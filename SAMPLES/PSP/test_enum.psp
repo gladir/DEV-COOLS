@@ -1,0 +1,115 @@
+<%
+{ test_enum.psp - Tests types definis, enumerations, ordinaux (TODO 18) }
+
+{ --- Test 1 : enumeration simple --- }
+type TColor = (Red, Green, Blue, Yellow);
+
+var c: Integer;
+c := Ord(Green);
+write(c);
+writeln;
+{ Attendu: 1 }
+
+{ --- Test 2 : Ord de la premiere valeur --- }
+c := Ord(Red);
+write(c);
+writeln;
+{ Attendu: 0 }
+
+{ --- Test 3 : Ord de la derniere valeur --- }
+c := Ord(Yellow);
+write(c);
+writeln;
+{ Attendu: 3 }
+
+{ --- Test 4 : Succ et Pred --- }
+c := Succ(5);
+write(c);
+writeln;
+{ Attendu: 6 }
+
+c := Pred(10);
+write(c);
+writeln;
+{ Attendu: 9 }
+
+{ --- Test 5 : Low et High sur enumeration --- }
+c := Low(TColor);
+write(c);
+writeln;
+{ Attendu: 0 }
+
+c := High(TColor);
+write(c);
+writeln;
+{ Attendu: 3 }
+
+{ --- Test 6 : sous-plage --- }
+type TDay = 1..31;
+
+c := Low(TDay);
+write(c);
+writeln;
+{ Attendu: 1 }
+
+c := High(TDay);
+write(c);
+writeln;
+{ Attendu: 31 }
+
+{ --- Test 7 : alias de type --- }
+type TEntier = Integer;
+var x: TEntier;
+x := 42;
+write(x);
+writeln;
+{ Attendu: 42 }
+
+{ --- Test 8 : SizeOf --- }
+c := SizeOf(Integer);
+write(c);
+writeln;
+{ Attendu: 2 }
+
+c := SizeOf(Byte);
+write(c);
+writeln;
+{ Attendu: 1 }
+
+{ --- Test 9 : Inc et Dec --- }
+var n: Integer;
+n := 10;
+Inc(n);
+write(n);
+writeln;
+{ Attendu: 11 }
+
+Dec(n);
+Dec(n);
+write(n);
+writeln;
+{ Attendu: 9 }
+
+{ --- Test 10 : Inc/Dec avec pas --- }
+n := 100;
+Inc(n, 50);
+write(n);
+writeln;
+{ Attendu: 150 }
+
+Dec(n, 30);
+write(n);
+writeln;
+{ Attendu: 120 }
+
+{ --- Test 11 : type pointeur (declaration seulement) --- }
+type PInt = ^Integer;
+
+{ --- Test 12 : utilisation enum dans expression --- }
+var col: Integer;
+col := Ord(Blue) + 10;
+write(col);
+writeln;
+{ Attendu: 12 }
+
+%>

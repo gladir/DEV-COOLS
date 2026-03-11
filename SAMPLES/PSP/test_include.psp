@@ -1,0 +1,19 @@
+<%
+{ test_include.psp - Tests pour TODO 25 : Directive Include }
+program test_include;
+
+{ Test inclusion avec la directive Pascal $I }
+{$I SAMPLES\PSP\test_inc.inc}
+
+var
+  a: Integer;
+
+begin
+  a := 42;
+  incvar := 100;
+
+  WriteLn(a);
+  WriteLn(incvar);
+  WriteLn(a + incvar);
+end.
+%>

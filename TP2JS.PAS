@@ -1,0 +1,10055 @@
+{ @author: Sylvain Maltais
+  @created: 2026
+  @version: 1.0
+  @website(https://www.gladir.com/dev-cools)
+  @abstract(Target: Turbo Pascal 7, Free Pascal 3.2)
+  @description: Compilateur Turbo Pascal vers JavaScript (.js)
+}
+
+(* ============================================================
+   TP2JS.PAS - Compilateur Turbo Pascal vers JavaScript (.js)
+   Turbo Pascal / Free Pascal (-Mtp)
+   Cible : code JavaScript ES5+ (.js)
+
+   Inspire du concept Pas2JS (Free Pascal) mais reecrit
+   entierement pour cibler le Turbo Pascal 7.
+
+   ============================================================ *)
+
+Program TP2JS;
+
+{$IFDEF FPC}
+  {$MODE TP}
+  {$H-}
+{$ENDIF}
+{$I-}
+
+{ ============================================================
+  CONSTANTES
+  ============================================================ }
+Const
+  TP2JS_VERSION = '1.0';
+  TP2JS_DATE    = '2026-03-10';
+
+  MAX_STR       = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
+  MAX_ERRORS    = {$IFDEF FPC}30{$ELSE}3{$ENDIF};
+
+  TP_VAR_PFX  = '_TPV_';
+  TP_FN_PFX   = '_TPF_';
+  TP_CST_PFX  = '_TPC_';
+  TP_TYPE_PFX = '_TPT_';
+  TP_UNIT_PFX = '_TPU_';
+  TP_RT_PFX   = '_TPR_';
+
+  MAX_TOKEN   = {$IFDEF FPC}16384{$ELSE}4096{$ENDIF};
+  MAX_CONST   = 256;
+  MAX_SYM     = {$IFDEF FPC}2048{$ELSE}512{$ENDIF};
+  MAX_SCOPE   = 64;
+  MAX_TYPE    = {$IFDEF FPC}512{$ELSE}128{$ENDIF};
+  MAX_FIELD   = 64;
+  MAX_UNITS   = 32;            { nombre maximum d unites utilisateur }
+
+  EXIT_OK    = 0;
+  EXIT_ERROR = 1;
+  EXIT_USAGE = 2;
+
+{ ============================================================
+  TYPES
+  ============================================================ }
+Type
+  TString = String[MAX_STR];
+
+  TOptions = Record
+    SrcFile   : TString;
+    OutFile   : TString;
+    Verbose   : Boolean;
+    DebugMode : Boolean;
+    Warnings  : Boolean;
+    ModuleES6 : Boolean;
+    Pretty    : Boolean;
+    HtmlMode  : Boolean;
+  End;
+
+  TTokenKind = (
+    TK_EOF,            { fin de fichier                       }
+    TK_INTEGER,        { literal entier 42 $FF                }
+    TK_REAL,           { literal reel 3.14 1.5E3              }
+    TK_STRING,         { literal chaine 'hello'               }
+    TK_CHAR,           { literal caractere #65 #$41           }
+    TK_IDENT,          { identificateur (non-mot-cle)         }
+    TK_KEYWORD,        { mot-cle Turbo Pascal reconnu         }
+    TK_OP,             { operateur := + - * / = <> < > etc.   }
+    TK_PUNCT,          { ponctuation ; , ( ) [ ] . ..         }
+    TK_DIRECTIVE       { directive (absolute, virtual, etc.)  }
+  );
+
+  TToken = Record
+    Kind     : TTokenKind;
+    Val      : TString;     { valeur textuelle brute           }
+    IntVal   : LongInt;     { valeur entiere (TK_INTEGER)      }
+    RealVal  : Real;        { valeur reelle (TK_REAL)          }
+    Line     : Integer;     { ligne source (1-base)            }
+    Col      : Integer;     { colonne source (1-base)          }
+  End;
+
+  TConstRec = Record
+    Name    : TString;     { nom de la constante Pascal         }
+    JSVal   : TString;     { valeur JavaScript generee          }
+    Kind    : TTokenKind;  { type du litteral (INT/REAL/STR...) }
+    IntVal  : LongInt;     { valeur entiere si applicable       }
+    RealVal : Real;        { valeur reelle si applicable        }
+    StrVal  : TString;     { valeur chaine si applicable        }
+    IsTyped : Boolean;     { constante typee (const X: T = V)   }
+  End;
+
+  TSymKind = (
+    SK_CONST,            { constante                            }
+    SK_TYPE,             { type (Integer, Boolean, record, etc) }
+    SK_VAR,              { variable                             }
+    SK_PARAM,            { parametre de procedure/fonction      }
+    SK_FUNC,             { fonction                             }
+    SK_PROC,             { procedure                            }
+    SK_FIELD,            { champ de record/object               }
+    SK_METHOD,           { methode d objet                      }
+    SK_PROPERTY,         { propriete d objet                    }
+    SK_UNIT,             { unite (uses)                         }
+    SK_LABEL,            { label (goto)                         }
+    SK_ENUMVAL           { valeur d enumeration                 }
+  );
+
+  TSymRec = Record
+    Name       : TString;    { nom Pascal (original)             }
+    JSName     : TString;    { nom JavaScript genere              }
+    Kind       : TSymKind;   { categorie du symbole               }
+    TypeIdx    : Integer;    { index dans table des types (-1=NA) }
+    Scope      : Integer;    { niveau de portee (0=global)        }
+    ScopeId    : Integer;    { id unique de la portee             }
+    IsPublic   : Boolean;    { visible dans INTERFACE             }
+    IsPrivate  : Boolean;    { prive (PRIVATE dans objet)         }
+    IsForward  : Boolean;    { declaration Forward                }
+    IsExternal : Boolean;    { declaration External               }
+  End;
+
+  TTypeKind = (
+    TYK_INTEGER,           { Integer : 16 bits signe              }
+    TYK_WORD,              { Word    : 16 bits non signe           }
+    TYK_BYTE,              { Byte    : 8 bits non signe            }
+    TYK_SHORTINT,          { ShortInt: 8 bits signe                }
+    TYK_LONGINT,           { LongInt : 32 bits signe               }
+    TYK_COMP,              { Comp    : 64 bits entier              }
+    TYK_BOOLEAN,           { Boolean : 8 bits                      }
+    TYK_CHAR,              { Char    : 8 bits                      }
+    TYK_REAL,              { Real    : 6 octets TP                 }
+    TYK_SINGLE,            { Single  : 4 octets IEEE               }
+    TYK_DOUBLE,            { Double  : 8 octets IEEE               }
+    TYK_EXTENDED,          { Extended: 10 octets                   }
+    TYK_STRING,            { String  : chaine courte 255 car       }
+    TYK_PCHAR,             { PChar   : pointeur vers char          }
+    TYK_ARRAY,             { Array   : tableau                     }
+    TYK_RECORD,            { Record  : enregistrement              }
+    TYK_SET,               { Set     : ensemble                    }
+    TYK_ENUM,              { Enum    : enumeration                 }
+    TYK_FILE,              { File    : fichier type                }
+    TYK_TEXT,              { Text    : fichier texte               }
+    TYK_POINTER,           { Pointer : pointeur generique          }
+    TYK_OBJECT,            { Object  : objet TP                    }
+    TYK_SUBRANGE,          { Subrange: sous-intervalle             }
+    TYK_PROCVAR            { ProcVar : variable procedurale        }
+  );
+
+  TFieldRec = Record
+    Name    : TString;     { nom du champ                         }
+    TypeIdx : Integer;     { index du type du champ               }
+  End;
+
+  TTypeRec = Record
+    Kind        : TTypeKind;   { categorie du type                }
+    Name        : TString;     { nom du type (Pascal)             }
+    Size        : Integer;     { taille en octets (TP)            }
+    JSType      : TString;     { type JavaScript correspondant    }
+    JSDefault   : TString;     { valeur par defaut en JS          }
+    BaseTypeIdx : Integer;     { type de base (array/pointer/set) }
+    ElemCount   : Integer;     { nombre d elements (array/enum)   }
+    FieldCount  : Integer;     { nombre de champs (record/object) }
+    Fields      : Array[0..MAX_FIELD - 1] Of TFieldRec;
+    Low         : LongInt;     { borne inf (subrange/array)       }
+    High        : LongInt;     { borne sup (subrange/array)       }
+    IsUnsigned  : Boolean;     { type non signe                   }
+  End;
+
+{ ============================================================
+  VARIABLES GLOBALES
+  ============================================================ }
+Var
+  Opts : TOptions;
+
+  ErrorCount : Integer;
+  WarnCount  : Integer;
+  TotalLines : LongInt;
+
+  OutF     : Text;
+  OutFOpen : Boolean;
+
+  { Lexeur }
+  LexSrcF   : Text;
+  LexOpened : Boolean;
+  LexLine   : String;
+  LexLineNo : Integer;
+  LexColNo  : Integer;
+  LexEOF    : Boolean;
+  CurToken  : TToken;
+
+  { Token pool pour traitement multi-passe }
+  TokenPool  : Array[0..MAX_TOKEN - 1] Of TToken;
+  TokenCount : Integer;
+
+  { Table des constantes }
+  ConstTab   : Array[0..MAX_CONST - 1] Of TConstRec;
+  ConstCount : Integer;
+
+  { Table des symboles }
+  SymTab     : Array[0..MAX_SYM - 1] Of TSymRec;
+  SymCount   : Integer;
+  CurScope   : Integer;         { niveau de portee courant (0=global) }
+  CurScopeId : Integer;         { id unique de la portee courante     }
+  SymJSSeq   : Integer;         { compteur pour noms JS uniques       }
+  BuiltinSymEnd : Integer;      { indice apres les symboles builtins  }
+
+  { Table des types }
+  TypeTab    : Array[0..MAX_TYPE - 1] Of TTypeRec;
+  TypeCount  : Integer;
+
+  { Emetteur de code JavaScript }
+  IndentLevel : Integer;          { niveau d indentation courant (0=gauche) }
+
+  { Parseur de programme }
+  ProgName    : TString;          { nom du programme PROGRAM xxx            }
+
+  { Compilation d unites }
+  IsUnitMode  : Boolean;          { True si on compile une UNIT             }
+  UnitName    : TString;          { nom de l unite courante                 }
+  UnitInitCount : Integer;        { nombre d unites avec init chargees      }
+  UnitInitNames : Array[0..MAX_UNITS - 1] Of TString;
+                                  { noms des unites ayant un bloc init      }
+  UnitLoaded    : Array[0..MAX_UNITS - 1] Of TString;
+                                  { noms des unites deja chargees           }
+  UnitLoadedCount : Integer;      { nombre d unites chargees                }
+
+  { Runtime JavaScript minimal }
+  RuntimeEmitted : Boolean;       { flag pour n emettre le runtime qu une fois }
+
+{ ============================================================
+  FORWARD DECLARATIONS
+  ============================================================ }
+Procedure LexClose; Forward;
+Function ParseExpr(Var P : Integer) : TString; Forward;
+Function ConstEvalExpr(Var P : Integer) : TString; Forward;
+Function IsBooleanExpr(Const S : TString) : Boolean; Forward;
+Function TypeFindByName(Const AName : TString) : Integer; Forward;
+Function SymFind(Const AName : TString) : Integer; Forward;
+Procedure ParseDeclSections(Var P : Integer); Forward;
+Procedure ParseUsesClause(Var P : Integer); Forward;
+Procedure EmitRuntime; Forward;
+
+{ ============================================================
+  INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
+  ============================================================ }
+
+Function IntToStr_(N : LongInt) : TString;
+Var
+  S : TString;
+Begin
+  Str(N, S);
+  IntToStr_ := S;
+End;
+
+{ StrToLongIntDef : convertir une chaine en LongInt avec defaut }
+Function StrToLongIntDef(Const S : TString; Def : LongInt) : LongInt;
+Var
+  N    : LongInt;
+  Code : Integer;
+Begin
+  Val(S, N, Code);
+  If Code = 0 Then
+    StrToLongIntDef := N
+  Else
+    StrToLongIntDef := Def;
+End;
+
+Function StrLowerCase(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do
+    If (R[I] >= 'A') And (R[I] <= 'Z') Then
+      R[I] := Chr(Ord(R[I]) + 32);
+  StrLowerCase := R;
+End;
+
+Function BaseName(Const Path : TString) : TString;
+Var
+  I, LastSep, LastDot : Integer;
+  S : TString;
+Begin
+  LastSep := 0;
+  LastDot := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If LastDot > LastSep Then
+    S := Copy(Path, LastSep + 1, LastDot - LastSep - 1)
+  Else
+    S := Copy(Path, LastSep + 1, Length(Path));
+  BaseName := S;
+End;
+
+Function ReplaceExt(Const Path, NewExt : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ReplaceExt := Copy(Path, 1, LastDot - 1) + NewExt
+  Else
+    ReplaceExt := Path + NewExt;
+End;
+
+Procedure FatalError(Const Msg : TString);
+Begin
+  WriteLn('TP2JS: FATAL: ', Msg);
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+    {$I-}
+    Assign(OutF, Opts.OutFile);
+    Erase(OutF);
+    {$I+}
+  End;
+  Halt(EXIT_ERROR);
+End;
+
+Procedure CompileError(Const Msg : TString);
+Begin
+  WriteLn('TP2JS: error: ', Msg);
+  Inc(ErrorCount);
+  If ErrorCount >= MAX_ERRORS Then
+    FatalError('trop d''erreurs, compilation arretee');
+End;
+
+Procedure WarnMsg(Const Msg : TString);
+Begin
+  If Not Opts.Warnings Then Exit;
+  WriteLn('TP2JS: warning: ', Msg);
+  Inc(WarnCount);
+End;
+
+Procedure ShowBanner;
+Begin
+  WriteLn('TP2JS v', TP2JS_VERSION, ' (', TP2JS_DATE, ')');
+  WriteLn('Compilateur Turbo Pascal -> JavaScript (.js)');
+  WriteLn('Turbo Pascal / Free Pascal (-Mtp)');
+  WriteLn;
+End;
+
+Procedure ShowUsage;Begin
+ WriteLn('TP2JS - Cette commande permet de compiler un fichier Turbo ',
+         'Pascal en code JavaScript.');
+ WriteLn;
+ WriteLn('Syntaxe : TP2JS <source.pas> [sortie.js] [options]');
+ WriteLn;
+ WriteLn('  source.pas : fichier Turbo Pascal source');
+ WriteLn('  sortie.js  : fichier JavaScript de sortie (defaut: source.js)');
+ WriteLn;
+ WriteLn('Options:');
+ WriteLn('  -v         : mode verbeux (banniere + statistiques)');
+ WriteLn('  -d         : debug tokens (affiche chaque token)');
+ WriteLn('  -w         : activer les avertissements');
+ WriteLn('  -m         : generer module ES6 (export/import)');
+ WriteLn('  -pretty    : indentation du JavaScript genere');
+ WriteLn('  -html      : generer un fichier HTML (avec <script>)');
+ WriteLn('  -h, --help : cette aide');
+ WriteLn;
+ Halt(EXIT_USAGE);
+End;
+
+Procedure ShowStats;Begin
+  WriteLn;
+  WriteLn('Compilation terminee : ', Opts.SrcFile, ' -> ', Opts.OutFile);
+  WriteLn('  Lignes         : ', TotalLines);
+  WriteLn('  Erreurs        : ', ErrorCount);
+  WriteLn('  Avertissements : ', WarnCount);
+End;
+
+Procedure InitOptions;Begin
+  Opts.SrcFile   := '';
+  Opts.OutFile   := '';
+  Opts.Verbose   := False;
+  Opts.DebugMode := False;
+  Opts.Warnings  := False;
+  Opts.ModuleES6 := False;
+  Opts.Pretty    := False;
+  Opts.HtmlMode  := False;
+End;
+
+Procedure ParseArgs;
+Var
+  I   : Integer;
+  Arg : TString;
+  Ext : TString;
+Begin
+  InitOptions;
+  If ParamCount = 0 Then
+    ShowUsage;
+
+  For I := 1 To ParamCount Do
+  Begin
+    Arg := ParamStr(I);
+
+    If (Arg = '-h') Or (Arg = '--help') Or (Arg = '/?') Then
+      ShowUsage
+    Else If (Arg = '-v') Or (Arg = '--verbose') Then
+      Opts.Verbose := True
+    Else If Arg = '-d' Then
+      Opts.DebugMode := True
+    Else If Arg = '-w' Then
+      Opts.Warnings := True
+    Else If Arg = '-m' Then
+      Opts.ModuleES6 := True
+    Else If Arg = '-pretty' Then
+      Opts.Pretty := True
+    Else If Arg = '-html' Then
+      Opts.HtmlMode := True
+    Else If (Length(Arg) > 0) And (Arg[1] = '-') Then
+    Begin
+      WriteLn('TP2JS: option inconnue: ', Arg);
+      ShowUsage;
+    End
+    Else If Opts.SrcFile = '' Then
+      Opts.SrcFile := Arg
+    Else If Opts.OutFile = '' Then
+      Opts.OutFile := Arg
+    Else
+    Begin
+      WriteLn('TP2JS: argument inattendu: ', Arg);
+      ShowUsage;
+    End;
+  End;
+
+  If Opts.SrcFile = '' Then
+  Begin
+    WriteLn('TP2JS: fichier source manquant');
+    ShowUsage;
+  End;
+
+  { Verifier extension .pas }
+  Ext := StrLowerCase(Opts.SrcFile);
+  If (Length(Ext) < 4) Or
+     (Copy(Ext, Length(Ext) - 3, 4) <> '.pas') Then
+  Begin
+    WriteLn('TP2JS: le fichier source doit avoir l''extension .pas');
+    ShowUsage;
+  End;
+
+  { Sortie par defaut : meme nom avec extension .js ou .html }
+  If Opts.OutFile = '' Then
+  Begin
+    If Opts.HtmlMode Then
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.html')
+    Else
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.js');
+  End;
+End;
+
+Procedure Cleanup;
+Begin
+  If LexOpened Then
+    LexClose;
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+Procedure GlobalInit;
+Begin
+  ErrorCount := 0;
+  WarnCount  := 0;
+  TotalLines := 0;
+  OutFOpen   := False;
+  LexOpened  := False;
+  LexEOF     := False;
+  LexLineNo  := 0;
+  LexColNo   := 1;
+  LexLine    := '';
+  CurToken.Kind    := TK_EOF;
+  CurToken.Val     := '';
+  CurToken.IntVal  := 0;
+  CurToken.RealVal := 0.0;
+  CurToken.Line    := 0;
+  CurToken.Col     := 0;
+  TokenCount := 0;
+  ConstCount := 0;
+  ProgName   := 'main';
+  RuntimeEmitted := False;
+End;
+
+{ ============================================================
+  LEXEUR (TOKENS TURBO PASCAL) [IMPLEMENTE]
+  ============================================================ }
+
+Function StrUpperCase(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do
+    If (R[I] >= 'a') And (R[I] <= 'z') Then
+      R[I] := Chr(Ord(R[I]) - 32);
+  StrUpperCase := R;
+End;
+
+Function IsIdentStart(Ch : Char) : Boolean;
+Begin
+  IsIdentStart := ((Ch >= 'A') And (Ch <= 'Z')) Or
+                  ((Ch >= 'a') And (Ch <= 'z')) Or
+                  (Ch = '_');
+End;
+
+Function IsIdentCont(Ch : Char) : Boolean;
+Begin
+  IsIdentCont := IsIdentStart(Ch) Or ((Ch >= '0') And (Ch <= '9'));
+End;
+
+Function IsHexDigit(Ch : Char) : Boolean;
+Begin
+  IsHexDigit := ((Ch >= '0') And (Ch <= '9')) Or
+                ((Ch >= 'A') And (Ch <= 'F')) Or
+                ((Ch >= 'a') And (Ch <= 'f'));
+End;
+
+Function HexVal(Ch : Char) : Integer;
+Begin
+  If (Ch >= '0') And (Ch <= '9') Then HexVal := Ord(Ch) - Ord('0')
+  Else If (Ch >= 'A') And (Ch <= 'F') Then HexVal := Ord(Ch) - Ord('A') + 10
+  Else HexVal := Ord(Ch) - Ord('a') + 10;
+End;
+
+Function IsKeyword(Const S : TString) : Boolean;
+Var
+  L : TString;
+Begin
+  L := StrLowerCase(S);
+  IsKeyword :=
+    (L = 'and')            Or (L = 'array')      Or (L = 'begin')     Or
+    (L = 'case')           Or (L = 'const')      Or (L = 'constructor') Or
+    (L = 'destructor')     Or (L = 'div')        Or (L = 'do')        Or
+    (L = 'downto')         Or (L = 'else')       Or (L = 'end')       Or
+    (L = 'file')           Or (L = 'for')        Or (L = 'forward')   Or
+    (L = 'function')       Or (L = 'goto')       Or (L = 'if')        Or
+    (L = 'implementation') Or (L = 'in')         Or (L = 'inherited') Or
+    (L = 'inline')         Or (L = 'interface')  Or (L = 'label')     Or
+    (L = 'mod')            Or (L = 'nil')        Or (L = 'not')       Or
+    (L = 'object')         Or (L = 'of')         Or (L = 'or')        Or
+    (L = 'packed')         Or (L = 'procedure')  Or (L = 'program')   Or
+    (L = 'record')         Or (L = 'repeat')     Or (L = 'set')       Or
+    (L = 'shl')            Or (L = 'shr')        Or (L = 'string')    Or
+    (L = 'then')           Or (L = 'to')         Or (L = 'type')      Or
+    (L = 'unit')           Or (L = 'until')      Or (L = 'uses')      Or
+    (L = 'var')            Or (L = 'while')      Or (L = 'with')      Or
+    (L = 'xor')            Or (L = 'otherwise');
+End;
+
+Function IsDirective(Const S : TString) : Boolean;
+Var
+  L : TString;
+Begin
+  L := StrLowerCase(S);
+  IsDirective :=
+    (L = 'absolute')   Or (L = 'assembler')  Or (L = 'external')  Or
+    (L = 'far')        Or (L = 'interrupt')  Or (L = 'near')      Or
+    (L = 'private')    Or (L = 'public')     Or (L = 'virtual');
+End;
+
+Procedure PrintToken(Const T : TToken);
+Begin
+  If Not Opts.DebugMode Then Exit;
+  Write('  [', T.Line, ',', T.Col, '] ');
+  Case T.Kind Of
+    TK_EOF       : Write('EOF');
+    TK_INTEGER   : Write('INT(', T.IntVal, ')');
+    TK_REAL      : Write('REAL(', T.Val, ')');
+    TK_STRING    : Write('STR(''', T.Val, ''')');
+    TK_CHAR      : Write('CHAR(#', T.IntVal, ')');
+    TK_IDENT     : Write('IDENT(', T.Val, ')');
+    TK_KEYWORD   : Write('KW(', T.Val, ')');
+    TK_OP        : Write('OP(', T.Val, ')');
+    TK_PUNCT     : Write('PUNCT(', T.Val, ')');
+    TK_DIRECTIVE : Write('DIR(', T.Val, ')');
+  End;
+  WriteLn;
+End;
+
+{ ---- LexNextLine -------------------------------------------- }
+Procedure LexNextLine;
+Begin
+  If LexEOF Then Exit;
+  If EOF(LexSrcF) Then
+  Begin
+    LexEOF   := True;
+    LexLine  := '';
+    LexColNo := 1;
+  End
+  Else
+  Begin
+    ReadLn(LexSrcF, LexLine);
+    Inc(LexLineNo);
+    Inc(TotalLines);
+    LexColNo := 1;
+  End;
+End;
+
+{ ---- LexInit ------------------------------------------------ }
+Procedure LexInit;
+Begin
+  LexLineNo := 0;
+  LexColNo  := 1;
+  LexEOF    := False;
+  LexLine   := '';
+  CurToken.Kind    := TK_EOF;
+  CurToken.Val     := '';
+  CurToken.IntVal  := 0;
+  CurToken.RealVal := 0.0;
+  CurToken.Line    := 0;
+  CurToken.Col     := 0;
+  LexNextLine;
+End;
+
+{ ---- LexClose ----------------------------------------------- }
+Procedure LexClose;
+Begin
+  If LexOpened Then
+  Begin
+    Close(LexSrcF);
+    LexOpened := False;
+  End;
+End;
+
+(* ---- LexSkipBraceComment : sauter accolades commentaire --- *)
+Procedure LexSkipBraceComment;
+Begin
+  Inc(LexColNo); (* sauter accolade ouvrante *)
+  While Not LexEOF Do
+  Begin
+    If LexColNo > Length(LexLine) Then
+      LexNextLine
+    Else If LexLine[LexColNo] = '}' Then
+    Begin
+      Inc(LexColNo);
+      Exit;
+    End
+    Else
+      Inc(LexColNo);
+  End;
+End;
+
+{ ---- LexSkipParenStarComment : sauter (* ... *) ------------- }
+Procedure LexSkipParenStarComment;
+Begin
+  Inc(LexColNo); Inc(LexColNo); { sauter '(' et '*' }
+  While Not LexEOF Do
+  Begin
+    If LexColNo > Length(LexLine) Then
+      LexNextLine
+    Else If (LexLine[LexColNo] = '*') And
+            (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = ')') Then
+    Begin
+      Inc(LexColNo); Inc(LexColNo);
+      Exit;
+    End
+    Else
+      Inc(LexColNo);
+  End;
+End;
+
+{ ---- LexSkipLineComment : sauter // ... -------------------- }
+Procedure LexSkipLineComment;
+Begin
+  LexColNo := Length(LexLine) + 1;
+End;
+
+{ ---- LexScanIdent : scanner un identificateur ou mot-cle --- }
+Procedure LexScanIdent;
+Var
+  S : TString;
+Begin
+  S := '';
+  While (LexColNo <= Length(LexLine)) And IsIdentCont(LexLine[LexColNo]) Do
+  Begin
+    If Length(S) < MAX_STR Then
+      S := S + LexLine[LexColNo];
+    Inc(LexColNo);
+  End;
+  CurToken.Val     := S;
+  CurToken.IntVal  := 0;
+  CurToken.RealVal := 0.0;
+  If IsKeyword(S) Then
+  Begin
+    CurToken.Kind := TK_KEYWORD;
+    CurToken.Val  := StrLowerCase(S);
+  End
+  Else If IsDirective(S) Then
+  Begin
+    CurToken.Kind := TK_DIRECTIVE;
+    CurToken.Val  := StrLowerCase(S);
+  End
+  Else
+    CurToken.Kind := TK_IDENT;
+End;
+
+{ ---- LexScanNumber : scanner un litteral numerique --------- }
+Procedure LexScanNumber;
+Var
+  N       : LongInt;
+  IsReal  : Boolean;
+  NegExp  : Boolean;
+  FracDiv : Real;
+  FracVal : Real;
+  ExpVal  : Integer;
+  FltVal  : Real;
+Begin
+  N       := 0;
+  IsReal  := False;
+  NegExp  := False;
+  FracVal := 0.0;
+  FracDiv := 10.0;
+  ExpVal  := 0;
+
+  { Scanner la partie entiere decimale }
+  While (LexColNo <= Length(LexLine)) And
+        (LexLine[LexColNo] >= '0') And (LexLine[LexColNo] <= '9') Do
+  Begin
+    N := N * 10 + (Ord(LexLine[LexColNo]) - Ord('0'));
+    Inc(LexColNo);
+  End;
+
+  { Partie decimale .ddd (mais pas '..' qui est le token de plage) }
+  If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '.') And
+     (LexColNo < Length(LexLine)) And (LexLine[LexColNo + 1] <> '.') And
+     (LexLine[LexColNo + 1] >= '0') And (LexLine[LexColNo + 1] <= '9') Then
+  Begin
+    IsReal := True;
+    Inc(LexColNo); { sauter '.' }
+    FracDiv := 10.0;
+    FracVal := 0.0;
+    While (LexColNo <= Length(LexLine)) And
+          (LexLine[LexColNo] >= '0') And (LexLine[LexColNo] <= '9') Do
+    Begin
+      FracVal := FracVal + (Ord(LexLine[LexColNo]) - Ord('0')) / FracDiv;
+      FracDiv := FracDiv * 10.0;
+      Inc(LexColNo);
+    End;
+  End;
+
+  { Exposant E [+-] ddd }
+  If (LexColNo <= Length(LexLine)) And
+     ((LexLine[LexColNo] = 'E') Or (LexLine[LexColNo] = 'e')) Then
+  Begin
+    IsReal := True;
+    Inc(LexColNo);
+    NegExp := False;
+    If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '-') Then
+    Begin
+      NegExp := True;
+      Inc(LexColNo);
+    End
+    Else If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '+') Then
+      Inc(LexColNo);
+    ExpVal := 0;
+    While (LexColNo <= Length(LexLine)) And
+          (LexLine[LexColNo] >= '0') And (LexLine[LexColNo] <= '9') Do
+    Begin
+      ExpVal := ExpVal * 10 + (Ord(LexLine[LexColNo]) - Ord('0'));
+      Inc(LexColNo);
+    End;
+  End;
+
+  If IsReal Then
+  Begin
+    FltVal := N + FracVal;
+    While ExpVal > 0 Do
+    Begin
+      If NegExp Then FltVal := FltVal / 10.0
+      Else           FltVal := FltVal * 10.0;
+      Dec(ExpVal);
+    End;
+    CurToken.Kind    := TK_REAL;
+    CurToken.RealVal := FltVal;
+    If FltVal > 2147483647.0 Then N := 2147483647
+    Else If FltVal < -2147483648.0 Then N := -2147483648
+    Else N := Trunc(FltVal);
+    CurToken.IntVal := N;
+    Str(FltVal:0:6, CurToken.Val);
+  End
+  Else
+  Begin
+    CurToken.Kind    := TK_INTEGER;
+    CurToken.IntVal  := N;
+    CurToken.RealVal := 0.0;
+    Str(N, CurToken.Val);
+  End;
+End;
+
+{ ---- LexScanHexNumber : scanner $FF ------------------------ }
+Procedure LexScanHexNumber;
+Var
+  N : LongInt;
+Begin
+  Inc(LexColNo); { sauter '$' }
+  N := 0;
+  While (LexColNo <= Length(LexLine)) And IsHexDigit(LexLine[LexColNo]) Do
+  Begin
+    N := N * 16 + HexVal(LexLine[LexColNo]);
+    Inc(LexColNo);
+  End;
+  CurToken.Kind    := TK_INTEGER;
+  CurToken.IntVal  := N;
+  CurToken.RealVal := 0.0;
+  Str(N, CurToken.Val);
+End;
+
+{ ---- LexScanString : scanner 'chaine' avec '' doublee ------ }
+Procedure LexScanString;
+Var
+  S  : TString;
+  Ch : Char;
+Begin
+  S := '';
+  Inc(LexColNo); { sauter quote ouvrante }
+  While LexColNo <= Length(LexLine) Do
+  Begin
+    Ch := LexLine[LexColNo];
+    If Ch = '''' Then
+    Begin
+      Inc(LexColNo);
+      { Quote doublee '' -> un seul caractere ' }
+      If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '''') Then
+      Begin
+        If Length(S) < MAX_STR Then
+          S := S + '''';
+        Inc(LexColNo);
+      End
+      Else
+        Break; { fin de chaine }
+    End
+    Else
+    Begin
+      If Length(S) < MAX_STR Then
+        S := S + Ch;
+      Inc(LexColNo);
+    End;
+  End;
+  CurToken.Kind    := TK_STRING;
+  CurToken.Val     := S;
+  CurToken.IntVal  := 0;
+  CurToken.RealVal := 0.0;
+  { Si chaine de longueur 1, stocker aussi le code ASCII }
+  If Length(S) = 1 Then
+    CurToken.IntVal := Ord(S[1]);
+End;
+
+{ ---- LexScanCharLit : scanner #nn, #$nn, ^X ---------------- }
+Procedure LexScanCharLit;
+Var
+  V : LongInt;
+  S : TString;
+Begin
+  S := '';
+  { Scanner une sequence de #nn / #$nn / ^X segments }
+  While (LexColNo <= Length(LexLine)) And
+        ((LexLine[LexColNo] = '#') Or (LexLine[LexColNo] = '^')) Do
+  Begin
+    If LexLine[LexColNo] = '#' Then
+    Begin
+      Inc(LexColNo); { sauter '#' }
+      V := 0;
+      If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '$') Then
+      Begin
+        Inc(LexColNo); { sauter '$' }
+        While (LexColNo <= Length(LexLine)) And
+              IsHexDigit(LexLine[LexColNo]) Do
+        Begin
+          V := V * 16 + HexVal(LexLine[LexColNo]);
+          Inc(LexColNo);
+        End;
+      End
+      Else
+      Begin
+        While (LexColNo <= Length(LexLine)) And
+              (LexLine[LexColNo] >= '0') And (LexLine[LexColNo] <= '9') Do
+        Begin
+          V := V * 10 + (Ord(LexLine[LexColNo]) - Ord('0'));
+          Inc(LexColNo);
+        End;
+      End;
+      If Length(S) < MAX_STR Then
+        S := S + Chr(V And $FF);
+    End
+    Else { '^' control character }
+    Begin
+      Inc(LexColNo); { sauter '^' }
+      If LexColNo <= Length(LexLine) Then
+      Begin
+        V := Ord(UpCase(LexLine[LexColNo])) - Ord('@');
+        If (V < 0) Or (V > 31) Then V := 0;
+        If Length(S) < MAX_STR Then
+          S := S + Chr(V);
+        Inc(LexColNo);
+      End;
+    End;
+  End;
+
+  { Si suivi d'une chaine 'xxx', concatener }
+  If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '''') Then
+  Begin
+    Inc(LexColNo); { sauter quote ouvrante }
+    While LexColNo <= Length(LexLine) Do
+    Begin
+      If LexLine[LexColNo] = '''' Then
+      Begin
+        Inc(LexColNo);
+        If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '''') Then
+        Begin
+          If Length(S) < MAX_STR Then S := S + '''';
+          Inc(LexColNo);
+        End
+        Else
+          Break;
+      End
+      Else
+      Begin
+        If Length(S) < MAX_STR Then
+          S := S + LexLine[LexColNo];
+        Inc(LexColNo);
+      End;
+    End;
+    { Peut etre suivi d'un autre #nn ou ^X }
+    While (LexColNo <= Length(LexLine)) And
+          ((LexLine[LexColNo] = '#') Or (LexLine[LexColNo] = '^')) Do
+    Begin
+      If LexLine[LexColNo] = '#' Then
+      Begin
+        Inc(LexColNo);
+        V := 0;
+        If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '$') Then
+        Begin
+          Inc(LexColNo);
+          While (LexColNo <= Length(LexLine)) And
+                IsHexDigit(LexLine[LexColNo]) Do
+          Begin
+            V := V * 16 + HexVal(LexLine[LexColNo]);
+            Inc(LexColNo);
+          End;
+        End
+        Else
+        Begin
+          While (LexColNo <= Length(LexLine)) And
+                (LexLine[LexColNo] >= '0') And
+                (LexLine[LexColNo] <= '9') Do
+          Begin
+            V := V * 10 + (Ord(LexLine[LexColNo]) - Ord('0'));
+            Inc(LexColNo);
+          End;
+        End;
+        If Length(S) < MAX_STR Then
+          S := S + Chr(V And $FF);
+      End
+      Else { '^' }
+      Begin
+        Inc(LexColNo);
+        If LexColNo <= Length(LexLine) Then
+        Begin
+          V := Ord(UpCase(LexLine[LexColNo])) - Ord('@');
+          If (V < 0) Or (V > 31) Then V := 0;
+          If Length(S) < MAX_STR Then
+            S := S + Chr(V);
+          Inc(LexColNo);
+        End;
+      End;
+    End;
+  End;
+
+  { Si un seul caractere -> TK_CHAR, sinon TK_STRING }
+  If Length(S) = 1 Then
+  Begin
+    CurToken.Kind   := TK_CHAR;
+    CurToken.IntVal := Ord(S[1]);
+  End
+  Else
+  Begin
+    CurToken.Kind   := TK_STRING;
+    CurToken.IntVal := 0;
+  End;
+  CurToken.Val     := S;
+  CurToken.RealVal := 0.0;
+End;
+
+{ ---- LexNextToken : scanner principal ----------------------- }
+Procedure LexNextToken;
+Var
+  Ch       : Char;
+  Scanning : Boolean;
+  SaveStr  : TString;
+Begin
+  CurToken.IntVal  := 0;
+  CurToken.RealVal := 0.0;
+
+  Scanning := True;
+  While Scanning Do
+  Begin
+    { Avancer a la prochaine ligne si fin de ligne }
+    While (Not LexEOF) And (LexColNo > Length(LexLine)) Do
+      LexNextLine;
+
+    { Fin de fichier }
+    If LexEOF Then
+    Begin
+      CurToken.Kind := TK_EOF;
+      CurToken.Val  := '';
+      CurToken.Line := LexLineNo;
+      CurToken.Col  := LexColNo;
+      Scanning := False;
+      Break;
+    End;
+
+    CurToken.Line := LexLineNo;
+    CurToken.Col  := LexColNo;
+    Ch := LexLine[LexColNo];
+
+    { Espaces blancs }
+    If (Ch = ' ') Or (Ch = #9) Or (Ch = #13) Or (Ch = #12) Then
+    Begin
+      Inc(LexColNo);
+    End
+
+    { Commentaire // ligne (TP7+) }
+    Else If (Ch = '/') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '/') Then
+    Begin
+      LexSkipLineComment;
+    End
+
+    (* Commentaire accolade *)
+    Else If Ch = '{' Then
+    Begin
+      LexSkipBraceComment;
+    End
+
+    { Commentaire (* ... *) ou operateur '(' }
+    Else If (Ch = '(') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '*') Then
+    Begin
+      LexSkipParenStarComment;
+    End
+
+    { Entier hexadecimal $FF }
+    Else If (Ch = '$') And (LexColNo < Length(LexLine)) And
+            IsHexDigit(LexLine[LexColNo + 1]) Then
+    Begin
+      LexScanHexNumber;
+      Scanning := False;
+    End
+
+    { Caractere literal #nn ou controle ^X }
+    Else If (Ch = '#') Or (Ch = '^') Then
+    Begin
+      LexScanCharLit;
+      Scanning := False;
+    End
+
+    { Chaine Pascal 'xxx' }
+    Else If Ch = '''' Then
+    Begin
+      LexScanString;
+      { Si suivi de #nn ou ^X -> concatener avec la chaine }
+      If (LexColNo <= Length(LexLine)) And
+         ((LexLine[LexColNo] = '#') Or (LexLine[LexColNo] = '^')) Then
+      Begin
+        SaveStr := CurToken.Val;
+        LexScanCharLit;
+        CurToken.Val  := SaveStr + CurToken.Val;
+        CurToken.Kind := TK_STRING;
+        CurToken.IntVal := 0;
+      End;
+      Scanning := False;
+    End
+
+    { Identificateur ou mot-cle }
+    Else If IsIdentStart(Ch) Then
+    Begin
+      LexScanIdent;
+      Scanning := False;
+    End
+
+    { Nombre decimal }
+    Else If (Ch >= '0') And (Ch <= '9') Then
+    Begin
+      LexScanNumber;
+      Scanning := False;
+    End
+
+    { Operateur d affectation := }
+    Else If (Ch = ':') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '=') Then
+    Begin
+      CurToken.Kind := TK_OP;
+      CurToken.Val  := ':=';
+      Inc(LexColNo, 2);
+      Scanning := False;
+    End
+
+    { Operateur <> }
+    Else If (Ch = '<') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '>') Then
+    Begin
+      CurToken.Kind := TK_OP;
+      CurToken.Val  := '<>';
+      Inc(LexColNo, 2);
+      Scanning := False;
+    End
+
+    { Operateur <= }
+    Else If (Ch = '<') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '=') Then
+    Begin
+      CurToken.Kind := TK_OP;
+      CurToken.Val  := '<=';
+      Inc(LexColNo, 2);
+      Scanning := False;
+    End
+
+    { Operateur >= }
+    Else If (Ch = '>') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '=') Then
+    Begin
+      CurToken.Kind := TK_OP;
+      CurToken.Val  := '>=';
+      Inc(LexColNo, 2);
+      Scanning := False;
+    End
+
+    { Token de plage .. }
+    Else If (Ch = '.') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '.') Then
+    Begin
+      CurToken.Kind := TK_PUNCT;
+      CurToken.Val  := '..';
+      Inc(LexColNo, 2);
+      Scanning := False;
+    End
+
+    { Operateurs simples }
+    Else If (Ch = '+') Or (Ch = '-') Or (Ch = '*') Or (Ch = '/') Or
+            (Ch = '=') Or (Ch = '<') Or (Ch = '>') Or (Ch = '@') Then
+    Begin
+      CurToken.Kind := TK_OP;
+      CurToken.Val  := Ch;
+      Inc(LexColNo);
+      Scanning := False;
+    End
+
+    { Ponctuation }
+    Else If (Ch = ';') Or (Ch = ',') Or (Ch = '(') Or (Ch = ')') Or
+            (Ch = '[') Or (Ch = ']') Or (Ch = '.') Or (Ch = ':') Or
+            (Ch = '^') Then
+    Begin
+      CurToken.Kind := TK_PUNCT;
+      CurToken.Val  := Ch;
+      Inc(LexColNo);
+      Scanning := False;
+    End
+
+    { Caractere inconnu : avancer et signaler }
+    Else
+    Begin
+      WarnMsg('caractere inattendu: ' + Ch + ' (ord=' +
+              IntToStr_(Ord(Ch)) + ')');
+      Inc(LexColNo);
+    End;
+  End;
+
+  PrintToken(CurToken);
+End;
+
+{ ============================================================
+  LITTERAUX ET CONSTANTES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- HexByte : octet -> 2 chiffres hexa -------------------- }
+Function HexByte(B : Integer) : TString;
+Const
+  HX : String[16] = '0123456789ABCDEF';
+Begin
+  HexByte := HX[(B Shr 4) And $F + 1] + HX[B And $F + 1];
+End;
+
+{ ---- StrToJS : convertir chaine Pascal -> litteral JS ------- }
+{ 'abc' -> "abc"  /  'l''arbre' -> "l'arbre"                   }
+{ Caracteres speciaux : #13 -> \r, #10 -> \n, #9 -> \t etc.    }
+Function StrToJS(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+  Ch : Char;
+Begin
+  R := '"';
+  For I := 1 To Length(S) Do
+  Begin
+    Ch := S[I];
+    Case Ch Of
+      '"'  : If Length(R) < MAX_STR - 2 Then R := R + '\"';
+      '\'  : If Length(R) < MAX_STR - 2 Then R := R + '\\';
+      #8   : If Length(R) < MAX_STR - 2 Then R := R + '\b';
+      #9   : If Length(R) < MAX_STR - 2 Then R := R + '\t';
+      #10  : If Length(R) < MAX_STR - 2 Then R := R + '\n';
+      #12  : If Length(R) < MAX_STR - 2 Then R := R + '\f';
+      #13  : If Length(R) < MAX_STR - 2 Then R := R + '\r';
+      #0   : If Length(R) < MAX_STR - 4 Then R := R + '\x00';
+      #26  : If Length(R) < MAX_STR - 4 Then R := R + '\x1A';
+    Else
+      If (Ord(Ch) < 32) Or (Ord(Ch) > 126) Then
+      Begin
+        If Length(R) < MAX_STR - 4 Then
+          R := R + '\x' + HexByte(Ord(Ch));
+      End
+      Else
+      Begin
+        If Length(R) < MAX_STR - 1 Then
+          R := R + Ch;
+      End;
+    End;
+  End;
+  If Length(R) < MAX_STR Then
+    R := R + '"';
+  StrToJS := R;
+End;
+
+{ ---- CharToJS : convertir code ASCII -> representation JS --- }
+{ Caracteres courants retournes comme chaine JS d un caractere  }
+{ Caracteres speciaux : #13 -> "\r", #10 -> "\n", etc.         }
+Function CharToJS(Code : Integer) : TString;
+Begin
+  Case Code Of
+    8  : CharToJS := '"\b"';
+    9  : CharToJS := '"\t"';
+    10 : CharToJS := '"\n"';
+    12 : CharToJS := '"\f"';
+    13 : CharToJS := '"\r"';
+    0  : CharToJS := '"\x00"';
+    26 : CharToJS := '"\x1A"';
+    34 : CharToJS := '"\""';
+    92 : CharToJS := '"\\\\"';
+  Else
+    If (Code >= 32) And (Code <= 126) Then
+      CharToJS := '"' + Chr(Code) + '"'
+    Else
+      CharToJS := 'String.fromCharCode(' + IntToStr_(Code) + ')';
+  End;
+End;
+
+{ ---- IntToJS : entier -> JavaScript ------------------------- }
+Function IntToJS(N : LongInt) : TString;
+Begin
+  IntToJS := IntToStr_(N);
+End;
+
+{ ---- RealToJS : reel -> JavaScript -------------------------- }
+Function RealToJS(R : Real) : TString;
+Var
+  S : TString;
+Begin
+  Str(R:0:10, S);
+  { Supprimer les zeros inutiles a la fin }
+  While (Length(S) > 1) And (S[Length(S)] = '0') And
+        (S[Length(S) - 1] <> '.') Do
+    Delete(S, Length(S), 1);
+  RealToJS := S;
+End;
+
+{ ---- LitToJS : convertir un token litteral en JavaScript ---- }
+{ Dispatche selon le type de token                              }
+Function LitToJS(Const T : TToken) : TString;
+Var
+  L : TString;
+Begin
+  Case T.Kind Of
+    TK_INTEGER : LitToJS := IntToJS(T.IntVal);
+    TK_REAL    : LitToJS := RealToJS(T.RealVal);
+    TK_STRING  : LitToJS := StrToJS(T.Val);
+    TK_CHAR    : LitToJS := CharToJS(T.IntVal);
+    TK_KEYWORD :
+    Begin
+      L := StrLowerCase(T.Val);
+      If L = 'true'  Then LitToJS := 'true'
+      Else If L = 'false' Then LitToJS := 'false'
+      Else If L = 'nil'   Then LitToJS := 'null'
+      Else LitToJS := T.Val;
+    End;
+    TK_IDENT :
+    Begin
+      L := StrLowerCase(T.Val);
+      If L = 'true'  Then LitToJS := 'true'
+      Else If L = 'false' Then LitToJS := 'false'
+      Else If L = 'nil'   Then LitToJS := 'null'
+      Else If L = 'maxint' Then LitToJS := '32767'
+      Else If L = 'maxlongint' Then LitToJS := '2147483647'
+      Else LitToJS := T.Val;
+    End;
+  Else
+    LitToJS := T.Val;
+  End;
+End;
+
+{ ---- TokenPoolInit : initialiser le pool de tokens ---------- }
+Procedure TokenPoolInit;
+Begin
+  TokenCount := 0;
+End;
+
+{ ---- TokenPoolAdd : ajouter un token au pool ---------------- }
+Procedure TokenPoolAdd(Const T : TToken);
+Begin
+  If TokenCount >= MAX_TOKEN Then
+  Begin
+    FatalError('pool de tokens sature (MAX_TOKEN=' +
+               IntToStr_(MAX_TOKEN) + ')');
+    Exit;
+  End;
+  TokenPool[TokenCount] := T;
+  Inc(TokenCount);
+End;
+
+{ ---- TokenPoolFill : remplir le pool depuis le lexeur ------- }
+{ Lex tous les tokens du fichier et les stocke dans TokenPool.  }
+Procedure TokenPoolFill;
+Begin
+  TokenPoolInit;
+  LexNextToken;
+  While CurToken.Kind <> TK_EOF Do
+  Begin
+    TokenPoolAdd(CurToken);
+    LexNextToken;
+  End;
+  { Ajouter le EOF final }
+  TokenPoolAdd(CurToken);
+End;
+
+{ ---- ConstInit : initialiser la table des constantes -------- }
+Procedure ConstInit;
+Begin
+  ConstCount := 0;
+End;
+
+{ ---- ConstAdd : ajouter une constante a la table ------------ }
+Procedure ConstAdd(Const AName, AJSVal : TString;
+                   AKind : TTokenKind;
+                   AIntVal : LongInt; ARealVal : Real;
+                   Const AStrVal : TString;
+                   AIsTyped : Boolean);
+Begin
+  If ConstCount >= MAX_CONST Then
+  Begin
+    CompileError('table des constantes saturee (MAX_CONST=' +
+                 IntToStr_(MAX_CONST) + ')');
+    Exit;
+  End;
+  ConstTab[ConstCount].Name    := AName;
+  ConstTab[ConstCount].JSVal   := AJSVal;
+  ConstTab[ConstCount].Kind    := AKind;
+  ConstTab[ConstCount].IntVal  := AIntVal;
+  ConstTab[ConstCount].RealVal := ARealVal;
+  ConstTab[ConstCount].StrVal  := AStrVal;
+  ConstTab[ConstCount].IsTyped := AIsTyped;
+  Inc(ConstCount);
+End;
+
+{ ---- ConstFind : chercher une constante par nom (insensible) }
+{ Retourne l index dans ConstTab ou -1 si introuvable          }
+Function ConstFind(Const AName : TString) : Integer;
+Var
+  I  : Integer;
+  LN : TString;
+  LC : TString;
+Begin
+  LN := StrLowerCase(AName);
+  For I := 0 To ConstCount - 1 Do
+  Begin
+    LC := StrLowerCase(ConstTab[I].Name);
+    If LC = LN Then
+    Begin
+      ConstFind := I;
+      Exit;
+    End;
+  End;
+  ConstFind := -1;
+End;
+
+{ ---- ConstFindIntVal : trouver la valeur entiere d une constante }
+{ Retourne la valeur entiere de la constante ou le defaut.         }
+Function ConstFindIntVal(Const AName : TString; Def : LongInt) : LongInt;
+Var
+  Idx : Integer;
+Begin
+  Idx := ConstFind(AName);
+  If Idx >= 0 Then
+    ConstFindIntVal := ConstTab[Idx].IntVal
+  Else
+    ConstFindIntVal := Def;
+End;
+
+{ ---- ConstRegisterBuiltins : constantes predefinies --------- }
+{ True, False, MaxInt, MaxLongInt, nil                          }
+Procedure ConstRegisterBuiltins;
+Begin
+  ConstAdd('True',       'true',          TK_KEYWORD, 1, 0.0, '', False);
+  ConstAdd('False',      'false',         TK_KEYWORD, 0, 0.0, '', False);
+  ConstAdd('MaxInt',     '32767',         TK_INTEGER, 32767, 0.0, '', False);
+  ConstAdd('MaxLongInt', '2147483647',    TK_INTEGER, 2147483647, 0.0, '', False);
+  ConstAdd('nil',        'null',          TK_KEYWORD, 0, 0.0, '', False);
+  ConstAdd('Pi',         'Math.PI',       TK_REAL,    3, 3.14159265358979, '', False);
+  { Constantes CRT - couleurs }
+  ConstAdd('Black',        '0',    TK_INTEGER, 0,   0.0, '', False);
+  ConstAdd('Blue',         '1',    TK_INTEGER, 1,   0.0, '', False);
+  ConstAdd('Green',        '2',    TK_INTEGER, 2,   0.0, '', False);
+  ConstAdd('Cyan',         '3',    TK_INTEGER, 3,   0.0, '', False);
+  ConstAdd('Red',          '4',    TK_INTEGER, 4,   0.0, '', False);
+  ConstAdd('Magenta',      '5',    TK_INTEGER, 5,   0.0, '', False);
+  ConstAdd('Brown',        '6',    TK_INTEGER, 6,   0.0, '', False);
+  ConstAdd('LightGray',    '7',    TK_INTEGER, 7,   0.0, '', False);
+  ConstAdd('DarkGray',     '8',    TK_INTEGER, 8,   0.0, '', False);
+  ConstAdd('LightBlue',    '9',    TK_INTEGER, 9,   0.0, '', False);
+  ConstAdd('LightGreen',   '10',   TK_INTEGER, 10,  0.0, '', False);
+  ConstAdd('LightCyan',    '11',   TK_INTEGER, 11,  0.0, '', False);
+  ConstAdd('LightRed',     '12',   TK_INTEGER, 12,  0.0, '', False);
+  ConstAdd('LightMagenta', '13',   TK_INTEGER, 13,  0.0, '', False);
+  ConstAdd('Yellow',       '14',   TK_INTEGER, 14,  0.0, '', False);
+  ConstAdd('White',        '15',   TK_INTEGER, 15,  0.0, '', False);
+  ConstAdd('Blink',        '128',  TK_INTEGER, 128, 0.0, '', False);
+  { Constantes CRT - modes ecran }
+  ConstAdd('BW40',    '0',   TK_INTEGER, 0,   0.0, '', False);
+  ConstAdd('CO40',    '1',   TK_INTEGER, 1,   0.0, '', False);
+  ConstAdd('BW80',    '2',   TK_INTEGER, 2,   0.0, '', False);
+  ConstAdd('CO80',    '3',   TK_INTEGER, 3,   0.0, '', False);
+  ConstAdd('Mono',    '7',   TK_INTEGER, 7,   0.0, '', False);
+  ConstAdd('Font8x8', '256', TK_INTEGER, 256, 0.0, '', False);
+  { Constantes DOS - attributs de fichier }
+  ConstAdd('ReadOnly',  '1',   TK_INTEGER, 1,   0.0, '', False);
+  ConstAdd('Hidden',    '2',   TK_INTEGER, 2,   0.0, '', False);
+  ConstAdd('SysFile',   '4',   TK_INTEGER, 4,   0.0, '', False);
+  ConstAdd('VolumeID',  '8',   TK_INTEGER, 8,   0.0, '', False);
+  ConstAdd('Directory', '16',  TK_INTEGER, 16,  0.0, '', False);
+  ConstAdd('Archive',   '32',  TK_INTEGER, 32,  0.0, '', False);
+  ConstAdd('AnyFile',   '63',  TK_INTEGER, 63,  0.0, '', False);
+  { Constantes Overlay }
+  ConstAdd('ovrOk',          '0',  TK_INTEGER,  0, 0.0, '', False);
+  ConstAdd('ovrError',       '-1', TK_INTEGER, -1, 0.0, '', False);
+  ConstAdd('ovrNotFound',    '-2', TK_INTEGER, -2, 0.0, '', False);
+  ConstAdd('ovrNoMemory',    '-3', TK_INTEGER, -3, 0.0, '', False);
+  ConstAdd('ovrIOError',     '-4', TK_INTEGER, -4, 0.0, '', False);
+  ConstAdd('ovrNoEMSDriver', '-5', TK_INTEGER, -5, 0.0, '', False);
+  ConstAdd('ovrNoEMSMemory', '-6', TK_INTEGER, -6, 0.0, '', False);
+  { Constantes Graph - pilotes }
+  ConstAdd('Detect',   '0',  TK_INTEGER, 0,  0.0, '', False);
+  ConstAdd('CGA',      '1',  TK_INTEGER, 1,  0.0, '', False);
+  ConstAdd('MCGA',     '2',  TK_INTEGER, 2,  0.0, '', False);
+  ConstAdd('EGA',      '3',  TK_INTEGER, 3,  0.0, '', False);
+  ConstAdd('EGA64',    '4',  TK_INTEGER, 4,  0.0, '', False);
+  ConstAdd('EGAMono',  '5',  TK_INTEGER, 5,  0.0, '', False);
+  ConstAdd('IBM8514',  '6',  TK_INTEGER, 6,  0.0, '', False);
+  ConstAdd('HercMono', '7',  TK_INTEGER, 7,  0.0, '', False);
+  ConstAdd('ATT400',   '8',  TK_INTEGER, 8,  0.0, '', False);
+  ConstAdd('VGA',      '9',  TK_INTEGER, 9,  0.0, '', False);
+  ConstAdd('PC3270',   '10', TK_INTEGER, 10, 0.0, '', False);
+  { Constantes Graph - modes }
+  ConstAdd('CGAHi',    '4',  TK_INTEGER, 4,  0.0, '', False);
+  ConstAdd('EGAHi',    '1',  TK_INTEGER, 1,  0.0, '', False);
+  ConstAdd('EGALo',    '0',  TK_INTEGER, 0,  0.0, '', False);
+  ConstAdd('VGAHi',    '2',  TK_INTEGER, 2,  0.0, '', False);
+  ConstAdd('VGAMed',   '1',  TK_INTEGER, 1,  0.0, '', False);
+  ConstAdd('VGALo',    '0',  TK_INTEGER, 0,  0.0, '', False);
+  { Constantes Graph - couleurs EGA }
+  ConstAdd('EGABlack',        '0',  TK_INTEGER, 0,  0.0, '', False);
+  ConstAdd('EGABlue',         '1',  TK_INTEGER, 1,  0.0, '', False);
+  ConstAdd('EGAGreen',        '2',  TK_INTEGER, 2,  0.0, '', False);
+  ConstAdd('EGACyan',         '3',  TK_INTEGER, 3,  0.0, '', False);
+  ConstAdd('EGARed',          '4',  TK_INTEGER, 4,  0.0, '', False);
+  ConstAdd('EGAMagenta',      '5',  TK_INTEGER, 5,  0.0, '', False);
+  ConstAdd('EGABrown',        '20', TK_INTEGER, 20, 0.0, '', False);
+  ConstAdd('EGALightGray',    '7',  TK_INTEGER, 7,  0.0, '', False);
+  ConstAdd('EGADarkGray',     '56', TK_INTEGER, 56, 0.0, '', False);
+  ConstAdd('EGALightBlue',    '57', TK_INTEGER, 57, 0.0, '', False);
+  ConstAdd('EGALightGreen',   '58', TK_INTEGER, 58, 0.0, '', False);
+  ConstAdd('EGALightCyan',    '59', TK_INTEGER, 59, 0.0, '', False);
+  ConstAdd('EGALightRed',     '60', TK_INTEGER, 60, 0.0, '', False);
+  ConstAdd('EGALightMagenta', '61', TK_INTEGER, 61, 0.0, '', False);
+  ConstAdd('EGAYellow',       '62', TK_INTEGER, 62, 0.0, '', False);
+  ConstAdd('EGAWhite',        '63', TK_INTEGER, 63, 0.0, '', False);
+  { Constantes Graph - remplissage }
+  ConstAdd('EmptyFill',  '0',  TK_INTEGER, 0,  0.0, '', False);
+  ConstAdd('SolidFill',  '1',  TK_INTEGER, 1,  0.0, '', False);
+  ConstAdd('LineFill',   '2',  TK_INTEGER, 2,  0.0, '', False);
+  ConstAdd('LtSlashFill','3',  TK_INTEGER, 3,  0.0, '', False);
+  ConstAdd('SlashFill',  '4',  TK_INTEGER, 4,  0.0, '', False);
+  ConstAdd('BkSlashFill','5',  TK_INTEGER, 5,  0.0, '', False);
+  ConstAdd('LtBkSlashFill','6',TK_INTEGER, 6,  0.0, '', False);
+  ConstAdd('HatchFill',  '7',  TK_INTEGER, 7,  0.0, '', False);
+  ConstAdd('XHatchFill', '8',  TK_INTEGER, 8,  0.0, '', False);
+  ConstAdd('InterleaveFill','9',TK_INTEGER,9,  0.0, '', False);
+  ConstAdd('WideDotFill','10', TK_INTEGER, 10, 0.0, '', False);
+  ConstAdd('CloseDotFill','11',TK_INTEGER, 11, 0.0, '', False);
+  ConstAdd('UserFill',   '12', TK_INTEGER, 12, 0.0, '', False);
+  { Constantes Graph - lignes }
+  ConstAdd('SolidLn',   '0',  TK_INTEGER, 0,  0.0, '', False);
+  ConstAdd('DottedLn',  '1',  TK_INTEGER, 1,  0.0, '', False);
+  ConstAdd('CenterLn',  '2',  TK_INTEGER, 2,  0.0, '', False);
+  ConstAdd('DashedLn',  '3',  TK_INTEGER, 3,  0.0, '', False);
+  ConstAdd('UserBitLn', '4',  TK_INTEGER, 4,  0.0, '', False);
+  ConstAdd('NormWidth',  '1', TK_INTEGER, 1,  0.0, '', False);
+  ConstAdd('ThickWidth', '3', TK_INTEGER, 3,  0.0, '', False);
+  { Constantes Graph - operations de copie }
+  ConstAdd('NormalPut',  '0', TK_INTEGER, 0,  0.0, '', False);
+  ConstAdd('XORPut',     '1', TK_INTEGER, 1,  0.0, '', False);
+  ConstAdd('OrPut',      '2', TK_INTEGER, 2,  0.0, '', False);
+  ConstAdd('AndPut',     '3', TK_INTEGER, 3,  0.0, '', False);
+  ConstAdd('NotPut',     '4', TK_INTEGER, 4,  0.0, '', False);
+  { Constantes Graph - texte }
+  ConstAdd('DefaultFont',   '0', TK_INTEGER, 0, 0.0, '', False);
+  ConstAdd('TriplexFont',   '1', TK_INTEGER, 1, 0.0, '', False);
+  ConstAdd('SmallFont',     '2', TK_INTEGER, 2, 0.0, '', False);
+  ConstAdd('SansSerifFont',  '3', TK_INTEGER, 3, 0.0, '', False);
+  ConstAdd('GothicFont',    '4', TK_INTEGER, 4, 0.0, '', False);
+  ConstAdd('HorizDir',      '0', TK_INTEGER, 0, 0.0, '', False);
+  ConstAdd('VertDir',       '1', TK_INTEGER, 1, 0.0, '', False);
+  ConstAdd('LeftText',      '0', TK_INTEGER, 0, 0.0, '', False);
+  ConstAdd('CenterText',    '1', TK_INTEGER, 1, 0.0, '', False);
+  ConstAdd('RightText',     '2', TK_INTEGER, 2, 0.0, '', False);
+  ConstAdd('BottomText',    '0', TK_INTEGER, 0, 0.0, '', False);
+  ConstAdd('TopText',       '2', TK_INTEGER, 2, 0.0, '', False);
+  { Constantes Graph - erreurs }
+  ConstAdd('grOk',           '0',  TK_INTEGER, 0,  0.0, '', False);
+  ConstAdd('grNoInitGraph',  '-1', TK_INTEGER, -1, 0.0, '', False);
+  ConstAdd('grNotDetected',  '-2', TK_INTEGER, -2, 0.0, '', False);
+  ConstAdd('grFileNotFound', '-3', TK_INTEGER, -3, 0.0, '', False);
+  ConstAdd('grInvalidDriver','-4', TK_INTEGER, -4, 0.0, '', False);
+  ConstAdd('grNoLoadMem',    '-5', TK_INTEGER, -5, 0.0, '', False);
+  ConstAdd('grNoScanMem',    '-6', TK_INTEGER, -6, 0.0, '', False);
+  ConstAdd('grNoFloodMem',   '-7', TK_INTEGER, -7, 0.0, '', False);
+  ConstAdd('grFontNotFound', '-8', TK_INTEGER, -8, 0.0, '', False);
+  ConstAdd('grNoFontMem',    '-9', TK_INTEGER, -9, 0.0, '', False);
+  ConstAdd('grInvalidMode',  '-10',TK_INTEGER,-10, 0.0, '', False);
+  ConstAdd('grError',        '-11',TK_INTEGER,-11, 0.0, '', False);
+  ConstAdd('grIOerror',      '-12',TK_INTEGER,-12, 0.0, '', False);
+  ConstAdd('grInvalidFont',  '-13',TK_INTEGER,-13, 0.0, '', False);
+  ConstAdd('grInvalidFontNum','-14',TK_INTEGER,-14,0.0, '', False);
+  ConstAdd('grInvalidDeviceNum','-15',TK_INTEGER,-15,0.0,'', False);
+End;
+
+{ ---- ConstEvalAtom : evaluer un atome constant -------------- }
+{ Lit un token a la position P dans le TokenPool et retourne    }
+{ sa valeur JavaScript. Avance P.                                }
+Function ConstEvalAtom(Var P : Integer) : TString;
+Var
+  Neg  : Boolean;
+  Idx  : Integer;
+  L    : TString;
+  Tmp  : TString;
+  Tmp2 : TString;
+Begin
+  ConstEvalAtom := '0';
+  If P >= TokenCount Then Exit;
+
+  { Signe unaire + ou - }
+  Neg := False;
+  If (TokenPool[P].Kind = TK_OP) And (TokenPool[P].Val = '-') Then
+  Begin
+    Neg := True;
+    Inc(P);
+    If P >= TokenCount Then Exit;
+  End
+  Else If (TokenPool[P].Kind = TK_OP) And (TokenPool[P].Val = '+') Then
+  Begin
+    Inc(P);
+    If P >= TokenCount Then Exit;
+  End;
+
+  { NOT unaire }
+  If (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'not') Then
+  Begin
+    Inc(P);
+    Tmp := ConstEvalAtom(P);
+    ConstEvalAtom := '!' + Tmp;
+    Exit;
+  End;
+
+  { Parentheses }
+  If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = '(') Then
+  Begin
+    Inc(P);
+    Tmp := ConstEvalExpr(P);
+    { Consommer ')' }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ')') Then
+      Inc(P);
+    If Neg Then
+      ConstEvalAtom := '-(' + Tmp + ')'
+    Else
+      ConstEvalAtom := '(' + Tmp + ')';
+    Exit;
+  End;
+
+  { Litteral entier }
+  If TokenPool[P].Kind = TK_INTEGER Then
+  Begin
+    If Neg Then
+      ConstEvalAtom := IntToStr_(-TokenPool[P].IntVal)
+    Else
+      ConstEvalAtom := IntToStr_(TokenPool[P].IntVal);
+    Inc(P);
+    Exit;
+  End;
+
+  { Litteral reel }
+  If TokenPool[P].Kind = TK_REAL Then
+  Begin
+    If Neg Then
+      ConstEvalAtom := '-' + RealToJS(TokenPool[P].RealVal)
+    Else
+      ConstEvalAtom := RealToJS(TokenPool[P].RealVal);
+    Inc(P);
+    Exit;
+  End;
+
+  { Litteral chaine }
+  If TokenPool[P].Kind = TK_STRING Then
+  Begin
+    ConstEvalAtom := StrToJS(TokenPool[P].Val);
+    Inc(P);
+    Exit;
+  End;
+
+  { Litteral caractere }
+  If TokenPool[P].Kind = TK_CHAR Then
+  Begin
+    ConstEvalAtom := CharToJS(TokenPool[P].IntVal);
+    Inc(P);
+    Exit;
+  End;
+
+  { Mot-cle booleens / nil }
+  If TokenPool[P].Kind = TK_KEYWORD Then
+  Begin
+    L := StrLowerCase(TokenPool[P].Val);
+    If L = 'true'  Then Begin ConstEvalAtom := 'true';  Inc(P); Exit; End;
+    If L = 'false' Then Begin ConstEvalAtom := 'false'; Inc(P); Exit; End;
+    If L = 'nil'   Then Begin ConstEvalAtom := 'null';  Inc(P); Exit; End;
+    { ORD, CHR, etc. traites dans les parties suivants }
+    ConstEvalAtom := TokenPool[P].Val;
+    Inc(P);
+    Exit;
+  End;
+
+  { Identificateur : chercher dans la table des constantes }
+  If TokenPool[P].Kind = TK_IDENT Then
+  Begin
+    Idx := ConstFind(TokenPool[P].Val);
+    If Idx >= 0 Then
+    Begin
+      If Neg Then
+        ConstEvalAtom := '-' + ConstTab[Idx].JSVal
+      Else
+        ConstEvalAtom := ConstTab[Idx].JSVal;
+    End
+    Else
+    Begin
+      If Neg Then
+        ConstEvalAtom := '-' + TokenPool[P].Val
+      Else
+        ConstEvalAtom := TokenPool[P].Val;
+    End;
+    Inc(P);
+    Exit;
+  End;
+
+  { Ensemble [elem, elem..elem] }
+  If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = '[') Then
+  Begin
+    Tmp := '[';
+    Inc(P);
+    While (P < TokenCount) And
+          Not ((TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ']')) Do
+    Begin
+      If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ',') Then
+      Begin
+        Tmp := Tmp + ', ';
+        Inc(P);
+      End
+      Else If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = '..') Then
+      Begin
+        Tmp := Tmp + '/*..*/';
+        Inc(P);
+      End
+      Else
+      Begin
+        Tmp2 := LitToJS(TokenPool[P]);
+        Tmp := Tmp + Tmp2;
+        Inc(P);
+      End;
+    End;
+    Tmp := Tmp + ']';
+    If (P < TokenCount) And (TokenPool[P].Val = ']') Then
+      Inc(P);
+    ConstEvalAtom := Tmp;
+    Exit;
+  End;
+
+  { Token non reconnu : retourner tel quel }
+  ConstEvalAtom := TokenPool[P].Val;
+  Inc(P);
+End;
+
+{ ---- ConstEvalTerm : niveau 2 (multiplicatif) pour constantes }
+{ Gere les operateurs *, /, DIV, MOD, AND, SHL, SHR            }
+Function ConstEvalTerm(Var P : Integer) : TString;
+Var
+  Left : TString;
+  Op   : TString;
+  Rght : TString;
+
+  Function IsConstLevel2 : Boolean;
+  Var LL : TString;
+  Begin
+    IsConstLevel2 := False;
+    If P >= TokenCount Then Exit;
+    If TokenPool[P].Kind = TK_OP Then
+    Begin
+      If (TokenPool[P].Val = '*') Or (TokenPool[P].Val = '/') Then
+        IsConstLevel2 := True;
+    End
+    Else If TokenPool[P].Kind = TK_KEYWORD Then
+    Begin
+      LL := StrLowerCase(TokenPool[P].Val);
+      If (LL = 'div') Or (LL = 'mod') Or (LL = 'and') Or
+         (LL = 'shl') Or (LL = 'shr') Then
+        IsConstLevel2 := True;
+    End;
+  End;
+
+Begin
+  Left := ConstEvalAtom(P);
+  While (P < TokenCount) And IsConstLevel2 Do
+  Begin
+    Op := StrLowerCase(TokenPool[P].Val);
+    Inc(P);
+    Rght := ConstEvalAtom(P);
+
+    If Op = '*'        Then Left := Left + ' * '  + Rght
+    Else If Op = '/'   Then Left := Left + ' / '  + Rght
+    Else If Op = 'div' Then Left := 'Math.trunc(' + Left + ' / ' + Rght + ')'
+    Else If Op = 'mod' Then Left := Left + ' % '  + Rght
+    Else If Op = 'and' Then
+    Begin
+      If IsBooleanExpr(Left) Or IsBooleanExpr(Rght) Then
+        Left := Left + ' && ' + Rght
+      Else
+        Left := '(' + Left + ' & ' + Rght + ')';
+    End
+    Else If Op = 'shl' Then Left := Left + ' << ' + Rght
+    Else If Op = 'shr' Then Left := Left + ' >> ' + Rght;
+  End;
+  ConstEvalTerm := Left;
+End;
+
+{ ---- ConstEvalSimple : niveau 3 (additif) pour constantes --- }
+{ Gere les operateurs +, -, OR, XOR                             }
+Function ConstEvalSimple(Var P : Integer) : TString;
+Var
+  Left : TString;
+  Op   : TString;
+  Rght : TString;
+
+  Function IsConstLevel3 : Boolean;
+  Var LL : TString;
+  Begin
+    IsConstLevel3 := False;
+    If P >= TokenCount Then Exit;
+    If TokenPool[P].Kind = TK_OP Then
+    Begin
+      If (TokenPool[P].Val = '+') Or (TokenPool[P].Val = '-') Then
+        IsConstLevel3 := True;
+    End
+    Else If TokenPool[P].Kind = TK_KEYWORD Then
+    Begin
+      LL := StrLowerCase(TokenPool[P].Val);
+      If (LL = 'or') Or (LL = 'xor') Then
+        IsConstLevel3 := True;
+    End;
+  End;
+
+Begin
+  Left := ConstEvalTerm(P);
+  While (P < TokenCount) And IsConstLevel3 Do
+  Begin
+    Op := StrLowerCase(TokenPool[P].Val);
+    Inc(P);
+    Rght := ConstEvalTerm(P);
+
+    If Op = '+'        Then Left := Left + ' + ' + Rght
+    Else If Op = '-'   Then Left := Left + ' - ' + Rght
+    Else If Op = 'or' Then
+    Begin
+      If IsBooleanExpr(Left) Or IsBooleanExpr(Rght) Then
+        Left := Left + ' || ' + Rght
+      Else
+        Left := '(' + Left + ' | ' + Rght + ')';
+    End
+    Else If Op = 'xor' Then Left := Left + ' ^ ' + Rght;
+  End;
+  ConstEvalSimple := Left;
+End;
+
+{ ---- ConstEvalExpr : niveau 4 (relationnel) pour constantes -- }
+{ Gere les operateurs =, <>, <, >, <=, >=, IN                   }
+{ Retourne la representation JavaScript de l expression          }
+Function ConstEvalExpr;
+Var
+  Left : TString;
+  Op   : TString;
+  Rght : TString;
+
+  Function IsConstLevel4 : Boolean;
+  Var LL : TString;
+  Begin
+    IsConstLevel4 := False;
+    If P >= TokenCount Then Exit;
+    If TokenPool[P].Kind = TK_OP Then
+    Begin
+      If (TokenPool[P].Val = '=') Or (TokenPool[P].Val = '<>') Or
+         (TokenPool[P].Val = '<') Or (TokenPool[P].Val = '>') Or
+         (TokenPool[P].Val = '<=') Or (TokenPool[P].Val = '>=') Then
+        IsConstLevel4 := True;
+    End
+    Else If TokenPool[P].Kind = TK_KEYWORD Then
+    Begin
+      LL := StrLowerCase(TokenPool[P].Val);
+      If LL = 'in' Then IsConstLevel4 := True;
+    End;
+  End;
+
+Begin
+  Left := ConstEvalSimple(P);
+  While (P < TokenCount) And IsConstLevel4 Do
+  Begin
+    Op := StrLowerCase(TokenPool[P].Val);
+    Inc(P);
+    Rght := ConstEvalSimple(P);
+
+    If Op = '='        Then Left := Left + ' === ' + Rght
+    Else If Op = '<>'  Then Left := Left + ' !== ' + Rght
+    Else If Op = '<'   Then Left := Left + ' < '   + Rght
+    Else If Op = '>'   Then Left := Left + ' > '   + Rght
+    Else If Op = '<='  Then Left := Left + ' <= '  + Rght
+    Else If Op = '>='  Then Left := Left + ' >= '  + Rght
+    Else If Op = 'in'  Then Left := Rght + '.indexOf(' + Left + ') >= 0';
+  End;
+  ConstEvalExpr := Left;
+End;
+
+{ ============================================================
+  OPERATEURS ET PRECEDENCE [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- OpToJS : convertir operateur Pascal en JavaScript ------ }
+{ Retourne la representation JavaScript de l operateur Pascal.  }
+{ DIV -> Math.trunc(a / b), MOD -> %, = -> ===, <> -> !==,     }
+{ AND -> &&, OR -> ||, NOT -> !, XOR -> ^, SHL -> <<, SHR -> >>}
+{ := -> =                                                        }
+Function OpToJS(Const Op : TString) : TString;
+Var
+  L : TString;
+Begin
+  L := StrLowerCase(Op);
+  If L = ':='       Then OpToJS := ' = '
+  Else If L = '='   Then OpToJS := ' === '
+  Else If L = '<>'  Then OpToJS := ' !== '
+  Else If L = '<'   Then OpToJS := ' < '
+  Else If L = '>'   Then OpToJS := ' > '
+  Else If L = '<='  Then OpToJS := ' <= '
+  Else If L = '>='  Then OpToJS := ' >= '
+  Else If L = '+'   Then OpToJS := ' + '
+  Else If L = '-'   Then OpToJS := ' - '
+  Else If L = '*'   Then OpToJS := ' * '
+  Else If L = '/'   Then OpToJS := ' / '
+  Else If L = 'div' Then OpToJS := ' div '
+  Else If L = 'mod' Then OpToJS := ' % '
+  Else If L = 'and' Then OpToJS := ' && '
+  Else If L = 'or'  Then OpToJS := ' || '
+  Else If L = 'not' Then OpToJS := '!'
+  Else If L = 'xor' Then OpToJS := ' ^ '
+  Else If L = 'shl' Then OpToJS := ' << '
+  Else If L = 'shr' Then OpToJS := ' >> '
+  Else If L = 'in'  Then OpToJS := ' in '
+  Else If L = '@'   Then OpToJS := '@'
+  Else OpToJS := ' ' + Op + ' ';
+End;
+
+{ ============================================================
+  EXPRESSIONS BINAIRES ET UNAIRES [IMPLEMENTE]
+  ============================================================ }
+{ Distinction bitwise vs logique pour AND/OR/NOT.               }
+{ IsBooleanExpr : heuristique detectant si une expression       }
+{ generee est booleenne. Utilise pour choisir entre && et &,    }
+{ || et |, ! et ~ selon le contexte.                            }
+{ Correction du bug ConstEvalAtom : parentheses utilisant       }
+{ ConstEvalExpr pour evaluer les sous-expressions completes.    }
+{ Ajout de l operateur AS pour le typage objet Turbo Pascal.    }
+
+{ ---- IsBooleanExpr : detecte si l expression JS est booleenne }
+{ Retourne True si l expression semble etre une comparaison,    }
+{ un litteral booleen, ou contient des operateurs logiques.     }
+{ Utilise pour choisir && vs & et || vs | dans AND/OR.          }
+Function IsBooleanExpr(Const S : TString) : Boolean;
+Var
+  R : Boolean;
+Begin
+  R :=
+    (Pos(' === ', S) > 0) Or
+    (Pos(' !== ', S) > 0) Or
+    (Pos(' >= ', S) > 0) Or
+    (Pos(' <= ', S) > 0) Or
+    (Pos(' && ', S) > 0) Or
+    (Pos(' || ', S) > 0) Or
+    (S = 'true') Or (S = 'false') Or
+    ((Length(S) >= 2) And (S[1] = '(') And (S[2] = '!'));
+  { Detecter < et > simples (sans << et >>) }
+  If Not R Then
+    If (Pos(' > ', S) > 0) And (Pos(' >> ', S) = 0) Then
+      R := True;
+  If Not R Then
+    If (Pos(' < ', S) > 0) And (Pos(' << ', S) = 0) Then
+      R := True;
+  If Not R Then
+    If (Pos('.indexOf(', S) > 0) And (Pos(') >= 0', S) > 0) Then
+      R := True;
+  IsBooleanExpr := R;
+End;
+
+{ ---- IsLevel2Op : niveau 2 de precedence Pascal ------------- }
+{ Operateurs multiplicatifs : * / DIV MOD AND SHL SHR           }
+Function IsLevel2Op(Const T : TToken) : Boolean;
+Var
+  L : TString;
+Begin
+  IsLevel2Op := False;
+  If T.Kind = TK_OP Then
+  Begin
+    If (T.Val = '*') Or (T.Val = '/') Then
+      IsLevel2Op := True;
+  End
+  Else If T.Kind = TK_KEYWORD Then
+  Begin
+    L := StrLowerCase(T.Val);
+    If (L = 'div') Or (L = 'mod') Or (L = 'and') Or
+       (L = 'shl') Or (L = 'shr') Then
+      IsLevel2Op := True;
+  End;
+End;
+
+{ ---- IsLevel3Op : niveau 3 de precedence Pascal ------------- }
+{ Operateurs additifs : + - OR XOR                               }
+Function IsLevel3Op(Const T : TToken) : Boolean;
+Var
+  L : TString;
+Begin
+  IsLevel3Op := False;
+  If T.Kind = TK_OP Then
+  Begin
+    If (T.Val = '+') Or (T.Val = '-') Then
+      IsLevel3Op := True;
+  End
+  Else If T.Kind = TK_KEYWORD Then
+  Begin
+    L := StrLowerCase(T.Val);
+    If (L = 'or') Or (L = 'xor') Then
+      IsLevel3Op := True;
+  End;
+End;
+
+{ ---- IsLevel4Op : niveau 4 de precedence Pascal ------------- }
+{ Operateurs relationnels : = <> < > <= >= IN                    }
+Function IsLevel4Op(Const T : TToken) : Boolean;
+Var
+  L : TString;
+Begin
+  IsLevel4Op := False;
+  If T.Kind = TK_OP Then
+  Begin
+    If (T.Val = '=') Or (T.Val = '<>') Or (T.Val = '<') Or
+       (T.Val = '>') Or (T.Val = '<=') Or (T.Val = '>=') Then
+      IsLevel4Op := True;
+  End
+  Else If T.Kind = TK_KEYWORD Then
+  Begin
+    L := StrLowerCase(T.Val);
+    If (L = 'in') Or (L = 'as') Then
+      IsLevel4Op := True;
+  End;
+End;
+
+{ ============================================================
+  EXPRESSIONS PRIMAIRES [IMPLEMENTE]
+  ============================================================ }
+{ Transtypage, acces chaine/tableau, fonctions standard,         }
+{ constantes predefinies, appels de methode objet.               }
+
+{ ---- IsTypeCastName : retourne vrai si le nom est un type ---- }
+{ connu pouvant servir de transtypage : Integer(x), Char(x)...   }
+Function IsTypeCastName(Const AName : TString) : Boolean;
+Var
+  L : TString;
+Begin
+  L := StrLowerCase(AName);
+  IsTypeCastName := (L = 'integer') Or (L = 'word') Or (L = 'byte') Or
+                    (L = 'shortint') Or (L = 'longint') Or (L = 'char') Or
+                    (L = 'boolean') Or (L = 'string') Or (L = 'comp');
+End;
+
+{ ---- EmitTypeCast : genere le transtypage en JS -------------- }
+{ Integer(x) -> (x | 0), Char(x) -> String.fromCharCode(x)...   }
+Function EmitTypeCast(Const AType : TString; Const AExpr : TString) : TString;
+Var
+  L : TString;
+Begin
+  L := StrLowerCase(AType);
+  If (L = 'integer') Or (L = 'shortint') Or (L = 'longint') Or
+     (L = 'comp') Then
+    EmitTypeCast := '(' + AExpr + ' | 0)'
+  Else If L = 'byte' Then
+    EmitTypeCast := '((' + AExpr + ') & 0xFF)'
+  Else If L = 'word' Then
+    EmitTypeCast := '((' + AExpr + ') & 0xFFFF)'
+  Else If L = 'char' Then
+    EmitTypeCast := 'String.fromCharCode(' + AExpr + ')'
+  Else If L = 'boolean' Then
+    EmitTypeCast := '(!!(' + AExpr + '))'
+  Else If L = 'string' Then
+    EmitTypeCast := 'String(' + AExpr + ')'
+  Else
+    EmitTypeCast := AExpr;
+End;
+
+{ ---- IsBuiltinFunc : retourne vrai si le nom est une         }
+{ fonction standard de Turbo Pascal necessitant une traduction  }
+{ speciale en JavaScript.                                       }
+Function IsBuiltinFunc(Const AName : TString) : Boolean;
+Var
+  L : TString;
+Begin
+  L := StrLowerCase(AName);
+  IsBuiltinFunc := (L = 'ord') Or (L = 'chr') Or (L = 'length') Or
+                   (L = 'abs') Or (L = 'sqr') Or (L = 'sqrt') Or
+                   (L = 'pred') Or (L = 'succ') Or (L = 'round') Or
+                   (L = 'trunc') Or (L = 'odd') Or (L = 'upcase') Or
+                   (L = 'lo') Or (L = 'hi') Or (L = 'pos') Or
+                   (L = 'copy') Or (L = 'concat') Or (L = 'sizeof') Or
+                   (L = 'inc') Or (L = 'dec') Or (L = 'random') Or
+                   (L = 'int') Or (L = 'frac') Or (L = 'sin') Or
+                   (L = 'cos') Or (L = 'arctan') Or (L = 'ln') Or
+                   (L = 'exp') Or (L = 'pi') Or (L = 'str') Or
+                   (L = 'val') Or (L = 'halt') Or (L = 'exit') Or
+                   (L = 'high') Or (L = 'low') Or (L = 'assigned') Or
+                   (L = 'swap') Or
+                   { fonctions System supplementaires }
+                   (L = 'delete') Or (L = 'insert') Or
+                   (L = 'randomize') Or (L = 'runerror') Or
+                   (L = 'fillchar') Or (L = 'move') Or
+                   (L = 'getmem') Or (L = 'freemem') Or
+                   (L = 'setlength') Or
+                   (L = 'assign') Or (L = 'reset') Or
+                   (L = 'rewrite') Or (L = 'close') Or
+                   (L = 'append') Or (L = 'seek') Or
+                   (L = 'erase') Or (L = 'rename') Or
+                   (L = 'blockread') Or (L = 'blockwrite') Or
+                   (L = 'paramcount') Or (L = 'paramstr') Or
+                   (L = 'addr') Or (L = 'eof') Or (L = 'eoln') Or
+                   (L = 'ioresult') Or (L = 'filepos') Or
+                   (L = 'filesize') Or
+                   { fonctions CRT }
+                   (L = 'clrscr') Or (L = 'clreol') Or
+                   (L = 'gotoxy') Or (L = 'wherex') Or
+                   (L = 'wherey') Or (L = 'textcolor') Or
+                   (L = 'textbackground') Or (L = 'delay') Or
+                   (L = 'sound') Or (L = 'nosound') Or
+                   (L = 'keypressed') Or (L = 'readkey') Or
+                   (L = 'highvideo') Or (L = 'lowvideo') Or
+                   (L = 'normvideo') Or (L = 'window') Or
+                   (L = 'insline') Or (L = 'delline') Or
+                   (L = 'textmode') Or
+                   { fonctions DOS }
+                   (L = 'getdate') Or (L = 'gettime') Or
+                   (L = 'setdate') Or (L = 'settime') Or
+                   (L = 'packtime') Or (L = 'unpacktime') Or
+                   (L = 'getftime') Or (L = 'setftime') Or
+                   (L = 'findfirst') Or (L = 'findnext') Or
+                   (L = 'fsearch') Or (L = 'fexpand') Or
+                   (L = 'fsplit') Or (L = 'getdir') Or
+                   (L = 'mkdir') Or (L = 'rmdir') Or
+                   (L = 'chdir') Or
+                   (L = 'envcount') Or (L = 'envstr') Or
+                   (L = 'getenv') Or (L = 'dosversion') Or
+                   (L = 'diskfree') Or (L = 'disksize') Or
+                   (L = 'getcbreak') Or (L = 'setcbreak') Or
+                   (L = 'getverify') Or (L = 'setverify') Or
+                   (L = 'exec') Or (L = 'dosexitcode') Or
+                   (L = 'swapvectors') Or (L = 'keep') Or
+                   (L = 'intr') Or (L = 'msdos') Or
+                   { fonctions Overlay }
+                   (L = 'ovrinit') Or (L = 'ovrinitems') Or
+                   (L = 'ovrgetbuf') Or (L = 'ovrsetbuf') Or
+                   (L = 'ovrgetretry') Or (L = 'ovrsetretry') Or
+                   (L = 'ovrclearbuf') Or (L = 'ovrresult') Or
+                   { fonctions Graph }
+                   (L = 'initgraph') Or (L = 'closegraph') Or
+                   (L = 'detectgraph') Or (L = 'graphresult') Or
+                   (L = 'grapherrormsg') Or
+                   (L = 'getmaxx') Or (L = 'getmaxy') Or
+                   (L = 'getmaxcolor') Or (L = 'getx') Or
+                   (L = 'gety') Or
+                   (L = 'putpixel') Or (L = 'getpixel') Or
+                   (L = 'line') Or (L = 'lineto') Or
+                   (L = 'linerel') Or (L = 'moveto') Or
+                   (L = 'moverel') Or
+                   (L = 'circle') Or (L = 'arc') Or
+                   (L = 'ellipse') Or (L = 'fillellipse') Or
+                   (L = 'rectangle') Or (L = 'bar') Or
+                   (L = 'bar3d') Or (L = 'pieslice') Or
+                   (L = 'sector') Or (L = 'floodfill') Or
+                   (L = 'fillpoly') Or
+                   (L = 'outtext') Or (L = 'outtextxy') Or
+                   (L = 'settextstyle') Or (L = 'settextjustify') Or
+                   (L = 'textwidth') Or (L = 'textheight') Or
+                   (L = 'setcolor') Or (L = 'setbkcolor') Or
+                   (L = 'getcolor') Or (L = 'getbkcolor') Or
+                   (L = 'setfillstyle') Or (L = 'setfillpattern') Or
+                   (L = 'setlinestyle') Or (L = 'setwritemode') Or
+                   (L = 'setviewport') Or (L = 'clearviewport') Or
+                   (L = 'cleardevice') Or (L = 'getviewsettings') Or
+                   (L = 'imagesize') Or (L = 'getimage') Or
+                   (L = 'putimage') Or
+                   (L = 'setpalette') Or (L = 'setallpalette') Or
+                   (L = 'getpalette') Or (L = 'getdefaultpalette') Or
+                   (L = 'setrgbpalette') Or
+                   (L = 'setaspectratio') Or (L = 'getaspectratio') Or
+                   (L = 'setactivepage') Or (L = 'setvisualpage');
+End;
+
+{ ---- EmitBuiltinCall : genere l appel de fonction standard --- }
+{ Convertit les fonctions standard TP en equivalent JavaScript.  }
+Function EmitBuiltinCall(Const AName : TString;
+                          Var P : Integer) : TString;
+Var
+  L     : TString;
+  Arg1  : TString;
+  Arg2  : TString;
+  Arg3  : TString;
+  Args  : TString;
+Begin
+  L := StrLowerCase(AName);
+  EmitBuiltinCall := AName + '()';
+
+  { Fonctions sans arguments }
+  If L = 'pi' Then
+  Begin
+    { Pi peut etre appele sans parentheses }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P); { ( }
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then
+        Inc(P); { ) }
+    End;
+    EmitBuiltinCall := 'Math.PI';
+    Exit;
+  End;
+
+  If L = 'random' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ')') Then
+      Begin
+        Inc(P);
+        EmitBuiltinCall := 'Math.random()';
+        Exit;
+      End;
+      Arg1 := ParseExpr(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then
+        Inc(P);
+      EmitBuiltinCall := 'Math.floor(Math.random() * ' + Arg1 + ')';
+      Exit;
+    End;
+    EmitBuiltinCall := 'Math.random()';
+    Exit;
+  End;
+
+  If L = 'halt' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And Not ((TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ')')) Then
+        Arg1 := ParseExpr(P)
+      Else
+        Arg1 := '0';
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then
+        Inc(P);
+    End
+    Else
+      Arg1 := '0';
+    EmitBuiltinCall := 'process.exit(' + Arg1 + ')';
+    Exit;
+  End;
+
+  If L = 'exit' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then
+        Inc(P);
+    End;
+    EmitBuiltinCall := 'return';
+    Exit;
+  End;
+
+  { fonctions sans argument ou a argument optionnel }
+
+  If L = 'randomize' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '/* Randomize */';
+    Exit;
+  End;
+
+  If L = 'paramcount' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '(typeof process !== "undefined" ? process.argv.length - 2 : 0)';
+    Exit;
+  End;
+
+  If L = 'ioresult' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '0 /* IOResult */';
+    Exit;
+  End;
+
+  { ============================================================
+    UNITE CRT [IMPLEMENTE]
+    Fonctions sans argument ou a argument optionnel.
+    ============================================================ }
+
+  { -- ClrScr : effacer l ecran -------------------------------- }
+  If L = 'clrscr' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := 'process.stdout.write("\x1b[2J\x1b[H")';
+    Exit;
+  End;
+
+  { -- ClrEol : effacer jusqu a la fin de ligne ---------------- }
+  If L = 'clreol' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := 'process.stdout.write("\x1b[K")';
+    Exit;
+  End;
+
+  { -- HighVideo : intensite haute ----------------------------- }
+  If L = 'highvideo' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := 'process.stdout.write("\x1b[1m")';
+    Exit;
+  End;
+
+  { -- LowVideo : intensite basse ----------------------------- }
+  If L = 'lowvideo' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := 'process.stdout.write("\x1b[2m")';
+    Exit;
+  End;
+
+  { -- NormVideo : reinitialiser les attributs video ----------- }
+  If L = 'normvideo' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := 'process.stdout.write("\x1b[0m")';
+    Exit;
+  End;
+
+  { -- InsLine : inserer une ligne ----------------------------- }
+  If L = 'insline' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := 'process.stdout.write("\x1b[L")';
+    Exit;
+  End;
+
+  { -- DelLine : supprimer une ligne --------------------------- }
+  If L = 'delline' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := 'process.stdout.write("\x1b[M")';
+    Exit;
+  End;
+
+  { -- NoSound : arreter le son (stub) ------------------------- }
+  If L = 'nosound' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '/* NoSound */';
+    Exit;
+  End;
+
+  { -- KeyPressed : touche disponible (stub) ------------------- }
+  If L = 'keypressed' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := 'false /* KeyPressed stub */';
+    Exit;
+  End;
+
+  { -- ReadKey : lire un caractere (stub) ---------------------- }
+  If L = 'readkey' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '"" /* ReadKey stub */';
+    Exit;
+  End;
+
+  { -- WhereX : position X courante (stub) --------------------- }
+  If L = 'wherex' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '1 /* WhereX stub */';
+    Exit;
+  End;
+
+  { -- WhereY : position Y courante (stub) --------------------- }
+  If L = 'wherey' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '1 /* WhereY stub */';
+    Exit;
+  End;
+
+  { ============================================================
+    UNITE DOS [IMPLEMENTE]
+    Fonctions sans argument ou a argument optionnel.
+    ============================================================ }
+
+  { -- EnvCount : nombre de variables d environnement ---------- }
+  If L = 'envcount' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '(typeof process !== "undefined" ? ' +
+      'Object.keys(process.env).length : 0)';
+    Exit;
+  End;
+
+  { -- DosVersion : version du systeme (stub) ------------------ }
+  If L = 'dosversion' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '0x0007 /* DosVersion stub: 7.0 */';
+    Exit;
+  End;
+
+  { -- DosExitCode : code retour dernier Exec (stub) ----------- }
+  If L = 'dosexitcode' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := 'DosExitCode';
+    Exit;
+  End;
+
+  { -- SwapVectors : echanger vecteurs d interruption (stub) --- }
+  If L = 'swapvectors' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '/* SwapVectors: not relevant in JS */';
+    Exit;
+  End;
+
+  { -- GetCBreak(Break) : lire etat Ctrl-Break (stub) --------- }
+  If L = 'getcbreak' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And Not ((TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ')')) Then
+        ParseExpr(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '/* GetCBreak stub */';
+    Exit;
+  End;
+
+  { -- GetVerify(Verify) : lire etat verification (stub) ------- }
+  If L = 'getverify' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And Not ((TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ')')) Then
+        ParseExpr(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '/* GetVerify stub */';
+    Exit;
+  End;
+
+  { ============================================================
+    UNITE OVERLAY [IMPLEMENTE]
+    Fonctions sans argument ou a argument optionnel.
+    Overlays non pertinents en JS : tous les appels sont des stubs.
+    ============================================================ }
+
+  { -- OvrInitEMS : initialiser overlay EMS (stub) ------------- }
+  If L = 'ovrinitems' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '/* OvrInitEMS: overlays not supported in JS */';
+    Exit;
+  End;
+
+  { -- OvrGetBuf : taille du buffer overlay (stub) ------------- }
+  If L = 'ovrgetbuf' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '0 /* OvrGetBuf stub */';
+    Exit;
+  End;
+
+  { -- OvrGetRetry : taille du cache overlay (stub) ------------ }
+  If L = 'ovrgetretry' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '0 /* OvrGetRetry stub */';
+    Exit;
+  End;
+
+  { -- OvrClearBuf : vider le buffer overlay (stub) ------------ }
+  If L = 'ovrclearbuf' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '/* OvrClearBuf: overlays not supported in JS */';
+    Exit;
+  End;
+
+  { -- OvrResult : code retour derniere operation overlay ------- }
+  If L = 'ovrresult' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := 'OvrResult';
+    Exit;
+  End;
+
+  { ============================================================
+    UNITE GRAPH [IMPLEMENTE]
+    Fonctions sans argument ou a argument optionnel.
+    ============================================================ }
+
+  { -- CloseGraph : fermer le mode graphique --------------------- }
+  If L = 'closegraph' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '_GR_Close()';
+    Exit;
+  End;
+
+  { -- GraphResult : code retour derniere operation graphique ---- }
+  If L = 'graphresult' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '_GR_Result';
+    Exit;
+  End;
+
+  { -- GetMaxX : largeur max du canvas -------------------------- }
+  If L = 'getmaxx' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '_GR_GetMaxX()';
+    Exit;
+  End;
+
+  { -- GetMaxY : hauteur max du canvas -------------------------- }
+  If L = 'getmaxy' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '_GR_GetMaxY()';
+    Exit;
+  End;
+
+  { -- GetMaxColor : nombre max de couleurs --------------------- }
+  If L = 'getmaxcolor' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '_GR_MaxColor';
+    Exit;
+  End;
+
+  { -- GetX : position X courante ------------------------------- }
+  If L = 'getx' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '_GR_CP.x';
+    Exit;
+  End;
+
+  { -- GetY : position Y courante ------------------------------- }
+  If L = 'gety' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '_GR_CP.y';
+    Exit;
+  End;
+
+  { -- GetColor : couleur de dessin courante -------------------- }
+  If L = 'getcolor' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '_GR_Color';
+    Exit;
+  End;
+
+  { -- GetBkColor : couleur de fond courante -------------------- }
+  If L = 'getbkcolor' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '_GR_BkColor';
+    Exit;
+  End;
+
+  { -- ClearDevice : effacer tout le canvas --------------------- }
+  If L = 'cleardevice' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '_GR_ClearDevice()';
+    Exit;
+  End;
+
+  { -- ClearViewPort : effacer le viewport courant -------------- }
+  If L = 'clearviewport' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '_GR_ClearViewPort()';
+    Exit;
+  End;
+
+  { -- GetViewSettings(VP) : lire parametres viewport ----------- }
+  If L = 'getviewsettings' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And Not ((TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ')')) Then
+        ParseExpr(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '/* GetViewSettings stub */';
+    Exit;
+  End;
+
+  { -- GetPalette(Pal) : lire palette courante (stub) ----------- }
+  If L = 'getpalette' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And Not ((TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ')')) Then
+        ParseExpr(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '/* GetPalette stub */';
+    Exit;
+  End;
+
+  { -- GetDefaultPalette(Pal) : palette par defaut (stub) ------- }
+  If L = 'getdefaultpalette' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And Not ((TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ')')) Then
+        ParseExpr(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '/* GetDefaultPalette stub */';
+    Exit;
+  End;
+
+  { -- GetAspectRatio(Xasp, Yasp) : lire ratio (stub) ---------- }
+  If L = 'getaspectratio' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And Not ((TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ')')) Then
+        ParseExpr(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ',') Then
+      Begin
+        Inc(P);
+        ParseExpr(P);
+      End;
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '/* GetAspectRatio stub */';
+    Exit;
+  End;
+
+  { Fonctions avec un argument obligatoire entre parentheses }
+  If Not ((P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = '(')) Then
+  Begin
+    EmitBuiltinCall := AName;
+    Exit;
+  End;
+  Inc(P); { consommer ( }
+
+  Arg1 := ParseExpr(P);
+
+  { Fonctions a 1 argument }
+  If L = 'ord' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := Arg1 + '.charCodeAt(0)';
+    Exit;
+  End;
+
+  If L = 'chr' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := 'String.fromCharCode(' + Arg1 + ')';
+    Exit;
+  End;
+
+  If L = 'length' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := Arg1 + '.length';
+    Exit;
+  End;
+
+  If L = 'abs' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := 'Math.abs(' + Arg1 + ')';
+    Exit;
+  End;
+
+  If L = 'sqr' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '(' + Arg1 + ' * ' + Arg1 + ')';
+    Exit;
+  End;
+
+  If L = 'sqrt' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := 'Math.sqrt(' + Arg1 + ')';
+    Exit;
+  End;
+
+  If L = 'pred' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '(' + Arg1 + ' - 1)';
+    Exit;
+  End;
+
+  If L = 'succ' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '(' + Arg1 + ' + 1)';
+    Exit;
+  End;
+
+  If L = 'round' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := 'Math.round(' + Arg1 + ')';
+    Exit;
+  End;
+
+  If (L = 'trunc') Or (L = 'int') Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := 'Math.trunc(' + Arg1 + ')';
+    Exit;
+  End;
+
+  If L = 'frac' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '(' + Arg1 + ' - Math.trunc(' + Arg1 + '))';
+    Exit;
+  End;
+
+  If L = 'odd' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '((' + Arg1 + ' & 1) !== 0)';
+    Exit;
+  End;
+
+  If L = 'upcase' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := Arg1 + '.toUpperCase()';
+    Exit;
+  End;
+
+  If L = 'lo' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '((' + Arg1 + ') & 0xFF)';
+    Exit;
+  End;
+
+  If L = 'hi' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '((' + Arg1 + ' >> 8) & 0xFF)';
+    Exit;
+  End;
+
+  If L = 'swap' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '(((' + Arg1 + ' & 0xFF) << 8) | ((' + Arg1 +
+                       ' >> 8) & 0xFF))';
+    Exit;
+  End;
+
+  If L = 'sin' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := 'Math.sin(' + Arg1 + ')';
+    Exit;
+  End;
+
+  If L = 'cos' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := 'Math.cos(' + Arg1 + ')';
+    Exit;
+  End;
+
+  If L = 'arctan' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := 'Math.atan(' + Arg1 + ')';
+    Exit;
+  End;
+
+  If L = 'ln' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := 'Math.log(' + Arg1 + ')';
+    Exit;
+  End;
+
+  If L = 'exp' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := 'Math.exp(' + Arg1 + ')';
+    Exit;
+  End;
+
+  If L = 'sizeof' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* sizeof */ 0';
+    Exit;
+  End;
+
+  If L = 'assigned' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '(' + Arg1 + ' !== null)';
+    Exit;
+  End;
+
+  If (L = 'high') Or (L = 'low') Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    If L = 'high' Then
+      EmitBuiltinCall := '(' + Arg1 + '.length - 1)'
+    Else
+      EmitBuiltinCall := '0';
+    Exit;
+  End;
+
+  If L = 'inc' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+      EmitBuiltinCall := Arg1 + ' += ' + Arg2;
+    End
+    Else
+    Begin
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+      EmitBuiltinCall := Arg1 + '++';
+    End;
+    Exit;
+  End;
+
+  If L = 'dec' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+      EmitBuiltinCall := Arg1 + ' -= ' + Arg2;
+    End
+    Else
+    Begin
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+      EmitBuiltinCall := Arg1 + '--';
+    End;
+    Exit;
+  End;
+
+  { Fonctions a 2+ arguments }
+  If L = 'pos' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End
+    Else
+      Arg2 := '""';
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '(' + Arg2 + '.indexOf(' + Arg1 + ') + 1)';
+    Exit;
+  End;
+
+  If L = 'copy' Then
+  Begin
+    Arg2 := '0'; Arg3 := '';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg3 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := Arg1 + '.substr((' + Arg2 + ') - 1, ' + Arg3 + ')';
+    Exit;
+  End;
+
+  If L = 'concat' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ' + ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '(' + Args + ')';
+    Exit;
+  End;
+
+  If L = 'str' Then
+  Begin
+    { Str(expr[:Width[:Decs]], VarDest) }
+    { Verifier si un format :Width suit le premier argument }
+    Args := ''; Arg2 := ''; Arg3 := '';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ':') Then
+    Begin
+      Inc(P); { consommer : }
+      Arg2 := ParseExpr(P); { Width }
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ':') Then
+      Begin
+        Inc(P); { consommer : }
+        Arg3 := ParseExpr(P); { Decimals }
+      End;
+    End;
+    { Lire la variable destination apres la virgule }
+    Args := '';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Args := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    { Generer le code JS }
+    If (Arg2 <> '') And (Arg3 <> '') Then
+    Begin
+      { Str(X:W:D, S) -> S = X.toFixed(D).padStart(W) }
+      If Args <> '' Then
+        EmitBuiltinCall := Args + ' = ' + Arg1 + '.toFixed(' + Arg3 +
+                           ').padStart(' + Arg2 + ')'
+      Else
+        EmitBuiltinCall := Arg1 + '.toFixed(' + Arg3 + ').padStart(' +
+                           Arg2 + ')';
+    End
+    Else If Arg2 <> '' Then
+    Begin
+      { Str(X:W, S) -> S = String(X).padStart(W) }
+      If Args <> '' Then
+        EmitBuiltinCall := Args + ' = String(' + Arg1 + ').padStart(' +
+                           Arg2 + ')'
+      Else
+        EmitBuiltinCall := 'String(' + Arg1 + ').padStart(' + Arg2 + ')';
+    End
+    Else If Args <> '' Then
+      EmitBuiltinCall := Args + ' = String(' + Arg1 + ')'
+    Else
+      EmitBuiltinCall := 'String(' + Arg1 + ')';
+    Exit;
+  End;
+
+  If L = 'val' Then
+  Begin
+    { Val(S, X, Code) -> X = Number(S); Code = isNaN(X) ? 1 : 0 }
+    Arg2 := ''; Arg3 := '';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg3 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    If (Arg2 <> '') And (Arg3 <> '') Then
+      { Val(S, X, Code) : set both X and Code }
+      EmitBuiltinCall := '(function() { ' + Arg2 + ' = Number(' + Arg1 +
+                         '); ' + Arg3 + ' = isNaN(' + Arg2 + ') ? 1 : 0; })()'
+    Else If Arg2 <> '' Then
+      EmitBuiltinCall := Arg2 + ' = Number(' + Arg1 + ')'
+    Else
+      EmitBuiltinCall := 'Number(' + Arg1 + ')';
+    Exit;
+  End;
+
+  { ============================================================
+    UNITE SYSTEM (IMPLICITE) [IMPLEMENTE]
+    Fonctions supplementaires du System unit Turbo Pascal.
+    ============================================================ }
+
+  { Fonctions g‚rant elles-memes les parentheses }
+
+  If L = 'runerror' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      Arg1 := ParseExpr(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+      EmitBuiltinCall := '(function() { throw new Error("Runtime error " + ' +
+                         Arg1 + '); })()';
+    End
+    Else
+      EmitBuiltinCall := '(function() { throw new Error("Runtime error"); })()';
+    Exit;
+  End;
+
+  If L = 'paramstr' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      Arg1 := ParseExpr(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+      EmitBuiltinCall := '(typeof process !== "undefined" ? (process.argv[(' +
+                         Arg1 + ') + 1] || "") : "")';
+    End
+    Else
+      EmitBuiltinCall := '""';
+    Exit;
+  End;
+
+  If L = 'eof' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If Not ((P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+              (TokenPool[P].Val = ')')) Then
+        Arg1 := ParseExpr(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := 'true /* Eof */';
+    Exit;
+  End;
+
+  If L = 'eoln' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If Not ((P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+              (TokenPool[P].Val = ')')) Then
+        Arg1 := ParseExpr(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := 'true /* Eoln */';
+    Exit;
+  End;
+
+  If L = 'filepos' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      Arg1 := ParseExpr(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+      EmitBuiltinCall := '0 /* FilePos(' + Arg1 + ') */';
+    End
+    Else
+      EmitBuiltinCall := '0 /* FilePos */';
+    Exit;
+  End;
+
+  If L = 'filesize' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      Arg1 := ParseExpr(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+      EmitBuiltinCall := '0 /* FileSize(' + Arg1 + ') */';
+    End
+    Else
+      EmitBuiltinCall := '0 /* FileSize */';
+    Exit;
+  End;
+
+  If L = 'addr' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      Arg1 := ParseExpr(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+      EmitBuiltinCall := Arg1 + ' /* Addr */';
+    End
+    Else
+      EmitBuiltinCall := 'null';
+    Exit;
+  End;
+
+  { -- Delete(S, Pos, Len) ---------------------------- }
+  If L = 'delete' Then
+  Begin
+    { Arg1 deja lu = S }
+    Arg2 := '1'; Arg3 := '0';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg3 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := Arg1 + ' = ' + Arg1 + '.substring(0, (' + Arg2 +
+                       ') - 1) + ' + Arg1 + '.substring((' + Arg2 +
+                       ') - 1 + (' + Arg3 + '))';
+    Exit;
+  End;
+
+  { -- Insert(Src, S, Pos) ------------------------------------ }
+  If L = 'insert' Then
+  Begin
+    { Arg1 deja lu = Src }
+    Arg2 := '""'; Arg3 := '1';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg3 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := Arg2 + ' = ' + Arg2 + '.substring(0, (' + Arg3 +
+                       ') - 1) + (' + Arg1 + ') + ' + Arg2 +
+                       '.substring((' + Arg3 + ') - 1)';
+    Exit;
+  End;
+
+  { -- SetLength(S, N) ---------------------------------------- }
+  If L = 'setlength' Then
+  Begin
+    Arg2 := '0';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := Arg1 + '.length = ' + Arg2;
+    Exit;
+  End;
+
+  { -- FillChar(Buf, Count, Val) ------------------------------ }
+  If L = 'fillchar' Then
+  Begin
+    Arg2 := '0'; Arg3 := '0';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg3 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* FillChar(' + Arg1 + ', ' + Arg2 + ', ' +
+                       Arg3 + ') */';
+    Exit;
+  End;
+
+  { -- Move(Src, Dest, Count) --------------------------------- }
+  If L = 'move' Then
+  Begin
+    Arg2 := ''; Arg3 := '0';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg3 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* Move(' + Arg1 + ', ' + Arg2 + ', ' +
+                       Arg3 + ') */';
+    Exit;
+  End;
+
+  { -- GetMem(P, Size) ---------------------------------------- }
+  If L = 'getmem' Then
+  Begin
+    Arg2 := '0';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := Arg1 + ' = new ArrayBuffer(' + Arg2 + ')';
+    Exit;
+  End;
+
+  { -- FreeMem(P [, Size]) ------------------------------------ }
+  If L = 'freemem' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := Arg1 + ' = null';
+    Exit;
+  End;
+
+  { -- Assign(F, Name) ---------------------------------------- }
+  If L = 'assign' Then
+  Begin
+    Arg2 := '""';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := Arg1 + ' = { name: ' + Arg2 + ', handle: null }';
+    Exit;
+  End;
+
+  { -- Reset(F) ----------------------------------------------- }
+  If L = 'reset' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* Reset(' + Arg1 + ') */';
+    Exit;
+  End;
+
+  { -- Rewrite(F) --------------------------------------------- }
+  If L = 'rewrite' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* Rewrite(' + Arg1 + ') */';
+    Exit;
+  End;
+
+  { -- Close(F) ----------------------------------------------- }
+  If L = 'close' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* Close(' + Arg1 + ') */';
+    Exit;
+  End;
+
+  { -- Append(F) ---------------------------------------------- }
+  If L = 'append' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* Append(' + Arg1 + ') */';
+    Exit;
+  End;
+
+  { -- Seek(F, Pos) ------------------------------------------- }
+  If L = 'seek' Then
+  Begin
+    Arg2 := '0';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* Seek(' + Arg1 + ', ' + Arg2 + ') */';
+    Exit;
+  End;
+
+  { -- Erase(F) ----------------------------------------------- }
+  If L = 'erase' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* Erase(' + Arg1 + ') */';
+    Exit;
+  End;
+
+  { -- Rename(F, NewName) ------------------------------------- }
+  If L = 'rename' Then
+  Begin
+    Arg2 := '""';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* Rename(' + Arg1 + ', ' + Arg2 + ') */';
+    Exit;
+  End;
+
+  { -- BlockRead(F, Buf, Count [, Result]) -------------------- }
+  If L = 'blockread' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* BlockRead(' + Args + ') */';
+    Exit;
+  End;
+
+  { -- BlockWrite(F, Buf, Count [, Result]) ------------------- }
+  If L = 'blockwrite' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* BlockWrite(' + Args + ') */';
+    Exit;
+  End;
+
+  { ============================================================
+    UNITE CRT [IMPLEMENTE]
+    Procedures avec argument(s) de l unite CRT Turbo Pascal.
+    ============================================================ }
+
+  { -- GotoXY(X, Y) : positionner le curseur ------------------- }
+  If L = 'gotoxy' Then
+  Begin
+    Arg2 := '1';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := 'process.stdout.write("\x1b[" + ' +
+                       Arg2 + ' + ";" + ' + Arg1 + ' + "H")';
+    Exit;
+  End;
+
+  { -- TextColor(Color) : couleur de texte ANSI ---------------- }
+  If L = 'textcolor' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := 'process.stdout.write("\x1b[" + _TPR_CrtFg(' +
+                       Arg1 + ') + "m")';
+    Exit;
+  End;
+
+  { -- TextBackground(Color) : couleur de fond ANSI ------------ }
+  If L = 'textbackground' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := 'process.stdout.write("\x1b[" + _TPR_CrtBg(' +
+                       Arg1 + ') + "m")';
+    Exit;
+  End;
+
+  { -- Window(X1, Y1, X2, Y2) : definir fenetre (stub) -------- }
+  If L = 'window' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* Window(' + Args + ') */';
+    Exit;
+  End;
+
+  { -- Sound(Hz) : generer un son (stub) ----------------------- }
+  If L = 'sound' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* Sound(' + Arg1 + ') */';
+    Exit;
+  End;
+
+  { -- Delay(Ms) : delai en millisecondes (stub) --------------- }
+  If L = 'delay' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* Delay(' + Arg1 + ') */';
+    Exit;
+  End;
+
+  { -- TextMode(Mode) : changer le mode texte (stub) ----------- }
+  If L = 'textmode' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* TextMode(' + Arg1 + ') */';
+    Exit;
+  End;
+
+  { ============================================================
+    UNITE DOS [IMPLEMENTE]
+    Fonctions de l unite DOS avec argument(s).
+    ============================================================ }
+
+  { -- GetDate(Y, M, D, DOW) : recuperer la date courante ------ }
+  If L = 'getdate' Then
+  Begin
+    Arg2 := '';
+    Arg3 := '';
+    Args := '';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg3 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Args := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '(function() { var _d = new Date(); ' +
+      Arg1 + ' = _d.getFullYear(); ' +
+      Arg2 + ' = _d.getMonth() + 1; ' +
+      Arg3 + ' = _d.getDate(); ' +
+      Args + ' = _d.getDay(); })()';
+    Exit;
+  End;
+
+  { -- GetTime(H, M, S, S100) : recuperer l heure courante ----- }
+  If L = 'gettime' Then
+  Begin
+    Arg2 := '';
+    Arg3 := '';
+    Args := '';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg3 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Args := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '(function() { var _d = new Date(); ' +
+      Arg1 + ' = _d.getHours(); ' +
+      Arg2 + ' = _d.getMinutes(); ' +
+      Arg3 + ' = _d.getSeconds(); ' +
+      Args + ' = Math.floor(_d.getMilliseconds() / 10); })()';
+    Exit;
+  End;
+
+  { -- SetDate(Y, M, D) : fixer la date (stub) ---------------- }
+  If L = 'setdate' Then
+  Begin
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* SetDate: not supported in JS */';
+    Exit;
+  End;
+
+  { -- SetTime(H, M, S, S100) : fixer l heure (stub) ---------- }
+  If L = 'settime' Then
+  Begin
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* SetTime: not supported in JS */';
+    Exit;
+  End;
+
+  { -- PackTime(DT, Time) : convertir DateTime en timestamp ---- }
+  If L = 'packtime' Then
+  Begin
+    Arg2 := '';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := Arg2 + ' = _TPR_PackTime(' + Arg1 + ')';
+    Exit;
+  End;
+
+  { -- UnpackTime(Time, DT) : convertir timestamp en DateTime -- }
+  If L = 'unpacktime' Then
+  Begin
+    Arg2 := '';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_TPR_UnpackTime(' + Arg1 + ', ' + Arg2 + ')';
+    Exit;
+  End;
+
+  { -- GetFTime(F, Time) : date modification fichier (stub) ---- }
+  If L = 'getftime' Then
+  Begin
+    Arg2 := '';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := Arg2 + ' = 0 /* GetFTime stub */';
+    Exit;
+  End;
+
+  { -- SetFTime(F, Time) : modifier date fichier (stub) ------- }
+  If L = 'setftime' Then
+  Begin
+    Arg2 := '';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* SetFTime stub */';
+    Exit;
+  End;
+
+  { -- FindFirst(Path, Attr, SR) : recherche fichiers (stub) --- }
+  If L = 'findfirst' Then
+  Begin
+    Arg2 := '';
+    Arg3 := '';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg3 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := 'DosError = 18 /* FindFirst stub */';
+    Exit;
+  End;
+
+  { -- FindNext(SR) : fichier suivant (stub) ------------------- }
+  If L = 'findnext' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := 'DosError = 18 /* FindNext stub */';
+    Exit;
+  End;
+
+  { -- FSearch(Name, List) : recherche dans PATH --------------- }
+  If L = 'fsearch' Then
+  Begin
+    Arg2 := '';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := Arg1 + ' /* FSearch stub */';
+    Exit;
+  End;
+
+  { -- FExpand(Path) : chemin absolu --------------------------- }
+  If L = 'fexpand' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := Arg1 + ' /* FExpand stub */';
+    Exit;
+  End;
+
+  { -- FSplit(Path, Dir, Name, Ext) : decomposition chemin ----- }
+  If L = 'fsplit' Then
+  Begin
+    Arg2 := '';
+    Arg3 := '';
+    Args := '';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg3 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Args := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_TPR_FSplit(' + Arg1 + ', ' +
+      '"' + Arg2 + '", "' + Arg3 + '", "' + Args + '")';
+    Exit;
+  End;
+
+  { -- GetDir(Drive, Dir) : repertoire courant ----------------- }
+  If L = 'getdir' Then
+  Begin
+    Arg2 := '';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := Arg2 + ' = (typeof process !== "undefined" ? process.cwd() : ".")';
+    Exit;
+  End;
+
+  { -- MkDir(Dir) : creer repertoire (stub) -------------------- }
+  If L = 'mkdir' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* MkDir(' + Arg1 + ') stub */';
+    Exit;
+  End;
+
+  { -- RmDir(Dir) : supprimer repertoire (stub) ---------------- }
+  If L = 'rmdir' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* RmDir(' + Arg1 + ') stub */';
+    Exit;
+  End;
+
+  { -- ChDir(Dir) : changer repertoire (stub) ------------------ }
+  If L = 'chdir' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* ChDir(' + Arg1 + ') stub */';
+    Exit;
+  End;
+
+  { -- EnvStr(N) : N-ieme variable d environnement ------------- }
+  If L = 'envstr' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '(typeof process !== "undefined" ? ' +
+      'Object.entries(process.env)[' + Arg1 + ' - 1].join("=") : "")';
+    Exit;
+  End;
+
+  { -- GetEnv(Name) : valeur de variable d environnement ------- }
+  If L = 'getenv' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '(typeof process !== "undefined" ? ' +
+      '(process.env[' + Arg1 + '] || "") : "")';
+    Exit;
+  End;
+
+  { -- DiskFree(Drive) : espace disque libre (stub) ------------ }
+  If L = 'diskfree' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '0 /* DiskFree stub */';
+    Exit;
+  End;
+
+  { -- DiskSize(Drive) : taille totale disque (stub) ----------- }
+  If L = 'disksize' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '0 /* DiskSize stub */';
+    Exit;
+  End;
+
+  { -- SetCBreak(Break) : fixer Ctrl-Break (stub) -------------- }
+  If L = 'setcbreak' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* SetCBreak stub */';
+    Exit;
+  End;
+
+  { -- SetVerify(Verify) : fixer verification (stub) ----------- }
+  If L = 'setverify' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* SetVerify stub */';
+    Exit;
+  End;
+
+  { -- Exec(Path, CmdLine) : executer programme (stub) --------- }
+  If L = 'exec' Then
+  Begin
+    Arg2 := '';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* Exec(' + Arg1 + ', ' + Arg2 + ') stub */';
+    Exit;
+  End;
+
+  { -- Keep(ExitCode) : TSR (stub) ----------------------------- }
+  If L = 'keep' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* Keep(' + Arg1 + ') stub: TSR not supported in JS */';
+    Exit;
+  End;
+
+  { -- Intr(IntNo, Regs) : interruption logicielle (stub) ----- }
+  If L = 'intr' Then
+  Begin
+    Arg2 := '';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* Intr(' + Arg1 + ') stub: not supported in JS */';
+    Exit;
+  End;
+
+  { -- MsDos(Regs) : appel INT 21h (stub) --------------------- }
+  If L = 'msdos' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* MsDos stub: not supported in JS */';
+    Exit;
+  End;
+
+  { ============================================================
+    UNITE OVERLAY [IMPLEMENTE]
+    Fonctions avec argument(s) - stubs overlay.
+    ============================================================ }
+
+  { -- OvrInit(FileName) : initialiser overlay (stub) ---------- }
+  If L = 'ovrinit' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* OvrInit(' + Arg1 + '): overlays not supported in JS */';
+    Exit;
+  End;
+
+  { -- OvrSetBuf(Size) : fixer taille buffer overlay (stub) ---- }
+  If L = 'ovrsetbuf' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* OvrSetBuf(' + Arg1 + '): overlays not supported in JS */';
+    Exit;
+  End;
+
+  { -- OvrSetRetry(Size) : fixer taille cache overlay (stub) --- }
+  If L = 'ovrsetretry' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* OvrSetRetry(' + Arg1 + '): overlays not supported in JS */';
+    Exit;
+  End;
+
+  { ============================================================
+    UNITE GRAPH [IMPLEMENTE]
+    Fonctions avec argument(s) de l unite Graph Turbo Pascal.
+    ============================================================ }
+
+  { -- InitGraph(Driver, Mode, Path) : initialiser le mode graphique }
+  If L = 'initgraph' Then
+  Begin
+    Arg2 := '0';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    Args := '""';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Args := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_Init(' + Arg1 + ', ' + Arg2 + ', ' + Args + ')';
+    Exit;
+  End;
+
+  { -- DetectGraph(Driver, Mode) : detection du pilote ---------- }
+  If L = 'detectgraph' Then
+  Begin
+    Arg2 := '0';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* DetectGraph -> VGA,VGAHi */ _GR_Result = 0';
+    Exit;
+  End;
+
+  { -- GraphErrorMsg(Code) : message d erreur graphique --------- }
+  If L = 'grapherrormsg' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_ErrorMsg(' + Arg1 + ')';
+    Exit;
+  End;
+
+  { -- PutPixel(X, Y, Color) : dessiner un pixel --------------- }
+  If L = 'putpixel' Then
+  Begin
+    Arg2 := '0';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    Args := '15';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Args := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_PutPixel(' + Arg1 + ', ' + Arg2 + ', ' + Args + ')';
+    Exit;
+  End;
+
+  { -- GetPixel(X, Y) : lire la couleur d un pixel ------------- }
+  If L = 'getpixel' Then
+  Begin
+    Arg2 := '0';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_GetPixel(' + Arg1 + ', ' + Arg2 + ')';
+    Exit;
+  End;
+
+  { -- Line(X1, Y1, X2, Y2) : tracer une ligne ----------------- }
+  If L = 'line' Then
+  Begin
+    Arg2 := '0';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    Args := Arg1 + ', ' + Arg2;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_Line(' + Args + ')';
+    Exit;
+  End;
+
+  { -- LineTo(X, Y) : tracer une ligne depuis CP ---------------- }
+  If L = 'lineto' Then
+  Begin
+    Arg2 := '0';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_LineTo(' + Arg1 + ', ' + Arg2 + ')';
+    Exit;
+  End;
+
+  { -- LineRel(DX, DY) : tracer une ligne relative -------------- }
+  If L = 'linerel' Then
+  Begin
+    Arg2 := '0';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_LineRel(' + Arg1 + ', ' + Arg2 + ')';
+    Exit;
+  End;
+
+  { -- MoveTo(X, Y) : deplacer CP ------------------------------ }
+  If L = 'moveto' Then
+  Begin
+    Arg2 := '0';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_MoveTo(' + Arg1 + ', ' + Arg2 + ')';
+    Exit;
+  End;
+
+  { -- MoveRel(DX, DY) : deplacer CP relatif ------------------- }
+  If L = 'moverel' Then
+  Begin
+    Arg2 := '0';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_MoveRel(' + Arg1 + ', ' + Arg2 + ')';
+    Exit;
+  End;
+
+  { -- Circle(X, Y, R) : tracer un cercle ---------------------- }
+  If L = 'circle' Then
+  Begin
+    Arg2 := '0';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    Args := '10';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Args := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_Circle(' + Arg1 + ', ' + Arg2 + ', ' + Args + ')';
+    Exit;
+  End;
+
+  { -- Arc(X, Y, StAngle, EndAngle, Radius) : arc de cercle ---- }
+  If L = 'arc' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_Arc(' + Args + ')';
+    Exit;
+  End;
+
+  { -- Ellipse(X, Y, StAngle, EndAngle, XR, YR) : ellipse ------ }
+  If L = 'ellipse' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_Ellipse(' + Args + ')';
+    Exit;
+  End;
+
+  { -- FillEllipse(X, Y, XR, YR) : ellipse remplie ------------- }
+  If L = 'fillellipse' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_FillEllipse(' + Args + ')';
+    Exit;
+  End;
+
+  { -- Rectangle(X1, Y1, X2, Y2) : rectangle ------------------- }
+  If L = 'rectangle' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_Rectangle(' + Args + ')';
+    Exit;
+  End;
+
+  { -- Bar(X1, Y1, X2, Y2) : barre remplie --------------------- }
+  If L = 'bar' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_Bar(' + Args + ')';
+    Exit;
+  End;
+
+  { -- Bar3D(X1, Y1, X2, Y2, Depth, Top) : barre 3D ----------- }
+  If L = 'bar3d' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_Bar3D(' + Args + ')';
+    Exit;
+  End;
+
+  { -- PieSlice(X, Y, StAngle, EndAngle, Radius) : secteur ----- }
+  If L = 'pieslice' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_PieSlice(' + Args + ')';
+    Exit;
+  End;
+
+  { -- Sector(X, Y, StAngle, EndAngle, XR, YR) : secteur ------- }
+  If L = 'sector' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_Sector(' + Args + ')';
+    Exit;
+  End;
+
+  { -- FloodFill(X, Y, Border) : remplissage ------------------- }
+  If L = 'floodfill' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_FloodFill(' + Args + ')';
+    Exit;
+  End;
+
+  { -- FillPoly(NumPoints, PolyPoints) : polygone rempli -------- }
+  If L = 'fillpoly' Then
+  Begin
+    Arg2 := '[]';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_FillPoly(' + Arg1 + ', ' + Arg2 + ')';
+    Exit;
+  End;
+
+  { -- OutText(S) : afficher texte a CP ------------------------- }
+  If L = 'outtext' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_OutText(' + Arg1 + ')';
+    Exit;
+  End;
+
+  { -- OutTextXY(X, Y, S) : afficher texte a position ----------- }
+  If L = 'outtextxy' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_OutTextXY(' + Args + ')';
+    Exit;
+  End;
+
+  { -- SetTextStyle(Font, Direction, Size) : style de texte ----- }
+  If L = 'settextstyle' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_SetTextStyle(' + Args + ')';
+    Exit;
+  End;
+
+  { -- SetTextJustify(Horiz, Vert) : justification texte -------- }
+  If L = 'settextjustify' Then
+  Begin
+    Arg2 := '0';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_SetTextJustify(' + Arg1 + ', ' + Arg2 + ')';
+    Exit;
+  End;
+
+  { -- TextWidth(S) : largeur du texte en pixels ---------------- }
+  If L = 'textwidth' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_TextWidth(' + Arg1 + ')';
+    Exit;
+  End;
+
+  { -- TextHeight(S) : hauteur du texte en pixels --------------- }
+  If L = 'textheight' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_TextHeight(' + Arg1 + ')';
+    Exit;
+  End;
+
+  { -- SetColor(Color) : couleur de dessin ---------------------- }
+  If L = 'setcolor' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_SetColor(' + Arg1 + ')';
+    Exit;
+  End;
+
+  { -- SetBkColor(Color) : couleur de fond ---------------------- }
+  If L = 'setbkcolor' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_SetBkColor(' + Arg1 + ')';
+    Exit;
+  End;
+
+  { -- SetFillStyle(Pattern, Color) : style de remplissage ------ }
+  If L = 'setfillstyle' Then
+  Begin
+    Arg2 := '15';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_SetFillStyle(' + Arg1 + ', ' + Arg2 + ')';
+    Exit;
+  End;
+
+  { -- SetFillPattern(Pattern, Color) : motif personnalise ------ }
+  If L = 'setfillpattern' Then
+  Begin
+    Arg2 := '15';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_SetFillStyle(12, ' + Arg2 + ')';
+    Exit;
+  End;
+
+  { -- SetLineStyle(Style, Pattern, Thick) : style de ligne ----- }
+  If L = 'setlinestyle' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_SetLineStyle(' + Args + ')';
+    Exit;
+  End;
+
+  { -- SetWriteMode(Mode) : mode d ecriture --------------------- }
+  If L = 'setwritemode' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_WriteMode = ' + Arg1;
+    Exit;
+  End;
+
+  { -- SetViewPort(X1, Y1, X2, Y2, Clip) : viewport ------------ }
+  If L = 'setviewport' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_SetViewPort(' + Args + ')';
+    Exit;
+  End;
+
+  { -- ImageSize(X1, Y1, X2, Y2) : taille buffer image --------- }
+  If L = 'imagesize' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_ImageSize(' + Args + ')';
+    Exit;
+  End;
+
+  { -- GetImage(X1, Y1, X2, Y2, Buf) : capturer image ---------- }
+  If L = 'getimage' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* GetImage(' + Args + ') stub */';
+    Exit;
+  End;
+
+  { -- PutImage(X, Y, Buf, Op) : afficher image ---------------- }
+  If L = 'putimage' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* PutImage(' + Args + ') stub */';
+    Exit;
+  End;
+
+  { -- SetPalette(Index, Color) : modifier palette -------------- }
+  If L = 'setpalette' Then
+  Begin
+    Arg2 := '0';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_Palette[' + Arg1 + '] = _GR_PalRGB(' + Arg2 + ')';
+    Exit;
+  End;
+
+  { -- SetAllPalette(Palette) : modifier toute la palette ------- }
+  If L = 'setallpalette' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* SetAllPalette stub */';
+    Exit;
+  End;
+
+  { -- SetRGBPalette(Index, R, G, B) : couleur RGB -------------- }
+  If L = 'setrgbpalette' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_SetRGBPalette(' + Args + ')';
+    Exit;
+  End;
+
+  { -- SetAspectRatio(Xasp, Yasp) : fixer ratio (stub) --------- }
+  If L = 'setaspectratio' Then
+  Begin
+    Arg2 := '10000';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* SetAspectRatio(' + Arg1 + ', ' + Arg2 + ') stub */';
+    Exit;
+  End;
+
+  { -- SetActivePage(Page) : page active (stub) ----------------- }
+  If L = 'setactivepage' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* SetActivePage(' + Arg1 + ') stub */';
+    Exit;
+  End;
+
+  { -- SetVisualPage(Page) : page visible (stub) ---------------- }
+  If L = 'setvisualpage' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* SetVisualPage(' + Arg1 + ') stub */';
+    Exit;
+  End;
+
+  { Fallback : appel generique }
+  Args := Arg1;
+  While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+        (TokenPool[P].Val = ',') Do
+  Begin
+    Inc(P);
+    Args := Args + ', ' + ParseExpr(P);
+  End;
+  If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+  EmitBuiltinCall := AName + '(' + Args + ')';
+End;
+
+{ ---- GetVarTypeKind : retourne le TTypeKind d une variable --- }
+{ Cherche le symbole dans la table et retourne son TypeKind.     }
+{ Retourne TYK_INTEGER par defaut si non trouve.                 }
+Function GetVarTypeKind(Const AName : TString) : TTypeKind;
+Var
+  SI  : Integer;
+  TI  : Integer;
+Begin
+  GetVarTypeKind := TYK_INTEGER;
+  SI := SymFind(AName);
+  If SI < 0 Then Exit;
+  TI := SymTab[SI].TypeIdx;
+  If (TI < 0) Or (TI >= TypeCount) Then Exit;
+  GetVarTypeKind := TypeTab[TI].Kind;
+End;
+
+{ ---- GetArrayLowBound : retourne la borne inf d un tableau --- }
+{ Retourne 0 par defaut si le symbole n est pas un tableau.      }
+Function GetArrayLowBound(Const AName : TString) : LongInt;
+Var
+  SI  : Integer;
+  TI  : Integer;
+Begin
+  GetArrayLowBound := 0;
+  SI := SymFind(AName);
+  If SI < 0 Then Exit;
+  TI := SymTab[SI].TypeIdx;
+  If (TI < 0) Or (TI >= TypeCount) Then Exit;
+  If TypeTab[TI].Kind = TYK_ARRAY Then
+    GetArrayLowBound := TypeTab[TI].Low;
+End;
+
+{ ---- ParseExprFactor : niveau 1 (le plus fort) -------------- }
+{ NOT, @, unaire +/-, atomes (litteraux, idents, parentheses)   }
+{ Transtypage, fonctions standard, acces chaine/tab.  }
+Function ParseExprFactor(Var P : Integer) : TString;
+Var
+  Tmp    : TString;
+  Idx    : Integer;
+  L      : TString;
+  Tmp2   : TString;
+  IdName : TString;
+  VTK    : TTypeKind;
+  ALow   : LongInt;
+Begin
+  ParseExprFactor := '0';
+  If P >= TokenCount Then Exit;
+
+  { NOT unaire : ! (logique) ou ~ (bitwise) selon le contexte }
+  If (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'not') Then
+  Begin
+    Inc(P);
+    { Pre-detection du contexte : variable Boolean ? }
+    VTK := TYK_INTEGER;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+      VTK := GetVarTypeKind(TokenPool[P].Val);
+    Tmp := ParseExprFactor(P);
+    If (VTK = TYK_BOOLEAN) Or IsBooleanExpr(Tmp) Then
+      ParseExprFactor := '(!' + Tmp + ')'
+    Else
+      ParseExprFactor := '(~' + Tmp + ')';
+    Exit;
+  End;
+
+  { @ operateur d adresse -> reference en JS }
+  If (TokenPool[P].Kind = TK_OP) And (TokenPool[P].Val = '@') Then
+  Begin
+    Inc(P);
+    Tmp := ParseExprFactor(P);
+    ParseExprFactor := Tmp;
+    Exit;
+  End;
+
+  { Unaire - }
+  If (TokenPool[P].Kind = TK_OP) And (TokenPool[P].Val = '-') Then
+  Begin
+    Inc(P);
+    Tmp := ParseExprFactor(P);
+    ParseExprFactor := '(-' + Tmp + ')';
+    Exit;
+  End;
+
+  { Unaire + }
+  If (TokenPool[P].Kind = TK_OP) And (TokenPool[P].Val = '+') Then
+  Begin
+    Inc(P);
+    Tmp := ParseExprFactor(P);
+    ParseExprFactor := Tmp;
+    Exit;
+  End;
+
+  { Parentheses }
+  If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = '(') Then
+  Begin
+    Inc(P);
+    Tmp := ParseExpr(P);
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ')') Then
+      Inc(P);
+    ParseExprFactor := '(' + Tmp + ')';
+    Exit;
+  End;
+
+  { Litteral entier }
+  If TokenPool[P].Kind = TK_INTEGER Then
+  Begin
+    ParseExprFactor := IntToJS(TokenPool[P].IntVal);
+    Inc(P);
+    Exit;
+  End;
+
+  { Litteral reel }
+  If TokenPool[P].Kind = TK_REAL Then
+  Begin
+    ParseExprFactor := RealToJS(TokenPool[P].RealVal);
+    Inc(P);
+    Exit;
+  End;
+
+  { Litteral chaine }
+  If TokenPool[P].Kind = TK_STRING Then
+  Begin
+    ParseExprFactor := StrToJS(TokenPool[P].Val);
+    Inc(P);
+    Exit;
+  End;
+
+  { Litteral caractere }
+  If TokenPool[P].Kind = TK_CHAR Then
+  Begin
+    ParseExprFactor := CharToJS(TokenPool[P].IntVal);
+    Inc(P);
+    Exit;
+  End;
+
+  { Mot-cle : true/false/nil }
+  If TokenPool[P].Kind = TK_KEYWORD Then
+  Begin
+    L := StrLowerCase(TokenPool[P].Val);
+    If L = 'true'  Then Begin ParseExprFactor := 'true';  Inc(P); Exit; End;
+    If L = 'false' Then Begin ParseExprFactor := 'false'; Inc(P); Exit; End;
+    If L = 'nil'   Then Begin ParseExprFactor := 'null';  Inc(P); Exit; End;
+
+    { INHERITED : appel methode parent -> super.method() }
+    If L = 'inherited' Then
+    Begin
+      Inc(P); { consommer INHERITED }
+      Tmp := 'super';
+      { Verifier si un nom de methode suit }
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+      Begin
+        Tmp := Tmp + '.' + TokenPool[P].Val;
+        Inc(P);
+        { Verifier si des arguments suivent }
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+           (TokenPool[P].Val = '(') Then
+        Begin
+          Inc(P); { consommer ( }
+          Tmp2 := '';
+          While (P < TokenCount) And
+                Not ((TokenPool[P].Kind = TK_PUNCT) And
+                     (TokenPool[P].Val = ')')) Do
+          Begin
+            If (TokenPool[P].Kind = TK_PUNCT) And
+               (TokenPool[P].Val = ',') Then
+            Begin
+              Tmp2 := Tmp2 + ', ';
+              Inc(P);
+            End
+            Else
+              Tmp2 := Tmp2 + ParseExpr(P);
+          End;
+          If (P < TokenCount) And (TokenPool[P].Val = ')') Then
+            Inc(P);
+          Tmp := Tmp + '(' + Tmp2 + ')';
+        End
+        Else
+          Tmp := Tmp + '()';
+      End;
+      ParseExprFactor := Tmp;
+      Exit;
+    End;
+
+    { Mot-cle String utilise comme transtypage : String(expr) }
+    If L = 'string' Then
+    Begin
+      If (P + 1 < TokenCount) And (TokenPool[P + 1].Kind = TK_PUNCT) And
+         (TokenPool[P + 1].Val = '(') Then
+      Begin
+        IdName := TokenPool[P].Val;
+        Inc(P); Inc(P); { consommer String ( }
+        Tmp := ParseExpr(P);
+        If (P < TokenCount) And (TokenPool[P].Val = ')') Then
+          Inc(P);
+        ParseExprFactor := EmitTypeCast(IdName, Tmp);
+        Exit;
+      End;
+    End;
+
+    ParseExprFactor := TokenPool[P].Val;
+    Inc(P);
+    Exit;
+  End;
+
+  { Ensemble [elem, elem..elem] }
+  If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = '[') Then
+  Begin
+    Tmp := '[';
+    Inc(P);
+    While (P < TokenCount) And
+          Not ((TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ']')) Do
+    Begin
+      If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ',') Then
+      Begin
+        Tmp := Tmp + ', ';
+        Inc(P);
+      End
+      Else If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = '..') Then
+      Begin
+        Tmp := Tmp + '/*..*/';
+        Inc(P);
+      End
+      Else
+      Begin
+        Tmp2 := LitToJS(TokenPool[P]);
+        Tmp := Tmp + Tmp2;
+        Inc(P);
+      End;
+    End;
+    Tmp := Tmp + ']';
+    If (P < TokenCount) And (TokenPool[P].Val = ']') Then
+      Inc(P);
+    ParseExprFactor := Tmp;
+    Exit;
+  End;
+
+  { Identificateur }
+  If TokenPool[P].Kind = TK_IDENT Then
+  Begin
+    IdName := TokenPool[P].Val;
+    L := StrLowerCase(IdName);
+
+    { Transtypage : Integer(expr), Byte(expr), Char(expr), etc. }
+    If IsTypeCastName(IdName) And (P + 1 < TokenCount) And
+       (TokenPool[P + 1].Kind = TK_PUNCT) And
+       (TokenPool[P + 1].Val = '(') Then
+    Begin
+      Inc(P); Inc(P); { consommer TypeName ( }
+      Tmp := ParseExpr(P);
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ')') Then
+        Inc(P);
+      ParseExprFactor := EmitTypeCast(IdName, Tmp);
+      Exit;
+    End;
+
+    { Fonctions standard : Ord, Chr, Length, Abs, etc. }
+    { Verifier d abord si c est un symbole utilisateur }
+    { Les procs/funcs decl par l utilisateur (index >= BuiltinSymEnd) }
+    { ont priorite sur les builtins.                                }
+    If IsBuiltinFunc(IdName) Then
+    Begin
+      Idx := SymFind(IdName);
+      If (Idx >= BuiltinSymEnd) And
+         ((SymTab[Idx].Kind = SK_PROC) Or (SymTab[Idx].Kind = SK_FUNC)) Then
+      Begin
+        { Symbole utilisateur proc/func : priorite sur builtins }
+      End
+      Else
+      Begin
+        Inc(P); { consommer le nom de la fonction }
+        ParseExprFactor := EmitBuiltinCall(IdName, P);
+        Exit;
+      End;
+    End;
+
+    { Constante utilisateur ou predefinie }
+    Idx := ConstFind(IdName);
+    If Idx >= 0 Then
+      Tmp := ConstTab[Idx].JSVal
+    Else
+    Begin
+      If L = 'true'  Then Tmp := 'true'
+      Else If L = 'false' Then Tmp := 'false'
+      Else If L = 'nil'   Then Tmp := 'null'
+      Else If L = 'maxint' Then Tmp := '32767'
+      Else If L = 'maxlongint' Then Tmp := '2147483647'
+      Else
+        Tmp := IdName;
+    End;
+    Inc(P);
+
+    { Postfixes : appel de fonction, acces tableau, acces champ }
+    While P < TokenCount Do
+    Begin
+      { Appel de fonction : ident(args) }
+      If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = '(') Then
+      Begin
+        Inc(P); { consommer ( }
+        Tmp2 := '';
+        While (P < TokenCount) And
+              Not ((TokenPool[P].Kind = TK_PUNCT) And
+                   (TokenPool[P].Val = ')')) Do
+        Begin
+          If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ',') Then
+          Begin
+            Tmp2 := Tmp2 + ', ';
+            Inc(P);
+          End
+          Else
+            Tmp2 := Tmp2 + ParseExpr(P);
+        End;
+        If (P < TokenCount) And (TokenPool[P].Val = ')') Then
+          Inc(P);
+        Tmp := Tmp + '(' + Tmp2 + ')';
+      End
+      { Acces index : ident[expr] avec ajustement selon le type }
+      { Gere aussi les tableaux multi-dimensionnels : A[i, j] -> A[i-lo][j-lo] }
+      Else If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = '[') Then
+      Begin
+        Inc(P); { consommer [ }
+        Tmp2 := ParseExpr(P);
+
+        { Acces caractere de chaine : S[i] -> S.charAt((i) - 1) }
+        VTK := GetVarTypeKind(IdName);
+        If (VTK = TYK_STRING) Or (VTK = TYK_PCHAR) Then
+          Tmp := Tmp + '.charAt((' + Tmp2 + ') - 1)'
+        { Acces tableau avec base non-zero : Arr[i] -> Arr[(i) - base] }
+        Else If VTK = TYK_ARRAY Then
+        Begin
+          ALow := GetArrayLowBound(IdName);
+          If ALow <> 0 Then
+            Tmp := Tmp + '[(' + Tmp2 + ') - ' + IntToStr_(ALow) + ']'
+          Else
+            Tmp := Tmp + '[' + Tmp2 + ']';
+        End
+        Else
+          Tmp := Tmp + '[' + Tmp2 + ']';
+
+        { Dimensions supplementaires : virgule -> nouvel index JS [] }
+        While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+              (TokenPool[P].Val = ',') Do
+        Begin
+          Inc(P); { consommer , }
+          Tmp2 := ParseExpr(P);
+          If (VTK = TYK_ARRAY) And (ALow <> 0) Then
+            Tmp := Tmp + '[(' + Tmp2 + ') - ' + IntToStr_(ALow) + ']'
+          Else
+            Tmp := Tmp + '[' + Tmp2 + ']';
+        End;
+
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+           (TokenPool[P].Val = ']') Then
+          Inc(P);
+      End
+      { Acces champ : ident.champ }
+      Else If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = '.') Then
+      Begin
+        Inc(P); { consommer . }
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+        Begin
+          Tmp := Tmp + '.' + TokenPool[P].Val;
+          Inc(P);
+        End;
+      End
+      { Dereferencement : ident^ }
+      Else If (TokenPool[P].Kind = TK_OP) And (TokenPool[P].Val = '^') Then
+      Begin
+        Inc(P); { consommer ^ }
+        { En JS, pas de dereferencement direct - garder tel quel }
+      End
+      Else
+        Break;
+    End;
+
+    { Ajouter () pour les procedures/fonctions sans parentheses }
+    Idx := SymFind(IdName);
+    If (Idx >= 0) And
+       ((SymTab[Idx].Kind = SK_PROC) Or (SymTab[Idx].Kind = SK_FUNC)) Then
+    Begin
+      { Si Tmp est juste le nom (pas de postfix ()), ajouter () }
+      If Tmp = IdName Then
+        Tmp := Tmp + '()';
+    End;
+
+    ParseExprFactor := Tmp;
+    Exit;
+  End;
+
+  { Token non reconnu : retourner tel quel }
+  ParseExprFactor := TokenPool[P].Val;
+  Inc(P);
+End;
+
+{ ---- ParseExprTerm : niveau 2 (multiplicatif) --------------- }
+{ * / DIV MOD AND SHL SHR                                       }
+Function ParseExprTerm(Var P : Integer) : TString;
+Var
+  Left : TString;
+  Op   : TString;
+  Rght : TString;
+Begin
+  Left := ParseExprFactor(P);
+
+  While (P < TokenCount) And IsLevel2Op(TokenPool[P]) Do
+  Begin
+    Op := StrLowerCase(TokenPool[P].Val);
+    Inc(P);
+    Rght := ParseExprFactor(P);
+
+    If Op = 'div' Then
+      Left := 'Math.trunc(' + Left + ' / ' + Rght + ')'
+    Else If Op = '*' Then
+      Left := Left + ' * ' + Rght
+    Else If Op = '/' Then
+      Left := Left + ' / ' + Rght
+    Else If Op = 'mod' Then
+      Left := Left + ' % ' + Rght
+    Else If Op = 'and' Then
+    Begin
+      If IsBooleanExpr(Left) Or IsBooleanExpr(Rght) Then
+        Left := Left + ' && ' + Rght
+      Else
+        Left := '(' + Left + ' & ' + Rght + ')';
+    End
+    Else If Op = 'shl' Then
+      Left := Left + ' << ' + Rght
+    Else If Op = 'shr' Then
+      Left := Left + ' >> ' + Rght;
+  End;
+
+  ParseExprTerm := Left;
+End;
+
+{ ---- ParseExprSimple : niveau 3 (additif) ------------------- }
+{ + - OR XOR                                                     }
+Function ParseExprSimple(Var P : Integer) : TString;
+Var
+  Left : TString;
+  Op   : TString;
+  Rght : TString;
+Begin
+  Left := ParseExprTerm(P);
+
+  While (P < TokenCount) And IsLevel3Op(TokenPool[P]) Do
+  Begin
+    Op := StrLowerCase(TokenPool[P].Val);
+    Inc(P);
+    Rght := ParseExprTerm(P);
+
+    If Op = '+' Then
+      Left := Left + ' + ' + Rght
+    Else If Op = '-' Then
+      Left := Left + ' - ' + Rght
+    Else If Op = 'or' Then
+    Begin
+      If IsBooleanExpr(Left) Or IsBooleanExpr(Rght) Then
+        Left := Left + ' || ' + Rght
+      Else
+        Left := '(' + Left + ' | ' + Rght + ')';
+    End
+    Else If Op = 'xor' Then
+      Left := Left + ' ^ ' + Rght;
+  End;
+
+  ParseExprSimple := Left;
+End;
+
+{ ---- ParseExpr : niveau 4 (relationnel, le plus faible) ----- }
+{ = <> < > <= >= IN                                              }
+Function ParseExpr;
+Var
+  Left : TString;
+  Op   : TString;
+  Rght : TString;
+Begin
+  Left := ParseExprSimple(P);
+
+  While (P < TokenCount) And IsLevel4Op(TokenPool[P]) Do
+  Begin
+    Op := StrLowerCase(TokenPool[P].Val);
+    Inc(P);
+    Rght := ParseExprSimple(P);
+
+    If Op = '=' Then
+      Left := Left + ' === ' + Rght
+    Else If Op = '<>' Then
+      Left := Left + ' !== ' + Rght
+    Else If Op = '<' Then
+      Left := Left + ' < ' + Rght
+    Else If Op = '>' Then
+      Left := Left + ' > ' + Rght
+    Else If Op = '<=' Then
+      Left := Left + ' <= ' + Rght
+    Else If Op = '>=' Then
+      Left := Left + ' >= ' + Rght
+    Else If Op = 'in' Then
+      Left := Rght + '.indexOf(' + Left + ') >= 0'
+    Else If Op = 'as' Then
+      Left := '/* as ' + Rght + ' */ ' + Left;
+  End;
+
+  ParseExpr := Left;
+End;
+
+{ ---- ParseAssign : gere l affectation := -------------------- }
+{ Detecte l operateur := et genere lhs = rhs en JavaScript.     }
+{ Copie de record (Object.assign) et tableau (.slice) }
+Function ParseAssign(Var P : Integer) : TString;
+Var
+  Left       : TString;
+  Rght       : TString;
+  SymIdx     : Integer;
+  TIdx       : Integer;
+  SaveP      : Integer;
+  IsElemAccess : Boolean;
+Begin
+  { Sauvegarder la position avant le parsing du LHS }
+  SaveP := P;
+  Left := ParseExpr(P);
+
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_OP) And
+     (TokenPool[P].Val = ':=') Then
+  Begin
+    Inc(P);
+    Rght := ParseExpr(P);
+
+    { Verifier le type de la variable cible pour record/array }
+    TIdx := -1;
+    IsElemAccess := False;
+    If (TokenPool[SaveP].Kind = TK_IDENT) Then
+    Begin
+      { Verifier si l ident est suivi de [ . ou ^ -> acces element }
+      If (SaveP + 1 < TokenCount) And
+         (TokenPool[SaveP + 1].Kind = TK_PUNCT) And
+         ((TokenPool[SaveP + 1].Val = '[') Or
+          (TokenPool[SaveP + 1].Val = '.')) Then
+        IsElemAccess := True;
+      If (SaveP + 1 < TokenCount) And
+         (TokenPool[SaveP + 1].Kind = TK_OP) And
+         (TokenPool[SaveP + 1].Val = '^') Then
+        IsElemAccess := True;
+
+      If Not IsElemAccess Then
+      Begin
+        SymIdx := SymFind(TokenPool[SaveP].Val);
+        If SymIdx >= 0 Then
+          TIdx := SymTab[SymIdx].TypeIdx;
+      End;
+    End;
+
+    { Affectation de record entier : Object.assign(lhs, rhs) }
+    If (TIdx >= 0) And (TIdx < TypeCount) And
+       (TypeTab[TIdx].Kind = TYK_RECORD) Then
+      ParseAssign := 'Object.assign(' + Left + ', ' + Rght + ')'
+    { Affectation de tableau entier : lhs = rhs.slice() }
+    Else If (TIdx >= 0) And (TIdx < TypeCount) And
+            (TypeTab[TIdx].Kind = TYK_ARRAY) Then
+      ParseAssign := Left + ' = ' + Rght + '.slice()'
+    { Affectation au nom de fonction -> Result = valeur }
+    Else If (Not IsElemAccess) And (TokenPool[SaveP].Kind = TK_IDENT) And
+            (SymIdx >= 0) And ((SymTab[SymIdx].Kind = SK_FUNC) Or
+                               (SymTab[SymIdx].Kind = SK_METHOD)) Then
+      ParseAssign := 'Result = ' + Rght
+    { Affectation normale (y compris elements de tableau/record) }
+    Else
+      ParseAssign := Left + ' = ' + Rght;
+  End
+  Else
+    ParseAssign := Left;
+End;
+
+{ ---- ExprToJS : point d entree pour convertir expressions ---- }
+{ Convertit une expression Pascal a la position P dans           }
+{ TokenPool en representation JavaScript. Gere l affectation.    }
+Function ExprToJS(Var P : Integer) : TString;
+Begin
+  ExprToJS := ParseAssign(P);
+End;
+
+{ ============================================================
+  TABLE DES SYMBOLES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- SymKindStr : nom textuel d un TSymKind ----------------- }
+Function SymKindStr(K : TSymKind) : TString;
+Begin
+  Case K Of
+    SK_CONST    : SymKindStr := 'CONST';
+    SK_TYPE     : SymKindStr := 'TYPE';
+    SK_VAR      : SymKindStr := 'VAR';
+    SK_PARAM    : SymKindStr := 'PARAM';
+    SK_FUNC     : SymKindStr := 'FUNC';
+    SK_PROC     : SymKindStr := 'PROC';
+    SK_FIELD    : SymKindStr := 'FIELD';
+    SK_METHOD   : SymKindStr := 'METHOD';
+    SK_PROPERTY : SymKindStr := 'PROPERTY';
+    SK_UNIT     : SymKindStr := 'UNIT';
+    SK_LABEL    : SymKindStr := 'LABEL';
+    SK_ENUMVAL  : SymKindStr := 'ENUMVAL';
+  Else
+    SymKindStr := '?';
+  End;
+End;
+
+{ ---- SymInit : initialiser la table des symboles ------------ }
+Procedure SymInit;
+Begin
+  SymCount   := 0;
+  CurScope   := 0;
+  CurScopeId := 0;
+  SymJSSeq   := 0;
+  BuiltinSymEnd := 0;
+End;
+
+{ ---- SymGenJSName : generer un nom JavaScript unique -------- }
+{ Prefixe selon le type du symbole, suffixe le nom Pascal.      }
+{ Variables -> _TPV_name, fonctions -> _TPF_name, etc.          }
+Function SymGenJSName(Const AName : TString; AKind : TSymKind) : TString;
+Begin
+  Case AKind Of
+    SK_CONST   : SymGenJSName := TP_CST_PFX + AName;
+    SK_TYPE    : SymGenJSName := TP_TYPE_PFX + AName;
+    SK_VAR     : SymGenJSName := TP_VAR_PFX + AName;
+    SK_PARAM   : SymGenJSName := AName;
+    SK_FUNC    : SymGenJSName := TP_FN_PFX + AName;
+    SK_PROC    : SymGenJSName := TP_FN_PFX + AName;
+    SK_FIELD   : SymGenJSName := AName;
+    SK_METHOD  : SymGenJSName := AName;
+    SK_PROPERTY: SymGenJSName := AName;
+    SK_UNIT    : SymGenJSName := TP_UNIT_PFX + AName;
+    SK_LABEL   : SymGenJSName := '_TPL_' + AName;
+    SK_ENUMVAL : SymGenJSName := TP_CST_PFX + AName;
+  Else
+    SymGenJSName := AName;
+  End;
+End;
+
+{ ---- SymAdd : ajouter un symbole a la table ----------------- }
+{ Retourne l index du nouveau symbole, ou -1 si table pleine.   }
+Function SymAdd(Const AName : TString; AKind : TSymKind;
+                ATypeIdx : Integer) : Integer;
+Begin
+  If SymCount >= MAX_SYM Then
+  Begin
+    CompileError('table des symboles saturee (MAX_SYM=' +
+                 IntToStr_(MAX_SYM) + ')');
+    SymAdd := -1;
+    Exit;
+  End;
+  SymTab[SymCount].Name       := AName;
+  SymTab[SymCount].JSName     := SymGenJSName(AName, AKind);
+  SymTab[SymCount].Kind       := AKind;
+  SymTab[SymCount].TypeIdx    := ATypeIdx;
+  SymTab[SymCount].Scope      := CurScope;
+  SymTab[SymCount].ScopeId    := CurScopeId;
+  SymTab[SymCount].IsPublic   := False;
+  SymTab[SymCount].IsPrivate  := False;
+  SymTab[SymCount].IsForward  := False;
+  SymTab[SymCount].IsExternal := False;
+  SymAdd := SymCount;
+  Inc(SymCount);
+End;
+
+{ ---- SymFind : chercher un symbole par nom (insensible) ----- }
+{ Parcourt la table du plus recent au plus ancien (portee        }
+{ la plus interne en premier). Retourne l index ou -1.           }
+Function SymFind(Const AName : TString) : Integer;
+Var
+  I  : Integer;
+  LN : TString;
+  LS : TString;
+Begin
+  LN := StrLowerCase(AName);
+  For I := SymCount - 1 DownTo 0 Do
+  Begin
+    LS := StrLowerCase(SymTab[I].Name);
+    If LS = LN Then
+    Begin
+      SymFind := I;
+      Exit;
+    End;
+  End;
+  SymFind := -1;
+End;
+
+{ ---- SymFindInScope : chercher dans une portee specifique --- }
+{ Recherche un symbole par nom dans le scope donne seulement.   }
+Function SymFindInScope(Const AName : TString;
+                        AScope : Integer) : Integer;
+Var
+  I  : Integer;
+  LN : TString;
+  LS : TString;
+Begin
+  LN := StrLowerCase(AName);
+  For I := SymCount - 1 DownTo 0 Do
+  Begin
+    If SymTab[I].Scope = AScope Then
+    Begin
+      LS := StrLowerCase(SymTab[I].Name);
+      If LS = LN Then
+      Begin
+        SymFindInScope := I;
+        Exit;
+      End;
+    End;
+  End;
+  SymFindInScope := -1;
+End;
+
+{ ---- SymEnterScope : entrer dans une portee imbriquee ------- }
+Procedure SymEnterScope;
+Begin
+  If CurScope >= MAX_SCOPE Then
+  Begin
+    CompileError('portees imbriquees max atteint (MAX_SCOPE=' +
+                 IntToStr_(MAX_SCOPE) + ')');
+    Exit;
+  End;
+  Inc(CurScope);
+  Inc(CurScopeId);
+End;
+
+{ ---- SymLeaveScope : quitter la portee courante ------------- }
+{ Les symboles de la portee quittee restent dans la table mais   }
+{ ne seront plus trouves par SymFind en priorite (portees        }
+{ plus recentes sont cherchees en premier).                      }
+Procedure SymLeaveScope;
+Begin
+  If CurScope > 0 Then
+    Dec(CurScope);
+End;
+
+{ ---- SymRegisterBuiltins : types et symboles predefinis ----- }
+{ Enregistre les types de base de Turbo Pascal dans la table     }
+{ des symboles avec les vrais TypeIdx du systeme de types.       }
+Procedure SymRegisterBuiltins;
+Var
+  TI : Integer;
+Begin
+  { Types entiers }
+  TI := TypeFindByName('Integer');
+  SymAdd('Integer',  SK_TYPE, TI);
+  TI := TypeFindByName('Word');
+  SymAdd('Word',     SK_TYPE, TI);
+  TI := TypeFindByName('Byte');
+  SymAdd('Byte',     SK_TYPE, TI);
+  TI := TypeFindByName('ShortInt');
+  SymAdd('ShortInt', SK_TYPE, TI);
+  TI := TypeFindByName('LongInt');
+  SymAdd('LongInt',  SK_TYPE, TI);
+  TI := TypeFindByName('Comp');
+  SymAdd('Comp',     SK_TYPE, TI);
+
+  { Types booleens }
+  TI := TypeFindByName('Boolean');
+  SymAdd('Boolean',  SK_TYPE, TI);
+
+  { Types caractere }
+  TI := TypeFindByName('Char');
+  SymAdd('Char',     SK_TYPE, TI);
+
+  { Types reels }
+  TI := TypeFindByName('Real');
+  SymAdd('Real',     SK_TYPE, TI);
+  TI := TypeFindByName('Single');
+  SymAdd('Single',   SK_TYPE, TI);
+  TI := TypeFindByName('Double');
+  SymAdd('Double',   SK_TYPE, TI);
+  TI := TypeFindByName('Extended');
+  SymAdd('Extended', SK_TYPE, TI);
+
+  { Types chaine }
+  TI := TypeFindByName('String');
+  SymAdd('String',   SK_TYPE, TI);
+  TI := TypeFindByName('PChar');
+  SymAdd('PChar',    SK_TYPE, TI);
+
+  { Types pointeur }
+  TI := TypeFindByName('Pointer');
+  SymAdd('Pointer',  SK_TYPE, TI);
+
+  { Types fichier }
+  TI := TypeFindByName('Text');
+  SymAdd('Text',     SK_TYPE, TI);
+  TI := TypeFindByName('File');
+  SymAdd('File',     SK_TYPE, TI);
+
+  { Constantes predefinees }
+  TI := TypeFindByName('Boolean');
+  SymAdd('True',         SK_CONST, TI);
+  SymAdd('False',        SK_CONST, TI);
+  TI := TypeFindByName('Pointer');
+  SymAdd('nil',          SK_CONST, TI);
+  TI := TypeFindByName('Integer');
+  SymAdd('MaxInt',       SK_CONST, TI);
+  TI := TypeFindByName('LongInt');
+  SymAdd('MaxLongInt',   SK_CONST, TI);
+  TI := TypeFindByName('Real');
+  SymAdd('Pi',           SK_CONST, TI);
+
+  { Procedures/fonctions System predefinies }
+  SymAdd('WriteLn',      SK_PROC,  -1);
+  SymAdd('Write',        SK_PROC,  -1);
+  SymAdd('ReadLn',       SK_PROC,  -1);
+  SymAdd('Read',         SK_PROC,  -1);
+  SymAdd('Inc',          SK_PROC,  -1);
+  SymAdd('Dec',          SK_PROC,  -1);
+  SymAdd('Halt',         SK_PROC,  -1);
+  SymAdd('Exit',         SK_PROC,  -1);
+  SymAdd('New',          SK_PROC,  -1);
+  SymAdd('Dispose',      SK_PROC,  -1);
+  SymAdd('GetMem',       SK_PROC,  -1);
+  SymAdd('FreeMem',      SK_PROC,  -1);
+  SymAdd('FillChar',     SK_PROC,  -1);
+  SymAdd('Move',         SK_PROC,  -1);
+  SymAdd('Assign',       SK_PROC,  -1);
+  SymAdd('Reset',        SK_PROC,  -1);
+  SymAdd('Rewrite',      SK_PROC,  -1);
+  SymAdd('Close',        SK_PROC,  -1);
+  SymAdd('Append',       SK_PROC,  -1);
+  SymAdd('Str',          SK_PROC,  -1);
+  SymAdd('Val',          SK_PROC,  -1);
+  SymAdd('Delete',       SK_PROC,  -1);
+  SymAdd('Insert',       SK_PROC,  -1);
+  SymAdd('Randomize',    SK_PROC,  -1);
+  SymAdd('RunError',     SK_PROC,  -1);
+  SymAdd('SetLength',    SK_PROC,  -1);
+  SymAdd('BlockRead',    SK_PROC,  -1);
+  SymAdd('BlockWrite',   SK_PROC,  -1);
+  SymAdd('Seek',         SK_PROC,  -1);
+  SymAdd('Erase',        SK_PROC,  -1);
+  SymAdd('Rename',       SK_PROC,  -1);
+  SymAdd('ClrScr',       SK_PROC,  -1);
+  SymAdd('GotoXY',       SK_PROC,  -1);
+  SymAdd('TextColor',    SK_PROC,  -1);
+  SymAdd('TextBackground', SK_PROC,  -1);
+  SymAdd('Delay',        SK_PROC,  -1);
+  SymAdd('Sound',        SK_PROC,  -1);
+  SymAdd('NoSound',      SK_PROC,  -1);
+  { procedures et fonctions CRT supplementaires }
+  SymAdd('ClrEol',       SK_PROC,  -1);
+  SymAdd('HighVideo',    SK_PROC,  -1);
+  SymAdd('LowVideo',     SK_PROC,  -1);
+  SymAdd('NormVideo',    SK_PROC,  -1);
+  SymAdd('Window',       SK_PROC,  -1);
+  SymAdd('InsLine',      SK_PROC,  -1);
+  SymAdd('DelLine',      SK_PROC,  -1);
+  SymAdd('TextMode',     SK_PROC,  -1);
+  { constantes CRT - couleurs }
+  TI := TypeFindByName('Byte');
+  SymAdd('Black',        SK_CONST, TI);
+  SymAdd('Blue',         SK_CONST, TI);
+  SymAdd('Green',        SK_CONST, TI);
+  SymAdd('Cyan',         SK_CONST, TI);
+  SymAdd('Red',          SK_CONST, TI);
+  SymAdd('Magenta',      SK_CONST, TI);
+  SymAdd('Brown',        SK_CONST, TI);
+  SymAdd('LightGray',   SK_CONST, TI);
+  SymAdd('DarkGray',    SK_CONST, TI);
+  SymAdd('LightBlue',   SK_CONST, TI);
+  SymAdd('LightGreen',  SK_CONST, TI);
+  SymAdd('LightCyan',   SK_CONST, TI);
+  SymAdd('LightRed',    SK_CONST, TI);
+  SymAdd('LightMagenta',SK_CONST, TI);
+  SymAdd('Yellow',       SK_CONST, TI);
+  SymAdd('White',        SK_CONST, TI);
+  SymAdd('Blink',        SK_CONST, TI);
+  { constantes CRT - modes ecran }
+  SymAdd('BW40',         SK_CONST, TI);
+  SymAdd('CO40',         SK_CONST, TI);
+  SymAdd('BW80',         SK_CONST, TI);
+  SymAdd('CO80',         SK_CONST, TI);
+  SymAdd('Mono',         SK_CONST, TI);
+  SymAdd('Font8x8',      SK_CONST, TI);
+  { variables CRT }
+  TI := TypeFindByName('Byte');
+  SymAdd('TextAttr',     SK_VAR, TI);
+  TI := TypeFindByName('Word');
+  SymAdd('WindMin',      SK_VAR, TI);
+  SymAdd('WindMax',      SK_VAR, TI);
+  TI := TypeFindByName('Integer');
+  SymAdd('LastMode',     SK_VAR, TI);
+  TI := TypeFindByName('Boolean');
+  SymAdd('DirectVideo',  SK_VAR, TI);
+  SymAdd('CheckBreak',   SK_VAR, TI);
+  SymAdd('CheckEOF',     SK_VAR, TI);
+  SymAdd('CheckSnow',    SK_VAR, TI);
+
+  SymAdd('Ord',          SK_FUNC,  -1);
+  SymAdd('Chr',          SK_FUNC,  -1);
+  SymAdd('Abs',          SK_FUNC,  -1);
+  SymAdd('Sqr',          SK_FUNC,  -1);
+  SymAdd('Sqrt',         SK_FUNC,  -1);
+  SymAdd('Sin',          SK_FUNC,  -1);
+  SymAdd('Cos',          SK_FUNC,  -1);
+  SymAdd('ArcTan',       SK_FUNC,  -1);
+  SymAdd('Exp',          SK_FUNC,  -1);
+  SymAdd('Ln',           SK_FUNC,  -1);
+  SymAdd('Int',          SK_FUNC,  -1);
+  SymAdd('Frac',         SK_FUNC,  -1);
+  SymAdd('Round',        SK_FUNC,  -1);
+  SymAdd('Trunc',        SK_FUNC,  -1);
+  SymAdd('Succ',         SK_FUNC,  -1);
+  SymAdd('Pred',         SK_FUNC,  -1);
+  SymAdd('Odd',          SK_FUNC,  -1);
+  SymAdd('Lo',           SK_FUNC,  -1);
+  SymAdd('Hi',           SK_FUNC,  -1);
+  SymAdd('Swap',         SK_FUNC,  -1);
+  SymAdd('SizeOf',       SK_FUNC,  -1);
+  SymAdd('Length',        SK_FUNC,  -1);
+  SymAdd('Copy',         SK_FUNC,  -1);
+  SymAdd('Pos',          SK_FUNC,  -1);
+  SymAdd('Concat',       SK_FUNC,  -1);
+  SymAdd('UpCase',       SK_FUNC,  -1);
+  SymAdd('Random',       SK_FUNC,  -1);
+  SymAdd('ParamCount',   SK_FUNC,  -1);
+  SymAdd('ParamStr',     SK_FUNC,  -1);
+  SymAdd('IOResult',     SK_FUNC,  -1);
+  SymAdd('Eof',          SK_FUNC,  -1);
+  SymAdd('Eoln',         SK_FUNC,  -1);
+  SymAdd('FilePos',      SK_FUNC,  -1);
+  SymAdd('FileSize',     SK_FUNC,  -1);
+  SymAdd('Addr',         SK_FUNC,  -1);
+  SymAdd('Assigned',     SK_FUNC,  -1);
+  SymAdd('KeyPressed',   SK_FUNC,  -1);
+  SymAdd('ReadKey',      SK_FUNC,  -1);
+  SymAdd('WhereX',       SK_FUNC,  -1);
+  SymAdd('WhereY',       SK_FUNC,  -1);
+  { procedures et fonctions DOS }
+  SymAdd('GetDate',      SK_PROC,  -1);
+  SymAdd('GetTime',      SK_PROC,  -1);
+  SymAdd('SetDate',      SK_PROC,  -1);
+  SymAdd('SetTime',      SK_PROC,  -1);
+  SymAdd('PackTime',     SK_PROC,  -1);
+  SymAdd('UnpackTime',   SK_PROC,  -1);
+  SymAdd('GetFTime',     SK_PROC,  -1);
+  SymAdd('SetFTime',     SK_PROC,  -1);
+  SymAdd('FindFirst',    SK_PROC,  -1);
+  SymAdd('FindNext',     SK_PROC,  -1);
+  SymAdd('FSearch',      SK_FUNC,  -1);
+  SymAdd('FExpand',      SK_FUNC,  -1);
+  SymAdd('FSplit',       SK_PROC,  -1);
+  SymAdd('GetDir',       SK_PROC,  -1);
+  SymAdd('EnvCount',     SK_FUNC,  -1);
+  SymAdd('EnvStr',       SK_FUNC,  -1);
+  SymAdd('GetEnv',       SK_FUNC,  -1);
+  SymAdd('DosVersion',   SK_FUNC,  -1);
+  SymAdd('DiskFree',     SK_FUNC,  -1);
+  SymAdd('DiskSize',     SK_FUNC,  -1);
+  SymAdd('GetCBreak',    SK_PROC,  -1);
+  SymAdd('SetCBreak',    SK_PROC,  -1);
+  SymAdd('GetVerify',    SK_PROC,  -1);
+  SymAdd('SetVerify',    SK_PROC,  -1);
+  SymAdd('Exec',         SK_PROC,  -1);
+  SymAdd('DosExitCode',  SK_FUNC,  -1);
+  SymAdd('SwapVectors',  SK_PROC,  -1);
+  SymAdd('Keep',         SK_PROC,  -1);
+  SymAdd('Intr',         SK_PROC,  -1);
+  SymAdd('MsDos',        SK_PROC,  -1);
+  { constantes DOS - attributs de fichier }
+  TI := TypeFindByName('Word');
+  SymAdd('ReadOnly',     SK_CONST, TI);
+  SymAdd('Hidden',       SK_CONST, TI);
+  SymAdd('SysFile',      SK_CONST, TI);
+  SymAdd('VolumeID',     SK_CONST, TI);
+  SymAdd('Directory',    SK_CONST, TI);
+  SymAdd('Archive',      SK_CONST, TI);
+  SymAdd('AnyFile',      SK_CONST, TI);
+  { variables DOS }
+  TI := TypeFindByName('Integer');
+  SymAdd('DosError',     SK_VAR,   TI);
+  SymAdd('DosExitCode',  SK_VAR,   TI);
+  { procedures et fonctions Overlay }
+  SymAdd('OvrInit',      SK_PROC,  -1);
+  SymAdd('OvrInitEMS',   SK_PROC,  -1);
+  SymAdd('OvrSetBuf',    SK_PROC,  -1);
+  SymAdd('OvrClearBuf',  SK_PROC,  -1);
+  SymAdd('OvrSetRetry',  SK_PROC,  -1);
+  SymAdd('OvrGetBuf',    SK_FUNC,  -1);
+  SymAdd('OvrGetRetry',  SK_FUNC,  -1);
+  SymAdd('OvrResult',    SK_FUNC,  -1);
+  { constantes Overlay }
+  TI := TypeFindByName('Integer');
+  SymAdd('ovrOk',          SK_CONST, TI);
+  SymAdd('ovrError',       SK_CONST, TI);
+  SymAdd('ovrNotFound',    SK_CONST, TI);
+  SymAdd('ovrNoMemory',    SK_CONST, TI);
+  SymAdd('ovrIOError',     SK_CONST, TI);
+  SymAdd('ovrNoEMSDriver', SK_CONST, TI);
+  SymAdd('ovrNoEMSMemory', SK_CONST, TI);
+  { procedures et fonctions Graph }
+  SymAdd('InitGraph',       SK_PROC,  -1);
+  SymAdd('CloseGraph',      SK_PROC,  -1);
+  SymAdd('DetectGraph',     SK_PROC,  -1);
+  SymAdd('ClearDevice',     SK_PROC,  -1);
+  SymAdd('ClearViewPort',   SK_PROC,  -1);
+  SymAdd('SetViewPort',     SK_PROC,  -1);
+  SymAdd('PutPixel',        SK_PROC,  -1);
+  SymAdd('Line',            SK_PROC,  -1);
+  SymAdd('LineTo',          SK_PROC,  -1);
+  SymAdd('LineRel',         SK_PROC,  -1);
+  SymAdd('MoveTo',          SK_PROC,  -1);
+  SymAdd('MoveRel',         SK_PROC,  -1);
+  SymAdd('Circle',          SK_PROC,  -1);
+  SymAdd('Arc',             SK_PROC,  -1);
+  SymAdd('Ellipse',         SK_PROC,  -1);
+  SymAdd('FillEllipse',     SK_PROC,  -1);
+  SymAdd('Rectangle',       SK_PROC,  -1);
+  SymAdd('Bar',             SK_PROC,  -1);
+  SymAdd('Bar3D',           SK_PROC,  -1);
+  SymAdd('PieSlice',        SK_PROC,  -1);
+  SymAdd('Sector',          SK_PROC,  -1);
+  SymAdd('FloodFill',       SK_PROC,  -1);
+  SymAdd('FillPoly',        SK_PROC,  -1);
+  SymAdd('OutText',         SK_PROC,  -1);
+  SymAdd('OutTextXY',       SK_PROC,  -1);
+  SymAdd('SetTextStyle',    SK_PROC,  -1);
+  SymAdd('SetTextJustify',  SK_PROC,  -1);
+  SymAdd('SetColor',        SK_PROC,  -1);
+  SymAdd('SetBkColor',      SK_PROC,  -1);
+  SymAdd('SetFillStyle',    SK_PROC,  -1);
+  SymAdd('SetFillPattern',  SK_PROC,  -1);
+  SymAdd('SetLineStyle',    SK_PROC,  -1);
+  SymAdd('SetWriteMode',    SK_PROC,  -1);
+  SymAdd('SetPalette',      SK_PROC,  -1);
+  SymAdd('SetAllPalette',   SK_PROC,  -1);
+  SymAdd('SetRGBPalette',   SK_PROC,  -1);
+  SymAdd('SetAspectRatio',  SK_PROC,  -1);
+  SymAdd('SetActivePage',   SK_PROC,  -1);
+  SymAdd('SetVisualPage',   SK_PROC,  -1);
+  SymAdd('GetImage',        SK_PROC,  -1);
+  SymAdd('PutImage',        SK_PROC,  -1);
+  SymAdd('GetViewSettings', SK_PROC,  -1);
+  SymAdd('GetPalette',      SK_PROC,  -1);
+  SymAdd('GetDefaultPalette',SK_PROC, -1);
+  SymAdd('GetAspectRatio',  SK_PROC,  -1);
+  SymAdd('GraphResult',     SK_FUNC,  -1);
+  SymAdd('GraphErrorMsg',   SK_FUNC,  -1);
+  SymAdd('GetMaxX',         SK_FUNC,  -1);
+  SymAdd('GetMaxY',         SK_FUNC,  -1);
+  SymAdd('GetMaxColor',     SK_FUNC,  -1);
+  SymAdd('GetX',            SK_FUNC,  -1);
+  SymAdd('GetY',            SK_FUNC,  -1);
+  SymAdd('GetPixel',        SK_FUNC,  -1);
+  SymAdd('GetColor',        SK_FUNC,  -1);
+  SymAdd('GetBkColor',      SK_FUNC,  -1);
+  SymAdd('TextWidth',       SK_FUNC,  -1);
+  SymAdd('TextHeight',      SK_FUNC,  -1);
+  SymAdd('ImageSize',       SK_FUNC,  -1);
+  { constantes Graph - pilotes et modes }
+  TI := TypeFindByName('Integer');
+  SymAdd('Detect',          SK_CONST, TI);
+  SymAdd('CGA',             SK_CONST, TI);
+  SymAdd('MCGA',            SK_CONST, TI);
+  SymAdd('EGA',             SK_CONST, TI);
+  SymAdd('EGA64',           SK_CONST, TI);
+  SymAdd('EGAMono',         SK_CONST, TI);
+  SymAdd('IBM8514',         SK_CONST, TI);
+  SymAdd('HercMono',        SK_CONST, TI);
+  SymAdd('ATT400',          SK_CONST, TI);
+  SymAdd('VGA',             SK_CONST, TI);
+  SymAdd('PC3270',          SK_CONST, TI);
+  SymAdd('CGAHi',           SK_CONST, TI);
+  SymAdd('EGAHi',           SK_CONST, TI);
+  SymAdd('EGALo',           SK_CONST, TI);
+  SymAdd('VGAHi',           SK_CONST, TI);
+  SymAdd('VGAMed',          SK_CONST, TI);
+  SymAdd('VGALo',           SK_CONST, TI);
+  { constantes Graph - styles et operations }
+  SymAdd('EmptyFill',       SK_CONST, TI);
+  SymAdd('SolidFill',       SK_CONST, TI);
+  SymAdd('LineFill',        SK_CONST, TI);
+  SymAdd('LtSlashFill',     SK_CONST, TI);
+  SymAdd('SlashFill',       SK_CONST, TI);
+  SymAdd('BkSlashFill',     SK_CONST, TI);
+  SymAdd('LtBkSlashFill',   SK_CONST, TI);
+  SymAdd('HatchFill',       SK_CONST, TI);
+  SymAdd('XHatchFill',      SK_CONST, TI);
+  SymAdd('InterleaveFill',  SK_CONST, TI);
+  SymAdd('WideDotFill',     SK_CONST, TI);
+  SymAdd('CloseDotFill',    SK_CONST, TI);
+  SymAdd('UserFill',        SK_CONST, TI);
+  SymAdd('SolidLn',         SK_CONST, TI);
+  SymAdd('DottedLn',        SK_CONST, TI);
+  SymAdd('CenterLn',        SK_CONST, TI);
+  SymAdd('DashedLn',        SK_CONST, TI);
+  SymAdd('UserBitLn',       SK_CONST, TI);
+  SymAdd('NormWidth',       SK_CONST, TI);
+  SymAdd('ThickWidth',      SK_CONST, TI);
+  SymAdd('NormalPut',       SK_CONST, TI);
+  SymAdd('XORPut',          SK_CONST, TI);
+  SymAdd('OrPut',           SK_CONST, TI);
+  SymAdd('AndPut',          SK_CONST, TI);
+  SymAdd('NotPut',          SK_CONST, TI);
+  SymAdd('DefaultFont',     SK_CONST, TI);
+  SymAdd('TriplexFont',     SK_CONST, TI);
+  SymAdd('SmallFont',       SK_CONST, TI);
+  SymAdd('SansSerifFont',   SK_CONST, TI);
+  SymAdd('GothicFont',      SK_CONST, TI);
+  SymAdd('HorizDir',        SK_CONST, TI);
+  SymAdd('VertDir',         SK_CONST, TI);
+  SymAdd('LeftText',        SK_CONST, TI);
+  SymAdd('CenterText',      SK_CONST, TI);
+  SymAdd('RightText',       SK_CONST, TI);
+  SymAdd('BottomText',      SK_CONST, TI);
+  SymAdd('TopText',         SK_CONST, TI);
+  SymAdd('grOk',            SK_CONST, TI);
+  SymAdd('grNoInitGraph',   SK_CONST, TI);
+  SymAdd('grNotDetected',   SK_CONST, TI);
+  SymAdd('grFileNotFound',  SK_CONST, TI);
+  SymAdd('grInvalidDriver', SK_CONST, TI);
+  SymAdd('grNoLoadMem',     SK_CONST, TI);
+  SymAdd('grNoScanMem',     SK_CONST, TI);
+  SymAdd('grNoFloodMem',    SK_CONST, TI);
+  SymAdd('grFontNotFound',  SK_CONST, TI);
+  SymAdd('grNoFontMem',     SK_CONST, TI);
+  SymAdd('grInvalidMode',   SK_CONST, TI);
+  SymAdd('grError',         SK_CONST, TI);
+  SymAdd('grIOerror',       SK_CONST, TI);
+  SymAdd('grInvalidFont',   SK_CONST, TI);
+  SymAdd('grInvalidFontNum',SK_CONST, TI);
+  SymAdd('grInvalidDeviceNum',SK_CONST,TI);
+  { constantes Graph - couleurs EGA }
+  SymAdd('EGABlack',        SK_CONST, TI);
+  SymAdd('EGABlue',         SK_CONST, TI);
+  SymAdd('EGAGreen',        SK_CONST, TI);
+  SymAdd('EGACyan',         SK_CONST, TI);
+  SymAdd('EGARed',          SK_CONST, TI);
+  SymAdd('EGAMagenta',      SK_CONST, TI);
+  SymAdd('EGABrown',        SK_CONST, TI);
+  SymAdd('EGALightGray',    SK_CONST, TI);
+  SymAdd('EGADarkGray',     SK_CONST, TI);
+  SymAdd('EGALightBlue',    SK_CONST, TI);
+  SymAdd('EGALightGreen',   SK_CONST, TI);
+  SymAdd('EGALightCyan',    SK_CONST, TI);
+  SymAdd('EGALightRed',     SK_CONST, TI);
+  SymAdd('EGALightMagenta', SK_CONST, TI);
+  SymAdd('EGAYellow',       SK_CONST, TI);
+  SymAdd('EGAWhite',        SK_CONST, TI);
+End;
+
+{ ---- SymDump : afficher le contenu de la table (debug) ------ }
+Procedure SymDump;
+Var
+  I : Integer;
+Begin
+  WriteLn('--- Table des symboles (', SymCount, ' entrees) ---');
+  For I := 0 To SymCount - 1 Do
+    WriteLn('  [', I, '] ', SymTab[I].Name, ' -> ',
+            SymTab[I].JSName, ' (', SymKindStr(SymTab[I].Kind),
+            ', scope=', SymTab[I].Scope,
+            ', type=', SymTab[I].TypeIdx, ')');
+  WriteLn('--- Fin de la table des symboles ---');
+End;
+
+{ ============================================================
+  SYSTEME DE TYPES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- TypeKindStr : nom textuel d un TTypeKind --------------- }
+Function TypeKindStr(K : TTypeKind) : TString;
+Begin
+  Case K Of
+    TYK_INTEGER  : TypeKindStr := 'INTEGER';
+    TYK_WORD     : TypeKindStr := 'WORD';
+    TYK_BYTE     : TypeKindStr := 'BYTE';
+    TYK_SHORTINT : TypeKindStr := 'SHORTINT';
+    TYK_LONGINT  : TypeKindStr := 'LONGINT';
+    TYK_COMP     : TypeKindStr := 'COMP';
+    TYK_BOOLEAN  : TypeKindStr := 'BOOLEAN';
+    TYK_CHAR     : TypeKindStr := 'CHAR';
+    TYK_REAL     : TypeKindStr := 'REAL';
+    TYK_SINGLE   : TypeKindStr := 'SINGLE';
+    TYK_DOUBLE   : TypeKindStr := 'DOUBLE';
+    TYK_EXTENDED : TypeKindStr := 'EXTENDED';
+    TYK_STRING   : TypeKindStr := 'STRING';
+    TYK_PCHAR    : TypeKindStr := 'PCHAR';
+    TYK_ARRAY    : TypeKindStr := 'ARRAY';
+    TYK_RECORD   : TypeKindStr := 'RECORD';
+    TYK_SET      : TypeKindStr := 'SET';
+    TYK_ENUM     : TypeKindStr := 'ENUM';
+    TYK_FILE     : TypeKindStr := 'FILE';
+    TYK_TEXT     : TypeKindStr := 'TEXT';
+    TYK_POINTER  : TypeKindStr := 'POINTER';
+    TYK_OBJECT   : TypeKindStr := 'OBJECT';
+    TYK_SUBRANGE : TypeKindStr := 'SUBRANGE';
+    TYK_PROCVAR  : TypeKindStr := 'PROCVAR';
+  Else
+    TypeKindStr := '?';
+  End;
+End;
+
+{ ---- TypeInit : initialiser la table des types -------------- }
+Procedure TypeInit;
+Begin
+  TypeCount := 0;
+End;
+
+{ ---- TypeAdd : ajouter un type a la table ------------------- }
+{ Retourne l index du nouveau type, ou -1 si table pleine.      }
+Function TypeAdd(AKind : TTypeKind; Const AName : TString;
+                 ASize : Integer; Const AJSType : TString;
+                 Const AJSDefault : TString) : Integer;
+Begin
+  If TypeCount >= MAX_TYPE Then
+  Begin
+    CompileError('table des types saturee (MAX_TYPE=' +
+                 IntToStr_(MAX_TYPE) + ')');
+    TypeAdd := -1;
+    Exit;
+  End;
+  TypeTab[TypeCount].Kind        := AKind;
+  TypeTab[TypeCount].Name        := AName;
+  TypeTab[TypeCount].Size        := ASize;
+  TypeTab[TypeCount].JSType      := AJSType;
+  TypeTab[TypeCount].JSDefault   := AJSDefault;
+  TypeTab[TypeCount].BaseTypeIdx := -1;
+  TypeTab[TypeCount].ElemCount   := 0;
+  TypeTab[TypeCount].FieldCount  := 0;
+  TypeTab[TypeCount].Low         := 0;
+  TypeTab[TypeCount].High        := 0;
+  TypeTab[TypeCount].IsUnsigned  := False;
+  TypeAdd := TypeCount;
+  Inc(TypeCount);
+End;
+
+{ ---- TypeFindByName : chercher un type par nom --------------- }
+{ Comparaison insensible a la casse. Retourne l index ou -1.     }
+Function TypeFindByName(Const AName : TString) : Integer;
+Var
+  I  : Integer;
+  LN : TString;
+  LT : TString;
+Begin
+  LN := StrLowerCase(AName);
+  For I := 0 To TypeCount - 1 Do
+  Begin
+    LT := StrLowerCase(TypeTab[I].Name);
+    If LT = LN Then
+    Begin
+      TypeFindByName := I;
+      Exit;
+    End;
+  End;
+  TypeFindByName := -1;
+End;
+
+{ ---- TypeToJS : correspondance type Pascal -> type JS ------- }
+{ Retourne la chaine du type JavaScript correspondant.           }
+Function TypeToJS(Idx : Integer) : TString;
+Begin
+  If (Idx < 0) Or (Idx >= TypeCount) Then
+    TypeToJS := 'any'
+  Else
+    TypeToJS := TypeTab[Idx].JSType;
+End;
+
+{ ---- TypeDefaultJS : valeur par defaut JS pour un type ------ }
+{ Retourne la valeur d initialisation par defaut en JS.          }
+Function TypeDefaultJS(Idx : Integer) : TString;
+Begin
+  If (Idx < 0) Or (Idx >= TypeCount) Then
+    TypeDefaultJS := 'null'
+  Else
+    TypeDefaultJS := TypeTab[Idx].JSDefault;
+End;
+
+{ ---- TypeIsNumeric : teste si le type est numerique --------- }
+Function TypeIsNumeric(Idx : Integer) : Boolean;
+Begin
+  TypeIsNumeric := False;
+  If (Idx < 0) Or (Idx >= TypeCount) Then Exit;
+  Case TypeTab[Idx].Kind Of
+    TYK_INTEGER, TYK_WORD, TYK_BYTE, TYK_SHORTINT,
+    TYK_LONGINT, TYK_COMP, TYK_REAL, TYK_SINGLE,
+    TYK_DOUBLE, TYK_EXTENDED :
+      TypeIsNumeric := True;
+  End;
+End;
+
+{ ---- TypeIsOrdinal : teste si le type est ordinal ----------- }
+Function TypeIsOrdinal(Idx : Integer) : Boolean;
+Begin
+  TypeIsOrdinal := False;
+  If (Idx < 0) Or (Idx >= TypeCount) Then Exit;
+  Case TypeTab[Idx].Kind Of
+    TYK_INTEGER, TYK_WORD, TYK_BYTE, TYK_SHORTINT,
+    TYK_LONGINT, TYK_COMP, TYK_BOOLEAN, TYK_CHAR,
+    TYK_ENUM, TYK_SUBRANGE :
+      TypeIsOrdinal := True;
+  End;
+End;
+
+{ ---- TypeIsInteger : teste si le type est entier ------------ }
+Function TypeIsInteger(Idx : Integer) : Boolean;
+Begin
+  TypeIsInteger := False;
+  If (Idx < 0) Or (Idx >= TypeCount) Then Exit;
+  Case TypeTab[Idx].Kind Of
+    TYK_INTEGER, TYK_WORD, TYK_BYTE, TYK_SHORTINT,
+    TYK_LONGINT, TYK_COMP :
+      TypeIsInteger := True;
+  End;
+End;
+
+{ ---- TypeIsReal : teste si le type est reel ----------------- }
+Function TypeIsReal(Idx : Integer) : Boolean;
+Begin
+  TypeIsReal := False;
+  If (Idx < 0) Or (Idx >= TypeCount) Then Exit;
+  Case TypeTab[Idx].Kind Of
+    TYK_REAL, TYK_SINGLE, TYK_DOUBLE, TYK_EXTENDED :
+      TypeIsReal := True;
+  End;
+End;
+
+{ ---- TypeIsString : teste si le type est une chaine --------- }
+Function TypeIsString(Idx : Integer) : Boolean;
+Begin
+  TypeIsString := False;
+  If (Idx < 0) Or (Idx >= TypeCount) Then Exit;
+  Case TypeTab[Idx].Kind Of
+    TYK_STRING, TYK_PCHAR :
+      TypeIsString := True;
+  End;
+End;
+
+{ ---- TypeIsBoolean : teste si le type est booleen ----------- }
+Function TypeIsBoolean(Idx : Integer) : Boolean;
+Begin
+  TypeIsBoolean := False;
+  If (Idx < 0) Or (Idx >= TypeCount) Then Exit;
+  TypeIsBoolean := (TypeTab[Idx].Kind = TYK_BOOLEAN);
+End;
+
+{ ---- TypeIsPointer : teste si le type est un pointeur ------- }
+Function TypeIsPointer(Idx : Integer) : Boolean;
+Begin
+  TypeIsPointer := False;
+  If (Idx < 0) Or (Idx >= TypeCount) Then Exit;
+  Case TypeTab[Idx].Kind Of
+    TYK_POINTER, TYK_PCHAR :
+      TypeIsPointer := True;
+  End;
+End;
+
+{ ---- TypeIsCompatible : teste la compatibilite de types ----- }
+{ Retourne True si une valeur de type SrcIdx peut etre affectee  }
+{ a une variable de type DstIdx (regles simplifiees TP).         }
+Function TypeIsCompatible(DstIdx, SrcIdx : Integer) : Boolean;
+Begin
+  TypeIsCompatible := False;
+  If (DstIdx < 0) Or (SrcIdx < 0) Then
+  Begin
+    TypeIsCompatible := True;
+    Exit;
+  End;
+  If DstIdx = SrcIdx Then
+  Begin
+    TypeIsCompatible := True;
+    Exit;
+  End;
+  { Numerique vers numerique : toujours compatible }
+  If TypeIsNumeric(DstIdx) And TypeIsNumeric(SrcIdx) Then
+  Begin
+    TypeIsCompatible := True;
+    Exit;
+  End;
+  { Chaine vers chaine }
+  If TypeIsString(DstIdx) And TypeIsString(SrcIdx) Then
+  Begin
+    TypeIsCompatible := True;
+    Exit;
+  End;
+  { Char vers String }
+  If TypeIsString(DstIdx) And
+     (TypeTab[SrcIdx].Kind = TYK_CHAR) Then
+  Begin
+    TypeIsCompatible := True;
+    Exit;
+  End;
+  { Pointeur vers pointeur }
+  If TypeIsPointer(DstIdx) And TypeIsPointer(SrcIdx) Then
+  Begin
+    TypeIsCompatible := True;
+    Exit;
+  End;
+End;
+
+{ ---- TypeAddField : ajouter un champ a un type record ------- }
+Function TypeAddField(TIdx : Integer; Const FName : TString;
+                      FTypeIdx : Integer) : Integer;
+Begin
+  TypeAddField := -1;
+  If (TIdx < 0) Or (TIdx >= TypeCount) Then Exit;
+  If TypeTab[TIdx].FieldCount >= MAX_FIELD Then
+  Begin
+    CompileError('trop de champs (MAX_FIELD=' +
+                 IntToStr_(MAX_FIELD) + ')');
+    Exit;
+  End;
+  TypeTab[TIdx].Fields[TypeTab[TIdx].FieldCount].Name    := FName;
+  TypeTab[TIdx].Fields[TypeTab[TIdx].FieldCount].TypeIdx := FTypeIdx;
+  TypeAddField := TypeTab[TIdx].FieldCount;
+  Inc(TypeTab[TIdx].FieldCount);
+End;
+
+{ ---- TypeRegisterBuiltins : types primitifs Turbo Pascal ---- }
+{ Enregistre les types de base dans la table des types et         }
+{ retourne les index pour les utiliser dans SymRegisterBuiltins.  }
+{ Correspondances JS :                                            }
+{   Integer/Word/Byte/ShortInt/LongInt/Comp -> number (entier)    }
+{   Real/Single/Double/Extended -> number (reel)                  }
+{   Boolean -> boolean                                            }
+{   Char -> string (1 car)                                        }
+{   String/PChar -> string                                        }
+{   Array -> Array, Record -> object, Set -> Array ou Set         }
+{   File/Text -> objet fichier, Pointer -> reference              }
+{   Object -> class, ProcVar -> function                          }
+Procedure TypeRegisterBuiltins;
+Var
+  Idx : Integer;
+Begin
+  { Types entiers }
+  Idx := TypeAdd(TYK_INTEGER,  'Integer',  2, 'number', '0');
+  TypeTab[Idx].Low := -32768;
+  TypeTab[Idx].High := 32767;
+  Idx := TypeAdd(TYK_WORD,     'Word',     2, 'number', '0');
+  TypeTab[Idx].IsUnsigned := True;
+  TypeTab[Idx].Low := 0;
+  TypeTab[Idx].High := 65535;
+  Idx := TypeAdd(TYK_BYTE,     'Byte',     1, 'number', '0');
+  TypeTab[Idx].IsUnsigned := True;
+  TypeTab[Idx].Low := 0;
+  TypeTab[Idx].High := 255;
+  Idx := TypeAdd(TYK_SHORTINT, 'ShortInt', 1, 'number', '0');
+  TypeTab[Idx].Low := -128;
+  TypeTab[Idx].High := 127;
+  Idx := TypeAdd(TYK_LONGINT,  'LongInt',  4, 'number', '0');
+  TypeTab[Idx].Low := -2147483647 - 1;
+  TypeTab[Idx].High := 2147483647;
+  Idx := TypeAdd(TYK_COMP,     'Comp',     8, 'number', '0');
+
+  { Types booleens }
+  Idx := TypeAdd(TYK_BOOLEAN,  'Boolean',  1, 'boolean', 'false');
+  TypeTab[Idx].Low := 0;
+  TypeTab[Idx].High := 1;
+
+  { Types caractere }
+  Idx := TypeAdd(TYK_CHAR,     'Char',     1, 'string', '""');
+  TypeTab[Idx].Low := 0;
+  TypeTab[Idx].High := 255;
+
+  { Types reels }
+  TypeAdd(TYK_REAL,     'Real',     6, 'number', '0.0');
+  TypeAdd(TYK_SINGLE,   'Single',   4, 'number', '0.0');
+  TypeAdd(TYK_DOUBLE,   'Double',   8, 'number', '0.0');
+  TypeAdd(TYK_EXTENDED, 'Extended', 10, 'number', '0.0');
+
+  { Types chaine }
+  TypeAdd(TYK_STRING,   'String',  256, 'string', '""');
+  TypeAdd(TYK_PCHAR,    'PChar',     4, 'string', 'null');
+
+  { Types pointeur }
+  TypeAdd(TYK_POINTER,  'Pointer',   4, 'object', 'null');
+
+  { Types fichier }
+  TypeAdd(TYK_TEXT,     'Text',      0, 'object', 'null');
+  TypeAdd(TYK_FILE,     'File',      0, 'object', 'null');
+End;
+
+{ ---- TypeDump : afficher la table des types (debug) --------- }
+Procedure TypeDump;
+Var
+  I : Integer;
+Begin
+  WriteLn('--- Table des types (', TypeCount, ' entrees) ---');
+  For I := 0 To TypeCount - 1 Do
+    WriteLn('  [', I, '] ', TypeTab[I].Name,
+            ' (', TypeKindStr(TypeTab[I].Kind),
+            ', size=', TypeTab[I].Size,
+            ', js=', TypeTab[I].JSType,
+            ', default=', TypeTab[I].JSDefault, ')');
+  WriteLn('--- Fin de la table des types ---');
+End;
+
+{ ============================================================
+  EMETTEUR DE CODE JAVASCRIPT [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- IndentStr : retourner la chaine d indentation ---------- }
+Function IndentStr : TString;
+Var
+  I : Integer;
+  S : TString;
+Begin
+  S := '';
+  For I := 1 To IndentLevel Do
+    S := S + '  ';
+  IndentStr := S;
+End;
+
+{ ---- IndentPush : augmenter le niveau d indentation --------- }
+Procedure IndentPush;
+Begin
+  Inc(IndentLevel);
+End;
+
+{ ---- IndentPop : diminuer le niveau d indentation ----------- }
+Procedure IndentPop;
+Begin
+  If IndentLevel > 0 Then
+    Dec(IndentLevel);
+End;
+
+{ ---- EmitOpen : ouvrir le fichier .js de sortie ------------- }
+{ Ouvre le fichier OutFile pour ecriture. Met OutFOpen a True.   }
+Procedure EmitOpen;
+Begin
+  If OutFOpen Then Exit;
+  Assign(OutF, Opts.OutFile);
+  {$I-}
+  Rewrite(OutF);
+  {$I+}
+  If IOResult <> 0 Then
+    FatalError('impossible d''ouvrir le fichier de sortie: ' + Opts.OutFile);
+  OutFOpen := True;
+  IndentLevel := 0;
+End;
+
+{ ---- EmitClose : fermer le fichier .js de sortie ------------ }
+Procedure EmitClose;
+Begin
+  If Not OutFOpen Then Exit;
+  {$I-}
+  Close(OutF);
+  {$I+}
+  If IOResult <> 0 Then
+    WarnMsg('erreur a la fermeture du fichier de sortie');
+  OutFOpen := False;
+End;
+
+{ ---- EmitRaw : ecrire texte brut sans indentation ----------- }
+Procedure EmitRaw(Const S : TString);
+Begin
+  If Not OutFOpen Then Exit;
+  Write(OutF, S);
+End;
+
+{ ---- EmitLine : ecrire une ligne avec indentation ----------- }
+Procedure EmitLine(Const S : TString);
+Begin
+  If Not OutFOpen Then Exit;
+  WriteLn(OutF, IndentStr + S);
+End;
+
+{ ---- EmitComment : ecrire un commentaire JS // -------------- }
+Procedure EmitComment(Const S : TString);
+Begin
+  If Not OutFOpen Then Exit;
+  WriteLn(OutF, IndentStr + '// ' + S);
+End;
+
+{ ---- EmitBlankLine : ecrire une ligne vide ------------------- }
+Procedure EmitBlankLine;
+Begin
+  If Not OutFOpen Then Exit;
+  WriteLn(OutF, '');
+End;
+
+{ ---- EmitHeader : en-tete du fichier JS genere -------------- }
+{ Emet le commentaire d en-tete et "use strict";                 }
+Procedure EmitHeader;
+Begin
+  If Opts.HtmlMode Then
+  Begin
+    WriteLn(OutF, '<!DOCTYPE html>');
+    WriteLn(OutF, '<html lang="en">');
+    WriteLn(OutF, '<head>');
+    WriteLn(OutF, '<meta charset="UTF-8">');
+    WriteLn(OutF, '<meta name="viewport" content="width=device-width, initial-scale=1.0">');
+    WriteLn(OutF, '<title>' + BaseName(Opts.SrcFile) + '</title>');
+    WriteLn(OutF, '</head>');
+    WriteLn(OutF, '<body>');
+    WriteLn(OutF, '<pre id="output"></pre>');
+    WriteLn(OutF, '<canvas id="graphCanvas" width="640" height="480" style="display:none;"></canvas>');
+    WriteLn(OutF, '<script>');
+  End;
+  EmitLine('/* Generated by TP2JS ' + TP2JS_VERSION +
+           ' - ' + TP2JS_DATE + ' */');
+  EmitLine('"use strict";');
+  EmitBlankLine;
+  { assistants CRT - conversion couleurs TP vers codes ANSI }
+  EmitComment('CRT color helpers');
+  EmitLine('var TextAttr = 7, WindMin = 0, WindMax = 0x184F, LastMode = 3;');
+  EmitLine('var DirectVideo = true, CheckBreak = true, CheckEOF = false, CheckSnow = true;');
+  EmitLine('function _TPR_CrtFg(c) {');
+  EmitLine('  var m = [30,34,32,36,31,35,33,37,90,94,92,96,91,95,93,97];');
+  EmitLine('  return (c >= 0 && c <= 15) ? String(m[c]) : "37";');
+  EmitLine('}');
+  EmitLine('function _TPR_CrtBg(c) {');
+  EmitLine('  var m = [40,44,42,46,41,45,43,47];');
+  EmitLine('  return (c >= 0 && c <= 7) ? String(m[c]) : "40";');
+  EmitLine('}');
+  EmitBlankLine;
+  { assistant DOS - variables et fonctions utilitaires }
+  EmitComment('DOS unit helpers');
+  EmitLine('var DosError = 0, DosExitCode = 0;');
+  EmitLine('function _TPR_PackTime(dt) {');
+  EmitLine('  return ((dt.Year - 1980) << 25) | (dt.Month << 21) | (dt.Day << 16) |');
+  EmitLine('         (dt.Hour << 11) | (dt.Min << 5) | (dt.Sec >> 1);');
+  EmitLine('}');
+  EmitLine('function _TPR_UnpackTime(t, dt) {');
+  EmitLine('  dt.Year = ((t >> 25) & 0x7F) + 1980;');
+  EmitLine('  dt.Month = (t >> 21) & 0x0F;');
+  EmitLine('  dt.Day = (t >> 16) & 0x1F;');
+  EmitLine('  dt.Hour = (t >> 11) & 0x1F;');
+  EmitLine('  dt.Min = (t >> 5) & 0x3F;');
+  EmitLine('  dt.Sec = (t & 0x1F) << 1;');
+  EmitLine('}');
+  EmitLine('function _TPR_FSplit(path, dirRef, nameRef, extRef) {');
+  EmitLine('  var i = path.length - 1;');
+  EmitLine('  while (i >= 0 && path[i] !== "/" && path[i] !== "\\") i--;');
+  EmitLine('  var d = (i >= 0) ? path.substring(0, i + 1) : "";');
+  EmitLine('  var f = path.substring(i + 1);');
+  EmitLine('  var j = f.lastIndexOf(".");');
+  EmitLine('  var n = (j >= 0) ? f.substring(0, j) : f;');
+  EmitLine('  var e = (j >= 0) ? f.substring(j) : "";');
+  EmitLine('  return { dir: d, name: n, ext: e };');
+  EmitLine('}');
+  EmitBlankLine;
+  { assistants Overlay - variable OvrResult }
+  EmitComment('Overlay unit helpers (stubs)');
+  EmitLine('var OvrResult = 0;');
+  EmitBlankLine;
+  { assistants Graph - canvas HTML5 }
+  EmitComment('Graph unit helpers (canvas)');
+  EmitLine('var _GR_Canvas = null, _GR_Ctx = null;');
+  EmitLine('var _GR_Width = 640, _GR_Height = 480;');
+  EmitLine('var _GR_CP = {x:0, y:0};');
+  EmitLine('var _GR_Color = 15, _GR_BkColor = 0;');
+  EmitLine('var _GR_FillColor = 15, _GR_FillPattern = 1;');
+  EmitLine('var _GR_MaxColor = 15, _GR_Result = 0;');
+  EmitLine('var _GR_WriteMode = 0;');
+  EmitLine('var _GR_Palette = [');
+  EmitLine('  "#000000","#0000AA","#00AA00","#00AAAA",');
+  EmitLine('  "#AA0000","#AA00AA","#AA5500","#AAAAAA",');
+  EmitLine('  "#555555","#5555FF","#55FF55","#55FFFF",');
+  EmitLine('  "#FF5555","#FF55FF","#FFFF55","#FFFFFF"');
+  EmitLine('];');
+  EmitLine('function _GR_PalRGB(c) {');
+  EmitLine('  return (c >= 0 && c < _GR_Palette.length) ? _GR_Palette[c] : "#FFFFFF";');
+  EmitLine('}');
+  EmitLine('function _GR_Init(drv, mode, path) {');
+  EmitLine('  if (typeof document !== "undefined") {');
+  EmitLine('    _GR_Canvas = document.createElement("canvas");');
+  EmitLine('    _GR_Canvas.width = _GR_Width; _GR_Canvas.height = _GR_Height;');
+  EmitLine('    document.body.appendChild(_GR_Canvas);');
+  EmitLine('    _GR_Ctx = _GR_Canvas.getContext("2d");');
+  EmitLine('  } else { _GR_Ctx = { fillRect:function(){}, strokeRect:function(){},');
+  EmitLine('    beginPath:function(){}, moveTo:function(){}, lineTo:function(){},');
+  EmitLine('    arc:function(){}, ellipse:function(){}, stroke:function(){},');
+  EmitLine('    fill:function(){}, closePath:function(){}, fillText:function(){},');
+  EmitLine('    clearRect:function(){}, measureText:function(){return{width:0};},');
+  EmitLine('    save:function(){}, restore:function(){}, clip:function(){},');
+  EmitLine('    getImageData:function(){return{data:[0,0,0,0]};},');
+  EmitLine('    putImageData:function(){}, setLineDash:function(){} }; }');
+  EmitLine('  _GR_Result = 0; _GR_CP = {x:0, y:0};');
+  EmitLine('}');
+  EmitLine('function _GR_Close() {');
+  EmitLine('  if (_GR_Canvas && _GR_Canvas.parentNode) _GR_Canvas.parentNode.removeChild(_GR_Canvas);');
+  EmitLine('  _GR_Ctx = null; _GR_Canvas = null;');
+  EmitLine('}');
+  EmitLine('function _GR_GetMaxX() { return _GR_Width - 1; }');
+  EmitLine('function _GR_GetMaxY() { return _GR_Height - 1; }');
+  EmitLine('function _GR_ErrorMsg(c) {');
+  EmitLine('  var m = {"0":"No error","-1":"No InitGraph","-2":"Not detected",');
+  EmitLine('    "-3":"File not found","-4":"Invalid driver","-5":"No load mem"};');
+  EmitLine('  return m[c] || "Unknown error " + c;');
+  EmitLine('}');
+  EmitLine('function _GR_SetColor(c) {');
+  EmitLine('  _GR_Color = c;');
+  EmitLine('  if (_GR_Ctx) _GR_Ctx.strokeStyle = _GR_PalRGB(c);');
+  EmitLine('}');
+  EmitLine('function _GR_SetBkColor(c) {');
+  EmitLine('  _GR_BkColor = c;');
+  EmitLine('}');
+  EmitLine('function _GR_SetFillStyle(p, c) {');
+  EmitLine('  _GR_FillPattern = p; _GR_FillColor = c;');
+  EmitLine('  if (_GR_Ctx) _GR_Ctx.fillStyle = _GR_PalRGB(c);');
+  EmitLine('}');
+  EmitLine('function _GR_SetLineStyle(st, pat, thick) {');
+  EmitLine('  if (!_GR_Ctx) return;');
+  EmitLine('  _GR_Ctx.lineWidth = thick || 1;');
+  EmitLine('  if (st === 1) _GR_Ctx.setLineDash([2,2]);');
+  EmitLine('  else if (st === 2) _GR_Ctx.setLineDash([4,2,2,2]);');
+  EmitLine('  else if (st === 3) _GR_Ctx.setLineDash([4,4]);');
+  EmitLine('  else _GR_Ctx.setLineDash([]);');
+  EmitLine('}');
+  EmitLine('function _GR_PutPixel(x, y, c) {');
+  EmitLine('  if (!_GR_Ctx) return;');
+  EmitLine('  _GR_Ctx.fillStyle = _GR_PalRGB(c);');
+  EmitLine('  _GR_Ctx.fillRect(x, y, 1, 1);');
+  EmitLine('  _GR_Ctx.fillStyle = _GR_PalRGB(_GR_FillColor);');
+  EmitLine('}');
+  EmitLine('function _GR_GetPixel(x, y) {');
+  EmitLine('  if (!_GR_Ctx) return 0;');
+  EmitLine('  var d = _GR_Ctx.getImageData(x, y, 1, 1).data;');
+  EmitLine('  return (d[0] > 128 ? 4 : 0) | (d[1] > 128 ? 2 : 0) | (d[2] > 128 ? 1 : 0);');
+  EmitLine('}');
+  EmitLine('function _GR_Line(x1, y1, x2, y2) {');
+  EmitLine('  if (!_GR_Ctx) return;');
+  EmitLine('  _GR_Ctx.beginPath(); _GR_Ctx.moveTo(x1+0.5,y1+0.5);');
+  EmitLine('  _GR_Ctx.lineTo(x2+0.5,y2+0.5); _GR_Ctx.stroke();');
+  EmitLine('  _GR_CP.x = x2; _GR_CP.y = y2;');
+  EmitLine('}');
+  EmitLine('function _GR_LineTo(x, y) {');
+  EmitLine('  _GR_Line(_GR_CP.x, _GR_CP.y, x, y);');
+  EmitLine('}');
+  EmitLine('function _GR_LineRel(dx, dy) {');
+  EmitLine('  _GR_Line(_GR_CP.x, _GR_CP.y, _GR_CP.x+dx, _GR_CP.y+dy);');
+  EmitLine('}');
+  EmitLine('function _GR_MoveTo(x, y) { _GR_CP.x = x; _GR_CP.y = y; }');
+  EmitLine('function _GR_MoveRel(dx, dy) { _GR_CP.x += dx; _GR_CP.y += dy; }');
+  EmitLine('function _GR_Circle(x, y, r) {');
+  EmitLine('  if (!_GR_Ctx) return;');
+  EmitLine('  _GR_Ctx.beginPath(); _GR_Ctx.arc(x, y, r, 0, 2*Math.PI);');
+  EmitLine('  _GR_Ctx.stroke();');
+  EmitLine('}');
+  EmitLine('function _GR_Arc(x, y, sa, ea, r) {');
+  EmitLine('  if (!_GR_Ctx) return;');
+  EmitLine('  _GR_Ctx.beginPath();');
+  EmitLine('  _GR_Ctx.arc(x, y, r, -ea*Math.PI/180, -sa*Math.PI/180);');
+  EmitLine('  _GR_Ctx.stroke();');
+  EmitLine('}');
+  EmitLine('function _GR_Ellipse(x, y, sa, ea, xr, yr) {');
+  EmitLine('  if (!_GR_Ctx) return;');
+  EmitLine('  _GR_Ctx.beginPath();');
+  EmitLine('  _GR_Ctx.ellipse(x, y, xr, yr, 0, -ea*Math.PI/180, -sa*Math.PI/180);');
+  EmitLine('  _GR_Ctx.stroke();');
+  EmitLine('}');
+  EmitLine('function _GR_FillEllipse(x, y, xr, yr) {');
+  EmitLine('  if (!_GR_Ctx) return;');
+  EmitLine('  _GR_Ctx.beginPath();');
+  EmitLine('  _GR_Ctx.ellipse(x, y, xr, yr, 0, 0, 2*Math.PI);');
+  EmitLine('  _GR_Ctx.fill(); _GR_Ctx.stroke();');
+  EmitLine('}');
+  EmitLine('function _GR_Rectangle(x1, y1, x2, y2) {');
+  EmitLine('  if (!_GR_Ctx) return;');
+  EmitLine('  _GR_Ctx.strokeRect(x1, y1, x2-x1, y2-y1);');
+  EmitLine('}');
+  EmitLine('function _GR_Bar(x1, y1, x2, y2) {');
+  EmitLine('  if (!_GR_Ctx) return;');
+  EmitLine('  _GR_Ctx.fillRect(x1, y1, x2-x1, y2-y1);');
+  EmitLine('}');
+  EmitLine('function _GR_Bar3D(x1, y1, x2, y2, depth, top) {');
+  EmitLine('  if (!_GR_Ctx) return;');
+  EmitLine('  _GR_Ctx.fillRect(x1, y1, x2-x1, y2-y1);');
+  EmitLine('  _GR_Ctx.strokeRect(x1, y1, x2-x1, y2-y1);');
+  EmitLine('  _GR_Ctx.beginPath();');
+  EmitLine('  _GR_Ctx.moveTo(x2,y2); _GR_Ctx.lineTo(x2+depth,y2-depth);');
+  EmitLine('  _GR_Ctx.lineTo(x2+depth,y1-depth); _GR_Ctx.lineTo(x2,y1);');
+  EmitLine('  _GR_Ctx.stroke();');
+  EmitLine('  if (top) {');
+  EmitLine('    _GR_Ctx.beginPath();');
+  EmitLine('    _GR_Ctx.moveTo(x1,y1); _GR_Ctx.lineTo(x1+depth,y1-depth);');
+  EmitLine('    _GR_Ctx.lineTo(x2+depth,y1-depth); _GR_Ctx.lineTo(x2,y1);');
+  EmitLine('    _GR_Ctx.stroke();');
+  EmitLine('  }');
+  EmitLine('}');
+  EmitLine('function _GR_PieSlice(x, y, sa, ea, r) {');
+  EmitLine('  if (!_GR_Ctx) return;');
+  EmitLine('  _GR_Ctx.beginPath(); _GR_Ctx.moveTo(x, y);');
+  EmitLine('  _GR_Ctx.arc(x, y, r, -ea*Math.PI/180, -sa*Math.PI/180);');
+  EmitLine('  _GR_Ctx.closePath(); _GR_Ctx.fill(); _GR_Ctx.stroke();');
+  EmitLine('}');
+  EmitLine('function _GR_Sector(x, y, sa, ea, xr, yr) {');
+  EmitLine('  if (!_GR_Ctx) return;');
+  EmitLine('  _GR_Ctx.beginPath(); _GR_Ctx.moveTo(x, y);');
+  EmitLine('  _GR_Ctx.ellipse(x, y, xr, yr, 0, -ea*Math.PI/180, -sa*Math.PI/180);');
+  EmitLine('  _GR_Ctx.closePath(); _GR_Ctx.fill(); _GR_Ctx.stroke();');
+  EmitLine('}');
+  EmitLine('function _GR_FloodFill(x, y, border) {');
+  EmitLine('  /* FloodFill: simplified stub - fills canvas background */');
+  EmitLine('  if (!_GR_Ctx) return;');
+  EmitLine('  _GR_Ctx.fillRect(0, 0, _GR_Width, _GR_Height);');
+  EmitLine('}');
+  EmitLine('function _GR_FillPoly(n, pts) {');
+  EmitLine('  if (!_GR_Ctx || n < 2) return;');
+  EmitLine('  _GR_Ctx.beginPath(); _GR_Ctx.moveTo(pts[0], pts[1]);');
+  EmitLine('  for (var i = 1; i < n; i++) _GR_Ctx.lineTo(pts[i*2], pts[i*2+1]);');
+  EmitLine('  _GR_Ctx.closePath(); _GR_Ctx.fill(); _GR_Ctx.stroke();');
+  EmitLine('}');
+  EmitLine('function _GR_OutText(s) {');
+  EmitLine('  if (!_GR_Ctx) return;');
+  EmitLine('  _GR_Ctx.fillStyle = _GR_PalRGB(_GR_Color);');
+  EmitLine('  _GR_Ctx.fillText(s, _GR_CP.x, _GR_CP.y);');
+  EmitLine('  _GR_CP.x += _GR_Ctx.measureText(s).width;');
+  EmitLine('  _GR_Ctx.fillStyle = _GR_PalRGB(_GR_FillColor);');
+  EmitLine('}');
+  EmitLine('function _GR_OutTextXY(x, y, s) {');
+  EmitLine('  if (!_GR_Ctx) return;');
+  EmitLine('  _GR_Ctx.fillStyle = _GR_PalRGB(_GR_Color);');
+  EmitLine('  _GR_Ctx.fillText(s, x, y);');
+  EmitLine('  _GR_Ctx.fillStyle = _GR_PalRGB(_GR_FillColor);');
+  EmitLine('}');
+  EmitLine('function _GR_SetTextStyle(font, dir, size) {');
+  EmitLine('  if (!_GR_Ctx) return;');
+  EmitLine('  var f = ["serif","serif","sans-serif","sans-serif","fantasy"];');
+  EmitLine('  _GR_Ctx.font = (size * 8) + "px " + (f[font] || "serif");');
+  EmitLine('}');
+  EmitLine('function _GR_SetTextJustify(h, v) {');
+  EmitLine('  if (!_GR_Ctx) return;');
+  EmitLine('  _GR_Ctx.textAlign = (h===1) ? "center" : (h===2) ? "right" : "left";');
+  EmitLine('  _GR_Ctx.textBaseline = (v===2) ? "top" : (v===0) ? "bottom" : "middle";');
+  EmitLine('}');
+  EmitLine('function _GR_TextWidth(s) {');
+  EmitLine('  if (!_GR_Ctx) return 0;');
+  EmitLine('  return Math.round(_GR_Ctx.measureText(s).width);');
+  EmitLine('}');
+  EmitLine('function _GR_TextHeight(s) {');
+  EmitLine('  if (!_GR_Ctx) return 8;');
+  EmitLine('  return parseInt(_GR_Ctx.font) || 8;');
+  EmitLine('}');
+  EmitLine('function _GR_ClearDevice() {');
+  EmitLine('  if (!_GR_Ctx) return;');
+  EmitLine('  _GR_Ctx.clearRect(0, 0, _GR_Width, _GR_Height);');
+  EmitLine('  _GR_CP = {x:0, y:0};');
+  EmitLine('}');
+  EmitLine('function _GR_ClearViewPort() {');
+  EmitLine('  if (!_GR_Ctx) return;');
+  EmitLine('  _GR_Ctx.clearRect(0, 0, _GR_Width, _GR_Height);');
+  EmitLine('}');
+  EmitLine('function _GR_SetViewPort(x1, y1, x2, y2, clip) {');
+  EmitLine('  if (!_GR_Ctx) return;');
+  EmitLine('  _GR_Ctx.save();');
+  EmitLine('  if (clip) {');
+  EmitLine('    _GR_Ctx.beginPath();');
+  EmitLine('    _GR_Ctx.rect(x1, y1, x2-x1, y2-y1);');
+  EmitLine('    _GR_Ctx.clip();');
+  EmitLine('  }');
+  EmitLine('}');
+  EmitLine('function _GR_ImageSize(x1, y1, x2, y2) {');
+  EmitLine('  return (Math.abs(x2-x1)+1) * (Math.abs(y2-y1)+1) * 4 + 4;');
+  EmitLine('}');
+  EmitLine('function _GR_SetRGBPalette(idx, r, g, b) {');
+  EmitLine('  if (idx >= 0 && idx < _GR_Palette.length)');
+  EmitLine('    _GR_Palette[idx] = "rgb("+((r&63)*4)+","+((g&63)*4)+","+((b&63)*4)+")";');
+  EmitLine('}');
+  EmitBlankLine;
+End;
+
+{ ---- EmitModuleHeader : en-tete module ES6 si option -m ----- }
+{ Si l option ModuleES6 est active, emet l en-tete pour module.  }
+Procedure EmitModuleHeader;
+Begin
+  If Not Opts.ModuleES6 Then Exit;
+  EmitComment('Module ES6');
+  { assistants : en mode unite + module, on ajoute les imports plus tard }
+  EmitBlankLine;
+End;
+
+{ ============================================================
+  RUNTIME JAVASCRIPT MINIMAL [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- EmitRuntime : emettre les fonctions runtime _TPR_* ------ }
+{ Emet une seule fois les fonctions d execution necessaires pour  }
+{ le code JavaScript genere a partir de Turbo Pascal.              }
+{ RuntimeEmitted empeche une double emission.                      }
+Procedure EmitRuntime;
+Begin
+  If RuntimeEmitted Then Exit;
+  RuntimeEmitted := True;
+
+  EmitBlankLine;
+  EmitComment('=== TP2JS Runtime Library ===');
+  EmitBlankLine;
+
+  { _TPR_IOResult : variable globale code d erreur E/S }
+  EmitComment('IOResult global variable');
+  EmitLine('var _TPR_IOResult = 0;');
+  EmitBlankLine;
+
+  { _TPR_Args : tableau des arguments de ligne de commande }
+  EmitComment('Command-line arguments (Node.js)');
+  EmitLine('var _TPR_Args = (typeof process !== "undefined") ? process.argv.slice(2) : [];');
+  EmitBlankLine;
+
+  { _TPR_Write(S) : ecriture sur stdout }
+  EmitComment('Write: output to stdout without newline');
+  EmitLine('function _TPR_Write(s) {');
+  EmitLine('  if (typeof document !== "undefined") {');
+  EmitLine('    var el = document.getElementById("output");');
+  EmitLine('    if (el) { el.textContent += String(s); return; }');
+  EmitLine('  }');
+  EmitLine('  if (typeof process !== "undefined" && process.stdout) {');
+  EmitLine('    process.stdout.write(String(s));');
+  EmitLine('  }');
+  EmitLine('}');
+  EmitBlankLine;
+
+  { _TPR_WriteLn(S) : ecriture avec retour de ligne }
+  EmitComment('WriteLn: output to stdout with newline');
+  EmitLine('function _TPR_WriteLn(s) {');
+  EmitLine('  if (typeof document !== "undefined") {');
+  EmitLine('    var el = document.getElementById("output");');
+  EmitLine('    if (el) {');
+  EmitLine('      el.textContent += (arguments.length === 0 ? "" : String(s)) + "\n";');
+  EmitLine('      return;');
+  EmitLine('    }');
+  EmitLine('  }');
+  EmitLine('  if (arguments.length === 0) { console.log(""); return; }');
+  EmitLine('  console.log(String(s));');
+  EmitLine('}');
+  EmitBlankLine;
+
+  { _TPR_ReadLn() : lecture d une ligne }
+  EmitComment('ReadLn: read a line from stdin');
+  EmitLine('function _TPR_ReadLn() {');
+  EmitLine('  if (typeof require !== "undefined") {');
+  EmitLine('    try {');
+  EmitLine('      var fs = require("fs");');
+  EmitLine('      var buf = Buffer.alloc(256);');
+  EmitLine('      var n = fs.readSync(0, buf, 0, 256);');
+  EmitLine('      return buf.toString("utf8", 0, n).replace(/[\r\n]+$/, "");');
+  EmitLine('    } catch(e) { return ""; }');
+  EmitLine('  }');
+  EmitLine('  if (typeof prompt !== "undefined") return prompt() || "";');
+  EmitLine('  return "";');
+  EmitLine('}');
+  EmitBlankLine;
+
+  { _TPR_WriteF(F, S) : ecriture dans un fichier }
+  EmitComment('WriteF: write to a file (Node.js)');
+  EmitLine('function _TPR_WriteF(f, s) {');
+  EmitLine('  if (typeof require !== "undefined") {');
+  EmitLine('    try {');
+  EmitLine('      var fs = require("fs");');
+  EmitLine('      fs.appendFileSync(f.name, String(s));');
+  EmitLine('      _TPR_IOResult = 0;');
+  EmitLine('    } catch(e) { _TPR_IOResult = 5; }');
+  EmitLine('  }');
+  EmitLine('}');
+  EmitBlankLine;
+
+  { _TPR_Halt(Code) : arret du programme }
+  EmitComment('Halt: stop program execution');
+  EmitLine('function _TPR_Halt(code) {');
+  EmitLine('  if (typeof process !== "undefined") process.exit(code || 0);');
+  EmitLine('  else throw new Error("Halt(" + (code || 0) + ")");');
+  EmitLine('}');
+  EmitBlankLine;
+
+  { _TPR_IntToStr(N, Width) : entier vers chaine formatee }
+  EmitComment('IntToStr: integer to formatted string');
+  EmitLine('function _TPR_IntToStr(n, width) {');
+  EmitLine('  var s = String(n);');
+  EmitLine('  if (typeof width === "number" && width > 0) {');
+  EmitLine('    while (s.length < width) s = " " + s;');
+  EmitLine('  }');
+  EmitLine('  return s;');
+  EmitLine('}');
+  EmitBlankLine;
+
+  { _TPR_RealToStr(R, Width, Dec) : reel vers chaine formatee }
+  EmitComment('RealToStr: real to formatted string');
+  EmitLine('function _TPR_RealToStr(r, width, dec) {');
+  EmitLine('  var s;');
+  EmitLine('  if (typeof dec === "number" && dec >= 0) s = r.toFixed(dec);');
+  EmitLine('  else s = String(r);');
+  EmitLine('  if (typeof width === "number" && width > 0) {');
+  EmitLine('    while (s.length < width) s = " " + s;');
+  EmitLine('  }');
+  EmitLine('  return s;');
+  EmitLine('}');
+  EmitBlankLine;
+
+  { _TPR_StrToInt(S) : chaine vers entier }
+  EmitComment('StrToInt: string to integer');
+  EmitLine('function _TPR_StrToInt(s) {');
+  EmitLine('  var v = parseInt(s, 10);');
+  EmitLine('  return isNaN(v) ? 0 : v;');
+  EmitLine('}');
+  EmitBlankLine;
+
+  { _TPR_StrToReal(S) : chaine vers reel }
+  EmitComment('StrToReal: string to real');
+  EmitLine('function _TPR_StrToReal(s) {');
+  EmitLine('  var v = parseFloat(s);');
+  EmitLine('  return isNaN(v) ? 0.0 : v;');
+  EmitLine('}');
+  EmitBlankLine;
+
+  { _TPR_SetUnion(A, B) : union d ensembles }
+  EmitComment('Set operations');
+  EmitLine('function _TPR_SetUnion(a, b) {');
+  EmitLine('  var r = a.slice();');
+  EmitLine('  for (var i = 0; i < b.length; i++) {');
+  EmitLine('    if (r.indexOf(b[i]) < 0) r.push(b[i]);');
+  EmitLine('  }');
+  EmitLine('  return r;');
+  EmitLine('}');
+  EmitBlankLine;
+
+  { _TPR_SetInter(A, B) : intersection d ensembles }
+  EmitLine('function _TPR_SetInter(a, b) {');
+  EmitLine('  var r = [];');
+  EmitLine('  for (var i = 0; i < a.length; i++) {');
+  EmitLine('    if (b.indexOf(a[i]) >= 0) r.push(a[i]);');
+  EmitLine('  }');
+  EmitLine('  return r;');
+  EmitLine('}');
+  EmitBlankLine;
+
+  { _TPR_SetDiff(A, B) : difference d ensembles }
+  EmitLine('function _TPR_SetDiff(a, b) {');
+  EmitLine('  var r = [];');
+  EmitLine('  for (var i = 0; i < a.length; i++) {');
+  EmitLine('    if (b.indexOf(a[i]) < 0) r.push(a[i]);');
+  EmitLine('  }');
+  EmitLine('  return r;');
+  EmitLine('}');
+  EmitBlankLine;
+
+  { _TPR_SetIn(Elem, S) : test d appartenance }
+  EmitLine('function _TPR_SetIn(elem, s) {');
+  EmitLine('  return s.indexOf(elem) >= 0;');
+  EmitLine('}');
+  EmitBlankLine;
+
+  { _TPR_Copy(S, Pos, Len) : sous-chaine (base 1 -> base 0) }
+  EmitComment('String operations (base-1 to base-0 conversion)');
+  EmitLine('function _TPR_Copy(s, pos, len) {');
+  EmitLine('  return String(s).substr(pos - 1, len);');
+  EmitLine('}');
+  EmitBlankLine;
+
+  { _TPR_Pos(Sub, S) : position de sous-chaine (base 1) }
+  EmitLine('function _TPR_Pos(sub, s) {');
+  EmitLine('  var i = String(s).indexOf(sub);');
+  EmitLine('  return (i >= 0) ? i + 1 : 0;');
+  EmitLine('}');
+  EmitBlankLine;
+
+  { _TPR_Delete(S, Pos, Len) : suppression dans chaine }
+  EmitLine('function _TPR_Delete(obj, pos, len) {');
+  EmitLine('  var s = String(obj.v !== undefined ? obj.v : obj);');
+  EmitLine('  var r = s.substring(0, pos - 1) + s.substring(pos - 1 + len);');
+  EmitLine('  if (obj.v !== undefined) obj.v = r;');
+  EmitLine('  return r;');
+  EmitLine('}');
+  EmitBlankLine;
+
+  { _TPR_Insert(Src, S, Pos) : insertion dans chaine }
+  EmitLine('function _TPR_Insert(src, obj, pos) {');
+  EmitLine('  var s = String(obj.v !== undefined ? obj.v : obj);');
+  EmitLine('  var r = s.substring(0, pos - 1) + src + s.substring(pos - 1);');
+  EmitLine('  if (obj.v !== undefined) obj.v = r;');
+  EmitLine('  return r;');
+  EmitLine('}');
+  EmitBlankLine;
+
+  { _TPR_FillChar(Buf, Count, Val) : remplissage tableau }
+  EmitComment('Memory operations');
+  EmitLine('function _TPR_FillChar(buf, count, val) {');
+  EmitLine('  var c = (typeof val === "string") ? val.charCodeAt(0) : val;');
+  EmitLine('  for (var i = 0; i < count; i++) buf[i] = c;');
+  EmitLine('}');
+  EmitBlankLine;
+
+  { _TPR_Move(Src, Dest, Count) : copie tableau }
+  EmitLine('function _TPR_Move(src, dest, count) {');
+  EmitLine('  for (var i = 0; i < count; i++) dest[i] = src[i];');
+  EmitLine('}');
+  EmitBlankLine;
+
+  { _TPR_Random(N) : nombre pseudo-aleatoire }
+  EmitComment('Random: pseudo-random number');
+  EmitLine('function _TPR_Random(n) {');
+  EmitLine('  if (typeof n === "number" && n > 0)');
+  EmitLine('    return Math.floor(Math.random() * n);');
+  EmitLine('  return Math.random();');
+  EmitLine('}');
+  EmitBlankLine;
+
+  EmitComment('=== End of TP2JS Runtime Library ===');
+  EmitBlankLine;
+End;
+
+{ ---- EmitFooter : pied de page du fichier JS genere --------- }
+{ Emet l appel du programme principal _main() a la fin.          }
+Procedure EmitFooter;
+Var
+  I : Integer;
+Begin
+  EmitBlankLine;
+  { Appeler les blocs d initialisation des unites }
+  If UnitInitCount > 0 Then
+  Begin
+    EmitComment('Initialisation des unites');
+    For I := 0 To UnitInitCount - 1 Do
+      EmitLine('_init_' + UnitInitNames[I] + '();');
+    EmitBlankLine;
+  End;
+  If Not IsUnitMode Then
+  Begin
+    EmitComment('Programme principal');
+    EmitLine('_main();');
+  End;
+  If Opts.HtmlMode Then
+  Begin
+    WriteLn(OutF, '</script>');
+    WriteLn(OutF, '</body>');
+    WriteLn(OutF, '</html>');
+  End;
+End;
+
+{ ============================================================
+  PROGRAMME PRINCIPAL (PROGRAM) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseUsesClause : parser la clause USES ---------------- }
+{ USES unit1, unit2, ..., unitN;                                 }
+{ Genere des commentaires /* uses unit1 */ en JS.                }
+{ Detecte et charge les unites utilisateur.                      }
+Procedure ParseUsesClause;
+Var
+  UName : TString;
+  Idx   : Integer;
+  LU    : TString;
+Begin
+  If P >= TokenCount Then Exit;
+  If (TokenPool[P].Kind <> TK_KEYWORD) Or
+     (StrLowerCase(TokenPool[P].Val) <> 'uses') Then Exit;
+  Inc(P); { consommer USES }
+  EmitComment('uses');
+  While P < TokenCount Do
+  Begin
+    If TokenPool[P].Kind = TK_IDENT Then
+    Begin
+      UName := TokenPool[P].Val;
+      LU := StrLowerCase(UName);
+      EmitComment('  ' + UName);
+      { Avertissement si USES Overlay }
+      If LU = 'overlay' Then
+        WriteLn('Warning: unit Overlay ignored - overlays are not supported in JavaScript');
+      { Notification si USES Graph }
+      If LU = 'graph' Then
+        WriteLn('Note: unit Graph mapped to HTML5 Canvas API in JavaScript');
+      { En mode module ES6, emettre import pour unites utilisateur }
+      If Opts.ModuleES6 Then
+      Begin
+        If (LU <> 'system') And (LU <> 'crt') And (LU <> 'dos') And
+           (LU <> 'overlay') And (LU <> 'graph') Then
+          EmitLine('// import * as ' + UName + ' from "./' + LU + '.js";');
+      End;
+      { Enregistrer l unite dans la table des symboles }
+      Idx := SymAdd(UName, SK_UNIT, -1);
+      Inc(P);
+    End
+    Else If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ',') Then
+      Inc(P)
+    Else If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ';') Then
+    Begin
+      Inc(P);
+      Exit;
+    End
+    Else
+    Begin
+      { Token inattendu, avancer }
+      Inc(P);
+    End;
+  End;
+End;
+
+{ ---- ParseConstSection : parser une section CONST ----------- }
+{ CONST nom = expr; nom = expr; ...                              }
+{ Genere : const nom = valeur; en JS.                            }
+Procedure ParseConstSection(Var P : Integer);
+Var
+  CName   : TString;
+  JSVal   : TString;
+  IsTyped : Boolean;
+  TypeName: TString;
+  TIdx    : Integer;
+  Idx     : Integer;
+Begin
+  If P >= TokenCount Then Exit;
+  If (TokenPool[P].Kind <> TK_KEYWORD) Or
+     (StrLowerCase(TokenPool[P].Val) <> 'const') Then Exit;
+  Inc(P); { consommer CONST }
+
+  { Boucle sur les declarations de constantes }
+  While P < TokenCount Do
+  Begin
+    { Verifier si on est sur un autre mot-cle de section ou BEGIN }
+    If TokenPool[P].Kind = TK_KEYWORD Then
+    Begin
+      If (StrLowerCase(TokenPool[P].Val) = 'const') Or
+         (StrLowerCase(TokenPool[P].Val) = 'var') Or
+         (StrLowerCase(TokenPool[P].Val) = 'type') Or
+         (StrLowerCase(TokenPool[P].Val) = 'label') Or
+         (StrLowerCase(TokenPool[P].Val) = 'begin') Or
+         (StrLowerCase(TokenPool[P].Val) = 'procedure') Or
+         (StrLowerCase(TokenPool[P].Val) = 'function') Or
+         (StrLowerCase(TokenPool[P].Val) = 'constructor') Or
+         (StrLowerCase(TokenPool[P].Val) = 'destructor') Then
+        Exit;
+    End;
+    CName := TokenPool[P].Val;
+    Inc(P);
+    IsTyped := False;
+    TIdx := -1;
+
+    { Constante typee : nom : Type = valeur }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ':') Then
+    Begin
+      Inc(P); { consommer : }
+      IsTyped := True;
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+      Begin
+        TypeName := TokenPool[P].Val;
+        TIdx := TypeFindByName(TypeName);
+        Inc(P);
+      End
+      Else If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) Then
+      Begin
+        TypeName := TokenPool[P].Val;
+        TIdx := TypeFindByName(TypeName);
+        Inc(P);
+      End;
+    End;
+
+    { Attendre = }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_OP) And
+       (TokenPool[P].Val = '=') Then
+    Begin
+      Inc(P); { consommer = }
+      JSVal := ConstEvalExpr(P);
+
+      { Enregistrer dans la table des constantes }
+      ConstAdd(CName, JSVal, TK_INTEGER, 0, 0.0, '', IsTyped);
+      { Enregistrer dans la table des symboles }
+      Idx := SymAdd(CName, SK_CONST, TIdx);
+
+      { Emettre en JavaScript }
+      If IsTyped Then
+        EmitLine('var ' + CName + ' = ' + JSVal + ';')
+      Else
+        EmitLine('const ' + CName + ' = ' + JSVal + ';');
+    End;
+
+    { Consommer le point-virgule si present }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ';') Then
+      Inc(P);
+  End;
+End;
+
+{ ============================================================
+  VARIABLES ET AFFECTATIONS [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseVarSection : parser une section VAR --------------- }
+{ VAR nom1, nom2 : Type; nom3 : Type;                           }
+{ Genere : var nom1 = default; var nom2 = default; en JS.       }
+{ Support complet Array/Record/Set/initialisation.     }
+Procedure ParseVarSection(Var P : Integer);
+Var
+  VarNames : Array[0..63] Of TString;
+  VarCount : Integer;
+  TypeName : TString;
+  TIdx     : Integer;
+  DefVal   : TString;
+  I        : Integer;
+  Idx      : Integer;
+  L        : TString;
+  Depth    : Integer;
+Begin
+  If P >= TokenCount Then Exit;
+  If (TokenPool[P].Kind <> TK_KEYWORD) Or
+     (StrLowerCase(TokenPool[P].Val) <> 'var') Then Exit;
+  Inc(P); { consommer VAR }
+
+  { Boucle sur les declarations de variables }
+  While P < TokenCount Do
+  Begin
+    { Verifier si on est sur un autre mot-cle de section ou BEGIN }
+    If TokenPool[P].Kind = TK_KEYWORD Then
+    Begin
+      L := StrLowerCase(TokenPool[P].Val);
+      If (L = 'const') Or (L = 'var') Or (L = 'type') Or
+         (L = 'label') Or (L = 'begin') Or
+         (L = 'procedure') Or (L = 'function') Or
+         (L = 'constructor') Or (L = 'destructor') Then
+        Exit;
+    End;
+
+    { Attendre un identificateur }
+    If TokenPool[P].Kind <> TK_IDENT Then
+    Begin
+      Inc(P);
+      Continue;
+    End;
+
+    { Collecter les noms de variables separes par des virgules }
+    VarCount := 0;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Do
+    Begin
+      If VarCount < 64 Then
+      Begin
+        VarNames[VarCount] := TokenPool[P].Val;
+        Inc(VarCount);
+      End;
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ',') Then
+        Inc(P)
+      Else
+        Break;
+    End;
+
+    { Attendre : Type }
+    TIdx := -1;
+    DefVal := 'null';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ':') Then
+    Begin
+      Inc(P); { consommer : }
+      If P < TokenCount Then
+      Begin
+        L := StrLowerCase(TokenPool[P].Val);
+
+        { Array [...] of Type }
+        If (TokenPool[P].Kind = TK_KEYWORD) And (L = 'array') Then
+        Begin
+          DefVal := '[]';
+          Inc(P);
+          { Parser [lo..hi] et enregistrer les bornes }
+          If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+             (TokenPool[P].Val = '[') Then
+          Begin
+            Inc(P); { consommer [ }
+            { Lire la borne inferieure }
+            If (P < TokenCount) And (TokenPool[P].Kind = TK_INTEGER) Then
+            Begin
+              TIdx := TypeAdd(TYK_ARRAY, '', 0, 'Array', '[]');
+              If TIdx >= 0 Then
+              Begin
+                TypeTab[TIdx].Low := TokenPool[P].IntVal;
+                Inc(P);
+                { Sauter .. }
+                If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+                   (TokenPool[P].Val = '..') Then
+                  Inc(P);
+                { Lire la borne superieure }
+                If (P < TokenCount) And (TokenPool[P].Kind = TK_INTEGER) Then
+                Begin
+                  TypeTab[TIdx].High := TokenPool[P].IntVal;
+                  Inc(P);
+                End;
+              End
+              Else
+              Begin
+                While (P < TokenCount) And
+                      Not ((TokenPool[P].Kind = TK_PUNCT) And
+                           (TokenPool[P].Val = ']')) Do
+                  Inc(P);
+              End;
+            End
+            Else
+            Begin
+              { Bornes non entier-litteral, sauter tout }
+              TIdx := TypeAdd(TYK_ARRAY, '', 0, 'Array', '[]');
+              While (P < TokenCount) And
+                    Not ((TokenPool[P].Kind = TK_PUNCT) And
+                         (TokenPool[P].Val = ']')) Do
+                Inc(P);
+            End;
+            If (P < TokenCount) And (TokenPool[P].Val = ']') Then
+              Inc(P); { consommer ] }
+          End
+          Else
+            TIdx := TypeAdd(TYK_ARRAY, '', 0, 'Array', '[]');
+          { Consommer OF }
+          If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+             (StrLowerCase(TokenPool[P].Val) = 'of') Then
+            Inc(P);
+          { Consommer le nom du type element }
+          If (P < TokenCount) And
+             ((TokenPool[P].Kind = TK_IDENT) Or
+              (TokenPool[P].Kind = TK_KEYWORD)) Then
+            Inc(P);
+        End
+        { Record ... end }
+        Else If (TokenPool[P].Kind = TK_KEYWORD) And (L = 'record') Then
+        Begin
+          DefVal := '{}';
+          Depth := 1;
+          Inc(P);
+          While (P < TokenCount) And (Depth > 0) Do
+          Begin
+            If (TokenPool[P].Kind = TK_KEYWORD) And
+               ((StrLowerCase(TokenPool[P].Val) = 'record') Or
+                (StrLowerCase(TokenPool[P].Val) = 'object')) Then
+              Inc(Depth)
+            Else If (TokenPool[P].Kind = TK_KEYWORD) And
+                    (StrLowerCase(TokenPool[P].Val) = 'end') Then
+              Dec(Depth);
+            Inc(P);
+          End;
+        End
+        { Set of Type }
+        Else If (TokenPool[P].Kind = TK_KEYWORD) And (L = 'set') Then
+        Begin
+          DefVal := '[]';
+          Inc(P);
+          { Consommer OF }
+          If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+             (StrLowerCase(TokenPool[P].Val) = 'of') Then
+            Inc(P);
+          { Consommer le nom du type element }
+          If (P < TokenCount) And
+             ((TokenPool[P].Kind = TK_IDENT) Or
+              (TokenPool[P].Kind = TK_KEYWORD)) Then
+            Inc(P);
+        End
+        { String[N] }
+        Else If (TokenPool[P].Kind = TK_KEYWORD) And (L = 'string') Then
+        Begin
+          TIdx := TypeFindByName('String');
+          DefVal := TypeDefaultJS(TIdx);
+          Inc(P);
+          If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+             (TokenPool[P].Val = '[') Then
+          Begin
+            While (P < TokenCount) And
+                  Not ((TokenPool[P].Kind = TK_PUNCT) And
+                       (TokenPool[P].Val = ']')) Do
+              Inc(P);
+            If P < TokenCount Then Inc(P);
+          End;
+        End
+        { Type simple (Integer, Boolean, etc.) ou type utilisateur }
+        Else If (TokenPool[P].Kind = TK_IDENT) Or
+                (TokenPool[P].Kind = TK_KEYWORD) Then
+        Begin
+          TypeName := TokenPool[P].Val;
+          TIdx := TypeFindByName(TypeName);
+          If (TIdx >= 0) And
+             ((TypeTab[TIdx].Kind = TYK_RECORD) Or
+              (TypeTab[TIdx].Kind = TYK_ARRAY)) Then
+            DefVal := '_TPT_' + TypeTab[TIdx].Name + '()'
+          Else
+            DefVal := TypeDefaultJS(TIdx);
+          Inc(P);
+        End;
+      End;
+    End;
+
+    { Emettre les variables en JavaScript }
+    For I := 0 To VarCount - 1 Do
+    Begin
+      Idx := SymAdd(VarNames[I], SK_VAR, TIdx);
+      EmitLine('var ' + VarNames[I] + ' = ' + DefVal + ';');
+    End;
+
+    { Consommer le point-virgule si present }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ';') Then
+      Inc(P);
+  End;
+End;
+
+{ ============================================================
+  TYPES STRUCTURES : ARRAY / RECORD / SET / STRING [IMPLEMENTE]
+  ============================================================ }
+{ Types structures Turbo Pascal -> JavaScript.                   }
+{ ARRAY[lo..hi] OF T -> fonction constructeur retournant Array   }
+{ RECORD champ1: T1; ... END -> fonction constructeur retournant }
+{ un objet litteral JS avec les champs et valeurs par defaut     }
+{ SET OF T -> new Set() en JS                                    }
+{ STRING[N] -> alias string en JS                                }
+{ Type alias (T = ExistingType) -> lien vers le type de base     }
+
+{ ---- ParseTypeArray : parser ARRAY[lo..hi] OF T -----------  }
+{ P pointe sur le token suivant ARRAY.                           }
+{ Retourne l index du type cree dans TypeTab.                    }
+Function ParseTypeArray(Var P : Integer; Const TName : TString) : Integer;
+Var
+  TIdx      : Integer;
+  LoVal     : LongInt;
+  HiVal     : LongInt;
+  ElemType  : TString;
+  ElemTIdx  : Integer;
+  ElemDef   : TString;
+  ArrSize   : Integer;
+  JSBody    : TString;
+Begin
+  LoVal := 0;
+  HiVal := -1;
+  ElemType := '';
+  ElemTIdx := -1;
+
+  { Parser [lo..hi] }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = '[') Then
+  Begin
+    Inc(P); { consommer [ }
+    { Lire la borne inferieure }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_INTEGER) Then
+    Begin
+      LoVal := TokenPool[P].IntVal;
+      Inc(P);
+    End
+    Else If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+    Begin
+      { Borne constante (ex: 1..MAX) }
+      LoVal := ConstFindIntVal(TokenPool[P].Val, 0);
+      Inc(P);
+    End;
+    { Sauter .. }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '..') Then
+      Inc(P);
+    { Lire la borne superieure }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_INTEGER) Then
+    Begin
+      HiVal := TokenPool[P].IntVal;
+      Inc(P);
+    End
+    Else If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+    Begin
+      HiVal := ConstFindIntVal(TokenPool[P].Val, 0);
+      Inc(P);
+    End;
+    { Gerer les dimensions multiples (virgule) - sauter les extras }
+    While (P < TokenCount) And
+          Not ((TokenPool[P].Kind = TK_PUNCT) And
+               (TokenPool[P].Val = ']')) Do
+      Inc(P);
+    If (P < TokenCount) And (TokenPool[P].Val = ']') Then
+      Inc(P); { consommer ] }
+  End;
+
+  { Consommer OF }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'of') Then
+    Inc(P);
+
+  { Lire le type des elements }
+  If (P < TokenCount) And
+     ((TokenPool[P].Kind = TK_IDENT) Or
+      (TokenPool[P].Kind = TK_KEYWORD)) Then
+  Begin
+    ElemType := TokenPool[P].Val;
+    ElemTIdx := TypeFindByName(ElemType);
+    Inc(P);
+  End;
+
+  { Calculer la taille et la valeur par defaut }
+  ArrSize := 0;
+  If HiVal >= LoVal Then
+    ArrSize := HiVal - LoVal + 1;
+  ElemDef := TypeDefaultJS(ElemTIdx);
+  If ElemDef = '' Then ElemDef := '0';
+
+  { Creer le type dans la table }
+  JSBody := 'new Array(' + IntToStr_(ArrSize) + ').fill(' + ElemDef + ')';
+  TIdx := TypeAdd(TYK_ARRAY, TName, ArrSize * 2, 'Array', JSBody);
+  If TIdx >= 0 Then
+  Begin
+    TypeTab[TIdx].Low := LoVal;
+    TypeTab[TIdx].High := HiVal;
+    TypeTab[TIdx].BaseTypeIdx := ElemTIdx;
+    TypeTab[TIdx].ElemCount := ArrSize;
+  End;
+
+  { Emettre la fonction constructeur JS }
+  EmitLine('function _TPT_' + TName + '() {');
+  IndentPush;
+  EmitLine('return ' + JSBody + ';');
+  IndentPop;
+  EmitLine('}');
+
+  ParseTypeArray := TIdx;
+End;
+
+{ ---- ParseTypeRecord : parser RECORD ... END --------------- }
+{ P pointe sur le token suivant RECORD.                          }
+{ Retourne l index du type cree dans TypeTab.                    }
+Function ParseTypeRecord(Var P : Integer; Const TName : TString) : Integer;
+Var
+  TIdx      : Integer;
+  FNames    : Array[0..MAX_FIELD - 1] Of TString;
+  FTypes    : Array[0..MAX_FIELD - 1] Of Integer;
+  FCount    : Integer;
+  FName     : TString;
+  FTypeName : TString;
+  FTIdx     : Integer;
+  Depth     : Integer;
+  I         : Integer;
+  JSFields  : TString;
+  L         : TString;
+Begin
+  FCount := 0;
+  Depth := 1;
+
+  { Parser les champs du record }
+  While (P < TokenCount) And (Depth > 0) Do
+  Begin
+    { Verifier end }
+    If (TokenPool[P].Kind = TK_KEYWORD) And
+       (StrLowerCase(TokenPool[P].Val) = 'end') Then
+    Begin
+      Dec(Depth);
+      Inc(P);
+      Continue;
+    End;
+    { Verifier record/object imbrique }
+    If (TokenPool[P].Kind = TK_KEYWORD) And
+       ((StrLowerCase(TokenPool[P].Val) = 'record') Or
+        (StrLowerCase(TokenPool[P].Val) = 'object')) Then
+    Begin
+      Inc(Depth);
+      Inc(P);
+      Continue;
+    End;
+    { Sauter CASE (variantes de record) }
+    If (TokenPool[P].Kind = TK_KEYWORD) And
+       (StrLowerCase(TokenPool[P].Val) = 'case') Then
+    Begin
+      { Sauter la partie variante jusqu au end }
+      While (P < TokenCount) And (Depth > 0) Do
+      Begin
+        If (TokenPool[P].Kind = TK_KEYWORD) And
+           (StrLowerCase(TokenPool[P].Val) = 'end') Then
+          Dec(Depth);
+        Inc(P);
+      End;
+      Continue;
+    End;
+
+    { Collecter les noms de champs (nom1, nom2 : Type) }
+    If (TokenPool[P].Kind = TK_IDENT) And (Depth = 1) Then
+    Begin
+      { Verifier que c est bien un champ (suivi de , ou :) }
+      If (P + 1 < TokenCount) And
+         ((TokenPool[P + 1].Val = ',') Or (TokenPool[P + 1].Val = ':')) Then
+      Begin
+        { Collecter les noms separes par des virgules }
+        While (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Do
+        Begin
+          If FCount < MAX_FIELD Then
+          Begin
+            FNames[FCount] := TokenPool[P].Val;
+            FTypes[FCount] := -1;
+            Inc(FCount);
+          End;
+          Inc(P);
+          If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+             (TokenPool[P].Val = ',') Then
+            Inc(P)
+          Else
+            Break;
+        End;
+
+        { Attendre : Type }
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+           (TokenPool[P].Val = ':') Then
+        Begin
+          Inc(P); { consommer : }
+          FTIdx := -1;
+          If (P < TokenCount) Then
+          Begin
+            L := StrLowerCase(TokenPool[P].Val);
+            { Array inline }
+            If (TokenPool[P].Kind = TK_KEYWORD) And (L = 'array') Then
+            Begin
+              FTIdx := TypeFindByName('Integer');
+              Inc(P);
+              { Sauter [lo..hi] }
+              If (P < TokenCount) And (TokenPool[P].Val = '[') Then
+              Begin
+                While (P < TokenCount) And
+                      Not ((TokenPool[P].Kind = TK_PUNCT) And
+                           (TokenPool[P].Val = ']')) Do
+                  Inc(P);
+                If P < TokenCount Then Inc(P);
+              End;
+              { Sauter OF type }
+              If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+                 (StrLowerCase(TokenPool[P].Val) = 'of') Then
+                Inc(P);
+              If (P < TokenCount) And
+                 ((TokenPool[P].Kind = TK_IDENT) Or
+                  (TokenPool[P].Kind = TK_KEYWORD)) Then
+                Inc(P);
+            End
+            { String[N] }
+            Else If (TokenPool[P].Kind = TK_KEYWORD) And (L = 'string') Then
+            Begin
+              FTIdx := TypeFindByName('String');
+              Inc(P);
+              If (P < TokenCount) And (TokenPool[P].Val = '[') Then
+              Begin
+                While (P < TokenCount) And
+                      Not ((TokenPool[P].Val = ']')) Do
+                  Inc(P);
+                If P < TokenCount Then Inc(P);
+              End;
+            End
+            { Type simple }
+            Else If (TokenPool[P].Kind = TK_IDENT) Or
+                    (TokenPool[P].Kind = TK_KEYWORD) Then
+            Begin
+              FTypeName := TokenPool[P].Val;
+              FTIdx := TypeFindByName(FTypeName);
+              Inc(P);
+            End;
+          End;
+          { Mettre a jour les champs collectes }
+          For I := FCount - 1 DownTo 0 Do
+          Begin
+            If FTypes[I] = -1 Then
+              FTypes[I] := FTIdx;
+          End;
+        End;
+
+        { Consommer ; }
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+           (TokenPool[P].Val = ';') Then
+          Inc(P);
+      End
+      Else
+        Inc(P);
+    End
+    Else
+      Inc(P);
+  End;
+
+  { Creer le type dans la table }
+  TIdx := TypeAdd(TYK_RECORD, TName, FCount * 2, 'object', '{}');
+  If TIdx >= 0 Then
+  Begin
+    For I := 0 To FCount - 1 Do
+      TypeAddField(TIdx, FNames[I], FTypes[I]);
+  End;
+
+  { Construire la valeur par defaut JS }
+  JSFields := '';
+  For I := 0 To FCount - 1 Do
+  Begin
+    If I > 0 Then JSFields := JSFields + ', ';
+    JSFields := JSFields + FNames[I] + ': ' + TypeDefaultJS(FTypes[I]);
+  End;
+
+  { Mettre a jour le JSDefault du type }
+  If TIdx >= 0 Then
+    TypeTab[TIdx].JSDefault := '{' + JSFields + '}';
+
+  { Emettre la fonction constructeur JS }
+  EmitLine('function _TPT_' + TName + '() {');
+  IndentPush;
+  EmitLine('return {' + JSFields + '};');
+  IndentPop;
+  EmitLine('}');
+
+  ParseTypeRecord := TIdx;
+End;
+
+{ ---- ParseTypeSet : parser SET OF T ------------------------ }
+{ P pointe sur le token suivant SET.                             }
+{ Retourne l index du type cree dans TypeTab.                    }
+Function ParseTypeSet(Var P : Integer; Const TName : TString) : Integer;
+Var
+  TIdx     : Integer;
+  ElemType : TString;
+  ElemTIdx : Integer;
+Begin
+  ElemType := '';
+  ElemTIdx := -1;
+
+  { Consommer OF }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'of') Then
+    Inc(P);
+
+  { Lire le type des elements }
+  If (P < TokenCount) And
+     ((TokenPool[P].Kind = TK_IDENT) Or
+      (TokenPool[P].Kind = TK_KEYWORD)) Then
+  Begin
+    ElemType := TokenPool[P].Val;
+    ElemTIdx := TypeFindByName(ElemType);
+    Inc(P);
+    { Gerer sous-intervalle inline : lo..hi }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '..') Then
+    Begin
+      Inc(P);
+      If P < TokenCount Then Inc(P);
+    End;
+  End;
+
+  { Creer le type dans la table }
+  TIdx := TypeAdd(TYK_SET, TName, 32, 'Set', 'new Set()');
+  If TIdx >= 0 Then
+    TypeTab[TIdx].BaseTypeIdx := ElemTIdx;
+
+  { Emettre un commentaire JS }
+  EmitComment('type ' + TName + ' = Set of ' + ElemType);
+
+  ParseTypeSet := TIdx;
+End;
+
+{ ---- ParseTypeString : parser STRING[N] -------------------- }
+{ P pointe sur le token suivant STRING.                          }
+{ Retourne l index du type cree dans TypeTab.                    }
+Function ParseTypeString(Var P : Integer; Const TName : TString) : Integer;
+Var
+  TIdx   : Integer;
+  MaxLen : Integer;
+Begin
+  MaxLen := 255;
+
+  { Parser [N] optionnel }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = '[') Then
+  Begin
+    Inc(P); { consommer [ }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_INTEGER) Then
+    Begin
+      MaxLen := TokenPool[P].IntVal;
+      Inc(P);
+    End
+    Else If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+    Begin
+      MaxLen := ConstFindIntVal(TokenPool[P].Val, 255);
+      Inc(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ']') Then
+      Inc(P); { consommer ] }
+  End;
+
+  { Creer le type dans la table }
+  TIdx := TypeAdd(TYK_STRING, TName, MaxLen + 1, 'string', '""');
+
+  { Emettre un commentaire JS }
+  EmitComment('type ' + TName + ' = String[' + IntToStr_(MaxLen) + ']');
+
+  ParseTypeString := TIdx;
+End;
+
+{ ============================================================
+  OBJETS ET HERITAGE (OBJECT) [IMPLEMENTE]
+  ============================================================ }
+{ Types OBJECT Turbo Pascal -> classes JavaScript ES6.           }
+{ TYPE TNom = OBJECT [(TParent)]                                 }
+{   champ1: T1;                                                  }
+{   CONSTRUCTOR Init(params);                                    }
+{   DESTRUCTOR Done; VIRTUAL;                                    }
+{   PROCEDURE Method(params); VIRTUAL;                           }
+{   FUNCTION Func(params): T; VIRTUAL;                           }
+{ END;                                                           }
+(* -> class TNom [extends TParent] { constructor() ... }          *)
+(* INHERITED -> super.method() en JS                              *)
+(* NEW(Ptr, Init(args)) -> Ptr = new TNom(args)                  *)
+(* DISPOSE(Ptr, Done) -> Ptr.Done(); Ptr = null                  *)
+
+{ ---- ParseTypeObject : parser OBJECT [(TParent)] ... END ---- }
+{ P pointe sur le token suivant OBJECT.                          }
+{ Retourne l index du type cree dans TypeTab.                    }
+Function ParseTypeObject(Var P : Integer; Const TName : TString) : Integer;
+Var
+  TIdx       : Integer;
+  ParentName : TString;
+  FNames     : Array[0..MAX_FIELD - 1] Of TString;
+  FTypes     : Array[0..MAX_FIELD - 1] Of Integer;
+  FCount     : Integer;
+  MNames     : Array[0..MAX_FIELD - 1] Of TString;
+  MKinds     : Array[0..MAX_FIELD - 1] Of TString;
+  MParams    : Array[0..MAX_FIELD - 1] Of TString;
+  MRetTypes  : Array[0..MAX_FIELD - 1] Of TString;
+  MCount     : Integer;
+  Depth      : Integer;
+  L          : TString;
+  FName      : TString;
+  FTIdx      : Integer;
+  FTypeName  : TString;
+  MethName   : TString;
+  MethKind   : TString;
+  ParamStr_  : TString;
+  RetType    : TString;
+  I          : Integer;
+  JSFields   : TString;
+  InPrivate  : Boolean;
+Begin
+  ParentName := '';
+  FCount := 0;
+  MCount := 0;
+  InPrivate := False;
+
+  { Parser le parent optionnel : OBJECT(TParent) }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = '(') Then
+  Begin
+    Inc(P); { consommer ( }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+    Begin
+      ParentName := TokenPool[P].Val;
+      Inc(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ')') Then
+      Inc(P); { consommer ) }
+  End;
+
+  { Parser les membres de l objet jusqu au END }
+  Depth := 1;
+  While (P < TokenCount) And (Depth > 0) Do
+  Begin
+    L := StrLowerCase(TokenPool[P].Val);
+
+    { Verifier END }
+    If (TokenPool[P].Kind = TK_KEYWORD) And (L = 'end') Then
+    Begin
+      Dec(Depth);
+      Inc(P);
+      Continue;
+    End;
+
+    { Verifier PRIVATE }
+    If ((TokenPool[P].Kind = TK_DIRECTIVE) Or
+        (TokenPool[P].Kind = TK_IDENT)) And (L = 'private') Then
+    Begin
+      InPrivate := True;
+      Inc(P);
+      Continue;
+    End;
+    { Verifier PUBLIC }
+    If ((TokenPool[P].Kind = TK_DIRECTIVE) Or
+        (TokenPool[P].Kind = TK_IDENT)) And (L = 'public') Then
+    Begin
+      InPrivate := False;
+      Inc(P);
+      Continue;
+    End;
+
+    { CONSTRUCTOR / DESTRUCTOR / PROCEDURE / FUNCTION }
+    If (TokenPool[P].Kind = TK_KEYWORD) And
+       ((L = 'constructor') Or (L = 'destructor') Or
+        (L = 'procedure') Or (L = 'function')) Then
+    Begin
+      MethKind := L;
+      Inc(P);
+      { Lire le nom de la methode }
+      MethName := '';
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+      Begin
+        MethName := TokenPool[P].Val;
+        Inc(P);
+      End;
+      { Lire les parametres optionnels }
+      ParamStr_ := '';
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = '(') Then
+      Begin
+        Inc(P); { consommer ( }
+        While (P < TokenCount) And
+              Not ((TokenPool[P].Kind = TK_PUNCT) And
+                   (TokenPool[P].Val = ')')) Do
+        Begin
+          { Sauter les qualificateurs VAR / CONST }
+          If (TokenPool[P].Kind = TK_KEYWORD) And
+             ((StrLowerCase(TokenPool[P].Val) = 'var') Or
+              (StrLowerCase(TokenPool[P].Val) = 'const')) Then
+          Begin
+            Inc(P);
+            Continue;
+          End;
+          { Collecter les noms de parametres (ident avant , ou :) }
+          If (TokenPool[P].Kind = TK_IDENT) And
+             (P + 1 < TokenCount) And
+             ((TokenPool[P + 1].Val = ',') Or
+              (TokenPool[P + 1].Val = ':') Or
+              (TokenPool[P + 1].Val = ')')) Then
+          Begin
+            If ParamStr_ <> '' Then ParamStr_ := ParamStr_ + ', ';
+            ParamStr_ := ParamStr_ + TokenPool[P].Val;
+            Inc(P);
+            { Consommer , si present }
+            If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+               (TokenPool[P].Val = ',') Then
+              Inc(P);
+          End
+          { Sauter : Type et ; separateur }
+          Else If (TokenPool[P].Kind = TK_PUNCT) And
+                  (TokenPool[P].Val = ':') Then
+          Begin
+            Inc(P); { consommer : }
+            { Sauter le nom du type }
+            If (P < TokenCount) And
+               ((TokenPool[P].Kind = TK_IDENT) Or
+                (TokenPool[P].Kind = TK_KEYWORD)) Then
+              Inc(P);
+          End
+          Else If (TokenPool[P].Kind = TK_PUNCT) And
+                  (TokenPool[P].Val = ';') Then
+            Inc(P)
+          Else
+            Inc(P);
+        End;
+        If (P < TokenCount) And (TokenPool[P].Val = ')') Then
+          Inc(P); { consommer ) }
+      End;
+      { Lire le type de retour pour FUNCTION }
+      RetType := '';
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ':') Then
+      Begin
+        Inc(P); { consommer : }
+        If (P < TokenCount) And
+           ((TokenPool[P].Kind = TK_IDENT) Or
+            (TokenPool[P].Kind = TK_KEYWORD)) Then
+        Begin
+          RetType := TokenPool[P].Val;
+          Inc(P);
+        End;
+      End;
+      { Consommer ; }
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ';') Then
+        Inc(P);
+      { Consommer VIRTUAL; si present (TK_DIRECTIVE ou TK_IDENT) }
+      If (P < TokenCount) And
+         ((TokenPool[P].Kind = TK_DIRECTIVE) Or
+          (TokenPool[P].Kind = TK_IDENT)) And
+         (StrLowerCase(TokenPool[P].Val) = 'virtual') Then
+      Begin
+        Inc(P);
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+           (TokenPool[P].Val = ';') Then
+          Inc(P);
+      End;
+      { Consommer ABSTRACT; si present }
+      If (P < TokenCount) And
+         ((TokenPool[P].Kind = TK_DIRECTIVE) Or
+          (TokenPool[P].Kind = TK_IDENT)) And
+         (StrLowerCase(TokenPool[P].Val) = 'abstract') Then
+      Begin
+        Inc(P);
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+           (TokenPool[P].Val = ';') Then
+          Inc(P);
+      End;
+      { Enregistrer la methode }
+      If MCount < MAX_FIELD Then
+      Begin
+        MNames[MCount] := MethName;
+        MKinds[MCount] := MethKind;
+        MParams[MCount] := ParamStr_;
+        MRetTypes[MCount] := RetType;
+        Inc(MCount);
+      End;
+      Continue;
+    End;
+
+    { Champs de donnees : nom1, nom2 : Type }
+    If (TokenPool[P].Kind = TK_IDENT) And (Depth = 1) Then
+    Begin
+      If (P + 1 < TokenCount) And
+         ((TokenPool[P + 1].Val = ',') Or (TokenPool[P + 1].Val = ':')) Then
+      Begin
+        { Collecter les noms }
+        While (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Do
+        Begin
+          If FCount < MAX_FIELD Then
+          Begin
+            FNames[FCount] := TokenPool[P].Val;
+            FTypes[FCount] := -1;
+            Inc(FCount);
+          End;
+          Inc(P);
+          If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+             (TokenPool[P].Val = ',') Then
+            Inc(P)
+          Else
+            Break;
+        End;
+        { Attendre : Type }
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+           (TokenPool[P].Val = ':') Then
+        Begin
+          Inc(P); { consommer : }
+          FTIdx := -1;
+          If (P < TokenCount) And
+             ((TokenPool[P].Kind = TK_IDENT) Or
+              (TokenPool[P].Kind = TK_KEYWORD)) Then
+          Begin
+            FTypeName := TokenPool[P].Val;
+            FTIdx := TypeFindByName(FTypeName);
+            Inc(P);
+          End;
+          For I := FCount - 1 DownTo 0 Do
+          Begin
+            If FTypes[I] = -1 Then
+              FTypes[I] := FTIdx;
+          End;
+        End;
+        { Consommer ; }
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+           (TokenPool[P].Val = ';') Then
+          Inc(P);
+        Continue;
+      End;
+    End;
+
+    { Token non reconnu : avancer }
+    Inc(P);
+  End;
+
+  { Creer le type dans la table }
+  TIdx := TypeAdd(TYK_OBJECT, TName, FCount * 2, 'class', 'null');
+  If TIdx >= 0 Then
+  Begin
+    For I := 0 To FCount - 1 Do
+      TypeAddField(TIdx, FNames[I], FTypes[I]);
+    If ParentName <> '' Then
+      TypeTab[TIdx].BaseTypeIdx := TypeFindByName(ParentName);
+  End;
+
+  { Emettre la classe JavaScript }
+  If ParentName <> '' Then
+    EmitLine('class ' + TName + ' extends ' + ParentName + ' {')
+  Else
+    EmitLine('class ' + TName + ' {');
+  IndentPush;
+
+  { Emettre un constructeur par defaut si aucun constructor declare }
+  { Ce constructeur initialise les champs avec les valeurs par defaut }
+  JSFields := '';
+  For I := 0 To FCount - 1 Do
+  Begin
+    If I > 0 Then JSFields := JSFields + ' ';
+    JSFields := JSFields + 'this.' + FNames[I] + ' = ' +
+                TypeDefaultJS(FTypes[I]) + ';';
+  End;
+
+  { Verifier si un constructeur est declare }
+  FTIdx := -1;
+  For I := 0 To MCount - 1 Do
+  Begin
+    If MKinds[I] = 'constructor' Then
+    Begin
+      FTIdx := I;
+      Break;
+    End;
+  End;
+
+  If FTIdx < 0 Then
+  Begin
+    { Pas de constructeur declare : generer un constructeur par defaut }
+    EmitLine('constructor() {');
+    IndentPush;
+    If ParentName <> '' Then
+      EmitLine('super();');
+    For I := 0 To FCount - 1 Do
+      EmitLine('this.' + FNames[I] + ' = ' + TypeDefaultJS(FTypes[I]) + ';');
+    IndentPop;
+    EmitLine('}');
+  End;
+
+  { Emettre les stubs de methodes (le corps sera genere dans           }
+  { les implementations TypeName.MethodName)                            }
+  For I := 0 To MCount - 1 Do
+  Begin
+    If MKinds[I] = 'constructor' Then
+    Begin
+      { Le constructeur sera emis lors de l implementation }
+      EmitComment('constructor ' + MNames[I] +
+                  '(' + MParams[I] + ') - implementation attendue');
+    End
+    Else If MKinds[I] = 'destructor' Then
+    Begin
+      EmitComment('destructor ' + MNames[I] + ' - implementation attendue');
+    End
+    Else If MKinds[I] = 'function' Then
+    Begin
+      EmitComment('method ' + MNames[I] +
+                  '(' + MParams[I] + '): ' + MRetTypes[I] +
+                  ' - implementation attendue');
+    End
+    Else
+    Begin
+      EmitComment('method ' + MNames[I] +
+                  '(' + MParams[I] + ') - implementation attendue');
+    End;
+    { Enregistrer la methode dans la table des symboles }
+    SymAdd(TName + '.' + MNames[I], SK_METHOD, TIdx);
+  End;
+
+  IndentPop;
+  EmitLine('}');
+  EmitBlankLine;
+
+  ParseTypeObject := TIdx;
+End;
+
+
+{ Forward declarations pour methodes d objets }
+Procedure ParseMethodImpl(Var P : Integer; IsFunc : Boolean); Forward;
+Function IsMethodImpl(P : Integer) : Boolean; Forward;
+
+{ ---- ParseTypeSection : parser une section TYPE ------------- }
+{ TYPE nom = definition;                                         }
+{ Genere du code JS pour les types structures.                   }
+Procedure ParseTypeSection(Var P : Integer);
+Var
+  TName    : TString;
+  L        : TString;
+  TIdx     : Integer;
+  Depth    : Integer;
+  BaseTIdx : Integer;
+Begin
+  If P >= TokenCount Then Exit;
+  If (TokenPool[P].Kind <> TK_KEYWORD) Or
+     (StrLowerCase(TokenPool[P].Val) <> 'type') Then Exit;
+  Inc(P); { consommer TYPE }
+
+  While P < TokenCount Do
+  Begin
+    { Verifier si on est sur un autre mot-cle de section ou BEGIN }
+    If TokenPool[P].Kind = TK_KEYWORD Then
+    Begin
+      L := StrLowerCase(TokenPool[P].Val);
+      If (L = 'const') Or (L = 'var') Or (L = 'type') Or
+         (L = 'label') Or (L = 'begin') Or
+         (L = 'procedure') Or (L = 'function') Or
+         (L = 'constructor') Or (L = 'destructor') Then
+        Exit;
+    End;
+
+    { Attendre un identificateur }
+    If TokenPool[P].Kind <> TK_IDENT Then
+    Begin
+      Inc(P);
+      Continue;
+    End;
+
+    TName := TokenPool[P].Val;
+    Inc(P);
+
+    { Attendre = }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_OP) And
+       (TokenPool[P].Val = '=') Then
+    Begin
+      Inc(P); { consommer = }
+
+      If P >= TokenCount Then Continue;
+      L := StrLowerCase(TokenPool[P].Val);
+
+      { ARRAY[lo..hi] OF T }
+      If (TokenPool[P].Kind = TK_KEYWORD) And (L = 'array') Then
+      Begin
+        Inc(P); { consommer ARRAY }
+        TIdx := ParseTypeArray(P, TName);
+        SymAdd(TName, SK_TYPE, TIdx);
+      End
+      { RECORD ... END }
+      Else If (TokenPool[P].Kind = TK_KEYWORD) And (L = 'record') Then
+      Begin
+        Inc(P); { consommer RECORD }
+        TIdx := ParseTypeRecord(P, TName);
+        SymAdd(TName, SK_TYPE, TIdx);
+      End
+      { SET OF T }
+      Else If (TokenPool[P].Kind = TK_KEYWORD) And (L = 'set') Then
+      Begin
+        Inc(P); { consommer SET }
+        TIdx := ParseTypeSet(P, TName);
+        SymAdd(TName, SK_TYPE, TIdx);
+      End
+      { STRING[N] }
+      Else If (TokenPool[P].Kind = TK_KEYWORD) And (L = 'string') Then
+      Begin
+        Inc(P); { consommer STRING }
+        TIdx := ParseTypeString(P, TName);
+        SymAdd(TName, SK_TYPE, TIdx);
+      End
+      { OBJECT [(TParent)] ... END }
+      Else If (TokenPool[P].Kind = TK_KEYWORD) And (L = 'object') Then
+      Begin
+        Inc(P); { consommer OBJECT }
+        TIdx := ParseTypeObject(P, TName);
+        SymAdd(TName, SK_TYPE, TIdx);
+      End
+      { ^BaseType (pointeur) }
+      Else If (TokenPool[P].Kind = TK_OP) And (TokenPool[P].Val = '^') Then
+      Begin
+        Inc(P); { consommer ^ }
+        If (P < TokenCount) And
+           ((TokenPool[P].Kind = TK_IDENT) Or
+            (TokenPool[P].Kind = TK_KEYWORD)) Then
+        Begin
+          BaseTIdx := TypeFindByName(TokenPool[P].Val);
+          Inc(P);
+        End
+        Else
+          BaseTIdx := -1;
+        TIdx := TypeAdd(TYK_POINTER, TName, 4, 'object', 'null');
+        If TIdx >= 0 Then
+          TypeTab[TIdx].BaseTypeIdx := BaseTIdx;
+        SymAdd(TName, SK_TYPE, TIdx);
+        EmitComment('type ' + TName + ' = ^...');
+      End
+      { Alias de type simple : T = ExistingType }
+      Else If (TokenPool[P].Kind = TK_IDENT) Or
+              (TokenPool[P].Kind = TK_KEYWORD) Then
+      Begin
+        BaseTIdx := TypeFindByName(TokenPool[P].Val);
+        Inc(P);
+        If BaseTIdx >= 0 Then
+        Begin
+          TIdx := TypeAdd(TypeTab[BaseTIdx].Kind, TName,
+                         TypeTab[BaseTIdx].Size,
+                         TypeTab[BaseTIdx].JSType,
+                         TypeTab[BaseTIdx].JSDefault);
+          SymAdd(TName, SK_TYPE, TIdx);
+          EmitComment('type ' + TName + ' = ' +
+                      TypeTab[BaseTIdx].Name);
+        End
+        Else
+        Begin
+          { Type inconnu, enregistrer comme alias generique }
+          TIdx := TypeAdd(TYK_INTEGER, TName, 2, 'any', 'null');
+          SymAdd(TName, SK_TYPE, TIdx);
+          EmitComment('type ' + TName + ' = ...');
+        End;
+      End
+      Else
+      Begin
+        { Definition non reconnue : sauter jusqu au ; }
+        SymAdd(TName, SK_TYPE, -1);
+        EmitComment('type ' + TName + ' = ...');
+        Depth := 0;
+        While P < TokenCount Do
+        Begin
+          If (TokenPool[P].Kind = TK_KEYWORD) And
+             ((StrLowerCase(TokenPool[P].Val) = 'record') Or
+              (StrLowerCase(TokenPool[P].Val) = 'object')) Then
+            Inc(Depth)
+          Else If (TokenPool[P].Kind = TK_KEYWORD) And
+                  (StrLowerCase(TokenPool[P].Val) = 'end') Then
+          Begin
+            If Depth > 0 Then Dec(Depth);
+          End;
+          If (Depth = 0) And (TokenPool[P].Kind = TK_PUNCT) And
+             (TokenPool[P].Val = ';') Then
+            Break;
+          Inc(P);
+        End;
+      End;
+
+      { Consommer ; final }
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ';') Then
+        Inc(P);
+    End
+    Else
+    Begin
+      { Pas de = : erreur de syntaxe, avancer jusqu au ; }
+      While (P < TokenCount) And
+            Not ((TokenPool[P].Kind = TK_PUNCT) And
+                 (TokenPool[P].Val = ';')) Do
+        Inc(P);
+      If P < TokenCount Then Inc(P);
+    End;
+  End;
+End;
+
+{ ---- ParseLabelSection : parser une section LABEL ----------- }
+{ LABEL label1, label2, ...;                                     }
+{ Enregistre les labels dans la table des symboles.              }
+Procedure ParseLabelSection(Var P : Integer);
+Var
+  LblName : TString;
+Begin
+  If P >= TokenCount Then Exit;
+  If (TokenPool[P].Kind <> TK_KEYWORD) Or
+     (StrLowerCase(TokenPool[P].Val) <> 'label') Then Exit;
+  Inc(P); { consommer LABEL }
+  EmitComment('label section');
+  { Parser les noms de labels separes par des virgules }
+  While (P < TokenCount) And
+        Not ((TokenPool[P].Kind = TK_PUNCT) And
+             (TokenPool[P].Val = ';')) Do
+  Begin
+    If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Continue;
+    End;
+    If (TokenPool[P].Kind = TK_IDENT) Or
+       (TokenPool[P].Kind = TK_INTEGER) Then
+    Begin
+      LblName := TokenPool[P].Val;
+      SymAdd(LblName, SK_LABEL, -1);
+      Inc(P);
+    End
+    Else
+      Inc(P);
+  End;
+  If P < TokenCount Then Inc(P);
+End;
+
+{ Forward declarations pour procedures et fonctions }
+Procedure ParseProcDecl(Var P : Integer); Forward;
+Procedure ParseFuncDecl(Var P : Integer); Forward;
+
+{ ---- ParseDeclSections : parser les sections de declaration - }
+{ Boucle sur CONST, TYPE, VAR, LABEL, PROCEDURE, FUNCTION.      }
+{ Plusieurs sections de chaque type autorisees.                  }
+Procedure ParseDeclSections(Var P : Integer);
+Var
+  L : TString;
+Begin
+  While P < TokenCount Do
+  Begin
+    If TokenPool[P].Kind <> TK_KEYWORD Then Exit;
+    L := StrLowerCase(TokenPool[P].Val);
+    If L = 'const' Then
+      ParseConstSection(P)
+    Else If L = 'var' Then
+      ParseVarSection(P)
+    Else If L = 'type' Then
+      ParseTypeSection(P)
+    Else If L = 'label' Then
+      ParseLabelSection(P)
+    Else If (L = 'procedure') Or (L = 'function') Or
+            (L = 'constructor') Or (L = 'destructor') Then
+    Begin
+      { Verifier si c est une implementation de methode }
+      If IsMethodImpl(P) Then
+        ParseMethodImpl(P, (L = 'function'))
+      Else If L = 'procedure' Then
+        ParseProcDecl(P)
+      Else If L = 'function' Then
+        ParseFuncDecl(P)
+      Else If L = 'constructor' Then
+        ParseMethodImpl(P, False)
+      Else If L = 'destructor' Then
+        ParseMethodImpl(P, False);
+    End
+    Else
+      Exit; { mot-cle non reconnu comme section de declaration }
+  End;
+End;
+
+{ ============================================================
+  ENTREES/SORTIES [IMPLEMENTE]
+  ============================================================ }
+{ Write/WriteLn avec formatage (expr:Width et expr:Width:Decimals). }
+{ Read/ReadLn avec generation de code JavaScript reel.              }
+{ Str avec formatage optionnel. Val avec code d erreur.             }
+
+{ ---- ParseWriteArg : parser un argument de Write/WriteLn ----- }
+{ Gere expr, expr:Width, et expr:Width:Decimals.                   }
+{ Retourne la representation JS formatee de l argument.            }
+Function ParseWriteArg(Var P : Integer) : TString;
+Var
+  Expr   : TString;
+  Width  : TString;
+  Decs   : TString;
+Begin
+  Expr := ParseExpr(P);
+  Width := '';
+  Decs := '';
+
+  { Verifier si un format :Width suit }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = ':') Then
+  Begin
+    Inc(P); { consommer : }
+    Width := ParseExpr(P);
+
+    { Verifier si :Decimals suit }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ':') Then
+    Begin
+      Inc(P); { consommer : }
+      Decs := ParseExpr(P);
+    End;
+  End;
+
+  { Generer le code JS selon le format }
+  If (Width <> '') And (Decs <> '') Then
+    { expr:Width:Decs -> expr.toFixed(Decs).padStart(Width) }
+    ParseWriteArg := Expr + '.toFixed(' + Decs + ').padStart(' + Width + ')'
+  Else If Width <> '' Then
+    { expr:Width -> String(expr).padStart(Width) }
+    ParseWriteArg := 'String(' + Expr + ').padStart(' + Width + ')'
+  Else
+    { expr -> expr tel quel }
+    ParseWriteArg := Expr;
+End;
+
+{ ---- ParseWriteStmt : parser Write(...) ou WriteLn(...) ------ }
+{ Gere les arguments multiples avec formatage optionnel.          }
+{ IsLn=true pour WriteLn (console.log), false pour Write.         }
+Procedure ParseWriteStmt(Var P : Integer; IsLn : Boolean);
+Var
+  JS     : TString;
+  ArgJS  : TString;
+  ArgCnt : Integer;
+Begin
+  Inc(P); { consommer Write/WriteLn }
+
+  JS := '';
+  ArgCnt := 0;
+
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = '(') Then
+  Begin
+    Inc(P); { consommer ( }
+    While (P < TokenCount) And
+          Not ((TokenPool[P].Kind = TK_PUNCT) And
+               (TokenPool[P].Val = ')')) Do
+    Begin
+      If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ',') Then
+      Begin
+        Inc(P);
+        Continue;
+      End;
+      ArgJS := ParseWriteArg(P);
+      If JS <> '' Then
+      Begin
+        { Parentheser l argument pour preserver la precedence JS }
+        { Evite "text" + 10 + 20 -> "text1020" au lieu de "text30" }
+        JS := JS + ' + (' + ArgJS + ')';
+      End
+      Else
+        JS := ArgJS;
+      Inc(ArgCnt);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then
+      Inc(P);
+  End;
+
+  If IsLn Then
+  Begin
+    If ArgCnt = 0 Then
+      EmitLine('_TPR_WriteLn();')
+    Else
+      EmitLine('_TPR_WriteLn(' + JS + ');');
+  End
+  Else
+  Begin
+    If ArgCnt = 0 Then
+      EmitLine('_TPR_Write("");')
+    Else
+      EmitLine('_TPR_Write(String(' + JS + '));');
+  End;
+End;
+
+{ ---- ParseReadStmt : parser Read(...) ou ReadLn(...) --------- }
+{ Gere la lecture de variables depuis l entree standard.           }
+{ IsLn=true pour ReadLn, false pour Read.                         }
+Procedure ParseReadStmt(Var P : Integer; IsLn : Boolean);
+Var
+  VarName : TString;
+  SI      : Integer;
+  TI      : Integer;
+  TK      : TTypeKind;
+Begin
+  Inc(P); { consommer Read/ReadLn }
+
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = '(') Then
+  Begin
+    Inc(P); { consommer ( }
+    While (P < TokenCount) And
+          Not ((TokenPool[P].Kind = TK_PUNCT) And
+               (TokenPool[P].Val = ')')) Do
+    Begin
+      If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ',') Then
+      Begin
+        Inc(P);
+        Continue;
+      End;
+
+      If (TokenPool[P].Kind = TK_IDENT) Then
+      Begin
+        VarName := TokenPool[P].Val;
+        Inc(P);
+
+        { Determiner le type de la variable pour choisir la conversion }
+        TK := TYK_INTEGER;
+        SI := SymFind(VarName);
+        If SI >= 0 Then
+        Begin
+          TI := SymTab[SI].TypeIdx;
+          If (TI >= 0) And (TI < TypeCount) Then
+            TK := TypeTab[TI].Kind;
+        End;
+
+        Case TK Of
+          TYK_INTEGER, TYK_BYTE, TYK_WORD, TYK_SHORTINT, TYK_LONGINT:
+            EmitLine(VarName + ' = parseInt(prompt(""), 10);');
+          TYK_REAL, TYK_SINGLE, TYK_DOUBLE, TYK_EXTENDED, TYK_COMP:
+            EmitLine(VarName + ' = parseFloat(prompt(""));');
+          TYK_CHAR:
+            EmitLine(VarName + ' = prompt("").charAt(0);');
+          TYK_STRING:
+            EmitLine(VarName + ' = prompt("");');
+        Else
+          EmitLine(VarName + ' = prompt("");');
+        End;
+      End
+      Else
+        Inc(P); { sauter token inconnu }
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then
+      Inc(P);
+  End
+  Else
+  Begin
+    { ReadLn sans arguments : juste lire une ligne }
+    If IsLn Then
+      EmitLine('prompt("");');
+  End;
+End;
+
+{ ============================================================
+  IF / CASE / GOTO [IMPLEMENTE]
+  ============================================================ }
+{ ParseIfStmt : IF cond THEN stmt [ELSE [IF ...]] avec chaines }
+{ ParseCaseStmt : CASE expr OF ... END avec intervalles lo..hi  }
+{ ParseGotoStmt : GOTO label (traduction limitee en JS)         }
+{ Labels en corps : ident: reconnu et emis en commentaire JS    }
+
+{ ---- ParseBeginEnd : parser BEGIN ... END. ------------------- }
+{ Corps principal du programme -> contenu de _main()             }
+{ Emet les instructions du corps principal en JavaScript.        }
+
+{ Forward declaration pour recursion mutuelle }
+Procedure ParseStmt(Var P : Integer); Forward;
+
+{ ---- ParseStmtBlock : parser un bloc BEGIN...END ------------- }
+Procedure ParseStmtBlock(Var P : Integer);
+Begin
+  If P >= TokenCount Then Exit;
+  If (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'begin') Then
+  Begin
+    Inc(P); { consommer BEGIN }
+    While (P < TokenCount) And
+          Not ((TokenPool[P].Kind = TK_KEYWORD) And
+               (StrLowerCase(TokenPool[P].Val) = 'end')) Do
+    Begin
+      ParseStmt(P);
+      { Consommer ; si present }
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ';') Then
+        Inc(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+       (StrLowerCase(TokenPool[P].Val) = 'end') Then
+      Inc(P);
+  End
+  Else
+    { Une seule instruction }
+    ParseStmt(P);
+End;
+
+{ ---- ParseIfStmt : parser IF...THEN...ELSE [IF...] --------- }
+{ Gere les chaines ELSE IF sans imbrication excessive.           }
+{ Genere: if (cond) ... else if (cond) ... else ...             }
+Procedure ParseIfStmt(Var P : Integer);
+Var
+  JS    : TString;
+  First : Boolean;
+Begin
+  First := True;
+  While P < TokenCount Do
+  Begin
+    Inc(P); { consommer IF }
+    JS := ExprToJS(P);
+    { Consommer THEN }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+       (StrLowerCase(TokenPool[P].Val) = 'then') Then
+      Inc(P);
+    If First Then
+    Begin
+      EmitLine('if (' + JS + ') {');
+      First := False;
+    End
+    Else
+      EmitLine('} else if (' + JS + ') {');
+    IndentPush;
+    ParseStmtBlock(P);
+    IndentPop;
+    { Consommer ; optionnel avant ELSE }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ';') Then
+    Begin
+      { Verifier si ELSE suit }
+      If (P + 1 < TokenCount) And (TokenPool[P + 1].Kind = TK_KEYWORD) And
+         (StrLowerCase(TokenPool[P + 1].Val) = 'else') Then
+        Inc(P) { consommer ; avant else }
+    End;
+    { ELSE optionnel }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+       (StrLowerCase(TokenPool[P].Val) = 'else') Then
+    Begin
+      Inc(P); { consommer ELSE }
+      { ELSE IF chaine }
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+         (StrLowerCase(TokenPool[P].Val) = 'if') Then
+        Continue { boucler pour parser le IF suivant }
+      Else
+      Begin
+        { ELSE simple }
+        EmitLine('} else {');
+        IndentPush;
+        ParseStmtBlock(P);
+        IndentPop;
+        Break;
+      End;
+    End
+    Else
+      Break;
+  End;
+  EmitLine('}');
+End;
+
+{ ---- ParseCaseStmt : parser CASE...OF...END avec intervalles - }
+{ Gere les valeurs multiples (val1, val2) et intervalles (lo..hi) }
+{ Genere: switch (expr) case val: ... break; default: ...       }
+Procedure ParseCaseStmt(Var P : Integer);
+Var
+  JS   : TString;
+  L    : TString;
+  Lo   : LongInt;
+  Hi   : LongInt;
+  I    : LongInt;
+Begin
+  Inc(P); { consommer CASE }
+  JS := ExprToJS(P);
+  { Consommer OF }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'of') Then
+    Inc(P);
+  EmitLine('switch (' + JS + ') {');
+  IndentPush;
+  { Parser les branches du case }
+  While (P < TokenCount) And
+        Not ((TokenPool[P].Kind = TK_KEYWORD) And
+             ((StrLowerCase(TokenPool[P].Val) = 'end') Or
+              (StrLowerCase(TokenPool[P].Val) = 'else') Or
+              (StrLowerCase(TokenPool[P].Val) = 'otherwise'))) Do
+  Begin
+    { Lire les valeurs du case (val1, val2, lo..hi) }
+    While (P < TokenCount) And
+          Not ((TokenPool[P].Kind = TK_PUNCT) And
+               (TokenPool[P].Val = ':')) And
+          Not ((TokenPool[P].Kind = TK_KEYWORD) And
+               ((StrLowerCase(TokenPool[P].Val) = 'end') Or
+                (StrLowerCase(TokenPool[P].Val) = 'else') Or
+                (StrLowerCase(TokenPool[P].Val) = 'otherwise'))) Do
+    Begin
+      If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ',') Then
+      Begin
+        Inc(P);
+        Continue;
+      End;
+      { Lire la valeur }
+      L := ExprToJS(P);
+      { Verifier si c est un intervalle lo..hi }
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = '..') Then
+      Begin
+        Inc(P); { consommer .. }
+        { Lo est deja dans L, lire Hi }
+        Lo := StrToLongIntDef(L, 0);
+        Hi := StrToLongIntDef(ExprToJS(P), 0);
+        { Generer case pour chaque valeur de l intervalle }
+        If (Hi - Lo <= 256) And (Hi >= Lo) Then
+        Begin
+          I := Lo;
+          While I <= Hi Do
+          Begin
+            EmitLine('case ' + IntToStr_(I) + ':');
+            Inc(I);
+          End;
+        End
+        Else
+        Begin
+          { Intervalle trop grand : generer un commentaire }
+          EmitLine('case ' + L + ': /* .. ' + IntToStr_(Hi) + ' */');
+        End;
+      End
+      Else
+        EmitLine('case ' + L + ':');
+    End;
+    { Consommer : }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ':') Then
+    Begin
+      Inc(P);
+      IndentPush;
+      ParseStmtBlock(P);
+      EmitLine('break;');
+      IndentPop;
+    End;
+    { Consommer ; si present }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ';') Then
+      Inc(P);
+  End;
+  { ELSE / OTHERWISE optionnel du case }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     ((StrLowerCase(TokenPool[P].Val) = 'else') Or
+      (StrLowerCase(TokenPool[P].Val) = 'otherwise')) Then
+  Begin
+    Inc(P);
+    EmitLine('default:');
+    IndentPush;
+    While (P < TokenCount) And
+          Not ((TokenPool[P].Kind = TK_KEYWORD) And
+               (StrLowerCase(TokenPool[P].Val) = 'end')) Do
+    Begin
+      ParseStmt(P);
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ';') Then
+        Inc(P);
+    End;
+    EmitLine('break;');
+    IndentPop;
+  End;
+  IndentPop;
+  EmitLine('}');
+  { Consommer END }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'end') Then
+    Inc(P);
+End;
+
+{ ---- ParseGotoStmt : parser GOTO label ----------------------- }
+{ GOTO est deconseille et la traduction en JS est limitee.        }
+{ Genere un commentaire d avertissement en JavaScript.            }
+Procedure ParseGotoStmt(Var P : Integer);
+Var
+  LblName : TString;
+Begin
+  Inc(P); { consommer GOTO }
+  LblName := '';
+  If P < TokenCount Then
+  Begin
+    If (TokenPool[P].Kind = TK_IDENT) Or
+       (TokenPool[P].Kind = TK_INTEGER) Then
+    Begin
+      LblName := TokenPool[P].Val;
+      Inc(P);
+    End;
+  End;
+  EmitComment('GOTO ' + LblName + ' - requires manual restructuring');
+End;
+
+{ ---- ParseStmt : parser une instruction unique --------------- }
+Procedure ParseStmt;
+Var
+  L   : TString;
+  JS  : TString;
+Begin
+  If P >= TokenCount Then Exit;
+
+  { Point-virgule seul : instruction vide }
+  If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ';') Then
+    Exit;
+
+  { END : fin de bloc - ne pas consommer }
+  If (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'end') Then
+    Exit;
+
+  { ELSE : ne pas consommer }
+  If (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'else') Then
+    Exit;
+
+  { UNTIL : ne pas consommer }
+  If (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'until') Then
+    Exit;
+
+  { BEGIN ... END : bloc d instructions }
+  If (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'begin') Then
+  Begin
+    Inc(P); { consommer BEGIN }
+    While (P < TokenCount) And
+          Not ((TokenPool[P].Kind = TK_KEYWORD) And
+               (StrLowerCase(TokenPool[P].Val) = 'end')) Do
+    Begin
+      ParseStmt(P);
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ';') Then
+        Inc(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+       (StrLowerCase(TokenPool[P].Val) = 'end') Then
+      Inc(P);
+    Exit;
+  End;
+
+  { WriteLn / Write (formatage et args multiples) }
+  If (TokenPool[P].Kind = TK_IDENT) And
+     ((StrLowerCase(TokenPool[P].Val) = 'writeln') Or
+      (StrLowerCase(TokenPool[P].Val) = 'write')) Then
+  Begin
+    L := StrLowerCase(TokenPool[P].Val);
+    ParseWriteStmt(P, L = 'writeln');
+    Exit;
+  End;
+
+  { ReadLn / Read (lecture depuis l entree standard) }
+  If (TokenPool[P].Kind = TK_IDENT) And
+     ((StrLowerCase(TokenPool[P].Val) = 'readln') Or
+      (StrLowerCase(TokenPool[P].Val) = 'read')) Then
+  Begin
+    L := StrLowerCase(TokenPool[P].Val);
+    ParseReadStmt(P, L = 'readln');
+    Exit;
+  End;
+
+  { IF ... THEN ... [ELSE [IF ...]] }
+  If (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'if') Then
+  Begin
+    ParseIfStmt(P);
+    Exit;
+  End;
+
+  { ---- BOUCLES ---------------------------------------- }
+
+  { FOR ... TO/DOWNTO ... DO ... }
+  If (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'for') Then
+  Begin
+    Inc(P); { consommer FOR }
+    JS := '';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+    Begin
+      L := TokenPool[P].Val; { nom de la variable de boucle }
+      Inc(P);
+      { Consommer := }
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_OP) And
+         (TokenPool[P].Val = ':=') Then
+        Inc(P);
+      { Lire la valeur initiale }
+      JS := ExprToJS(P);
+      { Determiner TO ou DOWNTO }
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+         (StrLowerCase(TokenPool[P].Val) = 'to') Then
+      Begin
+        Inc(P);
+        JS := 'for (var ' + L + ' = ' + JS + '; ' + L + ' <= ' +
+              ExprToJS(P) + '; ' + L + '++) {';
+      End
+      Else If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+              (StrLowerCase(TokenPool[P].Val) = 'downto') Then
+      Begin
+        Inc(P);
+        JS := 'for (var ' + L + ' = ' + JS + '; ' + L + ' >= ' +
+              ExprToJS(P) + '; ' + L + '--) {';
+      End
+      Else
+        JS := 'for (;;) { /* error: missing TO/DOWNTO */';
+    End;
+    { Consommer DO }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+       (StrLowerCase(TokenPool[P].Val) = 'do') Then
+      Inc(P);
+    EmitLine(JS);
+    IndentPush;
+    ParseStmtBlock(P);
+    IndentPop;
+    EmitLine('}');
+    Exit;
+  End;
+
+  { WHILE ... DO ... }
+  If (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'while') Then
+  Begin
+    Inc(P); { consommer WHILE }
+    JS := ExprToJS(P);
+    { Consommer DO }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+       (StrLowerCase(TokenPool[P].Val) = 'do') Then
+      Inc(P);
+    EmitLine('while (' + JS + ') {');
+    IndentPush;
+    ParseStmtBlock(P);
+    IndentPop;
+    EmitLine('}');
+    Exit;
+  End;
+
+  { REPEAT ... UNTIL expr }
+  If (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'repeat') Then
+  Begin
+    Inc(P); { consommer REPEAT }
+    EmitLine('do {');
+    IndentPush;
+    While (P < TokenCount) And
+          Not ((TokenPool[P].Kind = TK_KEYWORD) And
+               (StrLowerCase(TokenPool[P].Val) = 'until')) Do
+    Begin
+      ParseStmt(P);
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ';') Then
+        Inc(P);
+    End;
+    IndentPop;
+    { Consommer UNTIL et l expression }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+       (StrLowerCase(TokenPool[P].Val) = 'until') Then
+    Begin
+      Inc(P);
+      JS := ExprToJS(P);
+      EmitLine('} while (!(' + JS + '));');
+    End
+    Else
+      EmitLine('} while (true);');
+    Exit;
+  End;
+
+  { CASE expr OF ... END }
+  If (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'case') Then
+  Begin
+    ParseCaseStmt(P);
+    Exit;
+  End;
+
+  { GOTO label }
+  If (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'goto') Then
+  Begin
+    ParseGotoStmt(P);
+    Exit;
+  End;
+
+  { Label definition : ident: }
+  { Detecter label: quand ident est suivi de : et non de := }
+  If (TokenPool[P].Kind = TK_IDENT) And
+     (P + 1 < TokenCount) And
+     (TokenPool[P + 1].Kind = TK_PUNCT) And
+     (TokenPool[P + 1].Val = ':') Then
+  Begin
+    L := TokenPool[P].Val;
+    EmitComment('label: ' + L);
+    Inc(P, 2); { consommer ident et : }
+    Exit;
+  End;
+  { Label definition numerique : 123: }
+  If (TokenPool[P].Kind = TK_INTEGER) And
+     (P + 1 < TokenCount) And
+     (TokenPool[P + 1].Kind = TK_PUNCT) And
+     (TokenPool[P + 1].Val = ':') Then
+  Begin
+    L := TokenPool[P].Val;
+    EmitComment('label: ' + L);
+    Inc(P, 2);
+    Exit;
+  End;
+
+  { Break : sortie de boucle -> break; en JS }
+  If (TokenPool[P].Kind = TK_IDENT) And
+     (StrLowerCase(TokenPool[P].Val) = 'break') Then
+  Begin
+    Inc(P);
+    EmitLine('break;');
+    Exit;
+  End;
+
+  { Continue : iteration suivante -> continue; en JS }
+  If (TokenPool[P].Kind = TK_IDENT) And
+     (StrLowerCase(TokenPool[P].Val) = 'continue') Then
+  Begin
+    Inc(P);
+    EmitLine('continue;');
+    Exit;
+  End;
+
+  { ---- OBJETS ET HERITAGE ----------------------------- }
+
+  { NEW(Ptr, Init(args)) -> Ptr = new TypeName(args) }
+  If (TokenPool[P].Kind = TK_IDENT) And
+     (StrLowerCase(TokenPool[P].Val) = 'new') Then
+  Begin
+    Inc(P); { consommer NEW }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P); { consommer ( }
+      L := '';
+      { Lire le premier argument : le pointeur }
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+      Begin
+        L := TokenPool[P].Val;
+        Inc(P);
+      End;
+      { Verifier s il y a un deuxieme argument apres la virgule }
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ',') Then
+      Begin
+        Inc(P); { consommer , }
+        { Deuxieme argument : Init(args) }
+        JS := '';
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+        Begin
+          JS := TokenPool[P].Val;
+          Inc(P);
+          { Lire les arguments du constructeur }
+          If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+             (TokenPool[P].Val = '(') Then
+          Begin
+            Inc(P); { consommer ( }
+            JS := '(';
+            While (P < TokenCount) And
+                  Not ((TokenPool[P].Kind = TK_PUNCT) And
+                       (TokenPool[P].Val = ')')) Do
+            Begin
+              JS := JS + TokenPool[P].Val;
+              Inc(P);
+            End;
+            JS := JS + ')';
+            If (P < TokenCount) And (TokenPool[P].Val = ')') Then
+              Inc(P);
+          End
+          Else
+            JS := '()';
+        End;
+        { Consommer ) externe }
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+           (TokenPool[P].Val = ')') Then
+          Inc(P);
+        { Deduire le type depuis le symbole du pointeur }
+        { Chercher le type de base du pointeur pour le new }
+        EmitLine(L + ' = new Object' + JS + ';');
+        EmitLine(L + '.' + StrLowerCase(Copy(JS, 1, Pos('(', JS) - 1)) + ';');
+      End
+      Else
+      Begin
+        (* NEW(Ptr) simple -> Ptr = empty object *)
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+           (TokenPool[P].Val = ')') Then
+          Inc(P);
+        EmitLine(L + ' = {};');
+      End;
+    End
+    Else
+    Begin
+      { new sans parentheses - traiter comme expression }
+      JS := 'new ' + ExprToJS(P);
+      EmitLine(JS + ';');
+    End;
+    Exit;
+  End;
+
+  { DISPOSE(Ptr, Done) -> Ptr.Done(); Ptr = null }
+  If (TokenPool[P].Kind = TK_IDENT) And
+     (StrLowerCase(TokenPool[P].Val) = 'dispose') Then
+  Begin
+    Inc(P); { consommer DISPOSE }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P); { consommer ( }
+      L := '';
+      { Lire le premier argument : le pointeur }
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+      Begin
+        L := TokenPool[P].Val;
+        Inc(P);
+      End;
+      { Verifier s il y a un deuxieme argument : le destructeur }
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ',') Then
+      Begin
+        Inc(P); { consommer , }
+        JS := '';
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+        Begin
+          JS := TokenPool[P].Val;
+          Inc(P);
+        End;
+        { Consommer ) }
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+           (TokenPool[P].Val = ')') Then
+          Inc(P);
+        { Emettre l appel au destructeur puis la mise a null }
+        If JS <> '' Then
+          EmitLine(L + '.' + JS + '();');
+        EmitLine(L + ' = null;');
+      End
+      Else
+      Begin
+        { DISPOSE(Ptr) simple -> Ptr = null }
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+           (TokenPool[P].Val = ')') Then
+          Inc(P);
+        EmitLine(L + ' = null;');
+      End;
+    End;
+    Exit;
+  End;
+
+  { INHERITED comme instruction (sans valeur de retour) }
+  If (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'inherited') Then
+  Begin
+    JS := ExprToJS(P);
+    EmitLine(JS + ';');
+    Exit;
+  End;
+
+  { Affectation ou appel de procedure : ident [:= expr] }
+  If TokenPool[P].Kind = TK_IDENT Then
+  Begin
+    JS := ExprToJS(P);
+    EmitLine(JS + ';');
+    Exit;
+  End;
+
+  { Token non reconnu : avancer }
+  Inc(P);
+End;
+
+{ ============================================================
+  PROCEDURES ET FONCTIONS [IMPLEMENTE]
+  ============================================================ }
+{ Procedures et fonctions Turbo Pascal -> fonctions JavaScript. }
+{ Gestion des parametres valeur, VAR, CONST, variables locales, }
+{ declarations imbriquees, Forward, Result, Exit.                }
+
+{ ---- ParseParamList : parser la liste de parametres ---------- }
+{ (param1: T1; var param2: T2; const param3: T3)                 }
+{ Retourne la liste des noms JS separes par virgule.             }
+{ VarParams recoit les noms des parametres VAR pour le           }
+{ wrapper post-appel.                                            }
+Function ParseParamList(Var P : Integer) : TString;
+Var
+  ParamNames : Array[0..31] Of TString;
+  ParamIsVar : Array[0..31] Of Boolean;
+  ParamCount : Integer;
+  IsVar      : Boolean;
+  IsConst    : Boolean;
+  L          : TString;
+  I          : Integer;
+  Result_    : TString;
+Begin
+  ParamCount := 0;
+  Result_ := '';
+  If P >= TokenCount Then Begin ParseParamList := ''; Exit; End;
+  If Not ((TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = '(')) Then
+  Begin
+    ParseParamList := '';
+    Exit;
+  End;
+  Inc(P); { consommer ( }
+
+  While (P < TokenCount) And
+        Not ((TokenPool[P].Kind = TK_PUNCT) And
+             (TokenPool[P].Val = ')')) Do
+  Begin
+    IsVar := False;
+    IsConst := False;
+
+    { Verifier les qualificateurs VAR / CONST }
+    If (TokenPool[P].Kind = TK_KEYWORD) Then
+    Begin
+      L := StrLowerCase(TokenPool[P].Val);
+      If L = 'var' Then
+      Begin
+        IsVar := True;
+        Inc(P);
+      End
+      Else If L = 'const' Then
+      Begin
+        IsConst := True;
+        Inc(P);
+      End;
+    End;
+
+    { Collecter les noms de parametres separes par des virgules }
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Do
+    Begin
+      If ParamCount < 32 Then
+      Begin
+        ParamNames[ParamCount] := TokenPool[P].Val;
+        ParamIsVar[ParamCount] := IsVar;
+        SymAdd(TokenPool[P].Val, SK_PARAM, -1);
+        Inc(ParamCount);
+      End;
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ',') Then
+        Inc(P)
+      Else
+        Break;
+    End;
+
+    { Consommer : Type }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ':') Then
+    Begin
+      Inc(P); { consommer : }
+      { Sauter le nom du type (simple ou array of...) }
+      If (P < TokenCount) And
+         ((TokenPool[P].Kind = TK_IDENT) Or
+          (TokenPool[P].Kind = TK_KEYWORD)) Then
+        Inc(P);
+    End;
+
+    { Consommer ; separateur entre groupes de parametres }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ';') Then
+      Inc(P);
+  End;
+
+  { Consommer ) }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = ')') Then
+    Inc(P);
+
+  { Construire la liste des parametres JS }
+  For I := 0 To ParamCount - 1 Do
+  Begin
+    If I > 0 Then Result_ := Result_ + ', ';
+    Result_ := Result_ + ParamNames[I];
+  End;
+
+  ParseParamList := Result_;
+End;
+
+{ ---- SkipDirectives : sauter les directives de routine ------- }
+{ FAR, NEAR, INLINE, ASSEMBLER, EXTERNAL, FORWARD, etc.          }
+{ Retourne True si FORWARD a ete trouve.                          }
+Function SkipDirectives(Var P : Integer) : Boolean;
+Var
+  L        : TString;
+  IsForward : Boolean;
+Begin
+  IsForward := False;
+  While (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Do
+  Begin
+    L := StrLowerCase(TokenPool[P].Val);
+    If (L = 'far') Or (L = 'near') Or (L = 'inline') Or
+       (L = 'assembler') Or (L = 'external') Or (L = 'register') Or
+       (L = 'cdecl') Or (L = 'stdcall') Or (L = 'pascal') Or
+       (L = 'safecall') Or (L = 'overload') Or (L = 'override') Or
+       (L = 'virtual') Or (L = 'abstract') Or (L = 'reintroduce') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ';') Then
+        Inc(P);
+    End
+    Else If L = 'forward' Then
+    Begin
+      IsForward := True;
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ';') Then
+        Inc(P);
+    End
+    Else
+      Break;
+  End;
+  { Also check keywords like EXTERNAL }
+  While (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) Do
+  Begin
+    L := StrLowerCase(TokenPool[P].Val);
+    If L = 'external' Then
+    Begin
+      Inc(P);
+      { Skip external name/index if present }
+      While (P < TokenCount) And
+            Not ((TokenPool[P].Kind = TK_PUNCT) And
+                 (TokenPool[P].Val = ';')) Do
+        Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ';') Then
+        Inc(P);
+    End
+    Else
+      Break;
+  End;
+  SkipDirectives := IsForward;
+End;
+
+{ ---- ParseProcDecl : parser PROCEDURE nom[(params)]; bloc ---- }
+{ PROCEDURE nom[(params)]; [directives;] [decls] BEGIN...END;    }
+{ Genere : function nom(params) en JavaScript.                    }
+Procedure ParseProcDecl;
+Var
+  ProcName   : TString;
+  Params     : TString;
+  L          : TString;
+  IsForward_ : Boolean;
+Begin
+  If P >= TokenCount Then Exit;
+  If (TokenPool[P].Kind <> TK_KEYWORD) Or
+     (StrLowerCase(TokenPool[P].Val) <> 'procedure') Then Exit;
+  Inc(P); { consommer PROCEDURE }
+
+  { Nom de la procedure }
+  ProcName := '';
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+  Begin
+    ProcName := TokenPool[P].Val;
+    Inc(P);
+  End;
+
+  { Enregistrer la procedure dans la table des symboles (scope global) }
+  SymAdd(ProcName, SK_PROC, -1);
+
+  { Entrer dans la portee de la procedure }
+  SymEnterScope;
+
+  { Parser la liste de parametres }
+  Params := ParseParamList(P);
+
+  { Consommer ; }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = ';') Then
+    Inc(P);
+
+  { Verifier les directives (FORWARD, FAR, NEAR, etc.) }
+  IsForward_ := SkipDirectives(P);
+
+  If IsForward_ Then
+  Begin
+    { Forward : pas de corps, declaration JS differee }
+    EmitComment('forward: procedure ' + ProcName);
+    SymLeaveScope;
+    Exit;
+  End;
+
+  { Emettre la declaration JavaScript }
+  EmitLine('function ' + ProcName + '(' + Params + ') {');
+  IndentPush;
+
+  { Parser les declarations locales (CONST, TYPE, VAR, LABEL) }
+  While (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) Do
+  Begin
+    L := StrLowerCase(TokenPool[P].Val);
+    If L = 'const' Then
+      ParseConstSection(P)
+    Else If L = 'var' Then
+      ParseVarSection(P)
+    Else If L = 'type' Then
+      ParseTypeSection(P)
+    Else If L = 'label' Then
+      ParseLabelSection(P)
+    Else If L = 'procedure' Then
+      ParseProcDecl(P)
+    Else If L = 'function' Then
+      ParseFuncDecl(P)
+    Else
+      Break;
+  End;
+
+  { Parser le corps BEGIN...END }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'begin') Then
+  Begin
+    Inc(P); { consommer BEGIN }
+    While (P < TokenCount) And
+          Not ((TokenPool[P].Kind = TK_KEYWORD) And
+               (StrLowerCase(TokenPool[P].Val) = 'end')) Do
+    Begin
+      ParseStmt(P);
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ';') Then
+        Inc(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+       (StrLowerCase(TokenPool[P].Val) = 'end') Then
+      Inc(P);
+  End;
+
+  IndentPop;
+  EmitLine('}');
+  EmitBlankLine;
+
+  { Consommer ; final }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = ';') Then
+    Inc(P);
+
+  { Quitter la portee }
+  SymLeaveScope;
+End;
+
+{ ---- ParseFuncDecl : parser FUNCTION nom[(params)]: Ret; bloc }
+{ FUNCTION nom[(params)]: RetType; [directives;] [decls]         }
+{ BEGIN...END;                                                    }
+{ Genere : function nom(params) avec var Result; return Result;  }
+Procedure ParseFuncDecl;
+Var
+  FuncName   : TString;
+  Params     : TString;
+  RetType    : TString;
+  L          : TString;
+  IsForward_ : Boolean;
+Begin
+  If P >= TokenCount Then Exit;
+  If (TokenPool[P].Kind <> TK_KEYWORD) Or
+     (StrLowerCase(TokenPool[P].Val) <> 'function') Then Exit;
+  Inc(P); { consommer FUNCTION }
+
+  { Nom de la fonction }
+  FuncName := '';
+  RetType := '';
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+  Begin
+    FuncName := TokenPool[P].Val;
+    Inc(P);
+  End;
+
+  { Enregistrer la fonction dans la table des symboles (scope global) }
+  SymAdd(FuncName, SK_FUNC, TypeFindByName(RetType));
+
+  { Entrer dans la portee de la fonction }
+  SymEnterScope;
+
+  { Parser la liste de parametres }
+  Params := ParseParamList(P);
+
+  { Consommer : RetType }
+  RetType := '';
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = ':') Then
+  Begin
+    Inc(P); { consommer : }
+    If (P < TokenCount) And
+       ((TokenPool[P].Kind = TK_IDENT) Or
+        (TokenPool[P].Kind = TK_KEYWORD)) Then
+    Begin
+      RetType := TokenPool[P].Val;
+      Inc(P);
+    End;
+  End;
+
+  { Consommer ; }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = ';') Then
+    Inc(P);
+
+  { Verifier les directives (FORWARD, FAR, NEAR, etc.) }
+  IsForward_ := SkipDirectives(P);
+
+  If IsForward_ Then
+  Begin
+    { Forward : pas de corps, declaration JS differee }
+    EmitComment('forward: function ' + FuncName);
+    SymLeaveScope;
+    Exit;
+  End;
+
+  { Emettre la declaration JavaScript }
+  EmitLine('function ' + FuncName + '(' + Params + ') {');
+  IndentPush;
+
+  { Variable Result implicite pour stocker la valeur de retour }
+  { En TP, le nom de la fonction ou Result sert de valeur retour }
+  EmitLine('var Result = null;');
+  SymAdd('Result', SK_VAR, TypeFindByName(RetType));
+
+  { Parser les declarations locales (CONST, TYPE, VAR, LABEL) }
+  While (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) Do
+  Begin
+    L := StrLowerCase(TokenPool[P].Val);
+    If L = 'const' Then
+      ParseConstSection(P)
+    Else If L = 'var' Then
+      ParseVarSection(P)
+    Else If L = 'type' Then
+      ParseTypeSection(P)
+    Else If L = 'label' Then
+      ParseLabelSection(P)
+    Else If L = 'procedure' Then
+      ParseProcDecl(P)
+    Else If L = 'function' Then
+      ParseFuncDecl(P)
+    Else
+      Break;
+  End;
+
+  { Parser le corps BEGIN...END }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'begin') Then
+  Begin
+    Inc(P); { consommer BEGIN }
+    While (P < TokenCount) And
+          Not ((TokenPool[P].Kind = TK_KEYWORD) And
+               (StrLowerCase(TokenPool[P].Val) = 'end')) Do
+    Begin
+      ParseStmt(P);
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ';') Then
+        Inc(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+       (StrLowerCase(TokenPool[P].Val) = 'end') Then
+      Inc(P);
+  End;
+
+  { Retourner la valeur de Result a la fin }
+  EmitLine('return Result;');
+  IndentPop;
+  EmitLine('}');
+  EmitBlankLine;
+
+  { Consommer ; final }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = ';') Then
+    Inc(P);
+
+  { Quitter la portee }
+  SymLeaveScope;
+End;
+
+{ ============================================================
+  IMPLEMENTATIONS DE METHODES D OBJETS
+  ============================================================ }
+
+{ ---- IsMethodImpl : detecte si on est sur TypeName.MethodName }
+{ Regarde si la sequence courante est PROCEDURE/FUNCTION ident.  }
+{ ident, ce qui indique une implementation de methode d objet.   }
+Function IsMethodImpl;
+Begin
+  IsMethodImpl := False;
+  If P + 2 >= TokenCount Then Exit;
+  If (TokenPool[P].Kind <> TK_KEYWORD) Then Exit;
+  If (StrLowerCase(TokenPool[P].Val) <> 'procedure') And
+     (StrLowerCase(TokenPool[P].Val) <> 'function') And
+     (StrLowerCase(TokenPool[P].Val) <> 'constructor') And
+     (StrLowerCase(TokenPool[P].Val) <> 'destructor') Then Exit;
+  { Verifier ident . ident }
+  If (TokenPool[P + 1].Kind = TK_IDENT) And
+     (P + 2 < TokenCount) And
+     (TokenPool[P + 2].Kind = TK_PUNCT) And
+     (TokenPool[P + 2].Val = '.') Then
+    IsMethodImpl := True;
+End;
+
+{ ---- ParseMethodImpl : parser une implementation de methode -- }
+{ TypeName.MethodName[(params)][: RetType]; [directives;]        }
+{ [decls] BEGIN ... END;                                         }
+{ Insere la methode dans le prototype de la classe JS.           }
+Procedure ParseMethodImpl;
+Var
+  TypeName : TString;
+  MethName : TString;
+  Params   : TString;
+  RetType  : TString;
+  L        : TString;
+  IsCtor   : Boolean;
+  IsDtor   : Boolean;
+  TIdx     : Integer;
+Begin
+  { Sauvegarder le mot-cle pour savoir si c est constructor/destructor }
+  L := StrLowerCase(TokenPool[P].Val);
+  IsCtor := (L = 'constructor');
+  IsDtor := (L = 'destructor');
+  Inc(P); { consommer PROCEDURE/FUNCTION/CONSTRUCTOR/DESTRUCTOR }
+
+  { Lire TypeName.MethodName }
+  TypeName := '';
+  MethName := '';
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+  Begin
+    TypeName := TokenPool[P].Val;
+    Inc(P);
+  End;
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = '.') Then
+  Begin
+    Inc(P); { consommer . }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+    Begin
+      MethName := TokenPool[P].Val;
+      Inc(P);
+    End;
+  End
+  Else
+  Begin
+    { Pas de point : c est une proc/func normale, pas une methode }
+    { Rembobiner et laisser ParseProcDecl/ParseFuncDecl gerer }
+    P := P - 2; { revenir avant le nom }
+    Exit;
+  End;
+
+  { Entrer dans la portee }
+  SymEnterScope;
+
+  { Parser les parametres }
+  Params := ParseParamList(P);
+
+  { Parser le type de retour pour les fonctions }
+  RetType := '';
+  If IsFunc And (P < TokenCount) And
+     (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ':') Then
+  Begin
+    Inc(P); { consommer : }
+    If (P < TokenCount) And
+       ((TokenPool[P].Kind = TK_IDENT) Or
+        (TokenPool[P].Kind = TK_KEYWORD)) Then
+    Begin
+      RetType := TokenPool[P].Val;
+      Inc(P);
+    End;
+  End;
+
+  { Consommer ; }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = ';') Then
+    Inc(P);
+
+  { Sauter les directives (VIRTUAL, FAR, etc.) }
+  SkipDirectives(P);
+
+  TIdx := TypeFindByName(TypeName);
+
+  { Emettre la methode dans le prototype JS }
+  EmitLine(TypeName + '.prototype.' + MethName + ' = function(' +
+           Params + ') {');
+  IndentPush;
+
+  If IsCtor Then
+    EmitComment('constructor implementation');
+  If IsDtor Then
+    EmitComment('destructor implementation');
+
+  { Variable Result pour les fonctions }
+  If IsFunc Then
+  Begin
+    EmitLine('var Result = null;');
+    SymAdd('Result', SK_VAR, TypeFindByName(RetType));
+    { Enregistrer le nom de la methode comme SK_METHOD dans la portee }
+    { pour que l affectation MethName := valeur devienne Result = valeur }
+    SymAdd(MethName, SK_METHOD, TypeFindByName(RetType));
+  End;
+
+  { Parser les declarations locales }
+  While (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) Do
+  Begin
+    L := StrLowerCase(TokenPool[P].Val);
+    If L = 'const' Then
+      ParseConstSection(P)
+    Else If L = 'var' Then
+      ParseVarSection(P)
+    Else If L = 'type' Then
+      ParseTypeSection(P)
+    Else If L = 'label' Then
+      ParseLabelSection(P)
+    Else
+      Break;
+  End;
+
+  { Parser le corps BEGIN...END }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'begin') Then
+  Begin
+    Inc(P); { consommer BEGIN }
+    While (P < TokenCount) And
+          Not ((TokenPool[P].Kind = TK_KEYWORD) And
+               (StrLowerCase(TokenPool[P].Val) = 'end')) Do
+    Begin
+      ParseStmt(P);
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ';') Then
+        Inc(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+       (StrLowerCase(TokenPool[P].Val) = 'end') Then
+      Inc(P);
+  End;
+
+  If IsFunc Then
+    EmitLine('return Result;');
+  IndentPop;
+  EmitLine('};');
+  EmitBlankLine;
+
+  { Consommer ; final }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = ';') Then
+    Inc(P);
+
+  { Quitter la portee }
+  SymLeaveScope;
+End;
+
+{ ---- ParseBeginEndMain : parser le bloc principal ------------ }
+{ BEGIN ... END. du programme principal                           }
+Procedure ParseBeginEndMain(Var P : Integer);
+Begin
+  If P >= TokenCount Then Exit;
+  If (TokenPool[P].Kind <> TK_KEYWORD) Or
+     (StrLowerCase(TokenPool[P].Val) <> 'begin') Then Exit;
+  Inc(P); { consommer BEGIN }
+
+  While (P < TokenCount) And
+        Not ((TokenPool[P].Kind = TK_KEYWORD) And
+             (StrLowerCase(TokenPool[P].Val) = 'end')) Do
+  Begin
+    ParseStmt(P);
+    { Consommer ; si present }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ';') Then
+      Inc(P);
+  End;
+
+  { Consommer END }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'end') Then
+    Inc(P);
+  { Consommer le point final . }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = '.') Then
+    Inc(P);
+End;
+
+{ ============================================================
+  UNITES UTILISATEUR ET COMPILATION SEPAREE [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseUnitInterface : parser la section INTERFACE --------- }
+{ INTERFACE [USES ...;] [CONST ...] [TYPE ...] [VAR ...]           }
+{ [PROCEDURE/FUNCTION signatures sans corps]                        }
+{ Genere les declarations exportees en JavaScript.                  }
+Procedure ParseUnitInterface(Var P : Integer);
+Var
+  L : TString;
+Begin
+  { Consommer INTERFACE }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'interface') Then
+  Begin
+    Inc(P);
+    EmitComment('interface');
+  End
+  Else Exit;
+
+  { Section USES optionnelle dans l interface }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'uses') Then
+  Begin
+    ParseUsesClause(P);
+    EmitBlankLine;
+  End;
+
+  { Declarations exportees : CONST, TYPE, VAR, signatures PROC/FUNC }
+  While P < TokenCount Do
+  Begin
+    If TokenPool[P].Kind <> TK_KEYWORD Then Exit;
+    L := StrLowerCase(TokenPool[P].Val);
+    If (L = 'implementation') Or (L = 'begin') Or (L = 'end') Then
+      Exit;
+    If L = 'const' Then
+      ParseDeclSections(P)
+    Else If L = 'var' Then
+      ParseDeclSections(P)
+    Else If L = 'type' Then
+      ParseDeclSections(P)
+    Else If (L = 'procedure') Or (L = 'function') Then
+    Begin
+      { En section INTERFACE, les procedure/function sont des signatures }
+      { (forward declarations) : on les parse normalement, le parseur    }
+      { gere deja les declarations sans corps (forward).                 }
+      ParseDeclSections(P);
+    End
+    Else
+      Exit;
+  End;
+End;
+
+{ ---- ParseUnitImplementation : parser IMPLEMENTATION ----------- }
+{ IMPLEMENTATION [USES ...;] [decls avec corps]                     }
+{ Genere les implementations en JavaScript.                         }
+Procedure ParseUnitImplementation(Var P : Integer);
+Begin
+  { Consommer IMPLEMENTATION }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'implementation') Then
+  Begin
+    Inc(P);
+    EmitBlankLine;
+    EmitComment('implementation');
+  End
+  Else Exit;
+
+  { Section USES optionnelle dans l implementation }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'uses') Then
+  Begin
+    ParseUsesClause(P);
+    EmitBlankLine;
+  End;
+
+  { Declarations et corps : CONST, TYPE, VAR, PROCEDURE, FUNCTION }
+  ParseDeclSections(P);
+End;
+
+{ ---- ParseUnitInit : parser le bloc d initialisation optionnel  }
+{ BEGIN ... END. a la fin d une unite                              }
+{ Genere : function _init_NomUnite() ...                           }
+Procedure ParseUnitInit(Var P : Integer);
+Begin
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'begin') Then
+  Begin
+    Inc(P); { consommer BEGIN }
+    EmitBlankLine;
+    EmitComment('Initialisation de l''unite ' + UnitName);
+    EmitLine('function _init_' + UnitName + '() {');
+    IndentPush;
+
+    While (P < TokenCount) And
+          Not ((TokenPool[P].Kind = TK_KEYWORD) And
+               (StrLowerCase(TokenPool[P].Val) = 'end')) Do
+    Begin
+      ParseStmt(P);
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ';') Then
+        Inc(P);
+    End;
+
+    IndentPop;
+    EmitLine('}');
+
+    { Enregistrer l unite dans la liste d initialisation }
+    If UnitInitCount < MAX_UNITS Then
+    Begin
+      UnitInitNames[UnitInitCount] := UnitName;
+      Inc(UnitInitCount);
+    End;
+  End;
+
+  { Consommer END }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'end') Then
+    Inc(P);
+  { Consommer le point final . }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = '.') Then
+    Inc(P);
+End;
+
+{ ---- ParseUnit : parser une unite Pascal complete ------------- }
+{ UNIT nom; INTERFACE ... IMPLEMENTATION ... [BEGIN ...] END.     }
+{ Genere le fichier JavaScript correspondant.                     }
+Procedure ParseUnit(Var P : Integer);
+Begin
+  IsUnitMode := True;
+  UnitName := 'unnamed';
+
+  { UNIT nom ; }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'unit') Then
+  Begin
+    Inc(P); { consommer UNIT }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+    Begin
+      UnitName := TokenPool[P].Val;
+      Inc(P);
+    End;
+    { Consommer ; }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ';') Then
+      Inc(P);
+  End;
+
+  EmitComment('Unit ' + UnitName);
+  EmitBlankLine;
+
+  { En mode module ES6, emettre l en-tete d export }
+  If Opts.ModuleES6 Then
+  Begin
+    EmitComment('exports (module ES6)');
+    EmitBlankLine;
+  End;
+
+  { Section INTERFACE }
+  ParseUnitInterface(P);
+  EmitBlankLine;
+
+  { Section IMPLEMENTATION }
+  ParseUnitImplementation(P);
+
+  { Section d initialisation optionnelle : BEGIN ... END. }
+  ParseUnitInit(P);
+
+  WriteLn('TP2JS: unite "', UnitName, '" compilee.');
+End;
+
+{ ============================================================
+  GENERATION FINALE ET FICHIERS EXEMPLES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- OptWarnUnusedVars : detecter les variables non utilisees - }
+{ Parcourt la table des symboles pour trouver les variables       }
+{ declarees par le programmeur (apres BuiltinSymEnd) qui ne       }
+{ sont jamais referencees dans les tokens du code source.          }
+{ Emet un avertissement pour chaque variable non utilisee.         }
+Procedure OptWarnUnusedVars;
+Var
+  I, J    : Integer;
+  VName   : TString;
+  Found   : Boolean;
+Begin
+  If Not Opts.Warnings Then Exit;
+  For I := BuiltinSymEnd To SymCount - 1 Do
+  Begin
+    If SymTab[I].Kind <> SK_VAR Then Continue;
+    VName := StrLowerCase(SymTab[I].Name);
+    Found := False;
+    { Chercher si le nom de la variable apparait dans les tokens }
+    { au-dela d une simple declaration (au moins 2 occurrences)  }
+    { car la premiere occurrence est la declaration elle-meme     }
+    J := 0;
+    While (J < TokenCount) And (Not Found) Do
+    Begin
+      If (TokenPool[J].Kind = TK_IDENT) And
+         (StrLowerCase(TokenPool[J].Val) = VName) Then
+      Begin
+        { Verifier que ce n est pas juste la declaration VAR }
+        If (J > 0) And (TokenPool[J - 1].Kind = TK_OP) And
+           (TokenPool[J - 1].Val = ':=') Then
+        Begin
+          Found := True;
+        End
+        Else If (J + 1 < TokenCount) And
+                (TokenPool[J + 1].Kind = TK_OP) And
+                (TokenPool[J + 1].Val = ':=') Then
+        Begin
+          Found := True;
+        End
+        Else If (J > 0) And (TokenPool[J - 1].Kind = TK_KEYWORD) And
+                (StrLowerCase(TokenPool[J - 1].Val) <> 'var') Then
+        Begin
+          Found := True;
+        End
+        Else If (J > 0) And (TokenPool[J - 1].Kind = TK_PUNCT) And
+                ((TokenPool[J - 1].Val = '(') Or
+                 (TokenPool[J - 1].Val = ',') Or
+                 (TokenPool[J - 1].Val = '[')) Then
+        Begin
+          Found := True;
+        End;
+      End;
+      Inc(J);
+    End;
+    If Not Found Then
+      WarnMsg('variable "' + SymTab[I].Name + '" declaree mais jamais utilisee');
+  End;
+End;
+
+{ ---- OptConstFold : replier les expressions constantes -------- }
+{ Parcourt les tokens pour detecter les patterns entier op entier  }
+{ et les remplace par le resultat evalue a la compilation.          }
+{ Supporte : +, -, *, DIV, MOD sur des entiers litteraux.          }
+Procedure OptConstFold;
+Var
+  I       : Integer;
+  A, B, R : LongInt;
+  Op      : TString;
+  Code    : Integer;
+Begin
+  I := 1;
+  While I < TokenCount - 1 Do
+  Begin
+    If (TokenPool[I].Kind = TK_OP) And
+       (TokenPool[I - 1].Kind = TK_INTEGER) And
+       (TokenPool[I + 1].Kind = TK_INTEGER) Then
+    Begin
+      Op := TokenPool[I].Val;
+      Val(TokenPool[I - 1].Val, A, Code);
+      If Code <> 0 Then Begin Inc(I); Continue; End;
+      Val(TokenPool[I + 1].Val, B, Code);
+      If Code <> 0 Then Begin Inc(I); Continue; End;
+
+      R := 0;
+      If Op = '+' Then R := A + B
+      Else If Op = '-' Then R := A - B
+      Else If Op = '*' Then R := A * B
+      Else If (StrLowerCase(Op) = 'div') And (B <> 0) Then R := A Div B
+      Else If (StrLowerCase(Op) = 'mod') And (B <> 0) Then R := A Mod B
+      Else Begin Inc(I); Continue; End;
+
+      { Remplacer les 3 tokens par le resultat }
+      TokenPool[I - 1].Val := IntToStr_(R);
+      TokenPool[I - 1].IntVal := R;
+      { Decaler les tokens }
+      Move(TokenPool[I + 2], TokenPool[I],
+           (TokenCount - I - 2) * SizeOf(TToken));
+      Dec(TokenCount, 2);
+      { Ne pas avancer, re-evaluer au meme index }
+    End
+    Else
+      Inc(I);
+  End;
+End;
+
+{ ---- OptDeadCode : detecter le code mort ---------------------- }
+{ Detecte les patterns IF FALSE THEN et IF 0 THEN dans le code    }
+{ source et emet un avertissement.                                  }
+Procedure OptDeadCode;
+Var
+  I : Integer;
+Begin
+  If Not Opts.Warnings Then Exit;
+  For I := 0 To TokenCount - 3 Do
+  Begin
+    If (TokenPool[I].Kind = TK_KEYWORD) And
+       (StrLowerCase(TokenPool[I].Val) = 'if') Then
+    Begin
+      { IF FALSE THEN -> code mort }
+      If ((TokenPool[I + 1].Kind = TK_KEYWORD) Or
+          (TokenPool[I + 1].Kind = TK_IDENT)) And
+         (StrLowerCase(TokenPool[I + 1].Val) = 'false') And
+         (TokenPool[I + 2].Kind = TK_KEYWORD) And
+         (StrLowerCase(TokenPool[I + 2].Val) = 'then') Then
+        WarnMsg('code mort detecte: IF FALSE THEN (ligne ' +
+                IntToStr_(TokenPool[I].Line) + ')');
+      { IF 0 THEN -> code mort }
+      If (TokenPool[I + 1].Kind = TK_INTEGER) And
+         (TokenPool[I + 1].Val = '0') And
+         (TokenPool[I + 2].Kind = TK_KEYWORD) And
+         (StrLowerCase(TokenPool[I + 2].Val) = 'then') Then
+        WarnMsg('code mort detecte: IF 0 THEN (ligne ' +
+                IntToStr_(TokenPool[I].Line) + ')');
+    End;
+  End;
+End;
+
+{ ---- ParseProgram : parser un programme Pascal complet ------ }
+{ PROGRAM nom [(params)]; [USES ...;] [decls] BEGIN ... END.    }
+{ Genere le fichier JavaScript complet.                          }
+Procedure ParseProgram(Var P : Integer);
+Begin
+  ProgName := 'main';
+
+  { PROGRAM nom ; }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'program') Then
+  Begin
+    Inc(P); { consommer PROGRAM }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+    Begin
+      ProgName := TokenPool[P].Val;
+      Inc(P);
+    End;
+    { Sauter les parametres de programme (output, input) }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      While (P < TokenCount) And
+            Not ((TokenPool[P].Kind = TK_PUNCT) And
+                 (TokenPool[P].Val = ')')) Do
+        Inc(P);
+      If P < TokenCount Then Inc(P);
+    End;
+    { Consommer ; }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ';') Then
+      Inc(P);
+  End;
+
+  EmitComment('Program ' + ProgName);
+  EmitBlankLine;
+
+  { Section USES optionnelle }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'uses') Then
+  Begin
+    ParseUsesClause(P);
+    EmitBlankLine;
+  End;
+
+  { Sections de declaration (CONST, TYPE, VAR, LABEL) }
+  ParseDeclSections(P);
+  EmitBlankLine;
+
+  { Corps principal : BEGIN ... END. }
+  EmitComment('Corps principal');
+  EmitLine('function _main() {');
+  IndentPush;
+
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'begin') Then
+    ParseBeginEndMain(P)
+  Else
+    EmitComment('pas de corps principal trouve');
+
+  IndentPop;
+  EmitLine('}');
+End;
+
+Procedure Run;
+Var
+  I   : Integer;
+  P   : Integer;
+  JS  : TString;
+Begin
+  GlobalInit;
+  ConstInit;
+  ConstRegisterBuiltins;
+  TypeInit;
+  TypeRegisterBuiltins;
+  SymInit;
+  SymRegisterBuiltins;
+  BuiltinSymEnd := SymCount;
+  If Opts.Verbose Then ShowBanner;
+
+  { Ouvrir le fichier source }
+  Assign(LexSrcF, Opts.SrcFile);
+  {$I-}
+  Reset(LexSrcF);
+  {$I+}
+  If IOResult <> 0 Then
+    FatalError('impossible d''ouvrir le fichier source: ' + Opts.SrcFile);
+  LexOpened := True;
+
+  LexInit;
+
+  { Remplir le token pool avec tous les tokens }
+  TokenPoolFill;
+
+  { optimisations simples }
+  OptConstFold;
+  OptDeadCode;
+
+  { Afficher les conversions JS des litteraux en mode debug }
+  If Opts.DebugMode Then
+  Begin
+    WriteLn('--- Litteraux -> JavaScript ---');
+    For I := 0 To TokenCount - 1 Do
+    Begin
+      If (TokenPool[I].Kind = TK_INTEGER) Or
+         (TokenPool[I].Kind = TK_REAL) Or
+         (TokenPool[I].Kind = TK_STRING) Or
+         (TokenPool[I].Kind = TK_CHAR) Then
+        WriteLn('  ', TokenPool[I].Val, ' -> ', LitToJS(TokenPool[I]))
+      Else If (TokenPool[I].Kind = TK_KEYWORD) And
+              ((StrLowerCase(TokenPool[I].Val) = 'true') Or
+               (StrLowerCase(TokenPool[I].Val) = 'false') Or
+               (StrLowerCase(TokenPool[I].Val) = 'nil')) Then
+        WriteLn('  ', TokenPool[I].Val, ' -> ', LitToJS(TokenPool[I]))
+      Else If (TokenPool[I].Kind = TK_IDENT) And
+              ((StrLowerCase(TokenPool[I].Val) = 'true') Or
+               (StrLowerCase(TokenPool[I].Val) = 'false')) Then
+        WriteLn('  ', TokenPool[I].Val, ' -> ', LitToJS(TokenPool[I]));
+    End;
+    WriteLn('--- Fin des litteraux ---');
+
+    { Afficher les conversions d operateurs }
+    WriteLn('--- Operateurs -> JavaScript ---');
+    WriteLn('  :=  -> ', OpToJS(':='));
+    WriteLn('  =   -> ', OpToJS('='));
+    WriteLn('  <>  -> ', OpToJS('<>'));
+    WriteLn('  DIV -> ', OpToJS('DIV'));
+    WriteLn('  MOD -> ', OpToJS('MOD'));
+    WriteLn('  AND -> ', OpToJS('AND'));
+    WriteLn('  OR  -> ', OpToJS('OR'));
+    WriteLn('  NOT -> ', OpToJS('NOT'));
+    WriteLn('  XOR -> ', OpToJS('XOR'));
+    WriteLn('  SHL -> ', OpToJS('SHL'));
+    WriteLn('  SHR -> ', OpToJS('SHR'));
+    WriteLn('  IN  -> ', OpToJS('IN'));
+    WriteLn('--- Fin des operateurs ---');
+
+    { Tester le parseur d expressions sur les expressions trouvees }
+    { Chercher les patterns ident := expr ; et ident = expr ;      }
+    WriteLn('--- Expressions -> JavaScript ---');
+    I := 0;
+    While I < TokenCount - 2 Do
+    Begin
+      { Pattern: ident := expr ; }
+      If (TokenPool[I].Kind = TK_IDENT) And
+         (I + 1 < TokenCount) And
+         (TokenPool[I + 1].Kind = TK_OP) And
+         (TokenPool[I + 1].Val = ':=') Then
+      Begin
+        P := I;
+        JS := ExprToJS(P);
+        WriteLn('  ', TokenPool[I].Val, ' := ... -> ', JS);
+        I := P;
+      End
+      { Pattern: ident = expr ; (constante) }
+      Else If (TokenPool[I].Kind = TK_IDENT) And
+              (I + 1 < TokenCount) And
+              (TokenPool[I + 1].Kind = TK_OP) And
+              (TokenPool[I + 1].Val = '=') And
+              (I >= 1) And
+              Not ((TokenPool[I - 1].Kind = TK_OP) Or
+                   (TokenPool[I - 1].Kind = TK_KEYWORD)) Then
+      Begin
+        P := I;
+        JS := ExprToJS(P);
+        WriteLn('  ', TokenPool[I].Val, ' = ... -> ', JS);
+        I := P;
+      End
+      Else
+        Inc(I);
+    End;
+    WriteLn('--- Fin des expressions ---');
+
+    WriteLn('Tokens dans le pool : ', TokenCount);
+    WriteLn('Constantes predefinies : ', ConstCount);
+    WriteLn('Types predefinis : ', TypeCount);
+    WriteLn('Symboles predefinis : ', SymCount);
+
+    TypeDump;
+    SymDump;
+  End;
+
+  WriteLn('TP2JS: compilation de ', Opts.SrcFile, ' -> ', Opts.OutFile);
+
+  { Ouvrir le fichier de sortie et emettre l en-tete }
+  EmitOpen;
+  EmitHeader;
+  EmitModuleHeader;
+
+  { detecter si le source est un UNIT ou un PROGRAM }
+  P := 0;
+  IsUnitMode := False;
+  UnitInitCount := 0;
+  UnitLoadedCount := 0;
+  If (TokenCount > 0) And (TokenPool[0].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[0].Val) = 'unit') Then
+  Begin
+    { Compiler comme unite }
+    ParseUnit(P);
+  End
+  Else
+  Begin
+    { Compiler comme programme }
+    ParseProgram(P);
+  End;
+
+  { avertissements variables non utilisees }
+  OptWarnUnusedVars;
+
+  { emettre le runtime JavaScript minimal }
+  EmitRuntime;
+
+  { Emettre le pied de page et fermer }
+  EmitFooter;
+  EmitClose;
+
+  WriteLn('TP2JS: fichier genere: ', Opts.OutFile);
+  If IsUnitMode Then
+    WriteLn('TP2JS: unite "', UnitName, '" compilee.')
+  Else
+    WriteLn('TP2JS: programme "', ProgName, '" compile.');
+  If Opts.ModuleES6 Then
+    WriteLn('TP2JS: mode module ES6 actif');
+  If Opts.Pretty Then
+    WriteLn('TP2JS: mode pretty-print actif');
+  If Opts.HtmlMode Then
+    WriteLn('TP2JS: mode HTML actif');
+
+  LexClose;
+  If Opts.Verbose Then ShowStats;
+  Cleanup;
+End;
+
+{ ============================================================
+  PROGRAMME PRINCIPAL
+  ============================================================ }
+Begin
+  ParseArgs;
+  Run;
+  If ErrorCount > 0 Then
+    Halt(EXIT_ERROR)
+  Else
+    Halt(EXIT_OK);
+End.

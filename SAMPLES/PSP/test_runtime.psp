@@ -1,0 +1,66 @@
+<%
+{ test_runtime.psp - Tests runtime minimal (TODO 24) }
+
+var
+  s: String;
+  t: String;
+  n: Integer;
+
+{ --- Test LowerCase --- }
+s := LowerCase('HELLO WORLD');
+write('LowerCase=');
+write(s);
+writeln;
+
+{ --- Test Trim --- }
+s := Trim('  hello  ');
+write('Trim=[');
+write(s);
+write(']');
+writeln;
+
+{ --- Test Delete --- }
+s := 'abcdef';
+Delete(s, 3, 2);
+write('Delete(abcdef,3,2)=');
+write(s);
+writeln;
+
+{ --- Test Insert --- }
+s := 'abef';
+Insert('cd', s, 3);
+write('Insert(cd,abef,3)=');
+write(s);
+writeln;
+
+{ --- Test combinaison --- }
+s := 'Hello World';
+t := LowerCase(s);
+write('lower(Hello World)=');
+write(t);
+writeln;
+
+{ --- Test Delete debut --- }
+s := 'xyzabc';
+Delete(s, 1, 3);
+write('Delete(xyzabc,1,3)=');
+write(s);
+writeln;
+
+{ --- Test Insert debut --- }
+s := 'world';
+Insert('hello ', s, 1);
+write('Insert(hello ,world,1)=');
+write(s);
+writeln;
+
+{ --- Test Trim sans espaces --- }
+s := Trim('nospace');
+write('Trim(nospace)=[');
+write(s);
+write(']');
+writeln;
+
+write('Done');
+writeln;
+%>

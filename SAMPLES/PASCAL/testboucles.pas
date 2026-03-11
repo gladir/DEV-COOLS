@@ -21,7 +21,7 @@ begin
   repeat
     WriteLn('Cette ligne sera affichée une fois');
     j := j + 1;
-  until j < 5;
+  until j >= 5;
   WriteLn('REPEAT terminé (une itération)');
   
   WriteLn('Fin de la démonstration');
