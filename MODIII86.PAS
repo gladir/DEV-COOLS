@@ -41,7 +41,7 @@
                WHILE WITH
              Mode debug -d : affichage de chaque token avec PrintToken
 
-   TODO 03 - LITTERAUX ET CONSTANTES
+   TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
              Entiers decimaux : 0..65535 (CARDINAL) ou -32768..32767 (INTEGER)
              Entiers hexadecimaux : 16_FF, 8_77, 2_1010 (base quelconque)
              Reels : reconnus par le lexeur, traites comme entiers (trunc)
@@ -427,6 +427,7 @@ Const
   MAX_STR       = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
   MAX_IMPORT    = 16;
   STACK_SIZE    = 1024;
+  MAX_TOKEN     = {$IFDEF FPC}16384{$ELSE}2048{$ENDIF};
 
   (* Prefixes de nommage ASM *)
   M3_VAR_PFX  = '_M3V_';     (* variable globale                    *)
@@ -442,6 +443,18 @@ Const
   EXIT_OK    = 0;
   EXIT_ERROR = 1;
   EXIT_USAGE = 2;
+
+  (* Index de types primitifs (futurs, pour TypeTab TODO 06) *)
+  TY_UNKNOWN     = -1;
+  TY_IDX_INTEGER = 0;
+  TY_IDX_CARDINAL= 1;
+  TY_IDX_BOOLEAN = 2;
+  TY_IDX_CHAR    = 3;
+  TY_IDX_REAL    = 4;
+  TY_IDX_LONGREAL= 5;
+  TY_IDX_TEXT    = 6;
+  TY_IDX_NIL     = 7;
+  TY_IDX_VOID    = 8;
 
 (* ============================================================
    TYPES
@@ -480,6 +493,50 @@ Type
     Col    : Integer;       (* colonne source (1-base)             *)
   End;
 
+  (* ---- Segment de donnees (TODO 03) ------------------------- *)
+  TDataKind = (
+    DK_WORD,       (* mot 16 bits (DW)                            *)
+    DK_BYTE,       (* octet (DB)                                  *)
+    DK_STR,        (* chaine ASCIIZ (DB 'abc',0)                  *)
+    DK_ARRAY,      (* tableau (DB n DUP(0))                       *)
+    DK_REC         (* record (DB size DUP(0))                     *)
+  );
+
+  TDataRec = Record
+    LblName   : TString;
+    Kind      : TDataKind;
+    IntVal    : LongInt;
+    StrVal    : TString;
+    ElemCount : Integer;   (* nombre d elements (DK_ARRAY)        *)
+    ElemSize  : Integer;   (* taille d un element (DK_ARRAY)      *)
+    RecSize   : Integer;   (* taille totale en octets (DK_REC)    *)
+  End;
+
+  (* ---- Valeurs d expression (TODO 03) ----------------------- *)
+  TExprKind = (
+    EK_NONE,       (* void / pas de valeur                        *)
+    EK_IMM,        (* valeur immediate dans ImmVal                 *)
+    EK_AX,         (* valeur dans registre AX                      *)
+    EK_MEM         (* adresse memoire [BP+Offset] ou label DATA   *)
+  );
+
+  TExprVal = Record
+    Kind    : TExprKind;
+    ImmVal  : LongInt;     (* valeur immediate ou offset           *)
+    TypeIdx : Integer;     (* index dans TypeTab (futur)           *)
+    Offset  : Integer;     (* offset dans DataTab ou pile          *)
+    SymIdx  : Integer;     (* index dans SymTab (-1 si aucun)     *)
+  End;
+
+  (* ---- Token pool (TODO 03) --------------------------------- *)
+  TPoolToken = Record
+    Kind   : TTokenKind;
+    Val    : TString;
+    IntVal : LongInt;
+    Line   : Integer;
+    Col    : Integer;
+  End;
+
 (* ============================================================
    VARIABLES GLOBALES
    ============================================================ *)
@@ -505,6 +562,15 @@ Var
   LexEOF    : Boolean;
   LexOpened : Boolean;
   CurToken  : TToken;
+
+  (* Segment de donnees (TODO 03) *)
+  DataTab    : Array[0..MAX_DATA-1] Of TDataRec;
+  DataCount  : Integer;
+  LabelGenSeq: LongInt;
+
+  (* Token Pool (TODO 03) *)
+  TokenPool  : Array[0..MAX_TOKEN-1] Of TPoolToken;
+  TokenCount : Integer;
 
 (* ============================================================
    TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1386,6 +1452,621 @@ Begin
   End;
 End;
 
+(* ============================================================
+   TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
+   ============================================================ *)
+
+(* ---- IntToStr : convertir un entier en chaine --------------- *)
+
+Function IntToStr(N : LongInt) : TString;
+Var S : TString;
+Begin
+  Str(N, S);
+  IntToStr := S;
+End;
+
+(* ---- LabelGen : generateur de labels uniques ---------------- *)
+
+Function LabelGen : TString;
+Begin
+  Inc(LabelGenSeq);
+  LabelGen := M3_LBL_PFX + IntToStr(LabelGenSeq);
+End;
+
+(* ---- DataAdd : ajouter une entree dans DataTab -------------- *)
+
+Function DataAdd(Const Lbl : TString; Kind : TDataKind;
+                 AIntVal : LongInt; Const AStrVal : TString) : Integer;
+Begin
+  If DataCount >= MAX_DATA Then
+    FatalError('DataTab pleine (MAX_DATA atteint)');
+  DataTab[DataCount].LblName   := Lbl;
+  DataTab[DataCount].Kind      := Kind;
+  DataTab[DataCount].IntVal    := AIntVal;
+  DataTab[DataCount].StrVal    := AStrVal;
+  DataTab[DataCount].ElemCount := 0;
+  DataTab[DataCount].ElemSize  := 0;
+  DataTab[DataCount].RecSize   := 0;
+  DataAdd := DataCount;
+  Inc(DataCount);
+End;
+
+(* ---- DataAddStr : creer un label et stocker une chaine ------ *)
+(* Retourne le label genere (_M3K_N).                            *)
+
+Function DataAddStr(Const S : TString) : TString;
+Var
+  Lbl : TString;
+Begin
+  Inc(LabelGenSeq);
+  Lbl := M3_STR_PFX + IntToStr(LabelGenSeq);
+  DataAdd(Lbl, DK_STR, 0, S);
+  DataAddStr := Lbl;
+End;
+
+(* ---- DataAddWord : ajouter un mot 16 bits dans DataTab ------ *)
+
+Function DataAddWord(Const Lbl : TString; AIntVal : LongInt) : Integer;
+Begin
+  DataAddWord := DataAdd(Lbl, DK_WORD, AIntVal, '');
+End;
+
+(* ---- DataAddByte : ajouter un octet dans DataTab ------------ *)
+
+Function DataAddByte(Const Lbl : TString; AIntVal : LongInt) : Integer;
+Begin
+  DataAddByte := DataAdd(Lbl, DK_BYTE, AIntVal, '');
+End;
+
+(* ---- DataAddArray : ajouter un tableau dans DataTab --------- *)
+
+Function DataAddArray(Const Lbl : TString;
+                      ECount, ESz : Integer) : Integer;
+Var
+  Idx : Integer;
+Begin
+  Idx := DataAdd(Lbl, DK_ARRAY, 0, '');
+  DataTab[Idx].ElemCount := ECount;
+  DataTab[Idx].ElemSize  := ESz;
+  DataAddArray := Idx;
+End;
+
+(* ---- DataAddRec : ajouter un record dans DataTab ------------ *)
+
+Function DataAddRec(Const Lbl : TString; RSz : Integer) : Integer;
+Var
+  Idx : Integer;
+Begin
+  Idx := DataAdd(Lbl, DK_REC, 0, '');
+  DataTab[Idx].RecSize := RSz;
+  DataAddRec := Idx;
+End;
+
+(* ---- DataFindStr : chercher une chaine deja stockee --------- *)
+(* Retourne l index dans DataTab ou -1 si non trouvee.           *)
+
+Function DataFindStr(Const S : TString) : Integer;
+Var I : Integer;
+Begin
+  DataFindStr := -1;
+  For I := 0 To DataCount - 1 Do
+    If (DataTab[I].Kind = DK_STR) And (DataTab[I].StrVal = S) Then
+    Begin
+      DataFindStr := I;
+      Exit;
+    End;
+End;
+
+(* ---- DataGetOrAddStr : chercher ou ajouter une chaine ------- *)
+(* Deduplication : si la chaine existe deja, retourne son label. *)
+
+Function DataGetOrAddStr(Const S : TString) : TString;
+Var Idx : Integer;
+Begin
+  Idx := DataFindStr(S);
+  If Idx >= 0 Then
+    DataGetOrAddStr := DataTab[Idx].LblName
+  Else
+    DataGetOrAddStr := DataAddStr(S);
+End;
+
+(* ---- DataInit : initialiser le segment de donnees ----------- *)
+
+Procedure DataInit;
+Begin
+  DataCount   := 0;
+  LabelGenSeq := 0;
+End;
+
+(* ---- ExprMakeImm : creer une valeur immediate --------------- *)
+
+Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
+                      Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_IMM;
+  Res.ImmVal  := AVal;
+  Res.TypeIdx := ATypeIdx;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ExprMakeNone : creer une valeur void ------------------- *)
+
+Procedure ExprMakeNone(Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_NONE;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_IDX_VOID;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ExprMakeBool : creer une valeur booleenne -------------- *)
+
+Procedure ExprMakeBool(AVal : Integer; Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_IMM;
+  Res.ImmVal  := AVal;
+  Res.TypeIdx := TY_IDX_BOOLEAN;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- LitEval : evaluer un token litteral en TExprVal -------- *)
+(* Gere : TK_INTEGER, TK_REAL (tronque), TK_STRING,             *)
+(*        TK_CHAR, TK_KEYWORD (TRUE/FALSE/NIL).                 *)
+
+Procedure LitEval(Const T : TToken; Var Res : TExprVal);
+Var
+  Idx : Integer;
+Begin
+  ExprMakeNone(Res);
+
+  Case T.Kind Of
+    (* --- Entiers --- *)
+    TK_INTEGER :
+    Begin
+      Res.Kind    := EK_IMM;
+      Res.ImmVal  := T.IntVal;
+      Res.TypeIdx := TY_IDX_INTEGER;
+    End;
+
+    (* --- Reels (tronques a entier) --- *)
+    TK_REAL :
+    Begin
+      WarnMsg('litteral reel tronque a entier');
+      Res.Kind    := EK_IMM;
+      Res.ImmVal  := T.IntVal;  (* deja tronque par LexScanNumber *)
+      Res.TypeIdx := TY_IDX_REAL;
+    End;
+
+    (* --- Caracteres --- *)
+    TK_CHAR :
+    Begin
+      Res.Kind    := EK_IMM;
+      Res.ImmVal  := T.IntVal;
+      Res.TypeIdx := TY_IDX_CHAR;
+    End;
+
+    (* --- Chaines TEXT --- *)
+    TK_STRING :
+    Begin
+      DataGetOrAddStr(T.Val);
+      Idx := DataFindStr(T.Val);
+      Res.Kind    := EK_MEM;
+      Res.ImmVal  := 0;
+      Res.TypeIdx := TY_IDX_TEXT;
+      Res.Offset  := Idx;
+      Res.SymIdx  := -1;
+    End;
+
+    (* --- Mots-cles speciaux : TRUE, FALSE, NIL --- *)
+    TK_KEYWORD :
+    Begin
+      If T.Val = 'TRUE' Then
+        ExprMakeBool(1, Res)
+      Else If T.Val = 'FALSE' Then
+        ExprMakeBool(0, Res)
+      Else If T.Val = 'NIL' Then
+        ExprMakeImm(0, TY_IDX_NIL, Res);
+    End;
+
+    (* --- Identifiants predeclares : TRUE, FALSE, NIL --- *)
+    TK_IDENT :
+    Begin
+      If StrUpCase(T.Val) = 'TRUE' Then
+        ExprMakeBool(1, Res)
+      Else If StrUpCase(T.Val) = 'FALSE' Then
+        ExprMakeBool(0, Res)
+      Else If StrUpCase(T.Val) = 'NIL' Then
+        ExprMakeImm(0, TY_IDX_NIL, Res);
+    End;
+  End;
+End;
+
+(* ---- ConstEvalAtom : evaluer un atome de constante ---------- *)
+(* Gere : litteral entier/reel/char, TRUE/FALSE/NIL,            *)
+(*        FIRST(T), LAST(T), NUMBER(T), ORD(x), VAL(T,x),      *)
+(*        parentheses, unaire +/- et NOT.                        *)
+
+Function ConstEvalAtom(Var P : Integer) : LongInt;
+Var
+  V : LongInt;
+  S : TString;
+Begin
+  V := 0;
+  If P >= TokenCount Then
+  Begin
+    ConstEvalAtom := 0;
+    Exit;
+  End;
+
+  (* Litteral entier *)
+  If TokenPool[P].Kind = TK_INTEGER Then
+  Begin
+    V := TokenPool[P].IntVal;
+    Inc(P);
+  End
+
+  (* Litteral reel -> tronquer *)
+  Else If TokenPool[P].Kind = TK_REAL Then
+  Begin
+    V := TokenPool[P].IntVal;
+    Inc(P);
+  End
+
+  (* Litteral caractere *)
+  Else If TokenPool[P].Kind = TK_CHAR Then
+  Begin
+    V := TokenPool[P].IntVal;
+    Inc(P);
+  End
+
+  (* Mots-cles speciaux *)
+  Else If TokenPool[P].Kind = TK_KEYWORD Then
+  Begin
+    S := TokenPool[P].Val;
+    If S = 'TRUE' Then V := 1
+    Else If S = 'FALSE' Then V := 0
+    Else If S = 'NIL' Then V := 0
+
+    (* FIRST(INTEGER) = -32768, FIRST(CARDINAL) = 0, FIRST(CHAR) = 0, FIRST(BOOLEAN) = 0 *)
+    Else If S = 'FIRST' Then
+    Begin
+      Inc(P);
+      (* Consommer ( *)
+      If (P < TokenCount) And (TokenPool[P].Val = '(') Then Inc(P);
+      If (P < TokenCount) Then
+      Begin
+        S := StrUpCase(TokenPool[P].Val);
+        If S = 'INTEGER'  Then V := -32768
+        Else If S = 'CARDINAL' Then V := 0
+        Else If S = 'CHAR'     Then V := 0
+        Else If S = 'BOOLEAN'  Then V := 0
+        Else V := 0;
+        Inc(P);
+      End;
+      (* Consommer ) *)
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End
+
+    (* LAST(INTEGER) = 32767, LAST(CARDINAL) = 65535, LAST(CHAR) = 255, LAST(BOOLEAN) = 1 *)
+    Else If S = 'LAST' Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = '(') Then Inc(P);
+      If (P < TokenCount) Then
+      Begin
+        S := StrUpCase(TokenPool[P].Val);
+        If S = 'INTEGER'  Then V := 32767
+        Else If S = 'CARDINAL' Then V := 65535
+        Else If S = 'CHAR'     Then V := 255
+        Else If S = 'BOOLEAN'  Then V := 1
+        Else V := 0;
+        Inc(P);
+      End;
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End
+
+    (* NUMBER(T) : nombre d elements d un type ordinal *)
+    Else If S = 'NUMBER' Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = '(') Then Inc(P);
+      If (P < TokenCount) Then
+      Begin
+        S := StrUpCase(TokenPool[P].Val);
+        If S = 'INTEGER'  Then V := 65536
+        Else If S = 'CARDINAL' Then V := 65536
+        Else If S = 'CHAR'     Then V := 256
+        Else If S = 'BOOLEAN'  Then V := 2
+        Else V := 0;
+        Inc(P);
+      End;
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End
+
+    (* ORD(x) : conversion ordinale *)
+    Else If S = 'ORD' Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = '(') Then Inc(P);
+      V := ConstEvalAtom(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End
+
+    (* VAL(T,x) : conversion vers type T *)
+    Else If S = 'VAL' Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = '(') Then Inc(P);
+      (* Sauter le nom de type *)
+      If (P < TokenCount) Then Inc(P);
+      (* Consommer virgule *)
+      If (P < TokenCount) And (TokenPool[P].Val = ',') Then Inc(P);
+      V := ConstEvalAtom(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End
+
+    Else
+    Begin
+      V := 0;
+      Inc(P);
+    End;
+  End
+
+  (* Identificateur : TRUE/FALSE/NIL ou FIRST/LAST/NUMBER/ORD/VAL *)
+  Else If TokenPool[P].Kind = TK_IDENT Then
+  Begin
+    S := StrUpCase(TokenPool[P].Val);
+    If S = 'TRUE' Then Begin V := 1; Inc(P); End
+    Else If S = 'FALSE' Then Begin V := 0; Inc(P); End
+    Else If S = 'NIL' Then Begin V := 0; Inc(P); End
+
+    Else If S = 'FIRST' Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = '(') Then Inc(P);
+      If (P < TokenCount) Then
+      Begin
+        S := StrUpCase(TokenPool[P].Val);
+        If S = 'INTEGER'  Then V := -32768
+        Else If S = 'CARDINAL' Then V := 0
+        Else If S = 'CHAR'     Then V := 0
+        Else If S = 'BOOLEAN'  Then V := 0
+        Else V := 0;
+        Inc(P);
+      End;
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End
+
+    Else If S = 'LAST' Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = '(') Then Inc(P);
+      If (P < TokenCount) Then
+      Begin
+        S := StrUpCase(TokenPool[P].Val);
+        If S = 'INTEGER'  Then V := 32767
+        Else If S = 'CARDINAL' Then V := 65535
+        Else If S = 'CHAR'     Then V := 255
+        Else If S = 'BOOLEAN'  Then V := 1
+        Else V := 0;
+        Inc(P);
+      End;
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End
+
+    Else If S = 'NUMBER' Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = '(') Then Inc(P);
+      If (P < TokenCount) Then
+      Begin
+        S := StrUpCase(TokenPool[P].Val);
+        If S = 'INTEGER'  Then V := 65536
+        Else If S = 'CARDINAL' Then V := 65536
+        Else If S = 'CHAR'     Then V := 256
+        Else If S = 'BOOLEAN'  Then V := 2
+        Else V := 0;
+        Inc(P);
+      End;
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End
+
+    Else If S = 'ORD' Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = '(') Then Inc(P);
+      V := ConstEvalAtom(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End
+
+    Else If S = 'VAL' Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = '(') Then Inc(P);
+      If (P < TokenCount) Then Inc(P); (* sauter le nom de type *)
+      If (P < TokenCount) And (TokenPool[P].Val = ',') Then Inc(P);
+      V := ConstEvalAtom(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End
+
+    Else
+    Begin
+      V := 0;
+      Inc(P);
+    End;
+  End
+
+  (* Parentheses *)
+  Else If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = '(') Then
+  Begin
+    Inc(P);
+    V := ConstEvalAtom(P);
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+  End
+
+  (* Unaire + *)
+  Else If (TokenPool[P].Kind = TK_OP) And (TokenPool[P].Val = '+') Then
+  Begin
+    Inc(P);
+    V := ConstEvalAtom(P);
+  End
+
+  (* Unaire - *)
+  Else If (TokenPool[P].Kind = TK_OP) And (TokenPool[P].Val = '-') Then
+  Begin
+    Inc(P);
+    V := -ConstEvalAtom(P);
+  End
+
+  (* NOT *)
+  Else If (TokenPool[P].Kind = TK_KEYWORD) And (TokenPool[P].Val = 'NOT') Then
+  Begin
+    Inc(P);
+    If ConstEvalAtom(P) = 0 Then V := 1 Else V := 0;
+  End
+
+  Else
+    Inc(P);
+
+  ConstEvalAtom := V;
+End;
+
+(* ---- ConstEvalExpr : evaluer une expression constante ------- *)
+(* Gere : + - * DIV MOD AND OR = # < > <= >=                    *)
+
+Function ConstEvalExpr(Var P : Integer) : LongInt;
+Var
+  L, R : LongInt;
+  Op   : TString;
+Begin
+  L := ConstEvalAtom(P);
+
+  While (P < TokenCount) And
+        ((TokenPool[P].Kind = TK_OP) Or
+         ((TokenPool[P].Kind = TK_KEYWORD) And
+          ((TokenPool[P].Val = 'DIV') Or (TokenPool[P].Val = 'MOD') Or
+           (TokenPool[P].Val = 'AND') Or (TokenPool[P].Val = 'OR')))) Do
+  Begin
+    Op := TokenPool[P].Val;
+    Inc(P);
+    R := ConstEvalAtom(P);
+
+    If Op = '+' Then L := L + R
+    Else If Op = '-' Then L := L - R
+    Else If Op = '*' Then L := L * R
+    Else If Op = 'DIV' Then
+    Begin
+      If R = 0 Then CompileError('division par zero')
+      Else L := L Div R;
+    End
+    Else If Op = 'MOD' Then
+    Begin
+      If R = 0 Then CompileError('division par zero')
+      Else L := L Mod R;
+    End
+    Else If Op = 'AND' Then
+    Begin
+      If (L <> 0) And (R <> 0) Then L := 1 Else L := 0;
+    End
+    Else If Op = 'OR' Then
+    Begin
+      If (L <> 0) Or (R <> 0) Then L := 1 Else L := 0;
+    End
+    Else If Op = '=' Then
+    Begin If L = R Then L := 1 Else L := 0; End
+    Else If Op = '#' Then
+    Begin If L <> R Then L := 1 Else L := 0; End
+    Else If Op = '<' Then
+    Begin If L < R Then L := 1 Else L := 0; End
+    Else If Op = '>' Then
+    Begin If L > R Then L := 1 Else L := 0; End
+    Else If Op = '<=' Then
+    Begin If L <= R Then L := 1 Else L := 0; End
+    Else If Op = '>=' Then
+    Begin If L >= R Then L := 1 Else L := 0; End
+    Else
+      Break;
+  End;
+
+  ConstEvalExpr := L;
+End;
+
+(* ---- ConstEval : point d entree pour evaluer une constante -- *)
+(* Evaluer les tokens de la position Start a End dans TokenPool. *)
+
+Function ConstEval(StartP, EndP : Integer) : LongInt;
+Var P : Integer;
+Begin
+  P := StartP;
+  ConstEval := ConstEvalExpr(P);
+End;
+
+(* ---- TokenPoolInit : initialiser le pool de tokens ---------- *)
+
+Procedure TokenPoolInit;
+Begin
+  TokenCount := 0;
+End;
+
+(* ---- TokenPoolAdd : ajouter un token au pool ---------------- *)
+
+Procedure TokenPoolAdd(Const T : TToken);
+Begin
+  If TokenCount >= MAX_TOKEN Then
+    FatalError('TokenPool plein (MAX_TOKEN atteint)');
+  TokenPool[TokenCount].Kind   := T.Kind;
+  TokenPool[TokenCount].Val    := T.Val;
+  TokenPool[TokenCount].IntVal := T.IntVal;
+  TokenPool[TokenCount].Line   := T.Line;
+  TokenPool[TokenCount].Col    := T.Col;
+  Inc(TokenCount);
+End;
+
+(* ---- TokenPoolConcatStrings : concatener les chaines adj. --- *)
+(* En Modula-3, "abc" & "def" au niveau des constantes.         *)
+(* Cette passe ne traite que les chaines litterales adjacentes.  *)
+
+Procedure TokenPoolConcatStrings;
+Var
+  I, J : Integer;
+Begin
+  I := 0;
+  While I < TokenCount - 2 Do
+  Begin
+    If (TokenPool[I].Kind = TK_STRING) And
+       (TokenPool[I+1].Kind = TK_OP) And (TokenPool[I+1].Val = '&') And
+       (TokenPool[I+2].Kind = TK_STRING) Then
+    Begin
+      (* Concatener les deux chaines *)
+      TokenPool[I].Val := Copy(TokenPool[I].Val, 1,
+                               Length(TokenPool[I].Val)) +
+                          TokenPool[I+2].Val;
+      (* Supprimer les deux tokens suivants *)
+      For J := I + 1 To TokenCount - 3 Do
+        TokenPool[J] := TokenPool[J + 2];
+      Dec(TokenCount, 2);
+    End
+    Else
+      Inc(I);
+  End;
+End;
+
+(* ---- TokenPoolRegisterStrings : enregistrer les chaines ----- *)
+(* Parcourir le TokenPool et ajouter chaque chaine dans DataTab. *)
+
+Procedure TokenPoolRegisterStrings;
+Var I : Integer;
+Begin
+  For I := 0 To TokenCount - 1 Do
+  Begin
+    If TokenPool[I].Kind = TK_STRING Then
+      DataGetOrAddStr(TokenPool[I].Val);
+  End;
+End;
+
 (* ---- Statistiques ----------------------------------------- *)
 
 Procedure ShowStats;
@@ -1410,20 +2091,35 @@ Begin
 
   If Opts.Verbose Then ShowBanner;
 
+  DataInit;
+  TokenPoolInit;
+
   LexInit;
   LexNextToken;
 
-  (* Boucle de debug : afficher tous les tokens si -d *)
+  (* Phase 1 : lire tous les tokens et les stocker dans TokenPool *)
   While CurToken.Kind <> TK_EOF Do
   Begin
     PrintToken(CurToken);
+    TokenPoolAdd(CurToken);
     LexNextToken;
   End;
   PrintToken(CurToken); (* afficher le token EOF *)
+  TokenPoolAdd(CurToken);
 
   LexClose;
 
-  (* TODO 03+ : ParseCompilationUnit, EmitRuntime, etc. *)
+  (* Phase 2 : concatener les chaines adjacentes et enregistrer *)
+  TokenPoolConcatStrings;
+  TokenPoolRegisterStrings;
+
+  If Opts.Verbose Then
+  Begin
+    WriteLn('  Tokens         : ', TokenCount);
+    WriteLn('  Donnees (DATA) : ', DataCount);
+  End;
+
+  (* TODO 04+ : ParseCompilationUnit, EmitRuntime, etc. *)
 
   If Opts.Verbose Then ShowStats;
   Cleanup;
