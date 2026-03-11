@@ -310,7 +310,7 @@
             Types proceduraux : variables de type procedure/function
               Appel indirect : CALL EAX
 
-  TODO 15 - TABLEAUX, RECORDS, ENSEMBLES ET OBJETS
+  TODO 15 - TABLEAUX, RECORDS, ENSEMBLES ET OBJETS    [IMPLEMENTE]
             ARRAY [lo..hi] OF T : tableau a bornes fixes
               Taille = (hi - lo + 1) * sizeof(T)
               Acces : offset calcule depuis base du tableau
@@ -4422,6 +4422,14 @@ Var
   ArrElem : LongInt;
   ElemType: TString;
   ElemSz  : Integer;
+  FOfs    : Integer;
+  FC      : Integer;
+  FName   : TString;
+  FTName  : TString;
+  FTIdx   : Integer;
+  FSz     : Integer;
+  BaseTN  : TString;
+  BTIdx   : Integer;
 Begin
   I := 0;
   Depth := 0;
@@ -4584,14 +4592,30 @@ Begin
             ArrElem := ArrHi - ArrLo + 1;
             If ArrElem < 1 Then ArrElem := 1;
             ElemSz := TPTypeSizeof(ElemType);
-            If ElemSz < 0 Then ElemSz := 4;
+            If ElemSz < 0 Then
+            Begin
+              BTIdx := TypeFindByName(ElemType);
+              If BTIdx >= 0 Then ElemSz := TypeTab[BTIdx].Size
+              Else ElemSz := 4;
+            End;
+
+            { Creer un type tableau anonyme }
+            TIdx := TypeAdd(TYK_ARRAY, '', ArrElem * ElemSz, 4, False, -1);
+            If TIdx >= 0 Then
+            Begin
+              TypeTab[TIdx].Lo := ArrLo;
+              TypeTab[TIdx].Hi := ArrHi;
+              BTIdx := TypeFindByName(ElemType);
+              If BTIdx < 0 Then BTIdx := TY_IDX_INTEGER;
+              TypeTab[TIdx].BaseTypeIdx := BTIdx;
+            End;
 
             { Creer une entree tableau pour chaque variable }
             For J := 0 To NCount - 1 Do
             Begin
               DIdx := DataAddArray(TP_VAR_PFX + Names[J],
                                     ArrElem, ElemSz);
-              SIdx := SymAdd(Names[J], SK_VAR, -1);
+              SIdx := SymAdd(Names[J], SK_VAR, TIdx);
               If SIdx >= 0 Then
               Begin
                 SymTab[SIdx].IsGlobal := True;
@@ -4600,6 +4624,124 @@ Begin
             End;
 
             { Avancer au ';' }
+            While (I < TokenCount) And
+                  Not ((TokenPool[I].Kind = TK_PUNCT) And
+                       (TokenPool[I].Val = ';')) Do
+              Inc(I);
+            If I < TokenCount Then Inc(I);
+            Continue;
+          End;
+
+          { Verifier si c'est RECORD ... END }
+          If (I < TokenCount) And (TokenPool[I].Kind = TK_KEYWORD) And
+             (StrUpperCase(TokenPool[I].Val) = 'RECORD') Then
+          Begin
+            Inc(I);
+            { Creer un type record anonyme }
+            TIdx := TypeAdd(TYK_RECORD, '', 0, 4, False, -1);
+            FOfs := 0;
+            FC := 0;
+
+            While I < TokenCount Do
+            Begin
+              If (TokenPool[I].Kind = TK_KEYWORD) And
+                 (StrUpperCase(TokenPool[I].Val) = 'END') Then
+              Begin
+                Inc(I);
+                Break;
+              End;
+              If TokenPool[I].Kind <> TK_IDENT Then
+              Begin
+                Inc(I);
+                Continue;
+              End;
+              FName := StrUpperCase(TokenPool[I].Val);
+              Inc(I);
+              If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+                 (TokenPool[I].Val = ':') Then
+                Inc(I);
+              FTName := 'INTEGER';
+              If (I < TokenCount) And
+                 ((TokenPool[I].Kind = TK_IDENT) Or
+                  (TokenPool[I].Kind = TK_KEYWORD)) Then
+              Begin
+                FTName := StrUpperCase(TokenPool[I].Val);
+                Inc(I);
+              End;
+              FSz := TPTypeSizeof(FTName);
+              If FSz < 0 Then
+              Begin
+                FTIdx := TypeFindByName(FTName);
+                If FTIdx >= 0 Then FSz := TypeTab[FTIdx].Size
+                Else FSz := 4;
+              End;
+              FTIdx := TypeFindByName(FTName);
+              If FTIdx < 0 Then FTIdx := TY_IDX_INTEGER;
+              If (TIdx >= 0) And (FC < MAX_FIELDS) Then
+              Begin
+                TypeTab[TIdx].Fields[FC].Name    := FName;
+                TypeTab[TIdx].Fields[FC].TypeIdx := FTIdx;
+                TypeTab[TIdx].Fields[FC].Offset  := FOfs;
+                Inc(FC);
+                TypeTab[TIdx].FieldCount := FC;
+                FOfs := FOfs + FSz;
+                TypeTab[TIdx].Size := FOfs;
+              End;
+              If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+                 (TokenPool[I].Val = ';') Then
+                Inc(I);
+            End;
+
+            For J := 0 To NCount - 1 Do
+            Begin
+              DIdx := DataAddStruct(TP_VAR_PFX + Names[J], FOfs);
+              SIdx := SymAdd(Names[J], SK_VAR, TIdx);
+              If SIdx >= 0 Then
+              Begin
+                SymTab[SIdx].IsGlobal := True;
+                SymTab[SIdx].Offset   := DIdx;
+              End;
+            End;
+
+            While (I < TokenCount) And
+                  Not ((TokenPool[I].Kind = TK_PUNCT) And
+                       (TokenPool[I].Val = ';')) Do
+              Inc(I);
+            If I < TokenCount Then Inc(I);
+            Continue;
+          End;
+
+          { Verifier si c'est SET OF T }
+          If (I < TokenCount) And (TokenPool[I].Kind = TK_KEYWORD) And
+             (StrUpperCase(TokenPool[I].Val) = 'SET') Then
+          Begin
+            Inc(I);
+            If (I < TokenCount) And (TokenPool[I].Kind = TK_KEYWORD) And
+               (StrUpperCase(TokenPool[I].Val) = 'OF') Then
+              Inc(I);
+            BaseTN := 'BYTE';
+            If (I < TokenCount) And
+               ((TokenPool[I].Kind = TK_IDENT) Or
+                (TokenPool[I].Kind = TK_KEYWORD)) Then
+            Begin
+              BaseTN := StrUpperCase(TokenPool[I].Val);
+              Inc(I);
+            End;
+            BTIdx := TypeFindByName(BaseTN);
+            If BTIdx < 0 Then BTIdx := TY_IDX_BYTE;
+            TIdx := TypeAdd(TYK_SET, '', 32, 4, False, BTIdx);
+
+            For J := 0 To NCount - 1 Do
+            Begin
+              DIdx := DataAddStruct(TP_VAR_PFX + Names[J], 32);
+              SIdx := SymAdd(Names[J], SK_VAR, TIdx);
+              If SIdx >= 0 Then
+              Begin
+                SymTab[SIdx].IsGlobal := True;
+                SymTab[SIdx].Offset   := DIdx;
+              End;
+            End;
+
             While (I < TokenCount) And
                   Not ((TokenPool[I].Kind = TK_PUNCT) And
                        (TokenPool[I].Val = ';')) Do
@@ -4642,7 +4784,19 @@ Begin
           { Creer les entrees DataTab et SymTab pour chaque variable }
           For J := 0 To NCount - 1 Do
           Begin
-            DIdx := DataAddGlobalVar(Names[J], TName, 0);
+            { Utiliser DataAddStruct pour les types structures }
+            If (TIdx >= 0) And (TIdx < TypeCount) And
+               ((TypeTab[TIdx].Kind = TYK_RECORD) Or
+                (TypeTab[TIdx].Kind = TYK_OBJECT) Or
+                (TypeTab[TIdx].Kind = TYK_SET)) Then
+              DIdx := DataAddStruct(TP_VAR_PFX + Names[J], TypeTab[TIdx].Size)
+            Else If (TIdx >= 0) And (TIdx < TypeCount) And
+                    (TypeTab[TIdx].Kind = TYK_ARRAY) Then
+              DIdx := DataAddArray(TP_VAR_PFX + Names[J],
+                TypeTab[TIdx].Hi - TypeTab[TIdx].Lo + 1,
+                TypeSizeofIdx(TypeTab[TIdx].BaseTypeIdx))
+            Else
+              DIdx := DataAddGlobalVar(Names[J], TName, 0);
             SIdx := SymAdd(Names[J], SK_VAR, TIdx);
             If SIdx >= 0 Then
             Begin
@@ -6008,6 +6162,654 @@ Begin
   End; { while }
 End;
 
+
+{ ============================================================ }
+{ TODO 15 - TABLEAUX, RECORDS, ENSEMBLES ET OBJETS [IMPLEMENTE] }
+{ ============================================================ }
+
+{ ------------------------------------------------------------ }
+{ ParseTypeDecls : scanner le TokenPool pour traiter les        }
+{ sections TYPE au niveau global.                               }
+{ Gere ARRAY, RECORD, SET, OBJECT, enums, alias, subrange.     }
+{ ------------------------------------------------------------ }
+
+Procedure ParseTypeDecls;
+Var
+  I       : Integer;
+  Depth   : Integer;
+  Up      : TString;
+  TName   : TString;
+  TIdx    : Integer;
+  SIdx    : Integer;
+  FName   : TString;
+  FTName  : TString;
+  FTIdx   : Integer;
+  FOfs    : Integer;
+  FSz     : Integer;
+  FC      : Integer;
+  ArrLo   : LongInt;
+  ArrHi   : LongInt;
+  ArrElem : LongInt;
+  ElemType: TString;
+  ElemSz  : Integer;
+  BaseTN  : TString;
+  BTIdx   : Integer;
+  ObjPar  : TString;
+Begin
+  I := 0;
+  Depth := 0;
+
+  While I < TokenCount Do
+  Begin
+    If (TokenPool[I].Kind = TK_KEYWORD) Then
+    Begin
+      Up := StrUpperCase(TokenPool[I].Val);
+
+      If (Up = 'BEGIN') Or (Up = 'RECORD') Or (Up = 'OBJECT') Or
+         (Up = 'REPEAT') Then
+      Begin
+        Inc(Depth);
+        Inc(I);
+        Continue;
+      End;
+
+      If Up = 'END' Then
+      Begin
+        If Depth > 0 Then Dec(Depth);
+        Inc(I);
+        Continue;
+      End;
+
+      If Up = 'UNTIL' Then
+      Begin
+        If Depth > 0 Then Dec(Depth);
+        Inc(I);
+        Continue;
+      End;
+
+      If Depth > 0 Then
+      Begin
+        Inc(I);
+        Continue;
+      End;
+
+      { --- Section TYPE --- }
+      If Up = 'TYPE' Then
+      Begin
+        Inc(I);
+
+        While I < TokenCount Do
+        Begin
+          { Si on rencontre un mot-cle de section, sortir }
+          If (TokenPool[I].Kind = TK_KEYWORD) Then
+          Begin
+            Up := StrUpperCase(TokenPool[I].Val);
+            If (Up = 'VAR') Or (Up = 'CONST') Or (Up = 'TYPE') Or
+               (Up = 'PROCEDURE') Or (Up = 'FUNCTION') Or
+               (Up = 'BEGIN') Or (Up = 'LABEL') Or
+               (Up = 'USES') Or (Up = 'PROGRAM') Then
+              Break;
+          End;
+
+          { Lire le nom du type }
+          If (TokenPool[I].Kind <> TK_IDENT) Then
+          Begin
+            Inc(I);
+            Continue;
+          End;
+          TName := StrUpperCase(TokenPool[I].Val);
+          Inc(I);
+
+          { Attendre '=' }
+          If (I < TokenCount) And (TokenPool[I].Kind = TK_OP) And
+             (TokenPool[I].Val = '=') Then
+            Inc(I)
+          Else
+          Begin
+            While (I < TokenCount) And
+                  Not ((TokenPool[I].Kind = TK_PUNCT) And
+                       (TokenPool[I].Val = ';')) Do
+              Inc(I);
+            If I < TokenCount Then Inc(I);
+            Continue;
+          End;
+
+          { --- PACKED prefix --- }
+          If (I < TokenCount) And (TokenPool[I].Kind = TK_KEYWORD) And
+             (StrUpperCase(TokenPool[I].Val) = 'PACKED') Then
+            Inc(I);
+
+          If I >= TokenCount Then Break;
+          Up := StrUpperCase(TokenPool[I].Val);
+
+          { --- ARRAY [lo..hi] OF T --- }
+          If (TokenPool[I].Kind = TK_KEYWORD) And (Up = 'ARRAY') Then
+          Begin
+            Inc(I);
+            ArrLo := 0;
+            ArrHi := 0;
+            ElemType := 'INTEGER';
+
+            If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+               (TokenPool[I].Val = '[') Then
+            Begin
+              Inc(I);
+              If (I < TokenCount) And (TokenPool[I].Kind = TK_INTEGER) Then
+              Begin
+                ArrLo := TokenPool[I].IntVal;
+                Inc(I);
+              End;
+              If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+                 (TokenPool[I].Val = '..') Then
+                Inc(I);
+              If (I < TokenCount) And (TokenPool[I].Kind = TK_INTEGER) Then
+              Begin
+                ArrHi := TokenPool[I].IntVal;
+                Inc(I);
+              End;
+              If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+                 (TokenPool[I].Val = ']') Then
+                Inc(I);
+            End;
+
+            If (I < TokenCount) And (TokenPool[I].Kind = TK_KEYWORD) And
+               (StrUpperCase(TokenPool[I].Val) = 'OF') Then
+              Inc(I);
+
+            If (I < TokenCount) And
+               ((TokenPool[I].Kind = TK_IDENT) Or
+                (TokenPool[I].Kind = TK_KEYWORD)) Then
+            Begin
+              ElemType := StrUpperCase(TokenPool[I].Val);
+              Inc(I);
+            End;
+
+            ArrElem := ArrHi - ArrLo + 1;
+            If ArrElem < 1 Then ArrElem := 1;
+            ElemSz := TPTypeSizeof(ElemType);
+            If ElemSz < 0 Then
+            Begin
+              BTIdx := TypeFindByName(ElemType);
+              If BTIdx >= 0 Then
+                ElemSz := TypeTab[BTIdx].Size
+              Else
+                ElemSz := 4;
+            End;
+
+            TIdx := TypeAdd(TYK_ARRAY, TName, ArrElem * ElemSz, 4, False, -1);
+            If TIdx >= 0 Then
+            Begin
+              TypeTab[TIdx].Lo := ArrLo;
+              TypeTab[TIdx].Hi := ArrHi;
+              BTIdx := TypeFindByName(ElemType);
+              If BTIdx < 0 Then BTIdx := TY_IDX_INTEGER;
+              TypeTab[TIdx].BaseTypeIdx := BTIdx;
+            End;
+            SIdx := SymAdd(TName, SK_TYPE, TIdx);
+
+            While (I < TokenCount) And
+                  Not ((TokenPool[I].Kind = TK_PUNCT) And
+                       (TokenPool[I].Val = ';')) Do
+              Inc(I);
+            If I < TokenCount Then Inc(I);
+            Continue;
+          End;
+
+          { --- RECORD ... END --- }
+          If (TokenPool[I].Kind = TK_KEYWORD) And (Up = 'RECORD') Then
+          Begin
+            Inc(I);
+            FC := 0;
+            FOfs := 0;
+
+            TIdx := TypeAdd(TYK_RECORD, TName, 0, 4, False, -1);
+
+            While I < TokenCount Do
+            Begin
+              If (TokenPool[I].Kind = TK_KEYWORD) And
+                 (StrUpperCase(TokenPool[I].Val) = 'END') Then
+              Begin
+                Inc(I);
+                Break;
+              End;
+              If (TokenPool[I].Kind = TK_KEYWORD) And
+                 (StrUpperCase(TokenPool[I].Val) = 'CASE') Then
+              Begin
+                { Variant record: skip to END }
+                While (I < TokenCount) And
+                      Not ((TokenPool[I].Kind = TK_KEYWORD) And
+                           (StrUpperCase(TokenPool[I].Val) = 'END')) Do
+                  Inc(I);
+                Continue;
+              End;
+
+              { Lire le(s) nom(s) de champ }
+              If (TokenPool[I].Kind <> TK_IDENT) Then
+              Begin
+                Inc(I);
+                Continue;
+              End;
+              FName := StrUpperCase(TokenPool[I].Val);
+              Inc(I);
+
+              { Attendre ':' }
+              If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+                 (TokenPool[I].Val = ':') Then
+                Inc(I)
+              Else
+              Begin
+                While (I < TokenCount) And
+                      Not ((TokenPool[I].Kind = TK_PUNCT) And
+                           ((TokenPool[I].Val = ';') Or (TokenPool[I].Val = ')'))) And
+                      Not ((TokenPool[I].Kind = TK_KEYWORD) And
+                           (StrUpperCase(TokenPool[I].Val) = 'END')) Do
+                  Inc(I);
+                If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+                   (TokenPool[I].Val = ';') Then Inc(I);
+                Continue;
+              End;
+
+              { Lire le type du champ }
+              FTName := 'INTEGER';
+              If (I < TokenCount) And
+                 ((TokenPool[I].Kind = TK_IDENT) Or
+                  (TokenPool[I].Kind = TK_KEYWORD)) Then
+              Begin
+                FTName := StrUpperCase(TokenPool[I].Val);
+                Inc(I);
+              End;
+
+              FSz := TPTypeSizeof(FTName);
+              If FSz < 0 Then
+              Begin
+                FTIdx := TypeFindByName(FTName);
+                If FTIdx >= 0 Then
+                  FSz := TypeTab[FTIdx].Size
+                Else
+                  FSz := 4;
+              End;
+              FTIdx := TypeFindByName(FTName);
+              If FTIdx < 0 Then FTIdx := TY_IDX_INTEGER;
+
+              { Enregistrer le champ }
+              If (TIdx >= 0) And (FC < MAX_FIELDS) Then
+              Begin
+                TypeTab[TIdx].Fields[FC].Name    := FName;
+                TypeTab[TIdx].Fields[FC].TypeIdx := FTIdx;
+                TypeTab[TIdx].Fields[FC].Offset  := FOfs;
+                Inc(FC);
+                TypeTab[TIdx].FieldCount := FC;
+                FOfs := FOfs + FSz;
+                TypeTab[TIdx].Size := FOfs;
+              End;
+
+              { Passer le ';' entre champs }
+              If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+                 (TokenPool[I].Val = ';') Then
+                Inc(I);
+            End;
+
+            SIdx := SymAdd(TName, SK_TYPE, TIdx);
+
+            { Passer le ';' apres END }
+            If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+               (TokenPool[I].Val = ';') Then
+              Inc(I);
+            Continue;
+          End;
+
+          { --- SET OF T --- }
+          If (TokenPool[I].Kind = TK_KEYWORD) And (Up = 'SET') Then
+          Begin
+            Inc(I);
+            If (I < TokenCount) And (TokenPool[I].Kind = TK_KEYWORD) And
+               (StrUpperCase(TokenPool[I].Val) = 'OF') Then
+              Inc(I);
+
+            BaseTN := 'BYTE';
+            If (I < TokenCount) And
+               ((TokenPool[I].Kind = TK_IDENT) Or
+                (TokenPool[I].Kind = TK_KEYWORD)) Then
+            Begin
+              BaseTN := StrUpperCase(TokenPool[I].Val);
+              Inc(I);
+            End;
+            BTIdx := TypeFindByName(BaseTN);
+            If BTIdx < 0 Then BTIdx := TY_IDX_BYTE;
+
+            TIdx := TypeAdd(TYK_SET, TName, 32, 4, False, BTIdx);
+            SIdx := SymAdd(TName, SK_TYPE, TIdx);
+
+            While (I < TokenCount) And
+                  Not ((TokenPool[I].Kind = TK_PUNCT) And
+                       (TokenPool[I].Val = ';')) Do
+              Inc(I);
+            If I < TokenCount Then Inc(I);
+            Continue;
+          End;
+
+          { --- OBJECT ... END --- }
+          If (TokenPool[I].Kind = TK_KEYWORD) And (Up = 'OBJECT') Then
+          Begin
+            Inc(I);
+            FC := 0;
+            FOfs := 0;
+            ObjPar := '';
+
+            { Heritage : OBJECT(Parent) }
+            If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+               (TokenPool[I].Val = '(') Then
+            Begin
+              Inc(I);
+              If (I < TokenCount) And
+                 ((TokenPool[I].Kind = TK_IDENT) Or
+                  (TokenPool[I].Kind = TK_KEYWORD)) Then
+              Begin
+                ObjPar := StrUpperCase(TokenPool[I].Val);
+                Inc(I);
+              End;
+              If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+                 (TokenPool[I].Val = ')') Then
+                Inc(I);
+
+              { Copier les champs du parent }
+              BTIdx := TypeFindByName(ObjPar);
+              If (BTIdx >= 0) And (TypeTab[BTIdx].Kind = TYK_OBJECT) Then
+              Begin
+                FC := TypeTab[BTIdx].FieldCount;
+                FOfs := TypeTab[BTIdx].Size;
+              End;
+            End;
+
+            TIdx := TypeAdd(TYK_OBJECT, TName, 0, 4, False, -1);
+
+            { Copier champs du parent si heritage }
+            If (ObjPar <> '') And (BTIdx >= 0) Then
+            Begin
+              If TIdx >= 0 Then
+              Begin
+                TypeTab[TIdx].BaseTypeIdx := BTIdx;
+                For SIdx := 0 To TypeTab[BTIdx].FieldCount - 1 Do
+                Begin
+                  If FC < MAX_FIELDS Then
+                  Begin
+                    TypeTab[TIdx].Fields[SIdx] := TypeTab[BTIdx].Fields[SIdx];
+                  End;
+                End;
+                TypeTab[TIdx].FieldCount := FC;
+                TypeTab[TIdx].Size := FOfs;
+              End;
+            End;
+
+            { Parser les champs et methodes }
+            While I < TokenCount Do
+            Begin
+              If (TokenPool[I].Kind = TK_KEYWORD) And
+                 (StrUpperCase(TokenPool[I].Val) = 'END') Then
+              Begin
+                Inc(I);
+                Break;
+              End;
+
+              { Skip CONSTRUCTOR, DESTRUCTOR, PROCEDURE, FUNCTION }
+              Up := '';
+              If TokenPool[I].Kind = TK_KEYWORD Then
+                Up := StrUpperCase(TokenPool[I].Val);
+              If (Up = 'CONSTRUCTOR') Or (Up = 'DESTRUCTOR') Or
+                 (Up = 'PROCEDURE') Or (Up = 'FUNCTION') Or
+                 (Up = 'VIRTUAL') Or (Up = 'PRIVATE') Or
+                 (Up = 'PUBLIC') Then
+              Begin
+                While (I < TokenCount) And
+                      Not ((TokenPool[I].Kind = TK_PUNCT) And
+                           (TokenPool[I].Val = ';')) And
+                      Not ((TokenPool[I].Kind = TK_KEYWORD) And
+                           (StrUpperCase(TokenPool[I].Val) = 'END')) Do
+                  Inc(I);
+                If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+                   (TokenPool[I].Val = ';') Then
+                  Inc(I);
+                Continue;
+              End;
+
+              { Champ de l objet }
+              If (TokenPool[I].Kind <> TK_IDENT) Then
+              Begin
+                Inc(I);
+                Continue;
+              End;
+              FName := StrUpperCase(TokenPool[I].Val);
+              Inc(I);
+
+              If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+                 (TokenPool[I].Val = ':') Then
+                Inc(I)
+              Else
+              Begin
+                While (I < TokenCount) And
+                      Not ((TokenPool[I].Kind = TK_PUNCT) And
+                           (TokenPool[I].Val = ';')) And
+                      Not ((TokenPool[I].Kind = TK_KEYWORD) And
+                           (StrUpperCase(TokenPool[I].Val) = 'END')) Do
+                  Inc(I);
+                If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+                   (TokenPool[I].Val = ';') Then Inc(I);
+                Continue;
+              End;
+
+              FTName := 'INTEGER';
+              If (I < TokenCount) And
+                 ((TokenPool[I].Kind = TK_IDENT) Or
+                  (TokenPool[I].Kind = TK_KEYWORD)) Then
+              Begin
+                FTName := StrUpperCase(TokenPool[I].Val);
+                Inc(I);
+              End;
+
+              FSz := TPTypeSizeof(FTName);
+              If FSz < 0 Then
+              Begin
+                FTIdx := TypeFindByName(FTName);
+                If FTIdx >= 0 Then
+                  FSz := TypeTab[FTIdx].Size
+                Else
+                  FSz := 4;
+              End;
+              FTIdx := TypeFindByName(FTName);
+              If FTIdx < 0 Then FTIdx := TY_IDX_INTEGER;
+
+              If (TIdx >= 0) And (FC < MAX_FIELDS) Then
+              Begin
+                TypeTab[TIdx].Fields[FC].Name    := FName;
+                TypeTab[TIdx].Fields[FC].TypeIdx := FTIdx;
+                TypeTab[TIdx].Fields[FC].Offset  := FOfs;
+                Inc(FC);
+                TypeTab[TIdx].FieldCount := FC;
+                FOfs := FOfs + FSz;
+                TypeTab[TIdx].Size := FOfs;
+              End;
+
+              If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+                 (TokenPool[I].Val = ';') Then
+                Inc(I);
+            End;
+
+            SIdx := SymAdd(TName, SK_TYPE, TIdx);
+
+            If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+               (TokenPool[I].Val = ';') Then
+              Inc(I);
+            Continue;
+          End;
+
+          { --- Enumeration : (val1, val2, ...) --- }
+          If (TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = '(') Then
+          Begin
+            Inc(I);
+            TIdx := TypeAdd(TYK_ENUM, TName, 4, 4, False, -1);
+            FC := 0;
+            While (I < TokenCount) And
+                  Not ((TokenPool[I].Kind = TK_PUNCT) And
+                       (TokenPool[I].Val = ')')) Do
+            Begin
+              If (TokenPool[I].Kind = TK_IDENT) Then
+              Begin
+                SIdx := SymAdd(StrUpperCase(TokenPool[I].Val), SK_CONST, TIdx);
+                If SIdx >= 0 Then
+                  SymTab[SIdx].ImmVal := FC;
+                Inc(FC);
+              End;
+              Inc(I);
+            End;
+            If I < TokenCount Then Inc(I); { skip ')' }
+            If TIdx >= 0 Then
+              TypeTab[TIdx].EnumCount := FC;
+
+            SIdx := SymAdd(TName, SK_TYPE, TIdx);
+
+            While (I < TokenCount) And
+                  Not ((TokenPool[I].Kind = TK_PUNCT) And
+                       (TokenPool[I].Val = ';')) Do
+              Inc(I);
+            If I < TokenCount Then Inc(I);
+            Continue;
+          End;
+
+          { --- Type alias or subrange --- }
+          If (I < TokenCount) And (TokenPool[I].Kind = TK_INTEGER) Then
+          Begin
+            { Subrange: lo..hi }
+            ArrLo := TokenPool[I].IntVal;
+            Inc(I);
+            If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+               (TokenPool[I].Val = '..') Then
+            Begin
+              Inc(I);
+              ArrHi := 0;
+              If (I < TokenCount) And (TokenPool[I].Kind = TK_INTEGER) Then
+              Begin
+                ArrHi := TokenPool[I].IntVal;
+                Inc(I);
+              End;
+              TIdx := TypeAdd(TYK_SUBRANGE, TName, 4, 4, False, TY_IDX_INTEGER);
+              If TIdx >= 0 Then
+              Begin
+                TypeTab[TIdx].Lo := ArrLo;
+                TypeTab[TIdx].Hi := ArrHi;
+              End;
+              SIdx := SymAdd(TName, SK_TYPE, TIdx);
+            End;
+          End
+          Else If (I < TokenCount) And
+                  ((TokenPool[I].Kind = TK_IDENT) Or
+                   (TokenPool[I].Kind = TK_KEYWORD)) Then
+          Begin
+            { Type alias: Type NewName = OldName }
+            BaseTN := StrUpperCase(TokenPool[I].Val);
+            Inc(I);
+            BTIdx := TypeFindByName(BaseTN);
+            If BTIdx >= 0 Then
+            Begin
+              TIdx := TypeAdd(TypeTab[BTIdx].Kind, TName,
+                TypeTab[BTIdx].Size, TypeTab[BTIdx].Align,
+                TypeTab[BTIdx].IsUnsigned, BTIdx);
+              If (TIdx >= 0) And (TypeTab[BTIdx].Kind = TYK_RECORD) Then
+              Begin
+                TypeTab[TIdx].FieldCount := TypeTab[BTIdx].FieldCount;
+                TypeTab[TIdx].Fields := TypeTab[BTIdx].Fields;
+              End;
+            End
+            Else
+              TIdx := TypeAdd(TYK_INTEGER, TName, 4, 4, False, -1);
+            SIdx := SymAdd(TName, SK_TYPE, TIdx);
+          End;
+
+          { Avancer au ';' }
+          While (I < TokenCount) And
+                Not ((TokenPool[I].Kind = TK_PUNCT) And
+                     (TokenPool[I].Val = ';')) Do
+            Inc(I);
+          If I < TokenCount Then Inc(I);
+        End;
+        Continue;
+      End;
+    End;
+
+    Inc(I);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ FindFieldOffset : trouver l offset d un champ dans un type   }
+{ record ou objet. Retourne l offset, ou -1 si non trouve.     }
+{ FSize retourne la taille du champ.                           }
+{ ------------------------------------------------------------ }
+
+Function FindFieldOffset(TIdx : Integer; Const FName : TString;
+                         Var FSize : Integer) : Integer;
+Var
+  J    : Integer;
+  Up   : TString;
+  FTI  : Integer;
+Begin
+  FindFieldOffset := -1;
+  FSize := 4;
+  If (TIdx < 0) Or (TIdx >= TypeCount) Then Exit;
+  If (TypeTab[TIdx].Kind <> TYK_RECORD) And
+     (TypeTab[TIdx].Kind <> TYK_OBJECT) Then Exit;
+
+  Up := StrUpperCase(FName);
+  For J := 0 To TypeTab[TIdx].FieldCount - 1 Do
+  Begin
+    If TypeTab[TIdx].Fields[J].Name = Up Then
+    Begin
+      FindFieldOffset := TypeTab[TIdx].Fields[J].Offset;
+      FTI := TypeTab[TIdx].Fields[J].TypeIdx;
+      If (FTI >= 0) And (FTI < TypeCount) Then
+        FSize := TypeTab[FTI].Size
+      Else
+        FSize := 4;
+      Exit;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetVarTypeIdx : retourne le TypeIdx d une variable locale,   }
+{ parametre ou globale.                                        }
+{ ------------------------------------------------------------ }
+
+Function GetVarTypeIdx(PI : Integer; Const Name : TString) : Integer;
+Var
+  LI, ParI, SI : Integer;
+  Up : TString;
+Begin
+  GetVarTypeIdx := -1;
+  Up := StrUpperCase(Name);
+
+  If PI >= 0 Then
+  Begin
+    LI := FindLocal(PI, Up);
+    If LI >= 0 Then
+    Begin
+      GetVarTypeIdx := ProcTab[PI].Locals[LI].TypeIdx;
+      Exit;
+    End;
+    ParI := FindParam(PI, Up);
+    If ParI >= 0 Then
+    Begin
+      GetVarTypeIdx := ProcTab[PI].Params[ParI].TypeIdx;
+      Exit;
+    End;
+  End;
+
+  SI := SymFind(Up);
+  If SI >= 0 Then
+  Begin
+    GetVarTypeIdx := SymTab[SI].TypeIdx;
+    Exit;
+  End;
+End;
 { ============================================================ }
 { TODO 10 - EXPRESSIONS PRIMAIRES                 [IMPLEMENTE] }
 { ============================================================ }
@@ -6018,6 +6820,7 @@ Var
   EPEnd   : Integer;   { borne superieure (exclusive)             }
   RetLbl  : TString;   { label de retour de la fonction courante  }
   LastPrimaryName : TString; { dernier ident charge par ParsePrimary }
+  LastVarTypeIdx : Integer; { type index du dernier ident charge }
 
   { Pile de boucles pour Break/Continue (TODO 13) }
   LoopBreakLbl : Array[0..31] Of TString;
@@ -6073,8 +6876,7 @@ Var
   Ref          : TString;
 Begin
   Up := StrUpperCase(Name);
-
-  { Chercher variable locale (seulement si dans une proc) }
+  LastVarTypeIdx := GetVarTypeIdx(PI, Up);
   If PI >= 0 Then
   Begin
     { Lecture du resultat de la fonction : FuncName ou Result }
@@ -6090,6 +6892,16 @@ Begin
     LI := FindLocal(PI, Up);
     If LI >= 0 Then
     Begin
+      If (ProcTab[PI].Locals[LI].TypeIdx >= 0) And
+         (ProcTab[PI].Locals[LI].TypeIdx < TypeCount) And
+         ((TypeTab[ProcTab[PI].Locals[LI].TypeIdx].Kind = TYK_RECORD) Or
+          (TypeTab[ProcTab[PI].Locals[LI].TypeIdx].Kind = TYK_ARRAY) Or
+          (TypeTab[ProcTab[PI].Locals[LI].TypeIdx].Kind = TYK_OBJECT) Or
+          (TypeTab[ProcTab[PI].Locals[LI].TypeIdx].Kind = TYK_SET)) Then
+      Begin
+        EmitInstr('LEA EAX,' + EBPOfs(ProcTab[PI].Locals[LI].Offset));
+        Exit;
+      End;
       If ProcTab[PI].Locals[LI].Size = 1 Then
         EmitInstr('MOVZX EAX,BYTE PTR ' + EBPOfs(ProcTab[PI].Locals[LI].Offset))
       Else
@@ -6124,6 +6936,15 @@ Begin
     If SymTab[SI].Kind = SK_VAR Then
     Begin
       Ref := SymTab[SI].MangledName;
+      If (SymTab[SI].TypeIdx >= 0) And (SymTab[SI].TypeIdx < TypeCount) And
+         ((TypeTab[SymTab[SI].TypeIdx].Kind = TYK_RECORD) Or
+          (TypeTab[SymTab[SI].TypeIdx].Kind = TYK_ARRAY) Or
+          (TypeTab[SymTab[SI].TypeIdx].Kind = TYK_OBJECT) Or
+          (TypeTab[SymTab[SI].TypeIdx].Kind = TYK_SET)) Then
+      Begin
+        EmitInstr('LEA EAX,[' + Ref + ']');
+        Exit;
+      End;
       If TypeSizeofIdx(SymTab[SI].TypeIdx) = 1 Then
         EmitInstr('MOVZX EAX,BYTE PTR [' + Ref + ']')
       Else
@@ -6133,7 +6954,14 @@ Begin
   End;
 
   { Par defaut : globale }
-  EmitInstr('MOV EAX,DWORD PTR [' + TP_VAR_PFX + Up + ']');
+  If (LastVarTypeIdx >= 0) And (LastVarTypeIdx < TypeCount) And
+     ((TypeTab[LastVarTypeIdx].Kind = TYK_RECORD) Or
+      (TypeTab[LastVarTypeIdx].Kind = TYK_ARRAY) Or
+      (TypeTab[LastVarTypeIdx].Kind = TYK_OBJECT) Or
+      (TypeTab[LastVarTypeIdx].Kind = TYK_SET)) Then
+    EmitInstr('LEA EAX,[' + TP_VAR_PFX + Up + ']')
+  Else
+    EmitInstr('MOV EAX,DWORD PTR [' + TP_VAR_PFX + Up + ']');
 End;
 
 { ------------------------------------------------------------ }
@@ -6371,6 +7199,7 @@ Var
   ParI   : Integer;
 Begin
   LastPrimaryName := '';
+  LastVarTypeIdx := -1;
 
   If EPAtEnd Then Exit;
 
@@ -6767,6 +7596,7 @@ Begin
 
     { Variable ou constante : charger dans EAX }
     LastPrimaryName := Up;
+    LastVarTypeIdx := GetVarTypeIdx(PI, Up);
     GenLoadVar(PI, Up);
     Inc(EP);
     Exit;
@@ -6793,6 +7623,10 @@ End;
 Procedure ParsePostfix(PI : Integer);
 Var
   Up : TString;
+  ElemSz : Integer;
+  FOfs : Integer;
+  FSize : Integer;
+  SavedTypeIdx : Integer;
 Begin
   While Not EPAtEnd Do
   Begin
@@ -6809,28 +7643,91 @@ Begin
     If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = '[') Then
     Begin
       Inc(EP);
-      EmitInstr('PUSH EAX');
+      SavedTypeIdx := LastVarTypeIdx;  { sauvegarder le type avant ParseExpr }
+      EmitInstr('PUSH EAX');         { sauvegarder adresse base }
       ParseExpr(PI);
-      { EAX = index, [ESP] = base address or array value }
-      EmitInstr('SHL EAX,2');  { multiplie par 4 (DWORD) }
+      LastVarTypeIdx := SavedTypeIdx;  { restaurer le type du tableau }
+      { EAX = index, [ESP] = base address }
+      { Soustraire borne inferieure si necessaire }
+      If (LastVarTypeIdx >= 0) And (LastVarTypeIdx < TypeCount) And
+         (TypeTab[LastVarTypeIdx].Kind = TYK_ARRAY) And
+         (TypeTab[LastVarTypeIdx].Lo <> 0) Then
+        EmitInstr('SUB EAX,' + IntToStr_(TypeTab[LastVarTypeIdx].Lo));
+      { Multiplier par la taille de l element }
+      If (LastVarTypeIdx >= 0) And (LastVarTypeIdx < TypeCount) And
+         (TypeTab[LastVarTypeIdx].Kind = TYK_ARRAY) And
+         (TypeTab[LastVarTypeIdx].BaseTypeIdx >= 0) Then
+      Begin
+        ElemSz := TypeSizeofIdx(TypeTab[LastVarTypeIdx].BaseTypeIdx);
+        If ElemSz = 1 Then
+          { pas de multiplication }
+        Else If ElemSz = 2 Then
+          EmitInstr('SHL EAX,1')
+        Else If ElemSz = 4 Then
+          EmitInstr('SHL EAX,2')
+        Else If ElemSz = 8 Then
+          EmitInstr('SHL EAX,3')
+        Else
+          EmitInstr('IMUL EAX,' + IntToStr_(ElemSz));
+        LastVarTypeIdx := TypeTab[LastVarTypeIdx].BaseTypeIdx;
+      End
+      Else
+        EmitInstr('SHL EAX,2');  { par defaut DWORD }
       EmitInstr('POP EBX');
       EmitInstr('ADD EBX,EAX');
-      EmitInstr('MOV EAX,[EBX]');
+      { Charger la valeur selon la taille }
+      If (LastVarTypeIdx >= 0) And (LastVarTypeIdx < TypeCount) Then
+      Begin
+        If TypeTab[LastVarTypeIdx].Size = 1 Then
+          EmitInstr('MOVZX EAX,BYTE PTR [EBX]')
+        Else If (TypeTab[LastVarTypeIdx].Kind = TYK_RECORD) Or
+                (TypeTab[LastVarTypeIdx].Kind = TYK_OBJECT) Then
+          EmitInstr('LEA EAX,[EBX]')
+        Else
+          EmitInstr('MOV EAX,[EBX]');
+      End
+      Else
+        EmitInstr('MOV EAX,[EBX]');
       EPMatch(']');
       Continue;
     End;
 
-    { Acces champ : .field }
+    { Acces champ : .field (record/objet) }
     If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = '.') Then
     Begin
       Inc(EP);
-      { Pour l instant, consommer le nom du champ }
       If Not EPAtEnd Then
       Begin
         Up := StrUpperCase(TokenPool[EP].Val);
         Inc(EP);
-        { TODO: calculer l'offset du champ dans le record }
-        EmitComment('champ: ' + Up);
+        FSize := 4;
+        FOfs := FindFieldOffset(LastVarTypeIdx, Up, FSize);
+        If FOfs >= 0 Then
+        Begin
+          If FOfs > 0 Then
+            EmitInstr('ADD EAX,' + IntToStr_(FOfs));
+          { Mettre a jour le type courant }
+          If (LastVarTypeIdx >= 0) And (LastVarTypeIdx < TypeCount) Then
+          Begin
+            For ElemSz := 0 To TypeTab[LastVarTypeIdx].FieldCount - 1 Do
+              If TypeTab[LastVarTypeIdx].Fields[ElemSz].Name = Up Then
+              Begin
+                LastVarTypeIdx := TypeTab[LastVarTypeIdx].Fields[ElemSz].TypeIdx;
+                Break;
+              End;
+          End;
+          { Charger la valeur du champ }
+          If (LastVarTypeIdx >= 0) And (LastVarTypeIdx < TypeCount) And
+             ((TypeTab[LastVarTypeIdx].Kind = TYK_RECORD) Or
+              (TypeTab[LastVarTypeIdx].Kind = TYK_OBJECT)) Then
+            { EAX pointe deja sur le sous-record }
+          Else If FSize = 1 Then
+            EmitInstr('MOVZX EAX,BYTE PTR [EAX]')
+          Else
+            EmitInstr('MOV EAX,[EAX]');
+        End
+        Else
+          EmitComment('champ inconnu: ' + Up);
       End;
       Continue;
     End;
@@ -8136,6 +9033,10 @@ Var
   VName : TString;
   SI    : Integer;
   LI    : Integer;
+  TIdx    : Integer;
+  FOfs    : Integer;
+  FSize   : Integer;
+  ElemSz  : Integer;
 Begin
   If EPAtEnd Then Exit;
 
@@ -8444,6 +9345,104 @@ Begin
     Inc(EP);
     If Not EPAtEnd Then
     Begin
+      { Affectation tableau : ident[index] := expr }
+      If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = '[') Then
+      Begin
+        Inc(EP);
+        LastVarTypeIdx := GetVarTypeIdx(PI, VName);
+        TIdx := LastVarTypeIdx;        { sauvegarder le type du tableau }
+        { Calculer l adresse de l element }
+        GenLoadAddr(PI, VName);
+        EmitInstr('PUSH EAX');         { sauvegarder adresse base }
+        ParseExpr(PI);                 { EAX = index }
+        LastVarTypeIdx := TIdx;        { restaurer le type du tableau }
+        { Soustraire borne inferieure }
+        If (LastVarTypeIdx >= 0) And (LastVarTypeIdx < TypeCount) And
+           (TypeTab[LastVarTypeIdx].Kind = TYK_ARRAY) And
+           (TypeTab[LastVarTypeIdx].Lo <> 0) Then
+          EmitInstr('SUB EAX,' + IntToStr_(TypeTab[LastVarTypeIdx].Lo));
+        { Multiplier par la taille de l element }
+        If (LastVarTypeIdx >= 0) And (LastVarTypeIdx < TypeCount) And
+           (TypeTab[LastVarTypeIdx].Kind = TYK_ARRAY) And
+           (TypeTab[LastVarTypeIdx].BaseTypeIdx >= 0) Then
+        Begin
+          ElemSz := TypeSizeofIdx(TypeTab[LastVarTypeIdx].BaseTypeIdx);
+          If ElemSz = 1 Then
+            { rien }
+          Else If ElemSz = 2 Then
+            EmitInstr('SHL EAX,1')
+          Else If ElemSz = 4 Then
+            EmitInstr('SHL EAX,2')
+          Else If ElemSz = 8 Then
+            EmitInstr('SHL EAX,3')
+          Else
+            EmitInstr('IMUL EAX,' + IntToStr_(ElemSz));
+        End
+        Else
+          EmitInstr('SHL EAX,2');
+        EmitInstr('POP EBX');
+        EmitInstr('ADD EBX,EAX');
+        EmitInstr('PUSH EBX');         { sauvegarder adresse element }
+        EPMatch(']');
+        { Attendre ':=' }
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_OP) And
+           (TokenPool[EP].Val = ':=') Then
+        Begin
+          Inc(EP);
+          ParseExpr(PI);               { EAX = valeur }
+          EmitInstr('POP EBX');
+          { Stocker selon la taille de l element }
+          If (TIdx >= 0) And (TIdx < TypeCount) And
+             (TypeTab[TIdx].Kind = TYK_ARRAY) And
+             (TypeTab[TIdx].BaseTypeIdx >= 0) And
+             (TypeSizeofIdx(TypeTab[TIdx].BaseTypeIdx) = 1) Then
+            EmitInstr('MOV BYTE PTR [EBX],AL')
+          Else
+            EmitInstr('MOV [EBX],EAX');
+        End;
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+           (TokenPool[EP].Val = ';') Then
+          Inc(EP);
+        Exit;
+      End;
+
+      { Affectation champ : ident.field := expr }
+      If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = '.') Then
+      Begin
+        Inc(EP);
+        If Not EPAtEnd Then
+        Begin
+          Up := StrUpperCase(TokenPool[EP].Val);
+          Inc(EP);
+          LastVarTypeIdx := GetVarTypeIdx(PI, VName);
+          FSize := 4;
+          FOfs := FindFieldOffset(LastVarTypeIdx, Up, FSize);
+          If FOfs >= 0 Then
+          Begin
+            GenLoadAddr(PI, VName);
+            If FOfs > 0 Then
+              EmitInstr('ADD EAX,' + IntToStr_(FOfs));
+            EmitInstr('PUSH EAX');     { sauvegarder adresse champ }
+            { Attendre ':=' }
+            If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_OP) And
+               (TokenPool[EP].Val = ':=') Then
+            Begin
+              Inc(EP);
+              ParseExpr(PI);           { EAX = valeur }
+              EmitInstr('POP EBX');
+              If FSize = 1 Then
+                EmitInstr('MOV BYTE PTR [EBX],AL')
+              Else
+                EmitInstr('MOV [EBX],EAX');
+            End;
+          End;
+        End;
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+           (TokenPool[EP].Val = ';') Then
+          Inc(EP);
+        Exit;
+      End;
+
       { Affectation ident := expr }
       If (TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = ':=') Then
       Begin
@@ -8878,6 +9877,9 @@ Begin
   DataEmittedCount := 0;
   EmitLabelSeq := 0;
   StaticVarSeq := 0;
+
+  { Analyser les declarations TYPE (TODO 15) }
+  ParseTypeDecls;
 
   { Analyser les declarations globales VAR et CONST (TODO 08) }
   ParseDataDecls;
