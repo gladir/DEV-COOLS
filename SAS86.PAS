@@ -503,7 +503,8 @@ Const
   FMT_HIGH_BOUND = 32767;  (* borne haute ouverte (HIGH) pour formats *)
   MAX_MACVAR     = 128;    (* nombre max de macro-variables          *)
   MAX_MACRO      = 32;     (* nombre max de macros %MACRO/%MEND     *)
-  MAX_MACRO_BODY = 4096;   (* taille max du corps d une macro (car.) *)
+  MAX_MACRO_BODY = 250;    (* taille max du corps d une macro (car.) *)
+                           (* limite par String[255] en mode TP     *)
   MAX_MACRO_PARAM= 16;     (* nombre max de parametres par macro    *)
 
   (* Caracteres speciaux (accolades = delimiteurs d indices tableau) *)
@@ -8220,7 +8221,7 @@ Begin
         End;
       End;
     End;
-    If Length(MBody) < 250 Then
+    If Length(MBody) < MAX_MACRO_BODY Then
     Begin
       If MBody <> '' Then MBody := MBody + ' ';
       MBody := MBody + CurToken.Val;
@@ -9004,8 +9005,7 @@ Begin
     End
     Else
       FuncArgs := '';
-    (* Evaluer et stocker dans _SASM_RESULT *)
-    PctName := Copy(StrUpperCase(CurToken.Val), 1, 0);
+    (* Evaluer la fonction macro (resultat est un commentaire ASM) *)
     EmitComment('macro function result (stub)');
     If CurToken.Kind = TK_SEMICOLON Then
       ParserAdvance;
