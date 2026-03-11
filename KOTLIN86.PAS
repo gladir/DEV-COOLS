@@ -187,7 +187,7 @@
             Groupement parenthese : (expr)
             Interpolation chaine : "texte $var texte" -> concat multiple
 
-  TODO 11 - EXPRESSIONS BINAIRES (PRATT)
+  TODO 11 - EXPRESSIONS BINAIRES (PRATT) [IMPLEMENTE]
             ParseExprPrec(MinPrec) : boucle Pratt complete
             Arithmetique entiere : ADD/SUB/IMUL/IDIV pour +, -, *, /
             Modulo : IDIV -> resultat dans DX (reste)
@@ -2207,6 +2207,8 @@ Begin
   Else If (Op = 'in')  Or (Op = '!in') Or
           (Op = 'is')  Or (Op = '!is') Then BinOpPrec := 7
   Else If Op = '?:'   Then BinOpPrec := 8
+  Else If (Op = 'shl') Or (Op = 'shr') Or (Op = 'ushr') Or
+          (Op = 'and') Or (Op = 'or') Or (Op = 'xor') Then BinOpPrec := 8
   Else If (Op = '+')  Or (Op = '-') Then BinOpPrec := 9
   Else If (Op = '*')  Or (Op = '/') Or (Op = '%') Then BinOpPrec := 10
   Else If (Op = 'as') Or (Op = 'as?') Then BinOpPrec := 11
@@ -2567,6 +2569,21 @@ Begin
       Exit;
     End;
   End;
+  (* Operateur unaire inv (bitwise NOT) comme identifiant *)
+  If (CurToken.Kind = TK_IDENT) And (CurToken.Val = 'inv') Then
+  Begin
+    ParserAdvance;
+    ParseUnary(Res);
+    If Res.Kind = EK_IMM Then
+      ExprMakeImm(Not Res.ImmVal, TY_IDX_INT, Res)
+    Else
+    Begin
+      ExprFlushToAX(Res);
+      EmitInstr('NOT    AX');
+      Res.Kind := EK_AX;
+    End;
+    Exit;
+  End;
   (* Pas d operateur unaire : appeler ParsePrimary *)
   ParsePrimary(Res);
   (* Postfixe !! (not-null assertion) *)
@@ -2615,6 +2632,17 @@ Begin
     Begin
       If (CurToken.Val = 'in') Or (CurToken.Val = 'is') Or
          (CurToken.Val = 'as') Then
+      Begin
+        Op   := CurToken.Val;
+        Prec := BinOpPrec(Op);
+      End;
+    End
+    (* Detecter operateurs infixes Kotlin : shl, shr, ushr, and, or, xor *)
+    Else If CurToken.Kind = TK_IDENT Then
+    Begin
+      If (CurToken.Val = 'shl') Or (CurToken.Val = 'shr') Or
+         (CurToken.Val = 'ushr') Or (CurToken.Val = 'and') Or
+         (CurToken.Val = 'or') Or (CurToken.Val = 'xor') Then
       Begin
         Op   := CurToken.Val;
         Prec := BinOpPrec(Op);
@@ -2767,7 +2795,13 @@ Begin
       Continue;
     End;
 
-    (* ---- Operateurs standards : recurser cote droit ---- *)
+    (* ---- Operateurs standards : sauvegarder gauche, recurser droit --- *)
+    If Res.Kind <> EK_IMM Then
+    Begin
+      ExprFlushToAX(Res);
+      EmitInstrA('PUSH', 'AX');
+    End;
+
     If BinOpIsRight(Op) Then
       ParseExprPrec(Prec, Right)
     Else
@@ -2807,6 +2841,18 @@ Begin
         ExprMakeBool(Ord(Res.ImmVal > Right.ImmVal), Res)
       Else If Op = '>=' Then
         ExprMakeBool(Ord(Res.ImmVal >= Right.ImmVal), Res)
+      Else If Op = 'shl' Then
+        ExprMakeImm(Res.ImmVal Shl Right.ImmVal, TY_IDX_INT, Res)
+      Else If Op = 'shr' Then
+        ExprMakeImm(Res.ImmVal Shr Right.ImmVal, TY_IDX_INT, Res)
+      Else If Op = 'ushr' Then
+        ExprMakeImm(Res.ImmVal Shr Right.ImmVal, TY_IDX_INT, Res)
+      Else If Op = 'and' Then
+        ExprMakeImm(Res.ImmVal And Right.ImmVal, TY_IDX_INT, Res)
+      Else If Op = 'or' Then
+        ExprMakeImm(Res.ImmVal Or Right.ImmVal, TY_IDX_INT, Res)
+      Else If Op = 'xor' Then
+        ExprMakeImm(Res.ImmVal Xor Right.ImmVal, TY_IDX_INT, Res)
       Else
       Begin
         (* Op inconnu ou non pliable : resultat dans AX *)
@@ -2816,9 +2862,147 @@ Begin
     End
     Else
     Begin
-      (* Non constant : resultat dans AX (emission dans TODO 11) *)
-      Res.Kind    := EK_AX;
-      Res.TypeIdx := TY_IDX_INT;
+      (* TODO 11 : emission binaire pour expressions non constantes *)
+      (* Charger droite dans AX, deplacer vers BX, restaurer gauche *)
+      ExprFlushToAX(Right);
+      EmitInstrAB('MOV', 'BX', 'AX');
+      If Res.Kind = EK_IMM Then
+        EmitInstrAB('MOV', 'AX', IntToStr(Res.ImmVal))
+      Else
+        EmitInstrA('POP', 'AX');
+      (* AX = gauche, BX = droite *)
+      If Op = '+' Then
+        EmitInstrAB('ADD', 'AX', 'BX')
+      Else If Op = '-' Then
+        EmitInstrAB('SUB', 'AX', 'BX')
+      Else If Op = '*' Then
+        EmitInstrA('IMUL', 'BX')
+      Else If Op = '/' Then
+      Begin
+        LblSkip := LabelGen;
+        LblEnd  := LabelGen;
+        EmitInstrAB('CMP', 'BX', '0');
+        EmitInstrA('JE', LblSkip);
+        EmitInstr('CWD');
+        EmitInstrA('IDIV', 'BX');
+        EmitInstrA('JMP', LblEnd);
+        EmitLabel(LblSkip);
+        EmitInstrAB('XOR', 'AX', 'AX');
+        EmitLabel(LblEnd);
+      End
+      Else If Op = '%' Then
+      Begin
+        LblSkip := LabelGen;
+        LblEnd  := LabelGen;
+        EmitInstrAB('CMP', 'BX', '0');
+        EmitInstrA('JE', LblSkip);
+        EmitInstr('CWD');
+        EmitInstrA('IDIV', 'BX');
+        EmitInstrAB('MOV', 'AX', 'DX');
+        EmitInstrA('JMP', LblEnd);
+        EmitLabel(LblSkip);
+        EmitInstrAB('XOR', 'AX', 'AX');
+        EmitLabel(LblEnd);
+      End
+      Else If (Op = '==') Or (Op = '===') Then
+      Begin
+        LblSkip := LabelGen;
+        LblEnd  := LabelGen;
+        EmitInstrAB('CMP', 'AX', 'BX');
+        EmitInstrA('JE', LblSkip);
+        EmitInstrAB('XOR', 'AX', 'AX');
+        EmitInstrA('JMP', LblEnd);
+        EmitLabel(LblSkip);
+        EmitInstrAB('MOV', 'AX', '1');
+        EmitLabel(LblEnd);
+      End
+      Else If (Op = '!=') Or (Op = '!==') Then
+      Begin
+        LblSkip := LabelGen;
+        LblEnd  := LabelGen;
+        EmitInstrAB('CMP', 'AX', 'BX');
+        EmitInstrA('JNE', LblSkip);
+        EmitInstrAB('XOR', 'AX', 'AX');
+        EmitInstrA('JMP', LblEnd);
+        EmitLabel(LblSkip);
+        EmitInstrAB('MOV', 'AX', '1');
+        EmitLabel(LblEnd);
+      End
+      Else If Op = '<' Then
+      Begin
+        LblSkip := LabelGen;
+        LblEnd  := LabelGen;
+        EmitInstrAB('CMP', 'AX', 'BX');
+        EmitInstrA('JL', LblSkip);
+        EmitInstrAB('XOR', 'AX', 'AX');
+        EmitInstrA('JMP', LblEnd);
+        EmitLabel(LblSkip);
+        EmitInstrAB('MOV', 'AX', '1');
+        EmitLabel(LblEnd);
+      End
+      Else If Op = '<=' Then
+      Begin
+        LblSkip := LabelGen;
+        LblEnd  := LabelGen;
+        EmitInstrAB('CMP', 'AX', 'BX');
+        EmitInstrA('JLE', LblSkip);
+        EmitInstrAB('XOR', 'AX', 'AX');
+        EmitInstrA('JMP', LblEnd);
+        EmitLabel(LblSkip);
+        EmitInstrAB('MOV', 'AX', '1');
+        EmitLabel(LblEnd);
+      End
+      Else If Op = '>' Then
+      Begin
+        LblSkip := LabelGen;
+        LblEnd  := LabelGen;
+        EmitInstrAB('CMP', 'AX', 'BX');
+        EmitInstrA('JG', LblSkip);
+        EmitInstrAB('XOR', 'AX', 'AX');
+        EmitInstrA('JMP', LblEnd);
+        EmitLabel(LblSkip);
+        EmitInstrAB('MOV', 'AX', '1');
+        EmitLabel(LblEnd);
+      End
+      Else If Op = '>=' Then
+      Begin
+        LblSkip := LabelGen;
+        LblEnd  := LabelGen;
+        EmitInstrAB('CMP', 'AX', 'BX');
+        EmitInstrA('JGE', LblSkip);
+        EmitInstrAB('XOR', 'AX', 'AX');
+        EmitInstrA('JMP', LblEnd);
+        EmitLabel(LblSkip);
+        EmitInstrAB('MOV', 'AX', '1');
+        EmitLabel(LblEnd);
+      End
+      Else If Op = 'shl' Then
+      Begin
+        EmitInstrAB('MOV', 'CL', 'BL');
+        EmitInstrAB('SHL', 'AX', 'CL');
+      End
+      Else If Op = 'shr' Then
+      Begin
+        EmitInstrAB('MOV', 'CL', 'BL');
+        EmitInstrAB('SAR', 'AX', 'CL');
+      End
+      Else If Op = 'ushr' Then
+      Begin
+        EmitInstrAB('MOV', 'CL', 'BL');
+        EmitInstrAB('SHR', 'AX', 'CL');
+      End
+      Else If Op = 'and' Then
+        EmitInstrAB('AND', 'AX', 'BX')
+      Else If Op = 'or' Then
+        EmitInstrAB('OR', 'AX', 'BX')
+      Else If Op = 'xor' Then
+        EmitInstrAB('XOR', 'AX', 'BX');
+      Res.Kind := EK_AX;
+      If (Op = '==') Or (Op = '!=') Or (Op = '===') Or (Op = '!==') Or
+         (Op = '<') Or (Op = '<=') Or (Op = '>') Or (Op = '>=') Then
+        Res.TypeIdx := TY_IDX_BOOLEAN
+      Else
+        Res.TypeIdx := TY_IDX_INT;
     End;
   Until False;
   (* ---- Assignation : = += -= *= /= %= ---- *)
