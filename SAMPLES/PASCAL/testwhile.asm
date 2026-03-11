@@ -1,5 +1,5 @@
 ; TPCW32 - Compilateur Turbo Pascal -> ASM 80386 Win32
-; Genere automatiquement a partir de : SAMPLES/PASCAL/testwhile.pas
+; Genere automatiquement a partir de : /home/runner/work/DEV-COOLS/DEV-COOLS/SAMPLES/PASCAL/testwhile.pas
 
 .386
 .MODEL FLAT, STDCALL
