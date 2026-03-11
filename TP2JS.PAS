@@ -412,7 +412,7 @@
                TextMode(Mode) -> changer le mode texte (stub)
                CO80, BW80, CO40, BW40, Mono, Font8x8 -> constantes de mode
 
-   TODO 20 - UNITE DOS
+   TODO 20 - UNITE DOS [IMPLEMENTE]
              Types :
                DateTime = record Year,Month,Day,Hour,Min,Sec: Word end
                SearchRec = record Attr,Time,Size,Name... end
@@ -2036,6 +2036,14 @@ Begin
   ConstAdd('CO80',    '3',   TK_INTEGER, 3,   0.0, '', False);
   ConstAdd('Mono',    '7',   TK_INTEGER, 7,   0.0, '', False);
   ConstAdd('Font8x8', '256', TK_INTEGER, 256, 0.0, '', False);
+  { TODO 20 : constantes DOS - attributs de fichier }
+  ConstAdd('ReadOnly',  '1',   TK_INTEGER, 1,   0.0, '', False);
+  ConstAdd('Hidden',    '2',   TK_INTEGER, 2,   0.0, '', False);
+  ConstAdd('SysFile',   '4',   TK_INTEGER, 4,   0.0, '', False);
+  ConstAdd('VolumeID',  '8',   TK_INTEGER, 8,   0.0, '', False);
+  ConstAdd('Directory', '16',  TK_INTEGER, 16,  0.0, '', False);
+  ConstAdd('Archive',   '32',  TK_INTEGER, 32,  0.0, '', False);
+  ConstAdd('AnyFile',   '63',  TK_INTEGER, 63,  0.0, '', False);
 End;
 
 { ---- ConstEvalAtom : evaluer un atome constant -------------- }
@@ -2578,7 +2586,25 @@ Begin
                    (L = 'highvideo') Or (L = 'lowvideo') Or
                    (L = 'normvideo') Or (L = 'window') Or
                    (L = 'insline') Or (L = 'delline') Or
-                   (L = 'textmode');
+                   (L = 'textmode') Or
+                   { TODO 20 : fonctions DOS }
+                   (L = 'getdate') Or (L = 'gettime') Or
+                   (L = 'setdate') Or (L = 'settime') Or
+                   (L = 'packtime') Or (L = 'unpacktime') Or
+                   (L = 'getftime') Or (L = 'setftime') Or
+                   (L = 'findfirst') Or (L = 'findnext') Or
+                   (L = 'fsearch') Or (L = 'fexpand') Or
+                   (L = 'fsplit') Or (L = 'getdir') Or
+                   (L = 'mkdir') Or (L = 'rmdir') Or
+                   (L = 'chdir') Or
+                   (L = 'envcount') Or (L = 'envstr') Or
+                   (L = 'getenv') Or (L = 'dosversion') Or
+                   (L = 'diskfree') Or (L = 'disksize') Or
+                   (L = 'getcbreak') Or (L = 'setcbreak') Or
+                   (L = 'getverify') Or (L = 'setverify') Or
+                   (L = 'exec') Or (L = 'dosexitcode') Or
+                   (L = 'swapvectors') Or (L = 'keep') Or
+                   (L = 'intr') Or (L = 'msdos');
 End;
 
 { ---- EmitBuiltinCall : genere l appel de fonction standard --- }
@@ -2862,6 +2888,96 @@ Begin
       If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
     End;
     EmitBuiltinCall := '1 /* WhereY stub */';
+    Exit;
+  End;
+
+  { ============================================================
+    TODO 20 - UNITE DOS [IMPLEMENTE]
+    Fonctions sans argument ou a argument optionnel.
+    ============================================================ }
+
+  { -- EnvCount : nombre de variables d environnement ---------- }
+  If L = 'envcount' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '(typeof process !== "undefined" ? ' +
+      'Object.keys(process.env).length : 0)';
+    Exit;
+  End;
+
+  { -- DosVersion : version du systeme (stub) ------------------ }
+  If L = 'dosversion' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '0x0007 /* DosVersion stub: 7.0 */';
+    Exit;
+  End;
+
+  { -- DosExitCode : code retour dernier Exec (stub) ----------- }
+  If L = 'dosexitcode' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := 'DosExitCode';
+    Exit;
+  End;
+
+  { -- SwapVectors : echanger vecteurs d interruption (stub) --- }
+  If L = 'swapvectors' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '/* SwapVectors: not relevant in JS */';
+    Exit;
+  End;
+
+  { -- GetCBreak(Break) : lire etat Ctrl-Break (stub) --------- }
+  If L = 'getcbreak' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And Not ((TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ')')) Then
+        ParseExpr(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '/* GetCBreak stub */';
+    Exit;
+  End;
+
+  { -- GetVerify(Verify) : lire etat verification (stub) ------- }
+  If L = 'getverify' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And Not ((TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ')')) Then
+        ParseExpr(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '/* GetVerify stub */';
     Exit;
   End;
 
@@ -3656,6 +3772,383 @@ Begin
   Begin
     If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
     EmitBuiltinCall := '/* TextMode(' + Arg1 + ') */';
+    Exit;
+  End;
+
+  { ============================================================
+    TODO 20 - UNITE DOS [IMPLEMENTE]
+    Fonctions de l unite DOS avec argument(s).
+    ============================================================ }
+
+  { -- GetDate(Y, M, D, DOW) : recuperer la date courante ------ }
+  If L = 'getdate' Then
+  Begin
+    Arg2 := '';
+    Arg3 := '';
+    Args := '';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg3 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Args := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '(function() { var _d = new Date(); ' +
+      Arg1 + ' = _d.getFullYear(); ' +
+      Arg2 + ' = _d.getMonth() + 1; ' +
+      Arg3 + ' = _d.getDate(); ' +
+      Args + ' = _d.getDay(); })()';
+    Exit;
+  End;
+
+  { -- GetTime(H, M, S, S100) : recuperer l heure courante ----- }
+  If L = 'gettime' Then
+  Begin
+    Arg2 := '';
+    Arg3 := '';
+    Args := '';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg3 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Args := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '(function() { var _d = new Date(); ' +
+      Arg1 + ' = _d.getHours(); ' +
+      Arg2 + ' = _d.getMinutes(); ' +
+      Arg3 + ' = _d.getSeconds(); ' +
+      Args + ' = Math.floor(_d.getMilliseconds() / 10); })()';
+    Exit;
+  End;
+
+  { -- SetDate(Y, M, D) : fixer la date (stub) ---------------- }
+  If L = 'setdate' Then
+  Begin
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* SetDate: not supported in JS */';
+    Exit;
+  End;
+
+  { -- SetTime(H, M, S, S100) : fixer l heure (stub) ---------- }
+  If L = 'settime' Then
+  Begin
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* SetTime: not supported in JS */';
+    Exit;
+  End;
+
+  { -- PackTime(DT, Time) : convertir DateTime en timestamp ---- }
+  If L = 'packtime' Then
+  Begin
+    Arg2 := '';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := Arg2 + ' = _TPR_PackTime(' + Arg1 + ')';
+    Exit;
+  End;
+
+  { -- UnpackTime(Time, DT) : convertir timestamp en DateTime -- }
+  If L = 'unpacktime' Then
+  Begin
+    Arg2 := '';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_TPR_UnpackTime(' + Arg1 + ', ' + Arg2 + ')';
+    Exit;
+  End;
+
+  { -- GetFTime(F, Time) : date modification fichier (stub) ---- }
+  If L = 'getftime' Then
+  Begin
+    Arg2 := '';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := Arg2 + ' = 0 /* GetFTime stub */';
+    Exit;
+  End;
+
+  { -- SetFTime(F, Time) : modifier date fichier (stub) ------- }
+  If L = 'setftime' Then
+  Begin
+    Arg2 := '';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* SetFTime stub */';
+    Exit;
+  End;
+
+  { -- FindFirst(Path, Attr, SR) : recherche fichiers (stub) --- }
+  If L = 'findfirst' Then
+  Begin
+    Arg2 := '';
+    Arg3 := '';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg3 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := 'DosError = 18 /* FindFirst stub */';
+    Exit;
+  End;
+
+  { -- FindNext(SR) : fichier suivant (stub) ------------------- }
+  If L = 'findnext' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := 'DosError = 18 /* FindNext stub */';
+    Exit;
+  End;
+
+  { -- FSearch(Name, List) : recherche dans PATH --------------- }
+  If L = 'fsearch' Then
+  Begin
+    Arg2 := '';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := Arg1 + ' /* FSearch stub */';
+    Exit;
+  End;
+
+  { -- FExpand(Path) : chemin absolu --------------------------- }
+  If L = 'fexpand' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := Arg1 + ' /* FExpand stub */';
+    Exit;
+  End;
+
+  { -- FSplit(Path, Dir, Name, Ext) : decomposition chemin ----- }
+  If L = 'fsplit' Then
+  Begin
+    Arg2 := '';
+    Arg3 := '';
+    Args := '';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg3 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Args := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_TPR_FSplit(' + Arg1 + ', ' +
+      '"' + Arg2 + '", "' + Arg3 + '", "' + Args + '")';
+    Exit;
+  End;
+
+  { -- GetDir(Drive, Dir) : repertoire courant ----------------- }
+  If L = 'getdir' Then
+  Begin
+    Arg2 := '';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := Arg2 + ' = (typeof process !== "undefined" ? process.cwd() : ".")';
+    Exit;
+  End;
+
+  { -- MkDir(Dir) : creer repertoire (stub) -------------------- }
+  If L = 'mkdir' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* MkDir(' + Arg1 + ') stub */';
+    Exit;
+  End;
+
+  { -- RmDir(Dir) : supprimer repertoire (stub) ---------------- }
+  If L = 'rmdir' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* RmDir(' + Arg1 + ') stub */';
+    Exit;
+  End;
+
+  { -- ChDir(Dir) : changer repertoire (stub) ------------------ }
+  If L = 'chdir' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* ChDir(' + Arg1 + ') stub */';
+    Exit;
+  End;
+
+  { -- EnvStr(N) : N-ieme variable d environnement ------------- }
+  If L = 'envstr' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '(typeof process !== "undefined" ? ' +
+      'Object.entries(process.env)[' + Arg1 + ' - 1].join("=") : "")';
+    Exit;
+  End;
+
+  { -- GetEnv(Name) : valeur de variable d environnement ------- }
+  If L = 'getenv' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '(typeof process !== "undefined" ? ' +
+      '(process.env[' + Arg1 + '] || "") : "")';
+    Exit;
+  End;
+
+  { -- DiskFree(Drive) : espace disque libre (stub) ------------ }
+  If L = 'diskfree' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '0 /* DiskFree stub */';
+    Exit;
+  End;
+
+  { -- DiskSize(Drive) : taille totale disque (stub) ----------- }
+  If L = 'disksize' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '0 /* DiskSize stub */';
+    Exit;
+  End;
+
+  { -- SetCBreak(Break) : fixer Ctrl-Break (stub) -------------- }
+  If L = 'setcbreak' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* SetCBreak stub */';
+    Exit;
+  End;
+
+  { -- SetVerify(Verify) : fixer verification (stub) ----------- }
+  If L = 'setverify' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* SetVerify stub */';
+    Exit;
+  End;
+
+  { -- Exec(Path, CmdLine) : executer programme (stub) --------- }
+  If L = 'exec' Then
+  Begin
+    Arg2 := '';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* Exec(' + Arg1 + ', ' + Arg2 + ') stub */';
+    Exit;
+  End;
+
+  { -- Keep(ExitCode) : TSR (stub) ----------------------------- }
+  If L = 'keep' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* Keep(' + Arg1 + ') stub: TSR not supported in JS */';
+    Exit;
+  End;
+
+  { -- Intr(IntNo, Regs) : interruption logicielle (stub) ----- }
+  If L = 'intr' Then
+  Begin
+    Arg2 := '';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* Intr(' + Arg1 + ') stub: not supported in JS */';
+    Exit;
+  End;
+
+  { -- MsDos(Regs) : appel INT 21h (stub) --------------------- }
+  If L = 'msdos' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* MsDos stub: not supported in JS */';
     Exit;
   End;
 
@@ -4588,6 +5081,50 @@ Begin
   SymAdd('ReadKey',      SK_FUNC,  -1);
   SymAdd('WhereX',       SK_FUNC,  -1);
   SymAdd('WhereY',       SK_FUNC,  -1);
+  { TODO 20 : procedures et fonctions DOS }
+  SymAdd('GetDate',      SK_PROC,  -1);
+  SymAdd('GetTime',      SK_PROC,  -1);
+  SymAdd('SetDate',      SK_PROC,  -1);
+  SymAdd('SetTime',      SK_PROC,  -1);
+  SymAdd('PackTime',     SK_PROC,  -1);
+  SymAdd('UnpackTime',   SK_PROC,  -1);
+  SymAdd('GetFTime',     SK_PROC,  -1);
+  SymAdd('SetFTime',     SK_PROC,  -1);
+  SymAdd('FindFirst',    SK_PROC,  -1);
+  SymAdd('FindNext',     SK_PROC,  -1);
+  SymAdd('FSearch',      SK_FUNC,  -1);
+  SymAdd('FExpand',      SK_FUNC,  -1);
+  SymAdd('FSplit',       SK_PROC,  -1);
+  SymAdd('GetDir',       SK_PROC,  -1);
+  SymAdd('EnvCount',     SK_FUNC,  -1);
+  SymAdd('EnvStr',       SK_FUNC,  -1);
+  SymAdd('GetEnv',       SK_FUNC,  -1);
+  SymAdd('DosVersion',   SK_FUNC,  -1);
+  SymAdd('DiskFree',     SK_FUNC,  -1);
+  SymAdd('DiskSize',     SK_FUNC,  -1);
+  SymAdd('GetCBreak',    SK_PROC,  -1);
+  SymAdd('SetCBreak',    SK_PROC,  -1);
+  SymAdd('GetVerify',    SK_PROC,  -1);
+  SymAdd('SetVerify',    SK_PROC,  -1);
+  SymAdd('Exec',         SK_PROC,  -1);
+  SymAdd('DosExitCode',  SK_FUNC,  -1);
+  SymAdd('SwapVectors',  SK_PROC,  -1);
+  SymAdd('Keep',         SK_PROC,  -1);
+  SymAdd('Intr',         SK_PROC,  -1);
+  SymAdd('MsDos',        SK_PROC,  -1);
+  { TODO 20 : constantes DOS - attributs de fichier }
+  TI := TypeFindByName('Word');
+  SymAdd('ReadOnly',     SK_CONST, TI);
+  SymAdd('Hidden',       SK_CONST, TI);
+  SymAdd('SysFile',      SK_CONST, TI);
+  SymAdd('VolumeID',     SK_CONST, TI);
+  SymAdd('Directory',    SK_CONST, TI);
+  SymAdd('Archive',      SK_CONST, TI);
+  SymAdd('AnyFile',      SK_CONST, TI);
+  { TODO 20 : variables DOS }
+  TI := TypeFindByName('Integer');
+  SymAdd('DosError',     SK_VAR,   TI);
+  SymAdd('DosExitCode',  SK_VAR,   TI);
 End;
 
 { ---- SymDump : afficher le contenu de la table (debug) ------ }
@@ -5038,6 +5575,32 @@ Begin
   EmitLine('function _TPR_CrtBg(c) {');
   EmitLine('  var m = [40,44,42,46,41,45,43,47];');
   EmitLine('  return (c >= 0 && c <= 7) ? String(m[c]) : "40";');
+  EmitLine('}');
+  EmitBlankLine;
+  { TODO 20 : helpers DOS - variables et fonctions utilitaires }
+  EmitComment('DOS unit helpers');
+  EmitLine('var DosError = 0, DosExitCode = 0;');
+  EmitLine('function _TPR_PackTime(dt) {');
+  EmitLine('  return ((dt.Year - 1980) << 25) | (dt.Month << 21) | (dt.Day << 16) |');
+  EmitLine('         (dt.Hour << 11) | (dt.Min << 5) | (dt.Sec >> 1);');
+  EmitLine('}');
+  EmitLine('function _TPR_UnpackTime(t, dt) {');
+  EmitLine('  dt.Year = ((t >> 25) & 0x7F) + 1980;');
+  EmitLine('  dt.Month = (t >> 21) & 0x0F;');
+  EmitLine('  dt.Day = (t >> 16) & 0x1F;');
+  EmitLine('  dt.Hour = (t >> 11) & 0x1F;');
+  EmitLine('  dt.Min = (t >> 5) & 0x3F;');
+  EmitLine('  dt.Sec = (t & 0x1F) << 1;');
+  EmitLine('}');
+  EmitLine('function _TPR_FSplit(path, dirRef, nameRef, extRef) {');
+  EmitLine('  var i = path.length - 1;');
+  EmitLine('  while (i >= 0 && path[i] !== "/" && path[i] !== "\\") i--;');
+  EmitLine('  var d = (i >= 0) ? path.substring(0, i + 1) : "";');
+  EmitLine('  var f = path.substring(i + 1);');
+  EmitLine('  var j = f.lastIndexOf(".");');
+  EmitLine('  var n = (j >= 0) ? f.substring(0, j) : f;');
+  EmitLine('  var e = (j >= 0) ? f.substring(j) : "";');
+  EmitLine('  return { dir: d, name: n, ext: e };');
   EmitLine('}');
   EmitBlankLine;
 End;

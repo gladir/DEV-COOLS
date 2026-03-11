@@ -13,6 +13,31 @@ function _TPR_CrtBg(c) {
   return (c >= 0 && c <= 7) ? String(m[c]) : "40";
 }
 
+// DOS unit helpers
+var DosError = 0, DosExitCode = 0;
+function _TPR_PackTime(dt) {
+  return ((dt.Year - 1980) << 25) | (dt.Month << 21) | (dt.Day << 16) |
+         (dt.Hour << 11) | (dt.Min << 5) | (dt.Sec >> 1);
+}
+function _TPR_UnpackTime(t, dt) {
+  dt.Year = ((t >> 25) & 0x7F) + 1980;
+  dt.Month = (t >> 21) & 0x0F;
+  dt.Day = (t >> 16) & 0x1F;
+  dt.Hour = (t >> 11) & 0x1F;
+  dt.Min = (t >> 5) & 0x3F;
+  dt.Sec = (t & 0x1F) << 1;
+}
+function _TPR_FSplit(path, dirRef, nameRef, extRef) {
+  var i = path.length - 1;
+  while (i >= 0 && path[i] !== "/" && path[i] !== "\\") i--;
+  var d = (i >= 0) ? path.substring(0, i + 1) : "";
+  var f = path.substring(i + 1);
+  var j = f.lastIndexOf(".");
+  var n = (j >= 0) ? f.substring(0, j) : f;
+  var e = (j >= 0) ? f.substring(j) : "";
+  return { dir: d, name: n, ext: e };
+}
+
 // Program test_crt
 
 // uses
