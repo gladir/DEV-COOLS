@@ -282,7 +282,7 @@
             Implementation interne : table de paires (cle, valeur)
               MAX_STRUCT_KEYS entrees, recherche lineaire par cle
 
-  TODO 19 - FONCTIONS UTILISATEUR (CFFUNCTION)
+  TODO 19 - FONCTIONS UTILISATEUR (CFFUNCTION) [IMPLEMENTE]
             <cffunction name="nom" returnType="type" access="public">
               <cfargument name="param" type="type" required="yes" default="val">
               ... corps ...
@@ -564,7 +564,8 @@ Type
     EK_NONE,   { void / pas de valeur            }
     EK_IMM,    { immediate dans ImmVal           }
     EK_AX,     { valeur dans AX                  }
-    EK_MEM     { adresse [BP+Offset] ou [_CFV_x] }
+    EK_MEM,    { adresse [BP+Offset] ou [_CFV_x] }
+    EK_STK     { valeur sauvegardee sur la pile   }
   );
 
   TExprVal = Record
@@ -772,6 +773,11 @@ Procedure ParseScriptDoWhile; Forward;
 Function  DataAddArrayBlock(Const Lbl : TString) : Integer; Forward;
 { TODO 18 }
 Function  DataAddStructBlock(Const Lbl : TString) : Integer; Forward;
+{ TODO 19 }
+Procedure ParseCfFunction; Forward;
+Procedure ParseCfReturn; Forward;
+Procedure ParseScriptFunction; Forward;
+Procedure ParseScriptReturn; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -2199,6 +2205,11 @@ Begin
       E.Kind := EK_AX;
     End;
     EK_AX  : ;  { deja dans AX }
+    EK_STK :
+    Begin
+      EmitInstr('POP', 'AX');
+      E.Kind := EK_AX;
+    End;
     EK_NONE : ;  { rien a faire }
   End;
 End;
@@ -2411,11 +2422,21 @@ Begin
   End;
 
   { ---- Cas general : L dans AX, R dans BX ----------------- }
-  ExprFlushToAX(L);
-  EmitInstr('PUSH', 'AX');
-  ExprFlushToAX(R);
-  EmitInstr('MOV', 'BX, AX');
-  EmitInstr('POP', 'AX');
+  If L.Kind = EK_STK Then
+  Begin
+    { L est deja sur la pile, R est le dernier evalue }
+    ExprFlushToAX(R);
+    EmitInstr('MOV', 'BX, AX');
+    EmitInstr('POP', 'AX');
+  End
+  Else
+  Begin
+    ExprFlushToAX(L);
+    EmitInstr('PUSH', 'AX');
+    ExprFlushToAX(R);
+    EmitInstr('MOV', 'BX, AX');
+    EmitInstr('POP', 'AX');
+  End;
   { AX = gauche, BX = droite }
 
   { Arithmetique }
@@ -4727,14 +4748,7 @@ Begin
   If CurToken.Kind <> TK_IDENT Then
   Begin
     CompileError('identifiant attendu apres <cfset>');
-    { Consommer jusqu a la fin de la balise }
-    While (CurToken.Kind <> TK_TAG_CLOSE) And
-          (CurToken.Kind <> TK_TAG_SELFCLOSE) And
-          (CurToken.Kind <> TK_EOF) Do
-      ParserAdvance;
-    If (CurToken.Kind = TK_TAG_CLOSE) Or
-       (CurToken.Kind = TK_TAG_SELFCLOSE) Then
-      ParserAdvance;
+    SkipToTagClose;
     Exit;
   End;
 
@@ -4841,13 +4855,7 @@ Begin
     Begin
       CompileError('"=" attendu dans <cfset>');
     End;
-    While (CurToken.Kind <> TK_TAG_CLOSE) And
-          (CurToken.Kind <> TK_TAG_SELFCLOSE) And
-          (CurToken.Kind <> TK_EOF) Do
-      ParserAdvance;
-    If (CurToken.Kind = TK_TAG_CLOSE) Or
-       (CurToken.Kind = TK_TAG_SELFCLOSE) Then
-      ParserAdvance;
+    SkipToTagClose;
     Exit;
   End;
   ParserAdvance;  { consommer = }
@@ -4869,7 +4877,8 @@ Begin
   End;
 
   { Consommer la balise fermante si presente }
-  If (CurToken.Kind = TK_TAG_CLOSE) Or
+  If ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>')) Or
+     (CurToken.Kind = TK_TAG_CLOSE) Or
      (CurToken.Kind = TK_TAG_SELFCLOSE) Then
     ParserAdvance;
 End;
@@ -6092,6 +6101,12 @@ Begin
       NextP := Prec
     Else
       NextP := Prec + 1;
+    { Sauvegarder l operande gauche si c est une valeur runtime }
+    If Res.Kind = EK_AX Then
+    Begin
+      EmitInstr('PUSH', 'AX');
+      Res.Kind := EK_STK;
+    End;
     ExprMakeNone(Right);
     ParseExprPrec(NextP, Right);
     ExprEmitBinOp(Op, Res, Right);
@@ -6416,6 +6431,10 @@ Begin
     Begin ParserAdvance; ParseCfBreak; End
     Else If TagLower = 'cfcontinue' Then
     Begin ParserAdvance; ParseCfContinue; End
+    Else If TagLower = 'cffunction' Then
+    Begin ParserAdvance; ParseCfFunction; End
+    Else If TagLower = 'cfreturn' Then
+    Begin ParserAdvance; ParseCfReturn; End
     Else
       ParserAdvance;
   End
@@ -6438,6 +6457,10 @@ Begin
     Begin ParserAdvance; ParseScriptFor; End
     Else If KwLower = 'do' Then
     Begin ParserAdvance; ParseScriptDoWhile; End
+    Else If KwLower = 'function' Then
+    Begin ParserAdvance; ParseScriptFunction; End
+    Else If KwLower = 'return' Then
+    Begin ParserAdvance; ParseScriptReturn; End
     Else If KwLower = 'break' Then
     Begin
       ParserAdvance;
@@ -7915,6 +7938,391 @@ Begin
   EmitLabel(LblEnd);
 
   LoopPop;
+End;
+
+{ ============================================================
+  TODO 19 - FONCTIONS UTILISATEUR (CFFUNCTION) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseCfFunction : <cffunction name="n" returnType="t"> -- }
+(* Parse <cffunction>, ses <cfargument>, le corps et </cffunction> *)
+(* Emet un JMP par-dessus le corps, le label, prolog, corps,      *)
+(* epilog, RET puis le label de reprise.                           *)
+Procedure ParseCfFunction;
+Var
+  FnName, RetType, Access : TString;
+  AttrName, AttrVal       : TString;
+  ParamNames : Array[0..MAX_PARAM - 1] Of TString;
+  ParamTypes : Array[0..MAX_PARAM - 1] Of TString;
+  ParamDefs  : Array[0..MAX_PARAM - 1] Of TString;
+  ParamReq   : Array[0..MAX_PARAM - 1] Of Boolean;
+  ParamCount : Integer;
+  I          : Integer;
+  Off        : Integer;
+  SkipLbl    : TString;
+  RetLbl     : TString;
+  OldFnDepth   : Integer;
+  OldFnRetLbl  : TString;
+  OldFnName    : TString;
+  OldFrameSize : Integer;
+  OldLoopTop   : Integer;
+Begin
+  EmitComment('---- <cffunction> ----');
+  FnName  := '';
+  RetType := 'any';
+  Access  := 'public';
+
+  { Lire les attributs de la balise <cffunction ...> }
+  While (CurToken.Kind <> TK_TAG_SELFCLOSE) And
+        (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>')) Do
+  Begin
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      AttrName := StrLowerCase(CurToken.Val);
+      ParserAdvance;
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+      Begin
+        ParserAdvance;
+        AttrVal := CurToken.Val;
+        If AttrName = 'name' Then
+          FnName := AttrVal
+        Else If AttrName = 'returntype' Then
+          RetType := StrLowerCase(AttrVal)
+        Else If AttrName = 'access' Then
+          Access := StrLowerCase(AttrVal);
+        ParserAdvance;
+      End;
+    End
+    Else
+      ParserAdvance;
+  End;
+  { Consommer la fermeture > ou /> }
+  If ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>')) Or
+     (CurToken.Kind = TK_TAG_SELFCLOSE) Then
+    ParserAdvance;
+
+  If FnName = '' Then
+  Begin
+    CompileError('attribut name requis dans <cffunction>');
+    Exit;
+  End;
+
+  { Enregistrer la fonction dans la table des symboles }
+  SymAdd(FnName, SC_FUNCTION, TY_IDX_ANY, 0);
+
+  { Emettre un JMP par-dessus le corps de la fonction }
+  SkipLbl := LabelGen;
+  EmitInstr('JMP', SkipLbl);
+
+  { Emettre le label de la fonction }
+  EmitBlankLine;
+  EmitComment('function ' + FnName + ' returnType=' + RetType +
+              ' access=' + Access);
+  EmitLabel(CF_FN_PFX + SymNameClean(FnName));
+
+  { Sauvegarder l etat du compilateur }
+  OldFnDepth   := CurFnDepth;
+  OldFnRetLbl  := CurFnRetLbl;
+  OldFnName    := CurFnName;
+  OldFrameSize := CurFrameSize;
+  OldLoopTop   := LoopTop;
+
+  { Initialiser le nouveau contexte }
+  CurFnDepth   := CurFnDepth + 1;
+  RetLbl       := LabelGen;
+  CurFnRetLbl  := RetLbl;
+  CurFnName    := FnName;
+  CurFrameSize := 0;
+  LoopTop      := 0;
+
+  { Prolog de la fonction }
+  EmitProlog;
+
+  { Entrer dans un nouveau scope }
+  SymEnterScope;
+
+  { Compter et enregistrer les <cfargument> }
+  ParamCount := 0;
+  { Sauter les tokens texte brut (espaces, retours a la ligne) }
+  While (CurToken.Kind = TK_TEXT) And (CurToken.Kind <> TK_EOF) Do
+    ParserAdvance;
+  While (CurToken.Kind = TK_TAG_OPEN) And
+        (StrLowerCase(CurToken.Val) = 'cfargument') And
+        (ParamCount < MAX_PARAM) Do
+  Begin
+    ParserAdvance;  { consommer 'cfargument' }
+    ParamNames[ParamCount] := '';
+    ParamTypes[ParamCount] := 'any';
+    ParamDefs[ParamCount]  := '';
+    ParamReq[ParamCount]   := True;
+
+    While (CurToken.Kind <> TK_TAG_SELFCLOSE) And
+          (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>')) Do
+    Begin
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        AttrName := StrLowerCase(CurToken.Val);
+        ParserAdvance;
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+        Begin
+          ParserAdvance;
+          AttrVal := CurToken.Val;
+          If AttrName = 'name' Then
+            ParamNames[ParamCount] := AttrVal
+          Else If AttrName = 'type' Then
+            ParamTypes[ParamCount] := StrLowerCase(AttrVal)
+          Else If AttrName = 'default' Then
+            ParamDefs[ParamCount] := AttrVal
+          Else If AttrName = 'required' Then
+            ParamReq[ParamCount] := (StrLowerCase(AttrVal) = 'yes') Or
+                                    (StrLowerCase(AttrVal) = 'true');
+          ParserAdvance;
+        End;
+      End
+      Else
+        ParserAdvance;
+    End;
+    { Consommer > ou /> }
+    If ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>')) Or
+       (CurToken.Kind = TK_TAG_SELFCLOSE) Then
+      ParserAdvance;
+
+    Inc(ParamCount);
+    { Sauter les tokens texte brut avant le prochain cfargument }
+    While (CurToken.Kind = TK_TEXT) And (CurToken.Kind <> TK_EOF) Do
+      ParserAdvance;
+  End;
+
+  { Enregistrer les parametres dans la table des symboles }
+  { Pile apres CALL + PUSH BP : [BP]=savedBP [BP+2]=ret [BP+4]=lastArg }
+  { Args empiles gauche-a-droite : param 0 (1er declare) est le plus profond }
+  { Donc param I => [BP + 4 + 2*(ParamCount-1-I)]                          }
+  For I := 0 To ParamCount - 1 Do
+  Begin
+    Off := 4 + 2 * (ParamCount - 1 - I);
+    SymAdd(ParamNames[I], SC_PARAM, TY_IDX_ANY, Off);
+    EmitComment('  arg ' + ParamNames[I] + ' @ [BP+' + IntToStr(Off) + ']');
+  End;
+
+  { Reserver l espace pile pour les variables locales }
+  EmitInstrAB('SUB', 'SP', '128');
+
+  { Parser le corps de la fonction jusqu a </cffunction> }
+  While CurToken.Kind <> TK_EOF Do
+  Begin
+    { Detecter la fermeture </cffunction> }
+    If (CurToken.Kind = TK_TAG_CLOSE) And
+       (StrLowerCase(CurToken.Val) = 'cffunction') Then
+    Begin
+      ParserAdvance;
+      Break;
+    End;
+    ParseBodyTag;
+  End;
+
+  { Label de retour + retour par defaut (AX=0) }
+  EmitLabel(RetLbl);
+  EmitEpilog;
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { Label de saut (reprendre l execution apres la definition) }
+  EmitLabel(SkipLbl);
+
+  { Quitter le scope }
+  SymLeaveScope;
+
+  { Restaurer l etat du compilateur }
+  CurFnDepth   := OldFnDepth;
+  CurFnRetLbl  := OldFnRetLbl;
+  CurFnName    := OldFnName;
+  CurFrameSize := OldFrameSize;
+  LoopTop      := OldLoopTop;
+End;
+
+{ ---- ParseCfReturn : <cfreturn expression> -------------------- }
+Procedure ParseCfReturn;
+Var
+  Res : TExprVal;
+Begin
+  EmitComment('---- <cfreturn> ----');
+  If CurFnDepth <= 0 Then
+  Begin
+    CompileError('<cfreturn> en dehors d''une cffunction');
+    SkipToTagClose;
+    Exit;
+  End;
+
+  ExprMakeNone(Res);
+  ParseExpr(Res);
+  ExprFlushToAX(Res);
+  EmitInstr('JMP', CurFnRetLbl);
+
+  { Consommer la fin de balise > ou /> }
+  SkipToTagClose;
+End;
+
+(* ---- ParseScriptFunction : function nom(params) body --------- *)
+(* Syntaxe cfscript : function nom(p1, p2) block return expr;     *)
+Procedure ParseScriptFunction;
+Var
+  FnName     : TString;
+  ParamNames : Array[0..MAX_PARAM - 1] Of TString;
+  ParamCount : Integer;
+  I          : Integer;
+  Off        : Integer;
+  SkipLbl    : TString;
+  RetLbl     : TString;
+  OldFnDepth   : Integer;
+  OldFnRetLbl  : TString;
+  OldFnName    : TString;
+  OldFrameSize : Integer;
+  OldLoopTop   : Integer;
+Begin
+  { Lire le nom de la fonction }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('nom de fonction attendu apres "function"');
+    Exit;
+  End;
+  FnName := CurToken.Val;
+  ParserAdvance;
+
+  { Enregistrer la fonction dans la table des symboles }
+  SymAdd(FnName, SC_FUNCTION, TY_IDX_ANY, 0);
+
+  { Lire la liste de parametres ( p1, p2, ... ) }
+  ParamCount := 0;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+  Begin
+    ParserAdvance;  { consommer ( }
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+    Begin
+      If (CurToken.Kind = TK_IDENT) And (ParamCount < MAX_PARAM) Then
+      Begin
+        ParamNames[ParamCount] := CurToken.Val;
+        Inc(ParamCount);
+      End;
+      ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance;
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance;  { consommer ) }
+  End;
+
+  EmitComment('---- function ' + FnName + ' ----');
+
+  { Emettre JMP par-dessus le corps }
+  SkipLbl := LabelGen;
+  EmitInstr('JMP', SkipLbl);
+
+  { Label de la fonction }
+  EmitBlankLine;
+  EmitLabel(CF_FN_PFX + SymNameClean(FnName));
+
+  { Sauvegarder l etat }
+  OldFnDepth   := CurFnDepth;
+  OldFnRetLbl  := CurFnRetLbl;
+  OldFnName    := CurFnName;
+  OldFrameSize := CurFrameSize;
+  OldLoopTop   := LoopTop;
+
+  { Nouveau contexte }
+  CurFnDepth   := CurFnDepth + 1;
+  RetLbl       := LabelGen;
+  CurFnRetLbl  := RetLbl;
+  CurFnName    := FnName;
+  CurFrameSize := 0;
+  LoopTop      := 0;
+
+  { Prolog }
+  EmitProlog;
+
+  { Nouveau scope }
+  SymEnterScope;
+
+  { Enregistrer les parametres }
+  For I := 0 To ParamCount - 1 Do
+  Begin
+    Off := 4 + 2 * (ParamCount - 1 - I);
+    SymAdd(ParamNames[I], SC_PARAM, TY_IDX_ANY, Off);
+    EmitComment('  arg ' + ParamNames[I] + ' @ [BP+' + IntToStr(Off) + ']');
+  End;
+
+  { Reserve espace pile pour les locaux }
+  EmitInstrAB('SUB', 'SP', '128');
+
+  (* Parser le corps entre accolades *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+  Begin
+    ParserAdvance;  (* consommer ouvrante *)
+    While CurToken.Kind <> TK_EOF Do
+    Begin
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+      Begin
+        ParserAdvance;  (* consommer fermante *)
+        Break;
+      End;
+      ParseBodyTag;
+    End;
+  End
+  Else
+    ParseBodyTag;  { instruction unique sans accolades }
+
+  { Label de retour + retour par defaut }
+  EmitLabel(RetLbl);
+  EmitEpilog;
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { Label de saut }
+  EmitLabel(SkipLbl);
+
+  { Quitter le scope }
+  SymLeaveScope;
+
+  { Restaurer l etat }
+  CurFnDepth   := OldFnDepth;
+  CurFnRetLbl  := OldFnRetLbl;
+  CurFnName    := OldFnName;
+  CurFrameSize := OldFrameSize;
+  LoopTop      := OldLoopTop;
+End;
+
+{ ---- ParseScriptReturn : return expr; ------------------------- }
+Procedure ParseScriptReturn;
+Var
+  Res : TExprVal;
+Begin
+  EmitComment('script return');
+  If CurFnDepth <= 0 Then
+  Begin
+    CompileError('return en dehors d''une function');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      ParserAdvance;
+    Exit;
+  End;
+
+  { Si le prochain token est ; on retourne 0 (void) }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+  Begin
+    EmitInstr('XOR', 'AX, AX');
+    EmitInstr('JMP', CurFnRetLbl);
+    ParserAdvance;
+    Exit;
+  End;
+
+  ExprMakeNone(Res);
+  ParseExpr(Res);
+  ExprFlushToAX(Res);
+  EmitInstr('JMP', CurFnRetLbl);
+
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
 End;
 
 Procedure ParsePage;

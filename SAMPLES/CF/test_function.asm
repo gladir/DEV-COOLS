@@ -1,6 +1,6 @@
 ; CF86 v1.0 - 2026-03-06
 ; Compilateur ColdFusion -> assembleur 8086
-; Source: SAMPLES/CF/test_struct.cfm
+; Source: SAMPLES/CF/test_function.cfm
 
 .MODEL SMALL
 .STACK 1024
@@ -15,141 +15,195 @@ _CFF_Main:
         MOV   AX, _DATA
         MOV   DS, AX
 
-; ---- CFSET ----
-; StructNew()
-        MOV   SI, OFFSET _CFL_1
-        MOV   WORD PTR [SI], 0
-        MOV   AX, SI
-        MOV   [_CFV_mystruct], AX
-; ---- CFSET ----
-; cfset: appel fonction structinsert
-        MOV   AX, [_CFV_mystruct]
+; ---- <cffunction> ----
+        JMP   _CFL_1
+
+; function double returnType=numeric access=public
+_CFF_double:
+        PUSH   BP
+        MOV   BP, SP
+;   arg n @ [BP+4]
+        SUB   SP, 128
+; ---- <cfreturn> ----
+        MOV   AX, [BP+4]
         PUSH   AX
-        MOV   AX, OFFSET _CFK_2
-        PUSH   AX
-        MOV   AX, OFFSET _CFK_3
-        PUSH   AX
+        MOV   AX, 2
+        MOV   BX, AX
         POP   AX
-        POP   DI
-        POP   SI
-        CALL   _CFRT_STINSERT
+        IMUL   BX
+        JMP   _CFL_2
+_CFL_2:
+        MOV   SP, BP
+        POP   BP
+        RET
+
+_CFL_1:
 ; ---- CFSET ----
-; cfset: appel fonction structinsert
-        MOV   AX, [_CFV_mystruct]
+; appel double
+        MOV   AX, 21
         PUSH   AX
-        MOV   AX, OFFSET _CFK_4
+        CALL   _CFF_double
+        ADD   SP, 2
+        MOV   [_CFV_result], AX
+; cfoutput: texte brut
+        MOV   SI, OFFSET _CFK_3
+        CALL   _CFRT_PRINT
+        MOV   AX, [_CFV_result]
+; cfoutput: expr numerique
+        CALL   _CFRT_PRINTNUM
+; ---- <cffunction> ----
+        JMP   _CFL_4
+
+; function addNums returnType=numeric access=public
+_CFF_addNums:
+        PUSH   BP
+        MOV   BP, SP
+;   arg a @ [BP+6]
+;   arg b @ [BP+4]
+        SUB   SP, 128
+; ---- <cfreturn> ----
+        MOV   AX, [BP+6]
         PUSH   AX
-        MOV   AX, 30
-        PUSH   AX
+        MOV   AX, [BP+4]
+        MOV   BX, AX
         POP   AX
-        POP   DI
-        POP   SI
-        CALL   _CFRT_STINSERT
+        ADD   AX, BX
+        JMP   _CFL_5
+_CFL_5:
+        MOV   SP, BP
+        POP   BP
+        RET
+
+_CFL_4:
 ; ---- CFSET ----
-; cfset: appel fonction structinsert
-        MOV   AX, [_CFV_mystruct]
+; appel addnums
+        MOV   AX, 10
         PUSH   AX
-        MOV   AX, OFFSET _CFK_5
+        MOV   AX, 32
         PUSH   AX
-        MOV   AX, OFFSET _CFK_6
+        CALL   _CFF_addnums
+        ADD   SP, 4
+        MOV   [_CFV_sum], AX
+; cfoutput: texte brut
+        MOV   SI, OFFSET _CFK_6
+        CALL   _CFRT_PRINT
+        MOV   AX, [_CFV_sum]
+; cfoutput: expr numerique
+        CALL   _CFRT_PRINTNUM
+; ---- <cffunction> ----
+        JMP   _CFL_7
+
+; function greet returnType=void access=public
+_CFF_greet:
+        PUSH   BP
+        MOV   BP, SP
+;   arg name @ [BP+4]
+        SUB   SP, 128
+; cfoutput: texte brut
+        MOV   SI, OFFSET _CFK_9
+        CALL   _CFRT_PRINT
+        MOV   AX, [BP+4]
+; cfoutput: expr numerique
+        CALL   _CFRT_PRINTNUM
+; cfoutput: texte brut
+        MOV   SI, OFFSET _CFK_10
+        CALL   _CFRT_PRINT
+_CFL_8:
+        MOV   SP, BP
+        POP   BP
+        RET
+
+_CFL_7:
+; ---- CFSET ----
+; cfset: appel fonction greet
+        MOV   AX, OFFSET _CFK_11
         PUSH   AX
+        CALL   _CFF_greet
+        ADD   SP, 2
+; ---- <cffunction> ----
+        JMP   _CFL_12
+
+; function square returnType=numeric access=public
+_CFF_square:
+        PUSH   BP
+        MOV   BP, SP
+;   arg x @ [BP+4]
+        SUB   SP, 128
+; ---- CFSET ----
+        MOV   AX, [BP+4]
+        PUSH   AX
+        MOV   AX, [BP+4]
+        MOV   BX, AX
         POP   AX
-        POP   DI
-        POP   SI
-        CALL   _CFRT_STINSERT
-; cfoutput: texte brut
-        MOV   SI, OFFSET _CFK_7
-        CALL   _CFRT_PRINT
-; StructCount()
-        MOV   AX, [_CFV_mystruct]
-        PUSH   AX
-        POP   SI
-        CALL   _CFRT_STCOUNT
-; cfoutput: expr numerique
-        CALL   _CFRT_PRINTNUM
-; cfoutput: texte brut
-        MOV   SI, OFFSET _CFK_8
-        CALL   _CFRT_PRINT
-; StructFind()
-        MOV   AX, [_CFV_mystruct]
-        PUSH   AX
-        MOV   AX, OFFSET _CFK_2
-        PUSH   AX
-        POP   DI
-        POP   SI
-        CALL   _CFRT_STFIND
-; cfoutput: expr numerique
-        CALL   _CFRT_PRINTNUM
-; StructKeyExists()
-        MOV   AX, [_CFV_mystruct]
-        PUSH   AX
-        MOV   AX, OFFSET _CFK_4
-        PUSH   AX
-        POP   DI
-        POP   SI
-        CALL   _CFRT_STKEYEX
-; cfif: test condition
-        TEST   AX, AX
-        JZ   _CFL_ELSE_10
-; cfoutput: texte brut
-        MOV   SI, OFFSET _CFK_11
-        CALL   _CFRT_PRINT
-; StructFind()
-        MOV   AX, [_CFV_mystruct]
-        PUSH   AX
-        MOV   AX, OFFSET _CFK_4
-        PUSH   AX
-        POP   DI
-        POP   SI
-        CALL   _CFRT_STFIND
-; cfoutput: expr numerique
-        CALL   _CFRT_PRINTNUM
-_CFL_ELSE_10:
-_CFL_ENDIF_9:
-; cfoutput: texte brut
-        MOV   SI, OFFSET _CFK_12
-        CALL   _CFRT_PRINT
-; StructKeyList()
-        MOV   AX, [_CFV_mystruct]
-        PUSH   AX
-        POP   SI
-        CALL   _CFRT_STKEYLIST
-; cfoutput: expr chaine
-        MOV   SI, AX
-        CALL   _CFRT_PRINT
+        IMUL   BX
+        MOV   [BP-2], AX
+; ---- <cfreturn> ----
+        MOV   AX, [BP-2]
+        JMP   _CFL_13
+_CFL_13:
+        MOV   SP, BP
+        POP   BP
+        RET
+
+_CFL_12:
 ; ---- CFSET ----
-; cfset: appel fonction structdelete
-        MOV   AX, [_CFV_mystruct]
+; appel square
+        MOV   AX, 7
         PUSH   AX
-        MOV   AX, OFFSET _CFK_5
-        PUSH   AX
-        POP   DI
-        POP   SI
-        CALL   _CFRT_STDEL
-; cfoutput: texte brut
-        MOV   SI, OFFSET _CFK_13
-        CALL   _CFRT_PRINT
-; StructCount()
-        MOV   AX, [_CFV_mystruct]
-        PUSH   AX
-        POP   SI
-        CALL   _CFRT_STCOUNT
-; cfoutput: expr numerique
-        CALL   _CFRT_PRINTNUM
-; ---- CFSET ----
-; cfset: appel fonction structclear
-        MOV   AX, [_CFV_mystruct]
-        PUSH   AX
-        POP   SI
-        CALL   _CFRT_STCLEAR
+        CALL   _CFF_square
+        ADD   SP, 2
+        MOV   [_CFV_sq], AX
 ; cfoutput: texte brut
         MOV   SI, OFFSET _CFK_14
         CALL   _CFRT_PRINT
-; StructCount()
-        MOV   AX, [_CFV_mystruct]
+        MOV   AX, [_CFV_sq]
+; cfoutput: expr numerique
+        CALL   _CFRT_PRINTNUM
+; ---- <cffunction> ----
+        JMP   _CFL_15
+
+; function doubleAdd returnType=numeric access=public
+_CFF_doubleAdd:
+        PUSH   BP
+        MOV   BP, SP
+;   arg a @ [BP+6]
+;   arg b @ [BP+4]
+        SUB   SP, 128
+; ---- <cfreturn> ----
+; appel double
+        MOV   AX, [BP+6]
         PUSH   AX
-        POP   SI
-        CALL   _CFRT_STCOUNT
+        CALL   _CFF_double
+        ADD   SP, 2
+        PUSH   AX
+; appel double
+        MOV   AX, [BP+4]
+        PUSH   AX
+        CALL   _CFF_double
+        ADD   SP, 2
+        MOV   BX, AX
+        POP   AX
+        ADD   AX, BX
+        JMP   _CFL_16
+_CFL_16:
+        MOV   SP, BP
+        POP   BP
+        RET
+
+_CFL_15:
+; ---- CFSET ----
+; appel doubleadd
+        MOV   AX, 3
+        PUSH   AX
+        MOV   AX, 4
+        PUSH   AX
+        CALL   _CFF_doubleadd
+        ADD   SP, 4
+        MOV   [_CFV_da], AX
+; cfoutput: texte brut
+        MOV   SI, OFFSET _CFK_17
+        CALL   _CFRT_PRINT
+        MOV   AX, [_CFV_da]
 ; cfoutput: expr numerique
         CALL   _CFRT_PRINTNUM
 
@@ -1306,19 +1360,17 @@ _CF_SWTMP  DW  0
 _CF_LOOPLIM  DW  0
 _CF_LOOPSTP  DW  0
 _CF_STRBUF2  DB  256 DUP(0)
-_CFL_1  DB  130 DUP(0)
-_CFV_mystruct  DW  0
-_CFK_2  DB  'nom',0
-_CFK_3  DB  'Alice',0
-_CFK_4  DB  'age',0
-_CFK_5  DB  'ville',0
-_CFK_6  DB  'Quebec',0
-_CFK_7  DB  'Nombre de cles: ',0
-_CFK_8  DB  'Nom: ',0
-_CFK_11  DB  'Age existe: ',0
-_CFK_12  DB  'Cles: ',0
-_CFK_13  DB  'Apres suppression: ',0
-_CFK_14  DB  'Apres clear: ',0
+_CFV_result  DW  0
+_CFK_3  DB  'Double de 21: ',0
+_CFV_sum  DW  0
+_CFK_6  DB  'Somme: ',0
+_CFK_9  DB  'Bonjour ',0
+_CFK_10  DB  '!',0
+_CFK_11  DB  'Monde',0
+_CFV_sq  DW  0
+_CFK_14  DB  'Carre de 7: ',0
+_CFV_da  DW  0
+_CFK_17  DB  'doubleAdd: ',0
 
 _DATA ENDS
 

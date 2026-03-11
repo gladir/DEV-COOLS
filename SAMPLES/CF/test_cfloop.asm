@@ -31,8 +31,8 @@ _CFL_FTEST_1:
         JG   _CFL_FEND_3
 ; ---- CFSET ----
         MOV   AX, [_CFV_total]
-        MOV   AX, [_CFV_i]
         PUSH   AX
+        MOV   AX, [_CFV_i]
         MOV   BX, AX
         POP   AX
         ADD   AX, BX
@@ -90,8 +90,8 @@ _CFL_FTEST_7:
         JG   _CFL_FEND_9
 ; ---- CFSET ----
         MOV   AX, [_CFV_sum]
-        MOV   AX, [_CFV_k]
         PUSH   AX
+        MOV   AX, [_CFV_k]
         MOV   BX, AX
         POP   AX
         ADD   AX, BX

@@ -32,6 +32,34 @@ _CFF_Main:
         POP   SI
         CALL   _CFRT_ARRAPPEND
 ; ---- CFSET ----
+; cfset: appel fonction arrayappend
+        MOV   AX, [_CFV_arr]
+        PUSH   AX
+        MOV   AX, 20
+        PUSH   AX
+        POP   AX
+        POP   SI
+        CALL   _CFRT_ARRAPPEND
+; ---- CFSET ----
+; cfset: appel fonction arrayappend
+        MOV   AX, [_CFV_arr]
+        PUSH   AX
+        MOV   AX, 30
+        PUSH   AX
+        POP   AX
+        POP   SI
+        CALL   _CFRT_ARRAPPEND
+; ---- CFSET ----
+; ArrayLen()
+        MOV   AX, [_CFV_arr]
+        PUSH   AX
+        POP   SI
+        CALL   _CFRT_ARRLEN
+        MOV   [_CFV_n], AX
+        MOV   AX, [_CFV_n]
+; cfoutput: expr numerique
+        CALL   _CFRT_PRINTNUM
+; ---- CFSET ----
 ; acces [] : arr
         MOV   AX, 2
         MOV   CX, AX
@@ -80,6 +108,16 @@ _CFF_Main:
         POP   SI
         CALL   _CFRT_ARRDEL
 ; ---- CFSET ----
+; ArrayLen()
+        MOV   AX, [_CFV_arr]
+        PUSH   AX
+        POP   SI
+        CALL   _CFRT_ARRLEN
+        MOV   [_CFV_n3], AX
+        MOV   AX, [_CFV_n3]
+; cfoutput: expr numerique
+        CALL   _CFRT_PRINTNUM
+; ---- CFSET ----
 ; cfset: appel fonction arrayinsertat
         MOV   AX, [_CFV_arr]
         PUSH   AX
@@ -91,6 +129,16 @@ _CFF_Main:
         POP   CX
         POP   SI
         CALL   _CFRT_ARRINS
+; ---- CFSET ----
+; ArrayLen()
+        MOV   AX, [_CFV_arr]
+        PUSH   AX
+        POP   SI
+        CALL   _CFRT_ARRLEN
+        MOV   [_CFV_n4], AX
+        MOV   AX, [_CFV_n4]
+; cfoutput: expr numerique
+        CALL   _CFRT_PRINTNUM
 ; ---- CFSET ----
 ; ArrayToList()
         MOV   AX, [_CFV_arr2]
@@ -109,6 +157,16 @@ _CFF_Main:
         PUSH   AX
         POP   SI
         CALL   _CFRT_ARRCLEAR
+; ---- CFSET ----
+; ArrayLen()
+        MOV   AX, [_CFV_arr]
+        PUSH   AX
+        POP   SI
+        CALL   _CFRT_ARRLEN
+        MOV   [_CFV_n5], AX
+        MOV   AX, [_CFV_n5]
+; cfoutput: expr numerique
+        CALL   _CFRT_PRINTNUM
 
 ; --- Fin du code ---
         MOV   SP, BP
@@ -1265,12 +1323,16 @@ _CF_LOOPSTP  DW  0
 _CF_STRBUF2  DB  256 DUP(0)
 _CFL_1  DB  130 DUP(0)
 _CFV_arr  DW  0
+_CFV_n  DW  0
 _CFV_v  DW  0
 _CFL_2  DB  130 DUP(0)
 _CFV_arr2  DW  0
 _CFV_n2  DW  0
+_CFV_n3  DW  0
+_CFV_n4  DW  0
 _CFK_3  DB  ',',0
 _CFV_lst  DW  0
+_CFV_n5  DW  0
 
 _DATA ENDS
 
