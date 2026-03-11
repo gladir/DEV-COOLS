@@ -120,7 +120,7 @@
             EmitProlog / EmitEpilog : PUSH BP / MOV BP,SP et MOV SP,BP / POP BP
             EmitDataSeg : ecrire _DATA SEGMENT ... _DATA ENDS
 
-  TODO 08 - SEGMENT DE DONNEES ET STATIQUES
+  TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
             TDataRec : LblName, Kind (DK_WORD/DK_BYTE/DK_STR/DK_TAGGED),
               IntVal, StrVal, TagVal
             DataTab[0..MAX_DATA-1], DataCount
@@ -607,14 +607,15 @@ Type
     SymIdx  : Integer;     { indice dans SymTab (-1 = pas lvalue) }
   End;
 
-  { ---- Segment de donnees (TODO 03) ------------------------ }
-  TDataKind = (DK_WORD, DK_BYTE, DK_STR);
+  { ---- Segment de donnees (TODO 03 + TODO 08) ---------------- }
+  TDataKind = (DK_WORD, DK_BYTE, DK_STR, DK_TAGGED);
 
   TDataRec = Record
     LblName : TString;     { label ASM de l entree                }
     Kind    : TDataKind;   { type de donnee                       }
     IntVal  : LongInt;     { valeur entiere (DK_WORD/DK_BYTE)     }
     StrVal  : TString;     { contenu chaine (DK_STR)              }
+    TagVal  : Integer;     { tag de type Clipper (DK_TAGGED)      }
   End;
 
   { ---- Table des symboles (TODO 05) ------------------------- }
@@ -739,6 +740,20 @@ Procedure LitEvalInt(Const T : TToken; Var Res : TExprVal); Forward;
 Procedure LitEvalFloat(Const T : TToken; Var Res : TExprVal); Forward;
 Procedure LitEval(Const T : TToken; Var Res : TExprVal); Forward;
 Procedure EmitDataSeg; Forward;
+{ Segment de donnees et statiques (TODO 08) }
+Function  DataAddTagged(Const Lbl : TString;
+                        ATagVal : Integer; AIntVal : LongInt;
+                        Const AStrVal : TString) : Integer; Forward;
+Function  DataAddPublicVar(Const Name : TString;
+                           ATypeIdx : Integer;
+                           AInitVal : LongInt) : Integer; Forward;
+Function  DataAddStaticVar(Const Name : TString;
+                           ATypeIdx : Integer;
+                           AInitVal : LongInt) : Integer; Forward;
+Function  DataAddDate(Const Lbl : TString;
+                      JulianVal : LongInt) : Integer; Forward;
+Function  DataAddArray(Const Lbl : TString;
+                       ElemCount : Integer) : Integer; Forward;
 { Operateurs et expressions (TODO 04) }
 Function  LabelGen : TString; Forward;
 Procedure EmitRaw(Const S : TString); Forward;
@@ -1043,6 +1058,7 @@ Begin
   WriteLn('  Lignes sources : ', TotalLines);
   WriteLn('  Symboles       : ', TotalSyms);
   WriteLn('  Types          : ', TypeCount);
+  WriteLn('  Donnees DATA   : ', DataCount);
   WriteLn('  Erreurs        : ', ErrorCount);
   WriteLn('  Avertissements : ', WarnCount);
 End;
@@ -1952,6 +1968,7 @@ Begin
   DataTab[Idx].Kind    := Kind;
   DataTab[Idx].IntVal  := AIntVal;
   DataTab[Idx].StrVal  := AStrVal;
+  DataTab[Idx].TagVal  := TY_IDX_NIL;
   Inc(DataCount);
   DataAdd := Idx;
 End;
@@ -2092,7 +2109,8 @@ End;
 { ---- EmitDataSeg : emettre le segment _DATA dans le .ASM ---- }
 (* Appele en fin de compilation pour ecrire les constantes.
    Contient : chaines litterales (DK_STR), mots (DK_WORD),
-   octets (DK_BYTE), et constantes predefinies Clipper.         *)
+   octets (DK_BYTE), entrees taggees (DK_TAGGED),
+   et constantes predefinies Clipper.                            *)
 
 Procedure EmitDataSeg;
 Var
@@ -2136,6 +2154,14 @@ Begin
           Write(OutF, NS);
         End;
         WriteLn(OutF, ',0');
+      End;
+      DK_TAGGED :
+      Begin
+        { Tag de type (1 octet) suivi de la valeur (1 mot 16 bits) }
+        Str(DataTab[I].TagVal, NS);
+        WriteLn(OutF, '        DB      ', NS, '       ; tag type');
+        Str(DataTab[I].IntVal, NS);
+        WriteLn(OutF, '        DW      ', NS, '       ; valeur');
       End;
     End;
   End;
@@ -3547,6 +3573,131 @@ Begin
   TypeTab[TY_IDX_OBJECT].Size := 2;
 
   TypeCount := TY_PRIM_COUNT;
+End;
+
+{ ============================================================
+  TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- DataAddTagged : ajouter une entree taggee tag+valeur --- }
+(* Cree une entree DK_TAGGED dans DataTab : 1 octet tag de type
+   Clipper [TY_IDX] suivi d un mot 16 bits valeur.
+   Utilise pour les variables PUBLIC, STATIC, et parametres
+   stockes dans le segment DATA.
+   Retourne l index dans DataTab ou -1 si plein.                *)
+
+Function DataAddTagged(Const Lbl : TString;
+                       ATagVal : Integer; AIntVal : LongInt;
+                       Const AStrVal : TString) : Integer;
+Var
+  Idx : Integer;
+Begin
+  If DataCount >= MAX_DATA Then
+  Begin
+    CompileError('segment DATA plein (max=' + IntToStr(MAX_DATA) + ')');
+    DataAddTagged := -1;
+    Exit;
+  End;
+  Idx := DataCount;
+  DataTab[Idx].LblName := Lbl;
+  DataTab[Idx].Kind    := DK_TAGGED;
+  DataTab[Idx].IntVal  := AIntVal;
+  DataTab[Idx].StrVal  := AStrVal;
+  DataTab[Idx].TagVal  := ATagVal;
+  Inc(DataCount);
+  DataAddTagged := Idx;
+End;
+
+{ ---- DataAddPublicVar : variable PUBLIC dans DATA ------------ }
+(* Cree une variable PUBLIC globale dans le segment DATA.
+   Le label est prefixe _CLG_ (ex: _CLG_COUNTER).
+   Format en memoire : DB tag [TY_IDX] + DW valeur.
+   Enregistre aussi dans la table des symboles (SC_PUBLIC).
+   Retourne l index dans DataTab ou -1 si erreur.               *)
+
+Function DataAddPublicVar(Const Name : TString;
+                          ATypeIdx : Integer;
+                          AInitVal : LongInt) : Integer;
+Var
+  Lbl : TString;
+  Idx : Integer;
+  SI  : Integer;
+Begin
+  Lbl := CL_GLB_PFX + SymNameClean(Name);
+  Idx := DataAddTagged(Lbl, ATypeIdx, AInitVal, '');
+  If Idx >= 0 Then
+  Begin
+    SI := SymAdd(Name, SC_PUBLIC, ATypeIdx, Idx);
+    If SI < 0 Then
+    Begin
+      CompileError('impossible d ajouter PUBLIC ' + Name + ' dans SymTab');
+      DataAddPublicVar := -1;
+      Exit;
+    End;
+  End;
+  DataAddPublicVar := Idx;
+End;
+
+{ ---- DataAddStaticVar : variable STATIC dans DATA ------------ }
+(* Cree une variable STATIC dans le segment DATA.
+   Le label est prefixe _CLS_ (ex: _CLS_TOTAL).
+   Persiste entre les appels de fonction : initialisee une seule
+   fois au premier appel, conserve sa valeur ensuite.
+   Format en memoire : DB tag [TY_IDX] + DW valeur.
+   Enregistre aussi dans la table des symboles (SC_STATIC).
+   Retourne l index dans DataTab ou -1 si erreur.               *)
+
+Function DataAddStaticVar(Const Name : TString;
+                          ATypeIdx : Integer;
+                          AInitVal : LongInt) : Integer;
+Var
+  Lbl : TString;
+  Idx : Integer;
+  SI  : Integer;
+Begin
+  Lbl := CL_STAT_PFX + SymNameClean(Name);
+  Idx := DataAddTagged(Lbl, ATypeIdx, AInitVal, '');
+  If Idx >= 0 Then
+  Begin
+    SI := SymAdd(Name, SC_STATIC, ATypeIdx, Idx);
+    If SI < 0 Then
+    Begin
+      CompileError('impossible d ajouter STATIC ' + Name + ' dans SymTab');
+      DataAddStaticVar := -1;
+      Exit;
+    End;
+  End;
+  DataAddStaticVar := Idx;
+End;
+
+{ ---- DataAddDate : ajouter une date litterale dans DATA ------ }
+(* Stocke une date Clipper sous forme de valeur julienne 16 bits.
+   Le tag est TY_IDX_DATE, la valeur est le jour julien.
+   Retourne l index dans DataTab ou -1 si erreur.               *)
+
+Function DataAddDate(Const Lbl : TString;
+                     JulianVal : LongInt) : Integer;
+Begin
+  DataAddDate := DataAddTagged(Lbl, TY_IDX_DATE, JulianVal, '');
+End;
+
+{ ---- DataAddArray : ajouter un tableau statique dans DATA ---- }
+(* Cree un descripteur de tableau statique dans DATA.
+   Le tag est TY_IDX_ARRAY, la valeur stockee est le nombre
+   d elements. Les elements eux-memes seront des entrees
+   DK_TAGGED consecutives ajoutees apres l entete.
+   Retourne l index dans DataTab ou -1 si erreur.               *)
+
+Function DataAddArray(Const Lbl : TString;
+                      ElemCount : Integer) : Integer;
+Begin
+  If ElemCount < 0 Then
+  Begin
+    CompileError('taille de tableau invalide : ' + IntToStr(ElemCount));
+    DataAddArray := -1;
+    Exit;
+  End;
+  DataAddArray := DataAddTagged(Lbl, TY_IDX_ARRAY, LongInt(ElemCount), '');
 End;
 
 { ============================================================
