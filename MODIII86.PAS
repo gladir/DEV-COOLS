@@ -128,7 +128,7 @@
              Tables de methodes virtuelles (vtable) : DW offset proc par methode
              Descripteurs d exception : DW code + ptr nom dans DATA
 
-   TODO 09 - VARIABLES ET AFFECTATIONS
+   TODO 09 - VARIABLES ET AFFECTATIONS [IMPLEMENTE]
              Variables globales : segment DATA, acces par label _M3V_nom
              Variables locales : pile BP, acces [BP-offset]
              Parametres VALUE : copie sur pile (comme variable locale)
@@ -430,8 +430,13 @@ Const
   MAX_ERRORS    = {$IFDEF FPC}30{$ELSE}3{$ENDIF};
   MAX_STR       = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
   MAX_IMPORT    = 16;
+  MAX_PROC      = {$IFDEF FPC}256{$ELSE}32{$ENDIF};
+  MAX_LOCAL     = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
   STACK_SIZE    = 1024;
   MAX_TOKEN     = {$IFDEF FPC}16384{$ELSE}2048{$ENDIF};
+
+  (* Prefixe statique (TODO 09) *)
+  M3_STA_PFX  = '_M3S_';     (* variable statique locale             *)
 
   (* Prefixes de nommage ASM *)
   M3_VAR_PFX  = '_M3V_';     (* variable globale                    *)
@@ -625,6 +630,40 @@ Type
     EnumCount   : Integer;    (* nombre de valeurs (enum)           *)
   End;
 
+  (* ---- Variable locale de procedure (TODO 09) ----------------- *)
+  TLocalVar = Record
+    Name    : TString;       (* nom de la variable                  *)
+    TypeIdx : Integer;       (* index dans TypeTab                  *)
+    Offset  : Integer;       (* offset BP (negatif : [BP-n])        *)
+    Size    : Integer;       (* taille en octets                    *)
+  End;
+
+  (* ---- Mode de passage de parametre Modula-3 (TODO 09) -------- *)
+  TParamMode = (
+    PM_VALUE,                (* VALUE : copie par valeur            *)
+    PM_VAR,                  (* VAR : passage par adresse           *)
+    PM_READONLY              (* READONLY : adresse, lecture seule   *)
+  );
+
+  (* ---- Information sur une procedure (TODO 09) ----------------- *)
+  TProcInfo = Record
+    Name       : TString;    (* nom Modula-3 original               *)
+    MangledName: TString;    (* label ASM (_M3P_nom)                *)
+    RetTypeIdx : Integer;    (* type retour (-1 = procedure void)   *)
+    IsFunction : Boolean;    (* True si retourne une valeur         *)
+    ParamCount : Integer;
+    ParamNames : Array[0..MAX_PARAM - 1] Of TString;
+    ParamTypes : Array[0..MAX_PARAM - 1] Of Integer;
+    ParamOfs   : Array[0..MAX_PARAM - 1] Of Integer;
+    ParamModes : Array[0..MAX_PARAM - 1] Of TParamMode;
+    LocalCount : Integer;
+    Locals     : Array[0..MAX_LOCAL - 1] Of TLocalVar;
+    LocalSize  : Integer;    (* taille totale cadre local (bytes)   *)
+    BodyStart  : Integer;    (* index premier token du corps        *)
+    BodyEnd    : Integer;    (* index dernier token du corps        *)
+    SymIdx     : Integer;    (* index dans SymTab                   *)
+  End;
+
 (* ============================================================
    VARIABLES GLOBALES
    ============================================================ *)
@@ -670,6 +709,10 @@ Var
   (* Systeme de types (TODO 06) *)
   TypeTab    : Array[0..MAX_TYPE-1] Of TTypeRec;
   TypeCount  : Integer;
+
+  (* Table des procedures (TODO 09) *)
+  ProcTab    : Array[0..MAX_PROC-1] Of TProcInfo;
+  ProcCount  : Integer;
 
 (* ============================================================
    TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -3717,7 +3760,557 @@ Begin
   End;
 End;
 
-(* ---- Statistiques ----------------------------------------- *)
+(* ============================================================
+   TODO 09 - VARIABLES ET AFFECTATIONS [IMPLEMENTE]
+   ============================================================ *)
+
+(* ---- GenVarRef : generer operande MASM pour valeur variable -- *)
+(* Retourne 'WORD PTR [BP-n]' pour locale, 'WORD PTR label' pour *)
+(* globale, 'WORD PTR [BX]' pour param VAR (deref pointeur).     *)
+
+Function GenVarRef(SIdx : Integer) : TString;
+Var
+  Pfx  : TString;
+  Sz   : Integer;
+Begin
+  If (SIdx < 0) Or (SIdx >= SymCount) Then
+  Begin
+    GenVarRef := 'WORD PTR [0]';
+    Exit;
+  End;
+
+  Sz := TypeSizeFromIdx(SymTab[SIdx].TypeIdx);
+  If Sz <= 1 Then
+    Pfx := 'BYTE PTR '
+  Else
+    Pfx := 'WORD PTR ';
+
+  Case SymTab[SIdx].Kind Of
+    SK_VAR :
+    Begin
+      If SymTab[SIdx].ScopeLevel = 0 Then
+        (* Variable globale : acces par label DATA *)
+        GenVarRef := Pfx + SymTab[SIdx].MangledName
+      Else
+        (* Variable locale : acces par BP *)
+        GenVarRef := Pfx + '[BP' + IntToStr(SymTab[SIdx].Offset) + ']';
+    End;
+    SK_PARAM :
+    Begin
+      If SymTab[SIdx].IsReadonly Then
+        (* READONLY : passage par adresse, deref via BX *)
+        GenVarRef := Pfx + '[BP+' + IntToStr(SymTab[SIdx].Offset) + ']'
+      Else
+        (* VALUE param : acces direct sur pile *)
+        GenVarRef := Pfx + '[BP+' + IntToStr(SymTab[SIdx].Offset) + ']';
+    End;
+    SK_CONST :
+    Begin
+      If SymTab[SIdx].ScopeLevel = 0 Then
+        GenVarRef := Pfx + SymTab[SIdx].MangledName
+      Else
+        GenVarRef := Pfx + '[BP' + IntToStr(SymTab[SIdx].Offset) + ']';
+    End;
+  Else
+    GenVarRef := Pfx + SymTab[SIdx].MangledName;
+  End;
+End;
+
+(* ---- GenVarAddr : generer operande MASM pour adresse variable *)
+(* Retourne 'OFFSET label' pour globale, expression LEA pour      *)
+(* locale.                                                         *)
+
+Function GenVarAddr(SIdx : Integer) : TString;
+Begin
+  If (SIdx < 0) Or (SIdx >= SymCount) Then
+  Begin
+    GenVarAddr := 'OFFSET 0';
+    Exit;
+  End;
+
+  Case SymTab[SIdx].Kind Of
+    SK_VAR :
+    Begin
+      If SymTab[SIdx].ScopeLevel = 0 Then
+        GenVarAddr := 'OFFSET ' + SymTab[SIdx].MangledName
+      Else
+        GenVarAddr := 'BP' + IntToStr(SymTab[SIdx].Offset);
+    End;
+    SK_PARAM :
+      GenVarAddr := 'BP+' + IntToStr(SymTab[SIdx].Offset);
+    SK_CONST :
+      GenVarAddr := 'OFFSET ' + SymTab[SIdx].MangledName;
+  Else
+    GenVarAddr := 'OFFSET ' + SymTab[SIdx].MangledName;
+  End;
+End;
+
+(* ---- GenStoreVar : emettre le code pour stocker AX dans var -- *)
+(* Emet MOV destination, AX (ou MOV destination, AL pour BYTE).   *)
+
+Procedure GenStoreVar(SIdx : Integer);
+Var
+  Ref : TString;
+  Sz  : Integer;
+Begin
+  If (SIdx < 0) Or (SIdx >= SymCount) Then Exit;
+  Ref := GenVarRef(SIdx);
+  Sz  := TypeSizeFromIdx(SymTab[SIdx].TypeIdx);
+  If Sz <= 1 Then
+    EmitInstrAB('MOV', Ref, 'AL')
+  Else
+    EmitInstrAB('MOV', Ref, 'AX');
+End;
+
+(* ---- GenLoadVar : emettre le code pour charger var dans AX --- *)
+(* Emet MOV AX, source (ou MOV AL,source + CBW pour BYTE).        *)
+
+Procedure GenLoadVar(SIdx : Integer);
+Var
+  Ref : TString;
+  Sz  : Integer;
+Begin
+  If (SIdx < 0) Or (SIdx >= SymCount) Then Exit;
+  Ref := GenVarRef(SIdx);
+  Sz  := TypeSizeFromIdx(SymTab[SIdx].TypeIdx);
+  If Sz <= 1 Then
+  Begin
+    EmitInstrAB('XOR', 'AX', 'AX');
+    EmitInstrAB('MOV', 'AL', Ref);
+  End
+  Else
+    EmitInstrAB('MOV', 'AX', Ref);
+End;
+
+(* ---- EmitAssign : emettre code d affectation := ---------------- *)
+(* Emet : valeur dans AX -> MOV destination, AX                     *)
+(* Pour RECORD/ARRAY : REP MOVSW (copie bloc).                      *)
+
+Procedure EmitAssign(DestIdx : Integer; Sz : Integer);
+Begin
+  If Sz <= 2 Then
+    (* Affectation simple : valeur dans AX *)
+    GenStoreVar(DestIdx)
+  Else
+  Begin
+    (* Affectation bloc : REP MOVSW *)
+    EmitComment('assign bloc ' + IntToStr(Sz) + ' octets');
+    EmitInstrAB('MOV', 'CX', IntToStr(Sz Div 2));
+    EmitInstr('CLD');
+    EmitInstr('REP MOVSW');
+    If (Sz Mod 2) = 1 Then
+      EmitInstr('MOVSB');
+  End;
+End;
+
+(* ---- SkipToMatchingSemicolon : avancer jusqu au ';' ----------- *)
+(* Avance P au-dela du prochain ';', en tenant compte de la       *)
+(* profondeur des parentheses.                                     *)
+
+Procedure SkipToMatchingSemicolon(Var P : Integer);
+Begin
+  While (P < TokenCount) And Not
+        ((TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ';'))
+  Do
+    Inc(P);
+  If P < TokenCount Then
+    Inc(P); (* passer le ';' *)
+End;
+
+(* ---- SkipToMatchingEnd : trouver le END correspondant --------- *)
+(* Avance P au-dela du END correspondant au BEGIN/PROCEDURE        *)
+(* courant, en tenant compte de l imbrication.                     *)
+
+Procedure SkipToMatchingEnd(Var P : Integer);
+Var
+  Depth : Integer;
+Begin
+  Depth := 1;
+  While (P < TokenCount) And (Depth > 0) Do
+  Begin
+    If (TokenPool[P].Kind = TK_KEYWORD) Then
+    Begin
+      If (TokenPool[P].Val = 'BEGIN') Or
+         (TokenPool[P].Val = 'IF') Or
+         (TokenPool[P].Val = 'WHILE') Or
+         (TokenPool[P].Val = 'FOR') Or
+         (TokenPool[P].Val = 'LOOP') Or
+         (TokenPool[P].Val = 'CASE') Or
+         (TokenPool[P].Val = 'TRY') Or
+         (TokenPool[P].Val = 'REPEAT') Or
+         (TokenPool[P].Val = 'WITH') Or
+         (TokenPool[P].Val = 'TYPECASE') Or
+         (TokenPool[P].Val = 'LOCK') Then
+        Inc(Depth)
+      Else If TokenPool[P].Val = 'END' Then
+        Dec(Depth);
+    End;
+    Inc(P);
+  End;
+End;
+
+(* ---- ParseProcDecls : scanner PROCEDURE au niveau MODULE ------ *)
+(* Parcourt le TokenPool pour trouver les declarations PROCEDURE.  *)
+(* Pour chaque procedure, collecte les parametres (VALUE/VAR/      *)
+(* READONLY), les variables locales (VAR dans le corps), et        *)
+(* memorise les bornes du corps (entre BEGIN et END).               *)
+
+Procedure ParseProcDecls;
+Var
+  P          : Integer;
+  PI         : Integer;   (* index dans ProcTab *)
+  PName      : TString;
+  Mode       : TParamMode;
+  PCount     : Integer;
+  ParamOfs   : Integer;
+  PTIdx      : Integer;
+  LCount     : Integer;
+  LSize      : Integer;
+  LTIdx      : Integer;
+  LName      : TString;
+  BodyOpen   : Integer;
+  RetTIdx    : Integer;
+  IsFn       : Boolean;
+  SI         : Integer;
+Begin
+  ProcCount := 0;
+
+  P := 0;
+  While P < TokenCount Do
+  Begin
+    (* Chercher le mot-cle PROCEDURE au niveau global *)
+    If Not ((TokenPool[P].Kind = TK_KEYWORD) And
+            (TokenPool[P].Val = 'PROCEDURE')) Then
+    Begin
+      Inc(P);
+      Continue;
+    End;
+
+    (* On ne traite que les PROCEDURE au niveau module *)
+    (* (pas celles imbriquees dans un corps BEGIN..END) *)
+    Inc(P); (* passer PROCEDURE *)
+
+    (* Nom de la procedure *)
+    If (P >= TokenCount) Or (TokenPool[P].Kind <> TK_IDENT) Then
+    Begin
+      Inc(P);
+      Continue;
+    End;
+    PName := TokenPool[P].Val;
+    Inc(P);
+
+    If ProcCount >= MAX_PROC Then
+    Begin
+      CompileError('trop de procedures (max=' + IntToStr(MAX_PROC) + ')');
+      Break;
+    End;
+    PI := ProcCount;
+    Inc(ProcCount);
+
+    ProcTab[PI].Name       := PName;
+    ProcTab[PI].MangledName:= M3_PROC_PFX + SymNameClean(PName);
+    ProcTab[PI].RetTypeIdx := TY_IDX_VOID;
+    ProcTab[PI].IsFunction := False;
+    ProcTab[PI].ParamCount := 0;
+    ProcTab[PI].LocalCount := 0;
+    ProcTab[PI].LocalSize  := 0;
+    ProcTab[PI].BodyStart  := -1;
+    ProcTab[PI].BodyEnd    := -1;
+    ProcTab[PI].SymIdx     := -1;
+
+    (* Enregistrer le symbole de la procedure *)
+    SI := SymAdd(PName, SK_PROC, TY_IDX_VOID, PI);
+    If SI >= 0 Then
+    Begin
+      SymTab[SI].MangledName := ProcTab[PI].MangledName;
+      ProcTab[PI].SymIdx     := SI;
+    End;
+
+    (* ---- Parser la liste de parametres '(' ... ')' ---- *)
+    PCount   := 0;
+    ParamOfs := 4; (* [BP+4] = adresse retour, [BP+6] = 1er param *)
+    (* En convention Pascal 8086 : params empiles gauche->droite *)
+    (* mais on fixe [BP+4]=retaddr, [BP+6..] = params            *)
+    ParamOfs := 6;
+
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P); (* passer '(' *)
+      SymEnterScope; (* portee des parametres *)
+
+      While (P < TokenCount) And Not
+            ((TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ')')) Do
+      Begin
+        (* Detecter le mode de passage *)
+        Mode := PM_VALUE; (* defaut : VALUE *)
+        If (TokenPool[P].Kind = TK_KEYWORD) And
+           (TokenPool[P].Val = 'VAR') Then
+        Begin
+          Mode := PM_VAR;
+          Inc(P);
+        End
+        Else If (TokenPool[P].Kind = TK_KEYWORD) And
+                (TokenPool[P].Val = 'READONLY') Then
+        Begin
+          Mode := PM_READONLY;
+          Inc(P);
+        End
+        Else If (TokenPool[P].Kind = TK_KEYWORD) And
+                (TokenPool[P].Val = 'VALUE') Then
+        Begin
+          Mode := PM_VALUE;
+          Inc(P);
+        End;
+
+        (* Nom du parametre *)
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+        Begin
+          If PCount < MAX_PARAM Then
+          Begin
+            ProcTab[PI].ParamNames[PCount] := TokenPool[P].Val;
+            ProcTab[PI].ParamModes[PCount] := Mode;
+          End;
+          Inc(P);
+
+          (* ':' Type *)
+          PTIdx := TY_IDX_INTEGER;
+          If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+             (TokenPool[P].Val = ':') Then
+          Begin
+            Inc(P); (* passer ':' *)
+            If (P < TokenCount) And
+               ((TokenPool[P].Kind = TK_KEYWORD) Or
+                (TokenPool[P].Kind = TK_IDENT)) Then
+            Begin
+              PTIdx := TypeIdxFromName(TokenPool[P].Val);
+              If PTIdx = TY_UNKNOWN Then
+                PTIdx := TY_IDX_INTEGER;
+              Inc(P);
+            End;
+          End;
+
+          If PCount < MAX_PARAM Then
+          Begin
+            ProcTab[PI].ParamTypes[PCount] := PTIdx;
+            ProcTab[PI].ParamOfs[PCount]   := ParamOfs;
+            (* En 8086, chaque param occupe 2 octets sur la pile *)
+            Inc(ParamOfs, 2);
+
+            (* Enregistrer le parametre dans SymTab *)
+            SI := SymAdd(ProcTab[PI].ParamNames[PCount],
+                         SK_PARAM, PTIdx, ProcTab[PI].ParamOfs[PCount]);
+            If SI >= 0 Then
+            Begin
+              If Mode = PM_READONLY Then
+                SymTab[SI].IsReadonly := True;
+            End;
+          End;
+          Inc(PCount);
+        End;
+
+        (* Separateur ';' ou ',' entre parametres *)
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+           ((TokenPool[P].Val = ';') Or (TokenPool[P].Val = ',')) Then
+          Inc(P);
+      End; (* while not ')' *)
+
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ')') Then
+        Inc(P); (* passer ')' *)
+
+      SymLeaveScope; (* quitter la portee des parametres *)
+    End;
+    ProcTab[PI].ParamCount := PCount;
+
+    (* ---- Type retour ': Type' apres ')' => c est une fonction --- *)
+    RetTIdx := TY_IDX_VOID;
+    IsFn    := False;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ':') Then
+    Begin
+      Inc(P); (* passer ':' *)
+      If (P < TokenCount) And
+         ((TokenPool[P].Kind = TK_KEYWORD) Or
+          (TokenPool[P].Kind = TK_IDENT)) Then
+      Begin
+        RetTIdx := TypeIdxFromName(TokenPool[P].Val);
+        If RetTIdx = TY_UNKNOWN Then
+          RetTIdx := TY_IDX_INTEGER;
+        IsFn := True;
+        Inc(P);
+      End;
+    End;
+    ProcTab[PI].RetTypeIdx := RetTIdx;
+    ProcTab[PI].IsFunction := IsFn;
+    If (ProcTab[PI].SymIdx >= 0) Then
+      SymTab[ProcTab[PI].SymIdx].TypeIdx := RetTIdx;
+
+    (* Passer '=' si present (pour corps inline) *)
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_OP) And
+       (TokenPool[P].Val = '=') Then
+      Inc(P);
+
+    (* Passer ';' apres la signature *)
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ';') Then
+      Inc(P);
+
+    (* ---- Variables locales (VAR avant BEGIN) ---- *)
+    LCount := 0;
+    LSize  := 0;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+       (TokenPool[P].Val = 'VAR') Then
+    Begin
+      Inc(P); (* passer VAR *)
+      (* Lire les declarations locales : ident : Type; *)
+      While (P < TokenCount) And Not
+            ((TokenPool[P].Kind = TK_KEYWORD) And
+             ((TokenPool[P].Val = 'BEGIN') Or
+              (TokenPool[P].Val = 'CONST') Or
+              (TokenPool[P].Val = 'VAR') Or
+              (TokenPool[P].Val = 'PROCEDURE'))) Do
+      Begin
+        If TokenPool[P].Kind = TK_IDENT Then
+        Begin
+          LName := TokenPool[P].Val;
+          Inc(P);
+          LTIdx := TY_IDX_INTEGER;
+          If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+             (TokenPool[P].Val = ':') Then
+          Begin
+            Inc(P); (* passer ':' *)
+            If (P < TokenCount) And
+               ((TokenPool[P].Kind = TK_KEYWORD) Or
+                (TokenPool[P].Kind = TK_IDENT)) Then
+            Begin
+              LTIdx := TypeIdxFromName(TokenPool[P].Val);
+              If LTIdx = TY_UNKNOWN Then
+                LTIdx := TY_IDX_INTEGER;
+              Inc(P);
+            End;
+          End;
+
+          (* Creer la variable locale *)
+          If LCount < MAX_LOCAL Then
+          Begin
+            Inc(LSize, TypeSizeFromIdx(LTIdx));
+            ProcTab[PI].Locals[LCount].Name    := LName;
+            ProcTab[PI].Locals[LCount].TypeIdx := LTIdx;
+            ProcTab[PI].Locals[LCount].Size    := TypeSizeFromIdx(LTIdx);
+            ProcTab[PI].Locals[LCount].Offset  := -LSize;
+            Inc(LCount);
+          End;
+
+          (* Passer le ';' *)
+          If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+             (TokenPool[P].Val = ';') Then
+            Inc(P);
+        End
+        Else
+          Inc(P); (* token inattendu, avancer *)
+      End;
+    End;
+    ProcTab[PI].LocalCount := LCount;
+    (* Aligner la taille locale sur mot (2 octets) *)
+    If (LSize Mod 2) = 1 Then Inc(LSize);
+    ProcTab[PI].LocalSize  := LSize;
+
+    (* ---- Corps : BEGIN ... END ---- *)
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+       (TokenPool[P].Val = 'BEGIN') Then
+    Begin
+      Inc(P); (* passer BEGIN *)
+      BodyOpen := P;
+      SkipToMatchingEnd(P);
+      ProcTab[PI].BodyStart := BodyOpen;
+      ProcTab[PI].BodyEnd   := P - 1;
+    End;
+
+    (* Passer le nom du module apres END (ex: END NomProc) *)
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+      Inc(P);
+
+    (* Passer le ';' apres END *)
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ';') Then
+      Inc(P);
+
+    If Opts.DebugMode Then
+      WriteLn('  PROC[', PI, ']: ', PName,
+              ' params=', PCount,
+              ' locals=', LCount,
+              ' localSize=', ProcTab[PI].LocalSize,
+              ' body=', ProcTab[PI].BodyStart, '..',
+              ProcTab[PI].BodyEnd);
+  End; (* while P < TokenCount *)
+End;
+
+(* ---- EmitProcedures : emettre le code ASM des procedures ------ *)
+(* Pour chaque procedure dans ProcTab, genere :                     *)
+(*   - label + prologue (PUSH BP / MOV BP,SP / SUB SP,n)           *)
+(*   - commentaires decrivant les parametres et les locales         *)
+(*   - placeholder pour le corps (TODO 10+)                        *)
+(*   - epilogue (POP BP / RET n)                                   *)
+
+Procedure EmitProcedures;
+Var
+  PI, LI : Integer;
+  OfsStr : TString;
+Begin
+  For PI := 0 To ProcCount - 1 Do
+  Begin
+    EmitBlankLine;
+    If ProcTab[PI].IsFunction Then
+      EmitComment('--- Fonction: ' + ProcTab[PI].Name + ' ---')
+    Else
+      EmitComment('--- Procedure: ' + ProcTab[PI].Name + ' ---');
+
+    EmitLabel(ProcTab[PI].MangledName);
+    EmitProlog(ProcTab[PI].LocalSize);
+
+    (* Commentaires descriptifs pour les parametres *)
+    For LI := 0 To ProcTab[PI].ParamCount - 1 Do
+    Begin
+      Case ProcTab[PI].ParamModes[LI] Of
+        PM_VALUE :
+          OfsStr := 'VALUE ';
+        PM_VAR :
+          OfsStr := 'VAR ';
+        PM_READONLY :
+          OfsStr := 'READONLY ';
+      End;
+      EmitComment('  param ' + OfsStr + ProcTab[PI].ParamNames[LI] +
+                  ' = [BP+' + IntToStr(ProcTab[PI].ParamOfs[LI]) + ']');
+    End;
+
+    (* Commentaires descriptifs pour les variables locales *)
+    For LI := 0 To ProcTab[PI].LocalCount - 1 Do
+    Begin
+      OfsStr := IntToStr(ProcTab[PI].Locals[LI].Offset);
+      EmitComment('  local ' + ProcTab[PI].Locals[LI].Name +
+                  ' = [BP' + OfsStr + ']');
+    End;
+
+    (* Initialiser les variables locales a zero *)
+    For LI := 0 To ProcTab[PI].LocalCount - 1 Do
+    Begin
+      If ProcTab[PI].Locals[LI].Size <= 1 Then
+        EmitInstrAB('MOV', 'BYTE PTR [BP' +
+                    IntToStr(ProcTab[PI].Locals[LI].Offset) + ']', '0')
+      Else
+        EmitInstrAB('MOV', 'WORD PTR [BP' +
+                    IntToStr(ProcTab[PI].Locals[LI].Offset) + ']', '0');
+    End;
+
+    EmitBlankLine;
+    EmitComment('  (corps: TODO 10+)');
+
+    (* Epilogue *)
+    EmitBlankLine;
+    EmitEpilog(ProcTab[PI].ParamCount * 2);
+  End;
+End;
 
 Procedure ShowStats;
 Begin
@@ -3736,6 +4329,7 @@ Begin
   WarnCount  := 0;
   TotalLines := 0;
   TotalSyms  := 0;
+  ProcCount  := 0;
   OutFOpen   := False;
   LexOpened  := False;
 
@@ -3769,19 +4363,24 @@ Begin
   (* Phase 2b : scanner les declarations VAR/CONST au niveau MODULE *)
   ParseDataDecls;
 
+  (* Phase 2c : scanner les declarations PROCEDURE au niveau MODULE *)
+  ParseProcDecls;
+
   If Opts.Verbose Then
   Begin
     WriteLn('  Tokens         : ', TokenCount);
     WriteLn('  Donnees (DATA) : ', DataCount);
     WriteLn('  Types          : ', TypeCount);
     WriteLn('  Symboles       : ', SymCount);
+    WriteLn('  Procedures     : ', ProcCount);
   End;
 
-  (* TODO 08+ : ParseCompilationUnit, EmitRuntime, etc. *)
+  (* TODO 09+ : ParseCompilationUnit, EmitRuntime, etc. *)
 
   (* Phase 3 : emettre le fichier assembleur *)
   EmitOpen;
   EmitHeader;
+  EmitProcedures;
   EmitClose;
 
   If Opts.Verbose Then ShowStats;
