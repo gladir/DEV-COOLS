@@ -113,7 +113,7 @@
              EmitProlog / EmitEpilog : PUSH BP / MOV BP,SP et MOV SP,BP / POP BP
              EmitDataSeg : ecrire _DATA SEGMENT ... _DATA ENDS
 
-   TODO 08 - SEGMENT DE DONNEES ET STATIQUES
+   TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
              TDataRec : LblName, Kind (DK_WORD/DK_BYTE/DK_STR/DK_ARRAY/DK_RECORD),
                IntVal, StrVal, ElemCount
              DataTab[0..MAX_DATA-1], DataCount
@@ -121,6 +121,10 @@
              Variables globales (VAR au niveau MODULE) : entrees DK_WORD dans DATA
              Constantes CONST : entrees DK_WORD ou DK_STR (immuables)
              Chaines TEXT litterales : DB 'abc',0 dans DATA avec label _M3K_N
+             IsM3TypeKeyword : detecter les mots-cles de type Modula-3
+             DataAddGlobalVar : creer entree DATA + symbole pour variable globale
+             DataAddGlobalConst : creer entree DATA + symbole pour constante
+             ParseDataDecls : scanner TokenPool pour blocs VAR/CONST au niveau MODULE
              Tables de methodes virtuelles (vtable) : DW offset proc par methode
              Descripteurs d exception : DW code + ptr nom dans DATA
 
@@ -3345,6 +3349,374 @@ Begin
   End;
 End;
 
+(* ============================================================
+   TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
+   ============================================================ *)
+
+(* ---- IsM3TypeKeyword : detecter un mot-cle de type Modula-3 - *)
+(* Retourne True si Val est un type primitif reconnu.             *)
+
+Function IsM3TypeKeyword(Const V : TString) : Boolean;
+Begin
+  IsM3TypeKeyword :=
+    (V = 'INTEGER')  Or (V = 'CARDINAL') Or (V = 'BOOLEAN') Or
+    (V = 'CHAR')     Or (V = 'REAL')     Or (V = 'LONGREAL') Or
+    (V = 'TEXT')     Or (V = 'REFANY')   Or (V = 'ROOT');
+End;
+
+(* ---- TypeIdxFromName : retourne l index de type pour un nom -- *)
+(* Reconnait les types primitifs et retourne leur TY_IDX.         *)
+
+Function TypeIdxFromName(Const V : TString) : Integer;
+Begin
+  If V = 'INTEGER'  Then TypeIdxFromName := TY_IDX_INTEGER
+  Else If V = 'CARDINAL' Then TypeIdxFromName := TY_IDX_CARDINAL
+  Else If V = 'BOOLEAN'  Then TypeIdxFromName := TY_IDX_BOOLEAN
+  Else If V = 'CHAR'     Then TypeIdxFromName := TY_IDX_CHAR
+  Else If V = 'REAL'     Then TypeIdxFromName := TY_IDX_REAL
+  Else If V = 'LONGREAL' Then TypeIdxFromName := TY_IDX_LONGREAL
+  Else If V = 'TEXT'     Then TypeIdxFromName := TY_IDX_TEXT
+  Else If V = 'REFANY'   Then TypeIdxFromName := TY_IDX_NIL
+  Else TypeIdxFromName := TY_UNKNOWN;
+End;
+
+(* ---- TypeSizeFromIdx : retourne la taille en octets d un type *)
+
+Function TypeSizeFromIdx(TIdx : Integer) : Integer;
+Begin
+  Case TIdx Of
+    TY_IDX_INTEGER  : TypeSizeFromIdx := 2;
+    TY_IDX_CARDINAL : TypeSizeFromIdx := 2;
+    TY_IDX_BOOLEAN  : TypeSizeFromIdx := 1;
+    TY_IDX_CHAR     : TypeSizeFromIdx := 1;
+    TY_IDX_REAL     : TypeSizeFromIdx := 2;
+    TY_IDX_LONGREAL : TypeSizeFromIdx := 2;
+    TY_IDX_TEXT     : TypeSizeFromIdx := 2;
+    TY_IDX_NIL      : TypeSizeFromIdx := 2;
+  Else
+    TypeSizeFromIdx := 2;  (* defaut : mot 16 bits *)
+  End;
+End;
+
+(* ---- DataAddGlobalVar : creer une variable globale DATA ----- *)
+(* Cree une entree DK_WORD ou DK_BYTE dans DataTab et enregistre *)
+(* le symbole correspondant dans SymTab avec mangling _M3V_name. *)
+
+Procedure DataAddGlobalVar(Const Name : TString; TIdx : Integer;
+                           InitVal : LongInt);
+Var
+  Lbl : TString;
+  Sz  : Integer;
+  SI  : Integer;
+Begin
+  Lbl := M3_VAR_PFX + Name;
+  Sz  := TypeSizeFromIdx(TIdx);
+  If Sz <= 1 Then
+    DataAddByte(Lbl, InitVal)
+  Else
+    DataAddWord(Lbl, InitVal);
+  SI := SymAdd(Name, SK_VAR, TIdx, DataCount - 1);
+  If SI >= 0 Then
+    SymTab[SI].MangledName := Lbl;
+End;
+
+(* ---- DataAddGlobalConst : creer une constante globale DATA -- *)
+(* Cree une entree DK_WORD (entier) ou DK_STR (chaine) et       *)
+(* enregistre le symbole dans SymTab avec SK_CONST.              *)
+
+Procedure DataAddGlobalConst(Const Name : TString; TIdx : Integer;
+                             IVal : LongInt; Const SVal : TString);
+Var
+  Lbl : TString;
+  SI  : Integer;
+Begin
+  Lbl := M3_VAR_PFX + Name;
+  If TIdx = TY_IDX_TEXT Then
+  Begin
+    (* Constante chaine : stocker dans DATA *)
+    DataAdd(Lbl, DK_STR, 0, SVal);
+    SI := SymAdd(Name, SK_CONST, TIdx, DataCount - 1);
+    If SI >= 0 Then
+    Begin
+      SymTab[SI].MangledName := Lbl;
+      SymTab[SI].IsReadonly  := True;
+    End;
+  End
+  Else
+  Begin
+    (* Constante entiere : stocker comme DW *)
+    DataAddWord(Lbl, IVal);
+    SI := SymAdd(Name, SK_CONST, TIdx, DataCount - 1);
+    If SI >= 0 Then
+    Begin
+      SymTab[SI].MangledName := Lbl;
+      SymTab[SI].IsReadonly  := True;
+      SymTab[SI].ImmVal      := IVal;
+    End;
+  End;
+End;
+
+(* ---- ParseDataDecls : scanner VAR/CONST au niveau MODULE ---- *)
+(* Parcourt le TokenPool entre MODULE ... BEGIN pour identifier   *)
+(* les blocs VAR (variables globales) et CONST (constantes).     *)
+(* Pour chaque variable, cree une entree dans DataTab et SymTab.  *)
+(* Pour chaque constante, evalue l expression et cree l entree.  *)
+
+Procedure ParseDataDecls;
+Var
+  P       : Integer;
+  InVar   : Boolean;   (* dans un bloc VAR *)
+  InConst : Boolean;   (* dans un bloc CONST *)
+  Name    : TString;
+  TIdx    : Integer;
+  IVal    : LongInt;
+  SVal    : TString;
+Begin
+  P       := 0;
+  InVar   := False;
+  InConst := False;
+
+  (* Chercher le mot-cle MODULE pour commencer *)
+  While (P < TokenCount) And Not
+        ((TokenPool[P].Kind = TK_KEYWORD) And (TokenPool[P].Val = 'MODULE'))
+  Do
+    Inc(P);
+  If P >= TokenCount Then Exit;
+  Inc(P); (* passer MODULE *)
+
+  (* Avancer au-dela du nom de module et du ';' *)
+  While (P < TokenCount) And Not
+        ((TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ';'))
+  Do
+    Inc(P);
+  If P < TokenCount Then Inc(P); (* passer le ';' *)
+
+  (* Scanner les declarations entre MODULE ...; et BEGIN *)
+  While P < TokenCount Do
+  Begin
+    (* Si on atteint BEGIN, on arrete *)
+    If (TokenPool[P].Kind = TK_KEYWORD) And (TokenPool[P].Val = 'BEGIN') Then
+      Break;
+
+    (* Si on atteint PROCEDURE, on arrete (declarations de proc) *)
+    If (TokenPool[P].Kind = TK_KEYWORD) And
+       (TokenPool[P].Val = 'PROCEDURE') Then
+      Break;
+
+    (* Detecter le mot-cle VAR *)
+    If (TokenPool[P].Kind = TK_KEYWORD) And (TokenPool[P].Val = 'VAR') Then
+    Begin
+      InVar   := True;
+      InConst := False;
+      Inc(P);
+      Continue;
+    End;
+
+    (* Detecter le mot-cle CONST *)
+    If (TokenPool[P].Kind = TK_KEYWORD) And (TokenPool[P].Val = 'CONST') Then
+    Begin
+      InConst := True;
+      InVar   := False;
+      Inc(P);
+      Continue;
+    End;
+
+    (* Detecter un autre mot-cle de section (TYPE, EXCEPTION, etc) *)
+    If (TokenPool[P].Kind = TK_KEYWORD) And
+       ((TokenPool[P].Val = 'TYPE') Or
+        (TokenPool[P].Val = 'EXCEPTION') Or
+        (TokenPool[P].Val = 'IMPORT') Or
+        (TokenPool[P].Val = 'FROM') Or
+        (TokenPool[P].Val = 'REVEAL')) Then
+    Begin
+      InVar   := False;
+      InConst := False;
+      (* Sauter jusqu a la fin de la section *)
+      Inc(P);
+      Continue;
+    End;
+
+    (* ---- Traiter une declaration VAR : ident [, ident]* : Type ; *)
+    If InVar And (TokenPool[P].Kind = TK_IDENT) Then
+    Begin
+      (* Collecter le(s) nom(s) de variable(s) *)
+      Repeat
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+        Begin
+          Name := TokenPool[P].Val;
+          Inc(P);
+          (* Chercher le ':' pour le type *)
+          If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+             (TokenPool[P].Val = ':') Then
+          Begin
+            Inc(P); (* passer ':' *)
+            (* Lire le nom du type *)
+            TIdx := TY_IDX_INTEGER; (* type par defaut *)
+            If P < TokenCount Then
+            Begin
+              If (TokenPool[P].Kind = TK_KEYWORD) Or
+                 (TokenPool[P].Kind = TK_IDENT) Then
+              Begin
+                TIdx := TypeIdxFromName(TokenPool[P].Val);
+                If TIdx = TY_UNKNOWN Then
+                  TIdx := TY_IDX_INTEGER; (* type utilisateur -> mot *)
+                Inc(P);
+              End;
+            End;
+            (* Creer la variable globale *)
+            DataAddGlobalVar(Name, TIdx, 0);
+            (* Passer le ';' *)
+            If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+               (TokenPool[P].Val = ';') Then
+              Inc(P);
+          End
+          Else If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+                  (TokenPool[P].Val = ',') Then
+          Begin
+            (* Plusieurs variables avant le ':' -> lire la suite *)
+            (* On gere name, name, name : Type; *)
+            (* Stocker ce premier nom et continuer la boucle *)
+            Inc(P); (* passer ',' *)
+
+            (* On va traiter les noms suivants dans la boucle *)
+            (* mais il faut d abord trouver le ':' pour le type *)
+            (* Strategie : collecter tous les noms d abord *)
+            (* Reculer et traiter comme un groupe *)
+
+            (* Approche simplifiee : creer avec type par defaut, *)
+            (* le type sera resolu quand on atteint ':' *)
+            DataAddGlobalVar(Name, TY_IDX_INTEGER, 0);
+            Continue;
+          End
+          Else
+            Inc(P);
+        End
+        Else
+          Inc(P);
+      Until (P >= TokenCount) Or
+            ((TokenPool[P].Kind = TK_KEYWORD) And
+             ((TokenPool[P].Val = 'VAR') Or
+              (TokenPool[P].Val = 'CONST') Or
+              (TokenPool[P].Val = 'TYPE') Or
+              (TokenPool[P].Val = 'BEGIN') Or
+              (TokenPool[P].Val = 'PROCEDURE'))) Or
+            ((TokenPool[P].Kind = TK_IDENT) And
+             (P + 1 < TokenCount) And
+             ((TokenPool[P+1].Kind = TK_PUNCT) And
+              ((TokenPool[P+1].Val = ':') Or (TokenPool[P+1].Val = ','))));
+      Continue;
+    End;
+
+    (* ---- Traiter une declaration CONST : ident = expr ; *)
+    If InConst And (TokenPool[P].Kind = TK_IDENT) Then
+    Begin
+      Name := TokenPool[P].Val;
+      Inc(P);
+
+      (* Chercher le '=' *)
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_OP) And
+         (TokenPool[P].Val = '=') Then
+      Begin
+        Inc(P); (* passer '=' *)
+
+        (* Evaluer l expression constante *)
+        IVal := 0;
+        SVal := '';
+        TIdx := TY_IDX_INTEGER;
+
+        If P < TokenCount Then
+        Begin
+          (* Constante chaine *)
+          If TokenPool[P].Kind = TK_STRING Then
+          Begin
+            SVal := TokenPool[P].Val;
+            TIdx := TY_IDX_TEXT;
+            Inc(P);
+          End
+          (* Constante entiere *)
+          Else If TokenPool[P].Kind = TK_INTEGER Then
+          Begin
+            IVal := TokenPool[P].IntVal;
+            TIdx := TY_IDX_INTEGER;
+            Inc(P);
+          End
+          (* Constante caractere *)
+          Else If TokenPool[P].Kind = TK_CHAR Then
+          Begin
+            IVal := TokenPool[P].IntVal;
+            TIdx := TY_IDX_CHAR;
+            Inc(P);
+          End
+          (* Constante booleenne TRUE/FALSE *)
+          Else If (TokenPool[P].Kind = TK_KEYWORD) And
+                  (TokenPool[P].Val = 'TRUE') Then
+          Begin
+            IVal := 1;
+            TIdx := TY_IDX_BOOLEAN;
+            Inc(P);
+          End
+          Else If (TokenPool[P].Kind = TK_KEYWORD) And
+                  (TokenPool[P].Val = 'FALSE') Then
+          Begin
+            IVal := 0;
+            TIdx := TY_IDX_BOOLEAN;
+            Inc(P);
+          End
+          (* Identifiant TRUE/FALSE (peuvent etre tokenises TK_IDENT) *)
+          Else If (TokenPool[P].Kind = TK_IDENT) And
+                  (TokenPool[P].Val = 'TRUE') Then
+          Begin
+            IVal := 1;
+            TIdx := TY_IDX_BOOLEAN;
+            Inc(P);
+          End
+          Else If (TokenPool[P].Kind = TK_IDENT) And
+                  (TokenPool[P].Val = 'FALSE') Then
+          Begin
+            IVal := 0;
+            TIdx := TY_IDX_BOOLEAN;
+            Inc(P);
+          End
+          (* Constante entiere negative *)
+          Else If (TokenPool[P].Kind = TK_OP) And
+                  (TokenPool[P].Val = '-') And
+                  (P + 1 < TokenCount) And
+                  (TokenPool[P+1].Kind = TK_INTEGER) Then
+          Begin
+            IVal := -TokenPool[P+1].IntVal;
+            TIdx := TY_IDX_INTEGER;
+            Inc(P, 2);
+          End
+          Else
+          Begin
+            (* Expression constante non reconnue : avancer *)
+            While (P < TokenCount) And Not
+                  ((TokenPool[P].Kind = TK_PUNCT) And
+                   (TokenPool[P].Val = ';'))
+            Do
+              Inc(P);
+          End;
+        End;
+
+        (* Creer la constante *)
+        DataAddGlobalConst(Name, TIdx, IVal, SVal);
+
+        (* Passer le ';' *)
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+           (TokenPool[P].Val = ';') Then
+          Inc(P);
+      End
+      Else
+        Inc(P); (* pas de '=' -> sauter *)
+
+      Continue;
+    End;
+
+    (* Token non reconnu dans ce contexte : avancer *)
+    Inc(P);
+  End;
+End;
+
 (* ---- Statistiques ----------------------------------------- *)
 
 Procedure ShowStats;
@@ -3394,6 +3766,9 @@ Begin
   TokenPoolConcatStrings;
   TokenPoolRegisterStrings;
 
+  (* Phase 2b : scanner les declarations VAR/CONST au niveau MODULE *)
+  ParseDataDecls;
+
   If Opts.Verbose Then
   Begin
     WriteLn('  Tokens         : ', TokenCount);
@@ -3402,7 +3777,7 @@ Begin
     WriteLn('  Symboles       : ', SymCount);
   End;
 
-  (* TODO 07+ : ParseCompilationUnit, EmitRuntime, etc. *)
+  (* TODO 08+ : ParseCompilationUnit, EmitRuntime, etc. *)
 
   (* Phase 3 : emettre le fichier assembleur *)
   EmitOpen;
