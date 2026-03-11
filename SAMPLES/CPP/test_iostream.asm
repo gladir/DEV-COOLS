@@ -279,6 +279,7 @@ _CC_STRBUF   DB  256 DUP(0)
 _CC_RT_CRLF     DB  13,10
 _CC_RT_NUMBUF   DB  8 DUP(0)
 _CC_RT_INBUF    DB  80,0,80 DUP(0)
+_CC_RT_ATMP     DW  0
 _CC_K_1  DB  'Hello, World!',0
 _CC_K_2  DB  'Valeur de x = ',0
 _CC_K_3  DB  'Test: ',0

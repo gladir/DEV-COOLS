@@ -413,6 +413,7 @@ _CC_STRBUF   DB  256 DUP(0)
 _CC_RT_CRLF     DB  13,10
 _CC_RT_NUMBUF   DB  8 DUP(0)
 _CC_RT_INBUF    DB  80,0,80 DUP(0)
+_CC_RT_ATMP     DW  0
 _CC_K_5  DB  'x > 3',0
 _CC_K_10  DB  'grand',0
 _CC_K_11  DB  'petit',0

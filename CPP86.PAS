@@ -592,6 +592,27 @@ Type
 
   TCondState = (CS_ACTIVE, CS_SKIPPING, CS_DONE);
 
+Const
+  MAX_FIELD  = 16;
+  MAX_STRUCT = 32;
+  MAX_ARR_INIT = 64;
+
+Type
+  TFieldInfo = Record
+    Name    : TString;
+    TypeIdx : Integer;
+    Offset  : Integer;
+  End;
+
+  TStructInfo = Record
+    Name       : TString;
+    FieldCount : Integer;
+    Fields     : Array[0..MAX_FIELD-1] Of TFieldInfo;
+    TotalSize  : Integer;
+    IsUnion    : Boolean;
+    TypeIdx    : Integer;
+  End;
+
 (* ============================================================
   VARIABLES GLOBALES
   ============================================================ *)
@@ -655,6 +676,13 @@ Var
   CondStack   : Array[0..MAX_COND - 1] Of TCondState;
   CondTop     : Integer;     (* -1 = pas de condition active *)
   IncludeDepth : Integer;    (* profondeur courante d inclusion *)
+
+  (* TODO 16 - Tableaux *)
+  LastArraySubIdx : Integer;  (* SymIdx quand arr[i] parse, -1 sinon *)
+
+  (* TODO 17 - Structures *)
+  StructTab   : Array[0..MAX_STRUCT-1] Of TStructInfo;
+  StructCount : Integer;
 
 (* ============================================================
   FORWARD DECLARATIONS
@@ -782,6 +810,12 @@ Procedure ParseDoWhileStmt; Forward;
 Procedure ParseForStmt; Forward;
 (* TODO 18 - Fonctions *)
 Procedure ParseFuncDecl; Forward;
+(* TODO 16 - Tableaux *)
+(* TODO 17 - Structures *)
+Procedure ParseStructDecl; Forward;
+Function  StructFind(Const Name : TString) : Integer; Forward;
+Function  StructFieldFind(SIIdx : Integer; Const FName : TString) : Integer; Forward;
+Function  StructFindByType(ATypeIdx : Integer) : Integer; Forward;
 (* Parseur principal *)
 Procedure ParserAdvance; Forward;
 Procedure ParseStmt; Forward;
@@ -1065,6 +1099,8 @@ Begin
   LoopTop        := 0;
   RuntimeEmitted := False;
   LabelGenSeq    := 0;
+  LastArraySubIdx := -1;
+  StructCount    := 0;
   GExprDummy.Kind    := EK_NONE;
   GExprDummy.ImmVal  := 0;
   GExprDummy.TypeIdx := TY_UNKNOWN;
@@ -2236,6 +2272,8 @@ Begin
   EmitRaw(CC_RT_PFX + 'CRLF     DB  13,10');
   EmitRaw(CC_RT_PFX + 'NUMBUF   DB  8 DUP(0)');
   EmitRaw(CC_RT_PFX + 'INBUF    DB  80,0,80 DUP(0)');
+  (* TODO 16 : Adresse temporaire pour acces tableau/struct *)
+  EmitRaw(CC_RT_PFX + 'ATMP     DW  0');
   (* Entrees dynamiques de DataTab *)
   For I := 0 To DataCount - 1 Do
   Begin
@@ -2773,11 +2811,16 @@ End;
 (* static_cast, sous-expressions entre parentheses.              *)
 Procedure ParsePrimary(Var Res : TExprVal);
 Var
-  SIdx     : Integer;
-  IdxRes   : TExprVal;
-  TypeSize : Integer;
-  Addr     : TString;
-  IdName   : TString;
+  SIdx       : Integer;
+  IdxRes     : TExprVal;
+  TypeSize   : Integer;
+  Addr       : TString;
+  IdName     : TString;
+  MemberName : TString;
+  SIIdx      : Integer;
+  FIdx       : Integer;
+  FieldOfs   : Integer;
+  FoundField : Boolean;
 Begin
   Case CurToken.Kind Of
     TK_INTEGER, TK_FLOAT, TK_CHAR, TK_STRING :
@@ -3049,20 +3092,18 @@ Begin
         While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Do
         Begin
           ParserAdvance; (* consomme '[' *)
-          (* Sauver l adresse de base sur la pile *)
           ExprFlushToAX(Res);
           EmitInstr('PUSH   AX');
-          (* Evaluer l index *)
           ParseExpr(IdxRes);
           ExprFlushToAX(IdxRes);
-          (* AX = index, multiplier par 2 (taille word) *)
           EmitInstr('SHL    AX,1');
-          (* Recuperer la base depuis la pile *)
           EmitInstr('POP    BX');
-          (* BX = base, AX = offset *)
           EmitInstrAB('ADD', 'BX', 'AX');
+          (* Sauver adresse dans temp pour affectation eventuelle *)
+          EmitInstrAB('MOV', 'WORD PTR [' + CC_RT_PFX + 'ATMP]', 'BX');
+          LastArraySubIdx := Res.SymIdx;
           (* Charger la valeur pointee *)
-          EmitInstrAB('MOV', 'AX', '[BX]');
+          EmitInstrAB('MOV', 'AX', 'WORD PTR [BX]');
           Res.Kind    := EK_AX;
           Res.TypeIdx := TY_IDX_INT;
           Res.SymIdx  := -1;
@@ -3076,23 +3117,83 @@ Begin
         Begin
           If CurToken.Val = '->' Then
           Begin
-            (* Dereferencement pointeur puis acces membre *)
             ExprFlushToAX(Res);
             EmitInstrAB('MOV', 'BX', 'AX');
-            EmitInstrAB('MOV', 'AX', '[BX]');
+            ParserAdvance;
+            If CurToken.Kind = TK_IDENT Then
+            Begin
+              MemberName := CurToken.Val;
+              ParserAdvance;
+              FoundField := False;
+              If Res.SymIdx >= 0 Then
+              Begin
+                SIIdx := StructFindByType(SymTab[Res.SymIdx].TypeIdx);
+                If SIIdx >= 0 Then
+                Begin
+                  FIdx := StructFieldFind(SIIdx, MemberName);
+                  If FIdx >= 0 Then
+                  Begin
+                    FoundField := True;
+                    If StructTab[SIIdx].Fields[FIdx].Offset > 0 Then
+                      EmitInstrAB('ADD', 'BX', IntToStr(StructTab[SIIdx].Fields[FIdx].Offset));
+                    EmitInstrAB('MOV', 'WORD PTR [' + CC_RT_PFX + 'ATMP]', 'BX');
+                    LastArraySubIdx := Res.SymIdx;
+                    EmitInstrAB('MOV', 'AX', 'WORD PTR [BX]');
+                  End;
+                End;
+              End;
+              If Not FoundField Then
+                EmitInstrAB('MOV', 'AX', '[BX]');
+            End;
           End
           Else If CurToken.Val = '.' Then
           Begin
-            (* Acces direct au membre (offset sera calcule *)
-            (* quand les structures seront implementees TODO 17) *)
-            ExprFlushToAX(Res);
-          End;
-          ParserAdvance;
-          If CurToken.Kind = TK_IDENT Then
             ParserAdvance;
+            If CurToken.Kind = TK_IDENT Then
+            Begin
+              MemberName := CurToken.Val;
+              ParserAdvance;
+              FoundField := False;
+              If Res.SymIdx >= 0 Then
+              Begin
+                SIIdx := StructFindByType(SymTab[Res.SymIdx].TypeIdx);
+                If SIIdx >= 0 Then
+                Begin
+                  FIdx := StructFieldFind(SIIdx, MemberName);
+                  If FIdx >= 0 Then
+                  Begin
+                    FoundField := True;
+                    FieldOfs := StructTab[SIIdx].Fields[FIdx].Offset;
+                    If (SymTab[Res.SymIdx].ScopeLevel = 0) Or SymTab[Res.SymIdx].IsStatic Then
+                    Begin
+                      EmitInstrAB('LEA', 'BX', '[' + SymTab[Res.SymIdx].MangledName + ']');
+                    End
+                    Else
+                    Begin
+                      EmitInstrAB('LEA', 'BX', '[BP' + IntToStr(SymTab[Res.SymIdx].Offset) + ']');
+                    End;
+                    If FieldOfs > 0 Then
+                      EmitInstrAB('ADD', 'BX', IntToStr(FieldOfs));
+                    EmitInstrAB('MOV', 'WORD PTR [' + CC_RT_PFX + 'ATMP]', 'BX');
+                    LastArraySubIdx := Res.SymIdx;
+                    EmitInstrAB('MOV', 'AX', 'WORD PTR [BX]');
+                  End;
+                End;
+              End;
+              If Not FoundField Then
+                ExprFlushToAX(Res);
+            End
+            Else
+              ExprFlushToAX(Res);
+          End
+          Else (* '::' *)
+          Begin
+            ParserAdvance;
+            If CurToken.Kind = TK_IDENT Then
+              ParserAdvance;
+          End;
           Res.Kind   := EK_AX;
           Res.SymIdx := -1;
-          (* Appel de methode : obj.method(...) ou ptr->method(...) *)
           If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
           Begin
             ParserAdvance;
@@ -3683,20 +3784,28 @@ Begin
     Op := CurToken.Val;
     ParserAdvance;
     ParseExprPrec(2, Right); (* droite-associatif *)
-    If Res.SymIdx < 0 Then
+    If (Res.SymIdx < 0) And (LastArraySubIdx < 0) Then
     Begin
       CompileError('cible d''affectation invalide (lvalue requise)');
       Res.Kind    := EK_AX;
       Res.TypeIdx := TY_IDX_INT;
       Exit;
     End;
-    If SymTab[Res.SymIdx].IsConst Then
+    If (LastArraySubIdx < 0) And (Res.SymIdx >= 0) And SymTab[Res.SymIdx].IsConst Then
       CompileError('affectation a une constante: "' +
                    SymTab[Res.SymIdx].Name + '"');
     If Op = '=' Then
     Begin
       ExprFlushToAX(Right);
-      ExprStore(Res.SymIdx);
+      If LastArraySubIdx >= 0 Then
+      Begin
+        (* Store via temp address (array element or struct field) *)
+        EmitInstrAB('MOV', 'BX', 'WORD PTR [' + CC_RT_PFX + 'ATMP]');
+        EmitInstrAB('MOV', 'WORD PTR [BX]', 'AX');
+        LastArraySubIdx := -1;
+      End
+      Else
+        ExprStore(Res.SymIdx);
     End
     Else
     Begin
@@ -3886,6 +3995,8 @@ Begin
   SymTab[SymCount].Offset      := Offset;
   SymTab[SymCount].IsStatic    := False;
   SymTab[SymCount].IsConst     := (Kind = SK_CONST);
+  SymTab[SymCount].IsArray     := False;
+  SymTab[SymCount].ArraySize   := 0;
   SymTab[SymCount].Access      := AL_PUBLIC;
   SymTab[SymCount].DeclLine    := CurToken.Line;
   If Opts.DebugMode Then
@@ -4219,6 +4330,252 @@ Begin
       Exit;
     End;
   TypeLookupName := TY_UNKNOWN;
+End;
+
+(* ============================================================
+   TODO 17 - STRUCTURES ET UNIONS
+   StructFind       : chercher une structure par nom
+   StructFieldFind  : chercher un champ dans une structure
+   StructFindByType : chercher une structure par TypeIdx
+   ParseStructDecl  : parser struct/union { ... } ident ;
+   ============================================================ *)
+
+(* ---- StructFind : chercher struct par nom dans StructTab ---- *)
+Function StructFind(Const Name : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := 0 To StructCount - 1 Do
+    If StructTab[I].Name = Name Then
+    Begin
+      StructFind := I;
+      Exit;
+    End;
+  StructFind := -1;
+End;
+
+(* ---- StructFieldFind : chercher un champ dans un struct ----- *)
+Function StructFieldFind(SIIdx : Integer; Const FName : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  StructFieldFind := -1;
+  If (SIIdx < 0) Or (SIIdx >= StructCount) Then Exit;
+  For I := 0 To StructTab[SIIdx].FieldCount - 1 Do
+    If StructTab[SIIdx].Fields[I].Name = FName Then
+    Begin
+      StructFieldFind := I;
+      Exit;
+    End;
+End;
+
+(* ---- StructFindByType : chercher struct par TypeIdx ---------- *)
+Function StructFindByType(ATypeIdx : Integer) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := 0 To StructCount - 1 Do
+    If StructTab[I].TypeIdx = ATypeIdx Then
+    Begin
+      StructFindByType := I;
+      Exit;
+    End;
+  StructFindByType := -1;
+End;
+
+(* ---- ParseStructDecl : parser struct/union declaration ------- *)
+(* struct Name { type field; ... } [varname] ;                    *)
+(* union  Name { type field; ... } [varname] ;                    *)
+Procedure ParseStructDecl;
+Var
+  IsUnion     : Boolean;
+  StructName  : TString;
+  FldTypeIdx  : Integer;
+  FldName     : TString;
+  FldIsConst  : Boolean;
+  FldIsStatic : Boolean;
+  SIIdx       : Integer;
+  TIdx        : Integer;
+  CurOfs      : Integer;
+  VarName     : TString;
+  SIdx        : Integer;
+  Lbl         : TString;
+  Ofs         : Integer;
+  OldFrame    : Integer;
+Begin
+  IsUnion := (CurToken.Val = 'union');
+  ParserAdvance; (* consomme struct/union *)
+
+  StructName := '';
+  (* Nom optionnel *)
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    StructName := CurToken.Val;
+    ParserAdvance;
+  End;
+
+  (* Corps { ... } *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+  Begin
+    ParserAdvance; (* consomme '{' *)
+
+    If StructCount >= MAX_STRUCT Then
+    Begin
+      CompileError('trop de structures (max=' + IntToStr(MAX_STRUCT) + ')');
+      (* Skip to closing brace *)
+      While (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+        ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+        ParserAdvance;
+      Exit;
+    End;
+
+    SIIdx := StructCount;
+    Inc(StructCount);
+    StructTab[SIIdx].Name       := StructName;
+    StructTab[SIIdx].FieldCount := 0;
+    StructTab[SIIdx].TotalSize  := 0;
+    StructTab[SIIdx].IsUnion    := IsUnion;
+    StructTab[SIIdx].TypeIdx    := TY_UNKNOWN;
+    CurOfs := 0;
+
+    (* Parser les champs *)
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+    Begin
+      FldTypeIdx := ParseTypeSpec(FldIsConst, FldIsStatic);
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        FldName := CurToken.Val;
+        ParserAdvance;
+        If StructTab[SIIdx].FieldCount < MAX_FIELD Then
+        Begin
+          StructTab[SIIdx].Fields[StructTab[SIIdx].FieldCount].Name    := FldName;
+          StructTab[SIIdx].Fields[StructTab[SIIdx].FieldCount].TypeIdx := FldTypeIdx;
+          If IsUnion Then
+            StructTab[SIIdx].Fields[StructTab[SIIdx].FieldCount].Offset := 0
+          Else
+            StructTab[SIIdx].Fields[StructTab[SIIdx].FieldCount].Offset := CurOfs;
+          Inc(StructTab[SIIdx].FieldCount);
+        End;
+        If Not IsUnion Then
+          Inc(CurOfs, 2)
+        Else
+        Begin
+          If 2 > CurOfs Then CurOfs := 2;
+        End;
+      End;
+      (* Consommer ; *)
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+    End;
+
+    StructTab[SIIdx].TotalSize := CurOfs;
+    If StructTab[SIIdx].TotalSize = 0 Then
+      StructTab[SIIdx].TotalSize := 2;
+
+    (* Consommer } *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+      ParserAdvance;
+
+    (* Enregistrer dans TypeTab *)
+    If TypeCount < MAX_TYPE Then
+    Begin
+      TIdx := TypeCount;
+      TypeTab[TIdx].Name    := StructName;
+      If IsUnion Then
+        TypeTab[TIdx].Kind := TYK_UNION
+      Else
+        TypeTab[TIdx].Kind := TYK_STRUCT;
+      TypeTab[TIdx].Size    := StructTab[SIIdx].TotalSize;
+      TypeTab[TIdx].BaseIdx := TY_UNKNOWN;
+      Inc(TypeCount);
+      StructTab[SIIdx].TypeIdx := TIdx;
+    End
+    Else
+      TIdx := TY_IDX_INT;
+
+    (* Variable apres la declaration : struct Name { ... } varname; *)
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      VarName := CurToken.Val;
+      ParserAdvance;
+
+      If CurScope = 0 Then
+      Begin
+        Lbl := CC_VAR_PFX + SymNameClean(VarName);
+        DataAddZero(Lbl, StructTab[SIIdx].TotalSize);
+        SIdx := SymAdd(VarName, SK_VAR, TIdx, 0);
+        If SIdx >= 0 Then
+          SymTab[SIdx].MangledName := Lbl;
+      End
+      Else
+      Begin
+        OldFrame := CurFrameSize;
+        Inc(CurFrameSize, StructTab[SIIdx].TotalSize);
+        Ofs := -(OldFrame + StructTab[SIIdx].TotalSize);
+        SIdx := SymAdd(VarName, SK_VAR, TIdx, Ofs);
+      End;
+    End;
+  End
+  Else
+  Begin
+    (* Pas de corps : c est une declaration de variable avec type struct *)
+    (* struct Name varname; *)
+    SIIdx := StructFind(StructName);
+    If SIIdx >= 0 Then
+      TIdx := StructTab[SIIdx].TypeIdx
+    Else
+      TIdx := TypeLookupName(StructName);
+    If TIdx = TY_UNKNOWN Then TIdx := TY_IDX_INT;
+
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      VarName := CurToken.Val;
+      ParserAdvance;
+
+      (* Pointer ? *)
+      While (CurToken.Kind = TK_OP) And (CurToken.Val = '*') Do
+      Begin
+        TIdx := TY_IDX_PTR;
+        ParserAdvance;
+      End;
+
+      If CurScope = 0 Then
+      Begin
+        If SIIdx >= 0 Then
+        Begin
+          Lbl := CC_VAR_PFX + SymNameClean(VarName);
+          DataAddZero(Lbl, StructTab[SIIdx].TotalSize);
+          SIdx := SymAdd(VarName, SK_VAR, TIdx, 0);
+          If SIdx >= 0 Then
+            SymTab[SIdx].MangledName := Lbl;
+        End
+        Else
+          DataAddGlobalVar(VarName, TIdx, 0);
+      End
+      Else
+      Begin
+        If SIIdx >= 0 Then
+        Begin
+          OldFrame := CurFrameSize;
+          Inc(CurFrameSize, StructTab[SIIdx].TotalSize);
+          Ofs := -(OldFrame + StructTab[SIIdx].TotalSize);
+          SIdx := SymAdd(VarName, SK_VAR, TIdx, Ofs);
+        End
+        Else
+        Begin
+          Ofs := SymNextOffset;
+          SIdx := SymAdd(VarName, SK_VAR, TIdx, -Ofs);
+        End;
+      End;
+    End;
+  End;
+
+  (* Consommer ; terminal *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
 End;
 
 (* ============================================================
@@ -4649,11 +5006,22 @@ Begin
     Begin
       If E.SymIdx >= 0 Then
       Begin
-        Addr := ExprAddrOf(E.SymIdx);
-        If Length(Addr) > 0 Then
-          EmitInstrAB('MOV', 'AX', Addr)
+        (* Array decay: load address, not value *)
+        If SymTab[E.SymIdx].IsArray Then
+        Begin
+          If (SymTab[E.SymIdx].ScopeLevel = 0) Or SymTab[E.SymIdx].IsStatic Then
+            EmitInstrAB('MOV', 'AX', 'OFFSET ' + SymTab[E.SymIdx].MangledName)
+          Else
+            EmitInstrAB('LEA', 'AX', '[BP' + IntToStr(SymTab[E.SymIdx].Offset) + ']');
+        End
         Else
-          EmitInstrAB('XOR', 'AX', 'AX');
+        Begin
+          Addr := ExprAddrOf(E.SymIdx);
+          If Length(Addr) > 0 Then
+            EmitInstrAB('MOV', 'AX', Addr)
+          Else
+            EmitInstrAB('XOR', 'AX', 'AX');
+        End;
       End
       Else
         EmitInstrAB('XOR', 'AX', 'AX');
@@ -4797,7 +5165,27 @@ Begin
     Else If CurToken.Val = 'signed' Then TIdx := TY_IDX_INT
     Else If CurToken.Val = 'float' Then TIdx := TY_IDX_FLOAT
     Else If CurToken.Val = 'double' Then TIdx := TY_IDX_DOUBLE
-    Else If CurToken.Val = 'auto' Then TIdx := TY_IDX_INT;
+    Else If CurToken.Val = 'auto' Then TIdx := TY_IDX_INT
+    Else If (CurToken.Val = 'struct') Or (CurToken.Val = 'union') Then
+    Begin
+      ParserAdvance; (* consomme struct/union *)
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        TIdx := TypeLookupName(CurToken.Val);
+        If TIdx = TY_UNKNOWN Then TIdx := TY_IDX_INT;
+        ParserAdvance;
+      End;
+      (* Skip to pointer/ref handling below *)
+      ParseTypeSpec := TIdx;
+      (* Pointeurs : type* *)
+      While (CurToken.Kind = TK_OP) And (CurToken.Val = '*') Do
+      Begin
+        TIdx := TY_IDX_PTR;
+        ParserAdvance;
+      End;
+      ParseTypeSpec := TIdx;
+      Exit;
+    End;
     ParserAdvance;
     (* Types composes : unsigned int, long int, short int, etc. *)
     If (CurToken.Kind = TK_KEYWORD) And
@@ -4847,13 +5235,21 @@ End;
 (* A scope > 0 -> variable locale sur la pile [BP-N].             *)
 Procedure ParseDeclStmt;
 Var
-  TypeIdx   : Integer;
-  IsConst   : Boolean;
-  IsStatic  : Boolean;
-  VarName   : TString;
-  SIdx      : Integer;
-  InitExpr  : TExprVal;
-  Ofs       : Integer;
+  TypeIdx      : Integer;
+  IsConst      : Boolean;
+  IsStatic     : Boolean;
+  VarName      : TString;
+  SIdx         : Integer;
+  InitExpr     : TExprVal;
+  Ofs          : Integer;
+  IsArrayDecl  : Boolean;
+  ArrSize      : Integer;
+  Lbl          : TString;
+  InitCount    : Integer;
+  ArrInitVals  : Array[0..MAX_ARR_INIT-1] Of Integer;
+  I            : Integer;
+  OldFrame     : Integer;
+  HasInit      : Boolean;
 Begin
   TypeIdx := ParseTypeSpec(IsConst, IsStatic);
 
@@ -4867,18 +5263,113 @@ Begin
     VarName := CurToken.Val;
     ParserAdvance;
 
-    (* Verifier si c est une declaration de fonction : ident( *)
-    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    (* --- Detection de declaration de tableau : type ident[N] --- *)
+    IsArrayDecl := False;
+    ArrSize := 0;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
     Begin
-      (* C est un prototype/definition de fonction -> stub TODO 18 *)
+      IsArrayDecl := True;
+      ParserAdvance; (* consomme '[' *)
+      If (CurToken.Kind = TK_INTEGER) Then
+      Begin
+        ArrSize := CurToken.IntVal;
+        ParserAdvance;
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+        ParserAdvance;
+    End;
+
+    (* Verifier si c est une declaration de fonction : ident( *)
+    If (Not IsArrayDecl) And (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
       ParseFuncDecl;
       Exit;
     End;
 
-    (* Declaration de variable *)
-    If CurScope = 0 Then
+    If IsArrayDecl Then
     Begin
-      (* Variable globale : dans segment DATA *)
+      (* ---- Declaration de tableau ---- *)
+      InitCount := 0;
+      HasInit := (CurToken.Kind = TK_OP) And (CurToken.Val = '=');
+      If HasInit Then
+      Begin
+        ParserAdvance; (* consomme '=' *)
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+        Begin
+          ParserAdvance; (* consomme '{' *)
+          While (CurToken.Kind <> TK_EOF) And
+                Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+          Begin
+            ParseExpr(InitExpr);
+            If InitCount < MAX_ARR_INIT Then
+            Begin
+              If InitExpr.Kind = EK_IMM Then
+                ArrInitVals[InitCount] := InitExpr.ImmVal
+              Else
+                ArrInitVals[InitCount] := 0;
+            End;
+            Inc(InitCount);
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+              ParserAdvance;
+          End;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+            ParserAdvance;
+          If ArrSize = 0 Then ArrSize := InitCount;
+        End;
+      End;
+      If ArrSize <= 0 Then ArrSize := 1;
+
+      If CurScope = 0 Then
+      Begin
+        (* Tableau global *)
+        Lbl := CC_VAR_PFX + SymNameClean(VarName);
+        DataAddZero(Lbl, ArrSize * 2);
+        SIdx := SymAdd(VarName, SK_VAR, TypeIdx, 0);
+        If SIdx >= 0 Then
+        Begin
+          SymTab[SIdx].MangledName := Lbl;
+          SymTab[SIdx].IsArray     := True;
+          SymTab[SIdx].ArraySize   := ArrSize;
+        End;
+        If HasInit Then
+        Begin
+          For I := 0 To InitCount - 1 Do
+          Begin
+            If I < MAX_ARR_INIT Then
+              EmitInstrAB('MOV', 'WORD PTR [' + Lbl + '+' + IntToStr(I*2) + ']',
+                          IntToStr(ArrInitVals[I]));
+          End;
+        End;
+      End
+      Else
+      Begin
+        (* Tableau local *)
+        OldFrame := CurFrameSize;
+        Inc(CurFrameSize, ArrSize * 2);
+        Ofs := -(OldFrame + ArrSize * 2);
+        SIdx := SymAdd(VarName, SK_VAR, TypeIdx, Ofs);
+        If SIdx >= 0 Then
+        Begin
+          SymTab[SIdx].IsArray   := True;
+          SymTab[SIdx].ArraySize := ArrSize;
+        End;
+        If HasInit Then
+        Begin
+          For I := 0 To InitCount - 1 Do
+          Begin
+            If I < MAX_ARR_INIT Then
+              EmitInstrAB('MOV', 'WORD PTR [BP' + IntToStr(Ofs + I*2) + ']',
+                          IntToStr(ArrInitVals[I]));
+          End;
+        End;
+      End;
+    End
+    Else
+    Begin
+      (* Declaration de variable scalaire *)
+      If CurScope = 0 Then
+      Begin
+        (* Variable globale : dans segment DATA *)
       If IsConst Then
       Begin
         If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
@@ -4941,6 +5432,7 @@ Begin
           ExprStore(SIdx);
       End;
     End;
+    End; (* End of scalar declaration *)
 
     (* Virgule -> declaration suivante *)
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
@@ -5666,7 +6158,15 @@ Begin
     Exit;
   End;
 
-  (* Mot-cle de portee C++ : class, struct, union, enum, namespace, typedef, using *)
+  (* TODO 17 : struct et union *)
+  If (CurToken.Kind = TK_KEYWORD) And
+     ((CurToken.Val = 'struct') Or (CurToken.Val = 'union')) Then
+  Begin
+    ParseStructDecl;
+    Exit;
+  End;
+
+  (* Mot-cle de portee C++ : class, enum, namespace, typedef, using *)
   If (CurToken.Kind = TK_KEYWORD) And
      ((CurToken.Val = 'class') Or (CurToken.Val = 'struct') Or
       (CurToken.Val = 'union') Or (CurToken.Val = 'enum') Or
@@ -5844,6 +6344,8 @@ Begin
     SymTab[I].Offset      := 0;
     SymTab[I].IsStatic    := False;
     SymTab[I].IsConst     := False;
+    SymTab[I].IsArray     := False;
+    SymTab[I].ArraySize   := 0;
     SymTab[I].Access      := AL_PUBLIC;
     SymTab[I].DeclLine    := 0;
   End;

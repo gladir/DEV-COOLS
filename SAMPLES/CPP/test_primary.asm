@@ -268,6 +268,7 @@ _CC_STRBUF   DB  256 DUP(0)
 _CC_RT_CRLF     DB  13,10
 _CC_RT_NUMBUF   DB  8 DUP(0)
 _CC_RT_INBUF    DB  80,0,80 DUP(0)
+_CC_RT_ATMP     DW  0
 _CC_V_result  DW  0
 _CC_V_g_val  DW  99
 _DATA   ENDS
