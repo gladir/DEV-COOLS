@@ -535,7 +535,7 @@
               -> routage vers _TPRT_INT33(AH=func, regs) -> API Windows
             Autres interruptions : avertissement + NOP
 
-  TODO 24 - GENERATION PE/COFF (EXE/OBJ) ET MODE DOS 16 BITS
+  TODO 24 - GENERATION PE/COFF (EXE/OBJ) ET MODE DOS 16 BITS [IMPLEMENTE]
             Mode EXE (par defaut) :
               Generation directe d un fichier PE (Portable Executable)
               En-tete MZ DOS stub + en-tete PE + sections
@@ -17055,6 +17055,606 @@ Begin
   EmitInstr('RET');
 End;
 
+{ ============================================================ }
+{ TODO 24 - GENERATION PE/COFF ET DOS 16 BITS  [IMPLEMENTE]   }
+{ ============================================================ }
+
+{ --- Constantes PE --- }
+Const
+  PE_IMG_BASE     = $00400000;
+  PE_SECT_ALIGN_  = $1000;
+  PE_FILE_ALIGN_  = $200;
+  PE_TEXT_RVA     = $1000;
+  PE_DATA_RVA     = $2000;
+  PE_IDATA_RVA    = $3000;
+  PE_HDR_SIZE     = $200;
+  PE_NUM_IMPORTS  = 7;
+
+{ --- Variable fichier binaire PE --- }
+Var
+  PEBinF : File;
+
+{ --- Helpers ecriture binaire --- }
+
+Procedure PEWrB(B: Byte);
+Begin
+  BlockWrite(PEBinF, B, 1);
+End;
+
+Procedure PEWrW(W: Word);
+Begin
+  BlockWrite(PEBinF, W, 2);
+End;
+
+Procedure PEWrD(D: LongInt);
+Begin
+  BlockWrite(PEBinF, D, 4);
+End;
+
+Procedure PEWrZeros(N: LongInt);
+Var I: LongInt;
+Begin
+  For I := 1 To N Do PEWrB(0);
+End;
+
+Procedure PEWrName8(S: TString);
+Var I: Integer;
+Begin
+  For I := 1 To 8 Do
+    If I <= Length(S) Then PEWrB(Byte(S[I]))
+    Else PEWrB(0);
+End;
+
+Procedure PEWrStr(S: TString);
+Var I: Integer;
+Begin
+  For I := 1 To Length(S) Do PEWrB(Byte(S[I]));
+  PEWrB(0);
+End;
+
+Procedure PEPadTo(Pos: LongInt);
+Begin
+  While FilePos(PEBinF) < Pos Do PEWrB(0);
+End;
+
+{ --- WritePEFile : generation d un PE executable Win32 --- }
+Procedure WritePEFile(FileName: TString);
+Const
+  { Offsets dans la section .idata }
+  IDT_OFS = $00;    { Import Directory Table }
+  ILT_OFS = $28;    { Import Lookup Table }
+  IAT_OFS = $48;    { Import Address Table }
+  HNT_OFS = $68;    { Hint/Name Table }
+Var
+  TextSize, DataSize, IdataSize, ImageSize: LongInt;
+  HntOfs : Array[0..6] Of LongInt;
+  HntNames: Array[0..6] Of TString;
+  DllNameOfs: LongInt;
+  Ofs, I: LongInt;
+  IdataVirtSize: LongInt;
+  IATva: LongInt;
+Begin
+  { Noms des fonctions importees }
+  HntNames[0] := 'ExitProcess';
+  HntNames[1] := 'GetStdHandle';
+  HntNames[2] := 'WriteFile';
+  HntNames[3] := 'ReadFile';
+  HntNames[4] := 'GetProcessHeap';
+  HntNames[5] := 'HeapAlloc';
+  HntNames[6] := 'HeapFree';
+
+  { Calculer les offsets Hint/Name }
+  Ofs := HNT_OFS;
+  For I := 0 To PE_NUM_IMPORTS - 1 Do
+  Begin
+    HntOfs[I] := Ofs;
+    Ofs := Ofs + 2 + Length(HntNames[I]) + 1;
+    If Odd(Ofs) Then Inc(Ofs);
+  End;
+  DllNameOfs := Ofs;
+  IdataVirtSize := DllNameOfs + Length('kernel32.dll') + 1;
+
+  { Tailles des sections (alignees sur FILE_ALIGN) }
+  TextSize  := PE_FILE_ALIGN_;
+  DataSize  := PE_FILE_ALIGN_;
+  IdataSize := PE_FILE_ALIGN_;
+  ImageSize := PE_IDATA_RVA + PE_SECT_ALIGN_;
+
+  { Ouvrir fichier binaire }
+  Assign(PEBinF, FileName);
+  Rewrite(PEBinF, 1);
+
+  { ===== DOS MZ Header (64 octets) ===== }
+  PEWrW($5A4D);         { e_magic = 'MZ' }
+  PEWrW($0090);         { e_cblp }
+  PEWrW($0003);         { e_cp }
+  PEWrW($0000);         { e_crlc }
+  PEWrW($0004);         { e_cparhdr }
+  PEWrW($0000);         { e_minalloc }
+  PEWrW($FFFF);         { e_maxalloc }
+  PEWrW($0000);         { e_ss }
+  PEWrW($00B8);         { e_sp }
+  PEWrW($0000);         { e_csum }
+  PEWrW($0000);         { e_ip }
+  PEWrW($0000);         { e_cs }
+  PEWrW($0040);         { e_lfarlc }
+  PEWrW($0000);         { e_ovno }
+  PEWrZeros(8);          { e_res[4] }
+  PEWrW($0000);         { e_oemid }
+  PEWrW($0000);         { e_oeminfo }
+  PEWrZeros(20);         { e_res2[10] }
+  PEWrD($00000080);     { e_lfanew -> PE header }
+
+  { ===== DOS Stub ===== }
+  PEWrB($0E); PEWrB($1F);             { PUSH CS / POP DS }
+  PEWrB($BA); PEWrB($0E); PEWrB($00); { MOV DX, 000Eh }
+  PEWrB($B4); PEWrB($09);             { MOV AH, 09h }
+  PEWrB($CD); PEWrB($21);             { INT 21h }
+  PEWrB($B8); PEWrB($01); PEWrB($4C); { MOV AX, 4C01h }
+  PEWrB($CD); PEWrB($21);             { INT 21h }
+  PEWrStr('This program cannot be run in DOS mode.');
+  PEWrB($0D); PEWrB($0D); PEWrB($0A); PEWrB($24);
+  PEPadTo($80);
+
+  { ===== PE Signature ===== }
+  PEWrD($00004550);     { 'PE\0\0' }
+
+  { ===== COFF File Header (20 octets) ===== }
+  PEWrW($014C);         { Machine = i386 }
+  PEWrW(3);             { NumberOfSections }
+  PEWrD(0);             { TimeDateStamp }
+  PEWrD(0);             { PointerToSymbolTable }
+  PEWrD(0);             { NumberOfSymbols }
+  PEWrW(224);           { SizeOfOptionalHeader }
+  PEWrW($0103);         { Characteristics: EXEC|32BIT|NO_RELOCS }
+
+  { ===== Optional Header PE32 (224 octets) ===== }
+  PEWrW($010B);         { Magic PE32 }
+  PEWrB(1); PEWrB(0);   { Linker version }
+  PEWrD(TextSize);      { SizeOfCode }
+  PEWrD(DataSize);      { SizeOfInitializedData }
+  PEWrD(0);             { SizeOfUninitializedData }
+  PEWrD(PE_TEXT_RVA);   { AddressOfEntryPoint }
+  PEWrD(PE_TEXT_RVA);   { BaseOfCode }
+  PEWrD(PE_DATA_RVA);   { BaseOfData }
+  PEWrD(PE_IMG_BASE);   { ImageBase }
+  PEWrD(PE_SECT_ALIGN_); { SectionAlignment }
+  PEWrD(PE_FILE_ALIGN_); { FileAlignment }
+  PEWrW(4); PEWrW(0);   { OS version }
+  PEWrW(0); PEWrW(0);   { Image version }
+  PEWrW(4); PEWrW(0);   { Subsystem version }
+  PEWrD(0);             { Win32VersionValue }
+  PEWrD(ImageSize);     { SizeOfImage }
+  PEWrD(PE_HDR_SIZE);   { SizeOfHeaders }
+  PEWrD(0);             { CheckSum }
+  PEWrW(3);             { Subsystem = CONSOLE }
+  PEWrW(0);             { DllCharacteristics }
+  PEWrD($100000);       { SizeOfStackReserve }
+  PEWrD($1000);         { SizeOfStackCommit }
+  PEWrD($100000);       { SizeOfHeapReserve }
+  PEWrD($1000);         { SizeOfHeapCommit }
+  PEWrD(0);             { LoaderFlags }
+  PEWrD(16);            { NumberOfRvaAndSizes }
+
+  { Data Directories (16 * 8 = 128 octets) }
+  PEWrD(0); PEWrD(0);   { [0] Export }
+  PEWrD(PE_IDATA_RVA);  { [1] Import RVA }
+  PEWrD(IdataVirtSize);  { [1] Import Size }
+  PEWrD(0); PEWrD(0);   { [2] Resource }
+  PEWrD(0); PEWrD(0);   { [3] Exception }
+  PEWrD(0); PEWrD(0);   { [4] Security }
+  PEWrD(0); PEWrD(0);   { [5] Base Reloc }
+  PEWrD(0); PEWrD(0);   { [6] Debug }
+  PEWrD(0); PEWrD(0);   { [7] Architecture }
+  PEWrD(0); PEWrD(0);   { [8] Global Ptr }
+  PEWrD(0); PEWrD(0);   { [9] TLS }
+  PEWrD(0); PEWrD(0);   { [10] Load Config }
+  PEWrD(0); PEWrD(0);   { [11] Bound Import }
+  PEWrD(PE_IDATA_RVA + IAT_OFS); { [12] IAT RVA }
+  PEWrD((PE_NUM_IMPORTS + 1) * 4); { [12] IAT Size }
+  PEWrD(0); PEWrD(0);   { [13] Delay Import }
+  PEWrD(0); PEWrD(0);   { [14] CLR }
+  PEWrD(0); PEWrD(0);   { [15] Reserved }
+
+  { ===== Section Headers ===== }
+
+  { .text }
+  PEWrName8('.text');
+  PEWrD(PE_SECT_ALIGN_); { VirtualSize }
+  PEWrD(PE_TEXT_RVA);    { VirtualAddress }
+  PEWrD(TextSize);       { SizeOfRawData }
+  PEWrD(PE_HDR_SIZE);    { PointerToRawData }
+  PEWrD(0); PEWrD(0);   { Relocs, Linenums }
+  PEWrW(0); PEWrW(0);   { NumRelocs, NumLinenums }
+  PEWrD($60000020);     { CODE | MEM_EXECUTE | MEM_READ }
+
+  { .data }
+  PEWrName8('.data');
+  PEWrD(PE_SECT_ALIGN_);
+  PEWrD(PE_DATA_RVA);
+  PEWrD(DataSize);
+  PEWrD(PE_HDR_SIZE + TextSize);
+  PEWrD(0); PEWrD(0);
+  PEWrW(0); PEWrW(0);
+  PEWrD(LongInt($C0000040));     { IDATA | MEM_READ | MEM_WRITE }
+
+  { .idata }
+  PEWrName8('.idata');
+  PEWrD(PE_SECT_ALIGN_);
+  PEWrD(PE_IDATA_RVA);
+  PEWrD(IdataSize);
+  PEWrD(PE_HDR_SIZE + TextSize + DataSize);
+  PEWrD(0); PEWrD(0);
+  PEWrW(0); PEWrW(0);
+  PEWrD(LongInt($C0000040));     { IDATA | MEM_READ | MEM_WRITE }
+
+  { Padding jusqu a FILE_ALIGN }
+  PEPadTo(PE_HDR_SIZE);
+
+  { ===== Section .text (code machine) ===== }
+  { Point d entree minimal :
+    GetStdHandle(-11) -> HSTDOUT
+    GetStdHandle(-10) -> HSTDIN
+    GetProcessHeap()  -> HHEAP
+    ExitProcess(0) }
+
+  IATva := PE_IMG_BASE + PE_IDATA_RVA + IAT_OFS;
+
+  { PUSH -11 }
+  PEWrB($6A); PEWrB($F5);
+  { CALL DWORD PTR [IAT_GetStdHandle] }
+  PEWrB($FF); PEWrB($15);
+  PEWrD(IATva + 1*4);
+  { MOV [HSTDOUT], EAX }
+  PEWrB($A3);
+  PEWrD(PE_IMG_BASE + PE_DATA_RVA + 0);
+
+  { PUSH -10 }
+  PEWrB($6A); PEWrB($F6);
+  { CALL DWORD PTR [IAT_GetStdHandle] }
+  PEWrB($FF); PEWrB($15);
+  PEWrD(IATva + 1*4);
+  { MOV [HSTDIN], EAX }
+  PEWrB($A3);
+  PEWrD(PE_IMG_BASE + PE_DATA_RVA + 4);
+
+  { CALL DWORD PTR [IAT_GetProcessHeap] }
+  PEWrB($FF); PEWrB($15);
+  PEWrD(IATva + 4*4);
+  { MOV [HHEAP], EAX }
+  PEWrB($A3);
+  PEWrD(PE_IMG_BASE + PE_DATA_RVA + 8);
+
+  { PUSH 0 }
+  PEWrB($6A); PEWrB($00);
+  { CALL DWORD PTR [IAT_ExitProcess] }
+  PEWrB($FF); PEWrB($15);
+  PEWrD(IATva + 0*4);
+
+  { Remplir le reste de la section .text }
+  PEPadTo(PE_HDR_SIZE + TextSize);
+
+  { ===== Section .data ===== }
+  { HSTDOUT DD 0 }
+  PEWrD(0);
+  { HSTDIN DD 0 }
+  PEWrD(0);
+  { HHEAP DD 0 }
+  PEWrD(0);
+
+  { Remplir le reste }
+  PEPadTo(PE_HDR_SIZE + TextSize + DataSize);
+
+  { ===== Section .idata (Import Table) ===== }
+
+  { --- Import Directory Table (2 entrees x 20 octets) --- }
+  { Entree kernel32.dll }
+  PEWrD(PE_IDATA_RVA + ILT_OFS); { OriginalFirstThunk (ILT) }
+  PEWrD(0);                        { TimeDateStamp }
+  PEWrD(-1);               { ForwarderChain = -1 }
+  PEWrD(PE_IDATA_RVA + DllNameOfs); { Name RVA }
+  PEWrD(PE_IDATA_RVA + IAT_OFS); { FirstThunk (IAT) }
+  { Terminateur nul }
+  PEWrZeros(20);
+
+  { --- ILT (Import Lookup Table) --- }
+  For I := 0 To PE_NUM_IMPORTS - 1 Do
+    PEWrD(PE_IDATA_RVA + HntOfs[I]);
+  PEWrD(0); { terminateur }
+
+  { Padding jusqu au IAT }
+  PEPadTo(PE_HDR_SIZE + TextSize + DataSize + IAT_OFS);
+
+  { --- IAT (Import Address Table) - identique a ILT --- }
+  For I := 0 To PE_NUM_IMPORTS - 1 Do
+    PEWrD(PE_IDATA_RVA + HntOfs[I]);
+  PEWrD(0); { terminateur }
+
+  { Padding jusqu au Hint/Name Table }
+  PEPadTo(PE_HDR_SIZE + TextSize + DataSize + HNT_OFS);
+
+  { --- Hint/Name Table --- }
+  For I := 0 To PE_NUM_IMPORTS - 1 Do
+  Begin
+    PEPadTo(PE_HDR_SIZE + TextSize + DataSize + HntOfs[I]);
+    PEWrW(0);             { Hint = 0 }
+    PEWrStr(HntNames[I]); { Nom ASCIIZ }
+    If Odd(FilePos(PEBinF)) Then PEWrB(0); { Aligner sur 2 }
+  End;
+
+  { --- DLL Name --- }
+  PEPadTo(PE_HDR_SIZE + TextSize + DataSize + DllNameOfs);
+  PEWrStr('kernel32.dll');
+
+  { Remplir le reste }
+  PEPadTo(PE_HDR_SIZE + TextSize + DataSize + IdataSize);
+
+  If Opts.Verbose Then
+    WriteLn('  PE genere : ', FileName, ' (',
+            FilePos(PEBinF), ' octets)');
+
+  Close(PEBinF);
+End;
+
+{ --- WriteCOFFFile : generation d un fichier objet COFF --- }
+Procedure WriteCOFFFile(FileName: TString);
+Const
+  COFF_TEXT_SIZE = 64;
+  COFF_DATA_SIZE = 32;
+  COFF_BSS_SIZE  = 256;
+  NUM_SECTIONS   = 3;
+  SECT_HDR_SIZE  = 40;
+  FILE_HDR_SIZE  = 20;
+Var
+  SymTabOfs, StrTabOfs: LongInt;
+  TextOfs, DataOfs: LongInt;
+  NumSymbols: LongInt;
+  NameOfs: LongInt;
+  I: Integer;
+
+  Procedure COFFWrName8(S: TString);
+  Var J: Integer;
+  Begin
+    For J := 1 To 8 Do
+      If J <= Length(S) Then PEWrB(Byte(S[J]))
+      Else PEWrB(0);
+  End;
+
+Begin
+  { Calculer les offsets }
+  TextOfs := FILE_HDR_SIZE + NUM_SECTIONS * SECT_HDR_SIZE;
+  DataOfs := TextOfs + COFF_TEXT_SIZE;
+  SymTabOfs := DataOfs + COFF_DATA_SIZE;
+  NumSymbols := 4; { .text, .data, .bss, _main }
+
+  Assign(PEBinF, FileName);
+  Rewrite(PEBinF, 1);
+
+  { ===== COFF File Header (20 octets) ===== }
+  PEWrW($014C);           { Machine = i386 }
+  PEWrW(NUM_SECTIONS);    { NumberOfSections }
+  PEWrD(0);               { TimeDateStamp }
+  PEWrD(SymTabOfs);       { PointerToSymbolTable }
+  PEWrD(NumSymbols);      { NumberOfSymbols }
+  PEWrW(0);               { SizeOfOptionalHeader = 0 }
+  PEWrW($0100);           { Characteristics: 32BIT }
+
+  { ===== Section Headers ===== }
+
+  { .text }
+  COFFWrName8('.text');
+  PEWrD(0);               { VirtualSize (0 for obj) }
+  PEWrD(0);               { VirtualAddress (0 for obj) }
+  PEWrD(COFF_TEXT_SIZE);  { SizeOfRawData }
+  PEWrD(TextOfs);         { PointerToRawData }
+  PEWrD(0);               { PointerToRelocations }
+  PEWrD(0);               { PointerToLinenumbers }
+  PEWrW(0);               { NumberOfRelocations }
+  PEWrW(0);               { NumberOfLinenumbers }
+  PEWrD($60000020);       { CODE | MEM_EXECUTE | MEM_READ }
+
+  { .data }
+  COFFWrName8('.data');
+  PEWrD(0);
+  PEWrD(0);
+  PEWrD(COFF_DATA_SIZE);
+  PEWrD(DataOfs);
+  PEWrD(0); PEWrD(0);
+  PEWrW(0); PEWrW(0);
+  PEWrD(LongInt($C0000040));       { IDATA | MEM_READ | MEM_WRITE }
+
+  { .bss }
+  COFFWrName8('.bss');
+  PEWrD(COFF_BSS_SIZE);  { VirtualSize }
+  PEWrD(0);
+  PEWrD(0);               { SizeOfRawData = 0 (uninitialized) }
+  PEWrD(0);
+  PEWrD(0); PEWrD(0);
+  PEWrW(0); PEWrW(0);
+  PEWrD(LongInt($C0000080));       { UDATA | MEM_READ | MEM_WRITE }
+
+  { ===== Section .text raw data ===== }
+  { PUSH EBP }
+  PEWrB($55);
+  { MOV EBP, ESP }
+  PEWrB($89); PEWrB($E5);
+  { PUSH 0 }
+  PEWrB($6A); PEWrB($00);
+  { INT 3 (placeholder - sera rempli par TODO 25) }
+  PEWrB($CC);
+  { MOV ESP, EBP }
+  PEWrB($89); PEWrB($EC);
+  { POP EBP }
+  PEWrB($5D);
+  { RET }
+  PEWrB($C3);
+  { Padding }
+  For I := 1 To COFF_TEXT_SIZE - 10 Do PEWrB($90); { NOP }
+
+  { ===== Section .data raw data ===== }
+  { HSTDOUT DD 0, HSTDIN DD 0, HHEAP DD 0 }
+  PEWrD(0); PEWrD(0); PEWrD(0);
+  { Padding }
+  For I := 1 To COFF_DATA_SIZE - 12 Do PEWrB(0);
+
+  { ===== Symbol Table (18 octets par symbole) ===== }
+  StrTabOfs := 4; { La string table commence apres sa taille }
+
+  { Symbole 0: .text section }
+  COFFWrName8('.text');
+  PEWrD(0);               { Value }
+  PEWrW(1);               { SectionNumber (1-based) }
+  PEWrW(0);               { Type }
+  PEWrB(3);               { StorageClass = IMAGE_SYM_CLASS_STATIC }
+  PEWrB(0);               { NumberOfAuxSymbols }
+
+  { Symbole 1: .data section }
+  COFFWrName8('.data');
+  PEWrD(0);
+  PEWrW(2);
+  PEWrW(0);
+  PEWrB(3);               { STATIC }
+  PEWrB(0);
+
+  { Symbole 2: .bss section }
+  COFFWrName8('.bss');
+  PEWrD(0);
+  PEWrW(3);
+  PEWrW(0);
+  PEWrB(3);               { STATIC }
+  PEWrB(0);
+
+  { Symbole 3: _main (public) }
+  { Nom court: _main = 5 chars, fits in 8 bytes }
+  NameOfs := 0; { unused, we use short name }
+  COFFWrName8('_main');
+  PEWrD(0);               { Value = offset 0 dans .text }
+  PEWrW(1);               { SectionNumber = .text }
+  PEWrW($20);             { Type = function }
+  PEWrB(2);               { StorageClass = IMAGE_SYM_CLASS_EXTERNAL }
+  PEWrB(0);
+
+  { ===== String Table ===== }
+  PEWrD(4);               { Taille de la string table (min = 4) }
+
+  Close(PEBinF);
+
+  If Opts.Verbose Then
+    WriteLn('  COFF genere : ', FileName);
+End;
+
+{ --- EmitHeaderDos16 : en-tete ASM pour mode DOS 16 bits --- }
+Procedure EmitHeaderDos16;
+Begin
+  EmitComment('TPCW32 - Compilateur Turbo Pascal -> ASM 8086 DOS');
+  EmitComment('Mode DOS 16 bits - genere a partir de : ' + Opts.SrcFile);
+  EmitBlankLine;
+  EmitRaw('.8086');
+  EmitRaw('.MODEL SMALL');
+  EmitRaw('.STACK 1024');
+  EmitBlankLine;
+End;
+
+{ --- EmitDataSegDos16 : segment de donnees DOS 16 bits --- }
+Procedure EmitDataSegDos16;
+Var
+  I, J : Integer;
+  S    : TString;
+  C    : Char;
+Begin
+  EmitComment('--- Segment de donnees DOS 16 bits ---');
+  EmitRaw('.DATA');
+  EmitBlankLine;
+  EmitRaw('NUMBUF   DB 16 DUP(0)');
+  EmitRaw('INBUF    DB 128 DUP(0)');
+  EmitRaw('CRLF     DB 13,10,''$''');
+  EmitRaw('STRTMP   DB 128 DUP(0)');
+  EmitRaw('TRUE_STR DB ''TRUE'',''$''');
+  EmitRaw('FALSE_STR DB ''FALSE'',''$''');
+  EmitBlankLine;
+
+  { Emettre les donnees utilisateur }
+  For I := 0 To DataCount - 1 Do
+  Begin
+    Case DataTab[I].Kind Of
+      DK_STR: Begin
+        S := '';
+        J := 1;
+        While J <= Length(DataTab[I].StrVal) Do
+        Begin
+          C := DataTab[I].StrVal[J];
+          If (Ord(C) >= 32) And (Ord(C) < 127) And (C <> '''') Then
+          Begin
+            If S <> '' Then S := S + ',';
+            S := S + '''';
+            While (J <= Length(DataTab[I].StrVal)) Do
+            Begin
+              C := DataTab[I].StrVal[J];
+              If (Ord(C) >= 32) And (Ord(C) < 127) And (C <> '''') Then
+              Begin S := S + C; Inc(J) End
+              Else Break;
+            End;
+            S := S + '''';
+          End
+          Else
+          Begin
+            If S <> '' Then S := S + ',';
+            S := S + IntToStr_(Ord(C));
+            Inc(J);
+          End;
+        End;
+        If S = '' Then S := '0' Else S := S + ',0';
+        EmitRaw(DataTab[I].LblName + ' DB ' + S);
+      End;
+      DK_DWORD: EmitRaw(DataTab[I].LblName + ' DW ' + IntToStr_(DataTab[I].IntVal));
+      DK_BYTE: EmitRaw(DataTab[I].LblName + ' DB ' + IntToStr_(DataTab[I].IntVal));
+      DK_ARRAY: Begin
+        If DataTab[I].ElemSize = 1 Then
+          EmitRaw(DataTab[I].LblName + ' DB ' +
+                  IntToStr_(DataTab[I].ElemCount) + ' DUP(0)')
+        Else
+          EmitRaw(DataTab[I].LblName + ' DB ' +
+                  IntToStr_(DataTab[I].ElemCount * DataTab[I].ElemSize) +
+                  ' DUP(0)');
+      End;
+      DK_RES: EmitRaw(DataTab[I].LblName + ' DB ' +
+                       IntToStr_(DataTab[I].IntVal) + ' DUP(0)');
+      DK_STRUCT: Begin
+        If DataTab[I].IntVal > 0 Then
+          EmitRaw(DataTab[I].LblName + ' DB ' +
+                  IntToStr_(DataTab[I].IntVal) + ' DUP(0)')
+        Else
+          EmitRaw(DataTab[I].LblName + ' DB 0');
+      End;
+    End;
+  End;
+  EmitBlankLine;
+End;
+
+{ --- EmitMainBlockDos16 : bloc principal DOS 16 bits --- }
+Procedure EmitMainBlockDos16;
+Begin
+  EmitComment('--- Segment de code DOS 16 bits ---');
+  EmitRaw('.CODE');
+  EmitBlankLine;
+  EmitLabel(TP_FUNC_PFX + 'Main');
+
+  { Initialiser DS }
+  EmitInstr('MOV AX,@DATA');
+  EmitInstr('MOV DS,AX');
+  EmitBlankLine;
+
+  { TODO 25 : ici sera emis le corps du programme en 16 bits }
+  EmitComment('Corps du programme (TODO 25)');
+
+  { Sortie propre via INT 21h }
+  EmitInstr('MOV AX,4C00h');
+  EmitInstr('INT 21h');
+  EmitBlankLine;
+
+  EmitRaw('END ' + TP_FUNC_PFX + 'Main');
+End;
+
 Procedure Run;
 Begin
   ShowBanner;
@@ -17121,7 +17721,7 @@ Begin
             '  Symboles=', SymCount);
 
   { Generation du fichier .ASM si demande (TODO 07) }
-  If Opts.AsmOutput Then
+  If Opts.AsmOutput And (Not Opts.Dos16Mode) Then
   Begin
     EmitOpen(ReplaceExt(Opts.OutFile, '.asm'));
     EmitHeader;
@@ -17152,11 +17752,38 @@ Begin
     { Emettre les routines runtime interruptions (TODO 23) }
     EmitIntrRuntime;
 
-    { TODO 13..25 : compilation complete }
-
     EmitClose;
     If Opts.Verbose Then
       WriteLn('  ASM genere : ', ReplaceExt(Opts.OutFile, '.asm'));
+  End;
+
+  { Generation du fichier .ASM DOS 16 bits si -dos16 et -asm (TODO 24) }
+  If Opts.Dos16Mode And Opts.AsmOutput Then
+  Begin
+    EmitOpen(ReplaceExt(Opts.OutFile, '.asm'));
+    EmitHeaderDos16;
+    EmitDataSegDos16;
+    EmitMainBlockDos16;
+    { Note: EmitClose n est pas appele car EmitMainBlockDos16 ecrit END }
+    If OutFOpen Then Begin Close(OutF); OutFOpen := False End;
+    If Opts.Verbose Then
+      WriteLn('  ASM DOS 16 bits genere : ', ReplaceExt(Opts.OutFile, '.asm'));
+  End;
+
+  { Generation du fichier PE (TODO 24) }
+  If (Not Opts.ObjOnly) And (Not Opts.Dos16Mode) Then
+  Begin
+    WritePEFile(Opts.OutFile);
+    If Opts.Verbose Then
+      WriteLn('  PE Win32 genere : ', Opts.OutFile);
+  End;
+
+  { Generation du fichier COFF (TODO 24) }
+  If Opts.ObjOnly Then
+  Begin
+    WriteCOFFFile(Opts.OutFile);
+    If Opts.Verbose Then
+      WriteLn('  COFF OBJ genere : ', Opts.OutFile);
   End;
 
   LexClose;
