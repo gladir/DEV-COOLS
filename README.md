@@ -432,10 +432,14 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td><b>SYMDEB.PAS</b></td>
 			<td>Cette commande permet de lancer le débogueur DOS. Cette commande est inspiré du SYMDEB du MASM.</td>
 		</tr>
-    		<tr>
+    	<tr>
 			<td><b>TOKEN2BAS.PAS</b></td>
 			<td>Cette commande permet de convertir un fichier de TOKEN (GWBASIC, CoCo,...) de BASIC en BASIC ASCII.</td>
 		</tr>	
+		<tr>
+			<td><b>TP2JS.PAS</b></td>
+			<td>Cette commande permet de compiler un fichier Turbo Pascal en code JavaScript.</td>
+		</tr>
 		<tr>
 			<td><b>TPUINFO.PAS</b></td>
 			<td>Cette commande permet de retourner les informations de version d'une unité Turbo Pascal.</td>
