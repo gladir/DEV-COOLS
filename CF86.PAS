@@ -247,7 +247,7 @@
             IsSimpleValue(val) -> test si chaine ou nombre -> AX=0|1
             RandRange(lo, hi) -> avertissement + AX=lo (pas de vrai random sur DOS)
 
-  TODO 17 - TABLEAUX (ARRAYS)
+  TODO 17 - TABLEAUX (ARRAYS) [IMPLEMENTE]
             ArrayNew(dimension) : creation de tableau -> AX=ptr
               dimension=1 pour tableau simple (seule dimension supportee)
             ArrayAppend(arr, val) : ajout en fin -> CALL _CFRT_ARRAPPEND
@@ -446,6 +446,8 @@ Const
   MAX_STR       = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
   MAX_INCLUDE   = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
   STACK_SIZE    = 1024;
+  MAX_ARRAY_ELEMS = 64;                { max elements par tableau (TODO 17) }
+  ARRAY_BLOCK_SIZE = 2 + 64 * 2;      { 2 octets count + 64 words = 130    }
 
   { Prefixes de nommage ASM }
   CF_VAR_PFX  = '_CFV_';    { variable scalaire                   }
@@ -764,6 +766,8 @@ Procedure ParseCfContinue; Forward;
 Procedure ParseScriptWhile; Forward;
 Procedure ParseScriptFor; Forward;
 Procedure ParseScriptDoWhile; Forward;
+{ TODO 17 }
+Function  DataAddArrayBlock(Const Lbl : TString) : Integer; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1873,6 +1877,20 @@ Begin
   If Idx >= 0 Then
     DataTab[Idx].ElemCount := ASize;
   DataAddStruct := Idx;
+End;
+
+{ ---- DataAddArrayBlock : allouer un bloc tableau dans DataTab }
+(* Cree une entree DK_ARRAY_BLK de taille ARRAY_BLOCK_SIZE      *)
+(* octets (2 octets count + MAX_ARRAY_ELEMS * 2 octets elems).  *)
+(* Le premier word (2 octets) contient le nombre d elements.     *)
+Function DataAddArrayBlock(Const Lbl : TString) : Integer;
+Var
+  Idx : Integer;
+Begin
+  Idx := DataAdd(Lbl, DK_ARRAY_BLK, 0, '');
+  If Idx >= 0 Then
+    DataTab[Idx].ElemCount := ARRAY_BLOCK_SIZE;
+  DataAddArrayBlock := Idx;
 End;
 
 { ============================================================ }
@@ -3921,6 +3939,253 @@ Begin
   EmitInstrAB('MOV', 'AX', '1');
   EmitInstr('RET', '');
   EmitBlankLine;
+
+  { ============================================================ }
+  { TODO 17 - Routines runtime pour tableaux (arrays)            }
+  { ============================================================ }
+
+  { ---- _CFRT_ARRLEN : longueur d un tableau ---- }
+  { Entree : SI = ptr tableau (premier word = count)  }
+  { Sortie : AX = nombre d elements                   }
+  EmitLabel(CF_RT_PFX + 'ARRLEN');
+  EmitInstrAB('MOV', 'AX', '[SI]');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_ARRAPPEND : ajouter un element en fin ---- }
+  { Entree : SI = ptr tableau, AX = valeur a ajouter      }
+  { Modifie le tableau en place, incrementant le count      }
+  EmitLabel(CF_RT_PFX + 'ARRAPPEND');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('PUSH', 'CX');
+  EmitInstrAB('MOV', 'CX', '[SI]');    { CX = count actuel }
+  EmitInstrAB('CMP', 'CX', IntToStr(MAX_ARRAY_ELEMS));
+  EmitInstr('JAE', CF_RT_PFX + 'ARAP_E');  { tableau plein }
+  EmitInstr('INC', 'WORD PTR [SI]');   { count++ }
+  EmitInstr('SHL', 'CX, 1');           { CX = count * 2 (offset octets) }
+  EmitInstrAB('ADD', 'CX', '2');       { +2 pour sauter le word count }
+  EmitInstrAB('MOV', 'BX', 'SI');
+  EmitInstrAB('ADD', 'BX', 'CX');
+  EmitInstrAB('MOV', '[BX]', 'AX');    { stocker la valeur }
+  EmitLabel(CF_RT_PFX + 'ARAP_E');
+  EmitInstr('POP', 'CX');
+  EmitInstr('POP', 'BX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_ARRGET : lire un element par index (1-based) ---- }
+  { Entree : SI = ptr tableau, CX = index (1-based)              }
+  { Sortie : AX = valeur a cet index                             }
+  EmitLabel(CF_RT_PFX + 'ARRGET');
+  EmitInstr('PUSH', 'BX');
+  EmitInstrAB('OR', 'CX', 'CX');
+  EmitInstr('JZ', CF_RT_PFX + 'ARGT_0');
+  EmitInstrAB('CMP', 'CX', '[SI]');    { comparer avec count }
+  EmitInstr('JA', CF_RT_PFX + 'ARGT_0');  { hors limites }
+  EmitInstr('DEC', 'CX');              { 0-based }
+  EmitInstr('SHL', 'CX, 1');           { * 2 octets }
+  EmitInstrAB('ADD', 'CX', '2');       { +2 pour sauter count }
+  EmitInstrAB('MOV', 'BX', 'SI');
+  EmitInstrAB('ADD', 'BX', 'CX');
+  EmitInstrAB('MOV', 'AX', '[BX]');
+  EmitInstr('POP', 'BX');
+  EmitInstr('RET', '');
+  EmitLabel(CF_RT_PFX + 'ARGT_0');
+  EmitInstrAB('XOR', 'AX', 'AX');     { retourner 0 si hors limites }
+  EmitInstr('POP', 'BX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_ARRSET : ecrire un element par index (1-based) -- }
+  { Entree : SI = ptr tableau, CX = index (1-based), AX = valeur }
+  EmitLabel(CF_RT_PFX + 'ARRSET');
+  EmitInstr('PUSH', 'BX');
+  EmitInstrAB('OR', 'CX', 'CX');
+  EmitInstr('JZ', CF_RT_PFX + 'ARST_E');
+  EmitInstrAB('CMP', 'CX', '[SI]');
+  EmitInstr('JA', CF_RT_PFX + 'ARST_E');
+  EmitInstr('DEC', 'CX');
+  EmitInstr('SHL', 'CX, 1');
+  EmitInstrAB('ADD', 'CX', '2');
+  EmitInstrAB('MOV', 'BX', 'SI');
+  EmitInstrAB('ADD', 'BX', 'CX');
+  EmitInstrAB('MOV', '[BX]', 'AX');
+  EmitLabel(CF_RT_PFX + 'ARST_E');
+  EmitInstr('POP', 'BX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_ARRDEL : supprimer l element a la position ---- }
+  { Entree : SI = ptr tableau, CX = position (1-based)          }
+  { Decale les elements suivants vers la gauche et decremente   }
+  EmitLabel(CF_RT_PFX + 'ARRDEL');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('PUSH', 'DX');
+  EmitInstrAB('OR', 'CX', 'CX');
+  EmitInstr('JZ', CF_RT_PFX + 'ARDL_E');
+  EmitInstrAB('CMP', 'CX', '[SI]');
+  EmitInstr('JA', CF_RT_PFX + 'ARDL_E');
+  { DX = count }
+  EmitInstrAB('MOV', 'DX', '[SI]');
+  { BX pointe vers l element a supprimer }
+  EmitInstr('DEC', 'CX');
+  EmitInstr('SHL', 'CX, 1');
+  EmitInstrAB('ADD', 'CX', '2');
+  EmitInstrAB('MOV', 'BX', 'SI');
+  EmitInstrAB('ADD', 'BX', 'CX');
+  { Decaler les elements suivants }
+  EmitLabel(CF_RT_PFX + 'ARDL_LP');
+  EmitInstrAB('ADD', 'CX', '2');       { CX = offset suivant }
+  EmitInstr('SHR', 'CX, 1');           { CX = index+1 (en words) }
+  EmitInstrAB('CMP', 'CX', 'DX');      { depasse count? }
+  EmitInstr('JA', CF_RT_PFX + 'ARDL_DN');
+  EmitInstr('SHL', 'CX, 1');           { retour en octets }
+  EmitInstrAB('MOV', 'AX', '[SI+CX]'); { lire element suivant }
+  EmitInstr('ADD', 'CX, 2');
+  EmitInstrAB('MOV', '[BX]', 'AX');    { ecrire a la position courante }
+  EmitInstrAB('ADD', 'BX', '2');
+  EmitInstr('JMP', CF_RT_PFX + 'ARDL_LP');
+  EmitLabel(CF_RT_PFX + 'ARDL_DN');
+  EmitInstr('DEC', 'WORD PTR [SI]');   { count-- }
+  EmitLabel(CF_RT_PFX + 'ARDL_E');
+  EmitInstr('POP', 'DX');
+  EmitInstr('POP', 'BX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_ARRINS : inserer un element a la position ---- }
+  { Entree : SI = ptr tableau, CX = position (1-based),       }
+  {          AX = valeur a inserer                              }
+  EmitLabel(CF_RT_PFX + 'ARRINS');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('PUSH', 'DX');
+  EmitInstrAB('MOV', 'DX', '[SI]');    { DX = count actuel }
+  EmitInstrAB('CMP', 'DX', IntToStr(MAX_ARRAY_ELEMS));
+  EmitInstr('JAE', CF_RT_PFX + 'ARIN_E');
+  EmitInstrAB('OR', 'CX', 'CX');
+  EmitInstr('JZ', CF_RT_PFX + 'ARIN_E');
+  EmitInstr('PUSH', 'AX');             { sauver valeur }
+  { Decaler les elements depuis la fin vers la droite }
+  EmitInstrAB('MOV', 'BX', 'DX');
+  EmitLabel(CF_RT_PFX + 'ARIN_LP');
+  EmitInstrAB('CMP', 'BX', 'CX');
+  EmitInstr('JB', CF_RT_PFX + 'ARIN_DN');
+  { Copier element[BX] vers element[BX+1] }
+  EmitInstr('PUSH', 'CX');
+  EmitInstrAB('MOV', 'CX', 'BX');
+  EmitInstr('DEC', 'CX');              { 0-based }
+  EmitInstr('SHL', 'CX, 1');
+  EmitInstrAB('ADD', 'CX', '2');
+  EmitInstrAB('MOV', 'AX', '[SI+CX]');
+  EmitInstrAB('ADD', 'CX', '2');
+  EmitInstrAB('MOV', '[SI+CX]', 'AX');
+  EmitInstr('POP', 'CX');
+  EmitInstr('DEC', 'BX');
+  EmitInstr('JMP', CF_RT_PFX + 'ARIN_LP');
+  EmitLabel(CF_RT_PFX + 'ARIN_DN');
+  { Inserer la valeur a la position CX }
+  EmitInstr('POP', 'AX');              { restaurer valeur }
+  EmitInstr('DEC', 'CX');              { 0-based }
+  EmitInstr('SHL', 'CX, 1');
+  EmitInstrAB('ADD', 'CX', '2');
+  EmitInstrAB('MOV', '[SI+CX]', 'AX');
+  EmitInstr('INC', 'WORD PTR [SI]');   { count++ }
+  EmitLabel(CF_RT_PFX + 'ARIN_E');
+  EmitInstr('POP', 'DX');
+  EmitInstr('POP', 'BX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_ARRCLEAR : vider un tableau ---- }
+  { Entree : SI = ptr tableau                     }
+  EmitLabel(CF_RT_PFX + 'ARRCLEAR');
+  EmitInstrAB('MOV', 'WORD PTR [SI]', '0');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_ARRTOLIST : convertir tableau en liste chaine ---- }
+  { Entree : SI = ptr tableau, DI = ptr delimiteur ASCIIZ         }
+  { Sortie : AX = ptr chaine resultat dans _CF_STRBUF             }
+  EmitLabel(CF_RT_PFX + 'ARRTOLIST');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('PUSH', 'CX');
+  EmitInstr('PUSH', 'DX');
+  EmitInstr('PUSH', 'SI');
+  EmitInstr('PUSH', 'DI');
+  EmitInstrAB('MOV', 'CX', '[SI]');    { CX = count }
+  EmitInstrAB('MOV', 'BX', 'OFFSET _CF_STRBUF'); { BX = dest }
+  EmitInstrAB('ADD', 'SI', '2');       { SI pointe vers elem[0] }
+  EmitInstrAB('OR', 'CX', 'CX');
+  EmitInstr('JZ', CF_RT_PFX + 'A2L_E');
+  EmitInstrAB('XOR', 'DX', 'DX');     { DX = index courant }
+  EmitLabel(CF_RT_PFX + 'A2L_LP');
+  { Si pas le premier element, ajouter le delimiteur }
+  EmitInstrAB('OR', 'DX', 'DX');
+  EmitInstr('JZ', CF_RT_PFX + 'A2L_ND');
+  EmitInstr('PUSH', 'SI');
+  EmitInstr('PUSH', 'DI');             { DI = delimiter saved on stack }
+  { Copier le delimiteur dans le buffer }
+  EmitInstrAB('MOV', 'SI', '[SP]');    { SI = delimiter ptr }
+  EmitLabel(CF_RT_PFX + 'A2L_DL');
+  EmitInstr('LODSB', '');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstr('JZ', CF_RT_PFX + 'A2L_DD');
+  EmitInstrAB('MOV', '[BX]', 'AL');
+  EmitInstr('INC', 'BX');
+  EmitInstr('JMP', CF_RT_PFX + 'A2L_DL');
+  EmitLabel(CF_RT_PFX + 'A2L_DD');
+  EmitInstr('POP', 'DI');
+  EmitInstr('POP', 'SI');
+  EmitLabel(CF_RT_PFX + 'A2L_ND');
+  { Convertir element courant en chaine et ajouter }
+  EmitInstrAB('MOV', 'AX', '[SI]');
+  EmitInstrAB('ADD', 'SI', '2');
+  { Convertir AX en chaine decimale dans [BX] }
+  EmitInstr('PUSH', 'CX');
+  EmitInstr('PUSH', 'DX');
+  EmitInstr('PUSH', 'SI');
+  EmitInstr('PUSH', 'DI');
+  { itoa inline simplifie }
+  EmitInstrAB('MOV', 'DI', 'BX');     { DI = dest }
+  EmitInstrAB('OR', 'AX', 'AX');
+  EmitInstr('JNS', CF_RT_PFX + 'A2L_PS');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '''-''');
+  EmitInstr('INC', 'DI');
+  EmitInstr('NEG', 'AX');
+  EmitLabel(CF_RT_PFX + 'A2L_PS');
+  EmitInstrAB('XOR', 'CX', 'CX');     { compteur chiffres }
+  EmitLabel(CF_RT_PFX + 'A2L_D1');
+  EmitInstrAB('XOR', 'DX', 'DX');
+  EmitInstrAB('MOV', 'SI', '10');
+  EmitInstr('DIV', 'SI');
+  EmitInstrAB('ADD', 'DL', '''0''');
+  EmitInstr('PUSH', 'DX');
+  EmitInstr('INC', 'CX');
+  EmitInstrAB('OR', 'AX', 'AX');
+  EmitInstr('JNZ', CF_RT_PFX + 'A2L_D1');
+  EmitLabel(CF_RT_PFX + 'A2L_D2');
+  EmitInstr('POP', 'AX');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstr('INC', 'DI');
+  EmitInstr('LOOP', CF_RT_PFX + 'A2L_D2');
+  EmitInstrAB('MOV', 'BX', 'DI');     { BX = prochaine position }
+  EmitInstr('POP', 'DI');
+  EmitInstr('POP', 'SI');
+  EmitInstr('POP', 'DX');
+  EmitInstr('POP', 'CX');
+  EmitInstr('INC', 'DX');
+  EmitInstr('DEC', 'CX');
+  EmitInstr('JNZ', CF_RT_PFX + 'A2L_LP');
+  EmitLabel(CF_RT_PFX + 'A2L_E');
+  EmitInstrAB('MOV', 'BYTE PTR [BX]', '0');  { terminateur }
+  EmitInstrAB('MOV', 'AX', 'OFFSET _CF_STRBUF');
+  EmitInstr('POP', 'DI');
+  EmitInstr('POP', 'SI');
+  EmitInstr('POP', 'DX');
+  EmitInstr('POP', 'CX');
+  EmitInstr('POP', 'BX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
 End;
 
 (* ---- EmitClose : fermer le fichier assembleur --------------- *)
@@ -4175,7 +4440,63 @@ Begin
   { Verifier l operateur d affectation = }
   If (CurToken.Kind <> TK_OP) Or (CurToken.Val <> '=') Then
   Begin
-    CompileError('"=" attendu dans <cfset>');
+    { TODO 17 : <cfset expression> sans affectation (appel de fonction) }
+    { Si le token suivant est ( alors c est un appel de fonction          }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('cfset: appel fonction ' + FullIdent);
+      ExprMakeNone(Res);
+      { Reinterpreter comme une expression en positionnant l ident }
+      { On simule un appel : parsons les arguments et appelons    }
+      SIdx := ParseCallArgs;
+      { Detecter les fonctions integrees de tableau }
+      CleanName := StrUpperCase(FullIdent);
+      If CleanName = 'ARRAYAPPEND' Then
+      Begin
+        EmitInstr('POP', 'AX');  { valeur }
+        EmitInstr('POP', 'SI');  { ptr tableau }
+        EmitInstr('CALL', CF_RT_PFX + 'ARRAPPEND');
+      End
+      Else If CleanName = 'ARRAYDELETEAT' Then
+      Begin
+        EmitInstr('POP', 'CX');  { position }
+        EmitInstr('POP', 'SI');  { ptr tableau }
+        EmitInstr('CALL', CF_RT_PFX + 'ARRDEL');
+      End
+      Else If CleanName = 'ARRAYINSERTAT' Then
+      Begin
+        EmitInstr('POP', 'AX');  { valeur }
+        EmitInstr('POP', 'CX');  { position }
+        EmitInstr('POP', 'SI');  { ptr tableau }
+        EmitInstr('CALL', CF_RT_PFX + 'ARRINS');
+      End
+      Else If CleanName = 'ARRAYCLEAR' Then
+      Begin
+        EmitInstr('POP', 'SI');  { ptr tableau }
+        EmitInstr('CALL', CF_RT_PFX + 'ARRCLEAR');
+      End
+      Else If CleanName = 'ARRAYSORT' Then
+      Begin
+        WarnMsg('ArraySort: tri non implemente, operation ignoree');
+        If SIdx >= 2 Then
+          EmitInstr('POP', 'BX');
+        EmitInstr('POP', 'AX');
+      End
+      Else
+      Begin
+        { Appel de fonction utilisateur generique }
+        EmitInstr('CALL', CF_FN_PFX + SymNameClean(FullIdent));
+        If SIdx > 0 Then
+        Begin
+          Str(SIdx * 2, CleanName);
+          EmitInstr('ADD', 'SP, ' + CleanName);
+        End;
+      End;
+    End
+    Else
+    Begin
+      CompileError('"=" attendu dans <cfset>');
+    End;
     While (CurToken.Kind <> TK_TAG_CLOSE) And
           (CurToken.Kind <> TK_TAG_SELFCLOSE) And
           (CurToken.Kind <> TK_EOF) Do
@@ -4309,6 +4630,9 @@ End;
 (*   - TODO 16 : Int Round Abs Max Min Sgn IncrementValue     *)
 (*     DecrementValue NumberFormat IsNumeric IsBoolean          *)
 (*     IsNull IsSimpleValue RandRange                          *)
+(*   - TODO 17 : ArrayNew ArrayAppend ArrayLen ArrayDeleteAt   *)
+(*     ArrayInsertAt ArrayClear ArraySort ArrayToList           *)
+(*     Litteral de tableau [expr, ...] et acces arr[i]         *)
 Procedure ParsePrimary(Var Res : TExprVal);
 Var
   Name     : TString;
@@ -4877,6 +5201,126 @@ Begin
       Res.SymIdx  := -1;
     End
 
+    { ============================================================ }
+    { TODO 17 - Fonctions integrees de tableaux (arrays)           }
+    { ============================================================ }
+
+    { -- Fonction integree : ArrayNew(dimension) ----------------- }
+    Else If (U = 'ARRAYNEW') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('ArrayNew()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'AX');  { dimension (ignore, toujours 1) }
+      { Allouer un bloc array dans DATA }
+      InnerStr := LabelGen;
+      DataAddArrayBlock(InnerStr);
+      EmitInstrAB('MOV', 'AX', 'OFFSET ' + InnerStr);
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_ARRAY;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : ArrayAppend(arr, val) --------------- }
+    Else If (U = 'ARRAYAPPEND') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('ArrayAppend()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'AX');  { valeur a ajouter }
+      EmitInstr('POP', 'SI');  { ptr tableau }
+      EmitInstr('CALL', CF_RT_PFX + 'ARRAPPEND');
+      ExprMakeImm(1, TY_IDX_BOOLEAN, Res);  { retourne true }
+    End
+
+    { -- Fonction integree : ArrayLen(arr) ----------------------- }
+    Else If (U = 'ARRAYLEN') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('ArrayLen()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'SI');  { ptr tableau }
+      EmitInstr('CALL', CF_RT_PFX + 'ARRLEN');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_NUMERIC;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : ArrayDeleteAt(arr, pos) ------------- }
+    Else If (U = 'ARRAYDELETEAT') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('ArrayDeleteAt()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'CX');  { position (1-based) }
+      EmitInstr('POP', 'SI');  { ptr tableau }
+      EmitInstr('CALL', CF_RT_PFX + 'ARRDEL');
+      ExprMakeImm(1, TY_IDX_BOOLEAN, Res);
+    End
+
+    { -- Fonction integree : ArrayInsertAt(arr, pos, val) -------- }
+    Else If (U = 'ARRAYINSERTAT') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('ArrayInsertAt()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'AX');  { valeur }
+      EmitInstr('POP', 'CX');  { position (1-based) }
+      EmitInstr('POP', 'SI');  { ptr tableau }
+      EmitInstr('CALL', CF_RT_PFX + 'ARRINS');
+      ExprMakeImm(1, TY_IDX_BOOLEAN, Res);
+    End
+
+    { -- Fonction integree : ArrayClear(arr) --------------------- }
+    Else If (U = 'ARRAYCLEAR') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('ArrayClear()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'SI');  { ptr tableau }
+      EmitInstr('CALL', CF_RT_PFX + 'ARRCLEAR');
+      ExprMakeImm(1, TY_IDX_BOOLEAN, Res);
+    End
+
+    { -- Fonction integree : ArraySort(arr, type) ---------------- }
+    Else If (U = 'ARRAYSORT') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      WarnMsg('ArraySort: tri non implemente, operation ignoree');
+      EmitComment('ArraySort() (stub)');
+      ArgCount := ParseCallArgs;
+      If ArgCount >= 2 Then
+        EmitInstr('POP', 'BX');  { type de tri (ignore) }
+      EmitInstr('POP', 'AX');    { arr (retourne tel quel) }
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_ARRAY;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : ArrayToList(arr [, delim]) ---------- }
+    Else If (U = 'ARRAYTOLIST') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('ArrayToList()');
+      ArgCount := ParseCallArgs;
+      If ArgCount >= 2 Then
+      Begin
+        EmitInstr('POP', 'DI');  { delimiteur personnalise }
+        EmitInstr('POP', 'SI');  { ptr tableau }
+      End
+      Else
+      Begin
+        EmitInstr('POP', 'SI');  { ptr tableau }
+        { Delimiteur par defaut : virgule }
+        ArgCount := DataAddStr(',');
+        EmitInstrAB('MOV', 'DI', 'OFFSET ' + DataTab[ArgCount].LblName);
+      End;
+      EmitInstr('CALL', CF_RT_PFX + 'ARRTOLIST');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_STRING;
+      Res.SymIdx  := -1;
+    End
+
     { -- Appel de fonction utilisateur : nom( args ) --------- }
     Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
     Begin
@@ -4939,16 +5383,14 @@ Begin
       { Fermer le crochet }
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
         ParserAdvance;
-      { Si c est un tableau : calculer l offset }
+      { Si c est un tableau : utiliser _CFRT_ARRGET (index base 1) }
       If (SIdx >= 0) And (TypeKindOf(SymTab[SIdx].TypeIdx) = TKC_ARRAY) Then
       Begin
-        { AX = index, multiplier par 2 (16-bit words) }
         ExprFlushToAX(SubExpr);
-        EmitInstr('SHL', 'AX, 1');
-        EmitInstr('MOV', 'BX, AX');
-        EmitInstr('MOV', 'AX, OFFSET ' + SymTab[SIdx].MangledName);
-        EmitInstr('ADD', 'BX, AX');
-        EmitInstr('MOV', 'AX, [BX]');
+        EmitInstrAB('MOV', 'CX', 'AX');  { CX = index (1-based) }
+        VarLoad(SIdx);
+        EmitInstrAB('MOV', 'SI', 'AX');  { SI = ptr tableau }
+        EmitInstr('CALL', CF_RT_PFX + 'ARRGET');
         Res.Kind    := EK_AX;
         Res.TypeIdx := TY_IDX_ANY;
         Res.SymIdx  := -1;
@@ -5003,6 +5445,41 @@ Begin
     Res := SubExpr;
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
       ParserAdvance;
+  End
+
+  { ---- Litteral de tableau [expr, expr, ...] (TODO 17) ---- }
+  Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
+  Begin
+    EmitComment('array literal []');
+    ParserAdvance;  { consommer [ }
+    { Allouer un bloc array dans DATA }
+    InnerStr := LabelGen;
+    DataAddArrayBlock(InnerStr);
+    EmitInstrAB('MOV', 'SI', 'OFFSET ' + InnerStr);
+    EmitInstrAB('MOV', 'WORD PTR [SI]', '0');  { count = 0 }
+    { Evaluer chaque element et appeler ARRAPPEND }
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']')) Do
+    Begin
+      ExprMakeNone(SubExpr);
+      ParseExpr(SubExpr);
+      ExprFlushToAX(SubExpr);
+      EmitInstr('PUSH', 'SI');
+      EmitInstr('CALL', CF_RT_PFX + 'ARRAPPEND');
+      EmitInstr('POP', 'SI');
+      { Virgule entre elements }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance
+      Else
+        Break;
+    End;
+    { Consommer ] }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+      ParserAdvance;
+    EmitInstrAB('MOV', 'AX', 'OFFSET ' + InnerStr);
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_ARRAY;
+    Res.SymIdx  := -1;
   End
 
   { ---- Token non reconnu (unaires geres par ParseUnary) --- }
@@ -6426,20 +6903,83 @@ Begin
     LoopPop;
   End
 
-  { --- FORM 3 : cfloop array (array iteration - simplified) --- }
+  { --- FORM 3 : cfloop array (array iteration) --- }
   Else If HasArray Then
   Begin
-    EmitComment('cfloop: array (simplifie) - TODO 17 requis');
-    { Skip body until </cfloop> }
-    While CurToken.Kind <> TK_EOF Do
+    EmitComment('cfloop: array ' + ArrName + ' index ' + IdxName);
+
+    { Chercher la variable tableau }
+    SIdx := SymFind(ArrName);
+    If SIdx < 0 Then
     Begin
-      If (CurToken.Kind = TK_TAG_CLOSE) And
-         (StrLowerCase(CurToken.Val) = 'cfloop') Then
+      WarnMsg('cfloop array: variable tableau non trouvee: ' + ArrName);
+      { Skip body }
+      While CurToken.Kind <> TK_EOF Do
       Begin
+        If (CurToken.Kind = TK_TAG_CLOSE) And
+           (StrLowerCase(CurToken.Val) = 'cfloop') Then
+        Begin ParserAdvance; Break; End;
         ParserAdvance;
-        Break;
       End;
-      ParserAdvance;
+    End
+    Else
+    Begin
+      { Creer la variable d index si inexistante }
+      If IdxName <> '' Then
+      Begin
+        Code := SymFind(IdxName);
+        If Code < 0 Then
+          Code := VarAlloc(IdxName, TY_IDX_ANY);
+      End
+      Else
+        Code := -1;
+
+      { Utiliser _CF_LOOPLIM comme compteur d iteration (1-based) }
+      LblTest := NewLabel('ATEST');
+      LblIncr := NewLabel('AINCR');
+      LblEnd  := NewLabel('AEND');
+
+      LoopPush(LblEnd, LblIncr);
+
+      { Initialiser le compteur a 1 }
+      EmitInstrAB('MOV', 'WORD PTR [_CF_LOOPLIM]', '1');
+
+      EmitLabel(LblTest);
+      { Charger le tableau }
+      VarLoad(SIdx);
+      EmitInstrAB('MOV', 'SI', 'AX');
+      { Comparer compteur avec ArrayLen }
+      EmitInstrAB('MOV', 'AX', '[SI]');  { AX = count }
+      EmitInstrAB('CMP', '[_CF_LOOPLIM]', 'AX');
+      EmitInstr('JA', LblEnd);
+
+      { Charger element courant : ARRGET(SI, [_CF_LOOPLIM]) }
+      EmitInstrAB('MOV', 'CX', '[_CF_LOOPLIM]');
+      EmitInstr('CALL', CF_RT_PFX + 'ARRGET');
+
+      { Stocker dans la variable index }
+      If Code >= 0 Then
+        VarStore(Code);
+
+      { Body }
+      While CurToken.Kind <> TK_EOF Do
+      Begin
+        If (CurToken.Kind = TK_TAG_CLOSE) And
+           (StrLowerCase(CurToken.Val) = 'cfloop') Then
+        Begin
+          ParserAdvance;
+          Break;
+        End;
+        ParseBodyTag;
+      End;
+
+      { Increment }
+      EmitLabel(LblIncr);
+      EmitInstr('INC', 'WORD PTR [_CF_LOOPLIM]');
+      EmitInstr('JMP', LblTest);
+      EmitLabel(LblEnd);
+
+      LoopPop;
     End;
   End
 
