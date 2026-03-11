@@ -143,7 +143,7 @@
               Rewrite, Close, Eof, Eoln, IOResult, Seek, FilePos,
               FileSize, Rename, Erase, MkDir, RmDir, ChDir, GetDir
 
-  TODO 06 - SYSTEME DE TYPES
+  TODO 06 - SYSTEME DE TYPES [IMPLEMENTE]
             TTypeKind : TYK_INTEGER (LongInt 32 bits signe),
               TYK_WORD (32 bits non signe), TYK_BYTE (8 bits),
               TYK_SHORTINT (8 bits signe), TYK_CHAR (8 bits),
@@ -1183,6 +1183,105 @@ Var
 
 { Forward declarations TODO 05 }
 Procedure SymRegisterBuiltins; Forward;
+
+{ ============================================================ }
+{ TODO 06 - SYSTEME DE TYPES                      [IMPLEMENTE] }
+{ ============================================================ }
+
+Const
+  MAX_TYPE   = {$IFDEF FPC}512{$ELSE}64{$ENDIF};
+  MAX_FIELDS = 64;    { nombre max de champs dans un record/objet  }
+  MAX_ENUMS  = 256;   { nombre max de valeurs enum                 }
+
+  { Index des types primitifs (fixes dans TypeTab) }
+  TY_UNKNOWN     = -1;  { type inconnu / pas encore defini           }
+  TY_IDX_INTEGER =  0;  { Integer  (LongInt 32 bits signe)           }
+  TY_IDX_WORD    =  1;  { Word     (32 bits non signe en Win32)      }
+  TY_IDX_BYTE    =  2;  { Byte     (8 bits non signe)                }
+  TY_IDX_SHORTINT=  3;  { ShortInt (8 bits signe)                    }
+  TY_IDX_CHAR    =  4;  { Char     (8 bits)                          }
+  TY_IDX_BOOLEAN =  5;  { Boolean  (8 bits, 0 ou 1)                  }
+  TY_IDX_STRING  =  6;  { String   (ShortString: 1+255 octets)       }
+  TY_IDX_REAL    =  7;  { Real     (stub entier 32 bits)             }
+  TY_IDX_SINGLE  =  8;  { Single   (flottant 32 bits)                }
+  TY_IDX_DOUBLE  =  9;  { Double   (flottant 64 bits)                }
+  TY_IDX_EXTENDED= 10;  { Extended (flottant 80 bits)                }
+  TY_IDX_COMP    = 11;  { Comp     (entier 64 bits virgule fixe)     }
+  TY_IDX_POINTER = 12;  { Pointer  (pointeur generique 32 bits)      }
+  TY_IDX_PCHAR   = 13;  { PChar    (pointeur vers Char)              }
+  TY_IDX_TEXT    = 14;  { Text     (handle fichier texte)            }
+  TY_IDX_NIL     = 15;  { nil      (constante pointeur nul)          }
+  TY_IDX_LONGINT = 16;  { LongInt  (alias de Integer en Win32)       }
+  TY_IDX_LONGWORD= 17;  { LongWord (TP8+, 32 bits non signe)        }
+  TY_PRIM_COUNT  = 18;  { nombre de types primitifs                  }
+
+Type
+  { Categories de types dans la table }
+  TTypeKind = (
+    TYK_INTEGER,    { entier signe 32 bits (Integer, LongInt)        }
+    TYK_WORD,       { entier non signe 32 bits (Word)                }
+    TYK_BYTE,       { entier non signe 8 bits (Byte)                 }
+    TYK_SHORTINT,   { entier signe 8 bits (ShortInt)                 }
+    TYK_CHAR,       { caractere 8 bits (Char)                        }
+    TYK_BOOLEAN,    { booleen 8 bits (Boolean)                       }
+    TYK_STRING,     { chaine courte ShortString (String[n])          }
+    TYK_REAL,       { reel (stub entier en Win32)                    }
+    TYK_SINGLE,     { flottant IEEE 32 bits                          }
+    TYK_DOUBLE,     { flottant IEEE 64 bits                          }
+    TYK_EXTENDED,   { flottant etendu 80 bits                        }
+    TYK_COMP,       { entier 64 bits virgule fixe                    }
+    TYK_POINTER,    { pointeur generique 32 bits                     }
+    TYK_PCHAR,      { pointeur vers Char (PChar)                     }
+    TYK_ARRAY,      { tableau (ARRAY [lo..hi] OF T)                  }
+    TYK_RECORD,     { record (RECORD ... END)                        }
+    TYK_SET,        { ensemble (SET OF T)                            }
+    TYK_ENUM,       { enumeration (TYPE T = (a, b, c))               }
+    TYK_FILE,       { fichier (File / File of T)                     }
+    TYK_TEXT,       { fichier texte (Text)                           }
+    TYK_OBJECT,     { objet TP 5.5+ (OBJECT ... END)                }
+    TYK_NIL,        { constante nil                                   }
+    TYK_SUBRANGE,   { sous-intervalle (lo..hi)                       }
+    TYK_PROCVAR     { variable de type procedure/fonction            }
+  );
+
+  { Un champ de record ou d objet }
+  TFieldRec = Record
+    Name    : TString;     { nom du champ                              }
+    TypeIdx : Integer;     { index du type dans TypeTab                }
+    Offset  : Integer;     { offset en octets depuis le debut du record}
+  End;
+
+  { Un enregistrement de la table des types }
+  TTypeRec = Record
+    Kind        : TTypeKind;   { categorie du type                     }
+    Name        : TString;     { nom du type ('' si anonyme)           }
+    Size        : Integer;     { taille en octets                      }
+    Align       : Integer;     { alignement en octets                  }
+    BaseTypeIdx : Integer;     { type de base (pointeur, tableau, alias)}
+    Lo          : LongInt;     { borne inferieure (subrange, array)    }
+    Hi          : LongInt;     { borne superieure (subrange, array)    }
+    FieldCount  : Integer;     { nombre de champs (record, objet)      }
+    Fields      : Array[0..MAX_FIELDS - 1] Of TFieldRec;
+    EnumCount   : Integer;     { nombre de valeurs (enum)              }
+    IsPacked    : Boolean;     { type PACKED ?                         }
+    IsUnsigned  : Boolean;     { type non signe ?                      }
+  End;
+
+Var
+  { Table des types }
+  TypeTab   : Array[0..MAX_TYPE - 1] Of TTypeRec;
+  TypeCount : Integer;
+
+{ Forward declarations TODO 06 }
+Procedure TypeInit; Forward;
+Function  TypeSizeofIdx(Idx : Integer) : Integer; Forward;
+Function  TypeFindByName(Const AName : TString) : Integer; Forward;
+Function  TypeResolve(Idx : Integer) : Integer; Forward;
+Function  TypeIsOrdinal(Idx : Integer) : Boolean; Forward;
+Function  TypeIsNumeric(Idx : Integer) : Boolean; Forward;
+Function  TypeIsPointer(Idx : Integer) : Boolean; Forward;
+Function  TypeCoerce(IdxA, IdxB : Integer) : Integer; Forward;
+Function  TypeCompatible(IdxDest, IdxSrc : Integer) : Boolean; Forward;
 
 { ------------------------------------------------------------ }
 { Fonctions de classification de caracteres                    }
@@ -3151,9 +3250,10 @@ Procedure SymRegisterBuiltins;
 
   { Registrer un type predefini }
   Procedure RegType(Const Name : TString);
-  Var R : Integer;
+  Var R, TIdx : Integer;
   Begin
-    R := SymAdd(Name, SK_TYPE, -1);
+    TIdx := TypeFindByName(Name);
+    R := SymAdd(Name, SK_TYPE, TIdx);
     If R >= 0 Then
       SymTab[R].IsGlobal := True;
   End;
@@ -3318,6 +3418,514 @@ Begin
   End;
 End;
 
+{ ============================================================ }
+{ TODO 06 - SYSTEME DE TYPES                      [IMPLEMENTE] }
+{ ============================================================ }
+
+{ ------------------------------------------------------------ }
+{ TypeAdd : ajouter un type dans la table                      }
+{ Retourne l index du type ajoute, ou -1 si plein              }
+{ ------------------------------------------------------------ }
+
+Function TypeAdd(Kind : TTypeKind; Const AName : TString;
+                 ASize : Integer; AAlign : Integer;
+                 AUnsigned : Boolean;
+                 ABaseTypeIdx : Integer) : Integer;
+Begin
+  If TypeCount >= MAX_TYPE Then
+  Begin
+    WarnMsg('table des types pleine (MAX_TYPE=' +
+      IntToStr_(MAX_TYPE) + ')');
+    TypeAdd := -1;
+    Exit;
+  End;
+
+  TypeTab[TypeCount].Kind        := Kind;
+  TypeTab[TypeCount].Name        := StrUpperCase(AName);
+  TypeTab[TypeCount].Size        := ASize;
+  TypeTab[TypeCount].Align       := AAlign;
+  TypeTab[TypeCount].BaseTypeIdx := ABaseTypeIdx;
+  TypeTab[TypeCount].Lo          := 0;
+  TypeTab[TypeCount].Hi          := 0;
+  TypeTab[TypeCount].FieldCount  := 0;
+  TypeTab[TypeCount].EnumCount   := 0;
+  TypeTab[TypeCount].IsPacked    := False;
+  TypeTab[TypeCount].IsUnsigned  := AUnsigned;
+
+  TypeAdd := TypeCount;
+  Inc(TypeCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeInit : initialiser la table des types avec les types      }
+{ primitifs de Turbo Pascal                                    }
+{ ------------------------------------------------------------ }
+
+Procedure TypeInit;
+Var I : Integer;
+Begin
+  TypeCount := 0;
+
+  { Initialiser toute la table a zero }
+  For I := 0 To MAX_TYPE - 1 Do
+  Begin
+    TypeTab[I].Kind        := TYK_INTEGER;
+    TypeTab[I].Name        := '';
+    TypeTab[I].Size        := 0;
+    TypeTab[I].Align       := 1;
+    TypeTab[I].BaseTypeIdx := TY_UNKNOWN;
+    TypeTab[I].Lo          := 0;
+    TypeTab[I].Hi          := 0;
+    TypeTab[I].FieldCount  := 0;
+    TypeTab[I].EnumCount   := 0;
+    TypeTab[I].IsPacked    := False;
+    TypeTab[I].IsUnsigned  := False;
+  End;
+
+  { Types primitifs Turbo Pascal (Win32, 32 bits)                  }
+  { Les index doivent correspondre aux constantes TY_IDX_xxx       }
+
+  { idx 0 : Integer (LongInt 32 bits signe) }
+  TypeAdd(TYK_INTEGER, 'INTEGER', 4, 4, False, TY_UNKNOWN);
+
+  { idx 1 : Word (32 bits non signe en Win32) }
+  TypeAdd(TYK_WORD, 'WORD', 4, 4, True, TY_UNKNOWN);
+
+  { idx 2 : Byte (8 bits non signe) }
+  TypeAdd(TYK_BYTE, 'BYTE', 1, 1, True, TY_UNKNOWN);
+
+  { idx 3 : ShortInt (8 bits signe) }
+  TypeAdd(TYK_SHORTINT, 'SHORTINT', 1, 1, False, TY_UNKNOWN);
+
+  { idx 4 : Char (8 bits) }
+  TypeAdd(TYK_CHAR, 'CHAR', 1, 1, True, TY_UNKNOWN);
+
+  { idx 5 : Boolean (8 bits, 0 ou 1) }
+  TypeAdd(TYK_BOOLEAN, 'BOOLEAN', 1, 1, True, TY_UNKNOWN);
+
+  { idx 6 : String (ShortString, 256 octets: 1 longueur + 255 data) }
+  TypeAdd(TYK_STRING, 'STRING', 256, 1, False, TY_UNKNOWN);
+
+  { idx 7 : Real (stub entier 32 bits en Win32) }
+  TypeAdd(TYK_REAL, 'REAL', 4, 4, False, TY_UNKNOWN);
+
+  { idx 8 : Single (flottant IEEE 32 bits) }
+  TypeAdd(TYK_SINGLE, 'SINGLE', 4, 4, False, TY_UNKNOWN);
+
+  { idx 9 : Double (flottant IEEE 64 bits) }
+  TypeAdd(TYK_DOUBLE, 'DOUBLE', 8, 4, False, TY_UNKNOWN);
+
+  { idx 10 : Extended (flottant 80 bits) }
+  TypeAdd(TYK_EXTENDED, 'EXTENDED', 10, 4, False, TY_UNKNOWN);
+
+  { idx 11 : Comp (entier 64 bits virgule fixe) }
+  TypeAdd(TYK_COMP, 'COMP', 8, 4, False, TY_UNKNOWN);
+
+  { idx 12 : Pointer (pointeur generique 32 bits) }
+  TypeAdd(TYK_POINTER, 'POINTER', 4, 4, False, TY_UNKNOWN);
+
+  { idx 13 : PChar (pointeur vers Char) }
+  TypeAdd(TYK_PCHAR, 'PCHAR', 4, 4, False, TY_IDX_CHAR);
+
+  { idx 14 : Text (handle fichier texte) }
+  TypeAdd(TYK_TEXT, 'TEXT', 4, 4, False, TY_UNKNOWN);
+
+  { idx 15 : nil (constante pointeur nul) }
+  TypeAdd(TYK_NIL, 'NIL', 4, 4, False, TY_UNKNOWN);
+
+  { idx 16 : LongInt (alias de Integer en Win32) }
+  TypeAdd(TYK_INTEGER, 'LONGINT', 4, 4, False, TY_IDX_INTEGER);
+
+  { idx 17 : LongWord (TP8+, 32 bits non signe) }
+  TypeAdd(TYK_WORD, 'LONGWORD', 4, 4, True, TY_IDX_WORD);
+
+  If Opts.DebugMode Then
+    WriteLn('  [TypeInit] ', TypeCount, ' types primitifs enregistres');
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeFindByName : trouver un type par son nom exact           }
+{ Retourne l index ou -1 si non trouve                         }
+{ ------------------------------------------------------------ }
+
+Function TypeFindByName(Const AName : TString) : Integer;
+Var
+  I  : Integer;
+  Up : TString;
+Begin
+  TypeFindByName := -1;
+  Up := StrUpperCase(AName);
+  For I := 0 To TypeCount - 1 Do
+    If TypeTab[I].Name = Up Then
+    Begin
+      TypeFindByName := I;
+      Exit;
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeSizeofIdx : retourne la taille d un type par son index   }
+{ ------------------------------------------------------------ }
+
+Function TypeSizeofIdx(Idx : Integer) : Integer;
+Begin
+  If (Idx >= 0) And (Idx < TypeCount) Then
+    TypeSizeofIdx := TypeTab[Idx].Size
+  Else
+    TypeSizeofIdx := 4;  { taille par defaut = DWORD 32 bits }
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeResolve : resoudre un alias de type (BaseTypeIdx)        }
+{ Suit la chaine BaseTypeIdx pour trouver le type reel         }
+{ (ex: LongInt -> Integer)                                     }
+{ Retourne l index du type final                               }
+{ ------------------------------------------------------------ }
+
+Function TypeResolve(Idx : Integer) : Integer;
+Var
+  Depth : Integer;
+  Cur   : Integer;
+Begin
+  Cur   := Idx;
+  Depth := 0;
+  While (Cur >= 0) And (Cur < TypeCount) And (Depth < 32) Do
+  Begin
+    { Si pas d alias (BaseTypeIdx < 0), on est arrive }
+    If TypeTab[Cur].BaseTypeIdx < 0 Then Break;
+
+    { Si c est un type compose (pointeur, tableau, record, etc.) }
+    { BaseTypeIdx designe le type element, pas un alias          }
+    If TypeTab[Cur].Kind In [TYK_POINTER, TYK_PCHAR, TYK_ARRAY,
+       TYK_RECORD, TYK_SET, TYK_ENUM, TYK_FILE,
+       TYK_OBJECT, TYK_PROCVAR] Then Break;
+
+    { Sinon c est un alias : suivre le lien }
+    Cur := TypeTab[Cur].BaseTypeIdx;
+    Inc(Depth);
+  End;
+  TypeResolve := Cur;
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeIsOrdinal : retourne True si le type est ordinal         }
+{ (Integer, Word, Byte, ShortInt, Char, Boolean, Enum,         }
+{  Subrange)                                                    }
+{ ------------------------------------------------------------ }
+
+Function TypeIsOrdinal(Idx : Integer) : Boolean;
+Var R : Integer;
+Begin
+  R := TypeResolve(Idx);
+  If (R < 0) Or (R >= TypeCount) Then
+  Begin
+    TypeIsOrdinal := False;
+    Exit;
+  End;
+  Case TypeTab[R].Kind Of
+    TYK_INTEGER, TYK_WORD, TYK_BYTE, TYK_SHORTINT,
+    TYK_CHAR, TYK_BOOLEAN, TYK_ENUM, TYK_SUBRANGE :
+      TypeIsOrdinal := True;
+  Else
+    TypeIsOrdinal := False;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeIsNumeric : retourne True si le type est numerique       }
+{ (tout ordinal + Real, Single, Double, Extended, Comp)        }
+{ ------------------------------------------------------------ }
+
+Function TypeIsNumeric(Idx : Integer) : Boolean;
+Var R : Integer;
+Begin
+  R := TypeResolve(Idx);
+  If (R < 0) Or (R >= TypeCount) Then
+  Begin
+    TypeIsNumeric := False;
+    Exit;
+  End;
+  Case TypeTab[R].Kind Of
+    TYK_INTEGER, TYK_WORD, TYK_BYTE, TYK_SHORTINT,
+    TYK_CHAR, TYK_BOOLEAN, TYK_ENUM, TYK_SUBRANGE,
+    TYK_REAL, TYK_SINGLE, TYK_DOUBLE, TYK_EXTENDED, TYK_COMP :
+      TypeIsNumeric := True;
+  Else
+    TypeIsNumeric := False;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeIsPointer : retourne True si le type est un pointeur     }
+{ (Pointer, PChar, nil)                                        }
+{ ------------------------------------------------------------ }
+
+Function TypeIsPointer(Idx : Integer) : Boolean;
+Var R : Integer;
+Begin
+  R := TypeResolve(Idx);
+  If (R < 0) Or (R >= TypeCount) Then
+  Begin
+    TypeIsPointer := False;
+    Exit;
+  End;
+  Case TypeTab[R].Kind Of
+    TYK_POINTER, TYK_PCHAR, TYK_NIL :
+      TypeIsPointer := True;
+  Else
+    TypeIsPointer := False;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeIsString : retourne True si le type est une chaine       }
+{ (String, PChar)                                              }
+{ ------------------------------------------------------------ }
+
+Function TypeIsString(Idx : Integer) : Boolean;
+Var R : Integer;
+Begin
+  R := TypeResolve(Idx);
+  If (R < 0) Or (R >= TypeCount) Then
+  Begin
+    TypeIsString := False;
+    Exit;
+  End;
+  Case TypeTab[R].Kind Of
+    TYK_STRING, TYK_PCHAR :
+      TypeIsString := True;
+  Else
+    TypeIsString := False;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeIsReal : retourne True si le type est un reel            }
+{ (Real, Single, Double, Extended, Comp)                       }
+{ ------------------------------------------------------------ }
+
+Function TypeIsReal(Idx : Integer) : Boolean;
+Var R : Integer;
+Begin
+  R := TypeResolve(Idx);
+  If (R < 0) Or (R >= TypeCount) Then
+  Begin
+    TypeIsReal := False;
+    Exit;
+  End;
+  Case TypeTab[R].Kind Of
+    TYK_REAL, TYK_SINGLE, TYK_DOUBLE, TYK_EXTENDED, TYK_COMP :
+      TypeIsReal := True;
+  Else
+    TypeIsReal := False;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeCoerce : determine le type resultat d une operation       }
+{ entre deux types (promotion Turbo Pascal)                    }
+{ Retourne l index du type promu                               }
+{ ------------------------------------------------------------ }
+
+Function TypeCoerce(IdxA, IdxB : Integer) : Integer;
+Var
+  RA, RB : Integer;
+  KA, KB : TTypeKind;
+Begin
+  RA := TypeResolve(IdxA);
+  RB := TypeResolve(IdxB);
+
+  { Si l un est invalide, retourner l autre }
+  If (RA < 0) Or (RA >= TypeCount) Then
+  Begin TypeCoerce := RB; Exit; End;
+  If (RB < 0) Or (RB >= TypeCount) Then
+  Begin TypeCoerce := RA; Exit; End;
+
+  KA := TypeTab[RA].Kind;
+  KB := TypeTab[RB].Kind;
+
+  { Extended absorbe tout (sauf string) }
+  If (KA = TYK_EXTENDED) Or (KB = TYK_EXTENDED) Then
+  Begin TypeCoerce := TY_IDX_EXTENDED; Exit; End;
+
+  { Double absorbe Real, Single, entiers }
+  If (KA = TYK_DOUBLE) Or (KB = TYK_DOUBLE) Then
+  Begin TypeCoerce := TY_IDX_DOUBLE; Exit; End;
+
+  { Single absorbe Real, entiers }
+  If (KA = TYK_SINGLE) Or (KB = TYK_SINGLE) Then
+  Begin TypeCoerce := TY_IDX_SINGLE; Exit; End;
+
+  { Comp absorbe entiers }
+  If (KA = TYK_COMP) Or (KB = TYK_COMP) Then
+  Begin TypeCoerce := TY_IDX_COMP; Exit; End;
+
+  { Real absorbe entiers }
+  If (KA = TYK_REAL) Or (KB = TYK_REAL) Then
+  Begin TypeCoerce := TY_IDX_REAL; Exit; End;
+
+  { Si un des deux est un pointeur, le resultat est un pointeur }
+  If (KA In [TYK_POINTER, TYK_PCHAR]) Then
+  Begin TypeCoerce := RA; Exit; End;
+  If (KB In [TYK_POINTER, TYK_PCHAR]) Then
+  Begin TypeCoerce := RB; Exit; End;
+
+  { LongInt (Integer) absorbe Word, Byte, ShortInt }
+  If (KA = TYK_INTEGER) Or (KB = TYK_INTEGER) Then
+  Begin TypeCoerce := TY_IDX_INTEGER; Exit; End;
+
+  { Word absorbe Byte }
+  If (KA = TYK_WORD) Or (KB = TYK_WORD) Then
+  Begin TypeCoerce := TY_IDX_WORD; Exit; End;
+
+  { Sinon, promotion vers Integer }
+  TypeCoerce := TY_IDX_INTEGER;
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeCompatible : verifie si une affectation dest := src est   }
+{ compatible au sens Turbo Pascal                              }
+{ Retourne True si compatible                                  }
+{ ------------------------------------------------------------ }
+
+Function TypeCompatible(IdxDest, IdxSrc : Integer) : Boolean;
+Var
+  RD, RS : Integer;
+  KD, KS : TTypeKind;
+Begin
+  RD := TypeResolve(IdxDest);
+  RS := TypeResolve(IdxSrc);
+
+  { Types invalides : on accepte pour ne pas bloquer }
+  If (RD < 0) Or (RD >= TypeCount) Or
+     (RS < 0) Or (RS >= TypeCount) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  { Meme type exact : toujours compatible }
+  If RD = RS Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  KD := TypeTab[RD].Kind;
+  KS := TypeTab[RS].Kind;
+
+  { nil -> tout type pointeur ou PChar }
+  If KS = TYK_NIL Then
+  Begin
+    TypeCompatible := (KD In [TYK_POINTER, TYK_PCHAR, TYK_NIL,
+                              TYK_PROCVAR, TYK_OBJECT]);
+    Exit;
+  End;
+
+  { Integer <-> Word (promotion implicite TP) }
+  If ((KD = TYK_INTEGER) Or (KD = TYK_WORD)) And
+     ((KS = TYK_INTEGER) Or (KS = TYK_WORD)) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  { Byte/ShortInt -> Integer ou Word (promotion implicite) }
+  If ((KS = TYK_BYTE) Or (KS = TYK_SHORTINT)) And
+     ((KD = TYK_INTEGER) Or (KD = TYK_WORD) Or
+      (KD = TYK_BYTE) Or (KD = TYK_SHORTINT)) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  { Integer/Word -> Byte/ShortInt (retrecissement implicite TP) }
+  If ((KD = TYK_BYTE) Or (KD = TYK_SHORTINT)) And
+     ((KS = TYK_INTEGER) Or (KS = TYK_WORD)) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  { Char -> String (promotion implicite TP) }
+  If (KD = TYK_STRING) And (KS = TYK_CHAR) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  { Boolean -> entier (en mode etendu $X+) }
+  If ((KD = TYK_INTEGER) Or (KD = TYK_WORD) Or (KD = TYK_BYTE)) And
+     (KS = TYK_BOOLEAN) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  { Entier -> Boolean }
+  If (KD = TYK_BOOLEAN) And
+     ((KS = TYK_INTEGER) Or (KS = TYK_WORD) Or (KS = TYK_BYTE) Or
+      (KS = TYK_SHORTINT)) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  { Numerique vers numerique : toujours OK (avec conversion) }
+  If TypeIsNumeric(RD) And TypeIsNumeric(RS) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  { Pointeur vers pointeur : compatible (type generique) }
+  If TypeIsPointer(RD) And TypeIsPointer(RS) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  { PChar <-> String (en mode etendu $X+) }
+  If ((KD = TYK_PCHAR) And (KS = TYK_STRING)) Or
+     ((KD = TYK_STRING) And (KS = TYK_PCHAR)) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  { Pointeur vers entier / entier vers pointeur (typecast) }
+  If (TypeIsPointer(RD) And TypeIsOrdinal(RS)) Or
+     (TypeIsOrdinal(RD) And TypeIsPointer(RS)) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  { Enum -> Integer (Ord implicite) }
+  If (KS = TYK_ENUM) And
+     ((KD = TYK_INTEGER) Or (KD = TYK_WORD) Or (KD = TYK_BYTE)) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  { Subrange : compatible avec son type de base }
+  If (KD = TYK_SUBRANGE) Or (KS = TYK_SUBRANGE) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  { Record/Object : compatibles seulement si meme nom }
+  If (KD In [TYK_RECORD, TYK_OBJECT]) And (KD = KS) Then
+  Begin
+    TypeCompatible := (TypeTab[RD].Name = TypeTab[RS].Name);
+    Exit;
+  End;
+
+  TypeCompatible := False;
+End;
+
 { ------------------------------------------------------------ }
 { Run                                                          }
 { ------------------------------------------------------------ }
@@ -3343,6 +3951,9 @@ Begin
   { Initialiser la table des symboles (TODO 05) }
   SymInit;
 
+  { Initialiser le systeme de types (TODO 06) }
+  TypeInit;
+
   { Initialiser le preprocesseur }
   PPInitDefines;
 
@@ -3359,9 +3970,9 @@ Begin
 
   If Opts.Verbose Then
     WriteLn('  Tokens: ', TokenCount, '  Donnees: ', DataCount,
-            '  Symboles: ', SymCount);
+            '  Symboles: ', SymCount, '  Types: ', TypeCount);
 
-  { TODO 06..25 : compilation complete }
+  { TODO 07..25 : compilation complete }
 
   LexClose;
   ShowStats;
