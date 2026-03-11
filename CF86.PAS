@@ -4283,9 +4283,9 @@ Begin
 End;
 
 { ---- VarLoad : charger la valeur d une variable dans AX ---- }
-(* Numeriques et booleens : MOV AX, [addr]                     *)
-(* Strings et pointeurs   : MOV AX, OFFSET label (global)      *)
-(*                          ou LEA AX, [addr] (si pointeur)    *)
+(* Tous les types : MOV AX, [addr]                             *)
+(* Pour pointeurs (strings, arrays, structs) la variable DW    *)
+(* contient le pointeur vers les donnees -> on lit la valeur.   *)
 Procedure VarLoad(SIdx : Integer);
 Var
   Addr : TString;
@@ -4296,11 +4296,7 @@ Begin
     Exit;
   End;
   Addr := VarAddrOf(SIdx);
-  If TypeIsPtr(SymTab[SIdx].TypeIdx) And
-     (Not SymTab[SIdx].IsLocal) Then
-    EmitInstr('MOV', 'AX, OFFSET ' + SymTab[SIdx].MangledName)
-  Else
-    EmitInstr('MOV', 'AX, ' + Addr);
+  EmitInstr('MOV', 'AX, ' + Addr);
 End;
 
 { ---- VarStore : stocker AX dans une variable ---------------- }

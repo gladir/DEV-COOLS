@@ -24,7 +24,7 @@ _CFF_Main:
         MOV   [_CFV_arr], AX
 ; ---- CFSET ----
 ; cfset: appel fonction arrayappend
-        MOV   AX, OFFSET _CFV_arr
+        MOV   AX, [_CFV_arr]
         PUSH   AX
         MOV   AX, 10
         PUSH   AX
@@ -35,7 +35,7 @@ _CFF_Main:
 ; acces [] : arr
         MOV   AX, 2
         MOV   CX, AX
-        MOV   AX, OFFSET _CFV_arr
+        MOV   AX, [_CFV_arr]
         MOV   SI, AX
         CALL   _CFRT_ARRGET
         MOV   [_CFV_v], AX
@@ -62,7 +62,7 @@ _CFF_Main:
         MOV   [_CFV_arr2], AX
 ; ---- CFSET ----
 ; ArrayLen()
-        MOV   AX, OFFSET _CFV_arr2
+        MOV   AX, [_CFV_arr2]
         PUSH   AX
         POP   SI
         CALL   _CFRT_ARRLEN
@@ -72,7 +72,7 @@ _CFF_Main:
         CALL   _CFRT_PRINTNUM
 ; ---- CFSET ----
 ; cfset: appel fonction arraydeleteat
-        MOV   AX, OFFSET _CFV_arr
+        MOV   AX, [_CFV_arr]
         PUSH   AX
         MOV   AX, 2
         PUSH   AX
@@ -81,7 +81,7 @@ _CFF_Main:
         CALL   _CFRT_ARRDEL
 ; ---- CFSET ----
 ; cfset: appel fonction arrayinsertat
-        MOV   AX, OFFSET _CFV_arr
+        MOV   AX, [_CFV_arr]
         PUSH   AX
         MOV   AX, 1
         PUSH   AX
@@ -93,19 +93,19 @@ _CFF_Main:
         CALL   _CFRT_ARRINS
 ; ---- CFSET ----
 ; ArrayToList()
-        MOV   AX, OFFSET _CFV_arr2
+        MOV   AX, [_CFV_arr2]
         PUSH   AX
         POP   SI
         MOV   DI, OFFSET _CFK_3
         CALL   _CFRT_ARRTOLIST
         MOV   [_CFV_lst], AX
-        MOV   AX, OFFSET _CFV_lst
+        MOV   AX, [_CFV_lst]
 ; cfoutput: expr chaine
         MOV   SI, AX
         CALL   _CFRT_PRINT
 ; ---- CFSET ----
 ; cfset: appel fonction arrayclear
-        MOV   AX, OFFSET _CFV_arr
+        MOV   AX, [_CFV_arr]
         PUSH   AX
         POP   SI
         CALL   _CFRT_ARRCLEAR
