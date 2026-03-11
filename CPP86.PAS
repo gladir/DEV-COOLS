@@ -181,7 +181,7 @@
             Increment/Decrement ++ -- : INC/DEC direct ou via registre
             Initialisation a la declaration : int x = 42;
 
-  TODO 11 - EXPRESSIONS PRIMAIRES
+  TODO 11 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
             ParsePrimary : literal entier, literal chaine, ident, appel de fonction
             Acces membre : expr.membre -> offset dans struct/class
             Acces via pointeur : expr->membre -> dereferencement + offset
@@ -762,6 +762,8 @@ Procedure ExprLoad(SIdx : Integer; Var Res : TExprVal); Forward;
 Function  ParseTypeSpec(Var AIsConst, AIsStatic : Boolean) : Integer; Forward;
 Procedure ParseDeclStmt; Forward;
 Procedure ParseExprStmt; Forward;
+(* TODO 11 - Expressions primaires *)
+Procedure ParseCallExpr(SIdx : Integer; Var Res : TExprVal); Forward;
 (* TODO 13 - I/O *)
 Procedure ParseCoutStmt; Forward;
 Procedure ParseCinStmt; Forward;
@@ -1095,7 +1097,9 @@ Begin
     (S = 'true')       Or (S = 'try')        Or (S = 'typedef')    Or
     (S = 'union')      Or (S = 'unsigned')   Or (S = 'using')      Or
     (S = 'virtual')    Or (S = 'void')       Or (S = 'volatile')   Or
-    (S = 'while')      Or (S = 'nullptr');
+    (S = 'while')      Or (S = 'nullptr')    Or (S = 'static_cast') Or
+    (S = 'dynamic_cast') Or (S = 'reinterpret_cast') Or
+    (S = 'const_cast') Or (S = 'explicit');
 End;
 
 (* ---- PrintToken : affichage debug d un token --------------- *)
@@ -2752,12 +2756,18 @@ Begin
 End;
 
 (* ---- ParsePrimary : expressions primaires C++ --------------- *)
+(* TODO 11 : gestion complete des expressions primaires C++.     *)
 (* Tokens primaires : entiers, flottants, caracteres, chaines,   *)
-(* true/false/nullptr/NULL, identificateurs, sous-expressions    *)
-(* entre parentheses.                                            *)
+(* true/false/nullptr/NULL, identificateurs, appels de fonction, *)
+(* acces membre/pointeur/index, sizeof, new, delete, this,       *)
+(* static_cast, sous-expressions entre parentheses.              *)
 Procedure ParsePrimary(Var Res : TExprVal);
 Var
-  SIdx : Integer;
+  SIdx     : Integer;
+  IdxRes   : TExprVal;
+  TypeSize : Integer;
+  Addr     : TString;
+  IdName   : TString;
 Begin
   Case CurToken.Kind Of
     TK_INTEGER, TK_FLOAT, TK_CHAR, TK_STRING :
@@ -2789,30 +2799,42 @@ Begin
               (CurToken.Val = 'unsigned') Or (CurToken.Val = 'signed')) Then
           Begin
             If (CurToken.Val = 'char') Or (CurToken.Val = 'bool') Then
-              ExprMakeImm(1, TY_IDX_INT, Res)
+              TypeSize := 1
             Else If CurToken.Val = 'short' Then
-              ExprMakeImm(2, TY_IDX_INT, Res)
+              TypeSize := 2
             Else If (CurToken.Val = 'int') Or (CurToken.Val = 'unsigned') Or
                     (CurToken.Val = 'signed') Then
-              ExprMakeImm(2, TY_IDX_INT, Res)
+              TypeSize := 2
             Else If CurToken.Val = 'long' Then
-              ExprMakeImm(4, TY_IDX_INT, Res)
+              TypeSize := 4
             Else If (CurToken.Val = 'float') Or (CurToken.Val = 'double') Then
-              ExprMakeImm(4, TY_IDX_INT, Res)
+              TypeSize := 4
             Else
-              ExprMakeImm(2, TY_IDX_INT, Res); (* defaut 16 bits *)
+              TypeSize := 2; (* defaut 16 bits *)
             ParserAdvance;
             (* Gerer les types composes : unsigned int, long int, etc. *)
             If (CurToken.Kind = TK_KEYWORD) And
                ((CurToken.Val = 'int') Or (CurToken.Val = 'char') Or
                 (CurToken.Val = 'long') Or (CurToken.Val = 'short')) Then
               ParserAdvance;
-            (* Gerer les pointeurs : type* *)
+            (* Gerer les pointeurs : type* -> toujours 2 octets *)
             While (CurToken.Kind = TK_OP) And (CurToken.Val = '*') Do
             Begin
-              ExprMakeImm(2, TY_IDX_INT, Res); (* pointeur = 2 octets *)
+              TypeSize := 2; (* pointeur = 2 octets en 16 bits *)
               ParserAdvance;
             End;
+            ExprMakeImm(TypeSize, TY_IDX_INT, Res);
+          End
+          Else If (CurToken.Kind = TK_IDENT) Then
+          Begin
+            (* sizeof(ident) : chercher le type dans SymTab *)
+            SIdx := SymFind(CurToken.Val);
+            If SIdx >= 0 Then
+              TypeSize := TypeSizeof(SymTab[SIdx].TypeIdx)
+            Else
+              TypeSize := 2; (* defaut *)
+            ParserAdvance;
+            ExprMakeImm(TypeSize, TY_IDX_INT, Res);
           End
           Else
           Begin
@@ -2832,52 +2854,148 @@ Begin
       End
       Else If CurToken.Val = 'new' Then
       Begin
-        (* new : allocation dynamique (stub, TODO 20) *)
+        (* new T : allocation dynamique via _CC_RT_NEW *)
+        (* new Type       -> AX = sizeof(Type), CALL _CC_RT_NEW *)
+        (* new Type(args) -> meme chose, constructeur sera TODO 19 *)
+        (* new Type[n]    -> AX = n * sizeof(Type), CALL _CC_RT_NEW *)
         ParserAdvance;
-        WarnMsg('new : allocation dynamique non implementee (stub)');
-        (* Consommer le type *)
-        If CurToken.Kind = TK_KEYWORD Then ParserAdvance;
-        If CurToken.Kind = TK_IDENT Then ParserAdvance;
-        (* Consommer les arguments optionnels *)
+        TypeSize := 2; (* defaut : taille d un int/pointeur *)
+        (* Determiner la taille du type *)
+        If CurToken.Kind = TK_KEYWORD Then
+        Begin
+          If (CurToken.Val = 'char') Or (CurToken.Val = 'bool') Then
+            TypeSize := 1
+          Else If CurToken.Val = 'short' Then
+            TypeSize := 2
+          Else If (CurToken.Val = 'int') Or (CurToken.Val = 'unsigned') Then
+            TypeSize := 2
+          Else If CurToken.Val = 'long' Then
+            TypeSize := 4
+          Else If (CurToken.Val = 'float') Or (CurToken.Val = 'double') Then
+            TypeSize := 4;
+          ParserAdvance;
+        End
+        Else If CurToken.Kind = TK_IDENT Then
+        Begin
+          (* Type utilisateur : chercher dans SymTab/TypeTab *)
+          SIdx := SymFind(CurToken.Val);
+          If SIdx >= 0 Then
+            TypeSize := TypeSizeof(SymTab[SIdx].TypeIdx);
+          ParserAdvance;
+        End;
+        (* Consommer les types composes *)
+        While (CurToken.Kind = TK_OP) And (CurToken.Val = '*') Do
+        Begin
+          TypeSize := 2;
+          ParserAdvance;
+        End;
+        (* new Type[n] : tableau *)
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
+        Begin
+          ParserAdvance;
+          ParseExpr(IdxRes);
+          ExprFlushToAX(IdxRes);
+          (* AX = nombre d elements *)
+          If TypeSize > 1 Then
+          Begin
+            EmitInstr('PUSH   DX');
+            EmitInstrAB('MOV', 'DX', IntToStr(TypeSize));
+            EmitInstr('IMUL   DX');
+            EmitInstr('POP    DX');
+          End;
+          (* AX = taille totale en octets *)
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+            ParserAdvance;
+        End
+        Else
+        Begin
+          (* new Type simple *)
+          EmitInstrAB('MOV', 'AX', IntToStr(TypeSize));
+        End;
+        (* Consommer les arguments du constructeur (stub) *)
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
         Begin
           ParserAdvance;
           While (CurToken.Kind <> TK_EOF) And
                 Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
-            ParserAdvance;
+          Begin
+            ParseExpr(GExprDummy);
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+              ParserAdvance;
+          End;
           If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
             ParserAdvance;
         End;
-        (* Consommer les initialiseurs [] optionnels *)
-        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
-        Begin
-          ParserAdvance;
-          While (CurToken.Kind <> TK_EOF) And
-                Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']')) Do
-            ParserAdvance;
-          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
-            ParserAdvance;
-        End;
-        ExprMakeImm(0, TY_IDX_PTR, Res);
+        (* Appeler _CC_RT_NEW : AX=taille -> AX=pointeur *)
+        EmitInstrA('CALL', '_CC_RT_NEW');
+        Res.Kind    := EK_AX;
+        Res.ImmVal  := 0;
+        Res.TypeIdx := TY_IDX_PTR;
+        Res.Offset  := 0;
+        Res.SymIdx  := -1;
       End
       Else If CurToken.Val = 'delete' Then
       Begin
-        (* delete : liberation dynamique (stub, TODO 20) *)
+        (* delete ptr : liberation memoire via _CC_RT_DELETE *)
         ParserAdvance;
-        WarnMsg('delete : liberation dynamique non implementee (stub)');
-        (* delete[] *)
+        (* delete[] ptr *)
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
         Begin
           ParserAdvance;
           If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
             ParserAdvance;
         End;
+        (* Evaluer l expression pointeur *)
         ParseUnary(Res);
+        ExprFlushToAX(Res);
+        (* AX = pointeur, appeler _CC_RT_DELETE *)
+        EmitInstrA('CALL', '_CC_RT_DELETE');
         ExprMakeNone(Res);
+      End
+      Else If CurToken.Val = 'this' Then
+      Begin
+        (* this : pointeur vers l objet courant *)
+        (* Premier parametre cache = [BP+4] *)
+        ParserAdvance;
+        EmitInstrAB('MOV', 'AX', 'WORD PTR [BP+4]');
+        Res.Kind    := EK_AX;
+        Res.ImmVal  := 0;
+        Res.TypeIdx := TY_IDX_PTR;
+        Res.Offset  := 0;
+        Res.SymIdx  := -1;
+      End
+      Else If CurToken.Val = 'static_cast' Then
+      Begin
+        (* static_cast<Type>(expr) : conversion de type *)
+        ParserAdvance;
+        (* Consommer < *)
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '<') Then
+          ParserAdvance;
+        (* Consommer le type cible *)
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_OP) And (CurToken.Val = '>')) Do
+          ParserAdvance;
+        (* Consommer > *)
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '>') Then
+          ParserAdvance;
+        (* Consommer ( *)
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          ParseExpr(Res);
+          ExprFlushToAX(Res);
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End
+        Else
+          ParseUnary(Res);
+        (* La valeur reste dans AX, le type est converti *)
+        Res.Kind    := EK_AX;
+        Res.SymIdx  := -1;
       End
       Else
       Begin
-        (* Autre mot-cle : stub *)
+        (* Autre mot-cle non reconnu : avancer *)
         ExprMakeNone(Res);
         ParserAdvance;
       End;
@@ -2891,8 +3009,9 @@ Begin
       End
       Else
       Begin
+        IdName := CurToken.Val;
         (* Recherche dans la table des symboles *)
-        SIdx := SymFind(CurToken.Val);
+        SIdx := SymFind(IdName);
         If SIdx >= 0 Then
         Begin
           Res.Kind    := EK_MEM;
@@ -2903,45 +3022,72 @@ Begin
         End
         Else
         Begin
-          (* Identificateur non declare : EK_NONE, sera gere par TODO 10 *)
+          (* Identificateur non declare : traiter comme externe *)
           ExprMakeNone(Res);
           Res.SymIdx := -1;
         End;
         ParserAdvance;
-        (* Appel de fonction : ident(...) -> stub postfixe TODO 18 *)
+        (* --- Appel de fonction : ident( ... ) --- *)
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
         Begin
-          ParserAdvance;
-          While (CurToken.Kind <> TK_EOF) And
-                Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
-          Begin
-            ParseExpr(GExprDummy);
-            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
-              ParserAdvance;
-          End;
-          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
-            ParserAdvance;
-          Res.Kind := EK_AX;
+          ParserAdvance; (* consomme '(' *)
+          ParseCallExpr(SIdx, Res);
+          (* Res deja rempli par ParseCallExpr *)
         End;
-        (* Acceseur tableau : ident[expr] -> stub postfixe TODO 22 *)
-        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
+        (* --- Acces index : ident[expr] --- *)
+        (* Calcule adresse base + index*elemsize, charge la valeur *)
+        While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Do
         Begin
-          ParserAdvance;
-          ParseExpr(GExprDummy);
+          ParserAdvance; (* consomme '[' *)
+          (* Sauver l adresse de base sur la pile *)
+          ExprFlushToAX(Res);
+          EmitInstr('PUSH   AX');
+          (* Evaluer l index *)
+          ParseExpr(IdxRes);
+          ExprFlushToAX(IdxRes);
+          (* AX = index, multiplier par 2 (taille word) *)
+          EmitInstr('SHL    AX,1');
+          (* Recuperer la base depuis la pile *)
+          EmitInstr('POP    BX');
+          (* BX = base, AX = offset *)
+          EmitInstrAB('ADD', 'BX', 'AX');
+          (* Charger la valeur pointee *)
+          EmitInstrAB('MOV', 'AX', '[BX]');
+          Res.Kind    := EK_AX;
+          Res.TypeIdx := TY_IDX_INT;
+          Res.SymIdx  := -1;
           If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
             ParserAdvance;
-          Res.Kind := EK_AX;
         End;
-        (* Acces membre : ident.member ou ident->member -> stub TODO 19 *)
+        (* --- Acces membre : .member ou ->member ou ::member --- *)
         While (CurToken.Kind = TK_OP) And
               ((CurToken.Val = '.') Or (CurToken.Val = '->') Or
                (CurToken.Val = '::')) Do
         Begin
+          If CurToken.Val = '->' Then
+          Begin
+            (* Dereferencement pointeur puis acces membre *)
+            ExprFlushToAX(Res);
+            EmitInstrAB('MOV', 'BX', 'AX');
+            EmitInstrAB('MOV', 'AX', '[BX]');
+          End
+          Else If CurToken.Val = '.' Then
+          Begin
+            (* Acces direct au membre (offset sera calcule *)
+            (* quand les structures seront implementees TODO 17) *)
+            ExprFlushToAX(Res);
+          End;
           ParserAdvance;
           If CurToken.Kind = TK_IDENT Then
             ParserAdvance;
           Res.Kind   := EK_AX;
           Res.SymIdx := -1;
+          (* Appel de methode : obj.method(...) ou ptr->method(...) *)
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+          Begin
+            ParserAdvance;
+            ParseCallExpr(-1, Res);
+          End;
         End;
       End;
     End;
@@ -2970,6 +3116,7 @@ Begin
           If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
             ParserAdvance;
           ParseUnary(Res);
+          ExprFlushToAX(Res);
           Res.Kind := EK_AX; (* cast -> resultat dans AX *)
         End
         Else
@@ -3059,21 +3206,52 @@ Begin
       Res.Kind := EK_AX;
       Exit;
     End;
-    (* Dereferencement : *ptr (TODO 21 : pointeurs) *)
+    (* Dereferencement : *ptr -> MOV BX,AX / MOV AX,[BX] *)
     If Op = '*' Then
     Begin
       ParserAdvance;
       ParseUnary(Res);
+      ExprFlushToAX(Res);
+      EmitInstrAB('MOV', 'BX', 'AX');
+      EmitInstrAB('MOV', 'AX', '[BX]');
       Res.Kind    := EK_AX;
       Res.TypeIdx := TY_IDX_INT;
       Res.SymIdx  := -1;
       Exit;
     End;
-    (* Adresse de : &var (TODO 21 : pointeurs) *)
+    (* Adresse de : &var -> LEA AX, variable *)
     If Op = '&' Then
     Begin
       ParserAdvance;
       ParseUnary(Res);
+      If (Res.SymIdx >= 0) And (Res.SymIdx < SymCount) Then
+      Begin
+        (* Variable connue : calculer son adresse *)
+        If (SymTab[Res.SymIdx].ScopeLevel = 0) Or
+           (SymTab[Res.SymIdx].Offset = 0) Then
+        Begin
+          (* Variable globale : MOV AX, OFFSET _CC_V_nom *)
+          EmitInstrAB('MOV', 'AX', 'OFFSET ' +
+                      SymTab[Res.SymIdx].MangledName);
+        End
+        Else If SymTab[Res.SymIdx].Offset > 0 Then
+        Begin
+          (* Parametre : LEA AX, [BP+N] *)
+          EmitInstrAB('LEA', 'AX', '[BP+' +
+                      IntToStr(SymTab[Res.SymIdx].Offset) + ']');
+        End
+        Else
+        Begin
+          (* Variable locale : LEA AX, [BP-N] *)
+          EmitInstrAB('LEA', 'AX', '[BP' +
+                      IntToStr(SymTab[Res.SymIdx].Offset) + ']');
+        End;
+      End
+      Else
+      Begin
+        (* Expression quelconque : adresse impossible, stub *)
+        ExprFlushToAX(Res);
+      End;
       Res.Kind    := EK_AX;
       Res.TypeIdx := TY_IDX_PTR;
       Res.SymIdx  := -1;
@@ -4166,10 +4344,49 @@ Begin
 End;
 
 (* ---- EmitRuntime : emettre les routines runtime ------------- *)
-(* Stub pour TODO 25 : sera complete avec les routines runtime   *)
+(* TODO 11 : _CC_RT_NEW et _CC_RT_DELETE pour new/delete         *)
+(* TODO 25 : sera complete avec les routines runtime avancees    *)
 Procedure EmitRuntime;
 Begin
-  (* stub - sera implemente dans une TODO ulterieure *)
+  EmitBlankLine;
+  EmitComment('=== Runtime library ===');
+  EmitBlankLine;
+  (* _CC_RT_NEW : allocation dynamique via INT 21h AH=48h          *)
+  (* Entree : AX = nombre d octets a allouer                       *)
+  (* Sortie : AX = pointeur vers le bloc alloue (segment:0000)     *)
+  (* Utilise les fonctions DOS pour l allocation memoire.           *)
+  (* En mode .MODEL SMALL, on utilise un heap simplifie.            *)
+  EmitLabel('_CC_RT_NEW');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('MOV    CX,AX');         (* CX = taille demandee *)
+  EmitInstr('ADD    CX,15');         (* aligner sur paragraphe *)
+  EmitInstr('SHR    CX,1');
+  EmitInstr('SHR    CX,1');
+  EmitInstr('SHR    CX,1');
+  EmitInstr('SHR    CX,1');          (* CX = paragraphes (16 octets) *)
+  EmitInstr('INC    CX');            (* au moins 1 paragraphe *)
+  EmitInstr('MOV    BX,CX');
+  EmitInstr('MOV    AH,48h');        (* DOS: allocate memory *)
+  EmitInstr('INT    21h');
+  EmitInstr('JNC    _CC_RT_NEW_OK');
+  EmitInstr('XOR    AX,AX');         (* echec : retourne NULL *)
+  EmitLabel('_CC_RT_NEW_OK');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+  (* _CC_RT_DELETE : liberation de memoire via INT 21h AH=49h      *)
+  (* Entree : AX = pointeur vers le bloc a liberer                 *)
+  (* En mode DOS, libere le segment alloue par _CC_RT_NEW.         *)
+  EmitLabel('_CC_RT_DELETE');
+  EmitInstr('PUSH   ES');
+  EmitInstr('MOV    ES,AX');         (* ES = segment a liberer *)
+  EmitInstr('MOV    AH,49h');        (* DOS: free memory *)
+  EmitInstr('INT    21h');
+  EmitInstr('POP    ES');
+  EmitInstr('RET');
+  EmitBlankLine;
 End;
 
 (* ============================================================
@@ -4286,6 +4503,67 @@ Begin
   Res.TypeIdx := SymTab[SIdx].TypeIdx;
   Res.Offset  := SymTab[SIdx].Offset;
   Res.SymIdx  := SIdx;
+End;
+
+(* ============================================================
+   TODO 11 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
+   ParseCallExpr  : appel de fonction -> PUSH args + CALL + ADD SP
+   ParsePrimary ameliore : ident, literal, sizeof, new, delete,
+     this, static_cast, appel de fonction, acces membre,
+     acces par pointeur, acces index, dereferencement, adresse.
+   ParseUnary ameliore : * (deref), & (addr-of) avec code ASM.
+   EmitRuntime : _CC_RT_NEW, _CC_RT_DELETE pour new/delete.
+   ============================================================ *)
+
+(* ---- ParseCallExpr : appel de fonction C++ -------------------- *)
+(* Syntaxe : ident ( arg1, arg2, ... )                             *)
+(* Convention cdecl : arguments pousses droite-a-gauche.           *)
+(* PUSH args (en ordre inverse), CALL _CC_F_nom, ADD SP, n*2.     *)
+(* SIdx = indice du symbole de la fonction dans SymTab.            *)
+(* Si SIdx < 0, le CALL utilise le nom mangled depuis CurFnName.  *)
+Procedure ParseCallExpr(SIdx : Integer; Var Res : TExprVal);
+Var
+  ArgRes   : TExprVal;
+  ArgCount : Integer;
+  FnLabel  : TString;
+Begin
+  ArgCount := 0;
+  (* Consommer '(' deja fait par l appelant.                       *)
+  (* Strategie simple : evaluer chaque argument de gauche a droite *)
+  (* et PUSH AX immediatement apres chaque evaluation.             *)
+  (* Les args sont empiles en ordre gauche-a-droite (standard C).  *)
+  (* Pour cdecl, l appelant nettoie la pile apres CALL.            *)
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+  Begin
+    ParseExpr(ArgRes);
+    ExprFlushToAX(ArgRes);
+    EmitInstr('PUSH   AX');
+    Inc(ArgCount);
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+  End;
+  (* Consommer ')' *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance;
+  (* Appeler la fonction *)
+  If (SIdx >= 0) And (SIdx < SymCount) Then
+    FnLabel := SymTab[SIdx].MangledName
+  Else
+    FnLabel := CC_FN_PFX + 'unknown';
+  EmitInstrA('CALL', FnLabel);
+  (* Nettoyer la pile (cdecl : l appelant nettoie) *)
+  If ArgCount > 0 Then
+    EmitInstrAB('ADD', 'SP', IntToStr(ArgCount * 2));
+  (* Le resultat est dans AX *)
+  Res.Kind    := EK_AX;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_IDX_INT;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+  (* Inferer le type de retour depuis la table des symboles *)
+  If (SIdx >= 0) And (SIdx < SymCount) Then
+    Res.TypeIdx := SymTab[SIdx].TypeIdx;
 End;
 
 (* ---- ParseTypeSpec : parser un type C++ et retourner TypeIdx - *)
