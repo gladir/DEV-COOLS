@@ -2056,6 +2056,7 @@ Begin
   DataAddWord('_CF_EXCOLDH', 0);     { ancien handler sauvegarde         }
   DataAdd('_CF_EXCNOMSG', DK_STR, 0, '');  { chaine vide par defaut }
   DataAdd(CF_RT_PFX + 'PANIC_MSG', DK_STR, 0, 'CF86 PANIC: ');
+  DataAddWord('_CF_EXCRAISE', 0);    { flag: 1=relancer apres finally   }
 End;
 
 { ---- ExprMakeImm : construire une valeur immediate --------- }
@@ -9998,6 +9999,7 @@ Begin
 
   { Pas d exception : sauter vers finally }
   EmitComment('cftry: fin corps try, saut vers finally');
+  EmitInstrAB('MOV', 'WORD PTR [_CF_EXCRAISE]', '0');
   EmitInstr('JMP', LblFinally);
 
   { Label du catch handler }
@@ -10054,6 +10056,9 @@ Begin
       EmitInstr('JNE', LblNextC);
     End;
 
+    { Exception attrapee : desactiver le flag de relance }
+    EmitInstrAB('MOV', 'WORD PTR [_CF_EXCRAISE]', '0');
+
     { Enregistrer les variables cfcatch.message, cfcatch.type, cfcatch.detail }
     SIdx := SymFind('cfcatch.message');
     If SIdx < 0 Then
@@ -10106,16 +10111,11 @@ Begin
     EmitLabel(LblNextC);
   End;
 
-  { Si aucun catch n a traite : relancer vers handler parent }
+  { Si aucun catch n a traite : marquer pour relance apres finally }
   If HadCatch Then
   Begin
-    EmitComment('cftry: exception non attrapee, relancer');
-    EmitInstr('POP', 'AX');
-    EmitInstrAB('MOV', '[_CF_HANDLER]', 'AX');
-    EmitInstrAB('MOV', 'AX', '[_CF_HANDLER]');
-    EmitInstrAB('OR', 'AX', 'AX');
-    EmitInstr('JZ', LblFinally);
-    EmitInstr('JMP', 'AX');
+    EmitComment('cftry: exception non attrapee, marquer relance');
+    EmitInstrAB('MOV', 'WORD PTR [_CF_EXCRAISE]', '1');
   End;
 
   { Label finally }
@@ -10163,6 +10163,16 @@ Begin
   EmitComment('cftry: restaurer ancien handler');
   EmitInstr('POP', 'AX');
   EmitInstrAB('MOV', '[_CF_HANDLER]', 'AX');
+
+  { Si exception non attrapee, relancer vers handler parent }
+  EmitInstrAB('CMP', 'WORD PTR [_CF_EXCRAISE]', '0');
+  EmitInstr('JE', LblEnd);
+  EmitComment('cftry: relancer exception vers parent');
+  EmitInstrAB('MOV', 'WORD PTR [_CF_EXCRAISE]', '0');
+  EmitInstrAB('MOV', 'AX', '[_CF_HANDLER]');
+  EmitInstrAB('OR', 'AX', 'AX');
+  EmitInstr('JZ', LblEnd);
+  EmitInstr('JMP', 'AX');
 
   EmitLabel(LblEnd);
   EmitComment('cftry: fin');
@@ -10342,6 +10352,7 @@ Begin
 
   { Pas d exception : sauter vers finally }
   EmitComment('script try: fin corps, saut vers finally');
+  EmitInstrAB('MOV', 'WORD PTR [_CF_EXCRAISE]', '0');
   EmitInstr('JMP', LblFinally);
 
   { Label catch }
@@ -10386,6 +10397,9 @@ Begin
                   IntToStr(TypeCode));
       EmitInstr('JNE', LblNextC);
     End;
+
+    { Exception attrapee : desactiver le flag de relance }
+    EmitInstrAB('MOV', 'WORD PTR [_CF_EXCRAISE]', '0');
 
     { Enregistrer les variables cfcatch.message etc }
     SIdx := SymFind('cfcatch.message');
@@ -10455,16 +10469,11 @@ Begin
     EmitLabel(LblNextC);
   End;
 
-  { Si non traite : relancer vers handler parent }
+  { Si non traite : marquer pour relance apres finally }
   If HadCatch Then
   Begin
-    EmitComment('script try: exception non attrapee, relancer');
-    EmitInstr('POP', 'AX');
-    EmitInstrAB('MOV', '[_CF_HANDLER]', 'AX');
-    EmitInstrAB('MOV', 'AX', '[_CF_HANDLER]');
-    EmitInstrAB('OR', 'AX', 'AX');
-    EmitInstr('JZ', LblFinally);
-    EmitInstr('JMP', 'AX');
+    EmitComment('script try: exception non attrapee, marquer relance');
+    EmitInstrAB('MOV', 'WORD PTR [_CF_EXCRAISE]', '1');
   End;
 
   { Label finally }
@@ -10496,6 +10505,16 @@ Begin
   EmitComment('script try: restaurer ancien handler');
   EmitInstr('POP', 'AX');
   EmitInstrAB('MOV', '[_CF_HANDLER]', 'AX');
+
+  { Si exception non attrapee, relancer vers handler parent }
+  EmitInstrAB('CMP', 'WORD PTR [_CF_EXCRAISE]', '0');
+  EmitInstr('JE', LblEnd);
+  EmitComment('script try: relancer exception vers parent');
+  EmitInstrAB('MOV', 'WORD PTR [_CF_EXCRAISE]', '0');
+  EmitInstrAB('MOV', 'AX', '[_CF_HANDLER]');
+  EmitInstrAB('OR', 'AX', 'AX');
+  EmitInstr('JZ', LblEnd);
+  EmitInstr('JMP', 'AX');
 
   EmitLabel(LblEnd);
   EmitComment('script try: fin');
