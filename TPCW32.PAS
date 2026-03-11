@@ -561,51 +561,34 @@
               Pas d emulation Windows (acces direct BIOS/DOS)
               Segments _TEXT / _DATA / _STACK
 
-  TODO 25 - RUNTIME MINIMAL ET GENERATION FINALE
-            Routines runtime (_TPRT_xxx) :
-              _TPRT_PRINT(handle, ptr, len) : WriteFile API
-              _TPRT_PRINTLN : _TPRT_PRINT + CR+LF
-              _TPRT_READLN(handle, buf, max) : ReadFile API
-              _TPRT_NUMTOSTR(EAX=n, EDI=buf) : entier -> ASCII (itoa)
-              _TPRT_STRTONUM(ESI=str) : ASCII -> entier (atoi) -> EAX
-              _TPRT_CONCAT(ESI=s1, EDI=s2) : concatenation ShortString
-              _TPRT_STRCMP(ESI=s1, EDI=s2) : comparaison -> drapeaux
-              _TPRT_COPY(ESI=src, EBX=pos, ECX=len) : sous-chaine
-              _TPRT_DELETE, _TPRT_INSERT, _TPRT_POS : operations chaines
-              _TPRT_NEW(ECX=taille) : HeapAlloc -> EAX=ptr
-              _TPRT_DISPOSE(EAX=ptr) : HeapFree
-              _TPRT_INPORT(EAX=port) : emulation lecture port -> AL/AX
-              _TPRT_OUTPORT(EAX=port, EDX=val) : emulation ecriture port
-              _TPRT_READMEM(EAX=seg, EDX=ofs) : emulation lecture memoire
-              _TPRT_WRITEMEM(EAX=seg, EDX=ofs, ECX=val) : emulation ecriture
-              _TPRT_INT21(AH=func) : emulation INT 21h
-              _TPRT_INT10(AH=func) : emulation INT 10h
-              _TPRT_INT16(AH=func) : emulation INT 16h
-              _TPRT_INT33(AX=func) : emulation INT 33h
-              _TPRT_HALT(EAX=code) : ExitProcess
-            RuntimeEmitted : flag pour emettre le runtime une seule fois
-            Generation finale :
-              Run : pipeline complet LexInit -> Parse -> Emit -> Close
-              Point d entree : _TPF_Main
-                GetStdHandle(-11) -> HSTDOUT
-                GetStdHandle(-10) -> HSTDIN
-                GetProcessHeap -> HHEAP
-                CALL _TPF_ProgramBody (corps du programme principal)
-                PUSH 0 / CALL ExitProcess
-              Fichiers SAMPLES\TURBOPASCAL\ a creer :
-                hello.pas       (Write, WriteLn, variables, constantes)
-                math.pas        (procedures, fonctions, recursion)
-                control.pas     (IF, CASE, WHILE, FOR, REPEAT)
-                strings.pas     (operations sur chaines, Copy, Pos, etc.)
-                arrays.pas      (tableaux, records, ensembles)
-                objects.pas     (objets TP5.5+, heritage, VMT)
-                crt_demo.pas    (unite Crt, ClrScr, GotoXY, ReadKey)
-                dos_demo.pas    (unite DOS, MsDos, FindFirst/FindNext)
-                graph_demo.pas  (unite Graph, InitGraph, PutPixel, Line)
-                asm_demo.pas    (instruction ASM, traduction 8086->80386)
-                port_demo.pas   (Port, PortW, Mem, MemW emules)
-                fileio.pas      (fichiers texte et types, BlockRead/Write)
-              Smoke tests : TPCW32.EXE -v SAMPLES\TURBOPASCAL\*.pas
+  TODO 25 - PARAMETRES COMPATIBLES TPC 7.0 [IMPLEMENTE]
+            Support des parametres du compilateur TPC de Turbo Pascal 7.0
+            en plus des parametres existants de TPCW32 :
+              -B       = Build all units (DOS 16 bits seulement)
+              -D<syms> = Definir des symboles conditionnels
+              -E<path> = Repertoire EXE et TPU de sortie
+              -F<size> = Find run-time error (DOS 16 bits seulement)
+              -GD      = Map detaillee
+              -GP      = Map avec publics
+              -GS      = Map avec segments
+              -I<path> = Repertoires Include
+              -L       = Link buffer sur disque (DOS 16 bits seulement)
+              -M       = Make des unites modifiees (DOS 16 bits seulement)
+              -O<path> = Repertoires des fichiers Object
+              -Q       = Compilation silencieuse
+              -R<path> = Repertoires Resource (DOS 16 bits seulement)
+              -T<path> = Repertoire Turbo (DOS 16 bits seulement)
+              -U<path> = Repertoires des unites
+              -V       = Informations de debogage dans l EXE
+              -$<sw>   = Directives de compilateur ($A+, $B-, $R+, etc.)
+            TOptions : champs ajoutes pour chaque option TP7
+            ParseArgs : reconnaissance des switches TP7 (majuscule/minuscule)
+              Options avec valeur accolee (-Dsym1;sym2, -EC:\OUT, etc.)
+              Options DOS 16 bits : -B, -F, -L, -M, -R, -T
+                generent un avertissement si pas en mode -dos16
+            ShowHelp : section TPC 7.0 ajoutee
+            ShowBanner : affiche les options TP7 actives
+            Test : test_tp7opts.pas
 
   ============================================================ *)
 
@@ -653,6 +636,24 @@ Type
     ObjOnly   : Boolean;   { -obj : produire seulement un .OBJ    }
     Dos16Mode : Boolean;   { -dos16 : generer un exe DOS 16 bits  }
     TPVersion : Integer;   { version TP cible (1..8, 55=5.5)      }
+    { Options compatibles TPC 7.0 (TODO 25) }
+    BuildAll  : Boolean;   { -B : build all units (DOS 16 seulement)  }
+    Defines   : TString;   { -D<syms> : symboles conditionnels        }
+    ExeDir    : TString;   { -E<path> : repertoire EXE/TPU sortie     }
+    FindErr   : TString;   { -F<adr>  : find error (DOS 16 seulement) }
+    MapDetailed : Boolean; { -GD : map detaillee                      }
+    MapPublics  : Boolean; { -GP : map avec publics                   }
+    MapSegments : Boolean; { -GS : map avec segments                  }
+    IncDirs   : TString;   { -I<path> : repertoires Include           }
+    LinkDisk  : Boolean;   { -L : link buffer disque (DOS 16 seulem.) }
+    MakeUnits : Boolean;   { -M : make unites modifiees (DOS 16 s.)   }
+    ObjDirs   : TString;   { -O<path> : repertoires objets            }
+    Quiet     : Boolean;   { -Q : compilation silencieuse              }
+    ResDirs   : TString;   { -R<path> : repertoires Resource (DOS 16) }
+    TurboDir  : TString;   { -T<path> : repertoire Turbo (DOS 16)     }
+    UnitDirs  : TString;   { -U<path> : repertoires unites            }
+    DebugInfo : Boolean;   { -V : infos de debogage dans l EXE        }
+    CompDir   : TString;   { -$<sw> : directives compilateur          }
   End;
 
 Var
@@ -829,6 +830,24 @@ Begin
   Opts.ObjOnly   := False;
   Opts.Dos16Mode := False;
   Opts.TPVersion := TP_VER_DEFAULT;
+  { Options TPC 7.0 (TODO 25) }
+  Opts.BuildAll    := False;
+  Opts.Defines     := '';
+  Opts.ExeDir      := '';
+  Opts.FindErr     := '';
+  Opts.MapDetailed := False;
+  Opts.MapPublics  := False;
+  Opts.MapSegments := False;
+  Opts.IncDirs     := '';
+  Opts.LinkDisk    := False;
+  Opts.MakeUnits   := False;
+  Opts.ObjDirs     := '';
+  Opts.Quiet       := False;
+  Opts.ResDirs     := '';
+  Opts.TurboDir    := '';
+  Opts.UnitDirs    := '';
+  Opts.DebugInfo   := False;
+  Opts.CompDir     := '';
 End;
 
 { ------------------------------------------------------------ }
@@ -843,7 +862,7 @@ Begin
           'Pascal pour l''assembleur du microprocesseur 80386 (en executable ',
           'Windows 32 bits).');
   WriteLn;
-  WriteLn('Syntaxe : TPCW32 <source.pas> [sortie] [options]');
+  WriteLn('Syntaxe : TPCW32 [options] <source.pas> [options]');
   WriteLn;
   WriteLn('Sortie :');
   WriteLn('  Par defaut un .EXE (PE Windows 32 bits)');
@@ -861,6 +880,25 @@ Begin
   WriteLn('  -tp7           Turbo Pascal 7 (defaut)');
   WriteLn('  -tp8           Turbo Pascal 8');
   WriteLn;
+  WriteLn('Options compatibles TPC 7.0 :');
+  WriteLn('  -B             Build all units (DOS 16 bits seulement)');
+  WriteLn('  -D<syms>       Definir des symboles conditionnels');
+  WriteLn('  -E<path>       Repertoire EXE et TPU de sortie');
+  WriteLn('  -F<size>       Find run-time error (DOS 16 bits seulement)');
+  WriteLn('  -GD            Map detaillee');
+  WriteLn('  -GP            Map avec publics');
+  WriteLn('  -GS            Map avec segments');
+  WriteLn('  -I<path>       Repertoires Include');
+  WriteLn('  -L             Link buffer sur disque (DOS 16 bits seulement)');
+  WriteLn('  -M             Make des unites modifiees (DOS 16 bits seulement)');
+  WriteLn('  -O<path>       Repertoires des fichiers Object');
+  WriteLn('  -Q             Compilation silencieuse');
+  WriteLn('  -R<path>       Repertoires Resource (DOS 16 bits seulement)');
+  WriteLn('  -T<path>       Repertoire Turbo (DOS 16 bits seulement)');
+  WriteLn('  -U<path>       Repertoires des unites');
+  WriteLn('  -V             Informations de debogage dans l''EXE');
+  WriteLn('  -$<sw>         Directives de compilateur ($A+, $B-, etc.)');
+  WriteLn;
   WriteLn('General :');
   WriteLn('  -v             Mode verbeux (banniere + statistiques)');
   WriteLn('  -d             Debug tokens (affiche chaque token)');
@@ -873,6 +911,10 @@ Begin
   WriteLn('  TPCW32 main.pas -asm -tp7');
   WriteLn('  TPCW32 old.pas -tp4 -dos16');
   WriteLn('  TPCW32 program.pas -obj -w');
+  WriteLn('  TPCW32 -DDEBUG;TEST hello.pas');
+  WriteLn('  TPCW32 -B -dos16 project.pas');
+  WriteLn('  TPCW32 -UC:\UNITS -IC:\INC hello.pas');
+  WriteLn('  TPCW32 -GD -V hello.pas');
   Halt(EXIT_OK);
 End;
 
@@ -885,6 +927,7 @@ Var
   I    : Integer;
   Arg  : TString;
   Ext  : TString;
+  UA   : TString;
 Begin
   InitOptions;
   If ParamCount = 0 Then
@@ -894,6 +937,7 @@ Begin
   While I <= ParamCount Do
   Begin
     Arg := ParamStr(I);
+    UA := StrUpperCase(Arg);
 
     If (Arg = '-h') Or (Arg = '--help') Or (Arg = '/?') Or
        (Arg = '/h') Or (Arg = '/H') Then
@@ -926,6 +970,41 @@ Begin
       Opts.TPVersion := TP_VER_7
     Else If Arg = '-tp8' Then
       Opts.TPVersion := TP_VER_8
+    { Options compatibles TPC 7.0 (TODO 25) }
+    Else If (UA = '-B') Then
+      Opts.BuildAll := True
+    Else If (Length(UA) >= 2) And (Copy(UA,1,2) = '-D') Then
+      Opts.Defines := Copy(Arg, 3, Length(Arg) - 2)
+    Else If (Length(UA) >= 2) And (Copy(UA,1,2) = '-E') Then
+      Opts.ExeDir := Copy(Arg, 3, Length(Arg) - 2)
+    Else If (Length(UA) >= 2) And (Copy(UA,1,2) = '-F') Then
+      Opts.FindErr := Copy(Arg, 3, Length(Arg) - 2)
+    Else If (UA = '-GD') Then
+      Opts.MapDetailed := True
+    Else If (UA = '-GP') Then
+      Opts.MapPublics := True
+    Else If (UA = '-GS') Then
+      Opts.MapSegments := True
+    Else If (Length(UA) >= 2) And (Copy(UA,1,2) = '-I') Then
+      Opts.IncDirs := Copy(Arg, 3, Length(Arg) - 2)
+    Else If (UA = '-L') Then
+      Opts.LinkDisk := True
+    Else If (UA = '-M') Then
+      Opts.MakeUnits := True
+    Else If (Length(UA) >= 2) And (Copy(UA,1,2) = '-O') Then
+      Opts.ObjDirs := Copy(Arg, 3, Length(Arg) - 2)
+    Else If (UA = '-Q') Then
+      Opts.Quiet := True
+    Else If (Length(UA) >= 2) And (Copy(UA,1,2) = '-R') Then
+      Opts.ResDirs := Copy(Arg, 3, Length(Arg) - 2)
+    Else If (Length(UA) >= 2) And (Copy(UA,1,2) = '-T') Then
+      Opts.TurboDir := Copy(Arg, 3, Length(Arg) - 2)
+    Else If (Length(UA) >= 2) And (Copy(UA,1,2) = '-U') Then
+      Opts.UnitDirs := Copy(Arg, 3, Length(Arg) - 2)
+    Else If (UA = '-V') Then
+      Opts.DebugInfo := True
+    Else If (Length(Arg) >= 2) And (Copy(Arg,1,2) = '-$') Then
+      Opts.CompDir := Copy(Arg, 3, Length(Arg) - 2)
     Else If (Length(Arg) > 0) And (Arg[1] = '-') Then
       FatalError('Option inconnue: ' + Arg)
     Else
@@ -958,6 +1037,27 @@ Begin
   If Opts.ObjOnly And Opts.Dos16Mode Then
     FatalError('-obj et -dos16 sont mutuellement exclusifs');
 
+  { Options DOS 16 bits seulement : avertir si pas en mode -dos16 (TODO 25) }
+  If (Not Opts.Dos16Mode) Then
+  Begin
+    If Opts.BuildAll Then
+      WarnMsg('-B (Build all) n''est disponible qu''en mode DOS 16 bits (-dos16)');
+    If Opts.FindErr <> '' Then
+      WarnMsg('-F (Find error) n''est disponible qu''en mode DOS 16 bits (-dos16)');
+    If Opts.LinkDisk Then
+      WarnMsg('-L (Link disk) n''est disponible qu''en mode DOS 16 bits (-dos16)');
+    If Opts.MakeUnits Then
+      WarnMsg('-M (Make units) n''est disponible qu''en mode DOS 16 bits (-dos16)');
+    If Opts.ResDirs <> '' Then
+      WarnMsg('-R (Resource dirs) n''est disponible qu''en mode DOS 16 bits (-dos16)');
+    If Opts.TurboDir <> '' Then
+      WarnMsg('-T (Turbo dir) n''est disponible qu''en mode DOS 16 bits (-dos16)');
+  End;
+
+  { -Q desactive le mode verbose }
+  If Opts.Quiet Then
+    Opts.Verbose := False;
+
   { Fichier de sortie par defaut }
   If Opts.OutFile = '' Then
   Begin
@@ -984,6 +1084,41 @@ Begin
   WriteLn('TP cible : ', TPVersionStr(Opts.TPVersion));
   If Opts.Dos16Mode Then
     WriteLn('Mode     : DOS 16 bits');
+  { Options TPC 7.0 (TODO 25) }
+  If Opts.BuildAll Then
+    WriteLn('Build    : all units');
+  If Opts.Defines <> '' Then
+    WriteLn('Defines  : ', Opts.Defines);
+  If Opts.ExeDir <> '' Then
+    WriteLn('ExeDir   : ', Opts.ExeDir);
+  If Opts.FindErr <> '' Then
+    WriteLn('FindErr  : ', Opts.FindErr);
+  If Opts.MapDetailed Then
+    WriteLn('Map      : detailed');
+  If Opts.MapPublics Then
+    WriteLn('Map      : publics');
+  If Opts.MapSegments Then
+    WriteLn('Map      : segments');
+  If Opts.IncDirs <> '' Then
+    WriteLn('Include  : ', Opts.IncDirs);
+  If Opts.LinkDisk Then
+    WriteLn('Link     : buffer on disk');
+  If Opts.MakeUnits Then
+    WriteLn('Make     : modified units');
+  If Opts.ObjDirs <> '' Then
+    WriteLn('ObjDirs  : ', Opts.ObjDirs);
+  If Opts.Quiet Then
+    WriteLn('Quiet    : yes');
+  If Opts.ResDirs <> '' Then
+    WriteLn('ResDirs  : ', Opts.ResDirs);
+  If Opts.TurboDir <> '' Then
+    WriteLn('TurboDir : ', Opts.TurboDir);
+  If Opts.UnitDirs <> '' Then
+    WriteLn('UnitDirs : ', Opts.UnitDirs);
+  If Opts.DebugInfo Then
+    WriteLn('Debug    : info in EXE');
+  If Opts.CompDir <> '' Then
+    WriteLn('Compiler : ', Opts.CompDir);
   WriteLn;
 End;
 
