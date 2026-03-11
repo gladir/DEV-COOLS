@@ -348,7 +348,7 @@
             CustomTags : <cf_montag> -> recherche dans le chemin des tags (stub)
             Portee caller : acces aux variables de la page appelante (stub)
 
-  TODO 23 - GESTION DES ERREURS (CFTRY / CFCATCH / CFTHROW)
+  TODO 23 - GESTION DES ERREURS (CFTRY / CFCATCH / CFTHROW) [IMPLEMENTE]
             <cftry>
               ... corps ...
               <cfcatch type="typeErreur">
@@ -840,6 +840,12 @@ Procedure ParseCfInclude; Forward;
 Procedure ParseCfModule; Forward;
 Procedure ParseCfInvoke; Forward;
 Procedure ParseCfImport; Forward;
+{ TODO 23 }
+Procedure ParseCfTry; Forward;
+Procedure ParseCfThrow; Forward;
+Procedure ParseCfRethrow; Forward;
+Procedure ParseScriptTry; Forward;
+Procedure ParseScriptThrow; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -2041,6 +2047,15 @@ Begin
   If Idx >= 0 Then
     DataTab[Idx].ElemCount := 512;
   DataAddWord('_CF_SCPOS', 0);
+
+  { Gestion des erreurs (TODO 23) }
+  DataAddWord('_CF_HANDLER', 0);     { ptr vers handler catch courant    }
+  DataAddWord('_CF_EXCTYPE', 0);     { code type exception (0=any,1=app..)}
+  DataAddWord('_CF_EXCMSG', 0);      { ptr message exception             }
+  DataAddWord('_CF_EXCDETAIL', 0);   { ptr detail exception              }
+  DataAddWord('_CF_EXCOLDH', 0);     { ancien handler sauvegarde         }
+  DataAdd('_CF_EXCNOMSG', DK_STR, 0, '');  { chaine vide par defaut }
+  DataAdd(CF_RT_PFX + 'PANIC_MSG', DK_STR, 0, 'CF86 PANIC: ');
 End;
 
 { ---- ExprMakeImm : construire une valeur immediate --------- }
@@ -4652,6 +4667,27 @@ Begin
   EmitInstr('RET', '');
   EmitBlankLine;
 
+  { ============================================================ }
+  { TODO 23 - Runtime : _CFRT_PANIC                              }
+  { ============================================================ }
+
+  { ---- _CFRT_PANIC : afficher message d erreur et terminer ---- }
+  { Entree : SI = ptr message ASCIIZ (ou 0 = pas de message)      }
+  { Action : affiche le message + CR/LF puis termine avec code 1  }
+  EmitLabel(CF_RT_PFX + 'PANIC');
+  EmitInstrAB('MOV', 'SI', 'OFFSET ' + CF_RT_PFX + 'PANIC_MSG');
+  EmitInstr('CALL', CF_RT_PFX + 'PRINT');
+  EmitInstrAB('MOV', 'SI', '[_CF_EXCMSG]');
+  EmitInstrAB('OR', 'SI', 'SI');
+  EmitInstr('JZ', CF_RT_PFX + 'PANIC_END');
+  EmitInstr('CALL', CF_RT_PFX + 'PRINT');
+  EmitLabel(CF_RT_PFX + 'PANIC_END');
+  EmitInstrAB('MOV', 'SI', 'OFFSET _CF_CRLF');
+  EmitInstr('CALL', CF_RT_PFX + 'PRINT');
+  EmitInstrAB('MOV', 'AX', '4C01h');
+  EmitInstr('INT', '21h');
+  EmitBlankLine;
+
 End;
 
 (* ---- EmitClose : fermer le fichier assembleur --------------- *)
@@ -6868,6 +6904,13 @@ Begin
     Begin ParserAdvance; ParseCfInvoke; End
     Else If TagLower = 'cfimport' Then
     Begin ParserAdvance; ParseCfImport; End
+    { TODO 23 - Gestion des erreurs }
+    Else If TagLower = 'cftry' Then
+    Begin ParserAdvance; ParseCfTry; End
+    Else If TagLower = 'cfthrow' Then
+    Begin ParserAdvance; ParseCfThrow; End
+    Else If TagLower = 'cfrethrow' Then
+    Begin ParserAdvance; ParseCfRethrow; End
     Else
       ParserAdvance;
   End
@@ -6920,6 +6963,11 @@ Begin
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
         ParserAdvance;
     End
+    { TODO 23 - Gestion des erreurs en cfscript }
+    Else If KwLower = 'try' Then
+    Begin ParserAdvance; ParseScriptTry; End
+    Else If KwLower = 'throw' Then
+    Begin ParserAdvance; ParseScriptThrow; End
     Else
       ParserAdvance;
   End
@@ -9840,6 +9888,719 @@ Begin
     ParserAdvance
   Else If CurToken.Kind = TK_TAG_SELFCLOSE Then
     ParserAdvance;
+End;
+
+{ ============================================================
+  TODO 23 - GESTION DES ERREURS (CFTRY / CFCATCH / CFTHROW)
+            [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ExcTypeCode : convertir un nom de type d exception ------ }
+(* en code numerique : 0=any, 1=application, 2=database,         *)
+(* 3=template, 4=security, 5=custom, 6=expression, 7=lock.      *)
+Function ExcTypeCode(Const TypeName : TString) : Integer;
+Var
+  U : TString;
+Begin
+  U := StrUpperCase(TypeName);
+  If (U = 'ANY') Or (U = '') Then
+    ExcTypeCode := 0
+  Else If U = 'APPLICATION' Then
+    ExcTypeCode := 1
+  Else If U = 'DATABASE' Then
+    ExcTypeCode := 2
+  Else If U = 'TEMPLATE' Then
+    ExcTypeCode := 3
+  Else If U = 'SECURITY' Then
+    ExcTypeCode := 4
+  Else If U = 'CUSTOM_TYPE' Then
+    ExcTypeCode := 5
+  Else If U = 'EXPRESSION' Then
+    ExcTypeCode := 6
+  Else If U = 'LOCK' Then
+    ExcTypeCode := 7
+  Else
+    ExcTypeCode := 5;  { custom par defaut }
+End;
+
+{ ---- ParseCfTry : <cftry>...<cfcatch>...<cffinally>...</cftry> }
+(* Mecanisme d exception sans support OS :                        *)
+(*   - Sauvegarde de l ancien handler dans _CF_EXCOLDH            *)
+(*   - Installation du nouveau handler (label du catch)           *)
+(*   - Corps du try                                               *)
+(*   - JMP vers le finally/fin                                    *)
+(*   - Label catch : test du type, corps du catch                 *)
+(*   - Label finally : code toujours execute                      *)
+(*   - Restauration de l ancien handler                           *)
+Procedure ParseCfTry;
+Var
+  LblCatch   : TString;
+  LblFinally : TString;
+  LblEnd     : TString;
+  LblNextC   : TString;
+  CatchType  : TString;
+  TypeCode   : Integer;
+  SIdx       : Integer;
+  HadCatch   : Boolean;
+  HadFinally : Boolean;
+Begin
+  { Consommer attributs restants et > de <cftry> }
+  While (CurToken.Kind <> TK_PUNCT) And
+        (CurToken.Kind <> TK_TAG_SELFCLOSE) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then Break;
+    ParserAdvance;
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then
+    ParserAdvance
+  Else If CurToken.Kind = TK_TAG_SELFCLOSE Then
+  Begin
+    ParserAdvance;
+    Exit;
+  End;
+
+  LblCatch   := NewLabel('CATCH');
+  LblFinally := NewLabel('FINALLY');
+  LblEnd     := NewLabel('ENDTRY');
+  HadCatch   := False;
+  HadFinally := False;
+
+  EmitComment('cftry: debut');
+
+  { Sauvegarder ancien handler }
+  EmitInstrAB('MOV', 'AX', '[_CF_HANDLER]');
+  EmitInstr('PUSH', 'AX');
+  { Installer nouveau handler -> label catch }
+  EmitInstrAB('MOV', 'WORD PTR [_CF_HANDLER]', 'OFFSET ' + LblCatch);
+
+  { Parser le corps du try : jusqu a cfcatch, cffinally ou /cftry }
+  While CurToken.Kind <> TK_EOF Do
+  Begin
+    { </cftry> fin de bloc }
+    If (CurToken.Kind = TK_TAG_CLOSE) And
+       (StrLowerCase(CurToken.Val) = 'cftry') Then
+    Begin
+      ParserAdvance;
+      Break;
+    End
+    { <cfcatch> : debut du bloc catch }
+    Else If (CurToken.Kind = TK_TAG_OPEN) And
+            (StrLowerCase(CurToken.Val) = 'cfcatch') Then
+      Break
+    { <cffinally> : debut du bloc finally }
+    Else If (CurToken.Kind = TK_TAG_OPEN) And
+            (StrLowerCase(CurToken.Val) = 'cffinally') Then
+      Break
+    Else
+      ParseBodyTag;
+  End;
+
+  { Pas d exception : sauter vers finally }
+  EmitComment('cftry: fin corps try, saut vers finally');
+  EmitInstr('JMP', LblFinally);
+
+  { Label du catch handler }
+  EmitLabel(LblCatch);
+
+  { Parser les blocs <cfcatch>...</cfcatch> }
+  While (CurToken.Kind = TK_TAG_OPEN) And
+        (StrLowerCase(CurToken.Val) = 'cfcatch') Do
+  Begin
+    ParserAdvance;  { consommer <cfcatch }
+    HadCatch := True;
+    CatchType := 'any';
+
+    { Lire attribut type="..." }
+    While (CurToken.Kind <> TK_PUNCT) And
+          (CurToken.Kind <> TK_TAG_SELFCLOSE) And
+          (CurToken.Kind <> TK_EOF) Do
+    Begin
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then Break;
+      If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+      Begin
+        If StrLowerCase(CurToken.Val) = 'type' Then
+        Begin
+          ParserAdvance;
+          If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+            ParserAdvance;
+          If (CurToken.Kind = TK_STRING) Or (CurToken.Kind = TK_IDENT) Then
+          Begin
+            CatchType := CurToken.Val;
+            ParserAdvance;
+          End;
+        End
+        Else
+          ParserAdvance;
+      End
+      Else
+        ParserAdvance;
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then
+      ParserAdvance
+    Else If CurToken.Kind = TK_TAG_SELFCLOSE Then
+      ParserAdvance;
+
+    TypeCode := ExcTypeCode(CatchType);
+    EmitComment('cfcatch type=' + CatchType + ' (code=' +
+                IntToStr(TypeCode) + ')');
+
+    { Si type != any, tester le type de l exception }
+    LblNextC := NewLabel('NEXTC');
+    If TypeCode <> 0 Then
+    Begin
+      EmitInstrAB('CMP', 'WORD PTR [_CF_EXCTYPE]',
+                  IntToStr(TypeCode));
+      EmitInstr('JNE', LblNextC);
+    End;
+
+    { Enregistrer les variables cfcatch.message, cfcatch.type, cfcatch.detail }
+    SIdx := SymFind('cfcatch.message');
+    If SIdx < 0 Then
+    Begin
+      SIdx := SymAdd('cfcatch.message', SC_VAR, TY_IDX_STRING, 0);
+      If SIdx >= 0 Then
+        DataAddWord(SymTab[SIdx].MangledName, 0);
+    End;
+    If SIdx >= 0 Then
+      EmitInstrAB('MOV', 'AX', '[_CF_EXCMSG]');
+    If SIdx >= 0 Then
+      EmitInstrAB('MOV', '[' + SymTab[SIdx].MangledName + ']', 'AX');
+
+    SIdx := SymFind('cfcatch.type');
+    If SIdx < 0 Then
+    Begin
+      SIdx := SymAdd('cfcatch.type', SC_VAR, TY_IDX_STRING, 0);
+      If SIdx >= 0 Then
+        DataAddWord(SymTab[SIdx].MangledName, 0);
+    End;
+
+    SIdx := SymFind('cfcatch.detail');
+    If SIdx < 0 Then
+    Begin
+      SIdx := SymAdd('cfcatch.detail', SC_VAR, TY_IDX_STRING, 0);
+      If SIdx >= 0 Then
+        DataAddWord(SymTab[SIdx].MangledName, 0);
+    End;
+    If SIdx >= 0 Then
+      EmitInstrAB('MOV', 'AX', '[_CF_EXCDETAIL]');
+    If SIdx >= 0 Then
+      EmitInstrAB('MOV', '[' + SymTab[SIdx].MangledName + ']', 'AX');
+
+    { Parser le corps du catch }
+    While CurToken.Kind <> TK_EOF Do
+    Begin
+      If (CurToken.Kind = TK_TAG_CLOSE) And
+         (StrLowerCase(CurToken.Val) = 'cfcatch') Then
+      Begin
+        ParserAdvance;
+        Break;
+      End;
+      ParseBodyTag;
+    End;
+
+    { Apres traitement, sauter vers finally }
+    EmitInstr('JMP', LblFinally);
+
+    { Label pour le prochain catch s il y en a }
+    EmitLabel(LblNextC);
+  End;
+
+  { Si aucun catch n a traite : relancer vers handler parent }
+  If HadCatch Then
+  Begin
+    EmitComment('cftry: exception non attrapee, relancer');
+    EmitInstr('POP', 'AX');
+    EmitInstrAB('MOV', '[_CF_HANDLER]', 'AX');
+    EmitInstrAB('MOV', 'AX', '[_CF_HANDLER]');
+    EmitInstrAB('OR', 'AX', 'AX');
+    EmitInstr('JZ', LblFinally);
+    EmitInstr('JMP', 'AX');
+  End;
+
+  { Label finally }
+  EmitLabel(LblFinally);
+
+  { Parser le bloc <cffinally>...</cffinally> s il est present }
+  If (CurToken.Kind = TK_TAG_OPEN) And
+     (StrLowerCase(CurToken.Val) = 'cffinally') Then
+  Begin
+    ParserAdvance;  { consommer <cffinally }
+    HadFinally := True;
+    { Consommer attributs et > }
+    While (CurToken.Kind <> TK_PUNCT) And
+          (CurToken.Kind <> TK_TAG_SELFCLOSE) And
+          (CurToken.Kind <> TK_EOF) Do
+    Begin
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then Break;
+      ParserAdvance;
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then
+      ParserAdvance
+    Else If CurToken.Kind = TK_TAG_SELFCLOSE Then
+      ParserAdvance;
+
+    EmitComment('cffinally: debut');
+    While CurToken.Kind <> TK_EOF Do
+    Begin
+      If (CurToken.Kind = TK_TAG_CLOSE) And
+         (StrLowerCase(CurToken.Val) = 'cffinally') Then
+      Begin
+        ParserAdvance;
+        Break;
+      End;
+      ParseBodyTag;
+    End;
+    EmitComment('cffinally: fin');
+  End;
+
+  { Consommer </cftry> si pas deja fait }
+  If (CurToken.Kind = TK_TAG_CLOSE) And
+     (StrLowerCase(CurToken.Val) = 'cftry') Then
+    ParserAdvance;
+
+  { Restaurer ancien handler }
+  EmitComment('cftry: restaurer ancien handler');
+  EmitInstr('POP', 'AX');
+  EmitInstrAB('MOV', '[_CF_HANDLER]', 'AX');
+
+  EmitLabel(LblEnd);
+  EmitComment('cftry: fin');
+End;
+
+{ ---- ParseCfThrow : <cfthrow message="msg" type="type" detail="det"> }
+(* Lever une exception :                                            *)
+(*   - Stocker type, message et detail dans les variables globales   *)
+(*   - Sauter au handler courant (JMP [_CF_HANDLER])                *)
+Procedure ParseCfThrow;
+Var
+  MsgVal    : TString;
+  TypeVal   : TString;
+  DetailVal : TString;
+  TypeCode  : Integer;
+  DIdx      : Integer;
+  Res       : TExprVal;
+Begin
+  MsgVal    := '';
+  TypeVal   := 'application';
+  DetailVal := '';
+
+  { Lire les attributs message=, type=, detail= }
+  While (CurToken.Kind <> TK_PUNCT) And
+        (CurToken.Kind <> TK_TAG_SELFCLOSE) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then Break;
+    If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+    Begin
+      If StrLowerCase(CurToken.Val) = 'message' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+          ParserAdvance;
+        If (CurToken.Kind = TK_STRING) Or (CurToken.Kind = TK_IDENT) Then
+        Begin
+          MsgVal := CurToken.Val;
+          ParserAdvance;
+        End;
+      End
+      Else If StrLowerCase(CurToken.Val) = 'type' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+          ParserAdvance;
+        If (CurToken.Kind = TK_STRING) Or (CurToken.Kind = TK_IDENT) Then
+        Begin
+          TypeVal := CurToken.Val;
+          ParserAdvance;
+        End;
+      End
+      Else If StrLowerCase(CurToken.Val) = 'detail' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+          ParserAdvance;
+        If (CurToken.Kind = TK_STRING) Or (CurToken.Kind = TK_IDENT) Then
+        Begin
+          DetailVal := CurToken.Val;
+          ParserAdvance;
+        End;
+      End
+      Else
+        ParserAdvance;
+    End
+    Else
+      ParserAdvance;
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then
+    ParserAdvance
+  Else If CurToken.Kind = TK_TAG_SELFCLOSE Then
+    ParserAdvance;
+
+  TypeCode := ExcTypeCode(TypeVal);
+  EmitComment('cfthrow: type=' + TypeVal + ' message=' + MsgVal);
+
+  { Stocker le type d exception }
+  EmitInstrAB('MOV', 'WORD PTR [_CF_EXCTYPE]', IntToStr(TypeCode));
+
+  { Stocker le message }
+  If MsgVal <> '' Then
+  Begin
+    DIdx := DataAddStr(MsgVal);
+    If DIdx >= 0 Then
+      EmitInstrAB('MOV', 'WORD PTR [_CF_EXCMSG]',
+                  'OFFSET ' + DataTab[DIdx].LblName);
+  End
+  Else
+    EmitInstrAB('MOV', 'WORD PTR [_CF_EXCMSG]', 'OFFSET _CF_EXCNOMSG');
+
+  { Stocker le detail }
+  If DetailVal <> '' Then
+  Begin
+    DIdx := DataAddStr(DetailVal);
+    If DIdx >= 0 Then
+      EmitInstrAB('MOV', 'WORD PTR [_CF_EXCDETAIL]',
+                  'OFFSET ' + DataTab[DIdx].LblName);
+  End
+  Else
+    EmitInstrAB('MOV', 'WORD PTR [_CF_EXCDETAIL]', 'OFFSET _CF_EXCNOMSG');
+
+  { Sauter au handler courant }
+  EmitInstrAB('MOV', 'AX', '[_CF_HANDLER]');
+  EmitInstrAB('OR', 'AX', 'AX');
+  EmitInstr('JZ', CF_RT_PFX + 'PANIC');  { pas de handler -> panic }
+  EmitInstr('JMP', 'AX');
+End;
+
+{ ---- ParseCfRethrow : <cfrethrow> ----------------------------- }
+(* Relancer l exception courante vers le handler parent.           *)
+Procedure ParseCfRethrow;
+Begin
+  { Consommer attributs et > }
+  While (CurToken.Kind <> TK_PUNCT) And
+        (CurToken.Kind <> TK_TAG_SELFCLOSE) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then Break;
+    ParserAdvance;
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then
+    ParserAdvance
+  Else If CurToken.Kind = TK_TAG_SELFCLOSE Then
+    ParserAdvance;
+
+  EmitComment('cfrethrow: relancer exception courante');
+  EmitInstrAB('MOV', 'AX', '[_CF_HANDLER]');
+  EmitInstrAB('OR', 'AX', 'AX');
+  EmitInstr('JZ', CF_RT_PFX + 'PANIC');
+  EmitInstr('JMP', 'AX');
+End;
+
+(* ---- ParseScriptTry : try/catch/finally en cfscript --------- *)
+(* Version cfscript du try/catch/finally.                          *)
+Procedure ParseScriptTry;
+Var
+  LblCatch   : TString;
+  LblFinally : TString;
+  LblEnd     : TString;
+  LblNextC   : TString;
+  CatchType  : TString;
+  CatchVar   : TString;
+  TypeCode   : Integer;
+  SIdx       : Integer;
+  HadCatch   : Boolean;
+  HadFinally : Boolean;
+Begin
+  LblCatch   := NewLabel('SCATCH');
+  LblFinally := NewLabel('SFNLY');
+  LblEnd     := NewLabel('SENDTRY');
+  HadCatch   := False;
+  HadFinally := False;
+
+  EmitComment('script try: debut');
+
+  { Consommer { }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+    ParserAdvance;
+
+  { Sauvegarder ancien handler }
+  EmitInstrAB('MOV', 'AX', '[_CF_HANDLER]');
+  EmitInstr('PUSH', 'AX');
+  { Installer nouveau handler }
+  EmitInstrAB('MOV', 'WORD PTR [_CF_HANDLER]', 'OFFSET ' + LblCatch);
+
+  { Parser le corps du try }
+  While CurToken.Kind <> TK_EOF Do
+  Begin
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+    Begin
+      ParserAdvance;
+      Break;
+    End;
+    ParseBodyTag;
+  End;
+
+  { Pas d exception : sauter vers finally }
+  EmitComment('script try: fin corps, saut vers finally');
+  EmitInstr('JMP', LblFinally);
+
+  { Label catch }
+  EmitLabel(LblCatch);
+
+  { Parser les blocs catch }
+  While (CurToken.Kind = TK_KEYWORD) And
+        (StrLowerCase(CurToken.Val) = 'catch') Do
+  Begin
+    ParserAdvance;  { consommer 'catch' }
+    HadCatch := True;
+    CatchType := 'any';
+    CatchVar  := 'e';
+
+    { catch (type varname) { }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      ParserAdvance;
+      { type }
+      If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+      Begin
+        CatchType := CurToken.Val;
+        ParserAdvance;
+      End;
+      { variable name }
+      If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+      Begin
+        CatchVar := CurToken.Val;
+        ParserAdvance;
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        ParserAdvance;
+    End;
+
+    TypeCode := ExcTypeCode(CatchType);
+    EmitComment('script catch type=' + CatchType + ' var=' + CatchVar);
+
+    LblNextC := NewLabel('SNEXTC');
+    If TypeCode <> 0 Then
+    Begin
+      EmitInstrAB('CMP', 'WORD PTR [_CF_EXCTYPE]',
+                  IntToStr(TypeCode));
+      EmitInstr('JNE', LblNextC);
+    End;
+
+    { Enregistrer les variables cfcatch.message etc }
+    SIdx := SymFind('cfcatch.message');
+    If SIdx < 0 Then
+    Begin
+      SIdx := SymAdd('cfcatch.message', SC_VAR, TY_IDX_STRING, 0);
+      If SIdx >= 0 Then
+        DataAddWord(SymTab[SIdx].MangledName, 0);
+    End;
+    If SIdx >= 0 Then
+    Begin
+      EmitInstrAB('MOV', 'AX', '[_CF_EXCMSG]');
+      EmitInstrAB('MOV', '[' + SymTab[SIdx].MangledName + ']', 'AX');
+    End;
+
+    SIdx := SymFind('cfcatch.type');
+    If SIdx < 0 Then
+    Begin
+      SIdx := SymAdd('cfcatch.type', SC_VAR, TY_IDX_STRING, 0);
+      If SIdx >= 0 Then
+        DataAddWord(SymTab[SIdx].MangledName, 0);
+    End;
+
+    SIdx := SymFind('cfcatch.detail');
+    If SIdx < 0 Then
+    Begin
+      SIdx := SymAdd('cfcatch.detail', SC_VAR, TY_IDX_STRING, 0);
+      If SIdx >= 0 Then
+        DataAddWord(SymTab[SIdx].MangledName, 0);
+    End;
+    If SIdx >= 0 Then
+    Begin
+      EmitInstrAB('MOV', 'AX', '[_CF_EXCDETAIL]');
+      EmitInstrAB('MOV', '[' + SymTab[SIdx].MangledName + ']', 'AX');
+    End;
+
+    { Aussi enregistrer la variable catch locale (e.message) }
+    SIdx := SymFind(CatchVar + '.message');
+    If SIdx < 0 Then
+    Begin
+      SIdx := SymAdd(CatchVar + '.message', SC_VAR, TY_IDX_STRING, 0);
+      If SIdx >= 0 Then
+        DataAddWord(SymTab[SIdx].MangledName, 0);
+    End;
+    If SIdx >= 0 Then
+    Begin
+      EmitInstrAB('MOV', 'AX', '[_CF_EXCMSG]');
+      EmitInstrAB('MOV', '[' + SymTab[SIdx].MangledName + ']', 'AX');
+    End;
+
+    { Consommer { }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+      ParserAdvance;
+
+    { Parser le corps du catch }
+    While CurToken.Kind <> TK_EOF Do
+    Begin
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+      Begin
+        ParserAdvance;
+        Break;
+      End;
+      ParseBodyTag;
+    End;
+
+    EmitInstr('JMP', LblFinally);
+    EmitLabel(LblNextC);
+  End;
+
+  { Si non traite : relancer vers handler parent }
+  If HadCatch Then
+  Begin
+    EmitComment('script try: exception non attrapee, relancer');
+    EmitInstr('POP', 'AX');
+    EmitInstrAB('MOV', '[_CF_HANDLER]', 'AX');
+    EmitInstrAB('MOV', 'AX', '[_CF_HANDLER]');
+    EmitInstrAB('OR', 'AX', 'AX');
+    EmitInstr('JZ', LblFinally);
+    EmitInstr('JMP', 'AX');
+  End;
+
+  { Label finally }
+  EmitLabel(LblFinally);
+
+  { Parser le bloc finally s il est present }
+  If (CurToken.Kind = TK_KEYWORD) And
+     (StrLowerCase(CurToken.Val) = 'finally') Then
+  Begin
+    ParserAdvance;
+    HadFinally := True;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+      ParserAdvance;
+
+    EmitComment('script finally: debut');
+    While CurToken.Kind <> TK_EOF Do
+    Begin
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+      Begin
+        ParserAdvance;
+        Break;
+      End;
+      ParseBodyTag;
+    End;
+    EmitComment('script finally: fin');
+  End;
+
+  { Restaurer ancien handler }
+  EmitComment('script try: restaurer ancien handler');
+  EmitInstr('POP', 'AX');
+  EmitInstrAB('MOV', '[_CF_HANDLER]', 'AX');
+
+  EmitLabel(LblEnd);
+  EmitComment('script try: fin');
+End;
+
+{ ---- ParseScriptThrow : throw(message="msg", type="type"); ----- }
+(* Version cfscript du cfthrow.                                     *)
+Procedure ParseScriptThrow;
+Var
+  MsgVal    : TString;
+  TypeVal   : TString;
+  DetailVal : TString;
+  TypeCode  : Integer;
+  DIdx      : Integer;
+  AttrName  : TString;
+  AttrVal   : TString;
+Begin
+  MsgVal    := '';
+  TypeVal   := 'application';
+  DetailVal := '';
+
+  EmitComment('script throw');
+
+  { throw(message="...", type="...", detail="..."); }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+  Begin
+    ParserAdvance;  { consommer ( }
+    While (CurToken.Kind <> TK_PUNCT) Or (CurToken.Val <> ')') Do
+    Begin
+      If CurToken.Kind = TK_EOF Then Break;
+      { Lire nom=valeur }
+      If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+      Begin
+        AttrName := StrLowerCase(CurToken.Val);
+        ParserAdvance;
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+        Begin
+          ParserAdvance;
+          AttrVal := '';
+          If (CurToken.Kind = TK_STRING) Or (CurToken.Kind = TK_IDENT) Then
+          Begin
+            AttrVal := CurToken.Val;
+            ParserAdvance;
+          End;
+          If AttrName = 'message' Then
+            MsgVal := AttrVal
+          Else If AttrName = 'type' Then
+            TypeVal := AttrVal
+          Else If AttrName = 'detail' Then
+            DetailVal := AttrVal;
+        End;
+      End
+      Else
+        ParserAdvance;
+      { Consommer , separateur }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance;
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance;
+  End
+  Else If CurToken.Kind = TK_STRING Then
+  Begin
+    { throw "message"; - forme simplifiee }
+    MsgVal := CurToken.Val;
+    ParserAdvance;
+  End;
+
+  { Consommer ; }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
+
+  TypeCode := ExcTypeCode(TypeVal);
+  EmitComment('script throw: type=' + TypeVal + ' msg=' + MsgVal);
+
+  { Stocker type }
+  EmitInstrAB('MOV', 'WORD PTR [_CF_EXCTYPE]', IntToStr(TypeCode));
+
+  { Stocker message }
+  If MsgVal <> '' Then
+  Begin
+    DIdx := DataAddStr(MsgVal);
+    If DIdx >= 0 Then
+      EmitInstrAB('MOV', 'WORD PTR [_CF_EXCMSG]',
+                  'OFFSET ' + DataTab[DIdx].LblName);
+  End
+  Else
+    EmitInstrAB('MOV', 'WORD PTR [_CF_EXCMSG]', 'OFFSET _CF_EXCNOMSG');
+
+  { Stocker detail }
+  If DetailVal <> '' Then
+  Begin
+    DIdx := DataAddStr(DetailVal);
+    If DIdx >= 0 Then
+      EmitInstrAB('MOV', 'WORD PTR [_CF_EXCDETAIL]',
+                  'OFFSET ' + DataTab[DIdx].LblName);
+  End
+  Else
+    EmitInstrAB('MOV', 'WORD PTR [_CF_EXCDETAIL]', 'OFFSET _CF_EXCNOMSG');
+
+  { Sauter au handler courant }
+  EmitInstrAB('MOV', 'AX', '[_CF_HANDLER]');
+  EmitInstrAB('OR', 'AX', 'AX');
+  EmitInstr('JZ', CF_RT_PFX + 'PANIC');
+  EmitInstr('JMP', 'AX');
 End;
 
 Procedure ParsePage;
