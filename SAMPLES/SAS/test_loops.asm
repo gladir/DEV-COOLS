@@ -11,7 +11,22 @@ _SASP_Main:
         MOV AX, _DATA
         MOV DS, AX
 
-; DATA
+
+; ========= DATA STEP =========
+; dataset: TEST
+        MOV WORD PTR [_SAS_N], 1
+        MOV WORD PTR [_SAS_ERROR], 0
+
+_SASL_1:
+; --- iteration DATA step ---
+; Reinitialiser PDV (variables non-RETAIN -> manquant)
+        MOV WORD PTR [_SAS_PDV + 0], -32768
+        MOV WORD PTR [_SAS_PDV + 0], -32768
+        LEA DI, _SAS_PDV + 0
+        MOV AL, 20h
+        MOV CX, 0
+        REP STOSB
+        MOV WORD PTR [_SAS_PDV + 0], -32768
         MOV AX, 10
 ; stocker X
         MOV [_SAS_PDV], AX
@@ -23,14 +38,14 @@ _SASP_Main:
         MOV BX, AX
         POP AX
         CMP AX, 8000h
-        JE _SASL_1
+        JE _SASL_4
         CMP BX, 8000h
-        JE _SASL_1
+        JE _SASL_4
         ADD AX, BX
-        JMP _SASL_2
-_SASL_1:
+        JMP _SASL_5
+_SASL_4:
         MOV AX, 8000h
-_SASL_2:
+_SASL_5:
 ; stocker X
         MOV [_SAS_PDV], AX
 ; PUT
@@ -38,7 +53,7 @@ _SASL_2:
         MOV AH, 40h
         MOV BX, [_SAS_OUTHDL]
         MOV CX, 16
-        LEA DX, _SASK_3
+        LEA DX, _SASK_6
         INT 21h
 ; PUT X
 ; charger X
@@ -57,7 +72,7 @@ _SASL_2:
 ; stocker I
         MOV [_SAS_PDV + 2], AX
 ; DO WHILE
-_SASL_4:
+_SASL_7:
 ; charger I
         MOV AX, [_SAS_PDV + 2]
         PUSH AX
@@ -65,28 +80,28 @@ _SASL_4:
         MOV BX, AX
         POP AX
         CMP AX, 8000h
-        JE _SASL_6
+        JE _SASL_9
         CMP BX, 8000h
-        JE _SASL_6
+        JE _SASL_9
         CMP AX, BX
-        JLE _SASL_8
+        JLE _SASL_11
         XOR AX, AX
-        JMP _SASL_9
-_SASL_8:
+        JMP _SASL_12
+_SASL_11:
         MOV AX, 1
+_SASL_12:
+        JMP _SASL_10
 _SASL_9:
-        JMP _SASL_7
-_SASL_6:
         MOV AX, 8000h
-_SASL_7:
+_SASL_10:
         TEST AX, AX
-        JZ _SASL_5
+        JZ _SASL_8
 ; PUT
 ; PUT literal: 'while : i='
         MOV AH, 40h
         MOV BX, [_SAS_OUTHDL]
         MOV CX, 10
-        LEA DX, _SASK_10
+        LEA DX, _SASK_13
         INT 21h
 ; PUT I
 ; charger I
@@ -108,24 +123,24 @@ _SASL_7:
         MOV BX, AX
         POP AX
         CMP AX, 8000h
-        JE _SASL_11
+        JE _SASL_14
         CMP BX, 8000h
-        JE _SASL_11
+        JE _SASL_14
         ADD AX, BX
-        JMP _SASL_12
-_SASL_11:
+        JMP _SASL_15
+_SASL_14:
         MOV AX, 8000h
-_SASL_12:
+_SASL_15:
 ; stocker I
         MOV [_SAS_PDV + 2], AX
-        JMP _SASL_4
-_SASL_5:
+        JMP _SASL_7
+_SASL_8:
         MOV AX, 1
 ; stocker J
         MOV [_SAS_PDV + 4], AX
 ; DO UNTIL
-        JMP _SASL_14
-_SASL_13:
+        JMP _SASL_17
+_SASL_16:
 ; charger J
         MOV AX, [_SAS_PDV + 4]
         PUSH AX
@@ -133,29 +148,29 @@ _SASL_13:
         MOV BX, AX
         POP AX
         CMP AX, 8000h
-        JE _SASL_16
+        JE _SASL_19
         CMP BX, 8000h
-        JE _SASL_16
+        JE _SASL_19
         CMP AX, BX
-        JG _SASL_18
+        JG _SASL_21
         XOR AX, AX
-        JMP _SASL_19
-_SASL_18:
+        JMP _SASL_22
+_SASL_21:
         MOV AX, 1
+_SASL_22:
+        JMP _SASL_20
 _SASL_19:
-        JMP _SASL_17
-_SASL_16:
         MOV AX, 8000h
-_SASL_17:
+_SASL_20:
         TEST AX, AX
-        JNZ _SASL_15
-_SASL_14:
+        JNZ _SASL_18
+_SASL_17:
 ; PUT
 ; PUT literal: 'until : j='
         MOV AH, 40h
         MOV BX, [_SAS_OUTHDL]
         MOV CX, 10
-        LEA DX, _SASK_20
+        LEA DX, _SASK_23
         INT 21h
 ; PUT J
 ; charger J
@@ -177,18 +192,18 @@ _SASL_14:
         MOV BX, AX
         POP AX
         CMP AX, 8000h
-        JE _SASL_21
+        JE _SASL_24
         CMP BX, 8000h
-        JE _SASL_21
+        JE _SASL_24
         ADD AX, BX
-        JMP _SASL_22
-_SASL_21:
+        JMP _SASL_25
+_SASL_24:
         MOV AX, 8000h
-_SASL_22:
+_SASL_25:
 ; stocker J
         MOV [_SAS_PDV + 4], AX
-        JMP _SASL_13
-_SASL_15:
+        JMP _SASL_16
+_SASL_18:
 ; DO K = ... TO ...
         MOV AX, 1
         MOV [_SAS_PDV + 6], AX
@@ -202,25 +217,25 @@ _SASL_15:
         MOV [_SAS_DOSTEP], BX
         POP DX
         MOV [_SAS_DOEND], DX
-_SASL_23:
+_SASL_26:
         MOV AX, [_SAS_PDV + 6]
         MOV DX, [_SAS_DOEND]
         MOV BX, [_SAS_DOSTEP]
         OR BX, BX
-        JS _SASL_23N
+        JS _SASL_26N
         CMP AX, DX
-        JG _SASL_25
-        JMP _SASL_23OK
-_SASL_23N:
+        JG _SASL_28
+        JMP _SASL_26OK
+_SASL_26N:
         CMP AX, DX
-        JL _SASL_25
-_SASL_23OK:
+        JL _SASL_28
+_SASL_26OK:
 ; PUT
 ; PUT literal: 'iter : k='
         MOV AH, 40h
         MOV BX, [_SAS_OUTHDL]
         MOV CX, 9
-        LEA DX, _SASK_26
+        LEA DX, _SASK_29
         INT 21h
 ; PUT K
 ; charger K
@@ -235,12 +250,12 @@ _SASL_23OK:
         MOV CX, 2
         LEA DX, _SAS_CRLF
         INT 21h
-_SASL_24:
+_SASL_27:
         MOV AX, [_SAS_PDV + 6]
         ADD AX, [_SAS_DOSTEP]
         MOV [_SAS_PDV + 6], AX
-        JMP _SASL_23
-_SASL_25:
+        JMP _SASL_26
+_SASL_28:
         POP WORD PTR [_SAS_DOSTEP]
         POP WORD PTR [_SAS_DOEND]
 ; DO M = ... TO ...
@@ -256,25 +271,25 @@ _SASL_25:
         MOV [_SAS_DOSTEP], BX
         POP DX
         MOV [_SAS_DOEND], DX
-_SASL_27:
+_SASL_30:
         MOV AX, [_SAS_PDV + 8]
         MOV DX, [_SAS_DOEND]
         MOV BX, [_SAS_DOSTEP]
         OR BX, BX
-        JS _SASL_27N
+        JS _SASL_30N
         CMP AX, DX
-        JG _SASL_29
-        JMP _SASL_27OK
-_SASL_27N:
+        JG _SASL_32
+        JMP _SASL_30OK
+_SASL_30N:
         CMP AX, DX
-        JL _SASL_29
-_SASL_27OK:
+        JL _SASL_32
+_SASL_30OK:
 ; PUT
 ; PUT literal: 'by2 : m='
         MOV AH, 40h
         MOV BX, [_SAS_OUTHDL]
         MOV CX, 8
-        LEA DX, _SASK_30
+        LEA DX, _SASK_33
         INT 21h
 ; PUT M
 ; charger M
@@ -289,12 +304,12 @@ _SASL_27OK:
         MOV CX, 2
         LEA DX, _SAS_CRLF
         INT 21h
-_SASL_28:
+_SASL_31:
         MOV AX, [_SAS_PDV + 8]
         ADD AX, [_SAS_DOSTEP]
         MOV [_SAS_PDV + 8], AX
-        JMP _SASL_27
-_SASL_29:
+        JMP _SASL_30
+_SASL_32:
         POP WORD PTR [_SAS_DOSTEP]
         POP WORD PTR [_SAS_DOEND]
 ; DO N = ... TO ...
@@ -310,25 +325,25 @@ _SASL_29:
         MOV [_SAS_DOSTEP], BX
         POP DX
         MOV [_SAS_DOEND], DX
-_SASL_31:
+_SASL_34:
         MOV AX, [_SAS_PDV + 10]
         MOV DX, [_SAS_DOEND]
         MOV BX, [_SAS_DOSTEP]
         OR BX, BX
-        JS _SASL_31N
+        JS _SASL_34N
         CMP AX, DX
-        JG _SASL_33
-        JMP _SASL_31OK
-_SASL_31N:
+        JG _SASL_36
+        JMP _SASL_34OK
+_SASL_34N:
         CMP AX, DX
-        JL _SASL_33
-_SASL_31OK:
+        JL _SASL_36
+_SASL_34OK:
 ; PUT
 ; PUT literal: 'rev : n='
         MOV AH, 40h
         MOV BX, [_SAS_OUTHDL]
         MOV CX, 8
-        LEA DX, _SASK_34
+        LEA DX, _SASK_37
         INT 21h
 ; PUT N
 ; charger N
@@ -343,12 +358,12 @@ _SASL_31OK:
         MOV CX, 2
         LEA DX, _SAS_CRLF
         INT 21h
-_SASL_32:
+_SASL_35:
         MOV AX, [_SAS_PDV + 10]
         ADD AX, [_SAS_DOSTEP]
         MOV [_SAS_PDV + 10], AX
-        JMP _SASL_31
-_SASL_33:
+        JMP _SASL_34
+_SASL_36:
         POP WORD PTR [_SAS_DOSTEP]
         POP WORD PTR [_SAS_DOEND]
 ; DO P = ... TO ...
@@ -364,19 +379,19 @@ _SASL_33:
         MOV [_SAS_DOSTEP], BX
         POP DX
         MOV [_SAS_DOEND], DX
-_SASL_35:
+_SASL_38:
         MOV AX, [_SAS_PDV + 12]
         MOV DX, [_SAS_DOEND]
         MOV BX, [_SAS_DOSTEP]
         OR BX, BX
-        JS _SASL_35N
+        JS _SASL_38N
         CMP AX, DX
-        JG _SASL_37
-        JMP _SASL_35OK
-_SASL_35N:
+        JG _SASL_40
+        JMP _SASL_38OK
+_SASL_38N:
         CMP AX, DX
-        JL _SASL_37
-_SASL_35OK:
+        JL _SASL_40
+_SASL_38OK:
 ; IF
 ; charger P
         MOV AX, [_SAS_PDV + 12]
@@ -385,31 +400,31 @@ _SASL_35OK:
         MOV BX, AX
         POP AX
         CMP AX, 8000h
-        JE _SASL_38
+        JE _SASL_41
         CMP BX, 8000h
-        JE _SASL_38
+        JE _SASL_41
         CMP AX, BX
-        JG _SASL_40
+        JG _SASL_43
         XOR AX, AX
-        JMP _SASL_41
-_SASL_40:
+        JMP _SASL_44
+_SASL_43:
         MOV AX, 1
+_SASL_44:
+        JMP _SASL_42
 _SASL_41:
-        JMP _SASL_39
-_SASL_38:
         MOV AX, 8000h
-_SASL_39:
-        TEST AX, AX
-        JZ _SASL_42
-; LEAVE
-        JMP _SASL_37
 _SASL_42:
+        TEST AX, AX
+        JZ _SASL_45
+; LEAVE
+        JMP _SASL_40
+_SASL_45:
 ; PUT
 ; PUT literal: 'leave : p='
         MOV AH, 40h
         MOV BX, [_SAS_OUTHDL]
         MOV CX, 10
-        LEA DX, _SASK_44
+        LEA DX, _SASK_47
         INT 21h
 ; PUT P
 ; charger P
@@ -424,12 +439,12 @@ _SASL_42:
         MOV CX, 2
         LEA DX, _SAS_CRLF
         INT 21h
-_SASL_36:
+_SASL_39:
         MOV AX, [_SAS_PDV + 12]
         ADD AX, [_SAS_DOSTEP]
         MOV [_SAS_PDV + 12], AX
-        JMP _SASL_35
-_SASL_37:
+        JMP _SASL_38
+_SASL_40:
         POP WORD PTR [_SAS_DOSTEP]
         POP WORD PTR [_SAS_DOEND]
 ; DO Q = ... TO ...
@@ -445,19 +460,19 @@ _SASL_37:
         MOV [_SAS_DOSTEP], BX
         POP DX
         MOV [_SAS_DOEND], DX
-_SASL_45:
+_SASL_48:
         MOV AX, [_SAS_PDV + 14]
         MOV DX, [_SAS_DOEND]
         MOV BX, [_SAS_DOSTEP]
         OR BX, BX
-        JS _SASL_45N
+        JS _SASL_48N
         CMP AX, DX
-        JG _SASL_47
-        JMP _SASL_45OK
-_SASL_45N:
+        JG _SASL_50
+        JMP _SASL_48OK
+_SASL_48N:
         CMP AX, DX
-        JL _SASL_47
-_SASL_45OK:
+        JL _SASL_50
+_SASL_48OK:
 ; IF
 ; charger Q
         MOV AX, [_SAS_PDV + 14]
@@ -466,31 +481,31 @@ _SASL_45OK:
         MOV BX, AX
         POP AX
         CMP AX, 8000h
-        JE _SASL_48
+        JE _SASL_51
         CMP BX, 8000h
-        JE _SASL_48
+        JE _SASL_51
         CMP AX, BX
-        JE _SASL_50
+        JE _SASL_53
         XOR AX, AX
-        JMP _SASL_51
-_SASL_50:
+        JMP _SASL_54
+_SASL_53:
         MOV AX, 1
+_SASL_54:
+        JMP _SASL_52
 _SASL_51:
-        JMP _SASL_49
-_SASL_48:
         MOV AX, 8000h
-_SASL_49:
-        TEST AX, AX
-        JZ _SASL_52
-; CONTINUE
-        JMP _SASL_46
 _SASL_52:
+        TEST AX, AX
+        JZ _SASL_55
+; CONTINUE
+        JMP _SASL_49
+_SASL_55:
 ; PUT
 ; PUT literal: 'cont : q='
         MOV AH, 40h
         MOV BX, [_SAS_OUTHDL]
         MOV CX, 9
-        LEA DX, _SASK_54
+        LEA DX, _SASK_57
         INT 21h
 ; PUT Q
 ; charger Q
@@ -505,12 +520,12 @@ _SASL_52:
         MOV CX, 2
         LEA DX, _SAS_CRLF
         INT 21h
-_SASL_46:
+_SASL_49:
         MOV AX, [_SAS_PDV + 14]
         ADD AX, [_SAS_DOSTEP]
         MOV [_SAS_PDV + 14], AX
-        JMP _SASL_45
-_SASL_47:
+        JMP _SASL_48
+_SASL_50:
         POP WORD PTR [_SAS_DOSTEP]
         POP WORD PTR [_SAS_DOEND]
         XOR AX, AX
@@ -527,7 +542,7 @@ _SASL_SKIP:
         MOV AH, 40h
         MOV BX, [_SAS_OUTHDL]
         MOV CX, 9
-        LEA DX, _SASK_55
+        LEA DX, _SASK_58
         INT 21h
 ; PUT R
 ; charger R
@@ -558,19 +573,19 @@ _SASL_SKIP:
         MOV [_SAS_DOSTEP], BX
         POP DX
         MOV [_SAS_DOEND], DX
-_SASL_56:
+_SASL_59:
         MOV AX, [_SAS_PDV + 20]
         MOV DX, [_SAS_DOEND]
         MOV BX, [_SAS_DOSTEP]
         OR BX, BX
-        JS _SASL_56N
+        JS _SASL_59N
         CMP AX, DX
-        JG _SASL_58
-        JMP _SASL_56OK
-_SASL_56N:
+        JG _SASL_61
+        JMP _SASL_59OK
+_SASL_59N:
         CMP AX, DX
-        JL _SASL_58
-_SASL_56OK:
+        JL _SASL_61
+_SASL_59OK:
 ; charger S
         MOV AX, [_SAS_PDV + 18]
         PUSH AX
@@ -578,22 +593,22 @@ _SASL_56OK:
         MOV BX, AX
         POP AX
         CMP AX, 8000h
-        JE _SASL_59
+        JE _SASL_62
         CMP BX, 8000h
-        JE _SASL_59
+        JE _SASL_62
         CMP AX, BX
-        JL _SASL_61
+        JL _SASL_64
         XOR AX, AX
-        JMP _SASL_62
-_SASL_61:
+        JMP _SASL_65
+_SASL_64:
         MOV AX, 1
+_SASL_65:
+        JMP _SASL_63
 _SASL_62:
-        JMP _SASL_60
-_SASL_59:
         MOV AX, 8000h
-_SASL_60:
+_SASL_63:
         TEST AX, AX
-        JZ _SASL_58
+        JZ _SASL_61
 ; charger S
         MOV AX, [_SAS_PDV + 18]
         PUSH AX
@@ -602,14 +617,14 @@ _SASL_60:
         MOV BX, AX
         POP AX
         CMP AX, 8000h
-        JE _SASL_63
+        JE _SASL_66
         CMP BX, 8000h
-        JE _SASL_63
+        JE _SASL_66
         ADD AX, BX
-        JMP _SASL_64
-_SASL_63:
+        JMP _SASL_67
+_SASL_66:
         MOV AX, 8000h
-_SASL_64:
+_SASL_67:
 ; stocker S
         MOV [_SAS_PDV + 18], AX
 ; PUT
@@ -617,7 +632,7 @@ _SASL_64:
         MOV AH, 40h
         MOV BX, [_SAS_OUTHDL]
         MOV CX, 12
-        LEA DX, _SASK_65
+        LEA DX, _SASK_68
         INT 21h
 ; PUT T
 ; charger T
@@ -630,7 +645,7 @@ _SASL_64:
         MOV AH, 40h
         MOV BX, [_SAS_OUTHDL]
         MOV CX, 3
-        LEA DX, _SASK_66
+        LEA DX, _SASK_69
         INT 21h
 ; PUT S
 ; charger S
@@ -645,12 +660,12 @@ _SASL_64:
         MOV CX, 2
         LEA DX, _SAS_CRLF
         INT 21h
-_SASL_57:
+_SASL_60:
         MOV AX, [_SAS_PDV + 20]
         ADD AX, [_SAS_DOSTEP]
         MOV [_SAS_PDV + 20], AX
-        JMP _SASL_56
-_SASL_58:
+        JMP _SASL_59
+_SASL_61:
         POP WORD PTR [_SAS_DOSTEP]
         POP WORD PTR [_SAS_DOEND]
 ; DO A = ... TO ...
@@ -666,19 +681,19 @@ _SASL_58:
         MOV [_SAS_DOSTEP], BX
         POP DX
         MOV [_SAS_DOEND], DX
-_SASL_67:
+_SASL_70:
         MOV AX, [_SAS_PDV + 22]
         MOV DX, [_SAS_DOEND]
         MOV BX, [_SAS_DOSTEP]
         OR BX, BX
-        JS _SASL_67N
+        JS _SASL_70N
         CMP AX, DX
-        JG _SASL_69
-        JMP _SASL_67OK
-_SASL_67N:
+        JG _SASL_72
+        JMP _SASL_70OK
+_SASL_70N:
         CMP AX, DX
-        JL _SASL_69
-_SASL_67OK:
+        JL _SASL_72
+_SASL_70OK:
 ; DO B = ... TO ...
         MOV AX, 1
         MOV [_SAS_PDV + 24], AX
@@ -692,25 +707,25 @@ _SASL_67OK:
         MOV [_SAS_DOSTEP], BX
         POP DX
         MOV [_SAS_DOEND], DX
-_SASL_70:
+_SASL_73:
         MOV AX, [_SAS_PDV + 24]
         MOV DX, [_SAS_DOEND]
         MOV BX, [_SAS_DOSTEP]
         OR BX, BX
-        JS _SASL_70N
+        JS _SASL_73N
         CMP AX, DX
-        JG _SASL_72
-        JMP _SASL_70OK
-_SASL_70N:
+        JG _SASL_75
+        JMP _SASL_73OK
+_SASL_73N:
         CMP AX, DX
-        JL _SASL_72
-_SASL_70OK:
+        JL _SASL_75
+_SASL_73OK:
 ; PUT
 ; PUT literal: 'imbr : a='
         MOV AH, 40h
         MOV BX, [_SAS_OUTHDL]
         MOV CX, 9
-        LEA DX, _SASK_73
+        LEA DX, _SASK_76
         INT 21h
 ; PUT A
 ; charger A
@@ -723,7 +738,7 @@ _SASL_70OK:
         MOV AH, 40h
         MOV BX, [_SAS_OUTHDL]
         MOV CX, 3
-        LEA DX, _SASK_74
+        LEA DX, _SASK_77
         INT 21h
 ; PUT B
 ; charger B
@@ -738,23 +753,30 @@ _SASL_70OK:
         MOV CX, 2
         LEA DX, _SAS_CRLF
         INT 21h
-_SASL_71:
+_SASL_74:
         MOV AX, [_SAS_PDV + 24]
         ADD AX, [_SAS_DOSTEP]
         MOV [_SAS_PDV + 24], AX
+        JMP _SASL_73
+_SASL_75:
+        POP WORD PTR [_SAS_DOSTEP]
+        POP WORD PTR [_SAS_DOEND]
+_SASL_71:
+        MOV AX, [_SAS_PDV + 22]
+        ADD AX, [_SAS_DOSTEP]
+        MOV [_SAS_PDV + 22], AX
         JMP _SASL_70
 _SASL_72:
         POP WORD PTR [_SAS_DOSTEP]
         POP WORD PTR [_SAS_DOEND]
-_SASL_68:
-        MOV AX, [_SAS_PDV + 22]
-        ADD AX, [_SAS_DOSTEP]
-        MOV [_SAS_PDV + 22], AX
-        JMP _SASL_67
-_SASL_69:
-        POP WORD PTR [_SAS_DOSTEP]
-        POP WORD PTR [_SAS_DOEND]
-; RUN
+_SASL_3:
+; OUTPUT : copier PDV -> dataset TEST
+        INC WORD PTR [_SAS_N]
+        MOV WORD PTR [_SAS_ERROR], 0
+        INC WORD PTR [_SAS_N]
+_SASL_2:
+; ========= FIN DATA STEP TEST =========
+
 
 ; --- Fin du code ---
         MOV SP, BP
@@ -783,19 +805,19 @@ _SAS_INHDL  DW  0
 _SAS_OUTHDL  DW  1
 _SAS_DOEND  DW  0
 _SAS_DOSTEP  DW  1
-_SASK_3  DB  'bloc simple : x=',0
-_SASK_10  DB  'while : i=',0
-_SASK_20  DB  'until : j=',0
-_SASK_26  DB  'iter : k=',0
-_SASK_30  DB  'by2 : m=',0
-_SASK_34  DB  'rev : n=',0
-_SASK_44  DB  'leave : p=',0
-_SASK_54  DB  'cont : q=',0
-_SASK_55  DB  'goto : r=',0
-_SASK_65  DB  'itwhile : t=',0
-_SASK_66  DB  ' s=',0
-_SASK_73  DB  'imbr : a=',0
-_SASK_74  DB  ' b=',0
+_SASK_6  DB  'bloc simple : x=',0
+_SASK_13  DB  'while : i=',0
+_SASK_23  DB  'until : j=',0
+_SASK_29  DB  'iter : k=',0
+_SASK_33  DB  'by2 : m=',0
+_SASK_37  DB  'rev : n=',0
+_SASK_47  DB  'leave : p=',0
+_SASK_57  DB  'cont : q=',0
+_SASK_58  DB  'goto : r=',0
+_SASK_68  DB  'itwhile : t=',0
+_SASK_69  DB  ' s=',0
+_SASK_76  DB  'imbr : a=',0
+_SASK_77  DB  ' b=',0
 
 _DATA ENDS
 

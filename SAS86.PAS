@@ -253,7 +253,7 @@
             Listes numerotees : score1-score5 -> 5 variables contiguees
             Boucle typique : DO i = 1 TO DIM(scores); scores{i} = 0; END;
 
-  TODO 16 - ETAPE DATA (DATA STEP)
+  TODO 16 - ETAPE DATA (DATA STEP) [IMPLEMENTE]
             ParseDataStep : DATA nom_dataset ; stmts; RUN;
               Cree ou remplace un dataset en memoire
             Boucle implicite : le DATA step itere automatiquement
@@ -727,6 +727,20 @@ Var
   IOInputBufLbl : TString;   (* label du buffer ligne d entree     *)
   IONumBufLbl   : TString;   (* label du buffer de conversion num  *)
 
+  (* DATA step (TODO 16) *)
+  InDataStep      : Boolean;   (* True si on est dans un DATA step    *)
+  DSName          : TString;   (* nom du dataset en cours (ex: WORK)  *)
+  DSLabel         : TString;   (* label ASM du dataset de sortie      *)
+  DSHasSet        : Boolean;   (* True si SET utilise dans le step    *)
+  DSSetName       : TString;   (* nom du dataset source SET           *)
+  DSSetLabel      : TString;   (* label ASM du dataset source SET     *)
+  DSHasOutput     : Boolean;   (* True si OUTPUT explicite present    *)
+  DSTopLabel      : TString;   (* label debut de boucle implicite     *)
+  DSEndLabel      : TString;   (* label fin du DATA step (apres RUN)  *)
+  DSStopLabel     : TString;   (* label STOP (sortie de boucle)       *)
+  DSOutputLabel   : TString;   (* label routine OUTPUT implicite      *)
+  DSObsCount      : Integer;   (* compteur observations ecrites       *)
+
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
@@ -843,6 +857,15 @@ Procedure ParseDoBlock; Forward;
 (* TODO 15 - Forward declarations tableaux SAS *)
 Procedure ParseArrayStmt; Forward;
 Function  ArrayFind(Const Name : TString) : Integer; Forward;
+(* TODO 16 - Forward declarations DATA step *)
+Procedure ParseDataStep; Forward;
+Procedure ParseSetStmt; Forward;
+Procedure ParseOutputStmt; Forward;
+Procedure ParseDeleteStmt; Forward;
+Procedure ParseStopStmt; Forward;
+Procedure ParseAbortStmt; Forward;
+Procedure DSEmitPDVReset; Forward;
+Procedure DSEmitImplicitOutput; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1120,6 +1143,18 @@ Begin
   IOCardsCount   := 0;
   IOInputBufLbl  := '';
   IONumBufLbl    := '';
+  InDataStep     := False;
+  DSName         := '';
+  DSLabel        := '';
+  DSHasSet       := False;
+  DSSetName      := '';
+  DSSetLabel     := '';
+  DSHasOutput    := False;
+  DSTopLabel     := '';
+  DSEndLabel     := '';
+  DSStopLabel    := '';
+  DSOutputLabel  := '';
+  DSObsCount     := 0;
   GExprDummy.Kind    := EK_NONE;
   GExprDummy.ImmVal  := 0;
   GExprDummy.TypeIdx := TY_UNKNOWN;
@@ -5773,7 +5808,334 @@ Begin
 End;
 
 { ============================================================
-  STUBS POUR TODO 16..25 (a implementer)
+  TODO 16 - ETAPE DATA (DATA STEP) [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- DSEmitPDVReset : reinitialiser le PDV a valeur manquante ---- *)
+(* En SAS, a chaque iteration du DATA step, les variables non         *)
+(* RETAIN sont remises a valeur manquante (MISSING_VAL = 8000h).      *)
+(* Les variables RETAIN conservent leur valeur.                        *)
+Procedure DSEmitPDVReset;
+Var
+  I : Integer;
+Begin
+  EmitComment('Reinitialiser PDV (variables non-RETAIN -> manquant)');
+  For I := 0 To SymCount - 1 Do
+  Begin
+    If (SymTab[I].Cat = SC_VAR) And (Not SymTab[I].IsRetained) Then
+    Begin
+      If SymTab[I].TypeIdx = TY_IDX_NUMERIC Then
+      Begin
+        (* Numerique : affecter MISSING_VAL (8000h) *)
+        EmitInstrAB('MOV', 'WORD PTR [_SAS_PDV + '
+                    + IntToStr(SymTab[I].Offset) + ']',
+                    IntToStr(MISSING_VAL));
+      End
+      Else If SymTab[I].TypeIdx = TY_IDX_CHARACTER Then
+      Begin
+        (* Caractere : remplir d espaces (20h) *)
+        EmitInstrAB('LEA', 'DI', '_SAS_PDV + '
+                    + IntToStr(SymTab[I].Offset));
+        EmitInstrAB('MOV', 'AL', '20h');
+        EmitInstrAB('MOV', 'CX', IntToStr(SymTab[I].VarLen));
+        EmitInstr('REP STOSB');
+      End;
+    End;
+  End;
+End;
+
+(* ---- DSEmitImplicitOutput : ecrire l observation dans le dataset -- *)
+(* Copie le PDV courant dans le dataset de sortie (si pas DELETE).      *)
+(* En mode simple (pas de SET), on ecrit simplement un commentaire      *)
+(* car le runtime reel n est pas encore implemente (TODO 24).           *)
+Procedure DSEmitImplicitOutput;
+Begin
+  EmitComment('OUTPUT : copier PDV -> dataset ' + DSName);
+  (* Incrementer le compteur d observations ecrites *)
+  EmitInstrA('INC', 'WORD PTR [_SAS_N]');
+  (* Reinitialiser _ERROR_ *)
+  EmitInstrAB('MOV', 'WORD PTR [_SAS_ERROR]', '0');
+End;
+
+(* ---- ParseSetStmt : SET dataset1 [dataset2] ; -------------------- *)
+(* Lit les observations d un dataset existant dans le PDV.              *)
+(* En mode simple, cela genere une lecture depuis les donnees           *)
+(* CARDS/INPUT deja parsees.                                            *)
+Procedure ParseSetStmt;
+Var
+  SetDS : TString;
+Begin
+  EmitComment('SET');
+  DSHasSet := True;
+
+  (* Parser le nom du dataset source *)
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    SetDS := StrUpperCase(CurToken.Val);
+    DSSetName := SetDS;
+    DSSetLabel := SAS_DS_PFX + SetDS;
+    EmitComment('SET source=' + SetDS);
+    ParserAdvance;
+
+    (* Concatenation : SET ds1 ds2 ; (second dataset optionnel) *)
+    If (CurToken.Kind = TK_IDENT) And
+       (CurToken.Kind <> TK_SEMICOLON) Then
+    Begin
+      EmitComment('SET concat: ' + StrUpperCase(CurToken.Val));
+      ParserAdvance;
+    End;
+  End
+  Else
+    EmitComment('SET sans dataset (lecture en cours)');
+
+  (* Consommer ; *)
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseOutputStmt : OUTPUT ; ---------------------------------- *)
+(* Ecrit explicitement l observation courante dans le dataset.          *)
+Procedure ParseOutputStmt;
+Begin
+  EmitComment('OUTPUT explicite');
+  DSHasOutput := True;
+  DSEmitImplicitOutput;
+
+  (* Consommer ; *)
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseDeleteStmt : DELETE ; ---------------------------------- *)
+(* Ne pas ecrire l observation courante, sauter a l iteration suivante. *)
+Procedure ParseDeleteStmt;
+Begin
+  EmitComment('DELETE : ne pas ecrire cette observation');
+  (* Sauter directement a l iteration suivante de la boucle *)
+  If InDataStep And (DSTopLabel <> '') Then
+    EmitInstrA('JMP', DSTopLabel)
+  Else
+    EmitComment('DELETE hors DATA step : ignore');
+
+  (* Consommer ; *)
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseStopStmt : STOP ; -------------------------------------- *)
+(* Arrete l execution du DATA step (sortie de la boucle implicite).    *)
+Procedure ParseStopStmt;
+Begin
+  EmitComment('STOP : arreter le DATA step');
+  If InDataStep And (DSStopLabel <> '') Then
+    EmitInstrA('JMP', DSStopLabel)
+  Else
+    EmitComment('STOP hors DATA step : ignore');
+
+  (* Consommer ; *)
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseAbortStmt : ABORT [RETURN | ABEND] [n] ; --------------- *)
+(* Arrete le DATA step avec un code d erreur. En mode DOS, on emet     *)
+(* INT 21h / AH=4Ch avec le code d erreur.                             *)
+Procedure ParseAbortStmt;
+Var
+  ErrCode : TString;
+Begin
+  EmitComment('ABORT : terminer avec erreur');
+
+  ErrCode := '1';  (* code d erreur par defaut *)
+
+  (* Options optionnelles : RETURN, ABEND, ou code numerique *)
+  If CurToken.Kind = TK_KEYWORD Then
+  Begin
+    If (StrUpperCase(CurToken.Val) = 'RETURN') Or
+       (StrUpperCase(CurToken.Val) = 'ABEND') Then
+      ParserAdvance;
+  End;
+  If CurToken.Kind = TK_INTEGER Then
+  Begin
+    ErrCode := CurToken.Val;
+    ParserAdvance;
+  End;
+
+  (* Generer la terminaison avec code d erreur *)
+  EmitInstrAB('MOV', 'AX', '4C' + ErrCode + 'h');
+  EmitInstr('INT 21h');
+
+  (* Consommer ; *)
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseDataStep : DATA nom ; stmts ; RUN ; -------------------- *)
+(* Parse un DATA step complet :                                         *)
+(*   1. DATA nom_dataset ;                                              *)
+(*   2. Instructions (SET, affectations, IF, DO, PUT, etc.)             *)
+(*   3. RUN ; ou QUIT ;                                                 *)
+(* Genere une boucle implicite : chaque iteration lit une observation,  *)
+(* execute le corps du DATA step, et ecrit le resultat (OUTPUT).        *)
+Procedure ParseDataStep;
+Var
+  KW : TString;
+Begin
+  EmitBlankLine;
+  EmitComment('========= DATA STEP =========');
+
+  (* Sauvegarder l etat *)
+  InDataStep   := True;
+  DSHasSet     := False;
+  DSHasOutput  := False;
+  DSObsCount   := 0;
+  DSSetName    := '';
+  DSSetLabel   := '';
+
+  (* Generer les labels du DATA step *)
+  DSTopLabel    := LabelGen;
+  DSEndLabel    := LabelGen;
+  DSStopLabel   := DSEndLabel;
+  DSOutputLabel := LabelGen;
+
+  (* Parser le nom du dataset *)
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    DSName := StrUpperCase(CurToken.Val);
+    ParserAdvance;
+  End
+  Else If (CurToken.Kind = TK_KEYWORD) And
+          (StrUpperCase(CurToken.Val) = '_NULL_') Then
+  Begin
+    DSName := '_NULL_';
+    ParserAdvance;
+  End
+  Else
+    DSName := 'WORK';  (* dataset par defaut *)
+
+  DSLabel := SAS_DS_PFX + DSName;
+  EmitComment('dataset: ' + DSName);
+
+  (* Consommer ; apres DATA nom *)
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+
+  (* Initialiser _N_ a 1 *)
+  EmitInstrAB('MOV', 'WORD PTR [_SAS_N]', '1');
+  (* Initialiser _ERROR_ a 0 *)
+  EmitInstrAB('MOV', 'WORD PTR [_SAS_ERROR]', '0');
+  EmitBlankLine;
+
+  (* Label debut de la boucle implicite *)
+  EmitLabel(DSTopLabel);
+  EmitComment('--- iteration DATA step ---');
+
+  (* Reinitialiser le PDV pour les variables non-RETAIN *)
+  DSEmitPDVReset;
+
+  (* Parser le corps du DATA step : stmts jusqu a RUN ou QUIT ou EOF *)
+  While CurToken.Kind <> TK_EOF Do
+  Begin
+    If CurToken.Kind = TK_KEYWORD Then
+    Begin
+      KW := StrUpperCase(CurToken.Val);
+
+      (* RUN ; marque la fin du DATA step *)
+      If KW = 'RUN' Then
+      Begin
+        ParserAdvance;  (* consommer RUN *)
+        If CurToken.Kind = TK_SEMICOLON Then
+          ParserAdvance;
+        Break;
+      End;
+
+      (* QUIT ; fin alternative pour certains contextes *)
+      If KW = 'QUIT' Then
+      Begin
+        ParserAdvance;
+        If CurToken.Kind = TK_SEMICOLON Then
+          ParserAdvance;
+        Break;
+      End;
+
+      (* DATA imbriquee ou PROC : fin implicite du DATA step *)
+      If (KW = 'DATA') Or (KW = 'PROC') Then
+        Break;
+
+      (* SET *)
+      If KW = 'SET' Then
+      Begin
+        ParserAdvance;
+        ParseSetStmt;
+        Continue;
+      End;
+
+      (* OUTPUT *)
+      If KW = 'OUTPUT' Then
+      Begin
+        ParserAdvance;
+        ParseOutputStmt;
+        Continue;
+      End;
+
+      (* DELETE *)
+      If KW = 'DELETE' Then
+      Begin
+        ParserAdvance;
+        ParseDeleteStmt;
+        Continue;
+      End;
+
+      (* STOP *)
+      If KW = 'STOP' Then
+      Begin
+        ParserAdvance;
+        ParseStopStmt;
+        Continue;
+      End;
+
+      (* ABORT *)
+      If KW = 'ABORT' Then
+      Begin
+        ParserAdvance;
+        ParseAbortStmt;
+        Continue;
+      End;
+    End;
+
+    (* Toute autre instruction : deleguer a ParseStmt *)
+    ParseStmt;
+  End;
+
+  (* OUTPUT implicite si aucun OUTPUT explicite n a ete utilise *)
+  If Not DSHasOutput Then
+  Begin
+    EmitLabel(DSOutputLabel);
+    DSEmitImplicitOutput;
+  End;
+
+  (* Incrementer _N_ *)
+  EmitInstrA('INC', 'WORD PTR [_SAS_N]');
+
+  (* Boucle implicite : en l absence de SET, une seule iteration *)
+  (* Avec SET, on bouclerait sur les observations (stub: 1 passe) *)
+  If DSHasSet Then
+  Begin
+    EmitComment('Boucle implicite : iteration suivante');
+    EmitInstrA('JMP', DSTopLabel);
+  End;
+
+  (* Label de sortie du DATA step *)
+  EmitLabel(DSEndLabel);
+  EmitComment('========= FIN DATA STEP ' + DSName + ' =========');
+  EmitBlankLine;
+
+  (* Restaurer l etat *)
+  InDataStep := False;
+End;
+
+{ ============================================================
+  STUBS POUR TODO 17..25 (a implementer)
   ============================================================ }
 
 Procedure ParseStmt;
@@ -5889,14 +6251,61 @@ Begin
       Exit;
     End;
 
-    (* DATA / RUN / PROC / QUIT : consommer le reste de l instruction *)
-    If (KW = 'DATA') Or (KW = 'RUN') Or (KW = 'PROC') Or
+    (* TODO 16 : DATA (debut d un DATA step) *)
+    If KW = 'DATA' Then
+    Begin
+      ParserAdvance;
+      ParseDataStep;
+      Exit;
+    End;
+
+    (* TODO 16 : SET (lecture d un dataset) *)
+    If KW = 'SET' Then
+    Begin
+      ParserAdvance;
+      ParseSetStmt;
+      Exit;
+    End;
+
+    (* TODO 16 : OUTPUT (ecriture explicite d une observation) *)
+    If KW = 'OUTPUT' Then
+    Begin
+      ParserAdvance;
+      ParseOutputStmt;
+      Exit;
+    End;
+
+    (* TODO 16 : DELETE (ne pas ecrire l observation courante) *)
+    If KW = 'DELETE' Then
+    Begin
+      ParserAdvance;
+      ParseDeleteStmt;
+      Exit;
+    End;
+
+    (* TODO 16 : STOP (arreter le DATA step) *)
+    If KW = 'STOP' Then
+    Begin
+      ParserAdvance;
+      ParseStopStmt;
+      Exit;
+    End;
+
+    (* TODO 16 : ABORT (terminer avec erreur) *)
+    If KW = 'ABORT' Then
+    Begin
+      ParserAdvance;
+      ParseAbortStmt;
+      Exit;
+    End;
+
+    (* RUN / PROC / QUIT : consommer le reste de l instruction *)
+    If (KW = 'RUN') Or (KW = 'PROC') Or
        (KW = 'QUIT') Or (KW = 'TITLE') Or (KW = 'FOOTNOTE') Or
        (KW = 'OPTIONS') Or (KW = 'CARDS') Or (KW = 'DATALINES') Or
-       (KW = 'OUTPUT') Or (KW = 'RETURN') Or (KW = 'DELETE') Or
-       (KW = 'STOP') Or (KW = 'ABORT') Or (KW = 'FORMAT') Or
+       (KW = 'RETURN') Or (KW = 'FORMAT') Or
        (KW = 'INFORMAT') Or (KW = 'ATTRIB') Or (KW = 'WHERE') Or
-       (KW = 'SET') Or (KW = 'MERGE') Or (KW = 'BY') Then
+       (KW = 'MERGE') Or (KW = 'BY') Then
     Begin
       EmitComment(KW);
       ParserAdvance;
