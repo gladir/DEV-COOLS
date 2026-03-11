@@ -599,6 +599,16 @@ _CC_RT_READLINE:
         RET
 
 
+; === Exception Runtime (TODO 23) ===
+
+_CC_RT_PANIC_EXC:
+        MOV    DX,OFFSET _CC_EXCMSG
+        MOV    AH,09h
+        INT    21h
+        MOV    AX,4C01h
+        INT    21h
+
+
 _TEXT   ENDS
 
 _DATA   SEGMENT WORD PUBLIC 'DATA'
@@ -609,6 +619,9 @@ _CC_STRBUF   DB  256 DUP(0)
 _CC_RT_CRLF     DB  13,10
 _CC_RT_NUMBUF   DB  8 DUP(0)
 _CC_RT_INBUF    DB  80,0,80 DUP(0)
+_CC_HANDLER  DW  0
+_CC_EXCCODE  DW  0
+_CC_EXCMSG   DB  'Unhandled exception',13,10,'$'
 _CC_RT_ATMP     DW  0
 _DATA   ENDS
 

@@ -343,7 +343,7 @@
               Labels : _CC_F_nom_T pour chaque instanciation
             Limitation : un seul parametre template, pas de template de template
 
-  TODO 23 - EXCEPTIONS (try / catch / throw)
+  TODO 23 - EXCEPTIONS (try / catch / throw) [IMPLEMENTE]
             ParseTryStmt : try { stmts } catch (Type& e) { stmts }
             catch multiples : try { } catch (T1&) { } catch (T2&) { }
             catch(...) : attraper toute exception
@@ -427,6 +427,8 @@ Const
   MAX_TMPL_FUNC  = {$IFDEF FPC}32{$ELSE}8{$ENDIF};   (* TODO 22 *)
   MAX_TMPL_CLASS = {$IFDEF FPC}16{$ELSE}4{$ENDIF};    (* TODO 22 *)
   MAX_TMPL_INST  = {$IFDEF FPC}64{$ELSE}16{$ENDIF};   (* TODO 22 *)
+  MAX_CATCH     = 8;      (* max catch clauses per try      TODO 23 *)
+  MAX_TRY_NEST  = 8;      (* max nested try depth            TODO 23 *)
   MAX_MACRO     = {$IFDEF FPC}256{$ELSE}32{$ENDIF};
   MAX_DEFINE    = {$IFDEF FPC}256{$ELSE}32{$ENDIF};
   MAX_COND      = 16;     (* profondeur max #ifdef/#ifndef imbriques  *)
@@ -771,6 +773,10 @@ Var
   CurTemplParam   : TString;   (* nom du parametre template courant, '' si hors template *)
   InTemplateDecl  : Boolean;   (* true pendant le parsing d un template *)
 
+  (* TODO 23 - Exceptions *)
+  ExcTryNest   : Integer;   (* profondeur d imbrication try courante *)
+  ExcCatchSeq  : Integer;   (* sequence pour labels catch *)
+
 (* ============================================================
   FORWARD DECLARATIONS
   ============================================================ *)
@@ -918,6 +924,10 @@ Function  TemplFuncFind(Const Name : TString) : Integer; Forward;
 Function  TemplClassFind(Const Name : TString) : Integer; Forward;
 Function  TemplInstFind(Const TmplName, TypeArg : TString) : Integer; Forward;
 Function  TemplMakeLabel(Const Name, TypeArg : TString) : TString; Forward;
+(* TODO 23 - Exceptions *)
+Procedure ParseTryStmt; Forward;
+Procedure ParseThrowStmt; Forward;
+Procedure EmitExceptionRuntime; Forward;
 (* Parseur principal *)
 Procedure ParserAdvance; Forward;
 Procedure ParseStmt; Forward;
@@ -1214,6 +1224,8 @@ Begin
   TemplInstCount := 0;
   CurTemplParam  := '';
   InTemplateDecl := False;
+  ExcTryNest     := 0;
+  ExcCatchSeq    := 0;
   GExprDummy.Kind    := EK_NONE;
   GExprDummy.ImmVal  := 0;
   GExprDummy.TypeIdx := TY_UNKNOWN;
@@ -2386,6 +2398,10 @@ Begin
   EmitRaw(CC_RT_PFX + 'CRLF     DB  13,10');
   EmitRaw(CC_RT_PFX + 'NUMBUF   DB  8 DUP(0)');
   EmitRaw(CC_RT_PFX + 'INBUF    DB  80,0,80 DUP(0)');
+  (* TODO 23 : Exception handler chain + message *)
+  EmitRaw('_CC_HANDLER  DW  0');
+  EmitRaw('_CC_EXCCODE  DW  0');
+  EmitRaw('_CC_EXCMSG   DB  ''Unhandled exception'',13,10,''$''');
   (* TODO 16 : Adresse temporaire pour acces tableau/struct *)
   EmitRaw(CC_RT_PFX + 'ATMP     DW  0');
   (* Entrees dynamiques de DataTab *)
@@ -5234,6 +5250,267 @@ Begin
   InTemplateDecl := SaveInTmpl;
 End;
 
+(* ============================================================
+   TODO 23 - EXCEPTIONS (try / catch / throw) [IMPLEMENTE]
+   ParseTryStmt   : try { stmts } catch (Type& e) { stmts }
+   ParseThrowStmt : throw expr;
+   EmitExceptionRuntime : _CC_RT_THROW, _CC_RT_PANIC_EXC
+   ============================================================ *)
+
+(* ---- ParseThrowStmt ----------------------------------------- *)
+(* throw expr;                                                     *)
+(* AX = valeur de l expression (code exception)                    *)
+(* Saute vers le handler courant (_CC_HANDLER) ou appelle          *)
+(* _CC_RT_PANIC_EXC si aucun handler n est installe.               *)
+Procedure ParseThrowStmt;
+Var
+  E : TExprVal;
+Begin
+  ParserAdvance; (* consommer 'throw' *)
+  (* throw; sans expression = re-throw, on met AX=_CC_EXCCODE *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+  Begin
+    EmitComment('throw (re-throw)');
+    EmitInstr('MOV    AX,WORD PTR [_CC_EXCCODE]');
+  End
+  Else
+  Begin
+    ParseExpr(E);
+    ExprFlushToAX(E);
+    EmitComment('throw expr');
+  End;
+  (* Stocker le code exception *)
+  EmitInstr('MOV    WORD PTR [_CC_EXCCODE],AX');
+  (* Si _CC_HANDLER = 0, pas de handler -> panic *)
+  EmitInstr('CMP    WORD PTR [_CC_HANDLER],0');
+  EmitInstr('JE     ' + CC_RT_PFX + 'PANIC_EXC');
+  (* Restaurer SP et sauter vers le handler *)
+  EmitInstr('MOV    SP,WORD PTR [_CC_HANDLER]');
+  EmitInstr('POP    BP');
+  EmitInstr('RET');
+  (* Consommer le ; *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
+End;
+
+(* ---- ParseTryStmt ------------------------------------------- *)
+(* try { stmts } catch (Type& e) { stmts } [catch(...) { stmts }] *)
+(* Mecanisme simplifie :                                           *)
+(*   - Sauvegarder ancien handler sur la pile                      *)
+(*   - Installer un nouveau handler (_CC_HANDLER = SP courant)     *)
+(*   - Corps du try : si throw, saute vers handler via RET         *)
+(*   - Catch : CMP _CC_EXCCODE pour chaque type, catch(...) = all  *)
+(*   - Restaurer le handler precedent apres le try                 *)
+Procedure ParseTryStmt;
+Var
+  LblCatch     : TString;
+  LblEnd       : TString;
+  LblNext      : TString;
+  CatchCount   : Integer;
+  IsCatchAll   : Boolean;
+  CatchVarName : TString;
+  CatchTypeName: TString;
+  CatchTypeIdx : Integer;
+  SaveNest     : Integer;
+  E            : TExprVal;
+  I            : Integer;
+Begin
+  ParserAdvance; (* consommer 'try' *)
+
+  Inc(ExcCatchSeq);
+  LblCatch := CC_LBL_PFX + 'CATCH_' + IntToStr(ExcCatchSeq);
+  LblEnd   := CC_LBL_PFX + 'TRYEND_' + IntToStr(ExcCatchSeq);
+
+  SaveNest := ExcTryNest;
+  Inc(ExcTryNest);
+
+  EmitComment('try block (nest=' + IntToStr(ExcTryNest) + ')');
+
+  (* Sauvegarder l ancien handler *)
+  EmitInstr('PUSH   WORD PTR [_CC_HANDLER]');
+  (* Installer le nouveau handler :                                *)
+  (*   On utilise CALL pour pousser l adresse de retour (= catch)  *)
+  (*   puis on sauvegarde SP dans _CC_HANDLER                      *)
+  EmitInstr('CALL   ' + LblCatch + '_SETUP');
+  (* Si on revient ici, c est qu un throw a ete fait -> sauter au catch *)
+  EmitInstr('JMP    ' + LblCatch + '_DISPATCH');
+  EmitLabel(LblCatch + '_SETUP');
+  (* L adresse de retour est au sommet de la pile *)
+  (* Sauvegarder BP pour restauration correcte *)
+  EmitInstr('PUSH   BP');
+  EmitInstr('MOV    WORD PTR [_CC_HANDLER],SP');
+  (* Retourner normalement au corps du try *)
+  EmitInstr('POP    BP');
+  EmitInstr('RET');
+
+  (* Corps du try { ... } *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+  Begin
+    ParserAdvance;
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+      ParseStmt;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+      ParserAdvance;
+  End;
+
+  (* Pas d exception : restaurer l ancien handler et sauter la fin *)
+  EmitComment('try - no exception, restore handler');
+  EmitInstr('POP    WORD PTR [_CC_HANDLER]');
+  EmitInstr('JMP    ' + LblEnd);
+
+  (* Dispatch des catch *)
+  EmitLabel(LblCatch + '_DISPATCH');
+  EmitComment('catch dispatch');
+  (* Restaurer le handler precedent (toujours sur la pile) *)
+  EmitInstr('POP    WORD PTR [_CC_HANDLER]');
+
+  CatchCount := 0;
+
+  (* Parser les clauses catch *)
+  While (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'catch') Do
+  Begin
+    ParserAdvance; (* consommer 'catch' *)
+    Inc(CatchCount);
+    IsCatchAll := False;
+    CatchVarName := '';
+    CatchTypeName := '';
+    CatchTypeIdx := TY_IDX_INT;
+
+    LblNext := CC_LBL_PFX + 'CNEXT_' + IntToStr(ExcCatchSeq) + '_' +
+               IntToStr(CatchCount);
+
+    (* ( ... ) *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      ParserAdvance;
+      (* catch(...) *)
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '...') Then
+      Begin
+        IsCatchAll := True;
+        ParserAdvance;
+      End
+      Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
+      Begin
+        (* Fallback pour '...' tokenise comme 3 points *)
+        IsCatchAll := True;
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
+          ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
+          ParserAdvance;
+      End
+      Else
+      Begin
+        (* catch(Type varname) ou catch(Type& varname) *)
+        If CurToken.Kind = TK_KEYWORD Then
+        Begin
+          CatchTypeName := CurToken.Val;
+          If CatchTypeName = 'int' Then CatchTypeIdx := TY_IDX_INT
+          Else If CatchTypeName = 'char' Then CatchTypeIdx := TY_IDX_CHAR
+          Else If CatchTypeName = 'short' Then CatchTypeIdx := TY_IDX_SHORT
+          Else If CatchTypeName = 'long' Then CatchTypeIdx := TY_IDX_LONG
+          Else If CatchTypeName = 'bool' Then CatchTypeIdx := TY_IDX_BOOL
+          Else If CatchTypeName = 'float' Then CatchTypeIdx := TY_IDX_FLOAT
+          Else If CatchTypeName = 'double' Then CatchTypeIdx := TY_IDX_DOUBLE
+          Else If CatchTypeName = 'unsigned' Then CatchTypeIdx := TY_IDX_UNSIGNED
+          Else If CatchTypeName = 'void' Then CatchTypeIdx := TY_IDX_VOID
+          Else CatchTypeIdx := TY_IDX_INT;
+          ParserAdvance;
+        End
+        Else If CurToken.Kind = TK_IDENT Then
+        Begin
+          CatchTypeName := CurToken.Val;
+          CatchTypeIdx := TY_IDX_INT; (* user type -> default to int *)
+          ParserAdvance;
+        End;
+        (* Optionnel : & *)
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '&') Then
+          ParserAdvance;
+        (* Optionnel : nom de variable *)
+        If CurToken.Kind = TK_IDENT Then
+        Begin
+          CatchVarName := CurToken.Val;
+          ParserAdvance;
+        End;
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        ParserAdvance;
+    End;
+
+    If IsCatchAll Then
+    Begin
+      EmitComment('catch(...)');
+      (* Pas de test de type, on attrape tout *)
+    End
+    Else
+    Begin
+      EmitComment('catch(' + CatchTypeName + ')');
+      (* Comparer le code exception avec l index du type *)
+      EmitInstr('MOV    AX,WORD PTR [_CC_EXCCODE]');
+      EmitInstr('CMP    AX,' + IntToStr(CatchTypeIdx));
+      EmitInstr('JNE    ' + LblNext);
+    End;
+
+    (* Si on a un nom de variable, on declare une locale avec la valeur *)
+    If CatchVarName <> '' Then
+    Begin
+      EmitComment('catch var ' + CatchVarName + ' = _CC_EXCCODE');
+      EmitInstr('MOV    AX,WORD PTR [_CC_EXCCODE]');
+      EmitInstr('PUSH   AX');
+    End;
+
+    (* Corps du catch { ... } *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+    Begin
+      ParserAdvance;
+      While (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+        ParseStmt;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+        ParserAdvance;
+    End;
+
+    (* Nettoyer la variable locale du catch *)
+    If CatchVarName <> '' Then
+      EmitInstr('ADD    SP,2');
+
+    EmitInstr('JMP    ' + LblEnd);
+
+    If Not IsCatchAll Then
+      EmitLabel(LblNext);
+  End;
+
+  (* Si aucun catch n a attrape l exception, appeler panic *)
+  If CatchCount > 0 Then
+  Begin
+    EmitInstr('JMP    ' + CC_RT_PFX + 'PANIC_EXC');
+  End;
+
+  EmitLabel(LblEnd);
+  EmitComment('end try/catch');
+
+  ExcTryNest := SaveNest;
+End;
+
+(* ---- EmitExceptionRuntime ----------------------------------- *)
+(* Emet les routines runtime pour les exceptions.                  *)
+Procedure EmitExceptionRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=== Exception Runtime (TODO 23) ===');
+  EmitBlankLine;
+
+  (* _CC_RT_PANIC_EXC : exception non geree -> affiche message et Halt *)
+  EmitLabel(CC_RT_PFX + 'PANIC_EXC');
+  EmitInstr('MOV    DX,OFFSET _CC_EXCMSG');
+  EmitInstr('MOV    AH,09h');
+  EmitInstr('INT    21h');
+  EmitInstr('MOV    AX,4C01h');
+  EmitInstr('INT    21h');
+  EmitBlankLine;
+End;
+
 (* Emet le label, prologue, corps, epilogue.                      *)
 (* Le premier parametre implicite est this a [BP+4].              *)
 Procedure ParseClassMethodBody(CIdx : Integer; MIdx : Integer);
@@ -6420,6 +6697,9 @@ Begin
   EmitInstr('POP    AX');
   EmitInstr('RET');
   EmitBlankLine;
+
+  (* TODO 23 - Exception runtime *)
+  EmitExceptionRuntime;
 End;
 
 (* ============================================================
@@ -7997,6 +8277,20 @@ Begin
     Exit;
   End;
 
+  (* TODO 23 : try/catch *)
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'try') Then
+  Begin
+    ParseTryStmt;
+    Exit;
+  End;
+
+  (* TODO 23 : throw *)
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'throw') Then
+  Begin
+    ParseThrowStmt;
+    Exit;
+  End;
+
   (* Mot-cle de portee C++ : enum, namespace, typedef, using, etc. *)
   If (CurToken.Kind = TK_KEYWORD) And
      ((CurToken.Val = 'enum') Or
@@ -8005,8 +8299,7 @@ Begin
       (CurToken.Val = 'extern') Or (CurToken.Val = 'friend') Or
       (CurToken.Val = 'inline') Or (CurToken.Val = 'virtual') Or
       (CurToken.Val = 'explicit') Or (CurToken.Val = 'operator') Or
-      (CurToken.Val = 'try') Or (CurToken.Val = 'catch') Or
-      (CurToken.Val = 'throw') Or (CurToken.Val = 'public') Or
+      (CurToken.Val = 'public') Or
       (CurToken.Val = 'private') Or (CurToken.Val = 'protected') Or
       (CurToken.Val = 'goto')) Then
   Begin
