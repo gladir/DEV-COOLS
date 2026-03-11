@@ -478,7 +478,7 @@
               TResourceFile, TResourceCollection, TStringList
               -> emulation des streams via API fichiers Windows
 
-  TODO 22 - EMULATION MEM / MEMW / MEML / PORT / PORTW ET IN/OUT
+  TODO 22 - EMULATION MEM / MEMW / MEML / PORT / PORTW ET IN/OUT [IMPLEMENTE]
             Mem[Seg:Ofs] : acces memoire octet
               -> emulation : tableau memoire simule ou acces direct
                  selon contexte (Mem[$0040:$0017] -> etat clavier
@@ -3575,6 +3575,17 @@ Begin
   RegProc('REGISTERTYPE');
   RegFunc('NEWSTR');
   RegProc('DISPOSESTR');
+
+  { ---------------------------------------------------------- }
+  { Variables speciales Mem/MemW/MemL/Port/PortW (TODO 22)     }
+  { Registrees comme fonctions pour les reconnaitre en         }
+  { ParsePrimary et ParseStmt avec traitement special.         }
+  { ---------------------------------------------------------- }
+  RegFunc('MEM');
+  RegFunc('MEMW');
+  RegFunc('MEML');
+  RegFunc('PORT');
+  RegFunc('PORTW');
 End;
 
 { ============================================================ }
@@ -4318,6 +4329,10 @@ Begin
   EmitRaw('EXTRN _CloseHandle@4:NEAR');
   EmitRaw('EXTRN _SetEndOfFile@4:NEAR');
   EmitRaw('EXTRN _FlushFileBuffers@4:NEAR');
+  EmitComment('--- Imports Win32 pour emulation Mem/Port (TODO 22) ---');
+  EmitComment('--- user32.dll ---');
+  EmitRaw('EXTRN _GetAsyncKeyState@4:NEAR');
+  EmitRaw('EXTRN _GetKeyState@4:NEAR');
   EmitBlankLine;
 End;
 
@@ -4467,6 +4482,11 @@ Begin
   EmitRaw('OBJ_TMPSIZ  DD 0');           { taille courante stream                }
   EmitRaw('OBJ_TMPBUF  DB 1024 DUP(0)');{ buffer TBufStream                     }
   EmitRaw('OBJ_BYTESRW DD 0');           { octets lus/ecrits                     }
+  EmitBlankLine;
+  EmitComment('--- Variables Mem/Port (emulation TODO 22) ---');
+  EmitRaw('MEM_TMPVAL  DD 0');           { valeur temporaire lecture Mem          }
+  EmitRaw('PORT_TMPVAL DD 0');           { valeur temporaire lecture Port         }
+  EmitRaw('PORT_RTCIDX DB 0');           { index CMOS RTC ($70)                  }
   EmitBlankLine;
 
   { Emettre toutes les entrees du pool de donnees }
@@ -8840,6 +8860,56 @@ Begin
       Exit;
     End;
 
+    { ---- TODO 22 : Mem[Seg:Ofs] / MemW[Seg:Ofs] / MemL[Seg:Ofs] en lecture ---- }
+    If (Up = 'MEM') Or (Up = 'MEMW') Or (Up = 'MEML') Then
+    Begin
+      Inc(EP);
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = '[') Then
+      Begin
+        Inc(EP);
+        ParseExpr(PI);           { EAX = Seg }
+        EmitInstr('PUSH EAX');   { sauvegarder Seg }
+        { Attendre ':' separateur Seg:Ofs }
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+           (TokenPool[EP].Val = ':') Then
+          Inc(EP);
+        ParseExpr(PI);           { EAX = Ofs }
+        EmitInstr('MOV EDX,EAX');  { EDX = Ofs }
+        EmitInstr('POP EAX');      { EAX = Seg }
+        { Appeler _TPRT_READMEM : EAX=seg, EDX=ofs -> resultat dans EAX }
+        EmitInstr('CALL ' + TP_RT_PFX + 'READMEM');
+        { Masquer selon la taille }
+        If Up = 'MEM' Then
+          EmitInstr('AND EAX,0FFh')       { octet : 8 bits }
+        Else If Up = 'MEMW' Then
+          EmitInstr('AND EAX,0FFFFh');     { mot : 16 bits }
+        { MEML : pas de masque, 32 bits complet }
+        EPMatch(']');
+      End;
+      Exit;
+    End;
+
+    { ---- TODO 22 : Port[$nn] / PortW[$nn] en lecture ---- }
+    If (Up = 'PORT') Or (Up = 'PORTW') Then
+    Begin
+      Inc(EP);
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = '[') Then
+      Begin
+        Inc(EP);
+        ParseExpr(PI);           { EAX = numero de port }
+        { Appeler _TPRT_INPORT : EAX=port -> resultat dans EAX }
+        EmitInstr('CALL ' + TP_RT_PFX + 'INPORT');
+        If Up = 'PORT' Then
+          EmitInstr('AND EAX,0FFh')       { octet }
+        Else
+          EmitInstr('AND EAX,0FFFFh');     { mot 16 bits }
+        EPMatch(']');
+      End;
+      Exit;
+    End;
+
     { Appel de procedure/fonction ? }
     SI := SymFind(Up);
     If (SI >= 0) And
@@ -12612,6 +12682,71 @@ Begin
       Exit;
     End;
 
+    { ---- TODO 22 : Mem[Seg:Ofs] := val / MemW / MemL en ecriture ---- }
+    If (Up = 'MEM') Or (Up = 'MEMW') Or (Up = 'MEML') Then
+    Begin
+      Inc(EP);
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = '[') Then
+      Begin
+        Inc(EP);
+        ParseExpr(PI);           { EAX = Seg }
+        EmitInstr('PUSH EAX');   { sauvegarder Seg }
+        { Attendre ':' separateur Seg:Ofs }
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+           (TokenPool[EP].Val = ':') Then
+          Inc(EP);
+        ParseExpr(PI);           { EAX = Ofs }
+        EmitInstr('PUSH EAX');   { sauvegarder Ofs }
+        EPMatch(']');
+        { Attendre ':=' }
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_OP) And
+           (TokenPool[EP].Val = ':=') Then
+        Begin
+          Inc(EP);
+          ParseExpr(PI);         { EAX = valeur a ecrire }
+          EmitInstr('MOV ECX,EAX');  { ECX = val }
+          EmitInstr('POP EDX');      { EDX = Ofs }
+          EmitInstr('POP EAX');      { EAX = Seg }
+          { Appeler _TPRT_WRITEMEM : EAX=seg, EDX=ofs, ECX=val }
+          EmitInstr('CALL ' + TP_RT_PFX + 'WRITEMEM');
+        End;
+      End;
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { ---- TODO 22 : Port[$nn] := val / PortW en ecriture ---- }
+    If (Up = 'PORT') Or (Up = 'PORTW') Then
+    Begin
+      Inc(EP);
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = '[') Then
+      Begin
+        Inc(EP);
+        ParseExpr(PI);           { EAX = numero de port }
+        EmitInstr('PUSH EAX');   { sauvegarder port }
+        EPMatch(']');
+        { Attendre ':=' }
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_OP) And
+           (TokenPool[EP].Val = ':=') Then
+        Begin
+          Inc(EP);
+          ParseExpr(PI);         { EAX = valeur a ecrire }
+          EmitInstr('MOV EDX,EAX');  { EDX = val }
+          EmitInstr('POP EAX');      { EAX = port }
+          { Appeler _TPRT_OUTPORT : EAX=port, EDX=val }
+          EmitInstr('CALL ' + TP_RT_PFX + 'OUTPORT');
+        End;
+      End;
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
     { Appel de proc (dans SymTab) }
     SI := SymFind(Up);
     If (SI >= 0) And (SymTab[SI].Kind = SK_PROC) Then
@@ -13085,7 +13220,7 @@ End;
 { CBW->CWDE, CWD->CDQ, PUSHF->PUSHFD, POPF->POPFD             }
 { LDS/LES -> MOV registre 32 bits                               }
 { INT nn -> commentaire (emulation future TODO 21)              }
-{ IN/OUT -> commentaire (emulation future TODO 22)              }
+{ IN/OUT -> appel _TPRT_INPORT/_TPRT_OUTPORT (emulation TODO 22) }
 { LOOP/LOOPZ/LOOPNZ -> DEC ECX + Jcc equivalent                }
 { ------------------------------------------------------------ }
 
@@ -13222,19 +13357,45 @@ Begin
     Exit;
   End;
 
-  { IN -> emulation future (commentaire) }
+  { IN -> emulation Port via _TPRT_INPORT (TODO 22) }
   If Up = 'IN' Then
   Begin
-    EmitComment('IN ' + Op1 + ',' + Op2 + ' (emule - voir TODO 22)');
-    EmitInstr('NOP');
+    EmitComment('IN ' + Op1 + ',' + Op2 + ' (emule via _TPRT_INPORT)');
+    { Op2 = numero port (immediat ou DX), Op1 = registre dest (AL/AX/EAX) }
+    { Charger le numero de port dans EAX }
+    If StrUpperCase(Op2) = 'DX' Then
+      EmitInstr('MOVZX EAX,DX')
+    Else
+      EmitInstr('MOV EAX,' + TranslateAsmOperand(PI, Op2));
+    EmitInstr('CALL ' + TP_RT_PFX + 'INPORT');
+    { Stocker le resultat dans le registre destination }
+    If StrUpperCase(Op1) = 'AL' Then
+      { resultat deja dans AL via EAX }
+    Else If StrUpperCase(Op1) = 'AX' Then
+      { resultat deja dans AX via EAX }
+    Else
+      { resultat deja dans EAX };
     Exit;
   End;
 
-  { OUT -> emulation future (commentaire) }
+  { OUT -> emulation Port via _TPRT_OUTPORT (TODO 22) }
   If Up = 'OUT' Then
   Begin
-    EmitComment('OUT ' + Op1 + ',' + Op2 + ' (emule - voir TODO 22)');
-    EmitInstr('NOP');
+    EmitComment('OUT ' + Op1 + ',' + Op2 + ' (emule via _TPRT_OUTPORT)');
+    { Op1 = numero port (immediat ou DX), Op2 = valeur (AL/AX/EAX) }
+    { Sauvegarder la valeur dans EDX }
+    If StrUpperCase(Op2) = 'AL' Then
+      EmitInstr('MOVZX EDX,AL')
+    Else If StrUpperCase(Op2) = 'AX' Then
+      EmitInstr('MOVZX EDX,AX')
+    Else
+      EmitInstr('MOV EDX,EAX');
+    { Charger le numero de port dans EAX }
+    If StrUpperCase(Op1) = 'DX' Then
+      EmitInstr('MOVZX EAX,DX')
+    Else
+      EmitInstr('MOV EAX,' + TranslateAsmOperand(PI, Op1));
+    EmitInstr('CALL ' + TP_RT_PFX + 'OUTPORT');
     Exit;
   End;
 
@@ -16051,6 +16212,339 @@ Begin
   EmitInstr('RET');
 End;
 
+{ ============================================================ }
+{ TODO 22 - ROUTINES RUNTIME MEM/PORT        [IMPLEMENTE]      }
+{ ============================================================ }
+
+Procedure EmitMemPortRuntime;
+Var
+  L1, L2, L3, L4, L5, L6, L7 : TString;
+Begin
+  EmitBlankLine;
+  EmitComment('============================================================');
+  EmitComment(' RUNTIME MEM/PORT : emulation Mem/MemW/MemL/Port/PortW      ');
+  EmitComment('============================================================');
+
+  { ------ _TPRT_READMEM : lecture memoire emulee --------------- }
+  { Parametres : EAX = segment, EDX = offset                      }
+  { Retourne dans EAX : valeur lue (selon le contexte)            }
+  { Emulation : Mem[$0040:$0017] -> etat clavier (shift keys)    }
+  {             Mem[$0040:$0049] -> mode video courant (03h)      }
+  {             Mem[$0040:$004A] -> nombre colonnes (80)          }
+  {             Mem[$0040:$0084] -> nombre lignes - 1 (24)        }
+  {             Mem[$B800:xxxx] -> memoire video texte (stub)     }
+  {             Autres -> 0 (non emule)                            }
+  EmitLabel(TP_RT_PFX + 'READMEM');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH ECX');
+  L1 := LabelGen;  { $0040 segment handler }
+  L2 := LabelGen;  { $B800 segment handler }
+  L3 := LabelGen;  { default -> 0 }
+  L4 := LabelGen;  { fin }
+  L5 := LabelGen;  { $0040:$0017 handler }
+  L6 := LabelGen;  { $0040:$0049 handler }
+  L7 := LabelGen;  { $0040:$004A handler }
+  { Verifier segment $0040 (BIOS Data Area) }
+  EmitInstr('CMP EAX,40h');
+  EmitInstr('JE ' + L1);
+  { Verifier segment $B800 (video texte) }
+  EmitInstr('CMP EAX,0B800h');
+  EmitInstr('JE ' + L2);
+  { Segment non emule -> 0 }
+  EmitInstr('JMP ' + L3);
+
+  { --- Segment $0040 : BIOS Data Area --- }
+  EmitLabel(L1);
+  { Offset $0017 : etat clavier (shift flags) }
+  EmitInstr('CMP EDX,17h');
+  EmitInstr('JE ' + L5);
+  { Offset $0049 : mode video courant }
+  EmitInstr('CMP EDX,49h');
+  EmitInstr('JE ' + L6);
+  { Offset $004A : nombre de colonnes }
+  EmitInstr('CMP EDX,4Ah');
+  EmitInstr('JE ' + L7);
+  { Offset $0084 : nombre de lignes - 1 }
+  EmitInstr('CMP EDX,84h');
+  EmitInstr('JNE ' + L3);
+  EmitInstr('MOV EAX,24');   { 25 lignes - 1 = 24 }
+  EmitInstr('JMP ' + L4);
+
+  { $0040:$0017 -> etat clavier via GetKeyState }
+  EmitLabel(L5);
+  EmitInstr('XOR EAX,EAX');
+  { Bit 0 : Right Shift (VK_RSHIFT=A1h) }
+  EmitInstr('PUSH 0A1h');
+  EmitInstr('CALL _GetAsyncKeyState@4');
+  EmitInstr('TEST EAX,8000h');
+  EmitInstr('JZ ' + LabelGen);
+  EmitInstr('OR BYTE PTR [MEM_TMPVAL],1');
+  EmitLabel(TP_LBL_PFX + IntToStr_(EmitLabelSeq - 1));
+  { Bit 1 : Left Shift (VK_LSHIFT=A0h) }
+  EmitInstr('PUSH 0A0h');
+  EmitInstr('CALL _GetAsyncKeyState@4');
+  EmitInstr('TEST EAX,8000h');
+  EmitInstr('JZ ' + LabelGen);
+  EmitInstr('OR BYTE PTR [MEM_TMPVAL],2');
+  EmitLabel(TP_LBL_PFX + IntToStr_(EmitLabelSeq - 1));
+  { Bit 2 : Ctrl (VK_CONTROL=11h) }
+  EmitInstr('PUSH 11h');
+  EmitInstr('CALL _GetAsyncKeyState@4');
+  EmitInstr('TEST EAX,8000h');
+  EmitInstr('JZ ' + LabelGen);
+  EmitInstr('OR BYTE PTR [MEM_TMPVAL],4');
+  EmitLabel(TP_LBL_PFX + IntToStr_(EmitLabelSeq - 1));
+  { Bit 3 : Alt (VK_MENU=12h) }
+  EmitInstr('PUSH 12h');
+  EmitInstr('CALL _GetAsyncKeyState@4');
+  EmitInstr('TEST EAX,8000h');
+  EmitInstr('JZ ' + LabelGen);
+  EmitInstr('OR BYTE PTR [MEM_TMPVAL],8');
+  EmitLabel(TP_LBL_PFX + IntToStr_(EmitLabelSeq - 1));
+  { Bit 4 : Scroll Lock (VK_SCROLL=91h) }
+  EmitInstr('PUSH 91h');
+  EmitInstr('CALL _GetKeyState@4');
+  EmitInstr('TEST EAX,1');
+  EmitInstr('JZ ' + LabelGen);
+  EmitInstr('OR BYTE PTR [MEM_TMPVAL],10h');
+  EmitLabel(TP_LBL_PFX + IntToStr_(EmitLabelSeq - 1));
+  { Bit 5 : Num Lock (VK_NUMLOCK=90h) }
+  EmitInstr('PUSH 90h');
+  EmitInstr('CALL _GetKeyState@4');
+  EmitInstr('TEST EAX,1');
+  EmitInstr('JZ ' + LabelGen);
+  EmitInstr('OR BYTE PTR [MEM_TMPVAL],20h');
+  EmitLabel(TP_LBL_PFX + IntToStr_(EmitLabelSeq - 1));
+  { Bit 6 : Caps Lock (VK_CAPITAL=14h) }
+  EmitInstr('PUSH 14h');
+  EmitInstr('CALL _GetKeyState@4');
+  EmitInstr('TEST EAX,1');
+  EmitInstr('JZ ' + LabelGen);
+  EmitInstr('OR BYTE PTR [MEM_TMPVAL],40h');
+  EmitLabel(TP_LBL_PFX + IntToStr_(EmitLabelSeq - 1));
+  { Bit 7 : Insert (VK_INSERT=2Dh) }
+  EmitInstr('PUSH 2Dh');
+  EmitInstr('CALL _GetKeyState@4');
+  EmitInstr('TEST EAX,1');
+  EmitInstr('JZ ' + LabelGen);
+  EmitInstr('OR BYTE PTR [MEM_TMPVAL],80h');
+  EmitLabel(TP_LBL_PFX + IntToStr_(EmitLabelSeq - 1));
+  EmitInstr('MOVZX EAX,BYTE PTR [MEM_TMPVAL]');
+  EmitInstr('MOV BYTE PTR [MEM_TMPVAL],0');  { reset }
+  EmitInstr('JMP ' + L4);
+
+  { $0040:$0049 -> mode video = 03h (texte 80x25) }
+  EmitLabel(L6);
+  EmitInstr('MOV EAX,3');
+  EmitInstr('JMP ' + L4);
+
+  { $0040:$004A -> colonnes = 80 }
+  EmitLabel(L7);
+  EmitInstr('MOV EAX,80');
+  EmitInstr('JMP ' + L4);
+
+  { --- Segment $B800 : memoire video texte (stub, retourne 0) --- }
+  EmitLabel(L2);
+  EmitInstr('XOR EAX,EAX');
+  EmitComment('memoire video texte non emulee (retourne 0)');
+  EmitInstr('JMP ' + L4);
+
+  { --- Defaut : segment non emule -> 0 --- }
+  EmitLabel(L3);
+  EmitInstr('XOR EAX,EAX');
+
+  { Sortie }
+  EmitLabel(L4);
+  EmitInstr('POP ECX');
+  EmitInstr('POP EBX');
+  EmitInstr('RET');
+
+  { ------ _TPRT_WRITEMEM : ecriture memoire emulee ------------ }
+  { Parametres : EAX = segment, EDX = offset, ECX = valeur       }
+  { Emulation minimale : ignore les ecritures (stub + commentaire)}
+  EmitLabel(TP_RT_PFX + 'WRITEMEM');
+  EmitComment('Mem[Seg:Ofs] := val  (ecriture emulee - stub)');
+  EmitInstr('RET');
+
+  { ------ _TPRT_INPORT : lecture port I/O emule ---------------- }
+  { Parametre : EAX = numero de port                              }
+  { Retourne dans EAX : valeur lue (emulee)                       }
+  { Port $60 : lecture clavier -> GetAsyncKeyState(VK_xxx)        }
+  { Port $61 : controle haut-parleur -> retourne 0                }
+  { Port $70 : index CMOS RTC -> retourne index sauvegarde        }
+  { Port $71 : donnees CMOS RTC -> GetLocalTime selon index       }
+  { Port $3F8-$3FE : ports serie COM1 -> stub                     }
+  { Autres : retourne 0                                            }
+  L1 := LabelGen;  { port $60 }
+  L2 := LabelGen;  { port $61 }
+  L3 := LabelGen;  { port $70 }
+  L4 := LabelGen;  { port $71 }
+  L5 := LabelGen;  { defaut }
+  L6 := LabelGen;  { fin }
+  L7 := LabelGen;  { port $71 secondes }
+  EmitLabel(TP_RT_PFX + 'INPORT');
+  EmitInstr('PUSH EBX');
+  { Port $60 : lecture clavier }
+  EmitInstr('CMP EAX,60h');
+  EmitInstr('JE ' + L1);
+  { Port $61 : controle haut-parleur }
+  EmitInstr('CMP EAX,61h');
+  EmitInstr('JE ' + L2);
+  { Port $70 : index CMOS }
+  EmitInstr('CMP EAX,70h');
+  EmitInstr('JE ' + L3);
+  { Port $71 : donnees CMOS }
+  EmitInstr('CMP EAX,71h');
+  EmitInstr('JE ' + L4);
+  { Defaut }
+  EmitInstr('JMP ' + L5);
+
+  { Port $60 : retourne derniere touche via GetAsyncKeyState }
+  EmitLabel(L1);
+  EmitComment('Port[$60] : lecture clavier emulee');
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('MOV ECX,255');
+  EmitLabel(LabelGen);
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH ECX');
+  EmitInstr('CALL _GetAsyncKeyState@4');
+  EmitInstr('POP ECX');
+  EmitInstr('TEST EAX,8000h');
+  EmitInstr('JNZ ' + LabelGen);
+  EmitInstr('DEC ECX');
+  EmitInstr('JNZ ' + TP_LBL_PFX + IntToStr_(EmitLabelSeq - 2));
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('JMP ' + L6);
+  EmitLabel(TP_LBL_PFX + IntToStr_(EmitLabelSeq - 1));
+  EmitInstr('MOV EAX,ECX');   { EAX = virtual key code }
+  EmitInstr('JMP ' + L6);
+
+  { Port $61 : controle haut-parleur (retourne 0) }
+  EmitLabel(L2);
+  EmitComment('Port[$61] : controle haut-parleur (stub)');
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('JMP ' + L6);
+
+  { Port $70 : index CMOS RTC (retourne index sauvegarde) }
+  EmitLabel(L3);
+  EmitComment('Port[$70] : index CMOS RTC');
+  EmitInstr('MOVZX EAX,BYTE PTR [PORT_RTCIDX]');
+  EmitInstr('JMP ' + L6);
+
+  { Port $71 : donnees CMOS RTC -> GetLocalTime selon PORT_RTCIDX }
+  EmitLabel(L4);
+  EmitComment('Port[$71] : donnees CMOS RTC via GetLocalTime');
+  { Appeler GetLocalTime(&SYSTEMTIME sur pile) }
+  EmitInstr('SUB ESP,16');       { SYSTEMTIME = 16 octets }
+  EmitInstr('PUSH ESP');
+  EmitInstr('CALL _GetLocalTime@4');
+  { PORT_RTCIDX : 0=secondes, 2=minutes, 4=heures, 6=jour semaine }
+  {               7=jour mois, 8=mois, 9=annee                     }
+  EmitInstr('MOVZX EBX,BYTE PTR [PORT_RTCIDX]');
+  EmitInstr('CMP EBX,0');
+  EmitInstr('JNE ' + LabelGen);
+  { Index 0 : secondes (SYSTEMTIME.wSecond = offset 12) }
+  EmitInstr('MOVZX EAX,WORD PTR [ESP+12]');
+  EmitInstr('ADD ESP,16');
+  EmitInstr('JMP ' + L6);
+  EmitLabel(TP_LBL_PFX + IntToStr_(EmitLabelSeq - 1));
+  EmitInstr('CMP EBX,2');
+  EmitInstr('JNE ' + LabelGen);
+  { Index 2 : minutes (SYSTEMTIME.wMinute = offset 10) }
+  EmitInstr('MOVZX EAX,WORD PTR [ESP+10]');
+  EmitInstr('ADD ESP,16');
+  EmitInstr('JMP ' + L6);
+  EmitLabel(TP_LBL_PFX + IntToStr_(EmitLabelSeq - 1));
+  EmitInstr('CMP EBX,4');
+  EmitInstr('JNE ' + LabelGen);
+  { Index 4 : heures (SYSTEMTIME.wHour = offset 8) }
+  EmitInstr('MOVZX EAX,WORD PTR [ESP+8]');
+  EmitInstr('ADD ESP,16');
+  EmitInstr('JMP ' + L6);
+  EmitLabel(TP_LBL_PFX + IntToStr_(EmitLabelSeq - 1));
+  EmitInstr('CMP EBX,6');
+  EmitInstr('JNE ' + LabelGen);
+  { Index 6 : jour de la semaine (SYSTEMTIME.wDayOfWeek = offset 4) }
+  EmitInstr('MOVZX EAX,WORD PTR [ESP+4]');
+  EmitInstr('ADD ESP,16');
+  EmitInstr('JMP ' + L6);
+  EmitLabel(TP_LBL_PFX + IntToStr_(EmitLabelSeq - 1));
+  EmitInstr('CMP EBX,7');
+  EmitInstr('JNE ' + LabelGen);
+  { Index 7 : jour du mois (SYSTEMTIME.wDay = offset 6) }
+  EmitInstr('MOVZX EAX,WORD PTR [ESP+6]');
+  EmitInstr('ADD ESP,16');
+  EmitInstr('JMP ' + L6);
+  EmitLabel(TP_LBL_PFX + IntToStr_(EmitLabelSeq - 1));
+  EmitInstr('CMP EBX,8');
+  EmitInstr('JNE ' + LabelGen);
+  { Index 8 : mois (SYSTEMTIME.wMonth = offset 2) }
+  EmitInstr('MOVZX EAX,WORD PTR [ESP+2]');
+  EmitInstr('ADD ESP,16');
+  EmitInstr('JMP ' + L6);
+  EmitLabel(TP_LBL_PFX + IntToStr_(EmitLabelSeq - 1));
+  EmitInstr('CMP EBX,9');
+  EmitInstr('JNE ' + LabelGen);
+  { Index 9 : annee (SYSTEMTIME.wYear = offset 0) }
+  EmitInstr('MOVZX EAX,WORD PTR [ESP]');
+  EmitInstr('ADD ESP,16');
+  EmitInstr('JMP ' + L6);
+  EmitLabel(TP_LBL_PFX + IntToStr_(EmitLabelSeq - 1));
+  { Index non reconnu }
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('ADD ESP,16');
+  EmitInstr('JMP ' + L6);
+
+  { Defaut : port non emule -> 0 }
+  EmitLabel(L5);
+  EmitComment('Port non emule (retourne 0)');
+  EmitInstr('XOR EAX,EAX');
+
+  { Sortie }
+  EmitLabel(L6);
+  EmitInstr('POP EBX');
+  EmitInstr('RET');
+
+  { ------ _TPRT_OUTPORT : ecriture port I/O emule ------------- }
+  { Parametres : EAX = numero de port, EDX = valeur               }
+  { Port $61 : bit 0-1 controle haut-parleur -> Beep API          }
+  { Port $70 : sauvegarde index CMOS dans PORT_RTCIDX              }
+  { Autres : ignore (stub)                                         }
+  L1 := LabelGen;  { port $61 }
+  L2 := LabelGen;  { port $70 }
+  L3 := LabelGen;  { fin }
+  EmitLabel(TP_RT_PFX + 'OUTPORT');
+  EmitInstr('PUSH EBX');
+  { Port $61 : haut-parleur }
+  EmitInstr('CMP EAX,61h');
+  EmitInstr('JE ' + L1);
+  { Port $70 : index CMOS }
+  EmitInstr('CMP EAX,70h');
+  EmitInstr('JE ' + L2);
+  { Defaut : ignorer }
+  EmitInstr('JMP ' + L3);
+
+  { Port $61 : controle haut-parleur via Beep API }
+  EmitLabel(L1);
+  EmitComment('Port[$61] : controle haut-parleur');
+  EmitInstr('TEST EDX,3');    { bits 0-1 actives = son ON }
+  EmitInstr('JZ ' + L3);
+  EmitInstr('PUSH 100');       { duree 100ms }
+  EmitInstr('PUSH 800');       { frequence 800 Hz }
+  EmitInstr('CALL _Beep@8');
+  EmitInstr('JMP ' + L3);
+
+  { Port $70 : sauvegarder index CMOS }
+  EmitLabel(L2);
+  EmitComment('Port[$70] : sauvegarde index CMOS RTC');
+  EmitInstr('MOV BYTE PTR [PORT_RTCIDX],DL');
+
+  { Sortie }
+  EmitLabel(L3);
+  EmitInstr('POP EBX');
+  EmitInstr('RET');
+End;
+
 Procedure Run;
 Begin
   ShowBanner;
@@ -16141,6 +16635,9 @@ Begin
 
     { Emettre les routines runtime Objects (TODO 21) }
     EmitObjectsRuntime;
+
+    { Emettre les routines runtime Mem/Port (TODO 22) }
+    EmitMemPortRuntime;
 
     { TODO 13..25 : compilation complete }
 

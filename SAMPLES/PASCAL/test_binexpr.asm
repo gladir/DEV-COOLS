@@ -114,6 +114,10 @@ EXTRN _GetFileSize@8:NEAR
 EXTRN _CloseHandle@4:NEAR
 EXTRN _SetEndOfFile@4:NEAR
 EXTRN _FlushFileBuffers@4:NEAR
+; --- Imports Win32 pour emulation Mem/Port (TODO 22) ---
+; --- user32.dll ---
+EXTRN _GetAsyncKeyState@4:NEAR
+EXTRN _GetKeyState@4:NEAR
 
 ; --- Segment de donnees ---
 .DATA
@@ -238,6 +242,11 @@ OBJ_TMPPOS  DD 0
 OBJ_TMPSIZ  DD 0
 OBJ_TMPBUF  DB 1024 DUP(0)
 OBJ_BYTESRW DD 0
+
+; --- Variables Mem/Port (emulation TODO 22) ---
+MEM_TMPVAL  DD 0
+PORT_TMPVAL DD 0
+PORT_RTCIDX DB 0
 
 ; --- Constantes et donnees utilisateur ---
 _TPK_1  DB '10 + 3 = ',0
@@ -2796,5 +2805,215 @@ _TPRT_STREAM_TRUNCATE:
         MOV EAX,DWORD PTR [OBJ_TMPPOS]
         MOV DWORD PTR [OBJ_TMPSIZ],EAX
 _TPRT_ST_END:
+        RET
+
+; ============================================================
+;  RUNTIME MEM/PORT : emulation Mem/MemW/MemL/Port/PortW      
+; ============================================================
+_TPRT_READMEM:
+        PUSH EBX
+        PUSH ECX
+        CMP EAX,40h
+        JE _TPL_20
+        CMP EAX,0B800h
+        JE _TPL_21
+        JMP _TPL_22
+_TPL_20:
+        CMP EDX,17h
+        JE _TPL_24
+        CMP EDX,49h
+        JE _TPL_25
+        CMP EDX,4Ah
+        JE _TPL_26
+        CMP EDX,84h
+        JNE _TPL_22
+        MOV EAX,24
+        JMP _TPL_23
+_TPL_24:
+        XOR EAX,EAX
+        PUSH 0A1h
+        CALL _GetAsyncKeyState@4
+        TEST EAX,8000h
+        JZ _TPL_27
+        OR BYTE PTR [MEM_TMPVAL],1
+_TPL_26:
+        PUSH 0A0h
+        CALL _GetAsyncKeyState@4
+        TEST EAX,8000h
+        JZ _TPL_28
+        OR BYTE PTR [MEM_TMPVAL],2
+_TPL_27:
+        PUSH 11h
+        CALL _GetAsyncKeyState@4
+        TEST EAX,8000h
+        JZ _TPL_29
+        OR BYTE PTR [MEM_TMPVAL],4
+_TPL_28:
+        PUSH 12h
+        CALL _GetAsyncKeyState@4
+        TEST EAX,8000h
+        JZ _TPL_30
+        OR BYTE PTR [MEM_TMPVAL],8
+_TPL_29:
+        PUSH 91h
+        CALL _GetKeyState@4
+        TEST EAX,1
+        JZ _TPL_31
+        OR BYTE PTR [MEM_TMPVAL],10h
+_TPL_30:
+        PUSH 90h
+        CALL _GetKeyState@4
+        TEST EAX,1
+        JZ _TPL_32
+        OR BYTE PTR [MEM_TMPVAL],20h
+_TPL_31:
+        PUSH 14h
+        CALL _GetKeyState@4
+        TEST EAX,1
+        JZ _TPL_33
+        OR BYTE PTR [MEM_TMPVAL],40h
+_TPL_32:
+        PUSH 2Dh
+        CALL _GetKeyState@4
+        TEST EAX,1
+        JZ _TPL_34
+        OR BYTE PTR [MEM_TMPVAL],80h
+_TPL_33:
+        MOVZX EAX,BYTE PTR [MEM_TMPVAL]
+        MOV BYTE PTR [MEM_TMPVAL],0
+        JMP _TPL_23
+_TPL_25:
+        MOV EAX,3
+        JMP _TPL_23
+_TPL_26:
+        MOV EAX,80
+        JMP _TPL_23
+_TPL_21:
+        XOR EAX,EAX
+; memoire video texte non emulee (retourne 0)
+        JMP _TPL_23
+_TPL_22:
+        XOR EAX,EAX
+_TPL_23:
+        POP ECX
+        POP EBX
+        RET
+_TPRT_WRITEMEM:
+; Mem[Seg:Ofs] := val  (ecriture emulee - stub)
+        RET
+_TPRT_INPORT:
+        PUSH EBX
+        CMP EAX,60h
+        JE _TPL_35
+        CMP EAX,61h
+        JE _TPL_36
+        CMP EAX,70h
+        JE _TPL_37
+        CMP EAX,71h
+        JE _TPL_38
+        JMP _TPL_39
+_TPL_35:
+; Port[$60] : lecture clavier emulee
+        XOR EAX,EAX
+        MOV ECX,255
+_TPL_42:
+        PUSH ECX
+        PUSH ECX
+        CALL _GetAsyncKeyState@4
+        POP ECX
+        TEST EAX,8000h
+        JNZ _TPL_43
+        DEC ECX
+        JNZ _TPL_41
+        XOR EAX,EAX
+        JMP _TPL_40
+_TPL_42:
+        MOV EAX,ECX
+        JMP _TPL_40
+_TPL_36:
+; Port[$61] : controle haut-parleur (stub)
+        XOR EAX,EAX
+        JMP _TPL_40
+_TPL_37:
+; Port[$70] : index CMOS RTC
+        MOVZX EAX,BYTE PTR [PORT_RTCIDX]
+        JMP _TPL_40
+_TPL_38:
+; Port[$71] : donnees CMOS RTC via GetLocalTime
+        SUB ESP,16
+        PUSH ESP
+        CALL _GetLocalTime@4
+        MOVZX EBX,BYTE PTR [PORT_RTCIDX]
+        CMP EBX,0
+        JNE _TPL_44
+        MOVZX EAX,WORD PTR [ESP+12]
+        ADD ESP,16
+        JMP _TPL_40
+_TPL_43:
+        CMP EBX,2
+        JNE _TPL_45
+        MOVZX EAX,WORD PTR [ESP+10]
+        ADD ESP,16
+        JMP _TPL_40
+_TPL_44:
+        CMP EBX,4
+        JNE _TPL_46
+        MOVZX EAX,WORD PTR [ESP+8]
+        ADD ESP,16
+        JMP _TPL_40
+_TPL_45:
+        CMP EBX,6
+        JNE _TPL_47
+        MOVZX EAX,WORD PTR [ESP+4]
+        ADD ESP,16
+        JMP _TPL_40
+_TPL_46:
+        CMP EBX,7
+        JNE _TPL_48
+        MOVZX EAX,WORD PTR [ESP+6]
+        ADD ESP,16
+        JMP _TPL_40
+_TPL_47:
+        CMP EBX,8
+        JNE _TPL_49
+        MOVZX EAX,WORD PTR [ESP+2]
+        ADD ESP,16
+        JMP _TPL_40
+_TPL_48:
+        CMP EBX,9
+        JNE _TPL_50
+        MOVZX EAX,WORD PTR [ESP]
+        ADD ESP,16
+        JMP _TPL_40
+_TPL_49:
+        XOR EAX,EAX
+        ADD ESP,16
+        JMP _TPL_40
+_TPL_39:
+; Port non emule (retourne 0)
+        XOR EAX,EAX
+_TPL_40:
+        POP EBX
+        RET
+_TPRT_OUTPORT:
+        PUSH EBX
+        CMP EAX,61h
+        JE _TPL_51
+        CMP EAX,70h
+        JE _TPL_52
+        JMP _TPL_53
+_TPL_51:
+; Port[$61] : controle haut-parleur
+        TEST EDX,3
+        JZ _TPL_53
+        PUSH 100
+        PUSH 800
+        CALL _Beep@8
+        JMP _TPL_53
+_TPL_52:
+; Port[$70] : sauvegarde index CMOS RTC
+        MOV BYTE PTR [PORT_RTCIDX],DL
+_TPL_53:
+        POP EBX
         RET
 END _TPF_Main
