@@ -2326,21 +2326,24 @@ End;
 (* unaire + : noop                                                *)
 
 Procedure EmitUnaryOp(Const Op : TString);
-Var LblEnd : TString;
+Var LblZero, LblEnd : TString;
 Begin
   If Op = 'NOT' Then
   Begin
+    Inc(LabelGenSeq);
+    Str(LabelGenSeq, LblZero);
+    LblZero := M3_LBL_PFX + LblZero;
     Inc(LabelGenSeq);
     Str(LabelGenSeq, LblEnd);
     LblEnd := M3_LBL_PFX + LblEnd;
 
     WriteLn(OutF, '        TEST    AX, AX');
-    WriteLn(OutF, '        JZ      ', LblEnd);
+    WriteLn(OutF, '        JZ      ', LblZero);
     WriteLn(OutF, '        XOR     AX, AX');
-    WriteLn(OutF, '        JMP     SHORT ', LblEnd, '_D');
-    WriteLn(OutF, LblEnd, ':');
+    WriteLn(OutF, '        JMP     SHORT ', LblEnd);
+    WriteLn(OutF, LblZero, ':');
     WriteLn(OutF, '        MOV     AX, 1');
-    WriteLn(OutF, LblEnd, '_D:');
+    WriteLn(OutF, LblEnd, ':');
   End
   Else If Op = '-' Then
     WriteLn(OutF, '        NEG     AX')
