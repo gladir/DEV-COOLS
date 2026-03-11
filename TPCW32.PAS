@@ -1383,7 +1383,7 @@ Begin
     CurToken.Kind    := TK_REAL;
     CurToken.RealVal := FltVal;
     If FltVal > 2147483647.0 Then N := 2147483647
-    Else If FltVal < -2147483648.0 Then N := -2147483647
+    Else If FltVal < -2147483647.0 Then N := -2147483647
     Else N := Trunc(FltVal);
     CurToken.IntVal := N;
     Str(FltVal:0:6, CurToken.Val);
