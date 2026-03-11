@@ -210,7 +210,7 @@
             En cfscript : for (element in collection) { }
             LoopPush / LoopPop : pile de labels pour break/continue
 
-  TODO 15 - FONCTIONS INTEGREES DE CHAINE
+  TODO 15 - FONCTIONS INTEGREES DE CHAINE [IMPLEMENTE]
             Len(str)               -> CALL _CFRT_STRLEN -> AX
             Left(str, count)       -> CALL _CFRT_LEFT -> AX=ptr
             Right(str, count)      -> CALL _CFRT_RIGHT -> AX=ptr
@@ -1921,6 +1921,11 @@ Begin
   { Variables temporaires pour cfloop (TODO 14) }
   DataAddWord('_CF_LOOPLIM', 0);
   DataAddWord('_CF_LOOPSTP', 0);
+
+  { Buffer secondaire pour fonctions de chaine (TODO 15) }
+  Idx := DataAdd('_CF_STRBUF2', DK_ARRAY_BLK, 0, '');
+  If Idx >= 0 Then
+    DataTab[Idx].ElemCount := 256;
 End;
 
 { ---- ExprMakeImm : construire une valeur immediate --------- }
@@ -3205,6 +3210,607 @@ Begin
   EmitInstr('CALL', CF_RT_PFX + 'PRINT');
   EmitInstr('RET', '');
   EmitBlankLine;
+
+  { ============================================================ }
+  { TODO 15 - Routines runtime pour fonctions de chaine          }
+  { ============================================================ }
+
+  { ---- _CFRT_LEFT : Left(str, count) ---- }
+  { Entree : SI = ptr chaine, CX = nombre de caracteres }
+  { Sortie : AX = ptr vers _CF_STRBUF }
+  EmitLabel(CF_RT_PFX + 'LEFT');
+  EmitInstr('PUSH', 'DI');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _CF_STRBUF');
+  EmitLabel(CF_RT_PFX + 'LEFT_LP');
+  EmitInstrAB('OR', 'CX', 'CX');
+  EmitInstr('JZ', CF_RT_PFX + 'LEFT_DN');
+  EmitInstr('LODSB', '');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstr('JZ', CF_RT_PFX + 'LEFT_DN');
+  EmitInstr('STOSB', '');
+  EmitInstr('DEC', 'CX');
+  EmitInstr('JMP', CF_RT_PFX + 'LEFT_LP');
+  EmitLabel(CF_RT_PFX + 'LEFT_DN');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _CF_STRBUF');
+  EmitInstr('POP', 'DI');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_RIGHT : Right(str, count) ---- }
+  { Entree : SI = ptr chaine, CX = nombre de caracteres }
+  { Sortie : AX = ptr vers _CF_STRBUF }
+  EmitLabel(CF_RT_PFX + 'RIGHT');
+  EmitInstr('PUSH', 'DI');
+  EmitInstr('PUSH', 'BX');
+  { D'abord trouver la longueur }
+  EmitInstr('PUSH', 'CX');
+  EmitInstr('PUSH', 'SI');
+  EmitInstr('CALL', CF_RT_PFX + 'STRLEN');
+  EmitInstr('POP', 'SI');
+  EmitInstrAB('MOV', 'BX', 'CX');  { BX = length }
+  EmitInstr('POP', 'CX');
+  { Si count >= length, copier tout }
+  EmitInstrAB('CMP', 'CX', 'BX');
+  EmitInstr('JAE', CF_RT_PFX + 'RIGHT_ALL');
+  { Avancer SI de (length - count) }
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstrAB('SUB', 'AX', 'CX');
+  EmitInstrAB('ADD', 'SI', 'AX');
+  EmitInstr('JMP', CF_RT_PFX + 'RIGHT_CP');
+  EmitLabel(CF_RT_PFX + 'RIGHT_ALL');
+  EmitInstrAB('MOV', 'CX', 'BX');
+  EmitLabel(CF_RT_PFX + 'RIGHT_CP');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _CF_STRBUF');
+  EmitLabel(CF_RT_PFX + 'RIGHT_LP');
+  EmitInstrAB('OR', 'CX', 'CX');
+  EmitInstr('JZ', CF_RT_PFX + 'RIGHT_DN');
+  EmitInstr('LODSB', '');
+  EmitInstr('STOSB', '');
+  EmitInstr('DEC', 'CX');
+  EmitInstr('JMP', CF_RT_PFX + 'RIGHT_LP');
+  EmitLabel(CF_RT_PFX + 'RIGHT_DN');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _CF_STRBUF');
+  EmitInstr('POP', 'BX');
+  EmitInstr('POP', 'DI');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_MID : Mid(str, start, count) ---- }
+  { Entree : SI = ptr chaine, BX = start (1-based), CX = count }
+  { Sortie : AX = ptr vers _CF_STRBUF }
+  EmitLabel(CF_RT_PFX + 'MID');
+  EmitInstr('PUSH', 'DI');
+  { Avancer SI de (start - 1) }
+  EmitInstr('DEC', 'BX');
+  EmitLabel(CF_RT_PFX + 'MID_SK');
+  EmitInstrAB('OR', 'BX', 'BX');
+  EmitInstr('JZ', CF_RT_PFX + 'MID_CP');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstr('JE', CF_RT_PFX + 'MID_CP');
+  EmitInstr('INC', 'SI');
+  EmitInstr('DEC', 'BX');
+  EmitInstr('JMP', CF_RT_PFX + 'MID_SK');
+  EmitLabel(CF_RT_PFX + 'MID_CP');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _CF_STRBUF');
+  EmitLabel(CF_RT_PFX + 'MID_LP');
+  EmitInstrAB('OR', 'CX', 'CX');
+  EmitInstr('JZ', CF_RT_PFX + 'MID_DN');
+  EmitInstr('LODSB', '');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstr('JZ', CF_RT_PFX + 'MID_DN');
+  EmitInstr('STOSB', '');
+  EmitInstr('DEC', 'CX');
+  EmitInstr('JMP', CF_RT_PFX + 'MID_LP');
+  EmitLabel(CF_RT_PFX + 'MID_DN');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _CF_STRBUF');
+  EmitInstr('POP', 'DI');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_TRIM : Trim(str) ---- }
+  { Entree : SI = ptr chaine }
+  { Sortie : AX = ptr vers _CF_STRBUF }
+  EmitLabel(CF_RT_PFX + 'TRIM');
+  EmitInstr('PUSH', 'DI');
+  { Skip leading spaces }
+  EmitLabel(CF_RT_PFX + 'TRIM_LS');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '32');
+  EmitInstr('JNE', CF_RT_PFX + 'TRIM_CP');
+  EmitInstr('INC', 'SI');
+  EmitInstr('JMP', CF_RT_PFX + 'TRIM_LS');
+  EmitLabel(CF_RT_PFX + 'TRIM_CP');
+  { Copy to buffer }
+  EmitInstrAB('MOV', 'DI', 'OFFSET _CF_STRBUF');
+  EmitLabel(CF_RT_PFX + 'TRIM_CL');
+  EmitInstr('LODSB', '');
+  EmitInstr('STOSB', '');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstr('JNZ', CF_RT_PFX + 'TRIM_CL');
+  { Now trim trailing spaces: back up from null }
+  EmitInstr('DEC', 'DI');  { point to null }
+  EmitLabel(CF_RT_PFX + 'TRIM_RS');
+  EmitInstrAB('CMP', 'DI', 'OFFSET _CF_STRBUF');
+  EmitInstr('JBE', CF_RT_PFX + 'TRIM_DN');
+  EmitInstr('DEC', 'DI');
+  EmitInstrAB('CMP', 'BYTE PTR [DI]', '32');
+  EmitInstr('JE', CF_RT_PFX + 'TRIM_RS');
+  EmitInstr('INC', 'DI');
+  EmitLabel(CF_RT_PFX + 'TRIM_DN');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _CF_STRBUF');
+  EmitInstr('POP', 'DI');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_LTRIM : LTrim(str) ---- }
+  { Entree : SI = ptr chaine }
+  { Sortie : AX = ptr vers _CF_STRBUF }
+  EmitLabel(CF_RT_PFX + 'LTRIM');
+  EmitInstr('PUSH', 'DI');
+  EmitLabel(CF_RT_PFX + 'LTR_LS');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '32');
+  EmitInstr('JNE', CF_RT_PFX + 'LTR_CP');
+  EmitInstr('INC', 'SI');
+  EmitInstr('JMP', CF_RT_PFX + 'LTR_LS');
+  EmitLabel(CF_RT_PFX + 'LTR_CP');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _CF_STRBUF');
+  EmitLabel(CF_RT_PFX + 'LTR_CL');
+  EmitInstr('LODSB', '');
+  EmitInstr('STOSB', '');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstr('JNZ', CF_RT_PFX + 'LTR_CL');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _CF_STRBUF');
+  EmitInstr('POP', 'DI');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_RTRIM : RTrim(str) ---- }
+  { Entree : SI = ptr chaine }
+  { Sortie : AX = ptr vers _CF_STRBUF }
+  EmitLabel(CF_RT_PFX + 'RTRIM');
+  EmitInstr('PUSH', 'DI');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _CF_STRBUF');
+  EmitLabel(CF_RT_PFX + 'RTR_CL');
+  EmitInstr('LODSB', '');
+  EmitInstr('STOSB', '');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstr('JNZ', CF_RT_PFX + 'RTR_CL');
+  EmitInstr('DEC', 'DI');
+  EmitLabel(CF_RT_PFX + 'RTR_RS');
+  EmitInstrAB('CMP', 'DI', 'OFFSET _CF_STRBUF');
+  EmitInstr('JBE', CF_RT_PFX + 'RTR_DN');
+  EmitInstr('DEC', 'DI');
+  EmitInstrAB('CMP', 'BYTE PTR [DI]', '32');
+  EmitInstr('JE', CF_RT_PFX + 'RTR_RS');
+  EmitInstr('INC', 'DI');
+  EmitLabel(CF_RT_PFX + 'RTR_DN');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _CF_STRBUF');
+  EmitInstr('POP', 'DI');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_UCASE : UCase(str) ---- }
+  { Entree : SI = ptr chaine }
+  { Sortie : AX = ptr vers _CF_STRBUF }
+  EmitLabel(CF_RT_PFX + 'UCASE');
+  EmitInstr('PUSH', 'DI');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _CF_STRBUF');
+  EmitLabel(CF_RT_PFX + 'UC_LP');
+  EmitInstr('LODSB', '');
+  EmitInstrAB('CMP', 'AL', '''a''');
+  EmitInstr('JB', CF_RT_PFX + 'UC_ST');
+  EmitInstrAB('CMP', 'AL', '''z''');
+  EmitInstr('JA', CF_RT_PFX + 'UC_ST');
+  EmitInstrAB('SUB', 'AL', '32');
+  EmitLabel(CF_RT_PFX + 'UC_ST');
+  EmitInstr('STOSB', '');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstr('JNZ', CF_RT_PFX + 'UC_LP');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _CF_STRBUF');
+  EmitInstr('POP', 'DI');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_LCASE : LCase(str) ---- }
+  { Entree : SI = ptr chaine }
+  { Sortie : AX = ptr vers _CF_STRBUF }
+  EmitLabel(CF_RT_PFX + 'LCASE');
+  EmitInstr('PUSH', 'DI');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _CF_STRBUF');
+  EmitLabel(CF_RT_PFX + 'LC_LP');
+  EmitInstr('LODSB', '');
+  EmitInstrAB('CMP', 'AL', '''A''');
+  EmitInstr('JB', CF_RT_PFX + 'LC_ST');
+  EmitInstrAB('CMP', 'AL', '''Z''');
+  EmitInstr('JA', CF_RT_PFX + 'LC_ST');
+  EmitInstrAB('ADD', 'AL', '32');
+  EmitLabel(CF_RT_PFX + 'LC_ST');
+  EmitInstr('STOSB', '');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstr('JNZ', CF_RT_PFX + 'LC_LP');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _CF_STRBUF');
+  EmitInstr('POP', 'DI');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_FIND : Find(substr, str) ---- }
+  { Entree : DI = ptr sous-chaine, SI = ptr chaine principale }
+  { Sortie : AX = position 1-based (0 si non trouve) }
+  EmitLabel(CF_RT_PFX + 'FIND');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('PUSH', 'CX');
+  EmitInstr('PUSH', 'DX');
+  EmitInstrAB('XOR', 'BX', 'BX');  { BX = position counter }
+  EmitLabel(CF_RT_PFX + 'FND_LP');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstr('JE', CF_RT_PFX + 'FND_NF');
+  EmitInstr('INC', 'BX');
+  { Comparer substr a cette position }
+  EmitInstr('PUSH', 'SI');
+  EmitInstr('PUSH', 'DI');
+  EmitLabel(CF_RT_PFX + 'FND_CM');
+  EmitInstrAB('MOV', 'AL', '[DI]');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstr('JZ', CF_RT_PFX + 'FND_OK');  { fin de substr = trouve }
+  EmitInstrAB('CMP', 'AL', '[SI]');
+  EmitInstr('JNE', CF_RT_PFX + 'FND_NX');
+  EmitInstr('INC', 'SI');
+  EmitInstr('INC', 'DI');
+  EmitInstr('JMP', CF_RT_PFX + 'FND_CM');
+  EmitLabel(CF_RT_PFX + 'FND_NX');
+  EmitInstr('POP', 'DI');
+  EmitInstr('POP', 'SI');
+  EmitInstr('INC', 'SI');
+  EmitInstr('JMP', CF_RT_PFX + 'FND_LP');
+  EmitLabel(CF_RT_PFX + 'FND_OK');
+  EmitInstr('POP', 'DI');
+  EmitInstr('POP', 'SI');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstr('JMP', CF_RT_PFX + 'FND_RT');
+  EmitLabel(CF_RT_PFX + 'FND_NF');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitLabel(CF_RT_PFX + 'FND_RT');
+  EmitInstr('POP', 'DX');
+  EmitInstr('POP', 'CX');
+  EmitInstr('POP', 'BX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_FINDNOCASE : FindNoCase(substr, str) ---- }
+  { Like FIND but case-insensitive }
+  { Entree : DI = ptr sous-chaine, SI = ptr chaine principale }
+  { Sortie : AX = position 1-based (0 si non trouve) }
+  EmitLabel(CF_RT_PFX + 'FINDNOCASE');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('PUSH', 'CX');
+  EmitInstr('PUSH', 'DX');
+  EmitInstrAB('XOR', 'BX', 'BX');
+  EmitLabel(CF_RT_PFX + 'FNC_LP');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstr('JE', CF_RT_PFX + 'FNC_NF');
+  EmitInstr('INC', 'BX');
+  EmitInstr('PUSH', 'SI');
+  EmitInstr('PUSH', 'DI');
+  EmitLabel(CF_RT_PFX + 'FNC_CM');
+  EmitInstrAB('MOV', 'AL', '[DI]');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstr('JZ', CF_RT_PFX + 'FNC_OK');
+  EmitInstrAB('MOV', 'AH', '[SI]');
+  { toupper AL }
+  EmitInstrAB('CMP', 'AL', '''a''');
+  EmitInstr('JB', CF_RT_PFX + 'FNC_U1');
+  EmitInstrAB('CMP', 'AL', '''z''');
+  EmitInstr('JA', CF_RT_PFX + 'FNC_U1');
+  EmitInstrAB('SUB', 'AL', '32');
+  EmitLabel(CF_RT_PFX + 'FNC_U1');
+  { toupper AH }
+  EmitInstrAB('CMP', 'AH', '''a''');
+  EmitInstr('JB', CF_RT_PFX + 'FNC_U2');
+  EmitInstrAB('CMP', 'AH', '''z''');
+  EmitInstr('JA', CF_RT_PFX + 'FNC_U2');
+  EmitInstrAB('SUB', 'AH', '32');
+  EmitLabel(CF_RT_PFX + 'FNC_U2');
+  EmitInstrAB('CMP', 'AL', 'AH');
+  EmitInstr('JNE', CF_RT_PFX + 'FNC_NX');
+  EmitInstr('INC', 'SI');
+  EmitInstr('INC', 'DI');
+  EmitInstr('JMP', CF_RT_PFX + 'FNC_CM');
+  EmitLabel(CF_RT_PFX + 'FNC_NX');
+  EmitInstr('POP', 'DI');
+  EmitInstr('POP', 'SI');
+  EmitInstr('INC', 'SI');
+  EmitInstr('JMP', CF_RT_PFX + 'FNC_LP');
+  EmitLabel(CF_RT_PFX + 'FNC_OK');
+  EmitInstr('POP', 'DI');
+  EmitInstr('POP', 'SI');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstr('JMP', CF_RT_PFX + 'FNC_RT');
+  EmitLabel(CF_RT_PFX + 'FNC_NF');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitLabel(CF_RT_PFX + 'FNC_RT');
+  EmitInstr('POP', 'DX');
+  EmitInstr('POP', 'CX');
+  EmitInstr('POP', 'BX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_REPLACE : Replace(str, search, replacement) ---- }
+  { Entree : SI = source, DI = search, BX = replacement }
+  { Sortie : AX = ptr vers _CF_STRBUF (premiere occurrence remplacee) }
+  EmitLabel(CF_RT_PFX + 'REPLACE');
+  EmitInstr('PUSH', 'CX');
+  EmitInstr('PUSH', 'DX');
+  EmitInstr('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'OFFSET _CF_STRBUF');
+  { Trouver la longueur de search }
+  EmitInstr('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', 'DI');
+  EmitInstr('CALL', CF_RT_PFX + 'STRLEN');
+  EmitInstrAB('MOV', 'DX', 'CX');  { DX = search length }
+  EmitInstr('POP', 'SI');
+  EmitLabel(CF_RT_PFX + 'RPL_LP');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstr('JE', CF_RT_PFX + 'RPL_DN');
+  { Comparer a cette position }
+  EmitInstr('PUSH', 'SI');
+  EmitInstr('PUSH', 'DI');
+  EmitInstrAB('MOV', 'CX', 'DX');
+  EmitLabel(CF_RT_PFX + 'RPL_CM');
+  EmitInstrAB('OR', 'CX', 'CX');
+  EmitInstr('JZ', CF_RT_PFX + 'RPL_FD');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('CMP', 'AL', '[DI]');
+  EmitInstr('JNE', CF_RT_PFX + 'RPL_NM');
+  EmitInstr('INC', 'SI');
+  EmitInstr('INC', 'DI');
+  EmitInstr('DEC', 'CX');
+  EmitInstr('JMP', CF_RT_PFX + 'RPL_CM');
+  EmitLabel(CF_RT_PFX + 'RPL_NM');
+  { Pas de correspondance - copier le caractere et continuer }
+  EmitInstr('POP', 'DI');
+  EmitInstr('POP', 'SI');
+  EmitInstr('LODSB', '');
+  EmitInstrAB('MOV', 'CX', 'BP');
+  EmitInstrAB('XCHG', 'DI', 'CX');
+  EmitInstr('STOSB', '');
+  EmitInstrAB('MOV', 'BP', 'DI');
+  EmitInstrAB('XCHG', 'DI', 'CX');
+  EmitInstr('JMP', CF_RT_PFX + 'RPL_LP');
+  EmitLabel(CF_RT_PFX + 'RPL_FD');
+  { Correspondance trouvee - copier replacement }
+  EmitInstr('POP', 'DI');
+  EmitInstr('POP', 'SI');
+  EmitInstrAB('ADD', 'SI', 'DX');  { avancer SI apres le match }
+  EmitInstr('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', 'BX');  { SI = replacement }
+  EmitInstrAB('XCHG', 'DI', 'BP');
+  EmitLabel(CF_RT_PFX + 'RPL_RC');
+  EmitInstr('LODSB', '');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstr('JZ', CF_RT_PFX + 'RPL_RD');
+  EmitInstr('STOSB', '');
+  EmitInstr('JMP', CF_RT_PFX + 'RPL_RC');
+  EmitLabel(CF_RT_PFX + 'RPL_RD');
+  EmitInstrAB('MOV', 'BP', 'DI');
+  EmitInstr('POP', 'SI');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _CF_NULL_STR');
+  EmitInstrAB('XOR', 'DX', 'DX');
+  { Copier le reste }
+  EmitLabel(CF_RT_PFX + 'RPL_RS');
+  EmitInstr('LODSB', '');
+  EmitInstrAB('XCHG', 'DI', 'BP');
+  EmitInstr('STOSB', '');
+  EmitInstrAB('MOV', 'BP', 'DI');
+  EmitInstrAB('XCHG', 'DI', 'BP');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstr('JNZ', CF_RT_PFX + 'RPL_RS');
+  EmitInstr('JMP', CF_RT_PFX + 'RPL_RT');
+  EmitLabel(CF_RT_PFX + 'RPL_DN');
+  { Fin de chaine - terminer le buffer }
+  EmitInstrAB('XCHG', 'DI', 'BP');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitLabel(CF_RT_PFX + 'RPL_RT');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _CF_STRBUF');
+  EmitInstr('POP', 'BP');
+  EmitInstr('POP', 'DX');
+  EmitInstr('POP', 'CX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_STRTONUM : convertir chaine -> entier ---- }
+  { Entree : SI = ptr chaine ASCIIZ }
+  { Sortie : AX = valeur entiere }
+  EmitLabel(CF_RT_PFX + 'STRTONUM');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('PUSH', 'CX');
+  EmitInstr('PUSH', 'DX');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstrAB('XOR', 'CX', 'CX');  { CX = signe (0=+, 1=-) }
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '''-''');
+  EmitInstr('JNE', CF_RT_PFX + 'STN_LP');
+  EmitInstrAB('MOV', 'CX', '1');
+  EmitInstr('INC', 'SI');
+  EmitLabel(CF_RT_PFX + 'STN_LP');
+  EmitInstrAB('MOV', 'BL', '[SI]');
+  EmitInstrAB('XOR', 'BH', 'BH');
+  EmitInstrAB('SUB', 'BL', '''0''');
+  EmitInstr('JB', CF_RT_PFX + 'STN_DN');
+  EmitInstrAB('CMP', 'BL', '9');
+  EmitInstr('JA', CF_RT_PFX + 'STN_DN');
+  EmitInstr('PUSH', 'DX');
+  EmitInstrAB('MOV', 'DX', '10');
+  EmitInstr('MUL', 'DX');
+  EmitInstr('POP', 'DX');
+  EmitInstrAB('ADD', 'AX', 'BX');
+  EmitInstr('INC', 'SI');
+  EmitInstr('JMP', CF_RT_PFX + 'STN_LP');
+  EmitLabel(CF_RT_PFX + 'STN_DN');
+  EmitInstrAB('OR', 'CX', 'CX');
+  EmitInstr('JZ', CF_RT_PFX + 'STN_RT');
+  EmitInstr('NEG', 'AX');
+  EmitLabel(CF_RT_PFX + 'STN_RT');
+  EmitInstr('POP', 'DX');
+  EmitInstr('POP', 'CX');
+  EmitInstr('POP', 'BX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_REPEAT : RepeatString(str, count) ---- }
+  { Entree : SI = ptr chaine, CX = repetitions }
+  { Sortie : AX = ptr vers _CF_STRBUF }
+  EmitLabel(CF_RT_PFX + 'REPEAT');
+  EmitInstr('PUSH', 'DI');
+  EmitInstr('PUSH', 'BX');
+  EmitInstrAB('MOV', 'BX', 'SI');  { BX = saved source ptr }
+  EmitInstrAB('MOV', 'DI', 'OFFSET _CF_STRBUF');
+  EmitLabel(CF_RT_PFX + 'RPT_OL');
+  EmitInstrAB('OR', 'CX', 'CX');
+  EmitInstr('JZ', CF_RT_PFX + 'RPT_DN');
+  EmitInstrAB('MOV', 'SI', 'BX');  { reset source to start }
+  EmitLabel(CF_RT_PFX + 'RPT_IL');
+  EmitInstr('LODSB', '');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstr('JZ', CF_RT_PFX + 'RPT_NX');
+  EmitInstr('STOSB', '');
+  EmitInstr('JMP', CF_RT_PFX + 'RPT_IL');
+  EmitLabel(CF_RT_PFX + 'RPT_NX');
+  EmitInstr('DEC', 'CX');
+  EmitInstr('JMP', CF_RT_PFX + 'RPT_OL');
+  EmitLabel(CF_RT_PFX + 'RPT_DN');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _CF_STRBUF');
+  EmitInstr('POP', 'BX');
+  EmitInstr('POP', 'DI');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_REVERSE : Reverse(str) ---- }
+  { Entree : SI = ptr chaine }
+  { Sortie : AX = ptr vers _CF_STRBUF }
+  EmitLabel(CF_RT_PFX + 'REVERSE');
+  EmitInstr('PUSH', 'DI');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('PUSH', 'CX');
+  { Trouver la longueur }
+  EmitInstr('CALL', CF_RT_PFX + 'STRLEN');
+  { DI = end of buffer (CX chars), copier a l'envers }
+  EmitInstrAB('MOV', 'DI', 'OFFSET _CF_STRBUF');
+  EmitInstrAB('ADD', 'SI', 'CX');
+  EmitInstr('DEC', 'SI');  { SI pointe sur le dernier caractere }
+  EmitLabel(CF_RT_PFX + 'REV_LP');
+  EmitInstrAB('OR', 'CX', 'CX');
+  EmitInstr('JZ', CF_RT_PFX + 'REV_DN');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstr('STOSB', '');
+  EmitInstr('DEC', 'SI');
+  EmitInstr('DEC', 'CX');
+  EmitInstr('JMP', CF_RT_PFX + 'REV_LP');
+  EmitLabel(CF_RT_PFX + 'REV_DN');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _CF_STRBUF');
+  EmitInstr('POP', 'CX');
+  EmitInstr('POP', 'BX');
+  EmitInstr('POP', 'DI');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_LISTLEN : ListLen(list) ---- }
+  { Entree : SI = ptr chaine CSV (separateur virgule) }
+  { Sortie : AX = nombre d elements }
+  EmitLabel(CF_RT_PFX + 'LISTLEN');
+  EmitInstr('PUSH', 'BX');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstr('JE', CF_RT_PFX + 'LLN_RT');
+  EmitInstr('INC', 'AX');  { au moins 1 element si chaine non vide }
+  EmitLabel(CF_RT_PFX + 'LLN_LP');
+  EmitInstrAB('MOV', 'BL', '[SI]');
+  EmitInstrAB('OR', 'BL', 'BL');
+  EmitInstr('JZ', CF_RT_PFX + 'LLN_RT');
+  EmitInstrAB('CMP', 'BL', ''',''');
+  EmitInstr('JNE', CF_RT_PFX + 'LLN_NX');
+  EmitInstr('INC', 'AX');
+  EmitLabel(CF_RT_PFX + 'LLN_NX');
+  EmitInstr('INC', 'SI');
+  EmitInstr('JMP', CF_RT_PFX + 'LLN_LP');
+  EmitLabel(CF_RT_PFX + 'LLN_RT');
+  EmitInstr('POP', 'BX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_LISTGETAT : ListGetAt(list, position) ---- }
+  { Entree : SI = ptr chaine CSV, CX = position (1-based) }
+  { Sortie : AX = ptr vers _CF_STRBUF2 }
+  EmitLabel(CF_RT_PFX + 'LISTGETAT');
+  EmitInstr('PUSH', 'DI');
+  EmitInstr('DEC', 'CX');  { convertir en 0-based }
+  { Avancer au Nth element }
+  EmitLabel(CF_RT_PFX + 'LGA_SK');
+  EmitInstrAB('OR', 'CX', 'CX');
+  EmitInstr('JZ', CF_RT_PFX + 'LGA_CP');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstr('JE', CF_RT_PFX + 'LGA_CP');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', ''',''');
+  EmitInstr('JNE', CF_RT_PFX + 'LGA_NX');
+  EmitInstr('DEC', 'CX');
+  EmitLabel(CF_RT_PFX + 'LGA_NX');
+  EmitInstr('INC', 'SI');
+  EmitInstr('JMP', CF_RT_PFX + 'LGA_SK');
+  EmitLabel(CF_RT_PFX + 'LGA_CP');
+  { Copier jusqu'a virgule ou fin }
+  EmitInstrAB('MOV', 'DI', 'OFFSET _CF_STRBUF2');
+  EmitLabel(CF_RT_PFX + 'LGA_CL');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstr('JZ', CF_RT_PFX + 'LGA_DN');
+  EmitInstrAB('CMP', 'AL', ''',''');
+  EmitInstr('JE', CF_RT_PFX + 'LGA_DN');
+  EmitInstr('STOSB', '');
+  EmitInstr('INC', 'SI');
+  EmitInstr('JMP', CF_RT_PFX + 'LGA_CL');
+  EmitLabel(CF_RT_PFX + 'LGA_DN');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _CF_STRBUF2');
+  EmitInstr('POP', 'DI');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_LISTAPPEND : ListAppend(list, value) ---- }
+  { Entree : SI = ptr chaine CSV, DI = ptr valeur a ajouter }
+  { Sortie : AX = ptr vers _CF_STRBUF }
+  EmitLabel(CF_RT_PFX + 'LISTAPPEND');
+  EmitInstr('PUSH', 'BX');
+  EmitInstrAB('MOV', 'BX', 'OFFSET _CF_STRBUF');
+  { Copier la liste existante }
+  EmitLabel(CF_RT_PFX + 'LAP_CL');
+  EmitInstr('LODSB', '');
+  EmitInstrAB('MOV', '[BX]', 'AL');
+  EmitInstr('INC', 'BX');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstr('JNZ', CF_RT_PFX + 'LAP_CL');
+  EmitInstr('DEC', 'BX');  { revenir sur le null }
+  { Ajouter virgule si la liste n est pas vide }
+  EmitInstrAB('CMP', 'BX', 'OFFSET _CF_STRBUF');
+  EmitInstr('JE', CF_RT_PFX + 'LAP_CV');
+  EmitInstrAB('MOV', 'BYTE PTR [BX]', ''',''');
+  EmitInstr('INC', 'BX');
+  EmitLabel(CF_RT_PFX + 'LAP_CV');
+  { Copier la valeur }
+  EmitInstrAB('MOV', 'SI', 'DI');
+  EmitLabel(CF_RT_PFX + 'LAP_VL');
+  EmitInstr('LODSB', '');
+  EmitInstrAB('MOV', '[BX]', 'AL');
+  EmitInstr('INC', 'BX');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstr('JNZ', CF_RT_PFX + 'LAP_VL');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _CF_STRBUF');
+  EmitInstr('POP', 'BX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
 End;
 
 (* ---- EmitClose : fermer le fichier assembleur --------------- *)
@@ -3587,6 +4193,9 @@ End;
 (*   - - expr (negation unaire)                                 *)
 (*   - IsDefined("var") -> AX=1 si existe, 0 sinon             *)
 (*   - Len(str) -> CALL _CFRT_STRLEN -> AX                     *)
+(*   - TODO 15 : Left Right Mid Trim LTrim RTrim UCase LCase  *)
+(*     Find FindNoCase Replace Chr Asc Val RepeatString        *)
+(*     Reverse ListLen ListGetAt ListAppend                    *)
 Procedure ParsePrimary(Var Res : TExprVal);
 Var
   Name     : TString;
@@ -3682,6 +4291,284 @@ Begin
       EmitInstr('CALL', CF_RT_PFX + 'STRLEN');
       Res.Kind    := EK_AX;
       Res.TypeIdx := TY_IDX_NUMERIC;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : Left(str, count) -------------- }
+    Else If (U = 'LEFT') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('Left()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'CX');  { count }
+      EmitInstr('POP', 'SI');  { string ptr }
+      EmitInstr('CALL', CF_RT_PFX + 'LEFT');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_STRING;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : Right(str, count) ------------- }
+    Else If (U = 'RIGHT') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('Right()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'CX');  { count }
+      EmitInstr('POP', 'SI');  { string ptr }
+      EmitInstr('CALL', CF_RT_PFX + 'RIGHT');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_STRING;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : Mid(str, start, count) -------- }
+    Else If (U = 'MID') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('Mid()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'CX');  { count }
+      EmitInstr('POP', 'BX');  { start (1-based) }
+      EmitInstr('POP', 'SI');  { string ptr }
+      EmitInstr('CALL', CF_RT_PFX + 'MID');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_STRING;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : Trim(str) --------------------- }
+    Else If (U = 'TRIM') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('Trim()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'SI');  { string ptr }
+      EmitInstr('CALL', CF_RT_PFX + 'TRIM');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_STRING;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : LTrim(str) -------------------- }
+    Else If (U = 'LTRIM') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('LTrim()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'SI');  { string ptr }
+      EmitInstr('CALL', CF_RT_PFX + 'LTRIM');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_STRING;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : RTrim(str) -------------------- }
+    Else If (U = 'RTRIM') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('RTrim()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'SI');  { string ptr }
+      EmitInstr('CALL', CF_RT_PFX + 'RTRIM');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_STRING;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : UCase(str) -------------------- }
+    Else If (U = 'UCASE') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('UCase()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'SI');  { string ptr }
+      EmitInstr('CALL', CF_RT_PFX + 'UCASE');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_STRING;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : LCase(str) -------------------- }
+    Else If (U = 'LCASE') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('LCase()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'SI');  { string ptr }
+      EmitInstr('CALL', CF_RT_PFX + 'LCASE');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_STRING;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : Find(substr, str) ------------- }
+    Else If (U = 'FIND') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('Find()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'SI');  { str (main string) }
+      EmitInstr('POP', 'DI');  { substr (search string) }
+      EmitInstr('CALL', CF_RT_PFX + 'FIND');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_NUMERIC;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : FindNoCase(substr, str) ------- }
+    Else If (U = 'FINDNOCASE') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('FindNoCase()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'SI');  { str }
+      EmitInstr('POP', 'DI');  { substr }
+      EmitInstr('CALL', CF_RT_PFX + 'FINDNOCASE');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_NUMERIC;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : Replace(str, sub, rep) -------- }
+    Else If (U = 'REPLACE') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('Replace()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'BX');  { replacement ptr }
+      EmitInstr('POP', 'DI');  { search ptr }
+      EmitInstr('POP', 'SI');  { source string ptr }
+      EmitInstr('CALL', CF_RT_PFX + 'REPLACE');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_STRING;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : ReplaceNoCase(str, sub, rep) -- }
+    Else If (U = 'REPLACENOCASE') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      WarnMsg('ReplaceNoCase traite comme Replace (sensible a la casse)');
+      EmitComment('ReplaceNoCase() -> Replace()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'BX');  { replacement ptr }
+      EmitInstr('POP', 'DI');  { search ptr }
+      EmitInstr('POP', 'SI');  { source string ptr }
+      EmitInstr('CALL', CF_RT_PFX + 'REPLACE');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_STRING;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : Chr(code) --------------------- }
+    Else If (U = 'CHR') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('Chr()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'AX');  { code ASCII }
+      EmitInstrAB('MOV', 'DI', 'OFFSET _CF_STRBUF2');
+      EmitInstrAB('MOV', '[DI]', 'AL');
+      EmitInstrAB('MOV', 'BYTE PTR [DI+1]', '0');
+      EmitInstrAB('MOV', 'AX', 'DI');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_STRING;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : Asc(str) ---------------------- }
+    Else If (U = 'ASC') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('Asc()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'SI');  { string ptr }
+      EmitInstrAB('XOR', 'AX', 'AX');
+      EmitInstrAB('MOV', 'AL', '[SI]');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_NUMERIC;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : Val(str) ---------------------- }
+    Else If (U = 'VAL') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('Val()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'SI');  { string ptr }
+      EmitInstr('CALL', CF_RT_PFX + 'STRTONUM');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_NUMERIC;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : RepeatString(str, count) ------ }
+    Else If (U = 'REPEATSTRING') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('RepeatString()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'CX');  { count }
+      EmitInstr('POP', 'SI');  { string ptr }
+      EmitInstr('CALL', CF_RT_PFX + 'REPEAT');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_STRING;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : Reverse(str) ------------------ }
+    Else If (U = 'REVERSE') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('Reverse()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'SI');  { string ptr }
+      EmitInstr('CALL', CF_RT_PFX + 'REVERSE');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_STRING;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : ListLen(list) ----------------- }
+    Else If (U = 'LISTLEN') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('ListLen()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'SI');  { list string ptr }
+      EmitInstr('CALL', CF_RT_PFX + 'LISTLEN');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_NUMERIC;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : ListGetAt(list, pos) ---------- }
+    Else If (U = 'LISTGETAT') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('ListGetAt()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'CX');  { position (1-based) }
+      EmitInstr('POP', 'SI');  { list string ptr }
+      EmitInstr('CALL', CF_RT_PFX + 'LISTGETAT');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_STRING;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : ListAppend(list, value) ------- }
+    Else If (U = 'LISTAPPEND') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('ListAppend()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'DI');  { value to append }
+      EmitInstr('POP', 'SI');  { list string ptr }
+      EmitInstr('CALL', CF_RT_PFX + 'LISTAPPEND');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_STRING;
       Res.SymIdx  := -1;
     End
 
