@@ -84,7 +84,7 @@
               DESTRUCTOR, OBJECT
             Mode debug -d : affichage de chaque token avec PrintToken
 
-  TODO 03 - PREPROCESSEUR ET DIRECTIVES DE COMPILATION
+  TODO 03 - PREPROCESSEUR ET DIRECTIVES DE COMPILATION [IMPLEMENTE]
             Directives conditionnelles :
               $IFDEF symbole / $IFNDEF symbole / $ELSE / $ENDIF
               $IFOPT X+ : tester l etat d une option
@@ -1046,6 +1046,29 @@ Var
   LexEOF    : Boolean;        { fin de fichier atteinte ?          }
   CurToken  : TToken;         { token courant                      }
 
+  { TODO 03 : Directives et inclusions }
+  DefineTab      : Array[0..63] Of TString;
+  DefineCount    : Integer;
+  IncSavedFName  : Array[0..7] Of TString;
+  IncSavedLine   : Array[0..7] Of TString;
+  IncSavedLineNo : Array[0..7] Of Integer;
+  IncSavedColNo  : Array[0..7] Of Integer;
+  IncSavedEOF    : Array[0..7] Of Boolean;
+  IncTop         : Integer;
+  LexSrcFName    : TString;
+  OptIO          : Boolean;
+  OptRange       : Boolean;
+  OptBoolEval    : Boolean;
+  OptOverflow    : Boolean;
+  OptAlign       : Boolean;
+  OptNCoprocessor: Boolean;
+  OptGen286      : Boolean;
+  OptExtSyntax   : Boolean;
+
+{ Forward declarations TODO 03 }
+Procedure LexHandleDollarDirective; Forward;
+Procedure IncludePop; Forward;
+
 { ------------------------------------------------------------ }
 { Fonctions de classification de caracteres                    }
 { ------------------------------------------------------------ }
@@ -1151,6 +1174,12 @@ Begin
   If LexEOF Then Exit;
   If EOF(LexSrcF) Then
   Begin
+    { Si on est dans un fichier inclus, depiler }
+    If IncTop >= 0 Then
+    Begin
+      IncludePop;
+      Exit;
+    End;
     LexEOF   := True;
     LexLine  := '';
     LexColNo := 1;
@@ -1198,10 +1227,16 @@ Begin
   LexColNo := Length(LexLine) + 1;
 End;
 
-{ Sauter commentaire accolade }
+{ Sauter commentaire accolade ou traiter directive {$ }
 Procedure LexSkipBraceComment;
 Begin
-  { Directive dollar ignoree pour TODO 03 }
+  { Detecter {$ : directive de compilation }
+  If (LexColNo < Length(LexLine)) And
+     (LexLine[LexColNo + 1] = '$') Then
+  Begin
+    LexHandleDollarDirective;
+    Exit;
+  End;
   Inc(LexColNo); { sauter accolade ouvrante }
   While Not LexEOF Do
   Begin
@@ -1772,6 +1807,396 @@ Begin
   PrintToken(CurToken);
 End;
 
+{ ============================================================ }
+{ TODO 03 - PREPROCESSEUR ET DIRECTIVES          [IMPLEMENTE] }
+{ ============================================================ }
+
+Const
+  MAX_DEFINE  = 64;    { nombre max de symboles de compilation }
+  MAX_INCLUDE = 8;     { profondeur max d inclusion }
+
+{ ---- DefineDefined : teste si un symbole est defini ---- }
+Function DefineDefined(Const Name : TString) : Boolean;
+Var
+  I : Integer;
+  N : TString;
+Begin
+  N := StrUpperCase(Name);
+  DefineDefined := False;
+  For I := 0 To DefineCount - 1 Do
+    If DefineTab[I] = N Then
+    Begin
+      DefineDefined := True;
+      Exit;
+    End;
+End;
+
+{ ---- DefineAdd : ajouter un symbole de compilation ---- }
+Procedure DefineAdd(Const Name : TString);
+Var
+  N : TString;
+Begin
+  N := StrUpperCase(Name);
+  If DefineDefined(N) Then Exit;
+  If DefineCount >= MAX_DEFINE Then
+  Begin
+    WarnMsg('trop de symboles $DEFINE (max ' +
+            IntToStr_(MAX_DEFINE) + ')');
+    Exit;
+  End;
+  DefineTab[DefineCount] := N;
+  Inc(DefineCount);
+End;
+
+{ ---- DefineRemove : supprimer un symbole ---- }
+Procedure DefineRemove(Const Name : TString);
+Var
+  I : Integer;
+  N : TString;
+Begin
+  N := StrUpperCase(Name);
+  For I := 0 To DefineCount - 1 Do
+    If DefineTab[I] = N Then
+    Begin
+      DefineTab[I] := DefineTab[DefineCount - 1];
+      Dec(DefineCount);
+      Exit;
+    End;
+End;
+
+{ ---- IncludePush : empiler le fichier courant et ouvrir un include ---- }
+Procedure IncludePush(Const FileName : TString);
+Var
+  FullPath : TString;
+  SrcDir   : TString;
+Begin
+  If IncTop >= MAX_INCLUDE - 1 Then
+  Begin
+    WarnMsg('profondeur d''inclusion maximale atteinte');
+    Exit;
+  End;
+  { Sauvegarder l etat du lexeur }
+  Inc(IncTop);
+  IncSavedFName[IncTop]  := LexSrcFName;
+  IncSavedLine[IncTop]   := LexLine;
+  IncSavedLineNo[IncTop] := LexLineNo;
+  IncSavedColNo[IncTop]  := LexColNo;
+  IncSavedEOF[IncTop]    := LexEOF;
+  { Fermer le fichier courant }
+  Close(LexSrcF);
+  { Tenter d ouvrir le fichier inclus (chemin direct) }
+  FullPath := FileName;
+  {$I-}
+  Assign(LexSrcF, FullPath);
+  Reset(LexSrcF);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    { Tenter dans le repertoire du fichier source }
+    SrcDir := ExtractDir(LexSrcFName);
+    If Length(SrcDir) > 0 Then
+    Begin
+      FullPath := SrcDir + FileName;
+      {$I-}
+      Assign(LexSrcF, FullPath);
+      Reset(LexSrcF);
+      {$I+}
+    End;
+    If IOResult <> 0 Then
+    Begin
+      WarnMsg('impossible d''ouvrir le fichier include: ' + FileName);
+      { Rouvrir le fichier precedent }
+      Assign(LexSrcF, IncSavedFName[IncTop]);
+      Reset(LexSrcF);
+      Dec(IncTop);
+      Exit;
+    End;
+  End;
+  LexSrcFName := FullPath;
+  LexOpened := True;
+  LexLine   := '';
+  LexLineNo := 0;
+  LexColNo  := 1;
+  LexEOF    := False;
+  LexNextLine;
+End;
+
+{ ---- IncludePop : depiler et restaurer le fichier precedent ---- }
+Procedure IncludePop;
+Var
+  I : Integer;
+  Dummy : TString;
+Begin
+  If IncTop < 0 Then Exit;
+  Close(LexSrcF);
+  { Rouvrir le fichier precedent et avancer jusqu a la bonne ligne }
+  Assign(LexSrcF, IncSavedFName[IncTop]);
+  Reset(LexSrcF);
+  For I := 1 To IncSavedLineNo[IncTop] Do
+  Begin
+    If Not EOF(LexSrcF) Then
+      ReadLn(LexSrcF, Dummy);
+  End;
+  LexSrcFName := IncSavedFName[IncTop];
+  LexLine     := IncSavedLine[IncTop];
+  LexLineNo   := IncSavedLineNo[IncTop];
+  LexColNo    := IncSavedColNo[IncTop];
+  LexEOF      := IncSavedEOF[IncTop];
+  Dec(IncTop);
+End;
+
+{ ---- LexSkipCondFalse : sauter le code dans un IFDEF faux ---- }
+{ Saute jusqu a trouver $ELSE ou $ENDIF au meme niveau }
+Procedure LexSkipCondFalse;
+Var
+  Depth : Integer;
+  P     : Integer;
+  Dir   : TString;
+Begin
+  Depth := 1;
+  While (Depth > 0) And (Not LexEOF) Do
+  Begin
+    If LexColNo > Length(LexLine) Then
+    Begin
+      LexNextLine;
+      Continue;
+    End;
+    If LexLine[LexColNo] = '{' Then
+    Begin
+      P := LexColNo + 1;
+      If (P <= Length(LexLine)) And (LexLine[P] = '$') Then
+      Begin
+        Inc(P);
+        Dir := '';
+        While (P <= Length(LexLine)) And (LexLine[P] <> '}') And
+              (LexLine[P] <> ' ') Do
+        Begin
+          Dir := Dir + UpCase(LexLine[P]);
+          Inc(P);
+        End;
+        If (Dir = 'IFDEF') Or (Dir = 'IFNDEF') Or (Dir = 'IFOPT') Then
+          Inc(Depth)
+        Else If Dir = 'ENDIF' Then
+        Begin
+          Dec(Depth);
+          If Depth = 0 Then
+          Begin
+            { Trouver l accolade fermante }
+            While (P <= Length(LexLine)) And (LexLine[P] <> '}') Do
+              Inc(P);
+            LexColNo := P + 1;
+            Exit;
+          End;
+        End
+        Else If (Dir = 'ELSE') And (Depth = 1) Then
+        Begin
+          { $ELSE au meme niveau : reprendre la compilation }
+          While (P <= Length(LexLine)) And (LexLine[P] <> '}') Do
+            Inc(P);
+          LexColNo := P + 1;
+          Exit;
+        End;
+      End;
+      { Sauter toute l accolade }
+      While (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] <> '}') Do
+        Inc(LexColNo);
+      If LexColNo <= Length(LexLine) Then
+        Inc(LexColNo);
+    End
+    Else
+      Inc(LexColNo);
+  End;
+End;
+
+(* ---- LexHandleDollarDirective : traiter dollar-directives *)
+(* Appelee quand LexColNo pointe sur accolade et le suivant est dollar *)
+(* Gere: I/INCLUDE, DEFINE, UNDEF, IFDEF, IFNDEF, IFOPT, *)
+(* ELSE, ENDIF, et les commutations I+/I-/R+/R-/etc. *)
+Procedure LexHandleDollarDirective;
+Var
+  Dir  : TString;
+  Arg  : TString;
+  Sw   : Char;
+Begin
+  Inc(LexColNo);  { sauter accolade ouvrante }
+  Inc(LexColNo);  { sauter $ }
+  { Lire le nom de la directive }
+  Dir := '';
+  While (LexColNo <= Length(LexLine)) And
+        IsIdentCont(LexLine[LexColNo]) Do
+  Begin
+    Dir := Dir + UpCase(LexLine[LexColNo]);
+    Inc(LexColNo);
+  End;
+
+  (* Detecter commutateurs une lettre : dollar I+ / dollar R- etc. *)
+  (* Si Dir est une seule lettre et le char courant est +/- *)
+  If (Length(Dir) = 1) And (LexColNo <= Length(LexLine)) And
+     ((LexLine[LexColNo] = '+') Or (LexLine[LexColNo] = '-')) Then
+  Begin
+    Sw := LexLine[LexColNo];
+    Inc(LexColNo);
+    { Consommer jusqu a accolade fermante }
+    While (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] <> '}') Do
+      Inc(LexColNo);
+    If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '}') Then
+      Inc(LexColNo);
+    { Appliquer la commutation }
+    Case Dir[1] Of
+      'I' : OptIO          := (Sw = '+');
+      'R' : OptRange       := (Sw = '+');
+      'B' : OptBoolEval    := (Sw = '+');
+      'Q' : OptOverflow    := (Sw = '+');
+      'A' : OptAlign       := (Sw = '+');
+      'N' : OptNCoprocessor:= (Sw = '+');
+      'G' : OptGen286      := (Sw = '+');
+      'X' : OptExtSyntax   := (Sw = '+');
+    End;
+    Exit;
+  End;
+
+  { Sauter espaces }
+  While (LexColNo <= Length(LexLine)) And
+        (LexLine[LexColNo] = ' ') Do
+    Inc(LexColNo);
+  { Lire l argument jusqu a accolade fermante }
+  Arg := '';
+  While (LexColNo <= Length(LexLine)) And
+        (LexLine[LexColNo] <> '}') Do
+  Begin
+    Arg := Arg + LexLine[LexColNo];
+    Inc(LexColNo);
+  End;
+  { Supprimer espaces de fin }
+  While (Length(Arg) > 0) And (Arg[Length(Arg)] = ' ') Do
+    Delete(Arg, Length(Arg), 1);
+  { Consommer accolade fermante }
+  If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '}') Then
+    Inc(LexColNo);
+
+  { Dispatcher les directives }
+  If (Dir = 'I') Or (Dir = 'INCLUDE') Then
+  Begin
+    { Supprimer quotes eventuelles }
+    If (Length(Arg) >= 2) And
+       ((Arg[1] = '''') Or (Arg[1] = '"')) Then
+    Begin
+      Delete(Arg, 1, 1);
+      If (Length(Arg) > 0) And
+         ((Arg[Length(Arg)] = '''') Or (Arg[Length(Arg)] = '"')) Then
+        Delete(Arg, Length(Arg), 1);
+    End;
+    If Length(Arg) > 0 Then
+      IncludePush(Arg)
+    Else
+      WarnMsg('nom de fichier attendu pour $INCLUDE');
+  End
+  Else If Dir = 'DEFINE' Then
+    DefineAdd(Arg)
+  Else If Dir = 'UNDEF' Then
+    DefineRemove(Arg)
+  Else If Dir = 'IFDEF' Then
+  Begin
+    If DefineDefined(Arg) Then
+      { Condition vraie : on ne fait rien }
+    Else
+      LexSkipCondFalse;
+  End
+  Else If Dir = 'IFNDEF' Then
+  Begin
+    If Not DefineDefined(Arg) Then
+      { Condition vraie : compiler }
+    Else
+      LexSkipCondFalse;
+  End
+  Else If Dir = 'IFOPT' Then
+  Begin
+    { $IFOPT X+ : tester l etat d une option }
+    { Format Arg = 'X+' ou 'X-' }
+    If Length(Arg) >= 2 Then
+    Begin
+      Sw := UpCase(Arg[1]);
+      If Arg[2] = '+' Then
+      Begin
+        Case Sw Of
+          'I' : If Not OptIO Then LexSkipCondFalse;
+          'R' : If Not OptRange Then LexSkipCondFalse;
+          'B' : If Not OptBoolEval Then LexSkipCondFalse;
+          'Q' : If Not OptOverflow Then LexSkipCondFalse;
+          'A' : If Not OptAlign Then LexSkipCondFalse;
+          'N' : If Not OptNCoprocessor Then LexSkipCondFalse;
+          'G' : If Not OptGen286 Then LexSkipCondFalse;
+          'X' : If Not OptExtSyntax Then LexSkipCondFalse;
+        Else
+          LexSkipCondFalse;
+        End;
+      End
+      Else
+      Begin
+        Case Sw Of
+          'I' : If OptIO Then LexSkipCondFalse;
+          'R' : If OptRange Then LexSkipCondFalse;
+          'B' : If OptBoolEval Then LexSkipCondFalse;
+          'Q' : If OptOverflow Then LexSkipCondFalse;
+          'A' : If OptAlign Then LexSkipCondFalse;
+          'N' : If OptNCoprocessor Then LexSkipCondFalse;
+          'G' : If OptGen286 Then LexSkipCondFalse;
+          'X' : If OptExtSyntax Then LexSkipCondFalse;
+        Else
+          LexSkipCondFalse;
+        End;
+      End;
+    End
+    Else
+      LexSkipCondFalse;
+  End
+  Else If Dir = 'ELSE' Then
+  Begin
+    { On est dans la branche vraie, sauter jusqu a $ENDIF }
+    LexSkipCondFalse;
+  End
+  Else If Dir = 'ENDIF' Then
+  Begin
+    { Fin de bloc conditionnel, rien a faire }
+  End;
+  { Autres directives ($L, $M, $S, etc.) : ignorees silencieusement }
+End;
+
+{ ---- PPInitDefines : initialiser symboles predefinis ---- }
+Procedure PPInitDefines;
+Begin
+  DefineCount := 0;
+  IncTop      := -1;
+
+  { Options de commutation par defaut (TP7) }
+  OptIO          := True;   { $I+ }
+  OptRange       := False;  { $R- }
+  OptBoolEval    := False;  { $B- court-circuit }
+  OptOverflow    := False;  { $Q- }
+  OptAlign       := True;   { $A+ }
+  OptNCoprocessor:= False;  { $N- }
+  OptGen286      := False;  { $G- }
+  OptExtSyntax   := True;   { $X+ en TP7 }
+
+  { Symbole WIN32 toujours defini dans TPCW32 }
+  DefineAdd('WIN32');
+
+  { Symboles MSDOS, CPU86, CPU87 }
+  DefineAdd('MSDOS');
+  DefineAdd('CPU86');
+  DefineAdd('CPU87');
+
+  { Symboles de version selon TPVersion }
+  If TPVersionAtLeast(TP_VER_1) Then DefineAdd('VER10');
+  If TPVersionAtLeast(TP_VER_2) Then DefineAdd('VER20');
+  If TPVersionAtLeast(TP_VER_4) Then DefineAdd('VER40');
+  If TPVersionAtLeast(TP_VER_5) Then DefineAdd('VER50');
+  If TPVersionAtLeast(TP_VER_55) Then DefineAdd('VER55');
+  If TPVersionAtLeast(TP_VER_6) Then DefineAdd('VER60');
+  If TPVersionAtLeast(TP_VER_7) Then DefineAdd('VER70');
+  If TPVersionAtLeast(TP_VER_8) Then DefineAdd('VER80');
+End;
+
 { ------------------------------------------------------------ }
 { Run                                                          }
 { ------------------------------------------------------------ }
@@ -1788,6 +2213,10 @@ Begin
   If IOResult <> 0 Then
     FatalError('impossible d''ouvrir le fichier source: ' + Opts.SrcFile);
   LexOpened := True;
+  LexSrcFName := Opts.SrcFile;
+
+  { Initialiser le preprocesseur }
+  PPInitDefines;
 
   { Initialiser le lexeur et scanner les tokens }
   LexInit;
@@ -1795,7 +2224,7 @@ Begin
   While CurToken.Kind <> TK_EOF Do
     LexNextToken;
 
-  { TODO 03..25 : compilation complete }
+  { TODO 04..25 : compilation complete }
 
   LexClose;
   ShowStats;
