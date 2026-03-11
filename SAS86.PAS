@@ -6524,12 +6524,6 @@ Begin
       Begin
         ParserAdvance;
         ParseProcTablesStmt;
-        ParserAdvance;
-        While (CurToken.Kind <> TK_SEMICOLON) And
-              (CurToken.Kind <> TK_EOF) Do
-          ParserAdvance;
-        If CurToken.Kind = TK_SEMICOLON Then
-          ParserAdvance;
         Continue;
       End;
 
