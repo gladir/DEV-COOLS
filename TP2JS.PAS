@@ -470,7 +470,7 @@
              Emettre un avertissement a la compilation si USES Overlay
                indiquant que les overlays sont ignores en JavaScript
 
-   TODO 22 - UNITE GRAPH
+   TODO 22 - UNITE GRAPH [IMPLEMENTE]
              Constantes de pilotes et modes :
                Detect=0, CGA=1, EGA=3, VGA=9, etc.
                -> constantes numeriques JS
@@ -2052,6 +2052,100 @@ Begin
   ConstAdd('ovrIOError',     '-4', TK_INTEGER, -4, 0.0, '', False);
   ConstAdd('ovrNoEMSDriver', '-5', TK_INTEGER, -5, 0.0, '', False);
   ConstAdd('ovrNoEMSMemory', '-6', TK_INTEGER, -6, 0.0, '', False);
+  { TODO 22 : constantes Graph - pilotes }
+  ConstAdd('Detect',   '0',  TK_INTEGER, 0,  0.0, '', False);
+  ConstAdd('CGA',      '1',  TK_INTEGER, 1,  0.0, '', False);
+  ConstAdd('MCGA',     '2',  TK_INTEGER, 2,  0.0, '', False);
+  ConstAdd('EGA',      '3',  TK_INTEGER, 3,  0.0, '', False);
+  ConstAdd('EGA64',    '4',  TK_INTEGER, 4,  0.0, '', False);
+  ConstAdd('EGAMono',  '5',  TK_INTEGER, 5,  0.0, '', False);
+  ConstAdd('IBM8514',  '6',  TK_INTEGER, 6,  0.0, '', False);
+  ConstAdd('HercMono', '7',  TK_INTEGER, 7,  0.0, '', False);
+  ConstAdd('ATT400',   '8',  TK_INTEGER, 8,  0.0, '', False);
+  ConstAdd('VGA',      '9',  TK_INTEGER, 9,  0.0, '', False);
+  ConstAdd('PC3270',   '10', TK_INTEGER, 10, 0.0, '', False);
+  { TODO 22 : constantes Graph - modes }
+  ConstAdd('CGAHi',    '4',  TK_INTEGER, 4,  0.0, '', False);
+  ConstAdd('EGAHi',    '1',  TK_INTEGER, 1,  0.0, '', False);
+  ConstAdd('EGALo',    '0',  TK_INTEGER, 0,  0.0, '', False);
+  ConstAdd('VGAHi',    '2',  TK_INTEGER, 2,  0.0, '', False);
+  ConstAdd('VGAMed',   '1',  TK_INTEGER, 1,  0.0, '', False);
+  ConstAdd('VGALo',    '0',  TK_INTEGER, 0,  0.0, '', False);
+  { TODO 22 : constantes Graph - couleurs EGA }
+  ConstAdd('EGABlack',        '0',  TK_INTEGER, 0,  0.0, '', False);
+  ConstAdd('EGABlue',         '1',  TK_INTEGER, 1,  0.0, '', False);
+  ConstAdd('EGAGreen',        '2',  TK_INTEGER, 2,  0.0, '', False);
+  ConstAdd('EGACyan',         '3',  TK_INTEGER, 3,  0.0, '', False);
+  ConstAdd('EGARed',          '4',  TK_INTEGER, 4,  0.0, '', False);
+  ConstAdd('EGAMagenta',      '5',  TK_INTEGER, 5,  0.0, '', False);
+  ConstAdd('EGABrown',        '20', TK_INTEGER, 20, 0.0, '', False);
+  ConstAdd('EGALightGray',    '7',  TK_INTEGER, 7,  0.0, '', False);
+  ConstAdd('EGADarkGray',     '56', TK_INTEGER, 56, 0.0, '', False);
+  ConstAdd('EGALightBlue',    '57', TK_INTEGER, 57, 0.0, '', False);
+  ConstAdd('EGALightGreen',   '58', TK_INTEGER, 58, 0.0, '', False);
+  ConstAdd('EGALightCyan',    '59', TK_INTEGER, 59, 0.0, '', False);
+  ConstAdd('EGALightRed',     '60', TK_INTEGER, 60, 0.0, '', False);
+  ConstAdd('EGALightMagenta', '61', TK_INTEGER, 61, 0.0, '', False);
+  ConstAdd('EGAYellow',       '62', TK_INTEGER, 62, 0.0, '', False);
+  ConstAdd('EGAWhite',        '63', TK_INTEGER, 63, 0.0, '', False);
+  { TODO 22 : constantes Graph - remplissage }
+  ConstAdd('EmptyFill',  '0',  TK_INTEGER, 0,  0.0, '', False);
+  ConstAdd('SolidFill',  '1',  TK_INTEGER, 1,  0.0, '', False);
+  ConstAdd('LineFill',   '2',  TK_INTEGER, 2,  0.0, '', False);
+  ConstAdd('LtSlashFill','3',  TK_INTEGER, 3,  0.0, '', False);
+  ConstAdd('SlashFill',  '4',  TK_INTEGER, 4,  0.0, '', False);
+  ConstAdd('BkSlashFill','5',  TK_INTEGER, 5,  0.0, '', False);
+  ConstAdd('LtBkSlashFill','6',TK_INTEGER, 6,  0.0, '', False);
+  ConstAdd('HatchFill',  '7',  TK_INTEGER, 7,  0.0, '', False);
+  ConstAdd('XHatchFill', '8',  TK_INTEGER, 8,  0.0, '', False);
+  ConstAdd('InterleaveFill','9',TK_INTEGER,9,  0.0, '', False);
+  ConstAdd('WideDotFill','10', TK_INTEGER, 10, 0.0, '', False);
+  ConstAdd('CloseDotFill','11',TK_INTEGER, 11, 0.0, '', False);
+  ConstAdd('UserFill',   '12', TK_INTEGER, 12, 0.0, '', False);
+  { TODO 22 : constantes Graph - lignes }
+  ConstAdd('SolidLn',   '0',  TK_INTEGER, 0,  0.0, '', False);
+  ConstAdd('DottedLn',  '1',  TK_INTEGER, 1,  0.0, '', False);
+  ConstAdd('CenterLn',  '2',  TK_INTEGER, 2,  0.0, '', False);
+  ConstAdd('DashedLn',  '3',  TK_INTEGER, 3,  0.0, '', False);
+  ConstAdd('UserBitLn', '4',  TK_INTEGER, 4,  0.0, '', False);
+  ConstAdd('NormWidth',  '1', TK_INTEGER, 1,  0.0, '', False);
+  ConstAdd('ThickWidth', '3', TK_INTEGER, 3,  0.0, '', False);
+  { TODO 22 : constantes Graph - operations de copie }
+  ConstAdd('NormalPut',  '0', TK_INTEGER, 0,  0.0, '', False);
+  ConstAdd('XORPut',     '1', TK_INTEGER, 1,  0.0, '', False);
+  ConstAdd('OrPut',      '2', TK_INTEGER, 2,  0.0, '', False);
+  ConstAdd('AndPut',     '3', TK_INTEGER, 3,  0.0, '', False);
+  ConstAdd('NotPut',     '4', TK_INTEGER, 4,  0.0, '', False);
+  { TODO 22 : constantes Graph - texte }
+  ConstAdd('DefaultFont',   '0', TK_INTEGER, 0, 0.0, '', False);
+  ConstAdd('TriplexFont',   '1', TK_INTEGER, 1, 0.0, '', False);
+  ConstAdd('SmallFont',     '2', TK_INTEGER, 2, 0.0, '', False);
+  ConstAdd('SansSerifFont',  '3', TK_INTEGER, 3, 0.0, '', False);
+  ConstAdd('GothicFont',    '4', TK_INTEGER, 4, 0.0, '', False);
+  ConstAdd('HorizDir',      '0', TK_INTEGER, 0, 0.0, '', False);
+  ConstAdd('VertDir',       '1', TK_INTEGER, 1, 0.0, '', False);
+  ConstAdd('LeftText',      '0', TK_INTEGER, 0, 0.0, '', False);
+  ConstAdd('CenterText',    '1', TK_INTEGER, 1, 0.0, '', False);
+  ConstAdd('RightText',     '2', TK_INTEGER, 2, 0.0, '', False);
+  ConstAdd('BottomText',    '0', TK_INTEGER, 0, 0.0, '', False);
+  ConstAdd('TopText',       '2', TK_INTEGER, 2, 0.0, '', False);
+  { TODO 22 : constantes Graph - erreurs }
+  ConstAdd('grOk',           '0',  TK_INTEGER, 0,  0.0, '', False);
+  ConstAdd('grNoInitGraph',  '-1', TK_INTEGER, -1, 0.0, '', False);
+  ConstAdd('grNotDetected',  '-2', TK_INTEGER, -2, 0.0, '', False);
+  ConstAdd('grFileNotFound', '-3', TK_INTEGER, -3, 0.0, '', False);
+  ConstAdd('grInvalidDriver','-4', TK_INTEGER, -4, 0.0, '', False);
+  ConstAdd('grNoLoadMem',    '-5', TK_INTEGER, -5, 0.0, '', False);
+  ConstAdd('grNoScanMem',    '-6', TK_INTEGER, -6, 0.0, '', False);
+  ConstAdd('grNoFloodMem',   '-7', TK_INTEGER, -7, 0.0, '', False);
+  ConstAdd('grFontNotFound', '-8', TK_INTEGER, -8, 0.0, '', False);
+  ConstAdd('grNoFontMem',    '-9', TK_INTEGER, -9, 0.0, '', False);
+  ConstAdd('grInvalidMode',  '-10',TK_INTEGER,-10, 0.0, '', False);
+  ConstAdd('grError',        '-11',TK_INTEGER,-11, 0.0, '', False);
+  ConstAdd('grIOerror',      '-12',TK_INTEGER,-12, 0.0, '', False);
+  ConstAdd('grInvalidFont',  '-13',TK_INTEGER,-13, 0.0, '', False);
+  ConstAdd('grInvalidFontNum','-14',TK_INTEGER,-14,0.0, '', False);
+  ConstAdd('grInvalidDeviceNum','-15',TK_INTEGER,-15,0.0,'', False);
 End;
 
 { ---- ConstEvalAtom : evaluer un atome constant -------------- }
@@ -2617,7 +2711,40 @@ Begin
                    (L = 'ovrinit') Or (L = 'ovrinitems') Or
                    (L = 'ovrgetbuf') Or (L = 'ovrsetbuf') Or
                    (L = 'ovrgetretry') Or (L = 'ovrsetretry') Or
-                   (L = 'ovrclearbuf') Or (L = 'ovrresult');
+                   (L = 'ovrclearbuf') Or (L = 'ovrresult') Or
+                   { TODO 22 : fonctions Graph }
+                   (L = 'initgraph') Or (L = 'closegraph') Or
+                   (L = 'detectgraph') Or (L = 'graphresult') Or
+                   (L = 'grapherrormsg') Or
+                   (L = 'getmaxx') Or (L = 'getmaxy') Or
+                   (L = 'getmaxcolor') Or (L = 'getx') Or
+                   (L = 'gety') Or
+                   (L = 'putpixel') Or (L = 'getpixel') Or
+                   (L = 'line') Or (L = 'lineto') Or
+                   (L = 'linerel') Or (L = 'moveto') Or
+                   (L = 'moverel') Or
+                   (L = 'circle') Or (L = 'arc') Or
+                   (L = 'ellipse') Or (L = 'fillellipse') Or
+                   (L = 'rectangle') Or (L = 'bar') Or
+                   (L = 'bar3d') Or (L = 'pieslice') Or
+                   (L = 'sector') Or (L = 'floodfill') Or
+                   (L = 'fillpoly') Or
+                   (L = 'outtext') Or (L = 'outtextxy') Or
+                   (L = 'settextstyle') Or (L = 'settextjustify') Or
+                   (L = 'textwidth') Or (L = 'textheight') Or
+                   (L = 'setcolor') Or (L = 'setbkcolor') Or
+                   (L = 'getcolor') Or (L = 'getbkcolor') Or
+                   (L = 'setfillstyle') Or (L = 'setfillpattern') Or
+                   (L = 'setlinestyle') Or (L = 'setwritemode') Or
+                   (L = 'setviewport') Or (L = 'clearviewport') Or
+                   (L = 'cleardevice') Or (L = 'getviewsettings') Or
+                   (L = 'imagesize') Or (L = 'getimage') Or
+                   (L = 'putimage') Or
+                   (L = 'setpalette') Or (L = 'setallpalette') Or
+                   (L = 'getpalette') Or (L = 'getdefaultpalette') Or
+                   (L = 'setrgbpalette') Or
+                   (L = 'setaspectratio') Or (L = 'getaspectratio') Or
+                   (L = 'setactivepage') Or (L = 'setvisualpage');
 End;
 
 { ---- EmitBuiltinCall : genere l appel de fonction standard --- }
@@ -3062,6 +3189,223 @@ Begin
       If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
     End;
     EmitBuiltinCall := 'OvrResult';
+    Exit;
+  End;
+
+  { ============================================================
+    TODO 22 - UNITE GRAPH [IMPLEMENTE]
+    Fonctions sans argument ou a argument optionnel.
+    ============================================================ }
+
+  { -- CloseGraph : fermer le mode graphique --------------------- }
+  If L = 'closegraph' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '_GR_Close()';
+    Exit;
+  End;
+
+  { -- GraphResult : code retour derniere operation graphique ---- }
+  If L = 'graphresult' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '_GR_Result';
+    Exit;
+  End;
+
+  { -- GetMaxX : largeur max du canvas -------------------------- }
+  If L = 'getmaxx' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '_GR_GetMaxX()';
+    Exit;
+  End;
+
+  { -- GetMaxY : hauteur max du canvas -------------------------- }
+  If L = 'getmaxy' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '_GR_GetMaxY()';
+    Exit;
+  End;
+
+  { -- GetMaxColor : nombre max de couleurs --------------------- }
+  If L = 'getmaxcolor' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '_GR_MaxColor';
+    Exit;
+  End;
+
+  { -- GetX : position X courante ------------------------------- }
+  If L = 'getx' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '_GR_CP.x';
+    Exit;
+  End;
+
+  { -- GetY : position Y courante ------------------------------- }
+  If L = 'gety' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '_GR_CP.y';
+    Exit;
+  End;
+
+  { -- GetColor : couleur de dessin courante -------------------- }
+  If L = 'getcolor' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '_GR_Color';
+    Exit;
+  End;
+
+  { -- GetBkColor : couleur de fond courante -------------------- }
+  If L = 'getbkcolor' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '_GR_BkColor';
+    Exit;
+  End;
+
+  { -- ClearDevice : effacer tout le canvas --------------------- }
+  If L = 'cleardevice' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '_GR_ClearDevice()';
+    Exit;
+  End;
+
+  { -- ClearViewPort : effacer le viewport courant -------------- }
+  If L = 'clearviewport' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '_GR_ClearViewPort()';
+    Exit;
+  End;
+
+  { -- GetViewSettings(VP) : lire parametres viewport ----------- }
+  If L = 'getviewsettings' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And Not ((TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ')')) Then
+        ParseExpr(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '/* GetViewSettings stub */';
+    Exit;
+  End;
+
+  { -- GetPalette(Pal) : lire palette courante (stub) ----------- }
+  If L = 'getpalette' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And Not ((TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ')')) Then
+        ParseExpr(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '/* GetPalette stub */';
+    Exit;
+  End;
+
+  { -- GetDefaultPalette(Pal) : palette par defaut (stub) ------- }
+  If L = 'getdefaultpalette' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And Not ((TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ')')) Then
+        ParseExpr(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '/* GetDefaultPalette stub */';
+    Exit;
+  End;
+
+  { -- GetAspectRatio(Xasp, Yasp) : lire ratio (stub) ---------- }
+  If L = 'getaspectratio' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And Not ((TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ')')) Then
+        ParseExpr(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ',') Then
+      Begin
+        Inc(P);
+        ParseExpr(P);
+      End;
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '/* GetAspectRatio stub */';
     Exit;
   End;
 
@@ -4265,6 +4609,614 @@ Begin
     Exit;
   End;
 
+  { ============================================================
+    TODO 22 - UNITE GRAPH [IMPLEMENTE]
+    Fonctions avec argument(s) de l unite Graph Turbo Pascal.
+    ============================================================ }
+
+  { -- InitGraph(Driver, Mode, Path) : initialiser le mode graphique }
+  If L = 'initgraph' Then
+  Begin
+    Arg2 := '0';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    Args := '""';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Args := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_Init(' + Arg1 + ', ' + Arg2 + ', ' + Args + ')';
+    Exit;
+  End;
+
+  { -- DetectGraph(Driver, Mode) : detection du pilote ---------- }
+  If L = 'detectgraph' Then
+  Begin
+    Arg2 := '0';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* DetectGraph -> VGA,VGAHi */ _GR_Result = 0';
+    Exit;
+  End;
+
+  { -- GraphErrorMsg(Code) : message d erreur graphique --------- }
+  If L = 'grapherrormsg' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_ErrorMsg(' + Arg1 + ')';
+    Exit;
+  End;
+
+  { -- PutPixel(X, Y, Color) : dessiner un pixel --------------- }
+  If L = 'putpixel' Then
+  Begin
+    Arg2 := '0';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    Args := '15';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Args := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_PutPixel(' + Arg1 + ', ' + Arg2 + ', ' + Args + ')';
+    Exit;
+  End;
+
+  { -- GetPixel(X, Y) : lire la couleur d un pixel ------------- }
+  If L = 'getpixel' Then
+  Begin
+    Arg2 := '0';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_GetPixel(' + Arg1 + ', ' + Arg2 + ')';
+    Exit;
+  End;
+
+  { -- Line(X1, Y1, X2, Y2) : tracer une ligne ----------------- }
+  If L = 'line' Then
+  Begin
+    Arg2 := '0';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    Args := Arg1 + ', ' + Arg2;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_Line(' + Args + ')';
+    Exit;
+  End;
+
+  { -- LineTo(X, Y) : tracer une ligne depuis CP ---------------- }
+  If L = 'lineto' Then
+  Begin
+    Arg2 := '0';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_LineTo(' + Arg1 + ', ' + Arg2 + ')';
+    Exit;
+  End;
+
+  { -- LineRel(DX, DY) : tracer une ligne relative -------------- }
+  If L = 'linerel' Then
+  Begin
+    Arg2 := '0';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_LineRel(' + Arg1 + ', ' + Arg2 + ')';
+    Exit;
+  End;
+
+  { -- MoveTo(X, Y) : deplacer CP ------------------------------ }
+  If L = 'moveto' Then
+  Begin
+    Arg2 := '0';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_MoveTo(' + Arg1 + ', ' + Arg2 + ')';
+    Exit;
+  End;
+
+  { -- MoveRel(DX, DY) : deplacer CP relatif ------------------- }
+  If L = 'moverel' Then
+  Begin
+    Arg2 := '0';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_MoveRel(' + Arg1 + ', ' + Arg2 + ')';
+    Exit;
+  End;
+
+  { -- Circle(X, Y, R) : tracer un cercle ---------------------- }
+  If L = 'circle' Then
+  Begin
+    Arg2 := '0';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    Args := '10';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Args := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_Circle(' + Arg1 + ', ' + Arg2 + ', ' + Args + ')';
+    Exit;
+  End;
+
+  { -- Arc(X, Y, StAngle, EndAngle, Radius) : arc de cercle ---- }
+  If L = 'arc' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_Arc(' + Args + ')';
+    Exit;
+  End;
+
+  { -- Ellipse(X, Y, StAngle, EndAngle, XR, YR) : ellipse ------ }
+  If L = 'ellipse' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_Ellipse(' + Args + ')';
+    Exit;
+  End;
+
+  { -- FillEllipse(X, Y, XR, YR) : ellipse remplie ------------- }
+  If L = 'fillellipse' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_FillEllipse(' + Args + ')';
+    Exit;
+  End;
+
+  { -- Rectangle(X1, Y1, X2, Y2) : rectangle ------------------- }
+  If L = 'rectangle' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_Rectangle(' + Args + ')';
+    Exit;
+  End;
+
+  { -- Bar(X1, Y1, X2, Y2) : barre remplie --------------------- }
+  If L = 'bar' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_Bar(' + Args + ')';
+    Exit;
+  End;
+
+  { -- Bar3D(X1, Y1, X2, Y2, Depth, Top) : barre 3D ----------- }
+  If L = 'bar3d' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_Bar3D(' + Args + ')';
+    Exit;
+  End;
+
+  { -- PieSlice(X, Y, StAngle, EndAngle, Radius) : secteur ----- }
+  If L = 'pieslice' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_PieSlice(' + Args + ')';
+    Exit;
+  End;
+
+  { -- Sector(X, Y, StAngle, EndAngle, XR, YR) : secteur ------- }
+  If L = 'sector' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_Sector(' + Args + ')';
+    Exit;
+  End;
+
+  { -- FloodFill(X, Y, Border) : remplissage ------------------- }
+  If L = 'floodfill' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_FloodFill(' + Args + ')';
+    Exit;
+  End;
+
+  { -- FillPoly(NumPoints, PolyPoints) : polygone rempli -------- }
+  If L = 'fillpoly' Then
+  Begin
+    Arg2 := '[]';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_FillPoly(' + Arg1 + ', ' + Arg2 + ')';
+    Exit;
+  End;
+
+  { -- OutText(S) : afficher texte a CP ------------------------- }
+  If L = 'outtext' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_OutText(' + Arg1 + ')';
+    Exit;
+  End;
+
+  { -- OutTextXY(X, Y, S) : afficher texte a position ----------- }
+  If L = 'outtextxy' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_OutTextXY(' + Args + ')';
+    Exit;
+  End;
+
+  { -- SetTextStyle(Font, Direction, Size) : style de texte ----- }
+  If L = 'settextstyle' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_SetTextStyle(' + Args + ')';
+    Exit;
+  End;
+
+  { -- SetTextJustify(Horiz, Vert) : justification texte -------- }
+  If L = 'settextjustify' Then
+  Begin
+    Arg2 := '0';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_SetTextJustify(' + Arg1 + ', ' + Arg2 + ')';
+    Exit;
+  End;
+
+  { -- TextWidth(S) : largeur du texte en pixels ---------------- }
+  If L = 'textwidth' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_TextWidth(' + Arg1 + ')';
+    Exit;
+  End;
+
+  { -- TextHeight(S) : hauteur du texte en pixels --------------- }
+  If L = 'textheight' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_TextHeight(' + Arg1 + ')';
+    Exit;
+  End;
+
+  { -- SetColor(Color) : couleur de dessin ---------------------- }
+  If L = 'setcolor' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_SetColor(' + Arg1 + ')';
+    Exit;
+  End;
+
+  { -- SetBkColor(Color) : couleur de fond ---------------------- }
+  If L = 'setbkcolor' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_SetBkColor(' + Arg1 + ')';
+    Exit;
+  End;
+
+  { -- SetFillStyle(Pattern, Color) : style de remplissage ------ }
+  If L = 'setfillstyle' Then
+  Begin
+    Arg2 := '15';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_SetFillStyle(' + Arg1 + ', ' + Arg2 + ')';
+    Exit;
+  End;
+
+  { -- SetFillPattern(Pattern, Color) : motif personnalise ------ }
+  If L = 'setfillpattern' Then
+  Begin
+    Arg2 := '15';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_SetFillStyle(12, ' + Arg2 + ')';
+    Exit;
+  End;
+
+  { -- SetLineStyle(Style, Pattern, Thick) : style de ligne ----- }
+  If L = 'setlinestyle' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_SetLineStyle(' + Args + ')';
+    Exit;
+  End;
+
+  { -- SetWriteMode(Mode) : mode d ecriture --------------------- }
+  If L = 'setwritemode' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_WriteMode = ' + Arg1;
+    Exit;
+  End;
+
+  { -- SetViewPort(X1, Y1, X2, Y2, Clip) : viewport ------------ }
+  If L = 'setviewport' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_SetViewPort(' + Args + ')';
+    Exit;
+  End;
+
+  { -- ImageSize(X1, Y1, X2, Y2) : taille buffer image --------- }
+  If L = 'imagesize' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_ImageSize(' + Args + ')';
+    Exit;
+  End;
+
+  { -- GetImage(X1, Y1, X2, Y2, Buf) : capturer image ---------- }
+  If L = 'getimage' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* GetImage(' + Args + ') stub */';
+    Exit;
+  End;
+
+  { -- PutImage(X, Y, Buf, Op) : afficher image ---------------- }
+  If L = 'putimage' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* PutImage(' + Args + ') stub */';
+    Exit;
+  End;
+
+  { -- SetPalette(Index, Color) : modifier palette -------------- }
+  If L = 'setpalette' Then
+  Begin
+    Arg2 := '0';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_Palette[' + Arg1 + '] = _GR_PalRGB(' + Arg2 + ')';
+    Exit;
+  End;
+
+  { -- SetAllPalette(Palette) : modifier toute la palette ------- }
+  If L = 'setallpalette' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* SetAllPalette stub */';
+    Exit;
+  End;
+
+  { -- SetRGBPalette(Index, R, G, B) : couleur RGB -------------- }
+  If L = 'setrgbpalette' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '_GR_SetRGBPalette(' + Args + ')';
+    Exit;
+  End;
+
+  { -- SetAspectRatio(Xasp, Yasp) : fixer ratio (stub) --------- }
+  If L = 'setaspectratio' Then
+  Begin
+    Arg2 := '10000';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* SetAspectRatio(' + Arg1 + ', ' + Arg2 + ') stub */';
+    Exit;
+  End;
+
+  { -- SetActivePage(Page) : page active (stub) ----------------- }
+  If L = 'setactivepage' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* SetActivePage(' + Arg1 + ') stub */';
+    Exit;
+  End;
+
+  { -- SetVisualPage(Page) : page visible (stub) ---------------- }
+  If L = 'setvisualpage' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* SetVisualPage(' + Arg1 + ') stub */';
+    Exit;
+  End;
+
   { Fallback : appel generique }
   Args := Arg1;
   While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
@@ -5256,6 +6208,155 @@ Begin
   SymAdd('ovrIOError',     SK_CONST, TI);
   SymAdd('ovrNoEMSDriver', SK_CONST, TI);
   SymAdd('ovrNoEMSMemory', SK_CONST, TI);
+  { TODO 22 : procedures et fonctions Graph }
+  SymAdd('InitGraph',       SK_PROC,  -1);
+  SymAdd('CloseGraph',      SK_PROC,  -1);
+  SymAdd('DetectGraph',     SK_PROC,  -1);
+  SymAdd('ClearDevice',     SK_PROC,  -1);
+  SymAdd('ClearViewPort',   SK_PROC,  -1);
+  SymAdd('SetViewPort',     SK_PROC,  -1);
+  SymAdd('PutPixel',        SK_PROC,  -1);
+  SymAdd('Line',            SK_PROC,  -1);
+  SymAdd('LineTo',          SK_PROC,  -1);
+  SymAdd('LineRel',         SK_PROC,  -1);
+  SymAdd('MoveTo',          SK_PROC,  -1);
+  SymAdd('MoveRel',         SK_PROC,  -1);
+  SymAdd('Circle',          SK_PROC,  -1);
+  SymAdd('Arc',             SK_PROC,  -1);
+  SymAdd('Ellipse',         SK_PROC,  -1);
+  SymAdd('FillEllipse',     SK_PROC,  -1);
+  SymAdd('Rectangle',       SK_PROC,  -1);
+  SymAdd('Bar',             SK_PROC,  -1);
+  SymAdd('Bar3D',           SK_PROC,  -1);
+  SymAdd('PieSlice',        SK_PROC,  -1);
+  SymAdd('Sector',          SK_PROC,  -1);
+  SymAdd('FloodFill',       SK_PROC,  -1);
+  SymAdd('FillPoly',        SK_PROC,  -1);
+  SymAdd('OutText',         SK_PROC,  -1);
+  SymAdd('OutTextXY',       SK_PROC,  -1);
+  SymAdd('SetTextStyle',    SK_PROC,  -1);
+  SymAdd('SetTextJustify',  SK_PROC,  -1);
+  SymAdd('SetColor',        SK_PROC,  -1);
+  SymAdd('SetBkColor',      SK_PROC,  -1);
+  SymAdd('SetFillStyle',    SK_PROC,  -1);
+  SymAdd('SetFillPattern',  SK_PROC,  -1);
+  SymAdd('SetLineStyle',    SK_PROC,  -1);
+  SymAdd('SetWriteMode',    SK_PROC,  -1);
+  SymAdd('SetPalette',      SK_PROC,  -1);
+  SymAdd('SetAllPalette',   SK_PROC,  -1);
+  SymAdd('SetRGBPalette',   SK_PROC,  -1);
+  SymAdd('SetAspectRatio',  SK_PROC,  -1);
+  SymAdd('SetActivePage',   SK_PROC,  -1);
+  SymAdd('SetVisualPage',   SK_PROC,  -1);
+  SymAdd('GetImage',        SK_PROC,  -1);
+  SymAdd('PutImage',        SK_PROC,  -1);
+  SymAdd('GetViewSettings', SK_PROC,  -1);
+  SymAdd('GetPalette',      SK_PROC,  -1);
+  SymAdd('GetDefaultPalette',SK_PROC, -1);
+  SymAdd('GetAspectRatio',  SK_PROC,  -1);
+  SymAdd('GraphResult',     SK_FUNC,  -1);
+  SymAdd('GraphErrorMsg',   SK_FUNC,  -1);
+  SymAdd('GetMaxX',         SK_FUNC,  -1);
+  SymAdd('GetMaxY',         SK_FUNC,  -1);
+  SymAdd('GetMaxColor',     SK_FUNC,  -1);
+  SymAdd('GetX',            SK_FUNC,  -1);
+  SymAdd('GetY',            SK_FUNC,  -1);
+  SymAdd('GetPixel',        SK_FUNC,  -1);
+  SymAdd('GetColor',        SK_FUNC,  -1);
+  SymAdd('GetBkColor',      SK_FUNC,  -1);
+  SymAdd('TextWidth',       SK_FUNC,  -1);
+  SymAdd('TextHeight',      SK_FUNC,  -1);
+  SymAdd('ImageSize',       SK_FUNC,  -1);
+  { TODO 22 : constantes Graph - pilotes et modes }
+  TI := TypeFindByName('Integer');
+  SymAdd('Detect',          SK_CONST, TI);
+  SymAdd('CGA',             SK_CONST, TI);
+  SymAdd('MCGA',            SK_CONST, TI);
+  SymAdd('EGA',             SK_CONST, TI);
+  SymAdd('EGA64',           SK_CONST, TI);
+  SymAdd('EGAMono',         SK_CONST, TI);
+  SymAdd('IBM8514',         SK_CONST, TI);
+  SymAdd('HercMono',        SK_CONST, TI);
+  SymAdd('ATT400',          SK_CONST, TI);
+  SymAdd('VGA',             SK_CONST, TI);
+  SymAdd('PC3270',          SK_CONST, TI);
+  SymAdd('CGAHi',           SK_CONST, TI);
+  SymAdd('EGAHi',           SK_CONST, TI);
+  SymAdd('EGALo',           SK_CONST, TI);
+  SymAdd('VGAHi',           SK_CONST, TI);
+  SymAdd('VGAMed',          SK_CONST, TI);
+  SymAdd('VGALo',           SK_CONST, TI);
+  { TODO 22 : constantes Graph - styles et operations }
+  SymAdd('EmptyFill',       SK_CONST, TI);
+  SymAdd('SolidFill',       SK_CONST, TI);
+  SymAdd('LineFill',        SK_CONST, TI);
+  SymAdd('LtSlashFill',     SK_CONST, TI);
+  SymAdd('SlashFill',       SK_CONST, TI);
+  SymAdd('BkSlashFill',     SK_CONST, TI);
+  SymAdd('LtBkSlashFill',   SK_CONST, TI);
+  SymAdd('HatchFill',       SK_CONST, TI);
+  SymAdd('XHatchFill',      SK_CONST, TI);
+  SymAdd('InterleaveFill',  SK_CONST, TI);
+  SymAdd('WideDotFill',     SK_CONST, TI);
+  SymAdd('CloseDotFill',    SK_CONST, TI);
+  SymAdd('UserFill',        SK_CONST, TI);
+  SymAdd('SolidLn',         SK_CONST, TI);
+  SymAdd('DottedLn',        SK_CONST, TI);
+  SymAdd('CenterLn',        SK_CONST, TI);
+  SymAdd('DashedLn',        SK_CONST, TI);
+  SymAdd('UserBitLn',       SK_CONST, TI);
+  SymAdd('NormWidth',       SK_CONST, TI);
+  SymAdd('ThickWidth',      SK_CONST, TI);
+  SymAdd('NormalPut',       SK_CONST, TI);
+  SymAdd('XORPut',          SK_CONST, TI);
+  SymAdd('OrPut',           SK_CONST, TI);
+  SymAdd('AndPut',          SK_CONST, TI);
+  SymAdd('NotPut',          SK_CONST, TI);
+  SymAdd('DefaultFont',     SK_CONST, TI);
+  SymAdd('TriplexFont',     SK_CONST, TI);
+  SymAdd('SmallFont',       SK_CONST, TI);
+  SymAdd('SansSerifFont',   SK_CONST, TI);
+  SymAdd('GothicFont',      SK_CONST, TI);
+  SymAdd('HorizDir',        SK_CONST, TI);
+  SymAdd('VertDir',         SK_CONST, TI);
+  SymAdd('LeftText',        SK_CONST, TI);
+  SymAdd('CenterText',      SK_CONST, TI);
+  SymAdd('RightText',       SK_CONST, TI);
+  SymAdd('BottomText',      SK_CONST, TI);
+  SymAdd('TopText',         SK_CONST, TI);
+  SymAdd('grOk',            SK_CONST, TI);
+  SymAdd('grNoInitGraph',   SK_CONST, TI);
+  SymAdd('grNotDetected',   SK_CONST, TI);
+  SymAdd('grFileNotFound',  SK_CONST, TI);
+  SymAdd('grInvalidDriver', SK_CONST, TI);
+  SymAdd('grNoLoadMem',     SK_CONST, TI);
+  SymAdd('grNoScanMem',     SK_CONST, TI);
+  SymAdd('grNoFloodMem',    SK_CONST, TI);
+  SymAdd('grFontNotFound',  SK_CONST, TI);
+  SymAdd('grNoFontMem',     SK_CONST, TI);
+  SymAdd('grInvalidMode',   SK_CONST, TI);
+  SymAdd('grError',         SK_CONST, TI);
+  SymAdd('grIOerror',       SK_CONST, TI);
+  SymAdd('grInvalidFont',   SK_CONST, TI);
+  SymAdd('grInvalidFontNum',SK_CONST, TI);
+  SymAdd('grInvalidDeviceNum',SK_CONST,TI);
+  { TODO 22 : constantes Graph - couleurs EGA }
+  SymAdd('EGABlack',        SK_CONST, TI);
+  SymAdd('EGABlue',         SK_CONST, TI);
+  SymAdd('EGAGreen',        SK_CONST, TI);
+  SymAdd('EGACyan',         SK_CONST, TI);
+  SymAdd('EGARed',          SK_CONST, TI);
+  SymAdd('EGAMagenta',      SK_CONST, TI);
+  SymAdd('EGABrown',        SK_CONST, TI);
+  SymAdd('EGALightGray',    SK_CONST, TI);
+  SymAdd('EGADarkGray',     SK_CONST, TI);
+  SymAdd('EGALightBlue',    SK_CONST, TI);
+  SymAdd('EGALightGreen',   SK_CONST, TI);
+  SymAdd('EGALightCyan',    SK_CONST, TI);
+  SymAdd('EGALightRed',     SK_CONST, TI);
+  SymAdd('EGALightMagenta', SK_CONST, TI);
+  SymAdd('EGAYellow',       SK_CONST, TI);
+  SymAdd('EGAWhite',        SK_CONST, TI);
 End;
 
 { ---- SymDump : afficher le contenu de la table (debug) ------ }
@@ -5738,6 +6839,221 @@ Begin
   EmitComment('Overlay unit helpers (stubs)');
   EmitLine('var OvrResult = 0;');
   EmitBlankLine;
+  { TODO 22 : helpers Graph - canvas HTML5 }
+  EmitComment('Graph unit helpers (canvas)');
+  EmitLine('var _GR_Canvas = null, _GR_Ctx = null;');
+  EmitLine('var _GR_Width = 640, _GR_Height = 480;');
+  EmitLine('var _GR_CP = {x:0, y:0};');
+  EmitLine('var _GR_Color = 15, _GR_BkColor = 0;');
+  EmitLine('var _GR_FillColor = 15, _GR_FillPattern = 1;');
+  EmitLine('var _GR_MaxColor = 15, _GR_Result = 0;');
+  EmitLine('var _GR_WriteMode = 0;');
+  EmitLine('var _GR_Palette = [');
+  EmitLine('  "#000000","#0000AA","#00AA00","#00AAAA",');
+  EmitLine('  "#AA0000","#AA00AA","#AA5500","#AAAAAA",');
+  EmitLine('  "#555555","#5555FF","#55FF55","#55FFFF",');
+  EmitLine('  "#FF5555","#FF55FF","#FFFF55","#FFFFFF"');
+  EmitLine('];');
+  EmitLine('function _GR_PalRGB(c) {');
+  EmitLine('  return (c >= 0 && c < _GR_Palette.length) ? _GR_Palette[c] : "#FFFFFF";');
+  EmitLine('}');
+  EmitLine('function _GR_Init(drv, mode, path) {');
+  EmitLine('  if (typeof document !== "undefined") {');
+  EmitLine('    _GR_Canvas = document.createElement("canvas");');
+  EmitLine('    _GR_Canvas.width = _GR_Width; _GR_Canvas.height = _GR_Height;');
+  EmitLine('    document.body.appendChild(_GR_Canvas);');
+  EmitLine('    _GR_Ctx = _GR_Canvas.getContext("2d");');
+  EmitLine('  } else { _GR_Ctx = { fillRect:function(){}, strokeRect:function(){},');
+  EmitLine('    beginPath:function(){}, moveTo:function(){}, lineTo:function(){},');
+  EmitLine('    arc:function(){}, ellipse:function(){}, stroke:function(){},');
+  EmitLine('    fill:function(){}, closePath:function(){}, fillText:function(){},');
+  EmitLine('    clearRect:function(){}, measureText:function(){return{width:0};},');
+  EmitLine('    save:function(){}, restore:function(){}, clip:function(){},');
+  EmitLine('    getImageData:function(){return{data:[0,0,0,0]};},');
+  EmitLine('    putImageData:function(){}, setLineDash:function(){} }; }');
+  EmitLine('  _GR_Result = 0; _GR_CP = {x:0, y:0};');
+  EmitLine('}');
+  EmitLine('function _GR_Close() {');
+  EmitLine('  if (_GR_Canvas && _GR_Canvas.parentNode) _GR_Canvas.parentNode.removeChild(_GR_Canvas);');
+  EmitLine('  _GR_Ctx = null; _GR_Canvas = null;');
+  EmitLine('}');
+  EmitLine('function _GR_GetMaxX() { return _GR_Width - 1; }');
+  EmitLine('function _GR_GetMaxY() { return _GR_Height - 1; }');
+  EmitLine('function _GR_ErrorMsg(c) {');
+  EmitLine('  var m = {"0":"No error","-1":"No InitGraph","-2":"Not detected",');
+  EmitLine('    "-3":"File not found","-4":"Invalid driver","-5":"No load mem"};');
+  EmitLine('  return m[c] || "Unknown error " + c;');
+  EmitLine('}');
+  EmitLine('function _GR_SetColor(c) {');
+  EmitLine('  _GR_Color = c;');
+  EmitLine('  if (_GR_Ctx) _GR_Ctx.strokeStyle = _GR_PalRGB(c);');
+  EmitLine('}');
+  EmitLine('function _GR_SetBkColor(c) {');
+  EmitLine('  _GR_BkColor = c;');
+  EmitLine('}');
+  EmitLine('function _GR_SetFillStyle(p, c) {');
+  EmitLine('  _GR_FillPattern = p; _GR_FillColor = c;');
+  EmitLine('  if (_GR_Ctx) _GR_Ctx.fillStyle = _GR_PalRGB(c);');
+  EmitLine('}');
+  EmitLine('function _GR_SetLineStyle(st, pat, thick) {');
+  EmitLine('  if (!_GR_Ctx) return;');
+  EmitLine('  _GR_Ctx.lineWidth = thick || 1;');
+  EmitLine('  if (st === 1) _GR_Ctx.setLineDash([2,2]);');
+  EmitLine('  else if (st === 2) _GR_Ctx.setLineDash([4,2,2,2]);');
+  EmitLine('  else if (st === 3) _GR_Ctx.setLineDash([4,4]);');
+  EmitLine('  else _GR_Ctx.setLineDash([]);');
+  EmitLine('}');
+  EmitLine('function _GR_PutPixel(x, y, c) {');
+  EmitLine('  if (!_GR_Ctx) return;');
+  EmitLine('  _GR_Ctx.fillStyle = _GR_PalRGB(c);');
+  EmitLine('  _GR_Ctx.fillRect(x, y, 1, 1);');
+  EmitLine('  _GR_Ctx.fillStyle = _GR_PalRGB(_GR_FillColor);');
+  EmitLine('}');
+  EmitLine('function _GR_GetPixel(x, y) {');
+  EmitLine('  if (!_GR_Ctx) return 0;');
+  EmitLine('  var d = _GR_Ctx.getImageData(x, y, 1, 1).data;');
+  EmitLine('  return (d[0] > 128 ? 4 : 0) | (d[1] > 128 ? 2 : 0) | (d[2] > 128 ? 1 : 0);');
+  EmitLine('}');
+  EmitLine('function _GR_Line(x1, y1, x2, y2) {');
+  EmitLine('  if (!_GR_Ctx) return;');
+  EmitLine('  _GR_Ctx.beginPath(); _GR_Ctx.moveTo(x1+0.5,y1+0.5);');
+  EmitLine('  _GR_Ctx.lineTo(x2+0.5,y2+0.5); _GR_Ctx.stroke();');
+  EmitLine('  _GR_CP.x = x2; _GR_CP.y = y2;');
+  EmitLine('}');
+  EmitLine('function _GR_LineTo(x, y) {');
+  EmitLine('  _GR_Line(_GR_CP.x, _GR_CP.y, x, y);');
+  EmitLine('}');
+  EmitLine('function _GR_LineRel(dx, dy) {');
+  EmitLine('  _GR_Line(_GR_CP.x, _GR_CP.y, _GR_CP.x+dx, _GR_CP.y+dy);');
+  EmitLine('}');
+  EmitLine('function _GR_MoveTo(x, y) { _GR_CP.x = x; _GR_CP.y = y; }');
+  EmitLine('function _GR_MoveRel(dx, dy) { _GR_CP.x += dx; _GR_CP.y += dy; }');
+  EmitLine('function _GR_Circle(x, y, r) {');
+  EmitLine('  if (!_GR_Ctx) return;');
+  EmitLine('  _GR_Ctx.beginPath(); _GR_Ctx.arc(x, y, r, 0, 2*Math.PI);');
+  EmitLine('  _GR_Ctx.stroke();');
+  EmitLine('}');
+  EmitLine('function _GR_Arc(x, y, sa, ea, r) {');
+  EmitLine('  if (!_GR_Ctx) return;');
+  EmitLine('  _GR_Ctx.beginPath();');
+  EmitLine('  _GR_Ctx.arc(x, y, r, -ea*Math.PI/180, -sa*Math.PI/180);');
+  EmitLine('  _GR_Ctx.stroke();');
+  EmitLine('}');
+  EmitLine('function _GR_Ellipse(x, y, sa, ea, xr, yr) {');
+  EmitLine('  if (!_GR_Ctx) return;');
+  EmitLine('  _GR_Ctx.beginPath();');
+  EmitLine('  _GR_Ctx.ellipse(x, y, xr, yr, 0, -ea*Math.PI/180, -sa*Math.PI/180);');
+  EmitLine('  _GR_Ctx.stroke();');
+  EmitLine('}');
+  EmitLine('function _GR_FillEllipse(x, y, xr, yr) {');
+  EmitLine('  if (!_GR_Ctx) return;');
+  EmitLine('  _GR_Ctx.beginPath();');
+  EmitLine('  _GR_Ctx.ellipse(x, y, xr, yr, 0, 0, 2*Math.PI);');
+  EmitLine('  _GR_Ctx.fill(); _GR_Ctx.stroke();');
+  EmitLine('}');
+  EmitLine('function _GR_Rectangle(x1, y1, x2, y2) {');
+  EmitLine('  if (!_GR_Ctx) return;');
+  EmitLine('  _GR_Ctx.strokeRect(x1, y1, x2-x1, y2-y1);');
+  EmitLine('}');
+  EmitLine('function _GR_Bar(x1, y1, x2, y2) {');
+  EmitLine('  if (!_GR_Ctx) return;');
+  EmitLine('  _GR_Ctx.fillRect(x1, y1, x2-x1, y2-y1);');
+  EmitLine('}');
+  EmitLine('function _GR_Bar3D(x1, y1, x2, y2, depth, top) {');
+  EmitLine('  if (!_GR_Ctx) return;');
+  EmitLine('  _GR_Ctx.fillRect(x1, y1, x2-x1, y2-y1);');
+  EmitLine('  _GR_Ctx.strokeRect(x1, y1, x2-x1, y2-y1);');
+  EmitLine('  _GR_Ctx.beginPath();');
+  EmitLine('  _GR_Ctx.moveTo(x2,y2); _GR_Ctx.lineTo(x2+depth,y2-depth);');
+  EmitLine('  _GR_Ctx.lineTo(x2+depth,y1-depth); _GR_Ctx.lineTo(x2,y1);');
+  EmitLine('  _GR_Ctx.stroke();');
+  EmitLine('  if (top) {');
+  EmitLine('    _GR_Ctx.beginPath();');
+  EmitLine('    _GR_Ctx.moveTo(x1,y1); _GR_Ctx.lineTo(x1+depth,y1-depth);');
+  EmitLine('    _GR_Ctx.lineTo(x2+depth,y1-depth); _GR_Ctx.lineTo(x2,y1);');
+  EmitLine('    _GR_Ctx.stroke();');
+  EmitLine('  }');
+  EmitLine('}');
+  EmitLine('function _GR_PieSlice(x, y, sa, ea, r) {');
+  EmitLine('  if (!_GR_Ctx) return;');
+  EmitLine('  _GR_Ctx.beginPath(); _GR_Ctx.moveTo(x, y);');
+  EmitLine('  _GR_Ctx.arc(x, y, r, -ea*Math.PI/180, -sa*Math.PI/180);');
+  EmitLine('  _GR_Ctx.closePath(); _GR_Ctx.fill(); _GR_Ctx.stroke();');
+  EmitLine('}');
+  EmitLine('function _GR_Sector(x, y, sa, ea, xr, yr) {');
+  EmitLine('  if (!_GR_Ctx) return;');
+  EmitLine('  _GR_Ctx.beginPath(); _GR_Ctx.moveTo(x, y);');
+  EmitLine('  _GR_Ctx.ellipse(x, y, xr, yr, 0, -ea*Math.PI/180, -sa*Math.PI/180);');
+  EmitLine('  _GR_Ctx.closePath(); _GR_Ctx.fill(); _GR_Ctx.stroke();');
+  EmitLine('}');
+  EmitLine('function _GR_FloodFill(x, y, border) {');
+  EmitLine('  /* FloodFill: simplified stub - fills canvas background */');
+  EmitLine('  if (!_GR_Ctx) return;');
+  EmitLine('  _GR_Ctx.fillRect(0, 0, _GR_Width, _GR_Height);');
+  EmitLine('}');
+  EmitLine('function _GR_FillPoly(n, pts) {');
+  EmitLine('  if (!_GR_Ctx || n < 2) return;');
+  EmitLine('  _GR_Ctx.beginPath(); _GR_Ctx.moveTo(pts[0], pts[1]);');
+  EmitLine('  for (var i = 1; i < n; i++) _GR_Ctx.lineTo(pts[i*2], pts[i*2+1]);');
+  EmitLine('  _GR_Ctx.closePath(); _GR_Ctx.fill(); _GR_Ctx.stroke();');
+  EmitLine('}');
+  EmitLine('function _GR_OutText(s) {');
+  EmitLine('  if (!_GR_Ctx) return;');
+  EmitLine('  _GR_Ctx.fillStyle = _GR_PalRGB(_GR_Color);');
+  EmitLine('  _GR_Ctx.fillText(s, _GR_CP.x, _GR_CP.y);');
+  EmitLine('  _GR_CP.x += _GR_Ctx.measureText(s).width;');
+  EmitLine('  _GR_Ctx.fillStyle = _GR_PalRGB(_GR_FillColor);');
+  EmitLine('}');
+  EmitLine('function _GR_OutTextXY(x, y, s) {');
+  EmitLine('  if (!_GR_Ctx) return;');
+  EmitLine('  _GR_Ctx.fillStyle = _GR_PalRGB(_GR_Color);');
+  EmitLine('  _GR_Ctx.fillText(s, x, y);');
+  EmitLine('  _GR_Ctx.fillStyle = _GR_PalRGB(_GR_FillColor);');
+  EmitLine('}');
+  EmitLine('function _GR_SetTextStyle(font, dir, size) {');
+  EmitLine('  if (!_GR_Ctx) return;');
+  EmitLine('  var f = ["serif","serif","sans-serif","sans-serif","fantasy"];');
+  EmitLine('  _GR_Ctx.font = (size * 8) + "px " + (f[font] || "serif");');
+  EmitLine('}');
+  EmitLine('function _GR_SetTextJustify(h, v) {');
+  EmitLine('  if (!_GR_Ctx) return;');
+  EmitLine('  _GR_Ctx.textAlign = (h===1) ? "center" : (h===2) ? "right" : "left";');
+  EmitLine('  _GR_Ctx.textBaseline = (v===2) ? "top" : (v===0) ? "bottom" : "middle";');
+  EmitLine('}');
+  EmitLine('function _GR_TextWidth(s) {');
+  EmitLine('  if (!_GR_Ctx) return 0;');
+  EmitLine('  return Math.round(_GR_Ctx.measureText(s).width);');
+  EmitLine('}');
+  EmitLine('function _GR_TextHeight(s) {');
+  EmitLine('  if (!_GR_Ctx) return 8;');
+  EmitLine('  return parseInt(_GR_Ctx.font) || 8;');
+  EmitLine('}');
+  EmitLine('function _GR_ClearDevice() {');
+  EmitLine('  if (!_GR_Ctx) return;');
+  EmitLine('  _GR_Ctx.clearRect(0, 0, _GR_Width, _GR_Height);');
+  EmitLine('  _GR_CP = {x:0, y:0};');
+  EmitLine('}');
+  EmitLine('function _GR_ClearViewPort() {');
+  EmitLine('  if (!_GR_Ctx) return;');
+  EmitLine('  _GR_Ctx.clearRect(0, 0, _GR_Width, _GR_Height);');
+  EmitLine('}');
+  EmitLine('function _GR_SetViewPort(x1, y1, x2, y2, clip) {');
+  EmitLine('  if (!_GR_Ctx) return;');
+  EmitLine('  _GR_Ctx.save();');
+  EmitLine('  if (clip) {');
+  EmitLine('    _GR_Ctx.beginPath();');
+  EmitLine('    _GR_Ctx.rect(x1, y1, x2-x1, y2-y1);');
+  EmitLine('    _GR_Ctx.clip();');
+  EmitLine('  }');
+  EmitLine('}');
+  EmitLine('function _GR_ImageSize(x1, y1, x2, y2) {');
+  EmitLine('  return (Math.abs(x2-x1)+1) * (Math.abs(y2-y1)+1) * 4 + 4;');
+  EmitLine('}');
+  EmitLine('function _GR_SetRGBPalette(idx, r, g, b) {');
+  EmitLine('  if (idx >= 0 && idx < _GR_Palette.length)');
+  EmitLine('    _GR_Palette[idx] = "rgb("+((r&63)*4)+","+((g&63)*4)+","+((b&63)*4)+")";');
+  EmitLine('}');
+  EmitBlankLine;
 End;
 
 { ---- EmitModuleHeader : en-tete module ES6 si option -m ----- }
@@ -5784,6 +7100,9 @@ Begin
       { TODO 21 : avertissement si USES Overlay }
       If StrLowerCase(UnitName) = 'overlay' Then
         WriteLn('Warning: unit Overlay ignored - overlays are not supported in JavaScript');
+      { TODO 22 : notification si USES Graph }
+      If StrLowerCase(UnitName) = 'graph' Then
+        WriteLn('Note: unit Graph mapped to HTML5 Canvas API in JavaScript');
       { Enregistrer l unite dans la table des symboles }
       Idx := SymAdd(UnitName, SK_UNIT, -1);
       Inc(P);
