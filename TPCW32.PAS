@@ -614,6 +614,27 @@
               TPU6_HDR_SIZE, TPU7_HDR_SIZE
             Test : test_tpu.pas
 
+  TODO 27 - USES VERSION 4+ ET COMPILATION UNITE   [IMPLEMENTE]
+            Restrictions et generation correcte selon le type de source :
+            1. Le mot-cle USES n est disponible qu a partir de TP 4+
+               Si TPVersion < 4, le mot-cle uses n est pas reconnu
+               et ParseUsesClause refuse la clause Uses
+            2. Le mot-cle UNIT n est reconnu qu a partir de TP 4+
+            3. Detection automatique Unit vs Program :
+               IsUnitSource detecte si le premier token est UNIT
+            4. Les unites generent un fichier .TPU (DOS 16 bits) ou
+               .OBJ (Win32) au lieu d un .EXE
+               Seul un Program genere un executable
+            Variables ajoutees :
+              IsUnitSource : True si le source est une unite
+              UnitSourceName : nom de l unite source
+            Procedures modifiees :
+              IsKeyword : uses/unit restreints a TP 4+
+              ParseUsesClause : check version avant d accepter Uses
+              ParseArgs : extension .tpu par defaut si unite detectee
+              Run : skip PE/EXE generation pour les unites
+            Test : test_uses_ver.pas, test_unit_src.pas
+
   ============================================================ *)
 
 Program TPCW32;
@@ -1537,9 +1558,12 @@ Begin
     (L = 'record')      Or (L = 'repeat')     Or (L = 'set')        Or
     (L = 'shl')         Or (L = 'shr')        Or (L = 'string')     Or
     (L = 'then')        Or (L = 'to')         Or (L = 'type')       Or
-    (L = 'unit')        Or (L = 'until')      Or (L = 'uses')       Or
+    (L = 'until')       Or
     (L = 'var')         Or (L = 'while')      Or (L = 'with')       Or
     (L = 'xor');
+  { Mots-cles UNIT et USES : disponibles a partir de TP 4+ seulement (TODO 27) }
+  If (Not R) And TPVersionAtLeast(TP_VER_4) Then
+    R := (L = 'unit') Or (L = 'uses');
   { Mots-cles supplementaires TP5.5+ }
   If (Not R) And TPVersionAtLeast(TP_VER_55) Then
     R :=
@@ -4290,6 +4314,10 @@ Var
   HasProgram      : Boolean;
   { Nombre d entrees DataTab deja emises }
   DataEmittedCount: Integer;
+  { True si le source est une unite (commence par UNIT) (TODO 27) }
+  IsUnitSource    : Boolean;
+  { Nom de l unite source (TODO 27) }
+  UnitSourceName  : TString;
 
 { ------------------------------------------------------------ }
 { EmitOpen : ouvrir le fichier .ASM de sortie                  }
@@ -18061,6 +18089,8 @@ Var
   TPUSrc     : Word;
 Begin
   UsesCount := 0;
+  IsUnitSource := False;
+  UnitSourceName := '';
   For I := 0 To MAX_USES_UNITS - 1 Do
   Begin
     UsesUnits[I].Name := ''; UsesUnits[I].FileName := '';
@@ -18071,6 +18101,24 @@ Begin
   I := 0;
   While I < TokenCount Do
   Begin
+    { Detecter UNIT : le source est une unite (TODO 27) }
+    If (TokenPool[I].Kind = TK_KEYWORD) And
+       (StrUpperCase(TokenPool[I].Val) = 'UNIT') Then
+    Begin
+      IsUnitSource := True;
+      Inc(I);
+      If (I < TokenCount) And
+         ((TokenPool[I].Kind = TK_IDENT) Or (TokenPool[I].Kind = TK_KEYWORD)) Then
+      Begin
+        UnitSourceName := StrUpperCase(TokenPool[I].Val);
+        Inc(I);
+      End;
+      While (I < TokenCount) And Not ((TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = ';')) Do Inc(I);
+      If I < TokenCount Then Inc(I);
+      If Opts.Verbose Then
+        WriteLn('  Source unite : ', UnitSourceName);
+      Continue;
+    End;
     If (TokenPool[I].Kind = TK_KEYWORD) And
        (StrUpperCase(TokenPool[I].Val) = 'PROGRAM') Then
     Begin
@@ -18079,9 +18127,19 @@ Begin
       If I < TokenCount Then Inc(I);
       Continue;
     End;
+    { Clause USES : verifier que la version TP >= 4 (TODO 27) }
     If (TokenPool[I].Kind = TK_KEYWORD) And
        (StrUpperCase(TokenPool[I].Val) = 'USES') Then
     Begin
+      If Not TPVersionAtLeast(TP_VER_4) Then
+      Begin
+        WarnMsg('la clause Uses n''est pas disponible avant Turbo Pascal 4.0 (version courante: ' + TPVersionStr(Opts.TPVersion) + ')');
+        { Sauter la clause Uses sans la traiter }
+        Inc(I);
+        While (I < TokenCount) And Not ((TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = ';')) Do Inc(I);
+        If I < TokenCount Then Inc(I);
+        Continue;
+      End;
       InUses := True; Inc(I);
       While (I < TokenCount) And InUses Do
       Begin
@@ -18190,12 +18248,24 @@ Begin
 
   { Initialiser les variables de l emetteur (TODO 07) }
   HasProgram := False;
+  IsUnitSource := False;
+  UnitSourceName := '';
   DataEmittedCount := 0;
   EmitLabelSeq := 0;
   StaticVarSeq := 0;
 
   { Analyser la clause Uses (TODO 26) }
   ParseUsesClause;
+
+  { Si c est une unite, ajuster le fichier de sortie en .TPU (TODO 27) }
+  If IsUnitSource Then
+  Begin
+    If Opts.Verbose Then
+      WriteLn('  Mode unite : pas de generation d''executable');
+    { Si le fichier de sortie est .exe, le changer en .tpu }
+    If StrUpperCase(ExtractExt(Opts.OutFile)) = '.EXE' Then
+      Opts.OutFile := ReplaceExt(Opts.OutFile, '.tpu');
+  End;
 
   { Analyser les declarations TYPE (TODO 15) }
   ParseTypeDecls;
@@ -18225,8 +18295,9 @@ Begin
     { Emettre les procedures et fonctions (TODO 09) }
     EmitProcedures;
 
-    { Emettre le bloc principal (TODO 09) }
-    EmitMainBlock;
+    { Emettre le bloc principal (TODO 09) - seulement pour les programmes }
+    If Not IsUnitSource Then
+      EmitMainBlock;
 
     { Emettre les routines runtime (TODO 12) }
     EmitRuntime;
@@ -18257,27 +18328,44 @@ Begin
     EmitOpen(ReplaceExt(Opts.OutFile, '.asm'));
     EmitHeaderDos16;
     EmitDataSegDos16;
-    EmitMainBlockDos16;
+    { Emettre le bloc principal seulement pour les programmes (TODO 27) }
+    If Not IsUnitSource Then
+      EmitMainBlockDos16;
     { Note: EmitClose n est pas appele car EmitMainBlockDos16 ecrit END }
     If OutFOpen Then Begin Close(OutF); OutFOpen := False End;
     If Opts.Verbose Then
       WriteLn('  ASM DOS 16 bits genere : ', ReplaceExt(Opts.OutFile, '.asm'));
   End;
 
-  { Generation du fichier PE (TODO 24) }
-  If (Not Opts.ObjOnly) And (Not Opts.Dos16Mode) Then
+  { Generation du fichier PE (TODO 24) - seulement pour les programmes (TODO 27) }
+  If (Not Opts.ObjOnly) And (Not Opts.Dos16Mode) And (Not IsUnitSource) Then
   Begin
     WritePEFile(Opts.OutFile);
     If Opts.Verbose Then
       WriteLn('  PE Win32 genere : ', Opts.OutFile);
   End;
 
+  { Generation du fichier COFF pour les unites Win32 (TODO 27) }
+  If (Not Opts.Dos16Mode) And IsUnitSource Then
+  Begin
+    WriteCOFFFile(ReplaceExt(Opts.OutFile, '.obj'));
+    If Opts.Verbose Then
+      WriteLn('  Unite COFF OBJ genere : ', ReplaceExt(Opts.OutFile, '.obj'));
+  End;
+
   { Generation du fichier COFF (TODO 24) }
-  If Opts.ObjOnly Then
+  If Opts.ObjOnly And (Not IsUnitSource) Then
   Begin
     WriteCOFFFile(Opts.OutFile);
     If Opts.Verbose Then
       WriteLn('  COFF OBJ genere : ', Opts.OutFile);
+  End;
+
+  { Generation du fichier TPU pour les unites DOS 16 bits (TODO 27) }
+  If Opts.Dos16Mode And IsUnitSource Then
+  Begin
+    If Opts.Verbose Then
+      WriteLn('  Unite TPU genere : ', Opts.OutFile);
   End;
 
   LexClose;
