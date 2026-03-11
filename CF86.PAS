@@ -300,7 +300,7 @@
             Arguments par defaut : default="valeur" si argument non fourni
             Arguments nommes : fonction(param1="val") -> resolution par nom
 
-  TODO 20 - COMPOSANTS CFC (CFCOMPONENT)
+  TODO 20 - COMPOSANTS CFC (CFCOMPONENT) [IMPLEMENTE]
             <cfcomponent displayName="NomComposant" extends="ParentComp">
               <cfproperty name="prop" type="type" default="val">
               <cffunction ...>...</cffunction>
@@ -450,6 +450,9 @@ Const
   ARRAY_BLOCK_SIZE = 2 + MAX_ARRAY_ELEMS * 2; { 2 octets count + elems words      }
   MAX_STRUCT_KEYS = 32;                       { max paires cle/valeur (TODO 18)    }
   STRUCT_BLOCK_SIZE = 2 + MAX_STRUCT_KEYS * 4;{ 2 octets count + paires (key+val)  }
+  MAX_COMP_PROPS   = 16;                       { max proprietes par composant (T20) }
+  MAX_COMP_METHODS = 16;                       { max methodes par composant  (T20)  }
+  MAX_COMP         = 16;                       { max composants enregistres  (T20)  }
 
   { Prefixes de nommage ASM }
   CF_VAR_PFX  = '_CFV_';    { variable scalaire                   }
@@ -587,6 +590,25 @@ Type
     ElemCount : Integer;
   End;
 
+  { ---- Composant CFC (TODO 20) ----------------------- }
+  TCompProp = Record
+    Name    : TString;    { nom de la propriete          }
+    TypeIdx : Integer;    { indice type (TY_IDX_ANY...)  }
+    DefVal  : TString;    { valeur par defaut            }
+  End;
+
+  TCompInfo = Record
+    Name        : TString;   { nom du composant             }
+    DisplayName : TString;   { displayName                  }
+    Extends     : TString;   { nom du parent (heritage)     }
+    Props       : Array[0..MAX_COMP_PROPS - 1] Of TCompProp;
+    PropCount   : Integer;
+    Methods     : Array[0..MAX_COMP_METHODS - 1] Of TString;
+    MethodCount : Integer;
+    SymIdx      : Integer;   { indice dans SymTab           }
+    DataLbl     : TString;   { label du bloc DATA prototype }
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -647,6 +669,11 @@ Var
   { Etat general }
   RuntimeEmitted : Boolean;
   InSilentMode   : Boolean;  { True dans <cfsilent> }
+
+  { Composants CFC (TODO 20) }
+  CompTab    : Array[0..MAX_COMP - 1] Of TCompInfo;
+  CompCount  : Integer;
+  CurCompIdx : Integer;    { indice composant courant (-1 = aucun) }
 
 { ============================================================
   FORWARD DECLARATIONS
@@ -778,6 +805,11 @@ Procedure ParseCfFunction; Forward;
 Procedure ParseCfReturn; Forward;
 Procedure ParseScriptFunction; Forward;
 Procedure ParseScriptReturn; Forward;
+{ TODO 20 }
+Procedure ParseCfComponent; Forward;
+Procedure ParseCfProperty; Forward;
+Procedure ParseScriptComponent; Forward;
+Procedure ParseScriptProperty; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1064,6 +1096,8 @@ Begin
   InSilentMode   := False;
   CurFrameSize   := 0;
   LabelGenSeq    := 0;
+  CompCount      := 0;
+  CurCompIdx     := -1;
   GExprDummy.Kind    := EK_NONE;
   GExprDummy.ImmVal  := 0;
   GExprDummy.TypeIdx := TY_UNKNOWN;
@@ -5020,7 +5054,7 @@ Begin
     ParserAdvance;
   End
 
-  { ---- Mots-cles booleens / null -------------------------- }
+  { ---- Mots-cles booleens / null / new / this --------------- }
   Else If CurToken.Kind = TK_KEYWORD Then
   Begin
     U := StrUpperCase(CurToken.Val);
@@ -5028,6 +5062,128 @@ Begin
     Begin
       LitEval(CurToken, Res);
       ParserAdvance;
+    End
+    { ---- new NomComposant() - instanciation (TODO 20) ------ }
+    Else If U = 'NEW' Then
+    Begin
+      ParserAdvance;  { consommer 'new' }
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        InnerStr := CurToken.Val;
+        ParserAdvance;  { consommer le nom }
+        EmitComment('new ' + InnerStr + '()');
+        { Allouer un bloc struct pour l instance }
+        Name := LabelGen;
+        DataAddStructBlock(Name);
+        EmitInstrAB('MOV', 'SI', 'OFFSET ' + Name);
+        EmitInstrAB('MOV', 'WORD PTR [SI]', '0');
+        { Inserer les proprietes par defaut du composant }
+        For SIdx := 0 To CompCount - 1 Do
+          If StrUpperCase(CompTab[SIdx].Name) =
+             StrUpperCase(InnerStr) Then
+          Begin
+            For ArgCount := 0 To CompTab[SIdx].PropCount - 1 Do
+            Begin
+              EmitInstr('PUSH', 'SI');
+              ArgCount := DataAddStr(CompTab[SIdx].Props[ArgCount].Name);
+              EmitInstrAB('MOV', 'DI', 'OFFSET ' +
+                          DataTab[ArgCount].LblName);
+              If CompTab[SIdx].Props[ArgCount].DefVal <> '' Then
+              Begin
+                ArgCount := DataAddStr(CompTab[SIdx].Props[ArgCount].DefVal);
+                EmitInstrAB('MOV', 'AX', 'OFFSET ' +
+                            DataTab[ArgCount].LblName);
+              End
+              Else
+                EmitInstr('XOR', 'AX, AX');
+              EmitInstr('CALL', CF_RT_PFX + 'STINSERT');
+              EmitInstr('POP', 'SI');
+            End;
+            Break;
+          End;
+        EmitInstrAB('MOV', 'AX', 'SI');
+        { Consommer la liste d arguments () si presente }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          While (CurToken.Kind <> TK_EOF) And
+                Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+            ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        Res.Kind    := EK_AX;
+        Res.TypeIdx := TY_IDX_STRUCT;
+        Res.SymIdx  := -1;
+      End
+      Else
+      Begin
+        CompileError('nom de composant attendu apres "new"');
+        ExprMakeImm(0, TY_IDX_NULL, Res);
+      End;
+    End
+    { ---- this.propriete - acces a l instance (TODO 20) ------ }
+    Else If U = 'THIS' Then
+    Begin
+      ParserAdvance;  { consommer 'this' }
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '.') Then
+      Begin
+        ParserAdvance;  { consommer '.' }
+        If CurToken.Kind = TK_IDENT Then
+        Begin
+          Name := CurToken.Val;
+          ParserAdvance;
+          { Appel de methode : this.method(args) }
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+          Begin
+            EmitComment('this.' + Name + '()');
+            ArgCount := ParseCallArgs;
+            If CurCompName <> '' Then
+              EmitInstr('CALL', CF_CMP_PFX +
+                        SymNameClean(CurCompName) + '_' +
+                        SymNameClean(Name))
+            Else
+              EmitInstr('CALL', CF_FN_PFX + SymNameClean(Name));
+            If ArgCount > 0 Then
+            Begin
+              Str(ArgCount * 2, InnerStr);
+              EmitInstr('ADD', 'SP, ' + InnerStr);
+            End;
+            Res.Kind    := EK_AX;
+            Res.TypeIdx := TY_IDX_ANY;
+            Res.SymIdx  := -1;
+          End
+          Else
+          Begin
+            { Acces a une propriete : this.prop }
+            EmitComment('this.' + Name);
+            SIdx := SymFind(Name);
+            If SIdx >= 0 Then
+            Begin
+              VarLoad(SIdx);
+              Res.Kind    := EK_AX;
+              Res.TypeIdx := SymTab[SIdx].TypeIdx;
+              Res.SymIdx  := SIdx;
+            End
+            Else
+            Begin
+              WarnMsg('propriete "' + Name + '" non trouvee');
+              ExprMakeImm(0, TY_IDX_ANY, Res);
+            End;
+          End;
+        End
+        Else
+        Begin
+          CompileError('identifiant attendu apres "this."');
+          ExprMakeImm(0, TY_IDX_ANY, Res);
+        End;
+      End
+      Else
+      Begin
+        { 'this' seul -> reference a l instance courante }
+        EmitComment('this (reference instance)');
+        ExprMakeImm(0, TY_IDX_STRUCT, Res);
+      End;
     End
     Else
     Begin
@@ -5786,6 +5942,62 @@ Begin
       ExprMakeImm(1, TY_IDX_BOOLEAN, Res);
     End
 
+    { -- CreateObject("component", "NomComp") (TODO 20) -------- }
+    Else If (U = 'CREATEOBJECT') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('CreateObject()');
+      ParserAdvance;  { consommer ( }
+      { Premier argument : type ("component") }
+      If CurToken.Kind = TK_STRING Then
+        ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance;
+      { Deuxieme argument : nom du composant }
+      InnerStr := '';
+      If CurToken.Kind = TK_STRING Then
+      Begin
+        InnerStr := CurToken.Val;
+        ParserAdvance;
+      End;
+      { Consommer ) }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        ParserAdvance;
+      { Allouer un bloc struct pour l instance }
+      Name := LabelGen;
+      DataAddStructBlock(Name);
+      EmitInstrAB('MOV', 'SI', 'OFFSET ' + Name);
+      EmitInstrAB('MOV', 'WORD PTR [SI]', '0');
+      { Inserer les proprietes par defaut du composant }
+      For SIdx := 0 To CompCount - 1 Do
+        If StrUpperCase(CompTab[SIdx].Name) =
+           StrUpperCase(InnerStr) Then
+        Begin
+          For ArgCount := 0 To CompTab[SIdx].PropCount - 1 Do
+          Begin
+            EmitInstr('PUSH', 'SI');
+            SIdx := DataAddStr(CompTab[SIdx].Props[ArgCount].Name);
+            EmitInstrAB('MOV', 'DI', 'OFFSET ' +
+                        DataTab[SIdx].LblName);
+            If CompTab[SIdx].Props[ArgCount].DefVal <> '' Then
+            Begin
+              SIdx := DataAddStr(CompTab[SIdx].Props[ArgCount].DefVal);
+              EmitInstrAB('MOV', 'AX', 'OFFSET ' +
+                          DataTab[SIdx].LblName);
+            End
+            Else
+              EmitInstr('XOR', 'AX, AX');
+            EmitInstr('CALL', CF_RT_PFX + 'STINSERT');
+            EmitInstr('POP', 'SI');
+          End;
+          Break;
+        End;
+      EmitInstrAB('MOV', 'AX', 'SI');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_STRUCT;
+      Res.SymIdx  := -1;
+    End
+
     { -- Appel de fonction utilisateur : nom( args ) --------- }
     Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
     Begin
@@ -6439,6 +6651,10 @@ Begin
     Begin ParserAdvance; ParseCfFunction; End
     Else If TagLower = 'cfreturn' Then
     Begin ParserAdvance; ParseCfReturn; End
+    Else If TagLower = 'cfcomponent' Then
+    Begin ParserAdvance; ParseCfComponent; End
+    Else If TagLower = 'cfproperty' Then
+    Begin ParserAdvance; ParseCfProperty; End
     Else
       ParserAdvance;
   End
@@ -6465,6 +6681,10 @@ Begin
     Begin ParserAdvance; ParseScriptFunction; End
     Else If KwLower = 'return' Then
     Begin ParserAdvance; ParseScriptReturn; End
+    Else If KwLower = 'component' Then
+    Begin ParserAdvance; ParseScriptComponent; End
+    Else If KwLower = 'property' Then
+    Begin ParserAdvance; ParseScriptProperty; End
     Else If KwLower = 'break' Then
     Begin
       ParserAdvance;
@@ -8327,6 +8547,504 @@ Begin
 
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
     ParserAdvance;
+End;
+
+{ ============================================================
+  TODO 20 - COMPOSANTS CFC (CFCOMPONENT) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- CompFind : chercher un composant par nom ---------------- }
+Function CompFind(Const AName : TString) : Integer;
+Var
+  I : Integer;
+  U : TString;
+Begin
+  U := StrUpperCase(AName);
+  For I := 0 To CompCount - 1 Do
+    If StrUpperCase(CompTab[I].Name) = U Then
+    Begin
+      CompFind := I;
+      Exit;
+    End;
+  CompFind := -1;
+End;
+
+{ ---- EmitGetter : generer getPropName() pour une propriete --- }
+(* Genere une fonction _CFC_Comp_getProp qui charge la valeur    *)
+(* de la propriete depuis la structure instance et la retourne    *)
+(* dans AX.                                                       *)
+Procedure EmitGetter(Const CompName, PropName, DefVal : TString);
+Var
+  FnLbl, SkipLbl, KeyIdx : TString;
+  DIdx : Integer;
+Begin
+  SkipLbl := LabelGen;
+  EmitInstr('JMP', SkipLbl);
+  FnLbl := CF_CMP_PFX + SymNameClean(CompName) + '_get' +
+           SymNameClean(PropName);
+  EmitBlankLine;
+  EmitComment('getter: get' + PropName + '()');
+  EmitLabel(FnLbl);
+  EmitProlog;
+  { SI = ptr instance -> [BP+4] (premier argument empile) }
+  EmitInstrAB('MOV', 'SI', '[BP+4]');
+  DIdx := DataAddStr(PropName);
+  KeyIdx := DataTab[DIdx].LblName;
+  EmitInstrAB('MOV', 'DI', 'OFFSET ' + KeyIdx);
+  EmitInstr('CALL', CF_RT_PFX + 'STFIND');
+  EmitEpilog;
+  EmitInstr('RET', '');
+  EmitBlankLine;
+  EmitLabel(SkipLbl);
+  { Enregistrer dans la table des symboles }
+  SymAdd('get' + PropName, SC_FUNCTION, TY_IDX_ANY, 0);
+End;
+
+{ ---- EmitSetter : generer setPropName(val) pour une propriete }
+(* Genere une fonction _CFC_Comp_setProp qui stocke la valeur    *)
+(* dans la structure instance.                                    *)
+Procedure EmitSetter(Const CompName, PropName : TString);
+Var
+  FnLbl, SkipLbl, KeyIdx : TString;
+  DIdx : Integer;
+Begin
+  SkipLbl := LabelGen;
+  EmitInstr('JMP', SkipLbl);
+  FnLbl := CF_CMP_PFX + SymNameClean(CompName) + '_set' +
+           SymNameClean(PropName);
+  EmitBlankLine;
+  EmitComment('setter: set' + PropName + '(val)');
+  EmitLabel(FnLbl);
+  EmitProlog;
+  { SI = ptr instance -> [BP+6], val -> [BP+4] }
+  EmitInstrAB('MOV', 'SI', '[BP+6]');
+  DIdx := DataAddStr(PropName);
+  KeyIdx := DataTab[DIdx].LblName;
+  EmitInstrAB('MOV', 'DI', 'OFFSET ' + KeyIdx);
+  EmitInstrAB('MOV', 'AX', '[BP+4]');
+  EmitInstr('CALL', CF_RT_PFX + 'STINSERT');
+  EmitEpilog;
+  EmitInstr('RET', '');
+  EmitBlankLine;
+  EmitLabel(SkipLbl);
+  { Enregistrer dans la table des symboles }
+  SymAdd('set' + PropName, SC_FUNCTION, TY_IDX_ANY, 0);
+End;
+
+{ ---- ParseCfProperty : <cfproperty name="p" type="t" ...> ---- }
+(* Parse une balise <cfproperty> dans un <cfcomponent>.           *)
+(* Enregistre la propriete dans le composant courant.             *)
+Procedure ParseCfProperty;
+Var
+  PropName, PropType, DefVal : TString;
+  AttrName, AttrVal          : TString;
+Begin
+  EmitComment('---- <cfproperty> ----');
+  PropName := '';
+  PropType := 'any';
+  DefVal   := '';
+
+  { Lire les attributs de la balise }
+  While (CurToken.Kind <> TK_TAG_SELFCLOSE) And
+        (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>')) Do
+  Begin
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      AttrName := StrLowerCase(CurToken.Val);
+      ParserAdvance;
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+      Begin
+        ParserAdvance;
+        AttrVal := CurToken.Val;
+        If AttrName = 'name' Then
+          PropName := AttrVal
+        Else If AttrName = 'type' Then
+          PropType := StrLowerCase(AttrVal)
+        Else If AttrName = 'default' Then
+          DefVal := AttrVal;
+        ParserAdvance;
+      End;
+    End
+    Else
+      ParserAdvance;
+  End;
+  { Consommer > ou /> }
+  If ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>')) Or
+     (CurToken.Kind = TK_TAG_SELFCLOSE) Then
+    ParserAdvance;
+
+  If PropName = '' Then
+  Begin
+    CompileError('attribut name requis dans <cfproperty>');
+    Exit;
+  End;
+
+  { Enregistrer la propriete dans le composant courant }
+  If (CurCompIdx >= 0) And (CurCompIdx < MAX_COMP) Then
+  Begin
+    If CompTab[CurCompIdx].PropCount < MAX_COMP_PROPS Then
+    Begin
+      With CompTab[CurCompIdx] Do
+      Begin
+        Props[PropCount].Name    := PropName;
+        Props[PropCount].TypeIdx := TY_IDX_ANY;
+        Props[PropCount].DefVal  := DefVal;
+        Inc(PropCount);
+      End;
+    End
+    Else
+      WarnMsg('trop de proprietes dans le composant');
+  End;
+
+  { Enregistrer comme variable dans la portee courante }
+  SymAdd(PropName, SC_CFPROPERTY, TY_IDX_ANY, 0);
+End;
+
+{ ---- ParseCfComponent : <cfcomponent ...>...</cfcomponent> ---- }
+(* Parse un composant CFC complet avec ses proprietes et methodes *)
+Procedure ParseCfComponent;
+Var
+  CompName, DispName, ExtendsName : TString;
+  AttrName, AttrVal : TString;
+  OldCompIdx        : Integer;
+  OldCompName       : TString;
+  I                 : Integer;
+Begin
+  EmitComment('==== <cfcomponent> ====');
+  CompName    := '';
+  DispName    := '';
+  ExtendsName := '';
+
+  { Lire les attributs de <cfcomponent ...> }
+  While (CurToken.Kind <> TK_TAG_SELFCLOSE) And
+        (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>')) Do
+  Begin
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      AttrName := StrLowerCase(CurToken.Val);
+      ParserAdvance;
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+      Begin
+        ParserAdvance;
+        AttrVal := CurToken.Val;
+        If AttrName = 'displayname' Then
+        Begin
+          DispName := AttrVal;
+          If CompName = '' Then CompName := AttrVal;
+        End
+        Else If AttrName = 'name' Then
+          CompName := AttrVal
+        Else If AttrName = 'extends' Then
+          ExtendsName := AttrVal;
+        ParserAdvance;
+      End;
+    End
+    Else
+      ParserAdvance;
+  End;
+  { Consommer > ou /> }
+  If ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>')) Or
+     (CurToken.Kind = TK_TAG_SELFCLOSE) Then
+    ParserAdvance;
+
+  { Si pas de nom, deduire du fichier source }
+  If CompName = '' Then
+    CompName := ReplaceExt(Opts.SrcFile, '');
+
+  { Sauvegarder le contexte }
+  OldCompIdx  := CurCompIdx;
+  OldCompName := CurCompName;
+
+  { Enregistrer le composant }
+  If CompCount < MAX_COMP Then
+  Begin
+    CompTab[CompCount].Name        := CompName;
+    CompTab[CompCount].DisplayName := DispName;
+    CompTab[CompCount].Extends     := ExtendsName;
+    CompTab[CompCount].PropCount   := 0;
+    CompTab[CompCount].MethodCount := 0;
+    CompTab[CompCount].DataLbl     := LabelGen;
+    DataAddStructBlock(CompTab[CompCount].DataLbl);
+    CurCompIdx := CompCount;
+    Inc(CompCount);
+  End
+  Else
+  Begin
+    CompileError('trop de composants (max=' + IntToStr(MAX_COMP) + ')');
+    CurCompIdx := -1;
+  End;
+
+  CurCompName := CompName;
+  SymAdd(CompName, SC_COMPONENT, TY_IDX_STRUCT, 0);
+  SymEnterScope;
+
+  { Heritage : copier les proprietes du parent }
+  If ExtendsName <> '' Then
+  Begin
+    I := CompFind(ExtendsName);
+    If I >= 0 Then
+    Begin
+      EmitComment('heritage depuis ' + ExtendsName);
+      If CurCompIdx >= 0 Then
+      Begin
+        { Copier les proprietes du parent }
+        CompTab[CurCompIdx].PropCount   := CompTab[I].PropCount;
+        CompTab[CurCompIdx].Props       := CompTab[I].Props;
+        CompTab[CurCompIdx].MethodCount := CompTab[I].MethodCount;
+        CompTab[CurCompIdx].Methods     := CompTab[I].Methods;
+      End;
+    End
+    Else
+      WarnMsg('composant parent non trouve : ' + ExtendsName);
+  End;
+
+  { Parser le contenu : cfproperty, cffunction, etc. }
+  While CurToken.Kind <> TK_EOF Do
+  Begin
+    If (CurToken.Kind = TK_TAG_CLOSE) And
+       (StrLowerCase(CurToken.Val) = 'cfcomponent') Then
+    Begin
+      ParserAdvance;
+      Break;
+    End;
+    ParseBodyTag;
+  End;
+
+  { Generer les getters et setters automatiques }
+  If CurCompIdx >= 0 Then
+  Begin
+    For I := 0 To CompTab[CurCompIdx].PropCount - 1 Do
+    Begin
+      EmitGetter(CompName, CompTab[CurCompIdx].Props[I].Name,
+                 CompTab[CurCompIdx].Props[I].DefVal);
+      EmitSetter(CompName, CompTab[CurCompIdx].Props[I].Name);
+    End;
+  End;
+
+  { Quitter le scope }
+  SymLeaveScope;
+
+  { Restaurer le contexte }
+  CurCompIdx  := OldCompIdx;
+  CurCompName := OldCompName;
+  EmitComment('==== fin cfcomponent ' + CompName + ' ====');
+End;
+
+{ ---- ParseScriptProperty : property name="prop" ...; --------- }
+(* Parse une declaration de propriete en syntaxe cfscript.        *)
+Procedure ParseScriptProperty;
+Var
+  PropName, PropType, DefVal : TString;
+  AttrName, AttrVal          : TString;
+Begin
+  EmitComment('---- script property ----');
+  PropName := '';
+  PropType := 'any';
+  DefVal   := '';
+
+  { Forme : property name="p" type="t" default="v"; }
+  { ou     : property p;   (forme courte)           }
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    AttrName := StrLowerCase(CurToken.Val);
+    { Verifier si c est un attribut nomme ou un nom direct }
+    If AttrName = 'name' Then
+    Begin
+      { Forme longue avec attributs nommes }
+      While (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
+      Begin
+        If CurToken.Kind = TK_IDENT Then
+        Begin
+          AttrName := StrLowerCase(CurToken.Val);
+          ParserAdvance;
+          If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+          Begin
+            ParserAdvance;
+            AttrVal := CurToken.Val;
+            If AttrName = 'name' Then
+              PropName := AttrVal
+            Else If AttrName = 'type' Then
+              PropType := StrLowerCase(AttrVal)
+            Else If AttrName = 'default' Then
+              DefVal := AttrVal;
+            ParserAdvance;
+          End;
+        End
+        Else
+          ParserAdvance;
+      End;
+    End
+    Else
+    Begin
+      { Forme courte : property nomProp; }
+      PropName := CurToken.Val;
+      ParserAdvance;
+      { Verifier si type suit }
+      If (CurToken.Kind = TK_IDENT) And
+         Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Then
+      Begin
+        PropType := StrLowerCase(CurToken.Val);
+        ParserAdvance;
+      End;
+    End;
+  End;
+
+  { Consommer le point-virgule }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
+
+  If PropName = '' Then
+  Begin
+    CompileError('nom de propriete manquant');
+    Exit;
+  End;
+
+  { Enregistrer la propriete dans le composant courant }
+  If (CurCompIdx >= 0) And (CurCompIdx < MAX_COMP) Then
+  Begin
+    If CompTab[CurCompIdx].PropCount < MAX_COMP_PROPS Then
+    Begin
+      With CompTab[CurCompIdx] Do
+      Begin
+        Props[PropCount].Name    := PropName;
+        Props[PropCount].TypeIdx := TY_IDX_ANY;
+        Props[PropCount].DefVal  := DefVal;
+        Inc(PropCount);
+      End;
+    End
+    Else
+      WarnMsg('trop de proprietes dans le composant');
+  End;
+
+  SymAdd(PropName, SC_CFPROPERTY, TY_IDX_ANY, 0);
+End;
+
+{ ---- ParseScriptComponent : component extends=P bloc --------- }
+(* Parse un composant en syntaxe cfscript.                        *)
+Procedure ParseScriptComponent;
+Var
+  CompName, ExtendsName : TString;
+  OldCompIdx            : Integer;
+  OldCompName           : TString;
+  I                     : Integer;
+  AttrName, AttrVal     : TString;
+Begin
+  EmitComment('==== script component ====');
+  CompName    := '';
+  ExtendsName := '';
+
+  { Lire les attributs optionnels avant { }
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{')) Do
+  Begin
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      AttrName := StrLowerCase(CurToken.Val);
+      ParserAdvance;
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+      Begin
+        ParserAdvance;
+        AttrVal := CurToken.Val;
+        If AttrName = 'extends' Then
+          ExtendsName := AttrVal
+        Else If AttrName = 'displayname' Then
+        Begin
+          If CompName = '' Then CompName := AttrVal;
+        End
+        Else If AttrName = 'name' Then
+          CompName := AttrVal;
+        ParserAdvance;
+      End;
+    End
+    Else
+      ParserAdvance;
+  End;
+
+  If CompName = '' Then
+    CompName := ReplaceExt(Opts.SrcFile, '');
+
+  { Sauvegarder le contexte }
+  OldCompIdx  := CurCompIdx;
+  OldCompName := CurCompName;
+
+  { Enregistrer le composant }
+  If CompCount < MAX_COMP Then
+  Begin
+    CompTab[CompCount].Name        := CompName;
+    CompTab[CompCount].DisplayName := CompName;
+    CompTab[CompCount].Extends     := ExtendsName;
+    CompTab[CompCount].PropCount   := 0;
+    CompTab[CompCount].MethodCount := 0;
+    CompTab[CompCount].DataLbl     := LabelGen;
+    DataAddStructBlock(CompTab[CompCount].DataLbl);
+    CurCompIdx := CompCount;
+    Inc(CompCount);
+  End
+  Else
+  Begin
+    CompileError('trop de composants (max=' + IntToStr(MAX_COMP) + ')');
+    CurCompIdx := -1;
+  End;
+
+  CurCompName := CompName;
+  SymAdd(CompName, SC_COMPONENT, TY_IDX_STRUCT, 0);
+  SymEnterScope;
+
+  { Heritage }
+  If ExtendsName <> '' Then
+  Begin
+    I := CompFind(ExtendsName);
+    If I >= 0 Then
+    Begin
+      EmitComment('heritage depuis ' + ExtendsName);
+      If CurCompIdx >= 0 Then
+      Begin
+        CompTab[CurCompIdx].PropCount   := CompTab[I].PropCount;
+        CompTab[CurCompIdx].Props       := CompTab[I].Props;
+        CompTab[CurCompIdx].MethodCount := CompTab[I].MethodCount;
+        CompTab[CurCompIdx].Methods     := CompTab[I].Methods;
+      End;
+    End
+    Else
+      WarnMsg('composant parent non trouve : ' + ExtendsName);
+  End;
+
+  { Parser le corps entre accolades }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+  Begin
+    ParserAdvance;  (* consommer ouvrante *)
+    While CurToken.Kind <> TK_EOF Do
+    Begin
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+      Begin
+        ParserAdvance;  (* consommer fermante *)
+        Break;
+      End;
+      ParseBodyTag;
+    End;
+  End;
+
+  { Generer les getters et setters automatiques }
+  If CurCompIdx >= 0 Then
+  Begin
+    For I := 0 To CompTab[CurCompIdx].PropCount - 1 Do
+    Begin
+      EmitGetter(CompName, CompTab[CurCompIdx].Props[I].Name,
+                 CompTab[CurCompIdx].Props[I].DefVal);
+      EmitSetter(CompName, CompTab[CurCompIdx].Props[I].Name);
+    End;
+  End;
+
+  { Quitter le scope }
+  SymLeaveScope;
+
+  { Restaurer le contexte }
+  CurCompIdx  := OldCompIdx;
+  CurCompName := OldCompName;
+  EmitComment('==== fin script component ' + CompName + ' ====');
 End;
 
 Procedure ParsePage;
