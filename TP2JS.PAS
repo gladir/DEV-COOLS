@@ -5575,13 +5575,11 @@ Begin
         Tmp := Tmp + '(' + Tmp2 + ')';
       End
       { Acces index : ident[expr] avec ajustement selon le type }
+      { Gere aussi les tableaux multi-dimensionnels : A[i, j] -> A[i-lo][j-lo] }
       Else If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = '[') Then
       Begin
         Inc(P); { consommer [ }
         Tmp2 := ParseExpr(P);
-        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
-           (TokenPool[P].Val = ']') Then
-          Inc(P);
 
         { Acces caractere de chaine : S[i] -> S.charAt((i) - 1) }
         VTK := GetVarTypeKind(IdName);
@@ -5598,6 +5596,22 @@ Begin
         End
         Else
           Tmp := Tmp + '[' + Tmp2 + ']';
+
+        { Dimensions supplementaires : virgule -> nouvel index JS [] }
+        While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+              (TokenPool[P].Val = ',') Do
+        Begin
+          Inc(P); { consommer , }
+          Tmp2 := ParseExpr(P);
+          If (VTK = TYK_ARRAY) And (ALow <> 0) Then
+            Tmp := Tmp + '[(' + Tmp2 + ') - ' + IntToStr_(ALow) + ']'
+          Else
+            Tmp := Tmp + '[' + Tmp2 + ']';
+        End;
+
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+           (TokenPool[P].Val = ']') Then
+          Inc(P);
       End
       { Acces champ : ident.champ }
       Else If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = '.') Then
@@ -8801,16 +8815,16 @@ Begin
   If IsLn Then
   Begin
     If ArgCnt = 0 Then
-      EmitLine('console.log("");')
+      EmitLine('_TPR_WriteLn();')
     Else
-      EmitLine('console.log(' + JS + ');');
+      EmitLine('_TPR_WriteLn(' + JS + ');');
   End
   Else
   Begin
     If ArgCnt = 0 Then
-      EmitLine('process.stdout.write("");')
+      EmitLine('_TPR_Write("");')
     Else
-      EmitLine('process.stdout.write(String(' + JS + '));');
+      EmitLine('_TPR_Write(String(' + JS + '));');
   End;
 End;
 
