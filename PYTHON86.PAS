@@ -14,13 +14,17 @@
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
 
-  TODO 01 - INFRASTRUCTURE ET OPTIONS
-            TOptions (SrcFile, OutFile, Verbose, DebugMode)
-            ParseArgs : analyser argv (source.py [sortie.asm] [-v] [-d])
-            FatalError, WarnMsg, EXIT_OK / EXIT_ERROR / EXIT_USAGE
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
+            TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings)
+            ParseArgs : analyser argv (source.py [sortie.asm] [-v] [-d] [-w])
+            FatalError, CompileError, WarnMsg, EXIT_OK / EXIT_ERROR / EXIT_USAGE
             Detecter l extension .py du fichier source
             Programme principal : validation des arguments et appel Run
             Version, Date, aide en ligne (option -h)
+            ShowBanner, ShowUsage, ShowStats
+            StrLowerCase, IntToStr_, BaseName, ReplaceExt
+            InitOptions, Cleanup, GlobalInit
+            Run (stub), programme principal ParseArgs + Run
 
   TODO 02 - LEXEUR (TOKENS PYTHON)
             TTokenKind : TK_EOF, TK_NEWLINE, TK_INDENT, TK_DEDENT,
@@ -381,5 +385,303 @@
 
 Program PYTHON86;
 
+{$IFDEF FPC}
+  {$MODE TP}
+  {$H-}
+{$ENDIF}
+{$I-}
+
+{ ============================================================
+  CONSTANTES GLOBALES
+  ============================================================ }
+Const
+  PYTHON86_VERSION = '1.0';
+  PYTHON86_DATE    = '2026-03-06';
+
+  { Limites des tableaux internes }
+  MAX_SYM        = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_LABEL      = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_SCOPE      = {$IFDEF FPC}64{$ELSE}32{$ENDIF};
+  MAX_DATA       = {$IFDEF FPC}512{$ELSE}128{$ENDIF};
+  MAX_TYPE       = {$IFDEF FPC}32{$ELSE}16{$ENDIF};
+  MAX_PARAM      = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
+  MAX_LOOP_NEST  = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
+  MAX_ERRORS     = {$IFDEF FPC}30{$ELSE}3{$ENDIF};
+  MAX_STR        = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
+  STACK_SIZE     = 1024;
+
+  { Prefixes de nommage ASM }
+  PY_VAR_PFX  = '_PYV_';    { variable globale/locale              }
+  PY_FN_PFX   = '_PYF_';    { fonction def                         }
+  PY_STR_PFX  = '_PYK_';    { constante chaine litterale           }
+  PY_RT_PFX   = '_PYRT_';   { routine runtime                      }
+  PY_LBL_PFX  = '_PYL_';    { label de saut interne                }
+  PY_CLS_PFX  = '_PYC_';    { classe / vtable                      }
+  PY_MTH_PFX  = '_PYM_';    { methode                              }
+
+  { Codes de sortie }
+  EXIT_OK    = 0;
+  EXIT_ERROR = 1;
+  EXIT_USAGE = 2;
+
+{ ============================================================
+  TYPES
+  ============================================================ }
+Type
+  TString = String[MAX_STR];
+
+  { ---- Options de compilation ----------------------------- }
+  TOptions = Record
+    SrcFile   : TString;   { fichier source Python (.py)           }
+    OutFile   : TString;   { fichier assembleur de sortie (.asm)   }
+    Verbose   : Boolean;   { -v : banniere et statistiques         }
+    DebugMode : Boolean;   { -d : affichage de chaque token        }
+    Warnings  : Boolean;   { -w : activer les avertissements       }
+  End;
+
+{ ============================================================
+  VARIABLES GLOBALES
+  ============================================================ }
+Var
+  { Options de compilation }
+  Opts       : TOptions;
+
+  { Compteurs generaux }
+  ErrorCount : Integer;
+  WarnCount  : Integer;
+  TotalLines : LongInt;
+  TotalSyms  : Integer;
+
+{ ============================================================
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Messages d erreur et d avertissement ---------------- }
+
+Procedure FatalError(Const Msg : TString);
 Begin
+  WriteLn('PYTHON86: FATAL: ', Msg);
+  Halt(EXIT_ERROR);
+End;
+
+Procedure CompileError(Const Msg : TString; Line : Integer);
+Begin
+  Write('PYTHON86:');
+  If Line > 0 Then
+    Write(Opts.SrcFile, ':', Line, ': ');
+  WriteLn('error: ', Msg);
+  Inc(ErrorCount);
+  If ErrorCount >= MAX_ERRORS Then
+    FatalError('trop d''erreurs, compilation arretee');
+End;
+
+Procedure WarnMsg(Const Msg : TString; Line : Integer);
+Begin
+  If Not Opts.Warnings Then Exit;
+  Write('PYTHON86:');
+  If Line > 0 Then
+    Write(Opts.SrcFile, ':', Line, ': ');
+  WriteLn('warning: ', Msg);
+  Inc(WarnCount);
+End;
+
+{ ---- Banniere ---------------------------------------------- }
+
+Procedure ShowBanner;
+Begin
+  WriteLn('PYTHON86 v', PYTHON86_VERSION, ' (', PYTHON86_DATE, ')');
+  WriteLn('Compilateur Python -> assembleur 8086 (MASM .MODEL SMALL)');
+  WriteLn('Turbo Pascal / Free Pascal (-Mtp)');
+  WriteLn;
+End;
+
+Procedure ShowUsage;
+Begin
+  WriteLn('Usage: PYTHON86 <source.py> [sortie.asm] [-v] [-d] [-w]');
+  WriteLn;
+  WriteLn('  source.py  : fichier Python source');
+  WriteLn('  sortie.asm : fichier assembleur de sortie (defaut: source.asm)');
+  WriteLn('  -v         : mode verbeux (banniere + statistiques)');
+  WriteLn('  -d         : debug tokens (affiche chaque token)');
+  WriteLn('  -w         : activer les avertissements');
+  WriteLn('  -h, --help : cette aide');
+  WriteLn;
+  Halt(EXIT_USAGE);
+End;
+
+Procedure ShowStats;
+Begin
+  WriteLn('Compilation terminee : ', Opts.SrcFile, ' -> ', Opts.OutFile);
+  WriteLn('  Lignes         : ', TotalLines);
+  WriteLn('  Symboles       : ', TotalSyms);
+  WriteLn('  Erreurs        : ', ErrorCount);
+  WriteLn('  Avertissements : ', WarnCount);
+End;
+
+{ ---- Utilitaires chaines ------------------------------------ }
+
+Function StrLowerCase(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do
+    If (R[I] >= 'A') And (R[I] <= 'Z') Then
+      R[I] := Chr(Ord(R[I]) + 32);
+  StrLowerCase := R;
+End;
+
+Function IntToStr_(N : LongInt) : TString;
+Var
+  S : TString;
+Begin
+  Str(N, S);
+  IntToStr_ := S;
+End;
+
+{ Extrait le nom de base d un chemin (sans repertoire ni extension) }
+Function BaseName(Const Path : TString) : TString;
+Var
+  I, LastSep, LastDot : Integer;
+  S : TString;
+Begin
+  LastSep := 0;
+  LastDot := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If LastDot > LastSep Then
+    S := Copy(Path, LastSep + 1, LastDot - LastSep - 1)
+  Else
+    S := Copy(Path, LastSep + 1, Length(Path));
+  BaseName := S;
+End;
+
+{ Remplace l extension d un chemin }
+Function ReplaceExt(Const Path, NewExt : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ReplaceExt := Copy(Path, 1, LastDot - 1) + NewExt
+  Else
+    ReplaceExt := Path + NewExt;
+End;
+
+{ ---- Initialisation des options ----------------------------- }
+
+Procedure InitOptions;
+Begin
+  Opts.SrcFile   := '';
+  Opts.OutFile   := '';
+  Opts.Verbose   := False;
+  Opts.DebugMode := False;
+  Opts.Warnings  := False;
+End;
+
+{ ---- Analyse des arguments de la ligne de commande --------- }
+
+Procedure ParseArgs;
+Var
+  I   : Integer;
+  Arg : TString;
+Begin
+  InitOptions;
+  If ParamCount = 0 Then
+    ShowUsage;
+
+  For I := 1 To ParamCount Do
+  Begin
+    Arg := ParamStr(I);
+
+    If (Arg = '-h') Or (Arg = '--help') Or (Arg = '/?') Then
+      ShowUsage
+    Else If (Arg = '-v') Or (Arg = '--verbose') Then
+      Opts.Verbose := True
+    Else If Arg = '-d' Then
+      Opts.DebugMode := True
+    Else If Arg = '-w' Then
+      Opts.Warnings := True
+    Else If Arg[1] = '-' Then
+    Begin
+      WriteLn('PYTHON86: option inconnue: ', Arg);
+      ShowUsage;
+    End
+    Else If Opts.SrcFile = '' Then
+      Opts.SrcFile := Arg
+    Else If Opts.OutFile = '' Then
+      Opts.OutFile := Arg
+    Else
+    Begin
+      WriteLn('PYTHON86: argument inattendu: ', Arg);
+      ShowUsage;
+    End;
+  End;
+
+  If Opts.SrcFile = '' Then
+  Begin
+    WriteLn('PYTHON86: fichier source manquant');
+    ShowUsage;
+  End;
+
+  If Opts.OutFile = '' Then
+    Opts.OutFile := ReplaceExt(Opts.SrcFile, '.asm');
+End;
+
+{ ---- Nettoyage des ressources ------------------------------ }
+
+Procedure Cleanup;
+Begin
+  { Sera complete dans les TODOs suivants (LexClose, EmitClose) }
+End;
+
+{ ---- Initialisation generale des variables globales -------- }
+
+Procedure GlobalInit;
+Begin
+  ErrorCount := 0;
+  WarnCount  := 0;
+  TotalLines := 0;
+  TotalSyms  := 0;
+End;
+
+{ ---- Pipeline de compilation (stub) ----------------------- }
+
+Procedure Run;
+Begin
+  GlobalInit;
+  If Opts.Verbose Then ShowBanner;
+
+  { TODO 02+ : LexInit, ParseModule, EmitRuntime, EmitDataSeg, EmitClose }
+
+  If Opts.Verbose Then ShowStats;
+
+  Cleanup;
+
+  If ErrorCount > 0 Then
+    Halt(EXIT_ERROR)
+  Else
+    Halt(EXIT_OK);
+End;
+
+{ ============================================================
+  PROGRAMME PRINCIPAL
+  ============================================================ }
+Begin
+  ParseArgs;
+  Run;
 End.
