@@ -8,12 +8,13 @@
 
 MODULE TestArrays;
 
-IMPORT IO;
+IMPORT Wr;
 
 VAR
   data : ARRAY [0..4] OF INTEGER;
   counts : ARRAY [1..3] OF INTEGER;
 
+(* ---- Test 1 : remplir et lire un tableau global ---- *)
 PROCEDURE FillArray() =
 VAR
   i : INTEGER;
@@ -37,41 +38,73 @@ BEGIN
   local_arr[2] := 9;
 
   (* Lire le tableau local *)
+  Wr.PutText("local_arr[1] = ");
   i := local_arr[1];
-  IO.PutInt(i);
-  IO.PutText("\n");
+  Wr.PutInt(i);
+  Wr.Nl();
 END FillArray;
 
+(* ---- Test 2 : NUMBER et parcours du tableau ---- *)
 PROCEDURE PrintArray() =
 VAR
   i : INTEGER;
   n : INTEGER;
 BEGIN
   n := NUMBER(data);
-  IO.PutText("NUMBER(data) = ");
-  IO.PutInt(n);
-  IO.PutText("\n");
+  Wr.PutText("NUMBER(data) = ");
+  Wr.PutInt(n);
+  Wr.Nl();
 
+  Wr.PutText("data: ");
   FOR i := 0 TO 4 DO
-    IO.PutInt(data[i]);
-    IO.PutText(" ");
+    Wr.PutInt(data[i]);
+    Wr.PutChar(' ');
   END;
-  IO.PutText("\n");
+  Wr.Nl();
 END PrintArray;
 
+(* ---- Test 3 : tableau avec borne non-nulle ---- *)
 PROCEDURE TestBounds() =
 VAR
   j : INTEGER;
 BEGIN
+  Wr.PutText("counts[1..3]: ");
   FOR j := 1 TO 3 DO
-    IO.PutInt(counts[j]);
-    IO.PutText(" ");
+    Wr.PutInt(counts[j]);
+    Wr.PutChar(' ');
   END;
-  IO.PutText("\n");
+  Wr.Nl();
 END TestBounds;
 
+(* ---- Test 4 : lecture et ecriture combinee ---- *)
+PROCEDURE TestReadWrite() =
+VAR
+  sum : INTEGER;
 BEGIN
+  sum := data[0] + data[4];
+  Wr.PutText("data[0]+data[4] = ");
+  Wr.PutInt(sum);
+  Wr.Nl();
+
+  data[2] := data[0] + data[1];
+  Wr.PutText("data[2] apres := ");
+  Wr.PutInt(data[2]);
+  Wr.Nl();
+END TestReadWrite;
+
+(* ---- Programme principal ---- *)
+BEGIN
+  Wr.PutText("=== Test FillArray ==="); Wr.Nl();
   FillArray();
+
+  Wr.PutText("=== Test PrintArray ==="); Wr.Nl();
   PrintArray();
+
+  Wr.PutText("=== Test Bounds ==="); Wr.Nl();
   TestBounds();
+
+  Wr.PutText("=== Test ReadWrite ==="); Wr.Nl();
+  TestReadWrite();
+
+  Wr.PutText("=== All array tests done ==="); Wr.Nl();
 END TestArrays.
