@@ -325,7 +325,7 @@
              Champs PRIVATE : accessibles dans l unite seulement
                -> convention JS avec prefixe _ ou champs prives (#)
 
-   TODO 18 - UNITE SYSTEM (IMPLICITE)
+   TODO 18 - UNITE SYSTEM (IMPLICITE) [IMPLEMENTE]
              Fonctions mathematiques :
                Abs(X) -> Math.abs(X)
                Sqr(X) -> (X * X) ou Math.pow(X, 2)
@@ -2527,7 +2527,22 @@ Begin
                    (L = 'exp') Or (L = 'pi') Or (L = 'str') Or
                    (L = 'val') Or (L = 'halt') Or (L = 'exit') Or
                    (L = 'high') Or (L = 'low') Or (L = 'assigned') Or
-                   (L = 'swap');
+                   (L = 'swap') Or
+                   { TODO 18 : fonctions System supplementaires }
+                   (L = 'delete') Or (L = 'insert') Or
+                   (L = 'randomize') Or (L = 'runerror') Or
+                   (L = 'fillchar') Or (L = 'move') Or
+                   (L = 'getmem') Or (L = 'freemem') Or
+                   (L = 'setlength') Or
+                   (L = 'assign') Or (L = 'reset') Or
+                   (L = 'rewrite') Or (L = 'close') Or
+                   (L = 'append') Or (L = 'seek') Or
+                   (L = 'erase') Or (L = 'rename') Or
+                   (L = 'blockread') Or (L = 'blockwrite') Or
+                   (L = 'paramcount') Or (L = 'paramstr') Or
+                   (L = 'addr') Or (L = 'eof') Or (L = 'eoln') Or
+                   (L = 'ioresult') Or (L = 'filepos') Or
+                   (L = 'filesize');
 End;
 
 { ---- EmitBuiltinCall : genere l appel de fonction standard --- }
@@ -2612,6 +2627,44 @@ Begin
         Inc(P);
     End;
     EmitBuiltinCall := 'return';
+    Exit;
+  End;
+
+  { TODO 18 : fonctions sans argument ou a argument optionnel }
+
+  If L = 'randomize' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '/* Randomize */';
+    Exit;
+  End;
+
+  If L = 'paramcount' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '(typeof process !== "undefined" ? process.argv.length - 2 : 0)';
+    Exit;
+  End;
+
+  If L = 'ioresult' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '0 /* IOResult */';
     Exit;
   End;
 
@@ -2963,6 +3016,371 @@ Begin
       EmitBuiltinCall := Arg2 + ' = Number(' + Arg1 + ')'
     Else
       EmitBuiltinCall := 'Number(' + Arg1 + ')';
+    Exit;
+  End;
+
+  { ============================================================
+    TODO 18 - UNITE SYSTEM (IMPLICITE) [IMPLEMENTE]
+    Fonctions supplementaires du System unit Turbo Pascal.
+    ============================================================ }
+
+  { Fonctions TODO 18 qui gerent elles-memes les parentheses }
+
+  If L = 'runerror' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      Arg1 := ParseExpr(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+      EmitBuiltinCall := '(function() { throw new Error("Runtime error " + ' +
+                         Arg1 + '); })()';
+    End
+    Else
+      EmitBuiltinCall := '(function() { throw new Error("Runtime error"); })()';
+    Exit;
+  End;
+
+  If L = 'paramstr' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      Arg1 := ParseExpr(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+      EmitBuiltinCall := '(typeof process !== "undefined" ? (process.argv[(' +
+                         Arg1 + ') + 1] || "") : "")';
+    End
+    Else
+      EmitBuiltinCall := '""';
+    Exit;
+  End;
+
+  If L = 'eof' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If Not ((P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+              (TokenPool[P].Val = ')')) Then
+        Arg1 := ParseExpr(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := 'true /* Eof */';
+    Exit;
+  End;
+
+  If L = 'eoln' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If Not ((P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+              (TokenPool[P].Val = ')')) Then
+        Arg1 := ParseExpr(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := 'true /* Eoln */';
+    Exit;
+  End;
+
+  If L = 'filepos' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      Arg1 := ParseExpr(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+      EmitBuiltinCall := '0 /* FilePos(' + Arg1 + ') */';
+    End
+    Else
+      EmitBuiltinCall := '0 /* FilePos */';
+    Exit;
+  End;
+
+  If L = 'filesize' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      Arg1 := ParseExpr(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+      EmitBuiltinCall := '0 /* FileSize(' + Arg1 + ') */';
+    End
+    Else
+      EmitBuiltinCall := '0 /* FileSize */';
+    Exit;
+  End;
+
+  If L = 'addr' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      Arg1 := ParseExpr(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+      EmitBuiltinCall := Arg1 + ' /* Addr */';
+    End
+    Else
+      EmitBuiltinCall := 'null';
+    Exit;
+  End;
+
+  { -- Delete(S, Pos, Len) : TODO 18 ---------------------------- }
+  If L = 'delete' Then
+  Begin
+    { Arg1 deja lu = S }
+    Arg2 := '1'; Arg3 := '0';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg3 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := Arg1 + ' = ' + Arg1 + '.substring(0, (' + Arg2 +
+                       ') - 1) + ' + Arg1 + '.substring((' + Arg2 +
+                       ') - 1 + (' + Arg3 + '))';
+    Exit;
+  End;
+
+  { -- Insert(Src, S, Pos) ------------------------------------ }
+  If L = 'insert' Then
+  Begin
+    { Arg1 deja lu = Src }
+    Arg2 := '""'; Arg3 := '1';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg3 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := Arg2 + ' = ' + Arg2 + '.substring(0, (' + Arg3 +
+                       ') - 1) + (' + Arg1 + ') + ' + Arg2 +
+                       '.substring((' + Arg3 + ') - 1)';
+    Exit;
+  End;
+
+  { -- SetLength(S, N) ---------------------------------------- }
+  If L = 'setlength' Then
+  Begin
+    Arg2 := '0';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := Arg1 + '.length = ' + Arg2;
+    Exit;
+  End;
+
+  { -- FillChar(Buf, Count, Val) ------------------------------ }
+  If L = 'fillchar' Then
+  Begin
+    Arg2 := '0'; Arg3 := '0';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg3 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* FillChar(' + Arg1 + ', ' + Arg2 + ', ' +
+                       Arg3 + ') */';
+    Exit;
+  End;
+
+  { -- Move(Src, Dest, Count) --------------------------------- }
+  If L = 'move' Then
+  Begin
+    Arg2 := ''; Arg3 := '0';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg3 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* Move(' + Arg1 + ', ' + Arg2 + ', ' +
+                       Arg3 + ') */';
+    Exit;
+  End;
+
+  { -- GetMem(P, Size) ---------------------------------------- }
+  If L = 'getmem' Then
+  Begin
+    Arg2 := '0';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := Arg1 + ' = new ArrayBuffer(' + Arg2 + ')';
+    Exit;
+  End;
+
+  { -- FreeMem(P [, Size]) ------------------------------------ }
+  If L = 'freemem' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := Arg1 + ' = null';
+    Exit;
+  End;
+
+  { -- Assign(F, Name) ---------------------------------------- }
+  If L = 'assign' Then
+  Begin
+    Arg2 := '""';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := Arg1 + ' = { name: ' + Arg2 + ', handle: null }';
+    Exit;
+  End;
+
+  { -- Reset(F) ----------------------------------------------- }
+  If L = 'reset' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* Reset(' + Arg1 + ') */';
+    Exit;
+  End;
+
+  { -- Rewrite(F) --------------------------------------------- }
+  If L = 'rewrite' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* Rewrite(' + Arg1 + ') */';
+    Exit;
+  End;
+
+  { -- Close(F) ----------------------------------------------- }
+  If L = 'close' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* Close(' + Arg1 + ') */';
+    Exit;
+  End;
+
+  { -- Append(F) ---------------------------------------------- }
+  If L = 'append' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* Append(' + Arg1 + ') */';
+    Exit;
+  End;
+
+  { -- Seek(F, Pos) ------------------------------------------- }
+  If L = 'seek' Then
+  Begin
+    Arg2 := '0';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* Seek(' + Arg1 + ', ' + Arg2 + ') */';
+    Exit;
+  End;
+
+  { -- Erase(F) ----------------------------------------------- }
+  If L = 'erase' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* Erase(' + Arg1 + ') */';
+    Exit;
+  End;
+
+  { -- Rename(F, NewName) ------------------------------------- }
+  If L = 'rename' Then
+  Begin
+    Arg2 := '""';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* Rename(' + Arg1 + ', ' + Arg2 + ') */';
+    Exit;
+  End;
+
+  { -- BlockRead(F, Buf, Count [, Result]) -------------------- }
+  If L = 'blockread' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* BlockRead(' + Args + ') */';
+    Exit;
+  End;
+
+  { -- BlockWrite(F, Buf, Count [, Result]) ------------------- }
+  If L = 'blockwrite' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* BlockWrite(' + Args + ') */';
     Exit;
   End;
 
@@ -3792,6 +4210,7 @@ Begin
   SymAdd('Delete',       SK_PROC,  -1);
   SymAdd('Insert',       SK_PROC,  -1);
   SymAdd('Randomize',    SK_PROC,  -1);
+  SymAdd('RunError',     SK_PROC,  -1);
   SymAdd('SetLength',    SK_PROC,  -1);
   SymAdd('BlockRead',    SK_PROC,  -1);
   SymAdd('BlockWrite',   SK_PROC,  -1);
