@@ -246,7 +246,7 @@
                Acces direct sans recalcul de l expression
              RECORD imbriques : acces chaine expr.champ1.champ2
 
-   TODO 17 - PROCEDURES ET FONCTIONS
+   TODO 17 - PROCEDURES ET FONCTIONS [IMPLEMENTE]
              ParseProcDecl : PROCEDURE nom(params) [: T] = bloc
              Parametres VALUE : copie de la valeur sur la pile
              Parametres VAR : passage par adresse (LEA + PUSH ptr)
@@ -662,6 +662,8 @@ Type
     BodyStart  : Integer;    (* index premier token du corps        *)
     BodyEnd    : Integer;    (* index dernier token du corps        *)
     SymIdx     : Integer;    (* index dans SymTab                   *)
+    NestLevel  : Integer;    (* 0=module-level, 1=nested, etc TODO 17 *)
+    ParentIdx  : Integer;    (* index du parent (-1=aucun) TODO 17  *)
   End;
 
 (* ============================================================
@@ -3875,9 +3877,34 @@ Begin
              (TokenPool[P].Val = ';') Then
             Inc(P);
         End
+        Else If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+                (TokenPool[P].Val = 'PROCEDURE') Then
+        Begin
+          (* TODO 17 - TYPE ProcType = PROCEDURE(params): RetType *)
+          If TypeCount < MAX_TYPE Then
+          Begin
+            TIdx := TypeCount;
+            Inc(TypeCount);
+            TypeTab[TIdx].Kind := TYK_PROC;
+            TypeTab[TIdx].Name := Name;
+            TypeTab[TIdx].Size := 2; (* pointeur de code 16 bits *)
+            TypeTab[TIdx].BaseTypeIdx := TY_IDX_VOID;
+            TypeTab[TIdx].FieldCount  := 0;
+            TypeTab[TIdx].EnumCount   := 0;
+            TypeTab[TIdx].Lo := 0;
+            TypeTab[TIdx].Hi := 0;
+            SymAdd(Name, SK_TYPE, TIdx, 0);
+          End;
+          (* Sauter la declaration jusqu au ';' *)
+          While (P < TokenCount) And Not
+                ((TokenPool[P].Kind = TK_PUNCT) And
+                 (TokenPool[P].Val = ';')) Do
+            Inc(P);
+          If P < TokenCount Then Inc(P);
+        End
         Else
         Begin
-          (* Type non-RECORD : sauter jusqu au ';' *)
+          (* Type non-RECORD, non-PROCEDURE : sauter jusqu au ';' *)
           While (P < TokenCount) And Not
                 ((TokenPool[P].Kind = TK_PUNCT) And
                  (TokenPool[P].Val = ';')) Do
@@ -5370,6 +5397,38 @@ Begin
         Exit;
       End;
 
+      (* TODO 17 - Appel indirect via variable de type PROCEDURE *)
+      LI := FindProcLocal(CurProcIdx, Name);
+      If (LI >= 0) And
+         (TypeTab[ProcTab[CurProcIdx].Locals[LI].TypeIdx].Kind = TYK_PROC) Then
+      Begin
+        GenLoadLocal(CurProcIdx, LI);
+        EmitInstrAB('MOV', 'BX', 'AX');
+        ParseCallArgs(ArgCount);
+        EmitInstr('CALL    BX');
+        Exit;
+      End;
+      ParI := FindProcParam(CurProcIdx, Name);
+      If (ParI >= 0) And
+         (TypeTab[ProcTab[CurProcIdx].ParamTypes[ParI]].Kind = TYK_PROC) Then
+      Begin
+        GenLoadParam(CurProcIdx, ParI);
+        EmitInstrAB('MOV', 'BX', 'AX');
+        ParseCallArgs(ArgCount);
+        EmitInstr('CALL    BX');
+        Exit;
+      End;
+      SI := SymFind(Name);
+      If (SI >= 0) And (SymTab[SI].Kind = SK_VAR) And
+         (TypeTab[SymTab[SI].TypeIdx].Kind = TYK_PROC) Then
+      Begin
+        GenLoadVar(SI);
+        EmitInstrAB('MOV', 'BX', 'AX');
+        ParseCallArgs(ArgCount);
+        EmitInstr('CALL    BX');
+        Exit;
+      End;
+
       (* Appel de procedure inconnue (module externe?) *)
       ParseCallArgs(ArgCount);
       EmitComment('call ' + Name + ' (unresolved)');
@@ -6485,6 +6544,41 @@ Begin
         Exit;
       End;
 
+      (* TODO 17 - Appel indirect via variable de type PROCEDURE *)
+      LI := FindProcLocal(CurProcIdx, Name);
+      If (LI >= 0) And
+         (TypeTab[ProcTab[CurProcIdx].Locals[LI].TypeIdx].Kind = TYK_PROC) Then
+      Begin
+        GenLoadLocal(CurProcIdx, LI);
+        EmitInstrAB('MOV', 'BX', 'AX');
+        ParseCallArgs(ArgCount);
+        EmitInstr('CALL    BX');
+        If EPMatch(TK_PUNCT, ';') Then Inc(EP);
+        Exit;
+      End;
+      ParI := FindProcParam(CurProcIdx, Name);
+      If (ParI >= 0) And
+         (TypeTab[ProcTab[CurProcIdx].ParamTypes[ParI]].Kind = TYK_PROC) Then
+      Begin
+        GenLoadParam(CurProcIdx, ParI);
+        EmitInstrAB('MOV', 'BX', 'AX');
+        ParseCallArgs(ArgCount);
+        EmitInstr('CALL    BX');
+        If EPMatch(TK_PUNCT, ';') Then Inc(EP);
+        Exit;
+      End;
+      SI := SymFind(Name);
+      If (SI >= 0) And (SymTab[SI].Kind = SK_VAR) And
+         (TypeTab[SymTab[SI].TypeIdx].Kind = TYK_PROC) Then
+      Begin
+        GenLoadVar(SI);
+        EmitInstrAB('MOV', 'BX', 'AX');
+        ParseCallArgs(ArgCount);
+        EmitInstr('CALL    BX');
+        If EPMatch(TK_PUNCT, ';') Then Inc(EP);
+        Exit;
+      End;
+
       (* Appel inconnu *)
       ParseCallArgs(ArgCount);
       EmitComment('call ' + Name + ' (unresolved)');
@@ -6520,6 +6614,248 @@ Begin
     ParseStmt;
 
   EmitLabel(RetLbl);
+End;
+
+(* ============================================================
+   TODO 17 - PROCEDURES ET FONCTIONS [IMPLEMENTE]
+   ============================================================ *)
+
+(* ---- ParseNestedProc : parser une procedure imbriquee --------- *)
+(* Cree une procedure aplatie dans ProcTab avec un nom mange       *)
+(* (parent_inner) et un lien statique vers le cadre parent.        *)
+
+Procedure ParseNestedProc(Var P : Integer;
+                          ParentPI : Integer;
+                          Const ParentName : TString);
+Var
+  NPI       : Integer;
+  NPName    : TString;
+  Mode      : TParamMode;
+  NPC       : Integer;
+  NParamOfs : Integer;
+  NPTIdx    : Integer;
+  NLCount   : Integer;
+  NLSize    : Integer;
+  NLTIdx    : Integer;
+  NLName    : TString;
+  NBodyOpen : Integer;
+  NRetTIdx  : Integer;
+  NIsFn     : Boolean;
+  NSI       : Integer;
+Begin
+  If (P >= TokenCount) Or
+     Not ((TokenPool[P].Kind = TK_KEYWORD) And
+          (TokenPool[P].Val = 'PROCEDURE')) Then
+    Exit;
+
+  Inc(P); (* passer PROCEDURE *)
+
+  If (P >= TokenCount) Or (TokenPool[P].Kind <> TK_IDENT) Then
+  Begin
+    Inc(P);
+    Exit;
+  End;
+
+  NPName := TokenPool[P].Val;
+  Inc(P);
+
+  If ProcCount >= MAX_PROC Then
+  Begin
+    Inc(P);
+    Exit;
+  End;
+
+  NPI := ProcCount;
+  Inc(ProcCount);
+
+  ProcTab[NPI].Name       := NPName;
+  ProcTab[NPI].MangledName:= M3_PROC_PFX + SymNameClean(ParentName) +
+                             '_' + SymNameClean(NPName);
+  ProcTab[NPI].RetTypeIdx := TY_IDX_VOID;
+  ProcTab[NPI].IsFunction := False;
+  ProcTab[NPI].ParamCount := 0;
+  ProcTab[NPI].LocalCount := 0;
+  ProcTab[NPI].LocalSize  := 0;
+  ProcTab[NPI].BodyStart  := -1;
+  ProcTab[NPI].BodyEnd    := -1;
+  ProcTab[NPI].SymIdx     := -1;
+  ProcTab[NPI].NestLevel  := ProcTab[ParentPI].NestLevel + 1;
+  ProcTab[NPI].ParentIdx  := ParentPI;
+
+  NSI := SymAdd(NPName, SK_PROC, TY_IDX_VOID, NPI);
+  If NSI >= 0 Then
+  Begin
+    SymTab[NSI].MangledName := ProcTab[NPI].MangledName;
+    ProcTab[NPI].SymIdx     := NSI;
+  End;
+
+  (* ---- Parser les parametres ---- *)
+  NPC       := 0;
+  NParamOfs := 6;
+
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = '(') Then
+  Begin
+    Inc(P);
+    While (P < TokenCount) And Not
+          ((TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ')')) Do
+    Begin
+      Mode := PM_VALUE;
+      If (TokenPool[P].Kind = TK_KEYWORD) And
+         (TokenPool[P].Val = 'VAR') Then
+      Begin Mode := PM_VAR; Inc(P); End
+      Else If (TokenPool[P].Kind = TK_KEYWORD) And
+              (TokenPool[P].Val = 'READONLY') Then
+      Begin Mode := PM_READONLY; Inc(P); End
+      Else If (TokenPool[P].Kind = TK_KEYWORD) And
+              (TokenPool[P].Val = 'VALUE') Then
+      Begin Mode := PM_VALUE; Inc(P); End;
+
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+      Begin
+        If NPC < MAX_PARAM Then
+        Begin
+          ProcTab[NPI].ParamNames[NPC] := TokenPool[P].Val;
+          ProcTab[NPI].ParamModes[NPC] := Mode;
+        End;
+        Inc(P);
+
+        NPTIdx := TY_IDX_INTEGER;
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+           (TokenPool[P].Val = ':') Then
+        Begin
+          Inc(P);
+          If (P < TokenCount) And
+             ((TokenPool[P].Kind = TK_KEYWORD) Or
+              (TokenPool[P].Kind = TK_IDENT)) Then
+          Begin
+            NPTIdx := TypeIdxFromName(TokenPool[P].Val);
+            If NPTIdx = TY_UNKNOWN Then NPTIdx := TY_IDX_INTEGER;
+            Inc(P);
+          End;
+        End;
+
+        If NPC < MAX_PARAM Then
+        Begin
+          ProcTab[NPI].ParamTypes[NPC] := NPTIdx;
+          ProcTab[NPI].ParamOfs[NPC]   := NParamOfs;
+          Inc(NParamOfs, 2);
+        End;
+        Inc(NPC);
+      End;
+
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         ((TokenPool[P].Val = ';') Or (TokenPool[P].Val = ',')) Then
+        Inc(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ')') Then
+      Inc(P);
+  End;
+  ProcTab[NPI].ParamCount := NPC;
+
+  (* ---- Type retour ---- *)
+  NRetTIdx := TY_IDX_VOID;
+  NIsFn    := False;
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = ':') Then
+  Begin
+    Inc(P);
+    If (P < TokenCount) And
+       ((TokenPool[P].Kind = TK_KEYWORD) Or
+        (TokenPool[P].Kind = TK_IDENT)) Then
+    Begin
+      NRetTIdx := TypeIdxFromName(TokenPool[P].Val);
+      If NRetTIdx = TY_UNKNOWN Then NRetTIdx := TY_IDX_INTEGER;
+      NIsFn := True;
+      Inc(P);
+    End;
+  End;
+  ProcTab[NPI].RetTypeIdx := NRetTIdx;
+  ProcTab[NPI].IsFunction := NIsFn;
+
+  (* Passer '=' *)
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_OP) And
+     (TokenPool[P].Val = '=') Then
+    Inc(P);
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = ';') Then
+    Inc(P);
+
+  (* ---- Variables locales ---- *)
+  NLCount := 0;
+  NLSize  := 0;
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (TokenPool[P].Val = 'VAR') Then
+  Begin
+    Inc(P);
+    While (P < TokenCount) And Not
+          ((TokenPool[P].Kind = TK_KEYWORD) And
+           ((TokenPool[P].Val = 'BEGIN') Or
+            (TokenPool[P].Val = 'PROCEDURE'))) Do
+    Begin
+      If TokenPool[P].Kind = TK_IDENT Then
+      Begin
+        NLName := TokenPool[P].Val;
+        Inc(P);
+        NLTIdx := TY_IDX_INTEGER;
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+           (TokenPool[P].Val = ':') Then
+        Begin
+          Inc(P);
+          If (P < TokenCount) And
+             ((TokenPool[P].Kind = TK_KEYWORD) Or
+              (TokenPool[P].Kind = TK_IDENT)) Then
+          Begin
+            NLTIdx := TypeIdxFromName(TokenPool[P].Val);
+            If NLTIdx = TY_UNKNOWN Then NLTIdx := TY_IDX_INTEGER;
+            Inc(P);
+          End;
+        End;
+        If NLCount < MAX_LOCAL Then
+        Begin
+          Inc(NLSize, TypeSizeFromIdx(NLTIdx));
+          ProcTab[NPI].Locals[NLCount].Name    := NLName;
+          ProcTab[NPI].Locals[NLCount].TypeIdx := NLTIdx;
+          ProcTab[NPI].Locals[NLCount].Size    := TypeSizeFromIdx(NLTIdx);
+          ProcTab[NPI].Locals[NLCount].Offset  := -NLSize;
+          Inc(NLCount);
+        End;
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+           (TokenPool[P].Val = ';') Then
+          Inc(P);
+      End
+      Else
+        Inc(P);
+    End;
+  End;
+  ProcTab[NPI].LocalCount := NLCount;
+  If (NLSize Mod 2) = 1 Then Inc(NLSize);
+  ProcTab[NPI].LocalSize  := NLSize;
+
+  (* ---- Corps BEGIN ... END ---- *)
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (TokenPool[P].Val = 'BEGIN') Then
+  Begin
+    Inc(P);
+    NBodyOpen := P;
+    SkipToMatchingEnd(P);
+    ProcTab[NPI].BodyStart := NBodyOpen;
+    ProcTab[NPI].BodyEnd   := P - 1;
+  End;
+
+  (* Passer le nom apres END *)
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+    Inc(P);
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = ';') Then
+    Inc(P);
+
+  If Opts.DebugMode Then
+    WriteLn('  NESTED_PROC[', NPI, ']: ', ParentName, '.', NPName,
+            ' params=', NPC, ' locals=', NLCount,
+            ' body=', ProcTab[NPI].BodyStart, '..',
+            ProcTab[NPI].BodyEnd);
 End;
 
 (* ============================================================
@@ -6594,6 +6930,8 @@ Begin
     ProcTab[PI].BodyStart  := -1;
     ProcTab[PI].BodyEnd    := -1;
     ProcTab[PI].SymIdx     := -1;
+    ProcTab[PI].NestLevel  := 0;
+    ProcTab[PI].ParentIdx  := -1;
 
     (* Enregistrer le symbole de la procedure *)
     SI := SymAdd(PName, SK_PROC, TY_IDX_VOID, PI);
@@ -6800,6 +7138,16 @@ Begin
     (* Aligner la taille locale sur mot (2 octets) *)
     If (LSize Mod 2) = 1 Then Inc(LSize);
     ProcTab[PI].LocalSize  := LSize;
+
+    (* ---- Procedures imbriquees (TODO 17) ---- *)
+    (* Detecter PROCEDURE avant BEGIN dans le corps d'une procedure *)
+    (* Les procedures imbriquees sont aplaties avec un nom mange    *)
+    While (P < TokenCount) And
+          (TokenPool[P].Kind = TK_KEYWORD) And
+          (TokenPool[P].Val = 'PROCEDURE') Do
+    Begin
+      ParseNestedProc(P, PI, PName);
+    End;
 
     (* ---- Corps : BEGIN ... END ---- *)
     If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
