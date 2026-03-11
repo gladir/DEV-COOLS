@@ -115,7 +115,7 @@
             EmitProlog / EmitEpilog : PUSH BP / MOV BP,SP et MOV SP,BP / POP BP
             EmitDataSeg : ecrire _DATA SEGMENT ... _DATA ENDS
 
-  TODO 08 - SEGMENT DE DONNEES ET STATIQUES
+  TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
             TDataRec : LblName, Kind (DK_WORD/DK_BYTE/DK_STR/DK_TABLE),
               IntVal, StrVal, ElemCount
             DataTab[0..MAX_DATA-1], DataCount
@@ -720,6 +720,9 @@ Function  DataAdd(Const Lbl : TString; Kind : TDataKind;
                   AIntVal : LongInt; Const AStrVal : TString) : Integer; Forward;
 Function  DataAddStr(Const S : TString) : TString; Forward;
 Function  DataAddWord(Const Lbl : TString; AIntVal : LongInt) : Integer; Forward;
+Function  DataAddTable(Const Lbl : TString; AElemCount : Integer) : Integer; Forward;
+Function  DataAddBuffer(Const Lbl : TString; ABufSize : Integer) : Integer; Forward;
+Procedure DataInit; Forward;
 Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
                       Var Res : TExprVal); Forward;
 Procedure ExprMakeNone(Var Res : TExprVal); Forward;
@@ -1066,6 +1069,7 @@ Begin
   CurToken.Col     := 0;
   TypeInit;  { TODO 06 : initialiser table des types primitifs Lua }
   SymInit;  { TODO 05 : initialiser table des symboles + builtins Lua }
+  DataInit;  { TODO 08 : pre-remplir DataTab avec donnees predefinies }
 End;
 
 { ============================================================
@@ -1265,6 +1269,52 @@ Begin
   DataAddWord := DataAdd(Lbl, DK_WORD, AIntVal, '');
 End;
 
+{ ---- DataAddTable : ajouter un bloc table dans DATA --------- }
+{ Cree une entree DK_TABLE_BLK avec AElemCount elements.        }
+{ Retourne l index dans DataTab ou -1 si plein.                 }
+Function DataAddTable(Const Lbl : TString; AElemCount : Integer) : Integer;
+Var
+  Idx : Integer;
+Begin
+  Idx := DataAdd(Lbl, DK_TABLE_BLK, 0, '');
+  If Idx >= 0 Then
+    DataTab[Idx].ElemCount := AElemCount;
+  DataAddTable := Idx;
+End;
+
+{ ---- DataAddBuffer : ajouter un buffer DB N DUP(0) dans DATA - }
+{ Cree une entree DK_BYTE avec ElemCount = ABufSize.              }
+{ Retourne l index dans DataTab ou -1 si plein.                   }
+Function DataAddBuffer(Const Lbl : TString; ABufSize : Integer) : Integer;
+Var
+  Idx : Integer;
+Begin
+  Idx := DataAdd(Lbl, DK_BYTE, 0, '');
+  If Idx >= 0 Then
+    DataTab[Idx].ElemCount := ABufSize;
+  DataAddBuffer := Idx;
+End;
+
+{ ---- DataInit : pre-remplir DataTab avec donnees predefinies -- }
+{ Appele depuis GlobalInit, apres SymInit.                        }
+{ Ajoute les chaines Lua standard et les buffers de travail.      }
+Procedure DataInit;
+Begin
+  DataCount := 0;
+  { Chaines predefinies pour type() et tostring() }
+  DataAdd(LUA_NIL_LBL, DK_STR, 0, 'nil');
+  DataAdd(LUA_TRUE_LBL, DK_STR, 0, 'true');
+  DataAdd(LUA_FALSE_LBL, DK_STR, 0, 'false');
+  { CRLF pour retour a la ligne : DB 13,10,0 }
+  DataAdd('_LUA_CRLF', DK_STR, 0, #13#10);
+  { Chaine vide pour nil/initialisation }
+  DataAdd('_LUA_NULL_STR', DK_STR, 0, '');
+  { Buffer de travail pour concatenation (512 octets) }
+  DataAddBuffer('_LUA_STRBUF', 512);
+  { Buffer temporaire pour conversions (256 octets) }
+  DataAddBuffer('_LUA_TMPBUF', 256);
+End;
+
 { ---- ExprMakeImm : construire une valeur immediate ---------- }
 Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
                       Var Res : TExprVal);
@@ -1358,9 +1408,13 @@ Begin
   End;
 End;
 
+{ ============================================================
+  TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
+  ============================================================ }
+
 { ---- EmitDataSeg : emettre le segment _DATA dans le .ASM ---- }
 { Appele depuis EmitClose. Ecrit _DATA SEGMENT ... ENDS.        }
-{ Emet aussi les chaines predefinies nil/true/false et buffers.  }
+{ Emet toutes les entrees de DataTab (predefinies + utilisateur). }
 Procedure EmitDataSeg;
 Var
   I     : Integer;
@@ -1372,14 +1426,7 @@ Var
 Begin
   If Not OutFOpen Then Exit;
   EmitRaw('_DATA   SEGMENT WORD PUBLIC ''DATA''');
-  { Chaines predefinies pour type() et tostring() }
-  EmitRaw(LUA_NIL_LBL + '   DB ''nil'',0');
-  EmitRaw(LUA_TRUE_LBL + '  DB ''true'',0');
-  EmitRaw(LUA_FALSE_LBL + ' DB ''false'',0');
-  { CRLF et buffer de travail }
-  EmitRaw('_LUA_CRLF      DB 13,10,0');
-  EmitRaw('_LUA_STRBUF    DB 256 DUP(0)');
-  { Emettre les entrees de DataTab }
+  { Emettre toutes les entrees de DataTab }
   For I := 0 To DataCount - 1 Do
   Begin
     Case DataTab[I].Kind Of
@@ -1390,50 +1437,68 @@ Begin
       End;
       DK_BYTE :
       Begin
-        Str(DataTab[I].IntVal And $FF, NS);
-        EmitRaw(DataTab[I].LblName + '  DB  ' + NS);
+        If DataTab[I].ElemCount > 0 Then
+        Begin
+          { Buffer : DB N DUP(0) }
+          Str(DataTab[I].ElemCount, NS);
+          EmitRaw(DataTab[I].LblName + '  DB  ' + NS + ' DUP(0)');
+        End
+        Else
+        Begin
+          Str(DataTab[I].IntVal And $FF, NS);
+          EmitRaw(DataTab[I].LblName + '  DB  ' + NS);
+        End;
       End;
       DK_STR  :
       Begin
-        { Emettre la chaine avec gestion des caracteres de controle }
-        Write(OutF, DataTab[I].LblName, '  DB  ');
-        InStr := False;
-        First := True;
-        For J := 1 To Length(DataTab[I].StrVal) Do
+        If Length(DataTab[I].StrVal) = 0 Then
         Begin
-          B := Ord(DataTab[I].StrVal[J]);
-          If (B >= 32) And (B < 127) And (DataTab[I].StrVal[J] <> '''') Then
+          { Chaine vide : DB 0 }
+          EmitRaw(DataTab[I].LblName + '  DB  0');
+        End
+        Else
+        Begin
+          { Emettre la chaine avec gestion des caracteres de controle }
+          Write(OutF, DataTab[I].LblName, '  DB  ');
+          InStr := False;
+          First := True;
+          For J := 1 To Length(DataTab[I].StrVal) Do
           Begin
-            { Caractere imprimable (pas apostrophe) }
-            If Not InStr Then
+            B := Ord(DataTab[I].StrVal[J]);
+            If (B >= 32) And (B < 127) And (DataTab[I].StrVal[J] <> '''') Then
             Begin
+              { Caractere imprimable (pas apostrophe) }
+              If Not InStr Then
+              Begin
+                If Not First Then Write(OutF, ',');
+                Write(OutF, '''');
+                InStr := True;
+              End;
+              Write(OutF, DataTab[I].StrVal[J]);
+            End
+            Else
+            Begin
+              { Caractere non imprimable ou apostrophe : valeur numerique }
+              If InStr Then
+              Begin
+                Write(OutF, '''');
+                InStr := False;
+              End;
               If Not First Then Write(OutF, ',');
-              Write(OutF, '''');
-              InStr := True;
+              Str(B, NS);
+              Write(OutF, NS);
             End;
-            Write(OutF, DataTab[I].StrVal[J]);
-          End
-          Else
-          Begin
-            { Caractere non imprimable ou apostrophe : valeur numerique }
-            If InStr Then
-            Begin
-              Write(OutF, '''');
-              InStr := False;
-            End;
-            If Not First Then Write(OutF, ',');
-            Str(B, NS);
-            Write(OutF, NS);
+            First := False;
           End;
-          First := False;
+          If InStr Then Write(OutF, '''');
+          WriteLn(OutF, ',0');
         End;
-        If InStr Then Write(OutF, '''');
-        WriteLn(OutF, ',0');
       End;
       DK_TABLE_BLK :
       Begin
-        { TODO 15 : construction de tables }
-        EmitRaw(DataTab[I].LblName + '  DW  0   ; table stub');
+        Str(DataTab[I].ElemCount, NS);
+        EmitRaw(DataTab[I].LblName + '  DW  ' + NS +
+                '   ; table (' + NS + ' elem)');
       End;
     End;
   End;
