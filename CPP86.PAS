@@ -261,7 +261,7 @@
             Pointeurs de fonction : int (*fp)(int) -> variable 2 octets
               Appel indirect : CALL [fp]
 
-  TODO 17 - STRUCTURES ET UNIONS
+  TODO 17 - STRUCTURES ET UNIONS [IMPLEMENTE]
             struct Nom { type1 champ1; type2 champ2; ... };
               Taille = somme des sizeof(Ti) alignes
               Acces champ : offset fixe depuis debut
@@ -4335,7 +4335,7 @@ Begin
 End;
 
 (* ============================================================
-   TODO 17 - STRUCTURES ET UNIONS
+   TODO 17 - STRUCTURES ET UNIONS [IMPLEMENTE]
    StructFind       : chercher une structure par nom
    StructFieldFind  : chercher un champ dans une structure
    StructFindByType : chercher une structure par TypeIdx
