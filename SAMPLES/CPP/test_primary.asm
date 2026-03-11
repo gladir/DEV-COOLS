@@ -12,23 +12,6 @@ _DATA   ENDS
 _TEXT   SEGMENT WORD PUBLIC 'CODE'
         ASSUME CS:_TEXT, DS:_DATA, SS:STACK
 
-        XOR AX,AX
-        XOR AX,AX
-        PUSH   AX
-        MOV AX,WORD PTR [_CC_V_b]
-        MOV BX,AX
-        POP    AX
-        ADD AX,BX
-        XOR AX,AX
-        XOR AX,AX
-        PUSH   AX
-        XOR AX,AX
-        MOV BX,AX
-        POP    AX
-        IMUL BX
-        XOR AX,AX
-        XOR AX,AX
-        NEG    AX
         MOV AX,42
         MOV WORD PTR [BP-2],AX
         MOV AX,2
@@ -40,9 +23,11 @@ _TEXT   SEGMENT WORD PUBLIC 'CODE'
         MOV AX,2
         MOV WORD PTR [BP-10],AX
         MOV AX,2
-        CALL _CC_RT_NEW
         MOV WORD PTR [BP-12],AX
-        MOV AX,WORD PTR [BP-12]
+        MOV AX,2
+        CALL _CC_RT_NEW
+        MOV WORD PTR [BP-14],AX
+        MOV AX,WORD PTR [BP-14]
         CALL _CC_RT_DELETE
         MOV AX,10
         PUSH   DX
@@ -50,56 +35,51 @@ _TEXT   SEGMENT WORD PUBLIC 'CODE'
         IMUL   DX
         POP    DX
         CALL _CC_RT_NEW
-        MOV WORD PTR [BP-14],AX
-        MOV AX,WORD PTR [BP-14]
+        MOV WORD PTR [BP-16],AX
+        MOV AX,WORD PTR [BP-16]
         CALL _CC_RT_DELETE
         MOV AX,100
-        MOV WORD PTR [BP-16],AX
-        LEA AX,[BP-16]
         MOV WORD PTR [BP-18],AX
-        MOV AX,WORD PTR [BP-18]
+        LEA AX,[BP-18]
+        MOV WORD PTR [BP-20],AX
+        MOV AX,WORD PTR [BP-20]
         MOV BX,AX
         MOV AX,[BX]
-        MOV WORD PTR [BP-20],AX
+        MOV WORD PTR [BP-22],AX
         MOV AX,5
-        MOV WORD PTR [BP-22],AX
-        MOV AX,WORD PTR [BP-22]
-        PUSH   AX
-        INC    AX
-        MOV WORD PTR [BP-22],AX
-        POP    AX
-        MOV AX,WORD PTR [BP-22]
-        INC    AX
-        MOV WORD PTR [BP-22],AX
-        MOV AX,WORD PTR [BP-22]
-        PUSH   AX
-        DEC    AX
-        MOV WORD PTR [BP-22],AX
-        POP    AX
-        MOV AX,WORD PTR [BP-22]
-        DEC    AX
-        MOV WORD PTR [BP-22],AX
-        MOV AX,3
         MOV WORD PTR [BP-24],AX
-        MOV AX,7
+        MOV AX,WORD PTR [BP-24]
+        PUSH   AX
+        INC    AX
+        MOV WORD PTR [BP-24],AX
+        POP    AX
+        MOV AX,WORD PTR [BP-24]
+        INC    AX
+        MOV WORD PTR [BP-24],AX
+        MOV AX,WORD PTR [BP-24]
+        PUSH   AX
+        DEC    AX
+        MOV WORD PTR [BP-24],AX
+        POP    AX
+        MOV AX,WORD PTR [BP-24]
+        DEC    AX
+        MOV WORD PTR [BP-24],AX
+        MOV AX,3
         MOV WORD PTR [BP-26],AX
-        MOV AX,10
-        PUSH   AX
-        MOV AX,20
-        PUSH   AX
-        CALL _CC_F_unknown
-        ADD SP,4
+        MOV AX,7
         MOV WORD PTR [BP-28],AX
-        MOV AX,6
+        MOV AX,WORD PTR [BP-2]
         PUSH   AX
-        CALL _CC_F_unknown
-        ADD SP,2
+        MOV AX,WORD PTR [BP-4]
+        MOV BX,AX
+        POP    AX
+        ADD AX,BX
+        PUSH   AX
+        MOV AX,2
+        MOV BX,AX
+        POP    AX
+        IMUL BX
         MOV WORD PTR [BP-30],AX
-        MOV AX,42
-        PUSH   AX
-        CALL _CC_F_unknown
-        ADD SP,2
-        MOV WORD PTR [BP-32],AX
 
 ; === Runtime library ===
 
@@ -141,7 +121,6 @@ _CC_NULL_S   DB  '(null)',0
 _CC_STRBUF   DB  256 DUP(0)
 _CC_V_result  DW  0
 _CC_V_g_val  DW  99
-_CC_V_b  DW  0
 _DATA   ENDS
 
 END _main

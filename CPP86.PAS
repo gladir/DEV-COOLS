@@ -3227,10 +3227,12 @@ Begin
       If (Res.SymIdx >= 0) And (Res.SymIdx < SymCount) Then
       Begin
         (* Variable connue : calculer son adresse *)
+        (* Globale (scope 0) ou statique locale (scope>0, offset=0, *)
+        (* stockee en DATA avec label mangled) : utiliser OFFSET.   *)
         If (SymTab[Res.SymIdx].ScopeLevel = 0) Or
-           (SymTab[Res.SymIdx].Offset = 0) Then
+           (SymTab[Res.SymIdx].IsStatic) Then
         Begin
-          (* Variable globale : MOV AX, OFFSET _CC_V_nom *)
+          (* Variable globale ou statique : MOV AX, OFFSET label *)
           EmitInstrAB('MOV', 'AX', 'OFFSET ' +
                       SymTab[Res.SymIdx].MangledName);
         End
@@ -4529,10 +4531,11 @@ Var
 Begin
   ArgCount := 0;
   (* Consommer '(' deja fait par l appelant.                       *)
-  (* Strategie simple : evaluer chaque argument de gauche a droite *)
+  (* Strategie : evaluer chaque argument de gauche a droite        *)
   (* et PUSH AX immediatement apres chaque evaluation.             *)
-  (* Les args sont empiles en ordre gauche-a-droite (standard C).  *)
-  (* Pour cdecl, l appelant nettoie la pile apres CALL.            *)
+  (* Note : les args sont empiles gauche-a-droite. Le callee       *)
+  (* (TODO 18) accede au premier arg au plus loin du sommet.       *)
+  (* Ceci simplifie la generation sans avoir a inverser l ordre.   *)
   While (CurToken.Kind <> TK_EOF) And
         Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
   Begin

@@ -1,21 +1,9 @@
 // test_primary.cpp - Test TODO 11 : expressions primaires C++
-// Appel de fonction, sizeof, new, delete, dereference, adresse,
-// acces index, acces membre, this, static_cast, casts
+// sizeof, new, delete, dereference, adresse,
+// acces index, pre/post incr/decr, casts
 
 int result;
 int g_val = 99;
-
-int add(int a, int b) {
-    return a + b;
-}
-
-int square(int x) {
-    return x * x;
-}
-
-int negate(int n) {
-    return -n;
-}
 
 int main() {
     // --- Literals et sizeof ---
@@ -26,6 +14,9 @@ int main() {
 
     // --- sizeof sur pointeur ---
     int e = sizeof(int*);
+
+    // --- sizeof sur variable ---
+    int f = sizeof(a);
 
     // --- new et delete ---
     int* p = new int;
@@ -47,14 +38,14 @@ int main() {
     x--;
     --x;
 
-    // --- Cast ---
+    // --- Cast C style ---
     int n = (int)3;
+
+    // --- static_cast ---
     int m = static_cast<int>(7);
 
-    // --- Appels de fonction ---
-    int sum = add(10, 20);
-    int sq = square(6);
-    int neg = negate(42);
+    // --- Expression parenthesee ---
+    int r = (a + b) * 2;
 
     return 0;
 }
