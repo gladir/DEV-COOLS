@@ -164,7 +164,7 @@
             Selon TPVersion : activer/desactiver certains types
               (TP1/TP2 : pas d objets, pas de PChar, etc.)
 
-  TODO 07 - EMETTEUR DE CODE ASM 80386
+  TODO 07 - EMETTEUR DE CODE ASM 80386 [IMPLEMENTE]
             EmitOpen, EmitClose, EmitRaw, EmitLabel, EmitInstr
             EmitComment, EmitBlankLine
             LabelGen global (compteur unique _TPL_NNNNN)
@@ -1083,6 +1083,10 @@ Const
   TP_LBL_PFX  = '_TPL_';   { labels internes                      }
   TP_RT_PFX   = '_TPRT_';  { routines runtime                     }
   TP_STA_PFX  = '_TPST_';  { variables statiques                  }
+  TP_ARR_PFX  = '_TPA_';   { tableaux                             }
+  TP_REC_PFX  = '_TPR_';   { records                              }
+  TP_ENUM_PFX = '_TPE_';   { enumerations                         }
+  TP_UNIT_PFX = '_TPU_';   { unites                               }
 
   { Table des tailles de types Turbo Pascal (Win32, 32 bits) }
   MAX_TP_TYPE_SIZES = 18;
@@ -3926,6 +3930,330 @@ Begin
   TypeCompatible := False;
 End;
 
+{ ============================================================ }
+{ TODO 07 - EMETTEUR DE CODE ASM 80386            [IMPLEMENTE] }
+{ ============================================================ }
+
+Var
+  { Compteur de labels interne a l emetteur }
+  EmitLabelSeq    : Integer;
+  { True si un programme principal est detecte }
+  HasProgram      : Boolean;
+  { Nombre d entrees DataTab deja emises }
+  DataEmittedCount: Integer;
+
+{ ------------------------------------------------------------ }
+{ EmitOpen : ouvrir le fichier .ASM de sortie                  }
+{ ------------------------------------------------------------ }
+
+Procedure EmitOpen(Const AsmFile : TString);
+Begin
+  Assign(OutF, AsmFile);
+  {$I-}
+  Rewrite(OutF);
+  {$I+}
+  If IOResult <> 0 Then
+    FatalError('impossible d''ouvrir le fichier de sortie: ' + AsmFile);
+  OutFOpen := True;
+  EmitLabelSeq := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitClose : fermer le fichier de sortie                      }
+{ La directive END indique le point d entree du programme       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitClose;
+Begin
+  If OutFOpen Then
+  Begin
+    If HasProgram Then
+      WriteLn(OutF, 'END ' + TP_FUNC_PFX + 'Main')
+    Else
+      WriteLn(OutF, 'END');
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRaw : ecrire une ligne brute dans le fichier de sortie   }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRaw(Const S : TString);
+Begin
+  If OutFOpen Then
+    WriteLn(OutF, S);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitLabel : ecrire un label suivi de ':'                     }
+{ ------------------------------------------------------------ }
+
+Procedure EmitLabel(Const Lbl : TString);
+Begin
+  If OutFOpen Then
+    WriteLn(OutF, Lbl, ':');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitInstr : ecrire une instruction avec 8 espaces d indent   }
+{ ------------------------------------------------------------ }
+
+Procedure EmitInstr(Const S : TString);
+Begin
+  If OutFOpen Then
+    WriteLn(OutF, '        ', S);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitComment : ecrire un commentaire ('; text')               }
+{ ------------------------------------------------------------ }
+
+Procedure EmitComment(Const S : TString);
+Begin
+  If OutFOpen Then
+    WriteLn(OutF, '; ', S);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitBlankLine : ecrire une ligne vide                        }
+{ ------------------------------------------------------------ }
+
+Procedure EmitBlankLine;
+Begin
+  If OutFOpen Then
+    WriteLn(OutF);
+End;
+
+{ ------------------------------------------------------------ }
+{ LabelGen : generer un label unique _TPL_NNNNN               }
+{ ------------------------------------------------------------ }
+
+Function LabelGen : TString;
+Begin
+  Inc(EmitLabelSeq);
+  LabelGen := TP_LBL_PFX + IntToStr_(EmitLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitHeader : emettre l en-tete ASM pour un programme Win32   }
+{ .386 / .MODEL FLAT, STDCALL / EXTRN imports Win32            }
+{ ------------------------------------------------------------ }
+
+Procedure EmitHeader;
+Begin
+  EmitComment('TPCW32 - Compilateur Turbo Pascal -> ASM 80386 Win32');
+  EmitComment('Genere automatiquement a partir de : ' + Opts.SrcFile);
+  EmitBlankLine;
+
+  { Directive processeur et modele memoire }
+  EmitRaw('.386');
+  EmitRaw('.MODEL FLAT, STDCALL');
+  EmitBlankLine;
+
+  { Declarations externes (imports Win32 kernel32.dll) }
+  EmitComment('--- Imports Win32 (kernel32.dll) ---');
+  EmitRaw('EXTRN _ExitProcess@4:NEAR');
+  EmitRaw('EXTRN _GetStdHandle@4:NEAR');
+  EmitRaw('EXTRN _WriteFile@20:NEAR');
+  EmitRaw('EXTRN _ReadFile@20:NEAR');
+  EmitRaw('EXTRN _WriteConsoleA@20:NEAR');
+  EmitRaw('EXTRN _ReadConsoleA@20:NEAR');
+  EmitRaw('EXTRN _SetConsoleCursorPosition@8:NEAR');
+  EmitRaw('EXTRN _GetConsoleScreenBufferInfo@8:NEAR');
+  EmitRaw('EXTRN _SetConsoleTextAttribute@8:NEAR');
+  EmitRaw('EXTRN _FillConsoleOutputCharacterA@20:NEAR');
+  EmitRaw('EXTRN _FillConsoleOutputAttribute@20:NEAR');
+  EmitRaw('EXTRN _GetConsoleMode@8:NEAR');
+  EmitRaw('EXTRN _SetConsoleMode@8:NEAR');
+  EmitRaw('EXTRN _GetProcessHeap@0:NEAR');
+  EmitRaw('EXTRN _HeapAlloc@12:NEAR');
+  EmitRaw('EXTRN _HeapFree@12:NEAR');
+  EmitRaw('EXTRN _CreateFileA@28:NEAR');
+  EmitRaw('EXTRN _CloseHandle@4:NEAR');
+  EmitRaw('EXTRN _SetFilePointer@16:NEAR');
+  EmitRaw('EXTRN _GetFileSize@8:NEAR');
+  EmitRaw('EXTRN _DeleteFileA@4:NEAR');
+  EmitRaw('EXTRN _CreateDirectoryA@8:NEAR');
+  EmitRaw('EXTRN _RemoveDirectoryA@4:NEAR');
+  EmitRaw('EXTRN _SetCurrentDirectoryA@4:NEAR');
+  EmitRaw('EXTRN _GetCurrentDirectoryA@8:NEAR');
+  EmitRaw('EXTRN _GetTickCount@0:NEAR');
+  EmitRaw('EXTRN _Sleep@4:NEAR');
+  EmitRaw('EXTRN _GetCommandLineA@0:NEAR');
+  EmitBlankLine;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitDataSeg : emettre le segment .DATA avec toutes les       }
+{ entrees du DataTab (chaines, valeurs, tableaux, reserves)    }
+{ et les variables runtime du compilateur                      }
+{ ------------------------------------------------------------ }
+
+Procedure EmitDataSeg;
+Var
+  I, J : Integer;
+  S    : TString;
+  C    : Char;
+Begin
+  EmitComment('--- Segment de donnees ---');
+  EmitRaw('.DATA');
+  EmitBlankLine;
+
+  { Variables runtime internes du compilateur }
+  EmitComment('--- Variables runtime TPCW32 ---');
+  EmitRaw('HSTDOUT   DD 0');           { handle stdout         }
+  EmitRaw('HSTDIN    DD 0');           { handle stdin          }
+  EmitRaw('HHEAP     DD 0');           { handle heap           }
+  EmitRaw('NUMBUF    DB 32 DUP(0)');   { buffer pour nombres   }
+  EmitRaw('INBUF     DB 256 DUP(0)');  { buffer pour lecture    }
+  EmitRaw('BYTESWR   DD 0');           { octets ecrits         }
+  EmitRaw('BYTESRD   DD 0');           { octets lus            }
+  EmitRaw('CRLF      DB 13,10,0');     { retour chariot        }
+  EmitRaw('STRTMP    DB 256 DUP(0)');  { buffer temp chaine    }
+  EmitBlankLine;
+
+  { Emettre toutes les entrees du pool de donnees }
+  EmitComment('--- Constantes et donnees utilisateur ---');
+  For I := DataEmittedCount To DataCount - 1 Do
+  Begin
+    Case DataTab[I].Kind Of
+      DK_STR:
+      Begin
+        { Regrouper les caracteres imprimables dans des literals }
+        { et les non-imprimables en valeurs numeriques           }
+        S := '';
+        J := 1;
+        While J <= Length(DataTab[I].StrVal) Do
+        Begin
+          C := DataTab[I].StrVal[J];
+          If (Ord(C) >= 32) And (Ord(C) < 127) And (C <> '''') Then
+          Begin
+            { Debut ou continuation d un groupe imprimable }
+            If S <> '' Then
+              S := S + ',';
+            S := S + '''';
+            While (J <= Length(DataTab[I].StrVal)) Do
+            Begin
+              C := DataTab[I].StrVal[J];
+              If (Ord(C) >= 32) And (Ord(C) < 127) And (C <> '''') Then
+              Begin
+                S := S + C;
+                Inc(J);
+              End
+              Else
+                Break;
+            End;
+            S := S + '''';
+          End
+          Else
+          Begin
+            { Caractere non-imprimable -> valeur numerique }
+            If S <> '' Then
+              S := S + ',';
+            S := S + IntToStr_(Ord(C));
+            Inc(J);
+          End;
+        End;
+        { Ajouter le terminateur nul }
+        If S = '' Then
+          S := '0'
+        Else
+          S := S + ',0';
+        EmitRaw(DataTab[I].LblName + '  DB ' + S);
+      End;
+
+      DK_DWORD:
+      Begin
+        EmitRaw(DataTab[I].LblName + '  DD ' +
+                IntToStr_(DataTab[I].IntVal));
+      End;
+
+      DK_BYTE:
+      Begin
+        EmitRaw(DataTab[I].LblName + '  DB ' +
+                IntToStr_(DataTab[I].IntVal));
+      End;
+
+      DK_ARRAY:
+      Begin
+        If DataTab[I].ElemSize = 1 Then
+          EmitRaw(DataTab[I].LblName + '  DB ' +
+                  IntToStr_(DataTab[I].ElemCount) + ' DUP(0)')
+        Else
+          EmitRaw(DataTab[I].LblName + '  DB ' +
+                  IntToStr_(DataTab[I].ElemCount * DataTab[I].ElemSize) +
+                  ' DUP(0)');
+      End;
+
+      DK_RES:
+      Begin
+        EmitRaw(DataTab[I].LblName + '  DB ' +
+                IntToStr_(DataTab[I].IntVal) + ' DUP(0)');
+      End;
+
+      DK_STRUCT:
+      Begin
+        { Structure : DB Size DUP(0) }
+        If DataTab[I].IntVal > 0 Then
+          EmitRaw(DataTab[I].LblName + '  DB ' +
+                  IntToStr_(DataTab[I].IntVal) + ' DUP(0)')
+        Else
+          EmitRaw(DataTab[I].LblName + '  DD 0');
+      End;
+
+      DK_ZERO:
+      Begin
+        { Espace initialise a zero : DB Size DUP(0) }
+        If DataTab[I].IntVal > 0 Then
+          EmitRaw(DataTab[I].LblName + '  DB ' +
+                  IntToStr_(DataTab[I].IntVal) + ' DUP(0)')
+        Else
+          EmitRaw(DataTab[I].LblName + '  DD 0');
+      End;
+    End; { case }
+  End;
+  EmitBlankLine;
+  DataEmittedCount := DataCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitCodeSeg : emettre le debut du segment .CODE              }
+{ ------------------------------------------------------------ }
+
+Procedure EmitCodeSeg;
+Begin
+  EmitComment('--- Segment de code ---');
+  EmitRaw('.CODE');
+  EmitBlankLine;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitProlog : emettre le prologue d une fonction/procedure     }
+{ PUSH EBP / MOV EBP,ESP / SUB ESP,locals                     }
+{ ------------------------------------------------------------ }
+
+Procedure EmitProlog(LocalSize : Integer);
+Begin
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  If LocalSize > 0 Then
+    EmitInstr('SUB ESP,' + IntToStr_(LocalSize));
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitEpilog : emettre l epilogue d une fonction/procedure      }
+{ MOV ESP,EBP / POP EBP / RET                                 }
+{ ------------------------------------------------------------ }
+
+Procedure EmitEpilog;
+Begin
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+End;
+
 { ------------------------------------------------------------ }
 { Run                                                          }
 { ------------------------------------------------------------ }
@@ -3972,7 +4300,25 @@ Begin
     WriteLn('  Tokens: ', TokenCount, '  Donnees: ', DataCount,
             '  Symboles: ', SymCount, '  Types: ', TypeCount);
 
-  { TODO 07..25 : compilation complete }
+  { Initialiser les variables de l emetteur (TODO 07) }
+  HasProgram := False;
+  DataEmittedCount := 0;
+  EmitLabelSeq := 0;
+
+  { Generation du fichier .ASM si demande (TODO 07) }
+  If Opts.AsmOutput Then
+  Begin
+    EmitOpen(ReplaceExt(Opts.OutFile, '.asm'));
+    EmitHeader;
+    EmitDataSeg;
+    EmitCodeSeg;
+
+    { TODO 08..25 : compilation complete }
+
+    EmitClose;
+    If Opts.Verbose Then
+      WriteLn('  ASM genere : ', ReplaceExt(Opts.OutFile, '.asm'));
+  End;
 
   LexClose;
   ShowStats;
