@@ -76,18 +76,36 @@ _TPF_Main:
         MOV [HHEAP],EAX
         MOV EAX,15
         MOV DWORD PTR [_TPV_NOMBRE],EAX
+; if
+        MOV EAX,DWORD PTR [_TPV_NOMBRE]
+        PUSH EAX
+        MOV EAX,10
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JG _TPL_2
+        XOR EAX,EAX
+        JMP _TPL_3
+_TPL_2:
+        MOV EAX,1
+_TPL_3:
+        TEST EAX,EAX
+        JZ _TPL_4
 ; writeln
         LEA EAX,[_TPK_1]
         MOV ESI,EAX
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
+        JMP _TPL_5
+_TPL_4:
 ; writeln
         LEA EAX,[_TPK_2]
         MOV ESI,EAX
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
+_TPL_5:
 _TPL_1:
         PUSH 0
         CALL ExitProcess

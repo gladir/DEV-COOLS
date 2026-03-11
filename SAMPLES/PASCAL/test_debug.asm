@@ -132,12 +132,26 @@ _TPF_CONVERT_TO_JASMIN_DEBUG:
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
+; if
         LEA EAX,[_TPK_5]
         PUSH EAX
         MOV EAX,DWORD PTR [EBP-260]
         PUSH EAX
         CALL _TPF_POS
         ADD ESP,8
+        PUSH EAX
+        MOV EAX,1
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JE _TPL_2
+        XOR EAX,EAX
+        JMP _TPL_3
+_TPL_2:
+        MOV EAX,1
+_TPL_3:
+        TEST EAX,EAX
+        JZ _TPL_4
         LEA EAX,[_TPK_8]
         PUSH EAX
         MOV EAX,DWORD PTR [EBP-260]
@@ -167,6 +181,69 @@ _TPF_CONVERT_TO_JASMIN_DEBUG:
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
+        JMP _TPL_5
+_TPL_4:
+; if
+        LEA EAX,[_TPK_7]
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP-260]
+        PUSH EAX
+        CALL _TPF_POS
+        ADD ESP,8
+        PUSH EAX
+        MOV EAX,1
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JE _TPL_6
+        XOR EAX,EAX
+        JMP _TPL_7
+_TPL_6:
+        MOV EAX,1
+_TPL_7:
+        TEST EAX,EAX
+        JZ _TPL_8
+        LEA EAX,[_TPK_11]
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP-260]
+        PUSH EAX
+        MOV EAX,7
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP-260]
+        PUSH EAX
+        CALL _TPF_LENGTH
+        ADD ESP,4
+        PUSH EAX
+        CALL _TPF_COPY
+        ADD ESP,12
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
+        MOV DWORD PTR [EBP-260],EAX
+; writeln
+        LEA EAX,[_TPK_9]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        MOV EAX,DWORD PTR [EBP-260]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        LEA EAX,[_TPK_10]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+        JMP _TPL_9
+_TPL_8:
+; writeln
+        LEA EAX,[_TPK_12]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+_TPL_9:
+_TPL_5:
+        MOV EAX,DWORD PTR [EBP-260]
+        MOV DWORD PTR [EBP-4],EAX
 _TPL_1:
         MOV EAX,DWORD PTR [EBP-4]
         MOV ESP,EBP
@@ -221,7 +298,7 @@ _TPF_Main:
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
-_TPL_2:
+_TPL_10:
         PUSH 0
         CALL ExitProcess
         MOV ESP,EBP

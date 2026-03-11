@@ -72,8 +72,15 @@ _TPF_Main:
 ; Obtenir le tas du processus
         CALL GetProcessHeap
         MOV [HHEAP],EAX
+; for
         MOV EAX,1
         MOV DWORD PTR [_TPV_I],EAX
+        MOV EAX,3
+        MOV DWORD PTR [_TPL_2],EAX
+_TPL_3:
+        MOV EAX,DWORD PTR [_TPV_I]
+        CMP EAX,DWORD PTR [_TPL_2]
+        JG _TPL_4
 ; writeln
         MOV EAX,DWORD PTR [_TPV_I]
         CALL _TPRT_NUMTOSTR
@@ -81,6 +88,12 @@ _TPF_Main:
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
+_TPL_5:
+        MOV EAX,DWORD PTR [_TPV_I]
+        INC EAX
+        MOV DWORD PTR [_TPV_I],EAX
+        JMP _TPL_3
+_TPL_4:
 _TPL_1:
         PUSH 0
         CALL ExitProcess

@@ -95,66 +95,156 @@ _TPF_Main:
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
+; if
+        MOV EAX,DWORD PTR [_TPV_A]
+        PUSH EAX
+        MOV EAX,DWORD PTR [_TPV_B]
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JE _TPL_2
+        XOR EAX,EAX
+        JMP _TPL_3
+_TPL_2:
+        MOV EAX,1
+_TPL_3:
+        TEST EAX,EAX
+        JZ _TPL_4
 ; writeln
         LEA EAX,[_TPK_2]
         MOV ESI,EAX
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
+        JMP _TPL_5
+_TPL_4:
 ; writeln
         LEA EAX,[_TPK_3]
         MOV ESI,EAX
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
+_TPL_5:
+; if
+        MOV EAX,DWORD PTR [_TPV_A]
+        PUSH EAX
+        MOV EAX,5
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JNE _TPL_6
+        XOR EAX,EAX
+        JMP _TPL_7
+_TPL_6:
+        MOV EAX,1
+_TPL_7:
+        TEST EAX,EAX
+        JZ _TPL_8
 ; writeln
         LEA EAX,[_TPK_4]
         MOV ESI,EAX
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
+        JMP _TPL_9
+_TPL_8:
 ; writeln
         LEA EAX,[_TPK_5]
         MOV ESI,EAX
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
+_TPL_9:
+; if
+        MOV EAX,DWORD PTR [_TPV_A]
+        PUSH EAX
+        MOV EAX,15
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JL _TPL_10
+        XOR EAX,EAX
+        JMP _TPL_11
+_TPL_10:
+        MOV EAX,1
+_TPL_11:
+        TEST EAX,EAX
+        JZ _TPL_12
 ; writeln
         LEA EAX,[_TPK_6]
         MOV ESI,EAX
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
+        JMP _TPL_13
+_TPL_12:
 ; writeln
         LEA EAX,[_TPK_7]
         MOV ESI,EAX
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
+_TPL_13:
+; if
+        MOV EAX,DWORD PTR [_TPV_A]
+        PUSH EAX
+        MOV EAX,10
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JGE _TPL_14
+        XOR EAX,EAX
+        JMP _TPL_15
+_TPL_14:
+        MOV EAX,1
+_TPL_15:
+        TEST EAX,EAX
+        JZ _TPL_16
 ; writeln
         LEA EAX,[_TPK_8]
         MOV ESI,EAX
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
+        JMP _TPL_17
+_TPL_16:
 ; writeln
         LEA EAX,[_TPK_9]
         MOV ESI,EAX
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
+_TPL_17:
+; if
+        MOV EAX,DWORD PTR [_TPV_B]
+        PUSH EAX
+        MOV EAX,10
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JLE _TPL_18
+        XOR EAX,EAX
+        JMP _TPL_19
+_TPL_18:
+        MOV EAX,1
+_TPL_19:
+        TEST EAX,EAX
+        JZ _TPL_20
 ; writeln
         LEA EAX,[_TPK_10]
         MOV ESI,EAX
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
+        JMP _TPL_21
+_TPL_20:
 ; writeln
         LEA EAX,[_TPK_11]
         MOV ESI,EAX
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
+_TPL_21:
 ; writeln
         LEA EAX,[_TPK_12]
         MOV ESI,EAX

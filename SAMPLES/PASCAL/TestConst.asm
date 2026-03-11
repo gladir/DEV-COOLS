@@ -119,12 +119,17 @@ _TPF_Main:
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
+; if
+        MOV EAX,1
+        TEST EAX,EAX
+        JZ _TPL_2
 ; writeln
         LEA EAX,[_TPK_6]
         MOV ESI,EAX
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
+_TPL_2:
 _TPL_1:
         PUSH 0
         CALL ExitProcess

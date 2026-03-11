@@ -80,6 +80,7 @@ _TPF_Main:
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
+_TPL_MYLABEL:
 ; writeln
         LEA EAX,[_TPK_2]
         MOV ESI,EAX

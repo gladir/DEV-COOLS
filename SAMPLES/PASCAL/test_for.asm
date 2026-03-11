@@ -81,8 +81,15 @@ _TPF_Main:
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
+; for
         MOV EAX,1
         MOV DWORD PTR [_TPV_I],EAX
+        MOV EAX,5
+        MOV DWORD PTR [_TPL_2],EAX
+_TPL_3:
+        MOV EAX,DWORD PTR [_TPV_I]
+        CMP EAX,DWORD PTR [_TPL_2]
+        JG _TPL_4
 ; writeln
         MOV EAX,DWORD PTR [_TPV_I]
         CALL _TPRT_NUMTOSTR
@@ -90,14 +97,27 @@ _TPF_Main:
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
+_TPL_5:
+        MOV EAX,DWORD PTR [_TPV_I]
+        INC EAX
+        MOV DWORD PTR [_TPV_I],EAX
+        JMP _TPL_3
+_TPL_4:
 ; writeln
         LEA EAX,[_TPK_2]
         MOV ESI,EAX
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
+; for
         MOV EAX,5
         MOV DWORD PTR [_TPV_I],EAX
+        MOV EAX,1
+        MOV DWORD PTR [_TPL_6],EAX
+_TPL_7:
+        MOV EAX,DWORD PTR [_TPV_I]
+        CMP EAX,DWORD PTR [_TPL_6]
+        JL _TPL_8
 ; writeln
         MOV EAX,DWORD PTR [_TPV_I]
         CALL _TPRT_NUMTOSTR
@@ -105,6 +125,12 @@ _TPF_Main:
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
+_TPL_9:
+        MOV EAX,DWORD PTR [_TPV_I]
+        DEC EAX
+        MOV DWORD PTR [_TPV_I],EAX
+        JMP _TPL_7
+_TPL_8:
 ; writeln
         LEA EAX,[_TPK_3]
         MOV ESI,EAX

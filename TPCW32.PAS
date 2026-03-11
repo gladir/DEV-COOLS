@@ -270,7 +270,7 @@
             Fichiers non types : BlockRead, BlockWrite
             IOResult : code d erreur derniere operation I/O
 
-  TODO 13 - STRUCTURES DE CONTROLE
+  TODO 13 - STRUCTURES DE CONTROLE                    [IMPLEMENTE]
             ParseIfStmt : IF cond THEN stmt [ELSE stmt]
               Emission TEST EAX,EAX / JZ LblElse, JMP LblEnd
             ParseCaseStmt : CASE expr OF
@@ -5635,6 +5635,11 @@ Var
   RetLbl  : TString;   { label de retour de la fonction courante  }
   LastPrimaryName : TString; { dernier ident charge par ParsePrimary }
 
+  { Pile de boucles pour Break/Continue (TODO 13) }
+  LoopBreakLbl : Array[0..31] Of TString;
+  LoopContLbl  : Array[0..31] Of TString;
+  LoopTop      : Integer;
+
 { ------------------------------------------------------------ }
 { EPAtEnd : le curseur est-il a la fin ?                       }
 { ------------------------------------------------------------ }
@@ -5862,6 +5867,18 @@ End;
 Procedure ParseExpr(PI : Integer); Forward;
 Procedure ParseExprPrec(PI : Integer; MinPrec : Integer); Forward;
 Procedure ParseBody(PI : Integer); Forward;
+
+{ ------------------------------------------------------------ }
+{ Forward declarations TODO 13                                  }
+{ ------------------------------------------------------------ }
+
+Procedure ParseStmt(PI : Integer); Forward;
+Procedure ParseIfStmt(PI : Integer); Forward;
+Procedure ParseCaseStmt(PI : Integer); Forward;
+Procedure ParseWhileStmt(PI : Integer); Forward;
+Procedure ParseRepeatStmt(PI : Integer); Forward;
+Procedure ParseForStmt(PI : Integer); Forward;
+Procedure ParseGotoStmt(PI : Integer); Forward;
 
 { ------------------------------------------------------------ }
 { ParseFuncCall : parser un appel de procedure/fonction         }
@@ -7154,21 +7171,896 @@ Begin
   EPMatch(')');
 End;
 
+{ ============================================================ }
+{ TODO 13 - STRUCTURES DE CONTROLE                [IMPLEMENTE] }
+{ ============================================================ }
+
 { ------------------------------------------------------------ }
-{ ParseBody : parser et emettre le corps d une procedure,       }
-{ fonction ou du programme principal.                           }
-{ PI = index dans ProcTab (-1 pour le bloc principal)           }
-{ Le corps est delimitei par BodyStart..BodyEnd dans TokenPool. }
-{ Gere : affectation, appel, EXIT, var := expr, INC, DEC       }
+{ LoopPush : empiler un contexte de boucle (Break/Continue)     }
 { ------------------------------------------------------------ }
 
-Procedure ParseBody(PI : Integer);
+Procedure LoopPush(Const LblBreak, LblCont : TString);
+Begin
+  Inc(LoopTop);
+  If LoopTop > 31 Then
+  Begin
+    WarnMsg('trop de boucles imbriquees');
+    Dec(LoopTop);
+    Exit;
+  End;
+  LoopBreakLbl[LoopTop] := LblBreak;
+  LoopContLbl[LoopTop]  := LblCont;
+End;
+
+{ ------------------------------------------------------------ }
+{ LoopPop : depiler un contexte de boucle                       }
+{ ------------------------------------------------------------ }
+
+Procedure LoopPop;
+Begin
+  If LoopTop >= 0 Then
+    Dec(LoopTop);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseIfStmt : parser IF cond THEN stmt [ELSE stmt]           }
+{ EP pointe sur IF a l entree.                                  }
+{ ------------------------------------------------------------ }
+
+Procedure ParseIfStmt(PI : Integer);
+Var
+  LblElse  : TString;
+  LblEndIf : TString;
+  HasElse  : Boolean;
+Begin
+  EmitComment('if');
+
+  Inc(EP);  { consommer IF }
+
+  { Evaluer la condition }
+  ParseExpr(PI);
+
+  LblElse  := LabelGen;
+  LblEndIf := LabelGen;
+
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + LblElse);
+
+  { Consommer THEN }
+  If Not EPAtEnd Then
+    If (TokenPool[EP].Kind = TK_KEYWORD) And
+       (StrUpperCase(TokenPool[EP].Val) = 'THEN') Then
+      Inc(EP);
+
+  { Parser l instruction du THEN }
+  ParseStmt(PI);
+
+  { Detecter ELSE }
+  HasElse := False;
+  If Not EPAtEnd Then
+    If (TokenPool[EP].Kind = TK_KEYWORD) And
+       (StrUpperCase(TokenPool[EP].Val) = 'ELSE') Then
+      HasElse := True;
+
+  If HasElse Then
+  Begin
+    EmitInstr('JMP ' + LblEndIf);
+    EmitLabel(LblElse);
+    Inc(EP);  { consommer ELSE }
+    ParseStmt(PI);
+    EmitLabel(LblEndIf);
+  End
+  Else
+    EmitLabel(LblElse);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseCaseStmt : parser CASE expr OF val: stmt; ... END       }
+{ EP pointe sur CASE a l entree.                                }
+{ ------------------------------------------------------------ }
+
+Procedure ParseCaseStmt(PI : Integer);
+Var
+  LblEnd  : TString;
+  LblNext : TString;
+  LblHit  : TString;
+  Up      : TString;
+  CaseVal : LongInt;
+  RangeHi : LongInt;
+Begin
+  EmitComment('case');
+
+  Inc(EP);  { consommer CASE }
+
+  { Evaluer l expression selecteur }
+  ParseExpr(PI);
+  EmitInstr('PUSH EAX');  { sauvegarder le selecteur sur la pile }
+
+  { Consommer OF }
+  If Not EPAtEnd Then
+    If (TokenPool[EP].Kind = TK_KEYWORD) And
+       (StrUpperCase(TokenPool[EP].Val) = 'OF') Then
+      Inc(EP);
+
+  LblEnd := LabelGen;
+
+  { Boucle sur les branches du CASE }
+  While Not EPAtEnd Do
+  Begin
+    Up := StrUpperCase(TokenPool[EP].Val);
+
+    { END ou ELSE : sortir de la boucle des branches }
+    If (TokenPool[EP].Kind = TK_KEYWORD) And
+       ((Up = 'END') Or (Up = 'ELSE') Or (Up = 'OTHERWISE')) Then
+      Break;
+
+    { Semicolons isoles : sauter }
+    If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ';') Then
+    Begin
+      Inc(EP);
+      Continue;
+    End;
+
+    LblNext := LabelGen;
+    LblHit  := LabelGen;
+
+    { Analyser les valeurs separees par des virgules }
+    While Not EPAtEnd Do
+    Begin
+      { Detecter ':' (fin des valeurs pour cette branche) }
+      If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ':') Then
+        Break;
+
+      { Lire la valeur }
+      CaseVal := 0;
+      If TokenPool[EP].Kind = TK_INTEGER Then
+      Begin
+        CaseVal := TokenPool[EP].IntVal;
+        Inc(EP);
+      End
+      Else If (TokenPool[EP].Kind = TK_CHAR) And
+              (Length(TokenPool[EP].Val) > 0) Then
+      Begin
+        CaseVal := Ord(TokenPool[EP].Val[1]);
+        Inc(EP);
+      End
+      Else
+      Begin
+        ParseExpr(PI);
+        { Valeur dans EAX, stocker en EBX }
+        EmitInstr('MOV EBX,EAX');
+        EmitInstr('MOV EAX,DWORD PTR [ESP]');
+        EmitInstr('CMP EAX,EBX');
+        EmitInstr('JE ' + LblHit);
+
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+           (TokenPool[EP].Val = ',') Then
+        Begin
+          Inc(EP);
+          Continue;
+        End
+        Else
+          Break;
+      End;
+
+      { Detecter plage val1..val2 }
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = '..') Then
+      Begin
+        Inc(EP);  { consommer .. }
+        RangeHi := 0;
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_INTEGER) Then
+        Begin
+          RangeHi := TokenPool[EP].IntVal;
+          Inc(EP);
+        End;
+        EmitInstr('MOV EAX,DWORD PTR [ESP]');
+        EmitInstr('CMP EAX,' + IntToStr_(CaseVal));
+        EmitInstr('JB ' + LblNext);
+        EmitInstr('CMP EAX,' + IntToStr_(RangeHi));
+        EmitInstr('JBE ' + LblHit);
+        EmitInstr('JMP ' + LblNext);
+      End
+      Else
+      Begin
+        EmitInstr('MOV EAX,DWORD PTR [ESP]');
+        EmitInstr('CMP EAX,' + IntToStr_(CaseVal));
+        EmitInstr('JE ' + LblHit);
+      End;
+
+      { Virgule : valeurs multiples }
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ',') Then
+        Inc(EP)
+      Else
+        Break;
+    End;
+
+    { Aucune valeur ne correspond -> sauter a la branche suivante }
+    EmitInstr('JMP ' + LblNext);
+    EmitLabel(LblHit);
+
+    { Consommer ':' }
+    If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+       (TokenPool[EP].Val = ':') Then
+      Inc(EP);
+
+    { Parser l instruction de cette branche }
+    ParseStmt(PI);
+
+    { Consommer le ; optionnel }
+    If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+       (TokenPool[EP].Val = ';') Then
+      Inc(EP);
+
+    { Sauter a la fin du CASE }
+    EmitInstr('JMP ' + LblEnd);
+    EmitLabel(LblNext);
+  End;
+
+  { Gerer la clause ELSE / OTHERWISE }
+  If Not EPAtEnd Then
+  Begin
+    Up := StrUpperCase(TokenPool[EP].Val);
+    If (TokenPool[EP].Kind = TK_KEYWORD) And
+       ((Up = 'ELSE') Or (Up = 'OTHERWISE')) Then
+    Begin
+      Inc(EP);
+      { Consommer ':' optionnel apres ELSE }
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ':') Then
+        Inc(EP);
+      EmitComment('case default');
+      { Parser les instructions de la clause par defaut jusqu a END }
+      While Not EPAtEnd Do
+      Begin
+        If (TokenPool[EP].Kind = TK_KEYWORD) And
+           (StrUpperCase(TokenPool[EP].Val) = 'END') Then
+          Break;
+        ParseStmt(PI);
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+           (TokenPool[EP].Val = ';') Then
+          Inc(EP);
+      End;
+    End;
+  End;
+
+  EmitLabel(LblEnd);
+  EmitInstr('POP EAX');  { depiler le selecteur }
+
+  { Consommer END }
+  If Not EPAtEnd Then
+    If (TokenPool[EP].Kind = TK_KEYWORD) And
+       (StrUpperCase(TokenPool[EP].Val) = 'END') Then
+      Inc(EP);
+
+  { Consommer ; optionnel apres END }
+  If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+     (TokenPool[EP].Val = ';') Then
+    Inc(EP);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseWhileStmt : parser WHILE cond DO stmt                   }
+{ EP pointe sur WHILE a l entree.                               }
+{ Labels : _TPL_WTEST_N, _TPL_WEND_N                           }
+{ ------------------------------------------------------------ }
+
+Procedure ParseWhileStmt(PI : Integer);
+Var
+  LblTest : TString;
+  LblEnd  : TString;
+Begin
+  EmitComment('while');
+
+  Inc(EP);  { consommer WHILE }
+
+  LblTest := LabelGen;
+  LblEnd  := LabelGen;
+
+  { Label de test }
+  EmitLabel(LblTest);
+
+  { Evaluer la condition }
+  ParseExpr(PI);
+
+  { TEST EAX,EAX / JZ fin }
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + LblEnd);
+
+  { Consommer DO }
+  If Not EPAtEnd Then
+    If (TokenPool[EP].Kind = TK_KEYWORD) And
+       (StrUpperCase(TokenPool[EP].Val) = 'DO') Then
+      Inc(EP);
+
+  { Empiler le contexte de boucle }
+  LoopPush(LblEnd, LblTest);
+
+  { Parser le corps de la boucle }
+  ParseStmt(PI);
+
+  { Consommer ; optionnel apres le corps }
+  If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+     (TokenPool[EP].Val = ';') Then
+    Inc(EP);
+
+  { Retour au test }
+  EmitInstr('JMP ' + LblTest);
+
+  { Label fin }
+  EmitLabel(LblEnd);
+
+  { Depiler le contexte de boucle }
+  LoopPop;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseRepeatStmt : parser REPEAT stmts UNTIL cond             }
+{ EP pointe sur REPEAT a l entree.                              }
+{ Labels : _TPL_RBEG_N, _TPL_REND_N                            }
+{ ------------------------------------------------------------ }
+
+Procedure ParseRepeatStmt(PI : Integer);
+Var
+  LblBeg : TString;
+  LblEnd : TString;
+Begin
+  EmitComment('repeat');
+
+  Inc(EP);  { consommer REPEAT }
+
+  LblBeg := LabelGen;
+  LblEnd := LabelGen;
+
+  { Label debut }
+  EmitLabel(LblBeg);
+
+  { Empiler le contexte de boucle }
+  LoopPush(LblEnd, LblBeg);
+
+  { Parser les instructions jusqu a UNTIL }
+  While Not EPAtEnd Do
+  Begin
+    If (TokenPool[EP].Kind = TK_KEYWORD) And
+       (StrUpperCase(TokenPool[EP].Val) = 'UNTIL') Then
+      Break;
+    ParseStmt(PI);
+    If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+       (TokenPool[EP].Val = ';') Then
+      Inc(EP);
+  End;
+
+  { Consommer UNTIL }
+  If Not EPAtEnd Then
+    If (TokenPool[EP].Kind = TK_KEYWORD) And
+       (StrUpperCase(TokenPool[EP].Val) = 'UNTIL') Then
+      Inc(EP);
+
+  { Evaluer la condition }
+  ParseExpr(PI);
+
+  { TEST EAX,EAX / JZ debut (si faux, on boucle) }
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + LblBeg);
+
+  { Label fin }
+  EmitLabel(LblEnd);
+
+  { Depiler le contexte de boucle }
+  LoopPop;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseForStmt : parser FOR id := lo TO|DOWNTO hi DO stmt      }
+{ EP pointe sur FOR a l entree.                                 }
+{ Labels : _TPL_FTEST_N, _TPL_FCONT_N, _TPL_FEND_N            }
+{ ------------------------------------------------------------ }
+
+Procedure ParseForStmt(PI : Integer);
+Var
+  VarName  : TString;
+  LimLabel : TString;
+  LblTest  : TString;
+  LblEnd   : TString;
+  LblCont  : TString;
+  IsDownTo : Boolean;
+Begin
+  EmitComment('for');
+
+  Inc(EP);  { consommer FOR }
+
+  { Lire la variable de boucle }
+  If EPAtEnd Or (TokenPool[EP].Kind <> TK_IDENT) Then Exit;
+  VarName := TokenPool[EP].Val;
+  Inc(EP);
+
+  { Consommer := }
+  If Not EPAtEnd Then
+    If (TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = ':=') Then
+      Inc(EP);
+
+  { Evaluer l expression de depart }
+  ParseExpr(PI);
+
+  { Stocker la valeur de depart dans la variable }
+  GenStoreVar(PI, VarName);
+
+  { Detecter TO ou DOWNTO }
+  IsDownTo := False;
+  If Not EPAtEnd Then
+  Begin
+    If (TokenPool[EP].Kind = TK_KEYWORD) And
+       (StrUpperCase(TokenPool[EP].Val) = 'TO') Then
+      Inc(EP)
+    Else If (TokenPool[EP].Kind = TK_KEYWORD) And
+            (StrUpperCase(TokenPool[EP].Val) = 'DOWNTO') Then
+    Begin
+      IsDownTo := True;
+      Inc(EP);
+    End;
+  End;
+
+  { Evaluer l expression limite }
+  ParseExpr(PI);
+
+  { Stocker la limite dans une variable data temporaire }
+  LimLabel := LabelGen;
+  EmitInstr('MOV DWORD PTR [' + LimLabel + '],EAX');
+
+  { Generer les labels de boucle }
+  LblTest := LabelGen;
+  LblEnd  := LabelGen;
+  LblCont := LabelGen;
+
+  { Consommer DO }
+  If Not EPAtEnd Then
+    If (TokenPool[EP].Kind = TK_KEYWORD) And
+       (StrUpperCase(TokenPool[EP].Val) = 'DO') Then
+      Inc(EP);
+
+  { Label de test }
+  EmitLabel(LblTest);
+
+  { Test : CMP variable, limite }
+  GenLoadVar(PI, VarName);
+  EmitInstr('CMP EAX,DWORD PTR [' + LimLabel + ']');
+  If IsDownTo Then
+    EmitInstr('JL ' + LblEnd)
+  Else
+    EmitInstr('JG ' + LblEnd);
+
+  { Empiler le contexte de boucle }
+  LoopPush(LblEnd, LblCont);
+
+  { Parser le corps de la boucle }
+  ParseStmt(PI);
+
+  { Consommer ; optionnel apres le corps }
+  If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+     (TokenPool[EP].Val = ';') Then
+    Inc(EP);
+
+  { Label continue (increment) }
+  EmitLabel(LblCont);
+
+  { Increment ou decrement de la variable }
+  GenLoadVar(PI, VarName);
+  If IsDownTo Then
+    EmitInstr('DEC EAX')
+  Else
+    EmitInstr('INC EAX');
+  GenStoreVar(PI, VarName);
+
+  { Retour au test }
+  EmitInstr('JMP ' + LblTest);
+
+  { Label fin }
+  EmitLabel(LblEnd);
+
+  { Depiler le contexte de boucle }
+  LoopPop;
+
+  { Ajouter la variable limite dans le segment de donnees }
+  DataAddDWord(LimLabel, 0);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseGotoStmt : parser GOTO label                            }
+{ EP pointe sur GOTO a l entree.                                }
+{ ------------------------------------------------------------ }
+
+Procedure ParseGotoStmt(PI : Integer);
+Var
+  LblName : TString;
+Begin
+  EmitComment('goto');
+
+  Inc(EP);  { consommer GOTO }
+
+  If Not EPAtEnd Then
+  Begin
+    { Le label peut etre un nombre ou un identificateur }
+    LblName := TokenPool[EP].Val;
+    Inc(EP);
+    EmitInstr('JMP ' + TP_LBL_PFX + StrUpperCase(LblName));
+  End;
+
+  { Consommer ; optionnel }
+  If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+     (TokenPool[EP].Val = ';') Then
+    Inc(EP);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseStmt : parser UNE instruction Pascal.                    }
+{ Gere : bloc BEGIN..END, IF, WHILE, REPEAT, FOR, CASE,       }
+{ affectation, appel, Write/Read, Exit, Halt, Break, Continue, }
+{ GOTO, WITH, labels numeriques.                                }
+{ ------------------------------------------------------------ }
+
+Procedure ParseStmt(PI : Integer);
 Var
   Up    : TString;
   VName : TString;
   SI    : Integer;
-  SaveEP, SaveEnd : Integer;
   LI    : Integer;
+Begin
+  If EPAtEnd Then Exit;
+
+  { Point-virgule seul : instruction vide }
+  If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ';') Then
+  Begin
+    Inc(EP);
+    Exit;
+  End;
+
+  { Point final : fin du programme }
+  If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = '.') Then
+  Begin
+    Inc(EP);
+    Exit;
+  End;
+
+  { Mots-cles }
+  If TokenPool[EP].Kind = TK_KEYWORD Then
+  Begin
+    Up := StrUpperCase(TokenPool[EP].Val);
+
+    { END : ne pas consommer, laisser l appelant gerer }
+    If Up = 'END' Then Exit;
+
+    { UNTIL : ne pas consommer, laisser ParseRepeatStmt gerer }
+    If Up = 'UNTIL' Then Exit;
+
+    { ELSE : ne pas consommer, laisser ParseIfStmt gerer }
+    If Up = 'ELSE' Then Exit;
+
+    { BEGIN : bloc imbrique }
+    If Up = 'BEGIN' Then
+    Begin
+      Inc(EP);  { consommer BEGIN }
+      While Not EPAtEnd Do
+      Begin
+        If (TokenPool[EP].Kind = TK_KEYWORD) And
+           (StrUpperCase(TokenPool[EP].Val) = 'END') Then
+        Begin
+          Inc(EP);  { consommer END }
+          { Consommer ; ou . optionnel apres END }
+          If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+             ((TokenPool[EP].Val = ';') Or (TokenPool[EP].Val = '.')) Then
+            Inc(EP);
+          Break;
+        End;
+        ParseStmt(PI);
+        { Consommer ; optionnel entre instructions }
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+           (TokenPool[EP].Val = ';') Then
+          Inc(EP);
+      End;
+      Exit;
+    End;
+
+    { IF }
+    If Up = 'IF' Then Begin ParseIfStmt(PI); Exit; End;
+
+    { WHILE }
+    If Up = 'WHILE' Then Begin ParseWhileStmt(PI); Exit; End;
+
+    { REPEAT }
+    If Up = 'REPEAT' Then Begin ParseRepeatStmt(PI); Exit; End;
+
+    { FOR }
+    If Up = 'FOR' Then Begin ParseForStmt(PI); Exit; End;
+
+    { CASE }
+    If Up = 'CASE' Then Begin ParseCaseStmt(PI); Exit; End;
+
+    { GOTO }
+    If Up = 'GOTO' Then Begin ParseGotoStmt(PI); Exit; End;
+
+    { WITH : consommer jusqu a DO, puis parser le corps }
+    If Up = 'WITH' Then
+    Begin
+      EmitComment('with');
+      Inc(EP);
+      While Not EPAtEnd Do
+      Begin
+        If (TokenPool[EP].Kind = TK_KEYWORD) And
+           (StrUpperCase(TokenPool[EP].Val) = 'DO') Then
+        Begin
+          Inc(EP);
+          Break;
+        End;
+        Inc(EP);
+      End;
+      ParseStmt(PI);
+      Exit;
+    End;
+
+    { EXIT : saut au label de retour }
+    If Up = 'EXIT' Then
+    Begin
+      Inc(EP);
+      EmitInstr('JMP ' + RetLbl);
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { HALT : appel ExitProcess }
+    If Up = 'HALT' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End
+      Else
+        EmitInstr('XOR EAX,EAX');
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL ExitProcess');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { BREAK : saut vers fin de boucle englobante }
+    If Up = 'BREAK' Then
+    Begin
+      Inc(EP);
+      If LoopTop >= 0 Then
+        EmitInstr('JMP ' + LoopBreakLbl[LoopTop])
+      Else
+        WarnMsg('break en dehors d une boucle');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { CONTINUE : saut vers test/increment de boucle englobante }
+    If Up = 'CONTINUE' Then
+    Begin
+      Inc(EP);
+      If LoopTop >= 0 Then
+        EmitInstr('JMP ' + LoopContLbl[LoopTop])
+      Else
+        WarnMsg('continue en dehors d une boucle');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { LABEL : section de labels, sauter la declaration }
+    If Up = 'LABEL' Then
+    Begin
+      Inc(EP);
+      While Not EPAtEnd Do
+      Begin
+        If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ';') Then
+        Begin
+          Inc(EP);
+          Break;
+        End;
+        Inc(EP);
+      End;
+      Exit;
+    End;
+
+    { VAR, CONST, TYPE locaux : avancer sans gerer pour l instant }
+    If (Up = 'VAR') Or (Up = 'CONST') Or (Up = 'TYPE') Then
+    Begin
+      Inc(EP);
+      Exit;
+    End;
+
+    { INC/DEC/NEW/DISPOSE comme keywords }
+    If (Up = 'INC') Or (Up = 'DEC') Or (Up = 'NEW') Or
+       (Up = 'DISPOSE') Then
+    Begin
+      ParseExpr(PI);
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { Autres mots-cles : avancer }
+    Inc(EP);
+    Exit;
+  End;
+
+  { Entier suivi de ':' = label numerique }
+  If (TokenPool[EP].Kind = TK_INTEGER) Then
+  Begin
+    If (EP + 1 < EPEnd) And
+       (TokenPool[EP + 1].Kind = TK_PUNCT) And
+       (TokenPool[EP + 1].Val = ':') Then
+    Begin
+      EmitLabel(TP_LBL_PFX + TokenPool[EP].Val);
+      Inc(EP, 2);  { consommer nombre et ':' }
+      Exit;
+    End;
+  End;
+
+  { Identificateur }
+  If TokenPool[EP].Kind = TK_IDENT Then
+  Begin
+    VName := TokenPool[EP].Val;
+    Up := StrUpperCase(VName);
+
+    { Label identificateur : ident suivi de ':' (pas ':=') }
+    If (EP + 1 < EPEnd) And
+       (TokenPool[EP + 1].Kind = TK_PUNCT) And
+       (TokenPool[EP + 1].Val = ':') And
+       Not ((EP + 2 < EPEnd) And (TokenPool[EP + 2].Val = '=')) Then
+    Begin
+      EmitLabel(TP_LBL_PFX + Up);
+      Inc(EP, 2);  { consommer ident et ':' }
+      Exit;
+    End;
+
+    { INC/DEC/NEW/DISPOSE }
+    If (Up = 'INC') Or (Up = 'DEC') Or (Up = 'NEW') Or
+       (Up = 'DISPOSE') Then
+    Begin
+      ParseExpr(PI);
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { Write / WriteLn }
+    If (Up = 'WRITE') Or (Up = 'WRITELN') Then
+    Begin
+      Inc(EP);
+      ParseWriteStmt(PI, Up = 'WRITELN');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { Read / ReadLn }
+    If (Up = 'READ') Or (Up = 'READLN') Then
+    Begin
+      Inc(EP);
+      ParseReadStmt(PI, Up = 'READLN');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { Str }
+    If Up = 'STR' Then
+    Begin
+      Inc(EP);
+      ParseStrStmt(PI);
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { Val }
+    If Up = 'VAL' Then
+    Begin
+      Inc(EP);
+      ParseValStmt(PI);
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { Appel de proc (dans SymTab) }
+    SI := SymFind(Up);
+    If (SI >= 0) And (SymTab[SI].Kind = SK_PROC) Then
+    Begin
+      Inc(EP);
+      ParseFuncCall(PI, Up);
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { Appel de proc (dans ProcTab) }
+    LI := 0;
+    While LI < ProcCount Do
+    Begin
+      If ProcTab[LI].Name = Up Then Break;
+      Inc(LI);
+    End;
+    If (LI < ProcCount) And (Not ProcTab[LI].IsFunction) Then
+    Begin
+      Inc(EP);
+      ParseFuncCall(PI, Up);
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { Affectation ou appel de fonction }
+    Inc(EP);
+    If Not EPAtEnd Then
+    Begin
+      { Affectation ident := expr }
+      If (TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = ':=') Then
+      Begin
+        Inc(EP);
+        ParseExpr(PI);
+        GenStoreVar(PI, VName);
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+           (TokenPool[EP].Val = ';') Then
+          Inc(EP);
+        Exit;
+      End;
+
+      { Appel de fonction (via SymTab) }
+      If (SI >= 0) And (SymTab[SI].Kind = SK_FUNC) Then
+      Begin
+        ParseFuncCall(PI, Up);
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+           (TokenPool[EP].Val = ';') Then
+          Inc(EP);
+        Exit;
+      End;
+
+      { Appel avec parentheses }
+      If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = '(') Then
+      Begin
+        ParseFuncCall(PI, Up);
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+           (TokenPool[EP].Val = ';') Then
+          Inc(EP);
+        Exit;
+      End;
+    End;
+
+    { Sinon : continuer }
+    Exit;
+  End;
+
+  { Autre : avancer }
+  Inc(EP);
+End;
+{ Gere : affectation, appel, EXIT, var := expr, INC, DEC       }
+{ Utilise ParseStmt pour chaque instruction.                    }
+{ ------------------------------------------------------------ }
+
+Procedure ParseBody(PI : Integer);
+Var
+  Up      : TString;
+  SaveEP, SaveEnd : Integer;
 Begin
   { Sauvegarder le contexte si necessaire }
   SaveEP  := EP;
@@ -7181,6 +8073,9 @@ Begin
     CurProcIdx := PI;
   End;
 
+  { Initialiser la pile de boucles }
+  LoopTop := -1;
+
   { Sauter le BEGIN initial }
   If Not EPAtEnd Then
   Begin
@@ -7189,97 +8084,22 @@ Begin
       Inc(EP);
   End;
 
-  { Parser les instructions du corps }
+  { Parser les instructions du corps via ParseStmt }
   While Not EPAtEnd Do
   Begin
-    If TokenPool[EP].Kind = TK_KEYWORD Then
-    Begin
-      Up := StrUpperCase(TokenPool[EP].Val);
-
-      { END : fin du bloc }
-      If Up = 'END' Then
-      Begin
-        Inc(EP);
-        { Sauter le '.' ou ';' apres END }
-        If Not EPAtEnd Then
-        Begin
-          If (TokenPool[EP].Kind = TK_PUNCT) And
-             ((TokenPool[EP].Val = '.') Or (TokenPool[EP].Val = ';')) Then
-            Inc(EP);
-        End;
-        Break;
-      End;
-
-      { EXIT : saut au label de retour }
-      If Up = 'EXIT' Then
-      Begin
-        Inc(EP);
-        EmitInstr('JMP ' + RetLbl);
-        If Not EPAtEnd Then
-          If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ';') Then
-            Inc(EP);
-        Continue;
-      End;
-
-      { HALT : appel ExitProcess }
-      If Up = 'HALT' Then
-      Begin
-        Inc(EP);
-        If EPMatch('(') Then
-        Begin
-          ParseExpr(PI);
-          EPMatch(')');
-        End
-        Else
-          EmitInstr('XOR EAX,EAX');
-        EmitInstr('PUSH EAX');
-        EmitInstr('CALL ExitProcess');
-        If Not EPAtEnd Then
-          If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ';') Then
-            Inc(EP);
-        Continue;
-      End;
-
-      { BEGIN : bloc imbrique }
-      If Up = 'BEGIN' Then
-      Begin
-        Inc(EP);
-        Continue;
-      End;
-
-      { Mots-cles de controle (TODO 12+) : sauter pour l instant }
-      If (Up = 'IF') Or (Up = 'THEN') Or (Up = 'ELSE') Or
-         (Up = 'WHILE') Or (Up = 'DO') Or (Up = 'FOR') Or
-         (Up = 'TO') Or (Up = 'DOWNTO') Or (Up = 'REPEAT') Or
-         (Up = 'UNTIL') Or (Up = 'CASE') Or (Up = 'OF') Or
-         (Up = 'WITH') Or (Up = 'GOTO') Or (Up = 'LABEL') Or
-         (Up = 'VAR') Or (Up = 'CONST') Or (Up = 'TYPE') Then
-      Begin
-        Inc(EP);
-        Continue;
-      End;
-
-      { INC/DEC/NEW/DISPOSE/SIZEOF etc : traiter comme expression }
-      If (Up = 'INC') Or (Up = 'DEC') Or (Up = 'NEW') Or
-         (Up = 'DISPOSE') Then
-      Begin
-        ParseExpr(PI);
-        If Not EPAtEnd Then
-          If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ';') Then
-            Inc(EP);
-        Continue;
-      End;
-
-      { Autres mots-cles : avancer }
-      Inc(EP);
-      Continue;
-    End;
-
-    { Point-virgule : sauter }
-    If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ';') Then
+    { END : fin du bloc }
+    If (TokenPool[EP].Kind = TK_KEYWORD) And
+       (StrUpperCase(TokenPool[EP].Val) = 'END') Then
     Begin
       Inc(EP);
-      Continue;
+      { Sauter le '.' ou ';' apres END }
+      If Not EPAtEnd Then
+      Begin
+        If (TokenPool[EP].Kind = TK_PUNCT) And
+           ((TokenPool[EP].Val = '.') Or (TokenPool[EP].Val = ';')) Then
+          Inc(EP);
+      End;
+      Break;
     End;
 
     { Point final : fin du programme }
@@ -7289,139 +8109,8 @@ Begin
       Break;
     End;
 
-    { Identificateur : soit affectation soit appel }
-    If TokenPool[EP].Kind = TK_IDENT Then
-    Begin
-      VName := TokenPool[EP].Val;
-      Up := StrUpperCase(VName);
-
-      { Builtins inline : INC, DEC, NEW, DISPOSE }
-      If (Up = 'INC') Or (Up = 'DEC') Or (Up = 'NEW') Or
-         (Up = 'DISPOSE') Then
-      Begin
-        ParseExpr(PI);
-        If Not EPAtEnd Then
-          If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ';') Then
-            Inc(EP);
-        Continue;
-      End;
-
-      { Write / WriteLn (TODO 12) }
-      If (Up = 'WRITE') Or (Up = 'WRITELN') Then
-      Begin
-        Inc(EP);
-        ParseWriteStmt(PI, Up = 'WRITELN');
-        If Not EPAtEnd Then
-          If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ';') Then
-            Inc(EP);
-        Continue;
-      End;
-
-      { Read / ReadLn (TODO 12) }
-      If (Up = 'READ') Or (Up = 'READLN') Then
-      Begin
-        Inc(EP);
-        ParseReadStmt(PI, Up = 'READLN');
-        If Not EPAtEnd Then
-          If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ';') Then
-            Inc(EP);
-        Continue;
-      End;
-
-      { Str (TODO 12) }
-      If Up = 'STR' Then
-      Begin
-        Inc(EP);
-        ParseStrStmt(PI);
-        If Not EPAtEnd Then
-          If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ';') Then
-            Inc(EP);
-        Continue;
-      End;
-
-      { Val (TODO 12) }
-      If Up = 'VAL' Then
-      Begin
-        Inc(EP);
-        ParseValStmt(PI);
-        If Not EPAtEnd Then
-          If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ';') Then
-            Inc(EP);
-        Continue;
-      End;
-
-      { Verifier s il s agit d un appel de proc }
-      SI := SymFind(Up);
-      If (SI >= 0) And (SymTab[SI].Kind = SK_PROC) Then
-      Begin
-        Inc(EP);
-        ParseFuncCall(PI, Up);
-        If Not EPAtEnd Then
-          If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ';') Then
-            Inc(EP);
-        Continue;
-      End;
-
-      { Verifier aussi dans ProcTab }
-      LI := 0;
-      While LI < ProcCount Do
-      Begin
-        If ProcTab[LI].Name = Up Then Break;
-        Inc(LI);
-      End;
-      If (LI < ProcCount) And (Not ProcTab[LI].IsFunction) Then
-      Begin
-        Inc(EP);
-        ParseFuncCall(PI, Up);
-        If Not EPAtEnd Then
-          If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ';') Then
-            Inc(EP);
-        Continue;
-      End;
-
-      { Affectation : ident := expr }
-      Inc(EP);
-      If Not EPAtEnd Then
-      Begin
-        { Affectation ident := expr }
-        If (TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = ':=') Then
-        Begin
-          Inc(EP);
-          ParseExpr(PI);
-          GenStoreVar(PI, VName);
-          If Not EPAtEnd Then
-            If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ';') Then
-              Inc(EP);
-          Continue;
-        End;
-
-        { Appel de fonction comme statement (peut etre une func sans parens) }
-        If (SI >= 0) And (SymTab[SI].Kind = SK_FUNC) Then
-        Begin
-          ParseFuncCall(PI, Up);
-          If Not EPAtEnd Then
-            If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ';') Then
-              Inc(EP);
-          Continue;
-        End;
-
-        { Si le token suivant est '(' c est un appel }
-        If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = '(') Then
-        Begin
-          ParseFuncCall(PI, Up);
-          If Not EPAtEnd Then
-            If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ';') Then
-              Inc(EP);
-          Continue;
-        End;
-      End;
-
-      { Sinon : continuer }
-      Continue;
-    End;
-
-    { Autre : avancer }
-    Inc(EP);
+    { Deleguer a ParseStmt }
+    ParseStmt(PI);
   End;
 
   { Restaurer le contexte }
@@ -7499,8 +8188,7 @@ Begin
           Up := StrUpperCase(TokenPool[I].Val);
           If Up = 'END' Then
             Inc(Depth)
-          Else If (Up = 'BEGIN') Or (Up = 'CASE') Or (Up = 'RECORD') Or
-                  (Up = 'REPEAT') Then
+          Else If (Up = 'BEGIN') Or (Up = 'CASE') Or (Up = 'RECORD') Then
             Dec(Depth);
         End;
         If Depth > 0 Then Dec(I);

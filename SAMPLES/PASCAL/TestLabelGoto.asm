@@ -85,6 +85,7 @@ _TPF_Main:
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
+_TPL_STARTLOOP:
 ; writeln
         LEA EAX,[_TPK_2]
         MOV ESI,EAX
@@ -102,18 +103,58 @@ _TPF_Main:
         POP EAX
         ADD EAX,EBX
         MOV DWORD PTR [_TPV_COUNTER],EAX
+; if
+        MOV EAX,DWORD PTR [_TPV_COUNTER]
+        PUSH EAX
+        MOV EAX,3
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JL _TPL_2
+        XOR EAX,EAX
+        JMP _TPL_3
+_TPL_2:
+        MOV EAX,1
+_TPL_3:
+        TEST EAX,EAX
+        JZ _TPL_4
+; goto
+        JMP _TPL_STARTLOOP
+_TPL_4:
+; if
+        MOV EAX,DWORD PTR [_TPV_COUNTER]
+        PUSH EAX
+        MOV EAX,5
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JG _TPL_6
+        XOR EAX,EAX
+        JMP _TPL_7
+_TPL_6:
+        MOV EAX,1
+_TPL_7:
+        TEST EAX,EAX
+        JZ _TPL_8
+; goto
+        JMP _TPL_ERRORHANDLER
+_TPL_8:
 ; writeln
         LEA EAX,[_TPK_3]
         MOV ESI,EAX
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
+; goto
+        JMP _TPL_ENDPROGRAM
+_TPL_ERRORHANDLER:
 ; writeln
         LEA EAX,[_TPK_4]
         MOV ESI,EAX
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
+_TPL_ENDPROGRAM:
 ; writeln
         LEA EAX,[_TPK_5]
         MOV ESI,EAX

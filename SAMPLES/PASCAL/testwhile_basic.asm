@@ -74,6 +74,22 @@ _TPF_Main:
         MOV [HHEAP],EAX
         MOV EAX,1
         MOV DWORD PTR [_TPV_I],EAX
+; while
+_TPL_2:
+        MOV EAX,DWORD PTR [_TPV_I]
+        PUSH EAX
+        MOV EAX,3
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JLE _TPL_4
+        XOR EAX,EAX
+        JMP _TPL_5
+_TPL_4:
+        MOV EAX,1
+_TPL_5:
+        TEST EAX,EAX
+        JZ _TPL_3
 ; writeln
         MOV EAX,DWORD PTR [_TPV_I]
         CALL _TPRT_NUMTOSTR
@@ -88,6 +104,8 @@ _TPF_Main:
         POP EAX
         ADD EAX,EBX
         MOV DWORD PTR [_TPV_I],EAX
+        JMP _TPL_2
+_TPL_3:
 _TPL_1:
         PUSH 0
         CALL ExitProcess

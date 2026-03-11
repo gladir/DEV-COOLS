@@ -61,6 +61,83 @@ _TPV_COMPTEUR  DD 0
 .CODE
 
 
+; --- Programme principal ---
+_TPF_Main:
+        PUSH EBP
+        MOV EBP,ESP
+; Obtenir STDOUT
+        PUSH -11
+        CALL GetStdHandle
+        MOV [HSTDOUT],EAX
+; Obtenir STDIN
+        PUSH -10
+        CALL GetStdHandle
+        MOV [HSTDIN],EAX
+; Obtenir le tas du processus
+        CALL GetProcessHeap
+        MOV [HHEAP],EAX
+        MOV EAX,0
+        MOV DWORD PTR [_TPV_COMPTEUR],EAX
+; writeln
+        LEA EAX,[_TPK_1]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+; writeln
+        LEA EAX,[_TPK_2]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+; repeat
+_TPL_2:
+; write
+        LEA EAX,[_TPK_3]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+; writeln
+        MOV EAX,DWORD PTR [_TPV_COMPTEUR]
+        CALL _TPRT_NUMTOSTR
+        LEA ESI,[NUMBUF]
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+        MOV EAX,DWORD PTR [_TPV_COMPTEUR]
+        PUSH EAX
+        MOV EAX,1
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
+        MOV DWORD PTR [_TPV_COMPTEUR],EAX
+        MOV EAX,DWORD PTR [_TPV_COMPTEUR]
+        PUSH EAX
+        MOV EAX,4
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JG _TPL_4
+        XOR EAX,EAX
+        JMP _TPL_5
+_TPL_4:
+        MOV EAX,1
+_TPL_5:
+        TEST EAX,EAX
+        JZ _TPL_2
+_TPL_3:
+; writeln
+        LEA EAX,[_TPK_4]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+_TPL_1:
+        PUSH 0
+        CALL ExitProcess
+        MOV ESP,EBP
+        POP EBP
+        RET
+
 ; === Routines runtime TPCW32 ===
 
 _TPRT_PRINTSTR:
@@ -180,4 +257,4 @@ _TPRT_SCPY_L:
         POP EDI
         POP ESI
         RET
-END
+END _TPF_Main

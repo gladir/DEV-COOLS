@@ -1,5 +1,5 @@
 ; TPCW32 - Compilateur Turbo Pascal -> ASM 80386 Win32
-; Genere automatiquement a partir de : /home/runner/work/DEV-COOLS/DEV-COOLS/SAMPLES/PASCAL/testwhile.pas
+; Genere automatiquement a partir de : SAMPLES/PASCAL/testwhile.pas
 
 .386
 .MODEL FLAT, STDCALL
@@ -83,6 +83,22 @@ _TPF_Main:
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
+; while
+_TPL_2:
+        MOV EAX,DWORD PTR [_TPV_I]
+        PUSH EAX
+        MOV EAX,5
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JLE _TPL_4
+        XOR EAX,EAX
+        JMP _TPL_5
+_TPL_4:
+        MOV EAX,1
+_TPL_5:
+        TEST EAX,EAX
+        JZ _TPL_3
 ; writeln
         LEA EAX,[_TPK_2]
         MOV ESI,EAX
@@ -100,6 +116,14 @@ _TPF_Main:
         POP EAX
         ADD EAX,EBX
         MOV DWORD PTR [_TPV_I],EAX
+        JMP _TPL_2
+_TPL_3:
+; writeln
+        LEA EAX,[_TPK_3]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
 _TPL_1:
         PUSH 0
         CALL ExitProcess

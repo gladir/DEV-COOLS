@@ -64,8 +64,25 @@ _TPF_CALCULATEFIBONACCI:
         MOV EBP,ESP
         SUB ESP,4
         MOV DWORD PTR [EBP-4],0
+; if
+        MOV EAX,DWORD PTR [EBP+8]
+        PUSH EAX
+        MOV EAX,1
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JLE _TPL_2
+        XOR EAX,EAX
+        JMP _TPL_3
+_TPL_2:
+        MOV EAX,1
+_TPL_3:
+        TEST EAX,EAX
+        JZ _TPL_4
         MOV EAX,DWORD PTR [EBP+8]
         MOV DWORD PTR [EBP-4],EAX
+        JMP _TPL_5
+_TPL_4:
         MOV EAX,DWORD PTR [EBP+8]
         PUSH EAX
         MOV EAX,1
@@ -89,6 +106,7 @@ _TPF_CALCULATEFIBONACCI:
         POP EAX
         ADD EAX,EBX
         MOV DWORD PTR [EBP-4],EAX
+_TPL_5:
 _TPL_1:
         MOV EAX,DWORD PTR [EBP-4]
         MOV ESP,EBP
@@ -110,7 +128,7 @@ _TPF_DISPLAYRESULT:
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
-_TPL_2:
+_TPL_6:
         MOV ESP,EBP
         POP EBP
         RET
@@ -143,7 +161,7 @@ _TPF_Main:
         PUSH EAX
         CALL _TPF_DISPLAYRESULT
         ADD ESP,4
-_TPL_3:
+_TPL_7:
         PUSH 0
         CALL ExitProcess
         MOV ESP,EBP

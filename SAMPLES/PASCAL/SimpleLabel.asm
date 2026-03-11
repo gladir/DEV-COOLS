@@ -72,6 +72,9 @@ _TPF_Main:
 ; Obtenir le tas du processus
         CALL GetProcessHeap
         MOV [HHEAP],EAX
+; goto
+        JMP _TPL_TEST
+_TPL_TEST:
 ; writeln
         LEA EAX,[_TPK_1]
         MOV ESI,EAX

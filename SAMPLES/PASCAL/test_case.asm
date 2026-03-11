@@ -78,30 +78,57 @@ _TPF_Main:
         MOV [HHEAP],EAX
         MOV EAX,2
         MOV DWORD PTR [_TPV_N],EAX
+; case
+        MOV EAX,DWORD PTR [_TPV_N]
+        PUSH EAX
+        MOV EAX,DWORD PTR [ESP]
+        CMP EAX,1
+        JE _TPL_4
+        JMP _TPL_3
+_TPL_4:
 ; writeln
         LEA EAX,[_TPK_1]
         MOV ESI,EAX
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
+        JMP _TPL_2
+_TPL_3:
+        MOV EAX,DWORD PTR [ESP]
+        CMP EAX,2
+        JE _TPL_6
+        JMP _TPL_5
+_TPL_6:
 ; writeln
         LEA EAX,[_TPK_2]
         MOV ESI,EAX
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
+        JMP _TPL_2
+_TPL_5:
+        MOV EAX,DWORD PTR [ESP]
+        CMP EAX,3
+        JE _TPL_8
+        JMP _TPL_7
+_TPL_8:
 ; writeln
         LEA EAX,[_TPK_3]
         MOV ESI,EAX
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
+        JMP _TPL_2
+_TPL_7:
+; case default
 ; writeln
         LEA EAX,[_TPK_4]
         MOV ESI,EAX
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
+_TPL_2:
+        POP EAX
 _TPL_1:
         PUSH 0
         CALL ExitProcess

@@ -87,6 +87,21 @@ _TPF_Main:
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
+; if
+        MOV EAX,DWORD PTR [_TPV_X]
+        PUSH EAX
+        MOV EAX,5
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JG _TPL_2
+        XOR EAX,EAX
+        JMP _TPL_3
+_TPL_2:
+        MOV EAX,1
+_TPL_3:
+        TEST EAX,EAX
+        JZ _TPL_4
 ; writeln
         MOV EAX,DWORD PTR [_TPV_X]
         CALL _TPRT_NUMTOSTR
@@ -94,6 +109,8 @@ _TPF_Main:
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
+        JMP _TPL_5
+_TPL_4:
 ; writeln
         MOV EAX,DWORD PTR [_TPV_Y]
         CALL _TPRT_NUMTOSTR
@@ -101,6 +118,23 @@ _TPF_Main:
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
+_TPL_5:
+; while
+_TPL_6:
+        MOV EAX,DWORD PTR [_TPV_X]
+        PUSH EAX
+        MOV EAX,0
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JG _TPL_8
+        XOR EAX,EAX
+        JMP _TPL_9
+_TPL_8:
+        MOV EAX,1
+_TPL_9:
+        TEST EAX,EAX
+        JZ _TPL_7
 ; writeln
         MOV EAX,DWORD PTR [_TPV_X]
         CALL _TPRT_NUMTOSTR
@@ -115,6 +149,8 @@ _TPF_Main:
         POP EAX
         SUB EAX,EBX
         MOV DWORD PTR [_TPV_X],EAX
+        JMP _TPL_6
+_TPL_7:
 _TPL_1:
         PUSH 0
         CALL ExitProcess
