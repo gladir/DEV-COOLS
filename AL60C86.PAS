@@ -14,7 +14,7 @@
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
 
-  TODO 01 - INFRASTRUCTURE ET OPTIONS
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
             TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings)
             ParseArgs : analyser argv (source.a60 [sortie.asm] [-v] [-d] [-w])
             FatalError, WarnMsg, EXIT_OK / EXIT_ERROR / EXIT_USAGE
@@ -37,7 +37,7 @@
               ( ) [ ] (parentheses et indices)
               + - * / (arithmetique)
               < <= = >= > != (comparaison)
-              ^ (puissance, notation alternative **)
+              ^ (puissance, notation alternative : deux etoiles)
               10 (notation exposant dans les reels, symbole dix)
             Mode debug -d : affichage de chaque token avec PrintToken
 
@@ -389,5 +389,388 @@
 
 Program AL60C86;
 
+{$IFDEF FPC}
+  {$MODE TP}
+  {$H-}
+{$ENDIF}
+{$I-}
+
+{ ============================================================
+  CONSTANTES GENERALES
+  ============================================================ }
+
+Const
+  AL60_VERSION = '1.0';
+  AL60_DATE    = '2026-03-06';
+
+  { Limites internes }
+  MAX_SYM       = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_LABEL     = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_SCOPE     = {$IFDEF FPC}64{$ELSE}32{$ENDIF};
+  MAX_DATA      = {$IFDEF FPC}512{$ELSE}100{$ENDIF};
+  MAX_TYPE      = {$IFDEF FPC}32{$ELSE}16{$ENDIF};
+  MAX_PARAM     = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
+  MAX_LOOP_NEST = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
+  MAX_ERRORS    = {$IFDEF FPC}30{$ELSE}3{$ENDIF};
+  MAX_STR       = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
+  STACK_SIZE    = 1024;
+
+  { Prefixes de nommage ASM }
+  A60_VAR_PFX  = '_A60V_';   { variable scalaire               }
+  A60_FN_PFX   = '_A60P_';   { procedure / fonction            }
+  A60_STR_PFX  = '_A60K_';   { constante chaine litterale      }
+  A60_RT_PFX   = '_A60RT_';  { routine runtime                 }
+  A60_LBL_PFX  = '_A60L_';   { label de saut interne           }
+  A60_SW_PFX   = '_A60S_';   { table switch (aiguillage)       }
+  A60_OWN_PFX  = '_A60O_';   { variable OWN (statique)         }
+  A60_THK_PFX  = '_A60T_';   { thunk (call by name)            }
+
+  { Codes de sortie }
+  EXIT_OK    = 0;
+  EXIT_ERROR = 1;
+  EXIT_USAGE = 2;
+
+  { Indices de types primitifs Algol 60 }
+  TY_IDX_INTEGER   = 0;  { entier 16 bits signe            }
+  TY_IDX_REAL      = 1;  { reel (stub: entier tronque)     }
+  TY_IDX_BOOLEAN   = 2;  { 0 ou 1 dans AX                  }
+  TY_IDX_STRING    = 3;  { pointeur chaine DATA             }
+  TY_IDX_LABEL     = 4;  { adresse de code (etiquette)      }
+  TY_IDX_SWITCH    = 5;  { tableau de labels (aiguillage)   }
+  TY_IDX_PROCEDURE = 6;  { pointeur de code (sous-programme)}
+  TY_IDX_ARRAY     = 7;  { tableau a bornes dynamiques      }
+  TY_PRIM_COUNT    = 8;
+  TY_UNKNOWN       = -1;
+
+{ ============================================================
+  TYPES
+  ============================================================ }
+
+Type
+  TString = String[MAX_STR];
+
+  { ---- Options de compilation ----------------------------- }
+  TOptions = Record
+    SrcFile   : TString;   { fichier source (.a60 / .alg)         }
+    OutFile   : TString;   { fichier assembleur de sortie (.asm)  }
+    Verbose   : Boolean;   { -v : banniere et statistiques        }
+    DebugMode : Boolean;   { -d : affichage de chaque token       }
+    Warnings  : Boolean;   { -w : activer les avertissements      }
+  End;
+
+{ ============================================================
+  VARIABLES GLOBALES
+  ============================================================ }
+
+Var
+  { Options }
+  Opts : TOptions;
+
+  { Compteurs generaux }
+  ErrorCount : Integer;
+  WarnCount  : Integer;
+  TotalLines : LongInt;
+  TotalSyms  : Integer;
+
+  { Emetteur ASM (stubs pour TODO 07+) }
+  OutF       : Text;
+  OutFOpen   : Boolean;
+
+  { Lexeur (stubs pour TODO 02+) }
+  LexOpened  : Boolean;
+
+  { Label sequentiel }
+  LabelSeq   : Integer;
+
+{ ============================================================
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Prototypes futurs (stubs) ----------------------------- }
+Procedure LexClose; Forward;
+
+{ ---- Erreur fatale ----------------------------------------- }
+Procedure FatalError(Const Msg : TString);
 Begin
-End.
+  WriteLn('AL60C86: FATAL: ', Msg);
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+    Assign(OutF, Opts.OutFile);
+    {$I-} Erase(OutF); {$I+}
+    If IOResult <> 0 Then ;
+  End;
+  Halt(EXIT_ERROR);
+End;
+
+{ ---- Erreur de compilation --------------------------------- }
+Procedure CompileError(Const Msg : TString);
+Begin
+  WriteLn('AL60C86: error: ', Msg);
+  Inc(ErrorCount);
+  If ErrorCount >= MAX_ERRORS Then
+    FatalError('trop d''erreurs, compilation arretee');
+End;
+
+{ ---- Avertissement ----------------------------------------- }
+Procedure WarnMsg(Const Msg : TString);
+Begin
+  If Not Opts.Warnings Then Exit;
+  WriteLn('AL60C86: warning: ', Msg);
+  Inc(WarnCount);
+End;
+
+{ ---- Banniere ---------------------------------------------- }
+Procedure ShowBanner;
+Begin
+  WriteLn('AL60C86 v', AL60_VERSION, ' (', AL60_DATE, ')');
+  WriteLn('Compilateur Algol 60 -> assembleur 8086 (MASM .MODEL SMALL)');
+  WriteLn('Turbo Pascal / Free Pascal (-Mtp)');
+  WriteLn;
+End;
+
+{ ---- Aide en ligne ----------------------------------------- }
+Procedure ShowUsage;
+Begin
+  WriteLn('AL60C86 - Cette commande permet de lancer le compilateur Algol 60 ',
+          'pour l''assembleur du microprocesseur 8086 ou 8088.');
+  WriteLn;
+  WriteLn('Syntaxe : AL60C86 <source.a60> [sortie.asm] [-v] [-d] [-w]');
+  WriteLn;
+  WriteLn('  source.a60 : fichier Algol 60 source (.a60 ou .alg)');
+  WriteLn('  sortie.asm : fichier assembleur de sortie (defaut: source.asm)');
+  WriteLn('  -v         : mode verbeux (banniere + statistiques)');
+  WriteLn('  -d         : debug tokens (affiche chaque token)');
+  WriteLn('  -w         : activer les avertissements');
+  WriteLn('  -h         : afficher cette aide');
+  WriteLn;
+  Halt(EXIT_USAGE);
+End;
+
+{ ---- Statistiques ------------------------------------------ }
+Procedure ShowStats;
+Begin
+  WriteLn;
+  WriteLn('Compilation terminee : ', Opts.SrcFile, ' -> ', Opts.OutFile);
+  WriteLn('  Lignes         : ', TotalLines);
+  WriteLn('  Erreurs        : ', ErrorCount);
+  WriteLn('  Avertissements : ', WarnCount);
+End;
+
+{ ---- Utilitaires chaines ----------------------------------- }
+
+Function StrLowerCase(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do
+    If (R[I] >= 'A') And (R[I] <= 'Z') Then
+      R[I] := Chr(Ord(R[I]) + 32);
+  StrLowerCase := R;
+End;
+
+Function IntToStr_(N : LongInt) : TString;
+Var
+  S : TString;
+Begin
+  Str(N, S);
+  IntToStr_ := S;
+End;
+
+Function BaseName(Const Path : TString) : TString;
+Var
+  I, LastSep, LastDot : Integer;
+  S : TString;
+Begin
+  LastSep := 0;
+  LastDot := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If LastDot > LastSep Then
+    S := Copy(Path, LastSep + 1, LastDot - LastSep - 1)
+  Else
+    S := Copy(Path, LastSep + 1, Length(Path));
+  BaseName := S;
+End;
+
+Function ReplaceExt(Const Path, NewExt : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ReplaceExt := Copy(Path, 1, LastDot - 1) + NewExt
+  Else
+    ReplaceExt := Path + NewExt;
+End;
+
+Function ExtractExt(Const Path : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ExtractExt := StrLowerCase(Copy(Path, LastDot, Length(Path) - LastDot + 1))
+  Else
+    ExtractExt := '';
+End;
+
+{ ---- Initialisation des options ---------------------------- }
+Procedure InitOptions;
+Begin
+  Opts.SrcFile   := '';
+  Opts.OutFile   := '';
+  Opts.Verbose   := False;
+  Opts.DebugMode := False;
+  Opts.Warnings  := False;
+End;
+
+{ ---- Analyse des arguments de la ligne de commande --------- }
+Procedure ParseArgs;
+Var
+  I   : Integer;
+  Arg : TString;
+  Ext : TString;
+Begin
+  InitOptions;
+  If ParamCount = 0 Then
+    ShowUsage;
+
+  For I := 1 To ParamCount Do
+  Begin
+    Arg := ParamStr(I);
+
+    If (Arg = '-h') Or (Arg = '--help') Or (Arg = '/?') Then
+      ShowUsage
+    Else If (Arg = '-v') Or (Arg = '--verbose') Then
+      Opts.Verbose := True
+    Else If Arg = '-d' Then
+      Opts.DebugMode := True
+    Else If Arg = '-w' Then
+      Opts.Warnings := True
+    Else If Arg[1] = '-' Then
+    Begin
+      WriteLn('AL60C86: option inconnue: ', Arg);
+      ShowUsage;
+    End
+    Else If Opts.SrcFile = '' Then
+      Opts.SrcFile := Arg
+    Else If Opts.OutFile = '' Then
+      Opts.OutFile := Arg
+    Else
+    Begin
+      WriteLn('AL60C86: argument inattendu: ', Arg);
+      ShowUsage;
+    End;
+  End;
+
+  If Opts.SrcFile = '' Then
+  Begin
+    WriteLn('AL60C86: fichier source manquant');
+    ShowUsage;
+  End;
+
+  { Detecter l extension .a60 ou .alg }
+  Ext := ExtractExt(Opts.SrcFile);
+  If (Ext <> '.a60') And (Ext <> '.alg') Then
+  Begin
+    WriteLn('AL60C86: avertissement: extension non reconnue: ', Ext);
+    WriteLn('  extensions attendues: .a60 ou .alg');
+  End;
+
+  If Opts.OutFile = '' Then
+    Opts.OutFile := ReplaceExt(Opts.SrcFile, '.asm');
+End;
+
+{ ---- Nettoyage --------------------------------------------- }
+Procedure Cleanup;
+Begin
+  If LexOpened Then
+    LexClose;
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+{ ---- Initialisation globale -------------------------------- }
+Procedure GlobalInit;
+Begin
+  ErrorCount     := 0;
+  WarnCount      := 0;
+  TotalLines     := 0;
+  TotalSyms      := 0;
+  LabelSeq       := 0;
+  OutFOpen       := False;
+  LexOpened      := False;
+End;
+
+{ ---- Stub LexClose (sera remplace par TODO 02) ------------- }
+Procedure LexClose;
+Begin
+  LexOpened := False;
+End;
+
+{ ---- Compilation (stub pour TODOs 02-25) ------------------- }
+Procedure Run;
+Begin
+  GlobalInit;
+  If Opts.Verbose Then ShowBanner;
+
+  { TODO 02+ : LexInit, ParseProgram, EmitRuntime, etc. }
+
+  If Opts.Verbose Then ShowStats;
+
+  Cleanup;
+
+  If ErrorCount > 0 Then
+    Halt(EXIT_ERROR)
+  Else
+    Halt(EXIT_OK);
+End;
+
+{ ============================================================
+  PROGRAMME PRINCIPAL
+  ============================================================ }
+BEGIN
+ If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
+   (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
+  WriteLn('AL60C86 - Cette commande permet de lancer le compilateur Algol 60 ',
+          'pour l''assembleur du microprocesseur 8086 ou 8088.');
+  WriteLn;
+  WriteLn('Syntaxe : AL60C86 source.a60 [sortie.asm] [options]');
+  WriteLn;
+  WriteLn('Options :');
+  WriteLn('  -v   mode verbeux (banniere + statistiques)');
+  WriteLn('  -d   mode debug   (trace de chaque token)');
+  WriteLn('  -w   activer les avertissements');
+  Halt(0);
+ End;
+  ParseArgs;
+  Run;
+END.
