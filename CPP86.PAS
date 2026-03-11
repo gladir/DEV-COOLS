@@ -3111,9 +3111,10 @@ Begin
             ParserAdvance;
         End;
         (* --- Acces membre : .member ou ->member ou ::member --- *)
-        While (CurToken.Kind = TK_OP) And
-              ((CurToken.Val = '.') Or (CurToken.Val = '->') Or
-               (CurToken.Val = '::')) Do
+        While ((CurToken.Kind = TK_OP) And
+               ((CurToken.Val = '.') Or (CurToken.Val = '->') Or
+                (CurToken.Val = '::'))) Or
+              ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.')) Do
         Begin
           If CurToken.Val = '->' Then
           Begin
@@ -5249,6 +5250,8 @@ Var
   I            : Integer;
   OldFrame     : Integer;
   HasInit      : Boolean;
+  DSIIdx       : Integer;
+  DStructSize  : Integer;
 Begin
   TypeIdx := ParseTypeSpec(IsConst, IsStatic);
 
@@ -5365,11 +5368,49 @@ Begin
     End
     Else
     Begin
-      (* Declaration de variable scalaire *)
+      (* Declaration de variable scalaire ou struct *)
+      DSIIdx := StructFindByType(TypeIdx);
+      If DSIIdx >= 0 Then
+        DStructSize := StructTab[DSIIdx].TotalSize
+      Else
+        DStructSize := 2;
+
       If CurScope = 0 Then
       Begin
         (* Variable globale : dans segment DATA *)
-      If IsConst Then
+        If DSIIdx >= 0 Then
+        Begin
+          (* Global struct variable *)
+          Lbl := CC_VAR_PFX + SymNameClean(VarName);
+          DataAddZero(Lbl, DStructSize);
+          SIdx := SymAdd(VarName, SK_VAR, TypeIdx, 0);
+          If SIdx >= 0 Then
+            SymTab[SIdx].MangledName := Lbl;
+          If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+          Begin
+            ParserAdvance;
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+            Begin
+              ParserAdvance;
+              I := 0;
+              While (CurToken.Kind <> TK_EOF) And
+                    Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+              Begin
+                ParseExpr(InitExpr);
+                If (I < StructTab[DSIIdx].FieldCount) Then
+                  EmitInstrAB('MOV', 'WORD PTR [' + Lbl + '+' +
+                              IntToStr(StructTab[DSIIdx].Fields[I].Offset) + ']',
+                              IntToStr(InitExpr.ImmVal));
+                Inc(I);
+                If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+                  ParserAdvance;
+              End;
+              If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+                ParserAdvance;
+            End;
+          End;
+        End
+        Else If IsConst Then
       Begin
         If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
         Begin
@@ -5410,28 +5451,63 @@ Begin
     End
     Else
     Begin
-      (* Variable locale : allouer sur la pile [BP-N] *)
-      Ofs := SymNextOffset;
-      If IsConst Then
-        SIdx := SymAdd(VarName, SK_CONST, TypeIdx, -Ofs)
+      (* Variable locale *)
+      If DSIIdx >= 0 Then
+      Begin
+        (* Local struct variable *)
+        OldFrame := CurFrameSize;
+        Inc(CurFrameSize, DStructSize);
+        Ofs := -(OldFrame + DStructSize);
+        SIdx := SymAdd(VarName, SK_VAR, TypeIdx, Ofs);
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+        Begin
+          ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+          Begin
+            ParserAdvance;
+            I := 0;
+            While (CurToken.Kind <> TK_EOF) And
+                  Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+            Begin
+              ParseExpr(InitExpr);
+              If (I < StructTab[DSIIdx].FieldCount) Then
+                EmitInstrAB('MOV', 'WORD PTR [BP' +
+                            IntToStr(Ofs + StructTab[DSIIdx].Fields[I].Offset) + ']',
+                            IntToStr(InitExpr.ImmVal));
+              Inc(I);
+              If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+                ParserAdvance;
+            End;
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+              ParserAdvance;
+          End;
+        End;
+      End
       Else
-        SIdx := SymAdd(VarName, SK_VAR, TypeIdx, -Ofs);
-      If SIdx >= 0 Then
       Begin
-        SymTab[SIdx].IsConst  := IsConst;
-        SymTab[SIdx].IsStatic := IsStatic;
-      End;
-      (* Initialisation optionnelle *)
-      If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
-      Begin
-        ParserAdvance;
-        ParseExpr(InitExpr);
-        ExprFlushToAX(InitExpr);
+        (* Scalar local variable *)
+        Ofs := SymNextOffset;
+        If IsConst Then
+          SIdx := SymAdd(VarName, SK_CONST, TypeIdx, -Ofs)
+        Else
+          SIdx := SymAdd(VarName, SK_VAR, TypeIdx, -Ofs);
         If SIdx >= 0 Then
-          ExprStore(SIdx);
+        Begin
+          SymTab[SIdx].IsConst  := IsConst;
+          SymTab[SIdx].IsStatic := IsStatic;
+        End;
+        (* Initialisation optionnelle *)
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+        Begin
+          ParserAdvance;
+          ParseExpr(InitExpr);
+          ExprFlushToAX(InitExpr);
+          If SIdx >= 0 Then
+            ExprStore(SIdx);
+        End;
       End;
     End;
-    End; (* End of scalar declaration *)
+    End; (* End of scalar/struct declaration *)
 
     (* Virgule -> declaration suivante *)
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
@@ -6219,6 +6295,14 @@ Begin
   If (CurToken.Kind = TK_IDENT) And (CurToken.Val = 'cin') Then
   Begin
     ParseCinStmt;
+    Exit;
+  End;
+
+  (* Declaration avec type utilisateur (struct/class) : ident ident ... *)
+  If (CurToken.Kind = TK_IDENT) And
+     (TypeLookupName(CurToken.Val) <> TY_UNKNOWN) Then
+  Begin
+    ParseDeclStmt;
     Exit;
   End;
 
