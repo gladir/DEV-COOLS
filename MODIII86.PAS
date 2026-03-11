@@ -299,7 +299,7 @@
              NARROW(expr, T) : verification + cast (exception si echec)
              ROOT : type objet racine, ancetre de tous les objets
 
-   TODO 20 - TYPES OPAQUES ET REVEAL
+   TODO 20 - TYPES OPAQUES ET REVEAL [IMPLEMENTE]
              Type opaque dans INTERFACE :
                TYPE T <: SuperType (type partiellement revele)
                Les clients ne voient que SuperType
@@ -436,6 +436,7 @@ Const
   MAX_TOKEN     = {$IFDEF FPC}16384{$ELSE}2048{$ENDIF};
   MAX_OBJ_TYPE  = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
   MAX_METHOD    = 16;
+  MAX_OPAQUE    = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
 
   (* Prefixe statique (TODO 09) *)
   M3_STA_PFX  = '_M3S_';     (* variable statique locale             *)
@@ -699,6 +700,17 @@ Type
     TotalSize  : Integer;    (* taille = 2 (vtable ptr) + champs      *)
   End;
 
+  (* ---- Types opaques et REVEAL (TODO 20) ---------------------- *)
+  TOpaqueEntry = Record
+    Name       : TString;     (* nom du type opaque                    *)
+    SuperTIdx  : Integer;     (* index TypeTab du supertype declare     *)
+    OpaqueIdx  : Integer;     (* index TypeTab de l entree opaque       *)
+    RevealTIdx : Integer;     (* index TypeTab du type revele (-1=non)  *)
+    IsBranded  : Boolean;     (* BRANDED utilise dans le REVEAL         *)
+    BrandTag   : TString;     (* etiquette BRANDED ('' = auto)          *)
+    IsRevealed : Boolean;     (* True quand REVEAL a ete traite         *)
+  End;
+
 (* ============================================================
    VARIABLES GLOBALES
    ============================================================ *)
@@ -734,6 +746,10 @@ Var
   (* Types objets (TODO 19) *)
   ObjTypeTab   : Array[0..MAX_OBJ_TYPE - 1] Of TObjTypeInfo;
   ObjTypeCount : Integer;
+
+  (* Types opaques (TODO 20) *)
+  OpaqueTab    : Array[0..MAX_OPAQUE - 1] Of TOpaqueEntry;
+  OpaqueCount  : Integer;
 
   (* Segment de donnees (TODO 03) *)
   DataTab    : Array[0..MAX_DATA-1] Of TDataRec;
@@ -1499,6 +1515,11 @@ Begin
     '<' : If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '=') Then
           Begin
             S := '<=';
+            Inc(LexColNo);
+          End
+          Else If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = ':') Then
+          Begin
+            S := '<:';
             Inc(LexColNo);
           End
           Else If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '>') Then
@@ -3907,6 +3928,15 @@ Begin
     Inc(P);
   End;
 
+  (* Sauter BRANDED ["tag"] si present (TODO 20) *)
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (TokenPool[P].Val = 'BRANDED') Then
+  Begin
+    Inc(P);
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_STRING) Then
+      Inc(P);
+  End;
+
   (* On doit maintenant etre sur OBJECT *)
   If (P >= TokenCount) Or Not
      ((TokenPool[P].Kind = TK_KEYWORD) And (TokenPool[P].Val = 'OBJECT'))
@@ -4224,6 +4254,17 @@ Var
   TIdx    : Integer;
   IVal    : LongInt;
   SVal    : TString;
+  (* TODO 20 - REVEAL / types opaques *)
+  SaveP       : Integer;
+  ScanP       : Integer;
+  HasObject   : Boolean;
+  IsBranded   : Boolean;
+  BrandTag    : TString;
+  RevTypeName : TString;
+  RevTIdx     : Integer;
+  OIdx        : Integer;
+  SuperName   : TString;
+  I           : Integer;
 Begin
   P       := 0;
   InVar   := False;
@@ -4442,7 +4483,7 @@ Begin
       Continue;
     End;
 
-    (* Detecter REVEAL T = ... -- TODO 18 *)
+    (* Detecter REVEAL T = ... -- TODO 20 *)
     If (TokenPool[P].Kind = TK_KEYWORD) And
        (TokenPool[P].Val = 'REVEAL') Then
     Begin
@@ -4450,25 +4491,136 @@ Begin
       InConst := False;
       InType  := False;
       Inc(P); (* passer REVEAL *)
-      (* REVEAL TypeName = definition *)
       If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
       Begin
         Name := TokenPool[P].Val;
         Inc(P);
-        (* Passer '=' et la definition (simplifiee) *)
         If (P < TokenCount) And (TokenPool[P].Kind = TK_OP) And
            (TokenPool[P].Val = '=') Then
         Begin
-          Inc(P);
-          (* Sauter la definition jusqu au ';' *)
-          While (P < TokenCount) And Not
-                ((TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ';'))
-          Do
-            Inc(P);
-          If (P < TokenCount) Then Inc(P); (* passer ';' *)
+          Inc(P); (* passer '=' *)
+          SaveP := P;
+          (* Scanner pour detecter OBJECT et BRANDED *)
+          HasObject := False;
+          IsBranded := False;
+          BrandTag  := '';
+          ScanP := P;
+          While (ScanP < TokenCount) And Not
+                ((TokenPool[ScanP].Kind = TK_PUNCT) And
+                 (TokenPool[ScanP].Val = ';')) Do
+          Begin
+            If (TokenPool[ScanP].Kind = TK_KEYWORD) And
+               (TokenPool[ScanP].Val = 'OBJECT') Then
+            Begin
+              HasObject := True;
+              Break;
+            End;
+            If (TokenPool[ScanP].Kind = TK_KEYWORD) And
+               (TokenPool[ScanP].Val = 'BRANDED') Then
+            Begin
+              IsBranded := True;
+              Inc(ScanP);
+              If (ScanP < TokenCount) And
+                 (TokenPool[ScanP].Kind = TK_STRING) Then
+              Begin
+                BrandTag := TokenPool[ScanP].Val;
+                Inc(ScanP);
+              End;
+              Continue;
+            End;
+            Inc(ScanP);
+          End;
+          (* Trouver l entree opaque correspondante *)
+          OIdx := -1;
+          For I := 0 To OpaqueCount - 1 Do
+            If OpaqueTab[I].Name = Name Then OIdx := I;
+          If HasObject Then
+          Begin
+            (* REVEAL T = [SuperType] [BRANDED ["tag"]] OBJECT ... END *)
+            P := SaveP;
+            TIdx := ParseObjectTypeFromTokens(P, Name);
+            If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+               (TokenPool[P].Val = ';') Then
+              Inc(P);
+            If OIdx >= 0 Then
+            Begin
+              OpaqueTab[OIdx].RevealTIdx := TIdx;
+              OpaqueTab[OIdx].IsBranded  := IsBranded;
+              OpaqueTab[OIdx].BrandTag   := BrandTag;
+              OpaqueTab[OIdx].IsRevealed := True;
+              If (OpaqueTab[OIdx].SuperTIdx >= 0) And (TIdx >= 0) Then
+              Begin
+                If Not TypeCompatible(OpaqueTab[OIdx].SuperTIdx,
+                                      TIdx) Then
+                  WarnMsg('REVEAL ' + Name +
+                    ': type revele peut etre incompatible avec le supertype');
+              End;
+            End
+            Else If TIdx >= 0 Then
+            Begin
+              If OpaqueCount < MAX_OPAQUE Then
+              Begin
+                OpaqueTab[OpaqueCount].Name       := Name;
+                OpaqueTab[OpaqueCount].SuperTIdx  := TY_UNKNOWN;
+                OpaqueTab[OpaqueCount].OpaqueIdx  := TY_UNKNOWN;
+                OpaqueTab[OpaqueCount].RevealTIdx := TIdx;
+                OpaqueTab[OpaqueCount].IsBranded  := IsBranded;
+                OpaqueTab[OpaqueCount].BrandTag   := BrandTag;
+                OpaqueTab[OpaqueCount].IsRevealed := True;
+                Inc(OpaqueCount);
+              End;
+            End;
+          End
+          Else
+          Begin
+            (* REVEAL T = ExistingType; (alias simple) *)
+            P := SaveP;
+            RevTypeName := '';
+            If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+            Begin
+              RevTypeName := TokenPool[P].Val;
+              Inc(P);
+            End;
+            RevTIdx := TypeFindByName(RevTypeName);
+            If RevTIdx < 0 Then
+              RevTIdx := TypeIdxFromName(RevTypeName);
+            If OIdx >= 0 Then
+            Begin
+              If RevTIdx >= 0 Then
+                OpaqueTab[OIdx].RevealTIdx := RevTIdx;
+              OpaqueTab[OIdx].IsRevealed := True;
+            End
+            Else
+            Begin
+              If OpaqueCount < MAX_OPAQUE Then
+              Begin
+                OpaqueTab[OpaqueCount].Name       := Name;
+                OpaqueTab[OpaqueCount].SuperTIdx  := TY_UNKNOWN;
+                OpaqueTab[OpaqueCount].OpaqueIdx  := TY_UNKNOWN;
+                OpaqueTab[OpaqueCount].RevealTIdx := RevTIdx;
+                OpaqueTab[OpaqueCount].IsBranded  := False;
+                OpaqueTab[OpaqueCount].BrandTag   := '';
+                OpaqueTab[OpaqueCount].IsRevealed := True;
+                Inc(OpaqueCount);
+              End;
+            End;
+            While (P < TokenCount) And Not
+                  ((TokenPool[P].Kind = TK_PUNCT) And
+                   (TokenPool[P].Val = ';')) Do
+              Inc(P);
+            If (P < TokenCount) Then Inc(P);
+          End;
+          If Opts.DebugMode Then
+          Begin
+            Write('  REVEAL ', Name);
+            If IsBranded Then
+            Begin
+              Write(' BRANDED');
+              If BrandTag <> '' Then Write(' "', BrandTag, '"');
+            End;
+            WriteLn;
+          End;
         End;
-        If Opts.DebugMode Then
-          WriteLn('  REVEAL ', Name, ' (stub)');
       End;
       Continue;
     End;
@@ -4538,6 +4690,26 @@ Begin
              (TokenPool[P].Val = ';') Then
             Inc(P);
         End
+        Else If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) And
+                (P + 1 < TokenCount) And
+                (TokenPool[P + 1].Kind = TK_KEYWORD) And
+                (TokenPool[P + 1].Val = 'BRANDED') Then
+        Begin
+          (* TODO 20 - TYPE T = ParentType BRANDED [tag] OBJECT ... END *)
+          TIdx := ParseObjectTypeFromTokens(P, Name);
+          If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+             (TokenPool[P].Val = ';') Then
+            Inc(P);
+        End
+        Else If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+                (TokenPool[P].Val = 'BRANDED') Then
+        Begin
+          (* TODO 20 - TYPE T = BRANDED [tag] OBJECT ... END *)
+          TIdx := ParseObjectTypeFromTokens(P, Name);
+          If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+             (TokenPool[P].Val = ';') Then
+            Inc(P);
+        End
         Else
         Begin
           While (P < TokenCount) And Not
@@ -4547,9 +4719,53 @@ Begin
           If P < TokenCount Then Inc(P);
         End;
       End
+      Else If (P < TokenCount) And (TokenPool[P].Kind = TK_OP) And
+              (TokenPool[P].Val = '<:') Then
+      Begin
+        Inc(P); (* passer '<:' *)
+        (* TYPE T <: SuperType - declaration opaque (TODO 20) *)
+        SuperName := '';
+        If (P < TokenCount) And
+           ((TokenPool[P].Kind = TK_IDENT) Or
+            (TokenPool[P].Kind = TK_KEYWORD)) Then
+        Begin
+          SuperName := TokenPool[P].Val;
+          Inc(P);
+        End;
+        If TypeCount < MAX_TYPE Then
+        Begin
+          TIdx := TypeCount;
+          Inc(TypeCount);
+          TypeTab[TIdx].Kind        := TYK_OPAQUE;
+          TypeTab[TIdx].Name        := Name;
+          TypeTab[TIdx].Size        := 2;
+          TypeTab[TIdx].BaseTypeIdx := TypeIdxFromName(SuperName);
+          TypeTab[TIdx].Lo          := 0;
+          TypeTab[TIdx].Hi          := 0;
+          TypeTab[TIdx].FieldCount  := 0;
+          TypeTab[TIdx].EnumCount   := 0;
+          SymAdd(Name, SK_TYPE, TIdx, 0);
+          If OpaqueCount < MAX_OPAQUE Then
+          Begin
+            OpaqueTab[OpaqueCount].Name       := Name;
+            OpaqueTab[OpaqueCount].SuperTIdx  := TypeTab[TIdx].BaseTypeIdx;
+            OpaqueTab[OpaqueCount].OpaqueIdx  := TIdx;
+            OpaqueTab[OpaqueCount].RevealTIdx := TY_UNKNOWN;
+            OpaqueTab[OpaqueCount].IsBranded  := False;
+            OpaqueTab[OpaqueCount].BrandTag   := '';
+            OpaqueTab[OpaqueCount].IsRevealed := False;
+            Inc(OpaqueCount);
+          End;
+          If Opts.DebugMode Then
+            WriteLn('  OPAQUE TYPE: ', Name, ' <: ', SuperName);
+        End;
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+           (TokenPool[P].Val = ';') Then
+          Inc(P);
+      End
       Else
       Begin
-        (* Pas de '=' -> avancer *)
+        (* Pas de '=' ou '<:' -> avancer *)
         While (P < TokenCount) And Not
               ((TokenPool[P].Kind = TK_PUNCT) And
                (TokenPool[P].Val = ';')) Do
@@ -8499,6 +8715,7 @@ Begin
   TotalSyms  := 0;
   ProcCount  := 0;
   ObjTypeCount := 0;
+  OpaqueCount  := 0;
   OutFOpen   := False;
   LexOpened  := False;
 
