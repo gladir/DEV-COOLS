@@ -2359,7 +2359,7 @@ Var
   SIdx   : Integer;
   FName  : TString;
   ArrIdx : TExprVal;
-  I      : Integer;
+  ArrI   : Integer;
 Begin
   ExprMakeNone(Res);
 
@@ -2430,10 +2430,10 @@ Begin
         ParserAdvance;  (* consommer { *)
 
         (* Chercher dans ArrayTab d abord (TODO 15) *)
-        I := ArrayFind(FName);
-        If I >= 0 Then
+        ArrI := ArrayFind(FName);
+        If ArrI >= 0 Then
         Begin
-          SIdx := ArrayTab[I].SymIdx;
+          SIdx := ArrayTab[ArrI].SymIdx;
           (* Parser l indice *)
           ParseExprPrec(1, ArrIdx);
           (* Consommer } *)
@@ -2446,27 +2446,27 @@ Begin
           ExprFlushToAX(ArrIdx);
           EmitComment('acces tableau ' + FName + '{i}');
           EmitInstrA('DEC', 'AX');  (* base 1 -> base 0 *)
-          If ArrayTab[I].IsChar Then
+          If ArrayTab[ArrI].IsChar Then
           Begin
-            EmitInstrAB('MOV', 'BX', IntToStr(ArrayTab[I].ElemLen));
+            EmitInstrAB('MOV', 'BX', IntToStr(ArrayTab[ArrI].ElemLen));
             EmitInstrA('IMUL', 'BX');
           End
           Else
             EmitInstrAB('SHL', 'AX', '1');  (* * 2 pour NUMERIC *)
           EmitInstrAB('ADD', 'AX',
-                       IntToStr(ArrayTab[I].BaseOffset));
+                       IntToStr(ArrayTab[ArrI].BaseOffset));
           EmitInstrAB('MOV', 'BX', 'AX');
-          If ArrayTab[I].IsChar Then
+          If ArrayTab[ArrI].IsChar Then
             EmitInstrAB('LEA', 'AX', '[_SAS_PDV + BX]')
           Else
             EmitInstrAB('MOV', 'AX', 'WORD PTR [_SAS_PDV + BX]');
           Res.Kind    := EK_AX;
-          If ArrayTab[I].IsChar Then
+          If ArrayTab[ArrI].IsChar Then
             Res.TypeIdx := TY_IDX_CHARACTER
           Else
             Res.TypeIdx := TY_IDX_NUMERIC;
           Res.ImmVal  := 0;
-          Res.Offset  := ArrayTab[I].BaseOffset;
+          Res.Offset  := ArrayTab[ArrI].BaseOffset;
           Res.SymIdx  := SIdx;
         End
         Else

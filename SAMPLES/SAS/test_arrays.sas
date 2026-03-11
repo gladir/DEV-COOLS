@@ -53,11 +53,12 @@ data test;
   tmp{3} = 300;
   put 'tmp{2}=' tmp{2};
 
-  /* Tableau multidimensionnel 2x3 */
+  /* Tableau multidimensionnel 2x3 = 6 elements lineaires */
   array mat {2,3};
   do r = 1 to 2;
     do c = 1 to 3;
-      mat{c} = r * 10 + c;
+      idx = (r - 1) * 3 + c;
+      mat{idx} = r * 10 + c;
     end;
   end;
   put 'mat{1}=' mat{1} ' mat{6}=' mat{6};

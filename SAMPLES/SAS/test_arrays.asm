@@ -584,8 +584,52 @@ _SASL_34N:
         CMP AX, DX
         JL _SASL_36
 _SASL_34OK:
+; charger R
+        MOV AX, [_SAS_PDV + 52]
+        PUSH AX
+        MOV AX, 1
+        MOV BX, AX
+        POP AX
+        CMP AX, 8000h
+        JE _SASL_37
+        CMP BX, 8000h
+        JE _SASL_37
+        SUB AX, BX
+        JMP _SASL_38
+_SASL_37:
+        MOV AX, 8000h
+_SASL_38:
+        PUSH AX
+        MOV AX, 3
+        MOV BX, AX
+        POP AX
+        CMP AX, 8000h
+        JE _SASL_39
+        CMP BX, 8000h
+        JE _SASL_39
+        IMUL BX
+        JMP _SASL_40
+_SASL_39:
+        MOV AX, 8000h
+_SASL_40:
+        PUSH AX
 ; charger C
         MOV AX, [_SAS_PDV + 54]
+        MOV BX, AX
+        POP AX
+        CMP AX, 8000h
+        JE _SASL_41
+        CMP BX, 8000h
+        JE _SASL_41
+        ADD AX, BX
+        JMP _SASL_42
+_SASL_41:
+        MOV AX, 8000h
+_SASL_42:
+; stocker IDX
+        MOV [_SAS_PDV + 56], AX
+; charger IDX
+        MOV AX, [_SAS_PDV + 56]
 ; affectation MAT{i} = ...
         DEC AX
         SHL AX, 1
@@ -598,28 +642,28 @@ _SASL_34OK:
         MOV BX, AX
         POP AX
         CMP AX, 8000h
-        JE _SASL_37
+        JE _SASL_43
         CMP BX, 8000h
-        JE _SASL_37
+        JE _SASL_43
         IMUL BX
-        JMP _SASL_38
-_SASL_37:
+        JMP _SASL_44
+_SASL_43:
         MOV AX, 8000h
-_SASL_38:
+_SASL_44:
         PUSH AX
 ; charger C
         MOV AX, [_SAS_PDV + 54]
         MOV BX, AX
         POP AX
         CMP AX, 8000h
-        JE _SASL_39
+        JE _SASL_45
         CMP BX, 8000h
-        JE _SASL_39
+        JE _SASL_45
         ADD AX, BX
-        JMP _SASL_40
-_SASL_39:
+        JMP _SASL_46
+_SASL_45:
         MOV AX, 8000h
-_SASL_40:
+_SASL_46:
         POP BX
         MOV WORD PTR [_SAS_PDV + BX], AX
 _SASL_35:
@@ -643,7 +687,7 @@ _SASL_33:
         MOV AH, 40h
         MOV BX, [_SAS_OUTHDL]
         MOV CX, 7
-        LEA DX, _SASK_41
+        LEA DX, _SASK_47
         INT 21h
 ; PUT MAT
 ; charger MAT
@@ -656,7 +700,7 @@ _SASL_33:
         MOV AH, 40h
         MOV BX, [_SAS_OUTHDL]
         MOV CX, 8
-        LEA DX, _SASK_42
+        LEA DX, _SASK_48
         INT 21h
 ; PUT MAT
 ; charger MAT
@@ -708,8 +752,8 @@ _SASK_19  DB  '}=',0
 _SASK_28  DB  'vals{',0
 _SASK_29  DB  '}=',0
 _SASK_30  DB  'tmp{2}=',0
-_SASK_41  DB  'mat{1}=',0
-_SASK_42  DB  ' mat{6}=',0
+_SASK_47  DB  'mat{1}=',0
+_SASK_48  DB  ' mat{6}=',0
 
 _DATA ENDS
 
