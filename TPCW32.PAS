@@ -120,7 +120,7 @@
             Expressions constantes : evaluation a la compilation
               (operations arithmetiques, Ord, Chr, Sizeof, etc.)
 
-  TODO 05 - TABLE DES SYMBOLES
+  TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
             TSymKind : SK_CONST, SK_TYPE, SK_VAR, SK_PARAM,
               SK_PROC, SK_FUNC, SK_FIELD, SK_METHOD, SK_UNIT,
               SK_LABEL, SK_PROPERTY
@@ -1126,6 +1126,63 @@ Var
   { Pool de tokens (pour le parseur futur) }
   TokenPool  : Array[0..MAX_TOKENS - 1] Of TToken;
   TokenCount : Integer;
+
+{ ============================================================ }
+{ TODO 05 - TABLE DES SYMBOLES                    [IMPLEMENTE] }
+{ ============================================================ }
+
+Const
+  MAX_SYM   = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_SCOPE = 64;   { profondeur max de scopes imbriques          }
+
+  { Prefixes de mangling supplementaires pour les symboles }
+  TP_FUNC_PFX = '_TPF_';   { fonctions / procedures               }
+  TP_FLD_PFX  = '_TPFL_';  { champs de record                     }
+
+Type
+  { Categories de symboles dans la table }
+  TSymKind = (
+    SK_CONST,       { constante nommee (Const x = 42)              }
+    SK_TYPE,        { type defini (Type T = ...)                    }
+    SK_VAR,         { variable locale ou globale                    }
+    SK_PARAM,       { parametre de procedure/fonction (valeur)      }
+    SK_PROC,        { procedure                                     }
+    SK_FUNC,        { fonction                                      }
+    SK_FIELD,       { champ de record/objet                        }
+    SK_METHOD,      { methode d objet (TP 5.5+)                    }
+    SK_UNIT,        { unite importee (Uses)                         }
+    SK_LABEL,       { label (Label / Goto)                          }
+    SK_PROPERTY     { propriete d objet (TP8+, stub futur)         }
+  );
+
+  { Un enregistrement de la table des symboles }
+  TSymRec = Record
+    Name        : TString;     { nom original (majuscules)              }
+    MangledName : TString;     { nom mangled pour emission ASM          }
+    Kind        : TSymKind;    { categorie du symbole                   }
+    TypeIdx     : Integer;     { index du type dans TypeTab (-1=aucun)  }
+    Offset      : Integer;     { offset stack ou data segment           }
+    ScopeLevel  : Integer;     { niveau de scope (0 = global)           }
+    ScopeId     : Integer;     { id unique du scope                     }
+    IsGlobal    : Boolean;     { visible globalement ?                  }
+    IsExternal  : Boolean;     { declare dans une unite externe ?       }
+    UnitName    : TString;     { nom de l unite d origine (ou '')       }
+    ImmVal      : LongInt;     { valeur immediate (const, enum)         }
+    ParamCount  : Integer;     { nombre de parametres (proc/func)       }
+  End;
+
+Var
+  { Table des symboles }
+  SymTab      : Array[0..MAX_SYM - 1] Of TSymRec;
+  SymCount    : Integer;
+
+  { Gestion des portees }
+  CurScopeLevel : Integer;   { niveau de scope courant (0 = global)    }
+  CurScopeId    : Integer;   { id du scope courant                     }
+  ScopeIdSeq    : Integer;   { sequence pour generer des ids uniques    }
+
+{ Forward declarations TODO 05 }
+Procedure SymRegisterBuiltins; Forward;
 
 { ------------------------------------------------------------ }
 { Fonctions de classification de caracteres                    }
@@ -2850,6 +2907,417 @@ Begin
   End;
 End;
 
+{ ============================================================ }
+{ TODO 05 - TABLE DES SYMBOLES                    [IMPLEMENTE] }
+{ ============================================================ }
+
+{ ------------------------------------------------------------ }
+{ SymInit : initialiser la table des symboles                  }
+{ ------------------------------------------------------------ }
+
+Procedure SymInit;
+Var I : Integer;
+Begin
+  SymCount      := 0;
+  CurScopeLevel := 0;
+  CurScopeId    := 0;
+  ScopeIdSeq    := 0;
+  For I := 0 To MAX_SYM - 1 Do
+  Begin
+    SymTab[I].Name        := '';
+    SymTab[I].MangledName := '';
+    SymTab[I].Kind        := SK_VAR;
+    SymTab[I].TypeIdx     := -1;
+    SymTab[I].Offset      := 0;
+    SymTab[I].ScopeLevel  := 0;
+    SymTab[I].ScopeId     := 0;
+    SymTab[I].IsGlobal    := False;
+    SymTab[I].IsExternal  := False;
+    SymTab[I].UnitName    := '';
+    SymTab[I].ImmVal      := 0;
+    SymTab[I].ParamCount  := 0;
+  End;
+  SymRegisterBuiltins;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymMangle : generer un nom mangled pour un symbole           }
+{ selon sa categorie                                           }
+{ ------------------------------------------------------------ }
+
+Function SymMangle(Const Name : TString; Kind : TSymKind) : TString;
+Begin
+  Case Kind Of
+    SK_CONST    : SymMangle := TP_VAR_PFX + Name;
+    SK_TYPE     : SymMangle := Name;
+    SK_VAR      : SymMangle := TP_VAR_PFX + Name;
+    SK_PARAM    : SymMangle := TP_VAR_PFX + Name;
+    SK_PROC     : SymMangle := TP_FUNC_PFX + Name;
+    SK_FUNC     : SymMangle := TP_FUNC_PFX + Name;
+    SK_FIELD    : SymMangle := TP_FLD_PFX + Name;
+    SK_METHOD   : SymMangle := TP_FUNC_PFX + Name;
+    SK_UNIT     : SymMangle := Name;
+    SK_LABEL    : SymMangle := TP_LBL_PFX + Name;
+    SK_PROPERTY : SymMangle := Name;
+  Else
+    SymMangle := TP_VAR_PFX + Name;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymFindInScope : chercher un symbole dans un scope precis    }
+{ Retourne l index ou -1 si non trouve                         }
+{ Comparaison insensible a la casse (Turbo Pascal)             }
+{ ------------------------------------------------------------ }
+
+Function SymFindInScope(Const Name : TString;
+                        Level : Integer) : Integer;
+Var
+  I  : Integer;
+  Up : TString;
+Begin
+  Up := StrUpperCase(Name);
+  For I := SymCount - 1 DownTo 0 Do
+  Begin
+    If (SymTab[I].Name = Up) And
+       (SymTab[I].ScopeLevel = Level) And
+       ((Level = 0) Or (SymTab[I].ScopeId = CurScopeId)) Then
+    Begin
+      SymFindInScope := I;
+      Exit;
+    End;
+  End;
+  SymFindInScope := -1;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymFind : chercher un symbole du scope courant vers global   }
+{ Retourne l index ou -1 si non trouve                         }
+{ ------------------------------------------------------------ }
+
+Function SymFind(Const Name : TString) : Integer;
+Var
+  I  : Integer;
+  Up : TString;
+Begin
+  Up := StrUpperCase(Name);
+  For I := SymCount - 1 DownTo 0 Do
+  Begin
+    If (SymTab[I].Name = Up) And
+       (SymTab[I].ScopeLevel <= CurScopeLevel) Then
+    Begin
+      SymFind := I;
+      Exit;
+    End;
+  End;
+  SymFind := -1;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymFindInUnit : chercher un symbole qualifie par unite        }
+{ Ex: Crt.ClrScr -> chercher ClrScr avec UnitName='CRT'       }
+{ ------------------------------------------------------------ }
+
+Function SymFindInUnit(Const UName, Name : TString) : Integer;
+Var
+  I  : Integer;
+  Up : TString;
+  UU : TString;
+Begin
+  Up := StrUpperCase(Name);
+  UU := StrUpperCase(UName);
+  For I := SymCount - 1 DownTo 0 Do
+  Begin
+    If (SymTab[I].Name = Up) And
+       (SymTab[I].UnitName = UU) Then
+    Begin
+      SymFindInUnit := I;
+      Exit;
+    End;
+  End;
+  SymFindInUnit := -1;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymAdd : ajouter un symbole dans la table                    }
+{ Retourne l index du symbole ajoute, ou -1 si erreur          }
+{ ------------------------------------------------------------ }
+
+Function SymAdd(Const Name : TString; Kind : TSymKind;
+                TIdx : Integer) : Integer;
+Var
+  Up  : TString;
+  Dup : Integer;
+Begin
+  If SymCount >= MAX_SYM Then
+  Begin
+    WarnMsg('table des symboles pleine (MAX_SYM=' +
+      IntToStr_(MAX_SYM) + ')');
+    SymAdd := -1;
+    Exit;
+  End;
+
+  Up := StrUpperCase(Name);
+
+  { Verifier doublon dans le scope courant }
+  Dup := SymFindInScope(Up, CurScopeLevel);
+  If Dup >= 0 Then
+  Begin
+    { Permettre la redefinition d une forward declaration }
+    If SymTab[Dup].IsExternal And
+       (Kind In [SK_PROC, SK_FUNC, SK_VAR]) Then
+    Begin
+      SymTab[Dup].Kind       := Kind;
+      SymTab[Dup].TypeIdx    := TIdx;
+      SymTab[Dup].IsExternal := False;
+      SymAdd := Dup;
+      Exit;
+    End
+    { Permettre qu un proc/func masque un type pre-declare }
+    Else If (SymTab[Dup].Kind = SK_TYPE) And
+            (Kind In [SK_PROC, SK_FUNC, SK_VAR]) Then
+    Begin
+      { On laisse passer, le nouveau symbole sera ajoute }
+    End
+    Else
+    Begin
+      WarnMsg('symbole deja defini dans ce scope: ' + Up);
+      SymAdd := Dup;
+      Exit;
+    End;
+  End;
+
+  { Ajouter le symbole }
+  SymTab[SymCount].Name        := Up;
+  SymTab[SymCount].MangledName := SymMangle(Up, Kind);
+  SymTab[SymCount].Kind        := Kind;
+  SymTab[SymCount].TypeIdx     := TIdx;
+  SymTab[SymCount].Offset      := 0;
+  SymTab[SymCount].ScopeLevel  := CurScopeLevel;
+  SymTab[SymCount].ScopeId     := CurScopeId;
+  SymTab[SymCount].IsGlobal    := (CurScopeLevel = 0);
+  SymTab[SymCount].IsExternal  := False;
+  SymTab[SymCount].UnitName    := '';
+  SymTab[SymCount].ImmVal      := 0;
+  SymTab[SymCount].ParamCount  := 0;
+
+  SymAdd := SymCount;
+  Inc(SymCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ SymEnterScope / SymLeaveScope : gestion des portees           }
+{ ------------------------------------------------------------ }
+
+Procedure SymEnterScope;
+Begin
+  If CurScopeLevel >= MAX_SCOPE Then
+  Begin
+    WarnMsg('profondeur de scope maximale atteinte');
+    Exit;
+  End;
+  Inc(CurScopeLevel);
+  Inc(ScopeIdSeq);
+  CurScopeId := ScopeIdSeq;
+  If Opts.DebugMode Then
+    WriteLn('  SCOPE_ENTER: level=', CurScopeLevel,
+            ' id=', CurScopeId);
+End;
+
+Procedure SymLeaveScope;
+Begin
+  If CurScopeLevel <= 0 Then
+  Begin
+    WarnMsg('tentative de quitter le scope global');
+    Exit;
+  End;
+  If Opts.DebugMode Then
+    WriteLn('  SCOPE_LEAVE: level=', CurScopeLevel);
+  Dec(CurScopeLevel);
+  If CurScopeLevel = 0 Then
+    CurScopeId := 0
+  Else
+    CurScopeId := CurScopeLevel;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymRegisterBuiltins : pre-enregistrer les types, constantes, }
+{ procedures et fonctions predefinies de Turbo Pascal           }
+{ Le compilateur les reconnait automatiquement sans qu ils      }
+{ soient declares explicitement dans le code source.            }
+{ ------------------------------------------------------------ }
+
+Procedure SymRegisterBuiltins;
+
+  { Registrer un type predefini }
+  Procedure RegType(Const Name : TString);
+  Var R : Integer;
+  Begin
+    R := SymAdd(Name, SK_TYPE, -1);
+    If R >= 0 Then
+      SymTab[R].IsGlobal := True;
+  End;
+
+  { Registrer une constante predefinie avec valeur }
+  Procedure RegConst(Const Name : TString; Val : LongInt);
+  Var R : Integer;
+  Begin
+    R := SymAdd(Name, SK_CONST, -1);
+    If R >= 0 Then
+    Begin
+      SymTab[R].ImmVal   := Val;
+      SymTab[R].IsGlobal := True;
+    End;
+  End;
+
+  { Registrer une procedure predefinie }
+  Procedure RegProc(Const Name : TString);
+  Var R : Integer;
+  Begin
+    R := SymAdd(Name, SK_PROC, -1);
+    If R >= 0 Then
+    Begin
+      SymTab[R].IsGlobal  := True;
+      SymTab[R].IsExternal := True;
+    End;
+  End;
+
+  { Registrer une fonction predefinie }
+  Procedure RegFunc(Const Name : TString);
+  Var R : Integer;
+  Begin
+    R := SymAdd(Name, SK_FUNC, -1);
+    If R >= 0 Then
+    Begin
+      SymTab[R].IsGlobal  := True;
+      SymTab[R].IsExternal := True;
+    End;
+  End;
+
+Begin
+  { ---------------------------------------------------------- }
+  { Types predefinis Turbo Pascal                              }
+  { ---------------------------------------------------------- }
+  RegType('INTEGER');    RegType('LONGINT');
+  RegType('WORD');       RegType('BYTE');
+  RegType('SHORTINT');   RegType('CHAR');
+  RegType('BOOLEAN');    RegType('STRING');
+  RegType('REAL');       RegType('POINTER');
+  RegType('TEXT');       RegType('PCHAR');
+
+  { Types TP 5+ }
+  If TPVersionAtLeast(TP_VER_5) Then
+  Begin
+    RegType('SINGLE');   RegType('DOUBLE');
+    RegType('EXTENDED'); RegType('COMP');
+  End;
+
+  { Types TP 7+ }
+  If TPVersionAtLeast(TP_VER_7) Then
+  Begin
+    RegType('LONGWORD');
+  End;
+
+  { ---------------------------------------------------------- }
+  { Constantes predefinies                                      }
+  { ---------------------------------------------------------- }
+  RegConst('TRUE', 1);
+  RegConst('FALSE', 0);
+  RegConst('NIL', 0);
+  RegConst('MAXINT', 32767);
+  RegConst('MAXLONGINT', 2147483647);
+
+  { ---------------------------------------------------------- }
+  { Procedures et fonctions predefinies (toujours disponibles) }
+  { ---------------------------------------------------------- }
+
+  { E/S standard }
+  RegProc('WRITE');      RegProc('WRITELN');
+  RegProc('READ');       RegProc('READLN');
+
+  { Conversion chaines }
+  RegProc('STR');        RegProc('VAL');
+
+  { Allocation memoire }
+  RegProc('NEW');        RegProc('DISPOSE');
+  RegProc('GETMEM');     RegProc('FREEMEM');
+
+  { Inc / Dec }
+  RegProc('INC');        RegProc('DEC');
+
+  { Fonctions ordinales }
+  RegFunc('ORD');        RegFunc('CHR');
+  RegFunc('SUCC');       RegFunc('PRED');
+  RegFunc('LOW');        RegFunc('HIGH');
+  RegFunc('SIZEOF');
+
+  { Fonctions mathematiques }
+  RegFunc('ABS');        RegFunc('SQR');
+  RegFunc('SQRT');       RegFunc('ROUND');
+  RegFunc('TRUNC');      RegFunc('INT');
+  RegFunc('FRAC');       RegFunc('SIN');
+  RegFunc('COS');        RegFunc('LN');
+  RegFunc('EXP');        RegFunc('PI');
+  RegFunc('ARCTAN');
+
+  { Fonctions de controle }
+  RegProc('HALT');       RegProc('EXIT');
+  RegProc('BREAK');      RegProc('CONTINUE');
+  RegProc('RUNERROR');
+
+  { Fonctions booleennes }
+  RegFunc('ODD');        RegFunc('ASSIGNED');
+
+  { Fonctions memoire }
+  RegProc('FILLCHAR');   RegProc('MOVE');
+  RegFunc('ADDR');       RegFunc('OFS');
+  RegFunc('SEG');        RegFunc('CSEG');
+  RegFunc('DSEG');       RegFunc('SSEG');
+  RegFunc('SPTR');
+  RegFunc('PARAMCOUNT'); RegFunc('PARAMSTR');
+
+  { Fonctions sur les chaines }
+  RegFunc('LENGTH');     RegFunc('COPY');
+  RegFunc('POS');        RegFunc('CONCAT');
+  RegFunc('UPCASE');
+  RegProc('INSERT');     RegProc('DELETE');
+
+  { Fichiers binaires }
+  RegProc('BLOCKREAD');  RegProc('BLOCKWRITE');
+  RegProc('ASSIGN');     RegProc('RESET');
+  RegProc('REWRITE');    RegProc('CLOSE');
+  RegFunc('EOF');        RegFunc('EOLN');
+  RegFunc('IORESULT');   RegProc('SEEK');
+  RegFunc('FILEPOS');    RegFunc('FILESIZE');
+  RegProc('RENAME');     RegProc('ERASE');
+  RegProc('APPEND');     RegProc('FLUSH');
+  RegProc('SETTEXTBUF');
+
+  { Repertoires }
+  RegProc('MKDIR');      RegProc('RMDIR');
+  RegProc('CHDIR');      RegProc('GETDIR');
+
+  { Fonctions de conversion }
+  RegFunc('LO');         RegFunc('HI');
+  RegFunc('SWAP');
+
+  { Fonctions diverses }
+  RegFunc('RANDOM');     RegProc('RANDOMIZE');
+  RegFunc('SIZEOF');
+
+  { TP 5.5+ : POO (objets) }
+  If TPVersionAtLeast(TP_VER_55) Then
+  Begin
+    RegFunc('TYPEOF');
+  End;
+
+  { TP 7+ : fonctions supplementaires }
+  If TPVersionAtLeast(TP_VER_7) Then
+  Begin
+    RegFunc('ASSIGNED');
+  End;
+End;
+
 { ------------------------------------------------------------ }
 { Run                                                          }
 { ------------------------------------------------------------ }
@@ -2872,6 +3340,9 @@ Begin
   DataInit;
   TokenPoolInit;
 
+  { Initialiser la table des symboles (TODO 05) }
+  SymInit;
+
   { Initialiser le preprocesseur }
   PPInitDefines;
 
@@ -2887,9 +3358,10 @@ Begin
   TokenPoolRegisterStrings;
 
   If Opts.Verbose Then
-    WriteLn('  Tokens: ', TokenCount, '  Donnees: ', DataCount);
+    WriteLn('  Tokens: ', TokenCount, '  Donnees: ', DataCount,
+            '  Symboles: ', SymCount);
 
-  { TODO 05..25 : compilation complete }
+  { TODO 06..25 : compilation complete }
 
   LexClose;
   ShowStats;
