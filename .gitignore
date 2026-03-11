@@ -1,8 +1,5 @@
 *.o
-SAS86
+*.ppu
 *.exe
 *.EXE
 SAS86
-*.o
-*.ppu
-SAS86.o
