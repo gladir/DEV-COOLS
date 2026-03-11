@@ -1,7 +1,7 @@
 ; ------------------------------------------------------------
 ;  Fichier genere par MODII86 v1.0
 ;  Date   : 2026-03-03
-;  Source : samples\MODULA2\arith_m2.mod
+;  Source : arith_m2.mod
 ;  Module : Arithmetique
 ;  Cible  : MASM 8086, modele SMALL, near cdecl
 ; ------------------------------------------------------------
@@ -68,7 +68,7 @@ _OL_2:
         CALL  _ORT_WRITESTR
         MOV  AX, [_OV_s]
         MOV  AX, 0
-;  Out.Real : emulation REAL non implementee
+;  Out.Real : emulation REAL non implementee (TODO 21+)
         CALL  _ORT_WRITELN
 
 ;  Fin normale du programme
@@ -76,7 +76,7 @@ _OL_2:
         INT  21h
 
 ; ------------------------------------------------------------
-;  ====== RUNTIME InOut / Terminal - MODII86 ====== 
+;  ====== RUNTIME InOut / Terminal - MODII86 TODO 20 ====== 
 
 _ORT_WRITESTR:
         PUSH  AX
@@ -273,7 +273,7 @@ _ORT_HEAP_FREE:
 _CODE           ENDS
 
 
-;  ----- Chaines litterales differees -----
+;  ----- Chaines litterales differees (TODO 25) -----
 _DATA           SEGMENT WORD PUBLIC 'DATA'
 
 _OK_1                   DB      'Somme 1..10 = ', 0

@@ -1,5 +1,2 @@
 *.o
 *.ppu
-CF86
-CF86.o
-/test_output.asm

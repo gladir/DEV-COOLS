@@ -1,0 +1,23 @@
+<html>
+<body>
+<%
+const
+  A = 10 + 5;
+  B = 3 * 7;
+  C = 100 div 3;
+  D = 100 mod 3;
+  E = (2 + 3) * 4;
+  F = -42;
+  G = not 0;
+  H = 5 shl 2;
+  I = 255 and $0F;
+  J = 10 = 10;
+  K = 5 <> 3;
+  L = 3 < 5;
+
+begin
+  WriteLn('Expressions testees');
+end.
+%>
+</body>
+</html>
