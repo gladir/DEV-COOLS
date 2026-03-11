@@ -262,7 +262,7 @@
              Halt / Halt(code) : arret du programme
                -> process.exit(code) ou throw new Error en JS
 
-   TODO 15 - PROCEDURES ET FONCTIONS
+   TODO 15 - PROCEDURES ET FONCTIONS [IMPLEMENTE]
              ParseProcDecl : PROCEDURE nom[(params)]; [directives;] bloc;
              ParseFuncDecl : FUNCTION nom[(params)]: RetType; [directives;] bloc;
              Parametres valeur : procedure P(X: Integer)
@@ -816,6 +816,7 @@ Var
   CurScope   : Integer;         { niveau de portee courant (0=global) }
   CurScopeId : Integer;         { id unique de la portee courante     }
   SymJSSeq   : Integer;         { compteur pour noms JS uniques       }
+  BuiltinSymEnd : Integer;      { indice apres les symboles builtins  }
 
   { Table des types }
   TypeTab    : Array[0..MAX_TYPE - 1] Of TTypeRec;
@@ -3182,11 +3183,23 @@ Begin
     End;
 
     { Fonctions standard : Ord, Chr, Length, Abs, etc. }
+    { Verifier d abord si c est un symbole utilisateur (TODO 15) }
+    { Les procs/funcs decl par l utilisateur (index >= BuiltinSymEnd) }
+    { ont priorite sur les builtins.                                }
     If IsBuiltinFunc(IdName) Then
     Begin
-      Inc(P); { consommer le nom de la fonction }
-      ParseExprFactor := EmitBuiltinCall(IdName, P);
-      Exit;
+      Idx := SymFind(IdName);
+      If (Idx >= BuiltinSymEnd) And
+         ((SymTab[Idx].Kind = SK_PROC) Or (SymTab[Idx].Kind = SK_FUNC)) Then
+      Begin
+        { Symbole utilisateur proc/func : priorite sur builtins }
+      End
+      Else
+      Begin
+        Inc(P); { consommer le nom de la fonction }
+        ParseExprFactor := EmitBuiltinCall(IdName, P);
+        Exit;
+      End;
     End;
 
     { Constante utilisateur ou predefinie }
@@ -3272,6 +3285,16 @@ Begin
       End
       Else
         Break;
+    End;
+
+    { Ajouter () pour les procedures/fonctions sans parentheses (TODO 15) }
+    Idx := SymFind(IdName);
+    If (Idx >= 0) And
+       ((SymTab[Idx].Kind = SK_PROC) Or (SymTab[Idx].Kind = SK_FUNC)) Then
+    Begin
+      { Si Tmp est juste le nom (pas de postfix ()), ajouter () }
+      If Tmp = IdName Then
+        Tmp := Tmp + '()';
     End;
 
     ParseExprFactor := Tmp;
@@ -3448,6 +3471,10 @@ Begin
     Else If (TIdx >= 0) And (TIdx < TypeCount) And
             (TypeTab[TIdx].Kind = TYK_ARRAY) Then
       ParseAssign := Left + ' = ' + Rght + '.slice()'
+    { Affectation au nom de fonction -> Result = valeur (TODO 15) }
+    Else If (Not IsElemAccess) And (TokenPool[SaveP].Kind = TK_IDENT) And
+            (SymIdx >= 0) And (SymTab[SymIdx].Kind = SK_FUNC) Then
+      ParseAssign := 'Result = ' + Rght
     { Affectation normale (y compris elements de tableau/record) }
     Else
       ParseAssign := Left + ' = ' + Rght;
@@ -3496,6 +3523,7 @@ Begin
   CurScope   := 0;
   CurScopeId := 0;
   SymJSSeq   := 0;
+  BuiltinSymEnd := 0;
 End;
 
 { ---- SymGenJSName : generer un nom JavaScript unique -------- }
@@ -4681,8 +4709,12 @@ Begin
   If P < TokenCount Then Inc(P);
 End;
 
+{ Forward declarations pour procedures et fonctions (TODO 15) }
+Procedure ParseProcDecl(Var P : Integer); Forward;
+Procedure ParseFuncDecl(Var P : Integer); Forward;
+
 { ---- ParseDeclSections : parser les sections de declaration - }
-{ Boucle sur CONST, TYPE, VAR, LABEL dans un ordre libre.       }
+{ Boucle sur CONST, TYPE, VAR, LABEL, PROCEDURE, FUNCTION.      }
 { Plusieurs sections de chaque type autorisees.                  }
 Procedure ParseDeclSections(Var P : Integer);
 Var
@@ -4700,6 +4732,10 @@ Begin
       ParseTypeSection(P)
     Else If L = 'label' Then
       ParseLabelSection(P)
+    Else If L = 'procedure' Then
+      ParseProcDecl(P)
+    Else If L = 'function' Then
+      ParseFuncDecl(P)
     Else
       Exit; { mot-cle non reconnu comme section de declaration }
   End;
@@ -5356,6 +5392,401 @@ Begin
   Inc(P);
 End;
 
+{ ============================================================
+  TODO 15 - PROCEDURES ET FONCTIONS [IMPLEMENTE]
+  ============================================================ }
+{ Procedures et fonctions Turbo Pascal -> fonctions JavaScript. }
+{ Gestion des parametres valeur, VAR, CONST, variables locales, }
+{ declarations imbriquees, Forward, Result, Exit.                }
+
+{ ---- ParseParamList : parser la liste de parametres ---------- }
+{ (param1: T1; var param2: T2; const param3: T3)                 }
+{ Retourne la liste des noms JS separes par virgule.             }
+{ VarParams recoit les noms des parametres VAR pour le           }
+{ wrapper post-appel.                                            }
+Function ParseParamList(Var P : Integer) : TString;
+Var
+  ParamNames : Array[0..31] Of TString;
+  ParamIsVar : Array[0..31] Of Boolean;
+  ParamCount : Integer;
+  IsVar      : Boolean;
+  IsConst    : Boolean;
+  L          : TString;
+  I          : Integer;
+  Result_    : TString;
+Begin
+  ParamCount := 0;
+  Result_ := '';
+  If P >= TokenCount Then Begin ParseParamList := ''; Exit; End;
+  If Not ((TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = '(')) Then
+  Begin
+    ParseParamList := '';
+    Exit;
+  End;
+  Inc(P); { consommer ( }
+
+  While (P < TokenCount) And
+        Not ((TokenPool[P].Kind = TK_PUNCT) And
+             (TokenPool[P].Val = ')')) Do
+  Begin
+    IsVar := False;
+    IsConst := False;
+
+    { Verifier les qualificateurs VAR / CONST }
+    If (TokenPool[P].Kind = TK_KEYWORD) Then
+    Begin
+      L := StrLowerCase(TokenPool[P].Val);
+      If L = 'var' Then
+      Begin
+        IsVar := True;
+        Inc(P);
+      End
+      Else If L = 'const' Then
+      Begin
+        IsConst := True;
+        Inc(P);
+      End;
+    End;
+
+    { Collecter les noms de parametres separes par des virgules }
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Do
+    Begin
+      If ParamCount < 32 Then
+      Begin
+        ParamNames[ParamCount] := TokenPool[P].Val;
+        ParamIsVar[ParamCount] := IsVar;
+        SymAdd(TokenPool[P].Val, SK_PARAM, -1);
+        Inc(ParamCount);
+      End;
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ',') Then
+        Inc(P)
+      Else
+        Break;
+    End;
+
+    { Consommer : Type }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ':') Then
+    Begin
+      Inc(P); { consommer : }
+      { Sauter le nom du type (simple ou array of...) }
+      If (P < TokenCount) And
+         ((TokenPool[P].Kind = TK_IDENT) Or
+          (TokenPool[P].Kind = TK_KEYWORD)) Then
+        Inc(P);
+    End;
+
+    { Consommer ; separateur entre groupes de parametres }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ';') Then
+      Inc(P);
+  End;
+
+  { Consommer ) }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = ')') Then
+    Inc(P);
+
+  { Construire la liste des parametres JS }
+  For I := 0 To ParamCount - 1 Do
+  Begin
+    If I > 0 Then Result_ := Result_ + ', ';
+    Result_ := Result_ + ParamNames[I];
+  End;
+
+  ParseParamList := Result_;
+End;
+
+{ ---- SkipDirectives : sauter les directives de routine ------- }
+{ FAR, NEAR, INLINE, ASSEMBLER, EXTERNAL, FORWARD, etc.          }
+{ Retourne True si FORWARD a ete trouve.                          }
+Function SkipDirectives(Var P : Integer) : Boolean;
+Var
+  L        : TString;
+  IsForward : Boolean;
+Begin
+  IsForward := False;
+  While (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Do
+  Begin
+    L := StrLowerCase(TokenPool[P].Val);
+    If (L = 'far') Or (L = 'near') Or (L = 'inline') Or
+       (L = 'assembler') Or (L = 'external') Or (L = 'register') Or
+       (L = 'cdecl') Or (L = 'stdcall') Or (L = 'pascal') Or
+       (L = 'safecall') Or (L = 'overload') Or (L = 'override') Or
+       (L = 'virtual') Or (L = 'abstract') Or (L = 'reintroduce') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ';') Then
+        Inc(P);
+    End
+    Else If L = 'forward' Then
+    Begin
+      IsForward := True;
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ';') Then
+        Inc(P);
+    End
+    Else
+      Break;
+  End;
+  { Also check keywords like EXTERNAL }
+  While (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) Do
+  Begin
+    L := StrLowerCase(TokenPool[P].Val);
+    If L = 'external' Then
+    Begin
+      Inc(P);
+      { Skip external name/index if present }
+      While (P < TokenCount) And
+            Not ((TokenPool[P].Kind = TK_PUNCT) And
+                 (TokenPool[P].Val = ';')) Do
+        Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ';') Then
+        Inc(P);
+    End
+    Else
+      Break;
+  End;
+  SkipDirectives := IsForward;
+End;
+
+{ ---- ParseProcDecl : parser PROCEDURE nom[(params)]; bloc ---- }
+{ PROCEDURE nom[(params)]; [directives;] [decls] BEGIN...END;    }
+{ Genere : function nom(params) en JavaScript.                    }
+Procedure ParseProcDecl;
+Var
+  ProcName   : TString;
+  Params     : TString;
+  L          : TString;
+  IsForward_ : Boolean;
+Begin
+  If P >= TokenCount Then Exit;
+  If (TokenPool[P].Kind <> TK_KEYWORD) Or
+     (StrLowerCase(TokenPool[P].Val) <> 'procedure') Then Exit;
+  Inc(P); { consommer PROCEDURE }
+
+  { Nom de la procedure }
+  ProcName := '';
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+  Begin
+    ProcName := TokenPool[P].Val;
+    Inc(P);
+  End;
+
+  { Enregistrer la procedure dans la table des symboles (scope global) }
+  SymAdd(ProcName, SK_PROC, -1);
+
+  { Entrer dans la portee de la procedure }
+  SymEnterScope;
+
+  { Parser la liste de parametres }
+  Params := ParseParamList(P);
+
+  { Consommer ; }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = ';') Then
+    Inc(P);
+
+  { Verifier les directives (FORWARD, FAR, NEAR, etc.) }
+  IsForward_ := SkipDirectives(P);
+
+  If IsForward_ Then
+  Begin
+    { Forward : pas de corps, declaration JS differee }
+    EmitComment('forward: procedure ' + ProcName);
+    SymLeaveScope;
+    Exit;
+  End;
+
+  { Emettre la declaration JavaScript }
+  EmitLine('function ' + ProcName + '(' + Params + ') {');
+  IndentPush;
+
+  { Parser les declarations locales (CONST, TYPE, VAR, LABEL) }
+  While (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) Do
+  Begin
+    L := StrLowerCase(TokenPool[P].Val);
+    If L = 'const' Then
+      ParseConstSection(P)
+    Else If L = 'var' Then
+      ParseVarSection(P)
+    Else If L = 'type' Then
+      ParseTypeSection(P)
+    Else If L = 'label' Then
+      ParseLabelSection(P)
+    Else If L = 'procedure' Then
+      ParseProcDecl(P)
+    Else If L = 'function' Then
+      ParseFuncDecl(P)
+    Else
+      Break;
+  End;
+
+  { Parser le corps BEGIN...END }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'begin') Then
+  Begin
+    Inc(P); { consommer BEGIN }
+    While (P < TokenCount) And
+          Not ((TokenPool[P].Kind = TK_KEYWORD) And
+               (StrLowerCase(TokenPool[P].Val) = 'end')) Do
+    Begin
+      ParseStmt(P);
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ';') Then
+        Inc(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+       (StrLowerCase(TokenPool[P].Val) = 'end') Then
+      Inc(P);
+  End;
+
+  IndentPop;
+  EmitLine('}');
+  EmitBlankLine;
+
+  { Consommer ; final }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = ';') Then
+    Inc(P);
+
+  { Quitter la portee }
+  SymLeaveScope;
+End;
+
+{ ---- ParseFuncDecl : parser FUNCTION nom[(params)]: Ret; bloc }
+{ FUNCTION nom[(params)]: RetType; [directives;] [decls]         }
+{ BEGIN...END;                                                    }
+{ Genere : function nom(params) avec var Result; return Result;  }
+Procedure ParseFuncDecl;
+Var
+  FuncName   : TString;
+  Params     : TString;
+  RetType    : TString;
+  L          : TString;
+  IsForward_ : Boolean;
+Begin
+  If P >= TokenCount Then Exit;
+  If (TokenPool[P].Kind <> TK_KEYWORD) Or
+     (StrLowerCase(TokenPool[P].Val) <> 'function') Then Exit;
+  Inc(P); { consommer FUNCTION }
+
+  { Nom de la fonction }
+  FuncName := '';
+  RetType := '';
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+  Begin
+    FuncName := TokenPool[P].Val;
+    Inc(P);
+  End;
+
+  { Enregistrer la fonction dans la table des symboles (scope global) }
+  SymAdd(FuncName, SK_FUNC, TypeFindByName(RetType));
+
+  { Entrer dans la portee de la fonction }
+  SymEnterScope;
+
+  { Parser la liste de parametres }
+  Params := ParseParamList(P);
+
+  { Consommer : RetType }
+  RetType := '';
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = ':') Then
+  Begin
+    Inc(P); { consommer : }
+    If (P < TokenCount) And
+       ((TokenPool[P].Kind = TK_IDENT) Or
+        (TokenPool[P].Kind = TK_KEYWORD)) Then
+    Begin
+      RetType := TokenPool[P].Val;
+      Inc(P);
+    End;
+  End;
+
+  { Consommer ; }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = ';') Then
+    Inc(P);
+
+  { Verifier les directives (FORWARD, FAR, NEAR, etc.) }
+  IsForward_ := SkipDirectives(P);
+
+  If IsForward_ Then
+  Begin
+    { Forward : pas de corps, declaration JS differee }
+    EmitComment('forward: function ' + FuncName);
+    SymLeaveScope;
+    Exit;
+  End;
+
+  { Emettre la declaration JavaScript }
+  EmitLine('function ' + FuncName + '(' + Params + ') {');
+  IndentPush;
+
+  { Variable Result implicite pour stocker la valeur de retour }
+  { En TP, le nom de la fonction ou Result sert de valeur retour }
+  EmitLine('var Result = null;');
+  SymAdd('Result', SK_VAR, TypeFindByName(RetType));
+
+  { Parser les declarations locales (CONST, TYPE, VAR, LABEL) }
+  While (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) Do
+  Begin
+    L := StrLowerCase(TokenPool[P].Val);
+    If L = 'const' Then
+      ParseConstSection(P)
+    Else If L = 'var' Then
+      ParseVarSection(P)
+    Else If L = 'type' Then
+      ParseTypeSection(P)
+    Else If L = 'label' Then
+      ParseLabelSection(P)
+    Else If L = 'procedure' Then
+      ParseProcDecl(P)
+    Else If L = 'function' Then
+      ParseFuncDecl(P)
+    Else
+      Break;
+  End;
+
+  { Parser le corps BEGIN...END }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'begin') Then
+  Begin
+    Inc(P); { consommer BEGIN }
+    While (P < TokenCount) And
+          Not ((TokenPool[P].Kind = TK_KEYWORD) And
+               (StrLowerCase(TokenPool[P].Val) = 'end')) Do
+    Begin
+      ParseStmt(P);
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ';') Then
+        Inc(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+       (StrLowerCase(TokenPool[P].Val) = 'end') Then
+      Inc(P);
+  End;
+
+  { Retourner la valeur de Result a la fin }
+  EmitLine('return Result;');
+  IndentPop;
+  EmitLine('}');
+  EmitBlankLine;
+
+  { Consommer ; final }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = ';') Then
+    Inc(P);
+
+  { Quitter la portee }
+  SymLeaveScope;
+End;
+
 { ---- ParseBeginEndMain : parser le bloc principal ------------ }
 { BEGIN ... END. du programme principal                           }
 Procedure ParseBeginEndMain(Var P : Integer);
@@ -5462,6 +5893,7 @@ Begin
   TypeRegisterBuiltins;
   SymInit;
   SymRegisterBuiltins;
+  BuiltinSymEnd := SymCount;
   If Opts.Verbose Then ShowBanner;
 
   { Ouvrir le fichier source }
