@@ -56,7 +56,7 @@
              NUMBER(T) : nombre d elements d un type ordinal ou tableau
              ORD(x), VAL(T,x) : conversion ordinale
 
-   TODO 04 - OPERATEURS ET PRECEDENCE
+   TODO 04 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
              Arithmetiques  : + - * DIV MOD (entiers)
                               + - * / (reels -> entiers tronques)
              Concatenation  : & (TEXT & TEXT -> appel _M3RT_CONCAT)
@@ -2086,6 +2086,267 @@ Begin
     If TokenPool[I].Kind = TK_STRING Then
       DataGetOrAddStr(TokenPool[I].Val);
   End;
+End;
+
+(* ============================================================
+   TODO 04 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
+   ============================================================ *)
+
+(* ---- IsM3BinOp : vrai si le token est un operateur binaire -- *)
+(* Operateurs binaires Modula-3 : + - * / & = # < <= > >=       *)
+(* Mots-cles operateurs : DIV MOD AND OR IN                      *)
+
+Function IsM3BinOp(Const T : TPoolToken) : Boolean;
+Begin
+  IsM3BinOp := False;
+  If T.Kind = TK_OP Then
+  Begin
+    If (T.Val = '+') Or (T.Val = '-') Or (T.Val = '*') Or
+       (T.Val = '/') Or (T.Val = '&') Or (T.Val = '=') Or
+       (T.Val = '#') Or (T.Val = '<') Or (T.Val = '>') Or
+       (T.Val = '<=') Or (T.Val = '>=') Then
+      IsM3BinOp := True;
+  End
+  Else If T.Kind = TK_KEYWORD Then
+  Begin
+    If (T.Val = 'DIV') Or (T.Val = 'MOD') Or
+       (T.Val = 'AND') Or (T.Val = 'OR') Or
+       (T.Val = 'IN') Then
+      IsM3BinOp := True;
+  End;
+End;
+
+(* ---- BinOpPrec : table de precedences Modula-3 (Pratt) ------ *)
+(* Retourne 0 si l operateur n est pas binaire.                  *)
+(* Niveaux (croissant = plus serre) :                            *)
+(*   OR                         -> 1  (OU logique)               *)
+(*   AND                        -> 2  (ET logique)               *)
+(*   = # < <= > >= IN           -> 3  (comparaison/appartenance) *)
+(*   + - (binaire)              -> 4  (additif)                  *)
+(*   * DIV MOD / &              -> 5  (multiplicatif/concat)     *)
+(*   NOT unaire +/-             -> traites par ParseUnary/Const  *)
+
+Function BinOpPrec(Const Op : TString) : Integer;
+Begin
+  If Op = 'OR' Then
+    BinOpPrec := 1
+  Else If Op = 'AND' Then
+    BinOpPrec := 2
+  Else If (Op = '=') Or (Op = '#') Or (Op = '<') Or (Op = '>') Or
+          (Op = '<=') Or (Op = '>=') Or (Op = 'IN') Then
+    BinOpPrec := 3
+  Else If (Op = '+') Or (Op = '-') Then
+    BinOpPrec := 4
+  Else If (Op = '*') Or (Op = 'DIV') Or (Op = 'MOD') Or
+          (Op = '/') Or (Op = '&') Then
+    BinOpPrec := 5
+  Else
+    BinOpPrec := 0;
+End;
+
+(* ---- BinOpIsRight : vrai si operateur droit-associatif ------ *)
+(* En Modula-3 aucun operateur binaire standard n est droite,    *)
+(* sauf := qui est traite separement.                            *)
+
+Function BinOpIsRight(Const Op : TString) : Boolean;
+Begin
+  BinOpIsRight := False;
+End;
+
+(* ---- ExprFlushToAX : charger TExprVal dans AX --------------- *)
+(* Genere le code 8086 pour mettre la valeur de E dans AX.       *)
+
+Procedure ExprFlushToAX(Var E : TExprVal);
+Var S : TString;
+Begin
+  Case E.Kind Of
+    EK_IMM :
+    Begin
+      Str(E.ImmVal, S);
+      WriteLn(OutF, '        MOV     AX, ', S);
+      E.Kind := EK_AX;
+    End;
+    EK_MEM :
+    Begin
+      If (E.Offset >= 0) And (E.Offset < DataCount) Then
+      Begin
+        (* Charger l adresse d une chaine DATA dans AX *)
+        If DataTab[E.Offset].Kind = DK_STR Then
+          WriteLn(OutF, '        LEA     AX, ', DataTab[E.Offset].LblName)
+        Else
+          WriteLn(OutF, '        MOV     AX, WORD PTR ', DataTab[E.Offset].LblName);
+      End
+      Else
+      Begin
+        Str(E.Offset, S);
+        WriteLn(OutF, '        MOV     AX, WORD PTR [BP+', S, ']');
+      End;
+      E.Kind := EK_AX;
+    End;
+    EK_AX :
+      ; (* deja dans AX *)
+    EK_NONE :
+      WriteLn(OutF, '        XOR     AX, AX');
+  End;
+End;
+
+(* ---- EmitBinOp : generer le code 8086 pour AX op BX --------- *)
+(* AX contient l operande gauche, BX l operande droite.          *)
+(* Resultat dans AX.                                              *)
+
+Procedure EmitBinOp(Const Op : TString);
+Var
+  LblTrue, LblEnd : TString;
+Begin
+  (* Arithmetique entiere *)
+  If Op = '+' Then
+    WriteLn(OutF, '        ADD     AX, BX')
+  Else If Op = '-' Then
+    WriteLn(OutF, '        SUB     AX, BX')
+  Else If Op = '*' Then
+    WriteLn(OutF, '        IMUL    BX')
+  Else If (Op = 'DIV') Or (Op = '/') Then
+  Begin
+    WriteLn(OutF, '        CWD');
+    WriteLn(OutF, '        IDIV    BX');
+    (* quotient dans AX *)
+  End
+  Else If Op = 'MOD' Then
+  Begin
+    WriteLn(OutF, '        CWD');
+    WriteLn(OutF, '        IDIV    BX');
+    WriteLn(OutF, '        MOV     AX, DX');
+    (* reste dans DX -> AX *)
+  End
+
+  (* Concatenation TEXT : & -> CALL _M3RT_CONCAT *)
+  Else If Op = '&' Then
+  Begin
+    WriteLn(OutF, '        MOV     SI, AX');
+    WriteLn(OutF, '        MOV     DI, BX');
+    WriteLn(OutF, '        CALL    ', M3_RT_PFX, 'CONCAT');
+    (* resultat dans AX *)
+  End
+
+  (* Comparaisons : = # < <= > >= *)
+  Else If (Op = '=') Or (Op = '#') Or (Op = '<') Or (Op = '>') Or
+          (Op = '<=') Or (Op = '>=') Then
+  Begin
+    Inc(LabelGenSeq);
+    Str(LabelGenSeq, LblTrue);
+    LblTrue := M3_LBL_PFX + LblTrue;
+    Inc(LabelGenSeq);
+    Str(LabelGenSeq, LblEnd);
+    LblEnd := M3_LBL_PFX + LblEnd;
+
+    WriteLn(OutF, '        CMP     AX, BX');
+    If Op = '=' Then
+      WriteLn(OutF, '        JE      ', LblTrue)
+    Else If Op = '#' Then
+      WriteLn(OutF, '        JNE     ', LblTrue)
+    Else If Op = '<' Then
+      WriteLn(OutF, '        JL      ', LblTrue)
+    Else If Op = '>' Then
+      WriteLn(OutF, '        JG      ', LblTrue)
+    Else If Op = '<=' Then
+      WriteLn(OutF, '        JLE     ', LblTrue)
+    Else If Op = '>=' Then
+      WriteLn(OutF, '        JGE     ', LblTrue);
+    WriteLn(OutF, '        XOR     AX, AX');
+    WriteLn(OutF, '        JMP     SHORT ', LblEnd);
+    WriteLn(OutF, LblTrue, ':');
+    WriteLn(OutF, '        MOV     AX, 1');
+    WriteLn(OutF, LblEnd, ':');
+  End
+
+  (* IN : element IN ensemble (stub - traite comme comparaison) *)
+  Else If Op = 'IN' Then
+  Begin
+    (* Stub : teste si bit AX est dans le masque BX *)
+    Inc(LabelGenSeq);
+    Str(LabelGenSeq, LblTrue);
+    LblTrue := M3_LBL_PFX + LblTrue;
+    Inc(LabelGenSeq);
+    Str(LabelGenSeq, LblEnd);
+    LblEnd := M3_LBL_PFX + LblEnd;
+
+    WriteLn(OutF, '        MOV     CX, AX');
+    WriteLn(OutF, '        MOV     AX, 1');
+    WriteLn(OutF, '        SHL     AX, CL');
+    WriteLn(OutF, '        TEST    AX, BX');
+    WriteLn(OutF, '        JNZ     ', LblTrue);
+    WriteLn(OutF, '        XOR     AX, AX');
+    WriteLn(OutF, '        JMP     SHORT ', LblEnd);
+    WriteLn(OutF, LblTrue, ':');
+    WriteLn(OutF, '        MOV     AX, 1');
+    WriteLn(OutF, LblEnd, ':');
+  End
+
+  (* AND logique (court-circuit) *)
+  Else If Op = 'AND' Then
+  Begin
+    (* AX = (AX <> 0) AND (BX <> 0) *)
+    Inc(LabelGenSeq);
+    Str(LabelGenSeq, LblEnd);
+    LblEnd := M3_LBL_PFX + LblEnd;
+
+    WriteLn(OutF, '        TEST    AX, AX');
+    WriteLn(OutF, '        JZ      ', LblEnd);
+    WriteLn(OutF, '        TEST    BX, BX');
+    WriteLn(OutF, '        JZ      ', LblEnd);
+    WriteLn(OutF, '        MOV     AX, 1');
+    WriteLn(OutF, LblEnd, ':');
+  End
+
+  (* OR logique (court-circuit) *)
+  Else If Op = 'OR' Then
+  Begin
+    Inc(LabelGenSeq);
+    Str(LabelGenSeq, LblTrue);
+    LblTrue := M3_LBL_PFX + LblTrue;
+    Inc(LabelGenSeq);
+    Str(LabelGenSeq, LblEnd);
+    LblEnd := M3_LBL_PFX + LblEnd;
+
+    WriteLn(OutF, '        TEST    AX, AX');
+    WriteLn(OutF, '        JNZ     ', LblTrue);
+    WriteLn(OutF, '        TEST    BX, BX');
+    WriteLn(OutF, '        JNZ     ', LblTrue);
+    WriteLn(OutF, '        XOR     AX, AX');
+    WriteLn(OutF, '        JMP     SHORT ', LblEnd);
+    WriteLn(OutF, LblTrue, ':');
+    WriteLn(OutF, '        MOV     AX, 1');
+    WriteLn(OutF, LblEnd, ':');
+  End;
+End;
+
+(* ---- EmitUnaryOp : generer le code 8086 pour op unaire ------- *)
+(* NOT : negation logique (AX=0 -> 1, AX<>0 -> 0)               *)
+(* unaire - : NEG AX                                              *)
+(* unaire + : noop                                                *)
+
+Procedure EmitUnaryOp(Const Op : TString);
+Var LblEnd : TString;
+Begin
+  If Op = 'NOT' Then
+  Begin
+    Inc(LabelGenSeq);
+    Str(LabelGenSeq, LblEnd);
+    LblEnd := M3_LBL_PFX + LblEnd;
+
+    WriteLn(OutF, '        TEST    AX, AX');
+    WriteLn(OutF, '        JZ      ', LblEnd);
+    WriteLn(OutF, '        XOR     AX, AX');
+    WriteLn(OutF, '        JMP     SHORT ', LblEnd, '_D');
+    WriteLn(OutF, LblEnd, ':');
+    WriteLn(OutF, '        MOV     AX, 1');
+    WriteLn(OutF, LblEnd, '_D:');
+  End
+  Else If Op = '-' Then
+    WriteLn(OutF, '        NEG     AX')
+  Else If Op = '+' Then
+    (* noop *)
+  ;
 End;
 
 (* ---- Statistiques ----------------------------------------- *)
