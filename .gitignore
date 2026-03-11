@@ -1,3 +1,5 @@
 *.o
 *.ppu
 TPCW32
+TPCW32
+*.o

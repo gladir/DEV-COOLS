@@ -118,6 +118,14 @@ EXTRN _FlushFileBuffers@4:NEAR
 ; --- user32.dll ---
 EXTRN _GetAsyncKeyState@4:NEAR
 EXTRN _GetKeyState@4:NEAR
+; --- Imports Win32 pour emulation interruptions (TODO 23) ---
+; --- kernel32.dll ---
+EXTRN _SetConsoleScreenBufferSize@8:NEAR
+EXTRN _WriteConsoleOutputAttribute@20:NEAR
+; --- user32.dll ---
+EXTRN _GetCursorPos@4:NEAR
+EXTRN _GetSystemMetrics@4:NEAR
+EXTRN _ShowCursor@4:NEAR
 
 ; --- Segment de donnees ---
 .DATA
@@ -247,6 +255,22 @@ OBJ_BYTESRW DD 0
 MEM_TMPVAL  DD 0
 PORT_TMPVAL DD 0
 PORT_RTCIDX DB 0
+
+; --- Variables interruptions (emulation TODO 23) ---
+INT_VIDEOMODE DB 3
+INT_CURSORX   DB 0
+INT_CURSORY   DB 0
+INT_CURPAGE   DB 0
+INT_MOUSEBTNS DD 0
+INT_MOUSEX    DD 0
+INT_MOUSEY    DD 0
+INT_MOUSEVIS  DD 0
+INT_KBCHAR    DB 0
+INT_KBSCAN    DB 0
+INT_CSBI      DB 24 DUP(0)
+INT_CURPOS    DD 0,0
+INT_INPREC    DB 32 DUP(0)
+INT_INEVCNT   DD 0
 
 ; --- Constantes et donnees utilisateur ---
 _TPK_1  DB '=== Test structures de controle (TODO 13) ===',0
@@ -3006,5 +3030,300 @@ _TPL_94:
         MOV BYTE PTR [PORT_RTCIDX],DL
 _TPL_95:
         POP EBX
+        RET
+
+; ============================================================
+;  RUNTIME INTR : emulation INT 10h/16h/33h et Intr()        
+; ============================================================
+_TPRT_INT10:
+        PUSH EBX
+        PUSH ECX
+        PUSH EDX
+        PUSH ESI
+        PUSH EDI
+        MOV EBX,EAX
+        SHR EBX,8
+        AND EBX,0FFh
+        CMP BL,00h
+        JE _TPL_96
+        CMP BL,02h
+        JE _TPL_97
+        CMP BL,03h
+        JE _TPL_98
+        CMP BL,06h
+        JE _TPL_99
+        CMP BL,07h
+        JE _TPL_100
+        CMP BL,09h
+        JE _TPL_101
+        CMP BL,0Eh
+        JE _TPL_102
+        CMP BL,0Fh
+        JE _TPL_103
+        JMP _TPL_105
+_TPL_96:
+; INT 10h AH=00h : set video mode
+        AND EAX,0FFh
+        MOV BYTE PTR [INT_VIDEOMODE],AL
+        CMP AL,03h
+        JNE _TPL_104
+        PUSH 001900050h
+        PUSH DWORD PTR [HSTDOUT]
+        CALL _SetConsoleScreenBufferSize@8
+        JMP _TPL_104
+_TPL_97:
+; INT 10h AH=02h : set cursor position
+        MOV BYTE PTR [INT_CURSORY],DH
+        MOV BYTE PTR [INT_CURSORX],DL
+        MOVZX ECX,DL
+        MOVZX ESI,DH
+        SHL ESI,16
+        OR ECX,ESI
+        PUSH ECX
+        PUSH DWORD PTR [HSTDOUT]
+        CALL _SetConsoleCursorPosition@8
+        JMP _TPL_104
+_TPL_98:
+; INT 10h AH=03h : get cursor position
+        PUSH OFFSET INT_CSBI
+        PUSH DWORD PTR [HSTDOUT]
+        CALL _GetConsoleScreenBufferInfo@8
+        MOVZX EDX,WORD PTR [INT_CSBI+4]
+        MOV DL,BYTE PTR [INT_CSBI+4]
+        MOV DH,BYTE PTR [INT_CSBI+6]
+        MOV CX,0607h
+        JMP _TPL_104
+_TPL_99:
+; INT 10h AH=06h : scroll up
+        AND EAX,0FFh
+        TEST EAX,EAX
+        JNZ _TPL_104
+        PUSH OFFSET BYTESWR
+        PUSH 0
+        PUSH 2000
+        PUSH 32
+        PUSH DWORD PTR [HSTDOUT]
+        CALL _FillConsoleOutputCharacterA@20
+        PUSH OFFSET BYTESWR
+        PUSH 0
+        PUSH 2000
+        PUSH 7
+        PUSH DWORD PTR [HSTDOUT]
+        CALL _FillConsoleOutputAttribute@20
+        PUSH 0
+        PUSH DWORD PTR [HSTDOUT]
+        CALL _SetConsoleCursorPosition@8
+        JMP _TPL_104
+_TPL_100:
+; INT 10h AH=07h : scroll down (stub)
+        JMP _TPL_104
+_TPL_101:
+; INT 10h AH=09h : write char+attr
+        AND EAX,0FFh
+        MOV BYTE PTR [NUMBUF],AL
+        PUSH OFFSET BYTESWR
+        PUSH 0
+        PUSH 1
+        PUSH OFFSET NUMBUF
+        PUSH DWORD PTR [HSTDOUT]
+        CALL _WriteFile@20
+        JMP _TPL_104
+_TPL_102:
+; INT 10h AH=0Eh : teletype write
+        AND EAX,0FFh
+        MOV BYTE PTR [NUMBUF],AL
+        PUSH OFFSET BYTESWR
+        PUSH 0
+        PUSH 1
+        PUSH OFFSET NUMBUF
+        PUSH DWORD PTR [HSTDOUT]
+        CALL _WriteFile@20
+        JMP _TPL_104
+_TPL_103:
+; INT 10h AH=0Fh : get video mode
+        MOVZX EAX,BYTE PTR [INT_VIDEOMODE]
+        OR EAX,5000h
+        XOR EBX,EBX
+        JMP _TPL_104
+_TPL_105:
+; INT 10h : fonction non emulee
+_TPL_104:
+        POP EDI
+        POP ESI
+        POP EDX
+        POP ECX
+        POP EBX
+        RET
+
+_TPRT_INT16:
+        PUSH EBX
+        PUSH ECX
+        PUSH EDX
+        MOV EBX,EAX
+        SHR EBX,8
+        AND EBX,0FFh
+        CMP BL,00h
+        JE _TPL_106
+        CMP BL,01h
+        JE _TPL_107
+        JMP _TPL_109
+_TPL_106:
+; INT 16h AH=00h : read key (blocking)
+_TPL_110:
+        PUSH OFFSET INT_INEVCNT
+        PUSH 1
+        PUSH OFFSET INT_INPREC
+        PUSH DWORD PTR [HSTDIN]
+        CALL _ReadConsoleInputA@16
+        CMP WORD PTR [INT_INPREC],1
+        JNE _TPL_109
+        CMP DWORD PTR [INT_INPREC+4],1
+        JNE _TPL_109
+        MOVZX EAX,BYTE PTR [INT_INPREC+14]
+        MOV AH,BYTE PTR [INT_INPREC+12]
+        MOV BYTE PTR [INT_KBCHAR],AL
+        MOV BYTE PTR [INT_KBSCAN],AH
+        JMP _TPL_108
+_TPL_107:
+; INT 16h AH=01h : check key available
+        PUSH OFFSET INT_INEVCNT
+        PUSH DWORD PTR [HSTDIN]
+        CALL _GetNumberOfConsoleInputEvents@8
+        CMP DWORD PTR [INT_INEVCNT],0
+        JE _TPL_111
+        PUSH OFFSET INT_INEVCNT
+        PUSH 1
+        PUSH OFFSET INT_INPREC
+        PUSH DWORD PTR [HSTDIN]
+        CALL _PeekConsoleInputA@16
+        CMP WORD PTR [INT_INPREC],1
+        JNE _TPL_110
+        CMP DWORD PTR [INT_INPREC+4],1
+        JNE _TPL_110
+        MOVZX EAX,BYTE PTR [INT_INPREC+14]
+        MOV AH,BYTE PTR [INT_INPREC+12]
+        OR EAX,EAX
+        JMP _TPL_108
+_TPL_110:
+        XOR EAX,EAX
+        JMP _TPL_108
+_TPL_109:
+; INT 16h : fonction non emulee
+        XOR EAX,EAX
+_TPL_108:
+        POP EDX
+        POP ECX
+        POP EBX
+        RET
+
+_TPRT_INT33:
+        PUSH EBX
+        PUSH ECX
+        PUSH EDX
+        AND EAX,0FFFFh
+        CMP AX,0
+        JE _TPL_112
+        CMP AX,3
+        JE _TPL_113
+        JMP _TPL_115
+_TPL_112:
+; INT 33h AX=0 : init mouse
+        PUSH 19
+        CALL _GetSystemMetrics@4
+        TEST EAX,EAX
+        JZ _TPL_116
+        MOV EAX,0FFFFh
+        MOV EBX,2
+        JMP _TPL_114
+_TPL_115:
+        XOR EAX,EAX
+        XOR EBX,EBX
+        JMP _TPL_114
+_TPL_113:
+; INT 33h AX=3 : get mouse pos+buttons
+        PUSH OFFSET INT_CURPOS
+        CALL _GetCursorPos@4
+        MOV ECX,DWORD PTR [INT_CURPOS]
+        MOV EDX,DWORD PTR [INT_CURPOS+4]
+        XOR EBX,EBX
+        PUSH 1
+        CALL _GetAsyncKeyState@4
+        TEST EAX,8000h
+        JZ _TPL_117
+        OR EBX,1
+_TPL_116:
+        PUSH 2
+        CALL _GetAsyncKeyState@4
+        TEST EAX,8000h
+        JZ _TPL_118
+        OR EBX,2
+_TPL_117:
+        MOV EAX,EBX
+        JMP _TPL_114
+_TPL_115:
+; INT 33h : fonction non emulee
+        XOR EAX,EAX
+_TPL_114:
+        POP EDX
+        POP ECX
+        POP EBX
+        RET
+
+_TPRT_INTR:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSH EBX
+        PUSH ECX
+        PUSH EDX
+        PUSH ESI
+        PUSH EDI
+        MOV EAX,DWORD PTR [EBP+8]
+        MOV ESI,DWORD PTR [EBP+12]
+        MOVZX EAX,WORD PTR [ESI]
+        MOVZX EBX,WORD PTR [ESI+2]
+        MOVZX ECX,WORD PTR [ESI+4]
+        MOVZX EDX,WORD PTR [ESI+6]
+        MOV EDI,DWORD PTR [EBP+8]
+        CMP EDI,10h
+        JE _TPL_119
+        CMP EDI,16h
+        JE _TPL_120
+        CMP EDI,21h
+        JE _TPL_121
+        CMP EDI,33h
+        JE _TPL_122
+        JMP _TPL_124
+_TPL_119:
+        CALL _TPRT_INT10
+        MOV WORD PTR [ESI],AX
+        MOV WORD PTR [ESI+2],BX
+        MOV WORD PTR [ESI+4],CX
+        MOV WORD PTR [ESI+6],DX
+        JMP _TPL_123
+_TPL_120:
+        CALL _TPRT_INT16
+        MOV WORD PTR [ESI],AX
+        JMP _TPL_123
+_TPL_121:
+        PUSH ESI
+        CALL _TPRT_MSDOS
+        ADD ESP,4
+        JMP _TPL_123
+_TPL_122:
+        CALL _TPRT_INT33
+        MOV WORD PTR [ESI],AX
+        MOV WORD PTR [ESI+2],BX
+        MOV WORD PTR [ESI+4],CX
+        MOV WORD PTR [ESI+6],DX
+        JMP _TPL_123
+_TPL_124:
+; Interruption non emulee (NOP)
+_TPL_123:
+        POP EDI
+        POP ESI
+        POP EDX
+        POP ECX
+        POP EBX
+        POP EBP
         RET
 END _TPF_Main

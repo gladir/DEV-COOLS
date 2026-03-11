@@ -507,7 +507,7 @@
               Mem[S:O] en lecture -> CALL _TPRT_READMEM(EAX=seg, EDX=ofs) -> AL/AX/EAX
               Mem[S:O] en ecriture -> CALL _TPRT_WRITEMEM(EAX=seg, EDX=ofs, ECX=val)
 
-  TODO 23 - EMULATION INTERRUPTIONS (INT 10h, INT 21h, Intr)
+  TODO 23 - EMULATION INTERRUPTIONS (INT 10h, INT 21h, Intr) [IMPLEMENTE]
             Procedure Intr(IntNo, Regs) de l unite DOS :
               Emulation des interruptions DOS/BIOS via API Windows
             INT 21h (DOS) : voir TODO 19 pour la table des fonctions
@@ -4333,6 +4333,14 @@ Begin
   EmitComment('--- user32.dll ---');
   EmitRaw('EXTRN _GetAsyncKeyState@4:NEAR');
   EmitRaw('EXTRN _GetKeyState@4:NEAR');
+  EmitComment('--- Imports Win32 pour emulation interruptions (TODO 23) ---');
+  EmitComment('--- kernel32.dll ---');
+  EmitRaw('EXTRN _SetConsoleScreenBufferSize@8:NEAR');
+  EmitRaw('EXTRN _WriteConsoleOutputAttribute@20:NEAR');
+  EmitComment('--- user32.dll ---');
+  EmitRaw('EXTRN _GetCursorPos@4:NEAR');
+  EmitRaw('EXTRN _GetSystemMetrics@4:NEAR');
+  EmitRaw('EXTRN _ShowCursor@4:NEAR');
   EmitBlankLine;
 End;
 
@@ -4487,6 +4495,22 @@ Begin
   EmitRaw('MEM_TMPVAL  DD 0');           { valeur temporaire lecture Mem          }
   EmitRaw('PORT_TMPVAL DD 0');           { valeur temporaire lecture Port         }
   EmitRaw('PORT_RTCIDX DB 0');           { index CMOS RTC ($70)                  }
+  EmitBlankLine;
+  EmitComment('--- Variables interruptions (emulation TODO 23) ---');
+  EmitRaw('INT_VIDEOMODE DB 3');         { mode video emule (03h=texte 80x25)    }
+  EmitRaw('INT_CURSORX   DB 0');         { position curseur X (colonne)           }
+  EmitRaw('INT_CURSORY   DB 0');         { position curseur Y (ligne)             }
+  EmitRaw('INT_CURPAGE   DB 0');         { page video active                      }
+  EmitRaw('INT_MOUSEBTNS DD 0');         { boutons souris (bit 0=left,1=right)   }
+  EmitRaw('INT_MOUSEX    DD 0');         { position souris X                      }
+  EmitRaw('INT_MOUSEY    DD 0');         { position souris Y                      }
+  EmitRaw('INT_MOUSEVIS  DD 0');         { visibilite curseur souris              }
+  EmitRaw('INT_KBCHAR    DB 0');         { dernier caractere lu clavier           }
+  EmitRaw('INT_KBSCAN    DB 0');         { dernier scan code lu clavier           }
+  EmitRaw('INT_CSBI      DB 24 DUP(0)');{ CONSOLE_SCREEN_BUFFER_INFO (22 bytes)  }
+  EmitRaw('INT_CURPOS    DD 0,0');       { POINT pour GetCursorPos (8 bytes)      }
+  EmitRaw('INT_INPREC    DB 32 DUP(0)');{ INPUT_RECORD buffer (20+ bytes)        }
+  EmitRaw('INT_INEVCNT   DD 0');         { nombre d evenements console            }
   EmitBlankLine;
 
   { Emettre toutes les entrees du pool de donnees }
@@ -11382,7 +11406,7 @@ Begin
       Exit;
     End;
 
-    { INTR(IntNo, Regs) }
+    { INTR(IntNo, Regs) - emulation interruptions (TODO 23) }
     If Up = 'INTR' Then
     Begin
       Inc(EP);
@@ -11395,7 +11419,8 @@ Begin
         EmitInstr('PUSH EAX');
         EPMatch(')');
       End;
-      EmitComment('Intr(IntNo, Regs) - stub');
+      EmitComment('Intr(IntNo, Regs) - emulation interruptions');
+      EmitInstr('CALL ' + TP_RT_PFX + 'INTR');
       EmitInstr('ADD ESP,8');
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then
@@ -13349,11 +13374,34 @@ Begin
     Exit;
   End;
 
-  { INT nn -> emulation future (commentaire) }
+  { INT nn -> emulation via routines runtime (TODO 23) }
   If Up = 'INT' Then
   Begin
-    EmitComment('INT ' + Op1 + ' (emule - voir TODO 21)');
-    EmitInstr('NOP');
+    If (Op1 = '21h') Or (Op1 = '21H') Or (Op1 = '$21') Then
+    Begin
+      EmitComment('INT 21h -> emulation DOS via _TPRT_MSDOS');
+      EmitInstr('CALL ' + TP_RT_PFX + 'MSDOS');
+    End
+    Else If (Op1 = '10h') Or (Op1 = '10H') Or (Op1 = '$10') Then
+    Begin
+      EmitComment('INT 10h -> emulation Video BIOS via _TPRT_INT10');
+      EmitInstr('CALL ' + TP_RT_PFX + 'INT10');
+    End
+    Else If (Op1 = '16h') Or (Op1 = '16H') Or (Op1 = '$16') Then
+    Begin
+      EmitComment('INT 16h -> emulation Clavier BIOS via _TPRT_INT16');
+      EmitInstr('CALL ' + TP_RT_PFX + 'INT16');
+    End
+    Else If (Op1 = '33h') Or (Op1 = '33H') Or (Op1 = '$33') Then
+    Begin
+      EmitComment('INT 33h -> emulation Souris via _TPRT_INT33');
+      EmitInstr('CALL ' + TP_RT_PFX + 'INT33');
+    End
+    Else
+    Begin
+      EmitComment('INT ' + Op1 + ' (non emule - NOP)');
+      EmitInstr('NOP');
+    End;
     Exit;
   End;
 
@@ -16545,6 +16593,468 @@ Begin
   EmitInstr('RET');
 End;
 
+{ ============================================================ }
+{ TODO 23 - ROUTINES RUNTIME INTERRUPTIONS   [IMPLEMENTE]      }
+{ ============================================================ }
+
+Procedure EmitIntrRuntime;
+Var
+  L1, L2, L3, L4, L5, L6, L7, L8, L9, LA : TString;
+Begin
+  EmitBlankLine;
+  EmitComment('============================================================');
+  EmitComment(' RUNTIME INTR : emulation INT 10h/16h/33h et Intr()        ');
+  EmitComment('============================================================');
+
+  { ------ _TPRT_INT10 : emulation INT 10h (Video BIOS) ----------- }
+  { Utilise les registres AH, AL, BH, BL, CX, DX disponibles       }
+  { AH = numero de fonction (passe dans le byte haut de AX)         }
+  { Pour appels depuis ASM : les registres sont deja positionnes    }
+  EmitLabel(TP_RT_PFX + 'INT10');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH EDX');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH EDI');
+  { Dispatch selon AH }
+  EmitInstr('MOV EBX,EAX');             { sauver AX dans EBX }
+  EmitInstr('SHR EBX,8');
+  EmitInstr('AND EBX,0FFh');            { EBX = AH (numero de fonction) }
+  L1 := LabelGen;   { func 00h : set video mode }
+  L2 := LabelGen;   { func 02h : set cursor position }
+  L3 := LabelGen;   { func 03h : get cursor position }
+  L4 := LabelGen;   { func 06h : scroll up }
+  L5 := LabelGen;   { func 07h : scroll down }
+  L6 := LabelGen;   { func 09h : write char+attr }
+  L7 := LabelGen;   { func 0Eh : teletype write }
+  L8 := LabelGen;   { func 0Fh : get video mode }
+  L9 := LabelGen;   { fin }
+  LA := LabelGen;   { defaut }
+  { Fonction 00h : changer mode video }
+  EmitInstr('CMP BL,00h');
+  EmitInstr('JE ' + L1);
+  { Fonction 02h : positionner curseur }
+  EmitInstr('CMP BL,02h');
+  EmitInstr('JE ' + L2);
+  { Fonction 03h : lire position curseur }
+  EmitInstr('CMP BL,03h');
+  EmitInstr('JE ' + L3);
+  { Fonction 06h : defiler vers le haut }
+  EmitInstr('CMP BL,06h');
+  EmitInstr('JE ' + L4);
+  { Fonction 07h : defiler vers le bas }
+  EmitInstr('CMP BL,07h');
+  EmitInstr('JE ' + L5);
+  { Fonction 09h : ecrire caractere+attribut }
+  EmitInstr('CMP BL,09h');
+  EmitInstr('JE ' + L6);
+  { Fonction 0Eh : ecrire caractere teletype }
+  EmitInstr('CMP BL,0Eh');
+  EmitInstr('JE ' + L7);
+  { Fonction 0Fh : lire mode video }
+  EmitInstr('CMP BL,0Fh');
+  EmitInstr('JE ' + L8);
+  { Defaut : non gere }
+  EmitInstr('JMP ' + LA);
+
+  { --- Fonction 00h : changer mode video --- }
+  { AL = mode video (03h=texte 80x25, 13h=graphique 320x200) }
+  EmitLabel(L1);
+  EmitComment('INT 10h AH=00h : set video mode');
+  EmitInstr('AND EAX,0FFh');             { AL = mode video }
+  EmitInstr('MOV BYTE PTR [INT_VIDEOMODE],AL');
+  EmitInstr('CMP AL,03h');
+  EmitInstr('JNE ' + L9);
+  { Mode 03h : texte 80x25 -> SetConsoleScreenBufferSize(hStdout, 80|(25<<16)) }
+  EmitInstr('PUSH 001900050h');          { COORD: X=80, Y=25 (packed) }
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL _SetConsoleScreenBufferSize@8');
+  EmitInstr('JMP ' + L9);
+
+  { --- Fonction 02h : positionner curseur --- }
+  { DH = ligne, DL = colonne, BH = page }
+  EmitLabel(L2);
+  EmitComment('INT 10h AH=02h : set cursor position');
+  { Sauvegarder DH/DL dans les variables }
+  EmitInstr('MOV BYTE PTR [INT_CURSORY],DH');
+  EmitInstr('MOV BYTE PTR [INT_CURSORX],DL');
+  { SetConsoleCursorPosition(hStdout, COORD) }
+  { COORD = DL | (DH << 8) dans un DWORD (X en bits 0-15, Y en bits 16-31) }
+  EmitInstr('MOVZX ECX,DL');              { X = colonne }
+  EmitInstr('MOVZX ESI,DH');              { Y = ligne }
+  EmitInstr('SHL ESI,16');
+  EmitInstr('OR ECX,ESI');                 { COORD packed }
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL _SetConsoleCursorPosition@8');
+  EmitInstr('JMP ' + L9);
+
+  { --- Fonction 03h : lire position curseur --- }
+  { Retourne DH = ligne, DL = colonne, CH = debut curseur, CL = fin curseur }
+  EmitLabel(L3);
+  EmitComment('INT 10h AH=03h : get cursor position');
+  { GetConsoleScreenBufferInfo(hStdout, &INT_CSBI) }
+  EmitInstr('PUSH OFFSET INT_CSBI');
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL _GetConsoleScreenBufferInfo@8');
+  { CSBI.dwCursorPosition = offset 4 : COORD (X=WORD, Y=WORD) }
+  EmitInstr('MOVZX EDX,WORD PTR [INT_CSBI+4]');   { X = colonne }
+  EmitInstr('MOV DL,BYTE PTR [INT_CSBI+4]');       { DL = colonne }
+  EmitInstr('MOV DH,BYTE PTR [INT_CSBI+6]');       { DH = ligne }
+  EmitInstr('MOV CX,0607h');              { CH=6 (debut), CL=7 (fin) curseur }
+  EmitInstr('JMP ' + L9);
+
+  { --- Fonction 06h : defiler vers le haut --- }
+  { AL = nb lignes (0=efface), BH = attr remplissage }
+  { CH,CL = ligne/col coin sup gauche }
+  { DH,DL = ligne/col coin inf droit }
+  EmitLabel(L4);
+  EmitComment('INT 10h AH=06h : scroll up');
+  { ScrollConsoleScreenBufferA(hStdout, lpScrollRect, lpClipRect, dwDestOrigin, lpFill) }
+  { Simplification : efface l ecran si AL=0 }
+  EmitInstr('AND EAX,0FFh');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JNZ ' + L9);                 { scroll partiel non emule }
+  { Efface l ecran : remplir 80*25=2000 caracteres avec espace }
+  EmitInstr('PUSH OFFSET BYTESWR');       { lpNumberOfCharsWritten }
+  EmitInstr('PUSH 0');                     { dwWriteCoord = 0,0 }
+  EmitInstr('PUSH 2000');                  { nLength = 80*25 }
+  EmitInstr('PUSH 32');                    { cCharacter = space }
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL _FillConsoleOutputCharacterA@20');
+  { Remplir les attributs aussi }
+  EmitInstr('PUSH OFFSET BYTESWR');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH 2000');
+  EmitInstr('PUSH 7');                     { attribut normal (gris sur noir) }
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL _FillConsoleOutputAttribute@20');
+  { Repositionner le curseur en 0,0 }
+  EmitInstr('PUSH 0');                     { COORD(0,0) }
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL _SetConsoleCursorPosition@8');
+  EmitInstr('JMP ' + L9);
+
+  { --- Fonction 07h : defiler vers le bas --- }
+  EmitLabel(L5);
+  EmitComment('INT 10h AH=07h : scroll down (stub)');
+  EmitInstr('JMP ' + L9);
+
+  { --- Fonction 09h : ecrire caractere avec attribut --- }
+  { AL = caractere, BH = page, BL = attribut, CX = count }
+  EmitLabel(L6);
+  EmitComment('INT 10h AH=09h : write char+attr');
+  EmitInstr('AND EAX,0FFh');              { AL = caractere }
+  EmitInstr('MOV BYTE PTR [NUMBUF],AL');
+  { Ecrire le caractere via WriteFile }
+  EmitInstr('PUSH OFFSET BYTESWR');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH 1');
+  EmitInstr('PUSH OFFSET NUMBUF');
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL _WriteFile@20');
+  EmitInstr('JMP ' + L9);
+
+  { --- Fonction 0Eh : ecrire caractere teletype --- }
+  { AL = caractere, BH = page }
+  EmitLabel(L7);
+  EmitComment('INT 10h AH=0Eh : teletype write');
+  EmitInstr('AND EAX,0FFh');
+  EmitInstr('MOV BYTE PTR [NUMBUF],AL');
+  EmitInstr('PUSH OFFSET BYTESWR');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH 1');
+  EmitInstr('PUSH OFFSET NUMBUF');
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL _WriteFile@20');
+  EmitInstr('JMP ' + L9);
+
+  { --- Fonction 0Fh : lire mode video --- }
+  { Retourne AL = mode, AH = nb colonnes, BH = page active }
+  EmitLabel(L8);
+  EmitComment('INT 10h AH=0Fh : get video mode');
+  EmitInstr('MOVZX EAX,BYTE PTR [INT_VIDEOMODE]');  { AL = mode }
+  EmitInstr('OR EAX,5000h');                          { AH = 80 colonnes }
+  EmitInstr('XOR EBX,EBX');                            { BH = page 0 }
+  EmitInstr('JMP ' + L9);
+
+  { Defaut }
+  EmitLabel(LA);
+  EmitComment('INT 10h : fonction non emulee');
+
+  { Fin INT 10h }
+  EmitLabel(L9);
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
+  EmitInstr('POP EDX');
+  EmitInstr('POP ECX');
+  EmitInstr('POP EBX');
+  EmitInstr('RET');
+
+  { ------ _TPRT_INT16 : emulation INT 16h (Clavier BIOS) -------- }
+  { AH = numero de fonction                                         }
+  { Fonction 00h : lire touche -> AH=scan, AL=char                 }
+  { Fonction 01h : touche disponible -> ZF=0 si oui, AH=scan AL=char }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'INT16');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH EDX');
+  L1 := LabelGen;  { func 00h }
+  L2 := LabelGen;  { func 01h }
+  L3 := LabelGen;  { fin }
+  L4 := LabelGen;  { defaut }
+  { Dispatch AH }
+  EmitInstr('MOV EBX,EAX');
+  EmitInstr('SHR EBX,8');
+  EmitInstr('AND EBX,0FFh');
+  { Fonction 00h }
+  EmitInstr('CMP BL,00h');
+  EmitInstr('JE ' + L1);
+  { Fonction 01h }
+  EmitInstr('CMP BL,01h');
+  EmitInstr('JE ' + L2);
+  EmitInstr('JMP ' + L4);
+
+  { --- Fonction 00h : attendre et lire une touche --- }
+  EmitLabel(L1);
+  EmitComment('INT 16h AH=00h : read key (blocking)');
+  { ReadConsoleInputA(hStdin, &INT_INPREC, 1, &INT_INEVCNT) }
+  EmitLabel(LabelGen);   { boucle d attente }
+  EmitInstr('PUSH OFFSET INT_INEVCNT');
+  EmitInstr('PUSH 1');
+  EmitInstr('PUSH OFFSET INT_INPREC');
+  EmitInstr('PUSH DWORD PTR [HSTDIN]');
+  EmitInstr('CALL _ReadConsoleInputA@16');
+  { Verifier que c est un evenement clavier (EventType = KEY_EVENT = 1) }
+  EmitInstr('CMP WORD PTR [INT_INPREC],1');
+  EmitInstr('JNE ' + TP_LBL_PFX + IntToStr_(EmitLabelSeq - 1));
+  { Verifier bKeyDown = TRUE }
+  EmitInstr('CMP DWORD PTR [INT_INPREC+4],1');
+  EmitInstr('JNE ' + TP_LBL_PFX + IntToStr_(EmitLabelSeq - 1));
+  { wVirtualScanCode = offset 12 (WORD), uChar.AsciiChar = offset 14 (BYTE) }
+  EmitInstr('MOVZX EAX,BYTE PTR [INT_INPREC+14]');  { AL = ASCII char }
+  EmitInstr('MOV AH,BYTE PTR [INT_INPREC+12]');     { AH = scan code }
+  EmitInstr('MOV BYTE PTR [INT_KBCHAR],AL');
+  EmitInstr('MOV BYTE PTR [INT_KBSCAN],AH');
+  EmitInstr('JMP ' + L3);
+
+  { --- Fonction 01h : verifier si touche disponible --- }
+  EmitLabel(L2);
+  EmitComment('INT 16h AH=01h : check key available');
+  { GetNumberOfConsoleInputEvents(hStdin, &INT_INEVCNT) }
+  EmitInstr('PUSH OFFSET INT_INEVCNT');
+  EmitInstr('PUSH DWORD PTR [HSTDIN]');
+  EmitInstr('CALL _GetNumberOfConsoleInputEvents@8');
+  { Si INT_INEVCNT > 0, lire avec PeekConsoleInputA }
+  EmitInstr('CMP DWORD PTR [INT_INEVCNT],0');
+  EmitInstr('JE ' + LabelGen);
+  { PeekConsoleInputA pour lire sans consommer }
+  EmitInstr('PUSH OFFSET INT_INEVCNT');
+  EmitInstr('PUSH 1');
+  EmitInstr('PUSH OFFSET INT_INPREC');
+  EmitInstr('PUSH DWORD PTR [HSTDIN]');
+  EmitInstr('CALL _PeekConsoleInputA@16');
+  { Verifier KEY_EVENT et bKeyDown }
+  EmitInstr('CMP WORD PTR [INT_INPREC],1');
+  EmitInstr('JNE ' + TP_LBL_PFX + IntToStr_(EmitLabelSeq - 1));
+  EmitInstr('CMP DWORD PTR [INT_INPREC+4],1');
+  EmitInstr('JNE ' + TP_LBL_PFX + IntToStr_(EmitLabelSeq - 1));
+  { Touche disponible : retourner AH=scan, AL=char, ZF=0 }
+  EmitInstr('MOVZX EAX,BYTE PTR [INT_INPREC+14]');
+  EmitInstr('MOV AH,BYTE PTR [INT_INPREC+12]');
+  EmitInstr('OR EAX,EAX');                { clear ZF (touche dispo) }
+  EmitInstr('JMP ' + L3);
+  { Pas de touche : ZF=1 }
+  EmitLabel(TP_LBL_PFX + IntToStr_(EmitLabelSeq - 1));
+  EmitInstr('XOR EAX,EAX');               { ZF=1 (pas de touche) }
+  EmitInstr('JMP ' + L3);
+
+  { Defaut }
+  EmitLabel(L4);
+  EmitComment('INT 16h : fonction non emulee');
+  EmitInstr('XOR EAX,EAX');
+
+  { Fin INT 16h }
+  EmitLabel(L3);
+  EmitInstr('POP EDX');
+  EmitInstr('POP ECX');
+  EmitInstr('POP EBX');
+  EmitInstr('RET');
+
+  { ------ _TPRT_INT33 : emulation INT 33h (Souris) -------------- }
+  { AX = numero de fonction                                         }
+  { Fonction 00h : initialiser souris -> AX=-1 (souris presente)   }
+  { Fonction 03h : position et boutons -> BX=boutons, CX=X, DX=Y  }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'INT33');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH EDX');
+  L1 := LabelGen;  { func 00h }
+  L2 := LabelGen;  { func 03h }
+  L3 := LabelGen;  { fin }
+  L4 := LabelGen;  { defaut }
+  { Dispatch AX (pas AH, car INT 33h utilise AX complet) }
+  EmitInstr('AND EAX,0FFFFh');
+  EmitInstr('CMP AX,0');
+  EmitInstr('JE ' + L1);
+  EmitInstr('CMP AX,3');
+  EmitInstr('JE ' + L2);
+  EmitInstr('JMP ' + L4);
+
+  { --- Fonction 00h : initialiser souris --- }
+  EmitLabel(L1);
+  EmitComment('INT 33h AX=0 : init mouse');
+  { GetSystemMetrics(SM_MOUSEPRESENT=19) }
+  EmitInstr('PUSH 19');
+  EmitInstr('CALL _GetSystemMetrics@4');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + LabelGen);
+  EmitInstr('MOV EAX,0FFFFh');           { AX = -1 : souris presente }
+  EmitInstr('MOV EBX,2');                 { BX = 2 boutons }
+  EmitInstr('JMP ' + L3);
+  EmitLabel(TP_LBL_PFX + IntToStr_(EmitLabelSeq - 1));
+  EmitInstr('XOR EAX,EAX');              { AX = 0 : pas de souris }
+  EmitInstr('XOR EBX,EBX');
+  EmitInstr('JMP ' + L3);
+
+  { --- Fonction 03h : position et boutons --- }
+  EmitLabel(L2);
+  EmitComment('INT 33h AX=3 : get mouse pos+buttons');
+  { GetCursorPos(&INT_CURPOS) }
+  EmitInstr('PUSH OFFSET INT_CURPOS');
+  EmitInstr('CALL _GetCursorPos@4');
+  EmitInstr('MOV ECX,DWORD PTR [INT_CURPOS]');    { CX = X }
+  EmitInstr('MOV EDX,DWORD PTR [INT_CURPOS+4]');  { DX = Y }
+  { Boutons via GetAsyncKeyState }
+  EmitInstr('XOR EBX,EBX');
+  { Bouton gauche (VK_LBUTTON=01h) }
+  EmitInstr('PUSH 1');
+  EmitInstr('CALL _GetAsyncKeyState@4');
+  EmitInstr('TEST EAX,8000h');
+  EmitInstr('JZ ' + LabelGen);
+  EmitInstr('OR EBX,1');                  { bit 0 = bouton gauche }
+  EmitLabel(TP_LBL_PFX + IntToStr_(EmitLabelSeq - 1));
+  { Bouton droit (VK_RBUTTON=02h) }
+  EmitInstr('PUSH 2');
+  EmitInstr('CALL _GetAsyncKeyState@4');
+  EmitInstr('TEST EAX,8000h');
+  EmitInstr('JZ ' + LabelGen);
+  EmitInstr('OR EBX,2');                  { bit 1 = bouton droit }
+  EmitLabel(TP_LBL_PFX + IntToStr_(EmitLabelSeq - 1));
+  EmitInstr('MOV EAX,EBX');              { sauver boutons }
+  EmitInstr('JMP ' + L3);
+
+  { Defaut }
+  EmitLabel(L4);
+  EmitComment('INT 33h : fonction non emulee');
+  EmitInstr('XOR EAX,EAX');
+
+  { Fin INT 33h }
+  EmitLabel(L3);
+  EmitInstr('POP EDX');
+  EmitInstr('POP ECX');
+  EmitInstr('POP EBX');
+  EmitInstr('RET');
+
+  { ------ _TPRT_INTR : dispatcher general pour Intr(IntNo, Regs) - }
+  { Parametres sur la pile :                                          }
+  {   [ESP+4] = IntNo (numero d interruption, passe par ParseStmt)   }
+  {   [ESP+8] = pointeur vers structure Registers                    }
+  { Structure Registers Turbo Pascal :                                }
+  {   Offset 0 : AX (AH=byte 1, AL=byte 0)                          }
+  {   Offset 2 : BX                                                   }
+  {   Offset 4 : CX                                                   }
+  {   Offset 6 : DX                                                   }
+  {   Offset 8 : BP                                                   }
+  {   Offset 10: SI                                                    }
+  {   Offset 12: DI                                                    }
+  {   Offset 14: DS                                                    }
+  {   Offset 16: ES                                                    }
+  {   Offset 18: Flags                                                 }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'INTR');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH EDX');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH EDI');
+  L1 := LabelGen;  { INT 10h }
+  L2 := LabelGen;  { INT 16h }
+  L3 := LabelGen;  { INT 21h }
+  L4 := LabelGen;  { INT 33h }
+  L5 := LabelGen;  { fin }
+  L6 := LabelGen;  { defaut }
+  { Charger IntNo }
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');    { IntNo }
+  EmitInstr('MOV ESI,DWORD PTR [EBP+12]');   { pointeur Registers }
+  { Charger les registres de la structure }
+  EmitInstr('MOVZX EAX,WORD PTR [ESI]');      { AX }
+  EmitInstr('MOVZX EBX,WORD PTR [ESI+2]');   { BX }
+  EmitInstr('MOVZX ECX,WORD PTR [ESI+4]');   { CX }
+  EmitInstr('MOVZX EDX,WORD PTR [ESI+6]');   { DX }
+  { Dispatcher selon IntNo }
+  EmitInstr('MOV EDI,DWORD PTR [EBP+8]');    { IntNo }
+  EmitInstr('CMP EDI,10h');
+  EmitInstr('JE ' + L1);
+  EmitInstr('CMP EDI,16h');
+  EmitInstr('JE ' + L2);
+  EmitInstr('CMP EDI,21h');
+  EmitInstr('JE ' + L3);
+  EmitInstr('CMP EDI,33h');
+  EmitInstr('JE ' + L4);
+  EmitInstr('JMP ' + L6);
+
+  { INT 10h via _TPRT_INT10 }
+  EmitLabel(L1);
+  EmitInstr('CALL ' + TP_RT_PFX + 'INT10');
+  { Stocker les resultats dans la structure Registers }
+  EmitInstr('MOV WORD PTR [ESI],AX');       { AX }
+  EmitInstr('MOV WORD PTR [ESI+2],BX');    { BX }
+  EmitInstr('MOV WORD PTR [ESI+4],CX');    { CX }
+  EmitInstr('MOV WORD PTR [ESI+6],DX');    { DX }
+  EmitInstr('JMP ' + L5);
+
+  { INT 16h via _TPRT_INT16 }
+  EmitLabel(L2);
+  EmitInstr('CALL ' + TP_RT_PFX + 'INT16');
+  EmitInstr('MOV WORD PTR [ESI],AX');
+  EmitInstr('JMP ' + L5);
+
+  { INT 21h via _TPRT_MSDOS }
+  EmitLabel(L3);
+  EmitInstr('PUSH ESI');                     { passer pointeur Registers }
+  EmitInstr('CALL ' + TP_RT_PFX + 'MSDOS');
+  EmitInstr('ADD ESP,4');
+  EmitInstr('JMP ' + L5);
+
+  { INT 33h via _TPRT_INT33 }
+  EmitLabel(L4);
+  EmitInstr('CALL ' + TP_RT_PFX + 'INT33');
+  EmitInstr('MOV WORD PTR [ESI],AX');       { AX }
+  EmitInstr('MOV WORD PTR [ESI+2],BX');    { BX }
+  EmitInstr('MOV WORD PTR [ESI+4],CX');    { CX }
+  EmitInstr('MOV WORD PTR [ESI+6],DX');    { DX }
+  EmitInstr('JMP ' + L5);
+
+  { Defaut : interruption non emulee }
+  EmitLabel(L6);
+  EmitComment('Interruption non emulee (NOP)');
+
+  { Fin _TPRT_INTR }
+  EmitLabel(L5);
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
+  EmitInstr('POP EDX');
+  EmitInstr('POP ECX');
+  EmitInstr('POP EBX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+End;
+
 Procedure Run;
 Begin
   ShowBanner;
@@ -16638,6 +17148,9 @@ Begin
 
     { Emettre les routines runtime Mem/Port (TODO 22) }
     EmitMemPortRuntime;
+
+    { Emettre les routines runtime interruptions (TODO 23) }
+    EmitIntrRuntime;
 
     { TODO 13..25 : compilation complete }
 
