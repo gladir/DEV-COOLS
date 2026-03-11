@@ -2401,6 +2401,7 @@ Begin
   (* TODO 23 : Exception handler chain + message *)
   EmitRaw('_CC_HANDLER  DW  0');
   EmitRaw('_CC_EXCCODE  DW  0');
+  EmitRaw('_CC_EXCVAL   DW  0');
   EmitRaw('_CC_EXCMSG   DB  ''Unhandled exception'',13,10,''$''');
   (* TODO 16 : Adresse temporaire pour acces tableau/struct *)
   EmitRaw(CC_RT_PFX + 'ATMP     DW  0');
@@ -5265,22 +5266,27 @@ End;
 Procedure ParseThrowStmt;
 Var
   E : TExprVal;
+  ThrowTypeIdx : Integer;
 Begin
   ParserAdvance; (* consommer 'throw' *)
-  (* throw; sans expression = re-throw, on met AX=_CC_EXCCODE *)
+  (* throw; sans expression = re-throw *)
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
   Begin
     EmitComment('throw (re-throw)');
-    EmitInstr('MOV    AX,WORD PTR [_CC_EXCCODE]');
+    (* _CC_EXCCODE et _CC_EXCVAL sont deja positionnes *)
   End
   Else
   Begin
     ParseExpr(E);
     ExprFlushToAX(E);
     EmitComment('throw expr');
+    (* Stocker la valeur lancee *)
+    EmitInstr('MOV    WORD PTR [_CC_EXCVAL],AX');
+    (* Determiner le type de l expression et le stocker comme code *)
+    ThrowTypeIdx := E.TypeIdx;
+    If ThrowTypeIdx < 0 Then ThrowTypeIdx := TY_IDX_INT;
+    EmitInstr('MOV    WORD PTR [_CC_EXCCODE],' + IntToStr(ThrowTypeIdx));
   End;
-  (* Stocker le code exception *)
-  EmitInstr('MOV    WORD PTR [_CC_EXCCODE],AX');
   (* Si _CC_HANDLER = 0, pas de handler -> panic *)
   EmitInstr('CMP    WORD PTR [_CC_HANDLER],0');
   EmitInstr('JE     ' + CC_RT_PFX + 'PANIC_EXC');
@@ -5455,8 +5461,8 @@ Begin
     (* Si on a un nom de variable, on declare une locale avec la valeur *)
     If CatchVarName <> '' Then
     Begin
-      EmitComment('catch var ' + CatchVarName + ' = _CC_EXCCODE');
-      EmitInstr('MOV    AX,WORD PTR [_CC_EXCCODE]');
+      EmitComment('catch var ' + CatchVarName + ' = _CC_EXCVAL');
+      EmitInstr('MOV    AX,WORD PTR [_CC_EXCVAL]');
       EmitInstr('PUSH   AX');
     End;
 

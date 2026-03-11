@@ -32,7 +32,8 @@ _CC_L_CATCH_1_SETUP:
         MOV WORD PTR [BP-2],AX
         MOV AX,42
 ; throw expr
-        MOV    WORD PTR [_CC_EXCCODE],AX
+        MOV    WORD PTR [_CC_EXCVAL],AX
+        MOV    WORD PTR [_CC_EXCCODE],4
         CMP    WORD PTR [_CC_HANDLER],0
         JE     _CC_RT_PANIC_EXC
         MOV    SP,WORD PTR [_CC_HANDLER]
@@ -50,8 +51,8 @@ _CC_L_CATCH_1_DISPATCH:
         MOV    AX,WORD PTR [_CC_EXCCODE]
         CMP    AX,4
         JNE    _CC_L_CNEXT_1_1
-; catch var e = _CC_EXCCODE
-        MOV    AX,WORD PTR [_CC_EXCCODE]
+; catch var e = _CC_EXCVAL
+        MOV    AX,WORD PTR [_CC_EXCVAL]
         PUSH   AX
         XOR AX,AX
         MOV WORD PTR [BP-2],AX
@@ -86,7 +87,8 @@ _CC_L_CATCH_2_SETUP:
         RET
         MOV AX,7
 ; throw expr
-        MOV    WORD PTR [_CC_EXCCODE],AX
+        MOV    WORD PTR [_CC_EXCVAL],AX
+        MOV    WORD PTR [_CC_EXCCODE],4
         CMP    WORD PTR [_CC_HANDLER],0
         JE     _CC_RT_PANIC_EXC
         MOV    SP,WORD PTR [_CC_HANDLER]
@@ -130,7 +132,8 @@ _CC_L_CATCH_3_SETUP:
         RET
         MOV AX,4
 ; throw expr
-        MOV    WORD PTR [_CC_EXCCODE],AX
+        MOV    WORD PTR [_CC_EXCVAL],AX
+        MOV    WORD PTR [_CC_EXCCODE],4
         CMP    WORD PTR [_CC_HANDLER],0
         JE     _CC_RT_PANIC_EXC
         MOV    SP,WORD PTR [_CC_HANDLER]
@@ -146,8 +149,8 @@ _CC_L_CATCH_3_DISPATCH:
         MOV    AX,WORD PTR [_CC_EXCCODE]
         CMP    AX,2
         JNE    _CC_L_CNEXT_3_1
-; catch var c = _CC_EXCCODE
-        MOV    AX,WORD PTR [_CC_EXCCODE]
+; catch var c = _CC_EXCVAL
+        MOV    AX,WORD PTR [_CC_EXCVAL]
         PUSH   AX
         MOV AX,1
         MOV WORD PTR [BP-2],AX
@@ -158,8 +161,8 @@ _CC_L_CNEXT_3_1:
         MOV    AX,WORD PTR [_CC_EXCCODE]
         CMP    AX,4
         JNE    _CC_L_CNEXT_3_2
-; catch var e = _CC_EXCCODE
-        MOV    AX,WORD PTR [_CC_EXCCODE]
+; catch var e = _CC_EXCVAL
+        MOV    AX,WORD PTR [_CC_EXCVAL]
         PUSH   AX
         MOV AX,2
         MOV WORD PTR [BP-2],AX
@@ -213,8 +216,8 @@ _CC_L_CATCH_4_DISPATCH:
         MOV    AX,WORD PTR [_CC_EXCCODE]
         CMP    AX,4
         JNE    _CC_L_CNEXT_4_1
-; catch var e = _CC_EXCCODE
-        MOV    AX,WORD PTR [_CC_EXCCODE]
+; catch var e = _CC_EXCVAL
+        MOV    AX,WORD PTR [_CC_EXCVAL]
         PUSH   AX
         MOV AX,0
         MOV WORD PTR [BP-2],AX
@@ -238,7 +241,8 @@ _CC_F_do_throw:
         MOV BP,SP
         MOV AX,99
 ; throw expr
-        MOV    WORD PTR [_CC_EXCCODE],AX
+        MOV    WORD PTR [_CC_EXCVAL],AX
+        MOV    WORD PTR [_CC_EXCCODE],4
         CMP    WORD PTR [_CC_HANDLER],0
         JE     _CC_RT_PANIC_EXC
         MOV    SP,WORD PTR [_CC_HANDLER]
@@ -276,8 +280,8 @@ _CC_L_CATCH_5_DISPATCH:
         MOV    AX,WORD PTR [_CC_EXCCODE]
         CMP    AX,4
         JNE    _CC_L_CNEXT_5_1
-; catch var e = _CC_EXCCODE
-        MOV    AX,WORD PTR [_CC_EXCCODE]
+; catch var e = _CC_EXCVAL
+        MOV    AX,WORD PTR [_CC_EXCVAL]
         PUSH   AX
         XOR AX,AX
         MOV WORD PTR [BP-2],AX
@@ -562,6 +566,7 @@ _CC_RT_NUMBUF   DB  8 DUP(0)
 _CC_RT_INBUF    DB  80,0,80 DUP(0)
 _CC_HANDLER  DW  0
 _CC_EXCCODE  DW  0
+_CC_EXCVAL   DW  0
 _CC_EXCMSG   DB  'Unhandled exception',13,10,'$'
 _CC_RT_ATMP     DW  0
 _CC_K_8  DB  'test_basic: ',0

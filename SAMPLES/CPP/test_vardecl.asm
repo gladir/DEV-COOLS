@@ -274,6 +274,7 @@ _CC_RT_NUMBUF   DB  8 DUP(0)
 _CC_RT_INBUF    DB  80,0,80 DUP(0)
 _CC_HANDLER  DW  0
 _CC_EXCCODE  DW  0
+_CC_EXCVAL   DW  0
 _CC_EXCMSG   DB  'Unhandled exception',13,10,'$'
 _CC_RT_ATMP     DW  0
 _CC_V_g  DW  42
