@@ -55,4 +55,13 @@ _TPV_GLOBALVALUE  DD 0
 ; --- Segment de code ---
 .CODE
 
+
+; --- SHOWMESSAGE ---
+_TPF_SHOWMESSAGE:
+        PUSH EBP
+        MOV EBP,ESP
+_TPL_1:
+        MOV ESP,EBP
+        POP EBP
+        RET
 END

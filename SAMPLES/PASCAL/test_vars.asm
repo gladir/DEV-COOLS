@@ -1,5 +1,5 @@
 ; TPCW32 - Compilateur Turbo Pascal -> ASM 80386 Win32
-; Genere automatiquement a partir de : SAMPLES/PASCAL/JustForward.pas
+; Genere automatiquement a partir de : SAMPLES/PASCAL/test_vars.pas
 
 .386
 .MODEL FLAT, STDCALL
@@ -49,11 +49,74 @@ CRLF      DB 13,10,0
 STRTMP    DB 256 DUP(0)
 
 ; --- Constantes et donnees utilisateur ---
-_TPK_1  DB 'Test program',0
+_TPV_X  DD 0
+_TPV_Y  DD 0
+_TPV_C  DB 0
 
 ; --- Segment de code ---
 .CODE
 
+
+; --- SIMPLEPROC ---
+_TPF_SIMPLEPROC:
+        PUSH EBP
+        MOV EBP,ESP
+_TPL_1:
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; --- ADDNUMBERS ---
+_TPF_ADDNUMBERS:
+        PUSH EBP
+        MOV EBP,ESP
+        SUB ESP,4
+_TPL_2:
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; --- DOUBLE ---
+_TPF_DOUBLE:
+        PUSH EBP
+        MOV EBP,ESP
+        SUB ESP,4
+        MOV DWORD PTR [EBP-4],0
+_TPL_3:
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; --- SWAPVALUES ---
+_TPF_SWAPVALUES:
+        PUSH EBP
+        MOV EBP,ESP
+_TPL_4:
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; --- MAX ---
+_TPF_MAX:
+        PUSH EBP
+        MOV EBP,ESP
+        SUB ESP,4
+        MOV DWORD PTR [EBP-4],0
+_TPL_5:
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; --- MIXEDPARAMS ---
+_TPF_MIXEDPARAMS:
+        PUSH EBP
+        MOV EBP,ESP
+_TPL_6:
+        MOV ESP,EBP
+        POP EBP
+        RET
 
 ; --- Programme principal ---
 _TPF_Main:

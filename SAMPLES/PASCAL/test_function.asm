@@ -52,11 +52,55 @@ STRTMP    DB 256 DUP(0)
 _TPK_1  DB 'Square de ',0
 _TPK_2  DB ' = ',0
 _TPK_3  DB 'Add5 de ',0
-_TPV_RESULT  DD 0
 _TPV_A  DD 0
 _TPV_B  DD 0
 
 ; --- Segment de code ---
 .CODE
 
-END
+
+; --- SQUARE ---
+_TPF_SQUARE:
+        PUSH EBP
+        MOV EBP,ESP
+        SUB ESP,8
+        MOV DWORD PTR [EBP-4],0
+_TPL_1:
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; --- ADD5 ---
+_TPF_ADD5:
+        PUSH EBP
+        MOV EBP,ESP
+        SUB ESP,4
+        MOV DWORD PTR [EBP-4],0
+_TPL_2:
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; --- Programme principal ---
+_TPF_Main:
+        PUSH EBP
+        MOV EBP,ESP
+; Obtenir STDOUT
+        PUSH -11
+        CALL GetStdHandle
+        MOV [HSTDOUT],EAX
+; Obtenir STDIN
+        PUSH -10
+        CALL GetStdHandle
+        MOV [HSTDIN],EAX
+; Obtenir le tas du processus
+        CALL GetProcessHeap
+        MOV [HHEAP],EAX
+        PUSH 0
+        CALL ExitProcess
+        MOV ESP,EBP
+        POP EBP
+        RET
+END _TPF_Main

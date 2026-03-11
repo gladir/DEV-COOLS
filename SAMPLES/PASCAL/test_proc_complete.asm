@@ -55,4 +55,43 @@ _TPV_COUNTER  DD 0
 ; --- Segment de code ---
 .CODE
 
-END
+
+; --- INCREMENTCOUNTER ---
+_TPF_INCREMENTCOUNTER:
+        PUSH EBP
+        MOV EBP,ESP
+_TPL_1:
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; --- SHOWCOUNTER ---
+_TPF_SHOWCOUNTER:
+        PUSH EBP
+        MOV EBP,ESP
+_TPL_2:
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; --- Programme principal ---
+_TPF_Main:
+        PUSH EBP
+        MOV EBP,ESP
+; Obtenir STDOUT
+        PUSH -11
+        CALL GetStdHandle
+        MOV [HSTDOUT],EAX
+; Obtenir STDIN
+        PUSH -10
+        CALL GetStdHandle
+        MOV [HSTDIN],EAX
+; Obtenir le tas du processus
+        CALL GetProcessHeap
+        MOV [HHEAP],EAX
+        PUSH 0
+        CALL ExitProcess
+        MOV ESP,EBP
+        POP EBP
+        RET
+END _TPF_Main

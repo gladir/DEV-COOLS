@@ -65,9 +65,41 @@ _TPK_13  DB 'Test 1:',0
 _TPK_14  DB 'ldd   x',0
 _TPK_15  DB 'Test 2:',0
 _TPK_16  DB 'std   x',0
-_TPV_RESULT  DB 256 DUP(0)
 
 ; --- Segment de code ---
 .CODE
 
-END
+
+; --- CONVERT_TO_JASMIN_DEBUG ---
+_TPF_CONVERT_TO_JASMIN_DEBUG:
+        PUSH EBP
+        MOV EBP,ESP
+        SUB ESP,260
+        MOV DWORD PTR [EBP-4],0
+_TPL_1:
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; --- Programme principal ---
+_TPF_Main:
+        PUSH EBP
+        MOV EBP,ESP
+; Obtenir STDOUT
+        PUSH -11
+        CALL GetStdHandle
+        MOV [HSTDOUT],EAX
+; Obtenir STDIN
+        PUSH -10
+        CALL GetStdHandle
+        MOV [HSTDIN],EAX
+; Obtenir le tas du processus
+        CALL GetProcessHeap
+        MOV [HHEAP],EAX
+        PUSH 0
+        CALL ExitProcess
+        MOV ESP,EBP
+        POP EBP
+        RET
+END _TPF_Main
