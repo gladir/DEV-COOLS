@@ -4528,7 +4528,7 @@ Begin
   EmitInstr('JB     ' + CC_RT_PFX + 'SNDN');
   EmitInstr('CMP    BL,57');                (* '9' *)
   EmitInstr('JA     ' + CC_RT_PFX + 'SNDN');
-  EmitInstr('SUB    BL,48');
+  EmitInstr('SUB    BL,48');                (* 48 = '0' *)
   EmitInstr('XOR    BH,BH');
   EmitInstr('PUSH   BX');
   EmitInstr('MOV    BX,10');
@@ -4565,10 +4565,10 @@ Begin
   EmitInstr('MOV    BL,[SI+1]');
   EmitInstr('MOV    BYTE PTR [SI+BX+2],0');
   (* Retour a la ligne apres la saisie *)
-  EmitInstr('MOV    DL,13');
+  EmitInstr('MOV    DL,13');               (* 13 = CR *)
   EmitInstr('MOV    AH,02h');
   EmitInstr('INT    21h');
-  EmitInstr('MOV    DL,10');
+  EmitInstr('MOV    DL,10');               (* 10 = LF *)
   EmitInstr('MOV    AH,02h');
   EmitInstr('INT    21h');
   EmitInstr('POP    SI');
