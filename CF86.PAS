@@ -446,8 +446,8 @@ Const
   MAX_STR       = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
   MAX_INCLUDE   = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
   STACK_SIZE    = 1024;
-  MAX_ARRAY_ELEMS = 64;                { max elements par tableau (TODO 17) }
-  ARRAY_BLOCK_SIZE = 2 + 64 * 2;      { 2 octets count + 64 words = 130    }
+  MAX_ARRAY_ELEMS = 64;                       { max elements par tableau (TODO 17) }
+  ARRAY_BLOCK_SIZE = 2 + MAX_ARRAY_ELEMS * 2; { 2 octets count + elems words      }
 
   { Prefixes de nommage ASM }
   CF_VAR_PFX  = '_CFV_';    { variable scalaire                   }
