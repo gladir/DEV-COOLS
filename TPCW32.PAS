@@ -12405,7 +12405,7 @@ Begin
   EmitInstr('MOVZX EAX,WORD PTR [DOS_SYSTIME+0]');   { wYear }
   EmitInstr('MOV WORD PTR [EBX+4],AX');               { CX = annee }
   EmitInstr('MOV AL,BYTE PTR [DOS_SYSTIME+2]');       { wMonth }
-  EmitInstr('MOV BYTE PTR [EBX+7]');                   { DH = mois }
+  EmitInstr('MOV BYTE PTR [EBX+7],AL');                 { DH = mois }
   EmitInstr('MOV AL,BYTE PTR [DOS_SYSTIME+6]');       { wDay }
   EmitInstr('MOV BYTE PTR [EBX+6],AL');                { DL = jour }
   EmitInstr('MOV AL,BYTE PTR [DOS_SYSTIME+4]');       { wDayOfWeek }
