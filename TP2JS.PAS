@@ -449,7 +449,7 @@
                SwapVectors -> stub (non pertinent en JS)
                Keep(Code) -> stub (TSR non pertinent en JS)
 
-   TODO 21 - UNITE OVERLAY
+   TODO 21 - UNITE OVERLAY [IMPLEMENTE]
              OverlayInit(FileName) : initialiser le gestionnaire d overlay
                -> avertissement : overlays non pertinents en JS
                -> stub : function OvrInit(f) { /* no-op */ }
@@ -2044,6 +2044,14 @@ Begin
   ConstAdd('Directory', '16',  TK_INTEGER, 16,  0.0, '', False);
   ConstAdd('Archive',   '32',  TK_INTEGER, 32,  0.0, '', False);
   ConstAdd('AnyFile',   '63',  TK_INTEGER, 63,  0.0, '', False);
+  { TODO 21 : constantes Overlay }
+  ConstAdd('ovrOk',          '0',  TK_INTEGER,  0, 0.0, '', False);
+  ConstAdd('ovrError',       '-1', TK_INTEGER, -1, 0.0, '', False);
+  ConstAdd('ovrNotFound',    '-2', TK_INTEGER, -2, 0.0, '', False);
+  ConstAdd('ovrNoMemory',    '-3', TK_INTEGER, -3, 0.0, '', False);
+  ConstAdd('ovrIOError',     '-4', TK_INTEGER, -4, 0.0, '', False);
+  ConstAdd('ovrNoEMSDriver', '-5', TK_INTEGER, -5, 0.0, '', False);
+  ConstAdd('ovrNoEMSMemory', '-6', TK_INTEGER, -6, 0.0, '', False);
 End;
 
 { ---- ConstEvalAtom : evaluer un atome constant -------------- }
@@ -2604,7 +2612,12 @@ Begin
                    (L = 'getverify') Or (L = 'setverify') Or
                    (L = 'exec') Or (L = 'dosexitcode') Or
                    (L = 'swapvectors') Or (L = 'keep') Or
-                   (L = 'intr') Or (L = 'msdos');
+                   (L = 'intr') Or (L = 'msdos') Or
+                   { TODO 21 : fonctions Overlay }
+                   (L = 'ovrinit') Or (L = 'ovrinitems') Or
+                   (L = 'ovrgetbuf') Or (L = 'ovrsetbuf') Or
+                   (L = 'ovrgetretry') Or (L = 'ovrsetretry') Or
+                   (L = 'ovrclearbuf') Or (L = 'ovrresult');
 End;
 
 { ---- EmitBuiltinCall : genere l appel de fonction standard --- }
@@ -2978,6 +2991,77 @@ Begin
       If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
     End;
     EmitBuiltinCall := '/* GetVerify stub */';
+    Exit;
+  End;
+
+  { ============================================================
+    TODO 21 - UNITE OVERLAY [IMPLEMENTE]
+    Fonctions sans argument ou a argument optionnel.
+    Overlays non pertinents en JS : tous les appels sont des stubs.
+    ============================================================ }
+
+  { -- OvrInitEMS : initialiser overlay EMS (stub) ------------- }
+  If L = 'ovrinitems' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '/* OvrInitEMS: overlays not supported in JS */';
+    Exit;
+  End;
+
+  { -- OvrGetBuf : taille du buffer overlay (stub) ------------- }
+  If L = 'ovrgetbuf' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '0 /* OvrGetBuf stub */';
+    Exit;
+  End;
+
+  { -- OvrGetRetry : taille du cache overlay (stub) ------------ }
+  If L = 'ovrgetretry' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '0 /* OvrGetRetry stub */';
+    Exit;
+  End;
+
+  { -- OvrClearBuf : vider le buffer overlay (stub) ------------ }
+  If L = 'ovrclearbuf' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '/* OvrClearBuf: overlays not supported in JS */';
+    Exit;
+  End;
+
+  { -- OvrResult : code retour derniere operation overlay ------- }
+  If L = 'ovrresult' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := 'OvrResult';
     Exit;
   End;
 
@@ -4152,6 +4236,35 @@ Begin
     Exit;
   End;
 
+  { ============================================================
+    TODO 21 - UNITE OVERLAY [IMPLEMENTE]
+    Fonctions avec argument(s) - stubs overlay.
+    ============================================================ }
+
+  { -- OvrInit(FileName) : initialiser overlay (stub) ---------- }
+  If L = 'ovrinit' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* OvrInit(' + Arg1 + '): overlays not supported in JS */';
+    Exit;
+  End;
+
+  { -- OvrSetBuf(Size) : fixer taille buffer overlay (stub) ---- }
+  If L = 'ovrsetbuf' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* OvrSetBuf(' + Arg1 + '): overlays not supported in JS */';
+    Exit;
+  End;
+
+  { -- OvrSetRetry(Size) : fixer taille cache overlay (stub) --- }
+  If L = 'ovrsetretry' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* OvrSetRetry(' + Arg1 + '): overlays not supported in JS */';
+    Exit;
+  End;
+
   { Fallback : appel generique }
   Args := Arg1;
   While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
@@ -5125,6 +5238,24 @@ Begin
   TI := TypeFindByName('Integer');
   SymAdd('DosError',     SK_VAR,   TI);
   SymAdd('DosExitCode',  SK_VAR,   TI);
+  { TODO 21 : procedures et fonctions Overlay }
+  SymAdd('OvrInit',      SK_PROC,  -1);
+  SymAdd('OvrInitEMS',   SK_PROC,  -1);
+  SymAdd('OvrSetBuf',    SK_PROC,  -1);
+  SymAdd('OvrClearBuf',  SK_PROC,  -1);
+  SymAdd('OvrSetRetry',  SK_PROC,  -1);
+  SymAdd('OvrGetBuf',    SK_FUNC,  -1);
+  SymAdd('OvrGetRetry',  SK_FUNC,  -1);
+  SymAdd('OvrResult',    SK_FUNC,  -1);
+  { TODO 21 : constantes Overlay }
+  TI := TypeFindByName('Integer');
+  SymAdd('ovrOk',          SK_CONST, TI);
+  SymAdd('ovrError',       SK_CONST, TI);
+  SymAdd('ovrNotFound',    SK_CONST, TI);
+  SymAdd('ovrNoMemory',    SK_CONST, TI);
+  SymAdd('ovrIOError',     SK_CONST, TI);
+  SymAdd('ovrNoEMSDriver', SK_CONST, TI);
+  SymAdd('ovrNoEMSMemory', SK_CONST, TI);
 End;
 
 { ---- SymDump : afficher le contenu de la table (debug) ------ }
@@ -5603,6 +5734,10 @@ Begin
   EmitLine('  return { dir: d, name: n, ext: e };');
   EmitLine('}');
   EmitBlankLine;
+  { TODO 21 : helpers Overlay - variable OvrResult }
+  EmitComment('Overlay unit helpers (stubs)');
+  EmitLine('var OvrResult = 0;');
+  EmitBlankLine;
 End;
 
 { ---- EmitModuleHeader : en-tete module ES6 si option -m ----- }
@@ -5646,6 +5781,9 @@ Begin
     Begin
       UnitName := TokenPool[P].Val;
       EmitComment('  ' + UnitName);
+      { TODO 21 : avertissement si USES Overlay }
+      If StrLowerCase(UnitName) = 'overlay' Then
+        WriteLn('Warning: unit Overlay ignored - overlays are not supported in JavaScript');
       { Enregistrer l unite dans la table des symboles }
       Idx := SymAdd(UnitName, SK_UNIT, -1);
       Inc(P);
