@@ -14,611 +14,6 @@
    Inspire du concept Pas2JS (Free Pascal) mais reecrit
    entierement pour cibler le Turbo Pascal 7.
 
-   FEUILLE DE ROUTE - 25 TODOS
-   ============================================================
-
-   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
-             TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings,
-               ModuleES6, Pretty)
-             ParseArgs : analyser argv (source.pas [sortie.js] [-v] [-d] [-w]
-               [-m] [-pretty] [-h])
-             FatalError, CompileError, WarnMsg
-             EXIT_OK / EXIT_ERROR / EXIT_USAGE
-             Detecter l extension .pas du fichier source
-             Sortie par defaut : meme nom avec extension .js
-             Programme principal : validation des arguments et appel Run
-             Version, Date, aide en ligne (option -h)
-             Option -m (module ES6) : generer export/import au lieu de global
-             Option -pretty : indentation du JavaScript genere
-             ShowBanner, ShowUsage, ShowStats
-             StrLowerCase, IntToStr_, BaseName, ReplaceExt
-             InitOptions, Cleanup, GlobalInit
-             Run (stub), programme principal ParseArgs + Run
-
-   TODO 02 - LEXEUR (TOKENS TURBO PASCAL) [IMPLEMENTE]
-             TTokenKind : TK_EOF, TK_INTEGER, TK_REAL, TK_STRING,
-               TK_CHAR, TK_IDENT, TK_KEYWORD, TK_OP, TK_PUNCT,
-               TK_DIRECTIVE
-             LexInit, LexClose, LexNextToken, LexScanIdent, LexScanNumber
-             LexScanString : chaine entre apostrophes 'abc'
-               Apostrophe doublee : 'l''arbre' -> l'arbre
-               Caracteres speciaux : #10 #13 #9 #0 #26 (codes ASCII)
-               Chaines avec ^ : ^G (BEL), ^M (CR), etc.
-             Commentaires : { ... } et (star...star) bloc, // ligne (TP7+)
-             Mots-cles : AND ARRAY BEGIN CASE CONST DIV DO DOWNTO
-               ELSE END FILE FOR FORWARD FUNCTION GOTO IF
-               IMPLEMENTATION IN INHERITED INLINE INTERFACE LABEL
-               MOD NIL NOT OBJECT OF OR PACKED PROCEDURE PROGRAM
-               RECORD REPEAT SET SHL SHR STRING THEN TO TYPE
-               UNIT UNTIL USES VAR WHILE WITH XOR
-             Directives : ABSOLUTE ASSEMBLER EXTERNAL FAR INTERRUPT
-               NEAR PRIVATE PUBLIC VIRTUAL
-             Mode debug -d : affichage de chaque token avec PrintToken
-
-   TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
-             Entiers decimaux : 0..2147483647 (LongInt)
-             Entiers hexadecimaux : $FF, $FFFF, $7FFFFFFF
-             Reels : 3.14, 1.5E10, 2.0E-3 -> number en JavaScript
-             Chaines : 'abc' -> chaine JS entre guillemets doubles "abc"
-               Concatenation : 'Hello' + ' World' (via operateur +)
-               Chaines avec codes : 'abc'#13#10 -> "abc\r\n" en JS
-             Caracteres : #65 -> String.fromCharCode(65)
-               'A' -> traite comme chaine de longueur 1
-             Nil : constante pointeur nul -> null en JS
-             True : constante booleenne -> true en JS
-             False : constante booleenne -> false en JS
-             Constantes typees : const X: Integer = 42 -> var X = 42
-             Constantes ensembles : [1, 3..5] -> Set ou tableau JS
-
-   TODO 04 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
-             Arithmetiques  : + - * / DIV MOD (entiers et reels)
-               / -> division reelle en JS
-               DIV -> Math.trunc(a / b) en JS
-               MOD -> operateur % en JS
-             Comparaison    : = <> < <= > >=
-               = -> === en JS, <> -> !== en JS
-             Logiques       : AND OR NOT XOR
-               AND -> && en JS, OR -> || en JS, NOT -> ! en JS
-               XOR -> (a ? !b : b) ou operateur bitwise ^ en JS
-             Bitwise        : AND OR XOR NOT SHL SHR (sur entiers)
-               SHL -> << en JS, SHR -> >> en JS
-             Affectation    : := -> = en JS
-             Concatenation  : + sur les chaines
-             Ensembles      : + (union) * (intersection) - (difference)
-               IN : appartenance a un ensemble
-             Adresse        : @ (adresse de) -> reference en JS
-             Precedence (du plus fort au plus faible) :
-               1. NOT, @ , unaire +/-
-               2. * / DIV MOD AND SHL SHR
-               3. + - OR XOR
-               4. = <> < > <= >= IN
-
-   TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
-             TSymKind : SK_CONST, SK_TYPE, SK_VAR, SK_PARAM, SK_FUNC,
-               SK_PROC, SK_FIELD, SK_METHOD, SK_PROPERTY, SK_UNIT,
-               SK_LABEL, SK_ENUMVAL
-             TSymRec : Name, JSName (nom JavaScript genere), Kind, TypeIdx,
-               Scope, IsPublic, IsPrivate, IsForward, IsExternal
-             SymAdd, SymFind, SymFindInScope, SymGenJSName
-             CurScope : compteur de portee imbriquee (max MAX_SCOPE)
-             SymEnterScope / SymLeaveScope : gestion des portees imbriquees
-             Qualificateurs : Unit.Ident -> recherche dans la portee de l unite
-             Distinction INTERFACE / IMPLEMENTATION dans les unites
-             Symboles predefinis : Integer, Word, Byte, Char, Boolean,
-               Real, String, LongInt, ShortInt, Pointer, Text,
-               Comp, Single, Double, Extended
-
-   TODO 06 - SYSTEME DE TYPES [IMPLEMENTE]
-             TTypeKind : TYK_INTEGER (16 bits signe), TYK_WORD (16 bits non signe),
-               TYK_BYTE (8 bits non signe), TYK_SHORTINT (8 bits signe),
-               TYK_LONGINT (32 bits signe), TYK_COMP (64 bits entier),
-               TYK_BOOLEAN (8 bits), TYK_CHAR (8 bits),
-               TYK_REAL (6 octets TP), TYK_SINGLE, TYK_DOUBLE, TYK_EXTENDED,
-               TYK_STRING (chaine courte 255 car), TYK_PCHAR (ptr char),
-               TYK_ARRAY, TYK_RECORD, TYK_SET, TYK_ENUM,
-               TYK_FILE, TYK_TEXT, TYK_POINTER, TYK_OBJECT,
-               TYK_SUBRANGE, TYK_PROCVAR
-             TypeTab, TypeInit : enregistrer les types primitifs et utilisateur
-             Correspondance vers JS :
-               Integer/Word/Byte/ShortInt/LongInt -> number
-               Real/Single/Double/Extended/Comp -> number
-               Boolean -> boolean, Char -> string (1 car)
-               String -> string, PChar -> string
-               Array -> Array, Record -> object, Set -> Set ou Array
-               File/Text -> objet fichier JS, Pointer -> reference
-               Object -> class JS, ProcVar -> function
-
-   TODO 07 - EMETTEUR DE CODE JAVASCRIPT [IMPLEMENTE]
-             TEmitter : OutF (Text), OutFOpen, EmitOpen, EmitClose
-             EmitRaw, EmitLine (avec indentation courante)
-             EmitComment (// commentaire JS)
-             EmitBlankLine
-             IndentLevel : niveau d indentation courant
-             IndentPush / IndentPop : gestion de l indentation
-             Prefixes JS : _TPV_ (variable), _TPF_ (fonction), _TPC_ (constante),
-               _TPT_ (type), _TPU_ (unite), _TPR_ (runtime)
-             EmitHeader : commentaire /* Generated by TP2JS */ + "use strict";
-             EmitModuleHeader : si option -m, generer en-tete module ES6
-             EmitFooter : fermer les blocs ouverts, appel du programme principal
-
-   TODO 08 - PROGRAMME PRINCIPAL (PROGRAM) [IMPLEMENTE]
-             ParseProgram : PROGRAM nom [(params)]; uses; decls; BEGIN stmts END.
-             Emission : function _main() { ... } en JS
-               Appel automatique : _main(); a la fin du fichier
-             Section USES : parser la liste d unites a importer
-               Generer les imports ou includes correspondants en JS
-             Sections de declaration : CONST, TYPE, VAR, LABEL
-               Ordre libre des sections (plusieurs de chaque autorisees)
-             BEGIN ... END. : corps principal -> contenu de _main()
-             Compilation d un fichier .pas autonome (sans UNIT)
-             Gestion du point final . (fin du programme)
-
-   TODO 09 - VARIABLES ET AFFECTATIONS [IMPLEMENTE]
-             Variables globales : section VAR -> var/let en JS
-               var X: Integer; -> var X = 0;
-               var S: String; -> var S = "";
-             Variables locales : VAR dans procedure/fonction -> var/let en JS
-             Initialisation par defaut selon le type :
-               Integer/Word/Byte/LongInt -> 0
-               Real/Single/Double -> 0.0
-               Boolean -> false, Char -> '\0' (ou "")
-               String -> "", Pointer -> null
-               Array -> [], Record -> {}, Set -> new Set() ou []
-             Affectation := -> = en JS
-               X := 42; -> X = 42;
-               S := 'Hello'; -> S = "Hello";
-             Variables typees constantes : const X: Integer = 42 -> var X = 42;
-               (mutables en Turbo Pascal malgre le mot-cle const)
-             Affectation de record : copie champ par champ en JS
-             Affectation de tableau : copie par slice() ou spread en JS
-
-   TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
-             ParsePrimary : literal entier, literal reel, literal chaine,
-               identificateur, appel de fonction/procedure
-             Appel de fonction : Func(arg1, arg2) -> Func(arg1, arg2) en JS
-             Acces champ record : Rec.Champ -> Rec.Champ en JS
-             Acces index tableau : Arr[i] -> Arr[i - baseIdx] en JS
-               (ajustement de l index de base si non zero)
-             Dereferencement pointeur : Ptr^ -> traduction selon contexte
-             Acces caractere chaine : S[i] -> S.charAt(i - 1) ou S[i - 1] en JS
-               (index base 1 en Pascal, base 0 en JS)
-             Transtypage : Integer(expr), Char(expr), Byte(expr)
-               -> Math.trunc(expr), String.fromCharCode(expr), (expr & 0xFF)
-             Parentheses : (expr) -> (expr) en JS
-             Constantes predefinies : MaxInt -> 32767, MaxLongInt -> 2147483647
-             Appel de methode objet : Obj.Method(args)
-             Fonctions standards : Ord, Chr, Length, Abs, Sqr, Sqrt, Pred,
-               Succ, Round, Trunc, Odd, UpCase, Lo, Hi, Pos, Copy, Concat,
-               Inc, Dec, Sizeof
-
-   TODO 11 - EXPRESSIONS BINAIRES ET UNAIRES [IMPLEMENTE]
-             ParseExprPrec(MinPrec) : boucle de precedence (Pratt parser)
-             Arithmetique : + - * / -> +, -, *, / en JS
-               DIV -> Math.trunc(a / b)
-               MOD -> a % b (ou ((a % b) + b) % b pour compatibilite Pascal)
-             Comparaison : = -> ===, <> -> !==, < <= > >= identiques en JS
-             Logique : AND -> &&, OR -> ||, NOT -> !
-             Bitwise : AND -> &, OR -> |, XOR -> ^, NOT -> ~
-               SHL -> <<, SHR -> >>
-             Concatenation de chaines : + -> + en JS (naturel)
-             Operateur IN : x IN S -> S.has(x) ou S.indexOf(x) >= 0
-             Operateur @ : @variable -> reference (pas d equivalent direct en JS)
-             Unaire : - (negation), + (identite), NOT (negation logique/bitwise)
-             Operateur de type : expr AS type (Turbo Pascal objets)
-
-   TODO 12 - ENTREES/SORTIES (Write / WriteLn / Read / ReadLn) [IMPLEMENTE]
-             Write(args...) : ecriture sans retour de ligne
-               Write('Hello') -> process.stdout.write("Hello") ou _TPR_Write("Hello")
-               Write(42) -> _TPR_Write(String(42)) ou _TPR_WriteInt(42)
-               Write(X:10) -> formatage avec largeur de champ
-               Write(R:10:2) -> formatage reel avec decimales
-               Write(F, data) -> ecriture dans fichier
-             WriteLn(args...) : ecriture avec retour de ligne
-               WriteLn -> _TPR_WriteLn() ou console.log()
-               WriteLn('Hello') -> console.log("Hello")
-             Read(args...) : lecture de valeurs
-               Read(X) -> X = _TPR_ReadInt() ou prompt()
-               Read(F, data) -> lecture depuis fichier
-             ReadLn(args...) : lecture avec passage a la ligne suivante
-             Formatage : Write(X:Width) et Write(R:Width:Decimals)
-               -> String(X).padStart(Width) et R.toFixed(Decimals)
-             Str(X, S) : conversion nombre vers chaine
-               -> S = String(X)
-             Str(X:W:D, S) : Str avec formatage
-               -> S = X.toFixed(D).padStart(W)
-             Val(S, X, Code) : conversion chaine vers nombre
-               -> X = Number(S), Code = isNaN(X) ? 1 : 0
-
-   TODO 13 - IF / CASE / GOTO [IMPLEMENTE]
-             ParseIfStmt : IF cond THEN stmt [ELSE stmt]
-               -> if (cond) { stmt } else { stmt } en JS
-               IF imbrique : else if (cond) { ... }
-             ParseCaseStmt : CASE expr OF
-               val1: stmt;
-               val2, val3: stmt;
-               lo..hi: stmt;
-               ELSE stmt END
-               -> switch (expr) { case val1: ...; break; ... default: ... } en JS
-               Intervalles lo..hi : generer plusieurs case ou condition if
-             ParseGotoStmt : GOTO label
-               Labels declares dans section LABEL
-               Emission en JS : utilisation de boucle etiquetee + break
-                 ou restructuration du flux de controle
-               Avertissement : GOTO deconseille, traduction limitee
-
-   TODO 14 - BOUCLES : FOR / WHILE / REPEAT / BREAK / CONTINUE [IMPLEMENTE]
-             ParseForStmt : FOR i := lo TO hi DO stmt
-               -> for (var i = lo; i <= hi; i++) { stmt } en JS
-               FOR i := hi DOWNTO lo DO stmt
-               -> for (var i = hi; i >= lo; i--) { stmt } en JS
-             ParseWhileStmt : WHILE cond DO stmt
-               -> while (cond) { stmt } en JS
-             ParseRepeatStmt : REPEAT stmts UNTIL cond
-               -> do { stmts } while (!(cond)); en JS
-             Break : sortie de boucle -> break; en JS
-               (Turbo Pascal 7 supporte Break dans les boucles)
-             Continue : iteration suivante -> continue; en JS
-             Exit : sortie de procedure/fonction -> return; en JS
-             Halt / Halt(code) : arret du programme
-               -> process.exit(code) ou throw new Error en JS
-
-   TODO 15 - PROCEDURES ET FONCTIONS [IMPLEMENTE]
-             ParseProcDecl : PROCEDURE nom[(params)]; [directives;] bloc;
-             ParseFuncDecl : FUNCTION nom[(params)]: RetType; [directives;] bloc;
-             Parametres valeur : procedure P(X: Integer)
-               -> function P(X) { ... } en JS
-             Parametres variable (VAR) : procedure P(var X: Integer)
-               -> passage par objet wrapper { value: X } en JS
-               Appel : P(X) -> P({value: X}); X = ref.value;
-               ou utilisation de tableaux : P([X]); X = ref[0];
-             Parametres constante (CONST) : comme valeur en JS (pas de copie)
-             Variables locales : VAR dans le bloc -> var en JS
-             Forward : declaration anticipee -> declaration JS differee
-             Nested procedures : procedures imbriquees
-               -> fonctions imbriquees en JS (closures naturelles)
-             Exit : sortie anticipee -> return; en JS
-             Exit(valeur) : retour avec valeur (TP7)
-               -> return valeur; en JS
-             Result : variable de retour implicite -> var Result; return Result;
-             Directives : FAR, NEAR, INLINE, ASSEMBLER, EXTERNAL
-               -> ignorer ou avertissement (non pertinent en JS)
-
-   TODO 16 - TYPES STRUCTURES : ARRAY / RECORD / SET / STRING [IMPLEMENTE]
-             ARRAY[lo..hi] OF T :
-               -> new Array(hi - lo + 1) en JS, indexation ajustee
-               Multidimensionnel : ARRAY[a..b, c..d] OF T -> tableaux imbriques
-             RECORD champ1: T1; champ2: T2; END :
-               -> objet literal { champ1: defaut1, champ2: defaut2 } en JS
-               Variantes : CASE tag OF val1: (...); val2: (...); END
-                 -> proprietes conditionnelles ou objet aplati
-             SET OF T (T = type ordinal, max 256 elements) :
-               -> new Set() en JS, ou tableau de booleens
-               Operations : + (union), * (intersection), - (difference), IN
-               -> Set.prototype methods ou operations sur tableaux
-             STRING et STRING[N] (chaine courte) :
-               -> string natif JS (pas de limite 255 en JS)
-               Length(S) -> S.length en JS
-               S[i] -> S.charAt(i - 1) ou S[i - 1] (base 0 en JS)
-               Copy, Pos, Concat, Delete, Insert -> methodes String JS
-
-   TODO 17 - OBJETS ET HERITAGE (OBJECT) [IMPLEMENTE]
-             TYPE TNom = OBJECT [(TParent)]
-               champ1: T1;
-               CONSTRUCTOR Init(params);
-               DESTRUCTOR Done; VIRTUAL;
-               PROCEDURE Method(params); VIRTUAL;
-               FUNCTION Func(params): T; VIRTUAL;
-             END;
-             Emission en JS : class TNom [extends TParent] {
-               constructor(params) { ... }
-               method(params) { ... }
-             }
-             Methodes virtuelles : VIRTUAL -> methodes de classe JS (naturel)
-             Methodes statiques : sans VIRTUAL -> identiques en JS
-             CONSTRUCTOR : -> constructor() en JS
-             DESTRUCTOR : -> methode destroy() en JS (appel manuel)
-             NEW(Ptr, Init(params)) : allocation + construction
-               -> Ptr = new TNom(params) en JS
-             DISPOSE(Ptr, Done) : destruction + liberation
-               -> Ptr.Done(); Ptr = null; en JS
-             INHERITED : appel methode parent -> super.method() en JS
-             Champs PRIVATE : accessibles dans l unite seulement
-               -> convention JS avec prefixe _ ou champs prives (#)
-
-   TODO 18 - UNITE SYSTEM (IMPLICITE) [IMPLEMENTE]
-             Fonctions mathematiques :
-               Abs(X) -> Math.abs(X)
-               Sqr(X) -> (X * X) ou Math.pow(X, 2)
-               Sqrt(X) -> Math.sqrt(X)
-               Sin(X) -> Math.sin(X), Cos(X) -> Math.cos(X)
-               ArcTan(X) -> Math.atan(X)
-               Exp(X) -> Math.exp(X), Ln(X) -> Math.log(X)
-               Int(X) -> Math.trunc(X), Frac(X) -> X - Math.trunc(X)
-               Round(X) -> Math.round(X), Trunc(X) -> Math.trunc(X)
-               Pi -> Math.PI
-             Fonctions ordinales :
-               Ord(X) -> X.charCodeAt(0) ou Number(X)
-               Chr(X) -> String.fromCharCode(X)
-               Succ(X) -> X + 1, Pred(X) -> X - 1
-               Inc(X) -> X++, Dec(X) -> X--
-               Inc(X, N) -> X += N, Dec(X, N) -> X -= N
-               Lo(X) -> X & 0xFF, Hi(X) -> (X >> 8) & 0xFF
-               Swap(X) -> ((X & 0xFF) << 8) | ((X >> 8) & 0xFF)
-               Odd(X) -> (X % 2 !== 0)
-             Fonctions de chaine :
-               Length(S) -> S.length
-               Copy(S, Pos, Len) -> S.substr(Pos - 1, Len)
-               Pos(Sub, S) -> (S.indexOf(Sub) + 1) ou 0 si absent
-               Concat(S1, S2, ...) -> S1 + S2 + ...
-               Delete(S, Pos, Len) -> S = S.substring(0, Pos-1) + S.substring(Pos-1+Len)
-               Insert(Src, S, Pos) -> S = S.substring(0, Pos-1) + Src + S.substring(Pos-1)
-               UpCase(Ch) -> Ch.toUpperCase()
-               Str(X, S) -> S = String(X)
-               Val(S, X, Code) -> X = parseFloat(S); Code = isNaN(X) ? 1 : 0
-             Fonctions de fichier :
-               Assign(F, Name) -> F = { name: Name, ... }
-               Reset(F) / Rewrite(F) -> ouverture fichier (stub ou API Node.js)
-               Close(F) -> fermeture fichier
-               Eof(F) -> fin de fichier, Eoln(F) -> fin de ligne
-               Read(F, ...) / Write(F, ...) -> lecture/ecriture fichier
-               Seek(F, Pos), FilePos(F), FileSize(F)
-               Erase(F), Rename(F, NewName)
-               BlockRead, BlockWrite : lecture/ecriture par blocs
-             Fonctions memoire :
-               New(P) -> P = {} ou P = new Type()
-               Dispose(P) -> P = null
-               GetMem(P, Size) / FreeMem(P, Size) -> allocation/liberation
-               SizeOf(T) -> taille en octets (constante ou estimation)
-               FillChar(Buf, Count, Val) -> remplissage memoire
-               Move(Src, Dest, Count) -> copie memoire
-             Autres :
-               Random / Random(N) -> Math.random() ou Math.floor(Math.random() * N)
-               Randomize -> (rien en JS, Random est deja pseudo-aleatoire)
-               ParamCount -> _TPR_Args.length - 1
-               ParamStr(N) -> _TPR_Args[N]
-               Halt(Code) -> process.exit(Code)
-               RunError(Code) -> throw new Error('Runtime error ' + Code)
-               Addr(X) -> reference a X
-               Assigned(P) -> (P !== null && P !== undefined)
-
-   TODO 19 - UNITE CRT [IMPLEMENTE]
-             Constantes de couleur :
-               Black=0, Blue=1, Green=2, Cyan=3, Red=4, Magenta=5,
-               Brown=6, LightGray=7, DarkGray=8, LightBlue=9,
-               LightGreen=10, LightCyan=11, LightRed=12, LightMagenta=13,
-               Yellow=14, White=15, Blink=128
-               -> constantes numeriques JS
-             Variables :
-               TextAttr, WindMin, WindMax, LastMode,
-               DirectVideo, CheckBreak, CheckEOF, CheckSnow
-             Procedures d ecran :
-               ClrScr -> console.clear() ou sequence ANSI ESC[2J
-               ClrEol -> sequence ANSI ESC[K
-               GotoXY(X, Y) -> sequence ANSI ESC[Y;XH
-               WhereX -> position X courante (stub)
-               WhereY -> position Y courante (stub)
-               TextColor(Color) -> sequence ANSI ESC[3Xm
-               TextBackground(Color) -> sequence ANSI ESC[4Xm
-               HighVideo / LowVideo / NormVideo -> sequences ANSI
-               Window(X1, Y1, X2, Y2) -> definir fenetre (stub)
-               InsLine / DelLine -> sequences ANSI insertion/suppression
-             Procedures de clavier :
-               KeyPressed -> verifier si touche disponible (stub ou event JS)
-               ReadKey -> lire un caractere (prompt ou event handler)
-             Procedures sonores :
-               Sound(Hz) / NoSound -> Web Audio API ou stub
-               Delay(Ms) -> setTimeout ou boucle d attente
-             Modes ecran :
-               TextMode(Mode) -> changer le mode texte (stub)
-               CO80, BW80, CO40, BW40, Mono, Font8x8 -> constantes de mode
-
-   TODO 20 - UNITE DOS [IMPLEMENTE]
-             Types :
-               DateTime = record Year,Month,Day,Hour,Min,Sec: Word end
-               SearchRec = record Attr,Time,Size,Name... end
-               Registers = record AX,BX,CX,DX,BP,SI,DI,DS,ES,Flags end
-             Constantes d attributs de fichier :
-               ReadOnly=$01, Hidden=$02, SysFile=$04, VolumeID=$08,
-               Directory=$10, Archive=$20, AnyFile=$3F
-             Fonctions de date et heure :
-               GetDate(Y,M,D,DOW) -> d = new Date(); Y=d.getFullYear(); ...
-               GetTime(H,M,S,S100) -> d = new Date(); H=d.getHours(); ...
-               SetDate / SetTime -> avertissement (non supporte en JS)
-               PackTime(DT, Time) / UnpackTime(Time, DT) -> conversion
-               GetFTime(F, Time) -> date de modification fichier (Node.js fs.stat)
-               SetFTime(F, Time) -> modifier date (Node.js fs.utimes)
-             Fonctions de fichier et repertoire :
-               FindFirst(Path, Attr, SR) -> recherche de fichiers (Node.js glob)
-               FindNext(SR) -> fichier suivant
-               FSearch(Name, List) -> recherche dans PATH
-               FExpand(Path) -> chemin absolu (Node.js path.resolve)
-               FSplit(Path, Dir, Name, Ext) -> decomposition chemin
-               GetDir(Drive, Dir) / SetDir(Dir) -> repertoire courant
-               CreateDir(Dir) / RemoveDir(Dir) -> creer/supprimer repertoire
-             Environnement et systeme :
-               EnvCount -> Object.keys(process.env).length
-               EnvStr(N) -> Object.entries(process.env)[N]
-               GetEnv(Name) -> process.env[Name] || ''
-               DosVersion -> { major: 7, minor: 0 } (stub)
-               DiskFree(Drive) / DiskSize(Drive) -> stub ou Node.js
-               GetCBreak / SetCBreak -> stub
-               GetVerify / SetVerify -> stub
-             Execution :
-               Exec(Path, CmdLine) -> child_process.execSync (Node.js)
-               DosExitCode -> code de retour du dernier Exec
-               SwapVectors -> stub (non pertinent en JS)
-               Keep(Code) -> stub (TSR non pertinent en JS)
-
-   TODO 21 - UNITE OVERLAY [IMPLEMENTE]
-             OverlayInit(FileName) : initialiser le gestionnaire d overlay
-               -> avertissement : overlays non pertinents en JS
-               -> stub : function OvrInit(f) { /* no-op */ }
-             OverlayInitEMS : utiliser EMS pour les overlays
-               -> stub : function OvrInitEMS() { /* no-op */ }
-             OvrGetBuf / OvrSetBuf : gerer la taille du buffer d overlay
-               -> stub : retourner des constantes
-             OvrGetRetry / OvrSetRetry : taille du cache de tentatives
-               -> stub
-             OvrClearBuf : vider le buffer d overlay
-               -> stub
-             OvrResult : code de retour des operations d overlay
-               -> constante ovrOk = 0
-             Constantes : ovrOk=0, ovrError=-1, ovrNotFound=-2,
-               ovrNoMemory=-3, ovrIOError=-4, ovrNoEMSDriver=-5,
-               ovrNoEMSMemory=-6
-               -> constantes numeriques JS
-             Emettre un avertissement a la compilation si USES Overlay
-               indiquant que les overlays sont ignores en JavaScript
-
-   TODO 22 - UNITE GRAPH [IMPLEMENTE]
-             Constantes de pilotes et modes :
-               Detect=0, CGA=1, EGA=3, VGA=9, etc.
-               -> constantes numeriques JS
-               CGAHi=4, EGAHi=1, VGAHi=2, VGAMed=1, VGALo=0
-             Constantes de couleur :
-               Black=0 ... White=15 (memes que Crt)
-               EGABlack..EGAWhite pour mode EGA
-             Constantes de remplissage et style :
-               EmptyFill=0, SolidFill=1, LineFill=2, ...
-               SolidLn=0, DottedLn=1, CenterLn=2, DashedLn=3
-               NormalPut=0, XORPut=1, OrPut=2, AndPut=3, NotPut=4
-             Initialisation :
-               InitGraph(Driver, Mode, Path) -> creer un <canvas> HTML
-                 ou utiliser une librairie canvas Node.js
-               CloseGraph -> detruire le contexte graphique
-               DetectGraph(Driver, Mode) -> detection automatique (VGA stub)
-               GraphResult / GraphErrorMsg -> codes d erreur graphique
-               GetMaxX / GetMaxY -> dimensions du canvas
-               GetMaxColor -> nombre de couleurs disponibles
-             Dessin :
-               PutPixel(X, Y, Color) -> ctx.fillRect(X, Y, 1, 1)
-               GetPixel(X, Y) -> ctx.getImageData(X, Y, 1, 1)
-               Line(X1, Y1, X2, Y2) -> ctx.beginPath(); ctx.moveTo/lineTo
-               LineTo(X, Y) -> ctx.lineTo depuis position courante
-               MoveTo(X, Y) -> mettre a jour position courante (CP)
-               Circle(X, Y, R) -> ctx.arc(X, Y, R, 0, 2*PI)
-               Arc(X, Y, SA, EA, R) -> ctx.arc avec angles
-               Ellipse(X, Y, SA, EA, XR, YR) -> ctx.ellipse
-               Rectangle(X1, Y1, X2, Y2) -> ctx.strokeRect
-               Bar(X1, Y1, X2, Y2) -> ctx.fillRect
-               Bar3D(X1, Y1, X2, Y2, Depth, Top) -> barre 3D (lignes)
-               FillEllipse(X, Y, XR, YR) -> ctx.fill() apres ellipse
-               FillPoly(NumPoints, PolyPoints) -> ctx.fill() apres path
-               FloodFill(X, Y, Border) -> algorithme de remplissage
-               Sector(X, Y, SA, EA, XR, YR) -> secteur rempli
-               PieSlice(X, Y, SA, EA, R) -> secteur circulaire
-             Texte graphique :
-               OutText(S) -> ctx.fillText(S, CP.X, CP.Y)
-               OutTextXY(X, Y, S) -> ctx.fillText(S, X, Y)
-               SetTextStyle(Font, Direction, Size) -> ctx.font = ...
-               SetTextJustify(Horiz, Vert) -> ctx.textAlign/textBaseline
-               TextWidth(S) / TextHeight(S) -> ctx.measureText
-             Style et couleur :
-               SetColor(Color) -> ctx.strokeStyle = palette[Color]
-               SetBkColor(Color) -> ctx.fillStyle pour fond
-               GetColor / GetBkColor -> couleur courante
-               SetFillStyle(Pattern, Color) -> remplissage courant
-               SetFillPattern(Pattern, Color) -> motif personnalise
-               SetLineStyle(Style, Pattern, Thick) -> ctx.setLineDash
-               SetWriteMode(Mode) -> ctx.globalCompositeOperation
-             Fenetrage et viewport :
-               SetViewPort(X1, Y1, X2, Y2, Clip) -> ctx.save/clip
-               ClearViewPort -> effacer le viewport courant
-               ClearDevice -> effacer tout le canvas
-               GetViewSettings -> retourner les parametres du viewport
-             Image :
-               ImageSize(X1, Y1, X2, Y2) -> taille du buffer image
-               GetImage(X1, Y1, X2, Y2, Buf) -> ctx.getImageData
-               PutImage(X, Y, Buf, Op) -> ctx.putImageData avec operation
-             Palette :
-               SetPalette(Index, Color) -> modifier une entree de palette
-               SetAllPalette(Palette) -> modifier toute la palette
-               GetPalette(Palette) -> lire la palette courante
-               GetDefaultPalette(Palette) -> palette par defaut
-               SetRGBPalette(Index, R, G, B) -> couleur RGB
-
-   TODO 23 - UNITES UTILISATEUR ET COMPILATION SEPAREE [IMPLEMENTE]
-             ParseUnit : UNIT nom; INTERFACE ... IMPLEMENTATION ... [BEGIN ... ] END.
-             Section INTERFACE :
-               Declarations exportees (types, constantes, variables, procedures)
-               Signatures de fonctions/procedures sans corps
-             Section IMPLEMENTATION :
-               Corps des procedures/fonctions declarees dans INTERFACE
-               Declarations privees (non exportees)
-             Section d initialisation : BEGIN ... END. (optionnel)
-               -> code execute au chargement de l unite
-               Emission JS : bloc d initialisation appele avant _main()
-             USES dans les unites : dependances entre unites
-               Resolution de l ordre d initialisation (topologique)
-             Compilation separee :
-               Chaque unite .pas -> un fichier .js separe
-               Option -m : module ES6 avec export/import
-               Option fichier unique : tout concatener dans un seul .js
-             Resolution des references croisees :
-               INTERFACE d une unite -> symboles disponibles pour les autres
-               Chargement des declarations depuis .pas ou .tpu (stub)
-
-   TODO 24 - RUNTIME JAVASCRIPT MINIMAL [IMPLEMENTE]
-             _TPR_Write(S) : ecriture sur stdout
-               -> process.stdout.write(String(S)) (Node.js)
-               -> document.write(S) (navigateur, si applicable)
-             _TPR_WriteLn(S) : ecriture avec retour de ligne
-               -> console.log(S)
-             _TPR_ReadLn() : lecture d une ligne
-               -> prompt() (navigateur) ou readline (Node.js)
-             _TPR_WriteF(F, S) : ecriture dans un fichier
-               -> fs.appendFileSync(F.name, S) (Node.js)
-             _TPR_Halt(Code) : arret du programme
-               -> process.exit(Code) (Node.js) ou throw (navigateur)
-             _TPR_IntToStr(N, Width) : entier vers chaine formatee
-               -> String(N).padStart(Width)
-             _TPR_RealToStr(R, Width, Dec) : reel vers chaine formatee
-               -> R.toFixed(Dec).padStart(Width)
-             _TPR_StrToInt(S) : chaine vers entier
-               -> parseInt(S, 10)
-             _TPR_StrToReal(S) : chaine vers reel
-               -> parseFloat(S)
-             _TPR_SetOps : operations sur les ensembles
-               _TPR_SetUnion(A, B), _TPR_SetInter(A, B),
-               _TPR_SetDiff(A, B), _TPR_SetIn(Elem, S)
-             _TPR_Copy(S, Pos, Len) : sous-chaine (base 1 -> base 0)
-               -> S.substr(Pos - 1, Len)
-             _TPR_Pos(Sub, S) : position de sous-chaine (base 1)
-               -> (S.indexOf(Sub) + 1) || 0
-             _TPR_Delete(S, Pos, Len) : suppression dans chaine
-             _TPR_Insert(Src, S, Pos) : insertion dans chaine
-             _TPR_FillChar(Buf, Count, Val) : remplissage tableau
-             _TPR_Move(Src, Dest, Count) : copie tableau
-             _TPR_Random(N) : nombre pseudo-aleatoire
-               -> Math.floor(Math.random() * N) si N fourni
-               -> Math.random() sinon
-             _TPR_IOResult : variable globale code d erreur E/S
-             _TPR_Args : tableau des arguments de ligne de commande
-               -> process.argv.slice(2) (Node.js)
-             RuntimeEmitted : flag pour n emettre le runtime qu une seule fois
-
-   TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES [IMPLEMENTE]
-             EmitClose : ecrire l appel _main() a la fin du fichier .js
-             Run : pipeline complet LexInit -> ParseProgram ou ParseUnit ->
-               EmitRuntime -> EmitFooter -> fermeture du fichier
-             Optimisations simples :
-               Constantes evaluees a la compilation (constant folding)
-               Suppression de code mort (branches if false)
-               Variables non utilisees -> avertissement
-             Fichiers SAMPLES\TURBOPASCAL\ a utiliser pour les tests :
-               hello.pas    (WriteLn, variables, constantes, String)
-               math.pas     (fonctions mathematiques, expressions, Real)
-               control.pas  (IF/CASE, WHILE, FOR, REPEAT, GOTO)
-               arrays.pas   (ARRAY fixe, multidimensionnel, String)
-               records.pas  (RECORD, WITH, variantes, affectation)
-               objects.pas  (OBJECT, CONSTRUCTOR, VIRTUAL, INHERITED)
-               fileio.pas   (Assign, Reset, Rewrite, Read, Write, Close)
-               crtdemo.pas  (uses Crt: ClrScr, GotoXY, TextColor, ReadKey)
-               dosdemo.pas  (uses Dos: GetDate, GetTime, FindFirst, Exec)
-               graphdemo.pas (uses Graph: InitGraph, Line, Circle, Bar)
-               unitdemo.pas (UNIT + PROGRAM utilisant l unite)
-             Smoke tests : TP2JS source.pas -v et execution node sortie.js
-
    ============================================================ *)
 
 Program TP2JS;
@@ -824,13 +219,13 @@ Var
   TypeTab    : Array[0..MAX_TYPE - 1] Of TTypeRec;
   TypeCount  : Integer;
 
-  { Emetteur de code JavaScript (TODO 07) }
+  { Emetteur de code JavaScript }
   IndentLevel : Integer;          { niveau d indentation courant (0=gauche) }
 
-  { Parseur de programme (TODO 08) }
+  { Parseur de programme }
   ProgName    : TString;          { nom du programme PROGRAM xxx            }
 
-  { TODO 23 : compilation d unites }
+  { Compilation d unites }
   IsUnitMode  : Boolean;          { True si on compile une UNIT             }
   UnitName    : TString;          { nom de l unite courante                 }
   UnitInitCount : Integer;        { nombre d unites avec init chargees      }
@@ -840,7 +235,7 @@ Var
                                   { noms des unites deja chargees           }
   UnitLoadedCount : Integer;      { nombre d unites chargees                }
 
-  { TODO 24 : runtime JavaScript minimal }
+  { Runtime JavaScript minimal }
   RuntimeEmitted : Boolean;       { flag pour n emettre le runtime qu une fois }
 
 { ============================================================
@@ -857,7 +252,7 @@ Procedure ParseUsesClause(Var P : Integer); Forward;
 Procedure EmitRuntime; Forward;
 
 { ============================================================
-  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
+  INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
   ============================================================ }
 
 Function IntToStr_(N : LongInt) : TString;
@@ -971,27 +366,28 @@ Begin
   WriteLn;
 End;
 
-Procedure ShowUsage;
-Begin
-  WriteLn('Usage: TP2JS <source.pas> [sortie.js] [options]');
-  WriteLn;
-  WriteLn('  source.pas : fichier Turbo Pascal source');
-  WriteLn('  sortie.js  : fichier JavaScript de sortie (defaut: source.js)');
-  WriteLn;
-  WriteLn('Options:');
-  WriteLn('  -v         : mode verbeux (banniere + statistiques)');
-  WriteLn('  -d         : debug tokens (affiche chaque token)');
-  WriteLn('  -w         : activer les avertissements');
-  WriteLn('  -m         : generer module ES6 (export/import)');
-  WriteLn('  -pretty    : indentation du JavaScript genere');
-  WriteLn('  -html      : generer un fichier HTML (avec <script>)');
-  WriteLn('  -h, --help : cette aide');
-  WriteLn;
-  Halt(EXIT_USAGE);
+Procedure ShowUsage;Begin
+ WriteLn('TP2JS - Cette commande permet de compiler un fichier Turbo ',
+         'Pascal en code JavaScript.');
+ WriteLn;
+ WriteLn('Syntaxe : TP2JS <source.pas> [sortie.js] [options]');
+ WriteLn;
+ WriteLn('  source.pas : fichier Turbo Pascal source');
+ WriteLn('  sortie.js  : fichier JavaScript de sortie (defaut: source.js)');
+ WriteLn;
+ WriteLn('Options:');
+ WriteLn('  -v         : mode verbeux (banniere + statistiques)');
+ WriteLn('  -d         : debug tokens (affiche chaque token)');
+ WriteLn('  -w         : activer les avertissements');
+ WriteLn('  -m         : generer module ES6 (export/import)');
+ WriteLn('  -pretty    : indentation du JavaScript genere');
+ WriteLn('  -html      : generer un fichier HTML (avec <script>)');
+ WriteLn('  -h, --help : cette aide');
+ WriteLn;
+ Halt(EXIT_USAGE);
 End;
 
-Procedure ShowStats;
-Begin
+Procedure ShowStats;Begin
   WriteLn;
   WriteLn('Compilation terminee : ', Opts.SrcFile, ' -> ', Opts.OutFile);
   WriteLn('  Lignes         : ', TotalLines);
@@ -999,8 +395,7 @@ Begin
   WriteLn('  Avertissements : ', WarnCount);
 End;
 
-Procedure InitOptions;
-Begin
+Procedure InitOptions;Begin
   Opts.SrcFile   := '';
   Opts.OutFile   := '';
   Opts.Verbose   := False;
@@ -1115,7 +510,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 02 - LEXEUR (TOKENS TURBO PASCAL) [IMPLEMENTE]
+  LEXEUR (TOKENS TURBO PASCAL) [IMPLEMENTE]
   ============================================================ }
 
 Function StrUpperCase(Const S : TString) : TString;
@@ -1804,7 +1199,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
+  LITTERAUX ET CONSTANTES [IMPLEMENTE]
   ============================================================ }
 
 { ---- HexByte : octet -> 2 chiffres hexa -------------------- }
@@ -2039,7 +1434,7 @@ Begin
   ConstAdd('MaxLongInt', '2147483647',    TK_INTEGER, 2147483647, 0.0, '', False);
   ConstAdd('nil',        'null',          TK_KEYWORD, 0, 0.0, '', False);
   ConstAdd('Pi',         'Math.PI',       TK_REAL,    3, 3.14159265358979, '', False);
-  { TODO 19 : constantes CRT - couleurs }
+  { Constantes CRT - couleurs }
   ConstAdd('Black',        '0',    TK_INTEGER, 0,   0.0, '', False);
   ConstAdd('Blue',         '1',    TK_INTEGER, 1,   0.0, '', False);
   ConstAdd('Green',        '2',    TK_INTEGER, 2,   0.0, '', False);
@@ -2057,14 +1452,14 @@ Begin
   ConstAdd('Yellow',       '14',   TK_INTEGER, 14,  0.0, '', False);
   ConstAdd('White',        '15',   TK_INTEGER, 15,  0.0, '', False);
   ConstAdd('Blink',        '128',  TK_INTEGER, 128, 0.0, '', False);
-  { TODO 19 : constantes CRT - modes ecran }
+  { Constantes CRT - modes ecran }
   ConstAdd('BW40',    '0',   TK_INTEGER, 0,   0.0, '', False);
   ConstAdd('CO40',    '1',   TK_INTEGER, 1,   0.0, '', False);
   ConstAdd('BW80',    '2',   TK_INTEGER, 2,   0.0, '', False);
   ConstAdd('CO80',    '3',   TK_INTEGER, 3,   0.0, '', False);
   ConstAdd('Mono',    '7',   TK_INTEGER, 7,   0.0, '', False);
   ConstAdd('Font8x8', '256', TK_INTEGER, 256, 0.0, '', False);
-  { TODO 20 : constantes DOS - attributs de fichier }
+  { Constantes DOS - attributs de fichier }
   ConstAdd('ReadOnly',  '1',   TK_INTEGER, 1,   0.0, '', False);
   ConstAdd('Hidden',    '2',   TK_INTEGER, 2,   0.0, '', False);
   ConstAdd('SysFile',   '4',   TK_INTEGER, 4,   0.0, '', False);
@@ -2072,7 +1467,7 @@ Begin
   ConstAdd('Directory', '16',  TK_INTEGER, 16,  0.0, '', False);
   ConstAdd('Archive',   '32',  TK_INTEGER, 32,  0.0, '', False);
   ConstAdd('AnyFile',   '63',  TK_INTEGER, 63,  0.0, '', False);
-  { TODO 21 : constantes Overlay }
+  { Constantes Overlay }
   ConstAdd('ovrOk',          '0',  TK_INTEGER,  0, 0.0, '', False);
   ConstAdd('ovrError',       '-1', TK_INTEGER, -1, 0.0, '', False);
   ConstAdd('ovrNotFound',    '-2', TK_INTEGER, -2, 0.0, '', False);
@@ -2080,7 +1475,7 @@ Begin
   ConstAdd('ovrIOError',     '-4', TK_INTEGER, -4, 0.0, '', False);
   ConstAdd('ovrNoEMSDriver', '-5', TK_INTEGER, -5, 0.0, '', False);
   ConstAdd('ovrNoEMSMemory', '-6', TK_INTEGER, -6, 0.0, '', False);
-  { TODO 22 : constantes Graph - pilotes }
+  { Constantes Graph - pilotes }
   ConstAdd('Detect',   '0',  TK_INTEGER, 0,  0.0, '', False);
   ConstAdd('CGA',      '1',  TK_INTEGER, 1,  0.0, '', False);
   ConstAdd('MCGA',     '2',  TK_INTEGER, 2,  0.0, '', False);
@@ -2092,14 +1487,14 @@ Begin
   ConstAdd('ATT400',   '8',  TK_INTEGER, 8,  0.0, '', False);
   ConstAdd('VGA',      '9',  TK_INTEGER, 9,  0.0, '', False);
   ConstAdd('PC3270',   '10', TK_INTEGER, 10, 0.0, '', False);
-  { TODO 22 : constantes Graph - modes }
+  { Constantes Graph - modes }
   ConstAdd('CGAHi',    '4',  TK_INTEGER, 4,  0.0, '', False);
   ConstAdd('EGAHi',    '1',  TK_INTEGER, 1,  0.0, '', False);
   ConstAdd('EGALo',    '0',  TK_INTEGER, 0,  0.0, '', False);
   ConstAdd('VGAHi',    '2',  TK_INTEGER, 2,  0.0, '', False);
   ConstAdd('VGAMed',   '1',  TK_INTEGER, 1,  0.0, '', False);
   ConstAdd('VGALo',    '0',  TK_INTEGER, 0,  0.0, '', False);
-  { TODO 22 : constantes Graph - couleurs EGA }
+  { Constantes Graph - couleurs EGA }
   ConstAdd('EGABlack',        '0',  TK_INTEGER, 0,  0.0, '', False);
   ConstAdd('EGABlue',         '1',  TK_INTEGER, 1,  0.0, '', False);
   ConstAdd('EGAGreen',        '2',  TK_INTEGER, 2,  0.0, '', False);
@@ -2116,7 +1511,7 @@ Begin
   ConstAdd('EGALightMagenta', '61', TK_INTEGER, 61, 0.0, '', False);
   ConstAdd('EGAYellow',       '62', TK_INTEGER, 62, 0.0, '', False);
   ConstAdd('EGAWhite',        '63', TK_INTEGER, 63, 0.0, '', False);
-  { TODO 22 : constantes Graph - remplissage }
+  { Constantes Graph - remplissage }
   ConstAdd('EmptyFill',  '0',  TK_INTEGER, 0,  0.0, '', False);
   ConstAdd('SolidFill',  '1',  TK_INTEGER, 1,  0.0, '', False);
   ConstAdd('LineFill',   '2',  TK_INTEGER, 2,  0.0, '', False);
@@ -2130,7 +1525,7 @@ Begin
   ConstAdd('WideDotFill','10', TK_INTEGER, 10, 0.0, '', False);
   ConstAdd('CloseDotFill','11',TK_INTEGER, 11, 0.0, '', False);
   ConstAdd('UserFill',   '12', TK_INTEGER, 12, 0.0, '', False);
-  { TODO 22 : constantes Graph - lignes }
+  { Constantes Graph - lignes }
   ConstAdd('SolidLn',   '0',  TK_INTEGER, 0,  0.0, '', False);
   ConstAdd('DottedLn',  '1',  TK_INTEGER, 1,  0.0, '', False);
   ConstAdd('CenterLn',  '2',  TK_INTEGER, 2,  0.0, '', False);
@@ -2138,13 +1533,13 @@ Begin
   ConstAdd('UserBitLn', '4',  TK_INTEGER, 4,  0.0, '', False);
   ConstAdd('NormWidth',  '1', TK_INTEGER, 1,  0.0, '', False);
   ConstAdd('ThickWidth', '3', TK_INTEGER, 3,  0.0, '', False);
-  { TODO 22 : constantes Graph - operations de copie }
+  { Constantes Graph - operations de copie }
   ConstAdd('NormalPut',  '0', TK_INTEGER, 0,  0.0, '', False);
   ConstAdd('XORPut',     '1', TK_INTEGER, 1,  0.0, '', False);
   ConstAdd('OrPut',      '2', TK_INTEGER, 2,  0.0, '', False);
   ConstAdd('AndPut',     '3', TK_INTEGER, 3,  0.0, '', False);
   ConstAdd('NotPut',     '4', TK_INTEGER, 4,  0.0, '', False);
-  { TODO 22 : constantes Graph - texte }
+  { Constantes Graph - texte }
   ConstAdd('DefaultFont',   '0', TK_INTEGER, 0, 0.0, '', False);
   ConstAdd('TriplexFont',   '1', TK_INTEGER, 1, 0.0, '', False);
   ConstAdd('SmallFont',     '2', TK_INTEGER, 2, 0.0, '', False);
@@ -2157,7 +1552,7 @@ Begin
   ConstAdd('RightText',     '2', TK_INTEGER, 2, 0.0, '', False);
   ConstAdd('BottomText',    '0', TK_INTEGER, 0, 0.0, '', False);
   ConstAdd('TopText',       '2', TK_INTEGER, 2, 0.0, '', False);
-  { TODO 22 : constantes Graph - erreurs }
+  { Constantes Graph - erreurs }
   ConstAdd('grOk',           '0',  TK_INTEGER, 0,  0.0, '', False);
   ConstAdd('grNoInitGraph',  '-1', TK_INTEGER, -1, 0.0, '', False);
   ConstAdd('grNotDetected',  '-2', TK_INTEGER, -2, 0.0, '', False);
@@ -2275,7 +1670,7 @@ Begin
     If L = 'true'  Then Begin ConstEvalAtom := 'true';  Inc(P); Exit; End;
     If L = 'false' Then Begin ConstEvalAtom := 'false'; Inc(P); Exit; End;
     If L = 'nil'   Then Begin ConstEvalAtom := 'null';  Inc(P); Exit; End;
-    { ORD, CHR, etc. traites dans les TODOs suivants }
+    { ORD, CHR, etc. traites dans les parties suivants }
     ConstEvalAtom := TokenPool[P].Val;
     Inc(P);
     Exit;
@@ -2488,7 +1883,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 04 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
+  OPERATEURS ET PRECEDENCE [IMPLEMENTE]
   ============================================================ }
 
 { ---- OpToJS : convertir operateur Pascal en JavaScript ------ }
@@ -2526,7 +1921,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 11 - EXPRESSIONS BINAIRES ET UNAIRES [IMPLEMENTE]
+  EXPRESSIONS BINAIRES ET UNAIRES [IMPLEMENTE]
   ============================================================ }
 { Distinction bitwise vs logique pour AND/OR/NOT.               }
 { IsBooleanExpr : heuristique detectant si une expression       }
@@ -2629,7 +2024,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
+  EXPRESSIONS PRIMAIRES [IMPLEMENTE]
   ============================================================ }
 { Transtypage, acces chaine/tableau, fonctions standard,         }
 { constantes predefinies, appels de methode objet.               }
@@ -2691,7 +2086,7 @@ Begin
                    (L = 'val') Or (L = 'halt') Or (L = 'exit') Or
                    (L = 'high') Or (L = 'low') Or (L = 'assigned') Or
                    (L = 'swap') Or
-                   { TODO 18 : fonctions System supplementaires }
+                   { fonctions System supplementaires }
                    (L = 'delete') Or (L = 'insert') Or
                    (L = 'randomize') Or (L = 'runerror') Or
                    (L = 'fillchar') Or (L = 'move') Or
@@ -2706,7 +2101,7 @@ Begin
                    (L = 'addr') Or (L = 'eof') Or (L = 'eoln') Or
                    (L = 'ioresult') Or (L = 'filepos') Or
                    (L = 'filesize') Or
-                   { TODO 19 : fonctions CRT }
+                   { fonctions CRT }
                    (L = 'clrscr') Or (L = 'clreol') Or
                    (L = 'gotoxy') Or (L = 'wherex') Or
                    (L = 'wherey') Or (L = 'textcolor') Or
@@ -2717,7 +2112,7 @@ Begin
                    (L = 'normvideo') Or (L = 'window') Or
                    (L = 'insline') Or (L = 'delline') Or
                    (L = 'textmode') Or
-                   { TODO 20 : fonctions DOS }
+                   { fonctions DOS }
                    (L = 'getdate') Or (L = 'gettime') Or
                    (L = 'setdate') Or (L = 'settime') Or
                    (L = 'packtime') Or (L = 'unpacktime') Or
@@ -2735,12 +2130,12 @@ Begin
                    (L = 'exec') Or (L = 'dosexitcode') Or
                    (L = 'swapvectors') Or (L = 'keep') Or
                    (L = 'intr') Or (L = 'msdos') Or
-                   { TODO 21 : fonctions Overlay }
+                   { fonctions Overlay }
                    (L = 'ovrinit') Or (L = 'ovrinitems') Or
                    (L = 'ovrgetbuf') Or (L = 'ovrsetbuf') Or
                    (L = 'ovrgetretry') Or (L = 'ovrsetretry') Or
                    (L = 'ovrclearbuf') Or (L = 'ovrresult') Or
-                   { TODO 22 : fonctions Graph }
+                   { fonctions Graph }
                    (L = 'initgraph') Or (L = 'closegraph') Or
                    (L = 'detectgraph') Or (L = 'graphresult') Or
                    (L = 'grapherrormsg') Or
@@ -2860,7 +2255,7 @@ Begin
     Exit;
   End;
 
-  { TODO 18 : fonctions sans argument ou a argument optionnel }
+  { fonctions sans argument ou a argument optionnel }
 
   If L = 'randomize' Then
   Begin
@@ -2899,7 +2294,7 @@ Begin
   End;
 
   { ============================================================
-    TODO 19 - UNITE CRT [IMPLEMENTE]
+    UNITE CRT [IMPLEMENTE]
     Fonctions sans argument ou a argument optionnel.
     ============================================================ }
 
@@ -3060,7 +2455,7 @@ Begin
   End;
 
   { ============================================================
-    TODO 20 - UNITE DOS [IMPLEMENTE]
+    UNITE DOS [IMPLEMENTE]
     Fonctions sans argument ou a argument optionnel.
     ============================================================ }
 
@@ -3150,7 +2545,7 @@ Begin
   End;
 
   { ============================================================
-    TODO 21 - UNITE OVERLAY [IMPLEMENTE]
+    UNITE OVERLAY [IMPLEMENTE]
     Fonctions sans argument ou a argument optionnel.
     Overlays non pertinents en JS : tous les appels sont des stubs.
     ============================================================ }
@@ -3221,7 +2616,7 @@ Begin
   End;
 
   { ============================================================
-    TODO 22 - UNITE GRAPH [IMPLEMENTE]
+    UNITE GRAPH [IMPLEMENTE]
     Fonctions sans argument ou a argument optionnel.
     ============================================================ }
 
@@ -3789,11 +3184,11 @@ Begin
   End;
 
   { ============================================================
-    TODO 18 - UNITE SYSTEM (IMPLICITE) [IMPLEMENTE]
+    UNITE SYSTEM (IMPLICITE) [IMPLEMENTE]
     Fonctions supplementaires du System unit Turbo Pascal.
     ============================================================ }
 
-  { Fonctions TODO 18 qui gerent elles-memes les parentheses }
+  { Fonctions g‚rant elles-memes les parentheses }
 
   If L = 'runerror' Then
   Begin
@@ -3902,7 +3297,7 @@ Begin
     Exit;
   End;
 
-  { -- Delete(S, Pos, Len) : TODO 18 ---------------------------- }
+  { -- Delete(S, Pos, Len) ---------------------------- }
   If L = 'delete' Then
   Begin
     { Arg1 deja lu = S }
@@ -4154,7 +3549,7 @@ Begin
   End;
 
   { ============================================================
-    TODO 19 - UNITE CRT [IMPLEMENTE]
+    UNITE CRT [IMPLEMENTE]
     Procedures avec argument(s) de l unite CRT Turbo Pascal.
     ============================================================ }
 
@@ -4232,7 +3627,7 @@ Begin
   End;
 
   { ============================================================
-    TODO 20 - UNITE DOS [IMPLEMENTE]
+    UNITE DOS [IMPLEMENTE]
     Fonctions de l unite DOS avec argument(s).
     ============================================================ }
 
@@ -4609,7 +4004,7 @@ Begin
   End;
 
   { ============================================================
-    TODO 21 - UNITE OVERLAY [IMPLEMENTE]
+    UNITE OVERLAY [IMPLEMENTE]
     Fonctions avec argument(s) - stubs overlay.
     ============================================================ }
 
@@ -4638,7 +4033,7 @@ Begin
   End;
 
   { ============================================================
-    TODO 22 - UNITE GRAPH [IMPLEMENTE]
+    UNITE GRAPH [IMPLEMENTE]
     Fonctions avec argument(s) de l unite Graph Turbo Pascal.
     ============================================================ }
 
@@ -5291,7 +4686,7 @@ End;
 
 { ---- ParseExprFactor : niveau 1 (le plus fort) -------------- }
 { NOT, @, unaire +/-, atomes (litteraux, idents, parentheses)   }
-{ TODO 10 : transtypage, fonctions standard, acces chaine/tab.  }
+{ Transtypage, fonctions standard, acces chaine/tab.  }
 Function ParseExprFactor(Var P : Integer) : TString;
 Var
   Tmp    : TString;
@@ -5401,7 +4796,7 @@ Begin
     If L = 'false' Then Begin ParseExprFactor := 'false'; Inc(P); Exit; End;
     If L = 'nil'   Then Begin ParseExprFactor := 'null';  Inc(P); Exit; End;
 
-    { INHERITED : appel methode parent -> super.method() (TODO 17) }
+    { INHERITED : appel methode parent -> super.method() }
     If L = 'inherited' Then
     Begin
       Inc(P); { consommer INHERITED }
@@ -5515,7 +4910,7 @@ Begin
     End;
 
     { Fonctions standard : Ord, Chr, Length, Abs, etc. }
-    { Verifier d abord si c est un symbole utilisateur (TODO 15) }
+    { Verifier d abord si c est un symbole utilisateur }
     { Les procs/funcs decl par l utilisateur (index >= BuiltinSymEnd) }
     { ont priorite sur les builtins.                                }
     If IsBuiltinFunc(IdName) Then
@@ -5633,7 +5028,7 @@ Begin
         Break;
     End;
 
-    { Ajouter () pour les procedures/fonctions sans parentheses (TODO 15) }
+    { Ajouter () pour les procedures/fonctions sans parentheses }
     Idx := SymFind(IdName);
     If (Idx >= 0) And
        ((SymTab[Idx].Kind = SK_PROC) Or (SymTab[Idx].Kind = SK_FUNC)) Then
@@ -5765,7 +5160,7 @@ End;
 
 { ---- ParseAssign : gere l affectation := -------------------- }
 { Detecte l operateur := et genere lhs = rhs en JavaScript.     }
-{ TODO 09 : copie de record (Object.assign) et tableau (.slice) }
+{ Copie de record (Object.assign) et tableau (.slice) }
 Function ParseAssign(Var P : Integer) : TString;
 Var
   Left       : TString;
@@ -5817,7 +5212,7 @@ Begin
     Else If (TIdx >= 0) And (TIdx < TypeCount) And
             (TypeTab[TIdx].Kind = TYK_ARRAY) Then
       ParseAssign := Left + ' = ' + Rght + '.slice()'
-    { Affectation au nom de fonction -> Result = valeur (TODO 15/17) }
+    { Affectation au nom de fonction -> Result = valeur }
     Else If (Not IsElemAccess) And (TokenPool[SaveP].Kind = TK_IDENT) And
             (SymIdx >= 0) And ((SymTab[SymIdx].Kind = SK_FUNC) Or
                                (SymTab[SymIdx].Kind = SK_METHOD)) Then
@@ -5839,7 +5234,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
+  TABLE DES SYMBOLES [IMPLEMENTE]
   ============================================================ }
 
 { ---- SymKindStr : nom textuel d un TSymKind ----------------- }
@@ -6099,7 +5494,7 @@ Begin
   SymAdd('Delay',        SK_PROC,  -1);
   SymAdd('Sound',        SK_PROC,  -1);
   SymAdd('NoSound',      SK_PROC,  -1);
-  { TODO 19 : procedures et fonctions CRT supplementaires }
+  { procedures et fonctions CRT supplementaires }
   SymAdd('ClrEol',       SK_PROC,  -1);
   SymAdd('HighVideo',    SK_PROC,  -1);
   SymAdd('LowVideo',     SK_PROC,  -1);
@@ -6108,7 +5503,7 @@ Begin
   SymAdd('InsLine',      SK_PROC,  -1);
   SymAdd('DelLine',      SK_PROC,  -1);
   SymAdd('TextMode',     SK_PROC,  -1);
-  { TODO 19 : constantes CRT - couleurs }
+  { constantes CRT - couleurs }
   TI := TypeFindByName('Byte');
   SymAdd('Black',        SK_CONST, TI);
   SymAdd('Blue',         SK_CONST, TI);
@@ -6127,14 +5522,14 @@ Begin
   SymAdd('Yellow',       SK_CONST, TI);
   SymAdd('White',        SK_CONST, TI);
   SymAdd('Blink',        SK_CONST, TI);
-  { TODO 19 : constantes CRT - modes ecran }
+  { constantes CRT - modes ecran }
   SymAdd('BW40',         SK_CONST, TI);
   SymAdd('CO40',         SK_CONST, TI);
   SymAdd('BW80',         SK_CONST, TI);
   SymAdd('CO80',         SK_CONST, TI);
   SymAdd('Mono',         SK_CONST, TI);
   SymAdd('Font8x8',      SK_CONST, TI);
-  { TODO 19 : variables CRT }
+  { variables CRT }
   TI := TypeFindByName('Byte');
   SymAdd('TextAttr',     SK_VAR, TI);
   TI := TypeFindByName('Word');
@@ -6188,7 +5583,7 @@ Begin
   SymAdd('ReadKey',      SK_FUNC,  -1);
   SymAdd('WhereX',       SK_FUNC,  -1);
   SymAdd('WhereY',       SK_FUNC,  -1);
-  { TODO 20 : procedures et fonctions DOS }
+  { procedures et fonctions DOS }
   SymAdd('GetDate',      SK_PROC,  -1);
   SymAdd('GetTime',      SK_PROC,  -1);
   SymAdd('SetDate',      SK_PROC,  -1);
@@ -6219,7 +5614,7 @@ Begin
   SymAdd('Keep',         SK_PROC,  -1);
   SymAdd('Intr',         SK_PROC,  -1);
   SymAdd('MsDos',        SK_PROC,  -1);
-  { TODO 20 : constantes DOS - attributs de fichier }
+  { constantes DOS - attributs de fichier }
   TI := TypeFindByName('Word');
   SymAdd('ReadOnly',     SK_CONST, TI);
   SymAdd('Hidden',       SK_CONST, TI);
@@ -6228,11 +5623,11 @@ Begin
   SymAdd('Directory',    SK_CONST, TI);
   SymAdd('Archive',      SK_CONST, TI);
   SymAdd('AnyFile',      SK_CONST, TI);
-  { TODO 20 : variables DOS }
+  { variables DOS }
   TI := TypeFindByName('Integer');
   SymAdd('DosError',     SK_VAR,   TI);
   SymAdd('DosExitCode',  SK_VAR,   TI);
-  { TODO 21 : procedures et fonctions Overlay }
+  { procedures et fonctions Overlay }
   SymAdd('OvrInit',      SK_PROC,  -1);
   SymAdd('OvrInitEMS',   SK_PROC,  -1);
   SymAdd('OvrSetBuf',    SK_PROC,  -1);
@@ -6241,7 +5636,7 @@ Begin
   SymAdd('OvrGetBuf',    SK_FUNC,  -1);
   SymAdd('OvrGetRetry',  SK_FUNC,  -1);
   SymAdd('OvrResult',    SK_FUNC,  -1);
-  { TODO 21 : constantes Overlay }
+  { constantes Overlay }
   TI := TypeFindByName('Integer');
   SymAdd('ovrOk',          SK_CONST, TI);
   SymAdd('ovrError',       SK_CONST, TI);
@@ -6250,7 +5645,7 @@ Begin
   SymAdd('ovrIOError',     SK_CONST, TI);
   SymAdd('ovrNoEMSDriver', SK_CONST, TI);
   SymAdd('ovrNoEMSMemory', SK_CONST, TI);
-  { TODO 22 : procedures et fonctions Graph }
+  { procedures et fonctions Graph }
   SymAdd('InitGraph',       SK_PROC,  -1);
   SymAdd('CloseGraph',      SK_PROC,  -1);
   SymAdd('DetectGraph',     SK_PROC,  -1);
@@ -6309,7 +5704,7 @@ Begin
   SymAdd('TextWidth',       SK_FUNC,  -1);
   SymAdd('TextHeight',      SK_FUNC,  -1);
   SymAdd('ImageSize',       SK_FUNC,  -1);
-  { TODO 22 : constantes Graph - pilotes et modes }
+  { constantes Graph - pilotes et modes }
   TI := TypeFindByName('Integer');
   SymAdd('Detect',          SK_CONST, TI);
   SymAdd('CGA',             SK_CONST, TI);
@@ -6328,7 +5723,7 @@ Begin
   SymAdd('VGAHi',           SK_CONST, TI);
   SymAdd('VGAMed',          SK_CONST, TI);
   SymAdd('VGALo',           SK_CONST, TI);
-  { TODO 22 : constantes Graph - styles et operations }
+  { constantes Graph - styles et operations }
   SymAdd('EmptyFill',       SK_CONST, TI);
   SymAdd('SolidFill',       SK_CONST, TI);
   SymAdd('LineFill',        SK_CONST, TI);
@@ -6382,7 +5777,7 @@ Begin
   SymAdd('grInvalidFont',   SK_CONST, TI);
   SymAdd('grInvalidFontNum',SK_CONST, TI);
   SymAdd('grInvalidDeviceNum',SK_CONST,TI);
-  { TODO 22 : constantes Graph - couleurs EGA }
+  { constantes Graph - couleurs EGA }
   SymAdd('EGABlack',        SK_CONST, TI);
   SymAdd('EGABlue',         SK_CONST, TI);
   SymAdd('EGAGreen',        SK_CONST, TI);
@@ -6416,7 +5811,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 06 - SYSTEME DE TYPES [IMPLEMENTE]
+  SYSTEME DE TYPES [IMPLEMENTE]
   ============================================================ }
 
 { ---- TypeKindStr : nom textuel d un TTypeKind --------------- }
@@ -6747,7 +6142,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 07 - EMETTEUR DE CODE JAVASCRIPT [IMPLEMENTE]
+  EMETTEUR DE CODE JAVASCRIPT [IMPLEMENTE]
   ============================================================ }
 
 { ---- IndentStr : retourner la chaine d indentation ---------- }
@@ -6852,7 +6247,7 @@ Begin
            ' - ' + TP2JS_DATE + ' */');
   EmitLine('"use strict";');
   EmitBlankLine;
-  { TODO 19 : helpers CRT - conversion couleurs TP vers codes ANSI }
+  { assistants CRT - conversion couleurs TP vers codes ANSI }
   EmitComment('CRT color helpers');
   EmitLine('var TextAttr = 7, WindMin = 0, WindMax = 0x184F, LastMode = 3;');
   EmitLine('var DirectVideo = true, CheckBreak = true, CheckEOF = false, CheckSnow = true;');
@@ -6865,7 +6260,7 @@ Begin
   EmitLine('  return (c >= 0 && c <= 7) ? String(m[c]) : "40";');
   EmitLine('}');
   EmitBlankLine;
-  { TODO 20 : helpers DOS - variables et fonctions utilitaires }
+  { assistant DOS - variables et fonctions utilitaires }
   EmitComment('DOS unit helpers');
   EmitLine('var DosError = 0, DosExitCode = 0;');
   EmitLine('function _TPR_PackTime(dt) {');
@@ -6891,11 +6286,11 @@ Begin
   EmitLine('  return { dir: d, name: n, ext: e };');
   EmitLine('}');
   EmitBlankLine;
-  { TODO 21 : helpers Overlay - variable OvrResult }
+  { assistants Overlay - variable OvrResult }
   EmitComment('Overlay unit helpers (stubs)');
   EmitLine('var OvrResult = 0;');
   EmitBlankLine;
-  { TODO 22 : helpers Graph - canvas HTML5 }
+  { assistants Graph - canvas HTML5 }
   EmitComment('Graph unit helpers (canvas)');
   EmitLine('var _GR_Canvas = null, _GR_Ctx = null;');
   EmitLine('var _GR_Width = 640, _GR_Height = 480;');
@@ -7118,12 +6513,12 @@ Procedure EmitModuleHeader;
 Begin
   If Not Opts.ModuleES6 Then Exit;
   EmitComment('Module ES6');
-  { TODO 23 : en mode unite + module, on ajoute les imports plus tard }
+  { assistants : en mode unite + module, on ajoute les imports plus tard }
   EmitBlankLine;
 End;
 
 { ============================================================
-  TODO 24 - RUNTIME JAVASCRIPT MINIMAL [IMPLEMENTE]
+  RUNTIME JAVASCRIPT MINIMAL [IMPLEMENTE]
   ============================================================ }
 
 { ---- EmitRuntime : emettre les fonctions runtime _TPR_* ------ }
@@ -7136,7 +6531,7 @@ Begin
   RuntimeEmitted := True;
 
   EmitBlankLine;
-  EmitComment('=== TP2JS Runtime Library (TODO 24) ===');
+  EmitComment('=== TP2JS Runtime Library ===');
   EmitBlankLine;
 
   { _TPR_IOResult : variable globale code d erreur E/S }
@@ -7357,7 +6752,7 @@ Var
   I : Integer;
 Begin
   EmitBlankLine;
-  { TODO 23 : appeler les blocs d initialisation des unites }
+  { Appeler les blocs d initialisation des unites }
   If UnitInitCount > 0 Then
   Begin
     EmitComment('Initialisation des unites');
@@ -7379,13 +6774,13 @@ Begin
 End;
 
 { ============================================================
-  TODO 08 - PROGRAMME PRINCIPAL (PROGRAM) [IMPLEMENTE]
+  PROGRAMME PRINCIPAL (PROGRAM) [IMPLEMENTE]
   ============================================================ }
 
 { ---- ParseUsesClause : parser la clause USES ---------------- }
 { USES unit1, unit2, ..., unitN;                                 }
 { Genere des commentaires /* uses unit1 */ en JS.                }
-{ TODO 23 : detecte et charge les unites utilisateur.            }
+{ Detecte et charge les unites utilisateur.                      }
 Procedure ParseUsesClause;
 Var
   UName : TString;
@@ -7404,13 +6799,13 @@ Begin
       UName := TokenPool[P].Val;
       LU := StrLowerCase(UName);
       EmitComment('  ' + UName);
-      { TODO 21 : avertissement si USES Overlay }
+      { Avertissement si USES Overlay }
       If LU = 'overlay' Then
         WriteLn('Warning: unit Overlay ignored - overlays are not supported in JavaScript');
-      { TODO 22 : notification si USES Graph }
+      { Notification si USES Graph }
       If LU = 'graph' Then
         WriteLn('Note: unit Graph mapped to HTML5 Canvas API in JavaScript');
-      { TODO 23 : en mode module ES6, emettre import pour unites utilisateur }
+      { En mode module ES6, emettre import pour unites utilisateur }
       If Opts.ModuleES6 Then
       Begin
         If (LU <> 'system') And (LU <> 'crt') And (LU <> 'dos') And
@@ -7522,13 +6917,13 @@ Begin
 End;
 
 { ============================================================
-  TODO 09 - VARIABLES ET AFFECTATIONS [IMPLEMENTE]
+  VARIABLES ET AFFECTATIONS [IMPLEMENTE]
   ============================================================ }
 
 { ---- ParseVarSection : parser une section VAR --------------- }
 { VAR nom1, nom2 : Type; nom3 : Type;                           }
 { Genere : var nom1 = default; var nom2 = default; en JS.       }
-{ TODO 09 : support complet Array/Record/Set/initialisation.     }
+{ Support complet Array/Record/Set/initialisation.     }
 Procedure ParseVarSection(Var P : Integer);
 Var
   VarNames : Array[0..63] Of TString;
@@ -7737,8 +7132,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 16 - TYPES STRUCTURES : ARRAY / RECORD / SET / STRING
-            [IMPLEMENTE]
+  TYPES STRUCTURES : ARRAY / RECORD / SET / STRING [IMPLEMENTE]
   ============================================================ }
 { Types structures Turbo Pascal -> JavaScript.                   }
 { ARRAY[lo..hi] OF T -> fonction constructeur retournant Array   }
@@ -8118,7 +7512,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 17 - OBJETS ET HERITAGE (OBJECT) [IMPLEMENTE]
+  OBJETS ET HERITAGE (OBJECT) [IMPLEMENTE]
   ============================================================ }
 { Types OBJECT Turbo Pascal -> classes JavaScript ES6.           }
 { TYPE TNom = OBJECT [(TParent)]                                 }
@@ -8473,13 +7867,13 @@ Begin
 End;
 
 
-{ Forward declarations pour methodes d objets (TODO 17) }
+{ Forward declarations pour methodes d objets }
 Procedure ParseMethodImpl(Var P : Integer; IsFunc : Boolean); Forward;
 Function IsMethodImpl(P : Integer) : Boolean; Forward;
 
 { ---- ParseTypeSection : parser une section TYPE ------------- }
 { TYPE nom = definition;                                         }
-{ Genere du code JS pour les types structures (TODO 16).         }
+{ Genere du code JS pour les types structures.                   }
 Procedure ParseTypeSection(Var P : Integer);
 Var
   TName    : TString;
@@ -8553,7 +7947,7 @@ Begin
         TIdx := ParseTypeString(P, TName);
         SymAdd(TName, SK_TYPE, TIdx);
       End
-      { OBJECT [(TParent)] ... END (TODO 17) }
+      { OBJECT [(TParent)] ... END }
       Else If (TokenPool[P].Kind = TK_KEYWORD) And (L = 'object') Then
       Begin
         Inc(P); { consommer OBJECT }
@@ -8646,7 +8040,7 @@ End;
 
 { ---- ParseLabelSection : parser une section LABEL ----------- }
 { LABEL label1, label2, ...;                                     }
-{ Enregistre les labels dans la table des symboles (TODO 13).    }
+{ Enregistre les labels dans la table des symboles.              }
 Procedure ParseLabelSection(Var P : Integer);
 Var
   LblName : TString;
@@ -8679,7 +8073,7 @@ Begin
   If P < TokenCount Then Inc(P);
 End;
 
-{ Forward declarations pour procedures et fonctions (TODO 15) }
+{ Forward declarations pour procedures et fonctions }
 Procedure ParseProcDecl(Var P : Integer); Forward;
 Procedure ParseFuncDecl(Var P : Integer); Forward;
 
@@ -8705,7 +8099,7 @@ Begin
     Else If (L = 'procedure') Or (L = 'function') Or
             (L = 'constructor') Or (L = 'destructor') Then
     Begin
-      { Verifier si c est une implementation de methode (TODO 17) }
+      { Verifier si c est une implementation de methode }
       If IsMethodImpl(P) Then
         ParseMethodImpl(P, (L = 'function'))
       Else If L = 'procedure' Then
@@ -8723,7 +8117,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 12 - ENTREES/SORTIES [IMPLEMENTE]
+  ENTREES/SORTIES [IMPLEMENTE]
   ============================================================ }
 { Write/WriteLn avec formatage (expr:Width et expr:Width:Decimals). }
 { Read/ReadLn avec generation de code JavaScript reel.              }
@@ -8897,7 +8291,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 13 - IF / CASE / GOTO [IMPLEMENTE]
+  IF / CASE / GOTO [IMPLEMENTE]
   ============================================================ }
 { ParseIfStmt : IF cond THEN stmt [ELSE [IF ...]] avec chaines }
 { ParseCaseStmt : CASE expr OF ... END avec intervalles lo..hi  }
@@ -9179,7 +8573,7 @@ Begin
     Exit;
   End;
 
-  { WriteLn / Write (TODO 12 : formatage et args multiples) }
+  { WriteLn / Write (formatage et args multiples) }
   If (TokenPool[P].Kind = TK_IDENT) And
      ((StrLowerCase(TokenPool[P].Val) = 'writeln') Or
       (StrLowerCase(TokenPool[P].Val) = 'write')) Then
@@ -9189,7 +8583,7 @@ Begin
     Exit;
   End;
 
-  { ReadLn / Read (TODO 12 : lecture depuis l entree standard) }
+  { ReadLn / Read (lecture depuis l entree standard) }
   If (TokenPool[P].Kind = TK_IDENT) And
      ((StrLowerCase(TokenPool[P].Val) = 'readln') Or
       (StrLowerCase(TokenPool[P].Val) = 'read')) Then
@@ -9199,7 +8593,7 @@ Begin
     Exit;
   End;
 
-  { IF ... THEN ... [ELSE [IF ...]] (TODO 13) }
+  { IF ... THEN ... [ELSE [IF ...]] }
   If (TokenPool[P].Kind = TK_KEYWORD) And
      (StrLowerCase(TokenPool[P].Val) = 'if') Then
   Begin
@@ -9207,9 +8601,9 @@ Begin
     Exit;
   End;
 
-  { ---- TODO 14 : BOUCLES ---------------------------------------- }
+  { ---- BOUCLES ---------------------------------------- }
 
-  { FOR ... TO/DOWNTO ... DO ... (TODO 14) }
+  { FOR ... TO/DOWNTO ... DO ... }
   If (TokenPool[P].Kind = TK_KEYWORD) And
      (StrLowerCase(TokenPool[P].Val) = 'for') Then
   Begin
@@ -9255,7 +8649,7 @@ Begin
     Exit;
   End;
 
-  { WHILE ... DO ... (TODO 14) }
+  { WHILE ... DO ... }
   If (TokenPool[P].Kind = TK_KEYWORD) And
      (StrLowerCase(TokenPool[P].Val) = 'while') Then
   Begin
@@ -9273,7 +8667,7 @@ Begin
     Exit;
   End;
 
-  { REPEAT ... UNTIL expr (TODO 14) }
+  { REPEAT ... UNTIL expr }
   If (TokenPool[P].Kind = TK_KEYWORD) And
      (StrLowerCase(TokenPool[P].Val) = 'repeat') Then
   Begin
@@ -9303,7 +8697,7 @@ Begin
     Exit;
   End;
 
-  { CASE expr OF ... END (TODO 13) }
+  { CASE expr OF ... END }
   If (TokenPool[P].Kind = TK_KEYWORD) And
      (StrLowerCase(TokenPool[P].Val) = 'case') Then
   Begin
@@ -9311,7 +8705,7 @@ Begin
     Exit;
   End;
 
-  { GOTO label (TODO 13) }
+  { GOTO label }
   If (TokenPool[P].Kind = TK_KEYWORD) And
      (StrLowerCase(TokenPool[P].Val) = 'goto') Then
   Begin
@@ -9319,7 +8713,7 @@ Begin
     Exit;
   End;
 
-  { Label definition : ident: (TODO 13) }
+  { Label definition : ident: }
   { Detecter label: quand ident est suivi de : et non de := }
   If (TokenPool[P].Kind = TK_IDENT) And
      (P + 1 < TokenCount) And
@@ -9343,7 +8737,7 @@ Begin
     Exit;
   End;
 
-  { Break : sortie de boucle -> break; en JS (TODO 14) }
+  { Break : sortie de boucle -> break; en JS }
   If (TokenPool[P].Kind = TK_IDENT) And
      (StrLowerCase(TokenPool[P].Val) = 'break') Then
   Begin
@@ -9352,7 +8746,7 @@ Begin
     Exit;
   End;
 
-  { Continue : iteration suivante -> continue; en JS (TODO 14) }
+  { Continue : iteration suivante -> continue; en JS }
   If (TokenPool[P].Kind = TK_IDENT) And
      (StrLowerCase(TokenPool[P].Val) = 'continue') Then
   Begin
@@ -9361,9 +8755,9 @@ Begin
     Exit;
   End;
 
-  { ---- TODO 17 : OBJETS ET HERITAGE ----------------------------- }
+  { ---- OBJETS ET HERITAGE ----------------------------- }
 
-  { NEW(Ptr, Init(args)) -> Ptr = new TypeName(args) (TODO 17) }
+  { NEW(Ptr, Init(args)) -> Ptr = new TypeName(args) }
   If (TokenPool[P].Kind = TK_IDENT) And
      (StrLowerCase(TokenPool[P].Val) = 'new') Then
   Begin
@@ -9437,7 +8831,7 @@ Begin
     Exit;
   End;
 
-  { DISPOSE(Ptr, Done) -> Ptr.Done(); Ptr = null (TODO 17) }
+  { DISPOSE(Ptr, Done) -> Ptr.Done(); Ptr = null }
   If (TokenPool[P].Kind = TK_IDENT) And
      (StrLowerCase(TokenPool[P].Val) = 'dispose') Then
   Begin
@@ -9485,7 +8879,7 @@ Begin
     Exit;
   End;
 
-  { INHERITED comme instruction (sans valeur de retour) (TODO 17) }
+  { INHERITED comme instruction (sans valeur de retour) }
   If (TokenPool[P].Kind = TK_KEYWORD) And
      (StrLowerCase(TokenPool[P].Val) = 'inherited') Then
   Begin
@@ -9507,7 +8901,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 15 - PROCEDURES ET FONCTIONS [IMPLEMENTE]
+  PROCEDURES ET FONCTIONS [IMPLEMENTE]
   ============================================================ }
 { Procedures et fonctions Turbo Pascal -> fonctions JavaScript. }
 { Gestion des parametres valeur, VAR, CONST, variables locales, }
@@ -9902,7 +9296,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 17 - IMPLEMENTATIONS DE METHODES D OBJETS
+  IMPLEMENTATIONS DE METHODES D OBJETS
   ============================================================ }
 
 { ---- IsMethodImpl : detecte si on est sur TypeName.MethodName }
@@ -10104,7 +9498,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 23 - UNITES UTILISATEUR ET COMPILATION SEPAREE [IMPLEMENTE]
+  UNITES UTILISATEUR ET COMPILATION SEPAREE [IMPLEMENTE]
   ============================================================ }
 
 { ---- ParseUnitInterface : parser la section INTERFACE --------- }
@@ -10277,7 +9671,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES [IMPLEMENTE]
+  GENERATION FINALE ET FICHIERS EXEMPLES [IMPLEMENTE]
   ============================================================ }
 
 { ---- OptWarnUnusedVars : detecter les variables non utilisees - }
@@ -10509,7 +9903,7 @@ Begin
   { Remplir le token pool avec tous les tokens }
   TokenPoolFill;
 
-  { TODO 25 : optimisations simples }
+  { optimisations simples }
   OptConstFold;
   OptDeadCode;
 
@@ -10604,7 +9998,7 @@ Begin
   EmitHeader;
   EmitModuleHeader;
 
-  { TODO 23 : detecter si le source est un UNIT ou un PROGRAM }
+  { detecter si le source est un UNIT ou un PROGRAM }
   P := 0;
   IsUnitMode := False;
   UnitInitCount := 0;
@@ -10621,10 +10015,10 @@ Begin
     ParseProgram(P);
   End;
 
-  { TODO 25 : avertissements variables non utilisees }
+  { avertissements variables non utilisees }
   OptWarnUnusedVars;
 
-  { TODO 24 : emettre le runtime JavaScript minimal }
+  { emettre le runtime JavaScript minimal }
   EmitRuntime;
 
   { Emettre le pied de page et fermer }
