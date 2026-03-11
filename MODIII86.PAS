@@ -188,7 +188,7 @@
                Text.Equal(a,b)   -> CALL _M3RT_STRCMP -> AX=0|1
                Text.Cat(a,b)     -> CALL _M3RT_CONCAT -> AX=ptr
 
-   TODO 13 - IF / ELSIF / ELSE / CASE
+   TODO 13 - IF / ELSIF / ELSE / CASE [IMPLEMENTE]
              ParseIfStmt : IF cond THEN stmts ELSIF cond THEN stmts ELSE stmts END
                Emission TEST AX,AX / JZ pour condition fausse
                Labels : _M3L_ELSIF_N, _M3L_ELSE_N, _M3L_ENDIF_N
@@ -5099,8 +5099,9 @@ End;
 
 (* ---- ParseStmt : parser une instruction unique du corps -------- *)
 (* Gere : affectation :=, appels de procedure (y compris qualifies *)
-(* Module.Ident), RETURN, IF/ELSIF/ELSE/END, WHILE/DO/END,        *)
-(* FOR/TO/BY/DO/END, LOOP/EXIT/END, REPEAT/UNTIL.                 *)
+(* Module.Ident), RETURN, IF/ELSIF/ELSE/END, CASE/OF/END,         *)
+(* TYPECASE/OF/END, WHILE/DO/END, FOR/TO/BY/DO/END,               *)
+(* LOOP/EXIT/END, REPEAT/UNTIL.                                    *)
 
 Procedure ParseStmt;
 Var
@@ -5111,6 +5112,10 @@ Var
   ForVar               : TString;
   ForLI, ForParI, ForSI: Integer;
   ByVal                : LongInt;
+  LblNext, LblBody     : TString;   (* TODO 13 - CASE labels          *)
+  CaseVal, HiVal       : TString;   (* TODO 13 - CASE value/range     *)
+  HasRange             : Boolean;    (* TODO 13 - range .. detected    *)
+  NegSign              : Boolean;    (* TODO 13 - negative value       *)
 Begin
   If EPAtEnd Then Exit;
 
@@ -5363,13 +5368,172 @@ Begin
     Exit;
   End;
 
-  (* --- CASE expr OF ... END (stub: skip) --- *)
+  (* --- CASE expr OF | val => stmts ... ELSE stmts END --- *)
+  (* TODO 13 - Instructions de branchement CASE                    *)
   If EPMatch(TK_KEYWORD, 'CASE') Then
   Begin
-    EmitComment('CASE (stub: skipping)');
     Inc(EP);
-    (* Skip to matching END *)
-    SkipToMatchingEnd(EP);
+    LblEnd := LabelGen;
+    EmitComment('CASE');
+
+    (* Evaluer l expression selecteur -> AX *)
+    ParseExpr;
+    EmitInstrA('PUSH', 'AX');  (* sauver la valeur sur la pile *)
+
+    (* Passer OF *)
+    If EPMatch(TK_KEYWORD, 'OF') Then Inc(EP);
+
+    (* Passer | initial optionnel *)
+    If EPMatch(TK_PUNCT, '|') Then Inc(EP);
+
+    (* --- Boucle sur les branches | val, val, lo..hi => stmts --- *)
+    While Not EPAtEnd And
+          Not EPMatch(TK_KEYWORD, 'ELSE') And
+          Not EPMatch(TK_KEYWORD, 'END') Do
+    Begin
+      LblBody := LabelGen;     (* label du corps de cette branche *)
+      LblNext := LabelGen;     (* label du test suivant           *)
+
+      (* --- Parser les etiquettes de la branche --- *)
+      (* Chaque etiquette : entier, char, ident ou intervalle lo..hi *)
+      While Not EPAtEnd And Not EPMatch(TK_OP, '=>') Do
+      Begin
+        (* Charger la valeur du selecteur depuis la pile *)
+        EmitInstrAB('MOV', 'AX', 'WORD PTR [SP]');
+
+        (* Detecter un signe negatif *)
+        NegSign := False;
+        If EPMatch(TK_OP, '-') Then
+        Begin
+          NegSign := True;
+          Inc(EP);
+        End;
+
+        CaseVal := '';
+        HasRange := False;
+
+        (* Valeur entiere *)
+        If (EP < TokenCount) And (TokenPool[EP].Kind = TK_INTEGER) Then
+        Begin
+          If NegSign Then
+            CaseVal := IntToStr(-TokenPool[EP].IntVal)
+          Else
+            CaseVal := IntToStr(TokenPool[EP].IntVal);
+          Inc(EP);
+        End
+        (* Valeur caractere *)
+        Else If (EP < TokenCount) And (TokenPool[EP].Kind = TK_CHAR) Then
+        Begin
+          CaseVal := IntToStr(TokenPool[EP].IntVal);
+          Inc(EP);
+        End
+        (* Identifiant (constante nommee) *)
+        Else If (EP < TokenCount) And (TokenPool[EP].Kind = TK_IDENT) Then
+        Begin
+          SI := SymFind(TokenPool[EP].Val);
+          If (SI >= 0) And (SymTab[SI].Kind = SK_CONST) Then
+            CaseVal := IntToStr(SymTab[SI].ImmVal)
+          Else
+            CaseVal := '0';
+          Inc(EP);
+        End
+        Else
+        Begin
+          (* Token inconnu dans les etiquettes CASE, avancer *)
+          Inc(EP);
+          If EPMatch(TK_PUNCT, ',') Then Inc(EP);
+          Continue;
+        End;
+
+        (* Verifier s il y a un intervalle .. *)
+        If EPMatch(TK_OP, '..') Then
+        Begin
+          HasRange := True;
+          Inc(EP);
+          HiVal := '';
+          NegSign := False;
+          If EPMatch(TK_OP, '-') Then
+          Begin
+            NegSign := True;
+            Inc(EP);
+          End;
+          If (EP < TokenCount) And (TokenPool[EP].Kind = TK_INTEGER) Then
+          Begin
+            If NegSign Then
+              HiVal := IntToStr(-TokenPool[EP].IntVal)
+            Else
+              HiVal := IntToStr(TokenPool[EP].IntVal);
+            Inc(EP);
+          End
+          Else If (EP < TokenCount) And (TokenPool[EP].Kind = TK_CHAR) Then
+          Begin
+            HiVal := IntToStr(TokenPool[EP].IntVal);
+            Inc(EP);
+          End
+          Else If (EP < TokenCount) And (TokenPool[EP].Kind = TK_IDENT) Then
+          Begin
+            SI := SymFind(TokenPool[EP].Val);
+            If (SI >= 0) And (SymTab[SI].Kind = SK_CONST) Then
+              HiVal := IntToStr(SymTab[SI].ImmVal)
+            Else
+              HiVal := '0';
+            Inc(EP);
+          End
+          Else
+            HiVal := CaseVal;
+        End;
+
+        (* Emettre le code de comparaison *)
+        If HasRange Then
+        Begin
+          (* Intervalle lo..hi : CMP AX, lo / JL next / CMP AX, hi / JG next *)
+          EmitInstrAB('CMP', 'AX', CaseVal);
+          EmitInstrA('JL', LblNext);
+          EmitInstrAB('CMP', 'AX', HiVal);
+          EmitInstrA('JLE', LblBody);
+        End
+        Else
+        Begin
+          (* Valeur simple : CMP AX, val / JE body *)
+          EmitInstrAB('CMP', 'AX', CaseVal);
+          EmitInstrA('JE', LblBody);
+        End;
+
+        (* Separateur virgule entre etiquettes *)
+        If EPMatch(TK_PUNCT, ',') Then Inc(EP);
+      End;
+
+      (* Aucune etiquette n a correspondu -> sauter au test suivant *)
+      EmitInstrA('JMP', LblNext);
+
+      (* --- Corps de la branche --- *)
+      EmitLabel(LblBody);
+      If EPMatch(TK_OP, '=>') Then Inc(EP);
+
+      While Not EPAtEnd And
+            Not EPMatch(TK_PUNCT, '|') And
+            Not EPMatch(TK_KEYWORD, 'ELSE') And
+            Not EPMatch(TK_KEYWORD, 'END') Do
+        ParseStmt;
+
+      EmitInstrA('JMP', LblEnd);
+      EmitLabel(LblNext);
+
+      (* Passer | avant la branche suivante *)
+      If EPMatch(TK_PUNCT, '|') Then Inc(EP);
+    End;
+
+    (* --- ELSE (branche par defaut) --- *)
+    If EPMatch(TK_KEYWORD, 'ELSE') Then
+    Begin
+      Inc(EP);
+      While Not EPAtEnd And Not EPMatch(TK_KEYWORD, 'END') Do
+        ParseStmt;
+    End;
+
+    EmitLabel(LblEnd);
+    EmitInstrAB('ADD', 'SP', '2');  (* depiler la valeur du selecteur *)
+    If EPMatch(TK_KEYWORD, 'END') Then Inc(EP);
     If EPMatch(TK_PUNCT, ';') Then Inc(EP);
     Exit;
   End;
@@ -5394,12 +5558,96 @@ Begin
     Exit;
   End;
 
-  (* --- TYPECASE (stub: skip) --- *)
+  (* --- TYPECASE expr OF | Type(v) => stmts ... ELSE stmts END --- *)
+  (* TODO 13 - TYPECASE : dispatch sur le type dynamique             *)
+  (* Note: necessite le systeme OOP (TODO 21). Implementation        *)
+  (* basique : evalue l expression, puis pour chaque branche de type *)
+  (* emet un test TYPECODE. Seul ELSE est garanti d etre execute     *)
+  (* tant que le systeme OOP n est pas complet.                      *)
   If EPMatch(TK_KEYWORD, 'TYPECASE') Then
   Begin
-    EmitComment('TYPECASE (stub: skipping)');
     Inc(EP);
-    SkipToMatchingEnd(EP);
+    LblEnd := LabelGen;
+    EmitComment('TYPECASE');
+
+    (* Evaluer l expression de type -> AX *)
+    ParseExpr;
+    EmitInstrA('PUSH', 'AX');  (* sauver la reference sur la pile *)
+
+    (* Passer OF *)
+    If EPMatch(TK_KEYWORD, 'OF') Then Inc(EP);
+
+    (* Passer | initial optionnel *)
+    If EPMatch(TK_PUNCT, '|') Then Inc(EP);
+
+    (* --- Branches | Type(var) => stmts --- *)
+    While Not EPAtEnd And
+          Not EPMatch(TK_KEYWORD, 'ELSE') And
+          Not EPMatch(TK_KEYWORD, 'END') Do
+    Begin
+      LblBody := LabelGen;
+      LblNext := LabelGen;
+
+      (* Parser le nom de type et la variable optionnelle *)
+      Name := '';
+      If (EP < TokenCount) And (TokenPool[EP].Kind = TK_IDENT) Then
+      Begin
+        Name := TokenPool[EP].Val;
+        Inc(EP);
+      End;
+
+      (* Type(var) - variable liee optionnelle *)
+      If EPMatch(TK_PUNCT, '(') Then
+      Begin
+        Inc(EP);
+        If (EP < TokenCount) And (TokenPool[EP].Kind = TK_IDENT) Then
+          Inc(EP);  (* passer le nom de variable *)
+        If EPMatch(TK_PUNCT, ')') Then Inc(EP);
+      End;
+
+      (* Emettre test de type via TYPECODE *)
+      EmitInstrAB('MOV', 'AX', 'WORD PTR [SP]');
+      SI := SymFind(Name);
+      If SI >= 0 Then
+      Begin
+        EmitComment('TYPECASE test: ' + Name);
+        EmitInstrAB('CMP', 'AX', IntToStr(SymTab[SI].TypeIdx));
+        EmitInstrA('JE', LblBody);
+      End
+      Else
+      Begin
+        EmitComment('TYPECASE test: ' + Name + ' (type inconnu)');
+      End;
+
+      EmitInstrA('JMP', LblNext);
+
+      (* Corps de la branche *)
+      EmitLabel(LblBody);
+      If EPMatch(TK_OP, '=>') Then Inc(EP);
+
+      While Not EPAtEnd And
+            Not EPMatch(TK_PUNCT, '|') And
+            Not EPMatch(TK_KEYWORD, 'ELSE') And
+            Not EPMatch(TK_KEYWORD, 'END') Do
+        ParseStmt;
+
+      EmitInstrA('JMP', LblEnd);
+      EmitLabel(LblNext);
+
+      If EPMatch(TK_PUNCT, '|') Then Inc(EP);
+    End;
+
+    (* ELSE *)
+    If EPMatch(TK_KEYWORD, 'ELSE') Then
+    Begin
+      Inc(EP);
+      While Not EPAtEnd And Not EPMatch(TK_KEYWORD, 'END') Do
+        ParseStmt;
+    End;
+
+    EmitLabel(LblEnd);
+    EmitInstrAB('ADD', 'SP', '2');
+    If EPMatch(TK_KEYWORD, 'END') Then Inc(EP);
     If EPMatch(TK_PUNCT, ';') Then Inc(EP);
     Exit;
   End;
