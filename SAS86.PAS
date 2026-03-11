@@ -328,7 +328,7 @@
               DESCENDING var2 : cle de tri descendante
               Emission : boucle de tri + echanges d observations (REP MOVSW)
 
-  TODO 20 - PROC FORMAT ET FORMATS
+  TODO 20 - PROC FORMAT ET FORMATS [IMPLEMENTE]
             PROC FORMAT : definir des formats personnalises
               PROC FORMAT ; VALUE nom_fmt
                 valeur = 'libelle'
@@ -497,6 +497,8 @@ Const
   MAX_PROC_VARS = 32;     (* nombre max de variables VAR/CLASS/BY   *)
   STACK_SIZE    = 1024;
   MISSING_VAL   = -32768; (* sentinelle valeur manquante = 8000h    *)
+  MAX_FORMAT    = 64;     (* nombre max de formats utilisateur      *)
+  MAX_FMT_RANGE = 32;     (* nombre max de plages par format        *)
 
   (* Caracteres speciaux (accolades = delimiteurs d indices tableau) *)
   (* En Turbo Pascal, { et } sont des delimiteurs de commentaire,   *)
@@ -654,6 +656,27 @@ Type
     SymIdx     : Integer;   (* indice dans SymTab (SC_ARRAY)         *)
   End;
 
+  (* ---- Formats utilisateur (TODO 20) ----------------------- *)
+  TFormatRange = Record
+    IsOther  : Boolean;        (* True si OTHER = 'label'              *)
+    IsSingle : Boolean;        (* True si valeur unique (pas low-high) *)
+    Low      : LongInt;        (* borne basse (ou valeur unique)       *)
+    High     : LongInt;        (* borne haute                          *)
+    LowStr   : TString;        (* 'LOW' si borne basse ouverte        *)
+    HighStr  : TString;        (* 'HIGH' si borne haute ouverte       *)
+    IsLowOpen  : Boolean;      (* True si LOW                         *)
+    IsHighOpen : Boolean;      (* True si HIGH                        *)
+    LabelStr : TString;        (* libelle associe                     *)
+  End;
+
+  TFormatDef = Record
+    Name       : TString;      (* nom du format (majuscules, sans .)  *)
+    IsChar     : Boolean;      (* True si format caractere ($fmt.)    *)
+    RangeCount : Integer;      (* nombre de plages definies           *)
+    Ranges     : Array[0..MAX_FMT_RANGE - 1] Of TFormatRange;
+    LblName    : TString;      (* label ASM de la table de dispatch   *)
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -769,6 +792,12 @@ Var
   (* PROC SORT DESCENDING flags (TODO 19) *)
   ProcByDescList  : Array[0..MAX_PROC_VARS - 1] Of Boolean;
                                (* True si DESCENDING pour cette var BY *)
+  (* Formats utilisateur (TODO 20) *)
+  FmtTab     : Array[0..MAX_FORMAT - 1] Of TFormatDef;
+  FmtCount   : Integer;         (* nombre de formats definis           *)
+  (* Association variable -> format (TODO 20) *)
+  (* Stocke le nom du format associe a chaque variable dans SymTab     *)
+  VarFmtName : Array[0..MAX_SYM - 1] Of TString;
 
 { ============================================================
   FORWARD DECLARATIONS
@@ -909,6 +938,14 @@ Procedure ParseProcMeansOptions; Forward;
 Procedure EmitProcFreq; Forward;
 Procedure EmitProcSort; Forward;
 Procedure ParseProcTablesStmt; Forward;
+(* TODO 20 - Forward declarations PROC FORMAT / FORMATS *)
+Procedure FmtInit; Forward;
+Function  FmtFind(Const Name : TString) : Integer; Forward;
+Function  FmtAdd(Const AName : TString; AIsChar : Boolean) : Integer; Forward;
+Procedure ParseProcFormatBody; Forward;
+Procedure EmitProcFormat; Forward;
+Procedure ParseFormatStmt; Forward;
+Procedure EmitFormatLookup(SIdx : Integer; FIdx : Integer); Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1214,6 +1251,7 @@ Begin
   ProcStatMin    := False;
   ProcStatMax    := False;
   ProcStatSum    := False;
+  FmtCount       := 0;
   GExprDummy.Kind    := EK_NONE;
   GExprDummy.ImmVal  := 0;
   GExprDummy.TypeIdx := TY_UNKNOWN;
@@ -6540,8 +6578,16 @@ Begin
         Continue;
       End;
 
-      (* FORMAT / INFORMAT / ATTRIB / OPTIONS : consommer *)
-      If (KW = 'FORMAT') Or (KW = 'INFORMAT') Or
+      (* FORMAT : associer un format a une variable (TODO 20) *)
+      If KW = 'FORMAT' Then
+      Begin
+        ParserAdvance;
+        ParseFormatStmt;
+        Continue;
+      End;
+
+      (* INFORMAT / ATTRIB / OPTIONS : consommer *)
+      If (KW = 'INFORMAT') Or
          (KW = 'ATTRIB') Or (KW = 'OPTIONS') Or
          (KW = 'OUTPUT') Then
       Begin
@@ -7233,6 +7279,463 @@ Begin
   EmitComment('PROC SORT : fin du tri');
 End;
 
+{ ============================================================
+  TODO 20 - PROC FORMAT ET FORMATS [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- FmtInit : initialiser la table des formats ------------- *)
+Procedure FmtInit;
+Var I : Integer;
+Begin
+  FmtCount := 0;
+  For I := 0 To MAX_FORMAT - 1 Do
+  Begin
+    FmtTab[I].Name       := '';
+    FmtTab[I].IsChar     := False;
+    FmtTab[I].RangeCount := 0;
+    FmtTab[I].LblName    := '';
+  End;
+  For I := 0 To MAX_SYM - 1 Do
+    VarFmtName[I] := '';
+End;
+
+(* ---- FmtFind : chercher un format par son nom --------------- *)
+Function FmtFind(Const Name : TString) : Integer;
+Var
+  I    : Integer;
+  UName : TString;
+Begin
+  UName := StrUpperCase(Name);
+  For I := 0 To FmtCount - 1 Do
+    If FmtTab[I].Name = UName Then
+    Begin
+      FmtFind := I;
+      Exit;
+    End;
+  FmtFind := -1;
+End;
+
+(* ---- FmtAdd : ajouter un nouveau format --------------------- *)
+Function FmtAdd(Const AName : TString; AIsChar : Boolean) : Integer;
+Var
+  I  : Integer;
+  Lbl : TString;
+Begin
+  If FmtCount >= MAX_FORMAT Then
+  Begin
+    WarnMsg('trop de formats definis (max ' + IntToStr(MAX_FORMAT) + ')');
+    FmtAdd := -1;
+    Exit;
+  End;
+  (* Verifier si le format existe deja *)
+  I := FmtFind(AName);
+  If I >= 0 Then
+  Begin
+    (* Remplacer la definition existante *)
+    FmtTab[I].RangeCount := 0;
+    FmtTab[I].IsChar     := AIsChar;
+    FmtAdd := I;
+    Exit;
+  End;
+  I := FmtCount;
+  FmtTab[I].Name       := StrUpperCase(AName);
+  FmtTab[I].IsChar     := AIsChar;
+  FmtTab[I].RangeCount := 0;
+  Lbl := SAS_FMT_PFX + StrUpperCase(AName);
+  FmtTab[I].LblName    := Lbl;
+  Inc(FmtCount);
+  FmtAdd := I;
+End;
+
+(* ---- ParseProcFormatBody : parser le corps de PROC FORMAT ---- *)
+(* Syntaxe :                                                        *)
+(*   PROC FORMAT ;                                                  *)
+(*     VALUE nom_fmt                                                *)
+(*       valeur = 'libelle'                                         *)
+(*       low - high = 'libelle'                                     *)
+(*       LOW - 50 = 'Bas'                                           *)
+(*       51 - HIGH = 'Haut'                                         *)
+(*       OTHER = 'Inconnu'                                          *)
+(*     ;                                                            *)
+(*   RUN;                                                           *)
+(* Supporte aussi : VALUE $nom_fmt pour les formats caractere.      *)
+Procedure ParseProcFormatBody;
+Var
+  KW      : TString;
+  FmtName : TString;
+  FIdx    : Integer;
+  IsChar  : Boolean;
+  Low, High : LongInt;
+  LowOpen, HighOpen : Boolean;
+  IsOther, IsSingle : Boolean;
+  LabelStr : TString;
+  RIdx     : Integer;
+Begin
+  While CurToken.Kind <> TK_EOF Do
+  Begin
+    (* Verifier les mots-cles de controle (IDENT ou KEYWORD) *)
+    If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
+    Begin
+      KW := StrUpperCase(CurToken.Val);
+      (* RUN ou QUIT : fin du PROC FORMAT *)
+      If (KW = 'RUN') Or (KW = 'QUIT') Then
+      Begin
+        ParserAdvance;
+        If CurToken.Kind = TK_SEMICOLON Then
+          ParserAdvance;
+        Break;
+      End;
+      (* DATA ou PROC : fin implicite *)
+      If (KW = 'DATA') Or (KW = 'PROC') Then
+        Break;
+      (* VALUE : debut de definition d un format *)
+      If KW = 'VALUE' Then
+      Begin
+        ParserAdvance;
+        IsChar := False;
+        (* Verifier si format caractere : $nom *)
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '$') Then
+        Begin
+          IsChar := True;
+          ParserAdvance;
+        End;
+        (* Lire le nom du format *)
+        If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+        Begin
+          FmtName := StrUpperCase(CurToken.Val);
+          ParserAdvance;
+          (* Ignorer le '.' final si present *)
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
+            ParserAdvance;
+        End
+        Else
+        Begin
+          CompileError('nom de format attendu apres VALUE');
+          FmtName := 'UNKNOWN';
+        End;
+        FIdx := FmtAdd(FmtName, IsChar);
+        EmitComment('PROC FORMAT : VALUE ' + FmtName);
+        (* Parser les plages : valeur = 'libelle' ou low - high = 'libelle' *)
+        While (CurToken.Kind <> TK_SEMICOLON) And
+              (CurToken.Kind <> TK_EOF) Do
+        Begin
+          Low := 0;
+          High := 0;
+          LowOpen := False;
+          HighOpen := False;
+          IsOther := False;
+          IsSingle := False;
+          LabelStr := '';
+          (* OTHER = 'label' *)
+          If ((CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT)) And
+             (StrUpperCase(CurToken.Val) = 'OTHER') Then
+          Begin
+            IsOther := True;
+            ParserAdvance;
+          End
+          (* LOW = borne basse ouverte *)
+          Else If ((CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT)) And
+                  (StrUpperCase(CurToken.Val) = 'LOW') Then
+          Begin
+            LowOpen := True;
+            Low := -32767;
+            ParserAdvance;
+            (* Attendre '-' pour un intervalle *)
+            If (CurToken.Kind = TK_OP) And (CurToken.Val = '-') Then
+            Begin
+              ParserAdvance;
+              (* Lire borne haute *)
+              If CurToken.Kind = TK_INTEGER Then
+              Begin
+                High := CurToken.IntVal;
+                ParserAdvance;
+              End
+              Else If ((CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT)) And
+                      (StrUpperCase(CurToken.Val) = 'HIGH') Then
+              Begin
+                HighOpen := True;
+                High := 32767;
+                ParserAdvance;
+              End;
+            End
+            Else
+            Begin
+              IsSingle := True;
+              High := Low;
+            End;
+          End
+          (* Valeur numerique ou intervalle *)
+          Else If CurToken.Kind = TK_INTEGER Then
+          Begin
+            Low := CurToken.IntVal;
+            High := Low;
+            IsSingle := True;
+            ParserAdvance;
+            (* Verifier si intervalle : valeur - valeur *)
+            If (CurToken.Kind = TK_OP) And (CurToken.Val = '-') Then
+            Begin
+              IsSingle := False;
+              ParserAdvance;
+              If CurToken.Kind = TK_INTEGER Then
+              Begin
+                High := CurToken.IntVal;
+                ParserAdvance;
+              End
+              Else If ((CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT)) And
+                      (StrUpperCase(CurToken.Val) = 'HIGH') Then
+              Begin
+                HighOpen := True;
+                High := 32767;
+                ParserAdvance;
+              End;
+            End;
+          End
+          (* Chaine comme cle (pour $format) *)
+          Else If CurToken.Kind = TK_STRING Then
+          Begin
+            (* Pour les formats caractere, on stocke le hash de la chaine *)
+            Low := Length(CurToken.Val);
+            High := Low;
+            IsSingle := True;
+            ParserAdvance;
+          End
+          Else
+          Begin
+            (* Token inattendu : avancer *)
+            ParserAdvance;
+            Continue;
+          End;
+          (* Attendre '=' *)
+          If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+          Begin
+            ParserAdvance;
+            (* Lire le libelle *)
+            If CurToken.Kind = TK_STRING Then
+            Begin
+              LabelStr := CurToken.Val;
+              ParserAdvance;
+            End
+            Else
+            Begin
+              CompileError('libelle chaine attendu apres = dans VALUE');
+              LabelStr := '???';
+            End;
+            (* Ajouter la plage au format *)
+            If (FIdx >= 0) And (FmtTab[FIdx].RangeCount < MAX_FMT_RANGE) Then
+            Begin
+              RIdx := FmtTab[FIdx].RangeCount;
+              FmtTab[FIdx].Ranges[RIdx].IsOther   := IsOther;
+              FmtTab[FIdx].Ranges[RIdx].IsSingle  := IsSingle;
+              FmtTab[FIdx].Ranges[RIdx].Low        := Low;
+              FmtTab[FIdx].Ranges[RIdx].High       := High;
+              FmtTab[FIdx].Ranges[RIdx].IsLowOpen  := LowOpen;
+              FmtTab[FIdx].Ranges[RIdx].IsHighOpen := HighOpen;
+              FmtTab[FIdx].Ranges[RIdx].LabelStr   := LabelStr;
+              Inc(FmtTab[FIdx].RangeCount);
+            End;
+          End
+          Else
+          Begin
+            (* Pas de '=' : ignorer *)
+            Continue;
+          End;
+        End;
+        (* Consommer le ; final *)
+        If CurToken.Kind = TK_SEMICOLON Then
+          ParserAdvance;
+        Continue;
+      End;
+    End;
+    (* Point-virgule isole *)
+    If CurToken.Kind = TK_SEMICOLON Then
+    Begin
+      ParserAdvance;
+      Continue;
+    End;
+    (* Autre token : avancer *)
+    ParserAdvance;
+  End;
+End;
+
+(* ---- EmitProcFormat : emettre les tables de dispatch des formats - *)
+(* Pour chaque format defini, emet une table de donnees dans le       *)
+(* segment de donnees avec les plages et les libelles.                 *)
+(* La routine runtime _SASRT_FMTLOOKUP consultera cette table.        *)
+Procedure EmitProcFormat;
+Var
+  I, J    : Integer;
+  StrIdx  : Integer;
+  HdrStr  : TString;
+Begin
+  EmitComment('PROC FORMAT : emission des tables de formats');
+  For I := 0 To FmtCount - 1 Do
+  Begin
+    EmitComment('Format ' + FmtTab[I].Name + ' : '
+                + IntToStr(FmtTab[I].RangeCount) + ' plages');
+    For J := 0 To FmtTab[I].RangeCount - 1 Do
+    Begin
+      HdrStr := FmtTab[I].Ranges[J].LabelStr;
+      StrIdx := DataAddStr(HdrStr);
+      If StrIdx >= 0 Then
+        EmitComment('  plage ' + IntToStr(J) + ' -> '
+                    + FmtTab[I].Ranges[J].LabelStr
+                    + ' (' + DataTab[StrIdx].LblName + ')');
+    End;
+  End;
+End;
+
+(* ---- EmitFormatLookup : emettre le code pour appliquer un format -- *)
+(* Genere le code ASM qui, a partir de la valeur dans AX et de la      *)
+(* definition du format, selectionne le libelle correspondant et        *)
+(* l affiche.                                                            *)
+(* SIdx : indice dans SymTab de la variable                             *)
+(* FIdx : indice dans FmtTab du format                                  *)
+Procedure EmitFormatLookup(SIdx : Integer; FIdx : Integer);
+Var
+  I        : Integer;
+  LblNext  : TString;
+  LblDone  : TString;
+  StrIdx   : Integer;
+Begin
+  If FIdx < 0 Then Exit;
+  If FmtTab[FIdx].RangeCount = 0 Then Exit;
+
+  EmitComment('Format lookup : ' + FmtTab[FIdx].Name);
+  LblDone := LabelGen;
+
+  (* AX contient la valeur a formatter *)
+  For I := 0 To FmtTab[FIdx].RangeCount - 1 Do
+  Begin
+    LblNext := LabelGen;
+
+    If FmtTab[FIdx].Ranges[I].IsOther Then
+    Begin
+      (* OTHER : toujours vrai, sauter a l affichage *)
+      StrIdx := DataAddStr(FmtTab[FIdx].Ranges[I].LabelStr);
+      If StrIdx >= 0 Then
+      Begin
+        EmitComment('OTHER -> ' + FmtTab[FIdx].Ranges[I].LabelStr);
+        EmitInstrAB('MOV', 'AH', '40h');
+        EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+        EmitInstrAB('MOV', 'CX',
+                    IntToStr(Length(FmtTab[FIdx].Ranges[I].LabelStr)));
+        EmitInstrAB('LEA', 'DX', DataTab[StrIdx].LblName);
+        EmitInstr('INT 21h');
+      End;
+      EmitInstrA('JMP', LblDone);
+    End
+    Else If FmtTab[FIdx].Ranges[I].IsSingle Then
+    Begin
+      (* Valeur unique : CMP AX, val ; JNE next *)
+      EmitInstrAB('CMP', 'AX',
+                  IntToStr(FmtTab[FIdx].Ranges[I].Low));
+      EmitInstrA('JNE', LblNext);
+      StrIdx := DataAddStr(FmtTab[FIdx].Ranges[I].LabelStr);
+      If StrIdx >= 0 Then
+      Begin
+        EmitInstrAB('MOV', 'AH', '40h');
+        EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+        EmitInstrAB('MOV', 'CX',
+                    IntToStr(Length(FmtTab[FIdx].Ranges[I].LabelStr)));
+        EmitInstrAB('LEA', 'DX', DataTab[StrIdx].LblName);
+        EmitInstr('INT 21h');
+      End;
+      EmitInstrA('JMP', LblDone);
+    End
+    Else
+    Begin
+      (* Intervalle : CMP AX, low ; JL next ; CMP AX, high ; JG next *)
+      EmitInstrAB('CMP', 'AX',
+                  IntToStr(FmtTab[FIdx].Ranges[I].Low));
+      EmitInstrA('JL', LblNext);
+      EmitInstrAB('CMP', 'AX',
+                  IntToStr(FmtTab[FIdx].Ranges[I].High));
+      EmitInstrA('JG', LblNext);
+      StrIdx := DataAddStr(FmtTab[FIdx].Ranges[I].LabelStr);
+      If StrIdx >= 0 Then
+      Begin
+        EmitInstrAB('MOV', 'AH', '40h');
+        EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+        EmitInstrAB('MOV', 'CX',
+                    IntToStr(Length(FmtTab[FIdx].Ranges[I].LabelStr)));
+        EmitInstrAB('LEA', 'DX', DataTab[StrIdx].LblName);
+        EmitInstr('INT 21h');
+      End;
+      EmitInstrA('JMP', LblDone);
+    End;
+
+    EmitLabel(LblNext);
+  End;
+
+  (* Si aucune plage ne correspond, afficher la valeur brute *)
+  EmitComment('Aucune plage : afficher la valeur brute');
+  EmitInstr('CALL _SASRT_NUMTOSTR');
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+  EmitInstrAB('MOV', 'CX', '6');
+  EmitInstrAB('MOV', 'DX', 'AX');
+  EmitInstr('INT 21h');
+
+  EmitLabel(LblDone);
+End;
+
+(* ---- ParseFormatStmt : parser FORMAT var1 fmt1. [var2 fmt2.] ; --- *)
+(* Appele apres que le mot-cle FORMAT ait ete consomme.                *)
+(* Associe un format a une ou plusieurs variables.                     *)
+(* Syntaxe : FORMAT var1 nom_format. [var2 nom_format2.] ;            *)
+(* Les formats predefinis (BEST. COMMA. DOLLAR. DATE9.) sont reconnus. *)
+Procedure ParseFormatStmt;
+Var
+  VarName  : TString;
+  FmtName  : TString;
+  SIdx     : Integer;
+Begin
+  EmitComment('FORMAT');
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    (* Lire le nom de la variable *)
+    If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+    Begin
+      VarName := StrUpperCase(CurToken.Val);
+      ParserAdvance;
+      (* Lire le nom du format *)
+      FmtName := '';
+      If CurToken.Kind = TK_FORMAT Then
+      Begin
+        FmtName := StrUpperCase(CurToken.Val);
+        ParserAdvance;
+      End
+      Else If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+      Begin
+        FmtName := StrUpperCase(CurToken.Val);
+        ParserAdvance;
+        (* Consommer le '.' du format si present *)
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
+          ParserAdvance;
+      End;
+      If FmtName <> '' Then
+      Begin
+        (* Enlever le '.' final si inclus dans le nom *)
+        If (Length(FmtName) > 0) And (FmtName[Length(FmtName)] = '.') Then
+          FmtName := Copy(FmtName, 1, Length(FmtName) - 1);
+        SIdx := SymFind(VarName);
+        If SIdx >= 0 Then
+        Begin
+          VarFmtName[SIdx] := FmtName;
+          EmitComment('FORMAT ' + VarName + ' = ' + FmtName);
+        End
+        Else
+          WarnMsg('variable non trouvee pour FORMAT : ' + VarName);
+      End;
+    End
+    Else
+      ParserAdvance;
+  End;
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
 (* ---- ParseProcStep : PROC nom [options] ; stmts ; RUN ; -------- *)
 (* Point d entree du PROC step.                                        *)
 (* Appele apres que le mot-cle PROC ait ete consomme.                  *)
@@ -7266,7 +7769,7 @@ Begin
   (* Dispatcher selon la procedure connue *)
   If (ProcName = 'PRINT') Or (ProcName = 'MEANS') Or
      (ProcName = 'SUMMARY') Or (ProcName = 'FREQ') Or
-     (ProcName = 'SORT') Or (ProcName = 'FORMAT') Or
+     (ProcName = 'SORT') Or
      (ProcName = 'TABULATE') Or (ProcName = 'REPORT') Or
      (ProcName = 'REG') Or (ProcName = 'CONTENTS') Or
      (ProcName = 'DATASETS') Or (ProcName = 'SQL') Or
@@ -7309,16 +7812,18 @@ Begin
       (* PROC SORT : generer le code de tri (TODO 19) *)
       EmitProcSort;
     End
-    Else If ProcName = 'FORMAT' Then
-    Begin
-      (* PROC FORMAT : stub (TODO 20) *)
-      EmitComment('PROC FORMAT : formats utilisateur (stub TODO 20)');
-    End
     Else
     Begin
       (* Autre procedure connue : stub generique *)
       EmitComment('PROC ' + ProcName + ' : stub (a implementer)');
     End;
+  End
+  Else If ProcName = 'FORMAT' Then
+  Begin
+    (* PROC FORMAT : parser le corps avec VALUE (TODO 20) *)
+    ParseProcFormatBody;
+    EmitComment('PROC FORMAT : execution');
+    EmitProcFormat;
   End
   Else
   Begin
@@ -7337,7 +7842,7 @@ Begin
 End;
 
 { ============================================================
-  STUBS POUR TODO 20..25 (a implementer)
+  STUBS POUR TODO 21..25 (a implementer)
   ============================================================ }
 
 Procedure ParseStmt;
@@ -7501,11 +8006,19 @@ Begin
       Exit;
     End;
 
+    (* TODO 20 : FORMAT var1 fmt1. ; *)
+    If KW = 'FORMAT' Then
+    Begin
+      ParserAdvance;
+      ParseFormatStmt;
+      Exit;
+    End;
+
     (* RUN / QUIT : consommer le reste de l instruction *)
     If (KW = 'RUN') Or
        (KW = 'QUIT') Or (KW = 'TITLE') Or (KW = 'FOOTNOTE') Or
        (KW = 'OPTIONS') Or (KW = 'CARDS') Or (KW = 'DATALINES') Or
-       (KW = 'RETURN') Or (KW = 'FORMAT') Or
+       (KW = 'RETURN') Or
        (KW = 'INFORMAT') Or (KW = 'ATTRIB') Or (KW = 'WHERE') Or
        (KW = 'MERGE') Or (KW = 'BY') Then
     Begin
@@ -7775,6 +8288,7 @@ Begin
   TypeInit;
   SymInit;
   DataInit;
+  FmtInit;
   EmitOpen;
   If ErrorCount > 0 Then
   Begin

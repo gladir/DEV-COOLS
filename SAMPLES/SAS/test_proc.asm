@@ -332,7 +332,7 @@ _SASL_15:
 
 ; ========= PROC FORMAT =========
 ; PROC FORMAT : execution
-; PROC FORMAT : formats utilisateur (stub TODO 20)
+; PROC FORMAT : emission des tables de formats
 ; ========= FIN PROC FORMAT =========
 
 
