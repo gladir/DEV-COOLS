@@ -86,7 +86,7 @@
              Tables separees pour chaque module importe
              Exportation : marquer les symboles visibles depuis INTERFACE
 
-   TODO 06 - SYSTEME DE TYPES
+   TODO 06 - SYSTEME DE TYPES [IMPLEMENTE]
              TTypeKind : TYK_INTEGER (16 bits signe), TYK_CARDINAL (16 bits non signe),
                TYK_BOOLEAN (8 bits), TYK_CHAR (8 bits), TYK_REAL (stub entier),
                TYK_LONGREAL (stub entier), TYK_TEXT (ptr chaine),
@@ -444,7 +444,7 @@ Const
   EXIT_ERROR = 1;
   EXIT_USAGE = 2;
 
-  (* Index de types primitifs (futurs, pour TypeTab TODO 06) *)
+  (* Index de types primitifs (TypeTab TODO 06) *)
   TY_UNKNOWN     = -1;
   TY_IDX_INTEGER = 0;
   TY_IDX_CARDINAL= 1;
@@ -455,6 +455,7 @@ Const
   TY_IDX_TEXT    = 6;
   TY_IDX_NIL     = 7;
   TY_IDX_VOID    = 8;
+  TY_PRIM_COUNT  = 9;
 
   (* Bornes des types primitifs Modula-3 (8086 16 bits) *)
   MIN_INTEGER    = -32768;
@@ -578,6 +579,48 @@ Type
     DeclLine    : Integer;   (* ligne de declaration source           *)
   End;
 
+  (* ---- Systeme de types (TODO 06) ----------------------------- *)
+  TTypeKind = (
+    TYK_INTEGER,   (* entier 16 bits signe                        *)
+    TYK_CARDINAL,  (* entier 16 bits non signe                    *)
+    TYK_BOOLEAN,   (* booleen 8 bits (0 ou 1), etendu a AX       *)
+    TYK_CHAR,      (* caractere 8 bits (0..255), etendu a AX     *)
+    TYK_REAL,      (* reel (stub: tronque en entier 16 bits)      *)
+    TYK_LONGREAL,  (* long reel (stub: tronque en entier 16 bits) *)
+    TYK_TEXT,      (* pointeur vers chaine ASCIIZ (2 octets)      *)
+    TYK_ARRAY,     (* tableau fixe (BaseTypeIdx = type element)   *)
+    TYK_OPENARRAY, (* tableau ouvert (taille inconnue statiquement)*)
+    TYK_RECORD,    (* enregistrement (FieldCount champs)          *)
+    TYK_SET,       (* ensemble d un type ordinal                  *)
+    TYK_ENUM,      (* enumeration (EnumCount valeurs)             *)
+    TYK_REF,       (* reference (pointeur trace)                  *)
+    TYK_REFANY,    (* REFANY : pointeur generique trace           *)
+    TYK_OBJECT,    (* objet (methodes + champs)                   *)
+    TYK_PROC,      (* type procedure / fonction                   *)
+    TYK_SUBRANGE,  (* sous-intervalle [Lo..Hi]                    *)
+    TYK_PACKED,    (* BITS FOR n : type compacte                  *)
+    TYK_OPAQUE,    (* type opaque (defini ailleurs)               *)
+    TYK_NULL       (* NIL : type du pointeur nul                  *)
+  );
+
+  TFieldRec = Record
+    Name    : TString;
+    TypeIdx : Integer;     (* index dans TypeTab                    *)
+    Offset  : Integer;     (* decalage en octets dans le record     *)
+  End;
+
+  TTypeRec = Record
+    Kind        : TTypeKind;  (* categorie du type                  *)
+    Name        : TString;    (* nom du type ('' si anonyme)        *)
+    Size        : Integer;    (* taille en octets                   *)
+    BaseTypeIdx : Integer;    (* type de base (array elem, ref, sub)*)
+    Lo          : LongInt;    (* borne inf (subrange, array index)  *)
+    Hi          : LongInt;    (* borne sup (subrange, array index)  *)
+    FieldCount  : Integer;    (* nombre de champs (record)          *)
+    Fields      : Array[0..MAX_FIELD - 1] Of TFieldRec;
+    EnumCount   : Integer;    (* nombre de valeurs (enum)           *)
+  End;
+
 (* ============================================================
    VARIABLES GLOBALES
    ============================================================ *)
@@ -619,6 +662,10 @@ Var
   ScopeTop   : Integer;         (* sommet de la pile de scopes         *)
   CurScope   : Integer;         (* niveau de portee courant            *)
   ScopeStack : Array[0..MAX_SCOPE-1] Of Integer; (* SymCount a l entree *)
+
+  (* Systeme de types (TODO 06) *)
+  TypeTab    : Array[0..MAX_TYPE-1] Of TTypeRec;
+  TypeCount  : Integer;
 
 (* ============================================================
    TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -2663,6 +2710,394 @@ Begin
     WriteLn('  Builtins registres : ', SymCount, ' symboles');
 End;
 
+(* ============================================================
+   TODO 06 - SYSTEME DE TYPES [IMPLEMENTE]
+   ============================================================ *)
+
+(* ---- TypeKindStr : nom textuel d un TTypeKind --------------- *)
+
+Function TypeKindStr(K : TTypeKind) : TString;
+Begin
+  Case K Of
+    TYK_INTEGER   : TypeKindStr := 'INTEGER';
+    TYK_CARDINAL  : TypeKindStr := 'CARDINAL';
+    TYK_BOOLEAN   : TypeKindStr := 'BOOLEAN';
+    TYK_CHAR      : TypeKindStr := 'CHAR';
+    TYK_REAL      : TypeKindStr := 'REAL';
+    TYK_LONGREAL  : TypeKindStr := 'LONGREAL';
+    TYK_TEXT      : TypeKindStr := 'TEXT';
+    TYK_ARRAY     : TypeKindStr := 'ARRAY';
+    TYK_OPENARRAY : TypeKindStr := 'OPENARRAY';
+    TYK_RECORD    : TypeKindStr := 'RECORD';
+    TYK_SET       : TypeKindStr := 'SET';
+    TYK_ENUM      : TypeKindStr := 'ENUM';
+    TYK_REF       : TypeKindStr := 'REF';
+    TYK_REFANY    : TypeKindStr := 'REFANY';
+    TYK_OBJECT    : TypeKindStr := 'OBJECT';
+    TYK_PROC      : TypeKindStr := 'PROCEDURE';
+    TYK_SUBRANGE  : TypeKindStr := 'SUBRANGE';
+    TYK_PACKED    : TypeKindStr := 'PACKED';
+    TYK_OPAQUE    : TypeKindStr := 'OPAQUE';
+    TYK_NULL      : TypeKindStr := 'NULL';
+  Else
+    TypeKindStr := '?';
+  End;
+End;
+
+(* ---- TypeInit : initialiser TypeTab avec les types primitifs -- *)
+(* Enregistre les 9 types primitifs Modula-3 aux indices reserves  *)
+(* TY_IDX_xxx. Tailles en octets pour cible 8086 16 bits.         *)
+
+Procedure TypeInit;
+
+  Procedure AddPrim(Idx : Integer; K : TTypeKind;
+                    Const AName : TString; Sz : Integer);
+  Begin
+    TypeTab[Idx].Kind        := K;
+    TypeTab[Idx].Name        := AName;
+    TypeTab[Idx].Size        := Sz;
+    TypeTab[Idx].BaseTypeIdx := TY_UNKNOWN;
+    TypeTab[Idx].Lo          := 0;
+    TypeTab[Idx].Hi          := 0;
+    TypeTab[Idx].FieldCount  := 0;
+    TypeTab[Idx].EnumCount   := 0;
+  End;
+
+Var I : Integer;
+Begin
+  TypeCount := 0;
+  For I := 0 To MAX_TYPE - 1 Do
+  Begin
+    TypeTab[I].Kind        := TYK_NULL;
+    TypeTab[I].Name        := '';
+    TypeTab[I].Size        := 0;
+    TypeTab[I].BaseTypeIdx := TY_UNKNOWN;
+    TypeTab[I].Lo          := 0;
+    TypeTab[I].Hi          := 0;
+    TypeTab[I].FieldCount  := 0;
+    TypeTab[I].EnumCount   := 0;
+  End;
+
+  AddPrim(TY_IDX_INTEGER,  TYK_INTEGER,  'INTEGER',  2);
+  AddPrim(TY_IDX_CARDINAL, TYK_CARDINAL, 'CARDINAL', 2);
+  AddPrim(TY_IDX_BOOLEAN,  TYK_BOOLEAN,  'BOOLEAN',  1);
+  AddPrim(TY_IDX_CHAR,     TYK_CHAR,     'CHAR',     1);
+  AddPrim(TY_IDX_REAL,     TYK_REAL,     'REAL',     2);
+  AddPrim(TY_IDX_LONGREAL, TYK_LONGREAL, 'LONGREAL', 2);
+  AddPrim(TY_IDX_TEXT,     TYK_TEXT,     'TEXT',     2);
+  AddPrim(TY_IDX_NIL,      TYK_NULL,    'NIL',      2);
+  AddPrim(TY_IDX_VOID,     TYK_NULL,    'VOID',     0);
+
+  TypeCount := TY_PRIM_COUNT;
+
+  If Opts.DebugMode Then
+    WriteLn('  TypeInit : ', TypeCount, ' types primitifs');
+End;
+
+(* ---- TypeAdd : ajouter un type dans TypeTab ------------------- *)
+(* Retourne l index du nouveau type (0-base) ou -1 si plein.       *)
+
+Function TypeAdd(Kind : TTypeKind; Const AName : TString;
+                 Size : Integer) : Integer;
+Begin
+  If TypeCount >= MAX_TYPE Then
+  Begin
+    CompileError('table des types pleine (max=' +
+                 IntToStr(MAX_TYPE) + ')');
+    TypeAdd := -1;
+    Exit;
+  End;
+  TypeTab[TypeCount].Kind        := Kind;
+  TypeTab[TypeCount].Name        := AName;
+  TypeTab[TypeCount].Size        := Size;
+  TypeTab[TypeCount].BaseTypeIdx := TY_UNKNOWN;
+  TypeTab[TypeCount].Lo          := 0;
+  TypeTab[TypeCount].Hi          := 0;
+  TypeTab[TypeCount].FieldCount  := 0;
+  TypeTab[TypeCount].EnumCount   := 0;
+
+  If Opts.DebugMode Then
+    WriteLn('  TYPE_ADD[', TypeCount, ']: ', AName,
+            ' kind=', TypeKindStr(Kind),
+            ' size=', Size);
+
+  TypeAdd := TypeCount;
+  Inc(TypeCount);
+End;
+
+(* ---- TypeSizeof : taille en octets d un type par son index ---- *)
+(* Retourne 2 (mot 16 bits) par defaut si l index est invalide.    *)
+
+Function TypeSizeof(TIdx : Integer) : Integer;
+Begin
+  If (TIdx >= 0) And (TIdx < TypeCount) Then
+    TypeSizeof := TypeTab[TIdx].Size
+  Else
+    TypeSizeof := 2;
+End;
+
+(* ---- TypeKindOf : retourner le TTypeKind pour un indice ------- *)
+
+Function TypeKindOf(TIdx : Integer) : TTypeKind;
+Begin
+  If (TIdx >= 0) And (TIdx < TypeCount) Then
+    TypeKindOf := TypeTab[TIdx].Kind
+  Else
+    TypeKindOf := TYK_NULL;
+End;
+
+(* ---- TypeFindByName : rechercher un type par nom -------------- *)
+(* Retourne l index dans TypeTab ou TY_UNKNOWN si non trouve.       *)
+
+Function TypeFindByName(Const Name : TString) : Integer;
+Var I : Integer;
+Begin
+  For I := 0 To TypeCount - 1 Do
+    If TypeTab[I].Name = Name Then
+    Begin
+      TypeFindByName := I;
+      Exit;
+    End;
+  TypeFindByName := TY_UNKNOWN;
+End;
+
+(* ---- TypeIsOrdinal : le type est-il ordinal ? ----------------- *)
+(* Types ordinaux en Modula-3 : INTEGER, CARDINAL, CHAR, BOOLEAN,  *)
+(* ENUM, SUBRANGE.                                                  *)
+
+Function TypeIsOrdinal(TIdx : Integer) : Boolean;
+Begin
+  If (TIdx < 0) Or (TIdx >= TypeCount) Then
+  Begin
+    TypeIsOrdinal := False;
+    Exit;
+  End;
+  Case TypeTab[TIdx].Kind Of
+    TYK_INTEGER, TYK_CARDINAL, TYK_CHAR,
+    TYK_BOOLEAN, TYK_ENUM, TYK_SUBRANGE :
+      TypeIsOrdinal := True;
+  Else
+    TypeIsOrdinal := False;
+  End;
+End;
+
+(* ---- TypeIsNumeric : le type est-il numerique ? --------------- *)
+(* Types numeriques : INTEGER, CARDINAL, REAL, LONGREAL.           *)
+
+Function TypeIsNumeric(TIdx : Integer) : Boolean;
+Begin
+  If (TIdx < 0) Or (TIdx >= TypeCount) Then
+  Begin
+    TypeIsNumeric := False;
+    Exit;
+  End;
+  Case TypeTab[TIdx].Kind Of
+    TYK_INTEGER, TYK_CARDINAL, TYK_REAL, TYK_LONGREAL :
+      TypeIsNumeric := True;
+  Else
+    TypeIsNumeric := False;
+  End;
+End;
+
+(* ---- TypeIsPointer : le type est-il un pointeur ? ------------- *)
+(* Types pointeur : REF, REFANY, OBJECT, TEXT, NULL (NIL).         *)
+
+Function TypeIsPointer(TIdx : Integer) : Boolean;
+Begin
+  If (TIdx < 0) Or (TIdx >= TypeCount) Then
+  Begin
+    TypeIsPointer := False;
+    Exit;
+  End;
+  Case TypeTab[TIdx].Kind Of
+    TYK_REF, TYK_REFANY, TYK_OBJECT, TYK_TEXT, TYK_NULL :
+      TypeIsPointer := True;
+  Else
+    TypeIsPointer := False;
+  End;
+End;
+
+(* ---- TypeCompatible : deux types sont-ils compatibles ? ------- *)
+(* Retourne True si une valeur de type T2 peut etre affectee a T1. *)
+(* Applique les regles d assignabilite de Modula-3 :                *)
+(*   - meme type : toujours compatible                              *)
+(*   - INTEGER <-> CARDINAL (promotion implicite 8086)              *)
+(*   - CHAR <-> INTEGER/CARDINAL (ORD/VAL)                          *)
+(*   - BOOLEAN -> INTEGER/CARDINAL (0|1)                            *)
+(*   - REAL <-> INTEGER/CARDINAL (troncature)                       *)
+(*   - NIL -> tout type reference (REF, REFANY, OBJECT, TEXT)       *)
+(*   - SUBRANGE -> son type de base                                 *)
+(*   - ENUM -> INTEGER (ORD)                                        *)
+
+Function TypeCompatible(T1, T2 : Integer) : Boolean;
+Var
+  K1, K2 : TTypeKind;
+Begin
+  (* Types identiques : toujours compatible *)
+  If T1 = T2 Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  (* Si l un des deux est inconnu, accepter *)
+  If (T1 = TY_UNKNOWN) Or (T2 = TY_UNKNOWN) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  (* Verifier les bornes *)
+  If (T1 < 0) Or (T1 >= TypeCount) Or
+     (T2 < 0) Or (T2 >= TypeCount) Then
+  Begin
+    TypeCompatible := False;
+    Exit;
+  End;
+
+  K1 := TypeTab[T1].Kind;
+  K2 := TypeTab[T2].Kind;
+
+  (* NIL -> tout type reference ou TEXT *)
+  If K2 = TYK_NULL Then
+  Begin
+    TypeCompatible := (K1 = TYK_REF) Or (K1 = TYK_REFANY) Or
+                      (K1 = TYK_OBJECT) Or (K1 = TYK_TEXT) Or
+                      (K1 = TYK_NULL) Or (K1 = TYK_PROC);
+    Exit;
+  End;
+
+  (* INTEGER <-> CARDINAL (meme representation 16 bits sur 8086) *)
+  If ((K1 = TYK_INTEGER) Or (K1 = TYK_CARDINAL)) And
+     ((K2 = TYK_INTEGER) Or (K2 = TYK_CARDINAL)) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  (* CHAR -> INTEGER/CARDINAL (ORD implicite) *)
+  If (K2 = TYK_CHAR) And
+     ((K1 = TYK_INTEGER) Or (K1 = TYK_CARDINAL)) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  (* INTEGER/CARDINAL -> CHAR (VAL implicite, avec bornes) *)
+  If (K1 = TYK_CHAR) And
+     ((K2 = TYK_INTEGER) Or (K2 = TYK_CARDINAL)) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  (* BOOLEAN -> INTEGER/CARDINAL (0|1) *)
+  If (K2 = TYK_BOOLEAN) And
+     ((K1 = TYK_INTEGER) Or (K1 = TYK_CARDINAL)) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  (* INTEGER/CARDINAL -> BOOLEAN (non-zero = TRUE) *)
+  If (K1 = TYK_BOOLEAN) And
+     ((K2 = TYK_INTEGER) Or (K2 = TYK_CARDINAL)) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  (* REAL <-> INTEGER/CARDINAL (troncature) *)
+  If ((K1 = TYK_REAL) Or (K1 = TYK_LONGREAL)) And
+     ((K2 = TYK_INTEGER) Or (K2 = TYK_CARDINAL)) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+  If ((K1 = TYK_INTEGER) Or (K1 = TYK_CARDINAL)) And
+     ((K2 = TYK_REAL) Or (K2 = TYK_LONGREAL)) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  (* REAL <-> LONGREAL *)
+  If ((K1 = TYK_REAL) And (K2 = TYK_LONGREAL)) Or
+     ((K1 = TYK_LONGREAL) And (K2 = TYK_REAL)) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  (* ENUM -> INTEGER/CARDINAL (ORD implicite) *)
+  If (K2 = TYK_ENUM) And
+     ((K1 = TYK_INTEGER) Or (K1 = TYK_CARDINAL)) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  (* SUBRANGE -> son type de base *)
+  If (K2 = TYK_SUBRANGE) And
+     (TypeTab[T2].BaseTypeIdx = T1) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+  If (K1 = TYK_SUBRANGE) And
+     (TypeTab[T1].BaseTypeIdx = T2) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  (* SUBRANGE <-> INTEGER/CARDINAL (le sous-type ordinal courant) *)
+  If (K2 = TYK_SUBRANGE) And
+     ((K1 = TYK_INTEGER) Or (K1 = TYK_CARDINAL)) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+  If (K1 = TYK_SUBRANGE) And
+     ((K2 = TYK_INTEGER) Or (K2 = TYK_CARDINAL)) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  (* REF <-> REFANY *)
+  If ((K1 = TYK_REF) And (K2 = TYK_REFANY)) Or
+     ((K1 = TYK_REFANY) And (K2 = TYK_REF)) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  (* OBJECT <-> REFANY *)
+  If ((K1 = TYK_OBJECT) And (K2 = TYK_REFANY)) Or
+     ((K1 = TYK_REFANY) And (K2 = TYK_OBJECT)) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  TypeCompatible := False;
+End;
+
+(* ---- TypeResolve : resoudre un nom de type via SymTab ---------- *)
+(* Recherche un symbole de categorie SK_TYPE et retourne TypeIdx.    *)
+
+Function TypeResolve(Const Name : TString) : Integer;
+Var
+  Idx : Integer;
+Begin
+  Idx := SymFind(Name);
+  If (Idx >= 0) And (SymTab[Idx].Kind = SK_TYPE) Then
+    TypeResolve := SymTab[Idx].TypeIdx
+  Else
+    TypeResolve := TY_UNKNOWN;
+End;
+
 (* ---- Statistiques ----------------------------------------- *)
 
 Procedure ShowStats;
@@ -2689,6 +3124,7 @@ Begin
 
   DataInit;
   TokenPoolInit;
+  TypeInit;
   SymInit;
   SymRegisterBuiltins;
 
@@ -2715,10 +3151,11 @@ Begin
   Begin
     WriteLn('  Tokens         : ', TokenCount);
     WriteLn('  Donnees (DATA) : ', DataCount);
+    WriteLn('  Types          : ', TypeCount);
     WriteLn('  Symboles       : ', SymCount);
   End;
 
-  (* TODO 05+ : ParseCompilationUnit, EmitRuntime, etc. *)
+  (* TODO 06+ : ParseCompilationUnit, EmitRuntime, etc. *)
 
   If Opts.Verbose Then ShowStats;
   Cleanup;
