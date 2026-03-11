@@ -292,7 +292,7 @@
             Exit : sortie de procedure/fonction courante
             Halt[(code)] : terminaison du programme
 
-  TODO 14 - PROCEDURES ET FONCTIONS
+  TODO 14 - PROCEDURES ET FONCTIONS                   [IMPLEMENTE]
             ParseProcDecl / ParseFuncDecl
             Parametres par valeur, par reference (VAR),
               constantes (CONST), non types (Var X)
@@ -5174,6 +5174,25 @@ Var
   LTIdx     : Integer;
   LSz       : Integer;
   LC        : Integer;
+  { Variables pour procedures imbriquees (TODO 14) }
+  NI        : Integer;
+  NIsFunc   : Boolean;
+  NName     : TString;
+  NPC       : Integer;
+  NVM       : LongInt;
+  NIsVarP   : Boolean;
+  NIsConstP : Boolean;
+  NGrpSt    : Integer;
+  NTName    : TString;
+  NTIdx     : Integer;
+  NRetTIdx  : Integer;
+  NSIdx     : Integer;
+  NLC       : Integer;
+  NLocalOfs : Integer;
+  NLTName   : TString;
+  NLTIdx    : Integer;
+  NLSz      : Integer;
+  NK        : Integer;
 Begin
   ProcCount := 0;
   I := 0;
@@ -5431,6 +5450,81 @@ Begin
             Inc(ProcCount);
           Continue;
         End;
+
+        { Verifier si un corps suit (VAR/CONST/TYPE/LABEL/BEGIN) }
+        { Si le prochain token est un mot-cle non lie au corps, ou si }
+        { c est PROCEDURE/FUNCTION sans BEGIN avant IMPLEMENTATION,   }
+        { traiter comme declaration anticipee (interface de unit)     }
+        If (I < TokenCount) And (TokenPool[I].Kind = TK_KEYWORD) Then
+        Begin
+          Up := StrUpperCase(TokenPool[I].Val);
+          If (Up <> 'VAR') And (Up <> 'CONST') And (Up <> 'TYPE') And
+             (Up <> 'LABEL') And (Up <> 'BEGIN') And
+             (Up <> 'PROCEDURE') And (Up <> 'FUNCTION') Then
+          Begin
+            { Pas de corps : declaration de type interface/forward implicite }
+            ProcTab[PI].IsForward := True;
+            If IsFunc Then
+              SIdx := SymAdd(PName, SK_FUNC, RetTIdx)
+            Else
+              SIdx := SymAdd(PName, SK_PROC, -1);
+            If SIdx >= 0 Then
+            Begin
+              SymTab[SIdx].ParamCount  := PC;
+              SymTab[SIdx].IsGlobal    := True;
+              SymTab[SIdx].MangledName := TP_FUNC_PFX + PName;
+            End;
+            ProcTab[PI].SymIdx := SIdx;
+            If PI = ProcCount Then
+              Inc(ProcCount);
+            Continue;
+          End;
+          { Si PROCEDURE/FUNCTION suit immediatement, scanner en avant }
+          { pour detecter si un BEGIN existe avant IMPLEMENTATION/END  }
+          If (Up = 'PROCEDURE') Or (Up = 'FUNCTION') Then
+          Begin
+            J := I;
+            SIdx := -1;  { reutiliser SIdx comme flag HasBody }
+            While (J < TokenCount) Do
+            Begin
+              If TokenPool[J].Kind = TK_KEYWORD Then
+              Begin
+                Up := StrUpperCase(TokenPool[J].Val);
+                If Up = 'BEGIN' Then
+                Begin SIdx := 1; Break; End;
+                If (Up = 'IMPLEMENTATION') Or (Up = 'INTERFACE') Then
+                  Break;
+              End;
+              Inc(J);
+            End;
+            If SIdx < 0 Then
+            Begin
+              { Pas de BEGIN trouve : section interface, forward implicite }
+              ProcTab[PI].IsForward := True;
+              If IsFunc Then
+                SIdx := SymAdd(PName, SK_FUNC, RetTIdx)
+              Else
+                SIdx := SymAdd(PName, SK_PROC, -1);
+              If SIdx >= 0 Then
+              Begin
+                SymTab[SIdx].ParamCount  := PC;
+                SymTab[SIdx].IsGlobal    := True;
+                SymTab[SIdx].MangledName := TP_FUNC_PFX + PName;
+              End;
+              ProcTab[PI].SymIdx := SIdx;
+              If PI = ProcCount Then
+                Inc(ProcCount);
+              Continue;
+            End;
+          End;
+        End;
+
+        { Reserver le slot dans ProcTab pour la proc courante }
+        { AVANT de scanner les sections locales qui peuvent creer }
+        { des procs imbriquees (TODO 14)                          }
+        If PI = ProcCount Then
+          Inc(ProcCount);
+
         LocalOfs := 0;
         LC := 0;
 
@@ -5552,24 +5646,314 @@ Begin
           End
           Else If (Up = 'PROCEDURE') Or (Up = 'FUNCTION') Then
           Begin
-            { Sauter les procedures/fonctions imbriquees }
-            { Avancer jusqu au prochain BEGIN + son END correspondant }
-            Inc(I);
-            While (I < TokenCount) Do
+            { Parser les procedures/fonctions imbriquees (TODO 14) }
+            { Elles deviennent des entrees separees dans ProcTab }
+            If ProcCount < MAX_PROC Then
             Begin
-              If (TokenPool[I].Kind = TK_KEYWORD) And
-                 (StrUpperCase(TokenPool[I].Val) = 'BEGIN') Then
+              NIsFunc := (Up = 'FUNCTION');
+                Inc(I); { sauter PROCEDURE/FUNCTION }
+
+                { Lire le nom }
+                If (I < TokenCount) And
+                   ((TokenPool[I].Kind = TK_IDENT) Or
+                    (TokenPool[I].Kind = TK_KEYWORD)) Then
+                Begin
+                  NName := StrUpperCase(TokenPool[I].Val);
+                  Inc(I);
+                End
+                Else
+                  NName := '';
+
+                NI := ProcCount;
+                ProcTab[NI].Name        := NName;
+                ProcTab[NI].MangledName := TP_FUNC_PFX + NName;
+                ProcTab[NI].IsFunction  := NIsFunc;
+                ProcTab[NI].RetTypeIdx  := -1;
+                ProcTab[NI].ParamCount  := 0;
+                ProcTab[NI].LocalCount  := 0;
+                ProcTab[NI].LocalSize   := 0;
+                ProcTab[NI].BodyStart   := -1;
+                ProcTab[NI].BodyEnd     := -1;
+                ProcTab[NI].IsForward   := False;
+                ProcTab[NI].IsExternal  := False;
+                ProcTab[NI].SymIdx      := -1;
+                ProcTab[NI].VarMask     := 0;
+                ProcTab[NI].RetOffset   := 0;
+
+                { Parser les parametres }
+                NPC := 0;
+                NVM := 0;
+                If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+                   (TokenPool[I].Val = '(') Then
+                Begin
+                  Inc(I);
+                  While (I < TokenCount) And
+                        Not ((TokenPool[I].Kind = TK_PUNCT) And
+                             (TokenPool[I].Val = ')')) Do
+                  Begin
+                    NIsVarP := False;
+                    NIsConstP := False;
+                    If (TokenPool[I].Kind = TK_KEYWORD) Then
+                    Begin
+                      If StrUpperCase(TokenPool[I].Val) = 'VAR' Then
+                      Begin NIsVarP := True; Inc(I); End
+                      Else If StrUpperCase(TokenPool[I].Val) = 'CONST' Then
+                      Begin NIsConstP := True; Inc(I); End;
+                    End;
+                    NGrpSt := NPC;
+                    While (I < TokenCount) And
+                          ((TokenPool[I].Kind = TK_IDENT) Or
+                           (TokenPool[I].Kind = TK_KEYWORD)) Do
+                    Begin
+                      If NPC < MAX_PARAM Then
+                      Begin
+                        ProcTab[NI].Params[NPC].Name    := StrUpperCase(TokenPool[I].Val);
+                        ProcTab[NI].Params[NPC].IsVar   := NIsVarP;
+                        ProcTab[NI].Params[NPC].IsConst := NIsConstP;
+                        ProcTab[NI].Params[NPC].TypeIdx := TY_IDX_INTEGER;
+                        ProcTab[NI].Params[NPC].Offset  := 0;
+                        If NIsVarP Then
+                          NVM := NVM Or (LongInt(1) Shl NPC);
+                        Inc(NPC);
+                      End;
+                      Inc(I);
+                      If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+                         (TokenPool[I].Val = ',') Then Inc(I) Else Break;
+                    End;
+                    If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+                       (TokenPool[I].Val = ':') Then
+                    Begin
+                      Inc(I);
+                      If (I < TokenCount) And
+                         ((TokenPool[I].Kind = TK_IDENT) Or
+                          (TokenPool[I].Kind = TK_KEYWORD)) Then
+                      Begin
+                        NTName := StrUpperCase(TokenPool[I].Val);
+                        NTIdx := TypeFindByName(NTName);
+                        If NTIdx < 0 Then NTIdx := TY_IDX_INTEGER;
+                        For NK := NGrpSt To NPC - 1 Do
+                          ProcTab[NI].Params[NK].TypeIdx := NTIdx;
+                        Inc(I);
+                      End;
+                    End;
+                    If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+                       (TokenPool[I].Val = ';') Then Inc(I);
+                  End;
+                  If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+                     (TokenPool[I].Val = ')') Then Inc(I);
+                End;
+                ProcTab[NI].ParamCount := NPC;
+                ProcTab[NI].VarMask    := NVM;
+                For NK := 0 To NPC - 1 Do
+                  ProcTab[NI].Params[NK].Offset := 8 + (NPC - 1 - NK) * 4;
+
+                { Type de retour }
+                NRetTIdx := TY_IDX_INTEGER;
+                If NIsFunc Then
+                Begin
+                  If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+                     (TokenPool[I].Val = ':') Then
+                  Begin
+                    Inc(I);
+                    If (I < TokenCount) And
+                       ((TokenPool[I].Kind = TK_IDENT) Or
+                        (TokenPool[I].Kind = TK_KEYWORD)) Then
+                    Begin
+                      NTName := StrUpperCase(TokenPool[I].Val);
+                      NTIdx := TypeFindByName(NTName);
+                      If NTIdx >= 0 Then NRetTIdx := NTIdx;
+                      Inc(I);
+                    End;
+                  End;
+                End;
+                ProcTab[NI].RetTypeIdx := NRetTIdx;
+
+                { Attendre ';' apres la signature }
+                While (I < TokenCount) And
+                      Not ((TokenPool[I].Kind = TK_PUNCT) And
+                           (TokenPool[I].Val = ';')) Do
+                  Inc(I);
+                If I < TokenCount Then Inc(I);
+
+                { Verifier FORWARD }
+                If (I < TokenCount) And
+                   ((TokenPool[I].Kind = TK_KEYWORD) Or
+                    (TokenPool[I].Kind = TK_IDENT)) And
+                   (StrUpperCase(TokenPool[I].Val) = 'FORWARD') Then
+                Begin
+                  ProcTab[NI].IsForward := True;
+                  While (I < TokenCount) And
+                        Not ((TokenPool[I].Kind = TK_PUNCT) And
+                             (TokenPool[I].Val = ';')) Do
+                    Inc(I);
+                  If I < TokenCount Then Inc(I);
+                End
+                Else If (I < TokenCount) And
+                        (TokenPool[I].Kind = TK_KEYWORD) And
+                        (StrUpperCase(TokenPool[I].Val) <> 'VAR') And
+                        (StrUpperCase(TokenPool[I].Val) <> 'CONST') And
+                        (StrUpperCase(TokenPool[I].Val) <> 'TYPE') And
+                        (StrUpperCase(TokenPool[I].Val) <> 'LABEL') And
+                        (StrUpperCase(TokenPool[I].Val) <> 'BEGIN') And
+                        (StrUpperCase(TokenPool[I].Val) <> 'PROCEDURE') And
+                        (StrUpperCase(TokenPool[I].Val) <> 'FUNCTION') Then
+                Begin
+                  { Pas de corps : declaration de type interface/forward implicite }
+                  ProcTab[NI].IsForward := True;
+                End
+                Else
+                Begin
+                  { Scanner les variables locales de la proc imbriquee }
+                  NLocalOfs := 0;
+                  NLC := 0;
+                  If NIsFunc Then
+                  Begin
+                    NLocalOfs := NLocalOfs + 4;
+                    ProcTab[NI].RetOffset := -NLocalOfs;
+                  End;
+                  While (I < TokenCount) Do
+                  Begin
+                    If TokenPool[I].Kind <> TK_KEYWORD Then Break;
+                    Up := StrUpperCase(TokenPool[I].Val);
+                    If Up = 'VAR' Then
+                    Begin
+                      Inc(I);
+                      While (I < TokenCount) Do
+                      Begin
+                        If (TokenPool[I].Kind = TK_KEYWORD) Then
+                        Begin
+                          Up := StrUpperCase(TokenPool[I].Val);
+                          If (Up = 'VAR') Or (Up = 'CONST') Or (Up = 'TYPE') Or
+                             (Up = 'BEGIN') Or (Up = 'PROCEDURE') Or
+                             (Up = 'FUNCTION') Or (Up = 'LABEL') Then
+                            Break;
+                        End;
+                        If (TokenPool[I].Kind <> TK_IDENT) And
+                           (TokenPool[I].Kind <> TK_KEYWORD) Then
+                        Begin Inc(I); Continue; End;
+                        NGrpSt := NLC;
+                        While (I < TokenCount) And
+                              ((TokenPool[I].Kind = TK_IDENT) Or
+                               (TokenPool[I].Kind = TK_KEYWORD)) Do
+                        Begin
+                          If NLC < MAX_LOCAL Then
+                          Begin
+                            ProcTab[NI].Locals[NLC].Name    := StrUpperCase(TokenPool[I].Val);
+                            ProcTab[NI].Locals[NLC].TypeIdx  := TY_IDX_INTEGER;
+                            ProcTab[NI].Locals[NLC].Size     := 4;
+                            ProcTab[NI].Locals[NLC].IsStatic := False;
+                            ProcTab[NI].Locals[NLC].StaticLbl:= '';
+                            ProcTab[NI].Locals[NLC].InitVal  := 0;
+                            ProcTab[NI].Locals[NLC].HasInit  := False;
+                            Inc(NLC);
+                          End;
+                          Inc(I);
+                          If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT)
+                             And (TokenPool[I].Val = ',') Then Inc(I) Else Break;
+                        End;
+                        If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+                           (TokenPool[I].Val = ':') Then
+                        Begin
+                          Inc(I);
+                          NLTName := '';
+                          If (I < TokenCount) And
+                             ((TokenPool[I].Kind = TK_IDENT) Or
+                              (TokenPool[I].Kind = TK_KEYWORD)) Then
+                          Begin
+                            NLTName := StrUpperCase(TokenPool[I].Val);
+                            Inc(I);
+                          End;
+                          NLTIdx := TypeFindByName(NLTName);
+                          If NLTIdx < 0 Then NLTIdx := TY_IDX_INTEGER;
+                          NLSz := TypeSizeofIdx(NLTIdx);
+                          If NLSz < 4 Then NLSz := 4;
+                          For NK := NGrpSt To NLC - 1 Do
+                          Begin
+                            ProcTab[NI].Locals[NK].TypeIdx := NLTIdx;
+                            ProcTab[NI].Locals[NK].Size    := NLSz;
+                            NLocalOfs := NLocalOfs + NLSz;
+                            If (NLocalOfs And 3) <> 0 Then
+                              NLocalOfs := (NLocalOfs + 3) And (Not 3);
+                            ProcTab[NI].Locals[NK].Offset := -NLocalOfs;
+                          End;
+                        End;
+                        While (I < TokenCount) And
+                              Not ((TokenPool[I].Kind = TK_PUNCT) And
+                                   (TokenPool[I].Val = ';')) Do
+                          Inc(I);
+                        If I < TokenCount Then Inc(I);
+                      End;
+                    End
+                    Else If (Up = 'CONST') Or (Up = 'TYPE') Or (Up = 'LABEL') Then
+                    Begin
+                      Inc(I);
+                      While (I < TokenCount) Do
+                      Begin
+                        If (TokenPool[I].Kind = TK_KEYWORD) Then
+                        Begin
+                          Up := StrUpperCase(TokenPool[I].Val);
+                          If (Up = 'VAR') Or (Up = 'CONST') Or (Up = 'TYPE') Or
+                             (Up = 'BEGIN') Or (Up = 'PROCEDURE') Or
+                             (Up = 'FUNCTION') Or (Up = 'LABEL') Then
+                            Break;
+                        End;
+                        Inc(I);
+                      End;
+                    End
+                    Else
+                      Break;
+                  End;
+                  ProcTab[NI].LocalCount := NLC;
+                  ProcTab[NI].LocalSize  := NLocalOfs;
+
+                  { Localiser le corps (BEGIN ... END) }
+                  If (I < TokenCount) And (TokenPool[I].Kind = TK_KEYWORD) And
+                     (StrUpperCase(TokenPool[I].Val) = 'BEGIN') Then
+                  Begin
+                    ProcTab[NI].BodyStart := I;
+                    Inc(I);
+                    SkipToMatchingEnd(I);
+                    ProcTab[NI].BodyEnd := I - 1;
+                  End;
+                  { Sauter le ';' apres END }
+                  If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+                     (TokenPool[I].Val = ';') Then
+                    Inc(I);
+                End;
+
+                { Enregistrer le symbole dans SymTab }
+                If NIsFunc Then
+                  NSIdx := SymAdd(NName, SK_FUNC, NRetTIdx)
+                Else
+                  NSIdx := SymAdd(NName, SK_PROC, -1);
+                If NSIdx >= 0 Then
+                Begin
+                  SymTab[NSIdx].ParamCount  := NPC;
+                  SymTab[NSIdx].IsGlobal    := True;
+                  SymTab[NSIdx].MangledName := TP_FUNC_PFX + NName;
+                End;
+                ProcTab[NI].SymIdx := NSIdx;
+                Inc(ProcCount);
+            End
+            Else
+            Begin
+              { Pas de place dans ProcTab : sauter }
+              Inc(I);
+              While (I < TokenCount) Do
               Begin
+                If (TokenPool[I].Kind = TK_KEYWORD) And
+                   (StrUpperCase(TokenPool[I].Val) = 'BEGIN') Then
+                Begin
+                  Inc(I);
+                  SkipToMatchingEnd(I);
+                  Break;
+                End;
                 Inc(I);
-                SkipToMatchingEnd(I);
-                Break;
               End;
-              Inc(I);
+              If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+                 (TokenPool[I].Val = ';') Then
+                Inc(I);
             End;
-            { Sauter le ';' apres END }
-            If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
-               (TokenPool[I].Val = ';') Then
-              Inc(I);
           End
           Else
             Break;
@@ -5693,8 +6077,11 @@ Begin
   { Chercher variable locale (seulement si dans une proc) }
   If PI >= 0 Then
   Begin
-    { Lecture du resultat de la fonction : FuncName }
-    If ProcTab[PI].IsFunction And (ProcTab[PI].Name = Up) Then
+    { Lecture du resultat de la fonction : FuncName ou Result }
+    { Result n est utilise que s il n y a pas de variable locale nommee RESULT }
+    If ProcTab[PI].IsFunction And
+       ((ProcTab[PI].Name = Up) Or
+        ((Up = 'RESULT') And (FindLocal(PI, 'RESULT') < 0))) Then
     Begin
       EmitInstr('MOV EAX,DWORD PTR ' + EBPOfs(ProcTab[PI].RetOffset));
       Exit;
@@ -5765,8 +6152,11 @@ Begin
   { Variable locale (seulement si dans une proc) }
   If PI >= 0 Then
   Begin
-    { Affectation du resultat de la fonction : FuncName := expr }
-    If ProcTab[PI].IsFunction And (ProcTab[PI].Name = Up) Then
+    { Affectation du resultat de la fonction : FuncName := expr ou Result := expr }
+    { Result n est utilise que s il n y a pas de variable locale nommee RESULT }
+    If ProcTab[PI].IsFunction And
+       ((ProcTab[PI].Name = Up) Or
+        ((Up = 'RESULT') And (FindLocal(PI, 'RESULT') < 0))) Then
     Begin
       EmitInstr('MOV DWORD PTR ' + EBPOfs(ProcTab[PI].RetOffset) + ',EAX');
       Exit;
@@ -5892,6 +6282,10 @@ Var
   Up        : TString;
   SI        : Integer;
   MName     : TString;
+  CalledPI  : Integer;
+  J         : Integer;
+  IsVarArg  : Boolean;
+  ArgName   : TString;
 Begin
   Up := StrUpperCase(ProcName);
   ArgCount := 0;
@@ -5903,6 +6297,15 @@ Begin
   Else
     MName := TP_FUNC_PFX + Up;
 
+  { Trouver l index dans ProcTab pour connaitre les params VAR }
+  CalledPI := -1;
+  For J := 0 To ProcCount - 1 Do
+    If ProcTab[J].Name = Up Then
+    Begin
+      CalledPI := J;
+      Break;
+    End;
+
   { Consommer '(' si present }
   If EPMatch('(') Then
   Begin
@@ -5910,8 +6313,36 @@ Begin
     If Not EPMatch(')') Then
     Begin
       Repeat
-        ParseExpr(PI);
-        EmitInstr('PUSH EAX');
+        { Determiner si le parametre courant est VAR }
+        IsVarArg := False;
+        If (CalledPI >= 0) And (ArgCount < ProcTab[CalledPI].ParamCount) Then
+          IsVarArg := ProcTab[CalledPI].Params[ArgCount].IsVar;
+
+        If IsVarArg Then
+        Begin
+          { Parametre VAR : pousser l adresse de la variable }
+          If (Not EPAtEnd) And
+             ((TokenPool[EP].Kind = TK_IDENT) Or
+              (TokenPool[EP].Kind = TK_KEYWORD)) Then
+          Begin
+            ArgName := TokenPool[EP].Val;
+            Inc(EP);
+            GenLoadAddr(PI, ArgName);
+            EmitInstr('PUSH EAX');
+          End
+          Else
+          Begin
+            { Fallback : evaluer et pousser (pas ideal pour VAR) }
+            ParseExpr(PI);
+            EmitInstr('PUSH EAX');
+          End;
+        End
+        Else
+        Begin
+          { Parametre normal : evaluer et pousser la valeur }
+          ParseExpr(PI);
+          EmitInstr('PUSH EAX');
+        End;
         Inc(ArgCount);
       Until Not EPMatch(',');
       If Not EPMatch(')') Then

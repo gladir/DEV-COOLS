@@ -62,7 +62,32 @@ _TPV_GLOBALVALUE  DD 0
 _TPF_SHOWMESSAGE:
         PUSH EBP
         MOV EBP,ESP
+; writeln
+        LEA EAX,[_TPK_1]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
 _TPL_1:
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; --- ADDNUMBERS ---
+_TPF_ADDNUMBERS:
+        PUSH EBP
+        MOV EBP,ESP
+        SUB ESP,4
+        MOV DWORD PTR [EBP-4],0
+        MOV EAX,DWORD PTR [EBP+12]
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP+8]
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
+        MOV DWORD PTR [EBP-4],EAX
+_TPL_2:
+        MOV EAX,DWORD PTR [EBP-4]
         MOV ESP,EBP
         POP EBP
         RET

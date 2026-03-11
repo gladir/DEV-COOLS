@@ -1,0 +1,557 @@
+; TPCW32 - Compilateur Turbo Pascal -> ASM 80386 Win32
+; Genere automatiquement a partir de : SAMPLES/PASCAL/test_todo14.pas
+
+.386
+.MODEL FLAT, STDCALL
+
+; --- Imports Win32 (kernel32.dll) ---
+EXTRN _ExitProcess@4:NEAR
+EXTRN _GetStdHandle@4:NEAR
+EXTRN _WriteFile@20:NEAR
+EXTRN _ReadFile@20:NEAR
+EXTRN _WriteConsoleA@20:NEAR
+EXTRN _ReadConsoleA@20:NEAR
+EXTRN _SetConsoleCursorPosition@8:NEAR
+EXTRN _GetConsoleScreenBufferInfo@8:NEAR
+EXTRN _SetConsoleTextAttribute@8:NEAR
+EXTRN _FillConsoleOutputCharacterA@20:NEAR
+EXTRN _FillConsoleOutputAttribute@20:NEAR
+EXTRN _GetConsoleMode@8:NEAR
+EXTRN _SetConsoleMode@8:NEAR
+EXTRN _GetProcessHeap@0:NEAR
+EXTRN _HeapAlloc@12:NEAR
+EXTRN _HeapFree@12:NEAR
+EXTRN _CreateFileA@28:NEAR
+EXTRN _CloseHandle@4:NEAR
+EXTRN _SetFilePointer@16:NEAR
+EXTRN _GetFileSize@8:NEAR
+EXTRN _DeleteFileA@4:NEAR
+EXTRN _CreateDirectoryA@8:NEAR
+EXTRN _RemoveDirectoryA@4:NEAR
+EXTRN _SetCurrentDirectoryA@4:NEAR
+EXTRN _GetCurrentDirectoryA@8:NEAR
+EXTRN _GetTickCount@0:NEAR
+EXTRN _Sleep@4:NEAR
+EXTRN _GetCommandLineA@0:NEAR
+
+; --- Segment de donnees ---
+.DATA
+
+; --- Variables runtime TPCW32 ---
+HSTDOUT   DD 0
+HSTDIN    DD 0
+HHEAP     DD 0
+NUMBUF    DB 32 DUP(0)
+INBUF     DB 256 DUP(0)
+BYTESWR   DD 0
+BYTESRD   DD 0
+CRLF      DB 13,10,0
+STRTMP    DB 256 DUP(0)
+TRUE_STR  DB 'TRUE',0
+FALSE_STR DB 'FALSE',0
+
+; --- Constantes et donnees utilisateur ---
+_TPK_1  DB 'Hello from SayHello!',0
+_TPK_2  DB 'Sum = ',0
+_TPK_3  DB 'Value = ',0
+_TPK_4  DB 'Called Later via Forward',0
+_TPK_5  DB 'Inside Inner',0
+_TPK_6  DB 'Inside Outer',0
+_TPK_7  DB 'Double(7) = ',0
+_TPK_8  DB 'Triple(5) = ',0
+_TPK_9  DB 'After Increment(42) = ',0
+_TPK_10  DB 'Factorial(5) = ',0
+_TPK_11  DB 'Compute(3) = ',0
+_TPV_A  DD 0
+_TPV_B  DD 0
+_TPV_C  DD 0
+
+; --- Segment de code ---
+.CODE
+
+
+; --- SAYHELLO ---
+_TPF_SAYHELLO:
+        PUSH EBP
+        MOV EBP,ESP
+; writeln
+        LEA EAX,[_TPK_1]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+_TPL_1:
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; --- SHOWSUM ---
+_TPF_SHOWSUM:
+        PUSH EBP
+        MOV EBP,ESP
+; writeln
+        LEA EAX,[_TPK_2]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        MOV EAX,DWORD PTR [EBP+12]
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP+8]
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
+        CALL _TPRT_NUMTOSTR
+        LEA ESI,[NUMBUF]
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+_TPL_2:
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; --- DOUBLE ---
+_TPF_DOUBLE:
+        PUSH EBP
+        MOV EBP,ESP
+        SUB ESP,4
+        MOV DWORD PTR [EBP-4],0
+        MOV EAX,DWORD PTR [EBP+8]
+        PUSH EAX
+        MOV EAX,2
+        MOV EBX,EAX
+        POP EAX
+        IMUL EAX,EBX
+        MOV DWORD PTR [EBP-4],EAX
+_TPL_3:
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; --- TRIPLE ---
+_TPF_TRIPLE:
+        PUSH EBP
+        MOV EBP,ESP
+        SUB ESP,4
+        MOV DWORD PTR [EBP-4],0
+        MOV EAX,DWORD PTR [EBP+8]
+        PUSH EAX
+        MOV EAX,3
+        MOV EBX,EAX
+        POP EAX
+        IMUL EAX,EBX
+        MOV DWORD PTR [EBP-4],EAX
+_TPL_4:
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; --- INCREMENT ---
+_TPF_INCREMENT:
+        PUSH EBP
+        MOV EBP,ESP
+        MOV EBX,DWORD PTR [EBP+8]
+        MOV EAX,[EBX]
+        PUSH EAX
+        MOV EAX,1
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
+        MOV EBX,DWORD PTR [EBP+8]
+        MOV [EBX],EAX
+_TPL_5:
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; --- SHOWVALUE ---
+_TPF_SHOWVALUE:
+        PUSH EBP
+        MOV EBP,ESP
+; writeln
+        LEA EAX,[_TPK_3]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        MOV EAX,DWORD PTR [EBP+8]
+        CALL _TPRT_NUMTOSTR
+        LEA ESI,[NUMBUF]
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+_TPL_6:
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; --- FACTORIAL ---
+_TPF_FACTORIAL:
+        PUSH EBP
+        MOV EBP,ESP
+        SUB ESP,4
+        MOV DWORD PTR [EBP-4],0
+; if
+        MOV EAX,DWORD PTR [EBP+8]
+        PUSH EAX
+        MOV EAX,1
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JLE _TPL_8
+        XOR EAX,EAX
+        JMP _TPL_9
+_TPL_8:
+        MOV EAX,1
+_TPL_9:
+        TEST EAX,EAX
+        JZ _TPL_10
+        MOV EAX,1
+        MOV DWORD PTR [EBP-4],EAX
+        JMP _TPL_11
+_TPL_10:
+        MOV EAX,DWORD PTR [EBP+8]
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP+8]
+        PUSH EAX
+        MOV EAX,1
+        MOV EBX,EAX
+        POP EAX
+        SUB EAX,EBX
+        PUSH EAX
+        CALL _TPF_FACTORIAL
+        ADD ESP,4
+        MOV EBX,EAX
+        POP EAX
+        IMUL EAX,EBX
+        MOV DWORD PTR [EBP-4],EAX
+_TPL_11:
+_TPL_7:
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; --- LATER ---
+_TPF_LATER:
+        PUSH EBP
+        MOV EBP,ESP
+; writeln
+        LEA EAX,[_TPK_4]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+_TPL_12:
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; --- CALLLATER ---
+_TPF_CALLLATER:
+        PUSH EBP
+        MOV EBP,ESP
+        CALL _TPF_LATER
+_TPL_13:
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; --- OUTER ---
+_TPF_OUTER:
+        PUSH EBP
+        MOV EBP,ESP
+; writeln
+        LEA EAX,[_TPK_6]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+        CALL _TPF_INNER
+_TPL_14:
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; --- INNER ---
+_TPF_INNER:
+        PUSH EBP
+        MOV EBP,ESP
+; writeln
+        LEA EAX,[_TPK_5]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+_TPL_15:
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; --- COMPUTE ---
+_TPF_COMPUTE:
+        PUSH EBP
+        MOV EBP,ESP
+        SUB ESP,4
+        MOV DWORD PTR [EBP-4],0
+        MOV EAX,DWORD PTR [EBP+8]
+        PUSH EAX
+        CALL _TPF_ADDTEN
+        ADD ESP,4
+        PUSH EAX
+        MOV EAX,5
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
+        MOV DWORD PTR [EBP-4],EAX
+_TPL_16:
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; --- ADDTEN ---
+_TPF_ADDTEN:
+        PUSH EBP
+        MOV EBP,ESP
+        SUB ESP,4
+        MOV DWORD PTR [EBP-4],0
+        MOV EAX,DWORD PTR [EBP+8]
+        PUSH EAX
+        MOV EAX,10
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
+        MOV DWORD PTR [EBP-4],EAX
+_TPL_17:
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; --- Programme principal ---
+_TPF_Main:
+        PUSH EBP
+        MOV EBP,ESP
+; Obtenir STDOUT
+        PUSH -11
+        CALL GetStdHandle
+        MOV [HSTDOUT],EAX
+; Obtenir STDIN
+        PUSH -10
+        CALL GetStdHandle
+        MOV [HSTDIN],EAX
+; Obtenir le tas du processus
+        CALL GetProcessHeap
+        MOV [HHEAP],EAX
+        CALL _TPF_SAYHELLO
+        MOV EAX,10
+        PUSH EAX
+        MOV EAX,20
+        PUSH EAX
+        CALL _TPF_SHOWSUM
+        ADD ESP,8
+        MOV EAX,7
+        PUSH EAX
+        CALL _TPF_DOUBLE
+        ADD ESP,4
+        MOV DWORD PTR [_TPV_A],EAX
+; writeln
+        LEA EAX,[_TPK_7]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        MOV EAX,DWORD PTR [_TPV_A]
+        CALL _TPRT_NUMTOSTR
+        LEA ESI,[NUMBUF]
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+        MOV EAX,5
+        PUSH EAX
+        CALL _TPF_TRIPLE
+        ADD ESP,4
+        MOV DWORD PTR [_TPV_B],EAX
+; writeln
+        LEA EAX,[_TPK_8]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        MOV EAX,DWORD PTR [_TPV_B]
+        CALL _TPRT_NUMTOSTR
+        LEA ESI,[NUMBUF]
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+        MOV EAX,42
+        MOV DWORD PTR [_TPV_C],EAX
+        LEA EAX,[_TPV_C]
+        PUSH EAX
+        CALL _TPF_INCREMENT
+        ADD ESP,4
+; writeln
+        LEA EAX,[_TPK_9]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        MOV EAX,DWORD PTR [_TPV_C]
+        CALL _TPRT_NUMTOSTR
+        LEA ESI,[NUMBUF]
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+        MOV EAX,99
+        PUSH EAX
+        CALL _TPF_SHOWVALUE
+        ADD ESP,4
+; writeln
+        LEA EAX,[_TPK_10]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        MOV EAX,5
+        PUSH EAX
+        CALL _TPF_FACTORIAL
+        ADD ESP,4
+        CALL _TPRT_NUMTOSTR
+        LEA ESI,[NUMBUF]
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+        CALL _TPF_CALLLATER
+        CALL _TPF_OUTER
+; writeln
+        LEA EAX,[_TPK_11]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        MOV EAX,3
+        PUSH EAX
+        CALL _TPF_COMPUTE
+        ADD ESP,4
+        CALL _TPRT_NUMTOSTR
+        LEA ESI,[NUMBUF]
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+_TPL_18:
+        PUSH 0
+        CALL ExitProcess
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; === Routines runtime TPCW32 ===
+
+_TPRT_PRINTSTR:
+        PUSHAD
+        XOR ECX,ECX
+_TPRT_PSTR_L:
+        CMP BYTE PTR [ESI+ECX],0
+        JE _TPRT_PSTR_G
+        INC ECX
+        JMP _TPRT_PSTR_L
+_TPRT_PSTR_G:
+        TEST ECX,ECX
+        JZ _TPRT_PSTR_D
+        PUSH 0
+        PUSH OFFSET BYTESWR
+        PUSH ECX
+        PUSH ESI
+        PUSH DWORD PTR [HSTDOUT]
+        CALL WriteFile
+_TPRT_PSTR_D:
+        POPAD
+        RET
+
+_TPRT_NUMTOSTR:
+        PUSHAD
+        LEA EDI,[NUMBUF]
+        XOR ECX,ECX
+        TEST EAX,EAX
+        JGE _TPRT_NTS_POS
+        MOV BYTE PTR [EDI],45
+        INC EDI
+        NEG EAX
+_TPRT_NTS_POS:
+        MOV EBX,10
+_TPRT_NTS_DIV:
+        XOR EDX,EDX
+        DIV EBX
+        ADD DL,48
+        PUSH EDX
+        INC ECX
+        TEST EAX,EAX
+        JNZ _TPRT_NTS_DIV
+_TPRT_NTS_POP:
+        POP EAX
+        MOV [EDI],AL
+        INC EDI
+        DEC ECX
+        JNZ _TPRT_NTS_POP
+        MOV BYTE PTR [EDI],0
+        POPAD
+        RET
+
+_TPRT_STRTONUM:
+        PUSH EBX
+        PUSH ECX
+        PUSH EDX
+        XOR EAX,EAX
+        XOR ECX,ECX
+        CMP BYTE PTR [ESI],45
+        JNE _TPRT_STN_LP
+        INC ESI
+        INC ECX
+_TPRT_STN_LP:
+        MOVZX EDX,BYTE PTR [ESI]
+        TEST DL,DL
+        JZ _TPRT_STN_DN
+        CMP DL,48
+        JB _TPRT_STN_DN
+        CMP DL,57
+        JA _TPRT_STN_DN
+        SUB DL,48
+        IMUL EAX,EAX,10
+        ADD EAX,EDX
+        INC ESI
+        JMP _TPRT_STN_LP
+_TPRT_STN_DN:
+        TEST ECX,ECX
+        JZ _TPRT_STN_RT
+        NEG EAX
+_TPRT_STN_RT:
+        POP EDX
+        POP ECX
+        POP EBX
+        RET
+
+_TPRT_READLN:
+        PUSHAD
+        PUSH 0
+        PUSH OFFSET BYTESRD
+        PUSH 255
+        PUSH OFFSET INBUF
+        PUSH DWORD PTR [HSTDIN]
+        CALL ReadFile
+        MOV ECX,DWORD PTR [BYTESRD]
+_TPRT_RL_TR:
+        TEST ECX,ECX
+        JZ _TPRT_RL_DN
+        DEC ECX
+        CMP BYTE PTR [INBUF+ECX],13
+        JE _TPRT_RL_TR
+        CMP BYTE PTR [INBUF+ECX],10
+        JE _TPRT_RL_TR
+        INC ECX
+_TPRT_RL_DN:
+        MOV BYTE PTR [INBUF+ECX],0
+        POPAD
+        RET
+
+_TPRT_STRCPY:
+        PUSH ESI
+        PUSH EDI
+_TPRT_SCPY_L:
+        LODSB
+        STOSB
+        TEST AL,AL
+        JNZ _TPRT_SCPY_L
+        POP EDI
+        POP ESI
+        RET
+END _TPF_Main
