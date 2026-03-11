@@ -330,7 +330,7 @@
             Operateurs amis : friend type operator+(const T&, const T&)
             Implementation : appel de fonction avec name mangling specifique
 
-  TODO 22 - TEMPLATES (BASIQUE)
+  TODO 22 - TEMPLATES (BASIQUE) [IMPLEMENTE]
             template<typename T> / template<class T>
             Fonctions template : template<typename T> T max(T a, T b)
               Instanciation implicite : max(1, 2) -> max<int>
@@ -424,6 +424,9 @@ Const
   MAX_STR       = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
   MAX_CLASS     = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
   MAX_VTBL      = 16;
+  MAX_TMPL_FUNC  = {$IFDEF FPC}32{$ELSE}8{$ENDIF};   (* TODO 22 *)
+  MAX_TMPL_CLASS = {$IFDEF FPC}16{$ELSE}4{$ENDIF};    (* TODO 22 *)
+  MAX_TMPL_INST  = {$IFDEF FPC}64{$ELSE}16{$ENDIF};   (* TODO 22 *)
   MAX_MACRO     = {$IFDEF FPC}256{$ELSE}32{$ENDIF};
   MAX_DEFINE    = {$IFDEF FPC}256{$ELSE}32{$ENDIF};
   MAX_COND      = 16;     (* profondeur max #ifdef/#ifndef imbriques  *)
@@ -652,6 +655,30 @@ Type
     VSlots       : Array[0..MAX_METHOD-1] Of TString; (* labels par slot *)
   End;
 
+  (* TODO 22 - Templates *)
+  TTemplFuncDef = Record
+    Name      : TString;   (* nom du template de fonction, ex: 'max' *)
+    ParamName : TString;   (* nom du parametre template, ex: 'T'     *)
+    FnLabel   : TString;   (* label ASM de la fonction de base       *)
+    RetTypeIdx: Integer;   (* type de retour (resolu a int 16-bit)   *)
+    Defined   : Boolean;
+  End;
+
+  TTemplClassDef = Record
+    Name      : TString;   (* nom du template de classe, ex: 'Vector' *)
+    ParamName : TString;   (* nom du parametre template, ex: 'T'      *)
+    ClassIdx  : Integer;   (* index dans ClassTab                      *)
+    Defined   : Boolean;
+  End;
+
+  TTemplInst = Record
+    TmplName : TString;    (* nom du template                        *)
+    TypeArg  : TString;    (* type concret, ex: 'int'                *)
+    TypeIdx  : Integer;    (* index type du type concret              *)
+    InstLabel: TString;    (* label ASM de l instanciation            *)
+    IsClass  : Boolean;    (* true = classe, false = fonction         *)
+  End;
+
 (* ============================================================
   VARIABLES GLOBALES
   ============================================================ *)
@@ -733,6 +760,16 @@ Var
   DeclFnName      : TString;   (* nom de la fonction en cours de parsing *)
   DeclFnRetTypeIdx: Integer;   (* type de retour *)
   InFuncBody      : Boolean;   (* true si on est dans le corps d une fonction *)
+
+  (* TODO 22 - Templates *)
+  TemplFuncTab    : Array[0..MAX_TMPL_FUNC-1] Of TTemplFuncDef;
+  TemplFuncCount  : Integer;
+  TemplClassTab   : Array[0..MAX_TMPL_CLASS-1] Of TTemplClassDef;
+  TemplClassCount : Integer;
+  TemplInstTab    : Array[0..MAX_TMPL_INST-1] Of TTemplInst;
+  TemplInstCount  : Integer;
+  CurTemplParam   : TString;   (* nom du parametre template courant, '' si hors template *)
+  InTemplateDecl  : Boolean;   (* true pendant le parsing d un template *)
 
 (* ============================================================
   FORWARD DECLARATIONS
@@ -875,6 +912,12 @@ Function  ClassFindByType(ATypeIdx : Integer) : Integer; Forward;
 (* TODO 21 - Surcharge d operateurs *)
 Function  OpMangle(Const Op : TString) : TString; Forward;
 Function  ClassOperatorFind(CIdx : Integer; Const Op : TString) : Integer; Forward;
+(* TODO 22 - Templates *)
+Procedure ParseTemplateDecl; Forward;
+Function  TemplFuncFind(Const Name : TString) : Integer; Forward;
+Function  TemplClassFind(Const Name : TString) : Integer; Forward;
+Function  TemplInstFind(Const TmplName, TypeArg : TString) : Integer; Forward;
+Function  TemplMakeLabel(Const Name, TypeArg : TString) : TString; Forward;
 (* Parseur principal *)
 Procedure ParserAdvance; Forward;
 Procedure ParseStmt; Forward;
@@ -1166,6 +1209,11 @@ Begin
   DeclFnName     := '';
   DeclFnRetTypeIdx := TY_UNKNOWN;
   InFuncBody     := False;
+  TemplFuncCount := 0;
+  TemplClassCount:= 0;
+  TemplInstCount := 0;
+  CurTemplParam  := '';
+  InTemplateDecl := False;
   GExprDummy.Kind    := EK_NONE;
   GExprDummy.ImmVal  := 0;
   GExprDummy.TypeIdx := TY_UNKNOWN;
@@ -1206,7 +1254,8 @@ Begin
     (S = 'virtual')    Or (S = 'void')       Or (S = 'volatile')   Or
     (S = 'while')      Or (S = 'nullptr')    Or (S = 'static_cast') Or
     (S = 'dynamic_cast') Or (S = 'reinterpret_cast') Or
-    (S = 'const_cast') Or (S = 'explicit');
+    (S = 'const_cast') Or (S = 'explicit')  Or (S = 'typename') Or
+    (S = 'constexpr');
 End;
 
 (* ---- PrintToken : affichage debug d un token --------------- *)
@@ -3206,6 +3255,17 @@ Begin
           Res.SymIdx := -1;
         End;
         ParserAdvance;
+        (* TODO 22 - Instanciation explicite : name<type>(args) *)
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '<') And
+           (TemplFuncFind(IdName) >= 0) Then
+        Begin
+          ParserAdvance; (* consomme '<' *)
+          While (CurToken.Kind <> TK_EOF) And
+                Not ((CurToken.Kind = TK_OP) And (CurToken.Val = '>')) Do
+            ParserAdvance;
+          If (CurToken.Kind = TK_OP) And (CurToken.Val = '>') Then
+            ParserAdvance; (* consomme '>' *)
+        End;
         (* --- Appel de fonction : ident( ... ) --- *)
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
         Begin
@@ -5021,6 +5081,159 @@ Begin
     End;
   ClassOperatorFind := -1;
 End;
+
+(* ============================================================
+  TODO 22 - TEMPLATES (BASIQUE) [IMPLEMENTE]
+  ============================================================ *)
+
+(* ---- TemplFuncFind : chercher un template de fonction ------- *)
+(* Retourne l index dans TemplFuncTab ou -1 si non trouve.       *)
+Function TemplFuncFind(Const Name : TString) : Integer;
+Var I : Integer;
+Begin
+  For I := 0 To TemplFuncCount - 1 Do
+    If TemplFuncTab[I].Name = Name Then
+    Begin
+      TemplFuncFind := I;
+      Exit;
+    End;
+  TemplFuncFind := -1;
+End;
+
+(* ---- TemplClassFind : chercher un template de classe -------- *)
+(* Retourne l index dans TemplClassTab ou -1 si non trouve.      *)
+Function TemplClassFind(Const Name : TString) : Integer;
+Var I : Integer;
+Begin
+  For I := 0 To TemplClassCount - 1 Do
+    If TemplClassTab[I].Name = Name Then
+    Begin
+      TemplClassFind := I;
+      Exit;
+    End;
+  TemplClassFind := -1;
+End;
+
+(* ---- TemplInstFind : chercher une instanciation existante --- *)
+(* Retourne l index dans TemplInstTab ou -1 si non trouve.       *)
+Function TemplInstFind(Const TmplName, TypeArg : TString) : Integer;
+Var I : Integer;
+Begin
+  For I := 0 To TemplInstCount - 1 Do
+    If (TemplInstTab[I].TmplName = TmplName) And
+       (TemplInstTab[I].TypeArg = TypeArg) Then
+    Begin
+      TemplInstFind := I;
+      Exit;
+    End;
+  TemplInstFind := -1;
+End;
+
+(* ---- TemplMakeLabel : generer un label pour une instanciation  *)
+(* Resultat : _CC_F_nom_type, ex: _CC_F_max_int                  *)
+Function TemplMakeLabel(Const Name, TypeArg : TString) : TString;
+Begin
+  TemplMakeLabel := CC_FN_PFX + SymNameClean(Name) + '_' + SymNameClean(TypeArg);
+End;
+
+(* ---- ParseTemplateDecl : parser une declaration template ---- *)
+(* Syntaxe : template<typename T> type func(params) { body }     *)
+(*           template<class T>    class Name { ... };             *)
+(*           template<>           class Name<Type> { ... };       *)
+(* Strategie : T est resolu a int (16-bit) dans ParseTypeSpec.   *)
+(* Le code genere est identique pour toutes les instanciations    *)
+(* car le compilateur cible 8086/16 bits.                         *)
+Procedure ParseTemplateDecl;
+Var
+  TParamName : TString;
+  SaveParam  : TString;
+  SaveInTmpl : Boolean;
+  SaveFnName : TString;
+  TCIdx      : Integer;
+Begin
+  ParserAdvance; (* consomme 'template' *)
+  TParamName := 'T';
+
+  (* Consommer '<' *)
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '<') Then
+  Begin
+    ParserAdvance;
+
+    (* template<> specialisation : parser normalement *)
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '>') Then
+    Begin
+      ParserAdvance;
+      ParseStmt;
+      Exit;
+    End;
+
+    (* template<typename T> ou template<class T> *)
+    If ((CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT)) And
+       ((CurToken.Val = 'typename') Or (CurToken.Val = 'class')) Then
+      ParserAdvance;
+
+    (* Lire le nom du parametre template *)
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      TParamName := CurToken.Val;
+      ParserAdvance;
+    End;
+
+    (* Consommer '>' *)
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '>') Then
+      ParserAdvance;
+  End;
+
+  (* Activer le mode template *)
+  SaveParam  := CurTemplParam;
+  SaveInTmpl := InTemplateDecl;
+  CurTemplParam  := TParamName;
+  InTemplateDecl := True;
+
+  (* Determiner ce qui suit : class, struct, ou fonction template *)
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'class') Then
+  Begin
+    (* Template de classe *)
+    ParseClassDecl;
+    (* Enregistrer dans TemplClassTab *)
+    If (ClassCount > 0) And (TemplClassCount < MAX_TMPL_CLASS) Then
+    Begin
+      TCIdx := TemplClassCount;
+      TemplClassTab[TCIdx].Name      := ClassTab[ClassCount-1].Name;
+      TemplClassTab[TCIdx].ParamName := TParamName;
+      TemplClassTab[TCIdx].ClassIdx  := ClassCount - 1;
+      TemplClassTab[TCIdx].Defined   := True;
+      Inc(TemplClassCount);
+    End;
+  End
+  Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'struct') Then
+  Begin
+    ParseStructDecl;
+  End
+  Else
+  Begin
+    (* Template de fonction : parser via ParseDeclStmt *)
+    SaveFnName := DeclFnName;
+    DeclFnName := '';
+    ParseDeclStmt;
+    (* Enregistrer dans TemplFuncTab si une fonction a ete parsee *)
+    If (DeclFnName <> '') And (TemplFuncCount < MAX_TMPL_FUNC) Then
+    Begin
+      TemplFuncTab[TemplFuncCount].Name      := DeclFnName;
+      TemplFuncTab[TemplFuncCount].ParamName := TParamName;
+      TemplFuncTab[TemplFuncCount].FnLabel   := CC_FN_PFX + SymNameClean(DeclFnName);
+      TemplFuncTab[TemplFuncCount].RetTypeIdx := DeclFnRetTypeIdx;
+      TemplFuncTab[TemplFuncCount].Defined   := True;
+      Inc(TemplFuncCount);
+    End;
+    If DeclFnName = '' Then DeclFnName := SaveFnName;
+  End;
+
+  (* Restaurer le contexte template *)
+  CurTemplParam  := SaveParam;
+  InTemplateDecl := SaveInTmpl;
+End;
+
 (* Emet le label, prologue, corps, epilogue.                      *)
 (* Le premier parametre implicite est this a [BP+4].              *)
 Procedure ParseClassMethodBody(CIdx : Integer; MIdx : Integer);
@@ -6466,10 +6679,29 @@ Begin
   End
   Else If CurToken.Kind = TK_IDENT Then
   Begin
-    (* Type utilisateur : struct, class, typedef *)
-    TIdx := TypeLookupName(CurToken.Val);
-    If TIdx = TY_UNKNOWN Then TIdx := TY_IDX_INT;
-    ParserAdvance;
+    (* TODO 22 - Parametre template : T resolu en int (16 bits) *)
+    If (CurTemplParam <> '') And (CurToken.Val = CurTemplParam) Then
+    Begin
+      TIdx := TY_IDX_INT;
+      ParserAdvance;
+    End
+    Else
+    Begin
+      (* Type utilisateur : struct, class, typedef *)
+      TIdx := TypeLookupName(CurToken.Val);
+      If TIdx = TY_UNKNOWN Then TIdx := TY_IDX_INT;
+      ParserAdvance;
+      (* TODO 22 - Type template : Name<type> -> ignorer <type> *)
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '<') Then
+      Begin
+        ParserAdvance; (* consomme '<' *)
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_OP) And (CurToken.Val = '>')) Do
+          ParserAdvance;
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '>') Then
+          ParserAdvance;
+      End;
+    End;
   End;
 
   (* Pointeurs : type* *)
@@ -7758,11 +7990,18 @@ Begin
     Exit;
   End;
 
+  (* TODO 22 : template *)
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'template') Then
+  Begin
+    ParseTemplateDecl;
+    Exit;
+  End;
+
   (* Mot-cle de portee C++ : enum, namespace, typedef, using, etc. *)
   If (CurToken.Kind = TK_KEYWORD) And
      ((CurToken.Val = 'enum') Or
       (CurToken.Val = 'namespace') Or (CurToken.Val = 'typedef') Or
-      (CurToken.Val = 'using') Or (CurToken.Val = 'template') Or
+      (CurToken.Val = 'using') Or
       (CurToken.Val = 'extern') Or (CurToken.Val = 'friend') Or
       (CurToken.Val = 'inline') Or (CurToken.Val = 'virtual') Or
       (CurToken.Val = 'explicit') Or (CurToken.Val = 'operator') Or
