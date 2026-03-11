@@ -14,7 +14,7 @@
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
 
-  TODO 01 - INFRASTRUCTURE ET OPTIONS
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
             TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings)
             ParseArgs : analyser argv (source.a58 [sortie.asm] [-v] [-d] [-w])
             FatalError, WarnMsg, EXIT_OK / EXIT_ERROR / EXIT_USAGE
@@ -371,7 +371,608 @@
 
   ============================================================ *)
 
+{ ============================================================
+  AL58C86 - Compilateur Algol 58 -> assembleur 8086
+  Version : 1.0  Date : 2026-03-06
+  Compilation : ppc386 -O2 -Mtp AL58C86.PAS
+  ============================================================ }
+
 Program AL58C86;
 
+{$IFDEF FPC}
+  {$MODE TP}
+  {$H-}
+{$ENDIF}
+{$I-}
+
+{ ============================================================
+  CONSTANTES
+  ============================================================ }
+Const
+  AL58_VERSION = '1.0';
+  AL58_DATE    = '2026-03-06';
+
+  { Limites internes }
+  MAX_SYM       = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_LABEL     = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_SCOPE     = {$IFDEF FPC}64{$ELSE}32{$ENDIF};
+  MAX_DATA      = {$IFDEF FPC}512{$ELSE}128{$ENDIF};
+  MAX_TYPE      = {$IFDEF FPC}32{$ELSE}16{$ENDIF};
+  MAX_PARAM     = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
+  MAX_LOOP_NEST = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
+  MAX_ERRORS    = {$IFDEF FPC}30{$ELSE}3{$ENDIF};
+  MAX_STR       = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
+  STACK_SIZE    = 1024;
+
+  { Prefixes de nommage ASM }
+  A58_VAR_PFX  = '_A58V_';    { variable scalaire                  }
+  A58_PROC_PFX = '_A58P_';    { procedure / fonction               }
+  A58_STR_PFX  = '_A58K_';    { constante chaine litterale         }
+  A58_RT_PFX   = '_A58RT_';   { routine runtime                    }
+  A58_LBL_PFX  = '_A58L_';    { label de saut interne              }
+  A58_SW_PFX   = '_A58SW_';   { table switch                       }
+  A58_OWN_PFX  = '_A58OWN_';  { variable own                       }
+  A58_ARR_PFX  = '_A58ARR_';  { tableau                            }
+
+  { Codes de sortie }
+  EXIT_OK    = 0;
+  EXIT_ERROR = 1;
+  EXIT_USAGE = 2;
+
+  { Indices de types primitifs Algol 58 }
+  TY_IDX_INTEGER   = 0;  { entier 16 bits signe   }
+  TY_IDX_REAL      = 1;  { reel (stub entier)     }
+  TY_IDX_BOOLEAN   = 2;  { 0 ou 1 dans AX         }
+  TY_IDX_STRING    = 3;  { pointeur chaine DATA    }
+  TY_IDX_LABEL     = 4;  { etiquette               }
+  TY_IDX_SWITCH    = 5;  { aiguillage              }
+  TY_IDX_PROCEDURE = 6;  { procedure               }
+  TY_PRIM_COUNT    = 7;
+  TY_UNKNOWN       = -1;
+
+{ ============================================================
+  TYPES
+  ============================================================ }
+Type
+  TString = String[MAX_STR];
+
+  { ---- Options de compilation ----------------------------- }
+  TOptions = Record
+    SrcFile   : TString;   { fichier source (.a58 ou .alg)        }
+    OutFile   : TString;   { fichier assembleur de sortie (.asm)  }
+    Verbose   : Boolean;   { -v : banniere et statistiques        }
+    DebugMode : Boolean;   { -d : affichage de chaque token       }
+    Warnings  : Boolean;   { -w : activer les avertissements      }
+  End;
+
+  { ---- Tokens Algol 58 (TODO 02) ------------------------- }
+  TTokenKind = (
+    TK_EOF,       { fin de fichier                          }
+    TK_INTEGER,   { literal entier 42                       }
+    TK_REAL,      { literal reel 3.14                       }
+    TK_STRING,    { literal chaine "abc"                    }
+    TK_IDENT,     { identificateur                          }
+    TK_KEYWORD,   { mot-cle Algol 58                        }
+    TK_OP,        { operateur + - * / ^ := = # < > <= >=   }
+    TK_PUNCT,     { ponctuation ; , ( ) [ ]                 }
+    TK_LABEL      { etiquette numerique ou symbolique       }
+  );
+
+  TToken = Record
+    Kind     : TTokenKind;
+    Val      : TString;     { valeur textuelle brute          }
+    IntVal   : LongInt;     { valeur entiere (TK_INTEGER)     }
+    RealVal  : Real;        { valeur reelle (TK_REAL)         }
+    Line     : Integer;     { ligne source (1-base)           }
+    Col      : Integer;     { colonne source (1-base)         }
+  End;
+
+  { ---- Categories de symboles (TODO 05) ------------------ }
+  TSymKind = (
+    SK_VAR,          { variable scalaire              }
+    SK_ARRAY,        { tableau                        }
+    SK_PROC,         { procedure / fonction           }
+    SK_LABEL,        { etiquette                      }
+    SK_SWITCH,       { aiguillage (switch)            }
+    SK_PARAM_VALUE,  { parametre par valeur           }
+    SK_PARAM_NAME    { parametre par nom (thunk)      }
+  );
+
+  TSymRec = Record
+    Name        : TString;   { identifiant Algol 58            }
+    MangledName : TString;   { _A58V_nom / _A58P_nom           }
+    Kind        : TSymKind;
+    TypeIdx     : Integer;   { indice dans TypeTab             }
+    ScopeLevel  : Integer;
+    Offset      : Integer;   { [BP-n] pour locaux              }
+    IsOwn       : Boolean;   { variable own (persistante)      }
+    DeclLine    : Integer;
+  End;
+
+  { ---- Types internes (TODO 06) -------------------------- }
+  TTypeKind = (
+    TYK_INTEGER,
+    TYK_REAL,
+    TYK_BOOLEAN,
+    TYK_STRING,
+    TYK_ARRAY,
+    TYK_LABEL,
+    TYK_SWITCH,
+    TYK_PROCEDURE
+  );
+
+  TTypeRec = Record
+    Name    : TString;
+    Kind    : TTypeKind;
+    Size    : Integer;   { octets : integer=2, ptr=2 }
+  End;
+
+  { ---- Segment de donnees (TODO 08) ---------------------- }
+  TDataKind = (DK_WORD, DK_BYTE, DK_STR, DK_ARRAY_BLK);
+
+  TDataRec = Record
+    LblName   : TString;
+    Kind      : TDataKind;
+    IntVal    : LongInt;
+    StrVal    : TString;
+    ElemCount : Integer;  { DK_ARRAY_BLK : nb elements }
+  End;
+
+{ ============================================================
+  VARIABLES GLOBALES
+  ============================================================ }
+Var
+  { Options }
+  Opts : TOptions;
+
+  { Compteurs generaux }
+  ErrorCount : Integer;
+  WarnCount  : Integer;
+  TotalLines : LongInt;
+  TotalSyms  : Integer;
+
+  { Lexeur (TODO 02) }
+  LexSrcF   : Text;
+  LexLine   : String;
+  LexLineNo : Integer;
+  LexColNo  : Integer;
+  LexEOF    : Boolean;
+  LexOpened : Boolean;
+  CurToken  : TToken;
+
+  { Table des symboles (TODO 05) }
+  SymTab     : Array[0..MAX_SYM - 1] Of TSymRec;
+  SymCount   : Integer;
+  ScopeStack : Array[0..MAX_SCOPE - 1] Of Integer;
+  ScopeTop   : Integer;
+  CurScope   : Integer;
+  LabelSeq   : Integer;
+
+  { Table des types (TODO 06) }
+  TypeTab   : Array[0..MAX_TYPE - 1] Of TTypeRec;
+  TypeCount : Integer;
+
+  { Emetteur ASM (TODO 07) }
+  OutF         : Text;
+  OutFOpen     : Boolean;
+  CurFrameSize : Integer;    { taille cadre local courant (words)   }
+  CurFnDepth   : Integer;    { 0 = global, >0 = dans une procedure }
+  CurFnRetLbl  : TString;    { label epilogue de la procedure       }
+  CurFnName    : TString;    { nom de la procedure courante         }
+  LoopTop      : Integer;
+
+  { Segment de donnees (TODO 08) }
+  DataTab   : Array[0..MAX_DATA - 1] Of TDataRec;
+  DataCount : Integer;
+
+  { Etat general }
+  RuntimeEmitted : Boolean;
+
+{ ============================================================
+  FORWARD DECLARATIONS
+  ============================================================ }
+Procedure EmitOpen;     Forward;
+Procedure EmitClose;    Forward;
+Procedure EmitDataSeg;  Forward;
+Procedure EmitRuntime;  Forward;
+Procedure EmitHeader;   Forward;
+Procedure LexInit;      Forward;
+Procedure LexClose;     Forward;
+Procedure LexNextToken; Forward;
+Procedure ParserAdvance; Forward;
+Procedure ParseBlock;   Forward;
+Procedure TypeInit;     Forward;
+Procedure SymInit;      Forward;
+
+{ ============================================================
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Messages d erreur et d avertissement ---------------- }
+
+Procedure FatalError(Const Msg : TString);
 Begin
+  WriteLn('AL58C86: FATAL: ', Msg);
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+    Assign(OutF, Opts.OutFile);
+    Erase(OutF);
+  End;
+  Halt(EXIT_ERROR);
+End;
+
+Procedure CompileError(Const Msg : TString);
+Begin
+  Write('AL58C86:');
+  If CurToken.Line > 0 Then
+    Write(Opts.SrcFile, ':', CurToken.Line, ': ');
+  WriteLn('error: ', Msg);
+  Inc(ErrorCount);
+  If ErrorCount >= MAX_ERRORS Then
+    FatalError('trop d''erreurs, compilation arretee');
+End;
+
+Procedure WarnMsg(Const Msg : TString);
+Begin
+  If Not Opts.Warnings Then Exit;
+  Write('AL58C86:');
+  If CurToken.Line > 0 Then
+    Write(Opts.SrcFile, ':', CurToken.Line, ': ');
+  WriteLn('warning: ', Msg);
+  Inc(WarnCount);
+End;
+
+{ ---- Banniere ---------------------------------------------- }
+
+Procedure ShowBanner;
+Begin
+  WriteLn('AL58C86 v', AL58_VERSION, ' (', AL58_DATE, ')');
+  WriteLn('Compilateur Algol 58 -> assembleur 8086 (MASM .MODEL SMALL)');
+  WriteLn('Turbo Pascal / Free Pascal (-Mtp)');
+  WriteLn;
+End;
+
+Procedure ShowUsage;
+Begin
+  WriteLn('Usage: AL58C86 <source.a58> [sortie.asm] [-v] [-d] [-w]');
+  WriteLn;
+  WriteLn('  source.a58 : fichier Algol 58 source (.a58 ou .alg)');
+  WriteLn('  sortie.asm : fichier assembleur de sortie (defaut: source.asm)');
+  WriteLn('  -v         : mode verbeux (banniere + statistiques)');
+  WriteLn('  -d         : debug tokens (affiche chaque token)');
+  WriteLn('  -w         : activer les avertissements');
+  WriteLn('  -h, --help : cette aide');
+  WriteLn;
+  Halt(EXIT_USAGE);
+End;
+
+{ ---- Utilitaires chaines ------------------------------------ }
+
+Function StrLowerCase(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do
+    If (R[I] >= 'A') And (R[I] <= 'Z') Then
+      R[I] := Chr(Ord(R[I]) + 32);
+  StrLowerCase := R;
+End;
+
+Function IntToStr_(N : LongInt) : TString;
+Var
+  S : TString;
+Begin
+  Str(N, S);
+  IntToStr_ := S;
+End;
+
+{ Extrait le nom de base d un chemin (sans extension) }
+Function BaseName(Const Path : TString) : TString;
+Var
+  I, LastSep, LastDot : Integer;
+  S : TString;
+Begin
+  LastSep := 0;
+  LastDot := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If LastDot > LastSep Then
+    S := Copy(Path, LastSep + 1, LastDot - LastSep - 1)
+  Else
+    S := Copy(Path, LastSep + 1, Length(Path));
+  BaseName := S;
+End;
+
+{ Remplace l extension d un chemin }
+Function ReplaceExt(Const Path, NewExt : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ReplaceExt := Copy(Path, 1, LastDot - 1) + NewExt
+  Else
+    ReplaceExt := Path + NewExt;
+End;
+
+{ ---- Initialisation des options ----------------------------- }
+
+Procedure InitOptions;
+Begin
+  Opts.SrcFile   := '';
+  Opts.OutFile   := '';
+  Opts.Verbose   := False;
+  Opts.DebugMode := False;
+  Opts.Warnings  := False;
+End;
+
+{ ---- Analyse des arguments de la ligne de commande --------- }
+
+Procedure ParseArgs;
+Var
+  I   : Integer;
+  Arg : TString;
+Begin
+  InitOptions;
+  If ParamCount = 0 Then
+    ShowUsage;
+
+  For I := 1 To ParamCount Do
+  Begin
+    Arg := ParamStr(I);
+
+    If (Arg = '-h') Or (Arg = '--help') Or (Arg = '/?') Then
+      ShowUsage
+    Else If Arg = '-v' Then
+      Opts.Verbose := True
+    Else If Arg = '-d' Then
+      Opts.DebugMode := True
+    Else If Arg = '-w' Then
+      Opts.Warnings := True
+    Else If Arg[1] = '-' Then
+    Begin
+      WriteLn('AL58C86: option inconnue: ', Arg);
+      ShowUsage;
+    End
+    Else If Opts.SrcFile = '' Then
+      Opts.SrcFile := Arg
+    Else If Opts.OutFile = '' Then
+      Opts.OutFile := Arg
+    Else
+    Begin
+      WriteLn('AL58C86: argument inattendu: ', Arg);
+      ShowUsage;
+    End;
+  End;
+
+  If Opts.SrcFile = '' Then
+  Begin
+    WriteLn('AL58C86: fichier source manquant');
+    ShowUsage;
+  End;
+
+  If Opts.OutFile = '' Then
+    Opts.OutFile := ReplaceExt(Opts.SrcFile, '.asm');
+End;
+
+{ ---- Nettoyage -------------------------------------------- }
+
+Procedure Cleanup;
+Begin
+  If LexOpened Then
+    LexClose;
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+{ ---- Initialisation generale des variables globales -------- }
+
+Procedure GlobalInit;
+Begin
+  ErrorCount     := 0;
+  WarnCount      := 0;
+  TotalLines     := 0;
+  TotalSyms      := 0;
+  SymCount       := 0;
+  ScopeTop       := 0;
+  CurScope       := 0;
+  LabelSeq       := 0;
+  TypeCount      := 0;
+  DataCount      := 0;
+  OutFOpen       := False;
+  LexOpened      := False;
+  LexEOF         := False;
+  CurFnDepth     := 0;
+  CurFnRetLbl    := '';
+  CurFnName      := '';
+  LoopTop        := 0;
+  RuntimeEmitted := False;
+  CurFrameSize   := 0;
+  CurToken.Kind    := TK_EOF;
+  CurToken.Val     := '';
+  CurToken.IntVal  := 0;
+  CurToken.RealVal := 0.0;
+  CurToken.Line    := 0;
+  CurToken.Col     := 0;
+End;
+
+{ ---- ShowStats --------------------------------------------- }
+
+Procedure ShowStats;
+Begin
+  WriteLn;
+  WriteLn('Compilation terminee : ', Opts.SrcFile, ' -> ', Opts.OutFile);
+  WriteLn('  Lignes         : ', TotalLines);
+  WriteLn('  Symboles       : ', TotalSyms);
+  WriteLn('  Erreurs        : ', ErrorCount);
+  WriteLn('  Avertissements : ', WarnCount);
+End;
+
+{ ============================================================
+  STUBS POUR LES TODOS SUIVANTS
+  ============================================================ }
+
+Procedure LexInit;
+Begin
+  Assign(LexSrcF, Opts.SrcFile);
+  Reset(LexSrcF);
+  If IOResult <> 0 Then
+    FatalError('impossible d''ouvrir le fichier source: ' + Opts.SrcFile);
+  LexOpened := True;
+  LexLineNo := 0;
+  LexColNo  := 1;
+  LexEOF    := False;
+  LexLine   := '';
+End;
+
+Procedure LexClose;
+Begin
+  If LexOpened Then
+  Begin
+    Close(LexSrcF);
+    LexOpened := False;
+  End;
+End;
+
+Procedure LexNextToken;
+Begin
+  { Stub : produit un token EOF }
+  CurToken.Kind   := TK_EOF;
+  CurToken.Val    := '';
+  CurToken.IntVal := 0;
+  CurToken.Line   := LexLineNo;
+  CurToken.Col    := LexColNo;
+End;
+
+Procedure ParserAdvance;
+Begin
+  LexNextToken;
+End;
+
+Procedure ParseBlock;
+Begin
+  { Stub : ne fait rien pour le moment }
+End;
+
+Procedure TypeInit;
+Begin
+  { Stub : sera implemente dans TODO 06 }
+  TypeCount := 0;
+End;
+
+Procedure SymInit;
+Begin
+  { Stub : sera implemente dans TODO 05 }
+  SymCount := 0;
+End;
+
+Procedure EmitOpen;
+Begin
+  Assign(OutF, Opts.OutFile);
+  Rewrite(OutF);
+  If IOResult <> 0 Then
+    FatalError('impossible de creer le fichier de sortie: ' + Opts.OutFile);
+  OutFOpen := True;
+End;
+
+Procedure EmitClose;
+Begin
+  If OutFOpen Then
+  Begin
+    WriteLn(OutF, '        END     _A58P_Main');
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+Procedure EmitHeader;
+Begin
+  WriteLn(OutF, '; =========================================================');
+  WriteLn(OutF, '; Genere par AL58C86 v', AL58_VERSION);
+  WriteLn(OutF, '; Source : ', Opts.SrcFile);
+  WriteLn(OutF, '; =========================================================');
+  WriteLn(OutF);
+  WriteLn(OutF, '        .8086');
+  WriteLn(OutF, '        .MODEL SMALL');
+  WriteLn(OutF, '        .STACK ', STACK_SIZE);
+  WriteLn(OutF);
+End;
+
+Procedure EmitDataSeg;
+Begin
+  { Stub : sera implemente dans TODO 08 }
+  WriteLn(OutF);
+  WriteLn(OutF, '_DATA   SEGMENT WORD PUBLIC ''DATA''');
+  WriteLn(OutF, '_DATA   ENDS');
+  WriteLn(OutF);
+End;
+
+Procedure EmitRuntime;
+Begin
+  { Stub : sera implemente dans TODO 24 }
+End;
+
+{ ============================================================
+  RUN - Pipeline principal de compilation
+  ============================================================ }
+
+Procedure Run;
+Begin
+  GlobalInit;
+  If Opts.Verbose Then ShowBanner;
+
+  TypeInit;
+  SymInit;
+  EmitOpen;
+  EmitHeader;
+  LexInit;
+
+  ParserAdvance;
+
+  While CurToken.Kind <> TK_EOF Do
+  Begin
+    ParseBlock;
+    If CurToken.Kind <> TK_EOF Then
+      ParserAdvance;
+  End;
+
+  LexClose;
+  EmitRuntime;
+  EmitDataSeg;
+  EmitClose;
+
+  If Opts.Verbose Then ShowStats;
+
+  If ErrorCount > 0 Then
+    Halt(EXIT_ERROR)
+  Else
+    Halt(EXIT_OK);
+End;
+
+{ ============================================================
+  PROGRAMME PRINCIPAL
+  ============================================================ }
+Begin
+  ParseArgs;
+  Run;
 End.
