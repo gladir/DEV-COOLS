@@ -156,7 +156,7 @@
             ParseDrop : parse DROP var1 var2 ... reinitialise au nom
             ParseUpper : parse UPPER var1 var2 ... convertit en majuscules
 
-  TODO 10 - EXPRESSIONS PRIMAIRES
+  TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
             ParsePrimary : literal nombre, literal chaine, ident, appel fonction
             Nombre : convertir en chaine (ou garder en registre si optimise)
             Chaine : charger adresse du literal dans SI
@@ -789,7 +789,10 @@ Procedure EmitBinOp(Const Op : TString;
 Procedure ParseUnary(Var Res : TExprVal); Forward;
 Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal); Forward;
 
-(* TODO 10 - Expressions *)
+(* TODO 10 - Expressions primaires *)
+Function  IsBuiltinFunc(Const Name : TString) : Boolean; Forward;
+Function  ParseCallArgs : Integer; Forward;
+Procedure ParseFuncCall(Const FuncName : TString; Var Res : TExprVal); Forward;
 Procedure ParsePrimary(Var Res : TExprVal); Forward;
 Procedure ParseExpr(Var Res : TExprVal);    Forward;
 
@@ -3022,7 +3025,484 @@ Begin
 End;
 
 (* TODO 10/11 - Expressions *)
-(* ParsePrimary reel dans TODO 04 ci-dessous *)
+
+{ ============================================================
+  TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- IsBuiltinFunc : verifier si un nom est une BIF connue ----- *)
+(* Recherche dans SymTab un symbole de type SK_BUILTIN.              *)
+Function IsBuiltinFunc(Const Name : TString) : Boolean;
+Var
+  U   : TString;
+  I   : Integer;
+Begin
+  U := StrUpperCase(Name);
+  IsBuiltinFunc := False;
+  For I := 0 To SymCount - 1 Do
+  Begin
+    If (SymTab[I].Kind = SK_BUILTIN) And (SymTab[I].Name = U) Then
+    Begin
+      IsBuiltinFunc := True;
+      Exit;
+    End;
+  End;
+End;
+
+(* ---- ParseCallArgs : parser les arguments entre parentheses ----- *)
+(* La parenthese ouvrante '(' a deja ete consommee.                   *)
+(* Chaque argument est evalue et PUSH-e sur la pile.                  *)
+(* Retourne le nombre d arguments.                                    *)
+Function ParseCallArgs : Integer;
+Var
+  ArgCount : Integer;
+  Arg      : TExprVal;
+Begin
+  ArgCount := 0;
+
+  (* Cas sans argument : nom() *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+  Begin
+    ParserAdvance;
+    ParseCallArgs := 0;
+    Exit;
+  End;
+
+  (* Premier argument *)
+  ParseExpr(Arg);
+  ExprFlushToAX(Arg);
+  EmitInstr('PUSH', 'AX');
+  Inc(ArgCount);
+
+  (* Arguments suivants separes par des virgules *)
+  While (CurToken.Kind = TK_COMMA) Do
+  Begin
+    ParserAdvance;
+    (* Argument vide (virgule consecutive) : pousser chaine vide *)
+    If (CurToken.Kind = TK_COMMA) Or
+       ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
+    Begin
+      EmitInstr('MOV', 'AX, OFFSET _RX_NULL_STR');
+      EmitInstr('PUSH', 'AX');
+      Inc(ArgCount);
+    End
+    Else
+    Begin
+      ParseExpr(Arg);
+      ExprFlushToAX(Arg);
+      EmitInstr('PUSH', 'AX');
+      Inc(ArgCount);
+    End;
+  End;
+
+  (* Consommer la parenthese fermante *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance
+  Else
+    CompileError('parenthese fermante ")" attendue apres arguments');
+
+  ParseCallArgs := ArgCount;
+End;
+
+(* ---- ParseFuncCall : parser un appel de fonction integree ------- *)
+(* La parenthese ouvrante '(' a deja ete consommee.                   *)
+(* Dispatcher vers les routines _RXB_ pour les fonctions connues,     *)
+(* ou vers _RXP_ pour les fonctions utilisateur.                      *)
+Procedure ParseFuncCall(Const FuncName : TString; Var Res : TExprVal);
+Var
+  UName    : TString;
+  ArgCount : Integer;
+  StackAdj : Integer;
+Begin
+  UName := StrUpperCase(FuncName);
+  EmitComment('call: ' + UName + '(...)');
+
+  ArgCount := ParseCallArgs;
+  StackAdj := ArgCount * 2;
+
+  (* --- Fonctions de chaines de caracteres --- *)
+  If UName = 'LENGTH' Then
+  Begin
+    EmitInstr('CALL', '_RXB_LENGTH');
+    Res.TypeIdx := TY_IDX_INTEGER;
+  End
+  Else If UName = 'SUBSTR' Then
+  Begin
+    EmitInstr('CALL', '_RXB_SUBSTR');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+  Else If UName = 'LEFT' Then
+  Begin
+    EmitInstr('CALL', '_RXB_LEFT');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+  Else If UName = 'RIGHT' Then
+  Begin
+    EmitInstr('CALL', '_RXB_RIGHT');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+  Else If UName = 'POS' Then
+  Begin
+    EmitInstr('CALL', '_RXB_POS');
+    Res.TypeIdx := TY_IDX_INTEGER;
+  End
+  Else If UName = 'LASTPOS' Then
+  Begin
+    EmitInstr('CALL', '_RXB_LASTPOS');
+    Res.TypeIdx := TY_IDX_INTEGER;
+  End
+  Else If UName = 'COPIES' Then
+  Begin
+    EmitInstr('CALL', '_RXB_COPIES');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+  Else If UName = 'REVERSE' Then
+  Begin
+    EmitInstr('CALL', '_RXB_REVERSE');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+  Else If UName = 'STRIP' Then
+  Begin
+    EmitInstr('CALL', '_RXB_STRIP');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+  Else If (UName = 'CENTER') Or (UName = 'CENTRE') Then
+  Begin
+    EmitInstr('CALL', '_RXB_CENTER');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+  Else If UName = 'SPACE' Then
+  Begin
+    EmitInstr('CALL', '_RXB_SPACE');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+  Else If UName = 'OVERLAY' Then
+  Begin
+    EmitInstr('CALL', '_RXB_OVERLAY');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+  Else If UName = 'INSERT' Then
+  Begin
+    EmitInstr('CALL', '_RXB_INSERT');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+  Else If UName = 'DELSTR' Then
+  Begin
+    EmitInstr('CALL', '_RXB_DELSTR');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+  Else If UName = 'TRANSLATE' Then
+  Begin
+    EmitInstr('CALL', '_RXB_TRANSLATE');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+  Else If UName = 'VERIFY' Then
+  Begin
+    EmitInstr('CALL', '_RXB_VERIFY');
+    Res.TypeIdx := TY_IDX_INTEGER;
+  End
+  Else If UName = 'ABBREV' Then
+  Begin
+    EmitInstr('CALL', '_RXB_ABBREV');
+    Res.TypeIdx := TY_IDX_BOOLEAN;
+  End
+  Else If UName = 'COMPARE' Then
+  Begin
+    EmitInstr('CALL', '_RXB_COMPARE');
+    Res.TypeIdx := TY_IDX_INTEGER;
+  End
+  Else If UName = 'CHANGESTR' Then
+  Begin
+    EmitInstr('CALL', '_RXB_CHANGESTR');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+  Else If UName = 'COUNTSTR' Then
+  Begin
+    EmitInstr('CALL', '_RXB_COUNTSTR');
+    Res.TypeIdx := TY_IDX_INTEGER;
+  End
+  Else If UName = 'XRANGE' Then
+  Begin
+    EmitInstr('CALL', '_RXB_XRANGE');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+
+  (* --- Fonctions de mots --- *)
+  Else If UName = 'WORD' Then
+  Begin
+    EmitInstr('CALL', '_RXB_WORD');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+  Else If UName = 'WORDS' Then
+  Begin
+    EmitInstr('CALL', '_RXB_WORDS');
+    Res.TypeIdx := TY_IDX_INTEGER;
+  End
+  Else If UName = 'WORDINDEX' Then
+  Begin
+    EmitInstr('CALL', '_RXB_WORDINDEX');
+    Res.TypeIdx := TY_IDX_INTEGER;
+  End
+  Else If UName = 'WORDLENGTH' Then
+  Begin
+    EmitInstr('CALL', '_RXB_WORDLENGTH');
+    Res.TypeIdx := TY_IDX_INTEGER;
+  End
+  Else If UName = 'WORDPOS' Then
+  Begin
+    EmitInstr('CALL', '_RXB_WORDPOS');
+    Res.TypeIdx := TY_IDX_INTEGER;
+  End
+  Else If UName = 'SUBWORD' Then
+  Begin
+    EmitInstr('CALL', '_RXB_SUBWORD');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+  Else If UName = 'DELWORD' Then
+  Begin
+    EmitInstr('CALL', '_RXB_DELWORD');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+
+  (* --- Fonctions arithmetiques --- *)
+  Else If UName = 'ABS' Then
+  Begin
+    EmitInstr('CALL', '_RXB_ABS');
+    Res.TypeIdx := TY_IDX_INTEGER;
+  End
+  Else If UName = 'SIGN' Then
+  Begin
+    EmitInstr('CALL', '_RXB_SIGN');
+    Res.TypeIdx := TY_IDX_INTEGER;
+  End
+  Else If UName = 'MAX' Then
+  Begin
+    EmitInstr('CALL', '_RXB_MAX');
+    Res.TypeIdx := TY_IDX_INTEGER;
+  End
+  Else If UName = 'MIN' Then
+  Begin
+    EmitInstr('CALL', '_RXB_MIN');
+    Res.TypeIdx := TY_IDX_INTEGER;
+  End
+  Else If UName = 'TRUNC' Then
+  Begin
+    EmitInstr('CALL', '_RXB_TRUNC');
+    Res.TypeIdx := TY_IDX_INTEGER;
+  End
+  Else If UName = 'FORMAT' Then
+  Begin
+    EmitInstr('CALL', '_RXB_FORMAT');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+  Else If UName = 'RANDOM' Then
+  Begin
+    EmitInstr('CALL', '_RXB_RANDOM');
+    Res.TypeIdx := TY_IDX_INTEGER;
+  End
+
+  (* --- Fonctions de conversion --- *)
+  Else If UName = 'C2D' Then
+  Begin
+    EmitInstr('CALL', '_RXB_C2D');
+    Res.TypeIdx := TY_IDX_INTEGER;
+  End
+  Else If UName = 'C2X' Then
+  Begin
+    EmitInstr('CALL', '_RXB_C2X');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+  Else If UName = 'D2C' Then
+  Begin
+    EmitInstr('CALL', '_RXB_D2C');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+  Else If UName = 'D2X' Then
+  Begin
+    EmitInstr('CALL', '_RXB_D2X');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+  Else If UName = 'X2C' Then
+  Begin
+    EmitInstr('CALL', '_RXB_X2C');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+  Else If UName = 'X2D' Then
+  Begin
+    EmitInstr('CALL', '_RXB_X2D');
+    Res.TypeIdx := TY_IDX_INTEGER;
+  End
+  Else If UName = 'B2X' Then
+  Begin
+    EmitInstr('CALL', '_RXB_B2X');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+  Else If UName = 'X2B' Then
+  Begin
+    EmitInstr('CALL', '_RXB_X2B');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+
+  (* --- Fonctions d information --- *)
+  Else If UName = 'DATATYPE' Then
+  Begin
+    EmitInstr('CALL', '_RXB_DATATYPE');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+  Else If UName = 'SYMBOL' Then
+  Begin
+    EmitInstr('CALL', '_RXB_SYMBOL');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+  Else If UName = 'VALUE' Then
+  Begin
+    EmitInstr('CALL', '_RXB_VALUE');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+  Else If UName = 'ARG' Then
+  Begin
+    EmitInstr('CALL', '_RXB_ARG');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+  Else If UName = 'DIGITS' Then
+  Begin
+    EmitInstr('CALL', '_RXB_DIGITS');
+    Res.TypeIdx := TY_IDX_INTEGER;
+  End
+  Else If UName = 'FORM' Then
+  Begin
+    EmitInstr('CALL', '_RXB_FORM');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+  Else If UName = 'FUZZ' Then
+  Begin
+    EmitInstr('CALL', '_RXB_FUZZ');
+    Res.TypeIdx := TY_IDX_INTEGER;
+  End
+  Else If UName = 'SOURCELINE' Then
+  Begin
+    EmitInstr('CALL', '_RXB_SOURCELINE');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+  Else If UName = 'ERRORTEXT' Then
+  Begin
+    EmitInstr('CALL', '_RXB_ERRORTEXT');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+  Else If UName = 'CONDITION' Then
+  Begin
+    EmitInstr('CALL', '_RXB_CONDITION');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+  Else If UName = 'DATE' Then
+  Begin
+    EmitInstr('CALL', '_RXB_DATE');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+  Else If UName = 'TIME' Then
+  Begin
+    EmitInstr('CALL', '_RXB_TIME');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+  Else If UName = 'QUEUED' Then
+  Begin
+    EmitInstr('CALL', '_RXB_QUEUED');
+    Res.TypeIdx := TY_IDX_INTEGER;
+  End
+  Else If UName = 'ADDRESS' Then
+  Begin
+    EmitInstr('CALL', '_RXB_ADDRESS');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+  Else If UName = 'TRACE' Then
+  Begin
+    EmitInstr('CALL', '_RXB_TRACE');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+
+  (* --- Fonctions E/S --- *)
+  Else If UName = 'LINEIN' Then
+  Begin
+    EmitInstr('CALL', '_RXB_LINEIN');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+  Else If UName = 'LINEOUT' Then
+  Begin
+    EmitInstr('CALL', '_RXB_LINEOUT');
+    Res.TypeIdx := TY_IDX_INTEGER;
+  End
+  Else If UName = 'LINES' Then
+  Begin
+    EmitInstr('CALL', '_RXB_LINES');
+    Res.TypeIdx := TY_IDX_INTEGER;
+  End
+  Else If UName = 'CHARIN' Then
+  Begin
+    EmitInstr('CALL', '_RXB_CHARIN');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+  Else If UName = 'CHAROUT' Then
+  Begin
+    EmitInstr('CALL', '_RXB_CHAROUT');
+    Res.TypeIdx := TY_IDX_INTEGER;
+  End
+  Else If UName = 'CHARS' Then
+  Begin
+    EmitInstr('CALL', '_RXB_CHARS');
+    Res.TypeIdx := TY_IDX_INTEGER;
+  End
+  Else If UName = 'STREAM' Then
+  Begin
+    EmitInstr('CALL', '_RXB_STREAM');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+
+  (* --- Logique binaire --- *)
+  Else If UName = 'BITAND' Then
+  Begin
+    EmitInstr('CALL', '_RXB_BITAND');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+  Else If UName = 'BITOR' Then
+  Begin
+    EmitInstr('CALL', '_RXB_BITOR');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+  Else If UName = 'BITXOR' Then
+  Begin
+    EmitInstr('CALL', '_RXB_BITXOR');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+
+  (* --- Divers --- *)
+  Else If UName = 'QUALIFY' Then
+  Begin
+    EmitInstr('CALL', '_RXB_QUALIFY');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+  Else If UName = 'USERID' Then
+  Begin
+    EmitInstr('CALL', '_RXB_USERID');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+
+  (* --- Fonction utilisateur : CALL _RXP_nom --- *)
+  Else
+  Begin
+    EmitInstr('CALL', RX_PROC_PFX + SymNameClean(UName));
+    Res.TypeIdx := TY_IDX_STRING;
+  End;
+
+  (* Nettoyer la pile des arguments (convention C: appelant) *)
+  If StackAdj > 0 Then
+    EmitInstr('ADD', 'SP, ' + IntToStr(StackAdj));
+
+  (* Resultat dans AX *)
+  Res.Kind   := EK_AX;
+  Res.ImmVal := 0;
+  Res.Offset := -1;
+  Res.SymIdx := -1;
+End;
 
 { ============================================================
   TODO 04 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
@@ -3381,10 +3861,13 @@ Begin
   Res.SymIdx := -1;
 End;
 
-(* ---- ParsePrimary : litteraux, identificateurs, parentheses *)
+(* ---- ParsePrimary : litteraux, identificateurs, appels fonctions *)
+(* Gere : nombres, chaines, identificateurs (variables / builtins), *)
+(* appels de fonctions ident(...), parentheses (expr).              *)
 Procedure ParsePrimary(Var Res : TExprVal);
 Var
-  Idx : Integer;
+  Idx      : Integer;
+  SaveName : TString;
 Begin
   ExprMakeNone(Res);
 
@@ -3403,29 +3886,63 @@ Begin
       ParserAdvance;
     End;
 
-    (* Identificateur ou constante predefinie *)
+    (* Identificateur ou constante predefinie ou appel de fonction *)
     TK_IDENT :
     Begin
-      Idx := SymFind(CurToken.Val);
-      If Idx >= 0 Then
+      SaveName := CurToken.Val;
+      ParserAdvance;
+
+      (* Verifier si c est un appel de fonction : ident( *)
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
       Begin
-        Res.Kind    := EK_MEM;
-        Res.ImmVal  := 0;
-        Res.TypeIdx := SymTab[Idx].TypeIdx;
-        Res.Offset  := SymTab[Idx].Offset;
-        Res.SymIdx  := Idx;
+        ParserAdvance; (* consommer '(' *)
+        ParseFuncCall(SaveName, Res);
       End
       Else
       Begin
-        (* Tenter evaluation comme constante predefinie *)
-        LitEval(CurToken, Res);
-        If Res.Kind = EK_NONE Then
+        (* Pas un appel : chercher comme variable ou constante *)
+        Idx := SymFind(SaveName);
+        If (Idx >= 0) And (SymTab[Idx].Kind = SK_VAR) Then
         Begin
-          (* Variable inconnue : auto-allouer (convention REXX) *)
-          Idx := VarAlloc(CurToken.Val);
+          (* Variable existante *)
+          VarLoad(Idx);
+          Res.Kind    := EK_AX;
+          Res.ImmVal  := 0;
+          Res.TypeIdx := SymTab[Idx].TypeIdx;
+          Res.Offset  := SymTab[Idx].Offset;
+          Res.SymIdx  := Idx;
+        End
+        Else If (Idx >= 0) And (SymTab[Idx].Kind = SK_BUILTIN) Then
+        Begin
+          (* Nom de builtin utilise comme variable -> valeur par defaut *)
+          (* En REXX, un nom de BIF sans parentheses est traite comme  *)
+          (* variable ; sa valeur par defaut est son nom en majuscules *)
+          Idx := VarAlloc(SaveName);
           If Idx >= 0 Then
           Begin
-            Res.Kind    := EK_MEM;
+            VarLoad(Idx);
+            Res.Kind    := EK_AX;
+            Res.ImmVal  := 0;
+            Res.TypeIdx := TY_IDX_STRING;
+            Res.Offset  := SymTab[Idx].Offset;
+            Res.SymIdx  := Idx;
+          End
+          Else
+          Begin
+            Res.Kind    := EK_AX;
+            Res.ImmVal  := 0;
+            Res.TypeIdx := TY_IDX_STRING;
+            Res.SymIdx  := -1;
+          End;
+        End
+        Else
+        Begin
+          (* Variable inconnue : auto-allouer (convention REXX) *)
+          Idx := VarAlloc(SaveName);
+          If Idx >= 0 Then
+          Begin
+            VarLoad(Idx);
+            Res.Kind    := EK_AX;
             Res.ImmVal  := 0;
             Res.TypeIdx := TY_IDX_STRING;
             Res.Offset  := SymTab[Idx].Offset;
@@ -3440,7 +3957,6 @@ Begin
           End;
         End;
       End;
-      ParserAdvance;
     End;
 
     (* Parentheses : groupement *)
