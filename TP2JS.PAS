@@ -172,7 +172,7 @@
              Affectation de record : copie champ par champ en JS
              Affectation de tableau : copie par slice() ou spread en JS
 
-   TODO 10 - EXPRESSIONS PRIMAIRES
+   TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
              ParsePrimary : literal entier, literal reel, literal chaine,
                identificateur, appel de fonction/procedure
              Appel de fonction : Func(arg1, arg2) -> Func(arg1, arg2) en JS
@@ -187,6 +187,9 @@
              Parentheses : (expr) -> (expr) en JS
              Constantes predefinies : MaxInt -> 32767, MaxLongInt -> 2147483647
              Appel de methode objet : Obj.Method(args)
+             Fonctions standards : Ord, Chr, Length, Abs, Sqr, Sqrt, Pred,
+               Succ, Round, Trunc, Odd, UpCase, Lo, Hi, Pos, Copy, Concat,
+               Inc, Dec, Sizeof
 
    TODO 11 - EXPRESSIONS BINAIRES ET UNAIRES
              ParseExprPrec(MinPrec) : boucle de precedence (Pratt parser)
@@ -2301,14 +2304,523 @@ Begin
   End;
 End;
 
+{ ============================================================
+  TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
+  ============================================================ }
+{ Transtypage, acces chaine/tableau, fonctions standard,         }
+{ constantes predefinies, appels de methode objet.               }
+
+{ ---- IsTypeCastName : retourne vrai si le nom est un type ---- }
+{ connu pouvant servir de transtypage : Integer(x), Char(x)...   }
+Function IsTypeCastName(Const AName : TString) : Boolean;
+Var
+  L : TString;
+Begin
+  L := StrLowerCase(AName);
+  IsTypeCastName := (L = 'integer') Or (L = 'word') Or (L = 'byte') Or
+                    (L = 'shortint') Or (L = 'longint') Or (L = 'char') Or
+                    (L = 'boolean') Or (L = 'string') Or (L = 'comp');
+End;
+
+{ ---- EmitTypeCast : genere le transtypage en JS -------------- }
+{ Integer(x) -> (x | 0), Char(x) -> String.fromCharCode(x)...   }
+Function EmitTypeCast(Const AType : TString; Const AExpr : TString) : TString;
+Var
+  L : TString;
+Begin
+  L := StrLowerCase(AType);
+  If (L = 'integer') Or (L = 'shortint') Or (L = 'longint') Or
+     (L = 'comp') Then
+    EmitTypeCast := '(' + AExpr + ' | 0)'
+  Else If L = 'byte' Then
+    EmitTypeCast := '((' + AExpr + ') & 0xFF)'
+  Else If L = 'word' Then
+    EmitTypeCast := '((' + AExpr + ') & 0xFFFF)'
+  Else If L = 'char' Then
+    EmitTypeCast := 'String.fromCharCode(' + AExpr + ')'
+  Else If L = 'boolean' Then
+    EmitTypeCast := '(!!(' + AExpr + '))'
+  Else If L = 'string' Then
+    EmitTypeCast := 'String(' + AExpr + ')'
+  Else
+    EmitTypeCast := AExpr;
+End;
+
+{ ---- IsBuiltinFunc : retourne vrai si le nom est une         }
+{ fonction standard de Turbo Pascal necessitant une traduction  }
+{ speciale en JavaScript.                                       }
+Function IsBuiltinFunc(Const AName : TString) : Boolean;
+Var
+  L : TString;
+Begin
+  L := StrLowerCase(AName);
+  IsBuiltinFunc := (L = 'ord') Or (L = 'chr') Or (L = 'length') Or
+                   (L = 'abs') Or (L = 'sqr') Or (L = 'sqrt') Or
+                   (L = 'pred') Or (L = 'succ') Or (L = 'round') Or
+                   (L = 'trunc') Or (L = 'odd') Or (L = 'upcase') Or
+                   (L = 'lo') Or (L = 'hi') Or (L = 'pos') Or
+                   (L = 'copy') Or (L = 'concat') Or (L = 'sizeof') Or
+                   (L = 'inc') Or (L = 'dec') Or (L = 'random') Or
+                   (L = 'int') Or (L = 'frac') Or (L = 'sin') Or
+                   (L = 'cos') Or (L = 'arctan') Or (L = 'ln') Or
+                   (L = 'exp') Or (L = 'pi') Or (L = 'str') Or
+                   (L = 'val') Or (L = 'halt') Or (L = 'exit') Or
+                   (L = 'high') Or (L = 'low') Or (L = 'assigned') Or
+                   (L = 'swap');
+End;
+
+{ ---- EmitBuiltinCall : genere l appel de fonction standard --- }
+{ Convertit les fonctions standard TP en equivalent JavaScript.  }
+Function EmitBuiltinCall(Const AName : TString;
+                          Var P : Integer) : TString;
+Var
+  L     : TString;
+  Arg1  : TString;
+  Arg2  : TString;
+  Arg3  : TString;
+  Args  : TString;
+Begin
+  L := StrLowerCase(AName);
+  EmitBuiltinCall := AName + '()';
+
+  { Fonctions sans arguments }
+  If L = 'pi' Then
+  Begin
+    { Pi peut etre appele sans parentheses }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P); { ( }
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then
+        Inc(P); { ) }
+    End;
+    EmitBuiltinCall := 'Math.PI';
+    Exit;
+  End;
+
+  If L = 'random' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ')') Then
+      Begin
+        Inc(P);
+        EmitBuiltinCall := 'Math.random()';
+        Exit;
+      End;
+      Arg1 := ParseExpr(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then
+        Inc(P);
+      EmitBuiltinCall := 'Math.floor(Math.random() * ' + Arg1 + ')';
+      Exit;
+    End;
+    EmitBuiltinCall := 'Math.random()';
+    Exit;
+  End;
+
+  If L = 'halt' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And Not ((TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ')')) Then
+        Arg1 := ParseExpr(P)
+      Else
+        Arg1 := '0';
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then
+        Inc(P);
+    End
+    Else
+      Arg1 := '0';
+    EmitBuiltinCall := 'process.exit(' + Arg1 + ')';
+    Exit;
+  End;
+
+  If L = 'exit' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then
+        Inc(P);
+    End;
+    EmitBuiltinCall := 'return';
+    Exit;
+  End;
+
+  { Fonctions avec un argument obligatoire entre parentheses }
+  If Not ((P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = '(')) Then
+  Begin
+    EmitBuiltinCall := AName;
+    Exit;
+  End;
+  Inc(P); { consommer ( }
+
+  Arg1 := ParseExpr(P);
+
+  { Fonctions a 1 argument }
+  If L = 'ord' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := Arg1 + '.charCodeAt(0)';
+    Exit;
+  End;
+
+  If L = 'chr' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := 'String.fromCharCode(' + Arg1 + ')';
+    Exit;
+  End;
+
+  If L = 'length' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := Arg1 + '.length';
+    Exit;
+  End;
+
+  If L = 'abs' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := 'Math.abs(' + Arg1 + ')';
+    Exit;
+  End;
+
+  If L = 'sqr' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '(' + Arg1 + ' * ' + Arg1 + ')';
+    Exit;
+  End;
+
+  If L = 'sqrt' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := 'Math.sqrt(' + Arg1 + ')';
+    Exit;
+  End;
+
+  If L = 'pred' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '(' + Arg1 + ' - 1)';
+    Exit;
+  End;
+
+  If L = 'succ' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '(' + Arg1 + ' + 1)';
+    Exit;
+  End;
+
+  If L = 'round' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := 'Math.round(' + Arg1 + ')';
+    Exit;
+  End;
+
+  If (L = 'trunc') Or (L = 'int') Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := 'Math.trunc(' + Arg1 + ')';
+    Exit;
+  End;
+
+  If L = 'frac' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '(' + Arg1 + ' - Math.trunc(' + Arg1 + '))';
+    Exit;
+  End;
+
+  If L = 'odd' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '((' + Arg1 + ' & 1) !== 0)';
+    Exit;
+  End;
+
+  If L = 'upcase' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := Arg1 + '.toUpperCase()';
+    Exit;
+  End;
+
+  If L = 'lo' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '((' + Arg1 + ') & 0xFF)';
+    Exit;
+  End;
+
+  If L = 'hi' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '((' + Arg1 + ' >> 8) & 0xFF)';
+    Exit;
+  End;
+
+  If L = 'swap' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '(((' + Arg1 + ' & 0xFF) << 8) | ((' + Arg1 +
+                       ' >> 8) & 0xFF))';
+    Exit;
+  End;
+
+  If L = 'sin' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := 'Math.sin(' + Arg1 + ')';
+    Exit;
+  End;
+
+  If L = 'cos' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := 'Math.cos(' + Arg1 + ')';
+    Exit;
+  End;
+
+  If L = 'arctan' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := 'Math.atan(' + Arg1 + ')';
+    Exit;
+  End;
+
+  If L = 'ln' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := 'Math.log(' + Arg1 + ')';
+    Exit;
+  End;
+
+  If L = 'exp' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := 'Math.exp(' + Arg1 + ')';
+    Exit;
+  End;
+
+  If L = 'sizeof' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* sizeof */ 0';
+    Exit;
+  End;
+
+  If L = 'assigned' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '(' + Arg1 + ' !== null)';
+    Exit;
+  End;
+
+  If (L = 'high') Or (L = 'low') Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    If L = 'high' Then
+      EmitBuiltinCall := '(' + Arg1 + '.length - 1)'
+    Else
+      EmitBuiltinCall := '0';
+    Exit;
+  End;
+
+  If L = 'inc' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+      EmitBuiltinCall := Arg1 + ' += ' + Arg2;
+    End
+    Else
+    Begin
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+      EmitBuiltinCall := Arg1 + '++';
+    End;
+    Exit;
+  End;
+
+  If L = 'dec' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+      EmitBuiltinCall := Arg1 + ' -= ' + Arg2;
+    End
+    Else
+    Begin
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+      EmitBuiltinCall := Arg1 + '--';
+    End;
+    Exit;
+  End;
+
+  { Fonctions a 2+ arguments }
+  If L = 'pos' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End
+    Else
+      Arg2 := '""';
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '(' + Arg2 + '.indexOf(' + Arg1 + ') + 1)';
+    Exit;
+  End;
+
+  If L = 'copy' Then
+  Begin
+    Arg2 := '0'; Arg3 := '';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg3 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := Arg1 + '.substr((' + Arg2 + ') - 1, ' + Arg3 + ')';
+    Exit;
+  End;
+
+  If L = 'concat' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ' + ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '(' + Args + ')';
+    Exit;
+  End;
+
+  If L = 'str' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End
+    Else
+      Arg2 := '';
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    If Arg2 <> '' Then
+      EmitBuiltinCall := Arg2 + ' = String(' + Arg1 + ')'
+    Else
+      EmitBuiltinCall := 'String(' + Arg1 + ')';
+    Exit;
+  End;
+
+  If L = 'val' Then
+  Begin
+    Arg2 := ''; Arg3 := '';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg3 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    If Arg2 <> '' Then
+      EmitBuiltinCall := Arg2 + ' = Number(' + Arg1 + ')'
+    Else
+      EmitBuiltinCall := 'Number(' + Arg1 + ')';
+    Exit;
+  End;
+
+  { Fallback : appel generique }
+  Args := Arg1;
+  While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+        (TokenPool[P].Val = ',') Do
+  Begin
+    Inc(P);
+    Args := Args + ', ' + ParseExpr(P);
+  End;
+  If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+  EmitBuiltinCall := AName + '(' + Args + ')';
+End;
+
+{ ---- GetVarTypeKind : retourne le TTypeKind d une variable --- }
+{ Cherche le symbole dans la table et retourne son TypeKind.     }
+{ Retourne TYK_INTEGER par defaut si non trouve.                 }
+Function GetVarTypeKind(Const AName : TString) : TTypeKind;
+Var
+  SI  : Integer;
+  TI  : Integer;
+Begin
+  GetVarTypeKind := TYK_INTEGER;
+  SI := SymFind(AName);
+  If SI < 0 Then Exit;
+  TI := SymTab[SI].TypeIdx;
+  If (TI < 0) Or (TI >= TypeCount) Then Exit;
+  GetVarTypeKind := TypeTab[TI].Kind;
+End;
+
+{ ---- GetArrayLowBound : retourne la borne inf d un tableau --- }
+{ Retourne 0 par defaut si le symbole n est pas un tableau.      }
+Function GetArrayLowBound(Const AName : TString) : LongInt;
+Var
+  SI  : Integer;
+  TI  : Integer;
+Begin
+  GetArrayLowBound := 0;
+  SI := SymFind(AName);
+  If SI < 0 Then Exit;
+  TI := SymTab[SI].TypeIdx;
+  If (TI < 0) Or (TI >= TypeCount) Then Exit;
+  If TypeTab[TI].Kind = TYK_ARRAY Then
+    GetArrayLowBound := TypeTab[TI].Low;
+End;
+
 { ---- ParseExprFactor : niveau 1 (le plus fort) -------------- }
 { NOT, @, unaire +/-, atomes (litteraux, idents, parentheses)   }
+{ TODO 10 : transtypage, fonctions standard, acces chaine/tab.  }
 Function ParseExprFactor(Var P : Integer) : TString;
 Var
-  Tmp  : TString;
-  Idx  : Integer;
-  L    : TString;
-  Tmp2 : TString;
+  Tmp    : TString;
+  Idx    : Integer;
+  L      : TString;
+  Tmp2   : TString;
+  IdName : TString;
+  VTK    : TTypeKind;
+  ALow   : LongInt;
 Begin
   ParseExprFactor := '0';
   If P >= TokenCount Then Exit;
@@ -2401,6 +2913,23 @@ Begin
     If L = 'true'  Then Begin ParseExprFactor := 'true';  Inc(P); Exit; End;
     If L = 'false' Then Begin ParseExprFactor := 'false'; Inc(P); Exit; End;
     If L = 'nil'   Then Begin ParseExprFactor := 'null';  Inc(P); Exit; End;
+
+    { Mot-cle String utilise comme transtypage : String(expr) }
+    If L = 'string' Then
+    Begin
+      If (P + 1 < TokenCount) And (TokenPool[P + 1].Kind = TK_PUNCT) And
+         (TokenPool[P + 1].Val = '(') Then
+      Begin
+        IdName := TokenPool[P].Val;
+        Inc(P); Inc(P); { consommer String ( }
+        Tmp := ParseExpr(P);
+        If (P < TokenCount) And (TokenPool[P].Val = ')') Then
+          Inc(P);
+        ParseExprFactor := EmitTypeCast(IdName, Tmp);
+        Exit;
+      End;
+    End;
+
     ParseExprFactor := TokenPool[P].Val;
     Inc(P);
     Exit;
@@ -2441,19 +2970,44 @@ Begin
   { Identificateur }
   If TokenPool[P].Kind = TK_IDENT Then
   Begin
-    Idx := ConstFind(TokenPool[P].Val);
+    IdName := TokenPool[P].Val;
+    L := StrLowerCase(IdName);
+
+    { Transtypage : Integer(expr), Byte(expr), Char(expr), etc. }
+    If IsTypeCastName(IdName) And (P + 1 < TokenCount) And
+       (TokenPool[P + 1].Kind = TK_PUNCT) And
+       (TokenPool[P + 1].Val = '(') Then
+    Begin
+      Inc(P); Inc(P); { consommer TypeName ( }
+      Tmp := ParseExpr(P);
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ')') Then
+        Inc(P);
+      ParseExprFactor := EmitTypeCast(IdName, Tmp);
+      Exit;
+    End;
+
+    { Fonctions standard : Ord, Chr, Length, Abs, etc. }
+    If IsBuiltinFunc(IdName) Then
+    Begin
+      Inc(P); { consommer le nom de la fonction }
+      ParseExprFactor := EmitBuiltinCall(IdName, P);
+      Exit;
+    End;
+
+    { Constante utilisateur ou predefinie }
+    Idx := ConstFind(IdName);
     If Idx >= 0 Then
       Tmp := ConstTab[Idx].JSVal
     Else
     Begin
-      L := StrLowerCase(TokenPool[P].Val);
       If L = 'true'  Then Tmp := 'true'
       Else If L = 'false' Then Tmp := 'false'
       Else If L = 'nil'   Then Tmp := 'null'
       Else If L = 'maxint' Then Tmp := '32767'
       Else If L = 'maxlongint' Then Tmp := '2147483647'
       Else
-        Tmp := TokenPool[P].Val;
+        Tmp := IdName;
     End;
     Inc(P);
 
@@ -2481,7 +3035,7 @@ Begin
           Inc(P);
         Tmp := Tmp + '(' + Tmp2 + ')';
       End
-      { Acces index : ident[expr] }
+      { Acces index : ident[expr] avec ajustement selon le type }
       Else If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = '[') Then
       Begin
         Inc(P); { consommer [ }
@@ -2489,7 +3043,22 @@ Begin
         If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
            (TokenPool[P].Val = ']') Then
           Inc(P);
-        Tmp := Tmp + '[' + Tmp2 + ']';
+
+        { Acces caractere de chaine : S[i] -> S.charAt((i) - 1) }
+        VTK := GetVarTypeKind(IdName);
+        If (VTK = TYK_STRING) Or (VTK = TYK_PCHAR) Then
+          Tmp := Tmp + '.charAt((' + Tmp2 + ') - 1)'
+        { Acces tableau avec base non-zero : Arr[i] -> Arr[(i) - base] }
+        Else If VTK = TYK_ARRAY Then
+        Begin
+          ALow := GetArrayLowBound(IdName);
+          If ALow <> 0 Then
+            Tmp := Tmp + '[(' + Tmp2 + ') - ' + IntToStr_(ALow) + ']'
+          Else
+            Tmp := Tmp + '[' + Tmp2 + ']';
+        End
+        Else
+          Tmp := Tmp + '[' + Tmp2 + ']';
       End
       { Acces champ : ident.champ }
       Else If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = '.') Then
@@ -2624,11 +3193,12 @@ End;
 { TODO 09 : copie de record (Object.assign) et tableau (.slice) }
 Function ParseAssign(Var P : Integer) : TString;
 Var
-  Left    : TString;
-  Rght    : TString;
-  SymIdx  : Integer;
-  TIdx    : Integer;
-  SaveP   : Integer;
+  Left       : TString;
+  Rght       : TString;
+  SymIdx     : Integer;
+  TIdx       : Integer;
+  SaveP      : Integer;
+  IsElemAccess : Boolean;
 Begin
   { Sauvegarder la position avant le parsing du LHS }
   SaveP := P;
@@ -2642,22 +3212,37 @@ Begin
 
     { Verifier le type de la variable cible pour record/array }
     TIdx := -1;
+    IsElemAccess := False;
     If (TokenPool[SaveP].Kind = TK_IDENT) Then
     Begin
-      SymIdx := SymFind(TokenPool[SaveP].Val);
-      If SymIdx >= 0 Then
-        TIdx := SymTab[SymIdx].TypeIdx;
+      { Verifier si l ident est suivi de [ . ou ^ -> acces element }
+      If (SaveP + 1 < TokenCount) And
+         (TokenPool[SaveP + 1].Kind = TK_PUNCT) And
+         ((TokenPool[SaveP + 1].Val = '[') Or
+          (TokenPool[SaveP + 1].Val = '.')) Then
+        IsElemAccess := True;
+      If (SaveP + 1 < TokenCount) And
+         (TokenPool[SaveP + 1].Kind = TK_OP) And
+         (TokenPool[SaveP + 1].Val = '^') Then
+        IsElemAccess := True;
+
+      If Not IsElemAccess Then
+      Begin
+        SymIdx := SymFind(TokenPool[SaveP].Val);
+        If SymIdx >= 0 Then
+          TIdx := SymTab[SymIdx].TypeIdx;
+      End;
     End;
 
-    { Affectation de record : Object.assign(lhs, rhs) }
+    { Affectation de record entier : Object.assign(lhs, rhs) }
     If (TIdx >= 0) And (TIdx < TypeCount) And
        (TypeTab[TIdx].Kind = TYK_RECORD) Then
       ParseAssign := 'Object.assign(' + Left + ', ' + Rght + ')'
-    { Affectation de tableau : lhs = rhs.slice() }
+    { Affectation de tableau entier : lhs = rhs.slice() }
     Else If (TIdx >= 0) And (TIdx < TypeCount) And
             (TypeTab[TIdx].Kind = TYK_ARRAY) Then
       ParseAssign := Left + ' = ' + Rght + '.slice()'
-    { Affectation normale }
+    { Affectation normale (y compris elements de tableau/record) }
     Else
       ParseAssign := Left + ' = ' + Rght;
   End
@@ -3643,16 +4228,52 @@ Begin
         Begin
           DefVal := '[]';
           Inc(P);
-          { Sauter [lo..hi] si present }
+          { Parser [lo..hi] et enregistrer les bornes }
           If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
              (TokenPool[P].Val = '[') Then
           Begin
-            While (P < TokenCount) And
-                  Not ((TokenPool[P].Kind = TK_PUNCT) And
-                       (TokenPool[P].Val = ']')) Do
-              Inc(P);
-            If P < TokenCount Then Inc(P); { consommer ] }
-          End;
+            Inc(P); { consommer [ }
+            { Lire la borne inferieure }
+            If (P < TokenCount) And (TokenPool[P].Kind = TK_INTEGER) Then
+            Begin
+              TIdx := TypeAdd(TYK_ARRAY, '', 0, 'Array', '[]');
+              If TIdx >= 0 Then
+              Begin
+                TypeTab[TIdx].Low := TokenPool[P].IntVal;
+                Inc(P);
+                { Sauter .. }
+                If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+                   (TokenPool[P].Val = '..') Then
+                  Inc(P);
+                { Lire la borne superieure }
+                If (P < TokenCount) And (TokenPool[P].Kind = TK_INTEGER) Then
+                Begin
+                  TypeTab[TIdx].High := TokenPool[P].IntVal;
+                  Inc(P);
+                End;
+              End
+              Else
+              Begin
+                While (P < TokenCount) And
+                      Not ((TokenPool[P].Kind = TK_PUNCT) And
+                           (TokenPool[P].Val = ']')) Do
+                  Inc(P);
+              End;
+            End
+            Else
+            Begin
+              { Bornes non entier-litteral, sauter tout }
+              TIdx := TypeAdd(TYK_ARRAY, '', 0, 'Array', '[]');
+              While (P < TokenCount) And
+                    Not ((TokenPool[P].Kind = TK_PUNCT) And
+                         (TokenPool[P].Val = ']')) Do
+                Inc(P);
+            End;
+            If (P < TokenCount) And (TokenPool[P].Val = ']') Then
+              Inc(P); { consommer ] }
+          End
+          Else
+            TIdx := TypeAdd(TYK_ARRAY, '', 0, 'Array', '[]');
           { Consommer OF }
           If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
              (StrLowerCase(TokenPool[P].Val) = 'of') Then
