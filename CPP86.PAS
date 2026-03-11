@@ -318,7 +318,7 @@
             dynamic_cast (stub) : verification de type a l execution
             Polymorphisme : appel via pointeur de Base -> dispatch virtuel
 
-  TODO 21 - SURCHARGE D OPERATEURS
+  TODO 21 - SURCHARGE D OPERATEURS [IMPLEMENTE]
             Syntaxe : type operator+(const T& rhs);
             Operateurs surchargeables : + - * / % == != < > <= >=
               ++ -- << >> [] () -> = += -= *= /= etc.
@@ -872,6 +872,9 @@ Function  ClassFind(Const Name : TString) : Integer; Forward;
 Function  ClassFieldFind(CIdx : Integer; Const FName : TString) : Integer; Forward;
 Function  ClassMethodFind(CIdx : Integer; Const MName : TString) : Integer; Forward;
 Function  ClassFindByType(ATypeIdx : Integer) : Integer; Forward;
+(* TODO 21 - Surcharge d operateurs *)
+Function  OpMangle(Const Op : TString) : TString; Forward;
+Function  ClassOperatorFind(CIdx : Integer; Const Op : TString) : Integer; Forward;
 (* Parseur principal *)
 Procedure ParserAdvance; Forward;
 Procedure ParseStmt; Forward;
@@ -3680,6 +3683,10 @@ Var
   LblSkip   : TString;
   LblDone   : TString;
   Addr      : TString;
+  (* TODO 21 - Surcharge d operateurs *)
+  OvlCIIdx  : Integer;
+  OvlMIdx   : Integer;
+  OvlDone   : Boolean;
 Begin
   ParseUnary(Res);
   Repeat
@@ -3835,6 +3842,39 @@ Begin
       ParseExprPrec(Prec, Right)
     Else
       ParseExprPrec(Prec + 1, Right);
+
+    (* TODO 21 - Surcharge d operateurs binaires *)
+    (* Si le cote gauche est un objet de classe avec operatorOp, appeler la methode *)
+    OvlDone := False;
+    OvlCIIdx := -1;
+    If (Res.SymIdx >= 0) Then
+      OvlCIIdx := ClassFindByType(SymTab[Res.SymIdx].TypeIdx);
+    If OvlCIIdx >= 0 Then
+    Begin
+      OvlMIdx := ClassOperatorFind(OvlCIIdx, Op);
+      If OvlMIdx >= 0 Then
+      Begin
+        OvlDone := True;
+        EmitComment('operator' + Op + ' surcharge');
+        (* Pousser l argument droit *)
+        ExprFlushToAX(Right);
+        EmitInstrA('PUSH', 'AX');
+        (* Pousser l adresse de l objet (this) *)
+        If (SymTab[Res.SymIdx].ScopeLevel = 0) Or SymTab[Res.SymIdx].IsStatic Then
+          EmitInstrAB('MOV', 'AX', 'OFFSET ' + SymTab[Res.SymIdx].MangledName)
+        Else
+          EmitInstrAB('LEA', 'AX', '[BP' + IntToStr(SymTab[Res.SymIdx].Offset) + ']');
+        EmitInstrA('PUSH', 'AX');
+        (* Appeler la methode operateur *)
+        EmitInstrA('CALL', ClassTab[OvlCIIdx].Methods[OvlMIdx].MangledLabel);
+        EmitInstrAB('ADD', 'SP', '4'); (* nettoyer this + arg *)
+        Res.Kind    := EK_AX;
+        Res.TypeIdx := ClassTab[OvlCIIdx].Methods[OvlMIdx].RetTypeIdx;
+        Res.SymIdx  := -1;
+      End;
+    End;
+    If Not OvlDone Then
+    Begin (* Operateur binaire standard (non surcharge) *)
 
     (* Pliage de constantes si les deux membres sont immediats *)
     FoldOk := (Res.Kind = EK_IMM) And (Right.Kind = EK_IMM);
@@ -4028,6 +4068,7 @@ Begin
       Res.TypeIdx := TY_IDX_INT;
       Res.SymIdx  := -1;
     End;
+    End; (* If Not OvlDone *)
   Until False;
 
   (* ---- Operateurs d affectation (prec=2, droit-assoc) ---- *)
@@ -4036,6 +4077,34 @@ Begin
     Op := CurToken.Val;
     ParserAdvance;
     ParseExprPrec(2, Right); (* droite-associatif *)
+    (* TODO 21 - Surcharge d operateurs d affectation *)
+    OvlDone := False;
+    OvlCIIdx := -1;
+    If (Res.SymIdx >= 0) Then
+      OvlCIIdx := ClassFindByType(SymTab[Res.SymIdx].TypeIdx);
+    If OvlCIIdx >= 0 Then
+    Begin
+      OvlMIdx := ClassOperatorFind(OvlCIIdx, Op);
+      If OvlMIdx >= 0 Then
+      Begin
+        OvlDone := True;
+        EmitComment('operator' + Op + ' surcharge (affectation)');
+        ExprFlushToAX(Right);
+        EmitInstrA('PUSH', 'AX');
+        If (SymTab[Res.SymIdx].ScopeLevel = 0) Or SymTab[Res.SymIdx].IsStatic Then
+          EmitInstrAB('MOV', 'AX', 'OFFSET ' + SymTab[Res.SymIdx].MangledName)
+        Else
+          EmitInstrAB('LEA', 'AX', '[BP' + IntToStr(SymTab[Res.SymIdx].Offset) + ']');
+        EmitInstrA('PUSH', 'AX');
+        EmitInstrA('CALL', ClassTab[OvlCIIdx].Methods[OvlMIdx].MangledLabel);
+        EmitInstrAB('ADD', 'SP', '4');
+        Res.Kind    := EK_AX;
+        Res.TypeIdx := ClassTab[OvlCIIdx].Methods[OvlMIdx].RetTypeIdx;
+        Res.SymIdx  := -1;
+      End;
+    End;
+    If Not OvlDone Then
+    Begin
     If (Res.SymIdx < 0) And (LastArraySubIdx < 0) Then
     Begin
       CompileError('cible d''affectation invalide (lvalue requise)');
@@ -4116,6 +4185,7 @@ Begin
     End;
     Res.Kind    := EK_AX;
     Res.TypeIdx := TY_IDX_INT;
+    End; (* If Not OvlDone *)
   End;
 End;
 
@@ -4898,7 +4968,59 @@ Begin
   ClassFindByType := -1;
 End;
 
-(* ---- ParseClassMethodBody : parser le corps d une methode --- *)
+(* ============================================================
+  TODO 21 - SURCHARGE D OPERATEURS [IMPLEMENTE]
+  OpMangle          : convertir un symbole d operateur en suffixe ASM
+  ClassOperatorFind : chercher un operateur surcharge dans une classe
+  ============================================================ *)
+
+(* ---- OpMangle : convertir symbole operateur en suffixe ASM -- *)
+(* operator+ -> OP_PLUS, operator== -> OP_EQ, etc.               *)
+Function OpMangle(Const Op : TString) : TString;
+Begin
+  If Op = '+' Then OpMangle := 'OP_PLUS'
+  Else If Op = '-' Then OpMangle := 'OP_MINUS'
+  Else If Op = '*' Then OpMangle := 'OP_MUL'
+  Else If Op = '/' Then OpMangle := 'OP_DIV'
+  Else If Op = '%' Then OpMangle := 'OP_MOD'
+  Else If Op = '==' Then OpMangle := 'OP_EQ'
+  Else If Op = '!=' Then OpMangle := 'OP_NEQ'
+  Else If Op = '<' Then OpMangle := 'OP_LT'
+  Else If Op = '>' Then OpMangle := 'OP_GT'
+  Else If Op = '<=' Then OpMangle := 'OP_LE'
+  Else If Op = '>=' Then OpMangle := 'OP_GE'
+  Else If Op = '++' Then OpMangle := 'OP_INC'
+  Else If Op = '--' Then OpMangle := 'OP_DEC'
+  Else If Op = '<<' Then OpMangle := 'OP_SHL'
+  Else If Op = '>>' Then OpMangle := 'OP_SHR'
+  Else If Op = '[]' Then OpMangle := 'OP_IDX'
+  Else If Op = '()' Then OpMangle := 'OP_CALL'
+  Else If Op = '->' Then OpMangle := 'OP_ARROW'
+  Else If Op = '=' Then OpMangle := 'OP_ASSIGN'
+  Else If Op = '+=' Then OpMangle := 'OP_ADDEQ'
+  Else If Op = '-=' Then OpMangle := 'OP_SUBEQ'
+  Else If Op = '*=' Then OpMangle := 'OP_MULEQ'
+  Else If Op = '/=' Then OpMangle := 'OP_DIVEQ'
+  Else OpMangle := 'OP_UNK';
+End;
+
+(* ---- ClassOperatorFind : chercher un operateur surcharge ---- *)
+(* Cherche une methode operator+Op dans la classe CIdx.           *)
+(* Retourne l index dans Methods ou -1 si non trouve.             *)
+Function ClassOperatorFind(CIdx : Integer; Const Op : TString) : Integer;
+Var
+  I        : Integer;
+  OpName   : TString;
+Begin
+  OpName := 'operator' + Op;
+  For I := 0 To ClassTab[CIdx].MethodCount - 1 Do
+    If ClassTab[CIdx].Methods[I].Name = OpName Then
+    Begin
+      ClassOperatorFind := I;
+      Exit;
+    End;
+  ClassOperatorFind := -1;
+End;
 (* Emet le label, prologue, corps, epilogue.                      *)
 (* Le premier parametre implicite est this a [BP+4].              *)
 Procedure ParseClassMethodBody(CIdx : Integer; MIdx : Integer);
@@ -5388,6 +5510,80 @@ Begin
       (* Peut etre un champ ou une methode *)
       FldTypeIdx := ParseTypeSpec(FldIsConst, FldIsStatic);
       If MIsStatic Then FldIsStatic := True;
+
+      (* TODO 21 - Surcharge d operateur : type operator+( ... ) *)
+      If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'operator') Then
+      Begin
+        ParserAdvance; (* consommer 'operator' *)
+        (* Lire le symbole de l operateur *)
+        FldName := '';
+        If CurToken.Kind = TK_OP Then
+        Begin
+          FldName := CurToken.Val;
+          ParserAdvance;
+        End
+        Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          (* operator() *)
+          ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+          FldName := '()';
+        End
+        Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
+        Begin
+          (* operator[] *)
+          ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+            ParserAdvance;
+          FldName := '[]';
+        End;
+        If (FldName <> '') And
+           (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          MName := 'operator' + FldName;
+          If ClassTab[CIdx].MethodCount < MAX_METHOD Then
+          Begin
+            MIdx := ClassTab[CIdx].MethodCount;
+            Inc(ClassTab[CIdx].MethodCount);
+            ClassTab[CIdx].Methods[MIdx].Name         := MName;
+            ClassTab[CIdx].Methods[MIdx].MangledLabel  := CC_CLS_PFX + SymNameClean(ClassName) + '_' + OpMangle(FldName);
+            ClassTab[CIdx].Methods[MIdx].RetTypeIdx    := FldTypeIdx;
+            ClassTab[CIdx].Methods[MIdx].Access        := AccessLvl;
+            ClassTab[CIdx].Methods[MIdx].IsConstructor := False;
+            ClassTab[CIdx].Methods[MIdx].IsDestructor  := False;
+            ClassTab[CIdx].Methods[MIdx].IsStatic      := FldIsStatic;
+            ClassTab[CIdx].Methods[MIdx].IsVirtual     := IsVirtualMethod;
+            ClassTab[CIdx].Methods[MIdx].IsPureVirtual := False;
+            If IsVirtualMethod Then
+            Begin
+              ClassTab[CIdx].Methods[MIdx].VTableSlot := ClassTab[CIdx].VSlotCount;
+              ClassTab[CIdx].VSlots[ClassTab[CIdx].VSlotCount]
+                := ClassTab[CIdx].Methods[MIdx].MangledLabel;
+              Inc(ClassTab[CIdx].VSlotCount);
+            End
+            Else
+              ClassTab[CIdx].Methods[MIdx].VTableSlot := -1;
+            (* Enregistrer dans SymTab *)
+            SIdx := SymAdd(ClassName + '::' + MName, SK_FUNC, FldTypeIdx, 0);
+            If SIdx >= 0 Then
+              SymTab[SIdx].MangledName := ClassTab[CIdx].Methods[MIdx].MangledLabel;
+            ParseClassMethodBody(CIdx, MIdx);
+            If ClassTab[CIdx].Methods[MIdx].IsPureVirtual Then
+              ClassTab[CIdx].IsAbstract := True;
+          End;
+        End
+        Else
+        Begin
+          (* Consommer jusqu au ; *)
+          While (CurToken.Kind <> TK_EOF) And
+                Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
+            ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+            ParserAdvance;
+        End;
+        Continue;
+      End;
 
       If CurToken.Kind = TK_IDENT Then
       Begin
