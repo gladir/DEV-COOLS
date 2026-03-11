@@ -43,7 +43,7 @@
   Turbo Pascal cible : 1, 2, 4, 5, 5.5 (tp55), 6, 7, 8.
   Par defaut c est la version 7.
 
-  FEUILLE DE ROUTE - 25 TODOS
+  FEUILLE DE ROUTE - 26 TODOS
   ============================================================
 
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -589,6 +589,30 @@
             ShowHelp : section TPC 7.0 ajoutee
             ShowBanner : affiche les options TP7 actives
             Test : test_tp7opts.pas
+
+  TODO 26 - LECTURE DES FICHIERS TPU (USES)            [IMPLEMENTE]
+            Lecture et validation des fichiers TPU (Turbo Pascal Unit)
+            pour la clause Uses. Support des formats TP4 a TP7 :
+              TPU9 (TP6, header $40 octets)
+              TPUQ (TP7, header $60 octets)
+            Recherche des fichiers TPU dans :
+              1. Repertoire courant
+              2. Repertoires -U (UnitDirs, separes par ;)
+              3. Repertoire Turbo (-T)
+            Structures ajoutees :
+              TTPUInfo : info sur une unite importee
+              UsesUnits[0..31] : table des unites Uses
+            Procedures ajoutees :
+              TPUVersionStr : version TPU en chaine lisible
+              TPUSearchFile : recherche du fichier TPU
+              LoadTPUHeader : lecture et validation du header TPU
+              IsKnownUnit : teste si unite connue (Crt, Dos, etc.)
+              MarkUnitSymbols : marque les symboles avec leur unite
+              ParseUsesClause : analyse la clause Uses complete
+            Constantes ajoutees :
+              TPU_MAGIC, TPU_VER_TP4..TP7, MAX_USES_UNITS
+              TPU6_HDR_SIZE, TPU7_HDR_SIZE
+            Test : test_tpu.pas
 
   ============================================================ *)
 
@@ -1226,6 +1250,17 @@ Const
   TP_ENUM_PFX = '_TPE_';   { enumerations                         }
   TP_UNIT_PFX = '_TPU_';   { unites                               }
 
+  { Constantes TPU (TODO 26) }
+  TPU_MAGIC      = $54;     { premier octet d un fichier TPU = 'T'   }
+  TPU_VER_TP4    = $30;     { '0' = Turbo Pascal 4.0                 }
+  TPU_VER_TP5    = $35;     { '5' = Turbo Pascal 5.0                 }
+  TPU_VER_TP55   = $36;     { '6' = Turbo Pascal 5.5                 }
+  TPU_VER_TP6    = $39;     { '9' = Turbo Pascal 6.0                 }
+  TPU_VER_TP7    = $51;     { 'Q' = Turbo Pascal 7.0 mode reel       }
+  MAX_USES_UNITS = 32;      { nombre max d unites dans la clause Uses }
+  TPU6_HDR_SIZE  = $40;     { taille header TP6 (TPU9)               }
+  TPU7_HDR_SIZE  = $60;     { taille header TP7 (TPUQ)               }
+
   { Table des tailles de types Turbo Pascal (Win32, 32 bits) }
   MAX_TP_TYPE_SIZES = 18;
 
@@ -1314,6 +1349,15 @@ Type
     ParamCount  : Integer;     { nombre de parametres (proc/func)       }
   End;
 
+  { Info sur une unite importee (TODO 26) }
+  TTPUInfo = Record
+    Name      : TString;    { nom de l unite (majuscules)             }
+    FileName  : TString;    { chemin complet du fichier TPU            }
+    Version   : Byte;       { version TPU detectee (octet 4)           }
+    Loaded    : Boolean;    { True si le fichier TPU a ete lu          }
+    IsKnown   : Boolean;    { True si c est une unite connue (Crt...) }
+  End;
+
 Var
   { Table des symboles }
   SymTab      : Array[0..MAX_SYM - 1] Of TSymRec;
@@ -1323,6 +1367,10 @@ Var
   CurScopeLevel : Integer;   { niveau de scope courant (0 = global)    }
   CurScopeId    : Integer;   { id du scope courant                     }
   ScopeIdSeq    : Integer;   { sequence pour generer des ids uniques    }
+
+  { Table des unites importees (TODO 26) }
+  UsesUnits    : Array[0..MAX_USES_UNITS - 1] Of TTPUInfo;
+  UsesCount    : Integer;
 
 { Forward declarations TODO 05 }
 Procedure SymRegisterBuiltins; Forward;
@@ -17790,6 +17838,314 @@ Begin
   EmitRaw('END ' + TP_FUNC_PFX + 'Main');
 End;
 
+{ ============================================================ }
+{ TODO 26 - LECTURE DES FICHIERS TPU (USES)       [IMPLEMENTE] }
+{ ============================================================ }
+
+Function TPUVersionStr(V : Byte) : TString;
+Begin
+  Case V Of
+    TPU_VER_TP4  : TPUVersionStr := '4.0';
+    TPU_VER_TP5  : TPUVersionStr := '5.0';
+    TPU_VER_TP55 : TPUVersionStr := '5.5';
+    TPU_VER_TP6  : TPUVersionStr := '6.0';
+    TPU_VER_TP7  : TPUVersionStr := '7.0';
+  Else
+    TPUVersionStr := 'inconnu';
+  End;
+End;
+
+Function TPUSearchFile(Const UnitName : TString) : TString;
+{ Search for .TPU file in current dir, UnitDirs, and TurboDir }
+Var
+  FName : TString;
+  TF    : File;
+  Dirs  : TString;
+  P     : Integer;
+  Dir   : TString;
+  IORes : Integer;
+Begin
+  FName := UnitName + '.TPU';
+  { 1. Current directory }
+  {$I-} Assign(TF, FName); Reset(TF, 1); IORes := IOResult; {$I+}
+  If IORes = 0 Then Begin Close(TF); TPUSearchFile := FName; Exit End;
+  { 2. UnitDirs (semicolon-separated) }
+  Dirs := Opts.UnitDirs;
+  While Length(Dirs) > 0 Do Begin
+    P := Pos(';', Dirs);
+    If P > 0 Then Begin Dir := Copy(Dirs, 1, P - 1); Dirs := Copy(Dirs, P + 1, Length(Dirs) - P) End
+    Else Begin Dir := Dirs; Dirs := '' End;
+    If Length(Dir) > 0 Then Begin
+      If (Dir[Length(Dir)] <> '\') And (Dir[Length(Dir)] <> '/') Then Dir := Dir + '/';
+      FName := Dir + UnitName + '.TPU';
+      {$I-} Assign(TF, FName); Reset(TF, 1); IORes := IOResult; {$I+}
+      If IORes = 0 Then Begin Close(TF); TPUSearchFile := FName; Exit End;
+    End;
+  End;
+  { 3. TurboDir }
+  If Opts.TurboDir <> '' Then Begin
+    Dir := Opts.TurboDir;
+    If (Dir[Length(Dir)] <> '\') And (Dir[Length(Dir)] <> '/') Then Dir := Dir + '/';
+    FName := Dir + UnitName + '.TPU';
+    {$I-} Assign(TF, FName); Reset(TF, 1); IORes := IOResult; {$I+}
+    If IORes = 0 Then Begin Close(TF); TPUSearchFile := FName; Exit End;
+  End;
+  TPUSearchFile := '';
+End;
+
+Function LoadTPUHeader(Const FileName : TString; Var Ver : Byte;
+                       Var UnitNameOut : TString; Var SymSize : Word;
+                       Var OfsHashTable : Word;
+                       Var OfsUnitList : Word;
+                       Var OfsSrcName : Word) : Boolean;
+{ Read and validate TPU header. Supports TP6 (TPU9) and TP7 (TPUQ).
+  Extracts version, symbol size, key offsets.
+  Reads unit name from ofs_this_unit obj_rec. }
+Var
+  TF    : File;
+  Hdr   : Array[0..95] Of Byte; { max 0x60 bytes for TP7 }
+  NRead : {$IFDEF FPC}LongInt{$ELSE}Word{$ENDIF};
+  IORes : Integer;
+  IsTP7 : Boolean;
+  OfsThisUnit : Word;
+  NameLen : Byte;
+  NameBuf : Array[0..63] Of Byte;
+  J     : Integer;
+Begin
+  LoadTPUHeader := False;
+  Ver := 0; UnitNameOut := ''; SymSize := 0;
+  OfsHashTable := 0; OfsUnitList := 0; OfsSrcName := 0;
+  {$I-} Assign(TF, FileName); Reset(TF, 1); IORes := IOResult; {$I+}
+  If IORes <> 0 Then Begin WarnMsg('impossible d''ouvrir: ' + FileName); Exit End;
+  {$I-} BlockRead(TF, Hdr, 96, NRead); IORes := IOResult; {$I+}
+  If (IORes <> 0) Or (NRead < TPU6_HDR_SIZE) Then
+  Begin Close(TF); WarnMsg('fichier TPU trop court: ' + FileName); Exit End;
+  { Check signature: T P U + version }
+  If (Hdr[0] <> $54) Or (Hdr[1] <> $50) Or (Hdr[2] <> $55) Then
+  Begin Close(TF); WarnMsg('fichier TPU invalide (signature): ' + FileName); Exit End;
+  Ver := Hdr[3];
+  IsTP7 := (Ver = TPU_VER_TP7);
+  If (Ver <> TPU_VER_TP6) And (Ver <> TPU_VER_TP7) And
+     (Ver <> TPU_VER_TP4) And (Ver <> TPU_VER_TP5) And
+     (Ver <> TPU_VER_TP55) Then
+  Begin Close(TF); WarnMsg('version TPU non supportee ($' + IntToStr_(Ver) + '): ' + FileName); Exit End;
+  { Extract offsets from header (all words, little-endian) }
+  OfsThisUnit := Hdr[$08] + Hdr[$09] * 256;
+  OfsHashTable := Hdr[$0A] + Hdr[$0B] * 256;
+  If IsTP7 Then Begin
+    OfsUnitList := Hdr[$16] + Hdr[$17] * 256;
+    OfsSrcName := Hdr[$18] + Hdr[$19] * 256;
+    SymSize := Hdr[$1E] + Hdr[$1F] * 256;
+  End Else Begin
+    OfsUnitList := Hdr[$16] + Hdr[$17] * 256;
+    OfsSrcName := Hdr[$18] + Hdr[$19] * 256;
+    SymSize := Hdr[$1C] + Hdr[$1D] * 256;
+  End;
+  { Read unit name from ofs_this_unit: obj_rec = next_obj:word; obj_type:byte; name:string }
+  If (OfsThisUnit > 0) And (OfsThisUnit + 4 < SymSize) Then
+  Begin
+    {$I-} Seek(TF, OfsThisUnit + 3); { skip next_obj(2) + obj_type(1) }
+    BlockRead(TF, NameBuf, 64, NRead); IORes := IOResult; {$I+}
+    If (IORes = 0) And (NRead > 0) Then
+    Begin
+      NameLen := NameBuf[0];
+      If NameLen > 63 Then NameLen := 63;
+      UnitNameOut := '';
+      For J := 1 To NameLen Do
+        UnitNameOut := UnitNameOut + Chr(NameBuf[J]);
+    End;
+  End;
+  Close(TF);
+  LoadTPUHeader := True;
+End;
+
+Function IsKnownUnit(Const UName : TString) : Boolean;
+Var Up : TString;
+Begin
+  Up := StrUpperCase(UName);
+  IsKnownUnit := (Up = 'SYSTEM') Or (Up = 'CRT') Or (Up = 'DOS') Or
+    (Up = 'GRAPH') Or (Up = 'GRAPH3') Or (Up = 'STRINGS') Or
+    (Up = 'OVERLAY') Or (Up = 'PRINTER') Or (Up = 'WINDOS') Or
+    (Up = 'TURBO3') Or (Up = 'OBJECTS');
+End;
+
+Procedure MarkUnitSymbols(Const UName : TString);
+{ Mark existing symbols in SymTab with their UnitName }
+Var Up : TString; I : Integer;
+  Procedure MarkIf(Const SName, UNm : TString);
+  Var J : Integer;
+  Begin
+    For J := 0 To SymCount - 1 Do
+      If SymTab[J].Name = SName Then SymTab[J].UnitName := UNm;
+  End;
+Begin
+  Up := StrUpperCase(UName);
+  If Up = 'CRT' Then
+  Begin
+    MarkIf('CLRSCR','CRT'); MarkIf('CLREOL','CRT'); MarkIf('GOTOXY','CRT');
+    MarkIf('TEXTCOLOR','CRT'); MarkIf('TEXTBACKGROUND','CRT');
+    MarkIf('HIGHVIDEO','CRT'); MarkIf('LOWVIDEO','CRT'); MarkIf('NORMVIDEO','CRT');
+    MarkIf('WINDOW','CRT'); MarkIf('DELAY','CRT'); MarkIf('SOUND','CRT');
+    MarkIf('NOSOUND','CRT'); MarkIf('ASSIGNCRT','CRT');
+    MarkIf('WHEREX','CRT'); MarkIf('WHEREY','CRT');
+    MarkIf('KEYPRESSED','CRT'); MarkIf('READKEY','CRT');
+  End
+  Else If Up = 'DOS' Then
+  Begin
+    MarkIf('DOSVERSION','DOS'); MarkIf('GETDATE','DOS'); MarkIf('GETTIME','DOS');
+    MarkIf('SETDATE','DOS'); MarkIf('SETTIME','DOS');
+    MarkIf('GETFATTR','DOS'); MarkIf('SETFATTR','DOS');
+    MarkIf('FINDFIRST','DOS'); MarkIf('FINDNEXT','DOS'); MarkIf('FINDCLOSE','DOS');
+    MarkIf('DISKFREE','DOS'); MarkIf('DISKSIZE','DOS'); MarkIf('GETENV','DOS');
+    MarkIf('FSEARCH','DOS'); MarkIf('FEXPAND','DOS'); MarkIf('FSPLIT','DOS');
+    MarkIf('EXEC','DOS'); MarkIf('SWAPVECTORS','DOS');
+    MarkIf('GETINTVEC','DOS'); MarkIf('SETINTVEC','DOS');
+    MarkIf('MSDOS','DOS'); MarkIf('INTR','DOS');
+  End
+  Else If Up = 'GRAPH' Then
+  Begin
+    MarkIf('INITGRAPH','GRAPH'); MarkIf('CLOSEGRAPH','GRAPH'); MarkIf('DETECTGRAPH','GRAPH');
+    MarkIf('PUTPIXEL','GRAPH'); MarkIf('LINE','GRAPH'); MarkIf('RECTANGLE','GRAPH');
+    MarkIf('BAR','GRAPH'); MarkIf('CIRCLE','GRAPH'); MarkIf('ARC','GRAPH');
+    MarkIf('ELLIPSE','GRAPH'); MarkIf('FILLELLIPSE','GRAPH');
+    MarkIf('SETCOLOR','GRAPH'); MarkIf('SETBKCOLOR','GRAPH');
+    MarkIf('OUTTEXTXY','GRAPH'); MarkIf('OUTTEXT','GRAPH');
+    MarkIf('MOVETO','GRAPH'); MarkIf('LINETO','GRAPH');
+    MarkIf('GETPIXEL','GRAPH'); MarkIf('GETMAXX','GRAPH'); MarkIf('GETMAXY','GRAPH');
+    MarkIf('GRAPHRESULT','GRAPH'); MarkIf('IMAGESIZE','GRAPH');
+    MarkIf('GETIMAGE','GRAPH'); MarkIf('PUTIMAGE','GRAPH');
+  End
+  Else If Up = 'STRINGS' Then
+  Begin
+    MarkIf('STRLEN','STRINGS'); MarkIf('STRCOPY','STRINGS');
+    MarkIf('STRCAT','STRINGS'); MarkIf('STRCOMP','STRINGS');
+    MarkIf('STRICOMP','STRINGS'); MarkIf('STRPOS','STRINGS');
+    MarkIf('STRSCAN','STRINGS'); MarkIf('STRRSCAN','STRINGS');
+    MarkIf('STREND','STRINGS'); MarkIf('STRMOVE','STRINGS');
+    MarkIf('STRNEW','STRINGS'); MarkIf('STRPAS','STRINGS');
+    MarkIf('STRPCOPY','STRINGS'); MarkIf('STRUPPER','STRINGS');
+    MarkIf('STRLOWER','STRINGS'); MarkIf('STRDISPOSE','STRINGS');
+  End
+  Else If Up = 'PRINTER' Then
+    MarkIf('ASSIGNLST','PRINTER')
+  Else If Up = 'OVERLAY' Then
+  Begin
+    MarkIf('OVRINIT','OVERLAY'); MarkIf('OVRINITEMS','OVERLAY');
+    MarkIf('OVRSETBUF','OVERLAY'); MarkIf('OVRCLEARBUF','OVERLAY');
+    MarkIf('OVRSETRETRY','OVERLAY');
+    MarkIf('OVRGETBUF','OVERLAY'); MarkIf('OVRGETRETURNCODE','OVERLAY');
+  End
+  Else If Up = 'OBJECTS' Then
+  Begin
+    MarkIf('TOBJECT_INIT','OBJECTS'); MarkIf('TOBJECT_DONE','OBJECTS');
+    MarkIf('TOBJECT_FREE','OBJECTS');
+    MarkIf('TSTREAM_GET','OBJECTS'); MarkIf('TSTREAM_GETPOS','OBJECTS');
+    MarkIf('TSTREAM_GETSIZE','OBJECTS'); MarkIf('TSTREAM_READ','OBJECTS');
+    MarkIf('TSTREAM_WRITE','OBJECTS');
+    MarkIf('REGISTERTYPE','OBJECTS'); MarkIf('NEWSTR','OBJECTS');
+    MarkIf('DISPOSESTR','OBJECTS');
+  End;
+End;
+
+Procedure ParseUsesClause;
+Var
+  I, SI      : Integer;
+  Up, UName  : TString;
+  InUses     : Boolean;
+  TPUPath    : TString;
+  TPUVer     : Byte;
+  TPUUName   : TString;
+  TPUSymSz   : Word;
+  TPUHash    : Word;
+  TPUUList   : Word;
+  TPUSrc     : Word;
+Begin
+  UsesCount := 0;
+  For I := 0 To MAX_USES_UNITS - 1 Do
+  Begin
+    UsesUnits[I].Name := ''; UsesUnits[I].FileName := '';
+    UsesUnits[I].Version := 0; UsesUnits[I].Loaded := False;
+    UsesUnits[I].IsKnown := False;
+  End;
+  InUses := False;
+  I := 0;
+  While I < TokenCount Do
+  Begin
+    If (TokenPool[I].Kind = TK_KEYWORD) And
+       (StrUpperCase(TokenPool[I].Val) = 'PROGRAM') Then
+    Begin
+      Inc(I);
+      While (I < TokenCount) And Not ((TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = ';')) Do Inc(I);
+      If I < TokenCount Then Inc(I);
+      Continue;
+    End;
+    If (TokenPool[I].Kind = TK_KEYWORD) And
+       (StrUpperCase(TokenPool[I].Val) = 'USES') Then
+    Begin
+      InUses := True; Inc(I);
+      While (I < TokenCount) And InUses Do
+      Begin
+        If (TokenPool[I].Kind = TK_IDENT) Or (TokenPool[I].Kind = TK_KEYWORD) Then
+        Begin
+          UName := StrUpperCase(TokenPool[I].Val);
+          If UsesCount >= MAX_USES_UNITS Then Begin WarnMsg('trop d''unites Uses (max=' + IntToStr_(MAX_USES_UNITS) + ')'); Break End;
+          UsesUnits[UsesCount].Name := UName;
+          UsesUnits[UsesCount].IsKnown := IsKnownUnit(UName);
+          SI := SymAdd(UName, SK_UNIT, -1);
+          If SI >= 0 Then
+          Begin SymTab[SI].IsGlobal := True; SymTab[SI].IsExternal := True; SymTab[SI].UnitName := UName End;
+          If UsesUnits[UsesCount].IsKnown Then MarkUnitSymbols(UName);
+          If Opts.Dos16Mode Then
+          Begin
+            TPUPath := TPUSearchFile(UName);
+            If TPUPath <> '' Then
+            Begin
+              UsesUnits[UsesCount].FileName := TPUPath;
+              If LoadTPUHeader(TPUPath, TPUVer, TPUUName, TPUSymSz, TPUHash, TPUUList, TPUSrc) Then
+              Begin
+                UsesUnits[UsesCount].Version := TPUVer;
+                UsesUnits[UsesCount].Loaded := True;
+                If Opts.Verbose Then
+                  WriteLn('  TPU charge: ', UName, ' (', TPUPath, ', v', TPUVersionStr(TPUVer),
+                          ', sym=', TPUSymSz, ', nom=', TPUUName, ')');
+              End;
+            End
+            Else If Not UsesUnits[UsesCount].IsKnown Then
+              WarnMsg('fichier TPU introuvable: ' + UName);
+          End;
+          Inc(UsesCount); Inc(I);
+          If I < TokenCount Then
+          Begin
+            If (TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = ',') Then Inc(I)
+            Else If (TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = ';') Then Begin Inc(I); InUses := False End
+            Else InUses := False;
+          End;
+        End
+        Else InUses := False;
+      End;
+      Break;
+    End;
+    If (TokenPool[I].Kind = TK_KEYWORD) Then
+    Begin
+      Up := StrUpperCase(TokenPool[I].Val);
+      If (Up = 'VAR') Or (Up = 'CONST') Or (Up = 'TYPE') Or (Up = 'PROCEDURE') Or
+         (Up = 'FUNCTION') Or (Up = 'BEGIN') Or (Up = 'LABEL') Then Break;
+    End;
+    Inc(I);
+  End;
+  If Opts.Verbose And (UsesCount > 0) Then
+  Begin
+    Write('  Uses: ');
+    For I := 0 To UsesCount - 1 Do
+    Begin
+      If I > 0 Then Write(', ');
+      Write(UsesUnits[I].Name);
+      If UsesUnits[I].Loaded Then Write(' [TPU v', TPUVersionStr(UsesUnits[I].Version), ']');
+    End;
+    WriteLn;
+  End;
+End;
+
 Procedure Run;
 Begin
   ShowBanner;
@@ -17837,6 +18193,9 @@ Begin
   DataEmittedCount := 0;
   EmitLabelSeq := 0;
   StaticVarSeq := 0;
+
+  { Analyser la clause Uses (TODO 26) }
+  ParseUsesClause;
 
   { Analyser les declarations TYPE (TODO 15) }
   ParseTypeDecls;

@@ -1,5 +1,5 @@
 ; TPCW32 - Compilateur Turbo Pascal -> ASM 80386 Win32
-; Genere automatiquement a partir de : SAMPLES/PASCAL/test_tp7opts.pas
+; Genere automatiquement a partir de : SAMPLES/PASCAL/test_tpu.pas
 
 .386
 .MODEL FLAT, STDCALL
@@ -273,11 +273,8 @@ INT_INPREC    DB 32 DUP(0)
 INT_INEVCNT   DD 0
 
 ; --- Constantes et donnees utilisateur ---
-_TPK_1  DB 'TestTP7Opts',0
-_TPK_2  DB 'Hello TP7',0
-_TPK_3  DB ' ',0
+_TPK_1  DB 'Test Uses Crt, Dos - X = ',0
 _TPV_X  DD 0
-_TPV_S  DB 256 DUP(0)
 
 ; --- Segment de code ---
 .CODE
@@ -300,15 +297,8 @@ _TPF_Main:
         MOV [HHEAP],EAX
         MOV EAX,42
         MOV DWORD PTR [_TPV_X],EAX
-        LEA EAX,[_TPK_2]
-        MOV ESI,EAX
-        LEA EDI,[_TPV_S]
-        CALL _TPRT_STRCPY
 ; writeln
-        LEA EAX,[_TPV_S]
-        MOV ESI,EAX
-        CALL _TPRT_PRINTSTR
-        LEA EAX,[_TPK_3]
+        LEA EAX,[_TPK_1]
         MOV ESI,EAX
         CALL _TPRT_PRINTSTR
         MOV EAX,DWORD PTR [_TPV_X]
