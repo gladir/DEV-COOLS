@@ -558,7 +558,7 @@
                INTERFACE d une unite -> symboles disponibles pour les autres
                Chargement des declarations depuis .pas ou .tpu (stub)
 
-   TODO 24 - RUNTIME JAVASCRIPT MINIMAL
+   TODO 24 - RUNTIME JAVASCRIPT MINIMAL [IMPLEMENTE]
              _TPR_Write(S) : ecriture sur stdout
                -> process.stdout.write(String(S)) (Node.js)
                -> document.write(S) (navigateur, si applicable)
@@ -839,6 +839,9 @@ Var
                                   { noms des unites deja chargees           }
   UnitLoadedCount : Integer;      { nombre d unites chargees                }
 
+  { TODO 24 : runtime JavaScript minimal }
+  RuntimeEmitted : Boolean;       { flag pour n emettre le runtime qu une fois }
+
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
@@ -850,6 +853,7 @@ Function TypeFindByName(Const AName : TString) : Integer; Forward;
 Function SymFind(Const AName : TString) : Integer; Forward;
 Procedure ParseDeclSections(Var P : Integer); Forward;
 Procedure ParseUsesClause(Var P : Integer); Forward;
+Procedure EmitRuntime; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1097,6 +1101,7 @@ Begin
   TokenCount := 0;
   ConstCount := 0;
   ProgName   := 'main';
+  RuntimeEmitted := False;
 End;
 
 { ============================================================
@@ -7079,6 +7084,225 @@ Begin
   EmitBlankLine;
 End;
 
+{ ============================================================
+  TODO 24 - RUNTIME JAVASCRIPT MINIMAL [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- EmitRuntime : emettre les fonctions runtime _TPR_* ------ }
+{ Emet une seule fois les fonctions d execution necessaires pour  }
+{ le code JavaScript genere a partir de Turbo Pascal.              }
+{ RuntimeEmitted empeche une double emission.                      }
+Procedure EmitRuntime;
+Begin
+  If RuntimeEmitted Then Exit;
+  RuntimeEmitted := True;
+
+  EmitBlankLine;
+  EmitComment('=== TP2JS Runtime Library (TODO 24) ===');
+  EmitBlankLine;
+
+  { _TPR_IOResult : variable globale code d erreur E/S }
+  EmitComment('IOResult global variable');
+  EmitLine('var _TPR_IOResult = 0;');
+  EmitBlankLine;
+
+  { _TPR_Args : tableau des arguments de ligne de commande }
+  EmitComment('Command-line arguments (Node.js)');
+  EmitLine('var _TPR_Args = (typeof process !== "undefined") ? process.argv.slice(2) : [];');
+  EmitBlankLine;
+
+  { _TPR_Write(S) : ecriture sur stdout }
+  EmitComment('Write: output to stdout without newline');
+  EmitLine('function _TPR_Write(s) {');
+  EmitLine('  if (typeof process !== "undefined" && process.stdout) {');
+  EmitLine('    process.stdout.write(String(s));');
+  EmitLine('  } else if (typeof document !== "undefined") {');
+  EmitLine('    document.write(String(s));');
+  EmitLine('  }');
+  EmitLine('}');
+  EmitBlankLine;
+
+  { _TPR_WriteLn(S) : ecriture avec retour de ligne }
+  EmitComment('WriteLn: output to stdout with newline');
+  EmitLine('function _TPR_WriteLn(s) {');
+  EmitLine('  if (arguments.length === 0) { console.log(""); return; }');
+  EmitLine('  console.log(String(s));');
+  EmitLine('}');
+  EmitBlankLine;
+
+  { _TPR_ReadLn() : lecture d une ligne }
+  EmitComment('ReadLn: read a line from stdin');
+  EmitLine('function _TPR_ReadLn() {');
+  EmitLine('  if (typeof require !== "undefined") {');
+  EmitLine('    try {');
+  EmitLine('      var fs = require("fs");');
+  EmitLine('      var buf = Buffer.alloc(256);');
+  EmitLine('      var n = fs.readSync(0, buf, 0, 256);');
+  EmitLine('      return buf.toString("utf8", 0, n).replace(/[\r\n]+$/, "");');
+  EmitLine('    } catch(e) { return ""; }');
+  EmitLine('  }');
+  EmitLine('  if (typeof prompt !== "undefined") return prompt() || "";');
+  EmitLine('  return "";');
+  EmitLine('}');
+  EmitBlankLine;
+
+  { _TPR_WriteF(F, S) : ecriture dans un fichier }
+  EmitComment('WriteF: write to a file (Node.js)');
+  EmitLine('function _TPR_WriteF(f, s) {');
+  EmitLine('  if (typeof require !== "undefined") {');
+  EmitLine('    try {');
+  EmitLine('      var fs = require("fs");');
+  EmitLine('      fs.appendFileSync(f.name, String(s));');
+  EmitLine('      _TPR_IOResult = 0;');
+  EmitLine('    } catch(e) { _TPR_IOResult = 5; }');
+  EmitLine('  }');
+  EmitLine('}');
+  EmitBlankLine;
+
+  { _TPR_Halt(Code) : arret du programme }
+  EmitComment('Halt: stop program execution');
+  EmitLine('function _TPR_Halt(code) {');
+  EmitLine('  if (typeof process !== "undefined") process.exit(code || 0);');
+  EmitLine('  else throw new Error("Halt(" + (code || 0) + ")");');
+  EmitLine('}');
+  EmitBlankLine;
+
+  { _TPR_IntToStr(N, Width) : entier vers chaine formatee }
+  EmitComment('IntToStr: integer to formatted string');
+  EmitLine('function _TPR_IntToStr(n, width) {');
+  EmitLine('  var s = String(n);');
+  EmitLine('  if (typeof width === "number" && width > 0) {');
+  EmitLine('    while (s.length < width) s = " " + s;');
+  EmitLine('  }');
+  EmitLine('  return s;');
+  EmitLine('}');
+  EmitBlankLine;
+
+  { _TPR_RealToStr(R, Width, Dec) : reel vers chaine formatee }
+  EmitComment('RealToStr: real to formatted string');
+  EmitLine('function _TPR_RealToStr(r, width, dec) {');
+  EmitLine('  var s;');
+  EmitLine('  if (typeof dec === "number" && dec >= 0) s = r.toFixed(dec);');
+  EmitLine('  else s = String(r);');
+  EmitLine('  if (typeof width === "number" && width > 0) {');
+  EmitLine('    while (s.length < width) s = " " + s;');
+  EmitLine('  }');
+  EmitLine('  return s;');
+  EmitLine('}');
+  EmitBlankLine;
+
+  { _TPR_StrToInt(S) : chaine vers entier }
+  EmitComment('StrToInt: string to integer');
+  EmitLine('function _TPR_StrToInt(s) {');
+  EmitLine('  var v = parseInt(s, 10);');
+  EmitLine('  return isNaN(v) ? 0 : v;');
+  EmitLine('}');
+  EmitBlankLine;
+
+  { _TPR_StrToReal(S) : chaine vers reel }
+  EmitComment('StrToReal: string to real');
+  EmitLine('function _TPR_StrToReal(s) {');
+  EmitLine('  var v = parseFloat(s);');
+  EmitLine('  return isNaN(v) ? 0.0 : v;');
+  EmitLine('}');
+  EmitBlankLine;
+
+  { _TPR_SetUnion(A, B) : union d ensembles }
+  EmitComment('Set operations');
+  EmitLine('function _TPR_SetUnion(a, b) {');
+  EmitLine('  var r = a.slice();');
+  EmitLine('  for (var i = 0; i < b.length; i++) {');
+  EmitLine('    if (r.indexOf(b[i]) < 0) r.push(b[i]);');
+  EmitLine('  }');
+  EmitLine('  return r;');
+  EmitLine('}');
+  EmitBlankLine;
+
+  { _TPR_SetInter(A, B) : intersection d ensembles }
+  EmitLine('function _TPR_SetInter(a, b) {');
+  EmitLine('  var r = [];');
+  EmitLine('  for (var i = 0; i < a.length; i++) {');
+  EmitLine('    if (b.indexOf(a[i]) >= 0) r.push(a[i]);');
+  EmitLine('  }');
+  EmitLine('  return r;');
+  EmitLine('}');
+  EmitBlankLine;
+
+  { _TPR_SetDiff(A, B) : difference d ensembles }
+  EmitLine('function _TPR_SetDiff(a, b) {');
+  EmitLine('  var r = [];');
+  EmitLine('  for (var i = 0; i < a.length; i++) {');
+  EmitLine('    if (b.indexOf(a[i]) < 0) r.push(a[i]);');
+  EmitLine('  }');
+  EmitLine('  return r;');
+  EmitLine('}');
+  EmitBlankLine;
+
+  { _TPR_SetIn(Elem, S) : test d appartenance }
+  EmitLine('function _TPR_SetIn(elem, s) {');
+  EmitLine('  return s.indexOf(elem) >= 0;');
+  EmitLine('}');
+  EmitBlankLine;
+
+  { _TPR_Copy(S, Pos, Len) : sous-chaine (base 1 -> base 0) }
+  EmitComment('String operations (base-1 to base-0 conversion)');
+  EmitLine('function _TPR_Copy(s, pos, len) {');
+  EmitLine('  return String(s).substr(pos - 1, len);');
+  EmitLine('}');
+  EmitBlankLine;
+
+  { _TPR_Pos(Sub, S) : position de sous-chaine (base 1) }
+  EmitLine('function _TPR_Pos(sub, s) {');
+  EmitLine('  var i = String(s).indexOf(sub);');
+  EmitLine('  return (i >= 0) ? i + 1 : 0;');
+  EmitLine('}');
+  EmitBlankLine;
+
+  { _TPR_Delete(S, Pos, Len) : suppression dans chaine }
+  EmitLine('function _TPR_Delete(obj, pos, len) {');
+  EmitLine('  var s = String(obj.v !== undefined ? obj.v : obj);');
+  EmitLine('  var r = s.substring(0, pos - 1) + s.substring(pos - 1 + len);');
+  EmitLine('  if (obj.v !== undefined) obj.v = r;');
+  EmitLine('  return r;');
+  EmitLine('}');
+  EmitBlankLine;
+
+  { _TPR_Insert(Src, S, Pos) : insertion dans chaine }
+  EmitLine('function _TPR_Insert(src, obj, pos) {');
+  EmitLine('  var s = String(obj.v !== undefined ? obj.v : obj);');
+  EmitLine('  var r = s.substring(0, pos - 1) + src + s.substring(pos - 1);');
+  EmitLine('  if (obj.v !== undefined) obj.v = r;');
+  EmitLine('  return r;');
+  EmitLine('}');
+  EmitBlankLine;
+
+  { _TPR_FillChar(Buf, Count, Val) : remplissage tableau }
+  EmitComment('Memory operations');
+  EmitLine('function _TPR_FillChar(buf, count, val) {');
+  EmitLine('  var c = (typeof val === "string") ? val.charCodeAt(0) : val;');
+  EmitLine('  for (var i = 0; i < count; i++) buf[i] = c;');
+  EmitLine('}');
+  EmitBlankLine;
+
+  { _TPR_Move(Src, Dest, Count) : copie tableau }
+  EmitLine('function _TPR_Move(src, dest, count) {');
+  EmitLine('  for (var i = 0; i < count; i++) dest[i] = src[i];');
+  EmitLine('}');
+  EmitBlankLine;
+
+  { _TPR_Random(N) : nombre pseudo-aleatoire }
+  EmitComment('Random: pseudo-random number');
+  EmitLine('function _TPR_Random(n) {');
+  EmitLine('  if (typeof n === "number" && n > 0)');
+  EmitLine('    return Math.floor(Math.random() * n);');
+  EmitLine('  return Math.random();');
+  EmitLine('}');
+  EmitBlankLine;
+
+  EmitComment('=== End of TP2JS Runtime Library ===');
+  EmitBlankLine;
+End;
+
 { ---- EmitFooter : pied de page du fichier JS genere --------- }
 { Emet l appel du programme principal _main() a la fin.          }
 Procedure EmitFooter;
@@ -10198,6 +10422,9 @@ Begin
     { Compiler comme programme }
     ParseProgram(P);
   End;
+
+  { TODO 24 : emettre le runtime JavaScript minimal }
+  EmitRuntime;
 
   { Emettre le pied de page et fermer }
   EmitFooter;
