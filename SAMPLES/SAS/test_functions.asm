@@ -1957,6 +1957,349 @@ _SASRT_DY_FD:
         RET
 
 
+; === Runtime minimal SAS86 (TODO 24) ===
+
+_SASRT_PRINT:
+        MOV AH, 40h
+        INT 21h
+        RET
+
+_SASRT_PRINTLN:
+        MOV BX, [_SAS_OUTHDL]
+        MOV AH, 40h
+        INT 21h
+        MOV AH, 40h
+        MOV BX, [_SAS_OUTHDL]
+        MOV CX, 2
+        LEA DX, _SAS_CRLF
+        INT 21h
+        RET
+
+_SASRT_PUTSTR:
+        MOV BX, [_SAS_OUTHDL]
+        MOV AH, 40h
+        INT 21h
+        RET
+
+_SASRT_PUTNUM:
+        PUSH SI
+        PUSH DI
+        CALL _SASRT_NUM2STR
+        MOV SI, AX
+        XOR CX, CX
+_SASRT_PN_L:
+        CMP BYTE PTR [SI], 0
+        JE _SASRT_PN_D
+        INC CX
+        INC SI
+        JMP _SASRT_PN_L
+_SASRT_PN_D:
+        MOV DX, AX
+        MOV BX, [_SAS_OUTHDL]
+        MOV AH, 40h
+        INT 21h
+        POP DI
+        POP SI
+        RET
+
+_SASRT_STRCMP:
+        PUSH SI
+        PUSH DI
+_SASRT_SC_LP:
+        MOV AL, [SI]
+        MOV AH, [DI]
+        CMP AL, AH
+        JNE _SASRT_SC_NE
+        TEST AL, AL
+        JZ _SASRT_SC_EQ
+        INC SI
+        INC DI
+        JMP _SASRT_SC_LP
+_SASRT_SC_EQ:
+        CMP AL, AL
+        POP DI
+        POP SI
+        RET
+_SASRT_SC_NE:
+        POP DI
+        POP SI
+        RET
+
+_SASRT_CONCAT:
+        PUSH SI
+        PUSH DI
+        PUSH DI
+        LEA DI, _SAS_STRBUF2
+_SASRT_CT_C1:
+        LODSB
+        TEST AL, AL
+        JZ _SASRT_CT_S2
+        STOSB
+        JMP _SASRT_CT_C1
+_SASRT_CT_S2:
+        POP SI
+_SASRT_CT_C2:
+        LODSB
+        STOSB
+        TEST AL, AL
+        JNZ _SASRT_CT_C2
+        LEA AX, _SAS_STRBUF2
+        POP DI
+        POP SI
+        RET
+
+_SASRT_STRCPY:
+        PUSH SI
+        PUSH DI
+        PUSH CX
+        MOV SI, AX
+_SASRT_SY_LP:
+        TEST CX, CX
+        JZ _SASRT_SY_DN
+        MOV AL, [SI]
+        TEST AL, AL
+        JZ _SASRT_SY_PD
+        STOSB
+        INC SI
+        DEC CX
+        JMP _SASRT_SY_LP
+_SASRT_SY_PD:
+        MOV AL, 20h
+        REP STOSB
+_SASRT_SY_DN:
+        POP CX
+        POP DI
+        POP SI
+        RET
+
+_SASRT_POW:
+        TEST BX, BX
+        JNZ _SASRT_PW_NZ
+        MOV AX, 1
+        RET
+_SASRT_PW_NZ:
+        PUSH CX
+        MOV CX, BX
+        MOV BX, AX
+_SASRT_PW_LP:
+        CMP CX, 1
+        JLE _SASRT_PW_DN
+        IMUL BX
+        DEC CX
+        JMP _SASRT_PW_LP
+_SASRT_PW_DN:
+        POP CX
+        RET
+
+_SASRT_ABS:
+        TEST AX, AX
+        JNS _SASRT_AB_DN
+        NEG AX
+_SASRT_AB_DN:
+        RET
+
+_SASRT_MISSING:
+        CMP AX, 8000h
+        RET
+
+_SASRT_PANIC:
+        MOV DX, SI
+        XOR CX, CX
+_SASRT_PK_L:
+        CMP BYTE PTR [SI], 0
+        JE _SASRT_PK_P
+        INC CX
+        INC SI
+        JMP _SASRT_PK_L
+_SASRT_PK_P:
+        MOV BX, 2
+        MOV AH, 40h
+        INT 21h
+        MOV AH, 40h
+        MOV BX, 2
+        MOV CX, 2
+        LEA DX, _SAS_CRLF
+        INT 21h
+        MOV AX, 4C01h
+        INT 21h
+
+_SASRT_READLINE:
+        PUSH SI
+        PUSH DI
+        PUSH BX
+        MOV SI, DI
+        XOR DX, DX
+_SASRT_RL_LP:
+        TEST CX, CX
+        JZ _SASRT_RL_DN
+        PUSH CX
+        PUSH DX
+        MOV AH, 3Fh
+        MOV BX, [_SAS_INHDL]
+        MOV CX, 1
+        MOV DX, DI
+        INT 21h
+        POP DX
+        POP CX
+        TEST AX, AX
+        JZ _SASRT_RL_DN
+        CMP BYTE PTR [DI], 0Ah
+        JE _SASRT_RL_NL
+        CMP BYTE PTR [DI], 0Dh
+        JE _SASRT_RL_LP
+        INC DI
+        INC DX
+        DEC CX
+        JMP _SASRT_RL_LP
+_SASRT_RL_NL:
+_SASRT_RL_DN:
+        MOV BYTE PTR [DI], 0
+        MOV AX, DX
+        POP BX
+        POP DI
+        POP SI
+        RET
+
+_SASRT_CPYFLD:
+        PUSH SI
+        PUSH DI
+        PUSH CX
+_SASRT_CF_LP:
+        TEST CX, CX
+        JZ _SASRT_CF_DN
+        MOV AL, [SI]
+        TEST AL, AL
+        JZ _SASRT_CF_PD
+        STOSB
+        INC SI
+        DEC CX
+        JMP _SASRT_CF_LP
+_SASRT_CF_PD:
+        MOV AL, 20h
+        REP STOSB
+_SASRT_CF_DN:
+        POP CX
+        POP DI
+        POP SI
+        RET
+
+_SASRT_GETFLD:
+        PUSH BX
+        XOR BX, BX
+_SASRT_GF_SK:
+        CMP BYTE PTR [SI], 20h
+        JNE _SASRT_GF_CP
+        CMP BYTE PTR [SI], 0
+        JE _SASRT_GF_PD
+        INC SI
+        JMP _SASRT_GF_SK
+_SASRT_GF_CP:
+        CMP BX, CX
+        JGE _SASRT_GF_PD
+        MOV AL, [SI]
+        TEST AL, AL
+        JZ _SASRT_GF_PD
+        CMP AL, 20h
+        JE _SASRT_GF_PD
+        CMP AL, 09h
+        JE _SASRT_GF_PD
+        STOSB
+        INC SI
+        INC BX
+        JMP _SASRT_GF_CP
+_SASRT_GF_PD:
+        MOV AX, CX
+        SUB AX, BX
+        MOV CX, AX
+        MOV AL, 20h
+        REP STOSB
+        POP BX
+        RET
+
+_SASRT_GETNUM:
+        PUSH BX
+_SASRT_GN_SK:
+        CMP BYTE PTR [SI], 20h
+        JNE _SASRT_GN_RD
+        INC SI
+        JMP _SASRT_GN_SK
+_SASRT_GN_RD:
+        XOR AX, AX
+        XOR CX, CX
+        CMP BYTE PTR [SI], 2Dh
+        JNE _SASRT_GN_DG
+        INC CX
+        INC SI
+_SASRT_GN_DG:
+        MOV BL, [SI]
+        SUB BL, 30h
+        JB _SASRT_GN_DN
+        CMP BL, 9
+        JA _SASRT_GN_DN
+        MOV DX, 10
+        IMUL DX
+        XOR BH, BH
+        ADD AX, BX
+        INC SI
+        JMP _SASRT_GN_DG
+_SASRT_GN_DN:
+        TEST CX, CX
+        JZ _SASRT_GN_RT
+        NEG AX
+_SASRT_GN_RT:
+        POP BX
+        RET
+
+_SASRT_ATOI:
+        PUSH BX
+        PUSH DX
+        XOR AX, AX
+        XOR DX, DX
+_SASRT_AT_SK:
+        TEST CX, CX
+        JZ _SASRT_AT_DN
+        CMP BYTE PTR [SI], 20h
+        JNE _SASRT_AT_SN
+        INC SI
+        DEC CX
+        JMP _SASRT_AT_SK
+_SASRT_AT_SN:
+        CMP BYTE PTR [SI], 2Dh
+        JNE _SASRT_AT_DG
+        INC DX
+        INC SI
+        DEC CX
+_SASRT_AT_DG:
+        TEST CX, CX
+        JZ _SASRT_AT_ND
+        MOV BL, [SI]
+        SUB BL, 30h
+        JB _SASRT_AT_ND
+        CMP BL, 9
+        JA _SASRT_AT_ND
+        PUSH DX
+        MOV DX, 10
+        IMUL DX
+        POP DX
+        XOR BH, BH
+        ADD AX, BX
+        INC SI
+        DEC CX
+        JMP _SASRT_AT_DG
+_SASRT_AT_ND:
+        TEST DX, DX
+        JZ _SASRT_AT_DN
+        NEG AX
+_SASRT_AT_DN:
+        POP DX
+        POP BX
+        RET
+
+_SASRT_INLIST:
+        XOR AX, AX
+        RET
+
+
 _TEXT ENDS
 
 _DATA SEGMENT PUBLIC 'DATA'
@@ -1977,6 +2320,17 @@ _SAS_DOEND  DW  0
 _SAS_DOSTEP  DW  1
 _SAS_STRBUF  DB  256 DUP(0)
 _SAS_STRBUF2  DB  256 DUP(0)
+_SAS_HEAP  DB  4096 DUP(0)
+_SAS_HEAPTOP  DW  0
+_SAS_FIRST  DW  0
+_SAS_LAST  DW  0
+_SAS_BYKEY  DW  0
+_SAS_BYKEY_PREV  DW  0
+_SAS_MRGIDX  DW  0
+_SAS_SETIDX  DW  0
+_SAS_SETEND  DW  0
+_SAS_SETNOBS  DW  0
+_SAS_SETPT  DW  0
 _SASK_32  DB  'Hello World',0
 _SASK_36  DB  'Hello',0
 _SASK_40  DB  'Hello   ',0

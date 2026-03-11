@@ -417,7 +417,7 @@
               de transactions (similaire a MERGE, valeurs non manquantes ecrasent)
             Instruction MODIFY : modification en place d un dataset existant
 
-  TODO 24 - RUNTIME MINIMAL
+  TODO 24 - RUNTIME MINIMAL [IMPLEMENTE]
             _SASRT_PRINT(BX=handle, SI=msg, CX=len) : INT 21h AH=40h
             _SASRT_PRINTLN : _SASRT_PRINT + CR+LF via _SAS_CRLF DB 13,10,0
             _SASRT_STRLEN(SI=str) : compte octets non-espace depuis la fin -> AX
@@ -1007,6 +1007,8 @@ Procedure ParsePercentDo; Forward;
 Procedure HandlePercentDirective; Forward;
 (* TODO 22 - Forward declarations FONCTIONS INTEGREES *)
 Procedure EmitBuiltinRuntime; Forward;
+(* TODO 24 - Forward declaration RUNTIME MINIMAL *)
+Procedure EmitMinimalRuntime; Forward;
 (* TODO 23 - Forward declarations FUSION DATASETS *)
 Procedure ParseSetStmtEnhanced; Forward;
 Procedure ParseMergeStmt; Forward;
@@ -2157,6 +2159,9 @@ Begin
   (* TODO 22 : buffers pour fonctions integrees *)
   DataAddObs('_SAS_STRBUF', 256);   (* buffer resultat fonctions chaine  *)
   DataAddObs('_SAS_STRBUF2', 256);  (* second buffer pour concatenation  *)
+  (* TODO 24 : heap statique pour runtime *)
+  DataAddObs('_SAS_HEAP', 4096);     (* heap statique 4 Ko                *)
+  DataAddWord('_SAS_HEAPTOP', 0);    (* pointeur sommet du heap           *)
   (* TODO 23 : variables pour MERGE/BY *)
   DataAddWord('_SAS_FIRST', 0);     (* FIRST.var flag                    *)
   DataAddWord('_SAS_LAST', 0);      (* LAST.var flag                     *)
@@ -3571,7 +3576,7 @@ Begin
   EmitBlankLine;
   EmitComment('--- Runtime minimal SAS86 ---');
   EmitBuiltinRuntime;
-  (* TODO 24 : emettre les routines runtime ici *)
+  EmitMinimalRuntime;
   EmitBlankLine;
 End;
 
@@ -9715,6 +9720,428 @@ Begin
   EmitInstrA('POP', 'BX');
   EmitInstr('RET');
   EmitBlankLine;
+End;
+
+{ ============================================================
+  TODO 24 - RUNTIME MINIMAL [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- EmitMinimalRuntime : emettre les routines runtime de base ---
+   Routines d entree/sortie, comparaison, copie, puissance, etc.
+   Conventions 16 bits : args dans AX, BX, CX, DX, SI, DI
+   Resultats dans AX (entier) ou AX=ptr (chaine)                    *)
+
+Procedure EmitMinimalRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=== Runtime minimal SAS86 (TODO 24) ===');
+  EmitBlankLine;
+
+  (* ------ _SASRT_PRINT : BX=handle, DX=msg, CX=len -> ecrire ---- *)
+  EmitLabel(SAS_RT_PFX + 'PRINT');
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstr('INT 21h');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_PRINTLN : DX=msg, CX=len -> ecrire + CRLF ------ *)
+  EmitLabel(SAS_RT_PFX + 'PRINTLN');
+  EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstr('INT 21h');
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+  EmitInstrAB('MOV', 'CX', '2');
+  EmitInstrAB('LEA', 'DX', '_SAS_CRLF');
+  EmitInstr('INT 21h');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_PUTSTR : DX=str, CX=len -> ecrire sur OUTHDL --- *)
+  (* Ecrit CX octets depuis DX vers le handle de sortie courant.     *)
+  EmitLabel(SAS_RT_PFX + 'PUTSTR');
+  EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstr('INT 21h');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_PUTNUM : AX=num -> convertir et ecrire ---------- *)
+  (* Convertit AX en chaine via NUM2STR puis ecrit via PUTSTR.       *)
+  EmitLabel(SAS_RT_PFX + 'PUTNUM');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('CALL', SAS_RT_PFX + 'NUM2STR');
+  (* AX = ptr vers _SAS_NUMBUF, calculer la longueur *)
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitLabel(SAS_RT_PFX + 'PN_L');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstrA('JE', SAS_RT_PFX + 'PN_D');
+  EmitInstrA('INC', 'CX');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', SAS_RT_PFX + 'PN_L');
+  EmitLabel(SAS_RT_PFX + 'PN_D');
+  EmitInstrAB('MOV', 'DX', 'AX');
+  EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstr('INT 21h');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_STRCMP : SI=str1, DI=str2 -> drapeaux ZF/CF ----- *)
+  (* Compare deux chaines ASCIIZ octet par octet.                     *)
+  (* ZF=1 si egales, CF selon ordre lexicographique.                  *)
+  EmitLabel(SAS_RT_PFX + 'STRCMP');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitLabel(SAS_RT_PFX + 'SC_LP');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('MOV', 'AH', '[DI]');
+  EmitInstrAB('CMP', 'AL', 'AH');
+  EmitInstrA('JNE', SAS_RT_PFX + 'SC_NE');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', SAS_RT_PFX + 'SC_EQ');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', SAS_RT_PFX + 'SC_LP');
+  EmitLabel(SAS_RT_PFX + 'SC_EQ');
+  (* Egal : positionner ZF=1 *)
+  EmitInstrAB('CMP', 'AL', 'AL');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitLabel(SAS_RT_PFX + 'SC_NE');
+  (* Non egal : drapeaux deja positionnes par CMP AL, AH *)
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_CONCAT : SI=str1, DI=str2 -> AX=ptr buf -------- *)
+  (* Concatene deux chaines ASCIIZ dans _SAS_STRBUF2.                 *)
+  EmitLabel(SAS_RT_PFX + 'CONCAT');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('LEA', 'DI', '_SAS_STRBUF2');
+  EmitLabel(SAS_RT_PFX + 'CT_C1');
+  EmitInstr('LODSB');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', SAS_RT_PFX + 'CT_S2');
+  EmitInstr('STOSB');
+  EmitInstrA('JMP', SAS_RT_PFX + 'CT_C1');
+  EmitLabel(SAS_RT_PFX + 'CT_S2');
+  EmitInstrA('POP', 'SI');
+  EmitLabel(SAS_RT_PFX + 'CT_C2');
+  EmitInstr('LODSB');
+  EmitInstr('STOSB');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JNZ', SAS_RT_PFX + 'CT_C2');
+  EmitInstrAB('LEA', 'AX', '_SAS_STRBUF2');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_STRCPY : AX=src(ASCIIZ), DI=dest, CX=maxlen ---- *)
+  (* Copie une chaine ASCIIZ source dans dest, tronquee a CX octets. *)
+  (* Remplit le reste avec des espaces (20h).                         *)
+  EmitLabel(SAS_RT_PFX + 'STRCPY');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitLabel(SAS_RT_PFX + 'SY_LP');
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JZ', SAS_RT_PFX + 'SY_DN');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', SAS_RT_PFX + 'SY_PD');
+  EmitInstr('STOSB');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', SAS_RT_PFX + 'SY_LP');
+  EmitLabel(SAS_RT_PFX + 'SY_PD');
+  (* Remplir le reste avec des espaces *)
+  EmitInstrAB('MOV', 'AL', '20h');
+  EmitInstr('REP STOSB');
+  EmitLabel(SAS_RT_PFX + 'SY_DN');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_POW : AX=base, BX=exp -> AX=base^exp ----------- *)
+  (* Puissance entiere par multiplication repetee.                    *)
+  EmitLabel(SAS_RT_PFX + 'POW');
+  EmitInstrAB('TEST', 'BX', 'BX');
+  EmitInstrA('JNZ', SAS_RT_PFX + 'PW_NZ');
+  EmitInstrAB('MOV', 'AX', '1');
+  EmitInstr('RET');
+  EmitLabel(SAS_RT_PFX + 'PW_NZ');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrAB('MOV', 'CX', 'BX');
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitLabel(SAS_RT_PFX + 'PW_LP');
+  EmitInstrAB('CMP', 'CX', '1');
+  EmitInstrA('JLE', SAS_RT_PFX + 'PW_DN');
+  EmitInstrA('IMUL', 'BX');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', SAS_RT_PFX + 'PW_LP');
+  EmitLabel(SAS_RT_PFX + 'PW_DN');
+  EmitInstrA('POP', 'CX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_ABS : AX=n -> AX=|n| --------------------------- *)
+  EmitLabel(SAS_RT_PFX + 'ABS');
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JNS', SAS_RT_PFX + 'AB_DN');
+  EmitInstrA('NEG', 'AX');
+  EmitLabel(SAS_RT_PFX + 'AB_DN');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_MISSING : AX=val -> ZF=1 si manquant (8000h) --- *)
+  EmitLabel(SAS_RT_PFX + 'MISSING');
+  EmitInstrAB('CMP', 'AX', '8000h');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_PANIC : SI=msg -> affiche + exit 4C01h ---------- *)
+  EmitLabel(SAS_RT_PFX + 'PANIC');
+  EmitInstrAB('MOV', 'DX', 'SI');
+  (* Calculer la longueur du message *)
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitLabel(SAS_RT_PFX + 'PK_L');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstrA('JE', SAS_RT_PFX + 'PK_P');
+  EmitInstrA('INC', 'CX');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', SAS_RT_PFX + 'PK_L');
+  EmitLabel(SAS_RT_PFX + 'PK_P');
+  EmitInstrAB('MOV', 'BX', '2');
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstr('INT 21h');
+  (* Ecrire CRLF *)
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstrAB('MOV', 'BX', '2');
+  EmitInstrAB('MOV', 'CX', '2');
+  EmitInstrAB('LEA', 'DX', '_SAS_CRLF');
+  EmitInstr('INT 21h');
+  (* Sortie avec code erreur *)
+  EmitInstrAB('MOV', 'AX', '4C01h');
+  EmitInstr('INT 21h');
+  EmitBlankLine;
+
+  (* ------ _SASRT_READLINE : DI=buf, CX=maxlen -> AX=len --------- *)
+  (* Lit une ligne depuis le handle d entree (_SAS_INHDL).            *)
+  (* Lecture octet par octet via INT 21h AH=3Fh.                      *)
+  EmitLabel(SAS_RT_PFX + 'READLINE');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrAB('MOV', 'SI', 'DI');
+  EmitInstrAB('XOR', 'DX', 'DX');   (* DX = compteur octets lus *)
+  EmitLabel(SAS_RT_PFX + 'RL_LP');
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JZ', SAS_RT_PFX + 'RL_DN');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrAB('MOV', 'AH', '3Fh');
+  EmitInstrAB('MOV', 'BX', '[_SAS_INHDL]');
+  EmitInstrAB('MOV', 'CX', '1');
+  EmitInstrAB('MOV', 'DX', 'DI');
+  EmitInstr('INT 21h');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JZ', SAS_RT_PFX + 'RL_DN');
+  (* Verifier fin de ligne (0Ah) *)
+  EmitInstrAB('CMP', 'BYTE PTR [DI]', '0Ah');
+  EmitInstrA('JE', SAS_RT_PFX + 'RL_NL');
+  (* Ignorer retour chariot (0Dh) *)
+  EmitInstrAB('CMP', 'BYTE PTR [DI]', '0Dh');
+  EmitInstrA('JE', SAS_RT_PFX + 'RL_LP');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('INC', 'DX');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', SAS_RT_PFX + 'RL_LP');
+  EmitLabel(SAS_RT_PFX + 'RL_NL');
+  EmitLabel(SAS_RT_PFX + 'RL_DN');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('MOV', 'AX', 'DX');
+  EmitInstrA('POP', 'BX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_CPYFLD : SI=src, DI=dest, CX=len -> copier n octets *)
+  (* Copie CX octets de SI vers DI, remplit avec espaces si source      *)
+  (* se termine avant CX.                                                *)
+  EmitLabel(SAS_RT_PFX + 'CPYFLD');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'CX');
+  EmitLabel(SAS_RT_PFX + 'CF_LP');
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JZ', SAS_RT_PFX + 'CF_DN');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', SAS_RT_PFX + 'CF_PD');
+  EmitInstr('STOSB');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', SAS_RT_PFX + 'CF_LP');
+  EmitLabel(SAS_RT_PFX + 'CF_PD');
+  EmitInstrAB('MOV', 'AL', '20h');
+  EmitInstr('REP STOSB');
+  EmitLabel(SAS_RT_PFX + 'CF_DN');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_GETFLD : SI=src, DI=dest, CX=maxlen -> copie champ *)
+  (* Lit un champ delimiteur-espace depuis SI vers DI, avance SI.       *)
+  (* Saute les espaces de tete, copie jusqu a espace ou fin de chaine.  *)
+  EmitLabel(SAS_RT_PFX + 'GETFLD');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrAB('XOR', 'BX', 'BX');  (* BX = compteur *)
+  (* Sauter les espaces de tete *)
+  EmitLabel(SAS_RT_PFX + 'GF_SK');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '20h');
+  EmitInstrA('JNE', SAS_RT_PFX + 'GF_CP');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstrA('JE', SAS_RT_PFX + 'GF_PD');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', SAS_RT_PFX + 'GF_SK');
+  EmitLabel(SAS_RT_PFX + 'GF_CP');
+  (* Copier jusqu a espace, tab ou fin *)
+  EmitInstrAB('CMP', 'BX', 'CX');
+  EmitInstrA('JGE', SAS_RT_PFX + 'GF_PD');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', SAS_RT_PFX + 'GF_PD');
+  EmitInstrAB('CMP', 'AL', '20h');
+  EmitInstrA('JE', SAS_RT_PFX + 'GF_PD');
+  EmitInstrAB('CMP', 'AL', '09h');
+  EmitInstrA('JE', SAS_RT_PFX + 'GF_PD');
+  EmitInstr('STOSB');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'BX');
+  EmitInstrA('JMP', SAS_RT_PFX + 'GF_CP');
+  EmitLabel(SAS_RT_PFX + 'GF_PD');
+  (* Remplir le reste avec des espaces *)
+  EmitInstrAB('MOV', 'AX', 'CX');
+  EmitInstrAB('SUB', 'AX', 'BX');
+  EmitInstrAB('MOV', 'CX', 'AX');
+  EmitInstrAB('MOV', 'AL', '20h');
+  EmitInstr('REP STOSB');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_GETNUM : SI=src -> AX=num, SI avance ------------ *)
+  (* Lit un entier decimal depuis SI (saute espaces), avance SI.      *)
+  EmitLabel(SAS_RT_PFX + 'GETNUM');
+  EmitInstrA('PUSH', 'BX');
+  (* Sauter les espaces *)
+  EmitLabel(SAS_RT_PFX + 'GN_SK');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '20h');
+  EmitInstrA('JNE', SAS_RT_PFX + 'GN_RD');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', SAS_RT_PFX + 'GN_SK');
+  EmitLabel(SAS_RT_PFX + 'GN_RD');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstrAB('XOR', 'CX', 'CX');  (* CX = signe *)
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '2Dh');
+  EmitInstrA('JNE', SAS_RT_PFX + 'GN_DG');
+  EmitInstrA('INC', 'CX');
+  EmitInstrA('INC', 'SI');
+  EmitLabel(SAS_RT_PFX + 'GN_DG');
+  EmitInstrAB('MOV', 'BL', '[SI]');
+  EmitInstrAB('SUB', 'BL', '30h');
+  EmitInstrA('JB', SAS_RT_PFX + 'GN_DN');
+  EmitInstrAB('CMP', 'BL', '9');
+  EmitInstrA('JA', SAS_RT_PFX + 'GN_DN');
+  EmitInstrAB('MOV', 'DX', '10');
+  EmitInstrA('IMUL', 'DX');
+  EmitInstrAB('XOR', 'BH', 'BH');
+  EmitInstrAB('ADD', 'AX', 'BX');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', SAS_RT_PFX + 'GN_DG');
+  EmitLabel(SAS_RT_PFX + 'GN_DN');
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JZ', SAS_RT_PFX + 'GN_RT');
+  EmitInstrA('NEG', 'AX');
+  EmitLabel(SAS_RT_PFX + 'GN_RT');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_ATOI : SI=str, CX=len -> AX=num ----------------- *)
+  (* Convertit CX octets depuis SI en entier (saute espaces de tete). *)
+  EmitLabel(SAS_RT_PFX + 'ATOI');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstrAB('XOR', 'DX', 'DX');  (* DX = signe *)
+  (* Sauter espaces de tete *)
+  EmitLabel(SAS_RT_PFX + 'AT_SK');
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JZ', SAS_RT_PFX + 'AT_DN');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '20h');
+  EmitInstrA('JNE', SAS_RT_PFX + 'AT_SN');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', SAS_RT_PFX + 'AT_SK');
+  EmitLabel(SAS_RT_PFX + 'AT_SN');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '2Dh');
+  EmitInstrA('JNE', SAS_RT_PFX + 'AT_DG');
+  EmitInstrA('INC', 'DX');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('DEC', 'CX');
+  EmitLabel(SAS_RT_PFX + 'AT_DG');
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JZ', SAS_RT_PFX + 'AT_ND');
+  EmitInstrAB('MOV', 'BL', '[SI]');
+  EmitInstrAB('SUB', 'BL', '30h');
+  EmitInstrA('JB', SAS_RT_PFX + 'AT_ND');
+  EmitInstrAB('CMP', 'BL', '9');
+  EmitInstrA('JA', SAS_RT_PFX + 'AT_ND');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrAB('MOV', 'DX', '10');
+  EmitInstrA('IMUL', 'DX');
+  EmitInstrA('POP', 'DX');
+  EmitInstrAB('XOR', 'BH', 'BH');
+  EmitInstrAB('ADD', 'AX', 'BX');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', SAS_RT_PFX + 'AT_DG');
+  EmitLabel(SAS_RT_PFX + 'AT_ND');
+  EmitInstrAB('TEST', 'DX', 'DX');
+  EmitInstrA('JZ', SAS_RT_PFX + 'AT_DN');
+  EmitInstrA('NEG', 'AX');
+  EmitLabel(SAS_RT_PFX + 'AT_DN');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_INLIST : AX=val (sur pile : liste) -> AX=1/0 ---- *)
+  (* Stub : retourne 0 (non trouve). Sera etendu selon besoin.        *)
+  EmitLabel(SAS_RT_PFX + 'INLIST');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
 End;
 
 { ============================================================
