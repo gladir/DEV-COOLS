@@ -110,14 +110,32 @@
               Math : abs, sqrt, pow, sin, cos, tan, log, exp, rand, srand
               Utility : exit, abort, system, sizeof (keyword)
 
-  TODO 07 - SYSTEME DE TYPES
+  TODO 07 - SYSTEME DE TYPES [IMPLEMENTE]
             TTypeKind : TYK_VOID, TYK_BOOL, TYK_CHAR, TYK_SHORT,
               TYK_INT, TYK_LONG, TYK_UNSIGNED, TYK_FLOAT, TYK_DOUBLE,
               TYK_PTR, TYK_REF, TYK_ARRAY, TYK_STRUCT, TYK_UNION,
               TYK_CLASS, TYK_ENUM, TYK_FUNC
             TypeTab, TypeInit : enregistrer les types primitifs et utilisateur
-            TypeSizeof : bool=1, char=1, short=2, int=2, long=4(stub 2), ptr=2
-            Conversions implicites : char->int, bool->int, enum->int
+            TypeKindOf : retourner le TTypeKind pour un indice
+            TypeSizeof : bool=1, char=1, short=2, int=2, long=2(stub), ptr=2
+            TypeMangle : prefixe ASM selon le type
+              TYK_VOID -> _CCV_, TYK_BOOL -> _CCB_, TYK_CHAR -> _CCC_,
+              TYK_SHORT/INT/LONG/UNSIGNED -> _CCN_, TYK_FLOAT/DOUBLE -> _CCD_,
+              TYK_PTR/REF -> _CCP_, TYK_ARRAY -> _CCA_,
+              TYK_STRUCT/UNION/CLASS -> _CCO_, TYK_ENUM -> _CCE_,
+              TYK_FUNC -> _CCF_
+            TypeIsNumeric : bool/char/short/int/long/unsigned/float/double/enum
+            TypeIsPtr : ptr/ref/array/func/class/struct
+            TypeCanCoerce : conversions implicites C++
+              same type, UNKNOWN, char->int, bool->int, enum->int,
+              short->int, char->short, unsigned widening,
+              int->long, float->double, int->float/double
+            TypeCoerceResult : deduire le type resultat d une op binaire
+              comparaison/logique -> bool, bitwise -> int,
+              arith promotion (int si les deux sont entiers,
+              long si un long, float/double si un flottant)
+            TypeInfer : IMM -> INT, sinon UNKNOWN
+            TypeLookupName : recherche par nom dans TypeTab
             Conversions explicites : static_cast, C-style cast (type)expr
             const qualifier : marquer les variables en lecture seule
             Pointeur et reference : T*, T& -> 2 octets (near pointer)
@@ -685,6 +703,10 @@ Function  TypeKindOf(TypeIdx : Integer) : TTypeKind; Forward;
 Function  TypeIsNumeric(TypeIdx : Integer) : Boolean; Forward;
 Function  TypeIsPtr(TypeIdx : Integer) : Boolean; Forward;
 Function  TypeCanCoerce(SrcIdx, DstIdx : Integer) : Boolean; Forward;
+Function  TypeCoerceResult(LeftIdx, RightIdx : Integer;
+                           Const Op : TString) : Integer; Forward;
+Function  TypeInfer(Const E : TExprVal) : Integer; Forward;
+Function  TypeLookupName(Const Name : TString) : Integer; Forward;
 (* TODO 08 - Emetteur ASM *)
 Function  LabelGen : TString; Forward;
 Procedure EmitRaw(Const S : TString); Forward;
@@ -3534,39 +3556,293 @@ Begin
 End;
 
 (* ============================================================
-  STUBS POUR TODO 07..25
-  (a implementer dans les prochaines etapes)
+  TODO 07 - SYSTEME DE TYPES [IMPLEMENTE]
   ============================================================ *)
 
-Function TypeSizeof(TypeIdx : Integer) : Integer;
-Begin
-  TypeSizeof := 2; (* stub : defaut 16 bits *)
-End;
-
-Function TypeMangle(TypeIdx : Integer) : TString;
-Begin
-  TypeMangle := 'i'; (* stub *)
-End;
+(* ---- TypeKindOf : retourner le TTypeKind pour un indice ---- *)
 
 Function TypeKindOf(TypeIdx : Integer) : TTypeKind;
 Begin
-  TypeKindOf := TYK_INT; (* stub *)
+  If (TypeIdx >= 0) And (TypeIdx < TypeCount) Then
+    TypeKindOf := TypeTab[TypeIdx].Kind
+  Else
+    TypeKindOf := TYK_INT;  (* defaut pour UNKNOWN *)
 End;
+
+(* ---- TypeSizeof : taille en octets d un type --------------- *)
+(* En architecture 16-bit, toutes les tailles sont 2 octets     *)
+(* (un mot machine = taille de AX) sauf void=0. Les types       *)
+(* char et bool sont stockes sur un mot entier pour simplifier.  *)
+
+Function TypeSizeof(TypeIdx : Integer) : Integer;
+Begin
+  If (TypeIdx >= 0) And (TypeIdx < TypeCount) Then
+    TypeSizeof := TypeTab[TypeIdx].Size
+  Else
+    TypeSizeof := 2; (* defaut 16 bits *)
+End;
+
+(* ---- TypeMangle : prefixe ASM selon le type ---------------- *)
+(* Utilise pour generer des labels typees dans le code ASM      *)
+
+Function TypeMangle(TypeIdx : Integer) : TString;
+Var
+  K : TTypeKind;
+Begin
+  K := TypeKindOf(TypeIdx);
+  Case K Of
+    TYK_VOID     : TypeMangle := '_CCV_';
+    TYK_BOOL     : TypeMangle := '_CCB_';
+    TYK_CHAR     : TypeMangle := '_CCC_';
+    TYK_SHORT,
+    TYK_INT,
+    TYK_LONG,
+    TYK_UNSIGNED : TypeMangle := '_CCN_';
+    TYK_FLOAT,
+    TYK_DOUBLE   : TypeMangle := '_CCD_';
+    TYK_PTR,
+    TYK_REF      : TypeMangle := '_CCP_';
+    TYK_ARRAY    : TypeMangle := '_CCA_';
+    TYK_STRUCT,
+    TYK_UNION,
+    TYK_CLASS    : TypeMangle := '_CCO_';
+    TYK_ENUM     : TypeMangle := '_CCE_';
+    TYK_FUNC     : TypeMangle := '_CCF_';
+  Else
+    TypeMangle := '_CCX_';  (* inconnu *)
+  End;
+End;
+
+(* ---- TypeIsNumeric : vrai si le type est un entier/nombre -- *)
+(* En C++ : bool, char, short, int, long, unsigned, float,      *)
+(* double et enum sont tous des types numeriques.                *)
 
 Function TypeIsNumeric(TypeIdx : Integer) : Boolean;
+Var
+  K : TTypeKind;
 Begin
-  TypeIsNumeric := True; (* stub *)
+  K := TypeKindOf(TypeIdx);
+  TypeIsNumeric :=
+    (K = TYK_BOOL) Or (K = TYK_CHAR) Or
+    (K = TYK_SHORT) Or (K = TYK_INT) Or
+    (K = TYK_LONG) Or (K = TYK_UNSIGNED) Or
+    (K = TYK_FLOAT) Or (K = TYK_DOUBLE) Or
+    (K = TYK_ENUM);
 End;
+
+(* ---- TypeIsPtr : vrai si le type est un pointeur/reference - *)
+(* ptr, ref, array (decay to pointer), function (function ptr)  *)
 
 Function TypeIsPtr(TypeIdx : Integer) : Boolean;
+Var
+  K : TTypeKind;
 Begin
-  TypeIsPtr := False; (* stub *)
+  K := TypeKindOf(TypeIdx);
+  TypeIsPtr :=
+    (K = TYK_PTR) Or (K = TYK_REF) Or
+    (K = TYK_ARRAY) Or (K = TYK_FUNC);
 End;
 
+(* ---- TypeCanCoerce : conversion implicite C++ -------------- *)
+(* Regles de conversion C++ simplifiees pour 16 bits :           *)
+(*   same type, UNKNOWN, char->int, bool->int, enum->int,       *)
+(*   short->int, unsigned widening, int->long, float->double,   *)
+(*   int->float/double (perte de precision OK en C++)            *)
+
 Function TypeCanCoerce(SrcIdx, DstIdx : Integer) : Boolean;
+Var
+  SK, DK : TTypeKind;
 Begin
-  TypeCanCoerce := True; (* stub *)
+  (* Meme type : toujours OK *)
+  If SrcIdx = DstIdx Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  (* UNKNOWN : toujours OK *)
+  If (SrcIdx = TY_UNKNOWN) Or (DstIdx = TY_UNKNOWN) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  SK := TypeKindOf(SrcIdx);
+  DK := TypeKindOf(DstIdx);
+  (* void -> rien, rien -> void : interdit *)
+  If (SK = TYK_VOID) Or (DK = TYK_VOID) Then
+  Begin
+    TypeCanCoerce := False;
+    Exit;
+  End;
+  (* Entre types numeriques : C++ fait des promotions implicites *)
+  If TypeIsNumeric(SrcIdx) And TypeIsNumeric(DstIdx) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  (* Pointeur -> bool (null check) *)
+  If TypeIsPtr(SrcIdx) And (DK = TYK_BOOL) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  (* int -> ptr (adresse constante, C++ le permet avec cast) *)
+  If TypeIsNumeric(SrcIdx) And (DK = TYK_PTR) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  (* ptr -> int (extraction d adresse) *)
+  If (SK = TYK_PTR) And TypeIsNumeric(DstIdx) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  (* array -> ptr (decay) *)
+  If (SK = TYK_ARRAY) And (DK = TYK_PTR) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  (* function -> ptr (function pointer) *)
+  If (SK = TYK_FUNC) And (DK = TYK_PTR) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  TypeCanCoerce := False;
 End;
+
+(* ---- TypeCoerceResult : type resultat d une op binaire ----- *)
+(* Regle de promotion C++ simplifiee :                           *)
+(*   comparaison/logique -> bool                                 *)
+(*   bitwise -> int                                              *)
+(*   arith : double > float > long > unsigned > int              *)
+(*   affectation : type du cote droit                            *)
+
+Function TypeCoerceResult(LeftIdx, RightIdx : Integer;
+                          Const Op : TString) : Integer;
+Var
+  LK, RK : TTypeKind;
+Begin
+  LK := TypeKindOf(LeftIdx);
+  RK := TypeKindOf(RightIdx);
+
+  (* Operateurs de comparaison et logiques -> bool *)
+  If (Op = '==') Or (Op = '!=') Or
+     (Op = '<')  Or (Op = '<=') Or
+     (Op = '>')  Or (Op = '>=') Or
+     (Op = '&&') Or (Op = '||') Then
+  Begin
+    TypeCoerceResult := TY_IDX_BOOL;
+    Exit;
+  End;
+
+  (* Operateurs bit a bit -> int *)
+  If (Op = '&')  Or (Op = '|')  Or (Op = '^') Or
+     (Op = '<<') Or (Op = '>>') Then
+  Begin
+    TypeCoerceResult := TY_IDX_INT;
+    Exit;
+  End;
+
+  (* Operateurs arithmetiques : promotion C++ *)
+  If (Op = '+') Or (Op = '-') Or (Op = '*') Or
+     (Op = '/') Or (Op = '%') Then
+  Begin
+    (* double > float > long > unsigned > int *)
+    If (LK = TYK_DOUBLE) Or (RK = TYK_DOUBLE) Then
+    Begin
+      TypeCoerceResult := TY_IDX_DOUBLE;
+      Exit;
+    End;
+    If (LK = TYK_FLOAT) Or (RK = TYK_FLOAT) Then
+    Begin
+      TypeCoerceResult := TY_IDX_FLOAT;
+      Exit;
+    End;
+    If (LK = TYK_LONG) Or (RK = TYK_LONG) Then
+    Begin
+      TypeCoerceResult := TY_IDX_LONG;
+      Exit;
+    End;
+    If (LK = TYK_UNSIGNED) Or (RK = TYK_UNSIGNED) Then
+    Begin
+      TypeCoerceResult := TY_IDX_UNSIGNED;
+      Exit;
+    End;
+    (* Les deux sont des entiers (int, short, char, bool, enum) *)
+    TypeCoerceResult := TY_IDX_INT;
+    Exit;
+  End;
+
+  (* Virgule : type du cote droit *)
+  If Op = ',' Then
+  Begin
+    TypeCoerceResult := RightIdx;
+    Exit;
+  End;
+
+  (* Ternaire ? : : si meme type, ce type ; sinon int *)
+  If Op = '?:' Then
+  Begin
+    If LeftIdx = RightIdx Then
+      TypeCoerceResult := LeftIdx
+    Else If TypeIsNumeric(LeftIdx) And TypeIsNumeric(RightIdx) Then
+      TypeCoerceResult := TY_IDX_INT
+    Else
+      TypeCoerceResult := LeftIdx;
+    Exit;
+  End;
+
+  (* Affectation : type du cote gauche (la variable assignee) *)
+  If (Op = '=')  Or (Op = '+=') Or (Op = '-=') Or
+     (Op = '*=') Or (Op = '/=') Or (Op = '%=') Or
+     (Op = '&=') Or (Op = '|=') Or (Op = '^=') Or
+     (Op = '<<=') Or (Op = '>>=') Then
+  Begin
+    TypeCoerceResult := LeftIdx;
+    Exit;
+  End;
+
+  (* Defaut : int *)
+  TypeCoerceResult := TY_IDX_INT;
+End;
+
+(* ---- TypeInfer : deduire le type d une expression ---------- *)
+(* Si la valeur est immediate (EK_IMM), c est un entier.        *)
+(* Sinon, UNKNOWN car on a besoin de plus d info contextuelle.   *)
+
+Function TypeInfer(Const E : TExprVal) : Integer;
+Begin
+  If E.Kind = EK_IMM Then
+    TypeInfer := TY_IDX_INT
+  Else If E.TypeIdx <> TY_UNKNOWN Then
+    TypeInfer := E.TypeIdx
+  Else
+    TypeInfer := TY_UNKNOWN;
+End;
+
+(* ---- TypeLookupName : chercher un type par nom ------------- *)
+(* Recherche case-sensitive dans TypeTab (comme en C++).          *)
+(* Retourne l indice ou TY_UNKNOWN si non trouve.                *)
+
+Function TypeLookupName(Const Name : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := 0 To TypeCount - 1 Do
+    If TypeTab[I].Name = Name Then
+    Begin
+      TypeLookupName := I;
+      Exit;
+    End;
+  TypeLookupName := TY_UNKNOWN;
+End;
+
+(* ============================================================
+  STUBS POUR TODO 08..25
+  (a implementer dans les prochaines etapes)
+  ============================================================ *)
 
 Function LabelGen : TString;
 Var
@@ -3780,9 +4056,96 @@ Begin
     ParserAdvance; (* stub : consomme un token *)
 End;
 
+(* ---- TypeInit : initialiser la table des types C++ ---------- *)
+(* Nettoie la table complete puis enregistre les types primitifs. *)
+(* Les indices correspondent aux constantes TY_IDX_xxx.           *)
+
 Procedure TypeInit;
+Var
+  I : Integer;
 Begin
-  TypeCount := 0; (* stub *)
+  TypeCount := 0;
+
+  (* Nettoyer la table complete *)
+  For I := 0 To MAX_TYPE - 1 Do
+  Begin
+    TypeTab[I].Name    := '';
+    TypeTab[I].Kind    := TYK_VOID;
+    TypeTab[I].Size    := 0;
+    TypeTab[I].BaseIdx := TY_UNKNOWN;
+  End;
+
+  (* Types primitifs C++ - indices fixes TY_IDX_xxx *)
+  (* [0] void *)
+  TypeTab[TY_IDX_VOID].Name    := 'void';
+  TypeTab[TY_IDX_VOID].Kind    := TYK_VOID;
+  TypeTab[TY_IDX_VOID].Size    := 0;
+  TypeTab[TY_IDX_VOID].BaseIdx := TY_UNKNOWN;
+
+  (* [1] bool - stocke sur un mot 16-bit *)
+  TypeTab[TY_IDX_BOOL].Name    := 'bool';
+  TypeTab[TY_IDX_BOOL].Kind    := TYK_BOOL;
+  TypeTab[TY_IDX_BOOL].Size    := 2;
+  TypeTab[TY_IDX_BOOL].BaseIdx := TY_UNKNOWN;
+
+  (* [2] char - stocke sur un mot 16-bit *)
+  TypeTab[TY_IDX_CHAR].Name    := 'char';
+  TypeTab[TY_IDX_CHAR].Kind    := TYK_CHAR;
+  TypeTab[TY_IDX_CHAR].Size    := 2;
+  TypeTab[TY_IDX_CHAR].BaseIdx := TY_UNKNOWN;
+
+  (* [3] short *)
+  TypeTab[TY_IDX_SHORT].Name    := 'short';
+  TypeTab[TY_IDX_SHORT].Kind    := TYK_SHORT;
+  TypeTab[TY_IDX_SHORT].Size    := 2;
+  TypeTab[TY_IDX_SHORT].BaseIdx := TY_UNKNOWN;
+
+  (* [4] int *)
+  TypeTab[TY_IDX_INT].Name    := 'int';
+  TypeTab[TY_IDX_INT].Kind    := TYK_INT;
+  TypeTab[TY_IDX_INT].Size    := 2;
+  TypeTab[TY_IDX_INT].BaseIdx := TY_UNKNOWN;
+
+  (* [5] long *)
+  TypeTab[TY_IDX_LONG].Name    := 'long';
+  TypeTab[TY_IDX_LONG].Kind    := TYK_LONG;
+  TypeTab[TY_IDX_LONG].Size    := 2;  (* stub 16-bit : devrait etre 4 *)
+  TypeTab[TY_IDX_LONG].BaseIdx := TY_UNKNOWN;
+
+  (* [6] unsigned int *)
+  TypeTab[TY_IDX_UNSIGNED].Name    := 'unsigned';
+  TypeTab[TY_IDX_UNSIGNED].Kind    := TYK_UNSIGNED;
+  TypeTab[TY_IDX_UNSIGNED].Size    := 2;
+  TypeTab[TY_IDX_UNSIGNED].BaseIdx := TY_UNKNOWN;
+
+  (* [7] float *)
+  TypeTab[TY_IDX_FLOAT].Name    := 'float';
+  TypeTab[TY_IDX_FLOAT].Kind    := TYK_FLOAT;
+  TypeTab[TY_IDX_FLOAT].Size    := 2;  (* stub 16-bit : devrait etre 4 *)
+  TypeTab[TY_IDX_FLOAT].BaseIdx := TY_UNKNOWN;
+
+  (* [8] double *)
+  TypeTab[TY_IDX_DOUBLE].Name    := 'double';
+  TypeTab[TY_IDX_DOUBLE].Kind    := TYK_DOUBLE;
+  TypeTab[TY_IDX_DOUBLE].Size    := 2;  (* stub 16-bit : devrait etre 8 *)
+  TypeTab[TY_IDX_DOUBLE].BaseIdx := TY_UNKNOWN;
+
+  { [9] pointeur generique void-ptr }
+  TypeTab[TY_IDX_PTR].Name    := 'ptr';
+  TypeTab[TY_IDX_PTR].Kind    := TYK_PTR;
+  TypeTab[TY_IDX_PTR].Size    := 2;  (* near pointer 16-bit *)
+  TypeTab[TY_IDX_PTR].BaseIdx := TY_IDX_VOID;
+
+  (* [10] reference generique *)
+  TypeTab[TY_IDX_REF].Name    := 'ref';
+  TypeTab[TY_IDX_REF].Kind    := TYK_REF;
+  TypeTab[TY_IDX_REF].Size    := 2;  (* near pointer 16-bit *)
+  TypeTab[TY_IDX_REF].BaseIdx := TY_IDX_VOID;
+
+  TypeCount := TY_PRIM_COUNT;
+
+  If Opts.DebugMode Then
+    WriteLn('[type] TypeInit : ', TypeCount, ' types primitifs enregistres');
 End;
 
 (* ---- SymInit : initialiser la table et predeclarer stdlib ---- *)
