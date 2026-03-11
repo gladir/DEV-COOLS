@@ -1204,6 +1204,7 @@ Begin
   ProcStatMin    := False;
   ProcStatMax    := False;
   ProcStatSum    := False;
+  GExprDummy.Kind    := EK_NONE;
   GExprDummy.ImmVal  := 0;
   GExprDummy.TypeIdx := TY_UNKNOWN;
   GExprDummy.Offset  := 0;
