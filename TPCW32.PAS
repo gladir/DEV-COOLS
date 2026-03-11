@@ -348,7 +348,7 @@
             Chr(N) / Ord(Ch) : conversions char <-> entier
             S[i] : acces direct au ieme caractere
 
-  TODO 17 - INSTRUCTION ASM ET TRADUCTION 8086 -> 80386
+  TODO 17 - INSTRUCTION ASM ET TRADUCTION 8086 -> 80386 [IMPLEMENTE]
             ParseAsmBlock : ASM ... END
             Traduction transparente des registres 8086 -> 80386 :
               AX -> EAX, BX -> EBX, CX -> ECX, DX -> EDX
@@ -4444,7 +4444,8 @@ Begin
       Up := StrUpperCase(TokenPool[I].Val);
 
       { Incrémenter depth sur BEGIN, RECORD, CASE, REPEAT }
-      If (Up = 'BEGIN') Or (Up = 'RECORD') Or (Up = 'REPEAT') Then
+      If (Up = 'BEGIN') Or (Up = 'RECORD') Or (Up = 'REPEAT') Or
+         (Up = 'ASM') Then
       Begin
         Inc(Depth);
         Inc(I);
@@ -5158,6 +5159,7 @@ Var
   Up  : TString;
 Begin
   FindLocal := -1;
+  If PI < 0 Then Exit;
   Up := StrUpperCase(Name);
   For J := 0 To ProcTab[PI].LocalCount - 1 Do
     If ProcTab[PI].Locals[J].Name = Up Then
@@ -5178,6 +5180,7 @@ Var
   Up  : TString;
 Begin
   FindParam := -1;
+  If PI < 0 Then Exit;
   Up := StrUpperCase(Name);
   For J := 0 To ProcTab[PI].ParamCount - 1 Do
     If ProcTab[PI].Params[J].Name = Up Then
@@ -5292,7 +5295,7 @@ Begin
     Begin
       Up := StrUpperCase(TokenPool[I].Val);
       If (Up = 'BEGIN') Or (Up = 'CASE') Or (Up = 'RECORD') Or
-         (Up = 'REPEAT') Then
+         (Up = 'REPEAT') Or (Up = 'ASM') Then
         Inc(Depth)
       Else If Up = 'END' Then
         Dec(Depth);
@@ -5362,7 +5365,7 @@ Begin
       Up := StrUpperCase(TokenPool[I].Val);
 
       If (Up = 'BEGIN') Or (Up = 'RECORD') Or (Up = 'REPEAT') Or
-         (Up = 'CASE') Then
+         (Up = 'CASE') Or (Up = 'ASM') Then
         Inc(Depth)
       Else If Up = 'END' Then
       Begin
@@ -6208,7 +6211,7 @@ Begin
       Up := StrUpperCase(TokenPool[I].Val);
 
       If (Up = 'BEGIN') Or (Up = 'RECORD') Or (Up = 'OBJECT') Or
-         (Up = 'REPEAT') Then
+         (Up = 'REPEAT') Or (Up = 'ASM') Then
       Begin
         Inc(Depth);
         Inc(I);
@@ -7132,6 +7135,7 @@ Procedure ParseWhileStmt(PI : Integer); Forward;
 Procedure ParseRepeatStmt(PI : Integer); Forward;
 Procedure ParseForStmt(PI : Integer); Forward;
 Procedure ParseGotoStmt(PI : Integer); Forward;
+Procedure ParseAsmBlock(PI : Integer); Forward;
 
 { ------------------------------------------------------------ }
 { ParseFuncCall : parser un appel de procedure/fonction         }
@@ -9413,6 +9417,13 @@ Begin
       Exit;
     End;
 
+    { ASM : bloc assembleur inline (TODO 17) }
+    If Up = 'ASM' Then
+    Begin
+      ParseAsmBlock(PI);
+      Exit;
+    End;
+
     { LABEL : section de labels, sauter la declaration }
     If Up = 'LABEL' Then
     Begin
@@ -9883,6 +9894,537 @@ Begin
   End;
 End;
 
+{ ============================================================ }
+{ TODO 17 - INSTRUCTION ASM ET TRADUCTION 8086 -> 80386        }
+{           [IMPLEMENTE]                                        }
+{ ============================================================ }
+
+{ ------------------------------------------------------------ }
+{ TranslateReg16to32 : traduire un registre 8086 (16 bits)     }
+{ vers son equivalent 80386 (32 bits).                          }
+{ AX->EAX, BX->EBX, CX->ECX, DX->EDX                          }
+{ SI->ESI, DI->EDI, BP->EBP, SP->ESP                           }
+{ Registres 8 bits (AL,AH,BL,...) : inchanges                  }
+{ Registres de segment (CS,DS,ES,SS) : retourne '' (ignores)   }
+{ ------------------------------------------------------------ }
+
+Function TranslateReg16to32(Const Reg : TString) : TString;
+Var
+  Up : TString;
+Begin
+  Up := StrUpperCase(Reg);
+  { Registres 16 bits -> 32 bits }
+  If Up = 'AX' Then TranslateReg16to32 := 'EAX'
+  Else If Up = 'BX' Then TranslateReg16to32 := 'EBX'
+  Else If Up = 'CX' Then TranslateReg16to32 := 'ECX'
+  Else If Up = 'DX' Then TranslateReg16to32 := 'EDX'
+  Else If Up = 'SI' Then TranslateReg16to32 := 'ESI'
+  Else If Up = 'DI' Then TranslateReg16to32 := 'EDI'
+  Else If Up = 'BP' Then TranslateReg16to32 := 'EBP'
+  Else If Up = 'SP' Then TranslateReg16to32 := 'ESP'
+  { Registres de segment : ignores en mode FLAT Win32 }
+  Else If Up = 'CS' Then TranslateReg16to32 := ''
+  Else If Up = 'DS' Then TranslateReg16to32 := ''
+  Else If Up = 'ES' Then TranslateReg16to32 := ''
+  Else If Up = 'SS' Then TranslateReg16to32 := ''
+  { Registres 8 bits : inchanges }
+  Else If (Up = 'AL') Or (Up = 'AH') Or (Up = 'BL') Or (Up = 'BH') Or
+          (Up = 'CL') Or (Up = 'CH') Or (Up = 'DL') Or (Up = 'DH') Then
+    TranslateReg16to32 := Up
+  { Registres 32 bits deja : inchanges }
+  Else If (Up = 'EAX') Or (Up = 'EBX') Or (Up = 'ECX') Or (Up = 'EDX') Or
+          (Up = 'ESI') Or (Up = 'EDI') Or (Up = 'EBP') Or (Up = 'ESP') Then
+    TranslateReg16to32 := Up
+  Else
+    TranslateReg16to32 := Reg;  { pas un registre, retourner tel quel }
+End;
+
+{ ------------------------------------------------------------ }
+{ IsAsmReg : tester si un identificateur est un registre x86   }
+{ ------------------------------------------------------------ }
+
+Function IsAsmReg(Const S : TString) : Boolean;
+Var
+  Up : TString;
+Begin
+  Up := StrUpperCase(S);
+  IsAsmReg :=
+    (Up = 'AX') Or (Up = 'BX') Or (Up = 'CX') Or (Up = 'DX') Or
+    (Up = 'SI') Or (Up = 'DI') Or (Up = 'BP') Or (Up = 'SP') Or
+    (Up = 'AL') Or (Up = 'AH') Or (Up = 'BL') Or (Up = 'BH') Or
+    (Up = 'CL') Or (Up = 'CH') Or (Up = 'DL') Or (Up = 'DH') Or
+    (Up = 'EAX') Or (Up = 'EBX') Or (Up = 'ECX') Or (Up = 'EDX') Or
+    (Up = 'ESI') Or (Up = 'EDI') Or (Up = 'EBP') Or (Up = 'ESP') Or
+    (Up = 'CS') Or (Up = 'DS') Or (Up = 'ES') Or (Up = 'SS');
+End;
+
+{ ------------------------------------------------------------ }
+{ TranslateAsmOperand : traduire un operande ASM 8086 vers     }
+{ 80386. Gere les registres, les immediats, et les references   }
+{ memoire avec adressage indirect [BX+SI+disp] etc.            }
+{ ------------------------------------------------------------ }
+
+Function TranslateAsmOperand(PI : Integer; Const Op : TString) : TString;
+Var
+  R     : TString;
+  I     : Integer;
+  C     : Char;
+  Tok   : TString;
+  Up    : TString;
+Begin
+  If Length(Op) = 0 Then
+  Begin
+    TranslateAsmOperand := '';
+    Exit;
+  End;
+
+  { Si l operande est un simple registre }
+  Up := StrUpperCase(Op);
+  If IsAsmReg(Up) Then
+  Begin
+    TranslateAsmOperand := TranslateReg16to32(Op);
+    Exit;
+  End;
+
+  { Si c est un reference memoire [xxx] }
+  If (Op[1] = '[') And (Op[Length(Op)] = ']') Then
+  Begin
+    R := '[';
+    I := 2;
+    While I < Length(Op) Do
+    Begin
+      C := Op[I];
+      { Extraire un token (ident ou autre) }
+      If ((C >= 'A') And (C <= 'Z')) Or ((C >= 'a') And (C <= 'z')) Or
+         (C = '_') Then
+      Begin
+        Tok := '';
+        While (I < Length(Op)) And
+              (((Op[I] >= 'A') And (Op[I] <= 'Z')) Or
+               ((Op[I] >= 'a') And (Op[I] <= 'z')) Or
+               ((Op[I] >= '0') And (Op[I] <= '9')) Or
+               (Op[I] = '_')) Do
+        Begin
+          Tok := Tok + Op[I];
+          Inc(I);
+        End;
+        { Traduire les registres dans les crochets }
+        If IsAsmReg(Tok) Then
+          R := R + TranslateReg16to32(Tok)
+        Else
+        Begin
+          { Verifier si c est une variable Pascal }
+          If (PI >= 0) And (FindLocal(PI, Tok) >= 0) Then
+            R := R + GenVarAddr(PI, Tok)
+          Else If (PI >= 0) And (FindParam(PI, Tok) >= 0) Then
+            R := R + GenVarAddr(PI, Tok)
+          Else If SymFind(StrUpperCase(Tok)) >= 0 Then
+            R := R + GenVarAddr(PI, Tok)
+          Else
+            R := R + Tok;
+        End;
+      End
+      Else
+      Begin
+        R := R + C;
+        Inc(I);
+      End;
+    End;
+    R := R + ']';
+    TranslateAsmOperand := R;
+    Exit;
+  End;
+
+  { Verifier si c est une variable Pascal (pas un immediat) }
+  If ((Op[1] >= 'A') And (Op[1] <= 'Z')) Or
+     ((Op[1] >= 'a') And (Op[1] <= 'z')) Or
+     (Op[1] = '_') Then
+  Begin
+    If IsAsmReg(Op) Then
+    Begin
+      TranslateAsmOperand := TranslateReg16to32(Op);
+      Exit;
+    End;
+    { Verifier si c est une variable Pascal connue }
+    If (PI >= 0) And (FindLocal(PI, Op) >= 0) Then
+    Begin
+      TranslateAsmOperand := GenVarRef(PI, Op);
+      Exit;
+    End;
+    If (PI >= 0) And (FindParam(PI, Op) >= 0) Then
+    Begin
+      TranslateAsmOperand := GenVarRef(PI, Op);
+      Exit;
+    End;
+    If SymFind(StrUpperCase(Op)) >= 0 Then
+    Begin
+      TranslateAsmOperand := GenVarRef(PI, Op);
+      Exit;
+    End;
+  End;
+
+  { Sinon retourner tel quel (immediat, label, etc.) }
+  TranslateAsmOperand := Op;
+End;
+
+{ ------------------------------------------------------------ }
+{ AsmTrimSpaces : supprimer les espaces en debut et fin         }
+{ ------------------------------------------------------------ }
+
+Function AsmTrimSpaces(Const S : TString) : TString;
+Var
+  A, B : Integer;
+Begin
+  A := 1;
+  While (A <= Length(S)) And (S[A] = ' ') Do Inc(A);
+  B := Length(S);
+  While (B >= A) And (S[B] = ' ') Do Dec(B);
+  AsmTrimSpaces := Copy(S, A, B - A + 1);
+End;
+
+{ ------------------------------------------------------------ }
+{ TranslateAsmLine : traduire une ligne ASM complete 8086       }
+{ vers son equivalent 80386.                                    }
+{ Gere : traduction des mnemoniques, registres et adressage     }
+{ CBW->CWDE, CWD->CDQ, PUSHF->PUSHFD, POPF->POPFD             }
+{ LDS/LES -> MOV registre 32 bits                               }
+{ INT nn -> commentaire (emulation future TODO 21)              }
+{ IN/OUT -> commentaire (emulation future TODO 22)              }
+{ LOOP/LOOPZ/LOOPNZ -> DEC ECX + Jcc equivalent                }
+{ ------------------------------------------------------------ }
+
+Procedure TranslateAsmLine(PI : Integer; Const Line : TString);
+Var
+  S      : TString;
+  Mne    : TString;
+  Rest   : TString;
+  Op1    : TString;
+  Op2    : TString;
+  I, J   : Integer;
+  Depth  : Integer;
+  Up     : TString;
+  LblEnd : TString;
+Begin
+  S := AsmTrimSpaces(Line);
+  If Length(S) = 0 Then Exit;
+
+  { Extraire le mnemonique (premier mot) }
+  I := 1;
+  While (I <= Length(S)) And (S[I] <> ' ') And (S[I] <> #9) Do Inc(I);
+  Mne := Copy(S, 1, I - 1);
+  Up := StrUpperCase(Mne);
+
+  { Extraire le reste (operandes) }
+  While (I <= Length(S)) And ((S[I] = ' ') Or (S[I] = #9)) Do Inc(I);
+  Rest := Copy(S, I, Length(S) - I + 1);
+
+  { Separer les operandes par virgule (en respectant les crochets) }
+  Op1 := '';
+  Op2 := '';
+  Depth := 0;
+  J := 0;
+  For I := 1 To Length(Rest) Do
+  Begin
+    If Rest[I] = '[' Then Inc(Depth)
+    Else If Rest[I] = ']' Then Dec(Depth);
+    If (Rest[I] = ',') And (Depth = 0) And (J = 0) Then
+    Begin
+      J := I;
+    End;
+  End;
+  If J > 0 Then
+  Begin
+    Op1 := AsmTrimSpaces(Copy(Rest, 1, J - 1));
+    Op2 := AsmTrimSpaces(Copy(Rest, J + 1, Length(Rest) - J));
+  End
+  Else
+    Op1 := AsmTrimSpaces(Rest);
+
+  { --- Traductions speciales de mnemoniques --- }
+
+  { CBW -> CWDE (extension de signe 8 -> 32 bits via EAX) }
+  If Up = 'CBW' Then
+  Begin
+    EmitInstr('CWDE');
+    Exit;
+  End;
+
+  { CWD -> CDQ (extension de signe 16 -> 64 bits via EDX:EAX) }
+  If Up = 'CWD' Then
+  Begin
+    EmitInstr('CDQ');
+    Exit;
+  End;
+
+  { PUSHF -> PUSHFD }
+  If Up = 'PUSHF' Then
+  Begin
+    EmitInstr('PUSHFD');
+    Exit;
+  End;
+
+  { POPF -> POPFD }
+  If Up = 'POPF' Then
+  Begin
+    EmitInstr('POPFD');
+    Exit;
+  End;
+
+  { LDS reg, [mem] -> MOV Ereg, DWORD PTR [mem] }
+  If Up = 'LDS' Then
+  Begin
+    EmitComment('LDS traduit en MOV 32 bits (mode FLAT)');
+    EmitInstr('MOV ' + TranslateAsmOperand(PI, Op1) + ',' +
+              TranslateAsmOperand(PI, Op2));
+    Exit;
+  End;
+
+  { LES reg, [mem] -> MOV Ereg, DWORD PTR [mem] }
+  If Up = 'LES' Then
+  Begin
+    EmitComment('LES traduit en MOV 32 bits (mode FLAT)');
+    EmitInstr('MOV ' + TranslateAsmOperand(PI, Op1) + ',' +
+              TranslateAsmOperand(PI, Op2));
+    Exit;
+  End;
+
+  { LOOP label -> DEC ECX / JNZ label }
+  If Up = 'LOOP' Then
+  Begin
+    EmitInstr('DEC ECX');
+    EmitInstr('JNZ ' + TranslateAsmOperand(PI, Op1));
+    Exit;
+  End;
+
+  { LOOPZ/LOOPE label -> DEC ECX / JNZ +skip / JZ label }
+  If (Up = 'LOOPZ') Or (Up = 'LOOPE') Then
+  Begin
+    LblEnd := LabelGen;
+    EmitInstr('DEC ECX');
+    EmitInstr('JZ ' + LblEnd);
+    EmitInstr('JZ ' + TranslateAsmOperand(PI, Op1));
+    EmitLabel(LblEnd);
+    Exit;
+  End;
+
+  { LOOPNZ/LOOPNE label -> DEC ECX / JZ +skip / JNZ label }
+  If (Up = 'LOOPNZ') Or (Up = 'LOOPNE') Then
+  Begin
+    LblEnd := LabelGen;
+    EmitInstr('DEC ECX');
+    EmitInstr('JZ ' + LblEnd);
+    EmitInstr('JNZ ' + TranslateAsmOperand(PI, Op1));
+    EmitLabel(LblEnd);
+    Exit;
+  End;
+
+  { INT nn -> emulation future (commentaire) }
+  If Up = 'INT' Then
+  Begin
+    EmitComment('INT ' + Op1 + ' (emule - voir TODO 21)');
+    EmitInstr('NOP');
+    Exit;
+  End;
+
+  { IN -> emulation future (commentaire) }
+  If Up = 'IN' Then
+  Begin
+    EmitComment('IN ' + Op1 + ',' + Op2 + ' (emule - voir TODO 22)');
+    EmitInstr('NOP');
+    Exit;
+  End;
+
+  { OUT -> emulation future (commentaire) }
+  If Up = 'OUT' Then
+  Begin
+    EmitComment('OUT ' + Op1 + ',' + Op2 + ' (emule - voir TODO 22)');
+    EmitInstr('NOP');
+    Exit;
+  End;
+
+  { REP MOVSB / REP MOVSW -> REP MOVSD (ou traduire) }
+  If Up = 'REP' Then
+  Begin
+    { Le reste contient l instruction repetee }
+    If StrUpperCase(Op1) = 'MOVSW' Then
+      EmitInstr('REP MOVSD')
+    Else If StrUpperCase(Op1) = 'STOSW' Then
+      EmitInstr('REP STOSD')
+    Else
+      EmitInstr('REP ' + StrUpperCase(Op1));
+    Exit;
+  End;
+
+  { Instructions sans operande }
+  If (Up = 'NOP') Or (Up = 'CLD') Or (Up = 'STD') Or
+     (Up = 'RET') Or (Up = 'RETF') Or (Up = 'CLI') Or (Up = 'STI') Or
+     (Up = 'MOVSB') Or (Up = 'MOVSW') Or (Up = 'MOVSD') Or
+     (Up = 'STOSB') Or (Up = 'STOSW') Or (Up = 'STOSD') Or
+     (Up = 'LODSB') Or (Up = 'LODSW') Or (Up = 'LODSD') Or
+     (Up = 'SCASB') Or (Up = 'SCASW') Or (Up = 'SCASD') Or
+     (Up = 'CMPSB') Or (Up = 'CMPSW') Or (Up = 'CMPSD') Or
+     (Up = 'PUSHA') Or (Up = 'POPA') Or
+     (Up = 'PUSHAD') Or (Up = 'POPAD') Or
+     (Up = 'PUSHFD') Or (Up = 'POPFD') Or
+     (Up = 'CWDE') Or (Up = 'CDQ') Or
+     (Up = 'SAHF') Or (Up = 'LAHF') Or
+     (Up = 'IRET') Or (Up = 'IRETD') Then
+  Begin
+    { MOVSW -> MOVSD en 32 bits }
+    If Up = 'MOVSW' Then EmitInstr('MOVSD')
+    Else If Up = 'STOSW' Then EmitInstr('STOSD')
+    Else If Up = 'LODSW' Then EmitInstr('LODSD')
+    Else If Up = 'SCASW' Then EmitInstr('SCASD')
+    Else If Up = 'CMPSW' Then EmitInstr('CMPSD')
+    Else If Up = 'PUSHA' Then EmitInstr('PUSHAD')
+    Else If Up = 'POPA' Then EmitInstr('POPAD')
+    Else If Up = 'IRET' Then EmitInstr('IRETD')
+    Else If Up = 'RETF' Then EmitInstr('RET')
+    Else EmitInstr(Up);
+    Exit;
+  End;
+
+  { Instructions avec 1 operande : PUSH, POP, INC, DEC, NEG, NOT, }
+  { CALL, JMP, Jcc, MUL, DIV, IMUL, IDIV                          }
+  If (Up = 'PUSH') Or (Up = 'POP') Or (Up = 'INC') Or (Up = 'DEC') Or
+     (Up = 'NEG') Or (Up = 'NOT') Or (Up = 'CALL') Or (Up = 'JMP') Or
+     (Up = 'MUL') Or (Up = 'DIV') Or (Up = 'IMUL') Or (Up = 'IDIV') Or
+     (Up = 'JE') Or (Up = 'JNE') Or (Up = 'JZ') Or (Up = 'JNZ') Or
+     (Up = 'JL') Or (Up = 'JLE') Or (Up = 'JG') Or (Up = 'JGE') Or
+     (Up = 'JB') Or (Up = 'JBE') Or (Up = 'JA') Or (Up = 'JAE') Or
+     (Up = 'JC') Or (Up = 'JNC') Or (Up = 'JS') Or (Up = 'JNS') Or
+     (Up = 'JO') Or (Up = 'JNO') Or (Up = 'JP') Or (Up = 'JNP') Or
+     (Up = 'JCXZ') Or (Up = 'JECXZ') Or
+     (Up = 'SETE') Or (Up = 'SETNE') Or (Up = 'SETL') Or
+     (Up = 'SETLE') Or (Up = 'SETG') Or (Up = 'SETGE') Or
+     (Up = 'SETB') Or (Up = 'SETBE') Or (Up = 'SETA') Or (Up = 'SETAE') Then
+  Begin
+    { JCXZ -> JECXZ en 32 bits }
+    If Up = 'JCXZ' Then
+      EmitInstr('JECXZ ' + TranslateAsmOperand(PI, Op1))
+    Else If Length(Op2) > 0 Then
+      EmitInstr(Up + ' ' + TranslateAsmOperand(PI, Op1) + ',' +
+                TranslateAsmOperand(PI, Op2))
+    Else
+      EmitInstr(Up + ' ' + TranslateAsmOperand(PI, Op1));
+    Exit;
+  End;
+
+  { Instructions avec 2 operandes : MOV, ADD, SUB, CMP, TEST, AND, }
+  { OR, XOR, SHL, SHR, ROL, ROR, RCL, RCR, LEA, XCHG, ADC, SBB   }
+  If (Up = 'MOV') Or (Up = 'ADD') Or (Up = 'SUB') Or (Up = 'CMP') Or
+     (Up = 'TEST') Or (Up = 'AND') Or (Up = 'OR') Or (Up = 'XOR') Or
+     (Up = 'SHL') Or (Up = 'SHR') Or (Up = 'SAL') Or (Up = 'SAR') Or
+     (Up = 'ROL') Or (Up = 'ROR') Or (Up = 'RCL') Or (Up = 'RCR') Or
+     (Up = 'LEA') Or (Up = 'XCHG') Or (Up = 'ADC') Or (Up = 'SBB') Or
+     (Up = 'BT') Or (Up = 'BTS') Or (Up = 'BTR') Or (Up = 'BTC') Or
+     (Up = 'BSF') Or (Up = 'BSR') Or
+     (Up = 'MOVZX') Or (Up = 'MOVSX') Or
+     (Up = 'SHLD') Or (Up = 'SHRD') Then
+  Begin
+    If Length(Op2) > 0 Then
+      EmitInstr(Up + ' ' + TranslateAsmOperand(PI, Op1) + ',' +
+                TranslateAsmOperand(PI, Op2))
+    Else
+      EmitInstr(Up + ' ' + TranslateAsmOperand(PI, Op1));
+    Exit;
+  End;
+
+  { Si on arrive ici, emettre tel quel (instruction non reconnue) }
+  If Length(Op2) > 0 Then
+    EmitInstr(Up + ' ' + TranslateAsmOperand(PI, Op1) + ',' +
+              TranslateAsmOperand(PI, Op2))
+  Else If Length(Op1) > 0 Then
+    EmitInstr(Up + ' ' + TranslateAsmOperand(PI, Op1))
+  Else
+    EmitInstr(Up);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseAsmBlock : parser un bloc ASM...END et traduire chaque   }
+{ ligne d assembleur 8086 en assembleur 80386 Win32.            }
+{ Syntaxe Turbo Pascal : ASM instruction; instruction; ... END  }
+{ Dans le TokenPool, chaque token est un mot ; on reconstruit   }
+{ les lignes d assembleur et on les traduit.                    }
+{ ------------------------------------------------------------ }
+
+Procedure ParseAsmBlock(PI : Integer);
+Var
+  AsmLine : TString;
+  Up      : TString;
+  T       : TString;
+Begin
+  EmitComment('--- Debut bloc ASM (TODO 17) ---');
+
+  { Consommer le mot-cle ASM }
+  If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_KEYWORD) And
+     (StrUpperCase(TokenPool[EP].Val) = 'ASM') Then
+    Inc(EP);
+
+  { Traiter les tokens jusqu au END correspondant }
+  While Not EPAtEnd Do
+  Begin
+    Up := StrUpperCase(TokenPool[EP].Val);
+
+    { END termine le bloc ASM }
+    If (TokenPool[EP].Kind = TK_KEYWORD) And (Up = 'END') Then
+    Begin
+      Inc(EP);
+      { Consommer ; ou . optionnel apres END }
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         ((TokenPool[EP].Val = ';') Or (TokenPool[EP].Val = '.')) Then
+        Inc(EP);
+      Break;
+    End;
+
+    { Point-virgule seul : separateur d instructions, ignorer }
+    If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ';') Then
+    Begin
+      Inc(EP);
+      Continue;
+    End;
+
+    { Construire une ligne ASM a partir des tokens }
+    { Une instruction ASM va jusqu au prochain ; ou END }
+    AsmLine := '';
+    While Not EPAtEnd Do
+    Begin
+      { Arreter au ; ou END }
+      If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ';') Then
+        Break;
+      If (TokenPool[EP].Kind = TK_KEYWORD) And
+         (StrUpperCase(TokenPool[EP].Val) = 'END') Then
+        Break;
+
+      { Verifier si le token suivant est ':' (c est un label ASM) }
+      T := TokenPool[EP].Val;
+      Inc(EP);
+
+      { Si le prochain token est ':', c est un label }
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ':') Then
+      Begin
+        { Emettre le label }
+        EmitLabel(T);
+        Inc(EP); { consommer ':' }
+        Continue;
+      End;
+
+      { Ajouter au tampon de la ligne }
+      If Length(AsmLine) > 0 Then
+        AsmLine := AsmLine + ' ';
+      AsmLine := AsmLine + T;
+    End;
+
+    { Traduire et emettre la ligne ASM }
+    AsmLine := AsmTrimSpaces(AsmLine);
+    If Length(AsmLine) > 0 Then
+      TranslateAsmLine(PI, AsmLine);
+  End;
+
+  EmitComment('--- Fin bloc ASM ---');
+End;
+
 { ------------------------------------------------------------ }
 { EmitMainBlock : emettre le bloc principal du programme        }
 { (le BEGIN..END. final)                                        }
@@ -9911,7 +10453,8 @@ Begin
           Up := StrUpperCase(TokenPool[I].Val);
           If Up = 'END' Then
             Inc(Depth)
-          Else If (Up = 'BEGIN') Or (Up = 'CASE') Or (Up = 'RECORD') Then
+          Else If (Up = 'BEGIN') Or (Up = 'CASE') Or (Up = 'RECORD') Or
+                  (Up = 'ASM') Then
             Dec(Depth);
         End;
         If Depth > 0 Then Dec(I);
