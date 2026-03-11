@@ -2834,6 +2834,8 @@ _TPRT_READMEM:
         JE _TPL_63
         JMP _TPL_64
 _TPL_62:
+        CMP EDX,13h
+        JE _TPL_69
         CMP EDX,17h
         JE _TPL_66
         CMP EDX,49h
@@ -2849,51 +2851,51 @@ _TPL_66:
         PUSH 0A1h
         CALL _GetAsyncKeyState@4
         TEST EAX,8000h
-        JZ _TPL_69
+        JZ _TPL_70
         OR BYTE PTR [MEM_TMPVAL],1
-_TPL_68:
+_TPL_69:
         PUSH 0A0h
         CALL _GetAsyncKeyState@4
         TEST EAX,8000h
-        JZ _TPL_70
+        JZ _TPL_71
         OR BYTE PTR [MEM_TMPVAL],2
-_TPL_69:
+_TPL_70:
         PUSH 11h
         CALL _GetAsyncKeyState@4
         TEST EAX,8000h
-        JZ _TPL_71
+        JZ _TPL_72
         OR BYTE PTR [MEM_TMPVAL],4
-_TPL_70:
+_TPL_71:
         PUSH 12h
         CALL _GetAsyncKeyState@4
         TEST EAX,8000h
-        JZ _TPL_72
+        JZ _TPL_73
         OR BYTE PTR [MEM_TMPVAL],8
-_TPL_71:
+_TPL_72:
         PUSH 91h
         CALL _GetKeyState@4
         TEST EAX,1
-        JZ _TPL_73
+        JZ _TPL_74
         OR BYTE PTR [MEM_TMPVAL],10h
-_TPL_72:
+_TPL_73:
         PUSH 90h
         CALL _GetKeyState@4
         TEST EAX,1
-        JZ _TPL_74
+        JZ _TPL_75
         OR BYTE PTR [MEM_TMPVAL],20h
-_TPL_73:
+_TPL_74:
         PUSH 14h
         CALL _GetKeyState@4
         TEST EAX,1
-        JZ _TPL_75
+        JZ _TPL_76
         OR BYTE PTR [MEM_TMPVAL],40h
-_TPL_74:
+_TPL_75:
         PUSH 2Dh
         CALL _GetKeyState@4
         TEST EAX,1
-        JZ _TPL_76
+        JZ _TPL_77
         OR BYTE PTR [MEM_TMPVAL],80h
-_TPL_75:
+_TPL_76:
         MOVZX EAX,BYTE PTR [MEM_TMPVAL]
         MOV BYTE PTR [MEM_TMPVAL],0
         JMP _TPL_65
@@ -2902,6 +2904,9 @@ _TPL_67:
         JMP _TPL_65
 _TPL_68:
         MOV EAX,80
+        JMP _TPL_65
+_TPL_69:
+        MOV EAX,640
         JMP _TPL_65
 _TPL_63:
         XOR EAX,EAX
@@ -2919,116 +2924,116 @@ _TPRT_WRITEMEM:
 _TPRT_INPORT:
         PUSH EBX
         CMP EAX,60h
-        JE _TPL_77
-        CMP EAX,61h
         JE _TPL_78
-        CMP EAX,70h
+        CMP EAX,61h
         JE _TPL_79
-        CMP EAX,71h
+        CMP EAX,70h
         JE _TPL_80
-        JMP _TPL_81
-_TPL_77:
+        CMP EAX,71h
+        JE _TPL_81
+        JMP _TPL_82
+_TPL_78:
 ; Port[$60] : lecture clavier emulee
         XOR EAX,EAX
         MOV ECX,255
-_TPL_84:
+_TPL_85:
         PUSH ECX
         PUSH ECX
         CALL _GetAsyncKeyState@4
         POP ECX
         TEST EAX,8000h
-        JNZ _TPL_85
+        JNZ _TPL_86
         DEC ECX
-        JNZ _TPL_83
+        JNZ _TPL_84
         XOR EAX,EAX
-        JMP _TPL_82
-_TPL_84:
+        JMP _TPL_83
+_TPL_85:
         MOV EAX,ECX
-        JMP _TPL_82
-_TPL_78:
+        JMP _TPL_83
+_TPL_79:
 ; Port[$61] : controle haut-parleur (stub)
         XOR EAX,EAX
-        JMP _TPL_82
-_TPL_79:
+        JMP _TPL_83
+_TPL_80:
 ; Port[$70] : index CMOS RTC
         MOVZX EAX,BYTE PTR [PORT_RTCIDX]
-        JMP _TPL_82
-_TPL_80:
+        JMP _TPL_83
+_TPL_81:
 ; Port[$71] : donnees CMOS RTC via GetLocalTime
         SUB ESP,16
         PUSH ESP
         CALL _GetLocalTime@4
         MOVZX EBX,BYTE PTR [PORT_RTCIDX]
         CMP EBX,0
-        JNE _TPL_86
+        JNE _TPL_87
         MOVZX EAX,WORD PTR [ESP+12]
         ADD ESP,16
-        JMP _TPL_82
-_TPL_85:
+        JMP _TPL_83
+_TPL_86:
         CMP EBX,2
-        JNE _TPL_87
+        JNE _TPL_88
         MOVZX EAX,WORD PTR [ESP+10]
         ADD ESP,16
-        JMP _TPL_82
-_TPL_86:
+        JMP _TPL_83
+_TPL_87:
         CMP EBX,4
-        JNE _TPL_88
+        JNE _TPL_89
         MOVZX EAX,WORD PTR [ESP+8]
         ADD ESP,16
-        JMP _TPL_82
-_TPL_87:
+        JMP _TPL_83
+_TPL_88:
         CMP EBX,6
-        JNE _TPL_89
+        JNE _TPL_90
         MOVZX EAX,WORD PTR [ESP+4]
         ADD ESP,16
-        JMP _TPL_82
-_TPL_88:
+        JMP _TPL_83
+_TPL_89:
         CMP EBX,7
-        JNE _TPL_90
+        JNE _TPL_91
         MOVZX EAX,WORD PTR [ESP+6]
         ADD ESP,16
-        JMP _TPL_82
-_TPL_89:
+        JMP _TPL_83
+_TPL_90:
         CMP EBX,8
-        JNE _TPL_91
+        JNE _TPL_92
         MOVZX EAX,WORD PTR [ESP+2]
         ADD ESP,16
-        JMP _TPL_82
-_TPL_90:
+        JMP _TPL_83
+_TPL_91:
         CMP EBX,9
-        JNE _TPL_92
+        JNE _TPL_93
         MOVZX EAX,WORD PTR [ESP]
         ADD ESP,16
-        JMP _TPL_82
-_TPL_91:
+        JMP _TPL_83
+_TPL_92:
         XOR EAX,EAX
         ADD ESP,16
-        JMP _TPL_82
-_TPL_81:
+        JMP _TPL_83
+_TPL_82:
 ; Port non emule (retourne 0)
         XOR EAX,EAX
-_TPL_82:
+_TPL_83:
         POP EBX
         RET
 _TPRT_OUTPORT:
         PUSH EBX
         CMP EAX,61h
-        JE _TPL_93
-        CMP EAX,70h
         JE _TPL_94
-        JMP _TPL_95
-_TPL_93:
+        CMP EAX,70h
+        JE _TPL_95
+        JMP _TPL_96
+_TPL_94:
 ; Port[$61] : controle haut-parleur
         TEST EDX,3
-        JZ _TPL_95
+        JZ _TPL_96
         PUSH 100
         PUSH 800
         CALL _Beep@8
-        JMP _TPL_95
-_TPL_94:
+        JMP _TPL_96
+_TPL_95:
 ; Port[$70] : sauvegarde index CMOS RTC
         MOV BYTE PTR [PORT_RTCIDX],DL
-_TPL_95:
+_TPL_96:
         POP EBX
         RET
 
@@ -3045,33 +3050,33 @@ _TPRT_INT10:
         SHR EBX,8
         AND EBX,0FFh
         CMP BL,00h
-        JE _TPL_96
-        CMP BL,02h
         JE _TPL_97
-        CMP BL,03h
+        CMP BL,02h
         JE _TPL_98
-        CMP BL,06h
+        CMP BL,03h
         JE _TPL_99
-        CMP BL,07h
+        CMP BL,06h
         JE _TPL_100
-        CMP BL,09h
+        CMP BL,07h
         JE _TPL_101
-        CMP BL,0Eh
+        CMP BL,09h
         JE _TPL_102
-        CMP BL,0Fh
+        CMP BL,0Eh
         JE _TPL_103
-        JMP _TPL_105
-_TPL_96:
+        CMP BL,0Fh
+        JE _TPL_104
+        JMP _TPL_106
+_TPL_97:
 ; INT 10h AH=00h : set video mode
         AND EAX,0FFh
         MOV BYTE PTR [INT_VIDEOMODE],AL
         CMP AL,03h
-        JNE _TPL_104
+        JNE _TPL_105
         PUSH 001900050h
         PUSH DWORD PTR [HSTDOUT]
         CALL _SetConsoleScreenBufferSize@8
-        JMP _TPL_104
-_TPL_97:
+        JMP _TPL_105
+_TPL_98:
 ; INT 10h AH=02h : set cursor position
         MOV BYTE PTR [INT_CURSORY],DH
         MOV BYTE PTR [INT_CURSORX],DL
@@ -3082,8 +3087,8 @@ _TPL_97:
         PUSH ECX
         PUSH DWORD PTR [HSTDOUT]
         CALL _SetConsoleCursorPosition@8
-        JMP _TPL_104
-_TPL_98:
+        JMP _TPL_105
+_TPL_99:
 ; INT 10h AH=03h : get cursor position
         PUSH OFFSET INT_CSBI
         PUSH DWORD PTR [HSTDOUT]
@@ -3092,12 +3097,12 @@ _TPL_98:
         MOV DL,BYTE PTR [INT_CSBI+4]
         MOV DH,BYTE PTR [INT_CSBI+6]
         MOV CX,0607h
-        JMP _TPL_104
-_TPL_99:
+        JMP _TPL_105
+_TPL_100:
 ; INT 10h AH=06h : scroll up
         AND EAX,0FFh
         TEST EAX,EAX
-        JNZ _TPL_104
+        JNZ _TPL_105
         PUSH OFFSET BYTESWR
         PUSH 0
         PUSH 2000
@@ -3113,11 +3118,11 @@ _TPL_99:
         PUSH 0
         PUSH DWORD PTR [HSTDOUT]
         CALL _SetConsoleCursorPosition@8
-        JMP _TPL_104
-_TPL_100:
-; INT 10h AH=07h : scroll down (stub)
-        JMP _TPL_104
+        JMP _TPL_105
 _TPL_101:
+; INT 10h AH=07h : scroll down (stub)
+        JMP _TPL_105
+_TPL_102:
 ; INT 10h AH=09h : write char+attr
         AND EAX,0FFh
         MOV BYTE PTR [NUMBUF],AL
@@ -3127,8 +3132,8 @@ _TPL_101:
         PUSH OFFSET NUMBUF
         PUSH DWORD PTR [HSTDOUT]
         CALL _WriteFile@20
-        JMP _TPL_104
-_TPL_102:
+        JMP _TPL_105
+_TPL_103:
 ; INT 10h AH=0Eh : teletype write
         AND EAX,0FFh
         MOV BYTE PTR [NUMBUF],AL
@@ -3138,16 +3143,16 @@ _TPL_102:
         PUSH OFFSET NUMBUF
         PUSH DWORD PTR [HSTDOUT]
         CALL _WriteFile@20
-        JMP _TPL_104
-_TPL_103:
+        JMP _TPL_105
+_TPL_104:
 ; INT 10h AH=0Fh : get video mode
         MOVZX EAX,BYTE PTR [INT_VIDEOMODE]
         OR EAX,5000h
         XOR EBX,EBX
-        JMP _TPL_104
-_TPL_105:
+        JMP _TPL_105
+_TPL_106:
 ; INT 10h : fonction non emulee
-_TPL_104:
+_TPL_105:
         POP EDI
         POP ESI
         POP EDX
@@ -3163,54 +3168,54 @@ _TPRT_INT16:
         SHR EBX,8
         AND EBX,0FFh
         CMP BL,00h
-        JE _TPL_106
-        CMP BL,01h
         JE _TPL_107
-        JMP _TPL_109
-_TPL_106:
+        CMP BL,01h
+        JE _TPL_108
+        JMP _TPL_110
+_TPL_107:
 ; INT 16h AH=00h : read key (blocking)
-_TPL_110:
+_TPL_111:
         PUSH OFFSET INT_INEVCNT
         PUSH 1
         PUSH OFFSET INT_INPREC
         PUSH DWORD PTR [HSTDIN]
         CALL _ReadConsoleInputA@16
         CMP WORD PTR [INT_INPREC],1
-        JNE _TPL_109
+        JNE _TPL_110
         CMP DWORD PTR [INT_INPREC+4],1
-        JNE _TPL_109
+        JNE _TPL_110
         MOVZX EAX,BYTE PTR [INT_INPREC+14]
         MOV AH,BYTE PTR [INT_INPREC+12]
         MOV BYTE PTR [INT_KBCHAR],AL
         MOV BYTE PTR [INT_KBSCAN],AH
-        JMP _TPL_108
-_TPL_107:
+        JMP _TPL_109
+_TPL_108:
 ; INT 16h AH=01h : check key available
         PUSH OFFSET INT_INEVCNT
         PUSH DWORD PTR [HSTDIN]
         CALL _GetNumberOfConsoleInputEvents@8
         CMP DWORD PTR [INT_INEVCNT],0
-        JE _TPL_111
+        JE _TPL_112
         PUSH OFFSET INT_INEVCNT
         PUSH 1
         PUSH OFFSET INT_INPREC
         PUSH DWORD PTR [HSTDIN]
         CALL _PeekConsoleInputA@16
         CMP WORD PTR [INT_INPREC],1
-        JNE _TPL_110
+        JNE _TPL_111
         CMP DWORD PTR [INT_INPREC+4],1
-        JNE _TPL_110
+        JNE _TPL_111
         MOVZX EAX,BYTE PTR [INT_INPREC+14]
         MOV AH,BYTE PTR [INT_INPREC+12]
         OR EAX,EAX
-        JMP _TPL_108
-_TPL_110:
+        JMP _TPL_109
+_TPL_111:
         XOR EAX,EAX
-        JMP _TPL_108
-_TPL_109:
+        JMP _TPL_109
+_TPL_110:
 ; INT 16h : fonction non emulee
         XOR EAX,EAX
-_TPL_108:
+_TPL_109:
         POP EDX
         POP ECX
         POP EBX
@@ -3222,24 +3227,24 @@ _TPRT_INT33:
         PUSH EDX
         AND EAX,0FFFFh
         CMP AX,0
-        JE _TPL_112
-        CMP AX,3
         JE _TPL_113
-        JMP _TPL_115
-_TPL_112:
+        CMP AX,3
+        JE _TPL_114
+        JMP _TPL_116
+_TPL_113:
 ; INT 33h AX=0 : init mouse
         PUSH 19
         CALL _GetSystemMetrics@4
         TEST EAX,EAX
-        JZ _TPL_116
+        JZ _TPL_117
         MOV EAX,0FFFFh
         MOV EBX,2
-        JMP _TPL_114
-_TPL_115:
+        JMP _TPL_115
+_TPL_116:
         XOR EAX,EAX
         XOR EBX,EBX
-        JMP _TPL_114
-_TPL_113:
+        JMP _TPL_115
+_TPL_114:
 ; INT 33h AX=3 : get mouse pos+buttons
         PUSH OFFSET INT_CURPOS
         CALL _GetCursorPos@4
@@ -3249,21 +3254,21 @@ _TPL_113:
         PUSH 1
         CALL _GetAsyncKeyState@4
         TEST EAX,8000h
-        JZ _TPL_117
+        JZ _TPL_118
         OR EBX,1
-_TPL_116:
+_TPL_117:
         PUSH 2
         CALL _GetAsyncKeyState@4
         TEST EAX,8000h
-        JZ _TPL_118
+        JZ _TPL_119
         OR EBX,2
-_TPL_117:
+_TPL_118:
         MOV EAX,EBX
-        JMP _TPL_114
-_TPL_115:
+        JMP _TPL_115
+_TPL_116:
 ; INT 33h : fonction non emulee
         XOR EAX,EAX
-_TPL_114:
+_TPL_115:
         POP EDX
         POP ECX
         POP EBX
@@ -3285,40 +3290,40 @@ _TPRT_INTR:
         MOVZX EDX,WORD PTR [ESI+6]
         MOV EDI,DWORD PTR [EBP+8]
         CMP EDI,10h
-        JE _TPL_119
-        CMP EDI,16h
         JE _TPL_120
-        CMP EDI,21h
+        CMP EDI,16h
         JE _TPL_121
-        CMP EDI,33h
+        CMP EDI,21h
         JE _TPL_122
-        JMP _TPL_124
-_TPL_119:
+        CMP EDI,33h
+        JE _TPL_123
+        JMP _TPL_125
+_TPL_120:
         CALL _TPRT_INT10
         MOV WORD PTR [ESI],AX
         MOV WORD PTR [ESI+2],BX
         MOV WORD PTR [ESI+4],CX
         MOV WORD PTR [ESI+6],DX
-        JMP _TPL_123
-_TPL_120:
+        JMP _TPL_124
+_TPL_121:
         CALL _TPRT_INT16
         MOV WORD PTR [ESI],AX
-        JMP _TPL_123
-_TPL_121:
+        JMP _TPL_124
+_TPL_122:
         PUSH ESI
         CALL _TPRT_MSDOS
         ADD ESP,4
-        JMP _TPL_123
-_TPL_122:
+        JMP _TPL_124
+_TPL_123:
         CALL _TPRT_INT33
         MOV WORD PTR [ESI],AX
         MOV WORD PTR [ESI+2],BX
         MOV WORD PTR [ESI+4],CX
         MOV WORD PTR [ESI+6],DX
-        JMP _TPL_123
-_TPL_124:
+        JMP _TPL_124
+_TPL_125:
 ; Interruption non emulee (NOP)
-_TPL_123:
+_TPL_124:
         POP EDI
         POP ESI
         POP EDX

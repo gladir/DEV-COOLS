@@ -635,6 +635,26 @@
               Run : skip PE/EXE generation pour les unites
             Test : test_uses_ver.pas, test_unit_src.pas
 
+  TODO 28 - VARIABLES ABSOLUTE $SEG:$OFS            [IMPLEMENTE]
+            Support de la syntaxe :
+              var X : Word absolute $0040:$0013;
+            Detectee dans ParseDataDecls apres le nom de type.
+            Win32 : lecture via _TPRT_READMEM (emulation BDA)
+              segment $0040 emule :
+                $0013 : memoire conventionnelle (640 Ko)
+                $0017 : etat clavier (shift keys)
+                $0049 : mode video courant (03h)
+                $004A : nombre colonnes (80)
+                $0084 : nombre lignes - 1 (24)
+            DOS 16 bits : acces direct segment:offset natif
+            Champs ajoutes dans TSymRec :
+              IsAbsolute, AbsSeg, AbsOfs
+            Procedures modifiees :
+              ParseDataDecls : parse ABSOLUTE $Seg:$Ofs
+              GenLoadVar : emulation Win32 ou acces direct DOS16
+              EmitMemPortRuntime : ajout $0040:$0013 (640 Ko)
+            Test : test_absolute.pas
+
   ============================================================ *)
 
 Program TPCW32;
@@ -1368,6 +1388,9 @@ Type
     UnitName    : TString;     { nom de l unite d origine (ou '')       }
     ImmVal      : LongInt;     { valeur immediate (const, enum)         }
     ParamCount  : Integer;     { nombre de parametres (proc/func)       }
+    IsAbsolute  : Boolean;     { variable absolute $Seg:$Ofs (TODO 28)  }
+    AbsSeg      : LongInt;     { segment absolute (ex: $0040)           }
+    AbsOfs      : LongInt;     { offset absolute (ex: $0013)            }
   End;
 
   { Info sur une unite importee (TODO 26) }
@@ -3250,6 +3273,9 @@ Begin
     SymTab[I].UnitName    := '';
     SymTab[I].ImmVal      := 0;
     SymTab[I].ParamCount  := 0;
+    SymTab[I].IsAbsolute  := False;
+    SymTab[I].AbsSeg      := 0;
+    SymTab[I].AbsOfs      := 0;
   End;
   SymRegisterBuiltins;
 End;
@@ -3414,6 +3440,9 @@ Begin
   SymTab[SymCount].UnitName    := '';
   SymTab[SymCount].ImmVal      := 0;
   SymTab[SymCount].ParamCount  := 0;
+  SymTab[SymCount].IsAbsolute  := False;
+  SymTab[SymCount].AbsSeg      := 0;
+  SymTab[SymCount].AbsOfs      := 0;
 
   SymAdd := SymCount;
   Inc(SymCount);
@@ -5385,6 +5414,91 @@ Begin
 
           { Trouver le type dans TypeTab }
           TIdx := TypeFindByName(TName);
+
+          { Verifier si c'est une declaration ABSOLUTE (TODO 28) }
+          { Syntaxe : var X : Type absolute $Seg:$Ofs;           }
+          {           var X : Type absolute OtherVar;             }
+          If (I < TokenCount) And
+             ((TokenPool[I].Kind = TK_IDENT) Or
+              (TokenPool[I].Kind = TK_KEYWORD)) And
+             (StrUpperCase(TokenPool[I].Val) = 'ABSOLUTE') Then
+          Begin
+            Inc(I); { sauter 'ABSOLUTE' }
+            { Lire le segment (valeur hex ou decimale) }
+            If (I < TokenCount) And (TokenPool[I].Kind = TK_INTEGER) Then
+            Begin
+              ArrLo := TokenPool[I].IntVal;  { segment }
+              Inc(I);
+              { Attendre ':' }
+              If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+                 (TokenPool[I].Val = ':') Then
+              Begin
+                Inc(I);
+                { Lire l'offset }
+                If (I < TokenCount) And (TokenPool[I].Kind = TK_INTEGER) Then
+                Begin
+                  ArrHi := TokenPool[I].IntVal;  { offset }
+                  Inc(I);
+                End
+                Else
+                  ArrHi := 0;
+                { Creer la variable absolute pour chaque nom }
+                For J := 0 To NCount - 1 Do
+                Begin
+                  DIdx := DataAddGlobalVar(Names[J], TName, 0);
+                  SIdx := SymAdd(Names[J], SK_VAR, TIdx);
+                  If SIdx >= 0 Then
+                  Begin
+                    SymTab[SIdx].IsGlobal   := True;
+                    SymTab[SIdx].Offset     := DIdx;
+                    SymTab[SIdx].IsAbsolute := True;
+                    SymTab[SIdx].AbsSeg     := ArrLo;
+                    SymTab[SIdx].AbsOfs     := ArrHi;
+                  End;
+                End;
+              End
+              Else
+              Begin
+                { Pas de ':' -> absolute sur une autre variable (absolute Var) }
+                For J := 0 To NCount - 1 Do
+                Begin
+                  DIdx := DataAddGlobalVar(Names[J], TName, 0);
+                  SIdx := SymAdd(Names[J], SK_VAR, TIdx);
+                  If SIdx >= 0 Then
+                  Begin
+                    SymTab[SIdx].IsGlobal := True;
+                    SymTab[SIdx].Offset   := DIdx;
+                  End;
+                End;
+              End;
+            End
+            Else
+            Begin
+              { absolute suivi d'un identifiant (variable overlay) }
+              If (I < TokenCount) And
+                 ((TokenPool[I].Kind = TK_IDENT) Or
+                  (TokenPool[I].Kind = TK_KEYWORD)) Then
+                Inc(I); { sauter le nom de variable }
+              For J := 0 To NCount - 1 Do
+              Begin
+                DIdx := DataAddGlobalVar(Names[J], TName, 0);
+                SIdx := SymAdd(Names[J], SK_VAR, TIdx);
+                If SIdx >= 0 Then
+                Begin
+                  SymTab[SIdx].IsGlobal := True;
+                  SymTab[SIdx].Offset   := DIdx;
+                End;
+              End;
+            End;
+
+            { Avancer au ';' }
+            While (I < TokenCount) And
+                  Not ((TokenPool[I].Kind = TK_PUNCT) And
+                       (TokenPool[I].Val = ';')) Do
+              Inc(I);
+            If I < TokenCount Then Inc(I);
+            Continue;
+          End;
 
           { Creer les entrees DataTab et SymTab pour chaque variable }
           For J := 0 To NCount - 1 Do
@@ -7543,6 +7657,41 @@ Begin
     End;
     If SymTab[SI].Kind = SK_VAR Then
     Begin
+      { Variable absolute $Seg:$Ofs (TODO 28) }
+      If SymTab[SI].IsAbsolute Then
+      Begin
+        If Opts.Dos16Mode Then
+        Begin
+          { DOS 16 bits : acces direct segment:offset }
+          EmitInstr('PUSH DS');
+          EmitInstr('MOV AX,' + IntToStr_(SymTab[SI].AbsSeg));
+          EmitInstr('MOV DS,AX');
+          If TypeSizeofIdx(SymTab[SI].TypeIdx) = 1 Then
+            EmitInstr('MOV AL,BYTE PTR DS:[' + IntToStr_(SymTab[SI].AbsOfs) + ']')
+          Else
+            EmitInstr('MOV AX,WORD PTR DS:[' + IntToStr_(SymTab[SI].AbsOfs) + ']');
+          EmitInstr('POP DS');
+          If TypeSizeofIdx(SymTab[SI].TypeIdx) = 1 Then
+            EmitInstr('MOVZX EAX,AL')
+          Else
+            EmitInstr('MOVZX EAX,AX');
+        End
+        Else
+        Begin
+          { Win32 : emulation via _TPRT_READMEM }
+          EmitComment('absolute $' + IntToStr_(SymTab[SI].AbsSeg) +
+                      ':$' + IntToStr_(SymTab[SI].AbsOfs));
+          EmitInstr('MOV EAX,' + IntToStr_(SymTab[SI].AbsSeg));
+          EmitInstr('MOV EDX,' + IntToStr_(SymTab[SI].AbsOfs));
+          EmitInstr('CALL ' + TP_RT_PFX + 'READMEM');
+          { Masquer selon la taille du type }
+          If TypeSizeofIdx(SymTab[SI].TypeIdx) = 1 Then
+            EmitInstr('AND EAX,0FFh')
+          Else If TypeSizeofIdx(SymTab[SI].TypeIdx) = 2 Then
+            EmitInstr('AND EAX,0FFFFh');
+        End;
+        Exit;
+      End;
       Ref := SymTab[SI].MangledName;
       If (SymTab[SI].TypeIdx >= 0) And (SymTab[SI].TypeIdx < TypeCount) And
          ((TypeTab[SymTab[SI].TypeIdx].Kind = TYK_RECORD) Or
@@ -16477,7 +16626,7 @@ End;
 
 Procedure EmitMemPortRuntime;
 Var
-  L1, L2, L3, L4, L5, L6, L7 : TString;
+  L1, L2, L3, L4, L5, L6, L7, L8 : TString;
 Begin
   EmitBlankLine;
   EmitComment('============================================================');
@@ -16487,7 +16636,8 @@ Begin
   { ------ _TPRT_READMEM : lecture memoire emulee --------------- }
   { Parametres : EAX = segment, EDX = offset                      }
   { Retourne dans EAX : valeur lue (selon le contexte)            }
-  { Emulation : Mem[$0040:$0017] -> etat clavier (shift keys)    }
+  { Emulation : Mem[$0040:$0013] -> memoire conventionnelle (640 Ko) }
+  {             Mem[$0040:$0017] -> etat clavier (shift keys)    }
   {             Mem[$0040:$0049] -> mode video courant (03h)      }
   {             Mem[$0040:$004A] -> nombre colonnes (80)          }
   {             Mem[$0040:$0084] -> nombre lignes - 1 (24)        }
@@ -16503,6 +16653,7 @@ Begin
   L5 := LabelGen;  { $0040:$0017 handler }
   L6 := LabelGen;  { $0040:$0049 handler }
   L7 := LabelGen;  { $0040:$004A handler }
+  L8 := LabelGen;  { $0040:$0013 handler (TODO 28) }
   { Verifier segment $0040 (BIOS Data Area) }
   EmitInstr('CMP EAX,40h');
   EmitInstr('JE ' + L1);
@@ -16514,6 +16665,9 @@ Begin
 
   { --- Segment $0040 : BIOS Data Area --- }
   EmitLabel(L1);
+  { Offset $0013 : memoire conventionnelle en Ko (TODO 28) }
+  EmitInstr('CMP EDX,13h');
+  EmitInstr('JE ' + L8);
   { Offset $0017 : etat clavier (shift flags) }
   EmitInstr('CMP EDX,17h');
   EmitInstr('JE ' + L5);
@@ -16600,6 +16754,12 @@ Begin
   { $0040:$004A -> colonnes = 80 }
   EmitLabel(L7);
   EmitInstr('MOV EAX,80');
+  EmitInstr('JMP ' + L4);
+
+  { $0040:$0013 -> memoire conventionnelle en Ko (TODO 28) }
+  { Valeur standard : 640 Ko (retourne comme Word = 16 bits) }
+  EmitLabel(L8);
+  EmitInstr('MOV EAX,640');
   EmitInstr('JMP ' + L4);
 
   { --- Segment $B800 : memoire video texte (stub, retourne 0) --- }
