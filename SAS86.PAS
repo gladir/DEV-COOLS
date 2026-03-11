@@ -441,7 +441,7 @@
             RuntimeEmitted : flag pour n emettre le runtime qu une seule fois
             Heap statique : _SAS_HEAP DB 4096 DUP(0) + _SAS_HEAPTOP DW 0
 
-  TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES
+  TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES [IMPLEMENTE]
             EmitClose : END _SASP_Main dans _TEXT ENDS / DATA ENDS
             Run : pipeline complet LexInit -> ParseProgram ->
               EmitRuntime -> _TEXT ENDS / EmitDataSeg / END _SASP_Main
