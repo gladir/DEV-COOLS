@@ -1,6 +1,6 @@
 ; CF86 v1.0 - 2026-03-06
 ; Compilateur ColdFusion -> assembleur 8086
-; Source: SAMPLES/CF/test_strings.cfm
+; Source: SAMPLES/CF/test_runtime.cfm
 
 .MODEL SMALL
 .STACK 1024
@@ -17,10 +17,28 @@ _CFF_Main:
 
 ; ---- CFSET ----
         MOV   AX, OFFSET _CFK_1
-        MOV   [_CFV_greeting], AX
+        MOV   [_CFV_a], AX
+; ---- CFSET ----
+        MOV   AX, OFFSET _CFK_2
+        MOV   [_CFV_b], AX
+; ---- CFSET ----
+        MOV   AX, [_CFV_a]
+        PUSH   AX
+        MOV   AX, [_CFV_b]
+        POP   AX
+        MOV   SI, AX
+        PUSH   SI
+        MOV   DI, AX
+        POP   SI
+        CALL   _CFRT_CONCAT
+        MOV   [_CFV_c], AX
+        MOV   AX, [_CFV_c]
+; cfoutput: expr chaine
+        MOV   SI, AX
+        CALL   _CFRT_PRINT
 ; ---- CFSET ----
 ; Len()
-        MOV   AX, [_CFV_greeting]
+        MOV   AX, [_CFV_c]
         PUSH   AX
         POP   SI
         CALL   _CFRT_STRLEN
@@ -29,64 +47,54 @@ _CFF_Main:
 ; cfoutput: expr numerique
         CALL   _CFRT_PRINTNUM
 ; ---- CFSET ----
-; Left()
-        MOV   AX, [_CFV_greeting]
+; Abs()
+        MOV   AX, -42
         PUSH   AX
-        MOV   AX, 5
-        PUSH   AX
-        POP   CX
-        POP   SI
-        CALL   _CFRT_LEFT
-        MOV   [_CFV_l], AX
-        MOV   AX, [_CFV_l]
-; cfoutput: expr chaine
-        MOV   SI, AX
-        CALL   _CFRT_PRINT
+        POP   AX
+        CALL   _CFRT_ABS
+        MOV   [_CFV_x], AX
+        MOV   AX, [_CFV_x]
+; cfoutput: expr numerique
+        CALL   _CFRT_PRINTNUM
 ; ---- CFSET ----
-; Right()
-        MOV   AX, [_CFV_greeting]
+; Max()
+        MOV   AX, 10
         PUSH   AX
-        MOV   AX, 5
+        MOV   AX, 20
         PUSH   AX
-        POP   CX
-        POP   SI
-        CALL   _CFRT_RIGHT
-        MOV   [_CFV_r], AX
-        MOV   AX, [_CFV_r]
-; cfoutput: expr chaine
-        MOV   SI, AX
-        CALL   _CFRT_PRINT
-; ---- CFSET ----
-; Mid()
-        MOV   AX, [_CFV_greeting]
-        PUSH   AX
-        MOV   AX, 7
-        PUSH   AX
-        MOV   AX, 5
-        PUSH   AX
-        POP   CX
         POP   BX
-        POP   SI
-        CALL   _CFRT_MID
-        MOV   [_CFV_m], AX
-        MOV   AX, [_CFV_m]
-; cfoutput: expr chaine
-        MOV   SI, AX
-        CALL   _CFRT_PRINT
+        POP   AX
+        CALL   _CFRT_MAX
+        MOV   [_CFV_mx], AX
+        MOV   AX, [_CFV_mx]
+; cfoutput: expr numerique
+        CALL   _CFRT_PRINTNUM
 ; ---- CFSET ----
-; Trim()
-        MOV   AX, OFFSET _CFK_2
+; Min()
+        MOV   AX, 10
+        PUSH   AX
+        MOV   AX, 20
+        PUSH   AX
+        POP   BX
+        POP   AX
+        CALL   _CFRT_MIN
+        MOV   [_CFV_mn], AX
+        MOV   AX, [_CFV_mn]
+; cfoutput: expr numerique
+        CALL   _CFRT_PRINTNUM
+; ---- CFSET ----
+; Val()
+        MOV   AX, OFFSET _CFK_3
         PUSH   AX
         POP   SI
-        CALL   _CFRT_TRIM
-        MOV   [_CFV_t], AX
-        MOV   AX, [_CFV_t]
-; cfoutput: expr chaine
-        MOV   SI, AX
-        CALL   _CFRT_PRINT
+        CALL   _CFRT_STRTONUM
+        MOV   [_CFV_v], AX
+        MOV   AX, [_CFV_v]
+; cfoutput: expr numerique
+        CALL   _CFRT_PRINTNUM
 ; ---- CFSET ----
 ; UCase()
-        MOV   AX, [_CFV_greeting]
+        MOV   AX, OFFSET _CFK_4
         PUSH   AX
         POP   SI
         CALL   _CFRT_UCASE
@@ -97,85 +105,23 @@ _CFF_Main:
         CALL   _CFRT_PRINT
 ; ---- CFSET ----
 ; LCase()
-        MOV   AX, [_CFV_greeting]
-        PUSH   AX
-        POP   SI
-        CALL   _CFRT_LCASE
-        MOV   [_CFV_lc], AX
-        MOV   AX, [_CFV_lc]
-; cfoutput: expr chaine
-        MOV   SI, AX
-        CALL   _CFRT_PRINT
-; ---- CFSET ----
-; Find()
-        MOV   AX, OFFSET _CFK_3
-        PUSH   AX
-        MOV   AX, [_CFV_greeting]
-        PUSH   AX
-        POP   SI
-        POP   DI
-        CALL   _CFRT_FIND
-        MOV   [_CFV_pos], AX
-        MOV   AX, [_CFV_pos]
-; cfoutput: expr numerique
-        CALL   _CFRT_PRINTNUM
-; ---- CFSET ----
-; Chr()
-        MOV   AX, 65
-        PUSH   AX
-        POP   AX
-        MOV   DI, OFFSET _CF_STRBUF2
-        MOV   [DI], AL
-        MOV   BYTE PTR [DI+1], 0
-        MOV   AX, DI
-        MOV   [_CFV_c], AX
-        MOV   AX, [_CFV_c]
-; cfoutput: expr chaine
-        MOV   SI, AX
-        CALL   _CFRT_PRINT
-; ---- CFSET ----
-; Asc()
-        MOV   AX, OFFSET _CFK_4
-        PUSH   AX
-        POP   SI
-        XOR   AX, AX
-        MOV   AL, [SI]
-        MOV   [_CFV_a], AX
-        MOV   AX, [_CFV_a]
-; cfoutput: expr numerique
-        CALL   _CFRT_PRINTNUM
-; ---- CFSET ----
-; Val()
         MOV   AX, OFFSET _CFK_5
         PUSH   AX
         POP   SI
-        CALL   _CFRT_STRTONUM
-        MOV   [_CFV_v], AX
-        MOV   AX, [_CFV_v]
-; cfoutput: expr numerique
-        CALL   _CFRT_PRINTNUM
-; ---- CFSET ----
-; RepeatString()
-        MOV   AX, OFFSET _CFK_6
-        PUSH   AX
-        MOV   AX, 3
-        PUSH   AX
-        POP   CX
-        POP   SI
-        CALL   _CFRT_REPEAT
-        MOV   [_CFV_rep], AX
-        MOV   AX, [_CFV_rep]
+        CALL   _CFRT_LCASE
+        MOV   [_CFV_l], AX
+        MOV   AX, [_CFV_l]
 ; cfoutput: expr chaine
         MOV   SI, AX
         CALL   _CFRT_PRINT
 ; ---- CFSET ----
-; Reverse()
-        MOV   AX, OFFSET _CFK_7
+; Trim()
+        MOV   AX, OFFSET _CFK_6
         PUSH   AX
         POP   SI
-        CALL   _CFRT_REVERSE
-        MOV   [_CFV_rev], AX
-        MOV   AX, [_CFV_rev]
+        CALL   _CFRT_TRIM
+        MOV   [_CFV_t], AX
+        MOV   AX, [_CFV_t]
 ; cfoutput: expr chaine
         MOV   SI, AX
         CALL   _CFRT_PRINT
@@ -1432,27 +1378,23 @@ _CFRT_PANIC_MSG  DB  'CF86 PANIC: ',0
 _CF_EXCRAISE  DW  0
 _CF_HEAP  DB  4096 DUP(0)
 _CF_HEAPTOP  DW  0
-_CFK_1  DB  'Hello World',0
-_CFV_greeting  DW  0
-_CFV_n  DW  0
-_CFV_l  DW  0
-_CFV_r  DW  0
-_CFV_m  DW  0
-_CFK_2  DB  '  hello  ',0
-_CFV_t  DW  0
-_CFV_u  DW  0
-_CFV_lc  DW  0
-_CFK_3  DB  'World',0
-_CFV_pos  DW  0
-_CFV_c  DW  0
-_CFK_4  DB  'A',0
+_CFK_1  DB  'Hello',0
 _CFV_a  DW  0
-_CFK_5  DB  '42',0
+_CFK_2  DB  ' World',0
+_CFV_b  DW  0
+_CFV_c  DW  0
+_CFV_n  DW  0
+_CFV_x  DW  0
+_CFV_mx  DW  0
+_CFV_mn  DW  0
+_CFK_3  DB  '123',0
 _CFV_v  DW  0
-_CFK_6  DB  'ab',0
-_CFV_rep  DW  0
-_CFK_7  DB  'Hello',0
-_CFV_rev  DW  0
+_CFK_4  DB  'hello',0
+_CFV_u  DW  0
+_CFK_5  DB  'HELLO',0
+_CFV_l  DW  0
+_CFK_6  DB  '  hi  ',0
+_CFV_t  DW  0
 
 _DATA ENDS
 

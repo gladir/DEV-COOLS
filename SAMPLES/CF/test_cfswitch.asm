@@ -1,6 +1,6 @@
 ; CF86 v1.0 - 2026-03-06
 ; Compilateur ColdFusion -> assembleur 8086
-; Source: /home/runner/work/DEV-COOLS/DEV-COOLS/SAMPLES/CF/test_cfswitch.cfm
+; Source: SAMPLES/CF/test_cfswitch.cfm
 
 .MODEL SMALL
 .STACK 1024
@@ -1221,6 +1221,51 @@ _CFRT_SCAPPNUM:
         CALL   _CFRT_SCAPPEND
         RET
 
+_CFRT_CONCAT:
+        PUSH   BX
+        PUSH   CX
+        PUSH   DI
+        PUSH   SI
+        MOV   BX, DI
+        MOV   DI, OFFSET _CF_STRBUF
+_CFRT_CONC_L1:
+        LODSB
+        OR   AL, AL
+        JZ   _CFRT_CONC_S2
+        STOSB
+        JMP   _CFRT_CONC_L1
+_CFRT_CONC_S2:
+        MOV   SI, BX
+_CFRT_CONC_L2:
+        LODSB
+        OR   AL, AL
+        JZ   _CFRT_CONC_DN
+        STOSB
+        JMP   _CFRT_CONC_L2
+_CFRT_CONC_DN:
+        MOV   BYTE PTR [DI], 0
+        MOV   AX, OFFSET _CF_STRBUF
+        POP   SI
+        POP   DI
+        POP   CX
+        POP   BX
+        RET
+
+_CFRT_STRCONTAINS:
+        PUSH   SI
+        PUSH   DI
+        CALL   _CFRT_FIND
+        OR   AX, AX
+        JZ   _CFRT_SCT_NO
+        MOV   AX, 1
+        JMP   _CFRT_SCT_DN
+_CFRT_SCT_NO:
+        XOR   AX, AX
+_CFRT_SCT_DN:
+        POP   DI
+        POP   SI
+        RET
+
 _CFRT_PANIC:
         MOV   SI, OFFSET _CFRT_PANIC_MSG
         CALL   _CFRT_PRINT
@@ -1259,6 +1304,8 @@ _CF_EXCOLDH  DW  0
 _CF_EXCNOMSG  DB  0
 _CFRT_PANIC_MSG  DB  'CF86 PANIC: ',0
 _CF_EXCRAISE  DW  0
+_CF_HEAP  DB  4096 DUP(0)
+_CF_HEAPTOP  DW  0
 _CFV_color  DW  0
 _CFV_name  DW  0
 

@@ -373,7 +373,7 @@
             <cfrethrow> : relancer l exception courante vers le handler parent
             Types d exception : any, application, database, template, security
 
-  TODO 24 - RUNTIME MINIMAL
+  TODO 24 - RUNTIME MINIMAL [IMPLEMENTE]
             _CFRT_PRINT(BX=handle, SI=msg, CX=len) : INT 21h AH=40h
             _CFRT_PRINTLN : _CFRT_PRINT + CR+LF via _CF_CRLF DB 13,10,0
             _CFRT_STRLEN(SI=str) : compte octets jusqu a 0 -> AX
@@ -2057,6 +2057,12 @@ Begin
   DataAdd('_CF_EXCNOMSG', DK_STR, 0, '');  { chaine vide par defaut }
   DataAdd(CF_RT_PFX + 'PANIC_MSG', DK_STR, 0, 'CF86 PANIC: ');
   DataAddWord('_CF_EXCRAISE', 0);    { flag: 1=relancer apres finally   }
+
+  { Heap statique (TODO 24) }
+  Idx := DataAdd('_CF_HEAP', DK_ARRAY_BLK, 0, '');
+  If Idx >= 0 Then
+    DataTab[Idx].ElemCount := 4096;
+  DataAddWord('_CF_HEAPTOP', 0);
 End;
 
 { ---- ExprMakeImm : construire une valeur immediate --------- }
@@ -4665,6 +4671,68 @@ Begin
   EmitInstr('CALL', CF_RT_PFX + 'NUMTOSTR');
   EmitInstrAB('MOV', 'SI', 'AX');
   EmitInstr('CALL', CF_RT_PFX + 'SCAPPEND');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ============================================================ }
+  { TODO 24 - Runtime : _CFRT_CONCAT, _CFRT_STRCONTAINS          }
+  { ============================================================ }
+
+  { ---- _CFRT_CONCAT : concatenation de deux chaines ASCIIZ --- }
+  { Entree : SI = ptr chaine 1, DI = ptr chaine 2                }
+  { Sortie : AX = ptr resultat dans _CF_STRBUF                   }
+  { Copie str1 puis str2 dans _CF_STRBUF, termine par 0          }
+  EmitLabel(CF_RT_PFX + 'CONCAT');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('PUSH', 'CX');
+  EmitInstr('PUSH', 'DI');
+  EmitInstr('PUSH', 'SI');
+  { DI sauvegarde -> on copie dans _CF_STRBUF }
+  EmitInstrAB('MOV', 'BX', 'DI');            { BX = ptr chaine 2 }
+  EmitInstrAB('MOV', 'DI', 'OFFSET _CF_STRBUF');
+  { Copie chaine 1 }
+  EmitLabel(CF_RT_PFX + 'CONC_L1');
+  EmitInstr('LODSB', '');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstr('JZ', CF_RT_PFX + 'CONC_S2');
+  EmitInstr('STOSB', '');
+  EmitInstr('JMP', CF_RT_PFX + 'CONC_L1');
+  { Copie chaine 2 }
+  EmitLabel(CF_RT_PFX + 'CONC_S2');
+  EmitInstrAB('MOV', 'SI', 'BX');
+  EmitLabel(CF_RT_PFX + 'CONC_L2');
+  EmitInstr('LODSB', '');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstr('JZ', CF_RT_PFX + 'CONC_DN');
+  EmitInstr('STOSB', '');
+  EmitInstr('JMP', CF_RT_PFX + 'CONC_L2');
+  EmitLabel(CF_RT_PFX + 'CONC_DN');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _CF_STRBUF');
+  EmitInstr('POP', 'SI');
+  EmitInstr('POP', 'DI');
+  EmitInstr('POP', 'CX');
+  EmitInstr('POP', 'BX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_STRCONTAINS : recherche sous-chaine ------------- }
+  { Entree : SI = ptr chaine, DI = ptr sous-chaine               }
+  { Sortie : AX = 1 si trouvee, 0 sinon                          }
+  { Utilise _CFRT_FIND en interne : si pos > 0 -> AX=1           }
+  EmitLabel(CF_RT_PFX + 'STRCONTAINS');
+  EmitInstr('PUSH', 'SI');
+  EmitInstr('PUSH', 'DI');
+  EmitInstr('CALL', CF_RT_PFX + 'FIND');
+  EmitInstrAB('OR', 'AX', 'AX');
+  EmitInstr('JZ', CF_RT_PFX + 'SCT_NO');
+  EmitInstrAB('MOV', 'AX', '1');
+  EmitInstr('JMP', CF_RT_PFX + 'SCT_DN');
+  EmitLabel(CF_RT_PFX + 'SCT_NO');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitLabel(CF_RT_PFX + 'SCT_DN');
+  EmitInstr('POP', 'DI');
+  EmitInstr('POP', 'SI');
   EmitInstr('RET', '');
   EmitBlankLine;
 
