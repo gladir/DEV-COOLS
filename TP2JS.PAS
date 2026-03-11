@@ -381,7 +381,7 @@
                Addr(X) -> reference a X
                Assigned(P) -> (P !== null && P !== undefined)
 
-   TODO 19 - UNITE CRT
+   TODO 19 - UNITE CRT [IMPLEMENTE]
              Constantes de couleur :
                Black=0, Blue=1, Green=2, Cyan=3, Red=4, Magenta=5,
                Brown=6, LightGray=7, DarkGray=8, LightBlue=9,
@@ -2011,6 +2011,31 @@ Begin
   ConstAdd('MaxLongInt', '2147483647',    TK_INTEGER, 2147483647, 0.0, '', False);
   ConstAdd('nil',        'null',          TK_KEYWORD, 0, 0.0, '', False);
   ConstAdd('Pi',         'Math.PI',       TK_REAL,    3, 3.14159265358979, '', False);
+  { TODO 19 : constantes CRT - couleurs }
+  ConstAdd('Black',        '0',    TK_INTEGER, 0,   0.0, '', False);
+  ConstAdd('Blue',         '1',    TK_INTEGER, 1,   0.0, '', False);
+  ConstAdd('Green',        '2',    TK_INTEGER, 2,   0.0, '', False);
+  ConstAdd('Cyan',         '3',    TK_INTEGER, 3,   0.0, '', False);
+  ConstAdd('Red',          '4',    TK_INTEGER, 4,   0.0, '', False);
+  ConstAdd('Magenta',      '5',    TK_INTEGER, 5,   0.0, '', False);
+  ConstAdd('Brown',        '6',    TK_INTEGER, 6,   0.0, '', False);
+  ConstAdd('LightGray',    '7',    TK_INTEGER, 7,   0.0, '', False);
+  ConstAdd('DarkGray',     '8',    TK_INTEGER, 8,   0.0, '', False);
+  ConstAdd('LightBlue',    '9',    TK_INTEGER, 9,   0.0, '', False);
+  ConstAdd('LightGreen',   '10',   TK_INTEGER, 10,  0.0, '', False);
+  ConstAdd('LightCyan',    '11',   TK_INTEGER, 11,  0.0, '', False);
+  ConstAdd('LightRed',     '12',   TK_INTEGER, 12,  0.0, '', False);
+  ConstAdd('LightMagenta', '13',   TK_INTEGER, 13,  0.0, '', False);
+  ConstAdd('Yellow',       '14',   TK_INTEGER, 14,  0.0, '', False);
+  ConstAdd('White',        '15',   TK_INTEGER, 15,  0.0, '', False);
+  ConstAdd('Blink',        '128',  TK_INTEGER, 128, 0.0, '', False);
+  { TODO 19 : constantes CRT - modes ecran }
+  ConstAdd('BW40',    '0',   TK_INTEGER, 0,   0.0, '', False);
+  ConstAdd('CO40',    '1',   TK_INTEGER, 1,   0.0, '', False);
+  ConstAdd('BW80',    '2',   TK_INTEGER, 2,   0.0, '', False);
+  ConstAdd('CO80',    '3',   TK_INTEGER, 3,   0.0, '', False);
+  ConstAdd('Mono',    '7',   TK_INTEGER, 7,   0.0, '', False);
+  ConstAdd('Font8x8', '256', TK_INTEGER, 256, 0.0, '', False);
 End;
 
 { ---- ConstEvalAtom : evaluer un atome constant -------------- }
@@ -2542,7 +2567,18 @@ Begin
                    (L = 'paramcount') Or (L = 'paramstr') Or
                    (L = 'addr') Or (L = 'eof') Or (L = 'eoln') Or
                    (L = 'ioresult') Or (L = 'filepos') Or
-                   (L = 'filesize');
+                   (L = 'filesize') Or
+                   { TODO 19 : fonctions CRT }
+                   (L = 'clrscr') Or (L = 'clreol') Or
+                   (L = 'gotoxy') Or (L = 'wherex') Or
+                   (L = 'wherey') Or (L = 'textcolor') Or
+                   (L = 'textbackground') Or (L = 'delay') Or
+                   (L = 'sound') Or (L = 'nosound') Or
+                   (L = 'keypressed') Or (L = 'readkey') Or
+                   (L = 'highvideo') Or (L = 'lowvideo') Or
+                   (L = 'normvideo') Or (L = 'window') Or
+                   (L = 'insline') Or (L = 'delline') Or
+                   (L = 'textmode');
 End;
 
 { ---- EmitBuiltinCall : genere l appel de fonction standard --- }
@@ -2665,6 +2701,167 @@ Begin
       If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
     End;
     EmitBuiltinCall := '0 /* IOResult */';
+    Exit;
+  End;
+
+  { ============================================================
+    TODO 19 - UNITE CRT [IMPLEMENTE]
+    Fonctions sans argument ou a argument optionnel.
+    ============================================================ }
+
+  { -- ClrScr : effacer l ecran -------------------------------- }
+  If L = 'clrscr' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := 'process.stdout.write("\x1b[2J\x1b[H")';
+    Exit;
+  End;
+
+  { -- ClrEol : effacer jusqu a la fin de ligne ---------------- }
+  If L = 'clreol' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := 'process.stdout.write("\x1b[K")';
+    Exit;
+  End;
+
+  { -- HighVideo : intensite haute ----------------------------- }
+  If L = 'highvideo' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := 'process.stdout.write("\x1b[1m")';
+    Exit;
+  End;
+
+  { -- LowVideo : intensite basse ----------------------------- }
+  If L = 'lowvideo' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := 'process.stdout.write("\x1b[2m")';
+    Exit;
+  End;
+
+  { -- NormVideo : reinitialiser les attributs video ----------- }
+  If L = 'normvideo' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := 'process.stdout.write("\x1b[0m")';
+    Exit;
+  End;
+
+  { -- InsLine : inserer une ligne ----------------------------- }
+  If L = 'insline' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := 'process.stdout.write("\x1b[L")';
+    Exit;
+  End;
+
+  { -- DelLine : supprimer une ligne --------------------------- }
+  If L = 'delline' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := 'process.stdout.write("\x1b[M")';
+    Exit;
+  End;
+
+  { -- NoSound : arreter le son (stub) ------------------------- }
+  If L = 'nosound' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '/* NoSound */';
+    Exit;
+  End;
+
+  { -- KeyPressed : touche disponible (stub) ------------------- }
+  If L = 'keypressed' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := 'false /* KeyPressed stub */';
+    Exit;
+  End;
+
+  { -- ReadKey : lire un caractere (stub) ---------------------- }
+  If L = 'readkey' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '"" /* ReadKey stub */';
+    Exit;
+  End;
+
+  { -- WhereX : position X courante (stub) --------------------- }
+  If L = 'wherex' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '1 /* WhereX stub */';
+    Exit;
+  End;
+
+  { -- WhereY : position Y courante (stub) --------------------- }
+  If L = 'wherey' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    End;
+    EmitBuiltinCall := '1 /* WhereY stub */';
     Exit;
   End;
 
@@ -3381,6 +3578,84 @@ Begin
     End;
     If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
     EmitBuiltinCall := '/* BlockWrite(' + Args + ') */';
+    Exit;
+  End;
+
+  { ============================================================
+    TODO 19 - UNITE CRT [IMPLEMENTE]
+    Procedures avec argument(s) de l unite CRT Turbo Pascal.
+    ============================================================ }
+
+  { -- GotoXY(X, Y) : positionner le curseur ------------------- }
+  If L = 'gotoxy' Then
+  Begin
+    Arg2 := '1';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Arg2 := ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := 'process.stdout.write("\x1b[" + ' +
+                       Arg2 + ' + ";" + ' + Arg1 + ' + "H")';
+    Exit;
+  End;
+
+  { -- TextColor(Color) : couleur de texte ANSI ---------------- }
+  If L = 'textcolor' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := 'process.stdout.write("\x1b[" + _TPR_CrtFg(' +
+                       Arg1 + ') + "m")';
+    Exit;
+  End;
+
+  { -- TextBackground(Color) : couleur de fond ANSI ------------ }
+  If L = 'textbackground' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := 'process.stdout.write("\x1b[" + _TPR_CrtBg(' +
+                       Arg1 + ') + "m")';
+    Exit;
+  End;
+
+  { -- Window(X1, Y1, X2, Y2) : definir fenetre (stub) -------- }
+  If L = 'window' Then
+  Begin
+    Args := Arg1;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+          (TokenPool[P].Val = ',') Do
+    Begin
+      Inc(P);
+      Args := Args + ', ' + ParseExpr(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* Window(' + Args + ') */';
+    Exit;
+  End;
+
+  { -- Sound(Hz) : generer un son (stub) ----------------------- }
+  If L = 'sound' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* Sound(' + Arg1 + ') */';
+    Exit;
+  End;
+
+  { -- Delay(Ms) : delai en millisecondes (stub) --------------- }
+  If L = 'delay' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* Delay(' + Arg1 + ') */';
+    Exit;
+  End;
+
+  { -- TextMode(Mode) : changer le mode texte (stub) ----------- }
+  If L = 'textmode' Then
+  Begin
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
+    EmitBuiltinCall := '/* TextMode(' + Arg1 + ') */';
     Exit;
   End;
 
@@ -4224,6 +4499,54 @@ Begin
   SymAdd('Delay',        SK_PROC,  -1);
   SymAdd('Sound',        SK_PROC,  -1);
   SymAdd('NoSound',      SK_PROC,  -1);
+  { TODO 19 : procedures et fonctions CRT supplementaires }
+  SymAdd('ClrEol',       SK_PROC,  -1);
+  SymAdd('HighVideo',    SK_PROC,  -1);
+  SymAdd('LowVideo',     SK_PROC,  -1);
+  SymAdd('NormVideo',    SK_PROC,  -1);
+  SymAdd('Window',       SK_PROC,  -1);
+  SymAdd('InsLine',      SK_PROC,  -1);
+  SymAdd('DelLine',      SK_PROC,  -1);
+  SymAdd('TextMode',     SK_PROC,  -1);
+  { TODO 19 : constantes CRT - couleurs }
+  TI := TypeFindByName('Byte');
+  SymAdd('Black',        SK_CONST, TI);
+  SymAdd('Blue',         SK_CONST, TI);
+  SymAdd('Green',        SK_CONST, TI);
+  SymAdd('Cyan',         SK_CONST, TI);
+  SymAdd('Red',          SK_CONST, TI);
+  SymAdd('Magenta',      SK_CONST, TI);
+  SymAdd('Brown',        SK_CONST, TI);
+  SymAdd('LightGray',   SK_CONST, TI);
+  SymAdd('DarkGray',    SK_CONST, TI);
+  SymAdd('LightBlue',   SK_CONST, TI);
+  SymAdd('LightGreen',  SK_CONST, TI);
+  SymAdd('LightCyan',   SK_CONST, TI);
+  SymAdd('LightRed',    SK_CONST, TI);
+  SymAdd('LightMagenta',SK_CONST, TI);
+  SymAdd('Yellow',       SK_CONST, TI);
+  SymAdd('White',        SK_CONST, TI);
+  SymAdd('Blink',        SK_CONST, TI);
+  { TODO 19 : constantes CRT - modes ecran }
+  SymAdd('BW40',         SK_CONST, TI);
+  SymAdd('CO40',         SK_CONST, TI);
+  SymAdd('BW80',         SK_CONST, TI);
+  SymAdd('CO80',         SK_CONST, TI);
+  SymAdd('Mono',         SK_CONST, TI);
+  SymAdd('Font8x8',      SK_CONST, TI);
+  { TODO 19 : variables CRT }
+  TI := TypeFindByName('Byte');
+  SymAdd('TextAttr',     SK_VAR, TI);
+  TI := TypeFindByName('Word');
+  SymAdd('WindMin',      SK_VAR, TI);
+  SymAdd('WindMax',      SK_VAR, TI);
+  TI := TypeFindByName('Integer');
+  SymAdd('LastMode',     SK_VAR, TI);
+  TI := TypeFindByName('Boolean');
+  SymAdd('DirectVideo',  SK_VAR, TI);
+  SymAdd('CheckBreak',   SK_VAR, TI);
+  SymAdd('CheckEOF',     SK_VAR, TI);
+  SymAdd('CheckSnow',    SK_VAR, TI);
 
   SymAdd('Ord',          SK_FUNC,  -1);
   SymAdd('Chr',          SK_FUNC,  -1);
@@ -4703,6 +5026,19 @@ Begin
   EmitLine('/* Generated by TP2JS ' + TP2JS_VERSION +
            ' - ' + TP2JS_DATE + ' */');
   EmitLine('"use strict";');
+  EmitBlankLine;
+  { TODO 19 : helpers CRT - conversion couleurs TP vers codes ANSI }
+  EmitComment('CRT color helpers');
+  EmitLine('var TextAttr = 7, WindMin = 0, WindMax = 0x184F, LastMode = 3;');
+  EmitLine('var DirectVideo = true, CheckBreak = true, CheckEOF = false, CheckSnow = true;');
+  EmitLine('function _TPR_CrtFg(c) {');
+  EmitLine('  var m = [30,34,32,36,31,35,33,37,90,94,92,96,91,95,93,97];');
+  EmitLine('  return (c >= 0 && c <= 15) ? String(m[c]) : "37";');
+  EmitLine('}');
+  EmitLine('function _TPR_CrtBg(c) {');
+  EmitLine('  var m = [40,44,42,46,41,45,43,47];');
+  EmitLine('  return (c >= 0 && c <= 7) ? String(m[c]) : "40";');
+  EmitLine('}');
   EmitBlankLine;
 End;
 
