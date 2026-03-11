@@ -192,6 +192,511 @@ _CFRT_PRINTNUM:
         CALL   _CFRT_PRINT
         RET
 
+_CFRT_LEFT:
+        PUSH   DI
+        MOV   DI, OFFSET _CF_STRBUF
+_CFRT_LEFT_LP:
+        OR   CX, CX
+        JZ   _CFRT_LEFT_DN
+        LODSB
+        OR   AL, AL
+        JZ   _CFRT_LEFT_DN
+        STOSB
+        DEC   CX
+        JMP   _CFRT_LEFT_LP
+_CFRT_LEFT_DN:
+        MOV   BYTE PTR [DI], 0
+        MOV   AX, OFFSET _CF_STRBUF
+        POP   DI
+        RET
+
+_CFRT_RIGHT:
+        PUSH   DI
+        PUSH   BX
+        PUSH   CX
+        PUSH   SI
+        CALL   _CFRT_STRLEN
+        POP   SI
+        MOV   BX, CX
+        POP   CX
+        CMP   CX, BX
+        JAE   _CFRT_RIGHT_ALL
+        MOV   AX, BX
+        SUB   AX, CX
+        ADD   SI, AX
+        JMP   _CFRT_RIGHT_CP
+_CFRT_RIGHT_ALL:
+        MOV   CX, BX
+_CFRT_RIGHT_CP:
+        MOV   DI, OFFSET _CF_STRBUF
+_CFRT_RIGHT_LP:
+        OR   CX, CX
+        JZ   _CFRT_RIGHT_DN
+        LODSB
+        STOSB
+        DEC   CX
+        JMP   _CFRT_RIGHT_LP
+_CFRT_RIGHT_DN:
+        MOV   BYTE PTR [DI], 0
+        MOV   AX, OFFSET _CF_STRBUF
+        POP   BX
+        POP   DI
+        RET
+
+_CFRT_MID:
+        PUSH   DI
+        DEC   BX
+_CFRT_MID_SK:
+        OR   BX, BX
+        JZ   _CFRT_MID_CP
+        CMP   BYTE PTR [SI], 0
+        JE   _CFRT_MID_CP
+        INC   SI
+        DEC   BX
+        JMP   _CFRT_MID_SK
+_CFRT_MID_CP:
+        MOV   DI, OFFSET _CF_STRBUF
+_CFRT_MID_LP:
+        OR   CX, CX
+        JZ   _CFRT_MID_DN
+        LODSB
+        OR   AL, AL
+        JZ   _CFRT_MID_DN
+        STOSB
+        DEC   CX
+        JMP   _CFRT_MID_LP
+_CFRT_MID_DN:
+        MOV   BYTE PTR [DI], 0
+        MOV   AX, OFFSET _CF_STRBUF
+        POP   DI
+        RET
+
+_CFRT_TRIM:
+        PUSH   DI
+_CFRT_TRIM_LS:
+        CMP   BYTE PTR [SI], 32
+        JNE   _CFRT_TRIM_CP
+        INC   SI
+        JMP   _CFRT_TRIM_LS
+_CFRT_TRIM_CP:
+        MOV   DI, OFFSET _CF_STRBUF
+_CFRT_TRIM_CL:
+        LODSB
+        STOSB
+        OR   AL, AL
+        JNZ   _CFRT_TRIM_CL
+        DEC   DI
+_CFRT_TRIM_RS:
+        CMP   DI, OFFSET _CF_STRBUF
+        JBE   _CFRT_TRIM_DN
+        DEC   DI
+        CMP   BYTE PTR [DI], 32
+        JE   _CFRT_TRIM_RS
+        INC   DI
+_CFRT_TRIM_DN:
+        MOV   BYTE PTR [DI], 0
+        MOV   AX, OFFSET _CF_STRBUF
+        POP   DI
+        RET
+
+_CFRT_LTRIM:
+        PUSH   DI
+_CFRT_LTR_LS:
+        CMP   BYTE PTR [SI], 32
+        JNE   _CFRT_LTR_CP
+        INC   SI
+        JMP   _CFRT_LTR_LS
+_CFRT_LTR_CP:
+        MOV   DI, OFFSET _CF_STRBUF
+_CFRT_LTR_CL:
+        LODSB
+        STOSB
+        OR   AL, AL
+        JNZ   _CFRT_LTR_CL
+        MOV   AX, OFFSET _CF_STRBUF
+        POP   DI
+        RET
+
+_CFRT_RTRIM:
+        PUSH   DI
+        MOV   DI, OFFSET _CF_STRBUF
+_CFRT_RTR_CL:
+        LODSB
+        STOSB
+        OR   AL, AL
+        JNZ   _CFRT_RTR_CL
+        DEC   DI
+_CFRT_RTR_RS:
+        CMP   DI, OFFSET _CF_STRBUF
+        JBE   _CFRT_RTR_DN
+        DEC   DI
+        CMP   BYTE PTR [DI], 32
+        JE   _CFRT_RTR_RS
+        INC   DI
+_CFRT_RTR_DN:
+        MOV   BYTE PTR [DI], 0
+        MOV   AX, OFFSET _CF_STRBUF
+        POP   DI
+        RET
+
+_CFRT_UCASE:
+        PUSH   DI
+        MOV   DI, OFFSET _CF_STRBUF
+_CFRT_UC_LP:
+        LODSB
+        CMP   AL, 'a'
+        JB   _CFRT_UC_ST
+        CMP   AL, 'z'
+        JA   _CFRT_UC_ST
+        SUB   AL, 32
+_CFRT_UC_ST:
+        STOSB
+        OR   AL, AL
+        JNZ   _CFRT_UC_LP
+        MOV   AX, OFFSET _CF_STRBUF
+        POP   DI
+        RET
+
+_CFRT_LCASE:
+        PUSH   DI
+        MOV   DI, OFFSET _CF_STRBUF
+_CFRT_LC_LP:
+        LODSB
+        CMP   AL, 'A'
+        JB   _CFRT_LC_ST
+        CMP   AL, 'Z'
+        JA   _CFRT_LC_ST
+        ADD   AL, 32
+_CFRT_LC_ST:
+        STOSB
+        OR   AL, AL
+        JNZ   _CFRT_LC_LP
+        MOV   AX, OFFSET _CF_STRBUF
+        POP   DI
+        RET
+
+_CFRT_FIND:
+        PUSH   BX
+        PUSH   CX
+        PUSH   DX
+        XOR   BX, BX
+_CFRT_FND_LP:
+        CMP   BYTE PTR [SI], 0
+        JE   _CFRT_FND_NF
+        INC   BX
+        PUSH   SI
+        PUSH   DI
+_CFRT_FND_CM:
+        MOV   AL, [DI]
+        OR   AL, AL
+        JZ   _CFRT_FND_OK
+        CMP   AL, [SI]
+        JNE   _CFRT_FND_NX
+        INC   SI
+        INC   DI
+        JMP   _CFRT_FND_CM
+_CFRT_FND_NX:
+        POP   DI
+        POP   SI
+        INC   SI
+        JMP   _CFRT_FND_LP
+_CFRT_FND_OK:
+        POP   DI
+        POP   SI
+        MOV   AX, BX
+        JMP   _CFRT_FND_RT
+_CFRT_FND_NF:
+        XOR   AX, AX
+_CFRT_FND_RT:
+        POP   DX
+        POP   CX
+        POP   BX
+        RET
+
+_CFRT_FINDNOCASE:
+        PUSH   BX
+        PUSH   CX
+        PUSH   DX
+        XOR   BX, BX
+_CFRT_FNC_LP:
+        CMP   BYTE PTR [SI], 0
+        JE   _CFRT_FNC_NF
+        INC   BX
+        PUSH   SI
+        PUSH   DI
+_CFRT_FNC_CM:
+        MOV   AL, [DI]
+        OR   AL, AL
+        JZ   _CFRT_FNC_OK
+        MOV   AH, [SI]
+        CMP   AL, 'a'
+        JB   _CFRT_FNC_U1
+        CMP   AL, 'z'
+        JA   _CFRT_FNC_U1
+        SUB   AL, 32
+_CFRT_FNC_U1:
+        CMP   AH, 'a'
+        JB   _CFRT_FNC_U2
+        CMP   AH, 'z'
+        JA   _CFRT_FNC_U2
+        SUB   AH, 32
+_CFRT_FNC_U2:
+        CMP   AL, AH
+        JNE   _CFRT_FNC_NX
+        INC   SI
+        INC   DI
+        JMP   _CFRT_FNC_CM
+_CFRT_FNC_NX:
+        POP   DI
+        POP   SI
+        INC   SI
+        JMP   _CFRT_FNC_LP
+_CFRT_FNC_OK:
+        POP   DI
+        POP   SI
+        MOV   AX, BX
+        JMP   _CFRT_FNC_RT
+_CFRT_FNC_NF:
+        XOR   AX, AX
+_CFRT_FNC_RT:
+        POP   DX
+        POP   CX
+        POP   BX
+        RET
+
+_CFRT_REPLACE:
+        PUSH   CX
+        PUSH   DX
+        PUSH   BP
+        MOV   BP, OFFSET _CF_STRBUF
+        PUSH   SI
+        MOV   SI, DI
+        CALL   _CFRT_STRLEN
+        MOV   DX, CX
+        POP   SI
+_CFRT_RPL_LP:
+        CMP   BYTE PTR [SI], 0
+        JE   _CFRT_RPL_DN
+        PUSH   SI
+        PUSH   DI
+        MOV   CX, DX
+_CFRT_RPL_CM:
+        OR   CX, CX
+        JZ   _CFRT_RPL_FD
+        MOV   AL, [SI]
+        CMP   AL, [DI]
+        JNE   _CFRT_RPL_NM
+        INC   SI
+        INC   DI
+        DEC   CX
+        JMP   _CFRT_RPL_CM
+_CFRT_RPL_NM:
+        POP   DI
+        POP   SI
+        LODSB
+        MOV   CX, BP
+        XCHG   DI, CX
+        STOSB
+        MOV   BP, DI
+        XCHG   DI, CX
+        JMP   _CFRT_RPL_LP
+_CFRT_RPL_FD:
+        POP   DI
+        POP   SI
+        ADD   SI, DX
+        PUSH   SI
+        MOV   SI, BX
+        XCHG   DI, BP
+_CFRT_RPL_RC:
+        LODSB
+        OR   AL, AL
+        JZ   _CFRT_RPL_RD
+        STOSB
+        JMP   _CFRT_RPL_RC
+_CFRT_RPL_RD:
+        MOV   BP, DI
+        POP   SI
+        MOV   DI, OFFSET _CF_NULL_STR
+        XOR   DX, DX
+_CFRT_RPL_RS:
+        LODSB
+        XCHG   DI, BP
+        STOSB
+        MOV   BP, DI
+        XCHG   DI, BP
+        OR   AL, AL
+        JNZ   _CFRT_RPL_RS
+        JMP   _CFRT_RPL_RT
+_CFRT_RPL_DN:
+        XCHG   DI, BP
+        MOV   BYTE PTR [DI], 0
+_CFRT_RPL_RT:
+        MOV   AX, OFFSET _CF_STRBUF
+        POP   BP
+        POP   DX
+        POP   CX
+        RET
+
+_CFRT_STRTONUM:
+        PUSH   BX
+        PUSH   CX
+        PUSH   DX
+        XOR   AX, AX
+        XOR   CX, CX
+        CMP   BYTE PTR [SI], '-'
+        JNE   _CFRT_STN_LP
+        MOV   CX, 1
+        INC   SI
+_CFRT_STN_LP:
+        MOV   BL, [SI]
+        XOR   BH, BH
+        SUB   BL, '0'
+        JB   _CFRT_STN_DN
+        CMP   BL, 9
+        JA   _CFRT_STN_DN
+        PUSH   DX
+        MOV   DX, 10
+        MUL   DX
+        POP   DX
+        ADD   AX, BX
+        INC   SI
+        JMP   _CFRT_STN_LP
+_CFRT_STN_DN:
+        OR   CX, CX
+        JZ   _CFRT_STN_RT
+        NEG   AX
+_CFRT_STN_RT:
+        POP   DX
+        POP   CX
+        POP   BX
+        RET
+
+_CFRT_REPEAT:
+        PUSH   DI
+        PUSH   BX
+        MOV   BX, SI
+        MOV   DI, OFFSET _CF_STRBUF
+_CFRT_RPT_OL:
+        OR   CX, CX
+        JZ   _CFRT_RPT_DN
+        MOV   SI, BX
+_CFRT_RPT_IL:
+        LODSB
+        OR   AL, AL
+        JZ   _CFRT_RPT_NX
+        STOSB
+        JMP   _CFRT_RPT_IL
+_CFRT_RPT_NX:
+        DEC   CX
+        JMP   _CFRT_RPT_OL
+_CFRT_RPT_DN:
+        MOV   BYTE PTR [DI], 0
+        MOV   AX, OFFSET _CF_STRBUF
+        POP   BX
+        POP   DI
+        RET
+
+_CFRT_REVERSE:
+        PUSH   DI
+        PUSH   BX
+        PUSH   CX
+        CALL   _CFRT_STRLEN
+        MOV   DI, OFFSET _CF_STRBUF
+        ADD   SI, CX
+        DEC   SI
+_CFRT_REV_LP:
+        OR   CX, CX
+        JZ   _CFRT_REV_DN
+        MOV   AL, [SI]
+        STOSB
+        DEC   SI
+        DEC   CX
+        JMP   _CFRT_REV_LP
+_CFRT_REV_DN:
+        MOV   BYTE PTR [DI], 0
+        MOV   AX, OFFSET _CF_STRBUF
+        POP   CX
+        POP   BX
+        POP   DI
+        RET
+
+_CFRT_LISTLEN:
+        PUSH   BX
+        XOR   AX, AX
+        CMP   BYTE PTR [SI], 0
+        JE   _CFRT_LLN_RT
+        INC   AX
+_CFRT_LLN_LP:
+        MOV   BL, [SI]
+        OR   BL, BL
+        JZ   _CFRT_LLN_RT
+        CMP   BL, ','
+        JNE   _CFRT_LLN_NX
+        INC   AX
+_CFRT_LLN_NX:
+        INC   SI
+        JMP   _CFRT_LLN_LP
+_CFRT_LLN_RT:
+        POP   BX
+        RET
+
+_CFRT_LISTGETAT:
+        PUSH   DI
+        DEC   CX
+_CFRT_LGA_SK:
+        OR   CX, CX
+        JZ   _CFRT_LGA_CP
+        CMP   BYTE PTR [SI], 0
+        JE   _CFRT_LGA_CP
+        CMP   BYTE PTR [SI], ','
+        JNE   _CFRT_LGA_NX
+        DEC   CX
+_CFRT_LGA_NX:
+        INC   SI
+        JMP   _CFRT_LGA_SK
+_CFRT_LGA_CP:
+        MOV   DI, OFFSET _CF_STRBUF2
+_CFRT_LGA_CL:
+        MOV   AL, [SI]
+        OR   AL, AL
+        JZ   _CFRT_LGA_DN
+        CMP   AL, ','
+        JE   _CFRT_LGA_DN
+        STOSB
+        INC   SI
+        JMP   _CFRT_LGA_CL
+_CFRT_LGA_DN:
+        MOV   BYTE PTR [DI], 0
+        MOV   AX, OFFSET _CF_STRBUF2
+        POP   DI
+        RET
+
+_CFRT_LISTAPPEND:
+        PUSH   BX
+        MOV   BX, OFFSET _CF_STRBUF
+_CFRT_LAP_CL:
+        LODSB
+        MOV   [BX], AL
+        INC   BX
+        OR   AL, AL
+        JNZ   _CFRT_LAP_CL
+        DEC   BX
+        CMP   BX, OFFSET _CF_STRBUF
+        JE   _CFRT_LAP_CV
+        MOV   BYTE PTR [BX], ','
+        INC   BX
+_CFRT_LAP_CV:
+        MOV   SI, DI
+_CFRT_LAP_VL:
+        LODSB
+        MOV   [BX], AL
+        INC   BX
+        OR   AL, AL
+        JNZ   _CFRT_LAP_VL
+        MOV   AX, OFFSET _CF_STRBUF
+        POP   BX
+        RET
+
 _TEXT ENDS
 
 _DATA SEGMENT PUBLIC 'DATA'
@@ -206,6 +711,7 @@ _CF_NUMBUF  DB  12 DUP(0)
 _CF_SWTMP  DW  0
 _CF_LOOPLIM  DW  0
 _CF_LOOPSTP  DW  0
+_CF_STRBUF2  DB  256 DUP(0)
 _CFV_total  DW  0
 _CFV_i  DW  0
 _CFV_countdown  DW  0
