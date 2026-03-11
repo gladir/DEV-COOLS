@@ -1,0 +1,41 @@
+<html>
+<body>
+<h1>Test TODO 12</h1>
+<%
+const
+  TITLE = 'PSP86 Test';
+  MAX   = 42;
+
+var
+  x: Integer;
+  name: String;
+  flag: Boolean;
+  ch: Char;
+
+x := 123;
+name := 'monde';
+flag := true;
+
+{ Test Write avec differents types }
+Write('Bonjour ');
+WriteLn(name);
+WriteLn('x = ', x);
+WriteLn('flag = ', flag);
+WriteLn;
+Write(MAX);
+WriteLn;
+Write('Valeur: ', x, ' ok');
+WriteLn;
+%>
+<p>Fragment HTML entre blocs Pascal</p>
+<%
+WriteLn('Back in code');
+%>
+<footer>
+<p>Expression inline: <%= x %></p>
+<p>Const inline: <%= MAX %></p>
+<p>Bool inline: <%= flag %></p>
+<p>String inline: <%= name %></p>
+</footer>
+</body>
+</html>

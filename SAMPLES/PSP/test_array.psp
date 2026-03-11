@@ -1,0 +1,38 @@
+<%
+{ test_array.psp - Tests pour TODO 19 : Tableaux (Array) }
+program test_array;
+
+const
+  N = 5;
+
+type
+  TTab = array[1..10] of Integer;
+
+var
+  arr: array[1..N] of Integer;
+  total: Integer;
+  i: Integer;
+
+begin
+  { Initialiser le tableau }
+  arr[1] := 10;
+  arr[2] := 20;
+  arr[3] := 30;
+  arr[4] := 40;
+  arr[5] := 50;
+
+  { Lire et additionner }
+  total := 0;
+  for i := 1 to N do
+    total := total + arr[i];
+
+  { Afficher la somme (devrait etre 150) }
+  WriteLn(total);
+
+  { Tester Length, Low, High, SizeOf }
+  WriteLn(Length(arr));
+  WriteLn(Low(arr));
+  WriteLn(High(arr));
+  WriteLn(SizeOf(arr));
+end.
+%>
