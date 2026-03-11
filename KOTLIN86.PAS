@@ -2499,7 +2499,7 @@ Begin
       ParseExpr(Res);
       ExprFlushToAX(Res);
       EmitInstrAB('SHL', 'AX', '1');  { index * 2 (taille mot 16 bits) }
-      EmitInstrAB('POP', 'BX', '');   { BX = base tableau }
+      EmitInstrA('POP', 'BX');          { BX = base tableau }
       EmitInstrAB('ADD', 'BX', 'AX');
       EmitInstrAB('MOV', 'AX', '[BX]');
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
