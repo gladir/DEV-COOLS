@@ -14,7 +14,7 @@
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
 
-  TODO 01 - INFRASTRUCTURE ET OPTIONS
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
             TOptions (SrcFile, OutFile, Verbose, DebugMode)
             ParseArgs : analyser argv (source.raku [sortie.asm] [-v] [-d])
             FatalError, WarnMsg, EXIT_OK / EXIT_ERROR / EXIT_USAGE
@@ -446,5 +446,828 @@
 
 Program RAKU86;
 
+{$IFDEF FPC}
+  {$MODE TP}
+  {$H-}
+{$ENDIF}
+{$I-}
+
+{ ============================================================
+  CONSTANTES GLOBALES
+  ============================================================ }
+Const
+  RAKU86_VERSION = '1.0';
+  RAKU86_DATE    = '2026-03-06';
+
+  { Limites des tableaux internes }
+  MAX_SYM       = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_LABEL     = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_SCOPE     = {$IFDEF FPC}64{$ELSE}32{$ENDIF};
+  MAX_DATA      = {$IFDEF FPC}512{$ELSE}100{$ENDIF};
+  MAX_TYPE      = {$IFDEF FPC}32{$ELSE}16{$ENDIF};
+  MAX_PARAM     = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
+  MAX_LOOP_NEST = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
+  MAX_ERRORS    = {$IFDEF FPC}30{$ELSE}3{$ENDIF};
+  MAX_STR       = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
+  MAX_MODULE    = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
+  MAX_MULTI     = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
+  MAX_HASH_PAIRS  = 16;
+  MAX_HASH_KEYS   = {$IFDEF FPC}512{$ELSE}100{$ENDIF};
+  STACK_SIZE      = 1024;
+
+  { Prefixes de nommage ASM }
+  RK_VAR_PFX  = '_RKV_';    { variable scalaire/tableau/hash }
+  RK_SUB_PFX  = '_RKS_';    { sous-routine sub / method      }
+  RK_STR_PFX  = '_RKK_';    { constante chaine               }
+  RK_RT_PFX   = '_RKRT_';   { routine runtime                }
+  RK_LBL_PFX  = '_RKL_';    { label de saut interne          }
+  RK_CLS_PFX  = '_RKC_';    { classe                         }
+  RK_ROLE_PFX = '_RKR_';    { role                           }
+  RK_GRM_PFX  = '_RKG_';    { grammar                        }
+
+  { Codes de sortie }
+  EXIT_OK    = 0;
+  EXIT_ERROR = 1;
+  EXIT_USAGE = 2;
+
+  { Indices de types primitifs Raku }
+  TY_IDX_INT     = 0;   { Int : entier signe 16 bits (2 octets)  }
+  TY_IDX_BOOL    = 1;   { Bool : True/False (1 octet)            }
+  TY_IDX_STR     = 2;   { Str : pointeur chaine (2 octets)       }
+  TY_IDX_RAT     = 3;   { Rat : stub entier (2 octets)           }
+  TY_IDX_ARRAY   = 4;   { Array : pointeur tableau (2 octets)    }
+  TY_IDX_HASH    = 5;   { Hash : pointeur hash (2 octets)        }
+  TY_IDX_CODE    = 6;   { Code : pointeur sub/block (2 octets)   }
+  TY_IDX_CLASS   = 7;   { objet instance (pointeur 2 octets)     }
+  TY_IDX_ROLE    = 8;   { role compose                           }
+  TY_IDX_MU      = 9;   { Mu : type racine                       }
+  TY_IDX_ANY     = 10;  { Any : sous-type de Mu                  }
+  TY_IDX_JUNCTION= 11;  { Junction                               }
+  TY_IDX_PAIR    = 12;  { Pair cle=>valeur (4 octets)            }
+  TY_IDX_REGEX   = 13;  { Regex                                  }
+  TY_IDX_MATCH   = 14;  { Match                                  }
+  TY_IDX_NIL     = 15;  { Nil (type indefini)                    }
+  TY_PRIM_COUNT  = 16;
+  TY_UNKNOWN     = -1;
+
+{ ============================================================
+  TYPES
+  ============================================================ }
+Type
+  TString = String[MAX_STR];
+
+  { ---- Tokens Raku ----------------------------------------- }
+  TTokenKind = (
+    TK_EOF,         { fin de fichier                       }
+    TK_IDENT,       { identificateur                       }
+    TK_KEYWORD,     { mot-cle Raku reconnu                 }
+    TK_SCALAR,      { variable scalaire $nom               }
+    TK_ARRAY_SIG,   { variable tableau @nom                }
+    TK_HASH_SIG,    { variable hash %nom                   }
+    TK_CODE_SIG,    { variable code &nom                   }
+    TK_INTEGER,     { litteral entier                      }
+    TK_RATIONAL,    { litteral rationnel / flottant         }
+    TK_STRING,      { litteral chaine                      }
+    TK_REGEX,       { expression reguliere /pat/           }
+    TK_OP,          { operateur                            }
+    TK_PUNCT        (* ponctuation () [] ; , -> =>          *)
+  );
+
+  TToken = Record
+    Kind     : TTokenKind;
+    Val      : TString;       { valeur textuelle brute             }
+    IntVal   : LongInt;       { valeur entiere (TK_INTEGER)        }
+    FloatVal : Real;          { valeur flottante (TK_RATIONAL)     }
+    Line     : Integer;       { ligne source (1-base)              }
+    Col      : Integer;       { colonne source (1-base)            }
+  End;
+
+  { ---- Options de compilation ----------------------------- }
+  TOptions = Record
+    SrcFile   : TString;   { script source (.raku/.p6)            }
+    OutFile   : TString;   { fichier assembleur de sortie (.asm)  }
+    Verbose   : Boolean;   { -v : banniere et statistiques        }
+    DebugMode : Boolean;   { -d : affichage de chaque token       }
+    Warnings  : Boolean;   { -w : activer les avertissements      }
+  End;
+
+  { ---- Categories de symboles ----------------------------- }
+  TSymCat = (
+    SC_MY,           { my $var / my @arr / my %h             }
+    SC_OUR,          { our $var (portee package)              }
+    SC_HAS,          { has $.attr / has $!attr (attribut)     }
+    SC_PARAM,        { parametre de sous-routine              }
+    SC_SUB,          { sous-routine (sub)                     }
+    SC_METHOD,       { methode (method)                       }
+    SC_CLASS,        { class                                  }
+    SC_ROLE,         { role                                   }
+    SC_MODULE,       { module / package                       }
+    SC_CONST         { constant                               }
+  );
+
+  TSymRec = Record
+    Name        : TString;   { nom sans sigil                  }
+    SigilName   : TString;   { nom avec sigil ($x @x %x &x)   }
+    MangledName : TString;   { _RKV_x / _RKS_x                }
+    Cat         : TSymCat;
+    TypeIdx     : Integer;   { indice dans TypeTab             }
+    ScopeLevel  : Integer;
+    Offset      : Integer;   { [BP-n] pour locaux, DATA sinon  }
+    IsExported  : Boolean;   { marque is export                }
+    DeclLine    : Integer;
+  End;
+
+  { ---- Types internes ------------------------------------- }
+  TTypeKind = (
+    TYK_INT,
+    TYK_BOOL,
+    TYK_STR,
+    TYK_RAT,
+    TYK_ARRAY,
+    TYK_HASH,
+    TYK_CODE,
+    TYK_CLASS,
+    TYK_ROLE,
+    TYK_MU,
+    TYK_ANY,
+    TYK_JUNCTION,
+    TYK_PAIR,
+    TYK_REGEX,
+    TYK_MATCH,
+    TYK_NIL,
+    TYK_UNKNOWN
+  );
+
+  TTypeRec = Record
+    Name    : TString;
+    Kind    : TTypeKind;
+    Size    : Integer;   { taille en octets                   }
+    ElemIdx : Integer;   { type des elements (TYK_ARRAY)      }
+  End;
+
+  { ---- Valeurs d'expression ------------------------------- }
+  TExprKind = (
+    EK_NONE,   { void / pas de valeur  }
+    EK_IMM,    { immediat dans ImmVal  }
+    EK_AX,     { valeur dans AX        }
+    EK_DXAX,   { valeur longue DX:AX   }
+    EK_MEM     { adresse [BP+Offset] ou [_RKV_x] }
+  );
+
+  TExprVal = Record
+    Kind    : TExprKind;
+    ImmVal  : LongInt;
+    TypeIdx : Integer;
+    Offset  : Integer;
+  End;
+
+  { ---- Segment de donnees --------------------------------- }
+  TDataKind = (DK_WORD, DK_BYTE, DK_STR, DK_ARRAY_BLK);
+
+  TDataRec = Record
+    LblName   : TString;
+    Kind      : TDataKind;
+    IntVal    : LongInt;
+    StrVal    : TString;
+    ElemCount : Integer;
+  End;
+
+  { ---- Table de hachage (compile-time) ------------------- }
+  THashKeyRec = Record
+    HashSym : Integer;
+    KeyStr  : TString;
+    SlotIdx : Integer;
+    KeyLbl  : TString;
+  End;
+
+{ ============================================================
+  VARIABLES GLOBALES
+  ============================================================ }
+Var
+  { Options }
+  Opts : TOptions;
+
+  { Compteurs globaux }
+  ErrorCount : Integer;
+  WarnCount  : Integer;
+  TotalLines : LongInt;
+  TotalSyms  : Integer;
+
+  { Valeur fictive pour ignorer un retour TExprVal }
+  GExprDummy : TExprVal;
+
+  { Lexeur }
+  LexSrcF   : Text;
+  LexLine   : String;
+  LexLineNo : Integer;
+  LexColNo  : Integer;
+  LexEOF    : Boolean;
+  LexOpened : Boolean;
+  CurToken  : TToken;
+
+  { Table des symboles }
+  SymTab    : Array[0..MAX_SYM - 1] Of TSymRec;
+  SymCount  : Integer;
+  ScopeStack: Array[0..MAX_SCOPE - 1] Of Integer;
+  ScopeTop  : Integer;
+  CurScope  : Integer;
+  LabelSeq  : Integer;
+
+  { Table des types }
+  TypeTab   : Array[0..MAX_TYPE - 1] Of TTypeRec;
+  TypeCount : Integer;
+
+  { Emetteur ASM }
+  OutF         : Text;
+  OutFOpen     : Boolean;
+  CurFrameSize : Integer;   { taille du cadre local courant        }
+  CurFnDepth   : Integer;   { 0 = global, >0 = dans une sub       }
+  CurFnRetLbl  : TString;   { label epilogue de la sub courante    }
+  CurFnName    : TString;   { nom de la sub courante               }
+  LoopTop      : Integer;
+  LoopBreakLbl : Array[0..MAX_LOOP_NEST - 1] Of TString;
+  LoopContLbl  : Array[0..MAX_LOOP_NEST - 1] Of TString;
+  LoopRedoLbl  : Array[0..MAX_LOOP_NEST - 1] Of TString;
+
+  { Segment de donnees statiques }
+  DataTab   : Array[0..MAX_DATA - 1] Of TDataRec;
+  DataCount : Integer;
+
+  { Table de hachage compile-time }
+  HashKeyTab   : Array[0..MAX_HASH_KEYS - 1] Of THashKeyRec;
+  HashKeyCount : Integer;
+
+  { Etat general }
+  RuntimeEmitted : Boolean;
+
+  { Modules importes }
+  ModuleTab   : Array[0..MAX_MODULE - 1] Of TString;
+  ModuleCount : Integer;
+
+  { Drapeau : le mot-clef courant a deja ete consomme }
+  GKwConsumed   : Boolean;
+  GCallArgCount : Integer;
+
+{ ============================================================
+  FORWARD DECLARATIONS
+  ============================================================ }
+Procedure LexInit;       Forward;
+Procedure LexClose;      Forward;
+Procedure EmitOpen;      Forward;
+Procedure EmitClose;     Forward;
+Procedure EmitDataSeg;   Forward;
+Procedure EmitRuntime;   Forward;
+Procedure EmitHeader;    Forward;
+Procedure ParserAdvance; Forward;
+Procedure ParseStmt;     Forward;
+Procedure TypeInit;      Forward;
+Procedure SymInit;       Forward;
+Procedure EmitRaw(Const S : TString);       Forward;
+Procedure EmitBlankLine;                    Forward;
+Procedure EmitComment(Const S : TString);   Forward;
+Procedure EmitLabel(Const Name : TString);  Forward;
+Procedure EmitInstr(Const Mnem, Ops : TString); Forward;
+
+{ ============================================================
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Erreur fatale ---------------------------------------- }
+Procedure FatalError(Const Msg : TString);
 Begin
+  WriteLn('RAKU86: ERREUR FATALE - ', Msg);
+  Halt(EXIT_ERROR);
+End;
+
+{ ---- Erreur de compilation -------------------------------- }
+Procedure CompileError(Const Msg : TString);
+Begin
+  Write('RAKU86:');
+  If CurToken.Line > 0 Then
+    Write(Opts.SrcFile, ':', CurToken.Line, ': ');
+  WriteLn('error: ', Msg);
+  Inc(ErrorCount);
+  If ErrorCount >= MAX_ERRORS Then
+    FatalError('trop d''erreurs, compilation arretee');
+End;
+
+{ ---- Avertissement ---------------------------------------- }
+Procedure WarnMsg(Const Msg : TString);
+Begin
+  If Not Opts.Warnings Then Exit;
+  Write('RAKU86:');
+  If CurToken.Line > 0 Then
+    Write(Opts.SrcFile, ':', CurToken.Line, ': ');
+  WriteLn('warning: ', Msg);
+  Inc(WarnCount);
+End;
+
+{ ---- Aide en ligne ---------------------------------------- }
+Procedure ShowHelp;
+Begin
+  WriteLn('RAKU86 - Cette commande permet de lancer le compilateur Raku pour de l''assembleur du microprocesseur ',
+          '8086 ou 8088.');
+  WriteLn;
+  WriteLn('Syntaxe : RAKU86 <source.raku> [sortie.asm] [-v] [-d] [-w]');
+  WriteLn;
+  WriteLn('  source.raku : fichier source Raku (.raku, .rakumod, .p6, .pm6)');
+  WriteLn('  sortie.asm  : fichier assembleur de sortie (defaut: source.asm)');
+  WriteLn('  -v          : mode verbeux (banniere + statistiques)');
+  WriteLn('  -d          : debug tokens (affiche chaque token)');
+  WriteLn('  -w          : activer les avertissements');
+  WriteLn('  -h, --help  : cette aide');
+  WriteLn;
+  Halt(EXIT_OK);
+End;
+
+{ ---- Initialisation des options --------------------------- }
+Procedure InitOptions;
+Begin
+  Opts.SrcFile   := '';
+  Opts.OutFile   := '';
+  Opts.Verbose   := False;
+  Opts.DebugMode := False;
+  Opts.Warnings  := False;
+End;
+
+{ ---- Construction du nom de sortie par defaut ------------- }
+Procedure BuildOutName;
+Var
+  Base : TString;
+  I    : Integer;
+Begin
+  Base := Opts.SrcFile;
+  For I := Length(Base) DownTo 1 Do
+  Begin
+    If Base[I] = '.' Then
+    Begin
+      Base := Copy(Base, 1, I - 1);
+      Break;
+    End;
+  End;
+  Opts.OutFile := Base + '.asm';
+End;
+
+{ ---- Analyse des arguments de la ligne de commande -------- }
+Procedure ParseArgs;
+Var
+  I   : Integer;
+  Arg : TString;
+Begin
+  If ParamCount = 0 Then
+    ShowHelp;
+  I := 1;
+  While I <= ParamCount Do
+  Begin
+    Arg := ParamStr(I);
+    If (Arg = '-h') Or (Arg = '--help') Or (Arg = '/?') Then
+      ShowHelp
+    Else If (Arg = '-v') Or (Arg = '--verbose') Then
+      Opts.Verbose := True
+    Else If (Arg = '-d') Or (Arg = '--debug') Then
+      Opts.DebugMode := True
+    Else If (Arg = '-w') Or (Arg = '--warnings') Then
+      Opts.Warnings := True
+    Else If (Length(Arg) > 0) And (Arg[1] = '-') Then
+    Begin
+      WriteLn('RAKU86: option inconnue : ', Arg);
+      Halt(EXIT_USAGE);
+    End
+    Else If Opts.SrcFile = '' Then
+      Opts.SrcFile := Arg
+    Else If Opts.OutFile = '' Then
+      Opts.OutFile := Arg
+    Else
+    Begin
+      WriteLn('RAKU86: argument inattendu : ', Arg);
+      Halt(EXIT_USAGE);
+    End;
+    Inc(I);
+  End;
+  If Opts.SrcFile = '' Then
+  Begin
+    WriteLn('RAKU86: aucun fichier source specifie.');
+    Halt(EXIT_USAGE);
+  End;
+  If Opts.OutFile = '' Then
+    BuildOutName;
+End;
+
+{ ---- Banniere --------------------------------------------- }
+Procedure ShowBanner;
+Begin
+  If Not Opts.Verbose Then Exit;
+  WriteLn('================================================');
+  WriteLn(' RAKU86 v', RAKU86_VERSION, ' (', RAKU86_DATE, ')');
+  WriteLn(' Compilateur Raku -> assembleur 8086 / DOS');
+  WriteLn('================================================');
+  WriteLn(' Source  : ', Opts.SrcFile);
+  WriteLn(' Sortie  : ', Opts.OutFile);
+  If Opts.Warnings Then WriteLn(' Mode    : avertissements actifs');
+  WriteLn('------------------------------------------------');
+End;
+
+{ ---- Statistiques finales --------------------------------- }
+Procedure ShowStats;
+Begin
+  WriteLn('------------------------------------------------');
+  WriteLn(' Lignes   : ', TotalLines);
+  WriteLn(' Symboles : ', SymCount);
+  WriteLn(' Erreurs  : ', ErrorCount);
+  WriteLn(' Avert.   : ', WarnCount);
+  If ErrorCount = 0 Then
+    WriteLn(' Resultat : OK -> ', Opts.OutFile)
+  Else
+    WriteLn(' Resultat : ECHEC (', ErrorCount, ' erreur(s))');
+  WriteLn('================================================');
+End;
+
+{ ---- Nettoyage des ressources ----------------------------- }
+Procedure Cleanup;
+Begin
+  LexClose;
+  EmitClose;
+End;
+
+{ ============================================================
+  STUBS (a remplir par les TODOs suivants)
+  ============================================================ }
+
+{ ---- TypeInit : initialisation des types primitifs -------- }
+Procedure TypeInit;
+Var
+  I : Integer;
+Begin
+  TypeCount := 0;
+  For I := 0 To MAX_TYPE - 1 Do
+  Begin
+    TypeTab[I].Name    := '';
+    TypeTab[I].Kind    := TYK_UNKNOWN;
+    TypeTab[I].Size    := 0;
+    TypeTab[I].ElemIdx := TY_UNKNOWN;
+  End;
+  TypeTab[TY_IDX_INT].Name     := 'Int';
+  TypeTab[TY_IDX_INT].Kind     := TYK_INT;
+  TypeTab[TY_IDX_INT].Size     := 2;
+  TypeTab[TY_IDX_BOOL].Name    := 'Bool';
+  TypeTab[TY_IDX_BOOL].Kind    := TYK_BOOL;
+  TypeTab[TY_IDX_BOOL].Size    := 1;
+  TypeTab[TY_IDX_STR].Name     := 'Str';
+  TypeTab[TY_IDX_STR].Kind     := TYK_STR;
+  TypeTab[TY_IDX_STR].Size     := 2;
+  TypeTab[TY_IDX_RAT].Name     := 'Rat';
+  TypeTab[TY_IDX_RAT].Kind     := TYK_RAT;
+  TypeTab[TY_IDX_RAT].Size     := 2;
+  TypeTab[TY_IDX_ARRAY].Name   := 'Array';
+  TypeTab[TY_IDX_ARRAY].Kind   := TYK_ARRAY;
+  TypeTab[TY_IDX_ARRAY].Size   := 2;
+  TypeTab[TY_IDX_ARRAY].ElemIdx:= TY_IDX_INT;
+  TypeTab[TY_IDX_HASH].Name    := 'Hash';
+  TypeTab[TY_IDX_HASH].Kind    := TYK_HASH;
+  TypeTab[TY_IDX_HASH].Size    := 2;
+  TypeTab[TY_IDX_CODE].Name    := 'Code';
+  TypeTab[TY_IDX_CODE].Kind    := TYK_CODE;
+  TypeTab[TY_IDX_CODE].Size    := 2;
+  TypeTab[TY_IDX_CLASS].Name   := 'Class';
+  TypeTab[TY_IDX_CLASS].Kind   := TYK_CLASS;
+  TypeTab[TY_IDX_CLASS].Size   := 2;
+  TypeTab[TY_IDX_ROLE].Name    := 'Role';
+  TypeTab[TY_IDX_ROLE].Kind    := TYK_ROLE;
+  TypeTab[TY_IDX_ROLE].Size    := 2;
+  TypeTab[TY_IDX_MU].Name      := 'Mu';
+  TypeTab[TY_IDX_MU].Kind      := TYK_MU;
+  TypeTab[TY_IDX_MU].Size      := 2;
+  TypeTab[TY_IDX_ANY].Name     := 'Any';
+  TypeTab[TY_IDX_ANY].Kind     := TYK_ANY;
+  TypeTab[TY_IDX_ANY].Size     := 2;
+  TypeTab[TY_IDX_JUNCTION].Name:= 'Junction';
+  TypeTab[TY_IDX_JUNCTION].Kind:= TYK_JUNCTION;
+  TypeTab[TY_IDX_JUNCTION].Size:= 2;
+  TypeTab[TY_IDX_PAIR].Name    := 'Pair';
+  TypeTab[TY_IDX_PAIR].Kind    := TYK_PAIR;
+  TypeTab[TY_IDX_PAIR].Size    := 4;
+  TypeTab[TY_IDX_REGEX].Name   := 'Regex';
+  TypeTab[TY_IDX_REGEX].Kind   := TYK_REGEX;
+  TypeTab[TY_IDX_REGEX].Size   := 2;
+  TypeTab[TY_IDX_MATCH].Name   := 'Match';
+  TypeTab[TY_IDX_MATCH].Kind   := TYK_MATCH;
+  TypeTab[TY_IDX_MATCH].Size   := 2;
+  TypeTab[TY_IDX_NIL].Name     := 'Nil';
+  TypeTab[TY_IDX_NIL].Kind     := TYK_NIL;
+  TypeTab[TY_IDX_NIL].Size     := 2;
+  TypeCount := TY_PRIM_COUNT;
+End;
+
+{ ---- SymInit : initialisation de la table des symboles ---- }
+Procedure SymInit;
+Var
+  I : Integer;
+Begin
+  SymCount     := 0;
+  ScopeTop     := 0;
+  CurScope     := 0;
+  LabelSeq     := 0;
+  CurFrameSize := 0;
+  CurFnDepth   := 0;
+  LoopTop      := 0;
+  GKwConsumed  := False;
+  CurFnRetLbl  := '';
+  CurFnName    := '';
+  For I := 0 To MAX_SYM - 1 Do
+  Begin
+    SymTab[I].Name        := '';
+    SymTab[I].SigilName   := '';
+    SymTab[I].MangledName := '';
+    SymTab[I].Cat         := SC_MY;
+    SymTab[I].TypeIdx     := TY_UNKNOWN;
+    SymTab[I].ScopeLevel  := 0;
+    SymTab[I].Offset      := 0;
+    SymTab[I].IsExported  := False;
+    SymTab[I].DeclLine    := 0;
+  End;
+End;
+
+{ ---- Emetteur ASM : stubs de base ------------------------- }
+Procedure EmitRaw(Const S : TString);
+Begin
+  If OutFOpen Then
+    WriteLn(OutF, S);
+End;
+
+Procedure EmitBlankLine;
+Begin
+  If OutFOpen Then
+    WriteLn(OutF);
+End;
+
+Procedure EmitComment(Const S : TString);
+Begin
+  EmitRaw('; ' + S);
+End;
+
+Procedure EmitLabel(Const Name : TString);
+Begin
+  EmitRaw(Name + ':');
+End;
+
+Procedure EmitInstr(Const Mnem, Ops : TString);
+Begin
+  If Ops = '' Then
+    EmitRaw('        ' + Mnem)
+  Else
+    EmitRaw('        ' + Mnem + '  ' + Ops);
+End;
+
+Procedure EmitHeader;
+Begin
+  EmitComment('Generated by RAKU86 v' + RAKU86_VERSION + ' - ' + RAKU86_DATE);
+  EmitComment('Source : ' + Opts.SrcFile);
+  EmitBlankLine;
+  EmitRaw('        .MODEL  SMALL');
+  EmitRaw('        .STACK  1024');
+  EmitBlankLine;
+  EmitRaw('_TEXT   SEGMENT WORD PUBLIC ''CODE''');
+  EmitRaw('        ASSUME  CS:_TEXT, DS:_DATA');
+  EmitBlankLine;
+  EmitRaw('_RKS_MAIN PROC NEAR');
+  EmitInstr('MOV', 'AX, @DATA');
+  EmitInstr('MOV', 'DS, AX');
+  EmitBlankLine;
+End;
+
+Procedure EmitOpen;
+Begin
+  Assign(OutF, Opts.OutFile);
+  Rewrite(OutF);
+  If IOResult <> 0 Then
+    FatalError('Impossible d''ouvrir le fichier de sortie : ' + Opts.OutFile);
+  OutFOpen := True;
+  EmitHeader;
+End;
+
+Procedure EmitRuntime;
+Begin
+  If RuntimeEmitted Then Exit;
+  RuntimeEmitted := True;
+  EmitBlankLine;
+  EmitComment('=== Runtime RAKU86 (stub) ===');
+  EmitBlankLine;
+End;
+
+Procedure EmitDataSeg;
+Var
+  I   : Integer;
+  Tmp : TString;
+Begin
+  EmitRaw('_DATA   SEGMENT WORD PUBLIC ''DATA''');
+  If DataCount = 0 Then
+    EmitRaw('; (aucune donnee)')
+  Else
+    For I := 0 To DataCount - 1 Do
+    Begin
+      Case DataTab[I].Kind Of
+        DK_WORD :
+        Begin
+          Str(DataTab[I].IntVal, Tmp);
+          EmitRaw(DataTab[I].LblName + '  DW  ' + Tmp);
+        End;
+        DK_BYTE :
+        Begin
+          Str(DataTab[I].IntVal, Tmp);
+          EmitRaw(DataTab[I].LblName + '  DB  ' + Tmp);
+        End;
+        DK_STR :
+          EmitRaw(DataTab[I].LblName + '  DB  ''' +
+                  DataTab[I].StrVal + ''', 0');
+        DK_ARRAY_BLK :
+        Begin
+          Str(DataTab[I].ElemCount, Tmp);
+          EmitRaw(DataTab[I].LblName + '  DW  ' + Tmp + ' DUP(0)');
+        End;
+      End;
+    End;
+  EmitRaw('_DATA   ENDS');
+End;
+
+Procedure EmitClose;
+Begin
+  If Not OutFOpen Then Exit;
+  EmitBlankLine;
+  EmitComment('Fin du script Raku - sortie implicite code 0');
+  EmitInstr('MOV', 'AX, 4C00h');
+  EmitInstr('INT', '21h');
+  EmitRaw('_RKS_MAIN ENDP');
+  EmitBlankLine;
+  EmitRuntime;
+  EmitRaw('_TEXT   ENDS');
+  EmitBlankLine;
+  EmitDataSeg;
+  EmitBlankLine;
+  EmitRaw('        END     _RKS_MAIN');
+  Close(OutF);
+  OutFOpen := False;
+End;
+
+{ ---- Lexeur : stubs --------------------------------------- }
+Procedure LexNextLine; Forward;
+
+Procedure LexInit;
+Begin
+  LexOpened := False;
+  Assign(LexSrcF, Opts.SrcFile);
+  Reset(LexSrcF);
+  If IOResult <> 0 Then
+    FatalError('Impossible d''ouvrir: ' + Opts.SrcFile);
+  LexOpened := True;
+  LexEOF    := False;
+  LexLineNo := 0;
+  LexColNo  := 1;
+  LexLine   := '';
+  LexNextLine;
+End;
+
+Procedure LexClose;
+Begin
+  If LexOpened Then
+  Begin
+    Close(LexSrcF);
+    LexOpened := False;
+  End;
+End;
+
+Procedure LexNextLine;
+Begin
+  If EOF(LexSrcF) Then
+  Begin
+    LexEOF := True;
+    LexLine := '';
+    Exit;
+  End;
+  ReadLn(LexSrcF, LexLine);
+  Inc(LexLineNo);
+  Inc(TotalLines);
+  LexColNo := 1;
+End;
+
+{ ---- LexNextToken : stub minimal -------------------------- }
+Procedure LexNextToken;
+Begin
+  { Sauter les blancs et les commentaires }
+  While Not LexEOF Do
+  Begin
+    While (LexColNo <= Length(LexLine)) And
+          (LexLine[LexColNo] = ' ') Do
+      Inc(LexColNo);
+    { Commentaire ligne : # }
+    If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '#') Then
+    Begin
+      LexNextLine;
+      Continue;
+    End;
+    If LexColNo <= Length(LexLine) Then
+      Break;
+    LexNextLine;
+  End;
+  If LexEOF Then
+  Begin
+    CurToken.Kind   := TK_EOF;
+    CurToken.Val    := '';
+    CurToken.IntVal := 0;
+    CurToken.Line   := LexLineNo;
+    CurToken.Col    := LexColNo;
+    Exit;
+  End;
+  { Stub : consomme un caractere et retourne TK_PUNCT }
+  CurToken.Kind   := TK_PUNCT;
+  CurToken.Val    := LexLine[LexColNo];
+  CurToken.IntVal := 0;
+  CurToken.Line   := LexLineNo;
+  CurToken.Col    := LexColNo;
+  Inc(LexColNo);
+End;
+
+{ ---- ParserAdvance : lire le prochain token --------------- }
+Procedure ParserAdvance;
+Begin
+  LexNextToken;
+End;
+
+{ ---- ParseStmt : stub ------------------------------------- }
+Procedure ParseStmt;
+Begin
+  { Stub : avancer d'un token pour eviter boucle infinie }
+  If CurToken.Kind <> TK_EOF Then
+    ParserAdvance;
+End;
+
+{ ============================================================
+  PROCEDURE Run
+  ============================================================ }
+Procedure Run;
+Begin
+  TypeInit;
+  SymInit;
+  EmitOpen;
+  If ErrorCount > 0 Then Exit;
+  LexInit;
+  ParserAdvance;
+  If Opts.DebugMode Then
+  Begin
+    While CurToken.Kind <> TK_EOF Do
+    Begin
+      WriteLn('  [', CurToken.Line, ':', CurToken.Col, '] ',
+              CurToken.Val);
+      ParserAdvance;
+    End;
+  End
+  Else
+  Begin
+    While CurToken.Kind <> TK_EOF Do
+      ParseStmt;
+  End;
+  LexClose;
+  EmitClose;
+  If Opts.Verbose Then
+    WriteLn('RAKU86: ', TotalLines, ' ligne(s) lues depuis ', Opts.SrcFile);
+End;
+
+{ ============================================================
+  PROGRAMME PRINCIPAL
+  ============================================================ }
+Begin
+  ErrorCount     := 0;
+  WarnCount      := 0;
+  TotalLines     := 0;
+  TotalSyms      := 0;
+  SymCount       := 0;
+  ScopeTop       := 0;
+  CurScope       := 0;
+  LabelSeq       := 0;
+  TypeCount      := 0;
+  DataCount      := 0;
+  OutFOpen       := False;
+  LexOpened      := False;
+  LexEOF         := False;
+  CurFrameSize   := 0;
+  CurFnDepth     := 0;
+  LoopTop        := 0;
+  GKwConsumed    := False;
+  GCallArgCount  := 0;
+  CurFnRetLbl    := '';
+  CurFnName      := '';
+  RuntimeEmitted := False;
+  ModuleCount    := 0;
+  HashKeyCount   := 0;
+  GExprDummy.Kind    := EK_NONE;
+  GExprDummy.ImmVal  := 0;
+  GExprDummy.TypeIdx := TY_UNKNOWN;
+  GExprDummy.Offset  := 0;
+  InitOptions;
+  ParseArgs;
+  ShowBanner;
+  Run;
+  Cleanup;
+  If Opts.Verbose Then ShowStats;
+  If ErrorCount > 0 Then Halt(EXIT_ERROR)
+                    Else Halt(EXIT_OK);
 End.
