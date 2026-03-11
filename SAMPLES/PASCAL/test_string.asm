@@ -47,6 +47,8 @@ BYTESWR   DD 0
 BYTESRD   DD 0
 CRLF      DB 13,10,0
 STRTMP    DB 256 DUP(0)
+STRBUF1   DB 256 DUP(0)
+STRBUF2   DB 256 DUP(0)
 TRUE_STR  DB 'TRUE',0
 FALSE_STR DB 'FALSE',0
 
@@ -83,9 +85,13 @@ _TPF_Main:
         CALL GetProcessHeap
         MOV [HHEAP],EAX
         LEA EAX,[_TPK_1]
-        MOV DWORD PTR [_TPV_MSG1],EAX
+        MOV ESI,EAX
+        LEA EDI,[_TPV_MSG1]
+        CALL _TPRT_STRCPY
         LEA EAX,[_TPK_2]
-        MOV DWORD PTR [_TPV_MSG2],EAX
+        MOV ESI,EAX
+        LEA EDI,[_TPV_MSG2]
+        CALL _TPRT_STRCPY
 ; writeln
         LEA EAX,[_TPK_3]
         MOV ESI,EAX
@@ -96,7 +102,7 @@ _TPF_Main:
         LEA EAX,[_TPK_4]
         MOV ESI,EAX
         CALL _TPRT_PRINTSTR
-        MOV EAX,DWORD PTR [_TPV_MSG1]
+        LEA EAX,[_TPV_MSG1]
         MOV ESI,EAX
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
@@ -105,28 +111,36 @@ _TPF_Main:
         LEA EAX,[_TPK_5]
         MOV ESI,EAX
         CALL _TPRT_PRINTSTR
-        MOV EAX,DWORD PTR [_TPV_MSG2]
+        LEA EAX,[_TPV_MSG2]
         MOV ESI,EAX
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
-        MOV EAX,DWORD PTR [_TPV_MSG1]
-        PUSH EAX
+        LEA EAX,[_TPV_MSG1]
+        MOV ESI,EAX
+        LEA EDI,[STRBUF1]
+        CALL _TPRT_STRCPY
         LEA EAX,[_TPK_6]
-        MOV EBX,EAX
-        POP EAX
-        ADD EAX,EBX
-        PUSH EAX
-        MOV EAX,DWORD PTR [_TPV_MSG2]
-        MOV EBX,EAX
-        POP EAX
-        ADD EAX,EBX
-        MOV DWORD PTR [_TPV_RESULT],EAX
+        MOV EDI,EAX
+        LEA ESI,[STRBUF1]
+        CALL _TPRT_CONCAT
+        LEA EAX,[STRBUF1]
+        MOV ESI,EAX
+        LEA EDI,[STRBUF1]
+        CALL _TPRT_STRCPY
+        LEA EAX,[_TPV_MSG2]
+        MOV EDI,EAX
+        LEA ESI,[STRBUF1]
+        CALL _TPRT_CONCAT
+        LEA EAX,[STRBUF1]
+        MOV ESI,EAX
+        LEA EDI,[_TPV_RESULT]
+        CALL _TPRT_STRCPY
 ; writeln
         LEA EAX,[_TPK_7]
         MOV ESI,EAX
         CALL _TPRT_PRINTSTR
-        MOV EAX,DWORD PTR [_TPV_RESULT]
+        LEA EAX,[_TPV_RESULT]
         MOV ESI,EAX
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
@@ -262,5 +276,173 @@ _TPRT_SCPY_L:
         JNZ _TPRT_SCPY_L
         POP EDI
         POP ESI
+        RET
+
+_TPRT_STRLEN:
+        PUSH ESI
+        XOR EAX,EAX
+_TPRT_SLN_L:
+        CMP BYTE PTR [ESI],0
+        JE _TPRT_SLN_D
+        INC EAX
+        INC ESI
+        JMP _TPRT_SLN_L
+_TPRT_SLN_D:
+        POP ESI
+        RET
+
+_TPRT_CONCAT:
+        PUSHAD
+_TPRT_CAT_F:
+        CMP BYTE PTR [ESI],0
+        JE _TPRT_CAT_C
+        INC ESI
+        JMP _TPRT_CAT_F
+_TPRT_CAT_C:
+_TPRT_CAT_L:
+        MOV AL,BYTE PTR [EDI]
+        MOV BYTE PTR [ESI],AL
+        TEST AL,AL
+        JZ _TPRT_CAT_D
+        INC ESI
+        INC EDI
+        JMP _TPRT_CAT_L
+_TPRT_CAT_D:
+        POPAD
+        RET
+
+_TPRT_STRCMP:
+        PUSH ESI
+        PUSH EDI
+_TPRT_CMP_L:
+        MOVZX EAX,BYTE PTR [ESI]
+        MOVZX ECX,BYTE PTR [EDI]
+        SUB EAX,ECX
+        JNZ _TPRT_CMP_D
+        TEST ECX,ECX
+        JZ _TPRT_CMP_D
+        INC ESI
+        INC EDI
+        JMP _TPRT_CMP_L
+_TPRT_CMP_D:
+        POP EDI
+        POP ESI
+        RET
+
+_TPRT_COPY:
+        PUSHAD
+        LEA EDI,[STRBUF1]
+        DEC EBX
+        TEST EBX,EBX
+        JLE _TPRT_CPY_C
+_TPRT_CPY_S:
+        CMP BYTE PTR [ESI],0
+        JE _TPRT_CPY_E
+        INC ESI
+        DEC EBX
+        JNZ _TPRT_CPY_S
+_TPRT_CPY_C:
+        TEST ECX,ECX
+        JLE _TPRT_CPY_E
+_TPRT_CPY_L:
+        CMP BYTE PTR [ESI],0
+        JE _TPRT_CPY_E
+        MOVSB
+        DEC ECX
+        JNZ _TPRT_CPY_L
+_TPRT_CPY_E:
+        MOV BYTE PTR [EDI],0
+        POPAD
+        LEA EAX,[STRBUF1]
+        RET
+
+_TPRT_POS:
+        PUSH EBX
+        PUSH ECX
+        PUSH EDX
+        PUSH ESI
+        PUSH EDI
+        XOR EAX,EAX
+        XOR EBX,EBX
+_TPRT_POS_O:
+        CMP BYTE PTR [ESI+EBX],0
+        JE _TPRT_POS_N
+        XOR ECX,ECX
+_TPRT_POS_M:
+        MOVZX EDX,BYTE PTR [EDI+ECX]
+        TEST DL,DL
+        JZ _TPRT_POS_F
+        CMP DL,BYTE PTR [ESI+EBX+ECX]
+        JNE _TPRT_POS_X
+        INC ECX
+        JMP _TPRT_POS_M
+_TPRT_POS_F:
+        LEA EAX,[EBX+1]
+        JMP _TPRT_POS_D
+_TPRT_POS_X:
+        INC EBX
+        JMP _TPRT_POS_O
+_TPRT_POS_N:
+        XOR EAX,EAX
+_TPRT_POS_D:
+        POP EDI
+        POP ESI
+        POP EDX
+        POP ECX
+        POP EBX
+        RET
+
+_TPRT_DELETE:
+        PUSHAD
+        DEC EBX
+        MOV EDI,ESI
+        ADD EDI,EBX
+        ADD ESI,EBX
+        ADD ESI,ECX
+_TPRT_DEL_L:
+        LODSB
+        STOSB
+        TEST AL,AL
+        JNZ _TPRT_DEL_L
+        POPAD
+        RET
+
+_TPRT_INSERT:
+        PUSHAD
+        DEC EBX
+        PUSH ESI
+        PUSH EDI
+        MOV ESI,EDI
+        LEA EDI,[STRBUF2]
+        CALL _TPRT_STRCPY
+        POP EDI
+        POP ESI
+        PUSH ESI
+        PUSH EBX
+        LEA ESI,[STRBUF2]
+        MOV ECX,EBX
+        TEST ECX,ECX
+        JZ _TPRT_INS_P2
+_TPRT_INS_P1:
+        MOVSB
+        DEC ECX
+        JNZ _TPRT_INS_P1
+_TPRT_INS_P2:
+        POP EBX
+        POP ESI
+_TPRT_INS_S1:
+        CMP BYTE PTR [ESI],0
+        JE _TPRT_INS_S2
+        MOVSB
+        JMP _TPRT_INS_S1
+_TPRT_INS_S2:
+        LEA ESI,[STRBUF2]
+        ADD ESI,EBX
+_TPRT_INS_R1:
+        LODSB
+        STOSB
+        TEST AL,AL
+        JNZ _TPRT_INS_R1
+        POPAD
         RET
 END _TPF_Main
