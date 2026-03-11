@@ -537,7 +537,7 @@
                GetDefaultPalette(Palette) -> palette par defaut
                SetRGBPalette(Index, R, G, B) -> couleur RGB
 
-   TODO 23 - UNITES UTILISATEUR ET COMPILATION SEPAREE
+   TODO 23 - UNITES UTILISATEUR ET COMPILATION SEPAREE [IMPLEMENTE]
              ParseUnit : UNIT nom; INTERFACE ... IMPLEMENTATION ... [BEGIN ... ] END.
              Section INTERFACE :
                Declarations exportees (types, constantes, variables, procedures)
@@ -652,6 +652,7 @@ Const
   MAX_SCOPE   = 64;
   MAX_TYPE    = {$IFDEF FPC}512{$ELSE}128{$ENDIF};
   MAX_FIELD   = 64;
+  MAX_UNITS   = 32;            { nombre maximum d unites utilisateur }
 
   EXIT_OK    = 0;
   EXIT_ERROR = 1;
@@ -828,6 +829,16 @@ Var
   { Parseur de programme (TODO 08) }
   ProgName    : TString;          { nom du programme PROGRAM xxx            }
 
+  { TODO 23 : compilation d unites }
+  IsUnitMode  : Boolean;          { True si on compile une UNIT             }
+  UnitName    : TString;          { nom de l unite courante                 }
+  UnitInitCount : Integer;        { nombre d unites avec init chargees      }
+  UnitInitNames : Array[0..MAX_UNITS - 1] Of TString;
+                                  { noms des unites ayant un bloc init      }
+  UnitLoaded    : Array[0..MAX_UNITS - 1] Of TString;
+                                  { noms des unites deja chargees           }
+  UnitLoadedCount : Integer;      { nombre d unites chargees                }
+
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
@@ -837,6 +848,8 @@ Function ConstEvalExpr(Var P : Integer) : TString; Forward;
 Function IsBooleanExpr(Const S : TString) : Boolean; Forward;
 Function TypeFindByName(Const AName : TString) : Integer; Forward;
 Function SymFind(Const AName : TString) : Integer; Forward;
+Procedure ParseDeclSections(Var P : Integer); Forward;
+Procedure ParseUsesClause(Var P : Integer); Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -7062,16 +7075,30 @@ Procedure EmitModuleHeader;
 Begin
   If Not Opts.ModuleES6 Then Exit;
   EmitComment('Module ES6');
+  { TODO 23 : en mode unite + module, on ajoute les imports plus tard }
   EmitBlankLine;
 End;
 
 { ---- EmitFooter : pied de page du fichier JS genere --------- }
 { Emet l appel du programme principal _main() a la fin.          }
 Procedure EmitFooter;
+Var
+  I : Integer;
 Begin
   EmitBlankLine;
-  EmitComment('Programme principal');
-  EmitLine('_main();');
+  { TODO 23 : appeler les blocs d initialisation des unites }
+  If UnitInitCount > 0 Then
+  Begin
+    EmitComment('Initialisation des unites');
+    For I := 0 To UnitInitCount - 1 Do
+      EmitLine('_init_' + UnitInitNames[I] + '();');
+    EmitBlankLine;
+  End;
+  If Not IsUnitMode Then
+  Begin
+    EmitComment('Programme principal');
+    EmitLine('_main();');
+  End;
 End;
 
 { ============================================================
@@ -7081,10 +7108,12 @@ End;
 { ---- ParseUsesClause : parser la clause USES ---------------- }
 { USES unit1, unit2, ..., unitN;                                 }
 { Genere des commentaires /* uses unit1 */ en JS.                }
-Procedure ParseUsesClause(Var P : Integer);
+{ TODO 23 : detecte et charge les unites utilisateur.            }
+Procedure ParseUsesClause;
 Var
-  UnitName : TString;
-  Idx      : Integer;
+  UName : TString;
+  Idx   : Integer;
+  LU    : TString;
 Begin
   If P >= TokenCount Then Exit;
   If (TokenPool[P].Kind <> TK_KEYWORD) Or
@@ -7095,16 +7124,24 @@ Begin
   Begin
     If TokenPool[P].Kind = TK_IDENT Then
     Begin
-      UnitName := TokenPool[P].Val;
-      EmitComment('  ' + UnitName);
+      UName := TokenPool[P].Val;
+      LU := StrLowerCase(UName);
+      EmitComment('  ' + UName);
       { TODO 21 : avertissement si USES Overlay }
-      If StrLowerCase(UnitName) = 'overlay' Then
+      If LU = 'overlay' Then
         WriteLn('Warning: unit Overlay ignored - overlays are not supported in JavaScript');
       { TODO 22 : notification si USES Graph }
-      If StrLowerCase(UnitName) = 'graph' Then
+      If LU = 'graph' Then
         WriteLn('Note: unit Graph mapped to HTML5 Canvas API in JavaScript');
+      { TODO 23 : en mode module ES6, emettre import pour unites utilisateur }
+      If Opts.ModuleES6 Then
+      Begin
+        If (LU <> 'system') And (LU <> 'crt') And (LU <> 'dos') And
+           (LU <> 'overlay') And (LU <> 'graph') Then
+          EmitLine('// import * as ' + UName + ' from "./' + LU + '.js";');
+      End;
       { Enregistrer l unite dans la table des symboles }
-      Idx := SymAdd(UnitName, SK_UNIT, -1);
+      Idx := SymAdd(UName, SK_UNIT, -1);
       Inc(P);
     End
     Else If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ',') Then
@@ -9788,6 +9825,179 @@ Begin
     Inc(P);
 End;
 
+{ ============================================================
+  TODO 23 - UNITES UTILISATEUR ET COMPILATION SEPAREE [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseUnitInterface : parser la section INTERFACE --------- }
+{ INTERFACE [USES ...;] [CONST ...] [TYPE ...] [VAR ...]           }
+{ [PROCEDURE/FUNCTION signatures sans corps]                        }
+{ Genere les declarations exportees en JavaScript.                  }
+Procedure ParseUnitInterface(Var P : Integer);
+Var
+  L : TString;
+Begin
+  { Consommer INTERFACE }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'interface') Then
+  Begin
+    Inc(P);
+    EmitComment('interface');
+  End
+  Else Exit;
+
+  { Section USES optionnelle dans l interface }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'uses') Then
+  Begin
+    ParseUsesClause(P);
+    EmitBlankLine;
+  End;
+
+  { Declarations exportees : CONST, TYPE, VAR, signatures PROC/FUNC }
+  While P < TokenCount Do
+  Begin
+    If TokenPool[P].Kind <> TK_KEYWORD Then Exit;
+    L := StrLowerCase(TokenPool[P].Val);
+    If (L = 'implementation') Or (L = 'begin') Or (L = 'end') Then
+      Exit;
+    If L = 'const' Then
+      ParseDeclSections(P)
+    Else If L = 'var' Then
+      ParseDeclSections(P)
+    Else If L = 'type' Then
+      ParseDeclSections(P)
+    Else If (L = 'procedure') Or (L = 'function') Then
+    Begin
+      { En section INTERFACE, les procedure/function sont des signatures }
+      { (forward declarations) : on les parse normalement, le parseur    }
+      { gere deja les declarations sans corps (forward).                 }
+      ParseDeclSections(P);
+    End
+    Else
+      Exit;
+  End;
+End;
+
+{ ---- ParseUnitImplementation : parser IMPLEMENTATION ----------- }
+{ IMPLEMENTATION [USES ...;] [decls avec corps]                     }
+{ Genere les implementations en JavaScript.                         }
+Procedure ParseUnitImplementation(Var P : Integer);
+Begin
+  { Consommer IMPLEMENTATION }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'implementation') Then
+  Begin
+    Inc(P);
+    EmitBlankLine;
+    EmitComment('implementation');
+  End
+  Else Exit;
+
+  { Section USES optionnelle dans l implementation }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'uses') Then
+  Begin
+    ParseUsesClause(P);
+    EmitBlankLine;
+  End;
+
+  { Declarations et corps : CONST, TYPE, VAR, PROCEDURE, FUNCTION }
+  ParseDeclSections(P);
+End;
+
+{ ---- ParseUnitInit : parser le bloc d initialisation optionnel  }
+{ BEGIN ... END. a la fin d une unite                              }
+{ Genere : function _init_NomUnite() ...                           }
+Procedure ParseUnitInit(Var P : Integer);
+Begin
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'begin') Then
+  Begin
+    Inc(P); { consommer BEGIN }
+    EmitBlankLine;
+    EmitComment('Initialisation de l''unite ' + UnitName);
+    EmitLine('function _init_' + UnitName + '() {');
+    IndentPush;
+
+    While (P < TokenCount) And
+          Not ((TokenPool[P].Kind = TK_KEYWORD) And
+               (StrLowerCase(TokenPool[P].Val) = 'end')) Do
+    Begin
+      ParseStmt(P);
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ';') Then
+        Inc(P);
+    End;
+
+    IndentPop;
+    EmitLine('}');
+
+    { Enregistrer l unite dans la liste d initialisation }
+    If UnitInitCount < MAX_UNITS Then
+    Begin
+      UnitInitNames[UnitInitCount] := UnitName;
+      Inc(UnitInitCount);
+    End;
+  End;
+
+  { Consommer END }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'end') Then
+    Inc(P);
+  { Consommer le point final . }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = '.') Then
+    Inc(P);
+End;
+
+{ ---- ParseUnit : parser une unite Pascal complete ------------- }
+{ UNIT nom; INTERFACE ... IMPLEMENTATION ... [BEGIN ...] END.     }
+{ Genere le fichier JavaScript correspondant.                     }
+Procedure ParseUnit(Var P : Integer);
+Begin
+  IsUnitMode := True;
+  UnitName := 'unnamed';
+
+  { UNIT nom ; }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'unit') Then
+  Begin
+    Inc(P); { consommer UNIT }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+    Begin
+      UnitName := TokenPool[P].Val;
+      Inc(P);
+    End;
+    { Consommer ; }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ';') Then
+      Inc(P);
+  End;
+
+  EmitComment('Unit ' + UnitName);
+  EmitBlankLine;
+
+  { En mode module ES6, emettre l en-tete d export }
+  If Opts.ModuleES6 Then
+  Begin
+    EmitComment('exports (module ES6)');
+    EmitBlankLine;
+  End;
+
+  { Section INTERFACE }
+  ParseUnitInterface(P);
+  EmitBlankLine;
+
+  { Section IMPLEMENTATION }
+  ParseUnitImplementation(P);
+
+  { Section d initialisation optionnelle : BEGIN ... END. }
+  ParseUnitInit(P);
+
+  WriteLn('TP2JS: unite "', UnitName, '" compilee.');
+End;
+
 { ---- ParseProgram : parser un programme Pascal complet ------ }
 { PROGRAM nom [(params)]; [USES ...;] [decls] BEGIN ... END.    }
 { Genere le fichier JavaScript complet.                          }
@@ -9972,16 +10182,32 @@ Begin
   EmitHeader;
   EmitModuleHeader;
 
-  { Parser le programme Pascal et generer le JavaScript }
+  { TODO 23 : detecter si le source est un UNIT ou un PROGRAM }
   P := 0;
-  ParseProgram(P);
+  IsUnitMode := False;
+  UnitInitCount := 0;
+  UnitLoadedCount := 0;
+  If (TokenCount > 0) And (TokenPool[0].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[0].Val) = 'unit') Then
+  Begin
+    { Compiler comme unite }
+    ParseUnit(P);
+  End
+  Else
+  Begin
+    { Compiler comme programme }
+    ParseProgram(P);
+  End;
 
   { Emettre le pied de page et fermer }
   EmitFooter;
   EmitClose;
 
   WriteLn('TP2JS: fichier genere: ', Opts.OutFile);
-  WriteLn('TP2JS: programme "', ProgName, '" compile.');
+  If IsUnitMode Then
+    WriteLn('TP2JS: unite "', UnitName, '" compilee.')
+  Else
+    WriteLn('TP2JS: programme "', ProgName, '" compile.');
   If Opts.ModuleES6 Then
     WriteLn('TP2JS: mode module ES6 actif');
   If Opts.Pretty Then
