@@ -105,7 +105,7 @@
               MSDOS, CPU86, CPU87
               WIN32 (toujours defini dans TPCW32)
 
-  TODO 04 - LITTERAUX ET CONSTANTES
+  TODO 04 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
             Entiers decimaux : 0..2147483647 (LongInt 32 bits)
             Entiers hexadecimaux : $FF, $FFFF, $FFFFFFFF
             Reels : 3.14, 1.5E3, 2.7E-5 (tronques en entier)
@@ -1068,6 +1068,64 @@ Var
 { Forward declarations TODO 03 }
 Procedure LexHandleDollarDirective; Forward;
 Procedure IncludePop; Forward;
+
+{ ============================================================ }
+{ TODO 04 - LITTERAUX ET CONSTANTES               [IMPLEMENTE] }
+{ ============================================================ }
+
+Const
+  MAX_DATA   = {$IFDEF FPC}512{$ELSE}128{$ENDIF};
+  MAX_TOKENS = {$IFDEF FPC}16384{$ELSE}4096{$ENDIF};
+
+  { Prefixes de mangling pour les labels generes }
+  TP_STR_PFX  = '_TPK_';   { constantes chaine                    }
+  TP_VAR_PFX  = '_TPV_';   { variables                            }
+  TP_LBL_PFX  = '_TPL_';   { labels internes                      }
+  TP_RT_PFX   = '_TPRT_';  { routines runtime                     }
+  TP_STA_PFX  = '_TPST_';  { variables statiques                  }
+
+  { Table des tailles de types Turbo Pascal (Win32, 32 bits) }
+  MAX_TP_TYPE_SIZES = 18;
+
+Type
+  { Types d entrees dans le pool de donnees }
+  TDataKind = (
+    DK_STR,     { chaine ASCIIZ (DB 'xxx',0)                         }
+    DK_DWORD,   { valeur 32 bits (DD nnn)                             }
+    DK_BYTE,    { valeur 8 bits (DB nnn)                              }
+    DK_ARRAY,   { tableau (DB ElemCount*ElemSize DUP(0))              }
+    DK_RES,     { espace reserve (DB Size DUP(0))                     }
+    DK_STRUCT,  { structure/record (DB Size DUP(0))                   }
+    DK_ZERO     { espace initialise a zero (DB Size DUP(0))          }
+  );
+
+  { Un enregistrement du pool de donnees }
+  TDataRec = Record
+    LblName   : TString;    { label ASM (ex: _TPK_1, _TPV_x)         }
+    Kind      : TDataKind;  { type de donnee                           }
+    IntVal    : LongInt;     { valeur entiere (pour DK_DWORD, DK_BYTE) }
+    StrVal    : TString;     { contenu chaine (pour DK_STR)            }
+    ElemCount : Integer;     { nombre d elements (pour DK_ARRAY)       }
+    ElemSize  : Integer;     { taille d un element (pour DK_ARRAY)     }
+  End;
+
+  { Taille connue d un type Turbo Pascal }
+  TTPSizeInfo = Record
+    Name : TString;         { nom du type (Integer, Char, etc.)        }
+    Size : Integer;         { taille en octets                          }
+  End;
+
+Var
+  { Pool de donnees (segment .DATA) }
+  DataTab    : Array[0..MAX_DATA - 1] Of TDataRec;
+  DataCount  : Integer;
+
+  { Compteur de labels auto-generes }
+  LabelGenSeq : Integer;
+
+  { Pool de tokens (pour le parseur futur) }
+  TokenPool  : Array[0..MAX_TOKENS - 1] Of TToken;
+  TokenCount : Integer;
 
 { ------------------------------------------------------------ }
 { Fonctions de classification de caracteres                    }
@@ -2197,6 +2255,601 @@ Begin
   If TPVersionAtLeast(TP_VER_8) Then DefineAdd('VER80');
 End;
 
+{ ============================================================ }
+{ TODO 04 - LITTERAUX ET CONSTANTES               [IMPLEMENTE] }
+{ ============================================================ }
+
+{ ---- Table des tailles de types Turbo Pascal (Win32) ---- }
+Const
+  TPTypeSizes : Array[0..MAX_TP_TYPE_SIZES - 1] Of TTPSizeInfo = (
+    (Name: 'INTEGER';   Size: 4),   { LongInt 32 bits en Win32          }
+    (Name: 'LONGINT';   Size: 4),   { LongInt 32 bits                   }
+    (Name: 'WORD';      Size: 4),   { elargi a 32 bits en Win32         }
+    (Name: 'BYTE';      Size: 1),   { 8 bits non signe                  }
+    (Name: 'SHORTINT';  Size: 1),   { 8 bits signe                      }
+    (Name: 'CHAR';      Size: 1),   { caractere 8 bits                  }
+    (Name: 'BOOLEAN';   Size: 1),   { booleen 8 bits                    }
+    (Name: 'STRING';    Size: 256), { ShortString (255+1 longueur)      }
+    (Name: 'REAL';      Size: 4),   { stub entier, 4 octets en Win32    }
+    (Name: 'SINGLE';    Size: 4),   { flottant 32 bits                  }
+    (Name: 'DOUBLE';    Size: 8),   { flottant 64 bits                  }
+    (Name: 'EXTENDED';  Size: 10),  { flottant 80 bits                  }
+    (Name: 'COMP';      Size: 8),   { entier 64 bits en virgule fixe    }
+    (Name: 'POINTER';   Size: 4),   { pointeur generique 32 bits        }
+    (Name: 'PCHAR';     Size: 4),   { pointeur vers Char                }
+    (Name: 'TEXT';      Size: 4),   { handle fichier texte              }
+    (Name: 'FILE';      Size: 4),   { handle fichier                    }
+    (Name: 'LONGWORD';  Size: 4)    { mot 32 bits non signe (TP8)       }
+  );
+
+{ ---- DataInit : initialiser le pool de donnees ---- }
+Procedure DataInit;
+Var I : Integer;
+Begin
+  DataCount   := 0;
+  LabelGenSeq := 0;
+  TokenCount  := 0;
+  For I := 0 To MAX_DATA - 1 Do
+  Begin
+    DataTab[I].LblName   := '';
+    DataTab[I].Kind      := DK_STR;
+    DataTab[I].IntVal    := 0;
+    DataTab[I].StrVal    := '';
+    DataTab[I].ElemCount := 0;
+    DataTab[I].ElemSize  := 0;
+  End;
+End;
+
+{ ---- DataAdd : ajouter une entree generique dans le pool ---- }
+Function DataAdd(Const Lbl : TString; Kind : TDataKind;
+                 AIntVal : LongInt; Const AStrVal : TString;
+                 AElemCount : Integer; AElemSize : Integer) : Integer;
+Begin
+  If DataCount >= MAX_DATA Then
+  Begin
+    WarnMsg('pool de donnees plein (MAX_DATA=' + IntToStr_(MAX_DATA) + ')');
+    DataAdd := -1;
+    Exit;
+  End;
+  DataTab[DataCount].LblName   := Lbl;
+  DataTab[DataCount].Kind      := Kind;
+  DataTab[DataCount].IntVal    := AIntVal;
+  DataTab[DataCount].StrVal    := AStrVal;
+  DataTab[DataCount].ElemCount := AElemCount;
+  DataTab[DataCount].ElemSize  := AElemSize;
+  DataAdd := DataCount;
+  Inc(DataCount);
+End;
+
+{ ---- DataAddStr : ajouter une chaine avec label auto-genere ---- }
+{ Retourne le label (ex: _TPK_1) }
+Function DataAddStr(Const S : TString) : TString;
+Var Lbl : TString;
+Begin
+  Inc(LabelGenSeq);
+  Lbl := TP_STR_PFX + IntToStr_(LabelGenSeq);
+  DataAdd(Lbl, DK_STR, 0, S, 0, 0);
+  DataAddStr := Lbl;
+End;
+
+{ ---- DataAddDWord : ajouter une valeur 32 bits avec label ---- }
+Function DataAddDWord(Const Lbl : TString; Val : LongInt) : Integer;
+Begin
+  DataAddDWord := DataAdd(Lbl, DK_DWORD, Val, '', 0, 0);
+End;
+
+{ ---- DataAddByte : ajouter une valeur 8 bits avec label ---- }
+Function DataAddByte(Const Lbl : TString; Val : Integer) : Integer;
+Begin
+  DataAddByte := DataAdd(Lbl, DK_BYTE, Val, '', 0, 0);
+End;
+
+{ ---- DataAddArray : ajouter un tableau avec label ---- }
+Function DataAddArray(Const Lbl : TString;
+                      AElemCount : Integer;
+                      AElemSize : Integer) : Integer;
+Begin
+  DataAddArray := DataAdd(Lbl, DK_ARRAY, 0, '', AElemCount, AElemSize);
+End;
+
+{ ---- DataAddRes : ajouter un espace reserve avec label ---- }
+Function DataAddRes(Const Lbl : TString; Size : Integer) : Integer;
+Begin
+  DataAddRes := DataAdd(Lbl, DK_RES, Size, '', 0, 0);
+End;
+
+{ ---- DataAddStruct : ajouter un record/structure ---- }
+Function DataAddStruct(Const Lbl : TString; Size : Integer) : Integer;
+Begin
+  DataAddStruct := DataAdd(Lbl, DK_STRUCT, Size, '', 0, 0);
+End;
+
+{ ---- DataAddZero : ajouter un espace initialise a zero ---- }
+Function DataAddZero(Const Lbl : TString; Size : Integer) : Integer;
+Begin
+  DataAddZero := DataAdd(Lbl, DK_ZERO, Size, '', 0, 0);
+End;
+
+{ ---- DataFindStr : rechercher si une chaine est deja dans le pool ---- }
+{ Retourne l index ou -1 si absente }
+Function DataFindStr(Const S : TString) : Integer;
+Var I : Integer;
+Begin
+  DataFindStr := -1;
+  For I := 0 To DataCount - 1 Do
+    If (DataTab[I].Kind = DK_STR) And (DataTab[I].StrVal = S) Then
+    Begin
+      DataFindStr := I;
+      Exit;
+    End;
+End;
+
+{ ---- DataGetOrAddStr : retourne le label d une chaine existante ---- }
+{ ou l ajoute si elle n existe pas encore (deduplication) }
+Function DataGetOrAddStr(Const S : TString) : TString;
+Var Idx : Integer;
+Begin
+  Idx := DataFindStr(S);
+  If Idx >= 0 Then
+    DataGetOrAddStr := DataTab[Idx].LblName
+  Else
+    DataGetOrAddStr := DataAddStr(S);
+End;
+
+{ ---- TPTypeSizeof : retourne la taille d un type TP de base ---- }
+{ Retourne -1 si le type est inconnu }
+Function TPTypeSizeof(Const TypeName : TString) : Integer;
+Var
+  I : Integer;
+  N : TString;
+Begin
+  TPTypeSizeof := -1;
+  N := StrUpperCase(TypeName);
+  For I := 0 To MAX_TP_TYPE_SIZES - 1 Do
+    If TPTypeSizes[I].Name = N Then
+    Begin
+      TPTypeSizeof := TPTypeSizes[I].Size;
+      Exit;
+    End;
+  { Pointeur : tout type ^xxx a la taille d un pointeur }
+  If (Length(N) > 1) And (N[1] = '^') Then
+  Begin
+    TPTypeSizeof := 4;  { 32 bits }
+    Exit;
+  End;
+End;
+
+{ ---- ConstEvalExpr : evaluer une expression constante TP ---- }
+{ Supporte : entiers, hex, Ord, Chr, SizeOf, MaxInt, True, False, Nil }
+{ Operateurs : + - * DIV MOD AND OR XOR NOT SHL SHR ( )  }
+
+Function ConstEvalExpr(Const S : TString; Var Pos : Integer) : LongInt;
+  Forward;
+
+Function ConstEvalAtom(Const S : TString; Var Pos : Integer) : LongInt;
+Var
+  N   : LongInt;
+  Neg : Boolean;
+  Id  : TString;
+  Sz  : Integer;
+  Arg : TString;
+  Depth : Integer;
+Begin
+  N := 0;
+
+  { Sauter les blancs }
+  While (Pos <= Length(S)) And ((S[Pos] = ' ') Or (S[Pos] = #9)) Do
+    Inc(Pos);
+
+  If Pos > Length(S) Then
+  Begin
+    ConstEvalAtom := 0;
+    Exit;
+  End;
+
+  { Operateur unaire - }
+  Neg := False;
+  If (Pos <= Length(S)) And (S[Pos] = '-') Then
+  Begin
+    Neg := True;
+    Inc(Pos);
+    While (Pos <= Length(S)) And ((S[Pos] = ' ') Or (S[Pos] = #9)) Do
+      Inc(Pos);
+  End;
+
+  { Operateur unaire + }
+  If (Pos <= Length(S)) And (S[Pos] = '+') Then
+  Begin
+    Inc(Pos);
+    While (Pos <= Length(S)) And ((S[Pos] = ' ') Or (S[Pos] = #9)) Do
+      Inc(Pos);
+  End;
+
+  { NOT : operateur unaire TP }
+  If (Pos + 2 <= Length(S)) And
+     (UpCase(S[Pos]) = 'N') And (UpCase(S[Pos+1]) = 'O') And
+     (UpCase(S[Pos+2]) = 'T') And
+     ((Pos + 3 > Length(S)) Or Not IsIdentCont(S[Pos+3])) Then
+  Begin
+    Inc(Pos, 3);
+    N := Not ConstEvalAtom(S, Pos);
+    If Neg Then N := -N;
+    ConstEvalAtom := N;
+    Exit;
+  End;
+
+  { Parentheses }
+  If (Pos <= Length(S)) And (S[Pos] = '(') Then
+  Begin
+    Inc(Pos);
+    N := ConstEvalExpr(S, Pos);
+    If (Pos <= Length(S)) And (S[Pos] = ')') Then
+      Inc(Pos);
+    If Neg Then N := -N;
+    ConstEvalAtom := N;
+    Exit;
+  End;
+
+  { Caractere #nn ou #$nn }
+  If (Pos <= Length(S)) And (S[Pos] = '#') Then
+  Begin
+    Inc(Pos);
+    If (Pos <= Length(S)) And (S[Pos] = '$') Then
+    Begin
+      { Hex char #$41 }
+      Inc(Pos);
+      N := 0;
+      While (Pos <= Length(S)) And IsHexDigit(S[Pos]) Do
+      Begin
+        N := N * 16 + HexVal(S[Pos]);
+        Inc(Pos);
+      End;
+    End
+    Else
+    Begin
+      { Decimal char #65 }
+      N := 0;
+      While (Pos <= Length(S)) And IsDigit(S[Pos]) Do
+      Begin
+        N := N * 10 + (Ord(S[Pos]) - Ord('0'));
+        Inc(Pos);
+      End;
+    End;
+    If Neg Then N := -N;
+    ConstEvalAtom := N;
+    Exit;
+  End;
+
+  { Chaine un caractere 'A' -> Ord('A') }
+  If (Pos <= Length(S)) And (S[Pos] = '''') Then
+  Begin
+    Inc(Pos);
+    If Pos <= Length(S) Then
+    Begin
+      N := Ord(S[Pos]);
+      Inc(Pos);
+    End;
+    If (Pos <= Length(S)) And (S[Pos] = '''') Then
+      Inc(Pos);
+    If Neg Then N := -N;
+    ConstEvalAtom := N;
+    Exit;
+  End;
+
+  { Hex $FF }
+  If (Pos <= Length(S)) And (S[Pos] = '$') Then
+  Begin
+    Inc(Pos);
+    N := 0;
+    While (Pos <= Length(S)) And IsHexDigit(S[Pos]) Do
+    Begin
+      N := N * 16 + HexVal(S[Pos]);
+      Inc(Pos);
+    End;
+    If Neg Then N := -N;
+    ConstEvalAtom := N;
+    Exit;
+  End;
+
+  { Nombre decimal }
+  If (Pos <= Length(S)) And IsDigit(S[Pos]) Then
+  Begin
+    N := 0;
+    While (Pos <= Length(S)) And IsDigit(S[Pos]) Do
+    Begin
+      N := N * 10 + (Ord(S[Pos]) - Ord('0'));
+      Inc(Pos);
+    End;
+    { Ignorer la partie decimale pour les reels }
+    If (Pos <= Length(S)) And (S[Pos] = '.') Then
+    Begin
+      Inc(Pos);
+      While (Pos <= Length(S)) And IsDigit(S[Pos]) Do
+        Inc(Pos);
+      { Ignorer exposant }
+      If (Pos <= Length(S)) And (UpCase(S[Pos]) = 'E') Then
+      Begin
+        Inc(Pos);
+        If (Pos <= Length(S)) And ((S[Pos] = '+') Or (S[Pos] = '-')) Then
+          Inc(Pos);
+        While (Pos <= Length(S)) And IsDigit(S[Pos]) Do
+          Inc(Pos);
+      End;
+    End;
+    If Neg Then N := -N;
+    ConstEvalAtom := N;
+    Exit;
+  End;
+
+  { Identificateur : mot-cle ou constante nommee }
+  If (Pos <= Length(S)) And IsIdentStart(S[Pos]) Then
+  Begin
+    Id := '';
+    While (Pos <= Length(S)) And IsIdentCont(S[Pos]) Do
+    Begin
+      Id := Id + UpCase(S[Pos]);
+      Inc(Pos);
+    End;
+    While (Pos <= Length(S)) And ((S[Pos] = ' ') Or (S[Pos] = #9)) Do
+      Inc(Pos);
+
+    { Constantes predefinies }
+    If Id = 'TRUE' Then N := 1
+    Else If Id = 'FALSE' Then N := 0
+    Else If Id = 'NIL' Then N := 0
+    Else If Id = 'MAXINT' Then N := 32767
+    Else If Id = 'MAXLONGINT' Then N := 2147483647
+
+    { Fonctions de conversion }
+    Else If Id = 'ORD' Then
+    Begin
+      If (Pos <= Length(S)) And (S[Pos] = '(') Then
+      Begin
+        Inc(Pos);
+        N := ConstEvalExpr(S, Pos);
+        If (Pos <= Length(S)) And (S[Pos] = ')') Then
+          Inc(Pos);
+      End;
+    End
+    Else If Id = 'CHR' Then
+    Begin
+      If (Pos <= Length(S)) And (S[Pos] = '(') Then
+      Begin
+        Inc(Pos);
+        N := ConstEvalExpr(S, Pos);
+        N := N And $FF;
+        If (Pos <= Length(S)) And (S[Pos] = ')') Then
+          Inc(Pos);
+      End;
+    End
+    Else If Id = 'SIZEOF' Then
+    Begin
+      If (Pos <= Length(S)) And (S[Pos] = '(') Then
+      Begin
+        Inc(Pos);
+        { Lire le nom du type comme argument }
+        While (Pos <= Length(S)) And ((S[Pos] = ' ') Or (S[Pos] = #9)) Do
+          Inc(Pos);
+        Arg := '';
+        Depth := 1;
+        While (Pos <= Length(S)) And (Depth > 0) Do
+        Begin
+          If S[Pos] = '(' Then Inc(Depth)
+          Else If S[Pos] = ')' Then
+          Begin
+            Dec(Depth);
+            If Depth = 0 Then
+            Begin
+              Inc(Pos);
+              Break;
+            End;
+          End;
+          Arg := Arg + S[Pos];
+          Inc(Pos);
+        End;
+        { Supprimer espaces de fin }
+        While (Length(Arg) > 0) And (Arg[Length(Arg)] = ' ') Do
+          Delete(Arg, Length(Arg), 1);
+        Sz := TPTypeSizeof(Arg);
+        If Sz >= 0 Then
+          N := Sz
+        Else
+          N := 4;  { taille par defaut pour types inconnus (32 bits) }
+      End;
+    End
+    Else If Id = 'SUCC' Then
+    Begin
+      If (Pos <= Length(S)) And (S[Pos] = '(') Then
+      Begin
+        Inc(Pos);
+        N := ConstEvalExpr(S, Pos) + 1;
+        If (Pos <= Length(S)) And (S[Pos] = ')') Then
+          Inc(Pos);
+      End;
+    End
+    Else If Id = 'PRED' Then
+    Begin
+      If (Pos <= Length(S)) And (S[Pos] = '(') Then
+      Begin
+        Inc(Pos);
+        N := ConstEvalExpr(S, Pos) - 1;
+        If (Pos <= Length(S)) And (S[Pos] = ')') Then
+          Inc(Pos);
+      End;
+    End
+    Else If Id = 'ABS' Then
+    Begin
+      If (Pos <= Length(S)) And (S[Pos] = '(') Then
+      Begin
+        Inc(Pos);
+        N := ConstEvalExpr(S, Pos);
+        If N < 0 Then N := -N;
+        If (Pos <= Length(S)) And (S[Pos] = ')') Then
+          Inc(Pos);
+      End;
+    End
+    Else If Id = 'LO' Then
+    Begin
+      If (Pos <= Length(S)) And (S[Pos] = '(') Then
+      Begin
+        Inc(Pos);
+        N := ConstEvalExpr(S, Pos) And $FF;
+        If (Pos <= Length(S)) And (S[Pos] = ')') Then
+          Inc(Pos);
+      End;
+    End
+    Else If Id = 'HI' Then
+    Begin
+      If (Pos <= Length(S)) And (S[Pos] = '(') Then
+      Begin
+        Inc(Pos);
+        N := (ConstEvalExpr(S, Pos) Shr 8) And $FF;
+        If (Pos <= Length(S)) And (S[Pos] = ')') Then
+          Inc(Pos);
+      End;
+    End
+    Else If Id = 'SWAP' Then
+    Begin
+      If (Pos <= Length(S)) And (S[Pos] = '(') Then
+      Begin
+        Inc(Pos);
+        N := ConstEvalExpr(S, Pos);
+        N := ((N And $FF) Shl 8) Or ((N Shr 8) And $FF);
+        If (Pos <= Length(S)) And (S[Pos] = ')') Then
+          Inc(Pos);
+      End;
+    End
+    Else
+      N := 0;  { identificateur inconnu : 0 par defaut }
+
+    If Neg Then N := -N;
+    ConstEvalAtom := N;
+    Exit;
+  End;
+
+  { Par defaut }
+  ConstEvalAtom := 0;
+End;
+
+{ ---- ConstEvalExpr : evaluer une expression constante entiere ---- }
+{ Operateurs TP : + - * DIV MOD AND OR XOR SHL SHR = <> < > <= >= }
+Function ConstEvalExpr(Const S : TString; Var Pos : Integer) : LongInt;
+Var
+  L, R : LongInt;
+  Op   : TString;
+Begin
+  L := ConstEvalAtom(S, Pos);
+
+  While Pos <= Length(S) Do
+  Begin
+    { Sauter blancs }
+    While (Pos <= Length(S)) And ((S[Pos] = ' ') Or (S[Pos] = #9)) Do
+      Inc(Pos);
+    If Pos > Length(S) Then Break;
+
+    { Detecter l operateur }
+    Op := '';
+    If S[Pos] = '+' Then Begin Op := '+'; Inc(Pos); End
+    Else If S[Pos] = '-' Then Begin Op := '-'; Inc(Pos); End
+    Else If S[Pos] = '*' Then Begin Op := '*'; Inc(Pos); End
+    Else If (S[Pos] = '<') And (Pos + 1 <= Length(S)) And (S[Pos+1] = '>') Then
+      Begin Op := '<>'; Inc(Pos, 2); End
+    Else If (S[Pos] = '<') And (Pos + 1 <= Length(S)) And (S[Pos+1] = '=') Then
+      Begin Op := '<='; Inc(Pos, 2); End
+    Else If (S[Pos] = '>') And (Pos + 1 <= Length(S)) And (S[Pos+1] = '=') Then
+      Begin Op := '>='; Inc(Pos, 2); End
+    Else If S[Pos] = '<' Then Begin Op := '<'; Inc(Pos); End
+    Else If S[Pos] = '>' Then Begin Op := '>'; Inc(Pos); End
+    Else If S[Pos] = '=' Then Begin Op := '='; Inc(Pos); End
+    Else If IsIdentStart(S[Pos]) Then
+    Begin
+      { Mots-cles operateurs : DIV, MOD, AND, OR, XOR, SHL, SHR }
+      Op := '';
+      While (Pos <= Length(S)) And IsIdentCont(S[Pos]) Do
+      Begin
+        Op := Op + UpCase(S[Pos]);
+        Inc(Pos);
+      End;
+      If (Op <> 'DIV') And (Op <> 'MOD') And (Op <> 'AND') And
+         (Op <> 'OR') And (Op <> 'XOR') And (Op <> 'SHL') And
+         (Op <> 'SHR') Then
+      Begin
+        { Pas un operateur connu, reculer }
+        Dec(Pos, Length(Op));
+        Break;
+      End;
+    End
+    Else
+      Break;  { pas un operateur reconnu }
+
+    R := ConstEvalAtom(S, Pos);
+
+    If Op = '+' Then L := L + R
+    Else If Op = '-' Then L := L - R
+    Else If Op = '*' Then L := L * R
+    Else If Op = 'DIV' Then
+    Begin
+      If R <> 0 Then L := L Div R Else L := 0;
+    End
+    Else If Op = 'MOD' Then
+    Begin
+      If R <> 0 Then L := L Mod R Else L := 0;
+    End
+    Else If Op = 'AND' Then L := L And R
+    Else If Op = 'OR' Then L := L Or R
+    Else If Op = 'XOR' Then L := L Xor R
+    Else If Op = 'SHL' Then L := L Shl R
+    Else If Op = 'SHR' Then L := L Shr R
+    Else If Op = '=' Then Begin If L = R Then L := 1 Else L := 0; End
+    Else If Op = '<>' Then Begin If L <> R Then L := 1 Else L := 0; End
+    Else If Op = '<' Then Begin If L < R Then L := 1 Else L := 0; End
+    Else If Op = '>' Then Begin If L > R Then L := 1 Else L := 0; End
+    Else If Op = '<=' Then Begin If L <= R Then L := 1 Else L := 0; End
+    Else If Op = '>=' Then Begin If L >= R Then L := 1 Else L := 0; End;
+  End;
+
+  ConstEvalExpr := L;
+End;
+
+{ ---- ConstEval : evaluer une expression constante complete ---- }
+{ Encapsulation avec initialisation de Pos }
+Function ConstEval(Const S : TString) : LongInt;
+Var P : Integer;
+Begin
+  P := 1;
+  ConstEval := ConstEvalExpr(S, P);
+End;
+
+{ ---- TokenPoolInit : initialiser le pool de tokens ---- }
+Procedure TokenPoolInit;
+Begin
+  TokenCount := 0;
+End;
+
+{ ---- TokenPoolAdd : ajouter un token dans le pool ---- }
+Procedure TokenPoolAdd(Const T : TToken);
+Begin
+  If TokenCount >= MAX_TOKENS Then
+  Begin
+    WarnMsg('pool de tokens plein');
+    Exit;
+  End;
+  TokenPool[TokenCount] := T;
+  Inc(TokenCount);
+End;
+
+{ ---- TokenPoolRegisterStrings : enregistrer toutes les chaines ---- }
+{ du pool de tokens dans le pool de donnees, en evitant les doublons }
+Procedure TokenPoolRegisterStrings;
+Var I : Integer;
+Begin
+  For I := 0 To TokenCount - 1 Do
+  Begin
+    If TokenPool[I].Kind = TK_STRING Then
+      DataGetOrAddStr(TokenPool[I].Val);
+  End;
+End;
+
 { ------------------------------------------------------------ }
 { Run                                                          }
 { ------------------------------------------------------------ }
@@ -2215,16 +2868,28 @@ Begin
   LexOpened := True;
   LexSrcFName := Opts.SrcFile;
 
+  { Initialiser le pool de donnees et le pool de tokens (TODO 04) }
+  DataInit;
+  TokenPoolInit;
+
   { Initialiser le preprocesseur }
   PPInitDefines;
 
-  { Initialiser le lexeur et scanner les tokens }
+  { Initialiser le lexeur et scanner les tokens dans le pool }
   LexInit;
-  LexNextToken;
-  While CurToken.Kind <> TK_EOF Do
+  Repeat
     LexNextToken;
+    If CurToken.Kind <> TK_EOF Then
+      TokenPoolAdd(CurToken);
+  Until CurToken.Kind = TK_EOF;
 
-  { TODO 04..25 : compilation complete }
+  { Enregistrer toutes les chaines dans le pool de donnees }
+  TokenPoolRegisterStrings;
+
+  If Opts.Verbose Then
+    WriteLn('  Tokens: ', TokenCount, '  Donnees: ', DataCount);
+
+  { TODO 05..25 : compilation complete }
 
   LexClose;
   ShowStats;
