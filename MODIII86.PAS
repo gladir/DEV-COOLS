@@ -234,7 +234,7 @@
              SUBARRAY(arr, start, len) : sous-tableau (ptr + offset)
              Verification de bornes : CMP index + JB/JAE -> exception si hors bornes
 
-   TODO 16 - ENREGISTREMENTS (RECORD) ET WITH
+   TODO 16 - ENREGISTREMENTS (RECORD) ET WITH [IMPLEMENTE]
              RECORD champ1: T1; champ2: T2; ... END
                Taille = somme des sizeof(Ti) alignes
                Acces champ : offset fixe depuis debut du record
@@ -3422,6 +3422,7 @@ End;
 (* Reconnait les types primitifs et retourne leur TY_IDX.         *)
 
 Function TypeIdxFromName(Const V : TString) : Integer;
+Var Idx : Integer;
 Begin
   If V = 'INTEGER'  Then TypeIdxFromName := TY_IDX_INTEGER
   Else If V = 'CARDINAL' Then TypeIdxFromName := TY_IDX_CARDINAL
@@ -3431,7 +3432,12 @@ Begin
   Else If V = 'LONGREAL' Then TypeIdxFromName := TY_IDX_LONGREAL
   Else If V = 'TEXT'     Then TypeIdxFromName := TY_IDX_TEXT
   Else If V = 'REFANY'   Then TypeIdxFromName := TY_IDX_NIL
-  Else TypeIdxFromName := TY_UNKNOWN;
+  Else
+  Begin
+    (* Chercher dans TypeTab les types definis par l utilisateur *)
+    Idx := TypeFindByName(V);
+    TypeIdxFromName := Idx;
+  End;
 End;
 
 (* ---- TypeSizeFromIdx : retourne la taille en octets d un type *)
@@ -3548,6 +3554,135 @@ Begin
   End;
 End;
 
+(* ============================================================
+   TODO 16 - ENREGISTREMENTS (RECORD) ET WITH [IMPLEMENTE]
+   ============================================================ *)
+
+(* ---- ParseRecordTypeFromTokens : parser un type RECORD ------ *)
+(* Lit RECORD champ1: T1; champ2: T2; ... END a partir de la     *)
+(* position P dans le TokenPool et cree l entree TypeTab.         *)
+(* Retourne l index du type ou TY_UNKNOWN.                        *)
+
+Function ParseRecordTypeFromTokens(Var P : Integer;
+                                   Const TName : TString) : Integer;
+Var
+  TIdx, FTIdx : Integer;
+  FCount      : Integer;
+  FOffset     : Integer;
+  FName       : TString;
+  FSz         : Integer;
+Begin
+  ParseRecordTypeFromTokens := TY_UNKNOWN;
+  If (P >= TokenCount) Or Not
+     ((TokenPool[P].Kind = TK_KEYWORD) And (TokenPool[P].Val = 'RECORD'))
+  Then Exit;
+  Inc(P); (* passer RECORD *)
+
+  TIdx := TypeAdd(TYK_RECORD, TName, 0);
+  If TIdx < 0 Then Exit;
+
+  FCount  := 0;
+  FOffset := 0;
+
+  (* Parser les champs : ident : Type ; *)
+  While (P < TokenCount) And Not
+        ((TokenPool[P].Kind = TK_KEYWORD) And (TokenPool[P].Val = 'END'))
+  Do
+  Begin
+    If TokenPool[P].Kind = TK_IDENT Then
+    Begin
+      FName := TokenPool[P].Val;
+      Inc(P);
+      (* Attendre ':' *)
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ':') Then
+      Begin
+        Inc(P); (* passer ':' *)
+        FTIdx := TY_IDX_INTEGER;
+        If P < TokenCount Then
+        Begin
+          If (TokenPool[P].Kind = TK_KEYWORD) Or
+             (TokenPool[P].Kind = TK_IDENT) Then
+          Begin
+            FTIdx := TypeIdxFromName(TokenPool[P].Val);
+            If FTIdx = TY_UNKNOWN Then
+              FTIdx := TY_IDX_INTEGER;
+            Inc(P);
+          End;
+        End;
+        FSz := TypeSizeFromIdx(FTIdx);
+        (* Aligner sur mot si necessaire *)
+        If (FSz > 1) And ((FOffset Mod 2) = 1) Then
+          Inc(FOffset);
+        If FCount < MAX_FIELD Then
+        Begin
+          TypeTab[TIdx].Fields[FCount].Name    := FName;
+          TypeTab[TIdx].Fields[FCount].TypeIdx := FTIdx;
+          TypeTab[TIdx].Fields[FCount].Offset  := FOffset;
+          Inc(FCount);
+        End;
+        Inc(FOffset, FSz);
+      End;
+      (* Passer ';' entre champs *)
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ';') Then
+        Inc(P);
+    End
+    Else
+      Inc(P); (* token inattendu, avancer *)
+  End;
+
+  (* Passer END *)
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (TokenPool[P].Val = 'END') Then
+    Inc(P);
+
+  (* Aligner la taille totale sur mot *)
+  If (FOffset Mod 2) = 1 Then Inc(FOffset);
+  TypeTab[TIdx].FieldCount := FCount;
+  TypeTab[TIdx].Size       := FOffset;
+
+  If Opts.DebugMode Then
+    WriteLn('  RECORD TYPE[', TIdx, ']: ', TName,
+            ' fields=', FCount, ' size=', FOffset);
+
+  ParseRecordTypeFromTokens := TIdx;
+End;
+
+(* ---- RecordFieldFind : trouver un champ dans un type RECORD - *)
+(* Retourne l index du champ (0..FieldCount-1) ou -1.            *)
+
+Function RecordFieldFind(TIdx : Integer;
+                         Const FName : TString) : Integer;
+Var I : Integer;
+Begin
+  RecordFieldFind := -1;
+  If (TIdx < 0) Or (TIdx >= TypeCount) Then Exit;
+  If TypeTab[TIdx].Kind <> TYK_RECORD Then Exit;
+  For I := 0 To TypeTab[TIdx].FieldCount - 1 Do
+    If TypeTab[TIdx].Fields[I].Name = FName Then
+    Begin
+      RecordFieldFind := I;
+      Exit;
+    End;
+End;
+
+(* ---- DataAddGlobalRecordVar : creer une variable record DATA  *)
+(* Cree une entree DK_REC dans DataTab et enregistre le symbole   *)
+(* dans SymTab.                                                    *)
+
+Procedure DataAddGlobalRecordVar(Const Name : TString; TIdx : Integer);
+Var
+  Lbl : TString;
+  SI  : Integer;
+Begin
+  Lbl := M3_VAR_PFX + Name;
+  DataAddRec(Lbl, TypeTab[TIdx].Size);
+  SI := SymAdd(Name, SK_VAR, TIdx, DataCount - 1);
+  If SI >= 0 Then
+    SymTab[SI].MangledName := Lbl;
+End;
+
 (* ---- DataAddGlobalVar : creer une variable globale DATA ----- *)
 (* Cree une entree DK_WORD ou DK_BYTE dans DataTab et enregistre *)
 (* le symbole correspondant dans SymTab avec mangling _M3V_name. *)
@@ -3637,6 +3772,7 @@ Var
   P       : Integer;
   InVar   : Boolean;   (* dans un bloc VAR *)
   InConst : Boolean;   (* dans un bloc CONST *)
+  InType  : Boolean;   (* dans un bloc TYPE - TODO 16 *)
   Name    : TString;
   TIdx    : Integer;
   IVal    : LongInt;
@@ -3645,6 +3781,7 @@ Begin
   P       := 0;
   InVar   := False;
   InConst := False;
+  InType  := False;
 
   (* Chercher le mot-cle MODULE pour commencer *)
   While (P < TokenCount) And Not
@@ -3678,6 +3815,7 @@ Begin
     Begin
       InVar   := True;
       InConst := False;
+      InType  := False;
       Inc(P);
       Continue;
     End;
@@ -3687,22 +3825,75 @@ Begin
     Begin
       InConst := True;
       InVar   := False;
+      InType  := False;
       Inc(P);
       Continue;
     End;
 
-    (* Detecter un autre mot-cle de section (TYPE, EXCEPTION, etc) *)
+    (* Detecter le mot-cle TYPE - TODO 16 *)
+    If (TokenPool[P].Kind = TK_KEYWORD) And (TokenPool[P].Val = 'TYPE') Then
+    Begin
+      InType  := True;
+      InVar   := False;
+      InConst := False;
+      Inc(P);
+      Continue;
+    End;
+
+    (* Detecter un autre mot-cle de section (EXCEPTION, etc) *)
     If (TokenPool[P].Kind = TK_KEYWORD) And
-       ((TokenPool[P].Val = 'TYPE') Or
-        (TokenPool[P].Val = 'EXCEPTION') Or
+       ((TokenPool[P].Val = 'EXCEPTION') Or
         (TokenPool[P].Val = 'IMPORT') Or
         (TokenPool[P].Val = 'FROM') Or
         (TokenPool[P].Val = 'REVEAL')) Then
     Begin
       InVar   := False;
       InConst := False;
+      InType  := False;
       (* Sauter jusqu a la fin de la section *)
       Inc(P);
+      Continue;
+    End;
+
+    (* ---- Traiter une declaration TYPE : ident = RECORD ... END *)
+    (* TODO 16 - parser les types RECORD definis par l utilisateur *)
+    If InType And (TokenPool[P].Kind = TK_IDENT) Then
+    Begin
+      Name := TokenPool[P].Val;
+      Inc(P);
+      (* Chercher '=' *)
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_OP) And
+         (TokenPool[P].Val = '=') Then
+      Begin
+        Inc(P); (* passer '=' *)
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+           (TokenPool[P].Val = 'RECORD') Then
+        Begin
+          TIdx := ParseRecordTypeFromTokens(P, Name);
+          (* Passer le ';' apres END *)
+          If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+             (TokenPool[P].Val = ';') Then
+            Inc(P);
+        End
+        Else
+        Begin
+          (* Type non-RECORD : sauter jusqu au ';' *)
+          While (P < TokenCount) And Not
+                ((TokenPool[P].Kind = TK_PUNCT) And
+                 (TokenPool[P].Val = ';')) Do
+            Inc(P);
+          If P < TokenCount Then Inc(P);
+        End;
+      End
+      Else
+      Begin
+        (* Pas de '=' -> avancer *)
+        While (P < TokenCount) And Not
+              ((TokenPool[P].Kind = TK_PUNCT) And
+               (TokenPool[P].Val = ';')) Do
+          Inc(P);
+        If P < TokenCount Then Inc(P);
+      End;
       Continue;
     End;
 
@@ -3744,6 +3935,9 @@ Begin
             If (TIdx >= 0) And (TIdx < TypeCount) And
                (TypeTab[TIdx].Kind = TYK_ARRAY) Then
               DataAddGlobalArrayVar(Name, TIdx)
+            Else If (TIdx >= 0) And (TIdx < TypeCount) And
+               (TypeTab[TIdx].Kind = TYK_RECORD) Then
+              DataAddGlobalRecordVar(Name, TIdx)
             Else
               DataAddGlobalVar(Name, TIdx, 0);
             (* Passer le ';' *)
@@ -4880,6 +5074,11 @@ Var
   ArrTIdx            : Integer;
   ArrElemSz          : Integer;
   ArrLo              : LongInt;
+  RecTIdx            : Integer;    (* TODO 16 - record type index     *)
+  FldI               : Integer;    (* TODO 16 - field index           *)
+  FldOfs             : Integer;    (* TODO 16 - field offset          *)
+  FldSz              : Integer;    (* TODO 16 - field size            *)
+  FldName            : TString;    (* TODO 16 - field name            *)
 Begin
   If EPAtEnd Then
   Begin
@@ -4985,7 +5184,7 @@ Begin
     Name := TokenPool[EP].Val;
     Inc(EP);
 
-    (* Acces qualifie Module.Ident *)
+    (* Acces qualifie Module.Ident ou Record.Field - TODO 16 *)
     If EPMatch(TK_PUNCT, '.') Then
     Begin
       (* Verifier si c est un module connu *)
@@ -4996,30 +5195,60 @@ Begin
         Exit;
       End;
       (* Sinon : acces champ d un record *)
-      (* Charger la variable d abord *)
+      (* Determiner le type de la variable pour trouver le champ *)
+      RecTIdx := TY_UNKNOWN;
       LI := FindProcLocal(CurProcIdx, Name);
       If LI >= 0 Then
-        GenLoadLocal(CurProcIdx, LI)
+      Begin
+        RecTIdx := ProcTab[CurProcIdx].Locals[LI].TypeIdx;
+        EmitInstrAB('LEA', 'BX', '[BP' +
+          IntToStr(ProcTab[CurProcIdx].Locals[LI].Offset) + ']');
+      End
       Else
       Begin
         ParI := FindProcParam(CurProcIdx, Name);
         If ParI >= 0 Then
-          GenLoadParam(CurProcIdx, ParI)
+        Begin
+          RecTIdx := ProcTab[CurProcIdx].ParamTypes[ParI];
+          EmitInstrAB('MOV', 'BX', 'WORD PTR [BP+' +
+            IntToStr(ProcTab[CurProcIdx].ParamOfs[ParI]) + ']');
+        End
         Else
         Begin
           SI := SymFind(Name);
           If SI >= 0 Then
-            GenLoadVar(SI)
+          Begin
+            RecTIdx := SymTab[SI].TypeIdx;
+            EmitInstrAB('LEA', 'BX', SymTab[SI].MangledName);
+          End
           Else
             EmitComment('unknown var: ' + Name);
         End;
       End;
-      (* .champ -> stub: just load offset *)
+      (* .champ -> calculer l offset et charger la valeur *)
       Inc(EP); (* passer '.' *)
       If (EP < TokenCount) And (TokenPool[EP].Kind = TK_IDENT) Then
       Begin
-        EmitComment('field access .' + TokenPool[EP].Val + ' (stub)');
+        FldName := TokenPool[EP].Val;
         Inc(EP);
+        FldI := RecordFieldFind(RecTIdx, FldName);
+        If FldI >= 0 Then
+        Begin
+          FldOfs := TypeTab[RecTIdx].Fields[FldI].Offset;
+          FldSz  := TypeSizeFromIdx(
+                      TypeTab[RecTIdx].Fields[FldI].TypeIdx);
+          If FldOfs > 0 Then
+            EmitInstrAB('ADD', 'BX', IntToStr(FldOfs));
+          If FldSz <= 1 Then
+          Begin
+            EmitInstrAB('XOR', 'AX', 'AX');
+            EmitInstrAB('MOV', 'AL', 'BYTE PTR [BX]');
+          End
+          Else
+            EmitInstrAB('MOV', 'AX', 'WORD PTR [BX]');
+        End
+        Else
+          EmitComment('unknown field: ' + FldName);
       End;
       Exit;
     End;
@@ -5398,6 +5627,12 @@ Var
   ArrTIdx              : Integer;    (* TODO 15 - array type index     *)
   ArrElemSz            : Integer;    (* TODO 15 - array element size   *)
   ArrLo                : LongInt;    (* TODO 15 - array lower bound    *)
+  RecTIdx              : Integer;    (* TODO 16 - record type index    *)
+  FldI                 : Integer;    (* TODO 16 - field index          *)
+  FldOfs               : Integer;    (* TODO 16 - field offset         *)
+  FldSz                : Integer;    (* TODO 16 - field size           *)
+  FldName              : TString;    (* TODO 16 - field name           *)
+  WithVar              : TString;    (* TODO 16 - WITH alias name      *)
 Begin
   If EPAtEnd Then Exit;
 
@@ -5852,12 +6087,38 @@ Begin
     Exit;
   End;
 
-  (* --- WITH (stub: skip) --- *)
+  (* --- WITH id = expr DO stmts END - TODO 16 --- *)
   If EPMatch(TK_KEYWORD, 'WITH') Then
   Begin
-    EmitComment('WITH (stub: skipping)');
     Inc(EP);
-    SkipToMatchingEnd(EP);
+    EmitComment('WITH');
+    WithVar := '';
+    (* Parser : ident = expr *)
+    If (EP < TokenCount) And (TokenPool[EP].Kind = TK_IDENT) Then
+    Begin
+      WithVar := TokenPool[EP].Val;
+      Inc(EP);
+    End;
+    (* Passer '=' *)
+    If EPMatch(TK_OP, '=') Then Inc(EP);
+    (* Evaluer l expression -> AX contient la valeur/adresse *)
+    ParseExpr;
+    (* Stocker le resultat dans une variable temporaire sur la pile *)
+    EmitInstrA('PUSH', 'AX');
+    EmitComment('WITH ' + WithVar + ' saved on stack');
+    (* Passer DO *)
+    If EPMatch(TK_KEYWORD, 'DO') Then Inc(EP);
+    (* Parser les instructions du bloc WITH *)
+    While Not EPAtEnd And
+          Not EPMatch(TK_KEYWORD, 'END') Do
+    Begin
+      ParseStmt;
+    End;
+    (* Restaurer la pile *)
+    EmitInstrAB('ADD', 'SP', '2');
+    EmitComment('END WITH');
+    (* Passer END *)
+    If EPMatch(TK_KEYWORD, 'END') Then Inc(EP);
     If EPMatch(TK_PUNCT, ';') Then Inc(EP);
     Exit;
   End;
@@ -5972,7 +6233,7 @@ Begin
     Name := TokenPool[EP].Val;
     Inc(EP);
 
-    (* Acces qualifie Module.Method(...) *)
+    (* Acces qualifie Module.Method(...) ou Record.Field := expr *)
     If EPMatch(TK_PUNCT, '.') Then
     Begin
       SI := SymFind(Name);
@@ -5982,15 +6243,76 @@ Begin
         If EPMatch(TK_PUNCT, ';') Then Inc(EP);
         Exit;
       End;
-      (* record.field := expr (stub) *)
+      (* record.field := expr - TODO 16 *)
+      RecTIdx := TY_UNKNOWN;
+      LI := FindProcLocal(CurProcIdx, Name);
+      If LI >= 0 Then
+      Begin
+        RecTIdx := ProcTab[CurProcIdx].Locals[LI].TypeIdx;
+      End
+      Else
+      Begin
+        ParI := FindProcParam(CurProcIdx, Name);
+        If ParI >= 0 Then
+          RecTIdx := ProcTab[CurProcIdx].ParamTypes[ParI]
+        Else
+        Begin
+          SI := SymFind(Name);
+          If SI >= 0 Then
+            RecTIdx := SymTab[SI].TypeIdx;
+        End;
+      End;
       Inc(EP); (* passer '.' *)
+      FldName := '';
       If (EP < TokenCount) And (TokenPool[EP].Kind = TK_IDENT) Then
+      Begin
+        FldName := TokenPool[EP].Val;
         Inc(EP);
+      End;
       If EPMatch(TK_OP, ':=') Then
       Begin
         Inc(EP);
         ParseExpr;
-        EmitComment('record field assign (stub)');
+        (* AX contient la valeur a stocker *)
+        EmitInstrA('PUSH', 'AX'); (* sauver la valeur *)
+        (* Charger l adresse de base du record dans BX *)
+        LI := FindProcLocal(CurProcIdx, Name);
+        If LI >= 0 Then
+          EmitInstrAB('LEA', 'BX', '[BP' +
+            IntToStr(ProcTab[CurProcIdx].Locals[LI].Offset) + ']')
+        Else
+        Begin
+          ParI := FindProcParam(CurProcIdx, Name);
+          If ParI >= 0 Then
+            EmitInstrAB('MOV', 'BX', 'WORD PTR [BP+' +
+              IntToStr(ProcTab[CurProcIdx].ParamOfs[ParI]) + ']')
+          Else
+          Begin
+            SI := SymFind(Name);
+            If SI >= 0 Then
+              EmitInstrAB('LEA', 'BX', SymTab[SI].MangledName);
+          End;
+        End;
+        (* Calculer l offset du champ *)
+        FldI := RecordFieldFind(RecTIdx, FldName);
+        If FldI >= 0 Then
+        Begin
+          FldOfs := TypeTab[RecTIdx].Fields[FldI].Offset;
+          FldSz  := TypeSizeFromIdx(
+                      TypeTab[RecTIdx].Fields[FldI].TypeIdx);
+          If FldOfs > 0 Then
+            EmitInstrAB('ADD', 'BX', IntToStr(FldOfs));
+          EmitInstrA('POP', 'AX');
+          If FldSz <= 1 Then
+            EmitInstrAB('MOV', 'BYTE PTR [BX]', 'AL')
+          Else
+            EmitInstrAB('MOV', 'WORD PTR [BX]', 'AX');
+        End
+        Else
+        Begin
+          EmitInstrA('POP', 'AX');
+          EmitComment('unknown field: ' + FldName);
+        End;
       End;
       If EPMatch(TK_PUNCT, ';') Then Inc(EP);
       Exit;
@@ -6561,6 +6883,16 @@ Begin
       If ProcTab[PI].Locals[LI].Size <= 1 Then
         EmitInstrAB('MOV', 'BYTE PTR [BP' +
                     IntToStr(ProcTab[PI].Locals[LI].Offset) + ']', '0')
+      Else If ProcTab[PI].Locals[LI].Size > 2 Then
+      Begin
+        (* RECORD/ARRAY : initialiser avec REP STOSW *)
+        EmitInstrAB('LEA', 'DI', '[BP' +
+                    IntToStr(ProcTab[PI].Locals[LI].Offset) + ']');
+        EmitInstrAB('MOV', 'CX',
+                    IntToStr(ProcTab[PI].Locals[LI].Size Div 2));
+        EmitInstrAB('XOR', 'AX', 'AX');
+        EmitInstr('REP    STOSW');
+      End
       Else
         EmitInstrAB('MOV', 'WORD PTR [BP' +
                     IntToStr(ProcTab[PI].Locals[LI].Offset) + ']', '0');
