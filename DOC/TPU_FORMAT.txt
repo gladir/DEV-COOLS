@@ -1,0 +1,326 @@
+==============================================================================
+    FORMAT DE FICHIER TPU - Turbo Pascal Unit (Borland Turbo Pascal 4.0-7.0)
+==============================================================================
+
+Document d'analyse du format des fichiers d'unite compilee Turbo Pascal
+(*.TPU) de Borland, couvrant les versions 4.0 a 7.0.
+
+Les informations sont issues de l'ingenierie inverse realisee pour les
+outils TPUINFO.PAS, TPCW32.PAS (TODO 26) et des projets de documentation
+existants (DosWorld/intrfc).
+
+Date:       Mars 2026
+
+==============================================================================
+1. VUE D'ENSEMBLE DE LA STRUCTURE DU FICHIER
+==============================================================================
+
+Un fichier TPU est compose de quatre sections principales disposees
+sequentiellement :
+
+  +---------------------------+  Offset 0
+  |   EN-TETE (Header)       |  Taille: 0x40 (TP4-TP6) ou 0x60 (TP7)
+  +---------------------------+
+  |   SECTION SYMBOLES        |  Taille: SymSize octets
+  |   (Table de hachage +     |
+  |    records d'interface +  |
+  |    info d'implementation) |
+  +---------------------------+
+  |   SECTION CODE            |  Taille: variable
+  |   (Code objet relogeable) |
+  +---------------------------+
+  |   SECTION FIXUP           |  Taille: variable
+  |   (Table de relocation)   |
+  +---------------------------+  Fin du fichier
+
+Taille totale = HeaderSize + SymSize + CodeSize + FixupSize
+
+==============================================================================
+2. SIGNATURE ET VERSIONS
+==============================================================================
+
+2.1 SIGNATURE (4 OCTETS)
+-------------------------
+
+Offset  Taille  Champ       Valeur
+------  ------  ----------  ------------------------------------------------
+0x00    1       Magic[0]    0x54 = 'T'
+0x01    1       Magic[1]    0x50 = 'P'
+0x02    1       Magic[2]    0x55 = 'U'
+0x03    1       Version     Octet de version (voir table ci-dessous)
+
+Les trois premiers octets "TPU" sont communs a toutes les versions.
+Le quatrieme octet identifie la version du compilateur :
+
+  Octet   Caractere   Version Turbo Pascal    Nom interne
+  -----   ---------   --------------------    -----------
+  0x30    '0'         4.0                     TPU0
+  0x35    '5'         5.0                     TPU5
+  0x36    '6'         5.5                     TPU6
+  0x39    '9'         6.0                     TPU9
+  0x51    'Q'         7.0 (mode reel)         TPUQ
+
+Note : Les fichiers TPU ne sont PAS compatibles entre versions.
+Un fichier compile avec TP5 ne peut pas etre utilise par TP6 ou TP7.
+Le fichier TPUINFO.PAS dans DEV-COOLS permet de determiner la version
+d'un fichier TPU.
+
+==============================================================================
+3. EN-TETE DU FICHIER (HEADER)
+==============================================================================
+
+La taille de l'en-tete depend de la version :
+  - TP 4.0 a 6.0 : 64 octets (0x40)
+  - TP 7.0       : 96 octets (0x60)
+
+3.1 CHAMPS COMMUNS A TOUTES LES VERSIONS
+------------------------------------------
+
+Offset  Taille  Champ           Description
+------  ------  --------------- -----------------------------------------------
+0x00    4       Signature       "TPU" + octet de version (voir section 2)
+0x04    4       Reserved        Octets reserves (usage interne Borland)
+0x08    2       OfsThisUnit     Offset dans la section symboles vers le record
+                                decrivant cette unite (Word, little-endian)
+0x0A    2       OfsHashTable    Offset vers la table de hachage des symboles
+                                (Word, little-endian)
+0x0C    ...     (varie)         (voir sections specifiques ci-dessous)
+0x16    2       OfsUnitList     Offset vers la liste des unites importees
+                                (Word, little-endian)
+0x18    2       OfsSrcName      Offset vers le nom du fichier source original
+                                (Word, little-endian)
+
+3.2 CHAMPS SPECIFIQUES TP6 (VERSION 0x39, HEADER = 0x40)
+----------------------------------------------------------
+
+Offset  Taille  Champ           Description
+------  ------  --------------- -----------------------------------------------
+0x1C    2       SymSize         Taille de la section symboles en octets
+                                (Word, little-endian)
+0x1E    34      Padding         Remplissage jusqu'a 0x40
+
+3.3 CHAMPS SPECIFIQUES TP7 (VERSION 0x51, HEADER = 0x60)
+----------------------------------------------------------
+
+Offset  Taille  Champ           Description
+------  ------  --------------- -----------------------------------------------
+0x1E    2       SymSize         Taille de la section symboles en octets
+                                (Word, little-endian) -- ATTENTION: decale de
+                                2 octets par rapport a TP6 (0x1E vs 0x1C)
+0x20    64      Padding         Remplissage jusqu'a 0x60
+
+NOTE IMPORTANTE : Le champ SymSize est a l'offset 0x1C pour TP4/TP5/TP55/TP6,
+mais a l'offset 0x1E pour TP7. C'est une difference critique lors de la
+lecture de fichiers TPU.
+
+==============================================================================
+4. SECTION SYMBOLES
+==============================================================================
+
+La section symboles commence immediatement apres l'en-tete et a une taille
+de SymSize octets.
+
+4.1 TABLE DE HACHAGE
+---------------------
+
+La table de hachage est situee a l'offset OfsHashTable dans la section
+symboles. Elle contient 16 entrees de mots (Word) qui sont des pointeurs
+vers les chaines de symboles dans chaque seau de hachage.
+
+4.2 RECORDS D'OBJET (OBJ_REC)
+-------------------------------
+
+Les symboles sont stockes sous forme de records lies :
+
+  Offset  Taille  Champ       Description
+  ------  ------  ----------  -----------------------------------------------
+  +0      2       NextObj     Offset du prochain record (0 = dernier)
+  +2      1       ObjType     Type de record (voir ci-dessous)
+  +3      1       NameLen     Longueur du nom (chaine prefixee par longueur)
+  +4      N       Name        Nom du symbole (ASCII, N = NameLen octets)
+
+Types de records courants :
+  - Unite (declaration "unit NomUnite")
+  - Constante (declarations "const")
+  - Type (declarations "type")
+  - Variable (declarations "var")
+  - Procedure / Fonction (declarations "procedure" / "function")
+
+4.3 EXTRACTION DU NOM DE L'UNITE
+----------------------------------
+
+Le nom de l'unite est extrait en naviguant a :
+  Offset = OfsThisUnit + 3  (on saute NextObj:Word + ObjType:Byte)
+
+Puis on lit une chaine Pascal :
+  [0]     = NameLen (1 octet, longueur du nom, 1-63)
+  [1..N]  = Name    (caracteres ASCII, generalement en majuscules)
+
+Exemple pour l'unite CRT :
+  OfsThisUnit pointe vers un record ou +3 contient : 03 43 52 54
+  = longueur 3, suivi de "CRT"
+
+==============================================================================
+5. SECTION CODE
+==============================================================================
+
+La section code contient le code machine objet relogeable genere par le
+compilateur. Elle suit immediatement la section symboles.
+
+Le code utilise le modele memoire FAR (appels RETF, segments separes pour
+le code et les donnees), typique du mode reel 8086/8088.
+
+Les adresses dans le code sont relatives et necessitent une relocation
+via la section fixup.
+
+==============================================================================
+6. SECTION FIXUP (RELOCATION)
+==============================================================================
+
+La section fixup contient les informations de relocation necessaires pour
+resoudre les references entre unites et ajuster les adresses lors de
+l'edition de liens.
+
+Le format des entrees de fixup est a taille variable dans le format TPU
+(contrairement au format QPU de Quick Pascal qui utilise 4 octets fixes
+par entree).
+
+==============================================================================
+7. UNITES CONNUES DE TURBO PASCAL
+==============================================================================
+
+Les unites standard fournies avec les differentes versions de Turbo Pascal :
+
+  Unite      Versions    Description
+  ---------  ----------  -----------------------------------------------
+  SYSTEM     4.0+        Unite automatiquement importee (runtime)
+  CRT        4.0+        Gestion ecran/clavier en mode texte
+  DOS        4.0+        Acces aux fonctions DOS
+  PRINTER    4.0+        Redirection vers imprimante (Lst)
+  GRAPH      4.0+        Mode graphique BGI
+  GRAPH3     4.0+        Compatibilite graphique Turbo Pascal 3.0
+  TURBO3     4.0+        Compatibilite avec Turbo Pascal 3.0
+  OVERLAY    5.0+        Gestion des overlays (segments superposes)
+  STRINGS    7.0         Chaines a zero terminal (PChar)
+  OBJECTS    7.0         Support de la programmation orientee objet
+  WINDOS     7.0         Fonctions DOS avec PChar
+
+==============================================================================
+8. COMPARAISON AVEC LE FORMAT QPU (QUICK PASCAL)
+==============================================================================
+
+Le format QPU (Microsoft Quick Pascal 1.0, 1989) est similaire au TPU
+mais avec des differences significatives :
+
+  Aspect              TPU (Borland)           QPU (Microsoft)
+  ------------------  ----------------------  ----------------------
+  Signature           "TPU" + version byte    "MSQP" (4 octets)
+  Header TP6          64 octets (0x40)        Variable (champ 0x0C)
+  Header TP7          96 octets (0x60)        Variable (champ 0x0C)
+  Table de hachage    16 entrees dans header  Pas dans le header
+  SymSize offset      0x1C (TP6) / 0x1E (TP7) 0x0E
+  Records symboles    Sans UnitTag            Avec UnitTag (2 octets)
+  Fixup               Taille variable/entree  4 octets fixes/entree
+  CodeSize offset     Calcule                 0x12
+  FixupSize offset    Calcule                 0x14
+  DepCount offset     Implicite               0x0A
+  Dep table           Via OfsUnitList         A partir de 0x20
+
+Les deux formats partagent :
+  - Structure en sections : header | symboles | code | fixup
+  - Records de symboles avec chaines prefixees par longueur
+  - Conventions d'appel Pascal (RETF, parametres empiles)
+  - Modele de memoire FAR (mode reel 8086)
+
+Voir DOC/QPU_FORMAT.txt pour la documentation complete du format QPU.
+
+==============================================================================
+9. RESUME DES OFFSETS POUR LECTURE RAPIDE
+==============================================================================
+
+Pour lire un fichier TPU :
+
+  1. Lire les 4 premiers octets
+  2. Verifier la signature : octets 0-2 = 0x54, 0x50, 0x55 ("TPU")
+  3. Lire la version : octet 3
+  4. Determiner la taille du header :
+     - Si version = 0x51 (TP7) : header = 0x60 (96 octets)
+     - Sinon (TP4-TP6)         : header = 0x40 (64 octets)
+  5. Lire OfsThisUnit  a offset 0x08 (Word LE)
+  6. Lire OfsHashTable  a offset 0x0A (Word LE)
+  7. Lire OfsUnitList   a offset 0x16 (Word LE)
+  8. Lire OfsSrcName    a offset 0x18 (Word LE)
+  9. Lire SymSize :
+     - TP7 (0x51)   : offset 0x1E (Word LE)
+     - TP4-TP6      : offset 0x1C (Word LE)
+  10. Lire le nom de l'unite : seek(OfsThisUnit + 3), lire chaine Pascal
+
+Pseudo-code (en Pascal) :
+
+  BlockRead(F, Hdr, 96);
+  If (Hdr[0] <> $54) Or (Hdr[1] <> $50) Or (Hdr[2] <> $55) Then Error;
+  Ver := Hdr[3];
+  IsTP7 := (Ver = $51);
+  OfsThisUnit := Hdr[$08] + Hdr[$09] * 256;
+  OfsHashTable := Hdr[$0A] + Hdr[$0B] * 256;
+  OfsUnitList := Hdr[$16] + Hdr[$17] * 256;
+  OfsSrcName := Hdr[$18] + Hdr[$19] * 256;
+  If IsTP7 Then
+    SymSize := Hdr[$1E] + Hdr[$1F] * 256
+  Else
+    SymSize := Hdr[$1C] + Hdr[$1D] * 256;
+  Seek(F, OfsThisUnit + 3);
+  BlockRead(F, NameBuf, 64);
+  NameLen := NameBuf[0];
+  UnitName := Copy(NameBuf, 1, NameLen);
+
+==============================================================================
+10. CONSTANTES DE REFERENCE (TPCW32.PAS)
+==============================================================================
+
+Les constantes utilisees dans le compilateur TPCW32.PAS pour la lecture
+des fichiers TPU :
+
+  Constante        Valeur   Description
+  ---------------  -------  -----------------------------------------------
+  TPU_MAGIC        $54      Premier octet d'un fichier TPU ('T')
+  TPU_VER_TP4      $30      Version Turbo Pascal 4.0 ('0')
+  TPU_VER_TP5      $35      Version Turbo Pascal 5.0 ('5')
+  TPU_VER_TP55     $36      Version Turbo Pascal 5.5 ('6')
+  TPU_VER_TP6      $39      Version Turbo Pascal 6.0 ('9')
+  TPU_VER_TP7      $51      Version Turbo Pascal 7.0 ('Q')
+  TPU6_HDR_SIZE    $40      Taille header TP4-TP6 (64 octets)
+  TPU7_HDR_SIZE    $60      Taille header TP7 (96 octets)
+  MAX_USES_UNITS   32       Nombre max d'unites dans la clause Uses
+
+==============================================================================
+11. ORDRE DES OCTETS
+==============================================================================
+
+Tous les champs multi-octets sont en little-endian (Intel byte order) :
+
+  Word = OctetBas + (OctetHaut * 256)
+
+Exemples :
+  0x78 0x56 se lit comme 0x5678 (22136 en decimal)
+  0x40 0x00 se lit comme 0x0040 (64 en decimal)
+
+==============================================================================
+12. REFERENCES
+==============================================================================
+
+Sources d'information :
+  - TPCW32.PAS (TODO 26) : Implementation de la lecture TPU dans le
+    compilateur Turbo Pascal vers Win32
+  - TPUINFO.PAS : Outil de detection de version TPU
+  - Projet DosWorld/intrfc : Documentation du format TPU par ingenierie
+    inverse (reference historique)
+  - Borland Turbo Pascal 7.0 Programmer's Reference (1992)
+
+Outils associes dans DEV-COOLS :
+  - TPUINFO.PAS : Affiche la version d'un fichier TPU
+  - TPCW32.PAS  : Compilateur Turbo Pascal qui lit les fichiers TPU/QPU
+
+==============================================================================
+FIN DU DOCUMENT
+==============================================================================
