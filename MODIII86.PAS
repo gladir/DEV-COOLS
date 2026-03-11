@@ -629,7 +629,7 @@ Begin
       Opts.DebugMode := True
     Else If Arg = '-w' Then
       Opts.Warnings := True
-    Else If Arg[1] = '-' Then
+    Else If (Length(Arg) > 0) And (Arg[1] = '-') Then
     Begin
       WriteLn('MODIII86: option inconnue: ', Arg);
       ShowUsage;
