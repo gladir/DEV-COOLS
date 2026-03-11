@@ -2169,6 +2169,7 @@ Begin
 End;
 
 (* ---- IsTypeSpecifier : identifie mots-cles type C++ --------- *)
+(* Reconnait les types C++98 + auto (pre-C++11 storage class).   *)
 Function IsTypeSpecifier(Const S : TString) : Boolean;
 Begin
   IsTypeSpecifier :=
@@ -2180,6 +2181,7 @@ Begin
 End;
 
 (* ---- IsStorageClass : identifie classes de stockage C++ ------ *)
+(* Cible 8086 : thread_local est reconnu mais non supporte.      *)
 Function IsStorageClass(Const S : TString) : Boolean;
 Begin
   IsStorageClass :=
@@ -2189,6 +2191,7 @@ Begin
 End;
 
 (* ---- IsQualifier : identifie qualificateurs C++ -------------- *)
+(* constexpr est reconnu pour compatibilite, traite comme const. *)
 Function IsQualifier(Const S : TString) : Boolean;
 Begin
   IsQualifier :=
