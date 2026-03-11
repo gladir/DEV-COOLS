@@ -46,7 +46,7 @@
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
 
-  TODO 01 - INFRASTRUCTURE ET OPTIONS
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
             TOptions : SrcFile, OutFile, Verbose, DebugMode, Warnings,
               AsmOutput, ObjOnly, Dos16Mode, TPVersion (1,2,4,5,55,6,7,8)
             ParseArgs : analyser argv
@@ -608,5 +608,404 @@
 
 Program TPCW32;
 
+{$IFDEF FPC}
+  {$MODE TP}
+  {$H-}
+{$ENDIF}
+{$I-}
+
+{ ============================================================ }
+{ TODO 01 - INFRASTRUCTURE ET OPTIONS                [IMPLEMENTE] }
+{ ============================================================ }
+
+Const
+  TPCW32_VERSION = '0.1';
+  TPCW32_DATE    = '2026';
+
+  EXIT_OK    = 0;
+  EXIT_ERROR = 1;
+  EXIT_USAGE = 2;
+
+  { Versions de Turbo Pascal supportees }
+  TP_VER_1   = 1;
+  TP_VER_2   = 2;
+  TP_VER_4   = 4;
+  TP_VER_5   = 5;
+  TP_VER_55  = 55;   { 5.5 represente par 55 }
+  TP_VER_6   = 6;
+  TP_VER_7   = 7;
+  TP_VER_8   = 8;
+  TP_VER_DEFAULT = TP_VER_7;
+
+Type
+  TString = String;
+
+  TOptions = Record
+    SrcFile   : TString;   { fichier source (.pas)                }
+    OutFile   : TString;   { fichier sortie (.exe, .obj)          }
+    Verbose   : Boolean;   { -v : banniere et statistiques        }
+    DebugMode : Boolean;   { -d : affichage de chaque token       }
+    Warnings  : Boolean;   { -w : afficher les avertissements     }
+    AsmOutput : Boolean;   { -asm : produire aussi un .ASM        }
+    ObjOnly   : Boolean;   { -obj : produire seulement un .OBJ    }
+    Dos16Mode : Boolean;   { -dos16 : generer un exe DOS 16 bits  }
+    TPVersion : Integer;   { version TP cible (1..8, 55=5.5)      }
+  End;
+
+Var
+  { Options }
+  Opts : TOptions;
+
+  { Compteurs generaux }
+  ErrorCount : Integer;
+  WarnCount  : Integer;
+  TotalLines : LongInt;
+
+  { Fichier de sortie interne (pour future emission) }
+  OutF       : Text;
+  OutFOpen   : Boolean;
+
+{ ------------------------------------------------------------ }
+{ Fonctions utilitaires                                        }
+{ ------------------------------------------------------------ }
+
+Function IntToStr_(V : LongInt) : TString;
+Var S : TString;
 Begin
-End.
+  Str(V, S);
+  IntToStr_ := S;
+End;
+
+Function StrUpperCase(Const S : TString) : TString;
+Var
+  I   : Integer;
+  Tmp : TString;
+Begin
+  Tmp := S;
+  For I := 1 To Length(Tmp) Do
+    If (Tmp[I] >= 'a') And (Tmp[I] <= 'z') Then
+      Tmp[I] := Chr(Ord(Tmp[I]) - 32);
+  StrUpperCase := Tmp;
+End;
+
+Function StrLowerCase(Const S : TString) : TString;
+Var
+  I   : Integer;
+  Tmp : TString;
+Begin
+  Tmp := S;
+  For I := 1 To Length(Tmp) Do
+    If (Tmp[I] >= 'A') And (Tmp[I] <= 'Z') Then
+      Tmp[I] := Chr(Ord(Tmp[I]) + 32);
+  StrLowerCase := Tmp;
+End;
+
+{ Retourne l extension d un chemin (avec le point, en minuscules) }
+Function ExtractExt(Const Path : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ExtractExt := StrLowerCase(Copy(Path, LastDot,
+                     Length(Path) - LastDot + 1))
+  Else
+    ExtractExt := '';
+End;
+
+{ Remplace l extension d un chemin }
+Function ReplaceExt(Const Path, NewExt : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ReplaceExt := Copy(Path, 1, LastDot - 1) + NewExt
+  Else
+    ReplaceExt := Path + NewExt;
+End;
+
+{ Retourne le repertoire d un chemin (avec le separateur final) }
+Function ExtractDir(Const Path : TString) : TString;
+Var
+  I, LastSep : Integer;
+Begin
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+  If LastSep > 0 Then
+    ExtractDir := Copy(Path, 1, LastSep)
+  Else
+    ExtractDir := '';
+End;
+
+{ Retourne une chaine representant la version TP }
+Function TPVersionStr(V : Integer) : TString;
+Begin
+  If V = TP_VER_55 Then
+    TPVersionStr := '5.5'
+  Else
+    TPVersionStr := IntToStr_(V);
+End;
+
+{ ------------------------------------------------------------ }
+{ FatalError / WarnMsg                                         }
+{ ------------------------------------------------------------ }
+
+Procedure FatalError(Const Msg : TString);
+Begin
+  WriteLn('TPCW32: FATAL: ', Msg);
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+  Halt(EXIT_ERROR);
+End;
+
+Procedure WarnMsg(Const Msg : TString);
+Begin
+  If Not Opts.Warnings Then Exit;
+  WriteLn('TPCW32: warning: ', Msg);
+  Inc(WarnCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ InitOptions                                                  }
+{ ------------------------------------------------------------ }
+
+Procedure InitOptions;
+Begin
+  Opts.SrcFile   := '';
+  Opts.OutFile   := '';
+  Opts.Verbose   := False;
+  Opts.DebugMode := False;
+  Opts.Warnings  := False;
+  Opts.AsmOutput := False;
+  Opts.ObjOnly   := False;
+  Opts.Dos16Mode := False;
+  Opts.TPVersion := TP_VER_DEFAULT;
+End;
+
+{ ------------------------------------------------------------ }
+{ ShowHelp                                                     }
+{ ------------------------------------------------------------ }
+
+Procedure ShowHelp;
+Begin
+  WriteLn('TPCW32 v', TPCW32_VERSION, ' (', TPCW32_DATE,
+          ') - Compilateur Turbo Pascal vers 80386 (Windows PE 32 bits)');
+  WriteLn('TPCW32 - Cette commande permet de lancer le compilateur Turbo ',
+          'Pascal pour l''assembleur du microprocesseur 80386 (en executable ',
+          'Windows 32 bits).');
+  WriteLn;
+  WriteLn('Syntaxe : TPCW32 <source.pas> [sortie] [options]');
+  WriteLn;
+  WriteLn('Sortie :');
+  WriteLn('  Par defaut un .EXE (PE Windows 32 bits)');
+  WriteLn('  -obj           Produire seulement un fichier .OBJ (COFF)');
+  WriteLn('  -asm           Produire egalement un fichier .ASM lisible');
+  WriteLn('  -dos16         Produire un executable DOS 16 bits');
+  WriteLn;
+  WriteLn('Version Turbo Pascal cible :');
+  WriteLn('  -tp1           Turbo Pascal 1');
+  WriteLn('  -tp2           Turbo Pascal 2');
+  WriteLn('  -tp4           Turbo Pascal 4');
+  WriteLn('  -tp5           Turbo Pascal 5');
+  WriteLn('  -tp55          Turbo Pascal 5.5');
+  WriteLn('  -tp6           Turbo Pascal 6');
+  WriteLn('  -tp7           Turbo Pascal 7 (defaut)');
+  WriteLn('  -tp8           Turbo Pascal 8');
+  WriteLn;
+  WriteLn('General :');
+  WriteLn('  -v             Mode verbeux (banniere + statistiques)');
+  WriteLn('  -d             Debug tokens (affiche chaque token)');
+  WriteLn('  -w             Afficher les avertissements');
+  WriteLn('  -h, --help, /? Afficher cette aide');
+  WriteLn;
+  WriteLn('Exemples :');
+  WriteLn('  TPCW32 hello.pas');
+  WriteLn('  TPCW32 hello.pas hello.exe -v');
+  WriteLn('  TPCW32 main.pas -asm -tp7');
+  WriteLn('  TPCW32 old.pas -tp4 -dos16');
+  WriteLn('  TPCW32 program.pas -obj -w');
+  Halt(EXIT_OK);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseArgs                                                    }
+{ ------------------------------------------------------------ }
+
+Procedure ParseArgs;
+Var
+  I    : Integer;
+  Arg  : TString;
+  Ext  : TString;
+Begin
+  InitOptions;
+  If ParamCount = 0 Then
+    ShowHelp;
+
+  I := 1;
+  While I <= ParamCount Do
+  Begin
+    Arg := ParamStr(I);
+
+    If (Arg = '-h') Or (Arg = '--help') Or (Arg = '/?') Or
+       (Arg = '/h') Or (Arg = '/H') Then
+      ShowHelp
+    Else If Arg = '-v' Then
+      Opts.Verbose := True
+    Else If Arg = '-d' Then
+      Opts.DebugMode := True
+    Else If Arg = '-w' Then
+      Opts.Warnings := True
+    Else If Arg = '-asm' Then
+      Opts.AsmOutput := True
+    Else If Arg = '-obj' Then
+      Opts.ObjOnly := True
+    Else If Arg = '-dos16' Then
+      Opts.Dos16Mode := True
+    Else If Arg = '-tp1' Then
+      Opts.TPVersion := TP_VER_1
+    Else If Arg = '-tp2' Then
+      Opts.TPVersion := TP_VER_2
+    Else If Arg = '-tp4' Then
+      Opts.TPVersion := TP_VER_4
+    Else If Arg = '-tp5' Then
+      Opts.TPVersion := TP_VER_5
+    Else If Arg = '-tp55' Then
+      Opts.TPVersion := TP_VER_55
+    Else If Arg = '-tp6' Then
+      Opts.TPVersion := TP_VER_6
+    Else If Arg = '-tp7' Then
+      Opts.TPVersion := TP_VER_7
+    Else If Arg = '-tp8' Then
+      Opts.TPVersion := TP_VER_8
+    Else If (Length(Arg) > 0) And (Arg[1] = '-') Then
+      FatalError('Option inconnue: ' + Arg)
+    Else
+    Begin
+      { Argument positionnel : fichier source ou sortie }
+      If Opts.SrcFile = '' Then
+        Opts.SrcFile := Arg
+      Else If Opts.OutFile = '' Then
+        Opts.OutFile := Arg
+      Else
+        FatalError('Argument inattendu: ' + Arg);
+    End;
+
+    Inc(I);
+  End;
+
+  { Validation : fichier source requis }
+  If Opts.SrcFile = '' Then
+  Begin
+    WriteLn('TPCW32: fichier source manquant');
+    ShowHelp;
+  End;
+
+  { Verifier l extension .pas }
+  Ext := ExtractExt(Opts.SrcFile);
+  If Ext <> '.pas' Then
+    WarnMsg('extension attendue .pas, trouvee: ' + Ext);
+
+  { -obj et -dos16 sont mutuellement exclusifs }
+  If Opts.ObjOnly And Opts.Dos16Mode Then
+    FatalError('-obj et -dos16 sont mutuellement exclusifs');
+
+  { Fichier de sortie par defaut }
+  If Opts.OutFile = '' Then
+  Begin
+    If Opts.ObjOnly Then
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.obj')
+    Else
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.exe');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ShowBanner / ShowStats                                       }
+{ ------------------------------------------------------------ }
+
+Procedure ShowBanner;
+Begin
+  If Not Opts.Verbose Then Exit;
+  WriteLn('TPCW32 v', TPCW32_VERSION, ' (', TPCW32_DATE,
+          ') - Compilateur Turbo Pascal -> 80386 PE Win32');
+  WriteLn('Source   : ', Opts.SrcFile);
+  WriteLn('Sortie   : ', Opts.OutFile);
+  If Opts.AsmOutput Then
+    WriteLn('ASM      : ', ReplaceExt(Opts.OutFile, '.asm'));
+  WriteLn('TP cible : ', TPVersionStr(Opts.TPVersion));
+  If Opts.Dos16Mode Then
+    WriteLn('Mode     : DOS 16 bits');
+  WriteLn;
+End;
+
+Procedure ShowStats;
+Begin
+  If Not Opts.Verbose Then Exit;
+  WriteLn;
+  WriteLn('--- Statistiques ---');
+  WriteLn('Lignes analysees : ', TotalLines);
+  WriteLn('Erreurs          : ', ErrorCount);
+  WriteLn('Avertissements   : ', WarnCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ Cleanup                                                      }
+{ ------------------------------------------------------------ }
+
+Procedure Cleanup;
+Begin
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ Run (stub - sera complete par les TODOs suivants)            }
+{ ------------------------------------------------------------ }
+
+Procedure Run;
+Begin
+  ShowBanner;
+  { TODO 02..25 : compilation complete }
+  ShowStats;
+End;
+
+{ ============================================================ }
+{ PROGRAMME PRINCIPAL                                          }
+{ ============================================================ }
+
+BEGIN
+  ErrorCount := 0;
+  WarnCount  := 0;
+  TotalLines := 0;
+  OutFOpen   := False;
+
+  ParseArgs;
+  Run;
+  Cleanup;
+  Halt(EXIT_OK);
+END.
