@@ -139,17 +139,28 @@
               deref -> deproc -> widen -> row -> unite -> void
             ApplyCoercion : point d entree avec verification
 
-  TODO 08 - EMETTEUR DE CODE ASM
+  TODO 08 - EMETTEUR DE CODE ASM [IMPLEMENTE]
             TEmitter : OutF (Text), OutFOpen, EmitOpen, EmitClose
             EmitRaw, EmitLabel, EmitInstr (formatage 8 espaces)
+            EmitInstrA (un operande), EmitInstrAB (deux operandes)
             EmitComment, EmitBlankLine
             LabelGen global (compteur unique _A68L_NNNNN)
             Prefixes : _A68V_ (variable), _A68P_ (procedure),
               _A68K_ (chaine const), _A68RT_ (runtime), _A68L_ (label),
               _A68M_ (mode/type info), _A68O_ (operateur utilisateur)
+            EmitOpen : Assign/Rewrite avec {$I-}/{$I+} IOResult
             EmitHeader : .MODEL SMALL / .STACK 1024 / _TEXT SEGMENT
+              WORD PUBLIC CODE / ASSUME CS:_TEXT,DS:_DATA,SS:NOTHING
+              _A68P_main: point d entree + init DS (MOV AX,_DATA/MOV DS,AX)
             EmitProlog / EmitEpilog : PUSH BP / MOV BP,SP et MOV SP,BP / POP BP
-            EmitDataSeg : ecrire _DATA SEGMENT ... _DATA ENDS
+            EmitDataSeg : _DATA SEGMENT avec constantes predefinies
+              (_A68_TRUE_S/_A68_FALSE_S/_A68_NIL_S/_A68_CRLF/_A68_STRBUF)
+              et entrees DataTab (DK_WORD/DK_BYTE/DK_STR avec gestion
+              caracteres de controle par valeurs numeriques et doublement
+              apostrophes, DK_ARRAY_BLK/DK_STRUCT_BLK)
+            EmitRuntime : stub pour TODO 24
+            EmitClose : DOS exit MOV AX,4C00h/INT 21h + runtime +
+              _TEXT ENDS + data + END _A68P_main
 
   TODO 09 - SEGMENT DE DONNEES ET STATIQUES
             TDataRec : LblName, Kind (DK_WORD/DK_BYTE/DK_STR/DK_ARRAY/DK_STRUCT),
@@ -767,8 +778,12 @@ Procedure ApplyCoercion(SrcMode, DstMode : Integer); Forward;
 { TODO 08 - Emetteur ASM }
 Function  LabelGen : TString; Forward;
 Procedure EmitRaw(Const S : TString); Forward;
+Procedure EmitBlankLine; Forward;
+Procedure EmitComment(Const S : TString); Forward;
 Procedure EmitLabel(Const Lbl : TString); Forward;
 Procedure EmitInstr(Const Mnem : TString); Forward;
+Procedure EmitInstrA(Const Mnem, A1 : TString); Forward;
+Procedure EmitInstrAB(Const Mnem, A1, A2 : TString); Forward;
 Procedure EmitOpen;      Forward;
 Procedure EmitClose;     Forward;
 Procedure EmitHeader;    Forward;
@@ -2221,68 +2236,97 @@ End;
 
 { ---- EmitDataSeg : ecrire _DATA SEGMENT complet -------------- }
 { Emet les chaines predefinies et toutes les entrees DataTab.    }
+{ Gestion des caracteres de controle : les octets non imprimables }
+{ (< 32 ou > 126) sont emis comme valeurs numeriques. Les        }
+{ apostrophes sont doublees ('') pour MASM.                      }
 
 Procedure EmitDataSeg;
 Var
-  I, J : Integer;
-  NS   : TString;
-  B    : Byte;
+  I, J     : Integer;
+  S, NS    : TString;
+  B        : Byte;
+  InStr    : Boolean;
+  First    : Boolean;
 Begin
   If Not OutFOpen Then Exit;
-  WriteLn(OutF);
-  WriteLn(OutF, '_DATA   SEGMENT WORD PUBLIC ''DATA''');
-  WriteLn(OutF, '        ASSUME  DS:_DATA');
-  { Chaines predefinies pour print(TRUE/FALSE) }
-  WriteLn(OutF, '_A68_TRUE_S:');
-  WriteLn(OutF, '        DB      ''TRUE'',0');
-  WriteLn(OutF, '_A68_FALSE_S:');
-  WriteLn(OutF, '        DB      ''FALSE'',0');
-  WriteLn(OutF, '_A68_NIL_S:');
-  WriteLn(OutF, '        DB      ''NIL'',0');
-  WriteLn(OutF, '_A68_CRLF:');
-  WriteLn(OutF, '        DB      13,10,0');
-  WriteLn(OutF, '_A68_STRBUF:');
-  WriteLn(OutF, '        DB      128 DUP(0)');
-  { Entrees DataTab }
+  EmitBlankLine;
+  EmitRaw('_DATA   SEGMENT WORD PUBLIC ''DATA''');
+  EmitRaw('        ASSUME  DS:_DATA');
+  { Constantes predefinies Algol 68 }
+  EmitLabel('_A68_TRUE_S');
+  EmitRaw('        DB      ''TRUE'',0');
+  EmitLabel('_A68_FALSE_S');
+  EmitRaw('        DB      ''FALSE'',0');
+  EmitLabel('_A68_NIL_S');
+  EmitRaw('        DB      ''NIL'',0');
+  EmitLabel('_A68_CRLF');
+  EmitRaw('        DB      13,10,0');
+  EmitLabel('_A68_STRBUF');
+  EmitRaw('        DB      256 DUP(0)');
+  { Entrees dynamiques de DataTab }
   For I := 0 To DataCount - 1 Do
   Begin
-    WriteLn(OutF, DataTab[I].LblName, ':');
+    EmitLabel(DataTab[I].LblName);
     Case DataTab[I].Kind Of
       DK_WORD :
-      Begin
-        Str(DataTab[I].IntVal, NS);
-        WriteLn(OutF, '        DW      ', NS);
-      End;
+        EmitRaw('        DW      ' + IntToStr(DataTab[I].IntVal));
       DK_BYTE :
       Begin
         Str(DataTab[I].IntVal And $FF, NS);
-        WriteLn(OutF, '        DB      ', NS);
+        EmitRaw('        DB      ' + NS);
       End;
       DK_STR :
       Begin
-        Write(OutF, '        DB      ');
+        { Construire la ligne DB avec gestion des caracteres de controle }
+        { et doublement des apostrophes pour MASM                       }
+        S := '        DB      ';
+        InStr := False;
+        First := True;
         For J := 1 To Length(DataTab[I].StrVal) Do
         Begin
           B := Ord(DataTab[I].StrVal[J]);
-          Str(B, NS);
-          If J > 1 Then Write(OutF, ',');
-          Write(OutF, NS);
+          If (B >= 32) And (B <= 126) Then
+          Begin
+            { Caractere imprimable }
+            If Not InStr Then
+            Begin
+              If Not First Then S := S + ',';
+              S := S + '''';
+              InStr := True;
+            End;
+            If DataTab[I].StrVal[J] = '''' Then
+              S := S + ''''''
+            Else
+              S := S + DataTab[I].StrVal[J];
+          End
+          Else
+          Begin
+            { Caractere de controle : emettre comme valeur numerique }
+            If InStr Then
+            Begin
+              S := S + '''';
+              InStr := False;
+            End;
+            If Not First Then S := S + ',';
+            Str(B, NS);
+            S := S + NS;
+          End;
+          First := False;
         End;
-        WriteLn(OutF, ',0');
+        If InStr Then S := S + '''';
+        If Length(DataTab[I].StrVal) = 0 Then
+          S := S + '0'
+        Else
+          S := S + ',0';
+        EmitRaw(S);
       End;
       DK_ARRAY_BLK :
-      Begin
-        { Descripteur de tableau : lwb, upb, elem_size, offset_data }
-        WriteLn(OutF, '        DW      0,0,0,0  ; stub array descriptor');
-      End;
+        EmitRaw('        DW      0,0,0,0  ; array descriptor');
       DK_STRUCT_BLK :
-      Begin
-        { Bloc de structure : stub }
-        WriteLn(OutF, '        DW      0  ; stub struct block');
-      End;
+        EmitRaw('        DW      0  ; struct block');
     End;
   End;
-  WriteLn(OutF, '_DATA   ENDS');
+  EmitRaw('_DATA   ENDS');
 End;
 
 { ---- LitEval : dispatcher principal pour les denotations ----- }
@@ -4048,58 +4092,148 @@ Begin
   CoerceChain(SrcMode, DstMode);
 End;
 
+{ ============================================================
+  TODO 08 - EMETTEUR DE CODE ASM [IMPLEMENTE]
+  ============================================================ }
+
+{ LabelGen : generer un label unique _A68L_NNNNN }
 Function LabelGen : TString;
+Var
+  S : TString;
 Begin
-  { TODO 08 }
   Inc(LabelGenSeq);
-  LabelGen := A68_LBL_PFX + IntToStr(LabelGenSeq);
+  Str(LabelGenSeq, S);
+  LabelGen := A68_LBL_PFX + S;
 End;
 
+{ EmitRaw : ecrire une ligne brute dans le fichier de sortie }
 Procedure EmitRaw(Const S : TString);
 Begin
-  { TODO 08 }
+  If OutFOpen Then
+    WriteLn(OutF, S);
 End;
 
+{ EmitBlankLine : ligne vide }
+Procedure EmitBlankLine;
+Begin
+  If OutFOpen Then
+    WriteLn(OutF);
+End;
+
+{ EmitComment : commentaire ASM '; texte' }
+Procedure EmitComment(Const S : TString);
+Begin
+  If OutFOpen Then
+    WriteLn(OutF, '; ', S);
+End;
+
+{ EmitLabel : label ASM suivi de ':' en colonne 0 }
 Procedure EmitLabel(Const Lbl : TString);
 Begin
-  { TODO 08 }
+  If OutFOpen Then
+    WriteLn(OutF, Lbl, ':');
 End;
 
+{ EmitInstr : instruction sans operandes (8 espaces d'indentation) }
 Procedure EmitInstr(Const Mnem : TString);
 Begin
-  { TODO 08 }
+  If OutFOpen Then
+    WriteLn(OutF, '        ', Mnem);
 End;
 
+{ EmitInstrA : instruction + un operande }
+Procedure EmitInstrA(Const Mnem, A1 : TString);
+Begin
+  If OutFOpen Then
+    WriteLn(OutF, '        ', Mnem, '   ', A1);
+End;
+
+{ EmitInstrAB : instruction + deux operandes separes par ', ' }
+Procedure EmitInstrAB(Const Mnem, A1, A2 : TString);
+Begin
+  If OutFOpen Then
+    WriteLn(OutF, '        ', Mnem, '   ', A1, ', ', A2);
+End;
+
+{ EmitOpen : ouvrir le fichier de sortie ASM }
 Procedure EmitOpen;
 Begin
-  { TODO 08 }
+  {$I-}
+  Assign(OutF, Opts.OutFile);
+  Rewrite(OutF);
+  {$I+}
+  If IOResult <> 0 Then
+    FatalError('impossible de creer le fichier: ' + Opts.OutFile);
+  OutFOpen := True;
 End;
 
-Procedure EmitClose;
-Begin
-  { TODO 08 }
-End;
-
+{ EmitHeader : en-tete du fichier ASM (.MODEL SMALL, segment de code, point d entree) }
 Procedure EmitHeader;
 Begin
-  { TODO 08 }
+  EmitComment('Genere par AL68C86 v' + AL68_VERSION + ' - ' + Opts.SrcFile);
+  EmitBlankLine;
+  EmitRaw('        .MODEL SMALL');
+  EmitRaw('        .STACK ' + IntToStr(STACK_SIZE));
+  EmitBlankLine;
+  EmitRaw('_TEXT   SEGMENT WORD PUBLIC ''CODE''');
+  EmitRaw('        ASSUME  CS:_TEXT, DS:_DATA, SS:NOTHING');
+  EmitBlankLine;
+  EmitComment('--- point d''entree ---');
+  EmitLabel(A68_PROC_PFX + 'main');
+  EmitInstr('MOV    AX, _DATA');
+  EmitInstr('MOV    DS, AX');
+  EmitBlankLine;
 End;
 
+{ EmitProlog : preambule de procedure (cadre BP) }
 Procedure EmitProlog;
 Begin
-  { TODO 08 }
+  EmitInstr('PUSH   BP');
+  EmitInstr('MOV    BP, SP');
+  If CurFrameSize > 0 Then
+    EmitInstr('SUB    SP, ' + IntToStr(CurFrameSize * 2));
 End;
 
+{ EmitEpilog : epilogue de procedure (restaurer SP/BP et retourner) }
 Procedure EmitEpilog;
 Begin
-  { TODO 08 }
+  If CurProcRetLbl <> '' Then
+    EmitLabel(CurProcRetLbl);
+  If CurFrameSize > 0 Then
+    EmitInstr('MOV    SP, BP');
+  EmitInstr('POP    BP');
+  EmitInstr('RET');
 End;
 
 { DataAdd, DataAddStr, EmitDataSeg : implementes dans TODO 03 ci-dessus }
 
 Procedure EmitRuntime;
 Begin
-  { TODO 24 }
+  { TODO 24 - stub : sera implemente plus tard }
+End;
+
+{ EmitClose : terminaison du programme DOS et fermeture du fichier ASM }
+Procedure EmitClose;
+Begin
+  EmitBlankLine;
+  EmitComment('--- sortie DOS ---');
+  EmitInstr('MOV    AX, 4C00h');
+  EmitInstr('INT    21h');
+  EmitBlankLine;
+  { Emettre le runtime (TODO 24) }
+  EmitRuntime;
+  EmitBlankLine;
+  EmitRaw('_TEXT   ENDS');
+  EmitBlankLine;
+  { Emettre le segment de donnees }
+  EmitDataSeg;
+  EmitBlankLine;
+  EmitRaw('        END ' + A68_PROC_PFX + 'main');
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
 End;
 
 Procedure ParseDeclStmt;
