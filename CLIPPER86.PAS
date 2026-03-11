@@ -107,7 +107,7 @@
             VALTYPE(x) : retourne le tag de type -> "C","N","D","L","A","B","O","U"
             Verification dynamique avant operations (erreur si type incompatible)
 
-  TODO 07 - EMETTEUR DE CODE ASM
+  TODO 07 - EMETTEUR DE CODE ASM [IMPLEMENTE]
             TEmitter : OutF (Text), OutFOpen, EmitOpen, EmitClose
             EmitRaw, EmitLabel, EmitInstr (formatage 8 espaces)
             EmitComment, EmitBlankLine
@@ -674,9 +674,11 @@ Var
   WarnCount  : Integer;
   TotalLines : LongInt;
 
-  { Emetteur ASM }
-  OutF     : Text;
-  OutFOpen : Boolean;
+  { Emetteur ASM (TODO 07) }
+  OutF         : Text;
+  OutFOpen     : Boolean;
+  CurFrameSize : Integer;    { taille cadre local courant (words)   }
+  CurFnRetLbl  : TString;    { label epilogue de la function        }
 
   { Lexeur (TODO 02) }
   LexSrcF    : Text;       { fichier source ouvert                }
@@ -777,6 +779,14 @@ Function  TypeCoerceResult(LeftIdx, RightIdx : Integer;
 Function  TypeInfer(Const E : TExprVal) : Integer; Forward;
 Function  TypeLookupName(Const Name : TString) : Integer; Forward;
 Procedure TypeInit; Forward;
+{ Emetteur ASM (TODO 07) }
+Procedure EmitBlankLine; Forward;
+Procedure EmitOpen; Forward;
+Procedure EmitHeader; Forward;
+Procedure EmitProlog; Forward;
+Procedure EmitEpilog; Forward;
+Procedure EmitRuntime; Forward;
+Procedure EmitClose; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1012,12 +1022,14 @@ End;
 
 Procedure GlobalInit;
 Begin
-  ErrorCount := 0;
-  WarnCount  := 0;
-  TotalLines := 0;
-  OutFOpen   := False;
-  DataCount  := 0;
-  LabelSeq   := 0;
+  ErrorCount   := 0;
+  WarnCount    := 0;
+  TotalLines   := 0;
+  OutFOpen     := False;
+  DataCount    := 0;
+  LabelSeq     := 0;
+  CurFrameSize := 0;
+  CurFnRetLbl  := '';
   TypeInit;
   SymInit;
 End;
@@ -1043,6 +1055,8 @@ Begin
   If Opts.Verbose Then
     ShowBanner;
 
+  EmitOpen;
+  EmitHeader;
   LexInit;
 
   { Lire le premier token }
@@ -1056,6 +1070,7 @@ Begin
   End;
 
   LexClose;
+  EmitClose;
 
   If Opts.Verbose Then
     ShowStats;
@@ -3532,6 +3547,113 @@ Begin
   TypeTab[TY_IDX_OBJECT].Size := 2;
 
   TypeCount := TY_PRIM_COUNT;
+End;
+
+{ ============================================================
+  TODO 07 - EMETTEUR DE CODE ASM [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- EmitBlankLine : ligne vide ------------------------------ }
+
+Procedure EmitBlankLine;
+Begin
+  If OutFOpen Then
+    WriteLn(OutF);
+End;
+
+{ ---- EmitOpen : ouvrir le fichier de sortie ASM -------------- }
+
+Procedure EmitOpen;
+Begin
+  {$I-}
+  Assign(OutF, Opts.OutFile);
+  Rewrite(OutF);
+  {$I+}
+  If IOResult <> 0 Then
+    FatalError('impossible de creer: ' + Opts.OutFile);
+  OutFOpen := True;
+End;
+
+{ ---- EmitHeader : en-tete MASM (.MODEL SMALL, _TEXT SEGMENT) - }
+
+Procedure EmitHeader;
+Begin
+  EmitComment('Genere par CLIPPER86 v' + CLIPPER86_VERSION +
+              ' - ' + Opts.SrcFile);
+  EmitBlankLine;
+  EmitRaw('        .MODEL SMALL');
+  EmitRaw('        .STACK ' + IntToStr(STACK_SIZE));
+  EmitBlankLine;
+  EmitRaw('_TEXT   SEGMENT WORD PUBLIC ''CODE''');
+  EmitRaw('        ASSUME  CS:_TEXT, DS:_DATA, SS:STACK');
+  EmitBlankLine;
+  { Point d entree : _CLP_Main }
+  EmitLabel('_CLP_Main');
+  { Initialiser DS sur le segment de donnees }
+  EmitInstrAB('MOV', 'AX', '_DATA');
+  EmitInstrAB('MOV', 'DS', 'AX');
+  EmitBlankLine;
+  EmitComment('--- debut du code genere ---');
+  EmitBlankLine;
+End;
+
+{ ---- EmitProlog : preambule de fonction (cadre BP) ----------- }
+
+Procedure EmitProlog;
+Begin
+  EmitInstr('PUSH   BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  If CurFrameSize > 0 Then
+    EmitInstrAB('SUB', 'SP', IntToStr(CurFrameSize * 2));
+End;
+
+{ ---- EmitEpilog : epilogue de fonction (restaurer SP/BP) ----- }
+
+Procedure EmitEpilog;
+Begin
+  If CurFnRetLbl <> '' Then
+    EmitLabel(CurFnRetLbl);
+  If CurFrameSize > 0 Then
+    EmitInstrAB('MOV', 'SP', 'BP');
+  EmitInstr('POP    BP');
+  EmitInstr('RET');
+End;
+
+{ ---- EmitRuntime : emettre les routines runtime inline ------- }
+(* Stub : sera implemente dans TODO 24 (RUNTIME MINIMAL)        *)
+
+Procedure EmitRuntime;
+Begin
+  { Stub : TODO 24 }
+End;
+
+{ ---- EmitClose : finaliser le fichier ASM -------------------- }
+
+Procedure EmitClose;
+Begin
+  EmitBlankLine;
+  EmitComment('--- fin du code genere ---');
+  EmitBlankLine;
+  { Sortie DOS propre }
+  EmitInstrAB('MOV', 'AX', '4C00h');
+  EmitInstr('INT    21h');
+  EmitBlankLine;
+  { Routines runtime inline }
+  EmitRuntime;
+  { Fermer le segment de code }
+  EmitRaw('_TEXT   ENDS');
+  EmitBlankLine;
+  { Emettre le segment de donnees }
+  EmitDataSeg;
+  EmitBlankLine;
+  { Directive de fin : point d entree _CLP_Main }
+  EmitRaw('        END     _CLP_Main');
+  { Fermer le fichier }
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
 End;
 
 { ============================================================
