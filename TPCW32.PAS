@@ -40,7 +40,7 @@
   mode video.
 
   Il est possible d indiquer le numero de version du
-  Turbo Pascal cible : 1, 2, 4, 5, 5.5, 6, 7, 8.
+  Turbo Pascal cible : 1, 2, 4, 5, 5.5 (tp55), 6, 7, 8.
   Par defaut c est la version 7.
 
   FEUILLE DE ROUTE - 25 TODOS
@@ -70,8 +70,8 @@
               Caracteres speciaux : #nn (decimal), #$nn (hexadecimal)
             LexScanNumber : entiers decimaux, hexadecimaux ($FF),
               reels (3.14, 1.5E3), suffixes pour TP compatibilite
-            Commentaires : curly braces et paren-star et // (TP7+)
-            Directives compilateur : dollar-I+ dollar-R- dollar-IFDEF etc.
+            Commentaires : accolades, paren-etoile et // (TP7+)
+            Directives compilateur : $I+ $R- $IFDEF etc. entre accolades
             Mots-cles Turbo Pascal (selon TPVersion) :
               AND ARRAY ASM BEGIN CASE CONST CONSTRUCTOR
               DESTRUCTOR DIV DO DOWNTO ELSE END FILE FOR
@@ -86,20 +86,20 @@
 
   TODO 03 - PREPROCESSEUR ET DIRECTIVES DE COMPILATION
             Directives conditionnelles :
-              dollar-IFDEF symbole / dollar-IFNDEF symbole / dollar-ELSE / dollar-ENDIF
-              dollar-IFOPT X+ : tester l etat d une option
-              dollar-DEFINE symbole / dollar-UNDEF symbole
+              $IFDEF symbole / $IFNDEF symbole / $ELSE / $ENDIF
+              $IFOPT X+ : tester l etat d une option
+              $DEFINE symbole / $UNDEF symbole
             Directives d inclusion :
-              dollar-I fichier.inc ou dollar-INCLUDE fichier.inc
+              $I fichier.inc ou $INCLUDE fichier.inc
             Directives de commutation :
-              dollar-I+/dollar-I- (verification I/O)
-              dollar-R+/dollar-R- (verification de range)
-              dollar-B+/dollar-B- (evaluation booleenne complete/court-circuit)
-              dollar-Q+/dollar-Q- (verification overflow)
-              dollar-A+/dollar-A- (alignement)
-              dollar-N+/dollar-N- (coprocesseur numerique)
-              dollar-G+/dollar-G- (generation code 80286)
-              dollar-X+/dollar-X- (syntaxe etendue)
+              $I+/$I- (verification I/O)
+              $R+/$R- (verification de range)
+              $B+/$B- (evaluation booleenne complete/court-circuit)
+              $Q+/$Q- (verification overflow)
+              $A+/$A- (alignement)
+              $N+/$N- (coprocesseur numerique)
+              $G+/$G- (generation code 80286)
+              $X+/$X- (syntaxe etendue)
             Symboles predefinis selon TPVersion :
               VER70 (TP7), VER60 (TP6), VER55 (TP5.5), etc.
               MSDOS, CPU86, CPU87
