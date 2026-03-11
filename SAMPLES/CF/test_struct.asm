@@ -1,6 +1,6 @@
 ; CF86 v1.0 - 2026-03-06
 ; Compilateur ColdFusion -> assembleur 8086
-; Source: SAMPLES/CF/test_arrays.cfm
+; Source: SAMPLES/CF/test_struct.cfm
 
 .MODEL SMALL
 .STACK 1024
@@ -16,99 +16,88 @@ _CFF_Main:
         MOV   DS, AX
 
 ; ---- CFSET ----
-; ArrayNew()
-        MOV   AX, 1
-        PUSH   AX
-        POP   AX
-        MOV   AX, OFFSET _CFL_1
-        MOV   [_CFV_arr], AX
-; ---- CFSET ----
-; cfset: appel fonction arrayappend
-        MOV   AX, [_CFV_arr]
-        PUSH   AX
-        MOV   AX, 10
-        PUSH   AX
-        POP   AX
-        POP   SI
-        CALL   _CFRT_ARRAPPEND
-; ---- CFSET ----
-; acces [] : arr
-        MOV   AX, 2
-        MOV   CX, AX
-        MOV   AX, [_CFV_arr]
-        MOV   SI, AX
-        CALL   _CFRT_ARRGET
-        MOV   [_CFV_v], AX
-        MOV   AX, [_CFV_v]
-; cfoutput: expr numerique
-        CALL   _CFRT_PRINTNUM
-; ---- CFSET ----
-; array literal []
-        MOV   SI, OFFSET _CFL_2
+; StructNew()
+        MOV   SI, OFFSET _CFL_1
         MOV   WORD PTR [SI], 0
-        MOV   AX, 100
-        PUSH   SI
-        CALL   _CFRT_ARRAPPEND
-        POP   SI
-        MOV   AX, 200
-        PUSH   SI
-        CALL   _CFRT_ARRAPPEND
-        POP   SI
-        MOV   AX, 300
-        PUSH   SI
-        CALL   _CFRT_ARRAPPEND
-        POP   SI
-        MOV   AX, OFFSET _CFL_2
-        MOV   [_CFV_arr2], AX
+        MOV   AX, SI
+        MOV   [_CFV_mystruct], AX
 ; ---- CFSET ----
-; ArrayLen()
-        MOV   AX, [_CFV_arr2]
+; cfset: appel fonction structinsert
+        MOV   AX, [_CFV_mystruct]
         PUSH   AX
-        POP   SI
-        CALL   _CFRT_ARRLEN
-        MOV   [_CFV_n2], AX
-        MOV   AX, [_CFV_n2]
-; cfoutput: expr numerique
-        CALL   _CFRT_PRINTNUM
-; ---- CFSET ----
-; cfset: appel fonction arraydeleteat
-        MOV   AX, [_CFV_arr]
+        MOV   AX, OFFSET _CFK_2
         PUSH   AX
-        MOV   AX, 2
-        PUSH   AX
-        POP   CX
-        POP   SI
-        CALL   _CFRT_ARRDEL
-; ---- CFSET ----
-; cfset: appel fonction arrayinsertat
-        MOV   AX, [_CFV_arr]
-        PUSH   AX
-        MOV   AX, 1
-        PUSH   AX
-        MOV   AX, 5
+        MOV   AX, OFFSET _CFK_3
         PUSH   AX
         POP   AX
-        POP   CX
+        POP   DI
         POP   SI
-        CALL   _CFRT_ARRINS
-; ---- CFSET ----
-; ArrayToList()
-        MOV   AX, [_CFV_arr2]
+        CALL   _CFRT_STINSERT
+; cfoutput: texte brut
+        MOV   SI, OFFSET _CFK_4
+        CALL   _CFRT_PRINT
+; StructFind()
+        MOV   AX, [_CFV_mystruct]
+        PUSH   AX
+        MOV   AX, OFFSET _CFK_2
+        PUSH   AX
+        POP   DI
+        POP   SI
+        CALL   _CFRT_STFIND
+; cfoutput: expr numerique
+        CALL   _CFRT_PRINTNUM
+; StructKeyExists()
+        MOV   AX, [_CFV_mystruct]
+        PUSH   AX
+        MOV   AX, OFFSET _CFK_6
+        PUSH   AX
+        POP   DI
+        POP   SI
+        CALL   _CFRT_STKEYEX
+; cfif: test condition
+        TEST   AX, AX
+        JZ   _CFL_ELSE_7
+; cfoutput: texte brut
+        MOV   SI, OFFSET _CFK_8
+        CALL   _CFRT_PRINT
+; StructFind()
+        MOV   AX, [_CFV_mystruct]
+        PUSH   AX
+        MOV   AX, OFFSET _CFK_6
+        PUSH   AX
+        POP   DI
+        POP   SI
+        CALL   _CFRT_STFIND
+; cfoutput: expr numerique
+        CALL   _CFRT_PRINTNUM
+_CFL_ELSE_7:
+_CFL_ENDIF_5:
+; cfoutput: texte brut
+        MOV   SI, OFFSET _CFK_9
+        CALL   _CFRT_PRINT
+; StructKeyList()
+        MOV   AX, [_CFV_mystruct]
         PUSH   AX
         POP   SI
-        MOV   DI, OFFSET _CFK_3
-        CALL   _CFRT_ARRTOLIST
-        MOV   [_CFV_lst], AX
-        MOV   AX, [_CFV_lst]
+        CALL   _CFRT_STKEYLIST
 ; cfoutput: expr chaine
         MOV   SI, AX
         CALL   _CFRT_PRINT
 ; ---- CFSET ----
-; cfset: appel fonction arrayclear
-        MOV   AX, [_CFV_arr]
+; cfset: appel fonction structdelete
+        MOV   AX, [_CFV_mystruct]
+        PUSH   AX
+        MOV   AX, OFFSET _CFK_10
+        PUSH   AX
+        POP   DI
+        POP   SI
+        CALL   _CFRT_STDEL
+; ---- CFSET ----
+; cfset: appel fonction structclear
+        MOV   AX, [_CFV_mystruct]
         PUSH   AX
         POP   SI
-        CALL   _CFRT_ARRCLEAR
+        CALL   _CFRT_STCLEAR
 
 ; --- Fin du code ---
         MOV   SP, BP
@@ -1264,13 +1253,14 @@ _CF_LOOPLIM  DW  0
 _CF_LOOPSTP  DW  0
 _CF_STRBUF2  DB  256 DUP(0)
 _CFL_1  DB  130 DUP(0)
-_CFV_arr  DW  0
-_CFV_v  DW  0
-_CFL_2  DB  130 DUP(0)
-_CFV_arr2  DW  0
-_CFV_n2  DW  0
-_CFK_3  DB  ',',0
-_CFV_lst  DW  0
+_CFV_mystruct  DW  0
+_CFK_2  DB  'nom',0
+_CFK_3  DB  'Alice',0
+_CFK_4  DB  'Nom: ',0
+_CFK_6  DB  'age',0
+_CFK_8  DB  'Age existe: ',0
+_CFK_9  DB  'Cles: ',0
+_CFK_10  DB  'ville',0
 
 _DATA ENDS
 

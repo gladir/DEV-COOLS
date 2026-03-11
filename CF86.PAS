@@ -263,7 +263,7 @@
             Affectation element : arr[i] = val -> MOV dans DATA a l offset
             Boucle cfloop array : voir TODO 14
 
-  TODO 18 - STRUCTURES (STRUCTS)
+  TODO 18 - STRUCTURES (STRUCTS) [IMPLEMENTE]
             StructNew() : creation de structure vide -> AX=ptr
             StructInsert(struct, cle, val) : ajout cle/valeur
               -> CALL _CFRT_STINSERT
@@ -448,6 +448,8 @@ Const
   STACK_SIZE    = 1024;
   MAX_ARRAY_ELEMS = 64;                       { max elements par tableau (TODO 17) }
   ARRAY_BLOCK_SIZE = 2 + MAX_ARRAY_ELEMS * 2; { 2 octets count + elems words      }
+  MAX_STRUCT_KEYS = 32;                       { max paires cle/valeur (TODO 18)    }
+  STRUCT_BLOCK_SIZE = 2 + MAX_STRUCT_KEYS * 4;{ 2 octets count + paires (key+val)  }
 
   { Prefixes de nommage ASM }
   CF_VAR_PFX  = '_CFV_';    { variable scalaire                   }
@@ -768,6 +770,8 @@ Procedure ParseScriptFor; Forward;
 Procedure ParseScriptDoWhile; Forward;
 { TODO 17 }
 Function  DataAddArrayBlock(Const Lbl : TString) : Integer; Forward;
+{ TODO 18 }
+Function  DataAddStructBlock(Const Lbl : TString) : Integer; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1891,6 +1895,20 @@ Begin
   If Idx >= 0 Then
     DataTab[Idx].ElemCount := ARRAY_BLOCK_SIZE;
   DataAddArrayBlock := Idx;
+End;
+
+{ ---- DataAddStructBlock : allouer un bloc structure ---------- }
+(* Cree une entree DK_STRUCT_BLK de taille STRUCT_BLOCK_SIZE     *)
+(* octets. Le premier word contient le nombre de paires.          *)
+(* Chaque paire = 2 words : pointeur cle ASCIIZ + valeur.        *)
+Function DataAddStructBlock(Const Lbl : TString) : Integer;
+Var
+  Idx : Integer;
+Begin
+  Idx := DataAdd(Lbl, DK_STRUCT_BLK, 0, '');
+  If Idx >= 0 Then
+    DataTab[Idx].ElemCount := STRUCT_BLOCK_SIZE;
+  DataAddStructBlock := Idx;
 End;
 
 { ============================================================ }
@@ -4186,6 +4204,317 @@ Begin
   EmitInstr('POP', 'BX');
   EmitInstr('RET', '');
   EmitBlankLine;
+
+  { ============================================================ }
+  { TODO 18 - Routines runtime pour structures (structs)         }
+  { ============================================================ }
+
+  { ---- _CFRT_STRCMP : comparaison de chaines ASCIIZ ---------- }
+  { Entree : SI = ptr chaine 1, DI = ptr chaine 2                }
+  { Sortie : AX = 0 si egal, <0 si str1<str2, >0 si str1>str2   }
+  EmitLabel(CF_RT_PFX + 'STRCMP');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('PUSH', 'SI');
+  EmitInstr('PUSH', 'DI');
+  EmitLabel(CF_RT_PFX + 'SCMP_LP');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('MOV', 'AH', '[DI]');
+  EmitInstrAB('CMP', 'AL', 'AH');
+  EmitInstr('JNE', CF_RT_PFX + 'SCMP_NE');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstr('JZ', CF_RT_PFX + 'SCMP_EQ');
+  EmitInstr('INC', 'SI');
+  EmitInstr('INC', 'DI');
+  EmitInstr('JMP', CF_RT_PFX + 'SCMP_LP');
+  EmitLabel(CF_RT_PFX + 'SCMP_EQ');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstr('JMP', CF_RT_PFX + 'SCMP_RT');
+  EmitLabel(CF_RT_PFX + 'SCMP_NE');
+  EmitInstrAB('XOR', 'AH', 'AH');
+  EmitInstrAB('MOV', 'BL', '[DI]');
+  EmitInstrAB('XOR', 'BH', 'BH');
+  EmitInstrAB('SUB', 'AX', 'BX');
+  EmitLabel(CF_RT_PFX + 'SCMP_RT');
+  EmitInstr('POP', 'DI');
+  EmitInstr('POP', 'SI');
+  EmitInstr('POP', 'BX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_STINSERT : inserer une paire cle/valeur -------- }
+  { Entree : SI = ptr struct, DI = ptr cle ASCIIZ, AX = valeur   }
+  { Layout struct : [count:WORD] [key1:WORD][val1:WORD] ...       }
+  { Si la cle existe deja, on met a jour la valeur                }
+  EmitLabel(CF_RT_PFX + 'STINSERT');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('PUSH', 'CX');
+  EmitInstr('PUSH', 'DX');
+  EmitInstr('PUSH', 'SI');
+  EmitInstr('PUSH', 'DI');
+  EmitInstrAB('MOV', 'DX', 'AX');          { DX = valeur a inserer }
+  EmitInstrAB('MOV', 'CX', '[SI]');        { CX = count }
+  EmitInstrAB('MOV', 'BX', 'SI');
+  EmitInstrAB('ADD', 'BX', '2');           { BX = debut paires }
+  EmitLabel(CF_RT_PFX + 'STI_LP');
+  EmitInstrAB('OR', 'CX', 'CX');
+  EmitInstr('JZ', CF_RT_PFX + 'STI_NEW');
+  { Comparer la cle }
+  EmitInstr('PUSH', 'CX');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('PUSH', 'DI');
+  EmitInstr('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', '[BX]');        { SI = cle existante }
+  EmitInstr('CALL', CF_RT_PFX + 'STRCMP');
+  EmitInstr('POP', 'SI');
+  EmitInstr('POP', 'DI');
+  EmitInstr('POP', 'BX');
+  EmitInstr('POP', 'CX');
+  EmitInstrAB('OR', 'AX', 'AX');
+  EmitInstr('JZ', CF_RT_PFX + 'STI_UPD');  { cle trouvee -> update }
+  EmitInstrAB('ADD', 'BX', '4');           { paire suivante }
+  EmitInstr('DEC', 'CX');
+  EmitInstr('JMP', CF_RT_PFX + 'STI_LP');
+  EmitLabel(CF_RT_PFX + 'STI_UPD');
+  { Mettre a jour la valeur existante }
+  EmitInstrAB('MOV', '[BX+2]', 'DX');
+  EmitInstr('JMP', CF_RT_PFX + 'STI_DN');
+  EmitLabel(CF_RT_PFX + 'STI_NEW');
+  { Ajouter une nouvelle paire }
+  EmitInstr('POP', 'DI');
+  EmitInstr('POP', 'SI');
+  EmitInstrAB('CMP', 'WORD PTR [SI]', IntToStr(MAX_STRUCT_KEYS));
+  EmitInstr('JAE', CF_RT_PFX + 'STI_FUL');
+  EmitInstr('INC', 'WORD PTR [SI]');       { count++ }
+  EmitInstrAB('MOV', '[BX]', 'DI');        { stocker ptr cle }
+  EmitInstrAB('MOV', '[BX+2]', 'DX');      { stocker valeur }
+  EmitLabel(CF_RT_PFX + 'STI_FUL');
+  EmitInstr('POP', 'DX');
+  EmitInstr('POP', 'CX');
+  EmitInstr('POP', 'BX');
+  EmitInstr('RET', '');
+  { Chemin normal : cle existante trouvee, piles deja restaurees }
+  EmitLabel(CF_RT_PFX + 'STI_DN');
+  EmitInstr('POP', 'DI');
+  EmitInstr('POP', 'SI');
+  EmitInstr('POP', 'DX');
+  EmitInstr('POP', 'CX');
+  EmitInstr('POP', 'BX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_STFIND : rechercher une cle dans struct --------- }
+  { Entree : SI = ptr struct, DI = ptr cle ASCIIZ                 }
+  { Sortie : AX = valeur associee (0 si non trouvee)               }
+  EmitLabel(CF_RT_PFX + 'STFIND');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('PUSH', 'CX');
+  EmitInstr('PUSH', 'SI');
+  EmitInstr('PUSH', 'DI');
+  EmitInstrAB('MOV', 'CX', '[SI]');        { CX = count }
+  EmitInstrAB('MOV', 'BX', 'SI');
+  EmitInstrAB('ADD', 'BX', '2');
+  EmitLabel(CF_RT_PFX + 'STF_LP');
+  EmitInstrAB('OR', 'CX', 'CX');
+  EmitInstr('JZ', CF_RT_PFX + 'STF_NF');
+  EmitInstr('PUSH', 'CX');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('PUSH', 'DI');
+  EmitInstr('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', '[BX]');
+  EmitInstr('CALL', CF_RT_PFX + 'STRCMP');
+  EmitInstr('POP', 'SI');
+  EmitInstr('POP', 'DI');
+  EmitInstr('POP', 'BX');
+  EmitInstr('POP', 'CX');
+  EmitInstrAB('OR', 'AX', 'AX');
+  EmitInstr('JZ', CF_RT_PFX + 'STF_OK');
+  EmitInstrAB('ADD', 'BX', '4');
+  EmitInstr('DEC', 'CX');
+  EmitInstr('JMP', CF_RT_PFX + 'STF_LP');
+  EmitLabel(CF_RT_PFX + 'STF_OK');
+  EmitInstrAB('MOV', 'AX', '[BX+2]');
+  EmitInstr('JMP', CF_RT_PFX + 'STF_RT');
+  EmitLabel(CF_RT_PFX + 'STF_NF');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitLabel(CF_RT_PFX + 'STF_RT');
+  EmitInstr('POP', 'DI');
+  EmitInstr('POP', 'SI');
+  EmitInstr('POP', 'CX');
+  EmitInstr('POP', 'BX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_STRUCTGET : alias de STFIND pour acces [] ------- }
+  EmitLabel(CF_RT_PFX + 'STRUCTGET');
+  EmitInstr('JMP', CF_RT_PFX + 'STFIND');
+  EmitBlankLine;
+
+  { ---- _CFRT_STKEYEX : tester si une cle existe ------------- }
+  { Entree : SI = ptr struct, DI = ptr cle ASCIIZ                 }
+  { Sortie : AX = 1 si existe, 0 sinon                            }
+  EmitLabel(CF_RT_PFX + 'STKEYEX');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('PUSH', 'CX');
+  EmitInstr('PUSH', 'SI');
+  EmitInstr('PUSH', 'DI');
+  EmitInstrAB('MOV', 'CX', '[SI]');
+  EmitInstrAB('MOV', 'BX', 'SI');
+  EmitInstrAB('ADD', 'BX', '2');
+  EmitLabel(CF_RT_PFX + 'SKE_LP');
+  EmitInstrAB('OR', 'CX', 'CX');
+  EmitInstr('JZ', CF_RT_PFX + 'SKE_NF');
+  EmitInstr('PUSH', 'CX');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('PUSH', 'DI');
+  EmitInstr('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', '[BX]');
+  EmitInstr('CALL', CF_RT_PFX + 'STRCMP');
+  EmitInstr('POP', 'SI');
+  EmitInstr('POP', 'DI');
+  EmitInstr('POP', 'BX');
+  EmitInstr('POP', 'CX');
+  EmitInstrAB('OR', 'AX', 'AX');
+  EmitInstr('JZ', CF_RT_PFX + 'SKE_OK');
+  EmitInstrAB('ADD', 'BX', '4');
+  EmitInstr('DEC', 'CX');
+  EmitInstr('JMP', CF_RT_PFX + 'SKE_LP');
+  EmitLabel(CF_RT_PFX + 'SKE_OK');
+  EmitInstrAB('MOV', 'AX', '1');
+  EmitInstr('JMP', CF_RT_PFX + 'SKE_RT');
+  EmitLabel(CF_RT_PFX + 'SKE_NF');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitLabel(CF_RT_PFX + 'SKE_RT');
+  EmitInstr('POP', 'DI');
+  EmitInstr('POP', 'SI');
+  EmitInstr('POP', 'CX');
+  EmitInstr('POP', 'BX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_STDEL : supprimer une cle de la structure ------- }
+  { Entree : SI = ptr struct, DI = ptr cle ASCIIZ                 }
+  EmitLabel(CF_RT_PFX + 'STDEL');
+  EmitInstr('PUSH', 'AX');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('PUSH', 'CX');
+  EmitInstr('PUSH', 'DX');
+  EmitInstr('PUSH', 'SI');
+  EmitInstr('PUSH', 'DI');
+  EmitInstrAB('MOV', 'CX', '[SI]');
+  EmitInstrAB('MOV', 'BX', 'SI');
+  EmitInstrAB('ADD', 'BX', '2');
+  EmitInstrAB('XOR', 'DX', 'DX');         { DX = index }
+  EmitLabel(CF_RT_PFX + 'SDL_LP');
+  EmitInstrAB('OR', 'CX', 'CX');
+  EmitInstr('JZ', CF_RT_PFX + 'SDL_DN');
+  EmitInstr('PUSH', 'CX');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('PUSH', 'DI');
+  EmitInstr('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', '[BX]');
+  EmitInstr('CALL', CF_RT_PFX + 'STRCMP');
+  EmitInstr('POP', 'SI');
+  EmitInstr('POP', 'DI');
+  EmitInstr('POP', 'BX');
+  EmitInstr('POP', 'CX');
+  EmitInstrAB('OR', 'AX', 'AX');
+  EmitInstr('JZ', CF_RT_PFX + 'SDL_FD');
+  EmitInstrAB('ADD', 'BX', '4');
+  EmitInstr('INC', 'DX');
+  EmitInstr('DEC', 'CX');
+  EmitInstr('JMP', CF_RT_PFX + 'SDL_LP');
+  EmitLabel(CF_RT_PFX + 'SDL_FD');
+  { Decaler les paires suivantes vers l arriere }
+  EmitInstr('DEC', 'CX');
+  EmitLabel(CF_RT_PFX + 'SDL_SH');
+  EmitInstrAB('OR', 'CX', 'CX');
+  EmitInstr('JZ', CF_RT_PFX + 'SDL_SD');
+  EmitInstrAB('MOV', 'AX', '[BX+4]');
+  EmitInstrAB('MOV', '[BX]', 'AX');
+  EmitInstrAB('MOV', 'AX', '[BX+6]');
+  EmitInstrAB('MOV', '[BX+2]', 'AX');
+  EmitInstrAB('ADD', 'BX', '4');
+  EmitInstr('DEC', 'CX');
+  EmitInstr('JMP', CF_RT_PFX + 'SDL_SH');
+  EmitLabel(CF_RT_PFX + 'SDL_SD');
+  EmitInstr('POP', 'DI');
+  EmitInstr('POP', 'SI');
+  EmitInstr('DEC', 'WORD PTR [SI]');
+  EmitInstr('JMP', CF_RT_PFX + 'SDL_RT');
+  EmitLabel(CF_RT_PFX + 'SDL_DN');
+  EmitInstr('POP', 'DI');
+  EmitInstr('POP', 'SI');
+  EmitLabel(CF_RT_PFX + 'SDL_RT');
+  EmitInstr('POP', 'DX');
+  EmitInstr('POP', 'CX');
+  EmitInstr('POP', 'BX');
+  EmitInstr('POP', 'AX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_STCOUNT : nombre de cles dans la structure ------ }
+  { Entree : SI = ptr struct                                       }
+  { Sortie : AX = nombre de paires                                 }
+  EmitLabel(CF_RT_PFX + 'STCOUNT');
+  EmitInstrAB('MOV', 'AX', '[SI]');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_STKEYLIST : liste des cles separees par , ------ }
+  { Entree : SI = ptr struct                                       }
+  { Sortie : AX = ptr vers _CF_STRBUF (cles separees par virgule)  }
+  EmitLabel(CF_RT_PFX + 'STKEYLIST');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('PUSH', 'CX');
+  EmitInstr('PUSH', 'DX');
+  EmitInstr('PUSH', 'SI');
+  EmitInstr('PUSH', 'DI');
+  EmitInstrAB('MOV', 'CX', '[SI]');
+  EmitInstrAB('ADD', 'SI', '2');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _CF_STRBUF');
+  EmitInstrAB('XOR', 'DX', 'DX');         { DX = premier element flag }
+  EmitLabel(CF_RT_PFX + 'SKL_LP');
+  EmitInstrAB('OR', 'CX', 'CX');
+  EmitInstr('JZ', CF_RT_PFX + 'SKL_DN');
+  { Ajouter virgule si pas le premier }
+  EmitInstrAB('OR', 'DX', 'DX');
+  EmitInstr('JZ', CF_RT_PFX + 'SKL_NC');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', ''',''');
+  EmitInstr('INC', 'DI');
+  EmitLabel(CF_RT_PFX + 'SKL_NC');
+  EmitInstrAB('MOV', 'DX', '1');
+  { Copier la cle }
+  EmitInstr('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', '[SI]');        { SI = ptr cle }
+  EmitLabel(CF_RT_PFX + 'SKL_CC');
+  EmitInstr('LODSB', '');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstr('JZ', CF_RT_PFX + 'SKL_CD');
+  EmitInstr('STOSB', '');
+  EmitInstr('JMP', CF_RT_PFX + 'SKL_CC');
+  EmitLabel(CF_RT_PFX + 'SKL_CD');
+  EmitInstr('POP', 'SI');
+  EmitInstrAB('ADD', 'SI', '4');           { paire suivante }
+  EmitInstr('DEC', 'CX');
+  EmitInstr('JMP', CF_RT_PFX + 'SKL_LP');
+  EmitLabel(CF_RT_PFX + 'SKL_DN');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _CF_STRBUF');
+  EmitInstr('POP', 'DI');
+  EmitInstr('POP', 'SI');
+  EmitInstr('POP', 'DX');
+  EmitInstr('POP', 'CX');
+  EmitInstr('POP', 'BX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_STCLEAR : vider une structure ------------------- }
+  { Entree : SI = ptr struct                                       }
+  EmitLabel(CF_RT_PFX + 'STCLEAR');
+  EmitInstrAB('MOV', 'WORD PTR [SI]', '0');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
 End;
 
 (* ---- EmitClose : fermer le fichier assembleur --------------- *)
@@ -4477,6 +4806,25 @@ Begin
         If SIdx >= 2 Then
           EmitInstr('POP', 'BX');
         EmitInstr('POP', 'AX');
+      End
+      { TODO 18 : fonctions de structure comme instructions }
+      Else If CleanName = 'STRUCTINSERT' Then
+      Begin
+        EmitInstr('POP', 'AX');  { valeur }
+        EmitInstr('POP', 'DI');  { ptr cle }
+        EmitInstr('POP', 'SI');  { ptr struct }
+        EmitInstr('CALL', CF_RT_PFX + 'STINSERT');
+      End
+      Else If CleanName = 'STRUCTDELETE' Then
+      Begin
+        EmitInstr('POP', 'DI');  { ptr cle }
+        EmitInstr('POP', 'SI');  { ptr struct }
+        EmitInstr('CALL', CF_RT_PFX + 'STDEL');
+      End
+      Else If CleanName = 'STRUCTCLEAR' Then
+      Begin
+        EmitInstr('POP', 'SI');  { ptr struct }
+        EmitInstr('CALL', CF_RT_PFX + 'STCLEAR');
       End
       Else
       Begin
@@ -5317,6 +5665,116 @@ Begin
       Res.SymIdx  := -1;
     End
 
+    { ============================================================ }
+    { TODO 18 - Fonctions integrees de structures (structs)         }
+    { ============================================================ }
+
+    { -- Fonction integree : StructNew() ------------------------- }
+    Else If (U = 'STRUCTNEW') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('StructNew()');
+      ArgCount := ParseCallArgs;
+      InnerStr := LabelGen;
+      DataAddStructBlock(InnerStr);
+      EmitInstrAB('MOV', 'SI', 'OFFSET ' + InnerStr);
+      EmitInstrAB('MOV', 'WORD PTR [SI]', '0');
+      EmitInstrAB('MOV', 'AX', 'SI');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_STRUCT;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : StructInsert(struct, key, val) ------ }
+    Else If (U = 'STRUCTINSERT') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('StructInsert()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'AX');  { valeur }
+      EmitInstr('POP', 'DI');  { ptr cle ASCIIZ }
+      EmitInstr('POP', 'SI');  { ptr struct }
+      EmitInstr('CALL', CF_RT_PFX + 'STINSERT');
+      ExprMakeImm(1, TY_IDX_BOOLEAN, Res);
+    End
+
+    { -- Fonction integree : StructFind(struct, key) ------------- }
+    Else If (U = 'STRUCTFIND') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('StructFind()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'DI');  { ptr cle }
+      EmitInstr('POP', 'SI');  { ptr struct }
+      EmitInstr('CALL', CF_RT_PFX + 'STFIND');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_ANY;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : StructKeyExists(struct, key) -------- }
+    Else If (U = 'STRUCTKEYEXISTS') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('StructKeyExists()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'DI');  { ptr cle }
+      EmitInstr('POP', 'SI');  { ptr struct }
+      EmitInstr('CALL', CF_RT_PFX + 'STKEYEX');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_BOOLEAN;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : StructDelete(struct, key) ----------- }
+    Else If (U = 'STRUCTDELETE') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('StructDelete()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'DI');  { ptr cle }
+      EmitInstr('POP', 'SI');  { ptr struct }
+      EmitInstr('CALL', CF_RT_PFX + 'STDEL');
+      ExprMakeImm(1, TY_IDX_BOOLEAN, Res);
+    End
+
+    { -- Fonction integree : StructCount(struct) ----------------- }
+    Else If (U = 'STRUCTCOUNT') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('StructCount()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'SI');  { ptr struct }
+      EmitInstr('CALL', CF_RT_PFX + 'STCOUNT');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_NUMERIC;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : StructKeyList(struct) --------------- }
+    Else If (U = 'STRUCTKEYLIST') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('StructKeyList()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'SI');  { ptr struct }
+      EmitInstr('CALL', CF_RT_PFX + 'STKEYLIST');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_STRING;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : StructClear(struct) ----------------- }
+    Else If (U = 'STRUCTCLEAR') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('StructClear()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'SI');  { ptr struct }
+      EmitInstr('CALL', CF_RT_PFX + 'STCLEAR');
+      ExprMakeImm(1, TY_IDX_BOOLEAN, Res);
+    End
+
     { -- Appel de fonction utilisateur : nom( args ) --------- }
     Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
     Begin
@@ -5338,34 +5796,62 @@ Begin
     { -- Acces membre par point : struct.cle ---------------- }
     Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '.') Then
     Begin
-      { Construire le nom complet scope.member }
-      While (CurToken.Kind = TK_OP) And (CurToken.Val = '.') Do
+      { Verifier si la base est un struct }
+      SIdx := SymFind(Name);
+      If (SIdx >= 0) And (TypeKindOf(SymTab[SIdx].TypeIdx) = TKC_STRUCT) Then
       Begin
+        { Acces dynamique sur struct : struct.cle -> STFIND }
         ParserAdvance;  { consommer . }
         If CurToken.Kind = TK_IDENT Then
         Begin
-          Name := Name + '.' + CurToken.Val;
+          EmitComment('struct.' + CurToken.Val);
+          ArgCount := DataAddStr(CurToken.Val);
+          VarLoad(SIdx);
+          EmitInstrAB('MOV', 'SI', 'AX');
+          EmitInstrAB('MOV', 'DI', 'OFFSET ' + DataTab[ArgCount].LblName);
+          EmitInstr('CALL', CF_RT_PFX + 'STFIND');
           ParserAdvance;
+          Res.Kind    := EK_AX;
+          Res.TypeIdx := TY_IDX_ANY;
+          Res.SymIdx  := -1;
         End
         Else
         Begin
           CompileError('identifiant attendu apres "."');
-          Break;
+          ExprMakeImm(0, TY_IDX_ANY, Res);
         End;
-      End;
-      { Rechercher comme nom complet (scope.variable) }
-      SIdx := SymFind(Name);
-      If SIdx >= 0 Then
-      Begin
-        VarLoad(SIdx);
-        Res.Kind    := EK_AX;
-        Res.TypeIdx := SymTab[SIdx].TypeIdx;
-        Res.SymIdx  := SIdx;
       End
       Else
       Begin
-        WarnMsg('membre non resolu : ' + Name);
-        ExprMakeImm(0, TY_IDX_ANY, Res);
+        { Construire le nom complet scope.member }
+        While (CurToken.Kind = TK_OP) And (CurToken.Val = '.') Do
+        Begin
+          ParserAdvance;  { consommer . }
+          If CurToken.Kind = TK_IDENT Then
+          Begin
+            Name := Name + '.' + CurToken.Val;
+            ParserAdvance;
+          End
+          Else
+          Begin
+            CompileError('identifiant attendu apres "."');
+            Break;
+          End;
+        End;
+        { Rechercher comme nom complet (scope.variable) }
+        SIdx := SymFind(Name);
+        If SIdx >= 0 Then
+        Begin
+          VarLoad(SIdx);
+          Res.Kind    := EK_AX;
+          Res.TypeIdx := SymTab[SIdx].TypeIdx;
+          Res.SymIdx  := SIdx;
+        End
+        Else
+        Begin
+          WarnMsg('membre non resolu : ' + Name);
+          ExprMakeImm(0, TY_IDX_ANY, Res);
+        End;
       End;
     End
 
@@ -5475,6 +5961,59 @@ Begin
     EmitInstrAB('MOV', 'AX', 'OFFSET ' + InnerStr);
     Res.Kind    := EK_AX;
     Res.TypeIdx := TY_IDX_ARRAY;
+    Res.SymIdx  := -1;
+  End
+
+  (* ---- Litteral de structure - cle: val, ... - (TODO 18) ---- *)
+  Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+  Begin
+    EmitComment('struct literal {}');
+    ParserAdvance;  (* consommer accolade ouvrante *)
+    InnerStr := LabelGen;
+    DataAddStructBlock(InnerStr);
+    EmitInstrAB('MOV', 'SI', 'OFFSET ' + InnerStr);
+    EmitInstrAB('MOV', 'WORD PTR [SI]', '0');  { count = 0 }
+    { Evaluer chaque paire cle: valeur ou cle = valeur }
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+    Begin
+      { Lire la cle (identifiant ou chaine) }
+      If (CurToken.Kind = TK_STRING) Or (CurToken.Kind = TK_IDENT) Then
+      Begin
+        ArgCount := DataAddStr(CurToken.Val);
+        EmitInstr('PUSH', 'SI');
+        EmitInstrAB('MOV', 'DI', 'OFFSET ' + DataTab[ArgCount].LblName);
+        ParserAdvance;
+        { Consommer : ou = }
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+          ParserAdvance
+        Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+          ParserAdvance;
+        { Evaluer la valeur }
+        ExprMakeNone(SubExpr);
+        ParseExpr(SubExpr);
+        ExprFlushToAX(SubExpr);
+        EmitInstr('POP', 'SI');
+        EmitInstr('PUSH', 'DI');
+        EmitInstr('PUSH', 'SI');
+        EmitInstr('CALL', CF_RT_PFX + 'STINSERT');
+        EmitInstr('POP', 'SI');
+        EmitInstr('POP', 'DI');
+      End
+      Else
+        Break;
+      { Virgule entre paires }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance
+      Else
+        Break;
+    End;
+    (* Consommer accolade fermante *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+      ParserAdvance;
+    EmitInstrAB('MOV', 'AX', 'OFFSET ' + InnerStr);
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_STRUCT;
     Res.SymIdx  := -1;
   End
 
@@ -6979,20 +7518,90 @@ Begin
     End;
   End
 
-  { --- FORM 4 : cfloop collection (struct iteration - simplified) --- }
+  { --- FORM 4 : cfloop collection (struct iteration) (TODO 18) --- }
   Else If HasColl Then
   Begin
-    EmitComment('cfloop: collection (simplifie) - TODO 18 requis');
-    { Skip body until </cfloop> }
-    While CurToken.Kind <> TK_EOF Do
+    EmitComment('cfloop: collection (struct)');
+    { Resoudre la collection }
+    SIdx := SymFind(CollName);
+    If SIdx < 0 Then
     Begin
-      If (CurToken.Kind = TK_TAG_CLOSE) And
-         (StrLowerCase(CurToken.Val) = 'cfloop') Then
+      WarnMsg('cfloop: collection non trouvee : ' + CollName);
+      { Skip body }
+      While CurToken.Kind <> TK_EOF Do
       Begin
+        If (CurToken.Kind = TK_TAG_CLOSE) And
+           (StrLowerCase(CurToken.Val) = 'cfloop') Then
+        Begin
+          ParserAdvance;
+          Break;
+        End;
         ParserAdvance;
-        Break;
       End;
-      ParserAdvance;
+    End
+    Else
+    Begin
+      { Creer variable item si necessaire }
+      If ItemName = '' Then ItemName := '__cfitem';
+      LblTest := LabelGen;
+      LblEnd  := LabelGen;
+      LblIncr := LabelGen;
+      LoopPush(LblEnd, LblIncr);
+      { Utiliser _CF_LOOPIDX comme compteur d index }
+      VarLoad(SIdx);
+      EmitInstrAB('MOV', 'SI', 'AX');
+      { Stocker le ptr struct et le count }
+      EmitInstr('PUSH', 'SI');
+      EmitInstrAB('MOV', 'CX', '[SI]');     { CX = count }
+      EmitInstr('PUSH', 'CX');
+      EmitInstrAB('ADD', 'SI', '2');
+      EmitInstr('PUSH', 'SI');              { base paires sur pile }
+      EmitInstrAB('MOV', 'WORD PTR [_CF_LOOPLIM]', '0');  { index courant }
+
+      EmitLabel(LblTest);
+      EmitInstr('POP', 'SI');               { restaurer base paires }
+      EmitInstr('POP', 'CX');               { restaurer count }
+      EmitInstrAB('MOV', 'AX', '[_CF_LOOPLIM]');
+      EmitInstrAB('CMP', 'AX', 'CX');
+      EmitInstr('JAE', LblEnd);
+      { Calculer offset : AX * 4 + base }
+      EmitInstr('SHL', 'AX, 1');
+      EmitInstr('SHL', 'AX, 1');
+      EmitInstrAB('MOV', 'BX', 'SI');
+      EmitInstrAB('ADD', 'BX', 'AX');
+      { Charger la cle dans la variable item }
+      EmitInstrAB('MOV', 'AX', '[BX]');     { AX = ptr cle }
+      SIdx := SymFind(ItemName);
+      If SIdx < 0 Then
+        SIdx := VarAlloc(ItemName, TY_IDX_STRING);
+      If SIdx >= 0 Then
+        VarStore(SIdx);
+      { Sauvegarder contexte pour la prochaine iteration }
+      EmitInstr('PUSH', 'SI');
+      EmitInstr('PUSH', 'CX');
+      EmitInstr('PUSH', 'SI');
+
+      { Body }
+      While CurToken.Kind <> TK_EOF Do
+      Begin
+        If (CurToken.Kind = TK_TAG_CLOSE) And
+           (StrLowerCase(CurToken.Val) = 'cfloop') Then
+        Begin
+          ParserAdvance;
+          Break;
+        End;
+        ParseBodyTag;
+      End;
+
+      { Increment }
+      EmitLabel(LblIncr);
+      EmitInstr('INC', 'WORD PTR [_CF_LOOPLIM]');
+      EmitInstr('JMP', LblTest);
+      EmitLabel(LblEnd);
+      { Nettoyer la pile (3 valeurs poussees) }
+      EmitInstr('ADD', 'SP, 6');
+
+      LoopPop;
     End;
   End
 

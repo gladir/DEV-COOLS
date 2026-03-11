@@ -898,6 +898,272 @@ _CFRT_A2L_E:
         POP   BX
         RET
 
+_CFRT_STRCMP:
+        PUSH   BX
+        PUSH   SI
+        PUSH   DI
+_CFRT_SCMP_LP:
+        MOV   AL, [SI]
+        MOV   AH, [DI]
+        CMP   AL, AH
+        JNE   _CFRT_SCMP_NE
+        OR   AL, AL
+        JZ   _CFRT_SCMP_EQ
+        INC   SI
+        INC   DI
+        JMP   _CFRT_SCMP_LP
+_CFRT_SCMP_EQ:
+        XOR   AX, AX
+        JMP   _CFRT_SCMP_RT
+_CFRT_SCMP_NE:
+        XOR   AH, AH
+        MOV   BL, [DI]
+        XOR   BH, BH
+        SUB   AX, BX
+_CFRT_SCMP_RT:
+        POP   DI
+        POP   SI
+        POP   BX
+        RET
+
+_CFRT_STINSERT:
+        PUSH   BX
+        PUSH   CX
+        PUSH   DX
+        PUSH   SI
+        PUSH   DI
+        MOV   DX, AX
+        MOV   CX, [SI]
+        MOV   BX, SI
+        ADD   BX, 2
+_CFRT_STI_LP:
+        OR   CX, CX
+        JZ   _CFRT_STI_NEW
+        PUSH   CX
+        PUSH   BX
+        PUSH   DI
+        PUSH   SI
+        MOV   SI, [BX]
+        CALL   _CFRT_STRCMP
+        POP   SI
+        POP   DI
+        POP   BX
+        POP   CX
+        OR   AX, AX
+        JZ   _CFRT_STI_UPD
+        ADD   BX, 4
+        DEC   CX
+        JMP   _CFRT_STI_LP
+_CFRT_STI_UPD:
+        MOV   [BX+2], DX
+        JMP   _CFRT_STI_DN
+_CFRT_STI_NEW:
+        POP   DI
+        POP   SI
+        CMP   WORD PTR [SI], 32
+        JAE   _CFRT_STI_FUL
+        INC   WORD PTR [SI]
+        MOV   [BX], DI
+        MOV   [BX+2], DX
+_CFRT_STI_FUL:
+        POP   DX
+        POP   CX
+        POP   BX
+        RET
+_CFRT_STI_DN:
+        POP   DI
+        POP   SI
+        POP   DX
+        POP   CX
+        POP   BX
+        RET
+
+_CFRT_STFIND:
+        PUSH   BX
+        PUSH   CX
+        PUSH   SI
+        PUSH   DI
+        MOV   CX, [SI]
+        MOV   BX, SI
+        ADD   BX, 2
+_CFRT_STF_LP:
+        OR   CX, CX
+        JZ   _CFRT_STF_NF
+        PUSH   CX
+        PUSH   BX
+        PUSH   DI
+        PUSH   SI
+        MOV   SI, [BX]
+        CALL   _CFRT_STRCMP
+        POP   SI
+        POP   DI
+        POP   BX
+        POP   CX
+        OR   AX, AX
+        JZ   _CFRT_STF_OK
+        ADD   BX, 4
+        DEC   CX
+        JMP   _CFRT_STF_LP
+_CFRT_STF_OK:
+        MOV   AX, [BX+2]
+        JMP   _CFRT_STF_RT
+_CFRT_STF_NF:
+        XOR   AX, AX
+_CFRT_STF_RT:
+        POP   DI
+        POP   SI
+        POP   CX
+        POP   BX
+        RET
+
+_CFRT_STRUCTGET:
+        JMP   _CFRT_STFIND
+
+_CFRT_STKEYEX:
+        PUSH   BX
+        PUSH   CX
+        PUSH   SI
+        PUSH   DI
+        MOV   CX, [SI]
+        MOV   BX, SI
+        ADD   BX, 2
+_CFRT_SKE_LP:
+        OR   CX, CX
+        JZ   _CFRT_SKE_NF
+        PUSH   CX
+        PUSH   BX
+        PUSH   DI
+        PUSH   SI
+        MOV   SI, [BX]
+        CALL   _CFRT_STRCMP
+        POP   SI
+        POP   DI
+        POP   BX
+        POP   CX
+        OR   AX, AX
+        JZ   _CFRT_SKE_OK
+        ADD   BX, 4
+        DEC   CX
+        JMP   _CFRT_SKE_LP
+_CFRT_SKE_OK:
+        MOV   AX, 1
+        JMP   _CFRT_SKE_RT
+_CFRT_SKE_NF:
+        XOR   AX, AX
+_CFRT_SKE_RT:
+        POP   DI
+        POP   SI
+        POP   CX
+        POP   BX
+        RET
+
+_CFRT_STDEL:
+        PUSH   AX
+        PUSH   BX
+        PUSH   CX
+        PUSH   DX
+        PUSH   SI
+        PUSH   DI
+        MOV   CX, [SI]
+        MOV   BX, SI
+        ADD   BX, 2
+        XOR   DX, DX
+_CFRT_SDL_LP:
+        OR   CX, CX
+        JZ   _CFRT_SDL_DN
+        PUSH   CX
+        PUSH   BX
+        PUSH   DI
+        PUSH   SI
+        MOV   SI, [BX]
+        CALL   _CFRT_STRCMP
+        POP   SI
+        POP   DI
+        POP   BX
+        POP   CX
+        OR   AX, AX
+        JZ   _CFRT_SDL_FD
+        ADD   BX, 4
+        INC   DX
+        DEC   CX
+        JMP   _CFRT_SDL_LP
+_CFRT_SDL_FD:
+        DEC   CX
+_CFRT_SDL_SH:
+        OR   CX, CX
+        JZ   _CFRT_SDL_SD
+        MOV   AX, [BX+4]
+        MOV   [BX], AX
+        MOV   AX, [BX+6]
+        MOV   [BX+2], AX
+        ADD   BX, 4
+        DEC   CX
+        JMP   _CFRT_SDL_SH
+_CFRT_SDL_SD:
+        POP   DI
+        POP   SI
+        DEC   WORD PTR [SI]
+        JMP   _CFRT_SDL_RT
+_CFRT_SDL_DN:
+        POP   DI
+        POP   SI
+_CFRT_SDL_RT:
+        POP   DX
+        POP   CX
+        POP   BX
+        POP   AX
+        RET
+
+_CFRT_STCOUNT:
+        MOV   AX, [SI]
+        RET
+
+_CFRT_STKEYLIST:
+        PUSH   BX
+        PUSH   CX
+        PUSH   DX
+        PUSH   SI
+        PUSH   DI
+        MOV   CX, [SI]
+        ADD   SI, 2
+        MOV   DI, OFFSET _CF_STRBUF
+        XOR   DX, DX
+_CFRT_SKL_LP:
+        OR   CX, CX
+        JZ   _CFRT_SKL_DN
+        OR   DX, DX
+        JZ   _CFRT_SKL_NC
+        MOV   BYTE PTR [DI], ','
+        INC   DI
+_CFRT_SKL_NC:
+        MOV   DX, 1
+        PUSH   SI
+        MOV   SI, [SI]
+_CFRT_SKL_CC:
+        LODSB
+        OR   AL, AL
+        JZ   _CFRT_SKL_CD
+        STOSB
+        JMP   _CFRT_SKL_CC
+_CFRT_SKL_CD:
+        POP   SI
+        ADD   SI, 4
+        DEC   CX
+        JMP   _CFRT_SKL_LP
+_CFRT_SKL_DN:
+        MOV   BYTE PTR [DI], 0
+        MOV   AX, OFFSET _CF_STRBUF
+        POP   DI
+        POP   SI
+        POP   DX
+        POP   CX
+        POP   BX
+        RET
+
+_CFRT_STCLEAR:
+        MOV   WORD PTR [SI], 0
+        RET
+
 _TEXT ENDS
 
 _DATA SEGMENT PUBLIC 'DATA'
