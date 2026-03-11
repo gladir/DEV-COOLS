@@ -333,7 +333,7 @@
             Formatage : DateFormat, TimeFormat, NumberFormat, LSCurrencyFormat
               -> stubs simplifie renvoyant la valeur brute en chaine
 
-  TODO 22 - INCLUSION ET MODULES (CFINCLUDE / CFMODULE)
+  TODO 22 - INCLUSION ET MODULES (CFINCLUDE / CFMODULE) [IMPLEMENTE]
             <cfinclude template="chemin/fichier.cfm">
               Inclusion textuelle du fichier source
               LexInit sur le fichier inclus, puis retour au fichier principal
@@ -677,6 +677,22 @@ Var
   CompCount  : Integer;
   CurCompIdx : Integer;    { indice composant courant (-1 = aucun) }
 
+  { Pile d inclusion (TODO 22) }
+  IncStack   : Array[0..MAX_INCLUDE - 1] Of Record
+    SrcF     : Text;
+    Line     : String;
+    LineNo   : Integer;
+    ColNo    : Integer;
+    IsEOF    : Boolean;
+    Opened   : Boolean;
+    FileName : TString;
+    WasInTag : Boolean;
+    WasInCfScript : Boolean;
+    WasInHashExpr : Boolean;
+    SavedToken : TToken;
+  End;
+  IncDepth   : Integer;    { profondeur d inclusion courante }
+
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
@@ -819,6 +835,11 @@ Procedure ParseCfFlush; Forward;
 Procedure ParseCfHeader; Forward;
 Procedure ParseCfContent; Forward;
 Procedure ParseCfLog; Forward;
+{ TODO 22 }
+Procedure ParseCfInclude; Forward;
+Procedure ParseCfModule; Forward;
+Procedure ParseCfInvoke; Forward;
+Procedure ParseCfImport; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1109,6 +1130,7 @@ Begin
   LabelGenSeq    := 0;
   CompCount      := 0;
   CurCompIdx     := -1;
+  IncDepth       := 0;
   GExprDummy.Kind    := EK_NONE;
   GExprDummy.ImmVal  := 0;
   GExprDummy.TypeIdx := TY_UNKNOWN;
@@ -6837,6 +6859,15 @@ Begin
     Begin ParserAdvance; ParseCfContent; End
     Else If TagLower = 'cflog' Then
     Begin ParserAdvance; ParseCfLog; End
+    { TODO 22 - Inclusion et modules }
+    Else If TagLower = 'cfinclude' Then
+    Begin ParserAdvance; ParseCfInclude; End
+    Else If TagLower = 'cfmodule' Then
+    Begin ParserAdvance; ParseCfModule; End
+    Else If TagLower = 'cfinvoke' Then
+    Begin ParserAdvance; ParseCfInvoke; End
+    Else If TagLower = 'cfimport' Then
+    Begin ParserAdvance; ParseCfImport; End
     Else
       ParserAdvance;
   End
@@ -9445,6 +9476,370 @@ Begin
   CurCompIdx  := OldCompIdx;
   CurCompName := OldCompName;
   EmitComment('==== fin script component ' + CompName + ' ====');
+End;
+
+{ ============================================================
+  TODO 22 - INCLUSION ET MODULES (CFINCLUDE / CFMODULE) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ExtractDir : extraire le repertoire d un chemin -------- }
+(* Retourne le chemin jusqu au dernier \ ou / inclus.            *)
+(* Si pas de separateur, retourne '' (repertoire courant).       *)
+Function ExtractDir(Const Path : TString) : TString;
+Var
+  I, LastSep : Integer;
+Begin
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+    If (Path[I] = '\') Or (Path[I] = '/') Then
+      LastSep := I;
+  If LastSep > 0 Then
+    ExtractDir := Copy(Path, 1, LastSep)
+  Else
+    ExtractDir := '';
+End;
+
+{ ---- IncPushState : empiler l etat courant du lexeur --------- }
+(* Sauvegarde le fichier source, la position et les flags du      *)
+(* lexeur avant d ouvrir un fichier inclus.                       *)
+Function IncPushState : Boolean;
+Begin
+  If IncDepth >= MAX_INCLUDE Then
+  Begin
+    CompileError('inclusion trop profonde (max=' +
+                 IntToStr(MAX_INCLUDE) + ')');
+    IncPushState := False;
+    Exit;
+  End;
+  IncStack[IncDepth].SrcF          := LexSrcF;
+  IncStack[IncDepth].Line          := LexLine;
+  IncStack[IncDepth].LineNo        := LexLineNo;
+  IncStack[IncDepth].ColNo         := LexColNo;
+  IncStack[IncDepth].IsEOF         := LexEOF;
+  IncStack[IncDepth].Opened        := LexOpened;
+  IncStack[IncDepth].FileName      := Opts.SrcFile;
+  IncStack[IncDepth].WasInTag      := InTag;
+  IncStack[IncDepth].WasInCfScript := InCfScript;
+  IncStack[IncDepth].WasInHashExpr := InHashExpr;
+  IncStack[IncDepth].SavedToken    := CurToken;
+  Inc(IncDepth);
+  IncPushState := True;
+End;
+
+{ ---- IncPopState : restaurer l etat precedent du lexeur ------ }
+(* Restaure le fichier source et la position sauvegardee.         *)
+Procedure IncPopState;
+Begin
+  If IncDepth <= 0 Then Exit;
+  Dec(IncDepth);
+  LexSrcF      := IncStack[IncDepth].SrcF;
+  LexLine      := IncStack[IncDepth].Line;
+  LexLineNo    := IncStack[IncDepth].LineNo;
+  LexColNo     := IncStack[IncDepth].ColNo;
+  LexEOF       := IncStack[IncDepth].IsEOF;
+  LexOpened    := IncStack[IncDepth].Opened;
+  Opts.SrcFile := IncStack[IncDepth].FileName;
+  InTag        := IncStack[IncDepth].WasInTag;
+  InCfScript   := IncStack[IncDepth].WasInCfScript;
+  InHashExpr   := IncStack[IncDepth].WasInHashExpr;
+  CurToken     := IncStack[IncDepth].SavedToken;
+End;
+
+{ ---- ParseCfInclude : <cfinclude template="chemin/fichier.cfm"> }
+(* Inclusion textuelle : sauvegarde l etat du lexeur courant,      *)
+(* ouvre le fichier inclus, parse son contenu, puis restaure.      *)
+Procedure ParseCfInclude;
+Var
+  TemplatePath : TString;
+  AttrName     : TString;
+  FullPath     : TString;
+  SrcDir       : TString;
+Begin
+  TemplatePath := '';
+
+  { Lire les attributs pour extraire template="..." }
+  While (CurToken.Kind <> TK_PUNCT) And
+        (CurToken.Kind <> TK_TAG_SELFCLOSE) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then Break;
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      AttrName := StrLowerCase(CurToken.Val);
+      ParserAdvance;
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+      Begin
+        ParserAdvance;
+        If AttrName = 'template' Then
+        Begin
+          TemplatePath := CurToken.Val;
+          ParserAdvance;
+        End
+        Else
+          ParserAdvance;
+      End;
+    End
+    Else
+      ParserAdvance;
+  End;
+  { Consommer > ou /> }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then
+    ParserAdvance
+  Else If CurToken.Kind = TK_TAG_SELFCLOSE Then
+    ParserAdvance;
+
+  If TemplatePath = '' Then
+  Begin
+    CompileError('cfinclude: attribut template= requis');
+    Exit;
+  End;
+
+  { Resoudre le chemin : relatif au fichier source courant }
+  SrcDir := ExtractDir(Opts.SrcFile);
+  FullPath := SrcDir + TemplatePath;
+
+  EmitComment('---- cfinclude: ' + TemplatePath + ' ----');
+
+  { Empiler l etat courant du lexeur }
+  If Not IncPushState Then Exit;
+
+  { Ouvrir le fichier inclus }
+  Assign(LexSrcF, FullPath);
+  {$I-}
+  Reset(LexSrcF);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    CompileError('cfinclude: impossible d''ouvrir ' + FullPath);
+    IncPopState;
+    Exit;
+  End;
+
+  LexOpened  := True;
+  LexEOF     := False;
+  LexLineNo  := 0;
+  LexColNo   := 1;
+  LexLine    := '';
+  InTag      := False;
+  InCfScript := False;
+  InHashExpr := False;
+  Opts.SrcFile := FullPath;
+  LexNextLine;
+
+  { Lire le premier token et parser le contenu du fichier inclus }
+  ParserAdvance;
+  While CurToken.Kind <> TK_EOF Do
+    ParseBodyTag;
+
+  { Fermer le fichier inclus }
+  If LexOpened Then
+  Begin
+    Close(LexSrcF);
+    LexOpened := False;
+  End;
+
+  { Restaurer l etat precedent }
+  IncPopState;
+  EmitComment('---- fin cfinclude: ' + TemplatePath + ' ----');
+End;
+
+{ ---- ParseCfModule : <cfmodule template="chemin/module.cfm" ...> }
+(* Execution d un module comme sous-programme.                     *)
+(* En mode DOS, on traite le module comme une inclusion simple     *)
+(* avec passage d attributs via la portee.                          *)
+Procedure ParseCfModule;
+Var
+  TemplatePath : TString;
+  AttrName, AttrVal : TString;
+  FullPath     : TString;
+  SrcDir       : TString;
+Begin
+  TemplatePath := '';
+
+  { Lire les attributs }
+  While (CurToken.Kind <> TK_PUNCT) And
+        (CurToken.Kind <> TK_TAG_SELFCLOSE) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then Break;
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      AttrName := StrLowerCase(CurToken.Val);
+      ParserAdvance;
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+      Begin
+        ParserAdvance;
+        AttrVal := CurToken.Val;
+        If AttrName = 'template' Then
+          TemplatePath := AttrVal;
+        ParserAdvance;
+      End;
+    End
+    Else
+      ParserAdvance;
+  End;
+  { Consommer > ou /> }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then
+    ParserAdvance
+  Else If CurToken.Kind = TK_TAG_SELFCLOSE Then
+    ParserAdvance;
+
+  If TemplatePath = '' Then
+  Begin
+    WarnMsg('cfmodule: attribut template= manquant (stub)');
+    EmitComment('cfmodule (stub - pas de template)');
+    Exit;
+  End;
+
+  { Resoudre le chemin }
+  SrcDir := ExtractDir(Opts.SrcFile);
+  FullPath := SrcDir + TemplatePath;
+
+  EmitComment('---- cfmodule: ' + TemplatePath + ' ----');
+  WarnMsg('cfmodule: traite comme cfinclude (portee caller non supportee)');
+
+  { Empiler l etat courant du lexeur }
+  If Not IncPushState Then Exit;
+
+  { Ouvrir le fichier module }
+  Assign(LexSrcF, FullPath);
+  {$I-}
+  Reset(LexSrcF);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    WarnMsg('cfmodule: impossible d''ouvrir ' + FullPath);
+    IncPopState;
+    EmitComment('cfmodule: fichier non trouve (ignore)');
+    Exit;
+  End;
+
+  LexOpened  := True;
+  LexEOF     := False;
+  LexLineNo  := 0;
+  LexColNo   := 1;
+  LexLine    := '';
+  InTag      := False;
+  InCfScript := False;
+  InHashExpr := False;
+  Opts.SrcFile := FullPath;
+  LexNextLine;
+
+  { Parser le contenu du module }
+  SymEnterScope;
+  ParserAdvance;
+  While CurToken.Kind <> TK_EOF Do
+    ParseBodyTag;
+  SymLeaveScope;
+
+  { Fermer le fichier module }
+  If LexOpened Then
+  Begin
+    Close(LexSrcF);
+    LexOpened := False;
+  End;
+
+  { Restaurer l etat }
+  IncPopState;
+  EmitComment('---- fin cfmodule: ' + TemplatePath + ' ----');
+End;
+
+{ ---- ParseCfInvoke : <cfinvoke component="N" method="M" ...> -- }
+(* Appel de methode sur un composant. Genere un CALL vers la       *)
+(* methode enregistree dans le composant.                           *)
+Procedure ParseCfInvoke;
+Var
+  CompName, MethodName, RetVar : TString;
+  AttrName, AttrVal            : TString;
+  CI, SIdx                     : Integer;
+  FnLbl                        : TString;
+Begin
+  CompName   := '';
+  MethodName := '';
+  RetVar     := '';
+
+  { Lire les attributs }
+  While (CurToken.Kind <> TK_PUNCT) And
+        (CurToken.Kind <> TK_TAG_SELFCLOSE) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then Break;
+    If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+    Begin
+      AttrName := StrLowerCase(CurToken.Val);
+      ParserAdvance;
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+      Begin
+        ParserAdvance;
+        AttrVal := CurToken.Val;
+        If AttrName = 'component' Then
+          CompName := AttrVal
+        Else If AttrName = 'method' Then
+          MethodName := AttrVal
+        Else If AttrName = 'returnvariable' Then
+          RetVar := AttrVal;
+        ParserAdvance;
+      End;
+    End
+    Else
+      ParserAdvance;
+  End;
+  { Consommer > ou /> }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then
+    ParserAdvance
+  Else If CurToken.Kind = TK_TAG_SELFCLOSE Then
+    ParserAdvance;
+
+  If (CompName = '') Or (MethodName = '') Then
+  Begin
+    CompileError('cfinvoke: attributs component= et method= requis');
+    Exit;
+  End;
+
+  EmitComment('cfinvoke: ' + CompName + '.' + MethodName);
+
+  { Chercher le composant }
+  CI := CompFind(CompName);
+  If CI < 0 Then
+    WarnMsg('cfinvoke: composant non trouve: ' + CompName);
+
+  { Generer l appel de methode }
+  FnLbl := CF_CMP_PFX + SymNameClean(CompName) + '_' +
+           SymNameClean(MethodName);
+  EmitInstr('CALL', FnLbl);
+
+  { Si returnVariable specifiee, stocker AX dans la variable }
+  If RetVar <> '' Then
+  Begin
+    SIdx := SymFind(RetVar);
+    If SIdx < 0 Then
+    Begin
+      SIdx := SymAdd(RetVar, SC_VAR, TY_IDX_ANY, 0);
+      If SIdx >= 0 Then
+        DataAddWord(SymTab[SIdx].MangledName, 0);
+    End;
+    If SIdx >= 0 Then
+      EmitInstrAB('MOV', '[' + SymTab[SIdx].MangledName + ']', 'AX');
+  End;
+End;
+
+{ ---- ParseCfImport : <cfimport taglib="path" prefix="pre"> ---- }
+(* Stub : importation de taglib (non supporte en mode DOS).        *)
+Procedure ParseCfImport;
+Begin
+  WarnMsg('cfimport: stub, importation de taglib non supportee');
+  EmitComment('cfimport (stub)');
+  While (CurToken.Kind <> TK_PUNCT) And
+        (CurToken.Kind <> TK_TAG_SELFCLOSE) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then Break;
+    ParserAdvance;
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then
+    ParserAdvance
+  Else If CurToken.Kind = TK_TAG_SELFCLOSE Then
+    ParserAdvance;
 End;
 
 Procedure ParsePage;

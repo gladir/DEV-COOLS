@@ -1306,6 +1306,35 @@ _CFRT_STCLEAR:
         MOV   WORD PTR [SI], 0
         RET
 
+_CFRT_SCSTART:
+        MOV   WORD PTR [_CF_SCPOS], 0
+        MOV   DI, OFFSET _CF_SCBUF
+        MOV   BYTE PTR [DI], 0
+        RET
+
+_CFRT_SCAPPEND:
+        PUSH   SI
+        MOV   DI, OFFSET _CF_SCBUF
+        ADD   DI, [_CF_SCPOS]
+_CFRT_SCA_LP:
+        LODSB
+        OR   AL, AL
+        JZ   _CFRT_SCA_DN
+        STOSB
+        JMP   _CFRT_SCA_LP
+_CFRT_SCA_DN:
+        MOV   BYTE PTR [DI], 0
+        SUB   DI, OFFSET _CF_SCBUF
+        MOV   [_CF_SCPOS], DI
+        POP   SI
+        RET
+
+_CFRT_SCAPPNUM:
+        CALL   _CFRT_NUMTOSTR
+        MOV   SI, AX
+        CALL   _CFRT_SCAPPEND
+        RET
+
 _TEXT ENDS
 
 _DATA SEGMENT PUBLIC 'DATA'
@@ -1321,6 +1350,8 @@ _CF_SWTMP  DW  0
 _CF_LOOPLIM  DW  0
 _CF_LOOPSTP  DW  0
 _CF_STRBUF2  DB  256 DUP(0)
+_CF_SCBUF  DB  512 DUP(0)
+_CF_SCPOS  DW  0
 _CFL_1  DB  130 DUP(0)
 _CFV_arr  DW  0
 _CFV_n  DW  0
