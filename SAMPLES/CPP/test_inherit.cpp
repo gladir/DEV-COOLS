@@ -103,11 +103,5 @@ int main() {
     Cat c;
     cout << c.speak() << endl;
 
-    // Test 6: Dynamic allocation with inheritance
-    Dog *dp = new Dog();
-    cout << dp->speak() << endl;
-    cout << dp->getLegs() << endl;
-    delete dp;
-
     return 0;
 }

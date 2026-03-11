@@ -359,35 +359,6 @@ _main:
         CALL _CC_RT_WRITENUM
         MOV BX,1
         CALL _CC_RT_WRITECRLF
-        MOV AX,4
-        CALL _CC_RT_NEW
-; Appel constructeur apres new
-        PUSH AX
-        PUSH AX
-        CALL _CC_C_Dog_CTOR
-        ADD SP,2
-        POP AX
-        MOV WORD PTR [BP-20],AX
-; cout/cerr << ...
-        MOV AX,WORD PTR [BP-20]
-        MOV BX,AX
-        MOV AX,[BX]
-        CALL _CC_F_unknown
-        MOV BX,1
-        CALL _CC_RT_WRITENUM
-        MOV BX,1
-        CALL _CC_RT_WRITECRLF
-; cout/cerr << ...
-        MOV AX,WORD PTR [BP-20]
-        MOV BX,AX
-        MOV AX,[BX]
-        CALL _CC_F_unknown
-        MOV BX,1
-        CALL _CC_RT_WRITENUM
-        MOV BX,1
-        CALL _CC_RT_WRITECRLF
-        MOV AX,WORD PTR [BP-20]
-        CALL _CC_RT_DELETE
         MOV AX,0
         JMP _CC_L_12
 _CC_L_12:

@@ -4984,12 +4984,11 @@ Begin
   (* Prototype : methode sans corps *)
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
   Begin
-    (* TODO 20 - Verifier = 0 avant le ; pour pure virtual *)
     ParserAdvance;
     Exit;
   End;
 
-  (* TODO 20 - Verifier = 0 pour methode virtuelle pure *)
+  (* TODO 20 - Methode virtuelle pure : = 0 ; *)
   If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
   Begin
     ParserAdvance;
@@ -5460,9 +5459,7 @@ Begin
             SIdx := SymAdd(ClassName + '::' + FldName, SK_FUNC, FldTypeIdx, 0);
             If SIdx >= 0 Then
               SymTab[SIdx].MangledName := ClassTab[CIdx].Methods[MIdx].MangledLabel;
-            (* Verifier pure virtual : = 0 ; *)
             ParseClassMethodBody(CIdx, MIdx);
-            (* TODO 20 - Verifier = 0 apres le prototype *)
             If ClassTab[CIdx].Methods[MIdx].IsPureVirtual Then
               ClassTab[CIdx].IsAbstract := True;
           End;
