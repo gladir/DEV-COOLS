@@ -53,6 +53,50 @@ EXTRN _CreateProcessA@40:NEAR
 EXTRN _WaitForSingleObject@8:NEAR
 EXTRN _GetExitCodeProcess@8:NEAR
 EXTRN _GetFullPathNameA@16:NEAR
+; --- Imports Win32 pour unite Graph (TODO 20) ---
+; --- user32.dll ---
+EXTRN _RegisterClassA@4:NEAR
+EXTRN _CreateWindowExA@48:NEAR
+EXTRN _DestroyWindow@4:NEAR
+EXTRN _ShowWindow@8:NEAR
+EXTRN _UpdateWindow@4:NEAR
+EXTRN _GetDC@4:NEAR
+EXTRN _ReleaseDC@8:NEAR
+EXTRN _DefWindowProcA@16:NEAR
+EXTRN _GetClientRect@8:NEAR
+EXTRN _InvalidateRect@12:NEAR
+EXTRN _PeekMessageA@20:NEAR
+EXTRN _DispatchMessageA@4:NEAR
+EXTRN _TranslateMessage@4:NEAR
+EXTRN _PostQuitMessage@4:NEAR
+EXTRN _LoadCursorA@8:NEAR
+EXTRN _GetModuleHandleA@4:NEAR
+EXTRN _FillRect@12:NEAR
+; --- gdi32.dll ---
+EXTRN _SetPixel@16:NEAR
+EXTRN _GetPixel@12:NEAR
+EXTRN _MoveToEx@16:NEAR
+EXTRN _LineTo@12:NEAR
+EXTRN _Rectangle@20:NEAR
+EXTRN _Ellipse@20:NEAR
+EXTRN _Arc@36:NEAR
+EXTRN _Pie@36:NEAR
+EXTRN _CreatePen@12:NEAR
+EXTRN _CreateSolidBrush@4:NEAR
+EXTRN _SelectObject@8:NEAR
+EXTRN _DeleteObject@4:NEAR
+EXTRN _TextOutA@20:NEAR
+EXTRN _CreateFontA@56:NEAR
+EXTRN _SetBkMode@8:NEAR
+EXTRN _SetTextColor@8:NEAR
+EXTRN _SetBkColor@8:NEAR
+EXTRN _GetTextExtentPoint32A@16:NEAR
+EXTRN _CreateCompatibleDC@4:NEAR
+EXTRN _CreateCompatibleBitmap@12:NEAR
+EXTRN _BitBlt@36:NEAR
+EXTRN _DeleteDC@4:NEAR
+EXTRN _FloodFill@16:NEAR
+EXTRN _GetStockObject@4:NEAR
 
 ; --- Segment de donnees ---
 .DATA
@@ -99,6 +143,66 @@ DOS_FINDHDL DD -1
 DOS_PROCINFO DB 16 DUP(0)
 DOS_STARTINFO DB 68 DUP(0)
 DOS_EXITVAL DD 0
+
+; --- Variables Graph (emulation graphique Windows) ---
+GR_RESULT   DD 0
+GR_DRIVER   DD 0
+GR_MODE     DD 0
+GR_HWND     DD 0
+GR_HDC      DD 0
+GR_HPEN     DD 0
+GR_HBRUSH   DD 0
+GR_HFONT    DD 0
+GR_HINST    DD 0
+GR_MAXX     DD 639
+GR_MAXY     DD 479
+GR_COLOR    DD 15
+GR_BKCOLOR  DD 0
+GR_FILLCOLOR DD 0
+GR_FILLSTYLE DD 1
+GR_LINESTYLE DD 0
+GR_LINEWIDTH DD 1
+GR_WRITEMODE DD 0
+GR_CPX      DD 0
+GR_CPY      DD 0
+GR_VPXL     DD 0
+GR_VPYT     DD 0
+GR_VPXR     DD 639
+GR_VPYB     DD 479
+GR_VPCLIP   DD 1
+GR_TXFONT   DD 0
+GR_TXDIR    DD 0
+GR_TXSIZE   DD 1
+GR_ACTIVE   DD 0
+GR_MAXCOLOR DD 15
+GR_WNDCLASS DB 'TPGraphWnd',0
+GR_WNDTITLE DB 'Turbo Pascal Graphics',0
+GR_CLSREC   DB 40 DUP(0)
+GR_RECT     DD 4 DUP(0)
+GR_MSG      DB 28 DUP(0)
+GR_TXBUF    DB 256 DUP(0)
+GR_TXSIZE2  DD 2 DUP(0)
+GR_PALETTE  DD 000000h
+            DD 0AA0000h
+            DD 000AA00h
+            DD 0AAAA00h
+            DD 00000AAh
+            DD 0AA00AAh
+            DD 00055AAh
+            DD 0AAAAAAh
+            DD 0555555h
+            DD 0FF5555h
+            DD 055FF55h
+            DD 0FFFF55h
+            DD 05555FFh
+            DD 0FF55FFh
+            DD 055FFFFh
+            DD 0FFFFFFh
+GR_ERRMSG0  DB 'No error',0
+GR_ERRMSG1  DB '(BGI) graphics not installed',0
+GR_ERRMSG2  DB 'Graphics hardware not detected',0
+GR_DRVNAME  DB 'EGAVGA',0
+GR_MODNAME  DB '640x480x16',0
 
 ; --- Constantes et donnees utilisateur ---
 _TPK_1  DB 'Test des operateurs logiques',0
@@ -1181,6 +1285,597 @@ _TPRT_MS_N2C:
 _TPRT_MS_N02:
 _TPRT_MS_DN:
         POP EBX
+        POP EBP
+        RET
+
+; ============================================================
+;  RUNTIME GRAPH : routines d emulation graphique Windows     
+; ============================================================
+
+_TPRT_INITGRAPH:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSHAD
+        PUSH 0
+        CALL GetModuleHandleA
+        MOV DWORD PTR [GR_HINST],EAX
+        PUSH 32512
+        PUSH 0
+        CALL LoadCursorA
+        MOV ECX,EAX
+        LEA EDI,[GR_CLSREC]
+        XOR EAX,EAX
+        MOV ECX,10
+        REP STOSD
+        MOV DWORD PTR [GR_CLSREC+0],3
+        MOV DWORD PTR [GR_CLSREC+4],OFFSET DefWindowProcA
+        MOV EAX,DWORD PTR [GR_HINST]
+        MOV DWORD PTR [GR_CLSREC+20],EAX
+        MOV DWORD PTR [GR_CLSREC+32],6
+        MOV DWORD PTR [GR_CLSREC+36],OFFSET GR_WNDCLASS
+        PUSH OFFSET GR_CLSREC
+        CALL RegisterClassA
+        PUSH 0
+        PUSH DWORD PTR [GR_HINST]
+        PUSH 0
+        PUSH 0
+        PUSH 520
+        PUSH 660
+        PUSH 100
+        PUSH 100
+        PUSH 00CF0000h
+        PUSH OFFSET GR_WNDTITLE
+        PUSH OFFSET GR_WNDCLASS
+        PUSH 0
+        CALL CreateWindowExA
+        MOV DWORD PTR [GR_HWND],EAX
+        PUSH 5
+        PUSH EAX
+        CALL ShowWindow
+        PUSH DWORD PTR [GR_HWND]
+        CALL UpdateWindow
+        PUSH DWORD PTR [GR_HWND]
+        CALL GetDC
+        MOV DWORD PTR [GR_HDC],EAX
+        MOV DWORD PTR [GR_ACTIVE],1
+        PUSH DWORD PTR [GR_PALETTE+60]
+        PUSH 1
+        PUSH 0
+        CALL CreatePen
+        MOV DWORD PTR [GR_HPEN],EAX
+        PUSH EAX
+        PUSH DWORD PTR [GR_HDC]
+        CALL SelectObject
+        PUSH 0
+        CALL CreateSolidBrush
+        MOV DWORD PTR [GR_HBRUSH],EAX
+        PUSH 1
+        PUSH DWORD PTR [GR_HDC]
+        CALL SetBkMode
+        MOV EDX,DWORD PTR [EBP+8]
+        MOV DWORD PTR [EDX],9
+        MOV EDX,DWORD PTR [EBP+12]
+        MOV DWORD PTR [EDX],2
+        MOV DWORD PTR [GR_RESULT],0
+        MOV DWORD PTR [GR_DRIVER],9
+        MOV DWORD PTR [GR_MODE],2
+        POPAD
+        POP EBP
+        RET
+
+_TPRT_CLOSEGRAPH:
+        PUSH EBP
+        MOV EBP,ESP
+        CMP DWORD PTR [GR_HPEN],0
+        JZ _TPRT_CG_NP
+        PUSH DWORD PTR [GR_HPEN]
+        CALL DeleteObject
+_TPRT_CG_NP:
+        CMP DWORD PTR [GR_HBRUSH],0
+        JZ _TPRT_CG_NB
+        PUSH DWORD PTR [GR_HBRUSH]
+        CALL DeleteObject
+_TPRT_CG_NB:
+        CMP DWORD PTR [GR_HFONT],0
+        JZ _TPRT_CG_NF
+        PUSH DWORD PTR [GR_HFONT]
+        CALL DeleteObject
+_TPRT_CG_NF:
+        PUSH DWORD PTR [GR_HDC]
+        PUSH DWORD PTR [GR_HWND]
+        CALL ReleaseDC
+        PUSH DWORD PTR [GR_HWND]
+        CALL DestroyWindow
+        MOV DWORD PTR [GR_ACTIVE],0
+        MOV DWORD PTR [GR_HWND],0
+        MOV DWORD PTR [GR_HDC],0
+        POP EBP
+        RET
+
+_TPRT_PUTPIXEL:
+        PUSH EBP
+        MOV EBP,ESP
+        MOV EAX,DWORD PTR [EBP+16]
+        AND EAX,0Fh
+        MOV EAX,DWORD PTR [GR_PALETTE+EAX*4]
+        PUSH EAX
+        PUSH DWORD PTR [EBP+12]
+        PUSH DWORD PTR [EBP+8]
+        PUSH DWORD PTR [GR_HDC]
+        CALL SetPixel
+        POP EBP
+        RET
+
+_TPRT_GETPIXEL:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSH DWORD PTR [EBP+16]
+        PUSH DWORD PTR [EBP+12]
+        PUSH DWORD PTR [GR_HDC]
+        CALL GetPixel
+        POP EBP
+        RET
+
+_TPRT_LINE:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSH 0
+        PUSH DWORD PTR [EBP+12]
+        PUSH DWORD PTR [EBP+8]
+        PUSH DWORD PTR [GR_HDC]
+        CALL MoveToEx
+        PUSH DWORD PTR [EBP+20]
+        PUSH DWORD PTR [EBP+16]
+        PUSH DWORD PTR [GR_HDC]
+        CALL LineTo
+        MOV EAX,DWORD PTR [EBP+16]
+        MOV DWORD PTR [GR_CPX],EAX
+        MOV EAX,DWORD PTR [EBP+20]
+        MOV DWORD PTR [GR_CPY],EAX
+        POP EBP
+        RET
+
+_TPRT_LINETO:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSH 0
+        PUSH DWORD PTR [GR_CPY]
+        PUSH DWORD PTR [GR_CPX]
+        PUSH DWORD PTR [GR_HDC]
+        CALL MoveToEx
+        PUSH DWORD PTR [EBP+12]
+        PUSH DWORD PTR [EBP+8]
+        PUSH DWORD PTR [GR_HDC]
+        CALL LineTo
+        MOV EAX,DWORD PTR [EBP+8]
+        MOV DWORD PTR [GR_CPX],EAX
+        MOV EAX,DWORD PTR [EBP+12]
+        MOV DWORD PTR [GR_CPY],EAX
+        POP EBP
+        RET
+
+_TPRT_LINEREL:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSH 0
+        PUSH DWORD PTR [GR_CPY]
+        PUSH DWORD PTR [GR_CPX]
+        PUSH DWORD PTR [GR_HDC]
+        CALL MoveToEx
+        MOV EAX,DWORD PTR [GR_CPX]
+        ADD EAX,DWORD PTR [EBP+8]
+        MOV DWORD PTR [GR_CPX],EAX
+        PUSH EAX
+        MOV EAX,DWORD PTR [GR_CPY]
+        ADD EAX,DWORD PTR [EBP+12]
+        MOV DWORD PTR [GR_CPY],EAX
+        PUSH EAX
+        POP EDX
+        POP ECX
+        PUSH EDX
+        PUSH ECX
+        PUSH DWORD PTR [GR_HDC]
+        CALL LineTo
+        POP EBP
+        RET
+
+_TPRT_RECTANGLE:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSH 5
+        CALL GetStockObject
+        PUSH EAX
+        PUSH DWORD PTR [GR_HDC]
+        CALL SelectObject
+        PUSH EAX
+        PUSH DWORD PTR [EBP+20]
+        PUSH DWORD PTR [EBP+16]
+        PUSH DWORD PTR [EBP+12]
+        PUSH DWORD PTR [EBP+8]
+        PUSH DWORD PTR [GR_HDC]
+        CALL Rectangle
+        POP EAX
+        PUSH EAX
+        PUSH DWORD PTR [GR_HDC]
+        CALL SelectObject
+        POP EBP
+        RET
+
+_TPRT_BAR:
+        PUSH EBP
+        MOV EBP,ESP
+        MOV EAX,DWORD PTR [GR_FILLCOLOR]
+        AND EAX,0Fh
+        MOV EAX,DWORD PTR [GR_PALETTE+EAX*4]
+        PUSH EAX
+        CALL CreateSolidBrush
+        PUSH EAX
+        PUSH EAX
+        PUSH DWORD PTR [GR_HDC]
+        CALL SelectObject
+        PUSH EAX
+        PUSH DWORD PTR [EBP+20]
+        PUSH DWORD PTR [EBP+16]
+        PUSH DWORD PTR [EBP+12]
+        PUSH DWORD PTR [EBP+8]
+        PUSH DWORD PTR [GR_HDC]
+        CALL Rectangle
+        POP EAX
+        PUSH EAX
+        PUSH DWORD PTR [GR_HDC]
+        CALL SelectObject
+        POP EAX
+        PUSH EAX
+        CALL DeleteObject
+        POP EBP
+        RET
+
+_TPRT_BAR3D:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSHAD
+        PUSH DWORD PTR [EBP+20]
+        PUSH DWORD PTR [EBP+16]
+        PUSH DWORD PTR [EBP+12]
+        PUSH DWORD PTR [EBP+8]
+        CALL _TPRT_BAR
+        ADD ESP,16
+        PUSH DWORD PTR [EBP+20]
+        PUSH DWORD PTR [EBP+16]
+        PUSH DWORD PTR [EBP+12]
+        PUSH DWORD PTR [EBP+8]
+        CALL _TPRT_RECTANGLE
+        ADD ESP,16
+; Bar3D top and side simplified (depth lines)
+        POPAD
+        POP EBP
+        RET
+
+_TPRT_CIRCLE:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSH 5
+        CALL GetStockObject
+        PUSH EAX
+        PUSH DWORD PTR [GR_HDC]
+        CALL SelectObject
+        PUSH EAX
+        MOV ECX,DWORD PTR [EBP+8]
+        MOV EDX,DWORD PTR [EBP+12]
+        MOV EBX,DWORD PTR [EBP+16]
+        MOV EAX,EDX
+        ADD EAX,EBX
+        PUSH EAX
+        MOV EAX,ECX
+        ADD EAX,EBX
+        PUSH EAX
+        MOV EAX,EDX
+        SUB EAX,EBX
+        PUSH EAX
+        MOV EAX,ECX
+        SUB EAX,EBX
+        PUSH EAX
+        PUSH DWORD PTR [GR_HDC]
+        CALL Ellipse
+        POP EAX
+        PUSH EAX
+        PUSH DWORD PTR [GR_HDC]
+        CALL SelectObject
+        POP EBP
+        RET
+
+_TPRT_ARC:
+        PUSH EBP
+        MOV EBP,ESP
+; Arc simplifie -> cercle (stub angles)
+        PUSH DWORD PTR [EBP+24]
+        PUSH DWORD PTR [EBP+12]
+        PUSH DWORD PTR [EBP+8]
+        CALL _TPRT_CIRCLE
+        ADD ESP,12
+        POP EBP
+        RET
+
+_TPRT_ELLIPSE:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSH 5
+        CALL GetStockObject
+        PUSH EAX
+        PUSH DWORD PTR [GR_HDC]
+        CALL SelectObject
+        PUSH EAX
+        MOV ECX,DWORD PTR [EBP+8]
+        MOV EDX,DWORD PTR [EBP+12]
+        MOV EBX,DWORD PTR [EBP+24]
+        MOV ESI,DWORD PTR [EBP+28]
+        MOV EAX,EDX
+        ADD EAX,ESI
+        PUSH EAX
+        MOV EAX,ECX
+        ADD EAX,EBX
+        PUSH EAX
+        MOV EAX,EDX
+        SUB EAX,ESI
+        PUSH EAX
+        MOV EAX,ECX
+        SUB EAX,EBX
+        PUSH EAX
+        PUSH DWORD PTR [GR_HDC]
+        CALL Ellipse
+        POP EAX
+        PUSH EAX
+        PUSH DWORD PTR [GR_HDC]
+        CALL SelectObject
+        POP EBP
+        RET
+
+_TPRT_FILLELLIPSE:
+        PUSH EBP
+        MOV EBP,ESP
+        MOV EAX,DWORD PTR [GR_FILLCOLOR]
+        AND EAX,0Fh
+        MOV EAX,DWORD PTR [GR_PALETTE+EAX*4]
+        PUSH EAX
+        CALL CreateSolidBrush
+        PUSH EAX
+        PUSH EAX
+        PUSH DWORD PTR [GR_HDC]
+        CALL SelectObject
+        PUSH EAX
+        MOV ECX,DWORD PTR [EBP+8]
+        MOV EDX,DWORD PTR [EBP+12]
+        MOV EBX,DWORD PTR [EBP+16]
+        MOV ESI,DWORD PTR [EBP+20]
+        MOV EAX,EDX
+        ADD EAX,ESI
+        PUSH EAX
+        MOV EAX,ECX
+        ADD EAX,EBX
+        PUSH EAX
+        MOV EAX,EDX
+        SUB EAX,ESI
+        PUSH EAX
+        MOV EAX,ECX
+        SUB EAX,EBX
+        PUSH EAX
+        PUSH DWORD PTR [GR_HDC]
+        CALL Ellipse
+        POP EAX
+        PUSH EAX
+        PUSH DWORD PTR [GR_HDC]
+        CALL SelectObject
+        POP EAX
+        PUSH EAX
+        CALL DeleteObject
+        POP EBP
+        RET
+
+_TPRT_PIESLICE:
+        PUSH EBP
+        MOV EBP,ESP
+; PieSlice simplifie -> cercle rempli (stub)
+        PUSH DWORD PTR [EBP+24]
+        PUSH DWORD PTR [EBP+12]
+        PUSH DWORD PTR [EBP+8]
+        CALL _TPRT_CIRCLE
+        ADD ESP,12
+        POP EBP
+        RET
+
+_TPRT_SECTOR:
+        PUSH EBP
+        MOV EBP,ESP
+; Sector simplifie -> ellipse remplie (stub)
+        PUSH DWORD PTR [EBP+28]
+        PUSH DWORD PTR [EBP+24]
+        PUSH DWORD PTR [EBP+12]
+        PUSH DWORD PTR [EBP+8]
+        CALL _TPRT_FILLELLIPSE
+        ADD ESP,16
+        POP EBP
+        RET
+
+_TPRT_FLOODFILL:
+        PUSH EBP
+        MOV EBP,ESP
+        MOV EAX,DWORD PTR [EBP+16]
+        AND EAX,0Fh
+        MOV EAX,DWORD PTR [GR_PALETTE+EAX*4]
+        PUSH EAX
+        PUSH DWORD PTR [EBP+12]
+        PUSH DWORD PTR [EBP+8]
+        PUSH DWORD PTR [GR_HDC]
+        CALL FloodFill
+        POP EBP
+        RET
+
+_TPRT_SETCOLOR:
+        PUSH EBP
+        MOV EBP,ESP
+        MOV EAX,DWORD PTR [EBP+8]
+        MOV DWORD PTR [GR_COLOR],EAX
+        CALL _TPRT_UPDATEPEN
+        POP EBP
+        RET
+
+_TPRT_UPDATEPEN:
+        PUSHAD
+        CMP DWORD PTR [GR_HPEN],0
+        JZ _TPRT_UP_SK
+        PUSH DWORD PTR [GR_HPEN]
+        CALL DeleteObject
+_TPRT_UP_SK:
+        MOV EAX,DWORD PTR [GR_COLOR]
+        AND EAX,0Fh
+        MOV EAX,DWORD PTR [GR_PALETTE+EAX*4]
+        PUSH EAX
+        PUSH DWORD PTR [GR_LINEWIDTH]
+        PUSH DWORD PTR [GR_LINESTYLE]
+        CALL CreatePen
+        MOV DWORD PTR [GR_HPEN],EAX
+        PUSH EAX
+        PUSH DWORD PTR [GR_HDC]
+        CALL SelectObject
+        MOV EAX,DWORD PTR [GR_COLOR]
+        AND EAX,0Fh
+        MOV EAX,DWORD PTR [GR_PALETTE+EAX*4]
+        PUSH EAX
+        PUSH DWORD PTR [GR_HDC]
+        CALL SetTextColor
+        POPAD
+        RET
+
+_TPRT_UPDATEFONT:
+        PUSHAD
+        CMP DWORD PTR [GR_HFONT],0
+        JZ _TPRT_UF_SK
+        PUSH DWORD PTR [GR_HFONT]
+        CALL DeleteObject
+_TPRT_UF_SK:
+        MOV EAX,DWORD PTR [GR_TXSIZE]
+        SHL EAX,3
+        TEST EAX,EAX
+        JNZ _TPRT_UF_NZ
+        MOV EAX,8
+_TPRT_UF_NZ:
+; CreateFontA - stub simplifie
+        MOV DWORD PTR [GR_HFONT],0
+        POPAD
+        RET
+
+_TPRT_OUTTEXTXY:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSHAD
+        MOV ESI,DWORD PTR [EBP+16]
+        XOR ECX,ECX
+        MOV CL,BYTE PTR [ESI]
+        INC ESI
+        PUSH ECX
+        PUSH ESI
+        PUSH DWORD PTR [EBP+12]
+        PUSH DWORD PTR [EBP+8]
+        PUSH DWORD PTR [GR_HDC]
+        CALL TextOutA
+        POPAD
+        POP EBP
+        RET
+
+_TPRT_CLEARDEVICE:
+        PUSHAD
+        MOV EAX,DWORD PTR [GR_BKCOLOR]
+        AND EAX,0Fh
+        MOV EAX,DWORD PTR [GR_PALETTE+EAX*4]
+        PUSH EAX
+        CALL CreateSolidBrush
+        MOV EBX,EAX
+        MOV DWORD PTR [GR_RECT+0],0
+        MOV DWORD PTR [GR_RECT+4],0
+        MOV EAX,DWORD PTR [GR_MAXX]
+        INC EAX
+        MOV DWORD PTR [GR_RECT+8],EAX
+        MOV EAX,DWORD PTR [GR_MAXY]
+        INC EAX
+        MOV DWORD PTR [GR_RECT+12],EAX
+        PUSH EBX
+        PUSH OFFSET GR_RECT
+        PUSH DWORD PTR [GR_HDC]
+        CALL FillRect
+        PUSH EBX
+        CALL DeleteObject
+        MOV DWORD PTR [GR_CPX],0
+        MOV DWORD PTR [GR_CPY],0
+        POPAD
+        RET
+
+_TPRT_GRAPHERRORMSG:
+        PUSH EBP
+        MOV EBP,ESP
+        MOV EAX,DWORD PTR [EBP+8]
+        TEST EAX,EAX
+        JNZ _TPRT_GE_E1
+        MOV EAX,OFFSET GR_ERRMSG0
+        JMP _TPRT_GE_DN
+_TPRT_GE_E1:
+        CMP EAX,-2
+        JNE _TPRT_GE_E2
+        MOV EAX,OFFSET GR_ERRMSG2
+        JMP _TPRT_GE_DN
+_TPRT_GE_E2:
+        MOV EAX,OFFSET GR_ERRMSG1
+_TPRT_GE_DN:
+        POP EBP
+        RET
+
+_TPRT_IMAGESIZE:
+        PUSH EBP
+        MOV EBP,ESP
+        MOV EAX,DWORD PTR [EBP+16]
+        SUB EAX,DWORD PTR [EBP+8]
+        INC EAX
+        MOV ECX,DWORD PTR [EBP+20]
+        SUB ECX,DWORD PTR [EBP+12]
+        INC ECX
+        IMUL EAX,ECX
+        SHL EAX,2
+        ADD EAX,4
+        POP EBP
+        RET
+
+_TPRT_TEXTHEIGHT:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSHAD
+        MOV ESI,DWORD PTR [EBP+8]
+        XOR ECX,ECX
+        MOV CL,BYTE PTR [ESI]
+        INC ESI
+        PUSH OFFSET GR_TXSIZE2
+        PUSH ECX
+        PUSH ESI
+        PUSH DWORD PTR [GR_HDC]
+        CALL GetTextExtentPoint32A
+        POPAD
+        MOV EAX,DWORD PTR [GR_TXSIZE2+4]
+        POP EBP
+        RET
+
+_TPRT_TEXTWIDTH:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSHAD
+        MOV ESI,DWORD PTR [EBP+8]
+        XOR ECX,ECX
+        MOV CL,BYTE PTR [ESI]
+        INC ESI
+        PUSH OFFSET GR_TXSIZE2
+        PUSH ECX
+        PUSH ESI
+        PUSH DWORD PTR [GR_HDC]
+        CALL GetTextExtentPoint32A
+        POPAD
+        MOV EAX,DWORD PTR [GR_TXSIZE2]
         POP EBP
         RET
 END _TPF_Main

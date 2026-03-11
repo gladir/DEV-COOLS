@@ -1,5 +1,5 @@
 ; TPCW32 - Compilateur Turbo Pascal -> ASM 80386 Win32
-; Genere automatiquement a partir de : SAMPLES/PASCAL/TestOption2.pas
+; Genere automatiquement a partir de : SAMPLES/PASCAL/TestGraph.pas
 
 .386
 .MODEL FLAT, STDCALL
@@ -205,10 +205,11 @@ GR_DRVNAME  DB 'EGAVGA',0
 GR_MODNAME  DB '640x480x16',0
 
 ; --- Constantes et donnees utilisateur ---
-_TPK_1  DB 'Test option /2 - Uses Crt,DOS',0
-_TPK_2  DB 'Programme compil',195,169,' avec support partiel des unit',195,169,'s',0
-_TPK_3  DB 'Appuyez sur une touche...',0
-_TPV_CH  DB 0
+_TPK_1  DB 0
+_TPK_2  DB 'Erreur graphique',0
+_TPK_3  DB 'Hello Graph!',0
+_TPV_GD  DD 0
+_TPV_GM  DD 0
 
 ; --- Segment de code ---
 .CODE
@@ -229,24 +230,137 @@ _TPF_Main:
 ; Obtenir le tas du processus
         CALL GetProcessHeap
         MOV [HHEAP],EAX
-; writeln
+        MOV EAX,DWORD PTR [_TPV_DETECT]
+        MOV DWORD PTR [_TPV_GD],EAX
+        MOV EAX,DWORD PTR [_TPV_GD]
+        PUSH EAX
+        MOV EAX,DWORD PTR [_TPV_GM]
+        PUSH EAX
         LEA EAX,[_TPK_1]
-        MOV ESI,EAX
-        CALL _TPRT_PRINTSTR
-        LEA ESI,[CRLF]
-        CALL _TPRT_PRINTSTR
+        PUSH EAX
+        CALL _TPRT_INITGRAPH
+        ADD ESP,12
+; if
+        MOV EAX,DWORD PTR [GR_RESULT]
+        MOV DWORD PTR [GR_RESULT],0
+        PUSH EAX
+        MOV EAX,0
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JNE _TPL_2
+        XOR EAX,EAX
+        JMP _TPL_3
+_TPL_2:
+        MOV EAX,1
+_TPL_3:
+        TEST EAX,EAX
+        JZ _TPL_4
 ; writeln
         LEA EAX,[_TPK_2]
         MOV ESI,EAX
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
-; writeln
+        MOV EAX,1
+        PUSH EAX
+        CALL _TPF_HALT
+        ADD ESP,4
+_TPL_4:
+        MOV EAX,15
+        PUSH EAX
+        CALL _TPRT_SETCOLOR
+        ADD ESP,4
+        MOV EAX,100
+        PUSH EAX
+        MOV EAX,100
+        PUSH EAX
+        MOV EAX,14
+        PUSH EAX
+        CALL _TPRT_PUTPIXEL
+        ADD ESP,12
+        MOV EAX,0
+        PUSH EAX
+        MOV EAX,0
+        PUSH EAX
+        MOV EAX,639
+        PUSH EAX
+        MOV EAX,479
+        PUSH EAX
+        CALL _TPRT_LINE
+        ADD ESP,16
+        MOV EAX,50
+        PUSH EAX
+        MOV EAX,50
+        PUSH EAX
+        MOV EAX,200
+        PUSH EAX
+        MOV EAX,150
+        PUSH EAX
+        CALL _TPRT_RECTANGLE
+        ADD ESP,16
+        MOV EAX,320
+        PUSH EAX
+        MOV EAX,240
+        PUSH EAX
+        MOV EAX,100
+        PUSH EAX
+        CALL _TPRT_CIRCLE
+        ADD ESP,12
+        MOV EAX,400
+        PUSH EAX
+        MOV EAX,300
+        PUSH EAX
+        MOV EAX,500
+        PUSH EAX
+        MOV EAX,400
+        PUSH EAX
+        CALL _TPRT_BAR
+        ADD ESP,16
+        MOV EAX,1
+        PUSH EAX
+        MOV EAX,12
+        PUSH EAX
+        POP EAX
+        MOV DWORD PTR [GR_FILLCOLOR],EAX
+        POP EAX
+        MOV DWORD PTR [GR_FILLSTYLE],EAX
+        MOV EAX,320
+        PUSH EAX
+        MOV EAX,240
+        PUSH EAX
+        MOV EAX,80
+        PUSH EAX
+        MOV EAX,50
+        PUSH EAX
+        CALL _TPRT_FILLELLIPSE
+        ADD ESP,16
+        MOV EAX,10
+        PUSH EAX
+        MOV EAX,10
+        PUSH EAX
         LEA EAX,[_TPK_3]
-        MOV ESI,EAX
-        CALL _TPRT_PRINTSTR
-        LEA ESI,[CRLF]
-        CALL _TPRT_PRINTSTR
+        PUSH EAX
+        CALL _TPRT_OUTTEXTXY
+        ADD ESP,12
+        MOV EAX,0
+        PUSH EAX
+        MOV EAX,0
+        PUSH EAX
+        POP ECX
+        MOV DWORD PTR [GR_CPY],ECX
+        POP ECX
+        MOV DWORD PTR [GR_CPX],ECX
+        MOV EAX,100
+        PUSH EAX
+        MOV EAX,100
+        PUSH EAX
+        CALL _TPRT_LINETO
+        ADD ESP,8
+        CALL _TPRT_CLEARDEVICE
+        MOV EAX,1
+        MOV DWORD PTR [GR_BKCOLOR],EAX
+        CALL _TPRT_CLOSEGRAPH
 _TPL_1:
         PUSH 0
         CALL ExitProcess
