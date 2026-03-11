@@ -238,7 +238,7 @@
               CONTINUE : passer a l iteration suivante -> JMP _SASL_DINCR_N
             Instruction GOTO label : saut inconditionnel vers une etiquette
 
-  TODO 15 - TABLEAUX SAS (ARRAY)
+  TODO 15 - TABLEAUX SAS (ARRAY) [IMPLEMENTE]
             Declaration : ARRAY nom {dim} [$ [longueur]] [elements] ;
               ARRAY scores {5} score1-score5 ;
               ARRAY noms {3} $ 20 nom1 nom2 nom3 ;
@@ -487,6 +487,9 @@ Const
   MAX_TYPE      = {$IFDEF FPC}32{$ELSE}16{$ENDIF};
   MAX_PARAM     = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
   MAX_LOOP_NEST = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
+  MAX_ARRAY     = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
+  MAX_ARRAY_DIM = 2;     (* dimensions max pour tableaux multidimensionnels *)
+  MAX_ARRAY_ELEM= {$IFDEF FPC}200{$ELSE}50{$ENDIF};
   MAX_ERRORS    = {$IFDEF FPC}30{$ELSE}3{$ENDIF};
   MAX_STR       = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
   MAX_OBS_SIZE  = 512;    (* taille max d une observation en octets *)
@@ -509,6 +512,7 @@ Const
   SAS_DS_PFX   = '_SASD_';   (* dataset en memoire                *)
   SAS_MAC_PFX  = '_SASM_';   (* macro                             *)
   SAS_FMT_PFX  = '_SASF_';   (* format utilisateur                *)
+  SAS_ARR_PFX  = '_SASA_';   (* tableau SAS                       *)
 
   (* Codes de sortie *)
   EXIT_OK    = 0;
@@ -634,6 +638,21 @@ Type
     ElemCount : Integer;
   End;
 
+  (* ---- Tableaux SAS (TODO 15) ------------------------------ *)
+  TArrayInfo = Record
+    Name       : TString;   (* nom du tableau (majuscules)           *)
+    ElemCount  : Integer;   (* nombre total d elements               *)
+    Dim1       : Integer;   (* dimension 1                           *)
+    Dim2       : Integer;   (* dimension 2 (0 = 1D)                  *)
+    IsChar     : Boolean;   (* True = elements CHARACTER             *)
+    ElemLen    : Integer;   (* longueur de chaque element (octets)   *)
+    BaseOffset : Integer;   (* offset du premier element dans le PDV *)
+    IsTemp     : Boolean;   (* _TEMPORARY_ : non ecrit dans dataset  *)
+    ElemSymIdx : Array[0..MAX_ARRAY_ELEM - 1] Of Integer;
+                             (* indices SymTab des elements          *)
+    SymIdx     : Integer;   (* indice dans SymTab (SC_ARRAY)         *)
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -682,6 +701,10 @@ Var
   LoopTop      : Integer;
   LoopBreakLbl : Array[0..MAX_LOOP_NEST - 1] Of TString;
   LoopContLbl  : Array[0..MAX_LOOP_NEST - 1] Of TString;
+
+  (* Tableaux SAS (TODO 15) *)
+  ArrayTab   : Array[0..MAX_ARRAY - 1] Of TArrayInfo;
+  ArrayCount : Integer;
 
   (* Segment de donnees (TODO 08) *)
   DataTab   : Array[0..MAX_DATA - 1] Of TDataRec;
@@ -817,6 +840,9 @@ Procedure ParseSelectStmt; Forward;
 Procedure LoopPush(Const BreakLbl, ContLbl : TString); Forward;
 Procedure LoopPop; Forward;
 Procedure ParseDoBlock; Forward;
+(* TODO 15 - Forward declarations tableaux SAS *)
+Procedure ParseArrayStmt; Forward;
+Function  ArrayFind(Const Name : TString) : Integer; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1081,6 +1107,7 @@ Begin
   LexAtStmtBeg   := True;
   CurFrameSize   := 0;
   LoopTop        := 0;
+  ArrayCount     := 0;
   RuntimeEmitted := False;
   LabelGenSeq    := 0;
   CurPDVOffset   := 0;
@@ -2332,6 +2359,7 @@ Var
   SIdx   : Integer;
   FName  : TString;
   ArrIdx : TExprVal;
+  I      : Integer;
 Begin
   ExprMakeNone(Res);
 
@@ -2400,45 +2428,87 @@ Begin
       Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val[1] = CH_LBRACE) Then
       Begin
         ParserAdvance;  (* consommer { *)
-        SIdx := SymFind(FName);
-        If SIdx < 0 Then
+
+        (* Chercher dans ArrayTab d abord (TODO 15) *)
+        I := ArrayFind(FName);
+        If I >= 0 Then
         Begin
-          WarnMsg('tableau "' + FName + '" non declare');
-          SIdx := VarAlloc(FName, TY_IDX_NUMERIC, 0);
-        End;
-        (* Parser l indice *)
-        ParseExprPrec(1, ArrIdx);
-        (* Consommer } *)
-        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val[1] = CH_RBRACE) Then
-          ParserAdvance
-        Else
-          CompileError('"}" manquant apres indice de tableau');
-        (* Generer le code d acces : base + indice * taille element *)
-        ExprFlushToAX(ArrIdx);
-        EmitComment('acces tableau ' + FName + '{i}');
-        If SymTab[SIdx].TypeIdx = TY_IDX_CHARACTER Then
-        Begin
-          (* Caractere : element = VarLen octets *)
-          EmitInstrAB('MOV', 'BX', IntToStr(SymTab[SIdx].VarLen));
-          EmitInstrA('IMUL', 'BX');
+          SIdx := ArrayTab[I].SymIdx;
+          (* Parser l indice *)
+          ParseExprPrec(1, ArrIdx);
+          (* Consommer } *)
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val[1] = CH_RBRACE) Then
+            ParserAdvance
+          Else
+            CompileError('"}" manquant apres indice de tableau');
+          (* Generer le code d acces base-1 :                         *)
+          (* offset = base_offset + (indice - 1) * elem_size         *)
+          ExprFlushToAX(ArrIdx);
+          EmitComment('acces tableau ' + FName + '{i}');
+          EmitInstrA('DEC', 'AX');  (* base 1 -> base 0 *)
+          If ArrayTab[I].IsChar Then
+          Begin
+            EmitInstrAB('MOV', 'BX', IntToStr(ArrayTab[I].ElemLen));
+            EmitInstrA('IMUL', 'BX');
+          End
+          Else
+            EmitInstrAB('SHL', 'AX', '1');  (* * 2 pour NUMERIC *)
+          EmitInstrAB('ADD', 'AX',
+                       IntToStr(ArrayTab[I].BaseOffset));
+          EmitInstrAB('MOV', 'BX', 'AX');
+          If ArrayTab[I].IsChar Then
+            EmitInstrAB('LEA', 'AX', '[_SAS_PDV + BX]')
+          Else
+            EmitInstrAB('MOV', 'AX', 'WORD PTR [_SAS_PDV + BX]');
+          Res.Kind    := EK_AX;
+          If ArrayTab[I].IsChar Then
+            Res.TypeIdx := TY_IDX_CHARACTER
+          Else
+            Res.TypeIdx := TY_IDX_NUMERIC;
+          Res.ImmVal  := 0;
+          Res.Offset  := ArrayTab[I].BaseOffset;
+          Res.SymIdx  := SIdx;
         End
         Else
         Begin
-          (* Numerique : element = 2 octets *)
-          EmitInstrAB('SHL', 'AX', '1');
+          (* Pas dans ArrayTab : fallback SymTab *)
+          SIdx := SymFind(FName);
+          If SIdx < 0 Then
+          Begin
+            WarnMsg('tableau "' + FName + '" non declare');
+            SIdx := VarAlloc(FName, TY_IDX_NUMERIC, 0);
+          End;
+          (* Parser l indice *)
+          ParseExprPrec(1, ArrIdx);
+          (* Consommer } *)
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val[1] = CH_RBRACE) Then
+            ParserAdvance
+          Else
+            CompileError('"}" manquant apres indice de tableau');
+          (* Generer le code d acces : base + (i-1) * taille element *)
+          ExprFlushToAX(ArrIdx);
+          EmitComment('acces tableau ' + FName + '{i}');
+          EmitInstrA('DEC', 'AX');  (* base 1 -> base 0 *)
+          If SymTab[SIdx].TypeIdx = TY_IDX_CHARACTER Then
+          Begin
+            EmitInstrAB('MOV', 'BX', IntToStr(SymTab[SIdx].VarLen));
+            EmitInstrA('IMUL', 'BX');
+          End
+          Else
+            EmitInstrAB('SHL', 'AX', '1');
+          EmitInstrAB('ADD', 'AX',
+                       IntToStr(SymTab[SIdx].Offset));
+          EmitInstrAB('MOV', 'BX', 'AX');
+          If SymTab[SIdx].TypeIdx = TY_IDX_CHARACTER Then
+            EmitInstrAB('LEA', 'AX', '[_SAS_PDV + BX]')
+          Else
+            EmitInstrAB('MOV', 'AX', 'WORD PTR [_SAS_PDV + BX]');
+          Res.Kind    := EK_AX;
+          Res.TypeIdx := SymTab[SIdx].TypeIdx;
+          Res.ImmVal  := 0;
+          Res.Offset  := SymTab[SIdx].Offset;
+          Res.SymIdx  := SIdx;
         End;
-        EmitInstrAB('ADD', 'AX',
-                     IntToStr(SymTab[SIdx].Offset));
-        EmitInstrAB('MOV', 'BX', 'AX');
-        If SymTab[SIdx].TypeIdx = TY_IDX_CHARACTER Then
-          EmitInstrAB('LEA', 'AX', '[_SAS_PDV + BX]')
-        Else
-          EmitInstrAB('MOV', 'AX', 'WORD PTR [_SAS_PDV + BX]');
-        Res.Kind    := EK_AX;
-        Res.TypeIdx := SymTab[SIdx].TypeIdx;
-        Res.ImmVal  := 0;
-        Res.Offset  := SymTab[SIdx].Offset;
-        Res.SymIdx  := SIdx;
       End
       Else
       Begin
@@ -3728,7 +3798,9 @@ Begin
     (Name = 'RIGHT')  Or (Name = 'UPCASE') Or (Name = 'LOWCASE') Or
     (Name = 'INDEX')  Or (Name = 'LENGTH') Or
     (Name = 'COMPRESS') Or (Name = 'CAT')  Or (Name = 'CATS')   Or
-    (Name = 'CATX')   Or (Name = 'PUT')    Or (Name = 'INPUT');
+    (Name = 'CATX')   Or (Name = 'PUT')    Or (Name = 'INPUT')  Or
+    (* Fonction tableau (TODO 15) *)
+    (Name = 'DIM');
 End;
 
 (* ---- ParseFuncCall : parser et emettre un appel de fonction ------ *)
@@ -3890,6 +3962,29 @@ Begin
     Res.ImmVal  := 0;
     Res.Offset  := 0;
     Res.SymIdx  := -1;
+  End
+
+  (* ========= DIM(array) : nombre d elements du tableau ====== *)
+  Else If FName = 'DIM' Then
+  Begin
+    (* DIM attend un nom de tableau comme argument *)
+    If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+    Begin
+      NArgs := ArrayFind(StrUpperCase(CurToken.Val));
+      ParserAdvance;
+      If NArgs >= 0 Then
+        ExprMakeImm(ArrayTab[NArgs].ElemCount, TY_IDX_NUMERIC, Res)
+      Else
+      Begin
+        WarnMsg('DIM() : tableau non declare');
+        ExprMakeImm(0, TY_IDX_NUMERIC, Res);
+      End;
+    End
+    Else
+    Begin
+      WarnMsg('DIM() : nom de tableau attendu');
+      ExprMakeImm(0, TY_IDX_NUMERIC, Res);
+    End;
   End
 
   (* ========= LENGTH(str) : longueur de chaine ============= *)
@@ -5319,14 +5414,375 @@ Begin
 End;
 
 { ============================================================
-  STUBS POUR TODO 15..25 (a implementer)
+  TODO 15 - TABLEAUX SAS (ARRAY) [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- ArrayFind : trouver un tableau par nom ------------------- *)
+Function ArrayFind(Const Name : TString) : Integer;
+Var I : Integer;
+Begin
+  For I := 0 To ArrayCount - 1 Do
+    If ArrayTab[I].Name = Name Then
+    Begin
+      ArrayFind := I;
+      Exit;
+    End;
+  ArrayFind := -1;
+End;
+
+(* ---- ParseArrayStmt : parser ARRAY nom {dim} [$ [len]] [elems] ; *)
+(* Appele apres que le mot-cle ARRAY ait ete consomme.               *)
+(* Formes supportees :                                                *)
+(*   ARRAY scores {5} ;                     -> 5 elements numeriques  *)
+(*   ARRAY noms {3} $ 20 ;                  -> 3 elements char len 20 *)
+(*   ARRAY tab {5} score1-score5 ;          -> 5 elements nommes      *)
+(*   ARRAY tab {5} x1 x2 x3 x4 x5 ;        -> elements explicites   *)
+(*   ARRAY tab {3,4} ;                      -> 3x4 = 12 elements     *)
+(*   ARRAY _tmp {5} _TEMPORARY_ ;           -> temporaire             *)
+Procedure ParseArrayStmt;
+Var
+  ArrName  : TString;
+  ArrIdx   : Integer;
+  Dim1     : Integer;
+  Dim2     : Integer;
+  TotalDim : Integer;
+  IsChar   : Boolean;
+  ElemLen  : Integer;
+  IsTemp   : Boolean;
+  I, J     : Integer;
+  VName    : TString;
+  SIdx     : Integer;
+  TypeIdx  : Integer;
+  BaseName : TString;
+  EndName  : TString;
+  BaseNum  : Integer;
+  EndNum   : Integer;
+  NumStr   : TString;
+  ParseOK  : Boolean;
+Begin
+  EmitComment('ARRAY declaration');
+
+  (* Le mot-cle ARRAY est deja consomme *)
+  (* Lire le nom du tableau *)
+  If (CurToken.Kind <> TK_IDENT) And (CurToken.Kind <> TK_KEYWORD) Then
+  Begin
+    CompileError('nom de tableau attendu apres ARRAY');
+    While (CurToken.Kind <> TK_SEMICOLON) And
+          (CurToken.Kind <> TK_EOF) Do
+      ParserAdvance;
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+    Exit;
+  End;
+
+  ArrName := StrUpperCase(CurToken.Val);
+  ParserAdvance;
+
+  (* Verifier si deja declare *)
+  If ArrayFind(ArrName) >= 0 Then
+  Begin
+    CompileError('tableau "' + ArrName + '" deja declare');
+    While (CurToken.Kind <> TK_SEMICOLON) And
+          (CurToken.Kind <> TK_EOF) Do
+      ParserAdvance;
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+    Exit;
+  End;
+
+  (* Lire les dimensions entre accolades : {dim} ou {dim1,dim2} *)
+  Dim1 := 0;
+  Dim2 := 0;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val[1] = CH_LBRACE) Then
+  Begin
+    ParserAdvance;  (* consommer { *)
+
+    (* Premiere dimension *)
+    If CurToken.Kind = TK_INTEGER Then
+    Begin
+      Dim1 := CurToken.IntVal;
+      ParserAdvance;
+    End
+    Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '*') Then
+    Begin
+      (* ARRAY nom {*} -> dimension implicite (comptee par les elements) *)
+      Dim1 := 0;  (* sera calcule apres *)
+      ParserAdvance;
+    End
+    Else
+    Begin
+      CompileError('dimension entiere attendue dans ARRAY');
+      Dim1 := 1;
+    End;
+
+    (* Deuxieme dimension optionnelle *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+    Begin
+      ParserAdvance;  (* consommer , *)
+      If CurToken.Kind = TK_INTEGER Then
+      Begin
+        Dim2 := CurToken.IntVal;
+        ParserAdvance;
+      End
+      Else
+      Begin
+        CompileError('deuxieme dimension entiere attendue');
+        Dim2 := 1;
+      End;
+    End;
+
+    (* Consommer } *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val[1] = CH_RBRACE) Then
+      ParserAdvance
+    Else
+      CompileError('"}" manquant apres les dimensions du tableau');
+  End
+  Else
+  Begin
+    CompileError('"{" attendu apres le nom du tableau');
+    While (CurToken.Kind <> TK_SEMICOLON) And
+          (CurToken.Kind <> TK_EOF) Do
+      ParserAdvance;
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+    Exit;
+  End;
+
+  (* Calculer le nombre total d elements *)
+  If Dim2 > 0 Then
+    TotalDim := Dim1 * Dim2
+  Else If Dim1 > 0 Then
+    TotalDim := Dim1
+  Else
+    TotalDim := 0;  (* sera calcule depuis les elements *)
+
+  (* Verifier $ (tableau de caracteres) *)
+  IsChar := False;
+  ElemLen := 2;  (* defaut : numerique 2 octets *)
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '$') Then
+  Begin
+    IsChar := True;
+    ElemLen := 8;  (* defaut chaine SAS *)
+    ParserAdvance;
+    (* Longueur optionnelle *)
+    If CurToken.Kind = TK_INTEGER Then
+    Begin
+      ElemLen := CurToken.IntVal;
+      ParserAdvance;
+    End;
+  End;
+
+  (* Verifier _TEMPORARY_ *)
+  IsTemp := False;
+  If (CurToken.Kind = TK_IDENT) And
+     (StrUpperCase(CurToken.Val) = '_TEMPORARY_') Then
+  Begin
+    IsTemp := True;
+    ParserAdvance;
+  End;
+
+  (* Determine le type des elements *)
+  If IsChar Then
+    TypeIdx := TY_IDX_CHARACTER
+  Else
+    TypeIdx := TY_IDX_NUMERIC;
+
+  (* Lire la liste d elements (avant ;) *)
+  (* Peut etre :                                                   *)
+  (*   - vide : generer des noms automatiques (ArrName1..ArrNameN) *)
+  (*   - liste explicite : x1 x2 x3                               *)
+  (*   - plage numerotee : score1-score5                           *)
+  J := 0;
+  ParseOK := True;
+
+  If ArrayCount >= MAX_ARRAY Then
+  Begin
+    CompileError('trop de tableaux (max=' + IntToStr(MAX_ARRAY) + ')');
+    While (CurToken.Kind <> TK_SEMICOLON) And
+          (CurToken.Kind <> TK_EOF) Do
+      ParserAdvance;
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+    Exit;
+  End;
+
+  ArrIdx := ArrayCount;
+
+  (* Parser les noms d elements *)
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) And
+        ParseOK And
+        (J < MAX_ARRAY_ELEM) Do
+  Begin
+    If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+    Begin
+      VName := StrUpperCase(CurToken.Val);
+
+      (* Skip _TEMPORARY_ qui a pu etre lu apres les elements *)
+      If VName = '_TEMPORARY_' Then
+      Begin
+        IsTemp := True;
+        ParserAdvance;
+      End
+      Else
+      Begin
+        ParserAdvance;
+
+        (* Verifier si c est une plage : name1-name5 *)
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '-') Then
+        Begin
+          ParserAdvance;  (* consommer - *)
+          If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+          Begin
+            EndName := StrUpperCase(CurToken.Val);
+            ParserAdvance;
+
+            (* Extraire le prefixe et les numeros *)
+            (* Ex: SCORE1-SCORE5 -> base=SCORE, 1..5 *)
+            BaseName := '';
+            NumStr := '';
+            I := Length(VName);
+            While (I > 0) And (VName[I] >= '0') And (VName[I] <= '9') Do
+              Dec(I);
+            BaseName := Copy(VName, 1, I);
+            NumStr := Copy(VName, I + 1, Length(VName) - I);
+            If NumStr <> '' Then
+              BaseNum := StrToIntDef(NumStr, 1)
+            Else
+              BaseNum := 1;
+
+            NumStr := '';
+            I := Length(EndName);
+            While (I > 0) And (EndName[I] >= '0') And (EndName[I] <= '9') Do
+              Dec(I);
+            NumStr := Copy(EndName, I + 1, Length(EndName) - I);
+            If NumStr <> '' Then
+              EndNum := StrToIntDef(NumStr, BaseNum)
+            Else
+              EndNum := BaseNum;
+
+            (* Creer les variables de la plage *)
+            For I := BaseNum To EndNum Do
+            Begin
+              If J >= MAX_ARRAY_ELEM Then
+              Begin
+                CompileError('trop d elements dans le tableau');
+                ParseOK := False;
+              End
+              Else
+              Begin
+                VName := BaseName + IntToStr(I);
+                SIdx := SymFind(VName);
+                If SIdx < 0 Then
+                  SIdx := VarAlloc(VName, TypeIdx, ElemLen);
+                ArrayTab[ArrIdx].ElemSymIdx[J] := SIdx;
+                Inc(J);
+              End;
+            End;
+          End
+          Else
+          Begin
+            CompileError('nom attendu apres - dans la plage de tableau');
+            ParseOK := False;
+          End;
+        End
+        Else
+        Begin
+          (* Element simple *)
+          SIdx := SymFind(VName);
+          If SIdx < 0 Then
+            SIdx := VarAlloc(VName, TypeIdx, ElemLen);
+          ArrayTab[ArrIdx].ElemSymIdx[J] := SIdx;
+          Inc(J);
+        End;
+      End;
+    End
+    Else
+    Begin
+      (* Token inattendu - arreter *)
+      ParseOK := False;
+    End;
+  End;
+
+  (* Si aucun element nomme, creer automatiquement *)
+  If J = 0 Then
+  Begin
+    If TotalDim <= 0 Then
+    Begin
+      CompileError('ARRAY sans dimension et sans elements');
+      TotalDim := 1;
+    End;
+    For I := 1 To TotalDim Do
+    Begin
+      If J >= MAX_ARRAY_ELEM Then
+      Begin
+        CompileError('trop d elements dans le tableau');
+        Break;
+      End;
+      VName := ArrName + IntToStr(I);
+      SIdx := SymFind(VName);
+      If SIdx < 0 Then
+        SIdx := VarAlloc(VName, TypeIdx, ElemLen);
+      ArrayTab[ArrIdx].ElemSymIdx[J] := SIdx;
+      Inc(J);
+    End;
+  End;
+
+  (* Ajuster TotalDim si dimension etait * *)
+  If TotalDim = 0 Then
+  Begin
+    TotalDim := J;
+    Dim1 := J;
+  End;
+
+  (* Verifier coherence *)
+  If (J > 0) And (J <> TotalDim) Then
+    WarnMsg('ARRAY ' + ArrName + ' : ' + IntToStr(J)
+            + ' elements pour dimension ' + IntToStr(TotalDim));
+
+  (* Creer l entree SC_ARRAY dans la table des symboles *)
+  SIdx := SymAdd(ArrName, SC_ARRAY, TypeIdx, 0);
+  If (SIdx >= 0) And (J > 0) Then
+  Begin
+    SymTab[SIdx].Offset := SymTab[ArrayTab[ArrIdx].ElemSymIdx[0]].Offset;
+    SymTab[SIdx].VarLen := ElemLen;
+  End;
+
+  (* Remplir le record ArrayTab *)
+  ArrayTab[ArrIdx].Name       := ArrName;
+  ArrayTab[ArrIdx].ElemCount  := TotalDim;
+  ArrayTab[ArrIdx].Dim1       := Dim1;
+  ArrayTab[ArrIdx].Dim2       := Dim2;
+  ArrayTab[ArrIdx].IsChar     := IsChar;
+  ArrayTab[ArrIdx].ElemLen    := ElemLen;
+  ArrayTab[ArrIdx].IsTemp     := IsTemp;
+  ArrayTab[ArrIdx].SymIdx     := SIdx;
+  If J > 0 Then
+    ArrayTab[ArrIdx].BaseOffset :=
+      SymTab[ArrayTab[ArrIdx].ElemSymIdx[0]].Offset
+  Else
+    ArrayTab[ArrIdx].BaseOffset := 0;
+  Inc(ArrayCount);
+
+  EmitComment('ARRAY ' + ArrName + ' dim=' + IntToStr(TotalDim)
+              + ' elemsize=' + IntToStr(ElemLen));
+
+  (* Consommer ; *)
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+{ ============================================================
+  STUBS POUR TODO 16..25 (a implementer)
   ============================================================ }
 
 Procedure ParseStmt;
 Var
-  KW   : TString;
-  SIdx : Integer;
-  VName: TString;
+  KW    : TString;
+  SIdx  : Integer;
+  VName : TString;
+  AIdx  : Integer;
+  E     : TExprVal;
 Begin
   (* Boucle principale : dispatch selon le type de token *)
 
@@ -5422,6 +5878,14 @@ Begin
     Begin
       ParserAdvance;
       ParseLabelStmt;
+      Exit;
+    End;
+
+    (* TODO 15 : ARRAY *)
+    If KW = 'ARRAY' Then
+    Begin
+      ParserAdvance;
+      ParseArrayStmt;
       Exit;
     End;
 
@@ -5534,6 +5998,75 @@ Begin
     Begin
       EmitLabel(SAS_LBL_PFX + VName);
       ParserAdvance;  (* consommer : *)
+      Exit;
+    End;
+
+    (* TODO 15 : Affectation tableau : ident{indice} = expr ; *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val[1] = CH_LBRACE) Then
+    Begin
+      ParserAdvance;  (* consommer { *)
+      AIdx := ArrayFind(VName);
+
+      (* Parser l indice *)
+      ParseExpr(E);
+      ExprFlushToAX(E);
+
+      (* Consommer } *)
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val[1] = CH_RBRACE) Then
+        ParserAdvance
+      Else
+        CompileError('"}" manquant apres indice de tableau');
+
+      (* Consommer = *)
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+        ParserAdvance
+      Else
+        CompileError('"=" attendu dans l affectation tableau');
+
+      (* Calculer l adresse cible et sauver sur la pile *)
+      EmitComment('affectation ' + VName + '{i} = ...');
+      EmitInstrA('DEC', 'AX');  (* base 1 -> base 0 *)
+      If AIdx >= 0 Then
+      Begin
+        If ArrayTab[AIdx].IsChar Then
+        Begin
+          EmitInstrAB('MOV', 'BX', IntToStr(ArrayTab[AIdx].ElemLen));
+          EmitInstrA('IMUL', 'BX');
+        End
+        Else
+          EmitInstrAB('SHL', 'AX', '1');
+        EmitInstrAB('ADD', 'AX', IntToStr(ArrayTab[AIdx].BaseOffset));
+      End
+      Else
+      Begin
+        SIdx := SymFind(VName);
+        If SIdx < 0 Then
+          SIdx := VarAlloc(VName, TY_IDX_NUMERIC, 0);
+        EmitInstrAB('SHL', 'AX', '1');
+        EmitInstrAB('ADD', 'AX', IntToStr(SymTab[SIdx].Offset));
+      End;
+      EmitInstrA('PUSH', 'AX');  (* sauver l offset calcule *)
+
+      (* Parser la valeur *)
+      ParseExpr(E);
+      ExprFlushToAX(E);
+
+      (* Stocker la valeur *)
+      EmitInstrA('POP', 'BX');   (* recuperer l offset *)
+      If (AIdx >= 0) And ArrayTab[AIdx].IsChar Then
+      Begin
+        (* Copie de chaine : AX = source, BX = offset dest *)
+        EmitInstrAB('MOV', 'DI', 'BX');
+        EmitInstrAB('ADD', 'DI', 'OFFSET _SAS_PDV');
+        EmitInstrAB('MOV', 'CX', IntToStr(ArrayTab[AIdx].ElemLen));
+        EmitInstrA('CALL', SAS_RT_PFX + 'STRCPY');
+      End
+      Else
+        EmitInstrAB('MOV', 'WORD PTR [_SAS_PDV + BX]', 'AX');
+
+      (* Consommer ; *)
+      If CurToken.Kind = TK_SEMICOLON Then
+        ParserAdvance;
       Exit;
     End;
 
