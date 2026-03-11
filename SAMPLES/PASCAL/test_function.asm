@@ -66,6 +66,11 @@ _TPF_SQUARE:
         SUB ESP,8
         MOV DWORD PTR [EBP-4],0
         MOV EAX,DWORD PTR [EBP+8]
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP+8]
+        MOV EBX,EAX
+        POP EAX
+        IMUL EAX,EBX
         MOV DWORD PTR [EBP-4],EAX
 _TPL_1:
         MOV EAX,DWORD PTR [EBP-4]
@@ -80,6 +85,11 @@ _TPF_ADD5:
         SUB ESP,4
         MOV DWORD PTR [EBP-4],0
         MOV EAX,DWORD PTR [EBP+8]
+        PUSH EAX
+        MOV EAX,5
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
         MOV DWORD PTR [EBP-4],EAX
 _TPL_2:
         MOV EAX,DWORD PTR [EBP-4]

@@ -93,6 +93,16 @@ _TPF_Main:
         CALL _TPF_WRITELN
         ADD ESP,4
         MOV EAX,DWORD PTR [_TPV_NUM1]
+        TEST EAX,EAX
+        JZ _TPL_2
+        MOV EAX,DWORD PTR [_TPV_NUM2]
+        TEST EAX,EAX
+        JZ _TPL_2
+        MOV EAX,1
+        JMP _TPL_3
+_TPL_2:
+        XOR EAX,EAX
+_TPL_3:
         MOV DWORD PTR [_TPV_RESULT],EAX
         LEA EAX,[_TPK_3]
         PUSH EAX
@@ -103,6 +113,16 @@ _TPF_Main:
         CALL _TPF_WRITELN
         ADD ESP,4
         MOV EAX,DWORD PTR [_TPV_NUM1]
+        TEST EAX,EAX
+        JNZ _TPL_4
+        MOV EAX,DWORD PTR [_TPV_NUM2]
+        TEST EAX,EAX
+        JNZ _TPL_4
+        XOR EAX,EAX
+        JMP _TPL_5
+_TPL_4:
+        MOV EAX,1
+_TPL_5:
         MOV DWORD PTR [_TPV_RESULT],EAX
         LEA EAX,[_TPK_4]
         PUSH EAX
@@ -113,6 +133,11 @@ _TPF_Main:
         CALL _TPF_WRITELN
         ADD ESP,4
         MOV EAX,DWORD PTR [_TPV_NUM1]
+        PUSH EAX
+        MOV EAX,DWORD PTR [_TPV_NUM2]
+        MOV EBX,EAX
+        POP EAX
+        XOR EAX,EBX
         MOV DWORD PTR [_TPV_RESULT],EAX
         LEA EAX,[_TPK_5]
         PUSH EAX
@@ -123,6 +148,16 @@ _TPF_Main:
         CALL _TPF_WRITELN
         ADD ESP,4
         MOV EAX,12
+        TEST EAX,EAX
+        JZ _TPL_6
+        MOV EAX,10
+        TEST EAX,EAX
+        JZ _TPL_6
+        MOV EAX,1
+        JMP _TPL_7
+_TPL_6:
+        XOR EAX,EAX
+_TPL_7:
         MOV DWORD PTR [_TPV_RESULT],EAX
         LEA EAX,[_TPK_6]
         PUSH EAX
@@ -133,6 +168,16 @@ _TPF_Main:
         CALL _TPF_WRITELN
         ADD ESP,4
         MOV EAX,12
+        TEST EAX,EAX
+        JNZ _TPL_8
+        MOV EAX,10
+        TEST EAX,EAX
+        JNZ _TPL_8
+        XOR EAX,EAX
+        JMP _TPL_9
+_TPL_8:
+        MOV EAX,1
+_TPL_9:
         MOV DWORD PTR [_TPV_RESULT],EAX
         LEA EAX,[_TPK_7]
         PUSH EAX
@@ -143,6 +188,11 @@ _TPF_Main:
         CALL _TPF_WRITELN
         ADD ESP,4
         MOV EAX,12
+        PUSH EAX
+        MOV EAX,10
+        MOV EBX,EAX
+        POP EAX
+        XOR EAX,EBX
         MOV DWORD PTR [_TPV_RESULT],EAX
         LEA EAX,[_TPK_8]
         PUSH EAX

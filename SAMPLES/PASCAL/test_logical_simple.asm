@@ -80,6 +80,16 @@ _TPF_Main:
         MOV EAX,7
         MOV DWORD PTR [_TPV_VAL2],EAX
         MOV EAX,DWORD PTR [_TPV_VAL1]
+        TEST EAX,EAX
+        JZ _TPL_2
+        MOV EAX,DWORD PTR [_TPV_VAL2]
+        TEST EAX,EAX
+        JZ _TPL_2
+        MOV EAX,1
+        JMP _TPL_3
+_TPL_2:
+        XOR EAX,EAX
+_TPL_3:
         MOV DWORD PTR [_TPV_RES],EAX
         LEA EAX,[_TPK_1]
         PUSH EAX
@@ -88,6 +98,16 @@ _TPF_Main:
         CALL _TPF_WRITELN
         ADD ESP,8
         MOV EAX,DWORD PTR [_TPV_VAL1]
+        TEST EAX,EAX
+        JNZ _TPL_4
+        MOV EAX,DWORD PTR [_TPV_VAL2]
+        TEST EAX,EAX
+        JNZ _TPL_4
+        XOR EAX,EAX
+        JMP _TPL_5
+_TPL_4:
+        MOV EAX,1
+_TPL_5:
         MOV DWORD PTR [_TPV_RES],EAX
         LEA EAX,[_TPK_2]
         PUSH EAX
@@ -96,6 +116,11 @@ _TPF_Main:
         CALL _TPF_WRITELN
         ADD ESP,8
         MOV EAX,DWORD PTR [_TPV_VAL1]
+        PUSH EAX
+        MOV EAX,DWORD PTR [_TPV_VAL2]
+        MOV EBX,EAX
+        POP EAX
+        XOR EAX,EBX
         MOV DWORD PTR [_TPV_RES],EAX
         LEA EAX,[_TPK_3]
         PUSH EAX

@@ -62,6 +62,11 @@ _TPF_DOUBLE:
         SUB ESP,4
         MOV DWORD PTR [EBP-4],0
         MOV EAX,DWORD PTR [EBP+8]
+        PUSH EAX
+        MOV EAX,2
+        MOV EBX,EAX
+        POP EAX
+        IMUL EAX,EBX
         MOV DWORD PTR [EBP-4],EAX
 _TPL_1:
         MOV EAX,DWORD PTR [EBP-4]

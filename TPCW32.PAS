@@ -233,7 +233,7 @@
             Abs(x), Sqr(x), Round(x), Trunc(x)
             Inc(x[,n]), Dec(x[,n]) : increment/decrement
 
-  TODO 11 - EXPRESSIONS BINAIRES ET PRECEDENCE
+  TODO 11 - EXPRESSIONS BINAIRES ET PRECEDENCE     [IMPLEMENTE]
             Precedence (du plus fort au plus faible) :
               1. NOT, @, unaire +/-
               2. * / DIV MOD AND SHL SHR
@@ -5858,6 +5858,7 @@ End;
 { ------------------------------------------------------------ }
 
 Procedure ParseExpr(PI : Integer); Forward;
+Procedure ParseExprPrec(PI : Integer; MinPrec : Integer); Forward;
 Procedure ParseBody(PI : Integer); Forward;
 
 { ------------------------------------------------------------ }
@@ -6445,16 +6446,258 @@ Begin
   ParsePostfix(PI);
 End;
 
+{ ============================================================ }
+{ TODO 11 - EXPRESSIONS BINAIRES ET PRECEDENCE [IMPLEMENTE]     }
+{ ============================================================ }
+
+{ ------------------------------------------------------------ }
+{ BinOpPrec : retourner le niveau de precedence d un operateur  }
+{ binaire Pascal. 0 = pas un operateur binaire.                 }
+{ Niveaux de precedence Pascal (plus haut = lie plus fort) :    }
+{   3 : * / DIV MOD AND SHL SHR  (multiplicatif)               }
+{   2 : + - OR XOR               (additif)                     }
+{   1 : = <> < > <= >= IN        (relationnel)                  }
+{ ------------------------------------------------------------ }
+
+Function BinOpPrec(Const Op : TString) : Integer;
+Var
+  U : TString;
+Begin
+  U := Op;
+  If (U = '*') Or (U = '/') Or (U = 'DIV') Or (U = 'MOD') Or
+     (U = 'AND') Or (U = 'SHL') Or (U = 'SHR') Then
+    BinOpPrec := 3
+  Else If (U = '+') Or (U = '-') Or (U = 'OR') Or (U = 'XOR') Then
+    BinOpPrec := 2
+  Else If (U = '=') Or (U = '<>') Or (U = '<') Or (U = '>') Or
+          (U = '<=') Or (U = '>=') Or (U = 'IN') Then
+    BinOpPrec := 1
+  Else
+    BinOpPrec := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitBinOp : emettre le code ASM pour EAX op EBX              }
+{ Le resultat doit rester dans EAX.                             }
+{ ------------------------------------------------------------ }
+
+Procedure EmitBinOp(Const Op : TString);
+Var
+  LblTrue, LblEnd : TString;
+Begin
+  { Arithmetique }
+  If Op = '+' Then
+    EmitInstr('ADD EAX,EBX')
+  Else If Op = '-' Then
+    EmitInstr('SUB EAX,EBX')
+  Else If Op = '*' Then
+    EmitInstr('IMUL EAX,EBX')
+  Else If (Op = '/') Or (Op = 'DIV') Then
+  Begin
+    EmitInstr('CDQ');
+    EmitInstr('IDIV EBX');
+  End
+  Else If Op = 'MOD' Then
+  Begin
+    EmitInstr('CDQ');
+    EmitInstr('IDIV EBX');
+    EmitInstr('MOV EAX,EDX');
+  End
+  { Decalages }
+  Else If Op = 'SHL' Then
+  Begin
+    EmitInstr('MOV ECX,EBX');
+    EmitInstr('SHL EAX,CL');
+  End
+  Else If Op = 'SHR' Then
+  Begin
+    EmitInstr('MOV ECX,EBX');
+    EmitInstr('SHR EAX,CL');
+  End
+  { Bit a bit / Logique }
+  Else If Op = 'AND' Then
+    EmitInstr('AND EAX,EBX')
+  Else If Op = 'OR' Then
+    EmitInstr('OR EAX,EBX')
+  Else If Op = 'XOR' Then
+    EmitInstr('XOR EAX,EBX')
+  { Comparaisons }
+  Else If Op = '=' Then
+  Begin
+    LblTrue := LabelGen;
+    LblEnd  := LabelGen;
+    EmitInstr('CMP EAX,EBX');
+    EmitInstr('JE ' + LblTrue);
+    EmitInstr('XOR EAX,EAX');
+    EmitInstr('JMP ' + LblEnd);
+    EmitLabel(LblTrue);
+    EmitInstr('MOV EAX,1');
+    EmitLabel(LblEnd);
+  End
+  Else If Op = '<>' Then
+  Begin
+    LblTrue := LabelGen;
+    LblEnd  := LabelGen;
+    EmitInstr('CMP EAX,EBX');
+    EmitInstr('JNE ' + LblTrue);
+    EmitInstr('XOR EAX,EAX');
+    EmitInstr('JMP ' + LblEnd);
+    EmitLabel(LblTrue);
+    EmitInstr('MOV EAX,1');
+    EmitLabel(LblEnd);
+  End
+  Else If Op = '<' Then
+  Begin
+    LblTrue := LabelGen;
+    LblEnd  := LabelGen;
+    EmitInstr('CMP EAX,EBX');
+    EmitInstr('JL ' + LblTrue);
+    EmitInstr('XOR EAX,EAX');
+    EmitInstr('JMP ' + LblEnd);
+    EmitLabel(LblTrue);
+    EmitInstr('MOV EAX,1');
+    EmitLabel(LblEnd);
+  End
+  Else If Op = '<=' Then
+  Begin
+    LblTrue := LabelGen;
+    LblEnd  := LabelGen;
+    EmitInstr('CMP EAX,EBX');
+    EmitInstr('JLE ' + LblTrue);
+    EmitInstr('XOR EAX,EAX');
+    EmitInstr('JMP ' + LblEnd);
+    EmitLabel(LblTrue);
+    EmitInstr('MOV EAX,1');
+    EmitLabel(LblEnd);
+  End
+  Else If Op = '>' Then
+  Begin
+    LblTrue := LabelGen;
+    LblEnd  := LabelGen;
+    EmitInstr('CMP EAX,EBX');
+    EmitInstr('JG ' + LblTrue);
+    EmitInstr('XOR EAX,EAX');
+    EmitInstr('JMP ' + LblEnd);
+    EmitLabel(LblTrue);
+    EmitInstr('MOV EAX,1');
+    EmitLabel(LblEnd);
+  End
+  Else If Op = '>=' Then
+  Begin
+    LblTrue := LabelGen;
+    LblEnd  := LabelGen;
+    EmitInstr('CMP EAX,EBX');
+    EmitInstr('JGE ' + LblTrue);
+    EmitInstr('XOR EAX,EAX');
+    EmitInstr('JMP ' + LblEnd);
+    EmitLabel(LblTrue);
+    EmitInstr('MOV EAX,1');
+    EmitLabel(LblEnd);
+  End
+  { IN (ensemble) : BT [set], val }
+  Else If Op = 'IN' Then
+  Begin
+    LblTrue := LabelGen;
+    LblEnd  := LabelGen;
+    EmitInstr('BT EBX,EAX');
+    EmitInstr('JC ' + LblTrue);
+    EmitInstr('XOR EAX,EAX');
+    EmitInstr('JMP ' + LblEnd);
+    EmitLabel(LblTrue);
+    EmitInstr('MOV EAX,1');
+    EmitLabel(LblEnd);
+  End
+  Else
+    EmitComment('; operateur binaire inconnu: ' + Op);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseExprPrec : parseur de Pratt pour expressions Pascal      }
+{ MinPrec = niveau de precedence minimal a capturer.            }
+{ Le resultat est toujours dans EAX.                            }
+{ Gere le court-circuit pour AND et OR booleens.                }
+{ ------------------------------------------------------------ }
+
+Procedure ParseExprPrec(PI : Integer; MinPrec : Integer);
+Var
+  Op       : TString;
+  Prec     : Integer;
+  LblF     : TString;
+  LblE     : TString;
+Begin
+  ParseUnary(PI);
+
+  While Not EPAtEnd Do
+  Begin
+    { Lire l operateur courant }
+    Op := '';
+    If TokenPool[EP].Kind = TK_OP Then
+      Op := StrUpperCase(TokenPool[EP].Val)
+    Else If TokenPool[EP].Kind = TK_KEYWORD Then
+      Op := StrUpperCase(TokenPool[EP].Val);
+
+    Prec := BinOpPrec(Op);
+    If (Prec = 0) Or (Prec < MinPrec) Then Break;
+
+    Inc(EP); { consommer l operateur }
+
+    { --- Court-circuit AND (ET logique) --- }
+    If Op = 'AND' Then
+    Begin
+      LblF := LabelGen;
+      LblE := LabelGen;
+      EmitInstr('TEST EAX,EAX');
+      EmitInstr('JZ ' + LblF);
+      ParseExprPrec(PI, Prec + 1);
+      EmitInstr('TEST EAX,EAX');
+      EmitInstr('JZ ' + LblF);
+      EmitInstr('MOV EAX,1');
+      EmitInstr('JMP ' + LblE);
+      EmitLabel(LblF);
+      EmitInstr('XOR EAX,EAX');
+      EmitLabel(LblE);
+      Continue;
+    End;
+
+    { --- Court-circuit OR (OU logique) --- }
+    If Op = 'OR' Then
+    Begin
+      LblF := LabelGen;
+      LblE := LabelGen;
+      EmitInstr('TEST EAX,EAX');
+      EmitInstr('JNZ ' + LblF);
+      ParseExprPrec(PI, Prec + 1);
+      EmitInstr('TEST EAX,EAX');
+      EmitInstr('JNZ ' + LblF);
+      EmitInstr('XOR EAX,EAX');
+      EmitInstr('JMP ' + LblE);
+      EmitLabel(LblF);
+      EmitInstr('MOV EAX,1');
+      EmitLabel(LblE);
+      Continue;
+    End;
+
+    { --- Operateurs binaires normaux --- }
+    { Sauver la valeur gauche (EAX) sur la pile }
+    EmitInstr('PUSH EAX');
+
+    ParseExprPrec(PI, Prec + 1);
+
+    { EAX = droite, pile = gauche }
+    EmitInstr('MOV EBX,EAX');
+    EmitInstr('POP EAX');
+    EmitBinOp(Op);
+  End;
+End;
+
 { ------------------------------------------------------------ }
 { ParseExpr : parser une expression complete                    }
-{ Pour l instant (TODO 10), appelle juste ParseUnary.           }
-{ TODO 11 ajoutera les operateurs binaires avec precedence.     }
+{ Appelle ParseExprPrec avec la precedence minimale (1).        }
 { ------------------------------------------------------------ }
 
 Procedure ParseExpr(PI : Integer);
 Begin
-  ParseUnary(PI);
-  { TODO 11 : operateurs binaires ici }
+  ParseExprPrec(PI, 1);
 End;
 
 { ------------------------------------------------------------ }

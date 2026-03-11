@@ -61,6 +61,11 @@ _TPF_INCREMENTCOUNTER:
         PUSH EBP
         MOV EBP,ESP
         MOV EAX,DWORD PTR [_TPV_COUNTER]
+        PUSH EAX
+        MOV EAX,1
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
         MOV DWORD PTR [_TPV_COUNTER],EAX
 _TPL_1:
         MOV ESP,EBP

@@ -101,7 +101,7 @@ _TPF_CONVERT_TO_JASMIN:
         CALL _TPF_POS
         ADD ESP,8
         LEA EAX,[_TPK_4]
-        MOV DWORD PTR [EBP-260],EAX
+        PUSH EAX
         MOV EAX,DWORD PTR [EBP-260]
         PUSH EAX
         MOV EAX,7
@@ -113,6 +113,10 @@ _TPF_CONVERT_TO_JASMIN:
         PUSH EAX
         CALL _TPF_COPY
         ADD ESP,12
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
+        MOV DWORD PTR [EBP-260],EAX
         LEA EAX,[_TPK_5]
         PUSH EAX
         CALL _TPF_WRITELN

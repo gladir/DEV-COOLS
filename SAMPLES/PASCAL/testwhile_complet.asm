@@ -93,6 +93,11 @@ _TPF_Main:
         CALL _TPF_WRITELN
         ADD ESP,8
         MOV EAX,DWORD PTR [_TPV_I]
+        PUSH EAX
+        MOV EAX,1
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
         MOV DWORD PTR [_TPV_I],EAX
 _TPL_1:
         PUSH 0

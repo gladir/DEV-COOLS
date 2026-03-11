@@ -66,13 +66,27 @@ _TPF_CALCULATEFIBONACCI:
         MOV DWORD PTR [EBP-4],EAX
         MOV EAX,DWORD PTR [EBP+8]
         PUSH EAX
-        CALL _TPF_CALCULATEFIBONACCI
-        ADD ESP,4
-        MOV DWORD PTR [EBP-4],EAX
-        MOV EAX,DWORD PTR [EBP+8]
+        MOV EAX,1
+        MOV EBX,EAX
+        POP EAX
+        SUB EAX,EBX
         PUSH EAX
         CALL _TPF_CALCULATEFIBONACCI
         ADD ESP,4
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP+8]
+        PUSH EAX
+        MOV EAX,2
+        MOV EBX,EAX
+        POP EAX
+        SUB EAX,EBX
+        PUSH EAX
+        CALL _TPF_CALCULATEFIBONACCI
+        ADD ESP,4
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
+        MOV DWORD PTR [EBP-4],EAX
 _TPL_1:
         MOV EAX,DWORD PTR [EBP-4]
         MOV ESP,EBP

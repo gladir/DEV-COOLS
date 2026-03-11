@@ -87,6 +87,11 @@ _TPF_Main:
         MOV EAX,20
         MOV DWORD PTR [_TPV_Y],EAX
         MOV EAX,DWORD PTR [_TPV_X]
+        PUSH EAX
+        MOV EAX,DWORD PTR [_TPV_Y]
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
         MOV DWORD PTR [_TPV_Z],EAX
         LEA EAX,[_TPK_1]
         MOV BYTE PTR [_TPV_A],AL
