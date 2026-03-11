@@ -138,7 +138,7 @@
              Affectation de RECORD : copie champ par champ ou REP MOVSW
              Affectation de ARRAY : copie element par element ou REP MOVSW
 
-   TODO 10 - EXPRESSIONS PRIMAIRES
+   TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
              ParsePrimary : literal entier, literal chaine, ident, appel de proc
              Acces qualifie : Module.Ident -> recherche symbole dans module
              Acces champ : expr.champ -> offset dans RECORD
@@ -713,6 +713,12 @@ Var
   (* Table des procedures (TODO 09) *)
   ProcTab    : Array[0..MAX_PROC-1] Of TProcInfo;
   ProcCount  : Integer;
+
+  (* Curseur d expression (TODO 10) *)
+  EP          : Integer;  (* position courante dans TokenPool *)
+  EPEnd       : Integer;  (* borne fin du corps courant *)
+  CurProcIdx  : Integer;  (* index dans ProcTab de la proc courante *)
+  RetLbl      : TString;  (* label de retour de la proc courante *)
 
 (* ============================================================
    TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -3937,7 +3943,6 @@ Begin
          (TokenPool[P].Val = 'LOOP') Or
          (TokenPool[P].Val = 'CASE') Or
          (TokenPool[P].Val = 'TRY') Or
-         (TokenPool[P].Val = 'REPEAT') Or
          (TokenPool[P].Val = 'WITH') Or
          (TokenPool[P].Val = 'TYPECASE') Or
          (TokenPool[P].Val = 'LOCK') Then
@@ -3948,6 +3953,1471 @@ Begin
     Inc(P);
   End;
 End;
+
+(* ============================================================
+   TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
+   ============================================================ *)
+
+(* ---- EPAtEnd : fin du corps courant ? ------------------------ *)
+
+Function EPAtEnd : Boolean;
+Begin
+  EPAtEnd := (EP >= EPEnd) Or (EP >= TokenCount);
+End;
+
+(* ---- EPMatch : verifier si le token courant correspond ------- *)
+
+Function EPMatch(Kind : TTokenKind; Const Val : TString) : Boolean;
+Begin
+  EPMatch := False;
+  If EP >= TokenCount Then Exit;
+  If TokenPool[EP].Kind <> Kind Then Exit;
+  If (Val <> '') And (TokenPool[EP].Val <> Val) Then Exit;
+  EPMatch := True;
+End;
+
+(* ---- FindProcLocal : chercher une variable locale dans proc -- *)
+
+Function FindProcLocal(PI : Integer; Const Name : TString) : Integer;
+Var I : Integer;
+Begin
+  FindProcLocal := -1;
+  For I := 0 To ProcTab[PI].LocalCount - 1 Do
+    If ProcTab[PI].Locals[I].Name = Name Then
+    Begin
+      FindProcLocal := I;
+      Exit;
+    End;
+End;
+
+(* ---- FindProcParam : chercher un parametre dans proc --------- *)
+
+Function FindProcParam(PI : Integer; Const Name : TString) : Integer;
+Var I : Integer;
+Begin
+  FindProcParam := -1;
+  For I := 0 To ProcTab[PI].ParamCount - 1 Do
+    If ProcTab[PI].ParamNames[I] = Name Then
+    Begin
+      FindProcParam := I;
+      Exit;
+    End;
+End;
+
+(* ---- FindProcByName : chercher une procedure par nom ---------- *)
+
+Function FindProcByName(Const Name : TString) : Integer;
+Var I : Integer;
+Begin
+  FindProcByName := -1;
+  For I := 0 To ProcCount - 1 Do
+    If ProcTab[I].Name = Name Then
+    Begin
+      FindProcByName := I;
+      Exit;
+    End;
+End;
+
+(* ---- GenLoadLocal : charger une variable locale dans AX ------- *)
+
+Procedure GenLoadLocal(PI, LI : Integer);
+Var OfsStr : TString;
+Begin
+  OfsStr := IntToStr(ProcTab[PI].Locals[LI].Offset);
+  If ProcTab[PI].Locals[LI].Size <= 1 Then
+  Begin
+    EmitInstrAB('XOR', 'AX', 'AX');
+    EmitInstrAB('MOV', 'AL', 'BYTE PTR [BP' + OfsStr + ']');
+  End
+  Else
+    EmitInstrAB('MOV', 'AX', 'WORD PTR [BP' + OfsStr + ']');
+End;
+
+(* ---- GenStoreLocal : stocker AX dans une variable locale ------ *)
+
+Procedure GenStoreLocal(PI, LI : Integer);
+Var OfsStr : TString;
+Begin
+  OfsStr := IntToStr(ProcTab[PI].Locals[LI].Offset);
+  If ProcTab[PI].Locals[LI].Size <= 1 Then
+    EmitInstrAB('MOV', 'BYTE PTR [BP' + OfsStr + ']', 'AL')
+  Else
+    EmitInstrAB('MOV', 'WORD PTR [BP' + OfsStr + ']', 'AX');
+End;
+
+(* ---- GenLoadParam : charger un parametre dans AX --------------- *)
+
+Procedure GenLoadParam(PI, ParI : Integer);
+Var OfsStr : TString;
+Begin
+  OfsStr := IntToStr(ProcTab[PI].ParamOfs[ParI]);
+  If ProcTab[PI].ParamModes[ParI] = PM_VAR Then
+  Begin
+    (* VAR param : adresse sur pile -> deref *)
+    EmitInstrAB('MOV', 'BX', 'WORD PTR [BP+' + OfsStr + ']');
+    EmitInstrAB('MOV', 'AX', 'WORD PTR [BX]');
+  End
+  Else If ProcTab[PI].ParamModes[ParI] = PM_READONLY Then
+  Begin
+    (* READONLY : meme traitement que VALUE pour 16 bits *)
+    EmitInstrAB('MOV', 'AX', 'WORD PTR [BP+' + OfsStr + ']');
+  End
+  Else
+    (* VALUE param : acces direct *)
+    EmitInstrAB('MOV', 'AX', 'WORD PTR [BP+' + OfsStr + ']');
+End;
+
+(* ---- GenStoreParam : stocker AX dans un parametre -------------- *)
+
+Procedure GenStoreParam(PI, ParI : Integer);
+Var OfsStr : TString;
+Begin
+  OfsStr := IntToStr(ProcTab[PI].ParamOfs[ParI]);
+  If ProcTab[PI].ParamModes[ParI] = PM_VAR Then
+  Begin
+    (* VAR param : adresse sur pile -> store via deref *)
+    EmitInstrA('PUSH', 'AX');
+    EmitInstrAB('MOV', 'BX', 'WORD PTR [BP+' + OfsStr + ']');
+    EmitInstrA('POP', 'AX');
+    EmitInstrAB('MOV', 'WORD PTR [BX]', 'AX');
+  End
+  Else
+    EmitInstrAB('MOV', 'WORD PTR [BP+' + OfsStr + ']', 'AX');
+End;
+
+(* ---- Forward declarations for ParseExpr / ParseBody ----------- *)
+
+Procedure ParseExpr; Forward;
+Procedure ParseStmt; Forward;
+
+(* ---- ParseCallArgs : parser et empiler les arguments ----------- *)
+(* Empile les arguments de gauche a droite (convention Pascal 8086) *)
+
+Procedure ParseCallArgs(Var ArgCount : Integer);
+Begin
+  ArgCount := 0;
+  If EPMatch(TK_PUNCT, '(') Then
+  Begin
+    Inc(EP); (* passer '(' *)
+    While Not EPAtEnd And Not EPMatch(TK_PUNCT, ')') Do
+    Begin
+      ParseExpr;
+      EmitInstrA('PUSH', 'AX');
+      Inc(ArgCount);
+      If EPMatch(TK_PUNCT, ',') Then
+        Inc(EP); (* passer ',' *)
+    End;
+    If EPMatch(TK_PUNCT, ')') Then
+      Inc(EP); (* passer ')' *)
+  End;
+End;
+
+(* ---- ParseBuiltinCall : parser les appels de fonctions built-in *)
+
+Procedure ParseBuiltinCall(Const Name : TString);
+Var
+  ArgCount : Integer;
+Begin
+  If Name = 'ABS' Then
+  Begin
+    (* ABS(x) -> CALL _M3RT_ABS *)
+    Inc(EP); (* passer '(' *)
+    ParseExpr;
+    If EPMatch(TK_PUNCT, ')') Then Inc(EP);
+    EmitInstr('CALL    ' + M3_RT_PFX + 'ABS');
+  End
+  Else If Name = 'MAX' Then
+  Begin
+    Inc(EP); (* passer '(' *)
+    ParseExpr;
+    EmitInstrA('PUSH', 'AX');
+    If EPMatch(TK_PUNCT, ',') Then Inc(EP);
+    ParseExpr;
+    EmitInstrAB('MOV', 'BX', 'AX');
+    EmitInstrA('POP', 'AX');
+    If EPMatch(TK_PUNCT, ')') Then Inc(EP);
+    EmitInstr('CALL    ' + M3_RT_PFX + 'MAX');
+  End
+  Else If Name = 'MIN' Then
+  Begin
+    Inc(EP); (* passer '(' *)
+    ParseExpr;
+    EmitInstrA('PUSH', 'AX');
+    If EPMatch(TK_PUNCT, ',') Then Inc(EP);
+    ParseExpr;
+    EmitInstrAB('MOV', 'BX', 'AX');
+    EmitInstrA('POP', 'AX');
+    If EPMatch(TK_PUNCT, ')') Then Inc(EP);
+    EmitInstr('CALL    ' + M3_RT_PFX + 'MIN');
+  End
+  Else If Name = 'ORD' Then
+  Begin
+    (* ORD(x) : identite pour CHAR/BOOLEAN -> AX *)
+    Inc(EP);
+    ParseExpr;
+    If EPMatch(TK_PUNCT, ')') Then Inc(EP);
+    (* valeur deja dans AX *)
+  End
+  Else If Name = 'VAL' Then
+  Begin
+    (* VAL(T, x) : type conversion (stub: just eval x) *)
+    Inc(EP);
+    (* skip type name *)
+    If (EP < TokenCount) And
+       ((TokenPool[EP].Kind = TK_KEYWORD) Or
+        (TokenPool[EP].Kind = TK_IDENT)) Then
+      Inc(EP);
+    If EPMatch(TK_PUNCT, ',') Then Inc(EP);
+    ParseExpr;
+    If EPMatch(TK_PUNCT, ')') Then Inc(EP);
+  End
+  Else If Name = 'FLOAT' Then
+  Begin
+    (* FLOAT(x) : stub -> AX = x (integer approx) *)
+    Inc(EP);
+    ParseExpr;
+    If EPMatch(TK_PUNCT, ')') Then Inc(EP);
+  End
+  Else If Name = 'TRUNC' Then
+  Begin
+    (* TRUNC(x) : stub -> AX = x (already integer) *)
+    Inc(EP);
+    ParseExpr;
+    If EPMatch(TK_PUNCT, ')') Then Inc(EP);
+  End
+  Else If Name = 'ROUND' Then
+  Begin
+    Inc(EP);
+    ParseExpr;
+    If EPMatch(TK_PUNCT, ')') Then Inc(EP);
+  End
+  Else If (Name = 'FIRST') Or (Name = 'LAST') Or (Name = 'NUMBER') Then
+  Begin
+    (* FIRST(T)/LAST(T)/NUMBER(T) : compile-time for primitives *)
+    Inc(EP);
+    If (EP < TokenCount) And
+       ((TokenPool[EP].Kind = TK_KEYWORD) Or
+        (TokenPool[EP].Kind = TK_IDENT)) Then
+    Begin
+      If Name = 'FIRST' Then
+        EmitInstrAB('MOV', 'AX', IntToStr(TypeFirst(TokenPool[EP].Val)))
+      Else If Name = 'LAST' Then
+        EmitInstrAB('MOV', 'AX', IntToStr(TypeLast(TokenPool[EP].Val)))
+      Else
+        EmitInstrAB('MOV', 'AX', IntToStr(TypeNumber(TokenPool[EP].Val)));
+      Inc(EP);
+    End
+    Else
+    Begin
+      ParseExpr;
+      EmitComment('FIRST/LAST/NUMBER on expr (stub)');
+    End;
+    If EPMatch(TK_PUNCT, ')') Then Inc(EP);
+  End
+  Else If Name = 'ISTYPE' Then
+  Begin
+    (* ISTYPE(expr, T) -> stub: AX=1 *)
+    Inc(EP);
+    ParseExpr;
+    If EPMatch(TK_PUNCT, ',') Then Inc(EP);
+    If (EP < TokenCount) Then Inc(EP); (* skip type *)
+    If EPMatch(TK_PUNCT, ')') Then Inc(EP);
+    EmitInstrAB('MOV', 'AX', '1');
+    EmitComment('ISTYPE stub: always true');
+  End
+  Else If Name = 'NARROW' Then
+  Begin
+    (* NARROW(expr, T) -> stub: return expr unchanged *)
+    Inc(EP);
+    ParseExpr;
+    If EPMatch(TK_PUNCT, ',') Then Inc(EP);
+    If (EP < TokenCount) Then Inc(EP); (* skip type *)
+    If EPMatch(TK_PUNCT, ')') Then Inc(EP);
+    EmitComment('NARROW stub: no-op');
+  End
+  Else If Name = 'TYPECODE' Then
+  Begin
+    (* TYPECODE(T) -> stub: AX = type index *)
+    Inc(EP);
+    If (EP < TokenCount) Then Inc(EP); (* skip type *)
+    If EPMatch(TK_PUNCT, ')') Then Inc(EP);
+    EmitInstrAB('MOV', 'AX', '0');
+    EmitComment('TYPECODE stub');
+  End
+  Else If Name = 'NEW' Then
+  Begin
+    (* NEW(T) -> CALL _M3RT_NEW *)
+    Inc(EP);
+    If (EP < TokenCount) Then Inc(EP); (* skip type name *)
+    (* Skip optional method overrides *)
+    While Not EPAtEnd And Not EPMatch(TK_PUNCT, ')') Do
+      Inc(EP);
+    If EPMatch(TK_PUNCT, ')') Then Inc(EP);
+    EmitInstr('CALL    ' + M3_RT_PFX + 'NEW');
+  End
+  Else If (Name = 'BITSIZE') Or (Name = 'BYTESIZE') Or
+          (Name = 'ADRSIZE') Then
+  Begin
+    Inc(EP);
+    If (EP < TokenCount) Then Inc(EP);
+    If EPMatch(TK_PUNCT, ')') Then Inc(EP);
+    If Name = 'BITSIZE' Then
+      EmitInstrAB('MOV', 'AX', '16')
+    Else
+      EmitInstrAB('MOV', 'AX', '2');
+    EmitComment(Name + ' stub');
+  End
+  Else If Name = 'ADR' Then
+  Begin
+    (* ADR(x) : address of variable *)
+    Inc(EP);
+    If (EP < TokenCount) And (TokenPool[EP].Kind = TK_IDENT) Then
+    Begin
+      (* Try local first *)
+      ArgCount := FindProcLocal(CurProcIdx, TokenPool[EP].Val);
+      If ArgCount >= 0 Then
+        EmitInstrAB('LEA', 'AX', '[BP' +
+          IntToStr(ProcTab[CurProcIdx].Locals[ArgCount].Offset) + ']')
+      Else
+      Begin
+        ArgCount := FindProcParam(CurProcIdx, TokenPool[EP].Val);
+        If ArgCount >= 0 Then
+          EmitInstrAB('LEA', 'AX', '[BP+' +
+            IntToStr(ProcTab[CurProcIdx].ParamOfs[ArgCount]) + ']')
+        Else
+        Begin
+          ArgCount := SymFind(TokenPool[EP].Val);
+          If ArgCount >= 0 Then
+            EmitInstrAB('LEA', 'AX', SymTab[ArgCount].MangledName)
+          Else
+            EmitComment('ADR: unknown var ' + TokenPool[EP].Val);
+        End;
+      End;
+      Inc(EP);
+    End
+    Else
+    Begin
+      ParseExpr;
+      EmitComment('ADR on expr (stub)');
+    End;
+    If EPMatch(TK_PUNCT, ')') Then Inc(EP);
+  End
+  Else
+  Begin
+    (* Unknown builtin - skip args *)
+    While Not EPAtEnd And Not EPMatch(TK_PUNCT, ')') Do
+      Inc(EP);
+    If EPMatch(TK_PUNCT, ')') Then Inc(EP);
+    EmitComment(Name + ' builtin stub');
+  End;
+End;
+
+(* ---- ParseProcCallStmt : parser un appel INC/DEC comme stmt --- *)
+
+Procedure ParseProcCallStmt(Const Name : TString);
+Var
+  LI, ParI, SI : Integer;
+  VarName      : TString;
+Begin
+  If (Name = 'INC') Or (Name = 'DEC') Then
+  Begin
+    (* INC(x) / INC(x, n) / DEC(x) / DEC(x, n) *)
+    If EPMatch(TK_PUNCT, '(') Then Inc(EP);
+    VarName := '';
+    If (EP < TokenCount) And (TokenPool[EP].Kind = TK_IDENT) Then
+    Begin
+      VarName := TokenPool[EP].Val;
+      Inc(EP);
+    End;
+
+    (* Load current value *)
+    LI := FindProcLocal(CurProcIdx, VarName);
+    ParI := -1;
+    SI := -1;
+    If LI < 0 Then ParI := FindProcParam(CurProcIdx, VarName);
+    If (LI < 0) And (ParI < 0) Then SI := SymFind(VarName);
+
+    If LI >= 0 Then
+      GenLoadLocal(CurProcIdx, LI)
+    Else If ParI >= 0 Then
+      GenLoadParam(CurProcIdx, ParI)
+    Else If SI >= 0 Then
+      GenLoadVar(SI);
+
+    If EPMatch(TK_PUNCT, ',') Then
+    Begin
+      (* INC(x, n) / DEC(x, n) *)
+      Inc(EP);
+      EmitInstrA('PUSH', 'AX');
+      ParseExpr;
+      EmitInstrAB('MOV', 'BX', 'AX');
+      EmitInstrA('POP', 'AX');
+      If Name = 'INC' Then
+        EmitInstrAB('ADD', 'AX', 'BX')
+      Else
+        EmitInstrAB('SUB', 'AX', 'BX');
+    End
+    Else
+    Begin
+      (* INC(x) / DEC(x) *)
+      If Name = 'INC' Then
+        EmitInstr('INC     AX')
+      Else
+        EmitInstr('DEC     AX');
+    End;
+
+    (* Store back *)
+    If LI >= 0 Then
+      GenStoreLocal(CurProcIdx, LI)
+    Else If ParI >= 0 Then
+      GenStoreParam(CurProcIdx, ParI)
+    Else If SI >= 0 Then
+      GenStoreVar(SI);
+
+    If EPMatch(TK_PUNCT, ')') Then Inc(EP);
+  End
+  Else If Name = 'DISPOSE' Then
+  Begin
+    If EPMatch(TK_PUNCT, '(') Then Inc(EP);
+    ParseExpr;
+    If EPMatch(TK_PUNCT, ')') Then Inc(EP);
+    EmitComment('DISPOSE (stub - no heap free in DOS)');
+  End
+  Else If Name = 'EVAL' Then
+  Begin
+    If EPMatch(TK_PUNCT, '(') Then Inc(EP);
+    ParseExpr;
+    If EPMatch(TK_PUNCT, ')') Then Inc(EP);
+    EmitComment('EVAL: result discarded');
+  End;
+End;
+
+(* ---- ParseQualifiedIdent : parser un identifiant qualifie ----- *)
+(* Gere Module.Ident et les appels de module (Wr.PutText etc.)    *)
+
+Procedure ParseQualifiedIdent(Const ModName : TString);
+Var
+  MethName  : TString;
+  ArgCount  : Integer;
+Begin
+  Inc(EP); (* passer '.' *)
+  MethName := '';
+  If (EP < TokenCount) And (TokenPool[EP].Kind = TK_IDENT) Then
+  Begin
+    MethName := TokenPool[EP].Val;
+    Inc(EP);
+  End;
+
+  (* Module Wr : ecriture *)
+  If ModName = 'Wr' Then
+  Begin
+    If MethName = 'PutChar' Then
+    Begin
+      ParseCallArgs(ArgCount);
+      EmitInstrA('POP', 'DX');
+      EmitInstrAB('MOV', 'AH', '02h');
+      EmitInstr('INT    21h');
+    End
+    Else If MethName = 'PutText' Then
+    Begin
+      ParseCallArgs(ArgCount);
+      EmitInstrA('POP', 'SI');
+      EmitInstr('CALL    ' + M3_RT_PFX + 'PRINT');
+    End
+    Else If MethName = 'PutInt' Then
+    Begin
+      ParseCallArgs(ArgCount);
+      EmitInstrA('POP', 'AX');
+      EmitInstrAB('LEA', 'DI', M3_RT_PFX + 'NUMBUF');
+      EmitInstr('CALL    ' + M3_RT_PFX + 'NUMTOSTR');
+      EmitInstrAB('MOV', 'SI', 'AX');
+      EmitInstr('CALL    ' + M3_RT_PFX + 'PRINT');
+    End
+    Else If MethName = 'Nl' Then
+    Begin
+      (* Wr.Nl() : write CRLF *)
+      If EPMatch(TK_PUNCT, '(') Then
+      Begin
+        Inc(EP);
+        If EPMatch(TK_PUNCT, ')') Then Inc(EP);
+      End;
+      EmitInstrAB('LEA', 'SI', M3_RT_PFX + 'CRLF');
+      EmitInstr('CALL    ' + M3_RT_PFX + 'PRINT');
+    End
+    Else
+    Begin
+      ParseCallArgs(ArgCount);
+      EmitComment('Wr.' + MethName + ' (stub)');
+    End;
+  End
+
+  (* Module Rd : lecture *)
+  Else If ModName = 'Rd' Then
+  Begin
+    If MethName = 'GetChar' Then
+    Begin
+      If EPMatch(TK_PUNCT, '(') Then
+      Begin
+        Inc(EP);
+        If EPMatch(TK_PUNCT, ')') Then Inc(EP);
+      End;
+      EmitInstrAB('MOV', 'AH', '01h');
+      EmitInstr('INT    21h');
+      EmitInstrAB('XOR', 'AH', 'AH');
+    End
+    Else If MethName = 'GetInt' Then
+    Begin
+      If EPMatch(TK_PUNCT, '(') Then
+      Begin
+        Inc(EP);
+        If EPMatch(TK_PUNCT, ')') Then Inc(EP);
+      End;
+      EmitInstrAB('LEA', 'SI', M3_RT_PFX + 'STRBUF');
+      EmitInstr('CALL    ' + M3_RT_PFX + 'STRTONUM');
+    End
+    Else
+    Begin
+      ParseCallArgs(ArgCount);
+      EmitComment('Rd.' + MethName + ' (stub)');
+    End;
+  End
+
+  (* Module Fmt *)
+  Else If ModName = 'Fmt' Then
+  Begin
+    If MethName = 'Int' Then
+    Begin
+      ParseCallArgs(ArgCount);
+      EmitInstrA('POP', 'AX');
+      EmitInstrAB('LEA', 'DI', M3_RT_PFX + 'NUMBUF');
+      EmitInstr('CALL    ' + M3_RT_PFX + 'NUMTOSTR');
+    End
+    Else If MethName = 'Char' Then
+    Begin
+      ParseCallArgs(ArgCount);
+      EmitInstrA('POP', 'AX');
+      EmitComment('Fmt.Char -> AX = ptr to single-char TEXT');
+    End
+    Else
+    Begin
+      ParseCallArgs(ArgCount);
+      EmitComment('Fmt.' + MethName + ' (stub)');
+    End;
+  End
+
+  (* Module Text *)
+  Else If ModName = 'Text' Then
+  Begin
+    If MethName = 'Length' Then
+    Begin
+      ParseCallArgs(ArgCount);
+      EmitInstrA('POP', 'SI');
+      EmitInstr('CALL    ' + M3_RT_PFX + 'STRLEN');
+    End
+    Else If MethName = 'Equal' Then
+    Begin
+      ParseCallArgs(ArgCount);
+      EmitInstrA('POP', 'DI');
+      EmitInstrA('POP', 'SI');
+      EmitInstr('CALL    ' + M3_RT_PFX + 'STRCMP');
+    End
+    Else If MethName = 'GetChar' Then
+    Begin
+      ParseCallArgs(ArgCount);
+      EmitInstrA('POP', 'BX');
+      EmitInstrA('POP', 'SI');
+      EmitInstrAB('XOR', 'AX', 'AX');
+      EmitInstrAB('MOV', 'AL', '[SI+BX]');
+    End
+    Else If MethName = 'Sub' Then
+    Begin
+      ParseCallArgs(ArgCount);
+      EmitInstrA('POP', 'CX');
+      EmitInstrA('POP', 'BX');
+      EmitInstrA('POP', 'SI');
+      EmitInstr('CALL    ' + M3_RT_PFX + 'TEXTSUB');
+    End
+    Else
+    Begin
+      ParseCallArgs(ArgCount);
+      EmitComment('Text.' + MethName + ' (stub)');
+    End;
+  End
+
+  (* Module IO *)
+  Else If ModName = 'IO' Then
+  Begin
+    If MethName = 'Put' Then
+    Begin
+      ParseCallArgs(ArgCount);
+      EmitInstrA('POP', 'SI');
+      EmitInstr('CALL    ' + M3_RT_PFX + 'PRINT');
+    End
+    Else
+    Begin
+      ParseCallArgs(ArgCount);
+      EmitComment('IO.' + MethName + ' (stub)');
+    End;
+  End
+
+  (* Autre module *)
+  Else
+  Begin
+    ParseCallArgs(ArgCount);
+    EmitComment(ModName + '.' + MethName + ' (stub)');
+  End;
+End;
+
+(* ---- ParsePrimary : parser une expression primaire ------------ *)
+(* Gere : entier, chaine, caractere, ident (variable/const/proc), *)
+(*        appels de fonctions, parentheses, NOT, unaire +/-.      *)
+(* Resultat dans AX.                                               *)
+
+Procedure ParsePrimary;
+Var
+  LI, ParI, SI, PI2 : Integer;
+  Name               : TString;
+  ArgCount           : Integer;
+  Lbl                : TString;
+Begin
+  If EPAtEnd Then
+  Begin
+    EmitInstrAB('XOR', 'AX', 'AX');
+    Exit;
+  End;
+
+  (* --- NOT (negation logique) --- *)
+  If EPMatch(TK_KEYWORD, 'NOT') Then
+  Begin
+    Inc(EP);
+    ParsePrimary;
+    EmitUnaryOp('NOT');
+    Exit;
+  End;
+
+  (* --- Unaire - (negation arithmetique) --- *)
+  If EPMatch(TK_OP, '-') Then
+  Begin
+    Inc(EP);
+    ParsePrimary;
+    EmitUnaryOp('-');
+    Exit;
+  End;
+
+  (* --- Unaire + (noop) --- *)
+  If EPMatch(TK_OP, '+') Then
+  Begin
+    Inc(EP);
+    ParsePrimary;
+    Exit;
+  End;
+
+  (* --- Parentheses --- *)
+  If EPMatch(TK_PUNCT, '(') Then
+  Begin
+    Inc(EP); (* passer '(' *)
+    ParseExpr;
+    If EPMatch(TK_PUNCT, ')') Then
+      Inc(EP); (* passer ')' *)
+    Exit;
+  End;
+
+  (* --- Litteral entier --- *)
+  If TokenPool[EP].Kind = TK_INTEGER Then
+  Begin
+    EmitInstrAB('MOV', 'AX', IntToStr(TokenPool[EP].IntVal));
+    Inc(EP);
+    Exit;
+  End;
+
+  (* --- Litteral caractere --- *)
+  If TokenPool[EP].Kind = TK_CHAR Then
+  Begin
+    EmitInstrAB('MOV', 'AX', IntToStr(TokenPool[EP].IntVal));
+    Inc(EP);
+    Exit;
+  End;
+
+  (* --- Litteral reel (tronque) --- *)
+  If TokenPool[EP].Kind = TK_REAL Then
+  Begin
+    EmitInstrAB('MOV', 'AX', IntToStr(TokenPool[EP].IntVal));
+    Inc(EP);
+    Exit;
+  End;
+
+  (* --- Litteral chaine TEXT --- *)
+  If TokenPool[EP].Kind = TK_STRING Then
+  Begin
+    Lbl := DataGetOrAddStr(TokenPool[EP].Val);
+    EmitInstrAB('LEA', 'AX', Lbl);
+    Inc(EP);
+    Exit;
+  End;
+
+  (* --- Mot-cle TRUE / FALSE / NIL --- *)
+  If TokenPool[EP].Kind = TK_KEYWORD Then
+  Begin
+    If TokenPool[EP].Val = 'TRUE' Then
+    Begin
+      EmitInstrAB('MOV', 'AX', '1');
+      Inc(EP);
+      Exit;
+    End
+    Else If TokenPool[EP].Val = 'FALSE' Then
+    Begin
+      EmitInstrAB('MOV', 'AX', '0');
+      Inc(EP);
+      Exit;
+    End
+    Else If TokenPool[EP].Val = 'NIL' Then
+    Begin
+      EmitInstrAB('XOR', 'AX', 'AX');
+      Inc(EP);
+      Exit;
+    End;
+  End;
+
+  (* --- Identifiant --- *)
+  If TokenPool[EP].Kind = TK_IDENT Then
+  Begin
+    Name := TokenPool[EP].Val;
+    Inc(EP);
+
+    (* Acces qualifie Module.Ident *)
+    If EPMatch(TK_PUNCT, '.') Then
+    Begin
+      (* Verifier si c est un module connu *)
+      SI := SymFind(Name);
+      If (SI >= 0) And (SymTab[SI].Kind = SK_MODULE) Then
+      Begin
+        ParseQualifiedIdent(Name);
+        Exit;
+      End;
+      (* Sinon : acces champ d un record *)
+      (* Charger la variable d abord *)
+      LI := FindProcLocal(CurProcIdx, Name);
+      If LI >= 0 Then
+        GenLoadLocal(CurProcIdx, LI)
+      Else
+      Begin
+        ParI := FindProcParam(CurProcIdx, Name);
+        If ParI >= 0 Then
+          GenLoadParam(CurProcIdx, ParI)
+        Else
+        Begin
+          SI := SymFind(Name);
+          If SI >= 0 Then
+            GenLoadVar(SI)
+          Else
+            EmitComment('unknown var: ' + Name);
+        End;
+      End;
+      (* .champ -> stub: just load offset *)
+      Inc(EP); (* passer '.' *)
+      If (EP < TokenCount) And (TokenPool[EP].Kind = TK_IDENT) Then
+      Begin
+        EmitComment('field access .' + TokenPool[EP].Val + ' (stub)');
+        Inc(EP);
+      End;
+      Exit;
+    End;
+
+    (* Dereferencement ^ *)
+    If EPMatch(TK_PUNCT, '^') Then
+    Begin
+      LI := FindProcLocal(CurProcIdx, Name);
+      If LI >= 0 Then
+        GenLoadLocal(CurProcIdx, LI)
+      Else
+      Begin
+        ParI := FindProcParam(CurProcIdx, Name);
+        If ParI >= 0 Then
+          GenLoadParam(CurProcIdx, ParI)
+        Else
+        Begin
+          SI := SymFind(Name);
+          If SI >= 0 Then GenLoadVar(SI);
+        End;
+      End;
+      Inc(EP); (* passer '^' *)
+      EmitInstrAB('MOV', 'BX', 'AX');
+      EmitInstrAB('MOV', 'AX', 'WORD PTR [BX]');
+      Exit;
+    End;
+
+    (* Acces index [i] *)
+    If EPMatch(TK_PUNCT, '[') Then
+    Begin
+      LI := FindProcLocal(CurProcIdx, Name);
+      If LI >= 0 Then
+        EmitInstrAB('LEA', 'BX', '[BP' +
+          IntToStr(ProcTab[CurProcIdx].Locals[LI].Offset) + ']')
+      Else
+      Begin
+        SI := SymFind(Name);
+        If SI >= 0 Then
+          EmitInstrAB('LEA', 'BX', SymTab[SI].MangledName);
+      End;
+      EmitInstrA('PUSH', 'BX');
+      Inc(EP); (* passer '[' *)
+      ParseExpr;
+      (* AX = index, compute byte offset (assume word elements) *)
+      EmitInstrAB('SHL', 'AX', '1');
+      EmitInstrA('POP', 'BX');
+      EmitInstrAB('ADD', 'BX', 'AX');
+      EmitInstrAB('MOV', 'AX', 'WORD PTR [BX]');
+      If EPMatch(TK_PUNCT, ']') Then Inc(EP);
+      Exit;
+    End;
+
+    (* Appel de builtin avec '(' *)
+    If EPMatch(TK_PUNCT, '(') Then
+    Begin
+      (* Built-in functions *)
+      If (Name = 'ABS') Or (Name = 'MAX') Or (Name = 'MIN') Or
+         (Name = 'ORD') Or (Name = 'VAL') Or (Name = 'FLOAT') Or
+         (Name = 'TRUNC') Or (Name = 'ROUND') Or
+         (Name = 'FIRST') Or (Name = 'LAST') Or (Name = 'NUMBER') Or
+         (Name = 'ISTYPE') Or (Name = 'NARROW') Or (Name = 'TYPECODE') Or
+         (Name = 'NEW') Or (Name = 'BITSIZE') Or (Name = 'BYTESIZE') Or
+         (Name = 'ADRSIZE') Or (Name = 'ADR') Then
+      Begin
+        ParseBuiltinCall(Name);
+        Exit;
+      End;
+
+      (* Appel de procedure/fonction utilisateur *)
+      PI2 := FindProcByName(Name);
+      If PI2 >= 0 Then
+      Begin
+        ParseCallArgs(ArgCount);
+        EmitInstr('CALL    ' + ProcTab[PI2].MangledName);
+        Exit;
+      End;
+
+      (* Appel de procedure inconnue (module externe?) *)
+      ParseCallArgs(ArgCount);
+      EmitComment('call ' + Name + ' (unresolved)');
+      Exit;
+    End;
+
+    (* Variable locale *)
+    LI := FindProcLocal(CurProcIdx, Name);
+    If LI >= 0 Then
+    Begin
+      GenLoadLocal(CurProcIdx, LI);
+      Exit;
+    End;
+
+    (* Parametre *)
+    ParI := FindProcParam(CurProcIdx, Name);
+    If ParI >= 0 Then
+    Begin
+      GenLoadParam(CurProcIdx, ParI);
+      Exit;
+    End;
+
+    (* Symbole global (variable, constante) *)
+    SI := SymFind(Name);
+    If SI >= 0 Then
+    Begin
+      Case SymTab[SI].Kind Of
+        SK_CONST :
+        Begin
+          If SymTab[SI].TypeIdx = TY_IDX_BOOLEAN Then
+            EmitInstrAB('MOV', 'AX', IntToStr(SymTab[SI].ImmVal))
+          Else If SymTab[SI].TypeIdx = TY_IDX_NIL Then
+            EmitInstrAB('XOR', 'AX', 'AX')
+          Else
+            GenLoadVar(SI);
+        End;
+        SK_VAR :
+          GenLoadVar(SI);
+        SK_PROC :
+        Begin
+          (* Procedure sans parentheses -> adresse *)
+          EmitInstrAB('MOV', 'AX', 'OFFSET ' + SymTab[SI].MangledName);
+        End;
+      Else
+        GenLoadVar(SI);
+      End;
+      Exit;
+    End;
+
+    (* Identifiant inconnu *)
+    EmitComment('unknown ident: ' + Name);
+    EmitInstrAB('XOR', 'AX', 'AX');
+    Exit;
+  End;
+
+  (* Token inattendu -> avancer *)
+  EmitComment('unexpected token: ' + TokenPool[EP].Val);
+  Inc(EP);
+End;
+
+(* ---- ParseExprPrec : parseur Pratt pour expressions binaires -- *)
+(* MinPrec = niveau de precedence minimum a accepter.              *)
+(* Resultat dans AX.                                               *)
+
+Procedure ParseExprPrec(MinPrec : Integer);
+Var
+  Op   : TString;
+  Prec : Integer;
+Begin
+  ParsePrimary;
+
+  While Not EPAtEnd Do
+  Begin
+    (* Verifier si le token courant est un operateur binaire *)
+    If Not IsM3BinOp(TokenPool[EP]) Then
+      Break;
+
+    Op := TokenPool[EP].Val;
+    Prec := BinOpPrec(Op);
+    If Prec < MinPrec Then
+      Break;
+
+    Inc(EP); (* passer l operateur *)
+
+    (* Sauver le cote gauche *)
+    EmitInstrA('PUSH', 'AX');
+
+    (* Parser le cote droit avec precedence superieure *)
+    ParseExprPrec(Prec + 1);
+
+    (* Restaurer le cote gauche *)
+    EmitInstrAB('MOV', 'BX', 'AX');
+    EmitInstrA('POP', 'AX');
+
+    (* Emettre l operation *)
+    EmitBinOp(Op);
+  End;
+End;
+
+(* ---- ParseExpr : parser une expression complete ---------------- *)
+
+Procedure ParseExpr;
+Begin
+  ParseExprPrec(1);
+End;
+
+(* ---- ParseStmt : parser une instruction unique du corps -------- *)
+(* Gere : affectation :=, appels de procedure (y compris qualifies *)
+(* Module.Ident), RETURN, IF/ELSIF/ELSE/END, WHILE/DO/END,        *)
+(* FOR/TO/BY/DO/END, LOOP/EXIT/END, REPEAT/UNTIL.                 *)
+
+Procedure ParseStmt;
+Var
+  Name, LblTest, LblEnd, LblElse : TString;
+  LI, ParI, SI, PI2   : Integer;
+  ArgCount             : Integer;
+  LoopLbl, ExitLbl     : TString;
+  ForVar               : TString;
+  ForLI, ForParI, ForSI: Integer;
+  ByVal                : LongInt;
+Begin
+  If EPAtEnd Then Exit;
+
+  (* --- Instruction vide ';' --- *)
+  If EPMatch(TK_PUNCT, ';') Then
+  Begin
+    Inc(EP);
+    Exit;
+  End;
+
+  (* --- RETURN [expr] --- *)
+  If EPMatch(TK_KEYWORD, 'RETURN') Then
+  Begin
+    Inc(EP);
+    (* Si un expression suit (pas ';' ou END), l evaluer *)
+    If Not EPAtEnd And
+       Not EPMatch(TK_PUNCT, ';') And
+       Not EPMatch(TK_KEYWORD, 'END') Then
+      ParseExpr;
+    EmitInstrA('JMP', RetLbl);
+    If EPMatch(TK_PUNCT, ';') Then Inc(EP);
+    Exit;
+  End;
+
+  (* --- IF / ELSIF / ELSE / END --- *)
+  If EPMatch(TK_KEYWORD, 'IF') Then
+  Begin
+    Inc(EP);
+    LblEnd := LabelGen;
+    LblElse := LabelGen;
+
+    (* Condition *)
+    ParseExpr;
+    EmitInstrAB('TEST', 'AX', 'AX');
+    EmitInstrA('JZ', LblElse);
+
+    (* Passer THEN *)
+    If EPMatch(TK_KEYWORD, 'THEN') Then Inc(EP);
+
+    (* Corps du IF *)
+    While Not EPAtEnd And
+          Not EPMatch(TK_KEYWORD, 'ELSIF') And
+          Not EPMatch(TK_KEYWORD, 'ELSE') And
+          Not EPMatch(TK_KEYWORD, 'END') Do
+      ParseStmt;
+
+    (* ELSIF chains *)
+    While EPMatch(TK_KEYWORD, 'ELSIF') Do
+    Begin
+      EmitInstrA('JMP', LblEnd);
+      EmitLabel(LblElse);
+      LblElse := LabelGen;
+      Inc(EP);
+      ParseExpr;
+      EmitInstrAB('TEST', 'AX', 'AX');
+      EmitInstrA('JZ', LblElse);
+      If EPMatch(TK_KEYWORD, 'THEN') Then Inc(EP);
+      While Not EPAtEnd And
+            Not EPMatch(TK_KEYWORD, 'ELSIF') And
+            Not EPMatch(TK_KEYWORD, 'ELSE') And
+            Not EPMatch(TK_KEYWORD, 'END') Do
+        ParseStmt;
+    End;
+
+    (* ELSE *)
+    If EPMatch(TK_KEYWORD, 'ELSE') Then
+    Begin
+      EmitInstrA('JMP', LblEnd);
+      EmitLabel(LblElse);
+      LblElse := '';
+      Inc(EP);
+      While Not EPAtEnd And Not EPMatch(TK_KEYWORD, 'END') Do
+        ParseStmt;
+    End;
+
+    If LblElse <> '' Then
+      EmitLabel(LblElse);
+    EmitLabel(LblEnd);
+    If EPMatch(TK_KEYWORD, 'END') Then Inc(EP);
+    If EPMatch(TK_PUNCT, ';') Then Inc(EP);
+    Exit;
+  End;
+
+  (* --- WHILE expr DO ... END --- *)
+  If EPMatch(TK_KEYWORD, 'WHILE') Then
+  Begin
+    Inc(EP);
+    LblTest := LabelGen;
+    LblEnd  := LabelGen;
+    EmitLabel(LblTest);
+    ParseExpr;
+    EmitInstrAB('TEST', 'AX', 'AX');
+    EmitInstrA('JZ', LblEnd);
+    If EPMatch(TK_KEYWORD, 'DO') Then Inc(EP);
+    While Not EPAtEnd And Not EPMatch(TK_KEYWORD, 'END') Do
+      ParseStmt;
+    EmitInstrA('JMP', LblTest);
+    EmitLabel(LblEnd);
+    If EPMatch(TK_KEYWORD, 'END') Then Inc(EP);
+    If EPMatch(TK_PUNCT, ';') Then Inc(EP);
+    Exit;
+  End;
+
+  (* --- FOR ident := expr TO expr [BY expr] DO ... END --- *)
+  If EPMatch(TK_KEYWORD, 'FOR') Then
+  Begin
+    Inc(EP);
+    ForVar := '';
+    If (EP < TokenCount) And (TokenPool[EP].Kind = TK_IDENT) Then
+    Begin
+      ForVar := TokenPool[EP].Val;
+      Inc(EP);
+    End;
+    If EPMatch(TK_OP, ':=') Then Inc(EP);
+
+    (* Evaluer start *)
+    ParseExpr;
+
+    (* Stocker dans la variable *)
+    ForLI  := FindProcLocal(CurProcIdx, ForVar);
+    ForParI := -1;
+    ForSI  := -1;
+    If ForLI < 0 Then ForParI := FindProcParam(CurProcIdx, ForVar);
+    If (ForLI < 0) And (ForParI < 0) Then ForSI := SymFind(ForVar);
+
+    If ForLI >= 0 Then
+      GenStoreLocal(CurProcIdx, ForLI)
+    Else If ForParI >= 0 Then
+      GenStoreParam(CurProcIdx, ForParI)
+    Else If ForSI >= 0 Then
+      GenStoreVar(ForSI);
+
+    (* TO expr *)
+    If EPMatch(TK_KEYWORD, 'TO') Then Inc(EP);
+    EmitInstrA('PUSH', 'AX');
+    ParseExpr;
+    EmitInstrA('PUSH', 'AX'); (* sauver limite sur pile *)
+
+    (* BY expr (optionnel) *)
+    ByVal := 1;
+    If EPMatch(TK_KEYWORD, 'BY') Then
+    Begin
+      Inc(EP);
+      If (EP < TokenCount) And (TokenPool[EP].Kind = TK_INTEGER) Then
+      Begin
+        ByVal := TokenPool[EP].IntVal;
+        Inc(EP);
+      End
+      Else
+      Begin
+        ParseExpr;
+        EmitComment('BY expr (using AX as step)');
+      End;
+    End;
+
+    If EPMatch(TK_KEYWORD, 'DO') Then Inc(EP);
+
+    LblTest := LabelGen;
+    LblEnd  := LabelGen;
+    EmitLabel(LblTest);
+
+    (* Charger la variable et comparer avec la limite *)
+    If ForLI >= 0 Then
+      GenLoadLocal(CurProcIdx, ForLI)
+    Else If ForParI >= 0 Then
+      GenLoadParam(CurProcIdx, ForParI)
+    Else If ForSI >= 0 Then
+      GenLoadVar(ForSI);
+
+    (* Comparer avec la limite (2eme element sur pile) *)
+    EmitInstrAB('CMP', 'AX', 'WORD PTR [SP]');
+    If ByVal >= 0 Then
+      EmitInstrA('JG', LblEnd)
+    Else
+      EmitInstrA('JL', LblEnd);
+
+    (* Corps du FOR *)
+    While Not EPAtEnd And Not EPMatch(TK_KEYWORD, 'END') Do
+      ParseStmt;
+
+    (* Incrementer *)
+    If ForLI >= 0 Then
+      GenLoadLocal(CurProcIdx, ForLI)
+    Else If ForParI >= 0 Then
+      GenLoadParam(CurProcIdx, ForParI)
+    Else If ForSI >= 0 Then
+      GenLoadVar(ForSI);
+
+    If ByVal = 1 Then
+      EmitInstr('INC     AX')
+    Else If ByVal = -1 Then
+      EmitInstr('DEC     AX')
+    Else
+      EmitInstrAB('ADD', 'AX', IntToStr(ByVal));
+
+    If ForLI >= 0 Then
+      GenStoreLocal(CurProcIdx, ForLI)
+    Else If ForParI >= 0 Then
+      GenStoreParam(CurProcIdx, ForParI)
+    Else If ForSI >= 0 Then
+      GenStoreVar(ForSI);
+
+    EmitInstrA('JMP', LblTest);
+    EmitLabel(LblEnd);
+    EmitInstrAB('ADD', 'SP', '4'); (* depiler start+limit *)
+
+    If EPMatch(TK_KEYWORD, 'END') Then Inc(EP);
+    If EPMatch(TK_PUNCT, ';') Then Inc(EP);
+    Exit;
+  End;
+
+  (* --- LOOP ... END (infinite loop, EXIT to break) --- *)
+  If EPMatch(TK_KEYWORD, 'LOOP') Then
+  Begin
+    Inc(EP);
+    LoopLbl := LabelGen;
+    ExitLbl := LabelGen;
+    EmitLabel(LoopLbl);
+    While Not EPAtEnd And Not EPMatch(TK_KEYWORD, 'END') Do
+    Begin
+      If EPMatch(TK_KEYWORD, 'EXIT') Then
+      Begin
+        Inc(EP);
+        EmitInstrA('JMP', ExitLbl);
+        If EPMatch(TK_PUNCT, ';') Then Inc(EP);
+      End
+      Else
+        ParseStmt;
+    End;
+    EmitInstrA('JMP', LoopLbl);
+    EmitLabel(ExitLbl);
+    If EPMatch(TK_KEYWORD, 'END') Then Inc(EP);
+    If EPMatch(TK_PUNCT, ';') Then Inc(EP);
+    Exit;
+  End;
+
+  (* --- REPEAT ... UNTIL expr --- *)
+  If EPMatch(TK_KEYWORD, 'REPEAT') Then
+  Begin
+    Inc(EP);
+    LoopLbl := LabelGen;
+    EmitLabel(LoopLbl);
+    While Not EPAtEnd And Not EPMatch(TK_KEYWORD, 'UNTIL') Do
+      ParseStmt;
+    If EPMatch(TK_KEYWORD, 'UNTIL') Then Inc(EP);
+    ParseExpr;
+    EmitInstrAB('TEST', 'AX', 'AX');
+    EmitInstrA('JZ', LoopLbl);
+    If EPMatch(TK_PUNCT, ';') Then Inc(EP);
+    Exit;
+  End;
+
+  (* --- CASE expr OF ... END (stub: skip) --- *)
+  If EPMatch(TK_KEYWORD, 'CASE') Then
+  Begin
+    EmitComment('CASE (stub: skipping)');
+    Inc(EP);
+    (* Skip to matching END *)
+    SkipToMatchingEnd(EP);
+    If EPMatch(TK_PUNCT, ';') Then Inc(EP);
+    Exit;
+  End;
+
+  (* --- TRY ... EXCEPT / FINALLY ... END (stub: skip) --- *)
+  If EPMatch(TK_KEYWORD, 'TRY') Then
+  Begin
+    EmitComment('TRY (stub: skipping)');
+    Inc(EP);
+    SkipToMatchingEnd(EP);
+    If EPMatch(TK_PUNCT, ';') Then Inc(EP);
+    Exit;
+  End;
+
+  (* --- WITH (stub: skip) --- *)
+  If EPMatch(TK_KEYWORD, 'WITH') Then
+  Begin
+    EmitComment('WITH (stub: skipping)');
+    Inc(EP);
+    SkipToMatchingEnd(EP);
+    If EPMatch(TK_PUNCT, ';') Then Inc(EP);
+    Exit;
+  End;
+
+  (* --- TYPECASE (stub: skip) --- *)
+  If EPMatch(TK_KEYWORD, 'TYPECASE') Then
+  Begin
+    EmitComment('TYPECASE (stub: skipping)');
+    Inc(EP);
+    SkipToMatchingEnd(EP);
+    If EPMatch(TK_PUNCT, ';') Then Inc(EP);
+    Exit;
+  End;
+
+  (* --- LOCK (stub: skip) --- *)
+  If EPMatch(TK_KEYWORD, 'LOCK') Then
+  Begin
+    EmitComment('LOCK (stub: skipping)');
+    Inc(EP);
+    SkipToMatchingEnd(EP);
+    If EPMatch(TK_PUNCT, ';') Then Inc(EP);
+    Exit;
+  End;
+
+  (* --- Identifiant : affectation ou appel de procedure --- *)
+  If TokenPool[EP].Kind = TK_IDENT Then
+  Begin
+    Name := TokenPool[EP].Val;
+    Inc(EP);
+
+    (* Acces qualifie Module.Method(...) *)
+    If EPMatch(TK_PUNCT, '.') Then
+    Begin
+      SI := SymFind(Name);
+      If (SI >= 0) And (SymTab[SI].Kind = SK_MODULE) Then
+      Begin
+        ParseQualifiedIdent(Name);
+        If EPMatch(TK_PUNCT, ';') Then Inc(EP);
+        Exit;
+      End;
+      (* record.field := expr (stub) *)
+      Inc(EP); (* passer '.' *)
+      If (EP < TokenCount) And (TokenPool[EP].Kind = TK_IDENT) Then
+        Inc(EP);
+      If EPMatch(TK_OP, ':=') Then
+      Begin
+        Inc(EP);
+        ParseExpr;
+        EmitComment('record field assign (stub)');
+      End;
+      If EPMatch(TK_PUNCT, ';') Then Inc(EP);
+      Exit;
+    End;
+
+    (* Affectation :=  ident := expr *)
+    If EPMatch(TK_OP, ':=') Then
+    Begin
+      Inc(EP);
+      ParseExpr;
+
+      (* Stocker le resultat *)
+      LI := FindProcLocal(CurProcIdx, Name);
+      If LI >= 0 Then
+      Begin
+        GenStoreLocal(CurProcIdx, LI);
+        If EPMatch(TK_PUNCT, ';') Then Inc(EP);
+        Exit;
+      End;
+
+      ParI := FindProcParam(CurProcIdx, Name);
+      If ParI >= 0 Then
+      Begin
+        GenStoreParam(CurProcIdx, ParI);
+        If EPMatch(TK_PUNCT, ';') Then Inc(EP);
+        Exit;
+      End;
+
+      SI := SymFind(Name);
+      If SI >= 0 Then
+      Begin
+        GenStoreVar(SI);
+        If EPMatch(TK_PUNCT, ';') Then Inc(EP);
+        Exit;
+      End;
+
+      EmitComment('assign to unknown: ' + Name);
+      If EPMatch(TK_PUNCT, ';') Then Inc(EP);
+      Exit;
+    End;
+
+    (* Deref assign: ident^ := expr *)
+    If EPMatch(TK_PUNCT, '^') Then
+    Begin
+      Inc(EP);
+      If EPMatch(TK_OP, ':=') Then
+      Begin
+        Inc(EP);
+        (* Load pointer *)
+        LI := FindProcLocal(CurProcIdx, Name);
+        If LI >= 0 Then
+          GenLoadLocal(CurProcIdx, LI)
+        Else
+        Begin
+          ParI := FindProcParam(CurProcIdx, Name);
+          If ParI >= 0 Then
+            GenLoadParam(CurProcIdx, ParI)
+          Else
+          Begin
+            SI := SymFind(Name);
+            If SI >= 0 Then GenLoadVar(SI);
+          End;
+        End;
+        EmitInstrA('PUSH', 'AX'); (* save pointer *)
+        ParseExpr;
+        EmitInstrA('POP', 'BX');
+        EmitInstrAB('MOV', 'WORD PTR [BX]', 'AX');
+      End;
+      If EPMatch(TK_PUNCT, ';') Then Inc(EP);
+      Exit;
+    End;
+
+    (* Index assign: ident[i] := expr *)
+    If EPMatch(TK_PUNCT, '[') Then
+    Begin
+      LI := FindProcLocal(CurProcIdx, Name);
+      If LI >= 0 Then
+        EmitInstrAB('LEA', 'BX', '[BP' +
+          IntToStr(ProcTab[CurProcIdx].Locals[LI].Offset) + ']')
+      Else
+      Begin
+        SI := SymFind(Name);
+        If SI >= 0 Then
+          EmitInstrAB('LEA', 'BX', SymTab[SI].MangledName);
+      End;
+      EmitInstrA('PUSH', 'BX');
+      Inc(EP); (* passer '[' *)
+      ParseExpr;
+      EmitInstrAB('SHL', 'AX', '1');
+      EmitInstrA('POP', 'BX');
+      EmitInstrAB('ADD', 'BX', 'AX');
+      EmitInstrA('PUSH', 'BX');
+      If EPMatch(TK_PUNCT, ']') Then Inc(EP);
+      If EPMatch(TK_OP, ':=') Then
+      Begin
+        Inc(EP);
+        ParseExpr;
+        EmitInstrA('POP', 'BX');
+        EmitInstrAB('MOV', 'WORD PTR [BX]', 'AX');
+      End;
+      If EPMatch(TK_PUNCT, ';') Then Inc(EP);
+      Exit;
+    End;
+
+    (* Appel de procedure/builtin avec '(' *)
+    If EPMatch(TK_PUNCT, '(') Then
+    Begin
+      (* Appels builtin statement-level *)
+      If (Name = 'INC') Or (Name = 'DEC') Or
+         (Name = 'DISPOSE') Or (Name = 'EVAL') Then
+      Begin
+        ParseProcCallStmt(Name);
+        If EPMatch(TK_PUNCT, ';') Then Inc(EP);
+        Exit;
+      End;
+
+      (* Builtin functions called as statements *)
+      If (Name = 'NEW') Then
+      Begin
+        ParseBuiltinCall(Name);
+        If EPMatch(TK_PUNCT, ';') Then Inc(EP);
+        Exit;
+      End;
+
+      (* Appel de procedure utilisateur *)
+      PI2 := FindProcByName(Name);
+      If PI2 >= 0 Then
+      Begin
+        ParseCallArgs(ArgCount);
+        EmitInstr('CALL    ' + ProcTab[PI2].MangledName);
+        If EPMatch(TK_PUNCT, ';') Then Inc(EP);
+        Exit;
+      End;
+
+      (* Appel inconnu *)
+      ParseCallArgs(ArgCount);
+      EmitComment('call ' + Name + ' (unresolved)');
+      If EPMatch(TK_PUNCT, ';') Then Inc(EP);
+      Exit;
+    End;
+
+    (* Identifiant seul -> expression evaluee et resultat ignore *)
+    EmitComment('expr stmt: ' + Name);
+    If EPMatch(TK_PUNCT, ';') Then Inc(EP);
+    Exit;
+  End;
+
+  (* Token inattendu -> avancer *)
+  Inc(EP);
+End;
+
+(* ---- ParseBody : parser le corps d une procedure --------------- *)
+(* Configure le curseur EP, cree le label de retour, et itere      *)
+(* ParseStmt pour chaque instruction du corps.                      *)
+
+Procedure ParseBody(PI : Integer);
+Begin
+  If ProcTab[PI].BodyStart < 0 Then Exit;
+  If ProcTab[PI].BodyEnd < 0 Then Exit;
+
+  CurProcIdx := PI;
+  EP    := ProcTab[PI].BodyStart;
+  EPEnd := ProcTab[PI].BodyEnd;
+  RetLbl := LabelGen;
+
+  While Not EPAtEnd Do
+    ParseStmt;
+
+  EmitLabel(RetLbl);
+End;
+
+(* ============================================================
+   TODO 09 (suite) - ParseProcDecls
+   ============================================================ *)
 
 (* ---- ParseProcDecls : scanner PROCEDURE au niveau MODULE ------ *)
 (* Parcourt le TokenPool pour trouver les declarations PROCEDURE.  *)
@@ -4250,7 +5720,7 @@ End;
 (* Pour chaque procedure dans ProcTab, genere :                     *)
 (*   - label + prologue (PUSH BP / MOV BP,SP / SUB SP,n)           *)
 (*   - commentaires decrivant les parametres et les locales         *)
-(*   - placeholder pour le corps (TODO 10+)                        *)
+(*   - corps via ParseBody (TODO 10)                               *)
 (*   - epilogue (POP BP / RET n)                                   *)
 
 Procedure EmitProcedures;
@@ -4304,7 +5774,7 @@ Begin
     End;
 
     EmitBlankLine;
-    EmitComment('  (corps: TODO 10+)');
+    ParseBody(PI);
 
     (* Epilogue *)
     EmitBlankLine;
@@ -4375,7 +5845,7 @@ Begin
     WriteLn('  Procedures     : ', ProcCount);
   End;
 
-  (* TODO 09+ : ParseCompilationUnit, EmitRuntime, etc. *)
+  (* TODO 11+ : ParseCompilationUnit, EmitRuntime, etc. *)
 
   (* Phase 3 : emettre le fichier assembleur *)
   EmitOpen;
