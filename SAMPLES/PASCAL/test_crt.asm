@@ -1,5 +1,5 @@
 ; TPCW32 - Compilateur Turbo Pascal -> ASM 80386 Win32
-; Genere automatiquement a partir de : SAMPLES/PASCAL/test_simple.pas
+; Genere automatiquement a partir de : SAMPLES/PASCAL/test_crt.pas
 
 .386
 .MODEL FLAT, STDCALL
@@ -73,8 +73,14 @@ CRT_NEVT  DD 0
 CRT_NWRT  DD 0
 
 ; --- Constantes et donnees utilisateur ---
-_TPK_1  DB 'Result: ',0
-_TPV_RESULT  DD 0
+_TPK_1  DB 'Hello CRT!',0
+_TPK_2  DB 'Bright text',0
+_TPK_3  DB 'Dim text',0
+_TPK_4  DB 'Normal text',0
+_TPK_5  DB 'WhereX=',0
+_TPK_6  DB ' WhereY=',0
+_TPK_7  DB 'Done.',0
+_TPV_CH  DB 0
 
 ; --- Segment de code ---
 .CODE
@@ -95,15 +101,94 @@ _TPF_Main:
 ; Obtenir le tas du processus
         CALL GetProcessHeap
         MOV [HHEAP],EAX
+        CALL _TPRT_CLRSCR
+        MOV EAX,14
+        PUSH EAX
+        CALL _TPRT_TEXTCOLOR
+        ADD ESP,4
+        MOV EAX,1
+        PUSH EAX
+        CALL _TPRT_TEXTBG
+        ADD ESP,4
+        MOV EAX,10
+        PUSH EAX
         MOV EAX,5
-        MOV DWORD PTR [_TPV_RESULT],EAX
+        PUSH EAX
+        CALL _TPRT_GOTOXY
+        ADD ESP,8
 ; writeln
         LEA EAX,[_TPK_1]
         MOV ESI,EAX
         CALL _TPRT_PRINTSTR
-        MOV EAX,DWORD PTR [_TPV_RESULT]
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+        CALL _TPRT_HIGHVIDEO
+; writeln
+        LEA EAX,[_TPK_2]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+        CALL _TPRT_LOWVIDEO
+; writeln
+        LEA EAX,[_TPK_3]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+        CALL _TPRT_NORMVIDEO
+; writeln
+        LEA EAX,[_TPK_4]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+        CALL _TPRT_CLREOL
+        MOV EAX,1
+        PUSH EAX
+        MOV EAX,1
+        PUSH EAX
+        MOV EAX,80
+        PUSH EAX
+        MOV EAX,25
+        PUSH EAX
+        CALL _TPRT_WINDOW
+        ADD ESP,16
+; writeln
+        LEA EAX,[_TPK_5]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        CALL _TPRT_WHEREX
         CALL _TPRT_NUMTOSTR
         LEA ESI,[NUMBUF]
+        CALL _TPRT_PRINTSTR
+        LEA EAX,[_TPK_6]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        CALL _TPRT_WHEREY
+        CALL _TPRT_NUMTOSTR
+        LEA ESI,[NUMBUF]
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+        MOV EAX,100
+        PUSH EAX
+        CALL Sleep
+        MOV EAX,440
+        PUSH EAX
+        CALL _TPRT_SOUND
+        ADD ESP,4
+; NoSound (stub)
+; if
+        CALL _TPRT_KEYPRESSED
+        TEST EAX,EAX
+        JZ _TPL_2
+        CALL _TPRT_READKEY
+        MOV BYTE PTR [_TPV_CH],AL
+_TPL_2:
+; writeln
+        LEA EAX,[_TPK_7]
+        MOV ESI,EAX
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR

@@ -33,6 +33,12 @@ EXTRN _GetCurrentDirectoryA@8:NEAR
 EXTRN _GetTickCount@0:NEAR
 EXTRN _Sleep@4:NEAR
 EXTRN _GetCommandLineA@0:NEAR
+EXTRN _PeekConsoleInputA@16:NEAR
+EXTRN _ReadConsoleInputA@16:NEAR
+EXTRN _GetNumberOfConsoleInputEvents@8:NEAR
+EXTRN _Beep@8:NEAR
+EXTRN _ScrollConsoleScreenBufferA@20:NEAR
+EXTRN _FlushConsoleInputBuffer@4:NEAR
 
 ; --- Segment de donnees ---
 .DATA
@@ -51,6 +57,20 @@ STRBUF1   DB 256 DUP(0)
 STRBUF2   DB 256 DUP(0)
 TRUE_STR  DB 'TRUE',0
 FALSE_STR DB 'FALSE',0
+
+; --- Variables CRT (emulation console) ---
+TEXTATTR  DD 7
+WINDMIN   DD 0
+WINDMAX   DD 184Fh
+LASTMODE  DD 3
+DIRECTVIDEO DD 1
+CHECKBREAK  DD 1
+CHECKEOF    DD 0
+CHECKSNOW   DD 0
+CRT_CSBI  DB 22 DUP(0)
+CRT_INREC DB 20 DUP(0)
+CRT_NEVT  DD 0
+CRT_NWRT  DD 0
 
 ; --- Constantes et donnees utilisateur ---
 _TPK_1  DB 'z = ',0
@@ -426,5 +446,249 @@ _TPRT_INS_R1:
         TEST AL,AL
         JNZ _TPRT_INS_R1
         POPAD
+        RET
+
+_TPRT_CLRSCR:
+        PUSHAD
+        PUSH OFFSET CRT_CSBI
+        PUSH DWORD PTR [HSTDOUT]
+        CALL GetConsoleScreenBufferInfo
+        MOVZX EAX,WORD PTR [CRT_CSBI+0]
+        MOVZX ECX,WORD PTR [CRT_CSBI+2]
+        IMUL EAX,ECX
+        PUSH OFFSET CRT_NWRT
+        PUSH 0
+        PUSH EAX
+        PUSH 32
+        PUSH DWORD PTR [HSTDOUT]
+        CALL FillConsoleOutputCharacterA
+        MOVZX EAX,WORD PTR [CRT_CSBI+0]
+        MOVZX ECX,WORD PTR [CRT_CSBI+2]
+        IMUL EAX,ECX
+        PUSH OFFSET CRT_NWRT
+        PUSH 0
+        PUSH EAX
+        PUSH DWORD PTR [TEXTATTR]
+        PUSH DWORD PTR [HSTDOUT]
+        CALL FillConsoleOutputAttribute
+        PUSH 0
+        PUSH DWORD PTR [HSTDOUT]
+        CALL SetConsoleCursorPosition
+        POPAD
+        RET
+
+_TPRT_CLREOL:
+        PUSHAD
+        PUSH OFFSET CRT_CSBI
+        PUSH DWORD PTR [HSTDOUT]
+        CALL GetConsoleScreenBufferInfo
+        MOVZX EAX,WORD PTR [CRT_CSBI+0]
+        MOVZX ECX,WORD PTR [CRT_CSBI+4]
+        SUB EAX,ECX
+        MOVZX EDX,WORD PTR [CRT_CSBI+6]
+        SHL EDX,16
+        OR EDX,ECX
+        PUSH OFFSET CRT_NWRT
+        PUSH EDX
+        PUSH EAX
+        PUSH 32
+        PUSH DWORD PTR [HSTDOUT]
+        CALL FillConsoleOutputCharacterA
+        POPAD
+        RET
+
+_TPRT_GOTOXY:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSH EAX
+        PUSH EDX
+        MOV EAX,DWORD PTR [EBP+8]
+        DEC EAX
+        AND EAX,0FFFFh
+        MOV EDX,DWORD PTR [EBP+12]
+        DEC EDX
+        SHL EDX,16
+        OR EAX,EDX
+        PUSH EAX
+        PUSH DWORD PTR [HSTDOUT]
+        CALL SetConsoleCursorPosition
+        POP EDX
+        POP EAX
+        POP EBP
+        RET
+
+_TPRT_WHEREX:
+        PUSH ECX
+        PUSH OFFSET CRT_CSBI
+        PUSH DWORD PTR [HSTDOUT]
+        CALL GetConsoleScreenBufferInfo
+        MOVZX EAX,WORD PTR [CRT_CSBI+4]
+        INC EAX
+        POP ECX
+        RET
+
+_TPRT_WHEREY:
+        PUSH ECX
+        PUSH OFFSET CRT_CSBI
+        PUSH DWORD PTR [HSTDOUT]
+        CALL GetConsoleScreenBufferInfo
+        MOVZX EAX,WORD PTR [CRT_CSBI+6]
+        INC EAX
+        POP ECX
+        RET
+
+_TPRT_TEXTCOLOR:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP+8]
+        AND EAX,0Fh
+        MOV EDX,DWORD PTR [TEXTATTR]
+        AND EDX,0F0h
+        OR EAX,EDX
+        MOV DWORD PTR [TEXTATTR],EAX
+        PUSH EAX
+        PUSH DWORD PTR [HSTDOUT]
+        CALL SetConsoleTextAttribute
+        POP EAX
+        POP EBP
+        RET
+
+_TPRT_TEXTBG:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP+8]
+        AND EAX,07h
+        SHL EAX,4
+        MOV EDX,DWORD PTR [TEXTATTR]
+        AND EDX,0Fh
+        OR EAX,EDX
+        MOV DWORD PTR [TEXTATTR],EAX
+        PUSH EAX
+        PUSH DWORD PTR [HSTDOUT]
+        CALL SetConsoleTextAttribute
+        POP EAX
+        POP EBP
+        RET
+
+_TPRT_HIGHVIDEO:
+        PUSH EAX
+        MOV EAX,DWORD PTR [TEXTATTR]
+        OR EAX,08h
+        MOV DWORD PTR [TEXTATTR],EAX
+        PUSH EAX
+        PUSH DWORD PTR [HSTDOUT]
+        CALL SetConsoleTextAttribute
+        POP EAX
+        RET
+
+_TPRT_LOWVIDEO:
+        PUSH EAX
+        MOV EAX,DWORD PTR [TEXTATTR]
+        AND EAX,0F7h
+        MOV DWORD PTR [TEXTATTR],EAX
+        PUSH EAX
+        PUSH DWORD PTR [HSTDOUT]
+        CALL SetConsoleTextAttribute
+        POP EAX
+        RET
+
+_TPRT_NORMVIDEO:
+        PUSH EAX
+        MOV EAX,7
+        MOV DWORD PTR [TEXTATTR],EAX
+        PUSH EAX
+        PUSH DWORD PTR [HSTDOUT]
+        CALL SetConsoleTextAttribute
+        POP EAX
+        RET
+
+_TPRT_WINDOW:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSH EAX
+        PUSH EDX
+        MOV EAX,DWORD PTR [EBP+12]
+        DEC EAX
+        SHL EAX,8
+        MOV EDX,DWORD PTR [EBP+8]
+        DEC EDX
+        OR EAX,EDX
+        MOV DWORD PTR [WINDMIN],EAX
+        MOV EAX,DWORD PTR [EBP+20]
+        DEC EAX
+        SHL EAX,8
+        MOV EDX,DWORD PTR [EBP+16]
+        DEC EDX
+        OR EAX,EDX
+        MOV DWORD PTR [WINDMAX],EAX
+        POP EDX
+        POP EAX
+        POP EBP
+        RET
+
+_TPRT_KEYPRESSED:
+        PUSH ECX
+        PUSH EDX
+        PUSH OFFSET CRT_NEVT
+        PUSH DWORD PTR [HSTDIN]
+        CALL GetNumberOfConsoleInputEvents
+        MOV EAX,DWORD PTR [CRT_NEVT]
+        TEST EAX,EAX
+        JZ _TPRT_KP_NO
+        PUSH OFFSET CRT_NEVT
+        PUSH 1
+        PUSH OFFSET CRT_INREC
+        PUSH DWORD PTR [HSTDIN]
+        CALL PeekConsoleInputA
+        MOVZX EAX,WORD PTR [CRT_INREC]
+        CMP EAX,1
+        JNE _TPRT_KP_FL
+        MOV EAX,DWORD PTR [CRT_INREC+4]
+        TEST EAX,EAX
+        JZ _TPRT_KP_FL
+        MOV EAX,1
+        JMP _TPRT_KP_DN
+_TPRT_KP_FL:
+        PUSH OFFSET CRT_NEVT
+        PUSH 1
+        PUSH OFFSET CRT_INREC
+        PUSH DWORD PTR [HSTDIN]
+        CALL ReadConsoleInputA
+_TPRT_KP_NO:
+        XOR EAX,EAX
+_TPRT_KP_DN:
+        POP EDX
+        POP ECX
+        RET
+
+_TPRT_READKEY:
+        PUSH ECX
+        PUSH EDX
+_TPRT_RK_LP:
+        PUSH OFFSET CRT_NEVT
+        PUSH 1
+        PUSH OFFSET CRT_INREC
+        PUSH DWORD PTR [HSTDIN]
+        CALL ReadConsoleInputA
+        MOVZX EAX,WORD PTR [CRT_INREC]
+        CMP EAX,1
+        JNE _TPRT_RK_LP
+        MOV EAX,DWORD PTR [CRT_INREC+4]
+        TEST EAX,EAX
+        JZ _TPRT_RK_LP
+        MOVZX EAX,BYTE PTR [CRT_INREC+14]
+        POP EDX
+        POP ECX
+        RET
+
+_TPRT_SOUND:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSH 200
+        PUSH DWORD PTR [EBP+8]
+        CALL Beep
+        POP EBP
         RET
 END _TPF_Main

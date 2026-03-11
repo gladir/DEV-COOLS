@@ -370,7 +370,7 @@
             Acces aux variables Pascal depuis ASM :
               MOV EAX, [variable] / MOV EAX, [EBP-offset]
 
-  TODO 18 - UNITE CRT (EMULATION CONSOLE WINDOWS)
+  TODO 18 - UNITE CRT (EMULATION CONSOLE WINDOWS) [IMPLEMENTE]
             ClrScr : FillConsoleOutputCharacterA + SetConsoleCursorPosition
             ClrEol : FillConsoleOutputCharacterA jusqu a fin de ligne
             GotoXY(X, Y) : SetConsoleCursorPosition
@@ -3424,6 +3424,20 @@ Begin
   Begin
     RegFunc('ASSIGNED');
   End;
+
+  { ---------------------------------------------------------- }
+  { Procedures et fonctions de l unite CRT (TODO 18)          }
+  { Toujours enregistrees, reconnues si Uses Crt presente      }
+  { ---------------------------------------------------------- }
+  RegProc('CLRSCR');     RegProc('CLREOL');
+  RegProc('GOTOXY');     RegProc('TEXTCOLOR');
+  RegProc('TEXTBACKGROUND');
+  RegProc('HIGHVIDEO');  RegProc('LOWVIDEO');
+  RegProc('NORMVIDEO');  RegProc('WINDOW');
+  RegProc('DELAY');      RegProc('SOUND');
+  RegProc('NOSOUND');    RegProc('ASSIGNCRT');
+  RegFunc('WHEREX');     RegFunc('WHEREY');
+  RegFunc('KEYPRESSED'); RegFunc('READKEY');
 End;
 
 { ============================================================ }
@@ -4086,6 +4100,12 @@ Begin
   EmitRaw('EXTRN _GetTickCount@0:NEAR');
   EmitRaw('EXTRN _Sleep@4:NEAR');
   EmitRaw('EXTRN _GetCommandLineA@0:NEAR');
+  EmitRaw('EXTRN _PeekConsoleInputA@16:NEAR');
+  EmitRaw('EXTRN _ReadConsoleInputA@16:NEAR');
+  EmitRaw('EXTRN _GetNumberOfConsoleInputEvents@8:NEAR');
+  EmitRaw('EXTRN _Beep@8:NEAR');
+  EmitRaw('EXTRN _ScrollConsoleScreenBufferA@20:NEAR');
+  EmitRaw('EXTRN _FlushConsoleInputBuffer@4:NEAR');
   EmitBlankLine;
 End;
 
@@ -4120,6 +4140,22 @@ Begin
   EmitRaw('STRBUF2   DB 256 DUP(0)');  { buffer concat/copy 2  }
   EmitRaw('TRUE_STR  DB ''TRUE'',0');   { chaine TRUE           }
   EmitRaw('FALSE_STR DB ''FALSE'',0');  { chaine FALSE          }
+  EmitBlankLine;
+
+  { Variables CRT (TODO 18) }
+  EmitComment('--- Variables CRT (emulation console) ---');
+  EmitRaw('TEXTATTR  DD 7');            { attribut texte courant (gris sur noir) }
+  EmitRaw('WINDMIN   DD 0');            { coin haut-gauche fenetre (0)           }
+  EmitRaw('WINDMAX   DD 184Fh');        { coin bas-droite (24*256+79 = 0x184F)   }
+  EmitRaw('LASTMODE  DD 3');            { dernier mode video (CO80)              }
+  EmitRaw('DIRECTVIDEO DD 1');          { acces video direct (ignore Win32)      }
+  EmitRaw('CHECKBREAK  DD 1');          { verification Ctrl+Break                }
+  EmitRaw('CHECKEOF    DD 0');          { verification Ctrl+Z                    }
+  EmitRaw('CHECKSNOW   DD 0');          { verification neige CGA (ignore Win32)  }
+  EmitRaw('CRT_CSBI  DB 22 DUP(0)');   { CONSOLE_SCREEN_BUFFER_INFO (22 bytes)  }
+  EmitRaw('CRT_INREC DB 20 DUP(0)');   { INPUT_RECORD buffer (20 bytes)         }
+  EmitRaw('CRT_NEVT  DD 0');           { nombre d evenements console            }
+  EmitRaw('CRT_NWRT  DD 0');           { nombre de cellules ecrites            }
   EmitBlankLine;
 
   { Emettre toutes les entrees du pool de donnees }
@@ -7725,6 +7761,40 @@ Begin
       Exit;
     End;
 
+    { ---- TODO 18 : Fonctions CRT (retournent valeur dans EAX) ---- }
+
+    { WHEREX -> colonne courante (1-based) }
+    If Up = 'WHEREX' Then
+    Begin
+      Inc(EP);
+      EmitInstr('CALL ' + TP_RT_PFX + 'WHEREX');
+      Exit;
+    End;
+
+    { WHEREY -> ligne courante (1-based) }
+    If Up = 'WHEREY' Then
+    Begin
+      Inc(EP);
+      EmitInstr('CALL ' + TP_RT_PFX + 'WHEREY');
+      Exit;
+    End;
+
+    { KEYPRESSED -> Boolean dans EAX }
+    If Up = 'KEYPRESSED' Then
+    Begin
+      Inc(EP);
+      EmitInstr('CALL ' + TP_RT_PFX + 'KEYPRESSED');
+      Exit;
+    End;
+
+    { READKEY -> caractere dans EAX }
+    If Up = 'READKEY' Then
+    Begin
+      Inc(EP);
+      EmitInstr('CALL ' + TP_RT_PFX + 'READKEY');
+      Exit;
+    End;
+
     { Appel de procedure/fonction ? }
     SI := SymFind(Up);
     If (SI >= 0) And
@@ -9616,6 +9686,209 @@ Begin
       Exit;
     End;
 
+    { ---- TODO 18 : Procedures CRT comme identifiants ---- }
+
+    { CLRSCR }
+    If Up = 'CLRSCR' Then
+    Begin
+      Inc(EP);
+      EmitInstr('CALL ' + TP_RT_PFX + 'CLRSCR');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { CLREOL }
+    If Up = 'CLREOL' Then
+    Begin
+      Inc(EP);
+      EmitInstr('CALL ' + TP_RT_PFX + 'CLREOL');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { GOTOXY(X, Y) }
+    If Up = 'GOTOXY' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'GOTOXY');
+      EmitInstr('ADD ESP,8');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { TEXTCOLOR(C) }
+    If Up = 'TEXTCOLOR' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + TP_RT_PFX + 'TEXTCOLOR');
+      EmitInstr('ADD ESP,4');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { TEXTBACKGROUND(C) }
+    If Up = 'TEXTBACKGROUND' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + TP_RT_PFX + 'TEXTBG');
+      EmitInstr('ADD ESP,4');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { HIGHVIDEO }
+    If Up = 'HIGHVIDEO' Then
+    Begin
+      Inc(EP);
+      EmitInstr('CALL ' + TP_RT_PFX + 'HIGHVIDEO');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { LOWVIDEO }
+    If Up = 'LOWVIDEO' Then
+    Begin
+      Inc(EP);
+      EmitInstr('CALL ' + TP_RT_PFX + 'LOWVIDEO');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { NORMVIDEO }
+    If Up = 'NORMVIDEO' Then
+    Begin
+      Inc(EP);
+      EmitInstr('CALL ' + TP_RT_PFX + 'NORMVIDEO');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { WINDOW(X1, Y1, X2, Y2) }
+    If Up = 'WINDOW' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'WINDOW');
+      EmitInstr('ADD ESP,16');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { DELAY(ms) }
+    If Up = 'DELAY' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL Sleep');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { SOUND(Hz) }
+    If Up = 'SOUND' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + TP_RT_PFX + 'SOUND');
+      EmitInstr('ADD ESP,4');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { NOSOUND }
+    If Up = 'NOSOUND' Then
+    Begin
+      Inc(EP);
+      EmitComment('NoSound (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { ASSIGNCRT }
+    If Up = 'ASSIGNCRT' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitComment('AssignCrt (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
     { Appel de proc (dans SymTab) }
     SI := SymFind(Up);
     If (SI >= 0) And (SymTab[SI].Kind = SK_PROC) Then
@@ -10883,11 +11156,316 @@ Begin
   EmitInstr('JNZ ' + TP_RT_PFX + 'INS_R1');
   EmitInstr('POPAD');
   EmitInstr('RET');
-End;
 
-{ ------------------------------------------------------------ }
-{ Run                                                          }
-{ ------------------------------------------------------------ }
+  { ============================================================ }
+  { TODO 18 - ROUTINES RUNTIME CRT               [IMPLEMENTE]    }
+  { ============================================================ }
+
+  { ------ _TPRT_CLRSCR : effacer l ecran console --------------- }
+  { Utilise FillConsoleOutputCharacterA pour remplir de ' '        }
+  { puis SetConsoleCursorPosition pour positionner en (0,0)        }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'CLRSCR');
+  EmitInstr('PUSHAD');
+  { Obtenir les informations du buffer console }
+  EmitInstr('PUSH OFFSET CRT_CSBI');
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL GetConsoleScreenBufferInfo');
+  { Calculer la taille totale : colonnes * lignes }
+  EmitInstr('MOVZX EAX,WORD PTR [CRT_CSBI+0]');  { dwSize.X (colonnes) }
+  EmitInstr('MOVZX ECX,WORD PTR [CRT_CSBI+2]');  { dwSize.Y (lignes)   }
+  EmitInstr('IMUL EAX,ECX');                       { EAX = total cells   }
+  { FillConsoleOutputCharacterA(hOut, ' ', count, 0, &written) }
+  EmitInstr('PUSH OFFSET CRT_NWRT');
+  EmitInstr('PUSH 0');                             { dwWriteCoord = (0,0) }
+  EmitInstr('PUSH EAX');                           { nLength              }
+  EmitInstr('PUSH 32');                            { cCharacter = ' '     }
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL FillConsoleOutputCharacterA');
+  { FillConsoleOutputAttribute(hOut, attr, count, 0, &written) }
+  EmitInstr('MOVZX EAX,WORD PTR [CRT_CSBI+0]');
+  EmitInstr('MOVZX ECX,WORD PTR [CRT_CSBI+2]');
+  EmitInstr('IMUL EAX,ECX');
+  EmitInstr('PUSH OFFSET CRT_NWRT');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH DWORD PTR [TEXTATTR]');
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL FillConsoleOutputAttribute');
+  { SetConsoleCursorPosition(hOut, (0,0)) }
+  EmitInstr('PUSH 0');                             { COORD (0,0) packed   }
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL SetConsoleCursorPosition');
+  EmitInstr('POPAD');
+  EmitInstr('RET');
+
+  { ------ _TPRT_CLREOL : effacer de curseur a fin de ligne ----- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'CLREOL');
+  EmitInstr('PUSHAD');
+  EmitInstr('PUSH OFFSET CRT_CSBI');
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL GetConsoleScreenBufferInfo');
+  { Nombre de cellules a effacer = colonnes - cursor.X }
+  EmitInstr('MOVZX EAX,WORD PTR [CRT_CSBI+0]');   { dwSize.X           }
+  EmitInstr('MOVZX ECX,WORD PTR [CRT_CSBI+4]');   { dwCursorPosition.X }
+  EmitInstr('SUB EAX,ECX');
+  { Coordonnee du curseur actuel (packed COORD) }
+  EmitInstr('MOVZX EDX,WORD PTR [CRT_CSBI+6]');   { dwCursorPosition.Y }
+  EmitInstr('SHL EDX,16');
+  EmitInstr('OR EDX,ECX');                          { EDX = packed COORD }
+  EmitInstr('PUSH OFFSET CRT_NWRT');
+  EmitInstr('PUSH EDX');
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH 32');
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL FillConsoleOutputCharacterA');
+  EmitInstr('POPAD');
+  EmitInstr('RET');
+
+  { ------ _TPRT_GOTOXY : positionner curseur ------------------- }
+  { Parametres sur pile : [ESP+4] = X (1-based), [ESP+8] = Y       }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'GOTOXY');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH EDX');
+  { X = [EBP+8] (1-based -> 0-based), Y = [EBP+12] }
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');         { X }
+  EmitInstr('DEC EAX');                             { 0-based }
+  EmitInstr('AND EAX,0FFFFh');
+  EmitInstr('MOV EDX,DWORD PTR [EBP+12]');        { Y }
+  EmitInstr('DEC EDX');                             { 0-based }
+  EmitInstr('SHL EDX,16');
+  EmitInstr('OR EAX,EDX');                          { packed COORD }
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL SetConsoleCursorPosition');
+  EmitInstr('POP EDX');
+  EmitInstr('POP EAX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_WHEREX : colonne courante -> EAX --------------- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'WHEREX');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH OFFSET CRT_CSBI');
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL GetConsoleScreenBufferInfo');
+  EmitInstr('MOVZX EAX,WORD PTR [CRT_CSBI+4]');   { dwCursorPosition.X }
+  EmitInstr('INC EAX');                             { 1-based }
+  EmitInstr('POP ECX');
+  EmitInstr('RET');
+
+  { ------ _TPRT_WHEREY : ligne courante -> EAX ----------------- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'WHEREY');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH OFFSET CRT_CSBI');
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL GetConsoleScreenBufferInfo');
+  EmitInstr('MOVZX EAX,WORD PTR [CRT_CSBI+6]');   { dwCursorPosition.Y }
+  EmitInstr('INC EAX');                             { 1-based }
+  EmitInstr('POP ECX');
+  EmitInstr('RET');
+
+  { ------ _TPRT_TEXTCOLOR : couleur texte ---------------------- }
+  { Parametre sur pile : [ESP+4] = couleur (0..15)                 }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'TEXTCOLOR');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EAX');
+  { TEXTATTR = (TEXTATTR AND F0h) OR (color AND 0Fh) }
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('AND EAX,0Fh');
+  EmitInstr('MOV EDX,DWORD PTR [TEXTATTR]');
+  EmitInstr('AND EDX,0F0h');
+  EmitInstr('OR EAX,EDX');
+  EmitInstr('MOV DWORD PTR [TEXTATTR],EAX');
+  { SetConsoleTextAttribute(hOut, attr) }
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL SetConsoleTextAttribute');
+  EmitInstr('POP EAX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_TEXTBG : couleur de fond ----------------------- }
+  { Parametre sur pile : [ESP+4] = couleur (0..7)                  }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'TEXTBG');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EAX');
+  { TEXTATTR = (TEXTATTR AND 0Fh) OR ((color AND 07h) SHL 4) }
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('AND EAX,07h');
+  EmitInstr('SHL EAX,4');
+  EmitInstr('MOV EDX,DWORD PTR [TEXTATTR]');
+  EmitInstr('AND EDX,0Fh');
+  EmitInstr('OR EAX,EDX');
+  EmitInstr('MOV DWORD PTR [TEXTATTR],EAX');
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL SetConsoleTextAttribute');
+  EmitInstr('POP EAX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_HIGHVIDEO : attribut haute intensite ------------ }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'HIGHVIDEO');
+  EmitInstr('PUSH EAX');
+  EmitInstr('MOV EAX,DWORD PTR [TEXTATTR]');
+  EmitInstr('OR EAX,08h');                         { bit intensite }
+  EmitInstr('MOV DWORD PTR [TEXTATTR],EAX');
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL SetConsoleTextAttribute');
+  EmitInstr('POP EAX');
+  EmitInstr('RET');
+
+  { ------ _TPRT_LOWVIDEO : attribut basse intensite ------------- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'LOWVIDEO');
+  EmitInstr('PUSH EAX');
+  EmitInstr('MOV EAX,DWORD PTR [TEXTATTR]');
+  EmitInstr('AND EAX,0F7h');                       { enlever bit intensite }
+  EmitInstr('MOV DWORD PTR [TEXTATTR],EAX');
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL SetConsoleTextAttribute');
+  EmitInstr('POP EAX');
+  EmitInstr('RET');
+
+  { ------ _TPRT_NORMVIDEO : attribut normal --------------------- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'NORMVIDEO');
+  EmitInstr('PUSH EAX');
+  EmitInstr('MOV EAX,7');                          { gris sur noir }
+  EmitInstr('MOV DWORD PTR [TEXTATTR],EAX');
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL SetConsoleTextAttribute');
+  EmitInstr('POP EAX');
+  EmitInstr('RET');
+
+  { ------ _TPRT_WINDOW : definir zone de texte ------------------ }
+  { Params : [ESP+4]=X1, [ESP+8]=Y1, [ESP+12]=X2, [ESP+16]=Y2    }
+  { Stocke dans WINDMIN/WINDMAX                                     }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'WINDOW');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH EDX');
+  { WINDMIN = (Y1-1)*256 + (X1-1) }
+  EmitInstr('MOV EAX,DWORD PTR [EBP+12]');        { Y1 }
+  EmitInstr('DEC EAX');
+  EmitInstr('SHL EAX,8');
+  EmitInstr('MOV EDX,DWORD PTR [EBP+8]');         { X1 }
+  EmitInstr('DEC EDX');
+  EmitInstr('OR EAX,EDX');
+  EmitInstr('MOV DWORD PTR [WINDMIN],EAX');
+  { WINDMAX = (Y2-1)*256 + (X2-1) }
+  EmitInstr('MOV EAX,DWORD PTR [EBP+20]');        { Y2 }
+  EmitInstr('DEC EAX');
+  EmitInstr('SHL EAX,8');
+  EmitInstr('MOV EDX,DWORD PTR [EBP+16]');        { X2 }
+  EmitInstr('DEC EDX');
+  EmitInstr('OR EAX,EDX');
+  EmitInstr('MOV DWORD PTR [WINDMAX],EAX');
+  EmitInstr('POP EDX');
+  EmitInstr('POP EAX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_KEYPRESSED : touche disponible -> EAX ---------- }
+  { Retourne 1 (True) si une touche est disponible, 0 sinon       }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'KEYPRESSED');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH EDX');
+  { GetNumberOfConsoleInputEvents(hStdin, &count) }
+  EmitInstr('PUSH OFFSET CRT_NEVT');
+  EmitInstr('PUSH DWORD PTR [HSTDIN]');
+  EmitInstr('CALL GetNumberOfConsoleInputEvents');
+  EmitInstr('MOV EAX,DWORD PTR [CRT_NEVT]');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'KP_NO');
+  { PeekConsoleInputA(hStdin, &rec, 1, &count) }
+  EmitInstr('PUSH OFFSET CRT_NEVT');
+  EmitInstr('PUSH 1');
+  EmitInstr('PUSH OFFSET CRT_INREC');
+  EmitInstr('PUSH DWORD PTR [HSTDIN]');
+  EmitInstr('CALL PeekConsoleInputA');
+  { Verifier si c est un evenement clavier (EventType == 1) }
+  EmitInstr('MOVZX EAX,WORD PTR [CRT_INREC]');
+  EmitInstr('CMP EAX,1');
+  EmitInstr('JNE ' + TP_RT_PFX + 'KP_FL');
+  { Verifier bKeyDown (offset 4 dans INPUT_RECORD) }
+  EmitInstr('MOV EAX,DWORD PTR [CRT_INREC+4]');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'KP_FL');
+  EmitInstr('MOV EAX,1');
+  EmitInstr('JMP ' + TP_RT_PFX + 'KP_DN');
+  EmitLabel(TP_RT_PFX + 'KP_FL');
+  { Pas un key event ou key up - flush et retourner 0 }
+  EmitInstr('PUSH OFFSET CRT_NEVT');
+  EmitInstr('PUSH 1');
+  EmitInstr('PUSH OFFSET CRT_INREC');
+  EmitInstr('PUSH DWORD PTR [HSTDIN]');
+  EmitInstr('CALL ReadConsoleInputA');
+  EmitLabel(TP_RT_PFX + 'KP_NO');
+  EmitInstr('XOR EAX,EAX');
+  EmitLabel(TP_RT_PFX + 'KP_DN');
+  EmitInstr('POP EDX');
+  EmitInstr('POP ECX');
+  EmitInstr('RET');
+
+  { ------ _TPRT_READKEY : lire une touche -> EAX --------------- }
+  { Retourne le code ASCII de la touche pressee                    }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'READKEY');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH EDX');
+  EmitLabel(TP_RT_PFX + 'RK_LP');
+  { ReadConsoleInputA(hStdin, &rec, 1, &count) }
+  EmitInstr('PUSH OFFSET CRT_NEVT');
+  EmitInstr('PUSH 1');
+  EmitInstr('PUSH OFFSET CRT_INREC');
+  EmitInstr('PUSH DWORD PTR [HSTDIN]');
+  EmitInstr('CALL ReadConsoleInputA');
+  { Verifier EventType == KEY_EVENT (1) }
+  EmitInstr('MOVZX EAX,WORD PTR [CRT_INREC]');
+  EmitInstr('CMP EAX,1');
+  EmitInstr('JNE ' + TP_RT_PFX + 'RK_LP');
+  { Verifier bKeyDown }
+  EmitInstr('MOV EAX,DWORD PTR [CRT_INREC+4]');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'RK_LP');
+  { Retourner AsciiChar (offset 14 dans INPUT_RECORD) }
+  EmitInstr('MOVZX EAX,BYTE PTR [CRT_INREC+14]');
+  EmitInstr('POP EDX');
+  EmitInstr('POP ECX');
+  EmitInstr('RET');
+
+  { ------ _TPRT_SOUND : emettre un son (Hz) -------------------- }
+  { Parametre sur pile : [ESP+4] = frequence en Hz                 }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SOUND');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  { Beep(frequency, duration=200ms) }
+  EmitInstr('PUSH 200');
+  EmitInstr('PUSH DWORD PTR [EBP+8]');
+  EmitInstr('CALL Beep');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+End;
 
 Procedure Run;
 Begin
