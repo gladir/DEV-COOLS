@@ -223,7 +223,7 @@
                       _CC_RT_WRITENUM, _CC_RT_STRTONUM, _CC_RT_READLINE
             Data    : _CC_RT_CRLF, _CC_RT_NUMBUF, _CC_RT_INBUF
 
-  TODO 14 - IF / ELSE / SWITCH
+  TODO 14 - IF / ELSE / SWITCH [IMPLEMENTE]
             ParseIfStmt : if (cond) stmt [else stmt]
               Emission TEST AX,AX / JZ pour condition fausse
               Labels : _CC_L_ELSE_N, _CC_L_ENDIF_N
@@ -235,8 +235,9 @@
               default : label par defaut si aucun case ne correspond
               Labels : _CC_L_CASE_N, _CC_L_SWEND_N
               fall-through : si pas de break, execution sequentielle
+            LoopPush / LoopPop : pile de labels pour break/continue
 
-  TODO 15 - BOUCLES : while / do-while / for / break / continue
+  TODO 15 - BOUCLES : while / do-while / for / break / continue [IMPLEMENTE]
             ParseWhileStmt : while (cond) stmt
               Labels : _CC_L_WTEST_N, _CC_L_WEND_N
             ParseDoWhileStmt : do stmt while (cond);
@@ -4965,7 +4966,7 @@ Begin
 End;
 
 (* ============================================================
-   STUBS POUR TODO 14..25
+   STUBS POUR TODO 16..25
    (a implementer dans les prochaines etapes)
    ============================================================ *)
 
@@ -5107,29 +5108,431 @@ Begin
     ParserAdvance;
 End;
 
-Procedure ParseIfStmt;
+(* ============================================================
+   TODO 14 - IF / ELSE / SWITCH [IMPLEMENTE]
+   ParseIfStmt  : if (cond) stmt [else stmt], else if chains
+   ParseSwitchStmt : switch (expr) { case val: stmts break; default: }
+   ============================================================ *)
+
+(* ---- LoopPush / LoopPop : pile pour break / continue -------- *)
+(* Utilisee aussi par switch (break -> fin du switch).            *)
+
+Procedure LoopPush(Const ABreakLbl, AContLbl : TString);
 Begin
-  (* stub *)
+  If LoopTop >= MAX_LOOP_NEST Then
+  Begin
+    CompileError('imbrication de boucles/switch trop profonde');
+    Exit;
+  End;
+  LoopBreakLbl[LoopTop] := ABreakLbl;
+  LoopContLbl[LoopTop]  := AContLbl;
+  Inc(LoopTop);
 End;
+
+Procedure LoopPop;
+Begin
+  If LoopTop > 0 Then
+    Dec(LoopTop);
+End;
+
+(* ---- ParseIfStmt : if (cond) stmt [else stmt] -------------- *)
+(* Gere les chaines else if par recursion naturelle de ParseStmt *)
+(* Emission : TEST AX,AX / JZ lbl_else, JMP lbl_endif           *)
+
+Procedure ParseIfStmt;
+Var
+  Res       : TExprVal;
+  LblElse   : TString;
+  LblEndIf  : TString;
+  HasElse   : Boolean;
+Begin
+  EmitComment('if');
+  ParserAdvance; (* consommer if *)
+
+  (* Consommer la parenthese ouvrante *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    ParserAdvance
+  Else
+    CompileError('"(" attendu apres "if"');
+
+  (* Evaluer la condition *)
+  ParseExpr(Res);
+  ExprFlushToAX(Res);
+
+  (* Consommer la parenthese fermante *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance
+  Else
+    CompileError('")" attendu apres condition if');
+
+  (* Generer les labels *)
+  LblElse  := LabelGen;
+  LblEndIf := LabelGen;
+
+  (* TEST AX,AX / JZ lbl_else *)
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JZ', LblElse);
+
+  (* Corps du then *)
+  ParseStmt;
+
+  (* Verifier si else suit *)
+  HasElse := (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'else');
+
+  If HasElse Then
+  Begin
+    (* JMP lbl_endif pour sauter le bloc else *)
+    EmitInstrA('JMP', LblEndIf);
+    EmitLabel(LblElse);
+
+    (* Consommer else *)
+    ParserAdvance;
+
+    (* Compiler le bloc else (qui peut etre un autre if) *)
+    ParseStmt;
+
+    EmitLabel(LblEndIf);
+  End
+  Else
+  Begin
+    (* Pas de else : le label else est la fin *)
+    EmitLabel(LblElse);
+  End;
+End;
+
+(* ---- ParseSwitchStmt : switch (expr) { case/default } ------ *)
+(* Strategie : evaluer expr, sauver dans AX.                     *)
+(* Pour chaque case : CMP AX,val / JE body_label                *)
+(* On genere d abord les tests, puis les corps avec fall-through.*)
+(* Approche simplifiee : test-and-branch inline.                 *)
 
 Procedure ParseSwitchStmt;
+Var
+  Res         : TExprVal;
+  LblSwEnd    : TString;
+  LblNext     : TString;
+  CaseVal     : LongInt;
 Begin
-  (* stub *)
+  EmitComment('switch');
+  ParserAdvance; (* consommer switch *)
+
+  (* Consommer '(' *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    ParserAdvance
+  Else
+    CompileError('"(" attendu apres "switch"');
+
+  (* Evaluer l expression du switch *)
+  ParseExpr(Res);
+  ExprFlushToAX(Res);
+
+  (* Consommer ')' *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance
+  Else
+    CompileError('")" attendu apres expression switch');
+
+  (* Sauvegarder la valeur du switch sur la pile *)
+  EmitInstrA('PUSH', 'AX');
+
+  LblSwEnd := LabelGen;
+
+  (* Empiler le break label pour break dans switch *)
+  LoopPush(LblSwEnd, '');
+
+  (* Consommer '{' *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+    ParserAdvance
+  Else
+    CompileError('"{" attendu apres expression switch');
+
+  SymEnterScope;
+
+  (* Boucle sur les case et default *)
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+  Begin
+    (* case val : *)
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'case') Then
+    Begin
+      ParserAdvance; (* consommer case *)
+
+      (* Lire la valeur du case *)
+      If CurToken.Kind = TK_INTEGER Then
+        CaseVal := CurToken.IntVal
+      Else If CurToken.Kind = TK_CHAR Then
+        CaseVal := CurToken.IntVal
+      Else
+      Begin
+        CompileError('constante entiere attendue apres "case"');
+        CaseVal := 0;
+      End;
+      ParserAdvance; (* consommer la valeur *)
+
+      (* Consommer ':' *)
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+        ParserAdvance;
+
+      LblNext := LabelGen;
+
+      (* Comparer la valeur du switch avec la valeur du case *)
+      EmitInstrAB('MOV', 'AX', 'WORD PTR [SP]');
+      EmitInstrAB('CMP', 'AX', IntToStr(CaseVal));
+      EmitInstrA('JNE', LblNext);
+
+      (* Corps du case : executer les instructions jusqu au break/case/default/} *)
+      While (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_KEYWORD) And
+                 ((CurToken.Val = 'case') Or (CurToken.Val = 'default'))) And
+            Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+        ParseStmt;
+
+      EmitLabel(LblNext);
+    End
+    (* default : *)
+    Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'default') Then
+    Begin
+      ParserAdvance; (* consommer default *)
+
+      (* Consommer ':' *)
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+        ParserAdvance;
+
+      (* Corps du default *)
+      While (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_KEYWORD) And
+                 ((CurToken.Val = 'case') Or (CurToken.Val = 'default'))) And
+            Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+        ParseStmt;
+    End
+    Else
+    Begin
+      (* Instructions entre les cases (fall-through ou erreur) *)
+      ParseStmt;
+    End;
+  End;
+
+  SymLeaveScope;
+
+  (* Consommer '}' *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+    ParserAdvance;
+
+  (* Label de fin du switch *)
+  EmitLabel(LblSwEnd);
+
+  (* Nettoyer la valeur du switch de la pile *)
+  EmitInstrAB('ADD', 'SP', '2');
+
+  LoopPop;
 End;
+
+(* ============================================================
+   TODO 15 - BOUCLES : while / do-while / for / break / continue
+   [IMPLEMENTE]
+   ParseWhileStmt   : while (cond) stmt
+   ParseDoWhileStmt : do stmt while (cond);
+   ParseForStmt     : for (init; cond; incr) stmt
+   ============================================================ *)
+
+(* ---- ParseWhileStmt : while (cond) stmt --------------------- *)
+(* Emission : LblTest -> eval cond -> TEST AX,AX -> JZ LblEnd   *)
+(*            -> stmt -> JMP LblTest -> LblEnd                   *)
 
 Procedure ParseWhileStmt;
+Var
+  Res      : TExprVal;
+  LblTest  : TString;
+  LblEnd   : TString;
 Begin
-  (* stub *)
+  EmitComment('while');
+  ParserAdvance; (* consommer while *)
+
+  LblTest := LabelGen;
+  LblEnd  := LabelGen;
+
+  LoopPush(LblEnd, LblTest);
+
+  EmitLabel(LblTest);
+
+  (* Consommer '(' *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    ParserAdvance
+  Else
+    CompileError('"(" attendu apres "while"');
+
+  (* Evaluer la condition *)
+  ParseExpr(Res);
+  ExprFlushToAX(Res);
+
+  (* Consommer ')' *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance
+  Else
+    CompileError('")" attendu apres condition while');
+
+  (* TEST AX,AX / JZ lbl_end *)
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JZ', LblEnd);
+
+  (* Corps de la boucle *)
+  ParseStmt;
+
+  (* JMP lbl_test *)
+  EmitInstrA('JMP', LblTest);
+
+  EmitLabel(LblEnd);
+
+  LoopPop;
 End;
+
+(* ---- ParseDoWhileStmt : do stmt while (cond); -------------- *)
+(* Emission : LblTop -> stmt -> LblCont -> eval cond            *)
+(*            -> TEST AX,AX -> JNZ LblTop -> LblEnd             *)
 
 Procedure ParseDoWhileStmt;
+Var
+  Res      : TExprVal;
+  LblTop   : TString;
+  LblCont  : TString;
+  LblEnd   : TString;
 Begin
-  (* stub *)
+  EmitComment('do-while');
+  ParserAdvance; (* consommer do *)
+
+  LblTop  := LabelGen;
+  LblCont := LabelGen;
+  LblEnd  := LabelGen;
+
+  LoopPush(LblEnd, LblCont);
+
+  EmitLabel(LblTop);
+
+  (* Corps de la boucle *)
+  ParseStmt;
+
+  EmitLabel(LblCont);
+
+  (* Consommer while *)
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'while') Then
+    ParserAdvance
+  Else
+    CompileError('"while" attendu apres corps do');
+
+  (* Consommer '(' *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    ParserAdvance
+  Else
+    CompileError('"(" attendu apres "while" dans do-while');
+
+  (* Evaluer la condition *)
+  ParseExpr(Res);
+  ExprFlushToAX(Res);
+
+  (* Consommer ')' *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance
+  Else
+    CompileError('")" attendu apres condition do-while');
+
+  (* Consommer ';' *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
+
+  (* TEST AX,AX / JNZ lbl_top *)
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JNZ', LblTop);
+
+  EmitLabel(LblEnd);
+
+  LoopPop;
 End;
 
+(* ---- ParseForStmt : for (init; cond; incr) stmt ------------ *)
+(* Emission : init -> LblTest -> cond -> JZ LblEnd              *)
+(*            -> stmt -> LblIncr -> incr -> JMP LblTest -> LblEnd*)
+
 Procedure ParseForStmt;
+Var
+  Res      : TExprVal;
+  LblTest  : TString;
+  LblIncr  : TString;
+  LblEnd   : TString;
+  LblBody  : TString;
 Begin
-  (* stub *)
+  EmitComment('for');
+  ParserAdvance; (* consommer for *)
+
+  LblTest := LabelGen;
+  LblIncr := LabelGen;
+  LblEnd  := LabelGen;
+  LblBody := LabelGen;
+
+  (* Consommer '(' *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    ParserAdvance
+  Else
+    CompileError('"(" attendu apres "for"');
+
+  SymEnterScope;
+
+  (* --- init : declaration ou expression --- *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance  (* init vide *)
+  Else If (CurToken.Kind = TK_KEYWORD) And
+          (IsTypeSpecifier(CurToken.Val) Or IsStorageClass(CurToken.Val) Or
+           IsQualifier(CurToken.Val)) Then
+    ParseDeclStmt  (* int i = 0; *)
+  Else
+    ParseExprStmt; (* i = 0; *)
+
+  EmitLabel(LblTest);
+
+  (* --- condition --- *)
+  If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Then
+  Begin
+    ParseExpr(Res);
+    ExprFlushToAX(Res);
+    EmitInstrAB('TEST', 'AX', 'AX');
+    EmitInstrA('JZ', LblEnd);
+  End;
+
+  (* Consommer ';' apres la condition *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
+
+  LoopPush(LblEnd, LblIncr);
+
+  (* On saute l increment au premier passage *)
+  EmitInstrA('JMP', LblBody);
+
+  EmitLabel(LblIncr);
+  (* increment *)
+  If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
+  Begin
+    ParseExpr(Res);
+    (* on ignore le resultat *)
+  End;
+  EmitInstrA('JMP', LblTest);
+
+  (* Consommer ')' *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance
+  Else
+    CompileError('")" attendu apres increment for');
+
+  EmitLabel(LblBody);
+
+  (* Corps de la boucle *)
+  ParseStmt;
+
+  (* Saut vers l increment *)
+  EmitInstrA('JMP', LblIncr);
+
+  EmitLabel(LblEnd);
+
+  SymLeaveScope;
+  LoopPop;
 End;
 
 Procedure ParseFuncDecl;
@@ -5222,12 +5625,32 @@ Begin
     If CurToken.Val = 'while' Then Begin ParseWhileStmt; Exit; End;
     If CurToken.Val = 'do' Then Begin ParseDoWhileStmt; Exit; End;
     If CurToken.Val = 'for' Then Begin ParseForStmt; Exit; End;
-    If CurToken.Val = 'break' Then Begin ParserAdvance;
+    If CurToken.Val = 'break' Then
+    Begin
+      ParserAdvance;
+      If LoopTop > 0 Then
+      Begin
+        EmitComment('break');
+        EmitInstrA('JMP', LoopBreakLbl[LoopTop - 1]);
+      End
+      Else
+        CompileError('break en dehors d''une boucle/switch');
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then ParserAdvance;
-      Exit; End;
-    If CurToken.Val = 'continue' Then Begin ParserAdvance;
+      Exit;
+    End;
+    If CurToken.Val = 'continue' Then
+    Begin
+      ParserAdvance;
+      If (LoopTop > 0) And (LoopContLbl[LoopTop - 1] <> '') Then
+      Begin
+        EmitComment('continue');
+        EmitInstrA('JMP', LoopContLbl[LoopTop - 1]);
+      End
+      Else
+        CompileError('continue en dehors d''une boucle');
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then ParserAdvance;
-      Exit; End;
+      Exit;
+    End;
   End;
 
   (* #include et autres directives preprocesseur deja gerees par ParserAdvance *)
@@ -5253,7 +5676,6 @@ Begin
       (CurToken.Val = 'try') Or (CurToken.Val = 'catch') Or
       (CurToken.Val = 'throw') Or (CurToken.Val = 'public') Or
       (CurToken.Val = 'private') Or (CurToken.Val = 'protected') Or
-      (CurToken.Val = 'case') Or (CurToken.Val = 'default') Or
       (CurToken.Val = 'goto')) Then
   Begin
     (* Stub : consommer jusqu au ; ou { } *)
