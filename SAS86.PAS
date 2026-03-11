@@ -273,7 +273,7 @@
             Variables automatiques : _N_ incremente a chaque iteration
               _ERROR_ = 1 si erreur de conversion ou donnees invalides
 
-  TODO 17 - ETAPE PROC (PROC STEP) ET INFRASTRUCTURE
+  TODO 17 - ETAPE PROC (PROC STEP) ET INFRASTRUCTURE [IMPLEMENTE]
             ParseProcStep : PROC nom_proc [DATA=dataset] [options] ; stmts; RUN;
               ou QUIT; pour terminer certaines procedures
             Options communes :
@@ -494,6 +494,7 @@ Const
   MAX_STR       = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
   MAX_OBS_SIZE  = 512;    (* taille max d une observation en octets *)
   MAX_DATASETS  = 32;     (* nombre max de datasets en memoire      *)
+  MAX_PROC_VARS = 32;     (* nombre max de variables VAR/CLASS/BY   *)
   STACK_SIZE    = 1024;
   MISSING_VAL   = -32768; (* sentinelle valeur manquante = 8000h    *)
 
@@ -741,6 +742,21 @@ Var
   DSOutputLabel   : TString;   (* label routine OUTPUT implicite      *)
   DSObsCount      : Integer;   (* compteur observations ecrites       *)
 
+  (* PROC step (TODO 17) *)
+  InProcStep      : Boolean;   (* True si on est dans un PROC step    *)
+  ProcName        : TString;   (* nom de la procedure en cours        *)
+  ProcDataDS      : TString;   (* DATA= dataset d entree              *)
+  ProcOutDS       : TString;   (* OUT= dataset de sortie              *)
+  ProcNoPrint     : Boolean;   (* NOPRINT option                      *)
+  ProcVarList     : Array[0..MAX_PROC_VARS - 1] Of TString;
+  ProcVarCount    : Integer;   (* nombre de variables VAR             *)
+  ProcByList      : Array[0..MAX_PROC_VARS - 1] Of TString;
+  ProcByCount     : Integer;   (* nombre de variables BY              *)
+  ProcClassList   : Array[0..MAX_PROC_VARS - 1] Of TString;
+  ProcClassCount  : Integer;   (* nombre de variables CLASS            *)
+  ProcTitle       : TString;   (* titre courant (TITLE)               *)
+  ProcFootnote    : TString;   (* note de bas de page (FOOTNOTE)      *)
+
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
@@ -866,6 +882,12 @@ Procedure ParseStopStmt; Forward;
 Procedure ParseAbortStmt; Forward;
 Procedure DSEmitPDVReset; Forward;
 Procedure DSEmitImplicitOutput; Forward;
+(* TODO 17 - Forward declarations PROC step *)
+Procedure ParseProcStep; Forward;
+Procedure ParseProcVarStmt; Forward;
+Procedure ParseProcByStmt; Forward;
+Procedure ParseProcClassStmt; Forward;
+Procedure ProcInit; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1155,6 +1177,16 @@ Begin
   DSStopLabel    := '';
   DSOutputLabel  := '';
   DSObsCount     := 0;
+  InProcStep     := False;
+  ProcName       := '';
+  ProcDataDS     := '';
+  ProcOutDS      := '';
+  ProcNoPrint    := False;
+  ProcVarCount   := 0;
+  ProcByCount    := 0;
+  ProcClassCount := 0;
+  ProcTitle      := '';
+  ProcFootnote   := '';
   GExprDummy.Kind    := EK_NONE;
   GExprDummy.ImmVal  := 0;
   GExprDummy.TypeIdx := TY_UNKNOWN;
@@ -6135,7 +6167,461 @@ Begin
 End;
 
 { ============================================================
-  STUBS POUR TODO 17..25 (a implementer)
+  TODO 17 - ETAPE PROC (PROC STEP) ET INFRASTRUCTURE [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- ProcInit : reinitialiser l etat du PROC step --------------- *)
+Procedure ProcInit;
+Begin
+  InProcStep     := True;
+  ProcName       := '';
+  ProcDataDS     := '';
+  ProcOutDS      := '';
+  ProcNoPrint    := False;
+  ProcVarCount   := 0;
+  ProcByCount    := 0;
+  ProcClassCount := 0;
+  ProcTitle      := '';
+  ProcFootnote   := '';
+End;
+
+(* ---- ParseProcVarStmt : parser VAR var1 var2 ... ; -------------- *)
+(* Appele apres que le mot-cle VAR ait ete consomme.                  *)
+Procedure ParseProcVarStmt;
+Begin
+  EmitComment('VAR');
+  ProcVarCount := 0;
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      If ProcVarCount < MAX_PROC_VARS Then
+      Begin
+        ProcVarList[ProcVarCount] := StrUpperCase(CurToken.Val);
+        Inc(ProcVarCount);
+      End
+      Else
+        WarnMsg('trop de variables dans VAR (max '
+                + IntToStr(MAX_PROC_VARS) + ')');
+    End;
+    ParserAdvance;
+  End;
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseProcByStmt : parser BY var1 var2 ... ; ---------------- *)
+(* Appele apres que le mot-cle BY ait ete consomme.                   *)
+Procedure ParseProcByStmt;
+Begin
+  EmitComment('BY');
+  ProcByCount := 0;
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      If ProcByCount < MAX_PROC_VARS Then
+      Begin
+        ProcByList[ProcByCount] := StrUpperCase(CurToken.Val);
+        Inc(ProcByCount);
+      End
+      Else
+        WarnMsg('trop de variables dans BY (max '
+                + IntToStr(MAX_PROC_VARS) + ')');
+    End;
+    ParserAdvance;
+  End;
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseProcClassStmt : parser CLASS var1 var2 ... ; ---------- *)
+(* Appele apres que le mot-cle CLASS ait ete consomme.                *)
+Procedure ParseProcClassStmt;
+Begin
+  EmitComment('CLASS');
+  ProcClassCount := 0;
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      If ProcClassCount < MAX_PROC_VARS Then
+      Begin
+        ProcClassList[ProcClassCount] := StrUpperCase(CurToken.Val);
+        Inc(ProcClassCount);
+      End
+      Else
+        WarnMsg('trop de variables dans CLASS (max '
+                + IntToStr(MAX_PROC_VARS) + ')');
+    End;
+    ParserAdvance;
+  End;
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseProcOptions : parser les options apres PROC nom ------- *)
+(* Options reconnues :                                                 *)
+(*   DATA=dataset  : dataset d entree                                  *)
+(*   OUT=dataset   : dataset de sortie                                 *)
+(*   NOPRINT       : supprimer l affichage                             *)
+(*   WHERE=(cond)  : filtrer (consomme sans generer de code)           *)
+(*   Autres options specifiques : passees au handler de la PROC        *)
+(* Consume les tokens jusqu au prochain ; (fin de la ligne PROC).      *)
+Procedure ParseProcOptions;
+Var
+  OptName : TString;
+Begin
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+    Begin
+      OptName := StrUpperCase(CurToken.Val);
+      ParserAdvance;
+
+      (* DATA=dataset *)
+      If OptName = 'DATA' Then
+      Begin
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+        Begin
+          ParserAdvance;
+          If (CurToken.Kind = TK_IDENT) Or
+             (CurToken.Kind = TK_KEYWORD) Then
+          Begin
+            ProcDataDS := StrUpperCase(CurToken.Val);
+            EmitComment('PROC option DATA=' + ProcDataDS);
+            ParserAdvance;
+          End;
+        End;
+        Continue;
+      End;
+
+      (* OUT=dataset *)
+      If OptName = 'OUT' Then
+      Begin
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+        Begin
+          ParserAdvance;
+          If (CurToken.Kind = TK_IDENT) Or
+             (CurToken.Kind = TK_KEYWORD) Then
+          Begin
+            ProcOutDS := StrUpperCase(CurToken.Val);
+            EmitComment('PROC option OUT=' + ProcOutDS);
+            ParserAdvance;
+          End;
+        End;
+        Continue;
+      End;
+
+      (* NOPRINT *)
+      If OptName = 'NOPRINT' Then
+      Begin
+        ProcNoPrint := True;
+        EmitComment('PROC option NOPRINT');
+        Continue;
+      End;
+
+      (* WHERE=(condition) : consommer la parenthese *)
+      If OptName = 'WHERE' Then
+      Begin
+        EmitComment('PROC option WHERE (stub)');
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+          ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          While (CurToken.Kind <> TK_PUNCT) Or (CurToken.Val <> ')') Do
+          Begin
+            If CurToken.Kind = TK_EOF Then Break;
+            ParserAdvance;
+          End;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        Continue;
+      End;
+
+      (* Autre option non reconnue : ignorer *)
+    End
+    Else
+      ParserAdvance;
+  End;
+
+  (* Consommer ; *)
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseProcBody : parser le corps du PROC step --------------- *)
+(* Lit les instructions internes au PROC step :                        *)
+(*   VAR, BY, CLASS, TITLE, FOOTNOTE, TABLES, etc.                    *)
+(* Sort a RUN ;, QUIT ;, ou debut d un autre step (DATA/PROC).        *)
+(* Retourne False si la procedure n est pas reconnue et que le corps   *)
+(* a ete ignore.                                                       *)
+Procedure ParseProcBody;
+Var
+  KW : TString;
+Begin
+  While CurToken.Kind <> TK_EOF Do
+  Begin
+    If CurToken.Kind = TK_KEYWORD Then
+    Begin
+      KW := StrUpperCase(CurToken.Val);
+
+      (* RUN ; marque la fin du PROC step *)
+      If KW = 'RUN' Then
+      Begin
+        ParserAdvance;
+        If CurToken.Kind = TK_SEMICOLON Then
+          ParserAdvance;
+        Break;
+      End;
+
+      (* QUIT ; fin alternative *)
+      If KW = 'QUIT' Then
+      Begin
+        ParserAdvance;
+        If CurToken.Kind = TK_SEMICOLON Then
+          ParserAdvance;
+        Break;
+      End;
+
+      (* DATA ou PROC : fin implicite du PROC step courant *)
+      If (KW = 'DATA') Or (KW = 'PROC') Then
+        Break;
+
+      (* VAR variables ; *)
+      If KW = 'VAR' Then
+      Begin
+        ParserAdvance;
+        ParseProcVarStmt;
+        Continue;
+      End;
+
+      (* BY variables ; *)
+      If KW = 'BY' Then
+      Begin
+        ParserAdvance;
+        ParseProcByStmt;
+        Continue;
+      End;
+
+      (* CLASS variables ; *)
+      If KW = 'CLASS' Then
+      Begin
+        ParserAdvance;
+        ParseProcClassStmt;
+        Continue;
+      End;
+
+      (* TITLE 'texte' ; *)
+      If KW = 'TITLE' Then
+      Begin
+        ParserAdvance;
+        If CurToken.Kind = TK_STRING Then
+        Begin
+          ProcTitle := CurToken.Val;
+          EmitComment('TITLE: ' + ProcTitle);
+          ParserAdvance;
+        End;
+        While (CurToken.Kind <> TK_SEMICOLON) And
+              (CurToken.Kind <> TK_EOF) Do
+          ParserAdvance;
+        If CurToken.Kind = TK_SEMICOLON Then
+          ParserAdvance;
+        Continue;
+      End;
+
+      (* FOOTNOTE 'texte' ; *)
+      If KW = 'FOOTNOTE' Then
+      Begin
+        ParserAdvance;
+        If CurToken.Kind = TK_STRING Then
+        Begin
+          ProcFootnote := CurToken.Val;
+          EmitComment('FOOTNOTE: ' + ProcFootnote);
+          ParserAdvance;
+        End;
+        While (CurToken.Kind <> TK_SEMICOLON) And
+              (CurToken.Kind <> TK_EOF) Do
+          ParserAdvance;
+        If CurToken.Kind = TK_SEMICOLON Then
+          ParserAdvance;
+        Continue;
+      End;
+
+      (* TABLES (pour PROC FREQ, stub TODO 19) *)
+      If KW = 'TABLES' Then
+      Begin
+        EmitComment('TABLES (stub TODO 19)');
+        ParserAdvance;
+        While (CurToken.Kind <> TK_SEMICOLON) And
+              (CurToken.Kind <> TK_EOF) Do
+          ParserAdvance;
+        If CurToken.Kind = TK_SEMICOLON Then
+          ParserAdvance;
+        Continue;
+      End;
+
+      (* WHERE (condition) ; *)
+      If KW = 'WHERE' Then
+      Begin
+        EmitComment('WHERE (stub)');
+        ParserAdvance;
+        While (CurToken.Kind <> TK_SEMICOLON) And
+              (CurToken.Kind <> TK_EOF) Do
+          ParserAdvance;
+        If CurToken.Kind = TK_SEMICOLON Then
+          ParserAdvance;
+        Continue;
+      End;
+
+      (* FORMAT / INFORMAT / ATTRIB / OPTIONS : consommer *)
+      If (KW = 'FORMAT') Or (KW = 'INFORMAT') Or
+         (KW = 'ATTRIB') Or (KW = 'OPTIONS') Or
+         (KW = 'OUTPUT') Then
+      Begin
+        EmitComment(KW + ' (stub)');
+        ParserAdvance;
+        While (CurToken.Kind <> TK_SEMICOLON) And
+              (CurToken.Kind <> TK_EOF) Do
+          ParserAdvance;
+        If CurToken.Kind = TK_SEMICOLON Then
+          ParserAdvance;
+        Continue;
+      End;
+    End;
+
+    (* Point-virgule isole *)
+    If CurToken.Kind = TK_SEMICOLON Then
+    Begin
+      ParserAdvance;
+      Continue;
+    End;
+
+    (* Autre token non reconnu dans le PROC : consommer la ligne *)
+    ParserAdvance;
+    While (CurToken.Kind <> TK_SEMICOLON) And
+          (CurToken.Kind <> TK_EOF) Do
+      ParserAdvance;
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+  End;
+End;
+
+(* ---- ParseProcStep : PROC nom [options] ; stmts ; RUN ; -------- *)
+(* Point d entree du PROC step.                                        *)
+(* Appele apres que le mot-cle PROC ait ete consomme.                  *)
+(* 1. Lire le nom de la procedure                                      *)
+(* 2. Parser les options (DATA=, OUT=, NOPRINT, WHERE=)                *)
+(* 3. Parser le corps (VAR, BY, CLASS, TITLE, FOOTNOTE, etc.)          *)
+(* 4. Dispatcher vers le handler de la procedure connue                 *)
+(* 5. Generer le code ASM pour la procedure                            *)
+Procedure ParseProcStep;
+Begin
+  ProcInit;
+  EmitBlankLine;
+
+  (* Lire le nom de la procedure *)
+  If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+  Begin
+    ProcName := StrUpperCase(CurToken.Val);
+    ParserAdvance;
+  End
+  Else
+  Begin
+    CompileError('nom de procedure attendu apres PROC');
+    ProcName := 'UNKNOWN';
+  End;
+
+  EmitComment('========= PROC ' + ProcName + ' =========');
+
+  (* Parser les options sur la meme ligne que PROC nom *)
+  ParseProcOptions;
+
+  (* Dispatcher selon la procedure connue *)
+  If (ProcName = 'PRINT') Or (ProcName = 'MEANS') Or
+     (ProcName = 'SUMMARY') Or (ProcName = 'FREQ') Or
+     (ProcName = 'SORT') Or (ProcName = 'FORMAT') Or
+     (ProcName = 'TABULATE') Or (ProcName = 'REPORT') Or
+     (ProcName = 'REG') Or (ProcName = 'CONTENTS') Or
+     (ProcName = 'DATASETS') Or (ProcName = 'SQL') Or
+     (ProcName = 'TRANSPOSE') Or (ProcName = 'UNIVARIATE') Or
+     (ProcName = 'CORR') Or (ProcName = 'APPEND') Then
+  Begin
+    (* Procedure connue : parser le corps puis emettre le code *)
+    ParseProcBody;
+
+    (* Generer le stub ASM selon la procedure *)
+    EmitComment('PROC ' + ProcName + ' : execution');
+
+    If ProcName = 'PRINT' Then
+    Begin
+      (* PROC PRINT : stub (TODO 18) *)
+      EmitComment('PROC PRINT : affichage tabulaire (stub TODO 18)');
+      If ProcDataDS <> '' Then
+        EmitComment('  DATA=' + ProcDataDS);
+      If ProcVarCount > 0 Then
+        EmitComment('  VAR : ' + IntToStr(ProcVarCount) + ' variable(s)');
+    End
+    Else If (ProcName = 'MEANS') Or (ProcName = 'SUMMARY') Then
+    Begin
+      (* PROC MEANS : stub (TODO 18) *)
+      EmitComment('PROC MEANS : statistiques descriptives (stub TODO 18)');
+      If ProcDataDS <> '' Then
+        EmitComment('  DATA=' + ProcDataDS);
+      If ProcVarCount > 0 Then
+        EmitComment('  VAR : ' + IntToStr(ProcVarCount) + ' variable(s)');
+    End
+    Else If ProcName = 'FREQ' Then
+    Begin
+      (* PROC FREQ : stub (TODO 19) *)
+      EmitComment('PROC FREQ : frequences (stub TODO 19)');
+    End
+    Else If ProcName = 'SORT' Then
+    Begin
+      (* PROC SORT : stub (TODO 19) *)
+      EmitComment('PROC SORT : tri (stub TODO 19)');
+      If ProcDataDS <> '' Then
+        EmitComment('  DATA=' + ProcDataDS);
+      If ProcOutDS <> '' Then
+        EmitComment('  OUT=' + ProcOutDS);
+      If ProcByCount > 0 Then
+        EmitComment('  BY : ' + IntToStr(ProcByCount) + ' variable(s)');
+    End
+    Else If ProcName = 'FORMAT' Then
+    Begin
+      (* PROC FORMAT : stub (TODO 20) *)
+      EmitComment('PROC FORMAT : formats utilisateur (stub TODO 20)');
+    End
+    Else
+    Begin
+      (* Autre procedure connue : stub generique *)
+      EmitComment('PROC ' + ProcName + ' : stub (a implementer)');
+    End;
+  End
+  Else
+  Begin
+    (* Procedure non reconnue : avertissement et ignorer *)
+    WarnMsg('procedure non reconnue : PROC ' + ProcName
+            + ' (ignoree jusqu a RUN/QUIT)');
+    EmitComment('PROC ' + ProcName + ' : non reconnu, ignore');
+    ParseProcBody;
+  End;
+
+  EmitComment('========= FIN PROC ' + ProcName + ' =========');
+  EmitBlankLine;
+
+  (* Restaurer l etat *)
+  InProcStep := False;
+End;
+
+{ ============================================================
+  STUBS POUR TODO 18..25 (a implementer)
   ============================================================ }
 
 Procedure ParseStmt;
@@ -6299,8 +6785,8 @@ Begin
       Exit;
     End;
 
-    (* RUN / PROC / QUIT : consommer le reste de l instruction *)
-    If (KW = 'RUN') Or (KW = 'PROC') Or
+    (* RUN / QUIT : consommer le reste de l instruction *)
+    If (KW = 'RUN') Or
        (KW = 'QUIT') Or (KW = 'TITLE') Or (KW = 'FOOTNOTE') Or
        (KW = 'OPTIONS') Or (KW = 'CARDS') Or (KW = 'DATALINES') Or
        (KW = 'RETURN') Or (KW = 'FORMAT') Or
@@ -6314,6 +6800,14 @@ Begin
         ParserAdvance;
       If CurToken.Kind = TK_SEMICOLON Then
         ParserAdvance;
+      Exit;
+    End;
+
+    (* TODO 17 : PROC (debut d un PROC step) *)
+    If KW = 'PROC' Then
+    Begin
+      ParserAdvance;
+      ParseProcStep;
       Exit;
     End;
 
