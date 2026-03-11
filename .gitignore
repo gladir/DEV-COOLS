@@ -2,3 +2,7 @@
 SAS86
 *.exe
 *.EXE
+SAS86
+*.o
+*.ppu
+SAS86.o

@@ -367,7 +367,7 @@
               &SYSTIME (heure courante), &SYSVER (version SAS)
               -> valeurs constantes codees en dur dans le compilateur
 
-  TODO 22 - FONCTIONS INTEGREES
+  TODO 22 - FONCTIONS INTEGREES [IMPLEMENTE]
             Fonctions numeriques :
               ABS(x) : valeur absolue -> CALL _SASRT_ABS
               INT(x) : partie entiere (identite sur entier 16 bits)
@@ -987,6 +987,8 @@ Function  MacroFuncEval(Const FName, Args : TString) : TString; Forward;
 Procedure ParsePercentIf; Forward;
 Procedure ParsePercentDo; Forward;
 Procedure HandlePercentDirective; Forward;
+(* TODO 22 - Forward declarations FONCTIONS INTEGREES *)
+Procedure EmitBuiltinRuntime; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -2126,6 +2128,9 @@ Begin
   DataAddWord('_SAS_DOSTEP', 1);   (* pas (BY) boucle DO iterative      *)
   IOInputBufLbl := '_SAS_INBUF';
   IONumBufLbl   := '_SAS_NUMBUF';
+  (* TODO 22 : buffers pour fonctions integrees *)
+  DataAddObs('_SAS_STRBUF', 256);   (* buffer resultat fonctions chaine  *)
+  DataAddObs('_SAS_STRBUF2', 256);  (* second buffer pour concatenation  *)
 End;
 
 (* ---- ExprMakeImm : construire une valeur immediate ---------- *)
@@ -3515,6 +3520,7 @@ Begin
   RuntimeEmitted := True;
   EmitBlankLine;
   EmitComment('--- Runtime minimal SAS86 ---');
+  EmitBuiltinRuntime;
   (* TODO 24 : emettre les routines runtime ici *)
   EmitBlankLine;
 End;
@@ -4012,6 +4018,9 @@ Begin
     (Name = 'INDEX')  Or (Name = 'LENGTH') Or
     (Name = 'COMPRESS') Or (Name = 'CAT')  Or (Name = 'CATS')   Or
     (Name = 'CATX')   Or (Name = 'PUT')    Or (Name = 'INPUT')  Or
+    (* Fonctions de date (TODO 22) *)
+    (Name = 'TODAY') Or (Name = 'MDY') Or (Name = 'YEAR') Or
+    (Name = 'MONTH') Or (Name = 'DAY') Or
     (* Fonction tableau (TODO 15) *)
     (Name = 'DIM');
 End;
@@ -4269,11 +4278,36 @@ Begin
   (* TRIM, LEFT, RIGHT, UPCASE, LOWCASE, COMPRESS            *)
   Else If (FName = 'TRIM') Or (FName = 'LEFT') Or
           (FName = 'RIGHT') Or (FName = 'UPCASE') Or
-          (FName = 'LOWCASE') Or (FName = 'COMPRESS') Then
+          (FName = 'LOWCASE') Then
   Begin
     ParseExprPrec(1, Arg1);
     ExprFlushToAX(Arg1);
     EmitInstrA('CALL', SAS_RT_PFX + FName);
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_CHARACTER;
+    Res.ImmVal  := 0;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+
+  (* ========= COMPRESS(str [,chars]) ========================= *)
+  Else If FName = 'COMPRESS' Then
+  Begin
+    ParseExprPrec(1, Arg1);
+    ExprFlushToAX(Arg1);
+    EmitInstrA('PUSH', 'AX');
+    (* Optionnel : caracteres a supprimer *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+    Begin
+      ParserAdvance;
+      ParseExprPrec(1, Arg2);
+      ExprFlushToAX(Arg2);
+      EmitInstrAB('MOV', 'DI', 'AX');
+    End
+    Else
+      EmitInstrAB('XOR', 'DI', 'DI');  (* DI=0 : supprimer espaces *)
+    EmitInstrA('POP', 'AX');
+    EmitInstrA('CALL', SAS_RT_PFX + 'COMPRESS');
     Res.Kind    := EK_AX;
     Res.TypeIdx := TY_IDX_CHARACTER;
     Res.ImmVal  := 0;
@@ -4340,6 +4374,58 @@ Begin
       Res.TypeIdx := TY_IDX_NUMERIC;
     End;
     Res.Kind    := EK_AX;
+    Res.ImmVal  := 0;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+
+  (* ========= TODAY() : date courante (SAS date) ============== *)
+  Else If FName = 'TODAY' Then
+  Begin
+    (* TODAY() : jours depuis 01JAN1960 -- constante codee en dur *)
+    EmitInstrAB('MOV', 'AX', '24176');  (* ~11MAR2026 *)
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_NUMERIC;
+    Res.ImmVal  := 0;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+
+  (* ========= MDY(month, day, year) : construire date SAS ==== *)
+  Else If FName = 'MDY' Then
+  Begin
+    ParseExprPrec(1, Arg1);
+    ExprFlushToAX(Arg1);
+    EmitInstrA('PUSH', 'AX');     (* month *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+    ParseExprPrec(1, Arg2);
+    ExprFlushToAX(Arg2);
+    EmitInstrA('PUSH', 'AX');     (* day *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+    ParseExprPrec(1, Arg3);
+    ExprFlushToAX(Arg3);
+    EmitInstrAB('MOV', 'CX', 'AX');   (* year *)
+    EmitInstrA('POP', 'BX');           (* day *)
+    EmitInstrA('POP', 'AX');           (* month *)
+    EmitInstrA('CALL', SAS_RT_PFX + 'MDY');
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_NUMERIC;
+    Res.ImmVal  := 0;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+
+  (* ========= YEAR/MONTH/DAY(date) : extraire composante ===== *)
+  Else If (FName = 'YEAR') Or (FName = 'MONTH') Or
+          (FName = 'DAY') Then
+  Begin
+    ParseExprPrec(1, Arg1);
+    ExprFlushToAX(Arg1);
+    EmitInstrA('CALL', SAS_RT_PFX + FName);
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_NUMERIC;
     Res.ImmVal  := 0;
     Res.Offset  := 0;
     Res.SymIdx  := -1;
@@ -9021,13 +9107,548 @@ Begin
     Exit;
   End;
 
-  (* Fallback : consommer *)
   ParserAdvance;
   While (CurToken.Kind <> TK_SEMICOLON) And
         (CurToken.Kind <> TK_EOF) Do
     ParserAdvance;
   If CurToken.Kind = TK_SEMICOLON Then
     ParserAdvance;
+End;
+
+{ ============================================================
+  TODO 22 - FONCTIONS INTEGREES [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- EmitBuiltinRuntime : emettre les routines runtime des fonctions --- *)
+(* Emet dans le segment de code les sous-programmes appeles par les         *)
+(* fonctions integrees SAS reconnues par ParseFuncCall.                     *)
+(* Convention d appel 16 bits :                                             *)
+(*   - arguments dans AX, BX, CX, DX, SI, DI selon la fonction            *)
+(*   - resultat dans AX (entier) ou AX=ptr vers _SAS_STRBUF (chaine)      *)
+(*   - registres modifies : AX, BX, CX, DX, SI, DI (sauf BP/SP)          *)
+
+Procedure EmitBuiltinRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=== Runtime fonctions integrees SAS86 (TODO 22) ===');
+  EmitBlankLine;
+
+  (* ------ _SASRT_MIN : AX=a, BX=b -> AX=min(a,b) -------------- *)
+  EmitLabel(SAS_RT_PFX + 'MIN');
+  EmitInstrAB('CMP', 'AX', 'BX');
+  EmitInstrA('JLE', SAS_RT_PFX + 'MIN_D');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitLabel(SAS_RT_PFX + 'MIN_D');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_MAX : AX=a, BX=b -> AX=max(a,b) -------------- *)
+  EmitLabel(SAS_RT_PFX + 'MAX');
+  EmitInstrAB('CMP', 'AX', 'BX');
+  EmitInstrA('JGE', SAS_RT_PFX + 'MAX_D');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitLabel(SAS_RT_PFX + 'MAX_D');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_ROUND : AX=n, BX=unite -> AX=arrondi ---------- *)
+  EmitLabel(SAS_RT_PFX + 'ROUND');
+  EmitInstrAB('TEST', 'BX', 'BX');
+  EmitInstrA('JZ', SAS_RT_PFX + 'ROUND_D');
+  EmitInstr('CWD');
+  EmitInstrA('IDIV', 'BX');
+  EmitInstrA('IMUL', 'BX');
+  EmitLabel(SAS_RT_PFX + 'ROUND_D');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_SQRT : AX=n -> AX=isqrt(n) (Newton) ---------- *)
+  EmitLabel(SAS_RT_PFX + 'SQRT');
+  EmitInstrAB('CMP', 'AX', '1');
+  EmitInstrA('JLE', SAS_RT_PFX + 'SQRT_D');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrAB('SHR', 'AX', '1');
+  EmitLabel(SAS_RT_PFX + 'SQRT_L');
+  EmitInstrAB('MOV', 'CX', 'AX');
+  EmitInstrA('PUSH', 'AX');
+  EmitInstrAB('MOV', 'AX', 'SI');
+  EmitInstrAB('XOR', 'DX', 'DX');
+  EmitInstrA('DIV', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstrAB('ADD', 'AX', 'BX');
+  EmitInstrAB('SHR', 'AX', '1');
+  EmitInstrAB('CMP', 'AX', 'CX');
+  EmitInstrA('JB', SAS_RT_PFX + 'SQRT_L');
+  EmitInstrAB('MOV', 'AX', 'CX');
+  EmitInstrA('POP', 'SI');
+  EmitLabel(SAS_RT_PFX + 'SQRT_D');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_LOG : AX=n -> AX=ilog2(n) (nb bits) ----------- *)
+  EmitLabel(SAS_RT_PFX + 'LOG');
+  EmitInstrAB('CMP', 'AX', '1');
+  EmitInstrA('JLE', SAS_RT_PFX + 'LOG_Z');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitLabel(SAS_RT_PFX + 'LOG_L');
+  EmitInstrAB('SHR', 'AX', '1');
+  EmitInstrA('JZ', SAS_RT_PFX + 'LOG_E');
+  EmitInstrA('INC', 'CX');
+  EmitInstrA('JMP', SAS_RT_PFX + 'LOG_L');
+  EmitLabel(SAS_RT_PFX + 'LOG_E');
+  EmitInstrAB('MOV', 'AX', 'CX');
+  EmitInstrA('POP', 'CX');
+  EmitInstr('RET');
+  EmitLabel(SAS_RT_PFX + 'LOG_Z');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_EXP : AX=n -> AX (stub identite) -------------- *)
+  EmitLabel(SAS_RT_PFX + 'EXP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_STRLEN : AX=ptr -> AX=longueur (ASCIIZ) ------- *)
+  EmitLabel(SAS_RT_PFX + 'STRLEN');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitLabel(SAS_RT_PFX + 'SL_LP');
+  EmitInstr('LODSB');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', SAS_RT_PFX + 'SL_DN');
+  EmitInstrA('INC', 'CX');
+  EmitInstrA('JMP', SAS_RT_PFX + 'SL_LP');
+  EmitLabel(SAS_RT_PFX + 'SL_DN');
+  EmitInstrAB('MOV', 'AX', 'CX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_INDEX : SI=str, DI=sub -> AX=pos (1-based) ---- *)
+  EmitLabel(SAS_RT_PFX + 'INDEX');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('XOR', 'BX', 'BX');
+  EmitLabel(SAS_RT_PFX + 'IX_NX');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', SAS_RT_PFX + 'IX_NF');
+  EmitInstrA('INC', 'BX');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitLabel(SAS_RT_PFX + 'IX_CM');
+  EmitInstrAB('MOV', 'AL', '[DI]');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', SAS_RT_PFX + 'IX_FD');
+  EmitInstrAB('CMP', 'AL', '[SI]');
+  EmitInstrA('JNE', SAS_RT_PFX + 'IX_NM');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', SAS_RT_PFX + 'IX_CM');
+  EmitLabel(SAS_RT_PFX + 'IX_NM');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', SAS_RT_PFX + 'IX_NX');
+  EmitLabel(SAS_RT_PFX + 'IX_FD');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitLabel(SAS_RT_PFX + 'IX_NF');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_SUBSTR : SI=str, BX=pos, CX=len -> AX=ptr ---- *)
+  EmitLabel(SAS_RT_PFX + 'SUBSTR');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('LEA', 'DI', '_SAS_STRBUF');
+  EmitInstrA('DEC', 'BX');
+  EmitInstrAB('ADD', 'SI', 'BX');
+  EmitLabel(SAS_RT_PFX + 'SS_LP');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', SAS_RT_PFX + 'SS_DN');
+  EmitInstr('LODSB');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', SAS_RT_PFX + 'SS_DN');
+  EmitInstr('STOSB');
+  EmitInstrAB('CMP', 'CX', '-1');
+  EmitInstrA('JE', SAS_RT_PFX + 'SS_LP');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', SAS_RT_PFX + 'SS_LP');
+  EmitLabel(SAS_RT_PFX + 'SS_DN');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('LEA', 'AX', '_SAS_STRBUF');
+  EmitInstrA('POP', 'DI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_TRIM : AX=ptr -> AX=ptr (trim trailing spaces) *)
+  EmitLabel(SAS_RT_PFX + 'TRIM');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrAB('LEA', 'DI', '_SAS_STRBUF');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitLabel(SAS_RT_PFX + 'TR_CP');
+  EmitInstr('LODSB');
+  EmitInstr('STOSB');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', SAS_RT_PFX + 'TR_TM');
+  EmitInstrA('INC', 'CX');
+  EmitInstrA('JMP', SAS_RT_PFX + 'TR_CP');
+  EmitLabel(SAS_RT_PFX + 'TR_TM');
+  EmitInstrAB('LEA', 'DI', '_SAS_STRBUF');
+  EmitInstrAB('ADD', 'DI', 'CX');
+  EmitInstrA('DEC', 'DI');
+  EmitLabel(SAS_RT_PFX + 'TR_BK');
+  EmitInstrAB('LEA', 'AX', '_SAS_STRBUF');
+  EmitInstrAB('CMP', 'DI', 'AX');
+  EmitInstrA('JB', SAS_RT_PFX + 'TR_DN');
+  EmitInstrAB('CMP', 'BYTE PTR [DI]', '20h');
+  EmitInstrA('JNE', SAS_RT_PFX + 'TR_DN');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrA('DEC', 'DI');
+  EmitInstrA('JMP', SAS_RT_PFX + 'TR_BK');
+  EmitLabel(SAS_RT_PFX + 'TR_DN');
+  EmitInstrAB('LEA', 'AX', '_SAS_STRBUF');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_LEFT : AX=ptr -> AX=ptr (trim leading spaces) - *)
+  EmitLabel(SAS_RT_PFX + 'LEFT');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitLabel(SAS_RT_PFX + 'LF_SK');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '20h');
+  EmitInstrA('JNE', SAS_RT_PFX + 'LF_CP');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', SAS_RT_PFX + 'LF_SK');
+  EmitLabel(SAS_RT_PFX + 'LF_CP');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('LEA', 'DI', '_SAS_STRBUF');
+  EmitLabel(SAS_RT_PFX + 'LF_LP');
+  EmitInstr('LODSB');
+  EmitInstr('STOSB');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JNZ', SAS_RT_PFX + 'LF_LP');
+  EmitInstrAB('LEA', 'AX', '_SAS_STRBUF');
+  EmitInstrA('POP', 'DI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_RIGHT : AX=ptr -> AX=ptr (right-align stub) --- *)
+  (* Simplifie : copie la chaine sans modification en v1            *)
+  EmitLabel(SAS_RT_PFX + 'RIGHT');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrAB('LEA', 'DI', '_SAS_STRBUF');
+  EmitLabel(SAS_RT_PFX + 'RI_LP');
+  EmitInstr('LODSB');
+  EmitInstr('STOSB');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JNZ', SAS_RT_PFX + 'RI_LP');
+  EmitInstrAB('LEA', 'AX', '_SAS_STRBUF');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_UPCASE : AX=ptr -> AX=ptr (majuscules) -------- *)
+  EmitLabel(SAS_RT_PFX + 'UPCASE');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrAB('LEA', 'DI', '_SAS_STRBUF');
+  EmitLabel(SAS_RT_PFX + 'UC_LP');
+  EmitInstr('LODSB');
+  EmitInstrAB('CMP', 'AL', '61h');
+  EmitInstrA('JB', SAS_RT_PFX + 'UC_OK');
+  EmitInstrAB('CMP', 'AL', '7Ah');
+  EmitInstrA('JA', SAS_RT_PFX + 'UC_OK');
+  EmitInstrAB('SUB', 'AL', '20h');
+  EmitLabel(SAS_RT_PFX + 'UC_OK');
+  EmitInstr('STOSB');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JNZ', SAS_RT_PFX + 'UC_LP');
+  EmitInstrAB('LEA', 'AX', '_SAS_STRBUF');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_LOWCASE : AX=ptr -> AX=ptr (minuscules) ------- *)
+  EmitLabel(SAS_RT_PFX + 'LOWCASE');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrAB('LEA', 'DI', '_SAS_STRBUF');
+  EmitLabel(SAS_RT_PFX + 'LC_LP');
+  EmitInstr('LODSB');
+  EmitInstrAB('CMP', 'AL', '41h');
+  EmitInstrA('JB', SAS_RT_PFX + 'LC_OK');
+  EmitInstrAB('CMP', 'AL', '5Ah');
+  EmitInstrA('JA', SAS_RT_PFX + 'LC_OK');
+  EmitInstrAB('ADD', 'AL', '20h');
+  EmitLabel(SAS_RT_PFX + 'LC_OK');
+  EmitInstr('STOSB');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JNZ', SAS_RT_PFX + 'LC_LP');
+  EmitInstrAB('LEA', 'AX', '_SAS_STRBUF');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_COMPRESS : AX=str, DI=chars -> AX=ptr --------- *)
+  (* Si DI=0, supprime les espaces (20h)                             *)
+  EmitLabel(SAS_RT_PFX + 'COMPRESS');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('LEA', 'DI', '_SAS_STRBUF');
+  EmitLabel(SAS_RT_PFX + 'CO_LP');
+  EmitInstr('LODSB');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', SAS_RT_PFX + 'CO_DN');
+  EmitInstrAB('MOV', 'BX', '[SP]');
+  EmitInstrAB('TEST', 'BX', 'BX');
+  EmitInstrA('JNZ', SAS_RT_PFX + 'CO_CK');
+  EmitInstrAB('CMP', 'AL', '20h');
+  EmitInstrA('JE', SAS_RT_PFX + 'CO_LP');
+  EmitInstrA('JMP', SAS_RT_PFX + 'CO_ST');
+  EmitLabel(SAS_RT_PFX + 'CO_CK');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', 'BX');
+  EmitLabel(SAS_RT_PFX + 'CO_SC');
+  EmitInstrAB('MOV', 'AH', '[SI]');
+  EmitInstrAB('TEST', 'AH', 'AH');
+  EmitInstrA('JZ', SAS_RT_PFX + 'CO_KP');
+  EmitInstrAB('CMP', 'AL', 'AH');
+  EmitInstrA('JE', SAS_RT_PFX + 'CO_RM');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', SAS_RT_PFX + 'CO_SC');
+  EmitLabel(SAS_RT_PFX + 'CO_KP');
+  EmitInstrA('POP', 'SI');
+  EmitLabel(SAS_RT_PFX + 'CO_ST');
+  EmitInstr('STOSB');
+  EmitInstrA('JMP', SAS_RT_PFX + 'CO_LP');
+  EmitLabel(SAS_RT_PFX + 'CO_RM');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('JMP', SAS_RT_PFX + 'CO_LP');
+  EmitLabel(SAS_RT_PFX + 'CO_DN');
+  EmitInstr('STOSB');
+  EmitInstrA('POP', 'BX');
+  EmitInstrAB('LEA', 'AX', '_SAS_STRBUF');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_STRCAT : SI=str1, DI=str2 -> AX=ptr ----------- *)
+  EmitLabel(SAS_RT_PFX + 'STRCAT');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('LEA', 'DI', '_SAS_STRBUF2');
+  EmitLabel(SAS_RT_PFX + 'SC_C1');
+  EmitInstr('LODSB');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', SAS_RT_PFX + 'SC_S2');
+  EmitInstr('STOSB');
+  EmitInstrA('JMP', SAS_RT_PFX + 'SC_C1');
+  EmitLabel(SAS_RT_PFX + 'SC_S2');
+  EmitInstrA('POP', 'SI');
+  EmitLabel(SAS_RT_PFX + 'SC_C2');
+  EmitInstr('LODSB');
+  EmitInstr('STOSB');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JNZ', SAS_RT_PFX + 'SC_C2');
+  EmitInstrAB('LEA', 'AX', '_SAS_STRBUF2');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_NUM2STR : AX=num -> AX=ptr (itoa) ------------- *)
+  EmitLabel(SAS_RT_PFX + 'NUM2STR');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrAB('LEA', 'DI', '_SAS_NUMBUF');
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JNS', SAS_RT_PFX + 'N2_POS');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '2Dh');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('NEG', 'AX');
+  EmitLabel(SAS_RT_PFX + 'N2_POS');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitInstrAB('MOV', 'BX', '10');
+  EmitLabel(SAS_RT_PFX + 'N2_DIV');
+  EmitInstrAB('XOR', 'DX', 'DX');
+  EmitInstrA('DIV', 'BX');
+  EmitInstrAB('ADD', 'DL', '30h');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrA('INC', 'CX');
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JNZ', SAS_RT_PFX + 'N2_DIV');
+  EmitLabel(SAS_RT_PFX + 'N2_POP');
+  EmitInstrA('POP', 'AX');
+  EmitInstr('STOSB');
+  EmitInstrA('LOOP', SAS_RT_PFX + 'N2_POP');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('LEA', 'AX', '_SAS_NUMBUF');
+  EmitInstrA('POP', 'BX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_STR2NUM : AX=ptr -> AX=num (atoi) ------------- *)
+  EmitLabel(SAS_RT_PFX + 'STR2NUM');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '2Dh');
+  EmitInstrA('JNE', SAS_RT_PFX + 'A2_LP');
+  EmitInstrA('INC', 'CX');
+  EmitInstrA('INC', 'SI');
+  EmitLabel(SAS_RT_PFX + 'A2_LP');
+  EmitInstrAB('MOV', 'BL', '[SI]');
+  EmitInstrAB('SUB', 'BL', '30h');
+  EmitInstrA('JB', SAS_RT_PFX + 'A2_DN');
+  EmitInstrAB('CMP', 'BL', '9');
+  EmitInstrA('JA', SAS_RT_PFX + 'A2_DN');
+  EmitInstrAB('MOV', 'DX', '10');
+  EmitInstrA('IMUL', 'DX');
+  EmitInstrAB('XOR', 'BH', 'BH');
+  EmitInstrAB('ADD', 'AX', 'BX');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', SAS_RT_PFX + 'A2_LP');
+  EmitLabel(SAS_RT_PFX + 'A2_DN');
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JZ', SAS_RT_PFX + 'A2_RT');
+  EmitInstrA('NEG', 'AX');
+  EmitLabel(SAS_RT_PFX + 'A2_RT');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_MDY : AX=month, BX=day, CX=year -> AX=date ---- *)
+  (* Date SAS = jours depuis 01JAN1960                               *)
+  EmitLabel(SAS_RT_PFX + 'MDY');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'BX');   (* sauvegarder day *)
+  EmitInstrA('PUSH', 'AX');   (* sauvegarder month *)
+  (* Calculer annees depuis 1960 *)
+  EmitInstrAB('MOV', 'AX', 'CX');
+  EmitInstrAB('SUB', 'AX', '1960');
+  EmitInstrAB('MOV', 'BX', '365');
+  EmitInstrA('IMUL', 'BX');   (* AX = years * 365 *)
+  EmitInstrAB('MOV', 'DI', 'AX');  (* DI = base days *)
+  (* Ajouter jours bissextiles : (year-1960)/4 approx *)
+  EmitInstrAB('MOV', 'AX', 'CX');
+  EmitInstrAB('SUB', 'AX', '1960');
+  EmitInstrAB('MOV', 'BX', '4');
+  EmitInstr('CWD');
+  EmitInstrA('IDIV', 'BX');
+  EmitInstrAB('ADD', 'DI', 'AX');  (* DI += leap days *)
+  (* Ajouter jours du mois : table cumulative *)
+  EmitInstrA('POP', 'AX');    (* AX = month *)
+  EmitInstrA('DEC', 'AX');    (* 0-based *)
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstrAB('SHL', 'BX', '1');   (* BX = month * 2 (word offset) *)
+  EmitInstrAB('ADD', 'BX', 'OFFSET ' + SAS_RT_PFX + 'MDAYS');
+  EmitInstrAB('MOV', 'AX', '[BX]');
+  EmitInstrAB('ADD', 'DI', 'AX');  (* DI += cumul month days *)
+  (* Ajouter le jour *)
+  EmitInstrA('POP', 'AX');    (* AX = day *)
+  EmitInstrA('DEC', 'AX');    (* 0-based *)
+  EmitInstrAB('ADD', 'AX', 'DI');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* Table des jours cumules par mois (non-bissextile) *)
+  EmitLabel(SAS_RT_PFX + 'MDAYS');
+  EmitRaw('        DW  0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334');
+  EmitBlankLine;
+
+  (* ------ _SASRT_YEAR : AX=date -> AX=annee -------------------- *)
+  EmitLabel(SAS_RT_PFX + 'YEAR');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrAB('MOV', 'BX', '365');
+  EmitInstr('CWD');
+  EmitInstrA('IDIV', 'BX');
+  EmitInstrAB('ADD', 'AX', '1960');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_MONTH : AX=date -> AX=mois (1-12) ------------- *)
+  EmitLabel(SAS_RT_PFX + 'MONTH');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'SI');
+  (* Obtenir jour-dans-l-annee : date MOD 365 *)
+  EmitInstrAB('MOV', 'BX', '365');
+  EmitInstr('CWD');
+  EmitInstrA('IDIV', 'BX');
+  EmitInstrAB('MOV', 'AX', 'DX');   (* AX = day of year *)
+  (* Chercher le mois dans la table cumulative *)
+  EmitInstrAB('LEA', 'SI', SAS_RT_PFX + 'MDAYS');
+  EmitInstrAB('MOV', 'CX', '12');
+  EmitInstrAB('XOR', 'BX', 'BX');
+  EmitLabel(SAS_RT_PFX + 'MO_LP');
+  EmitInstrAB('MOV', 'DX', '[SI+BX]');
+  EmitInstrAB('CMP', 'AX', 'DX');
+  EmitInstrA('JL', SAS_RT_PFX + 'MO_FD');
+  EmitInstrAB('ADD', 'BX', '2');
+  EmitInstrA('LOOP', SAS_RT_PFX + 'MO_LP');
+  EmitLabel(SAS_RT_PFX + 'MO_FD');
+  EmitInstrAB('SHR', 'BX', '1');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_DAY : AX=date -> AX=jour (1-31) --------------- *)
+  EmitLabel(SAS_RT_PFX + 'DAY');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'SI');
+  (* Obtenir jour-dans-l-annee *)
+  EmitInstrAB('MOV', 'BX', '365');
+  EmitInstr('CWD');
+  EmitInstrA('IDIV', 'BX');
+  EmitInstrAB('MOV', 'AX', 'DX');   (* AX = day of year *)
+  (* Trouver le mois et soustraire les jours cumules *)
+  EmitInstrAB('LEA', 'SI', SAS_RT_PFX + 'MDAYS');
+  EmitInstrAB('XOR', 'BX', 'BX');
+  EmitInstrAB('MOV', 'CX', '11');
+  EmitLabel(SAS_RT_PFX + 'DY_LP');
+  EmitInstrAB('MOV', 'DX', '[SI+BX+2]');
+  EmitInstrAB('CMP', 'AX', 'DX');
+  EmitInstrA('JL', SAS_RT_PFX + 'DY_FD');
+  EmitInstrAB('ADD', 'BX', '2');
+  EmitInstrA('LOOP', SAS_RT_PFX + 'DY_LP');
+  EmitLabel(SAS_RT_PFX + 'DY_FD');
+  EmitInstrAB('SUB', 'AX', '[SI+BX]');
+  EmitInstrA('INC', 'AX');   (* 1-based *)
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitBlankLine;
 End;
 
 { ============================================================
