@@ -122,7 +122,7 @@
             Stack WAM : _PL_STACK DW 1024 DUP(0) + _PL_STOP DW 0
             Trail : _PL_TRAIL DW 512 DUP(0) + _PL_TTOP DW 0
 
-  TODO 09 - UNIFICATION
+  TODO 09 - UNIFICATION [IMPLEMENTE]
             Unify(addr1, addr2) : algorithme d unification recursif
               Deref les deux termes
               Si les deux sont REF : lier la plus recente a l autre
@@ -763,6 +763,13 @@ Procedure TrailPush(Addr : Integer); Forward;
 Function  TrailTop : Integer; Forward;
 Procedure TrailReset; Forward;
 Procedure TermInit; Forward;
+{ Unification (TODO 09) }
+Procedure Bind(RefAddr, Term : Integer); Forward;
+Procedure UnwindTrail(SavedTop : Integer); Forward;
+Function  Unify(Addr1, Addr2 : Integer) : Boolean; Forward;
+Procedure EmitUnify; Forward;
+Procedure EmitDeref; Forward;
+Procedure EmitBind; Forward;
 { Emetteur de code ASM (TODO 07) }
 Procedure EmitOpen; Forward;
 Procedure EmitClose; Forward;
@@ -3401,6 +3408,206 @@ Begin
 End;
 
 { ============================================================
+  TODO 09 - UNIFICATION [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Bind : lier une variable REF a un terme ------------------- }
+{ RefAddr est l adresse heap d une cellule REF libre (pointe sur   }
+{ elle-meme). On ecrit le terme Term a cette adresse et on empile  }
+{ l adresse sur le trail pour pouvoir defaire la liaison lors du   }
+{ backtracking.                                                    }
+Procedure Bind(RefAddr, Term : Integer);
+Begin
+  Heap[RefAddr] := Term;
+  TrailPush(RefAddr);
+End;
+
+{ ---- UnwindTrail : defaire les liaisons depuis SavedTop --------- }
+{ Restaure toutes les variables liees depuis SavedTop jusqu a TTop  }
+{ en remettant chaque cellule a une REF libre pointant sur elle-    }
+{ meme. Utilise lors du backtracking pour annuler les unifications.  }
+Procedure UnwindTrail(SavedTop : Integer);
+Var
+  I    : Integer;
+  Addr : Integer;
+Begin
+  I := TTop - 1;
+  While I >= SavedTop Do
+  Begin
+    Addr := Trail[I];
+    Heap[Addr] := MakeRef(Addr);
+    Dec(I);
+  End;
+  TTop := SavedTop;
+End;
+
+{ ---- Unify : algorithme d unification recursif ------------------- }
+{ Prend deux adresses heap, dereference chacune, puis :              }
+{   - Si les deux sont REF : lier la plus recente a l autre          }
+{   - Si un seul est REF : lier la variable au terme                 }
+{   - Si deux atomes : comparer les index d atome                    }
+{   - Si deux entiers : comparer les valeurs                         }
+{   - Si deux structures : comparer foncteur/arite, unifier args     }
+{   - Si deux listes : unifier tete puis queue recursivement         }
+{ Retourne True si l unification reussit, False sinon.               }
+Function Unify(Addr1, Addr2 : Integer) : Boolean;
+Var
+  D1, D2   : Integer;
+  C1, C2   : Integer;
+  T1, T2   : Integer;
+  V1, V2   : Integer;
+  FIdx1    : Integer;
+  FIdx2    : Integer;
+  Arity    : Integer;
+  I        : Integer;
+  A1, A2   : Integer;
+  Ok       : Boolean;
+Begin
+  D1 := Deref(Addr1);
+  D2 := Deref(Addr2);
+
+  { Meme adresse : trivial }
+  If D1 = D2 Then
+  Begin
+    Unify := True;
+    Exit;
+  End;
+
+  C1 := Heap[D1];
+  C2 := Heap[D2];
+  T1 := GetTag(C1);
+  T2 := GetTag(C2);
+  V1 := GetVal(C1);
+  V2 := GetVal(C2);
+
+  { ---- Cas 1 : les deux sont REF (variables libres) ----------- }
+  If (T1 = TAG_REF) And (T2 = TAG_REF) Then
+  Begin
+    { Lier la plus recente (adresse plus haute) a l autre }
+    If D1 > D2 Then
+      Bind(D1, C2)
+    Else
+      Bind(D2, C1);
+    Unify := True;
+    Exit;
+  End;
+
+  { ---- Cas 2 : un seul est REF ----- }
+  If T1 = TAG_REF Then
+  Begin
+    Bind(D1, C2);
+    Unify := True;
+    Exit;
+  End;
+  If T2 = TAG_REF Then
+  Begin
+    Bind(D2, C1);
+    Unify := True;
+    Exit;
+  End;
+
+  { ---- Cas 3 : deux atomes -------- }
+  If (T1 = TAG_ATOM) And (T2 = TAG_ATOM) Then
+  Begin
+    Unify := (V1 = V2);
+    Exit;
+  End;
+
+  { ---- Cas 4 : deux entiers ------- }
+  If (T1 = TAG_INT) And (T2 = TAG_INT) Then
+  Begin
+    Unify := (V1 = V2);
+    Exit;
+  End;
+
+  { ---- Cas 5 : deux structures ----- }
+  { Structure sur le heap : [STR(addr)] -> Heap[addr] = foncteur   }
+  { Heap[addr+1..addr+arity] = arguments                          }
+  If (T1 = TAG_STR) And (T2 = TAG_STR) Then
+  Begin
+    A1 := V1;  { adresse du foncteur dans le heap }
+    A2 := V2;
+    { Le foncteur est stocke comme un entier brut : index FunctorTab }
+    FIdx1 := Heap[A1];
+    FIdx2 := Heap[A2];
+    { Les foncteurs doivent etre identiques }
+    If FIdx1 <> FIdx2 Then
+    Begin
+      Unify := False;
+      Exit;
+    End;
+    { Extraire l arite du foncteur }
+    If (FIdx1 >= 0) And (FIdx1 < FunctorCount) Then
+      Arity := FunctorTab[FIdx1].Arity
+    Else
+    Begin
+      Unify := False;
+      Exit;
+    End;
+    { Unifier chaque argument }
+    Ok := True;
+    For I := 1 To Arity Do
+    Begin
+      Ok := Unify(A1 + I, A2 + I);
+      If Not Ok Then
+      Begin
+        Unify := False;
+        Exit;
+      End;
+    End;
+    Unify := True;
+    Exit;
+  End;
+
+  { ---- Cas 6 : deux listes --------- }
+  { Liste sur le heap : [LIST(addr)] -> Heap[addr] = tete,         }
+  { Heap[addr+1] = queue                                           }
+  If (T1 = TAG_LIST) And (T2 = TAG_LIST) Then
+  Begin
+    A1 := V1;  { adresse de la paire dans le heap }
+    A2 := V2;
+    { Unifier la tete }
+    Ok := Unify(A1, A2);
+    If Not Ok Then
+    Begin
+      Unify := False;
+      Exit;
+    End;
+    { Unifier la queue }
+    Ok := Unify(A1 + 1, A2 + 1);
+    Unify := Ok;
+    Exit;
+  End;
+
+  { ---- Sinon : types incompatibles, echec ---- }
+  Unify := False;
+End;
+
+{ ---- EmitDeref : emettre un appel a _PLRT_DEREF ------------------ }
+{ AX contient l adresse du terme a dereferencer.                     }
+{ Apres l appel, AX contient l adresse du terme dereference.         }
+Procedure EmitDeref;
+Begin
+  EmitInstr('CALL    _PLRT_DEREF');
+End;
+
+{ ---- EmitBind : emettre un appel a _PLRT_BIND -------------------- }
+{ AX = adresse de la variable REF, BX = terme a lier.               }
+{ Empile l adresse sur le trail apres la liaison.                    }
+Procedure EmitBind;
+Begin
+  EmitInstr('CALL    _PLRT_BIND');
+End;
+
+{ ---- EmitUnify : emettre un appel a _PLRT_UNIFY ------------------ }
+{ AX = terme1, BX = terme2.                                         }
+{ Apres l appel, CF (Carry Flag) = 1 si echec, 0 si succes.         }
+Procedure EmitUnify;
+Begin
+  EmitInstr('CALL    _PLRT_UNIFY');
+End;
+
+{ ============================================================
   TODO 07 - EMETTEUR DE CODE ASM [IMPLEMENTE]
   ============================================================ }
 
@@ -3748,7 +3955,7 @@ Begin
 End;
 
 { ============================================================
-  STUBS POUR LES TODOS RESTANTS (09..25)
+  STUBS POUR LES TODOS RESTANTS (10..25)
   ============================================================ }
 
 Procedure Run;
