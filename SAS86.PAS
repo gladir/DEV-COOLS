@@ -217,7 +217,7 @@
               WHEN (cond2) action ;
               Chaque WHEN est une condition booleenne independante
 
-  TODO 14 - BOUCLES : DO / DO WHILE / DO UNTIL
+  TODO 14 - BOUCLES : DO / DO WHILE / DO UNTIL [IMPLEMENTE]
             ParseDoSimple : DO; stmts; END;
               Bloc d instructions simple (pas de boucle)
             ParseDoIterative : DO var = debut TO fin [BY pas] ;
@@ -813,6 +813,10 @@ Procedure ParseFileStmt; Forward;
 (* TODO 13 - Forward declarations IF/THEN/ELSE/SELECT *)
 Procedure ParseIfStmt; Forward;
 Procedure ParseSelectStmt; Forward;
+(* TODO 14 - Forward declarations boucles DO *)
+Procedure LoopPush(Const BreakLbl, ContLbl : TString); Forward;
+Procedure LoopPop; Forward;
+Procedure ParseDoBlock; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1131,7 +1135,7 @@ Begin
     (S = 'OR')        Or (S = 'EQ')        Or (S = 'NE')        Or
     (S = 'LT')        Or (S = 'LE')        Or (S = 'GT')        Or
     (S = 'GE')        Or (S = 'LEAVE')     Or (S = 'CONTINUE')  Or
-    (S = '_NULL_')    Or (S = '_TEMPORARY_');
+    (S = 'TO')        Or (S = '_NULL_')    Or (S = '_TEMPORARY_');
 End;
 
 (* ---- PrintToken : affichage debug d un token --------------- *)
@@ -1791,9 +1795,10 @@ Begin
       Scanning := False;
     End
 
-    (* Ponctuation : ( ) , @ # $ *)
+    (* Ponctuation : ( ) , @ # $ : *)
     Else If (Ch = '(') Or (Ch = ')') Or (Ch = ',') Or
-            (Ch = '@') Or (Ch = '#') Or (Ch = '$') Then
+            (Ch = '@') Or (Ch = '#') Or (Ch = '$') Or
+            (Ch = ':') Then
     Begin
       CurToken.Kind := TK_PUNCT;
       CurToken.Val  := Ch;
@@ -1914,6 +1919,9 @@ Begin
   DataAddObs('_SAS_NUMBUF', 12);   (* buffer conversion num -> str      *)
   DataAddWord('_SAS_INHDL', 0);    (* handle fichier INFILE (0=stdin)   *)
   DataAddWord('_SAS_OUTHDL', 1);   (* handle fichier FILE (1=stdout)    *)
+  (* TODO 14 : variables temporaires pour boucles DO iteratives *)
+  DataAddWord('_SAS_DOEND', 0);    (* borne de fin boucle DO iterative  *)
+  DataAddWord('_SAS_DOSTEP', 1);   (* pas (BY) boucle DO iterative      *)
   IOInputBufLbl := '_SAS_INBUF';
   IONumBufLbl   := '_SAS_NUMBUF';
 End;
@@ -4934,7 +4942,384 @@ Begin
 End;
 
 { ============================================================
-  STUBS POUR TODO 14..25 (a implementer)
+  TODO 14 - BOUCLES : DO / DO WHILE / DO UNTIL [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- LoopPush : empiler un contexte de boucle --------------- *)
+(* BreakLbl = label de sortie (LEAVE -> JMP BreakLbl)           *)
+(* ContLbl  = label de continuation (CONTINUE -> JMP ContLbl)   *)
+Procedure LoopPush(Const BreakLbl, ContLbl : TString);
+Begin
+  If LoopTop >= MAX_LOOP_NEST Then
+  Begin
+    CompileError('imbrication de boucles DO trop profonde (max='
+                 + IntToStr(MAX_LOOP_NEST) + ')');
+    Exit;
+  End;
+  LoopBreakLbl[LoopTop] := BreakLbl;
+  LoopContLbl[LoopTop]  := ContLbl;
+  Inc(LoopTop);
+End;
+
+(* ---- LoopPop : depiler un contexte de boucle ---------------- *)
+Procedure LoopPop;
+Begin
+  If LoopTop > 0 Then
+    Dec(LoopTop);
+End;
+
+(* ---- ParseDoBlock : parser le corps stmts; END; ------------- *)
+(* Parse les instructions jusqu a END;                            *)
+(* Le ; apres DO (ou apres la condition) a deja ete consomme.    *)
+Procedure ParseDoBlock;
+Begin
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_KEYWORD) And
+             (StrUpperCase(CurToken.Val) = 'END')) Do
+    ParseStmt;
+  (* Consommer END *)
+  If (CurToken.Kind = TK_KEYWORD) And
+     (StrUpperCase(CurToken.Val) = 'END') Then
+    ParserAdvance;
+  (* Consommer ; apres END *)
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseDoStmt : parser toutes les formes de DO ----------- *)
+(* Appele apres que le mot-cle DO ait ete consomme.              *)
+(* Detecte la forme :                                             *)
+(*   DO ;                      -> bloc simple (pas de boucle)     *)
+(*   DO WHILE (cond) ;         -> boucle while                    *)
+(*   DO UNTIL (cond) ;         -> boucle until                    *)
+(*   DO var = a TO b [BY c] ;  -> boucle iterative                *)
+(*   DO var = a TO b WHILE/UNTIL (cond) ; -> combinaison          *)
+(* Emission DO WHILE :                                            *)
+(*   LblTest: eval cond / JZ LblEnd / body / JMP LblTest         *)
+(*   LblEnd:                                                      *)
+(* Emission DO UNTIL :                                            *)
+(*   JMP LblBody (skip test on 1st iter)                          *)
+(*   LblTest: eval cond / JNZ LblEnd                              *)
+(*   LblBody: body / JMP LblTest / LblEnd:                        *)
+(* Emission DO iterative :                                        *)
+(*   var = start / LblTest: CMP var,end / JG LblEnd               *)
+(*   body / LblIncr: ADD var,step / JMP LblTest / LblEnd:         *)
+Procedure ParseDoStmt;
+Var
+  KW       : TString;
+  VarName  : TString;
+  SIdx     : Integer;
+  E        : TExprVal;
+  LblTest  : TString;
+  LblIncr  : TString;
+  LblEnd   : TString;
+  LblBody  : TString;
+  VarAddr  : TString;
+  HasWhile : Boolean;
+  HasUntil : Boolean;
+Begin
+  KW := '';
+  If CurToken.Kind = TK_KEYWORD Then
+    KW := StrUpperCase(CurToken.Val);
+
+  (* ----------------------------------------------------------
+     DO WHILE (condition) ;
+     Emission :
+       LblTest: eval cond
+                TEST AX,AX / JZ LblEnd
+                body
+                JMP LblTest
+       LblEnd:
+     ---------------------------------------------------------- *)
+  If KW = 'WHILE' Then
+  Begin
+    EmitComment('DO WHILE');
+    ParserAdvance;  (* consommer WHILE *)
+
+    LblTest := LabelGen;
+    LblEnd  := LabelGen;
+
+    EmitLabel(LblTest);
+
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      ParserAdvance
+    Else
+      CompileError('"(" attendu apres DO WHILE');
+
+    ParseExpr(E);
+    ExprFlushToAX(E);
+
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else
+      CompileError('")" attendu apres la condition du DO WHILE');
+
+    EmitInstrAB('TEST', 'AX', 'AX');
+    EmitInstrA('JZ', LblEnd);
+
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+
+    LoopPush(LblEnd, LblTest);
+    ParseDoBlock;
+
+    EmitInstrA('JMP', LblTest);
+    EmitLabel(LblEnd);
+
+    LoopPop;
+    Exit;
+  End;
+
+  (* ----------------------------------------------------------
+     DO UNTIL (condition) ;
+     Semantique SAS : le corps est execute au moins une fois,
+     la condition est evaluee apres chaque iteration.
+     Comme le lexeur est unidirectionnel, on emet le code de
+     condition lineairement mais on saute par-dessus la
+     premiere fois :
+       JMP LblBody
+       LblTest: eval cond
+                TEST AX,AX / JNZ LblEnd  (vrai -> sortir)
+       LblBody: body
+                JMP LblTest
+       LblEnd:
+     ---------------------------------------------------------- *)
+  If KW = 'UNTIL' Then
+  Begin
+    EmitComment('DO UNTIL');
+    ParserAdvance;  (* consommer UNTIL *)
+
+    LblTest := LabelGen;
+    LblBody := LabelGen;
+    LblEnd  := LabelGen;
+
+    EmitInstrA('JMP', LblBody);
+
+    EmitLabel(LblTest);
+
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      ParserAdvance
+    Else
+      CompileError('"(" attendu apres DO UNTIL');
+
+    ParseExpr(E);
+    ExprFlushToAX(E);
+
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else
+      CompileError('")" attendu apres la condition du DO UNTIL');
+
+    EmitInstrAB('TEST', 'AX', 'AX');
+    EmitInstrA('JNZ', LblEnd);
+
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+
+    EmitLabel(LblBody);
+
+    LoopPush(LblEnd, LblTest);
+    ParseDoBlock;
+
+    EmitInstrA('JMP', LblTest);
+    EmitLabel(LblEnd);
+
+    LoopPop;
+    Exit;
+  End;
+
+  (* ----------------------------------------------------------
+     DO ; (bloc simple, pas de boucle) ou
+     DO var = start TO end [BY step] [WHILE/UNTIL (cond)] ;
+     ---------------------------------------------------------- *)
+  If CurToken.Kind = TK_SEMICOLON Then
+  Begin
+    (* DO ; ... END; -> bloc simple sans boucle *)
+    EmitComment('DO (bloc)');
+    ParserAdvance;  (* consommer ; *)
+    ParseDoBlock;
+    Exit;
+  End;
+
+  (* DO var = start TO end [BY step] [WHILE/UNTIL (cond)] ; *)
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    VarName := StrUpperCase(CurToken.Val);
+    ParserAdvance;  (* consommer le nom de variable *)
+
+    (* Verifier = *)
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+    Begin
+      ParserAdvance;  (* consommer = *)
+
+      EmitComment('DO ' + VarName + ' = ... TO ...');
+
+      (* Allouer la variable de boucle si necessaire *)
+      SIdx := SymFind(VarName);
+      If SIdx < 0 Then
+        SIdx := VarAlloc(VarName, TY_IDX_NUMERIC, 0);
+      VarAddr := VarAddrOf(SIdx);
+
+      (* Evaluer la valeur de depart *)
+      ParseExpr(E);
+      ExprFlushToAX(E);
+      EmitInstrAB('MOV', VarAddr, 'AX');
+
+      (* Consommer TO *)
+      If (CurToken.Kind = TK_KEYWORD) And
+         (StrUpperCase(CurToken.Val) = 'TO') Then
+        ParserAdvance
+      Else
+        CompileError('"TO" attendu dans la boucle DO iterative');
+
+      (* Evaluer la valeur de fin -> sauver dans DX via pile *)
+      ParseExpr(E);
+      ExprFlushToAX(E);
+      EmitInstrA('PUSH', 'AX');  (* sauver la borne fin sur la pile *)
+
+      (* Verifier BY *)
+      If (CurToken.Kind = TK_KEYWORD) And
+         (StrUpperCase(CurToken.Val) = 'BY') Then
+      Begin
+        ParserAdvance;  (* consommer BY *)
+        ParseExpr(E);
+        ExprFlushToAX(E);
+        (* AX = pas -> sauver dans BX via pile *)
+        EmitInstrA('PUSH', 'AX');  (* pas sur la pile *)
+      End
+      Else
+      Begin
+        (* Pas par defaut = 1 *)
+        EmitInstrAB('MOV', 'AX', '1');
+        EmitInstrA('PUSH', 'AX');
+      End;
+
+      (* Verifier WHILE ou UNTIL additionnel *)
+      HasWhile := False;
+      HasUntil := False;
+      KW := '';
+      If CurToken.Kind = TK_KEYWORD Then
+        KW := StrUpperCase(CurToken.Val);
+
+      If KW = 'WHILE' Then
+      Begin
+        HasWhile := True;
+        ParserAdvance;  (* consommer WHILE *)
+      End
+      Else If KW = 'UNTIL' Then
+      Begin
+        HasUntil := True;
+        ParserAdvance;  (* consommer UNTIL *)
+      End;
+
+      LblTest := LabelGen;
+      LblIncr := LabelGen;
+      LblEnd  := LabelGen;
+
+      (* Sauvegarder les anciennes valeurs de DOEND/DOSTEP *)
+      (* pour supporter les boucles DO iteratives imbriquees *)
+      EmitInstrA('PUSH', 'WORD PTR [_SAS_DOEND]');
+      EmitInstrA('PUSH', 'WORD PTR [_SAS_DOSTEP]');
+
+      (* Depiler le pas et la borne dans les variables temp *)
+      EmitInstrA('POP', 'BX');   (* pas *)
+      EmitInstrAB('MOV', '[_SAS_DOSTEP]', 'BX');
+      EmitInstrA('POP', 'DX');   (* borne fin *)
+      EmitInstrAB('MOV', '[_SAS_DOEND]', 'DX');
+
+      (* Label de test *)
+      EmitLabel(LblTest);
+
+      (* Comparer var avec borne *)
+      (* Si pas >= 0 : var > borne -> sortir (JG) *)
+      (* Si pas < 0  : var < borne -> sortir (JL) *)
+      EmitInstrAB('MOV', 'AX', VarAddr);
+      EmitInstrAB('MOV', 'DX', '[_SAS_DOEND]');
+      EmitInstrAB('MOV', 'BX', '[_SAS_DOSTEP]');
+      EmitInstrAB('OR', 'BX', 'BX');
+      EmitInstrA('JS', LblTest + 'N');
+      (* pas >= 0 *)
+      EmitInstrAB('CMP', 'AX', 'DX');
+      EmitInstrA('JG', LblEnd);
+      EmitInstrA('JMP', LblTest + 'OK');
+      EmitLabel(LblTest + 'N');
+      (* pas < 0 *)
+      EmitInstrAB('CMP', 'AX', 'DX');
+      EmitInstrA('JL', LblEnd);
+      EmitLabel(LblTest + 'OK');
+
+      (* Condition additionnelle WHILE/UNTIL *)
+      If HasWhile Then
+      Begin
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+          ParserAdvance;
+        ParseExpr(E);
+        ExprFlushToAX(E);
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+        EmitInstrAB('TEST', 'AX', 'AX');
+        EmitInstrA('JZ', LblEnd);
+      End
+      Else If HasUntil Then
+      Begin
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+          ParserAdvance;
+        ParseExpr(E);
+        ExprFlushToAX(E);
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+        EmitInstrAB('TEST', 'AX', 'AX');
+        EmitInstrA('JNZ', LblEnd);
+      End;
+
+      (* Consommer ; *)
+      If CurToken.Kind = TK_SEMICOLON Then
+        ParserAdvance;
+
+      LoopPush(LblEnd, LblIncr);
+      ParseDoBlock;
+
+      (* Increment *)
+      EmitLabel(LblIncr);
+      EmitInstrAB('MOV', 'AX', VarAddr);
+      EmitInstrAB('ADD', 'AX', '[_SAS_DOSTEP]');
+      EmitInstrAB('MOV', VarAddr, 'AX');
+      EmitInstrA('JMP', LblTest);
+
+      EmitLabel(LblEnd);
+      (* Restaurer les anciennes valeurs de DOEND/DOSTEP *)
+      EmitInstrA('POP', 'WORD PTR [_SAS_DOSTEP]');
+      EmitInstrA('POP', 'WORD PTR [_SAS_DOEND]');
+      LoopPop;
+      Exit;
+    End
+    Else
+    Begin
+      (* DO suivi d un ident mais pas de = : traiter comme bloc *)
+      (* Cela ne devrait pas arriver en SAS valide *)
+      EmitComment('DO (bloc)');
+      While (CurToken.Kind <> TK_SEMICOLON) And
+            (CurToken.Kind <> TK_EOF) Do
+        ParserAdvance;
+      If CurToken.Kind = TK_SEMICOLON Then
+        ParserAdvance;
+      ParseDoBlock;
+      Exit;
+    End;
+  End;
+
+  (* Fallback : consommer jusqu au ; et traiter comme bloc *)
+  EmitComment('DO (bloc)');
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+    ParserAdvance;
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+  ParseDoBlock;
+End;
+
+{ ============================================================
+  STUBS POUR TODO 15..25 (a implementer)
   ============================================================ }
 
 Procedure ParseStmt;
@@ -5075,7 +5460,60 @@ Begin
       Exit;
     End;
 
-    (* TODO 14+ : DO/END, boucles, etc. : stub *)
+    (* TODO 14 : DO (toutes formes) *)
+    If KW = 'DO' Then
+    Begin
+      ParserAdvance;  (* consommer DO *)
+      ParseDoStmt;
+      Exit;
+    End;
+
+    (* TODO 14 : LEAVE (sortir de la boucle DO courante) *)
+    If KW = 'LEAVE' Then
+    Begin
+      ParserAdvance;  (* consommer LEAVE *)
+      EmitComment('LEAVE');
+      If LoopTop > 0 Then
+        EmitInstrA('JMP', LoopBreakLbl[LoopTop - 1])
+      Else
+        CompileError('LEAVE en dehors d une boucle DO');
+      If CurToken.Kind = TK_SEMICOLON Then
+        ParserAdvance;
+      Exit;
+    End;
+
+    (* TODO 14 : CONTINUE (iteration suivante de la boucle DO) *)
+    If KW = 'CONTINUE' Then
+    Begin
+      ParserAdvance;  (* consommer CONTINUE *)
+      EmitComment('CONTINUE');
+      If LoopTop > 0 Then
+        EmitInstrA('JMP', LoopContLbl[LoopTop - 1])
+      Else
+        CompileError('CONTINUE en dehors d une boucle DO');
+      If CurToken.Kind = TK_SEMICOLON Then
+        ParserAdvance;
+      Exit;
+    End;
+
+    (* TODO 14 : GOTO label (saut inconditionnel) *)
+    If KW = 'GOTO' Then
+    Begin
+      ParserAdvance;  (* consommer GOTO *)
+      EmitComment('GOTO');
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        EmitInstrA('JMP', SAS_LBL_PFX + StrUpperCase(CurToken.Val));
+        ParserAdvance;
+      End
+      Else
+        CompileError('etiquette attendue apres GOTO');
+      If CurToken.Kind = TK_SEMICOLON Then
+        ParserAdvance;
+      Exit;
+    End;
+
+    (* TODO 14+ : autres mots-cles non geres *)
     ParserAdvance;
     While (CurToken.Kind <> TK_SEMICOLON) And
           (CurToken.Kind <> TK_EOF) Do
@@ -5085,11 +5523,19 @@ Begin
     Exit;
   End;
 
-  (* --- Identificateur : affectation ou expression --- *)
+  (* --- Identificateur : affectation, label GOTO, ou expression --- *)
   If CurToken.Kind = TK_IDENT Then
   Begin
     VName := StrUpperCase(CurToken.Val);
     ParserAdvance;
+
+    (* Label GOTO : ident suivi de : (ponctuation) *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+    Begin
+      EmitLabel(SAS_LBL_PFX + VName);
+      ParserAdvance;  (* consommer : *)
+      Exit;
+    End;
 
     (* Affectation : ident = expr ; *)
     If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
