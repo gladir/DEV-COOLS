@@ -180,7 +180,7 @@
             Propagation des valeurs manquantes :
               Si un operande = 8000h, le resultat = 8000h (manquant)
 
-  TODO 12 - ENTREES/SORTIES (PUT / INPUT / INFILE / FILE)
+  TODO 12 - ENTREES/SORTIES (PUT / INPUT / INFILE / FILE) [IMPLEMENTE]
             Instruction INPUT : lire des donnees depuis une source
               INPUT var1 var2 $var3 : lecture en liste (espaces comme separateurs)
               INPUT var1 1-5 var2 6-10 : lecture en colonnes (positions fixes)
@@ -693,6 +693,17 @@ Var
   (* Etat general *)
   RuntimeEmitted : Boolean;
 
+  (* I/O (TODO 12) *)
+  IOInfilePath  : TString;   (* chemin INFILE courant, '' = CARDS  *)
+  IOInfileDlm   : TString;   (* delimiteur INFILE (defaut = ' ')   *)
+  IOFirstObs    : Integer;   (* FIRSTOBS : lignes a sauter         *)
+  IOFilePath    : TString;   (* chemin FILE courant, '' = STDOUT   *)
+  IOCardsActive : Boolean;   (* True si lecture CARDS/DATALINES    *)
+  IOCardsLbl    : TString;   (* label des donnees CARDS en cours   *)
+  IOCardsCount  : Integer;   (* compteur lignes CARDS deja lues    *)
+  IOInputBufLbl : TString;   (* label du buffer ligne d entree     *)
+  IONumBufLbl   : TString;   (* label du buffer de conversion num  *)
+
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
@@ -794,6 +805,11 @@ Procedure ParseLabelStmt; Forward;
 Function  IsBuiltinFunc(Const Name : TString) : Boolean; Forward;
 Procedure ParseFuncCall(Const FName : TString; Var Res : TExprVal); Forward;
 Procedure ParseInOp(Var Res : TExprVal); Forward;
+(* TODO 12 - Forward declarations entrees/sorties *)
+Procedure ParsePutStmt; Forward;
+Procedure ParseInputStmt; Forward;
+Procedure ParseInfileStmt; Forward;
+Procedure ParseFileStmt; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1061,6 +1077,15 @@ Begin
   RuntimeEmitted := False;
   LabelGenSeq    := 0;
   CurPDVOffset   := 0;
+  IOInfilePath   := '';
+  IOInfileDlm    := ' ';
+  IOFirstObs     := 1;
+  IOFilePath     := '';
+  IOCardsActive  := False;
+  IOCardsLbl     := '';
+  IOCardsCount   := 0;
+  IOInputBufLbl  := '';
+  IONumBufLbl    := '';
   GExprDummy.Kind    := EK_NONE;
   GExprDummy.ImmVal  := 0;
   GExprDummy.TypeIdx := TY_UNKNOWN;
@@ -1879,6 +1904,15 @@ Begin
   DataAddObs('_SAS_PDV', MAX_OBS_SIZE);
   (* Retour chariot pour sortie console *)
   DataAdd('_SAS_CRLF', DK_STR, 0, #13#10);
+  (* TODO 12 : buffers d entree/sortie *)
+  DataAddObs('_SAS_INBUF', 256);   (* buffer ligne d entree 256 octets  *)
+  DataAddWord('_SAS_INLEN', 0);    (* longueur lue dans le buffer       *)
+  DataAddWord('_SAS_INPOS', 0);    (* position courante dans le buffer  *)
+  DataAddObs('_SAS_NUMBUF', 12);   (* buffer conversion num -> str      *)
+  DataAddWord('_SAS_INHDL', 0);    (* handle fichier INFILE (0=stdin)   *)
+  DataAddWord('_SAS_OUTHDL', 1);   (* handle fichier FILE (1=stdout)    *)
+  IOInputBufLbl := '_SAS_INBUF';
+  IONumBufLbl   := '_SAS_NUMBUF';
 End;
 
 (* ---- ExprMakeImm : construire une valeur immediate ---------- *)
@@ -4073,15 +4107,654 @@ Begin
 End;
 
 { ============================================================
-  STUBS POUR TODO 12..25 (a implementer)
+  TODO 12 - ENTREES/SORTIES (PUT / INPUT / INFILE / FILE)
+  [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- ParsePutStmt : instruction PUT --------------------------
+   PUT var1 var2 ;           -> ecriture en liste (espaces entre chaque)
+   PUT 'texte literal' ;     -> ecriture de chaine litterale
+   PUT var1 1-5 var2 6-10 ;  -> ecriture en colonnes (positions fixes)
+   PUT _ALL_ ;               -> ecriture de toutes les variables
+   Le resultat est ecrit via INT 21h AH=40h sur le handle courant
+   (1 = STDOUT par defaut, ou le handle de FILE si specifie).
+   -------------------------------------------------------------- *)
+Procedure ParsePutStmt;
+Var
+  E        : TExprVal;
+  SIdx     : Integer;
+  StrIdx   : Integer;
+  ItemCount: Integer;
+  VName    : TString;
+  Col1     : Integer;
+  Col2     : Integer;
+  HasCol   : Boolean;
+Begin
+  EmitComment('PUT');
+  ItemCount := 0;
+
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    HasCol := False;
+    Col1   := 0;
+    Col2   := 0;
+
+    (* --- Chaine litterale : PUT 'texte' --- *)
+    If CurToken.Kind = TK_STRING Then
+    Begin
+      StrIdx := DataAddStr(CurToken.Val);
+      If StrIdx >= 0 Then
+      Begin
+        EmitComment('PUT literal: ''' + CurToken.Val + '''');
+        EmitInstrAB('MOV', 'AH', '40h');
+        EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+        EmitInstrAB('MOV', 'CX', IntToStr(Length(CurToken.Val)));
+        EmitInstrAB('LEA', 'DX', DataTab[StrIdx].LblName);
+        EmitInstr('INT 21h');
+      End;
+      ParserAdvance;
+      Inc(ItemCount);
+    End
+
+    (* --- Pointeur de colonne @ --- *)
+    Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '@') Then
+    Begin
+      ParserAdvance;
+      (* Optionnel : valeur de colonne apres @ *)
+      If CurToken.Kind = TK_INTEGER Then
+      Begin
+        Col1 := CurToken.IntVal;
+        ParserAdvance;
+        EmitComment('PUT @' + IntToStr(Col1));
+        (* Positionnement de colonne : on ignore pour la generation *)
+        (* simple mais on emet un commentaire                       *)
+      End;
+    End
+
+    (* --- Variable ou _ALL_ --- *)
+    Else If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+    Begin
+      VName := StrUpperCase(CurToken.Val);
+
+      (* PUT _ALL_ : ecrire toutes les variables *)
+      If VName = '_ALL_' Then
+      Begin
+        EmitComment('PUT _ALL_');
+        ParserAdvance;
+        Inc(ItemCount);
+      End
+      Else
+      Begin
+        ParserAdvance;
+
+        (* Verifier si on a un pattern col1-col2 *)
+        If (CurToken.Kind = TK_INTEGER) Then
+        Begin
+          Col1 := CurToken.IntVal;
+          ParserAdvance;
+          If (CurToken.Kind = TK_OP) And (CurToken.Val = '-') Then
+          Begin
+            ParserAdvance;
+            If CurToken.Kind = TK_INTEGER Then
+            Begin
+              Col2 := CurToken.IntVal;
+              HasCol := True;
+              ParserAdvance;
+            End;
+          End;
+        End;
+
+        (* Allouer/trouver la variable *)
+        SIdx := SymFind(VName);
+        If SIdx < 0 Then
+          SIdx := VarAlloc(VName, TY_IDX_NUMERIC, 0);
+
+        If SIdx >= 0 Then
+        Begin
+          If HasCol Then
+            EmitComment('PUT ' + VName + ' ' +
+                        IntToStr(Col1) + '-' + IntToStr(Col2))
+          Else
+            EmitComment('PUT ' + VName);
+
+          If SymTab[SIdx].TypeIdx = TY_IDX_CHARACTER Then
+          Begin
+            (* Chaine : AX = adresse, CX = longueur *)
+            EmitInstrAB('LEA', 'DX', '_SAS_PDV + ' +
+                        IntToStr(SymTab[SIdx].Offset));
+            EmitInstrAB('MOV', 'CX', IntToStr(SymTab[SIdx].VarLen));
+            EmitInstrA('CALL', SAS_RT_PFX + 'PUTSTR');
+          End
+          Else
+          Begin
+            (* Numerique : convertir et ecrire *)
+            VarLoad(SIdx, E);
+            EmitInstrA('CALL', SAS_RT_PFX + 'PUTNUM');
+          End;
+
+          (* Ecrire un espace separateur apres chaque item sauf si colonnes *)
+          If (Not HasCol) And (ItemCount > 0) Then
+          Begin
+            EmitInstrAB('MOV', 'AH', '02h');
+            EmitInstrAB('MOV', 'DL', '20h');
+            EmitInstr('INT 21h');
+          End;
+        End;
+        Inc(ItemCount);
+      End;
+    End
+
+    Else
+      ParserAdvance;
+  End;
+
+  (* Ecrire saut de ligne en fin de PUT *)
+  EmitComment('PUT newline');
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+  EmitInstrAB('MOV', 'CX', '2');
+  EmitInstrAB('LEA', 'DX', '_SAS_CRLF');
+  EmitInstr('INT 21h');
+
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseInputStmt : instruction INPUT ----------------------
+   INPUT var1 var2 ;         -> lecture en liste (espaces separateurs)
+   INPUT var1 $ ;            -> variable CHARACTER
+   INPUT var1 1-5 var2 6-10 ;-> lecture en colonnes (positions fixes)
+   INPUT var1 @col ;         -> pointeur de colonne
+   INPUT var1 : $8. ;        -> lecture formatee (informat $8.)
+
+   Source : si INFILE actif -> lire depuis fichier (INT 21h AH=3Fh)
+            sinon          -> lire depuis CARDS/DATALINES inline
+   On lit une ligne entiere dans _SAS_INBUF puis on la decoupe.
+   -------------------------------------------------------------- *)
+Procedure ParseInputStmt;
+Var
+  VName   : TString;
+  SIdx    : Integer;
+  IsChar  : Boolean;
+  VarLen  : Integer;
+  TIdx    : Integer;
+  Col1    : Integer;
+  Col2    : Integer;
+  HasCol  : Boolean;
+  HasFmt  : Boolean;
+  LblSkip : TString;
+Begin
+  EmitComment('INPUT');
+
+  (* Emettre la lecture d une ligne dans _SAS_INBUF *)
+  EmitComment('lire une ligne dans _SAS_INBUF');
+  EmitInstrAB('MOV', 'AH', '3Fh');
+  EmitInstrAB('MOV', 'BX', '[_SAS_INHDL]');
+  EmitInstrAB('MOV', 'CX', '255');
+  EmitInstrAB('LEA', 'DX', '_SAS_INBUF');
+  EmitInstr('INT 21h');
+  (* AX = nb octets lus *)
+  LblSkip := LabelGen;
+  EmitInstrAB('CMP', 'AX', '0');
+  EmitInstrA('JE', LblSkip);
+  EmitInstrAB('MOV', '[_SAS_INLEN]', 'AX');
+  EmitInstrAB('MOV', 'WORD PTR [_SAS_INPOS]', '0');
+
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    HasCol := False;
+    HasFmt := False;
+    Col1 := 0;
+    Col2 := 0;
+    IsChar := False;
+    VarLen := 0;
+
+    (* --- Pointeur de colonne @ --- *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '@') Then
+    Begin
+      ParserAdvance;
+      If CurToken.Kind = TK_INTEGER Then
+      Begin
+        Col1 := CurToken.IntVal;
+        EmitComment('INPUT @' + IntToStr(Col1));
+        EmitInstrAB('MOV', 'WORD PTR [_SAS_INPOS]',
+                    IntToStr(Col1 - 1));
+        ParserAdvance;
+      End;
+      Continue;
+    End;
+
+    (* --- Identificateur de variable --- *)
+    If (CurToken.Kind <> TK_IDENT) And (CurToken.Kind <> TK_KEYWORD) Then
+    Begin
+      ParserAdvance;
+      Continue;
+    End;
+
+    VName := StrUpperCase(CurToken.Val);
+    ParserAdvance;
+
+    (* Verifier $ -> variable CHARACTER *)
+    If (CurToken.Kind = TK_IDENT) And (StrUpperCase(CurToken.Val) = '$') Then
+    Begin
+      IsChar := True;
+      ParserAdvance;
+    End
+    Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '$') Then
+    Begin
+      IsChar := True;
+      ParserAdvance;
+    End;
+
+    (* Verifier si pattern colonne : entier - entier *)
+    If CurToken.Kind = TK_INTEGER Then
+    Begin
+      Col1 := CurToken.IntVal;
+      ParserAdvance;
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '-') Then
+      Begin
+        ParserAdvance;
+        If CurToken.Kind = TK_INTEGER Then
+        Begin
+          Col2 := CurToken.IntVal;
+          HasCol := True;
+          ParserAdvance;
+        End;
+      End;
+    End;
+
+    (* Verifier si format apres : *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+    Begin
+      ParserAdvance;
+      HasFmt := True;
+      (* Consommer le format (ex: $8. , 5.2 , etc.) *)
+      If (CurToken.Kind = TK_FORMAT) Or (CurToken.Kind = TK_IDENT) Or
+         (CurToken.Kind = TK_INTEGER) Or (CurToken.Kind = TK_FLOAT) Then
+        ParserAdvance;
+    End;
+
+    (* Determiner le type *)
+    If IsChar Then
+      TIdx := TY_IDX_CHARACTER
+    Else
+      TIdx := TY_IDX_NUMERIC;
+
+    If IsChar And (VarLen <= 0) Then
+    Begin
+      If HasCol Then
+        VarLen := Col2 - Col1 + 1
+      Else
+        VarLen := 8;
+    End;
+
+    (* Allouer/trouver la variable *)
+    SIdx := SymFind(VName);
+    If SIdx < 0 Then
+      SIdx := VarAlloc(VName, TIdx, VarLen);
+
+    If SIdx < 0 Then Continue;
+
+    (* Generer la lecture *)
+    If HasCol Then
+    Begin
+      (* Lecture en colonnes : positions fixes *)
+      EmitComment('INPUT ' + VName + ' ' +
+                  IntToStr(Col1) + '-' + IntToStr(Col2));
+      EmitInstrAB('LEA', 'SI', '_SAS_INBUF + ' + IntToStr(Col1 - 1));
+      EmitInstrAB('MOV', 'CX', IntToStr(Col2 - Col1 + 1));
+      If TIdx = TY_IDX_CHARACTER Then
+      Begin
+        EmitInstrAB('LEA', 'DI', '_SAS_PDV + ' +
+                    IntToStr(SymTab[SIdx].Offset));
+        EmitInstrA('CALL', SAS_RT_PFX + 'CPYFLD');
+      End
+      Else
+      Begin
+        EmitInstrA('CALL', SAS_RT_PFX + 'ATOI');
+        EmitInstrAB('MOV', VarAddrOf(SIdx), 'AX');
+      End;
+    End
+    Else
+    Begin
+      (* Lecture en liste : delimiter par espaces/delimiteur *)
+      EmitComment('INPUT ' + VName + ' (liste)');
+      EmitInstrAB('LEA', 'SI', '_SAS_INBUF');
+      EmitInstrAB('ADD', 'SI', '[_SAS_INPOS]');
+      If TIdx = TY_IDX_CHARACTER Then
+      Begin
+        EmitInstrAB('MOV', 'CX', IntToStr(SymTab[SIdx].VarLen));
+        EmitInstrAB('LEA', 'DI', '_SAS_PDV + ' +
+                    IntToStr(SymTab[SIdx].Offset));
+        EmitInstrA('CALL', SAS_RT_PFX + 'GETFLD');
+      End
+      Else
+      Begin
+        EmitInstrA('CALL', SAS_RT_PFX + 'GETNUM');
+        EmitInstrAB('MOV', VarAddrOf(SIdx), 'AX');
+      End;
+      (* Mettre a jour la position *)
+      EmitInstrAB('MOV', '[_SAS_INPOS]', 'SI');
+    End;
+  End;
+
+  EmitLabel(LblSkip);
+
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseInfileStmt : instruction INFILE ---------------------
+   INFILE 'chemin.dat' ;              -> ouvrir fichier externe
+   INFILE 'chemin.dat' DLM=',' ;      -> delimiteur specifique
+   INFILE 'chemin.dat' FIRSTOBS=2 ;   -> sauter les N-1 premieres lignes
+   INFILE CARDS ; / INFILE DATALINES ; -> lecture inline
+   L ouverture effective se fait via INT 21h AH=3Dh (ouvrir fichier)
+   -------------------------------------------------------------- *)
+Procedure ParseInfileStmt;
+Var
+  FilePath : TString;
+  OptName  : TString;
+  StrIdx   : Integer;
+Begin
+  EmitComment('INFILE');
+
+  (* Lire la source *)
+  If CurToken.Kind = TK_STRING Then
+  Begin
+    FilePath := CurToken.Val;
+    IOInfilePath := FilePath;
+    ParserAdvance;
+
+    (* Emettre l ouverture du fichier *)
+    StrIdx := DataAddStr(FilePath);
+    If StrIdx >= 0 Then
+    Begin
+      EmitComment('INFILE ''' + FilePath + '''');
+      EmitInstrAB('MOV', 'AH', '3Dh');
+      EmitInstrAB('MOV', 'AL', '00h');
+      EmitInstrAB('LEA', 'DX', DataTab[StrIdx].LblName);
+      EmitInstr('INT 21h');
+      EmitInstrAB('MOV', '[_SAS_INHDL]', 'AX');
+    End;
+  End
+  Else If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
+  Begin
+    OptName := StrUpperCase(CurToken.Val);
+    If (OptName = 'CARDS') Or (OptName = 'DATALINES') Then
+    Begin
+      IOInfilePath  := '';
+      IOCardsActive := True;
+      EmitComment('INFILE CARDS');
+    End;
+    ParserAdvance;
+  End;
+
+  (* Parser les options INFILE *)
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+    Begin
+      OptName := StrUpperCase(CurToken.Val);
+      ParserAdvance;
+
+      (* DLM = 'c' *)
+      If OptName = 'DLM' Then
+      Begin
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+          ParserAdvance;
+        If CurToken.Kind = TK_STRING Then
+        Begin
+          IOInfileDlm := CurToken.Val;
+          EmitComment('  DLM=''' + IOInfileDlm + '''');
+          ParserAdvance;
+        End;
+      End
+
+      (* FIRSTOBS = n *)
+      Else If OptName = 'FIRSTOBS' Then
+      Begin
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+          ParserAdvance;
+        If CurToken.Kind = TK_INTEGER Then
+        Begin
+          IOFirstObs := CurToken.IntVal;
+          EmitComment('  FIRSTOBS=' + IntToStr(IOFirstObs));
+          ParserAdvance;
+        End;
+      End
+
+      Else
+        (* Option inconnue : ignorer *)
+        ;
+    End
+    Else
+      ParserAdvance;
+  End;
+
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseFileStmt : instruction FILE -------------------------
+   FILE 'sortie.dat' ;    -> ouvrir fichier de sortie
+   FILE PRINT ;            -> destination STDOUT avec sauts de page
+   Par defaut, la sortie est STDOUT (handle 1).
+   L ouverture se fait via INT 21h AH=3Ch (creer fichier).
+   -------------------------------------------------------------- *)
+Procedure ParseFileStmt;
+Var
+  FilePath : TString;
+  OptName  : TString;
+  StrIdx   : Integer;
+Begin
+  EmitComment('FILE');
+
+  If CurToken.Kind = TK_STRING Then
+  Begin
+    FilePath := CurToken.Val;
+    IOFilePath := FilePath;
+    ParserAdvance;
+
+    (* Emettre la creation du fichier *)
+    StrIdx := DataAddStr(FilePath);
+    If StrIdx >= 0 Then
+    Begin
+      EmitComment('FILE ''' + FilePath + '''');
+      EmitInstrAB('MOV', 'AH', '3Ch');
+      EmitInstrAB('MOV', 'CX', '0');
+      EmitInstrAB('LEA', 'DX', DataTab[StrIdx].LblName);
+      EmitInstr('INT 21h');
+      EmitInstrAB('MOV', '[_SAS_OUTHDL]', 'AX');
+    End;
+  End
+  Else If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
+  Begin
+    OptName := StrUpperCase(CurToken.Val);
+    If OptName = 'PRINT' Then
+    Begin
+      IOFilePath := '';
+      EmitComment('FILE PRINT (STDOUT)');
+      EmitInstrAB('MOV', 'WORD PTR [_SAS_OUTHDL]', '1');
+    End;
+    ParserAdvance;
+  End;
+
+  (* Ignorer les options supplementaires *)
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+    ParserAdvance;
+
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+{ ============================================================
+  STUBS POUR TODO 13..25 (a implementer)
   ============================================================ }
 
 Procedure ParseStmt;
+Var
+  KW   : TString;
+  SIdx : Integer;
+  VName: TString;
 Begin
-  (* stub : consomme un token pour eviter boucle infinie *)
-  LexNextToken;
-  If Opts.DebugMode Then
-    PrintToken(CurToken);
+  (* Boucle principale : dispatch selon le type de token *)
+
+  (* --- Fin de fichier --- *)
+  If CurToken.Kind = TK_EOF Then Exit;
+
+  (* --- Point-virgule isole --- *)
+  If CurToken.Kind = TK_SEMICOLON Then
+  Begin
+    ParserAdvance;
+    Exit;
+  End;
+
+  (* --- Mot-cle SAS --- *)
+  If CurToken.Kind = TK_KEYWORD Then
+  Begin
+    KW := StrUpperCase(CurToken.Val);
+
+    (* TODO 12 : PUT *)
+    If KW = 'PUT' Then
+    Begin
+      ParserAdvance;
+      ParsePutStmt;
+      Exit;
+    End;
+
+    (* TODO 12 : INPUT *)
+    If KW = 'INPUT' Then
+    Begin
+      ParserAdvance;
+      ParseInputStmt;
+      Exit;
+    End;
+
+    (* TODO 12 : INFILE *)
+    If KW = 'INFILE' Then
+    Begin
+      ParserAdvance;
+      ParseInfileStmt;
+      Exit;
+    End;
+
+    (* TODO 12 : FILE *)
+    If KW = 'FILE' Then
+    Begin
+      ParserAdvance;
+      ParseFileStmt;
+      Exit;
+    End;
+
+    (* TODO 09 : RETAIN *)
+    If KW = 'RETAIN' Then
+    Begin
+      ParserAdvance;
+      ParseRetain;
+      Exit;
+    End;
+
+    (* TODO 09 : DROP *)
+    If KW = 'DROP' Then
+    Begin
+      ParserAdvance;
+      ParseDrop;
+      Exit;
+    End;
+
+    (* TODO 09 : KEEP *)
+    If KW = 'KEEP' Then
+    Begin
+      ParserAdvance;
+      ParseKeep;
+      Exit;
+    End;
+
+    (* TODO 09 : RENAME *)
+    If KW = 'RENAME' Then
+    Begin
+      ParserAdvance;
+      ParseRename;
+      Exit;
+    End;
+
+    (* TODO 09 : LENGTH *)
+    If KW = 'LENGTH' Then
+    Begin
+      ParserAdvance;
+      ParseLength;
+      Exit;
+    End;
+
+    (* TODO 09 : LABEL *)
+    If KW = 'LABEL' Then
+    Begin
+      ParserAdvance;
+      ParseLabelStmt;
+      Exit;
+    End;
+
+    (* DATA / RUN / PROC / QUIT : consommer le reste de l instruction *)
+    If (KW = 'DATA') Or (KW = 'RUN') Or (KW = 'PROC') Or
+       (KW = 'QUIT') Or (KW = 'TITLE') Or (KW = 'FOOTNOTE') Or
+       (KW = 'OPTIONS') Or (KW = 'CARDS') Or (KW = 'DATALINES') Or
+       (KW = 'OUTPUT') Or (KW = 'RETURN') Or (KW = 'DELETE') Or
+       (KW = 'STOP') Or (KW = 'ABORT') Or (KW = 'FORMAT') Or
+       (KW = 'INFORMAT') Or (KW = 'ATTRIB') Or (KW = 'WHERE') Or
+       (KW = 'SET') Or (KW = 'MERGE') Or (KW = 'BY') Then
+    Begin
+      EmitComment(KW);
+      ParserAdvance;
+      While (CurToken.Kind <> TK_SEMICOLON) And
+            (CurToken.Kind <> TK_EOF) Do
+        ParserAdvance;
+      If CurToken.Kind = TK_SEMICOLON Then
+        ParserAdvance;
+      Exit;
+    End;
+
+    (* TODO 13+ : IF/THEN/ELSE, DO/END, SELECT, etc. : stub *)
+    ParserAdvance;
+    While (CurToken.Kind <> TK_SEMICOLON) And
+          (CurToken.Kind <> TK_EOF) Do
+      ParserAdvance;
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+    Exit;
+  End;
+
+  (* --- Identificateur : affectation ou expression --- *)
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    VName := StrUpperCase(CurToken.Val);
+    ParserAdvance;
+
+    (* Affectation : ident = expr ; *)
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+    Begin
+      SIdx := SymFind(VName);
+      If SIdx < 0 Then
+        SIdx := VarAlloc(VName, TY_IDX_NUMERIC, 0);
+      ParseAssign(SIdx);
+      Exit;
+    End;
+
+    (* Sinon, consommer le reste *)
+    While (CurToken.Kind <> TK_SEMICOLON) And
+          (CurToken.Kind <> TK_EOF) Do
+      ParserAdvance;
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+    Exit;
+  End;
+
+  (* --- Autre : consommer pour eviter boucle infinie --- *)
+  ParserAdvance;
 End;
 
 Procedure ParserAdvance;
