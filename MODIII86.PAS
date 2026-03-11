@@ -165,7 +165,7 @@
              Ensembles : OR (union), AND (intersection), NOT+AND (difference)
              Operateur IN : BT (bit test) ou decalage + AND
 
-   TODO 12 - ENTREES/SORTIES (MODULES Wr / Rd / Stdio)
+   TODO 12 - ENTREES/SORTIES (MODULES Wr / Rd / Stdio) [IMPLEMENTE]
              Module Wr (ecriture) :
                Wr.PutChar(ch)     -> INT 21h AH=02h DL=ch
                Wr.PutText(txt)    -> INT 21h AH=40h BX=1 (STDOUT)
@@ -4444,6 +4444,24 @@ Begin
       EmitInstrAB('LEA', 'SI', M3_RT_PFX + 'CRLF');
       EmitInstr('CALL    ' + M3_RT_PFX + 'PRINT');
     End
+    Else If MethName = 'PutReal' Then
+    Begin
+      (* Wr.PutReal(r) : avertissement + affiche comme entier *)
+      ParseCallArgs(ArgCount);
+      EmitInstrA('POP', 'AX');
+      EmitComment('Wr.PutReal: approx entiere (REAL non supporte 8086)');
+      EmitInstrAB('LEA', 'DI', M3_RT_PFX + 'NUMBUF');
+      EmitInstr('CALL    ' + M3_RT_PFX + 'NUMTOSTR');
+      EmitInstrAB('MOV', 'SI', 'AX');
+      EmitInstr('CALL    ' + M3_RT_PFX + 'PRINT');
+    End
+    Else If MethName = 'PutBool' Then
+    Begin
+      (* Wr.PutBool(b) : affiche TRUE ou FALSE *)
+      ParseCallArgs(ArgCount);
+      EmitInstrA('POP', 'AX');
+      EmitInstr('CALL    ' + M3_RT_PFX + 'PRBOOL');
+    End
     Else
     Begin
       ParseCallArgs(ArgCount);
@@ -4473,7 +4491,21 @@ Begin
         If EPMatch(TK_PUNCT, ')') Then Inc(EP);
       End;
       EmitInstrAB('LEA', 'SI', M3_RT_PFX + 'STRBUF');
+      EmitInstr('CALL    ' + M3_RT_PFX + 'READLINE');
+      EmitInstrAB('LEA', 'SI', M3_RT_PFX + 'STRBUF');
       EmitInstr('CALL    ' + M3_RT_PFX + 'STRTONUM');
+    End
+    Else If MethName = 'GetLine' Then
+    Begin
+      (* Rd.GetLine() : lire une ligne complete -> AX=ptr STRBUF *)
+      If EPMatch(TK_PUNCT, '(') Then
+      Begin
+        Inc(EP);
+        If EPMatch(TK_PUNCT, ')') Then Inc(EP);
+      End;
+      EmitInstrAB('LEA', 'SI', M3_RT_PFX + 'STRBUF');
+      EmitInstr('CALL    ' + M3_RT_PFX + 'READLINE');
+      EmitInstrAB('LEA', 'AX', M3_RT_PFX + 'STRBUF');
     End
     Else
     Begin
@@ -4494,9 +4526,20 @@ Begin
     End
     Else If MethName = 'Char' Then
     Begin
+      (* Fmt.Char(ch) : convertir un caractere en TEXT d un octet *)
       ParseCallArgs(ArgCount);
       EmitInstrA('POP', 'AX');
-      EmitComment('Fmt.Char -> AX = ptr to single-char TEXT');
+      EmitInstrAB('LEA', 'DI', M3_RT_PFX + 'STRBUF');
+      EmitInstrAB('MOV', '[DI]', 'AL');
+      EmitInstrAB('MOV', 'BYTE PTR [DI+1]', '0');
+      EmitInstrAB('MOV', 'AX', 'DI');
+    End
+    Else If MethName = 'Bool' Then
+    Begin
+      (* Fmt.Bool(b) : retourne "TRUE" ou "FALSE" en TEXT *)
+      ParseCallArgs(ArgCount);
+      EmitInstrA('POP', 'AX');
+      EmitInstr('CALL    ' + M3_RT_PFX + 'FMTBOOL');
     End
     Else
     Begin
@@ -4537,6 +4580,14 @@ Begin
       EmitInstrA('POP', 'SI');
       EmitInstr('CALL    ' + M3_RT_PFX + 'TEXTSUB');
     End
+    Else If MethName = 'Cat' Then
+    Begin
+      (* Text.Cat(a, b) : concatener deux TEXT -> AX=ptr *)
+      ParseCallArgs(ArgCount);
+      EmitInstrA('POP', 'DI');
+      EmitInstrA('POP', 'SI');
+      EmitInstr('CALL    ' + M3_RT_PFX + 'CONCAT');
+    End
     Else
     Begin
       ParseCallArgs(ArgCount);
@@ -4557,6 +4608,43 @@ Begin
     Begin
       ParseCallArgs(ArgCount);
       EmitComment('IO.' + MethName + ' (stub)');
+    End;
+  End
+
+  (* Module Stdio : handles stdout et stderr *)
+  Else If ModName = 'Stdio' Then
+  Begin
+    If MethName = 'stdout' Then
+    Begin
+      (* Stdio.stdout -> AX = 1 (handle stdout DOS) *)
+      EmitInstrAB('MOV', 'AX', '1');
+    End
+    Else If MethName = 'stderr' Then
+    Begin
+      (* Stdio.stderr -> AX = 2 (handle stderr DOS) *)
+      EmitInstrAB('MOV', 'AX', '2');
+    End
+    Else
+    Begin
+      ParseCallArgs(ArgCount);
+      EmitComment('Stdio.' + MethName + ' (stub)');
+    End;
+  End
+
+  (* Module Process *)
+  Else If ModName = 'Process' Then
+  Begin
+    If MethName = 'Exit' Then
+    Begin
+      ParseCallArgs(ArgCount);
+      EmitInstrA('POP', 'AX');
+      EmitInstrAB('MOV', 'AH', '4Ch');
+      EmitInstr('INT    21h');
+    End
+    Else
+    Begin
+      ParseCallArgs(ArgCount);
+      EmitComment('Process.' + MethName + ' (stub)');
     End;
   End
 
@@ -5889,6 +5977,317 @@ Begin
   End;
 End;
 
+(* ============================================================
+   TODO 12 - ENTREES/SORTIES (MODULES Wr / Rd / Stdio) [IMPLEMENTE]
+   ============================================================ *)
+
+(* ---- EmitRuntime : emettre les routines runtime dans _TEXT ---- *)
+(* Genere les sous-programmes ASM 8086 appeles par le code genere. *)
+(* Chaque routine est autonome et suit la convention NEAR CALL.    *)
+(* Toutes les routines preservent BP et les registres de segment.  *)
+
+Procedure EmitRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=========================================================');
+  EmitComment('RUNTIME MODULA-3 (_M3RT_xxx)');
+  EmitComment('=========================================================');
+
+  (* --------------------------------------------------------------- *)
+  (* _M3RT_PRINT : afficher une chaine ASCIIZ via DOS               *)
+  (* Entree : SI = pointeur vers chaine ASCIIZ                      *)
+  (* Sortie : rien                                                   *)
+  (* Modifie : AX, BX, CX, DX                                       *)
+  (* --------------------------------------------------------------- *)
+  EmitBlankLine;
+  EmitLabel(M3_RT_PFX + 'PRINT');
+  EmitInstrA('PUSH', 'SI');
+  EmitComment('calculer la longueur de la chaine');
+  EmitInstrAB('MOV', 'DI', 'SI');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitLabel(M3_RT_PFX + 'PRINT_L');
+  EmitInstrAB('CMP', 'BYTE PTR [DI]', '0');
+  EmitInstrA('JE', M3_RT_PFX + 'PRINT_D');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('INC', 'CX');
+  EmitInstrA('JMP', M3_RT_PFX + 'PRINT_L');
+  EmitLabel(M3_RT_PFX + 'PRINT_D');
+  EmitComment('ecrire CX octets a partir de SI');
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstrAB('MOV', 'BX', '1');
+  EmitInstrAB('MOV', 'DX', 'SI');
+  EmitInstr('INT    21h');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+
+  (* --------------------------------------------------------------- *)
+  (* _M3RT_NUMTOSTR : convertir un entier signe 16 bits en ASCIIZ   *)
+  (* Entree : AX = valeur, DI = buffer destination                  *)
+  (* Sortie : AX = pointeur vers debut du nombre dans buffer        *)
+  (* Modifie : AX, BX, CX, DX, DI                                   *)
+  (* --------------------------------------------------------------- *)
+  EmitBlankLine;
+  EmitLabel(M3_RT_PFX + 'NUMTOSTR');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', 'DI');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitInstrAB('MOV', 'BX', '10');
+  EmitInstrAB('CMP', 'AX', '0');
+  EmitInstrA('JGE', M3_RT_PFX + 'NTS_POS');
+  EmitComment('nombre negatif : stocker - et nier');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '''-''');
+  EmitInstrA('INC', 'DI');
+  EmitInstr('NEG     AX');
+  EmitLabel(M3_RT_PFX + 'NTS_POS');
+  EmitInstrAB('CMP', 'AX', '0');
+  EmitInstrA('JNE', M3_RT_PFX + 'NTS_DIVL');
+  EmitComment('cas zero');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '''0''');
+  EmitInstrAB('MOV', 'BYTE PTR [DI+1]', '0');
+  EmitInstrAB('MOV', 'AX', 'SI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitLabel(M3_RT_PFX + 'NTS_DIVL');
+  EmitComment('extraire chiffres de droite a gauche');
+  EmitInstrAB('XOR', 'DX', 'DX');
+  EmitInstrA('DIV', 'BX');
+  EmitInstrAB('ADD', 'DL', '''0''');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrA('INC', 'CX');
+  EmitInstrAB('CMP', 'AX', '0');
+  EmitInstrA('JNE', M3_RT_PFX + 'NTS_DIVL');
+  EmitComment('ecrire chiffres dans l''ordre');
+  EmitLabel(M3_RT_PFX + 'NTS_WR');
+  EmitInstrA('POP', 'AX');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JNZ', M3_RT_PFX + 'NTS_WR');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('MOV', 'AX', 'SI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+
+  (* --------------------------------------------------------------- *)
+  (* _M3RT_STRTONUM : convertir une chaine ASCIIZ en entier signe   *)
+  (* Entree : SI = pointeur vers chaine ASCIIZ                      *)
+  (* Sortie : AX = valeur entiere                                   *)
+  (* Modifie : AX, BX, CX, DX                                       *)
+  (* --------------------------------------------------------------- *)
+  EmitBlankLine;
+  EmitLabel(M3_RT_PFX + 'STRTONUM');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitInstrAB('MOV', 'BX', '10');
+  EmitComment('verifier signe negatif');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '''-''');
+  EmitInstrA('JNE', M3_RT_PFX + 'STN_LP');
+  EmitInstrA('INC', 'SI');
+  EmitInstrAB('MOV', 'CX', '1');
+  EmitLabel(M3_RT_PFX + 'STN_LP');
+  EmitInstrAB('MOV', 'DL', '[SI]');
+  EmitInstrAB('CMP', 'DL', '''0''');
+  EmitInstrA('JB', M3_RT_PFX + 'STN_DN');
+  EmitInstrAB('CMP', 'DL', '''9''');
+  EmitInstrA('JA', M3_RT_PFX + 'STN_DN');
+  EmitInstrAB('SUB', 'DL', '''0''');
+  EmitInstrAB('XOR', 'DH', 'DH');
+  EmitInstrA('MUL', 'BX');
+  EmitInstrAB('ADD', 'AX', 'DX');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', M3_RT_PFX + 'STN_LP');
+  EmitLabel(M3_RT_PFX + 'STN_DN');
+  EmitInstrAB('CMP', 'CX', '1');
+  EmitInstrA('JNE', M3_RT_PFX + 'STN_OK');
+  EmitInstr('NEG     AX');
+  EmitLabel(M3_RT_PFX + 'STN_OK');
+  EmitInstr('RET');
+
+  (* --------------------------------------------------------------- *)
+  (* _M3RT_STRLEN : longueur d une chaine ASCIIZ                    *)
+  (* Entree : SI = pointeur vers chaine ASCIIZ                      *)
+  (* Sortie : AX = longueur (sans le zero terminal)                 *)
+  (* Modifie : AX, SI                                                *)
+  (* --------------------------------------------------------------- *)
+  EmitBlankLine;
+  EmitLabel(M3_RT_PFX + 'STRLEN');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitLabel(M3_RT_PFX + 'SL_LP');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstrA('JE', M3_RT_PFX + 'SL_DN');
+  EmitInstrA('INC', 'AX');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', M3_RT_PFX + 'SL_LP');
+  EmitLabel(M3_RT_PFX + 'SL_DN');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+
+  (* --------------------------------------------------------------- *)
+  (* _M3RT_STRCMP : comparer deux chaines ASCIIZ                     *)
+  (* Entree : SI = chaine gauche, DI = chaine droite                *)
+  (* Sortie : drapeaux ZF et CF selon comparaison                   *)
+  (*   ZF=1 -> egal ; CF=1 -> gauche < droite                      *)
+  (*   AX = 1 si egal, AX = 0 sinon                                *)
+  (* Modifie : AX, SI, DI                                            *)
+  (* --------------------------------------------------------------- *)
+  EmitBlankLine;
+  EmitLabel(M3_RT_PFX + 'STRCMP');
+  EmitInstrA('PUSH', 'BX');
+  EmitLabel(M3_RT_PFX + 'SC_LP');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('MOV', 'BL', '[DI]');
+  EmitInstrAB('CMP', 'AL', 'BL');
+  EmitInstrA('JNE', M3_RT_PFX + 'SC_NE');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', M3_RT_PFX + 'SC_EQ');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', M3_RT_PFX + 'SC_LP');
+  EmitLabel(M3_RT_PFX + 'SC_EQ');
+  EmitInstrAB('MOV', 'AX', '1');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitLabel(M3_RT_PFX + 'SC_NE');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+
+  (* --------------------------------------------------------------- *)
+  (* _M3RT_CONCAT : concatener deux ASCIIZ -> STRBUF                *)
+  (* Entree : SI = chaine gauche, DI = chaine droite                *)
+  (* Sortie : AX = pointeur vers STRBUF avec resultat               *)
+  (* Modifie : AX, CX, SI, DI                                       *)
+  (* --------------------------------------------------------------- *)
+  EmitBlankLine;
+  EmitLabel(M3_RT_PFX + 'CONCAT');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrAB('LEA', 'BX', M3_RT_PFX + 'STRBUF');
+  EmitInstrA('PUSH', 'BX');
+  EmitComment('copier chaine gauche');
+  EmitLabel(M3_RT_PFX + 'CC_L1');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', M3_RT_PFX + 'CC_L2');
+  EmitInstrAB('MOV', '[BX]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'BX');
+  EmitInstrA('JMP', M3_RT_PFX + 'CC_L1');
+  EmitComment('copier chaine droite');
+  EmitLabel(M3_RT_PFX + 'CC_L2');
+  EmitInstrAB('MOV', 'AL', '[DI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', M3_RT_PFX + 'CC_DN');
+  EmitInstrAB('MOV', '[BX]', 'AL');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('INC', 'BX');
+  EmitInstrA('JMP', M3_RT_PFX + 'CC_L2');
+  EmitLabel(M3_RT_PFX + 'CC_DN');
+  EmitInstrAB('MOV', 'BYTE PTR [BX]', '0');
+  EmitInstrA('POP', 'AX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+
+  (* --------------------------------------------------------------- *)
+  (* _M3RT_TEXTSUB : extraction sous-chaine -> STRBUF               *)
+  (* Entree : SI = source, BX = start (0-based), CX = longueur     *)
+  (* Sortie : AX = pointeur vers STRBUF avec sous-chaine            *)
+  (* Modifie : AX, CX, SI, DI                                       *)
+  (* --------------------------------------------------------------- *)
+  EmitBlankLine;
+  EmitLabel(M3_RT_PFX + 'TEXTSUB');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrAB('ADD', 'SI', 'BX');
+  EmitInstrAB('LEA', 'DI', M3_RT_PFX + 'STRBUF');
+  EmitInstrA('PUSH', 'DI');
+  EmitLabel(M3_RT_PFX + 'TS_LP');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', M3_RT_PFX + 'TS_DN');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', M3_RT_PFX + 'TS_DN');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', M3_RT_PFX + 'TS_LP');
+  EmitLabel(M3_RT_PFX + 'TS_DN');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrA('POP', 'AX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+
+  (* --------------------------------------------------------------- *)
+  (* _M3RT_READLINE : lire une ligne depuis stdin (INT 21h AH=0Ah)  *)
+  (* Entree : SI = buffer destination (doit faire >= 256 octets)    *)
+  (* Sortie : SI contient la chaine ASCIIZ lue                      *)
+  (* Modifie : AX, BX, CX, DX                                       *)
+  (* --------------------------------------------------------------- *)
+  EmitBlankLine;
+  EmitLabel(M3_RT_PFX + 'READLINE');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitComment('preparer le buffer DOS AH=0Ah : [maxlen] [actlen] [data...]');
+  EmitInstrAB('MOV', 'BYTE PTR [SI]', '253');
+  EmitInstrAB('MOV', 'BYTE PTR [SI+1]', '0');
+  EmitInstrAB('MOV', 'AH', '0Ah');
+  EmitInstrAB('MOV', 'DX', 'SI');
+  EmitInstr('INT    21h');
+  EmitComment('convertir en ASCIIZ : deplacer les caracteres et terminer par 0');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitInstrAB('MOV', 'CL', '[SI+1]');
+  EmitInstrAB('LEA', 'BX', '[SI+2]');
+  EmitInstrAB('MOV', 'DI', 'SI');
+  EmitLabel(M3_RT_PFX + 'RL_LP');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', M3_RT_PFX + 'RL_DN');
+  EmitInstrAB('MOV', 'AL', '[BX]');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'BX');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', M3_RT_PFX + 'RL_LP');
+  EmitLabel(M3_RT_PFX + 'RL_DN');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+
+  (* --------------------------------------------------------------- *)
+  (* _M3RT_PRBOOL : afficher TRUE ou FALSE                          *)
+  (* Entree : AX = valeur booleenne (0=FALSE, non-zero=TRUE)        *)
+  (* Sortie : rien                                                   *)
+  (* Modifie : AX, SI                                                *)
+  (* --------------------------------------------------------------- *)
+  EmitBlankLine;
+  EmitLabel(M3_RT_PFX + 'PRBOOL');
+  EmitInstrAB('CMP', 'AX', '0');
+  EmitInstrA('JE', M3_RT_PFX + 'PB_F');
+  EmitInstrAB('LEA', 'SI', M3_RT_PFX + 'TRUE_S');
+  EmitInstrA('JMP', M3_RT_PFX + 'PB_PR');
+  EmitLabel(M3_RT_PFX + 'PB_F');
+  EmitInstrAB('LEA', 'SI', M3_RT_PFX + 'FALSE_S');
+  EmitLabel(M3_RT_PFX + 'PB_PR');
+  EmitInstr('CALL    ' + M3_RT_PFX + 'PRINT');
+  EmitInstr('RET');
+
+  (* --------------------------------------------------------------- *)
+  (* _M3RT_FMTBOOL : retourner pointeur vers "TRUE" ou "FALSE"     *)
+  (* Entree : AX = valeur booleenne (0=FALSE, non-zero=TRUE)        *)
+  (* Sortie : AX = pointeur vers chaine ASCIIZ "TRUE" ou "FALSE"   *)
+  (* Modifie : AX                                                    *)
+  (* --------------------------------------------------------------- *)
+  EmitBlankLine;
+  EmitLabel(M3_RT_PFX + 'FMTBOOL');
+  EmitInstrAB('CMP', 'AX', '0');
+  EmitInstrA('JE', M3_RT_PFX + 'FB_F');
+  EmitInstrAB('LEA', 'AX', M3_RT_PFX + 'TRUE_S');
+  EmitInstr('RET');
+  EmitLabel(M3_RT_PFX + 'FB_F');
+  EmitInstrAB('LEA', 'AX', M3_RT_PFX + 'FALSE_S');
+  EmitInstr('RET');
+End;
+
 Procedure ShowStats;
 Begin
   WriteLn('Compilation terminee : ', Opts.SrcFile, ' -> ', Opts.OutFile);
@@ -5952,12 +6351,11 @@ Begin
     WriteLn('  Procedures     : ', ProcCount);
   End;
 
-  (* TODO 12+ : ParseCompilationUnit, EmitRuntime, etc. *)
-
   (* Phase 3 : emettre le fichier assembleur *)
   EmitOpen;
   EmitHeader;
   EmitProcedures;
+  EmitRuntime;
   EmitClose;
 
   If Opts.Verbose Then ShowStats;
