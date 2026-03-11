@@ -277,7 +277,7 @@
                sont declarees comme modules externes (EXTRN en ASM)
              Tables d importation/exportation : symboles EXTRN et PUBLIC
 
-   TODO 19 - TYPES OBJETS ET METHODES (OBJECT)
+   TODO 19 - TYPES OBJETS ET METHODES (OBJECT) [IMPLEMENTE]
              Declaration : TYPE T = ParentType OBJECT
                champs;
                METHODS
@@ -434,6 +434,8 @@ Const
   MAX_LOCAL     = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
   STACK_SIZE    = 1024;
   MAX_TOKEN     = {$IFDEF FPC}16384{$ELSE}2048{$ENDIF};
+  MAX_OBJ_TYPE  = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
+  MAX_METHOD    = 16;
 
   (* Prefixe statique (TODO 09) *)
   M3_STA_PFX  = '_M3S_';     (* variable statique locale             *)
@@ -674,6 +676,29 @@ Type
     SymCount   : Integer;     (* nombre de symboles (FROM ... IMPORT)   *)
   End;
 
+  (* ---- Types objets et methodes (TODO 19) ---------------------- *)
+  TMethodEntry = Record
+    Name       : TString;    (* nom Modula-3 de la methode            *)
+    MangledName: TString;    (* label ASM (_M3P_Type_Method)          *)
+    ParamCount : Integer;    (* nombre de parametres (sans self)      *)
+    RetTypeIdx : Integer;    (* type de retour (-1 = void)            *)
+    VTSlot     : Integer;    (* index dans la vtable (0-based)        *)
+  End;
+
+  TObjTypeInfo = Record
+    Name       : TString;    (* nom du type objet                     *)
+    TypeIdx    : Integer;    (* index dans TypeTab                    *)
+    ParentObjIdx: Integer;   (* index dans ObjTypeTab (-1 = ROOT)     *)
+    FieldCount : Integer;    (* nombre de champs                      *)
+    Fields     : Array[0..MAX_FIELD - 1] Of TFieldRec;
+    FieldSize  : Integer;    (* taille totale des champs en octets    *)
+    MethodCount: Integer;    (* nombre de methodes (y compris heritees)*)
+    Methods    : Array[0..MAX_METHOD - 1] Of TMethodEntry;
+    VtableLabel: TString;    (* label de la vtable dans DATA          *)
+    TypeCode   : Integer;    (* code unique pour ISTYPE               *)
+    TotalSize  : Integer;    (* taille = 2 (vtable ptr) + champs      *)
+  End;
+
 (* ============================================================
    VARIABLES GLOBALES
    ============================================================ *)
@@ -705,6 +730,10 @@ Var
   ImportCount  : Integer;
   ModuleName   : TString;   (* nom du MODULE ou INTERFACE courant *)
   ExportsName  : TString;   (* nom de l interface exportee (EXPORTS) *)
+
+  (* Types objets (TODO 19) *)
+  ObjTypeTab   : Array[0..MAX_OBJ_TYPE - 1] Of TObjTypeInfo;
+  ObjTypeCount : Integer;
 
   (* Segment de donnees (TODO 03) *)
   DataTab    : Array[0..MAX_DATA-1] Of TDataRec;
@@ -2780,6 +2809,34 @@ Begin
   (* Exceptions predefinies *)
   SymAdd('RuntimeError', SK_EXCEPTION, TY_UNKNOWN, 0);
 
+  (* Type objet racine ROOT (TODO 19) *)
+  If TypeCount < MAX_TYPE Then
+  Begin
+    TypeTab[TypeCount].Kind        := TYK_OBJECT;
+    TypeTab[TypeCount].Name        := 'ROOT';
+    TypeTab[TypeCount].Size        := 2;
+    TypeTab[TypeCount].BaseTypeIdx := TypeCount;
+    TypeTab[TypeCount].Lo          := 0;
+    TypeTab[TypeCount].Hi          := 0;
+    TypeTab[TypeCount].FieldCount  := 0;
+    TypeTab[TypeCount].EnumCount   := 0;
+    SymAdd('ROOT', SK_TYPE, TypeCount, 0);
+    If ObjTypeCount < MAX_OBJ_TYPE Then
+    Begin
+      ObjTypeTab[ObjTypeCount].Name        := 'ROOT';
+      ObjTypeTab[ObjTypeCount].TypeIdx     := TypeCount;
+      ObjTypeTab[ObjTypeCount].ParentObjIdx:= -1;
+      ObjTypeTab[ObjTypeCount].FieldCount  := 0;
+      ObjTypeTab[ObjTypeCount].FieldSize   := 0;
+      ObjTypeTab[ObjTypeCount].MethodCount := 0;
+      ObjTypeTab[ObjTypeCount].VtableLabel := M3_TYPE_PFX + 'ROOT_VT';
+      ObjTypeTab[ObjTypeCount].TypeCode    := 0;
+      ObjTypeTab[ObjTypeCount].TotalSize   := 2;
+      Inc(ObjTypeCount);
+    End;
+    Inc(TypeCount);
+  End;
+
   If Opts.DebugMode Then
     WriteLn('  Builtins registres : ', SymCount, ' symboles');
 End;
@@ -3434,6 +3491,22 @@ Begin
                 IntToStr(DataTab[I].RecSize) + ' DUP(0)');
     End;
   End;
+
+  (* Vtables des types objets (TODO 19) *)
+  If ObjTypeCount > 0 Then
+  Begin
+    EmitBlankLine;
+    EmitComment('--- Vtables des types objets ---');
+    For I := 0 To ObjTypeCount - 1 Do
+    Begin
+      S := ObjTypeTab[I].VtableLabel + '  DW  ';
+      S := S + IntToStr(ObjTypeTab[I].TypeCode);
+      For J := 0 To ObjTypeTab[I].MethodCount - 1 Do
+        S := S + ',OFFSET ' + ObjTypeTab[I].Methods[J].MangledName;
+      EmitRaw(S);
+    End;
+  End;
+
   EmitBlankLine;
   EmitRaw('_DATA   ENDS');
 End;
@@ -3735,6 +3808,310 @@ Begin
       RecordFieldFind := I;
       Exit;
     End;
+End;
+
+(* ============================================================
+   TODO 19 - TYPES OBJETS ET METHODES (OBJECT) [IMPLEMENTE]
+   ============================================================ *)
+
+(* ---- ObjTypeFind : trouver un type objet par nom -------------- *)
+(* Retourne l index dans ObjTypeTab ou -1 si non trouve.            *)
+
+Function ObjTypeFind(Const Name : TString) : Integer;
+Var I : Integer;
+Begin
+  For I := 0 To ObjTypeCount - 1 Do
+    If ObjTypeTab[I].Name = Name Then
+    Begin
+      ObjTypeFind := I;
+      Exit;
+    End;
+  ObjTypeFind := -1;
+End;
+
+(* ---- ObjTypeFindByTypeIdx : trouver objet par TypeTab index --- *)
+
+Function ObjTypeFindByTypeIdx(TIdx : Integer) : Integer;
+Var I : Integer;
+Begin
+  For I := 0 To ObjTypeCount - 1 Do
+    If ObjTypeTab[I].TypeIdx = TIdx Then
+    Begin
+      ObjTypeFindByTypeIdx := I;
+      Exit;
+    End;
+  ObjTypeFindByTypeIdx := -1;
+End;
+
+(* ---- ObjTypeFieldFind : trouver un champ dans un type objet --- *)
+(* Retourne l index du champ (0..FieldCount-1) ou -1.              *)
+
+Function ObjTypeFieldFind(ObjIdx : Integer;
+                          Const FldName : TString) : Integer;
+Var I : Integer;
+Begin
+  ObjTypeFieldFind := -1;
+  If (ObjIdx < 0) Or (ObjIdx >= ObjTypeCount) Then Exit;
+  For I := 0 To ObjTypeTab[ObjIdx].FieldCount - 1 Do
+    If ObjTypeTab[ObjIdx].Fields[I].Name = FldName Then
+    Begin
+      ObjTypeFieldFind := I;
+      Exit;
+    End;
+End;
+
+(* ---- ObjTypeMethodFind : trouver une methode dans un type objet *)
+(* Retourne l index de la methode (0..MethodCount-1) ou -1.        *)
+
+Function ObjTypeMethodFind(ObjIdx : Integer;
+                           Const MethName : TString) : Integer;
+Var I : Integer;
+Begin
+  ObjTypeMethodFind := -1;
+  If (ObjIdx < 0) Or (ObjIdx >= ObjTypeCount) Then Exit;
+  For I := 0 To ObjTypeTab[ObjIdx].MethodCount - 1 Do
+    If ObjTypeTab[ObjIdx].Methods[I].Name = MethName Then
+    Begin
+      ObjTypeMethodFind := I;
+      Exit;
+    End;
+End;
+
+(* ---- ParseObjectTypeFromTokens : parser OBJECT...END ---------- *)
+(* Lit [ParentType] OBJECT champs; METHODS ...; OVERRIDES ...; END *)
+(* a partir de la position P dans le TokenPool. Cree l entree       *)
+(* dans ObjTypeTab et TypeTab. Retourne l index TypeTab.            *)
+
+Function ParseObjectTypeFromTokens(Var P : Integer;
+                                   Const TName : TString) : Integer;
+Var
+  TIdx, FTIdx   : Integer;
+  OIdx, POIdx   : Integer;
+  FCount        : Integer;
+  FOffset       : Integer;
+  MCount        : Integer;
+  FName, MName  : TString;
+  FSz           : Integer;
+  ParentName    : TString;
+  InMethods     : Boolean;
+  InOverrides   : Boolean;
+  MI            : Integer;
+Begin
+  ParseObjectTypeFromTokens := TY_UNKNOWN;
+  ParentName := '';
+
+  (* Verifier si un parent est nomme avant OBJECT *)
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+  Begin
+    ParentName := TokenPool[P].Val;
+    Inc(P);
+  End;
+
+  (* On doit maintenant etre sur OBJECT *)
+  If (P >= TokenCount) Or Not
+     ((TokenPool[P].Kind = TK_KEYWORD) And (TokenPool[P].Val = 'OBJECT'))
+  Then Exit;
+  Inc(P); (* passer OBJECT *)
+
+  If ObjTypeCount >= MAX_OBJ_TYPE Then
+  Begin
+    ParseObjectTypeFromTokens := TY_UNKNOWN;
+    Exit;
+  End;
+
+  (* Creer l entree TypeTab *)
+  TIdx := TypeAdd(TYK_OBJECT, TName, 2);
+  If TIdx < 0 Then Exit;
+
+  OIdx := ObjTypeCount;
+  Inc(ObjTypeCount);
+  ObjTypeTab[OIdx].Name       := TName;
+  ObjTypeTab[OIdx].TypeIdx    := TIdx;
+  ObjTypeTab[OIdx].TypeCode   := OIdx + 1;
+  ObjTypeTab[OIdx].VtableLabel:= M3_TYPE_PFX + TName + '_VT';
+  ObjTypeTab[OIdx].FieldCount := 0;
+  ObjTypeTab[OIdx].FieldSize  := 0;
+  ObjTypeTab[OIdx].MethodCount:= 0;
+
+  (* Heritage du parent *)
+  POIdx := -1;
+  If ParentName <> '' Then
+  Begin
+    POIdx := ObjTypeFind(ParentName);
+    If POIdx >= 0 Then
+    Begin
+      (* Copier champs du parent *)
+      For FCount := 0 To ObjTypeTab[POIdx].FieldCount - 1 Do
+        ObjTypeTab[OIdx].Fields[FCount] := ObjTypeTab[POIdx].Fields[FCount];
+      ObjTypeTab[OIdx].FieldCount := ObjTypeTab[POIdx].FieldCount;
+      ObjTypeTab[OIdx].FieldSize  := ObjTypeTab[POIdx].FieldSize;
+      (* Copier methodes du parent (vtable heritee) *)
+      For MCount := 0 To ObjTypeTab[POIdx].MethodCount - 1 Do
+        ObjTypeTab[OIdx].Methods[MCount] := ObjTypeTab[POIdx].Methods[MCount];
+      ObjTypeTab[OIdx].MethodCount := ObjTypeTab[POIdx].MethodCount;
+    End;
+  End;
+  ObjTypeTab[OIdx].ParentObjIdx := POIdx;
+
+  FCount  := ObjTypeTab[OIdx].FieldCount;
+  FOffset := ObjTypeTab[OIdx].FieldSize;
+  MCount  := ObjTypeTab[OIdx].MethodCount;
+  InMethods   := False;
+  InOverrides := False;
+
+  (* Parser champs, METHODS, OVERRIDES jusqu a END *)
+  While (P < TokenCount) And Not
+        ((TokenPool[P].Kind = TK_KEYWORD) And (TokenPool[P].Val = 'END'))
+  Do
+  Begin
+    (* Detecter section METHODS *)
+    If (TokenPool[P].Kind = TK_KEYWORD) And (TokenPool[P].Val = 'METHODS') Then
+    Begin
+      InMethods   := True;
+      InOverrides := False;
+      Inc(P);
+      Continue;
+    End;
+    (* Detecter section OVERRIDES *)
+    If (TokenPool[P].Kind = TK_KEYWORD) And (TokenPool[P].Val = 'OVERRIDES') Then
+    Begin
+      InMethods   := False;
+      InOverrides := True;
+      Inc(P);
+      Continue;
+    End;
+
+    If TokenPool[P].Kind = TK_IDENT Then
+    Begin
+      If InOverrides Then
+      Begin
+        (* OVERRIDES : methode := NouvelleProc ; *)
+        MName := TokenPool[P].Val;
+        Inc(P);
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_OP) And
+           (TokenPool[P].Val = ':=') Then
+        Begin
+          Inc(P); (* passer ':=' *)
+          If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+          Begin
+            MI := ObjTypeMethodFind(OIdx, MName);
+            If MI >= 0 Then
+              ObjTypeTab[OIdx].Methods[MI].MangledName :=
+                M3_PROC_PFX + TokenPool[P].Val;
+            Inc(P);
+          End;
+        End;
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+           (TokenPool[P].Val = ';') Then
+          Inc(P);
+      End
+      Else If InMethods Then
+      Begin
+        (* METHODS : methode(params): RetType ; *)
+        MName := TokenPool[P].Val;
+        Inc(P);
+        (* Sauter la liste de parametres *)
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+           (TokenPool[P].Val = '(') Then
+        Begin
+          Inc(P);
+          While (P < TokenCount) And Not
+                ((TokenPool[P].Kind = TK_PUNCT) And
+                 (TokenPool[P].Val = ')')) Do
+            Inc(P);
+          If P < TokenCount Then Inc(P); (* passer ')' *)
+        End;
+        (* Sauter le type de retour optionnel *)
+        FTIdx := -1;
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+           (TokenPool[P].Val = ':') Then
+        Begin
+          Inc(P);
+          If (P < TokenCount) Then
+          Begin
+            FTIdx := TypeIdxFromName(TokenPool[P].Val);
+            Inc(P);
+          End;
+        End;
+        If MCount < MAX_METHOD Then
+        Begin
+          ObjTypeTab[OIdx].Methods[MCount].Name       := MName;
+          ObjTypeTab[OIdx].Methods[MCount].MangledName :=
+            M3_PROC_PFX + TName + '_' + MName;
+          ObjTypeTab[OIdx].Methods[MCount].ParamCount  := 0;
+          ObjTypeTab[OIdx].Methods[MCount].RetTypeIdx  := FTIdx;
+          ObjTypeTab[OIdx].Methods[MCount].VTSlot      := MCount;
+          Inc(MCount);
+        End;
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+           (TokenPool[P].Val = ';') Then
+          Inc(P);
+      End
+      Else
+      Begin
+        (* Champ : ident : Type ; *)
+        FName := TokenPool[P].Val;
+        Inc(P);
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+           (TokenPool[P].Val = ':') Then
+        Begin
+          Inc(P);
+          FTIdx := TY_IDX_INTEGER;
+          If P < TokenCount Then
+          Begin
+            If (TokenPool[P].Kind = TK_KEYWORD) Or
+               (TokenPool[P].Kind = TK_IDENT) Then
+            Begin
+              FTIdx := TypeIdxFromName(TokenPool[P].Val);
+              If FTIdx = TY_UNKNOWN Then
+                FTIdx := TY_IDX_INTEGER;
+              Inc(P);
+            End;
+          End;
+          FSz := TypeSizeFromIdx(FTIdx);
+          If (FSz > 1) And ((FOffset Mod 2) = 1) Then
+            Inc(FOffset);
+          If FCount < MAX_FIELD Then
+          Begin
+            ObjTypeTab[OIdx].Fields[FCount].Name    := FName;
+            ObjTypeTab[OIdx].Fields[FCount].TypeIdx := FTIdx;
+            ObjTypeTab[OIdx].Fields[FCount].Offset  := FOffset;
+            Inc(FCount);
+          End;
+          Inc(FOffset, FSz);
+        End;
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+           (TokenPool[P].Val = ';') Then
+          Inc(P);
+      End;
+    End
+    Else
+      Inc(P); (* token inattendu, avancer *)
+  End;
+
+  (* Passer END *)
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (TokenPool[P].Val = 'END') Then
+    Inc(P);
+
+  If (FOffset Mod 2) = 1 Then Inc(FOffset);
+  ObjTypeTab[OIdx].FieldCount  := FCount;
+  ObjTypeTab[OIdx].FieldSize   := FOffset;
+  ObjTypeTab[OIdx].MethodCount := MCount;
+  (* TotalSize = 2 (vtable ptr) + taille des champs *)
+  ObjTypeTab[OIdx].TotalSize   := 2 + FOffset;
+  TypeTab[TIdx].Size           := 2; (* variable = pointeur vers objet *)
+  TypeTab[TIdx].BaseTypeIdx    := TIdx;
+
+  (* Enregistrer le symbole TYPE *)
+  SymAdd(TName, SK_TYPE, TIdx, 0);
+
+  If Opts.DebugMode Then
+    WriteLn('  OBJECT TYPE[', OIdx, ']: ', TName,
+            ' fields=', FCount, ' methods=', MCount,
+            ' totalSize=', ObjTypeTab[OIdx].TotalSize);
+
+  ParseObjectTypeFromTokens := TIdx;
 End;
 
 (* ---- DataAddGlobalRecordVar : creer une variable record DATA  *)
@@ -4141,9 +4518,28 @@ Begin
             Inc(P);
           If P < TokenCount Then Inc(P);
         End
+        Else If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+                (TokenPool[P].Val = 'OBJECT') Then
+        Begin
+          (* TODO 19 - TYPE T = OBJECT ... END *)
+          TIdx := ParseObjectTypeFromTokens(P, Name);
+          If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+             (TokenPool[P].Val = ';') Then
+            Inc(P);
+        End
+        Else If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) And
+                (P + 1 < TokenCount) And
+                (TokenPool[P + 1].Kind = TK_KEYWORD) And
+                (TokenPool[P + 1].Val = 'OBJECT') Then
+        Begin
+          (* TODO 19 - TYPE T = ParentType OBJECT ... END *)
+          TIdx := ParseObjectTypeFromTokens(P, Name);
+          If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+             (TokenPool[P].Val = ';') Then
+            Inc(P);
+        End
         Else
         Begin
-          (* Type non-RECORD, non-PROCEDURE : sauter jusqu au ';' *)
           While (P < TokenCount) And Not
                 ((TokenPool[P].Kind = TK_PUNCT) And
                  (TokenPool[P].Val = ';')) Do
@@ -4712,6 +5108,8 @@ Var
   LI, SI    : Integer;
   ArrTIdx   : Integer;
   ArrElemSz : Integer;
+  ObjI      : Integer;
+  Lbl       : TString;
 Begin
   If Name = 'ABS' Then
   Begin
@@ -4835,44 +5233,110 @@ Begin
   End
   Else If Name = 'ISTYPE' Then
   Begin
-    (* ISTYPE(expr, T) -> stub: AX=1 *)
-    Inc(EP);
+    (* ISTYPE(expr, T) -> compare typecode dynamique *)
+    Inc(EP); (* passer '(' *)
     ParseExpr;
+    EmitInstrA('PUSH', 'AX'); (* sauver le pointeur objet *)
     If EPMatch(TK_PUNCT, ',') Then Inc(EP);
-    If (EP < TokenCount) Then Inc(EP); (* skip type *)
+    ObjI := -1;
+    If (EP < TokenCount) And (TokenPool[EP].Kind = TK_IDENT) Then
+    Begin
+      ObjI := ObjTypeFind(TokenPool[EP].Val);
+      Inc(EP);
+    End;
     If EPMatch(TK_PUNCT, ')') Then Inc(EP);
-    EmitInstrAB('MOV', 'AX', '1');
-    EmitComment('ISTYPE stub: always true');
+    EmitInstrA('POP', 'BX'); (* BX = ptr objet *)
+    If ObjI >= 0 Then
+    Begin
+      Lbl := LabelGen;
+      EmitInstrAB('MOV', 'BX', 'WORD PTR [BX]');
+      EmitInstrAB('MOV', 'AX', 'WORD PTR [BX]');
+      EmitInstrAB('CMP', 'AX', IntToStr(ObjTypeTab[ObjI].TypeCode));
+      EmitInstrAB('MOV', 'AX', '0');
+      EmitInstrA('JNE', Lbl);
+      EmitInstrAB('MOV', 'AX', '1');
+      EmitLabel(Lbl);
+    End
+    Else
+    Begin
+      EmitInstrAB('MOV', 'AX', '1');
+      EmitComment('ISTYPE: type inconnu, true par defaut');
+    End;
   End
   Else If Name = 'NARROW' Then
   Begin
-    (* NARROW(expr, T) -> stub: return expr unchanged *)
-    Inc(EP);
+    (* NARROW(expr, T) -> verifier typecode, sinon erreur *)
+    Inc(EP); (* passer '(' *)
     ParseExpr;
+    EmitInstrA('PUSH', 'AX'); (* sauver le pointeur objet *)
     If EPMatch(TK_PUNCT, ',') Then Inc(EP);
-    If (EP < TokenCount) Then Inc(EP); (* skip type *)
+    ObjI := -1;
+    If (EP < TokenCount) And (TokenPool[EP].Kind = TK_IDENT) Then
+    Begin
+      ObjI := ObjTypeFind(TokenPool[EP].Val);
+      Inc(EP);
+    End;
     If EPMatch(TK_PUNCT, ')') Then Inc(EP);
-    EmitComment('NARROW stub: no-op');
+    EmitInstrA('POP', 'AX'); (* AX = ptr objet resultat *)
+    If ObjI >= 0 Then
+    Begin
+      Lbl := LabelGen;
+      EmitInstrA('PUSH', 'AX');
+      EmitInstrAB('MOV', 'BX', 'WORD PTR [AX]');
+      EmitInstrAB('CMP', 'WORD PTR [BX]',
+                   IntToStr(ObjTypeTab[ObjI].TypeCode));
+      EmitInstrA('JE', Lbl);
+      EmitComment('NARROW echec: halt');
+      EmitInstrAB('MOV', 'AH', '4Ch');
+      EmitInstrAB('MOV', 'AL', '1');
+      EmitInstr('INT    21h');
+      EmitLabel(Lbl);
+      EmitInstrA('POP', 'AX');
+    End
+    Else
+      EmitComment('NARROW: type inconnu, no-op');
   End
   Else If Name = 'TYPECODE' Then
   Begin
-    (* TYPECODE(T) -> stub: AX = type index *)
-    Inc(EP);
-    If (EP < TokenCount) Then Inc(EP); (* skip type *)
+    (* TYPECODE(T) -> AX = typecode statique *)
+    Inc(EP); (* passer '(' *)
+    ObjI := -1;
+    If (EP < TokenCount) And (TokenPool[EP].Kind = TK_IDENT) Then
+    Begin
+      ObjI := ObjTypeFind(TokenPool[EP].Val);
+      Inc(EP);
+    End;
     If EPMatch(TK_PUNCT, ')') Then Inc(EP);
-    EmitInstrAB('MOV', 'AX', '0');
-    EmitComment('TYPECODE stub');
+    If ObjI >= 0 Then
+      EmitInstrAB('MOV', 'AX', IntToStr(ObjTypeTab[ObjI].TypeCode))
+    Else
+    Begin
+      EmitInstrAB('MOV', 'AX', '0');
+      EmitComment('TYPECODE: type inconnu');
+    End;
   End
   Else If Name = 'NEW' Then
   Begin
-    (* NEW(T) -> CALL _M3RT_NEW *)
-    Inc(EP);
-    If (EP < TokenCount) Then Inc(EP); (* skip type name *)
+    (* NEW(T) -> allouer un objet ou un ref *)
+    Inc(EP); (* passer '(' *)
+    ObjI := -1;
+    If (EP < TokenCount) And (TokenPool[EP].Kind = TK_IDENT) Then
+    Begin
+      ObjI := ObjTypeFind(TokenPool[EP].Val);
+      Inc(EP);
+    End;
     (* Skip optional method overrides *)
     While Not EPAtEnd And Not EPMatch(TK_PUNCT, ')') Do
       Inc(EP);
     If EPMatch(TK_PUNCT, ')') Then Inc(EP);
-    EmitInstr('CALL    ' + M3_RT_PFX + 'NEW');
+    If ObjI >= 0 Then
+    Begin
+      EmitInstrAB('MOV', 'CX', IntToStr(ObjTypeTab[ObjI].TotalSize));
+      EmitInstrAB('LEA', 'SI', ObjTypeTab[ObjI].VtableLabel);
+      EmitInstr('CALL    ' + M3_RT_PFX + 'OBJNEW');
+    End
+    Else
+      EmitInstr('CALL    ' + M3_RT_PFX + 'NEW');
   End
   Else If (Name = 'BITSIZE') Or (Name = 'BYTESIZE') Or
           (Name = 'ADRSIZE') Then
@@ -5345,6 +5809,7 @@ Var
   FldOfs             : Integer;    (* TODO 16 - field offset          *)
   FldSz              : Integer;    (* TODO 16 - field size            *)
   FldName            : TString;    (* TODO 16 - field name            *)
+  ObjI, MI           : Integer;    (* TODO 19 - object type/method    *)
 Begin
   If EPAtEnd Then
   Begin
@@ -5460,15 +5925,21 @@ Begin
         ParseQualifiedIdent(Name);
         Exit;
       End;
-      (* Sinon : acces champ d un record *)
+      (* Sinon : acces champ d un record ou objet *)
       (* Determiner le type de la variable pour trouver le champ *)
       RecTIdx := TY_UNKNOWN;
       LI := FindProcLocal(CurProcIdx, Name);
       If LI >= 0 Then
       Begin
         RecTIdx := ProcTab[CurProcIdx].Locals[LI].TypeIdx;
-        EmitInstrAB('LEA', 'BX', '[BP' +
-          IntToStr(ProcTab[CurProcIdx].Locals[LI].Offset) + ']');
+        (* Objets sont des pointeurs : charger le pointeur dans BX *)
+        If (RecTIdx >= 0) And (RecTIdx < TypeCount) And
+           (TypeTab[RecTIdx].Kind = TYK_OBJECT) Then
+          EmitInstrAB('MOV', 'BX', 'WORD PTR [BP' +
+            IntToStr(ProcTab[CurProcIdx].Locals[LI].Offset) + ']')
+        Else
+          EmitInstrAB('LEA', 'BX', '[BP' +
+            IntToStr(ProcTab[CurProcIdx].Locals[LI].Offset) + ']');
       End
       Else
       Begin
@@ -5485,36 +5956,106 @@ Begin
           If SI >= 0 Then
           Begin
             RecTIdx := SymTab[SI].TypeIdx;
-            EmitInstrAB('LEA', 'BX', SymTab[SI].MangledName);
+            If (RecTIdx >= 0) And (RecTIdx < TypeCount) And
+               (TypeTab[RecTIdx].Kind = TYK_OBJECT) Then
+              EmitInstrAB('MOV', 'BX', SymTab[SI].MangledName)
+            Else
+              EmitInstrAB('LEA', 'BX', SymTab[SI].MangledName);
           End
           Else
             EmitComment('unknown var: ' + Name);
         End;
       End;
-      (* .champ -> calculer l offset et charger la valeur *)
+      (* .champ ou .methode -> calculer l offset et charger *)
       Inc(EP); (* passer '.' *)
       If (EP < TokenCount) And (TokenPool[EP].Kind = TK_IDENT) Then
       Begin
         FldName := TokenPool[EP].Val;
         Inc(EP);
-        FldI := RecordFieldFind(RecTIdx, FldName);
-        If FldI >= 0 Then
+        (* Verifier si c est un type objet - TODO 19 *)
+        ObjI := -1;
+        If (RecTIdx >= 0) And (RecTIdx < TypeCount) And
+           (TypeTab[RecTIdx].Kind = TYK_OBJECT) Then
+          ObjI := ObjTypeFindByTypeIdx(RecTIdx);
+        If ObjI >= 0 Then
         Begin
-          FldOfs := TypeTab[RecTIdx].Fields[FldI].Offset;
-          FldSz  := TypeSizeFromIdx(
-                      TypeTab[RecTIdx].Fields[FldI].TypeIdx);
-          If FldOfs > 0 Then
-            EmitInstrAB('ADD', 'BX', IntToStr(FldOfs));
-          If FldSz <= 1 Then
+          (* Chercher d abord une methode *)
+          MI := ObjTypeMethodFind(ObjI, FldName);
+          If MI >= 0 Then
           Begin
-            EmitInstrAB('XOR', 'AX', 'AX');
-            EmitInstrAB('MOV', 'AL', 'BYTE PTR [BX]');
-          End
-          Else
-            EmitInstrAB('MOV', 'AX', 'WORD PTR [BX]');
+            (* Appel de methode virtuelle via vtable *)
+            (* BX = ptr objet, [BX] = ptr vtable *)
+            EmitInstrA('PUSH', 'BX'); (* self = premier parametre *)
+            (* Parser les arguments *)
+            ArgCount := 0;
+            If EPMatch(TK_PUNCT, '(') Then
+            Begin
+              Inc(EP);
+              While Not EPAtEnd And Not EPMatch(TK_PUNCT, ')') Do
+              Begin
+                ParseExpr;
+                EmitInstrA('PUSH', 'AX');
+                Inc(ArgCount);
+                If EPMatch(TK_PUNCT, ',') Then Inc(EP);
+              End;
+              If EPMatch(TK_PUNCT, ')') Then Inc(EP);
+            End;
+            (* Charger vtable et appeler la methode *)
+            (* Self est deja empile, recuperer ptr objet *)
+            EmitInstrAB('MOV', 'BX', 'WORD PTR [BP+' +
+              IntToStr(4 + ArgCount * 2) + ']');
+            EmitInstrAB('MOV', 'BX', 'WORD PTR [BX]');
+            (* Slot 0 = typecode, methodes a partir de slot 1 *)
+            EmitInstr('CALL    WORD PTR [BX+' +
+              IntToStr(2 + ObjTypeTab[ObjI].Methods[MI].VTSlot * 2) + ']');
+            (* Nettoyer les arguments + self de la pile *)
+            If ArgCount + 1 > 0 Then
+              EmitInstrAB('ADD', 'SP', IntToStr((ArgCount + 1) * 2));
+            Exit;
+          End;
+          (* Chercher un champ *)
+          FldI := ObjTypeFieldFind(ObjI, FldName);
+          If FldI >= 0 Then
+          Begin
+            (* BX = ptr objet, champs apres le vtable ptr (offset +2) *)
+            FldOfs := ObjTypeTab[ObjI].Fields[FldI].Offset + 2;
+            FldSz  := TypeSizeFromIdx(
+                        ObjTypeTab[ObjI].Fields[FldI].TypeIdx);
+            If FldOfs > 0 Then
+              EmitInstrAB('ADD', 'BX', IntToStr(FldOfs));
+            If FldSz <= 1 Then
+            Begin
+              EmitInstrAB('XOR', 'AX', 'AX');
+              EmitInstrAB('MOV', 'AL', 'BYTE PTR [BX]');
+            End
+            Else
+              EmitInstrAB('MOV', 'AX', 'WORD PTR [BX]');
+            Exit;
+          End;
+          EmitComment('unknown obj member: ' + FldName);
         End
         Else
-          EmitComment('unknown field: ' + FldName);
+        Begin
+          (* Acces champ record normal *)
+          FldI := RecordFieldFind(RecTIdx, FldName);
+          If FldI >= 0 Then
+          Begin
+            FldOfs := TypeTab[RecTIdx].Fields[FldI].Offset;
+            FldSz  := TypeSizeFromIdx(
+                        TypeTab[RecTIdx].Fields[FldI].TypeIdx);
+            If FldOfs > 0 Then
+              EmitInstrAB('ADD', 'BX', IntToStr(FldOfs));
+            If FldSz <= 1 Then
+            Begin
+              EmitInstrAB('XOR', 'AX', 'AX');
+              EmitInstrAB('MOV', 'AL', 'BYTE PTR [BX]');
+            End
+            Else
+              EmitInstrAB('MOV', 'AX', 'WORD PTR [BX]');
+          End
+          Else
+            EmitComment('unknown field: ' + FldName);
+        End;
       End;
       Exit;
     End;
@@ -5931,6 +6472,7 @@ Var
   FldSz                : Integer;    (* TODO 16 - field size           *)
   FldName              : TString;    (* TODO 16 - field name           *)
   WithVar              : TString;    (* TODO 16 - WITH alias name      *)
+  ObjI, MI             : Integer;    (* TODO 19 - object type/method   *)
 Begin
   If EPAtEnd Then Exit;
 
@@ -6541,7 +7083,7 @@ Begin
         If EPMatch(TK_PUNCT, ';') Then Inc(EP);
         Exit;
       End;
-      (* record.field := expr - TODO 16 *)
+      (* record.field := expr OR obj.field := expr OR obj.method() *)
       RecTIdx := TY_UNKNOWN;
       LI := FindProcLocal(CurProcIdx, Name);
       If LI >= 0 Then
@@ -6567,7 +7109,107 @@ Begin
         FldName := TokenPool[EP].Val;
         Inc(EP);
       End;
-      If EPMatch(TK_OP, ':=') Then
+      (* Verifier si c est un type objet - TODO 19 *)
+      ObjI := -1;
+      If (RecTIdx >= 0) And (RecTIdx < TypeCount) And
+         (TypeTab[RecTIdx].Kind = TYK_OBJECT) Then
+        ObjI := ObjTypeFindByTypeIdx(RecTIdx);
+      If (ObjI >= 0) Then
+      Begin
+        (* Chercher d abord une methode *)
+        MI := ObjTypeMethodFind(ObjI, FldName);
+        If MI >= 0 Then
+        Begin
+          (* Appel de methode : obj.method(args) *)
+          (* Charger ptr objet dans BX et empiler self *)
+          LI := FindProcLocal(CurProcIdx, Name);
+          If LI >= 0 Then
+            EmitInstrAB('MOV', 'BX', 'WORD PTR [BP' +
+              IntToStr(ProcTab[CurProcIdx].Locals[LI].Offset) + ']')
+          Else
+          Begin
+            ParI := FindProcParam(CurProcIdx, Name);
+            If ParI >= 0 Then
+              EmitInstrAB('MOV', 'BX', 'WORD PTR [BP+' +
+                IntToStr(ProcTab[CurProcIdx].ParamOfs[ParI]) + ']')
+            Else
+            Begin
+              SI := SymFind(Name);
+              If SI >= 0 Then
+                EmitInstrAB('MOV', 'BX', SymTab[SI].MangledName);
+            End;
+          End;
+          EmitInstrA('PUSH', 'BX'); (* self *)
+          ArgCount := 0;
+          If EPMatch(TK_PUNCT, '(') Then
+          Begin
+            Inc(EP);
+            While Not EPAtEnd And Not EPMatch(TK_PUNCT, ')') Do
+            Begin
+              ParseExpr;
+              EmitInstrA('PUSH', 'AX');
+              Inc(ArgCount);
+              If EPMatch(TK_PUNCT, ',') Then Inc(EP);
+            End;
+            If EPMatch(TK_PUNCT, ')') Then Inc(EP);
+          End;
+          (* Recuperer self pour vtable dispatch *)
+          EmitInstrAB('MOV', 'BX', 'WORD PTR [BP+' +
+            IntToStr(4 + ArgCount * 2) + ']');
+          EmitInstrAB('MOV', 'BX', 'WORD PTR [BX]');
+          EmitInstr('CALL    WORD PTR [BX+' +
+            IntToStr(2 + ObjTypeTab[ObjI].Methods[MI].VTSlot * 2) + ']');
+          If ArgCount + 1 > 0 Then
+            EmitInstrAB('ADD', 'SP', IntToStr((ArgCount + 1) * 2));
+          If EPMatch(TK_PUNCT, ';') Then Inc(EP);
+          Exit;
+        End;
+        (* Sinon affectation champ objet *)
+        FldI := ObjTypeFieldFind(ObjI, FldName);
+        If EPMatch(TK_OP, ':=') Then
+        Begin
+          Inc(EP);
+          ParseExpr;
+          EmitInstrA('PUSH', 'AX');
+          (* Charger le pointeur objet dans BX *)
+          LI := FindProcLocal(CurProcIdx, Name);
+          If LI >= 0 Then
+            EmitInstrAB('MOV', 'BX', 'WORD PTR [BP' +
+              IntToStr(ProcTab[CurProcIdx].Locals[LI].Offset) + ']')
+          Else
+          Begin
+            ParI := FindProcParam(CurProcIdx, Name);
+            If ParI >= 0 Then
+              EmitInstrAB('MOV', 'BX', 'WORD PTR [BP+' +
+                IntToStr(ProcTab[CurProcIdx].ParamOfs[ParI]) + ']')
+            Else
+            Begin
+              SI := SymFind(Name);
+              If SI >= 0 Then
+                EmitInstrAB('MOV', 'BX', SymTab[SI].MangledName);
+            End;
+          End;
+          If FldI >= 0 Then
+          Begin
+            FldOfs := ObjTypeTab[ObjI].Fields[FldI].Offset + 2;
+            FldSz  := TypeSizeFromIdx(
+                        ObjTypeTab[ObjI].Fields[FldI].TypeIdx);
+            If FldOfs > 0 Then
+              EmitInstrAB('ADD', 'BX', IntToStr(FldOfs));
+            EmitInstrA('POP', 'AX');
+            If FldSz <= 1 Then
+              EmitInstrAB('MOV', 'BYTE PTR [BX]', 'AL')
+            Else
+              EmitInstrAB('MOV', 'WORD PTR [BX]', 'AX');
+          End
+          Else
+          Begin
+            EmitInstrA('POP', 'AX');
+            EmitComment('unknown obj field: ' + FldName);
+          End;
+        End;
+      End
+      Else If EPMatch(TK_OP, ':=') Then
       Begin
         Inc(EP);
         ParseExpr;
@@ -7806,6 +8448,36 @@ Begin
   EmitLabel(M3_RT_PFX + 'FB_F');
   EmitInstrAB('LEA', 'AX', M3_RT_PFX + 'FALSE_S');
   EmitInstr('RET');
+
+  (* --------------------------------------------------------------- *)
+  (* _M3RT_OBJNEW : allouer un objet sur le heap (TODO 19)          *)
+  (* Entree : CX = taille totale, SI = adresse vtable               *)
+  (* Sortie : AX = pointeur vers le nouvel objet                    *)
+  (* [AX] contient le pointeur vtable, le reste est a zero          *)
+  (* Modifie : AX, BX, CX, DI                                       *)
+  (* --------------------------------------------------------------- *)
+  EmitBlankLine;
+  EmitLabel(M3_RT_PFX + 'OBJNEW');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'BX', M3_RT_PFX + 'HEAPTOP');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstrAB('ADD', 'BX', 'CX');
+  EmitInstrAB('MOV', M3_RT_PFX + 'HEAPTOP', 'BX');
+  EmitComment('zero-fill the object');
+  EmitInstrAB('MOV', 'DI', 'AX');
+  EmitInstrA('PUSH', 'AX');
+  EmitInstrAB('SHR', 'CX', '1');
+  EmitInstrA('PUSH', 'AX');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstr('REP    STOSW');
+  EmitInstrA('POP', 'AX');
+  EmitInstrA('POP', 'AX');
+  EmitComment('store vtable pointer at [AX]');
+  EmitInstrA('POP', 'SI');
+  EmitInstrAB('MOV', 'WORD PTR [AX]', 'SI');
+  EmitInstrA('POP', 'CX');
+  EmitInstr('RET');
 End;
 
 Procedure ShowStats;
@@ -7826,6 +8498,7 @@ Begin
   TotalLines := 0;
   TotalSyms  := 0;
   ProcCount  := 0;
+  ObjTypeCount := 0;
   OutFOpen   := False;
   LexOpened  := False;
 
@@ -7879,6 +8552,7 @@ Begin
     WriteLn('  Symboles       : ', SymCount);
     WriteLn('  Procedures     : ', ProcCount);
     WriteLn('  Imports        : ', ImportCount);
+    WriteLn('  Types objets   : ', ObjTypeCount);
   End;
 
   (* Phase 3 : emettre le fichier assembleur *)
