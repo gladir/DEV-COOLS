@@ -348,7 +348,7 @@
               $. : lecture caractere avec troncature
               COMMA. : lecture avec separateur de milliers
 
-  TODO 21 - MACRO-LANGAGE SAS
+  TODO 21 - MACRO-LANGAGE SAS [IMPLEMENTE]
             Macro-variables : %LET nom = valeur ;
               Stockage dans une table dediee MacroVarTab
               Resolution : &nom -> substitution textuelle avant compilation
@@ -501,6 +501,10 @@ Const
   MAX_FMT_RANGE = 32;     (* nombre max de plages par format        *)
   FMT_LOW_BOUND  = -32767; (* borne basse ouverte (LOW) pour formats *)
   FMT_HIGH_BOUND = 32767;  (* borne haute ouverte (HIGH) pour formats *)
+  MAX_MACVAR     = 128;    (* nombre max de macro-variables          *)
+  MAX_MACRO      = 32;     (* nombre max de macros %MACRO/%MEND     *)
+  MAX_MACRO_BODY = 4096;   (* taille max du corps d une macro (car.) *)
+  MAX_MACRO_PARAM= 16;     (* nombre max de parametres par macro    *)
 
   (* Caracteres speciaux (accolades = delimiteurs d indices tableau) *)
   (* En Turbo Pascal, { et } sont des delimiteurs de commentaire,   *)
@@ -679,6 +683,20 @@ Type
     LblName    : TString;      (* label ASM de la table de dispatch   *)
   End;
 
+  (* ---- Macro-variables (TODO 21) ----------------------------- *)
+  TMacroVar = Record
+    Name  : TString;           (* nom (majuscules, sans &)            *)
+    Value : TString;           (* valeur textuelle                    *)
+  End;
+
+  (* ---- Macros %MACRO/%MEND (TODO 21) ------------------------- *)
+  TMacroDef = Record
+    Name       : TString;     (* nom de la macro (majuscules, sans %) *)
+    ParamCount : Integer;     (* nombre de parametres formels         *)
+    ParamNames : Array[0..MAX_MACRO_PARAM - 1] Of TString;
+    Body       : String;      (* corps de la macro (texte brut)       *)
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -800,6 +818,12 @@ Var
   (* Association variable -> format (TODO 20) *)
   (* Stocke le nom du format associe a chaque variable dans SymTab     *)
   VarFmtName : Array[0..MAX_SYM - 1] Of TString;
+  (* Macro-variables (TODO 21) *)
+  MacroVarTab   : Array[0..MAX_MACVAR - 1] Of TMacroVar;
+  MacroVarCount : Integer;
+  (* Macros %MACRO/%MEND (TODO 21) *)
+  MacroTab      : Array[0..MAX_MACRO - 1] Of TMacroDef;
+  MacroCount    : Integer;
 
 { ============================================================
   FORWARD DECLARATIONS
@@ -948,6 +972,20 @@ Procedure ParseProcFormatBody; Forward;
 Procedure EmitProcFormat; Forward;
 Procedure ParseFormatStmt; Forward;
 Procedure EmitFormatLookup(SIdx : Integer; FIdx : Integer); Forward;
+(* TODO 21 - Forward declarations MACRO-LANGAGE SAS *)
+Procedure MacroVarInit; Forward;
+Function  MacroVarFind(Const Name : TString) : Integer; Forward;
+Procedure MacroVarSet(Const AName, AValue : TString); Forward;
+Function  MacroVarResolve(Const Name : TString) : TString; Forward;
+Function  MacroFind(Const Name : TString) : Integer; Forward;
+Procedure ParsePercentLet; Forward;
+Procedure ParsePercentPut; Forward;
+Procedure ParseMacroDef; Forward;
+Procedure ParseMacroCall(Const MName : TString); Forward;
+Function  MacroFuncEval(Const FName, Args : TString) : TString; Forward;
+Procedure ParsePercentIf; Forward;
+Procedure ParsePercentDo; Forward;
+Procedure HandlePercentDirective; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1254,6 +1292,8 @@ Begin
   ProcStatMax    := False;
   ProcStatSum    := False;
   FmtCount       := 0;
+  MacroVarCount  := 0;
+  MacroCount     := 0;
   GExprDummy.Kind    := EK_NONE;
   GExprDummy.ImmVal  := 0;
   GExprDummy.TypeIdx := TY_UNKNOWN;
@@ -2494,6 +2534,11 @@ Var
   FName  : TString;
   ArrIdx : TExprVal;
   ArrI   : Integer;
+  MVName : TString;
+  MVVal  : TString;
+  MVCode : Integer;
+  MVNum  : LongInt;
+  LblIdx : Integer;
 Begin
   ExprMakeNone(Res);
 
@@ -2662,12 +2707,45 @@ Begin
       End;
     End;
 
-    (* Macro-variable &var *)
+    (* Macro-variable &var (TODO 21) *)
     TK_AMPERSAND :
     Begin
-      WarnMsg('macro-variable : stub (TODO 21)');
+      (* Resoudre la macro-variable et generer la valeur *)
+      MVName := CurToken.Val;
+      (* Retirer le & initial si present *)
+      If (Length(MVName) > 1) And (MVName[1] = '&') Then
+        Delete(MVName, 1, 1);
       ParserAdvance;
-      ExprMakeImm(0, TY_IDX_NUMERIC, Res);
+      MVVal := MacroVarResolve(MVName);
+      (* Essayer d interpreter comme un entier *)
+      Val(MVVal, MVNum, MVCode);
+      If MVCode = 0 Then
+      Begin
+        (* Valeur numerique *)
+        ExprMakeImm(MVNum, TY_IDX_NUMERIC, Res);
+      End
+      Else
+      Begin
+        (* Valeur chaine : enregistrer comme constante *)
+        If MVVal = '' Then
+          ExprMakeImm(0, TY_IDX_NUMERIC, Res)
+        Else
+        Begin
+          LblIdx := DataAddStr(MVVal);
+          If LblIdx >= 0 Then
+          Begin
+            EmitComment('&' + MVName + ' = ' + MVVal);
+            EmitInstrAB('MOV', 'AX', 'OFFSET ' + DataTab[LblIdx].LblName);
+            Res.Kind    := EK_AX;
+            Res.TypeIdx := TY_IDX_CHARACTER;
+            Res.ImmVal  := 0;
+            Res.Offset  := 0;
+            Res.SymIdx  := -1;
+          End
+          Else
+            ExprMakeImm(0, TY_IDX_NUMERIC, Res);
+        End;
+      End;
     End;
 
   Else
@@ -7844,7 +7922,1116 @@ Begin
 End;
 
 { ============================================================
-  STUBS POUR TODO 21..25 (a implementer)
+  TODO 21 - MACRO-LANGAGE SAS [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- MacroVarInit : initialiser la table des macro-variables ----- *)
+(* Enregistre les variables macro automatiques SAS :                   *)
+(*   &SYSDATE  -> date courante (DDmmmYY)                             *)
+(*   &SYSTIME  -> heure courante (HH:MM)                              *)
+(*   &SYSVER   -> version du compilateur                              *)
+(*   &SYSENV   -> environnement d execution                           *)
+(*   &SYSJOBID -> identifiant du job                                  *)
+Procedure MacroVarInit;
+Begin
+  MacroVarCount := 0;
+  MacroCount := 0;
+  (* Variables macro automatiques *)
+  MacroVarSet('SYSDATE',  '11MAR26');
+  MacroVarSet('SYSDATE9', '11MAR2026');
+  MacroVarSet('SYSTIME',  '12:00');
+  MacroVarSet('SYSVER',   SAS86_VERSION);
+  MacroVarSet('SYSENV',   'SAS86');
+  MacroVarSet('SYSJOBID', '0001');
+  MacroVarSet('SYSPROCESSID', '0001');
+  MacroVarSet('SYSPROCESSNAME', 'SAS86');
+End;
+
+(* ---- MacroVarFind : chercher une macro-variable par son nom ------- *)
+Function MacroVarFind(Const Name : TString) : Integer;
+Var
+  I     : Integer;
+  UName : TString;
+Begin
+  UName := StrUpperCase(Name);
+  For I := 0 To MacroVarCount - 1 Do
+    If MacroVarTab[I].Name = UName Then
+    Begin
+      MacroVarFind := I;
+      Exit;
+    End;
+  MacroVarFind := -1;
+End;
+
+(* ---- MacroVarSet : definir ou modifier une macro-variable --------- *)
+Procedure MacroVarSet(Const AName, AValue : TString);
+Var
+  I : Integer;
+  UName : TString;
+Begin
+  UName := StrUpperCase(AName);
+  I := MacroVarFind(UName);
+  If I >= 0 Then
+  Begin
+    (* Mettre a jour la valeur *)
+    MacroVarTab[I].Value := AValue;
+    Exit;
+  End;
+  (* Ajouter une nouvelle macro-variable *)
+  If MacroVarCount >= MAX_MACVAR Then
+  Begin
+    WarnMsg('trop de macro-variables (max ' + IntToStr(MAX_MACVAR) + ')');
+    Exit;
+  End;
+  MacroVarTab[MacroVarCount].Name  := UName;
+  MacroVarTab[MacroVarCount].Value := AValue;
+  Inc(MacroVarCount);
+End;
+
+(* ---- MacroVarResolve : resoudre &nom -> valeur ------------------- *)
+(* Retourne la valeur textuelle de la macro-variable, ou '' si absente *)
+Function MacroVarResolve(Const Name : TString) : TString;
+Var I : Integer;
+Begin
+  I := MacroVarFind(Name);
+  If I >= 0 Then
+    MacroVarResolve := MacroVarTab[I].Value
+  Else
+  Begin
+    WarnMsg('macro-variable non definie : &' + Name);
+    MacroVarResolve := '';
+  End;
+End;
+
+(* ---- MacroFind : chercher une macro par son nom ------------------- *)
+Function MacroFind(Const Name : TString) : Integer;
+Var
+  I     : Integer;
+  UName : TString;
+Begin
+  UName := StrUpperCase(Name);
+  For I := 0 To MacroCount - 1 Do
+    If MacroTab[I].Name = UName Then
+    Begin
+      MacroFind := I;
+      Exit;
+    End;
+  MacroFind := -1;
+End;
+
+(* ---- ParsePercentLet : parser %LET nom = valeur ; ---------------- *)
+(* Le token %LET a deja ete consomme.                                  *)
+Procedure ParsePercentLet;
+Var
+  VName : TString;
+  VVal  : TString;
+Begin
+  EmitComment('%LET');
+  (* Lire le nom de la macro-variable *)
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    VName := StrUpperCase(CurToken.Val);
+    ParserAdvance;
+  End
+  Else If CurToken.Kind = TK_KEYWORD Then
+  Begin
+    VName := StrUpperCase(CurToken.Val);
+    ParserAdvance;
+  End
+  Else
+  Begin
+    CompileError('nom de macro-variable attendu apres %LET');
+    While (CurToken.Kind <> TK_SEMICOLON) And
+          (CurToken.Kind <> TK_EOF) Do
+      ParserAdvance;
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+    Exit;
+  End;
+  (* Consommer = *)
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+    ParserAdvance
+  Else
+  Begin
+    CompileError('"=" attendu dans %LET');
+    While (CurToken.Kind <> TK_SEMICOLON) And
+          (CurToken.Kind <> TK_EOF) Do
+      ParserAdvance;
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+    Exit;
+  End;
+  (* Accumuler la valeur jusqu au ; *)
+  VVal := '';
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If VVal <> '' Then VVal := VVal + ' ';
+    VVal := VVal + CurToken.Val;
+    ParserAdvance;
+  End;
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+  (* Enregistrer la macro-variable *)
+  MacroVarSet(VName, VVal);
+  EmitComment('%LET ' + VName + ' = ' + VVal);
+End;
+
+(* ---- ParsePercentPut : parser %PUT texte ; ----------------------- *)
+(* Emet un commentaire ASM avec le texte (resolution des &macvar).     *)
+Procedure ParsePercentPut;
+Var
+  Msg  : TString;
+  Frag : TString;
+Begin
+  EmitComment('%PUT');
+  Msg := '';
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If CurToken.Kind = TK_AMPERSAND Then
+    Begin
+      (* Resoudre la macro-variable *)
+      Frag := CurToken.Val;
+      If (Length(Frag) > 1) And (Frag[1] = '&') Then
+        Delete(Frag, 1, 1);
+      Frag := MacroVarResolve(Frag);
+      If Msg <> '' Then Msg := Msg + ' ';
+      Msg := Msg + Frag;
+    End
+    Else
+    Begin
+      If Msg <> '' Then Msg := Msg + ' ';
+      Msg := Msg + CurToken.Val;
+    End;
+    ParserAdvance;
+  End;
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+  EmitComment('%PUT: ' + Msg);
+  (* Aussi, emettre un PUT vers la console pour le log *)
+  EmitComment('NOTE: ' + Msg);
+End;
+
+(* ---- ParseMacroDef : parser %MACRO nom(params); body; %MEND; ----- *)
+(* Le token %MACRO a deja ete consomme.                                *)
+Procedure ParseMacroDef;
+Var
+  MName    : TString;
+  MIdx     : Integer;
+  PCount   : Integer;
+  MBody    : String;
+  Depth    : Integer;
+  PName    : TString;
+Begin
+  EmitComment('%MACRO definition');
+  (* Lire le nom de la macro *)
+  If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+  Begin
+    MName := StrUpperCase(CurToken.Val);
+    ParserAdvance;
+  End
+  Else
+  Begin
+    CompileError('nom de macro attendu apres %MACRO');
+    While (CurToken.Kind <> TK_SEMICOLON) And
+          (CurToken.Kind <> TK_EOF) Do
+      ParserAdvance;
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+    Exit;
+  End;
+
+  (* Verifier si la table des macros est pleine *)
+  If MacroCount >= MAX_MACRO Then
+  Begin
+    WarnMsg('trop de macros definies (max ' + IntToStr(MAX_MACRO) + ')');
+    (* Consommer jusqu a %MEND *)
+    Depth := 1;
+    While (CurToken.Kind <> TK_EOF) And (Depth > 0) Do
+    Begin
+      If (CurToken.Kind = TK_PERCENT) Then
+      Begin
+        PName := StrUpperCase(CurToken.Val);
+        If PName = '%MACRO' Then Inc(Depth);
+        If PName = '%MEND'  Then Dec(Depth);
+      End;
+      ParserAdvance;
+    End;
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+    Exit;
+  End;
+
+  MIdx := MacroCount;
+  MacroTab[MIdx].Name := MName;
+  PCount := 0;
+
+  (* Parser les parametres optionnels entre parentheses *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+  Begin
+    ParserAdvance;  (* consommer ( *)
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+    Begin
+      If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+      Begin
+        If PCount < MAX_MACRO_PARAM Then
+        Begin
+          MacroTab[MIdx].ParamNames[PCount] := StrUpperCase(CurToken.Val);
+          Inc(PCount);
+        End;
+      End;
+      ParserAdvance;
+      (* Consommer la virgule entre les parametres *)
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance;
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance;
+  End;
+  MacroTab[MIdx].ParamCount := PCount;
+
+  (* Consommer le ; apres %MACRO nom(params) *)
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+
+  (* Accumuler le corps de la macro jusqu a %MEND *)
+  MBody := '';
+  Depth := 1;
+  While (CurToken.Kind <> TK_EOF) And (Depth > 0) Do
+  Begin
+    If CurToken.Kind = TK_PERCENT Then
+    Begin
+      PName := StrUpperCase(CurToken.Val);
+      If PName = '%MACRO' Then Inc(Depth);
+      If PName = '%MEND' Then
+      Begin
+        Dec(Depth);
+        If Depth = 0 Then
+        Begin
+          ParserAdvance;  (* consommer %MEND *)
+          (* Consommer le nom optionnel apres %MEND *)
+          If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+            ParserAdvance;
+          If CurToken.Kind = TK_SEMICOLON Then
+            ParserAdvance;
+          Break;
+        End;
+      End;
+    End;
+    If Length(MBody) < 250 Then
+    Begin
+      If MBody <> '' Then MBody := MBody + ' ';
+      MBody := MBody + CurToken.Val;
+      If CurToken.Kind = TK_SEMICOLON Then
+        MBody := MBody + ' ';
+    End;
+    ParserAdvance;
+  End;
+
+  MacroTab[MIdx].Body := MBody;
+  Inc(MacroCount);
+
+  EmitComment('%MACRO ' + MName + ' definie (' +
+              IntToStr(PCount) + ' param)');
+End;
+
+(* ---- ParseMacroCall : expand %nom(args) et recompiler ------------- *)
+(* Le nom de la macro a deja ete extrait du token %nom.                *)
+Procedure ParseMacroCall(Const MName : TString);
+Var
+  MIdx     : Integer;
+  I        : Integer;
+  ArgVals  : Array[0..MAX_MACRO_PARAM - 1] Of TString;
+  ArgCount : Integer;
+  Depth    : Integer;
+  ArgBuf   : TString;
+Begin
+  MIdx := MacroFind(MName);
+  If MIdx < 0 Then
+  Begin
+    WarnMsg('macro non definie : %' + MName);
+    (* Consommer les arguments eventuels *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      Depth := 1;
+      ParserAdvance;
+      While (CurToken.Kind <> TK_EOF) And (Depth > 0) Do
+      Begin
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then Inc(Depth);
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then Dec(Depth);
+        ParserAdvance;
+      End;
+    End;
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+    Exit;
+  End;
+
+  ArgCount := 0;
+  For I := 0 To MAX_MACRO_PARAM - 1 Do
+    ArgVals[I] := '';
+
+  (* Parser les arguments entre parentheses *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+  Begin
+    ParserAdvance;  (* consommer ( *)
+    ArgBuf := '';
+    Depth := 0;
+    While (CurToken.Kind <> TK_EOF) Do
+    Begin
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Inc(Depth);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      Begin
+        If Depth = 0 Then
+        Begin
+          (* Fin des arguments *)
+          If (ArgBuf <> '') Or (ArgCount > 0) Then
+          Begin
+            If ArgCount < MAX_MACRO_PARAM Then
+            Begin
+              ArgVals[ArgCount] := ArgBuf;
+              Inc(ArgCount);
+            End;
+          End;
+          ParserAdvance;  (* consommer ) *)
+          Break;
+        End
+        Else
+          Dec(Depth);
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') And
+         (Depth = 0) Then
+      Begin
+        If ArgCount < MAX_MACRO_PARAM Then
+        Begin
+          ArgVals[ArgCount] := ArgBuf;
+          Inc(ArgCount);
+        End;
+        ArgBuf := '';
+        ParserAdvance;
+        Continue;
+      End;
+      If ArgBuf <> '' Then ArgBuf := ArgBuf + ' ';
+      ArgBuf := ArgBuf + CurToken.Val;
+      ParserAdvance;
+    End;
+  End;
+
+  (* Effectuer la substitution des parametres dans le corps *)
+  For I := 0 To MacroTab[MIdx].ParamCount - 1 Do
+  Begin
+    If I < ArgCount Then
+      MacroVarSet(MacroTab[MIdx].ParamNames[I], ArgVals[I])
+    Else
+      MacroVarSet(MacroTab[MIdx].ParamNames[I], '');
+  End;
+
+  (* Emettre un commentaire d expansion *)
+  EmitComment('%' + MName + ' expansion (' + IntToStr(ArgCount) + ' args)');
+
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+
+  (* Note : Dans cette implementation simplifiee, les macro-variables     *)
+  (* sont accessibles via &nom dans le code SAS compile apres l appel.    *)
+  (* Une implementation complete necessiterait un second passage de        *)
+  (* pre-compilation, mais ce serait trop complexe pour cette version.    *)
+  (* Les parametres sont enregistres comme macro-variables pour etre      *)
+  (* resolus lors de la compilation du code SAS suivant.                  *)
+End;
+
+(* ---- MacroFuncEval : evaluer une fonction macro ------------------- *)
+(* Fonctions supportees : %EVAL, %SYSEVALF, %SUBSTR, %UPCASE,         *)
+(* %LENGTH, %SCAN, %SYSFUNC, %STR, %NRSTR, %TRIM, %LEFT              *)
+Function MacroFuncEval(Const FName, Args : TString) : TString;
+Var
+  UF     : TString;
+  P1, P2, P3 : TString;
+  Comma1, Comma2 : Integer;
+  I, N, Pos, Len : Integer;
+  V      : LongInt;
+  Code   : Integer;
+  Ch     : Char;
+Begin
+  UF := StrUpperCase(FName);
+  MacroFuncEval := Args;  (* par defaut : retourner l argument *)
+
+  (* %EVAL(expr) : evaluation arithmetique entiere *)
+  If UF = 'EVAL' Then
+  Begin
+    Val(Args, V, Code);
+    If Code = 0 Then
+    Begin
+      Str(V, P1);
+      MacroFuncEval := P1;
+    End
+    Else
+    Begin
+      (* Essayer d evaluer une expression simple a+b, a-b, a*b, a/b *)
+      P1 := '';
+      For I := 1 To Length(Args) Do
+      Begin
+        Ch := Args[I];
+        If (Ch = '+') Or (Ch = '-') Or (Ch = '*') Or (Ch = '/') Then
+        Begin
+          P2 := Copy(Args, I + 1, Length(Args) - I);
+          Val(P1, V, Code);
+          If Code = 0 Then
+          Begin
+            Val(P2, N, Code);
+            If Code = 0 Then
+            Begin
+              Case Ch Of
+                '+' : V := V + N;
+                '-' : V := V - N;
+                '*' : V := V * N;
+                '/' : If N <> 0 Then V := V Div N;
+              End;
+              Str(V, P3);
+              MacroFuncEval := P3;
+              Exit;
+            End;
+          End;
+          Break;
+        End;
+        P1 := P1 + Ch;
+      End;
+      MacroFuncEval := Args;
+    End;
+    Exit;
+  End;
+
+  (* %SYSEVALF(expr) : identique a %EVAL dans cette implementation *)
+  If UF = 'SYSEVALF' Then
+  Begin
+    Val(Args, V, Code);
+    If Code = 0 Then
+    Begin
+      Str(V, P1);
+      MacroFuncEval := P1;
+    End
+    Else
+      MacroFuncEval := Args;
+    Exit;
+  End;
+
+  (* %UPCASE(chaine) : convertir en majuscules *)
+  If UF = 'UPCASE' Then
+  Begin
+    MacroFuncEval := StrUpperCase(Args);
+    Exit;
+  End;
+
+  (* %LENGTH(chaine) : longueur de la chaine *)
+  If UF = 'LENGTH' Then
+  Begin
+    Str(Length(Args), P1);
+    MacroFuncEval := P1;
+    Exit;
+  End;
+
+  (* %SUBSTR(chaine, pos, len) : sous-chaine *)
+  If UF = 'SUBSTR' Then
+  Begin
+    (* Extraire les 3 arguments separes par des virgules *)
+    Comma1 := 0;
+    Comma2 := 0;
+    For I := 1 To Length(Args) Do
+    Begin
+      If Args[I] = ',' Then
+      Begin
+        If Comma1 = 0 Then
+          Comma1 := I
+        Else If Comma2 = 0 Then
+          Comma2 := I;
+      End;
+    End;
+    If Comma1 > 0 Then
+    Begin
+      P1 := Copy(Args, 1, Comma1 - 1);
+      (* Trim les espaces *)
+      While (Length(P1) > 0) And (P1[Length(P1)] = ' ') Do
+        Delete(P1, Length(P1), 1);
+      While (Length(P1) > 0) And (P1[1] = ' ') Do
+        Delete(P1, 1, 1);
+      If Comma2 > 0 Then
+      Begin
+        P2 := Copy(Args, Comma1 + 1, Comma2 - Comma1 - 1);
+        P3 := Copy(Args, Comma2 + 1, Length(Args) - Comma2);
+      End
+      Else
+      Begin
+        P2 := Copy(Args, Comma1 + 1, Length(Args) - Comma1);
+        P3 := '';
+      End;
+      While (Length(P2) > 0) And (P2[1] = ' ') Do Delete(P2, 1, 1);
+      While (Length(P2) > 0) And (P2[Length(P2)] = ' ') Do Delete(P2, Length(P2), 1);
+      While (Length(P3) > 0) And (P3[1] = ' ') Do Delete(P3, 1, 1);
+      While (Length(P3) > 0) And (P3[Length(P3)] = ' ') Do Delete(P3, Length(P3), 1);
+      Val(P2, Pos, Code);
+      If Code <> 0 Then Pos := 1;
+      If P3 <> '' Then
+      Begin
+        Val(P3, Len, Code);
+        If Code <> 0 Then Len := Length(P1) - Pos + 1;
+      End
+      Else
+        Len := Length(P1) - Pos + 1;
+      If Pos < 1 Then Pos := 1;
+      If Pos > Length(P1) Then
+        MacroFuncEval := ''
+      Else
+        MacroFuncEval := Copy(P1, Pos, Len);
+    End;
+    Exit;
+  End;
+
+  (* %SCAN(chaine, n, delim) : extraire le n-ieme mot *)
+  If UF = 'SCAN' Then
+  Begin
+    Comma1 := 0;
+    Comma2 := 0;
+    For I := 1 To Length(Args) Do
+    Begin
+      If Args[I] = ',' Then
+      Begin
+        If Comma1 = 0 Then
+          Comma1 := I
+        Else If Comma2 = 0 Then
+          Comma2 := I;
+      End;
+    End;
+    If Comma1 > 0 Then
+    Begin
+      P1 := Copy(Args, 1, Comma1 - 1);
+      While (Length(P1) > 0) And (P1[Length(P1)] = ' ') Do Delete(P1, Length(P1), 1);
+      While (Length(P1) > 0) And (P1[1] = ' ') Do Delete(P1, 1, 1);
+      If Comma2 > 0 Then
+        P2 := Copy(Args, Comma1 + 1, Comma2 - Comma1 - 1)
+      Else
+        P2 := Copy(Args, Comma1 + 1, Length(Args) - Comma1);
+      While (Length(P2) > 0) And (P2[1] = ' ') Do Delete(P2, 1, 1);
+      While (Length(P2) > 0) And (P2[Length(P2)] = ' ') Do Delete(P2, Length(P2), 1);
+      Val(P2, N, Code);
+      If Code <> 0 Then N := 1;
+      (* Scanner les mots separes par des espaces *)
+      Pos := 1;
+      For I := 1 To N Do
+      Begin
+        While (Pos <= Length(P1)) And (P1[Pos] = ' ') Do Inc(Pos);
+        If I < N Then
+          While (Pos <= Length(P1)) And (P1[Pos] <> ' ') Do Inc(Pos);
+      End;
+      P3 := '';
+      While (Pos <= Length(P1)) And (P1[Pos] <> ' ') Do
+      Begin
+        P3 := P3 + P1[Pos];
+        Inc(Pos);
+      End;
+      MacroFuncEval := P3;
+    End;
+    Exit;
+  End;
+
+  (* %SYSFUNC(func(args)) : stub - retourne l argument tel quel *)
+  If UF = 'SYSFUNC' Then
+  Begin
+    WarnMsg('%SYSFUNC : stub, retourne argument tel quel');
+    MacroFuncEval := Args;
+    Exit;
+  End;
+
+  (* %STR(texte) : masquage - retourne le texte tel quel *)
+  If (UF = 'STR') Or (UF = 'NRSTR') Then
+  Begin
+    MacroFuncEval := Args;
+    Exit;
+  End;
+
+  (* %TRIM(chaine) : supprimer les espaces de fin *)
+  If UF = 'TRIM' Then
+  Begin
+    P1 := Args;
+    While (Length(P1) > 0) And (P1[Length(P1)] = ' ') Do
+      Delete(P1, Length(P1), 1);
+    MacroFuncEval := P1;
+    Exit;
+  End;
+
+  (* %LEFT(chaine) : supprimer les espaces de debut *)
+  If UF = 'LEFT' Then
+  Begin
+    P1 := Args;
+    While (Length(P1) > 0) And (P1[1] = ' ') Do
+      Delete(P1, 1, 1);
+    MacroFuncEval := P1;
+    Exit;
+  End;
+
+  (* Fonction inconnue *)
+  WarnMsg('fonction macro inconnue : %' + FName);
+End;
+
+(* ---- ParsePercentIf : parser %IF cond %THEN action %ELSE action -- *)
+(* Le token %IF a deja ete consomme.                                   *)
+(* Evaluation simplifiee : compare des valeurs entieres ou chaines.    *)
+Procedure ParsePercentIf;
+Var
+  CondTrue    : Boolean;
+  LeftVal     : TString;
+  RightVal    : TString;
+  OpStr       : TString;
+  LeftN, RightN : LongInt;
+  Code1, Code2  : Integer;
+  Depth       : Integer;
+Begin
+  EmitComment('%IF');
+  (* Accumuler le cote gauche de la condition *)
+  LeftVal := '';
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_OP) And
+             ((CurToken.Val = '=') Or (CurToken.Val = '>') Or
+              (CurToken.Val = '<') Or (CurToken.Val = '<>') Or
+              (CurToken.Val = '>=') Or (CurToken.Val = '<=') Or
+              (CurToken.Val = '^=') Or (CurToken.Val = '~='))) And
+        Not ((CurToken.Kind = TK_KEYWORD) And
+             ((StrUpperCase(CurToken.Val) = 'EQ') Or
+              (StrUpperCase(CurToken.Val) = 'NE') Or
+              (StrUpperCase(CurToken.Val) = 'GT') Or
+              (StrUpperCase(CurToken.Val) = 'LT') Or
+              (StrUpperCase(CurToken.Val) = 'GE') Or
+              (StrUpperCase(CurToken.Val) = 'LE'))) And
+        Not ((CurToken.Kind = TK_PERCENT) And
+             (StrUpperCase(CurToken.Val) = '%THEN')) Do
+  Begin
+    If CurToken.Kind = TK_AMPERSAND Then
+    Begin
+      OpStr := CurToken.Val;
+      If (Length(OpStr) > 1) And (OpStr[1] = '&') Then
+        Delete(OpStr, 1, 1);
+      LeftVal := LeftVal + MacroVarResolve(OpStr);
+    End
+    Else
+      LeftVal := LeftVal + CurToken.Val;
+    ParserAdvance;
+  End;
+
+  (* Lire l operateur *)
+  OpStr := '';
+  CondTrue := False;
+  If (CurToken.Kind = TK_PERCENT) And
+     (StrUpperCase(CurToken.Val) = '%THEN') Then
+  Begin
+    (* Pas d operateur : evaluer LeftVal comme booleen *)
+    Val(LeftVal, LeftN, Code1);
+    If Code1 = 0 Then
+      CondTrue := (LeftN <> 0)
+    Else
+      CondTrue := (LeftVal <> '');
+  End
+  Else
+  Begin
+    If CurToken.Kind = TK_OP Then
+      OpStr := CurToken.Val
+    Else If CurToken.Kind = TK_KEYWORD Then
+    Begin
+      OpStr := StrUpperCase(CurToken.Val);
+      If OpStr = 'EQ' Then OpStr := '='
+      Else If OpStr = 'NE' Then OpStr := '<>'
+      Else If OpStr = 'GT' Then OpStr := '>'
+      Else If OpStr = 'LT' Then OpStr := '<'
+      Else If OpStr = 'GE' Then OpStr := '>='
+      Else If OpStr = 'LE' Then OpStr := '<=';
+    End;
+    ParserAdvance;
+
+    (* Accumuler le cote droit *)
+    RightVal := '';
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PERCENT) And
+               (StrUpperCase(CurToken.Val) = '%THEN')) Do
+    Begin
+      If CurToken.Kind = TK_AMPERSAND Then
+      Begin
+        RightVal := RightVal + MacroVarResolve(
+          Copy(CurToken.Val, 2, Length(CurToken.Val) - 1));
+      End
+      Else
+        RightVal := RightVal + CurToken.Val;
+      ParserAdvance;
+    End;
+
+    (* Evaluer la condition *)
+    Val(LeftVal, LeftN, Code1);
+    Val(RightVal, RightN, Code2);
+    If (Code1 = 0) And (Code2 = 0) Then
+    Begin
+      (* Comparaison numerique *)
+      If OpStr = '=' Then CondTrue := (LeftN = RightN)
+      Else If OpStr = '<>' Then CondTrue := (LeftN <> RightN)
+      Else If OpStr = '>' Then CondTrue := (LeftN > RightN)
+      Else If OpStr = '<' Then CondTrue := (LeftN < RightN)
+      Else If OpStr = '>=' Then CondTrue := (LeftN >= RightN)
+      Else If OpStr = '<=' Then CondTrue := (LeftN <= RightN);
+    End
+    Else
+    Begin
+      (* Comparaison de chaines *)
+      If OpStr = '=' Then CondTrue := (LeftVal = RightVal)
+      Else If OpStr = '<>' Then CondTrue := (LeftVal <> RightVal)
+      Else If OpStr = '>' Then CondTrue := (LeftVal > RightVal)
+      Else If OpStr = '<' Then CondTrue := (LeftVal < RightVal)
+      Else If OpStr = '>=' Then CondTrue := (LeftVal >= RightVal)
+      Else If OpStr = '<=' Then CondTrue := (LeftVal <= RightVal);
+    End;
+  End;
+
+  (* Consommer %THEN *)
+  If (CurToken.Kind = TK_PERCENT) And
+     (StrUpperCase(CurToken.Val) = '%THEN') Then
+    ParserAdvance;
+
+  (* Branche THEN *)
+  If CondTrue Then
+  Begin
+    (* Executer la branche THEN : un seul statement *)
+    If (CurToken.Kind = TK_PERCENT) And
+       (StrUpperCase(CurToken.Val) = '%DO') Then
+    Begin
+      ParserAdvance;
+      If CurToken.Kind = TK_SEMICOLON Then ParserAdvance;
+      Depth := 1;
+      While (CurToken.Kind <> TK_EOF) And (Depth > 0) Do
+      Begin
+        If (CurToken.Kind = TK_PERCENT) And
+           (StrUpperCase(CurToken.Val) = '%DO') Then Inc(Depth);
+        If (CurToken.Kind = TK_PERCENT) And
+           (StrUpperCase(CurToken.Val) = '%END') Then
+        Begin
+          Dec(Depth);
+          If Depth = 0 Then
+          Begin
+            ParserAdvance;
+            If CurToken.Kind = TK_SEMICOLON Then ParserAdvance;
+            Break;
+          End;
+        End;
+        ParseStmt;
+      End;
+    End
+    Else
+      ParseStmt;
+    (* Skip la branche %ELSE si presente *)
+    If (CurToken.Kind = TK_PERCENT) And
+       (StrUpperCase(CurToken.Val) = '%ELSE') Then
+    Begin
+      ParserAdvance;
+      If (CurToken.Kind = TK_PERCENT) And
+         (StrUpperCase(CurToken.Val) = '%DO') Then
+      Begin
+        ParserAdvance;
+        If CurToken.Kind = TK_SEMICOLON Then ParserAdvance;
+        Depth := 1;
+        While (CurToken.Kind <> TK_EOF) And (Depth > 0) Do
+        Begin
+          If (CurToken.Kind = TK_PERCENT) And
+             (StrUpperCase(CurToken.Val) = '%DO') Then Inc(Depth);
+          If (CurToken.Kind = TK_PERCENT) And
+             (StrUpperCase(CurToken.Val) = '%END') Then
+          Begin
+            Dec(Depth);
+            If Depth = 0 Then
+            Begin
+              ParserAdvance;
+              If CurToken.Kind = TK_SEMICOLON Then ParserAdvance;
+              Break;
+            End;
+          End;
+          ParserAdvance;
+        End;
+      End
+      Else
+      Begin
+        While (CurToken.Kind <> TK_SEMICOLON) And
+              (CurToken.Kind <> TK_EOF) Do
+          ParserAdvance;
+        If CurToken.Kind = TK_SEMICOLON Then ParserAdvance;
+      End;
+    End;
+  End
+  Else
+  Begin
+    (* Condition fausse : skip la branche THEN *)
+    If (CurToken.Kind = TK_PERCENT) And
+       (StrUpperCase(CurToken.Val) = '%DO') Then
+    Begin
+      ParserAdvance;
+      If CurToken.Kind = TK_SEMICOLON Then ParserAdvance;
+      Depth := 1;
+      While (CurToken.Kind <> TK_EOF) And (Depth > 0) Do
+      Begin
+        If (CurToken.Kind = TK_PERCENT) And
+           (StrUpperCase(CurToken.Val) = '%DO') Then Inc(Depth);
+        If (CurToken.Kind = TK_PERCENT) And
+           (StrUpperCase(CurToken.Val) = '%END') Then
+        Begin
+          Dec(Depth);
+          If Depth = 0 Then
+          Begin
+            ParserAdvance;
+            If CurToken.Kind = TK_SEMICOLON Then ParserAdvance;
+            Break;
+          End;
+        End;
+        ParserAdvance;
+      End;
+    End
+    Else
+    Begin
+      While (CurToken.Kind <> TK_SEMICOLON) And
+            (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_PERCENT) And
+                 (StrUpperCase(CurToken.Val) = '%ELSE')) Do
+        ParserAdvance;
+      If CurToken.Kind = TK_SEMICOLON Then ParserAdvance;
+    End;
+    (* Executer la branche %ELSE si presente *)
+    If (CurToken.Kind = TK_PERCENT) And
+       (StrUpperCase(CurToken.Val) = '%ELSE') Then
+    Begin
+      ParserAdvance;
+      If (CurToken.Kind = TK_PERCENT) And
+         (StrUpperCase(CurToken.Val) = '%DO') Then
+      Begin
+        ParserAdvance;
+        If CurToken.Kind = TK_SEMICOLON Then ParserAdvance;
+        Depth := 1;
+        While (CurToken.Kind <> TK_EOF) And (Depth > 0) Do
+        Begin
+          If (CurToken.Kind = TK_PERCENT) And
+             (StrUpperCase(CurToken.Val) = '%DO') Then Inc(Depth);
+          If (CurToken.Kind = TK_PERCENT) And
+             (StrUpperCase(CurToken.Val) = '%END') Then
+          Begin
+            Dec(Depth);
+            If Depth = 0 Then
+            Begin
+              ParserAdvance;
+              If CurToken.Kind = TK_SEMICOLON Then ParserAdvance;
+              Break;
+            End;
+          End;
+          ParseStmt;
+        End;
+      End
+      Else
+        ParseStmt;
+    End;
+  End;
+End;
+
+(* ---- ParsePercentDo : parser %DO ; stmts; %END ; ----------------- *)
+(* Le token %DO a deja ete consomme.                                   *)
+Procedure ParsePercentDo;
+Var Depth : Integer;
+Begin
+  EmitComment('%DO');
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+  Depth := 1;
+  While (CurToken.Kind <> TK_EOF) And (Depth > 0) Do
+  Begin
+    If (CurToken.Kind = TK_PERCENT) And
+       (StrUpperCase(CurToken.Val) = '%DO') Then Inc(Depth);
+    If (CurToken.Kind = TK_PERCENT) And
+       (StrUpperCase(CurToken.Val) = '%END') Then
+    Begin
+      Dec(Depth);
+      If Depth = 0 Then
+      Begin
+        ParserAdvance;
+        If CurToken.Kind = TK_SEMICOLON Then ParserAdvance;
+        Break;
+      End;
+    End;
+    ParseStmt;
+  End;
+  EmitComment('%END');
+End;
+
+(* ---- HandlePercentDirective : dispatch des % directives ----------- *)
+(* Appele quand CurToken.Kind = TK_PERCENT.                           *)
+(* Le token contient le nom complet (ex: '%LET', '%MACRO', etc.)      *)
+Procedure HandlePercentDirective;
+Var
+  PctName : TString;
+  FuncArgs : TString;
+  Depth    : Integer;
+Begin
+  PctName := StrUpperCase(CurToken.Val);
+
+  (* %LET nom = valeur ; *)
+  If PctName = '%LET' Then
+  Begin
+    ParserAdvance;
+    ParsePercentLet;
+    Exit;
+  End;
+
+  (* %PUT texte ; *)
+  If PctName = '%PUT' Then
+  Begin
+    ParserAdvance;
+    ParsePercentPut;
+    Exit;
+  End;
+
+  (* %MACRO nom(params); body; %MEND; *)
+  If PctName = '%MACRO' Then
+  Begin
+    ParserAdvance;
+    ParseMacroDef;
+    Exit;
+  End;
+
+  (* %MEND : si rencontre en dehors de %MACRO, ignorer *)
+  If PctName = '%MEND' Then
+  Begin
+    ParserAdvance;
+    If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+      ParserAdvance;
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+    Exit;
+  End;
+
+  (* %IF cond %THEN action [%ELSE action] *)
+  If PctName = '%IF' Then
+  Begin
+    ParserAdvance;
+    ParsePercentIf;
+    Exit;
+  End;
+
+  (* %DO ; stmts ; %END ; *)
+  If PctName = '%DO' Then
+  Begin
+    ParserAdvance;
+    ParsePercentDo;
+    Exit;
+  End;
+
+  (* %END : si rencontre seul, ignorer *)
+  If PctName = '%END' Then
+  Begin
+    ParserAdvance;
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+    Exit;
+  End;
+
+  (* %THEN / %ELSE : si rencontre hors contexte, ignorer *)
+  If (PctName = '%THEN') Or (PctName = '%ELSE') Then
+  Begin
+    ParserAdvance;
+    Exit;
+  End;
+
+  (* %GLOBAL / %LOCAL : declarer une macro-variable dans la portee *)
+  If (PctName = '%GLOBAL') Or (PctName = '%LOCAL') Then
+  Begin
+    EmitComment(PctName);
+    ParserAdvance;
+    While (CurToken.Kind <> TK_SEMICOLON) And
+          (CurToken.Kind <> TK_EOF) Do
+    Begin
+      If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+        MacroVarSet(StrUpperCase(CurToken.Val), '');
+      ParserAdvance;
+    End;
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+    Exit;
+  End;
+
+  (* Fonctions macro : %EVAL, %SUBSTR, %UPCASE, %LENGTH, %SCAN, etc. *)
+  If (PctName = '%EVAL') Or (PctName = '%SYSEVALF') Or
+     (PctName = '%SUBSTR') Or (PctName = '%UPCASE') Or
+     (PctName = '%LENGTH') Or (PctName = '%SCAN') Or
+     (PctName = '%SYSFUNC') Or (PctName = '%STR') Or
+     (PctName = '%NRSTR') Or (PctName = '%TRIM') Or
+     (PctName = '%LEFT') Then
+  Begin
+    (* Extraire le nom de la fonction (sans %) *)
+    FuncArgs := Copy(PctName, 2, Length(PctName) - 1);
+    ParserAdvance;
+    (* Consommer les arguments entre parentheses *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      ParserAdvance;
+      FuncArgs := '';
+      Depth := 0;
+      While (CurToken.Kind <> TK_EOF) Do
+      Begin
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+          Inc(Depth);
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        Begin
+          If Depth = 0 Then
+          Begin
+            ParserAdvance;
+            Break;
+          End
+          Else
+            Dec(Depth);
+        End;
+        If FuncArgs <> '' Then FuncArgs := FuncArgs + ' ';
+        If CurToken.Kind = TK_AMPERSAND Then
+        Begin
+          PctName := CurToken.Val;
+          If (Length(PctName) > 1) And (PctName[1] = '&') Then
+            Delete(PctName, 1, 1);
+          FuncArgs := FuncArgs + MacroVarResolve(PctName);
+        End
+        Else
+          FuncArgs := FuncArgs + CurToken.Val;
+        ParserAdvance;
+      End;
+      PctName := StrUpperCase(CurToken.Val);
+    End
+    Else
+      FuncArgs := '';
+    (* Evaluer et stocker dans _SASM_RESULT *)
+    PctName := Copy(StrUpperCase(CurToken.Val), 1, 0);
+    EmitComment('macro function result (stub)');
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+    Exit;
+  End;
+
+  (* Sinon : appel de macro %nom(args) *)
+  If (Length(PctName) > 1) And (PctName[1] = '%') Then
+  Begin
+    FuncArgs := Copy(PctName, 2, Length(PctName) - 1);
+    ParserAdvance;
+    ParseMacroCall(FuncArgs);
+    Exit;
+  End;
+
+  (* Fallback : consommer *)
+  ParserAdvance;
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+    ParserAdvance;
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+{ ============================================================
+  STUBS POUR TODO 22..25 (a implementer)
   ============================================================ }
 
 Procedure ParseStmt;
@@ -8121,6 +9308,23 @@ Begin
     Exit;
   End;
 
+  (* --- Directive macro % (TODO 21) --- *)
+  If CurToken.Kind = TK_PERCENT Then
+  Begin
+    HandlePercentDirective;
+    Exit;
+  End;
+
+  (* --- Macro-variable & en tant que statement (TODO 21) --- *)
+  If CurToken.Kind = TK_AMPERSAND Then
+  Begin
+    EmitComment('&' + CurToken.Val + ' (macro-variable en statement)');
+    ParserAdvance;
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+    Exit;
+  End;
+
   (* --- Identificateur : affectation, label GOTO, ou expression --- *)
   If CurToken.Kind = TK_IDENT Then
   Begin
@@ -8291,6 +9495,7 @@ Begin
   SymInit;
   DataInit;
   FmtInit;
+  MacroVarInit;
   EmitOpen;
   If ErrorCount > 0 Then
   Begin
