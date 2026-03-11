@@ -205,7 +205,7 @@
                ELSE stmts END
                Emission : CALL _M3RT_TYPECODE + CMP pour chaque type
 
-   TODO 14 - BOUCLES : WHILE / REPEAT / FOR / LOOP / EXIT
+   TODO 14 - BOUCLES : WHILE / REPEAT / FOR / LOOP / EXIT [IMPLEMENTE]
              ParseWhileStmt : WHILE cond DO stmts END
                Labels : _M3L_WTEST_N, _M3L_WEND_N
              ParseRepeatStmt : REPEAT stmts UNTIL cond
@@ -719,6 +719,10 @@ Var
   EPEnd       : Integer;  (* borne fin du corps courant *)
   CurProcIdx  : Integer;  (* index dans ProcTab de la proc courante *)
   RetLbl      : TString;  (* label de retour de la proc courante *)
+
+  (* Pile de boucles LOOP/EXIT (TODO 14) *)
+  LoopExitStack : Array[0..MAX_LOOP_NEST-1] Of TString;
+  LoopExitTop   : Integer;  (* sommet de la pile, 0 = vide *)
 
 (* ============================================================
    TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1724,6 +1728,7 @@ Procedure DataInit;
 Begin
   DataCount   := 0;
   LabelGenSeq := 0;
+  LoopExitTop := 0;
 End;
 
 (* ---- ExprMakeImm : creer une valeur immediate --------------- *)
@@ -5097,6 +5102,28 @@ Begin
   ParseExprPrec(1);
 End;
 
+(* ============================================================
+   TODO 14 - BOUCLES : WHILE / REPEAT / FOR / LOOP / EXIT [IMPLEMENTE]
+   ============================================================ *)
+
+(* ---- LoopPush : empiler le label de sortie EXIT d une boucle LOOP - *)
+
+Procedure LoopPush(Const ExLbl : TString);
+Begin
+  If LoopExitTop >= MAX_LOOP_NEST Then
+    FatalError('Boucles LOOP imbriquees trop profondes');
+  LoopExitStack[LoopExitTop] := ExLbl;
+  Inc(LoopExitTop);
+End;
+
+(* ---- LoopPop : depiler le label de sortie EXIT -------------------- *)
+
+Procedure LoopPop;
+Begin
+  If LoopExitTop > 0 Then
+    Dec(LoopExitTop);
+End;
+
 (* ---- ParseStmt : parser une instruction unique du corps -------- *)
 (* Gere : affectation :=, appels de procedure (y compris qualifies *)
 (* Module.Ident), RETURN, IF/ELSIF/ELSE/END, CASE/OF/END,         *)
@@ -5136,6 +5163,19 @@ Begin
        Not EPMatch(TK_KEYWORD, 'END') Then
       ParseExpr;
     EmitInstrA('JMP', RetLbl);
+    If EPMatch(TK_PUNCT, ';') Then Inc(EP);
+    Exit;
+  End;
+
+  (* --- EXIT (sortie de boucle LOOP, via LoopExitStack) --- *)
+  (* TODO 14 - EXIT autonome, utilisable dans IF/CASE imbrique      *)
+  If EPMatch(TK_KEYWORD, 'EXIT') Then
+  Begin
+    Inc(EP);
+    If LoopExitTop > 0 Then
+      EmitInstrA('JMP', LoopExitStack[LoopExitTop - 1])
+    Else
+      FatalError('EXIT en dehors d''une boucle LOOP');
     If EPMatch(TK_PUNCT, ';') Then Inc(EP);
     Exit;
   End;
@@ -5200,6 +5240,7 @@ Begin
   End;
 
   (* --- WHILE expr DO ... END --- *)
+  (* TODO 14 - Boucle WHILE avec test de condition                  *)
   If EPMatch(TK_KEYWORD, 'WHILE') Then
   Begin
     Inc(EP);
@@ -5220,6 +5261,7 @@ Begin
   End;
 
   (* --- FOR ident := expr TO expr [BY expr] DO ... END --- *)
+  (* TODO 14 - Boucle FOR avec increment optionnel BY               *)
   If EPMatch(TK_KEYWORD, 'FOR') Then
   Begin
     Inc(EP);
@@ -5328,18 +5370,23 @@ Begin
   End;
 
   (* --- LOOP ... END (infinite loop, EXIT to break) --- *)
+  (* TODO 14 - Boucle infinie avec pile pour EXIT imbrique          *)
   If EPMatch(TK_KEYWORD, 'LOOP') Then
   Begin
     Inc(EP);
     LoopLbl := LabelGen;
     ExitLbl := LabelGen;
+    LoopPush(ExitLbl);
     EmitLabel(LoopLbl);
     While Not EPAtEnd And Not EPMatch(TK_KEYWORD, 'END') Do
     Begin
       If EPMatch(TK_KEYWORD, 'EXIT') Then
       Begin
         Inc(EP);
-        EmitInstrA('JMP', ExitLbl);
+        If LoopExitTop > 0 Then
+          EmitInstrA('JMP', LoopExitStack[LoopExitTop - 1])
+        Else
+          FatalError('EXIT en dehors d''une boucle LOOP');
         If EPMatch(TK_PUNCT, ';') Then Inc(EP);
       End
       Else
@@ -5347,12 +5394,14 @@ Begin
     End;
     EmitInstrA('JMP', LoopLbl);
     EmitLabel(ExitLbl);
+    LoopPop;
     If EPMatch(TK_KEYWORD, 'END') Then Inc(EP);
     If EPMatch(TK_PUNCT, ';') Then Inc(EP);
     Exit;
   End;
 
   (* --- REPEAT ... UNTIL expr --- *)
+  (* TODO 14 - Boucle REPEAT/UNTIL avec test de fin                 *)
   If EPMatch(TK_KEYWORD, 'REPEAT') Then
   Begin
     Inc(EP);
