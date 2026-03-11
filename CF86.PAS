@@ -2422,9 +2422,11 @@ Begin
   End;
 
   { ---- Cas general : L dans AX, R dans BX ----------------- }
+  { EK_STK : L a ete sauvegarde sur la pile par ParseExprPrec  }
+  { car deux operandes EK_AX ecraseraient AX mutuellement.     }
+  { EK_IMM/EK_MEM peuvent etre recharges, pas besoin de pile.  }
   If L.Kind = EK_STK Then
   Begin
-    { L est deja sur la pile, R est le dernier evalue }
     ExprFlushToAX(R);
     EmitInstr('MOV', 'BX, AX');
     EmitInstr('POP', 'AX');
@@ -6101,7 +6103,9 @@ Begin
       NextP := Prec
     Else
       NextP := Prec + 1;
-    { Sauvegarder l operande gauche si c est une valeur runtime }
+    { Sauvegarder l operande gauche si c est une valeur runtime   }
+    { EK_AX doit etre sauvegarde car le parsing du cote droit    }
+    { ecraserait AX. EK_IMM/EK_MEM sont rechargeables sans pile. }
     If Res.Kind = EK_AX Then
     Begin
       EmitInstr('PUSH', 'AX');
