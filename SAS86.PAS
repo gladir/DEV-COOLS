@@ -396,7 +396,7 @@
               MDY(m, d, y) : construire une date SAS
               YEAR(date), MONTH(date), DAY(date) : extraire composantes
 
-  TODO 23 - FUSION ET MANIPULATION DE DATASETS (MERGE / SET / BY)
+  TODO 23 - FUSION ET MANIPULATION DE DATASETS (MERGE / SET / BY) [IMPLEMENTE]
             Instruction SET : lecture sequentielle
               SET ds1 ; -> lire observation par observation
               SET ds1 ds2 ; -> concatenation verticale (empiler)
@@ -506,6 +506,8 @@ Const
   MAX_MACRO_BODY = 250;    (* taille max du corps d une macro (car.) *)
                            (* limite par String[255] en mode TP     *)
   MAX_MACRO_PARAM= 16;     (* nombre max de parametres par macro    *)
+  MAX_MERGE_DS   = 8;      (* nombre max de datasets dans MERGE/SET *)
+  MAX_BY_VARS    = 16;     (* nombre max de variables BY dans DATA  *)
 
   (* Caracteres speciaux (accolades = delimiteurs d indices tableau) *)
   (* En Turbo Pascal, { et } sont des delimiteurs de commentaire,   *)
@@ -825,6 +827,22 @@ Var
   (* Macros %MACRO/%MEND (TODO 21) *)
   MacroTab      : Array[0..MAX_MACRO - 1] Of TMacroDef;
   MacroCount    : Integer;
+  (* MERGE/BY dans DATA step (TODO 23) *)
+  DSMergeList   : Array[0..MAX_MERGE_DS - 1] Of TString;
+  DSMergeLblList: Array[0..MAX_MERGE_DS - 1] Of TString;
+  DSMergeCount  : Integer;     (* nombre de datasets dans MERGE         *)
+  DSHasMerge    : Boolean;     (* True si MERGE present dans le step    *)
+  DSByVarList   : Array[0..MAX_BY_VARS - 1] Of TString;
+  DSByVarCount  : Integer;     (* nombre de variables BY dans DATA step *)
+  DSHasBy       : Boolean;     (* True si BY present dans le DATA step  *)
+  DSHasUpdate   : Boolean;     (* True si UPDATE present dans le step   *)
+  DSHasModify   : Boolean;     (* True si MODIFY present dans le step   *)
+  DSSetList     : Array[0..MAX_MERGE_DS - 1] Of TString;
+  DSSetLblList  : Array[0..MAX_MERGE_DS - 1] Of TString;
+  DSSetCount    : Integer;     (* nombre de datasets dans SET           *)
+  DSSetPointVar : TString;     (* variable POINT= dans SET              *)
+  DSSetNobsVar  : TString;     (* variable NOBS= dans SET               *)
+  DSSetEndVar   : TString;     (* variable END= dans SET                *)
 
 { ============================================================
   FORWARD DECLARATIONS
@@ -989,6 +1007,12 @@ Procedure ParsePercentDo; Forward;
 Procedure HandlePercentDirective; Forward;
 (* TODO 22 - Forward declarations FONCTIONS INTEGREES *)
 Procedure EmitBuiltinRuntime; Forward;
+(* TODO 23 - Forward declarations FUSION DATASETS *)
+Procedure ParseSetStmtEnhanced; Forward;
+Procedure ParseMergeStmt; Forward;
+Procedure ParseDataByStmt; Forward;
+Procedure ParseUpdateStmt; Forward;
+Procedure ParseModifyStmt; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1339,7 +1363,9 @@ Begin
     (S = 'OR')        Or (S = 'EQ')        Or (S = 'NE')        Or
     (S = 'LT')        Or (S = 'LE')        Or (S = 'GT')        Or
     (S = 'GE')        Or (S = 'LEAVE')     Or (S = 'CONTINUE')  Or
-    (S = 'TO')        Or (S = '_NULL_')    Or (S = '_TEMPORARY_');
+    (S = 'TO')        Or (S = '_NULL_')    Or (S = '_TEMPORARY_') Or
+    (S = 'UPDATE')    Or (S = 'MODIFY')   Or (S = 'NOBS')       Or
+    (S = 'POINT')     Or (S = 'FIRST')    Or (S = 'LAST');
 End;
 
 (* ---- PrintToken : affichage debug d un token --------------- *)
@@ -2131,6 +2157,16 @@ Begin
   (* TODO 22 : buffers pour fonctions integrees *)
   DataAddObs('_SAS_STRBUF', 256);   (* buffer resultat fonctions chaine  *)
   DataAddObs('_SAS_STRBUF2', 256);  (* second buffer pour concatenation  *)
+  (* TODO 23 : variables pour MERGE/BY *)
+  DataAddWord('_SAS_FIRST', 0);     (* FIRST.var flag                    *)
+  DataAddWord('_SAS_LAST', 0);      (* LAST.var flag                     *)
+  DataAddWord('_SAS_BYKEY', 0);     (* cle BY courante                   *)
+  DataAddWord('_SAS_BYKEY_PREV', 0);(* cle BY precedente                 *)
+  DataAddWord('_SAS_MRGIDX', 0);    (* index courant pour MERGE          *)
+  DataAddWord('_SAS_SETIDX', 0);    (* index courant multi-SET           *)
+  DataAddWord('_SAS_SETEND', 0);    (* flag END= pour SET                *)
+  DataAddWord('_SAS_SETNOBS', 0);   (* variable NOBS= pour SET           *)
+  DataAddWord('_SAS_SETPT', 0);     (* variable POINT= pour SET          *)
 End;
 
 (* ---- ExprMakeImm : construire une valeur immediate ---------- *)
@@ -2697,6 +2733,18 @@ Begin
       End
       Else
       Begin
+        (* TODO 23 : FIRST.var / LAST.var *)
+        If ((FName = 'FIRST') Or (FName = 'LAST')) And
+           (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
+        Begin
+          ParserAdvance;  (* consommer . *)
+          If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+          Begin
+            FName := FName + '.' + StrUpperCase(CurToken.Val);
+            ParserAdvance;
+          End;
+        End;
+
         (* Variable simple : rechercher dans SymTab *)
         SIdx := SymFind(FName);
         If SIdx >= 0 Then
@@ -6121,39 +6169,12 @@ Begin
   EmitInstrAB('MOV', 'WORD PTR [_SAS_ERROR]', '0');
 End;
 
-(* ---- ParseSetStmt : SET dataset1 [dataset2] ; -------------------- *)
-(* Lit les observations d un dataset existant dans le PDV.              *)
-(* En mode simple, cela genere une lecture depuis les donnees           *)
-(* CARDS/INPUT deja parsees.                                            *)
+(* ---- ParseSetStmt : SET dataset1 [dataset2] [opts] ; ---------------- *)
+(* Delegue a ParseSetStmtEnhanced (TODO 23) pour supporter les options   *)
+(* POINT=, NOBS=, END= et la concatenation multi-datasets.              *)
 Procedure ParseSetStmt;
-Var
-  SetDS : TString;
 Begin
-  EmitComment('SET');
-  DSHasSet := True;
-
-  (* Parser le nom du dataset source *)
-  If CurToken.Kind = TK_IDENT Then
-  Begin
-    SetDS := StrUpperCase(CurToken.Val);
-    DSSetName := SetDS;
-    DSSetLabel := SAS_DS_PFX + SetDS;
-    EmitComment('SET source=' + SetDS);
-    ParserAdvance;
-
-    (* Concatenation : SET ds1 ds2 ; (second dataset optionnel) *)
-    If CurToken.Kind = TK_IDENT Then
-    Begin
-      EmitComment('SET concat: ' + StrUpperCase(CurToken.Val));
-      ParserAdvance;
-    End;
-  End
-  Else
-    EmitComment('SET sans dataset (lecture en cours)');
-
-  (* Consommer ; *)
-  If CurToken.Kind = TK_SEMICOLON Then
-    ParserAdvance;
+  ParseSetStmtEnhanced;
 End;
 
 (* ---- ParseOutputStmt : OUTPUT ; ---------------------------------- *)
@@ -6255,6 +6276,17 @@ Begin
   DSObsCount   := 0;
   DSSetName    := '';
   DSSetLabel   := '';
+  (* TODO 23 : initialiser les variables de fusion *)
+  DSHasMerge   := False;
+  DSHasBy      := False;
+  DSHasUpdate  := False;
+  DSHasModify  := False;
+  DSMergeCount := 0;
+  DSByVarCount := 0;
+  DSSetCount   := 0;
+  DSSetPointVar := '';
+  DSSetNobsVar  := '';
+  DSSetEndVar   := '';
 
   (* Generer les labels du DATA step *)
   DSTopLabel    := LabelGen;
@@ -6363,6 +6395,38 @@ Begin
       Begin
         ParserAdvance;
         ParseAbortStmt;
+        Continue;
+      End;
+
+      (* TODO 23 : MERGE *)
+      If KW = 'MERGE' Then
+      Begin
+        ParserAdvance;
+        ParseMergeStmt;
+        Continue;
+      End;
+
+      (* TODO 23 : BY (dans DATA step context) *)
+      If KW = 'BY' Then
+      Begin
+        ParserAdvance;
+        ParseDataByStmt;
+        Continue;
+      End;
+
+      (* TODO 23 : UPDATE *)
+      If KW = 'UPDATE' Then
+      Begin
+        ParserAdvance;
+        ParseUpdateStmt;
+        Continue;
+      End;
+
+      (* TODO 23 : MODIFY *)
+      If KW = 'MODIFY' Then
+      Begin
+        ParserAdvance;
+        ParseModifyStmt;
         Continue;
       End;
     End;
@@ -9652,7 +9716,364 @@ Begin
 End;
 
 { ============================================================
-  STUBS POUR TODO 22..25 (a implementer)
+  TODO 23 - FUSION ET MANIPULATION DE DATASETS [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- ParseSetStmtEnhanced : SET ds1 [ds2] [POINT=var] [NOBS=var]
+        [END=var] ;
+   Remplace ParseSetStmt pour supporter les options TODO 23.         *)
+
+Procedure ParseSetStmtEnhanced;
+Var
+  SetDS  : TString;
+  KW     : TString;
+  VName  : TString;
+  SIdx   : Integer;
+Begin
+  EmitComment('SET (enhanced TODO 23)');
+  DSHasSet := True;
+  DSSetCount := 0;
+  DSSetPointVar := '';
+  DSSetNobsVar  := '';
+  DSSetEndVar   := '';
+
+  (* Parser les noms de dataset sources et les options *)
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    (* Option POINT= *)
+    If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+    Begin
+      KW := StrUpperCase(CurToken.Val);
+      If KW = 'POINT' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+          ParserAdvance;
+        If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+        Begin
+          VName := StrUpperCase(CurToken.Val);
+          DSSetPointVar := VName;
+          EmitComment('SET POINT=' + VName);
+          SIdx := SymFind(VName);
+          If SIdx < 0 Then
+            SIdx := VarAlloc(VName, TY_IDX_NUMERIC, 2);
+          (* Stocker la valeur dans la variable POINT *)
+          EmitInstrAB('MOV', 'AX', 'WORD PTR [_SAS_SETPT]');
+          VarStore(SIdx);
+          ParserAdvance;
+        End;
+        Continue;
+      End;
+
+      (* Option NOBS= *)
+      If KW = 'NOBS' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+          ParserAdvance;
+        If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+        Begin
+          VName := StrUpperCase(CurToken.Val);
+          DSSetNobsVar := VName;
+          EmitComment('SET NOBS=' + VName);
+          SIdx := SymFind(VName);
+          If SIdx < 0 Then
+            SIdx := VarAlloc(VName, TY_IDX_NUMERIC, 2);
+          (* Affecter le nombre total d observations a la variable *)
+          EmitInstrAB('MOV', 'AX', 'WORD PTR [_SAS_SETNOBS]');
+          VarStore(SIdx);
+          ParserAdvance;
+        End;
+        Continue;
+      End;
+
+      (* Option END= *)
+      If (KW = 'END') Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+          ParserAdvance;
+        If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+        Begin
+          VName := StrUpperCase(CurToken.Val);
+          DSSetEndVar := VName;
+          EmitComment('SET END=' + VName);
+          SIdx := SymFind(VName);
+          If SIdx < 0 Then
+            SIdx := VarAlloc(VName, TY_IDX_NUMERIC, 2);
+          (* Affecter le flag de fin a la variable *)
+          EmitInstrAB('MOV', 'AX', 'WORD PTR [_SAS_SETEND]');
+          VarStore(SIdx);
+          ParserAdvance;
+        End;
+        Continue;
+      End;
+
+      (* Nom de dataset *)
+      If (KW <> 'POINT') And (KW <> 'NOBS') And (KW <> 'END') Then
+      Begin
+        SetDS := KW;
+        If DSSetCount < MAX_MERGE_DS Then
+        Begin
+          DSSetList[DSSetCount] := SetDS;
+          DSSetLblList[DSSetCount] := SAS_DS_PFX + SetDS;
+          Inc(DSSetCount);
+        End;
+        EmitComment('SET source=' + SetDS);
+        (* Maintenir la compatibilite avec le champ unique *)
+        If DSSetCount = 1 Then
+        Begin
+          DSSetName  := SetDS;
+          DSSetLabel := SAS_DS_PFX + SetDS;
+        End;
+        ParserAdvance;
+        Continue;
+      End;
+    End;
+
+    ParserAdvance;
+  End;
+
+  (* Concatenation verticale : SET ds1 ds2 ; *)
+  If DSSetCount > 1 Then
+  Begin
+    EmitComment('SET concatenation: ' + IntToStr(DSSetCount) + ' datasets');
+    EmitInstrAB('MOV', 'WORD PTR [_SAS_SETIDX]', '0');
+  End;
+
+  (* Consommer ; *)
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseMergeStmt : MERGE ds1 ds2 [ds3] ... ; -------------------- *)
+(* Fusion horizontale de datasets. Necessite BY pour la correspondance.  *)
+Procedure ParseMergeStmt;
+Var
+  MDS : TString;
+Begin
+  EmitComment('MERGE (TODO 23)');
+  DSHasMerge := True;
+  DSMergeCount := 0;
+
+  (* Parser les noms des datasets a fusionner *)
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+    Begin
+      MDS := StrUpperCase(CurToken.Val);
+      If DSMergeCount < MAX_MERGE_DS Then
+      Begin
+        DSMergeList[DSMergeCount] := MDS;
+        DSMergeLblList[DSMergeCount] := SAS_DS_PFX + MDS;
+        Inc(DSMergeCount);
+        EmitComment('MERGE source=' + MDS);
+      End;
+    End;
+    ParserAdvance;
+  End;
+
+  (* Initialiser l index de fusion *)
+  EmitInstrAB('MOV', 'WORD PTR [_SAS_MRGIDX]', '0');
+
+  (* Si pas de BY, fusion un-a-un par position *)
+  If Not DSHasBy Then
+    EmitComment('MERGE un-a-un (pas de BY) : correspondance par position');
+
+  (* Consommer ; *)
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseDataByStmt : BY var1 var2 ... ; (dans DATA step) ---------- *)
+(* Specifie les cles de tri pour MERGE ou traitement par groupe.         *)
+(* Cree les variables automatiques FIRST.var et LAST.var pour chaque cle *)
+Procedure ParseDataByStmt;
+Var
+  VName    : TString;
+  SIdx     : Integer;
+  FirstVar : TString;
+  LastVar  : TString;
+Begin
+  EmitComment('BY (DATA step, TODO 23)');
+  DSHasBy := True;
+  DSByVarCount := 0;
+
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+    Begin
+      VName := StrUpperCase(CurToken.Val);
+      (* Ignorer DESCENDING / ASCENDING *)
+      If (VName <> 'DESCENDING') And (VName <> 'ASCENDING') And
+         (VName <> 'NOTSORTED') Then
+      Begin
+        If DSByVarCount < MAX_BY_VARS Then
+        Begin
+          DSByVarList[DSByVarCount] := VName;
+          Inc(DSByVarCount);
+          EmitComment('BY var=' + VName);
+
+          (* Creer FIRST.var et LAST.var comme variables automatiques *)
+          FirstVar := 'FIRST.' + VName;
+          LastVar  := 'LAST.' + VName;
+
+          SIdx := SymFind(FirstVar);
+          If SIdx < 0 Then
+            SIdx := VarAlloc(FirstVar, TY_IDX_NUMERIC, 2);
+
+          SIdx := SymFind(LastVar);
+          If SIdx < 0 Then
+            SIdx := VarAlloc(LastVar, TY_IDX_NUMERIC, 2);
+
+          (* Initialiser FIRST.var et LAST.var *)
+          SIdx := SymFind(FirstVar);
+          If SIdx >= 0 Then
+          Begin
+            EmitInstrAB('MOV', 'AX', '0');
+            VarStore(SIdx);
+          End;
+          SIdx := SymFind(LastVar);
+          If SIdx >= 0 Then
+          Begin
+            EmitInstrAB('MOV', 'AX', '0');
+            VarStore(SIdx);
+          End;
+        End;
+      End;
+    End;
+    ParserAdvance;
+  End;
+
+  (* Emettre le code de comparaison des cles BY *)
+  If DSByVarCount > 0 Then
+  Begin
+    EmitBlankLine;
+    EmitComment('--- Gestion FIRST./LAST. pour BY ---');
+    (* Sauvegarder la cle precedente *)
+    EmitInstrAB('MOV', 'AX', 'WORD PTR [_SAS_BYKEY]');
+    EmitInstrAB('MOV', 'WORD PTR [_SAS_BYKEY_PREV]', 'AX');
+
+    (* Charger la cle courante depuis la premiere variable BY *)
+    SIdx := SymFind(DSByVarList[0]);
+    If SIdx >= 0 Then
+    Begin
+      VarLoad(SIdx, GExprDummy);
+      ExprFlushToAX(GExprDummy);
+      EmitInstrAB('MOV', 'WORD PTR [_SAS_BYKEY]', 'AX');
+    End;
+
+    (* Comparer avec la cle precedente pour determiner FIRST/LAST *)
+    EmitInstrAB('MOV', 'BX', 'WORD PTR [_SAS_BYKEY_PREV]');
+    EmitInstrAB('CMP', 'AX', 'BX');
+    FirstVar := 'FIRST.' + DSByVarList[0];
+    SIdx := SymFind(FirstVar);
+    If SIdx >= 0 Then
+    Begin
+      VName := LabelGen;
+      EmitInstrAB('MOV', 'AX', '0');
+      EmitInstrA('JE', VName);
+      EmitInstrAB('MOV', 'AX', '1');
+      EmitLabel(VName);
+      VarStore(SIdx);
+    End;
+
+    (* LAST.var sera positionne au prochain tour quand FIRST change *)
+    EmitComment('LAST.var positionne par look-ahead (stub commentaire)');
+    LastVar := 'LAST.' + DSByVarList[0];
+    SIdx := SymFind(LastVar);
+    If SIdx >= 0 Then
+    Begin
+      EmitInstrAB('MOV', 'AX', '1');
+      VarStore(SIdx);
+      EmitComment('LAST.' + DSByVarList[0] + ' = 1 (sera corrige en runtime)');
+    End;
+  End;
+
+  (* Consommer ; *)
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseUpdateStmt : UPDATE master transaction ; ------------------- *)
+(* Met a jour un dataset maitre avec un dataset de transactions.          *)
+(* Les valeurs non manquantes du dataset transaction ecrasent le maitre.  *)
+Procedure ParseUpdateStmt;
+Var
+  DS1, DS2 : TString;
+Begin
+  EmitComment('UPDATE (TODO 23)');
+  DSHasUpdate := True;
+
+  DS1 := '';
+  DS2 := '';
+
+  (* Parser le dataset maitre *)
+  If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+  Begin
+    DS1 := StrUpperCase(CurToken.Val);
+    EmitComment('UPDATE master=' + DS1);
+    ParserAdvance;
+  End;
+
+  (* Parser le dataset transaction *)
+  If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+  Begin
+    DS2 := StrUpperCase(CurToken.Val);
+    EmitComment('UPDATE transaction=' + DS2);
+    ParserAdvance;
+  End;
+
+  (* Generer le code de mise a jour *)
+  If (DS1 <> '') And (DS2 <> '') Then
+  Begin
+    EmitComment('UPDATE : lire master ' + DS1 + ' puis appliquer ' + DS2);
+    (* Charger les variables du maitre, puis ecraser avec les *)
+    (* valeurs non manquantes du dataset transaction           *)
+    EmitInstrAB('MOV', 'AX', IntToStr(MISSING_VAL));
+    EmitComment('Si valeur transaction <> MISSING -> ecraser maitre');
+  End
+  Else
+    WarnMsg('UPDATE necessite deux datasets');
+
+  (* Consommer ; *)
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseModifyStmt : MODIFY dataset ; ------------------------------ *)
+(* Modification en place d un dataset existant.                            *)
+(* Les observations sont lues, modifiees, et reecrites dans le meme dataset *)
+Procedure ParseModifyStmt;
+Var
+  ModDS : TString;
+Begin
+  EmitComment('MODIFY (TODO 23)');
+  DSHasModify := True;
+
+  ModDS := '';
+  If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+  Begin
+    ModDS := StrUpperCase(CurToken.Val);
+    EmitComment('MODIFY dataset=' + ModDS);
+    DSSetName  := ModDS;
+    DSSetLabel := SAS_DS_PFX + ModDS;
+    DSHasSet   := True;  (* MODIFY implique lecture comme SET *)
+    ParserAdvance;
+  End
+  Else
+    WarnMsg('MODIFY necessite un nom de dataset');
+
+  (* Consommer ; *)
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+{ ============================================================
+  STUBS POUR TODO 23..25 (a implementer)
   ============================================================ }
 
 Procedure ParseStmt;
@@ -9829,8 +10250,7 @@ Begin
        (KW = 'QUIT') Or (KW = 'TITLE') Or (KW = 'FOOTNOTE') Or
        (KW = 'OPTIONS') Or (KW = 'CARDS') Or (KW = 'DATALINES') Or
        (KW = 'RETURN') Or
-       (KW = 'INFORMAT') Or (KW = 'ATTRIB') Or (KW = 'WHERE') Or
-       (KW = 'MERGE') Or (KW = 'BY') Then
+       (KW = 'INFORMAT') Or (KW = 'ATTRIB') Or (KW = 'WHERE') Then
     Begin
       EmitComment(KW);
       ParserAdvance;
@@ -9839,6 +10259,38 @@ Begin
         ParserAdvance;
       If CurToken.Kind = TK_SEMICOLON Then
         ParserAdvance;
+      Exit;
+    End;
+
+    (* TODO 23 : MERGE hors DATA step -> commentaire *)
+    If KW = 'MERGE' Then
+    Begin
+      ParserAdvance;
+      ParseMergeStmt;
+      Exit;
+    End;
+
+    (* TODO 23 : BY hors DATA step -> traiter comme PROC BY *)
+    If KW = 'BY' Then
+    Begin
+      ParserAdvance;
+      ParseDataByStmt;
+      Exit;
+    End;
+
+    (* TODO 23 : UPDATE hors DATA step *)
+    If KW = 'UPDATE' Then
+    Begin
+      ParserAdvance;
+      ParseUpdateStmt;
+      Exit;
+    End;
+
+    (* TODO 23 : MODIFY hors DATA step *)
+    If KW = 'MODIFY' Then
+    Begin
+      ParserAdvance;
+      ParseModifyStmt;
       Exit;
     End;
 
