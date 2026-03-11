@@ -303,7 +303,7 @@
             Membres static : variables de classe dans DATA (pas dans l instance)
             this : pointeur vers l objet courant -> [BP+4] (premier param)
 
-  TODO 20 - HERITAGE ET METHODES VIRTUELLES
+  TODO 20 - HERITAGE ET METHODES VIRTUELLES [IMPLEMENTE]
             class Derivee : public Base { ... };
               Heritage simple : champs de Base precedent ceux de Derivee
               sizeof(Derivee) = sizeof(Base) + champs_propres
@@ -627,6 +627,8 @@ Type
     IsDestructor  : Boolean;
     IsStatic      : Boolean;
     IsVirtual     : Boolean;
+    VTableSlot    : Integer;   (* slot dans la vtable, -1 si non virtuel *)
+    IsPureVirtual : Boolean;   (* = 0 methode virtuelle pure            *)
   End;
 
   TClassInfo = Record
@@ -643,6 +645,11 @@ Type
     CtorLabel    : TString;
     DtorLabel    : TString;
     ParentIdx    : Integer;  (* index dans ClassTab, -1 si pas de parent *)
+    HasVTable    : Boolean;  (* classe a une vtable                      *)
+    VtableLabel  : TString;  (* label DATA de la vtable                  *)
+    IsAbstract   : Boolean;  (* contient methode(s) virtuelle(s) pure(s) *)
+    VSlotCount   : Integer;  (* nombre de slots dans la vtable           *)
+    VSlots       : Array[0..MAX_METHOD-1] Of TString; (* labels par slot *)
   End;
 
 (* ============================================================
@@ -2362,6 +2369,21 @@ Begin
                 IntToStr(DataTab[I].ElemCount) + ' DUP(0)');
     End;
   End;
+  (* TODO 20 - Emettre les vtables pour les classes avec methodes virtuelles *)
+  For I := 0 To ClassCount - 1 Do
+  Begin
+    If ClassTab[I].HasVTable And (ClassTab[I].VSlotCount > 0) And
+       (ClassTab[I].VtableLabel <> '') Then
+    Begin
+      S := '';
+      For J := 0 To ClassTab[I].VSlotCount - 1 Do
+      Begin
+        If J > 0 Then S := S + ', ';
+        S := S + ClassTab[I].VSlots[J];
+      End;
+      EmitRaw(ClassTab[I].VtableLabel + '  DW  ' + S);
+    End;
+  End;
   EmitRaw('_DATA   ENDS');
 End;
 
@@ -3273,8 +3295,18 @@ Begin
                           ParserAdvance;
                           EmitInstrA('PUSH', 'BX'); (* push this *)
                           ParseCallExpr(-1, Res);
-                          (* L appel a deja gere les args, on ajoute CALL *)
-                          EmitInstrA('CALL', ClassTab[CIIdx].Methods[CMIdx].MangledLabel);
+                          (* TODO 20 - Dispatch virtuel ou direct *)
+                          If ClassTab[CIIdx].Methods[CMIdx].IsVirtual And
+                             ClassTab[CIIdx].HasVTable And
+                             (ClassTab[CIIdx].Methods[CMIdx].VTableSlot >= 0) Then
+                          Begin
+                            (* Sauver this (BX deja sur pile), charger vtable *)
+                            EmitInstrAB('MOV', 'SI', 'WORD PTR [BX]');
+                            EmitInstrA('CALL',
+                              'WORD PTR [SI+' + IntToStr(ClassTab[CIIdx].Methods[CMIdx].VTableSlot * 2) + ']');
+                          End
+                          Else
+                            EmitInstrA('CALL', ClassTab[CIIdx].Methods[CMIdx].MangledLabel);
                           EmitInstrAB('ADD', 'SP', '2'); (* nettoyer this *)
                           Res.Kind    := EK_AX;
                           Res.SymIdx  := -1;
@@ -3375,7 +3407,22 @@ Begin
                           End;
                           If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
                             ParserAdvance;
-                          EmitInstrA('CALL', ClassTab[CIIdx].Methods[CMIdx].MangledLabel);
+                          (* TODO 20 - Dispatch virtuel ou direct *)
+                          If ClassTab[CIIdx].Methods[CMIdx].IsVirtual And
+                             ClassTab[CIIdx].HasVTable And
+                             (ClassTab[CIIdx].Methods[CMIdx].VTableSlot >= 0) Then
+                          Begin
+                            (* Charger adresse objet dans BX pour vtable *)
+                            If (SymTab[Res.SymIdx].ScopeLevel = 0) Or SymTab[Res.SymIdx].IsStatic Then
+                              EmitInstrAB('MOV', 'BX', 'OFFSET ' + SymTab[Res.SymIdx].MangledName)
+                            Else
+                              EmitInstrAB('LEA', 'BX', '[BP' + IntToStr(SymTab[Res.SymIdx].Offset) + ']');
+                            EmitInstrAB('MOV', 'SI', 'WORD PTR [BX]');
+                            EmitInstrA('CALL',
+                              'WORD PTR [SI+' + IntToStr(ClassTab[CIIdx].Methods[CMIdx].VTableSlot * 2) + ']');
+                          End
+                          Else
+                            EmitInstrA('CALL', ClassTab[CIIdx].Methods[CMIdx].MangledLabel);
                           EmitInstrAB('ADD', 'SP', '2'); (* nettoyer this *)
                           Res.Kind    := EK_AX;
                           Res.SymIdx  := -1;
@@ -4937,7 +4984,23 @@ Begin
   (* Prototype : methode sans corps *)
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
   Begin
+    (* TODO 20 - Verifier = 0 avant le ; pour pure virtual *)
     ParserAdvance;
+    Exit;
+  End;
+
+  (* TODO 20 - Verifier = 0 pour methode virtuelle pure *)
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+  Begin
+    ParserAdvance;
+    If (CurToken.Kind = TK_INTEGER) And (CurToken.IntVal = 0) Then
+    Begin
+      ParserAdvance;
+      ClassTab[CIdx].Methods[MIdx].IsPureVirtual := True;
+      ClassTab[CIdx].IsAbstract := True;
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      ParserAdvance;
     Exit;
   End;
 
@@ -4994,6 +5057,28 @@ Begin
     EmitInstrAB('MOV', 'CX', IntToStr(ClassTab[CIdx].TotalSize Div 2));
     EmitInstrAB('XOR', 'AX', 'AX');
     EmitInstr('REP    STOSW');
+
+    (* TODO 20 - Appeler le constructeur de la classe de base *)
+    If (ClassTab[CIdx].ParentIdx >= 0) And
+       ClassTab[ClassTab[CIdx].ParentIdx].HasCtor Then
+    Begin
+      EmitComment('Appel constructeur base ' +
+                  ClassTab[ClassTab[CIdx].ParentIdx].Name);
+      EmitInstrA('PUSH', 'WORD PTR [BP+4]');
+      EmitInstrA('CALL',
+                 ClassTab[ClassTab[CIdx].ParentIdx].CtorLabel);
+      EmitInstrAB('ADD', 'SP', '2');
+    End;
+
+    (* TODO 20 - Initialiser le pointeur de vtable *)
+    If ClassTab[CIdx].HasVTable And
+       (ClassTab[CIdx].VtableLabel <> '') Then
+    Begin
+      EmitComment('Initialiser pointeur vtable');
+      EmitInstrAB('MOV', 'BX', 'WORD PTR [BP+4]');
+      EmitInstrAB('MOV', 'WORD PTR [BX]',
+                   'OFFSET ' + ClassTab[CIdx].VtableLabel);
+    End;
   End;
 
   (* Parser le corps *)
@@ -5049,6 +5134,12 @@ Var
   SaveAccess   : TAccessLevel;
   IsCtor       : Boolean;
   IsDtor       : Boolean;
+  (* TODO 20 - Heritage et methodes virtuelles *)
+  BaseName       : TString;
+  ParentCIdx     : Integer;
+  IsVirtualMethod: Boolean;
+  OverrideMIdx   : Integer;
+  I              : Integer;
 Begin
   ParserAdvance; (* consomme 'class' *)
 
@@ -5060,7 +5151,10 @@ Begin
   End;
 
   (* Heritage optionnel : class Derived : public Base *)
-  If (CurToken.Kind = TK_OP) And (CurToken.Val = ':') Then
+  ParentCIdx := -1;
+  BaseName := '';
+  If ((CurToken.Kind = TK_OP) Or (CurToken.Kind = TK_PUNCT)) And
+     (CurToken.Val = ':') Then
   Begin
     ParserAdvance;
     (* Consommer public/private/protected *)
@@ -5068,9 +5162,13 @@ Begin
        ((CurToken.Val = 'public') Or (CurToken.Val = 'private') Or
         (CurToken.Val = 'protected')) Then
       ParserAdvance;
-    (* Consommer le nom de la classe de base *)
+    (* Nom de la classe de base *)
     If CurToken.Kind = TK_IDENT Then
+    Begin
+      BaseName := CurToken.Val;
+      ParentCIdx := ClassFind(BaseName);
       ParserAdvance;
+    End;
   End;
 
   (* Corps { ... } *)
@@ -5100,8 +5198,50 @@ Begin
     ClassTab[CIdx].HasDtor     := False;
     ClassTab[CIdx].CtorLabel   := '';
     ClassTab[CIdx].DtorLabel   := '';
-    ClassTab[CIdx].ParentIdx   := -1;
+    ClassTab[CIdx].ParentIdx   := ParentCIdx;
+    ClassTab[CIdx].HasVTable   := False;
+    ClassTab[CIdx].VtableLabel := '';
+    ClassTab[CIdx].IsAbstract  := False;
+    ClassTab[CIdx].VSlotCount  := 0;
     CurOfs := 0;
+
+    (* TODO 20 - Heritage : copier champs et methodes du parent *)
+    If ParentCIdx >= 0 Then
+    Begin
+      (* Copier les champs du parent *)
+      For I := 0 To ClassTab[ParentCIdx].FieldCount - 1 Do
+      Begin
+        If ClassTab[CIdx].FieldCount < MAX_FIELD Then
+        Begin
+          ClassTab[CIdx].Fields[ClassTab[CIdx].FieldCount]
+            := ClassTab[ParentCIdx].Fields[I];
+          ClassTab[CIdx].FieldAccess[ClassTab[CIdx].FieldCount]
+            := ClassTab[ParentCIdx].FieldAccess[I];
+          Inc(ClassTab[CIdx].FieldCount);
+        End;
+      End;
+      CurOfs := ClassTab[ParentCIdx].TotalSize;
+      (* Copier les methodes du parent (sauf ctor/dtor) *)
+      For I := 0 To ClassTab[ParentCIdx].MethodCount - 1 Do
+      Begin
+        If ClassTab[ParentCIdx].Methods[I].IsConstructor Then Continue;
+        If ClassTab[ParentCIdx].Methods[I].IsDestructor Then Continue;
+        If ClassTab[CIdx].MethodCount < MAX_METHOD Then
+        Begin
+          ClassTab[CIdx].Methods[ClassTab[CIdx].MethodCount]
+            := ClassTab[ParentCIdx].Methods[I];
+          Inc(ClassTab[CIdx].MethodCount);
+        End;
+      End;
+      (* Heriter la vtable si le parent en a une *)
+      If ClassTab[ParentCIdx].HasVTable Then
+      Begin
+        ClassTab[CIdx].HasVTable := True;
+        ClassTab[CIdx].VSlotCount := ClassTab[ParentCIdx].VSlotCount;
+        For I := 0 To ClassTab[ParentCIdx].VSlotCount - 1 Do
+          ClassTab[CIdx].VSlots[I] := ClassTab[ParentCIdx].VSlots[I];
+      End;
+    End;
 
     (* Sauvegarder et initialiser le contexte de classe *)
     SaveClassIdx := CurClassIdx;
@@ -5117,7 +5257,7 @@ Begin
       If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'public') Then
       Begin
         ParserAdvance;
-        If (CurToken.Kind = TK_OP) And (CurToken.Val = ':') Then
+        If ((CurToken.Kind = TK_OP) Or (CurToken.Kind = TK_PUNCT)) And (CurToken.Val = ':') Then
           ParserAdvance;
         AccessLvl := AL_PUBLIC;
         Continue;
@@ -5125,7 +5265,7 @@ Begin
       If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'private') Then
       Begin
         ParserAdvance;
-        If (CurToken.Kind = TK_OP) And (CurToken.Val = ':') Then
+        If ((CurToken.Kind = TK_OP) Or (CurToken.Kind = TK_PUNCT)) And (CurToken.Val = ':') Then
           ParserAdvance;
         AccessLvl := AL_PRIVATE;
         Continue;
@@ -5133,13 +5273,13 @@ Begin
       If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'protected') Then
       Begin
         ParserAdvance;
-        If (CurToken.Kind = TK_OP) And (CurToken.Val = ':') Then
+        If ((CurToken.Kind = TK_OP) Or (CurToken.Kind = TK_PUNCT)) And (CurToken.Val = ':') Then
           ParserAdvance;
         AccessLvl := AL_PROTECTED;
         Continue;
       End;
 
-      (* Ignorer les mots-cles friend, virtual, inline *)
+      (* Ignorer les mots-cles friend, inline *)
       If (CurToken.Kind = TK_KEYWORD) And
          ((CurToken.Val = 'friend') Or (CurToken.Val = 'inline')) Then
       Begin
@@ -5148,10 +5288,22 @@ Begin
       End;
 
       MIsStatic := False;
+      IsVirtualMethod := False;
+      (* TODO 20 - virtual : ne pas sauter, propager le flag *)
       If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'virtual') Then
       Begin
+        IsVirtualMethod := True;
         ParserAdvance;
-        Continue;
+        (* Si c est la premiere methode virtuelle, preparer la vtable *)
+        If Not ClassTab[CIdx].HasVTable Then
+        Begin
+          ClassTab[CIdx].HasVTable := True;
+          (* Decaler les offsets de tous les champs existants de +2 *)
+          (* pour faire place au pointeur de vtable a l offset 0    *)
+          For I := 0 To ClassTab[CIdx].FieldCount - 1 Do
+            Inc(ClassTab[CIdx].Fields[I].Offset, 2);
+          Inc(CurOfs, 2);
+        End;
       End;
       If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'static') Then
       Begin
@@ -5182,6 +5334,8 @@ Begin
             ClassTab[CIdx].Methods[MIdx].IsDestructor  := False;
             ClassTab[CIdx].Methods[MIdx].IsStatic      := False;
             ClassTab[CIdx].Methods[MIdx].IsVirtual     := False;
+            ClassTab[CIdx].Methods[MIdx].VTableSlot    := -1;
+            ClassTab[CIdx].Methods[MIdx].IsPureVirtual := False;
             ClassTab[CIdx].HasCtor   := True;
             ClassTab[CIdx].CtorLabel := ClassTab[CIdx].Methods[MIdx].MangledLabel;
             ParseClassMethodBody(CIdx, MIdx);
@@ -5217,7 +5371,9 @@ Begin
               ClassTab[CIdx].Methods[MIdx].IsConstructor := False;
               ClassTab[CIdx].Methods[MIdx].IsDestructor  := True;
               ClassTab[CIdx].Methods[MIdx].IsStatic      := False;
-              ClassTab[CIdx].Methods[MIdx].IsVirtual     := False;
+              ClassTab[CIdx].Methods[MIdx].IsVirtual     := IsVirtualMethod;
+              ClassTab[CIdx].Methods[MIdx].VTableSlot    := -1;
+              ClassTab[CIdx].Methods[MIdx].IsPureVirtual := False;
               ClassTab[CIdx].HasDtor   := True;
               ClassTab[CIdx].DtorLabel := ClassTab[CIdx].Methods[MIdx].MangledLabel;
               ParseClassMethodBody(CIdx, MIdx);
@@ -5242,23 +5398,73 @@ Begin
         (* Methode : type ident( ... ) *)
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
         Begin
-          If ClassTab[CIdx].MethodCount < MAX_METHOD Then
+          (* TODO 20 - Verifier si c est un override d une methode existante *)
+          OverrideMIdx := -1;
+          For I := 0 To ClassTab[CIdx].MethodCount - 1 Do
+            If ClassTab[CIdx].Methods[I].Name = FldName Then
+            Begin
+              OverrideMIdx := I;
+              Break;
+            End;
+
+          If OverrideMIdx >= 0 Then
           Begin
-            MIdx := ClassTab[CIdx].MethodCount;
-            Inc(ClassTab[CIdx].MethodCount);
-            ClassTab[CIdx].Methods[MIdx].Name         := FldName;
+            (* Override : mettre a jour l entree existante *)
+            MIdx := OverrideMIdx;
             ClassTab[CIdx].Methods[MIdx].MangledLabel  := CC_CLS_PFX + SymNameClean(ClassName) + '_' + SymNameClean(FldName);
             ClassTab[CIdx].Methods[MIdx].RetTypeIdx    := FldTypeIdx;
             ClassTab[CIdx].Methods[MIdx].Access        := AccessLvl;
-            ClassTab[CIdx].Methods[MIdx].IsConstructor := False;
-            ClassTab[CIdx].Methods[MIdx].IsDestructor  := False;
             ClassTab[CIdx].Methods[MIdx].IsStatic      := FldIsStatic;
-            ClassTab[CIdx].Methods[MIdx].IsVirtual     := False;
+            If IsVirtualMethod Then
+              ClassTab[CIdx].Methods[MIdx].IsVirtual := True;
+            (* Mettre a jour le slot vtable si virtuel *)
+            If ClassTab[CIdx].Methods[MIdx].IsVirtual And
+               (ClassTab[CIdx].Methods[MIdx].VTableSlot >= 0) Then
+              ClassTab[CIdx].VSlots[ClassTab[CIdx].Methods[MIdx].VTableSlot]
+                := ClassTab[CIdx].Methods[MIdx].MangledLabel;
+          End
+          Else
+          Begin
+            (* Nouvelle methode *)
+            If ClassTab[CIdx].MethodCount < MAX_METHOD Then
+            Begin
+              MIdx := ClassTab[CIdx].MethodCount;
+              Inc(ClassTab[CIdx].MethodCount);
+              ClassTab[CIdx].Methods[MIdx].Name         := FldName;
+              ClassTab[CIdx].Methods[MIdx].MangledLabel  := CC_CLS_PFX + SymNameClean(ClassName) + '_' + SymNameClean(FldName);
+              ClassTab[CIdx].Methods[MIdx].RetTypeIdx    := FldTypeIdx;
+              ClassTab[CIdx].Methods[MIdx].Access        := AccessLvl;
+              ClassTab[CIdx].Methods[MIdx].IsConstructor := False;
+              ClassTab[CIdx].Methods[MIdx].IsDestructor  := False;
+              ClassTab[CIdx].Methods[MIdx].IsStatic      := FldIsStatic;
+              ClassTab[CIdx].Methods[MIdx].IsVirtual     := IsVirtualMethod;
+              ClassTab[CIdx].Methods[MIdx].IsPureVirtual := False;
+              (* TODO 20 - Assigner un slot vtable si virtuel *)
+              If IsVirtualMethod Then
+              Begin
+                ClassTab[CIdx].Methods[MIdx].VTableSlot := ClassTab[CIdx].VSlotCount;
+                ClassTab[CIdx].VSlots[ClassTab[CIdx].VSlotCount]
+                  := ClassTab[CIdx].Methods[MIdx].MangledLabel;
+                Inc(ClassTab[CIdx].VSlotCount);
+              End
+              Else
+                ClassTab[CIdx].Methods[MIdx].VTableSlot := -1;
+            End
+            Else
+              MIdx := -1;
+          End;
+
+          If MIdx >= 0 Then
+          Begin
             (* Enregistrer dans SymTab pour resolution d appel *)
             SIdx := SymAdd(ClassName + '::' + FldName, SK_FUNC, FldTypeIdx, 0);
             If SIdx >= 0 Then
               SymTab[SIdx].MangledName := ClassTab[CIdx].Methods[MIdx].MangledLabel;
+            (* Verifier pure virtual : = 0 ; *)
             ParseClassMethodBody(CIdx, MIdx);
+            (* TODO 20 - Verifier = 0 apres le prototype *)
+            If ClassTab[CIdx].Methods[MIdx].IsPureVirtual Then
+              ClassTab[CIdx].IsAbstract := True;
           End;
         End
         Else
@@ -5308,6 +5514,10 @@ Begin
     If ClassTab[CIdx].TotalSize = 0 Then
       ClassTab[CIdx].TotalSize := 2;
 
+    (* TODO 20 - Generer le label vtable si necessaire *)
+    If ClassTab[CIdx].HasVTable And (ClassTab[CIdx].VSlotCount > 0) Then
+      ClassTab[CIdx].VtableLabel := CC_CLS_PFX + SymNameClean(ClassName) + '_VT';
+
     (* Consommer '}' *)
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
       ParserAdvance;
@@ -5320,6 +5530,9 @@ Begin
       TypeTab[TIdx].Kind    := TYK_CLASS;
       TypeTab[TIdx].Size    := ClassTab[CIdx].TotalSize;
       TypeTab[TIdx].BaseIdx := TY_UNKNOWN;
+      (* TODO 20 - Stocker le parent dans BaseIdx pour heritage *)
+      If ParentCIdx >= 0 Then
+        TypeTab[TIdx].BaseIdx := ClassTab[ParentCIdx].TypeIdx;
       Inc(TypeCount);
       ClassTab[CIdx].TypeIdx := TIdx;
     End
