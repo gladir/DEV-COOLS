@@ -5878,8 +5878,7 @@ Begin
     ParserAdvance;
 
     (* Concatenation : SET ds1 ds2 ; (second dataset optionnel) *)
-    If (CurToken.Kind = TK_IDENT) And
-       (CurToken.Kind <> TK_SEMICOLON) Then
+    If CurToken.Kind = TK_IDENT Then
     Begin
       EmitComment('SET concat: ' + StrUpperCase(CurToken.Val));
       ParserAdvance;
@@ -5962,7 +5961,8 @@ Begin
   End;
 
   (* Generer la terminaison avec code d erreur *)
-  EmitInstrAB('MOV', 'AX', '4C' + ErrCode + 'h');
+  EmitInstrAB('MOV', 'AH', '4Ch');
+  EmitInstrAB('MOV', 'AL', ErrCode);
   EmitInstr('INT 21h');
 
   (* Consommer ; *)
