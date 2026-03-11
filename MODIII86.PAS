@@ -221,7 +221,7 @@
                -> JMP _M3L_LEND_N (erreur si hors LOOP)
              LoopPush / LoopPop : pile de labels pour EXIT
 
-   TODO 15 - TABLEAUX (ARRAY)
+   TODO 15 - TABLEAUX (ARRAY) [IMPLEMENTE]
              ARRAY [lo..hi] OF T : tableau a bornes fixes
                Taille = (hi - lo + 1) * sizeof(T), acces par offset calcule
                Multidimensionnel : ARRAY [a..b],[c..d] OF T
@@ -3448,7 +3448,103 @@ Begin
     TY_IDX_TEXT     : TypeSizeFromIdx := 2;
     TY_IDX_NIL      : TypeSizeFromIdx := 2;
   Else
-    TypeSizeFromIdx := 2;  (* defaut : mot 16 bits *)
+    If (TIdx >= 0) And (TIdx < TypeCount) Then
+      TypeSizeFromIdx := TypeTab[TIdx].Size
+    Else
+      TypeSizeFromIdx := 2;  (* defaut : mot 16 bits *)
+  End;
+End;
+
+(* ---- ParseArrayTypeFromTokens : parser un type ARRAY -------- *)
+(* Lit ARRAY [lo..hi] OF T ou ARRAY OF T a partir de la position *)
+(* P dans le TokenPool et cree l entree TypeTab correspondante.  *)
+(* Retourne l index du type ou TY_UNKNOWN.                       *)
+
+Function ParseArrayTypeFromTokens(Var P : Integer) : Integer;
+Var
+  Lo, Hi   : LongInt;
+  ElemTIdx : Integer;
+  ElemSz   : Integer;
+  ArrSize  : Integer;
+  TIdx     : Integer;
+Begin
+  ParseArrayTypeFromTokens := TY_UNKNOWN;
+  If (P >= TokenCount) Then Exit;
+  If Not ((TokenPool[P].Kind = TK_KEYWORD) And (TokenPool[P].Val = 'ARRAY')) Then
+    Exit;
+  Inc(P); (* passer ARRAY *)
+
+  (* --- Tableau fixe : ARRAY [lo..hi] OF T --- *)
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = '[') Then
+  Begin
+    Inc(P); (* passer '[' *)
+    Lo := 0;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_INTEGER) Then
+    Begin
+      Lo := TokenPool[P].IntVal;
+      Inc(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_OP) And
+       (TokenPool[P].Val = '..') Then
+      Inc(P);
+    Hi := 0;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_INTEGER) Then
+    Begin
+      Hi := TokenPool[P].IntVal;
+      Inc(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ']') Then
+      Inc(P);
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+       (TokenPool[P].Val = 'OF') Then
+      Inc(P);
+    ElemTIdx := TY_IDX_INTEGER;
+    If (P < TokenCount) And
+       ((TokenPool[P].Kind = TK_KEYWORD) Or
+        (TokenPool[P].Kind = TK_IDENT)) Then
+    Begin
+      ElemTIdx := TypeIdxFromName(TokenPool[P].Val);
+      If ElemTIdx = TY_UNKNOWN Then
+        ElemTIdx := TY_IDX_INTEGER;
+      Inc(P);
+    End;
+    ElemSz  := TypeSizeFromIdx(ElemTIdx);
+    ArrSize := (Hi - Lo + 1) * ElemSz;
+    TIdx := TypeAdd(TYK_ARRAY, '', ArrSize);
+    If TIdx >= 0 Then
+    Begin
+      TypeTab[TIdx].BaseTypeIdx := ElemTIdx;
+      TypeTab[TIdx].Lo          := Lo;
+      TypeTab[TIdx].Hi          := Hi;
+    End;
+    ParseArrayTypeFromTokens := TIdx;
+  End
+  Else
+  Begin
+    (* --- Tableau ouvert : ARRAY OF T --- *)
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+       (TokenPool[P].Val = 'OF') Then
+      Inc(P);
+    ElemTIdx := TY_IDX_INTEGER;
+    If (P < TokenCount) And
+       ((TokenPool[P].Kind = TK_KEYWORD) Or
+        (TokenPool[P].Kind = TK_IDENT)) Then
+    Begin
+      ElemTIdx := TypeIdxFromName(TokenPool[P].Val);
+      If ElemTIdx = TY_UNKNOWN Then
+        ElemTIdx := TY_IDX_INTEGER;
+      Inc(P);
+    End;
+    TIdx := TypeAdd(TYK_OPENARRAY, '', 4);
+    If TIdx >= 0 Then
+    Begin
+      TypeTab[TIdx].BaseTypeIdx := ElemTIdx;
+      TypeTab[TIdx].Lo          := 0;
+      TypeTab[TIdx].Hi          := 0;
+    End;
+    ParseArrayTypeFromTokens := TIdx;
   End;
 End;
 
@@ -3469,6 +3565,26 @@ Begin
     DataAddByte(Lbl, InitVal)
   Else
     DataAddWord(Lbl, InitVal);
+  SI := SymAdd(Name, SK_VAR, TIdx, DataCount - 1);
+  If SI >= 0 Then
+    SymTab[SI].MangledName := Lbl;
+End;
+
+(* ---- DataAddGlobalArrayVar : creer une variable tableau DATA -- *)
+(* Cree une entree DK_ARRAY dans DataTab et enregistre le symbole  *)
+(* dans SymTab.                                                    *)
+
+Procedure DataAddGlobalArrayVar(Const Name : TString; TIdx : Integer);
+Var
+  Lbl       : TString;
+  SI        : Integer;
+  ElemCount : Integer;
+  ElemSz    : Integer;
+Begin
+  Lbl := M3_VAR_PFX + Name;
+  ElemCount := TypeTab[TIdx].Hi - TypeTab[TIdx].Lo + 1;
+  ElemSz    := TypeSizeFromIdx(TypeTab[TIdx].BaseTypeIdx);
+  DataAddArray(Lbl, ElemCount, ElemSz);
   SI := SymAdd(Name, SK_VAR, TIdx, DataCount - 1);
   If SI >= 0 Then
     SymTab[SI].MangledName := Lbl;
@@ -3608,17 +3724,28 @@ Begin
             TIdx := TY_IDX_INTEGER; (* type par defaut *)
             If P < TokenCount Then
             Begin
-              If (TokenPool[P].Kind = TK_KEYWORD) Or
+              If (TokenPool[P].Kind = TK_KEYWORD) And
+                 (TokenPool[P].Val = 'ARRAY') Then
+              Begin
+                TIdx := ParseArrayTypeFromTokens(P);
+                If TIdx = TY_UNKNOWN Then
+                  TIdx := TY_IDX_INTEGER;
+              End
+              Else If (TokenPool[P].Kind = TK_KEYWORD) Or
                  (TokenPool[P].Kind = TK_IDENT) Then
               Begin
                 TIdx := TypeIdxFromName(TokenPool[P].Val);
                 If TIdx = TY_UNKNOWN Then
-                  TIdx := TY_IDX_INTEGER; (* type utilisateur -> mot *)
+                  TIdx := TY_IDX_INTEGER;
                 Inc(P);
               End;
             End;
             (* Creer la variable globale *)
-            DataAddGlobalVar(Name, TIdx, 0);
+            If (TIdx >= 0) And (TIdx < TypeCount) And
+               (TypeTab[TIdx].Kind = TYK_ARRAY) Then
+              DataAddGlobalArrayVar(Name, TIdx)
+            Else
+              DataAddGlobalVar(Name, TIdx, 0);
             (* Passer le ';' *)
             If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
                (TokenPool[P].Val = ';') Then
@@ -4121,7 +4248,10 @@ End;
 
 Procedure ParseBuiltinCall(Const Name : TString);
 Var
-  ArgCount : Integer;
+  ArgCount  : Integer;
+  LI, SI    : Integer;
+  ArrTIdx   : Integer;
+  ArrElemSz : Integer;
 Begin
   If Name = 'ABS' Then
   Begin
@@ -4209,7 +4339,31 @@ Begin
       Else If Name = 'LAST' Then
         EmitInstrAB('MOV', 'AX', IntToStr(TypeLast(TokenPool[EP].Val)))
       Else
-        EmitInstrAB('MOV', 'AX', IntToStr(TypeNumber(TokenPool[EP].Val)));
+      Begin
+        (* NUMBER: check if it is an array variable *)
+        LI := FindProcLocal(CurProcIdx, TokenPool[EP].Val);
+        If (LI >= 0) And
+           (ProcTab[CurProcIdx].Locals[LI].TypeIdx >= 0) And
+           (ProcTab[CurProcIdx].Locals[LI].TypeIdx < TypeCount) And
+           (TypeTab[ProcTab[CurProcIdx].Locals[LI].TypeIdx].Kind = TYK_ARRAY)
+        Then
+          EmitInstrAB('MOV', 'AX',
+            IntToStr(TypeTab[ProcTab[CurProcIdx].Locals[LI].TypeIdx].Hi -
+                     TypeTab[ProcTab[CurProcIdx].Locals[LI].TypeIdx].Lo + 1))
+        Else
+        Begin
+          SI := SymFind(TokenPool[EP].Val);
+          If (SI >= 0) And (SymTab[SI].TypeIdx >= 0) And
+             (SymTab[SI].TypeIdx < TypeCount) And
+             (TypeTab[SymTab[SI].TypeIdx].Kind = TYK_ARRAY) Then
+            EmitInstrAB('MOV', 'AX',
+              IntToStr(TypeTab[SymTab[SI].TypeIdx].Hi -
+                       TypeTab[SymTab[SI].TypeIdx].Lo + 1))
+          Else
+            EmitInstrAB('MOV', 'AX',
+              IntToStr(TypeNumber(TokenPool[EP].Val)));
+        End;
+      End;
       Inc(EP);
     End
     Else
@@ -4306,6 +4460,57 @@ Begin
       EmitComment('ADR on expr (stub)');
     End;
     If EPMatch(TK_PUNCT, ')') Then Inc(EP);
+  End
+  Else If Name = 'SUBARRAY' Then
+  Begin
+    (* SUBARRAY(arr, start, len) -> pointer to arr + start * elemSize *)
+    Inc(EP); (* pass '(' *)
+    ArrTIdx := TY_UNKNOWN;
+    If (EP < TokenCount) And (TokenPool[EP].Kind = TK_IDENT) Then
+    Begin
+      LI := FindProcLocal(CurProcIdx, TokenPool[EP].Val);
+      If LI >= 0 Then
+      Begin
+        ArrTIdx := ProcTab[CurProcIdx].Locals[LI].TypeIdx;
+        EmitInstrAB('LEA', 'AX', '[BP' +
+          IntToStr(ProcTab[CurProcIdx].Locals[LI].Offset) + ']');
+      End
+      Else
+      Begin
+        SI := SymFind(TokenPool[EP].Val);
+        If SI >= 0 Then
+        Begin
+          ArrTIdx := SymTab[SI].TypeIdx;
+          EmitInstrAB('LEA', 'AX', SymTab[SI].MangledName);
+        End;
+      End;
+      Inc(EP);
+    End;
+    EmitInstrA('PUSH', 'AX');
+    If EPMatch(TK_PUNCT, ',') Then Inc(EP);
+    ParseExpr; (* start index -> AX *)
+    ArrElemSz := 2;
+    If (ArrTIdx >= 0) And (ArrTIdx < TypeCount) And
+       (TypeTab[ArrTIdx].Kind = TYK_ARRAY) Then
+      ArrElemSz := TypeSizeFromIdx(TypeTab[ArrTIdx].BaseTypeIdx);
+    If ArrElemSz = 2 Then
+      EmitInstrAB('SHL', 'AX', '1')
+    Else If ArrElemSz <> 1 Then
+    Begin
+      EmitInstrAB('MOV', 'CX', IntToStr(ArrElemSz));
+      EmitInstrA('MUL', 'CX');
+    End;
+    EmitInstrA('POP', 'BX');
+    EmitInstrAB('ADD', 'AX', 'BX');
+    If EPMatch(TK_PUNCT, ',') Then
+    Begin
+      Inc(EP);
+      EmitInstrA('PUSH', 'AX');
+      ParseExpr; (* len - ignored for address calculation *)
+      EmitInstrA('POP', 'AX');
+    End;
+    If EPMatch(TK_PUNCT, ')') Then Inc(EP);
+    EmitComment('SUBARRAY: AX = base + start*elemSize');
   End
   Else
   Begin
@@ -4672,6 +4877,9 @@ Var
   Name               : TString;
   ArgCount           : Integer;
   Lbl                : TString;
+  ArrTIdx            : Integer;
+  ArrElemSz          : Integer;
+  ArrLo              : LongInt;
 Begin
   If EPAtEnd Then
   Begin
@@ -4839,27 +5047,70 @@ Begin
       Exit;
     End;
 
-    (* Acces index [i] *)
+    (* Acces index [i] - TODO 15 *)
     If EPMatch(TK_PUNCT, '[') Then
     Begin
+      (* Determiner le type du tableau pour taille element et borne *)
+      ArrTIdx := TY_UNKNOWN;
       LI := FindProcLocal(CurProcIdx, Name);
       If LI >= 0 Then
+      Begin
+        ArrTIdx := ProcTab[CurProcIdx].Locals[LI].TypeIdx;
         EmitInstrAB('LEA', 'BX', '[BP' +
-          IntToStr(ProcTab[CurProcIdx].Locals[LI].Offset) + ']')
+          IntToStr(ProcTab[CurProcIdx].Locals[LI].Offset) + ']');
+      End
       Else
       Begin
-        SI := SymFind(Name);
-        If SI >= 0 Then
-          EmitInstrAB('LEA', 'BX', SymTab[SI].MangledName);
+        ParI := FindProcParam(CurProcIdx, Name);
+        If ParI >= 0 Then
+        Begin
+          ArrTIdx := ProcTab[CurProcIdx].ParamTypes[ParI];
+          EmitInstrAB('MOV', 'BX', 'WORD PTR [BP+' +
+            IntToStr(ProcTab[CurProcIdx].ParamOfs[ParI]) + ']');
+        End
+        Else
+        Begin
+          SI := SymFind(Name);
+          If SI >= 0 Then
+          Begin
+            ArrTIdx := SymTab[SI].TypeIdx;
+            EmitInstrAB('LEA', 'BX', SymTab[SI].MangledName);
+          End;
+        End;
+      End;
+      ArrElemSz := 2;
+      ArrLo := 0;
+      If (ArrTIdx >= 0) And (ArrTIdx < TypeCount) And
+         (TypeTab[ArrTIdx].Kind = TYK_ARRAY) Then
+      Begin
+        ArrElemSz := TypeSizeFromIdx(TypeTab[ArrTIdx].BaseTypeIdx);
+        ArrLo     := TypeTab[ArrTIdx].Lo;
       End;
       EmitInstrA('PUSH', 'BX');
       Inc(EP); (* passer '[' *)
       ParseExpr;
-      (* AX = index, compute byte offset (assume word elements) *)
-      EmitInstrAB('SHL', 'AX', '1');
+      (* AX = index, ajuster pour borne inferieure *)
+      If ArrLo <> 0 Then
+        EmitInstrAB('SUB', 'AX', IntToStr(ArrLo));
+      (* Calculer offset en octets *)
+      If ArrElemSz = 2 Then
+        EmitInstrAB('SHL', 'AX', '1')
+      Else If ArrElemSz = 4 Then
+        EmitInstrAB('SHL', 'AX', '2')
+      Else If ArrElemSz <> 1 Then
+      Begin
+        EmitInstrAB('MOV', 'CX', IntToStr(ArrElemSz));
+        EmitInstrA('MUL', 'CX');
+      End;
       EmitInstrA('POP', 'BX');
       EmitInstrAB('ADD', 'BX', 'AX');
-      EmitInstrAB('MOV', 'AX', 'WORD PTR [BX]');
+      If ArrElemSz = 1 Then
+      Begin
+        EmitInstrAB('XOR', 'AH', 'AH');
+        EmitInstrAB('MOV', 'AL', 'BYTE PTR [BX]');
+      End
+      Else
+        EmitInstrAB('MOV', 'AX', 'WORD PTR [BX]');
       If EPMatch(TK_PUNCT, ']') Then Inc(EP);
       Exit;
     End;
@@ -4874,7 +5125,8 @@ Begin
          (Name = 'FIRST') Or (Name = 'LAST') Or (Name = 'NUMBER') Or
          (Name = 'ISTYPE') Or (Name = 'NARROW') Or (Name = 'TYPECODE') Or
          (Name = 'NEW') Or (Name = 'BITSIZE') Or (Name = 'BYTESIZE') Or
-         (Name = 'ADRSIZE') Or (Name = 'ADR') Then
+         (Name = 'ADRSIZE') Or (Name = 'ADR') Or
+         (Name = 'SUBARRAY') Then
       Begin
         ParseBuiltinCall(Name);
         Exit;
@@ -5143,6 +5395,9 @@ Var
   CaseVal, HiVal       : TString;   (* TODO 13 - CASE value/range     *)
   HasRange             : Boolean;    (* TODO 13 - range .. detected    *)
   NegSign              : Boolean;    (* TODO 13 - negative value       *)
+  ArrTIdx              : Integer;    (* TODO 15 - array type index     *)
+  ArrElemSz            : Integer;    (* TODO 15 - array element size   *)
+  ArrLo                : LongInt;    (* TODO 15 - array lower bound    *)
 Begin
   If EPAtEnd Then Exit;
 
@@ -5808,23 +6063,58 @@ Begin
       Exit;
     End;
 
-    (* Index assign: ident[i] := expr *)
+    (* Index assign: ident[i] := expr - TODO 15 *)
     If EPMatch(TK_PUNCT, '[') Then
     Begin
+      ArrTIdx := TY_UNKNOWN;
       LI := FindProcLocal(CurProcIdx, Name);
       If LI >= 0 Then
+      Begin
+        ArrTIdx := ProcTab[CurProcIdx].Locals[LI].TypeIdx;
         EmitInstrAB('LEA', 'BX', '[BP' +
-          IntToStr(ProcTab[CurProcIdx].Locals[LI].Offset) + ']')
+          IntToStr(ProcTab[CurProcIdx].Locals[LI].Offset) + ']');
+      End
       Else
       Begin
-        SI := SymFind(Name);
-        If SI >= 0 Then
-          EmitInstrAB('LEA', 'BX', SymTab[SI].MangledName);
+        ParI := FindProcParam(CurProcIdx, Name);
+        If ParI >= 0 Then
+        Begin
+          ArrTIdx := ProcTab[CurProcIdx].ParamTypes[ParI];
+          EmitInstrAB('MOV', 'BX', 'WORD PTR [BP+' +
+            IntToStr(ProcTab[CurProcIdx].ParamOfs[ParI]) + ']');
+        End
+        Else
+        Begin
+          SI := SymFind(Name);
+          If SI >= 0 Then
+          Begin
+            ArrTIdx := SymTab[SI].TypeIdx;
+            EmitInstrAB('LEA', 'BX', SymTab[SI].MangledName);
+          End;
+        End;
+      End;
+      ArrElemSz := 2;
+      ArrLo := 0;
+      If (ArrTIdx >= 0) And (ArrTIdx < TypeCount) And
+         (TypeTab[ArrTIdx].Kind = TYK_ARRAY) Then
+      Begin
+        ArrElemSz := TypeSizeFromIdx(TypeTab[ArrTIdx].BaseTypeIdx);
+        ArrLo     := TypeTab[ArrTIdx].Lo;
       End;
       EmitInstrA('PUSH', 'BX');
       Inc(EP); (* passer '[' *)
       ParseExpr;
-      EmitInstrAB('SHL', 'AX', '1');
+      If ArrLo <> 0 Then
+        EmitInstrAB('SUB', 'AX', IntToStr(ArrLo));
+      If ArrElemSz = 2 Then
+        EmitInstrAB('SHL', 'AX', '1')
+      Else If ArrElemSz = 4 Then
+        EmitInstrAB('SHL', 'AX', '2')
+      Else If ArrElemSz <> 1 Then
+      Begin
+        EmitInstrAB('MOV', 'CX', IntToStr(ArrElemSz));
+        EmitInstrA('MUL', 'CX');
+      End;
       EmitInstrA('POP', 'BX');
       EmitInstrAB('ADD', 'BX', 'AX');
       EmitInstrA('PUSH', 'BX');
@@ -5834,7 +6124,10 @@ Begin
         Inc(EP);
         ParseExpr;
         EmitInstrA('POP', 'BX');
-        EmitInstrAB('MOV', 'WORD PTR [BX]', 'AX');
+        If ArrElemSz = 1 Then
+          EmitInstrAB('MOV', 'BYTE PTR [BX]', 'AL')
+        Else
+          EmitInstrAB('MOV', 'WORD PTR [BX]', 'AX');
       End;
       If EPMatch(TK_PUNCT, ';') Then Inc(EP);
       Exit;
@@ -6143,6 +6436,14 @@ Begin
           Begin
             Inc(P); (* passer ':' *)
             If (P < TokenCount) And
+               (TokenPool[P].Kind = TK_KEYWORD) And
+               (TokenPool[P].Val = 'ARRAY') Then
+            Begin
+              LTIdx := ParseArrayTypeFromTokens(P);
+              If LTIdx = TY_UNKNOWN Then
+                LTIdx := TY_IDX_INTEGER;
+            End
+            Else If (P < TokenCount) And
                ((TokenPool[P].Kind = TK_KEYWORD) Or
                 (TokenPool[P].Kind = TK_IDENT)) Then
             Begin
