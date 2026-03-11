@@ -198,7 +198,7 @@
               FILE 'sortie.dat' : ouvrir avec INT 21h AH=3Ch
               FILE PRINT : destination imprimante (STDOUT avec sauts de page)
 
-  TODO 13 - IF / THEN / ELSE / SELECT
+  TODO 13 - IF / THEN / ELSE / SELECT [IMPLEMENTE]
             ParseIfStmt : IF condition THEN action ;
               IF condition THEN action ; ELSE action ;
               Emission TEST AX,AX / JZ pour condition fausse
@@ -810,6 +810,9 @@ Procedure ParsePutStmt; Forward;
 Procedure ParseInputStmt; Forward;
 Procedure ParseInfileStmt; Forward;
 Procedure ParseFileStmt; Forward;
+(* TODO 13 - Forward declarations IF/THEN/ELSE/SELECT *)
+Procedure ParseIfStmt; Forward;
+Procedure ParseSelectStmt; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -4593,7 +4596,345 @@ Begin
 End;
 
 { ============================================================
-  STUBS POUR TODO 13..25 (a implementer)
+  TODO 13 - IF / THEN / ELSE / SELECT [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- ParseIfStmt : IF condition THEN action [ELSE action] ---- *)
+(* Syntaxe SAS :                                                    *)
+(*   IF cond THEN action;                                           *)
+(*   IF cond THEN action; ELSE action;                              *)
+(*   IF cond THEN DO; stmts; END;                                   *)
+(*   IF cond THEN DO; stmts; END; ELSE DO; stmts; END;             *)
+(* Emission :                                                       *)
+(*   evaluer cond -> AX                                              *)
+(*   TEST AX,AX / JZ LblElse (ou LblEnd si pas de ELSE)            *)
+(*   code branche THEN                                               *)
+(*   JMP LblEnd (si ELSE)                                           *)
+(*   LblElse: code branche ELSE                                     *)
+(*   LblEnd:                                                         *)
+Procedure ParseIfStmt;
+Var
+  E           : TExprVal;
+  LblElse     : TString;
+  LblEnd      : TString;
+  HasElse     : Boolean;
+Begin
+  EmitComment('IF');
+  (* IF est deja consomme par le parseur appelant *)
+
+  (* Evaluer la condition *)
+  ParseExpr(E);
+  ExprFlushToAX(E);
+
+  (* Labels *)
+  LblElse := LabelGen;
+  LblEnd  := LabelGen;
+
+  (* TEST AX,AX / JZ pour condition fausse *)
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JZ', LblElse);
+
+  (* Consommer THEN (obligatoire en SAS) *)
+  If (CurToken.Kind = TK_KEYWORD) And
+     (StrUpperCase(CurToken.Val) = 'THEN') Then
+    ParserAdvance
+  Else
+    CompileError('"THEN" attendu apres la condition du IF');
+
+  (* Branche THEN *)
+  (* Verifier si c est un bloc DO; stmts; END; *)
+  If (CurToken.Kind = TK_KEYWORD) And
+     (StrUpperCase(CurToken.Val) = 'DO') Then
+  Begin
+    ParserAdvance;  (* consommer DO *)
+    (* Consommer ; apres DO *)
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+    (* Parser les instructions du bloc jusqu a END *)
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_KEYWORD) And
+               (StrUpperCase(CurToken.Val) = 'END')) Do
+      ParseStmt;
+    (* Consommer END *)
+    If (CurToken.Kind = TK_KEYWORD) And
+       (StrUpperCase(CurToken.Val) = 'END') Then
+      ParserAdvance;
+    (* Consommer ; apres END *)
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+  End
+  Else
+  Begin
+    (* Instruction simple THEN *)
+    ParseStmt;
+  End;
+
+  (* Verifier s il y a un ELSE *)
+  HasElse := False;
+  If (CurToken.Kind = TK_KEYWORD) And
+     (StrUpperCase(CurToken.Val) = 'ELSE') Then
+  Begin
+    HasElse := True;
+    ParserAdvance;  (* consommer ELSE *)
+  End;
+
+  If HasElse Then
+  Begin
+    (* Sauter par-dessus la branche ELSE depuis THEN *)
+    EmitInstrA('JMP', LblEnd);
+    EmitLabel(LblElse);
+
+    (* Branche ELSE *)
+    (* Verifier si ELSE IF (chaine) *)
+    If (CurToken.Kind = TK_KEYWORD) And
+       (StrUpperCase(CurToken.Val) = 'IF') Then
+    Begin
+      ParserAdvance;  (* consommer IF *)
+      ParseIfStmt;    (* recursion pour ELSE IF *)
+    End
+    (* Verifier si c est un bloc DO; stmts; END; *)
+    Else If (CurToken.Kind = TK_KEYWORD) And
+            (StrUpperCase(CurToken.Val) = 'DO') Then
+    Begin
+      ParserAdvance;  (* consommer DO *)
+      (* Consommer ; apres DO *)
+      If CurToken.Kind = TK_SEMICOLON Then
+        ParserAdvance;
+      (* Parser les instructions du bloc jusqu a END *)
+      While (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_KEYWORD) And
+                 (StrUpperCase(CurToken.Val) = 'END')) Do
+        ParseStmt;
+      (* Consommer END *)
+      If (CurToken.Kind = TK_KEYWORD) And
+         (StrUpperCase(CurToken.Val) = 'END') Then
+        ParserAdvance;
+      (* Consommer ; apres END *)
+      If CurToken.Kind = TK_SEMICOLON Then
+        ParserAdvance;
+    End
+    Else
+    Begin
+      (* Instruction simple ELSE *)
+      ParseStmt;
+    End;
+
+    EmitLabel(LblEnd);
+  End
+  Else
+  Begin
+    (* Pas de ELSE : le label ELSE pointe sur la fin *)
+    EmitLabel(LblElse);
+  End;
+End;
+
+(* ---- ParseSelectStmt : SELECT [(expr)] ; WHEN ... END ; ------ *)
+(* Syntaxe SAS :                                                    *)
+(*   SELECT (expr) ;                                                 *)
+(*     WHEN (val1, val2) action ;                                   *)
+(*     WHEN (val3) DO; stmts; END;                                  *)
+(*     OTHERWISE action ;                                           *)
+(*   END;                                                            *)
+(*   SELECT ;              (sans expression)                         *)
+(*     WHEN (cond1) action;                                         *)
+(*     WHEN (cond2) action;                                         *)
+(*     OTHERWISE action;                                            *)
+(*   END;                                                            *)
+(* Emission avec expression :                                       *)
+(*   Evaluer expr -> sauver dans DX                                 *)
+(*   Pour chaque WHEN : CMP DX, val -> JE LblAction                *)
+(*   OTHERWISE -> code par defaut                                    *)
+(*   Labels : _SASL_WHEN_N, _SASL_SELEND_N                         *)
+(* Emission sans expression :                                       *)
+(*   Chaque WHEN evalue sa propre condition booleenne               *)
+Procedure ParseSelectStmt;
+Var
+  E           : TExprVal;
+  HasSelectExpr : Boolean;
+  LblSelEnd   : TString;
+  LblNext     : TString;
+  LblAction   : TString;
+  KW          : TString;
+  WhenVal     : TExprVal;
+  FirstVal    : Boolean;
+Begin
+  EmitComment('SELECT');
+  (* SELECT est deja consomme par le parseur appelant *)
+
+  LblSelEnd := LabelGen;
+
+  (* Verifier si SELECT a une expression (parenthese) *)
+  HasSelectExpr := False;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+  Begin
+    HasSelectExpr := True;
+    ParserAdvance;  (* consommer ( *)
+    ParseExpr(E);
+    ExprFlushToAX(E);
+    (* Sauver la valeur du SELECT dans DX *)
+    EmitInstrAB('MOV', 'DX', 'AX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else
+      CompileError('")" attendu apres l''expression du SELECT');
+  End;
+
+  (* Consommer ; apres SELECT *)
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+
+  (* Boucle sur les WHEN et OTHERWISE *)
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_KEYWORD) And
+             (StrUpperCase(CurToken.Val) = 'END')) Do
+  Begin
+    KW := '';
+    If CurToken.Kind = TK_KEYWORD Then
+      KW := StrUpperCase(CurToken.Val);
+
+    (* --- WHEN --- *)
+    If KW = 'WHEN' Then
+    Begin
+      ParserAdvance;  (* consommer WHEN *)
+      LblNext := LabelGen;
+
+      If HasSelectExpr Then
+      Begin
+        (* SELECT (expr) : comparer DX avec chaque valeur *)
+        EmitComment('WHEN');
+        (* Consommer ( *)
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+          ParserAdvance
+        Else
+          CompileError('"(" attendu apres WHEN');
+
+        (* Parser la liste de valeurs : WHEN (val1, val2, ...) *)
+        LblAction := LabelGen;
+        FirstVal  := True;
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+        Begin
+          If Not FirstVal Then
+          Begin
+            (* Consommer la virgule *)
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+              ParserAdvance;
+          End;
+          FirstVal := False;
+          ParseExpr(WhenVal);
+          ExprFlushToAX(WhenVal);
+          EmitInstrAB('CMP', 'DX', 'AX');
+          EmitInstrA('JE', LblAction);
+        End;
+
+        (* Consommer ) *)
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+
+        (* Aucune valeur ne correspond : sauter au prochain WHEN *)
+        EmitInstrA('JMP', LblNext);
+        EmitLabel(LblAction);
+      End
+      Else
+      Begin
+        (* SELECT sans expression : chaque WHEN a sa propre condition *)
+        EmitComment('WHEN');
+        (* Consommer ( *)
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+          ParserAdvance
+        Else
+          CompileError('"(" attendu apres WHEN');
+
+        (* Evaluer la condition booleenne *)
+        ParseExpr(WhenVal);
+        ExprFlushToAX(WhenVal);
+
+        (* Consommer ) *)
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+
+        (* Tester : si faux, sauter au prochain WHEN *)
+        EmitInstrAB('TEST', 'AX', 'AX');
+        EmitInstrA('JZ', LblNext);
+      End;
+
+      (* Parser l action du WHEN *)
+      (* Verifier si c est un bloc DO; stmts; END; *)
+      If (CurToken.Kind = TK_KEYWORD) And
+         (StrUpperCase(CurToken.Val) = 'DO') Then
+      Begin
+        ParserAdvance;  (* consommer DO *)
+        If CurToken.Kind = TK_SEMICOLON Then
+          ParserAdvance;
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_KEYWORD) And
+                   (StrUpperCase(CurToken.Val) = 'END')) Do
+          ParseStmt;
+        If (CurToken.Kind = TK_KEYWORD) And
+           (StrUpperCase(CurToken.Val) = 'END') Then
+          ParserAdvance;
+        If CurToken.Kind = TK_SEMICOLON Then
+          ParserAdvance;
+      End
+      Else
+        ParseStmt;
+
+      (* Apres l action : sauter a la fin du SELECT *)
+      EmitInstrA('JMP', LblSelEnd);
+      EmitLabel(LblNext);
+    End
+
+    (* --- OTHERWISE --- *)
+    Else If KW = 'OTHERWISE' Then
+    Begin
+      ParserAdvance;  (* consommer OTHERWISE *)
+      EmitComment('OTHERWISE');
+
+      (* Parser l action de OTHERWISE *)
+      If (CurToken.Kind = TK_KEYWORD) And
+         (StrUpperCase(CurToken.Val) = 'DO') Then
+      Begin
+        ParserAdvance;  (* consommer DO *)
+        If CurToken.Kind = TK_SEMICOLON Then
+          ParserAdvance;
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_KEYWORD) And
+                   (StrUpperCase(CurToken.Val) = 'END')) Do
+          ParseStmt;
+        If (CurToken.Kind = TK_KEYWORD) And
+           (StrUpperCase(CurToken.Val) = 'END') Then
+          ParserAdvance;
+        If CurToken.Kind = TK_SEMICOLON Then
+          ParserAdvance;
+      End
+      Else If CurToken.Kind = TK_SEMICOLON Then
+        (* OTHERWISE ; -> pas d action (instruction vide) *)
+        ParserAdvance
+      Else
+        ParseStmt;
+    End
+
+    Else
+    Begin
+      (* Token inattendu dans SELECT : consommer pour eviter boucle *)
+      CompileError('WHEN ou OTHERWISE attendu dans SELECT, trouve: ' + CurToken.Val);
+      ParserAdvance;
+    End;
+  End;
+
+  EmitLabel(LblSelEnd);
+
+  (* Consommer END *)
+  If (CurToken.Kind = TK_KEYWORD) And
+     (StrUpperCase(CurToken.Val) = 'END') Then
+    ParserAdvance;
+  (* Consommer ; apres END *)
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+{ ============================================================
+  STUBS POUR TODO 14..25 (a implementer)
   ============================================================ }
 
 Procedure ParseStmt;
@@ -4718,7 +5059,23 @@ Begin
       Exit;
     End;
 
-    (* TODO 13+ : IF/THEN/ELSE, DO/END, SELECT, etc. : stub *)
+    (* TODO 13 : IF *)
+    If KW = 'IF' Then
+    Begin
+      ParserAdvance;
+      ParseIfStmt;
+      Exit;
+    End;
+
+    (* TODO 13 : SELECT *)
+    If KW = 'SELECT' Then
+    Begin
+      ParserAdvance;
+      ParseSelectStmt;
+      Exit;
+    End;
+
+    (* TODO 14+ : DO/END, boucles, etc. : stub *)
     ParserAdvance;
     While (CurToken.Kind <> TK_SEMICOLON) And
           (CurToken.Kind <> TK_EOF) Do
