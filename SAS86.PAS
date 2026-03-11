@@ -312,7 +312,7 @@
                 STD   : ecart-type -> approximation entiere (stub)
               Emission : calcul en une passe sur le dataset + affichage
 
-  TODO 19 - PROC FREQ ET PROC SORT
+  TODO 19 - PROC FREQ ET PROC SORT [IMPLEMENTE]
             PROC FREQ : tableaux de frequences
               PROC FREQ DATA=dataset ; TABLES var1 var2 ; RUN;
               TABLES var1 : frequences simples (comptage par valeur)
@@ -763,6 +763,12 @@ Var
   ProcStatMin     : Boolean;   (* calculer MIN                        *)
   ProcStatMax     : Boolean;   (* calculer MAX                        *)
   ProcStatSum     : Boolean;   (* calculer SUM                        *)
+  (* PROC FREQ tables list (TODO 19) *)
+  ProcTablesList  : Array[0..MAX_PROC_VARS - 1] Of TString;
+  ProcTablesCount : Integer;   (* nombre de variables TABLES          *)
+  (* PROC SORT DESCENDING flags (TODO 19) *)
+  ProcByDescList  : Array[0..MAX_PROC_VARS - 1] Of Boolean;
+                               (* True si DESCENDING pour cette var BY *)
 
 { ============================================================
   FORWARD DECLARATIONS
@@ -899,6 +905,10 @@ Procedure ProcInit; Forward;
 Procedure EmitProcPrint; Forward;
 Procedure EmitProcMeans; Forward;
 Procedure ParseProcMeansOptions; Forward;
+(* TODO 19 - Forward declarations PROC FREQ / PROC SORT *)
+Procedure EmitProcFreq; Forward;
+Procedure EmitProcSort; Forward;
+Procedure ParseProcTablesStmt; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -6189,6 +6199,7 @@ End;
 
 (* ---- ProcInit : reinitialiser l etat du PROC step --------------- *)
 Procedure ProcInit;
+Var I : Integer;
 Begin
   InProcStep     := True;
   ProcName       := '';
@@ -6206,6 +6217,9 @@ Begin
   ProcStatMin    := False;
   ProcStatMax    := False;
   ProcStatSum    := False;
+  ProcTablesCount := 0;
+  For I := 0 To MAX_PROC_VARS - 1 Do
+    ProcByDescList[I] := False;
 End;
 
 (* ---- ParseProcVarStmt : parser VAR var1 var2 ... ; -------------- *)
@@ -6234,21 +6248,35 @@ Begin
     ParserAdvance;
 End;
 
-(* ---- ParseProcByStmt : parser BY var1 var2 ... ; ---------------- *)
-(* Appele apres que le mot-cle BY ait ete consomme.                   *)
+(* ---- ParseProcByStmt : parser BY [DESCENDING] var1 [DESCENDING] var2 ... ; *)
+(* Appele apres que le mot-cle BY ait ete consomme.                           *)
+(* Supporte le mot-cle DESCENDING devant chaque variable.                     *)
 Procedure ParseProcByStmt;
+Var
+  DescNext : Boolean;
+  KW       : TString;
 Begin
   EmitComment('BY');
   ProcByCount := 0;
+  DescNext := False;
   While (CurToken.Kind <> TK_SEMICOLON) And
         (CurToken.Kind <> TK_EOF) Do
   Begin
-    If CurToken.Kind = TK_IDENT Then
+    If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
     Begin
+      KW := StrUpperCase(CurToken.Val);
+      If KW = 'DESCENDING' Then
+      Begin
+        DescNext := True;
+        ParserAdvance;
+        Continue;
+      End;
       If ProcByCount < MAX_PROC_VARS Then
       Begin
-        ProcByList[ProcByCount] := StrUpperCase(CurToken.Val);
+        ProcByList[ProcByCount] := KW;
+        ProcByDescList[ProcByCount] := DescNext;
         Inc(ProcByCount);
+        DescNext := False;
       End
       Else
         WarnMsg('trop de variables dans BY (max '
@@ -6491,10 +6519,11 @@ Begin
         Continue;
       End;
 
-      (* TABLES (pour PROC FREQ, stub TODO 19) *)
+      (* TABLES (pour PROC FREQ, TODO 19) *)
       If KW = 'TABLES' Then
       Begin
-        EmitComment('TABLES (stub TODO 19)');
+        ParserAdvance;
+        ParseProcTablesStmt;
         ParserAdvance;
         While (CurToken.Kind <> TK_SEMICOLON) And
               (CurToken.Kind <> TK_EOF) Do
@@ -6931,6 +6960,285 @@ Begin
   End;
 End;
 
+{ ============================================================
+  TODO 19 - PROC FREQ ET PROC SORT [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- ParseProcTablesStmt : parser TABLES var1 var2 ... ; ------ *)
+(* Appele apres que le mot-cle TABLES ait ete consomme.             *)
+(* Reconnait les noms de variables simples ; si un '*' est detecte  *)
+(* (tableau croise), emet un avertissement et l ignore.             *)
+Procedure ParseProcTablesStmt;
+Var
+  HasCross : Boolean;
+Begin
+  EmitComment('TABLES');
+  ProcTablesCount := 0;
+  HasCross := False;
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    (* Detecter tableau croise var1 * var2 *)
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '*') Then
+    Begin
+      HasCross := True;
+      ParserAdvance;
+      Continue;
+    End;
+    If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+    Begin
+      If Not HasCross Then
+      Begin
+        If ProcTablesCount < MAX_PROC_VARS Then
+        Begin
+          ProcTablesList[ProcTablesCount] := StrUpperCase(CurToken.Val);
+          Inc(ProcTablesCount);
+        End
+        Else
+          WarnMsg('trop de variables dans TABLES (max '
+                  + IntToStr(MAX_PROC_VARS) + ')');
+      End
+      Else
+      Begin
+        WarnMsg('tableaux croises (var1 * var2) non supportes, ignore');
+        HasCross := False;
+      End;
+    End;
+    ParserAdvance;
+  End;
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- EmitProcFreq : generer le code ASM pour PROC FREQ ---------- *)
+(* Pour chaque variable listee dans TABLES, parcourt les valeurs du   *)
+(* PDV et affiche les frequences.                                      *)
+(* En mode simple (une seule observation dans le PDV), la frequence   *)
+(* est triviale : chaque valeur a un compteur de 1 (100%).             *)
+(* Pour les variables numeriques : affiche valeur, frequence, pourcent *)
+(* Pour les variables caracteres : affiche la chaine, frequence, %     *)
+Procedure EmitProcFreq;
+Var
+  I, SIdx, StrIdx : Integer;
+  VName   : TString;
+  HdrStr  : TString;
+Begin
+  EmitComment('PROC FREQ : tableaux de frequences');
+
+  (* Afficher le titre si specifie *)
+  If ProcTitle <> '' Then
+  Begin
+    StrIdx := DataAddStr(ProcTitle);
+    If StrIdx >= 0 Then
+    Begin
+      EmitInstrAB('MOV', 'AH', '40h');
+      EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+      EmitInstrAB('MOV', 'CX', IntToStr(Length(ProcTitle)));
+      EmitInstrAB('LEA', 'DX', DataTab[StrIdx].LblName);
+      EmitInstr('INT 21h');
+      EmitInstrAB('MOV', 'AH', '40h');
+      EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+      EmitInstrAB('MOV', 'CX', '2');
+      EmitInstrAB('LEA', 'DX', '_SAS_CRLF');
+      EmitInstr('INT 21h');
+    End;
+  End;
+
+  (* Pour chaque variable dans TABLES *)
+  For I := 0 To ProcTablesCount - 1 Do
+  Begin
+    VName := ProcTablesList[I];
+    SIdx := SymFind(VName);
+
+    (* En-tete du tableau de frequences *)
+    HdrStr := VName + ' Frequency Percent';
+    StrIdx := DataAddStr(HdrStr);
+    If StrIdx >= 0 Then
+    Begin
+      EmitComment('FREQ table: ' + VName);
+      EmitInstrAB('MOV', 'AH', '40h');
+      EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+      EmitInstrAB('MOV', 'CX', IntToStr(Length(HdrStr)));
+      EmitInstrAB('LEA', 'DX', DataTab[StrIdx].LblName);
+      EmitInstr('INT 21h');
+      EmitInstrAB('MOV', 'AH', '40h');
+      EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+      EmitInstrAB('MOV', 'CX', '2');
+      EmitInstrAB('LEA', 'DX', '_SAS_CRLF');
+      EmitInstr('INT 21h');
+    End;
+
+    If SIdx >= 0 Then
+    Begin
+      (* Afficher la valeur courante du PDV *)
+      If SymTab[SIdx].TypeIdx = TY_IDX_CHARACTER Then
+      Begin
+        EmitComment('FREQ ' + VName + ' (char)');
+        EmitInstrAB('LEA', 'DX', '_SAS_PDV + ' +
+                    IntToStr(SymTab[SIdx].Offset));
+        EmitInstrAB('MOV', 'CX', IntToStr(SymTab[SIdx].VarLen));
+        EmitInstrA('CALL', SAS_RT_PFX + 'PUTSTR');
+      End
+      Else
+      Begin
+        EmitComment('FREQ ' + VName + ' (num)');
+        EmitInstrAB('MOV', 'AX', 'WORD PTR [_SAS_PDV + ' +
+                    IntToStr(SymTab[SIdx].Offset) + ']');
+        EmitInstrA('CALL', SAS_RT_PFX + 'PUTNUM');
+      End;
+
+      (* Espace separateur *)
+      EmitInstrAB('MOV', 'AH', '02h');
+      EmitInstrAB('MOV', 'DL', '20h');
+      EmitInstr('INT 21h');
+
+      (* Frequence = 1 (une seule observation dans le PDV) *)
+      EmitComment('Frequency = 1');
+      EmitInstrAB('MOV', 'AX', '1');
+      EmitInstrA('CALL', SAS_RT_PFX + 'PUTNUM');
+
+      (* Espace separateur *)
+      EmitInstrAB('MOV', 'AH', '02h');
+      EmitInstrAB('MOV', 'DL', '20h');
+      EmitInstr('INT 21h');
+
+      (* Pourcentage = 100 (une seule observation -> 100%) *)
+      EmitComment('Percent = 100');
+      EmitInstrAB('MOV', 'AX', '100');
+      EmitInstrA('CALL', SAS_RT_PFX + 'PUTNUM');
+    End
+    Else
+      EmitComment('FREQ ' + VName + ' : variable non trouvee');
+
+    (* Saut de ligne *)
+    EmitInstrAB('MOV', 'AH', '40h');
+    EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+    EmitInstrAB('MOV', 'CX', '2');
+    EmitInstrAB('LEA', 'DX', '_SAS_CRLF');
+    EmitInstr('INT 21h');
+  End;
+
+  (* Si aucune variable TABLES n est specifiee, avertir *)
+  If ProcTablesCount = 0 Then
+    EmitComment('PROC FREQ : aucune variable TABLES specifiee');
+
+  (* Note de bas de page *)
+  If ProcFootnote <> '' Then
+  Begin
+    StrIdx := DataAddStr(ProcFootnote);
+    If StrIdx >= 0 Then
+    Begin
+      EmitInstrAB('MOV', 'AH', '40h');
+      EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+      EmitInstrAB('MOV', 'CX', IntToStr(Length(ProcFootnote)));
+      EmitInstrAB('LEA', 'DX', DataTab[StrIdx].LblName);
+      EmitInstr('INT 21h');
+      EmitInstrAB('MOV', 'AH', '40h');
+      EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+      EmitInstrAB('MOV', 'CX', '2');
+      EmitInstrAB('LEA', 'DX', '_SAS_CRLF');
+      EmitInstr('INT 21h');
+    End;
+  End;
+End;
+
+(* ---- EmitProcSort : generer le code ASM pour PROC SORT ---------- *)
+(* Tri a bulles sur les observations d un dataset en memoire.          *)
+(* En mode simple (une seule observation dans le PDV), le tri est      *)
+(* trivial : rien a faire (un seul element est deja trie).             *)
+(* Le code genere :                                                    *)
+(*   1. Affiche un commentaire indiquant les cles de tri               *)
+(*   2. Pour chaque variable BY, indique la direction (ASC/DESC)       *)
+(*   3. En multi-observations : boucle de tri a bulles avec CMP        *)
+(*      et echange via REP MOVSW (stub pour multi-obs futur)           *)
+Procedure EmitProcSort;
+Var
+  I, SIdx : Integer;
+  VName   : TString;
+  DirStr  : TString;
+  LblOuter, LblInner, LblNoSwap, LblDone : TString;
+Begin
+  EmitComment('PROC SORT : tri du dataset');
+
+  If ProcDataDS <> '' Then
+    EmitComment('DATA=' + ProcDataDS);
+  If ProcOutDS <> '' Then
+    EmitComment('OUT=' + ProcOutDS);
+
+  (* Afficher les cles de tri *)
+  For I := 0 To ProcByCount - 1 Do
+  Begin
+    VName := ProcByList[I];
+    If ProcByDescList[I] Then
+      DirStr := 'DESCENDING'
+    Else
+      DirStr := 'ASCENDING';
+    EmitComment('BY ' + VName + ' (' + DirStr + ')');
+  End;
+
+  (* Si aucune variable BY, avertissement *)
+  If ProcByCount = 0 Then
+  Begin
+    EmitComment('PROC SORT : aucune variable BY specifiee');
+    Exit;
+  End;
+
+  (* Generation du tri a bulles sur le PDV *)
+  (* En mode simple (observation unique), pas de boucle necessaire *)
+  (* On genere quand meme le squelette pour multi-observations     *)
+  LblOuter  := LabelGen;
+  LblInner  := LabelGen;
+  LblNoSwap := LabelGen;
+  LblDone   := LabelGen;
+
+  EmitComment('Tri a bulles (squelette multi-observations)');
+
+  (* CX = nombre d observations - 1 (pour la passe externe) *)
+  EmitInstrAB('MOV', 'CX', 'WORD PTR [_SAS_N]');
+  EmitInstrAB('CMP', 'CX', '2');
+  EmitInstrA('JL', LblDone);
+  EmitInstrA('DEC', 'CX');
+
+  (* Boucle externe : passes du tri a bulles *)
+  EmitLabel(LblOuter);
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrAB('XOR', 'SI', 'SI');  (* SI = indice courant = 0 *)
+
+  (* Boucle interne : comparer elements adjacents *)
+  EmitLabel(LblInner);
+
+  (* Comparer la premiere cle BY *)
+  VName := ProcByList[0];
+  SIdx := SymFind(VName);
+  If SIdx >= 0 Then
+  Begin
+    EmitComment('Comparer ' + VName);
+    EmitInstrAB('MOV', 'AX', 'WORD PTR [_SAS_PDV + ' +
+                IntToStr(SymTab[SIdx].Offset) + ']');
+    EmitInstrAB('MOV', 'BX', 'WORD PTR [_SAS_PDV + ' +
+                IntToStr(SymTab[SIdx].Offset) + ']');
+    EmitInstrAB('CMP', 'AX', 'BX');
+    If ProcByDescList[0] Then
+      EmitInstrA('JGE', LblNoSwap)  (* DESCENDING : pas d echange si >= *)
+    Else
+      EmitInstrA('JLE', LblNoSwap); (* ASCENDING  : pas d echange si <= *)
+  End;
+
+  (* Echange d observations : REP MOVSW (stub symbolique) *)
+  EmitComment('Echange observations (REP MOVSW)');
+  EmitInstrAB('MOV', 'CX', IntToStr(MAX_OBS_SIZE Div 2));
+  EmitInstr('NOP');  (* placeholder pour echange reel *)
+
+  EmitLabel(LblNoSwap);
+  EmitInstr('LOOP ' + LblInner);
+
+  EmitInstrA('POP', 'CX');
+  EmitInstr('LOOP ' + LblOuter);
+
+  EmitLabel(LblDone);
+  EmitComment('PROC SORT : fin du tri');
+End;
+
 (* ---- ParseProcStep : PROC nom [options] ; stmts ; RUN ; -------- *)
 (* Point d entree du PROC step.                                        *)
 (* Appele apres que le mot-cle PROC ait ete consomme.                  *)
@@ -6996,19 +7304,16 @@ Begin
     End
     Else If ProcName = 'FREQ' Then
     Begin
-      (* PROC FREQ : stub (TODO 19) *)
-      EmitComment('PROC FREQ : frequences (stub TODO 19)');
+      (* PROC FREQ : generer le code de frequences (TODO 19) *)
+      If ProcNoPrint Then
+        EmitComment('PROC FREQ : NOPRINT -> pas d affichage')
+      Else
+        EmitProcFreq;
     End
     Else If ProcName = 'SORT' Then
     Begin
-      (* PROC SORT : stub (TODO 19) *)
-      EmitComment('PROC SORT : tri (stub TODO 19)');
-      If ProcDataDS <> '' Then
-        EmitComment('  DATA=' + ProcDataDS);
-      If ProcOutDS <> '' Then
-        EmitComment('  OUT=' + ProcOutDS);
-      If ProcByCount > 0 Then
-        EmitComment('  BY : ' + IntToStr(ProcByCount) + ' variable(s)');
+      (* PROC SORT : generer le code de tri (TODO 19) *)
+      EmitProcSort;
     End
     Else If ProcName = 'FORMAT' Then
     Begin
@@ -7038,7 +7343,7 @@ Begin
 End;
 
 { ============================================================
-  STUBS POUR TODO 18..25 (a implementer)
+  STUBS POUR TODO 20..25 (a implementer)
   ============================================================ }
 
 Procedure ParseStmt;

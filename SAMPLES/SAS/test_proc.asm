@@ -261,18 +261,72 @@ _SASL_11:
 ; PROC option OUT=TEST1_SORTED
 ; BY
 ; PROC SORT : execution
-; PROC SORT : tri (stub TODO 19)
-;   DATA=TEST1
-;   OUT=TEST1_SORTED
-;   BY : 1 variable(s)
+; PROC SORT : tri du dataset
+; DATA=TEST1
+; OUT=TEST1_SORTED
+; BY X (ASCENDING)
+; Tri a bulles (squelette multi-observations)
+        MOV CX, WORD PTR [_SAS_N]
+        CMP CX, 2
+        JL _SASL_15
+        DEC CX
+_SASL_12:
+        PUSH CX
+        XOR SI, SI
+_SASL_13:
+; Comparer X
+        MOV AX, WORD PTR [_SAS_PDV + 0]
+        MOV BX, WORD PTR [_SAS_PDV + 0]
+        CMP AX, BX
+        JLE _SASL_14
+; Echange observations (REP MOVSW)
+        MOV CX, 256
+        NOP
+_SASL_14:
+        LOOP _SASL_13
+        POP CX
+        LOOP _SASL_12
+_SASL_15:
+; PROC SORT : fin du tri
 ; ========= FIN PROC SORT =========
 
 
 ; ========= PROC FREQ =========
 ; PROC option DATA=TEST1
-; TABLES (stub TODO 19)
+; TABLES
 ; PROC FREQ : execution
-; PROC FREQ : frequences (stub TODO 19)
+; PROC FREQ : tableaux de frequences
+; FREQ table: X
+        MOV AH, 40h
+        MOV BX, [_SAS_OUTHDL]
+        MOV CX, 19
+        LEA DX, _SASK_16
+        INT 21h
+        MOV AH, 40h
+        MOV BX, [_SAS_OUTHDL]
+        MOV CX, 2
+        LEA DX, _SAS_CRLF
+        INT 21h
+; FREQ X (num)
+        MOV AX, WORD PTR [_SAS_PDV + 0]
+        CALL _SASRT_PUTNUM
+        MOV AH, 02h
+        MOV DL, 20h
+        INT 21h
+; Frequency = 1
+        MOV AX, 1
+        CALL _SASRT_PUTNUM
+        MOV AH, 02h
+        MOV DL, 20h
+        INT 21h
+; Percent = 100
+        MOV AX, 100
+        CALL _SASRT_PUTNUM
+        MOV AH, 40h
+        MOV BX, [_SAS_OUTHDL]
+        MOV CX, 2
+        LEA DX, _SAS_CRLF
+        INT 21h
 ; ========= FIN PROC FREQ =========
 
 
@@ -301,7 +355,7 @@ _SASL_11:
         MOV AH, 40h
         MOV BX, [_SAS_OUTHDL]
         MOV CX, 22
-        LEA DX, _SASK_12
+        LEA DX, _SASK_17
         INT 21h
         MOV AH, 40h
         MOV BX, [_SAS_OUTHDL]
@@ -312,7 +366,7 @@ _SASL_11:
         MOV AH, 40h
         MOV BX, [_SAS_OUTHDL]
         MOV CX, 27
-        LEA DX, _SASK_13
+        LEA DX, _SASK_18
         INT 21h
         MOV AH, 40h
         MOV BX, [_SAS_OUTHDL]
@@ -323,11 +377,11 @@ _SASL_11:
         MOV AH, 40h
         MOV BX, [_SAS_OUTHDL]
         MOV CX, 1
-        LEA DX, _SASK_14
+        LEA DX, _SASK_19
         INT 21h
         MOV AX, WORD PTR [_SAS_PDV + 0]
         CMP AX, -32768
-        JE _SASL_15
+        JE _SASL_20
         PUSH AX
 ; N = 1
         MOV AH, 02h
@@ -365,7 +419,7 @@ _SASL_11:
         INT 21h
         CALL _SASRT_PUTNUM
         POP AX
-_SASL_15:
+_SASL_20:
         MOV AH, 40h
         MOV BX, [_SAS_OUTHDL]
         MOV CX, 2
@@ -374,7 +428,7 @@ _SASL_15:
         MOV AH, 40h
         MOV BX, [_SAS_OUTHDL]
         MOV CX, 21
-        LEA DX, _SASK_16
+        LEA DX, _SASK_21
         INT 21h
         MOV AH, 40h
         MOV BX, [_SAS_OUTHDL]
@@ -400,7 +454,7 @@ _SASL_15:
         MOV AH, 40h
         MOV BX, [_SAS_OUTHDL]
         MOV CX, 1
-        LEA DX, _SASK_17
+        LEA DX, _SASK_22
         INT 21h
         MOV AH, 40h
         MOV BX, [_SAS_OUTHDL]
@@ -430,7 +484,7 @@ _SASL_15:
         MOV AH, 40h
         MOV BX, [_SAS_OUTHDL]
         MOV CX, 22
-        LEA DX, _SASK_18
+        LEA DX, _SASK_23
         INT 21h
         MOV AH, 40h
         MOV BX, [_SAS_OUTHDL]
@@ -441,11 +495,11 @@ _SASL_15:
         MOV AH, 40h
         MOV BX, [_SAS_OUTHDL]
         MOV CX, 1
-        LEA DX, _SASK_19
+        LEA DX, _SASK_24
         INT 21h
         MOV AX, WORD PTR [_SAS_PDV + 0]
         CMP AX, -32768
-        JE _SASL_20
+        JE _SASL_25
         PUSH AX
 ; N = 1
         MOV AH, 02h
@@ -473,7 +527,7 @@ _SASL_15:
         MOV DL, 20h
         INT 21h
         CALL _SASRT_PUTNUM
-_SASL_20:
+_SASL_25:
         MOV AH, 40h
         MOV BX, [_SAS_OUTHDL]
         MOV CX, 2
@@ -483,11 +537,11 @@ _SASL_20:
         MOV AH, 40h
         MOV BX, [_SAS_OUTHDL]
         MOV CX, 1
-        LEA DX, _SASK_21
+        LEA DX, _SASK_26
         INT 21h
         MOV AX, WORD PTR [_SAS_PDV + 2]
         CMP AX, -32768
-        JE _SASL_22
+        JE _SASL_27
         PUSH AX
 ; N = 1
         MOV AH, 02h
@@ -515,7 +569,7 @@ _SASL_20:
         MOV DL, 20h
         INT 21h
         CALL _SASRT_PUTNUM
-_SASL_22:
+_SASL_27:
         MOV AH, 40h
         MOV BX, [_SAS_OUTHDL]
         MOV CX, 2
@@ -555,14 +609,15 @@ _SASK_6  DB  'X Y TOTAL',0
 _SASK_7  DB  'Variable N Mean Std Min Max',0
 _SASK_8  DB  'X',0
 _SASK_10  DB  'Y',0
-_SASK_12  DB  'Statistiques par genre',0
-_SASK_13  DB  'Variable N Mean Std Min Max',0
-_SASK_14  DB  'X',0
-_SASK_16  DB  'Source: test_proc.sas',0
-_SASK_17  DB  'X',0
-_SASK_18  DB  'Variable N Min Max Sum',0
+_SASK_16  DB  'X Frequency Percent',0
+_SASK_17  DB  'Statistiques par genre',0
+_SASK_18  DB  'Variable N Mean Std Min Max',0
 _SASK_19  DB  'X',0
-_SASK_21  DB  'Y',0
+_SASK_21  DB  'Source: test_proc.sas',0
+_SASK_22  DB  'X',0
+_SASK_23  DB  'Variable N Min Max Sum',0
+_SASK_24  DB  'X',0
+_SASK_26  DB  'Y',0
 
 _DATA ENDS
 
