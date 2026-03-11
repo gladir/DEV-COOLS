@@ -1,6 +1,6 @@
 ; CF86 v1.0 - 2026-03-06
 ; Compilateur ColdFusion -> assembleur 8086
-; Source: SAMPLES/CF/test_writeoutput.cfm
+; Source: /home/runner/work/DEV-COOLS/DEV-COOLS/SAMPLES/CF/test_writeoutput.cfm
 
 .MODEL SMALL
 .STACK 1024
@@ -1193,6 +1193,19 @@ _CFRT_SCAPPNUM:
         CALL   _CFRT_SCAPPEND
         RET
 
+_CFRT_PANIC:
+        MOV   SI, OFFSET _CFRT_PANIC_MSG
+        CALL   _CFRT_PRINT
+        MOV   SI, [_CF_EXCMSG]
+        OR   SI, SI
+        JZ   _CFRT_PANIC_END
+        CALL   _CFRT_PRINT
+_CFRT_PANIC_END:
+        MOV   SI, OFFSET _CF_CRLF
+        CALL   _CFRT_PRINT
+        MOV   AX, 4C01h
+        INT   21h
+
 _TEXT ENDS
 
 _DATA SEGMENT PUBLIC 'DATA'
@@ -1210,6 +1223,14 @@ _CF_LOOPSTP  DW  0
 _CF_STRBUF2  DB  256 DUP(0)
 _CF_SCBUF  DB  512 DUP(0)
 _CF_SCPOS  DW  0
+_CF_HANDLER  DW  0
+_CF_EXCTYPE  DW  0
+_CF_EXCMSG  DW  0
+_CF_EXCDETAIL  DW  0
+_CF_EXCOLDH  DW  0
+_CF_EXCNOMSG  DB  0
+_CFRT_PANIC_MSG  DB  'CF86 PANIC: ',0
+_CF_EXCRAISE  DW  0
 _CFK_1  DB  'Bonjour',0
 _CFV_greeting  DW  0
 

@@ -1,6 +1,6 @@
 ; CF86 v1.0 - 2026-03-06
 ; Compilateur ColdFusion -> assembleur 8086
-; Source: /home/runner/work/DEV-COOLS/DEV-COOLS/SAMPLES/CF/test_struct.cfm
+; Source: /home/runner/work/DEV-COOLS/DEV-COOLS/SAMPLES/CF/test_trycatch.cfm
 
 .MODEL SMALL
 .STACK 1024
@@ -15,143 +15,351 @@ _CFF_Main:
         MOV   AX, _DATA
         MOV   DS, AX
 
+; cftry: debut
+        MOV   AX, [_CF_HANDLER]
+        PUSH   AX
+        MOV   WORD PTR [_CF_HANDLER], OFFSET _CFL_CATCH_1
 ; ---- CFSET ----
-; StructNew()
-        MOV   SI, OFFSET _CFL_1
-        MOV   WORD PTR [SI], 0
-        MOV   AX, SI
-        MOV   [_CFV_mystruct], AX
-; ---- CFSET ----
-; cfset: appel fonction structinsert
-        MOV   AX, [_CFV_mystruct]
-        PUSH   AX
-        MOV   AX, OFFSET _CFK_2
-        PUSH   AX
-        MOV   AX, OFFSET _CFK_3
-        PUSH   AX
-        POP   AX
-        POP   DI
-        POP   SI
-        CALL   _CFRT_STINSERT
-; ---- CFSET ----
-; cfset: appel fonction structinsert
-        MOV   AX, [_CFV_mystruct]
-        PUSH   AX
-        MOV   AX, OFFSET _CFK_4
-        PUSH   AX
-        MOV   AX, 30
-        PUSH   AX
-        POP   AX
-        POP   DI
-        POP   SI
-        CALL   _CFRT_STINSERT
-; ---- CFSET ----
-; cfset: appel fonction structinsert
-        MOV   AX, [_CFV_mystruct]
-        PUSH   AX
-        MOV   AX, OFFSET _CFK_5
-        PUSH   AX
-        MOV   AX, OFFSET _CFK_6
-        PUSH   AX
-        POP   AX
-        POP   DI
-        POP   SI
-        CALL   _CFRT_STINSERT
-; cfoutput: texte brut
-        MOV   SI, OFFSET _CFK_7
-        CALL   _CFRT_PRINT
-; StructCount()
-        MOV   AX, [_CFV_mystruct]
-        PUSH   AX
-        POP   SI
-        CALL   _CFRT_STCOUNT
+        MOV   AX, 42
+        MOV   [_CFV_x], AX
+        MOV   AX, [_CFV_x]
 ; cfoutput: expr numerique
         CALL   _CFRT_PRINTNUM
+; cftry: fin corps try, saut vers finally
+        MOV   WORD PTR [_CF_EXCRAISE], 0
+        JMP   _CFL_FINALLY_2
+_CFL_CATCH_1:
+; cfcatch type=any (code=0)
+        MOV   WORD PTR [_CF_EXCRAISE], 0
+        MOV   AX, [_CF_EXCMSG]
+        MOV   [_CFV_cfcatch_message], AX
+        MOV   AX, [_CF_EXCDETAIL]
+        MOV   [_CFV_cfcatch_detail], AX
 ; cfoutput: texte brut
-        MOV   SI, OFFSET _CFK_8
+        MOV   SI, OFFSET _CFK_5
         CALL   _CFRT_PRINT
-; StructFind()
-        MOV   AX, [_CFV_mystruct]
+        JMP   _CFL_FINALLY_2
+_CFL_NEXTC_4:
+; cftry: exception non attrapee, marquer relance
+        MOV   WORD PTR [_CF_EXCRAISE], 1
+_CFL_FINALLY_2:
+; cftry: restaurer ancien handler
+        POP   AX
+        MOV   [_CF_HANDLER], AX
+        CMP   WORD PTR [_CF_EXCRAISE], 0
+        JE   _CFL_ENDTRY_3
+; cftry: relancer exception vers parent
+        MOV   WORD PTR [_CF_EXCRAISE], 0
+        MOV   AX, [_CF_HANDLER]
+        OR   AX, AX
+        JZ   _CFL_ENDTRY_3
+        JMP   AX
+_CFL_ENDTRY_3:
+; cftry: fin
+; cftry: debut
+        MOV   AX, [_CF_HANDLER]
         PUSH   AX
-        MOV   AX, OFFSET _CFK_2
-        PUSH   AX
-        POP   DI
-        POP   SI
-        CALL   _CFRT_STFIND
-; cfoutput: expr numerique
-        CALL   _CFRT_PRINTNUM
-; StructKeyExists()
-        MOV   AX, [_CFV_mystruct]
-        PUSH   AX
-        MOV   AX, OFFSET _CFK_4
-        PUSH   AX
-        POP   DI
-        POP   SI
-        CALL   _CFRT_STKEYEX
-; cfif: test condition
-        TEST   AX, AX
-        JZ   _CFL_ELSE_10
-; cfoutput: texte brut
-        MOV   SI, OFFSET _CFK_11
-        CALL   _CFRT_PRINT
-; StructFind()
-        MOV   AX, [_CFV_mystruct]
-        PUSH   AX
-        MOV   AX, OFFSET _CFK_4
-        PUSH   AX
-        POP   DI
-        POP   SI
-        CALL   _CFRT_STFIND
-; cfoutput: expr numerique
-        CALL   _CFRT_PRINTNUM
-_CFL_ELSE_10:
-_CFL_ENDIF_9:
-; cfoutput: texte brut
-        MOV   SI, OFFSET _CFK_12
-        CALL   _CFRT_PRINT
-; StructKeyList()
-        MOV   AX, [_CFV_mystruct]
-        PUSH   AX
-        POP   SI
-        CALL   _CFRT_STKEYLIST
+        MOV   WORD PTR [_CF_HANDLER], OFFSET _CFL_CATCH_6
+; cfthrow: type=application message=Erreur de test
+        MOV   WORD PTR [_CF_EXCTYPE], 1
+        MOV   WORD PTR [_CF_EXCMSG], OFFSET _CFK_9
+        MOV   WORD PTR [_CF_EXCDETAIL], OFFSET _CFK_10
+        MOV   AX, [_CF_HANDLER]
+        OR   AX, AX
+        JZ   _CFRT_PANIC
+        JMP   AX
+; cftry: fin corps try, saut vers finally
+        MOV   WORD PTR [_CF_EXCRAISE], 0
+        JMP   _CFL_FINALLY_7
+_CFL_CATCH_6:
+; cfcatch type=application (code=1)
+        CMP   WORD PTR [_CF_EXCTYPE], 1
+        JNE   _CFL_NEXTC_11
+        MOV   WORD PTR [_CF_EXCRAISE], 0
+        MOV   AX, [_CF_EXCMSG]
+        MOV   [_CFV_cfcatch_message], AX
+        MOV   AX, [_CF_EXCDETAIL]
+        MOV   [_CFV_cfcatch_detail], AX
+        MOV   AX, [_CFV_cfcatch_message]
 ; cfoutput: expr chaine
         MOV   SI, AX
         CALL   _CFRT_PRINT
+        JMP   _CFL_FINALLY_7
+_CFL_NEXTC_11:
+; cftry: exception non attrapee, marquer relance
+        MOV   WORD PTR [_CF_EXCRAISE], 1
+_CFL_FINALLY_7:
+; cftry: restaurer ancien handler
+        POP   AX
+        MOV   [_CF_HANDLER], AX
+        CMP   WORD PTR [_CF_EXCRAISE], 0
+        JE   _CFL_ENDTRY_8
+; cftry: relancer exception vers parent
+        MOV   WORD PTR [_CF_EXCRAISE], 0
+        MOV   AX, [_CF_HANDLER]
+        OR   AX, AX
+        JZ   _CFL_ENDTRY_8
+        JMP   AX
+_CFL_ENDTRY_8:
+; cftry: fin
+; cftry: debut
+        MOV   AX, [_CF_HANDLER]
+        PUSH   AX
+        MOV   WORD PTR [_CF_HANDLER], OFFSET _CFL_CATCH_12
 ; ---- CFSET ----
-; cfset: appel fonction structdelete
-        MOV   AX, [_CFV_mystruct]
-        PUSH   AX
-        MOV   AX, OFFSET _CFK_5
-        PUSH   AX
-        POP   DI
-        POP   SI
-        CALL   _CFRT_STDEL
+        MOV   AX, 10
+        MOV   [_CFV_y], AX
+; cftry: fin corps try, saut vers finally
+        MOV   WORD PTR [_CF_EXCRAISE], 0
+        JMP   _CFL_FINALLY_13
+_CFL_CATCH_12:
+; cfcatch type=any (code=0)
+        MOV   WORD PTR [_CF_EXCRAISE], 0
+        MOV   AX, [_CF_EXCMSG]
+        MOV   [_CFV_cfcatch_message], AX
+        MOV   AX, [_CF_EXCDETAIL]
+        MOV   [_CFV_cfcatch_detail], AX
 ; cfoutput: texte brut
-        MOV   SI, OFFSET _CFK_13
+        MOV   SI, OFFSET _CFK_16
         CALL   _CFRT_PRINT
-; StructCount()
-        MOV   AX, [_CFV_mystruct]
-        PUSH   AX
-        POP   SI
-        CALL   _CFRT_STCOUNT
-; cfoutput: expr numerique
-        CALL   _CFRT_PRINTNUM
-; ---- CFSET ----
-; cfset: appel fonction structclear
-        MOV   AX, [_CFV_mystruct]
-        PUSH   AX
-        POP   SI
-        CALL   _CFRT_STCLEAR
+        JMP   _CFL_FINALLY_13
+_CFL_NEXTC_15:
+; cftry: exception non attrapee, marquer relance
+        MOV   WORD PTR [_CF_EXCRAISE], 1
+_CFL_FINALLY_13:
+; cftry: restaurer ancien handler
+        POP   AX
+        MOV   [_CF_HANDLER], AX
+        CMP   WORD PTR [_CF_EXCRAISE], 0
+        JE   _CFL_ENDTRY_14
+; cftry: relancer exception vers parent
+        MOV   WORD PTR [_CF_EXCRAISE], 0
+        MOV   AX, [_CF_HANDLER]
+        OR   AX, AX
+        JZ   _CFL_ENDTRY_14
+        JMP   AX
+_CFL_ENDTRY_14:
+; cftry: fin
 ; cfoutput: texte brut
-        MOV   SI, OFFSET _CFK_14
+        MOV   SI, OFFSET _CFK_17
         CALL   _CFRT_PRINT
-; StructCount()
-        MOV   AX, [_CFV_mystruct]
+; cftry: debut
+        MOV   AX, [_CF_HANDLER]
         PUSH   AX
-        POP   SI
-        CALL   _CFRT_STCOUNT
-; cfoutput: expr numerique
-        CALL   _CFRT_PRINTNUM
+        MOV   WORD PTR [_CF_HANDLER], OFFSET _CFL_CATCH_18
+; cfthrow: type=database message=DB error
+        MOV   WORD PTR [_CF_EXCTYPE], 2
+        MOV   WORD PTR [_CF_EXCMSG], OFFSET _CFK_21
+        MOV   WORD PTR [_CF_EXCDETAIL], OFFSET _CF_EXCNOMSG
+        MOV   AX, [_CF_HANDLER]
+        OR   AX, AX
+        JZ   _CFRT_PANIC
+        JMP   AX
+; cftry: fin corps try, saut vers finally
+        MOV   WORD PTR [_CF_EXCRAISE], 0
+        JMP   _CFL_FINALLY_19
+_CFL_CATCH_18:
+; cfcatch type=database (code=2)
+        CMP   WORD PTR [_CF_EXCTYPE], 2
+        JNE   _CFL_NEXTC_22
+        MOV   WORD PTR [_CF_EXCRAISE], 0
+        MOV   AX, [_CF_EXCMSG]
+        MOV   [_CFV_cfcatch_message], AX
+        MOV   AX, [_CF_EXCDETAIL]
+        MOV   [_CFV_cfcatch_detail], AX
+; cfoutput: texte brut
+        MOV   SI, OFFSET _CFK_23
+        CALL   _CFRT_PRINT
+        JMP   _CFL_FINALLY_19
+_CFL_NEXTC_22:
+; cftry: exception non attrapee, marquer relance
+        MOV   WORD PTR [_CF_EXCRAISE], 1
+_CFL_FINALLY_19:
+; cftry: restaurer ancien handler
+        POP   AX
+        MOV   [_CF_HANDLER], AX
+        CMP   WORD PTR [_CF_EXCRAISE], 0
+        JE   _CFL_ENDTRY_20
+; cftry: relancer exception vers parent
+        MOV   WORD PTR [_CF_EXCRAISE], 0
+        MOV   AX, [_CF_HANDLER]
+        OR   AX, AX
+        JZ   _CFL_ENDTRY_20
+        JMP   AX
+_CFL_ENDTRY_20:
+; cftry: fin
+; cftry: debut
+        MOV   AX, [_CF_HANDLER]
+        PUSH   AX
+        MOV   WORD PTR [_CF_HANDLER], OFFSET _CFL_CATCH_24
+; cftry: debut
+        MOV   AX, [_CF_HANDLER]
+        PUSH   AX
+        MOV   WORD PTR [_CF_HANDLER], OFFSET _CFL_CATCH_27
+; cfthrow: type=application message=inner error
+        MOV   WORD PTR [_CF_EXCTYPE], 1
+        MOV   WORD PTR [_CF_EXCMSG], OFFSET _CFK_30
+        MOV   WORD PTR [_CF_EXCDETAIL], OFFSET _CF_EXCNOMSG
+        MOV   AX, [_CF_HANDLER]
+        OR   AX, AX
+        JZ   _CFRT_PANIC
+        JMP   AX
+; cftry: fin corps try, saut vers finally
+        MOV   WORD PTR [_CF_EXCRAISE], 0
+        JMP   _CFL_FINALLY_28
+_CFL_CATCH_27:
+; cfcatch type=application (code=1)
+        CMP   WORD PTR [_CF_EXCTYPE], 1
+        JNE   _CFL_NEXTC_31
+        MOV   WORD PTR [_CF_EXCRAISE], 0
+        MOV   AX, [_CF_EXCMSG]
+        MOV   [_CFV_cfcatch_message], AX
+        MOV   AX, [_CF_EXCDETAIL]
+        MOV   [_CFV_cfcatch_detail], AX
+; cfrethrow: relancer exception courante
+        MOV   AX, [_CF_HANDLER]
+        OR   AX, AX
+        JZ   _CFRT_PANIC
+        JMP   AX
+        JMP   _CFL_FINALLY_28
+_CFL_NEXTC_31:
+; cftry: exception non attrapee, marquer relance
+        MOV   WORD PTR [_CF_EXCRAISE], 1
+_CFL_FINALLY_28:
+; cftry: restaurer ancien handler
+        POP   AX
+        MOV   [_CF_HANDLER], AX
+        CMP   WORD PTR [_CF_EXCRAISE], 0
+        JE   _CFL_ENDTRY_29
+; cftry: relancer exception vers parent
+        MOV   WORD PTR [_CF_EXCRAISE], 0
+        MOV   AX, [_CF_HANDLER]
+        OR   AX, AX
+        JZ   _CFL_ENDTRY_29
+        JMP   AX
+_CFL_ENDTRY_29:
+; cftry: fin
+; cftry: fin corps try, saut vers finally
+        MOV   WORD PTR [_CF_EXCRAISE], 0
+        JMP   _CFL_FINALLY_25
+_CFL_CATCH_24:
+_CFL_FINALLY_25:
+; cftry: restaurer ancien handler
+        POP   AX
+        MOV   [_CF_HANDLER], AX
+        CMP   WORD PTR [_CF_EXCRAISE], 0
+        JE   _CFL_ENDTRY_26
+; cftry: relancer exception vers parent
+        MOV   WORD PTR [_CF_EXCRAISE], 0
+        MOV   AX, [_CF_HANDLER]
+        OR   AX, AX
+        JZ   _CFL_ENDTRY_26
+        JMP   AX
+_CFL_ENDTRY_26:
+; cftry: fin
+; cfoutput: texte brut
+        MOV   SI, OFFSET _CFK_32
+        CALL   _CFRT_PRINT
+; script try: debut
+        MOV   AX, [_CF_HANDLER]
+        PUSH   AX
+        MOV   WORD PTR [_CF_HANDLER], OFFSET _CFL_SCATCH_33
+; ---- VAR (local) ----
+        MOV   AX, 99
+        MOV   [_CFV_z], AX
+; script try: fin corps, saut vers finally
+        MOV   WORD PTR [_CF_EXCRAISE], 0
+        JMP   _CFL_SFNLY_34
+_CFL_SCATCH_33:
+; script catch type=any var=e
+        MOV   WORD PTR [_CF_EXCRAISE], 0
+        MOV   AX, [_CF_EXCMSG]
+        MOV   [_CFV_cfcatch_message], AX
+        MOV   AX, [_CF_EXCDETAIL]
+        MOV   [_CFV_cfcatch_detail], AX
+        MOV   AX, [_CF_EXCMSG]
+        MOV   [_CFV_e_message], AX
+        MOV   AX, [_CFV_e_message]
+; WriteOutput: chaine
+        MOV   SI, AX
+        CALL   _CFRT_PRINT
+        JMP   _CFL_SFNLY_34
+_CFL_SNEXTC_36:
+; script try: exception non attrapee, marquer relance
+        MOV   WORD PTR [_CF_EXCRAISE], 1
+_CFL_SFNLY_34:
+; script finally: debut
+        MOV   AX, OFFSET _CFK_37
+; WriteOutput: chaine
+        MOV   SI, AX
+        CALL   _CFRT_PRINT
+; script finally: fin
+; script try: restaurer ancien handler
+        POP   AX
+        MOV   [_CF_HANDLER], AX
+        CMP   WORD PTR [_CF_EXCRAISE], 0
+        JE   _CFL_SENDTRY_35
+; script try: relancer exception vers parent
+        MOV   WORD PTR [_CF_EXCRAISE], 0
+        MOV   AX, [_CF_HANDLER]
+        OR   AX, AX
+        JZ   _CFL_SENDTRY_35
+        JMP   AX
+_CFL_SENDTRY_35:
+; script try: fin
+; script try: debut
+        MOV   AX, [_CF_HANDLER]
+        PUSH   AX
+        MOV   WORD PTR [_CF_HANDLER], OFFSET _CFL_SCATCH_38
+; script throw
+; script throw: type=application msg=script error
+        MOV   WORD PTR [_CF_EXCTYPE], 1
+        MOV   WORD PTR [_CF_EXCMSG], OFFSET _CFK_41
+        MOV   WORD PTR [_CF_EXCDETAIL], OFFSET _CF_EXCNOMSG
+        MOV   AX, [_CF_HANDLER]
+        OR   AX, AX
+        JZ   _CFRT_PANIC
+        JMP   AX
+; script try: fin corps, saut vers finally
+        MOV   WORD PTR [_CF_EXCRAISE], 0
+        JMP   _CFL_SFNLY_39
+_CFL_SCATCH_38:
+; script catch type=application var=e
+        CMP   WORD PTR [_CF_EXCTYPE], 1
+        JNE   _CFL_SNEXTC_42
+        MOV   WORD PTR [_CF_EXCRAISE], 0
+        MOV   AX, [_CF_EXCMSG]
+        MOV   [_CFV_cfcatch_message], AX
+        MOV   AX, [_CF_EXCDETAIL]
+        MOV   [_CFV_cfcatch_detail], AX
+        MOV   AX, [_CF_EXCMSG]
+        MOV   [_CFV_e_message], AX
+        MOV   AX, OFFSET _CFK_43
+; WriteOutput: chaine
+        MOV   SI, AX
+        CALL   _CFRT_PRINT
+        MOV   AX, [_CFV_cfcatch_message]
+; WriteOutput: chaine
+        MOV   SI, AX
+        CALL   _CFRT_PRINT
+        JMP   _CFL_SFNLY_39
+_CFL_SNEXTC_42:
+; script try: exception non attrapee, marquer relance
+        MOV   WORD PTR [_CF_EXCRAISE], 1
+_CFL_SFNLY_39:
+; script try: restaurer ancien handler
+        POP   AX
+        MOV   [_CF_HANDLER], AX
+        CMP   WORD PTR [_CF_EXCRAISE], 0
+        JE   _CFL_SENDTRY_40
+; script try: relancer exception vers parent
+        MOV   WORD PTR [_CF_EXCRAISE], 0
+        MOV   AX, [_CF_HANDLER]
+        OR   AX, AX
+        JZ   _CFL_SENDTRY_40
+        JMP   AX
+_CFL_SENDTRY_40:
+; script try: fin
 
 ; --- Fin du code ---
         MOV   SP, BP
@@ -1358,19 +1566,25 @@ _CF_EXCOLDH  DW  0
 _CF_EXCNOMSG  DB  0
 _CFRT_PANIC_MSG  DB  'CF86 PANIC: ',0
 _CF_EXCRAISE  DW  0
-_CFL_1  DB  130 DUP(0)
-_CFV_mystruct  DW  0
-_CFK_2  DB  'nom',0
-_CFK_3  DB  'Alice',0
-_CFK_4  DB  'age',0
-_CFK_5  DB  'ville',0
-_CFK_6  DB  'Quebec',0
-_CFK_7  DB  'Nombre de cles: ',0
-_CFK_8  DB  'Nom: ',0
-_CFK_11  DB  'Age existe: ',0
-_CFK_12  DB  'Cles: ',0
-_CFK_13  DB  'Apres suppression: ',0
-_CFK_14  DB  'Apres clear: ',0
+_CFV_x  DW  0
+_CFV_cfcatch_message  DW  0
+_CFV_cfcatch_type  DW  0
+_CFV_cfcatch_detail  DW  0
+_CFK_5  DB  'Erreur attrapee',0
+_CFK_9  DB  'Erreur de test',0
+_CFK_10  DB  'detail test',0
+_CFV_y  DW  0
+_CFK_16  DB  'Erreur',0
+_CFK_17  DB  'Finally execute',0
+_CFK_21  DB  'DB error',0
+_CFK_23  DB  'DB catch',0
+_CFK_30  DB  'inner error',0
+_CFK_32  DB  'Rethrown',0
+_CFV_z  DW  0
+_CFV_e_message  DW  0
+_CFK_37  DB  'done',0
+_CFK_41  DB  'script error',0
+_CFK_43  DB  'caught: ',0
 
 _DATA ENDS
 

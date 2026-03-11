@@ -1,6 +1,6 @@
 ; CF86 v1.0 - 2026-03-06
 ; Compilateur ColdFusion -> assembleur 8086
-; Source: /home/runner/work/DEV-COOLS/DEV-COOLS/SAMPLES/CF/test_struct.cfm
+; Source: /home/runner/work/DEV-COOLS/DEV-COOLS/SAMPLES/CF/test_include_helper.cfm
 
 .MODEL SMALL
 .STACK 1024
@@ -16,142 +16,11 @@ _CFF_Main:
         MOV   DS, AX
 
 ; ---- CFSET ----
-; StructNew()
-        MOV   SI, OFFSET _CFL_1
-        MOV   WORD PTR [SI], 0
-        MOV   AX, SI
-        MOV   [_CFV_mystruct], AX
-; ---- CFSET ----
-; cfset: appel fonction structinsert
-        MOV   AX, [_CFV_mystruct]
-        PUSH   AX
-        MOV   AX, OFFSET _CFK_2
-        PUSH   AX
-        MOV   AX, OFFSET _CFK_3
-        PUSH   AX
-        POP   AX
-        POP   DI
-        POP   SI
-        CALL   _CFRT_STINSERT
-; ---- CFSET ----
-; cfset: appel fonction structinsert
-        MOV   AX, [_CFV_mystruct]
-        PUSH   AX
-        MOV   AX, OFFSET _CFK_4
-        PUSH   AX
-        MOV   AX, 30
-        PUSH   AX
-        POP   AX
-        POP   DI
-        POP   SI
-        CALL   _CFRT_STINSERT
-; ---- CFSET ----
-; cfset: appel fonction structinsert
-        MOV   AX, [_CFV_mystruct]
-        PUSH   AX
-        MOV   AX, OFFSET _CFK_5
-        PUSH   AX
-        MOV   AX, OFFSET _CFK_6
-        PUSH   AX
-        POP   AX
-        POP   DI
-        POP   SI
-        CALL   _CFRT_STINSERT
+        MOV   AX, 1
+        MOV   [_CFV_included], AX
 ; cfoutput: texte brut
-        MOV   SI, OFFSET _CFK_7
+        MOV   SI, OFFSET _CFK_1
         CALL   _CFRT_PRINT
-; StructCount()
-        MOV   AX, [_CFV_mystruct]
-        PUSH   AX
-        POP   SI
-        CALL   _CFRT_STCOUNT
-; cfoutput: expr numerique
-        CALL   _CFRT_PRINTNUM
-; cfoutput: texte brut
-        MOV   SI, OFFSET _CFK_8
-        CALL   _CFRT_PRINT
-; StructFind()
-        MOV   AX, [_CFV_mystruct]
-        PUSH   AX
-        MOV   AX, OFFSET _CFK_2
-        PUSH   AX
-        POP   DI
-        POP   SI
-        CALL   _CFRT_STFIND
-; cfoutput: expr numerique
-        CALL   _CFRT_PRINTNUM
-; StructKeyExists()
-        MOV   AX, [_CFV_mystruct]
-        PUSH   AX
-        MOV   AX, OFFSET _CFK_4
-        PUSH   AX
-        POP   DI
-        POP   SI
-        CALL   _CFRT_STKEYEX
-; cfif: test condition
-        TEST   AX, AX
-        JZ   _CFL_ELSE_10
-; cfoutput: texte brut
-        MOV   SI, OFFSET _CFK_11
-        CALL   _CFRT_PRINT
-; StructFind()
-        MOV   AX, [_CFV_mystruct]
-        PUSH   AX
-        MOV   AX, OFFSET _CFK_4
-        PUSH   AX
-        POP   DI
-        POP   SI
-        CALL   _CFRT_STFIND
-; cfoutput: expr numerique
-        CALL   _CFRT_PRINTNUM
-_CFL_ELSE_10:
-_CFL_ENDIF_9:
-; cfoutput: texte brut
-        MOV   SI, OFFSET _CFK_12
-        CALL   _CFRT_PRINT
-; StructKeyList()
-        MOV   AX, [_CFV_mystruct]
-        PUSH   AX
-        POP   SI
-        CALL   _CFRT_STKEYLIST
-; cfoutput: expr chaine
-        MOV   SI, AX
-        CALL   _CFRT_PRINT
-; ---- CFSET ----
-; cfset: appel fonction structdelete
-        MOV   AX, [_CFV_mystruct]
-        PUSH   AX
-        MOV   AX, OFFSET _CFK_5
-        PUSH   AX
-        POP   DI
-        POP   SI
-        CALL   _CFRT_STDEL
-; cfoutput: texte brut
-        MOV   SI, OFFSET _CFK_13
-        CALL   _CFRT_PRINT
-; StructCount()
-        MOV   AX, [_CFV_mystruct]
-        PUSH   AX
-        POP   SI
-        CALL   _CFRT_STCOUNT
-; cfoutput: expr numerique
-        CALL   _CFRT_PRINTNUM
-; ---- CFSET ----
-; cfset: appel fonction structclear
-        MOV   AX, [_CFV_mystruct]
-        PUSH   AX
-        POP   SI
-        CALL   _CFRT_STCLEAR
-; cfoutput: texte brut
-        MOV   SI, OFFSET _CFK_14
-        CALL   _CFRT_PRINT
-; StructCount()
-        MOV   AX, [_CFV_mystruct]
-        PUSH   AX
-        POP   SI
-        CALL   _CFRT_STCOUNT
-; cfoutput: expr numerique
-        CALL   _CFRT_PRINTNUM
 
 ; --- Fin du code ---
         MOV   SP, BP
@@ -1358,19 +1227,8 @@ _CF_EXCOLDH  DW  0
 _CF_EXCNOMSG  DB  0
 _CFRT_PANIC_MSG  DB  'CF86 PANIC: ',0
 _CF_EXCRAISE  DW  0
-_CFL_1  DB  130 DUP(0)
-_CFV_mystruct  DW  0
-_CFK_2  DB  'nom',0
-_CFK_3  DB  'Alice',0
-_CFK_4  DB  'age',0
-_CFK_5  DB  'ville',0
-_CFK_6  DB  'Quebec',0
-_CFK_7  DB  'Nombre de cles: ',0
-_CFK_8  DB  'Nom: ',0
-_CFK_11  DB  'Age existe: ',0
-_CFK_12  DB  'Cles: ',0
-_CFK_13  DB  'Apres suppression: ',0
-_CFK_14  DB  'Apres clear: ',0
+_CFV_included  DW  0
+_CFK_1  DB  'Included!',0
 
 _DATA ENDS
 
