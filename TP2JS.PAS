@@ -283,7 +283,7 @@
              Directives : FAR, NEAR, INLINE, ASSEMBLER, EXTERNAL
                -> ignorer ou avertissement (non pertinent en JS)
 
-   TODO 16 - TYPES STRUCTURES : ARRAY / RECORD / SET / STRING
+   TODO 16 - TYPES STRUCTURES : ARRAY / RECORD / SET / STRING [IMPLEMENTE]
              ARRAY[lo..hi] OF T :
                -> new Array(hi - lo + 1) en JS, indexation ajustee
                Multidimensionnel : ARRAY[a..b, c..d] OF T -> tableaux imbriques
@@ -1986,6 +1986,19 @@ Begin
     End;
   End;
   ConstFind := -1;
+End;
+
+{ ---- ConstFindIntVal : trouver la valeur entiere d une constante }
+{ Retourne la valeur entiere de la constante ou le defaut.         }
+Function ConstFindIntVal(Const AName : TString; Def : LongInt) : LongInt;
+Var
+  Idx : Integer;
+Begin
+  Idx := ConstFind(AName);
+  If Idx >= 0 Then
+    ConstFindIntVal := ConstTab[Idx].IntVal
+  Else
+    ConstFindIntVal := Def;
 End;
 
 { ---- ConstRegisterBuiltins : constantes predefinies --------- }
@@ -4573,7 +4586,12 @@ Begin
         Begin
           TypeName := TokenPool[P].Val;
           TIdx := TypeFindByName(TypeName);
-          DefVal := TypeDefaultJS(TIdx);
+          If (TIdx >= 0) And
+             ((TypeTab[TIdx].Kind = TYK_RECORD) Or
+              (TypeTab[TIdx].Kind = TYK_ARRAY)) Then
+            DefVal := '_TPT_' + TypeTab[TIdx].Name + '()'
+          Else
+            DefVal := TypeDefaultJS(TIdx);
           Inc(P);
         End;
       End;
@@ -4593,13 +4611,397 @@ Begin
   End;
 End;
 
+{ ============================================================
+  TODO 16 - TYPES STRUCTURES : ARRAY / RECORD / SET / STRING
+            [IMPLEMENTE]
+  ============================================================ }
+{ Types structures Turbo Pascal -> JavaScript.                   }
+{ ARRAY[lo..hi] OF T -> fonction constructeur retournant Array   }
+{ RECORD champ1: T1; ... END -> fonction constructeur retournant }
+{ un objet litteral JS avec les champs et valeurs par defaut     }
+{ SET OF T -> new Set() en JS                                    }
+{ STRING[N] -> alias string en JS                                }
+{ Type alias (T = ExistingType) -> lien vers le type de base     }
+
+{ ---- ParseTypeArray : parser ARRAY[lo..hi] OF T -----------  }
+{ P pointe sur le token suivant ARRAY.                           }
+{ Retourne l index du type cree dans TypeTab.                    }
+Function ParseTypeArray(Var P : Integer; Const TName : TString) : Integer;
+Var
+  TIdx      : Integer;
+  LoVal     : LongInt;
+  HiVal     : LongInt;
+  ElemType  : TString;
+  ElemTIdx  : Integer;
+  ElemDef   : TString;
+  ArrSize   : Integer;
+  JSBody    : TString;
+Begin
+  LoVal := 0;
+  HiVal := -1;
+  ElemType := '';
+  ElemTIdx := -1;
+
+  { Parser [lo..hi] }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = '[') Then
+  Begin
+    Inc(P); { consommer [ }
+    { Lire la borne inferieure }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_INTEGER) Then
+    Begin
+      LoVal := TokenPool[P].IntVal;
+      Inc(P);
+    End
+    Else If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+    Begin
+      { Borne constante (ex: 1..MAX) }
+      LoVal := ConstFindIntVal(TokenPool[P].Val, 0);
+      Inc(P);
+    End;
+    { Sauter .. }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '..') Then
+      Inc(P);
+    { Lire la borne superieure }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_INTEGER) Then
+    Begin
+      HiVal := TokenPool[P].IntVal;
+      Inc(P);
+    End
+    Else If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+    Begin
+      HiVal := ConstFindIntVal(TokenPool[P].Val, 0);
+      Inc(P);
+    End;
+    { Gerer les dimensions multiples (virgule) - sauter les extras }
+    While (P < TokenCount) And
+          Not ((TokenPool[P].Kind = TK_PUNCT) And
+               (TokenPool[P].Val = ']')) Do
+      Inc(P);
+    If (P < TokenCount) And (TokenPool[P].Val = ']') Then
+      Inc(P); { consommer ] }
+  End;
+
+  { Consommer OF }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'of') Then
+    Inc(P);
+
+  { Lire le type des elements }
+  If (P < TokenCount) And
+     ((TokenPool[P].Kind = TK_IDENT) Or
+      (TokenPool[P].Kind = TK_KEYWORD)) Then
+  Begin
+    ElemType := TokenPool[P].Val;
+    ElemTIdx := TypeFindByName(ElemType);
+    Inc(P);
+  End;
+
+  { Calculer la taille et la valeur par defaut }
+  ArrSize := 0;
+  If HiVal >= LoVal Then
+    ArrSize := HiVal - LoVal + 1;
+  ElemDef := TypeDefaultJS(ElemTIdx);
+  If ElemDef = '' Then ElemDef := '0';
+
+  { Creer le type dans la table }
+  JSBody := 'new Array(' + IntToStr_(ArrSize) + ').fill(' + ElemDef + ')';
+  TIdx := TypeAdd(TYK_ARRAY, TName, ArrSize * 2, 'Array', JSBody);
+  If TIdx >= 0 Then
+  Begin
+    TypeTab[TIdx].Low := LoVal;
+    TypeTab[TIdx].High := HiVal;
+    TypeTab[TIdx].BaseTypeIdx := ElemTIdx;
+    TypeTab[TIdx].ElemCount := ArrSize;
+  End;
+
+  { Emettre la fonction constructeur JS }
+  EmitLine('function _TPT_' + TName + '() {');
+  IndentPush;
+  EmitLine('return ' + JSBody + ';');
+  IndentPop;
+  EmitLine('}');
+
+  ParseTypeArray := TIdx;
+End;
+
+{ ---- ParseTypeRecord : parser RECORD ... END --------------- }
+{ P pointe sur le token suivant RECORD.                          }
+{ Retourne l index du type cree dans TypeTab.                    }
+Function ParseTypeRecord(Var P : Integer; Const TName : TString) : Integer;
+Var
+  TIdx      : Integer;
+  FNames    : Array[0..MAX_FIELD - 1] Of TString;
+  FTypes    : Array[0..MAX_FIELD - 1] Of Integer;
+  FCount    : Integer;
+  FName     : TString;
+  FTypeName : TString;
+  FTIdx     : Integer;
+  Depth     : Integer;
+  I         : Integer;
+  JSFields  : TString;
+  L         : TString;
+Begin
+  FCount := 0;
+  Depth := 1;
+
+  { Parser les champs du record }
+  While (P < TokenCount) And (Depth > 0) Do
+  Begin
+    { Verifier end }
+    If (TokenPool[P].Kind = TK_KEYWORD) And
+       (StrLowerCase(TokenPool[P].Val) = 'end') Then
+    Begin
+      Dec(Depth);
+      Inc(P);
+      Continue;
+    End;
+    { Verifier record/object imbrique }
+    If (TokenPool[P].Kind = TK_KEYWORD) And
+       ((StrLowerCase(TokenPool[P].Val) = 'record') Or
+        (StrLowerCase(TokenPool[P].Val) = 'object')) Then
+    Begin
+      Inc(Depth);
+      Inc(P);
+      Continue;
+    End;
+    { Sauter CASE (variantes de record) }
+    If (TokenPool[P].Kind = TK_KEYWORD) And
+       (StrLowerCase(TokenPool[P].Val) = 'case') Then
+    Begin
+      { Sauter la partie variante jusqu au end }
+      While (P < TokenCount) And (Depth > 0) Do
+      Begin
+        If (TokenPool[P].Kind = TK_KEYWORD) And
+           (StrLowerCase(TokenPool[P].Val) = 'end') Then
+          Dec(Depth);
+        Inc(P);
+      End;
+      Continue;
+    End;
+
+    { Collecter les noms de champs (nom1, nom2 : Type) }
+    If (TokenPool[P].Kind = TK_IDENT) And (Depth = 1) Then
+    Begin
+      { Verifier que c est bien un champ (suivi de , ou :) }
+      If (P + 1 < TokenCount) And
+         ((TokenPool[P + 1].Val = ',') Or (TokenPool[P + 1].Val = ':')) Then
+      Begin
+        { Collecter les noms separes par des virgules }
+        While (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Do
+        Begin
+          If FCount < MAX_FIELD Then
+          Begin
+            FNames[FCount] := TokenPool[P].Val;
+            FTypes[FCount] := -1;
+            Inc(FCount);
+          End;
+          Inc(P);
+          If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+             (TokenPool[P].Val = ',') Then
+            Inc(P)
+          Else
+            Break;
+        End;
+
+        { Attendre : Type }
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+           (TokenPool[P].Val = ':') Then
+        Begin
+          Inc(P); { consommer : }
+          FTIdx := -1;
+          If (P < TokenCount) Then
+          Begin
+            L := StrLowerCase(TokenPool[P].Val);
+            { Array inline }
+            If (TokenPool[P].Kind = TK_KEYWORD) And (L = 'array') Then
+            Begin
+              FTIdx := TypeFindByName('Integer');
+              Inc(P);
+              { Sauter [lo..hi] }
+              If (P < TokenCount) And (TokenPool[P].Val = '[') Then
+              Begin
+                While (P < TokenCount) And
+                      Not ((TokenPool[P].Kind = TK_PUNCT) And
+                           (TokenPool[P].Val = ']')) Do
+                  Inc(P);
+                If P < TokenCount Then Inc(P);
+              End;
+              { Sauter OF type }
+              If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+                 (StrLowerCase(TokenPool[P].Val) = 'of') Then
+                Inc(P);
+              If (P < TokenCount) And
+                 ((TokenPool[P].Kind = TK_IDENT) Or
+                  (TokenPool[P].Kind = TK_KEYWORD)) Then
+                Inc(P);
+            End
+            { String[N] }
+            Else If (TokenPool[P].Kind = TK_KEYWORD) And (L = 'string') Then
+            Begin
+              FTIdx := TypeFindByName('String');
+              Inc(P);
+              If (P < TokenCount) And (TokenPool[P].Val = '[') Then
+              Begin
+                While (P < TokenCount) And
+                      Not ((TokenPool[P].Val = ']')) Do
+                  Inc(P);
+                If P < TokenCount Then Inc(P);
+              End;
+            End
+            { Type simple }
+            Else If (TokenPool[P].Kind = TK_IDENT) Or
+                    (TokenPool[P].Kind = TK_KEYWORD) Then
+            Begin
+              FTypeName := TokenPool[P].Val;
+              FTIdx := TypeFindByName(FTypeName);
+              Inc(P);
+            End;
+          End;
+          { Mettre a jour les champs collectes }
+          For I := FCount - 1 DownTo 0 Do
+          Begin
+            If FTypes[I] = -1 Then
+              FTypes[I] := FTIdx;
+          End;
+        End;
+
+        { Consommer ; }
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+           (TokenPool[P].Val = ';') Then
+          Inc(P);
+      End
+      Else
+        Inc(P);
+    End
+    Else
+      Inc(P);
+  End;
+
+  { Creer le type dans la table }
+  TIdx := TypeAdd(TYK_RECORD, TName, FCount * 2, 'object', '{}');
+  If TIdx >= 0 Then
+  Begin
+    For I := 0 To FCount - 1 Do
+      TypeAddField(TIdx, FNames[I], FTypes[I]);
+  End;
+
+  { Construire la valeur par defaut JS }
+  JSFields := '';
+  For I := 0 To FCount - 1 Do
+  Begin
+    If I > 0 Then JSFields := JSFields + ', ';
+    JSFields := JSFields + FNames[I] + ': ' + TypeDefaultJS(FTypes[I]);
+  End;
+
+  { Mettre a jour le JSDefault du type }
+  If TIdx >= 0 Then
+    TypeTab[TIdx].JSDefault := '{' + JSFields + '}';
+
+  { Emettre la fonction constructeur JS }
+  EmitLine('function _TPT_' + TName + '() {');
+  IndentPush;
+  EmitLine('return {' + JSFields + '};');
+  IndentPop;
+  EmitLine('}');
+
+  ParseTypeRecord := TIdx;
+End;
+
+{ ---- ParseTypeSet : parser SET OF T ------------------------ }
+{ P pointe sur le token suivant SET.                             }
+{ Retourne l index du type cree dans TypeTab.                    }
+Function ParseTypeSet(Var P : Integer; Const TName : TString) : Integer;
+Var
+  TIdx     : Integer;
+  ElemType : TString;
+  ElemTIdx : Integer;
+Begin
+  ElemType := '';
+  ElemTIdx := -1;
+
+  { Consommer OF }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'of') Then
+    Inc(P);
+
+  { Lire le type des elements }
+  If (P < TokenCount) And
+     ((TokenPool[P].Kind = TK_IDENT) Or
+      (TokenPool[P].Kind = TK_KEYWORD)) Then
+  Begin
+    ElemType := TokenPool[P].Val;
+    ElemTIdx := TypeFindByName(ElemType);
+    Inc(P);
+    { Gerer sous-intervalle inline : lo..hi }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '..') Then
+    Begin
+      Inc(P);
+      If P < TokenCount Then Inc(P);
+    End;
+  End;
+
+  { Creer le type dans la table }
+  TIdx := TypeAdd(TYK_SET, TName, 32, 'Set', 'new Set()');
+  If TIdx >= 0 Then
+    TypeTab[TIdx].BaseTypeIdx := ElemTIdx;
+
+  { Emettre un commentaire JS }
+  EmitComment('type ' + TName + ' = Set of ' + ElemType);
+
+  ParseTypeSet := TIdx;
+End;
+
+{ ---- ParseTypeString : parser STRING[N] -------------------- }
+{ P pointe sur le token suivant STRING.                          }
+{ Retourne l index du type cree dans TypeTab.                    }
+Function ParseTypeString(Var P : Integer; Const TName : TString) : Integer;
+Var
+  TIdx   : Integer;
+  MaxLen : Integer;
+Begin
+  MaxLen := 255;
+
+  { Parser [N] optionnel }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = '[') Then
+  Begin
+    Inc(P); { consommer [ }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_INTEGER) Then
+    Begin
+      MaxLen := TokenPool[P].IntVal;
+      Inc(P);
+    End
+    Else If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+    Begin
+      MaxLen := ConstFindIntVal(TokenPool[P].Val, 255);
+      Inc(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ']') Then
+      Inc(P); { consommer ] }
+  End;
+
+  { Creer le type dans la table }
+  TIdx := TypeAdd(TYK_STRING, TName, MaxLen + 1, 'string', '""');
+
+  { Emettre un commentaire JS }
+  EmitComment('type ' + TName + ' = String[' + IntToStr_(MaxLen) + ']');
+
+  ParseTypeString := TIdx;
+End;
+
 { ---- ParseTypeSection : parser une section TYPE ------------- }
 { TYPE nom = definition;                                         }
-{ Emet un commentaire JS pour chaque type declare.               }
+{ Genere du code JS pour les types structures (TODO 16).         }
 Procedure ParseTypeSection(Var P : Integer);
 Var
-  TName : TString;
-  Depth : Integer;
+  TName    : TString;
+  L        : TString;
+  TIdx     : Integer;
+  Depth    : Integer;
+  BaseTIdx : Integer;
 Begin
   If P >= TokenCount Then Exit;
   If (TokenPool[P].Kind <> TK_KEYWORD) Or
@@ -4611,13 +5013,10 @@ Begin
     { Verifier si on est sur un autre mot-cle de section ou BEGIN }
     If TokenPool[P].Kind = TK_KEYWORD Then
     Begin
-      If (StrLowerCase(TokenPool[P].Val) = 'const') Or
-         (StrLowerCase(TokenPool[P].Val) = 'var') Or
-         (StrLowerCase(TokenPool[P].Val) = 'type') Or
-         (StrLowerCase(TokenPool[P].Val) = 'label') Or
-         (StrLowerCase(TokenPool[P].Val) = 'begin') Or
-         (StrLowerCase(TokenPool[P].Val) = 'procedure') Or
-         (StrLowerCase(TokenPool[P].Val) = 'function') Then
+      L := StrLowerCase(TokenPool[P].Val);
+      If (L = 'const') Or (L = 'var') Or (L = 'type') Or
+         (L = 'label') Or (L = 'begin') Or
+         (L = 'procedure') Or (L = 'function') Then
         Exit;
     End;
 
@@ -4635,32 +5034,110 @@ Begin
     If (P < TokenCount) And (TokenPool[P].Kind = TK_OP) And
        (TokenPool[P].Val = '=') Then
     Begin
-      Inc(P);
-      EmitComment('type ' + TName + ' = ...');
-      { Enregistrer dans la table des symboles }
-      SymAdd(TName, SK_TYPE, -1);
-      { Sauter la definition du type jusqu au ; }
-      Depth := 0;
-      While P < TokenCount Do
+      Inc(P); { consommer = }
+
+      If P >= TokenCount Then Continue;
+      L := StrLowerCase(TokenPool[P].Val);
+
+      { ARRAY[lo..hi] OF T }
+      If (TokenPool[P].Kind = TK_KEYWORD) And (L = 'array') Then
       Begin
-        If (TokenPool[P].Kind = TK_KEYWORD) And
-           ((StrLowerCase(TokenPool[P].Val) = 'record') Or
-            (StrLowerCase(TokenPool[P].Val) = 'object')) Then
-          Inc(Depth)
-        Else If (TokenPool[P].Kind = TK_KEYWORD) And
-                (StrLowerCase(TokenPool[P].Val) = 'end') Then
+        Inc(P); { consommer ARRAY }
+        TIdx := ParseTypeArray(P, TName);
+        SymAdd(TName, SK_TYPE, TIdx);
+      End
+      { RECORD ... END }
+      Else If (TokenPool[P].Kind = TK_KEYWORD) And (L = 'record') Then
+      Begin
+        Inc(P); { consommer RECORD }
+        TIdx := ParseTypeRecord(P, TName);
+        SymAdd(TName, SK_TYPE, TIdx);
+      End
+      { SET OF T }
+      Else If (TokenPool[P].Kind = TK_KEYWORD) And (L = 'set') Then
+      Begin
+        Inc(P); { consommer SET }
+        TIdx := ParseTypeSet(P, TName);
+        SymAdd(TName, SK_TYPE, TIdx);
+      End
+      { STRING[N] }
+      Else If (TokenPool[P].Kind = TK_KEYWORD) And (L = 'string') Then
+      Begin
+        Inc(P); { consommer STRING }
+        TIdx := ParseTypeString(P, TName);
+        SymAdd(TName, SK_TYPE, TIdx);
+      End
+      { ^BaseType (pointeur) }
+      Else If (TokenPool[P].Kind = TK_OP) And (TokenPool[P].Val = '^') Then
+      Begin
+        Inc(P); { consommer ^ }
+        If (P < TokenCount) And
+           ((TokenPool[P].Kind = TK_IDENT) Or
+            (TokenPool[P].Kind = TK_KEYWORD)) Then
         Begin
-          If Depth > 0 Then
-            Dec(Depth);
-        End;
-        If (Depth = 0) And (TokenPool[P].Kind = TK_PUNCT) And
-           (TokenPool[P].Val = ';') Then
-        Begin
+          BaseTIdx := TypeFindByName(TokenPool[P].Val);
           Inc(P);
-          Break;
-        End;
+        End
+        Else
+          BaseTIdx := -1;
+        TIdx := TypeAdd(TYK_POINTER, TName, 4, 'object', 'null');
+        If TIdx >= 0 Then
+          TypeTab[TIdx].BaseTypeIdx := BaseTIdx;
+        SymAdd(TName, SK_TYPE, TIdx);
+        EmitComment('type ' + TName + ' = ^...');
+      End
+      { Alias de type simple : T = ExistingType }
+      Else If (TokenPool[P].Kind = TK_IDENT) Or
+              (TokenPool[P].Kind = TK_KEYWORD) Then
+      Begin
+        BaseTIdx := TypeFindByName(TokenPool[P].Val);
         Inc(P);
+        If BaseTIdx >= 0 Then
+        Begin
+          TIdx := TypeAdd(TypeTab[BaseTIdx].Kind, TName,
+                         TypeTab[BaseTIdx].Size,
+                         TypeTab[BaseTIdx].JSType,
+                         TypeTab[BaseTIdx].JSDefault);
+          SymAdd(TName, SK_TYPE, TIdx);
+          EmitComment('type ' + TName + ' = ' +
+                      TypeTab[BaseTIdx].Name);
+        End
+        Else
+        Begin
+          { Type inconnu, enregistrer comme alias generique }
+          TIdx := TypeAdd(TYK_INTEGER, TName, 2, 'any', 'null');
+          SymAdd(TName, SK_TYPE, TIdx);
+          EmitComment('type ' + TName + ' = ...');
+        End;
+      End
+      Else
+      Begin
+        { Definition non reconnue : sauter jusqu au ; }
+        SymAdd(TName, SK_TYPE, -1);
+        EmitComment('type ' + TName + ' = ...');
+        Depth := 0;
+        While P < TokenCount Do
+        Begin
+          If (TokenPool[P].Kind = TK_KEYWORD) And
+             ((StrLowerCase(TokenPool[P].Val) = 'record') Or
+              (StrLowerCase(TokenPool[P].Val) = 'object')) Then
+            Inc(Depth)
+          Else If (TokenPool[P].Kind = TK_KEYWORD) And
+                  (StrLowerCase(TokenPool[P].Val) = 'end') Then
+          Begin
+            If Depth > 0 Then Dec(Depth);
+          End;
+          If (Depth = 0) And (TokenPool[P].Kind = TK_PUNCT) And
+             (TokenPool[P].Val = ';') Then
+            Break;
+          Inc(P);
+        End;
       End;
+
+      { Consommer ; final }
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ';') Then
+        Inc(P);
     End
     Else
     Begin
