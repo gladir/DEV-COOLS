@@ -358,7 +358,7 @@
             Destructeurs : appel automatique lors du deroulement de pile
               (stub simplifie)
 
-  TODO 24 - ESPACES DE NOMS (namespace)
+  TODO 24 - ESPACES DE NOMS (namespace) [IMPLEMENTE]
             namespace Nom { declarations }
             using namespace Nom : rendre tous les symboles de Nom visibles
             using Nom::symbole : importation selective
@@ -429,6 +429,9 @@ Const
   MAX_TMPL_INST  = {$IFDEF FPC}64{$ELSE}16{$ENDIF};   (* TODO 22 *)
   MAX_CATCH     = 8;      (* max catch clauses per try      TODO 23 *)
   MAX_TRY_NEST  = 8;      (* max nested try depth            TODO 23 *)
+  MAX_NAMESPACE = {$IFDEF FPC}32{$ELSE}8{$ENDIF};  (* TODO 24 *)
+  MAX_NS_SYM    = {$IFDEF FPC}128{$ELSE}32{$ENDIF}; (* syms par namespace TODO 24 *)
+  MAX_NS_USING  = {$IFDEF FPC}16{$ELSE}4{$ENDIF};  (* using namespace actifs TODO 24 *)
   MAX_MACRO     = {$IFDEF FPC}256{$ELSE}32{$ENDIF};
   MAX_DEFINE    = {$IFDEF FPC}256{$ELSE}32{$ENDIF};
   MAX_COND      = 16;     (* profondeur max #ifdef/#ifndef imbriques  *)
@@ -681,6 +684,20 @@ Type
     IsClass  : Boolean;    (* true = classe, false = fonction         *)
   End;
 
+  (* TODO 24 - Espaces de noms *)
+  TNsSymEntry = Record
+    OrigName   : TString;  (* nom original du symbole dans le NS    *)
+    SymIdx     : Integer;  (* index dans SymTab global               *)
+  End;
+
+  TNamespaceInfo = Record
+    Name        : TString;   (* nom du namespace, '' = anonyme         *)
+    IsAnonymous : Boolean;
+    SymCount    : Integer;   (* nombre de symboles dans ce NS          *)
+    Syms        : Array[0..MAX_NS_SYM-1] Of TNsSymEntry;
+    MangledPfx  : TString;   (* prefixe mangling _CC_NS_Nom_           *)
+  End;
+
 (* ============================================================
   VARIABLES GLOBALES
   ============================================================ *)
@@ -776,6 +793,13 @@ Var
   (* TODO 23 - Exceptions *)
   ExcTryNest   : Integer;   (* profondeur d imbrication try courante *)
   ExcCatchSeq  : Integer;   (* sequence pour labels catch *)
+
+  (* TODO 24 - Espaces de noms *)
+  NsTab        : Array[0..MAX_NAMESPACE-1] Of TNamespaceInfo;
+  NsCount      : Integer;
+  CurNsIdx     : Integer;   (* -1 = portee globale, >=0 = dans un namespace *)
+  NsUsingTab   : Array[0..MAX_NS_USING-1] Of Integer; (* indices dans NsTab *)
+  NsUsingCount : Integer;
 
 (* ============================================================
   FORWARD DECLARATIONS
@@ -928,6 +952,17 @@ Function  TemplMakeLabel(Const Name, TypeArg : TString) : TString; Forward;
 Procedure ParseTryStmt; Forward;
 Procedure ParseThrowStmt; Forward;
 Procedure EmitExceptionRuntime; Forward;
+(* TODO 24 - Espaces de noms *)
+Function  NsFind(Const Name : TString) : Integer; Forward;
+Function  NsAddOrFind(Const Name : TString; IsAnon : Boolean) : Integer; Forward;
+Procedure NsRegisterSym(NIdx : Integer; Const OrigName : TString; SIdx : Integer); Forward;
+Function  NsFindSym(NIdx : Integer; Const SymName : TString) : Integer; Forward;
+Function  NsUsingActive(NIdx : Integer) : Boolean; Forward;
+Procedure NsUsingAdd(NIdx : Integer); Forward;
+Function  NsResolveName(Const NsName, SymName : TString) : Integer; Forward;
+Function  NsFindSymInUsing(Const SymName : TString) : Integer; Forward;
+Procedure ParseNamespaceDecl; Forward;
+Procedure ParseUsingDirective; Forward;
 (* Parseur principal *)
 Procedure ParserAdvance; Forward;
 Procedure ParseStmt; Forward;
@@ -1226,6 +1261,9 @@ Begin
   InTemplateDecl := False;
   ExcTryNest     := 0;
   ExcCatchSeq    := 0;
+  NsCount        := 0;
+  CurNsIdx       := -1;
+  NsUsingCount   := 0;
   GExprDummy.Kind    := EK_NONE;
   GExprDummy.ImmVal  := 0;
   GExprDummy.TypeIdx := TY_UNKNOWN;
@@ -3518,11 +3556,24 @@ Begin
             Else
               ExprFlushToAX(Res);
           End
-          Else (* '::' *)
+          Else (* '::' - resolution de portee / namespace *)
           Begin
-            ParserAdvance;
+            ParserAdvance; (* consommer '::' *)
             If CurToken.Kind = TK_IDENT Then
+            Begin
+              MemberName := CurToken.Val;
               ParserAdvance;
+              (* TODO 24 : resolution namespace Nom::symbole *)
+              SIdx := NsResolveName(IdName, MemberName);
+              If SIdx >= 0 Then
+              Begin
+                Res.Kind    := EK_MEM;
+                Res.ImmVal  := 0;
+                Res.TypeIdx := SymTab[SIdx].TypeIdx;
+                Res.Offset  := SymTab[SIdx].Offset;
+                Res.SymIdx  := SIdx;
+              End;
+            End;
           End;
           Res.Kind   := EK_AX;
           Res.SymIdx := -1;
@@ -4402,6 +4453,9 @@ Begin
   If Opts.DebugMode Then
     WriteLn('[sym] +', SymCount, ' "', Name, '" -> ',
             SymTab[SymCount].MangledName, ' scope=', CurScope);
+  (* TODO 24 : enregistrer dans le namespace courant *)
+  If CurNsIdx >= 0 Then
+    NsRegisterSym(CurNsIdx, Name, SymCount);
   SymAdd := SymCount;
   Inc(SymCount);
   Inc(TotalSyms);
@@ -5515,6 +5569,316 @@ Begin
   EmitInstr('MOV    AX,4C01h');
   EmitInstr('INT    21h');
   EmitBlankLine;
+End;
+
+(* ============================================================
+  TODO 24 - ESPACES DE NOMS (namespace) [IMPLEMENTE]
+  ============================================================ *)
+
+(* ---- NsFind : recherche d un namespace par nom --------------- *)
+(* Retourne l index dans NsTab, ou -1 si introuvable.             *)
+Function NsFind(Const Name : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  NsFind := -1;
+  For I := 0 To NsCount - 1 Do
+    If NsTab[I].Name = Name Then
+    Begin
+      NsFind := I;
+      Exit;
+    End;
+End;
+
+(* ---- NsAddOrFind : ajouter ou retrouver un namespace --------- *)
+(* Si le namespace existe deja, retourne son index.                *)
+(* Sinon, le cree et retourne le nouvel index.                     *)
+Function NsAddOrFind(Const Name : TString; IsAnon : Boolean) : Integer;
+Var
+  Idx : Integer;
+Begin
+  Idx := NsFind(Name);
+  If Idx >= 0 Then
+  Begin
+    NsAddOrFind := Idx;
+    Exit;
+  End;
+  If NsCount >= MAX_NAMESPACE Then
+  Begin
+    CompileError('trop d''espaces de noms (max ' + IntToStr(MAX_NAMESPACE) + ')');
+    NsAddOrFind := -1;
+    Exit;
+  End;
+  Idx := NsCount;
+  NsTab[Idx].Name        := Name;
+  NsTab[Idx].IsAnonymous := IsAnon;
+  NsTab[Idx].SymCount    := 0;
+  If IsAnon Then
+    NsTab[Idx].MangledPfx := CC_NS_PFX + 'ANON_'
+  Else
+    NsTab[Idx].MangledPfx := CC_NS_PFX + Name + '_';
+  Inc(NsCount);
+  NsAddOrFind := Idx;
+End;
+
+(* ---- NsRegisterSym : enregistrer un symbole dans le namespace -- *)
+Procedure NsRegisterSym(NIdx : Integer; Const OrigName : TString; SIdx : Integer);
+Begin
+  If NIdx < 0 Then Exit;
+  If NIdx >= NsCount Then Exit;
+  If NsTab[NIdx].SymCount >= MAX_NS_SYM Then Exit;
+  NsTab[NIdx].Syms[NsTab[NIdx].SymCount].OrigName := OrigName;
+  NsTab[NIdx].Syms[NsTab[NIdx].SymCount].SymIdx   := SIdx;
+  Inc(NsTab[NIdx].SymCount);
+End;
+
+(* ---- NsFindSym : chercher un symbole dans un namespace --------- *)
+(* Retourne l index SymTab du symbole, ou -1.                       *)
+Function NsFindSym(NIdx : Integer; Const SymName : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  NsFindSym := -1;
+  If NIdx < 0 Then Exit;
+  If NIdx >= NsCount Then Exit;
+  For I := 0 To NsTab[NIdx].SymCount - 1 Do
+    If NsTab[NIdx].Syms[I].OrigName = SymName Then
+    Begin
+      NsFindSym := NsTab[NIdx].Syms[I].SymIdx;
+      Exit;
+    End;
+End;
+
+(* ---- NsUsingActive : verifier si un NS est dans les using ------- *)
+Function NsUsingActive(NIdx : Integer) : Boolean;
+Var
+  I : Integer;
+Begin
+  NsUsingActive := False;
+  For I := 0 To NsUsingCount - 1 Do
+    If NsUsingTab[I] = NIdx Then
+    Begin
+      NsUsingActive := True;
+      Exit;
+    End;
+End;
+
+(* ---- NsUsingAdd : ajouter un using namespace -------------------- *)
+Procedure NsUsingAdd(NIdx : Integer);
+Begin
+  If NIdx < 0 Then Exit;
+  If NsUsingActive(NIdx) Then Exit; (* deja actif *)
+  If NsUsingCount >= MAX_NS_USING Then
+  Begin
+    CompileError('trop de using namespace (max ' + IntToStr(MAX_NS_USING) + ')');
+    Exit;
+  End;
+  NsUsingTab[NsUsingCount] := NIdx;
+  Inc(NsUsingCount);
+End;
+
+(* ---- NsResolveName : resolution de Nom::symbole ----------------- *)
+(* Cherche d abord dans le namespace Nom, puis dans les using actifs. *)
+(* Retourne l index SymTab, ou -1.                                    *)
+Function NsResolveName(Const NsName, SymName : TString) : Integer;
+Var
+  NIdx, SIdx, I : Integer;
+Begin
+  NsResolveName := -1;
+  (* Chercher dans le namespace specifie *)
+  NIdx := NsFind(NsName);
+  If NIdx >= 0 Then
+  Begin
+    SIdx := NsFindSym(NIdx, SymName);
+    If SIdx >= 0 Then
+    Begin
+      NsResolveName := SIdx;
+      Exit;
+    End;
+  End;
+  (* Fallback : chercher directement dans SymTab *)
+  (* (pour les symboles predeclares comme cout, cin, etc.) *)
+  SIdx := SymFind(SymName);
+  If SIdx >= 0 Then
+    NsResolveName := SIdx;
+End;
+
+(* ---- NsFindSymInUsing : chercher dans les using namespace -------- *)
+(* Utilise quand SymFind echoue, pour chercher dans les NS actifs.   *)
+Function NsFindSymInUsing(Const SymName : TString) : Integer;
+Var
+  I, SIdx : Integer;
+Begin
+  NsFindSymInUsing := -1;
+  For I := 0 To NsUsingCount - 1 Do
+  Begin
+    SIdx := NsFindSym(NsUsingTab[I], SymName);
+    If SIdx >= 0 Then
+    Begin
+      NsFindSymInUsing := SIdx;
+      Exit;
+    End;
+  End;
+End;
+
+(* ---- ParseNamespaceDecl : parse namespace Nom { decls } ---------- *)
+(* Gere aussi :                                                        *)
+(*   namespace { ... } (anonyme)                                       *)
+(*   namespace A { namespace B { ... } } (imbrique)                    *)
+(*   namespace A::B { ... } (C++17 stub)                               *)
+Procedure ParseNamespaceDecl;
+Var
+  NsName    : TString;
+  NIdx      : Integer;
+  SaveNsIdx : Integer;
+  IsAnon    : Boolean;
+Begin
+  ParserAdvance; (* consommer 'namespace' *)
+
+  IsAnon := False;
+  NsName := '';
+
+  (* namespace { ... } : anonyme *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+  Begin
+    IsAnon := True;
+    NsName := '';
+  End
+  Else If CurToken.Kind = TK_IDENT Then
+  Begin
+    NsName := CurToken.Val;
+    ParserAdvance;
+    (* C++17 : namespace A::B { ... } *)
+    While (CurToken.Kind = TK_OP) And (CurToken.Val = '::') Do
+    Begin
+      ParserAdvance;
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        NsName := NsName + '_' + CurToken.Val;
+        ParserAdvance;
+      End;
+    End;
+  End
+  Else
+  Begin
+    (* Erreur : nom attendu *)
+    CompileError('nom de namespace attendu');
+    Exit;
+  End;
+
+  NIdx := NsAddOrFind(NsName, IsAnon);
+  SaveNsIdx := CurNsIdx;
+  CurNsIdx := NIdx;
+
+  EmitComment('namespace ' + NsName + ' {');
+
+  (* { declarations } *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+  Begin
+    ParserAdvance;
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+      ParseStmt;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+      ParserAdvance;
+  End;
+
+  EmitComment('} // namespace ' + NsName);
+
+  (* Si namespace anonyme, rendre tous les symboles visibles *)
+  If IsAnon And (NIdx >= 0) Then
+    NsUsingAdd(NIdx);
+
+  CurNsIdx := SaveNsIdx;
+End;
+
+(* ---- ParseUsingDirective : parse using namespace Nom / using Nom::sym *)
+Procedure ParseUsingDirective;
+Var
+  NsName  : TString;
+  SymName : TString;
+  NIdx    : Integer;
+  SIdx    : Integer;
+Begin
+  ParserAdvance; (* consommer 'using' *)
+
+  (* using namespace Nom; *)
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'namespace') Then
+  Begin
+    ParserAdvance; (* consommer 'namespace' *)
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      NsName := CurToken.Val;
+      ParserAdvance;
+      NIdx := NsFind(NsName);
+      If NIdx >= 0 Then
+      Begin
+        NsUsingAdd(NIdx);
+        EmitComment('using namespace ' + NsName);
+      End
+      Else
+      Begin
+        (* Namespace std est toujours accepte *)
+        If NsName = 'std' Then
+        Begin
+          NIdx := NsAddOrFind('std', False);
+          NsUsingAdd(NIdx);
+          EmitComment('using namespace std');
+        End
+        Else
+          WarnMsg('namespace ''' + NsName + ''' non declare');
+      End;
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      ParserAdvance;
+    Exit;
+  End;
+
+  (* using Nom::symbole; *)
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    NsName := CurToken.Val;
+    ParserAdvance;
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '::') Then
+    Begin
+      ParserAdvance;
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        SymName := CurToken.Val;
+        ParserAdvance;
+        (* Resoudre et creer un alias dans la portee courante *)
+        SIdx := NsResolveName(NsName, SymName);
+        If SIdx >= 0 Then
+          EmitComment('using ' + NsName + '::' + SymName)
+        Else
+        Begin
+          (* Chercher directement : par ex. std::cout -> cout *)
+          SIdx := SymFind(SymName);
+          If SIdx >= 0 Then
+            EmitComment('using ' + NsName + '::' + SymName)
+          Else
+            WarnMsg('symbole ' + NsName + '::' + SymName + ' non trouve');
+        End;
+      End;
+    End
+    Else
+    Begin
+      (* using Type; - type alias stub, consommer jusqu au ; *)
+      While (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
+        ParserAdvance;
+    End;
+  End
+  Else If CurToken.Kind = TK_KEYWORD Then
+  Begin
+    (* using int = ...; ou similaire - consommer jusqu au ; *)
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
+      ParserAdvance;
+  End;
+
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
 End;
 
 (* Emet le label, prologue, corps, epilogue.                      *)
@@ -8297,11 +8661,23 @@ Begin
     Exit;
   End;
 
-  (* Mot-cle de portee C++ : enum, namespace, typedef, using, etc. *)
+  (* TODO 24 : namespace *)
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'namespace') Then
+  Begin
+    ParseNamespaceDecl;
+    Exit;
+  End;
+
+  (* TODO 24 : using namespace / using Nom::sym *)
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'using') Then
+  Begin
+    ParseUsingDirective;
+    Exit;
+  End;
+
+  (* Mot-cle de portee C++ : enum, typedef, etc. *)
   If (CurToken.Kind = TK_KEYWORD) And
-     ((CurToken.Val = 'enum') Or
-      (CurToken.Val = 'namespace') Or (CurToken.Val = 'typedef') Or
-      (CurToken.Val = 'using') Or
+     ((CurToken.Val = 'enum') Or (CurToken.Val = 'typedef') Or
       (CurToken.Val = 'extern') Or (CurToken.Val = 'friend') Or
       (CurToken.Val = 'inline') Or (CurToken.Val = 'virtual') Or
       (CurToken.Val = 'explicit') Or (CurToken.Val = 'operator') Or
@@ -8329,6 +8705,39 @@ Begin
     End;
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
       ParserAdvance;
+    Exit;
+  End;
+
+  (* TODO 24 : std::cout, std::cin, std::cerr *)
+  If (CurToken.Kind = TK_IDENT) And (CurToken.Val = 'std') Then
+  Begin
+    ParserAdvance; (* consommer 'std' *)
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '::') Then
+    Begin
+      ParserAdvance; (* consommer '::' *)
+      If (CurToken.Kind = TK_IDENT) And
+         ((CurToken.Val = 'cout') Or (CurToken.Val = 'cerr')) Then
+      Begin
+        ParseCoutStmt;
+        Exit;
+      End;
+      If (CurToken.Kind = TK_IDENT) And (CurToken.Val = 'cin') Then
+      Begin
+        ParseCinStmt;
+        Exit;
+      End;
+      If (CurToken.Kind = TK_IDENT) And (CurToken.Val = 'endl') Then
+      Begin
+        (* std::endl seul -> juste un newline *)
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+          ParserAdvance;
+        Exit;
+      End;
+      (* Autre symbole std:: -> traiter comme expression *)
+    End;
+    (* std sans :: : traiter comme ident normal -> expression *)
+    ParseExprStmt;
     Exit;
   End;
 
@@ -8461,7 +8870,8 @@ End;
 
 Procedure SymInit;
 Var
-  I : Integer;
+  I       : Integer;
+  StdNIdx : Integer;  (* TODO 24 *)
 Begin
   SymCount     := 0;
   ScopeTop     := 0;
@@ -8552,6 +8962,16 @@ Begin
   SymAdd('cin',      SK_VAR,  TY_IDX_INT, 0);
   SymAdd('cerr',     SK_VAR,  TY_IDX_INT, 0);
   SymAdd('endl',     SK_CONST, TY_IDX_INT, 0);
+
+  (* ---- TODO 24 : Pre-declarer le namespace std ---- *)
+  StdNIdx := NsAddOrFind('std', False);
+  If StdNIdx >= 0 Then
+  Begin
+    NsRegisterSym(StdNIdx, 'cout', SymFind('cout'));
+    NsRegisterSym(StdNIdx, 'cin',  SymFind('cin'));
+    NsRegisterSym(StdNIdx, 'cerr', SymFind('cerr'));
+    NsRegisterSym(StdNIdx, 'endl', SymFind('endl'));
+  End;
 End;
 
 (* ---- Pipeline de compilation -------------------------------- *)
