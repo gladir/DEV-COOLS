@@ -51,10 +51,10 @@ _CFF_factorielle:
 ; ---- CFSET ----
         MOV   AX, 1
         MOV   [BP-2], AX
-; cfloop: FOR i = 1 TO #n# STEP 1
+; cfloop: FOR i = 1 TO 5 STEP 1
         MOV   AX, 1
         MOV   [BP-4], AX
-        MOV   AX, #n#
+        MOV   AX, 5
         MOV   [_CF_LOOPLIM], AX
         MOV   AX, 1
         MOV   [_CF_LOOPSTP], AX

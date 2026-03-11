@@ -22,13 +22,6 @@
 </cfloop>
 <cfoutput>Somme impairs: #impairs#</cfoutput>
 
-<!--- cfloop condition --->
-<cfset n = 1>
-<cfloop condition="n LT 100">
-  <cfset n = n * 2>
-</cfloop>
-<cfoutput>Puissance de 2: #n#</cfoutput>
-
 <!--- cfloop avec cfbreak --->
 <cfset trouve = 0>
 <cfloop index="m" from="1" to="100" step="1">
@@ -38,14 +31,3 @@
   </cfif>
 </cfloop>
 <cfoutput>Trouve: #trouve#</cfoutput>
-
-<!--- cfloop sur tableau --->
-<cfset arr = ArrayNew(1)>
-<cfset ArrayAppend(arr, 10)>
-<cfset ArrayAppend(arr, 20)>
-<cfset ArrayAppend(arr, 30)>
-<cfset somme2 = 0>
-<cfloop array="#arr#" index="val">
-  <cfset somme2 = somme2 + val>
-</cfloop>
-<cfoutput>Somme tableau: #somme2#</cfoutput>

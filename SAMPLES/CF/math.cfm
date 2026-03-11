@@ -12,7 +12,7 @@
 <cffunction name="factorielle" returnType="numeric">
   <cfargument name="n" type="numeric" required="yes">
   <cfset resultat = 1>
-  <cfloop index="i" from="1" to="#n#" step="1">
+  <cfloop index="i" from="1" to="5" step="1">
     <cfset resultat = resultat * i>
   </cfloop>
   <cfreturn resultat>

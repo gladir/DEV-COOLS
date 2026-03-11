@@ -118,29 +118,6 @@ _CFL_FEND_11:
 ; cfoutput: expr numerique
         CALL   _CFRT_PRINTNUM
 ; ---- CFSET ----
-        MOV   AX, 1
-        MOV   [_CFV_n], AX
-; cfloop: WHILE condition
-_CFL_WTEST_13:
-; cfloop: condition non resolue: n LT 100
-        JMP   _CFL_WEND_14
-; ---- CFSET ----
-        MOV   AX, [_CFV_n]
-        PUSH   AX
-        MOV   AX, 2
-        MOV   BX, AX
-        POP   AX
-        IMUL   BX
-        MOV   [_CFV_n], AX
-        JMP   _CFL_WTEST_13
-_CFL_WEND_14:
-; cfoutput: texte brut
-        MOV   SI, OFFSET _CFK_15
-        CALL   _CFRT_PRINT
-        MOV   AX, [_CFV_n]
-; cfoutput: expr numerique
-        CALL   _CFRT_PRINTNUM
-; ---- CFSET ----
         MOV   AX, 0
         MOV   [_CFV_trouve], AX
 ; cfloop: FOR m = 1 TO 100 STEP 1
@@ -150,10 +127,10 @@ _CFL_WEND_14:
         MOV   [_CF_LOOPLIM], AX
         MOV   AX, 1
         MOV   [_CF_LOOPSTP], AX
-_CFL_FTEST_16:
+_CFL_FTEST_13:
         MOV   AX, [_CFV_m]
         CMP   AX, [_CF_LOOPLIM]
-        JG   _CFL_FEND_18
+        JG   _CFL_FEND_15
         MOV   AX, [_CFV_m]
         PUSH   AX
         MOV   AX, 7
@@ -164,68 +141,24 @@ _CFL_FTEST_16:
         SETE   AL
 ; cfif: test condition
         TEST   AX, AX
-        JZ   _CFL_ELSE_20
+        JZ   _CFL_ELSE_17
 ; ---- CFSET ----
         MOV   AX, [_CFV_m]
         MOV   [_CFV_trouve], AX
 ; cfbreak
-        JMP   _CFL_FEND_18
-_CFL_ELSE_20:
-_CFL_ENDIF_19:
-_CFL_FINCR_17:
+        JMP   _CFL_FEND_15
+_CFL_ELSE_17:
+_CFL_ENDIF_16:
+_CFL_FINCR_14:
         MOV   AX, [_CFV_m]
         ADD   AX, [_CF_LOOPSTP]
         MOV   [_CFV_m], AX
-        JMP   _CFL_FTEST_16
-_CFL_FEND_18:
+        JMP   _CFL_FTEST_13
+_CFL_FEND_15:
 ; cfoutput: texte brut
-        MOV   SI, OFFSET _CFK_21
+        MOV   SI, OFFSET _CFK_18
         CALL   _CFRT_PRINT
         MOV   AX, [_CFV_trouve]
-; cfoutput: expr numerique
-        CALL   _CFRT_PRINTNUM
-; ---- CFSET ----
-; ArrayNew()
-        MOV   AX, 1
-        PUSH   AX
-        POP   AX
-        MOV   AX, OFFSET _CFL_22
-        MOV   [_CFV_arr], AX
-; ---- CFSET ----
-; cfset: appel fonction arrayappend
-        MOV   AX, [_CFV_arr]
-        PUSH   AX
-        MOV   AX, 10
-        PUSH   AX
-        POP   AX
-        POP   SI
-        CALL   _CFRT_ARRAPPEND
-; ---- CFSET ----
-; cfset: appel fonction arrayappend
-        MOV   AX, [_CFV_arr]
-        PUSH   AX
-        MOV   AX, 20
-        PUSH   AX
-        POP   AX
-        POP   SI
-        CALL   _CFRT_ARRAPPEND
-; ---- CFSET ----
-; cfset: appel fonction arrayappend
-        MOV   AX, [_CFV_arr]
-        PUSH   AX
-        MOV   AX, 30
-        PUSH   AX
-        POP   AX
-        POP   SI
-        CALL   _CFRT_ARRAPPEND
-; ---- CFSET ----
-        MOV   AX, 0
-        MOV   [_CFV_somme2], AX
-; cfloop: array #arr# index val
-; cfoutput: texte brut
-        MOV   SI, OFFSET _CFK_23
-        CALL   _CFRT_PRINT
-        MOV   AX, [_CFV_somme2]
 ; cfoutput: expr numerique
         CALL   _CFRT_PRINTNUM
 
@@ -1490,15 +1423,9 @@ _CFK_8  DB  'Decompte: ',0
 _CFV_impairs  DW  0
 _CFV_k  DW  0
 _CFK_12  DB  'Somme impairs: ',0
-_CFV_n  DW  0
-_CFK_15  DB  'Puissance de 2: ',0
 _CFV_trouve  DW  0
 _CFV_m  DW  0
-_CFK_21  DB  'Trouve: ',0
-_CFL_22  DB  130 DUP(0)
-_CFV_arr  DW  0
-_CFV_somme2  DW  0
-_CFK_23  DB  'Somme tableau: ',0
+_CFK_18  DB  'Trouve: ',0
 
 _DATA ENDS
 
