@@ -456,6 +456,20 @@ Const
   TY_IDX_NIL     = 7;
   TY_IDX_VOID    = 8;
 
+  (* Bornes des types primitifs Modula-3 (8086 16 bits) *)
+  MIN_INTEGER    = -32768;
+  MAX_INTEGER    =  32767;
+  MIN_CARDINAL   =  0;
+  MAX_CARDINAL   =  65535;
+  MIN_CHAR       =  0;
+  MAX_CHAR       =  255;
+  MIN_BOOLEAN    =  0;
+  MAX_BOOLEAN    =  1;
+  NUM_INTEGER    =  65536;
+  NUM_CARDINAL   =  65536;
+  NUM_CHAR       =  256;
+  NUM_BOOLEAN    =  2;
+
 (* ============================================================
    TYPES
    ============================================================ *)
@@ -1684,6 +1698,45 @@ Begin
   End;
 End;
 
+(* ---- TypeFirst : FIRST(T) pour un nom de type --------------- *)
+
+Function TypeFirst(Const TName : TString) : LongInt;
+Var U : TString;
+Begin
+  U := StrUpCase(TName);
+  If U = 'INTEGER'       Then TypeFirst := MIN_INTEGER
+  Else If U = 'CARDINAL' Then TypeFirst := MIN_CARDINAL
+  Else If U = 'CHAR'     Then TypeFirst := MIN_CHAR
+  Else If U = 'BOOLEAN'  Then TypeFirst := MIN_BOOLEAN
+  Else TypeFirst := 0;
+End;
+
+(* ---- TypeLast : LAST(T) pour un nom de type ----------------- *)
+
+Function TypeLast(Const TName : TString) : LongInt;
+Var U : TString;
+Begin
+  U := StrUpCase(TName);
+  If U = 'INTEGER'       Then TypeLast := MAX_INTEGER
+  Else If U = 'CARDINAL' Then TypeLast := MAX_CARDINAL
+  Else If U = 'CHAR'     Then TypeLast := MAX_CHAR
+  Else If U = 'BOOLEAN'  Then TypeLast := MAX_BOOLEAN
+  Else TypeLast := 0;
+End;
+
+(* ---- TypeNumber : NUMBER(T) pour un nom de type ------------- *)
+
+Function TypeNumber(Const TName : TString) : LongInt;
+Var U : TString;
+Begin
+  U := StrUpCase(TName);
+  If U = 'INTEGER'       Then TypeNumber := NUM_INTEGER
+  Else If U = 'CARDINAL' Then TypeNumber := NUM_CARDINAL
+  Else If U = 'CHAR'     Then TypeNumber := NUM_CHAR
+  Else If U = 'BOOLEAN'  Then TypeNumber := NUM_BOOLEAN
+  Else TypeNumber := 0;
+End;
+
 (* ---- ConstEvalAtom : evaluer un atome de constante ---------- *)
 (* Gere : litteral entier/reel/char, TRUE/FALSE/NIL,            *)
 (*        FIRST(T), LAST(T), NUMBER(T), ORD(x), VAL(T,x),      *)
@@ -1730,39 +1783,27 @@ Begin
     Else If S = 'FALSE' Then V := 0
     Else If S = 'NIL' Then V := 0
 
-    (* FIRST(INTEGER) = -32768, FIRST(CARDINAL) = 0, FIRST(CHAR) = 0, FIRST(BOOLEAN) = 0 *)
+    (* FIRST(INTEGER), FIRST(CARDINAL), etc. *)
     Else If S = 'FIRST' Then
     Begin
       Inc(P);
-      (* Consommer ( *)
       If (P < TokenCount) And (TokenPool[P].Val = '(') Then Inc(P);
       If (P < TokenCount) Then
       Begin
-        S := StrUpCase(TokenPool[P].Val);
-        If S = 'INTEGER'  Then V := -32768
-        Else If S = 'CARDINAL' Then V := 0
-        Else If S = 'CHAR'     Then V := 0
-        Else If S = 'BOOLEAN'  Then V := 0
-        Else V := 0;
+        V := TypeFirst(TokenPool[P].Val);
         Inc(P);
       End;
-      (* Consommer ) *)
       If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
     End
 
-    (* LAST(INTEGER) = 32767, LAST(CARDINAL) = 65535, LAST(CHAR) = 255, LAST(BOOLEAN) = 1 *)
+    (* LAST(INTEGER), LAST(CARDINAL), etc. *)
     Else If S = 'LAST' Then
     Begin
       Inc(P);
       If (P < TokenCount) And (TokenPool[P].Val = '(') Then Inc(P);
       If (P < TokenCount) Then
       Begin
-        S := StrUpCase(TokenPool[P].Val);
-        If S = 'INTEGER'  Then V := 32767
-        Else If S = 'CARDINAL' Then V := 65535
-        Else If S = 'CHAR'     Then V := 255
-        Else If S = 'BOOLEAN'  Then V := 1
-        Else V := 0;
+        V := TypeLast(TokenPool[P].Val);
         Inc(P);
       End;
       If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
@@ -1775,12 +1816,7 @@ Begin
       If (P < TokenCount) And (TokenPool[P].Val = '(') Then Inc(P);
       If (P < TokenCount) Then
       Begin
-        S := StrUpCase(TokenPool[P].Val);
-        If S = 'INTEGER'  Then V := 65536
-        Else If S = 'CARDINAL' Then V := 65536
-        Else If S = 'CHAR'     Then V := 256
-        Else If S = 'BOOLEAN'  Then V := 2
-        Else V := 0;
+        V := TypeNumber(TokenPool[P].Val);
         Inc(P);
       End;
       If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
@@ -1829,12 +1865,7 @@ Begin
       If (P < TokenCount) And (TokenPool[P].Val = '(') Then Inc(P);
       If (P < TokenCount) Then
       Begin
-        S := StrUpCase(TokenPool[P].Val);
-        If S = 'INTEGER'  Then V := -32768
-        Else If S = 'CARDINAL' Then V := 0
-        Else If S = 'CHAR'     Then V := 0
-        Else If S = 'BOOLEAN'  Then V := 0
-        Else V := 0;
+        V := TypeFirst(TokenPool[P].Val);
         Inc(P);
       End;
       If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
@@ -1846,12 +1877,7 @@ Begin
       If (P < TokenCount) And (TokenPool[P].Val = '(') Then Inc(P);
       If (P < TokenCount) Then
       Begin
-        S := StrUpCase(TokenPool[P].Val);
-        If S = 'INTEGER'  Then V := 32767
-        Else If S = 'CARDINAL' Then V := 65535
-        Else If S = 'CHAR'     Then V := 255
-        Else If S = 'BOOLEAN'  Then V := 1
-        Else V := 0;
+        V := TypeLast(TokenPool[P].Val);
         Inc(P);
       End;
       If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
@@ -1863,12 +1889,7 @@ Begin
       If (P < TokenCount) And (TokenPool[P].Val = '(') Then Inc(P);
       If (P < TokenCount) Then
       Begin
-        S := StrUpCase(TokenPool[P].Val);
-        If S = 'INTEGER'  Then V := 65536
-        Else If S = 'CARDINAL' Then V := 65536
-        Else If S = 'CHAR'     Then V := 256
-        Else If S = 'BOOLEAN'  Then V := 2
-        Else V := 0;
+        V := TypeNumber(TokenPool[P].Val);
         Inc(P);
       End;
       If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
