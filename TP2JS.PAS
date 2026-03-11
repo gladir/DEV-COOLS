@@ -246,7 +246,7 @@
                  ou restructuration du flux de controle
                Avertissement : GOTO deconseille, traduction limitee
 
-   TODO 14 - BOUCLES : FOR / WHILE / REPEAT / BREAK / CONTINUE
+   TODO 14 - BOUCLES : FOR / WHILE / REPEAT / BREAK / CONTINUE [IMPLEMENTE]
              ParseForStmt : FOR i := lo TO hi DO stmt
                -> for (var i = lo; i <= hi; i++) { stmt } en JS
                FOR i := hi DOWNTO lo DO stmt
@@ -5187,7 +5187,9 @@ Begin
     Exit;
   End;
 
-  { FOR ... TO/DOWNTO ... DO ... }
+  { ---- TODO 14 : BOUCLES ---------------------------------------- }
+
+  { FOR ... TO/DOWNTO ... DO ... (TODO 14) }
   If (TokenPool[P].Kind = TK_KEYWORD) And
      (StrLowerCase(TokenPool[P].Val) = 'for') Then
   Begin
@@ -5233,7 +5235,7 @@ Begin
     Exit;
   End;
 
-  { WHILE ... DO ... }
+  { WHILE ... DO ... (TODO 14) }
   If (TokenPool[P].Kind = TK_KEYWORD) And
      (StrLowerCase(TokenPool[P].Val) = 'while') Then
   Begin
@@ -5251,7 +5253,7 @@ Begin
     Exit;
   End;
 
-  { REPEAT ... UNTIL expr }
+  { REPEAT ... UNTIL expr (TODO 14) }
   If (TokenPool[P].Kind = TK_KEYWORD) And
      (StrLowerCase(TokenPool[P].Val) = 'repeat') Then
   Begin
@@ -5321,6 +5323,24 @@ Begin
     L := TokenPool[P].Val;
     EmitComment('label: ' + L);
     Inc(P, 2);
+    Exit;
+  End;
+
+  { Break : sortie de boucle -> break; en JS (TODO 14) }
+  If (TokenPool[P].Kind = TK_IDENT) And
+     (StrLowerCase(TokenPool[P].Val) = 'break') Then
+  Begin
+    Inc(P);
+    EmitLine('break;');
+    Exit;
+  End;
+
+  { Continue : iteration suivante -> continue; en JS (TODO 14) }
+  If (TokenPool[P].Kind = TK_IDENT) And
+     (StrLowerCase(TokenPool[P].Val) = 'continue') Then
+  Begin
+    Inc(P);
+    EmitLine('continue;');
     Exit;
   End;
 
