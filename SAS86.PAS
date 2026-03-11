@@ -499,6 +499,8 @@ Const
   MISSING_VAL   = -32768; (* sentinelle valeur manquante = 8000h    *)
   MAX_FORMAT    = 64;     (* nombre max de formats utilisateur      *)
   MAX_FMT_RANGE = 32;     (* nombre max de plages par format        *)
+  FMT_LOW_BOUND  = -32767; (* borne basse ouverte (LOW) pour formats *)
+  FMT_HIGH_BOUND = 32767;  (* borne haute ouverte (HIGH) pour formats *)
 
   (* Caracteres speciaux (accolades = delimiteurs d indices tableau) *)
   (* En Turbo Pascal, { et } sont des delimiteurs de commentaire,   *)
@@ -7438,7 +7440,7 @@ Begin
                   (StrUpperCase(CurToken.Val) = 'LOW') Then
           Begin
             LowOpen := True;
-            Low := -32767;
+            Low := FMT_LOW_BOUND;
             ParserAdvance;
             (* Attendre '-' pour un intervalle *)
             If (CurToken.Kind = TK_OP) And (CurToken.Val = '-') Then
@@ -7454,7 +7456,7 @@ Begin
                       (StrUpperCase(CurToken.Val) = 'HIGH') Then
               Begin
                 HighOpen := True;
-                High := 32767;
+                High := FMT_HIGH_BOUND;
                 ParserAdvance;
               End;
             End
@@ -7485,7 +7487,7 @@ Begin
                       (StrUpperCase(CurToken.Val) = 'HIGH') Then
               Begin
                 HighOpen := True;
-                High := 32767;
+                High := FMT_HIGH_BOUND;
                 ParserAdvance;
               End;
             End;
