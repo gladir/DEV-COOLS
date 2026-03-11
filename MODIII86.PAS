@@ -74,7 +74,7 @@
                5. AND
                6. OR
 
-   TODO 05 - TABLE DES SYMBOLES
+   TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
              TSymKind : SK_CONST, SK_TYPE, SK_VAR, SK_PARAM, SK_PROC,
                SK_FIELD, SK_METHOD, SK_MODULE, SK_EXCEPTION
              TSymRec : Name, MangledName, Kind, TypeIdx, Offset,
@@ -551,6 +551,33 @@ Type
     Col    : Integer;
   End;
 
+  (* ---- Table des symboles (TODO 05) ------------------------- *)
+  TSymKind = (
+    SK_CONST,      (* constante (CONST)                           *)
+    SK_TYPE,       (* type utilisateur (TYPE)                     *)
+    SK_VAR,        (* variable (VAR)                              *)
+    SK_PARAM,      (* parametre de procedure (VALUE/VAR/READONLY) *)
+    SK_PROC,       (* procedure / fonction (PROCEDURE)            *)
+    SK_FIELD,      (* champ de RECORD                             *)
+    SK_METHOD,     (* methode d un OBJECT                         *)
+    SK_MODULE,     (* module (MODULE / INTERFACE)                 *)
+    SK_EXCEPTION   (* exception (EXCEPTION)                       *)
+  );
+
+  TSymRec = Record
+    Name        : TString;   (* identifiant Modula-3 original         *)
+    MangledName : TString;   (* nom ASM (_M3V_nom, _M3P_nom, ...)    *)
+    Kind        : TSymKind;  (* categorie du symbole                  *)
+    TypeIdx     : Integer;   (* index dans TypeTab (-1 si inconnu)    *)
+    Offset      : Integer;   (* offset pile [BP-n] ou DATA            *)
+    ScopeLevel  : Integer;   (* profondeur de portee (0 = global)     *)
+    IsExported  : Boolean;   (* visible depuis INTERFACE              *)
+    IsImported  : Boolean;   (* importe depuis un autre module        *)
+    IsReadonly  : Boolean;   (* parametre READONLY                    *)
+    ImmVal      : LongInt;   (* valeur immediate (SK_CONST)           *)
+    DeclLine    : Integer;   (* ligne de declaration source           *)
+  End;
+
 (* ============================================================
    VARIABLES GLOBALES
    ============================================================ *)
@@ -585,6 +612,13 @@ Var
   (* Token Pool (TODO 03) *)
   TokenPool  : Array[0..MAX_TOKEN-1] Of TPoolToken;
   TokenCount : Integer;
+
+  (* Table des symboles (TODO 05) *)
+  SymTab     : Array[0..MAX_SYM-1] Of TSymRec;
+  SymCount   : Integer;
+  ScopeTop   : Integer;         (* sommet de la pile de scopes         *)
+  CurScope   : Integer;         (* niveau de portee courant            *)
+  ScopeStack : Array[0..MAX_SCOPE-1] Of Integer; (* SymCount a l entree *)
 
 (* ============================================================
    TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -2352,6 +2386,283 @@ Begin
   ;
 End;
 
+(* ============================================================
+   TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
+   ============================================================ *)
+
+(* ---- SymKindStr : nom textuel d un TSymKind ----------------- *)
+Function SymKindStr(K : TSymKind) : TString;
+Begin
+  Case K Of
+    SK_CONST     : SymKindStr := 'CONST';
+    SK_TYPE      : SymKindStr := 'TYPE';
+    SK_VAR       : SymKindStr := 'VAR';
+    SK_PARAM     : SymKindStr := 'PARAM';
+    SK_PROC      : SymKindStr := 'PROC';
+    SK_FIELD     : SymKindStr := 'FIELD';
+    SK_METHOD    : SymKindStr := 'METHOD';
+    SK_MODULE    : SymKindStr := 'MODULE';
+    SK_EXCEPTION : SymKindStr := 'EXCEPTION';
+  Else
+    SymKindStr := '?';
+  End;
+End;
+
+(* ---- SymNameClean : nettoyer un identifiant pour ASM --------- *)
+(* Remplace les caracteres non alphanumeriques par '_'.            *)
+
+Function SymNameClean(Const Name : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+  C : Char;
+Begin
+  R := '';
+  For I := 1 To Length(Name) Do
+  Begin
+    C := Name[I];
+    If ((C >= 'A') And (C <= 'Z')) Or
+       ((C >= 'a') And (C <= 'z')) Or
+       ((C >= '0') And (C <= '9')) Or (C = '_') Then
+      R := R + C
+    Else
+      R := R + '_';
+  End;
+  SymNameClean := R;
+End;
+
+(* ---- SymMangle : generer un nom ASM mangled pour un symbole -- *)
+(* Utilise les prefixes M3_VAR_PFX, M3_PROC_PFX, etc.            *)
+
+Function SymMangle(Const Name : TString; Kind : TSymKind) : TString;
+Var Clean : TString;
+Begin
+  Clean := SymNameClean(Name);
+  Case Kind Of
+    SK_CONST     : SymMangle := M3_VAR_PFX  + Clean;
+    SK_TYPE      : SymMangle := M3_TYPE_PFX + Clean;
+    SK_VAR       : SymMangle := M3_VAR_PFX  + Clean;
+    SK_PARAM     : SymMangle := M3_VAR_PFX  + Clean;
+    SK_PROC      : SymMangle := M3_PROC_PFX + Clean;
+    SK_FIELD     : SymMangle := M3_OBJ_PFX  + Clean;
+    SK_METHOD    : SymMangle := M3_PROC_PFX + Clean;
+    SK_MODULE    : SymMangle := M3_VAR_PFX  + Clean;
+    SK_EXCEPTION : SymMangle := M3_EXC_PFX  + Clean;
+  Else
+    SymMangle := M3_VAR_PFX + Clean;
+  End;
+End;
+
+(* ---- SymInit : initialiser la table des symboles ------------- *)
+
+Procedure SymInit;
+Var I : Integer;
+Begin
+  SymCount  := 0;
+  ScopeTop  := 0;
+  CurScope  := 0;
+  For I := 0 To MAX_SYM - 1 Do
+  Begin
+    SymTab[I].Name        := '';
+    SymTab[I].MangledName := '';
+    SymTab[I].Kind        := SK_VAR;
+    SymTab[I].TypeIdx     := TY_UNKNOWN;
+    SymTab[I].Offset      := 0;
+    SymTab[I].ScopeLevel  := 0;
+    SymTab[I].IsExported  := False;
+    SymTab[I].IsImported  := False;
+    SymTab[I].IsReadonly  := False;
+    SymTab[I].ImmVal      := 0;
+    SymTab[I].DeclLine    := 0;
+  End;
+  For I := 0 To MAX_SCOPE - 1 Do
+    ScopeStack[I] := 0;
+End;
+
+(* ---- SymFind : rechercher un symbole par nom (du plus recent) *)
+(* Parcourt de la fin vers le debut pour respecter le shadowing.  *)
+
+Function SymFind(Const Name : TString) : Integer;
+Var I : Integer;
+Begin
+  For I := SymCount - 1 DownTo 0 Do
+    If SymTab[I].Name = Name Then
+    Begin
+      SymFind := I;
+      Exit;
+    End;
+  SymFind := -1;
+End;
+
+(* ---- SymFindInScope : rechercher dans un scope precis -------- *)
+(* Ne retourne que les symboles dont ScopeLevel = Level.           *)
+
+Function SymFindInScope(Const Name : TString;
+                        Level : Integer) : Integer;
+Var I : Integer;
+Begin
+  For I := SymCount - 1 DownTo 0 Do
+    If (SymTab[I].Name = Name) And
+       (SymTab[I].ScopeLevel = Level) Then
+    Begin
+      SymFindInScope := I;
+      Exit;
+    End;
+  SymFindInScope := -1;
+End;
+
+(* ---- SymAdd : ajouter un symbole dans la table --------------- *)
+(* Retourne l index du symbole (0-base) ou -1 si la table est     *)
+(* pleine.                                                         *)
+
+Function SymAdd(Const Name : TString; Kind : TSymKind;
+                TypeIdx, Offset : Integer) : Integer;
+Begin
+  If SymCount >= MAX_SYM Then
+  Begin
+    CompileError('table des symboles pleine (max=' +
+                 IntToStr(MAX_SYM) + ')');
+    SymAdd := -1;
+    Exit;
+  End;
+  SymTab[SymCount].Name        := Name;
+  SymTab[SymCount].MangledName := SymMangle(Name, Kind);
+  SymTab[SymCount].Kind        := Kind;
+  SymTab[SymCount].TypeIdx     := TypeIdx;
+  SymTab[SymCount].Offset      := Offset;
+  SymTab[SymCount].ScopeLevel  := CurScope;
+  SymTab[SymCount].IsExported  := False;
+  SymTab[SymCount].IsImported  := False;
+  SymTab[SymCount].IsReadonly  := False;
+  SymTab[SymCount].ImmVal      := 0;
+  SymTab[SymCount].DeclLine    := 0;
+
+  If Opts.DebugMode Then
+    WriteLn('  SYM_ADD[', SymCount, ']: ', Name,
+            ' kind=', SymKindStr(Kind),
+            ' scope=', CurScope,
+            ' -> ', SymTab[SymCount].MangledName);
+
+  SymAdd := SymCount;
+  Inc(SymCount);
+  Inc(TotalSyms);
+End;
+
+(* ---- SymEnterScope : entrer dans une nouvelle portee --------- *)
+(* Chaque BEGIN, PROCEDURE, MODULE cree un nouvel environnement.  *)
+
+Procedure SymEnterScope;
+Begin
+  If ScopeTop >= MAX_SCOPE Then
+  Begin
+    CompileError('portees trop imbriquees (max=' +
+                 IntToStr(MAX_SCOPE) + ')');
+    Exit;
+  End;
+  ScopeStack[ScopeTop] := SymCount;
+  Inc(ScopeTop);
+  Inc(CurScope);
+  If Opts.DebugMode Then
+    WriteLn('  SCOPE_ENTER: level=', CurScope);
+End;
+
+(* ---- SymLeaveScope : quitter la portee courante -------------- *)
+(* Les symboles locaux de cette portee sont retires de la table.   *)
+
+Procedure SymLeaveScope;
+Begin
+  If ScopeTop <= 0 Then
+  Begin
+    CompileError('SymLeaveScope: pile de scopes vide');
+    Exit;
+  End;
+  Dec(ScopeTop);
+  SymCount := ScopeStack[ScopeTop];
+  Dec(CurScope);
+  If Opts.DebugMode Then
+    WriteLn('  SCOPE_LEAVE: level=', CurScope);
+End;
+
+(* ---- SymRegisterBuiltins : enregistrer les predeclares M3 --- *)
+(* Types primitifs, constantes predefinies, et procedures          *)
+(* predeclares de Modula-3.                                        *)
+
+Procedure SymRegisterBuiltins;
+Begin
+  (* Types primitifs Modula-3 *)
+  SymAdd('INTEGER',     SK_TYPE, TY_IDX_INTEGER,  0);
+  SymAdd('CARDINAL',    SK_TYPE, TY_IDX_CARDINAL, 0);
+  SymAdd('BOOLEAN',     SK_TYPE, TY_IDX_BOOLEAN,  0);
+  SymAdd('CHAR',        SK_TYPE, TY_IDX_CHAR,     0);
+  SymAdd('REAL',        SK_TYPE, TY_IDX_REAL,      0);
+  SymAdd('LONGREAL',    SK_TYPE, TY_IDX_LONGREAL,  0);
+  SymAdd('TEXT',        SK_TYPE, TY_IDX_TEXT,      0);
+
+  (* Constantes predefinies *)
+  SymAdd('TRUE',        SK_CONST, TY_IDX_BOOLEAN, 0);
+  SymTab[SymCount - 1].ImmVal := 1;
+  SymAdd('FALSE',       SK_CONST, TY_IDX_BOOLEAN, 0);
+  SymTab[SymCount - 1].ImmVal := 0;
+  SymAdd('NIL',         SK_CONST, TY_IDX_NIL,     0);
+  SymTab[SymCount - 1].ImmVal := 0;
+
+  (* Procedures predefinies Modula-3 *)
+  SymAdd('ABS',         SK_PROC, TY_IDX_INTEGER,  0);
+  SymAdd('MAX',         SK_PROC, TY_IDX_INTEGER,  0);
+  SymAdd('MIN',         SK_PROC, TY_IDX_INTEGER,  0);
+  SymAdd('ORD',         SK_PROC, TY_IDX_INTEGER,  0);
+  SymAdd('VAL',         SK_PROC, TY_IDX_INTEGER,  0);
+  SymAdd('FIRST',       SK_PROC, TY_IDX_INTEGER,  0);
+  SymAdd('LAST',        SK_PROC, TY_IDX_INTEGER,  0);
+  SymAdd('NUMBER',      SK_PROC, TY_IDX_INTEGER,  0);
+  SymAdd('FLOAT',       SK_PROC, TY_IDX_REAL,     0);
+  SymAdd('TRUNC',       SK_PROC, TY_IDX_INTEGER,  0);
+  SymAdd('ROUND',       SK_PROC, TY_IDX_INTEGER,  0);
+  SymAdd('CEILING',     SK_PROC, TY_IDX_INTEGER,  0);
+  SymAdd('FLOOR',       SK_PROC, TY_IDX_INTEGER,  0);
+  SymAdd('INC',         SK_PROC, TY_IDX_VOID,     0);
+  SymAdd('DEC',         SK_PROC, TY_IDX_VOID,     0);
+  SymAdd('NEW',         SK_PROC, TY_IDX_NIL,      0);
+  SymAdd('DISPOSE',     SK_PROC, TY_IDX_VOID,     0);
+  SymAdd('ISTYPE',      SK_PROC, TY_IDX_BOOLEAN,  0);
+  SymAdd('NARROW',      SK_PROC, TY_IDX_NIL,      0);
+  SymAdd('TYPECODE',    SK_PROC, TY_IDX_INTEGER,  0);
+  SymAdd('BITSIZE',     SK_PROC, TY_IDX_INTEGER,  0);
+  SymAdd('BYTESIZE',    SK_PROC, TY_IDX_INTEGER,  0);
+  SymAdd('ADRSIZE',     SK_PROC, TY_IDX_INTEGER,  0);
+  SymAdd('LOOPHOLE',    SK_PROC, TY_IDX_INTEGER,  0);
+  SymAdd('ADR',         SK_PROC, TY_IDX_INTEGER,  0);
+  SymAdd('SUBARRAY',    SK_PROC, TY_IDX_INTEGER,  0);
+
+  (* Modules standard couramment importes *)
+  SymAdd('Wr',          SK_MODULE, TY_UNKNOWN, 0);
+  SymTab[SymCount - 1].IsImported := True;
+  SymAdd('Rd',          SK_MODULE, TY_UNKNOWN, 0);
+  SymTab[SymCount - 1].IsImported := True;
+  SymAdd('Fmt',         SK_MODULE, TY_UNKNOWN, 0);
+  SymTab[SymCount - 1].IsImported := True;
+  SymAdd('Text',        SK_MODULE, TY_UNKNOWN, 0);
+  SymTab[SymCount - 1].IsImported := True;
+  SymAdd('Stdio',       SK_MODULE, TY_UNKNOWN, 0);
+  SymTab[SymCount - 1].IsImported := True;
+  SymAdd('Math',        SK_MODULE, TY_UNKNOWN, 0);
+  SymTab[SymCount - 1].IsImported := True;
+  SymAdd('Word',        SK_MODULE, TY_UNKNOWN, 0);
+  SymTab[SymCount - 1].IsImported := True;
+  SymAdd('Process',     SK_MODULE, TY_UNKNOWN, 0);
+  SymTab[SymCount - 1].IsImported := True;
+  SymAdd('IO',          SK_MODULE, TY_UNKNOWN, 0);
+  SymTab[SymCount - 1].IsImported := True;
+  SymAdd('Params',      SK_MODULE, TY_UNKNOWN, 0);
+  SymTab[SymCount - 1].IsImported := True;
+
+  (* Exceptions predefinies *)
+  SymAdd('RuntimeError', SK_EXCEPTION, TY_UNKNOWN, 0);
+
+  If Opts.DebugMode Then
+    WriteLn('  Builtins registres : ', SymCount, ' symboles');
+End;
+
 (* ---- Statistiques ----------------------------------------- *)
 
 Procedure ShowStats;
@@ -2378,6 +2689,8 @@ Begin
 
   DataInit;
   TokenPoolInit;
+  SymInit;
+  SymRegisterBuiltins;
 
   LexInit;
   LexNextToken;
@@ -2402,9 +2715,10 @@ Begin
   Begin
     WriteLn('  Tokens         : ', TokenCount);
     WriteLn('  Donnees (DATA) : ', DataCount);
+    WriteLn('  Symboles       : ', SymCount);
   End;
 
-  (* TODO 04+ : ParseCompilationUnit, EmitRuntime, etc. *)
+  (* TODO 05+ : ParseCompilationUnit, EmitRuntime, etc. *)
 
   If Opts.Verbose Then ShowStats;
   Cleanup;
