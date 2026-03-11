@@ -2844,7 +2844,13 @@ Begin
       Else If Op = 'shl' Then
         ExprMakeImm(Res.ImmVal Shl Right.ImmVal, TY_IDX_INT, Res)
       Else If Op = 'shr' Then
-        ExprMakeImm(Res.ImmVal Shr Right.ImmVal, TY_IDX_INT, Res)
+      Begin
+        (* Decalage arithmetique a droite : preserve le signe *)
+        If Res.ImmVal < 0 Then
+          ExprMakeImm(Not (Not Res.ImmVal Shr Right.ImmVal), TY_IDX_INT, Res)
+        Else
+          ExprMakeImm(Res.ImmVal Shr Right.ImmVal, TY_IDX_INT, Res);
+      End
       Else If Op = 'ushr' Then
         ExprMakeImm(Res.ImmVal Shr Right.ImmVal, TY_IDX_INT, Res)
       Else If Op = 'and' Then
