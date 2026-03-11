@@ -1,5 +1,5 @@
 ; TPCW32 - Compilateur Turbo Pascal -> ASM 80386 Win32
-; Genere automatiquement a partir de : SAMPLES/PASCAL/test_expr.pas
+; Genere automatiquement a partir de : SAMPLES/PASCAL/test_todo21.pas
 
 .386
 .MODEL FLAT, STDCALL
@@ -222,15 +222,23 @@ OVR_RESULT  DD 0
 OVR_BUFSIZE DD 0
 
 ; --- Constantes et donnees utilisateur ---
-_TPK_1  DB 'Hello World',0
-_TPK_2  DB 'A',0
-_TPK_3  DB 'Test',0
-_TPV_X  DD 0
-_TPV_Y  DD 0
-_TPV_Z  DD 0
-_TPV_C  DB 0
-_TPV_B  DB 0
-_TPV_S  DB 256 DUP(0)
+_TPK_1  DB '=== Test unite Strings (TODO 21) ===',0
+_TPK_2  DB 'Hello World',0
+_TPK_3  DB 'StrCopy: ',0
+_TPK_4  DB 'StrLen: ',0
+_TPK_5  DB 'Hello',0
+_TPK_6  DB ' World',0
+_TPK_7  DB 'StrCat: ',0
+_TPK_8  DB 'StrComp(equal): ',0
+_TPK_9  DB 'hello',0
+_TPK_10  DB 'StrUpper: ',0
+_TPK_11  DB 'HELLO',0
+_TPK_12  DB 'StrLower: ',0
+_TPK_13  DB 'Done.',0
+_TPV_BUF1  DB 256 DUP(0)
+_TPV_BUF2  DB 256 DUP(0)
+_TPV_P  DD 0
+_TPV_N  DD 0
 
 ; --- Segment de code ---
 .CODE
@@ -251,97 +259,125 @@ _TPF_Main:
 ; Obtenir le tas du processus
         CALL GetProcessHeap
         MOV [HHEAP],EAX
-        MOV EAX,42
-        MOV DWORD PTR [_TPV_X],EAX
-        MOV EAX,0
-        MOV DWORD PTR [_TPV_Y],EAX
-        MOV EAX,1
-        NEG EAX
-        MOV DWORD PTR [_TPV_Z],EAX
-        MOV EAX,100
-        MOV DWORD PTR [_TPV_X],EAX
-        MOV EAX,DWORD PTR [_TPV_X]
-        MOV DWORD PTR [_TPV_Y],EAX
-        MOV EAX,65
-        AND EAX,0FFh
-        MOV BYTE PTR [_TPV_C],AL
-        MOV EAX,1
-        MOV BYTE PTR [_TPV_B],AL
-        XOR EAX,EAX
-        MOV BYTE PTR [_TPV_B],AL
+; writeln
         LEA EAX,[_TPK_1]
         MOV ESI,EAX
-        LEA EDI,[_TPV_S]
-        CALL _TPRT_STRCPY
-        MOV EAX,4
-        MOV DWORD PTR [_TPV_X],EAX
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+        LEA EAX,[_TPV_BUF1]
+        PUSH EAX
         LEA EAX,[_TPK_2]
-        AND EAX,0FFh
-        MOV DWORD PTR [_TPV_X],EAX
-        MOV EAX,66
-        AND EAX,0FFh
-        MOV BYTE PTR [_TPV_C],AL
-        MOV EAX,5
-        INC EAX
-        MOV DWORD PTR [_TPV_X],EAX
-        MOV EAX,10
-        DEC EAX
-        MOV DWORD PTR [_TPV_Y],EAX
-        MOV EAX,7
-        NEG EAX
-        CDQ
-        XOR EAX,EDX
-        SUB EAX,EDX
-        MOV DWORD PTR [_TPV_X],EAX
-        MOV EAX,3
-        IMUL EAX,EAX
-        MOV DWORD PTR [_TPV_Y],EAX
-        MOV EAX,5
-        AND EAX,1
-        MOV BYTE PTR [_TPV_B],AL
-        MOV EAX,256
-        AND EAX,0FFh
-        MOV DWORD PTR [_TPV_X],EAX
-        MOV EAX,256
-        SHR EAX,8
-        AND EAX,0FFh
-        MOV DWORD PTR [_TPV_Y],EAX
-        MOV EAX,10
-        MOV DWORD PTR [_TPV_X],EAX
-        MOV EAX,DWORD PTR [_TPV_X]
-        INC EAX
-        MOV DWORD PTR [_TPV_X],EAX
-        MOV EAX,DWORD PTR [_TPV_X]
-        DEC EAX
-        MOV DWORD PTR [_TPV_X],EAX
-        MOV EAX,5
-        MOV ECX,EAX
-        MOV EAX,DWORD PTR [_TPV_X]
-        ADD EAX,ECX
-        MOV DWORD PTR [_TPV_X],EAX
-        MOV EAX,3
-        MOV ECX,EAX
-        MOV EAX,DWORD PTR [_TPV_X]
-        SUB EAX,ECX
-        MOV DWORD PTR [_TPV_X],EAX
+        PUSH EAX
+        CALL _TPF_STRCOPY
+        ADD ESP,8
 ; writeln
-        LEA ESI,[CRLF]
-        CALL _TPRT_PRINTSTR
-; write
-        MOV EAX,42
-        CALL _TPRT_NUMTOSTR
-        LEA ESI,[NUMBUF]
-        CALL _TPRT_PRINTSTR
-; writeln
-        MOV EAX,DWORD PTR [_TPV_X]
-        CALL _TPRT_NUMTOSTR
-        LEA ESI,[NUMBUF]
-        CALL _TPRT_PRINTSTR
-        LEA ESI,[CRLF]
-        CALL _TPRT_PRINTSTR
-; write
         LEA EAX,[_TPK_3]
         MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        LEA EAX,[_TPV_BUF1]
+        CALL _TPRT_NUMTOSTR
+        LEA ESI,[NUMBUF]
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+        LEA EAX,[_TPV_BUF1]
+        PUSH EAX
+        CALL lstrlenA
+        MOV DWORD PTR [_TPV_N],EAX
+; writeln
+        LEA EAX,[_TPK_4]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        MOV EAX,DWORD PTR [_TPV_N]
+        CALL _TPRT_NUMTOSTR
+        LEA ESI,[NUMBUF]
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+        LEA EAX,[_TPV_BUF2]
+        PUSH EAX
+        LEA EAX,[_TPK_5]
+        PUSH EAX
+        CALL _TPF_STRCOPY
+        ADD ESP,8
+        LEA EAX,[_TPV_BUF2]
+        PUSH EAX
+        LEA EAX,[_TPK_6]
+        PUSH EAX
+        CALL _TPF_STRCAT
+        ADD ESP,8
+; writeln
+        LEA EAX,[_TPK_7]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        LEA EAX,[_TPV_BUF2]
+        CALL _TPRT_NUMTOSTR
+        LEA ESI,[NUMBUF]
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+        LEA EAX,[_TPV_BUF1]
+        PUSH EAX
+        LEA EAX,[_TPV_BUF2]
+        PUSH EAX
+        CALL lstrcmpA
+        MOV DWORD PTR [_TPV_N],EAX
+; writeln
+        LEA EAX,[_TPK_8]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        MOV EAX,DWORD PTR [_TPV_N]
+        CALL _TPRT_NUMTOSTR
+        LEA ESI,[NUMBUF]
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+        LEA EAX,[_TPV_BUF1]
+        PUSH EAX
+        LEA EAX,[_TPK_9]
+        PUSH EAX
+        CALL _TPF_STRCOPY
+        ADD ESP,8
+        LEA EAX,[_TPV_BUF1]
+        PUSH EAX
+        CALL _TPF_STRUPPER
+        ADD ESP,4
+; writeln
+        LEA EAX,[_TPK_10]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        LEA EAX,[_TPV_BUF1]
+        CALL _TPRT_NUMTOSTR
+        LEA ESI,[NUMBUF]
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+        LEA EAX,[_TPV_BUF1]
+        PUSH EAX
+        LEA EAX,[_TPK_11]
+        PUSH EAX
+        CALL _TPF_STRCOPY
+        ADD ESP,8
+        LEA EAX,[_TPV_BUF1]
+        PUSH EAX
+        CALL _TPF_STRLOWER
+        ADD ESP,4
+; writeln
+        LEA EAX,[_TPK_12]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        LEA EAX,[_TPV_BUF1]
+        CALL _TPRT_NUMTOSTR
+        LEA ESI,[NUMBUF]
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+; writeln
+        LEA EAX,[_TPK_13]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
 _TPL_1:
         PUSH 0

@@ -97,6 +97,13 @@ EXTRN _BitBlt@36:NEAR
 EXTRN _DeleteDC@4:NEAR
 EXTRN _FloodFill@16:NEAR
 EXTRN _GetStockObject@4:NEAR
+; --- Imports Win32 pour unite Strings (TODO 21) ---
+; --- kernel32.dll ---
+EXTRN _lstrlenA@4:NEAR
+EXTRN _lstrcpyA@8:NEAR
+EXTRN _lstrcatA@8:NEAR
+EXTRN _lstrcmpA@8:NEAR
+EXTRN _lstrcmpiA@8:NEAR
 
 ; --- Segment de donnees ---
 .DATA
@@ -203,6 +210,16 @@ GR_ERRMSG1  DB '(BGI) graphics not installed',0
 GR_ERRMSG2  DB 'Graphics hardware not detected',0
 GR_DRVNAME  DB 'EGAVGA',0
 GR_MODNAME  DB '640x480x16',0
+
+; --- Variables Strings (unite Strings emulation) ---
+STR_TMPBUF  DB 256 DUP(0)
+STR_PASBUF  DB 256 DUP(0)
+; --- Variables Printer (unite Printer emulation) ---
+PRN_HANDLE  DD -1
+PRN_FNAME   DB 'NUL',0
+; --- Variables Overlay (stubs) ---
+OVR_RESULT  DD 0
+OVR_BUFSIZE DD 0
 
 ; --- Constantes et donnees utilisateur ---
 _TPK_1  DB '=== Test 1: Compteur simple ===',0
@@ -1893,6 +1910,410 @@ _TPRT_TEXTWIDTH:
         CALL GetTextExtentPoint32A
         POPAD
         MOV EAX,DWORD PTR [GR_TXSIZE2]
+        POP EBP
+        RET
+
+; ============================================================
+;  RUNTIME STRINGS : routines unite Strings (PChar / ASCIIZ)  
+; ============================================================
+
+_TPRT_STRCOPY:
+        PUSH EBP
+        MOV EBP,ESP
+        MOV EAX,DWORD PTR [EBP+12]
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP+8]
+        PUSH EAX
+        CALL lstrcpyA
+        MOV EAX,DWORD PTR [EBP+8]
+        POP EBP
+        RET
+
+_TPRT_STRCAT:
+        PUSH EBP
+        MOV EBP,ESP
+        MOV EAX,DWORD PTR [EBP+12]
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP+8]
+        PUSH EAX
+        CALL lstrcatA
+        MOV EAX,DWORD PTR [EBP+8]
+        POP EBP
+        RET
+
+_TPRT_STRPOS:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSH EBX
+        PUSH ESI
+        PUSH EDI
+        MOV ESI,DWORD PTR [EBP+8]
+        MOV EDI,DWORD PTR [EBP+12]
+        PUSH EDI
+        CALL lstrlenA
+        MOV ECX,EAX
+        TEST ECX,ECX
+        JZ _TPRT_SP_NUL
+        PUSH ESI
+        CALL lstrlenA
+        MOV EBX,EAX
+        SUB EBX,ECX
+        JS _TPRT_SP_NF
+        INC EBX
+_TPRT_SP_LP:
+        PUSH ECX
+        PUSH ESI
+        PUSH EDI
+        REPE CMPSB
+        POP EDI
+        POP ESI
+        POP ECX
+        JE _TPRT_SP_FD
+        INC ESI
+        DEC EBX
+        JNZ _TPRT_SP_LP
+_TPRT_SP_NF:
+        XOR EAX,EAX
+        JMP _TPRT_SP_DN
+_TPRT_SP_NUL:
+        MOV EAX,ESI
+        JMP _TPRT_SP_DN
+_TPRT_SP_FD:
+        MOV EAX,ESI
+_TPRT_SP_DN:
+        POP EDI
+        POP ESI
+        POP EBX
+        POP EBP
+        RET
+
+_TPRT_STRSCAN:
+        PUSH EBP
+        MOV EBP,ESP
+        MOV EDX,DWORD PTR [EBP+8]
+        MOV CL,BYTE PTR [EBP+12]
+_TPRT_SC_LP:
+        MOV AL,BYTE PTR [EDX]
+        CMP AL,CL
+        JE _TPRT_SC_FD
+        TEST AL,AL
+        JZ _TPRT_SC_NF
+        INC EDX
+        JMP _TPRT_SC_LP
+_TPRT_SC_NF:
+        XOR EAX,EAX
+        POP EBP
+        RET
+_TPRT_SC_FD:
+        MOV EAX,EDX
+        POP EBP
+        RET
+
+_TPRT_STRRSCAN:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSH EBX
+        MOV EDX,DWORD PTR [EBP+8]
+        MOV CL,BYTE PTR [EBP+12]
+        XOR EBX,EBX
+_TPRT_RS_LP:
+        MOV AL,BYTE PTR [EDX]
+        TEST AL,AL
+        JZ _TPRT_RS_DN
+        CMP AL,CL
+        JNE _TPRT_RS_NX
+        MOV EBX,EDX
+_TPRT_RS_NX:
+        INC EDX
+        JMP _TPRT_RS_LP
+_TPRT_RS_DN:
+        MOV EAX,EBX
+        POP EBX
+        POP EBP
+        RET
+
+_TPRT_STREND:
+        MOV EAX,DWORD PTR [ESP+4]
+_TPRT_SE_LP:
+        CMP BYTE PTR [EAX],0
+        JE _TPRT_SE_DN
+        INC EAX
+        JMP _TPRT_SE_LP
+_TPRT_SE_DN:
+        RET
+
+_TPRT_STRMOVE:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSH ESI
+        PUSH EDI
+        PUSH ECX
+        MOV EDI,DWORD PTR [EBP+8]
+        MOV ESI,DWORD PTR [EBP+12]
+        MOV ECX,DWORD PTR [EBP+16]
+        REP MOVSB
+        POP ECX
+        POP EDI
+        POP ESI
+        MOV EAX,DWORD PTR [EBP+8]
+        POP EBP
+        RET
+
+_TPRT_STRNEW:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSH EBX
+        MOV EAX,DWORD PTR [EBP+8]
+        PUSH EAX
+        CALL lstrlenA
+        INC EAX
+        MOV EBX,EAX
+        PUSH EBX
+        PUSH 0
+        PUSH DWORD PTR [HHEAP]
+        CALL HeapAlloc
+        TEST EAX,EAX
+        JZ _TPRT_SN_DN
+        PUSH DWORD PTR [EBP+8]
+        PUSH EAX
+        MOV EBX,EAX
+        CALL lstrcpyA
+        MOV EAX,EBX
+_TPRT_SN_DN:
+        POP EBX
+        POP EBP
+        RET
+
+_TPRT_STRDISPOSE:
+        PUSH EBP
+        MOV EBP,ESP
+        MOV EAX,DWORD PTR [EBP+8]
+        TEST EAX,EAX
+        JZ _TPRT_SD_DN
+        PUSH EAX
+        PUSH 0
+        PUSH DWORD PTR [HHEAP]
+        CALL HeapFree
+_TPRT_SD_DN:
+        POP EBP
+        RET
+
+_TPRT_STRPAS:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSH ESI
+        PUSH EDI
+        MOV ESI,DWORD PTR [EBP+8]
+        PUSH ESI
+        CALL lstrlenA
+        CMP EAX,255
+        JBE _TPRT_PA_OK
+        MOV EAX,255
+_TPRT_PA_OK:
+        LEA EDI,[STR_PASBUF]
+        MOV BYTE PTR [EDI],AL
+        MOV ECX,EAX
+        INC EDI
+        REP MOVSB
+        MOV EAX,OFFSET STR_PASBUF
+        POP EDI
+        POP ESI
+        POP EBP
+        RET
+
+_TPRT_STRPCOPY:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSH ESI
+        PUSH EDI
+        MOV EDI,DWORD PTR [EBP+8]
+        MOV ESI,DWORD PTR [EBP+12]
+        XOR ECX,ECX
+        MOV CL,BYTE PTR [ESI]
+        INC ESI
+        REP MOVSB
+        MOV BYTE PTR [EDI],0
+        MOV EAX,DWORD PTR [EBP+8]
+        POP EDI
+        POP ESI
+        POP EBP
+        RET
+
+_TPRT_STRUPPER:
+        PUSH EBP
+        MOV EBP,ESP
+        MOV EDX,DWORD PTR [EBP+8]
+        MOV EAX,EDX
+_TPRT_SU_LP:
+        MOV CL,BYTE PTR [EDX]
+        TEST CL,CL
+        JZ _TPRT_SU_DN
+        CMP CL,'a'
+        JB _TPRT_SU_NX
+        CMP CL,'z'
+        JA _TPRT_SU_NX
+        SUB CL,32
+        MOV BYTE PTR [EDX],CL
+_TPRT_SU_NX:
+        INC EDX
+        JMP _TPRT_SU_LP
+_TPRT_SU_DN:
+        POP EBP
+        RET
+
+_TPRT_STRLOWER:
+        PUSH EBP
+        MOV EBP,ESP
+        MOV EDX,DWORD PTR [EBP+8]
+        MOV EAX,EDX
+_TPRT_SL_LP:
+        MOV CL,BYTE PTR [EDX]
+        TEST CL,CL
+        JZ _TPRT_SL_DN
+        CMP CL,'A'
+        JB _TPRT_SL_NX
+        CMP CL,'Z'
+        JA _TPRT_SL_NX
+        ADD CL,32
+        MOV BYTE PTR [EDX],CL
+_TPRT_SL_NX:
+        INC EDX
+        JMP _TPRT_SL_LP
+_TPRT_SL_DN:
+        POP EBP
+        RET
+
+_TPRT_STRLCOPY:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSH ESI
+        PUSH EDI
+        MOV EDI,DWORD PTR [EBP+8]
+        MOV ESI,DWORD PTR [EBP+12]
+        MOV ECX,DWORD PTR [EBP+16]
+_TPRT_LC_LP:
+        TEST ECX,ECX
+        JZ _TPRT_LC_DN
+        MOV AL,BYTE PTR [ESI]
+        MOV BYTE PTR [EDI],AL
+        TEST AL,AL
+        JZ _TPRT_LC_DN
+        INC ESI
+        INC EDI
+        DEC ECX
+        JMP _TPRT_LC_LP
+_TPRT_LC_DN:
+        MOV BYTE PTR [EDI],0
+        MOV EAX,DWORD PTR [EBP+8]
+        POP EDI
+        POP ESI
+        POP EBP
+        RET
+
+_TPRT_STRLCAT:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSH EBX
+        PUSH ESI
+        PUSH EDI
+        MOV EDI,DWORD PTR [EBP+8]
+_TPRT_LA_FE:
+        CMP BYTE PTR [EDI],0
+        JE _TPRT_LA_CP
+        INC EDI
+        JMP _TPRT_LA_FE
+_TPRT_LA_CP:
+        MOV EBX,EDI
+        SUB EBX,DWORD PTR [EBP+8]
+        MOV ECX,DWORD PTR [EBP+16]
+        SUB ECX,EBX
+        JLE _TPRT_LA_DN
+        MOV ESI,DWORD PTR [EBP+12]
+_TPRT_LA_LP:
+        TEST ECX,ECX
+        JZ _TPRT_LA_DN
+        MOV AL,BYTE PTR [ESI]
+        MOV BYTE PTR [EDI],AL
+        TEST AL,AL
+        JZ _TPRT_LA_DN
+        INC ESI
+        INC EDI
+        DEC ECX
+        JMP _TPRT_LA_LP
+_TPRT_LA_DN:
+        MOV BYTE PTR [EDI],0
+        MOV EAX,DWORD PTR [EBP+8]
+        POP EDI
+        POP ESI
+        POP EBX
+        POP EBP
+        RET
+
+_TPRT_STRECOPY:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSH ESI
+        PUSH EDI
+        MOV EDI,DWORD PTR [EBP+8]
+        MOV ESI,DWORD PTR [EBP+12]
+_TPRT_EC_LP:
+        MOV AL,BYTE PTR [ESI]
+        MOV BYTE PTR [EDI],AL
+        TEST AL,AL
+        JZ _TPRT_EC_DN
+        INC ESI
+        INC EDI
+        JMP _TPRT_EC_LP
+_TPRT_EC_DN:
+        MOV EAX,EDI
+        POP EDI
+        POP ESI
+        POP EBP
+        RET
+
+_TPRT_STRLICOMP:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSH ESI
+        PUSH EDI
+        MOV ESI,DWORD PTR [EBP+8]
+        MOV EDI,DWORD PTR [EBP+12]
+        MOV ECX,DWORD PTR [EBP+16]
+_TPRT_LI_LP:
+        TEST ECX,ECX
+        JZ _TPRT_LI_EQ
+        MOV AL,BYTE PTR [ESI]
+        MOV AH,BYTE PTR [EDI]
+        CMP AL,'a'
+        JB _TPRT_LI_N1
+        CMP AL,'z'
+        JA _TPRT_LI_N1
+        SUB AL,32
+_TPRT_LI_N1:
+        CMP AH,'a'
+        JB _TPRT_LI_N2
+        CMP AH,'z'
+        JA _TPRT_LI_N2
+        SUB AH,32
+_TPRT_LI_N2:
+        CMP AL,AH
+        JNE _TPRT_LI_NE
+        TEST AL,AL
+        JZ _TPRT_LI_EQ
+        INC ESI
+        INC EDI
+        DEC ECX
+        JMP _TPRT_LI_LP
+_TPRT_LI_EQ:
+        XOR EAX,EAX
+        JMP _TPRT_LI_DN
+_TPRT_LI_NE:
+        MOVZX EAX,AL
+        MOVZX EDX,AH
+        SUB EAX,EDX
+_TPRT_LI_DN:
+        POP EDI
+        POP ESI
         POP EBP
         RET
 END _TPF_Main

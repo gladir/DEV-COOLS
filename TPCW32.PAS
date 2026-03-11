@@ -451,7 +451,7 @@
               GraphColorMode, GraphMode, HiRes, HiResColor
               Draw, Plot, ColorTable, Palette
 
-  TODO 21 - UNITES STRINGS, PRINTER, OVERLAY, TURBO3, OBJECTS
+  TODO 21 - UNITES STRINGS, PRINTER, OVERLAY, TURBO3, OBJECTS [IMPLEMENTE]
             Unite Strings (fonctions PChar / ASCIIZ) :
               StrCopy, StrCat, StrLen, StrComp, StrPos, StrScan,
               StrEnd, StrMove, StrNew, StrDispose, StrPas, StrPCopy,
@@ -3501,6 +3501,37 @@ Begin
   RegProc('PALETTE');      RegProc('GRAPHBACKGROUND');
   RegProc('GRAPHWINDOW');  RegProc('PLOT');
   RegProc('DRAW');         RegProc('COLORTABLE');
+
+  { ---------------------------------------------------------- }
+  { Procedures et fonctions de l unite Strings (TODO 21)       }
+  { Fonctions PChar / ASCIIZ                                    }
+  { ---------------------------------------------------------- }
+  RegFunc('STRLEN');      RegFunc('STRCOPY');
+  RegFunc('STRCAT');      RegFunc('STRCOMP');
+  RegFunc('STRICOMP');    RegFunc('STRPOS');
+  RegFunc('STRSCAN');     RegFunc('STRRSCAN');
+  RegFunc('STREND');      RegFunc('STRMOVE');
+  RegFunc('STRNEW');      RegFunc('STRPAS');
+  RegFunc('STRPCOPY');    RegFunc('STRUPPER');
+  RegFunc('STRLOWER');    RegFunc('STRLCOPY');
+  RegFunc('STRLCAT');     RegFunc('STRECOPY');
+  RegFunc('STRLICOMP');
+  RegProc('STRDISPOSE');
+
+  { ---------------------------------------------------------- }
+  { Procedures et fonctions de l unite Printer (TODO 21)       }
+  { Emulation imprimante -> fichier NUL ou redirection          }
+  { ---------------------------------------------------------- }
+  RegProc('ASSIGNLST');
+
+  { ---------------------------------------------------------- }
+  { Procedures et fonctions de l unite Overlay (TODO 21)       }
+  { Stubs : overlays non necessaires en Win32 memoire FLAT      }
+  { ---------------------------------------------------------- }
+  RegProc('OVRINIT');     RegProc('OVRINITEMS');
+  RegProc('OVRSETBUF');   RegProc('OVRCLEARBUF');
+  RegProc('OVRSETRETRY');
+  RegFunc('OVRGETBUF');   RegFunc('OVRGETRETURNCODE');
 End;
 
 { ============================================================ }
@@ -4227,6 +4258,13 @@ Begin
   EmitRaw('EXTRN _DeleteDC@4:NEAR');
   EmitRaw('EXTRN _FloodFill@16:NEAR');
   EmitRaw('EXTRN _GetStockObject@4:NEAR');
+  EmitComment('--- Imports Win32 pour unite Strings (TODO 21) ---');
+  EmitComment('--- kernel32.dll ---');
+  EmitRaw('EXTRN _lstrlenA@4:NEAR');
+  EmitRaw('EXTRN _lstrcpyA@8:NEAR');
+  EmitRaw('EXTRN _lstrcatA@8:NEAR');
+  EmitRaw('EXTRN _lstrcmpA@8:NEAR');
+  EmitRaw('EXTRN _lstrcmpiA@8:NEAR');
   EmitBlankLine;
 End;
 
@@ -4356,6 +4394,18 @@ Begin
   EmitRaw('GR_ERRMSG2  DB ''Graphics hardware not detected'',0');
   EmitRaw('GR_DRVNAME  DB ''EGAVGA'',0'); { nom pilote par defaut                 }
   EmitRaw('GR_MODNAME  DB ''640x480x16'',0'); { nom mode par defaut               }
+  EmitBlankLine;
+
+  { Variables Strings / Printer / Overlay (TODO 21) }
+  EmitComment('--- Variables Strings (unite Strings emulation) ---');
+  EmitRaw('STR_TMPBUF  DB 256 DUP(0)');  { buffer temporaire pour conversions     }
+  EmitRaw('STR_PASBUF  DB 256 DUP(0)');  { buffer pour StrPas (PChar->Pascal)     }
+  EmitComment('--- Variables Printer (unite Printer emulation) ---');
+  EmitRaw('PRN_HANDLE  DD -1');          { handle fichier imprimante (NUL)        }
+  EmitRaw('PRN_FNAME   DB ''NUL'',0');   { nom fichier imprimante par defaut      }
+  EmitComment('--- Variables Overlay (stubs) ---');
+  EmitRaw('OVR_RESULT  DD 0');           { ovrOk = 0                              }
+  EmitRaw('OVR_BUFSIZE DD 0');           { taille buffer overlay                  }
   EmitBlankLine;
 
   { Emettre toutes les entrees du pool de donnees }
@@ -8288,6 +8338,329 @@ Begin
       Exit;
     End;
 
+    { ---- TODO 21 : Fonctions Strings (retournent valeur dans EAX) ---- }
+
+    { STRLEN(S) -> longueur de la chaine PChar }
+    If Up = 'STRLEN' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL lstrlenA');
+      Exit;
+    End;
+
+    { STRCOPY(Dest, Source) -> PChar (copie chaine, retourne Dest) }
+    If Up = 'STRCOPY' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);  EmitInstr('PUSH EAX');  { Dest }
+        EPMatch(',');
+        ParseExpr(PI);  EmitInstr('PUSH EAX');  { Source }
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'STRCOPY');
+      EmitInstr('ADD ESP,8');
+      Exit;
+    End;
+
+    { STRCAT(Dest, Source) -> PChar (concatene, retourne Dest) }
+    If Up = 'STRCAT' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);  EmitInstr('PUSH EAX');  { Dest }
+        EPMatch(',');
+        ParseExpr(PI);  EmitInstr('PUSH EAX');  { Source }
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'STRCAT');
+      EmitInstr('ADD ESP,8');
+      Exit;
+    End;
+
+    { STRCOMP(S1, S2) -> Integer (comparaison) }
+    If Up = 'STRCOMP' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitInstr('CALL lstrcmpA');
+      Exit;
+    End;
+
+    { STRICOMP(S1, S2) -> Integer (comparaison insensible a la casse) }
+    If Up = 'STRICOMP' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitInstr('CALL lstrcmpiA');
+      Exit;
+    End;
+
+    { STRLICOMP(S1, S2, MaxLen) -> Integer (comparaison insensible, limitee) }
+    If Up = 'STRLICOMP' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'STRLICOMP');
+      EmitInstr('ADD ESP,12');
+      Exit;
+    End;
+
+    { STRPOS(S1, S2) -> PChar (position sous-chaine ou NIL) }
+    If Up = 'STRPOS' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'STRPOS');
+      EmitInstr('ADD ESP,8');
+      Exit;
+    End;
+
+    { STRSCAN(S, C) -> PChar (premiere occurrence du caractere) }
+    If Up = 'STRSCAN' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'STRSCAN');
+      EmitInstr('ADD ESP,8');
+      Exit;
+    End;
+
+    { STRRSCAN(S, C) -> PChar (derniere occurrence du caractere) }
+    If Up = 'STRRSCAN' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'STRRSCAN');
+      EmitInstr('ADD ESP,8');
+      Exit;
+    End;
+
+    { STREND(S) -> PChar (pointeur vers le zero terminal) }
+    If Up = 'STREND' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + TP_RT_PFX + 'STREND');
+      EmitInstr('ADD ESP,4');
+      Exit;
+    End;
+
+    { STRMOVE(Dest, Source, Count) -> PChar }
+    If Up = 'STRMOVE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'STRMOVE');
+      EmitInstr('ADD ESP,12');
+      Exit;
+    End;
+
+    { STRNEW(S) -> PChar (alloue copie sur le heap) }
+    If Up = 'STRNEW' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + TP_RT_PFX + 'STRNEW');
+      EmitInstr('ADD ESP,4');
+      Exit;
+    End;
+
+    { STRPAS(S) -> String (convertit PChar en Pascal string) }
+    If Up = 'STRPAS' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + TP_RT_PFX + 'STRPAS');
+      EmitInstr('ADD ESP,4');
+      Exit;
+    End;
+
+    { STRPCOPY(Dest, Source) -> PChar (copie Pascal string vers PChar) }
+    If Up = 'STRPCOPY' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'STRPCOPY');
+      EmitInstr('ADD ESP,8');
+      Exit;
+    End;
+
+    { STRUPPER(S) -> PChar (convertit en majuscules in-place) }
+    If Up = 'STRUPPER' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + TP_RT_PFX + 'STRUPPER');
+      EmitInstr('ADD ESP,4');
+      Exit;
+    End;
+
+    { STRLOWER(S) -> PChar (convertit en minuscules in-place) }
+    If Up = 'STRLOWER' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + TP_RT_PFX + 'STRLOWER');
+      EmitInstr('ADD ESP,4');
+      Exit;
+    End;
+
+    { STRLCOPY(Dest, Source, MaxLen) -> PChar (copie limitee) }
+    If Up = 'STRLCOPY' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'STRLCOPY');
+      EmitInstr('ADD ESP,12');
+      Exit;
+    End;
+
+    { STRLCAT(Dest, Source, MaxLen) -> PChar (concatenation limitee) }
+    If Up = 'STRLCAT' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'STRLCAT');
+      EmitInstr('ADD ESP,12');
+      Exit;
+    End;
+
+    { STRECOPY(Dest, Source) -> PChar (copie, retourne fin de dest) }
+    If Up = 'STRECOPY' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'STRECOPY');
+      EmitInstr('ADD ESP,8');
+      Exit;
+    End;
+
+    { ---- TODO 21 : Fonctions Overlay (retournent valeur dans EAX) ---- }
+
+    { OVRGETBUF -> taille buffer overlay (stub, retourne 0) }
+    If Up = 'OVRGETBUF' Then
+    Begin
+      Inc(EP);
+      EmitInstr('MOV EAX,DWORD PTR [OVR_BUFSIZE]');
+      Exit;
+    End;
+
+    { OVRGETRETURNCODE -> code retour overlay (stub, retourne 0) }
+    If Up = 'OVRGETRETURNCODE' Then
+    Begin
+      Inc(EP);
+      EmitInstr('MOV EAX,DWORD PTR [OVR_RESULT]');
+      Exit;
+    End;
+
     { Appel de procedure/fonction ? }
     SI := SymFind(Up);
     If (SI >= 0) And
@@ -11667,6 +12040,105 @@ Begin
       Exit;
     End;
 
+    { ---- TODO 21 : Procedures Strings comme identifiants ---- }
+
+    { STRDISPOSE(S) : liberer chaine allouee par StrNew }
+    If Up = 'STRDISPOSE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + TP_RT_PFX + 'STRDISPOSE');
+      EmitInstr('ADD ESP,4');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { ---- TODO 21 : Procedures Printer comme identifiants ---- }
+
+    { ASSIGNLST : assigner fichier imprimante (stub) }
+    If Up = 'ASSIGNLST' Then
+    Begin
+      Inc(EP);
+      EmitComment('AssignLst (Printer unit stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { ---- TODO 21 : Procedures Overlay comme identifiants (stubs) ---- }
+
+    { OVRINIT(FileName) }
+    If Up = 'OVRINIT' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitComment('OvrInit (stub - not needed in Win32)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { OVRINITEMS }
+    If Up = 'OVRINITEMS' Then
+    Begin
+      Inc(EP);
+      EmitComment('OvrInitEMS (stub - not needed in Win32)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { OVRSETBUF(Size) }
+    If Up = 'OVRSETBUF' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitInstr('MOV DWORD PTR [OVR_BUFSIZE],EAX');
+      EmitComment('OvrSetBuf (stub - not needed in Win32)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { OVRCLEARBUF }
+    If Up = 'OVRCLEARBUF' Then
+    Begin
+      Inc(EP);
+      EmitComment('OvrClearBuf (stub - not needed in Win32)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { OVRSETRETRY(Size) }
+    If Up = 'OVRSETRETRY' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitComment('OvrSetRetry (stub - not needed in Win32)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
     { Appel de proc (dans SymTab) }
     SI := SymFind(Up);
     If (SI >= 0) And (SymTab[SI].Kind = SK_PROC) Then
@@ -14423,6 +14895,495 @@ Begin
   EmitInstr('RET');
 End;
 
+{ ============================================================ }
+{ TODO 21 - ROUTINES RUNTIME STRINGS/OVERLAY    [IMPLEMENTE]   }
+{ ============================================================ }
+
+Procedure EmitStringsRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('============================================================');
+  EmitComment(' RUNTIME STRINGS : routines unite Strings (PChar / ASCIIZ)  ');
+  EmitComment('============================================================');
+
+  { ------ _TPR_STRCOPY : copie chaine ASCIIZ ------------------- }
+  { Parametres : [ESP+4]=Dest, [ESP+8]=Source                      }
+  { Retourne Dest dans EAX                                         }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'STRCOPY');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+12]');  { Source }
+  EmitInstr('PUSH EAX');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');   { Dest }
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL lstrcpyA');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');   { retourne Dest }
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPR_STRCAT : concatene chaines ASCIIZ --------------- }
+  { Parametres : [ESP+4]=Dest, [ESP+8]=Source                      }
+  { Retourne Dest dans EAX                                         }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'STRCAT');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+12]');  { Source }
+  EmitInstr('PUSH EAX');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');   { Dest }
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL lstrcatA');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');   { retourne Dest }
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPR_STRPOS : chercher sous-chaine ------------------- }
+  { Parametres : [ESP+4]=S1 (chaine), [ESP+8]=S2 (sous-chaine)    }
+  { Retourne pointeur dans EAX ou 0 si non trouve                  }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'STRPOS');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH EDI');
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');   { S1 }
+  EmitInstr('MOV EDI,DWORD PTR [EBP+12]');  { S2 }
+  { Longueur de S2 }
+  EmitInstr('PUSH EDI');
+  EmitInstr('CALL lstrlenA');
+  EmitInstr('MOV ECX,EAX');                  { ECX = len(S2) }
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'SP_NUL');
+  { Longueur de S1 }
+  EmitInstr('PUSH ESI');
+  EmitInstr('CALL lstrlenA');
+  EmitInstr('MOV EBX,EAX');                  { EBX = len(S1) }
+  EmitInstr('SUB EBX,ECX');
+  EmitInstr('JS ' + TP_RT_PFX + 'SP_NF');   { S2 plus long que S1 }
+  EmitInstr('INC EBX');                      { nombre de positions a tester }
+  EmitLabel(TP_RT_PFX + 'SP_LP');
+  { Comparer ECX octets a ESI avec EDI }
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH EDI');
+  EmitInstr('REPE CMPSB');
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
+  EmitInstr('POP ECX');
+  EmitInstr('JE ' + TP_RT_PFX + 'SP_FD');   { trouve! }
+  EmitInstr('INC ESI');
+  EmitInstr('DEC EBX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'SP_LP');
+  EmitLabel(TP_RT_PFX + 'SP_NF');
+  EmitInstr('XOR EAX,EAX');                  { retourne NIL }
+  EmitInstr('JMP ' + TP_RT_PFX + 'SP_DN');
+  EmitLabel(TP_RT_PFX + 'SP_NUL');
+  EmitInstr('MOV EAX,ESI');                  { sous-chaine vide -> retourne S1 }
+  EmitInstr('JMP ' + TP_RT_PFX + 'SP_DN');
+  EmitLabel(TP_RT_PFX + 'SP_FD');
+  EmitInstr('MOV EAX,ESI');                  { retourne position trouvee }
+  EmitLabel(TP_RT_PFX + 'SP_DN');
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
+  EmitInstr('POP EBX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPR_STRSCAN : chercher caractere -------------------- }
+  { Parametres : [ESP+4]=S, [ESP+8]=C (caractere)                  }
+  { Retourne pointeur dans EAX ou 0 si non trouve                  }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'STRSCAN');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EDX,DWORD PTR [EBP+8]');   { S }
+  EmitInstr('MOV CL,BYTE PTR [EBP+12]');    { C }
+  EmitLabel(TP_RT_PFX + 'SC_LP');
+  EmitInstr('MOV AL,BYTE PTR [EDX]');
+  EmitInstr('CMP AL,CL');
+  EmitInstr('JE ' + TP_RT_PFX + 'SC_FD');
+  EmitInstr('TEST AL,AL');
+  EmitInstr('JZ ' + TP_RT_PFX + 'SC_NF');
+  EmitInstr('INC EDX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'SC_LP');
+  EmitLabel(TP_RT_PFX + 'SC_NF');
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'SC_FD');
+  EmitInstr('MOV EAX,EDX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPR_STRRSCAN : chercher caractere en arriere -------- }
+  { Parametres : [ESP+4]=S, [ESP+8]=C (caractere)                  }
+  { Retourne pointeur dans EAX ou 0 si non trouve                  }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'STRRSCAN');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  EmitInstr('MOV EDX,DWORD PTR [EBP+8]');   { S }
+  EmitInstr('MOV CL,BYTE PTR [EBP+12]');    { C }
+  EmitInstr('XOR EBX,EBX');                  { EBX = derniere position trouvee }
+  EmitLabel(TP_RT_PFX + 'RS_LP');
+  EmitInstr('MOV AL,BYTE PTR [EDX]');
+  EmitInstr('TEST AL,AL');
+  EmitInstr('JZ ' + TP_RT_PFX + 'RS_DN');
+  EmitInstr('CMP AL,CL');
+  EmitInstr('JNE ' + TP_RT_PFX + 'RS_NX');
+  EmitInstr('MOV EBX,EDX');
+  EmitLabel(TP_RT_PFX + 'RS_NX');
+  EmitInstr('INC EDX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'RS_LP');
+  EmitLabel(TP_RT_PFX + 'RS_DN');
+  EmitInstr('MOV EAX,EBX');
+  EmitInstr('POP EBX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPR_STREND : pointeur vers fin de chaine ------------ }
+  { Parametre : [ESP+4]=S                                          }
+  { Retourne pointeur vers le zero terminal dans EAX                }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'STREND');
+  EmitInstr('MOV EAX,DWORD PTR [ESP+4]');
+  EmitLabel(TP_RT_PFX + 'SE_LP');
+  EmitInstr('CMP BYTE PTR [EAX],0');
+  EmitInstr('JE ' + TP_RT_PFX + 'SE_DN');
+  EmitInstr('INC EAX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'SE_LP');
+  EmitLabel(TP_RT_PFX + 'SE_DN');
+  EmitInstr('RET');
+
+  { ------ _TPR_STRMOVE : deplacer octets ----------------------- }
+  { Parametres : [ESP+4]=Dest, [ESP+8]=Source, [ESP+12]=Count      }
+  { Retourne Dest dans EAX                                         }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'STRMOVE');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH EDI');
+  EmitInstr('PUSH ECX');
+  EmitInstr('MOV EDI,DWORD PTR [EBP+8]');   { Dest }
+  EmitInstr('MOV ESI,DWORD PTR [EBP+12]');  { Source }
+  EmitInstr('MOV ECX,DWORD PTR [EBP+16]');  { Count }
+  EmitInstr('REP MOVSB');
+  EmitInstr('POP ECX');
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');   { retourne Dest }
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPR_STRNEW : allouer copie sur le heap --------------- }
+  { Parametre : [ESP+4]=S (chaine source)                          }
+  { Retourne pointeur nouvelle chaine dans EAX                     }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'STRNEW');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  { Calculer longueur + 1 }
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL lstrlenA');
+  EmitInstr('INC EAX');                      { +1 pour le zero terminal }
+  EmitInstr('MOV EBX,EAX');                  { sauver taille }
+  { Allouer memoire }
+  EmitInstr('PUSH EBX');                     { taille }
+  EmitInstr('PUSH 0');                       { HEAP_ZERO_MEMORY = 0 }
+  EmitInstr('PUSH DWORD PTR [HHEAP]');
+  EmitInstr('CALL HeapAlloc');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'SN_DN');
+  { Copier la chaine }
+  EmitInstr('PUSH DWORD PTR [EBP+8]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('MOV EBX,EAX');                  { sauver pointeur resultat }
+  EmitInstr('CALL lstrcpyA');
+  EmitInstr('MOV EAX,EBX');                  { retourner pointeur }
+  EmitLabel(TP_RT_PFX + 'SN_DN');
+  EmitInstr('POP EBX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPR_STRDISPOSE : liberer chaine allouee ------------- }
+  { Parametre : [ESP+4]=S (pointeur chaine a liberer)              }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'STRDISPOSE');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'SD_DN');
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH DWORD PTR [HHEAP]');
+  EmitInstr('CALL HeapFree');
+  EmitLabel(TP_RT_PFX + 'SD_DN');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPR_STRPAS : convertir PChar en Pascal string -------- }
+  { Parametre : [ESP+4]=S (PChar)                                   }
+  { Retourne pointeur vers STR_PASBUF (format Pascal) dans EAX     }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'STRPAS');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH EDI');
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');
+  { Longueur }
+  EmitInstr('PUSH ESI');
+  EmitInstr('CALL lstrlenA');
+  EmitInstr('CMP EAX,255');
+  EmitInstr('JBE ' + TP_RT_PFX + 'PA_OK');
+  EmitInstr('MOV EAX,255');                  { tronquer a 255 }
+  EmitLabel(TP_RT_PFX + 'PA_OK');
+  EmitInstr('LEA EDI,[STR_PASBUF]');
+  EmitInstr('MOV BYTE PTR [EDI],AL');        { octet de longueur }
+  EmitInstr('MOV ECX,EAX');
+  EmitInstr('INC EDI');
+  EmitInstr('REP MOVSB');
+  EmitInstr('MOV EAX,OFFSET STR_PASBUF');
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPR_STRPCOPY : copier Pascal string vers PChar ------- }
+  { Parametres : [ESP+4]=Dest (PChar), [ESP+8]=Source (Pascal str)  }
+  { Retourne Dest dans EAX                                          }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'STRPCOPY');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH EDI');
+  EmitInstr('MOV EDI,DWORD PTR [EBP+8]');   { Dest }
+  EmitInstr('MOV ESI,DWORD PTR [EBP+12]');  { Source (Pascal string) }
+  EmitInstr('XOR ECX,ECX');
+  EmitInstr('MOV CL,BYTE PTR [ESI]');       { longueur Pascal }
+  EmitInstr('INC ESI');                      { sauter octet longueur }
+  EmitInstr('REP MOVSB');
+  EmitInstr('MOV BYTE PTR [EDI],0');         { zero terminal }
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');   { retourne Dest }
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPR_STRUPPER : majuscules in-place ------------------- }
+  { Parametre : [ESP+4]=S                                           }
+  { Retourne S dans EAX                                             }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'STRUPPER');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EDX,DWORD PTR [EBP+8]');
+  EmitInstr('MOV EAX,EDX');                  { sauver pour retour }
+  EmitLabel(TP_RT_PFX + 'SU_LP');
+  EmitInstr('MOV CL,BYTE PTR [EDX]');
+  EmitInstr('TEST CL,CL');
+  EmitInstr('JZ ' + TP_RT_PFX + 'SU_DN');
+  EmitInstr('CMP CL,''a''');
+  EmitInstr('JB ' + TP_RT_PFX + 'SU_NX');
+  EmitInstr('CMP CL,''z''');
+  EmitInstr('JA ' + TP_RT_PFX + 'SU_NX');
+  EmitInstr('SUB CL,32');
+  EmitInstr('MOV BYTE PTR [EDX],CL');
+  EmitLabel(TP_RT_PFX + 'SU_NX');
+  EmitInstr('INC EDX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'SU_LP');
+  EmitLabel(TP_RT_PFX + 'SU_DN');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPR_STRLOWER : minuscules in-place ------------------- }
+  { Parametre : [ESP+4]=S                                           }
+  { Retourne S dans EAX                                             }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'STRLOWER');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EDX,DWORD PTR [EBP+8]');
+  EmitInstr('MOV EAX,EDX');
+  EmitLabel(TP_RT_PFX + 'SL_LP');
+  EmitInstr('MOV CL,BYTE PTR [EDX]');
+  EmitInstr('TEST CL,CL');
+  EmitInstr('JZ ' + TP_RT_PFX + 'SL_DN');
+  EmitInstr('CMP CL,''A''');
+  EmitInstr('JB ' + TP_RT_PFX + 'SL_NX');
+  EmitInstr('CMP CL,''Z''');
+  EmitInstr('JA ' + TP_RT_PFX + 'SL_NX');
+  EmitInstr('ADD CL,32');
+  EmitInstr('MOV BYTE PTR [EDX],CL');
+  EmitLabel(TP_RT_PFX + 'SL_NX');
+  EmitInstr('INC EDX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'SL_LP');
+  EmitLabel(TP_RT_PFX + 'SL_DN');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPR_STRLCOPY : copie limitee ------------------------ }
+  { Parametres : [ESP+4]=Dest, [ESP+8]=Source, [ESP+12]=MaxLen     }
+  { Retourne Dest dans EAX                                         }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'STRLCOPY');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH EDI');
+  EmitInstr('MOV EDI,DWORD PTR [EBP+8]');   { Dest }
+  EmitInstr('MOV ESI,DWORD PTR [EBP+12]');  { Source }
+  EmitInstr('MOV ECX,DWORD PTR [EBP+16]');  { MaxLen }
+  EmitLabel(TP_RT_PFX + 'LC_LP');
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'LC_DN');
+  EmitInstr('MOV AL,BYTE PTR [ESI]');
+  EmitInstr('MOV BYTE PTR [EDI],AL');
+  EmitInstr('TEST AL,AL');
+  EmitInstr('JZ ' + TP_RT_PFX + 'LC_DN');
+  EmitInstr('INC ESI');
+  EmitInstr('INC EDI');
+  EmitInstr('DEC ECX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'LC_LP');
+  EmitLabel(TP_RT_PFX + 'LC_DN');
+  EmitInstr('MOV BYTE PTR [EDI],0');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPR_STRLCAT : concatenation limitee ------------------ }
+  { Parametres : [ESP+4]=Dest, [ESP+8]=Source, [ESP+12]=MaxLen     }
+  { Retourne Dest dans EAX                                         }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'STRLCAT');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH EDI');
+  EmitInstr('MOV EDI,DWORD PTR [EBP+8]');   { Dest }
+  { Trouver la fin de Dest }
+  EmitLabel(TP_RT_PFX + 'LA_FE');
+  EmitInstr('CMP BYTE PTR [EDI],0');
+  EmitInstr('JE ' + TP_RT_PFX + 'LA_CP');
+  EmitInstr('INC EDI');
+  EmitInstr('JMP ' + TP_RT_PFX + 'LA_FE');
+  EmitLabel(TP_RT_PFX + 'LA_CP');
+  { Calculer place restante }
+  EmitInstr('MOV EBX,EDI');
+  EmitInstr('SUB EBX,DWORD PTR [EBP+8]');   { longueur actuelle }
+  EmitInstr('MOV ECX,DWORD PTR [EBP+16]');  { MaxLen }
+  EmitInstr('SUB ECX,EBX');
+  EmitInstr('JLE ' + TP_RT_PFX + 'LA_DN');
+  EmitInstr('MOV ESI,DWORD PTR [EBP+12]');  { Source }
+  EmitLabel(TP_RT_PFX + 'LA_LP');
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'LA_DN');
+  EmitInstr('MOV AL,BYTE PTR [ESI]');
+  EmitInstr('MOV BYTE PTR [EDI],AL');
+  EmitInstr('TEST AL,AL');
+  EmitInstr('JZ ' + TP_RT_PFX + 'LA_DN');
+  EmitInstr('INC ESI');
+  EmitInstr('INC EDI');
+  EmitInstr('DEC ECX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'LA_LP');
+  EmitLabel(TP_RT_PFX + 'LA_DN');
+  EmitInstr('MOV BYTE PTR [EDI],0');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
+  EmitInstr('POP EBX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPR_STRECOPY : copie retournant fin ------------------- }
+  { Parametres : [ESP+4]=Dest, [ESP+8]=Source                       }
+  { Retourne pointeur vers fin de Dest dans EAX                     }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'STRECOPY');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH EDI');
+  EmitInstr('MOV EDI,DWORD PTR [EBP+8]');   { Dest }
+  EmitInstr('MOV ESI,DWORD PTR [EBP+12]');  { Source }
+  EmitLabel(TP_RT_PFX + 'EC_LP');
+  EmitInstr('MOV AL,BYTE PTR [ESI]');
+  EmitInstr('MOV BYTE PTR [EDI],AL');
+  EmitInstr('TEST AL,AL');
+  EmitInstr('JZ ' + TP_RT_PFX + 'EC_DN');
+  EmitInstr('INC ESI');
+  EmitInstr('INC EDI');
+  EmitInstr('JMP ' + TP_RT_PFX + 'EC_LP');
+  EmitLabel(TP_RT_PFX + 'EC_DN');
+  EmitInstr('MOV EAX,EDI');                  { retourne pointeur vers fin }
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPR_STRLICOMP : comparaison insensible limitee ------- }
+  { Parametres : [ESP+4]=S1, [ESP+8]=S2, [ESP+12]=MaxLen           }
+  { Retourne <0, 0, >0 dans EAX                                    }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'STRLICOMP');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH EDI');
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');   { S1 }
+  EmitInstr('MOV EDI,DWORD PTR [EBP+12]');  { S2 }
+  EmitInstr('MOV ECX,DWORD PTR [EBP+16]');  { MaxLen }
+  EmitLabel(TP_RT_PFX + 'LI_LP');
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'LI_EQ');
+  EmitInstr('MOV AL,BYTE PTR [ESI]');
+  EmitInstr('MOV AH,BYTE PTR [EDI]');
+  { Convertir en majuscules pour comparaison }
+  EmitInstr('CMP AL,''a''');
+  EmitInstr('JB ' + TP_RT_PFX + 'LI_N1');
+  EmitInstr('CMP AL,''z''');
+  EmitInstr('JA ' + TP_RT_PFX + 'LI_N1');
+  EmitInstr('SUB AL,32');
+  EmitLabel(TP_RT_PFX + 'LI_N1');
+  EmitInstr('CMP AH,''a''');
+  EmitInstr('JB ' + TP_RT_PFX + 'LI_N2');
+  EmitInstr('CMP AH,''z''');
+  EmitInstr('JA ' + TP_RT_PFX + 'LI_N2');
+  EmitInstr('SUB AH,32');
+  EmitLabel(TP_RT_PFX + 'LI_N2');
+  EmitInstr('CMP AL,AH');
+  EmitInstr('JNE ' + TP_RT_PFX + 'LI_NE');
+  EmitInstr('TEST AL,AL');
+  EmitInstr('JZ ' + TP_RT_PFX + 'LI_EQ');
+  EmitInstr('INC ESI');
+  EmitInstr('INC EDI');
+  EmitInstr('DEC ECX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'LI_LP');
+  EmitLabel(TP_RT_PFX + 'LI_EQ');
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'LI_DN');
+  EmitLabel(TP_RT_PFX + 'LI_NE');
+  EmitInstr('MOVZX EAX,AL');
+  EmitInstr('MOVZX EDX,AH');
+  EmitInstr('SUB EAX,EDX');
+  EmitLabel(TP_RT_PFX + 'LI_DN');
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+End;
+
 Procedure Run;
 Begin
   ShowBanner;
@@ -14507,6 +15468,9 @@ Begin
 
     { Emettre les routines runtime Graph (TODO 20) }
     EmitGraphRuntime;
+
+    { Emettre les routines runtime Strings/Overlay (TODO 21) }
+    EmitStringsRuntime;
 
     { TODO 13..25 : compilation complete }
 
