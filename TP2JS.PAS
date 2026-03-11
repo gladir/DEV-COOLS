@@ -206,7 +206,7 @@
              Unaire : - (negation), + (identite), NOT (negation logique/bitwise)
              Operateur de type : expr AS type (Turbo Pascal objets)
 
-   TODO 12 - ENTREES/SORTIES (Write / WriteLn / Read / ReadLn)
+   TODO 12 - ENTREES/SORTIES (Write / WriteLn / Read / ReadLn) [IMPLEMENTE]
              Write(args...) : ecriture sans retour de ligne
                Write('Hello') -> process.stdout.write("Hello") ou _TPR_Write("Hello")
                Write(42) -> _TPR_Write(String(42)) ou _TPR_WriteInt(42)
@@ -224,8 +224,10 @@
                -> String(X).padStart(Width) et R.toFixed(Decimals)
              Str(X, S) : conversion nombre vers chaine
                -> S = String(X)
+             Str(X:W:D, S) : Str avec formatage
+               -> S = X.toFixed(D).padStart(W)
              Val(S, X, Code) : conversion chaine vers nombre
-               -> X = parseInt(S) ou parseFloat(S), Code = isNaN(X) ? 1 : 0
+               -> X = Number(S), Code = isNaN(X) ? 1 : 0
 
    TODO 13 - IF / CASE / GOTO
              ParseIfStmt : IF cond THEN stmt [ELSE stmt]
@@ -2858,17 +2860,52 @@ Begin
 
   If L = 'str' Then
   Begin
+    { Str(expr[:Width[:Decs]], VarDest) }
+    { Verifier si un format :Width suit le premier argument }
+    Args := ''; Arg2 := ''; Arg3 := '';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ':') Then
+    Begin
+      Inc(P); { consommer : }
+      Arg2 := ParseExpr(P); { Width }
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ':') Then
+      Begin
+        Inc(P); { consommer : }
+        Arg3 := ParseExpr(P); { Decimals }
+      End;
+    End;
+    { Lire la variable destination apres la virgule }
+    Args := '';
     If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
        (TokenPool[P].Val = ',') Then
     Begin
       Inc(P);
-      Arg2 := ParseExpr(P);
-    End
-    Else
-      Arg2 := '';
+      Args := ParseExpr(P);
+    End;
     If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
-    If Arg2 <> '' Then
-      EmitBuiltinCall := Arg2 + ' = String(' + Arg1 + ')'
+    { Generer le code JS }
+    If (Arg2 <> '') And (Arg3 <> '') Then
+    Begin
+      { Str(X:W:D, S) -> S = X.toFixed(D).padStart(W) }
+      If Args <> '' Then
+        EmitBuiltinCall := Args + ' = ' + Arg1 + '.toFixed(' + Arg3 +
+                           ').padStart(' + Arg2 + ')'
+      Else
+        EmitBuiltinCall := Arg1 + '.toFixed(' + Arg3 + ').padStart(' +
+                           Arg2 + ')';
+    End
+    Else If Arg2 <> '' Then
+    Begin
+      { Str(X:W, S) -> S = String(X).padStart(W) }
+      If Args <> '' Then
+        EmitBuiltinCall := Args + ' = String(' + Arg1 + ').padStart(' +
+                           Arg2 + ')'
+      Else
+        EmitBuiltinCall := 'String(' + Arg1 + ').padStart(' + Arg2 + ')';
+    End
+    Else If Args <> '' Then
+      EmitBuiltinCall := Args + ' = String(' + Arg1 + ')'
     Else
       EmitBuiltinCall := 'String(' + Arg1 + ')';
     Exit;
@@ -2876,6 +2913,7 @@ Begin
 
   If L = 'val' Then
   Begin
+    { Val(S, X, Code) -> X = Number(S); Code = isNaN(X) ? 1 : 0 }
     Arg2 := ''; Arg3 := '';
     If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
        (TokenPool[P].Val = ',') Then
@@ -2890,7 +2928,11 @@ Begin
       Arg3 := ParseExpr(P);
     End;
     If (P < TokenCount) And (TokenPool[P].Val = ')') Then Inc(P);
-    If Arg2 <> '' Then
+    If (Arg2 <> '') And (Arg3 <> '') Then
+      { Val(S, X, Code) : set both X and Code }
+      EmitBuiltinCall := '(function() { ' + Arg2 + ' = Number(' + Arg1 +
+                         '); ' + Arg3 + ' = isNaN(' + Arg2 + ') ? 1 : 0; })()'
+    Else If Arg2 <> '' Then
       EmitBuiltinCall := Arg2 + ' = Number(' + Arg1 + ')'
     Else
       EmitBuiltinCall := 'Number(' + Arg1 + ')';
@@ -4633,6 +4675,180 @@ Begin
   End;
 End;
 
+{ ============================================================
+  TODO 12 - ENTREES/SORTIES [IMPLEMENTE]
+  ============================================================ }
+{ Write/WriteLn avec formatage (expr:Width et expr:Width:Decimals). }
+{ Read/ReadLn avec generation de code JavaScript reel.              }
+{ Str avec formatage optionnel. Val avec code d erreur.             }
+
+{ ---- ParseWriteArg : parser un argument de Write/WriteLn ----- }
+{ Gere expr, expr:Width, et expr:Width:Decimals.                   }
+{ Retourne la representation JS formatee de l argument.            }
+Function ParseWriteArg(Var P : Integer) : TString;
+Var
+  Expr   : TString;
+  Width  : TString;
+  Decs   : TString;
+Begin
+  Expr := ParseExpr(P);
+  Width := '';
+  Decs := '';
+
+  { Verifier si un format :Width suit }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = ':') Then
+  Begin
+    Inc(P); { consommer : }
+    Width := ParseExpr(P);
+
+    { Verifier si :Decimals suit }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ':') Then
+    Begin
+      Inc(P); { consommer : }
+      Decs := ParseExpr(P);
+    End;
+  End;
+
+  { Generer le code JS selon le format }
+  If (Width <> '') And (Decs <> '') Then
+    { expr:Width:Decs -> expr.toFixed(Decs).padStart(Width) }
+    ParseWriteArg := Expr + '.toFixed(' + Decs + ').padStart(' + Width + ')'
+  Else If Width <> '' Then
+    { expr:Width -> String(expr).padStart(Width) }
+    ParseWriteArg := 'String(' + Expr + ').padStart(' + Width + ')'
+  Else
+    { expr -> expr tel quel }
+    ParseWriteArg := Expr;
+End;
+
+{ ---- ParseWriteStmt : parser Write(...) ou WriteLn(...) ------ }
+{ Gere les arguments multiples avec formatage optionnel.          }
+{ IsLn=true pour WriteLn (console.log), false pour Write.         }
+Procedure ParseWriteStmt(Var P : Integer; IsLn : Boolean);
+Var
+  JS     : TString;
+  ArgJS  : TString;
+  ArgCnt : Integer;
+Begin
+  Inc(P); { consommer Write/WriteLn }
+
+  JS := '';
+  ArgCnt := 0;
+
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = '(') Then
+  Begin
+    Inc(P); { consommer ( }
+    While (P < TokenCount) And
+          Not ((TokenPool[P].Kind = TK_PUNCT) And
+               (TokenPool[P].Val = ')')) Do
+    Begin
+      If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ',') Then
+      Begin
+        Inc(P);
+        Continue;
+      End;
+      ArgJS := ParseWriteArg(P);
+      If JS <> '' Then
+      Begin
+        { Parentheser l argument pour preserver la precedence JS }
+        { Evite "text" + 10 + 20 -> "text1020" au lieu de "text30" }
+        JS := JS + ' + (' + ArgJS + ')';
+      End
+      Else
+        JS := ArgJS;
+      Inc(ArgCnt);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then
+      Inc(P);
+  End;
+
+  If IsLn Then
+  Begin
+    If ArgCnt = 0 Then
+      EmitLine('console.log("");')
+    Else
+      EmitLine('console.log(' + JS + ');');
+  End
+  Else
+  Begin
+    If ArgCnt = 0 Then
+      EmitLine('process.stdout.write("");')
+    Else
+      EmitLine('process.stdout.write(String(' + JS + '));');
+  End;
+End;
+
+{ ---- ParseReadStmt : parser Read(...) ou ReadLn(...) --------- }
+{ Gere la lecture de variables depuis l entree standard.           }
+{ IsLn=true pour ReadLn, false pour Read.                         }
+Procedure ParseReadStmt(Var P : Integer; IsLn : Boolean);
+Var
+  VarName : TString;
+  SI      : Integer;
+  TI      : Integer;
+  TK      : TTypeKind;
+Begin
+  Inc(P); { consommer Read/ReadLn }
+
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = '(') Then
+  Begin
+    Inc(P); { consommer ( }
+    While (P < TokenCount) And
+          Not ((TokenPool[P].Kind = TK_PUNCT) And
+               (TokenPool[P].Val = ')')) Do
+    Begin
+      If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ',') Then
+      Begin
+        Inc(P);
+        Continue;
+      End;
+
+      If (TokenPool[P].Kind = TK_IDENT) Then
+      Begin
+        VarName := TokenPool[P].Val;
+        Inc(P);
+
+        { Determiner le type de la variable pour choisir la conversion }
+        TK := TYK_INTEGER;
+        SI := SymFind(VarName);
+        If SI >= 0 Then
+        Begin
+          TI := SymTab[SI].TypeIdx;
+          If (TI >= 0) And (TI < TypeCount) Then
+            TK := TypeTab[TI].Kind;
+        End;
+
+        Case TK Of
+          TYK_INTEGER, TYK_BYTE, TYK_WORD, TYK_SHORTINT, TYK_LONGINT:
+            EmitLine(VarName + ' = parseInt(prompt(""), 10);');
+          TYK_REAL, TYK_SINGLE, TYK_DOUBLE, TYK_EXTENDED, TYK_COMP:
+            EmitLine(VarName + ' = parseFloat(prompt(""));');
+          TYK_CHAR:
+            EmitLine(VarName + ' = prompt("").charAt(0);');
+          TYK_STRING:
+            EmitLine(VarName + ' = prompt("");');
+        Else
+          EmitLine(VarName + ' = prompt("");');
+        End;
+      End
+      Else
+        Inc(P); { sauter token inconnu }
+    End;
+    If (P < TokenCount) And (TokenPool[P].Val = ')') Then
+      Inc(P);
+  End
+  Else
+  Begin
+    { ReadLn sans arguments : juste lire une ligne }
+    If IsLn Then
+      EmitLine('prompt("");');
+  End;
+End;
+
 { ---- ParseBeginEnd : parser BEGIN ... END. ------------------- }
 { Corps principal du programme -> contenu de _main()             }
 { Emet les instructions du corps principal en JavaScript.        }
@@ -4714,56 +4930,23 @@ Begin
     Exit;
   End;
 
-  { WriteLn / Write }
+  { WriteLn / Write (TODO 12 : formatage et args multiples) }
   If (TokenPool[P].Kind = TK_IDENT) And
      ((StrLowerCase(TokenPool[P].Val) = 'writeln') Or
       (StrLowerCase(TokenPool[P].Val) = 'write')) Then
   Begin
     L := StrLowerCase(TokenPool[P].Val);
-    Inc(P);
-    JS := '';
-    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
-       (TokenPool[P].Val = '(') Then
-    Begin
-      Inc(P); { consommer ( }
-      While (P < TokenCount) And
-            Not ((TokenPool[P].Kind = TK_PUNCT) And
-                 (TokenPool[P].Val = ')')) Do
-      Begin
-        If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ',') Then
-        Begin
-          JS := JS + ' + ';
-          Inc(P);
-        End
-        Else
-          JS := JS + ExprToJS(P);
-      End;
-      If (P < TokenCount) And (TokenPool[P].Val = ')') Then
-        Inc(P);
-    End;
-    If L = 'writeln' Then
-      EmitLine('console.log(' + JS + ');')
-    Else
-      EmitLine('process.stdout.write(String(' + JS + '));');
+    ParseWriteStmt(P, L = 'writeln');
     Exit;
   End;
 
-  { ReadLn / Read }
+  { ReadLn / Read (TODO 12 : lecture depuis l entree standard) }
   If (TokenPool[P].Kind = TK_IDENT) And
      ((StrLowerCase(TokenPool[P].Val) = 'readln') Or
       (StrLowerCase(TokenPool[P].Val) = 'read')) Then
   Begin
-    EmitComment(TokenPool[P].Val + '(...)');
-    Inc(P);
-    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
-       (TokenPool[P].Val = '(') Then
-    Begin
-      While (P < TokenCount) And
-            Not ((TokenPool[P].Kind = TK_PUNCT) And
-                 (TokenPool[P].Val = ')')) Do
-        Inc(P);
-      If P < TokenCount Then Inc(P);
-    End;
+    L := StrLowerCase(TokenPool[P].Val);
+    ParseReadStmt(P, L = 'readln');
     Exit;
   End;
 
