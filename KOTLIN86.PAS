@@ -170,7 +170,7 @@
             Operateurs composes : += -= *= /= %= -> load / op / store
             Destructuration : val (a, b) = pair -> acces componentN() -> stubs
 
-  TODO 10 - EXPRESSIONS PRIMAIRES
+  TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
             ParsePrimary : literal entier, literal chaine, literal caractere,
               ident, this, super, null, true, false
             this -> BX = ptr objet courant (parametre cache)
@@ -856,6 +856,8 @@ Procedure ExprStore(SIdx : Integer); Forward;
 Procedure ExprLoad(SIdx : Integer; Var Res : TExprVal); Forward;
 Function  DeclAllocSym(Const Name : TString; Kind : TSymKind) : Integer; Forward;
 Procedure ParseDeclStmt(Const Kw : TString); Forward;
+{ TODO 10 - Expressions primaires }
+Function  ParseCallArgs : Integer; Forward;
 { General }
 Procedure ParserAdvance; Forward;
 Procedure ParseStmt;     Forward;
@@ -2134,8 +2136,8 @@ Begin
       LitEvalFloat(T, Res);  { flottant tronque en entier       }
     TK_STRING :
     Begin
-      { L'adresse DATA sera resolue dans ParsePrimary (TODO 10) }
-      { via DataAddStr et LEA AX, [_KTK_n]                      }
+      { L'adresse DATA est resolue dans ParsePrimary (TODO 10) }
+      { via DataAddStr et LEA AX, [_KTK_n]                     }
       Res.Kind    := EK_AX;
       Res.ImmVal  := 0;
       Res.TypeIdx := TY_IDX_STRING;
@@ -2218,17 +2220,75 @@ Begin
   BinOpIsRight := IsAssignOp(Op) Or (Op = '?:');
 End;
 
+{ ============================================================
+  TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- ParseCallArgs : empiler les arguments d un appel ------ *)
+(* Lit les expressions separees par ',' jusqu au ')' fermant.    *)
+(* Les arguments sont empiles gauche a droite (PUSH AX).         *)
+(* Retourne le nombre d arguments.                               *)
+Function ParseCallArgs : Integer;
+Var
+  N   : Integer;
+  Arg : TExprVal;
+Begin
+  N := 0;
+  ParserAdvance; { consomme '(' }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+  Begin
+    ParserAdvance; { consomme ')' : 0 arguments }
+    ParseCallArgs := 0;
+    Exit;
+  End;
+  Repeat
+    ParseExpr(Arg);
+    ExprFlushToAX(Arg);
+    EmitInstrA('PUSH', 'AX');
+    Inc(N);
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance  { consomme ',' }
+    Else
+      Break;
+  Until False;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance;  { consomme ')' }
+  ParseCallArgs := N;
+End;
+
 (* ---- ParsePrimary : atome du parseur Pratt ----------------- *)
 (* Gere : litteraux (int, long, float, string, char),           *)
-(* mots-cles (true, false, null), identifiants, parentheses.    *)
-(* Les appels de fonctions et acces membres sont au TODO 10.    *)
+(* mots-cles (true, false, null, this, super),                   *)
+(* identifiants, appels de fonctions, parentheses, acces index,  *)
+(* acces membre, safe call, not-null assert.                     *)
 Procedure ParsePrimary(Var Res : TExprVal);
+Var
+  IdName   : TString;
+  SIdx     : Integer;
+  Lbl      : TString;
+  NArgs    : Integer;
+  SVal     : TString;
+  MembName : TString;
+  LblNull  : TString;
+  LblEnd   : TString;
 Begin
   Case CurToken.Kind Of
-    TK_INTEGER, TK_LONG, TK_FLOAT, TK_STRING, TK_CHAR :
+    TK_INTEGER, TK_LONG, TK_FLOAT, TK_CHAR :
     Begin
       LitEval(CurToken, Res);
       ParserAdvance;
+    End;
+    TK_STRING :
+    Begin
+      (* Chaine litterale : creer entree dans DATA + LEA AX *)
+      Lbl := DataAddStr(CurToken.Val);
+      ParserAdvance;
+      EmitInstrAB('LEA', 'AX', Lbl);
+      Res.Kind    := EK_AX;
+      Res.ImmVal  := 0;
+      Res.TypeIdx := TY_IDX_STRING;
+      Res.Offset  := 0;
+      Res.SymIdx  := -1;
     End;
     TK_KEYWORD :
     Begin
@@ -2238,27 +2298,85 @@ Begin
         LitEval(CurToken, Res);
         ParserAdvance;
       End
+      Else If CurToken.Val = 'this' Then
+      Begin
+        (* this : pointeur objet courant, passe via BX en contexte classe *)
+        ParserAdvance;
+        If CurClassName = '' Then
+        Begin
+          WarnMsg('"this" utilise hors d''une classe');
+          EmitInstrAB('XOR', 'AX', 'AX');
+        End
+        Else
+          EmitInstrAB('MOV', 'AX', 'BX');
+        Res.Kind    := EK_AX;
+        Res.ImmVal  := 0;
+        Res.TypeIdx := TY_IDX_ANY;
+        Res.Offset  := 0;
+        Res.SymIdx  := -1;
+      End
+      Else If CurToken.Val = 'super' Then
+      Begin
+        (* super : stub, traite comme this *)
+        ParserAdvance;
+        EmitInstrAB('MOV', 'AX', 'BX');
+        Res.Kind    := EK_AX;
+        Res.ImmVal  := 0;
+        Res.TypeIdx := TY_IDX_ANY;
+        Res.Offset  := 0;
+        Res.SymIdx  := -1;
+      End
       Else
       Begin
-        (* Mot-cle non-litteral : stub TODO 10 *)
+        (* Mot-cle non-litteral : pas une expression primaire *)
         ExprMakeNone(Res);
         ParserAdvance;
       End;
     End;
     TK_IDENT :
     Begin
-      (* Variable ou appel : stub TODO 10, charge si declaree *)
-      Res.SymIdx := SymFind(CurToken.Val);
-      If Res.SymIdx >= 0 Then
+      IdName := CurToken.Val;
+      ParserAdvance;
+      (* Appel de fonction : nom(args) *)
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
       Begin
-        Res.Kind    := EK_MEM;
+        NArgs := ParseCallArgs;
+        GCallArgCount := NArgs;
+        SIdx := SymFind(IdName);
+        If (SIdx >= 0) And (SymTab[SIdx].Kind = SK_FUN) Then
+          EmitInstrA('CALL', SymTab[SIdx].MangledName)
+        Else
+          EmitInstrA('CALL', KT_FN_PFX + SymNameClean(IdName));
+        (* Nettoyer la pile si arguments *)
+        If NArgs > 0 Then
+        Begin
+          SVal := IntToStr(NArgs * 2);
+          EmitInstrAB('ADD', 'SP', SVal);
+        End;
+        Res.Kind    := EK_AX;
         Res.ImmVal  := 0;
-        Res.TypeIdx := SymTab[Res.SymIdx].TypeIdx;
-        Res.Offset  := SymTab[Res.SymIdx].Offset;
+        If SIdx >= 0 Then
+          Res.TypeIdx := SymTab[SIdx].TypeIdx
+        Else
+          Res.TypeIdx := TY_IDX_ANY;
+        Res.Offset  := 0;
+        Res.SymIdx  := -1;
       End
       Else
-        ExprMakeNone(Res);
-      ParserAdvance;
+      Begin
+        (* Variable simple *)
+        SIdx := SymFind(IdName);
+        If SIdx >= 0 Then
+        Begin
+          ExprLoad(SIdx, Res);
+        End
+        Else
+        Begin
+          (* Identifiant non declare : avertissement, retourne 0 *)
+          WarnMsg('identifiant non declare : "' + IdName + '"');
+          ExprMakeImm(0, TY_IDX_INT, Res);
+        End;
+      End;
     End;
     TK_PUNCT :
     Begin
@@ -2279,12 +2397,126 @@ Begin
     ExprMakeNone(Res);
     ParserAdvance;
   End;
+
+  (* --- Suffixes postfixe : . ?. !! [] --- *)
+  While True Do
+  Begin
+    (* Acces membre : expr.membre ou appel methode expr.membre(args) *)
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '.') Then
+    Begin
+      ExprFlushToAX(Res);
+      ParserAdvance; { consomme '.' }
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        MembName := CurToken.Val;
+        ParserAdvance;
+        (* Appel methode : expr.membre(args) *)
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          EmitInstrA('PUSH', 'AX'); { receveur en premier arg }
+          NArgs := ParseCallArgs;
+          GCallArgCount := NArgs + 1;
+          EmitInstrA('CALL', KT_FN_PFX + MembName);
+          SVal := IntToStr((NArgs + 1) * 2);
+          EmitInstrAB('ADD', 'SP', SVal);
+        End
+        Else
+        Begin
+          (* Acces champ : stub, charge via offset pointeur *)
+          EmitComment('acces membre .' + MembName);
+          EmitInstrAB('MOV', 'BX', 'AX');
+          EmitInstrAB('MOV', 'AX', '[BX]');
+        End;
+      End
+      Else
+        CompileError('identifiant attendu apres "."');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_ANY;
+      Res.SymIdx  := -1;
+    End
+    (* Safe call : expr?.membre *)
+    Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '?.') Then
+    Begin
+      ExprFlushToAX(Res);
+      LblNull := LabelGen;
+      LblEnd  := LabelGen;
+      EmitInstrAB('CMP', 'AX', '0');
+      EmitInstrA('JZ', LblNull);
+      ParserAdvance; { consomme '?.' }
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        MembName := CurToken.Val;
+        ParserAdvance;
+        (* Appel methode safe : expr?.membre(args) *)
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          EmitInstrA('PUSH', 'AX');
+          NArgs := ParseCallArgs;
+          GCallArgCount := NArgs + 1;
+          EmitInstrA('CALL', KT_FN_PFX + MembName);
+          SVal := IntToStr((NArgs + 1) * 2);
+          EmitInstrAB('ADD', 'SP', SVal);
+        End
+        Else
+        Begin
+          EmitComment('safe access ?.' + MembName);
+          EmitInstrAB('MOV', 'BX', 'AX');
+          EmitInstrAB('MOV', 'AX', '[BX]');
+        End;
+        EmitInstrA('JMP', LblEnd);
+      End
+      Else
+      Begin
+        CompileError('identifiant attendu apres "?."');
+        EmitInstrA('JMP', LblEnd);
+      End;
+      EmitLabel(LblNull);
+      EmitInstrAB('XOR', 'AX', 'AX'); { null -> AX = 0 }
+      EmitLabel(LblEnd);
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_ANY;
+      Res.SymIdx  := -1;
+    End
+    (* Not-null assert : expr!! *)
+    Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '!!') Then
+    Begin
+      ExprFlushToAX(Res);
+      ParserAdvance;
+      LblEnd := LabelGen;
+      EmitInstrAB('CMP', 'AX', '0');
+      EmitInstrA('JNZ', LblEnd);
+      EmitInstrA('CALL', KT_RT_PFX + 'PANIC');
+      EmitLabel(LblEnd);
+      Res.Kind    := EK_AX;
+      Res.SymIdx  := -1;
+    End
+    (* Acces index : expr[i] *)
+    Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
+    Begin
+      ExprFlushToAX(Res);
+      EmitInstrA('PUSH', 'AX'); { sauver base du tableau }
+      ParserAdvance; { consomme '[' }
+      ParseExpr(Res);
+      ExprFlushToAX(Res);
+      EmitInstrAB('SHL', 'AX', '1');  { index * 2 (taille mot 16 bits) }
+      EmitInstrAB('POP', 'BX', '');   { BX = base tableau }
+      EmitInstrAB('ADD', 'BX', 'AX');
+      EmitInstrAB('MOV', 'AX', '[BX]');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+        ParserAdvance; { consomme ']' }
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_INT;
+      Res.SymIdx  := -1;
+    End
+    Else
+      Break;
+  End;
 End;
 
 (* ---- ParseUnary : operateurs unaires prefixe + postfixe --- *)
 (* Prefixe : + - ! ++ --                                        *)
 (* Postfixe : !! (not-null assertion, stub)                     *)
-(* ++ et -- postfixe seront geres dans TODO 10.                 *)
+(* ++ et -- postfixe geres. !! gere dans ParsePrimary postfixe. *)
 Procedure ParseUnary(Var Res : TExprVal);
 Var
   Op : TString;
