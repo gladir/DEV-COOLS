@@ -252,7 +252,7 @@
             IN (ensemble) : BT [set], val ou decalage + AND
             Concatenation de chaines + : CALL _TPRT_CONCAT
 
-  TODO 12 - ENTREES/SORTIES (Write / WriteLn / Read / ReadLn)
+  TODO 12 - ENTREES/SORTIES (Write / WriteLn / Read / ReadLn) [IMPLEMENTE]
             Write(args) : ecriture sur STDOUT via WriteFile/WriteConsoleA
               Write(I:5) : formatage avec largeur de champ
               Write(R:10:2) : reel avec largeur et decimales
@@ -4116,6 +4116,8 @@ Begin
   EmitRaw('BYTESRD   DD 0');           { octets lus            }
   EmitRaw('CRLF      DB 13,10,0');     { retour chariot        }
   EmitRaw('STRTMP    DB 256 DUP(0)');  { buffer temp chaine    }
+  EmitRaw('TRUE_STR  DB ''TRUE'',0');   { chaine TRUE           }
+  EmitRaw('FALSE_STR DB ''FALSE'',0');  { chaine FALSE          }
   EmitBlankLine;
 
   { Emettre toutes les entrees du pool de donnees }
@@ -6700,6 +6702,458 @@ Begin
   ParseExprPrec(PI, 1);
 End;
 
+{ ============================================================ }
+{ TODO 12 - ENTREES/SORTIES                       [IMPLEMENTE] }
+{ ============================================================ }
+
+{ ------------------------------------------------------------ }
+{ InferExprType : deviner le type de l expression courante      }
+{ en examinant le premier token sans avancer EP.                }
+{ Retourne un TY_IDX_* valide.                                 }
+{ ------------------------------------------------------------ }
+
+Function InferExprType(PI : Integer) : Integer;
+Var
+  Up : TString;
+  SI, LI : Integer;
+Begin
+  InferExprType := TY_IDX_INTEGER;
+  If EP >= EPEnd Then Exit;
+
+  If TokenPool[EP].Kind = TK_STRING Then
+  Begin
+    InferExprType := TY_IDX_STRING;
+    Exit;
+  End;
+
+  If TokenPool[EP].Kind = TK_CHAR Then
+  Begin
+    InferExprType := TY_IDX_CHAR;
+    Exit;
+  End;
+
+  If TokenPool[EP].Kind = TK_IDENT Then
+  Begin
+    Up := StrUpperCase(TokenPool[EP].Val);
+    If (Up = 'TRUE') Or (Up = 'FALSE') Then
+    Begin
+      InferExprType := TY_IDX_BOOLEAN;
+      Exit;
+    End;
+
+    { Chercher dans les variables locales }
+    If PI >= 0 Then
+    Begin
+      LI := FindLocal(PI, Up);
+      If LI >= 0 Then
+      Begin
+        InferExprType := ProcTab[PI].Locals[LI].TypeIdx;
+        Exit;
+      End;
+      LI := FindParam(PI, Up);
+      If LI >= 0 Then
+      Begin
+        InferExprType := ProcTab[PI].Params[LI].TypeIdx;
+        Exit;
+      End;
+    End;
+
+    { Chercher dans les symboles globaux }
+    SI := SymFind(Up);
+    If SI >= 0 Then
+    Begin
+      InferExprType := SymTab[SI].TypeIdx;
+      Exit;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitPrintEAX : emettre le code pour afficher EAX selon le    }
+{ type. EAX contient la valeur a afficher.                     }
+{ String -> appel de _TPRT_PRINTSTR (EAX=pointeur ASCIIZ)     }
+{ Char -> ecriture d un caractere unique via WriteFile          }
+{ Boolean -> 'TRUE' ou 'FALSE'                                 }
+{ Integer -> conversion en chaine puis affichage               }
+{ ------------------------------------------------------------ }
+
+Procedure EmitPrintEAX(TypeIdx : Integer);
+Var
+  LblFalse, LblDone : TString;
+Begin
+  If TypeIdx = TY_IDX_STRING Then
+  Begin
+    { EAX = pointeur ASCIIZ -> afficher directement }
+    EmitInstr('MOV ESI,EAX');
+    EmitInstr('CALL ' + TP_RT_PFX + 'PRINTSTR');
+  End
+  Else If TypeIdx = TY_IDX_CHAR Then
+  Begin
+    { EAX = caractere -> stocker dans STRTMP et afficher }
+    EmitInstr('MOV BYTE PTR [STRTMP],AL');
+    EmitInstr('MOV BYTE PTR [STRTMP+1],0');
+    EmitInstr('LEA ESI,[STRTMP]');
+    EmitInstr('CALL ' + TP_RT_PFX + 'PRINTSTR');
+  End
+  Else If TypeIdx = TY_IDX_BOOLEAN Then
+  Begin
+    { EAX = 0 -> FALSE, sinon -> TRUE }
+    LblFalse := LabelGen;
+    LblDone  := LabelGen;
+    EmitInstr('TEST EAX,EAX');
+    EmitInstr('JZ ' + LblFalse);
+    EmitInstr('LEA ESI,[TRUE_STR]');
+    EmitInstr('JMP ' + LblDone);
+    EmitLabel(LblFalse);
+    EmitInstr('LEA ESI,[FALSE_STR]');
+    EmitLabel(LblDone);
+    EmitInstr('CALL ' + TP_RT_PFX + 'PRINTSTR');
+  End
+  Else
+  Begin
+    { Integer / Word / Byte / autre -> convertir en chaine }
+    EmitInstr('CALL ' + TP_RT_PFX + 'NUMTOSTR');
+    EmitInstr('LEA ESI,[NUMBUF]');
+    EmitInstr('CALL ' + TP_RT_PFX + 'PRINTSTR');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseWriteStmt : parser Write(args) ou WriteLn(args).         }
+{ EP pointe apres WRITE/WRITELN deja consomme.                 }
+{ Gere plusieurs arguments separes par virgule.                }
+{ Gere le formatage :width (ignore pour l instant).            }
+{ ------------------------------------------------------------ }
+
+Procedure ParseWriteStmt(PI : Integer; IsWriteLn : Boolean);
+Var
+  TIdx : Integer;
+Begin
+  If IsWriteLn Then
+    EmitComment('writeln')
+  Else
+    EmitComment('write');
+
+  { Gerer WriteLn sans arguments -> juste CR+LF }
+  If EPAtEnd Then
+  Begin
+    If IsWriteLn Then
+    Begin
+      EmitInstr('LEA ESI,[CRLF]');
+      EmitInstr('CALL ' + TP_RT_PFX + 'PRINTSTR');
+    End;
+    Exit;
+  End;
+
+  { Si pas de parenthese, WriteLn sans args }
+  If Not ((TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = '(')) Then
+  Begin
+    If IsWriteLn Then
+    Begin
+      EmitInstr('LEA ESI,[CRLF]');
+      EmitInstr('CALL ' + TP_RT_PFX + 'PRINTSTR');
+    End;
+    Exit;
+  End;
+
+  { Consommer ( }
+  Inc(EP);
+
+  { Boucle sur les arguments }
+  While Not EPAtEnd Do
+  Begin
+    { Fin des arguments ? }
+    If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ')') Then
+      Break;
+
+    { Determiner le type de l argument }
+    TIdx := InferExprType(PI);
+
+    { Evaluer l expression }
+    ParseExpr(PI);
+
+    { Detecter formatage :width }
+    If Not EPAtEnd Then
+    Begin
+      If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ':') Then
+      Begin
+        Inc(EP); { consommer : }
+        { Ignorer l expression de largeur }
+        If Not EPAtEnd Then
+        Begin
+          If TokenPool[EP].Kind = TK_INTEGER Then
+            Inc(EP)
+          Else
+            ParseExpr(PI); { evaluer et jeter }
+        End;
+        { Si :w:d (formatage flottant) : ignorer aussi d }
+        If Not EPAtEnd Then
+        Begin
+          If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ':') Then
+          Begin
+            Inc(EP);
+            If Not EPAtEnd Then
+            Begin
+              If TokenPool[EP].Kind = TK_INTEGER Then
+                Inc(EP)
+              Else
+                ParseExpr(PI);
+            End;
+          End;
+        End;
+      End;
+    End;
+
+    { Afficher selon le type }
+    EmitPrintEAX(TIdx);
+
+    { Virgule entre arguments }
+    If Not EPAtEnd Then
+    Begin
+      If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ',') Then
+        Inc(EP)
+      Else
+        Break;
+    End;
+  End;
+
+  { Consommer ) }
+  If Not EPAtEnd Then
+    If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ')') Then
+      Inc(EP);
+
+  { WriteLn : ajouter CR+LF }
+  If IsWriteLn Then
+  Begin
+    EmitInstr('LEA ESI,[CRLF]');
+    EmitInstr('CALL ' + TP_RT_PFX + 'PRINTSTR');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseReadStmt : parser Read(vars) ou ReadLn(vars).            }
+{ EP pointe apres READ/READLN deja consomme.                   }
+{ Lit une ligne depuis STDIN, puis parse les variables.         }
+{ ------------------------------------------------------------ }
+
+Procedure ParseReadStmt(PI : Integer; IsReadLn : Boolean);
+Var
+  VName, Up : TString;
+  SI, LI    : Integer;
+  TIdx      : Integer;
+Begin
+  If IsReadLn Then
+    EmitComment('readln')
+  Else
+    EmitComment('read');
+
+  { ReadLn sans arguments : lire et jeter une ligne }
+  If EPAtEnd Or
+     Not ((TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = '(')) Then
+  Begin
+    If IsReadLn Then
+      EmitInstr('CALL ' + TP_RT_PFX + 'READLN');
+    Exit;
+  End;
+
+  { Consommer ( }
+  Inc(EP);
+
+  { Lire une ligne dans INBUF }
+  EmitInstr('CALL ' + TP_RT_PFX + 'READLN');
+
+  { Boucle sur les variables }
+  While Not EPAtEnd Do
+  Begin
+    If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ')') Then
+      Break;
+
+    If TokenPool[EP].Kind = TK_IDENT Then
+    Begin
+      VName := TokenPool[EP].Val;
+      Up := StrUpperCase(VName);
+      Inc(EP);
+
+      { Determiner le type de la variable }
+      TIdx := TY_IDX_INTEGER;
+      If PI >= 0 Then
+      Begin
+        LI := FindLocal(PI, Up);
+        If LI >= 0 Then
+          TIdx := ProcTab[PI].Locals[LI].TypeIdx
+        Else
+        Begin
+          LI := FindParam(PI, Up);
+          If LI >= 0 Then
+            TIdx := ProcTab[PI].Params[LI].TypeIdx;
+        End;
+      End;
+      If TIdx = TY_IDX_INTEGER Then
+      Begin
+        SI := SymFind(Up);
+        If SI >= 0 Then
+          TIdx := SymTab[SI].TypeIdx;
+      End;
+
+      If (TIdx = TY_IDX_STRING) Or (TIdx = TY_IDX_PCHAR) Then
+      Begin
+        { Copier INBUF vers la variable string }
+        EmitInstr('LEA ESI,[INBUF]');
+        GenLoadAddr(PI, VName);
+        EmitInstr('MOV EDI,EAX');
+        { Copier octet par octet jusqu au NUL }
+        EmitInstr('CALL ' + TP_RT_PFX + 'STRCPY');
+      End
+      Else If TIdx = TY_IDX_CHAR Then
+      Begin
+        { Prendre le premier caractere de INBUF }
+        EmitInstr('MOVZX EAX,BYTE PTR [INBUF]');
+        GenStoreVar(PI, VName);
+      End
+      Else
+      Begin
+        { Integer : convertir INBUF en nombre }
+        EmitInstr('LEA ESI,[INBUF]');
+        EmitInstr('CALL ' + TP_RT_PFX + 'STRTONUM');
+        GenStoreVar(PI, VName);
+      End;
+    End
+    Else
+      Inc(EP); { sauter token inconnu }
+
+    { Virgule entre variables }
+    If Not EPAtEnd Then
+    Begin
+      If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ',') Then
+        Inc(EP)
+      Else
+        Break;
+    End;
+  End;
+
+  { Consommer ) }
+  If Not EPAtEnd Then
+    If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ')') Then
+      Inc(EP);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseStrStmt : parser Str(N[:W], S)                          }
+{ Convertit un nombre en chaine.                               }
+{ ------------------------------------------------------------ }
+
+Procedure ParseStrStmt(PI : Integer);
+Var
+  VName : TString;
+Begin
+  EmitComment('str');
+
+  { Consommer ( }
+  If Not EPMatch('(') Then Exit;
+
+  { Evaluer l expression numerique }
+  ParseExpr(PI);
+
+  { Ignorer le formatage :width }
+  If Not EPAtEnd Then
+  Begin
+    If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ':') Then
+    Begin
+      Inc(EP);
+      If Not EPAtEnd Then
+      Begin
+        If TokenPool[EP].Kind = TK_INTEGER Then
+          Inc(EP)
+        Else
+          ParseExpr(PI);
+      End;
+    End;
+  End;
+
+  { Convertir en chaine }
+  EmitInstr('CALL ' + TP_RT_PFX + 'NUMTOSTR');
+
+  { Consommer , }
+  EPMatch(',');
+
+  { Variable cible }
+  If Not EPAtEnd Then
+  Begin
+    If TokenPool[EP].Kind = TK_IDENT Then
+    Begin
+      VName := TokenPool[EP].Val;
+      Inc(EP);
+
+      { Copier NUMBUF vers la variable string }
+      EmitInstr('LEA ESI,[NUMBUF]');
+      GenLoadAddr(PI, VName);
+      EmitInstr('MOV EDI,EAX');
+      EmitInstr('CALL ' + TP_RT_PFX + 'STRCPY');
+    End;
+  End;
+
+  { Consommer ) }
+  EPMatch(')');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseValStmt : parser Val(S, N, Code)                        }
+{ Convertit une chaine en nombre.                              }
+{ ------------------------------------------------------------ }
+
+Procedure ParseValStmt(PI : Integer);
+Var
+  VName : TString;
+Begin
+  EmitComment('val');
+
+  { Consommer ( }
+  If Not EPMatch('(') Then Exit;
+
+  { Evaluer l expression chaine }
+  ParseExpr(PI);
+  EmitInstr('MOV ESI,EAX');
+
+  { Convertir en nombre }
+  EmitInstr('CALL ' + TP_RT_PFX + 'STRTONUM');
+
+  { Consommer , }
+  EPMatch(',');
+
+  { Variable numerique cible }
+  If Not EPAtEnd Then
+  Begin
+    If TokenPool[EP].Kind = TK_IDENT Then
+    Begin
+      VName := TokenPool[EP].Val;
+      Inc(EP);
+      GenStoreVar(PI, VName);
+    End;
+  End;
+
+  { Troisieme argument Code : stocker 0 (pas d erreur) }
+  If Not EPAtEnd Then
+  Begin
+    If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ',') Then
+    Begin
+      Inc(EP);
+      If Not EPAtEnd Then
+      Begin
+        If TokenPool[EP].Kind = TK_IDENT Then
+        Begin
+          VName := TokenPool[EP].Val;
+          Inc(EP);
+          EmitInstr('XOR EAX,EAX');
+          GenStoreVar(PI, VName);
+        End;
+      End;
+    End;
+  End;
+
+  { Consommer ) }
+  EPMatch(')');
+End;
+
 { ------------------------------------------------------------ }
 { ParseBody : parser et emettre le corps d une procedure,       }
 { fonction ou du programme principal.                           }
@@ -6852,6 +7306,50 @@ Begin
         Continue;
       End;
 
+      { Write / WriteLn (TODO 12) }
+      If (Up = 'WRITE') Or (Up = 'WRITELN') Then
+      Begin
+        Inc(EP);
+        ParseWriteStmt(PI, Up = 'WRITELN');
+        If Not EPAtEnd Then
+          If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ';') Then
+            Inc(EP);
+        Continue;
+      End;
+
+      { Read / ReadLn (TODO 12) }
+      If (Up = 'READ') Or (Up = 'READLN') Then
+      Begin
+        Inc(EP);
+        ParseReadStmt(PI, Up = 'READLN');
+        If Not EPAtEnd Then
+          If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ';') Then
+            Inc(EP);
+        Continue;
+      End;
+
+      { Str (TODO 12) }
+      If Up = 'STR' Then
+      Begin
+        Inc(EP);
+        ParseStrStmt(PI);
+        If Not EPAtEnd Then
+          If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ';') Then
+            Inc(EP);
+        Continue;
+      End;
+
+      { Val (TODO 12) }
+      If Up = 'VAL' Then
+      Begin
+        Inc(EP);
+        ParseValStmt(PI);
+        If Not EPAtEnd Then
+          If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ';') Then
+            Inc(EP);
+        Continue;
+      End;
+
       { Verifier s il s agit d un appel de proc }
       SI := SymFind(Up);
       If (SI >= 0) And (SymTab[SI].Kind = SK_PROC) Then
@@ -6940,7 +7438,6 @@ End;
 Procedure EmitProcedures;
 Var
   FI       : Integer;
-  RetLbl   : TString;
 Begin
   For FI := 0 To ProcCount - 1 Do
   Begin
@@ -7053,6 +7550,165 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
+{ EmitRuntime : emettre les routines runtime internes du        }
+{ compilateur dans le segment .CODE.                           }
+{ _TPRT_PRINTSTR : afficher chaine ASCIIZ (ESI = pointeur)    }
+{ _TPRT_NUMTOSTR : convertir EAX en chaine NUMBUF             }
+{ _TPRT_STRTONUM : convertir chaine ASCIIZ (ESI) en EAX       }
+{ _TPRT_READLN   : lire une ligne de STDIN dans INBUF         }
+{ _TPRT_STRCPY   : copier chaine (ESI -> EDI)                 }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=== Routines runtime TPCW32 ===');
+
+  { ------ _TPRT_PRINTSTR : afficher chaine ASCIIZ ---------- }
+  { Entree : ESI = pointeur vers chaine ASCIIZ                }
+  { Utilise : WriteFile(HSTDOUT, ESI, len, &BYTESWR, 0)       }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'PRINTSTR');
+  EmitInstr('PUSHAD');
+  { Calculer la longueur de la chaine }
+  EmitInstr('XOR ECX,ECX');
+  EmitLabel(TP_RT_PFX + 'PSTR_L');
+  EmitInstr('CMP BYTE PTR [ESI+ECX],0');
+  EmitInstr('JE ' + TP_RT_PFX + 'PSTR_G');
+  EmitInstr('INC ECX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'PSTR_L');
+  EmitLabel(TP_RT_PFX + 'PSTR_G');
+  { ECX = longueur, ESI = debut de la chaine }
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'PSTR_D');
+  { Appeler WriteFile(HSTDOUT, ESI, ECX, &BYTESWR, 0) }
+  EmitInstr('PUSH 0');                     { lpOverlapped         }
+  EmitInstr('PUSH OFFSET BYTESWR');        { lpNumberOfBytesWritten }
+  EmitInstr('PUSH ECX');                   { nNumberOfBytesToWrite }
+  EmitInstr('PUSH ESI');                   { lpBuffer             }
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');   { hFile                }
+  EmitInstr('CALL WriteFile');
+  EmitLabel(TP_RT_PFX + 'PSTR_D');
+  EmitInstr('POPAD');
+  EmitInstr('RET');
+
+  { ------ _TPRT_NUMTOSTR : EAX -> NUMBUF (ASCIIZ) ---------- }
+  { Entree : EAX = entier signe 32 bits                       }
+  { Sortie : NUMBUF contient la representation decimale        }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'NUMTOSTR');
+  EmitInstr('PUSHAD');
+  EmitInstr('LEA EDI,[NUMBUF]');
+  EmitInstr('XOR ECX,ECX');        { compteur de chiffres }
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JGE ' + TP_RT_PFX + 'NTS_POS');
+  { Nombre negatif : stocker '-' et inverser }
+  EmitInstr('MOV BYTE PTR [EDI],45'); { '-' }
+  EmitInstr('INC EDI');
+  EmitInstr('NEG EAX');
+  EmitLabel(TP_RT_PFX + 'NTS_POS');
+  EmitInstr('MOV EBX,10');
+  EmitLabel(TP_RT_PFX + 'NTS_DIV');
+  EmitInstr('XOR EDX,EDX');
+  EmitInstr('DIV EBX');            { EAX=quotient, EDX=reste }
+  EmitInstr('ADD DL,48');          { '0' }
+  EmitInstr('PUSH EDX');
+  EmitInstr('INC ECX');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'NTS_DIV');
+  EmitLabel(TP_RT_PFX + 'NTS_POP');
+  EmitInstr('POP EAX');
+  EmitInstr('MOV [EDI],AL');
+  EmitInstr('INC EDI');
+  EmitInstr('DEC ECX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'NTS_POP');
+  EmitInstr('MOV BYTE PTR [EDI],0'); { terminateur NUL }
+  EmitInstr('POPAD');
+  EmitInstr('RET');
+
+  { ------ _TPRT_STRTONUM : ESI -> EAX (entier) ------------- }
+  { Entree : ESI = pointeur vers chaine ASCIIZ decimale        }
+  { Sortie : EAX = valeur entiere                              }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'STRTONUM');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH EDX');
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('XOR ECX,ECX');        { flag signe }
+  EmitInstr('CMP BYTE PTR [ESI],45'); { '-' }
+  EmitInstr('JNE ' + TP_RT_PFX + 'STN_LP');
+  EmitInstr('INC ESI');
+  EmitInstr('INC ECX');
+  EmitLabel(TP_RT_PFX + 'STN_LP');
+  EmitInstr('MOVZX EDX,BYTE PTR [ESI]');
+  EmitInstr('TEST DL,DL');
+  EmitInstr('JZ ' + TP_RT_PFX + 'STN_DN');
+  EmitInstr('CMP DL,48'); { '0' }
+  EmitInstr('JB ' + TP_RT_PFX + 'STN_DN');
+  EmitInstr('CMP DL,57'); { '9' }
+  EmitInstr('JA ' + TP_RT_PFX + 'STN_DN');
+  EmitInstr('SUB DL,48');
+  EmitInstr('IMUL EAX,EAX,10');
+  EmitInstr('ADD EAX,EDX');
+  EmitInstr('INC ESI');
+  EmitInstr('JMP ' + TP_RT_PFX + 'STN_LP');
+  EmitLabel(TP_RT_PFX + 'STN_DN');
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'STN_RT');
+  EmitInstr('NEG EAX');
+  EmitLabel(TP_RT_PFX + 'STN_RT');
+  EmitInstr('POP EDX');
+  EmitInstr('POP ECX');
+  EmitInstr('POP EBX');
+  EmitInstr('RET');
+
+  { ------ _TPRT_READLN : lire une ligne de STDIN ----------- }
+  { Sortie : INBUF contient la ligne lue, terminee par NUL    }
+  { BYTESRD = nombre d octets lus                              }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'READLN');
+  EmitInstr('PUSHAD');
+  { ReadFile(HSTDIN, INBUF, 255, &BYTESRD, 0) }
+  EmitInstr('PUSH 0');                     { lpOverlapped         }
+  EmitInstr('PUSH OFFSET BYTESRD');        { lpNumberOfBytesRead  }
+  EmitInstr('PUSH 255');                   { nNumberOfBytesToRead  }
+  EmitInstr('PUSH OFFSET INBUF');          { lpBuffer             }
+  EmitInstr('PUSH DWORD PTR [HSTDIN]');    { hFile                }
+  EmitInstr('CALL ReadFile');
+  { Retirer CR/LF de fin et terminer par NUL }
+  EmitInstr('MOV ECX,DWORD PTR [BYTESRD]');
+  EmitLabel(TP_RT_PFX + 'RL_TR');
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'RL_DN');
+  EmitInstr('DEC ECX');
+  EmitInstr('CMP BYTE PTR [INBUF+ECX],13');
+  EmitInstr('JE ' + TP_RT_PFX + 'RL_TR');
+  EmitInstr('CMP BYTE PTR [INBUF+ECX],10');
+  EmitInstr('JE ' + TP_RT_PFX + 'RL_TR');
+  EmitInstr('INC ECX');
+  EmitLabel(TP_RT_PFX + 'RL_DN');
+  EmitInstr('MOV BYTE PTR [INBUF+ECX],0');
+  EmitInstr('POPAD');
+  EmitInstr('RET');
+
+  { ------ _TPRT_STRCPY : copier chaine ASCIIZ --------------- }
+  { Entree : ESI = source, EDI = destination                   }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'STRCPY');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH EDI');
+  EmitLabel(TP_RT_PFX + 'SCPY_L');
+  EmitInstr('LODSB');
+  EmitInstr('STOSB');
+  EmitInstr('TEST AL,AL');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'SCPY_L');
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
+  EmitInstr('RET');
+End;
+
+{ ------------------------------------------------------------ }
 { Run                                                          }
 { ------------------------------------------------------------ }
 
@@ -7132,7 +7788,10 @@ Begin
     { Emettre le bloc principal (TODO 09) }
     EmitMainBlock;
 
-    { TODO 10..25 : compilation complete }
+    { Emettre les routines runtime (TODO 12) }
+    EmitRuntime;
+
+    { TODO 13..25 : compilation complete }
 
     EmitClose;
     If Opts.Verbose Then
