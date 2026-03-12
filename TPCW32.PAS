@@ -4474,8 +4474,8 @@ Begin
       Up := StrUpperCase(TokenPool[I].Val);
 
       { Incrémenter depth sur BEGIN, RECORD, CASE, REPEAT }
-      If (Up = 'BEGIN') Or (Up = 'RECORD') Or (Up = 'REPEAT') Or
-         (Up = 'ASM') Then
+      If (Up = 'BEGIN') Or (Up = 'RECORD') Or (Up = 'CASE') Or
+         (Up = 'REPEAT') Or (Up = 'ASM') Then
       Begin
         Inc(Depth);
         Inc(I);
@@ -4767,6 +4767,49 @@ Begin
             For J := 0 To NCount - 1 Do
             Begin
               DIdx := DataAddStruct(TP_VAR_PFX + Names[J], 32);
+              SIdx := SymAdd(Names[J], SK_VAR, TIdx);
+              If SIdx >= 0 Then
+              Begin
+                SymTab[SIdx].IsGlobal := True;
+                SymTab[SIdx].Offset   := DIdx;
+              End;
+            End;
+
+            While (I < TokenCount) And
+                  Not ((TokenPool[I].Kind = TK_PUNCT) And
+                       (TokenPool[I].Val = ';')) Do
+              Inc(I);
+            If I < TokenCount Then Inc(I);
+            Continue;
+          End;
+
+          { Type enumere inline : (val1, val2, ...) }
+          If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+             (TokenPool[I].Val = '(') Then
+          Begin
+            Inc(I); { sauter '(' }
+            TIdx := TypeAdd(TYK_ENUM, '', 4, 4, False, -1);
+            FC := 0;
+            While (I < TokenCount) And
+                  Not ((TokenPool[I].Kind = TK_PUNCT) And
+                       (TokenPool[I].Val = ')')) Do
+            Begin
+              If (TokenPool[I].Kind = TK_IDENT) Then
+              Begin
+                SIdx := SymAdd(StrUpperCase(TokenPool[I].Val), SK_CONST, TIdx);
+                If SIdx >= 0 Then
+                  SymTab[SIdx].ImmVal := FC;
+                Inc(FC);
+              End;
+              Inc(I);
+            End;
+            If I < TokenCount Then Inc(I); { sauter ')' }
+            If TIdx >= 0 Then
+              TypeTab[TIdx].EnumCount := FC;
+
+            For J := 0 To NCount - 1 Do
+            Begin
+              DIdx := DataAddDWord(TP_VAR_PFX + Names[J], 0);
               SIdx := SymAdd(Names[J], SK_VAR, TIdx);
               If SIdx >= 0 Then
               Begin
@@ -8724,6 +8767,54 @@ Begin
     LastVarTypeIdx := GetVarTypeIdx(PI, Up);
     GenLoadVar(PI, Up);
     Inc(EP);
+    Exit;
+  End;
+
+  { Constructeur d ensemble : [elem1, elem2, lo..hi, ...] }
+  If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = '[') Then
+  Begin
+    Inc(EP); { sauter '[' }
+    EmitInstr('XOR EAX,EAX');  { EAX = ensemble vide (bitmask) }
+    While (Not EPAtEnd) And
+          Not ((TokenPool[EP].Kind = TK_PUNCT) And
+               (TokenPool[EP].Val = ']')) Do
+    Begin
+      EmitInstr('PUSH EAX');          { sauvegarder ensemble courant }
+      ParseExpr(PI);                  { EAX = valeur element }
+      { Verifier si c est un intervalle (lo..hi) }
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = '..') Then
+      Begin
+        Inc(EP);                      { sauter '..' }
+        EmitInstr('PUSH EAX');        { sauvegarder lo }
+        ParseExpr(PI);               { EAX = hi }
+        { EAX=hi, [ESP]=lo, [ESP+4]=ensemble }
+        EmitInstr('MOV EDX,EAX');     { EDX = hi }
+        EmitInstr('POP ECX');         { ECX = lo }
+        EmitInstr('POP EBX');         { EBX = ensemble courant }
+        Lbl := LabelGen;
+        EmitLabel(Lbl);
+        EmitInstr('CMP ECX,EDX');
+        EmitInstr('JG ' + Lbl + 'E');
+        EmitInstr('BTS EBX,ECX');
+        EmitInstr('INC ECX');
+        EmitInstr('JMP ' + Lbl);
+        EmitLabel(Lbl + 'E');
+        EmitInstr('MOV EAX,EBX');     { EAX = ensemble mis a jour }
+      End
+      Else
+      Begin
+        { Element simple : positionner 1 bit }
+        EmitInstr('MOV ECX,EAX');     { ECX = numero du bit }
+        EmitInstr('POP EAX');         { EAX = ensemble courant }
+        EmitInstr('BTS EAX,ECX');     { positionner le bit }
+      End;
+      { Sauter la virgule si presente }
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ',') Then
+        Inc(EP);
+    End;
+    If Not EPAtEnd Then Inc(EP);  { sauter ']' }
     Exit;
   End;
 
