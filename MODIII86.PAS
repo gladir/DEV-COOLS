@@ -364,7 +364,7 @@
              Prefixe des labels : _M3G_NomInst_ pour eviter les collisions
              Limitation : un seul niveau de genericite (pas de generiques imbriques)
 
-   TODO 24 - RUNTIME MINIMAL
+   TODO 24 - RUNTIME MINIMAL [IMPLEMENTE]
              _M3RT_PRINT(BX=handle, SI=msg, CX=len) : INT 21h AH=40h
              _M3RT_PRINTLN : _M3RT_PRINT + CR+LF via _M3_CRLF DB 13,10,0
              _M3RT_STRLEN(SI=str) : compte octets jusqu a 0 -> AX
@@ -797,6 +797,9 @@ Var
   GenericCount : Integer;
   GenInstTab   : Array[0..MAX_GENERIC_INST - 1] Of TGenericInst;
   GenInstCount : Integer;
+
+  (* Runtime (TODO 24) *)
+  RuntimeEmitted : Boolean;
 
   (* Segment de donnees (TODO 03) *)
   DataTab    : Array[0..MAX_DATA-1] Of TDataRec;
@@ -3512,6 +3515,7 @@ Begin
   EmitRaw(M3_EXC_PFX + 'EXCVAL  DW  0');
   EmitRaw(M3_RT_PFX + 'EXC_MSG DB  ''Unhandled exception: '',0');
   EmitRaw(M3_RT_PFX + 'NILMSG  DB  ''NIL dereference'',0');
+  EmitRaw(M3_RT_PFX + 'IDXMSG  DB  ''Index out of bounds'',0');
   EmitBlankLine;
 
   (* Donnees du programme depuis DataTab *)
@@ -9049,6 +9053,9 @@ End;
 
 Procedure EmitRuntime;
 Begin
+  If RuntimeEmitted Then Exit;
+  RuntimeEmitted := True;
+
   EmitBlankLine;
   EmitComment('=========================================================');
   EmitComment('RUNTIME MODULA-3 (_M3RT_xxx)');
@@ -9446,6 +9453,111 @@ Begin
   EmitInstrAB('MOV', 'AH', '4Ch');
   EmitInstrAB('MOV', 'AL', '1');
   EmitInstr('INT    21h');
+
+  (* --------------------------------------------------------------- *)
+  (* _M3RT_PRINTLN : afficher une chaine ASCIIZ + CR+LF (TODO 24)    *)
+  (* Entree : SI = pointeur vers chaine ASCIIZ                       *)
+  (* Sortie : rien                                                    *)
+  (* Modifie : AX, BX, CX, DX, SI, DI                                *)
+  (* --------------------------------------------------------------- *)
+  EmitBlankLine;
+  EmitLabel(M3_RT_PFX + 'PRINTLN');
+  EmitInstrA('CALL', M3_RT_PFX + 'PRINT');
+  EmitInstrAB('MOV', 'SI', 'OFFSET ' + M3_RT_PFX + 'CRLF');
+  EmitInstrA('CALL', M3_RT_PFX + 'PRINT');
+  EmitInstr('RET');
+
+  (* --------------------------------------------------------------- *)
+  (* _M3RT_ABS : valeur absolue d un entier signe (TODO 24)          *)
+  (* Entree : AX = entier signe                                       *)
+  (* Sortie : AX = |AX|                                                *)
+  (* Modifie : AX                                                      *)
+  (* --------------------------------------------------------------- *)
+  EmitBlankLine;
+  EmitLabel(M3_RT_PFX + 'ABS');
+  EmitInstrAB('CMP', 'AX', '0');
+  EmitInstrA('JGE', M3_RT_PFX + 'ABS_OK');
+  EmitInstrA('NEG', 'AX');
+  EmitLabel(M3_RT_PFX + 'ABS_OK');
+  EmitInstr('RET');
+
+  (* --------------------------------------------------------------- *)
+  (* _M3RT_MAX : maximum de deux entiers signes (TODO 24)             *)
+  (* Entree : AX = a, BX = b                                          *)
+  (* Sortie : AX = max(a, b)                                          *)
+  (* Modifie : AX                                                      *)
+  (* --------------------------------------------------------------- *)
+  EmitBlankLine;
+  EmitLabel(M3_RT_PFX + 'MAX');
+  EmitInstrAB('CMP', 'AX', 'BX');
+  EmitInstrA('JGE', M3_RT_PFX + 'MAX_OK');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitLabel(M3_RT_PFX + 'MAX_OK');
+  EmitInstr('RET');
+
+  (* --------------------------------------------------------------- *)
+  (* _M3RT_MIN : minimum de deux entiers signes (TODO 24)             *)
+  (* Entree : AX = a, BX = b                                          *)
+  (* Sortie : AX = min(a, b)                                          *)
+  (* Modifie : AX                                                      *)
+  (* --------------------------------------------------------------- *)
+  EmitBlankLine;
+  EmitLabel(M3_RT_PFX + 'MIN');
+  EmitInstrAB('CMP', 'AX', 'BX');
+  EmitInstrA('JLE', M3_RT_PFX + 'MIN_OK');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitLabel(M3_RT_PFX + 'MIN_OK');
+  EmitInstr('RET');
+
+  (* --------------------------------------------------------------- *)
+  (* _M3RT_TYPECODE : lire le typecode d un objet (TODO 24)           *)
+  (* Entree : BX = pointeur vers objet (premier mot = ptr vtable)     *)
+  (* Sortie : AX = typecode (premier mot de la vtable)                *)
+  (* Modifie : AX, BX                                                  *)
+  (* --------------------------------------------------------------- *)
+  EmitBlankLine;
+  EmitLabel(M3_RT_PFX + 'TYPECODE');
+  EmitInstrAB('MOV', 'BX', 'WORD PTR [BX]');
+  EmitComment('BX = ptr vtable');
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [BX]');
+  EmitComment('AX = typecode (premier mot vtable)');
+  EmitInstr('RET');
+
+  (* --------------------------------------------------------------- *)
+  (* _M3RT_CHKIDX : verification de bornes d index (TODO 24)         *)
+  (* Entree : AX = index, BX = lo, CX = hi                            *)
+  (* Sortie : AX inchange si lo <= AX <= hi, sinon Halt               *)
+  (* Modifie : rien (si en bornes)                                     *)
+  (* --------------------------------------------------------------- *)
+  EmitBlankLine;
+  EmitLabel(M3_RT_PFX + 'CHKIDX');
+  EmitInstrAB('CMP', 'AX', 'BX');
+  EmitInstrA('JL', M3_RT_PFX + 'CHKIDX_BAD');
+  EmitInstrAB('CMP', 'AX', 'CX');
+  EmitInstrA('JG', M3_RT_PFX + 'CHKIDX_BAD');
+  EmitInstr('RET');
+  EmitLabel(M3_RT_PFX + 'CHKIDX_BAD');
+  EmitInstrAB('MOV', 'SI', 'OFFSET ' + M3_RT_PFX + 'IDXMSG');
+  EmitInstrA('CALL', M3_RT_PFX + 'PRINT');
+  EmitInstrAB('MOV', 'SI', 'OFFSET ' + M3_RT_PFX + 'CRLF');
+  EmitInstrA('CALL', M3_RT_PFX + 'PRINT');
+  EmitInstrAB('MOV', 'AH', '4Ch');
+  EmitInstrAB('MOV', 'AL', '1');
+  EmitInstr('INT    21h');
+
+  (* --------------------------------------------------------------- *)
+  (* _M3RT_PANIC : afficher un message d erreur et terminer (TODO 24) *)
+  (* Entree : SI = pointeur vers chaine ASCIIZ                       *)
+  (* Sortie : ne retourne pas                                         *)
+  (* --------------------------------------------------------------- *)
+  EmitBlankLine;
+  EmitLabel(M3_RT_PFX + 'PANIC');
+  EmitInstrA('CALL', M3_RT_PFX + 'PRINT');
+  EmitInstrAB('MOV', 'SI', 'OFFSET ' + M3_RT_PFX + 'CRLF');
+  EmitInstrA('CALL', M3_RT_PFX + 'PRINT');
+  EmitInstrAB('MOV', 'AH', '4Ch');
+  EmitInstrAB('MOV', 'AL', '1');
+  EmitInstr('INT    21h');
 End;
 
 Procedure ShowStats;
@@ -9472,6 +9584,7 @@ Begin
   ExcTryNest   := 0;
   GenericCount := 0;
   GenInstCount := 0;
+  RuntimeEmitted := False;
   OutFOpen   := False;
   LexOpened  := False;
 
