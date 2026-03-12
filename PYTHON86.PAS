@@ -162,7 +162,7 @@
             Dictionnaires litteraux : paires cle/valeur dans DATA (DK_DICT)
             Heap statique : _PY_HEAP DB 4096 DUP(0) + _PY_HEAPTOP DW 0
 
-  TODO 09 - VARIABLES ET AFFECTATIONS
+  TODO 09 - VARIABLES ET AFFECTATIONS [IMPLEMENTE]
             Variables globales : segment DATA, acces par label _PYV_nom
             Variables locales : pile BP, acces [BP-offset]
             Parametres de fonction : pile BP, acces [BP+offset]
@@ -172,6 +172,10 @@
             Affectation multiple : a, b = expr1, expr2 -> evaluer puis stocker
             Echange : a, b = b, a -> via registre ou pile temporaire
             Unpacking simple : a, b, c = liste -> extraire elements
+            ExprLoadToAX : charger variable (globale/locale/param) dans AX
+            EmitStoreVar : stocker AX dans variable (globale/locale/param)
+            ParseAssign : parser affectation simple, augmentee, multiple
+            EnsureVarInData : auto-declarer globale dans segment DATA
 
   TODO 10 - EXPRESSIONS PRIMAIRES
             ParsePrimary : literal entier, literal chaine, ident, appel de func
@@ -713,6 +717,11 @@ Function  TypeSizeof(TypeIdx : Integer) : Integer; Forward;
 Function  TypeFindByName(Const Name : TString) : Integer; Forward;
 Function  TypeKindStr(K : TTypeKind) : TString; Forward;
 Function  TypeIdxFromExpr(Const E : TExprVal) : Integer; Forward;
+{ TODO 09 - Forward declarations variables et affectations }
+Procedure ExprLoadToAX(SIdx : Integer);    Forward;
+Procedure EmitStoreVar(SIdx : Integer);    Forward;
+Procedure EnsureVarInData(SIdx : Integer); Forward;
+Procedure ParseAssign(FirstSymIdx : Integer); Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -2327,11 +2336,18 @@ Begin
       Begin
         If (E.Offset >= 0) And (E.Offset < DataCount) Then
           EmitInstr('MOV    AX, OFFSET ' + DataTab[E.Offset].LblName)
+        Else If (E.SymIdx >= 0) And (E.SymIdx < SymCount) Then
+          EmitInstr('MOV    AX, OFFSET ' + SymTab[E.SymIdx].MangledName)
         Else
           EmitInstr('XOR    AX, AX');
       End
+      Else If (E.SymIdx >= 0) And (E.SymIdx < SymCount) Then
+      Begin
+        { Variable : charger depuis memoire (TODO 09) }
+        ExprLoadToAX(E.SymIdx);
+      End
       Else
-        EmitInstr('XOR    AX, AX');   { stub : TODO 05+ pour variables }
+        EmitInstr('XOR    AX, AX');
       E.Kind := EK_AX;
     End;
     EK_AX :
@@ -2719,7 +2735,7 @@ Begin
       End;
     End;
 
-    { Identifiant : resolution via SymFind (TODO 05) }
+    { Identifiant : resolution via SymFind (TODO 05/09) }
     TK_IDENT :
     Begin
       Res.SymIdx := SymFind(CurToken.Val);
@@ -2732,15 +2748,21 @@ Begin
            (SymTab[Res.SymIdx].Kind = SK_FUNC) Then
           ExprMakeImm(0, SymTab[Res.SymIdx].TypeIdx, Res)
         Else
-          ExprMakeImm(0, SymTab[Res.SymIdx].TypeIdx, Res);
-        Res.SymIdx := SymFind(CurToken.Val);
+        Begin
+          { Variable : retourner EK_MEM pour acces lecture/ecriture }
+          Res.Kind    := EK_MEM;
+          Res.TypeIdx := SymTab[Res.SymIdx].TypeIdx;
+          Res.Offset  := SymTab[Res.SymIdx].Offset;
+        End;
       End
       Else
       Begin
         { Identifiant inconnu : auto-declarer comme variable globale }
         EmitComment('ident (auto): ' + CurToken.Val);
         Res.SymIdx := SymAdd(CurToken.Val, SK_VAR, TY_UNKNOWN, 0);
-        ExprMakeImm(0, TY_UNKNOWN, Res);
+        Res.Kind    := EK_MEM;
+        Res.TypeIdx := TY_UNKNOWN;
+        Res.Offset  := 0;
         If Res.SymIdx < 0 Then Res.SymIdx := -1;
       End;
       ParserAdvance;
@@ -3334,6 +3356,247 @@ Begin
   EmitInstr('RET');
 End;
 
+{ ============================================================
+  TODO 09 - VARIABLES ET AFFECTATIONS [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ExprLoadToAX : charger une variable dans AX ------------- }
+{ Globale (scope=0) : MOV AX, [_PYV_x]                          }
+{ Locale  (offset<0): MOV AX, [BP-offset]                       }
+{ Param   (offset>0): MOV AX, [BP+offset]                       }
+Procedure ExprLoadToAX(SIdx : Integer);
+Var
+  Off : Integer;
+Begin
+  If (SIdx < 0) Or (SIdx >= SymCount) Then
+  Begin
+    EmitInstr('XOR    AX, AX');
+    Exit;
+  End;
+  If (SymTab[SIdx].ScopeLevel = 0) Or (SymTab[SIdx].IsGlobal) Then
+  Begin
+    { Variable globale : acces par label dans segment DATA }
+    EnsureVarInData(SIdx);
+    EmitInstr('MOV    AX, [' + SymTab[SIdx].MangledName + ']');
+  End
+  Else If SymTab[SIdx].Kind = SK_PARAM Then
+  Begin
+    { Parametre : [BP+offset] (offset positif, +4 pour ret addr+old BP) }
+    Off := SymTab[SIdx].Offset;
+    If Off >= 0 Then
+      EmitInstr('MOV    AX, [BP+' + IntToStr_(Off) + ']')
+    Else
+      EmitInstr('MOV    AX, [BP' + IntToStr_(Off) + ']');
+  End
+  Else
+  Begin
+    { Variable locale : [BP-offset] (offset negatif ou 0) }
+    Off := SymTab[SIdx].Offset;
+    If Off = 0 Then
+      EmitInstr('MOV    AX, [BP]')
+    Else If Off > 0 Then
+      EmitInstr('MOV    AX, [BP-' + IntToStr_(Off) + ']')
+    Else
+      EmitInstr('MOV    AX, [BP+' + IntToStr_(-Off) + ']');
+  End;
+End;
+
+{ ---- EmitStoreVar : stocker AX dans une variable ------------- }
+{ Globale (scope=0) : MOV [_PYV_x], AX                          }
+{ Locale  (offset>0): MOV [BP-offset], AX                       }
+{ Param   (offset>0): MOV [BP+offset], AX                       }
+Procedure EmitStoreVar(SIdx : Integer);
+Var
+  Off : Integer;
+Begin
+  If (SIdx < 0) Or (SIdx >= SymCount) Then Exit;
+  If (SymTab[SIdx].ScopeLevel = 0) Or (SymTab[SIdx].IsGlobal) Then
+  Begin
+    { Variable globale : stocker dans segment DATA }
+    EnsureVarInData(SIdx);
+    EmitInstr('MOV    [' + SymTab[SIdx].MangledName + '], AX');
+  End
+  Else If SymTab[SIdx].Kind = SK_PARAM Then
+  Begin
+    Off := SymTab[SIdx].Offset;
+    If Off >= 0 Then
+      EmitInstr('MOV    [BP+' + IntToStr_(Off) + '], AX')
+    Else
+      EmitInstr('MOV    [BP' + IntToStr_(Off) + '], AX');
+  End
+  Else
+  Begin
+    Off := SymTab[SIdx].Offset;
+    If Off = 0 Then
+      EmitInstr('MOV    [BP], AX')
+    Else If Off > 0 Then
+      EmitInstr('MOV    [BP-' + IntToStr_(Off) + '], AX')
+    Else
+      EmitInstr('MOV    [BP+' + IntToStr_(-Off) + '], AX');
+  End;
+End;
+
+{ ---- EnsureVarInData : s assurer qu une globale a un DW ------ }
+{ Si la variable globale n a pas encore d entree DATA, en creer   }
+{ une (DK_WORD initialise a 0) avec le label _PYV_x.             }
+Procedure EnsureVarInData(SIdx : Integer);
+Var
+  I : Integer;
+  Lbl : TString;
+Begin
+  If (SIdx < 0) Or (SIdx >= SymCount) Then Exit;
+  Lbl := SymTab[SIdx].MangledName;
+  { Verifier si deja dans DataTab }
+  For I := 0 To DataCount - 1 Do
+    If DataTab[I].LblName = Lbl Then Exit;
+  { Ajouter un DW 0 }
+  DataAddWord(Lbl, 0);
+End;
+
+{ ---- ParseAssign : parser une affectation -------------------- }
+{ Appelee quand on a un identifiant suivi de '=' ou op-assign.    }
+{ Gere :                                                          }
+{   x = expr           (affectation simple)                       }
+{   x += expr          (affectation augmentee)                    }
+{   a, b = e1, e2      (affectation multiple)                    }
+{   a, b = b, a        (echange via pile temporaire)             }
+Procedure ParseAssign(FirstSymIdx : Integer);
+Var
+  Op     : TString;
+  RHS    : TExprVal;
+  Targets : Array[0..MAX_PARAM - 1] Of Integer;  { indices symboles }
+  NTargets : Integer;
+  Vals   : Array[0..MAX_PARAM - 1] Of TExprVal;
+  NVals  : Integer;
+  VName  : TString;
+  I, SIdx : Integer;
+Begin
+  NTargets := 1;
+  Targets[0] := FirstSymIdx;
+
+  { Collecter les cibles d affectation multiple : a, b, c = ... }
+  While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
+  Begin
+    ParserAdvance;
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      VName := CurToken.Val;
+      SIdx := SymFind(VName);
+      If SIdx < 0 Then
+        SIdx := SymAdd(VName, SK_VAR, TY_UNKNOWN, 0);
+      If NTargets < MAX_PARAM Then
+      Begin
+        Targets[NTargets] := SIdx;
+        Inc(NTargets);
+      End;
+      ParserAdvance;
+    End
+    Else
+      Break;
+  End;
+
+  { Determiner le type d affectation }
+  If (CurToken.Kind = TK_OP) And IsAssignOp(CurToken.Val) Then
+  Begin
+    Op := CurToken.Val;
+    ParserAdvance;
+
+    If Op = '=' Then
+    Begin
+      { ---- Affectation simple ou multiple ---- }
+      If NTargets = 1 Then
+      Begin
+        { Simple : x = expr }
+        EmitComment('assign: ' + SymTab[Targets[0]].Name + ' = expr');
+        ParseExpr(RHS);
+        ExprFlushToAX(RHS);
+        EmitStoreVar(Targets[0]);
+      End
+      Else
+      Begin
+        { Multiple : a, b = expr1, expr2 }
+        EmitComment('assign multiple: ' + IntToStr_(NTargets) + ' targets');
+        NVals := 0;
+        For I := 0 To NTargets - 1 Do
+        Begin
+          If I > 0 Then
+          Begin
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+              ParserAdvance;
+          End;
+          If NVals < MAX_PARAM Then
+          Begin
+            ParseExpr(Vals[NVals]);
+            ExprFlushToAX(Vals[NVals]);
+            EmitInstr('PUSH   AX');
+            Inc(NVals);
+          End;
+        End;
+        { Stocker en ordre inverse (dernier pousse = premier depile) }
+        For I := NVals - 1 DownTo 0 Do
+        Begin
+          EmitInstr('POP    AX');
+          EmitStoreVar(Targets[I]);
+        End;
+      End;
+    End
+    Else
+    Begin
+      { ---- Affectation augmentee : x += expr, x -= expr, etc. ---- }
+      EmitComment('augmented assign: ' + SymTab[Targets[0]].Name +
+                  ' ' + Op + ' expr');
+      { Charger la valeur courante de la variable }
+      ExprLoadToAX(Targets[0]);
+      EmitInstr('PUSH   AX');
+      { Evaluer l expression droite }
+      ParseExpr(RHS);
+      ExprFlushToAX(RHS);
+      EmitInstr('MOV    BX, AX');
+      EmitInstr('POP    AX');
+      { Appliquer l operateur }
+      If      Op = '+='  Then EmitInstr('ADD    AX, BX')
+      Else If Op = '-='  Then EmitInstr('SUB    AX, BX')
+      Else If Op = '*='  Then EmitInstr('IMUL   BX')
+      Else If Op = '//=' Then
+      Begin
+        EmitInstr('CWD');
+        EmitInstr('IDIV   BX');
+      End
+      Else If Op = '/='  Then
+      Begin
+        EmitInstr('CWD');
+        EmitInstr('IDIV   BX');
+      End
+      Else If Op = '%='  Then
+      Begin
+        EmitInstr('CWD');
+        EmitInstr('IDIV   BX');
+        EmitInstr('MOV    AX, DX');
+      End
+      Else If Op = '&='  Then EmitInstr('AND    AX, BX')
+      Else If Op = '|='  Then EmitInstr('OR     AX, BX')
+      Else If Op = '^='  Then EmitInstr('XOR    AX, BX')
+      Else If Op = '<<=' Then
+      Begin
+        EmitInstr('MOV    CX, BX');
+        EmitInstr('SHL    AX, CL');
+      End
+      Else If Op = '>>=' Then
+      Begin
+        EmitInstr('MOV    CX, BX');
+        EmitInstr('SAR    AX, CL');
+      End
+      Else If Op = '**=' Then
+      Begin
+        EmitInstr('MOV    CX, BX');
+        EmitInstr('CALL   ' + PY_RT_PFX + 'POWER');
+      End;
+      { Stocker le resultat }
+      EmitStoreVar(Targets[0]);
+    End;
+  End;
+End;
+
 Procedure Run;
 Var
   VarName : TString;
@@ -3426,8 +3689,59 @@ Begin
         ParserAdvance;
       Continue;
     End;
-    { Parser une expression }
-    ParseExpr(GExprDummy);
+    { Affectation : ident = expr / ident += expr / a, b = e1, e2 (TODO 09) }
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      VarName := CurToken.Val;
+      Idx := SymFind(VarName);
+      If Idx < 0 Then
+        Idx := SymAdd(VarName, SK_VAR, TY_UNKNOWN, 0);
+      ParserAdvance;
+      { Detecter affectation simple/augmentee/multiple }
+      If ((CurToken.Kind = TK_OP) And IsAssignOp(CurToken.Val)) Or
+         ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',')) Then
+      Begin
+        ParseAssign(Idx);
+        { Sauter les NEWLINE apres l affectation }
+        If CurToken.Kind = TK_NEWLINE Then
+          ParserAdvance;
+        Continue;
+      End
+      Else
+      Begin
+        { Pas une affectation : c est une expression commencant par ident }
+        { L identifiant est deja consomme, il faut le traiter }
+        { On construit un EK_MEM pour le symbole et on continue le parseur }
+        GExprDummy.Kind    := EK_MEM;
+        GExprDummy.TypeIdx := SymTab[Idx].TypeIdx;
+        GExprDummy.Offset  := SymTab[Idx].Offset;
+        GExprDummy.SymIdx  := Idx;
+        GExprDummy.ImmVal  := 0;
+        { Appel de fonction : f(args) stub }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          While (CurToken.Kind <> TK_EOF) And
+                Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+            ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+          ExprMakeAX(TY_IDX_INT, GExprDummy);
+        End;
+        { Si un operateur binaire suit, continuer le parsing }
+        If (CurToken.Kind = TK_OP) And (BinOpPrec(CurToken.Val) > 0) Then
+        Begin
+          ExprFlushToAX(GExprDummy);
+          { Continuer avec ParseExprPrec en utilisant le resultat courant }
+          { On reparse depuis la boucle precedente }
+        End;
+      End;
+    End
+    Else
+    Begin
+      { Parser une expression }
+      ParseExpr(GExprDummy);
+    End;
     { Garde de securite : si le token n a pas avance, forcer }
     If (CurToken.Kind <> TK_EOF) And
        (CurToken.Kind <> TK_NEWLINE) Then
