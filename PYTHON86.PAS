@@ -135,7 +135,7 @@
             isinstance(obj, cls) : verification de type -> AX=0|1
             type(obj) : retourner le descripteur de type -> AX=idx
 
-  TODO 07 - EMETTEUR DE CODE ASM
+  TODO 07 - EMETTEUR DE CODE ASM [IMPLEMENTE]
             TEmitter : OutF (Text), OutFOpen, EmitOpen, EmitClose
             EmitRaw, EmitLabel, EmitInstr (formatage 8 espaces)
             EmitComment, EmitBlankLine
@@ -144,8 +144,12 @@
               _PYRT_ (runtime), _PYL_ (label), _PYC_ (classe/vtable),
               _PYM_ (methode)
             EmitHeader : .MODEL SMALL / .STACK 1024 / _TEXT SEGMENT
-            EmitProlog / EmitEpilog : PUSH BP / MOV BP,SP et MOV SP,BP / POP BP
+            EmitProlog(FrameSize) : PUSH BP / MOV BP,SP / SUB SP,N (si N>0)
+            EmitEpilog : MOV SP,BP / POP BP / RET
             EmitDataSeg : ecrire _DATA SEGMENT ... _DATA ENDS
+            Integration dans Run : point d entree _PYF_Main avec
+              init DS, EmitProlog, code utilisateur, EmitEpilog,
+              sortie DOS (MOV AX,4C00h / INT 21h)
 
   TODO 08 - SEGMENT DE DONNEES ET STATIQUES
             TDataRec : LblName, Kind (DK_WORD/DK_BYTE/DK_STR/DK_LIST/DK_DICT),
@@ -667,6 +671,9 @@ Procedure EmitOpen;            Forward;
 Procedure EmitHeader;          Forward;
 Procedure EmitDataSeg;         Forward;
 Procedure EmitClose;           Forward;
+{ TODO 07 - Forward declarations emetteur de code ASM }
+Procedure EmitProlog(FrameSize : Integer);  Forward;
+Procedure EmitEpilog;                       Forward;
 { TODO 04 - Forward declarations operateurs et precedence }
 Procedure EmitInstr(Const S : TString);      Forward;
 Procedure EmitLabel(Const Lbl : TString);    Forward;
@@ -3233,6 +3240,29 @@ Begin
     WriteLn('  Types enregistres : ', TypeCount);
 End;
 
+{ ============================================================
+  TODO 07 - EMETTEUR DE CODE ASM [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- EmitProlog : prologue de fonction ----------------------- }
+{ PUSH BP / MOV BP,SP / SUB SP,FrameSize (si FrameSize > 0)     }
+Procedure EmitProlog(FrameSize : Integer);
+Begin
+  EmitInstr('PUSH BP');
+  EmitInstr('MOV BP,SP');
+  If FrameSize > 0 Then
+    EmitInstr('SUB SP,' + IntToStr_(FrameSize));
+End;
+
+{ ---- EmitEpilog : epilogue de fonction ----------------------- }
+{ MOV SP,BP / POP BP / RET                                      }
+Procedure EmitEpilog;
+Begin
+  EmitInstr('MOV SP,BP');
+  EmitInstr('POP BP');
+  EmitInstr('RET');
+End;
+
 Procedure Run;
 Var
   VarName : TString;
@@ -3245,6 +3275,14 @@ Begin
 
   EmitOpen;
   EmitHeader;
+
+  { Point d entree principal }
+  EmitComment('-- Point d entree principal --');
+  EmitLabel('_PYF_Main');
+  EmitInstr('MOV AX,_DATA');
+  EmitInstr('MOV DS,AX');
+  EmitProlog(0);
+  EmitBlankLine;
 
   LexInit;
 
@@ -3329,6 +3367,13 @@ Begin
   End;
 
   LexClose;
+
+  { Epilogue et sortie DOS }
+  EmitBlankLine;
+  EmitComment('-- Fin du programme --');
+  EmitEpilog;
+  EmitInstr('MOV AX,4C00h');
+  EmitInstr('INT 21h');
 
   EmitClose;
 
