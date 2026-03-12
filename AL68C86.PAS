@@ -162,17 +162,25 @@
             EmitClose : DOS exit MOV AX,4C00h/INT 21h + runtime +
               _TEXT ENDS + data + END _A68P_main
 
-  TODO 09 - SEGMENT DE DONNEES ET STATIQUES
+  TODO 09 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
             TDataRec : LblName, Kind (DK_WORD/DK_BYTE/DK_STR/DK_ARRAY/DK_STRUCT),
               IntVal, StrVal, ElemCount
             DataTab[0..MAX_DATA-1], DataCount
             DataAdd, DataAddStr, DataAddStruct : variantes d ajout
+            DataAddByte : un octet (CHAR, BOOL) dans le segment DATA
+            DataAddArrayDesc : descripteur de tableau [lwb:upb]
+              DW lwb, DW upb, DW taille_elem, DW offset_data
+            DataAddUnionDesc : descripteur d union (UNION)
+              DW discriminant, taille_max * DB 0
+            DataAddGlobalVar : variable globale _A68V_nom (DW 0)
+            DataFindStr : retrouver un label de chaine existante
             Variables globales : entrees DK_WORD dans DATA avec label _A68V_nom
             Constantes : entrees DK_WORD ou DK_STR (immuables)
             Chaines litterales : DB 'abc',0 dans DATA avec label _A68K_N
             Descripteurs de tableaux : DW lwb, upb, taille_elem, offset_data
             Descripteurs de modes UNION : DW discriminant + donnees
-            Pool de chaines pour STRING dynamique
+            Pool de chaines : _A68_STRPOOL DB STRPOOL_SIZE DUP(0)
+              + _A68_STRPOOL_TOP DW 0 (prochain octet libre)
 
   TODO 10 - DECLARATIONS D IDENTITE ET DE VARIABLE
             Declaration d identite : INT x = 42;
@@ -475,6 +483,7 @@ Const
   MAX_STR       = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
   MAX_OP        = {$IFDEF FPC}128{$ELSE}32{$ENDIF};
   STACK_SIZE    = 1024;
+  STRPOOL_SIZE  = 1024;  { taille du pool de chaines dynamiques }
 
   { Prefixes de nommage ASM }
   A68_VAR_PFX  = '_A68V_';    { variable (identite REF)             }
@@ -484,6 +493,8 @@ Const
   A68_LBL_PFX  = '_A68L_';    { label de saut interne               }
   A68_MODE_PFX = '_A68M_';    { info de mode (type)                 }
   A68_OP_PFX   = '_A68O_';    { operateur utilisateur               }
+  A68_ARR_PFX  = '_A68A_';    { descripteur de tableau               }
+  A68_UNI_PFX  = '_A68U_';    { descripteur d union                  }
 
   { Codes de sortie }
   EXIT_OK    = 0;
@@ -796,6 +807,18 @@ Procedure EmitRuntime;   Forward;
 Function  DataAdd(Const Lbl : TString; Kind : TDataKind;
                   AIntVal : LongInt; Const AStrVal : TString) : Integer; Forward;
 Function  DataAddStr(Const S : TString) : TString; Forward;
+Function  DataAddByte(Const Lbl : TString;
+                      AByteVal : Integer) : Integer; Forward;
+Function  DataAddStruct(Const Lbl : TString;
+                        ASize : Integer) : Integer; Forward;
+Function  DataAddArrayDesc(Const Lbl : TString;
+                           ALwb, AUpb, AElemSize : Integer;
+                           Const ADataLbl : TString) : Integer; Forward;
+Function  DataAddUnionDesc(Const Lbl : TString;
+                           ADiscrim, AMaxSize : Integer) : Integer; Forward;
+Function  DataAddGlobalVar(Const Name : TString;
+                           ModeIdx : Integer) : Integer; Forward;
+Function  DataFindStr(Const S : TString) : TString; Forward;
 
 { TODO 10 - Declarations }
 Procedure ParseDeclStmt; Forward;
@@ -2234,6 +2257,127 @@ Begin
   DataAddWord := DataAdd(Lbl, DK_WORD, AIntVal, '');
 End;
 
+{ ============================================================
+  TODO 09 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- DataAddByte : ajouter un octet dans le segment DATA ------- }
+{ Utilise pour CHAR et BOOL.                                       }
+
+Function DataAddByte(Const Lbl : TString;
+                     AByteVal : Integer) : Integer;
+Begin
+  DataAddByte := DataAdd(Lbl, DK_BYTE, AByteVal And $FF, '');
+End;
+
+{ ---- DataAddStruct : ajouter un bloc STRUCT vide --------------- }
+{ ASize = nombre de mots DW du bloc (ElemCount stocke la taille). }
+
+Function DataAddStruct(Const Lbl : TString;
+                       ASize : Integer) : Integer;
+Var
+  Idx : Integer;
+Begin
+  Idx := DataAdd(Lbl, DK_STRUCT_BLK, ASize, '');
+  If (Idx >= 0) And (Idx < MAX_DATA) Then
+    DataTab[Idx].ElemCount := ASize;
+  DataAddStruct := Idx;
+End;
+
+{ ---- DataAddArrayDesc : descripteur de tableau [lwb:upb] ------- }
+{ Genere un bloc de 4 mots DW : lwb, upb, taille_elem, ptr_data.  }
+{ ADataLbl est le label du bloc de donnees du tableau.             }
+{ Le descripteur est emis dans le segment DATA avec label Lbl.     }
+{ Structure :                                                       }
+{   Lbl DW lwb                                                     }
+{       DW upb                                                     }
+{       DW taille_elem (octets par element)                        }
+{       DW OFFSET ADataLbl  (pointeur near vers les donnees)       }
+
+Function DataAddArrayDesc(Const Lbl : TString;
+                          ALwb, AUpb, AElemSize : Integer;
+                          Const ADataLbl : TString) : Integer;
+Var
+  Idx : Integer;
+Begin
+  Idx := DataAdd(Lbl, DK_ARRAY_BLK, ALwb, ADataLbl);
+  If (Idx >= 0) And (Idx < MAX_DATA) Then
+  Begin
+    { On stocke les meta-donnees dans les champs disponibles :       }
+    { IntVal = lwb, ElemCount = upb, StrVal = label bloc donnees     }
+    { On encode upb et elem_size dans ElemCount (upb * 256 + size)   }
+    DataTab[Idx].ElemCount := (AUpb * 256) + (AElemSize And $FF);
+  End;
+  DataAddArrayDesc := Idx;
+End;
+
+{ ---- DataAddUnionDesc : descripteur d union -------------------- }
+{ Genere un bloc contenant un discriminant (DW) suivi de           }
+{ AMaxSize octets nuls pour la partie donnees de l union.          }
+
+Function DataAddUnionDesc(Const Lbl : TString;
+                          ADiscrim, AMaxSize : Integer) : Integer;
+Var
+  Idx : Integer;
+Begin
+  Idx := DataAdd(Lbl, DK_STRUCT_BLK, ADiscrim, '');
+  If (Idx >= 0) And (Idx < MAX_DATA) Then
+    DataTab[Idx].ElemCount := AMaxSize;
+  DataAddUnionDesc := Idx;
+End;
+
+{ ---- DataAddGlobalVar : declarer une variable globale ---------- }
+{ Cree une entree DK_WORD dans DataTab avec label _A68V_nom       }
+{ et valeur initiale 0. Retourne l index dans DataTab.            }
+{ Si la variable existe deja, retourne l index existant.          }
+
+Function DataAddGlobalVar(Const Name : TString;
+                          ModeIdx : Integer) : Integer;
+Var
+  I      : Integer;
+  Lbl    : TString;
+  MK     : TModeKind;
+Begin
+  Lbl := A68_VAR_PFX + SymNameClean(Name);
+  { Verifier si deja declaree }
+  For I := 0 To DataCount - 1 Do
+    If DataTab[I].LblName = Lbl Then
+    Begin
+      DataAddGlobalVar := I;
+      Exit;
+    End;
+  { Choisir la taille selon le mode }
+  MK := ModeKindOf(ModeIdx);
+  Case MK Of
+    MK_BOOL, MK_CHAR :
+      DataAddGlobalVar := DataAddByte(Lbl, 0);
+    MK_COMPL :
+    Begin
+      { COMPL = 2 mots (re + im) }
+      DataAddGlobalVar := DataAddStruct(Lbl, 2);
+    End;
+    Else
+      { INT, REAL, BITS, STRING, REF, PROC, etc. = 1 mot DW }
+      DataAddGlobalVar := DataAddWord(Lbl, 0);
+  End;
+End;
+
+{ ---- DataFindStr : retrouver un label de chaine existante ------ }
+{ Retourne le label si la chaine existe dans DataTab, '' sinon.    }
+
+Function DataFindStr(Const S : TString) : TString;
+Var
+  I : Integer;
+Begin
+  DataFindStr := '';
+  For I := 0 To DataCount - 1 Do
+    If (DataTab[I].Kind = DK_STR) And (DataTab[I].StrVal = S) Then
+    Begin
+      DataFindStr := DataTab[I].LblName;
+      Exit;
+    End;
+End;
+
 { ---- EmitDataSeg : ecrire _DATA SEGMENT complet -------------- }
 { Emet les chaines predefinies et toutes les entrees DataTab.    }
 { Gestion des caracteres de controle : les octets non imprimables }
@@ -2263,6 +2407,11 @@ Begin
   EmitRaw('        DB      13,10,0');
   EmitLabel('_A68_STRBUF');
   EmitRaw('        DB      256 DUP(0)');
+  { Pool de chaines dynamiques pour STRING (TODO 09) }
+  EmitLabel('_A68_STRPOOL');
+  EmitRaw('        DB      ' + IntToStr(STRPOOL_SIZE) + ' DUP(0)');
+  EmitLabel('_A68_STRPOOL_TOP');
+  EmitRaw('        DW      0');
   { Entrees dynamiques de DataTab }
   For I := 0 To DataCount - 1 Do
   Begin
@@ -2321,9 +2470,42 @@ Begin
         EmitRaw(S);
       End;
       DK_ARRAY_BLK :
-        EmitRaw('        DW      0,0,0,0  ; array descriptor');
+      Begin
+        { Descripteur de tableau : DW lwb, upb, taille_elem, OFFSET data }
+        { IntVal = lwb, ElemCount = (upb*256 + elemsize), StrVal = data label }
+        S := '        DW      ' + IntToStr(DataTab[I].IntVal);
+        If DataTab[I].ElemCount > 0 Then
+        Begin
+          Str(DataTab[I].ElemCount Div 256, NS);
+          S := S + ',' + NS;
+          Str(DataTab[I].ElemCount And $FF, NS);
+          S := S + ',' + NS;
+        End
+        Else
+          S := S + ',0,2';
+        If DataTab[I].StrVal <> '' Then
+          S := S + ',OFFSET ' + DataTab[I].StrVal
+        Else
+          S := S + ',0';
+        EmitRaw(S + '  ; array desc [lwb,upb,esiz,data]');
+      End;
       DK_STRUCT_BLK :
-        EmitRaw('        DW      0  ; struct block');
+      Begin
+        { Bloc STRUCT/UNION : IntVal = valeur initiale (discriminant pour UNION) }
+        { ElemCount = nombre de mots DW a reserver                               }
+        If DataTab[I].ElemCount > 1 Then
+        Begin
+          EmitRaw('        DW      ' + IntToStr(DataTab[I].IntVal) +
+                  '  ; struct/union block');
+          Str(DataTab[I].ElemCount - 1, NS);
+          EmitRaw('        DW      ' + NS + ' DUP(0)');
+        End
+        Else If DataTab[I].ElemCount = 1 Then
+          EmitRaw('        DW      ' + IntToStr(DataTab[I].IntVal) +
+                  '  ; struct block')
+        Else
+          EmitRaw('        DW      0  ; struct block');
+      End;
     End;
   End;
   EmitRaw('_DATA   ENDS');
