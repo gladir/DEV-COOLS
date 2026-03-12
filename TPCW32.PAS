@@ -125,6 +125,9 @@ Var
   OutF       : Text;
   OutFOpen   : Boolean;
 
+  { Drapeau pour la generation binaire PE (mini-assembleur) }
+  BcActive   : Boolean;
+
 { ------------------------------------------------------------ }
 { Fonctions utilitaires                                        }
 { ------------------------------------------------------------ }
@@ -3792,6 +3795,13 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
+{ Declarations anticipees du mini-assembleur binaire           }
+{ ------------------------------------------------------------ }
+
+Procedure BcDefineLabel(Const Nm: TString); Forward;
+Procedure BcAssemble(Const S: TString); Forward;
+
+{ ------------------------------------------------------------ }
 { EmitLabel : ecrire un label suivi de ':'                     }
 { ------------------------------------------------------------ }
 
@@ -3799,6 +3809,8 @@ Procedure EmitLabel(Const Lbl : TString);
 Begin
   If OutFOpen Then
     WriteLn(OutF, Lbl, ':');
+  If BcActive Then
+    BcDefineLabel(Lbl);
 End;
 
 { ------------------------------------------------------------ }
@@ -3809,6 +3821,8 @@ Procedure EmitInstr(Const S : TString);
 Begin
   If OutFOpen Then
     WriteLn(OutF, '        ', S);
+  If BcActive Then
+    BcAssemble(S);
 End;
 
 { ------------------------------------------------------------ }
@@ -10244,6 +10258,7 @@ Begin
 
   { Stocker la limite dans une variable data temporaire }
   LimLabel := LabelGen;
+  DataAddDWord(LimLabel, 0);  { Allouer la variable temporaire pour la limite }
   EmitInstr('MOV DWORD PTR [' + LimLabel + '],EAX');
 
   { Generer les labels de boucle }
@@ -16960,11 +16975,58 @@ Const
   PE_DATA_RVA     = $2000;
   PE_IDATA_RVA    = $3000;
   PE_HDR_SIZE     = $200;
-  PE_NUM_IMPORTS  = 7;
+  PE_NUM_IMPORTS_OLD  = 7;
 
-{ --- Variable fichier binaire PE --- }
+{ --- Constantes du mini-assembleur binaire --- }
+  BC_MAX_CODE   = 262144;  { 256 Ko de code machine max }
+  BC_MAX_DATA   = 262144;  { 256 Ko de donnees max      }
+  BC_MAX_LABEL  = 8192;    { labels de code max          }
+  BC_MAX_DLABEL = 8192;    { labels de donnees max       }
+  BC_MAX_FIXUP  = 32768;   { fixups max                  }
+  BC_MAX_IMP    = 256;     { imports API max             }
+
+  { Types de fixup }
+  BC_FIX_REL32  = 0;       { CALL/JMP rel32 vers label code    }
+  BC_FIX_ABS32_CODE = 1;   { adresse absolue vers label code   }
+  BC_FIX_ABS32_DATA = 2;   { adresse absolue vers label data   }
+  BC_FIX_ABS32_IMP  = 3;   { adresse absolue vers IAT entry    }
+
+  { Index de registres x86-32 }
+  R_EAX = 0; R_ECX = 1; R_EDX = 2; R_EBX = 3;
+  R_ESP = 4; R_EBP = 5; R_ESI = 6; R_EDI = 7;
+
+Type
+  TBcLabel = Record
+    Name   : TString;
+    Offset : LongInt;
+  End;
+  TBcFixup = Record
+    CodeOfs  : LongInt;    { offset dans BcCode ou ecrire la valeur   }
+    LblName  : TString;    { nom du label cible                       }
+    Kind     : Integer;    { BC_FIX_REL32, BC_FIX_ABS32_DATA, etc.   }
+    Addend   : LongInt;    { deplacemenent additionnel                }
+  End;
+  TBcImport = Record
+    ApiName  : TString;    { nom normalise de l API (ex: ExitProcess) }
+    DllName  : TString;    { nom de la DLL (ex: kernel32.dll)         }
+    IatSlot  : Integer;    { index dans l IAT                         }
+  End;
+
+{ --- Variables du mini-assembleur binaire --- }
 Var
   PEBinF : File;
+  BcCode     : Array[0..BC_MAX_CODE-1] of Byte;
+  BcCodeLen  : LongInt;
+  BcData     : Array[0..BC_MAX_DATA-1] of Byte;
+  BcDataLen  : LongInt;
+  BcLabels   : Array[0..BC_MAX_LABEL-1] of TBcLabel;
+  BcLabelCnt : Integer;
+  BcDLabels  : Array[0..BC_MAX_DLABEL-1] of TBcLabel;
+  BcDLabelCnt: Integer;
+  BcFixups   : Array[0..BC_MAX_FIXUP-1] of TBcFixup;
+  BcFixupCnt : LongInt;
+  BcImports  : Array[0..BC_MAX_IMP-1] of TBcImport;
+  BcImportCnt: Integer;
 
 { --- Helpers ecriture binaire --- }
 
@@ -17009,50 +17071,1550 @@ Begin
   While FilePos(PEBinF) < Pos Do PEWrB(0);
 End;
 
+{ ============================================================ }
+{ MINI-ASSEMBLEUR x86-32 INTERNE (GENERATION BINAIRE PE)       }
+{ ============================================================ }
+
+Procedure BcInit;
+Begin
+  BcCodeLen := 0; BcDataLen := 0;
+  BcLabelCnt := 0; BcDLabelCnt := 0;
+  BcFixupCnt := 0; BcImportCnt := 0;
+  BcActive := False;
+  FillChar(BcCode, SizeOf(BcCode), 0);
+  FillChar(BcData, SizeOf(BcData), 0);
+End;
+
+{ --- Emission d octets dans BcCode --- }
+Procedure BcEmitB(B: Byte);
+Begin
+  If BcCodeLen < BC_MAX_CODE Then
+  Begin BcCode[BcCodeLen] := B; Inc(BcCodeLen); End;
+End;
+
+Procedure BcEmitW(W: Word);
+Begin
+  BcEmitB(Lo(W)); BcEmitB(Hi(W));
+End;
+
+Procedure BcEmitD(D: LongInt);
+Begin
+  BcEmitB(Byte(D)); BcEmitB(Byte(D Shr 8));
+  BcEmitB(Byte(D Shr 16)); BcEmitB(Byte(D Shr 24));
+End;
+
+{ --- Emission d octets dans BcData --- }
+Procedure BcDataB(B: Byte);
+Begin
+  If BcDataLen < BC_MAX_DATA Then
+  Begin BcData[BcDataLen] := B; Inc(BcDataLen); End;
+End;
+
+Procedure BcDataD(D: LongInt);
+Begin
+  BcDataB(Byte(D)); BcDataB(Byte(D Shr 8));
+  BcDataB(Byte(D Shr 16)); BcDataB(Byte(D Shr 24));
+End;
+
+Procedure BcDataW(W: Word);
+Begin
+  BcDataB(Lo(W)); BcDataB(Hi(W));
+End;
+
+Procedure BcDataStr(Const S: TString);
+Var I: Integer;
+Begin
+  For I := 1 To Length(S) Do BcDataB(Byte(S[I]));
+  BcDataB(0);
+End;
+
+Procedure BcDataZeros(N: LongInt);
+Var I: LongInt;
+Begin
+  For I := 1 To N Do BcDataB(0);
+End;
+
+{ --- Gestion des labels de donnees --- }
+Procedure BcDefineDataLabel(Const Nm: TString);
+Begin
+  If BcDLabelCnt < BC_MAX_DLABEL Then
+  Begin
+    BcDLabels[BcDLabelCnt].Name := Nm;
+    BcDLabels[BcDLabelCnt].Offset := BcDataLen;
+    Inc(BcDLabelCnt);
+  End;
+End;
+
+Function BcFindDataLabel(Const Nm: TString): LongInt;
+Var I: Integer;
+Begin
+  BcFindDataLabel := -1;
+  For I := 0 To BcDLabelCnt - 1 Do
+    If BcDLabels[I].Name = Nm Then
+    Begin BcFindDataLabel := BcDLabels[I].Offset; Exit; End;
+End;
+
+{ --- Gestion des labels de code --- }
+Procedure BcDefineLabel(Const Nm: TString);
+Begin
+  If BcLabelCnt < BC_MAX_LABEL Then
+  Begin
+    BcLabels[BcLabelCnt].Name := Nm;
+    BcLabels[BcLabelCnt].Offset := BcCodeLen;
+    Inc(BcLabelCnt);
+  End;
+End;
+
+Function BcFindLabel(Const Nm: TString): LongInt;
+Var I: Integer;
+Begin
+  BcFindLabel := -1;
+  For I := 0 To BcLabelCnt - 1 Do
+    If BcLabels[I].Name = Nm Then
+    Begin BcFindLabel := BcLabels[I].Offset; Exit; End;
+End;
+
+{ --- Gestion des fixups --- }
+Procedure BcAddFixup(Kind: Integer; Const Lbl: TString; Addend: LongInt);
+Begin
+  If BcFixupCnt < BC_MAX_FIXUP Then
+  Begin
+    BcFixups[BcFixupCnt].CodeOfs := BcCodeLen;
+    BcFixups[BcFixupCnt].LblName := Lbl;
+    BcFixups[BcFixupCnt].Kind := Kind;
+    BcFixups[BcFixupCnt].Addend := Addend;
+    Inc(BcFixupCnt);
+  End;
+End;
+
+{ --- Gestion des imports --- }
+Function BcNormalizeApi(Const Raw: TString): TString;
+Var S: TString; P: Integer;
+Begin
+  S := Raw;
+  If (Length(S) > 0) And (S[1] = '_') Then Delete(S, 1, 1);
+  P := Pos('@', S);
+  If P > 0 Then S := Copy(S, 1, P - 1);
+  BcNormalizeApi := S;
+End;
+
+Function BcApiToDll(Const Api: TString): TString;
+Var U: TString;
+Begin
+  U := StrUpperCase(Api);
+  { user32.dll }
+  If (U = 'REGISTERCLASSA') Or (U = 'CREATEWINDOWEXA') Or
+     (U = 'DESTROYWINDOW') Or (U = 'SHOWWINDOW') Or
+     (U = 'UPDATEWINDOW') Or (U = 'GETDC') Or
+     (U = 'RELEASEDC') Or (U = 'DEFWINDOWPROCA') Or
+     (U = 'GETCLIENTRECT') Or (U = 'INVALIDATERECT') Or
+     (U = 'PEEKMESSAGEA') Or (U = 'DISPATCHMESSAGEA') Or
+     (U = 'TRANSLATEMESSAGE') Or (U = 'POSTQUITMESSAGE') Or
+     (U = 'LOADCURSORA') Or
+     (U = 'FILLRECT') Or (U = 'GETASYNCKEYSTATE') Or
+     (U = 'GETKEYSTATE') Or (U = 'GETCURSORPOS') Or
+     (U = 'GETSYSTEMMETRICS') Or (U = 'SHOWCURSOR') Or
+     (U = 'MESSAGEBOXA') Then
+    BcApiToDll := 'user32.dll'
+  { gdi32.dll }
+  Else If (U = 'SETPIXEL') Or (U = 'GETPIXEL') Or
+     (U = 'MOVETOEX') Or (U = 'LINETO') Or
+     (U = 'RECTANGLE') Or (U = 'ELLIPSE') Or
+     (U = 'ARC') Or (U = 'PIE') Or
+     (U = 'CREATEPEN') Or (U = 'CREATESOLIDBRUSH') Or
+     (U = 'SELECTOBJECT') Or (U = 'DELETEOBJECT') Or
+     (U = 'TEXTOUTA') Or (U = 'CREATEFONTA') Or
+     (U = 'SETBKMODE') Or (U = 'SETTEXTCOLOR') Or
+     (U = 'SETBKCOLOR') Or (U = 'GETTEXTEXTENTPOINT32A') Or
+     (U = 'CREATECOMPATIBLEDC') Or (U = 'CREATECOMPATIBLEBITMAP') Or
+     (U = 'BITBLT') Or (U = 'DELETEDC') Or
+     (U = 'FLOODFILL') Or (U = 'GETSTOCKOBJECT') Then
+    BcApiToDll := 'gdi32.dll'
+  Else
+    BcApiToDll := 'kernel32.dll';
+End;
+
+Function BcFindOrAddImport(Const RawName: TString): Integer;
+Var Api: TString; I: Integer;
+Begin
+  Api := BcNormalizeApi(RawName);
+  For I := 0 To BcImportCnt - 1 Do
+    If BcImports[I].ApiName = Api Then
+    Begin BcFindOrAddImport := I; Exit; End;
+  If BcImportCnt < BC_MAX_IMP Then
+  Begin
+    BcImports[BcImportCnt].ApiName := Api;
+    BcImports[BcImportCnt].DllName := BcApiToDll(Api);
+    BcImports[BcImportCnt].IatSlot := BcImportCnt;
+    BcFindOrAddImport := BcImportCnt;
+    Inc(BcImportCnt);
+  End Else
+    BcFindOrAddImport := 0;
+End;
+
+Function BcIsImport(Const Name: TString): Boolean;
+Var U: TString;
+Begin
+  U := StrUpperCase(BcNormalizeApi(Name));
+  BcIsImport := (U = 'EXITPROCESS') Or (U = 'GETSTDHANDLE') Or
+    (U = 'WRITEFILE') Or (U = 'READFILE') Or
+    (U = 'GETPROCESSHEAP') Or (U = 'HEAPALLOC') Or
+    (U = 'HEAPFREE') Or (U = 'CREATEFILEA') Or
+    (U = 'CLOSEHANDLE') Or (U = 'SETFILEPOINTER') Or
+    (U = 'GETFILESIZE') Or (U = 'DELETEFILEA') Or
+    (U = 'CREATEDIRECTORYA') Or (U = 'REMOVEDIRECTORYA') Or
+    (U = 'SETCURRENTDIRECTORYA') Or (U = 'GETCURRENTDIRECTORYA') Or
+    (U = 'GETTICKCOUNT') Or (U = 'SLEEP') Or
+    (U = 'GETCOMMANDLINEA') Or (U = 'WRITECONSOLEA') Or
+    (U = 'READCONSOLEA') Or (U = 'SETCONSOLECURSORPOSITION') Or
+    (U = 'GETCONSOLESCREENBUFFERINFO') Or (U = 'SETCONSOLETEXTATTRIBUTE') Or
+    (U = 'FILLCONSOLEOUTPUTCHARACTERA') Or (U = 'FILLCONSOLEOUTPUTATTRIBUTE') Or
+    (U = 'GETCONSOLEMODE') Or (U = 'SETCONSOLEMODE') Or
+    (U = 'PEEKCONSOLEINPUTA') Or (U = 'READCONSOLEINPUTA') Or
+    (U = 'GETNUMBEROFCONSOLEINPUTEVENTS') Or (U = 'BEEP') Or
+    (U = 'SCROLLCONSOLESCREENBUFFERA') Or (U = 'FLUSHCONSOLEINPUTBUFFER') Or
+    (U = 'GETLOCALTIME') Or (U = 'SETLOCALTIME') Or
+    (U = 'GETFILEATTRIBUTESA') Or (U = 'SETFILEATTRIBUTESA') Or
+    (U = 'FINDFIRSTFILEA') Or (U = 'FINDNEXTFILEA') Or
+    (U = 'FINDCLOSE') Or (U = 'GETDISKFREESPACEA') Or
+    (U = 'GETENVIRONMENTVARIABLEA') Or (U = 'CREATEPROCESSA') Or
+    (U = 'WAITFORSINGLEOBJECT') Or (U = 'GETEXITCODEPROCESS') Or
+    (U = 'GETFULLPATHNAMEA') Or (U = 'REGISTERCLASSA') Or
+    (U = 'CREATEWINDOWEXA') Or (U = 'DESTROYWINDOW') Or
+    (U = 'SHOWWINDOW') Or (U = 'UPDATEWINDOW') Or
+    (U = 'GETDC') Or (U = 'RELEASEDC') Or
+    (U = 'DEFWINDOWPROCA') Or (U = 'GETCLIENTRECT') Or
+    (U = 'INVALIDATERECT') Or (U = 'PEEKMESSAGEA') Or
+    (U = 'DISPATCHMESSAGEA') Or (U = 'TRANSLATEMESSAGE') Or
+    (U = 'POSTQUITMESSAGE') Or (U = 'LOADCURSORA') Or
+    (U = 'GETMODULEHANDLEA') Or (U = 'FILLRECT') Or
+    (U = 'SETPIXEL') Or (U = 'GETPIXEL') Or
+    (U = 'MOVETOEX') Or (U = 'LINETO') Or
+    (U = 'RECTANGLE') Or (U = 'ELLIPSE') Or
+    (U = 'ARC') Or (U = 'PIE') Or
+    (U = 'CREATEPEN') Or (U = 'CREATESOLIDBRUSH') Or
+    (U = 'SELECTOBJECT') Or (U = 'DELETEOBJECT') Or
+    (U = 'TEXTOUTA') Or (U = 'CREATEFONTA') Or
+    (U = 'SETBKMODE') Or (U = 'SETTEXTCOLOR') Or
+    (U = 'SETBKCOLOR') Or (U = 'GETTEXTEXTENTPOINT32A') Or
+    (U = 'CREATECOMPATIBLEDC') Or (U = 'CREATECOMPATIBLEBITMAP') Or
+    (U = 'BITBLT') Or (U = 'DELETEDC') Or
+    (U = 'FLOODFILL') Or (U = 'GETSTOCKOBJECT') Or
+    (U = 'GETASYNCKEYSTATE') Or (U = 'GETKEYSTATE') Or
+    (U = 'GETCURSORPOS') Or (U = 'GETSYSTEMMETRICS') Or
+    (U = 'SHOWCURSOR') Or (U = 'SETCONSOLESCREENBUFFERSIZE') Or
+    (U = 'WRITECONSOLEOUTPUTATTRIBUTE') Or (U = 'SETENDOFFILE') Or
+    (U = 'FLUSHFILEBUFFERS') Or (U = 'LSTRLENA') Or
+    (U = 'LSTRCPYA') Or (U = 'LSTRCATA') Or
+    (U = 'LSTRCMPA') Or (U = 'LSTRCMPIA') Or
+    (U = 'MESSAGEBOXA');
+End;
+
+{ --- Parseur d operandes x86 --- }
+
+Function BcParseReg32(Const S: TString): Integer;
+Var U: TString;
+Begin
+  U := StrUpperCase(S);
+  If U = 'EAX' Then BcParseReg32 := R_EAX
+  Else If U = 'ECX' Then BcParseReg32 := R_ECX
+  Else If U = 'EDX' Then BcParseReg32 := R_EDX
+  Else If U = 'EBX' Then BcParseReg32 := R_EBX
+  Else If U = 'ESP' Then BcParseReg32 := R_ESP
+  Else If U = 'EBP' Then BcParseReg32 := R_EBP
+  Else If U = 'ESI' Then BcParseReg32 := R_ESI
+  Else If U = 'EDI' Then BcParseReg32 := R_EDI
+  Else BcParseReg32 := -1;
+End;
+
+Function BcParseReg8(Const S: TString): Integer;
+Var U: TString;
+Begin
+  U := StrUpperCase(S);
+  If U = 'AL' Then BcParseReg8 := 0
+  Else If U = 'CL' Then BcParseReg8 := 1
+  Else If U = 'DL' Then BcParseReg8 := 2
+  Else If U = 'BL' Then BcParseReg8 := 3
+  Else If U = 'AH' Then BcParseReg8 := 4
+  Else If U = 'CH' Then BcParseReg8 := 5
+  Else If U = 'DH' Then BcParseReg8 := 6
+  Else If U = 'BH' Then BcParseReg8 := 7
+  Else BcParseReg8 := -1;
+End;
+
+Function BcParseReg16(Const S: TString): Integer;
+Var U: TString;
+Begin
+  U := StrUpperCase(S);
+  If U = 'AX' Then BcParseReg16 := 0
+  Else If U = 'CX' Then BcParseReg16 := 1
+  Else If U = 'DX' Then BcParseReg16 := 2
+  Else If U = 'BX' Then BcParseReg16 := 3
+  Else If U = 'SP' Then BcParseReg16 := 4
+  Else If U = 'BP' Then BcParseReg16 := 5
+  Else If U = 'SI' Then BcParseReg16 := 6
+  Else If U = 'DI' Then BcParseReg16 := 7
+  Else BcParseReg16 := -1;
+End;
+
+{$Q-}{$R-}  { Disable overflow/range checks: hex values like 80000000h exceed LongInt }
+Function BcParseImm(Const S: TString; Var V: LongInt): Boolean;
+Var T: TString; I: Integer; Neg: Boolean; Ch: Char; U: LongWord;
+Begin
+  BcParseImm := False; V := 0; U := 0;
+  T := S;
+  While (Length(T) > 0) And (T[1] = ' ') Do Delete(T, 1, 1);
+  While (Length(T) > 0) And (T[Length(T)] = ' ') Do Delete(T, Length(T), 1);
+  If T = '' Then Exit;
+  Neg := False;
+  If T[1] = '-' Then Begin Neg := True; Delete(T, 1, 1); End;
+  If T = '' Then Exit;
+  If (Length(T) > 1) And (StrUpperCase(Copy(T, Length(T), 1)) = 'H') Then
+  Begin
+    Delete(T, Length(T), 1);
+    If (Length(T) > 1) And (T[1] = '0') Then Delete(T, 1, 1);
+    For I := 1 To Length(T) Do Begin
+      Ch := UpCase(T[I]);
+      If (Ch >= '0') And (Ch <= '9') Then U := U * 16 + LongWord(Ord(Ch) - Ord('0'))
+      Else If (Ch >= 'A') And (Ch <= 'F') Then U := U * 16 + LongWord(Ord(Ch) - Ord('A') + 10)
+      Else Exit;
+    End;
+  End
+  Else If (Length(T) > 2) And (Copy(T, 1, 2) = '0x') Then
+  Begin
+    Delete(T, 1, 2);
+    For I := 1 To Length(T) Do Begin
+      Ch := UpCase(T[I]);
+      If (Ch >= '0') And (Ch <= '9') Then U := U * 16 + LongWord(Ord(Ch) - Ord('0'))
+      Else If (Ch >= 'A') And (Ch <= 'F') Then U := U * 16 + LongWord(Ord(Ch) - Ord('A') + 10)
+      Else Exit;
+    End;
+  End
+  Else Begin
+    For I := 1 To Length(T) Do
+      If (T[I] >= '0') And (T[I] <= '9') Then U := U * 10 + LongWord(Ord(T[I]) - Ord('0'))
+      Else Exit;
+  End;
+  V := LongInt(U);
+  If Neg Then V := -V;
+  BcParseImm := True;
+End;
+{$Q+}{$R+}
+
+{ Emettre ModR/M + SIB + displacement pour operande memoire }
+{ Retourne True si l operande est un label de donnee (fixup necessaire) }
+{ RegField est le champ /r (0-7) du ModR/M }
+Function BcEmitMemRM(Const Mem: TString; RegField: Integer;
+                     Var DataLbl: TString; Var DataAdd: LongInt): Boolean;
+Var
+  Inner, Part1, Part2, DP, DP2: TString;
+  P, BaseReg, IdxReg, Idx: Integer;
+  Disp: LongInt;
+  HasDisp, Neg2: Boolean;
+Begin
+  BcEmitMemRM := False;
+  DataLbl := ''; DataAdd := 0;
+  { Extraire le contenu entre crochets }
+  Inner := Mem;
+  If (Length(Inner) > 0) And (Inner[1] = '[') Then Delete(Inner, 1, 1);
+  If (Length(Inner) > 0) And (Inner[Length(Inner)] = ']') Then
+    Delete(Inner, Length(Inner), 1);
+  While (Length(Inner) > 0) And (Inner[1] = ' ') Do Delete(Inner, 1, 1);
+  While (Length(Inner) > 0) And (Inner[Length(Inner)] = ' ') Do
+    Delete(Inner, Length(Inner), 1);
+
+  { Chercher un '+' ou '-' pour separer base et displacement }
+  P := 0; Disp := 0; HasDisp := False;
+  Part1 := ''; Part2 := '';
+  { Trouver le premier + ou - apres le debut }
+  { Attention : il peut y avoir des chiffres hex comme 0A1h }
+  Begin
+    Idx := 2; { commencer apres le 1er caractere }
+    While Idx <= Length(Inner) Do
+    Begin
+      If (Inner[Idx] = '+') Or (Inner[Idx] = '-') Then
+      Begin P := Idx; Break; End;
+      Inc(Idx);
+    End;
+  End;
+
+  If P > 0 Then
+  Begin
+    Part1 := Copy(Inner, 1, P - 1);
+    While (Length(Part1) > 0) And (Part1[Length(Part1)] = ' ') Do
+      Delete(Part1, Length(Part1), 1);
+    Part2 := Copy(Inner, P, Length(Inner) - P + 1);
+    While (Length(Part2) > 0) And (Part2[1] = ' ') Do Delete(Part2, 1, 1);
+  End
+  Else
+  Begin
+    Part1 := Inner; Part2 := '';
+  End;
+
+  BaseReg := BcParseReg32(Part1);
+
+  If BaseReg >= 0 Then
+  Begin
+    { [reg] ou [reg+disp] ou [reg+reg] }
+    IdxReg := -1;
+    If Part2 <> '' Then
+    Begin
+      DP := Part2;
+      If (DP[1] = '+') Then Delete(DP, 1, 1);
+      While (Length(DP) > 0) And (DP[1] = ' ') Do Delete(DP, 1, 1);
+      IdxReg := BcParseReg32(DP);
+      If IdxReg < 0 Then
+      Begin
+        If Not BcParseImm(DP, Disp) Then
+        Begin
+          { Negatif ? }
+          If (Part2[1] = '-') Then
+          Begin
+            Delete(Part2, 1, 1);
+            While (Length(Part2) > 0) And (Part2[1] = ' ') Do Delete(Part2, 1, 1);
+            If BcParseImm(Part2, Disp) Then
+              Disp := -Disp
+            Else Exit;
+          End Else Exit;
+        End;
+        HasDisp := True;
+      End;
+    End;
+
+    If IdxReg >= 0 Then
+    Begin
+      { [base+index] : ModR/M=04+RegField*8 SIB=base+index*8 }
+      BcEmitB($04 Or (RegField Shl 3));
+      BcEmitB(Byte(BaseReg) Or Byte(IdxReg Shl 3));
+    End
+    Else If (Not HasDisp) And (BaseReg <> R_EBP) Then
+    Begin
+      { [reg] : mod=00, r/m=reg }
+      If BaseReg = R_ESP Then
+      Begin BcEmitB($04 Or (RegField Shl 3)); BcEmitB($24); End
+      Else BcEmitB(Byte(BaseReg) Or Byte(RegField Shl 3));
+    End
+    Else If HasDisp And (Disp >= -128) And (Disp <= 127) Then
+    Begin
+      { [reg+disp8] : mod=01 }
+      If BaseReg = R_ESP Then
+      Begin BcEmitB($44 Or (RegField Shl 3)); BcEmitB($24); End
+      Else BcEmitB($40 Or Byte(BaseReg) Or Byte(RegField Shl 3));
+      BcEmitB(Byte(Disp));
+    End
+    Else
+    Begin
+      { [reg+disp32] : mod=10 }
+      If BaseReg = R_ESP Then
+      Begin BcEmitB($84 Or (RegField Shl 3)); BcEmitB($24); End
+      Else BcEmitB($80 Or Byte(BaseReg) Or Byte(RegField Shl 3));
+      BcEmitD(Disp);
+    End;
+  End
+  Else
+  Begin
+    { [label] ou [label+disp] : disp32 direct }
+    BcEmitB($05 Or (RegField Shl 3)); { mod=00, r/m=101 }
+    DataLbl := Part1;
+    If Part2 <> '' Then
+    Begin
+      DP2 := Part2;
+      If (DP2[1] = '+') Or (DP2[1] = '-') Then
+      Begin
+        Neg2 := (DP2[1] = '-');
+        Delete(DP2, 1, 1);
+        While (Length(DP2) > 0) And (DP2[1] = ' ') Do Delete(DP2, 1, 1);
+        If BcParseImm(DP2, DataAdd) Then
+        Begin If Neg2 Then DataAdd := -DataAdd; End;
+      End;
+    End;
+    BcAddFixup(BC_FIX_ABS32_DATA, DataLbl, DataAdd);
+    BcEmitD(0); { placeholder, sera resolu }
+    BcEmitMemRM := True;
+  End;
+End;
+
+{ --- Assembleur principal --- }
+Procedure BcAssemble(Const S: TString);
+Var
+  Line, Mnem, Op1, Op2, Tmp, Rest, ImOp2, ImOp3, R2: TString;
+  P, Reg1, Reg2, Imm8Reg, Slot, AluOp, Cp: Integer;
+  ImmVal: LongInt;
+  DataLbl: TString;
+  DataAdd: LongInt;
+  IsByte, IsWord, Neg3: Boolean;
+
+  Procedure SplitOps(Const Rest: TString);
+  Var J, Depth: Integer;
+  Begin
+    Op1 := ''; Op2 := '';
+    J := 1; Depth := 0;
+    While J <= Length(Rest) Do
+    Begin
+      If Rest[J] = '[' Then Inc(Depth)
+      Else If Rest[J] = ']' Then Dec(Depth)
+      Else If (Rest[J] = ',') And (Depth = 0) Then
+      Begin
+        Op1 := Copy(Rest, 1, J - 1);
+        Op2 := Copy(Rest, J + 1, Length(Rest) - J);
+        While (Length(Op1) > 0) And (Op1[Length(Op1)] = ' ') Do
+          Delete(Op1, Length(Op1), 1);
+        While (Length(Op2) > 0) And (Op2[1] = ' ') Do Delete(Op2, 1, 1);
+        Exit;
+      End;
+      Inc(J);
+    End;
+    Op1 := Rest;
+    While (Length(Op1) > 0) And (Op1[Length(Op1)] = ' ') Do
+      Delete(Op1, Length(Op1), 1);
+  End;
+
+  Function StartsWithBracket(Const X: TString): Boolean;
+  Var I: Integer;
+  Begin
+    StartsWithBracket := False;
+    For I := 1 To Length(X) Do
+      If X[I] = '[' Then Begin StartsWithBracket := True; Exit; End
+      Else If X[I] <> ' ' Then Exit;
+  End;
+
+  Function StripSizePrefix(Const X: TString): TString;
+  Var U, Res: TString; Idx2: Integer;
+  Begin
+    U := StrUpperCase(X);
+    If Copy(U, 1, 10) = 'DWORD PTR ' Then Res := Copy(X, 11, 255)
+    Else If Copy(U, 1, 9) = 'BYTE PTR ' Then Res := Copy(X, 10, 255)
+    Else If Copy(U, 1, 9) = 'WORD PTR ' Then Res := Copy(X, 10, 255)
+    Else Begin
+      Idx2 := Pos('PTR ', U);
+      If Idx2 > 0 Then Res := Copy(X, Idx2 + 4, 255)
+      Else Res := X;
+    End;
+    While (Length(Res) > 0) And (Res[1] = ' ') Do Delete(Res, 1, 1);
+    StripSizePrefix := Res;
+  End;
+
+  Function HasBytePrefix(Const X: TString): Boolean;
+  Begin HasBytePrefix := Pos('BYTE PTR', StrUpperCase(X)) > 0; End;
+
+  Function HasWordPrefix(Const X: TString): Boolean;
+  Var U: TString;
+  Begin
+    U := StrUpperCase(X);
+    HasWordPrefix := (Pos('WORD PTR', U) > 0) And (Pos('DWORD PTR', U) = 0);
+  End;
+
+  Function HasDWordPrefix(Const X: TString): Boolean;
+  Begin HasDWordPrefix := Pos('DWORD PTR', StrUpperCase(X)) > 0; End;
+
+Begin { BcAssemble }
+  Line := S;
+  While (Length(Line) > 0) And (Line[1] = ' ') Do Delete(Line, 1, 1);
+  While (Length(Line) > 0) And (Line[Length(Line)] = ' ') Do
+    Delete(Line, Length(Line), 1);
+  If Line = '' Then Exit;
+
+  { Extraire le mnemonique }
+  P := Pos(' ', Line);
+  If P > 0 Then
+  Begin Mnem := StrUpperCase(Copy(Line, 1, P - 1));
+    Tmp := Copy(Line, P + 1, Length(Line) - P);
+    While (Length(Tmp) > 0) And (Tmp[1] = ' ') Do Delete(Tmp, 1, 1);
+  End
+  Else Begin Mnem := StrUpperCase(Line); Tmp := ''; End;
+  SplitOps(Tmp);
+
+  { ---- Instructions sans operandes ---- }
+  If Mnem = 'RET' Then Begin BcEmitB($C3); Exit; End;
+  If Mnem = 'PUSHAD' Then Begin BcEmitB($60); Exit; End;
+  If Mnem = 'POPAD' Then Begin BcEmitB($61); Exit; End;
+  If Mnem = 'CDQ' Then Begin BcEmitB($99); Exit; End;
+  If Mnem = 'NOP' Then Begin BcEmitB($90); Exit; End;
+  If Mnem = 'LODSB' Then Begin BcEmitB($AC); Exit; End;
+  If Mnem = 'STOSB' Then Begin BcEmitB($AA); Exit; End;
+  If Mnem = 'MOVSB' Then Begin BcEmitB($A4); Exit; End;
+  If Mnem = 'REP' Then Begin BcEmitB($F3);
+    { Le reste est l instruction suivante }
+    If Op1 <> '' Then BcAssemble(Op1);
+    Exit; End;
+  If Mnem = 'REPE' Then Begin BcEmitB($F3);
+    If Op1 <> '' Then BcAssemble(Op1);
+    Exit; End;
+
+  { ---- PUSH ---- }
+  If Mnem = 'PUSH' Then
+  Begin
+    Reg1 := BcParseReg32(Op1);
+    If Reg1 >= 0 Then { PUSH reg32 }
+    Begin BcEmitB($50 + Reg1); Exit; End;
+    If Pos('OFFSET ', StrUpperCase(Op1)) = 1 Then
+    Begin { PUSH OFFSET label }
+      Tmp := Copy(Op1, 8, 255);
+      While (Length(Tmp) > 0) And (Tmp[1] = ' ') Do Delete(Tmp, 1, 1);
+      { Verifier si label+disp }
+      DataAdd := 0;
+      DataLbl := Tmp;
+      P := 2;
+      While P <= Length(Tmp) Do
+      Begin
+        If (Tmp[P] = '+') Or (Tmp[P] = '-') Then
+        Begin
+          DataLbl := Copy(Tmp, 1, P - 1);
+          Rest := Copy(Tmp, P, Length(Tmp) - P + 1);
+          If (Rest[1] = '+') Then Delete(Rest, 1, 1);
+          While (Length(Rest) > 0) And (Rest[1] = ' ') Do Delete(Rest, 1, 1);
+          Neg3 := False;
+          If (Length(Rest) > 0) And (Rest[1] = '-') Then
+          Begin Neg3 := True; Delete(Rest, 1, 1);
+            While (Length(Rest) > 0) And (Rest[1] = ' ') Do Delete(Rest, 1, 1);
+          End;
+          BcParseImm(Rest, DataAdd);
+          If Neg3 Then DataAdd := -DataAdd;
+          Break;
+        End;
+        Inc(P);
+      End;
+      BcEmitB($68);
+      BcAddFixup(BC_FIX_ABS32_DATA, DataLbl, DataAdd);
+      BcEmitD(0);
+      Exit;
+    End;
+    If HasDWordPrefix(Op1) Then
+    Begin { PUSH DWORD PTR [mem] }
+      Tmp := StripSizePrefix(Op1);
+      BcEmitB($FF);
+      BcEmitMemRM(Tmp, 6, DataLbl, DataAdd);
+      Exit;
+    End;
+    If BcParseImm(Op1, ImmVal) Then
+    Begin
+      If (ImmVal >= -128) And (ImmVal <= 127) Then
+      Begin BcEmitB($6A); BcEmitB(Byte(ImmVal)); End
+      Else Begin BcEmitB($68); BcEmitD(ImmVal); End;
+      Exit;
+    End;
+    Exit;
+  End;
+
+  { ---- POP ---- }
+  If Mnem = 'POP' Then
+  Begin
+    Reg1 := BcParseReg32(Op1);
+    If Reg1 >= 0 Then BcEmitB($58 + Reg1);
+    Exit;
+  End;
+
+  { ---- CALL ---- }
+  If Mnem = 'CALL' Then
+  Begin
+    If HasDWordPrefix(Op1) Then
+    Begin { CALL DWORD PTR [mem] - indirect }
+      Tmp := StripSizePrefix(Op1);
+      BcEmitB($FF);
+      BcEmitMemRM(Tmp, 2, DataLbl, DataAdd);
+      Exit;
+    End;
+    { CALL label ou CALL api }
+    Tmp := Op1;
+    While (Length(Tmp) > 0) And (Tmp[1] = ' ') Do Delete(Tmp, 1, 1);
+    If BcIsImport(Tmp) Then
+    Begin
+      { CALL [IAT+slot] : FF 15 abs32 }
+      Slot := BcFindOrAddImport(Tmp);
+      BcEmitB($FF); BcEmitB($15);
+      BcAddFixup(BC_FIX_ABS32_IMP, BcImports[Slot].ApiName, Slot);
+      BcEmitD(0);
+    End
+    Else
+    Begin
+      { CALL rel32 vers label interne }
+      BcEmitB($E8);
+      BcAddFixup(BC_FIX_REL32, Tmp, 0);
+      BcEmitD(0);
+    End;
+    Exit;
+  End;
+
+  { ---- JMP / Jcc ---- }
+  If (Mnem = 'JMP') Or (Mnem = 'JE') Or (Mnem = 'JNE') Or
+     (Mnem = 'JZ') Or (Mnem = 'JNZ') Or (Mnem = 'JG') Or
+     (Mnem = 'JGE') Or (Mnem = 'JL') Or (Mnem = 'JLE') Or
+     (Mnem = 'JA') Or (Mnem = 'JB') Or (Mnem = 'JBE') Or
+     (Mnem = 'JC') Or (Mnem = 'JS') Then
+  Begin
+    If Mnem = 'JMP' Then
+    Begin BcEmitB($E9); End
+    Else Begin
+      BcEmitB($0F);
+      If (Mnem = 'JE') Or (Mnem = 'JZ') Then BcEmitB($84)
+      Else If (Mnem = 'JNE') Or (Mnem = 'JNZ') Then BcEmitB($85)
+      Else If Mnem = 'JG' Then BcEmitB($8F)
+      Else If Mnem = 'JGE' Then BcEmitB($8D)
+      Else If Mnem = 'JL' Then BcEmitB($8C)
+      Else If Mnem = 'JLE' Then BcEmitB($8E)
+      Else If Mnem = 'JA' Then BcEmitB($87)
+      Else If (Mnem = 'JB') Or (Mnem = 'JC') Then BcEmitB($82)
+      Else If Mnem = 'JBE' Then BcEmitB($86)
+      Else If Mnem = 'JS' Then BcEmitB($88);
+    End;
+    BcAddFixup(BC_FIX_REL32, Op1, 0);
+    BcEmitD(0);
+    Exit;
+  End;
+
+  { ---- MOV ---- }
+  If Mnem = 'MOV' Then
+  Begin
+    Reg1 := BcParseReg32(Op1);
+    If Reg1 >= 0 Then
+    Begin
+      Reg2 := BcParseReg32(Op2);
+      If Reg2 >= 0 Then
+      Begin { MOV reg32,reg32 }
+        BcEmitB($89); BcEmitB($C0 + Reg2 * 8 + Reg1); Exit;
+      End;
+      If BcParseImm(Op2, ImmVal) Then
+      Begin { MOV reg32,imm32 }
+        BcEmitB($B8 + Reg1); BcEmitD(ImmVal); Exit;
+      End;
+      If HasDWordPrefix(Op2) Or StartsWithBracket(Op2) Then
+      Begin { MOV reg32,[mem] }
+        Tmp := StripSizePrefix(Op2);
+        If Not StartsWithBracket(Tmp) Then Tmp := Op2;
+        If StartsWithBracket(Tmp) Then
+        Begin
+          BcEmitB($8B);
+          BcEmitMemRM(Tmp, Reg1, DataLbl, DataAdd);
+          Exit;
+        End;
+      End;
+      Exit;
+    End;
+    { MOV reg8, ... }
+    Reg1 := BcParseReg8(Op1);
+    If Reg1 >= 0 Then
+    Begin
+      If HasBytePrefix(Op2) Or StartsWithBracket(Op2) Then
+      Begin { MOV reg8,[mem] }
+        Tmp := StripSizePrefix(Op2);
+        If Not StartsWithBracket(Tmp) Then Tmp := Op2;
+        If StartsWithBracket(Tmp) Then
+        Begin
+          BcEmitB($8A);
+          BcEmitMemRM(Tmp, Reg1, DataLbl, DataAdd);
+          Exit;
+        End;
+      End;
+      Reg2 := BcParseReg8(Op2);
+      If Reg2 >= 0 Then
+      Begin BcEmitB($88); BcEmitB($C0 + Reg2 * 8 + Reg1); Exit; End;
+      Exit;
+    End;
+    { MOV [mem], ... }
+    If HasBytePrefix(Op1) Or HasDWordPrefix(Op1) Or HasWordPrefix(Op1) Or
+       StartsWithBracket(Op1) Then
+    Begin
+      IsByte := HasBytePrefix(Op1);
+      IsWord := HasWordPrefix(Op1);
+      Tmp := StripSizePrefix(Op1);
+      If Not StartsWithBracket(Tmp) Then Tmp := Op1;
+
+      If IsByte Then
+      Begin
+        Reg2 := BcParseReg8(Op2);
+        If Reg2 >= 0 Then
+        Begin { MOV BYTE PTR [mem], reg8 }
+          BcEmitB($88);
+          BcEmitMemRM(Tmp, Reg2, DataLbl, DataAdd);
+          Exit;
+        End;
+        { MOV BYTE PTR [mem], imm8 }
+        If BcParseImm(Op2, ImmVal) Then
+        Begin
+          BcEmitB($C6);
+          BcEmitMemRM(Tmp, 0, DataLbl, DataAdd);
+          BcEmitB(Byte(ImmVal));
+          Exit;
+        End;
+        { MOV BYTE PTR [mem], 'c' }
+        If (Length(Op2) = 3) And (Op2[1] = '''') And (Op2[3] = '''') Then
+        Begin
+          BcEmitB($C6);
+          BcEmitMemRM(Tmp, 0, DataLbl, DataAdd);
+          BcEmitB(Byte(Op2[2]));
+          Exit;
+        End;
+        Exit;
+      End;
+      If IsWord Then
+      Begin
+        Reg2 := BcParseReg16(Op2);
+        If Reg2 >= 0 Then
+        Begin { MOV WORD PTR [mem], reg16 }
+          BcEmitB($66); BcEmitB($89);
+          BcEmitMemRM(Tmp, Reg2, DataLbl, DataAdd);
+          Exit;
+        End;
+        Exit;
+      End;
+      { Check plain [mem],reg8 (e.g. MOV [EDI],AL without BYTE PTR) }
+      Reg2 := BcParseReg8(Op2);
+      If Reg2 >= 0 Then
+      Begin { MOV [mem], reg8 }
+        BcEmitB($88);
+        BcEmitMemRM(Tmp, Reg2, DataLbl, DataAdd);
+        Exit;
+      End;
+      { DWORD or plain [mem] }
+      Reg2 := BcParseReg32(Op2);
+      If Reg2 >= 0 Then
+      Begin { MOV [mem], reg32 }
+        BcEmitB($89);
+        BcEmitMemRM(Tmp, Reg2, DataLbl, DataAdd);
+        Exit;
+      End;
+      If BcParseImm(Op2, ImmVal) Then
+      Begin { MOV DWORD PTR [mem], imm32 }
+        BcEmitB($C7);
+        BcEmitMemRM(Tmp, 0, DataLbl, DataAdd);
+        BcEmitD(ImmVal);
+        Exit;
+      End;
+      Exit;
+    End;
+    { MOV ESP,EBP special non attrape }
+    Exit;
+  End;
+
+  { ---- LEA ---- }
+  If Mnem = 'LEA' Then
+  Begin
+    Reg1 := BcParseReg32(Op1);
+    If Reg1 >= 0 Then
+    Begin
+      Tmp := StripSizePrefix(Op2);
+      If Not StartsWithBracket(Tmp) Then Tmp := Op2;
+      If StartsWithBracket(Tmp) Then
+      Begin
+        BcEmitB($8D);
+        BcEmitMemRM(Tmp, Reg1, DataLbl, DataAdd);
+      End
+      Else
+      Begin { LEA reg,[label] sans crochets }
+        BcEmitB($8D);
+        BcEmitB($05 Or (Reg1 Shl 3));
+        DataAdd := 0;
+        P := 2;
+        DataLbl := Tmp;
+        While P <= Length(Tmp) Do
+        Begin
+          If (Tmp[P] = '+') Or (Tmp[P] = '-') Then
+          Begin
+            DataLbl := Copy(Tmp, 1, P - 1);
+            R2 := Copy(Tmp, P, Length(Tmp) - P + 1);
+            If R2[1] = '+' Then Delete(R2, 1, 1);
+            BcParseImm(R2, DataAdd);
+            Break;
+          End;
+          Inc(P);
+        End;
+        BcAddFixup(BC_FIX_ABS32_DATA, DataLbl, DataAdd);
+        BcEmitD(0);
+      End;
+    End;
+    Exit;
+  End;
+
+  { ---- MOVZX ---- }
+  If Mnem = 'MOVZX' Then
+  Begin
+    Reg1 := BcParseReg32(Op1);
+    If Reg1 >= 0 Then
+    Begin
+      BcEmitB($0F); BcEmitB($B6);
+      Tmp := StripSizePrefix(Op2);
+      If Not StartsWithBracket(Tmp) Then
+      Begin
+        Reg2 := BcParseReg8(Tmp);
+        If Reg2 >= 0 Then
+        Begin BcEmitB($C0 + Reg1 * 8 + Reg2); Exit; End;
+        Tmp := Op2;
+      End;
+      If StartsWithBracket(Tmp) Then
+        BcEmitMemRM(Tmp, Reg1, DataLbl, DataAdd);
+    End;
+    Exit;
+  End;
+
+  { ---- ADD/SUB/CMP/AND/OR/XOR/TEST ---- }
+  If (Mnem = 'ADD') Or (Mnem = 'SUB') Or (Mnem = 'CMP') Or
+     (Mnem = 'AND') Or (Mnem = 'OR') Or (Mnem = 'XOR') Or
+     (Mnem = 'TEST') Then
+  Begin
+    If Mnem = 'ADD' Then AluOp := 0
+    Else If Mnem = 'OR' Then AluOp := 1
+    Else If Mnem = 'AND' Then AluOp := 4
+    Else If Mnem = 'SUB' Then AluOp := 5
+    Else If Mnem = 'XOR' Then AluOp := 6
+    Else If Mnem = 'CMP' Then AluOp := 7
+    Else AluOp := -1; { TEST }
+
+    Reg1 := BcParseReg32(Op1);
+    If Reg1 >= 0 Then
+    Begin
+      Reg2 := BcParseReg32(Op2);
+      If Reg2 >= 0 Then
+      Begin { op reg,reg }
+        If AluOp >= 0 Then
+        Begin BcEmitB(AluOp * 8 + 1); BcEmitB($C0 + Reg2 * 8 + Reg1); End
+        Else { TEST }
+        Begin BcEmitB($85); BcEmitB($C0 + Reg1 * 8 + Reg2); End;
+        Exit;
+      End;
+      If BcParseImm(Op2, ImmVal) Then
+      Begin { op reg,imm }
+        If AluOp >= 0 Then
+        Begin
+          If (ImmVal >= -128) And (ImmVal <= 127) Then
+          Begin BcEmitB($83); BcEmitB($C0 + AluOp * 8 + Reg1);
+            BcEmitB(Byte(ImmVal)); End
+          Else
+          Begin
+            If Reg1 = R_EAX Then
+            Begin BcEmitB(AluOp * 8 + 5); BcEmitD(ImmVal); End
+            Else Begin BcEmitB($81); BcEmitB($C0 + AluOp * 8 + Reg1);
+              BcEmitD(ImmVal); End;
+          End;
+        End Else Begin { TEST reg,imm }
+          If Reg1 = R_EAX Then Begin BcEmitB($A9); BcEmitD(ImmVal); End
+          Else Begin BcEmitB($F7); BcEmitB($C0 + Reg1); BcEmitD(ImmVal); End;
+        End;
+        Exit;
+      End;
+      { op reg32,[mem] : e.g. CMP EAX,DWORD PTR [label] }
+      If HasDWordPrefix(Op2) Or StartsWithBracket(Op2) Then
+      Begin
+        Tmp := StripSizePrefix(Op2);
+        If Not StartsWithBracket(Tmp) Then Tmp := Op2;
+        If StartsWithBracket(Tmp) Then
+        Begin
+          If AluOp >= 0 Then
+            BcEmitB(AluOp * 8 + 3)       { ADD=03 OR=0B AND=23 SUB=2B XOR=33 CMP=3B }
+          Else
+            BcEmitB($85);                 { TEST reg,[mem] }
+          BcEmitMemRM(Tmp, Reg1, DataLbl, DataAdd);
+          Exit;
+        End;
+      End;
+      Exit;
+    End;
+    { op reg8,... }
+    Reg1 := BcParseReg8(Op1);
+    If Reg1 >= 0 Then
+    Begin
+      If BcParseImm(Op2, ImmVal) Then
+      Begin
+        If AluOp >= 0 Then
+        Begin
+          If Reg1 = 0 Then { AL }
+          Begin BcEmitB(AluOp * 8 + 4); BcEmitB(Byte(ImmVal)); End
+          Else Begin BcEmitB($80); BcEmitB($C0 + AluOp * 8 + Reg1);
+            BcEmitB(Byte(ImmVal)); End;
+        End Else Begin { TEST reg8,imm8 }
+          If Reg1 = 0 Then Begin BcEmitB($A8); BcEmitB(Byte(ImmVal)); End
+          Else Begin BcEmitB($F6); BcEmitB($C0 + Reg1); BcEmitB(Byte(ImmVal)); End;
+        End;
+        Exit;
+      End;
+      Reg2 := BcParseReg8(Op2);
+      If Reg2 >= 0 Then
+      Begin
+        If AluOp >= 0 Then
+        Begin BcEmitB(AluOp * 8); BcEmitB($C0 + Reg2 * 8 + Reg1); End
+        Else Begin BcEmitB($84); BcEmitB($C0 + Reg1 * 8 + Reg2); End;
+        Exit;
+      End;
+      Exit;
+    End;
+    { CMP BYTE PTR [mem],imm }
+    If HasBytePrefix(Op1) Then
+    Begin
+      Tmp := StripSizePrefix(Op1);
+      If StartsWithBracket(Tmp) Then
+      Begin
+        If AluOp >= 0 Then BcEmitB($80)
+        Else BcEmitB($F6);
+        BcEmitMemRM(Tmp, AluOp And 7, DataLbl, DataAdd);
+        If BcParseImm(Op2, ImmVal) Then BcEmitB(Byte(ImmVal));
+      End;
+      Exit;
+    End;
+    If HasDWordPrefix(Op1) Then
+    Begin
+      Tmp := StripSizePrefix(Op1);
+      If StartsWithBracket(Tmp) Then
+      Begin
+        If BcParseImm(Op2, ImmVal) Then
+        Begin
+          If (ImmVal >= -128) And (ImmVal <= 127) And (AluOp >= 0) Then
+          Begin
+            BcEmitB($83);
+            BcEmitMemRM(Tmp, AluOp And 7, DataLbl, DataAdd);
+            BcEmitB(Byte(ImmVal));
+          End
+          Else
+          Begin
+            If AluOp >= 0 Then BcEmitB($81) Else BcEmitB($F7);
+            BcEmitMemRM(Tmp, AluOp And 7, DataLbl, DataAdd);
+            BcEmitD(ImmVal);
+          End;
+        End;
+      End;
+      Exit;
+    End;
+    Exit;
+  End;
+
+  { ---- INC / DEC ---- }
+  If Mnem = 'INC' Then
+  Begin
+    Reg1 := BcParseReg32(Op1);
+    If Reg1 >= 0 Then BcEmitB($40 + Reg1)
+    Else If HasBytePrefix(Op1) Or StartsWithBracket(Op1) Then
+    Begin Tmp := StripSizePrefix(Op1);
+      BcEmitB($FE); BcEmitMemRM(Tmp, 0, DataLbl, DataAdd); End;
+    Exit;
+  End;
+  If Mnem = 'DEC' Then
+  Begin
+    Reg1 := BcParseReg32(Op1);
+    If Reg1 >= 0 Then BcEmitB($48 + Reg1)
+    Else If HasBytePrefix(Op1) Or StartsWithBracket(Op1) Then
+    Begin Tmp := StripSizePrefix(Op1);
+      BcEmitB($FE); BcEmitMemRM(Tmp, 1, DataLbl, DataAdd); End;
+    Exit;
+  End;
+
+  { ---- NEG / NOT / DIV / IMUL ---- }
+  If Mnem = 'NEG' Then
+  Begin Reg1 := BcParseReg32(Op1);
+    If Reg1 >= 0 Then Begin BcEmitB($F7); BcEmitB($D8 + Reg1); End;
+    Exit; End;
+  If Mnem = 'NOT' Then
+  Begin Reg1 := BcParseReg32(Op1);
+    If Reg1 >= 0 Then Begin BcEmitB($F7); BcEmitB($D0 + Reg1); End;
+    Exit; End;
+  If Mnem = 'DIV' Then
+  Begin Reg1 := BcParseReg32(Op1);
+    If Reg1 >= 0 Then Begin BcEmitB($F7); BcEmitB($F0 + Reg1); End;
+    Exit; End;
+  If Mnem = 'IMUL' Then
+  Begin
+    Reg1 := BcParseReg32(Op1);
+    If (Op2 <> '') Then
+    Begin
+      { IMUL reg1,op2,imm  ou  IMUL reg1,reg2 }
+      ImOp2 := Op2; ImOp3 := '';
+      Cp := Pos(',', ImOp2);
+      If Cp > 0 Then
+      Begin ImOp3 := Copy(ImOp2, Cp + 1, 255); ImOp2 := Copy(ImOp2, 1, Cp - 1);
+        While (Length(ImOp3) > 0) And (ImOp3[1] = ' ') Do Delete(ImOp3, 1, 1);
+        While (Length(ImOp2) > 0) And (ImOp2[Length(ImOp2)] = ' ') Do
+          Delete(ImOp2, Length(ImOp2), 1);
+      End;
+      If ImOp3 <> '' Then
+      Begin
+        Reg2 := BcParseReg32(ImOp2);
+        If (Reg2 >= 0) And BcParseImm(ImOp3, ImmVal) Then
+        Begin
+          If (ImmVal >= -128) And (ImmVal <= 127) Then
+          Begin BcEmitB($6B); BcEmitB($C0 + Reg1 * 8 + Reg2);
+            BcEmitB(Byte(ImmVal)); End
+          Else Begin BcEmitB($69); BcEmitB($C0 + Reg1 * 8 + Reg2);
+            BcEmitD(ImmVal); End;
+        End;
+      End
+      Else
+      Begin
+        Reg2 := BcParseReg32(ImOp2);
+        If Reg2 >= 0 Then
+        Begin BcEmitB($0F); BcEmitB($AF);
+          BcEmitB($C0 + Reg1 * 8 + Reg2); End;
+      End;
+    End
+    Else If Reg1 >= 0 Then
+    Begin BcEmitB($F7); BcEmitB($E8 + Reg1); End;
+    Exit;
+  End;
+
+  { ---- SHL / SHR ---- }
+  If (Mnem = 'SHL') Or (Mnem = 'SHR') Then
+  Begin
+    Reg1 := BcParseReg32(Op1);
+    If (Reg1 >= 0) And BcParseImm(Op2, ImmVal) Then
+    Begin
+      If ImmVal = 1 Then
+      Begin BcEmitB($D1);
+        If Mnem = 'SHL' Then BcEmitB($E0 + Reg1)
+        Else BcEmitB($E8 + Reg1); End
+      Else Begin BcEmitB($C1);
+        If Mnem = 'SHL' Then BcEmitB($E0 + Reg1)
+        Else BcEmitB($E8 + Reg1);
+        BcEmitB(Byte(ImmVal)); End;
+    End;
+    Exit;
+  End;
+
+  { ---- BT / BTS ---- }
+  If (Mnem = 'BT') Or (Mnem = 'BTS') Then
+  Begin
+    Reg1 := BcParseReg32(Op1);
+    If (Reg1 >= 0) And BcParseImm(Op2, ImmVal) Then
+    Begin
+      BcEmitB($0F); BcEmitB($BA);
+      If Mnem = 'BT' Then BcEmitB($E0 + Reg1)
+      Else BcEmitB($E8 + Reg1);
+      BcEmitB(Byte(ImmVal));
+    End;
+    Exit;
+  End;
+
+  { ---- INT ---- }
+  If Mnem = 'INT' Then
+  Begin
+    If BcParseImm(Op1, ImmVal) Then
+    Begin BcEmitB($CD); BcEmitB(Byte(ImmVal)); End;
+    Exit;
+  End;
+
+  { ---- DD (data dans le code) ---- }
+  If Mnem = 'DD' Then
+  Begin
+    If BcParseImm(Op1, ImmVal) Then BcEmitD(ImmVal)
+    Else BcEmitD(0);
+    Exit;
+  End;
+
+  { Instruction non reconnue : emettre NOP comme placeholder }
+  { WriteLn('BcAssemble: non reconnu: [', S, ']'); }
+End;
+
+{ --- Construction de la section .data binaire --- }
+Procedure BcBuildData;
+Var I, J: Integer; S: TString;
+Begin
+  BcDataLen := 0; BcDLabelCnt := 0;
+
+  { Variables runtime HSTDOUT, HSTDIN, HHEAP (les 3 premiers DWORDs) }
+  BcDefineDataLabel('HSTDOUT');   BcDataD(0);
+  BcDefineDataLabel('HSTDIN');    BcDataD(0);
+  BcDefineDataLabel('HHEAP');     BcDataD(0);
+  BcDefineDataLabel('NUMBUF');    BcDataZeros(32);
+  BcDefineDataLabel('INBUF');     BcDataZeros(256);
+  BcDefineDataLabel('BYTESWR');   BcDataD(0);
+  BcDefineDataLabel('BYTESRD');   BcDataD(0);
+  BcDefineDataLabel('CRLF');      BcDataB(13); BcDataB(10); BcDataB(0);
+  BcDefineDataLabel('STRTMP');    BcDataZeros(256);
+  BcDefineDataLabel('STRBUF1');   BcDataZeros(256);
+  BcDefineDataLabel('STRBUF2');   BcDataZeros(256);
+  BcDefineDataLabel('TRUE_STR');  BcDataStr('TRUE');
+  BcDefineDataLabel('FALSE_STR'); BcDataStr('FALSE');
+
+  { Variables CRT }
+  BcDefineDataLabel('TEXTATTR');   BcDataD(7);
+  BcDefineDataLabel('WINDMIN');    BcDataD(0);
+  BcDefineDataLabel('WINDMAX');    BcDataD($184F);
+  BcDefineDataLabel('LASTMODE');   BcDataD(3);
+  BcDefineDataLabel('DIRECTVIDEO');BcDataD(1);
+  BcDefineDataLabel('CHECKBREAK'); BcDataD(1);
+  BcDefineDataLabel('CHECKEOF');   BcDataD(0);
+  BcDefineDataLabel('CHECKSNOW');  BcDataD(0);
+  BcDefineDataLabel('CRT_CSBI');   BcDataZeros(22);
+  BcDefineDataLabel('CRT_INREC');  BcDataZeros(20);
+  BcDefineDataLabel('CRT_NEVT');   BcDataD(0);
+  BcDefineDataLabel('CRT_NWRT');   BcDataD(0);
+
+  { Variables DOS }
+  BcDefineDataLabel('DOSERROR');    BcDataD(0);
+  BcDefineDataLabel('DOSEXITCODE'); BcDataD(0);
+  BcDefineDataLabel('DOS_SYSTIME'); BcDataZeros(16);
+  BcDefineDataLabel('DOS_FATTR');   BcDataD(0);
+  BcDefineDataLabel('DOS_ENVBUF');  BcDataZeros(256);
+  BcDefineDataLabel('DOS_PATHBUF'); BcDataZeros(260);
+  BcDefineDataLabel('DOS_DKFREE');  BcDataZeros(16);
+  BcDefineDataLabel('DOS_FINDDATA');BcDataZeros(320);
+  BcDefineDataLabel('DOS_FINDHDL'); BcDataD(-1);
+  BcDefineDataLabel('DOS_PROCINFO');BcDataZeros(16);
+  BcDefineDataLabel('DOS_STARTINFO');BcDataZeros(68);
+  BcDefineDataLabel('DOS_EXITVAL'); BcDataD(0);
+
+  { Variables Graph }
+  BcDefineDataLabel('GR_RESULT');   BcDataD(0);
+  BcDefineDataLabel('GR_DRIVER');   BcDataD(0);
+  BcDefineDataLabel('GR_MODE');     BcDataD(0);
+  BcDefineDataLabel('GR_HWND');     BcDataD(0);
+  BcDefineDataLabel('GR_HDC');      BcDataD(0);
+  BcDefineDataLabel('GR_HPEN');     BcDataD(0);
+  BcDefineDataLabel('GR_HBRUSH');   BcDataD(0);
+  BcDefineDataLabel('GR_HFONT');    BcDataD(0);
+  BcDefineDataLabel('GR_HINST');    BcDataD(0);
+  BcDefineDataLabel('GR_MAXX');     BcDataD(639);
+  BcDefineDataLabel('GR_MAXY');     BcDataD(479);
+  BcDefineDataLabel('GR_COLOR');    BcDataD(15);
+  BcDefineDataLabel('GR_BKCOLOR');  BcDataD(0);
+  BcDefineDataLabel('GR_FILLCOLOR');BcDataD(0);
+  BcDefineDataLabel('GR_FILLSTYLE');BcDataD(1);
+  BcDefineDataLabel('GR_LINESTYLE');BcDataD(0);
+  BcDefineDataLabel('GR_LINEWIDTH');BcDataD(1);
+  BcDefineDataLabel('GR_WRITEMODE');BcDataD(0);
+  BcDefineDataLabel('GR_CPX');      BcDataD(0);
+  BcDefineDataLabel('GR_CPY');      BcDataD(0);
+  BcDefineDataLabel('GR_VPXL');     BcDataD(0);
+  BcDefineDataLabel('GR_VPYT');     BcDataD(0);
+  BcDefineDataLabel('GR_VPXR');     BcDataD(639);
+  BcDefineDataLabel('GR_VPYB');     BcDataD(479);
+  BcDefineDataLabel('GR_VPCLIP');   BcDataD(1);
+  BcDefineDataLabel('GR_TXFONT');   BcDataD(0);
+  BcDefineDataLabel('GR_TXDIR');    BcDataD(0);
+  BcDefineDataLabel('GR_TXSIZE');   BcDataD(1);
+  BcDefineDataLabel('GR_ACTIVE');   BcDataD(0);
+  BcDefineDataLabel('GR_MAXCOLOR'); BcDataD(15);
+  BcDefineDataLabel('GR_WNDCLASS'); BcDataStr('TPGraphWnd');
+  BcDefineDataLabel('GR_WNDTITLE'); BcDataStr('Turbo Pascal Graphics');
+  BcDefineDataLabel('GR_CLSREC');   BcDataZeros(40);
+  BcDefineDataLabel('GR_RECT');     BcDataZeros(16);
+  BcDefineDataLabel('GR_MSG');      BcDataZeros(28);
+  BcDefineDataLabel('GR_TXBUF');    BcDataZeros(256);
+  BcDefineDataLabel('GR_TXSIZE2');  BcDataZeros(8);
+  BcDefineDataLabel('GR_PALETTE');
+  { 16 couleurs EGA/VGA COLORREF }
+  BcDataD($000000); BcDataD($AA0000); BcDataD($00AA00); BcDataD($AAAA00);
+  BcDataD($0000AA); BcDataD($AA00AA); BcDataD($0055AA); BcDataD($AAAAAA);
+  BcDataD($555555); BcDataD($FF5555); BcDataD($55FF55); BcDataD($FFFF55);
+  BcDataD($5555FF); BcDataD($FF55FF); BcDataD($55FFFF); BcDataD($FFFFFF);
+  BcDefineDataLabel('GR_ERRMSG0');  BcDataStr('No error');
+  BcDefineDataLabel('GR_ERRMSG1');  BcDataStr('(BGI) graphics not installed');
+  BcDefineDataLabel('GR_ERRMSG2');  BcDataStr('Graphics hardware not detected');
+  BcDefineDataLabel('GR_DRVNAME');  BcDataStr('EGAVGA');
+  BcDefineDataLabel('GR_MODNAME');  BcDataStr('640x480x16');
+
+  { Variables Strings/Printer/Overlay/Objects }
+  BcDefineDataLabel('STR_TMPBUF'); BcDataZeros(256);
+  BcDefineDataLabel('STR_PASBUF'); BcDataZeros(256);
+  BcDefineDataLabel('PRN_HANDLE'); BcDataD(-1);
+  BcDefineDataLabel('PRN_FNAME');  BcDataStr('NUL');
+  BcDefineDataLabel('OVR_RESULT'); BcDataD(0);
+  BcDefineDataLabel('OVR_BUFSIZE');BcDataD(0);
+  BcDefineDataLabel('OBJ_STATUS'); BcDataD(0);
+  BcDefineDataLabel('OBJ_STRBUF'); BcDataZeros(256);
+  BcDefineDataLabel('OBJ_TMPHDL'); BcDataD(-1);
+  BcDefineDataLabel('OBJ_TMPPOS'); BcDataD(0);
+  BcDefineDataLabel('OBJ_TMPSIZ'); BcDataD(0);
+  BcDefineDataLabel('OBJ_TMPBUF'); BcDataZeros(1024);
+  BcDefineDataLabel('OBJ_BYTESRW');BcDataD(0);
+
+  { Variables Mem/Port }
+  BcDefineDataLabel('MEM_TMPVAL'); BcDataD(0);
+  BcDefineDataLabel('PORT_TMPVAL');BcDataD(0);
+  BcDefineDataLabel('PORT_RTCIDX');BcDataB(0);
+
+  { Variables interruptions }
+  BcDefineDataLabel('INT_VIDEOMODE');BcDataB(3);
+  BcDefineDataLabel('INT_CURSORX'); BcDataB(0);
+  BcDefineDataLabel('INT_CURSORY'); BcDataB(0);
+  BcDefineDataLabel('INT_CURPAGE'); BcDataB(0);
+  BcDefineDataLabel('INT_MOUSEBTNS');BcDataD(0);
+  BcDefineDataLabel('INT_MOUSEX');  BcDataD(0);
+  BcDefineDataLabel('INT_MOUSEY');  BcDataD(0);
+  BcDefineDataLabel('INT_MOUSEVIS');BcDataD(0);
+  BcDefineDataLabel('INT_KBCHAR'); BcDataB(0);
+  BcDefineDataLabel('INT_KBSCAN'); BcDataB(0);
+  BcDefineDataLabel('INT_CSBI');   BcDataZeros(24);
+  BcDefineDataLabel('INT_CURPOS'); BcDataZeros(8);
+  BcDefineDataLabel('INT_INPREC'); BcDataZeros(32);
+  BcDefineDataLabel('INT_INEVCNT');BcDataD(0);
+
+  { Constantes et donnees utilisateur depuis DataTab }
+  For I := 0 To DataCount - 1 Do
+  Begin
+    BcDefineDataLabel(DataTab[I].LblName);
+    Case DataTab[I].Kind Of
+      DK_STR:
+      Begin
+        For J := 1 To Length(DataTab[I].StrVal) Do
+          BcDataB(Byte(DataTab[I].StrVal[J]));
+        BcDataB(0); { terminateur NUL }
+      End;
+      DK_DWORD: BcDataD(DataTab[I].IntVal);
+      DK_BYTE: BcDataB(Byte(DataTab[I].IntVal));
+      DK_ARRAY: BcDataZeros(LongInt(DataTab[I].ElemCount) *
+                            LongInt(DataTab[I].ElemSize));
+      DK_RES: BcDataZeros(DataTab[I].IntVal);
+      DK_STRUCT:
+        If DataTab[I].IntVal > 0 Then BcDataZeros(DataTab[I].IntVal)
+        Else BcDataD(0);
+      DK_ZERO:
+        If DataTab[I].IntVal > 0 Then BcDataZeros(DataTab[I].IntVal)
+        Else BcDataD(0);
+    End;
+  End;
+End;
+
+{ --- Resolution des fixups (code relatif + donnees absolues) --- }
+Procedure BcResolveFixups(DataVA: LongInt);
+Var
+  I: LongInt;
+  TargetOfs, FixOfs: LongInt;
+  Val: LongInt;
+Begin
+  For I := 0 To BcFixupCnt - 1 Do
+  Begin
+    FixOfs := BcFixups[I].CodeOfs;
+    If FixOfs + 3 >= BcCodeLen Then Continue;
+    Case BcFixups[I].Kind Of
+      BC_FIX_REL32:
+      Begin
+        TargetOfs := BcFindLabel(BcFixups[I].LblName);
+        If TargetOfs >= 0 Then
+        Begin
+          Val := TargetOfs - (FixOfs + 4);
+          BcCode[FixOfs] := Byte(Val);
+          BcCode[FixOfs + 1] := Byte(Val Shr 8);
+          BcCode[FixOfs + 2] := Byte(Val Shr 16);
+          BcCode[FixOfs + 3] := Byte(Val Shr 24);
+        End;
+      End;
+      BC_FIX_ABS32_DATA:
+      Begin
+        TargetOfs := BcFindDataLabel(BcFixups[I].LblName);
+        If TargetOfs >= 0 Then
+          Val := DataVA + TargetOfs + BcFixups[I].Addend
+        Else
+          Val := DataVA;
+        BcCode[FixOfs] := Byte(Val);
+        BcCode[FixOfs + 1] := Byte(Val Shr 8);
+        BcCode[FixOfs + 2] := Byte(Val Shr 16);
+        BcCode[FixOfs + 3] := Byte(Val Shr 24);
+      End;
+    End; { case }
+  End;
+End;
+
+{ Patch les fixups IAT avec les adresses reelles }
+Procedure BcPatchIATFixups(IatVA: LongInt);
+Var I: LongInt; FixOfs, Slot: LongInt; Val: LongInt;
+Begin
+  For I := 0 To BcFixupCnt - 1 Do
+  Begin
+    If BcFixups[I].Kind = BC_FIX_ABS32_IMP Then
+    Begin
+      FixOfs := BcFixups[I].CodeOfs;
+      If FixOfs + 3 >= BcCodeLen Then Continue;
+      Slot := BcFixups[I].Addend;
+      Val := IatVA + Slot * 4;
+      BcCode[FixOfs] := Byte(Val);
+      BcCode[FixOfs + 1] := Byte(Val Shr 8);
+      BcCode[FixOfs + 2] := Byte(Val Shr 16);
+      BcCode[FixOfs + 3] := Byte(Val Shr 24);
+    End;
+  End;
+End;
+
 { --- WritePEFile : generation d un PE executable Win32 --- }
 Procedure WritePEFile(FileName: TString);
 Const
-  { Offsets dans la section .idata }
-  IDT_OFS = $00;    { Import Directory Table }
-  ILT_OFS = $28;    { Import Lookup Table }
-  IAT_OFS = $48;    { Import Address Table }
-  HNT_OFS = $68;    { Hint/Name Table }
-Var
-  TextSize, DataSize, IdataSize, ImageSize: LongInt;
-  HntOfs : Array[0..6] Of LongInt;
-  HntNames: Array[0..6] Of TString;
-  DllNameOfs: LongInt;
-  Ofs, I: LongInt;
-  IdataVirtSize: LongInt;
-  IATva: LongInt;
-Begin
-  { Noms des fonctions importees }
-  HntNames[0] := 'ExitProcess';
-  HntNames[1] := 'GetStdHandle';
-  HntNames[2] := 'WriteFile';
-  HntNames[3] := 'ReadFile';
-  HntNames[4] := 'GetProcessHeap';
-  HntNames[5] := 'HeapAlloc';
-  HntNames[6] := 'HeapFree';
-
-  { Calculer les offsets Hint/Name }
-  Ofs := HNT_OFS;
-  For I := 0 To PE_NUM_IMPORTS - 1 Do
-  Begin
-    HntOfs[I] := Ofs;
-    Ofs := Ofs + 2 + Length(HntNames[I]) + 1;
-    If Odd(Ofs) Then Inc(Ofs);
+  MAX_DLL_PE = 8;
+  MAX_IMP_PER_DLL = 128;
+Type
+  TDllGroup = Record
+    DllName: TString;
+    Idxs: Array[0..MAX_IMP_PER_DLL-1] Of Integer;
+    Cnt: Integer;
   End;
-  DllNameOfs := Ofs;
-  IdataVirtSize := DllNameOfs + Length('kernel32.dll') + 1;
+Var
+  DllGroups: Array[0..MAX_DLL_PE-1] Of TDllGroup;
+  DllGrpCnt: Integer;
+  TextRawSize, DataRawSize, IdataRawSize: LongInt;
+  DataRVA, IdataRVA: LongInt;
+  DataVA, IdataVA: LongInt;
+  ImageSize: LongInt;
+  TextAligned, DataAligned: LongInt;
+  { Import table layout offsets (within .idata section) }
+  IdtSize, IltOfs, IatOfs, HntOfs, DnmOfs: LongInt;
+  IltPerDll, IatPerDll: Array[0..MAX_DLL_PE-1] Of LongInt;
+  HntPerImp: Array[0..255] Of LongInt;
+  DnmPerDll: Array[0..MAX_DLL_PE-1] Of LongInt;
+  IatVA: LongInt;
+  CurOfs: LongInt;
+  DI, AI, I, J: Integer;
+  Found: Boolean;
+  ImpIdx: Integer;
+  IdataVirtSize: LongInt;
+  IatSlotOfs: Array[0..255] Of LongInt;
+  FxOfs, ValIat, IATTotalSize, IdataFileBase, MainOfs: LongInt;
+  Slot: LongInt;
+  EntryPointRVA: LongInt;
 
-  { Tailles des sections (alignees sur FILE_ALIGN) }
-  TextSize  := PE_FILE_ALIGN_;
-  DataSize  := PE_FILE_ALIGN_;
-  IdataSize := PE_FILE_ALIGN_;
-  ImageSize := PE_IDATA_RVA + PE_SECT_ALIGN_;
+  Function AlignUp(V, A: LongInt): LongInt;
+  Begin AlignUp := ((V + A - 1) Div A) * A; End;
 
-  { Ouvrir fichier binaire }
+Begin
+  { ========== Grouper les imports par DLL ========== }
+  DllGrpCnt := 0;
+  For I := 0 To BcImportCnt - 1 Do
+  Begin
+    Found := False;
+    For DI := 0 To DllGrpCnt - 1 Do
+      If DllGroups[DI].DllName = BcImports[I].DllName Then
+      Begin
+        If DllGroups[DI].Cnt < MAX_IMP_PER_DLL Then
+        Begin
+          DllGroups[DI].Idxs[DllGroups[DI].Cnt] := I;
+          Inc(DllGroups[DI].Cnt);
+        End;
+        Found := True; Break;
+      End;
+    If (Not Found) And (DllGrpCnt < MAX_DLL_PE) Then
+    Begin
+      DllGroups[DllGrpCnt].DllName := BcImports[I].DllName;
+      DllGroups[DllGrpCnt].Cnt := 1;
+      DllGroups[DllGrpCnt].Idxs[0] := I;
+      Inc(DllGrpCnt);
+    End;
+  End;
+  { S assurer qu au moins kernel32.dll est present }
+  If DllGrpCnt = 0 Then
+  Begin
+    DllGrpCnt := 1;
+    DllGroups[0].DllName := 'kernel32.dll';
+    DllGroups[0].Cnt := 0;
+  End;
+
+  { ========== Calculer la disposition de la section .idata ========== }
+  { IDT : (DllGrpCnt + 1) * 20 bytes }
+  IdtSize := (DllGrpCnt + 1) * 20;
+  CurOfs := IdtSize;
+
+  { ILT per DLL }
+  IltOfs := CurOfs;
+  For DI := 0 To DllGrpCnt - 1 Do
+  Begin
+    IltPerDll[DI] := CurOfs;
+    CurOfs := CurOfs + (DllGroups[DI].Cnt + 1) * 4;
+  End;
+
+  { IAT per DLL (meme structure que ILT) }
+  IatOfs := CurOfs;
+  For DI := 0 To DllGrpCnt - 1 Do
+  Begin
+    IatPerDll[DI] := CurOfs;
+    CurOfs := CurOfs + (DllGroups[DI].Cnt + 1) * 4;
+  End;
+
+  { Hint/Name Table }
+  HntOfs := CurOfs;
+  For DI := 0 To DllGrpCnt - 1 Do
+    For AI := 0 To DllGroups[DI].Cnt - 1 Do
+    Begin
+      ImpIdx := DllGroups[DI].Idxs[AI];
+      HntPerImp[ImpIdx] := CurOfs;
+      CurOfs := CurOfs + 2 + Length(BcImports[ImpIdx].ApiName) + 1;
+      If Odd(CurOfs) Then Inc(CurOfs);
+    End;
+
+  { DLL Name strings }
+  DnmOfs := CurOfs;
+  For DI := 0 To DllGrpCnt - 1 Do
+  Begin
+    DnmPerDll[DI] := CurOfs;
+    CurOfs := CurOfs + Length(DllGroups[DI].DllName) + 1;
+    If Odd(CurOfs) Then Inc(CurOfs);
+  End;
+  IdataVirtSize := CurOfs;
+
+  { ========== Calculer les tailles et RVA des sections ========== }
+  TextAligned := AlignUp(BcCodeLen, PE_SECT_ALIGN_);
+  If TextAligned < PE_SECT_ALIGN_ Then TextAligned := PE_SECT_ALIGN_;
+  DataAligned := AlignUp(BcDataLen, PE_SECT_ALIGN_);
+  If DataAligned < PE_SECT_ALIGN_ Then DataAligned := PE_SECT_ALIGN_;
+
+  DataRVA  := PE_TEXT_RVA + TextAligned;
+  IdataRVA := DataRVA + DataAligned;
+
+  DataVA   := PE_IMG_BASE + DataRVA;
+  IdataVA  := PE_IMG_BASE + IdataRVA;
+
+  TextRawSize  := AlignUp(BcCodeLen, PE_FILE_ALIGN_);
+  If TextRawSize < PE_FILE_ALIGN_ Then TextRawSize := PE_FILE_ALIGN_;
+  DataRawSize  := AlignUp(BcDataLen, PE_FILE_ALIGN_);
+  If DataRawSize < PE_FILE_ALIGN_ Then DataRawSize := PE_FILE_ALIGN_;
+  IdataRawSize := AlignUp(IdataVirtSize, PE_FILE_ALIGN_);
+  If IdataRawSize < PE_FILE_ALIGN_ Then IdataRawSize := PE_FILE_ALIGN_;
+
+  ImageSize := IdataRVA + AlignUp(IdataVirtSize, PE_SECT_ALIGN_);
+
+  { ========== Resoudre les fixups maintenant qu on connait le layout ========== }
+  BcResolveFixups(DataVA);
+
+  { Trouver le point d entree _TPF_Main }
+  EntryPointRVA := PE_TEXT_RVA;
+  MainOfs := BcFindLabel(TP_FUNC_PFX + 'Main');
+  If MainOfs >= 0 Then
+    EntryPointRVA := PE_TEXT_RVA + MainOfs;
+
+  { Calculer l adresse VA de chaque slot IAT }
+  { Le IAT est une table plate : slot I est a IatOfs + position dans le groupe }
+  { On veut que BcImports[I] -> IAT_VA + slot_offset }
+  IatVA := PE_IMG_BASE + IdataRVA + IatOfs;
+  { Mais le code utilise BcFixups[].Addend = index dans BcImports[] }
+  { et BcPatchIATFixups calcule IatVA + Slot*4 }
+  { Il faut que pour l import I, la position dans le IAT soit I*4 }
+  { Le IAT a des separateurs null entre groupes DLL, donc slot*4 ne marchera pas }
+  { => On construit un IAT plat continu SANS les separateurs null inter-DLL }
+  { SAUF que le loader Windows EXIGE les null entre groupes. }
+  { Solution : construire un mapping ordonne de slot sequentiel }
+  { En fait, reordonner le IAT pour que slot I = position I dans le bloc }
+  { Le plus simple : IAT plat de BcImportCnt+DllGrpCnt entrees }
+  { Slot I doit mapper a la bonne position dans le IAT regroupe }
+  { Construisons un tableau position[BcImportSlot] -> byte offset dans IAT }
+  CurOfs := 0;
+    For DI := 0 To DllGrpCnt - 1 Do
+    Begin
+      For AI := 0 To DllGroups[DI].Cnt - 1 Do
+      Begin
+        ImpIdx := DllGroups[DI].Idxs[AI];
+        IatSlotOfs[ImpIdx] := CurOfs;
+        CurOfs := CurOfs + 4;
+      End;
+      CurOfs := CurOfs + 4; { null terminator per DLL group }
+    End;
+    { Patch IAT fixups : chaque slot -> IatVA base + son offset }
+    For I := 0 To BcFixupCnt - 1 Do
+    Begin
+      If BcFixups[I].Kind = BC_FIX_ABS32_IMP Then
+      Begin
+        FxOfs := BcFixups[I].CodeOfs;
+        If FxOfs + 3 >= BcCodeLen Then Continue;
+        Slot := BcFixups[I].Addend;
+        If (Slot >= 0) And (Slot < BcImportCnt) Then
+          ValIat := PE_IMG_BASE + IdataRVA + IatPerDll[0] + IatSlotOfs[Slot]
+        Else
+          ValIat := PE_IMG_BASE + IdataRVA + IatPerDll[0];
+        { Trouver le bon IatPerDll pour ce slot }
+        For DI := 0 To DllGrpCnt - 1 Do
+          For AI := 0 To DllGroups[DI].Cnt - 1 Do
+            If DllGroups[DI].Idxs[AI] = Slot Then
+            Begin
+              ValIat := PE_IMG_BASE + IdataRVA + IatPerDll[DI] + AI * 4;
+            End;
+        BcCode[FxOfs] := Byte(ValIat);
+        BcCode[FxOfs + 1] := Byte(ValIat Shr 8);
+        BcCode[FxOfs + 2] := Byte(ValIat Shr 16);
+        BcCode[FxOfs + 3] := Byte(ValIat Shr 24);
+      End;
+    End;
+
+  { ========== Ecrire le fichier PE ========== }
   Assign(PEBinF, FileName);
   Rewrite(PEBinF, 1);
 
@@ -17103,12 +18665,12 @@ Begin
   { ===== Optional Header PE32 (224 octets) ===== }
   PEWrW($010B);         { Magic PE32 }
   PEWrB(1); PEWrB(0);   { Linker version }
-  PEWrD(TextSize);      { SizeOfCode }
-  PEWrD(DataSize);      { SizeOfInitializedData }
+  PEWrD(TextRawSize);   { SizeOfCode }
+  PEWrD(DataRawSize + IdataRawSize); { SizeOfInitializedData }
   PEWrD(0);             { SizeOfUninitializedData }
-  PEWrD(PE_TEXT_RVA);   { AddressOfEntryPoint }
+  PEWrD(EntryPointRVA); { AddressOfEntryPoint = _TPF_Main }
   PEWrD(PE_TEXT_RVA);   { BaseOfCode }
-  PEWrD(PE_DATA_RVA);   { BaseOfData }
+  PEWrD(DataRVA);       { BaseOfData }
   PEWrD(PE_IMG_BASE);   { ImageBase }
   PEWrD(PE_SECT_ALIGN_); { SectionAlignment }
   PEWrD(PE_FILE_ALIGN_); { FileAlignment }
@@ -17130,7 +18692,7 @@ Begin
 
   { Data Directories (16 * 8 = 128 octets) }
   PEWrD(0); PEWrD(0);   { [0] Export }
-  PEWrD(PE_IDATA_RVA);  { [1] Import RVA }
+  PEWrD(IdataRVA);       { [1] Import RVA }
   PEWrD(IdataVirtSize);  { [1] Import Size }
   PEWrD(0); PEWrD(0);   { [2] Resource }
   PEWrD(0); PEWrD(0);   { [3] Exception }
@@ -17142,8 +18704,16 @@ Begin
   PEWrD(0); PEWrD(0);   { [9] TLS }
   PEWrD(0); PEWrD(0);   { [10] Load Config }
   PEWrD(0); PEWrD(0);   { [11] Bound Import }
-  PEWrD(PE_IDATA_RVA + IAT_OFS); { [12] IAT RVA }
-  PEWrD((PE_NUM_IMPORTS + 1) * 4); { [12] IAT Size }
+  { [12] IAT - pointe vers la premiere table IAT }
+  If DllGrpCnt > 0 Then
+  Begin
+    PEWrD(IdataRVA + IatPerDll[0]);
+    { Taille totale du IAT }
+    IATTotalSize := 0;
+    For DI := 0 To DllGrpCnt - 1 Do
+      IATTotalSize := IATTotalSize + (DllGroups[DI].Cnt + 1) * 4;
+    PEWrD(IATTotalSize);
+  End Else Begin PEWrD(0); PEWrD(0); End;
   PEWrD(0); PEWrD(0);   { [13] Delay Import }
   PEWrD(0); PEWrD(0);   { [14] CLR }
   PEWrD(0); PEWrD(0);   { [15] Reserved }
@@ -17152,9 +18722,9 @@ Begin
 
   { .text }
   PEWrName8('.text');
-  PEWrD(PE_SECT_ALIGN_); { VirtualSize }
+  PEWrD(BcCodeLen);      { VirtualSize }
   PEWrD(PE_TEXT_RVA);    { VirtualAddress }
-  PEWrD(TextSize);       { SizeOfRawData }
+  PEWrD(TextRawSize);    { SizeOfRawData }
   PEWrD(PE_HDR_SIZE);    { PointerToRawData }
   PEWrD(0); PEWrD(0);   { Relocs, Linenums }
   PEWrW(0); PEWrW(0);   { NumRelocs, NumLinenums }
@@ -17162,128 +18732,99 @@ Begin
 
   { .data }
   PEWrName8('.data');
-  PEWrD(PE_SECT_ALIGN_);
-  PEWrD(PE_DATA_RVA);
-  PEWrD(DataSize);
-  PEWrD(PE_HDR_SIZE + TextSize);
+  PEWrD(BcDataLen);
+  PEWrD(DataRVA);
+  PEWrD(DataRawSize);
+  PEWrD(PE_HDR_SIZE + TextRawSize);
   PEWrD(0); PEWrD(0);
   PEWrW(0); PEWrW(0);
-  PEWrD(LongInt($C0000040));     { IDATA | MEM_READ | MEM_WRITE }
+  PEWrD(LongInt($C0000040)); { IDATA | MEM_READ | MEM_WRITE }
 
   { .idata }
   PEWrName8('.idata');
-  PEWrD(PE_SECT_ALIGN_);
-  PEWrD(PE_IDATA_RVA);
-  PEWrD(IdataSize);
-  PEWrD(PE_HDR_SIZE + TextSize + DataSize);
+  PEWrD(IdataVirtSize);
+  PEWrD(IdataRVA);
+  PEWrD(IdataRawSize);
+  PEWrD(PE_HDR_SIZE + TextRawSize + DataRawSize);
   PEWrD(0); PEWrD(0);
   PEWrW(0); PEWrW(0);
-  PEWrD(LongInt($C0000040));     { IDATA | MEM_READ | MEM_WRITE }
+  PEWrD(LongInt($C0000040)); { IDATA | MEM_READ | MEM_WRITE }
 
   { Padding jusqu a FILE_ALIGN }
   PEPadTo(PE_HDR_SIZE);
 
-  { ===== Section .text (code machine) ===== }
-  { Point d entree minimal :
-    GetStdHandle(-11) -> HSTDOUT
-    GetStdHandle(-10) -> HSTDIN
-    GetProcessHeap()  -> HHEAP
-    ExitProcess(0) }
+  { ===== Section .text (code machine compile) ===== }
+  For I := 0 To BcCodeLen - 1 Do PEWrB(BcCode[I]);
+  PEPadTo(PE_HDR_SIZE + TextRawSize);
 
-  IATva := PE_IMG_BASE + PE_IDATA_RVA + IAT_OFS;
-
-  { PUSH -11 }
-  PEWrB($6A); PEWrB($F5);
-  { CALL DWORD PTR [IAT_GetStdHandle] }
-  PEWrB($FF); PEWrB($15);
-  PEWrD(IATva + 1*4);
-  { MOV [HSTDOUT], EAX }
-  PEWrB($A3);
-  PEWrD(PE_IMG_BASE + PE_DATA_RVA + 0);
-
-  { PUSH -10 }
-  PEWrB($6A); PEWrB($F6);
-  { CALL DWORD PTR [IAT_GetStdHandle] }
-  PEWrB($FF); PEWrB($15);
-  PEWrD(IATva + 1*4);
-  { MOV [HSTDIN], EAX }
-  PEWrB($A3);
-  PEWrD(PE_IMG_BASE + PE_DATA_RVA + 4);
-
-  { CALL DWORD PTR [IAT_GetProcessHeap] }
-  PEWrB($FF); PEWrB($15);
-  PEWrD(IATva + 4*4);
-  { MOV [HHEAP], EAX }
-  PEWrB($A3);
-  PEWrD(PE_IMG_BASE + PE_DATA_RVA + 8);
-
-  { PUSH 0 }
-  PEWrB($6A); PEWrB($00);
-  { CALL DWORD PTR [IAT_ExitProcess] }
-  PEWrB($FF); PEWrB($15);
-  PEWrD(IATva + 0*4);
-
-  { Remplir le reste de la section .text }
-  PEPadTo(PE_HDR_SIZE + TextSize);
-
-  { ===== Section .data ===== }
-  { HSTDOUT DD 0 }
-  PEWrD(0);
-  { HSTDIN DD 0 }
-  PEWrD(0);
-  { HHEAP DD 0 }
-  PEWrD(0);
-
-  { Remplir le reste }
-  PEPadTo(PE_HDR_SIZE + TextSize + DataSize);
+  { ===== Section .data (donnees globales) ===== }
+  For I := 0 To BcDataLen - 1 Do PEWrB(BcData[I]);
+  PEPadTo(PE_HDR_SIZE + TextRawSize + DataRawSize);
 
   { ===== Section .idata (Import Table) ===== }
+  IdataFileBase := PE_HDR_SIZE + TextRawSize + DataRawSize;
 
-  { --- Import Directory Table (2 entrees x 20 octets) --- }
-  { Entree kernel32.dll }
-  PEWrD(PE_IDATA_RVA + ILT_OFS); { OriginalFirstThunk (ILT) }
-  PEWrD(0);                        { TimeDateStamp }
-  PEWrD(-1);               { ForwarderChain = -1 }
-  PEWrD(PE_IDATA_RVA + DllNameOfs); { Name RVA }
-  PEWrD(PE_IDATA_RVA + IAT_OFS); { FirstThunk (IAT) }
-  { Terminateur nul }
-  PEWrZeros(20);
-
-  { --- ILT (Import Lookup Table) --- }
-  For I := 0 To PE_NUM_IMPORTS - 1 Do
-    PEWrD(PE_IDATA_RVA + HntOfs[I]);
-  PEWrD(0); { terminateur }
-
-  { Padding jusqu au IAT }
-  PEPadTo(PE_HDR_SIZE + TextSize + DataSize + IAT_OFS);
-
-  { --- IAT (Import Address Table) - identique a ILT --- }
-  For I := 0 To PE_NUM_IMPORTS - 1 Do
-    PEWrD(PE_IDATA_RVA + HntOfs[I]);
-  PEWrD(0); { terminateur }
-
-  { Padding jusqu au Hint/Name Table }
-  PEPadTo(PE_HDR_SIZE + TextSize + DataSize + HNT_OFS);
-
-  { --- Hint/Name Table --- }
-  For I := 0 To PE_NUM_IMPORTS - 1 Do
+  { --- IDT (Import Directory Table) --- }
+  For DI := 0 To DllGrpCnt - 1 Do
   Begin
-    PEPadTo(PE_HDR_SIZE + TextSize + DataSize + HntOfs[I]);
-    PEWrW(0);             { Hint = 0 }
-    PEWrStr(HntNames[I]); { Nom ASCIIZ }
-    If Odd(FilePos(PEBinF)) Then PEWrB(0); { Aligner sur 2 }
+    PEWrD(IdataRVA + IltPerDll[DI]); { OriginalFirstThunk (ILT) }
+    PEWrD(0);                         { TimeDateStamp }
+    PEWrD(LongInt(-1));               { ForwarderChain = -1 }
+    PEWrD(IdataRVA + DnmPerDll[DI]); { Name RVA }
+    PEWrD(IdataRVA + IatPerDll[DI]); { FirstThunk (IAT) }
+  End;
+  PEWrZeros(20); { terminateur nul }
+
+  { --- ILT (Import Lookup Table) per DLL --- }
+  For DI := 0 To DllGrpCnt - 1 Do
+  Begin
+    PEPadTo(IdataFileBase + IltPerDll[DI]);
+    For AI := 0 To DllGroups[DI].Cnt - 1 Do
+    Begin
+      ImpIdx := DllGroups[DI].Idxs[AI];
+      PEWrD(IdataRVA + HntPerImp[ImpIdx]);
+    End;
+    PEWrD(0); { null terminator }
   End;
 
-  { --- DLL Name --- }
-  PEPadTo(PE_HDR_SIZE + TextSize + DataSize + DllNameOfs);
-  PEWrStr('kernel32.dll');
+  { --- IAT (Import Address Table) per DLL - identique au ILT --- }
+  For DI := 0 To DllGrpCnt - 1 Do
+  Begin
+    PEPadTo(IdataFileBase + IatPerDll[DI]);
+    For AI := 0 To DllGroups[DI].Cnt - 1 Do
+    Begin
+      ImpIdx := DllGroups[DI].Idxs[AI];
+      PEWrD(IdataRVA + HntPerImp[ImpIdx]);
+    End;
+    PEWrD(0); { null terminator }
+  End;
 
-  { Remplir le reste }
-  PEPadTo(PE_HDR_SIZE + TextSize + DataSize + IdataSize);
+  { --- Hint/Name Table --- }
+  For DI := 0 To DllGrpCnt - 1 Do
+    For AI := 0 To DllGroups[DI].Cnt - 1 Do
+    Begin
+      ImpIdx := DllGroups[DI].Idxs[AI];
+      PEPadTo(IdataFileBase + HntPerImp[ImpIdx]);
+      PEWrW(0);                              { Hint = 0 }
+      PEWrStr(BcImports[ImpIdx].ApiName);    { Nom ASCIIZ }
+      If Odd(FilePos(PEBinF)) Then PEWrB(0); { Aligner sur 2 }
+    End;
+
+  { --- DLL Name strings --- }
+  For DI := 0 To DllGrpCnt - 1 Do
+  Begin
+    PEPadTo(IdataFileBase + DnmPerDll[DI]);
+    PEWrStr(DllGroups[DI].DllName);
+    If Odd(FilePos(PEBinF)) Then PEWrB(0);
+  End;
+
+  { Remplir le reste de la section }
+  PEPadTo(IdataFileBase + IdataRawSize);
 
   If Opts.Verbose Then
     WriteLn('  PE genere : ', FileName, ' (',
-            FilePos(PEBinF), ' octets)');
+            FilePos(PEBinF), ' octets, code=', BcCodeLen,
+            ' data=', BcDataLen, ' imports=', BcImportCnt, ')');
 
   Close(PEBinF);
 End;
@@ -18092,10 +19633,22 @@ Begin
     WriteLn('  Apres ParseProcDecls: Procedures=', ProcCount,
             '  Symboles=', SymCount);
 
-  { Generation du fichier .ASM si demande (TODO 07) }
-  If Opts.AsmOutput And (Not Opts.Dos16Mode) Then
+  { Generation du code Win32 : pipeline d emission (texte ASM + binaire PE) }
+  { La pipeline s execute si -asm est demande OU si un PE doit etre genere }
+  If (Not Opts.Dos16Mode) And
+     (Opts.AsmOutput Or ((Not Opts.ObjOnly) And (Not IsUnitSource))) Then
   Begin
-    EmitOpen(ReplaceExt(Opts.OutFile, '.asm'));
+    { Initialiser la generation binaire si un PE est requis }
+    If (Not Opts.ObjOnly) And (Not IsUnitSource) Then
+    Begin
+      BcInit;
+      BcActive := True;
+    End;
+
+    { Ouvrir le fichier ASM texte si demande (TODO 07) }
+    If Opts.AsmOutput Then
+      EmitOpen(ReplaceExt(Opts.OutFile, '.asm'));
+
     EmitHeader;
     EmitDataSeg;
     EmitCodeSeg;
@@ -18125,9 +19678,14 @@ Begin
     { Emettre les routines runtime interruptions (TODO 23) }
     EmitIntrRuntime;
 
-    EmitClose;
-    If Opts.Verbose Then
-      WriteLn('  ASM genere : ', ReplaceExt(Opts.OutFile, '.asm'));
+    If Opts.AsmOutput Then
+    Begin
+      EmitClose;
+      If Opts.Verbose Then
+        WriteLn('  ASM genere : ', ReplaceExt(Opts.OutFile, '.asm'));
+    End;
+
+    BcActive := False;
   End;
 
   { Generation du fichier .ASM DOS 16 bits si -dos16 et -asm (TODO 24) }
@@ -18148,6 +19706,7 @@ Begin
   { Generation du fichier PE (TODO 24) - seulement pour les programmes (TODO 27) }
   If (Not Opts.ObjOnly) And (Not Opts.Dos16Mode) And (Not IsUnitSource) Then
   Begin
+    BcBuildData;  { Apres toute emission pour capturer tous les DataTab }
     WritePEFile(Opts.OutFile);
     If Opts.Verbose Then
       WriteLn('  PE Win32 genere : ', Opts.OutFile);
