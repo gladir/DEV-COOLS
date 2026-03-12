@@ -2303,10 +2303,13 @@ Begin
   Idx := DataAdd(Lbl, DK_ARRAY_BLK, ALwb, ADataLbl);
   If (Idx >= 0) And (Idx < MAX_DATA) Then
   Begin
-    { On stocke les meta-donnees dans les champs disponibles :       }
-    { IntVal = lwb, ElemCount = upb, StrVal = label bloc donnees     }
-    { On encode upb et elem_size dans ElemCount (upb * 256 + size)   }
-    DataTab[Idx].ElemCount := (AUpb * 256) + (AElemSize And $FF);
+    { Champs reutilises pour le descripteur de tableau :              }
+    { IntVal  = lwb (borne inferieure)                               }
+    { StrVal  = label du bloc de donnees                             }
+    { ElemCount encode upb et elem_size sur 16 bits :                }
+    {   bits 8..15 = upb (borne superieure, max 255)                 }
+    {   bits 0..7  = taille element en octets (max 255)              }
+    DataTab[Idx].ElemCount := (AUpb And $FF) * 256 + (AElemSize And $FF);
   End;
   DataAddArrayDesc := Idx;
 End;
@@ -2472,12 +2475,15 @@ Begin
       DK_ARRAY_BLK :
       Begin
         { Descripteur de tableau : DW lwb, upb, taille_elem, OFFSET data }
-        { IntVal = lwb, ElemCount = (upb*256 + elemsize), StrVal = data label }
+        { Decodage : IntVal = lwb, ElemCount bits 8..15 = upb,           }
+        {            ElemCount bits 0..7 = elem_size, StrVal = data lbl  }
         S := '        DW      ' + IntToStr(DataTab[I].IntVal);
         If DataTab[I].ElemCount > 0 Then
         Begin
+          { upb = bits 8..15 }
           Str(DataTab[I].ElemCount Div 256, NS);
           S := S + ',' + NS;
+          { elem_size = bits 0..7 }
           Str(DataTab[I].ElemCount And $FF, NS);
           S := S + ',' + NS;
         End
@@ -2491,12 +2497,14 @@ Begin
       End;
       DK_STRUCT_BLK :
       Begin
-        { Bloc STRUCT/UNION : IntVal = valeur initiale (discriminant pour UNION) }
-        { ElemCount = nombre de mots DW a reserver                               }
+        { Bloc STRUCT/UNION : IntVal = valeur initiale (discriminant)    }
+        { ElemCount = nombre total de mots DW a reserver dans le bloc   }
         If DataTab[I].ElemCount > 1 Then
         Begin
+          { Premier mot = valeur initiale / discriminant }
           EmitRaw('        DW      ' + IntToStr(DataTab[I].IntVal) +
                   '  ; struct/union block');
+          { Mots restants = (ElemCount - 1) remplis de zeros }
           Str(DataTab[I].ElemCount - 1, NS);
           EmitRaw('        DW      ' + NS + ' DUP(0)');
         End
