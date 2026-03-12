@@ -1,4 +1,4 @@
-; REXX86 v1.0 - SAMPLES/REXX/test_io.rexx
+; REXX86 v1.0 - SAMPLES/REXX/test_strings.rexx
 .MODEL SMALL
 .STACK 1024
 
@@ -11,63 +11,303 @@ _RXP_Main:
         MOV   DS, AX
 
 ; SAY
+; call: LENGTH(...)
         LEA     AX, _RXK_1
-        MOV   SI, AX
-        CALL   _RXRT_PRINTLN
-; SAY
-        MOV     AX, 42
+        PUSH     AX
+        CALL     _RXB_LENGTH
+        ADD     SP, 2
         CALL   _RXRT_NUMTOSTR
         CALL   _RXRT_PRINTLN
 ; SAY
-        MOV     AX, 5
+; call: LENGTH(...)
+        LEA     AX, _RXK_1
+        PUSH     AX
+        CALL     _RXB_LENGTH
+        ADD     SP, 2
         CALL   _RXRT_NUMTOSTR
         CALL   _RXRT_PRINTLN
 ; SAY
+; call: LENGTH(...)
         LEA     AX, _RXK_2
         PUSH     AX
+        CALL     _RXB_LENGTH
+        ADD     SP, 2
+        CALL   _RXRT_NUMTOSTR
+        CALL   _RXRT_PRINTLN
+; SAY
+; call: SUBSTR(...)
         LEA     AX, _RXK_3
-        MOV     BX, AX
-        POP     AX
-        MOV     SI, AX
-        MOV     DI, BX
-        CALL    _RXRT_CONCAT
+        PUSH     AX
+        MOV     AX, 7
+        PUSH     AX
+        MOV   AX, 0
+        PUSH   AX
+        CALL     _RXB_SUBSTR
+        ADD     SP, 6
         MOV   SI, AX
         CALL   _RXRT_PRINTLN
 ; SAY
-        MOV   SI, OFFSET _RX_CRLF
-        CALL   _RXRT_PRINT
-; assign: X = ...
+; call: SUBSTR(...)
+        LEA     AX, _RXK_3
+        PUSH     AX
+        MOV     AX, 1
+        PUSH     AX
+        MOV     AX, 5
+        PUSH     AX
+        CALL     _RXB_SUBSTR
+        ADD     SP, 6
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SAY
+; call: SUBSTR(...)
         LEA     AX, _RXK_4
-        MOV     SI, AX
-        LEA     DI, _RXV_X
-        CALL     _RXRT_STRCPY
-; SAY
-        LEA     AX, _RXV_X
+        PUSH     AX
+        MOV     AX, 3
+        PUSH     AX
+        MOV     AX, 2
+        PUSH     AX
+        CALL     _RXB_SUBSTR
+        ADD     SP, 6
         MOV   SI, AX
         CALL   _RXRT_PRINTLN
-; assign: NOM = ...
-        LEA     AX, _RXK_5
-        MOV     SI, AX
-        LEA     DI, _RXV_NOM
-        CALL     _RXRT_STRCPY
 ; SAY
-        LEA     AX, _RXV_NOM
+; call: LEFT(...)
+        LEA     AX, _RXK_4
+        PUSH     AX
+        MOV     AX, 3
+        PUSH     AX
+        MOV   AX, 32
+        PUSH   AX
+        CALL     _RXB_LEFT
+        ADD     SP, 6
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SAY
+; call: LEFT(...)
+        LEA     AX, _RXK_5
+        PUSH     AX
+        MOV     AX, 5
+        PUSH     AX
+        MOV   AX, 32
+        PUSH   AX
+        CALL     _RXB_LEFT
+        ADD     SP, 6
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SAY
+; call: RIGHT(...)
+        LEA     AX, _RXK_5
+        PUSH     AX
+        MOV     AX, 3
+        PUSH     AX
+        MOV   AX, 32
+        PUSH   AX
+        CALL     _RXB_RIGHT
+        ADD     SP, 6
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SAY
+; call: RIGHT(...)
+        LEA     AX, _RXK_5
+        PUSH     AX
+        MOV     AX, 5
+        PUSH     AX
+        MOV   AX, 32
+        PUSH   AX
+        CALL     _RXB_RIGHT
+        ADD     SP, 6
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SAY
+; call: COPIES(...)
         LEA     AX, _RXK_6
         PUSH     AX
-        MOV     BX, AX
-        POP     AX
-        PUSH     BX
-        MOV     SI, AX
-        MOV     DI, OFFSET _RX_SPC_S
-        CALL    _RXRT_CONCAT
-        MOV     SI, AX
-        POP     DI
-        PUSH     DI
-        MOV     DI, OFFSET _RX_TMPBUF
-        CALL    _RXRT_STRCPY
-        MOV     SI, OFFSET _RX_TMPBUF
-        POP     DI
-        CALL    _RXRT_CONCAT
+        MOV     AX, 3
+        PUSH     AX
+        CALL     _RXB_COPIES
+        ADD     SP, 4
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SAY
+; call: COPIES(...)
+        LEA     AX, _RXK_7
+        PUSH     AX
+        MOV     AX, 5
+        PUSH     AX
+        CALL     _RXB_COPIES
+        ADD     SP, 4
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SAY
+; call: REVERSE(...)
+        LEA     AX, _RXK_7
+        PUSH     AX
+        CALL     _RXB_REVERSE
+        ADD     SP, 2
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SAY
+; call: REVERSE(...)
+        LEA     AX, _RXK_8
+        PUSH     AX
+        CALL     _RXB_REVERSE
+        ADD     SP, 2
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SAY
+; call: POS(...)
+        LEA     AX, _RXK_9
+        PUSH     AX
+        LEA     AX, _RXK_9
+        PUSH     AX
+        MOV   AX, 1
+        PUSH   AX
+        CALL     _RXB_POS
+        ADD     SP, 6
+        CALL   _RXRT_NUMTOSTR
+        CALL   _RXRT_PRINTLN
+; SAY
+; call: POS(...)
+        LEA     AX, _RXK_10
+        PUSH     AX
+        LEA     AX, _RXK_10
+        PUSH     AX
+        MOV   AX, 1
+        PUSH   AX
+        CALL     _RXB_POS
+        ADD     SP, 6
+        CALL   _RXRT_NUMTOSTR
+        CALL   _RXRT_PRINTLN
+; SAY
+; call: POS(...)
+        LEA     AX, _RXK_11
+        PUSH     AX
+        LEA     AX, _RXK_11
+        PUSH     AX
+        MOV     AX, 5
+        PUSH     AX
+        CALL     _RXB_POS
+        ADD     SP, 6
+        CALL   _RXRT_NUMTOSTR
+        CALL   _RXRT_PRINTLN
+; SAY
+; call: LASTPOS(...)
+        LEA     AX, _RXK_12
+        PUSH     AX
+        LEA     AX, _RXK_12
+        PUSH     AX
+        MOV   AX, 0
+        PUSH   AX
+        CALL     _RXB_LASTPOS
+        ADD     SP, 6
+        CALL   _RXRT_NUMTOSTR
+        CALL   _RXRT_PRINTLN
+; SAY
+; call: CENTER(...)
+        LEA     AX, _RXK_12
+        PUSH     AX
+        MOV     AX, 6
+        PUSH     AX
+        MOV   AX, 32
+        PUSH   AX
+        CALL     _RXB_CENTER
+        ADD     SP, 6
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SAY
+; call: CENTER(...)
+        LEA     AX, _RXK_12
+        PUSH     AX
+        MOV     AX, 3
+        PUSH     AX
+        MOV   AX, 32
+        PUSH   AX
+        CALL     _RXB_CENTER
+        ADD     SP, 6
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SAY
+; call: STRIP(...)
+        LEA     AX, _RXK_13
+        PUSH     AX
+        MOV   AX, 66
+        PUSH   AX
+        MOV   AX, 32
+        PUSH   AX
+        CALL     _RXB_STRIP
+        ADD     SP, 6
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SAY
+; call: SPACE(...)
+        LEA     AX, _RXK_14
+        PUSH     AX
+        MOV   AX, 1
+        PUSH   AX
+        MOV   AX, 32
+        PUSH   AX
+        CALL     _RXB_SPACE
+        ADD     SP, 6
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SAY
+; call: SPACE(...)
+        LEA     AX, _RXK_15
+        PUSH     AX
+        MOV     AX, 1
+        PUSH     AX
+        MOV   AX, 32
+        PUSH   AX
+        CALL     _RXB_SPACE
+        ADD     SP, 6
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SAY
+; call: OVERLAY(...)
+        LEA     AX, _RXK_16
+        PUSH     AX
+        LEA     AX, _RXK_16
+        PUSH     AX
+        MOV     AX, 3
+        PUSH     AX
+        CALL     _RXB_OVERLAY
+        ADD     SP, 6
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SAY
+; call: INSERT(...)
+        LEA     AX, _RXK_16
+        PUSH     AX
+        LEA     AX, _RXK_16
+        PUSH     AX
+        MOV     AX, 3
+        PUSH     AX
+        CALL     _RXB_INSERT
+        ADD     SP, 6
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SAY
+; call: DELSTR(...)
+        LEA     AX, _RXK_16
+        PUSH     AX
+        MOV     AX, 3
+        PUSH     AX
+        MOV     AX, 2
+        PUSH     AX
+        CALL     _RXB_DELSTR
+        ADD     SP, 6
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SAY
+; call: DELSTR(...)
+        LEA     AX, _RXK_16
+        PUSH     AX
+        MOV     AX, 3
+        PUSH     AX
+        MOV   AX, 0
+        PUSH   AX
+        CALL     _RXB_DELSTR
+        ADD     SP, 6
         MOV   SI, AX
         CALL   _RXRT_PRINTLN
         JMP     _RXP_Exit
@@ -1078,16 +1318,22 @@ _RX_NUMBUF DB 12 DUP(0)
 _RX_CATBUF DB 256 DUP(0)
 _RX_INPUTBF DB 256 DUP(0)
 _RX_BIFBUF DB 256 DUP(0)
-_RXK_1 DB 'Hello, World!',0
-_RXK_2 DB 'Resultat:',0
-_RXK_3 DB ' 10',0
-_RXV_X DB 256 DUP(0)
-_RXV_X_D DB 'X',0
-_RXK_4 DB 'Bonjour',0
-_RXV_NOM DB 256 DUP(0)
-_RXV_NOM_D DB 'NOM',0
-_RXK_5 DB 'REXX',0
-_RXK_6 DB 'Langage:',0
+_RXK_1 DB 'hello',0
+_RXK_2 DB 'REXX',0
+_RXK_3 DB 'hello world',0
+_RXK_4 DB 'abcdef',0
+_RXK_5 DB 'hi',0
+_RXK_6 DB 'ab',0
+_RXK_7 DB '*',0
+_RXK_8 DB 'abcde',0
+_RXK_9 DB 'll',0
+_RXK_10 DB 'xyz',0
+_RXK_11 DB 'o',0
+_RXK_12 DB 'l',0
+_RXK_13 DB '  hello  ',0
+_RXK_14 DB '  hello   world  ',0
+_RXK_15 DB 'a  b  c',0
+_RXK_16 DB 'XX',0
 _DATA ENDS
 
 END _RXP_Main

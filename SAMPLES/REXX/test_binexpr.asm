@@ -580,6 +580,656 @@ _RXRT_PRINTINT:
         CALL   _RXRT_PRINT
         RET
 
+; --- Runtime BIF chaines (TODO 15) ---
+
+_RXB_LENGTH:
+        PUSH   BP
+        MOV   BP, SP
+        MOV   SI, [BP+4]
+        CALL   _RXRT_STRLEN
+        MOV   AX, CX
+        POP   BP
+        RET
+
+_RXB_SUBSTR:
+        PUSH   BP
+        MOV   BP, SP
+        PUSH   DI
+        PUSH   SI
+        MOV   SI, [BP+8]
+        CALL   _RXRT_STRLEN
+        MOV   DX, [BP+6]
+        MOV   BX, [BP+4]
+        LEA   DI, _RX_BIFBUF
+        CMP   DX, 1
+        JGE   _RXB_SUBS_POK
+        MOV   DX, 1
+_RXB_SUBS_POK:
+        CMP   DX, CX
+        JBE   _RXB_SUBS_PIR
+        MOV   BYTE PTR [DI], 0
+        JMP   _RXB_SUBS_DN
+_RXB_SUBS_PIR:
+        CMP   BX, 0
+        JG   _RXB_SUBS_HL
+        MOV   BX, CX
+        SUB   BX, DX
+        INC   BX
+_RXB_SUBS_HL:
+        PUSH   AX
+        MOV   AX, DX
+        ADD   AX, BX
+        DEC   AX
+        CMP   AX, CX
+        POP   AX
+        JBE   _RXB_SUBS_CP
+        MOV   BX, CX
+        SUB   BX, DX
+        INC   BX
+_RXB_SUBS_CP:
+        ADD   SI, DX
+        DEC   SI
+        MOV   CX, BX
+_RXB_SUBS_CL:
+        CMP   CX, 0
+        JE   _RXB_SUBS_NL
+        MOV   AL, [SI]
+        CMP   AL, 0
+        JE   _RXB_SUBS_NL
+        MOV   [DI], AL
+        INC   SI
+        INC   DI
+        DEC   CX
+        JMP   _RXB_SUBS_CL
+_RXB_SUBS_NL:
+        MOV   BYTE PTR [DI], 0
+_RXB_SUBS_DN:
+        MOV   AX, OFFSET _RX_BIFBUF
+        POP   SI
+        POP   DI
+        POP   BP
+        RET
+
+_RXB_LEFT:
+        PUSH   BP
+        MOV   BP, SP
+        PUSH   DI
+        PUSH   SI
+        MOV   SI, [BP+8]
+        MOV   CX, [BP+6]
+        MOV   DX, [BP+4]
+        LEA   DI, _RX_BIFBUF
+_RXB_LEFT_CP:
+        CMP   CX, 0
+        JE   _RXB_LEFT_DN
+        MOV   AL, [SI]
+        CMP   AL, 0
+        JE   _RXB_LEFT_PD
+        MOV   [DI], AL
+        INC   SI
+        INC   DI
+        DEC   CX
+        JMP   _RXB_LEFT_CP
+_RXB_LEFT_PD:
+        CMP   CX, 0
+        JE   _RXB_LEFT_DN
+        MOV   [DI], DL
+        INC   DI
+        DEC   CX
+        JMP   _RXB_LEFT_PD
+_RXB_LEFT_DN:
+        MOV   BYTE PTR [DI], 0
+        MOV   AX, OFFSET _RX_BIFBUF
+        POP   SI
+        POP   DI
+        POP   BP
+        RET
+
+_RXB_RIGHT:
+        PUSH   BP
+        MOV   BP, SP
+        PUSH   DI
+        PUSH   SI
+        MOV   SI, [BP+8]
+        CALL   _RXRT_STRLEN
+        MOV   BX, [BP+6]
+        MOV   DX, [BP+4]
+        LEA   DI, _RX_BIFBUF
+        CMP   CX, BX
+        JAE   _RXB_RIGHT_NP
+        PUSH   CX
+        MOV   AX, BX
+        SUB   AX, CX
+        MOV   CX, AX
+_RXB_RIGHT_PL:
+        CMP   CX, 0
+        JE   _RXB_RIGHT_CC
+        MOV   BYTE PTR [DI], DL
+        INC   DI
+        DEC   CX
+        JMP   _RXB_RIGHT_PL
+_RXB_RIGHT_CC:
+        POP   CX
+_RXB_RIGHT_CL:
+        CMP   CX, 0
+        JE   _RXB_RIGHT_DN
+        MOV   AL, [SI]
+        MOV   [DI], AL
+        INC   SI
+        INC   DI
+        DEC   CX
+        JMP   _RXB_RIGHT_CL
+_RXB_RIGHT_NP:
+        MOV   AX, CX
+        SUB   AX, BX
+        ADD   SI, AX
+        MOV   CX, BX
+_RXB_RIGHT_CF:
+        CMP   CX, 0
+        JE   _RXB_RIGHT_DN
+        MOV   AL, [SI]
+        MOV   [DI], AL
+        INC   SI
+        INC   DI
+        DEC   CX
+        JMP   _RXB_RIGHT_CF
+_RXB_RIGHT_DN:
+        MOV   BYTE PTR [DI], 0
+        MOV   AX, OFFSET _RX_BIFBUF
+        POP   SI
+        POP   DI
+        POP   BP
+        RET
+
+_RXB_CENTER:
+        PUSH   BP
+        MOV   BP, SP
+        PUSH   DI
+        PUSH   SI
+        MOV   SI, [BP+8]
+        CALL   _RXRT_STRLEN
+        MOV   BX, [BP+6]
+        MOV   DX, [BP+4]
+        LEA   DI, _RX_BIFBUF
+        CMP   CX, BX
+        JAE   _RXB_CTR_TR
+        PUSH   CX
+        PUSH   DX
+        MOV   AX, BX
+        SUB   AX, CX
+        SHR   AX, 1
+        PUSH   AX
+        MOV   CX, AX
+        POP   AX
+        PUSH   AX
+        MOV   CX, AX
+_RXB_CTR_LP:
+        CMP   CX, 0
+        JE   _RXB_CTR_CS
+        MOV   BYTE PTR [DI], DL
+        INC   DI
+        DEC   CX
+        JMP   _RXB_CTR_LP
+_RXB_CTR_CS:
+        POP   AX
+        POP   DX
+        POP   CX
+        PUSH   AX
+        PUSH   CX
+_RXB_CTR_CC:
+        CMP   CX, 0
+        JE   _RXB_CTR_RP
+        MOV   AL, [SI]
+        CMP   AL, 0
+        JE   _RXB_CTR_RP
+        MOV   [DI], AL
+        INC   SI
+        INC   DI
+        DEC   CX
+        JMP   _RXB_CTR_CC
+_RXB_CTR_RP:
+        POP   CX
+        POP   AX
+        MOV   DX, [BP+4]
+        MOV   BX, [BP+6]
+        SUB   BX, AX
+        SUB   BX, CX
+        MOV   CX, BX
+_RXB_CTR_RL:
+        CMP   CX, 0
+        JLE   _RXB_CTR_DN
+        MOV   BYTE PTR [DI], DL
+        INC   DI
+        DEC   CX
+        JMP   _RXB_CTR_RL
+        JMP   _RXB_CTR_DN
+_RXB_CTR_TR:
+        MOV   CX, BX
+_RXB_CTR_TL:
+        CMP   CX, 0
+        JE   _RXB_CTR_DN
+        MOV   AL, [SI]
+        MOV   [DI], AL
+        INC   SI
+        INC   DI
+        DEC   CX
+        JMP   _RXB_CTR_TL
+_RXB_CTR_DN:
+        MOV   BYTE PTR [DI], 0
+        MOV   AX, OFFSET _RX_BIFBUF
+        POP   SI
+        POP   DI
+        POP   BP
+        RET
+
+_RXB_COPIES:
+        PUSH   BP
+        MOV   BP, SP
+        PUSH   DI
+        PUSH   SI
+        LEA   DI, _RX_BIFBUF
+        MOV   BX, [BP+4]
+_RXB_COP_OL:
+        CMP   BX, 0
+        JLE   _RXB_COP_DN
+        MOV   SI, [BP+6]
+_RXB_COP_IL:
+        MOV   AL, [SI]
+        CMP   AL, 0
+        JE   _RXB_COP_NX
+        MOV   [DI], AL
+        INC   SI
+        INC   DI
+        JMP   _RXB_COP_IL
+_RXB_COP_NX:
+        DEC   BX
+        JMP   _RXB_COP_OL
+_RXB_COP_DN:
+        MOV   BYTE PTR [DI], 0
+        MOV   AX, OFFSET _RX_BIFBUF
+        POP   SI
+        POP   DI
+        POP   BP
+        RET
+
+_RXB_REVERSE:
+        PUSH   BP
+        MOV   BP, SP
+        PUSH   DI
+        PUSH   SI
+        MOV   SI, [BP+4]
+        CALL   _RXRT_STRLEN
+        LEA   DI, _RX_BIFBUF
+        MOV   BYTE PTR [DI+CX], 0
+        ADD   SI, CX
+        DEC   SI
+_RXB_REV_LP:
+        CMP   CX, 0
+        JE   _RXB_REV_DN
+        MOV   AL, [SI]
+        MOV   [DI], AL
+        DEC   SI
+        INC   DI
+        DEC   CX
+        JMP   _RXB_REV_LP
+_RXB_REV_DN:
+        MOV   AX, OFFSET _RX_BIFBUF
+        POP   SI
+        POP   DI
+        POP   BP
+        RET
+
+_RXB_STRIP:
+        PUSH   BP
+        MOV   BP, SP
+        PUSH   DI
+        PUSH   SI
+        MOV   SI, [BP+8]
+        CALL   _RXRT_STRLEN
+        MOV   BX, [BP+6]
+        MOV   DX, [BP+4]
+        CMP   BL, 84
+        JE   _RXB_STR_NL
+_RXB_STR_LL:
+        CMP   CX, 0
+        JE   _RXB_STR_NL
+        CMP   BYTE PTR [SI], DL
+        JNE   _RXB_STR_NL
+        INC   SI
+        DEC   CX
+        JMP   _RXB_STR_LL
+_RXB_STR_NL:
+        LEA   DI, _RX_BIFBUF
+        PUSH   CX
+        PUSH   SI
+_RXB_STR_CY:
+        CMP   CX, 0
+        JE   _RXB_STR_CD
+        MOV   AL, [SI]
+        MOV   [DI], AL
+        INC   SI
+        INC   DI
+        DEC   CX
+        JMP   _RXB_STR_CY
+_RXB_STR_CD:
+        MOV   BYTE PTR [DI], 0
+        POP   SI
+        POP   CX
+        CMP   BL, 76
+        JE   _RXB_STR_DN
+        LEA   DI, _RX_BIFBUF
+        ADD   DI, CX
+        DEC   DI
+_RXB_STR_TL:
+        CMP   CX, 0
+        JE   _RXB_STR_TD
+        CMP   BYTE PTR [DI], DL
+        JNE   _RXB_STR_TD
+        MOV   BYTE PTR [DI], 0
+        DEC   DI
+        DEC   CX
+        JMP   _RXB_STR_TL
+_RXB_STR_TD:
+_RXB_STR_DN:
+        MOV   AX, OFFSET _RX_BIFBUF
+        POP   SI
+        POP   DI
+        POP   BP
+        RET
+
+_RXB_SPACE:
+        PUSH   BP
+        MOV   BP, SP
+        PUSH   DI
+        PUSH   SI
+        MOV   SI, [BP+8]
+        MOV   BX, [BP+6]
+        MOV   DX, [BP+4]
+        LEA   DI, _RX_BIFBUF
+_RXB_SPC_SK:
+        CMP   BYTE PTR [SI], 32
+        JNE   _RXB_SPC_WD
+        INC   SI
+        JMP   _RXB_SPC_SK
+_RXB_SPC_WD:
+        CMP   BYTE PTR [SI], 0
+        JE   _RXB_SPC_DN
+        CMP   BYTE PTR [SI], 32
+        JE   _RXB_SPC_SP
+        MOV   AL, [SI]
+        MOV   [DI], AL
+        INC   SI
+        INC   DI
+        JMP   _RXB_SPC_WD
+_RXB_SPC_SP:
+_RXB_SPC_S2:
+        CMP   BYTE PTR [SI], 32
+        JNE   _RXB_SPC_IP
+        INC   SI
+        JMP   _RXB_SPC_S2
+_RXB_SPC_IP:
+        CMP   BYTE PTR [SI], 0
+        JE   _RXB_SPC_DN
+        PUSH   CX
+        MOV   CX, BX
+_RXB_SPC_PL:
+        CMP   CX, 0
+        JE   _RXB_SPC_PD
+        MOV   BYTE PTR [DI], DL
+        INC   DI
+        DEC   CX
+        JMP   _RXB_SPC_PL
+_RXB_SPC_PD:
+        POP   CX
+        JMP   _RXB_SPC_WD
+_RXB_SPC_DN:
+        MOV   BYTE PTR [DI], 0
+        MOV   AX, OFFSET _RX_BIFBUF
+        POP   SI
+        POP   DI
+        POP   BP
+        RET
+
+_RXB_OVERLAY:
+        PUSH   BP
+        MOV   BP, SP
+        PUSH   DI
+        PUSH   SI
+        MOV   SI, [BP+6]
+        LEA   DI, _RX_BIFBUF
+        CALL   _RXRT_STRCPY
+        LEA   DI, _RX_BIFBUF
+        MOV   AX, [BP+4]
+        DEC   AX
+        ADD   DI, AX
+        MOV   SI, [BP+8]
+_RXB_OVL_LP:
+        MOV   AL, [SI]
+        CMP   AL, 0
+        JE   _RXB_OVL_DN
+        MOV   [DI], AL
+        INC   SI
+        INC   DI
+        JMP   _RXB_OVL_LP
+_RXB_OVL_DN:
+        CMP   BYTE PTR [DI], 0
+        JNE   _RXB_OVL_OK
+        MOV   BYTE PTR [DI], 0
+_RXB_OVL_OK:
+        MOV   AX, OFFSET _RX_BIFBUF
+        POP   SI
+        POP   DI
+        POP   BP
+        RET
+
+_RXB_INSERT:
+        PUSH   BP
+        MOV   BP, SP
+        PUSH   DI
+        PUSH   SI
+        LEA   DI, _RX_BIFBUF
+        MOV   BX, [BP+4]
+        MOV   SI, [BP+6]
+        MOV   CX, BX
+_RXB_INS_P1:
+        CMP   CX, 0
+        JE   _RXB_INS_NW
+        MOV   AL, [SI]
+        CMP   AL, 0
+        JE   _RXB_INS_NW
+        MOV   [DI], AL
+        INC   SI
+        INC   DI
+        DEC   CX
+        JMP   _RXB_INS_P1
+_RXB_INS_NW:
+        PUSH   SI
+        MOV   SI, [BP+8]
+_RXB_INS_NL:
+        MOV   AL, [SI]
+        CMP   AL, 0
+        JE   _RXB_INS_ND
+        MOV   [DI], AL
+        INC   SI
+        INC   DI
+        JMP   _RXB_INS_NL
+_RXB_INS_ND:
+        POP   SI
+_RXB_INS_RL:
+        MOV   AL, [SI]
+        MOV   [DI], AL
+        CMP   AL, 0
+        JE   _RXB_INS_DN
+        INC   SI
+        INC   DI
+        JMP   _RXB_INS_RL
+_RXB_INS_DN:
+        MOV   AX, OFFSET _RX_BIFBUF
+        POP   SI
+        POP   DI
+        POP   BP
+        RET
+
+_RXB_DELSTR:
+        PUSH   BP
+        MOV   BP, SP
+        PUSH   DI
+        PUSH   SI
+        MOV   SI, [BP+8]
+        LEA   DI, _RX_BIFBUF
+        MOV   BX, [BP+6]
+        DEC   BX
+        MOV   CX, BX
+_RXB_DEL_P1:
+        CMP   CX, 0
+        JE   _RXB_DEL_SK
+        MOV   AL, [SI]
+        CMP   AL, 0
+        JE   _RXB_DEL_DN
+        MOV   [DI], AL
+        INC   SI
+        INC   DI
+        DEC   CX
+        JMP   _RXB_DEL_P1
+_RXB_DEL_SK:
+        MOV   CX, [BP+4]
+        CMP   CX, 0
+        JE   _RXB_DEL_DN
+_RXB_DEL_SL:
+        CMP   CX, 0
+        JE   _RXB_DEL_RS
+        CMP   BYTE PTR [SI], 0
+        JE   _RXB_DEL_DN
+        INC   SI
+        DEC   CX
+        JMP   _RXB_DEL_SL
+_RXB_DEL_RS:
+_RXB_DEL_RL:
+        MOV   AL, [SI]
+        MOV   [DI], AL
+        CMP   AL, 0
+        JE   _RXB_DEL_DN
+        INC   SI
+        INC   DI
+        JMP   _RXB_DEL_RL
+_RXB_DEL_DN:
+        MOV   BYTE PTR [DI], 0
+        MOV   AX, OFFSET _RX_BIFBUF
+        POP   SI
+        POP   DI
+        POP   BP
+        RET
+
+_RXB_POS:
+        PUSH   BP
+        MOV   BP, SP
+        PUSH   DI
+        PUSH   SI
+        MOV   SI, [BP+8]
+        CALL   _RXRT_STRLEN
+        MOV   BX, CX
+        CMP   BX, 0
+        JE   _RXB_POS_NF
+        MOV   SI, [BP+6]
+        CALL   _RXRT_STRLEN
+        MOV   DX, [BP+4]
+        DEC   DX
+        MOV   SI, [BP+6]
+        ADD   SI, DX
+        SUB   CX, DX
+        INC   DX
+_RXB_POS_LP:
+        CMP   CX, BX
+        JB   _RXB_POS_NF
+        PUSH   SI
+        PUSH   CX
+        MOV   DI, [BP+8]
+        MOV   CX, BX
+_RXB_POS_CM:
+        CMP   CX, 0
+        JE   _RXB_POS_FD
+        MOV   AL, [SI]
+        CMP   AL, [DI]
+        JNE   _RXB_POS_NM
+        INC   SI
+        INC   DI
+        DEC   CX
+        JMP   _RXB_POS_CM
+_RXB_POS_FD:
+        POP   CX
+        POP   SI
+        MOV   AX, DX
+        JMP   _RXB_POS_DN
+_RXB_POS_NM:
+        POP   CX
+        POP   SI
+        INC   SI
+        INC   DX
+        DEC   CX
+        JMP   _RXB_POS_LP
+_RXB_POS_NF:
+        XOR   AX, AX
+_RXB_POS_DN:
+        POP   SI
+        POP   DI
+        POP   BP
+        RET
+
+_RXB_LASTPOS:
+        PUSH   BP
+        MOV   BP, SP
+        PUSH   DI
+        PUSH   SI
+        MOV   SI, [BP+8]
+        CALL   _RXRT_STRLEN
+        MOV   BX, CX
+        CMP   BX, 0
+        JE   _RXB_LPO_NF
+        MOV   SI, [BP+6]
+        CALL   _RXRT_STRLEN
+        XOR   AX, AX
+        MOV   DX, 1
+        MOV   SI, [BP+6]
+_RXB_LPO_LP:
+        CMP   CX, BX
+        JB   _RXB_LPO_DN
+        PUSH   SI
+        PUSH   CX
+        MOV   DI, [BP+8]
+        MOV   CX, BX
+_RXB_LPO_CM:
+        CMP   CX, 0
+        JE   _RXB_LPO_FD
+        MOV   AL, [SI]
+        CMP   AL, [DI]
+        JNE   _RXB_LPO_NM
+        INC   SI
+        INC   DI
+        DEC   CX
+        JMP   _RXB_LPO_CM
+_RXB_LPO_FD:
+        POP   CX
+        POP   SI
+        MOV   AX, DX
+        INC   SI
+        INC   DX
+        DEC   CX
+        JMP   _RXB_LPO_LP
+_RXB_LPO_NM:
+        POP   CX
+        POP   SI
+        INC   SI
+        INC   DX
+        DEC   CX
+        JMP   _RXB_LPO_LP
+_RXB_LPO_NF:
+        XOR   AX, AX
+_RXB_LPO_DN:
+        POP   SI
+        POP   DI
+        POP   BP
+        RET
+
 
 ; --- sortie DOS ---
         MOV   AX, 4C00h
@@ -605,6 +1255,7 @@ _RX_TMPBUF DB 256 DUP(0)
 _RX_NUMBUF DB 12 DUP(0)
 _RX_CATBUF DB 256 DUP(0)
 _RX_INPUTBF DB 256 DUP(0)
+_RX_BIFBUF DB 256 DUP(0)
 _RXK_1 DB 'Hello',0
 _RXK_2 DB 'World',0
 _RXK_3 DB 'abc',0

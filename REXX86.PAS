@@ -238,7 +238,7 @@
               -> JMP _RXL_DTEST_N (ou _RXL_DINCR_N pour boucle compteur)
             LoopPush / LoopPop : pile de labels pour LEAVE et ITERATE
 
-  TODO 15 - CHAINES DE CARACTERES ET FONCTIONS INTEGREES (partie 1)
+  TODO 15 - CHAINES DE CARACTERES ET FONCTIONS INTEGREES (partie 1) [IMPLEMENTE]
             LENGTH(str) : longueur de la chaine -> AX
               -> CALL _RXB_LENGTH
             SUBSTR(str, pos [,len [,pad]]) : sous-chaine
@@ -831,6 +831,9 @@ Procedure ParseDoUntil;        Forward;
 Procedure ParseDoForever;      Forward;
 Procedure ParseDoCount(Const VarName : TString); Forward;
 Procedure ParseDoExpr;         Forward;
+
+(* TODO 15 - CHAINES ET FONCTIONS INTEGREES partie 1 *)
+Procedure EmitBifRuntime;      Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -3036,6 +3039,11 @@ Begin
   (*  TODO 12 - Runtime pour entrees/sorties                      *)
   (* ============================================================ *)
   EmitIORuntime;
+
+  (* ============================================================ *)
+  (*  TODO 15 - Runtime fonctions integrees (chaines partie 1)    *)
+  (* ============================================================ *)
+  EmitBifRuntime;
 End;
 
 { ============================================================
@@ -3093,7 +3101,817 @@ Begin
   EmitBlankLine;
 End;
 
-(* ---- EmitClose : fermer le fichier de sortie ASM ------------- *)
+{ ============================================================
+  TODO 15 - CHAINES DE CARACTERES ET FONCTIONS INTEGREES
+            (partie 1) [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- EmitBifRuntime : routines runtime fonctions integrees ---- *)
+(* Emet les routines assembleur 8086 pour les fonctions integrees   *)
+(* de manipulation de chaines REXX (partie 1).                      *)
+(* Convention d appel (C) : arguments sur la pile, resultat AX.     *)
+(* Apres PUSH BP ; MOV BP,SP :                                     *)
+(*   1 arg  : arg1=[BP+4]                                          *)
+(*   2 args : arg1=[BP+6], arg2=[BP+4]                             *)
+(*   3 args : arg1=[BP+8], arg2=[BP+6], arg3=[BP+4]               *)
+(* Les arguments chaine sont des pointeurs ASCIIZ.                  *)
+(* Les arguments numeriques (pos, len, n) sont des entiers 16 bits. *)
+(* Le resultat chaine est dans _RX_BIFBUF, retourne via AX.        *)
+Procedure EmitBifRuntime;
+Begin
+  EmitComment('--- Runtime BIF chaines (TODO 15) ---');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_LENGTH(str) : longueur de la chaine                    *)
+  (*  1 arg : str=[BP+4]                                          *)
+  (*  Retour : AX = longueur (entier)                             *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_LENGTH');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrAB('MOV', 'SI', '[BP+4]');
+  EmitInstrA('CALL', '_RXRT_STRLEN');
+  EmitInstrAB('MOV', 'AX', 'CX');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_SUBSTR(str, pos, len)                                  *)
+  (*  3 args : str=[BP+8], pos=[BP+6], len=[BP+4]                *)
+  (*  len=0 signifie le reste de la chaine                        *)
+  (*  Retour : AX = OFFSET _RX_BIFBUF                            *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_SUBSTR');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', '[BP+8]');
+  EmitInstrA('CALL', '_RXRT_STRLEN');
+  (* CX = strlen, DX = pos, BX = len *)
+  EmitInstrAB('MOV', 'DX', '[BP+6]');
+  EmitInstrAB('MOV', 'BX', '[BP+4]');
+  EmitInstrAB('LEA', 'DI', '_RX_BIFBUF');
+  (* Valider pos >= 1 *)
+  EmitInstrAB('CMP', 'DX', '1');
+  EmitInstrA('JGE', '_RXB_SUBS_POK');
+  EmitInstrAB('MOV', 'DX', '1');
+  EmitLabel('_RXB_SUBS_POK');
+  (* Si pos > strlen, chaine vide *)
+  EmitInstrAB('CMP', 'DX', 'CX');
+  EmitInstrA('JBE', '_RXB_SUBS_PIR');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrA('JMP', '_RXB_SUBS_DN');
+  EmitLabel('_RXB_SUBS_PIR');
+  (* Calculer la longueur effective *)
+  EmitInstrAB('CMP', 'BX', '0');
+  EmitInstrA('JG', '_RXB_SUBS_HL');
+  (* len=0 : reste de la chaine *)
+  EmitInstrAB('MOV', 'BX', 'CX');
+  EmitInstrAB('SUB', 'BX', 'DX');
+  EmitInstrA('INC', 'BX');
+  EmitLabel('_RXB_SUBS_HL');
+  (* Borner : si pos+len-1 > strlen, reduire len *)
+  EmitInstrA('PUSH', 'AX');
+  EmitInstrAB('MOV', 'AX', 'DX');
+  EmitInstrAB('ADD', 'AX', 'BX');
+  EmitInstrA('DEC', 'AX');
+  EmitInstrAB('CMP', 'AX', 'CX');
+  EmitInstrA('POP', 'AX');
+  EmitInstrA('JBE', '_RXB_SUBS_CP');
+  EmitInstrAB('MOV', 'BX', 'CX');
+  EmitInstrAB('SUB', 'BX', 'DX');
+  EmitInstrA('INC', 'BX');
+  EmitLabel('_RXB_SUBS_CP');
+  (* Avancer SI a str + pos - 1 *)
+  EmitInstrAB('ADD', 'SI', 'DX');
+  EmitInstrA('DEC', 'SI');
+  (* Copier BX octets *)
+  EmitInstrAB('MOV', 'CX', 'BX');
+  EmitLabel('_RXB_SUBS_CL');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', '_RXB_SUBS_NL');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', '_RXB_SUBS_NL');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', '_RXB_SUBS_CL');
+  EmitLabel('_RXB_SUBS_NL');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitLabel('_RXB_SUBS_DN');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _RX_BIFBUF');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_LEFT(str, len, pad)                                    *)
+  (*  3 args : str=[BP+8], len=[BP+6], pad=[BP+4] (ASCII code)   *)
+  (*  Retour : AX = OFFSET _RX_BIFBUF                            *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_LEFT');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', '[BP+8]');
+  EmitInstrAB('MOV', 'CX', '[BP+6]');
+  EmitInstrAB('MOV', 'DX', '[BP+4]');
+  EmitInstrAB('LEA', 'DI', '_RX_BIFBUF');
+  EmitLabel('_RXB_LEFT_CP');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', '_RXB_LEFT_DN');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', '_RXB_LEFT_PD');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', '_RXB_LEFT_CP');
+  EmitLabel('_RXB_LEFT_PD');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', '_RXB_LEFT_DN');
+  EmitInstrAB('MOV', '[DI]', 'DL');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', '_RXB_LEFT_PD');
+  EmitLabel('_RXB_LEFT_DN');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _RX_BIFBUF');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_RIGHT(str, len, pad)                                   *)
+  (*  3 args : str=[BP+8], len=[BP+6], pad=[BP+4] (ASCII code)   *)
+  (*  Retour : AX = OFFSET _RX_BIFBUF                            *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_RIGHT');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', '[BP+8]');
+  EmitInstrA('CALL', '_RXRT_STRLEN');
+  (* CX = strlen, BX = target len, DL = pad *)
+  EmitInstrAB('MOV', 'BX', '[BP+6]');
+  EmitInstrAB('MOV', 'DX', '[BP+4]');
+  EmitInstrAB('LEA', 'DI', '_RX_BIFBUF');
+  EmitInstrAB('CMP', 'CX', 'BX');
+  EmitInstrA('JAE', '_RXB_RIGHT_NP');
+  (* Padding necessaire : BX - CX caracteres de remplissage *)
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstrAB('SUB', 'AX', 'CX');
+  EmitInstrAB('MOV', 'CX', 'AX');
+  EmitLabel('_RXB_RIGHT_PL');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', '_RXB_RIGHT_CC');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', 'DL');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', '_RXB_RIGHT_PL');
+  EmitLabel('_RXB_RIGHT_CC');
+  EmitInstrA('POP', 'CX');
+  (* Copier tous les CX octets de str *)
+  EmitLabel('_RXB_RIGHT_CL');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', '_RXB_RIGHT_DN');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', '_RXB_RIGHT_CL');
+  EmitLabel('_RXB_RIGHT_NP');
+  (* strlen >= targetLen : copier les derniers BX octets *)
+  EmitInstrAB('MOV', 'AX', 'CX');
+  EmitInstrAB('SUB', 'AX', 'BX');
+  EmitInstrAB('ADD', 'SI', 'AX');
+  EmitInstrAB('MOV', 'CX', 'BX');
+  EmitLabel('_RXB_RIGHT_CF');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', '_RXB_RIGHT_DN');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', '_RXB_RIGHT_CF');
+  EmitLabel('_RXB_RIGHT_DN');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _RX_BIFBUF');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_CENTER(str, len, pad)                                  *)
+  (*  3 args : str=[BP+8], len=[BP+6], pad=[BP+4] (ASCII code)   *)
+  (*  Retour : AX = OFFSET _RX_BIFBUF                            *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_CENTER');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', '[BP+8]');
+  EmitInstrA('CALL', '_RXRT_STRLEN');
+  (* CX = strlen *)
+  EmitInstrAB('MOV', 'BX', '[BP+6]');
+  EmitInstrAB('MOV', 'DX', '[BP+4]');
+  EmitInstrAB('LEA', 'DI', '_RX_BIFBUF');
+  (* Si strlen >= width : tronquer au centre *)
+  EmitInstrAB('CMP', 'CX', 'BX');
+  EmitInstrA('JAE', '_RXB_CTR_TR');
+  (* leftPad = (width - strlen) / 2 *)
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstrAB('SUB', 'AX', 'CX');
+  EmitInstrAB('SHR', 'AX', '1');
+  EmitInstrA('PUSH', 'AX');
+  EmitInstrAB('MOV', 'CX', 'AX');
+  EmitInstrA('POP', 'AX');
+  EmitInstrA('PUSH', 'AX');
+  EmitInstrAB('MOV', 'CX', 'AX');
+  (* Ecrire leftPad *)
+  EmitLabel('_RXB_CTR_LP');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', '_RXB_CTR_CS');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', 'DL');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', '_RXB_CTR_LP');
+  EmitLabel('_RXB_CTR_CS');
+  (* Copier strlen octets de str *)
+  EmitInstrA('POP', 'AX');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('PUSH', 'AX');
+  EmitInstrA('PUSH', 'CX');
+  EmitLabel('_RXB_CTR_CC');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', '_RXB_CTR_RP');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', '_RXB_CTR_RP');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', '_RXB_CTR_CC');
+  EmitLabel('_RXB_CTR_RP');
+  (* rightPad = width - leftPad - strlen *)
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'AX');
+  EmitInstrAB('MOV', 'DX', '[BP+4]');
+  EmitInstrAB('MOV', 'BX', '[BP+6]');
+  EmitInstrAB('SUB', 'BX', 'AX');
+  EmitInstrAB('SUB', 'BX', 'CX');
+  EmitInstrAB('MOV', 'CX', 'BX');
+  EmitLabel('_RXB_CTR_RL');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JLE', '_RXB_CTR_DN');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', 'DL');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', '_RXB_CTR_RL');
+  EmitInstrA('JMP', '_RXB_CTR_DN');
+  EmitLabel('_RXB_CTR_TR');
+  (* strlen >= width : copier les width premiers octets *)
+  EmitInstrAB('MOV', 'CX', 'BX');
+  EmitLabel('_RXB_CTR_TL');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', '_RXB_CTR_DN');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', '_RXB_CTR_TL');
+  EmitLabel('_RXB_CTR_DN');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _RX_BIFBUF');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_COPIES(str, n) : repeter str n fois                    *)
+  (*  2 args : str=[BP+6], n=[BP+4]                               *)
+  (*  Retour : AX = OFFSET _RX_BIFBUF                            *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_COPIES');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('LEA', 'DI', '_RX_BIFBUF');
+  EmitInstrAB('MOV', 'BX', '[BP+4]');
+  EmitLabel('_RXB_COP_OL');
+  EmitInstrAB('CMP', 'BX', '0');
+  EmitInstrA('JLE', '_RXB_COP_DN');
+  EmitInstrAB('MOV', 'SI', '[BP+6]');
+  EmitLabel('_RXB_COP_IL');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', '_RXB_COP_NX');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', '_RXB_COP_IL');
+  EmitLabel('_RXB_COP_NX');
+  EmitInstrA('DEC', 'BX');
+  EmitInstrA('JMP', '_RXB_COP_OL');
+  EmitLabel('_RXB_COP_DN');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _RX_BIFBUF');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_REVERSE(str) : inverser la chaine                      *)
+  (*  1 arg : str=[BP+4]                                          *)
+  (*  Retour : AX = OFFSET _RX_BIFBUF                            *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_REVERSE');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', '[BP+4]');
+  EmitInstrA('CALL', '_RXRT_STRLEN');
+  (* CX = strlen *)
+  EmitInstrAB('LEA', 'DI', '_RX_BIFBUF');
+  EmitInstrAB('MOV', 'BYTE PTR [DI+CX]', '0');
+  (* Positionner SI a la fin : SI + CX - 1 *)
+  EmitInstrAB('ADD', 'SI', 'CX');
+  EmitInstrA('DEC', 'SI');
+  EmitLabel('_RXB_REV_LP');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', '_RXB_REV_DN');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('DEC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', '_RXB_REV_LP');
+  EmitLabel('_RXB_REV_DN');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _RX_BIFBUF');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_STRIP(str, option, char)                               *)
+  (*  3 args : str=[BP+8], option=[BP+6], char=[BP+4] (ASCII)    *)
+  (*  option: 66='B'(both), 76='L'(leading), 84='T'(trailing)    *)
+  (*  Retour : AX = OFFSET _RX_BIFBUF                            *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_STRIP');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', '[BP+8]');
+  EmitInstrA('CALL', '_RXRT_STRLEN');
+  (* CX = strlen, BX = option, DX = strip char *)
+  EmitInstrAB('MOV', 'BX', '[BP+6]');
+  EmitInstrAB('MOV', 'DX', '[BP+4]');
+  (* Strip leading si option = 'L' ou 'B' *)
+  EmitInstrAB('CMP', 'BL', '84');
+  EmitInstrA('JE', '_RXB_STR_NL');
+  EmitLabel('_RXB_STR_LL');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', '_RXB_STR_NL');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', 'DL');
+  EmitInstrA('JNE', '_RXB_STR_NL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', '_RXB_STR_LL');
+  EmitLabel('_RXB_STR_NL');
+  (* Copier dans _RX_BIFBUF *)
+  EmitInstrAB('LEA', 'DI', '_RX_BIFBUF');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'SI');
+  EmitLabel('_RXB_STR_CY');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', '_RXB_STR_CD');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', '_RXB_STR_CY');
+  EmitLabel('_RXB_STR_CD');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'CX');
+  (* Strip trailing si option = 'T' ou 'B' *)
+  EmitInstrAB('CMP', 'BL', '76');
+  EmitInstrA('JE', '_RXB_STR_DN');
+  EmitInstrAB('LEA', 'DI', '_RX_BIFBUF');
+  EmitInstrAB('ADD', 'DI', 'CX');
+  EmitInstrA('DEC', 'DI');
+  EmitLabel('_RXB_STR_TL');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', '_RXB_STR_TD');
+  EmitInstrAB('CMP', 'BYTE PTR [DI]', 'DL');
+  EmitInstrA('JNE', '_RXB_STR_TD');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrA('DEC', 'DI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', '_RXB_STR_TL');
+  EmitLabel('_RXB_STR_TD');
+  EmitLabel('_RXB_STR_DN');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _RX_BIFBUF');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_SPACE(str, n, pad)                                     *)
+  (*  3 args : str=[BP+8], n=[BP+6], pad=[BP+4] (ASCII code)     *)
+  (*  Normalise les espaces : n espaces entre chaque mot          *)
+  (*  Retour : AX = OFFSET _RX_BIFBUF                            *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_SPACE');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', '[BP+8]');
+  EmitInstrAB('MOV', 'BX', '[BP+6]');
+  EmitInstrAB('MOV', 'DX', '[BP+4]');
+  EmitInstrAB('LEA', 'DI', '_RX_BIFBUF');
+  (* Sauter les espaces initiaux *)
+  EmitLabel('_RXB_SPC_SK');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '32');
+  EmitInstrA('JNE', '_RXB_SPC_WD');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', '_RXB_SPC_SK');
+  EmitLabel('_RXB_SPC_WD');
+  (* Copier un mot (non-espace) *)
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstrA('JE', '_RXB_SPC_DN');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '32');
+  EmitInstrA('JE', '_RXB_SPC_SP');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', '_RXB_SPC_WD');
+  EmitLabel('_RXB_SPC_SP');
+  (* Sauter tous les espaces *)
+  EmitLabel('_RXB_SPC_S2');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '32');
+  EmitInstrA('JNE', '_RXB_SPC_IP');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', '_RXB_SPC_S2');
+  EmitLabel('_RXB_SPC_IP');
+  (* Si fin de chaine, ne pas ajouter de padding *)
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstrA('JE', '_RXB_SPC_DN');
+  (* Inserer n caracteres pad *)
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrAB('MOV', 'CX', 'BX');
+  EmitLabel('_RXB_SPC_PL');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', '_RXB_SPC_PD');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', 'DL');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', '_RXB_SPC_PL');
+  EmitLabel('_RXB_SPC_PD');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('JMP', '_RXB_SPC_WD');
+  EmitLabel('_RXB_SPC_DN');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _RX_BIFBUF');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_OVERLAY(new, target, pos)                              *)
+  (*  3 args : new=[BP+8], target=[BP+6], pos=[BP+4]             *)
+  (*  Superpose new sur target a la position pos (1-based)        *)
+  (*  Retour : AX = OFFSET _RX_BIFBUF                            *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_OVERLAY');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'SI');
+  (* Copier target dans _RX_BIFBUF *)
+  EmitInstrAB('MOV', 'SI', '[BP+6]');
+  EmitInstrAB('LEA', 'DI', '_RX_BIFBUF');
+  EmitInstrA('CALL', '_RXRT_STRCPY');
+  (* Superposer new a pos *)
+  EmitInstrAB('LEA', 'DI', '_RX_BIFBUF');
+  EmitInstrAB('MOV', 'AX', '[BP+4]');
+  EmitInstrA('DEC', 'AX');
+  EmitInstrAB('ADD', 'DI', 'AX');
+  EmitInstrAB('MOV', 'SI', '[BP+8]');
+  EmitLabel('_RXB_OVL_LP');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', '_RXB_OVL_DN');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', '_RXB_OVL_LP');
+  EmitLabel('_RXB_OVL_DN');
+  (* Si on a depasse la fin de target, terminer *)
+  EmitInstrAB('CMP', 'BYTE PTR [DI]', '0');
+  EmitInstrA('JNE', '_RXB_OVL_OK');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitLabel('_RXB_OVL_OK');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _RX_BIFBUF');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_INSERT(new, target, pos)                               *)
+  (*  3 args : new=[BP+8], target=[BP+6], pos=[BP+4]             *)
+  (*  pos=0 signifie inserer au debut                             *)
+  (*  Retour : AX = OFFSET _RX_BIFBUF                            *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_INSERT');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('LEA', 'DI', '_RX_BIFBUF');
+  EmitInstrAB('MOV', 'BX', '[BP+4]');
+  EmitInstrAB('MOV', 'SI', '[BP+6]');
+  (* Copier les pos premiers octets de target *)
+  EmitInstrAB('MOV', 'CX', 'BX');
+  EmitLabel('_RXB_INS_P1');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', '_RXB_INS_NW');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', '_RXB_INS_NW');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', '_RXB_INS_P1');
+  EmitLabel('_RXB_INS_NW');
+  (* Copier new *)
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', '[BP+8]');
+  EmitLabel('_RXB_INS_NL');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', '_RXB_INS_ND');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', '_RXB_INS_NL');
+  EmitLabel('_RXB_INS_ND');
+  EmitInstrA('POP', 'SI');
+  (* Copier le reste de target *)
+  EmitLabel('_RXB_INS_RL');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', '_RXB_INS_DN');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', '_RXB_INS_RL');
+  EmitLabel('_RXB_INS_DN');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _RX_BIFBUF');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_DELSTR(str, pos, len)                                  *)
+  (*  3 args : str=[BP+8], pos=[BP+6], len=[BP+4]                *)
+  (*  len=0 signifie supprimer jusqu a la fin                     *)
+  (*  Retour : AX = OFFSET _RX_BIFBUF                            *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_DELSTR');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', '[BP+8]');
+  EmitInstrAB('LEA', 'DI', '_RX_BIFBUF');
+  EmitInstrAB('MOV', 'BX', '[BP+6]');
+  EmitInstrA('DEC', 'BX');
+  (* Copier les BX premiers octets *)
+  EmitInstrAB('MOV', 'CX', 'BX');
+  EmitLabel('_RXB_DEL_P1');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', '_RXB_DEL_SK');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', '_RXB_DEL_DN');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', '_RXB_DEL_P1');
+  EmitLabel('_RXB_DEL_SK');
+  (* Sauter len octets *)
+  EmitInstrAB('MOV', 'CX', '[BP+4]');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', '_RXB_DEL_DN');
+  EmitLabel('_RXB_DEL_SL');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', '_RXB_DEL_RS');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstrA('JE', '_RXB_DEL_DN');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', '_RXB_DEL_SL');
+  EmitLabel('_RXB_DEL_RS');
+  (* Copier le reste *)
+  EmitLabel('_RXB_DEL_RL');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', '_RXB_DEL_DN');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', '_RXB_DEL_RL');
+  EmitLabel('_RXB_DEL_DN');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _RX_BIFBUF');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_POS(needle, haystack, start)                           *)
+  (*  3 args : needle=[BP+8], haystack=[BP+6], start=[BP+4]      *)
+  (*  start est 1-based (defaut 1)                                *)
+  (*  Retour : AX = position 1-based, 0 si non trouve             *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_POS');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'SI');
+  (* Longueur du needle *)
+  EmitInstrAB('MOV', 'SI', '[BP+8]');
+  EmitInstrA('CALL', '_RXRT_STRLEN');
+  EmitInstrAB('MOV', 'BX', 'CX');
+  (* BX = needle length. Si 0, retourner 0 *)
+  EmitInstrAB('CMP', 'BX', '0');
+  EmitInstrA('JE', '_RXB_POS_NF');
+  (* Longueur du haystack *)
+  EmitInstrAB('MOV', 'SI', '[BP+6]');
+  EmitInstrA('CALL', '_RXRT_STRLEN');
+  (* CX = haystack length *)
+  EmitInstrAB('MOV', 'DX', '[BP+4]');
+  EmitInstrA('DEC', 'DX');
+  (* DX = start offset (0-based). Avancer dans haystack *)
+  EmitInstrAB('MOV', 'SI', '[BP+6]');
+  EmitInstrAB('ADD', 'SI', 'DX');
+  EmitInstrAB('SUB', 'CX', 'DX');
+  EmitInstrA('INC', 'DX');
+  (* DX = position courante (1-based) *)
+  EmitLabel('_RXB_POS_LP');
+  EmitInstrAB('CMP', 'CX', 'BX');
+  EmitInstrA('JB', '_RXB_POS_NF');
+  (* Comparer BX octets de SI avec needle *)
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrAB('MOV', 'DI', '[BP+8]');
+  EmitInstrAB('MOV', 'CX', 'BX');
+  EmitLabel('_RXB_POS_CM');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', '_RXB_POS_FD');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('CMP', 'AL', '[DI]');
+  EmitInstrA('JNE', '_RXB_POS_NM');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', '_RXB_POS_CM');
+  EmitLabel('_RXB_POS_FD');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'SI');
+  EmitInstrAB('MOV', 'AX', 'DX');
+  EmitInstrA('JMP', '_RXB_POS_DN');
+  EmitLabel('_RXB_POS_NM');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DX');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', '_RXB_POS_LP');
+  EmitLabel('_RXB_POS_NF');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitLabel('_RXB_POS_DN');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_LASTPOS(needle, haystack, start)                       *)
+  (*  3 args : needle=[BP+8], haystack=[BP+6], start=[BP+4]      *)
+  (*  start=0 signifie chercher depuis la fin (defaut)            *)
+  (*  Retour : AX = derniere position 1-based, 0 si non trouve    *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_LASTPOS');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'SI');
+  (* Longueur du needle *)
+  EmitInstrAB('MOV', 'SI', '[BP+8]');
+  EmitInstrA('CALL', '_RXRT_STRLEN');
+  EmitInstrAB('MOV', 'BX', 'CX');
+  EmitInstrAB('CMP', 'BX', '0');
+  EmitInstrA('JE', '_RXB_LPO_NF');
+  (* Longueur du haystack *)
+  EmitInstrAB('MOV', 'SI', '[BP+6]');
+  EmitInstrA('CALL', '_RXRT_STRLEN');
+  (* CX = haystack length *)
+  EmitInstrAB('XOR', 'AX', 'AX');
+  (* AX = meilleure position trouvee (0 = aucune) *)
+  EmitInstrAB('MOV', 'DX', '1');
+  EmitInstrAB('MOV', 'SI', '[BP+6]');
+  EmitLabel('_RXB_LPO_LP');
+  EmitInstrAB('CMP', 'CX', 'BX');
+  EmitInstrA('JB', '_RXB_LPO_DN');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrAB('MOV', 'DI', '[BP+8]');
+  EmitInstrAB('MOV', 'CX', 'BX');
+  EmitLabel('_RXB_LPO_CM');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', '_RXB_LPO_FD');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('CMP', 'AL', '[DI]');
+  EmitInstrA('JNE', '_RXB_LPO_NM');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', '_RXB_LPO_CM');
+  EmitLabel('_RXB_LPO_FD');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'SI');
+  EmitInstrAB('MOV', 'AX', 'DX');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DX');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', '_RXB_LPO_LP');
+  EmitLabel('_RXB_LPO_NM');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DX');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', '_RXB_LPO_LP');
+  EmitLabel('_RXB_LPO_NF');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitLabel('_RXB_LPO_DN');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+End;
 (* Emet la sortie DOS, le runtime, ferme _TEXT, ecrit _DATA,      *)
 (* puis la directive END avec le point d entree _RXP_Main.         *)
 Procedure EmitClose;
@@ -3197,6 +4015,8 @@ Begin
   DataAddBuffer('_RX_CATBUF', 256);               (* buffer concatenation *)
   (* TODO 12 - Buffer d entree STDIN *)
   DataAddBuffer('_RX_INPUTBF', 256);              (* buffer entree DOS AH=0Ah *)
+  (* TODO 15 - Buffer fonctions integrees *)
+  DataAddBuffer('_RX_BIFBUF', 256);               (* buffer fonctions integrees *)
 End;
 
 (* ============================================================
@@ -3508,26 +4328,56 @@ Begin
   End
   Else If UName = 'SUBSTR' Then
   Begin
+    If ArgCount < 3 Then
+    Begin
+      EmitInstrAB('MOV', 'AX', '0');
+      EmitInstrA('PUSH', 'AX');
+      Inc(StackAdj, 2);
+    End;
     EmitInstr('CALL', '_RXB_SUBSTR');
     Res.TypeIdx := TY_IDX_STRING;
   End
   Else If UName = 'LEFT' Then
   Begin
+    If ArgCount < 3 Then
+    Begin
+      EmitInstrAB('MOV', 'AX', '32');
+      EmitInstrA('PUSH', 'AX');
+      Inc(StackAdj, 2);
+    End;
     EmitInstr('CALL', '_RXB_LEFT');
     Res.TypeIdx := TY_IDX_STRING;
   End
   Else If UName = 'RIGHT' Then
   Begin
+    If ArgCount < 3 Then
+    Begin
+      EmitInstrAB('MOV', 'AX', '32');
+      EmitInstrA('PUSH', 'AX');
+      Inc(StackAdj, 2);
+    End;
     EmitInstr('CALL', '_RXB_RIGHT');
     Res.TypeIdx := TY_IDX_STRING;
   End
   Else If UName = 'POS' Then
   Begin
+    If ArgCount < 3 Then
+    Begin
+      EmitInstrAB('MOV', 'AX', '1');
+      EmitInstrA('PUSH', 'AX');
+      Inc(StackAdj, 2);
+    End;
     EmitInstr('CALL', '_RXB_POS');
     Res.TypeIdx := TY_IDX_INTEGER;
   End
   Else If UName = 'LASTPOS' Then
   Begin
+    If ArgCount < 3 Then
+    Begin
+      EmitInstrAB('MOV', 'AX', '0');
+      EmitInstrA('PUSH', 'AX');
+      Inc(StackAdj, 2);
+    End;
     EmitInstr('CALL', '_RXB_LASTPOS');
     Res.TypeIdx := TY_IDX_INTEGER;
   End
@@ -3543,16 +4393,46 @@ Begin
   End
   Else If UName = 'STRIP' Then
   Begin
+    If ArgCount < 2 Then
+    Begin
+      EmitInstrAB('MOV', 'AX', '66');
+      EmitInstrA('PUSH', 'AX');
+      Inc(StackAdj, 2);
+    End;
+    If ArgCount < 3 Then
+    Begin
+      EmitInstrAB('MOV', 'AX', '32');
+      EmitInstrA('PUSH', 'AX');
+      Inc(StackAdj, 2);
+    End;
     EmitInstr('CALL', '_RXB_STRIP');
     Res.TypeIdx := TY_IDX_STRING;
   End
   Else If (UName = 'CENTER') Or (UName = 'CENTRE') Then
   Begin
+    If ArgCount < 3 Then
+    Begin
+      EmitInstrAB('MOV', 'AX', '32');
+      EmitInstrA('PUSH', 'AX');
+      Inc(StackAdj, 2);
+    End;
     EmitInstr('CALL', '_RXB_CENTER');
     Res.TypeIdx := TY_IDX_STRING;
   End
   Else If UName = 'SPACE' Then
   Begin
+    If ArgCount < 2 Then
+    Begin
+      EmitInstrAB('MOV', 'AX', '1');
+      EmitInstrA('PUSH', 'AX');
+      Inc(StackAdj, 2);
+    End;
+    If ArgCount < 3 Then
+    Begin
+      EmitInstrAB('MOV', 'AX', '32');
+      EmitInstrA('PUSH', 'AX');
+      Inc(StackAdj, 2);
+    End;
     EmitInstr('CALL', '_RXB_SPACE');
     Res.TypeIdx := TY_IDX_STRING;
   End
@@ -3563,11 +4443,23 @@ Begin
   End
   Else If UName = 'INSERT' Then
   Begin
+    If ArgCount < 3 Then
+    Begin
+      EmitInstrAB('MOV', 'AX', '0');
+      EmitInstrA('PUSH', 'AX');
+      Inc(StackAdj, 2);
+    End;
     EmitInstr('CALL', '_RXB_INSERT');
     Res.TypeIdx := TY_IDX_STRING;
   End
   Else If UName = 'DELSTR' Then
   Begin
+    If ArgCount < 3 Then
+    Begin
+      EmitInstrAB('MOV', 'AX', '0');
+      EmitInstrA('PUSH', 'AX');
+      Inc(StackAdj, 2);
+    End;
     EmitInstr('CALL', '_RXB_DELSTR');
     Res.TypeIdx := TY_IDX_STRING;
   End
