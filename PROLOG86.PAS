@@ -258,7 +258,7 @@
             halt : MOV AX,4C00h / INT 21h
             halt(Code) : MOV AL,Code / MOV AH,4Ch / INT 21h
 
-  TODO 17 - ENTREES/SORTIES
+  TODO 17 - ENTREES/SORTIES [IMPLEMENTE]
             Flux standard : user_input (STDIN), user_output (STDOUT)
             write(X) : ecrire un terme Prolog
               Atome -> INT 21h AH=40h BX=1 (STDOUT)
@@ -924,6 +924,8 @@ Procedure EmitArithEval(NodeIdx : Integer); Forward;
 Procedure EmitCompareRuntime; Forward;
 { Controle : cut, if-then-else, negation (TODO 16) }
 Procedure EmitControlRuntime; Forward;
+{ Entrees/sorties (TODO 17) }
+Procedure EmitIORuntime; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -3996,6 +3998,12 @@ Begin
   EmitRaw('_PL_CUT_BARRIER DW  0');
   EmitBlankLine;
 
+  { Buffer d entrees/sorties (TODO 17) }
+  EmitComment('--- I/O buffer (TODO 17) ---');
+  EmitRaw('_PL_IOBUF   DB  128 DUP(0)');
+  EmitRaw('_PL_IOBUFLEN DW  0');
+  EmitBlankLine;
+
   { Registres d arguments WAM A1..AN (TODO 10) }
   EmitComment('--- Registres d arguments WAM ---');
   EmitRaw('_PL_ARGS    DW  ' + IntToStr(MAX_ARGS_REG) + ' DUP(0)');
@@ -5352,6 +5360,499 @@ Begin
   EmitBlankLine;
 End;
 
+{ ============================================================
+  TODO 17 - ENTREES/SORTIES [IMPLEMENTE]
+  Routines runtime pour les predicats d entrees/sorties.
+  ============================================================ }
+Procedure EmitIORuntime;
+Var
+  NS : TString;
+Begin
+  EmitBlankLine;
+  EmitComment('=======================================');
+  EmitComment('  Routines I/O (TODO 17)');
+  EmitComment('=======================================');
+  EmitBlankLine;
+
+  { ---------------------------------------------------------- }
+  { _PLRT_NUMTOSTR : AX = signed 16-bit int                   }
+  {   Convertit en chaine ASCII dans _PL_IOBUF                }
+  {   Retourne DX = OFFSET buffer, CX = longueur              }
+  { ---------------------------------------------------------- }
+  EmitLabel(PL_RT_PFX + 'NUMTOSTR');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _PL_IOBUF');
+  EmitInstrAB('ADD', 'DI', '127');
+  EmitInstrAB('MOV', 'CX', '0');
+  EmitInstrAB('MOV', 'BX', '10');
+  { Gerer le signe }
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JNS', PL_RT_PFX + 'N2S_POS');
+  EmitInstrA('PUSH', 'AX');
+  EmitInstr('NEG    AX');
+  EmitInstrA('JMP', PL_RT_PFX + 'N2S_LOOP');
+  EmitLabel(PL_RT_PFX + 'N2S_POS');
+  EmitInstrA('PUSH', 'AX');
+  { Boucle de conversion }
+  EmitLabel(PL_RT_PFX + 'N2S_LOOP');
+  EmitInstrAB('XOR', 'DX', 'DX');
+  EmitInstrA('DIV', 'BX');
+  EmitInstrAB('ADD', 'DL', '''0''');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', 'DL');
+  EmitInstr('DEC    DI');
+  EmitInstr('INC    CX');
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JNZ', PL_RT_PFX + 'N2S_LOOP');
+  { Ajouter le signe si negatif }
+  EmitInstrA('POP', 'AX');
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JNS', PL_RT_PFX + 'N2S_DONE');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '''-''');
+  EmitInstr('DEC    DI');
+  EmitInstr('INC    CX');
+  EmitLabel(PL_RT_PFX + 'N2S_DONE');
+  EmitInstr('INC    DI');
+  EmitInstrAB('MOV', 'DX', 'DI');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { ---------------------------------------------------------- }
+  { _PLRT_WRITE_TERM : AX = tagged term -> ecrire sur STDOUT  }
+  { Gere ATOM, INT, REF, LIST, STR                            }
+  { ---------------------------------------------------------- }
+  EmitLabel(PL_RT_PFX + 'WRITE_TERM');
+  EmitInstrA('PUSH', 'AX');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  { Deref d abord }
+  EmitInstr('CALL    ' + PL_RT_PFX + 'DEREF');
+  { Extraire le tag }
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstrAB('AND', 'BX', IntToStr(TAG_MASK));
+  EmitInstrAB('MOV', 'CL', IntToStr(TAG_SHIFT));
+  EmitInstrAB('SHR', 'BX', 'CL');
+  { Tag = TAG_ATOM ? }
+  Str(TAG_ATOM, NS);
+  EmitInstrAB('CMP', 'BX', NS);
+  EmitInstrA('JE', PL_RT_PFX + 'WT_ATOM');
+  { Tag = TAG_INT ? }
+  Str(TAG_INT, NS);
+  EmitInstrAB('CMP', 'BX', NS);
+  EmitInstrA('JE', PL_RT_PFX + 'WT_INT');
+  { Tag = TAG_LIST ? }
+  Str(TAG_LIST, NS);
+  EmitInstrAB('CMP', 'BX', NS);
+  EmitInstrA('JE', PL_RT_PFX + 'WT_LIST');
+  { Tag = TAG_STR ? }
+  Str(TAG_STR, NS);
+  EmitInstrAB('CMP', 'BX', NS);
+  EmitInstrA('JE', PL_RT_PFX + 'WT_STR');
+  { Tag = TAG_REF (variable libre) }
+  EmitInstrA('JMP', PL_RT_PFX + 'WT_REF');
+
+  { --- Ecrire un atome --- }
+  EmitLabel(PL_RT_PFX + 'WT_ATOM');
+  EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+  EmitInstrAB('SHL', 'AX', '1');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrAB('ADD', 'SI', 'OFFSET ' + PL_ATOM_PFX + 'TABLE');
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [SI]');
+  { SI pointe sur la chaine ASCIIZ de l atome }
+  { Calculer la longueur }
+  EmitInstrAB('MOV', 'DI', 'SI');
+  EmitInstrAB('MOV', 'CX', '0');
+  EmitLabel(PL_RT_PFX + 'WT_ALEN');
+  EmitInstrAB('CMP', 'BYTE PTR [DI]', '0');
+  EmitInstrA('JE', PL_RT_PFX + 'WT_APRN');
+  EmitInstr('INC    DI');
+  EmitInstr('INC    CX');
+  EmitInstrA('JMP', PL_RT_PFX + 'WT_ALEN');
+  EmitLabel(PL_RT_PFX + 'WT_APRN');
+  { Ecrire via INT 21h AH=40h, BX=1 (STDOUT), CX=len, DX=offset }
+  EmitInstrAB('MOV', 'DX', 'SI');
+  EmitInstrAB('MOV', 'BX', '1');
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstrA('INT', '21h');
+  EmitInstrA('JMP', PL_RT_PFX + 'WT_END');
+
+  { --- Ecrire un entier --- }
+  EmitLabel(PL_RT_PFX + 'WT_INT');
+  EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+  { Sign-extend 13 bits }
+  EmitInstrAB('TEST', 'AX', '1000h');
+  EmitInstrA('JZ', PL_RT_PFX + 'WT_IPOS');
+  EmitInstrAB('OR', 'AX', '0E000h');
+  EmitLabel(PL_RT_PFX + 'WT_IPOS');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'NUMTOSTR');
+  { DX=offset, CX=length }
+  EmitInstrAB('MOV', 'BX', '1');
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstrA('INT', '21h');
+  EmitInstrA('JMP', PL_RT_PFX + 'WT_END');
+
+  { --- Ecrire une liste --- }
+  EmitLabel(PL_RT_PFX + 'WT_LIST');
+  EmitComment('print [ then elements');
+  EmitInstrAB('MOV', 'DL', '''[''');
+  EmitInstrAB('MOV', 'AH', '02h');
+  EmitInstrA('INT', '21h');
+  { AX still has the tagged list - reload from stack }
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [SP+10]');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'DEREF');
+  EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+  EmitInstrAB('SHL', 'AX', '1');
+  EmitInstrAB('ADD', 'AX', 'OFFSET _PL_HEAP');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  { Print head }
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [SI]');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'WRITE_TERM');
+  { Check tail }
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [SI+2]');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'DEREF');
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstrAB('AND', 'BX', IntToStr(TAG_MASK));
+  Str(TAG_ATOM Shl TAG_SHIFT, NS);
+  EmitInstrAB('CMP', 'BX', NS);
+  EmitInstrA('JNE', PL_RT_PFX + 'WT_LTAIL');
+  { Tail is atom - check if [] (nil) }
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstrAB('AND', 'BX', IntToStr(VAL_MASK));
+  EmitInstrAB('CMP', 'BX', '0');
+  EmitInstrA('JE', PL_RT_PFX + 'WT_LEND');
+  { Non-nil atom tail: print | then atom }
+  EmitLabel(PL_RT_PFX + 'WT_LTAIL');
+  EmitInstrAB('MOV', 'DL', '''|''');
+  EmitInstrAB('MOV', 'AH', '02h');
+  EmitInstrA('INT', '21h');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'WRITE_TERM');
+  EmitLabel(PL_RT_PFX + 'WT_LEND');
+  EmitInstrAB('MOV', 'DL', ''']''');
+  EmitInstrAB('MOV', 'AH', '02h');
+  EmitInstrA('INT', '21h');
+  EmitInstrA('JMP', PL_RT_PFX + 'WT_END');
+
+  { --- Ecrire une structure f(args) --- }
+  EmitLabel(PL_RT_PFX + 'WT_STR');
+  EmitComment('structure: print functor(args)');
+  { Simplification: afficher <str:XXXX> }
+  EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+  EmitInstrAB('MOV', 'DL', '''<''');
+  EmitInstrAB('MOV', 'AH', '02h');
+  EmitInstrA('INT', '21h');
+  EmitInstrAB('MOV', 'DL', '''>''');
+  EmitInstrAB('MOV', 'AH', '02h');
+  EmitInstrA('INT', '21h');
+  EmitInstrA('JMP', PL_RT_PFX + 'WT_END');
+
+  { --- Ecrire une variable libre _GXXXX --- }
+  EmitLabel(PL_RT_PFX + 'WT_REF');
+  EmitInstrAB('MOV', 'DL', '''_''');
+  EmitInstrAB('MOV', 'AH', '02h');
+  EmitInstrA('INT', '21h');
+  EmitInstrAB('MOV', 'DL', '''G''');
+  EmitInstrAB('MOV', 'AH', '02h');
+  EmitInstrA('INT', '21h');
+  EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+  EmitInstr('CALL    ' + PL_RT_PFX + 'NUMTOSTR');
+  EmitInstrAB('MOV', 'BX', '1');
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstrA('INT', '21h');
+
+  EmitLabel(PL_RT_PFX + 'WT_END');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstrA('POP', 'AX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { ---------------------------------------------------------- }
+  { _PLRT_NL : ecrire CR+LF sur STDOUT                        }
+  { ---------------------------------------------------------- }
+  EmitLabel(PL_RT_PFX + 'NL');
+  EmitInstrAB('MOV', 'DL', '13');
+  EmitInstrAB('MOV', 'AH', '02h');
+  EmitInstrA('INT', '21h');
+  EmitInstrAB('MOV', 'DL', '10');
+  EmitInstrAB('MOV', 'AH', '02h');
+  EmitInstrA('INT', '21h');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { ---------------------------------------------------------- }
+  { _PLRT_TAB : AX = nombre d espaces a ecrire                }
+  { ---------------------------------------------------------- }
+  EmitLabel(PL_RT_PFX + 'TAB');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrAB('MOV', 'CX', 'AX');
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JZ', PL_RT_PFX + 'TAB_END');
+  EmitLabel(PL_RT_PFX + 'TAB_LOOP');
+  EmitInstrAB('MOV', 'DL', '32');
+  EmitInstrAB('MOV', 'AH', '02h');
+  EmitInstrA('INT', '21h');
+  EmitInstr('LOOP    ' + PL_RT_PFX + 'TAB_LOOP');
+  EmitLabel(PL_RT_PFX + 'TAB_END');
+  EmitInstrA('POP', 'CX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { ---------------------------------------------------------- }
+  { _PLRT_PUT_CHAR : AL = caractere a ecrire                  }
+  { ---------------------------------------------------------- }
+  EmitLabel(PL_RT_PFX + 'PUT_CHAR');
+  EmitInstrAB('MOV', 'DL', 'AL');
+  EmitInstrAB('MOV', 'AH', '02h');
+  EmitInstrA('INT', '21h');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { ---------------------------------------------------------- }
+  { _PLRT_GET_CHAR : lire un caractere -> AL                  }
+  {   Retourne AX = tagged ATOM (atome 1 caractere)            }
+  { ---------------------------------------------------------- }
+  EmitLabel(PL_RT_PFX + 'GET_CHAR');
+  EmitInstrAB('MOV', 'AH', '01h');
+  EmitInstrA('INT', '21h');
+  { AL = caractere lu, creer un tagged INT (code ASCII) }
+  EmitInstrAB('XOR', 'AH', 'AH');
+  EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+  Str(TAG_INT Shl TAG_SHIFT, NS);
+  EmitInstrAB('OR', 'AX', NS);
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { ---------------------------------------------------------- }
+  { _PLRT_CHAR_CODE : AX=tagged atom(1char) -> AX=tagged INT  }
+  {   ou AX=tagged INT -> AX=tagged INT (identite pour codes)  }
+  { ---------------------------------------------------------- }
+  EmitLabel(PL_RT_PFX + 'CHAR_CODE');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstrAB('AND', 'BX', IntToStr(TAG_MASK));
+  Str(TAG_ATOM Shl TAG_SHIFT, NS);
+  EmitInstrAB('CMP', 'BX', NS);
+  EmitInstrA('JNE', PL_RT_PFX + 'CC_INT');
+  { C est un atome -> extraire le premier caractere }
+  EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+  EmitInstrAB('SHL', 'AX', '1');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrAB('ADD', 'SI', 'OFFSET ' + PL_ATOM_PFX + 'TABLE');
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [SI]');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [SI]');
+  EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+  Str(TAG_INT Shl TAG_SHIFT, NS);
+  EmitInstrAB('OR', 'AX', NS);
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitLabel(PL_RT_PFX + 'CC_INT');
+  { Deja un entier - retourner tel quel }
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { ---------------------------------------------------------- }
+  { _PLRT_ATOM_LENGTH : AX=tagged atom -> AX=tagged INT (len) }
+  { ---------------------------------------------------------- }
+  EmitLabel(PL_RT_PFX + 'ATOM_LENGTH');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+  EmitInstrAB('SHL', 'AX', '1');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrAB('ADD', 'SI', 'OFFSET ' + PL_ATOM_PFX + 'TABLE');
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [SI]');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitLabel(PL_RT_PFX + 'AL_LOOP');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstrA('JE', PL_RT_PFX + 'AL_DONE');
+  EmitInstr('INC    SI');
+  EmitInstr('INC    CX');
+  EmitInstrA('JMP', PL_RT_PFX + 'AL_LOOP');
+  EmitLabel(PL_RT_PFX + 'AL_DONE');
+  EmitInstrAB('MOV', 'AX', 'CX');
+  EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+  Str(TAG_INT Shl TAG_SHIFT, NS);
+  EmitInstrAB('OR', 'AX', NS);
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { ---------------------------------------------------------- }
+  { _PLRT_ATOM_CONCAT : AX=atom1, BX=atom2                    }
+  {   Copie les deux chaines dans _PL_IOBUF, cree un nouvel   }
+  {   atome sur le heap, retourne AX=tagged ATOM               }
+  {   Simplification: retourne la concatenation dans _PL_IOBUF}
+  {   et cree un atome tag INT avec la longueur.               }
+  { ---------------------------------------------------------- }
+  EmitLabel(PL_RT_PFX + 'ATOM_CONCAT');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'CX');
+  { Sauver BX (atom2) }
+  EmitInstrA('PUSH', 'BX');
+  { Resoudre atom1 -> SI pointe sur la chaine }
+  EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+  EmitInstrAB('SHL', 'AX', '1');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrAB('ADD', 'SI', 'OFFSET ' + PL_ATOM_PFX + 'TABLE');
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [SI]');
+  { Copier atom1 dans IOBUF }
+  EmitInstrAB('MOV', 'DI', 'OFFSET _PL_IOBUF');
+  EmitLabel(PL_RT_PFX + 'AC_CP1');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [SI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', PL_RT_PFX + 'AC_CP2S');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', 'AL');
+  EmitInstr('INC    SI');
+  EmitInstr('INC    DI');
+  EmitInstrA('JMP', PL_RT_PFX + 'AC_CP1');
+  { Copier atom2 }
+  EmitLabel(PL_RT_PFX + 'AC_CP2S');
+  EmitInstrA('POP', 'BX');
+  EmitInstrAB('AND', 'BX', IntToStr(VAL_MASK));
+  EmitInstrAB('SHL', 'BX', '1');
+  EmitInstrAB('MOV', 'SI', 'BX');
+  EmitInstrAB('ADD', 'SI', 'OFFSET ' + PL_ATOM_PFX + 'TABLE');
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [SI]');
+  EmitLabel(PL_RT_PFX + 'AC_CP2');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [SI]');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', 'AL');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', PL_RT_PFX + 'AC_DONE');
+  EmitInstr('INC    SI');
+  EmitInstr('INC    DI');
+  EmitInstrA('JMP', PL_RT_PFX + 'AC_CP2');
+  EmitLabel(PL_RT_PFX + 'AC_DONE');
+  { Calculer la longueur dans CX }
+  EmitInstrAB('MOV', 'AX', 'DI');
+  EmitInstrAB('SUB', 'AX', 'OFFSET _PL_IOBUF');
+  EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+  Str(TAG_INT Shl TAG_SHIFT, NS);
+  EmitInstrAB('OR', 'AX', NS);
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { ---------------------------------------------------------- }
+  { _PLRT_ATOM_CHARS : AX=tagged atom -> construit une liste   }
+  {   de tagged INT (codes ASCII) sur le heap, retourne AX     }
+  { ---------------------------------------------------------- }
+  EmitLabel(PL_RT_PFX + 'ATOM_CHARS');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'CX');
+  { Resoudre l atome -> SI = chaine ASCIIZ }
+  EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+  EmitInstrAB('SHL', 'AX', '1');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrAB('ADD', 'SI', 'OFFSET ' + PL_ATOM_PFX + 'TABLE');
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [SI]');
+  { Trouver la fin de la chaine pour construire la liste a l envers }
+  EmitInstrAB('MOV', 'DI', 'SI');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitLabel(PL_RT_PFX + 'ACH_LEN');
+  EmitInstrAB('CMP', 'BYTE PTR [DI]', '0');
+  EmitInstrA('JE', PL_RT_PFX + 'ACH_BUILD');
+  EmitInstr('INC    DI');
+  EmitInstr('INC    CX');
+  EmitInstrA('JMP', PL_RT_PFX + 'ACH_LEN');
+  EmitLabel(PL_RT_PFX + 'ACH_BUILD');
+  { DI pointe apres le dernier char, CX = longueur }
+  { Commencer avec [] (nil = atom index 0 tague) }
+  { On suppose que l atome [] est a l index 0 si present }
+  { Utiliser TAG_ATOM | 0 pour [] }
+  Str(TAG_ATOM Shl TAG_SHIFT, NS);
+  EmitInstrAB('MOV', 'AX', NS);
+  { Construire la liste de droite a gauche }
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JZ', PL_RT_PFX + 'ACH_DONE');
+  EmitLabel(PL_RT_PFX + 'ACH_LOOP');
+  EmitInstr('DEC    DI');
+  { Charger le caractere }
+  EmitInstrAB('XOR', 'BX', 'BX');
+  EmitInstrAB('MOV', 'BL', 'BYTE PTR [DI]');
+  { Creer un tagged INT pour le code du caractere }
+  EmitInstrAB('AND', 'BX', IntToStr(VAL_MASK));
+  Str(TAG_INT Shl TAG_SHIFT, NS);
+  EmitInstrAB('OR', 'BX', NS);
+  { AX = tail, BX = head (char code) -> on veut PUTLIST(BX, AX) }
+  { _PLRT_PUTLIST attend AX=head, BX=tail }
+  EmitInstrA('PUSH', 'AX');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'PUTLIST');
+  { AX = nouvelle liste }
+  EmitInstr('LOOP    ' + PL_RT_PFX + 'ACH_LOOP');
+  EmitLabel(PL_RT_PFX + 'ACH_DONE');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { ---------------------------------------------------------- }
+  { _PLRT_NUMBER_CHARS : AX=tagged INT -> liste de codes       }
+  {   Convertit via NUMTOSTR puis construit la liste            }
+  { ---------------------------------------------------------- }
+  EmitLabel(PL_RT_PFX + 'NUMBER_CHARS');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'CX');
+  { Extraire la valeur entiere }
+  EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+  EmitInstrAB('TEST', 'AX', '1000h');
+  EmitInstrA('JZ', PL_RT_PFX + 'NC_POS');
+  EmitInstrAB('OR', 'AX', '0E000h');
+  EmitLabel(PL_RT_PFX + 'NC_POS');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'NUMTOSTR');
+  { DX=offset, CX=length de la chaine dans IOBUF }
+  EmitInstrAB('MOV', 'SI', 'DX');
+  EmitInstrAB('ADD', 'SI', 'CX');
+  { SI pointe apres le dernier char }
+  { Construire la liste de droite a gauche }
+  Str(TAG_ATOM Shl TAG_SHIFT, NS);
+  EmitInstrAB('MOV', 'AX', NS);
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JZ', PL_RT_PFX + 'NC_DONE');
+  EmitLabel(PL_RT_PFX + 'NC_LOOP');
+  EmitInstr('DEC    SI');
+  EmitInstrAB('XOR', 'BX', 'BX');
+  EmitInstrAB('MOV', 'BL', 'BYTE PTR [SI]');
+  EmitInstrAB('AND', 'BX', IntToStr(VAL_MASK));
+  Str(TAG_INT Shl TAG_SHIFT, NS);
+  EmitInstrAB('OR', 'BX', NS);
+  EmitInstrA('PUSH', 'AX');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'PUTLIST');
+  EmitInstr('LOOP    ' + PL_RT_PFX + 'NC_LOOP');
+  EmitLabel(PL_RT_PFX + 'NC_DONE');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+End;
+
 { ---- EmitRuntime : emettre les routines runtime --------------- }
 { Emet les routines de backtracking, liste, arith, compare, ctrl. }
 Procedure EmitRuntime;
@@ -5361,6 +5862,7 @@ Begin
   EmitArithRuntime;
   EmitCompareRuntime;
   EmitControlRuntime;
+  EmitIORuntime;
 End;
 
 { ---- EmitClose : fermer le fichier de sortie ASM -------------- }
@@ -7029,6 +7531,508 @@ Begin
         EmitInstrA('POP', 'WORD PTR [_PL_TTOP]');
         EmitInstrA('POP', 'WORD PTR [_PL_HTOP]');
       End;
+    End
+    { === TODO 17 : Predicats I/O inline === }
+    { --- write/1 --- }
+    Else If (GoalTab[GIdx].PredName = 'write') And
+            (GoalTab[GIdx].Arity = 1) Then
+    Begin
+      EmitComment('write/1 inline');
+      If GoalTab[GIdx].Args[0].Kind = FAK_ATOM Then
+      Begin
+        TagVal := (TAG_ATOM Shl TAG_SHIFT) Or
+                  (GoalTab[GIdx].Args[0].AtomIdx And VAL_MASK);
+        Str(TagVal, NS);
+        EmitInstrAB('MOV', 'AX', NS);
+      End
+      Else If GoalTab[GIdx].Args[0].Kind = FAK_INT Then
+      Begin
+        TagVal := (TAG_INT Shl TAG_SHIFT) Or
+                  (Integer(GoalTab[GIdx].Args[0].IntVal) And VAL_MASK);
+        Str(TagVal, NS);
+        EmitInstrAB('MOV', 'AX', NS);
+      End
+      Else If GoalTab[GIdx].Args[0].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[0].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitDeref;
+      End
+      Else
+        EmitInstrAB('MOV', 'AX', '0');
+      EmitInstr('CALL    ' + PL_RT_PFX + 'WRITE_TERM');
+      EmitComment('write/1 done');
+    End
+    { --- writeln/1 --- }
+    Else If (GoalTab[GIdx].PredName = 'writeln') And
+            (GoalTab[GIdx].Arity = 1) Then
+    Begin
+      EmitComment('writeln/1 inline');
+      If GoalTab[GIdx].Args[0].Kind = FAK_ATOM Then
+      Begin
+        TagVal := (TAG_ATOM Shl TAG_SHIFT) Or
+                  (GoalTab[GIdx].Args[0].AtomIdx And VAL_MASK);
+        Str(TagVal, NS);
+        EmitInstrAB('MOV', 'AX', NS);
+      End
+      Else If GoalTab[GIdx].Args[0].Kind = FAK_INT Then
+      Begin
+        TagVal := (TAG_INT Shl TAG_SHIFT) Or
+                  (Integer(GoalTab[GIdx].Args[0].IntVal) And VAL_MASK);
+        Str(TagVal, NS);
+        EmitInstrAB('MOV', 'AX', NS);
+      End
+      Else If GoalTab[GIdx].Args[0].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[0].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitDeref;
+      End
+      Else
+        EmitInstrAB('MOV', 'AX', '0');
+      EmitInstr('CALL    ' + PL_RT_PFX + 'WRITE_TERM');
+      EmitInstr('CALL    ' + PL_RT_PFX + 'NL');
+      EmitComment('writeln/1 done');
+    End
+    { --- nl/0 --- }
+    Else If (GoalTab[GIdx].PredName = 'nl') And
+            (GoalTab[GIdx].Arity = 0) Then
+    Begin
+      EmitComment('nl/0 inline');
+      EmitInstr('CALL    ' + PL_RT_PFX + 'NL');
+    End
+    { --- print/1 --- }
+    Else If (GoalTab[GIdx].PredName = 'print') And
+            (GoalTab[GIdx].Arity = 1) Then
+    Begin
+      EmitComment('print/1 inline (same as write)');
+      If GoalTab[GIdx].Args[0].Kind = FAK_ATOM Then
+      Begin
+        TagVal := (TAG_ATOM Shl TAG_SHIFT) Or
+                  (GoalTab[GIdx].Args[0].AtomIdx And VAL_MASK);
+        Str(TagVal, NS);
+        EmitInstrAB('MOV', 'AX', NS);
+      End
+      Else If GoalTab[GIdx].Args[0].Kind = FAK_INT Then
+      Begin
+        TagVal := (TAG_INT Shl TAG_SHIFT) Or
+                  (Integer(GoalTab[GIdx].Args[0].IntVal) And VAL_MASK);
+        Str(TagVal, NS);
+        EmitInstrAB('MOV', 'AX', NS);
+      End
+      Else If GoalTab[GIdx].Args[0].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[0].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitDeref;
+      End
+      Else
+        EmitInstrAB('MOV', 'AX', '0');
+      EmitInstr('CALL    ' + PL_RT_PFX + 'WRITE_TERM');
+      EmitComment('print/1 done');
+    End
+    { --- write_canonical/1 --- }
+    Else If (GoalTab[GIdx].PredName = 'write_canonical') And
+            (GoalTab[GIdx].Arity = 1) Then
+    Begin
+      EmitComment('write_canonical/1 inline (same as write)');
+      If GoalTab[GIdx].Args[0].Kind = FAK_ATOM Then
+      Begin
+        TagVal := (TAG_ATOM Shl TAG_SHIFT) Or
+                  (GoalTab[GIdx].Args[0].AtomIdx And VAL_MASK);
+        Str(TagVal, NS);
+        EmitInstrAB('MOV', 'AX', NS);
+      End
+      Else If GoalTab[GIdx].Args[0].Kind = FAK_INT Then
+      Begin
+        TagVal := (TAG_INT Shl TAG_SHIFT) Or
+                  (Integer(GoalTab[GIdx].Args[0].IntVal) And VAL_MASK);
+        Str(TagVal, NS);
+        EmitInstrAB('MOV', 'AX', NS);
+      End
+      Else If GoalTab[GIdx].Args[0].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[0].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitDeref;
+      End
+      Else
+        EmitInstrAB('MOV', 'AX', '0');
+      EmitInstr('CALL    ' + PL_RT_PFX + 'WRITE_TERM');
+      EmitComment('write_canonical/1 done');
+    End
+    { --- tab/1 --- }
+    Else If (GoalTab[GIdx].PredName = 'tab') And
+            (GoalTab[GIdx].Arity = 1) Then
+    Begin
+      EmitComment('tab/1 inline');
+      If GoalTab[GIdx].Args[0].Kind = FAK_INT Then
+      Begin
+        Str(Integer(GoalTab[GIdx].Args[0].IntVal), NS);
+        EmitInstrAB('MOV', 'AX', NS);
+      End
+      Else If GoalTab[GIdx].Args[0].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[0].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitDeref;
+        EmitInstr('CALL    ' + PL_RT_PFX + 'DEREF_INT');
+      End
+      Else
+        EmitInstrAB('MOV', 'AX', '0');
+      EmitInstr('CALL    ' + PL_RT_PFX + 'TAB');
+      EmitComment('tab/1 done');
+    End
+    { --- put_char/1 --- }
+    Else If (GoalTab[GIdx].PredName = 'put_char') And
+            (GoalTab[GIdx].Arity = 1) Then
+    Begin
+      EmitComment('put_char/1 inline');
+      If GoalTab[GIdx].Args[0].Kind = FAK_ATOM Then
+      Begin
+        { Extraire le premier caractere de l atome }
+        TagVal := (TAG_ATOM Shl TAG_SHIFT) Or
+                  (GoalTab[GIdx].Args[0].AtomIdx And VAL_MASK);
+        Str(TagVal, NS);
+        EmitInstrAB('MOV', 'AX', NS);
+        EmitInstr('CALL    ' + PL_RT_PFX + 'CHAR_CODE');
+        { AX = tagged INT code }
+        EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+        EmitInstrAB('MOV', 'DL', 'AL');
+      End
+      Else If GoalTab[GIdx].Args[0].Kind = FAK_INT Then
+      Begin
+        Str(Integer(GoalTab[GIdx].Args[0].IntVal), NS);
+        EmitInstrAB('MOV', 'DL', NS);
+      End
+      Else If GoalTab[GIdx].Args[0].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[0].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitDeref;
+        EmitInstr('CALL    ' + PL_RT_PFX + 'CHAR_CODE');
+        EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+        EmitInstrAB('MOV', 'DL', 'AL');
+      End
+      Else
+        EmitInstrAB('MOV', 'DL', '32');
+      EmitInstrAB('MOV', 'AH', '02h');
+      EmitInstrA('INT', '21h');
+      EmitComment('put_char/1 done');
+    End
+    { --- get_char/1 --- }
+    Else If (GoalTab[GIdx].PredName = 'get_char') And
+            (GoalTab[GIdx].Arity = 1) Then
+    Begin
+      EmitComment('get_char/1 inline');
+      EmitInstr('CALL    ' + PL_RT_PFX + 'GET_CHAR');
+      { AX = tagged INT (char code) }
+      EmitInstrAB('MOV', 'BX', 'AX');
+      If GoalTab[GIdx].Args[0].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[0].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitBind;
+      End;
+      EmitComment('get_char/1 done');
+    End
+    { --- char_code/2 --- }
+    Else If (GoalTab[GIdx].PredName = 'char_code') And
+            (GoalTab[GIdx].Arity = 2) Then
+    Begin
+      EmitComment('char_code/2 inline');
+      { Charger arg0 (Char) }
+      If GoalTab[GIdx].Args[0].Kind = FAK_ATOM Then
+      Begin
+        TagVal := (TAG_ATOM Shl TAG_SHIFT) Or
+                  (GoalTab[GIdx].Args[0].AtomIdx And VAL_MASK);
+        Str(TagVal, NS);
+        EmitInstrAB('MOV', 'AX', NS);
+        EmitInstr('CALL    ' + PL_RT_PFX + 'CHAR_CODE');
+        { AX = tagged INT (code) -> unifier avec arg1 }
+        EmitInstrAB('MOV', 'BX', 'AX');
+        If GoalTab[GIdx].Args[1].Kind = FAK_VAR Then
+        Begin
+          VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[1].VarName);
+          EmitInstrAB('MOV', 'AX',
+                      'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+          EmitBind;
+        End;
+      End
+      Else If GoalTab[GIdx].Args[0].Kind = FAK_VAR Then
+      Begin
+        { arg0 est une variable -> arg1 doit etre un code }
+        If GoalTab[GIdx].Args[1].Kind = FAK_INT Then
+        Begin
+          TagVal := (TAG_INT Shl TAG_SHIFT) Or
+                    (Integer(GoalTab[GIdx].Args[1].IntVal) And VAL_MASK);
+          Str(TagVal, NS);
+          EmitInstrAB('MOV', 'BX', NS);
+          VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[0].VarName);
+          EmitInstrAB('MOV', 'AX',
+                      'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+          EmitBind;
+        End
+        Else If GoalTab[GIdx].Args[1].Kind = FAK_VAR Then
+        Begin
+          VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[1].VarName);
+          EmitInstrAB('MOV', 'AX',
+                      'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+          EmitDeref;
+          EmitInstr('CALL    ' + PL_RT_PFX + 'DEREF_INT');
+          { AX = raw int, faire tagged INT }
+          EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+          Str(TAG_INT Shl TAG_SHIFT, NS);
+          EmitInstrAB('OR', 'AX', NS);
+          EmitInstrAB('MOV', 'BX', 'AX');
+          VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[0].VarName);
+          EmitInstrAB('MOV', 'AX',
+                      'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+          EmitBind;
+        End;
+      End;
+      EmitComment('char_code/2 done');
+    End
+    { --- atom_length/2 --- }
+    Else If (GoalTab[GIdx].PredName = 'atom_length') And
+            (GoalTab[GIdx].Arity = 2) Then
+    Begin
+      EmitComment('atom_length/2 inline');
+      If GoalTab[GIdx].Args[0].Kind = FAK_ATOM Then
+      Begin
+        TagVal := (TAG_ATOM Shl TAG_SHIFT) Or
+                  (GoalTab[GIdx].Args[0].AtomIdx And VAL_MASK);
+        Str(TagVal, NS);
+        EmitInstrAB('MOV', 'AX', NS);
+      End
+      Else If GoalTab[GIdx].Args[0].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[0].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitDeref;
+      End
+      Else
+      Begin
+        EmitInstrAB('MOV', 'AX', '0');
+      End;
+      EmitInstr('CALL    ' + PL_RT_PFX + 'ATOM_LENGTH');
+      { AX = tagged INT (longueur) -> unifier avec arg1 }
+      EmitInstrAB('MOV', 'BX', 'AX');
+      If GoalTab[GIdx].Args[1].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[1].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitBind;
+      End;
+      EmitComment('atom_length/2 done');
+    End
+    { --- atom_concat/3 --- }
+    Else If (GoalTab[GIdx].PredName = 'atom_concat') And
+            (GoalTab[GIdx].Arity = 3) Then
+    Begin
+      EmitComment('atom_concat/3 inline');
+      { Charger arg0 }
+      If GoalTab[GIdx].Args[0].Kind = FAK_ATOM Then
+      Begin
+        TagVal := (TAG_ATOM Shl TAG_SHIFT) Or
+                  (GoalTab[GIdx].Args[0].AtomIdx And VAL_MASK);
+        Str(TagVal, NS);
+        EmitInstrAB('MOV', 'AX', NS);
+      End
+      Else If GoalTab[GIdx].Args[0].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[0].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitDeref;
+      End
+      Else
+        EmitInstrAB('MOV', 'AX', '0');
+      EmitInstrA('PUSH', 'AX');
+      { Charger arg1 }
+      If GoalTab[GIdx].Args[1].Kind = FAK_ATOM Then
+      Begin
+        TagVal := (TAG_ATOM Shl TAG_SHIFT) Or
+                  (GoalTab[GIdx].Args[1].AtomIdx And VAL_MASK);
+        Str(TagVal, NS);
+        EmitInstrAB('MOV', 'BX', NS);
+      End
+      Else If GoalTab[GIdx].Args[1].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[1].VarName);
+        EmitInstrAB('MOV', 'BX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        { Deref via AX }
+        EmitInstrA('PUSH', 'AX');
+        EmitInstrAB('MOV', 'AX', 'BX');
+        EmitDeref;
+        EmitInstrAB('MOV', 'BX', 'AX');
+        EmitInstrA('POP', 'AX');
+      End
+      Else
+        EmitInstrAB('MOV', 'BX', '0');
+      EmitInstrA('POP', 'AX');
+      EmitInstr('CALL    ' + PL_RT_PFX + 'ATOM_CONCAT');
+      { AX = tagged INT (longueur concatenee) -> unifier avec arg2 }
+      EmitInstrAB('MOV', 'BX', 'AX');
+      If GoalTab[GIdx].Args[2].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[2].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitBind;
+      End;
+      EmitComment('atom_concat/3 done');
+    End
+    { --- atom_chars/2 --- }
+    Else If (GoalTab[GIdx].PredName = 'atom_chars') And
+            (GoalTab[GIdx].Arity = 2) Then
+    Begin
+      EmitComment('atom_chars/2 inline');
+      If GoalTab[GIdx].Args[0].Kind = FAK_ATOM Then
+      Begin
+        TagVal := (TAG_ATOM Shl TAG_SHIFT) Or
+                  (GoalTab[GIdx].Args[0].AtomIdx And VAL_MASK);
+        Str(TagVal, NS);
+        EmitInstrAB('MOV', 'AX', NS);
+      End
+      Else If GoalTab[GIdx].Args[0].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[0].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitDeref;
+      End
+      Else
+        EmitInstrAB('MOV', 'AX', '0');
+      EmitInstr('CALL    ' + PL_RT_PFX + 'ATOM_CHARS');
+      { AX = tagged LIST -> unifier avec arg1 }
+      EmitInstrAB('MOV', 'BX', 'AX');
+      If GoalTab[GIdx].Args[1].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[1].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitBind;
+      End;
+      EmitComment('atom_chars/2 done');
+    End
+    { --- atom_codes/2 --- }
+    Else If (GoalTab[GIdx].PredName = 'atom_codes') And
+            (GoalTab[GIdx].Arity = 2) Then
+    Begin
+      EmitComment('atom_codes/2 inline (same as atom_chars for codes)');
+      If GoalTab[GIdx].Args[0].Kind = FAK_ATOM Then
+      Begin
+        TagVal := (TAG_ATOM Shl TAG_SHIFT) Or
+                  (GoalTab[GIdx].Args[0].AtomIdx And VAL_MASK);
+        Str(TagVal, NS);
+        EmitInstrAB('MOV', 'AX', NS);
+      End
+      Else If GoalTab[GIdx].Args[0].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[0].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitDeref;
+      End
+      Else
+        EmitInstrAB('MOV', 'AX', '0');
+      EmitInstr('CALL    ' + PL_RT_PFX + 'ATOM_CHARS');
+      EmitInstrAB('MOV', 'BX', 'AX');
+      If GoalTab[GIdx].Args[1].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[1].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitBind;
+      End;
+      EmitComment('atom_codes/2 done');
+    End
+    { --- number_chars/2 --- }
+    Else If (GoalTab[GIdx].PredName = 'number_chars') And
+            (GoalTab[GIdx].Arity = 2) Then
+    Begin
+      EmitComment('number_chars/2 inline');
+      If GoalTab[GIdx].Args[0].Kind = FAK_INT Then
+      Begin
+        TagVal := (TAG_INT Shl TAG_SHIFT) Or
+                  (Integer(GoalTab[GIdx].Args[0].IntVal) And VAL_MASK);
+        Str(TagVal, NS);
+        EmitInstrAB('MOV', 'AX', NS);
+      End
+      Else If GoalTab[GIdx].Args[0].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[0].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitDeref;
+      End
+      Else
+        EmitInstrAB('MOV', 'AX', '0');
+      EmitInstr('CALL    ' + PL_RT_PFX + 'NUMBER_CHARS');
+      EmitInstrAB('MOV', 'BX', 'AX');
+      If GoalTab[GIdx].Args[1].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[1].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitBind;
+      End;
+      EmitComment('number_chars/2 done');
+    End
+    { --- number_codes/2 --- }
+    Else If (GoalTab[GIdx].PredName = 'number_codes') And
+            (GoalTab[GIdx].Arity = 2) Then
+    Begin
+      EmitComment('number_codes/2 inline (same as number_chars)');
+      If GoalTab[GIdx].Args[0].Kind = FAK_INT Then
+      Begin
+        TagVal := (TAG_INT Shl TAG_SHIFT) Or
+                  (Integer(GoalTab[GIdx].Args[0].IntVal) And VAL_MASK);
+        Str(TagVal, NS);
+        EmitInstrAB('MOV', 'AX', NS);
+      End
+      Else If GoalTab[GIdx].Args[0].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[0].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitDeref;
+      End
+      Else
+        EmitInstrAB('MOV', 'AX', '0');
+      EmitInstr('CALL    ' + PL_RT_PFX + 'NUMBER_CHARS');
+      EmitInstrAB('MOV', 'BX', 'AX');
+      If GoalTab[GIdx].Args[1].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[1].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitBind;
+      End;
+      EmitComment('number_codes/2 done');
+    End
+    { --- read/1 (stub) --- }
+    Else If (GoalTab[GIdx].PredName = 'read') And
+            (GoalTab[GIdx].Arity = 1) Then
+    Begin
+      EmitComment('read/1 stub (not implemented)');
+    End
+    { --- sub_atom/5 (stub) --- }
+    Else If (GoalTab[GIdx].PredName = 'sub_atom') And
+            (GoalTab[GIdx].Arity = 5) Then
+    Begin
+      EmitComment('sub_atom/5 stub (not implemented)');
     End
     Else
     Begin
