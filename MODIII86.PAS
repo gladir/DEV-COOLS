@@ -3922,7 +3922,10 @@ Begin
   ParentName := '';
 
   (* Verifier si un parent est nomme avant OBJECT *)
-  If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+  If (P < TokenCount) And
+     ((TokenPool[P].Kind = TK_IDENT) Or
+      ((TokenPool[P].Kind = TK_KEYWORD) And (TokenPool[P].Val = 'ROOT')))
+  Then
   Begin
     ParentName := TokenPool[P].Val;
     Inc(P);
@@ -4679,7 +4682,10 @@ Begin
              (TokenPool[P].Val = ';') Then
             Inc(P);
         End
-        Else If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) And
+        Else If (P < TokenCount) And
+                ((TokenPool[P].Kind = TK_IDENT) Or
+                 ((TokenPool[P].Kind = TK_KEYWORD) And
+                  (TokenPool[P].Val = 'ROOT'))) And
                 (P + 1 < TokenCount) And
                 (TokenPool[P + 1].Kind = TK_KEYWORD) And
                 (TokenPool[P + 1].Val = 'OBJECT') Then
@@ -4690,7 +4696,10 @@ Begin
              (TokenPool[P].Val = ';') Then
             Inc(P);
         End
-        Else If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) And
+        Else If (P < TokenCount) And
+                ((TokenPool[P].Kind = TK_IDENT) Or
+                 ((TokenPool[P].Kind = TK_KEYWORD) And
+                  (TokenPool[P].Val = 'ROOT'))) And
                 (P + 1 < TokenCount) And
                 (TokenPool[P + 1].Kind = TK_KEYWORD) And
                 (TokenPool[P + 1].Val = 'BRANDED') Then
