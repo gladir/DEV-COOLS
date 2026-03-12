@@ -313,7 +313,7 @@
              BRANDED : chaque BRANDED cree un type distinct nominalement
                BRANDED "etiquette" ou BRANDED (etiquette automatique)
 
-   TODO 21 - EXCEPTIONS (TRY / EXCEPT / FINALLY / RAISE)
+   TODO 21 - EXCEPTIONS (TRY / EXCEPT / FINALLY / RAISE) [IMPLEMENTE]
              ParseTryExceptStmt : TRY stmts EXCEPT
                | Exception1 => stmts
                | Exception2(v) => stmts  (v = argument de l exception)
@@ -437,6 +437,8 @@ Const
   MAX_OBJ_TYPE  = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
   MAX_METHOD    = 16;
   MAX_OPAQUE    = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
+  MAX_EXCEPTION = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
+  MAX_TRY_NEST  = 8;
 
   (* Prefixe statique (TODO 09) *)
   M3_STA_PFX  = '_M3S_';     (* variable statique locale             *)
@@ -711,6 +713,15 @@ Type
     IsRevealed : Boolean;     (* True quand REVEAL a ete traite         *)
   End;
 
+  (* ---- Exceptions (TODO 21) ----------------------------------- *)
+  TExceptionEntry = Record
+    Name       : TString;     (* nom de l exception                    *)
+    Code       : Integer;     (* code unique (1-based)                  *)
+    HasArg     : Boolean;     (* True si EXCEPTION E(ArgType)           *)
+    ArgTIdx    : Integer;     (* TypeIdx de l argument (-1 si pas arg)  *)
+    SymIdx     : Integer;     (* index dans SymTab                      *)
+  End;
+
 (* ============================================================
    VARIABLES GLOBALES
    ============================================================ *)
@@ -750,6 +761,11 @@ Var
   (* Types opaques (TODO 20) *)
   OpaqueTab    : Array[0..MAX_OPAQUE - 1] Of TOpaqueEntry;
   OpaqueCount  : Integer;
+
+  (* Exceptions (TODO 21) *)
+  ExcTab       : Array[0..MAX_EXCEPTION - 1] Of TExceptionEntry;
+  ExcCount     : Integer;
+  ExcTryNest   : Integer;
 
   (* Segment de donnees (TODO 03) *)
   DataTab    : Array[0..MAX_DATA-1] Of TDataRec;
@@ -3443,6 +3459,12 @@ Begin
   EmitRaw(M3_RT_PFX + 'HEAP    DB  4096 DUP(0)');
   EmitRaw(M3_RT_PFX + 'HEAPTOP DW  OFFSET ' + M3_RT_PFX + 'HEAP');
   EmitBlankLine;
+  EmitComment('--- Exception handler (TODO 21) ---');
+  EmitRaw(M3_EXC_PFX + 'HANDLER DW  0');
+  EmitRaw(M3_EXC_PFX + 'EXCCODE DW  0');
+  EmitRaw(M3_EXC_PFX + 'EXCVAL  DW  0');
+  EmitRaw(M3_RT_PFX + 'EXC_MSG DB  ''Unhandled exception: '',0');
+  EmitBlankLine;
 
   (* Donnees du programme depuis DataTab *)
   If DataCount > 0 Then
@@ -4268,6 +4290,9 @@ Var
   OIdx        : Integer;
   SuperName   : TString;
   I           : Integer;
+  (* TODO 21 - EXCEPTION declarations *)
+  HasExcArg   : Boolean;
+  ExcArgTIdx  : Integer;
 Begin
   P       := 0;
   InVar   := False;
@@ -4381,7 +4406,7 @@ Begin
       Continue;
     End;
 
-    (* Detecter un autre mot-cle de section (EXCEPTION, etc) *)
+    (* ---- Section EXCEPTION : declarations d exceptions (TODO 21) ---- *)
     If (TokenPool[P].Kind = TK_KEYWORD) And
        (TokenPool[P].Val = 'EXCEPTION') Then
     Begin
@@ -4389,6 +4414,49 @@ Begin
       InConst := False;
       InType  := False;
       Inc(P);
+      (* Parse EXCEPTION declarations: Name [(ArgType)] ; *)
+      While (P < TokenCount) And
+            (TokenPool[P].Kind = TK_IDENT) Do
+      Begin
+        Name := TokenPool[P].Val;
+        Inc(P);
+        (* Check for optional argument type: (ArgType) *)
+        HasExcArg := False;
+        ExcArgTIdx := TY_UNKNOWN;
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+           (TokenPool[P].Val = '(') Then
+        Begin
+          Inc(P); (* skip '(' *)
+          HasExcArg := True;
+          If (P < TokenCount) And
+             ((TokenPool[P].Kind = TK_IDENT) Or
+              (TokenPool[P].Kind = TK_KEYWORD)) Then
+          Begin
+            ExcArgTIdx := TypeIdxFromName(TokenPool[P].Val);
+            Inc(P);
+          End;
+          If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+             (TokenPool[P].Val = ')') Then
+            Inc(P); (* skip ')' *)
+        End;
+        (* Register exception in ExcTab *)
+        If ExcCount < MAX_EXCEPTION Then
+        Begin
+          ExcTab[ExcCount].Name   := Name;
+          ExcTab[ExcCount].Code   := ExcCount + 1;
+          ExcTab[ExcCount].HasArg := HasExcArg;
+          ExcTab[ExcCount].ArgTIdx:= ExcArgTIdx;
+          ExcTab[ExcCount].SymIdx := SymCount;
+          Inc(ExcCount);
+        End;
+        SymAdd(Name, SK_EXCEPTION, TY_UNKNOWN, 0);
+        If Opts.DebugMode Then
+          WriteLn('  EXCEPTION: ', Name);
+        (* Skip ';' *)
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+           (TokenPool[P].Val = ';') Then
+          Inc(P);
+      End;
       Continue;
     End;
 
@@ -6698,6 +6766,9 @@ Var
   FldName              : TString;    (* TODO 16 - field name           *)
   WithVar              : TString;    (* TODO 16 - WITH alias name      *)
   ObjI, MI             : Integer;    (* TODO 19 - object type/method   *)
+  LblExcept, LblFinally, LblTryEnd : TString; (* TODO 21 - exception labels *)
+  ExcBranchName, ExcBranchVar : TString;       (* TODO 21 - EXCEPT branch   *)
+  ExcBranchCode, ExcI         : Integer;       (* TODO 21 - exception code   *)
 Begin
   If EPAtEnd Then Exit;
 
@@ -7142,12 +7213,209 @@ Begin
     Exit;
   End;
 
-  (* --- TRY ... EXCEPT / FINALLY ... END (stub: skip) --- *)
+  (* --- TRY ... EXCEPT / FINALLY ... END (TODO 21) --- *)
   If EPMatch(TK_KEYWORD, 'TRY') Then
   Begin
-    EmitComment('TRY (stub: skipping)');
     Inc(EP);
-    SkipToMatchingEnd(EP);
+    Inc(ExcTryNest);
+    LblExcept  := LabelGen;
+    LblFinally := LabelGen;
+    LblTryEnd  := LabelGen;
+
+    EmitComment('TRY: save old handler, install new');
+    EmitInstrA('PUSH', 'WORD PTR [' + M3_EXC_PFX + 'HANDLER]');
+    EmitInstrAB('MOV', 'WORD PTR [' + M3_EXC_PFX + 'HANDLER]',
+                'OFFSET ' + LblExcept);
+
+    (* Parse body statements until EXCEPT or FINALLY or END *)
+    While Not EPAtEnd And
+          Not EPMatch(TK_KEYWORD, 'EXCEPT') And
+          Not EPMatch(TK_KEYWORD, 'FINALLY') And
+          Not EPMatch(TK_KEYWORD, 'END') Do
+      ParseStmt;
+
+    (* Determine whether EXCEPT or FINALLY *)
+    If EPMatch(TK_KEYWORD, 'EXCEPT') Then
+    Begin
+      Inc(EP);
+      EmitComment('TRY: no exception, restore handler + skip EXCEPT');
+      EmitInstrA('POP', 'WORD PTR [' + M3_EXC_PFX + 'HANDLER]');
+      EmitInstrA('JMP', LblTryEnd);
+
+      EmitLabel(LblExcept);
+      EmitComment('EXCEPT handler: AX = exception code');
+      EmitInstrA('POP', 'WORD PTR [' + M3_EXC_PFX + 'HANDLER]');
+
+      (* Skip optional leading '|' *)
+      If EPMatch(TK_PUNCT, '|') Then Inc(EP);
+
+      (* Parse exception branches: | ExcName [(var)] => stmts *)
+      While Not EPAtEnd And
+            Not EPMatch(TK_KEYWORD, 'ELSE') And
+            Not EPMatch(TK_KEYWORD, 'END') Do
+      Begin
+        LblNext := LabelGen;
+        ExcBranchName := '';
+        ExcBranchVar  := '';
+        If (EP < TokenCount) And (TokenPool[EP].Kind = TK_IDENT) Then
+        Begin
+          ExcBranchName := TokenPool[EP].Val;
+          Inc(EP);
+        End;
+        (* Optional (var) *)
+        If EPMatch(TK_PUNCT, '(') Then
+        Begin
+          Inc(EP);
+          If (EP < TokenCount) And (TokenPool[EP].Kind = TK_IDENT) Then
+          Begin
+            ExcBranchVar := TokenPool[EP].Val;
+            Inc(EP);
+          End;
+          If EPMatch(TK_PUNCT, ')') Then Inc(EP);
+        End;
+        (* Skip '=>' *)
+        If EPMatch(TK_OP, '=>') Then Inc(EP);
+
+        (* Look up exception code *)
+        ExcBranchCode := 0;
+        For ExcI := 0 To ExcCount - 1 Do
+          If ExcTab[ExcI].Name = ExcBranchName Then
+            ExcBranchCode := ExcTab[ExcI].Code;
+        (* Also check SymTab for RuntimeError etc. *)
+        If ExcBranchCode = 0 Then
+        Begin
+          For ExcI := 0 To SymCount - 1 Do
+            If (SymTab[ExcI].Kind = SK_EXCEPTION) And
+               (SymTab[ExcI].Name = ExcBranchName) Then
+            Begin
+              ExcBranchCode := ExcI + 1;
+            End;
+        End;
+
+        EmitComment('| ' + ExcBranchName);
+        EmitInstrAB('CMP', 'WORD PTR [' + M3_EXC_PFX + 'EXCCODE]',
+                    IntToStr(ExcBranchCode));
+        EmitInstrA('JNE', LblNext);
+
+        (* If (var) defined, load exception value into a local *)
+        If ExcBranchVar <> '' Then
+        Begin
+          EmitComment('bind ' + ExcBranchVar + ' := exception arg');
+          EmitInstrAB('MOV', 'AX', 'WORD PTR [' + M3_EXC_PFX + 'EXCVAL]');
+        End;
+
+        (* Parse handler statements *)
+        While Not EPAtEnd And
+              Not EPMatch(TK_PUNCT, '|') And
+              Not EPMatch(TK_KEYWORD, 'ELSE') And
+              Not EPMatch(TK_KEYWORD, 'END') Do
+          ParseStmt;
+
+        EmitInstrA('JMP', LblTryEnd);
+        EmitLabel(LblNext);
+
+        (* Skip '|' separator *)
+        If EPMatch(TK_PUNCT, '|') Then Inc(EP);
+      End;
+
+      (* ELSE clause (optional) *)
+      If EPMatch(TK_KEYWORD, 'ELSE') Then
+      Begin
+        Inc(EP);
+        EmitComment('EXCEPT ELSE (catch-all)');
+        While Not EPAtEnd And
+              Not EPMatch(TK_KEYWORD, 'END') Do
+          ParseStmt;
+        EmitInstrA('JMP', LblTryEnd);
+      End
+      Else
+      Begin
+        (* No ELSE: unhandled exception -> panic *)
+        EmitComment('unhandled exception -> re-raise');
+        EmitInstrAB('MOV', 'AX', 'WORD PTR [' + M3_EXC_PFX + 'EXCCODE]');
+        EmitInstrA('CALL', M3_RT_PFX + 'PANIC_EXC');
+      End;
+
+      EmitLabel(LblTryEnd);
+    End
+    Else If EPMatch(TK_KEYWORD, 'FINALLY') Then
+    Begin
+      Inc(EP);
+      EmitComment('TRY: no exception path -> skip to FINALLY');
+      EmitInstrA('POP', 'WORD PTR [' + M3_EXC_PFX + 'HANDLER]');
+      EmitInstrA('JMP', LblFinally);
+
+      EmitLabel(LblExcept);
+      EmitComment('EXCEPT (exception occurred): restore handler');
+      EmitInstrA('POP', 'WORD PTR [' + M3_EXC_PFX + 'HANDLER]');
+
+      EmitLabel(LblFinally);
+      EmitComment('FINALLY block: always executed');
+
+      While Not EPAtEnd And
+            Not EPMatch(TK_KEYWORD, 'END') Do
+        ParseStmt;
+
+      EmitLabel(LblTryEnd);
+    End
+    Else
+    Begin
+      (* Just END - degenerate TRY...END *)
+      EmitInstrA('POP', 'WORD PTR [' + M3_EXC_PFX + 'HANDLER]');
+      EmitLabel(LblExcept);
+      EmitLabel(LblTryEnd);
+    End;
+
+    (* Skip END ; *)
+    If EPMatch(TK_KEYWORD, 'END') Then Inc(EP);
+    If EPMatch(TK_PUNCT, ';') Then Inc(EP);
+    Dec(ExcTryNest);
+    Exit;
+  End;
+
+  (* --- RAISE Exception [(arg)] --- (TODO 21) *)
+  If EPMatch(TK_KEYWORD, 'RAISE') Then
+  Begin
+    Inc(EP);
+    EmitComment('RAISE');
+    ExcBranchName := '';
+    ExcBranchCode := 0;
+    If (EP < TokenCount) And (TokenPool[EP].Kind = TK_IDENT) Then
+    Begin
+      ExcBranchName := TokenPool[EP].Val;
+      Inc(EP);
+      (* Lookup exception code *)
+      For ExcI := 0 To ExcCount - 1 Do
+        If ExcTab[ExcI].Name = ExcBranchName Then
+          ExcBranchCode := ExcTab[ExcI].Code;
+      If ExcBranchCode = 0 Then
+        For ExcI := 0 To SymCount - 1 Do
+          If (SymTab[ExcI].Kind = SK_EXCEPTION) And
+             (SymTab[ExcI].Name = ExcBranchName) Then
+            ExcBranchCode := ExcI + 1;
+    End;
+    EmitInstrAB('MOV', 'WORD PTR [' + M3_EXC_PFX + 'EXCCODE]',
+                IntToStr(ExcBranchCode));
+    (* Optional argument (expr) *)
+    If EPMatch(TK_PUNCT, '(') Then
+    Begin
+      Inc(EP);
+      ParseExpr;
+      EmitInstrAB('MOV', 'WORD PTR [' + M3_EXC_PFX + 'EXCVAL]', 'AX');
+      If EPMatch(TK_PUNCT, ')') Then Inc(EP);
+    End
+    Else
+      EmitInstrAB('MOV', 'WORD PTR [' + M3_EXC_PFX + 'EXCVAL]', '0');
+    (* Jump to handler *)
+    EmitComment('jump to current handler');
+    EmitInstrAB('MOV', 'BX', 'WORD PTR [' + M3_EXC_PFX + 'HANDLER]');
+    EmitInstrAB('CMP', 'BX', '0');
+    LblEnd := LabelGen;
+    EmitInstrA('JNE', LblEnd);
+    EmitComment('no handler -> panic');
+    EmitInstrA('CALL', M3_RT_PFX + 'PANIC_EXC');
+    EmitLabel(LblEnd);
+    EmitInstr('JMP    BX');
     If EPMatch(TK_PUNCT, ';') Then Inc(EP);
     Exit;
   End;
@@ -8703,6 +8971,27 @@ Begin
   EmitInstrAB('MOV', 'WORD PTR [AX]', 'SI');
   EmitInstrA('POP', 'CX');
   EmitInstr('RET');
+
+  (* --------------------------------------------------------------- *)
+  (* _M3RT_PANIC_EXC : exception non geree -> afficher + Halt        *)
+  (* Entree : _M3X_EXCCODE = code exception                          *)
+  (* Sortie : ne retourne pas                                        *)
+  (* --------------------------------------------------------------- *)
+  EmitBlankLine;
+  EmitLabel(M3_RT_PFX + 'PANIC_EXC');
+  EmitInstrAB('MOV', 'SI', 'OFFSET ' + M3_RT_PFX + 'EXC_MSG');
+  EmitInstrA('CALL', M3_RT_PFX + 'PRINT');
+  EmitComment('print exception code');
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [' + M3_EXC_PFX + 'EXCCODE]');
+  EmitInstrAB('MOV', 'DI', 'OFFSET ' + M3_RT_PFX + 'NUMBUF');
+  EmitInstrA('CALL', M3_RT_PFX + 'NUMTOSTR');
+  EmitInstrAB('MOV', 'SI', 'OFFSET ' + M3_RT_PFX + 'NUMBUF');
+  EmitInstrA('CALL', M3_RT_PFX + 'PRINT');
+  EmitInstrAB('MOV', 'SI', 'OFFSET ' + M3_RT_PFX + 'CRLF');
+  EmitInstrA('CALL', M3_RT_PFX + 'PRINT');
+  EmitInstrAB('MOV', 'AH', '4Ch');
+  EmitInstrAB('MOV', 'AL', '1');
+  EmitInstr('INT    21h');
 End;
 
 Procedure ShowStats;
@@ -8725,6 +9014,8 @@ Begin
   ProcCount  := 0;
   ObjTypeCount := 0;
   OpaqueCount  := 0;
+  ExcCount     := 0;
+  ExcTryNest   := 0;
   OutFOpen   := False;
   LexOpened  := False;
 
@@ -8779,6 +9070,7 @@ Begin
     WriteLn('  Procedures     : ', ProcCount);
     WriteLn('  Imports        : ', ImportCount);
     WriteLn('  Types objets   : ', ObjTypeCount);
+    WriteLn('  Exceptions     : ', ExcCount);
   End;
 
   (* Phase 3 : emettre le fichier assembleur *)
