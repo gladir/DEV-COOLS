@@ -1,0 +1,3 @@
+program minimal;
+begin
+end.

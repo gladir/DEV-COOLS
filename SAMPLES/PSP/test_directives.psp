@@ -1,0 +1,33 @@
+<%
+{ test_directives.psp - Tests pour TODO 21 : Directives PSP et Inclusions }
+program test_directives;
+
+{$DEFINE TESTMODE}
+
+{$I SAMPLES\PSP\test_inc.inc}
+
+var
+  x: Integer;
+
+begin
+  x := 100;
+  incvar := 200;
+
+  {$IFDEF TESTMODE}
+  WriteLn(x);
+  {$ELSE}
+  WriteLn(0);
+  {$ENDIF}
+
+  {$IFNDEF UNDEFINED_SYM}
+  WriteLn(incvar);
+  {$ENDIF}
+
+  {$UNDEF TESTMODE}
+  {$IFDEF TESTMODE}
+  WriteLn(999);
+  {$ENDIF}
+
+  WriteLn(x + incvar);
+end.
+%>
