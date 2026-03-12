@@ -310,7 +310,7 @@
             isinstance(obj, cls) : comparaison du typecode -> AX=0|1
             EmitClassRuntime : _PYRT_OBJNEW (CX=taille -> AX=ptr heap)
 
-  TODO 19 - TUPLES ET UNPACKING
+  TODO 19 - TUPLES ET UNPACKING [IMPLEMENTE]
             Tuple vide : () -> pointeur vers zone vide
             Tuple literal : (e0, e1, e2) -> allocation + stockage DW par element
             Tuple singleton : (e0,) -> la virgule finale distingue du parenthesage
@@ -474,7 +474,8 @@ Const
   TY_IDX_DICT  = 5;   { pointeur bloc DATA          }
   TY_IDX_FUNC  = 6;   { pointeur de code            }
   TY_IDX_CLASS = 7;   { pointeur vtable             }
-  TY_PRIM_COUNT = 8;
+  TY_IDX_TUPLE = 8;   { pointeur tuple immutable    }
+  TY_PRIM_COUNT = 9;
   TY_UNKNOWN   = -1;
 
 { ============================================================
@@ -533,7 +534,7 @@ Type
   End;
 
   { ---- Segment de donnees (TODO 03) ------------------------ }
-  TDataKind = (DK_WORD, DK_BYTE, DK_STR, DK_ARRAY_BLK, DK_LIST, DK_DICT);
+  TDataKind = (DK_WORD, DK_BYTE, DK_STR, DK_ARRAY_BLK, DK_LIST, DK_DICT, DK_TUPLE);
 
   TDataRec = Record
     LblName   : TString;
@@ -782,6 +783,9 @@ Procedure EmitClassRuntime;  Forward;
 Function  ClassFind(Const Name : TString) : Integer; Forward;
 Function  ClassFindAttr(ClsIdx : Integer; Const AName : TString) : Integer; Forward;
 Function  ClassFindMeth(ClsIdx : Integer; Const MName : TString) : Integer; Forward;
+{ TODO 19 - Forward declarations tuples }
+Procedure ParseTupleLiteral(Var Res : TExprVal); Forward;
+Procedure EmitTupleRuntime; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -2341,6 +2345,15 @@ Begin
           EmitRaw(DataTab[I].LblName + '  DW  ' +
                   IntToStr_(DataTab[I].ElemCount * 2) + ' DUP(0)');
       End;
+      DK_TUPLE :
+      Begin
+        { Tuple : ElemCount mots de 16 bits initialises a 0 }
+        If DataTab[I].ElemCount <= 0 Then
+          EmitRaw(DataTab[I].LblName + '  DW  0')
+        Else
+          EmitRaw(DataTab[I].LblName + '  DW  ' +
+                  IntToStr_(DataTab[I].ElemCount) + ' DUP(0)');
+      End;
     End;
   End;
   EmitRaw('');
@@ -2359,6 +2372,8 @@ Begin
   EmitDictRuntime;
   { Emettre les routines runtime pour classes (TODO 18) }
   EmitClassRuntime;
+  { Emettre les routines runtime pour tuples (TODO 19) }
+  EmitTupleRuntime;
   { Fermer le segment de code }
   EmitRaw('');
   EmitRaw('_TEXT   ENDS');
@@ -2695,6 +2710,38 @@ Begin
     Exit;
   End;
 
+  { ---- TODO 19 : Concatenation tuple + tuple --------------- }
+  If (Op = '+') And (L.TypeIdx = TY_IDX_TUPLE) Then
+  Begin
+    ExprFlushToAX(L);
+    EmitInstr('MOV    SI, AX');      { SI = tuple gauche }
+    EmitInstr('PUSH   SI');
+    ExprFlushToAX(R);
+    EmitInstr('MOV    DI, AX');      { DI = tuple droite }
+    EmitInstr('POP    SI');
+    EmitInstr('CALL   ' + PY_RT_PFX + 'TUPLECONCAT');
+    L.Kind    := EK_AX;
+    L.TypeIdx := TY_IDX_TUPLE;
+    L.SymIdx  := -1;
+    Exit;
+  End;
+
+  { ---- TODO 19 : Repetition tuple * n --------------------- }
+  If (Op = '*') And (L.TypeIdx = TY_IDX_TUPLE) Then
+  Begin
+    ExprFlushToAX(L);
+    EmitInstr('MOV    SI, AX');      { SI = tuple }
+    EmitInstr('PUSH   SI');
+    ExprFlushToAX(R);
+    EmitInstr('MOV    CX, AX');      { CX = count }
+    EmitInstr('POP    SI');
+    EmitInstr('CALL   ' + PY_RT_PFX + 'TUPLEMUL');
+    L.Kind    := EK_AX;
+    L.TypeIdx := TY_IDX_TUPLE;
+    L.SymIdx  := -1;
+    Exit;
+  End;
+
   { ---- TODO 11 : Comparaison str (==, !=, <, <=, >, >=) --- }
   If ((Op = '==') Or (Op = '!=') Or (Op = '<') Or
       (Op = '<=') Or (Op = '>') Or (Op = '>=')) And
@@ -2732,6 +2779,28 @@ Begin
     EmitInstr('MOV    SI, AX');      { SI = dict }
     EmitInstr('POP    AX');          { AX = key }
     EmitInstr('CALL   ' + PY_RT_PFX + 'DICTCONTAINS');
+    If Op = 'not in' Then
+    Begin
+      EmitInstr('TEST   AX, AX');
+      EmitInstr('MOV    AX, 0');
+      EmitInstr('JNZ    $+4');
+      EmitInstr('INC    AX');
+    End;
+    L.Kind    := EK_AX;
+    L.TypeIdx := TY_IDX_INT;
+    L.SymIdx  := -1;
+    Exit;
+  End;
+
+  { ---- TODO 19 : Operateur in pour tuples ------------------- }
+  If ((Op = 'in') Or (Op = 'not in')) And (R.TypeIdx = TY_IDX_TUPLE) Then
+  Begin
+    ExprFlushToAX(L);
+    EmitInstr('PUSH   AX');          { element a chercher }
+    ExprFlushToAX(R);
+    EmitInstr('MOV    SI, AX');      { SI = tuple }
+    EmitInstr('POP    AX');          { AX = element }
+    EmitInstr('CALL   ' + PY_RT_PFX + 'CONTAINS');
     If Op = 'not in' Then
     Begin
       EmitInstr('TEST   AX, AX');
@@ -3005,7 +3074,7 @@ Begin
         ParseCallArgs(Res.SymIdx, Res);
     End;
 
-    { Parentheses de groupement ou tuple literal (TODO 10) }
+    { Parentheses de groupement ou tuple literal (TODO 10/19) }
     TK_PUNCT :
     Begin
       If CurToken.Val = '(' Then
@@ -3016,18 +3085,27 @@ Begin
         Begin
           ParserAdvance;
           EmitComment('tuple vide');
-          EmitInstr('XOR    AX, AX');
-          ExprMakeAX(TY_IDX_LIST, Res);
+          { Allouer un tuple vide avec count=0 sur le heap }
+          EmitInstr('MOV    DI, [_PY_HEAPTOP]');
+          EmitInstr('ADD    DI, OFFSET _PY_HEAP');
+          EmitInstr('MOV    WORD PTR [DI], 0');
+          EmitInstr('ADD    WORD PTR [_PY_HEAPTOP], 2');
+          EmitInstr('MOV    AX, DI');
+          ExprMakeAX(TY_IDX_TUPLE, Res);
         End
         Else
         Begin
           ParseExpr(E);
-          { Verifier si c est un tuple : (e1, e2, ...) }
+          { Verifier si c est un tuple : (e1, e2, ...) ou (e1,) }
           If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
           Begin
             EmitComment('tuple literal');
+            { Allouer sur le heap }
             ExprFlushToAX(E);
-            EmitInstr('PUSH   AX');  { sauvegarder premier element }
+            EmitInstr('MOV    DI, [_PY_HEAPTOP]');
+            EmitInstr('ADD    DI, OFFSET _PY_HEAP');
+            EmitInstr('MOV    [DI+2], AX');     { elem 0 }
+            ArgCount := 1;
             While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
             Begin
               ParserAdvance;
@@ -3035,10 +3113,16 @@ Begin
                 Break;
               ParseExpr(IdxE);
               ExprFlushToAX(IdxE);
-              EmitInstr('PUSH   AX');
+              EmitInstr('MOV    [DI+' + IntToStr_(2 + ArgCount * 2) + '], AX');
+              Inc(ArgCount);
             End;
-            EmitInstr('POP    AX');  { valeur du dernier element dans AX }
-            ExprMakeAX(TY_IDX_LIST, E);
+            { Ecrire le count en tete }
+            EmitInstr('MOV    WORD PTR [DI], ' + IntToStr_(ArgCount));
+            { Mettre a jour HEAPTOP }
+            EmitInstr('ADD    WORD PTR [_PY_HEAPTOP], ' +
+                      IntToStr_((ArgCount + 1) * 2));
+            EmitInstr('MOV    AX, DI');
+            ExprMakeAX(TY_IDX_TUPLE, E);
           End;
           Res := E;
           If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
@@ -4990,29 +5074,46 @@ Begin
       End
       Else
       Begin
-        { Multiple : a, b = expr1, expr2 }
+        { Multiple : a, b = expr1, expr2 ou a, b, c = tuple }
         EmitComment('assign multiple: ' + IntToStr_(NTargets) + ' targets');
-        NVals := 0;
-        For I := 0 To NTargets - 1 Do
+        { Parser la premiere expression }
+        ParseExpr(RHS);
+        ExprFlushToAX(RHS);
+        { TODO 19 : Unpacking de tuple : a, b, c = tup }
+        If (Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ','))) And
+           ((RHS.TypeIdx = TY_IDX_TUPLE) Or (RHS.TypeIdx = TY_IDX_LIST)) Then
         Begin
-          If I > 0 Then
+          EmitComment('tuple/list unpacking');
+          EmitInstr('MOV    SI, AX');    { SI = ptr tuple/list }
+          For I := 0 To NTargets - 1 Do
+          Begin
+            EmitInstr('MOV    AX, [SI+' + IntToStr_(2 + I * 2) + ']');
+            EmitStoreVar(Targets[I]);
+          End;
+        End
+        Else
+        Begin
+          { Affectation multiple classique : a, b = expr1, expr2 }
+          EmitInstr('PUSH   AX');
+          NVals := 1;
+          For I := 1 To NTargets - 1 Do
           Begin
             If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
               ParserAdvance;
+            If NVals < MAX_PARAM Then
+            Begin
+              ParseExpr(Vals[NVals]);
+              ExprFlushToAX(Vals[NVals]);
+              EmitInstr('PUSH   AX');
+              Inc(NVals);
+            End;
           End;
-          If NVals < MAX_PARAM Then
+          { Stocker en ordre inverse (dernier pousse = premier depile) }
+          For I := NVals - 1 DownTo 0 Do
           Begin
-            ParseExpr(Vals[NVals]);
-            ExprFlushToAX(Vals[NVals]);
-            EmitInstr('PUSH   AX');
-            Inc(NVals);
+            EmitInstr('POP    AX');
+            EmitStoreVar(Targets[I]);
           End;
-        End;
-        { Stocker en ordre inverse (dernier pousse = premier depile) }
-        For I := NVals - 1 DownTo 0 Do
-        Begin
-          EmitInstr('POP    AX');
-          EmitStoreVar(Targets[I]);
         End;
       End;
     End
@@ -5097,8 +5198,9 @@ Begin
   If Name = 'len' Then
   Begin
     EmitInstr('MOV    SI, AX');
-    If (ArgTypeIdx = TY_IDX_LIST) Or (ArgTypeIdx = TY_IDX_DICT) Then
-      EmitInstr('MOV    AX, [SI]')   { liste/dict : count en tete }
+    If (ArgTypeIdx = TY_IDX_LIST) Or (ArgTypeIdx = TY_IDX_DICT) Or
+       (ArgTypeIdx = TY_IDX_TUPLE) Then
+      EmitInstr('MOV    AX, [SI]')   { liste/dict/tuple : count en tete }
     Else
       EmitInstr('CALL   ' + PY_RT_PFX + 'LEN');  { chaine ASCIIZ }
     ExprMakeAX(TY_IDX_INT, Res);
@@ -6409,6 +6511,183 @@ Begin
   EmitComment('end class ' + ClassName);
 End;
 
+{ ============================================================
+  TODO 19 - TUPLES ET UNPACKING [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseTupleLiteral : tuple literal explicite --------------- }
+{ Appele quand on sait qu il faut parser un tuple (e.g., depuis   }
+{ un contexte ou l on attend un tuple). Le format heap est le     }
+{ meme que pour les listes : [count DW][elem0 DW][elem1 DW]...   }
+{ mais le type est TY_IDX_TUPLE (immutable).                      }
+Procedure ParseTupleLiteral(Var Res : TExprVal);
+Var
+  ElemE     : TExprVal;
+  ElemCount : Integer;
+Begin
+  EmitComment('tuple literal');
+  { Consommer le '(' }
+  ParserAdvance;
+  ElemCount := 0;
+
+  { Tuple vide : () -> heap [count=0] }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+  Begin
+    ParserAdvance;
+    EmitInstr('MOV    DI, [_PY_HEAPTOP]');
+    EmitInstr('ADD    DI, OFFSET _PY_HEAP');
+    EmitInstr('MOV    WORD PTR [DI], 0');  { count = 0 }
+    EmitInstr('ADD    WORD PTR [_PY_HEAPTOP], 2');
+    EmitInstr('MOV    AX, DI');
+    ExprMakeAX(TY_IDX_TUPLE, Res);
+    Exit;
+  End;
+
+  { Allouer le bloc dans le heap : bump allocator }
+  EmitInstr('MOV    DI, [_PY_HEAPTOP]');
+  EmitInstr('ADD    DI, OFFSET _PY_HEAP');
+
+  { Parser chaque element et stocker dans [DI + 2 + 2*i] }
+  ParseExpr(ElemE);
+  ExprFlushToAX(ElemE);
+  EmitInstr('MOV    [DI+2], AX');        { elem 0 a offset 2 }
+  Inc(ElemCount);
+  While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
+  Begin
+    ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      Break;  { virgule terminale }
+    ParseExpr(ElemE);
+    ExprFlushToAX(ElemE);
+    EmitInstr('MOV    [DI+' + IntToStr_(2 + ElemCount * 2) + '], AX');
+    Inc(ElemCount);
+  End;
+
+  { Ecrire le count en tete }
+  EmitInstr('MOV    WORD PTR [DI], ' + IntToStr_(ElemCount));
+  { Mettre a jour le HEAPTOP : (count + 1) * 2 }
+  EmitInstr('ADD    WORD PTR [_PY_HEAPTOP], ' +
+            IntToStr_((ElemCount + 1) * 2));
+  { Retourner le pointeur vers le bloc }
+  EmitInstr('MOV    AX, DI');
+
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance
+  Else
+    CompileError(''')'' attendue', CurToken.Line);
+  ExprMakeAX(TY_IDX_TUPLE, Res);
+End;
+
+{ ---- EmitTupleRuntime : routines runtime pour tuples ----------- }
+{ Layout tuple : [count DW][elem0 DW][elem1 DW]... (comme list)  }
+{ Tuples immutables : pas de append/pop/insert                    }
+{   _PYRT_TUPLECONCAT : SI=tup1, DI=tup2 -> AX=new tuple         }
+{   _PYRT_TUPLEMUL    : SI=tuple, CX=repeat -> AX=new tuple       }
+Procedure EmitTupleRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('-- Runtime : tuples (TODO 19) --');
+
+  { _PYRT_TUPLECONCAT : SI=tup1, DI=tup2 -> AX=new tuple }
+  EmitLabel(PY_RT_PFX + 'TUPLECONCAT');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   DX');
+  EmitInstr('MOV    AX, [SI]');          { AX = count1 }
+  EmitInstr('MOV    BX, [DI]');          { BX = count2 }
+  EmitInstr('MOV    CX, AX');
+  EmitInstr('ADD    CX, BX');            { CX = total count }
+  { Sauver contexte }
+  EmitInstr('PUSH   CX');               { total }
+  EmitInstr('PUSH   SI');               { tup1 }
+  EmitInstr('PUSH   DI');               { tup2 }
+  EmitInstr('PUSH   AX');               { count1 }
+  EmitInstr('PUSH   BX');               { count2 }
+  { Allouer sur le heap }
+  EmitInstr('MOV    DI, [_PY_HEAPTOP]');
+  EmitInstr('ADD    DI, OFFSET _PY_HEAP');
+  { Depiler et organiser }
+  EmitInstr('POP    CX');               { CX = count2 }
+  EmitInstr('POP    AX');               { AX = count1 }
+  EmitInstr('POP    BX');               { BX = ptr tup2 }
+  EmitInstr('POP    SI');               { SI = ptr tup1 }
+  EmitInstr('POP    DX');               { DX = total count }
+  { Ecrire total count }
+  EmitInstr('MOV    [DI], DX');
+  EmitInstr('PUSH   DI');               { sauver ptr new tuple }
+  EmitInstr('PUSH   BX');               { sauver ptr tup2 }
+  EmitInstr('PUSH   CX');               { sauver count2 }
+  EmitInstr('ADD    DI, 2');
+  { Copier count1 elements depuis tup1 }
+  EmitInstr('ADD    SI, 2');
+  EmitInstr('MOV    CX, AX');
+  EmitInstr('TEST   CX, CX');
+  EmitInstr('JLE    ' + PY_RT_PFX + 'TC_P2');
+  EmitLabel(PY_RT_PFX + 'TC_L1');
+  EmitInstr('MOVSW');
+  EmitInstr('LOOP   ' + PY_RT_PFX + 'TC_L1');
+  EmitLabel(PY_RT_PFX + 'TC_P2');
+  { Copier count2 elements depuis tup2 }
+  EmitInstr('POP    CX');               { CX = count2 }
+  EmitInstr('POP    SI');               { SI = ptr tup2 }
+  EmitInstr('ADD    SI, 2');
+  EmitInstr('TEST   CX, CX');
+  EmitInstr('JLE    ' + PY_RT_PFX + 'TC_DN');
+  EmitLabel(PY_RT_PFX + 'TC_L2');
+  EmitInstr('MOVSW');
+  EmitInstr('LOOP   ' + PY_RT_PFX + 'TC_L2');
+  EmitLabel(PY_RT_PFX + 'TC_DN');
+  { Mettre a jour HEAPTOP }
+  EmitInstr('POP    AX');               { AX = ptr new tuple }
+  EmitInstr('MOV    CX, [AX]');         { CX = total count }
+  EmitInstr('INC    CX');               { +1 pour header }
+  EmitInstr('SHL    CX, 1');
+  EmitInstr('ADD    [_PY_HEAPTOP], CX');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+
+  { _PYRT_TUPLEMUL : SI=tuple, CX=repeat -> AX=new tuple }
+  EmitLabel(PY_RT_PFX + 'TUPLEMUL');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   DX');
+  EmitInstr('MOV    AX, [SI]');          { AX = elem count }
+  EmitInstr('MOV    BX, AX');
+  EmitInstr('IMUL   CX');               { AX = total elements }
+  EmitInstr('MOV    DX, AX');            { DX = total }
+  { Allouer sur le heap }
+  EmitInstr('MOV    DI, [_PY_HEAPTOP]');
+  EmitInstr('ADD    DI, OFFSET _PY_HEAP');
+  EmitInstr('MOV    [DI], DX');          { ecrire total count }
+  EmitInstr('PUSH   DI');               { sauver ptr new tuple }
+  EmitInstr('ADD    DI, 2');
+  EmitInstr('TEST   CX, CX');
+  EmitInstr('JLE    ' + PY_RT_PFX + 'TM_DN');
+  EmitLabel(PY_RT_PFX + 'TM_LP');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   SI');
+  EmitInstr('ADD    SI, 2');
+  EmitInstr('MOV    CX, BX');            { CX = elem count per iter }
+  EmitInstr('TEST   CX, CX');
+  EmitInstr('JLE    ' + PY_RT_PFX + 'TM_NX');
+  EmitLabel(PY_RT_PFX + 'TM_CP');
+  EmitInstr('MOVSW');
+  EmitInstr('LOOP   ' + PY_RT_PFX + 'TM_CP');
+  EmitLabel(PY_RT_PFX + 'TM_NX');
+  EmitInstr('POP    SI');
+  EmitInstr('POP    CX');
+  EmitInstr('LOOP   ' + PY_RT_PFX + 'TM_LP');
+  EmitLabel(PY_RT_PFX + 'TM_DN');
+  { Mettre a jour HEAPTOP }
+  EmitInstr('POP    AX');               { AX = ptr new tuple }
+  EmitInstr('MOV    CX, [AX]');
+  EmitInstr('INC    CX');
+  EmitInstr('SHL    CX, 1');
+  EmitInstr('ADD    [_PY_HEAPTOP], CX');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+End;
+
 { ---- ParseBlock : parser un bloc indente ---------------------- }
 { Attend NEWLINE INDENT ... instructions ... DEDENT              }
 Procedure ParseBlock;
@@ -7152,6 +7431,13 @@ Begin
           CompileError(''']'' attendue', CurToken.Line);
         If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
         Begin
+          { TODO 19 : tuples immuables -> erreur de compilation }
+          If SymTab[Idx].TypeIdx = TY_IDX_TUPLE Then
+          Begin
+            CompileError('les tuples sont immuables : affectation par index interdite', CurToken.Line);
+            ParserAdvance;
+            Continue;
+          End;
           ParserAdvance;                   { consommer '=' }
           ParseExpr(GExprDummy);
           ExprFlushToAX(GExprDummy);
