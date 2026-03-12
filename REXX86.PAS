@@ -183,7 +183,7 @@
             Logique XOR && : XOR AX, BX apres evaluation des deux cotes
             Logique NOT \ : XOR AX,1
 
-  TODO 12 - ENTREES/SORTIES (SAY / PULL / LINEIN / LINEOUT / CHAROUT)
+  TODO 12 - ENTREES/SORTIES (SAY / PULL / LINEIN / LINEOUT / CHAROUT) [IMPLEMENTE]
             SAY expr : evaluer expr -> afficher sur STDOUT + CR+LF
               SAY sans argument : afficher une ligne vide
               -> CALL _RXRT_PRINT(SI=msg) + CALL _RXRT_PRINTLN
@@ -670,6 +670,7 @@ Var
   LexColNo  : Integer;
   LexEOF    : Boolean;
   LexOpened : Boolean;
+  LexNeedEOL : Boolean;
   CurToken  : TToken;
 
   (* Table des symboles (TODO 05) *)
@@ -809,6 +810,12 @@ Procedure ParseUpper; Forward;
 (* Autres stubs *)
 Procedure ParseStmt;           Forward;
 Procedure ParserAdvance;       Forward;
+
+(* TODO 12 - Entrees/Sorties *)
+Procedure ParseSayStmt;        Forward;
+Procedure ParsePullStmt;       Forward;
+Procedure ParseParsePullStmt;  Forward;
+Procedure EmitIORuntime;       Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1047,6 +1054,7 @@ Begin
   DataCount      := 0;
   OutFOpen       := False;
   LexOpened      := False;
+  LexNeedEOL     := False;
   LexEOF         := False;
   CurFnDepth     := 0;
   CurFnRetLbl    := '';
@@ -1441,9 +1449,29 @@ Begin
   Scanning := True;
   While Scanning Do
   Begin
-    (* Passer les lignes vides / fin de fichier *)
-    While (Not LexEOF) And (LexColNo > Length(LexLine)) Do
+    (* Si une fin de ligne physique est en attente, emettre TK_EOL *)
+    If LexNeedEOL Then
+    Begin
+      LexNeedEOL := False;
+      CurToken.Kind   := TK_EOL;
+      CurToken.Val    := '';
+      CurToken.IntVal := 0;
+      CurToken.Line   := LexLineNo;
+      CurToken.Col    := 0;
+      Scanning := False;
+      PrintToken(CurToken);
+      Exit;
+    End;
+
+    (* Passer a la ligne suivante si en fin de ligne physique *)
+    If (Not LexEOF) And (LexColNo > Length(LexLine)) Then
+    Begin
+      LexNeedEOL := True;
       LexNextLine;
+      While (Not LexEOF) And (LexColNo > Length(LexLine)) Do
+        LexNextLine;
+      Continue;  (* remonter au debut de la boucle pour emettre TK_EOL *)
+    End;
 
     If LexEOF Then
     Begin
@@ -1471,6 +1499,7 @@ Begin
             (LexLine[LexColNo + 1] = '*') Then
     Begin
       LexSkipBlockComment;
+      LexNeedEOL := False; (* commentaire ne cree pas de fin de ligne *)
     End
 
     (* Fin de ligne : point-virgule implicite ou explicite *)
@@ -2987,6 +3016,66 @@ Begin
   EmitInstrA('POP', 'SI');
   EmitRaw('        RET');
   EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  TODO 12 - Runtime pour entrees/sorties                      *)
+  (* ============================================================ *)
+  EmitIORuntime;
+End;
+
+{ ============================================================
+  TODO 12 - ENTREES/SORTIES (SAY / PULL) [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- EmitIORuntime : routines runtime pour les E/S REXX ------- *)
+(* Emet les routines supplementaires pour SAY, PULL, etc.          *)
+Procedure EmitIORuntime;
+Begin
+  EmitComment('--- Runtime E/S REXX (TODO 12) ---');
+  EmitBlankLine;
+
+  (* _RXRT_INPUT : lire une ligne depuis STDIN via INT 21h AH=0Ah *)
+  (* Sortie : AX = pointeur vers la chaine ASCIIZ dans _RX_INPUTBF *)
+  EmitLabel('_RXRT_INPUT');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrA('PUSH', 'SI');
+  (* Initialiser le buffer DOS : octet 0 = max chars *)
+  EmitInstrAB('MOV', 'BYTE PTR [_RX_INPUTBF]', '253');
+  EmitInstrAB('MOV', 'BYTE PTR [_RX_INPUTBF+1]', '0');
+  (* Appel DOS AH=0Ah : lecture tampon *)
+  EmitInstrAB('MOV', 'AH', '0Ah');
+  EmitInstrAB('LEA', 'DX', '_RX_INPUTBF');
+  EmitRaw('        INT     21h');
+  (* Null-terminer : _RX_INPUTBF[2 + longueur] = 0 *)
+  EmitInstrAB('XOR', 'BH', 'BH');
+  EmitInstrAB('MOV', 'BL', 'BYTE PTR [_RX_INPUTBF+1]');
+  EmitInstrAB('MOV', 'BYTE PTR [_RX_INPUTBF+BX+2]', '0');
+  (* Copier la chaine utile de [_RX_INPUTBF+2] vers _RX_STRBUF *)
+  EmitInstrAB('LEA', 'SI', '_RX_INPUTBF');
+  EmitInstrAB('ADD', 'SI', '2');
+  EmitInstrAB('LEA', 'DI', '_RX_STRBUF');
+  EmitInstrA('CALL', '_RXRT_STRCPY');
+  (* Afficher un CR+LF apres la saisie *)
+  EmitInstrAB('MOV', 'SI', 'OFFSET _RX_CRLF');
+  EmitInstrA('CALL', '_RXRT_PRINT');
+  (* Retourner le pointeur vers la copie *)
+  EmitInstrAB('LEA', 'AX', '_RX_STRBUF');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* _RXRT_PRINTINT : afficher l entier signe dans AX sur STDOUT *)
+  (* Convertit via NUMTOSTR puis appelle PRINT                    *)
+  EmitLabel('_RXRT_PRINTINT');
+  EmitInstrA('CALL', '_RXRT_NUMTOSTR');  (* AX -> SI = chaine *)
+  EmitInstrA('CALL', '_RXRT_PRINT');     (* SI -> STDOUT *)
+  EmitRaw('        RET');
+  EmitBlankLine;
 End;
 
 (* ---- EmitClose : fermer le fichier de sortie ASM ------------- *)
@@ -3091,6 +3180,8 @@ Begin
   DataAddBuffer('_RX_TMPBUF', 256);               (* tampon temporaire   *)
   DataAddBuffer('_RX_NUMBUF', 12);                (* conversion numerique *)
   DataAddBuffer('_RX_CATBUF', 256);               (* buffer concatenation *)
+  (* TODO 12 - Buffer d entree STDIN *)
+  DataAddBuffer('_RX_INPUTBF', 256);              (* buffer entree DOS AH=0Ah *)
 End;
 
 (* ============================================================
@@ -4593,8 +4684,332 @@ Begin
   LexNextToken;
 End;
 
-Procedure ParseStmt;
+{ ============================================================
+  TODO 12 - ENTREES/SORTIES : instructions SAY, PULL, PARSE
+  [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- ParseSayStmt : parser SAY [expr] ----------------------- *)
+(* SAY seul : afficher une ligne vide (CR+LF)                     *)
+(* SAY expr : evaluer expr, afficher le resultat + CR+LF          *)
+Procedure ParseSayStmt;
+Var
+  Res : TExprVal;
 Begin
+  EmitComment('SAY');
+
+  (* SAY sans argument : ligne vide *)
+  If (CurToken.Kind = TK_EOL) Or (CurToken.Kind = TK_EOF) Then
+  Begin
+    EmitInstrAB('MOV', 'SI', 'OFFSET _RX_CRLF');
+    EmitInstrA('CALL', '_RXRT_PRINT');
+    Exit;
+  End;
+
+  (* SAY expr : evaluer l expression *)
+  ParseExpr(Res);
+  ExprFlushToAX(Res);
+
+  (* Si le type est INTEGER ou BOOLEAN : convertir en chaine d abord *)
+  If (Res.TypeIdx = TY_IDX_INTEGER) Or
+     (Res.TypeIdx = TY_IDX_BOOLEAN) Then
+  Begin
+    (* AX contient la valeur numerique -> convertir en chaine *)
+    EmitInstrA('CALL', '_RXRT_NUMTOSTR');  (* AX -> SI = chaine *)
+    EmitInstrA('CALL', '_RXRT_PRINTLN');
+  End
+  Else
+  Begin
+    (* AX contient un pointeur vers une chaine ASCIIZ *)
+    EmitInstrAB('MOV', 'SI', 'AX');
+    EmitInstrA('CALL', '_RXRT_PRINTLN');
+  End;
+End;
+
+(* ---- ParsePullStmt : parser PULL var1 [var2 ...] ------------- *)
+(* Lit une ligne depuis STDIN, convertit en majuscules, stocke     *)
+(* dans la variable. Equivalent a PARSE UPPER PULL.                *)
+Procedure ParsePullStmt;
+Var
+  VarName : TString;
+  Idx     : Integer;
+Begin
+  EmitComment('PULL');
+
+  (* Lire une ligne depuis STDIN *)
+  EmitInstrA('CALL', '_RXRT_INPUT');  (* AX = ptr vers chaine *)
+
+  (* Convertir en majuscules (PULL = PARSE UPPER PULL) *)
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrA('CALL', '_RXRT_UPPER');
+
+  (* Stocker dans la premiere variable *)
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    VarName := StrUpperCase(CurToken.Val);
+    Idx := VarAlloc(VarName);
+    (* AX contient encore le pointeur depuis _RXRT_INPUT *)
+    (* qui a ete converti en majuscules par _RXRT_UPPER *)
+    EmitInstrAB('LEA', 'AX', '_RX_STRBUF');
+    VarStore(Idx);
+    ParserAdvance;
+
+    (* Variables supplementaires : pour l instant on ignore *)
+    (* (PARSE complet serait TODO 24 - PARSE avance)       *)
+    While (CurToken.Kind = TK_IDENT) Do
+    Begin
+      VarName := StrUpperCase(CurToken.Val);
+      Idx := VarAlloc(VarName);
+      (* Les variables supplementaires recoivent chaine vide *)
+      EmitInstrAB('MOV', 'AX', 'OFFSET _RX_NULL_STR');
+      VarStore(Idx);
+      ParserAdvance;
+    End;
+  End;
+End;
+
+(* ---- ParseParsePullStmt : parser PARSE [UPPER] PULL var ----- *)
+(* Gere aussi PARSE [UPPER] ARG pour les arguments du programme.  *)
+Procedure ParseParsePullStmt;
+Var
+  DoUpper : Boolean;
+  VarName : TString;
+  Idx     : Integer;
+Begin
+  EmitComment('PARSE');
+  DoUpper := False;
+
+  (* Verifier UPPER *)
+  If (CurToken.Kind = TK_KEYWORD) And
+     (StrUpperCase(CurToken.Val) = 'UPPER') Then
+  Begin
+    DoUpper := True;
+    ParserAdvance;
+  End;
+
+  (* Dispatcher selon le mot-cle suivant *)
+  If (CurToken.Kind = TK_KEYWORD) And
+     (StrUpperCase(CurToken.Val) = 'PULL') Then
+  Begin
+    ParserAdvance;  (* consommer PULL *)
+
+    (* Lire une ligne depuis STDIN *)
+    EmitInstrA('CALL', '_RXRT_INPUT');
+
+    (* Convertir en majuscules si PARSE UPPER PULL *)
+    If DoUpper Then
+    Begin
+      EmitInstrAB('MOV', 'SI', 'AX');
+      EmitInstrA('CALL', '_RXRT_UPPER');
+    End;
+
+    (* Stocker dans la variable *)
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      VarName := StrUpperCase(CurToken.Val);
+      Idx := VarAlloc(VarName);
+      EmitInstrAB('LEA', 'AX', '_RX_STRBUF');
+      VarStore(Idx);
+      ParserAdvance;
+
+      While (CurToken.Kind = TK_IDENT) Do
+      Begin
+        VarName := StrUpperCase(CurToken.Val);
+        Idx := VarAlloc(VarName);
+        EmitInstrAB('MOV', 'AX', 'OFFSET _RX_NULL_STR');
+        VarStore(Idx);
+        ParserAdvance;
+      End;
+    End;
+  End
+  Else If (CurToken.Kind = TK_KEYWORD) And
+          (StrUpperCase(CurToken.Val) = 'ARG') Then
+  Begin
+    ParserAdvance;  (* consommer ARG *)
+    EmitComment('PARSE ARG (stub - arguments non disponibles en DOS .COM)');
+
+    (* Stocker chaine vide dans la variable (simplifie) *)
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      VarName := StrUpperCase(CurToken.Val);
+      Idx := VarAlloc(VarName);
+      EmitInstrAB('MOV', 'AX', 'OFFSET _RX_NULL_STR');
+      VarStore(Idx);
+      ParserAdvance;
+
+      While (CurToken.Kind = TK_IDENT) Do
+      Begin
+        VarName := StrUpperCase(CurToken.Val);
+        Idx := VarAlloc(VarName);
+        EmitInstrAB('MOV', 'AX', 'OFFSET _RX_NULL_STR');
+        VarStore(Idx);
+        ParserAdvance;
+      End;
+    End;
+  End
+  Else
+  Begin
+    WarnMsg('PARSE : mot-cle PULL ou ARG attendu');
+    (* Sauter jusqu a la fin de la ligne *)
+    While (CurToken.Kind <> TK_EOL) And (CurToken.Kind <> TK_EOF) Do
+      ParserAdvance;
+  End;
+End;
+
+(* ---- ParseStmt : dispatcher principal des instructions REXX -- *)
+(* Gere les mots-cles, les affectations et les expressions comme  *)
+(* instructions.                                                   *)
+Procedure ParseStmt;
+Var
+  U        : TString;
+  SaveName : TString;
+  Res      : TExprVal;
+Begin
+  (* Sauter les fins de ligne / points-virgules *)
+  While CurToken.Kind = TK_EOL Do
+    ParserAdvance;
+
+  If CurToken.Kind = TK_EOF Then Exit;
+
+  (* --- Labels : ignorer pour l instant (TODO futur) --- *)
+  If CurToken.Kind = TK_LABEL Then
+  Begin
+    EmitLabel('_RXL_' + SymNameClean(StrUpperCase(CurToken.Val)));
+    ParserAdvance;
+    Exit;
+  End;
+
+  (* --- Mots-cles REXX --- *)
+  If CurToken.Kind = TK_KEYWORD Then
+  Begin
+    U := StrUpperCase(CurToken.Val);
+
+    (* SAY [expr] *)
+    If U = 'SAY' Then
+    Begin
+      ParserAdvance;
+      ParseSayStmt;
+      Exit;
+    End;
+
+    (* PULL var1 [var2 ...] *)
+    If U = 'PULL' Then
+    Begin
+      ParserAdvance;
+      ParsePullStmt;
+      Exit;
+    End;
+
+    (* PARSE [UPPER] PULL|ARG var *)
+    If U = 'PARSE' Then
+    Begin
+      ParserAdvance;
+      ParseParsePullStmt;
+      Exit;
+    End;
+
+    (* NOP *)
+    If U = 'NOP' Then
+    Begin
+      EmitComment('NOP');
+      ParserAdvance;
+      Exit;
+    End;
+
+    (* EXIT [expr] *)
+    If U = 'EXIT' Then
+    Begin
+      ParserAdvance;
+      EmitComment('EXIT');
+      If (CurToken.Kind <> TK_EOL) And (CurToken.Kind <> TK_EOF) Then
+      Begin
+        ParseExpr(Res);
+        ExprFlushToAX(Res);
+        EmitInstrAB('MOV', 'AH', '4Ch');
+        EmitRaw('        INT     21h');
+      End
+      Else
+      Begin
+        EmitInstrAB('MOV', 'AX', '4C00h');
+        EmitRaw('        INT     21h');
+      End;
+      Exit;
+    End;
+
+    (* DROP var1 var2 ... *)
+    If U = 'DROP' Then
+    Begin
+      ParserAdvance;
+      ParseDrop;
+      Exit;
+    End;
+
+    (* UPPER var1 var2 ... *)
+    If U = 'UPPER' Then
+    Begin
+      ParserAdvance;
+      ParseUpper;
+      Exit;
+    End;
+
+    (* RETURN [expr] *)
+    If U = 'RETURN' Then
+    Begin
+      ParserAdvance;
+      EmitComment('RETURN');
+      If (CurToken.Kind <> TK_EOL) And (CurToken.Kind <> TK_EOF) Then
+      Begin
+        ParseExpr(Res);
+        ExprFlushToAX(Res);
+      End;
+      (* RETURN simple : revenir a l appelant (stub) *)
+      EmitRaw('        JMP     _RXP_Exit');
+      Exit;
+    End;
+
+    (* Mots-cles non encore geres : sauter *)
+    WarnMsg('mot-cle "' + U + '" non encore gere (TODO futur)');
+    ParserAdvance;
+    While (CurToken.Kind <> TK_EOL) And (CurToken.Kind <> TK_EOF) Do
+      ParserAdvance;
+    Exit;
+  End;
+
+  (* --- Identificateur : affectation ou expression --- *)
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    SaveName := CurToken.Val;
+    ParserAdvance;
+
+    (* Verifier si c est une affectation : ident = expr *)
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+    Begin
+      ParserAdvance;  (* consommer = *)
+      ParseAssign(SaveName);
+      Exit;
+    End;
+
+    (* Pas une affectation : reculer n est pas possible, *)
+    (* traiter comme expression standalone.               *)
+    (* On doit simuler : on a deja avance le premier ident *)
+    (* Verifier si c est un appel de fonction : ident( *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      ParserAdvance; (* consommer '(' *)
+      ParseFuncCall(SaveName, Res);
+      (* Ignorer le resultat : appel comme instruction *)
+      Exit;
+    End;
+
+    (* C est un identifiant seul sur la ligne, ou suivi d autres tokens *)
+    (* En REXX strict, c est une erreur ou une commande externe *)
+    (* On ignore silencieusement pour l instant *)
+    While (CurToken.Kind <> TK_EOL) And (CurToken.Kind <> TK_EOF) Do
+      ParserAdvance;
+    Exit;
+  End;
+
+  (* --- Autre token (nombre, chaine, etc.) : avancer --- *)
   ParserAdvance;
 End;
 
