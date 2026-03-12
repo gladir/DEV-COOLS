@@ -4510,7 +4510,9 @@ Begin
     Exit;
   End;
 
-  { Si REF explicite, le mode effectif est une reference a MIdx }
+  { Si REF explicite, le mode effectif est une reference a MIdx.
+    Note : le mode de base est perdu ici (simplification TODO 10).
+    Une implementation complete creerait un mode REF(base) dans ModeTab. }
   If IsRef Then
     MIdx := TY_IDX_REF;
 
@@ -4561,7 +4563,8 @@ Begin
       IsLoc := True;
       IsVar := True;
       ParserAdvance;  { consomme LOC }
-      { Optionnel : mode apres LOC (peut etre omis si deja declare) }
+      { Optionnel : mode apres LOC - utilise pour la taille d allocation.
+        Remplace MIdx par le mode de base (intentionnel pour REF INT = LOC INT) }
       If CurToken.Kind = TK_BOLD Then
       Begin
         InnerMode := ModeLookupName(CurToken.Val);
@@ -4605,7 +4608,7 @@ Begin
       EmitInstr('CALL   ' + A68_RT_PFX + 'ALLOC');
       { AX = pointeur vers la zone allouee }
 
-      { Lire l initialiseur si present }
+      { Lire l initialiseur si present, sinon initialiser a 0 }
       If (CurToken.Kind <> TK_SEMI) And (CurToken.Kind <> TK_COMMA) And
          (CurToken.Kind <> TK_EOF) Then
       Begin
@@ -4615,6 +4618,11 @@ Begin
         EmitInstr('MOV    BX, AX');    { BX = valeur init }
         EmitInstr('POP    AX');        { AX = pointeur }
         EmitInstr('MOV    [AX], BX');  { stocker valeur }
+      End
+      Else
+      Begin
+        { Pas d initialiseur : initialiser a 0 }
+        EmitInstr('MOV    WORD PTR [AX], 0');
       End;
 
       { Enregistrer dans la table des symboles }
