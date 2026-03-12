@@ -181,7 +181,7 @@
               CALL _PLRT_TRUST : restaurer + supprimer choice point
               JC _PL_L_FAIL : echec si plus de choix
 
-  TODO 13 - LISTES
+  TODO 13 - LISTES [IMPLEMENTE]
             Notation : [H|T] -> foncteur '.'/2 (H=tete, T=queue)
             Liste vide : [] -> atome special (index 0)
             Notation sucre : [a,b,c] -> '.'(a,'.'(b,'.'(c,[])))
@@ -467,6 +467,7 @@ Const
   MAX_ARGS_REG  = 16;  { nombre max de registres A1..AN (WAM) }
   MAX_BODY_GOALS = {$IFDEF FPC}32{$ELSE}16{$ENDIF};
   MAX_RULE_VARS  = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
+  MAX_LIST_ELEMS = {$IFDEF FPC}128{$ELSE}32{$ENDIF};
   HEAP_SIZE     = 2048;
   STACK_SIZE    = 1024;
   TRAIL_SIZE    = 512;
@@ -631,7 +632,7 @@ Type
     FAK_VAR,       { variable nommee : name = nom variable         }
     FAK_ANON,      { variable anonyme _ : pas de liaison           }
     FAK_STR,       { structure foncteur(args) : val = index functor}
-    FAK_LIST       { liste [H|T] : stub pour TODO 13               }
+    FAK_LIST       { liste [H|T] (TODO 13)                         }
   );
 
   TFactArg = Record
@@ -639,6 +640,10 @@ Type
     AtomIdx : Integer;   { FAK_ATOM : index atome                  }
     IntVal  : LongInt;   { FAK_INT : valeur entiere                }
     VarName : TString;   { FAK_VAR : nom de la variable            }
+    { FAK_LIST (TODO 13) }
+    ListStart : Integer; { index debut dans ListElemTab             }
+    ListLen   : Integer; { nombre d elements (avant |)              }
+    HasTail   : Boolean; { True si notation [..|Tail]               }
   End;
 
   { ---- Clause Prolog (TODO 10) --------------------------------- }
@@ -732,6 +737,10 @@ Var
   { Variables locales de la regle courante }
   RuleVarTab   : Array[0..MAX_RULE_VARS - 1] Of TRuleVarEntry;
   RuleVarCount : Integer;
+
+  { Elements de liste (TODO 13) }
+  ListElemTab   : Array[0..MAX_LIST_ELEMS - 1] Of TFactArg;
+  ListElemCount : Integer;
 
   { Representation des termes WAM (TODO 06) }
   Heap       : Array[0..HEAP_SIZE - 1] Of Integer;  { tas WAM             }
@@ -871,6 +880,10 @@ Procedure ParseRuleBody(CIdx : Integer); Forward;
 Procedure EmitRuleCode(CIdx : Integer); Forward;
 { Retour arriere - Backtracking (TODO 12) }
 Procedure EmitBacktrackRuntime; Forward;
+{ Listes (TODO 13) }
+Procedure EmitListRuntime; Forward;
+Procedure EmitBuildListToAX(Const Arg : TFactArg; InRule : Boolean); Forward;
+Procedure EmitLoadArgToAX(Const Arg : TFactArg; InRule : Boolean); Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1160,6 +1173,8 @@ Begin
   { TODO 11 }
   GoalCount    := 0;
   RuleVarCount := 0;
+  { TODO 13 }
+  ListElemCount := 0;
 End;
 
 { ---- Statistiques ------------------------------------------ }
@@ -4115,12 +4130,424 @@ Begin
   EmitBlankLine;
 End;
 
+{ ============================================================
+  TODO 13 - LISTES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- EmitListRuntime : emettre les routines de liste ----------- }
+{ Routines WAM pour la construction et la decomposition de listes, }
+{ ainsi que les predicats de liste standard.                       }
+{                                                                  }
+{   _PLRT_PUTLIST : AX=head, BX=tail -> AX=tagged list            }
+{     Alloue 2 cellules sur le heap pour [Head|Tail]               }
+{     heap[htop] = head, heap[htop+1] = tail                      }
+{     AX = MakeList(htop) = (TAG_LIST << 13) | htop               }
+{     htop += 2                                                    }
+{                                                                  }
+{   _PLRT_GETLIST : AX=tagged list -> BX=head, CX=tail            }
+{     Extrait la tete et la queue d une liste                      }
+{     CF=1 si AX n est pas une liste                               }
+{                                                                  }
+{   _PLRT_LENGTH : AX=tagged list -> AX=longueur (entier)         }
+{   _PLRT_MEMBER : AX=elem, BX=liste -> CF=1 si pas membre        }
+{   _PLRT_APPEND : AX=l1, BX=l2 -> AX=l1++l2 (sur le heap)       }
+{   _PLRT_NTH    : AX=index (0-based), BX=liste -> AX=element     }
+{   _PLRT_LAST   : AX=liste -> AX=dernier element                 }
+Procedure EmitListRuntime;
+Var
+  NS        : TString;
+Begin
+  EmitBlankLine;
+  EmitComment('=======================================');
+  EmitComment('  Routines de liste (TODO 13)');
+  EmitComment('=======================================');
+  EmitBlankLine;
+
+  { -------------------------------------------------------------- }
+  { _PLRT_PUTLIST : AX=head, BX=tail -> AX=tagged list             }
+  { Alloue 2 cellules sur le heap                                  }
+  { -------------------------------------------------------------- }
+  EmitLabel('_PLRT_PUTLIST');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [_PL_HTOP]');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstr('SHL    SI,1');
+  EmitInstrAB('ADD', 'SI', 'OFFSET _PL_HEAP');
+  EmitInstrAB('MOV', 'WORD PTR [SI]', 'AX');     { heap[htop] = head }
+  EmitInstrAB('MOV', 'WORD PTR [SI+2]', 'BX');   { heap[htop+1] = tail }
+  EmitInstrA('POP', 'AX');  { AX = old htop }
+  { Tag as LIST: (TAG_LIST << 13) | htop }
+  Str(TAG_LIST Shl TAG_SHIFT, NS);
+  EmitInstrAB('OR', 'AX', NS);
+  EmitInstr('ADD    WORD PTR [_PL_HTOP],2');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { -------------------------------------------------------------- }
+  { _PLRT_GETLIST : AX=tagged list -> BX=head, CX=tail            }
+  { CF=1 si pas une liste                                         }
+  { -------------------------------------------------------------- }
+  EmitLabel('_PLRT_GETLIST');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'AX');
+  { Verifier le tag LIST }
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstrAB('AND', 'BX', IntToStr(TAG_MASK));
+  Str(TAG_LIST Shl TAG_SHIFT, NS);
+  EmitInstrAB('CMP', 'BX', NS);
+  EmitInstrA('JNE', '_PLRT_GETL_FAIL');
+  { Extraire la valeur (adresse heap) }
+  EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstr('SHL    SI,1');
+  EmitInstrAB('ADD', 'SI', 'OFFSET _PL_HEAP');
+  EmitInstrAB('MOV', 'BX', 'WORD PTR [SI]');     { BX = head }
+  EmitInstrAB('MOV', 'CX', 'WORD PTR [SI+2]');   { CX = tail }
+  EmitInstrA('POP', 'AX');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('CLC');
+  EmitInstr('RET');
+  EmitLabel('_PLRT_GETL_FAIL');
+  EmitInstrA('POP', 'AX');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('STC');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { -------------------------------------------------------------- }
+  { _PLRT_LENGTH : AX=tagged list -> AX=longueur (tagged int)     }
+  { Parcourt la liste et compte les elements                       }
+  { -------------------------------------------------------------- }
+  EmitLabel('_PLRT_LENGTH');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrAB('XOR', 'CX', 'CX');  { CX = compteur }
+  EmitLabel('_PLRT_LEN_LP');
+  { Verifier si AX = [] }
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstrAB('AND', 'BX', IntToStr(TAG_MASK));
+  Str(TAG_LIST Shl TAG_SHIFT, NS);
+  EmitInstrAB('CMP', 'BX', NS);
+  EmitInstrA('JNE', '_PLRT_LEN_DONE');
+  { Extraire la queue }
+  EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstr('SHL    SI,1');
+  EmitInstrAB('ADD', 'SI', 'OFFSET _PL_HEAP');
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [SI+2]');  { AX = tail }
+  EmitInstr('INC    CX');
+  EmitInstrA('JMP', '_PLRT_LEN_LP');
+  EmitLabel('_PLRT_LEN_DONE');
+  { CX = longueur -> construire tagged int }
+  EmitInstrAB('MOV', 'AX', 'CX');
+  EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+  Str(TAG_INT Shl TAG_SHIFT, NS);
+  EmitInstrAB('OR', 'AX', NS);
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { -------------------------------------------------------------- }
+  { _PLRT_MEMBER : AX=elem, BX=liste -> CF=1 si pas membre        }
+  { Parcourt la liste et unifie chaque element avec AX             }
+  { -------------------------------------------------------------- }
+  EmitLabel('_PLRT_MEMBER');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrAB('MOV', 'DX', 'AX');  { DX = element a chercher }
+  EmitLabel('_PLRT_MEM_LP');
+  { Verifier si BX est une liste }
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstrAB('AND', 'AX', IntToStr(TAG_MASK));
+  Str(TAG_LIST Shl TAG_SHIFT, NS);
+  EmitInstrAB('CMP', 'AX', NS);
+  EmitInstrA('JNE', '_PLRT_MEM_FAIL');
+  { Extraire head et tail }
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstr('SHL    SI,1');
+  EmitInstrAB('ADD', 'SI', 'OFFSET _PL_HEAP');
+  { Comparer head avec l element }
+  EmitInstrAB('CMP', 'DX', 'WORD PTR [SI]');
+  EmitInstrA('JE', '_PLRT_MEM_OK');
+  { Pas egal : passer au suivant }
+  EmitInstrAB('MOV', 'BX', 'WORD PTR [SI+2]');  { BX = tail }
+  EmitInstrA('JMP', '_PLRT_MEM_LP');
+  EmitLabel('_PLRT_MEM_OK');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('CLC');
+  EmitInstr('RET');
+  EmitLabel('_PLRT_MEM_FAIL');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('STC');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { -------------------------------------------------------------- }
+  { _PLRT_APPEND : AX=l1, BX=l2 -> AX=l1++l2 (construit sur heap)}
+  { Copie l1 en ajoutant l2 comme queue du dernier element         }
+  { -------------------------------------------------------------- }
+  EmitLabel('_PLRT_APPEND');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrA('PUSH', 'CX');
+  { Si l1 est vide, le resultat est l2 }
+  EmitInstrAB('MOV', 'CX', 'AX');
+  EmitInstrAB('AND', 'CX', IntToStr(TAG_MASK));
+  Str(TAG_LIST Shl TAG_SHIFT, NS);
+  EmitInstrAB('CMP', 'CX', NS);
+  EmitInstrA('JNE', '_PLRT_APP_L1EMPTY');
+  { l1 non-vide : extraire head et tail }
+  EmitInstrAB('MOV', 'DX', 'AX');
+  EmitInstrAB('AND', 'DX', IntToStr(VAL_MASK));
+  EmitInstrAB('MOV', 'SI', 'DX');
+  EmitInstr('SHL    SI,1');
+  EmitInstrAB('ADD', 'SI', 'OFFSET _PL_HEAP');
+  EmitInstrA('PUSH', 'BX');  { sauver l2 }
+  EmitInstrA('PUSH', 'WORD PTR [SI]');  { sauver head }
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [SI+2]');  { AX = tail de l1 }
+  { Appel recursif : AX=tail(l1), BX=l2 }
+  EmitInstr('CALL    _PLRT_APPEND');
+  { AX = append(tail(l1), l2) }
+  EmitInstrAB('MOV', 'BX', 'AX');  { BX = nouvelle queue }
+  EmitInstrA('POP', 'AX');   { AX = head de l1 }
+  EmitInstrAB('ADD', 'SP', '2');  { depiler BX sauvegarde }
+  { Construire la nouvelle cellule [head | append(tail,l2)] }
+  EmitInstr('CALL    _PLRT_PUTLIST');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitLabel('_PLRT_APP_L1EMPTY');
+  EmitInstrAB('MOV', 'AX', 'BX');  { resultat = l2 }
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { -------------------------------------------------------------- }
+  { _PLRT_NTH : AX=index (0-based int), BX=liste -> AX=element    }
+  { CF=1 si index hors bornes ou pas une liste                    }
+  { -------------------------------------------------------------- }
+  EmitLabel('_PLRT_NTH');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrAB('MOV', 'CX', 'AX');  { CX = index }
+  EmitLabel('_PLRT_NTH_LP');
+  { Verifier si BX est une liste }
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstrAB('AND', 'AX', IntToStr(TAG_MASK));
+  Str(TAG_LIST Shl TAG_SHIFT, NS);
+  EmitInstrAB('CMP', 'AX', NS);
+  EmitInstrA('JNE', '_PLRT_NTH_FAIL');
+  { Extraire head et tail }
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstr('SHL    SI,1');
+  EmitInstrAB('ADD', 'SI', 'OFFSET _PL_HEAP');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', '_PLRT_NTH_FOUND');
+  EmitInstr('DEC    CX');
+  EmitInstrAB('MOV', 'BX', 'WORD PTR [SI+2]');  { BX = tail }
+  EmitInstrA('JMP', '_PLRT_NTH_LP');
+  EmitLabel('_PLRT_NTH_FOUND');
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [SI]');  { AX = head }
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('CLC');
+  EmitInstr('RET');
+  EmitLabel('_PLRT_NTH_FAIL');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('STC');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { -------------------------------------------------------------- }
+  { _PLRT_LAST : AX=liste -> AX=dernier element                   }
+  { CF=1 si liste vide                                             }
+  { -------------------------------------------------------------- }
+  EmitLabel('_PLRT_LAST');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'BX');
+  EmitLabel('_PLRT_LAST_LP');
+  { Verifier si AX est une liste }
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstrAB('AND', 'BX', IntToStr(TAG_MASK));
+  Str(TAG_LIST Shl TAG_SHIFT, NS);
+  EmitInstrAB('CMP', 'BX', NS);
+  EmitInstrA('JNE', '_PLRT_LAST_FAIL');
+  { Extraire head et tail }
+  EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstr('SHL    SI,1');
+  EmitInstrAB('ADD', 'SI', 'OFFSET _PL_HEAP');
+  EmitInstrAB('MOV', 'BX', 'WORD PTR [SI+2]');  { BX = tail }
+  { Si tail n est pas une liste, head est le dernier }
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstrAB('AND', 'AX', IntToStr(TAG_MASK));
+  Str(TAG_LIST Shl TAG_SHIFT, NS);
+  EmitInstrAB('CMP', 'AX', NS);
+  EmitInstrA('JNE', '_PLRT_LAST_GOT');
+  { Tail est une liste : continuer }
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstrA('JMP', '_PLRT_LAST_LP');
+  EmitLabel('_PLRT_LAST_GOT');
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [SI]');  { AX = head (dernier) }
+  EmitInstrA('POP', 'BX');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('CLC');
+  EmitInstr('RET');
+  EmitLabel('_PLRT_LAST_FAIL');
+  EmitInstrA('POP', 'BX');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('STC');
+  EmitInstr('RET');
+  EmitBlankLine;
+End;
+
+{ ---- EmitLoadArgToAX : emettre le code pour charger un argument  }
+{ dans AX sous forme taguee WAM.                                    }
+{ InRule = True si on est dans une regle (variables dans l env BP).  }
+Procedure EmitLoadArgToAX(Const Arg : TFactArg; InRule : Boolean);
+Var
+  TagVal : Integer;
+  NS     : TString;
+  VarIdx : Integer;
+Begin
+  Case Arg.Kind Of
+    FAK_ATOM :
+    Begin
+      TagVal := (TAG_ATOM Shl TAG_SHIFT) Or (Arg.AtomIdx And VAL_MASK);
+      Str(TagVal, NS);
+      EmitInstrAB('MOV', 'AX', NS);
+      EmitComment('atom ' + AtomName(Arg.AtomIdx));
+    End;
+
+    FAK_INT :
+    Begin
+      TagVal := (TAG_INT Shl TAG_SHIFT) Or
+                (Integer(Arg.IntVal) And VAL_MASK);
+      Str(TagVal, NS);
+      EmitInstrAB('MOV', 'AX', NS);
+      EmitComment('int ' + IntToStr(Arg.IntVal));
+    End;
+
+    FAK_VAR :
+    Begin
+      If InRule Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(Arg.VarName);
+        EmitComment('var ' + Arg.VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+      End
+      Else
+      Begin
+        { Dans un fait, variable = creer REF libre sur le heap }
+        EmitComment('var ' + Arg.VarName);
+        EmitInstrAB('MOV', 'AX', 'WORD PTR [_PL_HTOP]');
+        EmitInstrAB('MOV', 'SI', 'AX');
+        EmitInstrAB('SHL', 'SI', '1');
+        EmitInstrAB('ADD', 'SI', 'OFFSET _PL_HEAP');
+        EmitInstrAB('MOV', 'WORD PTR [SI]', 'AX');
+        EmitInstr('INC    WORD PTR [_PL_HTOP]');
+      End;
+    End;
+
+    FAK_ANON :
+    Begin
+      EmitComment('anon _');
+      EmitInstrAB('MOV', 'AX', 'WORD PTR [_PL_HTOP]');
+      EmitInstrAB('MOV', 'SI', 'AX');
+      EmitInstrAB('SHL', 'SI', '1');
+      EmitInstrAB('ADD', 'SI', 'OFFSET _PL_HEAP');
+      EmitInstrAB('MOV', 'WORD PTR [SI]', 'AX');
+      EmitInstr('INC    WORD PTR [_PL_HTOP]');
+    End;
+
+    FAK_LIST :
+    Begin
+      EmitBuildListToAX(Arg, InRule);
+    End;
+  Else
+    EmitInstrAB('MOV', 'AX', '0');
+  End;
+End;
+
+{ ---- EmitBuildListToAX : construire une liste sur le heap -------- }
+{ Construit la liste element par element de droite a gauche.         }
+{ Le resultat (tagged LIST) est dans AX.                             }
+{                                                                    }
+{ Pour [a, b, c] :                                                   }
+{   1. BX = [] (tagged atom)                                        }
+{   2. AX = tagged(c), CALL _PLRT_PUTLIST -> AX = [c]              }
+{   3. BX = AX, AX = tagged(b), CALL _PLRT_PUTLIST -> AX = [b,c]  }
+{   4. BX = AX, AX = tagged(a), CALL _PLRT_PUTLIST -> AX = [a,b,c]}
+{                                                                    }
+{ Pour [a, b | T] :                                                  }
+{   1. BX = T (tagged var)                                          }
+{   2. AX = tagged(b), CALL _PLRT_PUTLIST -> AX = [b|T]            }
+{   3. BX = AX, AX = tagged(a), CALL _PLRT_PUTLIST -> AX = [a,b|T] }
+Procedure EmitBuildListToAX(Const Arg : TFactArg; InRule : Boolean);
+Var
+  I         : Integer;
+  NilTagVal : Integer;
+  NS        : TString;
+Begin
+  EmitComment('build list (' + IntToStr(Arg.ListLen) + ' elems' +
+              ')');
+
+  { Commencer par la queue }
+  If Arg.HasTail Then
+  Begin
+    { Queue explicite : charger l element de queue }
+    EmitLoadArgToAX(ListElemTab[Arg.ListStart + Arg.ListLen], InRule);
+    EmitInstrAB('MOV', 'BX', 'AX');
+  End
+  Else
+  Begin
+    { Queue implicite : [] }
+    NilTagVal := (TAG_ATOM Shl TAG_SHIFT) Or
+                 (AtomIntern('[]') And VAL_MASK);
+    Str(NilTagVal, NS);
+    EmitInstrAB('MOV', 'BX', NS);
+    EmitComment('tail = []');
+  End;
+
+  { Construire de droite a gauche }
+  For I := Arg.ListLen - 1 DownTo 0 Do
+  Begin
+    { Sauver la queue courante (BX) }
+    EmitInstrA('PUSH', 'BX');
+    { Charger l element dans AX }
+    EmitLoadArgToAX(ListElemTab[Arg.ListStart + I], InRule);
+    { Restaurer la queue }
+    EmitInstrA('POP', 'BX');
+    { Construire la cellule [head|tail] }
+    EmitInstr('CALL    _PLRT_PUTLIST');
+    { Pour l iteration suivante, le resultat courant devient la queue }
+    If I > 0 Then
+      EmitInstrAB('MOV', 'BX', 'AX');
+  End;
+  { Resultat final dans AX }
+End;
+
 { ---- EmitRuntime : emettre les routines runtime --------------- }
-{ Emet les routines de backtracking (TODO 12) et sera complete   }
-{ par TODO 24 (runtime WAM minimal).                              }
+{ Emet les routines de backtracking (TODO 12) et de liste (TODO 13). }
 Procedure EmitRuntime;
 Begin
   EmitBacktrackRuntime;
+  EmitListRuntime;
 End;
 
 { ---- EmitClose : fermer le fichier de sortie ASM -------------- }
@@ -4244,6 +4671,9 @@ Begin
   Arg.AtomIdx := -1;
   Arg.IntVal  := 0;
   Arg.VarName := '';
+  Arg.ListStart := 0;
+  Arg.ListLen   := 0;
+  Arg.HasTail   := False;
 
   Case CurToken.Kind Of
     TK_ATOM :
@@ -4303,6 +4733,77 @@ Begin
         ParserAdvance;
       End;
     End;
+
+    TK_LBRACKET :
+    Begin
+      ParserAdvance; { consomme '[' }
+      If CurToken.Kind = TK_RBRACKET Then
+      Begin
+        { Liste vide [] -> atome special }
+        Arg.Kind    := FAK_ATOM;
+        Arg.AtomIdx := AtomIntern('[]');
+        ParserAdvance; { consomme ']' }
+      End
+      Else
+      Begin
+        { Liste non-vide [elem1, elem2, ... | Tail] }
+        Arg.Kind      := FAK_LIST;
+        Arg.ListStart := ListElemCount;
+        Arg.ListLen   := 0;
+        Arg.HasTail   := False;
+        Arg.VarName   := '';
+
+        While (CurToken.Kind <> TK_EOF) And
+              (CurToken.Kind <> TK_RBRACKET) And
+              (CurToken.Kind <> TK_PIPE) Do
+        Begin
+          If ListElemCount >= MAX_LIST_ELEMS Then
+          Begin
+            CompileError('trop d elements de liste (max=' +
+                         IntToStr(MAX_LIST_ELEMS) + ')');
+            Break;
+          End;
+          ParseFactArg(ListElemTab[ListElemCount]);
+          Inc(ListElemCount);
+          Inc(Arg.ListLen);
+
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+            ParserAdvance
+          Else If (CurToken.Kind <> TK_RBRACKET) And
+                  (CurToken.Kind <> TK_PIPE) Then
+          Begin
+            CompileError('] ou , ou | attendu dans la liste');
+            Break;
+          End;
+        End;
+
+        { Queue explicite [..|Tail] }
+        If CurToken.Kind = TK_PIPE Then
+        Begin
+          ParserAdvance; { consomme '|' }
+          Arg.HasTail := True;
+          { Parser l element de queue dans ListElemTab }
+          If ListElemCount >= MAX_LIST_ELEMS Then
+            CompileError('trop d elements de liste (max=' +
+                         IntToStr(MAX_LIST_ELEMS) + ')')
+          Else
+          Begin
+            ParseFactArg(ListElemTab[ListElemCount]);
+            Inc(ListElemCount);
+          End;
+
+          If CurToken.Kind = TK_RBRACKET Then
+            ParserAdvance
+          Else
+            CompileError('] attendu apres la queue de liste');
+        End
+        Else If CurToken.Kind = TK_RBRACKET Then
+          ParserAdvance
+        Else
+          CompileError('] attendu a la fin de la liste');
+      End;
+    End;
+
   Else
     CompileError('argument de fait inattendu: ' + CurToken.Val);
     ParserAdvance;
@@ -4604,6 +5105,14 @@ Begin
         EmitInstrAB('ADD', 'SI', 'OFFSET _PL_HEAP');
         EmitInstrAB('MOV', 'WORD PTR [SI]', 'BX');
         EmitInstr('INC    WORD PTR [_PL_HTOP]');
+      End;
+
+      FAK_LIST :
+      Begin
+        { Liste : construire sur le heap (TODO 13) }
+        EmitComment('list');
+        EmitBuildListToAX(ClauseTab[CIdx].Args[I], False);
+        EmitInstrAB('MOV', 'BX', 'AX');
       End;
     Else
       EmitComment('arg non gere');
@@ -4916,6 +5425,14 @@ Begin
           EmitInstrAB('MOV', 'WORD PTR [SI]', 'BX');
           EmitInstr('INC    WORD PTR [_PL_HTOP]');
         End;
+
+        FAK_LIST :
+        Begin
+          { Liste : construire sur le heap (TODO 13) }
+          EmitComment('list');
+          EmitBuildListToAX(ClauseTab[CIdx].Args[I], True);
+          EmitInstrAB('MOV', 'BX', 'AX');
+        End;
       Else
         EmitComment('arg tete non gere');
         EmitInstrAB('MOV', 'BX', '0');
@@ -4984,6 +5501,15 @@ Begin
           EmitInstrAB('ADD', 'SI', 'OFFSET _PL_HEAP');
           EmitInstrAB('MOV', 'WORD PTR [SI]', 'AX');
           EmitInstr('INC    WORD PTR [_PL_HTOP]');
+          EmitInstrAB('MOV', 'WORD PTR [_PL_ARGS + ' +
+                      IntToStr(J * 2) + ']', 'AX');
+        End;
+
+        FAK_LIST :
+        Begin
+          { Liste : construire sur le heap (TODO 13) }
+          EmitComment('list');
+          EmitBuildListToAX(GoalTab[GIdx].Args[J], True);
           EmitInstrAB('MOV', 'WORD PTR [_PL_ARGS + ' +
                       IntToStr(J * 2) + ']', 'AX');
         End;
@@ -5227,7 +5753,7 @@ Begin
 
   EmitBlankLine;
   EmitComment('=======================================');
-  EmitComment('  Clauses compilees (TODO 10 + 11 + 12)');
+  EmitComment('  Clauses compilees (TODO 10 + 11 + 12 + 13)');
   EmitComment('=======================================');
 
   { Emettre le code de chaque clause individuelle }
@@ -5282,7 +5808,7 @@ Begin
 End;
 
 { ============================================================
-  STUBS POUR LES TODOS RESTANTS (13..25)
+  STUBS POUR LES TODOS RESTANTS (14..25)
   ============================================================ }
 
 Procedure Run;
