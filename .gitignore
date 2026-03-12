@@ -1,0 +1,6 @@
+# Build artifacts
+*.o
+*.ppu
+*.exe
+AL60C86
+
