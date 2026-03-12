@@ -219,7 +219,7 @@
             input() converti en int : int(input()) -> _PYRT_STRTONUM
             open/read/write/close : stubs ou non implemente (avertissement)
 
-  TODO 13 - IF / ELIF / ELSE
+  TODO 13 - IF / ELIF / ELSE [IMPLEMENTE]
             ParseIfStmt : if cond: bloc {elif cond: bloc} [else: bloc]
               Gestion de l indentation pour delimiter les blocs
               Emission TEST AX,AX / JZ pour condition fausse
@@ -731,6 +731,9 @@ Procedure ParseDictLiteral(Var Res : TExprVal);  Forward;
 Procedure EmitExprRuntime;  Forward;
 { TODO 12 - Forward declarations entrees/sorties }
 Procedure EmitIORuntime;  Forward;
+{ TODO 13 - Forward declarations if/elif/else }
+Procedure ParseBlock;    Forward;
+Procedure ParseIfStmt;   Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -3202,8 +3205,45 @@ End;
 
 { ---- ParseExpr : parser une expression complete -------------- }
 Procedure ParseExpr(Var Res : TExprVal);
+Var
+  CondRes  : TExprVal;
+  ElseRes  : TExprVal;
+  LblElse  : TString;
+  LblEnd   : TString;
 Begin
   ParseExprPrec(1, Res);
+  { Expression ternaire : a if cond else b (TODO 13) }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'if') Then
+  Begin
+    ParserAdvance;
+    { Sauvegarder la valeur de a }
+    ExprFlushToAX(Res);
+    EmitInstr('PUSH   AX');
+    { Parser la condition }
+    ParseExprPrec(1, CondRes);
+    ExprFlushToAX(CondRes);
+    LblElse := LabelGen;
+    LblEnd  := LabelGen;
+    { Si condition fausse, aller au else }
+    EmitInstr('TEST   AX, AX');
+    EmitInstr('JZ     ' + LblElse);
+    { Condition vraie : utiliser a (deja sur la pile) }
+    EmitInstr('POP    AX');
+    EmitInstr('JMP    ' + LblEnd);
+    { Else }
+    EmitLabel(LblElse);
+    EmitInstr('ADD    SP, 2');
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'else') Then
+    Begin
+      ParserAdvance;
+      ParseExprPrec(1, ElseRes);
+      ExprFlushToAX(ElseRes);
+    End
+    Else
+      CompileError('''else'' attendu dans expression ternaire', CurToken.Line);
+    EmitLabel(LblEnd);
+    ExprMakeAX(Res.TypeIdx, Res);
+  End;
 End;
 
 { ============================================================
@@ -4676,6 +4716,245 @@ Begin
   ExprMakeAX(TY_IDX_DICT, Res);
 End;
 
+{ ============================================================
+  TODO 13 - IF / ELIF / ELSE [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseBlock : parser un bloc indente ---------------------- }
+{ Attend NEWLINE INDENT ... instructions ... DEDENT              }
+Procedure ParseBlock;
+Var
+  VarName : TString;
+  Idx     : Integer;
+Begin
+  { Sauter le NEWLINE apres ':' }
+  While CurToken.Kind = TK_NEWLINE Do
+    ParserAdvance;
+  { Attendre INDENT }
+  If CurToken.Kind <> TK_INDENT Then
+  Begin
+    CompileError('bloc indente attendu', CurToken.Line);
+    Exit;
+  End;
+  ParserAdvance; { consommer INDENT }
+
+  { Parser les instructions jusqu au DEDENT }
+  While (CurToken.Kind <> TK_DEDENT) And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    { Sauter les NEWLINE }
+    If CurToken.Kind = TK_NEWLINE Then
+    Begin
+      ParserAdvance;
+      Continue;
+    End;
+    { INDENT inattendu }
+    If CurToken.Kind = TK_INDENT Then
+    Begin
+      ParserAdvance;
+      Continue;
+    End;
+    { if / elif / else (recursif - TODO 13) }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'if') Then
+    Begin
+      ParseIfStmt;
+      Continue;
+    End;
+    { pass : instruction vide }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'pass') Then
+    Begin
+      EmitComment('pass');
+      ParserAdvance;
+      If CurToken.Kind = TK_NEWLINE Then ParserAdvance;
+      Continue;
+    End;
+    { global }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'global') Then
+    Begin
+      ParserAdvance;
+      While (CurToken.Kind <> TK_EOF) And
+            (CurToken.Kind <> TK_NEWLINE) Do
+      Begin
+        If CurToken.Kind = TK_IDENT Then
+        Begin
+          VarName := CurToken.Val;
+          Idx := SymFind(VarName);
+          If Idx < 0 Then
+            Idx := SymAdd(VarName, SK_VAR, TY_UNKNOWN, 0);
+          If Idx >= 0 Then
+            SymTab[Idx].IsGlobal := True;
+        End;
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+          ParserAdvance;
+      End;
+      Continue;
+    End;
+    { nonlocal }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'nonlocal') Then
+    Begin
+      ParserAdvance;
+      While (CurToken.Kind <> TK_EOF) And
+            (CurToken.Kind <> TK_NEWLINE) Do
+      Begin
+        If CurToken.Kind = TK_IDENT Then
+        Begin
+          VarName := CurToken.Val;
+          Idx := SymFind(VarName);
+          If Idx < 0 Then
+            Idx := SymAdd(VarName, SK_VAR, TY_UNKNOWN, 0);
+          If Idx >= 0 Then
+            SymTab[Idx].IsNonlocal := True;
+        End;
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+          ParserAdvance;
+      End;
+      Continue;
+    End;
+    { Autres mots-cles (stub) - sauter la ligne }
+    If (CurToken.Kind = TK_KEYWORD) And
+       (CurToken.Val <> 'True') And (CurToken.Val <> 'False') And
+       (CurToken.Val <> 'None') And (CurToken.Val <> 'not') Then
+    Begin
+      While (CurToken.Kind <> TK_EOF) And
+            (CurToken.Kind <> TK_NEWLINE) Do
+        ParserAdvance;
+      Continue;
+    End;
+    { Affectation : ident = expr / ident += expr / a, b = e1, e2 }
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      VarName := CurToken.Val;
+      Idx := SymFind(VarName);
+      If Idx < 0 Then
+        Idx := SymAdd(VarName, SK_VAR, TY_UNKNOWN, 0);
+      ParserAdvance;
+      If ((CurToken.Kind = TK_OP) And IsAssignOp(CurToken.Val)) Or
+         ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',')) Then
+      Begin
+        ParseAssign(Idx);
+        If CurToken.Kind = TK_NEWLINE Then
+          ParserAdvance;
+        Continue;
+      End
+      Else
+      Begin
+        GExprDummy.Kind    := EK_MEM;
+        GExprDummy.TypeIdx := SymTab[Idx].TypeIdx;
+        GExprDummy.Offset  := SymTab[Idx].Offset;
+        GExprDummy.SymIdx  := Idx;
+        GExprDummy.ImmVal  := 0;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+          ParseCallArgs(Idx, GExprDummy);
+        If (CurToken.Kind = TK_OP) And (BinOpPrec(CurToken.Val) > 0) Then
+          ExprFlushToAX(GExprDummy);
+      End;
+    End
+    Else
+    Begin
+      ParseExpr(GExprDummy);
+    End;
+    { Avancer si bloque }
+    If (CurToken.Kind <> TK_EOF) And
+       (CurToken.Kind <> TK_NEWLINE) And
+       (CurToken.Kind <> TK_DEDENT) Then
+      ParserAdvance;
+    If CurToken.Kind = TK_NEWLINE Then
+      ParserAdvance;
+  End;
+  { Consommer le DEDENT }
+  If CurToken.Kind = TK_DEDENT Then
+    ParserAdvance;
+End;
+
+{ ---- ParseIfStmt : parser if / elif / else -------------------- }
+Procedure ParseIfStmt;
+Var
+  LblElse  : TString;
+  LblEndIf : TString;
+  CondRes  : TExprVal;
+Begin
+  LblEndIf := LabelGen;
+
+  { Consommer 'if' }
+  EmitComment('-- if --');
+  ParserAdvance;
+
+  { Parser la condition }
+  ParseExpr(CondRes);
+  ExprFlushToAX(CondRes);
+
+  { Attendre ':' }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+    ParserAdvance
+  Else
+    CompileError(''':'' attendu apres condition if', CurToken.Line);
+
+  { Generer le saut conditionnel }
+  LblElse := LabelGen;
+  EmitInstr('TEST   AX, AX');
+  EmitInstr('JZ     ' + LblElse);
+
+  { Parser le bloc if }
+  ParseBlock;
+
+  { Saut vers la fin }
+  EmitInstr('JMP    ' + LblEndIf);
+
+  { Label else/elif }
+  EmitLabel(LblElse);
+
+  { Boucle pour les elif }
+  While (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'elif') Do
+  Begin
+    EmitComment('-- elif --');
+    ParserAdvance;
+
+    { Parser la condition elif }
+    ParseExpr(CondRes);
+    ExprFlushToAX(CondRes);
+
+    { Attendre ':' }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+      ParserAdvance
+    Else
+      CompileError(''':'' attendu apres condition elif', CurToken.Line);
+
+    { Generer le saut conditionnel }
+    LblElse := LabelGen;
+    EmitInstr('TEST   AX, AX');
+    EmitInstr('JZ     ' + LblElse);
+
+    { Parser le bloc elif }
+    ParseBlock;
+
+    { Saut vers la fin }
+    EmitInstr('JMP    ' + LblEndIf);
+
+    { Label pour le prochain elif/else }
+    EmitLabel(LblElse);
+  End;
+
+  { Branche else optionnelle }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'else') Then
+  Begin
+    EmitComment('-- else --');
+    ParserAdvance;
+
+    { Attendre ':' }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+      ParserAdvance
+    Else
+      CompileError(''':'' attendu apres else', CurToken.Line);
+
+    { Parser le bloc else }
+    ParseBlock;
+  End;
+
+  { Label fin du if }
+  EmitLabel(LblEndIf);
+End;
+
 Procedure Run;
 Var
   VarName : TString;
@@ -4756,6 +5035,20 @@ Begin
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
           ParserAdvance;
       End;
+      Continue;
+    End;
+    { Instruction if / elif / else (TODO 13) }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'if') Then
+    Begin
+      ParseIfStmt;
+      Continue;
+    End;
+    { Instruction pass (TODO 13) }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'pass') Then
+    Begin
+      EmitComment('pass');
+      ParserAdvance;
+      If CurToken.Kind = TK_NEWLINE Then ParserAdvance;
       Continue;
     End;
     { Mots-cles d instruction : stub (TODO 06+) - sauter la ligne }
