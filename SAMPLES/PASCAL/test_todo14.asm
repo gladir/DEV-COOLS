@@ -573,9 +573,6 @@ _TPF_Main:
         CALL _TPF_SHOWSUM
         ADD ESP,8
         MOV EAX,7
-        PUSH EAX
-        CALL _TPF_DOUBLE
-        ADD ESP,4
         MOV DWORD PTR [_TPV_A],EAX
 ; writeln
         LEA EAX,[_TPK_7]

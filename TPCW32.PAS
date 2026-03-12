@@ -7489,6 +7489,29 @@ Begin
       Exit;
     End;
 
+    { Typecast : TypeName(expr) -> evaluer expr, resultat dans EAX }
+    If ((Up = 'INTEGER') Or (Up = 'LONGINT') Or (Up = 'WORD') Or
+        (Up = 'BYTE') Or (Up = 'SHORTINT') Or (Up = 'CHAR') Or
+        (Up = 'BOOLEAN') Or (Up = 'POINTER') Or (Up = 'PCHAR') Or
+        (Up = 'REAL') Or (Up = 'SINGLE') Or (Up = 'DOUBLE') Or
+        (Up = 'LONGWORD') Or (Up = 'COMP')) And
+       (EP + 1 < EPEnd) And
+       (TokenPool[EP + 1].Kind = TK_PUNCT) And
+       (TokenPool[EP + 1].Val = '(') Then
+    Begin
+      Inc(EP);  { sauter le nom de type }
+      Inc(EP);  { sauter '(' }
+      ParseExpr(PI);
+      EPMatch(')');
+      { Masquer selon la taille du type cible }
+      If (Up = 'BYTE') Or (Up = 'SHORTINT') Or (Up = 'CHAR') Or
+         (Up = 'BOOLEAN') Then
+        EmitInstr('AND EAX,0FFh')
+      Else If Up = 'WORD' Then
+        EmitInstr('AND EAX,0FFFFh');
+      Exit;
+    End;
+
     { SIZEOF(T) / SIZEOF(V) }
     If Up = 'SIZEOF' Then
     Begin
@@ -10372,10 +10395,14 @@ Begin
             Inc(EP);
           Break;
         End;
+        SI := EP;  { sauvegarder position avant ParseStmt }
         ParseStmt(PI);
         { Consommer ; optionnel entre instructions }
         If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
            (TokenPool[EP].Val = ';') Then
+          Inc(EP);
+        { Securite : si EP n a pas avance, forcer l avancement }
+        If EP = SI Then
           Inc(EP);
       End;
       Exit;
@@ -12800,7 +12827,7 @@ End;
 Procedure ParseBody(PI : Integer);
 Var
   Up      : TString;
-  SaveEP, SaveEnd : Integer;
+  SaveEP, SaveEnd, PrevEP : Integer;
 Begin
   { Sauvegarder le contexte si necessaire }
   SaveEP  := EP;
@@ -12850,7 +12877,11 @@ Begin
     End;
 
     { Deleguer a ParseStmt }
+    PrevEP := EP;
     ParseStmt(PI);
+    { Securite : si EP n a pas avance, forcer l avancement }
+    If EP = PrevEP Then
+      Inc(EP);
   End;
 
   { Restaurer le contexte }

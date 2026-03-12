@@ -318,9 +318,6 @@ _TPF_Main:
         MOV ESI,EAX
         CALL _TPRT_PRINTSTR
         MOV EAX,5
-        PUSH EAX
-        CALL _TPF_DOUBLE
-        ADD ESP,4
         CALL _TPRT_NUMTOSTR
         LEA ESI,[NUMBUF]
         CALL _TPRT_PRINTSTR
