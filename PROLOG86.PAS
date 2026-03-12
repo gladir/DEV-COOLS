@@ -6035,7 +6035,9 @@ Begin
               ParseFactArg(G.Args[1 + A]);
               Inc(A);
               Inc(G.ArgCount);
-            End;
+            End
+            Else
+              Break;
             If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
               ParserAdvance
             Else If CurToken.Kind <> TK_RPAREN Then
