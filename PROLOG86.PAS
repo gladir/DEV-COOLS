@@ -239,7 +239,7 @@
               arg(N, Term, Arg) : extraire le Nieme argument
               copy_term(Original, Copie) : copie avec nouvelles variables
 
-  TODO 16 - CONTROLE : CUT, IF-THEN-ELSE, NEGATION
+  TODO 16 - CONTROLE : CUT, IF-THEN-ELSE, NEGATION [IMPLEMENTE]
             Cut (!) : supprimer tous les points de choix jusqu au parent
               Emission : MOV [_PL_CUT_BARRIER], saved_choice_point
               Couper : restaurer la pile de choix au niveau sauvegarde
@@ -922,6 +922,8 @@ Function  ParseArithFactor : Integer; Forward;
 Procedure EmitArithEval(NodeIdx : Integer); Forward;
 { Comparaison et tests de type (TODO 15) }
 Procedure EmitCompareRuntime; Forward;
+{ Controle : cut, if-then-else, negation (TODO 16) }
+Procedure EmitControlRuntime; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -3991,6 +3993,7 @@ Begin
   { Pointeur de pile de points de choix (TODO 12) }
   EmitComment('--- Backtracking (choice point stack) ---');
   EmitRaw('_PL_CPTOP   DW  0');
+  EmitRaw('_PL_CUT_BARRIER DW  0');
   EmitBlankLine;
 
   { Registres d arguments WAM A1..AN (TODO 10) }
@@ -5295,14 +5298,69 @@ Begin
   EmitBlankLine;
 End;
 
+{ ============================================================
+  TODO 16 - CONTROLE : CUT, IF-THEN-ELSE, NEGATION [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- EmitControlRuntime : routines de controle --------------- }
+{ _PLRT_NEGATION : negation par echec                           }
+{   Entree : AX = adresse du predicat a essayer                 }
+{   Sortie : CF=0 si le predicat echoue (succes de \+)          }
+{            CF=1 si le predicat reussit (echec de \+)          }
+Procedure EmitControlRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=== TODO 16 : Control Runtime ===');
+  EmitBlankLine;
+
+  { _PLRT_NEGATION : negation par echec }
+  { AX = adresse du but a essayer }
+  { Sauvegarder l etat, essayer le but, restaurer }
+  EmitLabel(PL_RT_PFX + 'NEGATION');
+  EmitComment('negation by failure: try goal in AX');
+  EmitComment('save HTOP, TTOP, CPTOP');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'WORD PTR [_PL_HTOP]');
+  EmitInstrA('PUSH', 'WORD PTR [_PL_TTOP]');
+  EmitInstrA('PUSH', 'WORD PTR [_PL_CPTOP]');
+  { Appeler le but via AX }
+  EmitInstr('CALL    AX');
+  { Si CF=0 (succes du but) -> la negation echoue }
+  EmitInstrA('JNC', PL_RT_PFX + 'NEG_FAIL');
+  { CF=1 (echec du but) -> la negation reussit }
+  EmitComment('goal failed -> negation succeeds');
+  EmitInstrA('POP', 'WORD PTR [_PL_CPTOP]');
+  EmitInstrA('POP', 'WORD PTR [_PL_TTOP]');
+  EmitInstrA('POP', 'WORD PTR [_PL_HTOP]');
+  EmitInstrAB('MOV', 'SP', 'BP');
+  EmitInstrA('POP', 'BP');
+  EmitInstr('CLC');
+  EmitInstr('RET');
+  EmitLabel(PL_RT_PFX + 'NEG_FAIL');
+  EmitComment('goal succeeded -> negation fails');
+  { Restaurer l etat }
+  EmitInstrA('POP', 'WORD PTR [_PL_CPTOP]');
+  EmitInstrA('POP', 'WORD PTR [_PL_TTOP]');
+  EmitInstrA('POP', 'WORD PTR [_PL_HTOP]');
+  { Untrail pour defaire les liaisons }
+  EmitInstr('CALL    ' + PL_RT_PFX + 'UNTRAIL');
+  EmitInstrAB('MOV', 'SP', 'BP');
+  EmitInstrA('POP', 'BP');
+  EmitInstr('STC');
+  EmitInstr('RET');
+  EmitBlankLine;
+End;
+
 { ---- EmitRuntime : emettre les routines runtime --------------- }
-{ Emet les routines de backtracking, liste, arith et compare.     }
+{ Emet les routines de backtracking, liste, arith, compare, ctrl. }
 Procedure EmitRuntime;
 Begin
   EmitBacktrackRuntime;
   EmitListRuntime;
   EmitArithRuntime;
   EmitCompareRuntime;
+  EmitControlRuntime;
 End;
 
 { ---- EmitClose : fermer le fichier de sortie ASM -------------- }
@@ -5937,6 +5995,78 @@ Begin
   G.PredName := '';
   G.Arity    := 0;
   G.ArgCount := 0;
+
+  { --- TODO 16 : Cut ! --- }
+  If CurToken.Kind = TK_CUT Then
+  Begin
+    G.PredName := '!';
+    G.Arity    := 0;
+    G.ArgCount := 0;
+    ParserAdvance;
+    Exit;
+  End;
+
+  { --- TODO 16 : Negation par echec \+(Goal) --- }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '\+') Then
+  Begin
+    ParserAdvance; { consomme \+ }
+    If CurToken.Kind = TK_LPAREN Then
+    Begin
+      ParserAdvance; { consomme ( }
+      G.PredName := '\+';
+      G.Arity    := 1;
+      G.ArgCount := 1;
+      { Le but est un atome ou foncteur : on stocke le nom comme atome }
+      If CurToken.Kind = TK_ATOM Then
+      Begin
+        G.Args[0].Kind    := FAK_ATOM;
+        G.Args[0].AtomIdx := AtomIntern(CurToken.Val);
+        ParserAdvance;
+        { Si suivi de ( -> foncteur avec args, on stocke l arite dans IntVal }
+        If CurToken.Kind = TK_LPAREN Then
+        Begin
+          ParserAdvance; { consomme ( }
+          A := 0;
+          While (CurToken.Kind <> TK_EOF) And
+                (CurToken.Kind <> TK_RPAREN) Do
+          Begin
+            If A < MAX_FACT_ARGS - 1 Then
+            Begin
+              ParseFactArg(G.Args[1 + A]);
+              Inc(A);
+              Inc(G.ArgCount);
+            End;
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+              ParserAdvance
+            Else If CurToken.Kind <> TK_RPAREN Then
+              Break;
+          End;
+          If CurToken.Kind = TK_RPAREN Then
+            ParserAdvance;
+          G.Arity := 1 + A;
+        End;
+      End;
+      If CurToken.Kind = TK_RPAREN Then
+        ParserAdvance;
+    End
+    Else
+    Begin
+      { \+ atome sans parentheses }
+      G.PredName := '\+';
+      G.Arity    := 1;
+      G.ArgCount := 1;
+      If CurToken.Kind = TK_ATOM Then
+      Begin
+        G.Args[0].Kind    := FAK_ATOM;
+        G.Args[0].AtomIdx := AtomIntern(CurToken.Val);
+        ParserAdvance;
+      End;
+    End;
+    Exit;
+  End;
+
+  { --- TODO 16 : If-Then-Else ( Cond -> Then ; Else ) et Disjonction ( A ; B ) --- }
+  { Ces constructions sont gerees par ParseRuleBody au niveau du ; }
 
   { --- Cas infixe : Variable is Expr / Variable CompOp Expr (TODO 14) --- }
   If CurToken.Kind = TK_VARIABLE Then
@@ -6768,6 +6898,135 @@ Begin
         EmitInstrA('JC', ClauseTab[CIdx].FailLabel);
       End;
       EmitComment('copy_term/2 ok');
+    End
+    { --- TODO 16 : Cut ! --- }
+    Else If GoalTab[GIdx].PredName = '!' Then
+    Begin
+      EmitComment('cut ! inline');
+      { Sauvegarder le point de choix courant comme barriere }
+      EmitInstrAB('MOV', 'AX', 'WORD PTR [_PL_CPTOP]');
+      EmitInstrAB('MOV', 'WORD PTR [_PL_CUT_BARRIER]', 'AX');
+      { Couper : restaurer CPTOP au niveau de la barriere }
+      { En pratique, on elimine les points de choix au-dessus }
+      EmitComment('cut: discard choice points');
+    End
+    { --- TODO 16 : true/0 --- }
+    Else If (GoalTab[GIdx].PredName = 'true') And
+            (GoalTab[GIdx].Arity = 0) Then
+    Begin
+      EmitComment('true/0 inline - noop');
+      { true reussit toujours : rien a faire }
+    End
+    { --- TODO 16 : fail/0 --- }
+    Else If (GoalTab[GIdx].PredName = 'fail') And
+            (GoalTab[GIdx].Arity = 0) Then
+    Begin
+      EmitComment('fail/0 inline');
+      EmitInstrA('JMP', ClauseTab[CIdx].FailLabel);
+    End
+    { --- TODO 16 : halt/0 --- }
+    Else If (GoalTab[GIdx].PredName = 'halt') And
+            (GoalTab[GIdx].Arity = 0) Then
+    Begin
+      EmitComment('halt/0 inline');
+      EmitInstrAB('MOV', 'AX', '4C00h');
+      EmitInstrA('INT', '21h');
+    End
+    { --- TODO 16 : halt/1 --- }
+    Else If (GoalTab[GIdx].PredName = 'halt') And
+            (GoalTab[GIdx].Arity = 1) Then
+    Begin
+      EmitComment('halt/1 inline');
+      If GoalTab[GIdx].Args[0].Kind = FAK_INT Then
+      Begin
+        Str(Integer(GoalTab[GIdx].Args[0].IntVal), NS);
+        EmitInstrAB('MOV', 'AL', NS);
+      End
+      Else If GoalTab[GIdx].Args[0].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[0].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitDeref;
+        EmitInstr('CALL    _PLRT_DEREF_INT');
+        { AX contient la valeur entiere }
+      End
+      Else
+        EmitInstrAB('MOV', 'AL', '0');
+      EmitInstrAB('MOV', 'AH', '4Ch');
+      EmitInstrA('INT', '21h');
+    End
+    { --- TODO 16 : negation par echec \+/1 --- }
+    Else If (GoalTab[GIdx].PredName = '\+') Then
+    Begin
+      EmitComment('\+/1 negation by failure inline');
+      { Sauvegarder etat }
+      EmitInstrA('PUSH', 'WORD PTR [_PL_HTOP]');
+      EmitInstrA('PUSH', 'WORD PTR [_PL_TTOP]');
+      EmitInstrA('PUSH', 'WORD PTR [_PL_CPTOP]');
+      { Construire l appel au but interne }
+      { L argument 0 contient le nom du predicat a nier }
+      If GoalTab[GIdx].Args[0].Kind = FAK_ATOM Then
+      Begin
+        { Charger les args supplementaires si presents }
+        For J := 1 To GoalTab[GIdx].ArgCount - 1 Do
+        Begin
+          Case GoalTab[GIdx].Args[J].Kind Of
+            FAK_ATOM :
+            Begin
+              TagVal := (TAG_ATOM Shl TAG_SHIFT) Or
+                        (GoalTab[GIdx].Args[J].AtomIdx And VAL_MASK);
+              Str(TagVal, NS);
+              EmitInstrAB('MOV', 'WORD PTR [_PL_ARGS + ' +
+                          IntToStr((J - 1) * 2) + ']', NS);
+            End;
+            FAK_INT :
+            Begin
+              TagVal := (TAG_INT Shl TAG_SHIFT) Or
+                        (Integer(GoalTab[GIdx].Args[J].IntVal) And VAL_MASK);
+              Str(TagVal, NS);
+              EmitInstrAB('MOV', 'WORD PTR [_PL_ARGS + ' +
+                          IntToStr((J - 1) * 2) + ']', NS);
+            End;
+            FAK_VAR :
+            Begin
+              VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[J].VarName);
+              EmitInstrAB('MOV', 'AX',
+                          'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+              EmitInstrAB('MOV', 'WORD PTR [_PL_ARGS + ' +
+                          IntToStr((J - 1) * 2) + ']', 'AX');
+            End;
+          End;
+        End;
+        { Appeler le predicat }
+        Clean   := SymNameClean(AtomName(GoalTab[GIdx].Args[0].AtomIdx));
+        PredLbl := PL_PRED_PFX + Clean + '_' +
+                   IntToStr(GoalTab[GIdx].Arity - 1);
+        EmitInstrA('CALL', PredLbl);
+        { Si succes (CF=0) -> negation echoue }
+        NS := LabelGen;
+        EmitInstrA('JC', NS);
+        { Succes du but -> restaurer et echouer }
+        EmitInstrA('POP', 'WORD PTR [_PL_CPTOP]');
+        EmitInstrA('POP', 'WORD PTR [_PL_TTOP]');
+        EmitInstrA('POP', 'WORD PTR [_PL_HTOP]');
+        EmitInstr('CALL    ' + PL_RT_PFX + 'UNTRAIL');
+        EmitInstrA('JMP', ClauseTab[CIdx].FailLabel);
+        EmitLabel(NS);
+        { Echec du but -> restaurer et reussir }
+        EmitInstrA('POP', 'WORD PTR [_PL_CPTOP]');
+        EmitInstrA('POP', 'WORD PTR [_PL_TTOP]');
+        EmitInstrA('POP', 'WORD PTR [_PL_HTOP]');
+        EmitInstr('CALL    ' + PL_RT_PFX + 'UNTRAIL');
+        EmitComment('\+/1 ok (goal failed -> negation succeeds)');
+      End
+      Else
+      Begin
+        EmitComment('\+/1: argument non-atome ignore');
+        EmitInstrA('POP', 'WORD PTR [_PL_CPTOP]');
+        EmitInstrA('POP', 'WORD PTR [_PL_TTOP]');
+        EmitInstrA('POP', 'WORD PTR [_PL_HTOP]');
+      End;
     End
     Else
     Begin
