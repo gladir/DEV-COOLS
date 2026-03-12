@@ -1,5 +1,3 @@
 *.o
-*.obj
 *.ppu
-MODIII86
-SAMPLES/MODULA3/*.asm
+*.obj
