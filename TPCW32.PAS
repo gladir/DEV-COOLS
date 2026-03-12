@@ -7849,16 +7849,16 @@ Begin
 
     { ---- TODO 16 : Builtins chaines ---- }
 
-    { LENGTH(S) -> longueur ASCIIZ dans EAX }
+    { LENGTH(S) -> longueur String Pascal (S[0]) dans EAX }
     If Up = 'LENGTH' Then
     Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
         ParseExpr(PI);
-        { EAX = pointeur vers chaine ASCIIZ }
+        { EAX = pointeur vers String Pascal (S[0] = longueur) }
         EmitInstr('MOV ESI,EAX');
-        EmitInstr('CALL ' + TP_RT_PFX + 'STRLEN');
+        EmitInstr('CALL ' + TP_RT_PFX + 'LENGTH');
         EPMatch(')');
       End;
       Exit;
@@ -13653,7 +13653,8 @@ End;
 { _TPRT_STRTONUM : convertir chaine ASCIIZ (ESI) en EAX       }
 { _TPRT_READLN   : lire une ligne de STDIN dans INBUF         }
 { _TPRT_STRCPY   : copier chaine (ESI -> EDI)                 }
-{ _TPRT_STRLEN   : longueur ASCIIZ (ESI) -> EAX  (TODO 16)   }
+{ _TPRT_LENGTH   : longueur String Pascal S[0] -> EAX         }
+{ _TPRT_STRLEN   : longueur ASCIIZ PChar (ESI) -> EAX         }
 { _TPRT_CONCAT   : concatener EDI apres ESI      (TODO 16)   }
 { _TPRT_STRCMP    : comparer ESI et EDI -> EAX    (TODO 16)   }
 { _TPRT_COPY     : sous-chaine -> STRBUF1        (TODO 16)   }
@@ -13814,9 +13815,19 @@ Begin
   { TODO 16 - ROUTINES RUNTIME CHAINES           [IMPLEMENTE]    }
   { ============================================================ }
 
-  { ------ _TPRT_STRLEN : longueur ASCIIZ -------------------- }
-  { Entree : ESI = pointeur vers chaine ASCIIZ                 }
+  { ------ _TPRT_LENGTH : longueur String Pascal (S[0]) ------ }
+  { Entree : ESI = pointeur vers String Pascal (S[0]=longueur) }
+  { Sortie : EAX = longueur (valeur de S[0])                   }
+  { Correspond a la fonction Length() de Turbo Pascal           }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'LENGTH');
+  EmitInstr('MOVZX EAX,BYTE PTR [ESI]');
+  EmitInstr('RET');
+
+  { ------ _TPRT_STRLEN : longueur PChar ASCIIZ -------------- }
+  { Entree : ESI = pointeur vers chaine ASCIIZ (PChar)         }
   { Sortie : EAX = longueur (nombre de caracteres avant NUL)   }
+  { Correspond a la fonction StrLen() de l unite Strings        }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'STRLEN');
   EmitInstr('PUSH ESI');

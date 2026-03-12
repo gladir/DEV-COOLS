@@ -435,7 +435,10 @@
   _TPRT_PRINTSTR     : afficher String Pascal (ESI = ptr, S[0]=len)
   _TPRT_PRINTSTR_AZ  : afficher PChar ASCIIZ (ESI = ptr, termine NUL)
   _TPRT_STRCPY       : copier String Pascal (avec S[0])
-  _TPRT_STRLEN       : longueur String Pascal (lire S[0])
+  _TPRT_LENGTH       : longueur String Pascal (lire S[0]) -> EAX
+                        = fonction Length() de System
+  _TPRT_STRLEN       : longueur PChar ASCIIZ (boucle NUL) -> EAX
+                        = fonction StrLen() de l'unite Strings
   _TPRT_CONCAT       : concatener deux String Pascal
   _TPRT_STRCMP        : comparer deux String Pascal
   _TPRT_COPY         : sous-chaine String Pascal -> STRBUF1
