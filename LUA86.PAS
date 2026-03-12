@@ -128,7 +128,7 @@
             _LUA_FALSE_S : DB 'false',0
             _LUART_STRBUF[0..511] : buffer de travail pour concatenation
 
-  TODO 09 - VARIABLES ET AFFECTATIONS
+  TODO 09 - VARIABLES ET AFFECTATIONS [IMPLEMENTE]
             Variables locales : local x = expr -> pile BP, acces [BP-offset]
               local x (sans init) -> valeur nil (AX=0)
               local x, y, z = a, b, c : affectation multiple
@@ -780,6 +780,13 @@ Procedure EmitEpilog; Forward;
 Procedure EmitOpen; Forward;
 Procedure EmitHeader; Forward;
 Procedure EmitRuntime; Forward;
+{ Variables et affectations (TODO 09) }
+Procedure ExprLoadToAX(Const E : TExprVal); Forward;
+Procedure EmitStoreVar(SIdx : Integer); Forward;
+Function  EnsureGlobalVar(Const Name : TString) : Integer; Forward;
+Procedure ParseLocalDecl; Forward;
+Procedure ParseAssignment(Const FirstName : TString); Forward;
+Procedure ParseStmt; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1503,6 +1510,464 @@ Begin
     End;
   End;
   EmitRaw('_DATA   ENDS');
+End;
+
+{ ============================================================
+  TODO 09 - VARIABLES ET AFFECTATIONS [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ExprLoadToAX : charger une TExprVal dans AX ---------------- }
+{ Si la valeur est deja dans AX, rien a faire. Sinon emettre le     }
+{ code necessaire (MOV AX, imm / MOV AX, [BP-off] / MOV AX, [lbl]) }
+Procedure ExprLoadToAX(Const E : TExprVal);
+Begin
+  ExprFlushToAX(E);
+End;
+
+{ ---- EmitStoreVar : stocker AX dans la variable d indice SIdx --- }
+{ Variable locale  : MOV [BP-offset], AX                            }
+{ Variable param   : MOV [BP+offset], AX                            }
+{ Variable globale : MOV [_LUAV_nom], AX                            }
+Procedure EmitStoreVar(SIdx : Integer);
+Var
+  NS : TString;
+Begin
+  If (SIdx < 0) Or (SIdx >= SymCount) Then Exit;
+  If SymTab[SIdx].Kind = SK_LOCAL Then
+  Begin
+    Str(SymTab[SIdx].Offset, NS);
+    EmitInstrAB('MOV', 'WORD PTR [BP-' + NS + ']', 'AX');
+  End
+  Else If SymTab[SIdx].Kind = SK_PARAM Then
+  Begin
+    Str(SymTab[SIdx].Offset, NS);
+    EmitInstrAB('MOV', 'WORD PTR [BP+' + NS + ']', 'AX');
+  End
+  Else
+  Begin
+    { Variable globale }
+    EmitInstrAB('MOV', 'WORD PTR [' +
+                SymTab[SIdx].MangledName + ']', 'AX');
+  End;
+End;
+
+{ ---- EnsureGlobalVar : creer une globale implicitement si absente }
+{ En Lua, la premiere utilisation d une variable non locale cree      }
+{ implicitement une globale dans le segment DATA.                     }
+{ Retourne l indice dans SymTab.                                      }
+Function EnsureGlobalVar(Const Name : TString) : Integer;
+Var
+  SIdx : Integer;
+  Lbl  : TString;
+Begin
+  SIdx := SymFind(Name);
+  If SIdx >= 0 Then
+  Begin
+    EnsureGlobalVar := SIdx;
+    Exit;
+  End;
+  { Creer le symbole global }
+  SIdx := SymAdd(Name, SK_GLOBAL, TY_UNKNOWN, 0);
+  If SIdx >= 0 Then
+  Begin
+    { Creer l entree DK_WORD dans DataTab }
+    Lbl := SymTab[SIdx].MangledName;
+    DataAddWord(Lbl, 0);
+  End;
+  EnsureGlobalVar := SIdx;
+End;
+
+{ ---- ParseLocalDecl : parser une declaration local --------------- }
+{ Formes :                                                            }
+{   local x                  (init nil)                               }
+{   local x = expr                                                    }
+{   local x, y, z = a, b, c (affectation multiple)                   }
+{   local function f() ... end (stub -> TODO 17)                      }
+Procedure ParseLocalDecl;
+Const
+  MAX_MULTI = 16;
+Var
+  Names   : Array[0..MAX_MULTI - 1] Of TString;
+  NCount  : Integer;
+  Vals    : Array[0..MAX_MULTI - 1] Of TExprVal;
+  VCount  : Integer;
+  I       : Integer;
+  SIdx    : Integer;
+  Off     : Integer;
+  NS      : TString;
+Begin
+  { CurToken est 'local', deja consomme par l appelant }
+  NCount := 0;
+  VCount := 0;
+
+  { local function f() ... end : stub pour TODO 17 }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'function') Then
+  Begin
+    If Opts.Warnings Then
+      WarnMsg('local function : stub, sera TODO 17');
+    ParserAdvance; { consomme 'function' }
+    If CurToken.Kind = TK_IDENT Then
+      ParserAdvance; { consomme le nom }
+    { Sauter jusqu a end }
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'end')) Do
+      ParserAdvance;
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'end') Then
+      ParserAdvance;
+    Exit;
+  End;
+
+  { Collecter les noms : local x, y, z }
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    Names[NCount] := CurToken.Val;
+    Inc(NCount);
+    ParserAdvance;
+    While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
+    Begin
+      ParserAdvance; { consomme ',' }
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        If NCount < MAX_MULTI Then
+        Begin
+          Names[NCount] := CurToken.Val;
+          Inc(NCount);
+        End;
+        ParserAdvance;
+      End
+      Else
+      Begin
+        CompileError('identifiant attendu apres ","');
+        Exit;
+      End;
+    End;
+  End
+  Else
+  Begin
+    CompileError('identifiant attendu apres "local"');
+    Exit;
+  End;
+
+  { Collecter les expressions : = expr1, expr2, ... }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+  Begin
+    ParserAdvance; { consomme '=' }
+    ParseExpr(Vals[0]);
+    VCount := 1;
+    While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
+    Begin
+      ParserAdvance; { consomme ',' }
+      If VCount < MAX_MULTI Then
+      Begin
+        ParseExpr(Vals[VCount]);
+        Inc(VCount);
+      End
+      Else
+        ParseExpr(GExprDummy); { ignorer les surplus }
+    End;
+  End;
+
+  { Declarer les variables locales et emettre le code }
+  EmitComment('local declaration: ' + IntToStr(NCount) + ' vars');
+  For I := 0 To NCount - 1 Do
+  Begin
+    { Allouer sur la pile }
+    Inc(CurFrameSize);
+    Off := CurFrameSize * 2;
+    SIdx := SymAdd(Names[I], SK_LOCAL, TY_UNKNOWN, Off);
+    { Emettre le SUB SP, 2 pour cette variable }
+    EmitInstrAB('SUB', 'SP', '2');
+    { Initialiser avec la valeur ou nil }
+    If I < VCount Then
+    Begin
+      ExprLoadToAX(Vals[I]);
+      If SIdx >= 0 Then
+      Begin
+        { Mettre a jour le type infere }
+        SymTab[SIdx].TypeIdx := TypeInfer(Vals[I]);
+      End;
+    End
+    Else
+    Begin
+      { Pas de valeur : init a nil (0) }
+      EmitInstrAB('XOR', 'AX', 'AX');
+    End;
+    { Stocker dans [BP-Off] }
+    If SIdx >= 0 Then
+      EmitStoreVar(SIdx)
+    Else
+    Begin
+      Str(Off, NS);
+      EmitInstrAB('MOV', 'WORD PTR [BP-' + NS + ']', 'AX');
+    End;
+  End;
+End;
+
+{ ---- ParseAssignment : parser une affectation -------------------- }
+{ Formes :                                                            }
+{   x = expr                                                          }
+{   a, b = expr1, expr2  (affectation multiple)                       }
+{ FirstName est le premier identifiant deja lu par l appelant.        }
+{ L appelant a deja consomme le premier ident.                         }
+Procedure ParseAssignment(Const FirstName : TString);
+Const
+  MAX_MULTI = 16;
+Var
+  Names  : Array[0..MAX_MULTI - 1] Of TString;
+  NCount : Integer;
+  Vals   : Array[0..MAX_MULTI - 1] Of TExprVal;
+  VCount : Integer;
+  I      : Integer;
+  SIdx   : Integer;
+Begin
+  NCount := 1;
+  VCount := 0;
+  Names[0] := FirstName;
+
+  { Collecter les noms supplementaires : , b, c }
+  While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
+  Begin
+    ParserAdvance; { consomme ',' }
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      If NCount < MAX_MULTI Then
+      Begin
+        Names[NCount] := CurToken.Val;
+        Inc(NCount);
+      End;
+      ParserAdvance;
+    End
+    Else
+    Begin
+      CompileError('identifiant attendu apres "," dans l''affectation');
+      Exit;
+    End;
+  End;
+
+  { Consommer '=' }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+    ParserAdvance
+  Else
+  Begin
+    CompileError('"=" attendu dans l''affectation');
+    Exit;
+  End;
+
+  { Evaluer les expressions a droite }
+  ParseExpr(Vals[0]);
+  VCount := 1;
+  While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
+  Begin
+    ParserAdvance; { consomme ',' }
+    If VCount < MAX_MULTI Then
+    Begin
+      ParseExpr(Vals[VCount]);
+      Inc(VCount);
+    End
+    Else
+      ParseExpr(GExprDummy); { ignorer les surplus }
+  End;
+
+  { Affecter les variables }
+  EmitComment('assignment: ' + IntToStr(NCount) + ' targets');
+
+  If (NCount = 1) And (VCount = 1) Then
+  Begin
+    { Cas simple : x = expr }
+    SIdx := SymFind(Names[0]);
+    If SIdx < 0 Then
+      SIdx := EnsureGlobalVar(Names[0]);
+    ExprLoadToAX(Vals[0]);
+    If SIdx >= 0 Then
+    Begin
+      EmitStoreVar(SIdx);
+      SymTab[SIdx].TypeIdx := TypeInfer(Vals[0]);
+    End;
+  End
+  Else
+  Begin
+    { Affectation multiple : evaluer toutes les expressions d abord }
+    { Pousser les valeurs sur la pile de droite a gauche }
+    For I := NCount - 1 DownTo 0 Do
+    Begin
+      If I < VCount Then
+        ExprLoadToAX(Vals[I])
+      Else
+        EmitInstrAB('XOR', 'AX', 'AX'); { nil }
+      EmitInstrA('PUSH', 'AX');
+    End;
+    { Depiler et affecter de gauche a droite }
+    For I := 0 To NCount - 1 Do
+    Begin
+      EmitInstrA('POP', 'AX');
+      SIdx := SymFind(Names[I]);
+      If SIdx < 0 Then
+        SIdx := EnsureGlobalVar(Names[I]);
+      If SIdx >= 0 Then
+      Begin
+        EmitStoreVar(SIdx);
+        If I < VCount Then
+          SymTab[SIdx].TypeIdx := TypeInfer(Vals[I]);
+      End;
+    End;
+  End;
+End;
+
+{ ---- ParseStmt : parser une instruction Lua ---------------------- }
+{ Gere : local decl, affectation, expression seule, ; optionnel.     }
+{ Dispatch principal pour la boucle de compilation.                   }
+Procedure ParseStmt;
+Var
+  E     : TExprVal;
+  VName : TString;
+Begin
+  { Instruction vide : ';' optionnel }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+  Begin
+    ParserAdvance;
+    Exit;
+  End;
+
+  { local : declaration de variable locale }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'local') Then
+  Begin
+    ParserAdvance; { consomme 'local' }
+    ParseLocalDecl;
+    { Consommer ';' optionnel }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      ParserAdvance;
+    Exit;
+  End;
+
+  { Identifiant : peut etre une affectation ou un appel de fonction }
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    VName := CurToken.Val;
+    ParserAdvance; { consomme l identifiant }
+    { Si suivi de '=' ou ',' -> affectation }
+    If ((CurToken.Kind = TK_OP) And (CurToken.Val = '=')) Or
+       ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',')) Then
+    Begin
+      ParseAssignment(VName);
+      { Consommer ';' optionnel }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+      Exit;
+    End
+    Else
+    Begin
+      { Pas une affectation : c est une expression commencant par ident }
+      { Rembobiner : on a deja lu l ident, il faut le traiter comme expr }
+      { Construire un ExprVal pour cet ident et continuer ParseExprPrec }
+      { Note : l ident est deja consomme, donc on construit le resultat }
+      E.Kind    := EK_MEM;
+      E.ImmVal  := 0;
+      E.TypeIdx := TY_UNKNOWN;
+      E.Offset  := 0;
+      E.SymIdx  := SymFind(VName);
+      If E.SymIdx < 0 Then
+        E.SymIdx := EnsureGlobalVar(VName);
+      If E.SymIdx >= 0 Then
+      Begin
+        E.TypeIdx := SymTab[E.SymIdx].TypeIdx;
+        E.Offset  := SymTab[E.SymIdx].Offset;
+      End;
+      { Continuer a parser la suite comme une expression (appels, etc.) }
+      { Pour l instant, on flush juste dans AX (le resultat est jete)  }
+      { Les appels de fonctions, etc. seront geres par TODO 10+        }
+      ExprFlushToAX(E);
+      { Consommer ';' optionnel }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+      Exit;
+    End;
+  End;
+
+  { Mot-cle de controle : stub pour les TODOs futurs }
+  If CurToken.Kind = TK_KEYWORD Then
+  Begin
+    { if/while/repeat/for/return/function/goto/break/do : stubs }
+    If (CurToken.Val = 'if') Or (CurToken.Val = 'while') Or
+       (CurToken.Val = 'repeat') Or (CurToken.Val = 'for') Or
+       (CurToken.Val = 'return') Or (CurToken.Val = 'function') Or
+       (CurToken.Val = 'goto') Or (CurToken.Val = 'break') Or
+       (CurToken.Val = 'do') Then
+    Begin
+      If Opts.Warnings Then
+        WarnMsg(CurToken.Val + ' : stub, sera implemente dans un TODO futur');
+      { Sauter le bloc jusqu a end/until pour ne pas bloquer le parser }
+      If (CurToken.Val = 'if') Or (CurToken.Val = 'while') Or
+         (CurToken.Val = 'for') Or (CurToken.Val = 'function') Or
+         (CurToken.Val = 'do') Then
+      Begin
+        ParserAdvance;
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_KEYWORD) And
+                   (CurToken.Val = 'end')) Do
+          ParserAdvance;
+        If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'end') Then
+          ParserAdvance;
+      End
+      Else If CurToken.Val = 'repeat' Then
+      Begin
+        ParserAdvance;
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_KEYWORD) And
+                   (CurToken.Val = 'until')) Do
+          ParserAdvance;
+        If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'until') Then
+        Begin
+          ParserAdvance;
+          ParseExpr(E); { parser la condition until }
+        End;
+      End
+      Else If CurToken.Val = 'return' Then
+      Begin
+        ParserAdvance;
+        { Parser les expressions de retour (stub) }
+        If (CurToken.Kind <> TK_EOF) And
+           Not ((CurToken.Kind = TK_KEYWORD) And
+                ((CurToken.Val = 'end') Or (CurToken.Val = 'else') Or
+                 (CurToken.Val = 'elseif') Or (CurToken.Val = 'until'))) And
+           Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Then
+          ParseExpr(E);
+      End
+      Else If CurToken.Val = 'break' Then
+        ParserAdvance
+      Else If CurToken.Val = 'goto' Then
+      Begin
+        ParserAdvance;
+        If CurToken.Kind = TK_IDENT Then
+          ParserAdvance;
+      End
+      Else
+        ParserAdvance;
+      { Consommer ';' optionnel }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+      Exit;
+    End;
+  End;
+
+  { Label goto ::label:: }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '::') Then
+  Begin
+    ParserAdvance; { consomme '::' }
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      EmitLabel(LUA_LBL_PFX + 'GOTO_' + CurToken.Val);
+      ParserAdvance;
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '::') Then
+      ParserAdvance; { consomme '::' }
+    Exit;
+  End;
+
+  { Expression seule (appel de fonction, etc.) }
+  ParseExpr(E);
+  { Consommer ';' optionnel }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
 End;
 
 { ============================================================
@@ -2402,14 +2867,58 @@ Begin
 End;
 
 { ---- ExprFlushToAX : forcer une TExprVal dans le registre AX  }
-{ Stub pour TODO 07 (emetteur). Marque le resultat comme EK_AX. }
+{ Emet le code assembleur correspondant selon le kind :          }
+{   EK_IMM  : MOV AX, ImmVal                                    }
+{   EK_MEM  : MOV AX, [BP-Offset] (local) ou MOV AX, [label]   }
+{   EK_AX   : deja dans AX (rien a faire)                       }
+{   EK_NONE : XOR AX, AX (zero)                                 }
 Procedure ExprFlushToAX(Const E : TExprVal);
+Var
+  NS : TString;
 Begin
-  { TODO 07 : emettre le code reel }
-  { EK_IMM  : MOV AX, ImmVal                   }
-  { EK_MEM  : MOV AX, [BP+Offset] ou [label]   }
-  { EK_AX   : deja dans AX                      }
-  { EK_NONE : XOR AX, AX                        }
+  Case E.Kind Of
+    EK_IMM :
+    Begin
+      Str(E.ImmVal, NS);
+      EmitInstrAB('MOV', 'AX', NS);
+    End;
+    EK_MEM :
+    Begin
+      If (E.SymIdx >= 0) And (E.SymIdx < SymCount) Then
+      Begin
+        If SymTab[E.SymIdx].Kind = SK_LOCAL Then
+        Begin
+          { Variable locale : [BP-offset] }
+          Str(SymTab[E.SymIdx].Offset, NS);
+          EmitInstrAB('MOV', 'AX', 'WORD PTR [BP-' + NS + ']');
+        End
+        Else If SymTab[E.SymIdx].Kind = SK_PARAM Then
+        Begin
+          { Parametre : [BP+offset] }
+          Str(SymTab[E.SymIdx].Offset, NS);
+          EmitInstrAB('MOV', 'AX', 'WORD PTR [BP+' + NS + ']');
+        End
+        Else
+        Begin
+          { Variable globale : [_LUAV_nom] }
+          EmitInstrAB('MOV', 'AX', 'WORD PTR [' +
+                      SymTab[E.SymIdx].MangledName + ']');
+        End;
+      End
+      Else
+      Begin
+        { Pas de symbole associe : XOR AX,AX }
+        EmitInstrAB('XOR', 'AX', 'AX');
+      End;
+    End;
+    EK_AX :
+    Begin
+      { Deja dans AX : rien a faire }
+    End;
+  Else
+    { EK_NONE ou autre : zero }
+    EmitInstrAB('XOR', 'AX', 'AX');
+  End;
 End;
 
 { ---- EmitBinOp : emettre le code pour un operateur binaire --- }
@@ -2430,8 +2939,11 @@ End;
 
 { ---- ParsePrimary : atome du parseur Pratt ------------------- }
 { Gere : literals (int, float, string), nil, true, false,       }
-{ identifiant (stub), parentheses, constructeur de table (stub)  }
+{ identifiant, parentheses, constructeur de table (stub)         }
 Procedure ParsePrimary(Var Res : TExprVal);
+Var
+  VName : TString;
+  SIdx  : Integer;
 Begin
   Case CurToken.Kind Of
     TK_INTEGER, TK_FLOAT, TK_STRING :
@@ -2468,12 +2980,27 @@ Begin
     TK_IDENT :
     Begin
       { TODO 09 : resoudre la variable dans SymTab }
-      { Pour l instant, stub EK_AX type inconnu }
-      Res.Kind    := EK_AX;
+      VName := CurToken.Val;
+      SIdx := SymFind(VName);
+      If SIdx < 0 Then
+      Begin
+        { Variable non declaree : creer implicitement comme globale }
+        SIdx := EnsureGlobalVar(VName);
+      End;
+      Res.Kind    := EK_MEM;
       Res.ImmVal  := 0;
-      Res.TypeIdx := TY_UNKNOWN;
-      Res.Offset  := 0;
-      Res.SymIdx  := -1;
+      If SIdx >= 0 Then
+      Begin
+        Res.TypeIdx := SymTab[SIdx].TypeIdx;
+        Res.Offset  := SymTab[SIdx].Offset;
+        Res.SymIdx  := SIdx;
+      End
+      Else
+      Begin
+        Res.TypeIdx := TY_UNKNOWN;
+        Res.Offset  := 0;
+        Res.SymIdx  := -1;
+      End;
       ParserAdvance;
     End;
     TK_PUNCT :
@@ -3415,23 +3942,15 @@ End;
 { ---- Run : pipeline de compilation ----------------------------- }
 
 Procedure Run;
-Var
-  E : TExprVal;
 Begin
   EmitOpen;     { ouvrir le fichier de sortie }
   EmitHeader;   { emettre le preambule ASM }
   LexInit;
   ParserAdvance;  { lire le premier token }
 
-  { Boucle principale : parser les expressions / instructions }
+  { Boucle principale : parser les instructions Lua }
   While CurToken.Kind <> TK_EOF Do
-  Begin
-    { Parser une expression et la consommer }
-    ParseExpr(E);
-    { Consommer le ';' optionnel (separateur d instructions en Lua) }
-    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
-      ParserAdvance;
-  End;
+    ParseStmt;
 
   LexClose;
   EmitClose;   { EmitDataSeg est appele depuis EmitClose }

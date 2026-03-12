@@ -1,3 +1,4 @@
 *.o
 *.ppu
 LUA86
+SAMPLES/LUA/*.asm
