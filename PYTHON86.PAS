@@ -189,7 +189,7 @@
             Dict literal : {k0:v0, k1:v1} -> allocation et remplissage
             len(x), abs(x), int(x), str(x), chr(x), ord(x) : builtins
 
-  TODO 11 - EXPRESSIONS BINAIRES
+  TODO 11 - EXPRESSIONS BINAIRES [IMPLEMENTE]
             ParseExprPrec(MinPrec) : boucle de precedence (Pratt)
             Arithmetique entiere : ADD/SUB/IMUL/IDIV pour +, -, *, //
             MOD : IDIV -> resultat dans DX (reste avec %)
@@ -727,6 +727,8 @@ Procedure ParseCallArgs(SIdx : Integer; Var Res : TExprVal); Forward;
 Procedure EmitBuiltinCall(SIdx : Integer; Var Res : TExprVal); Forward;
 Procedure ParseListLiteral(Var Res : TExprVal);  Forward;
 Procedure ParseDictLiteral(Var Res : TExprVal);  Forward;
+{ TODO 11 - Forward declarations expressions binaires }
+Procedure EmitExprRuntime;  Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -2267,6 +2269,8 @@ End;
 
 Procedure EmitClose;
 Begin
+  { Emettre les routines runtime (TODO 11) }
+  EmitExprRuntime;
   { Fermer le segment de code }
   EmitRaw('');
   EmitRaw('_TEXT   ENDS');
@@ -2539,6 +2543,88 @@ Begin
     Exit;
   End;
 
+  { ---- TODO 11 : Concatenation str + ----------------------- }
+  If (Op = '+') And (L.TypeIdx = TY_IDX_STR) Then
+  Begin
+    ExprFlushToAX(L);
+    EmitInstr('MOV    SI, AX');      { SI = gauche }
+    EmitInstr('PUSH   SI');
+    ExprFlushToAX(R);
+    EmitInstr('MOV    DI, AX');      { DI = droite }
+    EmitInstr('POP    SI');
+    EmitInstr('CALL   ' + PY_RT_PFX + 'CONCAT');
+    L.Kind    := EK_AX;
+    L.TypeIdx := TY_IDX_STR;
+    L.SymIdx  := -1;
+    Exit;
+  End;
+
+  { ---- TODO 11 : Repetition str * n ----------------------- }
+  If (Op = '*') And (L.TypeIdx = TY_IDX_STR) Then
+  Begin
+    ExprFlushToAX(L);
+    EmitInstr('MOV    SI, AX');      { SI = chaine }
+    EmitInstr('PUSH   SI');
+    ExprFlushToAX(R);
+    EmitInstr('MOV    CX, AX');      { CX = count  }
+    EmitInstr('POP    SI');
+    EmitInstr('CALL   ' + PY_RT_PFX + 'STRMUL');
+    L.Kind    := EK_AX;
+    L.TypeIdx := TY_IDX_STR;
+    L.SymIdx  := -1;
+    Exit;
+  End;
+
+  { ---- TODO 11 : Comparaison str (==, !=, <, <=, >, >=) --- }
+  If ((Op = '==') Or (Op = '!=') Or (Op = '<') Or
+      (Op = '<=') Or (Op = '>') Or (Op = '>=')) And
+     (L.TypeIdx = TY_IDX_STR) Then
+  Begin
+    ExprFlushToAX(L);
+    EmitInstr('MOV    SI, AX');
+    EmitInstr('PUSH   SI');
+    ExprFlushToAX(R);
+    EmitInstr('MOV    DI, AX');
+    EmitInstr('POP    SI');
+    EmitInstr('CALL   ' + PY_RT_PFX + 'STRCMP');
+    { AX = resultat de la comparaison (-1,0,+1) }
+    EmitInstr('MOV    BX, AX');
+    EmitInstr('MOV    AX, 0');
+    If      Op = '==' Then Begin EmitInstr('TEST   BX, BX'); EmitInstr('JNZ    $+4'); End
+    Else If Op = '!=' Then Begin EmitInstr('TEST   BX, BX'); EmitInstr('JZ     $+4'); End
+    Else If Op = '<'  Then Begin EmitInstr('CMP    BX, 0');  EmitInstr('JGE    $+4'); End
+    Else If Op = '<=' Then Begin EmitInstr('CMP    BX, 0');  EmitInstr('JG     $+4'); End
+    Else If Op = '>'  Then Begin EmitInstr('CMP    BX, 0');  EmitInstr('JLE    $+4'); End
+    Else If Op = '>=' Then Begin EmitInstr('CMP    BX, 0');  EmitInstr('JL     $+4'); End;
+    EmitInstr('INC    AX');
+    L.Kind    := EK_AX;
+    L.TypeIdx := TY_IDX_INT;
+    L.SymIdx  := -1;
+    Exit;
+  End;
+
+  { ---- TODO 11 : Operateur in / not in -------------------- }
+  If (Op = 'in') Or (Op = 'not in') Then
+  Begin
+    ExprFlushToAX(L);
+    EmitInstr('PUSH   AX');          { element a chercher }
+    ExprFlushToAX(R);
+    EmitInstr('MOV    SI, AX');      { SI = collection   }
+    EmitInstr('POP    AX');          { AX = element      }
+    EmitInstr('CALL   ' + PY_RT_PFX + 'CONTAINS');
+    If Op = 'not in' Then
+    Begin
+      EmitInstr('TEST   AX, AX');
+      EmitInstr('MOV    AX, 0');
+      EmitInstr('JNZ    $+4');
+      EmitInstr('INC    AX');
+    End;
+    L.Kind    := EK_AX;
+    L.TypeIdx := TY_IDX_INT;
+    L.SymIdx  := -1;
+    Exit;
+  End;
+
   { ---- Cas general : emission 8086 ------------------------- }
   ExprFlushToAX(L);
 
@@ -2625,25 +2711,15 @@ Begin
       EmitInstr('JL     $+4');
       EmitInstr('INC    AX');
     End
-    Else If (Op = 'in') Or (Op = 'not in') Or
-            (Op = 'is') Or (Op = 'is not') Then
+    Else If (Op = 'is') Or (Op = 'is not') Then
     Begin
-      { Stub : comparaison simple pour 'is', 0/1 pour 'in' }
-      If (Op = 'is') Or (Op = 'is not') Then
-      Begin
-        EmitInstr('CMP    AX, ' + RS);
-        EmitInstr('MOV    AX, 0');
-        If Op = 'is' Then
-          EmitInstr('JNE    $+4')
-        Else
-          EmitInstr('JE     $+4');
-        EmitInstr('INC    AX');
-      End
+      EmitInstr('CMP    AX, ' + RS);
+      EmitInstr('MOV    AX, 0');
+      If Op = 'is' Then
+        EmitInstr('JNE    $+4')
       Else
-      Begin
-        EmitInstr('XOR    AX, AX');   { stub in/not in }
-        If Op = 'not in' Then EmitInstr('INC    AX');
-      End;
+        EmitInstr('JE     $+4');
+      EmitInstr('INC    AX');
     End;
   End
   Else
@@ -2697,9 +2773,7 @@ Begin
       Else If Op = '>'      Then EmitInstr('JLE    $+4')
       Else If Op = '>='     Then EmitInstr('JL     $+4')
       Else If Op = 'is'     Then EmitInstr('JNE    $+4')
-      Else If Op = 'is not' Then EmitInstr('JE     $+4')
-      Else If Op = 'in'     Then EmitInstr('JMP    $+4')  { stub }
-      Else If Op = 'not in' Then EmitInstr('JMP    $+2');  { stub }
+      Else If Op = 'is not' Then EmitInstr('JE     $+4');
       EmitInstr('INC    AX');
     End;
   End;
@@ -3114,6 +3188,136 @@ End;
 Procedure ParseExpr(Var Res : TExprVal);
 Begin
   ParseExprPrec(1, Res);
+End;
+
+{ ============================================================
+  TODO 11 - EXPRESSIONS BINAIRES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- EmitExprRuntime : routines runtime pour expressions ----- }
+{ Emettre les sous-programmes ASM 8086 pour les operations       }
+{ binaires non triviales : concatenation, comparaison de         }
+{ chaines, recherche dans une collection, puissance, et          }
+{ logique not.                                                   }
+Procedure EmitExprRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('-- Runtime : expressions binaires (TODO 11) --');
+
+  { _PYRT_CONCAT : SI=gauche, DI=droite -> AX=resultat (ptr _PY_STRBUF) }
+  EmitLabel(PY_RT_PFX + 'CONCAT');
+  EmitInstr('PUSH   DI');              { sauver droite }
+  EmitInstr('MOV    DI, OFFSET _PY_STRBUF');
+  { Copier gauche (SI) dans buf }
+  EmitLabel(PY_RT_PFX + 'CC1');
+  EmitInstr('LODSB');
+  EmitInstr('TEST   AL, AL');
+  EmitInstr('JZ     ' + PY_RT_PFX + 'CC2');
+  EmitInstr('STOSB');
+  EmitInstr('JMP    ' + PY_RT_PFX + 'CC1');
+  EmitLabel(PY_RT_PFX + 'CC2');
+  EmitInstr('POP    SI');              { SI = droite }
+  { Copier droite dans buf }
+  EmitLabel(PY_RT_PFX + 'CC3');
+  EmitInstr('LODSB');
+  EmitInstr('TEST   AL, AL');
+  EmitInstr('JZ     ' + PY_RT_PFX + 'CC4');
+  EmitInstr('STOSB');
+  EmitInstr('JMP    ' + PY_RT_PFX + 'CC3');
+  EmitLabel(PY_RT_PFX + 'CC4');
+  EmitInstr('MOV    BYTE PTR [DI], 0');
+  EmitInstr('MOV    AX, OFFSET _PY_STRBUF');
+  EmitInstr('RET');
+
+  { _PYRT_STRCMP : SI=gauche, DI=droite -> AX = -1/0/+1 }
+  EmitLabel(PY_RT_PFX + 'STRCMP');
+  EmitLabel(PY_RT_PFX + 'SC1');
+  EmitInstr('MOV    AL, [SI]');
+  EmitInstr('MOV    AH, [DI]');
+  EmitInstr('CMP    AL, AH');
+  EmitInstr('JB     ' + PY_RT_PFX + 'SCLT');
+  EmitInstr('JA     ' + PY_RT_PFX + 'SCGT');
+  EmitInstr('TEST   AL, AL');
+  EmitInstr('JZ     ' + PY_RT_PFX + 'SCEQ');
+  EmitInstr('INC    SI');
+  EmitInstr('INC    DI');
+  EmitInstr('JMP    ' + PY_RT_PFX + 'SC1');
+  EmitLabel(PY_RT_PFX + 'SCEQ');
+  EmitInstr('XOR    AX, AX');
+  EmitInstr('RET');
+  EmitLabel(PY_RT_PFX + 'SCLT');
+  EmitInstr('MOV    AX, -1');
+  EmitInstr('RET');
+  EmitLabel(PY_RT_PFX + 'SCGT');
+  EmitInstr('MOV    AX, 1');
+  EmitInstr('RET');
+
+  { _PYRT_STRMUL : SI=chaine, CX=count -> AX=resultat (ptr _PY_STRBUF) }
+  EmitLabel(PY_RT_PFX + 'STRMUL');
+  EmitInstr('MOV    DI, OFFSET _PY_STRBUF');
+  EmitInstr('TEST   CX, CX');
+  EmitInstr('JLE    ' + PY_RT_PFX + 'SM_END');
+  EmitLabel(PY_RT_PFX + 'SM_LP');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   SI');
+  EmitLabel(PY_RT_PFX + 'SM_C');
+  EmitInstr('LODSB');
+  EmitInstr('TEST   AL, AL');
+  EmitInstr('JZ     ' + PY_RT_PFX + 'SM_NX');
+  EmitInstr('STOSB');
+  EmitInstr('JMP    ' + PY_RT_PFX + 'SM_C');
+  EmitLabel(PY_RT_PFX + 'SM_NX');
+  EmitInstr('POP    SI');
+  EmitInstr('POP    CX');
+  EmitInstr('LOOP   ' + PY_RT_PFX + 'SM_LP');
+  EmitLabel(PY_RT_PFX + 'SM_END');
+  EmitInstr('MOV    BYTE PTR [DI], 0');
+  EmitInstr('MOV    AX, OFFSET _PY_STRBUF');
+  EmitInstr('RET');
+
+  { _PYRT_CONTAINS : AX=elem, SI=collection -> AX=0|1 (stub list scan) }
+  EmitLabel(PY_RT_PFX + 'CONTAINS');
+  EmitInstr('MOV    BX, AX');
+  EmitInstr('MOV    CX, [SI]');       { CX = nombre d elements }
+  EmitInstr('ADD    SI, 2');
+  EmitInstr('TEST   CX, CX');
+  EmitInstr('JZ     ' + PY_RT_PFX + 'CN_NO');
+  EmitLabel(PY_RT_PFX + 'CN_LP');
+  EmitInstr('LODSW');
+  EmitInstr('CMP    AX, BX');
+  EmitInstr('JE     ' + PY_RT_PFX + 'CN_YES');
+  EmitInstr('LOOP   ' + PY_RT_PFX + 'CN_LP');
+  EmitLabel(PY_RT_PFX + 'CN_NO');
+  EmitInstr('XOR    AX, AX');
+  EmitInstr('RET');
+  EmitLabel(PY_RT_PFX + 'CN_YES');
+  EmitInstr('MOV    AX, 1');
+  EmitInstr('RET');
+
+  { _PYRT_NOT : AX -> AX = 0 si truthy, 1 si falsy }
+  EmitLabel(PY_RT_PFX + 'NOT');
+  EmitInstr('TEST   AX, AX');
+  EmitInstr('MOV    AX, 0');
+  EmitInstr('JNZ    $+4');
+  EmitInstr('INC    AX');
+  EmitInstr('RET');
+
+  { _PYRT_POWER : AX=base, CX=exposant -> AX=resultat }
+  { (deja partiellement present dans les appels, on emet le corps) }
+  EmitLabel(PY_RT_PFX + 'POWER');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   DX');
+  EmitInstr('MOV    BX, AX');        { BX = base }
+  EmitInstr('MOV    AX, 1');         { AX = accumulateur = 1 }
+  EmitInstr('TEST   CX, CX');
+  EmitInstr('JLE    ' + PY_RT_PFX + 'PW_END');
+  EmitLabel(PY_RT_PFX + 'PW_LP');
+  EmitInstr('IMUL   BX');
+  EmitInstr('LOOP   ' + PY_RT_PFX + 'PW_LP');
+  EmitLabel(PY_RT_PFX + 'PW_END');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
 End;
 
 { ============================================================
