@@ -131,7 +131,7 @@
             Dates litterales : DW valeur_julienne dans DATA
             Tableaux statiques : bloc (tag, ptr_elements) dans DATA
 
-  TODO 09 - VARIABLES ET AFFECTATIONS
+  TODO 09 - VARIABLES ET AFFECTATIONS [IMPLEMENTE]
             Variables LOCAL : pile BP, acces [BP-offset] (tag + valeur = 3 octets)
             Variables STATIC : segment DATA, acces par label _CLS_nom
             Variables PRIVATE : segment DATA ou pile (visibles dans sous-routines)
@@ -703,6 +703,10 @@ Var
   CurScope   : Integer;    { profondeur de portee courante          }
   TotalSyms  : Integer;    { nombre total de symboles declares      }
 
+  { Variables et affectations (TODO 09) }
+  SymNextOffset   : Integer;   { prochain offset pile pour locals [BP-n] }
+  ParamNextOffset : Integer;   { prochain offset pile pour params [BP+n] }
+
   { Table des types (TODO 06) }
   TypeTab   : Array[0..MAX_TYPE - 1] Of TTypeRec;
   TypeCount : Integer;     { nombre d entrees dans TypeTab          }
@@ -802,6 +806,16 @@ Procedure EmitProlog; Forward;
 Procedure EmitEpilog; Forward;
 Procedure EmitRuntime; Forward;
 Procedure EmitClose; Forward;
+{ Variables et affectations (TODO 09) }
+Function  ExprAddrOf(SIdx : Integer) : TString; Forward;
+Procedure ExprStore(SIdx : Integer); Forward;
+Procedure ExprLoad(SIdx : Integer; Var Res : TExprVal); Forward;
+Function  DeclAllocSym(Const Name : TString;
+                       Cat : TSymCat) : Integer; Forward;
+Procedure DeclInitUndef(SIdx : Integer); Forward;
+Procedure ParseDeclStmt(Const Kw : TString); Forward;
+Procedure ParseStoreStmt; Forward;
+Procedure ParseExprStmt; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1045,6 +1059,8 @@ Begin
   LabelSeq     := 0;
   CurFrameSize := 0;
   CurFnRetLbl  := '';
+  SymNextOffset := 0;
+  ParamNextOffset := 4;   { [BP+4] est le premier parametre }
   TypeInit;
   SymInit;
 End;
@@ -1066,6 +1082,8 @@ End;
 { ---- Pipeline de compilation -------------------------------- }
 
 Procedure Run;
+Var
+  Kw : TString;
 Begin
   GlobalInit;
   If Opts.Verbose Then
@@ -1078,11 +1096,67 @@ Begin
   { Lire le premier token }
   LexNextToken;
 
-  { Boucle de tokenisation (TODO 02) }
+  { Boucle principale de compilation }
   While CurToken.Kind <> TK_EOF Do
   Begin
-    PrintToken(CurToken);
-    LexNextToken;
+    If Opts.DebugMode Then
+      PrintToken(CurToken);
+
+    { Dispatch selon le type de token }
+    If CurToken.Kind = TK_KEYWORD Then
+    Begin
+      Kw := CurToken.Val;
+      { Declarations de variables (TODO 09) }
+      If (Kw = 'LOCAL') Or (Kw = 'LOCA') Or
+         (Kw = 'STATIC') Or (Kw = 'STAT') Or
+         (Kw = 'PRIVATE') Or (Kw = 'PRIV') Or
+         (Kw = 'PUBLIC') Or (Kw = 'PUBL') Or
+         (Kw = 'DECLARE') Or (Kw = 'DECL') Or
+         (Kw = 'PARAMETERS') Or (Kw = 'PARA') Then
+      Begin
+        { Normaliser les abreviations }
+        If (Kw = 'LOCA') Then Kw := 'LOCAL';
+        If (Kw = 'STAT') Then Kw := 'STATIC';
+        If (Kw = 'PRIV') Then Kw := 'PRIVATE';
+        If (Kw = 'PUBL') Then Kw := 'PUBLIC';
+        If (Kw = 'DECL') Then Kw := 'DECLARE';
+        If (Kw = 'PARA') Then Kw := 'PARAMETERS';
+        ParserAdvance; { consommer le mot-cle }
+        ParseDeclStmt(Kw);
+      End
+      { STORE expr TO var1, var2 ... (TODO 09) }
+      Else If Kw = 'STORE' Then
+      Begin
+        ParserAdvance; { consommer STORE }
+        ParseStoreStmt;
+      End
+      Else
+      Begin
+        { Autres mots-cles : stub pour TODOs futurs }
+        ParserAdvance;
+      End;
+    End
+    Else If CurToken.Kind = TK_IDENT Then
+    Begin
+      { Instruction expression : affectation ou appel }
+      ParseExprStmt;
+    End
+    Else If CurToken.Kind = TK_PUNCT Then
+    Begin
+      { ? et ?? pour affichage (sera gere au TODO 12) }
+      If CurToken.Val = '?' Then
+      Begin
+        ParserAdvance;
+        { Stub : sera gere au TODO 12 }
+      End
+      Else
+        ParserAdvance;
+    End
+    Else
+    Begin
+      { Autre token : avancer }
+      ParserAdvance;
+    End;
   End;
 
   LexClose;
@@ -1162,7 +1236,7 @@ Begin
      (U = 'SEQUENCE')   Or (U = 'RECOVER')    Or (U = 'END')        Or
      (U = 'EXIT')       Or (U = 'LOOP')       Or (U = 'NIL')        Or
      (U = 'SELF')       Or (U = 'EACH')       Or (U = 'IN')         Or
-     (U = 'WITH')       Or (U = 'CLASS') Then
+     (U = 'WITH')       Or (U = 'CLASS')      Or (U = 'STORE') Then
   Begin
     IsKeyword := True;
     Exit;
@@ -1207,7 +1281,8 @@ Begin
      (U = 'STEP')    Or (U = 'CASE')   Or (U = 'BEGIN')   Or
      (U = 'END')     Or (U = 'EXIT')   Or (U = 'LOOP')    Or
      (U = 'NIL')     Or (U = 'SELF')   Or (U = 'EACH')    Or
-     (U = 'IN')      Or (U = 'WITH')   Or (U = 'CLASS') Then
+     (U = 'IN')      Or (U = 'WITH')   Or (U = 'CLASS')   Or
+     (U = 'STORE') Then
   Begin
     ExpandKeyword := U;
     Exit;
@@ -2324,7 +2399,10 @@ End;
    Les variables/fonctions seront gerees par TODO 05+.           *)
 
 Procedure ParsePrimary(Var Res : TExprVal);
+Var
+  SIdx : Integer;
 Begin
+  SIdx := -1;
   Case CurToken.Kind Of
     TK_INTEGER, TK_FLOAT, TK_STRING :
     Begin
@@ -2353,27 +2431,66 @@ Begin
     End;
     TK_IDENT :
     Begin
-      { Identificateur : stub pour TODO 05 (table des symboles) }
-      { Pour l instant, les idents non reconnus deviennent EK_NONE }
-      ExprMakeNone(Res);
-      Res.TypeIdx := TY_UNKNOWN;
-      ParserAdvance;
+      { Identificateur : rechercher dans la table des symboles }
+      SIdx := SymFind(CurToken.Val);
+      If SIdx >= 0 Then
+      Begin
+        { Symbole trouve : charger la valeur }
+        ExprLoad(SIdx, Res);
+        ParserAdvance;
+      End
+      Else
+      Begin
+        { Symbole inconnu : creer une variable PRIVATE implicite }
+        If Opts.Warnings Then
+          WarnMsg('variable implicite PRIVATE : ' + CurToken.Val);
+        SIdx := DeclAllocSym(CurToken.Val, SC_PRIVATE);
+        ExprLoad(SIdx, Res);
+        ParserAdvance;
+      End;
       { Appel de fonction : ident(...) - consommer les arguments }
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
       Begin
-        ParserAdvance; { consomme '(' }
-        While (CurToken.Kind <> TK_EOF) And
-              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+        { Si c est une FUNC/PROC connue : emettre CALL }
+        If (SIdx >= 0) And
+           ((SymTab[SIdx].Cat = SC_FUNC) Or (SymTab[SIdx].Cat = SC_PROC)) Then
         Begin
-          ParseExpr(Res);
-          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+          EmitComment('call ' + SymTab[SIdx].MangledName);
+          { Consommer arguments }
+          ParserAdvance; { consomme '(' }
+          While (CurToken.Kind <> TK_EOF) And
+                Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+          Begin
+            ParseExpr(Res);
+            ExprFlushToAX(Res);
+            EmitInstr('PUSH   AX');
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+              ParserAdvance;
+          End;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
             ParserAdvance;
+          EmitInstrA('CALL', SymTab[SIdx].MangledName);
+          Res.Kind    := EK_AX;
+          Res.TypeIdx := SymTab[SIdx].TypeIdx;
+          Res.SymIdx  := -1;
+        End
+        Else
+        Begin
+          { Appel generique }
+          ParserAdvance; { consomme '(' }
+          While (CurToken.Kind <> TK_EOF) And
+                Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+          Begin
+            ParseExpr(Res);
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+              ParserAdvance;
+          End;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+          Res.Kind    := EK_AX;
+          Res.TypeIdx := TY_UNKNOWN;
+          Res.SymIdx  := -1;
         End;
-        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
-          ParserAdvance;
-        Res.Kind    := EK_AX;
-        Res.TypeIdx := TY_UNKNOWN;
-        Res.SymIdx  := -1;
       End;
     End;
     TK_PUNCT :
@@ -2825,14 +2942,50 @@ Begin
     Op := CurToken.Val;
     ParserAdvance;
     ParseExprPrec(1, Right); { droite-associatif }
-    { L affectation sera completee au TODO 05 (SymTab) }
-    { Pour l instant : evaluer la droite, resultat dans AX }
     ExprFlushToAX(Right);
-    Res.Kind    := EK_AX;
-    Res.TypeIdx := Right.TypeIdx;
-    Res.SymIdx  := -1;
-    If (Op <> ':=') And Opts.Warnings Then
-      WarnMsg('affectation composee "' + Op + '" : stub, sera gere au TODO 05');
+    If Op = ':=' Then
+    Begin
+      { Affectation simple : stocker AX dans le lvalue }
+      ExprStore(Res.SymIdx);
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := Right.TypeIdx;
+      Res.SymIdx  := -1;
+    End
+    Else
+    Begin
+      { Affectation composee += -= *= /= %= }
+      { Charger la valeur courante dans BX }
+      EmitInstrAB('MOV', 'BX', 'AX');
+      If Res.SymIdx >= 0 Then
+        EmitInstrAB('MOV', 'AX', ExprAddrOf(Res.SymIdx))
+      Else
+        EmitInstrAB('XOR', 'AX', 'AX');
+      { Appliquer l operation }
+      If Op = '+=' Then
+        EmitInstrAB('ADD', 'AX', 'BX')
+      Else If Op = '-=' Then
+        EmitInstrAB('SUB', 'AX', 'BX')
+      Else If Op = '*=' Then
+      Begin
+        EmitInstrAB('IMUL', 'AX', 'BX');
+      End
+      Else If Op = '/=' Then
+      Begin
+        EmitInstr('CWD');
+        EmitInstrA('IDIV', 'BX');
+      End
+      Else If Op = '%=' Then
+      Begin
+        EmitInstr('CWD');
+        EmitInstrA('IDIV', 'BX');
+        EmitInstrAB('MOV', 'AX', 'DX');
+      End;
+      { Stocker le resultat }
+      ExprStore(Res.SymIdx);
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := Right.TypeIdx;
+      Res.SymIdx  := -1;
+    End;
   End;
 End;
 
@@ -3698,6 +3851,368 @@ Begin
     Exit;
   End;
   DataAddArray := DataAddTagged(Lbl, TY_IDX_ARRAY, LongInt(ElemCount), '');
+End;
+
+{ ============================================================
+  TODO 09 - VARIABLES ET AFFECTATIONS [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ExprAddrOf : adresse MASM d un symbole ------------------- }
+(* Retourne l expression d adresse MASM pour le symbole SIdx :
+     SC_LOCAL   -> WORD PTR [BP-offset]
+     SC_PARAM   -> WORD PTR [BP+offset]
+     SC_STATIC  -> WORD PTR [label+1]  (tag is at [label], value at [label+1])
+     SC_PUBLIC  -> WORD PTR [label+1]
+     SC_PRIVATE -> WORD PTR [BP-offset] si offset<>0, sinon DATA label
+     SC_FUNC/SC_PROC -> '' (pas d adresse memoire)
+   Pour les variables taggees en DATA, +1 saute le tag octet.   *)
+
+Function ExprAddrOf(SIdx : Integer) : TString;
+Var
+  NS : TString;
+Begin
+  If (SIdx < 0) Or (SIdx >= SymCount) Then
+  Begin
+    ExprAddrOf := '0';
+    Exit;
+  End;
+  Case SymTab[SIdx].Cat Of
+    SC_LOCAL :
+    Begin
+      Str(SymTab[SIdx].Offset, NS);
+      ExprAddrOf := 'WORD PTR [BP-' + NS + ']';
+    End;
+    SC_PARAM :
+    Begin
+      Str(SymTab[SIdx].Offset, NS);
+      ExprAddrOf := 'WORD PTR [BP+' + NS + ']';
+    End;
+    SC_STATIC, SC_PUBLIC :
+    Begin
+      { DK_TAGGED : DB tag, DW valeur -> valeur est a label+1 }
+      ExprAddrOf := 'WORD PTR [' + SymTab[SIdx].MangledName + '+1]';
+    End;
+    SC_PRIVATE :
+    Begin
+      If SymTab[SIdx].Offset > 0 Then
+      Begin
+        Str(SymTab[SIdx].Offset, NS);
+        ExprAddrOf := 'WORD PTR [BP-' + NS + ']';
+      End
+      Else
+        ExprAddrOf := 'WORD PTR [' + SymTab[SIdx].MangledName + '+1]';
+    End;
+  Else
+    ExprAddrOf := '0';
+  End;
+End;
+
+{ ---- ExprStore : stocker AX dans un symbole ------------------- }
+(* Ecrit la valeur de AX dans la variable designee par SIdx.
+   Ignore silencieusement si SIdx invalide (pas de lvalue).
+   Pour les variables taggees (PUBLIC/STATIC) on met aussi a jour
+   le tag de type si connu.                                       *)
+
+Procedure ExprStore(SIdx : Integer);
+Var
+  Addr : TString;
+Begin
+  If (SIdx < 0) Or (SIdx >= SymCount) Then Exit;
+  Addr := ExprAddrOf(SIdx);
+  If Addr = '0' Then Exit;
+  EmitInstrAB('MOV', Addr, 'AX');
+  SymTab[SIdx].IsInit := True;
+End;
+
+{ ---- ExprLoad : charger un symbole dans AX et TExprVal -------- }
+(* Genere MOV AX, [addr] et remplit Res.
+   Pour FUNC/PROC : met juste l offset de CALL, pas de load.     *)
+
+Procedure ExprLoad(SIdx : Integer; Var Res : TExprVal);
+Var
+  Addr : TString;
+Begin
+  If (SIdx < 0) Or (SIdx >= SymCount) Then
+  Begin
+    ExprMakeNone(Res);
+    Exit;
+  End;
+  { FUNC/PROC : pas de chargement de valeur }
+  If (SymTab[SIdx].Cat = SC_FUNC) Or (SymTab[SIdx].Cat = SC_PROC) Then
+  Begin
+    Res.Kind    := EK_NONE;
+    Res.ImmVal  := 0;
+    Res.TypeIdx := SymTab[SIdx].TypeIdx;
+    Res.Offset  := 0;
+    Res.SymIdx  := SIdx;
+    Exit;
+  End;
+  Addr := ExprAddrOf(SIdx);
+  If Addr <> '0' Then
+    EmitInstrAB('MOV', 'AX', Addr)
+  Else
+    EmitInstrAB('XOR', 'AX', 'AX');
+  Res.Kind    := EK_AX;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := SymTab[SIdx].TypeIdx;
+  Res.Offset  := SymTab[SIdx].Offset;
+  Res.SymIdx  := SIdx;
+End;
+
+{ ---- DeclAllocSym : allouer un symbole pour declaration ------- }
+(* Cree un nouveau symbole dans SymTab pour LOCAL/STATIC/PRIVATE/
+   PUBLIC/PARAM. Gere l offset pile pour les LOCALs et PARAMs.
+   Pour STATIC/PUBLIC, cree l entree DATA taggee.
+   Retourne l indice du symbole ou -1 si erreur.                 *)
+
+Function DeclAllocSym(Const Name : TString;
+                      Cat : TSymCat) : Integer;
+Var
+  Existing : Integer;
+  SI       : Integer;
+  Ofs      : Integer;
+  Lbl      : TString;
+Begin
+  { Verifier redeclaration dans le meme scope }
+  Existing := SymFindInScope(Name);
+  If (Existing >= 0) And (SymTab[Existing].Cat = Cat) Then
+  Begin
+    If Opts.Warnings Then
+      WarnMsg('redeclaration de ' + Name + ' dans le meme scope');
+    DeclAllocSym := Existing;
+    Exit;
+  End;
+
+  Case Cat Of
+    SC_LOCAL :
+    Begin
+      { Allouer sur la pile : [BP-n] }
+      { En Clipper chaque variable = 3 octets (tag + word) }
+      { Mais en pratique on utilise juste le word sur la pile }
+      Inc(SymNextOffset, 2);
+      Ofs := SymNextOffset;
+      SI := SymAdd(Name, SC_LOCAL, TY_IDX_NIL, Ofs);
+      Inc(CurFrameSize);
+      DeclAllocSym := SI;
+    End;
+    SC_PARAM :
+    Begin
+      { Parametres sont a [BP+4], [BP+6], etc. }
+      { (BP+0=ancien BP, BP+2=adresse retour) }
+      Ofs := ParamNextOffset;
+      SI := SymAdd(Name, SC_PARAM, TY_IDX_NIL, Ofs);
+      Inc(ParamNextOffset, 2);
+      DeclAllocSym := SI;
+    End;
+    SC_STATIC :
+    Begin
+      { Variable STATIC : cree dans DATA via DataAddStaticVar }
+      Lbl := CL_STAT_PFX + SymNameClean(Name);
+      DataAddTagged(Lbl, TY_IDX_NIL, 0, '');
+      SI := SymAdd(Name, SC_STATIC, TY_IDX_NIL, DataCount - 1);
+      DeclAllocSym := SI;
+    End;
+    SC_PUBLIC :
+    Begin
+      { Variable PUBLIC : cree dans DATA via DataAddPublicVar }
+      { DataAddPublicVar ajoute aussi dans SymTab }
+      Existing := SymFind(Name);
+      If (Existing >= 0) And (SymTab[Existing].Cat = SC_PUBLIC) Then
+      Begin
+        DeclAllocSym := Existing;
+        Exit;
+      End;
+      Lbl := CL_GLB_PFX + SymNameClean(Name);
+      DataAddTagged(Lbl, TY_IDX_NIL, 0, '');
+      SI := SymAdd(Name, SC_PUBLIC, TY_IDX_NIL, DataCount - 1);
+      DeclAllocSym := SI;
+    End;
+    SC_PRIVATE :
+    Begin
+      { Variable PRIVATE : comme LOCAL sur la pile }
+      Inc(SymNextOffset, 2);
+      Ofs := SymNextOffset;
+      SI := SymAdd(Name, SC_PRIVATE, TY_IDX_NIL, Ofs);
+      Inc(CurFrameSize);
+      DeclAllocSym := SI;
+    End;
+  Else
+    SI := SymAdd(Name, Cat, TY_IDX_NIL, 0);
+    DeclAllocSym := SI;
+  End;
+End;
+
+{ ---- DeclInitUndef : initialiser une variable non definie ----- }
+(* Emet MOV [addr], 0 pour initialiser a NIL/0.                  *)
+
+Procedure DeclInitUndef(SIdx : Integer);
+Var
+  Addr : TString;
+Begin
+  If (SIdx < 0) Or (SIdx >= SymCount) Then Exit;
+  Addr := ExprAddrOf(SIdx);
+  If Addr = '0' Then Exit;
+  EmitInstrAB('MOV', Addr, '0');
+End;
+
+{ ---- ParseDeclStmt : parser une declaration LOCAL/STATIC/etc. - }
+(* Syntaxe Clipper :
+     LOCAL  var1 [:= expr] [, var2 [:= expr]] ...
+     STATIC var1 [:= expr] [, var2 [:= expr]] ...
+     PRIVATE var1 [, var2] ...
+     PUBLIC var1 [, var2] ...
+     PARAMETERS var1, var2, ...
+   Le mot-cle a deja ete consomme par le caller.
+   Pour chaque declarateur :
+     - allouer le symbole via DeclAllocSym
+     - si := expr, parser l expression, flush AX, stocker
+     - sinon initialiser a 0 (NIL)                                 *)
+
+Procedure ParseDeclStmt(Const Kw : TString);
+Var
+  Cat      : TSymCat;
+  VarName  : TString;
+  SI       : Integer;
+  InitExpr : TExprVal;
+Begin
+  { Determiner la categorie selon le mot-cle }
+  If Kw = 'LOCAL' Then
+    Cat := SC_LOCAL
+  Else If Kw = 'STATIC' Then
+    Cat := SC_STATIC
+  Else If (Kw = 'PRIVATE') Or (Kw = 'PRIV') Then
+    Cat := SC_PRIVATE
+  Else If (Kw = 'PUBLIC') Or (Kw = 'PUBL') Then
+    Cat := SC_PUBLIC
+  Else If (Kw = 'PARAMETERS') Or (Kw = 'PARA') Then
+    Cat := SC_PARAM
+  Else If Kw = 'DECLARE' Then
+    Cat := SC_LOCAL
+  Else
+  Begin
+    CompileError('mot-cle de declaration inconnu : ' + Kw);
+    Exit;
+  End;
+
+  EmitComment(Kw + ' declaration');
+
+  { Boucle sur les declarateurs separes par virgule }
+  Repeat
+    { Attendre un identificateur }
+    If CurToken.Kind <> TK_IDENT Then
+    Begin
+      CompileError(Kw + ' : identificateur attendu, trouve "' +
+                   CurToken.Val + '"');
+      Exit;
+    End;
+    VarName := CurToken.Val;
+    ParserAdvance;
+
+    { Allouer le symbole }
+    SI := DeclAllocSym(VarName, Cat);
+
+    { Initialisation optionnelle := expr }
+    If (CurToken.Kind = TK_OP) And
+       ((CurToken.Val = ':=') Or (CurToken.Val = '=')) Then
+    Begin
+      ParserAdvance; { consommer := ou = }
+      ParseExpr(InitExpr);
+      ExprFlushToAX(InitExpr);
+      ExprStore(SI);
+      If SI >= 0 Then
+        SymTab[SI].TypeIdx := InitExpr.TypeIdx;
+    End
+    Else
+    Begin
+      { Pas d initialisation : mettre a 0 (NIL) }
+      DeclInitUndef(SI);
+    End;
+
+    { Virgule -> prochain declarateur }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance
+    Else
+      Break;
+  Until CurToken.Kind = TK_EOF;
+End;
+
+{ ---- ParseStoreStmt : parser STORE expr TO var1, var2, ... ---- }
+(* Syntaxe dBASE/Clipper :
+     STORE expr TO var1 [, var2 ...]
+   Evalue l expression, puis stocke dans chaque variable.
+   Le mot-cle STORE a deja ete consomme par le caller.            *)
+
+Procedure ParseStoreStmt;
+Var
+  StoreExpr : TExprVal;
+  SI        : Integer;
+  VarName   : TString;
+Begin
+  EmitComment('STORE ... TO ...');
+  ParseExpr(StoreExpr);
+  ExprFlushToAX(StoreExpr);
+
+  { Attendre le mot-cle TO }
+  If Not ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'TO')) Then
+  Begin
+    CompileError('STORE : mot-cle TO attendu');
+    Exit;
+  End;
+  ParserAdvance; { consommer TO }
+
+  { Sauvegarder AX car on va stocker dans plusieurs vars }
+  EmitInstr('PUSH   AX');
+
+  { Boucle sur les variables cibles }
+  Repeat
+    If CurToken.Kind <> TK_IDENT Then
+    Begin
+      CompileError('STORE TO : identificateur attendu');
+      Break;
+    End;
+    VarName := CurToken.Val;
+    ParserAdvance;
+
+    SI := SymFind(VarName);
+    If SI < 0 Then
+    Begin
+      { Variable non declaree : creer PRIVATE implicite }
+      SI := DeclAllocSym(VarName, SC_PRIVATE);
+    End;
+
+    { Restaurer AX et stocker }
+    EmitInstrAB('MOV', 'AX', 'WORD PTR [SP]');
+    ExprStore(SI);
+    If SI >= 0 Then
+      SymTab[SI].TypeIdx := StoreExpr.TypeIdx;
+
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance
+    Else
+      Break;
+  Until CurToken.Kind = TK_EOF;
+
+  { Nettoyer la pile }
+  EmitInstrAB('ADD', 'SP', '2');
+End;
+
+{ ---- ParseExprStmt : parser une instruction expression -------- }
+(* Analyse une expression comme instruction (appel de fonction,
+   affectation, etc.). Le resultat est ignore.                    *)
+
+Procedure ParseExprStmt;
+Var
+  Res : TExprVal;
+Begin
+  ParseExpr(Res);
+  { Materialiser si necessaire (pour les effets de bord) }
+  If Res.Kind = EK_IMM Then
+    { Constante seule : pas d effet de bord }
+  Else If Res.Kind = EK_NONE Then
+    { Pas de valeur }
+  Else
+    { Resultat ignore }
+    ;
 End;
 
 { ============================================================
