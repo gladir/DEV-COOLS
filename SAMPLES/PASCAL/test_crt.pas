@@ -1,70 +1,26 @@
-program test_crt;
-uses Crt;
-var
-  i: Integer;
-  ch: Char;
-begin
+Program TestCrt;
+Uses Crt;
+Var
+  Ch : Char;
+Begin
   ClrScr;
-  TextColor(Yellow);
-  WriteLn('=== Test CRT Unit ===');
-  NormVideo;
-
-  { Test couleurs }
-  for i := 0 to 15 do
-  begin
-    TextColor(i);
-    Write('Color ', i, ' ');
-  end;
-  NormVideo;
-  WriteLn;
-
-  { Test fond }
-  for i := 0 to 7 do
-  begin
-    TextBackground(i);
-    Write(' Bg', i, ' ');
-  end;
-  NormVideo;
-  WriteLn;
-
-  { Test positionnement }
+  TextColor(14);
+  TextBackground(1);
   GotoXY(10, 5);
-  WriteLn('Position (10,5)');
-
-  { Test video }
+  WriteLn('Hello CRT!');
   HighVideo;
-  WriteLn('HighVideo');
+  WriteLn('Bright text');
   LowVideo;
-  WriteLn('LowVideo');
+  WriteLn('Dim text');
   NormVideo;
-  WriteLn('NormVideo');
-
-  { Test lignes }
-  InsLine;
-  DelLine;
+  WriteLn('Normal text');
   ClrEol;
-
-  { Test constantes couleur }
-  TextColor(Red);
-  WriteLn('Rouge');
-  TextColor(Green);
-  WriteLn('Vert');
-  TextColor(LightCyan);
-  WriteLn('Cyan clair');
-  TextBackground(Blue);
-  WriteLn('Fond bleu');
-  NormVideo;
-
-  { Test constantes mode }
-  WriteLn('CO80 = ', CO80);
-  WriteLn('BW80 = ', BW80);
-
-  { Test stubs }
+  Window(1, 1, 80, 25);
+  WriteLn('WhereX=', WhereX, ' WhereY=', WhereY);
   Delay(100);
   Sound(440);
   NoSound;
-  Window(1, 1, 80, 25);
-  TextMode(CO80);
-
-  WriteLn('=== Fin test CRT ===');
-end.
+  If KeyPressed Then
+    Ch := ReadKey;
+  WriteLn('Done.');
+End.

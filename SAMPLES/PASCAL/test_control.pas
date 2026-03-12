@@ -1,78 +1,101 @@
 program test_control;
-{ Test TODO 13 : IF / CASE / GOTO }
-
-label
-  Debut, Fin;
 
 var
-  n: integer;
-  c: char;
+  i, j, n, somme: integer;
 
 begin
-  { Test IF / ELSE IF / ELSE }
-  n := 3;
-  if n = 1 then
-    writeln('Un')
-  else if n = 2 then
-    writeln('Deux')
-  else if n = 3 then
-    writeln('Trois')
+  WriteLn('=== Test structures de controle (TODO 13) ===');
+
+  { --- IF THEN ELSE --- }
+  n := 10;
+  if n > 5 then
+    WriteLn('IF simple: n > 5');
+
+  if n > 20 then
+    WriteLn('ERREUR: ne devrait pas afficher')
   else
-    writeln('Autre');
+    WriteLn('IF ELSE: n <= 20');
 
-  { Test IF simple }
-  if n > 0 then
-    writeln('Positif');
+  if n > 100 then
+    WriteLn('ERREUR')
+  else if n > 50 then
+    WriteLn('ERREUR')
+  else
+    WriteLn('IF ELSE IF: n <= 50');
 
-  { Test IF avec BEGIN END }
-  if n < 10 then
+  if n > 5 then
   begin
-    writeln('Petit nombre');
-    writeln('n = ', n);
-  end
-  else
-    writeln('Grand nombre');
+    WriteLn('IF BEGIN END: bloc 1');
+    WriteLn('IF BEGIN END: bloc 2');
+  end;
 
-  { Test CASE simple }
+  { --- WHILE DO --- }
+  i := 1;
+  while i <= 3 do
+  begin
+    Write('WHILE: i=');
+    WriteLn(i);
+    i := i + 1;
+  end;
+
+  { --- REPEAT UNTIL --- }
+  i := 1;
+  repeat
+    Write('REPEAT: i=');
+    WriteLn(i);
+    i := i + 1;
+  until i > 3;
+
+  { --- FOR TO DO --- }
+  for i := 1 to 3 do
+  begin
+    Write('FOR: i=');
+    WriteLn(i);
+  end;
+
+  { --- FOR DOWNTO DO --- }
+  for i := 3 downto 1 do
+  begin
+    Write('DOWNTO: i=');
+    WriteLn(i);
+  end;
+
+  { --- CASE OF --- }
   n := 2;
   case n of
-    1: writeln('Un');
-    2: writeln('Deux');
-    3: writeln('Trois');
+    1: WriteLn('CASE: un');
+    2: WriteLn('CASE: deux');
+    3: WriteLn('CASE: trois');
   else
-    writeln('Autre');
+    WriteLn('CASE: autre');
   end;
 
-  { Test CASE avec valeurs multiples }
-  c := 'B';
-  case c of
-    'A', 'E', 'I', 'O', 'U': writeln('Voyelle');
-  else
-    writeln('Consonne');
-  end;
-
-  { Test CASE avec intervalles }
-  n := 5;
+  { --- CASE avec BEGIN END --- }
+  n := 1;
   case n of
-    1, 2: writeln('Un ou Deux');
-    3..5: writeln('Trois a Cinq');
-    6..10: writeln('Six a Dix');
-  else
-    writeln('Hors plage');
+    1: begin
+         WriteLn('CASE BEGIN: premier');
+         WriteLn('CASE BEGIN: suite');
+       end;
+    2: WriteLn('CASE: deuxieme');
   end;
 
-  { Test CASE sans ELSE }
-  case n of
-    1: writeln('Premier');
-    5: writeln('Cinquieme');
-  end;
+  { --- Boucles imbriquees --- }
+  for i := 1 to 2 do
+    for j := 1 to 2 do
+    begin
+      Write('IMBRIQUE: i=');
+      Write(i);
+      Write(' j=');
+      WriteLn(j);
+    end;
 
-  { Test GOTO }
-  goto Fin;
+  { --- Somme avec FOR --- }
+  somme := 0;
+  for i := 1 to 10 do
+    somme := somme + i;
+  Write('SOMME 1..10 = ');
+  WriteLn(somme);
 
-Debut:
-  writeln('Debut');
-
-Fin:
-  writeln('Programme termine');
+  WriteLn('=== Fin des tests ===');
 end.

@@ -1,53 +1,35 @@
-program test_dos;
-uses Dos;
-var
-  Y, M, D, DOW: Word;
-  H, Mi, S, S100: Word;
-  Env: String;
-  EC: Integer;
-begin
-  WriteLn('=== Test DOS Unit ===');
+{ test_dos.pas - Test de l unite DOS pour TPCW32 }
+Program TestDos;
+Uses Dos;
+Var
+  Y, M, D, DW : Word;
+  H, Mi, S, S100 : Word;
+  SR : SearchRec;
+  EnvPath : String;
+Begin
+  WriteLn('=== Test unite DOS ===');
 
-  { Test constantes attributs fichier }
-  WriteLn('ReadOnly = ', ReadOnly);
-  WriteLn('Hidden = ', Hidden);
-  WriteLn('SysFile = ', SysFile);
-  WriteLn('VolumeID = ', VolumeID);
-  WriteLn('Directory = ', Directory);
-  WriteLn('Archive = ', Archive);
-  WriteLn('AnyFile = ', AnyFile);
+  WriteLn('DosVersion = ', DosVersion);
 
-  { Test GetDate }
-  GetDate(Y, M, D, DOW);
-  WriteLn('Year: ', Y);
-  WriteLn('Month: ', M);
-  WriteLn('Day: ', D);
-  WriteLn('DayOfWeek: ', DOW);
+  GetDate(Y, M, D, DW);
+  WriteLn('Date : ', Y, '-', M, '-', D, ' (jour ', DW, ')');
 
-  { Test GetTime }
   GetTime(H, Mi, S, S100);
-  WriteLn('Hour: ', H);
-  WriteLn('Min: ', Mi);
-  WriteLn('Sec: ', S);
+  WriteLn('Heure : ', H, ':', Mi, ':', S, '.', S100);
 
-  { Test GetEnv }
-  Env := GetEnv('PATH');
-  WriteLn('PATH length: ', Length(Env));
+  EnvPath := GetEnv('PATH');
+  WriteLn('PATH = ', EnvPath);
 
-  { Test EnvCount }
-  WriteLn('EnvCount: ', EnvCount);
+  WriteLn('DiskFree(0) = ', DiskFree(0));
+  WriteLn('DiskSize(0) = ', DiskSize(0));
 
-  { Test DosVersion }
-  WriteLn('DosVersion: ', DosVersion);
+  FindFirst('*.pas', $3F, SR);
+  If DosError = 0 Then
+    WriteLn('Premier fichier : ', SR.Name)
+  Else
+    WriteLn('Aucun fichier .pas trouve');
 
-  { Test DosExitCode }
-  EC := DosExitCode;
-  WriteLn('DosExitCode: ', EC);
-
-  { Test stubs }
   SwapVectors;
-  DiskFree(0);
-  DiskSize(0);
+  WriteLn('Done.');
+End.
 
-  WriteLn('=== Fin test DOS ===');
-end.
