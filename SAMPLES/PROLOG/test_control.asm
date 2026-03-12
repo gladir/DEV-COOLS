@@ -13,6 +13,11 @@ _PLP_Main:
         MOV   DS, AX
 
 
+; --- Appel du but principal ---
+        CALL   _PLP_max_3
+        MOV   AX, 4C00h
+        INT   21h
+
 ; =======================================
 ;   Clauses compilees (TODO 10 + 11 + 12 + 13 + 14 + 15)
 ; =======================================
@@ -349,9 +354,6 @@ _PLP_not_animal_1:
         JMP   _PLP_not_animal_1_0
 
 ; --- Fin du code genere ---
-
-        MOV   AX, 4C00h
-        INT   21h
 
 
 ; =======================================

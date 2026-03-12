@@ -414,7 +414,7 @@
             Stack : _PL_STACK DW 1024 DUP(0) + _PL_STOP DW 0
             Trail : _PL_TRAIL DW 512 DUP(0) + _PL_TTOP DW 0
 
-  TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES
+  TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES [IMPLEMENTE]
             EmitClose : END _PLP_Main dans _TEXT ENDS / DATA ENDS
             Run : pipeline complet LexInit -> ParseProgram ->
               EmitRuntime -> _TEXT ENDS / EmitDataSeg / END _PLP_Main
@@ -7815,12 +7815,6 @@ Begin
   EmitComment('--- Fin du code genere ---');
   EmitBlankLine;
 
-  { Sortie DOS : MOV AX,4C00h / INT 21h }
-  EmitInstrAB('MOV', 'AX', '4C00h');
-  EmitInstrA('INT', '21h');
-
-  EmitBlankLine;
-
   { Emettre les routines runtime (TODO 24) }
   EmitRuntime;
 
@@ -11165,6 +11159,10 @@ End;
   ============================================================ }
 
 Procedure Run;
+Var
+  HasMainPred : Boolean;
+  I           : Integer;
+  EntryLabel  : TString;
 Begin
   GlobalInit;
   If Opts.Verbose Then
@@ -11176,9 +11174,34 @@ Begin
   ParseProgram;
   LexClose;
 
+  { Detecter si main/0 existe (TODO 25) }
+  HasMainPred := False;
+  For I := 0 To ClauseCount - 1 Do
+    If (ClauseTab[I].PredName = 'main') And (ClauseTab[I].Arity = 0) Then
+    Begin
+      HasMainPred := True;
+      Break;
+    End;
+
   { Phase 2 : emettre le code ASM }
   EmitOpen;
   EmitHeader;
+
+  { Appel du but principal (TODO 25) }
+  EmitBlankLine;
+  EmitComment('--- Appel du but principal ---');
+  If HasMainPred Then
+    EmitInstrA('CALL', PL_PRED_PFX + 'main_0')
+  Else If ClauseCount > 0 Then
+  Begin
+    EntryLabel := PL_PRED_PFX + SymNameClean(ClauseTab[0].PredName) +
+                  '_' + IntToStr(ClauseTab[0].Arity);
+    EmitInstrA('CALL', EntryLabel);
+  End;
+
+  { Sortie DOS apres le but principal }
+  EmitInstrAB('MOV', 'AX', '4C00h');
+  EmitInstrA('INT', '21h');
 
   { Emettre le code des predicats }
   EmitAllPredicates;

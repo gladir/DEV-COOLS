@@ -13,6 +13,11 @@ _PLP_Main:
         MOV   DS, AX
 
 
+; --- Appel du but principal ---
+        CALL   _PLP_hello_0
+        MOV   AX, 4C00h
+        INT   21h
+
 ; =======================================
 ;   Clauses compilees (TODO 10 + 11 + 12 + 13 + 14 + 15)
 ; =======================================
@@ -233,9 +238,6 @@ _PLP_animal_1_ok:
 ; === Predicat test_write/0 (1 clause(s)) ===
 
 ; --- Fin du code genere ---
-
-        MOV   AX, 4C00h
-        INT   21h
 
 
 ; =======================================

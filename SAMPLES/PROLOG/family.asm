@@ -1,4 +1,4 @@
-; Genere par PROLOG86 v1.0 - SAMPLES/PROLOG/test_strings.pl
+; Genere par PROLOG86 v1.0 - SAMPLES/PROLOG/family.pl
 ; Date: 2026-03-06
 
         .MODEL SMALL
@@ -22,267 +22,273 @@ _PLP_Main:
 ;   Clauses compilees (TODO 10 + 11 + 12 + 13 + 14 + 15)
 ; =======================================
 
-; --- Regle test_upcase/1 clause 0 (1 but(s), 1 var(s)) ---
-_PLP_test_upcase_1_0:
+; --- Fait parent/2 clause 0 ---
+_PLP_parent_2_0:
         PUSH   BP
         MOV   BP, SP
-; allocate 1 variable(s) locale(s)
-        SUB   SP, 2
-; init vars locales a REF libre
-        MOV   AX, WORD PTR [_PL_HTOP]
-        MOV   SI, AX
-        SHL   SI, 1
-        ADD   SI, OFFSET _PL_HEAP
-        MOV   WORD PTR [SI], AX
-        INC    WORD PTR [_PL_HTOP]
-        MOV   WORD PTR [BP-2], AX
-; unification tete
-; arg tete 1/1
+; arg 1/2
         MOV   AX, WORD PTR [_PL_ARGS + 0]
-; var X [BP-2]
-        MOV   BX, WORD PTR [BP-2]
+        MOV   BX, 8200
+; atom tom
         CALL    _PLRT_UNIFY
-        JC   _PLP_test_upcase_1_0_F
-; --- corps de la regle ---
-
-; but 1/1: upcase_atom/2
-; upcase_atom/2 inline (TODO 23)
-        MOV   AX, 8200
-        CALL    _PLRT_UPCASE
-        MOV   BX, AX
-        MOV   AX, WORD PTR [BP-2]
-        CALL    _PLRT_BIND
-; upcase_atom/2 done
+        JC   _PLP_parent_2_0_F
+; arg 2/2
+        MOV   AX, WORD PTR [_PL_ARGS + 2]
+        MOV   BX, 8201
+; atom bob
+        CALL    _PLRT_UNIFY
+        JC   _PLP_parent_2_0_F
         CLC
         MOV   SP, BP
         POP   BP
         RET
 
-_PLP_test_upcase_1_0_F:
+_PLP_parent_2_0_F:
         STC
         MOV   SP, BP
         POP   BP
         RET
 
-; --- Regle test_upcase2/1 clause 0 (1 but(s), 1 var(s)) ---
-_PLP_test_upcase2_1_0:
+; --- Fait parent/2 clause 1 ---
+_PLP_parent_2_1:
         PUSH   BP
         MOV   BP, SP
-; allocate 1 variable(s) locale(s)
-        SUB   SP, 2
-; init vars locales a REF libre
-        MOV   AX, WORD PTR [_PL_HTOP]
-        MOV   SI, AX
-        SHL   SI, 1
-        ADD   SI, OFFSET _PL_HEAP
-        MOV   WORD PTR [SI], AX
-        INC    WORD PTR [_PL_HTOP]
-        MOV   WORD PTR [BP-2], AX
-; unification tete
-; arg tete 1/1
+; arg 1/2
         MOV   AX, WORD PTR [_PL_ARGS + 0]
-; var X [BP-2]
-        MOV   BX, WORD PTR [BP-2]
+        MOV   BX, 8200
+; atom tom
         CALL    _PLRT_UNIFY
-        JC   _PLP_test_upcase2_1_0_F
-; --- corps de la regle ---
-
-; but 1/1: upcase_atom/2
-; upcase_atom/2 inline (TODO 23)
-        MOV   AX, 8201
-        CALL    _PLRT_UPCASE
-        MOV   BX, AX
-        MOV   AX, WORD PTR [BP-2]
-        CALL    _PLRT_BIND
-; upcase_atom/2 done
+        JC   _PLP_parent_2_1_F
+; arg 2/2
+        MOV   AX, WORD PTR [_PL_ARGS + 2]
+        MOV   BX, 8202
+; atom liz
+        CALL    _PLRT_UNIFY
+        JC   _PLP_parent_2_1_F
         CLC
         MOV   SP, BP
         POP   BP
         RET
 
-_PLP_test_upcase2_1_0_F:
+_PLP_parent_2_1_F:
         STC
         MOV   SP, BP
         POP   BP
         RET
 
-; --- Regle test_downcase/1 clause 0 (1 but(s), 1 var(s)) ---
-_PLP_test_downcase_1_0:
+; --- Fait parent/2 clause 2 ---
+_PLP_parent_2_2:
         PUSH   BP
         MOV   BP, SP
-; allocate 1 variable(s) locale(s)
-        SUB   SP, 2
-; init vars locales a REF libre
-        MOV   AX, WORD PTR [_PL_HTOP]
-        MOV   SI, AX
-        SHL   SI, 1
-        ADD   SI, OFFSET _PL_HEAP
-        MOV   WORD PTR [SI], AX
-        INC    WORD PTR [_PL_HTOP]
-        MOV   WORD PTR [BP-2], AX
-; unification tete
-; arg tete 1/1
+; arg 1/2
         MOV   AX, WORD PTR [_PL_ARGS + 0]
-; var X [BP-2]
-        MOV   BX, WORD PTR [BP-2]
+        MOV   BX, 8201
+; atom bob
         CALL    _PLRT_UNIFY
-        JC   _PLP_test_downcase_1_0_F
-; --- corps de la regle ---
-
-; but 1/1: downcase_atom/2
-; downcase_atom/2 inline (TODO 23)
-        MOV   AX, 8202
-        CALL    _PLRT_DOWNCASE
-        MOV   BX, AX
-        MOV   AX, WORD PTR [BP-2]
-        CALL    _PLRT_BIND
-; downcase_atom/2 done
+        JC   _PLP_parent_2_2_F
+; arg 2/2
+        MOV   AX, WORD PTR [_PL_ARGS + 2]
+        MOV   BX, 8203
+; atom ann
+        CALL    _PLRT_UNIFY
+        JC   _PLP_parent_2_2_F
         CLC
         MOV   SP, BP
         POP   BP
         RET
 
-_PLP_test_downcase_1_0_F:
+_PLP_parent_2_2_F:
         STC
         MOV   SP, BP
         POP   BP
         RET
 
-; --- Regle test_atom_string/1 clause 0 (1 but(s), 1 var(s)) ---
-_PLP_test_atom_string_1_0:
+; --- Fait parent/2 clause 3 ---
+_PLP_parent_2_3:
         PUSH   BP
         MOV   BP, SP
-; allocate 1 variable(s) locale(s)
-        SUB   SP, 2
-; init vars locales a REF libre
-        MOV   AX, WORD PTR [_PL_HTOP]
-        MOV   SI, AX
-        SHL   SI, 1
-        ADD   SI, OFFSET _PL_HEAP
-        MOV   WORD PTR [SI], AX
-        INC    WORD PTR [_PL_HTOP]
-        MOV   WORD PTR [BP-2], AX
-; unification tete
-; arg tete 1/1
+; arg 1/2
         MOV   AX, WORD PTR [_PL_ARGS + 0]
-; var X [BP-2]
-        MOV   BX, WORD PTR [BP-2]
+        MOV   BX, 8201
+; atom bob
         CALL    _PLRT_UNIFY
-        JC   _PLP_test_atom_string_1_0_F
-; --- corps de la regle ---
-
-; but 1/1: atom_string/2
-; atom_string/2 inline (TODO 23)
-        MOV   AX, 8200
-        CALL    _PLRT_ATOM_STRING
-        MOV   BX, AX
-        MOV   AX, WORD PTR [BP-2]
-        CALL    _PLRT_BIND
-; atom_string/2 done
-        CLC
-        MOV   SP, BP
-        POP   BP
-        RET
-
-_PLP_test_atom_string_1_0_F:
-        STC
-        MOV   SP, BP
-        POP   BP
-        RET
-
-; --- Regle test_number_string/1 clause 0 (1 but(s), 1 var(s)) ---
-_PLP_test_number_string_1_0:
-        PUSH   BP
-        MOV   BP, SP
-; allocate 1 variable(s) locale(s)
-        SUB   SP, 2
-; init vars locales a REF libre
-        MOV   AX, WORD PTR [_PL_HTOP]
-        MOV   SI, AX
-        SHL   SI, 1
-        ADD   SI, OFFSET _PL_HEAP
-        MOV   WORD PTR [SI], AX
-        INC    WORD PTR [_PL_HTOP]
-        MOV   WORD PTR [BP-2], AX
-; unification tete
-; arg tete 1/1
-        MOV   AX, WORD PTR [_PL_ARGS + 0]
-; var X [BP-2]
-        MOV   BX, WORD PTR [BP-2]
-        CALL    _PLRT_UNIFY
-        JC   _PLP_test_number_string_1_0_F
-; --- corps de la regle ---
-
-; but 1/1: number_string/2
-; number_string/2 inline (TODO 23)
-        MOV   AX, 16426
-        CALL    _PLRT_NUMBER_STRING
-        MOV   BX, AX
-        MOV   AX, WORD PTR [BP-2]
-        CALL    _PLRT_BIND
-; number_string/2 done
-        CLC
-        MOV   SP, BP
-        POP   BP
-        RET
-
-_PLP_test_number_string_1_0_F:
-        STC
-        MOV   SP, BP
-        POP   BP
-        RET
-
-; --- Regle test_string_concat/1 clause 0 (1 but(s), 1 var(s)) ---
-_PLP_test_string_concat_1_0:
-        PUSH   BP
-        MOV   BP, SP
-; allocate 1 variable(s) locale(s)
-        SUB   SP, 2
-; init vars locales a REF libre
-        MOV   AX, WORD PTR [_PL_HTOP]
-        MOV   SI, AX
-        SHL   SI, 1
-        ADD   SI, OFFSET _PL_HEAP
-        MOV   WORD PTR [SI], AX
-        INC    WORD PTR [_PL_HTOP]
-        MOV   WORD PTR [BP-2], AX
-; unification tete
-; arg tete 1/1
-        MOV   AX, WORD PTR [_PL_ARGS + 0]
-; var X [BP-2]
-        MOV   BX, WORD PTR [BP-2]
-        CALL    _PLRT_UNIFY
-        JC   _PLP_test_string_concat_1_0_F
-; --- corps de la regle ---
-
-; but 1/1: string_concat/3
-; string_concat/3 inline (TODO 23)
-        MOV   AX, 8203
-        PUSH   AX
+        JC   _PLP_parent_2_3_F
+; arg 2/2
+        MOV   AX, WORD PTR [_PL_ARGS + 2]
         MOV   BX, 8204
-        POP   AX
-        CALL    _PLRT_STRING_CONCAT
-        MOV   BX, AX
-        MOV   AX, WORD PTR [BP-2]
-        CALL    _PLRT_BIND
-; string_concat/3 done
+; atom pat
+        CALL    _PLRT_UNIFY
+        JC   _PLP_parent_2_3_F
         CLC
         MOV   SP, BP
         POP   BP
         RET
 
-_PLP_test_string_concat_1_0_F:
+_PLP_parent_2_3_F:
         STC
         MOV   SP, BP
         POP   BP
         RET
 
-; --- Regle test_string_length/1 clause 0 (1 but(s), 1 var(s)) ---
-_PLP_test_string_length_1_0:
+; --- Fait parent/2 clause 4 ---
+_PLP_parent_2_4:
         PUSH   BP
         MOV   BP, SP
-; allocate 1 variable(s) locale(s)
-        SUB   SP, 2
+; arg 1/2
+        MOV   AX, WORD PTR [_PL_ARGS + 0]
+        MOV   BX, 8204
+; atom pat
+        CALL    _PLRT_UNIFY
+        JC   _PLP_parent_2_4_F
+; arg 2/2
+        MOV   AX, WORD PTR [_PL_ARGS + 2]
+        MOV   BX, 8205
+; atom jim
+        CALL    _PLRT_UNIFY
+        JC   _PLP_parent_2_4_F
+        CLC
+        MOV   SP, BP
+        POP   BP
+        RET
+
+_PLP_parent_2_4_F:
+        STC
+        MOV   SP, BP
+        POP   BP
+        RET
+
+; --- Fait male/1 clause 0 ---
+_PLP_male_1_0:
+        PUSH   BP
+        MOV   BP, SP
+; arg 1/1
+        MOV   AX, WORD PTR [_PL_ARGS + 0]
+        MOV   BX, 8200
+; atom tom
+        CALL    _PLRT_UNIFY
+        JC   _PLP_male_1_0_F
+        CLC
+        MOV   SP, BP
+        POP   BP
+        RET
+
+_PLP_male_1_0_F:
+        STC
+        MOV   SP, BP
+        POP   BP
+        RET
+
+; --- Fait male/1 clause 1 ---
+_PLP_male_1_1:
+        PUSH   BP
+        MOV   BP, SP
+; arg 1/1
+        MOV   AX, WORD PTR [_PL_ARGS + 0]
+        MOV   BX, 8201
+; atom bob
+        CALL    _PLRT_UNIFY
+        JC   _PLP_male_1_1_F
+        CLC
+        MOV   SP, BP
+        POP   BP
+        RET
+
+_PLP_male_1_1_F:
+        STC
+        MOV   SP, BP
+        POP   BP
+        RET
+
+; --- Fait male/1 clause 2 ---
+_PLP_male_1_2:
+        PUSH   BP
+        MOV   BP, SP
+; arg 1/1
+        MOV   AX, WORD PTR [_PL_ARGS + 0]
+        MOV   BX, 8205
+; atom jim
+        CALL    _PLRT_UNIFY
+        JC   _PLP_male_1_2_F
+        CLC
+        MOV   SP, BP
+        POP   BP
+        RET
+
+_PLP_male_1_2_F:
+        STC
+        MOV   SP, BP
+        POP   BP
+        RET
+
+; --- Fait female/1 clause 0 ---
+_PLP_female_1_0:
+        PUSH   BP
+        MOV   BP, SP
+; arg 1/1
+        MOV   AX, WORD PTR [_PL_ARGS + 0]
+        MOV   BX, 8202
+; atom liz
+        CALL    _PLRT_UNIFY
+        JC   _PLP_female_1_0_F
+        CLC
+        MOV   SP, BP
+        POP   BP
+        RET
+
+_PLP_female_1_0_F:
+        STC
+        MOV   SP, BP
+        POP   BP
+        RET
+
+; --- Fait female/1 clause 1 ---
+_PLP_female_1_1:
+        PUSH   BP
+        MOV   BP, SP
+; arg 1/1
+        MOV   AX, WORD PTR [_PL_ARGS + 0]
+        MOV   BX, 8203
+; atom ann
+        CALL    _PLRT_UNIFY
+        JC   _PLP_female_1_1_F
+        CLC
+        MOV   SP, BP
+        POP   BP
+        RET
+
+_PLP_female_1_1_F:
+        STC
+        MOV   SP, BP
+        POP   BP
+        RET
+
+; --- Fait female/1 clause 2 ---
+_PLP_female_1_2:
+        PUSH   BP
+        MOV   BP, SP
+; arg 1/1
+        MOV   AX, WORD PTR [_PL_ARGS + 0]
+        MOV   BX, 8204
+; atom pat
+        CALL    _PLRT_UNIFY
+        JC   _PLP_female_1_2_F
+        CLC
+        MOV   SP, BP
+        POP   BP
+        RET
+
+_PLP_female_1_2_F:
+        STC
+        MOV   SP, BP
+        POP   BP
+        RET
+
+; --- Regle father/2 clause 0 (2 but(s), 2 var(s)) ---
+_PLP_father_2_0:
+        PUSH   BP
+        MOV   BP, SP
+; allocate 2 variable(s) locale(s)
+        SUB   SP, 4
 ; init vars locales a REF libre
         MOV   AX, WORD PTR [_PL_HTOP]
         MOV   SI, AX
@@ -291,143 +297,654 @@ _PLP_test_string_length_1_0:
         MOV   WORD PTR [SI], AX
         INC    WORD PTR [_PL_HTOP]
         MOV   WORD PTR [BP-2], AX
+        MOV   AX, WORD PTR [_PL_HTOP]
+        MOV   SI, AX
+        SHL   SI, 1
+        ADD   SI, OFFSET _PL_HEAP
+        MOV   WORD PTR [SI], AX
+        INC    WORD PTR [_PL_HTOP]
+        MOV   WORD PTR [BP-4], AX
 ; unification tete
-; arg tete 1/1
+; arg tete 1/2
         MOV   AX, WORD PTR [_PL_ARGS + 0]
 ; var X [BP-2]
         MOV   BX, WORD PTR [BP-2]
         CALL    _PLRT_UNIFY
-        JC   _PLP_test_string_length_1_0_F
+        JC   _PLP_father_2_0_F
+; arg tete 2/2
+        MOV   AX, WORD PTR [_PL_ARGS + 2]
+; var Y [BP-4]
+        MOV   BX, WORD PTR [BP-4]
+        CALL    _PLRT_UNIFY
+        JC   _PLP_father_2_0_F
 ; --- corps de la regle ---
 
-; but 1/1: string_length/2
-; string_length/2 inline (TODO 23)
-        MOV   AX, 8200
-        CALL    _PLRT_STRING_LENGTH
-        MOV   BX, AX
+; but 1/2: parent/2
+; var X
         MOV   AX, WORD PTR [BP-2]
-        CALL    _PLRT_BIND
-; string_length/2 done
-        CLC
+        MOV   WORD PTR [_PL_ARGS + 0], AX
+; var Y
+        MOV   AX, WORD PTR [BP-4]
+        MOV   WORD PTR [_PL_ARGS + 2], AX
+        CALL   _PLP_parent_2
+        JC   _PLP_father_2_0_F
+
+; but 2/2: male/1
+; var X
+        MOV   AX, WORD PTR [BP-2]
+        MOV   WORD PTR [_PL_ARGS + 0], AX
+; last call optimization
         MOV   SP, BP
         POP   BP
-        RET
+        JMP   _PLP_male_1
 
-_PLP_test_string_length_1_0_F:
+_PLP_father_2_0_F:
         STC
         MOV   SP, BP
         POP   BP
         RET
 
-; --- Regle test_char_type_alpha/0 clause 0 (1 but(s), 0 var(s)) ---
-_PLP_test_char_type_alpha_0_0:
+; --- Regle mother/2 clause 0 (2 but(s), 2 var(s)) ---
+_PLP_mother_2_0:
         PUSH   BP
         MOV   BP, SP
+; allocate 2 variable(s) locale(s)
+        SUB   SP, 4
+; init vars locales a REF libre
+        MOV   AX, WORD PTR [_PL_HTOP]
+        MOV   SI, AX
+        SHL   SI, 1
+        ADD   SI, OFFSET _PL_HEAP
+        MOV   WORD PTR [SI], AX
+        INC    WORD PTR [_PL_HTOP]
+        MOV   WORD PTR [BP-2], AX
+        MOV   AX, WORD PTR [_PL_HTOP]
+        MOV   SI, AX
+        SHL   SI, 1
+        ADD   SI, OFFSET _PL_HEAP
+        MOV   WORD PTR [SI], AX
+        INC    WORD PTR [_PL_HTOP]
+        MOV   WORD PTR [BP-4], AX
+; unification tete
+; arg tete 1/2
+        MOV   AX, WORD PTR [_PL_ARGS + 0]
+; var X [BP-2]
+        MOV   BX, WORD PTR [BP-2]
+        CALL    _PLRT_UNIFY
+        JC   _PLP_mother_2_0_F
+; arg tete 2/2
+        MOV   AX, WORD PTR [_PL_ARGS + 2]
+; var Y [BP-4]
+        MOV   BX, WORD PTR [BP-4]
+        CALL    _PLRT_UNIFY
+        JC   _PLP_mother_2_0_F
 ; --- corps de la regle ---
 
-; but 1/1: char_type/2
-; char_type/2 inline (TODO 23)
-        MOV   AX, 8205
-        MOV   BX, 8206
-        CALL    _PLRT_CHAR_TYPE
-        JC   _PLP_test_char_type_alpha_0_0_F
-; char_type/2 done
-        CLC
+; but 1/2: parent/2
+; var X
+        MOV   AX, WORD PTR [BP-2]
+        MOV   WORD PTR [_PL_ARGS + 0], AX
+; var Y
+        MOV   AX, WORD PTR [BP-4]
+        MOV   WORD PTR [_PL_ARGS + 2], AX
+        CALL   _PLP_parent_2
+        JC   _PLP_mother_2_0_F
+
+; but 2/2: female/1
+; var X
+        MOV   AX, WORD PTR [BP-2]
+        MOV   WORD PTR [_PL_ARGS + 0], AX
+; last call optimization
         MOV   SP, BP
         POP   BP
-        RET
+        JMP   _PLP_female_1
 
-_PLP_test_char_type_alpha_0_0_F:
+_PLP_mother_2_0_F:
         STC
         MOV   SP, BP
         POP   BP
         RET
 
-; --- Regle test_char_type_digit/0 clause 0 (1 but(s), 0 var(s)) ---
-_PLP_test_char_type_digit_0_0:
+; --- Regle grandparent/2 clause 0 (2 but(s), 3 var(s)) ---
+_PLP_grandparent_2_0:
         PUSH   BP
         MOV   BP, SP
+; allocate 3 variable(s) locale(s)
+        SUB   SP, 6
+; init vars locales a REF libre
+        MOV   AX, WORD PTR [_PL_HTOP]
+        MOV   SI, AX
+        SHL   SI, 1
+        ADD   SI, OFFSET _PL_HEAP
+        MOV   WORD PTR [SI], AX
+        INC    WORD PTR [_PL_HTOP]
+        MOV   WORD PTR [BP-2], AX
+        MOV   AX, WORD PTR [_PL_HTOP]
+        MOV   SI, AX
+        SHL   SI, 1
+        ADD   SI, OFFSET _PL_HEAP
+        MOV   WORD PTR [SI], AX
+        INC    WORD PTR [_PL_HTOP]
+        MOV   WORD PTR [BP-4], AX
+        MOV   AX, WORD PTR [_PL_HTOP]
+        MOV   SI, AX
+        SHL   SI, 1
+        ADD   SI, OFFSET _PL_HEAP
+        MOV   WORD PTR [SI], AX
+        INC    WORD PTR [_PL_HTOP]
+        MOV   WORD PTR [BP-6], AX
+; unification tete
+; arg tete 1/2
+        MOV   AX, WORD PTR [_PL_ARGS + 0]
+; var X [BP-2]
+        MOV   BX, WORD PTR [BP-2]
+        CALL    _PLRT_UNIFY
+        JC   _PLP_grandparent_2_0_F
+; arg tete 2/2
+        MOV   AX, WORD PTR [_PL_ARGS + 2]
+; var Z [BP-4]
+        MOV   BX, WORD PTR [BP-4]
+        CALL    _PLRT_UNIFY
+        JC   _PLP_grandparent_2_0_F
 ; --- corps de la regle ---
 
-; but 1/1: char_type/2
-; char_type/2 inline (TODO 23)
-        MOV   AX, 16385
-        MOV   BX, 8207
-        CALL    _PLRT_CHAR_TYPE
-        JC   _PLP_test_char_type_digit_0_0_F
-; char_type/2 done
-        CLC
+; but 1/2: parent/2
+; var X
+        MOV   AX, WORD PTR [BP-2]
+        MOV   WORD PTR [_PL_ARGS + 0], AX
+; var Y
+        MOV   AX, WORD PTR [BP-6]
+        MOV   WORD PTR [_PL_ARGS + 2], AX
+        CALL   _PLP_parent_2
+        JC   _PLP_grandparent_2_0_F
+
+; but 2/2: parent/2
+; var Y
+        MOV   AX, WORD PTR [BP-6]
+        MOV   WORD PTR [_PL_ARGS + 0], AX
+; var Z
+        MOV   AX, WORD PTR [BP-4]
+        MOV   WORD PTR [_PL_ARGS + 2], AX
+; last call optimization
         MOV   SP, BP
         POP   BP
-        RET
+        JMP   _PLP_parent_2
 
-_PLP_test_char_type_digit_0_0_F:
+_PLP_grandparent_2_0_F:
         STC
         MOV   SP, BP
         POP   BP
         RET
 
-; --- Regle test_char_type_upper/0 clause 0 (1 but(s), 0 var(s)) ---
-_PLP_test_char_type_upper_0_0:
+; --- Regle grandfather/2 clause 0 (2 but(s), 2 var(s)) ---
+_PLP_grandfather_2_0:
         PUSH   BP
         MOV   BP, SP
+; allocate 2 variable(s) locale(s)
+        SUB   SP, 4
+; init vars locales a REF libre
+        MOV   AX, WORD PTR [_PL_HTOP]
+        MOV   SI, AX
+        SHL   SI, 1
+        ADD   SI, OFFSET _PL_HEAP
+        MOV   WORD PTR [SI], AX
+        INC    WORD PTR [_PL_HTOP]
+        MOV   WORD PTR [BP-2], AX
+        MOV   AX, WORD PTR [_PL_HTOP]
+        MOV   SI, AX
+        SHL   SI, 1
+        ADD   SI, OFFSET _PL_HEAP
+        MOV   WORD PTR [SI], AX
+        INC    WORD PTR [_PL_HTOP]
+        MOV   WORD PTR [BP-4], AX
+; unification tete
+; arg tete 1/2
+        MOV   AX, WORD PTR [_PL_ARGS + 0]
+; var X [BP-2]
+        MOV   BX, WORD PTR [BP-2]
+        CALL    _PLRT_UNIFY
+        JC   _PLP_grandfather_2_0_F
+; arg tete 2/2
+        MOV   AX, WORD PTR [_PL_ARGS + 2]
+; var Z [BP-4]
+        MOV   BX, WORD PTR [BP-4]
+        CALL    _PLRT_UNIFY
+        JC   _PLP_grandfather_2_0_F
 ; --- corps de la regle ---
 
-; but 1/1: char_type/2
-; char_type/2 inline (TODO 23)
-        MOV   AX, 8208
-        MOV   BX, 8209
-        CALL    _PLRT_CHAR_TYPE
-        JC   _PLP_test_char_type_upper_0_0_F
-; char_type/2 done
-        CLC
+; but 1/2: grandparent/2
+; var X
+        MOV   AX, WORD PTR [BP-2]
+        MOV   WORD PTR [_PL_ARGS + 0], AX
+; var Z
+        MOV   AX, WORD PTR [BP-4]
+        MOV   WORD PTR [_PL_ARGS + 2], AX
+        CALL   _PLP_grandparent_2
+        JC   _PLP_grandfather_2_0_F
+
+; but 2/2: male/1
+; var X
+        MOV   AX, WORD PTR [BP-2]
+        MOV   WORD PTR [_PL_ARGS + 0], AX
+; last call optimization
         MOV   SP, BP
         POP   BP
-        RET
+        JMP   _PLP_male_1
 
-_PLP_test_char_type_upper_0_0_F:
+_PLP_grandfather_2_0_F:
         STC
         MOV   SP, BP
         POP   BP
         RET
 
-; --- Regle test_char_type_lower/0 clause 0 (1 but(s), 0 var(s)) ---
-_PLP_test_char_type_lower_0_0:
+; --- Regle sibling/2 clause 0 (3 but(s), 3 var(s)) ---
+_PLP_sibling_2_0:
         PUSH   BP
         MOV   BP, SP
+; allocate 3 variable(s) locale(s)
+        SUB   SP, 6
+; init vars locales a REF libre
+        MOV   AX, WORD PTR [_PL_HTOP]
+        MOV   SI, AX
+        SHL   SI, 1
+        ADD   SI, OFFSET _PL_HEAP
+        MOV   WORD PTR [SI], AX
+        INC    WORD PTR [_PL_HTOP]
+        MOV   WORD PTR [BP-2], AX
+        MOV   AX, WORD PTR [_PL_HTOP]
+        MOV   SI, AX
+        SHL   SI, 1
+        ADD   SI, OFFSET _PL_HEAP
+        MOV   WORD PTR [SI], AX
+        INC    WORD PTR [_PL_HTOP]
+        MOV   WORD PTR [BP-4], AX
+        MOV   AX, WORD PTR [_PL_HTOP]
+        MOV   SI, AX
+        SHL   SI, 1
+        ADD   SI, OFFSET _PL_HEAP
+        MOV   WORD PTR [SI], AX
+        INC    WORD PTR [_PL_HTOP]
+        MOV   WORD PTR [BP-6], AX
+; unification tete
+; arg tete 1/2
+        MOV   AX, WORD PTR [_PL_ARGS + 0]
+; var X [BP-2]
+        MOV   BX, WORD PTR [BP-2]
+        CALL    _PLRT_UNIFY
+        JC   _PLP_sibling_2_0_F
+; arg tete 2/2
+        MOV   AX, WORD PTR [_PL_ARGS + 2]
+; var Y [BP-4]
+        MOV   BX, WORD PTR [BP-4]
+        CALL    _PLRT_UNIFY
+        JC   _PLP_sibling_2_0_F
 ; --- corps de la regle ---
 
-; but 1/1: char_type/2
-; char_type/2 inline (TODO 23)
-        MOV   AX, 8205
-        MOV   BX, 8210
-        CALL    _PLRT_CHAR_TYPE
-        JC   _PLP_test_char_type_lower_0_0_F
-; char_type/2 done
+; but 1/3: parent/2
+; var P
+        MOV   AX, WORD PTR [BP-6]
+        MOV   WORD PTR [_PL_ARGS + 0], AX
+; var X
+        MOV   AX, WORD PTR [BP-2]
+        MOV   WORD PTR [_PL_ARGS + 2], AX
+        CALL   _PLP_parent_2
+        JC   _PLP_sibling_2_0_F
+
+; but 2/3: parent/2
+; var P
+        MOV   AX, WORD PTR [BP-6]
+        MOV   WORD PTR [_PL_ARGS + 0], AX
+; var Y
+        MOV   AX, WORD PTR [BP-4]
+        MOV   WORD PTR [_PL_ARGS + 2], AX
+        CALL   _PLP_parent_2
+        JC   _PLP_sibling_2_0_F
+
+; but 3/3: \==/2
+; \==/2 structural neq inline
+; var X
+        MOV   AX, WORD PTR [BP-2]
+        PUSH   AX
+; var Y
+        MOV   AX, WORD PTR [BP-4]
+        MOV   BX, AX
+        POP   AX
+        CALL    _PLRT_STRUCT_EQ
+        JNC   _PLP_sibling_2_0_F
+; \==/2 ok
         CLC
         MOV   SP, BP
         POP   BP
         RET
 
-_PLP_test_char_type_lower_0_0_F:
+_PLP_sibling_2_0_F:
         STC
         MOV   SP, BP
         POP   BP
         RET
 
-; --- Regle main/0 clause 0 (2 but(s), 0 var(s)) ---
+; --- Regle brother/2 clause 0 (2 but(s), 2 var(s)) ---
+_PLP_brother_2_0:
+        PUSH   BP
+        MOV   BP, SP
+; allocate 2 variable(s) locale(s)
+        SUB   SP, 4
+; init vars locales a REF libre
+        MOV   AX, WORD PTR [_PL_HTOP]
+        MOV   SI, AX
+        SHL   SI, 1
+        ADD   SI, OFFSET _PL_HEAP
+        MOV   WORD PTR [SI], AX
+        INC    WORD PTR [_PL_HTOP]
+        MOV   WORD PTR [BP-2], AX
+        MOV   AX, WORD PTR [_PL_HTOP]
+        MOV   SI, AX
+        SHL   SI, 1
+        ADD   SI, OFFSET _PL_HEAP
+        MOV   WORD PTR [SI], AX
+        INC    WORD PTR [_PL_HTOP]
+        MOV   WORD PTR [BP-4], AX
+; unification tete
+; arg tete 1/2
+        MOV   AX, WORD PTR [_PL_ARGS + 0]
+; var X [BP-2]
+        MOV   BX, WORD PTR [BP-2]
+        CALL    _PLRT_UNIFY
+        JC   _PLP_brother_2_0_F
+; arg tete 2/2
+        MOV   AX, WORD PTR [_PL_ARGS + 2]
+; var Y [BP-4]
+        MOV   BX, WORD PTR [BP-4]
+        CALL    _PLRT_UNIFY
+        JC   _PLP_brother_2_0_F
+; --- corps de la regle ---
+
+; but 1/2: sibling/2
+; var X
+        MOV   AX, WORD PTR [BP-2]
+        MOV   WORD PTR [_PL_ARGS + 0], AX
+; var Y
+        MOV   AX, WORD PTR [BP-4]
+        MOV   WORD PTR [_PL_ARGS + 2], AX
+        CALL   _PLP_sibling_2
+        JC   _PLP_brother_2_0_F
+
+; but 2/2: male/1
+; var X
+        MOV   AX, WORD PTR [BP-2]
+        MOV   WORD PTR [_PL_ARGS + 0], AX
+; last call optimization
+        MOV   SP, BP
+        POP   BP
+        JMP   _PLP_male_1
+
+_PLP_brother_2_0_F:
+        STC
+        MOV   SP, BP
+        POP   BP
+        RET
+
+; --- Regle sister/2 clause 0 (2 but(s), 2 var(s)) ---
+_PLP_sister_2_0:
+        PUSH   BP
+        MOV   BP, SP
+; allocate 2 variable(s) locale(s)
+        SUB   SP, 4
+; init vars locales a REF libre
+        MOV   AX, WORD PTR [_PL_HTOP]
+        MOV   SI, AX
+        SHL   SI, 1
+        ADD   SI, OFFSET _PL_HEAP
+        MOV   WORD PTR [SI], AX
+        INC    WORD PTR [_PL_HTOP]
+        MOV   WORD PTR [BP-2], AX
+        MOV   AX, WORD PTR [_PL_HTOP]
+        MOV   SI, AX
+        SHL   SI, 1
+        ADD   SI, OFFSET _PL_HEAP
+        MOV   WORD PTR [SI], AX
+        INC    WORD PTR [_PL_HTOP]
+        MOV   WORD PTR [BP-4], AX
+; unification tete
+; arg tete 1/2
+        MOV   AX, WORD PTR [_PL_ARGS + 0]
+; var X [BP-2]
+        MOV   BX, WORD PTR [BP-2]
+        CALL    _PLRT_UNIFY
+        JC   _PLP_sister_2_0_F
+; arg tete 2/2
+        MOV   AX, WORD PTR [_PL_ARGS + 2]
+; var Y [BP-4]
+        MOV   BX, WORD PTR [BP-4]
+        CALL    _PLRT_UNIFY
+        JC   _PLP_sister_2_0_F
+; --- corps de la regle ---
+
+; but 1/2: sibling/2
+; var X
+        MOV   AX, WORD PTR [BP-2]
+        MOV   WORD PTR [_PL_ARGS + 0], AX
+; var Y
+        MOV   AX, WORD PTR [BP-4]
+        MOV   WORD PTR [_PL_ARGS + 2], AX
+        CALL   _PLP_sibling_2
+        JC   _PLP_sister_2_0_F
+
+; but 2/2: female/1
+; var X
+        MOV   AX, WORD PTR [BP-2]
+        MOV   WORD PTR [_PL_ARGS + 0], AX
+; last call optimization
+        MOV   SP, BP
+        POP   BP
+        JMP   _PLP_female_1
+
+_PLP_sister_2_0_F:
+        STC
+        MOV   SP, BP
+        POP   BP
+        RET
+
+; --- Regle ancestor/2 clause 0 (1 but(s), 2 var(s)) ---
+_PLP_ancestor_2_0:
+        PUSH   BP
+        MOV   BP, SP
+; allocate 2 variable(s) locale(s)
+        SUB   SP, 4
+; init vars locales a REF libre
+        MOV   AX, WORD PTR [_PL_HTOP]
+        MOV   SI, AX
+        SHL   SI, 1
+        ADD   SI, OFFSET _PL_HEAP
+        MOV   WORD PTR [SI], AX
+        INC    WORD PTR [_PL_HTOP]
+        MOV   WORD PTR [BP-2], AX
+        MOV   AX, WORD PTR [_PL_HTOP]
+        MOV   SI, AX
+        SHL   SI, 1
+        ADD   SI, OFFSET _PL_HEAP
+        MOV   WORD PTR [SI], AX
+        INC    WORD PTR [_PL_HTOP]
+        MOV   WORD PTR [BP-4], AX
+; unification tete
+; arg tete 1/2
+        MOV   AX, WORD PTR [_PL_ARGS + 0]
+; var X [BP-2]
+        MOV   BX, WORD PTR [BP-2]
+        CALL    _PLRT_UNIFY
+        JC   _PLP_ancestor_2_0_F
+; arg tete 2/2
+        MOV   AX, WORD PTR [_PL_ARGS + 2]
+; var Y [BP-4]
+        MOV   BX, WORD PTR [BP-4]
+        CALL    _PLRT_UNIFY
+        JC   _PLP_ancestor_2_0_F
+; --- corps de la regle ---
+
+; but 1/1: parent/2
+; var X
+        MOV   AX, WORD PTR [BP-2]
+        MOV   WORD PTR [_PL_ARGS + 0], AX
+; var Y
+        MOV   AX, WORD PTR [BP-4]
+        MOV   WORD PTR [_PL_ARGS + 2], AX
+; last call optimization
+        MOV   SP, BP
+        POP   BP
+        JMP   _PLP_parent_2
+
+_PLP_ancestor_2_0_F:
+        STC
+        MOV   SP, BP
+        POP   BP
+        RET
+
+; --- Regle ancestor/2 clause 1 (2 but(s), 3 var(s)) ---
+_PLP_ancestor_2_1:
+        PUSH   BP
+        MOV   BP, SP
+; allocate 3 variable(s) locale(s)
+        SUB   SP, 6
+; init vars locales a REF libre
+        MOV   AX, WORD PTR [_PL_HTOP]
+        MOV   SI, AX
+        SHL   SI, 1
+        ADD   SI, OFFSET _PL_HEAP
+        MOV   WORD PTR [SI], AX
+        INC    WORD PTR [_PL_HTOP]
+        MOV   WORD PTR [BP-2], AX
+        MOV   AX, WORD PTR [_PL_HTOP]
+        MOV   SI, AX
+        SHL   SI, 1
+        ADD   SI, OFFSET _PL_HEAP
+        MOV   WORD PTR [SI], AX
+        INC    WORD PTR [_PL_HTOP]
+        MOV   WORD PTR [BP-4], AX
+        MOV   AX, WORD PTR [_PL_HTOP]
+        MOV   SI, AX
+        SHL   SI, 1
+        ADD   SI, OFFSET _PL_HEAP
+        MOV   WORD PTR [SI], AX
+        INC    WORD PTR [_PL_HTOP]
+        MOV   WORD PTR [BP-6], AX
+; unification tete
+; arg tete 1/2
+        MOV   AX, WORD PTR [_PL_ARGS + 0]
+; var X [BP-2]
+        MOV   BX, WORD PTR [BP-2]
+        CALL    _PLRT_UNIFY
+        JC   _PLP_ancestor_2_1_F
+; arg tete 2/2
+        MOV   AX, WORD PTR [_PL_ARGS + 2]
+; var Y [BP-4]
+        MOV   BX, WORD PTR [BP-4]
+        CALL    _PLRT_UNIFY
+        JC   _PLP_ancestor_2_1_F
+; --- corps de la regle ---
+
+; but 1/2: parent/2
+; var X
+        MOV   AX, WORD PTR [BP-2]
+        MOV   WORD PTR [_PL_ARGS + 0], AX
+; var Z
+        MOV   AX, WORD PTR [BP-6]
+        MOV   WORD PTR [_PL_ARGS + 2], AX
+        CALL   _PLP_parent_2
+        JC   _PLP_ancestor_2_1_F
+
+; but 2/2: ancestor/2
+; var Z
+        MOV   AX, WORD PTR [BP-6]
+        MOV   WORD PTR [_PL_ARGS + 0], AX
+; var Y
+        MOV   AX, WORD PTR [BP-4]
+        MOV   WORD PTR [_PL_ARGS + 2], AX
+; last call optimization
+        MOV   SP, BP
+        POP   BP
+        JMP   _PLP_ancestor_2
+
+_PLP_ancestor_2_1_F:
+        STC
+        MOV   SP, BP
+        POP   BP
+        RET
+
+; --- Regle main/0 clause 0 (12 but(s), 0 var(s)) ---
 _PLP_main_0_0:
         PUSH   BP
         MOV   BP, SP
 ; --- corps de la regle ---
 
-; but 1/2: write/1
+; but 1/12: father/2
+        MOV   WORD PTR [_PL_ARGS + 0], 8200
+; atom tom
+        MOV   WORD PTR [_PL_ARGS + 2], 8201
+; atom bob
+        CALL   _PLP_father_2
+        JC   _PLP_main_0_0_F
+
+; but 2/12: write/1
 ; write/1 inline
-        MOV   AX, 8211
+        MOV   AX, 8206
         CALL    _PLRT_WRITE_TERM
 ; write/1 done
 
-; but 2/2: nl/0
+; but 3/12: nl/0
+; nl/0 inline
+        CALL    _PLRT_NL
+
+; but 4/12: grandparent/2
+        MOV   WORD PTR [_PL_ARGS + 0], 8200
+; atom tom
+        MOV   WORD PTR [_PL_ARGS + 2], 8203
+; atom ann
+        CALL   _PLP_grandparent_2
+        JC   _PLP_main_0_0_F
+
+; but 5/12: write/1
+; write/1 inline
+        MOV   AX, 8207
+        CALL    _PLRT_WRITE_TERM
+; write/1 done
+
+; but 6/12: nl/0
+; nl/0 inline
+        CALL    _PLRT_NL
+
+; but 7/12: sibling/2
+        MOV   WORD PTR [_PL_ARGS + 0], 8203
+; atom ann
+        MOV   WORD PTR [_PL_ARGS + 2], 8204
+; atom pat
+        CALL   _PLP_sibling_2
+        JC   _PLP_main_0_0_F
+
+; but 8/12: write/1
+; write/1 inline
+        MOV   AX, 8208
+        CALL    _PLRT_WRITE_TERM
+; write/1 done
+
+; but 9/12: nl/0
+; nl/0 inline
+        CALL    _PLRT_NL
+
+; but 10/12: ancestor/2
+        MOV   WORD PTR [_PL_ARGS + 0], 8200
+; atom tom
+        MOV   WORD PTR [_PL_ARGS + 2], 8205
+; atom jim
+        CALL   _PLP_ancestor_2
+        JC   _PLP_main_0_0_F
+
+; but 11/12: write/1
+; write/1 inline
+        MOV   AX, 8209
+        CALL    _PLRT_WRITE_TERM
+; write/1 done
+
+; but 12/12: nl/0
 ; nl/0 inline
         CALL    _PLRT_NL
         CLC
@@ -445,41 +962,175 @@ _PLP_main_0_0_F:
 ;   Points d entree des predicats
 ; =======================================
 
-; === Predicat test_upcase/1 (1 clause(s)) ===
-_PLP_test_upcase_1:
-        JMP   _PLP_test_upcase_1_0
+; === Predicat parent/2 (5 clause(s)) ===
+_PLP_parent_2:
+; Backtracking WAM - 5 clauses
 
-; === Predicat test_upcase2/1 (1 clause(s)) ===
-_PLP_test_upcase2_1:
-        JMP   _PLP_test_upcase2_1_0
+; try_me_else _PLP_parent_2_cp1
+        MOV   BX, OFFSET _PLP_parent_2_cp1
+        CALL    _PLRT_TRY
+        CALL   _PLP_parent_2_0
+        JNC   _PLP_parent_2_ok
+_PLP_parent_2_cp1:
+; retry_me_else _PLP_parent_2_cp2
+        MOV   BX, OFFSET _PLP_parent_2_cp2
+        CALL    _PLRT_RETRY
+        CALL   _PLP_parent_2_1
+        JNC   _PLP_parent_2_ok
+_PLP_parent_2_cp2:
+; retry_me_else _PLP_parent_2_cp3
+        MOV   BX, OFFSET _PLP_parent_2_cp3
+        CALL    _PLRT_RETRY
+        CALL   _PLP_parent_2_2
+        JNC   _PLP_parent_2_ok
+_PLP_parent_2_cp3:
+; retry_me_else _PLP_parent_2_cp4
+        MOV   BX, OFFSET _PLP_parent_2_cp4
+        CALL    _PLRT_RETRY
+        CALL   _PLP_parent_2_3
+        JNC   _PLP_parent_2_ok
+_PLP_parent_2_cp4:
+; trust_me
+        CALL    _PLRT_TRUST
+        CALL   _PLP_parent_2_4
+        RET
+_PLP_parent_2_ok:
+; Succes : retirer le choice point (commit)
+        PUSH   SI
+        PUSH   AX
+        MOV   SI, WORD PTR [_PL_CPTOP]
+        SUB   SI, 4
+        SHL    SI,1
+        MOV   AX, WORD PTR [_PL_STACK + SI]
+        MOV   WORD PTR [_PL_CPTOP], AX
+        POP   AX
+        POP   SI
+        CLC
+        RET
 
-; === Predicat test_downcase/1 (1 clause(s)) ===
-_PLP_test_downcase_1:
-        JMP   _PLP_test_downcase_1_0
+; === Predicat male/1 (3 clause(s)) ===
+_PLP_male_1:
+; Backtracking WAM - 3 clauses
 
-; === Predicat test_atom_string/1 (1 clause(s)) ===
-_PLP_test_atom_string_1:
-        JMP   _PLP_test_atom_string_1_0
+; try_me_else _PLP_male_1_cp1
+        MOV   BX, OFFSET _PLP_male_1_cp1
+        CALL    _PLRT_TRY
+        CALL   _PLP_male_1_0
+        JNC   _PLP_male_1_ok
+_PLP_male_1_cp1:
+; retry_me_else _PLP_male_1_cp2
+        MOV   BX, OFFSET _PLP_male_1_cp2
+        CALL    _PLRT_RETRY
+        CALL   _PLP_male_1_1
+        JNC   _PLP_male_1_ok
+_PLP_male_1_cp2:
+; trust_me
+        CALL    _PLRT_TRUST
+        CALL   _PLP_male_1_2
+        RET
+_PLP_male_1_ok:
+; Succes : retirer le choice point (commit)
+        PUSH   SI
+        PUSH   AX
+        MOV   SI, WORD PTR [_PL_CPTOP]
+        SUB   SI, 4
+        SHL    SI,1
+        MOV   AX, WORD PTR [_PL_STACK + SI]
+        MOV   WORD PTR [_PL_CPTOP], AX
+        POP   AX
+        POP   SI
+        CLC
+        RET
 
-; === Predicat test_number_string/1 (1 clause(s)) ===
-_PLP_test_number_string_1:
-        JMP   _PLP_test_number_string_1_0
+; === Predicat female/1 (3 clause(s)) ===
+_PLP_female_1:
+; Backtracking WAM - 3 clauses
 
-; === Predicat test_string_concat/1 (1 clause(s)) ===
-_PLP_test_string_concat_1:
-        JMP   _PLP_test_string_concat_1_0
+; try_me_else _PLP_female_1_cp1
+        MOV   BX, OFFSET _PLP_female_1_cp1
+        CALL    _PLRT_TRY
+        CALL   _PLP_female_1_0
+        JNC   _PLP_female_1_ok
+_PLP_female_1_cp1:
+; retry_me_else _PLP_female_1_cp2
+        MOV   BX, OFFSET _PLP_female_1_cp2
+        CALL    _PLRT_RETRY
+        CALL   _PLP_female_1_1
+        JNC   _PLP_female_1_ok
+_PLP_female_1_cp2:
+; trust_me
+        CALL    _PLRT_TRUST
+        CALL   _PLP_female_1_2
+        RET
+_PLP_female_1_ok:
+; Succes : retirer le choice point (commit)
+        PUSH   SI
+        PUSH   AX
+        MOV   SI, WORD PTR [_PL_CPTOP]
+        SUB   SI, 4
+        SHL    SI,1
+        MOV   AX, WORD PTR [_PL_STACK + SI]
+        MOV   WORD PTR [_PL_CPTOP], AX
+        POP   AX
+        POP   SI
+        CLC
+        RET
 
-; === Predicat test_string_length/1 (1 clause(s)) ===
-_PLP_test_string_length_1:
-        JMP   _PLP_test_string_length_1_0
+; === Predicat father/2 (1 clause(s)) ===
+_PLP_father_2:
+        JMP   _PLP_father_2_0
 
-; === Predicat test_char_type_alpha/0 (1 clause(s)) ===
+; === Predicat mother/2 (1 clause(s)) ===
+_PLP_mother_2:
+        JMP   _PLP_mother_2_0
 
-; === Predicat test_char_type_digit/0 (1 clause(s)) ===
+; === Predicat grandparent/2 (1 clause(s)) ===
+_PLP_grandparent_2:
+        JMP   _PLP_grandparent_2_0
 
-; === Predicat test_char_type_upper/0 (1 clause(s)) ===
+; === Predicat grandfather/2 (1 clause(s)) ===
+_PLP_grandfather_2:
+        JMP   _PLP_grandfather_2_0
 
-; === Predicat test_char_type_lower/0 (1 clause(s)) ===
+; === Predicat sibling/2 (1 clause(s)) ===
+_PLP_sibling_2:
+        JMP   _PLP_sibling_2_0
+
+; === Predicat brother/2 (1 clause(s)) ===
+_PLP_brother_2:
+        JMP   _PLP_brother_2_0
+
+; === Predicat sister/2 (1 clause(s)) ===
+_PLP_sister_2:
+        JMP   _PLP_sister_2_0
+
+; === Predicat ancestor/2 (2 clause(s)) ===
+_PLP_ancestor_2:
+; Backtracking WAM - 2 clauses
+
+; try_me_else _PLP_ancestor_2_cp1
+        MOV   BX, OFFSET _PLP_ancestor_2_cp1
+        CALL    _PLRT_TRY
+        CALL   _PLP_ancestor_2_0
+        JNC   _PLP_ancestor_2_ok
+_PLP_ancestor_2_cp1:
+; trust_me
+        CALL    _PLRT_TRUST
+        CALL   _PLP_ancestor_2_1
+        RET
+_PLP_ancestor_2_ok:
+; Succes : retirer le choice point (commit)
+        PUSH   SI
+        PUSH   AX
+        MOV   SI, WORD PTR [_PL_CPTOP]
+        SUB   SI, 4
+        SHL    SI,1
+        MOV   AX, WORD PTR [_PL_STACK + SI]
+        MOV   WORD PTR [_PL_CPTOP], AX
+        POP   AX
+        POP   SI
+        CLC
+        RET
 
 ; === Predicat main/0 (1 clause(s)) ===
 
