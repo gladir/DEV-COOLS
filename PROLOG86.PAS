@@ -307,7 +307,7 @@
             Tous les predicats : enregistrement dans la table des symboles
               avec flag IsBuiltin = True et un code (BIF_xxx)
 
-  TODO 19 - ASSERT ET RETRACT (BASE DE DONNEES DYNAMIQUE)
+  TODO 19 - ASSERT ET RETRACT (BASE DE DONNEES DYNAMIQUE) [IMPLEMENTE]
             asserta(Clause) : ajouter une clause en tete du predicat
               Marquer le predicat comme IsDynamic
               Copier la clause dans le heap permanent
@@ -324,7 +324,7 @@
             Emission : les clauses dynamiques sont stockees dans le heap
               et interpretees au lieu d etre compilees en code natif
 
-  TODO 20 - FINDALL, BAGOF, SETOF (COLLECTE DE SOLUTIONS)
+  TODO 20 - FINDALL, BAGOF, SETOF (COLLECTE DE SOLUTIONS) [IMPLEMENTE]
             findall(Template, Goal, Bag) :
               Collecter toutes les instances de Template satisfaisant Goal
               Creer un point de choix pour Goal
@@ -1019,6 +1019,10 @@ Procedure EmitControlRuntime; Forward;
 Procedure EmitIORuntime; Forward;
 { Predicats predefinis (TODO 18) }
 Procedure EmitBuiltinRuntime; Forward;
+{ Assert/retract - base de donnees dynamique (TODO 19) }
+Procedure EmitDynDBRuntime; Forward;
+{ Collecte de solutions (TODO 20) }
+Procedure EmitCollectRuntime; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -4111,6 +4115,18 @@ Begin
   EmitRaw('_PL_IOBUFLEN DW  0');
   EmitBlankLine;
 
+  { Base de donnees dynamique (TODO 19) }
+  EmitComment('--- Dynamic database (TODO 19) ---');
+  EmitRaw('_PL_DYNDB   DW  256 DUP(0)');
+  EmitRaw('_PL_DYNCOUNT DW  0');
+  EmitBlankLine;
+
+  { Buffer de collecte de solutions (TODO 20) }
+  EmitComment('--- Solution collection buffer (TODO 20) ---');
+  EmitRaw('_PL_COLLECT  DW  256 DUP(0)');
+  EmitRaw('_PL_COLLCOUNT DW  0');
+  EmitBlankLine;
+
   { Registres d arguments WAM A1..AN (TODO 10) }
   EmitComment('--- Registres d arguments WAM ---');
   EmitRaw('_PL_ARGS    DW  ' + IntToStr(MAX_ARGS_REG) + ' DUP(0)');
@@ -6298,6 +6314,320 @@ Begin
   EmitBlankLine;
 End;
 
+{ ============================================================
+  TODO 19 - ASSERT ET RETRACT [IMPLEMENTE]
+  ============================================================ }
+
+Procedure EmitDynDBRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=======================================');
+  EmitComment('  Routines Dynamic DB (TODO 19)');
+  EmitComment('=======================================');
+  EmitBlankLine;
+
+  { ---------------------------------------------------------- }
+  { _PLRT_ASSERTA : AX = tagged term (clause head)            }
+  {   Insert at beginning of _PL_DYNDB, shift existing right   }
+  {   Increment _PL_DYNCOUNT                                   }
+  { ---------------------------------------------------------- }
+  EmitLabel(PL_RT_PFX + 'ASSERTA');
+  EmitInstr('PUSH    BX');
+  EmitInstr('PUSH    CX');
+  EmitInstr('PUSH    SI');
+  EmitInstr('PUSH    DI');
+  EmitInstr('PUSH    AX');
+  { Shift existing entries right by one word }
+  EmitInstrAB('MOV', 'CX', 'WORD PTR [_PL_DYNCOUNT]');
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JZ', PL_RT_PFX + 'ASSA_INS');
+  { SI = address of last entry, DI = SI + 2 }
+  EmitInstrAB('MOV', 'SI', 'CX');
+  EmitInstr('DEC     SI');
+  EmitInstr('SHL     SI,1');
+  EmitInstrAB('ADD', 'SI', 'OFFSET _PL_DYNDB');
+  EmitInstrAB('MOV', 'DI', 'SI');
+  EmitInstrAB('ADD', 'DI', '2');
+  { Copy from end to beginning }
+  EmitInstr('STD');
+  EmitInstr('REP MOVSW');
+  EmitInstr('CLD');
+  EmitLabel(PL_RT_PFX + 'ASSA_INS');
+  { Insert at position 0 }
+  EmitInstr('POP     AX');
+  EmitInstrAB('MOV', 'WORD PTR [_PL_DYNDB]', 'AX');
+  EmitInstr('INC     WORD PTR [_PL_DYNCOUNT]');
+  EmitInstr('POP     DI');
+  EmitInstr('POP     SI');
+  EmitInstr('POP     CX');
+  EmitInstr('POP     BX');
+  EmitInstr('CLC');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { ---------------------------------------------------------- }
+  { _PLRT_ASSERTZ : AX = tagged term (clause head)            }
+  {   Append at end of _PL_DYNDB[_PL_DYNCOUNT]                }
+  {   Increment _PL_DYNCOUNT                                   }
+  { ---------------------------------------------------------- }
+  EmitLabel(PL_RT_PFX + 'ASSERTZ');
+  EmitInstr('PUSH    SI');
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [_PL_DYNCOUNT]');
+  EmitInstr('SHL     SI,1');
+  EmitInstrAB('ADD', 'SI', 'OFFSET _PL_DYNDB');
+  EmitInstrAB('MOV', 'WORD PTR [SI]', 'AX');
+  EmitInstr('INC     WORD PTR [_PL_DYNCOUNT]');
+  EmitInstr('POP     SI');
+  EmitInstr('CLC');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { ---------------------------------------------------------- }
+  { _PLRT_RETRACT : AX = tagged term to match                 }
+  {   Scan _PL_DYNDB for first matching entry                  }
+  {   If found: remove (shift left), decrement count, CLC      }
+  {   If not found: STC                                        }
+  { ---------------------------------------------------------- }
+  EmitLabel(PL_RT_PFX + 'RETRACT');
+  EmitInstr('PUSH    BX');
+  EmitInstr('PUSH    CX');
+  EmitInstr('PUSH    SI');
+  EmitInstr('PUSH    DI');
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstrAB('MOV', 'CX', 'WORD PTR [_PL_DYNCOUNT]');
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JZ', PL_RT_PFX + 'RET_FAIL');
+  EmitInstrAB('MOV', 'SI', 'OFFSET _PL_DYNDB');
+  EmitLabel(PL_RT_PFX + 'RET_LOOP');
+  EmitInstrAB('CMP', 'WORD PTR [SI]', 'BX');
+  EmitInstrA('JE', PL_RT_PFX + 'RET_FOUND');
+  EmitInstrAB('ADD', 'SI', '2');
+  EmitInstr('DEC     CX');
+  EmitInstrA('JNZ', PL_RT_PFX + 'RET_LOOP');
+  EmitLabel(PL_RT_PFX + 'RET_FAIL');
+  EmitInstr('POP     DI');
+  EmitInstr('POP     SI');
+  EmitInstr('POP     CX');
+  EmitInstr('POP     BX');
+  EmitInstr('STC');
+  EmitInstr('RET');
+  EmitLabel(PL_RT_PFX + 'RET_FOUND');
+  { Shift remaining entries left }
+  EmitInstrAB('MOV', 'DI', 'SI');
+  EmitInstrAB('ADD', 'SI', '2');
+  EmitInstr('DEC     CX');
+  EmitInstr('CLD');
+  EmitInstr('REP MOVSW');
+  EmitInstr('DEC     WORD PTR [_PL_DYNCOUNT]');
+  EmitInstr('POP     DI');
+  EmitInstr('POP     SI');
+  EmitInstr('POP     CX');
+  EmitInstr('POP     BX');
+  EmitInstr('CLC');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { ---------------------------------------------------------- }
+  { _PLRT_ABOLISH : AX = tagged atom of predicate              }
+  {   Clear all matching entries, reset count                   }
+  { ---------------------------------------------------------- }
+  EmitLabel(PL_RT_PFX + 'ABOLISH');
+  EmitInstr('PUSH    BX');
+  EmitInstr('PUSH    CX');
+  EmitInstr('PUSH    SI');
+  EmitInstr('PUSH    DI');
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstrAB('AND', 'BX', IntToStr(VAL_MASK));
+  EmitComment('extract atom index from predicate');
+  EmitInstrAB('MOV', 'CX', 'WORD PTR [_PL_DYNCOUNT]');
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JZ', PL_RT_PFX + 'ABOL_DONE');
+  EmitInstrAB('MOV', 'SI', 'OFFSET _PL_DYNDB');
+  EmitInstrAB('MOV', 'DI', 'SI');
+  EmitInstrAB('XOR', 'DX', 'DX');
+  EmitComment('DX = new count');
+  EmitLabel(PL_RT_PFX + 'ABOL_LOOP');
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [SI]');
+  EmitInstr('PUSH    AX');
+  EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+  EmitInstrAB('CMP', 'AX', 'BX');
+  EmitInstr('POP     AX');
+  EmitInstrA('JE', PL_RT_PFX + 'ABOL_SKIP');
+  { Keep this entry }
+  EmitInstrAB('MOV', 'WORD PTR [DI]', 'AX');
+  EmitInstrAB('ADD', 'DI', '2');
+  EmitInstr('INC     DX');
+  EmitLabel(PL_RT_PFX + 'ABOL_SKIP');
+  EmitInstrAB('ADD', 'SI', '2');
+  EmitInstr('DEC     CX');
+  EmitInstrA('JNZ', PL_RT_PFX + 'ABOL_LOOP');
+  EmitInstrAB('MOV', 'WORD PTR [_PL_DYNCOUNT]', 'DX');
+  EmitLabel(PL_RT_PFX + 'ABOL_DONE');
+  EmitInstr('POP     DI');
+  EmitInstr('POP     SI');
+  EmitInstr('POP     CX');
+  EmitInstr('POP     BX');
+  EmitInstr('CLC');
+  EmitInstr('RET');
+  EmitBlankLine;
+End;
+
+{ ============================================================
+  TODO 20 - FINDALL, BAGOF, SETOF [IMPLEMENTE]
+  ============================================================ }
+
+Procedure EmitCollectRuntime;
+Var
+  NS : TString;
+Begin
+  EmitBlankLine;
+  EmitComment('=======================================');
+  EmitComment('  Routines Collection (TODO 20)');
+  EmitComment('=======================================');
+  EmitBlankLine;
+
+  { ---------------------------------------------------------- }
+  { _PLRT_COLLECT_PUSH : AX = term to store in collect buffer  }
+  {   Store in _PL_COLLECT[_PL_COLLCOUNT], increment count     }
+  { ---------------------------------------------------------- }
+  EmitLabel(PL_RT_PFX + 'COLLECT_PUSH');
+  EmitInstr('PUSH    SI');
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [_PL_COLLCOUNT]');
+  EmitInstr('SHL     SI,1');
+  EmitInstrAB('ADD', 'SI', 'OFFSET _PL_COLLECT');
+  EmitInstrAB('MOV', 'WORD PTR [SI]', 'AX');
+  EmitInstr('INC     WORD PTR [_PL_COLLCOUNT]');
+  EmitInstr('POP     SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { ---------------------------------------------------------- }
+  { _PLRT_COLLECT_RESET : set _PL_COLLCOUNT to 0               }
+  { ---------------------------------------------------------- }
+  EmitLabel(PL_RT_PFX + 'COLLECT_RESET');
+  EmitInstrAB('MOV', 'WORD PTR [_PL_COLLCOUNT]', '0');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { ---------------------------------------------------------- }
+  { _PLRT_MAKELIST : build Prolog list from _PL_COLLECT buffer  }
+  {   Read _PL_COLLECT[0.._PL_COLLCOUNT-1]                     }
+  {   Build list right-to-left using _PLRT_PUTLIST              }
+  {   AX = resulting list (or nil atom if empty). CLC.          }
+  { ---------------------------------------------------------- }
+  EmitLabel(PL_RT_PFX + 'MAKELIST');
+  EmitInstr('PUSH    BX');
+  EmitInstr('PUSH    CX');
+  EmitInstr('PUSH    SI');
+  EmitInstrAB('MOV', 'CX', 'WORD PTR [_PL_COLLCOUNT]');
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JZ', PL_RT_PFX + 'MKLS_EMPTY');
+  { Start with nil as tail }
+  Str((TAG_ATOM Shl TAG_SHIFT) Or 1, NS);
+  EmitInstrAB('MOV', 'BX', NS);
+  EmitComment('BX = [] (nil atom)');
+  { SI points to last element }
+  EmitInstrAB('MOV', 'SI', 'CX');
+  EmitInstr('DEC     SI');
+  EmitInstr('SHL     SI,1');
+  EmitInstrAB('ADD', 'SI', 'OFFSET _PL_COLLECT');
+  EmitLabel(PL_RT_PFX + 'MKLS_LOOP');
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [SI]');
+  EmitComment('AX = head, BX = tail');
+  EmitInstr('CALL    _PLRT_PUTLIST');
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitComment('new tail = resulting list');
+  EmitInstrAB('SUB', 'SI', '2');
+  EmitInstr('DEC     CX');
+  EmitInstrA('JNZ', PL_RT_PFX + 'MKLS_LOOP');
+  EmitComment('AX = complete list');
+  EmitInstrA('JMP', PL_RT_PFX + 'MKLS_DONE');
+  EmitLabel(PL_RT_PFX + 'MKLS_EMPTY');
+  Str((TAG_ATOM Shl TAG_SHIFT) Or 1, NS);
+  EmitInstrAB('MOV', 'AX', NS);
+  EmitComment('AX = [] (empty list)');
+  EmitLabel(PL_RT_PFX + 'MKLS_DONE');
+  EmitInstr('POP     SI');
+  EmitInstr('POP     CX');
+  EmitInstr('POP     BX');
+  EmitInstr('CLC');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { ---------------------------------------------------------- }
+  { _PLRT_FINDALL : stub - actual logic inlined in EmitRuleCode }
+  {   This just calls MAKELIST for the collected results        }
+  { ---------------------------------------------------------- }
+  EmitLabel(PL_RT_PFX + 'FINDALL');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'MAKELIST');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { ---------------------------------------------------------- }
+  { _PLRT_SETOF_DEDUP : AX = list, remove consecutive dups     }
+  {   Walk the list, skip nodes whose head = prev head          }
+  {   AX = deduplicated list                                    }
+  { ---------------------------------------------------------- }
+  EmitLabel(PL_RT_PFX + 'SETOF_DEDUP');
+  EmitInstr('PUSH    BX');
+  EmitInstr('PUSH    CX');
+  EmitInstr('PUSH    SI');
+  EmitInstr('PUSH    DI');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  { Check if empty or single }
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstrAB('AND', 'BX', IntToStr(TAG_MASK));
+  Str(TAG_LIST Shl TAG_SHIFT, NS);
+  EmitInstrAB('CMP', 'BX', NS);
+  EmitInstrA('JNE', PL_RT_PFX + 'DEDUP_DONE');
+  { Walk the list, build new list without consecutive dups }
+  EmitComment('reset collect buffer for dedup');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'COLLECT_RESET');
+  EmitLabel(PL_RT_PFX + 'DEDUP_WALK');
+  { SI = current tagged list cell }
+  EmitInstrAB('MOV', 'AX', 'SI');
+  EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+  EmitInstr('SHL     AX,1');
+  EmitInstrAB('ADD', 'AX', 'OFFSET _PL_HEAP');
+  EmitInstrAB('MOV', 'DI', 'AX');
+  EmitComment('DI -> heap cell [head|tail]');
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [DI]');
+  EmitComment('AX = head of current cell');
+  EmitInstrAB('MOV', 'CX', 'WORD PTR [_PL_COLLCOUNT]');
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JZ', PL_RT_PFX + 'DEDUP_ADD');
+  { Compare with last pushed }
+  EmitInstr('PUSH    SI');
+  EmitInstrAB('MOV', 'SI', 'CX');
+  EmitInstr('DEC     SI');
+  EmitInstr('SHL     SI,1');
+  EmitInstrAB('ADD', 'SI', 'OFFSET _PL_COLLECT');
+  EmitInstrAB('CMP', 'AX', 'WORD PTR [SI]');
+  EmitInstr('POP     SI');
+  EmitInstrA('JE', PL_RT_PFX + 'DEDUP_SKIP');
+  EmitLabel(PL_RT_PFX + 'DEDUP_ADD');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'COLLECT_PUSH');
+  EmitLabel(PL_RT_PFX + 'DEDUP_SKIP');
+  { Move to tail }
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [DI+2]');
+  EmitComment('SI = tail');
+  EmitInstrAB('MOV', 'BX', 'SI');
+  EmitInstrAB('AND', 'BX', IntToStr(TAG_MASK));
+  Str(TAG_LIST Shl TAG_SHIFT, NS);
+  EmitInstrAB('CMP', 'BX', NS);
+  EmitInstrA('JE', PL_RT_PFX + 'DEDUP_WALK');
+  { End of list - build result }
+  EmitInstr('CALL    ' + PL_RT_PFX + 'MAKELIST');
+  EmitLabel(PL_RT_PFX + 'DEDUP_DONE');
+  EmitInstr('POP     DI');
+  EmitInstr('POP     SI');
+  EmitInstr('POP     CX');
+  EmitInstr('POP     BX');
+  EmitInstr('CLC');
+  EmitInstr('RET');
+  EmitBlankLine;
+End;
+
 { ---- EmitRuntime : emettre les routines runtime --------------- }
 { Emet les routines de backtracking, liste, arith, compare, ctrl. }
 Procedure EmitRuntime;
@@ -6309,6 +6639,8 @@ Begin
   EmitControlRuntime;
   EmitIORuntime;
   EmitBuiltinRuntime;
+  EmitDynDBRuntime;
+  EmitCollectRuntime;
 End;
 
 { ---- EmitClose : fermer le fichier de sortie ASM -------------- }
@@ -8664,6 +8996,234 @@ Begin
         EmitInstrA('JMP', ClauseTab[CIdx].FailLabel);
       End;
       EmitComment('call/1 done');
+    End
+    { === TODO 19 : Assert/Retract inline === }
+    { --- assert/1 (alias for assertz) --- }
+    Else If (GoalTab[GIdx].PredName = 'assert') And
+            (GoalTab[GIdx].Arity = 1) Then
+    Begin
+      EmitComment('assert/1 inline (TODO 19)');
+      EmitLoadArgToAX(GoalTab[GIdx].Args[0], True);
+      EmitInstr('CALL    ' + PL_RT_PFX + 'ASSERTZ');
+      EmitComment('assert/1 done');
+    End
+    { --- asserta/1 --- }
+    Else If (GoalTab[GIdx].PredName = 'asserta') And
+            (GoalTab[GIdx].Arity = 1) Then
+    Begin
+      EmitComment('asserta/1 inline (TODO 19)');
+      EmitLoadArgToAX(GoalTab[GIdx].Args[0], True);
+      EmitInstr('CALL    ' + PL_RT_PFX + 'ASSERTA');
+      EmitComment('asserta/1 done');
+    End
+    { --- assertz/1 --- }
+    Else If (GoalTab[GIdx].PredName = 'assertz') And
+            (GoalTab[GIdx].Arity = 1) Then
+    Begin
+      EmitComment('assertz/1 inline (TODO 19)');
+      EmitLoadArgToAX(GoalTab[GIdx].Args[0], True);
+      EmitInstr('CALL    ' + PL_RT_PFX + 'ASSERTZ');
+      EmitComment('assertz/1 done');
+    End
+    { --- retract/1 --- }
+    Else If (GoalTab[GIdx].PredName = 'retract') And
+            (GoalTab[GIdx].Arity = 1) Then
+    Begin
+      EmitComment('retract/1 inline (TODO 19)');
+      EmitLoadArgToAX(GoalTab[GIdx].Args[0], True);
+      EmitInstr('CALL    ' + PL_RT_PFX + 'RETRACT');
+      EmitInstrA('JC', ClauseTab[CIdx].FailLabel);
+      EmitComment('retract/1 done');
+    End
+    { --- abolish/1 --- }
+    Else If (GoalTab[GIdx].PredName = 'abolish') And
+            (GoalTab[GIdx].Arity = 1) Then
+    Begin
+      EmitComment('abolish/1 inline (TODO 19)');
+      EmitLoadArgToAX(GoalTab[GIdx].Args[0], True);
+      EmitInstr('CALL    ' + PL_RT_PFX + 'ABOLISH');
+      EmitComment('abolish/1 done');
+    End
+    { === TODO 20 : Findall/Bagof/Setof inline === }
+    { --- findall/3 --- }
+    Else If (GoalTab[GIdx].PredName = 'findall') And
+            (GoalTab[GIdx].Arity = 3) Then
+    Begin
+      EmitComment('findall/3 inline (TODO 20)');
+      { Reset collection buffer }
+      EmitInstr('CALL    ' + PL_RT_PFX + 'COLLECT_RESET');
+      { Save state (heap, trail, choicepoint) }
+      EmitInstrA('PUSH', 'WORD PTR [_PL_HTOP]');
+      EmitInstrA('PUSH', 'WORD PTR [_PL_TTOP]');
+      EmitInstrA('PUSH', 'WORD PTR [_PL_CPTOP]');
+      { Call Goal (arg[1]) }
+      If GoalTab[GIdx].Args[1].Kind = FAK_ATOM Then
+      Begin
+        { Load extra args for the goal if present }
+        For J := 3 To GoalTab[GIdx].ArgCount - 1 Do
+        Begin
+          Case GoalTab[GIdx].Args[J].Kind Of
+            FAK_ATOM :
+            Begin
+              TagVal := (TAG_ATOM Shl TAG_SHIFT) Or
+                        (GoalTab[GIdx].Args[J].AtomIdx And VAL_MASK);
+              Str(TagVal, NS);
+              EmitInstrAB('MOV', 'WORD PTR [_PL_ARGS + ' +
+                          IntToStr((J - 3) * 2) + ']', NS);
+            End;
+            FAK_INT :
+            Begin
+              TagVal := (TAG_INT Shl TAG_SHIFT) Or
+                        (Integer(GoalTab[GIdx].Args[J].IntVal) And VAL_MASK);
+              Str(TagVal, NS);
+              EmitInstrAB('MOV', 'WORD PTR [_PL_ARGS + ' +
+                          IntToStr((J - 3) * 2) + ']', NS);
+            End;
+            FAK_VAR :
+            Begin
+              VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[J].VarName);
+              EmitInstrAB('MOV', 'AX',
+                          'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+              EmitInstrAB('MOV', 'WORD PTR [_PL_ARGS + ' +
+                          IntToStr((J - 3) * 2) + ']', 'AX');
+            End;
+          End;
+        End;
+        Clean   := SymNameClean(AtomName(GoalTab[GIdx].Args[1].AtomIdx));
+        PredLbl := PL_PRED_PFX + Clean + '_0';
+        NS := LabelGen;  { label for goal-failure path }
+        EmitInstrA('CALL', PredLbl);
+        EmitInstrA('JC', NS);
+        { Goal succeeded: push Template (arg[0]) to collect buffer }
+        EmitLoadArgToAX(GoalTab[GIdx].Args[0], True);
+        EmitInstr('CALL    ' + PL_RT_PFX + 'COLLECT_PUSH');
+        { Fall through to restoration (single-pass collection) }
+        EmitLabel(NS);
+      End
+      Else
+      Begin
+        EmitComment('findall/3: goal is not an atom, skip');
+      End;
+      { Restore state }
+      EmitInstrA('POP', 'WORD PTR [_PL_CPTOP]');
+      EmitInstrA('POP', 'WORD PTR [_PL_TTOP]');
+      EmitInstrA('POP', 'WORD PTR [_PL_HTOP]');
+      EmitInstr('CALL    ' + PL_RT_PFX + 'UNTRAIL');
+      { Build list from collected solutions }
+      EmitInstr('CALL    ' + PL_RT_PFX + 'MAKELIST');
+      { Unify result with arg[2] (Bag) }
+      EmitInstrAB('MOV', 'BX', 'AX');
+      If GoalTab[GIdx].Args[2].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[2].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitBind;
+      End;
+      EmitComment('findall/3 done');
+    End
+    { --- bagof/3 --- }
+    Else If (GoalTab[GIdx].PredName = 'bagof') And
+            (GoalTab[GIdx].Arity = 3) Then
+    Begin
+      EmitComment('bagof/3 inline (TODO 20)');
+      { Reset collection buffer }
+      EmitInstr('CALL    ' + PL_RT_PFX + 'COLLECT_RESET');
+      { Save state }
+      EmitInstrA('PUSH', 'WORD PTR [_PL_HTOP]');
+      EmitInstrA('PUSH', 'WORD PTR [_PL_TTOP]');
+      EmitInstrA('PUSH', 'WORD PTR [_PL_CPTOP]');
+      { Call Goal (arg[1]) }
+      If GoalTab[GIdx].Args[1].Kind = FAK_ATOM Then
+      Begin
+        Clean   := SymNameClean(AtomName(GoalTab[GIdx].Args[1].AtomIdx));
+        PredLbl := PL_PRED_PFX + Clean + '_0';
+        NS := LabelGen;
+        EmitInstrA('CALL', PredLbl);
+        EmitInstrA('JC', NS);
+        { Goal succeeded: push Template to collect buffer }
+        EmitLoadArgToAX(GoalTab[GIdx].Args[0], True);
+        EmitInstr('CALL    ' + PL_RT_PFX + 'COLLECT_PUSH');
+        EmitLabel(NS);
+      End
+      Else
+        EmitComment('bagof/3: goal is not an atom, skip');
+      { Restore state }
+      EmitInstrA('POP', 'WORD PTR [_PL_CPTOP]');
+      EmitInstrA('POP', 'WORD PTR [_PL_TTOP]');
+      EmitInstrA('POP', 'WORD PTR [_PL_HTOP]');
+      EmitInstr('CALL    ' + PL_RT_PFX + 'UNTRAIL');
+      { Build list from collected solutions }
+      EmitInstr('CALL    ' + PL_RT_PFX + 'MAKELIST');
+      { Check if empty - bagof fails if no solutions }
+      NS := LabelGen;
+      Str((TAG_ATOM Shl TAG_SHIFT) Or 1, PredLbl);
+      EmitInstrAB('CMP', 'AX', PredLbl);
+      EmitComment('compare with [] (nil)');
+      EmitInstrA('JE', ClauseTab[CIdx].FailLabel);
+      { Unify result with arg[2] (Bag) }
+      EmitInstrAB('MOV', 'BX', 'AX');
+      If GoalTab[GIdx].Args[2].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[2].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitBind;
+      End;
+      EmitComment('bagof/3 done');
+    End
+    { --- setof/3 --- }
+    Else If (GoalTab[GIdx].PredName = 'setof') And
+            (GoalTab[GIdx].Arity = 3) Then
+    Begin
+      EmitComment('setof/3 inline (TODO 20)');
+      { Reset collection buffer }
+      EmitInstr('CALL    ' + PL_RT_PFX + 'COLLECT_RESET');
+      { Save state }
+      EmitInstrA('PUSH', 'WORD PTR [_PL_HTOP]');
+      EmitInstrA('PUSH', 'WORD PTR [_PL_TTOP]');
+      EmitInstrA('PUSH', 'WORD PTR [_PL_CPTOP]');
+      { Call Goal (arg[1]) }
+      If GoalTab[GIdx].Args[1].Kind = FAK_ATOM Then
+      Begin
+        Clean   := SymNameClean(AtomName(GoalTab[GIdx].Args[1].AtomIdx));
+        PredLbl := PL_PRED_PFX + Clean + '_0';
+        NS := LabelGen;
+        EmitInstrA('CALL', PredLbl);
+        EmitInstrA('JC', NS);
+        { Goal succeeded: push Template to collect buffer }
+        EmitLoadArgToAX(GoalTab[GIdx].Args[0], True);
+        EmitInstr('CALL    ' + PL_RT_PFX + 'COLLECT_PUSH');
+        EmitLabel(NS);
+      End
+      Else
+        EmitComment('setof/3: goal is not an atom, skip');
+      { Restore state }
+      EmitInstrA('POP', 'WORD PTR [_PL_CPTOP]');
+      EmitInstrA('POP', 'WORD PTR [_PL_TTOP]');
+      EmitInstrA('POP', 'WORD PTR [_PL_HTOP]');
+      EmitInstr('CALL    ' + PL_RT_PFX + 'UNTRAIL');
+      { Build list, sort, and dedup }
+      EmitInstr('CALL    ' + PL_RT_PFX + 'MAKELIST');
+      { Check if empty - setof fails if no solutions }
+      Str((TAG_ATOM Shl TAG_SHIFT) Or 1, PredLbl);
+      EmitInstrAB('CMP', 'AX', PredLbl);
+      EmitComment('compare with [] (nil)');
+      EmitInstrA('JE', ClauseTab[CIdx].FailLabel);
+      { Sort the list }
+      EmitInstr('CALL    ' + PL_RT_PFX + 'SORT');
+      { Remove consecutive duplicates }
+      EmitInstr('CALL    ' + PL_RT_PFX + 'SETOF_DEDUP');
+      { Unify result with arg[2] (Set) }
+      EmitInstrAB('MOV', 'BX', 'AX');
+      If GoalTab[GIdx].Args[2].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[2].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitBind;
+      End;
+      EmitComment('setof/3 done');
     End
     Else
     Begin

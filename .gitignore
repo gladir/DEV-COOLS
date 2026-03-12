@@ -1,2 +1,4 @@
 *.o
 PROLOG86
+P86
+*.ppu
