@@ -3984,7 +3984,6 @@ Begin
   { -------------------------------------------------------------- }
   EmitLabel('_PLRT_UNTRAIL');
   EmitInstrA('PUSH', 'SI');
-  EmitInstrA('PUSH', 'DI');
   EmitInstrA('PUSH', 'AX');
   EmitLabel('_PLRT_UNTR_LP');
   EmitInstrAB('MOV', 'AX', 'WORD PTR [_PL_TTOP]');
@@ -3993,23 +3992,18 @@ Begin
   { Decrementer TTOP }
   EmitInstr('DEC    AX');
   EmitInstrAB('MOV', 'WORD PTR [_PL_TTOP]', 'AX');
-  { Lire l adresse enregistree dans le trail }
+  { Lire l adresse enregistree dans le trail : trail[AX] = addr heap }
   EmitInstrAB('MOV', 'SI', 'AX');
   EmitInstr('SHL    SI,1');                { index -> offset octets }
-  EmitInstrAB('MOV', 'DI', 'WORD PTR [_PL_TRAIL + SI]');
-  { Remettre la cellule heap comme REF libre (auto-reference) }
-  { TAG_REF=0, donc valeur = DI elle-meme }
-  EmitInstr('SHL    DI,1');                { index -> offset octets }
   EmitInstrAB('MOV', 'AX', 'WORD PTR [_PL_TRAIL + SI]');
-  { AX = adresse originale (index heap) }
-  { Stocker AX comme valeur dans heap[AX] = MakeRef(AX) = AX (tag REF=0) }
+  { AX = adresse heap (index) a remettre comme REF libre }
+  { Stocker heap[AX] = AX (auto-reference = variable libre, TAG_REF=0) }
   EmitInstrAB('MOV', 'SI', 'AX');
   EmitInstr('SHL    SI,1');
   EmitInstrAB('MOV', 'WORD PTR [_PL_HEAP + SI]', 'AX');
   EmitInstrA('JMP', '_PLRT_UNTR_LP');
   EmitLabel('_PLRT_UNTR_DONE');
   EmitInstrA('POP', 'AX');
-  EmitInstrA('POP', 'DI');
   EmitInstrA('POP', 'SI');
   EmitInstr('RET');
   EmitBlankLine;
@@ -5125,19 +5119,29 @@ Begin
         End
         Else
         Begin
-          { Derniere clause : trust_me }
+          { Derniere clause : trust_me (CP deja supprime par TRUST) }
           EmitLabel(EntryLabel + '_cp' + IntToStr(I));
           EmitComment('trust_me');
           EmitInstr('CALL    _PLRT_TRUST');
           EmitInstrA('CALL', ClauseTab[Indices[I]].ClsLabel);
-          EmitInstrA('JNC', EntryLabel + '_ok');
+          { Propager le resultat directement }
+          EmitInstr('RET');
         End;
       End;
 
-      { Toutes les clauses ont echoue }
-      EmitInstr('STC');
-      EmitInstr('RET');
+      { Toutes les clauses non-derniere ont echoue, la derniere retourne }
+      { via RET ci-dessus. Ce label est pour les clauses non-dernieres.  }
       EmitLabel(EntryLabel + '_ok');
+      EmitComment('Succes : retirer le choice point (commit)');
+      EmitInstrA('PUSH', 'SI');
+      EmitInstrA('PUSH', 'AX');
+      EmitInstrAB('MOV', 'SI', 'WORD PTR [_PL_CPTOP]');
+      EmitInstrAB('SUB', 'SI', '4');
+      EmitInstr('SHL    SI,1');
+      EmitInstrAB('MOV', 'AX', 'WORD PTR [_PL_STACK + SI]');
+      EmitInstrAB('MOV', 'WORD PTR [_PL_CPTOP]', 'AX');
+      EmitInstrA('POP', 'AX');
+      EmitInstrA('POP', 'SI');
       EmitInstr('CLC');
       EmitInstr('RET');
     End;
@@ -5183,25 +5187,31 @@ Begin
       End
       Else
       Begin
-        { Derniere clause : trust_me }
+        { Derniere clause : trust_me (CP deja supprime par TRUST) }
         EmitLabel(EntryLabel + '_cp' + IntToStr(I));
         EmitComment('trust_me');
         EmitInstr('CALL    _PLRT_TRUST');
         EmitInstrA('CALL', ClauseTab[Indices[I]].ClsLabel);
-        { Propager le resultat directement (pas de branche _ok) }
+        { Propager le resultat directement (CF set par la clause) }
         EmitInstr('RET');
-        EmitInstrA('JMP', EntryLabel + '_end');
       End;
     End;
 
-    { Label de succes : depiler le choice point avant de retourner }
+    { Label de succes : retirer le choice point sans restaurer l etat }
+    { (les liaisons reussies doivent etre conservees)                 }
     EmitLabel(EntryLabel + '_ok');
-    EmitComment('Succes : retirer le choice point');
-    EmitInstr('CALL    _PLRT_TRUST');
+    EmitComment('Succes : retirer le choice point (commit)');
+    EmitInstrA('PUSH', 'SI');
+    EmitInstrA('PUSH', 'AX');
+    EmitInstrAB('MOV', 'SI', 'WORD PTR [_PL_CPTOP]');
+    EmitInstrAB('SUB', 'SI', '4');
+    EmitInstr('SHL    SI,1');
+    EmitInstrAB('MOV', 'AX', 'WORD PTR [_PL_STACK + SI]');
+    EmitInstrAB('MOV', 'WORD PTR [_PL_CPTOP]', 'AX');
+    EmitInstrA('POP', 'AX');
+    EmitInstrA('POP', 'SI');
     EmitInstr('CLC');
     EmitInstr('RET');
-
-    EmitLabel(EntryLabel + '_end');
   End;
 End;
 
