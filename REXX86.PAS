@@ -202,7 +202,7 @@
             LINES([nom]) : nombre de lignes restantes -> AX (0 ou 1)
             STREAM(nom, option) : gestion de flux (open/close/status)
 
-  TODO 13 - IF / THEN / ELSE / SELECT / WHEN / OTHERWISE
+  TODO 13 - IF / THEN / ELSE / SELECT / WHEN / OTHERWISE [IMPLEMENTE]
             ParseIfStmt : IF cond THEN instr [; ELSE instr]
               Emission TEST AX,AX / JZ pour condition fausse
               Labels : _RXL_ELSE_N, _RXL_ENDIF_N
@@ -816,6 +816,11 @@ Procedure ParseSayStmt;        Forward;
 Procedure ParsePullStmt;       Forward;
 Procedure ParseParsePullStmt;  Forward;
 Procedure EmitIORuntime;       Forward;
+
+(* TODO 13 - IF/THEN/ELSE/SELECT *)
+Procedure ParseIfStmt;         Forward;
+Procedure ParseSelectStmt;     Forward;
+Procedure ParseDoBlock;        Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -4856,6 +4861,259 @@ Begin
   End;
 End;
 
+{ ============================================================
+  TODO 13 - IF / THEN / ELSE / SELECT / WHEN / OTHERWISE
+  [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- ParseDoBlock : parser un bloc DO ; stmts ; END ---------- *)
+(* Un bloc DO/END est l equivalent des accolades en REXX.         *)
+(* Utilise dans IF cond THEN DO; ... END et SELECT/WHEN.          *)
+Procedure ParseDoBlock;
+Var
+  U : TString;
+Begin
+  EmitComment('DO block');
+  (* Boucler sur les instructions jusqu a END *)
+  While CurToken.Kind <> TK_EOF Do
+  Begin
+    (* Sauter les fins de ligne *)
+    While CurToken.Kind = TK_EOL Do
+      ParserAdvance;
+    If CurToken.Kind = TK_EOF Then Break;
+
+    (* Verifier END *)
+    If (CurToken.Kind = TK_KEYWORD) Then
+    Begin
+      U := StrUpperCase(CurToken.Val);
+      If U = 'END' Then
+      Begin
+        ParserAdvance;  (* consommer END *)
+        Exit;
+      End;
+    End;
+
+    (* Parser l instruction suivante *)
+    ParseStmt;
+  End;
+End;
+
+(* ---- ParseIfStmt : parser IF cond THEN instr [ELSE instr] ---- *)
+(* IF condition THEN instruction [; ELSE instruction]              *)
+(* Si THEN est suivi de DO, c est un bloc DO/END.                  *)
+Procedure ParseIfStmt;
+Var
+  Res      : TExprVal;
+  U        : TString;
+  LblElse  : TString;
+  LblEndif : TString;
+Begin
+  EmitComment('IF');
+
+  (* Evaluer la condition *)
+  ParseExpr(Res);
+  ExprFlushToAX(Res);
+
+  LblElse  := LabelGen;
+  LblEndif := LabelGen;
+
+  (* TEST AX,AX / JZ lbl_else *)
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitRaw('        JZ      ' + LblElse);
+
+  (* Consommer THEN (obligatoire) *)
+  While CurToken.Kind = TK_EOL Do
+    ParserAdvance;
+  If (CurToken.Kind = TK_KEYWORD) And
+     (StrUpperCase(CurToken.Val) = 'THEN') Then
+    ParserAdvance
+  Else
+    WarnMsg('THEN attendu apres condition IF');
+
+  (* Sauter les fins de ligne apres THEN *)
+  While CurToken.Kind = TK_EOL Do
+    ParserAdvance;
+
+  (* Branche THEN : instruction ou bloc DO/END *)
+  If (CurToken.Kind = TK_KEYWORD) And
+     (StrUpperCase(CurToken.Val) = 'DO') Then
+  Begin
+    ParserAdvance;  (* consommer DO *)
+    ParseDoBlock;
+  End
+  Else If (CurToken.Kind = TK_KEYWORD) And
+          (StrUpperCase(CurToken.Val) = 'NOP') Then
+  Begin
+    EmitComment('NOP');
+    ParserAdvance;
+  End
+  Else
+    ParseStmt;
+
+  (* Sauter les fins de ligne *)
+  While CurToken.Kind = TK_EOL Do
+    ParserAdvance;
+
+  (* Verifier ELSE *)
+  If (CurToken.Kind = TK_KEYWORD) And
+     (StrUpperCase(CurToken.Val) = 'ELSE') Then
+  Begin
+    ParserAdvance;  (* consommer ELSE *)
+    EmitRaw('        JMP     ' + LblEndif);
+    EmitLabel(LblElse);
+
+    (* Sauter les fins de ligne apres ELSE *)
+    While CurToken.Kind = TK_EOL Do
+      ParserAdvance;
+
+    (* Branche ELSE : instruction ou bloc DO/END *)
+    If (CurToken.Kind = TK_KEYWORD) And
+       (StrUpperCase(CurToken.Val) = 'DO') Then
+    Begin
+      ParserAdvance;
+      ParseDoBlock;
+    End
+    Else If (CurToken.Kind = TK_KEYWORD) And
+            (StrUpperCase(CurToken.Val) = 'NOP') Then
+    Begin
+      EmitComment('NOP');
+      ParserAdvance;
+    End
+    Else
+      ParseStmt;
+
+    EmitLabel(LblEndif);
+  End
+  Else
+  Begin
+    (* Pas de ELSE : lbl_else = point de sortie *)
+    EmitLabel(LblElse);
+  End;
+End;
+
+(* ---- ParseSelectStmt : parser SELECT / WHEN / OTHERWISE / END *)
+(* SELECT                                                          *)
+(*   WHEN cond1 THEN instr1                                       *)
+(*   WHEN cond2 THEN instr2                                       *)
+(*   OTHERWISE instr_defaut                                        *)
+(* END                                                             *)
+Procedure ParseSelectStmt;
+Var
+  Res      : TExprVal;
+  U        : TString;
+  LblNext  : TString;
+  LblEnd   : TString;
+  HasOther : Boolean;
+Begin
+  EmitComment('SELECT');
+  LblEnd   := LabelGen;
+  HasOther := False;
+
+  (* Boucle sur les clauses WHEN / OTHERWISE *)
+  While CurToken.Kind <> TK_EOF Do
+  Begin
+    (* Sauter les fins de ligne *)
+    While CurToken.Kind = TK_EOL Do
+      ParserAdvance;
+    If CurToken.Kind = TK_EOF Then Break;
+
+    If CurToken.Kind <> TK_KEYWORD Then Break;
+    U := StrUpperCase(CurToken.Val);
+
+    (* END du SELECT *)
+    If U = 'END' Then
+    Begin
+      ParserAdvance;
+      Break;
+    End;
+
+    (* WHEN cond THEN instr *)
+    If U = 'WHEN' Then
+    Begin
+      ParserAdvance;  (* consommer WHEN *)
+      EmitComment('WHEN');
+
+      (* Evaluer la condition *)
+      ParseExpr(Res);
+      ExprFlushToAX(Res);
+
+      LblNext := LabelGen;
+      EmitInstrAB('TEST', 'AX', 'AX');
+      EmitRaw('        JZ      ' + LblNext);
+
+      (* Consommer THEN *)
+      While CurToken.Kind = TK_EOL Do
+        ParserAdvance;
+      If (CurToken.Kind = TK_KEYWORD) And
+         (StrUpperCase(CurToken.Val) = 'THEN') Then
+        ParserAdvance
+      Else
+        WarnMsg('THEN attendu apres condition WHEN');
+
+      (* Sauter les fins de ligne apres THEN *)
+      While CurToken.Kind = TK_EOL Do
+        ParserAdvance;
+
+      (* Instruction ou bloc DO/END *)
+      If (CurToken.Kind = TK_KEYWORD) And
+         (StrUpperCase(CurToken.Val) = 'DO') Then
+      Begin
+        ParserAdvance;
+        ParseDoBlock;
+      End
+      Else If (CurToken.Kind = TK_KEYWORD) And
+              (StrUpperCase(CurToken.Val) = 'NOP') Then
+      Begin
+        EmitComment('NOP');
+        ParserAdvance;
+      End
+      Else
+        ParseStmt;
+
+      (* Sauter au END du SELECT *)
+      EmitRaw('        JMP     ' + LblEnd);
+      EmitLabel(LblNext);
+    End
+
+    (* OTHERWISE instr *)
+    Else If U = 'OTHERWISE' Then
+    Begin
+      ParserAdvance;  (* consommer OTHERWISE *)
+      EmitComment('OTHERWISE');
+      HasOther := True;
+
+      (* Sauter les fins de ligne *)
+      While CurToken.Kind = TK_EOL Do
+        ParserAdvance;
+
+      (* Instructions jusqu au END *)
+      While CurToken.Kind <> TK_EOF Do
+      Begin
+        While CurToken.Kind = TK_EOL Do
+          ParserAdvance;
+        If CurToken.Kind = TK_EOF Then Break;
+        If (CurToken.Kind = TK_KEYWORD) And
+           (StrUpperCase(CurToken.Val) = 'END') Then
+        Begin
+          ParserAdvance;
+          Break;
+        End;
+        ParseStmt;
+      End;
+      Break;  (* Sortir de la boucle WHEN *)
+    End
+
+    Else
+    Begin
+      (* Token inattendu dans SELECT *)
+      WarnMsg('WHEN ou OTHERWISE attendu dans SELECT');
+      ParserAdvance;
+    End;
+  End;
+
+  EmitLabel(LblEnd);
+End;
+
 (* ---- ParseStmt : dispatcher principal des instructions REXX -- *)
 (* Gere les mots-cles, les affectations et les expressions comme  *)
 (* instructions.                                                   *)
@@ -4905,6 +5163,30 @@ Begin
     Begin
       ParserAdvance;
       ParseParsePullStmt;
+      Exit;
+    End;
+
+    (* IF cond THEN instr [ELSE instr] *)
+    If U = 'IF' Then
+    Begin
+      ParserAdvance;
+      ParseIfStmt;
+      Exit;
+    End;
+
+    (* SELECT / WHEN / OTHERWISE / END *)
+    If U = 'SELECT' Then
+    Begin
+      ParserAdvance;
+      ParseSelectStmt;
+      Exit;
+    End;
+
+    (* DO ... END (bloc simple, sans boucle pour l instant) *)
+    If U = 'DO' Then
+    Begin
+      ParserAdvance;
+      ParseDoBlock;
       Exit;
     End;
 
