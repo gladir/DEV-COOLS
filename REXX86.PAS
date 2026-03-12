@@ -167,7 +167,7 @@
             Fonctions integrees : SUBSTR, LENGTH, etc. -> CALL _RXB_nom
             Variable composee (stem) : nom.queue -> calcul dynamique de cle
 
-  TODO 11 - EXPRESSIONS BINAIRES ET CONCATENATION
+  TODO 11 - EXPRESSIONS BINAIRES ET CONCATENATION [IMPLEMENTE]
             ParseExprPrec(MinPrec) : boucle de precedence (Pratt)
             Arithmetique entiere : ADD/SUB/IMUL/IDIV pour +, -, *, /
             Division entiere % : IDIV -> quotient dans AX
@@ -2715,6 +2715,278 @@ Begin
   EmitInstrA('POP', 'AX');
   EmitRaw('        RET');
   EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  TODO 11 - Runtime pour expressions binaires et concatenation *)
+  (* ============================================================ *)
+
+  (* _RXRT_STRLEN : longueur d'une chaine ASCIIZ               *)
+  (* Entree : SI = chaine ASCIIZ                                *)
+  (* Sortie : CX = longueur (octets avant le 0 terminal)       *)
+  EmitLabel('_RXRT_STRLEN');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitLabel('_RXRT_STRLEN_L');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstrA('JE', '_RXRT_STRLEN_D');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'CX');
+  EmitInstrA('JMP', '_RXRT_STRLEN_L');
+  EmitLabel('_RXRT_STRLEN_D');
+  EmitInstrA('POP', 'SI');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* _RXRT_NUMTOSTR : convertir entier signe en chaine ASCIIZ  *)
+  (* Entree : AX = entier signe                                *)
+  (* Sortie : SI = adresse du resultat dans _RX_NUMBUF          *)
+  EmitLabel('_RXRT_NUMTOSTR');
+  EmitInstrA('PUSH', 'AX');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _RX_NUMBUF');
+  EmitInstrAB('ADD', 'DI', '11');   (* fin du buffer *)
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0'); (* terminateur *)
+  EmitInstrA('DEC', 'DI');
+  EmitInstrAB('MOV', 'BX', '10');
+  EmitInstrAB('XOR', 'CX', 'CX');  (* flag signe *)
+  EmitInstrAB('OR', 'AX', 'AX');
+  EmitInstrA('JNS', '_RXRT_N2S_P');
+  EmitInstrA('NEG', 'AX');
+  EmitInstrAB('MOV', 'CX', '1');
+  EmitLabel('_RXRT_N2S_P');
+  EmitInstrAB('OR', 'AX', 'AX');
+  EmitInstrA('JNZ', '_RXRT_N2S_L');
+  (* cas special : 0 *)
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '''0''');
+  EmitInstrA('DEC', 'DI');
+  EmitInstrA('JMP', '_RXRT_N2S_S');
+  EmitLabel('_RXRT_N2S_L');
+  EmitInstrAB('XOR', 'DX', 'DX');
+  EmitInstrA('DIV', 'BX');       (* AX=quotient, DX=reste *)
+  EmitInstrAB('ADD', 'DL', '''0''');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', 'DL');
+  EmitInstrA('DEC', 'DI');
+  EmitInstrAB('OR', 'AX', 'AX');
+  EmitInstrA('JNZ', '_RXRT_N2S_L');
+  EmitLabel('_RXRT_N2S_S');
+  EmitInstrAB('OR', 'CX', 'CX');
+  EmitInstrA('JZ', '_RXRT_N2S_D');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '''-''');
+  EmitInstrA('DEC', 'DI');
+  EmitLabel('_RXRT_N2S_D');
+  EmitInstrA('INC', 'DI');
+  EmitInstrAB('MOV', 'SI', 'DI');  (* SI = debut de la chaine *)
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstrA('POP', 'AX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* _RXRT_STRTONUM : convertir chaine ASCIIZ en entier signe  *)
+  (* Entree : SI = chaine ASCIIZ                               *)
+  (* Sortie : AX = valeur entiere                              *)
+  EmitLabel('_RXRT_STRTONUM');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstrAB('XOR', 'CX', 'CX'); (* flag signe *)
+  (* sauter les espaces en tete *)
+  EmitLabel('_RXRT_S2N_SP');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', ''' ''');
+  EmitInstrA('JNE', '_RXRT_S2N_SG');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', '_RXRT_S2N_SP');
+  EmitLabel('_RXRT_S2N_SG');
+  (* verifier signe *)
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '''-''');
+  EmitInstrA('JNE', '_RXRT_S2N_PL');
+  EmitInstrAB('MOV', 'CX', '1');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', '_RXRT_S2N_LP');
+  EmitLabel('_RXRT_S2N_PL');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '''+''');
+  EmitInstrA('JNE', '_RXRT_S2N_LP');
+  EmitInstrA('INC', 'SI');
+  EmitLabel('_RXRT_S2N_LP');
+  EmitInstrAB('MOV', 'BL', 'BYTE PTR [SI]');
+  EmitInstrAB('CMP', 'BL', '''0''');
+  EmitInstrA('JB', '_RXRT_S2N_DN');
+  EmitInstrAB('CMP', 'BL', '''9''');
+  EmitInstrA('JA', '_RXRT_S2N_DN');
+  EmitInstrAB('SUB', 'BL', '''0''');
+  EmitInstrAB('XOR', 'BH', 'BH');
+  EmitInstrAB('MOV', 'DX', 'AX');   (* save AX *)
+  EmitInstrAB('SHL', 'AX', '1');    (* AX*2 *)
+  EmitInstrAB('SHL', 'AX', '1');    (* AX*4 *)
+  EmitInstrAB('ADD', 'AX', 'DX');   (* AX*5 *)
+  EmitInstrAB('SHL', 'AX', '1');    (* AX*10 *)
+  EmitInstrAB('ADD', 'AX', 'BX');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', '_RXRT_S2N_LP');
+  EmitLabel('_RXRT_S2N_DN');
+  EmitInstrAB('OR', 'CX', 'CX');
+  EmitInstrA('JZ', '_RXRT_S2N_R');
+  EmitInstrA('NEG', 'AX');
+  EmitLabel('_RXRT_S2N_R');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* _RXRT_CONCAT : concatener deux chaines ASCIIZ             *)
+  (* Entree : SI = chaine gauche, DI = chaine droite           *)
+  (* Sortie : AX = adresse du resultat dans _RX_CATBUF         *)
+  (* Copie SI puis DI dans _RX_CATBUF, terminateur 0           *)
+  EmitLabel('_RXRT_CONCAT');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('MOV', 'BX', 'OFFSET _RX_CATBUF');
+  (* copier chaine gauche *)
+  EmitLabel('_RXRT_CAT_L1');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [SI]');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstrA('JZ', '_RXRT_CAT_L2');
+  EmitInstrAB('MOV', 'BYTE PTR [BX]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'BX');
+  EmitInstrA('JMP', '_RXRT_CAT_L1');
+  EmitLabel('_RXRT_CAT_L2');
+  (* copier chaine droite *)
+  EmitInstrAB('MOV', 'SI', 'DI');
+  EmitLabel('_RXRT_CAT_L3');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [SI]');
+  EmitInstrAB('MOV', 'BYTE PTR [BX]', 'AL');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstrA('JZ', '_RXRT_CAT_DN');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'BX');
+  EmitInstrA('JMP', '_RXRT_CAT_L3');
+  EmitLabel('_RXRT_CAT_DN');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _RX_CATBUF');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* _RXRT_STRCMP : comparaison normale de chaines REXX        *)
+  (* En REXX, la comparaison normale ignore les espaces en     *)
+  (* tete et en queue (leading/trailing) et compare en tenant  *)
+  (* compte de la casse. Simplifie ici : comparaison ASCIIZ    *)
+  (* avec trim des espaces.                                     *)
+  (* Entree : SI = chaine gauche, DI = chaine droite           *)
+  (* Sortie : drapeaux (ZF=1 si egal, CF selon ordre)          *)
+  (*          AX = -1 si SI<DI, 0 si SI=DI, 1 si SI>DI        *)
+  EmitLabel('_RXRT_STRCMP');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  (* sauter espaces en tete de SI *)
+  EmitLabel('_RXRT_CMP_SL');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', ''' ''');
+  EmitInstrA('JNE', '_RXRT_CMP_SR');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', '_RXRT_CMP_SL');
+  EmitLabel('_RXRT_CMP_SR');
+  (* sauter espaces en tete de DI *)
+  EmitInstrAB('CMP', 'BYTE PTR [DI]', ''' ''');
+  EmitInstrA('JNE', '_RXRT_CMP_LP');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', '_RXRT_CMP_SR');
+  EmitLabel('_RXRT_CMP_LP');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [SI]');
+  EmitInstrAB('MOV', 'AH', 'BYTE PTR [DI]');
+  (* si les deux sont 0, egalite *)
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstrA('JNZ', '_RXRT_CMP_NZ');
+  EmitInstrAB('OR', 'AH', 'AH');
+  EmitInstrA('JNZ', '_RXRT_CMP_RS');
+  (* les deux sont 0 -> egal *)
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstrA('JMP', '_RXRT_CMP_DN');
+  EmitLabel('_RXRT_CMP_NZ');
+  (* si AL=espace et AH=0, traiter comme egal (trim trail) *)
+  EmitInstrAB('CMP', 'AL', ''' ''');
+  EmitInstrA('JNE', '_RXRT_CMP_C1');
+  EmitInstrAB('OR', 'AH', 'AH');
+  EmitInstrA('JNZ', '_RXRT_CMP_C1');
+  (* verifier si reste de SI est tout espaces *)
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', '_RXRT_CMP_LP');
+  EmitLabel('_RXRT_CMP_C1');
+  (* si AH=espace et AL=0, traiter comme egal (trim trail) *)
+  EmitInstrAB('CMP', 'AH', ''' ''');
+  EmitInstrA('JNE', '_RXRT_CMP_C2');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstrA('JNZ', '_RXRT_CMP_C2');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', '_RXRT_CMP_LP');
+  EmitLabel('_RXRT_CMP_C2');
+  EmitInstrAB('CMP', 'AL', 'AH');
+  EmitInstrA('JB', '_RXRT_CMP_LT');
+  EmitInstrA('JA', '_RXRT_CMP_GT');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', '_RXRT_CMP_LP');
+  EmitLabel('_RXRT_CMP_RS');
+  (* AL=0 mais AH<>0 : verifier si reste DI tout espaces *)
+  EmitInstrAB('CMP', 'AH', ''' ''');
+  EmitInstrA('JNE', '_RXRT_CMP_LT');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', '_RXRT_CMP_LP');
+  EmitLabel('_RXRT_CMP_LT');
+  EmitInstrAB('MOV', 'AX', '0FFFFh');  (* -1 *)
+  EmitInstrA('JMP', '_RXRT_CMP_DN');
+  EmitLabel('_RXRT_CMP_GT');
+  EmitInstrAB('MOV', 'AX', '1');
+  EmitLabel('_RXRT_CMP_DN');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* _RXRT_STRCMPS : comparaison stricte de chaines REXX      *)
+  (* La comparaison stricte preserve les espaces (pas de trim) *)
+  (* Compare octet par octet sans normalisation.               *)
+  (* Entree : SI = chaine gauche, DI = chaine droite           *)
+  (* Sortie : AX = -1 / 0 / 1 selon ordre                     *)
+  EmitLabel('_RXRT_STRCMPS');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitLabel('_RXRT_SCMP_LP');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [SI]');
+  EmitInstrAB('MOV', 'AH', 'BYTE PTR [DI]');
+  EmitInstrAB('CMP', 'AL', 'AH');
+  EmitInstrA('JB', '_RXRT_SCMP_LT');
+  EmitInstrA('JA', '_RXRT_SCMP_GT');
+  (* AL = AH *)
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstrA('JZ', '_RXRT_SCMP_EQ');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', '_RXRT_SCMP_LP');
+  EmitLabel('_RXRT_SCMP_EQ');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstrA('JMP', '_RXRT_SCMP_DN');
+  EmitLabel('_RXRT_SCMP_LT');
+  EmitInstrAB('MOV', 'AX', '0FFFFh');
+  EmitInstrA('JMP', '_RXRT_SCMP_DN');
+  EmitLabel('_RXRT_SCMP_GT');
+  EmitInstrAB('MOV', 'AX', '1');
+  EmitLabel('_RXRT_SCMP_DN');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitRaw('        RET');
+  EmitBlankLine;
 End;
 
 (* ---- EmitClose : fermer le fichier de sortie ASM ------------- *)
@@ -2813,10 +3085,12 @@ Begin
   DataAdd('_RX_NULL_STR', DK_STR, 0, '');         (* chaine vide         *)
   DataAdd('_RX_TRUE_S', DK_STR, 0, '1');          (* chaine "1" (true)   *)
   DataAdd('_RX_FALSE_S', DK_STR, 0, '0');         (* chaine "0" (false)  *)
+  DataAdd('_RX_SPC_S', DK_STR, 0, ' ');           (* chaine espace (concat implicite) *)
   (* Tampons de travail *)
   DataAddBuffer('_RX_STRBUF', 256);               (* buffer general      *)
   DataAddBuffer('_RX_TMPBUF', 256);               (* tampon temporaire   *)
   DataAddBuffer('_RX_NUMBUF', 12);                (* conversion numerique *)
+  DataAddBuffer('_RX_CATBUF', 256);               (* buffer concatenation *)
 End;
 
 (* ============================================================
@@ -3671,16 +3945,44 @@ Begin
   (* Concatenation explicite *)
   Else If Op = '||' Then
   Begin
-    EmitComment('concatenation || : stub, appel _RXRT_CONCAT requis');
+    (* AX=gauche, BX=droite -> SI=gauche, DI=droite -> CALL _RXRT_CONCAT *)
+    EmitInstr('MOV', 'SI, AX');
+    EmitInstr('MOV', 'DI, BX');
     EmitRaw('        CALL    _RXRT_CONCAT');
     Res.TypeIdx := TY_IDX_STRING;
   End
 
-  (* Comparaisons normales *)
+  (* Concatenation implicite (espace) : gauche + ' ' + droite *)
+  Else If Op = ' ' Then
+  Begin
+    (* AX=gauche, BX=droite *)
+    (* D'abord concatener AX + " " *)
+    EmitInstr('PUSH', 'BX');
+    EmitInstr('MOV', 'SI, AX');
+    EmitInstr('MOV', 'DI, OFFSET _RX_SPC_S');
+    EmitRaw('        CALL    _RXRT_CONCAT');
+    (* Puis concatener le resultat + droite *)
+    EmitInstr('MOV', 'SI, AX');
+    EmitInstr('POP', 'DI');
+    (* Copier le resultat intermediaire dans _RX_TMPBUF *)
+    EmitInstr('PUSH', 'DI');
+    EmitInstr('MOV', 'DI, OFFSET _RX_TMPBUF');
+    EmitRaw('        CALL    _RXRT_STRCPY');
+    EmitInstr('MOV', 'SI, OFFSET _RX_TMPBUF');
+    EmitInstr('POP', 'DI');
+    EmitRaw('        CALL    _RXRT_CONCAT');
+    Res.TypeIdx := TY_IDX_STRING;
+  End
+
+  (* Comparaisons normales : utiliser _RXRT_STRCMP *)
+  (* _RXRT_STRCMP(SI=gauche, DI=droite) -> AX = -1/0/1 *)
   Else If Op = '=' Then
   Begin
     LblSkip := LabelGen;
-    EmitInstr('CMP', 'AX, BX');
+    EmitInstr('MOV', 'SI, AX');
+    EmitInstr('MOV', 'DI, BX');
+    EmitRaw('        CALL    _RXRT_STRCMP');
+    EmitInstr('OR', 'AX, AX');
     EmitInstr('MOV', 'AX, 0');
     EmitRaw('        JNE     ' + LblSkip);
     EmitInstr('INC', 'AX');
@@ -3690,7 +3992,10 @@ Begin
   Else If Op = '\=' Then
   Begin
     LblSkip := LabelGen;
-    EmitInstr('CMP', 'AX, BX');
+    EmitInstr('MOV', 'SI, AX');
+    EmitInstr('MOV', 'DI, BX');
+    EmitRaw('        CALL    _RXRT_STRCMP');
+    EmitInstr('OR', 'AX, AX');
     EmitInstr('MOV', 'AX, 0');
     EmitRaw('        JE      ' + LblSkip);
     EmitInstr('INC', 'AX');
@@ -3700,9 +4005,12 @@ Begin
   Else If Op = '>' Then
   Begin
     LblSkip := LabelGen;
-    EmitInstr('CMP', 'AX, BX');
+    EmitInstr('MOV', 'SI, AX');
+    EmitInstr('MOV', 'DI, BX');
+    EmitRaw('        CALL    _RXRT_STRCMP');
+    EmitInstr('CMP', 'AX, 1');
     EmitInstr('MOV', 'AX, 0');
-    EmitRaw('        JLE     ' + LblSkip);
+    EmitRaw('        JNE     ' + LblSkip);
     EmitInstr('INC', 'AX');
     EmitLabel(LblSkip);
     Res.TypeIdx := TY_IDX_BOOLEAN;
@@ -3710,9 +4018,12 @@ Begin
   Else If Op = '<' Then
   Begin
     LblSkip := LabelGen;
-    EmitInstr('CMP', 'AX, BX');
+    EmitInstr('MOV', 'SI, AX');
+    EmitInstr('MOV', 'DI, BX');
+    EmitRaw('        CALL    _RXRT_STRCMP');
+    EmitInstr('CMP', 'AX, 0FFFFh');
     EmitInstr('MOV', 'AX, 0');
-    EmitRaw('        JGE     ' + LblSkip);
+    EmitRaw('        JNE     ' + LblSkip);
     EmitInstr('INC', 'AX');
     EmitLabel(LblSkip);
     Res.TypeIdx := TY_IDX_BOOLEAN;
@@ -3720,29 +4031,41 @@ Begin
   Else If Op = '>=' Then
   Begin
     LblSkip := LabelGen;
-    EmitInstr('CMP', 'AX, BX');
+    LblDone := LabelGen;
+    EmitInstr('MOV', 'SI, AX');
+    EmitInstr('MOV', 'DI, BX');
+    EmitRaw('        CALL    _RXRT_STRCMP');
+    EmitInstr('CMP', 'AX, 0FFFFh');  (* AX = -1 means < *)
     EmitInstr('MOV', 'AX, 0');
-    EmitRaw('        JL      ' + LblSkip);
-    EmitInstr('INC', 'AX');
+    EmitRaw('        JE      ' + LblSkip);
+    EmitInstr('INC', 'AX');  (* result = 1 (true: >= ) *)
     EmitLabel(LblSkip);
     Res.TypeIdx := TY_IDX_BOOLEAN;
   End
   Else If Op = '<=' Then
   Begin
     LblSkip := LabelGen;
-    EmitInstr('CMP', 'AX, BX');
+    LblDone := LabelGen;
+    EmitInstr('MOV', 'SI, AX');
+    EmitInstr('MOV', 'DI, BX');
+    EmitRaw('        CALL    _RXRT_STRCMP');
+    EmitInstr('CMP', 'AX, 1');  (* AX = 1 means > *)
     EmitInstr('MOV', 'AX, 0');
-    EmitRaw('        JG      ' + LblSkip);
-    EmitInstr('INC', 'AX');
+    EmitRaw('        JE      ' + LblSkip);
+    EmitInstr('INC', 'AX');  (* result = 1 (true: <= ) *)
     EmitLabel(LblSkip);
     Res.TypeIdx := TY_IDX_BOOLEAN;
   End
 
-  (* Comparaisons strictes *)
+  (* Comparaisons strictes : utiliser _RXRT_STRCMPS *)
+  (* _RXRT_STRCMPS(SI=gauche, DI=droite) -> AX = -1/0/1 *)
   Else If Op = '==' Then
   Begin
     LblSkip := LabelGen;
-    EmitInstr('CMP', 'AX, BX');
+    EmitInstr('MOV', 'SI, AX');
+    EmitInstr('MOV', 'DI, BX');
+    EmitRaw('        CALL    _RXRT_STRCMPS');
+    EmitInstr('OR', 'AX, AX');
     EmitInstr('MOV', 'AX, 0');
     EmitRaw('        JNE     ' + LblSkip);
     EmitInstr('INC', 'AX');
@@ -3752,7 +4075,10 @@ Begin
   Else If Op = '\==' Then
   Begin
     LblSkip := LabelGen;
-    EmitInstr('CMP', 'AX, BX');
+    EmitInstr('MOV', 'SI, AX');
+    EmitInstr('MOV', 'DI, BX');
+    EmitRaw('        CALL    _RXRT_STRCMPS');
+    EmitInstr('OR', 'AX, AX');
     EmitInstr('MOV', 'AX, 0');
     EmitRaw('        JE      ' + LblSkip);
     EmitInstr('INC', 'AX');
@@ -3762,10 +4088,12 @@ Begin
   Else If Op = '>>' Then
   Begin
     LblSkip := LabelGen;
-    EmitComment('strict >> : meme code que >');
-    EmitInstr('CMP', 'AX, BX');
+    EmitInstr('MOV', 'SI, AX');
+    EmitInstr('MOV', 'DI, BX');
+    EmitRaw('        CALL    _RXRT_STRCMPS');
+    EmitInstr('CMP', 'AX, 1');
     EmitInstr('MOV', 'AX, 0');
-    EmitRaw('        JLE     ' + LblSkip);
+    EmitRaw('        JNE     ' + LblSkip);
     EmitInstr('INC', 'AX');
     EmitLabel(LblSkip);
     Res.TypeIdx := TY_IDX_BOOLEAN;
@@ -3773,10 +4101,12 @@ Begin
   Else If Op = '<<' Then
   Begin
     LblSkip := LabelGen;
-    EmitComment('strict << : meme code que <');
-    EmitInstr('CMP', 'AX, BX');
+    EmitInstr('MOV', 'SI, AX');
+    EmitInstr('MOV', 'DI, BX');
+    EmitRaw('        CALL    _RXRT_STRCMPS');
+    EmitInstr('CMP', 'AX, 0FFFFh');
     EmitInstr('MOV', 'AX, 0');
-    EmitRaw('        JGE     ' + LblSkip);
+    EmitRaw('        JNE     ' + LblSkip);
     EmitInstr('INC', 'AX');
     EmitLabel(LblSkip);
     Res.TypeIdx := TY_IDX_BOOLEAN;
@@ -3784,10 +4114,12 @@ Begin
   Else If Op = '>>=' Then
   Begin
     LblSkip := LabelGen;
-    EmitComment('strict >>= : meme code que >=');
-    EmitInstr('CMP', 'AX, BX');
+    EmitInstr('MOV', 'SI, AX');
+    EmitInstr('MOV', 'DI, BX');
+    EmitRaw('        CALL    _RXRT_STRCMPS');
+    EmitInstr('CMP', 'AX, 0FFFFh');  (* AX = -1 means < *)
     EmitInstr('MOV', 'AX, 0');
-    EmitRaw('        JL      ' + LblSkip);
+    EmitRaw('        JE      ' + LblSkip);
     EmitInstr('INC', 'AX');
     EmitLabel(LblSkip);
     Res.TypeIdx := TY_IDX_BOOLEAN;
@@ -3795,10 +4127,12 @@ Begin
   Else If Op = '<<=' Then
   Begin
     LblSkip := LabelGen;
-    EmitComment('strict <<= : meme code que <=');
-    EmitInstr('CMP', 'AX, BX');
+    EmitInstr('MOV', 'SI, AX');
+    EmitInstr('MOV', 'DI, BX');
+    EmitRaw('        CALL    _RXRT_STRCMPS');
+    EmitInstr('CMP', 'AX, 1');  (* AX = 1 means > *)
     EmitInstr('MOV', 'AX, 0');
-    EmitRaw('        JG      ' + LblSkip);
+    EmitRaw('        JE      ' + LblSkip);
     EmitInstr('INC', 'AX');
     EmitLabel(LblSkip);
     Res.TypeIdx := TY_IDX_BOOLEAN;
@@ -4061,11 +4395,25 @@ Begin
     Begin
       Op   := CurToken.Val;
       Prec := BinOpPrec(Op);
+    End
+    (* Concatenation implicite (espace) : si le token suivant est un *)
+    (* literal, identifiant, ou '(' sans operateur binaire devant,   *)
+    (* traiter comme concatenation avec espace (niveau 5).           *)
+    Else If (CurToken.Kind = TK_NUMBER) Or
+            (CurToken.Kind = TK_STRING)  Or
+            (CurToken.Kind = TK_IDENT)   Or
+            ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+    Begin
+      Op   := ' ';    (* concatenation implicite *)
+      Prec := 5;      (* meme precedence que || *)
     End;
     (* Arreter si fin ou priorite insuffisante *)
     If (Prec = 0) Or (Prec < MinPrec) Then Break;
 
-    ParserAdvance;
+    (* Pour la concatenation implicite (Op=' '), ne pas avancer   *)
+    (* le lexeur car il n'y a pas de token operateur a consommer. *)
+    If Op <> ' ' Then
+      ParserAdvance;
 
     (* Court-circuit AND : si LHS=0, ne pas evaluer RHS *)
     If Op = '&' Then
@@ -4123,7 +4471,9 @@ Begin
     ParseExprPrec(NextPrec, Right);
 
     (* Pliage de constantes si les deux membres sont immediats *)
-    FoldOk := (Res.Kind = EK_IMM) And (Right.Kind = EK_IMM);
+    (* Sauf pour la concatenation qui necessite des operations string *)
+    FoldOk := (Res.Kind = EK_IMM) And (Right.Kind = EK_IMM)
+              And (Op <> '||') And (Op <> ' ');
     If FoldOk Then
     Begin
       If Op = '+' Then
@@ -4169,12 +4519,6 @@ Begin
           End;
           ExprMakeImm(PowAcc, TY_IDX_INTEGER, Res);
         End;
-      End
-      Else If Op = '||' Then
-      Begin
-        (* Concatenation constante : stub, garder LHS *)
-        Res.Kind := EK_AX;
-        Res.TypeIdx := TY_IDX_STRING;
       End
       (* Comparaisons *)
       Else If Op = '=' Then
