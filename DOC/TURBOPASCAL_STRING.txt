@@ -1,0 +1,451 @@
+==============================================================================
+  TURBO PASCAL 7.0 - Chaines de caracteres : String vs PChar
+==============================================================================
+
+  Ce document clarifie les deux types de chaines en Turbo Pascal 7.0
+  et leurs fonctions respectives. Les deux types NE SONT PAS
+  interchangeables et utilisent des conventions memoire differentes.
+
+==============================================================================
+  1. FORMAT MEMOIRE
+==============================================================================
+
+  STRING (ShortString / Pascal String)
+  ------------------------------------
+  Format : [Octet 0 = Longueur] [Octet 1..N = Caracteres]
+
+  Offset :  0    1    2    3    4    5
+  Contenu: [04] ['T'] ['E'] ['S'] ['T'] [??]
+
+  - S[0] contient la LONGUEUR (type Char, valeur ordinale 0..255)
+  - S[1] est le PREMIER caractere
+  - S[N] est le DERNIER caractere (N = Ord(S[0]))
+  - Taille maximale : 255 caracteres + 1 octet de longueur = 256 octets
+  - PAS de terminateur NUL requis (mais peut etre present)
+  - Declaration : Var S : String;         { String[255] par defaut }
+                  Var S : String[80];     { max 80 caracteres      }
+
+  PChar (Pointeur vers Char / C String / ASCIIZ)
+  -----------------------------------------------
+  Format : [Char 0] [Char 1] ... [Char N] [NUL]
+
+  Offset :  0    1    2    3    4
+  Contenu: ['T'] ['E'] ['S'] ['T'] [00]
+
+  - P[0] est le PREMIER caractere (ici 'T' = 84)
+  - P^ est aussi le premier caractere
+  - La chaine se termine par un octet NUL (valeur 0)
+  - Pas de limite de taille intrinseque (sauf memoire disponible)
+  - Declaration : Var P : PChar;
+  - Compatible avec les API C et Windows
+
+==============================================================================
+  2. RESUME DES DIFFERENCES
+==============================================================================
+
+  Propriete          | String              | PChar
+  -------------------+---------------------+---------------------
+  Type               | ShortString         | ^Char (pointeur)
+  Longueur max       | 255 caracteres      | Illimitee (memoire)
+  Stockage longueur  | S[0] (1 octet)      | Aucun (NUL termine)
+  Premier caractere  | S[1]                | P[0] ou P^
+  Acces S[0]/P[0]    | Longueur            | Premier caractere
+  Terminaison        | Pas de NUL requis   | NUL obligatoire
+  Taille memoire     | Ord(S[0]) + 1       | StrLen(P) + 1
+  Unite requise      | Aucune (System)     | Strings (unite)
+  Passage par valeur | Copie complete      | Copie du pointeur
+  Indexation base    | 1 (S[1] = 1er char) | 0 (P[0] = 1er char)
+
+==============================================================================
+  3. FONCTIONS STRING (Unite System - toujours disponibles)
+==============================================================================
+
+  Ces fonctions operent sur le type STRING (Pascal String avec S[0]=longueur).
+  Elles font partie de l'unite System et sont toujours disponibles.
+
+  3.1 Fonctions retournant une valeur
+  ------------------------------------
+
+  Function Length(S : String) : Integer;
+    - Retourne la longueur de S (equivalent a Ord(S[0]))
+    - Exemple : Length('TEST') = 4
+
+  Function Copy(S : String; Pos : Integer; Len : Integer) : String;
+    - Retourne une sous-chaine de S
+    - Pos : position de depart (1-based)
+    - Len : nombre de caracteres a copier
+    - Exemple : Copy('ABCDEF', 2, 3) = 'BCD'
+
+  Function Pos(SubStr : String; S : String) : Integer;
+    - Retourne la position de SubStr dans S (1-based), 0 si non trouve
+    - Exemple : Pos('CD', 'ABCDEF') = 3
+
+  Function Concat(S1 : String; S2 : String; ...) : String;
+    - Concatene plusieurs chaines (equivalent a S1 + S2 + ...)
+    - Exemple : Concat('AB', 'CD', 'EF') = 'ABCDEF'
+
+  Function Chr(X : Byte) : Char;
+    - Retourne le caractere correspondant au code ASCII X
+    - Exemple : Chr(65) = 'A'
+
+  Function Ord(C : Char) : Integer;
+    - Retourne le code ASCII du caractere C
+    - Exemple : Ord('A') = 65
+    - Exemple : Ord(S[0]) = longueur de la chaine S
+
+  Function Upcase(C : Char) : Char;
+    - Retourne le caractere en majuscule
+    - Exemple : Upcase('a') = 'A'
+
+  3.2 Procedures modifiant une chaine
+  ------------------------------------
+
+  Procedure Delete(Var S : String; Pos : Integer; Len : Integer);
+    - Supprime Len caracteres de S a partir de Pos
+    - Modifie S directement (passage par reference)
+    - Exemple : S := 'ABCDEF'; Delete(S, 2, 3); { S = 'AEF' }
+
+  Procedure Insert(Source : String; Var Dest : String; Pos : Integer);
+    - Insere Source dans Dest a la position Pos
+    - Modifie Dest directement (passage par reference)
+    - Exemple : S := 'AEF'; Insert('BCD', S, 2); { S = 'ABCDEF' }
+
+  Procedure Str(X : Integer; Var S : String);
+  Procedure Str(X : Real; Var S : String);
+  Procedure Str(X : Integer:Width; Var S : String);
+  Procedure Str(X : Real:Width:Decimals; Var S : String);
+    - Convertit un nombre en sa representation chaine
+    - Exemple : Str(42, S); { S = '42' }
+
+  Procedure Val(S : String; Var V : Integer; Var Code : Integer);
+  Procedure Val(S : String; Var V : Real; Var Code : Integer);
+    - Convertit une chaine en nombre
+    - Code = 0 si OK, sinon position de l'erreur
+    - Exemple : Val('42', N, Err); { N = 42, Err = 0 }
+
+  3.3 Operateurs sur String
+  --------------------------
+
+  S1 + S2          Concatenation    'AB' + 'CD' = 'ABCD'
+  S1 = S2          Egalite          'ABC' = 'ABC' -> True
+  S1 <> S2         Inegalite        'ABC' <> 'DEF' -> True
+  S1 < S2          Inferieur        'ABC' < 'DEF' -> True
+  S1 > S2          Superieur        'DEF' > 'ABC' -> True
+  S1 <= S2         Inf ou egal
+  S1 >= S2         Sup ou egal
+  S[N]             Acces caractere  S[0] = longueur, S[1] = 1er char
+
+==============================================================================
+  4. FONCTIONS PCHAR (Unite Strings - doit etre declaree dans Uses)
+==============================================================================
+
+  Ces fonctions operent sur le type PCHAR (chaines C, ASCIIZ, terminees
+  par NUL). Elles sont dans l'unite STRINGS et doivent etre importees :
+
+    Uses Strings;
+
+  ATTENTION : Les noms commencent par "Str" (convention C).
+  NE PAS confondre avec les fonctions String de l'unite System.
+
+  4.1 Fonctions de mesure et recherche
+  -------------------------------------
+
+  Function StrLen(S : PChar) : Word;
+    - Retourne la longueur de la chaine (nombre de chars avant NUL)
+    - Equivalent C : strlen()
+    - Exemple : StrLen('TEST') = 4
+
+  Function StrPos(S1 : PChar; S2 : PChar) : PChar;
+    - Cherche S2 dans S1, retourne pointeur ou NIL
+    - Equivalent C : strstr()
+    - Exemple : StrPos(P, 'CD') -> pointeur vers 'CD...'
+
+  Function StrScan(S : PChar; C : Char) : PChar;
+    - Cherche le caractere C dans S, retourne pointeur ou NIL
+    - Equivalent C : strchr()
+    - Exemple : StrScan(P, 'C') -> pointeur vers 'C...'
+
+  Function StrRScan(S : PChar; C : Char) : PChar;
+    - Cherche la derniere occurrence de C dans S
+    - Equivalent C : strrchr()
+
+  Function StrEnd(S : PChar) : PChar;
+    - Retourne pointeur vers le NUL terminal
+    - Exemple : StrEnd(P) pointe sur le #0 final
+
+  4.2 Fonctions de copie
+  -----------------------
+
+  Function StrCopy(Dest : PChar; Source : PChar) : PChar;
+    - Copie Source vers Dest, retourne Dest
+    - Equivalent C : strcpy()
+    - ATTENTION : pas de verification de debordement !
+
+  Function StrLCopy(Dest : PChar; Source : PChar; MaxLen : Word) : PChar;
+    - Copie au maximum MaxLen caracteres de Source vers Dest
+    - Equivalent C : strncpy()
+
+  Function StrMove(Dest : PChar; Source : PChar; Count : Word) : PChar;
+    - Copie exactement Count octets (peut inclure des NUL)
+    - Equivalent C : memmove()
+
+  Function StrECopy(Dest : PChar; Source : PChar) : PChar;
+    - Copie et retourne pointeur vers le NUL de fin dans Dest
+    - (Utile pour concatenation rapide)
+
+  Function StrPCopy(Dest : PChar; Source : String) : PChar;
+    - Copie une String Pascal vers un buffer PChar
+    - CONVERSION String -> PChar
+    - Exemple : StrPCopy(P, S);
+
+  Function StrPas(S : PChar) : String;
+    - Convertit un PChar en String Pascal
+    - CONVERSION PChar -> String
+    - Exemple : S := StrPas(P);
+
+  4.3 Fonctions de concatenation
+  -------------------------------
+
+  Function StrCat(Dest : PChar; Source : PChar) : PChar;
+    - Ajoute Source a la fin de Dest, retourne Dest
+    - Equivalent C : strcat()
+
+  Function StrLCat(Dest : PChar; Source : PChar; MaxLen : Word) : PChar;
+    - Concatenation limitee a MaxLen caracteres total
+    - Equivalent C : strncat() (avec semantique differente)
+
+  4.4 Fonctions de comparaison
+  -----------------------------
+
+  Function StrComp(S1 : PChar; S2 : PChar) : Integer;
+    - Compare S1 et S2 (sensible a la casse)
+    - Retourne <0, 0, >0 (comme strcmp en C)
+    - Equivalent C : strcmp()
+
+  Function StrIComp(S1 : PChar; S2 : PChar) : Integer;
+    - Compare sans tenir compte de la casse
+    - Equivalent C : stricmp() / strcasecmp()
+
+  Function StrLComp(S1 : PChar; S2 : PChar; MaxLen : Word) : Integer;
+    - Compare au maximum MaxLen caracteres
+    - Equivalent C : strncmp()
+
+  Function StrLIComp(S1 : PChar; S2 : PChar; MaxLen : Word) : Integer;
+    - Compare MaxLen caracteres sans casse
+    - Equivalent C : strnicmp()
+
+  4.5 Fonctions de transformation
+  --------------------------------
+
+  Function StrUpper(S : PChar) : PChar;
+    - Convertit en majuscules (modifie en place), retourne S
+    - Equivalent C : strupr()
+
+  Function StrLower(S : PChar) : PChar;
+    - Convertit en minuscules (modifie en place), retourne S
+    - Equivalent C : strlwr()
+
+  4.6 Fonctions d'allocation
+  ---------------------------
+
+  Function StrNew(S : PChar) : PChar;
+    - Alloue une copie de S sur le heap, retourne le pointeur
+    - Equivalent C : strdup()
+
+  Procedure StrDispose(S : PChar);
+    - Libere une chaine allouee par StrNew
+    - Equivalent C : free()
+
+==============================================================================
+  5. FONCTIONS DE CONVERSION String <-> PChar
+==============================================================================
+
+  PChar -> String :   S := StrPas(P);          { Unite Strings }
+  String -> PChar :   StrPCopy(P, S);          { Unite Strings }
+  String -> PChar :   P := @S[1];              { Astuce, pas officiel }
+
+==============================================================================
+  6. TABLE RECAPITULATIVE - NE PAS MELANGER
+==============================================================================
+
+  OPERATION         | STRING (System)      | PCHAR (Strings)
+  ------------------+----------------------+----------------------
+  Longueur          | Length(S)            | StrLen(P)
+  Copie             | Copy(S,Pos,Len)      | StrCopy(D,S)
+  Copie limitee     | (n/a)                | StrLCopy(D,S,Max)
+  Position          | Pos(Sub,S)           | StrPos(S,Sub)
+  Concatenation     | Concat(S1,S2) ou +   | StrCat(D,S)
+  Concat limitee    | (n/a)                | StrLCat(D,S,Max)
+  Comparaison       | S1 = S2  (operateur) | StrComp(S1,S2)
+  Comp sans casse   | (n/a)                | StrIComp(S1,S2)
+  Suppression       | Delete(S,Pos,Len)    | (n/a, faire a la main)
+  Insertion         | Insert(Src,Dst,Pos)  | (n/a, faire a la main)
+  Num -> Chaine     | Str(N, S)            | (n/a)
+  Chaine -> Num     | Val(S, N, Err)       | (n/a)
+  Majuscule char    | Upcase(C)            | StrUpper(P)
+  Minuscule         | (n/a)                | StrLower(P)
+  Premier char      | S[1]                 | P[0] ou P^
+  Longueur byte     | S[0] = Ord->longueur | (n/a, pas de S[0])
+  Allocation heap   | (n/a)                | StrNew(P)
+  Liberation heap   | (n/a)                | StrDispose(P)
+  Conv Str->PChar   | (n/a)                | StrPCopy(P, S)
+  Conv PChar->Str   | (n/a)                | StrPas(P)
+  Fin de chaine     | (n/a)                | StrEnd(P)
+  Chercher char     | (n/a)                | StrScan(P, C)
+  Chercher dernier  | (n/a)                | StrRScan(P, C)
+
+==============================================================================
+  7. EXEMPLES COMPARATIFS
+==============================================================================
+
+  7.1 Exemple String
+  -------------------
+
+  Program TestString;
+  Var S : String;
+  Begin
+    S := 'TEST';
+    WriteLn('Length = ', Length(S));     { 4 }
+    WriteLn('S[0] = ', Ord(S[0]));      { 4 = longueur }
+    WriteLn('S[1] = ', S[1]);           { 'T' = premier caractere }
+    WriteLn('Copy = ', Copy(S, 2, 2));  { 'ES' }
+    WriteLn('Pos = ', Pos('ST', S));    { 3 }
+    Delete(S, 1, 2);                    { S = 'ST' }
+    Insert('BE', S, 1);                 { S = 'BEST' }
+  End.
+
+  7.2 Exemple PChar
+  ------------------
+
+  Program TestPChar;
+  Uses Strings;
+  Var
+    P : PChar;
+    Buf : Array[0..255] Of Char;
+  Begin
+    P := 'TEST';
+    WriteLn('StrLen = ', StrLen(P));    { 4 }
+    WriteLn('P[0] = ', Ord(P[0]));     { 84 = Ord('T') = premier char }
+    WriteLn('P[1] = ', P[1]);          { 'E' = deuxieme caractere }
+    StrCopy(Buf, P);                   { Buf = 'TEST'#0 }
+    StrCat(Buf, '!');                  { Buf = 'TEST!'#0 }
+    WriteLn(StrComp(P, 'TEST'));       { 0 = egal }
+  End.
+
+  7.3 Sortie attendue du programme test_length.pas
+  -------------------------------------------------
+
+  Program TestLength;
+  Uses Strings;
+  Var
+    S : String;
+    P : PChar;
+  BEGIN
+    S := 'TEST';
+    P := 'TEST';
+    WriteLn('Length(''TEST'')=S[0], S[0]=4:');
+    WriteLn('Length(''TEST'')=', Length(S));   { 4 }
+    WriteLn('S[0]=', Ord(S[0]));              { 4 = LONGUEUR }
+    WriteLn;
+    WriteLn('StrLen(''TEST'')=4, P[0]=84');
+    WriteLn('StrLen(''TEST'')=', StrLen(P));  { 4 }
+    WriteLn('P[0]=', Ord(P[0]));              { 84 = Ord('T') }
+  END.
+
+  Sortie :
+    Length('TEST')=S[0], S[0]=4:
+    Length('TEST')=4
+    S[0]=4
+
+    StrLen('TEST')=4, P[0]=84
+    StrLen('TEST')=4
+    P[0]=84
+
+==============================================================================
+  8. REGLES POUR LE COMPILATEUR TPCW32
+==============================================================================
+
+  8.1 Stockage des constantes String en memoire
+  -----------------------------------------------
+
+  Une constante String 'TEST' doit etre emise comme :
+    _TPK_1  DB 4,'TEST',0       ; 4 = longueur, 0 = NUL (optionnel)
+
+  Une constante PChar 'TEST' doit etre emise comme :
+    _TPK_2  DB 'TEST',0         ; pas de longueur, juste ASCIIZ
+
+  8.2 Affectation S := 'chaine'
+  ------------------------------
+
+  STRCPY pour String : copie S[0] (longueur) + S[1..N] (contenu)
+    - Source : pointe sur l'octet de longueur
+    - Destination : pointe sur l'octet de longueur de la variable
+    - Copie Ord(Source[0]) + 1 octets minimum
+
+  Pour PChar : copie jusqu'au NUL terminal (lstrcpyA ou boucle ASCIIZ)
+
+  8.3 Length(S) vs StrLen(P)
+  ---------------------------
+
+  Length(S) pour String :
+    MOVZX EAX, BYTE PTR [ESI]    ; lire S[0] = longueur
+    ; EAX = longueur, c'est tout
+
+  StrLen(P) pour PChar :
+    PUSH EAX
+    CALL lstrlenA                 ; appel API Windows
+    ; ou boucle manuelle jusqu'au NUL
+
+  8.4 Acces par index S[N] vs P[N]
+  ---------------------------------
+
+  S[0] sur String = longueur :
+    LEA EAX,[S]          ; adresse de base = S[0]
+    MOVZX EAX,BYTE PTR [EAX]   ; lire l'octet de longueur
+
+  S[1] sur String = premier caractere :
+    LEA EAX,[S]
+    MOVZX EAX,BYTE PTR [EAX+1]
+
+  P[0] sur PChar = premier caractere :
+    MOV EAX,[P]          ; charger le pointeur
+    MOVZX EAX,BYTE PTR [EAX]   ; lire premier char
+
+  8.5 WriteLn et PRINTSTR
+  ------------------------
+
+  Pour afficher une String :
+    - ESI pointe sur S[0]
+    - Lire longueur = MOVZX ECX, BYTE PTR [ESI]
+    - Buffer a afficher = ESI + 1
+    - WriteFile(hStdout, ESI+1, ECX, ...)
+
+  Pour afficher un PChar (PRINTSTR_AZ) :
+    - ESI pointe sur le premier caractere
+    - Calculer longueur en bouclant jusqu'au NUL
+    - WriteFile(hStdout, ESI, longueur, ...)
+
+  Pour les buffers internes (NUMBUF, CRLF, TRUE_STR, FALSE_STR) :
+    - Ces buffers sont ASCIIZ (pas de longueur prefixee)
+    - Utiliser PRINTSTR_AZ (version ASCIIZ) pour les afficher
+
+  8.6 Routines runtime a distinguer
+  -----------------------------------
+
+  _TPRT_PRINTSTR     : afficher String Pascal (ESI = ptr, S[0]=len)
+  _TPRT_PRINTSTR_AZ  : afficher PChar ASCIIZ (ESI = ptr, termine NUL)
+  _TPRT_STRCPY       : copier String Pascal (avec S[0])
+  _TPRT_STRLEN       : longueur String Pascal (lire S[0])
+  _TPRT_CONCAT       : concatener deux String Pascal
+  _TPRT_STRCMP        : comparer deux String Pascal
+  _TPRT_COPY         : sous-chaine String Pascal -> STRBUF1
+  _TPRT_POS          : position sous-chaine dans String Pascal
+  _TPRT_DELETE        : supprimer dans String Pascal (modifie S[0])
+  _TPRT_INSERT        : inserer dans String Pascal (modifie S[0])
+
+  Pour PChar : utiliser les API Windows (lstrlenA, lstrcpyA, etc.)
+  ou les wrappers de l'unite Strings.
+
+==============================================================================
+  FIN DU DOCUMENT
+==============================================================================
