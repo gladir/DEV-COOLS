@@ -332,7 +332,7 @@
                Restauration : MOV [_M3X_HANDLER], ancien_handler
              RAISE sans handler : affiche 'Unhandled exception' + Halt
 
-   TODO 22 - TYPES REFERENCE (REF / REFANY / BRANDED / UNTRACED)
+   TODO 22 - TYPES REFERENCE (REF / REFANY / BRANDED / UNTRACED) [IMPLEMENTE]
              REF T : reference vers un type T (pointeur type)
                Allocation : NEW(REF T) -> CALL _M3RT_NEW(CX=sizeof(T)) -> AX=ptr
                Dereferencement : expr^ -> MOV BX,AX / MOV AX,[BX]
@@ -468,8 +468,9 @@ Const
   TY_IDX_LONGREAL= 5;
   TY_IDX_TEXT    = 6;
   TY_IDX_NIL     = 7;
-  TY_IDX_VOID    = 8;
-  TY_PRIM_COUNT  = 9;
+  TY_IDX_REFANY  = 8;
+  TY_IDX_VOID    = 9;
+  TY_PRIM_COUNT  = 10;
 
   (* Bornes des types primitifs Modula-3 (8086 16 bits) *)
   MIN_INTEGER    = -32768;
@@ -2784,6 +2785,7 @@ Begin
   SymAdd('REAL',        SK_TYPE, TY_IDX_REAL,      0);
   SymAdd('LONGREAL',    SK_TYPE, TY_IDX_LONGREAL,  0);
   SymAdd('TEXT',        SK_TYPE, TY_IDX_TEXT,      0);
+  SymAdd('REFANY',      SK_TYPE, TY_IDX_REFANY,   0);
 
   (* Constantes predefinies *)
   SymAdd('TRUE',        SK_CONST, TY_IDX_BOOLEAN, 0);
@@ -2954,6 +2956,7 @@ Begin
   AddPrim(TY_IDX_LONGREAL, TYK_LONGREAL, 'LONGREAL', 2);
   AddPrim(TY_IDX_TEXT,     TYK_TEXT,     'TEXT',     2);
   AddPrim(TY_IDX_NIL,      TYK_NULL,    'NIL',      2);
+  AddPrim(TY_IDX_REFANY,   TYK_REFANY,  'REFANY',   2);
   AddPrim(TY_IDX_VOID,     TYK_NULL,    'VOID',     0);
 
   TypeCount := TY_PRIM_COUNT;
@@ -3464,6 +3467,7 @@ Begin
   EmitRaw(M3_EXC_PFX + 'EXCCODE DW  0');
   EmitRaw(M3_EXC_PFX + 'EXCVAL  DW  0');
   EmitRaw(M3_RT_PFX + 'EXC_MSG DB  ''Unhandled exception: '',0');
+  EmitRaw(M3_RT_PFX + 'NILMSG  DB  ''NIL dereference'',0');
   EmitBlankLine;
 
   (* Donnees du programme depuis DataTab *)
@@ -3617,7 +3621,7 @@ Begin
   Else If V = 'REAL'     Then TypeIdxFromName := TY_IDX_REAL
   Else If V = 'LONGREAL' Then TypeIdxFromName := TY_IDX_LONGREAL
   Else If V = 'TEXT'     Then TypeIdxFromName := TY_IDX_TEXT
-  Else If V = 'REFANY'   Then TypeIdxFromName := TY_IDX_NIL
+  Else If V = 'REFANY'   Then TypeIdxFromName := TY_IDX_REFANY
   Else
   Begin
     (* Chercher dans TypeTab les types definis par l utilisateur *)
@@ -3639,6 +3643,7 @@ Begin
     TY_IDX_LONGREAL : TypeSizeFromIdx := 2;
     TY_IDX_TEXT     : TypeSizeFromIdx := 2;
     TY_IDX_NIL      : TypeSizeFromIdx := 2;
+    TY_IDX_REFANY   : TypeSizeFromIdx := 2;
   Else
     If (TIdx >= 0) And (TIdx < TypeCount) Then
       TypeSizeFromIdx := TypeTab[TIdx].Size
@@ -4781,8 +4786,115 @@ Begin
         Else If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
                 (TokenPool[P].Val = 'BRANDED') Then
         Begin
-          (* TODO 20 - TYPE T = BRANDED [tag] OBJECT ... END *)
-          TIdx := ParseObjectTypeFromTokens(P, Name);
+          (* Check if BRANDED [tag] REF or BRANDED [tag] OBJECT *)
+          If ((P + 1 < TokenCount) And (TokenPool[P + 1].Kind = TK_KEYWORD)
+              And (TokenPool[P + 1].Val = 'REF'))
+             Or ((P + 2 < TokenCount) And (TokenPool[P + 1].Kind = TK_STRING)
+              And (TokenPool[P + 2].Kind = TK_KEYWORD)
+              And (TokenPool[P + 2].Val = 'REF')) Then
+          Begin
+            (* TODO 22 - TYPE T = BRANDED ["tag"] REF U *)
+            Inc(P); (* passer BRANDED *)
+            If (P < TokenCount) And (TokenPool[P].Kind = TK_STRING) Then
+              Inc(P); (* passer tag optionnel *)
+            Inc(P); (* passer REF *)
+            If (P < TokenCount) And
+               ((TokenPool[P].Kind = TK_IDENT) Or
+                (TokenPool[P].Kind = TK_KEYWORD)) Then
+            Begin
+              If TypeCount < MAX_TYPE Then
+              Begin
+                TIdx := TypeCount;
+                Inc(TypeCount);
+                TypeTab[TIdx].Kind        := TYK_REF;
+                TypeTab[TIdx].Name        := Name;
+                TypeTab[TIdx].Size        := 2;
+                TypeTab[TIdx].BaseTypeIdx := TypeIdxFromName(TokenPool[P].Val);
+                TypeTab[TIdx].Lo          := 0;
+                TypeTab[TIdx].Hi          := 0;
+                TypeTab[TIdx].FieldCount  := 0;
+                TypeTab[TIdx].EnumCount   := 0;
+                SymAdd(Name, SK_TYPE, TIdx, 0);
+              End;
+              Inc(P);
+            End;
+            If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+               (TokenPool[P].Val = ';') Then
+              Inc(P);
+          End
+          Else
+          Begin
+            (* TODO 20 - TYPE T = BRANDED [tag] OBJECT ... END *)
+            TIdx := ParseObjectTypeFromTokens(P, Name);
+            If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+               (TokenPool[P].Val = ';') Then
+              Inc(P);
+          End;
+        End
+        Else If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+                (TokenPool[P].Val = 'UNTRACED') Then
+        Begin
+          (* TODO 22 - TYPE T = UNTRACED [BRANDED ["tag"]] REF U *)
+          Inc(P); (* passer UNTRACED *)
+          If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+             (TokenPool[P].Val = 'BRANDED') Then
+          Begin
+            Inc(P); (* passer BRANDED *)
+            If (P < TokenCount) And (TokenPool[P].Kind = TK_STRING) Then
+              Inc(P); (* passer tag optionnel *)
+          End;
+          If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+             (TokenPool[P].Val = 'REF') Then
+            Inc(P); (* passer REF *)
+          If (P < TokenCount) And
+             ((TokenPool[P].Kind = TK_IDENT) Or
+              (TokenPool[P].Kind = TK_KEYWORD)) Then
+          Begin
+            If TypeCount < MAX_TYPE Then
+            Begin
+              TIdx := TypeCount;
+              Inc(TypeCount);
+              TypeTab[TIdx].Kind        := TYK_REF;
+              TypeTab[TIdx].Name        := Name;
+              TypeTab[TIdx].Size        := 2;
+              TypeTab[TIdx].BaseTypeIdx := TypeIdxFromName(TokenPool[P].Val);
+              TypeTab[TIdx].Lo          := 0;
+              TypeTab[TIdx].Hi          := 0;
+              TypeTab[TIdx].FieldCount  := 0;
+              TypeTab[TIdx].EnumCount   := 0;
+              SymAdd(Name, SK_TYPE, TIdx, 0);
+            End;
+            Inc(P);
+          End;
+          If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+             (TokenPool[P].Val = ';') Then
+            Inc(P);
+        End
+        Else If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+                (TokenPool[P].Val = 'REF') Then
+        Begin
+          (* TODO 22 - TYPE T = REF U *)
+          Inc(P); (* passer REF *)
+          If (P < TokenCount) And
+             ((TokenPool[P].Kind = TK_IDENT) Or
+              (TokenPool[P].Kind = TK_KEYWORD)) Then
+          Begin
+            If TypeCount < MAX_TYPE Then
+            Begin
+              TIdx := TypeCount;
+              Inc(TypeCount);
+              TypeTab[TIdx].Kind        := TYK_REF;
+              TypeTab[TIdx].Name        := Name;
+              TypeTab[TIdx].Size        := 2;
+              TypeTab[TIdx].BaseTypeIdx := TypeIdxFromName(TokenPool[P].Val);
+              TypeTab[TIdx].Lo          := 0;
+              TypeTab[TIdx].Hi          := 0;
+              TypeTab[TIdx].FieldCount  := 0;
+              TypeTab[TIdx].EnumCount   := 0;
+              SymAdd(Name, SK_TYPE, TIdx, 0);
+            End;
+            Inc(P);
+          End;
           If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
              (TokenPool[P].Val = ';') Then
             Inc(P);
@@ -4876,6 +4988,31 @@ Begin
                 TIdx := ParseArrayTypeFromTokens(P);
                 If TIdx = TY_UNKNOWN Then
                   TIdx := TY_IDX_INTEGER;
+              End
+              Else If (TokenPool[P].Kind = TK_KEYWORD) And
+                 (TokenPool[P].Val = 'REF') Then
+              Begin
+                (* TODO 22 - VAR v : REF T *)
+                Inc(P); (* passer REF *)
+                If (P < TokenCount) And
+                   ((TokenPool[P].Kind = TK_IDENT) Or
+                    (TokenPool[P].Kind = TK_KEYWORD)) Then
+                Begin
+                  If TypeCount < MAX_TYPE Then
+                  Begin
+                    TIdx := TypeCount;
+                    Inc(TypeCount);
+                    TypeTab[TIdx].Kind        := TYK_REF;
+                    TypeTab[TIdx].Name        := '';
+                    TypeTab[TIdx].Size        := 2;
+                    TypeTab[TIdx].BaseTypeIdx := TypeIdxFromName(TokenPool[P].Val);
+                    TypeTab[TIdx].Lo          := 0;
+                    TypeTab[TIdx].Hi          := 0;
+                    TypeTab[TIdx].FieldCount  := 0;
+                    TypeTab[TIdx].EnumCount   := 0;
+                  End;
+                  Inc(P);
+                End;
               End
               Else If (TokenPool[P].Kind = TK_KEYWORD) Or
                  (TokenPool[P].Kind = TK_IDENT) Then
@@ -5402,6 +5539,7 @@ Var
   ArrTIdx   : Integer;
   ArrElemSz : Integer;
   ObjI      : Integer;
+  TIdx      : Integer;
   Lbl       : TString;
 Begin
   If Name = 'ABS' Then
@@ -5613,9 +5751,11 @@ Begin
     (* NEW(T) -> allouer un objet ou un ref *)
     Inc(EP); (* passer '(' *)
     ObjI := -1;
+    TIdx := TY_UNKNOWN;
     If (EP < TokenCount) And (TokenPool[EP].Kind = TK_IDENT) Then
     Begin
       ObjI := ObjTypeFind(TokenPool[EP].Val);
+      TIdx := TypeIdxFromName(TokenPool[EP].Val);
       Inc(EP);
     End;
     (* Skip optional method overrides *)
@@ -5628,8 +5768,18 @@ Begin
       EmitInstrAB('LEA', 'SI', ObjTypeTab[ObjI].VtableLabel);
       EmitInstr('CALL    ' + M3_RT_PFX + 'OBJNEW');
     End
-    Else
+    Else If (TIdx >= 0) And (TIdx < TypeCount) And
+            (TypeTab[TIdx].Kind = TYK_REF) Then
+    Begin
+      EmitInstrAB('MOV', 'CX',
+        IntToStr(TypeSizeFromIdx(TypeTab[TIdx].BaseTypeIdx)));
       EmitInstr('CALL    ' + M3_RT_PFX + 'NEW');
+    End
+    Else
+    Begin
+      EmitInstrAB('MOV', 'CX', '2');
+      EmitInstr('CALL    ' + M3_RT_PFX + 'NEW');
+    End;
   End
   Else If (Name = 'BITSIZE') Or (Name = 'BYTESIZE') Or
           (Name = 'ADRSIZE') Then
@@ -8970,6 +9120,54 @@ Begin
   EmitInstrA('POP', 'SI');
   EmitInstrAB('MOV', 'WORD PTR [AX]', 'SI');
   EmitInstrA('POP', 'CX');
+  EmitInstr('RET');
+
+  (* --------------------------------------------------------------- *)
+  (* _M3RT_NEW : allouer un bloc sur le heap (TODO 22)               *)
+  (* Entree : CX = nombre d octets a allouer                         *)
+  (* Sortie : AX = pointeur vers le bloc alloue                      *)
+  (* Le bloc est rempli de zeros                                     *)
+  (* Modifie : AX, BX, CX, DI                                       *)
+  (* --------------------------------------------------------------- *)
+  EmitBlankLine;
+  EmitLabel(M3_RT_PFX + 'NEW');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrAB('MOV', 'BX', M3_RT_PFX + 'HEAPTOP');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstrAB('ADD', 'BX', 'CX');
+  EmitInstrAB('MOV', M3_RT_PFX + 'HEAPTOP', 'BX');
+  EmitComment('zero-fill allocated block');
+  EmitInstrAB('MOV', 'DI', 'AX');
+  EmitInstrA('PUSH', 'AX');
+  EmitInstrAB('SHR', 'CX', '1');
+  EmitInstr('JCXZ   ' + M3_RT_PFX + 'NEW_OK');
+  EmitLabel(M3_RT_PFX + 'NEW_ZF');
+  EmitInstrAB('MOV', 'WORD PTR [DI]', '0');
+  EmitInstrAB('ADD', 'DI', '2');
+  EmitInstr('LOOP   ' + M3_RT_PFX + 'NEW_ZF');
+  EmitLabel(M3_RT_PFX + 'NEW_OK');
+  EmitInstrA('POP', 'AX');
+  EmitInstrA('POP', 'CX');
+  EmitInstr('RET');
+
+  (* --------------------------------------------------------------- *)
+  (* _M3RT_CHKNIL : verifier qu un pointeur n est pas NIL (TODO 22) *)
+  (* Entree : AX = pointeur a verifier                               *)
+  (* Sortie : AX inchange si non-NIL, sinon Halt avec message        *)
+  (* Modifie : rien (si non-NIL)                                     *)
+  (* --------------------------------------------------------------- *)
+  EmitBlankLine;
+  EmitLabel(M3_RT_PFX + 'CHKNIL');
+  EmitInstrAB('CMP', 'AX', '0');
+  EmitInstrA('JNE', M3_RT_PFX + 'CHKNIL_OK');
+  EmitInstrAB('MOV', 'SI', 'OFFSET ' + M3_RT_PFX + 'NILMSG');
+  EmitInstrA('CALL', M3_RT_PFX + 'PRINT');
+  EmitInstrAB('MOV', 'SI', 'OFFSET ' + M3_RT_PFX + 'CRLF');
+  EmitInstrA('CALL', M3_RT_PFX + 'PRINT');
+  EmitInstrAB('MOV', 'AH', '4Ch');
+  EmitInstrAB('MOV', 'AL', '1');
+  EmitInstr('INT    21h');
+  EmitLabel(M3_RT_PFX + 'CHKNIL_OK');
   EmitInstr('RET');
 
   (* --------------------------------------------------------------- *)
