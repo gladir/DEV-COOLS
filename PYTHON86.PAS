@@ -114,17 +114,24 @@
             Instruction global : marquer une variable comme globale
             Instruction nonlocal : marquer une variable de portee englobante
 
-  TODO 06 - SYSTEME DE TYPES DYNAMIQUE
+  TODO 06 - SYSTEME DE TYPES DYNAMIQUE [IMPLEMENTE]
             TTypeKind : TYK_INT (16 bits signe), TYK_BOOL (8 bits),
               TYK_STR (ptr chaine), TYK_NONE (nul),
               TYK_LIST (ptr tableau dynamique), TYK_DICT (ptr table de hachage),
               TYK_TUPLE (ptr tableau fixe), TYK_FUNC (ptr de code),
               TYK_OBJECT (ptr instance de classe), TYK_CLASS (descripteur)
+            TTypeRec : Name, Kind, Size
+            TypeTab[MAX_TYPE], TypeCount
+            TypeInit : enregistrer les 10 types primitifs Python
+            TypeKindOf(idx) : retourner le TTypeKind pour un indice
+            TypeSizeof(idx) : INT=2, BOOL=2, STR=2(ptr), LIST=2(ptr),
+              DICT=2(ptr), TUPLE=2(ptr), FUNC=2(ptr), OBJECT=2(ptr),
+              CLASS=2(ptr), NONE=0
+            TypeFindByName(name) : rechercher un type par nom -> index
+            TypeKindStr(kind) : nom textuel d un TTypeKind
+            TypeIdxFromExpr(e) : deduire l indice type d une expression
             Typage dynamique simplifie : le compilateur infere un type
               statique quand c est possible (entier, chaine, None)
-            Verification de type a l execution pour les cas ambigus
-            TypeTab, TypeInit : enregistrer les types primitifs
-            TypeSizeof : INT=2, BOOL=1, STR=2(ptr), LIST=2(ptr), DICT=2(ptr)
             isinstance(obj, cls) : verification de type -> AX=0|1
             type(obj) : retourner le descripteur de type -> AX=idx
 
@@ -550,6 +557,27 @@ Type
     DeclLine    : Integer;     { ligne de declaration (debug)     }
   End;
 
+  { ---- Systeme de types dynamique (TODO 06) ------------------ }
+  TTypeKind = (
+    TYK_INT,       { entier 16 bits signe                     }
+    TYK_BOOL,      { booleen (0 ou 1)                         }
+    TYK_STR,       { pointeur chaine terminee par 0           }
+    TYK_NONE,      { None : valeur nulle                      }
+    TYK_LIST,      { pointeur tableau dynamique               }
+    TYK_DICT,      { pointeur table de hachage                }
+    TYK_TUPLE,     { pointeur tableau fixe (immutable)        }
+    TYK_FUNC,      { pointeur de code (fonction)              }
+    TYK_OBJECT,    { pointeur instance de classe              }
+    TYK_CLASS,     { descripteur de classe                    }
+    TYK_UNKNOWN    { type indetermine                         }
+  );
+
+  TTypeRec = Record
+    Name : TString;    { nom Python du type (int, str, ...) }
+    Kind : TTypeKind;  { categorie de type                  }
+    Size : Integer;    { taille en octets (2=mot, 0=void)   }
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -595,6 +623,10 @@ Var
   ScopeStack  : Array[0..MAX_SCOPE - 1] Of Integer;
   ScopeTop    : Integer;    { sommet de la pile des portees }
   CurScope    : Integer;    { niveau de portee courant (0 = global) }
+
+  { Systeme de types (TODO 06) }
+  TypeTab     : Array[0..MAX_TYPE - 1] Of TTypeRec;
+  TypeCount   : Integer;
 
 { ============================================================
   FORWARD DECLARATIONS
@@ -662,6 +694,13 @@ Function  SymAdd(Const Name : TString; Kind : TSymKind;
 Procedure SymEnterScope;     Forward;
 Procedure SymLeaveScope;     Forward;
 Procedure SymInit;           Forward;
+{ TODO 06 - Forward declarations systeme de types }
+Procedure TypeInit;          Forward;
+Function  TypeKindOf(TypeIdx : Integer) : TTypeKind; Forward;
+Function  TypeSizeof(TypeIdx : Integer) : Integer; Forward;
+Function  TypeFindByName(Const Name : TString) : Integer; Forward;
+Function  TypeKindStr(K : TTypeKind) : TString; Forward;
+Function  TypeIdxFromExpr(Const E : TExprVal) : Integer; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -3064,6 +3103,136 @@ Begin
   SymAdd('open',      SK_BUILTIN, TY_IDX_INT,  0);
 End;
 
+{ ============================================================
+  TODO 06 - SYSTEME DE TYPES DYNAMIQUE [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- TypeKindStr : nom textuel d un TTypeKind --------------- }
+Function TypeKindStr(K : TTypeKind) : TString;
+Begin
+  Case K Of
+    TYK_INT     : TypeKindStr := 'int';
+    TYK_BOOL    : TypeKindStr := 'bool';
+    TYK_STR     : TypeKindStr := 'str';
+    TYK_NONE    : TypeKindStr := 'NoneType';
+    TYK_LIST    : TypeKindStr := 'list';
+    TYK_DICT    : TypeKindStr := 'dict';
+    TYK_TUPLE   : TypeKindStr := 'tuple';
+    TYK_FUNC    : TypeKindStr := 'function';
+    TYK_OBJECT  : TypeKindStr := 'object';
+    TYK_CLASS   : TypeKindStr := 'type';
+    TYK_UNKNOWN : TypeKindStr := '<unknown>';
+  Else
+    TypeKindStr := '<unknown>';
+  End;
+End;
+
+{ ---- TypeKindOf : retourner le TTypeKind pour un indice ----- }
+{ Si l indice est invalide, retourne TYK_UNKNOWN.                }
+Function TypeKindOf(TypeIdx : Integer) : TTypeKind;
+Begin
+  If (TypeIdx >= 0) And (TypeIdx < TypeCount) Then
+    TypeKindOf := TypeTab[TypeIdx].Kind
+  Else
+    TypeKindOf := TYK_UNKNOWN;
+End;
+
+{ ---- TypeSizeof : taille en octets d un type par son indice -- }
+{ En architecture 16-bit, les pointeurs font 2 octets (un mot). }
+{ INT=2, BOOL=2 (stocke sur un mot pour simplifier), STR=2,     }
+{ LIST=2, DICT=2, TUPLE=2, FUNC=2, OBJECT=2, CLASS=2, NONE=0.  }
+Function TypeSizeof(TypeIdx : Integer) : Integer;
+Begin
+  If (TypeIdx >= 0) And (TypeIdx < TypeCount) Then
+    TypeSizeof := TypeTab[TypeIdx].Size
+  Else
+    TypeSizeof := 2;  { taille par defaut : word (16 bits) }
+End;
+
+{ ---- TypeFindByName : rechercher un type par nom ------------- }
+{ Retourne l indice dans TypeTab ou TY_UNKNOWN si non trouve.    }
+Function TypeFindByName(Const Name : TString) : Integer;
+Var I : Integer;
+Begin
+  For I := 0 To TypeCount - 1 Do
+    If TypeTab[I].Name = Name Then
+    Begin
+      TypeFindByName := I;
+      Exit;
+    End;
+  TypeFindByName := TY_UNKNOWN;
+End;
+
+{ ---- TypeIdxFromExpr : deduire l indice type d une expression  }
+{ Utilise le champ TypeIdx de l expression si connu,              }
+{ sinon retourne TY_UNKNOWN.                                      }
+Function TypeIdxFromExpr(Const E : TExprVal) : Integer;
+Begin
+  If (E.TypeIdx >= 0) And (E.TypeIdx < TypeCount) Then
+    TypeIdxFromExpr := E.TypeIdx
+  Else
+    TypeIdxFromExpr := TY_UNKNOWN;
+End;
+
+{ ---- TypeInit : enregistrer les types primitifs Python -------- }
+{ Les indices correspondent a TY_IDX_INT=0 .. TY_IDX_CLASS=7.    }
+{ Les types supplementaires (TUPLE, UNKNOWN) sont ajoutes apres.  }
+Procedure TypeInit;
+Var I : Integer;
+Begin
+  TypeCount := 0;
+  For I := 0 To MAX_TYPE - 1 Do
+  Begin
+    TypeTab[I].Name := '';
+    TypeTab[I].Kind := TYK_UNKNOWN;
+    TypeTab[I].Size := 0;
+  End;
+  { TY_IDX_INT = 0 : entier 16 bits signe }
+  TypeTab[0].Name := 'int';
+  TypeTab[0].Kind := TYK_INT;
+  TypeTab[0].Size := 2;
+  { TY_IDX_STR = 1 : pointeur chaine }
+  TypeTab[1].Name := 'str';
+  TypeTab[1].Kind := TYK_STR;
+  TypeTab[1].Size := 2;
+  { TY_IDX_BOOL = 2 : booleen (stocke sur un mot) }
+  TypeTab[2].Name := 'bool';
+  TypeTab[2].Kind := TYK_BOOL;
+  TypeTab[2].Size := 2;
+  { TY_IDX_NONE = 3 : None (pas de taille) }
+  TypeTab[3].Name := 'NoneType';
+  TypeTab[3].Kind := TYK_NONE;
+  TypeTab[3].Size := 0;
+  { TY_IDX_LIST = 4 : liste dynamique (pointeur) }
+  TypeTab[4].Name := 'list';
+  TypeTab[4].Kind := TYK_LIST;
+  TypeTab[4].Size := 2;
+  { TY_IDX_DICT = 5 : dictionnaire (pointeur) }
+  TypeTab[5].Name := 'dict';
+  TypeTab[5].Kind := TYK_DICT;
+  TypeTab[5].Size := 2;
+  { TY_IDX_FUNC = 6 : fonction (pointeur de code) }
+  TypeTab[6].Name := 'function';
+  TypeTab[6].Kind := TYK_FUNC;
+  TypeTab[6].Size := 2;
+  { TY_IDX_CLASS = 7 : descripteur de classe }
+  TypeTab[7].Name := 'type';
+  TypeTab[7].Kind := TYK_CLASS;
+  TypeTab[7].Size := 2;
+  { 8 : tuple (pointeur tableau fixe) }
+  TypeTab[8].Name := 'tuple';
+  TypeTab[8].Kind := TYK_TUPLE;
+  TypeTab[8].Size := 2;
+  { 9 : object (instance de classe) }
+  TypeTab[9].Name := 'object';
+  TypeTab[9].Kind := TYK_OBJECT;
+  TypeTab[9].Size := 2;
+  TypeCount := 10;
+
+  If Opts.DebugMode Then
+    WriteLn('  Types enregistres : ', TypeCount);
+End;
+
 Procedure Run;
 Var
   VarName : TString;
@@ -3071,6 +3240,7 @@ Var
 Begin
   GlobalInit;
   SymInit;
+  TypeInit;
   If Opts.Verbose Then ShowBanner;
 
   EmitOpen;
