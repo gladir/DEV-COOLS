@@ -323,7 +323,7 @@
             Concatenation : tup1 + tup2 -> CALL _PYRT_TUPLECONCAT -> AX=ptr
             Operateur in : val in tup -> CALL _PYRT_TUPLECONTAINS -> AX=0|1
 
-  TODO 20 - CHAINES (str) OPERATIONS AVANCEES
+  TODO 20 - CHAINES (str) OPERATIONS AVANCEES [IMPLEMENTE]
             Concatenation : s1 + s2 -> CALL _PYRT_CONCAT -> AX=ptr
             Repetition : s * n -> CALL _PYRT_STRMUL -> AX=ptr
             Acces par index : s[i] -> MOV AL,[SI+i] / MOVZX AX,AL
@@ -786,6 +786,8 @@ Function  ClassFindMeth(ClsIdx : Integer; Const MName : TString) : Integer; Forw
 { TODO 19 - Forward declarations tuples }
 Procedure ParseTupleLiteral(Var Res : TExprVal); Forward;
 Procedure EmitTupleRuntime; Forward;
+{ TODO 20 - Forward declaration runtime chaines avancees }
+Procedure EmitStrRuntime; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -2275,6 +2277,8 @@ Begin
   EmitRaw('');
   { Buffer de travail pour concatenation de chaines }
   EmitRaw('_PY_STRBUF  DB  256 DUP(0)');
+  { Buffer secondaire pour operations chaines avancees (TODO 20) }
+  EmitRaw('_PY_STRBUF2 DB  256 DUP(0)');
   EmitRaw('');
   { Buffer pour conversions entier -> chaine (TODO 12) }
   EmitRaw('_PY_NUMBUF  DB  12 DUP(0)');
@@ -2374,6 +2378,8 @@ Begin
   EmitClassRuntime;
   { Emettre les routines runtime pour tuples (TODO 19) }
   EmitTupleRuntime;
+  { Emettre les routines runtime pour chaines avancees (TODO 20) }
+  EmitStrRuntime;
   { Fermer le segment de code }
   EmitRaw('');
   EmitRaw('_TEXT   ENDS');
@@ -2814,6 +2820,28 @@ Begin
     Exit;
   End;
 
+  { ---- TODO 20 : Operateur in pour chaines (sub in str) ------ }
+  If ((Op = 'in') Or (Op = 'not in')) And (R.TypeIdx = TY_IDX_STR) Then
+  Begin
+    ExprFlushToAX(L);
+    EmitInstr('PUSH   AX');          { sous-chaine a chercher }
+    ExprFlushToAX(R);
+    EmitInstr('MOV    SI, AX');      { SI = chaine principale }
+    EmitInstr('POP    DI');          { DI = sous-chaine       }
+    EmitInstr('CALL   ' + PY_RT_PFX + 'STRCONTAINS');
+    If Op = 'not in' Then
+    Begin
+      EmitInstr('TEST   AX, AX');
+      EmitInstr('MOV    AX, 0');
+      EmitInstr('JNZ    $+4');
+      EmitInstr('INC    AX');
+    End;
+    L.Kind    := EK_AX;
+    L.TypeIdx := TY_IDX_INT;
+    L.SymIdx  := -1;
+    Exit;
+  End;
+
   { ---- TODO 11 : Operateur in / not in -------------------- }
   If (Op = 'in') Or (Op = 'not in') Then
   Begin
@@ -3157,24 +3185,48 @@ Begin
       { Detecter slice : [a:b] }
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
       Begin
-        { Slice : expr[a:b] }
-        EmitComment('slice [a:b]');
-        ExprFlushToAX(IdxE);
-        EmitInstr('PUSH   AX');   { sauvegarder a }
-        ParserAdvance;
-        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+        If Res.TypeIdx = TY_IDX_STR Then
         Begin
-          EmitInstr('MOV    BX, 0FFFFh'); { b = fin }
-          EmitInstr('POP    AX');         { AX = a }
+          { Slice sur chaine : s[a:b] -> CALL _PYRT_STRSLICE (TODO 20) }
+          EmitComment('str slice [a:b]');
+          ExprFlushToAX(IdxE);
+          EmitInstr('PUSH   AX');   { sauvegarder a }
+          ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+          Begin
+            EmitInstr('MOV    BX, 0FFFFh'); { b = fin }
+            EmitInstr('POP    AX');         { AX = a }
+          End
+          Else
+          Begin
+            ParseExpr(E);
+            ExprFlushToAX(E);
+            EmitInstr('MOV    BX, AX');   { BX = b }
+            EmitInstr('POP    AX');       { AX = a }
+          End;
+          EmitInstr('CALL   ' + PY_RT_PFX + 'STRSLICE');
         End
         Else
         Begin
-          ParseExpr(E);
-          ExprFlushToAX(E);
-          EmitInstr('MOV    BX, AX');   { BX = b }
-          EmitInstr('POP    AX');       { AX = a }
+          { Slice : expr[a:b] }
+          EmitComment('slice [a:b]');
+          ExprFlushToAX(IdxE);
+          EmitInstr('PUSH   AX');   { sauvegarder a }
+          ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+          Begin
+            EmitInstr('MOV    BX, 0FFFFh'); { b = fin }
+            EmitInstr('POP    AX');         { AX = a }
+          End
+          Else
+          Begin
+            ParseExpr(E);
+            ExprFlushToAX(E);
+            EmitInstr('MOV    BX, AX');   { BX = b }
+            EmitInstr('POP    AX');       { AX = a }
+          End;
+          EmitInstr('CALL   ' + PY_RT_PFX + 'SLICE');
         End;
-        EmitInstr('CALL   ' + PY_RT_PFX + 'SLICE');
       End
       Else
       Begin
@@ -3184,6 +3236,29 @@ Begin
           EmitComment('dict access [key]');
           ExprFlushToAX(IdxE);
           EmitInstr('CALL   ' + PY_RT_PFX + 'DICTGET');
+        End
+        Else If Res.TypeIdx = TY_IDX_STR Then
+        Begin
+          { Index chaine : s[i] -> caractere comme chaine (TODO 20) }
+          EmitComment('str index [i]');
+          ExprFlushToAX(IdxE);
+          EmitInstr('MOV    BX, AX');          { BX = index }
+          EmitInstr('TEST   BX, BX');
+          LblNeg := LabelGen;
+          EmitInstr('JGE    ' + LblNeg);
+          { index negatif : i + strlen(s) }
+          EmitInstr('PUSH   BX');
+          EmitInstr('CALL   ' + PY_RT_PFX + 'LEN');
+          EmitInstr('POP    BX');
+          EmitInstr('ADD    BX, AX');
+          EmitLabel(LblNeg);
+          EmitInstr('ADD    SI, BX');
+          EmitInstr('XOR    AH, AH');
+          EmitInstr('MOV    AL, [SI]');
+          { Stocker le caractere dans STRBUF2 comme chaine 1 char }
+          EmitInstr('MOV    BYTE PTR [_PY_STRBUF2], AL');
+          EmitInstr('MOV    BYTE PTR [_PY_STRBUF2+1], 0');
+          EmitInstr('MOV    AX, OFFSET _PY_STRBUF2');
         End
         Else
         Begin
@@ -3208,7 +3283,10 @@ Begin
         ParserAdvance
       Else
         CompileError(''']'' attendue', CurToken.Line);
-      ExprMakeAX(TY_IDX_INT, Res);
+      If Res.TypeIdx = TY_IDX_STR Then
+        ExprMakeAX(TY_IDX_STR, Res)
+      Else
+        ExprMakeAX(TY_IDX_INT, Res);
     End
     Else If CurToken.Val = '.' Then
     Begin
@@ -3279,6 +3357,140 @@ Begin
             If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
               ParserAdvance;
             ExprMakeAX(TY_IDX_INT, Res);
+          End;
+        End
+        Else If (Res.TypeIdx = TY_IDX_STR) And
+           (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          { --- Methodes de chaine (TODO 20) --- }
+          If AttrName = 'upper' Then
+          Begin
+            { s.upper() : SI=chaine -> AX=ptr nouvelle chaine majuscules }
+            ParserAdvance;  { consommer '(' }
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance;
+            EmitInstr('CALL   ' + PY_RT_PFX + 'STRUPPER');
+            ExprMakeAX(TY_IDX_STR, Res);
+          End
+          Else If AttrName = 'lower' Then
+          Begin
+            { s.lower() : SI=chaine -> AX=ptr nouvelle chaine minuscules }
+            ParserAdvance;  { consommer '(' }
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance;
+            EmitInstr('CALL   ' + PY_RT_PFX + 'STRLOWER');
+            ExprMakeAX(TY_IDX_STR, Res);
+          End
+          Else If AttrName = 'strip' Then
+          Begin
+            { s.strip() : SI=chaine -> AX=ptr chaine sans espaces }
+            ParserAdvance;  { consommer '(' }
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance;
+            EmitInstr('CALL   ' + PY_RT_PFX + 'STRSTRIP');
+            ExprMakeAX(TY_IDX_STR, Res);
+          End
+          Else If AttrName = 'find' Then
+          Begin
+            { s.find(sub) : SI=chaine, DI=sous-chaine -> AX=index ou -1 }
+            EmitInstr('PUSH   SI');
+            ParserAdvance;  { consommer '(' }
+            ParseExpr(ArgE);
+            ExprFlushToAX(ArgE);
+            EmitInstr('MOV    DI, AX');   { DI = sous-chaine }
+            EmitInstr('POP    SI');       { SI = chaine }
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance;
+            EmitInstr('CALL   ' + PY_RT_PFX + 'STRFIND');
+            ExprMakeAX(TY_IDX_INT, Res);
+          End
+          Else If AttrName = 'replace' Then
+          Begin
+            { s.replace(old, new) : SI=chaine, DI=old, DX=new -> AX=ptr }
+            EmitInstr('PUSH   SI');
+            ParserAdvance;  { consommer '(' }
+            ParseExpr(ArgE);
+            ExprFlushToAX(ArgE);
+            EmitInstr('PUSH   AX');  { sauver old }
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+              ParserAdvance;
+            ParseExpr(ArgE);
+            ExprFlushToAX(ArgE);
+            EmitInstr('MOV    DX, AX');  { DX = new }
+            EmitInstr('POP    DI');      { DI = old }
+            EmitInstr('POP    SI');      { SI = chaine }
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance;
+            EmitInstr('CALL   ' + PY_RT_PFX + 'STRREPLACE');
+            ExprMakeAX(TY_IDX_STR, Res);
+          End
+          Else If AttrName = 'split' Then
+          Begin
+            { s.split(sep) : SI=chaine, DI=sep -> AX=ptr liste }
+            EmitInstr('PUSH   SI');
+            ParserAdvance;  { consommer '(' }
+            ParseExpr(ArgE);
+            ExprFlushToAX(ArgE);
+            EmitInstr('MOV    DI, AX');   { DI = separateur }
+            EmitInstr('POP    SI');       { SI = chaine }
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance;
+            EmitInstr('CALL   ' + PY_RT_PFX + 'STRSPLIT');
+            ExprMakeAX(TY_IDX_LIST, Res);
+          End
+          Else If AttrName = 'startswith' Then
+          Begin
+            { s.startswith(prefix) : SI=chaine, DI=prefix -> AX=0|1 }
+            EmitInstr('PUSH   SI');
+            ParserAdvance;  { consommer '(' }
+            ParseExpr(ArgE);
+            ExprFlushToAX(ArgE);
+            EmitInstr('MOV    DI, AX');   { DI = prefix }
+            EmitInstr('POP    SI');       { SI = chaine }
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance;
+            EmitInstr('CALL   ' + PY_RT_PFX + 'STARTSWITH');
+            ExprMakeAX(TY_IDX_BOOL, Res);
+          End
+          Else If AttrName = 'endswith' Then
+          Begin
+            { s.endswith(suffix) : SI=chaine, DI=suffix -> AX=0|1 }
+            EmitInstr('PUSH   SI');
+            ParserAdvance;  { consommer '(' }
+            ParseExpr(ArgE);
+            ExprFlushToAX(ArgE);
+            EmitInstr('MOV    DI, AX');   { DI = suffix }
+            EmitInstr('POP    SI');       { SI = chaine }
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance;
+            EmitInstr('CALL   ' + PY_RT_PFX + 'ENDSWITH');
+            ExprMakeAX(TY_IDX_BOOL, Res);
+          End
+          Else If AttrName = 'count' Then
+          Begin
+            { s.count(sub) : SI=chaine, DI=sous-chaine -> AX=nombre }
+            EmitInstr('PUSH   SI');
+            ParserAdvance;  { consommer '(' }
+            ParseExpr(ArgE);
+            ExprFlushToAX(ArgE);
+            EmitInstr('MOV    DI, AX');   { DI = sous-chaine }
+            EmitInstr('POP    SI');       { SI = chaine }
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance;
+            EmitInstr('CALL   ' + PY_RT_PFX + 'STRCOUNT');
+            ExprMakeAX(TY_IDX_INT, Res);
+          End
+          Else
+          Begin
+            { Methode str inconnue : stub generique }
+            EmitInstr('MOV    AX, SI');
+            ParserAdvance;  { consommer '(' }
+            While (CurToken.Kind <> TK_EOF) And
+                  Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+              ParserAdvance;
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance;
+            ExprMakeAX(TY_IDX_STR, Res);
           End;
         End
         Else If (Res.TypeIdx = TY_IDX_DICT) And
@@ -6688,7 +6900,404 @@ Begin
   EmitInstr('RET');
 End;
 
-{ ---- ParseBlock : parser un bloc indente ---------------------- }
+{ ============================================================
+  TODO 20 - CHAINES (str) OPERATIONS AVANCEES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- EmitStrRuntime : routines runtime pour chaines avancees --- }
+{   _PYRT_STRSLICE    : SI=str, AX=start, BX=end -> AX=ptr       }
+{   _PYRT_STRFIND     : SI=str, DI=sub -> AX=index ou -1          }
+{   _PYRT_STRUPPER    : SI=str -> AX=ptr nouvelle chaine           }
+{   _PYRT_STRLOWER    : SI=str -> AX=ptr nouvelle chaine           }
+{   _PYRT_STRSTRIP    : SI=str -> AX=ptr nouvelle chaine           }
+{   _PYRT_STRSPLIT    : SI=str, DI=sep -> AX=ptr liste             }
+{   _PYRT_STRREPLACE  : SI=str, DI=old, DX=new -> AX=ptr          }
+{   _PYRT_STARTSWITH  : SI=str, DI=prefix -> AX=0|1                }
+{   _PYRT_ENDSWITH    : SI=str, DI=suffix -> AX=0|1                }
+{   _PYRT_STRCONTAINS : SI=str, DI=sub -> AX=0|1                   }
+{   _PYRT_STRCOUNT    : SI=str, DI=sub -> AX=nombre occurrences    }
+
+Procedure EmitStrRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('-- Runtime : chaines avancees (TODO 20) --');
+
+  { _PYRT_STRSLICE : SI=str, AX=start, BX=end -> AX=ptr _PY_STRBUF2 }
+  { Si BX = FFFFh, copier jusqu a la fin de la chaine                  }
+  EmitLabel(PY_RT_PFX + 'STRSLICE');
+  EmitInstr('PUSH   DX');
+  EmitInstr('MOV    DX, AX');              { DX = start }
+  EmitInstr('CMP    BX, 0FFFFh');
+  EmitInstr('JNE    ' + PY_RT_PFX + 'SSL_OK');
+  { BX = FFFFh : calculer la longueur pour b=len }
+  EmitInstr('PUSH   SI');
+  EmitInstr('CALL   ' + PY_RT_PFX + 'LEN');
+  EmitInstr('MOV    BX, AX');
+  EmitInstr('POP    SI');
+  EmitLabel(PY_RT_PFX + 'SSL_OK');
+  { DX=start, BX=end, SI=str }
+  EmitInstr('ADD    SI, DX');              { SI pointe sur str[start] }
+  EmitInstr('MOV    CX, BX');
+  EmitInstr('SUB    CX, DX');              { CX = end - start }
+  EmitInstr('MOV    DI, OFFSET _PY_STRBUF2');
+  EmitInstr('TEST   CX, CX');
+  EmitInstr('JLE    ' + PY_RT_PFX + 'SSL_DN');
+  EmitLabel(PY_RT_PFX + 'SSL_CP');
+  EmitInstr('MOVSB');
+  EmitInstr('LOOP   ' + PY_RT_PFX + 'SSL_CP');
+  EmitLabel(PY_RT_PFX + 'SSL_DN');
+  EmitInstr('MOV    BYTE PTR [DI], 0');
+  EmitInstr('MOV    AX, OFFSET _PY_STRBUF2');
+  EmitInstr('POP    DX');
+  EmitInstr('RET');
+
+  { _PYRT_STRFIND : SI=str, DI=sub -> AX=index ou -1 }
+  EmitLabel(PY_RT_PFX + 'STRFIND');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   DX');
+  EmitInstr('XOR    BX, BX');              { BX = position courante }
+  EmitLabel(PY_RT_PFX + 'SF_LP');
+  EmitInstr('CMP    BYTE PTR [SI], 0');
+  EmitInstr('JE     ' + PY_RT_PFX + 'SF_NO');
+  { Comparer sub a partir de SI }
+  EmitInstr('PUSH   SI');
+  EmitInstr('PUSH   DI');
+  EmitLabel(PY_RT_PFX + 'SF_CMP');
+  EmitInstr('MOV    AL, [DI]');
+  EmitInstr('TEST   AL, AL');
+  EmitInstr('JZ     ' + PY_RT_PFX + 'SF_YES');  { fin de sub -> trouve }
+  EmitInstr('CMP    AL, [SI]');
+  EmitInstr('JNE    ' + PY_RT_PFX + 'SF_NX');
+  EmitInstr('INC    SI');
+  EmitInstr('INC    DI');
+  EmitInstr('JMP    ' + PY_RT_PFX + 'SF_CMP');
+  EmitLabel(PY_RT_PFX + 'SF_YES');
+  EmitInstr('POP    DI');
+  EmitInstr('POP    SI');
+  EmitInstr('MOV    AX, BX');              { AX = index trouve }
+  EmitInstr('POP    DX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitLabel(PY_RT_PFX + 'SF_NX');
+  EmitInstr('POP    DI');
+  EmitInstr('POP    SI');
+  EmitInstr('INC    SI');
+  EmitInstr('INC    BX');
+  EmitInstr('JMP    ' + PY_RT_PFX + 'SF_LP');
+  EmitLabel(PY_RT_PFX + 'SF_NO');
+  EmitInstr('MOV    AX, -1');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+
+  { _PYRT_STRUPPER : SI=str -> AX=ptr _PY_STRBUF2 (copie majuscules) }
+  EmitLabel(PY_RT_PFX + 'STRUPPER');
+  EmitInstr('MOV    DI, OFFSET _PY_STRBUF2');
+  EmitLabel(PY_RT_PFX + 'SU_LP');
+  EmitInstr('LODSB');
+  EmitInstr('TEST   AL, AL');
+  EmitInstr('JZ     ' + PY_RT_PFX + 'SU_DN');
+  EmitInstr('CMP    AL, 97');              { 'a' }
+  EmitInstr('JB     ' + PY_RT_PFX + 'SU_ST');
+  EmitInstr('CMP    AL, 122');             { 'z' }
+  EmitInstr('JA     ' + PY_RT_PFX + 'SU_ST');
+  EmitInstr('SUB    AL, 32');              { minuscule -> majuscule }
+  EmitLabel(PY_RT_PFX + 'SU_ST');
+  EmitInstr('STOSB');
+  EmitInstr('JMP    ' + PY_RT_PFX + 'SU_LP');
+  EmitLabel(PY_RT_PFX + 'SU_DN');
+  EmitInstr('STOSB');                      { stocker le null terminal }
+  EmitInstr('MOV    AX, OFFSET _PY_STRBUF2');
+  EmitInstr('RET');
+
+  { _PYRT_STRLOWER : SI=str -> AX=ptr _PY_STRBUF2 (copie minuscules) }
+  EmitLabel(PY_RT_PFX + 'STRLOWER');
+  EmitInstr('MOV    DI, OFFSET _PY_STRBUF2');
+  EmitLabel(PY_RT_PFX + 'SL_LP');
+  EmitInstr('LODSB');
+  EmitInstr('TEST   AL, AL');
+  EmitInstr('JZ     ' + PY_RT_PFX + 'SL_DN');
+  EmitInstr('CMP    AL, 65');              { 'A' }
+  EmitInstr('JB     ' + PY_RT_PFX + 'SL_ST');
+  EmitInstr('CMP    AL, 90');              { 'Z' }
+  EmitInstr('JA     ' + PY_RT_PFX + 'SL_ST');
+  EmitInstr('ADD    AL, 32');              { majuscule -> minuscule }
+  EmitLabel(PY_RT_PFX + 'SL_ST');
+  EmitInstr('STOSB');
+  EmitInstr('JMP    ' + PY_RT_PFX + 'SL_LP');
+  EmitLabel(PY_RT_PFX + 'SL_DN');
+  EmitInstr('STOSB');                      { stocker le null terminal }
+  EmitInstr('MOV    AX, OFFSET _PY_STRBUF2');
+  EmitInstr('RET');
+
+  { _PYRT_STRSTRIP : SI=str -> AX=ptr _PY_STRBUF2 (sans espaces debut/fin) }
+  EmitLabel(PY_RT_PFX + 'STRSTRIP');
+  EmitInstr('PUSH   BX');
+  { Sauter les espaces en debut }
+  EmitLabel(PY_RT_PFX + 'SS_L1');
+  EmitInstr('MOV    AL, [SI]');
+  EmitInstr('CMP    AL, 32');              { espace }
+  EmitInstr('JE     ' + PY_RT_PFX + 'SS_SK');
+  EmitInstr('CMP    AL, 9');               { tab }
+  EmitInstr('JE     ' + PY_RT_PFX + 'SS_SK');
+  EmitInstr('JMP    ' + PY_RT_PFX + 'SS_CP');
+  EmitLabel(PY_RT_PFX + 'SS_SK');
+  EmitInstr('INC    SI');
+  EmitInstr('JMP    ' + PY_RT_PFX + 'SS_L1');
+  EmitLabel(PY_RT_PFX + 'SS_CP');
+  { Copier dans STRBUF2 }
+  EmitInstr('MOV    DI, OFFSET _PY_STRBUF2');
+  EmitInstr('XOR    CX, CX');             { CX = longueur copiee }
+  EmitLabel(PY_RT_PFX + 'SS_L2');
+  EmitInstr('LODSB');
+  EmitInstr('STOSB');
+  EmitInstr('INC    CX');
+  EmitInstr('TEST   AL, AL');
+  EmitInstr('JNZ    ' + PY_RT_PFX + 'SS_L2');
+  EmitInstr('DEC    CX');                  { ne pas compter le null }
+  { Retirer les espaces en fin }
+  EmitInstr('MOV    DI, OFFSET _PY_STRBUF2');
+  EmitInstr('ADD    DI, CX');
+  EmitInstr('DEC    DI');                  { pointer sur dernier char }
+  EmitLabel(PY_RT_PFX + 'SS_L3');
+  EmitInstr('TEST   CX, CX');
+  EmitInstr('JZ     ' + PY_RT_PFX + 'SS_FN');
+  EmitInstr('MOV    AL, [DI]');
+  EmitInstr('CMP    AL, 32');
+  EmitInstr('JE     ' + PY_RT_PFX + 'SS_TR');
+  EmitInstr('CMP    AL, 9');
+  EmitInstr('JE     ' + PY_RT_PFX + 'SS_TR');
+  EmitInstr('JMP    ' + PY_RT_PFX + 'SS_FN');
+  EmitLabel(PY_RT_PFX + 'SS_TR');
+  EmitInstr('DEC    DI');
+  EmitInstr('DEC    CX');
+  EmitInstr('JMP    ' + PY_RT_PFX + 'SS_L3');
+  EmitLabel(PY_RT_PFX + 'SS_FN');
+  EmitInstr('INC    DI');
+  EmitInstr('MOV    BYTE PTR [DI], 0');
+  EmitInstr('MOV    AX, OFFSET _PY_STRBUF2');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+
+  { _PYRT_STRREPLACE : SI=str, DI=old, DX=new -> AX=ptr _PY_STRBUF2 }
+  EmitLabel(PY_RT_PFX + 'STRREPLACE');
+  EmitInstr('PUSH   BX');
+  EmitInstr('MOV    BX, OFFSET _PY_STRBUF2'); { BX = dest }
+  EmitLabel(PY_RT_PFX + 'SR_LP');
+  EmitInstr('CMP    BYTE PTR [SI], 0');
+  EmitInstr('JE     ' + PY_RT_PFX + 'SR_DN');
+  { Tester si old commence ici }
+  EmitInstr('PUSH   SI');
+  EmitInstr('PUSH   DI');
+  EmitLabel(PY_RT_PFX + 'SR_CM');
+  EmitInstr('MOV    AL, [DI]');
+  EmitInstr('TEST   AL, AL');
+  EmitInstr('JZ     ' + PY_RT_PFX + 'SR_MT');   { fin de old -> match }
+  EmitInstr('CMP    AL, [SI]');
+  EmitInstr('JNE    ' + PY_RT_PFX + 'SR_NM');
+  EmitInstr('INC    SI');
+  EmitInstr('INC    DI');
+  EmitInstr('JMP    ' + PY_RT_PFX + 'SR_CM');
+  EmitLabel(PY_RT_PFX + 'SR_MT');
+  { Match : copier new dans dest, avancer SI }
+  EmitInstr('POP    DI');                  { restaurer DI = old }
+  EmitInstr('ADD    SP, 2');               { abandonner ancien SI }
+  { Copier new (DX) dans BX }
+  EmitInstr('PUSH   SI');                  { sauver SI (apres old) }
+  EmitInstr('MOV    SI, DX');              { SI = new }
+  EmitLabel(PY_RT_PFX + 'SR_CN');
+  EmitInstr('LODSB');
+  EmitInstr('TEST   AL, AL');
+  EmitInstr('JZ     ' + PY_RT_PFX + 'SR_CD');
+  EmitInstr('MOV    [BX], AL');
+  EmitInstr('INC    BX');
+  EmitInstr('JMP    ' + PY_RT_PFX + 'SR_CN');
+  EmitLabel(PY_RT_PFX + 'SR_CD');
+  EmitInstr('POP    SI');                  { SI = position apres match }
+  EmitInstr('JMP    ' + PY_RT_PFX + 'SR_LP');
+  EmitLabel(PY_RT_PFX + 'SR_NM');
+  { Pas de match : copier le caractere courant }
+  EmitInstr('POP    DI');                  { restaurer DI }
+  EmitInstr('POP    SI');                  { restaurer SI }
+  EmitInstr('MOV    AL, [SI]');
+  EmitInstr('MOV    [BX], AL');
+  EmitInstr('INC    BX');
+  EmitInstr('INC    SI');
+  EmitInstr('JMP    ' + PY_RT_PFX + 'SR_LP');
+  EmitLabel(PY_RT_PFX + 'SR_DN');
+  EmitInstr('MOV    BYTE PTR [BX], 0');
+  EmitInstr('MOV    AX, OFFSET _PY_STRBUF2');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+
+  { _PYRT_STARTSWITH : SI=str, DI=prefix -> AX=0|1 }
+  EmitLabel(PY_RT_PFX + 'STARTSWITH');
+  EmitLabel(PY_RT_PFX + 'SW_LP');
+  EmitInstr('MOV    AL, [DI]');
+  EmitInstr('TEST   AL, AL');
+  EmitInstr('JZ     ' + PY_RT_PFX + 'SW_YES');   { fin prefix -> ok }
+  EmitInstr('CMP    AL, [SI]');
+  EmitInstr('JNE    ' + PY_RT_PFX + 'SW_NO');
+  EmitInstr('INC    SI');
+  EmitInstr('INC    DI');
+  EmitInstr('JMP    ' + PY_RT_PFX + 'SW_LP');
+  EmitLabel(PY_RT_PFX + 'SW_YES');
+  EmitInstr('MOV    AX, 1');
+  EmitInstr('RET');
+  EmitLabel(PY_RT_PFX + 'SW_NO');
+  EmitInstr('XOR    AX, AX');
+  EmitInstr('RET');
+
+  { _PYRT_ENDSWITH : SI=str, DI=suffix -> AX=0|1 }
+  EmitLabel(PY_RT_PFX + 'ENDSWITH');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   DX');
+  { Calculer len(str) }
+  EmitInstr('PUSH   SI');
+  EmitInstr('CALL   ' + PY_RT_PFX + 'LEN');
+  EmitInstr('MOV    BX, AX');              { BX = len(str) }
+  EmitInstr('POP    SI');
+  { Calculer len(suffix) }
+  EmitInstr('PUSH   SI');
+  EmitInstr('MOV    SI, DI');
+  EmitInstr('CALL   ' + PY_RT_PFX + 'LEN');
+  EmitInstr('MOV    DX, AX');              { DX = len(suffix) }
+  EmitInstr('POP    SI');
+  { Si len(suffix) > len(str) -> false }
+  EmitInstr('CMP    DX, BX');
+  EmitInstr('JA     ' + PY_RT_PFX + 'EW_NO');
+  { SI += len(str) - len(suffix) }
+  EmitInstr('MOV    AX, BX');
+  EmitInstr('SUB    AX, DX');
+  EmitInstr('ADD    SI, AX');
+  { Comparer SI avec DI }
+  EmitLabel(PY_RT_PFX + 'EW_LP');
+  EmitInstr('MOV    AL, [DI]');
+  EmitInstr('TEST   AL, AL');
+  EmitInstr('JZ     ' + PY_RT_PFX + 'EW_YES');
+  EmitInstr('CMP    AL, [SI]');
+  EmitInstr('JNE    ' + PY_RT_PFX + 'EW_NO');
+  EmitInstr('INC    SI');
+  EmitInstr('INC    DI');
+  EmitInstr('JMP    ' + PY_RT_PFX + 'EW_LP');
+  EmitLabel(PY_RT_PFX + 'EW_YES');
+  EmitInstr('MOV    AX, 1');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitLabel(PY_RT_PFX + 'EW_NO');
+  EmitInstr('XOR    AX, AX');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+
+  { _PYRT_STRCONTAINS : SI=str, DI=sub -> AX=0|1 }
+  { Utilise STRFIND et convertit -1 en 0, sinon 1 }
+  EmitLabel(PY_RT_PFX + 'STRCONTAINS');
+  EmitInstr('CALL   ' + PY_RT_PFX + 'STRFIND');
+  EmitInstr('CMP    AX, -1');
+  EmitInstr('JE     ' + PY_RT_PFX + 'SC2_NO');
+  EmitInstr('MOV    AX, 1');
+  EmitInstr('RET');
+  EmitLabel(PY_RT_PFX + 'SC2_NO');
+  EmitInstr('XOR    AX, AX');
+  EmitInstr('RET');
+
+  { _PYRT_STRCOUNT : SI=str, DI=sub -> AX=nombre d occurrences }
+  EmitLabel(PY_RT_PFX + 'STRCOUNT');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   DX');
+  EmitInstr('XOR    DX, DX');              { DX = compteur }
+  EmitLabel(PY_RT_PFX + 'SCT_LP');
+  EmitInstr('CMP    BYTE PTR [SI], 0');
+  EmitInstr('JE     ' + PY_RT_PFX + 'SCT_DN');
+  { Tester si sub commence a SI }
+  EmitInstr('PUSH   SI');
+  EmitInstr('PUSH   DI');
+  EmitLabel(PY_RT_PFX + 'SCT_CM');
+  EmitInstr('MOV    AL, [DI]');
+  EmitInstr('TEST   AL, AL');
+  EmitInstr('JZ     ' + PY_RT_PFX + 'SCT_MT');
+  EmitInstr('CMP    AL, [SI]');
+  EmitInstr('JNE    ' + PY_RT_PFX + 'SCT_NM');
+  EmitInstr('INC    SI');
+  EmitInstr('INC    DI');
+  EmitInstr('JMP    ' + PY_RT_PFX + 'SCT_CM');
+  EmitLabel(PY_RT_PFX + 'SCT_MT');
+  { Match trouve : incrementer compteur, avancer SI apres le match }
+  EmitInstr('INC    DX');
+  EmitInstr('POP    DI');
+  EmitInstr('ADD    SP, 2');               { abandonner ancien SI }
+  EmitInstr('JMP    ' + PY_RT_PFX + 'SCT_LP');
+  EmitLabel(PY_RT_PFX + 'SCT_NM');
+  EmitInstr('POP    DI');
+  EmitInstr('POP    SI');
+  EmitInstr('INC    SI');
+  EmitInstr('JMP    ' + PY_RT_PFX + 'SCT_LP');
+  EmitLabel(PY_RT_PFX + 'SCT_DN');
+  EmitInstr('MOV    AX, DX');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+
+  { _PYRT_STRSPLIT : SI=str, DI=sep (1 char) -> AX=ptr liste heap }
+  { Layout liste : [count DW][elem0 DW][elem1 DW]...              }
+  { Chaque elem est un ptr vers une sous-chaine copiee sur heap    }
+  EmitLabel(PY_RT_PFX + 'STRSPLIT');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   DX');
+  EmitInstr('MOV    DX, DI');              { DX = ptr separateur }
+  EmitInstr('MOV    AL, [DX]');            { AL = premier char sep }
+  EmitInstr('MOV    AH, AL');              { AH = sep char }
+  { Allouer la liste sur le heap }
+  EmitInstr('MOV    BX, [_PY_HEAPTOP]');
+  EmitInstr('ADD    BX, OFFSET _PY_HEAP'); { BX = debut liste }
+  EmitInstr('PUSH   BX');                  { sauver ptr liste }
+  EmitInstr('ADD    BX, 2');               { sauter le count header }
+  EmitInstr('XOR    CX, CX');              { CX = nombre d elements }
+  { Pour chaque token : copier dans heap, stocker ptr dans liste }
+  EmitLabel(PY_RT_PFX + 'SPL_LP');
+  { Debut d un token : position courante dans heap apres la liste }
+  EmitInstr('MOV    DI, [_PY_HEAPTOP]');
+  EmitInstr('ADD    DI, OFFSET _PY_HEAP');
+  EmitInstr('ADD    DI, 256');             { zone temporaire plus loin }
+  EmitInstr('PUSH   DI');                  { sauver debut du token }
+  EmitLabel(PY_RT_PFX + 'SPL_CH');
+  EmitInstr('MOV    AL, [SI]');
+  EmitInstr('TEST   AL, AL');
+  EmitInstr('JZ     ' + PY_RT_PFX + 'SPL_ET');   { fin chaine }
+  EmitInstr('CMP    AL, AH');
+  EmitInstr('JE     ' + PY_RT_PFX + 'SPL_ET');   { separateur }
+  EmitInstr('STOSB');                      { copier le char }
+  EmitInstr('INC    SI');
+  EmitInstr('JMP    ' + PY_RT_PFX + 'SPL_CH');
+  EmitLabel(PY_RT_PFX + 'SPL_ET');
+  EmitInstr('MOV    BYTE PTR [DI], 0');   { null-terminer le token }
+  EmitInstr('POP    DI');                  { DI = debut du token }
+  { Stocker le ptr dans la liste }
+  EmitInstr('MOV    [BX], DI');
+  EmitInstr('ADD    BX, 2');
+  EmitInstr('INC    CX');
+  { Si fin de chaine, arreter }
+  EmitInstr('CMP    BYTE PTR [SI], 0');
+  EmitInstr('JE     ' + PY_RT_PFX + 'SPL_DN');
+  EmitInstr('INC    SI');                  { sauter le separateur }
+  EmitInstr('JMP    ' + PY_RT_PFX + 'SPL_LP');
+  EmitLabel(PY_RT_PFX + 'SPL_DN');
+  { Ecrire le count dans l en-tete de la liste }
+  EmitInstr('POP    DI');                  { DI = debut liste }
+  EmitInstr('MOV    [DI], CX');
+  { Mettre a jour HEAPTOP }
+  EmitInstr('MOV    AX, CX');
+  EmitInstr('INC    AX');                  { +1 pour header }
+  EmitInstr('SHL    AX, 1');               { *2 pour mots }
+  EmitInstr('ADD    AX, 512');             { espace pour les sous-chaines }
+  EmitInstr('ADD    [_PY_HEAPTOP], AX');
+  EmitInstr('MOV    AX, DI');              { AX = ptr liste }
+  EmitInstr('POP    DX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+End;
 { Attend NEWLINE INDENT ... instructions ... DEDENT              }
 Procedure ParseBlock;
 Var
