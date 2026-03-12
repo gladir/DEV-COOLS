@@ -3137,6 +3137,7 @@ Begin
           Else If Lw2 = 'length' Then
           Begin
             ExprFlushToEAX(SubEv);
+            EmitInstrAB('MOV', 'ESI', 'EAX');
             EmitInstrA('CALL', VXP_RT_PFX + 'STRLEN');
             Res.Kind    := EK_EAX;
             Res.TypeIdx := TY_IDX_INTEGER;
@@ -6196,6 +6197,27 @@ Begin
   EmitInstr('RET');
   EmitBlankLine;
 
+  { _VXPRT_COPY : wrapper cdecl pour SUBSTR (Copy(S, Start, Len)) }
+  { Stack apres CALL : [ESP+4]=len, [ESP+8]=start, [ESP+12]=str }
+  EmitComment('COPY : [ESP+12]=str, [ESP+8]=start, [ESP+4]=len -> EAX=ptr STRBUF');
+  EmitLabel(VXP_RT_PFX + 'COPY');
+  EmitInstrAB('MOV', 'ESI', 'DWORD PTR [ESP+12]');
+  EmitInstrAB('MOV', 'EBX', 'DWORD PTR [ESP+8]');
+  EmitInstrAB('MOV', 'ECX', 'DWORD PTR [ESP+4]');
+  EmitInstrA('CALL', VXP_RT_PFX + 'SUBSTR');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_POS : wrapper cdecl pour INDEX (Pos(Sub, S)) }
+  { Stack apres CALL : [ESP+4]=S, [ESP+8]=Sub }
+  EmitComment('POS : [ESP+4]=str, [ESP+8]=substr -> EAX=position (1-based, 0=absent)');
+  EmitLabel(VXP_RT_PFX + 'POS');
+  EmitInstrAB('MOV', 'ESI', 'DWORD PTR [ESP+4]');
+  EmitInstrAB('MOV', 'EDI', 'DWORD PTR [ESP+8]');
+  EmitInstrA('CALL', VXP_RT_PFX + 'INDEX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
   { _VXPRT_SSLICE : affecter sous-chaine dans chaine cible (32-bit) }
   EmitComment('SSLICE : EDI=target, ESI=source, EBX=pos(1-base), ECX=len');
   EmitLabel(VXP_RT_PFX + 'SSLICE');
@@ -8525,12 +8547,43 @@ Begin
       Continue;
     End;
 
-    { IMUL reg (operande unique : EDX:EAX = EAX * reg) }
+    { IMUL }
     If Mnem = 'IMUL' Then
     Begin
       R1 := PERegNum(Op1);
-      If R1 >= 0 Then
-      Begin PECodeByte($F7); PECodeByte($E8 + R1); End;
+      R2 := PERegNum(Op2);
+      If (R1 >= 0) And (R2 >= 0) Then
+      Begin
+        { IMUL reg, reg (two-operand : r1 = r1 * r2) : 0F AF /r }
+        PECodeByte($0F);
+        PECodeByte($AF);
+        PECodeByte($C0 + R1 * 8 + R2);
+      End
+      Else If (R1 >= 0) And (Length(Op2) > 0) Then
+      Begin
+        { IMUL reg, imm32 (three-operand : r1 = r1 * imm) }
+        Imm := PEParseImm(Op2);
+        If (Imm >= -128) And (Imm <= 127) Then
+        Begin
+          { IMUL r32, r32, imm8 : 6B ModRM ib }
+          PECodeByte($6B);
+          PECodeByte($C0 + R1 * 8 + R1);
+          PECodeByte(Byte(Imm And $FF));
+        End
+        Else
+        Begin
+          { IMUL r32, r32, imm32 : 69 ModRM id }
+          PECodeByte($69);
+          PECodeByte($C0 + R1 * 8 + R1);
+          PECodeDWord(Imm);
+        End;
+      End
+      Else If R1 >= 0 Then
+      Begin
+        { IMUL reg (single-operand : EDX:EAX = EAX * reg) : F7 /5 }
+        PECodeByte($F7);
+        PECodeByte($E8 + R1);
+      End;
       Continue;
     End;
 
@@ -8564,6 +8617,12 @@ Begin
         PECodeByte($0F); PECodeByte($B6);
         PECodeByte($C0 + R1 * 8 + R2);
       End
+      { MOVZX reg, BYTE PTR [reg+depl] }
+      Else If PEIsByteRegDisp(Op2, RegX, DispX) Then
+      Begin
+        PECodeByte($0F); PECodeByte($B6);
+        PEEmitModRM(R1, RegX, DispX);
+      End
       { MOVZX reg, BYTE PTR [symbole] }
       Else If PEIsBytePtrMem(Op2) Then
       Begin
@@ -8571,12 +8630,6 @@ Begin
         PECodeByte($0F); PECodeByte($B6);
         PECodeByte($05 + R1 * 8);
         PEEmitSymFixup(Sym);
-      End
-      { MOVZX reg, BYTE PTR [reg+depl] }
-      Else If PEIsByteRegDisp(Op2, RegX, DispX) Then
-      Begin
-        PECodeByte($0F); PECodeByte($B6);
-        PEEmitModRM(R1, RegX, DispX);
       End
       { MOVZX reg, WORD PTR [symbole] }
       Else If PEIsWordPtrMem(Op2) Then
@@ -8604,17 +8657,17 @@ Begin
       { BTS DWORD PTR [reg], reg2 ou BTS DWORD PTR [symbole], reg }
       R2 := PERegNum(Op2);
       If R2 < 0 Then Begin Continue; End;
-      If PEIsDwordPtrMem(Op1) Then
+      If PEIsDwordRegDisp(Op1, RegX, DispX) Then
+      Begin
+        PECodeByte($0F); PECodeByte($AB);
+        PEEmitModRM(R2, RegX, DispX);
+      End
+      Else If PEIsDwordPtrMem(Op1) Then
       Begin
         Sym := PEExtractMemSym(Op1);
         PECodeByte($0F); PECodeByte($AB);
         PECodeByte($05 + R2 * 8);
         PEEmitSymFixup(Sym);
-      End
-      Else If PEIsDwordRegDisp(Op1, RegX, DispX) Then
-      Begin
-        PECodeByte($0F); PECodeByte($AB);
-        PEEmitModRM(R2, RegX, DispX);
       End;
       Continue;
     End;
@@ -8639,6 +8692,12 @@ Begin
           PECodeByte($B8 + R1);
           PEEmitSymFixup(Sym);
         End
+        Else If PEIsDwordRegDisp(Op2, RegX, DispX) Then
+        Begin
+          { MOV reg, DWORD PTR [reg+depl] }
+          PECodeByte($8B);
+          PEEmitModRM(R1, RegX, DispX);
+        End
         Else If PEIsDwordPtrMem(Op2) Then
         Begin
           { MOV reg, DWORD PTR [symbole] }
@@ -8647,29 +8706,23 @@ Begin
           PECodeByte($05 + R1 * 8);
           PEEmitSymFixup(Sym);
         End
-        Else If PEIsDwordRegDisp(Op2, RegX, DispX) Then
-        Begin
-          { MOV reg, DWORD PTR [reg+depl] }
-          PECodeByte($8B);
-          PEEmitModRM(R1, RegX, DispX);
-        End
         Else If PEStartsWith(StrUpperCase(PETrimLine(Op2)),
                  'BYTE PTR [') Then
         Begin
           { MOV AL, BYTE PTR [reg] -> 8A modrm }
           R2 := PEReg8Num(Op1);
           If R2 < 0 Then R2 := 0;
-          If PEIsBytePtrMem(Op2) Then
+          If PEIsByteRegDisp(Op2, RegX, DispX) Then
+          Begin
+            PECodeByte($8A);
+            PEEmitModRM(R2, RegX, DispX);
+          End
+          Else If PEIsBytePtrMem(Op2) Then
           Begin
             Sym := PEExtractMemSym(Op2);
             PECodeByte($8A);
             PECodeByte($05 + R2 * 8);
             PEEmitSymFixup(Sym);
-          End
-          Else If PEIsByteRegDisp(Op2, RegX, DispX) Then
-          Begin
-            PECodeByte($8A);
-            PEEmitModRM(R2, RegX, DispX);
           End;
         End
         Else If PEIsReg8(Op2) Then
@@ -8685,6 +8738,30 @@ Begin
           { MOV reg32, imm32 }
           Imm := PEParseImm(Op2);
           PECodeByte($B8 + R1);
+          PECodeDWord(Imm);
+        End;
+      End
+      { MOV DWORD PTR [reg+depl], reg2 }
+      Else If PEIsDwordRegDisp(Op1, RegX, DispX) And (R2 >= 0) Then
+      Begin
+        PECodeByte($89);
+        PEEmitModRM(R2, RegX, DispX);
+      End
+      { MOV DWORD PTR [reg+depl], imm32 }
+      Else If PEIsDwordRegDisp(Op1, RegX, DispX) Then
+      Begin
+        If PEStartsWith(StrUpperCase(Op2), 'OFFSET ') Then
+        Begin
+          PECodeByte($C7);
+          PEEmitModRM(0, RegX, DispX);
+          BaseSym := PETrimLine(Copy(Op2, 8, Length(Op2) - 7));
+          PEEmitSymFixup(BaseSym);
+        End
+        Else
+        Begin
+          Imm := PEParseImm(Op2);
+          PECodeByte($C7);
+          PEEmitModRM(0, RegX, DispX);
           PECodeDWord(Imm);
         End;
       End
@@ -8718,28 +8795,21 @@ Begin
           PECodeDWord(Imm);
         End;
       End
-      { MOV DWORD PTR [reg+depl], reg2 }
-      Else If PEIsDwordRegDisp(Op1, RegX, DispX) And (R2 >= 0) Then
+      { MOV BYTE PTR [reg+depl], AL/imm }
+      Else If PEIsByteRegDisp(Op1, RegX, DispX) Then
       Begin
-        PECodeByte($89);
-        PEEmitModRM(R2, RegX, DispX);
-      End
-      { MOV DWORD PTR [reg+depl], imm32 }
-      Else If PEIsDwordRegDisp(Op1, RegX, DispX) Then
-      Begin
-        If PEStartsWith(StrUpperCase(Op2), 'OFFSET ') Then
+        If PEIsReg8(Op2) Then
         Begin
-          PECodeByte($C7);
-          PEEmitModRM(0, RegX, DispX);
-          BaseSym := PETrimLine(Copy(Op2, 8, Length(Op2) - 7));
-          PEEmitSymFixup(BaseSym);
+          R2 := PEReg8Num(Op2);
+          PECodeByte($88);
+          PEEmitModRM(R2, RegX, DispX);
         End
         Else
         Begin
           Imm := PEParseImm(Op2);
-          PECodeByte($C7);
+          PECodeByte($C6);
           PEEmitModRM(0, RegX, DispX);
-          PECodeDWord(Imm);
+          PECodeByte(Byte(Imm And $FF));
         End;
       End
       { MOV BYTE PTR [symbole], AL/imm }
@@ -8762,20 +8832,31 @@ Begin
           PECodeByte(Byte(Imm And $FF));
         End;
       End
-      { MOV BYTE PTR [reg+depl], AL/imm }
-      Else If PEIsByteRegDisp(Op1, RegX, DispX) Then
+      { MOV r8, BYTE PTR [reg+depl] / MOV r8, BYTE PTR [sym] / MOV r8, r8 / MOV r8, imm8 }
+      Else If PEIsReg8(Op1) Then
       Begin
-        If PEIsReg8(Op2) Then
+        R1 := PEReg8Num(Op1);
+        If PEIsByteRegDisp(Op2, RegX, DispX) Then
+        Begin
+          PECodeByte($8A);
+          PEEmitModRM(R1, RegX, DispX);
+        End
+        Else If PEIsBytePtrMem(Op2) Then
+        Begin
+          Sym := PEExtractMemSym(Op2);
+          PECodeByte($8A);
+          PECodeByte($05 + R1 * 8);
+          PEEmitSymFixup(Sym);
+        End
+        Else If PEIsReg8(Op2) Then
         Begin
           R2 := PEReg8Num(Op2);
-          PECodeByte($88);
-          PEEmitModRM(R2, RegX, DispX);
+          PECodeByte($8A); PECodeByte($C0 + R1 * 8 + R2);
         End
         Else
         Begin
           Imm := PEParseImm(Op2);
-          PECodeByte($C6);
-          PEEmitModRM(0, RegX, DispX);
+          PECodeByte($B0 + R1);
           PECodeByte(Byte(Imm And $FF));
         End;
       End
@@ -9039,6 +9120,14 @@ Begin
           PECodeDWord(Imm);
         End;
       End
+      { CMP BYTE PTR [reg+depl], imm }
+      Else If PEIsByteRegDisp(Op1, RegX, DispX) Then
+      Begin
+        Imm := PEParseImm(Op2);
+        PECodeByte($80);
+        PEEmitModRM(7, RegX, DispX);
+        PECodeByte(Byte(Imm And $FF));
+      End
       { CMP BYTE PTR [symbole], imm }
       Else If PEIsBytePtrMem(Op1) Then
       Begin
@@ -9048,19 +9137,23 @@ Begin
         PEEmitSymFixup(Sym);
         PECodeByte(Byte(Imm And $FF));
       End
-      { CMP BYTE PTR [reg+depl], imm }
-      Else If PEIsByteRegDisp(Op1, RegX, DispX) Then
-      Begin
-        Imm := PEParseImm(Op2);
-        PECodeByte($80);
-        PEEmitModRM(7, RegX, DispX);
-        PECodeByte(Byte(Imm And $FF));
-      End
-      { CMP r8, imm8 or CMP r8, r8 }
+      { CMP r8, BYTE PTR [reg+depl] / CMP r8, BYTE PTR [sym] / CMP r8, r8 / CMP r8, imm8 }
       Else If PEIsReg8(Op1) Then
       Begin
         R1 := PEReg8Num(Op1);
-        If PEIsReg8(Op2) Then
+        If PEIsByteRegDisp(Op2, RegX, DispX) Then
+        Begin
+          PECodeByte($3A);
+          PEEmitModRM(R1, RegX, DispX);
+        End
+        Else If PEIsBytePtrMem(Op2) Then
+        Begin
+          Sym := PEExtractMemSym(Op2);
+          PECodeByte($3A);
+          PECodeByte($05 + R1 * 8);
+          PEEmitSymFixup(Sym);
+        End
+        Else If PEIsReg8(Op2) Then
         Begin
           R2 := PEReg8Num(Op2);
           PECodeByte($3A); PECodeByte($C0 + R1 * 8 + R2);
@@ -10710,6 +10803,15 @@ Begin
                   ((TypeTab[TIdx].Kind = TKP_TEXT) Or
                    (TypeTab[TIdx].Kind = TKP_FILE)) Then
             DIdx := DataAddRec(SymTab[Idx].MangledName, FILE_DESC_SIZE)
+          Else If (TIdx >= 0) And (TIdx < TypeCount) And
+                  (TypeTab[TIdx].Kind = TKP_ARRAY) Then
+          Begin
+            SymTab[Idx].MangledName := VXP_ARR_PFX +
+              StrUpperCase(Names[I]);
+            DIdx := DataAddArray(SymTab[Idx].MangledName,
+              TypeTab[TIdx].Hi - TypeTab[TIdx].Lo + 1,
+              TypeSizeof(TypeTab[TIdx].BaseTypeIdx));
+          End
           Else If TSz = 1 Then
             DIdx := DataAddByte(SymTab[Idx].MangledName, 0)
           Else
@@ -10738,6 +10840,15 @@ Begin
                   ((TypeTab[TIdx].Kind = TKP_TEXT) Or
                    (TypeTab[TIdx].Kind = TKP_FILE)) Then
             DIdx := DataAddRec(SymTab[Idx].MangledName, FILE_DESC_SIZE)
+          Else If (TIdx >= 0) And (TIdx < TypeCount) And
+                  (TypeTab[TIdx].Kind = TKP_ARRAY) Then
+          Begin
+            SymTab[Idx].MangledName := VXP_ARR_PFX +
+              StrUpperCase(Names[I]);
+            DIdx := DataAddArray(SymTab[Idx].MangledName,
+              TypeTab[TIdx].Hi - TypeTab[TIdx].Lo + 1,
+              TypeSizeof(TypeTab[TIdx].BaseTypeIdx));
+          End
           Else If TSz = 1 Then
             DIdx := DataAddByte(SymTab[Idx].MangledName, 0)
           Else
@@ -10782,6 +10893,20 @@ Begin
             SymTab[Idx].IsLocal := False;
             If Opts.DebugMode Then
               WriteLn('  VAR_FILE_GLOBAL: ', Names[I], ' : ',
+                      TName, ' -> ', SymTab[Idx].MangledName);
+          End
+          Else If (TIdx >= 0) And (TIdx < TypeCount) And
+                  (TypeTab[TIdx].Kind = TKP_ARRAY) Then
+          Begin
+            SymTab[Idx].MangledName := VXP_ARR_PFX +
+              StrUpperCase(Names[I]);
+            DIdx := DataAddArray(SymTab[Idx].MangledName,
+              TypeTab[TIdx].Hi - TypeTab[TIdx].Lo + 1,
+              TypeSizeof(TypeTab[TIdx].BaseTypeIdx));
+            SymTab[Idx].DataIdx := DIdx;
+            SymTab[Idx].IsLocal := False;
+            If Opts.DebugMode Then
+              WriteLn('  VAR_ARRAY_GLOBAL: ', Names[I], ' : ',
                       TName, ' -> ', SymTab[Idx].MangledName);
           End
           Else If TSz = 1 Then
@@ -12525,6 +12650,9 @@ Var
   ArrElemTN    : TString;
   ArrElemTI    : Integer;
   ArrSz        : Integer;
+  Dim2Lo, Dim2Hi : LongInt;
+  Dim2Count      : LongInt;
+  InnerArrTIdx   : Integer;
   MultiNames   : Array[0..MAX_FIELD - 1] Of TString;
   MultiCount   : Integer;
   MIdx         : Integer;
@@ -12902,14 +13030,46 @@ Begin
           ArrHi := SymTab[TIdx].ImmVal;
         LexNextToken;
       End;
-      (* gerer multi-dimensionnel : sauter ", lo..hi" *)
-      While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
+      (* gerer multi-dimensionnel : parser la 2e dimension *)
+      Dim2Lo := 0;
+      Dim2Hi := 0;
+      Dim2Count := 0;
+      InnerArrTIdx := -1;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
       Begin
         LexNextToken;
-        While (CurToken.Kind <> TK_EOF) And
-              Not IsCloseBracket And
-              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',')) Do
+        If CurToken.Kind = TK_INTEGER Then
+        Begin
+          Dim2Lo := CurToken.IntVal;
           LexNextToken;
+        End
+        Else If (CurToken.Kind = TK_IDENT) Or
+                (CurToken.Kind = TK_KEYWORD) Then
+        Begin
+          TIdx := SymFind(CurToken.Val);
+          If (TIdx >= 0) And
+             (SymTab[TIdx].Cat In [SC_CONST, SC_ENUM_VAL]) Then
+            Dim2Lo := SymTab[TIdx].ImmVal;
+          LexNextToken;
+        End;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '..') Then
+          LexNextToken;
+        If CurToken.Kind = TK_INTEGER Then
+        Begin
+          Dim2Hi := CurToken.IntVal;
+          LexNextToken;
+        End
+        Else If (CurToken.Kind = TK_IDENT) Or
+                (CurToken.Kind = TK_KEYWORD) Then
+        Begin
+          TIdx := SymFind(CurToken.Val);
+          If (TIdx >= 0) And
+             (SymTab[TIdx].Cat In [SC_CONST, SC_ENUM_VAL]) Then
+            Dim2Hi := SymTab[TIdx].ImmVal;
+          LexNextToken;
+        End;
+        Dim2Count := Dim2Hi - Dim2Lo + 1;
+        If Dim2Count < 1 Then Dim2Count := 1;
       End;
       If IsCloseBracket Then LexNextToken;
       If (CurToken.Kind = TK_KEYWORD) And
@@ -12923,6 +13083,27 @@ Begin
       End;
       ArrElemTI := TypeResolve(ArrElemTN);
       If ArrElemTI = TY_UNKNOWN Then ArrElemTI := TY_IDX_INTEGER;
+
+      (* Si multi-dimensionnel, creer le type tableau interne d abord *)
+      If Dim2Count > 0 Then
+      Begin
+        InnerArrTIdx := TY_IDX_INTEGER;
+        If TypeCount < MAX_TYPE Then
+        Begin
+          InnerArrTIdx := TypeCount;
+          Inc(TypeCount);
+          TypeTab[InnerArrTIdx].Kind        := TKP_ARRAY;
+          TypeTab[InnerArrTIdx].Size        := Dim2Count * TypeSizeof(ArrElemTI);
+          TypeTab[InnerArrTIdx].BaseTypeIdx := ArrElemTI;
+          TypeTab[InnerArrTIdx].Lo          := Dim2Lo;
+          TypeTab[InnerArrTIdx].Hi          := Dim2Hi;
+          TypeTab[InnerArrTIdx].FieldCount  := 0;
+          TypeTab[InnerArrTIdx].EnumCount   := 0;
+          TypeTab[InnerArrTIdx].Packed_     := IsPacked;
+        End;
+        ArrElemTI := InnerArrTIdx;
+      End;
+
       ArrCount := ArrHi - ArrLo + 1;
       If ArrCount < 1 Then ArrCount := 1;
       ArrSz := ArrCount * TypeSizeof(ArrElemTI);
