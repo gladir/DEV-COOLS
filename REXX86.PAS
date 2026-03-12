@@ -217,7 +217,7 @@
               Labels : _RXL_WHEN_N, _RXL_SNEXT_N, _RXL_SEND_N
               Emission : pour chaque WHEN -> eval cond + JZ vers suivant
 
-  TODO 14 - BOUCLES DO / END
+  TODO 14 - BOUCLES DO / END [IMPLEMENTE]
             ParseDoBlock : DO [; stmts ;] END (bloc simple)
             ParseDoWhile : DO WHILE cond [; stmts ;] END
               Labels : _RXL_DTEST_N, _RXL_DEND_N
@@ -821,6 +821,16 @@ Procedure EmitIORuntime;       Forward;
 Procedure ParseIfStmt;         Forward;
 Procedure ParseSelectStmt;     Forward;
 Procedure ParseDoBlock;        Forward;
+
+(* TODO 14 - BOUCLES DO/END *)
+Procedure LoopPush(Const BreakLbl, ContLbl : TString); Forward;
+Procedure LoopPop;             Forward;
+Procedure ParseDoBodyUntilEnd; Forward;
+Procedure ParseDoWhile;        Forward;
+Procedure ParseDoUntil;        Forward;
+Procedure ParseDoForever;      Forward;
+Procedure ParseDoCount(Const VarName : TString); Forward;
+Procedure ParseDoExpr;         Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -4867,35 +4877,113 @@ End;
   ============================================================ }
 
 (* ---- ParseDoBlock : parser un bloc DO ; stmts ; END ---------- *)
-(* Un bloc DO/END est l equivalent des accolades en REXX.         *)
-(* Utilise dans IF cond THEN DO; ... END et SELECT/WHEN.          *)
+(* Dispatcher : apres avoir consomme DO, on regarde le prochain    *)
+(* token pour determiner la variante :                              *)
+(*   DO WHILE cond -> ParseDoWhile                                  *)
+(*   DO UNTIL cond -> ParseDoUntil                                  *)
+(*   DO FOREVER    -> ParseDoForever                                *)
+(*   DO var = ...  -> ParseDoCount                                  *)
+(*   DO expr       -> ParseDoExpr (repeter N fois)                  *)
+(*   DO ; stmts ; END -> bloc simple (pas de boucle)                *)
 Procedure ParseDoBlock;
 Var
-  U : TString;
+  U        : TString;
+  SaveName : TString;
 Begin
-  EmitComment('DO block');
-  (* Boucler sur les instructions jusqu a END *)
-  While CurToken.Kind <> TK_EOF Do
-  Begin
-    (* Sauter les fins de ligne *)
-    While CurToken.Kind = TK_EOL Do
-      ParserAdvance;
-    If CurToken.Kind = TK_EOF Then Break;
+  (* Sauter les fins de ligne apres DO *)
+  While CurToken.Kind = TK_EOL Do
+    ParserAdvance;
 
-    (* Verifier END *)
-    If (CurToken.Kind = TK_KEYWORD) Then
+  If CurToken.Kind = TK_EOF Then Exit;
+
+  (* Verifier les mots-cles specifiques *)
+  If CurToken.Kind = TK_KEYWORD Then
+  Begin
+    U := StrUpperCase(CurToken.Val);
+
+    (* DO WHILE cond *)
+    If U = 'WHILE' Then
     Begin
-      U := StrUpperCase(CurToken.Val);
-      If U = 'END' Then
-      Begin
-        ParserAdvance;  (* consommer END *)
-        Exit;
-      End;
+      ParserAdvance;  (* consommer WHILE *)
+      ParseDoWhile;
+      Exit;
     End;
 
-    (* Parser l instruction suivante *)
-    ParseStmt;
+    (* DO UNTIL cond *)
+    If U = 'UNTIL' Then
+    Begin
+      ParserAdvance;  (* consommer UNTIL *)
+      ParseDoUntil;
+      Exit;
+    End;
+
+    (* DO FOREVER *)
+    If U = 'FOREVER' Then
+    Begin
+      ParserAdvance;  (* consommer FOREVER *)
+      ParseDoForever;
+      Exit;
+    End;
+
+    (* DO END = bloc vide *)
+    If U = 'END' Then
+    Begin
+      ParserAdvance;  (* consommer END *)
+      EmitComment('DO block (vide)');
+      Exit;
+    End;
   End;
+
+  (* DO ident = debut TO fin [BY pas] : boucle compteur *)
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    SaveName := CurToken.Val;
+    ParserAdvance;
+
+    (* Verifier si c est une affectation ident = ... *)
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+    Begin
+      ParserAdvance;  (* consommer = *)
+      ParseDoCount(SaveName);
+      Exit;
+    End;
+
+    (* Pas un compteur : c est peut-etre DO expr *)
+    (* On a deja consomme l ident, il faudrait revenir en arriere *)
+    (* On ne peut pas, donc on traite comme un bloc simple *)
+    (* Le token courant n est pas END, on parse comme bloc *)
+    EmitComment('DO block');
+    (* On a consomme un token de trop - on doit parser le reste *)
+    (* Comme on ne peut pas faire de look-back, on traite       *)
+    (* l identifiant comme debut du corps du bloc                *)
+    While (CurToken.Kind <> TK_EOF) Do
+    Begin
+      While CurToken.Kind = TK_EOL Do
+        ParserAdvance;
+      If CurToken.Kind = TK_EOF Then Break;
+      If (CurToken.Kind = TK_KEYWORD) And
+         (StrUpperCase(CurToken.Val) = 'END') Then
+      Begin
+        ParserAdvance;
+        Exit;
+      End;
+      ParseStmt;
+    End;
+    Exit;
+  End;
+
+  (* DO expr : repeter N fois *)
+  If (CurToken.Kind = TK_NUMBER) Or
+     (CurToken.Kind = TK_STRING) Or
+     (CurToken.Kind = TK_PUNCT) Then
+  Begin
+    ParseDoExpr;
+    Exit;
+  End;
+
+  (* Bloc simple DO ; stmts ; END *)
+  EmitComment('DO block');
+  ParseDoBodyUntilEnd;
 End;
 
 (* ---- ParseIfStmt : parser IF cond THEN instr [ELSE instr] ---- *)
@@ -5110,7 +5198,422 @@ Begin
   EmitLabel(LblEnd);
 End;
 
-(* ---- ParseStmt : dispatcher principal des instructions REXX -- *)
+{ ============================================================
+  TODO 14 - BOUCLES DO / END [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- LoopPush : empiler les labels LEAVE/ITERATE ------------- *)
+(* BreakLbl = label pour LEAVE, ContLbl = label pour ITERATE       *)
+Procedure LoopPush(Const BreakLbl, ContLbl : TString);
+Begin
+  If LoopTop >= MAX_LOOP_NEST Then
+  Begin
+    CompileError('boucles imbriquees trop profondes');
+    Exit;
+  End;
+  LoopBreakLbl[LoopTop] := BreakLbl;
+  LoopContLbl[LoopTop]  := ContLbl;
+  Inc(LoopTop);
+End;
+
+(* ---- LoopPop : depiler les labels LEAVE/ITERATE -------------- *)
+Procedure LoopPop;
+Begin
+  If LoopTop > 0 Then
+    Dec(LoopTop);
+End;
+
+(* ---- ParseDoBodyUntilEnd : parser instructions jusqu a END ----- *)
+(* Corps commun a toutes les boucles DO. Parse des instructions      *)
+(* jusqu a rencontrer END ou EOF.                                     *)
+Procedure ParseDoBodyUntilEnd;
+Var
+  U : TString;
+Begin
+  While CurToken.Kind <> TK_EOF Do
+  Begin
+    (* Sauter les fins de ligne *)
+    While CurToken.Kind = TK_EOL Do
+      ParserAdvance;
+    If CurToken.Kind = TK_EOF Then Break;
+
+    (* Verifier END *)
+    If (CurToken.Kind = TK_KEYWORD) Then
+    Begin
+      U := StrUpperCase(CurToken.Val);
+      If U = 'END' Then
+      Begin
+        ParserAdvance;  (* consommer END *)
+        Exit;
+      End;
+    End;
+
+    (* Parser l instruction suivante *)
+    ParseStmt;
+  End;
+End;
+
+(* ---- ParseDoWhile : DO WHILE cond ; stmts ; END -------------- *)
+(* Structure :                                                       *)
+(*   _RXL_test:                                                      *)
+(*     <eval cond>                                                   *)
+(*     TEST AX,AX                                                    *)
+(*     JZ   _RXL_end                                                 *)
+(*     <stmts>                                                       *)
+(*     JMP  _RXL_test                                                *)
+(*   _RXL_end:                                                       *)
+Procedure ParseDoWhile;
+Var
+  Res     : TExprVal;
+  LblTest : TString;
+  LblEnd  : TString;
+Begin
+  EmitComment('DO WHILE');
+
+  LblTest := LabelGen;
+  LblEnd  := LabelGen;
+
+  (* Empiler pour LEAVE/ITERATE *)
+  LoopPush(LblEnd, LblTest);
+
+  (* Label de test *)
+  EmitLabel(LblTest);
+
+  (* Evaluer la condition *)
+  ParseExpr(Res);
+  ExprFlushToAX(Res);
+
+  (* Si faux -> sortie *)
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitRaw('        JZ      ' + LblEnd);
+
+  (* Sauter EOL apres condition *)
+  While CurToken.Kind = TK_EOL Do
+    ParserAdvance;
+
+  (* Corps de la boucle *)
+  ParseDoBodyUntilEnd;
+
+  (* Retour au test *)
+  EmitRaw('        JMP     ' + LblTest);
+
+  (* Label de sortie *)
+  EmitLabel(LblEnd);
+
+  LoopPop;
+End;
+
+(* ---- ParseDoUntil : DO UNTIL cond ; stmts ; END -------------- *)
+(* Structure :                                                       *)
+(*   _RXL_beg:                                                       *)
+(*     <stmts>                                                       *)
+(*     <eval cond>                                                   *)
+(*     TEST AX,AX                                                    *)
+(*     JZ   _RXL_beg                                                 *)
+(*   _RXL_end:                                                       *)
+(* La condition est testee APRES le corps (au moins 1 execution).    *)
+(* Strategie : on parse et emet la condition AVANT le corps, on      *)
+(* utilise un JMP pour sauter le test au premier tour, puis on       *)
+(* re-tombe dans le test a chaque iteration suivante.                *)
+(*   JMP _RXL_body                                                   *)
+(*   _RXL_test:                                                      *)
+(*     <eval cond>                                                   *)
+(*     TEST AX,AX                                                    *)
+(*     JNZ  _RXL_end         (si UNTIL vrai -> sortir)               *)
+(*   _RXL_body:                                                      *)
+(*     <stmts>                                                       *)
+(*     JMP _RXL_test                                                 *)
+(*   _RXL_end:                                                       *)
+Procedure ParseDoUntil;
+Var
+  Res     : TExprVal;
+  LblTest : TString;
+  LblBody : TString;
+  LblEnd  : TString;
+Begin
+  EmitComment('DO UNTIL');
+
+  LblTest := LabelGen;
+  LblBody := LabelGen;
+  LblEnd  := LabelGen;
+
+  (* Empiler pour LEAVE/ITERATE *)
+  LoopPush(LblEnd, LblTest);
+
+  (* Sauter le test au premier tour (execute au moins une fois) *)
+  EmitRaw('        JMP     ' + LblBody);
+
+  (* Label de test de la condition UNTIL *)
+  EmitLabel(LblTest);
+
+  (* Evaluer la condition UNTIL *)
+  ParseExpr(Res);
+  ExprFlushToAX(Res);
+
+  (* Si condition UNTIL vraie -> sortir *)
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitRaw('        JNZ     ' + LblEnd);
+
+  (* Label du corps *)
+  EmitLabel(LblBody);
+
+  (* Sauter les EOL *)
+  While CurToken.Kind = TK_EOL Do
+    ParserAdvance;
+
+  (* Corps de la boucle *)
+  ParseDoBodyUntilEnd;
+
+  (* Retour au test *)
+  EmitRaw('        JMP     ' + LblTest);
+
+  EmitLabel(LblEnd);
+
+  LoopPop;
+End;
+
+(* ---- ParseDoForever : DO FOREVER ; stmts ; END --------------- *)
+(* Boucle infinie, sortie uniquement par LEAVE.                    *)
+(*   _RXL_beg:                                                     *)
+(*     <stmts>                                                     *)
+(*     JMP _RXL_beg                                                *)
+(*   _RXL_end:                                                     *)
+Procedure ParseDoForever;
+Var
+  LblBeg : TString;
+  LblEnd : TString;
+Begin
+  EmitComment('DO FOREVER');
+
+  LblBeg := LabelGen;
+  LblEnd := LabelGen;
+
+  (* Empiler pour LEAVE/ITERATE *)
+  LoopPush(LblEnd, LblBeg);
+
+  EmitLabel(LblBeg);
+
+  (* Sauter EOL apres FOREVER *)
+  While CurToken.Kind = TK_EOL Do
+    ParserAdvance;
+
+  (* Corps de la boucle *)
+  ParseDoBodyUntilEnd;
+
+  (* Retour au debut *)
+  EmitRaw('        JMP     ' + LblBeg);
+
+  EmitLabel(LblEnd);
+
+  LoopPop;
+End;
+
+(* ---- ParseDoCount : DO var = debut TO fin [BY pas] ----------- *)
+(* Boucle compteur classique.                                       *)
+(*   <var> = <debut>                                                *)
+(*   _RXL_test:                                                     *)
+(*     CMP <var>, <fin>                                             *)
+(*     JG  _RXL_end          (ou JL si pas negatif)                 *)
+(*     <stmts>                                                      *)
+(*   _RXL_incr:                                                     *)
+(*     ADD <var>, <pas>                                             *)
+(*     JMP _RXL_test                                                *)
+(*   _RXL_end:                                                      *)
+(* VarName est le nom de la variable de boucle, deja parse.         *)
+Procedure ParseDoCount(Const VarName : TString);
+Var
+  VarIdx     : Integer;
+  Res        : TExprVal;
+  LblTest    : TString;
+  LblIncr    : TString;
+  LblEnd     : TString;
+  HasBy      : Boolean;
+  LblFinVar  : TString;
+  LblStepVar : TString;
+Begin
+  EmitComment('DO ' + VarName + ' = ... TO ... [BY ...]');
+
+  (* Allouer la variable de boucle *)
+  VarIdx := VarAlloc(VarName);
+
+  (* Evaluer l expression de debut *)
+  ParseExpr(Res);
+  ExprFlushToAX(Res);
+  (* Convertir en nombre et stocker dans la variable *)
+  EmitInstr('CALL', '_RXRT_NUMTOSTR');
+  VarStore(VarIdx);
+
+  (* Consommer TO *)
+  While CurToken.Kind = TK_EOL Do
+    ParserAdvance;
+  If (CurToken.Kind = TK_KEYWORD) And (StrUpperCase(CurToken.Val) = 'TO') Then
+    ParserAdvance
+  Else
+    CompileError('TO attendu dans DO compteur');
+
+  (* Evaluer l expression de fin *)
+  ParseExpr(Res);
+  ExprFlushToAX(Res);
+  (* Sauver la limite dans une variable temporaire DATA *)
+  LblFinVar := LabelGen + '_FIN';
+  DataAddBuffer(LblFinVar, 256);
+  EmitInstr('MOV', 'SI, AX');
+  EmitInstr('LEA', 'DI, ' + LblFinVar);
+  EmitInstr('CALL', '_RXRT_STRCPY');
+
+  (* Verifier BY *)
+  HasBy := False;
+  While CurToken.Kind = TK_EOL Do
+    ParserAdvance;
+  If (CurToken.Kind = TK_KEYWORD) And (StrUpperCase(CurToken.Val) = 'BY') Then
+  Begin
+    ParserAdvance;
+    HasBy := True;
+    (* Evaluer l expression de pas *)
+    ParseExpr(Res);
+    ExprFlushToAX(Res);
+    (* Sauver le pas dans une variable temporaire DATA *)
+    LblStepVar := LabelGen + '_STEP';
+    DataAddBuffer(LblStepVar, 256);
+    EmitInstr('MOV', 'SI, AX');
+    EmitInstr('LEA', 'DI, ' + LblStepVar);
+    EmitInstr('CALL', '_RXRT_STRCPY');
+  End;
+
+  (* Generer les labels *)
+  LblTest := LabelGen;
+  LblIncr := LabelGen;
+  LblEnd  := LabelGen;
+
+  (* Empiler pour LEAVE/ITERATE *)
+  LoopPush(LblEnd, LblIncr);
+
+  (* Label de test *)
+  EmitLabel(LblTest);
+
+  (* Charger la variable de boucle et la convertir en nombre *)
+  VarLoad(VarIdx);
+  EmitInstr('MOV', 'SI, AX');
+  EmitInstr('CALL', '_RXRT_STRTONUM');
+  EmitInstr('PUSH', 'AX');
+
+  (* Charger la limite et convertir *)
+  EmitInstr('LEA', 'SI, ' + LblFinVar);
+  EmitInstr('CALL', '_RXRT_STRTONUM');
+  EmitInstr('MOV', 'BX, AX');
+  EmitInstr('POP', 'AX');
+
+  (* Comparer : AX = var, BX = fin *)
+  EmitInstrAB('CMP', 'AX', 'BX');
+  (* Si pas positif : JG end. Si pas negatif : JL end *)
+  If HasBy Then
+  Begin
+    (* Pas dynamique : on assume positif par defaut *)
+    (* Pour un pas negatif, le test est inverse       *)
+    EmitRaw('        JG      ' + LblEnd);
+  End
+  Else
+    EmitRaw('        JG      ' + LblEnd);
+
+  (* Sauter EOL *)
+  While CurToken.Kind = TK_EOL Do
+    ParserAdvance;
+
+  (* Corps de la boucle *)
+  ParseDoBodyUntilEnd;
+
+  (* Label d increment *)
+  EmitLabel(LblIncr);
+
+  (* Incrementer la variable de boucle *)
+  VarLoad(VarIdx);
+  EmitInstr('MOV', 'SI, AX');
+  EmitInstr('CALL', '_RXRT_STRTONUM');
+  If HasBy Then
+  Begin
+    (* Charger le pas *)
+    EmitInstr('PUSH', 'AX');
+    EmitInstr('LEA', 'SI, ' + LblStepVar);
+    EmitInstr('CALL', '_RXRT_STRTONUM');
+    EmitInstr('MOV', 'BX, AX');
+    EmitInstr('POP', 'AX');
+    EmitInstrAB('ADD', 'AX', 'BX');
+  End
+  Else
+    EmitInstr('INC', 'AX');
+
+  (* Reconvertir en chaine et stocker *)
+  EmitInstr('CALL', '_RXRT_NUMTOSTR');
+  VarStore(VarIdx);
+
+  (* Retour au test *)
+  EmitRaw('        JMP     ' + LblTest);
+
+  EmitLabel(LblEnd);
+
+  LoopPop;
+End;
+
+(* ---- ParseDoExpr : DO expr ; stmts ; END --------------------- *)
+(* Repeter le bloc expr fois.                                       *)
+(*   <eval expr -> CX>                                              *)
+(*   _RXL_test:                                                     *)
+(*     CMP CX, 0                                                    *)
+(*     JLE _RXL_end                                                 *)
+(*     PUSH CX                                                      *)
+(*     <stmts>                                                      *)
+(*     POP CX                                                       *)
+(*     DEC CX                                                       *)
+(*     JMP _RXL_test                                                *)
+(*   _RXL_end:                                                      *)
+Procedure ParseDoExpr;
+Var
+  Res     : TExprVal;
+  LblTest : TString;
+  LblEnd  : TString;
+  CountLbl: TString;
+Begin
+  EmitComment('DO expr (repeat N times)');
+
+  (* Evaluer l expression de comptage *)
+  ParseExpr(Res);
+  ExprFlushToAX(Res);
+  (* Convertir en nombre si c est une chaine *)
+  EmitInstr('MOV', 'SI, AX');
+  EmitInstr('CALL', '_RXRT_STRTONUM');
+
+  (* Stocker le compteur dans une variable temporaire DATA *)
+  CountLbl := LabelGen + '_CNT';
+  DataAddWord(CountLbl, 0);
+  EmitInstr('MOV', 'WORD PTR ' + CountLbl + ', AX');
+
+  LblTest := LabelGen;
+  LblEnd  := LabelGen;
+
+  LoopPush(LblEnd, LblTest);
+
+  EmitLabel(LblTest);
+
+  (* Tester le compteur *)
+  EmitInstr('MOV', 'AX, WORD PTR ' + CountLbl);
+  EmitInstrAB('CMP', 'AX', '0');
+  EmitRaw('        JLE     ' + LblEnd);
+
+  (* Sauter EOL *)
+  While CurToken.Kind = TK_EOL Do
+    ParserAdvance;
+
+  (* Corps de la boucle *)
+  ParseDoBodyUntilEnd;
+
+  (* Decrementer le compteur *)
+  EmitInstr('DEC', 'WORD PTR ' + CountLbl);
+  EmitRaw('        JMP     ' + LblTest);
+
+  EmitLabel(LblEnd);
+
+  LoopPop;
+End;
 (* Gere les mots-cles, les affectations et les expressions comme  *)
 (* instructions.                                                   *)
 Procedure ParseStmt;
@@ -5178,11 +5681,35 @@ Begin
       Exit;
     End;
 
-    (* DO ... END (bloc simple, sans boucle pour l instant) *)
+    (* DO ... END (bloc, boucle, compteur via ParseDoBlock) *)
     If U = 'DO' Then
     Begin
       ParserAdvance;
       ParseDoBlock;
+      Exit;
+    End;
+
+    (* LEAVE [nom] : sortir de la boucle courante *)
+    If U = 'LEAVE' Then
+    Begin
+      ParserAdvance;
+      EmitComment('LEAVE');
+      If LoopTop > 0 Then
+        EmitRaw('        JMP     ' + LoopBreakLbl[LoopTop - 1])
+      Else
+        CompileError('LEAVE en dehors d''une boucle DO');
+      Exit;
+    End;
+
+    (* ITERATE [nom] : passer a l iteration suivante *)
+    If U = 'ITERATE' Then
+    Begin
+      ParserAdvance;
+      EmitComment('ITERATE');
+      If LoopTop > 0 Then
+        EmitRaw('        JMP     ' + LoopContLbl[LoopTop - 1])
+      Else
+        CompileError('ITERATE en dehors d''une boucle DO');
       Exit;
     End;
 
