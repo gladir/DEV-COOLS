@@ -339,7 +339,7 @@
             ord(c) : caractere -> entier -> AX
             Operateur in : sub in s -> CALL _PYRT_STRCONTAINS -> AX=0|1
 
-  TODO 21 - GESTION DES EXCEPTIONS (try / except / finally / raise)
+  TODO 21 - GESTION DES EXCEPTIONS (try / except / finally / raise) [IMPLEMENTE]
             ParseTryStmt : try: bloc except [Type [as var]]: bloc [finally: bloc]
               try: bloc -> sauvegarder handler courant, installer nouveau
               except ExceptionType: bloc -> label _PYL_EXCEPT_N, CMP code exception
@@ -441,6 +441,7 @@ Const
   MAX_TYPE       = {$IFDEF FPC}32{$ELSE}16{$ENDIF};
   MAX_PARAM      = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
   MAX_LOOP_NEST  = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
+  MAX_TRY_NEST   = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
   MAX_ERRORS     = {$IFDEF FPC}30{$ELSE}3{$ENDIF};
   MAX_STR        = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
   STACK_SIZE     = 1024;
@@ -657,6 +658,12 @@ Var
   LoopElseStack  : Array[0..MAX_LOOP_NEST - 1] Of TString;
   LoopTop        : Integer;
 
+  { Pile de try/except (TODO 21) }
+  TryExceptStack  : Array[0..MAX_TRY_NEST - 1] Of TString;
+  TryFinallyStack : Array[0..MAX_TRY_NEST - 1] Of TString;
+  TryEndStack     : Array[0..MAX_TRY_NEST - 1] Of TString;
+  TryTop          : Integer;
+
   { Gestion des fonctions (TODO 17) }
   FuncRetLabel   : TString;    { label d epilogue pour return       }
   FuncLocalsSize : Integer;    { taille des locaux en octets        }
@@ -788,6 +795,9 @@ Procedure ParseTupleLiteral(Var Res : TExprVal); Forward;
 Procedure EmitTupleRuntime; Forward;
 { TODO 20 - Forward declaration runtime chaines avancees }
 Procedure EmitStrRuntime; Forward;
+{ TODO 21 - Forward declarations exceptions }
+Procedure ParseTryStmt;   Forward;
+Procedure ParseRaiseStmt; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1030,6 +1040,8 @@ Begin
   CurScope  := 0;
   { TODO 14 : pile de boucles }
   LoopTop   := 0;
+  { TODO 21 : exceptions }
+  TryTop    := 0;
   { TODO 17 : fonctions }
   FuncRetLabel   := '';
   FuncLocalsSize := 0;
@@ -2296,6 +2308,10 @@ Begin
   EmitRaw('_PY_FOREND   DW 0');
   EmitRaw('_PY_FORSTEP  DW 0');
   EmitRaw('_PY_FORITER  DW 0');
+  EmitRaw('');
+  { Donnees pour gestion des exceptions (TODO 21) }
+  EmitRaw('_PY_EXCFLAG  DW 0');
+  EmitRaw('_PY_EXCVAL   DW 0');
   EmitRaw('');
   { Heap statique pour allocations dynamiques (listes, dicts, objets) }
   EmitRaw('_PY_HEAP    DB  4096 DUP(0)');
@@ -7298,6 +7314,185 @@ Begin
   EmitInstr('POP    BX');
   EmitInstr('RET');
 End;
+
+{ ============================================================
+  TODO 21 - GESTION DES EXCEPTIONS [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- TryPush : empiler les labels d un nouveau try/except ------ }
+Procedure TryPush(ExceptLbl, FinallyLbl, EndLbl : TString);
+Begin
+  If TryTop >= MAX_TRY_NEST Then
+  Begin
+    CompileError('trop de try imbriques', CurToken.Line);
+    Exit;
+  End;
+  TryExceptStack[TryTop]  := ExceptLbl;
+  TryFinallyStack[TryTop] := FinallyLbl;
+  TryEndStack[TryTop]     := EndLbl;
+  Inc(TryTop);
+End;
+
+{ ---- TryPop : depiler les labels du try courant ----------------- }
+Procedure TryPop;
+Begin
+  If TryTop > 0 Then
+    Dec(TryTop);
+End;
+
+{ ---- ParseTryStmt : try: bloc except [Type [as var]]: bloc ------- }
+{ Mecanisme : _PY_EXCFLAG = 0 (pas d exception), 1 (exception)     }
+{ try:   -> executer le bloc, si pas d exception sauter a else/end  }
+{ except: -> tester _PY_EXCFLAG, executer handler, clear flag       }
+{ finally: -> toujours execute (label finally)                       }
+{ raise:  -> positionner _PY_EXCFLAG et sauter a except              }
+Procedure ParseTryStmt;
+Var
+  LblExcept  : TString;
+  LblFinally : TString;
+  LblEnd     : TString;
+  LblElse    : TString;
+  HasFinally : Boolean;
+  HasElse    : Boolean;
+  ExcVarName : TString;
+  ExcVarIdx  : Integer;
+Begin
+  EmitComment('-- try --');
+  ParserAdvance;  { consommer 'try' }
+
+  LblExcept  := LabelGen;
+  LblFinally := LabelGen;
+  LblEnd     := LabelGen;
+  LblElse    := LabelGen;
+  HasFinally := False;
+  HasElse    := False;
+
+  { Initialiser le flag d exception a 0 }
+  EmitInstr('MOV    WORD PTR [_PY_EXCFLAG], 0');
+
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+    ParserAdvance;
+
+  { Empiler le contexte try }
+  TryPush(LblExcept, LblFinally, LblEnd);
+
+  { Parser le bloc try }
+  ParseBlock;
+
+  { Si pas d exception, sauter a else ou finally ou end }
+  EmitInstr('CMP    WORD PTR [_PY_EXCFLAG], 0');
+  EmitInstr('JNE    ' + LblExcept);
+  EmitInstr('JMP    ' + LblElse);
+
+  { Label except }
+  EmitLabel(LblExcept);
+
+  { Parser les clauses except }
+  While (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'except') Do
+  Begin
+    EmitComment('-- except --');
+    ParserAdvance;  { consommer 'except' }
+
+    { except avec type ou except generique }
+    If (CurToken.Kind = TK_IDENT) Then
+    Begin
+      { except ExceptionType [as var]: }
+      ParserAdvance;  { consommer le type (ignore pour simplification) }
+      If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'as') Then
+      Begin
+        ParserAdvance;  { consommer 'as' }
+        If CurToken.Kind = TK_IDENT Then
+        Begin
+          ExcVarName := CurToken.Val;
+          ParserAdvance;  { consommer le nom de variable }
+          { Stocker la valeur d exception dans la variable }
+          ExcVarIdx := SymFind(ExcVarName);
+          If ExcVarIdx < 0 Then
+            ExcVarIdx := SymAdd(ExcVarName, SK_GLOBAL, TY_IDX_INT, 0);
+          EmitInstr('MOV    AX, [_PY_EXCVAL]');
+          EmitInstr('MOV    [' + SymTab[ExcVarIdx].MangledName + '], AX');
+        End;
+      End;
+    End;
+
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+      ParserAdvance;
+
+    { Parser le bloc except }
+    ParseBlock;
+
+    { Apres le handler, effacer le flag et sauter a finally/end }
+    EmitInstr('MOV    WORD PTR [_PY_EXCFLAG], 0');
+    EmitInstr('JMP    ' + LblFinally);
+  End;
+
+  { Si aucun handler n a traite, sauter a finally quand meme }
+  EmitInstr('JMP    ' + LblFinally);
+
+  { Label else (execute si aucune exception) }
+  EmitLabel(LblElse);
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'else') Then
+  Begin
+    HasElse := True;
+    EmitComment('-- try/else --');
+    ParserAdvance;  { consommer 'else' }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+      ParserAdvance;
+    ParseBlock;
+  End;
+
+  { Label finally }
+  EmitLabel(LblFinally);
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'finally') Then
+  Begin
+    HasFinally := True;
+    EmitComment('-- finally --');
+    ParserAdvance;  { consommer 'finally' }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+      ParserAdvance;
+    ParseBlock;
+  End;
+
+  { Label fin du try/except/finally }
+  EmitLabel(LblEnd);
+
+  { Depiler le contexte try }
+  TryPop;
+End;
+
+{ ---- ParseRaiseStmt : raise [expression] ------------------------- }
+Procedure ParseRaiseStmt;
+Var
+  E : TExprVal;
+Begin
+  EmitComment('-- raise --');
+  ParserAdvance;  { consommer 'raise' }
+
+  { Positionner le flag d exception }
+  EmitInstr('MOV    WORD PTR [_PY_EXCFLAG], 1');
+
+  { Si une expression suit, l evaluer comme valeur d exception }
+  If (CurToken.Kind <> TK_NEWLINE) And (CurToken.Kind <> TK_EOF) And
+     (CurToken.Kind <> TK_DEDENT) Then
+  Begin
+    ParseExpr(E);
+    ExprFlushToAX(E);
+    EmitInstr('MOV    [_PY_EXCVAL], AX');
+  End;
+
+  { Sauter au handler except le plus proche }
+  If TryTop > 0 Then
+    EmitInstr('JMP    ' + TryExceptStack[TryTop - 1])
+  Else
+  Begin
+    { raise sans handler : afficher erreur et quitter }
+    EmitComment('raise sans handler : halt');
+    EmitInstr('MOV    AX, 4C01h');
+    EmitInstr('INT    21h');
+  End;
+End;
+
+{ ---- ParseBlock : parser un bloc indente ---------------------- }
 { Attend NEWLINE INDENT ... instructions ... DEDENT              }
 Procedure ParseBlock;
 Var
@@ -7449,6 +7644,20 @@ Begin
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
           ParserAdvance;
       End;
+      Continue;
+    End;
+    { try/except/finally (TODO 21) }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'try') Then
+    Begin
+      ParseTryStmt;
+      If CurToken.Kind = TK_NEWLINE Then ParserAdvance;
+      Continue;
+    End;
+    { raise (TODO 21) }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'raise') Then
+    Begin
+      ParseRaiseStmt;
+      If CurToken.Kind = TK_NEWLINE Then ParserAdvance;
       Continue;
     End;
     { Autres mots-cles (stub) - sauter la ligne }
@@ -7890,6 +8099,20 @@ Begin
             ParserAdvance;
         End;
       End;
+      If CurToken.Kind = TK_NEWLINE Then ParserAdvance;
+      Continue;
+    End;
+    { Instruction try/except/finally (TODO 21) }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'try') Then
+    Begin
+      ParseTryStmt;
+      If CurToken.Kind = TK_NEWLINE Then ParserAdvance;
+      Continue;
+    End;
+    { Instruction raise (TODO 21) }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'raise') Then
+    Begin
+      ParseRaiseStmt;
       If CurToken.Kind = TK_NEWLINE Then ParserAdvance;
       Continue;
     End;
