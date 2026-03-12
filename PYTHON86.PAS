@@ -151,15 +151,15 @@
               init DS, EmitProlog, code utilisateur, EmitEpilog,
               sortie DOS (MOV AX,4C00h / INT 21h)
 
-  TODO 08 - SEGMENT DE DONNEES ET STATIQUES
+  TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
             TDataRec : LblName, Kind (DK_WORD/DK_BYTE/DK_STR/DK_LIST/DK_DICT),
               IntVal, StrVal, ElemCount
             DataTab[0..MAX_DATA-1], DataCount
-            DataAdd, DataAddStr, DataAddList : variantes d ajout
+            DataAdd, DataAddStr, DataAddList, DataAddDict : variantes d ajout
             Variables globales : entrees DK_WORD dans DATA
             Chaines litterales : DB 'abc',0 dans DATA avec label _PYK_N
-            Listes litterales : suite de DW dans DATA pour les elements
-            Dictionnaires litteraux : paires cle/valeur dans DATA
+            Listes litterales : suite de DW dans DATA pour les elements (DK_LIST)
+            Dictionnaires litteraux : paires cle/valeur dans DATA (DK_DICT)
             Heap statique : _PY_HEAP DB 4096 DUP(0) + _PY_HEAPTOP DW 0
 
   TODO 09 - VARIABLES ET AFFECTATIONS
@@ -527,7 +527,7 @@ Type
   End;
 
   { ---- Segment de donnees (TODO 03) ------------------------ }
-  TDataKind = (DK_WORD, DK_BYTE, DK_STR, DK_ARRAY_BLK);
+  TDataKind = (DK_WORD, DK_BYTE, DK_STR, DK_ARRAY_BLK, DK_LIST, DK_DICT);
 
   TDataRec = Record
     LblName   : TString;
@@ -658,6 +658,11 @@ Function  DataAdd(Const Lbl : TString; Kind : TDataKind;
 Function  DataAddStr(Const S : TString) : TString; Forward;
 Function  DataAddWord(Const Lbl : TString;
                       AIntVal : LongInt) : Integer; Forward;
+{ TODO 08 - Forward declarations segment de donnees }
+Function  DataAddList(Const Lbl : TString;
+                      AElemCount : Integer) : Integer; Forward;
+Function  DataAddDict(Const Lbl : TString;
+                      APairCount : Integer) : Integer; Forward;
 Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
                       Var Res : TExprVal); Forward;
 Procedure ExprMakeNone(Var Res : TExprVal); Forward;
@@ -2000,6 +2005,50 @@ Begin
   DataAddWord := DataAdd(Lbl, DK_WORD, AIntVal, '');
 End;
 
+{ ============================================================
+  TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
+  ============================================================ }
+
+{ DataAddList : creer une entree DK_LIST dans DataTab.            }
+{ AElemCount elements de 16 bits (DW) seront reserves.            }
+{ Les elements sont initialises a 0 ; le code generateur remplit  }
+{ les valeurs effectives.                                          }
+Function DataAddList(Const Lbl : TString;
+                     AElemCount : Integer) : Integer;
+Var
+  Idx : Integer;
+Begin
+  If DataCount >= MAX_DATA Then
+    FatalError('DataTab pleine (MAX_DATA atteint)');
+  Idx := DataCount;
+  DataTab[Idx].LblName   := Lbl;
+  DataTab[Idx].Kind      := DK_LIST;
+  DataTab[Idx].IntVal    := 0;
+  DataTab[Idx].StrVal    := '';
+  DataTab[Idx].ElemCount := AElemCount;
+  Inc(DataCount);
+  DataAddList := Idx;
+End;
+
+{ DataAddDict : creer une entree DK_DICT dans DataTab.            }
+{ APairCount paires cle/valeur -> 2*APairCount mots de 16 bits.   }
+Function DataAddDict(Const Lbl : TString;
+                     APairCount : Integer) : Integer;
+Var
+  Idx : Integer;
+Begin
+  If DataCount >= MAX_DATA Then
+    FatalError('DataTab pleine (MAX_DATA atteint)');
+  Idx := DataCount;
+  DataTab[Idx].LblName   := Lbl;
+  DataTab[Idx].Kind      := DK_DICT;
+  DataTab[Idx].IntVal    := 0;
+  DataTab[Idx].StrVal    := '';
+  DataTab[Idx].ElemCount := APairCount;
+  Inc(DataCount);
+  DataAddDict := Idx;
+End;
+
 { ---- Constructeurs TExprVal --------------------------------- }
 
 { ExprMakeImm : valeur immediate constante }
@@ -2144,6 +2193,10 @@ Begin
   { Buffer de travail pour concatenation de chaines }
   EmitRaw('_PY_STRBUF  DB  256 DUP(0)');
   EmitRaw('');
+  { Heap statique pour allocations dynamiques (listes, dicts, objets) }
+  EmitRaw('_PY_HEAP    DB  4096 DUP(0)');
+  EmitRaw('_PY_HEAPTOP DW  0');
+  EmitRaw('');
   { Emettre toutes les entrees de DataTab }
   For I := 0 To DataCount - 1 Do
   Begin
@@ -2174,6 +2227,24 @@ Begin
       DK_ARRAY_BLK :
         EmitRaw(DataTab[I].LblName + '  DW  ' +
                 IntToStr_(DataTab[I].ElemCount) + ' DUP(0)');
+      DK_LIST :
+      Begin
+        { Liste litterale : ElemCount mots de 16 bits initialises a 0 }
+        If DataTab[I].ElemCount <= 0 Then
+          EmitRaw(DataTab[I].LblName + '  DW  0')
+        Else
+          EmitRaw(DataTab[I].LblName + '  DW  ' +
+                  IntToStr_(DataTab[I].ElemCount) + ' DUP(0)');
+      End;
+      DK_DICT :
+      Begin
+        { Dictionnaire : 2*ElemCount mots (paires cle/valeur) }
+        If DataTab[I].ElemCount <= 0 Then
+          EmitRaw(DataTab[I].LblName + '  DW  0')
+        Else
+          EmitRaw(DataTab[I].LblName + '  DW  ' +
+                  IntToStr_(DataTab[I].ElemCount * 2) + ' DUP(0)');
+      End;
     End;
   End;
   EmitRaw('');
