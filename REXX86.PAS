@@ -4031,7 +4031,6 @@ Begin
   Else If Op = '>=' Then
   Begin
     LblSkip := LabelGen;
-    LblDone := LabelGen;
     EmitInstr('MOV', 'SI, AX');
     EmitInstr('MOV', 'DI, BX');
     EmitRaw('        CALL    _RXRT_STRCMP');
@@ -4045,7 +4044,6 @@ Begin
   Else If Op = '<=' Then
   Begin
     LblSkip := LabelGen;
-    LblDone := LabelGen;
     EmitInstr('MOV', 'SI, AX');
     EmitInstr('MOV', 'DI, BX');
     EmitRaw('        CALL    _RXRT_STRCMP');
