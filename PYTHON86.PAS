@@ -231,7 +231,7 @@
             Valeurs truthy/falsy : 0, None, '', [] sont falsy,
               tout le reste est truthy -> TEST AX,AX
 
-  TODO 14 - BOUCLES : while / for / break / continue / else
+  TODO 14 - BOUCLES : while / for / break / continue / else [IMPLEMENTE]
             ParseWhileStmt : while cond: bloc [else: bloc]
               Labels : _PYL_WTEST_N, _PYL_WEND_N, _PYL_WELSE_N
               Le bloc else est execute si la boucle termine normalement
@@ -636,6 +636,12 @@ Var
   TypeTab     : Array[0..MAX_TYPE - 1] Of TTypeRec;
   TypeCount   : Integer;
 
+  { Pile de boucles (TODO 14) }
+  LoopBreakStack : Array[0..MAX_LOOP_NEST - 1] Of TString;
+  LoopContStack  : Array[0..MAX_LOOP_NEST - 1] Of TString;
+  LoopElseStack  : Array[0..MAX_LOOP_NEST - 1] Of TString;
+  LoopTop        : Integer;
+
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
@@ -734,6 +740,9 @@ Procedure EmitIORuntime;  Forward;
 { TODO 13 - Forward declarations if/elif/else }
 Procedure ParseBlock;    Forward;
 Procedure ParseIfStmt;   Forward;
+{ TODO 14 - Forward declarations boucles }
+Procedure ParseWhileStmt; Forward;
+Procedure ParseForStmt;   Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -974,6 +983,8 @@ Begin
   SymCount  := 0;
   ScopeTop  := 0;
   CurScope  := 0;
+  { TODO 14 : pile de boucles }
+  LoopTop   := 0;
 End;
 
 { ============================================================
@@ -2225,6 +2236,11 @@ Begin
   EmitRaw('_PY_INPUTMX DB  126');
   EmitRaw('_PY_INPUTLN DB  0');
   EmitRaw('_PY_INPUTBF DB  128 DUP(0)');
+  EmitRaw('');
+  { Donnees pour boucle for (TODO 14) }
+  EmitRaw('_PY_FOREND   DW 0');
+  EmitRaw('_PY_FORSTEP  DW 0');
+  EmitRaw('_PY_FORITER  DW 0');
   EmitRaw('');
   { Heap statique pour allocations dynamiques (listes, dicts, objets) }
   EmitRaw('_PY_HEAP    DB  4096 DUP(0)');
@@ -4717,6 +4733,277 @@ Begin
 End;
 
 { ============================================================
+  TODO 14 - BOUCLES : while / for / break / continue / else [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- LoopPush : empiler les labels d une nouvelle boucle -------- }
+Procedure LoopPush(BreakLbl, ContLbl, ElseLbl : TString);
+Begin
+  If LoopTop >= MAX_LOOP_NEST Then
+  Begin
+    CompileError('trop de boucles imbriquees', CurToken.Line);
+    Exit;
+  End;
+  LoopBreakStack[LoopTop] := BreakLbl;
+  LoopContStack[LoopTop]  := ContLbl;
+  LoopElseStack[LoopTop]  := ElseLbl;
+  Inc(LoopTop);
+End;
+
+{ ---- LoopPop : depiler les labels de la boucle courante --------- }
+Procedure LoopPop;
+Begin
+  If LoopTop > 0 Then
+    Dec(LoopTop);
+End;
+
+{ ---- ParseWhileStmt : while cond: bloc [else: bloc] ------------- }
+Procedure ParseWhileStmt;
+Var
+  LblTest  : TString;
+  LblEnd   : TString;
+  LblElse  : TString;
+  CondRes  : TExprVal;
+  HasElse  : Boolean;
+Begin
+  EmitComment('-- while --');
+  ParserAdvance; { consommer 'while' }
+
+  LblTest := LabelGen;
+  LblEnd  := LabelGen;
+  LblElse := LabelGen;
+
+  { Label de test (re-evaluation de la condition) }
+  EmitLabel(LblTest);
+
+  { Parser la condition }
+  ParseExpr(CondRes);
+  ExprFlushToAX(CondRes);
+
+  { Attendre ':' }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+    ParserAdvance
+  Else
+    CompileError(''':'' attendu apres condition while', CurToken.Line);
+
+  { Saut conditionnel vers else ou fin si faux }
+  EmitInstr('TEST   AX, AX');
+  EmitInstr('JZ     ' + LblElse);
+
+  { Empiler les labels pour break/continue }
+  LoopPush(LblEnd, LblTest, LblElse);
+
+  { Parser le corps de la boucle }
+  ParseBlock;
+
+  { Saut vers le test }
+  EmitInstr('JMP    ' + LblTest);
+
+  { Depiler les labels de boucle }
+  LoopPop;
+
+  { Bloc else optionnel (execute si la boucle termine normalement) }
+  EmitLabel(LblElse);
+  HasElse := False;
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'else') Then
+  Begin
+    HasElse := True;
+    EmitComment('-- while else --');
+    ParserAdvance;
+
+    { Attendre ':' }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+      ParserAdvance
+    Else
+      CompileError(''':'' attendu apres else', CurToken.Line);
+
+    { Parser le bloc else }
+    ParseBlock;
+  End;
+
+  { Label de fin }
+  EmitLabel(LblEnd);
+End;
+
+{ ---- ParseForStmt : for var in range(...): bloc [else: bloc] ----- }
+{ Supporte : for x in range(n), range(a,b), range(a,b,step)         }
+Procedure ParseForStmt;
+Var
+  LblTest, LblIncr, LblEnd, LblElse : TString;
+  VarName   : TString;
+  VarIdx    : Integer;
+  StartRes, EndRes, StepRes : TExprVal;
+  HasStep   : Boolean;
+  HasElse   : Boolean;
+Begin
+  EmitComment('-- for --');
+  ParserAdvance; { consommer 'for' }
+
+  LblTest := LabelGen;
+  LblIncr := LabelGen;
+  LblEnd  := LabelGen;
+  LblElse := LabelGen;
+
+  { Parser le nom de la variable }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('identifiant attendu apres for', CurToken.Line);
+    Exit;
+  End;
+  VarName := CurToken.Val;
+  VarIdx := SymFind(VarName);
+  If VarIdx < 0 Then
+    VarIdx := SymAdd(VarName, SK_VAR, TY_IDX_INT, 0);
+  EnsureVarInData(VarIdx);
+  ParserAdvance;
+
+  { Attendre 'in' }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'in') Then
+    ParserAdvance
+  Else
+    CompileError('''in'' attendu apres variable for', CurToken.Line);
+
+  { Parser l iterable : range(n), range(a,b), range(a,b,step) }
+  HasStep := False;
+  If (CurToken.Kind = TK_IDENT) And (CurToken.Val = 'range') Then
+  Begin
+    ParserAdvance; { consommer 'range' }
+
+    { Attendre '(' }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      ParserAdvance;
+
+    { Premier argument }
+    ParseExpr(StartRes);
+    ExprFlushToAX(StartRes);
+    EmitInstr('PUSH   AX');   { sauvegarder arg1 }
+
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+    Begin
+      ParserAdvance;
+      { Deuxieme argument : range(start, end) }
+      ParseExpr(EndRes);
+      ExprFlushToAX(EndRes);
+      EmitInstr('PUSH   AX');   { sauvegarder end }
+
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      Begin
+        ParserAdvance;
+        { Troisieme argument : range(start, end, step) }
+        HasStep := True;
+        ParseExpr(StepRes);
+        ExprFlushToAX(StepRes);
+        EmitInstr('PUSH   AX');   { sauvegarder step }
+      End;
+
+      { Attendre ')' }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        ParserAdvance;
+
+      If HasStep Then
+      Begin
+        { range(start, end, step) : step dans PUSH, end dans PUSH, start dans PUSH }
+        EmitInstr('POP    CX');    { CX = step }
+        EmitInstr('POP    BX');    { BX = end  }
+        EmitInstr('POP    AX');    { AX = start }
+        EmitInstr('MOV    [' + SymTab[VarIdx].MangledName + '], AX');
+        EmitInstr('MOV    [_PY_FOREND], BX');
+        EmitInstr('MOV    [_PY_FORSTEP], CX');
+      End
+      Else
+      Begin
+        { range(start, end) : end dans PUSH, start dans PUSH }
+        EmitInstr('POP    BX');    { BX = end }
+        EmitInstr('POP    AX');    { AX = start }
+        EmitInstr('MOV    [' + SymTab[VarIdx].MangledName + '], AX');
+        EmitInstr('MOV    [_PY_FOREND], BX');
+        EmitInstr('MOV    WORD PTR [_PY_FORSTEP], 1');
+      End;
+    End
+    Else
+    Begin
+      { range(n) : n est la fin, debut = 0 }
+      { Attendre ')' }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        ParserAdvance;
+
+      EmitInstr('POP    BX');    { BX = n }
+      EmitInstr('MOV    [_PY_FOREND], BX');
+      EmitInstr('MOV    WORD PTR [' + SymTab[VarIdx].MangledName + '], 0');
+      EmitInstr('MOV    WORD PTR [_PY_FORSTEP], 1');
+    End;
+  End
+  Else
+  Begin
+    { for elem in iterable : iteration generique (stub basique) }
+    { On evalue l iterable et on itere sur les caracteres si string }
+    ParseExpr(StartRes);
+    ExprFlushToAX(StartRes);
+    EmitInstr('MOV    SI, AX');        { SI = ptr iterable }
+    EmitInstr('MOV    WORD PTR [' + SymTab[VarIdx].MangledName + '], 0'); { index = 0 }
+    { Stocker la longueur dans _PY_FOREND }
+    EmitInstr('CALL   _PYRT_LEN');     { AX = longueur }
+    EmitInstr('MOV    [_PY_FOREND], AX');
+    EmitInstr('MOV    WORD PTR [_PY_FORSTEP], 1');
+    EmitInstr('MOV    [_PY_FORITER], SI'); { sauvegarder le ptr iterable }
+  End;
+
+  { Attendre ':' }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+    ParserAdvance
+  Else
+    CompileError(''':'' attendu apres for', CurToken.Line);
+
+  { Empiler les labels pour break/continue }
+  LoopPush(LblEnd, LblIncr, LblElse);
+
+  { Label de test }
+  EmitLabel(LblTest);
+
+  { Comparaison : var < end (ou > end si step negatif) }
+  EmitInstr('MOV    AX, [' + SymTab[VarIdx].MangledName + ']');
+  EmitInstr('CMP    AX, [_PY_FOREND]');
+  EmitInstr('JGE    ' + LblElse);
+
+  { Corps de la boucle }
+  ParseBlock;
+
+  { Label d increment }
+  EmitLabel(LblIncr);
+
+  { Incrementer la variable }
+  EmitInstr('MOV    AX, [' + SymTab[VarIdx].MangledName + ']');
+  EmitInstr('ADD    AX, [_PY_FORSTEP]');
+  EmitInstr('MOV    [' + SymTab[VarIdx].MangledName + '], AX');
+
+  { Saut vers le test }
+  EmitInstr('JMP    ' + LblTest);
+
+  { Bloc else optionnel }
+  EmitLabel(LblElse);
+  HasElse := False;
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'else') Then
+  Begin
+    HasElse := True;
+    EmitComment('-- for else --');
+    ParserAdvance;
+
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+      ParserAdvance
+    Else
+      CompileError(''':'' attendu apres else', CurToken.Line);
+
+    ParseBlock;
+  End;
+
+  { Label de fin }
+  EmitLabel(LblEnd);
+
+  { Depiler les labels de boucle }
+  LoopPop;
+End;
+
+{ ============================================================
   TODO 13 - IF / ELIF / ELSE [IMPLEMENTE]
   ============================================================ }
 
@@ -4757,6 +5044,42 @@ Begin
     If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'if') Then
     Begin
       ParseIfStmt;
+      Continue;
+    End;
+    { while (TODO 14) }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'while') Then
+    Begin
+      ParseWhileStmt;
+      Continue;
+    End;
+    { for (TODO 14) }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'for') Then
+    Begin
+      ParseForStmt;
+      Continue;
+    End;
+    { break (TODO 14) }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'break') Then
+    Begin
+      EmitComment('break');
+      If LoopTop > 0 Then
+        EmitInstr('JMP    ' + LoopBreakStack[LoopTop - 1])
+      Else
+        CompileError('break en dehors d''une boucle', CurToken.Line);
+      ParserAdvance;
+      If CurToken.Kind = TK_NEWLINE Then ParserAdvance;
+      Continue;
+    End;
+    { continue (TODO 14) }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'continue') Then
+    Begin
+      EmitComment('continue');
+      If LoopTop > 0 Then
+        EmitInstr('JMP    ' + LoopContStack[LoopTop - 1])
+      Else
+        CompileError('continue en dehors d''une boucle', CurToken.Line);
+      ParserAdvance;
+      If CurToken.Kind = TK_NEWLINE Then ParserAdvance;
       Continue;
     End;
     { pass : instruction vide }
@@ -5041,6 +5364,42 @@ Begin
     If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'if') Then
     Begin
       ParseIfStmt;
+      Continue;
+    End;
+    { Instruction while (TODO 14) }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'while') Then
+    Begin
+      ParseWhileStmt;
+      Continue;
+    End;
+    { Instruction for (TODO 14) }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'for') Then
+    Begin
+      ParseForStmt;
+      Continue;
+    End;
+    { Instruction break (TODO 14) }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'break') Then
+    Begin
+      EmitComment('break');
+      If LoopTop > 0 Then
+        EmitInstr('JMP    ' + LoopBreakStack[LoopTop - 1])
+      Else
+        CompileError('break en dehors d''une boucle', CurToken.Line);
+      ParserAdvance;
+      If CurToken.Kind = TK_NEWLINE Then ParserAdvance;
+      Continue;
+    End;
+    { Instruction continue (TODO 14) }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'continue') Then
+    Begin
+      EmitComment('continue');
+      If LoopTop > 0 Then
+        EmitInstr('JMP    ' + LoopContStack[LoopTop - 1])
+      Else
+        CompileError('continue en dehors d''une boucle', CurToken.Line);
+      ParserAdvance;
+      If CurToken.Kind = TK_NEWLINE Then ParserAdvance;
       Continue;
     End;
     { Instruction pass (TODO 13) }
