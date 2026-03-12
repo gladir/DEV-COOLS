@@ -848,6 +848,7 @@ Function  DataAddArray(Const Lbl : TString; ACount : Integer) : Integer; Forward
 Function  DataAddObj(Const Lbl : TString; ASize : Integer) : Integer; Forward;
 Procedure DataInit;      Forward;
 Procedure EmitRuntime;   Forward;
+Procedure EmitExprRuntime; Forward;
 Procedure EmitHeader;    Forward;
 { TODO 09 - Variables }
 Function  ExprAddrOf(SIdx : Integer) : TString; Forward;
@@ -2877,7 +2878,41 @@ Begin
       Else
         EmitInstrA('POP', 'AX');
       (* AX = gauche, BX = droite *)
-      If Op = '+' Then
+      (* --- String concatenation : + avec chaine --- *)
+      If (Op = '+') And
+         ((Res.TypeIdx = TY_IDX_STRING) Or
+          (Right.TypeIdx = TY_IDX_STRING)) Then
+      Begin
+        EmitInstrAB('MOV', 'SI', 'AX');
+        EmitInstrAB('MOV', 'DI', 'BX');
+        EmitInstrA('CALL', '_KTRT_CONCAT');
+      End
+      (* --- String comparison : ==, !=, <, <=, >, >= avec chaines --- *)
+      Else If ((Op = '==') Or (Op = '!=') Or (Op = '<') Or
+               (Op = '<=') Or (Op = '>') Or (Op = '>=')) And
+              (Res.TypeIdx = TY_IDX_STRING) And
+              (Right.TypeIdx = TY_IDX_STRING) Then
+      Begin
+        EmitInstrAB('MOV', 'SI', 'AX');
+        EmitInstrAB('MOV', 'DI', 'BX');
+        EmitInstrA('CALL', '_KTRT_STRCMP');
+        LblSkip := LabelGen;
+        LblEnd  := LabelGen;
+        EmitInstrAB('CMP', 'AX', '0');
+        If Op = '==' Then EmitInstrA('JE', LblSkip)
+        Else If Op = '!=' Then EmitInstrA('JNE', LblSkip)
+        Else If Op = '<' Then EmitInstrA('JL', LblSkip)
+        Else If Op = '<=' Then EmitInstrA('JLE', LblSkip)
+        Else If Op = '>' Then EmitInstrA('JG', LblSkip)
+        Else EmitInstrA('JGE', LblSkip);
+        EmitInstrAB('XOR', 'AX', 'AX');
+        EmitInstrA('JMP', LblEnd);
+        EmitLabel(LblSkip);
+        EmitInstrAB('MOV', 'AX', '1');
+        EmitLabel(LblEnd);
+      End
+      (* --- Integer + --- *)
+      Else If Op = '+' Then
         EmitInstrAB('ADD', 'AX', 'BX')
       Else If Op = '-' Then
         EmitInstrAB('SUB', 'AX', 'BX')
@@ -3007,6 +3042,10 @@ Begin
       If (Op = '==') Or (Op = '!=') Or (Op = '===') Or (Op = '!==') Or
          (Op = '<') Or (Op = '<=') Or (Op = '>') Or (Op = '>=') Then
         Res.TypeIdx := TY_IDX_BOOLEAN
+      Else If (Op = '+') And
+              ((Res.TypeIdx = TY_IDX_STRING) Or
+               (Right.TypeIdx = TY_IDX_STRING)) Then
+        Res.TypeIdx := TY_IDX_STRING
       Else
         Res.TypeIdx := TY_IDX_INT;
     End;
@@ -3533,7 +3572,81 @@ Begin
   EmitComment('=========================================================');
   EmitComment('RUNTIME MINIMAL KOTLIN86');
   EmitComment('=========================================================');
-  { stub - les routines runtime seront ajoutees dans TODO 24 }
+  EmitExprRuntime;
+End;
+
+(* ---- EmitExprRuntime : routines runtime pour expressions ------ *)
+(* _KTRT_CONCAT : concatenation de deux chaines ASCIIZ.            *)
+(*   Entree : SI = chaine source 1 (ASCIIZ)                        *)
+(*            DI = chaine source 2 (ASCIIZ)                        *)
+(*   Sortie : AX = pointeur vers _KT_STRBUF (resultat)             *)
+(* _KTRT_STRCMP : comparaison lexicographique de deux chaines.      *)
+(*   Entree : SI = chaine 1, DI = chaine 2                         *)
+(*   Sortie : AX = -1 (si SI<DI), 0 (si SI=DI), 1 (si SI>DI)     *)
+Procedure EmitExprRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('--- _KTRT_CONCAT : concatenation de chaines ---');
+  EmitComment('SI = str1 (ASCIIZ), DI = str2 (ASCIIZ) -> AX = ptr buf');
+  EmitLabel('_KTRT_CONCAT');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrAB('MOV', 'BX', 'DI');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _KT_STRBUF');
+  EmitComment('Copier str1 dans le buffer');
+  EmitLabel('_KTRT_CC1');
+  EmitInstr('LODSB');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', '_KTRT_CC2');
+  EmitInstr('STOSB');
+  EmitInstrA('JMP', '_KTRT_CC1');
+  EmitLabel('_KTRT_CC2');
+  EmitComment('Copier str2 dans le buffer');
+  EmitInstrAB('MOV', 'SI', 'BX');
+  EmitLabel('_KTRT_CC3');
+  EmitInstr('LODSB');
+  EmitInstr('STOSB');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JNZ', '_KTRT_CC3');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _KT_STRBUF');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+
+  EmitBlankLine;
+  EmitComment('--- _KTRT_STRCMP : comparaison de chaines ---');
+  EmitComment('SI = str1, DI = str2 -> AX = -1/0/+1');
+  EmitLabel('_KTRT_STRCMP');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitLabel('_KTRT_SC1');
+  EmitInstr('LODSB');
+  EmitInstrAB('MOV', 'AH', '[DI]');
+  EmitInstrA('INC', 'DI');
+  EmitInstrAB('CMP', 'AL', 'AH');
+  EmitInstrA('JNE', '_KTRT_SC2');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JNZ', '_KTRT_SC1');
+  EmitComment('Les chaines sont egales');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitLabel('_KTRT_SC2');
+  EmitInstrA('JA', '_KTRT_SC3');
+  EmitComment('str1 < str2');
+  EmitInstrAB('MOV', 'AX', '-1');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitLabel('_KTRT_SC3');
+  EmitComment('str1 > str2');
+  EmitInstrAB('MOV', 'AX', '1');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
 End;
 
 (* ---- EmitClose : fermer le fichier de sortie ASM ----------- *)
