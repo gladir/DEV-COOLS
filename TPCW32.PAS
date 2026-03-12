@@ -7007,6 +7007,7 @@ Var
   RetLbl  : TString;   { label de retour de la fonction courante  }
   LastPrimaryName : TString; { dernier ident charge par ParsePrimary }
   LastVarTypeIdx : Integer; { type index du dernier ident charge }
+  LastExprIsPascalStr : Boolean; { True = EAX pointe sur format Pascal [len][chars][NUL] }
 
   { Pile de boucles pour Break/Continue (TODO 13) }
   LoopBreakLbl : Array[0..31] Of TString;
@@ -7087,6 +7088,8 @@ Begin
           (TypeTab[ProcTab[PI].Locals[LI].TypeIdx].Kind = TYK_STRING)) Then
       Begin
         EmitInstr('LEA EAX,' + EBPOfs(ProcTab[PI].Locals[LI].Offset));
+        If TypeTab[ProcTab[PI].Locals[LI].TypeIdx].Kind = TYK_STRING Then
+          LastExprIsPascalStr := True;
         Exit;
       End;
       If ProcTab[PI].Locals[LI].Size = 1 Then
@@ -7166,6 +7169,8 @@ Begin
           (TypeTab[SymTab[SI].TypeIdx].Kind = TYK_STRING)) Then
       Begin
         EmitInstr('LEA EAX,[' + Ref + ']');
+        If TypeTab[SymTab[SI].TypeIdx].Kind = TYK_STRING Then
+          LastExprIsPascalStr := True;
         Exit;
       End;
       If TypeSizeofIdx(SymTab[SI].TypeIdx) = 1 Then
@@ -7183,7 +7188,11 @@ Begin
       (TypeTab[LastVarTypeIdx].Kind = TYK_OBJECT) Or
       (TypeTab[LastVarTypeIdx].Kind = TYK_SET) Or
       (TypeTab[LastVarTypeIdx].Kind = TYK_STRING)) Then
-    EmitInstr('LEA EAX,[' + TP_VAR_PFX + Up + ']')
+  Begin
+    EmitInstr('LEA EAX,[' + TP_VAR_PFX + Up + ']');
+    If TypeTab[LastVarTypeIdx].Kind = TYK_STRING Then
+      LastExprIsPascalStr := True;
+  End
   Else
     EmitInstr('MOV EAX,DWORD PTR [' + TP_VAR_PFX + Up + ']');
 End;
@@ -7455,6 +7464,7 @@ Var
 Begin
   LastPrimaryName := '';
   LastVarTypeIdx := -1;
+  LastExprIsPascalStr := False;
 
   If EPAtEnd Then Exit;
 
@@ -7480,6 +7490,7 @@ Begin
     Lbl := DataGetOrAddStr(TokenPool[EP].Val);
     EmitInstr('LEA EAX,[' + Lbl + ']');
     LastVarTypeIdx := TY_IDX_STRING;
+    LastExprIsPascalStr := False;  { literal ASCIIZ, pas format Pascal }
     Inc(EP);
     Exit;
   End;
@@ -7856,11 +7867,16 @@ Begin
       If EPMatch('(') Then
       Begin
         ParseExpr(PI);
-        { EAX = pointeur vers String Pascal (S[0] = longueur) }
         EmitInstr('MOV ESI,EAX');
-        EmitInstr('CALL ' + TP_RT_PFX + 'LENGTH');
+        If LastExprIsPascalStr Then
+          { EAX = pointeur vers String Pascal (S[0] = longueur) }
+          EmitInstr('CALL ' + TP_RT_PFX + 'LENGTH')
+        Else
+          { EAX = pointeur vers ASCIIZ : compter les caracteres }
+          EmitInstr('CALL ' + TP_RT_PFX + 'STRLEN');
         EPMatch(')');
       End;
+      LastExprIsPascalStr := False;
       Exit;
     End;
 
@@ -7872,6 +7888,8 @@ Begin
       Begin
         { S -> ESI }
         ParseExpr(PI);
+        If LastExprIsPascalStr Then
+          EmitInstr('INC EAX');    { sauter l octet de longueur }
         EmitInstr('PUSH EAX');
         EPMatch(',');
         { Pos -> EBX }
@@ -7899,10 +7917,14 @@ Begin
       Begin
         { SubStr -> EDI }
         ParseExpr(PI);
+        If LastExprIsPascalStr Then
+          EmitInstr('INC EAX');    { sauter l octet de longueur }
         EmitInstr('PUSH EAX');
         EPMatch(',');
         { S -> ESI }
         ParseExpr(PI);
+        If LastExprIsPascalStr Then
+          EmitInstr('INC EAX');    { sauter l octet de longueur }
         EmitInstr('MOV ESI,EAX');
         EmitInstr('POP EDI');
         EmitInstr('CALL ' + TP_RT_PFX + 'POS');
@@ -7920,10 +7942,12 @@ Begin
       Begin
         { Premier argument }
         ParseExpr(PI);
-        { EAX = pointeur vers s1, copier dans STRBUF1 }
+        { EAX = pointeur vers s1, copier dans STRBUF1 (ASCIIZ) }
         EmitInstr('MOV ESI,EAX');
+        If LastExprIsPascalStr Then
+          EmitInstr('INC ESI');         { sauter l octet de longueur }
         EmitInstr('LEA EDI,[STRBUF1]');
-        EmitInstr('CALL ' + TP_RT_PFX + 'STRASSIGN');
+        EmitInstr('CALL ' + TP_RT_PFX + 'STRASSIGN_PCHAR');
         { Arguments suivants : concatener }
         While Not EPAtEnd Do
         Begin
@@ -7932,6 +7956,8 @@ Begin
             Inc(EP);
             ParseExpr(PI);
             EmitInstr('MOV EDI,EAX');
+            If LastExprIsPascalStr Then
+              EmitInstr('INC EDI');     { sauter l octet de longueur }
             EmitInstr('LEA ESI,[STRBUF1]');
             EmitInstr('CALL ' + TP_RT_PFX + 'CONCAT');
           End
@@ -9263,6 +9289,7 @@ Var
   LblF     : TString;
   LblE     : TString;
   LeftIsStr : Boolean;
+  LeftPascal : Boolean;
 Begin
   ParseUnary(PI);
 
@@ -9281,6 +9308,7 @@ Begin
     { Detecter si la partie gauche est une chaine }
     LeftIsStr := (LastVarTypeIdx = TY_IDX_STRING) Or
                  (LastVarTypeIdx = TY_IDX_PCHAR);
+    LeftPascal := LastExprIsPascalStr;
 
     Inc(EP); { consommer l operateur }
 
@@ -9288,14 +9316,19 @@ Begin
     If (Op = '+') And LeftIsStr Then
     Begin
       EmitInstr('MOV ESI,EAX');        { ESI = chaine gauche  }
+      If LeftPascal Then
+        EmitInstr('INC ESI');           { sauter l octet de longueur }
       EmitInstr('LEA EDI,[STRBUF1]');
-      EmitInstr('CALL ' + TP_RT_PFX + 'STRASSIGN');
+      EmitInstr('CALL ' + TP_RT_PFX + 'STRASSIGN_PCHAR');
       ParseExprPrec(PI, Prec + 1);
       EmitInstr('MOV EDI,EAX');        { EDI = chaine droite  }
+      If LastExprIsPascalStr Then
+        EmitInstr('INC EDI');           { sauter l octet de longueur }
       EmitInstr('LEA ESI,[STRBUF1]');
       EmitInstr('CALL ' + TP_RT_PFX + 'CONCAT');
       EmitInstr('LEA EAX,[STRBUF1]');
       LastVarTypeIdx := TY_IDX_STRING;
+      LastExprIsPascalStr := False;     { STRBUF1 est ASCIIZ }
       Continue;
     End;
 
@@ -9303,9 +9336,13 @@ Begin
     If ((Op = '=') Or (Op = '<>') Or (Op = '<') Or (Op = '>') Or
         (Op = '<=') Or (Op = '>=')) And LeftIsStr Then
     Begin
+      If LeftPascal Then
+        EmitInstr('INC EAX');           { sauter l octet de longueur gauche }
       EmitInstr('PUSH EAX');            { sauver gauche }
       ParseExprPrec(PI, Prec + 1);
       EmitInstr('MOV EDI,EAX');         { EDI = droite  }
+      If LastExprIsPascalStr Then
+        EmitInstr('INC EDI');           { sauter l octet de longueur droite }
       EmitInstr('POP ESI');             { ESI = gauche  }
       EmitInstr('CALL ' + TP_RT_PFX + 'STRCOMPARE');
       { EAX = resultat strcompare: <0, 0, >0 }
@@ -9498,8 +9535,10 @@ Var
 Begin
   If TypeIdx = TY_IDX_STRING Then
   Begin
-    { EAX = pointeur ASCIIZ -> afficher directement }
+    { EAX = pointeur vers chaine }
     EmitInstr('MOV ESI,EAX');
+    If LastExprIsPascalStr Then
+      EmitInstr('INC ESI');           { sauter l octet de longueur }
     EmitInstr('CALL ' + TP_RT_PFX + 'PRINTSTR');
   End
   Else If TypeIdx = TY_IDX_CHAR Then
@@ -13657,7 +13696,8 @@ End;
 { _TPRT_NUMTOSTR : convertir EAX en chaine NUMBUF             }
 { _TPRT_STRTONUM : convertir chaine ASCIIZ (ESI) en EAX       }
 { _TPRT_READLN   : lire une ligne de STDIN dans INBUF         }
-{ _TPRT_STRASSIGN: copier String Pascal (ESI -> EDI)          }
+{ _TPRT_STRASSIGN: affecter String Pascal (ASCIIZ -> Pascal) }
+{ _TPRT_STRASSIGN_PCHAR: copier ASCIIZ brut (ESI -> EDI)      }
 { _TPRT_STRCPY   : StrCopy PChar ASCIIZ (Dest,Src) -> Dest    }
 { _TPRT_LENGTH   : longueur String Pascal S[0] -> EAX         }
 { _TPRT_STRLEN   : longueur ASCIIZ PChar (ESI) -> EAX         }
@@ -13803,18 +13843,57 @@ Begin
   EmitInstr('POPAD');
   EmitInstr('RET');
 
-  { ------ _TPRT_STRASSIGN : copier String (ESI -> EDI) ------ }
-  { Entree : ESI = source ASCIIZ, EDI = destination             }
+  { ------ _TPRT_STRASSIGN : affecter String Pascal ---------- }
+  { Entree : ESI = source ASCIIZ, EDI = destination String      }
+  { Convertit ASCIIZ en format Pascal : EDI[0]=len, EDI[1..]=chars, +NUL }
   { Utilise pour l affectation String := expr                   }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'STRASSIGN');
+  EmitInstr('PUSHAD');
+  { D abord, compter la longueur de la source ASCIIZ }
+  EmitInstr('XOR ECX,ECX');
+  EmitInstr('MOV EBX,ESI');           { sauver debut source }
+  EmitLabel(TP_RT_PFX + 'SASG_C');
+  EmitInstr('CMP BYTE PTR [ESI],0');
+  EmitInstr('JE ' + TP_RT_PFX + 'SASG_D');
+  EmitInstr('INC ECX');
+  EmitInstr('INC ESI');
+  EmitInstr('JMP ' + TP_RT_PFX + 'SASG_C');
+  EmitLabel(TP_RT_PFX + 'SASG_D');
+  { ECX = longueur, tronquer a 255 max }
+  EmitInstr('CMP ECX,255');
+  EmitInstr('JLE ' + TP_RT_PFX + 'SASG_OK');
+  EmitInstr('MOV ECX,255');
+  EmitLabel(TP_RT_PFX + 'SASG_OK');
+  { Stocker longueur dans EDI[0] }
+  EmitInstr('MOV BYTE PTR [EDI],CL');
+  EmitInstr('INC EDI');               { avancer apres l octet de longueur }
+  { Copier ECX caracteres de EBX vers EDI }
+  EmitInstr('MOV ESI,EBX');           { restaurer source }
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'SASG_N');
+  EmitLabel(TP_RT_PFX + 'SASG_L');
+  EmitInstr('MOVSB');
+  EmitInstr('DEC ECX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'SASG_L');
+  EmitLabel(TP_RT_PFX + 'SASG_N');
+  { Ajouter NUL terminal pour compatibilite }
+  EmitInstr('MOV BYTE PTR [EDI],0');
+  EmitInstr('POPAD');
+  EmitInstr('RET');
+
+  { ------ _TPRT_STRASSIGN_PCHAR : copier ASCIIZ brut -------- }
+  { Entree : ESI = source ASCIIZ, EDI = destination ASCIIZ     }
+  { Copie simple byte par byte (pour buffers internes)         }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'STRASSIGN_PCHAR');
   EmitInstr('PUSH ESI');
   EmitInstr('PUSH EDI');
-  EmitLabel(TP_RT_PFX + 'SASG_L');
+  EmitLabel(TP_RT_PFX + 'SPCA_L');
   EmitInstr('LODSB');
   EmitInstr('STOSB');
   EmitInstr('TEST AL,AL');
-  EmitInstr('JNZ ' + TP_RT_PFX + 'SASG_L');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'SPCA_L');
   EmitInstr('POP EDI');
   EmitInstr('POP ESI');
   EmitInstr('RET');
@@ -14048,7 +14127,7 @@ Begin
   EmitInstr('PUSH EDI');
   EmitInstr('MOV ESI,EDI');
   EmitInstr('LEA EDI,[STRBUF2]');
-  EmitInstr('CALL ' + TP_RT_PFX + 'STRASSIGN');
+  EmitInstr('CALL ' + TP_RT_PFX + 'STRASSIGN_PCHAR');
   EmitInstr('POP EDI');
   EmitInstr('POP ESI');
   { EDI = debut du buffer destination }
