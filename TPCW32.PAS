@@ -14052,8 +14052,10 @@ Begin
   EmitInstr('RET');
 
   { ------ _TPRT_POS : Pos(SubStr, S) -> EAX ----------------- }
-  { Entree : EDI = sous-chaine, ESI = chaine (ASCIIZ)          }
+  { Entree : EDI = sous-chaine (ASCIIZ), ESI = chaine (ASCIIZ) }
   { Sortie : EAX = position 1-based, ou 0 si non trouve        }
+  { Note : utilise MOVZX+CMP reg32 car BcAssemble ne supporte  }
+  {        pas CMP reg8,[mem] (silencieusement ignore)          }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'POS');
   EmitInstr('PUSH EBX');
@@ -14061,27 +14063,36 @@ Begin
   EmitInstr('PUSH EDX');
   EmitInstr('PUSH ESI');
   EmitInstr('PUSH EDI');
-  EmitInstr('XOR EAX,EAX');
-  EmitInstr('XOR EBX,EBX');        { index courant (0-based) }
+  EmitInstr('MOV EBX,ESI');        { EBX = debut original de S }
+  { ESI = position courante dans S (boucle externe)            }
+  { EDI = debut du pattern (inchange)                          }
   EmitLabel(TP_RT_PFX + 'POS_O');
-  EmitInstr('CMP BYTE PTR [ESI+EBX],0');
-  EmitInstr('JE ' + TP_RT_PFX + 'POS_N');
-  { Comparer EDI avec ESI+EBX }
-  EmitInstr('XOR ECX,ECX');
+  EmitInstr('MOVZX EAX,BYTE PTR [ESI]');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'POS_N'); { fin de S = pas trouve }
+  { Essayer de matcher le pattern a la position ESI }
+  EmitInstr('MOV EAX,ESI');        { EAX = curseur interne S }
+  EmitInstr('MOV ECX,EDI');        { ECX = curseur interne pattern }
   EmitLabel(TP_RT_PFX + 'POS_M');
-  EmitInstr('MOVZX EDX,BYTE PTR [EDI+ECX]');
-  EmitInstr('TEST DL,DL');
+  EmitInstr('MOVZX EDX,BYTE PTR [ECX]');  { char pattern -> EDX }
+  EmitInstr('TEST EDX,EDX');
   EmitInstr('JZ ' + TP_RT_PFX + 'POS_F'); { fin du pattern = trouve }
-  EmitInstr('CMP DL,BYTE PTR [ESI+EBX+ECX]');
-  EmitInstr('JNE ' + TP_RT_PFX + 'POS_X');
+  EmitInstr('PUSH ECX');           { sauvegarder curseur pattern }
+  EmitInstr('MOVZX ECX,BYTE PTR [EAX]');  { char S -> ECX }
+  EmitInstr('CMP EDX,ECX');        { comparer reg32,reg32 (supporte) }
+  EmitInstr('POP ECX');            { restaurer curseur (flags preserves) }
+  EmitInstr('JNE ' + TP_RT_PFX + 'POS_X'); { mismatch }
+  EmitInstr('INC EAX');
   EmitInstr('INC ECX');
   EmitInstr('JMP ' + TP_RT_PFX + 'POS_M');
   EmitLabel(TP_RT_PFX + 'POS_F');
-  { Trouve a la position EBX+1 }
-  EmitInstr('LEA EAX,[EBX+1]');
+  { Trouve ! Position = ESI - EBX + 1 }
+  EmitInstr('MOV EAX,ESI');
+  EmitInstr('SUB EAX,EBX');
+  EmitInstr('INC EAX');
   EmitInstr('JMP ' + TP_RT_PFX + 'POS_D');
   EmitLabel(TP_RT_PFX + 'POS_X');
-  EmitInstr('INC EBX');
+  EmitInstr('INC ESI');
   EmitInstr('JMP ' + TP_RT_PFX + 'POS_O');
   EmitLabel(TP_RT_PFX + 'POS_N');
   EmitInstr('XOR EAX,EAX');        { pas trouve }
