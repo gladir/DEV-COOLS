@@ -165,7 +165,7 @@
             Dernier appel (last call) : optimisation d appel terminal
               deallocate + JMP au lieu de CALL + RET
 
-  TODO 12 - RETOUR ARRIERE (BACKTRACKING)
+  TODO 12 - RETOUR ARRIERE (BACKTRACKING) [IMPLEMENTE]
             Points de choix (choice points) sur la pile :
               Sauvegarder : BP, HTOP, TTOP, adresse clause suivante
               try_me_else(Label) : creer point de choix
@@ -869,6 +869,8 @@ Function  RuleVarFindOrAdd(Const VName : TString) : Integer; Forward;
 Procedure ParseGoal(Var G : TGoalRec); Forward;
 Procedure ParseRuleBody(CIdx : Integer); Forward;
 Procedure EmitRuleCode(CIdx : Integer); Forward;
+{ Retour arriere - Backtracking (TODO 12) }
+Procedure EmitBacktrackRuntime; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -3931,6 +3933,11 @@ Begin
   EmitRaw('_PL_TTOP    DW  0');
   EmitBlankLine;
 
+  { Pointeur de pile de points de choix (TODO 12) }
+  EmitComment('--- Backtracking (choice point stack) ---');
+  EmitRaw('_PL_CPTOP   DW  0');
+  EmitBlankLine;
+
   { Registres d arguments WAM A1..AN (TODO 10) }
   EmitComment('--- Registres d arguments WAM ---');
   EmitRaw('_PL_ARGS    DW  ' + IntToStr(MAX_ARGS_REG) + ' DUP(0)');
@@ -3939,11 +3946,187 @@ Begin
   EmitRaw('_DATA   ENDS');
 End;
 
+{ ============================================================
+  TODO 12 - RETOUR ARRIERE (BACKTRACKING) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- EmitBacktrackRuntime : emettre les routines de backtracking -- }
+{ Implemente les routines WAM de gestion des points de choix :       }
+{   _PLRT_TRY    : creer un point de choix                          }
+{   _PLRT_RETRY  : restaurer l etat et essayer la clause suivante   }
+{   _PLRT_TRUST  : derniere clause, supprimer le point de choix     }
+{   _PLRT_UNTRAIL: defaire les liaisons du trail                    }
+{                                                                    }
+{ Structure d un point de choix sur _PL_STACK (4 mots) :             }
+{   [CPTOP-4] = ancien CPTOP (precedent point de choix)             }
+{   [CPTOP-3] = TTOP sauvegarde (trail top)                         }
+{   [CPTOP-2] = HTOP sauvegarde (heap top)                          }
+{   [CPTOP-1] = adresse clause suivante (BX)                        }
+{ Convention d appel :                                               }
+{   _PLRT_TRY(BX=label_next) -> CF=0                                }
+{   _PLRT_RETRY(BX=label_next) -> CF=0, etat restaure               }
+{   _PLRT_TRUST -> CF=0, etat restaure, CP supprime                 }
+{   _PLRT_UNTRAIL(CX=saved_ttop) -> trail defait                    }
+Procedure EmitBacktrackRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=======================================');
+  EmitComment('  Routines de backtracking (TODO 12)');
+  EmitComment('=======================================');
+  EmitBlankLine;
+
+  { -------------------------------------------------------------- }
+  { _PLRT_UNTRAIL : defaire les liaisons du trail                   }
+  { Entree : CX = saved TTOP (defaire jusqu a cette valeur)        }
+  { Sortie : _PL_TTOP = CX                                         }
+  { Effet  : chaque adresse enregistree dans le trail est           }
+  {          remise a son auto-reference (variable libre)            }
+  { -------------------------------------------------------------- }
+  EmitLabel('_PLRT_UNTRAIL');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'AX');
+  EmitLabel('_PLRT_UNTR_LP');
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [_PL_TTOP]');
+  EmitInstrAB('CMP', 'AX', 'CX');
+  EmitInstrA('JLE', '_PLRT_UNTR_DONE');
+  { Decrementer TTOP }
+  EmitInstr('DEC    AX');
+  EmitInstrAB('MOV', 'WORD PTR [_PL_TTOP]', 'AX');
+  { Lire l adresse enregistree dans le trail }
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstr('SHL    SI,1');                { index -> offset octets }
+  EmitInstrAB('MOV', 'DI', 'WORD PTR [_PL_TRAIL + SI]');
+  { Remettre la cellule heap comme REF libre (auto-reference) }
+  { TAG_REF=0, donc valeur = DI elle-meme }
+  EmitInstr('SHL    DI,1');                { index -> offset octets }
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [_PL_TRAIL + SI]');
+  { AX = adresse originale (index heap) }
+  { Stocker AX comme valeur dans heap[AX] = MakeRef(AX) = AX (tag REF=0) }
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstr('SHL    SI,1');
+  EmitInstrAB('MOV', 'WORD PTR [_PL_HEAP + SI]', 'AX');
+  EmitInstrA('JMP', '_PLRT_UNTR_LP');
+  EmitLabel('_PLRT_UNTR_DONE');
+  EmitInstrA('POP', 'AX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { -------------------------------------------------------------- }
+  { _PLRT_TRY : creer un point de choix                            }
+  { Entree : BX = adresse de la clause suivante (label)            }
+  { Sortie : CF = 0                                                 }
+  { Effet  : empile un choice point de 4 mots sur _PL_STACK        }
+  {          [prev_cp, ttop, htop, next_clause]                     }
+  { -------------------------------------------------------------- }
+  EmitLabel('_PLRT_TRY');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'AX');
+  { SI = CPTOP * 2 (offset octets dans _PL_STACK) }
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [_PL_CPTOP]');
+  EmitInstr('SHL    SI,1');
+  { Stocker ancien CPTOP }
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [_PL_CPTOP]');
+  EmitInstrAB('MOV', 'WORD PTR [_PL_STACK + SI]', 'AX');
+  EmitInstrAB('ADD', 'SI', '2');
+  { Stocker TTOP }
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [_PL_TTOP]');
+  EmitInstrAB('MOV', 'WORD PTR [_PL_STACK + SI]', 'AX');
+  EmitInstrAB('ADD', 'SI', '2');
+  { Stocker HTOP }
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [_PL_HTOP]');
+  EmitInstrAB('MOV', 'WORD PTR [_PL_STACK + SI]', 'AX');
+  EmitInstrAB('ADD', 'SI', '2');
+  { Stocker adresse clause suivante }
+  EmitInstrAB('MOV', 'WORD PTR [_PL_STACK + SI]', 'BX');
+  EmitInstrAB('ADD', 'SI', '2');
+  { Mettre a jour CPTOP (SI/2 = nouveau CPTOP) }
+  EmitInstr('SHR    SI,1');
+  EmitInstrAB('MOV', 'WORD PTR [_PL_CPTOP]', 'SI');
+  { Succes }
+  EmitInstr('CLC');
+  EmitInstrA('POP', 'AX');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { -------------------------------------------------------------- }
+  { _PLRT_RETRY : restaurer l etat et essayer la clause suivante   }
+  { Entree : BX = adresse de la nouvelle clause suivante (label)   }
+  { Sortie : CF = 0, HTOP/TTOP restaures, trail defait             }
+  { Effet  : restaure l etat depuis le choice point courant,        }
+  {          met a jour l adresse de la clause suivante              }
+  { -------------------------------------------------------------- }
+  EmitLabel('_PLRT_RETRY');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'AX');
+  EmitInstrA('PUSH', 'CX');
+  { SI pointe sur le choice point courant (CPTOP - 4 mots) }
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [_PL_CPTOP]');
+  EmitInstrAB('SUB', 'SI', '4');
+  EmitInstr('SHL    SI,1');
+  { Lire TTOP sauvegarde (slot 1) }
+  EmitInstrAB('MOV', 'CX', 'WORD PTR [_PL_STACK + SI + 2]');
+  { Defaire le trail }
+  EmitInstr('CALL    _PLRT_UNTRAIL');
+  { Restaurer TTOP }
+  EmitInstrAB('MOV', 'WORD PTR [_PL_TTOP]', 'CX');
+  { Restaurer HTOP (slot 2) }
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [_PL_STACK + SI + 4]');
+  EmitInstrAB('MOV', 'WORD PTR [_PL_HTOP]', 'AX');
+  { Mettre a jour l adresse de la clause suivante (slot 3) }
+  EmitInstrAB('MOV', 'WORD PTR [_PL_STACK + SI + 6]', 'BX');
+  { CF = 0 (succes) }
+  EmitInstr('CLC');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'AX');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { -------------------------------------------------------------- }
+  { _PLRT_TRUST : derniere clause, restaurer et supprimer CP       }
+  { Entree : (rien)                                                 }
+  { Sortie : CF = 0, HTOP/TTOP restaures, CP supprime              }
+  { Effet  : restaure l etat, puis retire le choice point           }
+  { -------------------------------------------------------------- }
+  EmitLabel('_PLRT_TRUST');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'AX');
+  EmitInstrA('PUSH', 'CX');
+  { SI pointe sur le choice point courant (CPTOP - 4 mots) }
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [_PL_CPTOP]');
+  EmitInstrAB('SUB', 'SI', '4');
+  EmitInstr('SHL    SI,1');
+  { Lire TTOP sauvegarde (slot 1) }
+  EmitInstrAB('MOV', 'CX', 'WORD PTR [_PL_STACK + SI + 2]');
+  { Defaire le trail }
+  EmitInstr('CALL    _PLRT_UNTRAIL');
+  { Restaurer TTOP }
+  EmitInstrAB('MOV', 'WORD PTR [_PL_TTOP]', 'CX');
+  { Restaurer HTOP (slot 2) }
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [_PL_STACK + SI + 4]');
+  EmitInstrAB('MOV', 'WORD PTR [_PL_HTOP]', 'AX');
+  { Restaurer ancien CPTOP (slot 0) = supprimer ce CP }
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [_PL_STACK + SI]');
+  EmitInstrAB('MOV', 'WORD PTR [_PL_CPTOP]', 'AX');
+  { CF = 0 (succes) }
+  EmitInstr('CLC');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'AX');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+End;
+
 { ---- EmitRuntime : emettre les routines runtime --------------- }
-{ Stub : sera complete par TODO 24 (runtime WAM minimal).        }
+{ Emet les routines de backtracking (TODO 12) et sera complete   }
+{ par TODO 24 (runtime WAM minimal).                              }
 Procedure EmitRuntime;
 Begin
-  { Stub pour TODO 24 - runtime WAM minimal }
+  EmitBacktrackRuntime;
 End;
 
 { ---- EmitClose : fermer le fichier de sortie ASM -------------- }
@@ -4880,6 +5063,7 @@ Var
   I          : Integer;
   ClsCount   : Integer;
   Indices    : Array[0..MAX_CLAUSE - 1] Of Integer;
+  NextLbl    : TString;
 Begin
   Clean      := SymNameClean(PName);
   EntryLabel := PL_PRED_PFX + Clean + '_' + IntToStr(PArity);
@@ -4913,13 +5097,43 @@ Begin
     End
     Else
     Begin
-      { Plusieurs clauses pour un predicat/0 : essayer chacune }
+      { Plusieurs clauses pour un predicat/0 : backtracking WAM }
       EmitLabel(EntryLabel);
+
       For I := 0 To ClsCount - 1 Do
       Begin
-        EmitInstrA('CALL', ClauseTab[Indices[I]].ClsLabel);
-        EmitInstrA('JNC', EntryLabel + '_ok');
+        If I = 0 Then
+        Begin
+          { Premiere clause : try_me_else }
+          NextLbl := EntryLabel + '_cp' + IntToStr(I + 1);
+          EmitComment('try_me_else ' + NextLbl);
+          EmitInstrAB('MOV', 'BX', 'OFFSET ' + NextLbl);
+          EmitInstr('CALL    _PLRT_TRY');
+          EmitInstrA('CALL', ClauseTab[Indices[I]].ClsLabel);
+          EmitInstrA('JNC', EntryLabel + '_ok');
+        End
+        Else If I < ClsCount - 1 Then
+        Begin
+          { Clauses intermediaires : retry_me_else }
+          EmitLabel(EntryLabel + '_cp' + IntToStr(I));
+          NextLbl := EntryLabel + '_cp' + IntToStr(I + 1);
+          EmitComment('retry_me_else ' + NextLbl);
+          EmitInstrAB('MOV', 'BX', 'OFFSET ' + NextLbl);
+          EmitInstr('CALL    _PLRT_RETRY');
+          EmitInstrA('CALL', ClauseTab[Indices[I]].ClsLabel);
+          EmitInstrA('JNC', EntryLabel + '_ok');
+        End
+        Else
+        Begin
+          { Derniere clause : trust_me }
+          EmitLabel(EntryLabel + '_cp' + IntToStr(I));
+          EmitComment('trust_me');
+          EmitInstr('CALL    _PLRT_TRUST');
+          EmitInstrA('CALL', ClauseTab[Indices[I]].ClsLabel);
+          EmitInstrA('JNC', EntryLabel + '_ok');
+        End;
       End;
+
       { Toutes les clauses ont echoue }
       EmitInstr('STC');
       EmitInstr('RET');
@@ -4940,46 +5154,54 @@ Begin
   End
   Else
   Begin
-    { Plusieurs clauses : indexation premier argument }
-    EmitComment('Indexation premier argument');
-    EmitInstrAB('MOV', 'AX', 'WORD PTR [_PL_ARGS]');
-    EmitDeref;
+    { Plusieurs clauses : backtracking WAM avec TRY/RETRY/TRUST }
+    EmitComment('Backtracking WAM - ' + IntToStr(ClsCount) + ' clauses');
     EmitBlankLine;
 
-    { Essayer chaque clause sequentiellement }
     For I := 0 To ClsCount - 1 Do
     Begin
-      EmitComment('try clause ' + IntToStr(I));
-      { Sauvegarder l etat avant l essai }
-      EmitInstrA('PUSH', 'AX');
-      EmitInstrAB('MOV', 'CX', 'WORD PTR [_PL_HTOP]');
-      EmitInstrA('PUSH', 'CX');
-      EmitInstrAB('MOV', 'CX', 'WORD PTR [_PL_TTOP]');
-      EmitInstrA('PUSH', 'CX');
-
-      EmitInstrA('CALL', ClauseTab[Indices[I]].ClsLabel);
-      EmitInstrA('JNC', EntryLabel + '_ok');
-
-      { Echec : restaurer l etat }
-      EmitInstrA('POP', 'CX');
-      EmitInstrAB('MOV', 'WORD PTR [_PL_TTOP]', 'CX');
-      EmitInstrA('POP', 'CX');
-      EmitInstrAB('MOV', 'WORD PTR [_PL_HTOP]', 'CX');
-      EmitInstrA('POP', 'AX');
-
-      { Continuer avec la clause suivante }
+      If I = 0 Then
+      Begin
+        { Premiere clause : try_me_else }
+        NextLbl := EntryLabel + '_cp' + IntToStr(I + 1);
+        EmitComment('try_me_else ' + NextLbl);
+        EmitInstrAB('MOV', 'BX', 'OFFSET ' + NextLbl);
+        EmitInstr('CALL    _PLRT_TRY');
+        EmitInstrA('CALL', ClauseTab[Indices[I]].ClsLabel);
+        EmitInstrA('JNC', EntryLabel + '_ok');
+      End
+      Else If I < ClsCount - 1 Then
+      Begin
+        { Clauses intermediaires : retry_me_else }
+        EmitLabel(EntryLabel + '_cp' + IntToStr(I));
+        NextLbl := EntryLabel + '_cp' + IntToStr(I + 1);
+        EmitComment('retry_me_else ' + NextLbl);
+        EmitInstrAB('MOV', 'BX', 'OFFSET ' + NextLbl);
+        EmitInstr('CALL    _PLRT_RETRY');
+        EmitInstrA('CALL', ClauseTab[Indices[I]].ClsLabel);
+        EmitInstrA('JNC', EntryLabel + '_ok');
+      End
+      Else
+      Begin
+        { Derniere clause : trust_me }
+        EmitLabel(EntryLabel + '_cp' + IntToStr(I));
+        EmitComment('trust_me');
+        EmitInstr('CALL    _PLRT_TRUST');
+        EmitInstrA('CALL', ClauseTab[Indices[I]].ClsLabel);
+        { Propager le resultat directement (pas de branche _ok) }
+        EmitInstr('RET');
+        EmitInstrA('JMP', EntryLabel + '_end');
+      End;
     End;
 
-    { Toutes les clauses ont echoue }
-    EmitInstr('STC');
-    EmitInstr('RET');
-
-    { Label de succes }
+    { Label de succes : depiler le choice point avant de retourner }
     EmitLabel(EntryLabel + '_ok');
-    { Nettoyer la pile (3 mots sauvegardes non depiles) }
-    EmitInstrAB('ADD', 'SP', '6');
+    EmitComment('Succes : retirer le choice point');
+    EmitInstr('CALL    _PLRT_TRUST');
     EmitInstr('CLC');
     EmitInstr('RET');
+
+    EmitLabel(EntryLabel + '_end');
   End;
 End;
 
@@ -4995,7 +5217,7 @@ Begin
 
   EmitBlankLine;
   EmitComment('=======================================');
-  EmitComment('  Clauses compilees (TODO 10 + 11)');
+  EmitComment('  Clauses compilees (TODO 10 + 11 + 12)');
   EmitComment('=======================================');
 
   { Emettre le code de chaque clause individuelle }
@@ -5050,7 +5272,7 @@ Begin
 End;
 
 { ============================================================
-  STUBS POUR LES TODOS RESTANTS (11..25)
+  STUBS POUR LES TODOS RESTANTS (13..25)
   ============================================================ }
 
 Procedure Run;
