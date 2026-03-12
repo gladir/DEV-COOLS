@@ -177,7 +177,7 @@
             ParseAssign : parser affectation simple, augmentee, multiple
             EnsureVarInData : auto-declarer globale dans segment DATA
 
-  TODO 10 - EXPRESSIONS PRIMAIRES
+  TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
             ParsePrimary : literal entier, literal chaine, ident, appel de func
             Acces attribut : expr.attr -> offset dans instance de classe
             Acces index : expr[i] -> appel selon type (list/str/dict)
@@ -722,6 +722,11 @@ Procedure ExprLoadToAX(SIdx : Integer);    Forward;
 Procedure EmitStoreVar(SIdx : Integer);    Forward;
 Procedure EnsureVarInData(SIdx : Integer); Forward;
 Procedure ParseAssign(FirstSymIdx : Integer); Forward;
+{ TODO 10 - Forward declarations expressions primaires }
+Procedure ParseCallArgs(SIdx : Integer; Var Res : TExprVal); Forward;
+Procedure EmitBuiltinCall(SIdx : Integer; Var Res : TExprVal); Forward;
+Procedure ParseListLiteral(Var Res : TExprVal);  Forward;
+Procedure ParseDictLiteral(Var Res : TExprVal);  Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -2702,12 +2707,15 @@ Begin
   L.SymIdx  := -1;
 End;
 
-{ ---- ParsePrimary : atome du parseur Pratt ------------------- }
+{ ---- ParsePrimary : atome du parseur Pratt (TODO 10) --------- }
 { Gere : litteraux entiers, flottants, chaines, True/False/None, }
-{ identifiants (stub), groupement parentheses.                   }
+{ identifiants + appel de fonction, parentheses / tuple,          }
+{ liste literale, dict literale, postfixes [i], [a:b], .attr.     }
 Procedure ParsePrimary(Var Res : TExprVal);
 Var
-  E : TExprVal;
+  E      : TExprVal;
+  IdxSym : Integer;
+  IdxE   : TExprVal;
 Begin
   ExprMakeNone(Res);
   Case CurToken.Kind Of
@@ -2735,69 +2743,176 @@ Begin
       End;
     End;
 
-    { Identifiant : resolution via SymFind (TODO 05/09) }
+    { Identifiant : resolution via SymFind (TODO 05/09/10) }
     TK_IDENT :
     Begin
-      Res.SymIdx := SymFind(CurToken.Val);
-      If Res.SymIdx >= 0 Then
+      IdxSym := SymFind(CurToken.Val);
+      If IdxSym >= 0 Then
       Begin
         EmitComment('ident: ' + CurToken.Val +
-                    ' [' + SymTab[Res.SymIdx].MangledName + ']');
-        { Pour les builtins et fonctions : sera gere par appel }
-        If (SymTab[Res.SymIdx].Kind = SK_BUILTIN) Or
-           (SymTab[Res.SymIdx].Kind = SK_FUNC) Then
-          ExprMakeImm(0, SymTab[Res.SymIdx].TypeIdx, Res)
+                    ' [' + SymTab[IdxSym].MangledName + ']');
+        Res.SymIdx := IdxSym;
+        { Builtin ou fonction : gerer l appel (TODO 10) }
+        If (SymTab[IdxSym].Kind = SK_BUILTIN) Or
+           (SymTab[IdxSym].Kind = SK_FUNC) Then
+        Begin
+          ExprMakeImm(0, SymTab[IdxSym].TypeIdx, Res);
+          Res.SymIdx := IdxSym;
+        End
         Else
         Begin
           { Variable : retourner EK_MEM pour acces lecture/ecriture }
           Res.Kind    := EK_MEM;
-          Res.TypeIdx := SymTab[Res.SymIdx].TypeIdx;
-          Res.Offset  := SymTab[Res.SymIdx].Offset;
+          Res.TypeIdx := SymTab[IdxSym].TypeIdx;
+          Res.Offset  := SymTab[IdxSym].Offset;
         End;
       End
       Else
       Begin
         { Identifiant inconnu : auto-declarer comme variable globale }
         EmitComment('ident (auto): ' + CurToken.Val);
-        Res.SymIdx := SymAdd(CurToken.Val, SK_VAR, TY_UNKNOWN, 0);
+        IdxSym := SymAdd(CurToken.Val, SK_VAR, TY_UNKNOWN, 0);
+        Res.SymIdx := IdxSym;
         Res.Kind    := EK_MEM;
         Res.TypeIdx := TY_UNKNOWN;
         Res.Offset  := 0;
-        If Res.SymIdx < 0 Then Res.SymIdx := -1;
+        If IdxSym < 0 Then Res.SymIdx := -1;
       End;
       ParserAdvance;
-      { Appel de fonction : f(args) stub }
+      { Appel de fonction / builtin : f(args) (TODO 10) }
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
-      Begin
-        ParserAdvance;
-        While (CurToken.Kind <> TK_EOF) And
-              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
-          ParserAdvance;
-        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
-          ParserAdvance;
-        ExprMakeAX(TY_IDX_INT, Res);
-      End;
+        ParseCallArgs(Res.SymIdx, Res);
     End;
 
-    { Parentheses de groupement }
+    { Parentheses de groupement ou tuple literal (TODO 10) }
     TK_PUNCT :
     Begin
       If CurToken.Val = '(' Then
       Begin
         ParserAdvance;
-        ParseExpr(E);
-        Res := E;
+        { Tuple vide : () }
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
-          ParserAdvance
+        Begin
+          ParserAdvance;
+          EmitComment('tuple vide');
+          EmitInstr('XOR    AX, AX');
+          ExprMakeAX(TY_IDX_LIST, Res);
+        End
         Else
-          CompileError(''')'' attendue', CurToken.Line);
+        Begin
+          ParseExpr(E);
+          { Verifier si c est un tuple : (e1, e2, ...) }
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+          Begin
+            EmitComment('tuple literal');
+            ExprFlushToAX(E);
+            EmitInstr('PUSH   AX');  { sauvegarder premier element }
+            While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
+            Begin
+              ParserAdvance;
+              If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+                Break;
+              ParseExpr(IdxE);
+              ExprFlushToAX(IdxE);
+              EmitInstr('PUSH   AX');
+            End;
+            EmitInstr('POP    AX');  { valeur du dernier element dans AX }
+            ExprMakeAX(TY_IDX_LIST, E);
+          End;
+          Res := E;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance
+          Else
+            CompileError(''')'' attendue', CurToken.Line);
+        End;
       End
+      Else If CurToken.Val = '[' Then
+        ParseListLiteral(Res)
+      Else If CurToken.Val = '{' Then
+        ParseDictLiteral(Res)
       Else
         ExprMakeNone(Res);
     End;
 
   Else
     ExprMakeNone(Res);
+  End;
+
+  { Postfixes : index [i], slice [a:b], attribut .attr (TODO 10) }
+  While (CurToken.Kind = TK_PUNCT) And
+        ((CurToken.Val = '[') Or (CurToken.Val = '.')) Do
+  Begin
+    If CurToken.Val = '[' Then
+    Begin
+      { Acces index ou slice : expr[i] ou expr[a:b] }
+      ExprFlushToAX(Res);
+      EmitInstr('MOV    SI, AX');   { SI = objet }
+      ParserAdvance;
+      ParseExpr(IdxE);
+      { Detecter slice : [a:b] }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+      Begin
+        { Slice : expr[a:b] }
+        EmitComment('slice [a:b]');
+        ExprFlushToAX(IdxE);
+        EmitInstr('PUSH   AX');   { sauvegarder a }
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+        Begin
+          EmitInstr('MOV    BX, 0FFFFh'); { b = fin }
+          EmitInstr('POP    AX');         { AX = a }
+        End
+        Else
+        Begin
+          ParseExpr(E);
+          ExprFlushToAX(E);
+          EmitInstr('MOV    BX, AX');   { BX = b }
+          EmitInstr('POP    AX');       { AX = a }
+        End;
+        EmitInstr('CALL   ' + PY_RT_PFX + 'SLICE');
+      End
+      Else
+      Begin
+        { Index simple : expr[i] }
+        EmitComment('index [i]');
+        ExprFlushToAX(IdxE);
+        EmitInstr('SHL    AX, 1');     { AX = i * 2 (taille mot) }
+        EmitInstr('ADD    SI, AX');
+        EmitInstr('MOV    AX, [SI]');
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+        ParserAdvance
+      Else
+        CompileError(''']'' attendue', CurToken.Line);
+      ExprMakeAX(TY_IDX_INT, Res);
+    End
+    Else If CurToken.Val = '.' Then
+    Begin
+      { Acces attribut : expr.attr }
+      ExprFlushToAX(Res);
+      EmitInstr('MOV    SI, AX');   { SI = instance }
+      ParserAdvance;
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        EmitComment('attr: .' + CurToken.Val);
+        { Attribut stub : offset 0 pour l instant }
+        EmitInstr('MOV    AX, [SI]');
+        ParserAdvance;
+        { Appel de methode : obj.method(args) }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          While (CurToken.Kind <> TK_EOF) And
+                Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+            ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+      End
+      Else
+        CompileError('identifiant attendu apres ''.''', CurToken.Line);
+      ExprMakeAX(TY_IDX_INT, Res);
+    End;
   End;
 End;
 
@@ -3597,6 +3712,334 @@ Begin
   End;
 End;
 
+{ ============================================================
+  TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- EmitBuiltinCall : emettre l appel d un builtin ---------- }
+{ len(x) -> CALL _PYRT_LEN ; abs(x) -> CALL _PYRT_ABS ; etc.    }
+{ L argument est dans AX a l entree ; resultat dans AX.           }
+Procedure EmitBuiltinCall(SIdx : Integer; Var Res : TExprVal);
+Var
+  Name : TString;
+Begin
+  If (SIdx < 0) Or (SIdx >= SymCount) Then
+  Begin
+    EmitComment('builtin: unknown');
+    ExprMakeAX(TY_IDX_INT, Res);
+    Exit;
+  End;
+  Name := SymTab[SIdx].Name;
+  EmitComment('builtin call: ' + Name);
+
+  If Name = 'len' Then
+  Begin
+    EmitInstr('MOV    SI, AX');
+    EmitInstr('CALL   ' + PY_RT_PFX + 'LEN');
+    ExprMakeAX(TY_IDX_INT, Res);
+  End
+  Else If Name = 'abs' Then
+  Begin
+    { AX = valeur, resultat absolu dans AX }
+    EmitInstr('CWD');
+    EmitInstr('XOR    AX, DX');
+    EmitInstr('SUB    AX, DX');
+    ExprMakeAX(TY_IDX_INT, Res);
+  End
+  Else If Name = 'int' Then
+  Begin
+    { int(x) : deja entier dans AX pour notre cible 8086 }
+    ExprMakeAX(TY_IDX_INT, Res);
+  End
+  Else If Name = 'str' Then
+  Begin
+    { str(x) : convertir entier -> chaine via runtime }
+    EmitInstr('CALL   ' + PY_RT_PFX + 'INTTOSTR');
+    ExprMakeAX(TY_IDX_STR, Res);
+  End
+  Else If Name = 'chr' Then
+  Begin
+    { chr(x) : caractere unique - stocker dans buffer }
+    EmitInstr('MOV    BYTE PTR [_PY_STRBUF], AL');
+    EmitInstr('MOV    BYTE PTR [_PY_STRBUF+1], 0');
+    EmitInstr('MOV    AX, OFFSET _PY_STRBUF');
+    ExprMakeAX(TY_IDX_STR, Res);
+  End
+  Else If Name = 'ord' Then
+  Begin
+    { ord(x) : premier caractere de la chaine -> entier }
+    EmitInstr('MOV    SI, AX');
+    EmitInstr('XOR    AH, AH');
+    EmitInstr('MOV    AL, [SI]');
+    ExprMakeAX(TY_IDX_INT, Res);
+  End
+  Else If Name = 'bool' Then
+  Begin
+    { bool(x) : 0->0, non-0->1 }
+    EmitInstr('TEST   AX, AX');
+    EmitInstr('MOV    AX, 0');
+    EmitInstr('JZ     $+4');
+    EmitInstr('INC    AX');
+    ExprMakeAX(TY_IDX_BOOL, Res);
+  End
+  Else If Name = 'print' Then
+  Begin
+    { print(x) : appeler le runtime print }
+    EmitInstr('CALL   ' + PY_RT_PFX + 'PRINT');
+    ExprMakeAX(TY_IDX_NONE, Res);
+  End
+  Else If Name = 'input' Then
+  Begin
+    { input() : lire une ligne }
+    EmitInstr('CALL   ' + PY_RT_PFX + 'INPUT');
+    ExprMakeAX(TY_IDX_STR, Res);
+  End
+  Else If Name = 'hex' Then
+  Begin
+    EmitInstr('CALL   ' + PY_RT_PFX + 'TOHEX');
+    ExprMakeAX(TY_IDX_STR, Res);
+  End
+  Else If Name = 'oct' Then
+  Begin
+    EmitInstr('CALL   ' + PY_RT_PFX + 'TOOCT');
+    ExprMakeAX(TY_IDX_STR, Res);
+  End
+  Else If Name = 'bin' Then
+  Begin
+    EmitInstr('CALL   ' + PY_RT_PFX + 'TOBIN');
+    ExprMakeAX(TY_IDX_STR, Res);
+  End
+  Else If (Name = 'min') Or (Name = 'max') Then
+  Begin
+    { min/max(a,b) : AX=premier arg deja pousse, BX disponible }
+    { L appelant pousse les args ; on recupere le 2eme depuis BX }
+    EmitInstr('POP    BX');  { 2eme argument }
+    If Name = 'min' Then
+    Begin
+      EmitInstr('CMP    AX, BX');
+      EmitInstr('JLE    $+4');
+      EmitInstr('MOV    AX, BX');
+    End
+    Else
+    Begin
+      EmitInstr('CMP    AX, BX');
+      EmitInstr('JGE    $+4');
+      EmitInstr('MOV    AX, BX');
+    End;
+    ExprMakeAX(TY_IDX_INT, Res);
+  End
+  Else
+  Begin
+    { Appel builtin generique via CALL }
+    EmitInstr('CALL   ' + SymTab[SIdx].MangledName);
+    ExprMakeAX(SymTab[SIdx].TypeIdx, Res);
+  End;
+End;
+
+{ ---- ParseCallArgs : parser les arguments d appel ------------ }
+{ Appele quand CurToken = '(' apres un identifiant.              }
+{ SIdx = indice du symbole de la fonction/builtin dans SymTab.   }
+{ Emet PUSH pour chaque argument, puis CALL pour la fonction.    }
+Procedure ParseCallArgs(SIdx : Integer; Var Res : TExprVal);
+Var
+  ArgE     : TExprVal;
+  ArgCount : Integer;
+  IsBuiltin: Boolean;
+Begin
+  { Consommer le '(' }
+  ParserAdvance;
+  ArgCount := 0;
+
+  IsBuiltin := False;
+  If (SIdx >= 0) And (SIdx < SymCount) Then
+    IsBuiltin := (SymTab[SIdx].Kind = SK_BUILTIN);
+
+  { Parser les arguments separes par des virgules }
+  If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
+  Begin
+    { Premier argument }
+    ParseExpr(ArgE);
+    ExprFlushToAX(ArgE);
+    EmitInstr('PUSH   AX');
+    Inc(ArgCount);
+    { Arguments suivants }
+    While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
+    Begin
+      ParserAdvance;
+      ParseExpr(ArgE);
+      ExprFlushToAX(ArgE);
+      EmitInstr('PUSH   AX');
+      Inc(ArgCount);
+    End;
+  End;
+
+  { Consommer le ')' }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance
+  Else
+    CompileError(''')'' attendue apres arguments', CurToken.Line);
+
+  { Emettre l appel }
+  If IsBuiltin Then
+  Begin
+    { Recuperer le premier argument (ou 0 si aucun) }
+    If ArgCount > 0 Then
+      EmitInstr('POP    AX')
+    Else
+      EmitInstr('XOR    AX, AX');
+    { Appeler le builtin specifique }
+    EmitBuiltinCall(SIdx, Res);
+    { Nettoyer les arguments supplementaires }
+    If ArgCount > 1 Then
+      EmitInstr('ADD    SP, ' + IntToStr_((ArgCount - 1) * 2));
+  End
+  Else
+  Begin
+    { Appel de fonction utilisateur : CALL _PYF_func }
+    If (SIdx >= 0) And (SIdx < SymCount) Then
+    Begin
+      EmitComment('call: ' + SymTab[SIdx].Name + ' (' +
+                  IntToStr_(ArgCount) + ' args)');
+      EmitInstr('CALL   ' + SymTab[SIdx].MangledName);
+    End
+    Else
+    Begin
+      EmitComment('call: unknown function');
+      EmitInstr('XOR    AX, AX');
+    End;
+    { Nettoyer la pile des arguments }
+    If ArgCount > 0 Then
+      EmitInstr('ADD    SP, ' + IntToStr_(ArgCount * 2));
+    If (SIdx >= 0) And (SIdx < SymCount) Then
+      ExprMakeAX(SymTab[SIdx].TypeIdx, Res)
+    Else
+      ExprMakeAX(TY_IDX_INT, Res);
+  End;
+End;
+
+{ ---- ParseListLiteral : [e0, e1, e2, ...] -------------------- }
+{ Cree un bloc DK_LIST dans DataTab et remplit les elements.      }
+Procedure ParseListLiteral(Var Res : TExprVal);
+Var
+  ElemE    : TExprVal;
+  ElemCount: Integer;
+Begin
+  EmitComment('list literal');
+  { Consommer le '[' }
+  ParserAdvance;
+  ElemCount := 0;
+
+  { Liste vide : [] }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+  Begin
+    ParserAdvance;
+    EmitInstr('XOR    AX, AX');
+    ExprMakeAX(TY_IDX_LIST, Res);
+    Exit;
+  End;
+
+  { Allouer le bloc dans le heap : bump allocator }
+  EmitInstr('MOV    DI, [_PY_HEAPTOP]');
+  EmitInstr('ADD    DI, OFFSET _PY_HEAP');
+
+  { Parser chaque element et stocker dans [DI + 2*i] }
+  ParseExpr(ElemE);
+  ExprFlushToAX(ElemE);
+  EmitInstr('MOV    [DI], AX');
+  Inc(ElemCount);
+  While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
+  Begin
+    ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+      Break;  { virgule terminale }
+    ParseExpr(ElemE);
+    ExprFlushToAX(ElemE);
+    EmitInstr('MOV    [DI+' + IntToStr_(ElemCount * 2) + '], AX');
+    Inc(ElemCount);
+  End;
+
+  { Mettre a jour le HEAPTOP }
+  EmitInstr('MOV    AX, ' + IntToStr_(ElemCount * 2));
+  EmitInstr('ADD    [_PY_HEAPTOP], AX');
+  { Retourner le pointeur vers le bloc }
+  EmitInstr('MOV    AX, DI');
+
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+    ParserAdvance
+  Else
+    CompileError(''']'' attendue', CurToken.Line);
+  ExprMakeAX(TY_IDX_LIST, Res);
+End;
+
+{ ---- ParseDictLiteral : dict literal ------------------------- }
+{ Cree un bloc DK_DICT dans le heap et remplit paires cle/val.   }
+Procedure ParseDictLiteral(Var Res : TExprVal);
+Var
+  KeyE, ValE : TExprVal;
+  PairCount  : Integer;
+Begin
+  EmitComment('dict literal');
+  { Consommer le '{' }
+  ParserAdvance;
+  PairCount := 0;
+
+  (* Dict vide : {} *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+  Begin
+    ParserAdvance;
+    EmitInstr('XOR    AX, AX');
+    ExprMakeAX(TY_IDX_DICT, Res);
+    Exit;
+  End;
+
+  { Allouer dans le heap }
+  EmitInstr('MOV    DI, [_PY_HEAPTOP]');
+  EmitInstr('ADD    DI, OFFSET _PY_HEAP');
+
+  { Parser paire cle:valeur }
+  ParseExpr(KeyE);
+  ExprFlushToAX(KeyE);
+  EmitInstr('MOV    [DI+' + IntToStr_(PairCount * 4) + '], AX');  { cle }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+    ParserAdvance
+  Else
+    CompileError(''':'' attendue dans dict literal', CurToken.Line);
+  ParseExpr(ValE);
+  ExprFlushToAX(ValE);
+  EmitInstr('MOV    [DI+' + IntToStr_(PairCount * 4 + 2) + '], AX');  { val }
+  Inc(PairCount);
+
+  While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
+  Begin
+    ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+      Break;  { virgule terminale }
+    ParseExpr(KeyE);
+    ExprFlushToAX(KeyE);
+    EmitInstr('MOV    [DI+' + IntToStr_(PairCount * 4) + '], AX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+      ParserAdvance
+    Else
+      CompileError(''':'' attendue dans dict literal', CurToken.Line);
+    ParseExpr(ValE);
+    ExprFlushToAX(ValE);
+    EmitInstr('MOV    [DI+' + IntToStr_(PairCount * 4 + 2) + '], AX');
+    Inc(PairCount);
+  End;
+
+  { Mettre a jour le HEAPTOP }
+  EmitInstr('MOV    AX, ' + IntToStr_(PairCount * 4));
+  EmitInstr('ADD    [_PY_HEAPTOP], AX');
+  { Retourner le pointeur vers le bloc }
+  EmitInstr('MOV    AX, DI');
+
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+    ParserAdvance
+  Else
+    CompileError('''}'' attendue', CurToken.Line);
+  ExprMakeAX(TY_IDX_DICT, Res);
+End;
+
 Procedure Run;
 Var
   VarName : TString;
@@ -3717,17 +4160,9 @@ Begin
         GExprDummy.Offset  := SymTab[Idx].Offset;
         GExprDummy.SymIdx  := Idx;
         GExprDummy.ImmVal  := 0;
-        { Appel de fonction : f(args) stub }
+        { Appel de fonction : f(args) (TODO 10) }
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
-        Begin
-          ParserAdvance;
-          While (CurToken.Kind <> TK_EOF) And
-                Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
-            ParserAdvance;
-          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
-            ParserAdvance;
-          ExprMakeAX(TY_IDX_INT, GExprDummy);
-        End;
+          ParseCallArgs(Idx, GExprDummy);
         { Si un operateur binaire suit, continuer le parsing }
         If (CurToken.Kind = TK_OP) And (BinOpPrec(CurToken.Val) > 0) Then
         Begin
