@@ -372,7 +372,7 @@
             Traitement : le parseur detecte :- en debut de clause
               et execute la directive au lieu de compiler une clause
 
-  TODO 23 - CHAINES ET CARACTERES
+  TODO 23 - CHAINES ET CARACTERES [IMPLEMENTE]
             Chaines double-quotees : "abc" -> liste de codes ou atome
               Drapeau double_quotes : atom (defaut), codes, chars
             Chaines simple-quotees : 'abc' -> atome
@@ -599,6 +599,11 @@ Const
   BIF_USE_MODULE     = 143;
   BIF_ENSURE_LOADED  = 144;
   BIF_INITIALIZATION = 145;
+  { Chaines et caracteres (TODO 23) }
+  BIF_CHAR_TYPE      = 150;
+  BIF_NUMBER_STRING  = 151;
+  BIF_STRING_CONCAT  = 152;
+  BIF_STRING_LENGTH  = 153;
 
   { Limites pour les directives (TODO 22) }
   MAX_INIT_GOALS = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
@@ -896,6 +901,8 @@ Var
   ModuleExpCount: Integer;
   InitGoalCount : Integer;   { nombre de buts :- initialization(Goal) }
   DiscontigFlag : Array[0..MAX_SYM - 1] Of Boolean;         { discontiguous?  }
+  { Chaines et caracteres (TODO 23) }
+  DoubleQuotesMode : TString;    { 'atom' (default), 'codes', 'chars' }
 
   { Representation des termes WAM (TODO 06) }
   Heap       : Array[0..HEAP_SIZE - 1] Of Integer;  { tas WAM             }
@@ -1066,6 +1073,8 @@ Procedure EmitOperatorRuntime; Forward;
 { Directives et chargement (TODO 22) }
 Function  ParseDirective : Boolean; Forward;
 Procedure DirectiveInit; Forward;
+{ Chaines et caracteres (TODO 23) }
+Procedure EmitStringRuntime; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -3522,6 +3531,12 @@ Begin
   SymAddBif('upcase_atom',  2, BIF_UPCASE_ATOM);
   SymAddBif('downcase_atom', 2, BIF_DOWNCASE_ATOM);
 
+  { Predicats builtins (chaines) (TODO 23) }
+  SymAddBif('char_type',      2, BIF_CHAR_TYPE);
+  SymAddBif('number_string',  2, BIF_NUMBER_STRING);
+  SymAddBif('string_concat',  3, BIF_STRING_CONCAT);
+  SymAddBif('string_length',  2, BIF_STRING_LENGTH);
+
   { Predicats builtins (operateurs) (TODO 21) }
   SymAddBif('op',           3, BIF_OP);
   SymAddBif('current_op',   3, BIF_CURRENT_OP);
@@ -3666,6 +3681,7 @@ Begin
   InitGoalCount := 0;
   For I := 0 To MAX_SYM - 1 Do
     DiscontigFlag[I] := False;
+  DoubleQuotesMode := 'atom';
 End;
 
 { ---- ParseDirective : parser une directive :- ... . ------------ }
@@ -3689,6 +3705,7 @@ Var
   OpType   : TString;
   OpName   : TString;
   SIdx     : Integer;
+  FlagName : TString;
 Begin
   ParseDirective := False;
 
@@ -3991,6 +4008,35 @@ Begin
       OpAdd(OpName, OpPrec, OpType);
       If Opts.Verbose Then
         WriteLn('PROLOG86: op(', OpPrec, ', ', OpType, ', ', OpName, ')');
+    End;
+    While (CurToken.Kind <> TK_EOF) And (CurToken.Kind <> TK_DOT) Do
+      ParserAdvance;
+    If CurToken.Kind = TK_DOT Then
+      ParserAdvance;
+    ParseDirective := True;
+    Exit;
+  End
+
+  { === :- set_prolog_flag(double_quotes, Mode). === (TODO 23) }
+  Else If DirName = 'set_prolog_flag' Then
+  Begin
+    { Parser : set_prolog_flag(FlagName, Value) }
+    If (CurToken.Kind = TK_ATOM) Then
+    Begin
+      FlagName := CurToken.Val;
+      ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance;
+      If (CurToken.Kind = TK_ATOM) Then
+      Begin
+        If FlagName = 'double_quotes' Then
+        Begin
+          DoubleQuotesMode := CurToken.Val;
+          If Opts.Verbose Then
+            WriteLn('PROLOG86: double_quotes = ', DoubleQuotesMode);
+        End;
+        ParserAdvance;
+      End;
     End;
     While (CurToken.Kind <> TK_EOF) And (CurToken.Kind <> TK_DOT) Do
       ParserAdvance;
@@ -4745,6 +4791,11 @@ Begin
   EmitComment('--- Directives (TODO 22) ---');
   EmitRaw('_PL_MODNAME DB  64 DUP(0)');
   EmitRaw('_PL_INITCNT DW  0');
+  EmitBlankLine;
+
+  { Chaines et caracteres (TODO 23) }
+  EmitComment('--- Strings (TODO 23) ---');
+  EmitRaw('_PL_DQMODE  DB  0');
   EmitBlankLine;
 
   { Registres d arguments WAM A1..AN (TODO 10) }
@@ -7319,6 +7370,425 @@ Begin
   EmitBlankLine;
 End;
 
+{ ============================================================
+  TODO 23 - CHAINES ET CARACTERES [IMPLEMENTE]
+  ============================================================ }
+{ Routines runtime pour les predicats de chaines (TODO 23) :     }
+{ _PLRT_CHAR_TYPE  : char_type/2 (classification de caractere)  }
+{ _PLRT_UPCASE     : upcase_atom/2 (conversion en majuscules)   }
+{ _PLRT_DOWNCASE   : downcase_atom/2 (conversion en minuscules) }
+{ _PLRT_ATOM_STRING : atom_string/2 (identite atome/chaine)     }
+{ _PLRT_NUMBER_STRING : number_string/2 (entier->chaine)        }
+{ _PLRT_STRING_CONCAT : string_concat/3 (delegation ATOM_CONCAT)}
+{ _PLRT_STRING_LENGTH : string_length/2 (delegation ATOM_LENGTH)}
+Procedure EmitStringRuntime;
+Var NS : TString;
+Begin
+  EmitBlankLine;
+  EmitComment('=== TODO 23 : Runtime chaines et caracteres ===');
+  EmitBlankLine;
+
+  { ---------------------------------------------------------- }
+  { _PLRT_CHAR_TYPE : AX=tagged ATOM(1-char) ou INT(code)      }
+  {   BX=tagged ATOM (type: alpha,digit,space,upper,lower,     }
+  {                    alnum,punct,ascii)                        }
+  {   Retourne CLC=match, STC=no match                          }
+  { ---------------------------------------------------------- }
+  EmitLabel(PL_RT_PFX + 'CHAR_TYPE');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  { Extraire le caractere de AX }
+  EmitInstrAB('MOV', 'CX', 'AX');
+  EmitInstrAB('AND', 'CX', IntToStr(TAG_MASK));
+  Str(TAG_ATOM Shl TAG_SHIFT, NS);
+  EmitInstrAB('CMP', 'CX', NS);
+  EmitInstrA('JNE', PL_RT_PFX + 'CT_ISINT');
+  { C est un atome 1-char -> extraire le premier caractere }
+  EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+  EmitInstrAB('SHL', 'AX', '1');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrAB('ADD', 'SI', 'OFFSET ' + PL_ATOM_PFX + 'TABLE');
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [SI]');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [SI]');
+  EmitInstrA('JMP', PL_RT_PFX + 'CT_GOTCH');
+  EmitLabel(PL_RT_PFX + 'CT_ISINT');
+  { C est un entier code ASCII }
+  EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+  EmitLabel(PL_RT_PFX + 'CT_GOTCH');
+  { AL = char a tester, BX = tagged atom type }
+  EmitInstrAB('MOV', 'DL', 'AL');
+  { Resoudre le type atom -> SI pointe sur la chaine }
+  EmitInstrAB('AND', 'BX', IntToStr(VAL_MASK));
+  EmitInstrAB('SHL', 'BX', '1');
+  EmitInstrAB('MOV', 'SI', 'BX');
+  EmitInstrAB('ADD', 'SI', 'OFFSET ' + PL_ATOM_PFX + 'TABLE');
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [SI]');
+  { Comparer le premier caractere du type pour determiner le test }
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [SI]');
+  { 'a' = alpha ou alnum ou ascii, 'd' = digit, 's' = space }
+  { 'u' = upper, 'l' = lower, 'p' = punct }
+  EmitInstrAB('CMP', 'AL', '''d''');
+  EmitInstrA('JE', PL_RT_PFX + 'CT_DIGIT');
+  EmitInstrAB('CMP', 'AL', '''s''');
+  EmitInstrA('JE', PL_RT_PFX + 'CT_SPACE');
+  EmitInstrAB('CMP', 'AL', '''u''');
+  EmitInstrA('JE', PL_RT_PFX + 'CT_UPPER');
+  EmitInstrAB('CMP', 'AL', '''l''');
+  EmitInstrA('JE', PL_RT_PFX + 'CT_LOWER');
+  EmitInstrAB('CMP', 'AL', '''p''');
+  EmitInstrA('JE', PL_RT_PFX + 'CT_PUNCT');
+  { Check for 'a' = alpha, alnum, ascii }
+  EmitInstrAB('CMP', 'AL', '''a''');
+  EmitInstrA('JNE', PL_RT_PFX + 'CT_FAIL');
+  { Distinguish alpha vs alnum vs ascii by second char }
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [SI+1]');
+  EmitInstrAB('CMP', 'AL', '''l''');
+  EmitInstrA('JE', PL_RT_PFX + 'CT_AL23');
+  EmitInstrAB('CMP', 'AL', '''s''');
+  EmitInstrA('JE', PL_RT_PFX + 'CT_ASCII');
+  { Not alpha/alnum/ascii -> fail }
+  EmitInstrA('JMP', PL_RT_PFX + 'CT_FAIL');
+  EmitLabel(PL_RT_PFX + 'CT_AL23');
+  { 'al' -> check 3rd char: 'p' = alpha, 'n' = alnum }
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [SI+2]');
+  EmitInstrAB('CMP', 'AL', '''n''');
+  EmitInstrA('JE', PL_RT_PFX + 'CT_ALNUM');
+  { Otherwise it is alpha }
+  EmitInstrA('JMP', PL_RT_PFX + 'CT_ALPHA');
+
+  { --- Test routines --- }
+  { DIGIT: '0'..'9' }
+  EmitLabel(PL_RT_PFX + 'CT_DIGIT');
+  EmitInstrAB('CMP', 'DL', '''0''');
+  EmitInstrA('JB', PL_RT_PFX + 'CT_FAIL');
+  EmitInstrAB('CMP', 'DL', '''9''');
+  EmitInstrA('JA', PL_RT_PFX + 'CT_FAIL');
+  EmitInstrA('JMP', PL_RT_PFX + 'CT_OK');
+
+  { SPACE: 32 (space), 9 (tab), 10 (LF), 13 (CR) }
+  EmitLabel(PL_RT_PFX + 'CT_SPACE');
+  EmitInstrAB('CMP', 'DL', '32');
+  EmitInstrA('JE', PL_RT_PFX + 'CT_OK');
+  EmitInstrAB('CMP', 'DL', '9');
+  EmitInstrA('JE', PL_RT_PFX + 'CT_OK');
+  EmitInstrAB('CMP', 'DL', '10');
+  EmitInstrA('JE', PL_RT_PFX + 'CT_OK');
+  EmitInstrAB('CMP', 'DL', '13');
+  EmitInstrA('JE', PL_RT_PFX + 'CT_OK');
+  EmitInstrA('JMP', PL_RT_PFX + 'CT_FAIL');
+
+  { UPPER: 'A'..'Z' }
+  EmitLabel(PL_RT_PFX + 'CT_UPPER');
+  EmitInstrAB('CMP', 'DL', '''A''');
+  EmitInstrA('JB', PL_RT_PFX + 'CT_FAIL');
+  EmitInstrAB('CMP', 'DL', '''Z''');
+  EmitInstrA('JA', PL_RT_PFX + 'CT_FAIL');
+  EmitInstrA('JMP', PL_RT_PFX + 'CT_OK');
+
+  { LOWER: 'a'..'z' }
+  EmitLabel(PL_RT_PFX + 'CT_LOWER');
+  EmitInstrAB('CMP', 'DL', '''a''');
+  EmitInstrA('JB', PL_RT_PFX + 'CT_FAIL');
+  EmitInstrAB('CMP', 'DL', '''z''');
+  EmitInstrA('JA', PL_RT_PFX + 'CT_FAIL');
+  EmitInstrA('JMP', PL_RT_PFX + 'CT_OK');
+
+  { ALPHA: 'A'..'Z' or 'a'..'z' }
+  EmitLabel(PL_RT_PFX + 'CT_ALPHA');
+  EmitInstrAB('CMP', 'DL', '''A''');
+  EmitInstrA('JB', PL_RT_PFX + 'CT_FAIL');
+  EmitInstrAB('CMP', 'DL', '''Z''');
+  EmitInstrA('JBE', PL_RT_PFX + 'CT_OK');
+  EmitInstrAB('CMP', 'DL', '''a''');
+  EmitInstrA('JB', PL_RT_PFX + 'CT_FAIL');
+  EmitInstrAB('CMP', 'DL', '''z''');
+  EmitInstrA('JA', PL_RT_PFX + 'CT_FAIL');
+  EmitInstrA('JMP', PL_RT_PFX + 'CT_OK');
+
+  { ALNUM: alpha or digit }
+  EmitLabel(PL_RT_PFX + 'CT_ALNUM');
+  EmitInstrAB('CMP', 'DL', '''0''');
+  EmitInstrA('JB', PL_RT_PFX + 'CT_FAIL');
+  EmitInstrAB('CMP', 'DL', '''9''');
+  EmitInstrA('JBE', PL_RT_PFX + 'CT_OK');
+  EmitInstrAB('CMP', 'DL', '''A''');
+  EmitInstrA('JB', PL_RT_PFX + 'CT_FAIL');
+  EmitInstrAB('CMP', 'DL', '''Z''');
+  EmitInstrA('JBE', PL_RT_PFX + 'CT_OK');
+  EmitInstrAB('CMP', 'DL', '''a''');
+  EmitInstrA('JB', PL_RT_PFX + 'CT_FAIL');
+  EmitInstrAB('CMP', 'DL', '''z''');
+  EmitInstrA('JA', PL_RT_PFX + 'CT_FAIL');
+  EmitInstrA('JMP', PL_RT_PFX + 'CT_OK');
+
+  { PUNCT: 33..47, 58..64, 91..96, 123..126 }
+  EmitLabel(PL_RT_PFX + 'CT_PUNCT');
+  EmitInstrAB('CMP', 'DL', '33');
+  EmitInstrA('JB', PL_RT_PFX + 'CT_FAIL');
+  EmitInstrAB('CMP', 'DL', '47');
+  EmitInstrA('JBE', PL_RT_PFX + 'CT_OK');
+  EmitInstrAB('CMP', 'DL', '58');
+  EmitInstrA('JB', PL_RT_PFX + 'CT_FAIL');
+  EmitInstrAB('CMP', 'DL', '64');
+  EmitInstrA('JBE', PL_RT_PFX + 'CT_OK');
+  EmitInstrAB('CMP', 'DL', '91');
+  EmitInstrA('JB', PL_RT_PFX + 'CT_FAIL');
+  EmitInstrAB('CMP', 'DL', '96');
+  EmitInstrA('JBE', PL_RT_PFX + 'CT_OK');
+  EmitInstrAB('CMP', 'DL', '123');
+  EmitInstrA('JB', PL_RT_PFX + 'CT_FAIL');
+  EmitInstrAB('CMP', 'DL', '126');
+  EmitInstrA('JA', PL_RT_PFX + 'CT_FAIL');
+  EmitInstrA('JMP', PL_RT_PFX + 'CT_OK');
+
+  { ASCII: 0..127 }
+  EmitLabel(PL_RT_PFX + 'CT_ASCII');
+  EmitInstrAB('CMP', 'DL', '127');
+  EmitInstrA('JA', PL_RT_PFX + 'CT_FAIL');
+  EmitInstrA('JMP', PL_RT_PFX + 'CT_OK');
+
+  { Return OK = CLC }
+  EmitLabel(PL_RT_PFX + 'CT_OK');
+  EmitInstr('CLC');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  { Return FAIL = STC }
+  EmitLabel(PL_RT_PFX + 'CT_FAIL');
+  EmitInstr('STC');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { ---------------------------------------------------------- }
+  { _PLRT_UPCASE : AX=tagged ATOM -> AX=tagged ATOM (upper)   }
+  {   Copie la chaine dans IOBUF, convertit a-z en A-Z,       }
+  {   intern comme nouvel atome dans _PLA_TABLE                }
+  { ---------------------------------------------------------- }
+  EmitLabel(PL_RT_PFX + 'UPCASE');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'CX');
+  { Resoudre l atome -> SI = chaine ASCIIZ }
+  EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+  EmitInstrAB('SHL', 'AX', '1');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrAB('ADD', 'SI', 'OFFSET ' + PL_ATOM_PFX + 'TABLE');
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [SI]');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _PL_IOBUF');
+  EmitLabel(PL_RT_PFX + 'UC_LOOP');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [SI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', PL_RT_PFX + 'UC_DONE');
+  EmitInstrAB('CMP', 'AL', '''a''');
+  EmitInstrA('JB', PL_RT_PFX + 'UC_STORE');
+  EmitInstrAB('CMP', 'AL', '''z''');
+  EmitInstrA('JA', PL_RT_PFX + 'UC_STORE');
+  EmitInstrAB('SUB', 'AL', '32');
+  EmitLabel(PL_RT_PFX + 'UC_STORE');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', 'AL');
+  EmitInstr('INC    SI');
+  EmitInstr('INC    DI');
+  EmitInstrA('JMP', PL_RT_PFX + 'UC_LOOP');
+  EmitLabel(PL_RT_PFX + 'UC_DONE');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  { Intern : allouer nouvel atome dans la table }
+  EmitInstr('CALL    ' + PL_RT_PFX + 'INTERN_IOBUF');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { ---------------------------------------------------------- }
+  { _PLRT_DOWNCASE : AX=tagged ATOM -> AX=tagged ATOM (lower) }
+  {   Copie la chaine dans IOBUF, convertit A-Z en a-z,       }
+  {   intern comme nouvel atome dans _PLA_TABLE                }
+  { ---------------------------------------------------------- }
+  EmitLabel(PL_RT_PFX + 'DOWNCASE');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+  EmitInstrAB('SHL', 'AX', '1');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrAB('ADD', 'SI', 'OFFSET ' + PL_ATOM_PFX + 'TABLE');
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [SI]');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _PL_IOBUF');
+  EmitLabel(PL_RT_PFX + 'DC_LOOP');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [SI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', PL_RT_PFX + 'DC_DONE');
+  EmitInstrAB('CMP', 'AL', '''A''');
+  EmitInstrA('JB', PL_RT_PFX + 'DC_STORE');
+  EmitInstrAB('CMP', 'AL', '''Z''');
+  EmitInstrA('JA', PL_RT_PFX + 'DC_STORE');
+  EmitInstrAB('ADD', 'AL', '32');
+  EmitLabel(PL_RT_PFX + 'DC_STORE');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', 'AL');
+  EmitInstr('INC    SI');
+  EmitInstr('INC    DI');
+  EmitInstrA('JMP', PL_RT_PFX + 'DC_LOOP');
+  EmitLabel(PL_RT_PFX + 'DC_DONE');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'INTERN_IOBUF');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { ---------------------------------------------------------- }
+  { _PLRT_INTERN_IOBUF : _PL_IOBUF contient une chaine ASCIIZ }
+  {   Alloue un nouvel atome dans _PLA_TABLE, retourne          }
+  {   AX = tagged ATOM (TAG_ATOM | index)                       }
+  { ---------------------------------------------------------- }
+  EmitLabel(PL_RT_PFX + 'INTERN_IOBUF');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'BX');
+  { Allouer espace sur le heap pour la chaine }
+  EmitInstrAB('MOV', 'SI', 'OFFSET _PL_IOBUF');
+  EmitInstrAB('MOV', 'CX', 'WORD PTR [' + PL_ATOM_PFX + 'COUNT]');
+  { DI = adresse dans _PLA_TABLE pour le nouvel index }
+  EmitInstrAB('MOV', 'DI', 'CX');
+  EmitInstrAB('SHL', 'DI', '1');
+  EmitInstrAB('ADD', 'DI', 'OFFSET ' + PL_ATOM_PFX + 'TABLE');
+  { Stocker l offset IOBUF comme chaine temporaire }
+  { En realite, copier la chaine dans le heap data }
+  EmitInstrAB('MOV', 'BX', 'WORD PTR [_PL_HTOP]');
+  EmitInstrAB('SHL', 'BX', '1');
+  EmitInstrAB('ADD', 'BX', 'OFFSET _PL_HEAP');
+  EmitInstrAB('MOV', 'WORD PTR [DI]', 'BX');
+  { Copier la chaine IOBUF -> heap }
+  EmitLabel(PL_RT_PFX + 'IIB_CP');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [SI]');
+  EmitInstrAB('MOV', 'BYTE PTR [BX]', 'AL');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', PL_RT_PFX + 'IIB_END');
+  EmitInstr('INC    SI');
+  EmitInstr('INC    BX');
+  EmitInstrA('JMP', PL_RT_PFX + 'IIB_CP');
+  EmitLabel(PL_RT_PFX + 'IIB_END');
+  { Mettre a jour _PL_HTOP (avancer de (len+1+1)/2 mots) }
+  EmitInstr('INC    BX');
+  EmitInstrAB('SUB', 'BX', 'OFFSET _PL_HEAP');
+  EmitInstr('INC    BX');
+  EmitInstrAB('SHR', 'BX', '1');
+  EmitInstrAB('MOV', 'WORD PTR [_PL_HTOP]', 'BX');
+  { AX = tagged ATOM avec index CX }
+  EmitInstrAB('MOV', 'AX', 'CX');
+  EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+  Str(TAG_ATOM Shl TAG_SHIFT, NS);
+  EmitInstrAB('OR', 'AX', NS);
+  { Incrementer le compteur d atomes }
+  EmitInstr('INC    WORD PTR [' + PL_ATOM_PFX + 'COUNT]');
+  EmitInstrA('POP', 'BX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { ---------------------------------------------------------- }
+  { _PLRT_ATOM_STRING : AX=tagged ATOM/INT -> AX=tagged ATOM   }
+  {   Si deja ATOM -> identite. Si INT -> convertir en chaine.  }
+  { ---------------------------------------------------------- }
+  EmitLabel(PL_RT_PFX + 'ATOM_STRING');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstrAB('AND', 'BX', IntToStr(TAG_MASK));
+  Str(TAG_ATOM Shl TAG_SHIFT, NS);
+  EmitInstrAB('CMP', 'BX', NS);
+  EmitInstrA('JE', PL_RT_PFX + 'AS_DONE');
+  { C est un INT -> convertir en chaine via NUMTOSTR + INTERN }
+  EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+  EmitInstrAB('TEST', 'AX', '1000h');
+  EmitInstrA('JZ', PL_RT_PFX + 'AS_POS');
+  EmitInstrAB('OR', 'AX', '0E000h');
+  EmitLabel(PL_RT_PFX + 'AS_POS');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'NUMTOSTR');
+  { DX=offset, CX=length : copier dans IOBUF depuis DX }
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('MOV', 'SI', 'DX');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _PL_IOBUF');
+  EmitLabel(PL_RT_PFX + 'AS_CPY');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [SI]');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', 'AL');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', PL_RT_PFX + 'AS_CPYD');
+  EmitInstr('INC    SI');
+  EmitInstr('INC    DI');
+  EmitInstrA('JMP', PL_RT_PFX + 'AS_CPY');
+  EmitLabel(PL_RT_PFX + 'AS_CPYD');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'INTERN_IOBUF');
+  EmitLabel(PL_RT_PFX + 'AS_DONE');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { ---------------------------------------------------------- }
+  { _PLRT_NUMBER_STRING : AX=tagged INT -> AX=tagged ATOM      }
+  {   Convertir le nombre en chaine via NUMTOSTR + INTERN       }
+  { ---------------------------------------------------------- }
+  EmitLabel(PL_RT_PFX + 'NUMBER_STRING');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+  EmitInstrAB('TEST', 'AX', '1000h');
+  EmitInstrA('JZ', PL_RT_PFX + 'NS_POS');
+  EmitInstrAB('OR', 'AX', '0E000h');
+  EmitLabel(PL_RT_PFX + 'NS_POS');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'NUMTOSTR');
+  { DX=offset, CX=length : copier dans IOBUF depuis DX }
+  EmitInstrAB('MOV', 'SI', 'DX');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _PL_IOBUF');
+  EmitLabel(PL_RT_PFX + 'NS_CPY');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [SI]');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', 'AL');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', PL_RT_PFX + 'NS_CPYD');
+  EmitInstr('INC    SI');
+  EmitInstr('INC    DI');
+  EmitInstrA('JMP', PL_RT_PFX + 'NS_CPY');
+  EmitLabel(PL_RT_PFX + 'NS_CPYD');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'INTERN_IOBUF');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { ---------------------------------------------------------- }
+  { _PLRT_STRING_CONCAT : AX=atom1, BX=atom2 -> AX=tagged ATOM }
+  {   Delegue a ATOM_CONCAT (strings = atoms dans ce systeme)   }
+  { ---------------------------------------------------------- }
+  EmitLabel(PL_RT_PFX + 'STRING_CONCAT');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'ATOM_CONCAT');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { ---------------------------------------------------------- }
+  { _PLRT_STRING_LENGTH : AX=tagged ATOM -> AX=tagged INT(len) }
+  {   Delegue a ATOM_LENGTH                                     }
+  { ---------------------------------------------------------- }
+  EmitLabel(PL_RT_PFX + 'STRING_LENGTH');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'ATOM_LENGTH');
+  EmitInstr('RET');
+  EmitBlankLine;
+End;
+
 { ---- EmitRuntime : emettre les routines runtime --------------- }
 { Emet les routines de backtracking, liste, arith, compare, ctrl. }
 Procedure EmitRuntime;
@@ -7333,6 +7803,7 @@ Begin
   EmitDynDBRuntime;
   EmitCollectRuntime;
   EmitOperatorRuntime;
+  EmitStringRuntime;
 End;
 
 { ---- EmitClose : fermer le fichier de sortie ASM -------------- }
@@ -10049,6 +10520,290 @@ Begin
         EmitComment('current_op/3: name is var, succeed trivially');
       End;
       EmitComment('current_op/3 done');
+    End
+
+    { === TODO 23 : Chaines et caracteres inline === }
+    { --- char_type/2 --- }
+    Else If (GoalTab[GIdx].PredName = 'char_type') And
+            (GoalTab[GIdx].Arity = 2) Then
+    Begin
+      EmitComment('char_type/2 inline (TODO 23)');
+      { Charger arg0 (Char) dans AX }
+      If GoalTab[GIdx].Args[0].Kind = FAK_ATOM Then
+      Begin
+        TagVal := (TAG_ATOM Shl TAG_SHIFT) Or
+                  (GoalTab[GIdx].Args[0].AtomIdx And VAL_MASK);
+        Str(TagVal, NS);
+        EmitInstrAB('MOV', 'AX', NS);
+      End
+      Else If GoalTab[GIdx].Args[0].Kind = FAK_INT Then
+      Begin
+        TagVal := (TAG_INT Shl TAG_SHIFT) Or
+                  (Integer(GoalTab[GIdx].Args[0].IntVal) And VAL_MASK);
+        Str(TagVal, NS);
+        EmitInstrAB('MOV', 'AX', NS);
+      End
+      Else If GoalTab[GIdx].Args[0].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[0].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitDeref;
+      End
+      Else
+        EmitInstrAB('MOV', 'AX', '0');
+      { Charger arg1 (Type) dans BX }
+      If GoalTab[GIdx].Args[1].Kind = FAK_ATOM Then
+      Begin
+        TagVal := (TAG_ATOM Shl TAG_SHIFT) Or
+                  (GoalTab[GIdx].Args[1].AtomIdx And VAL_MASK);
+        Str(TagVal, NS);
+        EmitInstrAB('MOV', 'BX', NS);
+      End
+      Else If GoalTab[GIdx].Args[1].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[1].VarName);
+        EmitInstrA('PUSH', 'AX');
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitDeref;
+        EmitInstrAB('MOV', 'BX', 'AX');
+        EmitInstrA('POP', 'AX');
+      End
+      Else
+        EmitInstrAB('MOV', 'BX', '0');
+      EmitInstr('CALL    ' + PL_RT_PFX + 'CHAR_TYPE');
+      EmitInstrA('JC', ClauseTab[CIdx].FailLabel);
+      EmitComment('char_type/2 done');
+    End
+    { --- upcase_atom/2 --- }
+    Else If (GoalTab[GIdx].PredName = 'upcase_atom') And
+            (GoalTab[GIdx].Arity = 2) Then
+    Begin
+      EmitComment('upcase_atom/2 inline (TODO 23)');
+      If GoalTab[GIdx].Args[0].Kind = FAK_ATOM Then
+      Begin
+        TagVal := (TAG_ATOM Shl TAG_SHIFT) Or
+                  (GoalTab[GIdx].Args[0].AtomIdx And VAL_MASK);
+        Str(TagVal, NS);
+        EmitInstrAB('MOV', 'AX', NS);
+      End
+      Else If GoalTab[GIdx].Args[0].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[0].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitDeref;
+      End
+      Else
+        EmitInstrAB('MOV', 'AX', '0');
+      EmitInstr('CALL    ' + PL_RT_PFX + 'UPCASE');
+      { AX = tagged ATOM (uppercased), unifier avec arg1 }
+      EmitInstrAB('MOV', 'BX', 'AX');
+      If GoalTab[GIdx].Args[1].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[1].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitBind;
+      End;
+      EmitComment('upcase_atom/2 done');
+    End
+    { --- downcase_atom/2 --- }
+    Else If (GoalTab[GIdx].PredName = 'downcase_atom') And
+            (GoalTab[GIdx].Arity = 2) Then
+    Begin
+      EmitComment('downcase_atom/2 inline (TODO 23)');
+      If GoalTab[GIdx].Args[0].Kind = FAK_ATOM Then
+      Begin
+        TagVal := (TAG_ATOM Shl TAG_SHIFT) Or
+                  (GoalTab[GIdx].Args[0].AtomIdx And VAL_MASK);
+        Str(TagVal, NS);
+        EmitInstrAB('MOV', 'AX', NS);
+      End
+      Else If GoalTab[GIdx].Args[0].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[0].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitDeref;
+      End
+      Else
+        EmitInstrAB('MOV', 'AX', '0');
+      EmitInstr('CALL    ' + PL_RT_PFX + 'DOWNCASE');
+      { AX = tagged ATOM (lowercased), unifier avec arg1 }
+      EmitInstrAB('MOV', 'BX', 'AX');
+      If GoalTab[GIdx].Args[1].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[1].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitBind;
+      End;
+      EmitComment('downcase_atom/2 done');
+    End
+    { --- atom_string/2 --- }
+    Else If (GoalTab[GIdx].PredName = 'atom_string') And
+            (GoalTab[GIdx].Arity = 2) Then
+    Begin
+      EmitComment('atom_string/2 inline (TODO 23)');
+      If GoalTab[GIdx].Args[0].Kind = FAK_ATOM Then
+      Begin
+        TagVal := (TAG_ATOM Shl TAG_SHIFT) Or
+                  (GoalTab[GIdx].Args[0].AtomIdx And VAL_MASK);
+        Str(TagVal, NS);
+        EmitInstrAB('MOV', 'AX', NS);
+      End
+      Else If GoalTab[GIdx].Args[0].Kind = FAK_INT Then
+      Begin
+        TagVal := (TAG_INT Shl TAG_SHIFT) Or
+                  (Integer(GoalTab[GIdx].Args[0].IntVal) And VAL_MASK);
+        Str(TagVal, NS);
+        EmitInstrAB('MOV', 'AX', NS);
+      End
+      Else If GoalTab[GIdx].Args[0].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[0].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitDeref;
+      End
+      Else
+        EmitInstrAB('MOV', 'AX', '0');
+      EmitInstr('CALL    ' + PL_RT_PFX + 'ATOM_STRING');
+      { AX = tagged ATOM, unifier avec arg1 }
+      EmitInstrAB('MOV', 'BX', 'AX');
+      If GoalTab[GIdx].Args[1].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[1].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitBind;
+      End;
+      EmitComment('atom_string/2 done');
+    End
+    { --- number_string/2 --- }
+    Else If (GoalTab[GIdx].PredName = 'number_string') And
+            (GoalTab[GIdx].Arity = 2) Then
+    Begin
+      EmitComment('number_string/2 inline (TODO 23)');
+      If GoalTab[GIdx].Args[0].Kind = FAK_INT Then
+      Begin
+        TagVal := (TAG_INT Shl TAG_SHIFT) Or
+                  (Integer(GoalTab[GIdx].Args[0].IntVal) And VAL_MASK);
+        Str(TagVal, NS);
+        EmitInstrAB('MOV', 'AX', NS);
+      End
+      Else If GoalTab[GIdx].Args[0].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[0].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitDeref;
+      End
+      Else
+        EmitInstrAB('MOV', 'AX', '0');
+      EmitInstr('CALL    ' + PL_RT_PFX + 'NUMBER_STRING');
+      { AX = tagged ATOM (string), unifier avec arg1 }
+      EmitInstrAB('MOV', 'BX', 'AX');
+      If GoalTab[GIdx].Args[1].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[1].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitBind;
+      End;
+      EmitComment('number_string/2 done');
+    End
+    { --- string_concat/3 --- }
+    Else If (GoalTab[GIdx].PredName = 'string_concat') And
+            (GoalTab[GIdx].Arity = 3) Then
+    Begin
+      EmitComment('string_concat/3 inline (TODO 23)');
+      { Charger arg0 }
+      If GoalTab[GIdx].Args[0].Kind = FAK_ATOM Then
+      Begin
+        TagVal := (TAG_ATOM Shl TAG_SHIFT) Or
+                  (GoalTab[GIdx].Args[0].AtomIdx And VAL_MASK);
+        Str(TagVal, NS);
+        EmitInstrAB('MOV', 'AX', NS);
+      End
+      Else If GoalTab[GIdx].Args[0].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[0].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitDeref;
+      End
+      Else
+        EmitInstrAB('MOV', 'AX', '0');
+      EmitInstrA('PUSH', 'AX');
+      { Charger arg1 }
+      If GoalTab[GIdx].Args[1].Kind = FAK_ATOM Then
+      Begin
+        TagVal := (TAG_ATOM Shl TAG_SHIFT) Or
+                  (GoalTab[GIdx].Args[1].AtomIdx And VAL_MASK);
+        Str(TagVal, NS);
+        EmitInstrAB('MOV', 'BX', NS);
+      End
+      Else If GoalTab[GIdx].Args[1].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[1].VarName);
+        EmitInstrAB('MOV', 'BX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitInstrA('PUSH', 'AX');
+        EmitInstrAB('MOV', 'AX', 'BX');
+        EmitDeref;
+        EmitInstrAB('MOV', 'BX', 'AX');
+        EmitInstrA('POP', 'AX');
+      End
+      Else
+        EmitInstrAB('MOV', 'BX', '0');
+      EmitInstrA('POP', 'AX');
+      EmitInstr('CALL    ' + PL_RT_PFX + 'STRING_CONCAT');
+      { AX = result, unifier avec arg2 }
+      EmitInstrAB('MOV', 'BX', 'AX');
+      If GoalTab[GIdx].Args[2].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[2].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitBind;
+      End;
+      EmitComment('string_concat/3 done');
+    End
+    { --- string_length/2 --- }
+    Else If (GoalTab[GIdx].PredName = 'string_length') And
+            (GoalTab[GIdx].Arity = 2) Then
+    Begin
+      EmitComment('string_length/2 inline (TODO 23)');
+      If GoalTab[GIdx].Args[0].Kind = FAK_ATOM Then
+      Begin
+        TagVal := (TAG_ATOM Shl TAG_SHIFT) Or
+                  (GoalTab[GIdx].Args[0].AtomIdx And VAL_MASK);
+        Str(TagVal, NS);
+        EmitInstrAB('MOV', 'AX', NS);
+      End
+      Else If GoalTab[GIdx].Args[0].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[0].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitDeref;
+      End
+      Else
+        EmitInstrAB('MOV', 'AX', '0');
+      EmitInstr('CALL    ' + PL_RT_PFX + 'STRING_LENGTH');
+      { AX = tagged INT (longueur), unifier avec arg1 }
+      EmitInstrAB('MOV', 'BX', 'AX');
+      If GoalTab[GIdx].Args[1].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[1].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitBind;
+      End;
+      EmitComment('string_length/2 done');
     End
 
     Else

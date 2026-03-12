@@ -1947,6 +1947,315 @@ _PLRT_OPLK_FOUND:
         CLC
         RET
 
+
+; === TODO 23 : Runtime chaines et caracteres ===
+
+_PLRT_CHAR_TYPE:
+        PUSH   SI
+        PUSH   DI
+        PUSH   CX
+        PUSH   DX
+        MOV   CX, AX
+        AND   CX, 57344
+        CMP   CX, 8192
+        JNE   _PLRT_CT_ISINT
+        AND   AX, 8191
+        SHL   AX, 1
+        MOV   SI, AX
+        ADD   SI, OFFSET _PLA_TABLE
+        MOV   SI, WORD PTR [SI]
+        XOR   AX, AX
+        MOV   AL, BYTE PTR [SI]
+        JMP   _PLRT_CT_GOTCH
+_PLRT_CT_ISINT:
+        AND   AX, 8191
+_PLRT_CT_GOTCH:
+        MOV   DL, AL
+        AND   BX, 8191
+        SHL   BX, 1
+        MOV   SI, BX
+        ADD   SI, OFFSET _PLA_TABLE
+        MOV   SI, WORD PTR [SI]
+        MOV   AL, BYTE PTR [SI]
+        CMP   AL, 'd'
+        JE   _PLRT_CT_DIGIT
+        CMP   AL, 's'
+        JE   _PLRT_CT_SPACE
+        CMP   AL, 'u'
+        JE   _PLRT_CT_UPPER
+        CMP   AL, 'l'
+        JE   _PLRT_CT_LOWER
+        CMP   AL, 'p'
+        JE   _PLRT_CT_PUNCT
+        CMP   AL, 'a'
+        JNE   _PLRT_CT_FAIL
+        MOV   AL, BYTE PTR [SI+1]
+        CMP   AL, 'l'
+        JE   _PLRT_CT_AL23
+        CMP   AL, 's'
+        JE   _PLRT_CT_ASCII
+        JMP   _PLRT_CT_FAIL
+_PLRT_CT_AL23:
+        MOV   AL, BYTE PTR [SI+2]
+        CMP   AL, 'n'
+        JE   _PLRT_CT_ALNUM
+        JMP   _PLRT_CT_ALPHA
+_PLRT_CT_DIGIT:
+        CMP   DL, '0'
+        JB   _PLRT_CT_FAIL
+        CMP   DL, '9'
+        JA   _PLRT_CT_FAIL
+        JMP   _PLRT_CT_OK
+_PLRT_CT_SPACE:
+        CMP   DL, 32
+        JE   _PLRT_CT_OK
+        CMP   DL, 9
+        JE   _PLRT_CT_OK
+        CMP   DL, 10
+        JE   _PLRT_CT_OK
+        CMP   DL, 13
+        JE   _PLRT_CT_OK
+        JMP   _PLRT_CT_FAIL
+_PLRT_CT_UPPER:
+        CMP   DL, 'A'
+        JB   _PLRT_CT_FAIL
+        CMP   DL, 'Z'
+        JA   _PLRT_CT_FAIL
+        JMP   _PLRT_CT_OK
+_PLRT_CT_LOWER:
+        CMP   DL, 'a'
+        JB   _PLRT_CT_FAIL
+        CMP   DL, 'z'
+        JA   _PLRT_CT_FAIL
+        JMP   _PLRT_CT_OK
+_PLRT_CT_ALPHA:
+        CMP   DL, 'A'
+        JB   _PLRT_CT_FAIL
+        CMP   DL, 'Z'
+        JBE   _PLRT_CT_OK
+        CMP   DL, 'a'
+        JB   _PLRT_CT_FAIL
+        CMP   DL, 'z'
+        JA   _PLRT_CT_FAIL
+        JMP   _PLRT_CT_OK
+_PLRT_CT_ALNUM:
+        CMP   DL, '0'
+        JB   _PLRT_CT_FAIL
+        CMP   DL, '9'
+        JBE   _PLRT_CT_OK
+        CMP   DL, 'A'
+        JB   _PLRT_CT_FAIL
+        CMP   DL, 'Z'
+        JBE   _PLRT_CT_OK
+        CMP   DL, 'a'
+        JB   _PLRT_CT_FAIL
+        CMP   DL, 'z'
+        JA   _PLRT_CT_FAIL
+        JMP   _PLRT_CT_OK
+_PLRT_CT_PUNCT:
+        CMP   DL, 33
+        JB   _PLRT_CT_FAIL
+        CMP   DL, 47
+        JBE   _PLRT_CT_OK
+        CMP   DL, 58
+        JB   _PLRT_CT_FAIL
+        CMP   DL, 64
+        JBE   _PLRT_CT_OK
+        CMP   DL, 91
+        JB   _PLRT_CT_FAIL
+        CMP   DL, 96
+        JBE   _PLRT_CT_OK
+        CMP   DL, 123
+        JB   _PLRT_CT_FAIL
+        CMP   DL, 126
+        JA   _PLRT_CT_FAIL
+        JMP   _PLRT_CT_OK
+_PLRT_CT_ASCII:
+        CMP   DL, 127
+        JA   _PLRT_CT_FAIL
+        JMP   _PLRT_CT_OK
+_PLRT_CT_OK:
+        CLC
+        POP   DX
+        POP   CX
+        POP   DI
+        POP   SI
+        RET
+_PLRT_CT_FAIL:
+        STC
+        POP   DX
+        POP   CX
+        POP   DI
+        POP   SI
+        RET
+
+_PLRT_UPCASE:
+        PUSH   SI
+        PUSH   DI
+        PUSH   CX
+        AND   AX, 8191
+        SHL   AX, 1
+        MOV   SI, AX
+        ADD   SI, OFFSET _PLA_TABLE
+        MOV   SI, WORD PTR [SI]
+        MOV   DI, OFFSET _PL_IOBUF
+_PLRT_UC_LOOP:
+        MOV   AL, BYTE PTR [SI]
+        CMP   AL, 0
+        JE   _PLRT_UC_DONE
+        CMP   AL, 'a'
+        JB   _PLRT_UC_STORE
+        CMP   AL, 'z'
+        JA   _PLRT_UC_STORE
+        SUB   AL, 32
+_PLRT_UC_STORE:
+        MOV   BYTE PTR [DI], AL
+        INC    SI
+        INC    DI
+        JMP   _PLRT_UC_LOOP
+_PLRT_UC_DONE:
+        MOV   BYTE PTR [DI], 0
+        CALL    _PLRT_INTERN_IOBUF
+        POP   CX
+        POP   DI
+        POP   SI
+        RET
+
+_PLRT_DOWNCASE:
+        PUSH   SI
+        PUSH   DI
+        PUSH   CX
+        AND   AX, 8191
+        SHL   AX, 1
+        MOV   SI, AX
+        ADD   SI, OFFSET _PLA_TABLE
+        MOV   SI, WORD PTR [SI]
+        MOV   DI, OFFSET _PL_IOBUF
+_PLRT_DC_LOOP:
+        MOV   AL, BYTE PTR [SI]
+        CMP   AL, 0
+        JE   _PLRT_DC_DONE
+        CMP   AL, 'A'
+        JB   _PLRT_DC_STORE
+        CMP   AL, 'Z'
+        JA   _PLRT_DC_STORE
+        ADD   AL, 32
+_PLRT_DC_STORE:
+        MOV   BYTE PTR [DI], AL
+        INC    SI
+        INC    DI
+        JMP   _PLRT_DC_LOOP
+_PLRT_DC_DONE:
+        MOV   BYTE PTR [DI], 0
+        CALL    _PLRT_INTERN_IOBUF
+        POP   CX
+        POP   DI
+        POP   SI
+        RET
+
+_PLRT_INTERN_IOBUF:
+        PUSH   SI
+        PUSH   DI
+        PUSH   CX
+        PUSH   BX
+        MOV   SI, OFFSET _PL_IOBUF
+        MOV   CX, WORD PTR [_PLA_COUNT]
+        MOV   DI, CX
+        SHL   DI, 1
+        ADD   DI, OFFSET _PLA_TABLE
+        MOV   BX, WORD PTR [_PL_HTOP]
+        SHL   BX, 1
+        ADD   BX, OFFSET _PL_HEAP
+        MOV   WORD PTR [DI], BX
+_PLRT_IIB_CP:
+        MOV   AL, BYTE PTR [SI]
+        MOV   BYTE PTR [BX], AL
+        CMP   AL, 0
+        JE   _PLRT_IIB_END
+        INC    SI
+        INC    BX
+        JMP   _PLRT_IIB_CP
+_PLRT_IIB_END:
+        INC    BX
+        SUB   BX, OFFSET _PL_HEAP
+        INC    BX
+        SHR   BX, 1
+        MOV   WORD PTR [_PL_HTOP], BX
+        MOV   AX, CX
+        AND   AX, 8191
+        OR   AX, 8192
+        INC    WORD PTR [_PLA_COUNT]
+        POP   BX
+        POP   CX
+        POP   DI
+        POP   SI
+        RET
+
+_PLRT_ATOM_STRING:
+        PUSH   BX
+        MOV   BX, AX
+        AND   BX, 57344
+        CMP   BX, 8192
+        JE   _PLRT_AS_DONE
+        AND   AX, 8191
+        TEST   AX, 1000h
+        JZ   _PLRT_AS_POS
+        OR   AX, 0E000h
+_PLRT_AS_POS:
+        CALL    _PLRT_NUMTOSTR
+        PUSH   SI
+        PUSH   DI
+        MOV   SI, DX
+        MOV   DI, OFFSET _PL_IOBUF
+_PLRT_AS_CPY:
+        MOV   AL, BYTE PTR [SI]
+        MOV   BYTE PTR [DI], AL
+        CMP   AL, 0
+        JE   _PLRT_AS_CPYD
+        INC    SI
+        INC    DI
+        JMP   _PLRT_AS_CPY
+_PLRT_AS_CPYD:
+        POP   DI
+        POP   SI
+        CALL    _PLRT_INTERN_IOBUF
+_PLRT_AS_DONE:
+        POP   BX
+        RET
+
+_PLRT_NUMBER_STRING:
+        PUSH   SI
+        PUSH   DI
+        AND   AX, 8191
+        TEST   AX, 1000h
+        JZ   _PLRT_NS_POS
+        OR   AX, 0E000h
+_PLRT_NS_POS:
+        CALL    _PLRT_NUMTOSTR
+        MOV   SI, DX
+        MOV   DI, OFFSET _PL_IOBUF
+_PLRT_NS_CPY:
+        MOV   AL, BYTE PTR [SI]
+        MOV   BYTE PTR [DI], AL
+        CMP   AL, 0
+        JE   _PLRT_NS_CPYD
+        INC    SI
+        INC    DI
+        JMP   _PLRT_NS_CPY
+_PLRT_NS_CPYD:
+        CALL    _PLRT_INTERN_IOBUF
+        POP   DI
+        POP   SI
+        RET
+
+_PLRT_STRING_CONCAT:
+        CALL    _PLRT_ATOM_CONCAT
+        RET
+
+_PLRT_STRING_LENGTH:
+        CALL    _PLRT_ATOM_LENGTH
+        RET
+
 _TEXT   ENDS
 
 _DATA   SEGMENT WORD PUBLIC 'DATA'
@@ -2013,6 +2322,9 @@ _PL_OPNAME  DB  4096 DUP(0)
 ; --- Directives (TODO 22) ---
 _PL_MODNAME DB  64 DUP(0)
 _PL_INITCNT DW  0
+
+; --- Strings (TODO 23) ---
+_PL_DQMODE  DB  0
 
 ; --- Registres d arguments WAM ---
 _PL_ARGS    DW  16 DUP(0)
