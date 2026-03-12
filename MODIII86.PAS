@@ -387,7 +387,7 @@
              RuntimeEmitted : flag pour n emettre le runtime qu une seule fois
              Heap statique : _M3_HEAP DB 4096 DUP(0) + _M3_HEAPTOP DW 0
 
-   TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES
+   TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES [IMPLEMENTE]
              EmitClose : END _M3P_Main dans _TEXT ENDS / DATA ENDS
              Run : pipeline complet LexInit -> ParseCompilationUnit ->
                EmitRuntime -> _TEXT ENDS / EmitDataSeg / END _M3P_Main
