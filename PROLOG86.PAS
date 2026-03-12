@@ -5089,16 +5089,56 @@ Begin
   { Same tag - for simple types (REF/ATOM/INT) values already compared }
   { since same tag but different word -> not equal }
   Lbl1 := LabelGen;
+  Lbl2 := LabelGen;
   EmitInstrAB('CMP', 'DX', IntToStr(TAG_LIST Shl TAG_SHIFT));
   EmitInstrA('JE', Lbl1);
   EmitInstrAB('CMP', 'DX', IntToStr(TAG_STR Shl TAG_SHIFT));
   EmitInstrA('JNE', LblFail);
-  { Structure: compare functor+arity at heap, then args recursively }
-  { For simplicity: compare the tagged word values (non-recursive) }
-  EmitInstrA('JMP', LblFail);
+  { Structure: compare functor word at heap[val], then args recursively }
+  { For 8086 simplicity: compare first two heap words (functor+arity) }
+  EmitComment('STR struct_eq: compare heap cells');
+  EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+  EmitInstrAB('AND', 'BX', IntToStr(VAL_MASK));
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstr('SHL    SI,1');
+  EmitInstrAB('ADD', 'SI', 'OFFSET _PL_HEAP');
+  EmitInstrAB('MOV', 'DI', 'BX');
+  EmitInstr('SHL    DI,1');
+  EmitInstrAB('ADD', 'DI', 'OFFSET _PL_HEAP');
+  { Compare functor cell (heap[addr]) }
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [SI]');
+  EmitInstrAB('CMP', 'AX', 'WORD PTR [DI]');
+  EmitInstrA('JNE', LblFail);
+  { Compare arity cell (heap[addr+1]) }
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [SI+2]');
+  EmitInstrAB('CMP', 'AX', 'WORD PTR [DI+2]');
+  EmitInstrA('JNE', LblFail);
+  EmitInstrA('JMP', LblOk);
   EmitLabel(Lbl1);
-  { LIST: compare head and tail - simplified: compare tagged words }
-  EmitInstrA('JMP', LblFail);
+  { LIST: compare head and tail recursively via nested STRUCT_EQ calls }
+  EmitComment('LIST struct_eq: compare head+tail');
+  EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+  EmitInstrAB('AND', 'BX', IntToStr(VAL_MASK));
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstr('SHL    SI,1');
+  EmitInstrAB('ADD', 'SI', 'OFFSET _PL_HEAP');
+  EmitInstrAB('MOV', 'DI', 'BX');
+  EmitInstr('SHL    DI,1');
+  EmitInstrAB('ADD', 'DI', 'OFFSET _PL_HEAP');
+  { Compare heads: heap[addr] }
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [SI]');
+  EmitInstrAB('MOV', 'BX', 'WORD PTR [DI]');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'STRUCT_EQ');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('JC', LblFail);
+  { Compare tails: heap[addr+1] }
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [SI+2]');
+  EmitInstrAB('MOV', 'BX', 'WORD PTR [DI+2]');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'STRUCT_EQ');
+  EmitInstrA('JC', LblFail);
   EmitLabel(LblOk);
   EmitInstr('CLC');
   EmitInstrA('JMP', LblEnd);
@@ -5216,7 +5256,36 @@ Begin
   EmitInstr('INC    WORD PTR [_PL_HTOP]');
   EmitInstrA('JMP', LblEnd);
   EmitLabel(Lbl1);
-  { For LIST/STR: simplified copy returns same term }
+  { For LIST: deep copy head and tail recursively }
+  Lbl2 := LabelGen;
+  EmitInstrAB('CMP', 'DX', IntToStr(TAG_LIST Shl TAG_SHIFT));
+  EmitInstrA('JNE', Lbl2);
+  EmitComment('copy LIST: copy head+tail');
+  EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstr('SHL    SI,1');
+  EmitInstrAB('ADD', 'SI', 'OFFSET _PL_HEAP');
+  { Copy head }
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [SI]');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'COPY_TERM');
+  EmitInstrAB('MOV', 'BX', 'AX');   { BX = copied head }
+  EmitInstrA('POP', 'SI');
+  { Copy tail }
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [SI+2]');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'COPY_TERM');
+  EmitInstrAB('MOV', 'DX', 'AX');   { DX = copied tail }
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'BX');          { BX = copied head }
+  { Build new list cell: _PLRT_PUTLIST(AX=head, BX=tail) }
+  EmitInstrAB('MOV', 'AX', 'BX');   { AX = head }
+  EmitInstrAB('MOV', 'BX', 'DX');   { BX = tail }
+  EmitInstr('CALL    ' + PL_RT_PFX + 'PUTLIST');
+  EmitInstrA('JMP', LblEnd);
+  EmitLabel(Lbl2);
+  { For STR: return same term (structure copy simplified) }
   EmitLabel(LblOk);
   EmitLabel(LblEnd);
   EmitInstrA('POP', 'SI');
@@ -6610,7 +6679,36 @@ Begin
       End;
       EmitInstrA('JMP', PredLbl);
       EmitLabel(Clean);
-      { Non-atom case: fail for now (INT/STR/LIST not yet handled) }
+      { INT case: functor(N, N, 0) - the number itself is the functor }
+      NS := LabelGen; { label for non-int case }
+      EmitInstrAB('CMP', 'BX', IntToStr(TAG_INT Shl TAG_SHIFT));
+      EmitInstrA('JNE', NS);
+      { Unify arg1 with the integer term }
+      EmitInstrAB('MOV', 'AX', 'DX');
+      If GoalTab[GIdx].Args[1].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[1].VarName);
+        EmitInstrAB('MOV', 'BX', 'AX');
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitUnify;
+        EmitInstrA('JC', ClauseTab[CIdx].FailLabel);
+      End;
+      { Unify arg2 with 0 }
+      If GoalTab[GIdx].Args[2].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[2].VarName);
+        TagVal := (TAG_INT Shl TAG_SHIFT) Or (0 And VAL_MASK);
+        Str(TagVal, NS);
+        EmitInstrAB('MOV', 'BX', NS);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitUnify;
+        EmitInstrA('JC', ClauseTab[CIdx].FailLabel);
+      End;
+      EmitInstrA('JMP', PredLbl);
+      EmitLabel(NS);
+      { Other types (STR/LIST): fail for now }
       EmitInstrA('JMP', ClauseTab[CIdx].FailLabel);
       EmitLabel(PredLbl);
       EmitComment('functor/3 ok');
