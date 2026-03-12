@@ -4904,7 +4904,6 @@ End;
 Procedure ParseIfStmt;
 Var
   Res      : TExprVal;
-  U        : TString;
   LblElse  : TString;
   LblEndif : TString;
 Begin
@@ -5003,11 +5002,9 @@ Var
   U        : TString;
   LblNext  : TString;
   LblEnd   : TString;
-  HasOther : Boolean;
 Begin
   EmitComment('SELECT');
   LblEnd   := LabelGen;
-  HasOther := False;
 
   (* Boucle sur les clauses WHEN / OTHERWISE *)
   While CurToken.Kind <> TK_EOF Do
@@ -5080,7 +5077,6 @@ Begin
     Begin
       ParserAdvance;  (* consommer OTHERWISE *)
       EmitComment('OTHERWISE');
-      HasOther := True;
 
       (* Sauter les fins de ligne *)
       While CurToken.Kind = TK_EOL Do

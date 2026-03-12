@@ -10,6 +10,244 @@ _RXP_Main:
         MOV   AX, _DATA
         MOV   DS, AX
 
+; SAY
+        MOV     AX, 5
+        CALL   _RXRT_NUMTOSTR
+        CALL   _RXRT_PRINTLN
+; SAY
+        MOV     AX, 6
+        CALL   _RXRT_NUMTOSTR
+        CALL   _RXRT_PRINTLN
+; SAY
+        MOV     AX, 15
+        CALL   _RXRT_NUMTOSTR
+        CALL   _RXRT_PRINTLN
+; SAY
+        MOV     AX, 5
+        CALL   _RXRT_NUMTOSTR
+        CALL   _RXRT_PRINTLN
+; SAY
+        MOV     AX, 2
+        CALL   _RXRT_NUMTOSTR
+        CALL   _RXRT_PRINTLN
+; SAY
+        MOV     AX, 1
+        CALL   _RXRT_NUMTOSTR
+        CALL   _RXRT_PRINTLN
+; SAY
+        MOV     AX, 32
+        CALL   _RXRT_NUMTOSTR
+        CALL   _RXRT_PRINTLN
+; SAY
+        LEA     AX, _RXK_1
+        PUSH     AX
+        LEA     AX, _RXK_2
+        MOV     BX, AX
+        POP     AX
+        MOV     SI, AX
+        MOV     DI, BX
+        CALL    _RXRT_CONCAT
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SAY
+        LEA     AX, _RXK_3
+        PUSH     AX
+        LEA     AX, _RXK_4
+        MOV     BX, AX
+        POP     AX
+        MOV     SI, AX
+        MOV     DI, BX
+        CALL    _RXRT_CONCAT
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SAY
+        LEA     AX, _RXK_4
+        PUSH     AX
+        LEA     AX, _RXK_4
+        MOV     BX, AX
+        POP     AX
+        PUSH     BX
+        MOV     SI, AX
+        MOV     DI, OFFSET _RX_SPC_S
+        CALL    _RXRT_CONCAT
+        MOV     SI, AX
+        POP     DI
+        PUSH     DI
+        MOV     DI, OFFSET _RX_TMPBUF
+        CALL    _RXRT_STRCPY
+        MOV     SI, OFFSET _RX_TMPBUF
+        POP     DI
+        CALL    _RXRT_CONCAT
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SAY
+        LEA     AX, _RXK_4
+        PUSH     AX
+        LEA     AX, _RXK_4
+        MOV     BX, AX
+        POP     AX
+        MOV     SI, AX
+        MOV     DI, BX
+        CALL    _RXRT_STRCMP
+        OR     AX, AX
+        MOV     AX, 0
+        JNE     _RXL_1
+        INC     AX
+_RXL_1:
+        CALL   _RXRT_NUMTOSTR
+        CALL   _RXRT_PRINTLN
+; SAY
+        LEA     AX, _RXK_4
+        PUSH     AX
+        LEA     AX, _RXK_4
+        MOV     BX, AX
+        POP     AX
+        MOV     SI, AX
+        MOV     DI, BX
+        CALL    _RXRT_STRCMP
+        OR     AX, AX
+        MOV     AX, 0
+        JE      _RXL_2
+        INC     AX
+_RXL_2:
+        CALL   _RXRT_NUMTOSTR
+        CALL   _RXRT_PRINTLN
+; SAY
+        LEA     AX, _RXK_5
+        PUSH     AX
+        LEA     AX, _RXK_6
+        MOV     BX, AX
+        POP     AX
+        MOV     SI, AX
+        MOV     DI, BX
+        CALL    _RXRT_STRCMP
+        CMP     AX, 1
+        MOV     AX, 0
+        JNE     _RXL_3
+        INC     AX
+_RXL_3:
+        CALL   _RXRT_NUMTOSTR
+        CALL   _RXRT_PRINTLN
+; SAY
+        LEA     AX, _RXK_6
+        PUSH     AX
+        LEA     AX, _RXK_6
+        MOV     BX, AX
+        POP     AX
+        MOV     SI, AX
+        MOV     DI, BX
+        CALL    _RXRT_STRCMP
+        CMP     AX, 0FFFFh
+        MOV     AX, 0
+        JNE     _RXL_4
+        INC     AX
+_RXL_4:
+        CALL   _RXRT_NUMTOSTR
+        CALL   _RXRT_PRINTLN
+; SAY
+        LEA     AX, _RXK_6
+        PUSH     AX
+        LEA     AX, _RXK_6
+        MOV     BX, AX
+        POP     AX
+        MOV     SI, AX
+        MOV     DI, BX
+        CALL    _RXRT_STRCMPS
+        OR     AX, AX
+        MOV     AX, 0
+        JNE     _RXL_5
+        INC     AX
+_RXL_5:
+        CALL   _RXRT_NUMTOSTR
+        CALL   _RXRT_PRINTLN
+; SAY
+        LEA     AX, _RXK_6
+        PUSH     AX
+        LEA     AX, _RXK_6
+        MOV     BX, AX
+        POP     AX
+        MOV     SI, AX
+        MOV     DI, BX
+        CALL    _RXRT_STRCMPS
+        OR     AX, AX
+        MOV     AX, 0
+        JE      _RXL_6
+        INC     AX
+_RXL_6:
+        CALL   _RXRT_NUMTOSTR
+        CALL   _RXRT_PRINTLN
+; SAY
+        MOV     AX, 1
+        OR     AX, AX
+        JZ      _RXL_7
+        MOV     AX, 1
+        OR     AX, AX
+        JZ      _RXL_7
+        MOV     AX, 1
+        JMP     _RXL_8
+_RXL_7:
+        XOR     AX, AX
+_RXL_8:
+        CALL   _RXRT_NUMTOSTR
+        CALL   _RXRT_PRINTLN
+; SAY
+        MOV     AX, 1
+        OR     AX, AX
+        JZ      _RXL_9
+        MOV     AX, 0
+        OR     AX, AX
+        JZ      _RXL_9
+        MOV     AX, 1
+        JMP     _RXL_10
+_RXL_9:
+        XOR     AX, AX
+_RXL_10:
+        CALL   _RXRT_NUMTOSTR
+        CALL   _RXRT_PRINTLN
+; SAY
+        MOV     AX, 0
+        OR     AX, AX
+        JNZ     _RXL_11
+        MOV     AX, 1
+        OR     AX, AX
+        JNZ     _RXL_11
+        XOR     AX, AX
+        JMP     _RXL_12
+_RXL_11:
+        MOV     AX, 1
+_RXL_12:
+        CALL   _RXRT_NUMTOSTR
+        CALL   _RXRT_PRINTLN
+; SAY
+        MOV     AX, 0
+        OR     AX, AX
+        JNZ     _RXL_13
+        MOV     AX, 0
+        OR     AX, AX
+        JNZ     _RXL_13
+        XOR     AX, AX
+        JMP     _RXL_14
+_RXL_13:
+        MOV     AX, 1
+_RXL_14:
+        CALL   _RXRT_NUMTOSTR
+        CALL   _RXRT_PRINTLN
+; SAY
+        MOV     AX, 1
+        CALL   _RXRT_NUMTOSTR
+        CALL   _RXRT_PRINTLN
+; SAY
+        MOV     AX, 0
+        CALL   _RXRT_NUMTOSTR
+        CALL   _RXRT_PRINTLN
+; SAY
+        MOV     AX, 1
+        CALL   _RXRT_NUMTOSTR
+        CALL   _RXRT_PRINTLN
+; SAY
+        MOV     AX, 0
+        CALL   _RXRT_NUMTOSTR
+        CALL   _RXRT_PRINTLN
         JMP     _RXP_Exit
 
 
@@ -309,6 +547,39 @@ _RXRT_SCMP_DN:
         POP   SI
         RET
 
+; --- Runtime E/S REXX (TODO 12) ---
+
+_RXRT_INPUT:
+        PUSH   BX
+        PUSH   CX
+        PUSH   DX
+        PUSH   SI
+        MOV   BYTE PTR [_RX_INPUTBF], 253
+        MOV   BYTE PTR [_RX_INPUTBF+1], 0
+        MOV   AH, 0Ah
+        LEA   DX, _RX_INPUTBF
+        INT     21h
+        XOR   BH, BH
+        MOV   BL, BYTE PTR [_RX_INPUTBF+1]
+        MOV   BYTE PTR [_RX_INPUTBF+BX+2], 0
+        LEA   SI, _RX_INPUTBF
+        ADD   SI, 2
+        LEA   DI, _RX_STRBUF
+        CALL   _RXRT_STRCPY
+        MOV   SI, OFFSET _RX_CRLF
+        CALL   _RXRT_PRINT
+        LEA   AX, _RX_STRBUF
+        POP   SI
+        POP   DX
+        POP   CX
+        POP   BX
+        RET
+
+_RXRT_PRINTINT:
+        CALL   _RXRT_NUMTOSTR
+        CALL   _RXRT_PRINT
+        RET
+
 
 ; --- sortie DOS ---
         MOV   AX, 4C00h
@@ -333,6 +604,13 @@ _RX_STRBUF DB 256 DUP(0)
 _RX_TMPBUF DB 256 DUP(0)
 _RX_NUMBUF DB 12 DUP(0)
 _RX_CATBUF DB 256 DUP(0)
+_RX_INPUTBF DB 256 DUP(0)
+_RXK_1 DB 'Hello',0
+_RXK_2 DB 'World',0
+_RXK_3 DB 'abc',0
+_RXK_4 DB 'def',0
+_RXK_5 DB 'b',0
+_RXK_6 DB 'a',0
 _DATA ENDS
 
 END _RXP_Main
