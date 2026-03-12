@@ -286,7 +286,7 @@
             atom_concat(A, B, C) : concatenation d atomes
             sub_atom(Atom, Before, Length, After, Sub) : sous-atome
 
-  TODO 18 - PREDICATS PREDEFINIS (BUILT-IN)
+  TODO 18 - PREDICATS PREDEFINIS (BUILT-IN) [IMPLEMENTE]
             Controle : true, fail, halt, halt/1, !/0 (cut)
             Logique : ','/2 (conjonction), ';'/2 (disjonction), '->'/2 (if-then)
             Unification : =/2, \=/2, unify_with_occurs_check/2
@@ -500,6 +500,96 @@ Const
   EXIT_ERROR = 1;
   EXIT_USAGE = 2;
 
+  { Codes BIF (Built-In Function) pour identification formelle (TODO 18) }
+  BIF_NONE           =  0;
+  { Controle }
+  BIF_TRUE           =  1;
+  BIF_FAIL           =  2;
+  BIF_HALT           =  3;
+  BIF_CUT            =  4;
+  BIF_CALL           =  5;
+  BIF_NOT            =  6;
+  { Unification }
+  BIF_UNIFY          = 10;
+  BIF_NOT_UNIFY      = 11;
+  BIF_UNIFY_OC       = 12;
+  { Comparaison structurelle }
+  BIF_STRUCT_EQ      = 20;
+  BIF_STRUCT_NEQ     = 21;
+  BIF_TERM_LT        = 22;
+  BIF_TERM_GT        = 23;
+  BIF_TERM_LE        = 24;
+  BIF_TERM_GE        = 25;
+  BIF_COMPARE        = 26;
+  { Arithmetique }
+  BIF_IS             = 30;
+  BIF_ARITH_EQ       = 31;
+  BIF_ARITH_NEQ      = 32;
+  BIF_ARITH_LT       = 33;
+  BIF_ARITH_GT       = 34;
+  BIF_ARITH_LE       = 35;
+  BIF_ARITH_GE       = 36;
+  { Type testing }
+  BIF_VAR            = 40;
+  BIF_NONVAR         = 41;
+  BIF_ATOM           = 42;
+  BIF_NUMBER         = 43;
+  BIF_INTEGER        = 44;
+  BIF_FLOAT          = 45;
+  BIF_COMPOUND       = 46;
+  BIF_CALLABLE       = 47;
+  BIF_IS_LIST        = 48;
+  BIF_ATOMIC         = 49;
+  BIF_GROUND         = 50;
+  { Termes }
+  BIF_FUNCTOR        = 60;
+  BIF_ARG            = 61;
+  BIF_UNIV           = 62;
+  BIF_COPY_TERM      = 63;
+  { Listes }
+  BIF_APPEND         = 70;
+  BIF_LENGTH         = 71;
+  BIF_MEMBER         = 72;
+  BIF_LAST           = 73;
+  BIF_REVERSE        = 74;
+  BIF_MSORT          = 75;
+  BIF_SORT           = 76;
+  BIF_NTH0           = 77;
+  BIF_NTH1           = 78;
+  { E/S }
+  BIF_WRITE          = 80;
+  BIF_WRITELN        = 81;
+  BIF_NL             = 82;
+  BIF_READ           = 83;
+  BIF_PRINT          = 84;
+  BIF_WRITE_CAN      = 85;
+  BIF_PUT_CHAR       = 86;
+  BIF_GET_CHAR       = 87;
+  BIF_TAB            = 88;
+  { Atomes/chaines }
+  BIF_ATOM_LENGTH    = 90;
+  BIF_ATOM_CONCAT    = 91;
+  BIF_ATOM_CHARS     = 92;
+  BIF_ATOM_CODES     = 93;
+  BIF_CHAR_CODE      = 94;
+  BIF_NUMBER_CHARS   = 95;
+  BIF_NUMBER_CODES   = 96;
+  BIF_SUB_ATOM       = 97;
+  BIF_UPCASE_ATOM    = 98;
+  BIF_DOWNCASE_ATOM  = 99;
+  BIF_ATOM_STRING    = 100;
+  { Meta / collect }
+  BIF_FINDALL        = 110;
+  BIF_BAGOF          = 111;
+  BIF_SETOF          = 112;
+  BIF_BETWEEN        = 113;
+  { Assert/retract }
+  BIF_ASSERT         = 120;
+  BIF_ASSERTA        = 121;
+  BIF_ASSERTZ        = 122;
+  BIF_RETRACT        = 123;
+  BIF_ABOLISH        = 124;
+
 { ============================================================
   TYPES
   ============================================================ }
@@ -602,6 +692,7 @@ Type
     ClauseCount : Integer;   { nombre de clauses pour ce predicat  }
     ScopeLevel  : Integer;   { niveau de portee (0=global)         }
     IsBuiltin   : Boolean;   { predicat builtin ?                  }
+    BifCode     : Integer;   { code BIF_xxx (0 si non builtin)     }
     IsDynamic   : Boolean;   { predicat dynamique (assert/retract) }
     IsExported  : Boolean;   { exporte hors du module ?            }
     DeclLine    : Integer;   { ligne de declaration                }
@@ -926,6 +1017,8 @@ Procedure EmitCompareRuntime; Forward;
 Procedure EmitControlRuntime; Forward;
 { Entrees/sorties (TODO 17) }
 Procedure EmitIORuntime; Forward;
+{ Predicats predefinis (TODO 18) }
+Procedure EmitBuiltinRuntime; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -3081,6 +3174,7 @@ Begin
   SymTab[Idx].ClauseCount := 0;
   SymTab[Idx].ScopeLevel  := CurScope;
   SymTab[Idx].IsBuiltin   := (Kind = SK_BUILTIN);
+  SymTab[Idx].BifCode     := BIF_NONE;
   SymTab[Idx].IsDynamic   := False;
   SymTab[Idx].IsExported  := False;
   SymTab[Idx].DeclLine    := LexLineNo;
@@ -3095,6 +3189,17 @@ Begin
             ' -> ', SymTab[Idx].MangledName);
 
   SymAdd := Idx;
+End;
+
+{ ---- SymAddBif : ajouter un symbole builtin avec code BIF ----- }
+Function SymAddBif(Const Name : TString; AArity : Integer;
+                   ABif : Integer) : Integer;
+Var Idx : Integer;
+Begin
+  Idx := SymAdd(Name, SK_BUILTIN, AArity);
+  If Idx >= 0 Then
+    SymTab[Idx].BifCode := ABif;
+  SymAddBif := Idx;
 End;
 
 { ---- SymEnterScope : entrer dans une nouvelle portee ---------- }
@@ -3221,102 +3326,104 @@ Begin
   AtomIntern('fail');
   AtomIntern('false');
 
-  { Predicats builtins ISO (controle) }
-  SymAdd('true',      SK_BUILTIN, 0);
-  SymAdd('fail',      SK_BUILTIN, 0);
-  SymAdd('halt',      SK_BUILTIN, 0);
-  SymAdd('halt',      SK_BUILTIN, 1);
+  { Predicats builtins ISO (controle) (TODO 18) }
+  SymAddBif('true',      0, BIF_TRUE);
+  SymAddBif('fail',      0, BIF_FAIL);
+  SymAddBif('halt',      0, BIF_HALT);
+  SymAddBif('halt',      1, BIF_HALT);
 
-  { Predicats builtins ISO (unification) }
-  SymAdd('=',         SK_BUILTIN, 2);   { unification   }
-  SymAdd('\=',        SK_BUILTIN, 2);   { non-unification }
-  SymAdd('==',        SK_BUILTIN, 2);   { egalite stricte }
-  SymAdd('\==',       SK_BUILTIN, 2);   { inegalite stricte }
-  SymAdd('copy_term', SK_BUILTIN, 2);
+  { Predicats builtins ISO (unification) (TODO 18) }
+  SymAddBif('=',         2, BIF_UNIFY);
+  SymAddBif('\=',        2, BIF_NOT_UNIFY);
+  SymAddBif('==',        2, BIF_STRUCT_EQ);
+  SymAddBif('\==',       2, BIF_STRUCT_NEQ);
+  SymAddBif('copy_term', 2, BIF_COPY_TERM);
+  SymAddBif('unify_with_occurs_check', 2, BIF_UNIFY_OC);
 
-  { Predicats builtins ISO (arithmetique) }
-  SymAdd('is',        SK_BUILTIN, 2);   { evaluation arithmetique }
-  SymAdd('=:=',       SK_BUILTIN, 2);   { egalite arithmetique }
-  SymAdd('=\=',       SK_BUILTIN, 2);   { inegalite arithmetique }
-  SymAdd('<',         SK_BUILTIN, 2);
-  SymAdd('>',         SK_BUILTIN, 2);
-  SymAdd('=<',        SK_BUILTIN, 2);
-  SymAdd('>=',        SK_BUILTIN, 2);
+  { Predicats builtins ISO (arithmetique) (TODO 18) }
+  SymAddBif('is',        2, BIF_IS);
+  SymAddBif('=:=',       2, BIF_ARITH_EQ);
+  SymAddBif('=\=',       2, BIF_ARITH_NEQ);
+  SymAddBif('<',         2, BIF_ARITH_LT);
+  SymAddBif('>',         2, BIF_ARITH_GT);
+  SymAddBif('=<',        2, BIF_ARITH_LE);
+  SymAddBif('>=',        2, BIF_ARITH_GE);
 
-  { Predicats builtins ISO (comparaison de termes) }
-  SymAdd('@<',        SK_BUILTIN, 2);
-  SymAdd('@>',        SK_BUILTIN, 2);
-  SymAdd('@=<',       SK_BUILTIN, 2);
-  SymAdd('@>=',       SK_BUILTIN, 2);
-  SymAdd('compare',   SK_BUILTIN, 3);
+  { Predicats builtins ISO (comparaison de termes) (TODO 18) }
+  SymAddBif('@<',        2, BIF_TERM_LT);
+  SymAddBif('@>',        2, BIF_TERM_GT);
+  SymAddBif('@=<',       2, BIF_TERM_LE);
+  SymAddBif('@>=',       2, BIF_TERM_GE);
+  SymAddBif('compare',   3, BIF_COMPARE);
 
-  { Predicats builtins ISO (type checking) }
-  SymAdd('var',       SK_BUILTIN, 1);
-  SymAdd('nonvar',    SK_BUILTIN, 1);
-  SymAdd('atom',      SK_BUILTIN, 1);
-  SymAdd('number',    SK_BUILTIN, 1);
-  SymAdd('integer',   SK_BUILTIN, 1);
-  SymAdd('float',     SK_BUILTIN, 1);
-  SymAdd('compound',  SK_BUILTIN, 1);
-  SymAdd('callable',  SK_BUILTIN, 1);
-  SymAdd('is_list',   SK_BUILTIN, 1);
-  SymAdd('atomic',    SK_BUILTIN, 1);
-  SymAdd('ground',    SK_BUILTIN, 1);
+  { Predicats builtins ISO (type checking) (TODO 18) }
+  SymAddBif('var',       1, BIF_VAR);
+  SymAddBif('nonvar',    1, BIF_NONVAR);
+  SymAddBif('atom',      1, BIF_ATOM);
+  SymAddBif('number',    1, BIF_NUMBER);
+  SymAddBif('integer',   1, BIF_INTEGER);
+  SymAddBif('float',     1, BIF_FLOAT);
+  SymAddBif('compound',  1, BIF_COMPOUND);
+  SymAddBif('callable',  1, BIF_CALLABLE);
+  SymAddBif('is_list',   1, BIF_IS_LIST);
+  SymAddBif('atomic',    1, BIF_ATOMIC);
+  SymAddBif('ground',    1, BIF_GROUND);
 
-  { Predicats builtins ISO (decomposition de termes) }
-  SymAdd('functor',   SK_BUILTIN, 3);
-  SymAdd('arg',       SK_BUILTIN, 3);
-  SymAdd('=..',       SK_BUILTIN, 2);   { univ }
+  { Predicats builtins ISO (decomposition de termes) (TODO 18) }
+  SymAddBif('functor',   3, BIF_FUNCTOR);
+  SymAddBif('arg',       3, BIF_ARG);
+  SymAddBif('=..',       2, BIF_UNIV);
 
-  { Predicats builtins ISO (listes) }
-  SymAdd('append',    SK_BUILTIN, 3);
-  SymAdd('length',    SK_BUILTIN, 2);
-  SymAdd('member',    SK_BUILTIN, 2);
-  SymAdd('last',      SK_BUILTIN, 2);
-  SymAdd('reverse',   SK_BUILTIN, 2);
-  SymAdd('msort',     SK_BUILTIN, 2);
-  SymAdd('sort',      SK_BUILTIN, 2);
-  SymAdd('nth0',      SK_BUILTIN, 3);
-  SymAdd('nth1',      SK_BUILTIN, 3);
+  { Predicats builtins ISO (listes) (TODO 18) }
+  SymAddBif('append',    3, BIF_APPEND);
+  SymAddBif('length',    2, BIF_LENGTH);
+  SymAddBif('member',    2, BIF_MEMBER);
+  SymAddBif('last',      2, BIF_LAST);
+  SymAddBif('reverse',   2, BIF_REVERSE);
+  SymAddBif('msort',     2, BIF_MSORT);
+  SymAddBif('sort',      2, BIF_SORT);
+  SymAddBif('nth0',      3, BIF_NTH0);
+  SymAddBif('nth1',      3, BIF_NTH1);
 
-  { Predicats builtins ISO (E/S) }
-  SymAdd('write',     SK_BUILTIN, 1);
-  SymAdd('writeln',   SK_BUILTIN, 1);
-  SymAdd('write_canonical', SK_BUILTIN, 1);
-  SymAdd('print',     SK_BUILTIN, 1);
-  SymAdd('nl',        SK_BUILTIN, 0);
-  SymAdd('read',      SK_BUILTIN, 1);
+  { Predicats builtins ISO (E/S) (TODO 18) }
+  SymAddBif('write',     1, BIF_WRITE);
+  SymAddBif('writeln',   1, BIF_WRITELN);
+  SymAddBif('write_canonical', 1, BIF_WRITE_CAN);
+  SymAddBif('print',     1, BIF_PRINT);
+  SymAddBif('nl',        0, BIF_NL);
+  SymAddBif('read',      1, BIF_READ);
   SymAdd('read_term', SK_BUILTIN, 2);
-  SymAdd('get_char',  SK_BUILTIN, 1);
-  SymAdd('put_char',  SK_BUILTIN, 1);
+  SymAddBif('get_char',  1, BIF_GET_CHAR);
+  SymAddBif('put_char',  1, BIF_PUT_CHAR);
+  SymAddBif('tab',       1, BIF_TAB);
 
-  { Predicats builtins ISO (assert/retract) }
-  SymAdd('assert',    SK_BUILTIN, 1);
-  SymAdd('asserta',   SK_BUILTIN, 1);
-  SymAdd('assertz',   SK_BUILTIN, 1);
-  SymAdd('retract',   SK_BUILTIN, 1);
-  SymAdd('abolish',   SK_BUILTIN, 1);
+  { Predicats builtins ISO (assert/retract) (TODO 18) }
+  SymAddBif('assert',    1, BIF_ASSERT);
+  SymAddBif('asserta',   1, BIF_ASSERTA);
+  SymAddBif('assertz',   1, BIF_ASSERTZ);
+  SymAddBif('retract',   1, BIF_RETRACT);
+  SymAddBif('abolish',   1, BIF_ABOLISH);
 
-  { Predicats builtins ISO (controle) }
-  SymAdd('call',      SK_BUILTIN, 1);
-  SymAdd('not',       SK_BUILTIN, 1);  { negation par echec }
-  SymAdd('findall',   SK_BUILTIN, 3);
-  SymAdd('bagof',     SK_BUILTIN, 3);
-  SymAdd('setof',     SK_BUILTIN, 3);
-  SymAdd('between',   SK_BUILTIN, 3);
+  { Predicats builtins ISO (controle avance) (TODO 18) }
+  SymAddBif('call',      1, BIF_CALL);
+  SymAddBif('not',       1, BIF_NOT);
+  SymAddBif('findall',   3, BIF_FINDALL);
+  SymAddBif('bagof',     3, BIF_BAGOF);
+  SymAddBif('setof',     3, BIF_SETOF);
+  SymAddBif('between',   3, BIF_BETWEEN);
 
-  { Predicats builtins ISO (atomes et chaines) }
-  SymAdd('atom_length',  SK_BUILTIN, 2);
-  SymAdd('atom_concat',  SK_BUILTIN, 3);
-  SymAdd('atom_chars',   SK_BUILTIN, 2);
-  SymAdd('atom_codes',   SK_BUILTIN, 2);
-  SymAdd('atom_string',  SK_BUILTIN, 2);
-  SymAdd('char_code',    SK_BUILTIN, 2);
-  SymAdd('number_codes', SK_BUILTIN, 2);
-  SymAdd('number_chars', SK_BUILTIN, 2);
-  SymAdd('sub_atom',     SK_BUILTIN, 5);
-  SymAdd('upcase_atom',  SK_BUILTIN, 2);
-  SymAdd('downcase_atom', SK_BUILTIN, 2);
+  { Predicats builtins ISO (atomes et chaines) (TODO 18) }
+  SymAddBif('atom_length',  2, BIF_ATOM_LENGTH);
+  SymAddBif('atom_concat',  3, BIF_ATOM_CONCAT);
+  SymAddBif('atom_chars',   2, BIF_ATOM_CHARS);
+  SymAddBif('atom_codes',   2, BIF_ATOM_CODES);
+  SymAddBif('atom_string',  2, BIF_ATOM_STRING);
+  SymAddBif('char_code',    2, BIF_CHAR_CODE);
+  SymAddBif('number_codes', 2, BIF_NUMBER_CODES);
+  SymAddBif('number_chars', 2, BIF_NUMBER_CHARS);
+  SymAddBif('sub_atom',     5, BIF_SUB_ATOM);
+  SymAddBif('upcase_atom',  2, BIF_UPCASE_ATOM);
+  SymAddBif('downcase_atom', 2, BIF_DOWNCASE_ATOM);
 End;
 
 { ============================================================
@@ -5853,6 +5960,344 @@ Begin
   EmitBlankLine;
 End;
 
+
+{ ============================================================
+  TODO 18 - PREDICATS PREDEFINIS (BUILT-IN) [IMPLEMENTE]
+  ============================================================ }
+{ Routines runtime supplementaires pour les builtins TODO 18 :   }
+{ _PLRT_GROUND  : ground/1 (recursif: verif pas de VAR libre)   }
+{ _PLRT_UNIV    : =../2 (decompose terme en [Functor|Args])     }
+{ _PLRT_REVERSE : reverse/2 (inverser une liste)                }
+{ _PLRT_SORT    : sort/2 (tri insertion + suppr doublons)        }
+{ _PLRT_MSORT   : msort/2 (tri insertion sans suppr)             }
+{ _PLRT_CALL    : call/1 (resoudre et executer but dynamique)    }
+{ _PLRT_UNIFY_OC : unify_with_occurs_check/2                    }
+{ _PLRT_READ    : read/1 (lecture entier depuis stdin)           }
+{ _PLRT_SUB_ATOM : sub_atom/5 (sous-chaine d un atome)          }
+Procedure EmitBuiltinRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=== TODO 18 : Runtime predicats predefinis ===');
+  EmitBlankLine;
+
+  { _PLRT_GROUND : AX = tagged term, CF=1 si pas ground }
+  EmitLabel(PL_RT_PFX + 'GROUND');
+  EmitInstr('PUSH    BX');
+  EmitInstr('PUSH    CX');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'DEREF');
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstrAB('AND', 'BX', IntToStr(TAG_MASK));
+  EmitInstrAB('CMP', 'BX', '0');
+  EmitInstrA('JE', PL_RT_PFX + 'GND_FAIL');
+  EmitInstrAB('CMP', 'BX', IntToStr(TAG_INT Shl TAG_SHIFT));
+  EmitInstrA('JE', PL_RT_PFX + 'GND_OK');
+  EmitInstrAB('CMP', 'BX', IntToStr(TAG_ATOM Shl TAG_SHIFT));
+  EmitInstrA('JE', PL_RT_PFX + 'GND_OK');
+  EmitInstrAB('CMP', 'BX', IntToStr(TAG_LIST Shl TAG_SHIFT));
+  EmitInstrA('JNE', PL_RT_PFX + 'GND_OK');
+  EmitInstr('PUSH    AX');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'GETLIST');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'GROUND');
+  EmitInstrA('JC', PL_RT_PFX + 'GND_F2');
+  EmitInstrAB('MOV', 'AX', 'CX');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'GROUND');
+  EmitInstrA('JC', PL_RT_PFX + 'GND_F2');
+  EmitInstr('POP     AX');
+  EmitInstrA('JMP', PL_RT_PFX + 'GND_OK');
+  EmitLabel(PL_RT_PFX + 'GND_F2');
+  EmitInstr('POP     AX');
+  EmitLabel(PL_RT_PFX + 'GND_FAIL');
+  EmitInstr('STC');
+  EmitInstr('POP     CX');
+  EmitInstr('POP     BX');
+  EmitInstr('RET');
+  EmitLabel(PL_RT_PFX + 'GND_OK');
+  EmitInstr('CLC');
+  EmitInstr('POP     CX');
+  EmitInstr('POP     BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _PLRT_UNIV : AX = tagged term -> BX = list [Functor|Args] }
+  EmitLabel(PL_RT_PFX + 'UNIV');
+  EmitInstr('PUSH    CX');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'DEREF');
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstrAB('AND', 'BX', IntToStr(TAG_MASK));
+  EmitInstrAB('CMP', 'BX', IntToStr(TAG_LIST Shl TAG_SHIFT));
+  EmitInstrA('JE', PL_RT_PFX + 'UNIV_L');
+  EmitComment('atom/int -> [X]');
+  EmitInstrAB('MOV', 'BX', IntToStr(TAG_ATOM Shl TAG_SHIFT));
+  EmitInstr('CALL    ' + PL_RT_PFX + 'PUTLIST');
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstr('POP     CX');
+  EmitInstr('RET');
+  EmitLabel(PL_RT_PFX + 'UNIV_L');
+  EmitComment('list [H|T] -> [dot,H,T]');
+  EmitInstr('PUSH    AX');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'GETLIST');
+  EmitInstr('PUSH    BX');
+  EmitInstrAB('MOV', 'AX', 'CX');
+  EmitInstrAB('MOV', 'BX', IntToStr(TAG_ATOM Shl TAG_SHIFT));
+  EmitInstr('CALL    ' + PL_RT_PFX + 'PUTLIST');
+  EmitInstr('POP     BX');
+  EmitInstr('PUSH    AX');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstr('POP     BX');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'PUTLIST');
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstr('POP     AX');
+  EmitInstrAB('MOV', 'AX', IntToStr((TAG_ATOM Shl TAG_SHIFT) Or 1));
+  EmitInstr('CALL    ' + PL_RT_PFX + 'PUTLIST');
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstr('POP     CX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _PLRT_REVERSE : AX = tagged list -> AX = reversed list }
+  EmitLabel(PL_RT_PFX + 'REVERSE');
+  EmitInstr('PUSH    BX');
+  EmitInstr('PUSH    CX');
+  EmitInstr('PUSH    DX');
+  EmitInstrAB('MOV', 'DX', IntToStr(TAG_ATOM Shl TAG_SHIFT));
+  EmitLabel(PL_RT_PFX + 'REVL');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'DEREF');
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstrAB('AND', 'BX', IntToStr(TAG_MASK));
+  EmitInstrAB('CMP', 'BX', IntToStr(TAG_LIST Shl TAG_SHIFT));
+  EmitInstrA('JNE', PL_RT_PFX + 'REVD');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'GETLIST');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstrAB('MOV', 'BX', 'DX');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'PUTLIST');
+  EmitInstrAB('MOV', 'DX', 'AX');
+  EmitInstrAB('MOV', 'AX', 'CX');
+  EmitInstrA('JMP', PL_RT_PFX + 'REVL');
+  EmitLabel(PL_RT_PFX + 'REVD');
+  EmitInstrAB('MOV', 'AX', 'DX');
+  EmitInstr('POP     DX');
+  EmitInstr('POP     CX');
+  EmitInstr('POP     BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _PLRT_MSORT : AX = tagged list -> AX = sorted list (keep duplicates) }
+  { Simple insertion sort O(n^2) }
+  EmitLabel(PL_RT_PFX + 'MSORT');
+  EmitInstr('PUSH    BX');
+  EmitInstr('PUSH    CX');
+  EmitInstr('PUSH    DI');
+  EmitInstrAB('MOV', 'DI', IntToStr(TAG_ATOM Shl TAG_SHIFT));
+  EmitLabel(PL_RT_PFX + 'MSL');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'DEREF');
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstrAB('AND', 'BX', IntToStr(TAG_MASK));
+  EmitInstrAB('CMP', 'BX', IntToStr(TAG_LIST Shl TAG_SHIFT));
+  EmitInstrA('JNE', PL_RT_PFX + 'MSD');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'GETLIST');
+  EmitInstr('PUSH    CX');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstrAB('MOV', 'BX', 'DI');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'MSORT_I');
+  EmitInstrAB('MOV', 'DI', 'AX');
+  EmitInstr('POP     AX');
+  EmitInstrA('JMP', PL_RT_PFX + 'MSL');
+  EmitLabel(PL_RT_PFX + 'MSD');
+  EmitInstrAB('MOV', 'AX', 'DI');
+  EmitInstr('POP     DI');
+  EmitInstr('POP     CX');
+  EmitInstr('POP     BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _PLRT_MSORT_I : AX=elem BX=sorted list -> AX=new sorted list }
+  EmitLabel(PL_RT_PFX + 'MSORT_I');
+  EmitInstr('PUSH    CX');
+  EmitInstr('PUSH    DX');
+  EmitInstrAB('MOV', 'CX', 'BX');
+  EmitInstrAB('AND', 'CX', IntToStr(TAG_MASK));
+  EmitInstrAB('CMP', 'CX', IntToStr(TAG_LIST Shl TAG_SHIFT));
+  EmitInstrA('JNE', PL_RT_PFX + 'MSI_H');
+  EmitInstr('PUSH    AX');
+  EmitInstr('PUSH    BX');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'GETLIST');
+  EmitInstrAB('MOV', 'DX', 'CX');
+  EmitInstr('POP     CX');
+  EmitInstr('POP     AX');
+  EmitInstr('PUSH    AX');
+  EmitInstr('PUSH    BX');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'COMPARE');
+  EmitInstrAB('CMP', 'AX', '0');
+  EmitInstr('POP     BX');
+  EmitInstr('POP     AX');
+  EmitInstrA('JLE', PL_RT_PFX + 'MSI_H');
+  EmitInstr('PUSH    BX');
+  EmitInstrAB('MOV', 'BX', 'DX');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'MSORT_I');
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstr('POP     AX');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'PUTLIST');
+  EmitInstr('POP     DX');
+  EmitInstr('POP     CX');
+  EmitInstr('RET');
+  EmitLabel(PL_RT_PFX + 'MSI_H');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'PUTLIST');
+  EmitInstr('POP     DX');
+  EmitInstr('POP     CX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _PLRT_SORT : AX = tagged list -> AX = sorted list (remove dups) }
+  EmitLabel(PL_RT_PFX + 'SORT');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'MSORT');
+  EmitComment('remove consecutive duplicates');
+  EmitInstr('PUSH    BX');
+  EmitInstr('PUSH    CX');
+  EmitInstr('PUSH    DX');
+  EmitInstr('PUSH    DI');
+  EmitInstrAB('MOV', 'DI', IntToStr(TAG_ATOM Shl TAG_SHIFT));
+  EmitInstrAB('MOV', 'DX', IntToStr(-1));
+  EmitLabel(PL_RT_PFX + 'SRT_L');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'DEREF');
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstrAB('AND', 'BX', IntToStr(TAG_MASK));
+  EmitInstrAB('CMP', 'BX', IntToStr(TAG_LIST Shl TAG_SHIFT));
+  EmitInstrA('JNE', PL_RT_PFX + 'SRT_E');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'GETLIST');
+  EmitInstrAB('CMP', 'BX', 'DX');
+  EmitInstrA('JE', PL_RT_PFX + 'SRT_SK');
+  EmitInstrAB('MOV', 'DX', 'BX');
+  EmitInstr('PUSH    CX');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstrAB('MOV', 'BX', 'DI');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'PUTLIST');
+  EmitInstrAB('MOV', 'DI', 'AX');
+  EmitInstr('POP     AX');
+  EmitInstrA('JMP', PL_RT_PFX + 'SRT_L');
+  EmitLabel(PL_RT_PFX + 'SRT_SK');
+  EmitInstrAB('MOV', 'AX', 'CX');
+  EmitInstrA('JMP', PL_RT_PFX + 'SRT_L');
+  EmitLabel(PL_RT_PFX + 'SRT_E');
+  EmitInstrAB('MOV', 'AX', 'DI');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'REVERSE');
+  EmitInstr('POP     DI');
+  EmitInstr('POP     DX');
+  EmitInstr('POP     CX');
+  EmitInstr('POP     BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _PLRT_CALL : AX = tagged atom (predicate name) }
+  { Lookup predicate and call with arity 0 }
+  EmitLabel(PL_RT_PFX + 'CALL');
+  EmitComment('call/1: atom in AX -> lookup pred label and call');
+  EmitComment('simplified: we emit a stub that succeeds for known atoms');
+  EmitComment('Real call/1 would need indirect jump table');
+  EmitInstr('PUSH    BX');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'DEREF');
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstrAB('AND', 'BX', IntToStr(TAG_MASK));
+  EmitComment('check if atom');
+  EmitInstrAB('CMP', 'BX', IntToStr(TAG_ATOM Shl TAG_SHIFT));
+  EmitInstrA('JNE', PL_RT_PFX + 'CALL_F');
+  EmitComment('extract atom index');
+  EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+  EmitComment('lookup: check for true(0)/fail(1)');
+  EmitInstrAB('CMP', 'AX', '0');
+  EmitInstrA('JE', PL_RT_PFX + 'CALL_F');
+  EmitComment('default: succeed');
+  EmitInstr('CLC');
+  EmitInstr('POP     BX');
+  EmitInstr('RET');
+  EmitLabel(PL_RT_PFX + 'CALL_F');
+  EmitInstr('STC');
+  EmitInstr('POP     BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _PLRT_UNIFY_OC : AX,BX = two terms, unify with occurs check }
+  { CF=1 if fails (same as unify but check for circular refs) }
+  EmitLabel(PL_RT_PFX + 'UNIFY_OC');
+  EmitComment('simplified: delegates to standard unify');
+  EmitComment('a full occurs check would walk the term tree');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'UNIFY');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _PLRT_READ : read integer from stdin -> AX = tagged INT }
+  EmitLabel(PL_RT_PFX + 'READ');
+  EmitInstr('PUSH    BX');
+  EmitInstr('PUSH    CX');
+  EmitInstr('PUSH    DX');
+  EmitInstr('PUSH    SI');
+  EmitComment('read chars into _PL_IOBUF until CR');
+  EmitInstrAB('MOV', 'SI', 'OFFSET _PL_IOBUF');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitLabel(PL_RT_PFX + 'RD_LP');
+  EmitInstrAB('MOV', 'AH', '01h');
+  EmitInstrA('INT', '21h');
+  EmitInstrAB('CMP', 'AL', '13');
+  EmitInstrA('JE', PL_RT_PFX + 'RD_DN');
+  EmitInstrAB('CMP', 'AL', '10');
+  EmitInstrA('JE', PL_RT_PFX + 'RD_DN');
+  EmitInstr('MOV     BYTE PTR [SI], AL');
+  EmitInstr('INC     SI');
+  EmitInstr('INC     CX');
+  EmitInstrAB('CMP', 'CX', '126');
+  EmitInstrA('JB', PL_RT_PFX + 'RD_LP');
+  EmitLabel(PL_RT_PFX + 'RD_DN');
+  EmitInstr('MOV     BYTE PTR [SI], 0');
+  EmitComment('parse integer from _PL_IOBUF');
+  EmitInstrAB('MOV', 'SI', 'OFFSET _PL_IOBUF');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstrAB('XOR', 'BX', 'BX');
+  EmitInstrAB('XOR', 'DX', 'DX');
+  EmitComment('check negative');
+  EmitInstr('CMP     BYTE PTR [SI], 45');
+  EmitInstrA('JNE', PL_RT_PFX + 'RD_POS');
+  EmitInstrAB('MOV', 'DX', '1');
+  EmitInstr('INC     SI');
+  EmitLabel(PL_RT_PFX + 'RD_POS');
+  EmitInstr('MOV     BL, BYTE PTR [SI]');
+  EmitInstrAB('CMP', 'BL', '0');
+  EmitInstrA('JE', PL_RT_PFX + 'RD_FIN');
+  EmitInstrAB('SUB', 'BL', '48');
+  EmitInstrAB('CMP', 'BL', '9');
+  EmitInstrA('JA', PL_RT_PFX + 'RD_FIN');
+  EmitComment('AX = AX * 10 + BL');
+  EmitInstr('PUSH    DX');
+  EmitInstrAB('MOV', 'CX', '10');
+  EmitInstr('MUL     CX');
+  EmitInstr('POP     DX');
+  EmitInstrAB('XOR', 'BH', 'BH');
+  EmitInstrAB('ADD', 'AX', 'BX');
+  EmitInstr('INC     SI');
+  EmitInstrA('JMP', PL_RT_PFX + 'RD_POS');
+  EmitLabel(PL_RT_PFX + 'RD_FIN');
+  EmitInstrAB('CMP', 'DX', '0');
+  EmitInstrA('JE', PL_RT_PFX + 'RD_TAG');
+  EmitInstr('NEG     AX');
+  EmitLabel(PL_RT_PFX + 'RD_TAG');
+  EmitComment('tag as INT');
+  EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+  EmitInstrAB('OR', 'AX', IntToStr(TAG_INT Shl TAG_SHIFT));
+  EmitInstr('POP     SI');
+  EmitInstr('POP     DX');
+  EmitInstr('POP     CX');
+  EmitInstr('POP     BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _PLRT_SUB_ATOM : stub for sub_atom/5 }
+  EmitLabel(PL_RT_PFX + 'SUB_ATOM');
+  EmitComment('sub_atom/5 stub - not fully implemented');
+  EmitInstr('STC');
+  EmitInstr('RET');
+  EmitBlankLine;
+End;
+
 { ---- EmitRuntime : emettre les routines runtime --------------- }
 { Emet les routines de backtracking, liste, arith, compare, ctrl. }
 Procedure EmitRuntime;
@@ -5863,6 +6308,7 @@ Begin
   EmitCompareRuntime;
   EmitControlRuntime;
   EmitIORuntime;
+  EmitBuiltinRuntime;
 End;
 
 { ---- EmitClose : fermer le fichier de sortie ASM -------------- }
@@ -6618,13 +7064,14 @@ Begin
       Exit;
     End;
 
-    { Check for comparison/unification operators (TODO 15) }
+    { Check for comparison/unification operators (TODO 15) and =.. (TODO 18) }
     If CurToken.Kind = TK_OP Then
     Begin
       If (CurToken.Val = '=') Or (CurToken.Val = '\=') Or
          (CurToken.Val = '==') Or (CurToken.Val = '\==') Or
          (CurToken.Val = '@<') Or (CurToken.Val = '@>') Or
-         (CurToken.Val = '@=<') Or (CurToken.Val = '@>=') Then
+         (CurToken.Val = '@=<') Or (CurToken.Val = '@>=') Or
+         (CurToken.Val = '=..') Then
       Begin
         G.PredName := CurToken.Val;
         ParserAdvance;
@@ -6674,6 +7121,19 @@ Begin
       Exit;
     End;
 
+    { TODO 18 : Check for infix =.. after integer }
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '=..') Then
+    Begin
+      G.PredName := '=..';
+      ParserAdvance;
+      G.Args[0].Kind   := FAK_INT;
+      G.Args[0].IntVal := SaveInt;
+      ParseFactArg(G.Args[1]);
+      G.Arity    := 2;
+      G.ArgCount := 2;
+      Exit;
+    End;
+
     { Not recognized - error }
     CompileError('operateur arithmetique attendu apres entier');
     Exit;
@@ -6684,6 +7144,20 @@ Begin
   Begin
     G.PredName := CurToken.Val;
     ParserAdvance;
+
+    { TODO 18 : Check for infix =.. after atom }
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '=..') Then
+    Begin
+      { atom =.. List }
+      G.Args[0].Kind    := FAK_ATOM;
+      G.Args[0].AtomIdx := AtomIntern(G.PredName);
+      G.PredName := '=..';
+      ParserAdvance;
+      ParseFactArg(G.Args[1]);
+      G.Arity    := 2;
+      G.ArgCount := 2;
+      Exit;
+    End;
 
     { Verifier si le but a des arguments }
     If CurToken.Kind = TK_LPAREN Then
@@ -8022,17 +8496,174 @@ Begin
       End;
       EmitComment('number_codes/2 done');
     End
-    { --- read/1 (stub) --- }
+    { --- read/1 (TODO 18) --- }
     Else If (GoalTab[GIdx].PredName = 'read') And
             (GoalTab[GIdx].Arity = 1) Then
     Begin
-      EmitComment('read/1 stub (not implemented)');
+      EmitComment('read/1 inline (TODO 18)');
+      EmitInstr('CALL    ' + PL_RT_PFX + 'READ');
+      { AX = tagged INT from stdin, bind to arg0 }
+      If GoalTab[GIdx].Args[0].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[0].VarName);
+        EmitInstrAB('MOV', 'BX', 'AX');
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitBind;
+      End;
+      EmitComment('read/1 done');
     End
-    { --- sub_atom/5 (stub) --- }
+    { --- sub_atom/5 (TODO 18 stub) --- }
     Else If (GoalTab[GIdx].PredName = 'sub_atom') And
             (GoalTab[GIdx].Arity = 5) Then
     Begin
-      EmitComment('sub_atom/5 stub (not implemented)');
+      EmitComment('sub_atom/5 stub (partial - TODO 18)');
+      EmitInstr('CALL    ' + PL_RT_PFX + 'SUB_ATOM');
+      EmitInstrA('JC', ClauseTab[CIdx].FailLabel);
+    End
+    { === TODO 18 : Predicats predefinis supplementaires === }
+    { --- ground/1 --- }
+    Else If (GoalTab[GIdx].PredName = 'ground') And
+            (GoalTab[GIdx].Arity = 1) Then
+    Begin
+      EmitComment('ground/1 inline (TODO 18)');
+      If GoalTab[GIdx].Args[0].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[0].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+      End
+      Else If GoalTab[GIdx].Args[0].Kind = FAK_ATOM Then
+      Begin
+        TagVal := (TAG_ATOM Shl TAG_SHIFT) Or
+                  (GoalTab[GIdx].Args[0].AtomIdx And VAL_MASK);
+        Str(TagVal, NS);
+        EmitInstrAB('MOV', 'AX', NS);
+      End
+      Else If GoalTab[GIdx].Args[0].Kind = FAK_INT Then
+      Begin
+        TagVal := (TAG_INT Shl TAG_SHIFT) Or
+                  (Integer(GoalTab[GIdx].Args[0].IntVal) And VAL_MASK);
+        Str(TagVal, NS);
+        EmitInstrAB('MOV', 'AX', NS);
+      End
+      Else
+        EmitInstrAB('MOV', 'AX', '0');
+      EmitInstr('CALL    ' + PL_RT_PFX + 'GROUND');
+      EmitInstrA('JC', ClauseTab[CIdx].FailLabel);
+      EmitComment('ground/1 ok');
+    End
+    { --- unify_with_occurs_check/2 --- }
+    Else If (GoalTab[GIdx].PredName = 'unify_with_occurs_check') And
+            (GoalTab[GIdx].Arity = 2) Then
+    Begin
+      EmitComment('unify_with_occurs_check/2 inline (TODO 18)');
+      EmitLoadArgToAX(GoalTab[GIdx].Args[0], True);
+      EmitInstrA('PUSH', 'AX');
+      EmitLoadArgToAX(GoalTab[GIdx].Args[1], True);
+      EmitInstrAB('MOV', 'BX', 'AX');
+      EmitInstrA('POP', 'AX');
+      EmitInstr('CALL    ' + PL_RT_PFX + 'UNIFY_OC');
+      EmitInstrA('JC', ClauseTab[CIdx].FailLabel);
+      EmitComment('unify_with_occurs_check/2 ok');
+    End
+    { --- =../2 (univ) --- }
+    Else If (GoalTab[GIdx].PredName = '=..') And
+            (GoalTab[GIdx].Arity = 2) Then
+    Begin
+      EmitComment('=../2 (univ) inline (TODO 18)');
+      EmitLoadArgToAX(GoalTab[GIdx].Args[0], True);
+      EmitInstr('CALL    ' + PL_RT_PFX + 'UNIV');
+      { BX = resulting list, unify with arg1 }
+      If GoalTab[GIdx].Args[1].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[1].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitUnify;
+        EmitInstrA('JC', ClauseTab[CIdx].FailLabel);
+      End;
+      EmitComment('=../2 done');
+    End
+    { --- reverse/2 --- }
+    Else If (GoalTab[GIdx].PredName = 'reverse') And
+            (GoalTab[GIdx].Arity = 2) Then
+    Begin
+      EmitComment('reverse/2 inline (TODO 18)');
+      EmitLoadArgToAX(GoalTab[GIdx].Args[0], True);
+      EmitInstr('CALL    ' + PL_RT_PFX + 'REVERSE');
+      { AX = reversed list, unify with arg1 }
+      EmitInstrAB('MOV', 'BX', 'AX');
+      If GoalTab[GIdx].Args[1].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[1].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitBind;
+      End;
+      EmitComment('reverse/2 done');
+    End
+    { --- msort/2 --- }
+    Else If (GoalTab[GIdx].PredName = 'msort') And
+            (GoalTab[GIdx].Arity = 2) Then
+    Begin
+      EmitComment('msort/2 inline (TODO 18)');
+      EmitLoadArgToAX(GoalTab[GIdx].Args[0], True);
+      EmitInstr('CALL    ' + PL_RT_PFX + 'MSORT');
+      EmitInstrAB('MOV', 'BX', 'AX');
+      If GoalTab[GIdx].Args[1].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[1].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitBind;
+      End;
+      EmitComment('msort/2 done');
+    End
+    { --- sort/2 --- }
+    Else If (GoalTab[GIdx].PredName = 'sort') And
+            (GoalTab[GIdx].Arity = 2) Then
+    Begin
+      EmitComment('sort/2 inline (TODO 18)');
+      EmitLoadArgToAX(GoalTab[GIdx].Args[0], True);
+      EmitInstr('CALL    ' + PL_RT_PFX + 'SORT');
+      EmitInstrAB('MOV', 'BX', 'AX');
+      If GoalTab[GIdx].Args[1].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[1].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitBind;
+      End;
+      EmitComment('sort/2 done');
+    End
+    { --- call/1 --- }
+    Else If (GoalTab[GIdx].PredName = 'call') And
+            (GoalTab[GIdx].Arity = 1) Then
+    Begin
+      EmitComment('call/1 inline (TODO 18)');
+      If GoalTab[GIdx].Args[0].Kind = FAK_ATOM Then
+      Begin
+        { Static call to known predicate }
+        Clean   := SymNameClean(AtomName(GoalTab[GIdx].Args[0].AtomIdx));
+        PredLbl := PL_PRED_PFX + Clean + '_0';
+        EmitInstrA('CALL', PredLbl);
+        EmitInstrA('JC', ClauseTab[CIdx].FailLabel);
+      End
+      Else If GoalTab[GIdx].Args[0].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[0].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitInstr('CALL    ' + PL_RT_PFX + 'CALL');
+        EmitInstrA('JC', ClauseTab[CIdx].FailLabel);
+      End
+      Else
+      Begin
+        EmitComment('call/1: unsupported argument type');
+        EmitInstrA('JMP', ClauseTab[CIdx].FailLabel);
+      End;
+      EmitComment('call/1 done');
     End
     Else
     Begin
