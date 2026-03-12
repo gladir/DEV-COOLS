@@ -73,7 +73,7 @@
               TY_IDX_NONE=3, TY_IDX_LIST=4, TY_IDX_DICT=5,
               TY_IDX_FUNC=6, TY_IDX_CLASS=7
 
-  TODO 04 - OPERATEURS ET PRECEDENCE
+  TODO 04 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
             Arithmetiques  : + - * // % ** (// = division entiere, ** = puissance)
                              / traite comme // (division entiere sur 8086)
             Comparaison    : == != < <= > >= (chaines et entiers)
@@ -96,6 +96,10 @@
               10. not
               11. and
               12. or
+            BinOpPrec, BinOpIsRight, IsAssignOp
+            EmitInstr, EmitLabel, EmitComment, EmitBlankLine
+            ExprFlushToAX, ExprEmitBinOp (pliage de constantes + 8086)
+            ParsePrimary, ParseUnary, ParseExprPrec, ParseExpr
 
   TODO 05 - TABLE DES SYMBOLES
             TSymKind : SK_VAR, SK_PARAM, SK_FUNC, SK_CLASS, SK_MODULE,
@@ -599,6 +603,22 @@ Procedure EmitOpen;            Forward;
 Procedure EmitHeader;          Forward;
 Procedure EmitDataSeg;         Forward;
 Procedure EmitClose;           Forward;
+{ TODO 04 - Forward declarations operateurs et precedence }
+Procedure EmitInstr(Const S : TString);      Forward;
+Procedure EmitLabel(Const Lbl : TString);    Forward;
+Procedure EmitComment(Const Msg : TString);  Forward;
+Procedure EmitBlankLine;                     Forward;
+Function  BinOpPrec(Const Op : TString) : Integer; Forward;
+Function  BinOpIsRight(Const Op : TString) : Boolean; Forward;
+Function  IsAssignOp(Const Op : TString) : Boolean; Forward;
+Procedure ExprFlushToAX(Var E : TExprVal);   Forward;
+Procedure ExprEmitBinOp(Const Op : TString;
+            Var L : TExprVal; Var R : TExprVal); Forward;
+Procedure ParsePrimary(Var Res : TExprVal);  Forward;
+Procedure ParseUnary(Var Res : TExprVal);    Forward;
+Procedure ParseExprPrec(MinPrec : Integer;
+            Var Res : TExprVal);             Forward;
+Procedure ParseExpr(Var Res : TExprVal);     Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -2085,7 +2105,697 @@ Begin
   End;
 End;
 
-{ ---- Pipeline de compilation -------------------------------- }
+{ ============================================================
+  TODO 04 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Helpers d emission ASM --------------------------------- }
+
+{ EmitInstr : emettre une instruction indentee (8 espaces) }
+Procedure EmitInstr(Const S : TString);
+Begin
+  If OutFOpen Then
+    WriteLn(OutF, '        ', S);
+End;
+
+{ EmitLabel : emettre un label suivi de ':' }
+Procedure EmitLabel(Const Lbl : TString);
+Begin
+  If OutFOpen Then
+    WriteLn(OutF, Lbl, ':');
+End;
+
+{ EmitComment : emettre un commentaire ASM ('; msg') }
+Procedure EmitComment(Const Msg : TString);
+Begin
+  If OutFOpen Then
+    WriteLn(OutF, '; ', Msg);
+End;
+
+{ EmitBlankLine : ligne vide dans le fichier de sortie }
+Procedure EmitBlankLine;
+Begin
+  If OutFOpen Then
+    WriteLn(OutF);
+End;
+
+{ ---- ExprFlushToAX : materialiser la valeur dans AX --------- }
+Procedure ExprFlushToAX(Var E : TExprVal);
+Var
+  S : TString;
+Begin
+  Case E.Kind Of
+    EK_IMM :
+    Begin
+      If E.ImmVal = 0 Then
+        EmitInstr('XOR    AX, AX')
+      Else
+      Begin
+        Str(E.ImmVal, S);
+        EmitInstr('MOV    AX, ' + S);
+      End;
+      E.Kind := EK_AX;
+    End;
+    EK_MEM :
+    Begin
+      { Chaine litterale : OFFSET label }
+      If E.TypeIdx = TY_IDX_STR Then
+      Begin
+        If (E.Offset >= 0) And (E.Offset < DataCount) Then
+          EmitInstr('MOV    AX, OFFSET ' + DataTab[E.Offset].LblName)
+        Else
+          EmitInstr('XOR    AX, AX');
+      End
+      Else
+        EmitInstr('XOR    AX, AX');   { stub : TODO 05+ pour variables }
+      E.Kind := EK_AX;
+    End;
+    EK_AX :
+      ;  { deja dans AX }
+    EK_NONE :
+    Begin
+      EmitInstr('XOR    AX, AX');
+      E.Kind := EK_AX;
+    End;
+  End;
+End;
+
+{ ---- BinOpPrec : table de precedences Python (Pratt) --------
+  Retourne 0 si l operateur n est pas binaire.
+  Niveaux (ordre croissant = priorite croissante) :
+    or           -> 1
+    and          -> 2
+    not          -> traite en unaire (ParseUnary)
+    == != < <= > >= in is  -> 3
+    |            -> 4
+    ^            -> 5
+    &            -> 6
+    << >>        -> 7
+    + - (binaire)-> 8
+    * / // %     -> 9
+    **           -> 10 (droit-associatif)                      }
+Function BinOpPrec(Const Op : TString) : Integer;
+Begin
+  If Op = 'or' Then
+    BinOpPrec := 1
+  Else If Op = 'and' Then
+    BinOpPrec := 2
+  Else If (Op = '==') Or (Op = '!=') Or
+          (Op = '<')  Or (Op = '<=') Or
+          (Op = '>')  Or (Op = '>=') Or
+          (Op = 'in') Or (Op = 'is') Or
+          (Op = 'not in') Or (Op = 'is not') Then
+    BinOpPrec := 3
+  Else If Op = '|' Then
+    BinOpPrec := 4
+  Else If Op = '^' Then
+    BinOpPrec := 5
+  Else If Op = '&' Then
+    BinOpPrec := 6
+  Else If (Op = '<<') Or (Op = '>>') Then
+    BinOpPrec := 7
+  Else If (Op = '+') Or (Op = '-') Then
+    BinOpPrec := 8
+  Else If (Op = '*') Or (Op = '/') Or (Op = '//') Or (Op = '%') Then
+    BinOpPrec := 9
+  Else If Op = '**' Then
+    BinOpPrec := 10
+  Else
+    BinOpPrec := 0;
+End;
+
+{ BinOpIsRight : ** est droit-associatif en Python }
+Function BinOpIsRight(Const Op : TString) : Boolean;
+Begin
+  BinOpIsRight := (Op = '**');
+End;
+
+{ IsAssignOp : detecter les operateurs d affectation }
+Function IsAssignOp(Const Op : TString) : Boolean;
+Begin
+  IsAssignOp := (Op = '=')   Or (Op = '+=')  Or (Op = '-=')  Or
+                (Op = '*=')  Or (Op = '//=') Or (Op = '%=')  Or
+                (Op = '**=') Or (Op = '&=')  Or (Op = '|=')  Or
+                (Op = '^=')  Or (Op = '<<=') Or (Op = '>>=') Or
+                (Op = '/=');
+End;
+
+{ ---- ExprEmitBinOp : generer le code 8086 d un operateur ----
+  Pliage de constantes si L et R sont EK_IMM.
+  Operateurs Python couverts :
+    + - * / // % ** (arith)
+    == != < <= > >= (comparaison)
+    and or (logique, court-circuit)
+    & | ^ << >> (bitwise)
+    in, is (stub = comparaison)                                }
+Procedure ExprEmitBinOp(Const Op : TString;
+            Var L : TExprVal; Var R : TExprVal);
+Var
+  RS     : TString;
+  LblEnd : TString;
+  Acc    : LongInt;
+  Exp    : LongInt;
+Begin
+  { ---- Pliage de constantes -------------------------------- }
+  If (L.Kind = EK_IMM) And (R.Kind = EK_IMM) Then
+  Begin
+    If      Op = '+'   Then L.ImmVal := L.ImmVal + R.ImmVal
+    Else If Op = '-'   Then L.ImmVal := L.ImmVal - R.ImmVal
+    Else If Op = '*'   Then L.ImmVal := L.ImmVal * R.ImmVal
+    Else If (Op = '/') Or (Op = '//') Then
+    Begin
+      If R.ImmVal = 0 Then
+      Begin
+        CompileError('division par zero', CurToken.Line);
+        L.ImmVal := 0;
+      End
+      Else
+        L.ImmVal := L.ImmVal Div R.ImmVal;
+    End
+    Else If Op = '%'   Then
+    Begin
+      If R.ImmVal = 0 Then
+      Begin
+        CompileError('modulo par zero', CurToken.Line);
+        L.ImmVal := 0;
+      End
+      Else
+        L.ImmVal := L.ImmVal Mod R.ImmVal;
+    End
+    Else If Op = '**'  Then
+    Begin
+      Acc := 1; Exp := R.ImmVal;
+      If Exp < 0 Then L.ImmVal := 0
+      Else Begin
+        While Exp > 0 Do Begin Acc := Acc * L.ImmVal; Dec(Exp); End;
+        L.ImmVal := Acc;
+      End;
+    End
+    Else If Op = '&'   Then L.ImmVal := L.ImmVal And R.ImmVal
+    Else If Op = '|'   Then L.ImmVal := L.ImmVal Or  R.ImmVal
+    Else If Op = '^'   Then L.ImmVal := L.ImmVal Xor R.ImmVal
+    Else If Op = '<<'  Then L.ImmVal := L.ImmVal Shl Integer(R.ImmVal And 15)
+    Else If Op = '>>'  Then L.ImmVal := L.ImmVal Shr Integer(R.ImmVal And 15)
+    Else If Op = '=='  Then Begin If L.ImmVal =  R.ImmVal Then L.ImmVal := 1 Else L.ImmVal := 0; End
+    Else If Op = '!='  Then Begin If L.ImmVal <> R.ImmVal Then L.ImmVal := 1 Else L.ImmVal := 0; End
+    Else If Op = '<'   Then Begin If L.ImmVal <  R.ImmVal Then L.ImmVal := 1 Else L.ImmVal := 0; End
+    Else If Op = '<='  Then Begin If L.ImmVal <= R.ImmVal Then L.ImmVal := 1 Else L.ImmVal := 0; End
+    Else If Op = '>'   Then Begin If L.ImmVal >  R.ImmVal Then L.ImmVal := 1 Else L.ImmVal := 0; End
+    Else If Op = '>='  Then Begin If L.ImmVal >= R.ImmVal Then L.ImmVal := 1 Else L.ImmVal := 0; End
+    Else If Op = 'and' Then
+    Begin
+      If (L.ImmVal <> 0) And (R.ImmVal <> 0) Then L.ImmVal := R.ImmVal
+      Else L.ImmVal := 0;
+    End
+    Else If Op = 'or'  Then
+    Begin
+      If L.ImmVal <> 0 Then { garde L }
+      Else L.ImmVal := R.ImmVal;
+    End
+    Else If Op = 'in'      Then L.ImmVal := 0  { stub }
+    Else If Op = 'not in'  Then L.ImmVal := 1  { stub }
+    Else If Op = 'is'      Then
+    Begin
+      If L.ImmVal = R.ImmVal Then L.ImmVal := 1 Else L.ImmVal := 0;
+    End
+    Else If Op = 'is not'  Then
+    Begin
+      If L.ImmVal <> R.ImmVal Then L.ImmVal := 1 Else L.ImmVal := 0;
+    End;
+    L.TypeIdx := TY_IDX_INT;
+    Exit;
+  End;
+
+  { ---- Court-circuit 'and' --------------------------------- }
+  If Op = 'and' Then
+  Begin
+    LblEnd := LabelGen;
+    ExprFlushToAX(L);
+    EmitInstr('TEST   AX, AX');
+    EmitInstr('JZ     ' + LblEnd);
+    ExprFlushToAX(R);
+    EmitLabel(LblEnd);
+    L.Kind := EK_AX;
+    L.TypeIdx := TY_IDX_INT;
+    Exit;
+  End;
+
+  { ---- Court-circuit 'or' ---------------------------------- }
+  If Op = 'or' Then
+  Begin
+    LblEnd := LabelGen;
+    ExprFlushToAX(L);
+    EmitInstr('TEST   AX, AX');
+    EmitInstr('JNZ    ' + LblEnd);
+    ExprFlushToAX(R);
+    EmitLabel(LblEnd);
+    L.Kind := EK_AX;
+    L.TypeIdx := TY_IDX_INT;
+    Exit;
+  End;
+
+  { ---- Cas general : emission 8086 ------------------------- }
+  ExprFlushToAX(L);
+
+  If R.Kind = EK_IMM Then
+  Begin
+    Str(R.ImmVal, RS);
+    If      Op = '+'   Then EmitInstr('ADD    AX, ' + RS)
+    Else If Op = '-'   Then EmitInstr('SUB    AX, ' + RS)
+    Else If Op = '&'   Then EmitInstr('AND    AX, ' + RS)
+    Else If Op = '|'   Then EmitInstr('OR     AX, ' + RS)
+    Else If Op = '^'   Then EmitInstr('XOR    AX, ' + RS)
+    Else If Op = '<<'  Then
+    Begin
+      EmitInstr('MOV    CL, ' + RS);
+      EmitInstr('SHL    AX, CL');
+    End
+    Else If Op = '>>'  Then
+    Begin
+      EmitInstr('MOV    CL, ' + RS);
+      EmitInstr('SAR    AX, CL');
+    End
+    Else If Op = '*'   Then
+    Begin
+      EmitInstr('MOV    BX, ' + RS);
+      EmitInstr('IMUL   BX');
+    End
+    Else If Op = '**'  Then
+    Begin
+      EmitInstr('MOV    CX, ' + RS);
+      EmitInstr('CALL   ' + PY_RT_PFX + 'POWER');
+    End
+    Else If (Op = '/') Or (Op = '//') Then
+    Begin
+      EmitInstr('MOV    BX, ' + RS);
+      EmitInstr('CWD');
+      EmitInstr('IDIV   BX');
+    End
+    Else If Op = '%'   Then
+    Begin
+      EmitInstr('MOV    BX, ' + RS);
+      EmitInstr('CWD');
+      EmitInstr('IDIV   BX');
+      EmitInstr('MOV    AX, DX');
+    End
+    Else If Op = '=='  Then
+    Begin
+      EmitInstr('CMP    AX, ' + RS);
+      EmitInstr('MOV    AX, 0');
+      EmitInstr('JNE    $+4');
+      EmitInstr('INC    AX');
+    End
+    Else If Op = '!='  Then
+    Begin
+      EmitInstr('CMP    AX, ' + RS);
+      EmitInstr('MOV    AX, 0');
+      EmitInstr('JE     $+4');
+      EmitInstr('INC    AX');
+    End
+    Else If Op = '<'   Then
+    Begin
+      EmitInstr('CMP    AX, ' + RS);
+      EmitInstr('MOV    AX, 0');
+      EmitInstr('JGE    $+4');
+      EmitInstr('INC    AX');
+    End
+    Else If Op = '<='  Then
+    Begin
+      EmitInstr('CMP    AX, ' + RS);
+      EmitInstr('MOV    AX, 0');
+      EmitInstr('JG     $+4');
+      EmitInstr('INC    AX');
+    End
+    Else If Op = '>'   Then
+    Begin
+      EmitInstr('CMP    AX, ' + RS);
+      EmitInstr('MOV    AX, 0');
+      EmitInstr('JLE    $+4');
+      EmitInstr('INC    AX');
+    End
+    Else If Op = '>='  Then
+    Begin
+      EmitInstr('CMP    AX, ' + RS);
+      EmitInstr('MOV    AX, 0');
+      EmitInstr('JL     $+4');
+      EmitInstr('INC    AX');
+    End
+    Else If (Op = 'in') Or (Op = 'not in') Or
+            (Op = 'is') Or (Op = 'is not') Then
+    Begin
+      { Stub : comparaison simple pour 'is', 0/1 pour 'in' }
+      If (Op = 'is') Or (Op = 'is not') Then
+      Begin
+        EmitInstr('CMP    AX, ' + RS);
+        EmitInstr('MOV    AX, 0');
+        If Op = 'is' Then
+          EmitInstr('JNE    $+4')
+        Else
+          EmitInstr('JE     $+4');
+        EmitInstr('INC    AX');
+      End
+      Else
+      Begin
+        EmitInstr('XOR    AX, AX');   { stub in/not in }
+        If Op = 'not in' Then EmitInstr('INC    AX');
+      End;
+    End;
+  End
+  Else
+  Begin
+    { R non immediat : sauvegarder L dans la pile, charger R dans BX }
+    EmitInstr('PUSH   AX');
+    ExprFlushToAX(R);
+    EmitInstr('MOV    BX, AX');
+    EmitInstr('POP    AX');
+    If      Op = '+'  Then EmitInstr('ADD    AX, BX')
+    Else If Op = '-'  Then EmitInstr('SUB    AX, BX')
+    Else If Op = '&'  Then EmitInstr('AND    AX, BX')
+    Else If Op = '|'  Then EmitInstr('OR     AX, BX')
+    Else If Op = '^'  Then EmitInstr('XOR    AX, BX')
+    Else If Op = '<<' Then
+    Begin
+      EmitInstr('MOV    CX, BX');
+      EmitInstr('SHL    AX, CL');
+    End
+    Else If Op = '>>' Then
+    Begin
+      EmitInstr('MOV    CX, BX');
+      EmitInstr('SAR    AX, CL');
+    End
+    Else If Op = '*'  Then EmitInstr('IMUL   BX')
+    Else If Op = '**' Then
+    Begin
+      EmitInstr('MOV    CX, BX');
+      EmitInstr('CALL   ' + PY_RT_PFX + 'POWER');
+    End
+    Else If (Op = '/') Or (Op = '//') Then
+    Begin
+      EmitInstr('CWD');
+      EmitInstr('IDIV   BX');
+    End
+    Else If Op = '%' Then
+    Begin
+      EmitInstr('CWD');
+      EmitInstr('IDIV   BX');
+      EmitInstr('MOV    AX, DX');
+    End
+    Else
+    Begin
+      { Comparaison : CMP AX, BX + branchement conditionnel }
+      EmitInstr('CMP    AX, BX');
+      EmitInstr('MOV    AX, 0');
+      If      Op = '=='     Then EmitInstr('JNE    $+4')
+      Else If Op = '!='     Then EmitInstr('JE     $+4')
+      Else If Op = '<'      Then EmitInstr('JGE    $+4')
+      Else If Op = '<='     Then EmitInstr('JG     $+4')
+      Else If Op = '>'      Then EmitInstr('JLE    $+4')
+      Else If Op = '>='     Then EmitInstr('JL     $+4')
+      Else If Op = 'is'     Then EmitInstr('JNE    $+4')
+      Else If Op = 'is not' Then EmitInstr('JE     $+4')
+      Else If Op = 'in'     Then EmitInstr('JMP    $+4')  { stub }
+      Else If Op = 'not in' Then EmitInstr('JMP    $+2');  { stub }
+      EmitInstr('INC    AX');
+    End;
+  End;
+  L.Kind    := EK_AX;
+  L.SymIdx  := -1;
+End;
+
+{ ---- ParsePrimary : atome du parseur Pratt ------------------- }
+{ Gere : litteraux entiers, flottants, chaines, True/False/None, }
+{ identifiants (stub), groupement parentheses.                   }
+Procedure ParsePrimary(Var Res : TExprVal);
+Var
+  E : TExprVal;
+Begin
+  ExprMakeNone(Res);
+  Case CurToken.Kind Of
+
+    { Litteraux : deleguer a LitEval }
+    TK_INTEGER, TK_FLOAT, TK_STRING :
+    Begin
+      LitEval(CurToken, Res);
+      ParserAdvance;
+    End;
+
+    { Mots-cles litteraux : True, False, None }
+    TK_KEYWORD :
+    Begin
+      If (CurToken.Val = 'True') Or (CurToken.Val = 'False') Or
+         (CurToken.Val = 'None') Then
+      Begin
+        LitEval(CurToken, Res);
+        ParserAdvance;
+      End
+      Else
+      Begin
+        { Mot-cle non litterale : pas un atome d expression }
+        ExprMakeNone(Res);
+      End;
+    End;
+
+    { Identifiant : stub pour TODO 05 (table des symboles) }
+    TK_IDENT :
+    Begin
+      EmitComment('ident: ' + CurToken.Val);
+      ExprMakeImm(0, TY_IDX_INT, Res);  { stub : valeur 0 }
+      Res.SymIdx := -1;
+      ParserAdvance;
+      { Appel de fonction : stub }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        ParserAdvance;
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+          ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+        ExprMakeAX(TY_IDX_INT, Res);
+      End;
+    End;
+
+    { Parentheses de groupement }
+    TK_PUNCT :
+    Begin
+      If CurToken.Val = '(' Then
+      Begin
+        ParserAdvance;
+        ParseExpr(E);
+        Res := E;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance
+        Else
+          CompileError(''')'' attendue', CurToken.Line);
+      End
+      Else
+        ExprMakeNone(Res);
+    End;
+
+  Else
+    ExprMakeNone(Res);
+  End;
+End;
+
+{ ---- ParseUnary : operateurs unaires Python ------------------ }
+{ Gere : - (negation), + (identite), ~ (complement bit a bit),  }
+{ not (negation logique).                                         }
+Procedure ParseUnary(Var Res : TExprVal);
+Begin
+  { Unaire '-' }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '-') Then
+  Begin
+    ParserAdvance;
+    ParseUnary(Res);
+    If Res.Kind = EK_IMM Then
+      Res.ImmVal := -Res.ImmVal
+    Else
+    Begin
+      ExprFlushToAX(Res);
+      EmitInstr('NEG    AX');
+      Res.Kind := EK_AX;
+    End;
+    Exit;
+  End;
+
+  { Unaire '+' : identite }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '+') Then
+  Begin
+    ParserAdvance;
+    ParseUnary(Res);
+    Exit;
+  End;
+
+  { Unaire '~' : complement bit a bit }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '~') Then
+  Begin
+    ParserAdvance;
+    ParseUnary(Res);
+    If Res.Kind = EK_IMM Then
+      Res.ImmVal := Not Res.ImmVal
+    Else
+    Begin
+      ExprFlushToAX(Res);
+      EmitInstr('NOT    AX');
+      Res.Kind := EK_AX;
+    End;
+    Exit;
+  End;
+
+  { Unaire 'not' : negation logique }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'not') Then
+  Begin
+    ParserAdvance;
+    { Detecter 'not in' (operateur binaire combine) }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'in') Then
+    Begin
+      { 'not in' sera gere comme operateur binaire par ParseExprPrec }
+      { On recule : c est a ParseExprPrec de le gerer                }
+      { Non - on parse l operande unaire 'not' normalement           }
+      ParseUnary(Res);
+      If Res.Kind = EK_IMM Then
+      Begin
+        If Res.ImmVal <> 0 Then Res.ImmVal := 0 Else Res.ImmVal := 1;
+      End
+      Else
+      Begin
+        ExprFlushToAX(Res);
+        EmitInstr('TEST   AX, AX');
+        EmitInstr('MOV    AX, 0');
+        EmitInstr('JNZ    $+4');
+        EmitInstr('INC    AX');
+        Res.Kind := EK_AX;
+      End;
+      Res.TypeIdx := TY_IDX_BOOL;
+      Exit;
+    End;
+    ParseUnary(Res);
+    If Res.Kind = EK_IMM Then
+    Begin
+      If Res.ImmVal <> 0 Then Res.ImmVal := 0 Else Res.ImmVal := 1;
+    End
+    Else
+    Begin
+      ExprFlushToAX(Res);
+      EmitInstr('TEST   AX, AX');
+      EmitInstr('MOV    AX, 0');
+      EmitInstr('JNZ    $+4');
+      EmitInstr('INC    AX');
+      Res.Kind := EK_AX;
+    End;
+    Res.TypeIdx := TY_IDX_BOOL;
+    Exit;
+  End;
+
+  { Pas d operateur unaire : deleguer a ParsePrimary }
+  ParsePrimary(Res);
+End;
+
+{ ---- ParseExprPrec : parseur Pratt pour expressions Python --- }
+{ Boucle de montee de precedence pour operateurs binaires.       }
+{ MinPrec = niveau de precedence minimal a capturer.             }
+{ AX = gauche, BX = droite pour emission binaire.                }
+{ Court-circuit pour and/or. Pliage de constantes via            }
+{ ExprEmitBinOp.                                                  }
+Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal);
+Var
+  Op       : TString;
+  Prec     : Integer;
+  NextPrec : Integer;
+  Right    : TExprVal;
+Begin
+  ParseUnary(Res);
+
+  Repeat
+    Op   := '';
+    Prec := 0;
+
+    { Detecter operateur binaire (TK_OP) }
+    If CurToken.Kind = TK_OP Then
+    Begin
+      Op   := CurToken.Val;
+      Prec := BinOpPrec(Op);
+    End
+    { Mots-cles operateurs : and, or, in, is, not (in) }
+    Else If CurToken.Kind = TK_KEYWORD Then
+    Begin
+      If (CurToken.Val = 'and') Or (CurToken.Val = 'or') Then
+      Begin
+        Op   := CurToken.Val;
+        Prec := BinOpPrec(Op);
+      End
+      Else If CurToken.Val = 'in' Then
+      Begin
+        Op   := 'in';
+        Prec := BinOpPrec('in');
+      End
+      Else If CurToken.Val = 'is' Then
+      Begin
+        Op   := 'is';
+        Prec := BinOpPrec('is');
+      End
+      Else If CurToken.Val = 'not' Then
+      Begin
+        { Lookahead pour 'not in' }
+        Op := 'not';
+        Prec := 0;
+      End;
+    End;
+
+    { Verifier si la precedence est suffisante }
+    If (Prec = 0) Or (Prec < MinPrec) Then Break;
+
+    { Gerer 'is not' (deux tokens) }
+    If Op = 'is' Then
+    Begin
+      ParserAdvance;
+      If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'not') Then
+      Begin
+        Op := 'is not';
+        ParserAdvance;
+      End;
+    End
+    { Gerer 'not in' (deux tokens depuis 'not') }
+    Else If Op = 'not' Then
+    Begin
+      ParserAdvance;
+      If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'in') Then
+      Begin
+        Op := 'not in';
+        Prec := BinOpPrec('not in');
+        If Prec < MinPrec Then Break;
+        ParserAdvance;
+      End
+      Else
+      Begin
+        { 'not' seul n est pas un operateur binaire ici }
+        { On ne devrait pas arriver ici normalement      }
+        Break;
+      End;
+    End
+    Else
+      ParserAdvance;  { consommer l operateur }
+
+    { Calculer le seuil de precedence pour la droite }
+    If BinOpIsRight(Op) Then
+      NextPrec := Prec       { droit-associatif : meme niveau }
+    Else
+      NextPrec := Prec + 1;  { gauche-associatif : niveau + 1 }
+
+    { Parser l operande droite }
+    ParseExprPrec(NextPrec, Right);
+
+    { Emettre le code binaire }
+    ExprEmitBinOp(Op, Res, Right);
+
+  Until False;
+End;
+
+{ ---- ParseExpr : parser une expression complete -------------- }
+Procedure ParseExpr(Var Res : TExprVal);
+Begin
+  ParseExprPrec(1, Res);
+End;
 
 Procedure Run;
 Begin
@@ -2100,9 +2810,37 @@ Begin
   { Lire le premier token }
   ParserAdvance;
 
-  { Boucle principale : scanner tous les tokens (stub TODO 04+) }
+  { Boucle principale : parser des expressions (TODO 04+) }
   While CurToken.Kind <> TK_EOF Do
-    ParserAdvance;
+  Begin
+    { Sauter les NEWLINE et INDENT/DEDENT entre instructions }
+    If (CurToken.Kind = TK_NEWLINE) Or
+       (CurToken.Kind = TK_INDENT) Or
+       (CurToken.Kind = TK_DEDENT) Then
+    Begin
+      ParserAdvance;
+      Continue;
+    End;
+    { Mots-cles d instruction : stub (TODO 05+) - sauter la ligne }
+    If (CurToken.Kind = TK_KEYWORD) And
+       (CurToken.Val <> 'True') And (CurToken.Val <> 'False') And
+       (CurToken.Val <> 'None') And (CurToken.Val <> 'not') Then
+    Begin
+      While (CurToken.Kind <> TK_EOF) And
+            (CurToken.Kind <> TK_NEWLINE) Do
+        ParserAdvance;
+      Continue;
+    End;
+    { Parser une expression }
+    ParseExpr(GExprDummy);
+    { Garde de securite : si le token n a pas avance, forcer }
+    If (CurToken.Kind <> TK_EOF) And
+       (CurToken.Kind <> TK_NEWLINE) Then
+      ParserAdvance;
+    { Sauter les NEWLINE apres l expression }
+    If CurToken.Kind = TK_NEWLINE Then
+      ParserAdvance;
+  End;
 
   LexClose;
 
