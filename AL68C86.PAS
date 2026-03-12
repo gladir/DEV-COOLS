@@ -182,7 +182,7 @@
             Pool de chaines : _A68_STRPOOL DB STRPOOL_SIZE DUP(0)
               + _A68_STRPOOL_TOP DW 0 (prochain octet libre)
 
-  TODO 10 - DECLARATIONS D IDENTITE ET DE VARIABLE
+  TODO 10 - DECLARATIONS D IDENTITE ET DE VARIABLE [IMPLEMENTE]
             Declaration d identite : INT x = 42;
               Mode est fixe, valeur est constante ou expression
               Pas de REF implicite (x est une constante, pas une variable)
@@ -4426,9 +4426,305 @@ Begin
   End;
 End;
 
+{ ============================================================
+  TODO 10 - DECLARATIONS D IDENTITE ET DE VARIABLE [IMPLEMENTE]
+  ============================================================ }
+
 Procedure ParseDeclStmt;
+{ Syntaxe Algol 68 supportee :
+    INT x = 42;               (identite / constante)
+    INT x := 42;              (variable locale abregee)
+    REF INT p = x;            (reference / alias)
+    REF INT x = LOC INT := 42; (variable LOC explicite)
+    HEAP INT x;               (allocation dynamique)
+    INT a = 1, b = 2;         (declarations multiples)
+  Le token courant est le premier mot de la declaration :
+    un mode (INT/BOOL/CHAR/REAL/STRING/BITS/BYTES/COMPL/VOID)
+    ou REF / LOC / HEAP.                                        }
+Var
+  MIdx      : Integer;   { indice du mode declare            }
+  SIdx      : Integer;   { indice du symbole cree            }
+  DIdx      : Integer;   { indice DataTab pour globales      }
+  OfsVal    : Integer;   { offset [BP-n] pour variable locale }
+  IsRef     : Boolean;   { REF explicite                     }
+  IsLoc     : Boolean;   { LOC explicite dans initialiseur   }
+  IsHeap    : Boolean;   { HEAP                              }
+  IsVar     : Boolean;   { vrai si := (variable, pas identite) }
+  Name      : TString;   { nom de l identificateur           }
+  Res       : TExprVal;  { valeur de l initialiseur          }
+  S         : TString;   { chaine temporaire                 }
+  Done      : Boolean;   { fin de la liste de declarations   }
+  InnerMode : Integer;   { mode apres LOC/HEAP               }
 Begin
-  { TODO 10 }
+  { --- 1. Detecter REF / LOC / HEAP en tete ---- }
+  IsRef  := False;
+  IsLoc  := False;
+  IsHeap := False;
+  MIdx   := -1;
+
+  If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'REF') Then
+  Begin
+    IsRef := True;
+    ParserAdvance;  { consomme REF }
+  End
+  Else If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'LOC') Then
+  Begin
+    IsLoc := True;
+    ParserAdvance;  { consomme LOC }
+  End
+  Else If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'HEAP') Then
+  Begin
+    IsHeap := True;
+    ParserAdvance;  { consomme HEAP }
+  End;
+
+  { --- 2. Lire le mode (INT, BOOL, CHAR, ...) ---- }
+  If CurToken.Kind = TK_BOLD Then
+  Begin
+    MIdx := ModeLookupName(CurToken.Val);
+    If MIdx >= 0 Then
+      ParserAdvance   { consomme le nom de mode }
+    Else
+    Begin
+      CompileError('mode inconnu : ' + CurToken.Val);
+      ParserAdvance;
+      Exit;
+    End;
+  End
+  Else If CurToken.Kind = TK_IDENT Then
+  Begin
+    { Mode utilisateur (TODO 16) ou alias - essayer de le trouver }
+    MIdx := ModeLookupName(CurToken.Val);
+    If MIdx >= 0 Then
+      ParserAdvance
+    Else
+    Begin
+      CompileError('mode attendu, obtenu : ' + CurToken.Val);
+      ParserAdvance;
+      Exit;
+    End;
+  End
+  Else
+  Begin
+    CompileError('mode attendu dans declaration');
+    Exit;
+  End;
+
+  { Si REF explicite, le mode effectif est une reference a MIdx }
+  If IsRef Then
+    MIdx := TY_IDX_REF;
+
+  { --- 3. Boucle sur les declarations multiples (a = 1, b = 2) --- }
+  Done := False;
+  While Not Done Do
+  Begin
+    { --- 3a. Lire l identificateur ---- }
+    If CurToken.Kind <> TK_IDENT Then
+    Begin
+      CompileError('identificateur attendu dans declaration');
+      Exit;
+    End;
+    Name := CurToken.Val;
+    ParserAdvance;  { consomme l identificateur }
+
+    { --- 3b. Operateur = (identite) ou := (variable) ---- }
+    IsVar := False;
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
+    Begin
+      IsVar := True;
+      ParserAdvance;  { consomme := }
+    End
+    Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+    Begin
+      IsVar := False;
+      ParserAdvance;  { consomme = }
+    End
+    Else
+    Begin
+      { Pas d initialiseur explicite pour HEAP decl }
+      If IsHeap Or IsLoc Then
+      Begin
+        { HEAP INT x; ou LOC INT x; sans initialiseur }
+        IsVar := True;
+      End
+      Else
+      Begin
+        CompileError('= ou := attendu apres identificateur ' + Name);
+        Exit;
+      End;
+    End;
+
+    { --- 3c. Detecter LOC/HEAP dans le membre droit ---- }
+    { Ex: REF INT x = LOC INT := 42; }
+    If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'LOC') Then
+    Begin
+      IsLoc := True;
+      IsVar := True;
+      ParserAdvance;  { consomme LOC }
+      { Optionnel : mode apres LOC (peut etre omis si deja declare) }
+      If CurToken.Kind = TK_BOLD Then
+      Begin
+        InnerMode := ModeLookupName(CurToken.Val);
+        If InnerMode >= 0 Then
+        Begin
+          MIdx := InnerMode;
+          ParserAdvance;
+        End;
+      End;
+      { Optionnel : := apres LOC INT }
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
+        ParserAdvance;
+    End
+    Else If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'HEAP') Then
+    Begin
+      IsHeap := True;
+      IsVar  := True;
+      ParserAdvance;  { consomme HEAP }
+      If CurToken.Kind = TK_BOLD Then
+      Begin
+        InnerMode := ModeLookupName(CurToken.Val);
+        If InnerMode >= 0 Then
+        Begin
+          MIdx := InnerMode;
+          ParserAdvance;
+        End;
+      End;
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
+        ParserAdvance;
+    End;
+
+    { --- 3d. Generer le code ---- }
+    EmitComment('decl ' + Name + ' : mode=' + IntToStr(MIdx));
+
+    If IsHeap Then
+    Begin
+      { HEAP : allocation dynamique }
+      { Charger la taille du mode dans CX puis appeler alloc }
+      Str(ModeSizeof(MIdx), S);
+      EmitInstr('MOV    CX, ' + S);
+      EmitInstr('CALL   ' + A68_RT_PFX + 'ALLOC');
+      { AX = pointeur vers la zone allouee }
+
+      { Lire l initialiseur si present }
+      If (CurToken.Kind <> TK_SEMI) And (CurToken.Kind <> TK_COMMA) And
+         (CurToken.Kind <> TK_EOF) Then
+      Begin
+        EmitInstr('PUSH   AX');        { sauvegarder le pointeur }
+        ParseExpr(Res);
+        ExprFlushToAX(Res);
+        EmitInstr('MOV    BX, AX');    { BX = valeur init }
+        EmitInstr('POP    AX');        { AX = pointeur }
+        EmitInstr('MOV    [AX], BX');  { stocker valeur }
+      End;
+
+      { Enregistrer dans la table des symboles }
+      If CurScope >= 1 Then
+      Begin
+        OfsVal := SymNextOffset;
+        SIdx := SymAdd(Name, SC_VAR, MIdx, OfsVal);
+        If SIdx >= 0 Then
+          SymTab[SIdx].IsHeap := True;
+        Str(OfsVal, S);
+        EmitInstr('MOV    [BP' + S + '], AX');
+      End
+      Else
+      Begin
+        DIdx := DataAddGlobalVar(Name, TY_IDX_REF);
+        SIdx := SymAdd(Name, SC_VAR, MIdx, 0);
+        If SIdx >= 0 Then
+        Begin
+          SymTab[SIdx].IsHeap := True;
+          EmitInstr('MOV    [' + SymTab[SIdx].MangledName + '], AX');
+        End;
+      End;
+    End
+    Else If IsVar Or IsLoc Then
+    Begin
+      { Variable locale ou avec LOC explicite }
+      { Lire l initialiseur }
+      If (CurToken.Kind <> TK_SEMI) And (CurToken.Kind <> TK_COMMA) And
+         (CurToken.Kind <> TK_EOF) Then
+      Begin
+        ParseExpr(Res);
+        ExprFlushToAX(Res);
+      End
+      Else
+      Begin
+        { Pas d initialiseur : valeur par defaut 0 }
+        EmitInstr('XOR    AX, AX');
+      End;
+
+      If CurScope >= 1 Then
+      Begin
+        { Variable locale : allouer sur la pile }
+        OfsVal := SymNextOffset;
+        SIdx := SymAdd(Name, SC_VAR, MIdx, OfsVal);
+        EmitInstr('SUB    SP, ' + IntToStr(ModeSizeof(MIdx)));
+        Str(OfsVal, S);
+        If ModeSizeof(MIdx) = 1 Then
+          EmitInstr('MOV    BYTE PTR [BP' + S + '], AL')
+        Else
+          EmitInstr('MOV    [BP' + S + '], AX');
+        Inc(CurFrameSize, ModeSizeof(MIdx));
+      End
+      Else
+      Begin
+        { Variable globale : stocker dans DATA segment }
+        DIdx := DataAddGlobalVar(Name, MIdx);
+        SIdx := SymAdd(Name, SC_VAR, MIdx, 0);
+        If SIdx >= 0 Then
+          EmitInstr('MOV    [' + SymTab[SIdx].MangledName + '], AX');
+      End;
+    End
+    Else
+    Begin
+      { Identite (constante) : INT x = 42 }
+      { Lire l initialiseur }
+      ParseExpr(Res);
+      ExprFlushToAX(Res);
+
+      If CurScope >= 1 Then
+      Begin
+        { Identite locale : allouer sur la pile (immutable) }
+        OfsVal := SymNextOffset;
+        SIdx := SymAdd(Name, SC_IDENT, MIdx, OfsVal);
+        EmitInstr('SUB    SP, ' + IntToStr(ModeSizeof(MIdx)));
+        Str(OfsVal, S);
+        If ModeSizeof(MIdx) = 1 Then
+          EmitInstr('MOV    BYTE PTR [BP' + S + '], AL')
+        Else
+          EmitInstr('MOV    [BP' + S + '], AX');
+        Inc(CurFrameSize, ModeSizeof(MIdx));
+      End
+      Else
+      Begin
+        { Identite globale : stocker dans DATA segment }
+        DIdx := DataAddGlobalVar(Name, MIdx);
+        SIdx := SymAdd(Name, SC_IDENT, MIdx, 0);
+        If SIdx >= 0 Then
+          EmitInstr('MOV    [' + SymTab[SIdx].MangledName + '], AX');
+      End;
+    End;
+
+    { --- 3e. Virgule -> declaration suivante, sinon fin ---- }
+    If CurToken.Kind = TK_COMMA Then
+    Begin
+      ParserAdvance;  { consomme , }
+      { Continuer la boucle }
+    End
+    Else
+      Done := True;
+  End; { While Not Done }
+
+  { --- 4. Point-virgule de fin ---- }
+  If CurToken.Kind = TK_SEMI Then
+    ParserAdvance  { consomme ; }
+  Else
+    { En Algol 68, le ; est optionnel avant END }
+    If Not ((CurToken.Kind = TK_BOLD) And
+            ((CurToken.Val = 'END') Or (CurToken.Val = 'FI') Or
+             (CurToken.Val = 'OD') Or (CurToken.Val = 'ESAC'))) Then
+      WarnMsg('; attendu apres declaration');
 End;
 
 { ParsePrimary, ParseExpr, ExprFlushToAX : implementes dans TODO 04 ci-dessus }
@@ -4514,10 +4810,30 @@ Begin
 End;
 
 Procedure ParseStmt;
+Var
+  IsDeclKw : Boolean;
 Begin
-  { TODO 25 - stub : consommer un token pour eviter boucle infinie }
-  If CurToken.Kind <> TK_EOF Then
-    ParserAdvance;
+  { Detecter si le token courant debute une declaration }
+  IsDeclKw := False;
+  If CurToken.Kind = TK_BOLD Then
+  Begin
+    { Mots-cles de mode ou prefixes de declaration }
+    If (CurToken.Val = 'INT') Or (CurToken.Val = 'REAL') Or
+       (CurToken.Val = 'BOOL') Or (CurToken.Val = 'CHAR') Or
+       (CurToken.Val = 'STRING') Or (CurToken.Val = 'BITS') Or
+       (CurToken.Val = 'BYTES') Or (CurToken.Val = 'COMPL') Or
+       (CurToken.Val = 'VOID') Or
+       (CurToken.Val = 'REF') Or (CurToken.Val = 'LOC') Or
+       (CurToken.Val = 'HEAP') Then
+      IsDeclKw := True;
+  End;
+
+  If IsDeclKw Then
+    ParseDeclStmt
+  Else If CurToken.Kind = TK_SEMI Then
+    ParserAdvance   { point-virgule seul = go-on vide }
+  Else If CurToken.Kind <> TK_EOF Then
+    ParserAdvance;  { stub : consommer un token pour eviter boucle infinie }
 End;
 
 Procedure ParserAdvance;
