@@ -151,7 +151,7 @@
             Indexation premier argument : table de saut selon le type/valeur
               du premier argument pour selection rapide de la clause
 
-  TODO 11 - COMPILATION DES REGLES
+  TODO 11 - COMPILATION DES REGLES [IMPLEMENTE]
             ParseRule : tete :- corps.
             Tete : comme un fait, unification des arguments
             Corps : sequence de buts separes par , (conjonction)
@@ -465,6 +465,8 @@ Const
   MAX_DYN       = {$IFDEF FPC}256{$ELSE}32{$ENDIF};
   MAX_FACT_ARGS = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
   MAX_ARGS_REG  = 16;  { nombre max de registres A1..AN (WAM) }
+  MAX_BODY_GOALS = {$IFDEF FPC}32{$ELSE}16{$ENDIF};
+  MAX_RULE_VARS  = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
   HEAP_SIZE     = 2048;
   STACK_SIZE    = 1024;
   TRAIL_SIZE    = 512;
@@ -652,6 +654,27 @@ Type
     ArgCount   : Integer;   { nombre d arguments parses            }
     Args       : Array[0..MAX_FACT_ARGS - 1] Of TFactArg;
     FailLabel  : TString;   { label de saut en cas d echec         }
+    { Champs specifiques aux regles (TODO 11) }
+    BodyStart  : Integer;   { index debut dans GoalTab             }
+    BodyLen    : Integer;   { nombre de buts dans le corps         }
+    NVars      : Integer;   { nombre de variables locales          }
+  End;
+
+  { ---- But dans le corps d une regle (TODO 11) ------------------- }
+  { Chaque but est un appel de predicat : nom(arg1, arg2, ..., argN) }
+  TGoalRec = Record
+    PredName : TString;   { nom du predicat appele                  }
+    Arity    : Integer;   { arite du but                            }
+    ArgCount : Integer;   { nombre d arguments                      }
+    Args     : Array[0..MAX_FACT_ARGS - 1] Of TFactArg;
+  End;
+
+  { ---- Variable locale dans une regle (TODO 11) ------------------- }
+  { Registre d une variable nommee utilisee dans la regle, avec son   }
+  { offset dans l environnement (pile).                               }
+  TRuleVarEntry = Record
+    Name   : TString;   { nom de la variable                        }
+    Offset : Integer;   { offset dans l environnement (BP-relative)  }
   End;
 
 { ============================================================
@@ -700,6 +723,15 @@ Var
   { Table des clauses (TODO 10) }
   ClauseTab   : Array[0..MAX_CLAUSE - 1] Of TClauseRec;
   ClauseCount : Integer;
+
+  { Corps des regles (TODO 11) }
+  { Chaque regle a un corps de buts stocke a part. L index dans       }
+  { GoalTab est BodyStart, et le nombre de buts est BodyLen.          }
+  GoalTab    : Array[0..MAX_CLAUSE * MAX_BODY_GOALS - 1] Of TGoalRec;
+  GoalCount  : Integer;
+  { Variables locales de la regle courante }
+  RuleVarTab   : Array[0..MAX_RULE_VARS - 1] Of TRuleVarEntry;
+  RuleVarCount : Integer;
 
   { Representation des termes WAM (TODO 06) }
   Heap       : Array[0..HEAP_SIZE - 1] Of Integer;  { tas WAM             }
@@ -832,6 +864,11 @@ Procedure EmitFactCode(CIdx : Integer); Forward;
 Procedure EmitPredEntry(Const PName : TString; PArity : Integer); Forward;
 Procedure EmitAllPredicates; Forward;
 Procedure ParseProgram; Forward;
+{ Compilation des regles (TODO 11) }
+Function  RuleVarFindOrAdd(Const VName : TString) : Integer; Forward;
+Procedure ParseGoal(Var G : TGoalRec); Forward;
+Procedure ParseRuleBody(CIdx : Integer); Forward;
+Procedure EmitRuleCode(CIdx : Integer); Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1118,6 +1155,9 @@ Begin
   DataInit;
   { TODO 10 }
   ClauseCount := 0;
+  { TODO 11 }
+  GoalCount    := 0;
+  RuleVarCount := 0;
 End;
 
 { ---- Statistiques ------------------------------------------ }
@@ -4167,15 +4207,62 @@ Begin
       ParserAdvance;
   End;
 
-  { Verifier si c est une regle (tete :- corps) }
+  { Verifier si c est une regle (tete :- corps) (TODO 11) }
   If (CurToken.Kind = TK_OP) And (CurToken.Val = ':-') Then
   Begin
-    { C est une regle, pas un fait - stub pour TODO 11 }
-    { Sauter le corps jusqu au . }
-    While (CurToken.Kind <> TK_EOF) And (CurToken.Kind <> TK_DOT) Do
-      ParserAdvance;
+    ParserAdvance; { consomme ':-' }
+
+    { Chercher ou creer le predicat dans la table des symboles }
+    SIdx := SymFindPredicate(PName, PArity);
+    If SIdx < 0 Then
+    Begin
+      SIdx := SymAdd(PName, SK_PREDICATE, PArity);
+      If SIdx >= 0 Then
+        SymTab[SIdx].ClauseHead := CIdx;
+    End;
+
+    { Determiner le numero de clause K pour ce predicat }
+    ClsIdx := 0;
+    If SIdx >= 0 Then
+    Begin
+      ClsIdx := SymTab[SIdx].ClauseCount;
+      Inc(SymTab[SIdx].ClauseCount);
+    End;
+
+    { Remplir l entree de clause comme regle }
+    ClauseTab[CIdx].PredName   := PName;
+    ClauseTab[CIdx].Arity      := PArity;
+    ClauseTab[CIdx].ClauseIdx  := ClsIdx;
+    ClauseTab[CIdx].SymIdx     := SIdx;
+    ClauseTab[CIdx].IsRule     := True;
+    ClauseTab[CIdx].ArgCount   := PArity;
+    ClauseTab[CIdx].BodyStart  := GoalCount;
+    ClauseTab[CIdx].BodyLen    := 0;
+    ClauseTab[CIdx].NVars      := 0;
+    ClauseTab[CIdx].FailLabel  := '';
+
+    { Generer le label ASM }
+    ClauseTab[CIdx].ClsLabel := PL_PRED_PFX + SymNameClean(PName) + '_' +
+                                IntToStr(PArity) + '_' + IntToStr(ClsIdx);
+    ClauseTab[CIdx].FailLabel := ClauseTab[CIdx].ClsLabel + '_F';
+
+    { Parser le corps de la regle }
+    ParseRuleBody(CIdx);
+
+    { Terminator : doit etre un point . }
     If CurToken.Kind = TK_DOT Then
-      ParserAdvance;
+      ParserAdvance
+    Else
+      CompileError('. attendu a la fin de la regle');
+
+    Inc(ClauseCount);
+
+    If Opts.DebugMode Then
+      WriteLn('  RULE[', CIdx, ']: ', PName, '/', PArity,
+              ' clause=', ClsIdx, ' body=', ClauseTab[CIdx].BodyLen,
+              ' vars=', ClauseTab[CIdx].NVars,
+              ' -> ', ClauseTab[CIdx].ClsLabel);
+
     ParseFact := True;
     Exit;
   End;
@@ -4211,6 +4298,9 @@ Begin
   ClauseTab[CIdx].IsRule     := False;
   ClauseTab[CIdx].ArgCount  := PArity;
   ClauseTab[CIdx].FailLabel := '';
+  ClauseTab[CIdx].BodyStart := 0;
+  ClauseTab[CIdx].BodyLen   := 0;
+  ClauseTab[CIdx].NVars     := 0;
 
   { Generer le label ASM : _PLP_nom_N_clauseK }
   If PArity = 0 Then
@@ -4359,7 +4449,393 @@ Begin
   EmitEpilog;
 End;
 
-{ ---- EmitPredEntry : emettre le point d entree d un predicat ----- }
+{ ============================================================
+  TODO 11 - COMPILATION DES REGLES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- RuleVarFindOrAdd : chercher ou ajouter une variable ------- }
+{ locale dans la table des variables de la regle courante.         }
+{ Retourne l index dans RuleVarTab.                                }
+Function RuleVarFindOrAdd(Const VName : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := 0 To RuleVarCount - 1 Do
+  Begin
+    If RuleVarTab[I].Name = VName Then
+    Begin
+      RuleVarFindOrAdd := I;
+      Exit;
+    End;
+  End;
+  { Nouvelle variable }
+  If RuleVarCount >= MAX_RULE_VARS Then
+  Begin
+    CompileError('trop de variables dans la regle (max=' +
+                 IntToStr(MAX_RULE_VARS) + ')');
+    RuleVarFindOrAdd := 0;
+    Exit;
+  End;
+  RuleVarTab[RuleVarCount].Name   := VName;
+  RuleVarTab[RuleVarCount].Offset := (RuleVarCount + 1) * 2;
+  RuleVarFindOrAdd := RuleVarCount;
+  Inc(RuleVarCount);
+End;
+
+{ ---- ParseGoal : parser un but dans le corps d une regle -------- }
+{ Un but est soit : atome (arite 0) ou foncteur(arg1,...,argN).     }
+{ Les arguments du but sont parses comme ceux d un fait.            }
+Procedure ParseGoal(Var G : TGoalRec);
+Var
+  A : Integer;
+Begin
+  G.PredName := '';
+  G.Arity    := 0;
+  G.ArgCount := 0;
+
+  If CurToken.Kind = TK_ATOM Then
+  Begin
+    G.PredName := CurToken.Val;
+    ParserAdvance;
+
+    { Verifier si le but a des arguments }
+    If CurToken.Kind = TK_LPAREN Then
+    Begin
+      ParserAdvance; { consomme '(' }
+      A := 0;
+      While (CurToken.Kind <> TK_EOF) And
+            (CurToken.Kind <> TK_RPAREN) Do
+      Begin
+        If A >= MAX_FACT_ARGS Then
+        Begin
+          CompileError('trop d arguments dans le but (max=' +
+                       IntToStr(MAX_FACT_ARGS) + ')');
+          Break;
+        End;
+        ParseFactArg(G.Args[A]);
+        Inc(A);
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+          ParserAdvance
+        Else If CurToken.Kind <> TK_RPAREN Then
+        Begin
+          CompileError(') ou , attendu dans les arguments du but');
+          Break;
+        End;
+      End;
+      If CurToken.Kind = TK_RPAREN Then
+        ParserAdvance;
+      G.Arity    := A;
+      G.ArgCount := A;
+    End;
+  End
+  Else
+  Begin
+    CompileError('atome attendu comme but dans le corps de la regle');
+    { Avancer pour eviter boucle infinie }
+    If CurToken.Kind <> TK_EOF Then
+      ParserAdvance;
+  End;
+End;
+
+{ ---- ParseRuleBody : parser le corps d une regle ----------------- }
+{ Le corps est une sequence de buts separes par des virgules :       }
+{   but1, but2, ..., butN                                            }
+{ Se termine avant le point .                                        }
+{ Collecte aussi les variables locales dans RuleVarTab.              }
+Procedure ParseRuleBody(CIdx : Integer);
+Var
+  I      : Integer;
+  GIdx   : Integer;
+  NGoals : Integer;
+Begin
+  { Reinitialiser la table des variables locales pour cette regle }
+  RuleVarCount := 0;
+
+  { Collecter les variables de la tete }
+  For I := 0 To ClauseTab[CIdx].ArgCount - 1 Do
+  Begin
+    If ClauseTab[CIdx].Args[I].Kind = FAK_VAR Then
+      RuleVarFindOrAdd(ClauseTab[CIdx].Args[I].VarName);
+  End;
+
+  ClauseTab[CIdx].BodyStart := GoalCount;
+  NGoals := 0;
+
+  { Parser les buts separes par des virgules }
+  While (CurToken.Kind <> TK_EOF) And
+        (CurToken.Kind <> TK_DOT) Do
+  Begin
+    If GoalCount >= MAX_CLAUSE * MAX_BODY_GOALS Then
+    Begin
+      CompileError('table des buts pleine');
+      Break;
+    End;
+
+    GIdx := GoalCount;
+    ParseGoal(GoalTab[GIdx]);
+
+    If GoalTab[GIdx].PredName = '' Then Break;
+
+    { Collecter les variables des arguments du but }
+    For I := 0 To GoalTab[GIdx].ArgCount - 1 Do
+    Begin
+      If GoalTab[GIdx].Args[I].Kind = FAK_VAR Then
+        RuleVarFindOrAdd(GoalTab[GIdx].Args[I].VarName);
+    End;
+
+    Inc(GoalCount);
+    Inc(NGoals);
+
+    { Virgule = conjonction (but suivant) }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance
+    Else
+      Break;  { fin du corps (point ou autre) }
+  End;
+
+  ClauseTab[CIdx].BodyLen := NGoals;
+  ClauseTab[CIdx].NVars   := RuleVarCount;
+End;
+
+{ ---- EmitRuleCode : emettre le code ASM pour une regle ----------- }
+{ Structure du code emis :                                            }
+{   label:                                                            }
+{     ; Allocation de l environnement                                 }
+{     PUSH BP                                                         }
+{     MOV  BP, SP                                                     }
+{     SUB  SP, NVars * 2       ; reserver les variables locales       }
+{     ; Initialiser les vars a REF libre sur le heap                  }
+{     ; Unifier les arguments de la tete                              }
+{     ; Pour chaque but du corps :                                    }
+{       ; Charger les arguments dans _PL_ARGS                         }
+{       ; CALL _PLP_predicat_N                                        }
+{       ; JC label_fail                                               }
+{     ; Dernier but : optimisation appel terminal                     }
+{       ; deallocate + JMP au lieu de CALL                            }
+{     ; Succes                                                        }
+{     CLC                                                             }
+{     MOV SP, BP                                                      }
+{     POP BP                                                          }
+{     RET                                                             }
+{   label_fail:                                                       }
+{     STC                                                             }
+{     MOV SP, BP                                                      }
+{     POP BP                                                          }
+{     RET                                                             }
+Procedure EmitRuleCode(CIdx : Integer);
+Var
+  I, J     : Integer;
+  GIdx     : Integer;
+  TagVal   : Integer;
+  NS       : TString;
+  VarIdx   : Integer;
+  IsLast   : Boolean;
+  PredLbl  : TString;
+  Clean    : TString;
+Begin
+  EmitBlankLine;
+  EmitComment('--- Regle ' + ClauseTab[CIdx].PredName + '/' +
+              IntToStr(ClauseTab[CIdx].Arity) +
+              ' clause ' + IntToStr(ClauseTab[CIdx].ClauseIdx) +
+              ' (' + IntToStr(ClauseTab[CIdx].BodyLen) + ' but(s),' +
+              ' ' + IntToStr(ClauseTab[CIdx].NVars) + ' var(s)) ---');
+
+  EmitLabel(ClauseTab[CIdx].ClsLabel);
+
+  { Prologue : allocation d environnement }
+  EmitProlog;
+  If ClauseTab[CIdx].NVars > 0 Then
+  Begin
+    EmitComment('allocate ' + IntToStr(ClauseTab[CIdx].NVars) +
+                ' variable(s) locale(s)');
+    EmitInstrAB('SUB', 'SP', IntToStr(ClauseTab[CIdx].NVars * 2));
+
+    { Initialiser les variables locales a REF libre sur le heap }
+    EmitComment('init vars locales a REF libre');
+    For I := 0 To ClauseTab[CIdx].NVars - 1 Do
+    Begin
+      EmitInstrAB('MOV', 'AX', 'WORD PTR [_PL_HTOP]');
+      EmitInstrAB('MOV', 'SI', 'AX');
+      EmitInstrAB('SHL', 'SI', '1');
+      EmitInstrAB('ADD', 'SI', 'OFFSET _PL_HEAP');
+      EmitInstrAB('MOV', 'WORD PTR [SI]', 'AX');
+      EmitInstr('INC    WORD PTR [_PL_HTOP]');
+      { Stocker la REF dans la variable locale [BP - offset] }
+      EmitInstrAB('MOV', 'WORD PTR [BP-' + IntToStr((I + 1) * 2) + ']',
+                  'AX');
+    End;
+  End;
+
+  { Unifier les arguments de la tete (comme un fait) }
+  If ClauseTab[CIdx].ArgCount > 0 Then
+  Begin
+    EmitComment('unification tete');
+    For I := 0 To ClauseTab[CIdx].ArgCount - 1 Do
+    Begin
+      EmitComment('arg tete ' + IntToStr(I + 1) + '/' +
+                  IntToStr(ClauseTab[CIdx].ArgCount));
+
+      { Charger le registre Ai dans AX }
+      EmitInstrAB('MOV', 'AX', 'WORD PTR [_PL_ARGS + ' +
+                  IntToStr(I * 2) + ']');
+
+      { Construire la valeur taguee de l argument }
+      Case ClauseTab[CIdx].Args[I].Kind Of
+        FAK_ATOM :
+        Begin
+          TagVal := (TAG_ATOM Shl TAG_SHIFT) Or
+                    (ClauseTab[CIdx].Args[I].AtomIdx And VAL_MASK);
+          Str(TagVal, NS);
+          EmitInstrAB('MOV', 'BX', NS);
+          EmitComment('atom ' + AtomName(ClauseTab[CIdx].Args[I].AtomIdx));
+        End;
+
+        FAK_INT :
+        Begin
+          TagVal := (TAG_INT Shl TAG_SHIFT) Or
+                    (Integer(ClauseTab[CIdx].Args[I].IntVal) And VAL_MASK);
+          Str(TagVal, NS);
+          EmitInstrAB('MOV', 'BX', NS);
+          EmitComment('int ' + IntToStr(ClauseTab[CIdx].Args[I].IntVal));
+        End;
+
+        FAK_VAR :
+        Begin
+          { Variable : utiliser la var locale de l environnement }
+          VarIdx := RuleVarFindOrAdd(ClauseTab[CIdx].Args[I].VarName);
+          EmitComment('var ' + ClauseTab[CIdx].Args[I].VarName +
+                      ' [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+          EmitInstrAB('MOV', 'BX',
+                      'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        End;
+
+        FAK_ANON :
+        Begin
+          { Variable anonyme : creer une REF libre }
+          EmitComment('anon _');
+          EmitInstrAB('MOV', 'BX', 'WORD PTR [_PL_HTOP]');
+          EmitInstrAB('MOV', 'SI', 'BX');
+          EmitInstrAB('SHL', 'SI', '1');
+          EmitInstrAB('ADD', 'SI', 'OFFSET _PL_HEAP');
+          EmitInstrAB('MOV', 'WORD PTR [SI]', 'BX');
+          EmitInstr('INC    WORD PTR [_PL_HTOP]');
+        End;
+      Else
+        EmitComment('arg tete non gere');
+        EmitInstrAB('MOV', 'BX', '0');
+      End;
+
+      { Appeler l unification }
+      EmitUnify;
+      EmitInstrA('JC', ClauseTab[CIdx].FailLabel);
+    End;
+  End;
+
+  { Emettre le code du corps (buts) }
+  EmitComment('--- corps de la regle ---');
+  For I := 0 To ClauseTab[CIdx].BodyLen - 1 Do
+  Begin
+    GIdx := ClauseTab[CIdx].BodyStart + I;
+    IsLast := (I = ClauseTab[CIdx].BodyLen - 1);
+
+    EmitBlankLine;
+    EmitComment('but ' + IntToStr(I + 1) + '/' +
+                IntToStr(ClauseTab[CIdx].BodyLen) + ': ' +
+                GoalTab[GIdx].PredName + '/' +
+                IntToStr(GoalTab[GIdx].Arity));
+
+    { Charger les arguments du but dans les registres _PL_ARGS }
+    For J := 0 To GoalTab[GIdx].ArgCount - 1 Do
+    Begin
+      Case GoalTab[GIdx].Args[J].Kind Of
+        FAK_ATOM :
+        Begin
+          TagVal := (TAG_ATOM Shl TAG_SHIFT) Or
+                    (GoalTab[GIdx].Args[J].AtomIdx And VAL_MASK);
+          Str(TagVal, NS);
+          EmitInstrAB('MOV', 'WORD PTR [_PL_ARGS + ' +
+                      IntToStr(J * 2) + ']', NS);
+          EmitComment('atom ' + AtomName(GoalTab[GIdx].Args[J].AtomIdx));
+        End;
+
+        FAK_INT :
+        Begin
+          TagVal := (TAG_INT Shl TAG_SHIFT) Or
+                    (Integer(GoalTab[GIdx].Args[J].IntVal) And VAL_MASK);
+          Str(TagVal, NS);
+          EmitInstrAB('MOV', 'WORD PTR [_PL_ARGS + ' +
+                      IntToStr(J * 2) + ']', NS);
+          EmitComment('int ' + IntToStr(GoalTab[GIdx].Args[J].IntVal));
+        End;
+
+        FAK_VAR :
+        Begin
+          VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[J].VarName);
+          EmitComment('var ' + GoalTab[GIdx].Args[J].VarName);
+          EmitInstrAB('MOV', 'AX',
+                      'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+          EmitInstrAB('MOV', 'WORD PTR [_PL_ARGS + ' +
+                      IntToStr(J * 2) + ']', 'AX');
+        End;
+
+        FAK_ANON :
+        Begin
+          { Variable anonyme : creer une REF libre }
+          EmitComment('anon _');
+          EmitInstrAB('MOV', 'AX', 'WORD PTR [_PL_HTOP]');
+          EmitInstrAB('MOV', 'SI', 'AX');
+          EmitInstrAB('SHL', 'SI', '1');
+          EmitInstrAB('ADD', 'SI', 'OFFSET _PL_HEAP');
+          EmitInstrAB('MOV', 'WORD PTR [SI]', 'AX');
+          EmitInstr('INC    WORD PTR [_PL_HTOP]');
+          EmitInstrAB('MOV', 'WORD PTR [_PL_ARGS + ' +
+                      IntToStr(J * 2) + ']', 'AX');
+        End;
+      Else
+        EmitInstrAB('MOV', 'WORD PTR [_PL_ARGS + ' +
+                    IntToStr(J * 2) + ']', '0');
+      End;
+    End;
+
+    { Appeler le predicat du but }
+    Clean   := SymNameClean(GoalTab[GIdx].PredName);
+    PredLbl := PL_PRED_PFX + Clean + '_' + IntToStr(GoalTab[GIdx].Arity);
+
+    If IsLast Then
+    Begin
+      { Optimisation appel terminal (last call) : deallocate + JMP }
+      EmitComment('last call optimization');
+      EmitInstrAB('MOV', 'SP', 'BP');
+      EmitInstrA('POP', 'BP');
+      EmitInstrA('JMP', PredLbl);
+      { Pas de label_fail apres JMP terminal : si le dernier but echoue, }
+      { le CF est propage automatiquement par le RET du predicat appele. }
+
+      { Emettre quand meme le label d echec pour les buts precedents }
+      EmitBlankLine;
+      EmitLabel(ClauseTab[CIdx].FailLabel);
+      EmitInstr('STC');
+      EmitEpilog;
+      Exit;
+    End
+    Else
+    Begin
+      EmitInstrA('CALL', PredLbl);
+      EmitInstrA('JC', ClauseTab[CIdx].FailLabel);
+    End;
+  End;
+
+  { Si le corps est vide (ne devrait pas arriver pour une regle) }
+  { ou si pas d optimisation terminale }
+  EmitInstr('CLC');
+  EmitEpilog;
+  EmitBlankLine;
+
+  { Label d echec }
+  EmitLabel(ClauseTab[CIdx].FailLabel);
+  EmitInstr('STC');
+  EmitEpilog;
+End;
 { Genere le label principal _PLP_nom_N et une table de saut          }
 { (indexation premier argument) vers les clauses individuelles.      }
 {                                                                    }
@@ -4394,8 +4870,7 @@ Begin
   For I := 0 To ClauseCount - 1 Do
   Begin
     If (ClauseTab[I].PredName = PName) And
-       (ClauseTab[I].Arity = PArity) And
-       (Not ClauseTab[I].IsRule) Then
+       (ClauseTab[I].Arity = PArity) Then
     Begin
       Indices[ClsCount] := I;
       Inc(ClsCount);
@@ -4490,8 +4965,8 @@ Begin
 End;
 
 { ---- EmitAllPredicates : emettre le code de tous les predicats --- }
-{ Emet d abord le code de chaque clause individuelle, puis les       }
-{ points d entree des predicats (avec indexation).                   }
+{ Emet d abord le code de chaque clause individuelle (faits et       }
+{ regles), puis les points d entree des predicats (indexation).      }
 Procedure EmitAllPredicates;
 Var
   I      : Integer;
@@ -4501,13 +4976,15 @@ Begin
 
   EmitBlankLine;
   EmitComment('=======================================');
-  EmitComment('  Clauses compilees (TODO 10)');
+  EmitComment('  Clauses compilees (TODO 10 + 11)');
   EmitComment('=======================================');
 
   { Emettre le code de chaque clause individuelle }
   For I := 0 To ClauseCount - 1 Do
   Begin
-    If Not ClauseTab[I].IsRule Then
+    If ClauseTab[I].IsRule Then
+      EmitRuleCode(I)
+    Else
       EmitFactCode(I);
   End;
 
@@ -4520,7 +4997,6 @@ Begin
   FillChar(Done, SizeOf(Done), 0);
   For I := 0 To ClauseCount - 1 Do
   Begin
-    If ClauseTab[I].IsRule Then Continue;
     If ClauseTab[I].SymIdx < 0 Then Continue;
 
     { Verifier si on a deja emis ce predicat }
@@ -4533,9 +5009,8 @@ Begin
 End;
 
 { ---- ParseProgram : boucle principale de parsing ---------------- }
-{ Parse les clauses Prolog (faits et directives) jusqu a EOF.       }
-{ Les faits sont ajoutes dans ClauseTab. Les regles (TODO 11) et    }
-{ les directives sont sautees pour l instant.                       }
+{ Parse les clauses Prolog (faits, regles et directives) jusqu a    }
+{ EOF. Les faits et regles sont ajoutes dans ClauseTab.             }
 Procedure ParseProgram;
 Var
   Parsed : Boolean;
