@@ -43,7 +43,7 @@
               True False Nil Mu Any
             Mode debug -d : affichage de chaque token avec PrintToken
 
-  TODO 03 - LITTERAUX ET CONSTANTES
+  TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
             Entiers decimaux : 0..65535 ou -32768..32767 (Int)
             Entiers autres bases : 0x1FF (hex), 0o77 (octal), 0b1010 (binaire)
             Separateurs : underscores dans les nombres 1_000_000
@@ -751,6 +751,21 @@ Procedure LexScanOp;                                  Forward;
 Procedure LexScanPunct;                               Forward;
 Procedure LexNextToken;                               Forward;
 
+{ Forward declarations TODO 03 - Litteraux et constantes }
+Function  IntToStr(N : LongInt) : TString;                        Forward;
+Function  LabelGen : TString;                                     Forward;
+Function  DataAdd(Const Lbl : TString; Kind : TDataKind;
+                  AIntVal : LongInt;
+                  Const AStrVal : TString) : Integer;             Forward;
+Function  DataAddStr(Const S : TString) : TString;                Forward;
+Function  DataAddWord(Const Lbl : TString;
+                      AIntVal : LongInt) : Integer;               Forward;
+Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
+                      Var Res : TExprVal);                        Forward;
+Procedure ExprMakeNone(Var Res : TExprVal);                       Forward;
+Procedure ExprMakeBool(AVal : Integer; Var Res : TExprVal);       Forward;
+Procedure LitEval(Const T : TToken; Var Res : TExprVal);          Forward;
+
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
   ============================================================ }
@@ -1083,8 +1098,10 @@ Var
   Tmp : TString;
 Begin
   EmitRaw('_DATA   SEGMENT WORD PUBLIC ''DATA''');
+  { Buffer de travail pour concatenation de chaines }
+  EmitRaw('_RK_STRBUF  DB  256 DUP(0)');
   If DataCount = 0 Then
-    EmitRaw('; (aucune donnee)')
+    EmitRaw('; (aucune donnee utilisateur)')
   Else
     For I := 0 To DataCount - 1 Do
     Begin
@@ -2024,6 +2041,164 @@ End;
 Procedure ParserAdvance;
 Begin
   LexNextToken;
+End;
+
+{ ============================================================
+  TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- IntToStr : conversion entier -> chaine ---------------- }
+Function IntToStr(N : LongInt) : TString;
+Var
+  S : TString;
+Begin
+  Str(N, S);
+  IntToStr := S;
+End;
+
+{ ---- LabelGen : generateur de labels uniques --------------- }
+Function LabelGen : TString;
+Begin
+  Inc(LabelSeq);
+  LabelGen := RK_LBL_PFX + IntToStr(LabelSeq);
+End;
+
+{ ---- DataAdd : ajouter une entree dans DataTab ------------- }
+Function DataAdd(Const Lbl : TString; Kind : TDataKind;
+                 AIntVal : LongInt;
+                 Const AStrVal : TString) : Integer;
+Begin
+  If DataCount >= MAX_DATA Then
+  Begin
+    CompileError('segment DATA plein (max=' + IntToStr(MAX_DATA) + ')');
+    DataAdd := -1;
+    Exit;
+  End;
+  DataTab[DataCount].LblName   := Lbl;
+  DataTab[DataCount].Kind      := Kind;
+  DataTab[DataCount].IntVal    := AIntVal;
+  DataTab[DataCount].StrVal    := AStrVal;
+  DataTab[DataCount].ElemCount := 0;
+  DataAdd := DataCount;
+  Inc(DataCount);
+End;
+
+{ ---- DataAddStr : creer un label _RKK_N et stocker chaine -- }
+{ Retourne le label genere.                                     }
+Function DataAddStr(Const S : TString) : TString;
+Var
+  Lbl : TString;
+Begin
+  Inc(LabelSeq);
+  Lbl := RK_STR_PFX + IntToStr(LabelSeq);
+  DataAdd(Lbl, DK_STR, 0, S);
+  DataAddStr := Lbl;
+End;
+
+{ ---- DataAddWord : ajouter un mot 16 bits dans DataTab ----- }
+Function DataAddWord(Const Lbl : TString;
+                     AIntVal : LongInt) : Integer;
+Begin
+  DataAddWord := DataAdd(Lbl, DK_WORD, AIntVal, '');
+End;
+
+{ ---- ExprMakeImm : construire une valeur immediate --------- }
+Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
+                      Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_IMM;
+  Res.ImmVal  := AVal;
+  Res.TypeIdx := ATypeIdx;
+  Res.Offset  := 0;
+End;
+
+{ ---- ExprMakeNone : valeur invalide (void/erreur) ---------- }
+Procedure ExprMakeNone(Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_NONE;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_UNKNOWN;
+  Res.Offset  := 0;
+End;
+
+{ ---- ExprMakeBool : valeur booleenne (True=1, False=0) ----- }
+Procedure ExprMakeBool(AVal : Integer; Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_IMM;
+  If AVal <> 0 Then Res.ImmVal := 1
+               Else Res.ImmVal := 0;
+  Res.TypeIdx := TY_IDX_BOOL;
+  Res.Offset  := 0;
+End;
+
+{ ---- LitEval : evaluer un token litteral en TExprVal ------- }
+{ Gere : TK_INTEGER, TK_RATIONAL (tronque avec avertissement), }
+{        TK_STRING (chaine -> DataAddStr), TK_KEYWORD           }
+{        (True/False/Nil/Inf/NaN).                              }
+Procedure LitEval(Const T : TToken; Var Res : TExprVal);
+Var
+  Lbl : TString;
+Begin
+  ExprMakeNone(Res);
+
+  Case T.Kind Of
+    { --- Entiers decimaux / hex / octal / binaire --- }
+    TK_INTEGER :
+    Begin
+      Res.Kind    := EK_IMM;
+      Res.ImmVal  := T.IntVal;
+      Res.TypeIdx := TY_IDX_INT;
+    End;
+
+    { --- Rationnels (tronques a entier avec avertissement) --- }
+    TK_RATIONAL :
+    Begin
+      WarnMsg('litteral rationnel tronque a entier (Rat -> Int)');
+      Res.Kind    := EK_IMM;
+      Res.ImmVal  := Trunc(T.FloatVal);
+      Res.TypeIdx := TY_IDX_RAT;
+    End;
+
+    { --- Chaines (simple ou double quote) -> DATA segment --- }
+    TK_STRING :
+    Begin
+      Lbl := DataAddStr(T.Val);
+      Res.Kind    := EK_IMM;
+      Res.ImmVal  := 0;
+      Res.TypeIdx := TY_IDX_STR;
+      { On stocke le label comme offset symbolique ; le code   }
+      { generateur utilisera MOV AX, OFFSET <lbl> pour charger }
+    End;
+
+    { --- Mots-cles booleens et constantes speciales --- }
+    TK_KEYWORD :
+    Begin
+      If T.Val = 'True' Then
+        ExprMakeBool(1, Res)
+      Else If T.Val = 'False' Then
+        ExprMakeBool(0, Res)
+      Else If T.Val = 'Nil' Then
+        ExprMakeImm(0, TY_IDX_NIL, Res)
+      Else If T.Val = 'Mu' Then
+        ExprMakeImm(0, TY_IDX_MU, Res)
+      Else If T.Val = 'Any' Then
+        ExprMakeImm(0, TY_IDX_ANY, Res)
+      Else If T.Val = 'Inf' Then
+      Begin
+        WarnMsg('Inf non supporte sur 8086, utilise 32767');
+        ExprMakeImm(32767, TY_IDX_INT, Res);
+      End
+      Else If T.Val = 'NaN' Then
+      Begin
+        WarnMsg('NaN non supporte sur 8086, utilise 0');
+        ExprMakeImm(0, TY_IDX_INT, Res);
+      End
+      Else
+        ExprMakeNone(Res);
+    End;
+  Else
+    ExprMakeNone(Res);
+  End;
 End;
 
 { ---- ParseStmt : stub ------------------------------------- }
