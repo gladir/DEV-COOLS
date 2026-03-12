@@ -7225,7 +7225,7 @@ Begin
       Begin
         EmitInstr('MOV ESI,EAX');
         EmitInstr('LEA EDI,' + EBPOfs(ProcTab[PI].Locals[LI].Offset));
-        EmitInstr('CALL ' + TP_RT_PFX + 'STRCPY');
+        EmitInstr('CALL ' + TP_RT_PFX + 'STRASSIGN');
         Exit;
       End;
       If ProcTab[PI].Locals[LI].Size = 1 Then
@@ -7264,7 +7264,7 @@ Begin
       Begin
         EmitInstr('MOV ESI,EAX');
         EmitInstr('LEA EDI,[' + Ref + ']');
-        EmitInstr('CALL ' + TP_RT_PFX + 'STRCPY');
+        EmitInstr('CALL ' + TP_RT_PFX + 'STRASSIGN');
         Exit;
       End;
       If TypeSizeofIdx(VarTI) = 1 Then
@@ -7282,7 +7282,7 @@ Begin
   Begin
     EmitInstr('MOV ESI,EAX');
     EmitInstr('LEA EDI,[' + TP_VAR_PFX + Up + ']');
-    EmitInstr('CALL ' + TP_RT_PFX + 'STRCPY');
+    EmitInstr('CALL ' + TP_RT_PFX + 'STRASSIGN');
   End
   Else
     EmitInstr('MOV DWORD PTR [' + TP_VAR_PFX + Up + '],EAX');
@@ -7923,7 +7923,7 @@ Begin
         { EAX = pointeur vers s1, copier dans STRBUF1 }
         EmitInstr('MOV ESI,EAX');
         EmitInstr('LEA EDI,[STRBUF1]');
-        EmitInstr('CALL ' + TP_RT_PFX + 'STRCPY');
+        EmitInstr('CALL ' + TP_RT_PFX + 'STRASSIGN');
         { Arguments suivants : concatener }
         While Not EPAtEnd Do
         Begin
@@ -8332,6 +8332,7 @@ Begin
     End;
 
     { STRCOPY(Dest, Source) -> PChar (copie chaine, retourne Dest) }
+    { = StrCopy() de l unite Strings, utilise _TPRT_STRCPY         }
     If Up = 'STRCOPY' Then
     Begin
       Inc(EP);
@@ -8339,11 +8340,14 @@ Begin
       Begin
         ParseExpr(PI);  EmitInstr('PUSH EAX');  { Dest }
         EPMatch(',');
-        ParseExpr(PI);  EmitInstr('PUSH EAX');  { Source }
+        ParseExpr(PI);                           { Source }
         EPMatch(')');
       End;
-      EmitInstr('CALL ' + TP_RT_PFX + 'STRCOPY');
-      EmitInstr('ADD ESP,8');
+      { ESI = Source (deja dans EAX), EDI = Dest (sur pile) }
+      EmitInstr('MOV ESI,EAX');
+      EmitInstr('POP EDI');
+      EmitInstr('CALL ' + TP_RT_PFX + 'STRCPY');
+      { EAX = Dest (retourne par STRCPY) }
       Exit;
     End;
 
@@ -8363,7 +8367,7 @@ Begin
       Exit;
     End;
 
-    { STRCOMP(S1, S2) -> Integer (comparaison) }
+    { STRCOMP(S1, S2) -> Integer (comparaison PChar) }
     If Up = 'STRCOMP' Then
     Begin
       Inc(EP);
@@ -8371,10 +8375,11 @@ Begin
       Begin
         ParseExpr(PI);  EmitInstr('PUSH EAX');
         EPMatch(',');
-        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        ParseExpr(PI);  EmitInstr('MOV EDI,EAX');
+        EmitInstr('POP ESI');
         EPMatch(')');
       End;
-      EmitInstr('CALL lstrcmpA');
+      EmitInstr('CALL ' + TP_RT_PFX + 'STRCMP');
       Exit;
     End;
 
@@ -9284,7 +9289,7 @@ Begin
     Begin
       EmitInstr('MOV ESI,EAX');        { ESI = chaine gauche  }
       EmitInstr('LEA EDI,[STRBUF1]');
-      EmitInstr('CALL ' + TP_RT_PFX + 'STRCPY');
+      EmitInstr('CALL ' + TP_RT_PFX + 'STRASSIGN');
       ParseExprPrec(PI, Prec + 1);
       EmitInstr('MOV EDI,EAX');        { EDI = chaine droite  }
       EmitInstr('LEA ESI,[STRBUF1]');
@@ -9302,8 +9307,8 @@ Begin
       ParseExprPrec(PI, Prec + 1);
       EmitInstr('MOV EDI,EAX');         { EDI = droite  }
       EmitInstr('POP ESI');             { ESI = gauche  }
-      EmitInstr('CALL ' + TP_RT_PFX + 'STRCMP');
-      { EAX = resultat strcmp: <0, 0, >0 }
+      EmitInstr('CALL ' + TP_RT_PFX + 'STRCOMPARE');
+      { EAX = resultat strcompare: <0, 0, >0 }
       LblF := LabelGen;
       LblE := LabelGen;
       If Op = '=' Then
@@ -9711,8 +9716,8 @@ Begin
         EmitInstr('LEA ESI,[INBUF]');
         GenLoadAddr(PI, VName);
         EmitInstr('MOV EDI,EAX');
-        { Copier octet par octet jusqu au NUL }
-        EmitInstr('CALL ' + TP_RT_PFX + 'STRCPY');
+        { Copier octet par octet }
+        EmitInstr('CALL ' + TP_RT_PFX + 'STRASSIGN');
       End
       Else If TIdx = TY_IDX_CHAR Then
       Begin
@@ -9798,7 +9803,7 @@ Begin
       EmitInstr('LEA ESI,[NUMBUF]');
       GenLoadAddr(PI, VName);
       EmitInstr('MOV EDI,EAX');
-      EmitInstr('CALL ' + TP_RT_PFX + 'STRCPY');
+      EmitInstr('CALL ' + TP_RT_PFX + 'STRASSIGN');
     End;
   End;
 
@@ -13652,11 +13657,13 @@ End;
 { _TPRT_NUMTOSTR : convertir EAX en chaine NUMBUF             }
 { _TPRT_STRTONUM : convertir chaine ASCIIZ (ESI) en EAX       }
 { _TPRT_READLN   : lire une ligne de STDIN dans INBUF         }
-{ _TPRT_STRCPY   : copier chaine (ESI -> EDI)                 }
+{ _TPRT_STRASSIGN: copier String Pascal (ESI -> EDI)          }
+{ _TPRT_STRCPY   : StrCopy PChar ASCIIZ (Dest,Src) -> Dest    }
 { _TPRT_LENGTH   : longueur String Pascal S[0] -> EAX         }
 { _TPRT_STRLEN   : longueur ASCIIZ PChar (ESI) -> EAX         }
 { _TPRT_CONCAT   : concatener EDI apres ESI      (TODO 16)   }
-{ _TPRT_STRCMP    : comparer ESI et EDI -> EAX    (TODO 16)   }
+{ _TPRT_STRCOMPARE: comparer String Pascal ESI/EDI -> EAX     }
+{ _TPRT_STRCMP    : StrComp PChar ASCIIZ ESI/EDI -> EAX       }
 { _TPRT_COPY     : sous-chaine -> STRBUF1        (TODO 16)   }
 { _TPRT_POS      : position sous-chaine -> EAX   (TODO 16)   }
 { _TPRT_DELETE    : supprimer in-place            (TODO 16)   }
@@ -13796,8 +13803,26 @@ Begin
   EmitInstr('POPAD');
   EmitInstr('RET');
 
-  { ------ _TPRT_STRCPY : copier chaine ASCIIZ --------------- }
-  { Entree : ESI = source, EDI = destination                   }
+  { ------ _TPRT_STRASSIGN : copier String (ESI -> EDI) ------ }
+  { Entree : ESI = source ASCIIZ, EDI = destination             }
+  { Utilise pour l affectation String := expr                   }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'STRASSIGN');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH EDI');
+  EmitLabel(TP_RT_PFX + 'SASG_L');
+  EmitInstr('LODSB');
+  EmitInstr('STOSB');
+  EmitInstr('TEST AL,AL');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'SASG_L');
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
+  EmitInstr('RET');
+
+  { ------ _TPRT_STRCPY : StrCopy PChar ASCIIZ --------------- }
+  { Entree : ESI = source ASCIIZ, EDI = destination ASCIIZ     }
+  { Correspond a StrCopy(Dest, Source) de l unite Strings       }
+  { Retourne : EAX = EDI (pointeur destination)                }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'STRCPY');
   EmitInstr('PUSH ESI');
@@ -13807,7 +13832,7 @@ Begin
   EmitInstr('STOSB');
   EmitInstr('TEST AL,AL');
   EmitInstr('JNZ ' + TP_RT_PFX + 'SCPY_L');
-  EmitInstr('POP EDI');
+  EmitInstr('POP EAX');           { EAX = Dest original }
   EmitInstr('POP ESI');
   EmitInstr('RET');
 
@@ -13869,24 +13894,46 @@ Begin
   EmitInstr('POPAD');
   EmitInstr('RET');
 
-  { ------ _TPRT_STRCMP : comparer ESI et EDI ----------------- }
+  { ------ _TPRT_STRCOMPARE : comparer String Pascal ESI/EDI -- }
   { Entree : ESI = chaine 1, EDI = chaine 2 (ASCIIZ)          }
+  { Sortie : EAX = <0 si s1<s2, 0 si s1=s2, >0 si s1>s2      }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'STRCOMPARE');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH EDI');
+  EmitLabel(TP_RT_PFX + 'SCMP_L');
+  EmitInstr('MOVZX EAX,BYTE PTR [ESI]');
+  EmitInstr('MOVZX ECX,BYTE PTR [EDI]');
+  EmitInstr('SUB EAX,ECX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'SCMP_D');
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'SCMP_D');
+  EmitInstr('INC ESI');
+  EmitInstr('INC EDI');
+  EmitInstr('JMP ' + TP_RT_PFX + 'SCMP_L');
+  EmitLabel(TP_RT_PFX + 'SCMP_D');
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
+  EmitInstr('RET');
+
+  { ------ _TPRT_STRCMP : StrComp PChar ASCIIZ ESI/EDI -------- }
+  { Entree : ESI = PChar 1, EDI = PChar 2 (ASCIIZ)            }
   { Sortie : EAX = <0 si s1<s2, 0 si s1=s2, >0 si s1>s2      }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'STRCMP');
   EmitInstr('PUSH ESI');
   EmitInstr('PUSH EDI');
-  EmitLabel(TP_RT_PFX + 'CMP_L');
+  EmitLabel(TP_RT_PFX + 'PCMP_L');
   EmitInstr('MOVZX EAX,BYTE PTR [ESI]');
   EmitInstr('MOVZX ECX,BYTE PTR [EDI]');
   EmitInstr('SUB EAX,ECX');
-  EmitInstr('JNZ ' + TP_RT_PFX + 'CMP_D');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'PCMP_D');
   EmitInstr('TEST ECX,ECX');
-  EmitInstr('JZ ' + TP_RT_PFX + 'CMP_D');
+  EmitInstr('JZ ' + TP_RT_PFX + 'PCMP_D');
   EmitInstr('INC ESI');
   EmitInstr('INC EDI');
-  EmitInstr('JMP ' + TP_RT_PFX + 'CMP_L');
-  EmitLabel(TP_RT_PFX + 'CMP_D');
+  EmitInstr('JMP ' + TP_RT_PFX + 'PCMP_L');
+  EmitLabel(TP_RT_PFX + 'PCMP_D');
   EmitInstr('POP EDI');
   EmitInstr('POP ESI');
   EmitInstr('RET');
@@ -14001,7 +14048,7 @@ Begin
   EmitInstr('PUSH EDI');
   EmitInstr('MOV ESI,EDI');
   EmitInstr('LEA EDI,[STRBUF2]');
-  EmitInstr('CALL ' + TP_RT_PFX + 'STRCPY');
+  EmitInstr('CALL ' + TP_RT_PFX + 'STRASSIGN');
   EmitInstr('POP EDI');
   EmitInstr('POP ESI');
   { EDI = debut du buffer destination }
