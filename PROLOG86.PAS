@@ -138,7 +138,7 @@
               CALL _PLRT_DEREF (AX=addr) -> AX=terme dereferance
               CALL _PLRT_BIND  (AX=ref, BX=terme) -> empile sur trail
 
-  TODO 10 - COMPILATION DES FAITS
+  TODO 10 - COMPILATION DES FAITS [IMPLEMENTE]
             ParseFact : atome. ou foncteur(arg1, arg2, ...).
             Fait sans arguments : predicat/0
               Emission : label _PLP_nom_0, succes immediat (RET)
@@ -463,6 +463,8 @@ Const
   MAX_FUNCTOR   = {$IFDEF FPC}256{$ELSE}64{$ENDIF};
   MAX_OP        = {$IFDEF FPC}128{$ELSE}64{$ENDIF};
   MAX_DYN       = {$IFDEF FPC}256{$ELSE}32{$ENDIF};
+  MAX_FACT_ARGS = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
+  MAX_ARGS_REG  = 16;  { nombre max de registres A1..AN (WAM) }
   HEAP_SIZE     = 2048;
   STACK_SIZE    = 1024;
   TRAIL_SIZE    = 512;
@@ -618,6 +620,40 @@ Type
     SymIdx  : Integer;   { index dans SymTab (-1 si pas lie)     }
   End;
 
+  { ---- Argument de fait (TODO 10) ------------------------------ }
+  { Chaque argument d un fait est soit un atome, un entier, une    }
+  { variable ou une variable anonyme _.                            }
+  TFactArgKind = (
+    FAK_ATOM,      { atome : val = index AtomTab                   }
+    FAK_INT,       { entier : val = valeur entiere                 }
+    FAK_VAR,       { variable nommee : name = nom variable         }
+    FAK_ANON,      { variable anonyme _ : pas de liaison           }
+    FAK_STR,       { structure foncteur(args) : val = index functor}
+    FAK_LIST       { liste [H|T] : stub pour TODO 13               }
+  );
+
+  TFactArg = Record
+    Kind    : TFactArgKind;
+    AtomIdx : Integer;   { FAK_ATOM : index atome                  }
+    IntVal  : LongInt;   { FAK_INT : valeur entiere                }
+    VarName : TString;   { FAK_VAR : nom de la variable            }
+  End;
+
+  { ---- Clause Prolog (TODO 10) --------------------------------- }
+  { Un fait est une clause sans corps : tete.                       }
+  { Une regle a un corps : tete :- but1, but2, ...  (TODO 11)     }
+  TClauseRec = Record
+    PredName   : TString;   { nom du predicat                      }
+    Arity      : Integer;   { arite du predicat                    }
+    ClauseIdx  : Integer;   { K dans _PLP_nom_N_clauseK            }
+    SymIdx     : Integer;   { index dans SymTab pour le predicat   }
+    ClsLabel   : TString;   { label ASM de cette clause            }
+    IsRule     : Boolean;   { True = regle, False = fait           }
+    ArgCount   : Integer;   { nombre d arguments parses            }
+    Args       : Array[0..MAX_FACT_ARGS - 1] Of TFactArg;
+    FailLabel  : TString;   { label de saut en cas d echec         }
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -660,6 +696,10 @@ Var
   FunctorTab : Array[0..MAX_FUNCTOR - 1] Of TFunctorEntry;
   FunctorCount : Integer;
   TotalSyms  : Integer;  { compteur cumulatif de symboles ajoutes }
+
+  { Table des clauses (TODO 10) }
+  ClauseTab   : Array[0..MAX_CLAUSE - 1] Of TClauseRec;
+  ClauseCount : Integer;
 
   { Representation des termes WAM (TODO 06) }
   Heap       : Array[0..HEAP_SIZE - 1] Of Integer;  { tas WAM             }
@@ -785,6 +825,13 @@ Procedure EmitEpilog; Forward;
 Procedure EmitHeader; Forward;
 Procedure EmitDataSeg; Forward;
 Procedure EmitRuntime; Forward;
+{ Compilation des faits (TODO 10) }
+Procedure ParseFactArg(Var Arg : TFactArg); Forward;
+Function  ParseFact : Boolean; Forward;
+Procedure EmitFactCode(CIdx : Integer); Forward;
+Procedure EmitPredEntry(Const PName : TString; PArity : Integer); Forward;
+Procedure EmitAllPredicates; Forward;
+Procedure ParseProgram; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1069,6 +1116,8 @@ Begin
   TermInit;
   { TODO 08 }
   DataInit;
+  { TODO 10 }
+  ClauseCount := 0;
 End;
 
 { ---- Statistiques ------------------------------------------ }
@@ -1083,6 +1132,7 @@ Begin
   WriteLn('Foncteurs      : ', FunctorCount);
   WriteLn('Donnees DATA   : ', DataCount, '/', MAX_DATA, ' entrees');
   WriteLn('Symboles       : ', SymCount, ' (total cumul: ', TotalSyms, ')');
+  WriteLn('Clauses        : ', ClauseCount, '/', MAX_CLAUSE);
   WriteLn('Heap WAM       : ', HTop, '/', HEAP_SIZE, ' cellules');
   WriteLn('Stack WAM      : ', STop, '/', STACK_SIZE, ' cellules');
   WriteLn('Trail WAM      : ', TTop, '/', TRAIL_SIZE, ' cellules');
@@ -3839,6 +3889,11 @@ Begin
   EmitRaw('_PL_STOP    DW  0');
   EmitRaw('_PL_TRAIL   DW  ' + IntToStr(TRAIL_SIZE) + ' DUP(0)');
   EmitRaw('_PL_TTOP    DW  0');
+  EmitBlankLine;
+
+  { Registres d arguments WAM A1..AN (TODO 10) }
+  EmitComment('--- Registres d arguments WAM ---');
+  EmitRaw('_PL_ARGS    DW  ' + IntToStr(MAX_ARGS_REG) + ' DUP(0)');
 
   EmitBlankLine;
   EmitRaw('_DATA   ENDS');
@@ -3955,31 +4010,581 @@ Begin
 End;
 
 { ============================================================
-  STUBS POUR LES TODOS RESTANTS (10..25)
+  TODO 10 - COMPILATION DES FAITS [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseFactArg : parser un argument d un fait --------------- }
+{ Chaque argument peut etre :                                      }
+{   - un atome (minuscule ou quote)                                }
+{   - un entier                                                    }
+{   - une variable (majuscule)                                     }
+{   - une variable anonyme _                                       }
+{   - une chaine (traitee comme atome)                             }
+{ Le resultat est stocke dans Arg.                                 }
+Procedure ParseFactArg(Var Arg : TFactArg);
+Begin
+  Arg.Kind    := FAK_ANON;
+  Arg.AtomIdx := -1;
+  Arg.IntVal  := 0;
+  Arg.VarName := '';
+
+  Case CurToken.Kind Of
+    TK_ATOM :
+    Begin
+      Arg.Kind    := FAK_ATOM;
+      Arg.AtomIdx := AtomIntern(CurToken.Val);
+      ParserAdvance;
+    End;
+
+    TK_INTEGER :
+    Begin
+      Arg.Kind   := FAK_INT;
+      Arg.IntVal := CurToken.IntVal;
+      ParserAdvance;
+    End;
+
+    TK_VARIABLE :
+    Begin
+      Arg.Kind    := FAK_VAR;
+      Arg.VarName := CurToken.Val;
+      ParserAdvance;
+    End;
+
+    TK_UNDERSCORE :
+    Begin
+      Arg.Kind := FAK_ANON;
+      ParserAdvance;
+    End;
+
+    TK_STRING :
+    Begin
+      Arg.Kind    := FAK_ATOM;
+      Arg.AtomIdx := AtomIntern(CurToken.Val);
+      ParserAdvance;
+    End;
+
+    TK_OP :
+    Begin
+      { Operateur unaire - pour entier negatif }
+      If CurToken.Val = '-' Then
+      Begin
+        ParserAdvance;
+        If CurToken.Kind = TK_INTEGER Then
+        Begin
+          Arg.Kind   := FAK_INT;
+          Arg.IntVal := -CurToken.IntVal;
+          ParserAdvance;
+        End
+        Else
+          CompileError('entier attendu apres -');
+      End
+      Else
+      Begin
+        { Atome operateur (ex: +, *) }
+        Arg.Kind    := FAK_ATOM;
+        Arg.AtomIdx := AtomIntern(CurToken.Val);
+        ParserAdvance;
+      End;
+    End;
+  Else
+    CompileError('argument de fait inattendu: ' + CurToken.Val);
+    ParserAdvance;
+  End;
+End;
+
+{ ---- ParseFact : parser un fait Prolog ------------------------- }
+{ Un fait est soit :                                                }
+{   atome.               -> predicat/0                             }
+{   foncteur(a1,...,aN). -> predicat/N                             }
+{ Retourne True si un fait a ete parse, False sinon.               }
+Function ParseFact : Boolean;
+Var
+  PName    : TString;
+  PArity   : Integer;
+  SIdx     : Integer;
+  CIdx     : Integer;
+  ClsIdx   : Integer;
+Begin
+  ParseFact := False;
+
+  { Doit commencer par un atome (nom du predicat) }
+  If CurToken.Kind <> TK_ATOM Then
+  Begin
+    { Directive :- ou requete ?- : pas un fait, ignorer pour l instant }
+    If (CurToken.Kind = TK_OP) And
+       ((CurToken.Val = ':-') Or (CurToken.Val = '?-')) Then
+    Begin
+      { Sauter la directive jusqu au . }
+      While (CurToken.Kind <> TK_EOF) And (CurToken.Kind <> TK_DOT) Do
+        ParserAdvance;
+      If CurToken.Kind = TK_DOT Then
+        ParserAdvance;
+      ParseFact := True;
+      Exit;
+    End;
+    Exit;
+  End;
+
+  PName  := CurToken.Val;
+  PArity := 0;
+  ParserAdvance;
+
+  { Verifier la table des clauses }
+  If ClauseCount >= MAX_CLAUSE Then
+  Begin
+    CompileError('table des clauses pleine (max=' + IntToStr(MAX_CLAUSE) + ')');
+    Exit;
+  End;
+
+  CIdx := ClauseCount;
+
+  { Fait avec arguments : foncteur(arg1, arg2, ...) }
+  If CurToken.Kind = TK_LPAREN Then
+  Begin
+    ParserAdvance; { consomme '(' }
+    PArity := 0;
+    While (CurToken.Kind <> TK_EOF) And
+          (CurToken.Kind <> TK_RPAREN) Do
+    Begin
+      If PArity >= MAX_FACT_ARGS Then
+      Begin
+        CompileError('trop d arguments dans le fait (max=' +
+                     IntToStr(MAX_FACT_ARGS) + ')');
+        Break;
+      End;
+      ParseFactArg(ClauseTab[CIdx].Args[PArity]);
+      Inc(PArity);
+      { Virgule entre les arguments }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance
+      Else If CurToken.Kind <> TK_RPAREN Then
+      Begin
+        CompileError(') ou , attendu dans les arguments du fait');
+        Break;
+      End;
+    End;
+    If CurToken.Kind = TK_RPAREN Then
+      ParserAdvance;
+  End;
+
+  { Verifier si c est une regle (tete :- corps) }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = ':-') Then
+  Begin
+    { C est une regle, pas un fait - stub pour TODO 11 }
+    { Sauter le corps jusqu au . }
+    While (CurToken.Kind <> TK_EOF) And (CurToken.Kind <> TK_DOT) Do
+      ParserAdvance;
+    If CurToken.Kind = TK_DOT Then
+      ParserAdvance;
+    ParseFact := True;
+    Exit;
+  End;
+
+  { Terminator : doit etre un point . }
+  If CurToken.Kind = TK_DOT Then
+    ParserAdvance
+  Else
+    CompileError('. attendu a la fin du fait');
+
+  { Chercher ou creer le predicat dans la table des symboles }
+  SIdx := SymFindPredicate(PName, PArity);
+  If SIdx < 0 Then
+  Begin
+    SIdx := SymAdd(PName, SK_PREDICATE, PArity);
+    If SIdx >= 0 Then
+      SymTab[SIdx].ClauseHead := CIdx;
+  End;
+
+  { Determiner le numero de clause K pour ce predicat }
+  ClsIdx := 0;
+  If SIdx >= 0 Then
+  Begin
+    ClsIdx := SymTab[SIdx].ClauseCount;
+    Inc(SymTab[SIdx].ClauseCount);
+  End;
+
+  { Remplir l entree de clause }
+  ClauseTab[CIdx].PredName  := PName;
+  ClauseTab[CIdx].Arity     := PArity;
+  ClauseTab[CIdx].ClauseIdx := ClsIdx;
+  ClauseTab[CIdx].SymIdx    := SIdx;
+  ClauseTab[CIdx].IsRule     := False;
+  ClauseTab[CIdx].ArgCount  := PArity;
+  ClauseTab[CIdx].FailLabel := '';
+
+  { Generer le label ASM : _PLP_nom_N_clauseK }
+  If PArity = 0 Then
+    ClauseTab[CIdx].ClsLabel := PL_PRED_PFX + SymNameClean(PName) + '_0'
+  Else
+    ClauseTab[CIdx].ClsLabel := PL_PRED_PFX + SymNameClean(PName) + '_' +
+                             IntToStr(PArity) + '_' + IntToStr(ClsIdx);
+
+  { Label d echec pour cette clause }
+  ClauseTab[CIdx].FailLabel := ClauseTab[CIdx].ClsLabel + '_F';
+
+  Inc(ClauseCount);
+
+  If Opts.DebugMode Then
+    WriteLn('  FACT[', CIdx, ']: ', PName, '/', PArity,
+            ' clause=', ClsIdx, ' -> ', ClauseTab[CIdx].ClsLabel);
+
+  ParseFact := True;
+End;
+
+{ ---- EmitFactCode : emettre le code ASM pour un fait ------------ }
+{ CIdx = index dans ClauseTab.                                      }
+{                                                                    }
+{ Pour un fait sans arguments (arite 0) :                           }
+{   label:                                                          }
+{     CLC           ; succes immediat                               }
+{     RET                                                           }
+{                                                                    }
+{ Pour un fait avec arguments (arite N) :                           }
+{   label:                                                          }
+{     PUSH BP                                                       }
+{     MOV  BP, SP                                                   }
+{     ; Pour chaque argument i (0..N-1) :                           }
+{     MOV  AX, WORD PTR [_PL_ARGS + i*2]  ; registre Ai            }
+{     MOV  BX, <valeur-argument-taguee>                             }
+{     CALL _PLRT_UNIFY                                              }
+{     JC   label_fail                                               }
+{     ; Succes : tous les arguments unifies                         }
+{     CLC                                                           }
+{     MOV  SP, BP                                                   }
+{     POP  BP                                                       }
+{     RET                                                           }
+{   label_fail:                                                     }
+{     STC           ; echec                                         }
+{     MOV  SP, BP                                                   }
+{     POP  BP                                                       }
+{     RET                                                           }
+Procedure EmitFactCode(CIdx : Integer);
+Var
+  I       : Integer;
+  TagVal  : Integer;
+  NS      : TString;
+Begin
+  EmitBlankLine;
+  EmitComment('--- Fait ' + ClauseTab[CIdx].PredName + '/' +
+              IntToStr(ClauseTab[CIdx].Arity) +
+              ' clause ' + IntToStr(ClauseTab[CIdx].ClauseIdx) + ' ---');
+
+  EmitLabel(ClauseTab[CIdx].ClsLabel);
+
+  { Fait sans arguments : succes immediat }
+  If ClauseTab[CIdx].Arity = 0 Then
+  Begin
+    EmitInstr('CLC');
+    EmitInstr('RET');
+    Exit;
+  End;
+
+  { Fait avec arguments }
+  EmitProlog;
+
+  For I := 0 To ClauseTab[CIdx].ArgCount - 1 Do
+  Begin
+    EmitComment('arg ' + IntToStr(I + 1) + '/' +
+                IntToStr(ClauseTab[CIdx].ArgCount));
+
+    { Charger le registre Ai dans AX }
+    EmitInstrAB('MOV', 'AX', 'WORD PTR [_PL_ARGS + ' +
+                IntToStr(I * 2) + ']');
+
+    { Construire la valeur taguee de l argument du fait }
+    Case ClauseTab[CIdx].Args[I].Kind Of
+      FAK_ATOM :
+      Begin
+        { Tag ATOM (1) << 13 | AtomIdx }
+        TagVal := (TAG_ATOM Shl TAG_SHIFT) Or
+                  (ClauseTab[CIdx].Args[I].AtomIdx And VAL_MASK);
+        Str(TagVal, NS);
+        EmitInstrAB('MOV', 'BX', NS);
+        EmitComment('atom ' + AtomName(ClauseTab[CIdx].Args[I].AtomIdx));
+      End;
+
+      FAK_INT :
+      Begin
+        { Tag INT (2) << 13 | (Val AND $1FFF) }
+        TagVal := (TAG_INT Shl TAG_SHIFT) Or
+                  (Integer(ClauseTab[CIdx].Args[I].IntVal) And VAL_MASK);
+        Str(TagVal, NS);
+        EmitInstrAB('MOV', 'BX', NS);
+        EmitComment('int ' + IntToStr(ClauseTab[CIdx].Args[I].IntVal));
+      End;
+
+      FAK_VAR :
+      Begin
+        { Variable : creer une REF libre sur le heap }
+        EmitComment('var ' + ClauseTab[CIdx].Args[I].VarName);
+        EmitInstrAB('MOV', 'BX', 'WORD PTR [_PL_HTOP]');
+        EmitInstrAB('MOV', 'SI', 'BX');
+        { Tag REF (0) << 13 | adresse = self-reference }
+        EmitInstrAB('SHL', 'SI', '1');
+        EmitInstrAB('ADD', 'SI', 'OFFSET _PL_HEAP');
+        EmitInstrAB('MOV', 'WORD PTR [SI]', 'BX');
+        EmitInstr('INC    WORD PTR [_PL_HTOP]');
+        { BX = MakeRef(addr) = (TAG_REF << 13) | addr = addr (TAG_REF=0) }
+      End;
+
+      FAK_ANON :
+      Begin
+        { Variable anonyme : toujours unifiable, creer REF libre }
+        EmitComment('anon _');
+        EmitInstrAB('MOV', 'BX', 'WORD PTR [_PL_HTOP]');
+        EmitInstrAB('MOV', 'SI', 'BX');
+        EmitInstrAB('SHL', 'SI', '1');
+        EmitInstrAB('ADD', 'SI', 'OFFSET _PL_HEAP');
+        EmitInstrAB('MOV', 'WORD PTR [SI]', 'BX');
+        EmitInstr('INC    WORD PTR [_PL_HTOP]');
+      End;
+    Else
+      EmitComment('arg non gere');
+      EmitInstrAB('MOV', 'BX', '0');
+    End;
+
+    { Appeler l unification }
+    EmitUnify;
+    EmitInstrA('JC', ClauseTab[CIdx].FailLabel);
+  End;
+
+  { Succes }
+  EmitInstr('CLC');
+  EmitEpilog;
+  EmitBlankLine;
+
+  { Label d echec }
+  EmitLabel(ClauseTab[CIdx].FailLabel);
+  EmitInstr('STC');
+  EmitEpilog;
+End;
+
+{ ---- EmitPredEntry : emettre le point d entree d un predicat ----- }
+{ Genere le label principal _PLP_nom_N et une table de saut          }
+{ (indexation premier argument) vers les clauses individuelles.      }
+{                                                                    }
+{ Si le predicat n a qu une seule clause, le label principal est     }
+{ un simple JMP vers la clause unique.                               }
+{                                                                    }
+{ Si le predicat a plusieurs clauses, on emet :                      }
+{   _PLP_nom_N:                                                      }
+{     ; Indexation premier argument                                  }
+{     MOV AX, WORD PTR [_PL_ARGS]     ; A1                          }
+{     CALL _PLRT_DEREF                                               }
+{     JMP _PLP_nom_N_clause0           ; essayer clause 0            }
+{   _PLP_nom_N_next0:                                                }
+{     JMP _PLP_nom_N_clause1           ; essayer clause 1            }
+{   ...                                                              }
+{   _PLP_nom_N_fail:                                                 }
+{     STC                              ; echec global                }
+{     RET                                                            }
+Procedure EmitPredEntry(Const PName : TString; PArity : Integer);
+Var
+  EntryLabel : TString;
+  Clean      : TString;
+  I          : Integer;
+  ClsCount   : Integer;
+  Indices    : Array[0..MAX_CLAUSE - 1] Of Integer;
+Begin
+  Clean      := SymNameClean(PName);
+  EntryLabel := PL_PRED_PFX + Clean + '_' + IntToStr(PArity);
+
+  { Collecter les indices de clauses pour ce predicat }
+  ClsCount := 0;
+  For I := 0 To ClauseCount - 1 Do
+  Begin
+    If (ClauseTab[I].PredName = PName) And
+       (ClauseTab[I].Arity = PArity) And
+       (Not ClauseTab[I].IsRule) Then
+    Begin
+      Indices[ClsCount] := I;
+      Inc(ClsCount);
+    End;
+  End;
+
+  If ClsCount = 0 Then Exit;
+
+  EmitBlankLine;
+  EmitComment('=== Predicat ' + PName + '/' + IntToStr(PArity) +
+              ' (' + IntToStr(ClsCount) + ' clause(s)) ===');
+
+  { Pour les predicats d arite 0, le label est _PLP_nom_0 }
+  If PArity = 0 Then
+  Begin
+    { Si une seule clause, le label de la clause EST le point d entree }
+    If ClsCount = 1 Then
+    Begin
+      { Le label _PLP_nom_0 pointe directement sur la clause }
+      { Rien a emettre : la clause a deja le bon label }
+    End
+    Else
+    Begin
+      { Plusieurs clauses pour un predicat/0 : essayer chacune }
+      EmitLabel(EntryLabel);
+      For I := 0 To ClsCount - 1 Do
+      Begin
+        EmitInstrA('CALL', ClauseTab[Indices[I]].ClsLabel);
+        EmitInstrA('JNC', EntryLabel + '_ok');
+      End;
+      { Toutes les clauses ont echoue }
+      EmitInstr('STC');
+      EmitInstr('RET');
+      EmitLabel(EntryLabel + '_ok');
+      EmitInstr('CLC');
+      EmitInstr('RET');
+    End;
+    Exit;
+  End;
+
+  { Predicat avec arguments }
+  EmitLabel(EntryLabel);
+
+  If ClsCount = 1 Then
+  Begin
+    { Une seule clause : saut direct }
+    EmitInstrA('JMP', ClauseTab[Indices[0]].ClsLabel);
+  End
+  Else
+  Begin
+    { Plusieurs clauses : indexation premier argument }
+    EmitComment('Indexation premier argument');
+    EmitInstrAB('MOV', 'AX', 'WORD PTR [_PL_ARGS]');
+    EmitDeref;
+    EmitBlankLine;
+
+    { Essayer chaque clause sequentiellement }
+    For I := 0 To ClsCount - 1 Do
+    Begin
+      EmitComment('try clause ' + IntToStr(I));
+      { Sauvegarder l etat avant l essai }
+      EmitInstrA('PUSH', 'AX');
+      EmitInstrAB('MOV', 'CX', 'WORD PTR [_PL_HTOP]');
+      EmitInstrA('PUSH', 'CX');
+      EmitInstrAB('MOV', 'CX', 'WORD PTR [_PL_TTOP]');
+      EmitInstrA('PUSH', 'CX');
+
+      EmitInstrA('CALL', ClauseTab[Indices[I]].ClsLabel);
+      EmitInstrA('JNC', EntryLabel + '_ok');
+
+      { Echec : restaurer l etat }
+      EmitInstrA('POP', 'CX');
+      EmitInstrAB('MOV', 'WORD PTR [_PL_TTOP]', 'CX');
+      EmitInstrA('POP', 'CX');
+      EmitInstrAB('MOV', 'WORD PTR [_PL_HTOP]', 'CX');
+      EmitInstrA('POP', 'AX');
+
+      { Continuer avec la clause suivante }
+    End;
+
+    { Toutes les clauses ont echoue }
+    EmitInstr('STC');
+    EmitInstr('RET');
+
+    { Label de succes }
+    EmitLabel(EntryLabel + '_ok');
+    { Nettoyer la pile (3 mots sauvegardes non depiles) }
+    EmitInstrAB('ADD', 'SP', '6');
+    EmitInstr('CLC');
+    EmitInstr('RET');
+  End;
+End;
+
+{ ---- EmitAllPredicates : emettre le code de tous les predicats --- }
+{ Emet d abord le code de chaque clause individuelle, puis les       }
+{ points d entree des predicats (avec indexation).                   }
+Procedure EmitAllPredicates;
+Var
+  I      : Integer;
+  Done   : Array[0..MAX_SYM - 1] Of Boolean;
+Begin
+  If ClauseCount = 0 Then Exit;
+
+  EmitBlankLine;
+  EmitComment('=======================================');
+  EmitComment('  Clauses compilees (TODO 10)');
+  EmitComment('=======================================');
+
+  { Emettre le code de chaque clause individuelle }
+  For I := 0 To ClauseCount - 1 Do
+  Begin
+    If Not ClauseTab[I].IsRule Then
+      EmitFactCode(I);
+  End;
+
+  EmitBlankLine;
+  EmitComment('=======================================');
+  EmitComment('  Points d entree des predicats');
+  EmitComment('=======================================');
+
+  { Emettre les points d entree (un par predicat unique) }
+  FillChar(Done, SizeOf(Done), 0);
+  For I := 0 To ClauseCount - 1 Do
+  Begin
+    If ClauseTab[I].IsRule Then Continue;
+    If ClauseTab[I].SymIdx < 0 Then Continue;
+
+    { Verifier si on a deja emis ce predicat }
+    If Done[ClauseTab[I].SymIdx] Then Continue;
+    Done[ClauseTab[I].SymIdx] := True;
+
+    { Emettre le point d entree }
+    EmitPredEntry(ClauseTab[I].PredName, ClauseTab[I].Arity);
+  End;
+End;
+
+{ ---- ParseProgram : boucle principale de parsing ---------------- }
+{ Parse les clauses Prolog (faits et directives) jusqu a EOF.       }
+{ Les faits sont ajoutes dans ClauseTab. Les regles (TODO 11) et    }
+{ les directives sont sautees pour l instant.                       }
+Procedure ParseProgram;
+Var
+  Parsed : Boolean;
+Begin
+  While CurToken.Kind <> TK_EOF Do
+  Begin
+    Parsed := ParseFact;
+    If Not Parsed Then
+    Begin
+      { Token inattendu au niveau clause : avancer }
+      If CurToken.Kind <> TK_EOF Then
+      Begin
+        WarnMsg('token inattendu au niveau clause: ' + CurToken.Val);
+        ParserAdvance;
+      End;
+    End;
+  End;
+End;
+
+{ ============================================================
+  STUBS POUR LES TODOS RESTANTS (11..25)
   ============================================================ }
 
 Procedure Run;
-Var
-  TokCount : LongInt;
 Begin
   GlobalInit;
   If Opts.Verbose Then
     ShowBanner;
   LexInit;
-  TokCount := 0;
   LexNextToken;
-  While CurToken.Kind <> TK_EOF Do
-  Begin
-    PrintToken(CurToken);
-    Inc(TokCount);
-    LexNextToken;
-  End;
-  PrintToken(CurToken); { afficher le EOF }
+
+  { Phase 1 : parser toutes les clauses }
+  ParseProgram;
   LexClose;
+
+  { Phase 2 : emettre le code ASM }
+  EmitOpen;
+  EmitHeader;
+
+  { Emettre le code des predicats }
+  EmitAllPredicates;
+
+  { Fermer (runtime + data + END) }
+  EmitClose;
+
   If Opts.Verbose Then
   Begin
     WriteLn('PROLOG86: ', TotalLines, ' ligne(s) lues, ',
-            TokCount, ' token(s)');
+            ClauseCount, ' clause(s)');
     ShowStats;
   End;
 End;
