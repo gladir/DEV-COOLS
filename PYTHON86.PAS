@@ -47,7 +47,7 @@
             ParserAdvance : lire token suivant avec PrintToken si -d
             Run : LexInit + boucle de tokens + LexClose
 
-  TODO 03 - LITTERAUX ET CONSTANTES
+  TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
             Entiers decimaux : 0..65535 (positifs) ou -32768..32767 (signes)
             Entiers hexadecimaux : 0xFF, octaux : 0o77, binaires : 0b1010
             Flottants : reconnus par le lexeur, traites comme entiers (trunc)
@@ -59,6 +59,19 @@
             False : constante booleenne -> AX=0
             Concatenation de chaines : + entre deux str -> appel _PYRT_CONCAT
             Repetition de chaines : * entre str et int -> appel _PYRT_STRMUL
+            TExprKind : EK_NONE, EK_IMM, EK_AX, EK_MEM
+            TExprVal : Kind, ImmVal, TypeIdx, Offset, SymIdx
+            TDataKind : DK_WORD, DK_BYTE, DK_STR, DK_ARRAY_BLK
+            TDataRec : LblName, Kind, IntVal, StrVal, ElemCount
+            DataAdd, DataAddStr, DataAddWord : gestion du segment DATA
+            ExprMakeImm, ExprMakeNone, ExprMakeBool, ExprMakeAX
+            LitEvalInt, LitEvalFloat, LitEvalStr, LitEval
+            LabelGen : generateur de labels uniques _PYL_N
+            EmitOpen, EmitHeader, EmitClose, EmitDataSeg, EmitRaw (stubs)
+            Indices de types primitifs :
+              TY_IDX_INT=0, TY_IDX_STR=1, TY_IDX_BOOL=2,
+              TY_IDX_NONE=3, TY_IDX_LIST=4, TY_IDX_DICT=5,
+              TY_IDX_FUNC=6, TY_IDX_CLASS=7
 
   TODO 04 - OPERATEURS ET PRECEDENCE
             Arithmetiques  : + - * // % ** (// = division entiere, ** = puissance)
@@ -430,6 +443,18 @@ Const
   EXIT_ERROR = 1;
   EXIT_USAGE = 2;
 
+  { Indices de types primitifs Python (TODO 03) }
+  TY_IDX_INT   = 0;   { entier 16 bits signe       }
+  TY_IDX_STR   = 1;   { pointeur chaine DATA       }
+  TY_IDX_BOOL  = 2;   { 0 ou 1 dans AX             }
+  TY_IDX_NONE  = 3;   { None : AX=0                }
+  TY_IDX_LIST  = 4;   { pointeur bloc DATA          }
+  TY_IDX_DICT  = 5;   { pointeur bloc DATA          }
+  TY_IDX_FUNC  = 6;   { pointeur de code            }
+  TY_IDX_CLASS = 7;   { pointeur vtable             }
+  TY_PRIM_COUNT = 8;
+  TY_UNKNOWN   = -1;
+
 { ============================================================
   TYPES
   ============================================================ }
@@ -469,6 +494,33 @@ Type
     Col      : Integer;     { colonne source (1-base)         }
   End;
 
+  { ---- Valeurs d expression (TODO 03) ---------------------- }
+  TExprKind = (
+    EK_NONE,   { void / pas de valeur                      }
+    EK_IMM,    { valeur immediate dans ImmVal               }
+    EK_AX,     { valeur dans le registre AX                 }
+    EK_MEM     { adresse memoire [BP+Offset] ou [_PYV_x]   }
+  );
+
+  TExprVal = Record
+    Kind    : TExprKind;
+    ImmVal  : LongInt;
+    TypeIdx : Integer;   { indice type primitif            }
+    Offset  : Integer;   { offset donnee/pile              }
+    SymIdx  : Integer;   { indice SymTab (-1 = pas lvalue) }
+  End;
+
+  { ---- Segment de donnees (TODO 03) ------------------------ }
+  TDataKind = (DK_WORD, DK_BYTE, DK_STR, DK_ARRAY_BLK);
+
+  TDataRec = Record
+    LblName   : TString;
+    Kind      : TDataKind;
+    IntVal    : LongInt;
+    StrVal    : TString;
+    ElemCount : Integer;
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -498,6 +550,16 @@ Var
   AtLineStart : Boolean;   { True = debut de ligne logique (indent)   }
   ParenDepth  : Integer;   { >0 = dans paren/crochet -> pas NEWLINE }
 
+  { Segment de donnees (TODO 03) }
+  DataTab     : Array[0..MAX_DATA - 1] Of TDataRec;
+  DataCount   : Integer;
+  LabelGenSeq : Integer;   { compteur pour labels uniques _PYL_N }
+  GExprDummy  : TExprVal;  { valeur fictive pour ignorer un retour }
+
+  { Fichier de sortie (TODO 03) }
+  OutF        : Text;
+  OutFOpen    : Boolean;
+
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
@@ -516,6 +578,27 @@ Function  LexScanEscChar : Char; Forward;
 Procedure LexScanString(Quote : Char; Triple : Boolean); Forward;
 Procedure LexNextToken;        Forward;
 Procedure ParserAdvance;       Forward;
+{ TODO 03 - Forward declarations litteraux et constantes }
+Function  LabelGen : TString;  Forward;
+Procedure EmitRaw(Const S : String); Forward;
+Function  DataAdd(Const Lbl : TString; Kind : TDataKind;
+                  AIntVal : LongInt; Const AStrVal : TString) : Integer; Forward;
+Function  DataAddStr(Const S : TString) : TString; Forward;
+Function  DataAddWord(Const Lbl : TString;
+                      AIntVal : LongInt) : Integer; Forward;
+Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
+                      Var Res : TExprVal); Forward;
+Procedure ExprMakeNone(Var Res : TExprVal); Forward;
+Procedure ExprMakeBool(AVal : Integer; Var Res : TExprVal); Forward;
+Procedure ExprMakeAX(ATypeIdx : Integer; Var Res : TExprVal); Forward;
+Procedure LitEvalInt(Const T : TToken; Var Res : TExprVal); Forward;
+Procedure LitEvalFloat(Const T : TToken; Var Res : TExprVal); Forward;
+Procedure LitEvalStr(Const T : TToken; Var Res : TExprVal); Forward;
+Procedure LitEval(Const T : TToken; Var Res : TExprVal); Forward;
+Procedure EmitOpen;            Forward;
+Procedure EmitHeader;          Forward;
+Procedure EmitDataSeg;         Forward;
+Procedure EmitClose;           Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -712,6 +795,11 @@ End;
 Procedure Cleanup;
 Begin
   If LexOpened Then LexClose;
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
 End;
 
 { ---- Initialisation generale des variables globales -------- }
@@ -738,6 +826,15 @@ Begin
   CurToken.FloatVal := 0.0;
   CurToken.Line    := 0;
   CurToken.Col     := 0;
+  { TODO 03 : segment de donnees et sortie }
+  DataCount   := 0;
+  LabelGenSeq := 0;
+  OutFOpen    := False;
+  GExprDummy.Kind    := EK_NONE;
+  GExprDummy.ImmVal  := 0;
+  GExprDummy.TypeIdx := TY_UNKNOWN;
+  GExprDummy.Offset  := 0;
+  GExprDummy.SymIdx  := -1;
 End;
 
 { ============================================================
@@ -1740,23 +1837,276 @@ Begin
     PrintToken(CurToken);
 End;
 
-{ ---- Pipeline de compilation (stub) ----------------------- }
+{ ============================================================
+  TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- LabelGen : generateur de labels uniques _PYL_N -------- }
+Function LabelGen : TString;
+Begin
+  Inc(LabelGenSeq);
+  LabelGen := PY_LBL_PFX + IntToStr_(LabelGenSeq);
+End;
+
+{ ---- EmitRaw : ecrire une ligne brute dans le fichier ASM --- }
+Procedure EmitRaw(Const S : String);
+Begin
+  If OutFOpen Then
+    WriteLn(OutF, S);
+End;
+
+{ ---- DataAdd : ajouter une entree dans DataTab -------------- }
+Function DataAdd(Const Lbl : TString; Kind : TDataKind;
+                 AIntVal : LongInt; Const AStrVal : TString) : Integer;
+Begin
+  If DataCount >= MAX_DATA Then
+    FatalError('DataTab pleine (MAX_DATA atteint)');
+  DataTab[DataCount].LblName   := Lbl;
+  DataTab[DataCount].Kind      := Kind;
+  DataTab[DataCount].IntVal    := AIntVal;
+  DataTab[DataCount].StrVal    := AStrVal;
+  DataTab[DataCount].ElemCount := 0;
+  DataAdd := DataCount;
+  Inc(DataCount);
+End;
+
+{ DataAddStr : creer un label _PYK_N et stocker la chaine litterale }
+Function DataAddStr(Const S : TString) : TString;
+Var
+  Lbl : TString;
+Begin
+  Inc(LabelGenSeq);
+  Lbl := PY_STR_PFX + IntToStr_(LabelGenSeq);
+  DataAdd(Lbl, DK_STR, 0, S);
+  DataAddStr := Lbl;
+End;
+
+{ DataAddWord : ajouter un mot 16 bits dans le segment DATA }
+Function DataAddWord(Const Lbl : TString; AIntVal : LongInt) : Integer;
+Begin
+  DataAddWord := DataAdd(Lbl, DK_WORD, AIntVal, '');
+End;
+
+{ ---- Constructeurs TExprVal --------------------------------- }
+
+{ ExprMakeImm : valeur immediate constante }
+Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
+                      Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_IMM;
+  Res.ImmVal  := AVal;
+  Res.TypeIdx := ATypeIdx;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+{ ExprMakeNone : valeur invalide (void / erreur) }
+Procedure ExprMakeNone(Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_NONE;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_UNKNOWN;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+{ ExprMakeBool : valeur booleenne (0 ou 1) }
+Procedure ExprMakeBool(AVal : Integer; Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_IMM;
+  If AVal <> 0 Then Res.ImmVal := 1 Else Res.ImmVal := 0;
+  Res.TypeIdx := TY_IDX_BOOL;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+{ ExprMakeAX : valeur dans le registre AX }
+Procedure ExprMakeAX(ATypeIdx : Integer; Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_AX;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := ATypeIdx;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+{ ---- Evaluateurs de litteraux ------------------------------- }
+
+{ LitEvalInt : convertir un token TK_INTEGER en valeur         }
+{ (IntVal est deja calcule par LexScanNumber)                   }
+Procedure LitEvalInt(Const T : TToken; Var Res : TExprVal);
+Begin
+  ExprMakeImm(T.IntVal, TY_IDX_INT, Res);
+End;
+
+{ LitEvalFloat : convertir un token TK_FLOAT en entier (trunc) }
+{ Python n a pas de float natif 8086 : on tronque avec warning  }
+Procedure LitEvalFloat(Const T : TToken; Var Res : TExprVal);
+Var
+  IV : LongInt;
+Begin
+  IV := Trunc(T.FloatVal);
+  If IV > 32767 Then IV := 32767;
+  If IV < -32768 Then IV := -32768;
+  WarnMsg('flottant tronque en entier: ' + T.Val, T.Line);
+  ExprMakeImm(IV, TY_IDX_INT, Res);
+End;
+
+{ LitEvalStr : stocker une chaine dans le segment DATA         }
+{ Retourne un EK_MEM pointant vers le label de la chaine       }
+Procedure LitEvalStr(Const T : TToken; Var Res : TExprVal);
+Var
+  Lbl : TString;
+Begin
+  Lbl := DataAddStr(T.Val);
+  Res.Kind    := EK_MEM;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_IDX_STR;
+  Res.Offset  := DataCount - 1;   { index de l entree DATA }
+  Res.SymIdx  := -1;
+End;
+
+{ LitEval : dispatcher principal pour les litteraux Python     }
+{ Tokens : TK_INTEGER, TK_FLOAT, TK_STRING, TK_KEYWORD        }
+{ Mots-cles : True, False, None                                 }
+Procedure LitEval(Const T : TToken; Var Res : TExprVal);
+Begin
+  ExprMakeNone(Res);
+  Case T.Kind Of
+    TK_INTEGER :
+      LitEvalInt(T, Res);
+    TK_FLOAT :
+      LitEvalFloat(T, Res);
+    TK_STRING :
+      LitEvalStr(T, Res);
+    TK_KEYWORD :
+    Begin
+      If T.Val = 'True' Then
+        ExprMakeBool(1, Res)
+      Else If T.Val = 'False' Then
+        ExprMakeBool(0, Res)
+      Else If T.Val = 'None' Then
+        ExprMakeImm(0, TY_IDX_NONE, Res)
+      Else
+        ExprMakeNone(Res);
+    End;
+  Else
+    ExprMakeNone(Res);
+  End;
+End;
+
+{ ---- Emission ASM (stubs pour TODOs suivants) --------------- }
+
+Procedure EmitOpen;
+Begin
+  Assign(OutF, Opts.OutFile);
+  Rewrite(OutF);
+  If IOResult <> 0 Then
+    FatalError('impossible de creer: ' + Opts.OutFile);
+  OutFOpen := True;
+End;
+
+Procedure EmitHeader;
+Begin
+  EmitRaw('; Genere par PYTHON86 v' + PYTHON86_VERSION +
+          ' - ' + Opts.SrcFile);
+  EmitRaw('; Cible : MASM .MODEL SMALL, DOS 16 bits');
+  EmitRaw('');
+  EmitRaw('.MODEL SMALL');
+  EmitRaw('.STACK ' + IntToStr_(STACK_SIZE));
+  EmitRaw('');
+  EmitRaw('_TEXT   SEGMENT WORD PUBLIC ''CODE''');
+  EmitRaw('        ASSUME CS:_TEXT, DS:_DATA, SS:STACK');
+  EmitRaw('');
+End;
+
+Procedure EmitDataSeg;
+Var
+  I, J : Integer;
+  S    : TString;
+Begin
+  EmitRaw('');
+  EmitRaw('_DATA   SEGMENT WORD PUBLIC ''DATA''');
+  EmitRaw('');
+  { Buffer de travail pour concatenation de chaines }
+  EmitRaw('_PY_STRBUF  DB  256 DUP(0)');
+  EmitRaw('');
+  { Emettre toutes les entrees de DataTab }
+  For I := 0 To DataCount - 1 Do
+  Begin
+    Case DataTab[I].Kind Of
+      DK_WORD :
+        EmitRaw(DataTab[I].LblName + '  DW  ' +
+                IntToStr_(DataTab[I].IntVal));
+      DK_BYTE :
+        EmitRaw(DataTab[I].LblName + '  DB  ' +
+                IntToStr_(DataTab[I].IntVal));
+      DK_STR :
+      Begin
+        { Emettre la chaine comme DB 'c','h',...,0 }
+        S := DataTab[I].StrVal;
+        If Length(S) = 0 Then
+          EmitRaw(DataTab[I].LblName + '  DB  0')
+        Else
+        Begin
+          Write(OutF, DataTab[I].LblName, '  DB  ');
+          For J := 1 To Length(S) Do
+          Begin
+            If J > 1 Then Write(OutF, ',');
+            Write(OutF, Ord(S[J]));
+          End;
+          WriteLn(OutF, ',0');
+        End;
+      End;
+      DK_ARRAY_BLK :
+        EmitRaw(DataTab[I].LblName + '  DW  ' +
+                IntToStr_(DataTab[I].ElemCount) + ' DUP(0)');
+    End;
+  End;
+  EmitRaw('');
+  EmitRaw('_DATA   ENDS');
+End;
+
+Procedure EmitClose;
+Begin
+  { Fermer le segment de code }
+  EmitRaw('');
+  EmitRaw('_TEXT   ENDS');
+  EmitRaw('');
+  { Segment de donnees }
+  EmitDataSeg;
+  EmitRaw('');
+  EmitRaw('        END _PYF_Main');
+  { Fermer le fichier }
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+{ ---- Pipeline de compilation -------------------------------- }
 
 Procedure Run;
 Begin
   GlobalInit;
   If Opts.Verbose Then ShowBanner;
 
+  EmitOpen;
+  EmitHeader;
+
   LexInit;
 
   { Lire le premier token }
   ParserAdvance;
 
-  { Boucle principale : scanner tous les tokens (stub TODO 03+) }
+  { Boucle principale : scanner tous les tokens (stub TODO 04+) }
   While CurToken.Kind <> TK_EOF Do
     ParserAdvance;
 
   LexClose;
+
+  EmitClose;
 
   If Opts.Verbose Then ShowStats;
 
