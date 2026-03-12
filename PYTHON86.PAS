@@ -101,14 +101,15 @@
             ExprFlushToAX, ExprEmitBinOp (pliage de constantes + 8086)
             ParsePrimary, ParseUnary, ParseExprPrec, ParseExpr
 
-  TODO 05 - TABLE DES SYMBOLES
+  TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
             TSymKind : SK_VAR, SK_PARAM, SK_FUNC, SK_CLASS, SK_MODULE,
               SK_BUILTIN, SK_GLOBAL, SK_LOCAL
             TSymRec : Name, MangledName, Kind, TypeIdx, Offset,
-              Scope, IsGlobal
-            SymAdd, SymFind, SymFindInScope, SymMangle
+              ScopeLevel, IsGlobal, IsNonlocal, DeclLine
+            SymNameClean, SymMangle, SymAdd, SymFind, SymFindInScope
+            SymInit : initialisation de la table des symboles
             CurScope : compteur de portee imbriquee (max MAX_SCOPE)
-            SymEnterScope / SymLeaveScope : gestion des portees imbriquees
+            ScopeStack / ScopeTop : pile pour SymEnterScope / SymLeaveScope
             Resolution des noms : local -> englobant -> global -> builtins
             Instruction global : marquer une variable comme globale
             Instruction nonlocal : marquer une variable de portee englobante
@@ -525,6 +526,30 @@ Type
     ElemCount : Integer;
   End;
 
+  { ---- Table des symboles (TODO 05) ------------------------- }
+  TSymKind = (
+    SK_VAR,       { variable (globale ou locale)               }
+    SK_PARAM,     { parametre de fonction                      }
+    SK_FUNC,      { fonction def                               }
+    SK_CLASS,     { classe class                               }
+    SK_MODULE,    { module importe                             }
+    SK_BUILTIN,   { builtin (print, len, int, str ...)         }
+    SK_GLOBAL,    { marqueur global (instruction global x)     }
+    SK_LOCAL      { variable locale explicite                  }
+  );
+
+  TSymRec = Record
+    Name        : TString;     { nom Python original              }
+    MangledName : TString;     { label ASM (_PYV_x, _PYF_f ...)  }
+    Kind        : TSymKind;
+    TypeIdx     : Integer;     { indice type primitif (-1=unknown)}
+    Offset      : Integer;     { offset pile BP- (locaux/params)  }
+    ScopeLevel  : Integer;     { niveau de portee (0=global)      }
+    IsGlobal    : Boolean;     { instruction global -> True       }
+    IsNonlocal  : Boolean;     { instruction nonlocal -> True     }
+    DeclLine    : Integer;     { ligne de declaration (debug)     }
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -563,6 +588,13 @@ Var
   { Fichier de sortie (TODO 03) }
   OutF        : Text;
   OutFOpen    : Boolean;
+
+  { Table des symboles (TODO 05) }
+  SymTab      : Array[0..MAX_SYM - 1] Of TSymRec;
+  SymCount    : Integer;
+  ScopeStack  : Array[0..MAX_SCOPE - 1] Of Integer;
+  ScopeTop    : Integer;    { sommet de la pile des portees }
+  CurScope    : Integer;    { niveau de portee courant (0 = global) }
 
 { ============================================================
   FORWARD DECLARATIONS
@@ -619,6 +651,17 @@ Procedure ParseUnary(Var Res : TExprVal);    Forward;
 Procedure ParseExprPrec(MinPrec : Integer;
             Var Res : TExprVal);             Forward;
 Procedure ParseExpr(Var Res : TExprVal);     Forward;
+{ TODO 05 - Forward declarations table des symboles }
+Function  SymNameClean(Const Name : TString) : TString; Forward;
+Function  SymMangle(Const Name : TString; Kind : TSymKind) : TString; Forward;
+Function  SymFind(Const Name : TString) : Integer; Forward;
+Function  SymFindInScope(Const Name : TString;
+            Level : Integer) : Integer; Forward;
+Function  SymAdd(Const Name : TString; Kind : TSymKind;
+            TypeIdx, Offset : Integer) : Integer; Forward;
+Procedure SymEnterScope;     Forward;
+Procedure SymLeaveScope;     Forward;
+Procedure SymInit;           Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -855,6 +898,10 @@ Begin
   GExprDummy.TypeIdx := TY_UNKNOWN;
   GExprDummy.Offset  := 0;
   GExprDummy.SymIdx  := -1;
+  { TODO 05 : table des symboles }
+  SymCount  := 0;
+  ScopeTop  := 0;
+  CurScope  := 0;
 End;
 
 { ============================================================
@@ -2555,14 +2602,32 @@ Begin
       End;
     End;
 
-    { Identifiant : stub pour TODO 05 (table des symboles) }
+    { Identifiant : resolution via SymFind (TODO 05) }
     TK_IDENT :
     Begin
-      EmitComment('ident: ' + CurToken.Val);
-      ExprMakeImm(0, TY_IDX_INT, Res);  { stub : valeur 0 }
-      Res.SymIdx := -1;
+      Res.SymIdx := SymFind(CurToken.Val);
+      If Res.SymIdx >= 0 Then
+      Begin
+        EmitComment('ident: ' + CurToken.Val +
+                    ' [' + SymTab[Res.SymIdx].MangledName + ']');
+        { Pour les builtins et fonctions : sera gere par appel }
+        If (SymTab[Res.SymIdx].Kind = SK_BUILTIN) Or
+           (SymTab[Res.SymIdx].Kind = SK_FUNC) Then
+          ExprMakeImm(0, SymTab[Res.SymIdx].TypeIdx, Res)
+        Else
+          ExprMakeImm(0, SymTab[Res.SymIdx].TypeIdx, Res);
+        Res.SymIdx := SymFind(CurToken.Val);
+      End
+      Else
+      Begin
+        { Identifiant inconnu : auto-declarer comme variable globale }
+        EmitComment('ident (auto): ' + CurToken.Val);
+        Res.SymIdx := SymAdd(CurToken.Val, SK_VAR, TY_UNKNOWN, 0);
+        ExprMakeImm(0, TY_UNKNOWN, Res);
+        If Res.SymIdx < 0 Then Res.SymIdx := -1;
+      End;
       ParserAdvance;
-      { Appel de fonction : stub }
+      { Appel de fonction : f(args) stub }
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
       Begin
         ParserAdvance;
@@ -2797,9 +2862,215 @@ Begin
   ParseExprPrec(1, Res);
 End;
 
+{ ============================================================
+  TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- SymNameClean : nettoyer un nom pour l utiliser en ASM --- }
+{ Supprime les caracteres non alphanumeriques sauf _ .           }
+Function SymNameClean(Const Name : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := '';
+  For I := 1 To Length(Name) Do
+    If ((Name[I] >= 'A') And (Name[I] <= 'Z')) Or
+       ((Name[I] >= 'a') And (Name[I] <= 'z')) Or
+       ((Name[I] >= '0') And (Name[I] <= '9')) Or
+       (Name[I] = '_') Then
+    Begin
+      If Length(R) < MAX_STR Then
+        R := R + Name[I];
+    End
+    Else
+    Begin
+      If Length(R) < MAX_STR Then
+        R := R + '_';
+    End;
+  If R = '' Then R := '_anon';
+  SymNameClean := R;
+End;
+
+{ ---- SymMangle : generer un label ASM depuis un symbole ------ }
+{ Le prefixe depend de la categorie du symbole :                  }
+{   SK_VAR / SK_LOCAL / SK_GLOBAL / SK_PARAM -> _PYV_             }
+{   SK_FUNC   -> _PYF_                                            }
+{   SK_CLASS  -> _PYC_                                             }
+{   SK_MODULE -> _PYV_                                             }
+{   SK_BUILTIN -> _PYRT_                                           }
+Function SymMangle(Const Name : TString; Kind : TSymKind) : TString;
+Var
+  Clean : TString;
+Begin
+  Clean := SymNameClean(Name);
+  Case Kind Of
+    SK_FUNC    : SymMangle := PY_FN_PFX  + Clean;
+    SK_CLASS   : SymMangle := PY_CLS_PFX + Clean;
+    SK_BUILTIN : SymMangle := PY_RT_PFX  + Clean;
+  Else
+    SymMangle := PY_VAR_PFX + Clean;
+  End;
+End;
+
+{ ---- SymFind : recherche MRU (Most Recently Used) ------------ }
+{ Cherche du plus recent au plus ancien pour respecter le         }
+{ masquage (shadowing) des variables dans les portees internes.   }
+Function SymFind(Const Name : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := SymCount - 1 DownTo 0 Do
+    If SymTab[I].Name = Name Then
+    Begin
+      SymFind := I;
+      Exit;
+    End;
+  SymFind := -1;
+End;
+
+{ ---- SymFindInScope : recherche dans une portee specifique --- }
+Function SymFindInScope(Const Name : TString;
+                        Level : Integer) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := SymCount - 1 DownTo 0 Do
+    If (SymTab[I].Name = Name) And
+       (SymTab[I].ScopeLevel = Level) Then
+    Begin
+      SymFindInScope := I;
+      Exit;
+    End;
+  SymFindInScope := -1;
+End;
+
+{ ---- SymAdd : ajouter un symbole dans la table --------------- }
+{ Retourne l indice du nouveau symbole (0-base) ou -1 si plein.  }
+Function SymAdd(Const Name : TString; Kind : TSymKind;
+                TypeIdx, Offset : Integer) : Integer;
+Begin
+  If SymCount >= MAX_SYM Then
+  Begin
+    CompileError('table des symboles pleine (max=' +
+                 IntToStr_(MAX_SYM) + ')', CurToken.Line);
+    SymAdd := -1;
+    Exit;
+  End;
+  SymTab[SymCount].Name        := Name;
+  SymTab[SymCount].MangledName := SymMangle(Name, Kind);
+  SymTab[SymCount].Kind        := Kind;
+  SymTab[SymCount].TypeIdx     := TypeIdx;
+  SymTab[SymCount].Offset      := Offset;
+  SymTab[SymCount].ScopeLevel  := CurScope;
+  SymTab[SymCount].IsGlobal    := False;
+  SymTab[SymCount].IsNonlocal  := False;
+  SymTab[SymCount].DeclLine    := CurToken.Line;
+
+  If Opts.DebugMode Then
+    WriteLn('  SYM_ADD[', SymCount, ']: ', Name,
+            ' kind=', Ord(Kind),
+            ' scope=', CurScope,
+            ' -> ', SymTab[SymCount].MangledName);
+
+  SymAdd := SymCount;
+  Inc(SymCount);
+  Inc(TotalSyms);
+End;
+
+{ ---- SymEnterScope : entrer dans une nouvelle portee --------- }
+{ Chaque def, class, lambda cree un nouvel environnement.        }
+Procedure SymEnterScope;
+Begin
+  If ScopeTop >= MAX_SCOPE Then
+  Begin
+    CompileError('portees trop imbriquees (max=' +
+                 IntToStr_(MAX_SCOPE) + ')', CurToken.Line);
+    Exit;
+  End;
+  ScopeStack[ScopeTop] := SymCount;
+  Inc(ScopeTop);
+  Inc(CurScope);
+  If Opts.DebugMode Then
+    WriteLn('  SCOPE_ENTER: level=', CurScope);
+End;
+
+{ ---- SymLeaveScope : quitter la portee courante -------------- }
+{ Les symboles locaux de cette portee sont retires de la table.  }
+Procedure SymLeaveScope;
+Begin
+  If ScopeTop <= 0 Then Exit;
+  Dec(ScopeTop);
+  SymCount := ScopeStack[ScopeTop];
+  Dec(CurScope);
+  If Opts.DebugMode Then
+    WriteLn('  SCOPE_LEAVE: level=', CurScope);
+End;
+
+{ ---- SymInit : initialiser la table des symboles ------------- }
+{ Enregistre les builtins Python (print, len, int, str, etc.)    }
+Procedure SymInit;
+Var
+  I : Integer;
+Begin
+  SymCount  := 0;
+  ScopeTop  := 0;
+  CurScope  := 0;
+  For I := 0 To MAX_SYM - 1 Do
+  Begin
+    SymTab[I].Name        := '';
+    SymTab[I].MangledName := '';
+    SymTab[I].Kind        := SK_VAR;
+    SymTab[I].TypeIdx     := TY_UNKNOWN;
+    SymTab[I].Offset      := 0;
+    SymTab[I].ScopeLevel  := 0;
+    SymTab[I].IsGlobal    := False;
+    SymTab[I].IsNonlocal  := False;
+    SymTab[I].DeclLine    := 0;
+  End;
+  { Enregistrer les builtins de base }
+  SymAdd('print',     SK_BUILTIN, TY_IDX_NONE, 0);
+  SymAdd('input',     SK_BUILTIN, TY_IDX_STR,  0);
+  SymAdd('len',       SK_BUILTIN, TY_IDX_INT,  0);
+  SymAdd('int',       SK_BUILTIN, TY_IDX_INT,  0);
+  SymAdd('str',       SK_BUILTIN, TY_IDX_STR,  0);
+  SymAdd('float',     SK_BUILTIN, TY_IDX_INT,  0);
+  SymAdd('bool',      SK_BUILTIN, TY_IDX_BOOL, 0);
+  SymAdd('abs',       SK_BUILTIN, TY_IDX_INT,  0);
+  SymAdd('chr',       SK_BUILTIN, TY_IDX_STR,  0);
+  SymAdd('ord',       SK_BUILTIN, TY_IDX_INT,  0);
+  SymAdd('type',      SK_BUILTIN, TY_IDX_INT,  0);
+  SymAdd('isinstance',SK_BUILTIN, TY_IDX_BOOL, 0);
+  SymAdd('range',     SK_BUILTIN, TY_IDX_LIST, 0);
+  SymAdd('list',      SK_BUILTIN, TY_IDX_LIST, 0);
+  SymAdd('dict',      SK_BUILTIN, TY_IDX_DICT, 0);
+  SymAdd('tuple',     SK_BUILTIN, TY_IDX_LIST, 0);
+  SymAdd('set',       SK_BUILTIN, TY_IDX_LIST, 0);
+  SymAdd('min',       SK_BUILTIN, TY_IDX_INT,  0);
+  SymAdd('max',       SK_BUILTIN, TY_IDX_INT,  0);
+  SymAdd('sum',       SK_BUILTIN, TY_IDX_INT,  0);
+  SymAdd('sorted',    SK_BUILTIN, TY_IDX_LIST, 0);
+  SymAdd('reversed',  SK_BUILTIN, TY_IDX_LIST, 0);
+  SymAdd('enumerate', SK_BUILTIN, TY_IDX_LIST, 0);
+  SymAdd('zip',       SK_BUILTIN, TY_IDX_LIST, 0);
+  SymAdd('map',       SK_BUILTIN, TY_IDX_LIST, 0);
+  SymAdd('filter',    SK_BUILTIN, TY_IDX_LIST, 0);
+  SymAdd('hex',       SK_BUILTIN, TY_IDX_STR,  0);
+  SymAdd('oct',       SK_BUILTIN, TY_IDX_STR,  0);
+  SymAdd('bin',       SK_BUILTIN, TY_IDX_STR,  0);
+  SymAdd('repr',      SK_BUILTIN, TY_IDX_STR,  0);
+  SymAdd('id',        SK_BUILTIN, TY_IDX_INT,  0);
+  SymAdd('hash',      SK_BUILTIN, TY_IDX_INT,  0);
+  SymAdd('open',      SK_BUILTIN, TY_IDX_INT,  0);
+End;
+
 Procedure Run;
+Var
+  VarName : TString;
+  Idx     : Integer;
 Begin
   GlobalInit;
+  SymInit;
   If Opts.Verbose Then ShowBanner;
 
   EmitOpen;
@@ -2821,7 +3092,52 @@ Begin
       ParserAdvance;
       Continue;
     End;
-    { Mots-cles d instruction : stub (TODO 05+) - sauter la ligne }
+    { Instruction global : marquer les variables comme globales }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'global') Then
+    Begin
+      ParserAdvance;
+      While (CurToken.Kind <> TK_EOF) And
+            (CurToken.Kind <> TK_NEWLINE) Do
+      Begin
+        If CurToken.Kind = TK_IDENT Then
+        Begin
+          VarName := CurToken.Val;
+          Idx := SymFind(VarName);
+          If Idx < 0 Then
+            Idx := SymAdd(VarName, SK_VAR, TY_UNKNOWN, 0);
+          If Idx >= 0 Then
+            SymTab[Idx].IsGlobal := True;
+        End;
+        ParserAdvance;
+        { Sauter les virgules }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+          ParserAdvance;
+      End;
+      Continue;
+    End;
+    { Instruction nonlocal : marquer les variables comme nonlocal }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'nonlocal') Then
+    Begin
+      ParserAdvance;
+      While (CurToken.Kind <> TK_EOF) And
+            (CurToken.Kind <> TK_NEWLINE) Do
+      Begin
+        If CurToken.Kind = TK_IDENT Then
+        Begin
+          VarName := CurToken.Val;
+          Idx := SymFind(VarName);
+          If Idx < 0 Then
+            Idx := SymAdd(VarName, SK_VAR, TY_UNKNOWN, 0);
+          If Idx >= 0 Then
+            SymTab[Idx].IsNonlocal := True;
+        End;
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+          ParserAdvance;
+      End;
+      Continue;
+    End;
+    { Mots-cles d instruction : stub (TODO 06+) - sauter la ligne }
     If (CurToken.Kind = TK_KEYWORD) And
        (CurToken.Val <> 'True') And (CurToken.Val <> 'False') And
        (CurToken.Val <> 'None') And (CurToken.Val <> 'not') Then
