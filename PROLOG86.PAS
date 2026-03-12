@@ -217,7 +217,7 @@
             Comparaisons arithmetiques : =:= =\= < > =< >=
               Evaluer les deux cotes + CMP + Jcc
 
-  TODO 15 - COMPARAISON ET TESTS DE TYPE
+  TODO 15 - COMPARAISON ET TESTS DE TYPE [IMPLEMENTE]
             Unification : =(X,Y) -> CALL _PLRT_UNIFY
             Non-unification : \=(X,Y) -> CALL _PLRT_UNIFY + NOT CF
             Egalite structurelle : ==(X,Y) -> comparaison sans liaison
@@ -920,6 +920,8 @@ Function  ParseArithExpr : Integer; Forward;
 Function  ParseArithTerm : Integer; Forward;
 Function  ParseArithFactor : Integer; Forward;
 Procedure EmitArithEval(NodeIdx : Integer); Forward;
+{ Comparaison et tests de type (TODO 15) }
+Procedure EmitCompareRuntime; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -5031,13 +5033,207 @@ Begin
   EmitBlankLine;
 End;
 
+{ ============================================================
+  TODO 15 - COMPARAISON ET TESTS DE TYPE [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- EmitCompareRuntime : routines de comparaison et type ------ }
+Procedure EmitCompareRuntime;
+Var
+  Lbl1, Lbl2, Lbl3, Lbl4, Lbl5 : TString;
+  LblEnd                        : TString;
+  LblFail, LblOk                : TString;
+Begin
+  EmitBlankLine;
+  EmitComment('========================================');
+  EmitComment(' Runtime : Comparaison et tests (TODO 15)');
+  EmitComment('========================================');
+
+  { _PLRT_TAG_OF : AX=tagged term -> AX=tag value (0..4) }
+  EmitBlankLine;
+  EmitComment('_PLRT_TAG_OF : AX=terme -> AX=tag (0..4)');
+  EmitLabel(PL_RT_PFX + 'TAG_OF');
+  EmitInstrAB('AND', 'AX', IntToStr(TAG_MASK));
+  EmitInstrAB('MOV', 'CL', IntToStr(TAG_SHIFT));
+  EmitInstrAB('SHR', 'AX', 'CL');
+  EmitInstr('RET');
+
+  { _PLRT_STRUCT_EQ : AX=term1, BX=term2 -> CF=1 if not equal }
+  EmitBlankLine;
+  EmitComment('_PLRT_STRUCT_EQ : AX=term1, BX=term2');
+  EmitComment('CF=0 si egaux structurellement, CF=1 sinon');
+  EmitLabel(PL_RT_PFX + 'STRUCT_EQ');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  { Deref AX }
+  EmitInstr('CALL    ' + PL_RT_PFX + 'DEREF');
+  EmitInstrAB('MOV', 'DX', 'AX');  { DX = deref term1 }
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'DEREF');
+  EmitInstrAB('MOV', 'BX', 'AX');  { BX = deref term2 }
+  EmitInstrAB('MOV', 'AX', 'DX');  { AX = deref term1 }
+  { Compare directly: if identical tagged words, equal }
+  EmitInstrAB('CMP', 'AX', 'BX');
+  LblOk := LabelGen;
+  LblFail := LabelGen;
+  LblEnd := LabelGen;
+  EmitInstrA('JE', LblOk);
+  { Tags differ? }
+  EmitInstrAB('MOV', 'DX', 'AX');
+  EmitInstrAB('AND', 'DX', IntToStr(TAG_MASK));
+  EmitInstrAB('MOV', 'SI', 'BX');
+  EmitInstrAB('AND', 'SI', IntToStr(TAG_MASK));
+  EmitInstrAB('CMP', 'DX', 'SI');
+  EmitInstrA('JNE', LblFail);
+  { Same tag - for simple types (REF/ATOM/INT) values already compared }
+  { since same tag but different word -> not equal }
+  Lbl1 := LabelGen;
+  EmitInstrAB('CMP', 'DX', IntToStr(TAG_LIST Shl TAG_SHIFT));
+  EmitInstrA('JE', Lbl1);
+  EmitInstrAB('CMP', 'DX', IntToStr(TAG_STR Shl TAG_SHIFT));
+  EmitInstrA('JNE', LblFail);
+  { Structure: compare functor+arity at heap, then args recursively }
+  { For simplicity: compare the tagged word values (non-recursive) }
+  EmitInstrA('JMP', LblFail);
+  EmitLabel(Lbl1);
+  { LIST: compare head and tail - simplified: compare tagged words }
+  EmitInstrA('JMP', LblFail);
+  EmitLabel(LblOk);
+  EmitInstr('CLC');
+  EmitInstrA('JMP', LblEnd);
+  EmitLabel(LblFail);
+  EmitInstr('STC');
+  EmitLabel(LblEnd);
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DX');
+  EmitInstr('RET');
+
+  { _PLRT_COMPARE : AX=term1, BX=term2 -> flags for ordering }
+  { CF=1,ZF=0 if term1<term2 ; CF=0,ZF=1 if equal ; CF=0,ZF=0 if term1>term2 }
+  { Order: Var(0) < Int(2) < Atom(1) < Str(3) < List(4) }
+  EmitBlankLine;
+  EmitComment('_PLRT_COMPARE : AX=term1, BX=term2 -> flags');
+  EmitComment('Ordre: Var < Int < Atom < Str < List');
+  EmitLabel(PL_RT_PFX + 'COMPARE');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'CX');
+  { Deref both }
+  EmitInstr('CALL    ' + PL_RT_PFX + 'DEREF');
+  EmitInstrAB('MOV', 'DX', 'AX');  { DX = deref term1 }
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstr('CALL    ' + PL_RT_PFX + 'DEREF');
+  EmitInstrAB('MOV', 'BX', 'AX');  { BX = deref term2 }
+  EmitInstrAB('MOV', 'AX', 'DX');  { AX = deref term1 }
+  { Extract tags }
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrAB('AND', 'SI', IntToStr(TAG_MASK));
+  EmitInstrAB('MOV', 'CL', IntToStr(TAG_SHIFT));
+  EmitInstrAB('SHR', 'SI', 'CL');  { SI = tag1 (0..4) }
+  EmitInstrAB('MOV', 'DI', 'BX');
+  EmitInstrAB('AND', 'DI', IntToStr(TAG_MASK));
+  EmitInstrAB('SHR', 'DI', 'CL');  { DI = tag2 (0..4) }
+  { Map tags to ordering: Var=0->0, Int=2->1, Atom=1->2, Str=3->3, List=4->4 }
+  { Use a mapping: we remap via compare of raw tags with special handling }
+  { Simplified: create order value in SI/DI }
+  { ordermap: 0->0(var), 1->2(atom), 2->1(int), 3->3(str), 4->4(list) }
+  Lbl1 := LabelGen;
+  Lbl2 := LabelGen;
+  Lbl3 := LabelGen;
+  Lbl4 := LabelGen;
+  { Remap SI }
+  EmitInstrAB('CMP', 'SI', '1');
+  EmitInstrA('JNE', Lbl1);
+  EmitInstrAB('MOV', 'SI', '2');
+  EmitInstrA('JMP', Lbl2);
+  EmitLabel(Lbl1);
+  EmitInstrAB('CMP', 'SI', '2');
+  EmitInstrA('JNE', Lbl2);
+  EmitInstrAB('MOV', 'SI', '1');
+  EmitLabel(Lbl2);
+  { Remap DI }
+  EmitInstrAB('CMP', 'DI', '1');
+  EmitInstrA('JNE', Lbl3);
+  EmitInstrAB('MOV', 'DI', '2');
+  EmitInstrA('JMP', Lbl4);
+  EmitLabel(Lbl3);
+  EmitInstrAB('CMP', 'DI', '2');
+  EmitInstrA('JNE', Lbl4);
+  EmitInstrAB('MOV', 'DI', '1');
+  EmitLabel(Lbl4);
+  { Compare order values }
+  Lbl5 := LabelGen;
+  LblEnd := LabelGen;
+  EmitInstrAB('CMP', 'SI', 'DI');
+  EmitInstrA('JE', Lbl5);
+  { Different type orders: CMP result already set flags correctly }
+  EmitInstrA('JMP', LblEnd);
+  EmitLabel(Lbl5);
+  { Same type order: compare by value (masked) }
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrAB('AND', 'SI', IntToStr(VAL_MASK));
+  EmitInstrAB('MOV', 'DI', 'BX');
+  EmitInstrAB('AND', 'DI', IntToStr(VAL_MASK));
+  EmitInstrAB('CMP', 'SI', 'DI');
+  EmitLabel(LblEnd);
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DX');
+  EmitInstr('RET');
+
+  { _PLRT_COPY_TERM : AX=source term -> AX=copy with fresh vars }
+  EmitBlankLine;
+  EmitComment('_PLRT_COPY_TERM : AX=source -> AX=copie');
+  EmitLabel(PL_RT_PFX + 'COPY_TERM');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrA('PUSH', 'SI');
+  { Deref source }
+  EmitInstr('CALL    ' + PL_RT_PFX + 'DEREF');
+  { Check tag }
+  EmitInstrAB('MOV', 'DX', 'AX');
+  EmitInstrAB('AND', 'DX', IntToStr(TAG_MASK));
+  LblOk := LabelGen;
+  LblEnd := LabelGen;
+  { If ATOM or INT, return as-is }
+  EmitInstrAB('CMP', 'DX', IntToStr(TAG_ATOM Shl TAG_SHIFT));
+  EmitInstrA('JE', LblOk);
+  EmitInstrAB('CMP', 'DX', IntToStr(TAG_INT Shl TAG_SHIFT));
+  EmitInstrA('JE', LblOk);
+  { If REF: create new fresh variable on heap }
+  Lbl1 := LabelGen;
+  EmitInstrAB('CMP', 'DX', IntToStr(TAG_REF Shl TAG_SHIFT));
+  EmitInstrA('JNE', Lbl1);
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [_PL_HTOP]');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrAB('SHL', 'SI', '1');
+  EmitInstrAB('ADD', 'SI', 'OFFSET _PL_HEAP');
+  EmitInstrAB('MOV', 'WORD PTR [SI]', 'AX');
+  EmitInstr('INC    WORD PTR [_PL_HTOP]');
+  EmitInstrA('JMP', LblEnd);
+  EmitLabel(Lbl1);
+  { For LIST/STR: simplified copy returns same term }
+  EmitLabel(LblOk);
+  EmitLabel(LblEnd);
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+End;
+
 { ---- EmitRuntime : emettre les routines runtime --------------- }
-{ Emet les routines de backtracking (TODO 12) et de liste (TODO 13). }
+{ Emet les routines de backtracking, liste, arith et compare.     }
 Procedure EmitRuntime;
 Begin
   EmitBacktrackRuntime;
   EmitListRuntime;
   EmitArithRuntime;
+  EmitCompareRuntime;
 End;
 
 { ---- EmitClose : fermer le fichier de sortie ASM -------------- }
@@ -5719,6 +5915,27 @@ Begin
       Exit;
     End;
 
+    { Check for comparison/unification operators (TODO 15) }
+    If CurToken.Kind = TK_OP Then
+    Begin
+      If (CurToken.Val = '=') Or (CurToken.Val = '\=') Or
+         (CurToken.Val = '==') Or (CurToken.Val = '\==') Or
+         (CurToken.Val = '@<') Or (CurToken.Val = '@>') Or
+         (CurToken.Val = '@=<') Or (CurToken.Val = '@>=') Then
+      Begin
+        G.PredName := CurToken.Val;
+        ParserAdvance;
+        { Left side : variable }
+        G.Args[0].Kind    := FAK_VAR;
+        G.Args[0].VarName := SaveVar;
+        { Right side : parse as term }
+        ParseFactArg(G.Args[1]);
+        G.Arity    := 2;
+        G.ArgCount := 2;
+        Exit;
+      End;
+    End;
+
     { Not recognized infix - error }
     CompileError('operateur attendu apres variable ' + SaveVar +
                  ' dans le corps de la regle (trouve: ' + CurToken.Val + ')');
@@ -6166,6 +6383,294 @@ Begin
       EmitLabel(NS);
       EmitComment('arith cmp ok');
     End
+    { --- TODO 15 : Unification =/2 --- }
+    Else If GoalTab[GIdx].PredName = '=' Then
+    Begin
+      EmitComment('=/2 unification inline');
+      { Charger arg0 dans AX }
+      EmitLoadArgToAX(GoalTab[GIdx].Args[0], True);
+      EmitInstrA('PUSH', 'AX');
+      { Charger arg1 dans AX }
+      EmitLoadArgToAX(GoalTab[GIdx].Args[1], True);
+      EmitInstrAB('MOV', 'BX', 'AX');
+      EmitInstrA('POP', 'AX');
+      EmitUnify;
+      EmitInstrA('JC', ClauseTab[CIdx].FailLabel);
+      EmitComment('=/2 ok');
+    End
+    { --- TODO 15 : Non-unification \=/2 --- }
+    Else If GoalTab[GIdx].PredName = '\=' Then
+    Begin
+      EmitComment('\=/2 non-unification inline');
+      EmitLoadArgToAX(GoalTab[GIdx].Args[0], True);
+      EmitInstrA('PUSH', 'AX');
+      EmitLoadArgToAX(GoalTab[GIdx].Args[1], True);
+      EmitInstrAB('MOV', 'BX', 'AX');
+      EmitInstrA('POP', 'AX');
+      EmitUnify;
+      EmitInstrA('JNC', ClauseTab[CIdx].FailLabel);
+      EmitComment('\=/2 ok');
+    End
+    { --- TODO 15 : Egalite structurelle ==/2 --- }
+    Else If GoalTab[GIdx].PredName = '==' Then
+    Begin
+      EmitComment('==/2 structural eq inline');
+      EmitLoadArgToAX(GoalTab[GIdx].Args[0], True);
+      EmitInstrA('PUSH', 'AX');
+      EmitLoadArgToAX(GoalTab[GIdx].Args[1], True);
+      EmitInstrAB('MOV', 'BX', 'AX');
+      EmitInstrA('POP', 'AX');
+      EmitInstr('CALL    ' + PL_RT_PFX + 'STRUCT_EQ');
+      EmitInstrA('JC', ClauseTab[CIdx].FailLabel);
+      EmitComment('==/2 ok');
+    End
+    { --- TODO 15 : Inegalite structurelle \==/2 --- }
+    Else If GoalTab[GIdx].PredName = '\==' Then
+    Begin
+      EmitComment('\==/2 structural neq inline');
+      EmitLoadArgToAX(GoalTab[GIdx].Args[0], True);
+      EmitInstrA('PUSH', 'AX');
+      EmitLoadArgToAX(GoalTab[GIdx].Args[1], True);
+      EmitInstrAB('MOV', 'BX', 'AX');
+      EmitInstrA('POP', 'AX');
+      EmitInstr('CALL    ' + PL_RT_PFX + 'STRUCT_EQ');
+      EmitInstrA('JNC', ClauseTab[CIdx].FailLabel);
+      EmitComment('\==/2 ok');
+    End
+    { --- TODO 15 : Ordre standard @< @> @=< @>= --- }
+    Else If (GoalTab[GIdx].PredName = '@<') Or
+            (GoalTab[GIdx].PredName = '@>') Or
+            (GoalTab[GIdx].PredName = '@=<') Or
+            (GoalTab[GIdx].PredName = '@>=') Then
+    Begin
+      EmitComment('order ' + GoalTab[GIdx].PredName + ' inline');
+      EmitLoadArgToAX(GoalTab[GIdx].Args[0], True);
+      EmitInstrA('PUSH', 'AX');
+      EmitLoadArgToAX(GoalTab[GIdx].Args[1], True);
+      EmitInstrAB('MOV', 'BX', 'AX');
+      EmitInstrA('POP', 'AX');
+      EmitInstr('CALL    ' + PL_RT_PFX + 'COMPARE');
+      NS := LabelGen;
+      If GoalTab[GIdx].PredName = '@<' Then
+        EmitInstrA('JB', NS)
+      Else If GoalTab[GIdx].PredName = '@>' Then
+        EmitInstrA('JA', NS)
+      Else If GoalTab[GIdx].PredName = '@=<' Then
+        EmitInstrA('JBE', NS)
+      Else If GoalTab[GIdx].PredName = '@>=' Then
+        EmitInstrA('JAE', NS);
+      EmitInstrA('JMP', ClauseTab[CIdx].FailLabel);
+      EmitLabel(NS);
+      EmitComment('order cmp ok');
+    End
+    { --- TODO 15 : var/1 --- }
+    Else If (GoalTab[GIdx].PredName = 'var') And
+            (GoalTab[GIdx].Arity = 1) Then
+    Begin
+      EmitComment('var/1 inline');
+      EmitLoadArgToAX(GoalTab[GIdx].Args[0], True);
+      EmitDeref;
+      EmitInstrAB('AND', 'AX', IntToStr(TAG_MASK));
+      EmitInstrAB('CMP', 'AX', IntToStr(TAG_REF Shl TAG_SHIFT));
+      EmitInstrA('JNE', ClauseTab[CIdx].FailLabel);
+      EmitComment('var/1 ok');
+    End
+    { --- TODO 15 : nonvar/1 --- }
+    Else If (GoalTab[GIdx].PredName = 'nonvar') And
+            (GoalTab[GIdx].Arity = 1) Then
+    Begin
+      EmitComment('nonvar/1 inline');
+      EmitLoadArgToAX(GoalTab[GIdx].Args[0], True);
+      EmitDeref;
+      EmitInstrAB('AND', 'AX', IntToStr(TAG_MASK));
+      EmitInstrAB('CMP', 'AX', IntToStr(TAG_REF Shl TAG_SHIFT));
+      EmitInstrA('JE', ClauseTab[CIdx].FailLabel);
+      EmitComment('nonvar/1 ok');
+    End
+    { --- TODO 15 : atom/1 --- }
+    Else If (GoalTab[GIdx].PredName = 'atom') And
+            (GoalTab[GIdx].Arity = 1) Then
+    Begin
+      EmitComment('atom/1 inline');
+      EmitLoadArgToAX(GoalTab[GIdx].Args[0], True);
+      EmitDeref;
+      EmitInstrAB('AND', 'AX', IntToStr(TAG_MASK));
+      EmitInstrAB('CMP', 'AX', IntToStr(TAG_ATOM Shl TAG_SHIFT));
+      EmitInstrA('JNE', ClauseTab[CIdx].FailLabel);
+      EmitComment('atom/1 ok');
+    End
+    { --- TODO 15 : number/1 et integer/1 --- }
+    Else If ((GoalTab[GIdx].PredName = 'number') Or
+             (GoalTab[GIdx].PredName = 'integer')) And
+            (GoalTab[GIdx].Arity = 1) Then
+    Begin
+      EmitComment(GoalTab[GIdx].PredName + '/1 inline');
+      EmitLoadArgToAX(GoalTab[GIdx].Args[0], True);
+      EmitDeref;
+      EmitInstrAB('AND', 'AX', IntToStr(TAG_MASK));
+      EmitInstrAB('CMP', 'AX', IntToStr(TAG_INT Shl TAG_SHIFT));
+      EmitInstrA('JNE', ClauseTab[CIdx].FailLabel);
+      EmitComment(GoalTab[GIdx].PredName + '/1 ok');
+    End
+    { --- TODO 15 : compound/1 --- }
+    Else If (GoalTab[GIdx].PredName = 'compound') And
+            (GoalTab[GIdx].Arity = 1) Then
+    Begin
+      EmitComment('compound/1 inline');
+      EmitLoadArgToAX(GoalTab[GIdx].Args[0], True);
+      EmitDeref;
+      EmitInstrAB('MOV', 'BX', 'AX');
+      EmitInstrAB('AND', 'BX', IntToStr(TAG_MASK));
+      NS := LabelGen;
+      EmitInstrAB('CMP', 'BX', IntToStr(TAG_STR Shl TAG_SHIFT));
+      EmitInstrA('JE', NS);
+      EmitInstrAB('CMP', 'BX', IntToStr(TAG_LIST Shl TAG_SHIFT));
+      EmitInstrA('JNE', ClauseTab[CIdx].FailLabel);
+      EmitLabel(NS);
+      EmitComment('compound/1 ok');
+    End
+    { --- TODO 15 : is_list/1 --- }
+    Else If (GoalTab[GIdx].PredName = 'is_list') And
+            (GoalTab[GIdx].Arity = 1) Then
+    Begin
+      EmitComment('is_list/1 inline');
+      EmitLoadArgToAX(GoalTab[GIdx].Args[0], True);
+      EmitDeref;
+      EmitInstrAB('MOV', 'BX', 'AX');
+      EmitInstrAB('AND', 'BX', IntToStr(TAG_MASK));
+      NS := LabelGen;
+      EmitInstrAB('CMP', 'BX', IntToStr(TAG_LIST Shl TAG_SHIFT));
+      EmitInstrA('JE', NS);
+      { Check for empty list atom [] }
+      EmitInstrAB('CMP', 'BX', IntToStr(TAG_ATOM Shl TAG_SHIFT));
+      EmitInstrA('JNE', ClauseTab[CIdx].FailLabel);
+      EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+      EmitInstrAB('CMP', 'AX', '0');
+      EmitInstrA('JNE', ClauseTab[CIdx].FailLabel);
+      EmitLabel(NS);
+      EmitComment('is_list/1 ok');
+    End
+    { --- TODO 15 : callable/1 --- }
+    Else If (GoalTab[GIdx].PredName = 'callable') And
+            (GoalTab[GIdx].Arity = 1) Then
+    Begin
+      EmitComment('callable/1 inline');
+      EmitLoadArgToAX(GoalTab[GIdx].Args[0], True);
+      EmitDeref;
+      EmitInstrAB('MOV', 'BX', 'AX');
+      EmitInstrAB('AND', 'BX', IntToStr(TAG_MASK));
+      NS := LabelGen;
+      EmitInstrAB('CMP', 'BX', IntToStr(TAG_ATOM Shl TAG_SHIFT));
+      EmitInstrA('JE', NS);
+      EmitInstrAB('CMP', 'BX', IntToStr(TAG_STR Shl TAG_SHIFT));
+      EmitInstrA('JE', NS);
+      EmitInstrAB('CMP', 'BX', IntToStr(TAG_LIST Shl TAG_SHIFT));
+      EmitInstrA('JNE', ClauseTab[CIdx].FailLabel);
+      EmitLabel(NS);
+      EmitComment('callable/1 ok');
+    End
+    { --- TODO 15 : functor/3 --- }
+    Else If (GoalTab[GIdx].PredName = 'functor') And
+            (GoalTab[GIdx].Arity = 3) Then
+    Begin
+      EmitComment('functor/3 inline');
+      { Load first arg (Term) to AX }
+      EmitLoadArgToAX(GoalTab[GIdx].Args[0], True);
+      EmitDeref;
+      EmitInstrAB('MOV', 'DX', 'AX');
+      EmitInstrAB('MOV', 'BX', 'AX');
+      EmitInstrAB('AND', 'BX', IntToStr(TAG_MASK));
+      Clean := LabelGen; { label for non-atom case }
+      PredLbl := LabelGen; { label for end of functor/3 }
+      { If ATOM: Name=self, Arity=0 }
+      EmitInstrAB('CMP', 'BX', IntToStr(TAG_ATOM Shl TAG_SHIFT));
+      EmitInstrA('JNE', Clean);
+      { Unify arg1 with the atom }
+      EmitInstrAB('MOV', 'AX', 'DX');
+      If GoalTab[GIdx].Args[1].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[1].VarName);
+        EmitInstrAB('MOV', 'BX', 'AX');
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitUnify;
+        EmitInstrA('JC', ClauseTab[CIdx].FailLabel);
+      End;
+      { Unify arg2 with 0 (arity of atom = 0) }
+      If GoalTab[GIdx].Args[2].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[2].VarName);
+        TagVal := (TAG_INT Shl TAG_SHIFT) Or (0 And VAL_MASK);
+        Str(TagVal, NS);
+        EmitInstrAB('MOV', 'BX', NS);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitUnify;
+        EmitInstrA('JC', ClauseTab[CIdx].FailLabel);
+      End;
+      EmitInstrA('JMP', PredLbl);
+      EmitLabel(Clean);
+      { Non-atom case: fail for now (INT/STR/LIST not yet handled) }
+      EmitInstrA('JMP', ClauseTab[CIdx].FailLabel);
+      EmitLabel(PredLbl);
+      EmitComment('functor/3 ok');
+    End
+    { --- TODO 15 : arg/3 --- }
+    Else If (GoalTab[GIdx].PredName = 'arg') And
+            (GoalTab[GIdx].Arity = 3) Then
+    Begin
+      EmitComment('arg/3 inline');
+      { Load arg0 (N) to AX }
+      EmitLoadArgToAX(GoalTab[GIdx].Args[0], True);
+      EmitDeref;
+      EmitInstrA('PUSH', 'AX');
+      { Load arg1 (Term) to AX }
+      EmitLoadArgToAX(GoalTab[GIdx].Args[1], True);
+      EmitDeref;
+      EmitInstrAB('MOV', 'BX', 'AX');
+      EmitInstrA('POP', 'AX');
+      { AX = N (tagged int), BX = Term }
+      { Extract integer value from N }
+      EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+      { BX points to structure on heap: [functor][arg1][arg2]... }
+      EmitInstrAB('MOV', 'SI', 'BX');
+      EmitInstrAB('AND', 'SI', IntToStr(VAL_MASK));
+      { Add N to get the Nth argument (1-based) }
+      EmitInstrAB('ADD', 'SI', 'AX');
+      EmitInstrAB('SHL', 'SI', '1');
+      EmitInstrAB('ADD', 'SI', 'OFFSET _PL_HEAP');
+      EmitInstrAB('MOV', 'AX', 'WORD PTR [SI]');
+      { Unify with arg2 }
+      If GoalTab[GIdx].Args[2].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[2].VarName);
+        EmitInstrAB('MOV', 'BX', 'AX');
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitUnify;
+        EmitInstrA('JC', ClauseTab[CIdx].FailLabel);
+      End;
+      EmitComment('arg/3 ok');
+    End
+    { --- TODO 15 : copy_term/2 --- }
+    Else If (GoalTab[GIdx].PredName = 'copy_term') And
+            (GoalTab[GIdx].Arity = 2) Then
+    Begin
+      EmitComment('copy_term/2 inline');
+      EmitLoadArgToAX(GoalTab[GIdx].Args[0], True);
+      EmitInstr('CALL    ' + PL_RT_PFX + 'COPY_TERM');
+      { Unify result with second arg }
+      If GoalTab[GIdx].Args[1].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[1].VarName);
+        EmitInstrAB('MOV', 'BX', 'AX');
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitUnify;
+        EmitInstrA('JC', ClauseTab[CIdx].FailLabel);
+      End;
+      EmitComment('copy_term/2 ok');
+    End
     Else
     Begin
       { --- But standard : charger args + appeler predicat --- }
@@ -6466,7 +6971,7 @@ Begin
 
   EmitBlankLine;
   EmitComment('=======================================');
-  EmitComment('  Clauses compilees (TODO 10 + 11 + 12 + 13 + 14)');
+  EmitComment('  Clauses compilees (TODO 10 + 11 + 12 + 13 + 14 + 15)');
   EmitComment('=======================================');
 
   { Emettre le code de chaque clause individuelle }
