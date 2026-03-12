@@ -7,7 +7,7 @@ test_upcase(X) :- upcase_atom(hello, X).
 test_upcase2(X) :- upcase_atom(abc, X).
 
 % --- downcase_atom/2 ---
-test_downcase(X) :- downcase_atom(hello, X).
+test_downcase(X) :- downcase_atom('WORLD', X).
 
 % --- atom_string/2 ---
 test_atom_string(X) :- atom_string(hello, X).
@@ -24,7 +24,7 @@ test_string_length(X) :- string_length(hello, X).
 % --- char_type/2 ---
 test_char_type_alpha :- char_type(a, alpha).
 test_char_type_digit :- char_type(1, digit).
-test_char_type_upper :- char_type(a, upper).
+test_char_type_upper :- char_type('A', upper).
 test_char_type_lower :- char_type(a, lower).
 
 % --- Predicat principal de test ---

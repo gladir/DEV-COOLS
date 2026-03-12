@@ -126,7 +126,7 @@ _PLP_test_downcase_1_0:
 
 ; but 1/1: downcase_atom/2
 ; downcase_atom/2 inline (TODO 23)
-        MOV   AX, 8200
+        MOV   AX, 8202
         CALL    _PLRT_DOWNCASE
         MOV   BX, AX
         MOV   AX, WORD PTR [BP-2]
@@ -252,9 +252,9 @@ _PLP_test_string_concat_1_0:
 
 ; but 1/1: string_concat/3
 ; string_concat/3 inline (TODO 23)
-        MOV   AX, 8202
+        MOV   AX, 8203
         PUSH   AX
-        MOV   BX, 8203
+        MOV   BX, 8204
         POP   AX
         CALL    _PLRT_STRING_CONCAT
         MOV   BX, AX
@@ -322,8 +322,8 @@ _PLP_test_char_type_alpha_0_0:
 
 ; but 1/1: char_type/2
 ; char_type/2 inline (TODO 23)
-        MOV   AX, 8204
-        MOV   BX, 8205
+        MOV   AX, 8205
+        MOV   BX, 8206
         CALL    _PLRT_CHAR_TYPE
         JC   _PLP_test_char_type_alpha_0_0_F
 ; char_type/2 done
@@ -347,7 +347,7 @@ _PLP_test_char_type_digit_0_0:
 ; but 1/1: char_type/2
 ; char_type/2 inline (TODO 23)
         MOV   AX, 16385
-        MOV   BX, 8206
+        MOV   BX, 8207
         CALL    _PLRT_CHAR_TYPE
         JC   _PLP_test_char_type_digit_0_0_F
 ; char_type/2 done
@@ -370,8 +370,8 @@ _PLP_test_char_type_upper_0_0:
 
 ; but 1/1: char_type/2
 ; char_type/2 inline (TODO 23)
-        MOV   AX, 8204
-        MOV   BX, 8207
+        MOV   AX, 8208
+        MOV   BX, 8209
         CALL    _PLRT_CHAR_TYPE
         JC   _PLP_test_char_type_upper_0_0_F
 ; char_type/2 done
@@ -394,8 +394,8 @@ _PLP_test_char_type_lower_0_0:
 
 ; but 1/1: char_type/2
 ; char_type/2 inline (TODO 23)
-        MOV   AX, 8204
-        MOV   BX, 8208
+        MOV   AX, 8205
+        MOV   BX, 8210
         CALL    _PLRT_CHAR_TYPE
         JC   _PLP_test_char_type_lower_0_0_F
 ; char_type/2 done
@@ -418,7 +418,7 @@ _PLP_main_0_0:
 
 ; but 1/2: write/1
 ; write/1 inline
-        MOV   AX, 8209
+        MOV   AX, 8211
         CALL    _PLRT_WRITE_TERM
 ; write/1 done
 
