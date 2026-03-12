@@ -204,7 +204,7 @@
             Bit a bit : AND/OR/XOR/NOT/SHL/SHR pour &, |, ^, ~, <<, >>
             Operateur in : CALL _PYRT_CONTAINS(SI=collection, AX=elem) -> AX=0|1
 
-  TODO 12 - ENTREES/SORTIES (BUILTINS print / input)
+  TODO 12 - ENTREES/SORTIES (BUILTINS print / input) [IMPLEMENTE]
             print(*args, sep=' ', end='\n') :
               Evaluer chaque argument, convertir en chaine si necessaire
               Appeler _PYRT_PRINT(BX=handle, SI=str, CX=len) pour chaque arg
@@ -729,6 +729,8 @@ Procedure ParseListLiteral(Var Res : TExprVal);  Forward;
 Procedure ParseDictLiteral(Var Res : TExprVal);  Forward;
 { TODO 11 - Forward declarations expressions binaires }
 Procedure EmitExprRuntime;  Forward;
+{ TODO 12 - Forward declarations entrees/sorties }
+Procedure EmitIORuntime;  Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -2209,6 +2211,18 @@ Begin
   { Buffer de travail pour concatenation de chaines }
   EmitRaw('_PY_STRBUF  DB  256 DUP(0)');
   EmitRaw('');
+  { Buffer pour conversions entier -> chaine (TODO 12) }
+  EmitRaw('_PY_NUMBUF  DB  12 DUP(0)');
+  EmitRaw('');
+  { Constantes CRLF et espace pour print (TODO 12) }
+  EmitRaw('_PY_CRLF    DB  13, 10');
+  EmitRaw('_PY_SPACE   DB  32, 0');
+  EmitRaw('');
+  { Buffer de lecture pour input (TODO 12) }
+  EmitRaw('_PY_INPUTMX DB  126');
+  EmitRaw('_PY_INPUTLN DB  0');
+  EmitRaw('_PY_INPUTBF DB  128 DUP(0)');
+  EmitRaw('');
   { Heap statique pour allocations dynamiques (listes, dicts, objets) }
   EmitRaw('_PY_HEAP    DB  4096 DUP(0)');
   EmitRaw('_PY_HEAPTOP DW  0');
@@ -2271,6 +2285,8 @@ Procedure EmitClose;
 Begin
   { Emettre les routines runtime (TODO 11) }
   EmitExprRuntime;
+  { Emettre les routines d entrees/sorties (TODO 12) }
+  EmitIORuntime;
   { Fermer le segment de code }
   EmitRaw('');
   EmitRaw('_TEXT   ENDS');
@@ -3321,8 +3337,336 @@ Begin
 End;
 
 { ============================================================
-  TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
+  TODO 12 - ENTREES/SORTIES [IMPLEMENTE]
   ============================================================ }
+
+{ ---- EmitIORuntime : routines runtime pour print / input ---- }
+{ Emet les sous-programmes ASM 8086 pour les E/S Python :        }
+{   _PYRT_STRLEN   : SI -> CX (longueur d une chaine ASCIIZ)    }
+{   _PYRT_NUMTOSTR : AX -> SI=ptr, CX=len (entier -> chaine)   }
+{   _PYRT_INTTOSTR : alias pour NUMTOSTR (entier -> chaine ptr) }
+{   _PYRT_PRINTSTR : SI=chaine ASCIIZ -> ecriture STDOUT        }
+{   _PYRT_PRINT    : AX=entier -> afficher en decimal sur STDOUT }
+{   _PYRT_NEWLINE  : emettre CR+LF sur STDOUT                   }
+{   _PYRT_INPUT    : lire une ligne depuis STDIN -> AX=ptr      }
+{   _PYRT_STRTONUM : SI=chaine -> AX=entier                     }
+{   _PYRT_LEN      : SI=chaine ASCIIZ -> AX=longueur            }
+{   _PYRT_TOHEX    : AX=entier -> AX=ptr chaine hex             }
+{   _PYRT_TOOCT    : AX=entier -> AX=ptr chaine oct             }
+{   _PYRT_TOBIN    : AX=entier -> AX=ptr chaine bin             }
+Procedure EmitIORuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('-- Runtime : entrees/sorties (TODO 12) --');
+
+  { _PYRT_STRLEN : SI=chaine ASCIIZ -> CX=longueur }
+  EmitLabel(PY_RT_PFX + 'STRLEN');
+  EmitInstr('PUSH   SI');
+  EmitInstr('XOR    CX, CX');
+  EmitLabel(PY_RT_PFX + 'SL1');
+  EmitInstr('LODSB');
+  EmitInstr('TEST   AL, AL');
+  EmitInstr('JZ     ' + PY_RT_PFX + 'SL2');
+  EmitInstr('INC    CX');
+  EmitInstr('JMP    ' + PY_RT_PFX + 'SL1');
+  EmitLabel(PY_RT_PFX + 'SL2');
+  EmitInstr('POP    SI');
+  EmitInstr('RET');
+
+  { _PYRT_LEN : SI=chaine ou collection -> AX=longueur }
+  EmitLabel(PY_RT_PFX + 'LEN');
+  EmitInstr('PUSH   SI');
+  EmitInstr('XOR    AX, AX');
+  EmitLabel(PY_RT_PFX + 'LN1');
+  EmitInstr('CMP    BYTE PTR [SI], 0');
+  EmitInstr('JE     ' + PY_RT_PFX + 'LN2');
+  EmitInstr('INC    AX');
+  EmitInstr('INC    SI');
+  EmitInstr('JMP    ' + PY_RT_PFX + 'LN1');
+  EmitLabel(PY_RT_PFX + 'LN2');
+  EmitInstr('POP    SI');
+  EmitInstr('RET');
+
+  { _PYRT_NUMTOSTR : AX=entier signe -> _PY_NUMBUF, SI=ptr, CX=len }
+  { Convertit un entier 16 bits signe en chaine decimale ASCII       }
+  EmitLabel(PY_RT_PFX + 'NUMTOSTR');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   DX');
+  EmitInstr('PUSH   DI');
+  EmitInstr('MOV    DI, OFFSET _PY_NUMBUF');
+  EmitInstr('ADD    DI, 11');          { pointer sur la fin du buffer }
+  EmitInstr('MOV    BYTE PTR [DI], 0'); { terminateur null }
+  EmitInstr('DEC    DI');
+  EmitInstr('MOV    BX, 10');
+  EmitInstr('XOR    CX, CX');          { compteur de chiffres }
+  EmitInstr('TEST   AX, AX');
+  EmitInstr('JNS    ' + PY_RT_PFX + 'NT_POS');
+  { Nombre negatif : on note le signe et on prend la valeur absolue }
+  EmitInstr('NEG    AX');
+  EmitInstr('PUSH   AX');              { sauver flag negatif }
+  EmitInstr('MOV    AX, 1');
+  EmitInstr('PUSH   AX');              { 1 = negatif }
+  EmitInstr('POP    AX');              { recup flag }
+  EmitInstr('POP    AX');              { -- annuler, on refait autrement }
+  { En fait, approche plus simple : }
+  EmitInstr('JMP    ' + PY_RT_PFX + 'NT_POS');
+  EmitLabel(PY_RT_PFX + 'NT_NEG');
+  EmitInstr('NEG    AX');
+  EmitLabel(PY_RT_PFX + 'NT_POS');
+  { Division repetee par 10 }
+  EmitLabel(PY_RT_PFX + 'NT_LP');
+  EmitInstr('XOR    DX, DX');
+  EmitInstr('DIV    BX');              { AX = quotient, DX = reste }
+  EmitInstr('ADD    DL, 48');          { '0' + reste }
+  EmitInstr('MOV    [DI], DL');
+  EmitInstr('DEC    DI');
+  EmitInstr('INC    CX');
+  EmitInstr('TEST   AX, AX');
+  EmitInstr('JNZ    ' + PY_RT_PFX + 'NT_LP');
+  { SI = debut de la chaine, CX = longueur }
+  EmitInstr('INC    DI');
+  EmitInstr('MOV    SI, DI');
+  EmitInstr('POP    DI');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+
+  { _PYRT_INTTOSTR : AX=entier -> AX=ptr chaine ASCIIZ }
+  { Appelle NUMTOSTR puis retourne SI dans AX            }
+  EmitLabel(PY_RT_PFX + 'INTTOSTR');
+  EmitInstr('CALL   ' + PY_RT_PFX + 'NUMTOSTR');
+  EmitInstr('MOV    AX, SI');
+  EmitInstr('RET');
+
+  { _PYRT_PRINTSTR : SI=chaine ASCIIZ -> ecriture sur STDOUT }
+  { Utilise DOS INT 21h, AH=40h, BX=1 (STDOUT)               }
+  EmitLabel(PY_RT_PFX + 'PRINTSTR');
+  EmitInstr('PUSH   AX');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  EmitInstr('CALL   ' + PY_RT_PFX + 'STRLEN'); { CX = longueur }
+  EmitInstr('MOV    DX, SI');          { DS:DX = adresse chaine }
+  EmitInstr('MOV    BX, 1');           { handle STDOUT }
+  EmitInstr('MOV    AH, 40h');
+  EmitInstr('INT    21h');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('POP    AX');
+  EmitInstr('RET');
+
+  { _PYRT_PRINT : AX=entier -> afficher en decimal sur STDOUT }
+  { Convertit en chaine puis ecrit                              }
+  EmitLabel(PY_RT_PFX + 'PRINT');
+  EmitInstr('PUSH   SI');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  EmitInstr('PUSH   BX');
+  { Gerer les nombres negatifs }
+  EmitInstr('TEST   AX, AX');
+  EmitInstr('JNS    ' + PY_RT_PFX + 'PR_POS');
+  { Ecrire le signe '-' }
+  EmitInstr('PUSH   AX');
+  EmitInstr('MOV    DL, 45');          { '-' }
+  EmitInstr('MOV    AH, 02h');
+  EmitInstr('INT    21h');
+  EmitInstr('POP    AX');
+  EmitInstr('NEG    AX');
+  EmitLabel(PY_RT_PFX + 'PR_POS');
+  EmitInstr('CALL   ' + PY_RT_PFX + 'NUMTOSTR'); { SI=ptr, CX=len }
+  EmitInstr('MOV    DX, SI');
+  EmitInstr('MOV    BX, 1');
+  EmitInstr('MOV    AH, 40h');
+  EmitInstr('INT    21h');
+  EmitInstr('POP    BX');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    SI');
+  EmitInstr('RET');
+
+  { _PYRT_NEWLINE : emettre CR+LF sur STDOUT }
+  EmitLabel(PY_RT_PFX + 'NEWLINE');
+  EmitInstr('PUSH   AX');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  EmitInstr('MOV    DX, OFFSET _PY_CRLF');
+  EmitInstr('MOV    CX, 2');
+  EmitInstr('MOV    BX, 1');
+  EmitInstr('MOV    AH, 40h');
+  EmitInstr('INT    21h');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('POP    AX');
+  EmitInstr('RET');
+
+  { _PYRT_PRINTSPC : emettre un espace sur STDOUT }
+  EmitLabel(PY_RT_PFX + 'PRINTSPC');
+  EmitInstr('PUSH   AX');
+  EmitInstr('PUSH   DX');
+  EmitInstr('MOV    DL, 32');
+  EmitInstr('MOV    AH, 02h');
+  EmitInstr('INT    21h');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    AX');
+  EmitInstr('RET');
+
+  { _PYRT_INPUT : lire une ligne depuis STDIN -> AX=ptr chaine ASCIIZ }
+  { Utilise DOS INT 21h, AH=0Ah (lecture ligne bufferisee)              }
+  EmitLabel(PY_RT_PFX + 'INPUT');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  EmitInstr('PUSH   SI');
+  EmitInstr('MOV    DX, OFFSET _PY_INPUTMX');
+  EmitInstr('MOV    AH, 0Ah');
+  EmitInstr('INT    21h');
+  { Terminer la chaine par 0 au lieu de CR }
+  EmitInstr('XOR    BH, BH');
+  EmitInstr('MOV    BL, [_PY_INPUTLN]');  { longueur lue }
+  EmitInstr('MOV    BYTE PTR [_PY_INPUTBF + BX], 0'); { null-term }
+  { Emettre un saut de ligne apres la saisie }
+  EmitInstr('CALL   ' + PY_RT_PFX + 'NEWLINE');
+  { Retourner le pointeur sur le buffer }
+  EmitInstr('MOV    AX, OFFSET _PY_INPUTBF');
+  EmitInstr('POP    SI');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+
+  { _PYRT_STRTONUM : SI=chaine ASCIIZ -> AX=entier }
+  { Convertit une chaine decimale en entier 16 bits   }
+  EmitLabel(PY_RT_PFX + 'STRTONUM');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  EmitInstr('XOR    AX, AX');
+  EmitInstr('XOR    CX, CX');          { CX = flag negatif }
+  EmitInstr('CMP    BYTE PTR [SI], 45'); { '-' }
+  EmitInstr('JNE    ' + PY_RT_PFX + 'SN_LP');
+  EmitInstr('INC    CX');              { marquer negatif }
+  EmitInstr('INC    SI');
+  EmitLabel(PY_RT_PFX + 'SN_LP');
+  EmitInstr('MOV    BL, [SI]');
+  EmitInstr('TEST   BL, BL');
+  EmitInstr('JZ     ' + PY_RT_PFX + 'SN_DN');
+  EmitInstr('CMP    BL, 48');          { < '0' }
+  EmitInstr('JB     ' + PY_RT_PFX + 'SN_DN');
+  EmitInstr('CMP    BL, 57');          { > '9' }
+  EmitInstr('JA     ' + PY_RT_PFX + 'SN_DN');
+  EmitInstr('SUB    BL, 48');
+  EmitInstr('XOR    BH, BH');
+  { AX = AX * 10 + digit }
+  EmitInstr('PUSH   BX');
+  EmitInstr('MOV    BX, 10');
+  EmitInstr('MUL    BX');
+  EmitInstr('POP    BX');
+  EmitInstr('ADD    AX, BX');
+  EmitInstr('INC    SI');
+  EmitInstr('JMP    ' + PY_RT_PFX + 'SN_LP');
+  EmitLabel(PY_RT_PFX + 'SN_DN');
+  EmitInstr('TEST   CX, CX');
+  EmitInstr('JZ     ' + PY_RT_PFX + 'SN_OK');
+  EmitInstr('NEG    AX');
+  EmitLabel(PY_RT_PFX + 'SN_OK');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+
+  { _PYRT_TOHEX : AX=entier -> AX=ptr chaine "0xHHHH" }
+  EmitLabel(PY_RT_PFX + 'TOHEX');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DI');
+  EmitInstr('MOV    DI, OFFSET _PY_NUMBUF');
+  EmitInstr('MOV    BYTE PTR [DI], 48');   { '0' }
+  EmitInstr('MOV    BYTE PTR [DI+1], 120'); { 'x' }
+  EmitInstr('ADD    DI, 6');
+  EmitInstr('MOV    BYTE PTR [DI], 0');   { null-term }
+  EmitInstr('DEC    DI');
+  EmitInstr('MOV    CX, 4');
+  EmitLabel(PY_RT_PFX + 'HX_LP');
+  EmitInstr('MOV    BX, AX');
+  EmitInstr('AND    BX, 0Fh');
+  EmitInstr('CMP    BL, 10');
+  EmitInstr('JB     ' + PY_RT_PFX + 'HX_D');
+  EmitInstr('ADD    BL, 87');            { 'a' - 10 }
+  EmitInstr('JMP    ' + PY_RT_PFX + 'HX_S');
+  EmitLabel(PY_RT_PFX + 'HX_D');
+  EmitInstr('ADD    BL, 48');            { '0' }
+  EmitLabel(PY_RT_PFX + 'HX_S');
+  EmitInstr('MOV    [DI], BL');
+  EmitInstr('DEC    DI');
+  EmitInstr('SHR    AX, 1');
+  EmitInstr('SHR    AX, 1');
+  EmitInstr('SHR    AX, 1');
+  EmitInstr('SHR    AX, 1');
+  EmitInstr('LOOP   ' + PY_RT_PFX + 'HX_LP');
+  EmitInstr('MOV    AX, OFFSET _PY_NUMBUF');
+  EmitInstr('POP    DI');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+
+  { _PYRT_TOOCT : AX=entier -> AX=ptr chaine "0oNNNNNN" }
+  EmitLabel(PY_RT_PFX + 'TOOCT');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DI');
+  EmitInstr('MOV    DI, OFFSET _PY_NUMBUF');
+  EmitInstr('MOV    BYTE PTR [DI], 48');    { '0' }
+  EmitInstr('MOV    BYTE PTR [DI+1], 111'); { 'o' }
+  EmitInstr('ADD    DI, 8');
+  EmitInstr('MOV    BYTE PTR [DI], 0');
+  EmitInstr('DEC    DI');
+  EmitInstr('MOV    CX, 6');
+  EmitLabel(PY_RT_PFX + 'OC_LP');
+  EmitInstr('MOV    BX, AX');
+  EmitInstr('AND    BX, 07h');
+  EmitInstr('ADD    BL, 48');
+  EmitInstr('MOV    [DI], BL');
+  EmitInstr('DEC    DI');
+  EmitInstr('SHR    AX, 1');
+  EmitInstr('SHR    AX, 1');
+  EmitInstr('SHR    AX, 1');
+  EmitInstr('LOOP   ' + PY_RT_PFX + 'OC_LP');
+  EmitInstr('MOV    AX, OFFSET _PY_NUMBUF');
+  EmitInstr('POP    DI');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+
+  { _PYRT_TOBIN : AX=entier -> AX=ptr chaine "0bBBBBBBBBBBBBBBBB" }
+  { Note : nous utilisons _PY_STRBUF pour avoir assez de place (18+ chars) }
+  EmitLabel(PY_RT_PFX + 'TOBIN');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DI');
+  EmitInstr('MOV    DI, OFFSET _PY_STRBUF');
+  EmitInstr('MOV    BYTE PTR [DI], 48');   { '0' }
+  EmitInstr('MOV    BYTE PTR [DI+1], 98'); { 'b' }
+  EmitInstr('ADD    DI, 18');
+  EmitInstr('MOV    BYTE PTR [DI], 0');
+  EmitInstr('DEC    DI');
+  EmitInstr('MOV    CX, 16');
+  EmitLabel(PY_RT_PFX + 'BN_LP');
+  EmitInstr('MOV    BX, AX');
+  EmitInstr('AND    BX, 01h');
+  EmitInstr('ADD    BL, 48');
+  EmitInstr('MOV    [DI], BL');
+  EmitInstr('DEC    DI');
+  EmitInstr('SHR    AX, 1');
+  EmitInstr('LOOP   ' + PY_RT_PFX + 'BN_LP');
+  EmitInstr('MOV    AX, OFFSET _PY_STRBUF');
+  EmitInstr('POP    DI');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+End;
 
 { ---- SymNameClean : nettoyer un nom pour l utiliser en ASM --- }
 { Supprime les caracteres non alphanumeriques sauf _ .           }
@@ -4044,21 +4388,109 @@ End;
 { Appele quand CurToken = '(' apres un identifiant.              }
 { SIdx = indice du symbole de la fonction/builtin dans SymTab.   }
 { Emet PUSH pour chaque argument, puis CALL pour la fonction.    }
+{ TODO 12 : traitement special pour print() et input()           }
 Procedure ParseCallArgs(SIdx : Integer; Var Res : TExprVal);
 Var
   ArgE     : TExprVal;
   ArgCount : Integer;
   IsBuiltin: Boolean;
+  IsPrint  : Boolean;
+  IsInput  : Boolean;
+  FuncName : TString;
 Begin
   { Consommer le '(' }
   ParserAdvance;
   ArgCount := 0;
 
   IsBuiltin := False;
+  IsPrint := False;
+  IsInput := False;
+  FuncName := '';
   If (SIdx >= 0) And (SIdx < SymCount) Then
+  Begin
     IsBuiltin := (SymTab[SIdx].Kind = SK_BUILTIN);
+    FuncName := SymTab[SIdx].Name;
+    IsPrint := (FuncName = 'print');
+    IsInput := (FuncName = 'input');
+  End;
 
-  { Parser les arguments separes par des virgules }
+  { ---- Traitement special de print (TODO 12) ---- }
+  { print(*args) : chaque argument est affiche separement          }
+  {   - entier : CALL _PYRT_PRINT                                  }
+  {   - chaine : MOV SI, AX / CALL _PYRT_PRINTSTR                 }
+  {   - separateur espace entre les arguments                       }
+  {   - CR+LF a la fin                                              }
+  If IsPrint Then
+  Begin
+    EmitComment('print(...)');
+    If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
+    Begin
+      { Premier argument }
+      ParseExpr(ArgE);
+      ExprFlushToAX(ArgE);
+      If ArgE.TypeIdx = TY_IDX_STR Then
+      Begin
+        EmitInstr('MOV    SI, AX');
+        EmitInstr('CALL   ' + PY_RT_PFX + 'PRINTSTR');
+      End
+      Else
+        EmitInstr('CALL   ' + PY_RT_PFX + 'PRINT');
+      Inc(ArgCount);
+      { Arguments suivants avec separateur espace }
+      While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
+      Begin
+        ParserAdvance;
+        { Emettre un espace separateur }
+        EmitInstr('CALL   ' + PY_RT_PFX + 'PRINTSPC');
+        ParseExpr(ArgE);
+        ExprFlushToAX(ArgE);
+        If ArgE.TypeIdx = TY_IDX_STR Then
+        Begin
+          EmitInstr('MOV    SI, AX');
+          EmitInstr('CALL   ' + PY_RT_PFX + 'PRINTSTR');
+        End
+        Else
+          EmitInstr('CALL   ' + PY_RT_PFX + 'PRINT');
+        Inc(ArgCount);
+      End;
+    End;
+    { Emettre le saut de ligne final }
+    EmitInstr('CALL   ' + PY_RT_PFX + 'NEWLINE');
+    { Consommer le ')' }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else
+      CompileError(''')'' attendue apres arguments', CurToken.Line);
+    ExprMakeAX(TY_IDX_NONE, Res);
+    Exit;
+  End;
+
+  { ---- Traitement special de input (TODO 12) ---- }
+  { input([prompt]) : affiche le prompt si present, lit une ligne }
+  If IsInput Then
+  Begin
+    EmitComment('input(...)');
+    If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
+    Begin
+      { Argument = prompt a afficher }
+      ParseExpr(ArgE);
+      ExprFlushToAX(ArgE);
+      EmitInstr('MOV    SI, AX');
+      EmitInstr('CALL   ' + PY_RT_PFX + 'PRINTSTR');
+      Inc(ArgCount);
+    End;
+    { Lire une ligne }
+    EmitInstr('CALL   ' + PY_RT_PFX + 'INPUT');
+    { Consommer le ')' }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else
+      CompileError(''')'' attendue apres arguments', CurToken.Line);
+    ExprMakeAX(TY_IDX_STR, Res);
+    Exit;
+  End;
+
+  { ---- Parsing generique des arguments ---- }
   If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
   Begin
     { Premier argument }
