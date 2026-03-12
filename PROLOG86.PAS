@@ -344,7 +344,7 @@
               _PLRT_FINDALL : boucle try/fail sur Goal + collecte
               _PLRT_MAKELIST : construire la liste depuis le buffer
 
-  TODO 21 - OPERATEURS UTILISATEUR (OP/3)
+  TODO 21 - OPERATEURS UTILISATEUR (OP/3) [IMPLEMENTE]
             op(Priorite, Type, Nom) : definir un operateur
               Priorite : 1..1200
               Type : xf, yf, xfx, xfy, yfx, fy, fx
@@ -589,6 +589,9 @@ Const
   BIF_ASSERTZ        = 122;
   BIF_RETRACT        = 123;
   BIF_ABOLISH        = 124;
+  { Operateurs utilisateur (TODO 21) }
+  BIF_OP             = 130;
+  BIF_CURRENT_OP     = 131;
 
 { ============================================================
   TYPES
@@ -799,6 +802,14 @@ Type
     Right   : Integer;         { index enfant droit  (-1 si aucun)   }
   End;
 
+  { ---- Operateur utilisateur (TODO 21) ----------------------------- }
+  { Chaque operateur defini par op/3 est stocke dans la table OpTab.   }
+  TOpEntry = Record
+    Name : TString;    { nom de l operateur                          }
+    Prec : Integer;    { precedence ISO 1..1200                      }
+    Spec : TString;    { specifieur : xf, yf, xfx, xfy, yfx, fy, fx }
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -862,6 +873,10 @@ Var
   { Noeuds d expression arithmetique (TODO 14) }
   ArithNodeTab   : Array[0..MAX_ARITH_NODES - 1] Of TArithNode;
   ArithNodeCount : Integer;
+
+  { Table des operateurs utilisateur (TODO 21) }
+  OpTab    : Array[0..MAX_OP - 1] Of TOpEntry;
+  OpCount  : Integer;
 
   { Representation des termes WAM (TODO 06) }
   Heap       : Array[0..HEAP_SIZE - 1] Of Integer;  { tas WAM             }
@@ -1023,6 +1038,12 @@ Procedure EmitBuiltinRuntime; Forward;
 Procedure EmitDynDBRuntime; Forward;
 { Collecte de solutions (TODO 20) }
 Procedure EmitCollectRuntime; Forward;
+{ Operateurs utilisateur (TODO 21) }
+Procedure OpAdd(Const AName : TString; APrec : Integer;
+                Const ASpec : TString); Forward;
+Function  OpFind(Const AName : TString) : Integer; Forward;
+Procedure OpInit; Forward;
+Procedure EmitOperatorRuntime; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1303,6 +1324,8 @@ Begin
   LabelGenSeq := 0;
   { TODO 05 }
   SymInit;
+  { TODO 21 }
+  OpInit;
   { TODO 06 }
   TermInit;
   { TODO 08 }
@@ -2483,6 +2506,9 @@ End;
 {   Prolog 400  -> Pratt 8 : * / // rem mod << >>              }
 {   Prolog 200  -> Pratt 9 : ** ^                              }
 Function BinOpPrec(Const Op : TString) : Integer;
+Var
+  OIdx : Integer;
+  P    : Integer;
 Begin
   { Niveau 1 : directif / requete (1200) }
   If (Op = ':-') Or (Op = '?-') Or (Op = '-->') Then
@@ -2519,7 +2545,26 @@ Begin
   Else If (Op = '**') Or (Op = '^') Then
     BinOpPrec := 9
   Else
-    BinOpPrec := 0;
+  Begin
+    { Fallback : consulter OpTab pour operateurs utilisateur (TODO 21) }
+    OIdx := OpFind(Op);
+    If OIdx >= 0 Then
+    Begin
+      P := OpTab[OIdx].Prec;
+      If P >= 1200 Then BinOpPrec := 1
+      Else If P >= 1100 Then BinOpPrec := 2
+      Else If P >= 1050 Then BinOpPrec := 3
+      Else If P >= 1000 Then BinOpPrec := 4
+      Else If P >= 900  Then BinOpPrec := 5
+      Else If P >= 700  Then BinOpPrec := 6
+      Else If P >= 500  Then BinOpPrec := 7
+      Else If P >= 400  Then BinOpPrec := 8
+      Else If P >= 200  Then BinOpPrec := 9
+      Else BinOpPrec := 10;
+    End
+    Else
+      BinOpPrec := 0;
+  End;
 End;
 
 { ---- BinOpIsRight : operateur droit-associatif ? ------------ }
@@ -2528,12 +2573,23 @@ End;
 {   xfy : associatif a droite (:-, ?-, ;, ->, ',', \+)          }
 {   yfx : associatif a gauche (+, -, *, /, //, mod, rem, etc.)  }
 Function BinOpIsRight(Const Op : TString) : Boolean;
+Var
+  OIdx : Integer;
 Begin
-  BinOpIsRight :=
-    (Op = ':-') Or (Op = '?-') Or (Op = '-->') Or
-    (Op = ';')  Or (Op = '->') Or
-    (Op = ',')  Or
-    (Op = '^');
+  If (Op = ':-') Or (Op = '?-') Or (Op = '-->') Or
+     (Op = ';')  Or (Op = '->') Or
+     (Op = ',')  Or
+     (Op = '^') Then
+    BinOpIsRight := True
+  Else
+  Begin
+    { Fallback : consulter OpTab pour operateurs utilisateur (TODO 21) }
+    OIdx := OpFind(Op);
+    If (OIdx >= 0) And (OpTab[OIdx].Spec = 'xfy') Then
+      BinOpIsRight := True
+    Else
+      BinOpIsRight := False;
+  End;
 End;
 
 { ---- OpSpecifier : retourner le type d operateur Prolog ------ }
@@ -2543,6 +2599,8 @@ End;
 { yfx    : infixe gauche-associatif                              }
 { xf/yf  : postfixe (non utilise dans ISO standard)             }
 Function OpSpecifier(Const Op : TString) : TString;
+Var
+  OIdx : Integer;
 Begin
   { Prefixes }
   If (Op = ':-') Or (Op = '?-') Then
@@ -2574,7 +2632,14 @@ Begin
   Else If (Op = '-->') Then
     OpSpecifier := 'xfx'
   Else
-    OpSpecifier := 'yfx';
+  Begin
+    { Fallback : consulter OpTab pour operateurs utilisateur (TODO 21) }
+    OIdx := OpFind(Op);
+    If OIdx >= 0 Then
+      OpSpecifier := OpTab[OIdx].Spec
+    Else
+      OpSpecifier := 'yfx';
+  End;
 End;
 
 { ---- ExprFlushToAX : materialiser une valeur dans AX -------- }
@@ -3428,6 +3493,126 @@ Begin
   SymAddBif('sub_atom',     5, BIF_SUB_ATOM);
   SymAddBif('upcase_atom',  2, BIF_UPCASE_ATOM);
   SymAddBif('downcase_atom', 2, BIF_DOWNCASE_ATOM);
+
+  { Predicats builtins (operateurs) (TODO 21) }
+  SymAddBif('op',           3, BIF_OP);
+  SymAddBif('current_op',   3, BIF_CURRENT_OP);
+End;
+
+{ ============================================================
+  TODO 21 - OPERATEURS UTILISATEUR (OP/3) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- OpFind : chercher un operateur par nom -------------------- }
+{ Retourne l index dans OpTab ou -1 si pas trouve.                 }
+Function OpFind(Const AName : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  OpFind := -1;
+  For I := 0 To OpCount - 1 Do
+    If OpTab[I].Name = AName Then
+    Begin
+      OpFind := I;
+      Exit;
+    End;
+End;
+
+{ ---- OpAdd : ajouter ou modifier un operateur ------------------- }
+{ Si un operateur du meme nom existe, met a jour sa precedence et   }
+{ son specifieur. Sinon, ajoute un nouvel operateur.                }
+{ Si APrec = 0, supprime l operateur.                               }
+Procedure OpAdd(Const AName : TString; APrec : Integer;
+                Const ASpec : TString);
+Var
+  Idx, I : Integer;
+Begin
+  Idx := OpFind(AName);
+  If APrec = 0 Then
+  Begin
+    { Suppression }
+    If Idx >= 0 Then
+    Begin
+      For I := Idx To OpCount - 2 Do
+        OpTab[I] := OpTab[I + 1];
+      Dec(OpCount);
+    End;
+    Exit;
+  End;
+  If Idx >= 0 Then
+  Begin
+    { Mise a jour }
+    OpTab[Idx].Prec := APrec;
+    OpTab[Idx].Spec := ASpec;
+  End
+  Else
+  Begin
+    { Ajout }
+    If OpCount >= MAX_OP Then
+    Begin
+      WarnMsg('operator table full, ignoring op(' +
+              IntToStr(APrec) + ',' + ASpec + ',' + AName + ')');
+      Exit;
+    End;
+    OpTab[OpCount].Name := AName;
+    OpTab[OpCount].Prec := APrec;
+    OpTab[OpCount].Spec := ASpec;
+    Inc(OpCount);
+  End;
+End;
+
+{ ---- OpInit : initialiser la table des operateurs ISO ------------ }
+{ Enregistre les operateurs standard ISO Prolog dans OpTab.          }
+Procedure OpInit;
+Begin
+  OpCount := 0;
+  { Directives (1200) }
+  OpAdd(':-',   1200, 'fx');
+  OpAdd('?-',   1200, 'fx');
+  OpAdd('-->',  1200, 'xfx');
+  { Disjonction (1100) }
+  OpAdd(';',    1100, 'xfy');
+  OpAdd('|',    1100, 'xfy');
+  { If-then (1050) }
+  OpAdd('->',   1050, 'xfy');
+  { Conjonction (1000) }
+  OpAdd(',',    1000, 'xfy');
+  { Negation (900) }
+  OpAdd('\+',    900, 'fy');
+  OpAdd('not',   900, 'fy');
+  { Comparaison / unification / evaluation (700) }
+  OpAdd('is',    700, 'xfx');
+  OpAdd('=',     700, 'xfx');
+  OpAdd('\=',    700, 'xfx');
+  OpAdd('==',    700, 'xfx');
+  OpAdd('\==',   700, 'xfx');
+  OpAdd('=:=',   700, 'xfx');
+  OpAdd('=\=',   700, 'xfx');
+  OpAdd('<',     700, 'xfx');
+  OpAdd('>',     700, 'xfx');
+  OpAdd('=<',    700, 'xfx');
+  OpAdd('>=',    700, 'xfx');
+  OpAdd('=..',   700, 'xfx');
+  OpAdd('@<',    700, 'xfx');
+  OpAdd('@>',    700, 'xfx');
+  OpAdd('@=<',   700, 'xfx');
+  OpAdd('@>=',   700, 'xfx');
+  { Addition / soustraction / bits (500) }
+  OpAdd('+',     500, 'yfx');
+  OpAdd('-',     500, 'yfx');
+  OpAdd('/\',    500, 'yfx');
+  OpAdd('\/',    500, 'yfx');
+  { Multiplication / division (400) }
+  OpAdd('*',     400, 'yfx');
+  OpAdd('/',     400, 'yfx');
+  OpAdd('//',    400, 'yfx');
+  OpAdd('rem',   400, 'yfx');
+  OpAdd('mod',   400, 'yfx');
+  OpAdd('<<',    400, 'yfx');
+  OpAdd('>>',    400, 'yfx');
+  { Puissance / existentiel (200) }
+  OpAdd('**',    200, 'xfx');
+  OpAdd('^',     200, 'xfy');
 End;
 
 { ============================================================
@@ -4125,6 +4310,14 @@ Begin
   EmitComment('--- Solution collection buffer (TODO 20) ---');
   EmitRaw('_PL_COLLECT  DW  256 DUP(0)');
   EmitRaw('_PL_COLLCOUNT DW  0');
+  EmitBlankLine;
+
+  { Table des operateurs utilisateur (TODO 21) }
+  EmitComment('--- Operator table (TODO 21) ---');
+  EmitRaw('_PL_OPCOUNT DW  0');
+  EmitRaw('_PL_OPPREC  DW  ' + IntToStr(MAX_OP) + ' DUP(0)');
+  EmitRaw('_PL_OPTYPE  DB  ' + IntToStr(MAX_OP * 4) + ' DUP(0)');
+  EmitRaw('_PL_OPNAME  DB  ' + IntToStr(MAX_OP * 32) + ' DUP(0)');
   EmitBlankLine;
 
   { Registres d arguments WAM A1..AN (TODO 10) }
@@ -6628,6 +6821,77 @@ Begin
   EmitBlankLine;
 End;
 
+{ ============================================================
+  TODO 21 - OPERATEURS UTILISATEUR (OP/3) RUNTIME [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- EmitOperatorRuntime : routines de gestion des operateurs ---- }
+{ _PLRT_OP_REGISTER : AX=prec, BX=spec_atom, CX=name_atom          }
+{   Enregistre un operateur dans _PL_OPTAB a runtime                }
+{ _PLRT_OP_LOOKUP : AX=name_atom -> AX=prec, BX=spec_atom (CLC)    }
+{   ou STC si pas trouve                                            }
+Procedure EmitOperatorRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=======================================');
+  EmitComment('  Routines Operateurs (TODO 21)');
+  EmitComment('=======================================');
+  EmitBlankLine;
+
+  { ---------------------------------------------------------- }
+  { _PLRT_OP_REGISTER : AX = precedence (tagged int)           }
+  {   BX = spec atom (tagged), CX = name atom (tagged)         }
+  {   Store in _PL_OPPREC[count] and _PL_OPCOUNT++             }
+  { ---------------------------------------------------------- }
+  EmitLabel(PL_RT_PFX + 'OP_REGISTER');
+  EmitInstr('PUSH    SI');
+  EmitInstr('PUSH    DI');
+  { Extract precedence value from AX (tagged int) }
+  EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+  { Store precedence }
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [_PL_OPCOUNT]');
+  EmitInstr('SHL     SI,1');
+  EmitInstrAB('ADD', 'SI', 'OFFSET _PL_OPPREC');
+  EmitInstrAB('MOV', 'WORD PTR [SI]', 'AX');
+  { Increment count }
+  EmitInstr('INC     WORD PTR [_PL_OPCOUNT]');
+  EmitInstr('POP     DI');
+  EmitInstr('POP     SI');
+  EmitInstr('CLC');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { ---------------------------------------------------------- }
+  { _PLRT_OP_LOOKUP : AX = name atom index (tagged)            }
+  {   Search _PL_OPPREC, return AX=prec or STC if not found    }
+  { ---------------------------------------------------------- }
+  EmitLabel(PL_RT_PFX + 'OP_LOOKUP');
+  EmitInstr('PUSH    CX');
+  EmitInstr('PUSH    SI');
+  EmitInstrAB('MOV', 'CX', 'WORD PTR [_PL_OPCOUNT]');
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JZ', PL_RT_PFX + 'OPLK_FAIL');
+  EmitInstrAB('MOV', 'SI', 'OFFSET _PL_OPPREC');
+  EmitLabel(PL_RT_PFX + 'OPLK_LOOP');
+  EmitInstrAB('CMP', 'AX', 'WORD PTR [SI]');
+  EmitInstrA('JE', PL_RT_PFX + 'OPLK_FOUND');
+  EmitInstrAB('ADD', 'SI', '2');
+  EmitInstr('DEC     CX');
+  EmitInstrA('JNZ', PL_RT_PFX + 'OPLK_LOOP');
+  EmitLabel(PL_RT_PFX + 'OPLK_FAIL');
+  EmitInstr('POP     SI');
+  EmitInstr('POP     CX');
+  EmitInstr('STC');
+  EmitInstr('RET');
+  EmitLabel(PL_RT_PFX + 'OPLK_FOUND');
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [SI]');
+  EmitInstr('POP     SI');
+  EmitInstr('POP     CX');
+  EmitInstr('CLC');
+  EmitInstr('RET');
+  EmitBlankLine;
+End;
+
 { ---- EmitRuntime : emettre les routines runtime --------------- }
 { Emet les routines de backtracking, liste, arith, compare, ctrl. }
 Procedure EmitRuntime;
@@ -6641,6 +6905,7 @@ Begin
   EmitBuiltinRuntime;
   EmitDynDBRuntime;
   EmitCollectRuntime;
+  EmitOperatorRuntime;
 End;
 
 { ---- EmitClose : fermer le fichier de sortie ASM -------------- }
@@ -9225,6 +9490,144 @@ Begin
       End;
       EmitComment('setof/3 done');
     End
+
+    { === TODO 21 : op/3 inline === }
+    Else If (GoalTab[GIdx].PredName = 'op') And
+            (GoalTab[GIdx].Arity = 3) Then
+    Begin
+      EmitComment('op/3 inline (TODO 21)');
+      { Arg0 = Precedence (integer), Arg1 = Type (atom), Arg2 = Name (atom) }
+      { At compile time, OpAdd has been called if this was a directive.       }
+      { At runtime, call _PLRT_OP_REGISTER.                                   }
+      { Load precedence from arg0 }
+      If GoalTab[GIdx].Args[0].Kind = FAK_INT Then
+      Begin
+        TagVal := (TAG_INT Shl TAG_SHIFT) Or
+                  (Integer(GoalTab[GIdx].Args[0].IntVal) And VAL_MASK);
+        Str(TagVal, NS);
+        EmitInstrAB('MOV', 'AX', NS);
+        EmitComment('prec = ' + IntToStr(GoalTab[GIdx].Args[0].IntVal));
+      End
+      Else If GoalTab[GIdx].Args[0].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[0].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitDeref;
+      End
+      Else
+      Begin
+        EmitInstrAB('MOV', 'AX', '0');
+      End;
+      EmitInstr('PUSH    AX');
+      { Load type atom from arg1 }
+      If GoalTab[GIdx].Args[1].Kind = FAK_ATOM Then
+      Begin
+        TagVal := (TAG_ATOM Shl TAG_SHIFT) Or
+                  (GoalTab[GIdx].Args[1].AtomIdx And VAL_MASK);
+        Str(TagVal, NS);
+        EmitInstrAB('MOV', 'BX', NS);
+        EmitComment('type = ' + AtomName(GoalTab[GIdx].Args[1].AtomIdx));
+      End
+      Else If GoalTab[GIdx].Args[1].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[1].VarName);
+        EmitInstrAB('MOV', 'BX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+      End
+      Else
+      Begin
+        EmitInstrAB('MOV', 'BX', '0');
+      End;
+      { Load name atom from arg2 }
+      If GoalTab[GIdx].Args[2].Kind = FAK_ATOM Then
+      Begin
+        TagVal := (TAG_ATOM Shl TAG_SHIFT) Or
+                  (GoalTab[GIdx].Args[2].AtomIdx And VAL_MASK);
+        Str(TagVal, NS);
+        EmitInstrAB('MOV', 'CX', NS);
+        EmitComment('name = ' + AtomName(GoalTab[GIdx].Args[2].AtomIdx));
+      End
+      Else If GoalTab[GIdx].Args[2].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[2].VarName);
+        EmitInstrAB('MOV', 'CX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+      End
+      Else
+      Begin
+        EmitInstrAB('MOV', 'CX', '0');
+      End;
+      EmitInstr('POP     AX');
+      EmitInstr('CALL    ' + PL_RT_PFX + 'OP_REGISTER');
+      { Also register at compile time if args are constants }
+      If (GoalTab[GIdx].Args[0].Kind = FAK_INT) And
+         (GoalTab[GIdx].Args[1].Kind = FAK_ATOM) And
+         (GoalTab[GIdx].Args[2].Kind = FAK_ATOM) Then
+      Begin
+        OpAdd(AtomName(GoalTab[GIdx].Args[2].AtomIdx),
+              GoalTab[GIdx].Args[0].IntVal,
+              AtomName(GoalTab[GIdx].Args[1].AtomIdx));
+      End;
+      EmitComment('op/3 done');
+    End
+
+    { === TODO 21 : current_op/3 inline === }
+    Else If (GoalTab[GIdx].PredName = 'current_op') And
+            (GoalTab[GIdx].Arity = 3) Then
+    Begin
+      EmitComment('current_op/3 inline (TODO 21)');
+      { current_op(Prec, Type, Name) : query operator table }
+      { If Name is known atom, look it up; bind Prec and Type }
+      If GoalTab[GIdx].Args[2].Kind = FAK_ATOM Then
+      Begin
+        NS := AtomName(GoalTab[GIdx].Args[2].AtomIdx);
+        I := OpFind(NS);
+        If I >= 0 Then
+        Begin
+          { Bind Prec (arg0) to the known precedence }
+          If GoalTab[GIdx].Args[0].Kind = FAK_VAR Then
+          Begin
+            TagVal := (TAG_INT Shl TAG_SHIFT) Or
+                      (OpTab[I].Prec And VAL_MASK);
+            Str(TagVal, NS);
+            VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[0].VarName);
+            EmitInstrAB('MOV', 'AX',
+                        'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+            EmitDeref;
+            EmitInstrAB('MOV', 'BX', NS);
+            EmitComment('prec = ' + IntToStr(OpTab[I].Prec));
+            EmitBind;
+          End;
+          { Bind Type (arg1) to the known specifier }
+          If GoalTab[GIdx].Args[1].Kind = FAK_VAR Then
+          Begin
+            TagVal := (TAG_ATOM Shl TAG_SHIFT) Or
+                      (AtomIntern(OpTab[I].Spec) And VAL_MASK);
+            Str(TagVal, NS);
+            VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[1].VarName);
+            EmitInstrAB('MOV', 'AX',
+                        'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+            EmitDeref;
+            EmitInstrAB('MOV', 'BX', NS);
+            EmitComment('type = ' + OpTab[I].Spec);
+            EmitBind;
+          End;
+        End
+        Else
+        Begin
+          EmitComment('current_op/3: operator not found, fail');
+          EmitInstrA('JMP', ClauseTab[CIdx].FailLabel);
+        End;
+      End
+      Else
+      Begin
+        { Name is a variable : not supported inline, succeed trivially }
+        EmitComment('current_op/3: name is var, succeed trivially');
+      End;
+      EmitComment('current_op/3 done');
+    End
+
     Else
     Begin
       { --- But standard : charger args + appeler predicat --- }
