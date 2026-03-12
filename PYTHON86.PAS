@@ -356,7 +356,7 @@
               FINALLY : execute dans tous les cas, puis restaurer handler
             RAISE sans handler : affiche 'Unhandled exception' + Halt
 
-  TODO 22 - COMPREHENSIONS ET GENERATEURS (SIMPLIFIE)
+  TODO 22 - COMPREHENSIONS ET GENERATEURS (SIMPLIFIE) [IMPLEMENTE]
             List comprehension : [expr for var in iterable]
               -> allocation liste, boucle for, evaluer expr, append
             List comprehension avec filtre : [expr for var in iterable if cond]
@@ -442,6 +442,7 @@ Const
   MAX_PARAM      = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
   MAX_LOOP_NEST  = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
   MAX_TRY_NEST   = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
+  MAX_COMP_BUF   = {$IFDEF FPC}64{$ELSE}32{$ENDIF};
   MAX_ERRORS     = {$IFDEF FPC}30{$ELSE}3{$ENDIF};
   MAX_STR        = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
   STACK_SIZE     = 1024;
@@ -664,6 +665,11 @@ Var
   TryEndStack     : Array[0..MAX_TRY_NEST - 1] Of TString;
   TryTop          : Integer;
 
+  { Buffer de code pour comprehensions (TODO 22) }
+  CompBuf       : Array[1..MAX_COMP_BUF] Of TString;
+  CompBufCount  : Integer;
+  CompBufActive : Boolean;
+
   { Gestion des fonctions (TODO 17) }
   FuncRetLabel   : TString;    { label d epilogue pour return       }
   FuncLocalsSize : Integer;    { taille des locaux en octets        }
@@ -798,6 +804,9 @@ Procedure EmitStrRuntime; Forward;
 { TODO 21 - Forward declarations exceptions }
 Procedure ParseTryStmt;   Forward;
 Procedure ParseRaiseStmt; Forward;
+{ TODO 22 - Forward declarations comprehensions }
+Procedure ParseListComprehension(Var Res : TExprVal);  Forward;
+Procedure ParseDictComprehension(Var Res : TExprVal);  Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1050,6 +1059,9 @@ Begin
   ClassCount  := 0;
   InClass     := False;
   CurClassIdx := -1;
+  { TODO 22 : comprehensions }
+  CompBufActive := False;
+  CompBufCount  := 0;
 End;
 
 { ============================================================
@@ -2064,9 +2076,18 @@ Begin
 End;
 
 { ---- EmitRaw : ecrire une ligne brute dans le fichier ASM --- }
+{ Si le buffer de comprehension est actif, stocker dans CompBuf }
 Procedure EmitRaw(Const S : String);
 Begin
-  If OutFOpen Then
+  If CompBufActive Then
+  Begin
+    If CompBufCount < MAX_COMP_BUF Then
+    Begin
+      Inc(CompBufCount);
+      CompBuf[CompBufCount] := S;
+    End;
+  End
+  Else If OutFOpen Then
     WriteLn(OutF, S);
 End;
 
@@ -2313,6 +2334,10 @@ Begin
   EmitRaw('_PY_EXCFLAG  DW 0');
   EmitRaw('_PY_EXCVAL   DW 0');
   EmitRaw('');
+  { Donnees pour comprehensions (TODO 22) }
+  EmitRaw('_PY_COMPTGT  DW 0');
+  EmitRaw('_PY_COMPIDX  DW 0');
+  EmitRaw('');
   { Heap statique pour allocations dynamiques (listes, dicts, objets) }
   EmitRaw('_PY_HEAP    DB  4096 DUP(0)');
   EmitRaw('_PY_HEAPTOP DW  0');
@@ -2421,28 +2446,60 @@ End;
 { EmitInstr : emettre une instruction indentee (8 espaces) }
 Procedure EmitInstr(Const S : TString);
 Begin
-  If OutFOpen Then
+  If CompBufActive Then
+  Begin
+    If CompBufCount < MAX_COMP_BUF Then
+    Begin
+      Inc(CompBufCount);
+      CompBuf[CompBufCount] := '        ' + S;
+    End;
+  End
+  Else If OutFOpen Then
     WriteLn(OutF, '        ', S);
 End;
 
 { EmitLabel : emettre un label suivi de ':' }
 Procedure EmitLabel(Const Lbl : TString);
 Begin
-  If OutFOpen Then
+  If CompBufActive Then
+  Begin
+    If CompBufCount < MAX_COMP_BUF Then
+    Begin
+      Inc(CompBufCount);
+      CompBuf[CompBufCount] := Lbl + ':';
+    End;
+  End
+  Else If OutFOpen Then
     WriteLn(OutF, Lbl, ':');
 End;
 
 { EmitComment : emettre un commentaire ASM ('; msg') }
 Procedure EmitComment(Const Msg : TString);
 Begin
-  If OutFOpen Then
+  If CompBufActive Then
+  Begin
+    If CompBufCount < MAX_COMP_BUF Then
+    Begin
+      Inc(CompBufCount);
+      CompBuf[CompBufCount] := '; ' + Msg;
+    End;
+  End
+  Else If OutFOpen Then
     WriteLn(OutF, '; ', Msg);
 End;
 
 { EmitBlankLine : ligne vide dans le fichier de sortie }
 Procedure EmitBlankLine;
 Begin
-  If OutFOpen Then
+  If CompBufActive Then
+  Begin
+    If CompBufCount < MAX_COMP_BUF Then
+    Begin
+      Inc(CompBufCount);
+      CompBuf[CompBufCount] := '';
+    End;
+  End
+  Else If OutFOpen Then
     WriteLn(OutF);
 End;
 
@@ -5754,6 +5811,487 @@ Begin
   End;
 End;
 
+{ ============================================================
+  TODO 22 - COMPREHENSIONS ET GENERATEURS (SIMPLIFIE) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- CompBufReplay : rejouer le code bufferise --------------- }
+{ Ecrit toutes les lignes accumulees dans CompBuf vers OutF.     }
+Procedure CompBufReplay;
+Var I : Integer;
+Begin
+  If OutFOpen Then
+    For I := 1 To CompBufCount Do
+      WriteLn(OutF, CompBuf[I]);
+End;
+
+{ ---- ScanLineForKeyword : detecter un mot-cle dans la ligne -- }
+{ Recherche le mot-cle KW dans la suite de LexLine a partir de   }
+{ LexColNo. Saute les chaines entre guillemets. Verifie les       }
+{ frontieres de mot. Usage : detecter 'for' pour distinguer       }
+{ comprehension de liste/dict litterale.                           }
+Function ScanLineForKeyword(Const KW : TString) : Boolean;
+Var
+  P, KLen : Integer;
+  InStr   : Boolean;
+  Q       : Char;
+Begin
+  ScanLineForKeyword := False;
+  KLen := Length(KW);
+  P := LexColNo;
+  InStr := False;
+  Q := #0;
+  While P <= Length(LexLine) Do
+  Begin
+    If Not InStr And ((LexLine[P] = '''') Or (LexLine[P] = '"')) Then
+    Begin
+      InStr := True;
+      Q := LexLine[P];
+      Inc(P);
+      Continue;
+    End;
+    If InStr And (LexLine[P] = Q) Then
+    Begin
+      InStr := False;
+      Inc(P);
+      Continue;
+    End;
+    If InStr Then
+    Begin
+      Inc(P);
+      Continue;
+    End;
+    If P + KLen - 1 <= Length(LexLine) Then
+    Begin
+      If Copy(LexLine, P, KLen) = KW Then
+      Begin
+        If ((P <= 1) Or Not (LexLine[P - 1] In
+            ['a'..'z','A'..'Z','0'..'9','_'])) And
+           ((P + KLen > Length(LexLine)) Or Not (LexLine[P + KLen] In
+            ['a'..'z','A'..'Z','0'..'9','_'])) Then
+        Begin
+          ScanLineForKeyword := True;
+          Exit;
+        End;
+      End;
+    End;
+    Inc(P);
+  End;
+End;
+
+{ ---- ParseListComprehension --------------------------------- }
+{ Syntaxe : [expr for var in iterable]                            }
+{           [expr for var in iterable if cond]                     }
+{ Le '[' a deja ete consomme par ParseListLiteral.                }
+Procedure ParseListComprehension(Var Res : TExprVal);
+Var
+  ExprE     : TExprVal;
+  VarName   : TString;
+  VarIdx    : Integer;
+  LblTest, LblEnd, LblIncr : TString;
+  StartRes, EndRes, StepRes : TExprVal;
+  HasStep, HasRange         : Boolean;
+  CondE     : TExprVal;
+Begin
+  EmitComment('list comprehension');
+
+  { Allouer une liste vide sur le heap }
+  EmitInstr('MOV    DI, [_PY_HEAPTOP]');
+  EmitInstr('ADD    DI, OFFSET _PY_HEAP');
+  EmitInstr('MOV    WORD PTR [DI], 0');       { count = 0 }
+  EmitInstr('ADD    WORD PTR [_PY_HEAPTOP], 2');
+  EmitInstr('MOV    [_PY_COMPTGT], DI');      { sauvegarder ptr liste }
+
+  { Bufferiser le code de l expression }
+  CompBufActive := True;
+  CompBufCount  := 0;
+  ParseExpr(ExprE);
+  ExprFlushToAX(ExprE);
+  CompBufActive := False;
+
+  { Attendre 'for' }
+  If (CurToken.Kind <> TK_KEYWORD) Or (CurToken.Val <> 'for') Then
+  Begin
+    CompileError('''for'' attendu dans list comprehension', CurToken.Line);
+    Exit;
+  End;
+  ParserAdvance;
+
+  { Parser le nom de la variable de boucle }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('identifiant attendu apres for', CurToken.Line);
+    Exit;
+  End;
+  VarName := CurToken.Val;
+  VarIdx := SymFind(VarName);
+  If VarIdx < 0 Then
+    VarIdx := SymAdd(VarName, SK_VAR, TY_IDX_INT, 0);
+  EnsureVarInData(VarIdx);
+  ParserAdvance;
+
+  { Attendre 'in' }
+  If (CurToken.Kind <> TK_KEYWORD) Or (CurToken.Val <> 'in') Then
+  Begin
+    CompileError('''in'' attendu dans list comprehension', CurToken.Line);
+    Exit;
+  End;
+  ParserAdvance;
+
+  LblTest := LabelGen;
+  LblIncr := LabelGen;
+  LblEnd  := LabelGen;
+
+  { Parser l iterable }
+  HasStep  := False;
+  HasRange := (CurToken.Kind = TK_IDENT) And (CurToken.Val = 'range');
+  If HasRange Then
+  Begin
+    ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      ParserAdvance;
+    ParseExpr(StartRes);
+    ExprFlushToAX(StartRes);
+    EmitInstr('PUSH   AX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+    Begin
+      ParserAdvance;
+      ParseExpr(EndRes);
+      ExprFlushToAX(EndRes);
+      EmitInstr('PUSH   AX');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      Begin
+        ParserAdvance;
+        HasStep := True;
+        ParseExpr(StepRes);
+        ExprFlushToAX(StepRes);
+        EmitInstr('PUSH   AX');
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        ParserAdvance;
+      If HasStep Then
+      Begin
+        EmitInstr('POP    CX');
+        EmitInstr('POP    BX');
+        EmitInstr('POP    AX');
+        EmitInstr('MOV    [' + SymTab[VarIdx].MangledName + '], AX');
+        EmitInstr('MOV    [_PY_FOREND], BX');
+        EmitInstr('MOV    [_PY_FORSTEP], CX');
+      End
+      Else
+      Begin
+        EmitInstr('POP    BX');
+        EmitInstr('POP    AX');
+        EmitInstr('MOV    [' + SymTab[VarIdx].MangledName + '], AX');
+        EmitInstr('MOV    [_PY_FOREND], BX');
+        EmitInstr('MOV    WORD PTR [_PY_FORSTEP], 1');
+      End;
+    End
+    Else
+    Begin
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        ParserAdvance;
+      EmitInstr('POP    BX');
+      EmitInstr('MOV    [_PY_FOREND], BX');
+      EmitInstr('MOV    WORD PTR [' + SymTab[VarIdx].MangledName + '], 0');
+      EmitInstr('MOV    WORD PTR [_PY_FORSTEP], 1');
+    End;
+  End
+  Else
+  Begin
+    { Iteration generique sur liste }
+    ParseExpr(StartRes);
+    ExprFlushToAX(StartRes);
+    EmitInstr('MOV    [_PY_FORITER], AX');
+    EmitInstr('MOV    WORD PTR [_PY_COMPIDX], 0');
+    EmitInstr('MOV    SI, AX');
+    EmitInstr('MOV    CX, [SI]');
+    EmitInstr('MOV    [_PY_FOREND], CX');
+  End;
+
+  { Boucle : label de test }
+  EmitLabel(LblTest);
+  If HasRange Then
+  Begin
+    EmitInstr('MOV    AX, [' + SymTab[VarIdx].MangledName + ']');
+    EmitInstr('CMP    AX, [_PY_FOREND]');
+    EmitInstr('JGE    ' + LblEnd);
+  End
+  Else
+  Begin
+    { Iteration generique : charger element courant dans la variable }
+    EmitInstr('MOV    BX, [_PY_COMPIDX]');
+    EmitInstr('CMP    BX, [_PY_FOREND]');
+    EmitInstr('JGE    ' + LblEnd);
+    EmitInstr('MOV    SI, [_PY_FORITER]');
+    EmitInstr('SHL    BX, 1');
+    EmitInstr('ADD    BX, 2');
+    EmitInstr('MOV    AX, [SI+BX]');
+    EmitInstr('MOV    [' + SymTab[VarIdx].MangledName + '], AX');
+  End;
+
+  { Filtre optionnel : if cond (emis directement, pas bufferise) }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'if') Then
+  Begin
+    ParserAdvance;
+    ParseExpr(CondE);
+    ExprFlushToAX(CondE);
+    EmitInstr('TEST   AX, AX');
+    EmitInstr('JZ     ' + LblIncr);
+  End;
+
+  { Rejouer le code de l expression bufferisee }
+  CompBufReplay;
+
+  { Appeler LISTAPPEND : SI = liste, AX = valeur }
+  EmitInstr('MOV    SI, [_PY_COMPTGT]');
+  EmitInstr('CALL   _PYRT_LISTAPPEND');
+
+  { Incrementer }
+  EmitLabel(LblIncr);
+  If HasRange Then
+  Begin
+    EmitInstr('MOV    AX, [' + SymTab[VarIdx].MangledName + ']');
+    EmitInstr('ADD    AX, [_PY_FORSTEP]');
+    EmitInstr('MOV    [' + SymTab[VarIdx].MangledName + '], AX');
+  End
+  Else
+    EmitInstr('INC    WORD PTR [_PY_COMPIDX]');
+  EmitInstr('JMP    ' + LblTest);
+
+  { Fin de boucle }
+  EmitLabel(LblEnd);
+
+  { Resultat = pointeur vers la liste }
+  EmitInstr('MOV    AX, [_PY_COMPTGT]');
+
+  { Consommer ']' }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+    ParserAdvance
+  Else
+    CompileError(''']'' attendue apres list comprehension', CurToken.Line);
+
+  ExprMakeAX(TY_IDX_LIST, Res);
+End;
+
+{ ---- ParseDictComprehension --------------------------------- }
+{ Syntaxe : (kexpr:vexpr for var in iterable)                     }
+{           (kexpr:vexpr for var in iterable if cond)              }
+{ Le accolade ouvrante a deja ete consomme par ParseDictLiteral.  }
+Procedure ParseDictComprehension(Var Res : TExprVal);
+Var
+  KeyE, ValE : TExprVal;
+  VarName    : TString;
+  VarIdx     : Integer;
+  LblTest, LblEnd, LblIncr : TString;
+  StartRes, EndRes, StepRes : TExprVal;
+  HasStep, HasRange : Boolean;
+  CondE      : TExprVal;
+Begin
+  EmitComment('dict comprehension');
+
+  { Allouer un dict vide sur le heap }
+  EmitInstr('MOV    DI, [_PY_HEAPTOP]');
+  EmitInstr('ADD    DI, OFFSET _PY_HEAP');
+  EmitInstr('MOV    WORD PTR [DI], 0');       { count = 0 }
+  EmitInstr('ADD    WORD PTR [_PY_HEAPTOP], 2');
+  EmitInstr('MOV    [_PY_COMPTGT], DI');      { sauvegarder ptr dict }
+
+  { Bufferiser le code de la cle }
+  CompBufActive := True;
+  CompBufCount  := 0;
+  ParseExpr(KeyE);
+  ExprFlushToAX(KeyE);
+  CompBufActive := False;
+
+  { Ajouter PUSH AX dans le buffer pour sauvegarder la cle }
+  If CompBufCount < MAX_COMP_BUF Then
+  Begin
+    Inc(CompBufCount);
+    CompBuf[CompBufCount] := '        PUSH   AX';
+  End;
+
+  { Attendre ':' }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+    ParserAdvance
+  Else
+    CompileError(''':'' attendue dans dict comprehension', CurToken.Line);
+
+  { Bufferiser le code de la valeur (ajoute apres cle + PUSH AX) }
+  CompBufActive := True;
+  ParseExpr(ValE);
+  ExprFlushToAX(ValE);
+  CompBufActive := False;
+  { CompBuf contient : code_cle + PUSH AX + code_valeur }
+
+  { Attendre 'for' }
+  If (CurToken.Kind <> TK_KEYWORD) Or (CurToken.Val <> 'for') Then
+  Begin
+    CompileError('''for'' attendu dans dict comprehension', CurToken.Line);
+    Exit;
+  End;
+  ParserAdvance;
+
+  { Parser le nom de la variable de boucle }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('identifiant attendu apres for', CurToken.Line);
+    Exit;
+  End;
+  VarName := CurToken.Val;
+  VarIdx := SymFind(VarName);
+  If VarIdx < 0 Then
+    VarIdx := SymAdd(VarName, SK_VAR, TY_IDX_INT, 0);
+  EnsureVarInData(VarIdx);
+  ParserAdvance;
+
+  { Attendre 'in' }
+  If (CurToken.Kind <> TK_KEYWORD) Or (CurToken.Val <> 'in') Then
+  Begin
+    CompileError('''in'' attendu dans dict comprehension', CurToken.Line);
+    Exit;
+  End;
+  ParserAdvance;
+
+  LblTest := LabelGen;
+  LblIncr := LabelGen;
+  LblEnd  := LabelGen;
+
+  { Parser l iterable }
+  HasStep  := False;
+  HasRange := (CurToken.Kind = TK_IDENT) And (CurToken.Val = 'range');
+  If HasRange Then
+  Begin
+    ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      ParserAdvance;
+    ParseExpr(StartRes);
+    ExprFlushToAX(StartRes);
+    EmitInstr('PUSH   AX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+    Begin
+      ParserAdvance;
+      ParseExpr(EndRes);
+      ExprFlushToAX(EndRes);
+      EmitInstr('PUSH   AX');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      Begin
+        ParserAdvance;
+        HasStep := True;
+        ParseExpr(StepRes);
+        ExprFlushToAX(StepRes);
+        EmitInstr('PUSH   AX');
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        ParserAdvance;
+      If HasStep Then
+      Begin
+        EmitInstr('POP    CX');
+        EmitInstr('POP    BX');
+        EmitInstr('POP    AX');
+        EmitInstr('MOV    [' + SymTab[VarIdx].MangledName + '], AX');
+        EmitInstr('MOV    [_PY_FOREND], BX');
+        EmitInstr('MOV    [_PY_FORSTEP], CX');
+      End
+      Else
+      Begin
+        EmitInstr('POP    BX');
+        EmitInstr('POP    AX');
+        EmitInstr('MOV    [' + SymTab[VarIdx].MangledName + '], AX');
+        EmitInstr('MOV    [_PY_FOREND], BX');
+        EmitInstr('MOV    WORD PTR [_PY_FORSTEP], 1');
+      End;
+    End
+    Else
+    Begin
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        ParserAdvance;
+      EmitInstr('POP    BX');
+      EmitInstr('MOV    [_PY_FOREND], BX');
+      EmitInstr('MOV    WORD PTR [' + SymTab[VarIdx].MangledName + '], 0');
+      EmitInstr('MOV    WORD PTR [_PY_FORSTEP], 1');
+    End;
+  End
+  Else
+  Begin
+    { Iteration generique sur liste }
+    ParseExpr(StartRes);
+    ExprFlushToAX(StartRes);
+    EmitInstr('MOV    [_PY_FORITER], AX');
+    EmitInstr('MOV    WORD PTR [_PY_COMPIDX], 0');
+    EmitInstr('MOV    SI, AX');
+    EmitInstr('MOV    CX, [SI]');
+    EmitInstr('MOV    [_PY_FOREND], CX');
+  End;
+
+  { Boucle : label de test }
+  EmitLabel(LblTest);
+  If HasRange Then
+  Begin
+    EmitInstr('MOV    AX, [' + SymTab[VarIdx].MangledName + ']');
+    EmitInstr('CMP    AX, [_PY_FOREND]');
+    EmitInstr('JGE    ' + LblEnd);
+  End
+  Else
+  Begin
+    EmitInstr('MOV    BX, [_PY_COMPIDX]');
+    EmitInstr('CMP    BX, [_PY_FOREND]');
+    EmitInstr('JGE    ' + LblEnd);
+    EmitInstr('MOV    SI, [_PY_FORITER]');
+    EmitInstr('SHL    BX, 1');
+    EmitInstr('ADD    BX, 2');
+    EmitInstr('MOV    AX, [SI+BX]');
+    EmitInstr('MOV    [' + SymTab[VarIdx].MangledName + '], AX');
+  End;
+
+  { Filtre optionnel : if cond (emis directement) }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'if') Then
+  Begin
+    ParserAdvance;
+    ParseExpr(CondE);
+    ExprFlushToAX(CondE);
+    EmitInstr('TEST   AX, AX');
+    EmitInstr('JZ     ' + LblIncr);
+  End;
+
+  { Rejouer le buffer : code_cle + PUSH AX + code_valeur }
+  CompBufReplay;
+  { Apres replay : AX = valeur, cle sur la pile }
+
+  { DICTSET : SI = dict, AX = cle, BX = valeur }
+  EmitInstr('MOV    BX, AX');                  { BX = valeur }
+  EmitInstr('POP    AX');                      { AX = cle }
+  EmitInstr('MOV    SI, [_PY_COMPTGT]');
+  EmitInstr('CALL   _PYRT_DICTSET');
+
+  { Incrementer }
+  EmitLabel(LblIncr);
+  If HasRange Then
+  Begin
+    EmitInstr('MOV    AX, [' + SymTab[VarIdx].MangledName + ']');
+    EmitInstr('ADD    AX, [_PY_FORSTEP]');
+    EmitInstr('MOV    [' + SymTab[VarIdx].MangledName + '], AX');
+  End
+  Else
+    EmitInstr('INC    WORD PTR [_PY_COMPIDX]');
+  EmitInstr('JMP    ' + LblTest);
+
+  { Fin de boucle }
+  EmitLabel(LblEnd);
+
+  { Resultat = pointeur vers le dict }
+  EmitInstr('MOV    AX, [_PY_COMPTGT]');
+
+  (* Consommer accolade fermante *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+    ParserAdvance
+  Else
+    CompileError('accolade fermante attendue apres dict comprehension',
+                 CurToken.Line);
+
+  ExprMakeAX(TY_IDX_DICT, Res);
+End;
+
 { ---- ParseListLiteral : [e0, e1, e2, ...] -------------------- }
 { Layout heap : [count DW][elem0 DW][elem1 DW]...                }
 Procedure ParseListLiteral(Var Res : TExprVal);
@@ -5776,6 +6314,13 @@ Begin
     EmitInstr('ADD    WORD PTR [_PY_HEAPTOP], 2');
     EmitInstr('MOV    AX, DI');
     ExprMakeAX(TY_IDX_LIST, Res);
+    Exit;
+  End;
+
+  { Detecter list comprehension : [expr for var in ...] }
+  If ScanLineForKeyword('for') Then
+  Begin
+    ParseListComprehension(Res);
     Exit;
   End;
 
@@ -5837,6 +6382,13 @@ Begin
     EmitInstr('ADD    WORD PTR [_PY_HEAPTOP], 2');
     EmitInstr('MOV    AX, DI');
     ExprMakeAX(TY_IDX_DICT, Res);
+    Exit;
+  End;
+
+  (* Detecter dict comprehension : k:v for var in ... *)
+  If ScanLineForKeyword('for') Then
+  Begin
+    ParseDictComprehension(Res);
     Exit;
   End;
 
