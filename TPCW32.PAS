@@ -4062,6 +4062,15 @@ Begin
   EmitRaw('DOS_EXITVAL DD 0');          { code sortie processus                  }
   EmitBlankLine;
 
+  { Variables ParamStr/ParamCount }
+  EmitComment('--- Variables ParamStr/ParamCount ---');
+  EmitRaw('PARAM_PARSED DD 0');          { 1 si deja parse                        }
+  EmitRaw('PARAM_COUNT  DD 0');          { nombre de parametres (sans argv[0])    }
+  EmitRaw('PARAM_ARGC   DD 0');          { nombre total d arguments (avec argv[0])}
+  EmitRaw('PARAM_PTRS   DD 64 DUP(0)'); { pointeurs vers chaque argument         }
+  EmitRaw('PARAM_BUF    DB 1024 DUP(0)');{ copie de la ligne de commande          }
+  EmitBlankLine;
+
   { Variables Graph (TODO 20) }
   EmitComment('--- Variables Graph (emulation graphique Windows) ---');
   EmitRaw('GR_RESULT   DD 0');            { GraphResult code (grOk=0)              }
@@ -7991,6 +8000,30 @@ Begin
 
     { ---- TODO 19 : Fonctions DOS (retournent valeur dans EAX) ---- }
 
+    { PARAMCOUNT -> nombre de parametres (sans argv[0]) }
+    If Up = 'PARAMCOUNT' Then
+    Begin
+      Inc(EP);
+      EmitInstr('CALL ' + TP_RT_PFX + 'PARAMCOUNT');
+      Exit;
+    End;
+
+    { PARAMSTR(N) -> N-ieme parametre (0=exe, 1..N=args) }
+    If Up = 'PARAMSTR' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + TP_RT_PFX + 'PARAMSTR');
+      EmitInstr('ADD ESP,4');
+      LastVarTypeIdx := TY_IDX_STRING;
+      Exit;
+    End;
+
     { DOSVERSION -> version DOS emulee }
     If Up = 'DOSVERSION' Then
     Begin
@@ -9425,6 +9458,14 @@ Begin
         InferExprType := ProcTab[PI].Params[LI].TypeIdx;
         Exit;
       End;
+    End;
+
+    { Builtins retournant une chaine }
+    If (Up = 'PARAMSTR') Or (Up = 'COPY') Or (Up = 'CONCAT')
+       Or (Up = 'GETENV') Or (Up = 'FEXPAND') Or (Up = 'FSEARCH') Then
+    Begin
+      InferExprType := TY_IDX_STRING;
+      Exit;
     End;
 
     { Chercher dans les symboles globaux }
@@ -14740,6 +14781,125 @@ Begin
   EmitInstr('POP EBX');
   EmitInstr('POP EBP');
   EmitInstr('RET');
+
+  { ------ _TPRT_PARSECMD : parser la ligne de commande -------- }
+  { Appele une seule fois, remplit PARAM_PTRS et PARAM_ARGC/COUNT }
+  { Gere les guillemets doubles pour les arguments avec espaces   }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'PARSECMD');
+  EmitInstr('CMP DWORD PTR [PARAM_PARSED],1');
+  EmitInstr('JE ' + TP_RT_PFX + 'PC_DN');
+  EmitInstr('PUSHAD');
+  { Obtenir la ligne de commande }
+  EmitInstr('CALL GetCommandLineA');
+  { Copier dans PARAM_BUF }
+  EmitInstr('MOV ESI,EAX');
+  EmitInstr('LEA EDI,[PARAM_BUF]');
+  EmitInstr('MOV ECX,1023');
+  EmitLabel(TP_RT_PFX + 'PC_CP');
+  EmitInstr('LODSB');
+  EmitInstr('STOSB');
+  EmitInstr('TEST AL,AL');
+  EmitInstr('JZ ' + TP_RT_PFX + 'PC_CE');
+  EmitInstr('DEC ECX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'PC_CP');
+  EmitInstr('MOV BYTE PTR [EDI],0');
+  EmitLabel(TP_RT_PFX + 'PC_CE');
+  { Parser les arguments }
+  { ESI parcourt PARAM_BUF, EDX pointe dans PARAM_PTRS }
+  EmitInstr('LEA ESI,[PARAM_BUF]');
+  EmitInstr('LEA EDX,[PARAM_PTRS]');
+  EmitInstr('XOR ECX,ECX');             { argc = 0 }
+  EmitLabel(TP_RT_PFX + 'PC_SK');
+  { Sauter les espaces }
+  EmitInstr('CMP BYTE PTR [ESI],0');
+  EmitInstr('JE ' + TP_RT_PFX + 'PC_FN');
+  EmitInstr('CMP BYTE PTR [ESI],32');
+  EmitInstr('JNE ' + TP_RT_PFX + 'PC_NW');
+  EmitInstr('INC ESI');
+  EmitInstr('JMP ' + TP_RT_PFX + 'PC_SK');
+  EmitLabel(TP_RT_PFX + 'PC_NW');
+  { Debut d un argument }
+  EmitInstr('CMP ECX,64');
+  EmitInstr('JGE ' + TP_RT_PFX + 'PC_FN');
+  { Stocker pointeur : [EDX] = ESI, EDX avance de 4 }
+  EmitInstr('MOV DWORD PTR [EDX],ESI');
+  EmitInstr('ADD EDX,4');
+  EmitInstr('INC ECX');
+  { Verifier si guillemet }
+  EmitInstr('CMP BYTE PTR [ESI],34');   { guillemet double }
+  EmitInstr('JNE ' + TP_RT_PFX + 'PC_UQ');
+  { Argument entre guillemets : avancer apres le guillemet ouvrant }
+  EmitInstr('INC ESI');
+  EmitInstr('MOV DWORD PTR [EDX-4],ESI'); { corriger le pointeur }
+  EmitLabel(TP_RT_PFX + 'PC_QT');
+  EmitInstr('CMP BYTE PTR [ESI],0');
+  EmitInstr('JE ' + TP_RT_PFX + 'PC_FN');
+  EmitInstr('CMP BYTE PTR [ESI],34');   { guillemet fermant }
+  EmitInstr('JE ' + TP_RT_PFX + 'PC_QE');
+  EmitInstr('INC ESI');
+  EmitInstr('JMP ' + TP_RT_PFX + 'PC_QT');
+  EmitLabel(TP_RT_PFX + 'PC_QE');
+  EmitInstr('MOV BYTE PTR [ESI],0');    { terminer l argument }
+  EmitInstr('INC ESI');
+  EmitInstr('JMP ' + TP_RT_PFX + 'PC_SK');
+  EmitLabel(TP_RT_PFX + 'PC_UQ');
+  { Argument sans guillemets : avancer jusqu au prochain espace ou fin }
+  EmitLabel(TP_RT_PFX + 'PC_CH');
+  EmitInstr('CMP BYTE PTR [ESI],0');
+  EmitInstr('JE ' + TP_RT_PFX + 'PC_FN');
+  EmitInstr('CMP BYTE PTR [ESI],32');
+  EmitInstr('JE ' + TP_RT_PFX + 'PC_SP');
+  EmitInstr('INC ESI');
+  EmitInstr('JMP ' + TP_RT_PFX + 'PC_CH');
+  EmitLabel(TP_RT_PFX + 'PC_SP');
+  EmitInstr('MOV BYTE PTR [ESI],0');    { terminer l argument }
+  EmitInstr('INC ESI');
+  EmitInstr('JMP ' + TP_RT_PFX + 'PC_SK');
+  EmitLabel(TP_RT_PFX + 'PC_FN');
+  { ECX = nombre total d arguments (argc) }
+  EmitInstr('MOV DWORD PTR [PARAM_ARGC],ECX');
+  { ParamCount = argc - 1 (sans argv[0]), minimum 0 }
+  EmitInstr('DEC ECX');
+  EmitInstr('CMP ECX,0');
+  EmitInstr('JGE ' + TP_RT_PFX + 'PC_OK');
+  EmitInstr('XOR ECX,ECX');
+  EmitLabel(TP_RT_PFX + 'PC_OK');
+  EmitInstr('MOV DWORD PTR [PARAM_COUNT],ECX');
+  EmitInstr('MOV DWORD PTR [PARAM_PARSED],1');
+  EmitInstr('POPAD');
+  EmitLabel(TP_RT_PFX + 'PC_DN');
+  EmitInstr('RET');
+
+  { ------ _TPRT_PARAMCOUNT : retourner nombre de params -------- }
+  { Sortie : EAX = nombre de parametres (sans argv[0])             }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'PARAMCOUNT');
+  EmitInstr('CALL ' + TP_RT_PFX + 'PARSECMD');
+  EmitInstr('MOV EAX,DWORD PTR [PARAM_COUNT]');
+  EmitInstr('RET');
+
+  { ------ _TPRT_PARAMSTR : retourner param N -> ASCIIZ ---------- }
+  { Parametre : [ESP+4] = index N (0 = exe, 1..N = arguments)      }
+  { Sortie : EAX = pointeur vers chaine ASCIIZ                     }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'PARAMSTR');
+  EmitInstr('CALL ' + TP_RT_PFX + 'PARSECMD');
+  EmitInstr('MOV ECX,DWORD PTR [ESP+4]');
+  { Verifier si N < argc }
+  EmitInstr('CMP ECX,DWORD PTR [PARAM_ARGC]');
+  EmitInstr('JGE ' + TP_RT_PFX + 'PS_EM');
+  { Calculer adresse : EAX = PARAM_PTRS + ECX*4 }
+  EmitInstr('LEA EAX,[PARAM_PTRS]');
+  EmitInstr('SHL ECX,2');                { ECX = ECX * 4 }
+  EmitInstr('ADD EAX,ECX');
+  EmitInstr('MOV EAX,DWORD PTR [EAX]'); { dereferencer }
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'PS_EM');
+  { Index hors limites : retourner chaine vide }
+  EmitInstr('LEA EAX,[STRTMP]');
+  EmitInstr('MOV BYTE PTR [EAX],0');
+  EmitInstr('RET');
 End;
 
 { ============================================================ }
@@ -18247,6 +18407,13 @@ Begin
   BcDefineDataLabel('DOS_PROCINFO');BcDataZeros(16);
   BcDefineDataLabel('DOS_STARTINFO');BcDataZeros(68);
   BcDefineDataLabel('DOS_EXITVAL'); BcDataD(0);
+
+  { Variables ParamStr/ParamCount }
+  BcDefineDataLabel('PARAM_PARSED'); BcDataD(0);
+  BcDefineDataLabel('PARAM_COUNT');  BcDataD(0);
+  BcDefineDataLabel('PARAM_ARGC');   BcDataD(0);
+  BcDefineDataLabel('PARAM_PTRS');   BcDataZeros(64 * 4);  { 64 DWORDs }
+  BcDefineDataLabel('PARAM_BUF');    BcDataZeros(1024);
 
   { Variables Graph }
   BcDefineDataLabel('GR_RESULT');   BcDataD(0);
