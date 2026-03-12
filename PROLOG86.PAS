@@ -198,7 +198,7 @@
               _PLRT_NTH(AX=index, BX=liste) -> AX=element
               _PLRT_LAST(AX=liste) -> AX=dernier element
 
-  TODO 14 - ARITHMETIQUE (IS ET EVALUATION)
+  TODO 14 - ARITHMETIQUE (IS ET EVALUATION) [IMPLEMENTE]
             ParseIsExpr : Var is Expression
             Evaluation d expression arithmetique (cote droit de is) :
               Entiers : valeur directe -> AX
@@ -468,6 +468,7 @@ Const
   MAX_BODY_GOALS = {$IFDEF FPC}32{$ELSE}16{$ENDIF};
   MAX_RULE_VARS  = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
   MAX_LIST_ELEMS = {$IFDEF FPC}128{$ELSE}32{$ENDIF};
+  MAX_ARITH_NODES = {$IFDEF FPC}128{$ELSE}32{$ENDIF};
   HEAP_SIZE     = 2048;
   STACK_SIZE    = 1024;
   TRAIL_SIZE    = 512;
@@ -632,7 +633,8 @@ Type
     FAK_VAR,       { variable nommee : name = nom variable         }
     FAK_ANON,      { variable anonyme _ : pas de liaison           }
     FAK_STR,       { structure foncteur(args) : val = index functor}
-    FAK_LIST       { liste [H|T] (TODO 13)                         }
+    FAK_LIST,      { liste [H|T] (TODO 13)                         }
+    FAK_EXPR       { expression arithmetique (TODO 14)              }
   );
 
   TFactArg = Record
@@ -644,6 +646,8 @@ Type
     ListStart : Integer; { index debut dans ListElemTab             }
     ListLen   : Integer; { nombre d elements (avant |)              }
     HasTail   : Boolean; { True si notation [..|Tail]               }
+    { FAK_EXPR (TODO 14) }
+    ExprRoot  : Integer; { index racine dans ArithNodeTab            }
   End;
 
   { ---- Clause Prolog (TODO 10) --------------------------------- }
@@ -680,6 +684,28 @@ Type
   TRuleVarEntry = Record
     Name   : TString;   { nom de la variable                        }
     Offset : Integer;   { offset dans l environnement (BP-relative)  }
+  End;
+
+  { ---- Expression arithmetique (TODO 14) ----------------------------- }
+  { Un noeud d arbre representant une expression arithmetique.            }
+  TArithOp = (
+    AO_ADD,   { + }           AO_SUB,   { - }
+    AO_MUL,   { * }           AO_DIV,   { / }
+    AO_IDIV,  { // }          AO_MOD,   { mod }
+    AO_REM,   { rem }         AO_NEG,   { unaire - }
+    AO_ABS,   { abs(X) }     AO_MAX,   { max(X,Y) }
+    AO_MIN,   { min(X,Y) }   AO_SIGN,  { sign(X) }
+    AO_SUCC,  { succ(X) }    AO_PLUS,  { plus(X,Y) }
+    AO_MSB    { msb(X) }
+  );
+  TArithNodeKind = (ANK_INT, ANK_VAR, ANK_BINOP, ANK_UNOP);
+  TArithNode = Record
+    Kind    : TArithNodeKind;
+    IntVal  : LongInt;         { ANK_INT : valeur entiere           }
+    VarName : TString;         { ANK_VAR : nom de la variable       }
+    Op      : TArithOp;        { ANK_BINOP/ANK_UNOP : operateur     }
+    Left    : Integer;         { index enfant gauche (-1 si aucun)   }
+    Right   : Integer;         { index enfant droit  (-1 si aucun)   }
   End;
 
 { ============================================================
@@ -741,6 +767,10 @@ Var
   { Elements de liste (TODO 13) }
   ListElemTab   : Array[0..MAX_LIST_ELEMS - 1] Of TFactArg;
   ListElemCount : Integer;
+
+  { Noeuds d expression arithmetique (TODO 14) }
+  ArithNodeTab   : Array[0..MAX_ARITH_NODES - 1] Of TArithNode;
+  ArithNodeCount : Integer;
 
   { Representation des termes WAM (TODO 06) }
   Heap       : Array[0..HEAP_SIZE - 1] Of Integer;  { tas WAM             }
@@ -884,6 +914,12 @@ Procedure EmitBacktrackRuntime; Forward;
 Procedure EmitListRuntime; Forward;
 Procedure EmitBuildListToAX(Const Arg : TFactArg; InRule : Boolean); Forward;
 Procedure EmitLoadArgToAX(Const Arg : TFactArg; InRule : Boolean); Forward;
+{ Arithmetique (TODO 14) }
+Procedure EmitArithRuntime; Forward;
+Function  ParseArithExpr : Integer; Forward;
+Function  ParseArithTerm : Integer; Forward;
+Function  ParseArithFactor : Integer; Forward;
+Procedure EmitArithEval(NodeIdx : Integer); Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1175,6 +1211,8 @@ Begin
   RuleVarCount := 0;
   { TODO 13 }
   ListElemCount := 0;
+  { TODO 14 }
+  ArithNodeCount := 0;
 End;
 
 { ---- Statistiques ------------------------------------------ }
@@ -4542,12 +4580,464 @@ Begin
   { Resultat final dans AX }
 End;
 
+{ ============================================================
+  TODO 14 - ARITHMETIQUE (IS ET EVALUATION) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ArithNodeAdd : ajouter un noeud dans ArithNodeTab ---------- }
+Function ArithNodeAdd(AKind : TArithNodeKind;
+                      AIntVal : LongInt;
+                      Const AVarName : TString;
+                      AOp : TArithOp;
+                      ALeft, ARight : Integer) : Integer;
+Begin
+  If ArithNodeCount >= MAX_ARITH_NODES Then
+  Begin
+    CompileError('table des noeuds arithmetiques pleine (max=' +
+                 IntToStr(MAX_ARITH_NODES) + ')');
+    ArithNodeAdd := 0;
+    Exit;
+  End;
+  ArithNodeTab[ArithNodeCount].Kind    := AKind;
+  ArithNodeTab[ArithNodeCount].IntVal  := AIntVal;
+  ArithNodeTab[ArithNodeCount].VarName := AVarName;
+  ArithNodeTab[ArithNodeCount].Op      := AOp;
+  ArithNodeTab[ArithNodeCount].Left    := ALeft;
+  ArithNodeTab[ArithNodeCount].Right   := ARight;
+  ArithNodeAdd := ArithNodeCount;
+  Inc(ArithNodeCount);
+End;
+
+{ ---- ParseArithFactor : parser un facteur arithmetique ----------- }
+{ Factor -> integer | variable | '-' Factor | '(' Expr ')'          }
+{         | abs(Expr) | max(Expr,Expr) | min(Expr,Expr)              }
+{         | sign(Expr) | succ(Expr) | plus(Expr,Expr) | msb(Expr)    }
+Function ParseArithFactor : Integer;
+Var
+  N      : Integer;
+  FName  : TString;
+  A1, A2 : Integer;
+  Op     : TArithOp;
+Begin
+  ParseArithFactor := -1;
+
+  { Entier }
+  If CurToken.Kind = TK_INTEGER Then
+  Begin
+    ParseArithFactor := ArithNodeAdd(ANK_INT, CurToken.IntVal, '',
+                                     AO_ADD, -1, -1);
+    ParserAdvance;
+    Exit;
+  End;
+
+  { Variable }
+  If CurToken.Kind = TK_VARIABLE Then
+  Begin
+    ParseArithFactor := ArithNodeAdd(ANK_VAR, 0, CurToken.Val,
+                                     AO_ADD, -1, -1);
+    ParserAdvance;
+    Exit;
+  End;
+
+  { Operateur unaire - }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '-') Then
+  Begin
+    ParserAdvance;
+    N := ParseArithFactor;
+    If N < 0 Then
+    Begin
+      CompileError('expression attendue apres le - unaire');
+      Exit;
+    End;
+    ParseArithFactor := ArithNodeAdd(ANK_UNOP, 0, '', AO_NEG, N, -1);
+    Exit;
+  End;
+
+  { Parentheses }
+  If CurToken.Kind = TK_LPAREN Then
+  Begin
+    ParserAdvance; { consomme ( }
+    N := ParseArithExpr;
+    If CurToken.Kind = TK_RPAREN Then
+      ParserAdvance
+    Else
+      CompileError(') attendu dans expression arithmetique');
+    ParseArithFactor := N;
+    Exit;
+  End;
+
+  { Fonctions arithmetiques : abs, max, min, sign, succ, plus, msb }
+  If CurToken.Kind = TK_ATOM Then
+  Begin
+    FName := CurToken.Val;
+    { Verifier si c est une fonction connue }
+    Op := AO_ADD; { valeur par defaut, sera changee }
+    If FName = 'abs'  Then Op := AO_ABS
+    Else If FName = 'max'  Then Op := AO_MAX
+    Else If FName = 'min'  Then Op := AO_MIN
+    Else If FName = 'sign' Then Op := AO_SIGN
+    Else If FName = 'succ' Then Op := AO_SUCC
+    Else If FName = 'plus' Then Op := AO_PLUS
+    Else If FName = 'msb'  Then Op := AO_MSB
+    Else
+    Begin
+      { Atome comme constante numerique ? Non, erreur }
+      CompileError('terme inattendu dans expression arithmetique: ' + FName);
+      ParserAdvance;
+      Exit;
+    End;
+
+    ParserAdvance; { consomme le nom de fonction }
+    If CurToken.Kind <> TK_LPAREN Then
+    Begin
+      CompileError('( attendu apres ' + FName);
+      ParseArithFactor := -1;
+      Exit;
+    End;
+    ParserAdvance; { consomme ( }
+
+    A1 := ParseArithExpr;
+
+    { Fonctions binaires : max(X,Y), min(X,Y), plus(X,Y) }
+    If (Op = AO_MAX) Or (Op = AO_MIN) Or (Op = AO_PLUS) Then
+    Begin
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance
+      Else
+        CompileError(', attendu dans ' + FName + '(X,Y)');
+      A2 := ParseArithExpr;
+      If CurToken.Kind = TK_RPAREN Then
+        ParserAdvance
+      Else
+        CompileError(') attendu apres ' + FName + '(X,Y)');
+      ParseArithFactor := ArithNodeAdd(ANK_BINOP, 0, '', Op, A1, A2);
+    End
+    Else
+    Begin
+      { Fonctions unaires : abs(X), sign(X), succ(X), msb(X) }
+      If CurToken.Kind = TK_RPAREN Then
+        ParserAdvance
+      Else
+        CompileError(') attendu apres ' + FName + '(X)');
+      ParseArithFactor := ArithNodeAdd(ANK_UNOP, 0, '', Op, A1, -1);
+    End;
+    Exit;
+  End;
+
+  { Rien de reconnu }
+  CompileError('facteur arithmetique attendu, trouve: ' + CurToken.Val);
+  If CurToken.Kind <> TK_EOF Then
+    ParserAdvance;
+End;
+
+{ ---- ParseArithTerm : parser un terme (*, /, //, mod, rem) ------- }
+{ Term -> Factor (('*' | '/' | '//' | 'mod' | 'rem') Factor)*       }
+Function ParseArithTerm : Integer;
+Var
+  Left, Right : Integer;
+  Op          : TArithOp;
+Begin
+  Left := ParseArithFactor;
+  ParseArithTerm := Left;
+  If Left < 0 Then Exit;
+
+  While True Do
+  Begin
+    Op := AO_ADD; { placeholder }
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '*') Then
+      Op := AO_MUL
+    Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '/') Then
+      Op := AO_DIV
+    Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '//') Then
+      Op := AO_IDIV
+    Else If (CurToken.Kind = TK_ATOM) And (CurToken.Val = 'mod') Then
+      Op := AO_MOD
+    Else If (CurToken.Kind = TK_ATOM) And (CurToken.Val = 'rem') Then
+      Op := AO_REM
+    Else
+      Break;
+
+    ParserAdvance;
+    Right := ParseArithFactor;
+    If Right < 0 Then Break;
+    Left := ArithNodeAdd(ANK_BINOP, 0, '', Op, Left, Right);
+  End;
+  ParseArithTerm := Left;
+End;
+
+{ ---- ParseArithExpr : parser une expression arithmetique --------- }
+{ Expr -> Term (('+' | '-') Term)*                                    }
+Function ParseArithExpr : Integer;
+Var
+  Left, Right : Integer;
+  Op          : TArithOp;
+Begin
+  Left := ParseArithTerm;
+  ParseArithExpr := Left;
+  If Left < 0 Then Exit;
+
+  While True Do
+  Begin
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '+') Then
+      Op := AO_ADD
+    Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '-') Then
+      Op := AO_SUB
+    Else
+      Break;
+
+    ParserAdvance;
+    Right := ParseArithTerm;
+    If Right < 0 Then Break;
+    Left := ArithNodeAdd(ANK_BINOP, 0, '', Op, Left, Right);
+  End;
+  ParseArithExpr := Left;
+End;
+
+{ ---- EmitArithEval : emettre le code pour evaluer un noeud ------- }
+{ Le resultat est dans AX (entier brut, non tague).                  }
+Procedure EmitArithEval(NodeIdx : Integer);
+Var
+  NS     : TString;
+  VarIdx : Integer;
+Begin
+  If (NodeIdx < 0) Or (NodeIdx >= ArithNodeCount) Then
+  Begin
+    EmitComment('arith eval: noeud invalide');
+    EmitInstrAB('MOV', 'AX', '0');
+    Exit;
+  End;
+
+  Case ArithNodeTab[NodeIdx].Kind Of
+    ANK_INT :
+    Begin
+      { Entier direct -> AX (valeur brute) }
+      Str(Integer(ArithNodeTab[NodeIdx].IntVal), NS);
+      EmitInstrAB('MOV', 'AX', NS);
+      EmitComment('int ' + IntToStr(ArithNodeTab[NodeIdx].IntVal));
+    End;
+
+    ANK_VAR :
+    Begin
+      { Variable : deref + extraire entier }
+      VarIdx := RuleVarFindOrAdd(ArithNodeTab[NodeIdx].VarName);
+      EmitComment('arith var ' + ArithNodeTab[NodeIdx].VarName);
+      EmitInstrAB('MOV', 'AX',
+                  'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+      EmitDeref;
+      EmitInstr('CALL    _PLRT_DEREF_INT');
+    End;
+
+    ANK_BINOP :
+    Begin
+      { Evaluer gauche dans AX, push, evaluer droite dans AX, pop BX }
+      EmitArithEval(ArithNodeTab[NodeIdx].Left);
+      EmitInstrA('PUSH', 'AX');
+      EmitArithEval(ArithNodeTab[NodeIdx].Right);
+      EmitInstrAB('MOV', 'BX', 'AX');
+      EmitInstrA('POP', 'AX');
+
+      Case ArithNodeTab[NodeIdx].Op Of
+        AO_ADD :
+        Begin
+          EmitInstrAB('ADD', 'AX', 'BX');
+          EmitComment('+');
+        End;
+        AO_SUB :
+        Begin
+          EmitInstrAB('SUB', 'AX', 'BX');
+          EmitComment('-');
+        End;
+        AO_MUL :
+        Begin
+          EmitInstr('IMUL   BX');
+          EmitComment('*');
+        End;
+        AO_DIV, AO_IDIV :
+        Begin
+          EmitInstr('CWD');
+          EmitInstr('IDIV   BX');
+          EmitComment('/ (quotient dans AX)');
+        End;
+        AO_MOD :
+        Begin
+          EmitInstr('CWD');
+          EmitInstr('IDIV   BX');
+          EmitInstrAB('MOV', 'AX', 'DX');
+          EmitComment('mod (reste dans DX->AX)');
+        End;
+        AO_REM :
+        Begin
+          EmitInstr('CWD');
+          EmitInstr('IDIV   BX');
+          EmitInstrAB('MOV', 'AX', 'DX');
+          EmitComment('rem (reste dans DX->AX)');
+        End;
+        AO_MAX :
+        Begin
+          NS := LabelGen;
+          EmitInstrAB('CMP', 'AX', 'BX');
+          EmitInstrA('JGE', NS);
+          EmitInstrAB('MOV', 'AX', 'BX');
+          EmitLabel(NS);
+          EmitComment('max');
+        End;
+        AO_MIN :
+        Begin
+          NS := LabelGen;
+          EmitInstrAB('CMP', 'AX', 'BX');
+          EmitInstrA('JLE', NS);
+          EmitInstrAB('MOV', 'AX', 'BX');
+          EmitLabel(NS);
+          EmitComment('min');
+        End;
+        AO_PLUS :
+        Begin
+          EmitInstrAB('ADD', 'AX', 'BX');
+          EmitComment('plus(X,Y)');
+        End;
+      End; { inner Case }
+    End;
+
+    ANK_UNOP :
+    Begin
+      { Evaluer l operande dans AX }
+      EmitArithEval(ArithNodeTab[NodeIdx].Left);
+
+      Case ArithNodeTab[NodeIdx].Op Of
+        AO_NEG :
+        Begin
+          EmitInstr('NEG    AX');
+          EmitComment('unaire -');
+        End;
+        AO_ABS :
+        Begin
+          EmitInstr('CALL    _PLRT_ABS');
+          EmitComment('abs');
+        End;
+        AO_SIGN :
+        Begin
+          EmitInstr('CALL    _PLRT_SIGN');
+          EmitComment('sign');
+        End;
+        AO_SUCC :
+        Begin
+          EmitInstr('INC    AX');
+          EmitComment('succ');
+        End;
+        AO_MSB :
+        Begin
+          EmitInstr('CALL    _PLRT_MSB');
+          EmitComment('msb');
+        End;
+      End; { inner Case }
+    End;
+  End; { outer Case }
+End;
+
+{ ---- EmitArithRuntime : emettre les routines arithmetiques ------- }
+{ Routines de support pour l evaluation arithmetique :               }
+{   _PLRT_DEREF_INT : AX=tagged -> AX=raw int (CF=1 si pas INT)    }
+{   _PLRT_MKINT     : AX=raw int -> AX=tagged INT                  }
+{   _PLRT_ABS       : AX=int -> AX=|int|                            }
+{   _PLRT_SIGN      : AX=int -> AX=(-1,0,1)                        }
+{   _PLRT_MSB       : AX=unsigned -> AX=bit index du MSB            }
+Procedure EmitArithRuntime;
+Var
+  NS : TString;
+Begin
+  EmitBlankLine;
+  EmitComment('=======================================');
+  EmitComment('  Routines arithmetiques (TODO 14)');
+  EmitComment('=======================================');
+  EmitBlankLine;
+
+  { _PLRT_DEREF_INT : AX=tagged term -> AX=raw signed int }
+  { Deref d abord, puis extrait la valeur entiere 13 bits sign-extended }
+  { CF=1 si le terme n est pas un entier }
+  EmitLabel('_PLRT_DEREF_INT');
+  EmitInstrA('PUSH', 'BX');
+  { Verifier le tag }
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstrAB('AND', 'BX', IntToStr(TAG_MASK));
+  Str(TAG_INT Shl TAG_SHIFT, NS);
+  EmitInstrAB('CMP', 'BX', NS);
+  EmitInstrA('JNE', '_PLRT_DI_FAIL');
+  { Extraire la valeur 13 bits }
+  EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+  { Sign-extend 13 bits -> 16 bits : si bit 12 set, OR E000h }
+  EmitInstrAB('TEST', 'AX', '1000h');
+  EmitInstrA('JZ', '_PLRT_DI_POS');
+  EmitInstrAB('OR', 'AX', '0E000h');
+  EmitLabel('_PLRT_DI_POS');
+  EmitInstr('CLC');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitLabel('_PLRT_DI_FAIL');
+  EmitInstr('STC');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _PLRT_MKINT : AX=raw int -> AX=tagged INT }
+  EmitLabel('_PLRT_MKINT');
+  EmitInstrAB('AND', 'AX', IntToStr(VAL_MASK));
+  Str(TAG_INT Shl TAG_SHIFT, NS);
+  EmitInstrAB('OR', 'AX', NS);
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _PLRT_ABS : AX=int -> AX=|int| }
+  EmitLabel('_PLRT_ABS');
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JNS', '_PLRT_ABS_OK');
+  EmitInstr('NEG    AX');
+  EmitLabel('_PLRT_ABS_OK');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _PLRT_SIGN : AX=int -> AX=(-1 si neg, 0 si zero, 1 si pos) }
+  EmitLabel('_PLRT_SIGN');
+  EmitInstrAB('CMP', 'AX', '0');
+  EmitInstrA('JL', '_PLRT_SIGN_N');
+  EmitInstrA('JG', '_PLRT_SIGN_P');
+  EmitInstrAB('MOV', 'AX', '0');
+  EmitInstr('RET');
+  EmitLabel('_PLRT_SIGN_N');
+  EmitInstrAB('MOV', 'AX', '-1');
+  EmitInstr('RET');
+  EmitLabel('_PLRT_SIGN_P');
+  EmitInstrAB('MOV', 'AX', '1');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _PLRT_MSB : AX=unsigned -> AX=index du bit le plus significatif }
+  { BSR (Bit Scan Reverse) sur 8086 n existe pas, on simule          }
+  EmitLabel('_PLRT_MSB');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrAB('MOV', 'CX', '15');
+  EmitLabel('_PLRT_MSB_LP');
+  EmitInstrAB('TEST', 'AX', '8000h');
+  EmitInstrA('JNZ', '_PLRT_MSB_FOUND');
+  EmitInstr('SHL    AX,1');
+  EmitInstr('DEC    CX');
+  EmitInstrA('JNS', '_PLRT_MSB_LP');
+  EmitInstrAB('MOV', 'AX', '-1');
+  EmitInstrA('POP', 'CX');
+  EmitInstr('RET');
+  EmitLabel('_PLRT_MSB_FOUND');
+  EmitInstrAB('MOV', 'AX', 'CX');
+  EmitInstrA('POP', 'CX');
+  EmitInstr('RET');
+  EmitBlankLine;
+End;
+
 { ---- EmitRuntime : emettre les routines runtime --------------- }
 { Emet les routines de backtracking (TODO 12) et de liste (TODO 13). }
 Procedure EmitRuntime;
 Begin
   EmitBacktrackRuntime;
   EmitListRuntime;
+  EmitArithRuntime;
 End;
 
 { ---- EmitClose : fermer le fichier de sortie ASM -------------- }
@@ -5169,16 +5659,107 @@ Begin
 End;
 
 { ---- ParseGoal : parser un but dans le corps d une regle -------- }
-{ Un but est soit : atome (arite 0) ou foncteur(arg1,...,argN).     }
+{ Un but est soit : atome (arite 0) ou foncteur(arg1,...,argN),     }
+{ ou un but infixe : Var is Expr, Expr CompOp Expr (TODO 14).      }
 { Les arguments du but sont parses comme ceux d un fait.            }
 Procedure ParseGoal(Var G : TGoalRec);
 Var
-  A : Integer;
+  A       : Integer;
+  SaveVar : TString;
+  SaveInt : LongInt;
+  IsInfix : Boolean;
 Begin
   G.PredName := '';
   G.Arity    := 0;
   G.ArgCount := 0;
 
+  { --- Cas infixe : Variable is Expr / Variable CompOp Expr (TODO 14) --- }
+  If CurToken.Kind = TK_VARIABLE Then
+  Begin
+    SaveVar := CurToken.Val;
+    ParserAdvance;
+
+    { Check for 'is' }
+    If (CurToken.Kind = TK_ATOM) And (CurToken.Val = 'is') Then
+    Begin
+      G.PredName := 'is';
+      ParserAdvance; { consomme 'is' }
+      G.Args[0].Kind    := FAK_VAR;
+      G.Args[0].VarName := SaveVar;
+      G.Args[1].Kind    := FAK_EXPR;
+      G.Args[1].ExprRoot := ParseArithExpr;
+      G.Arity    := 2;
+      G.ArgCount := 2;
+      Exit;
+    End;
+
+    { Check for arithmetic comparison operators }
+    IsInfix := False;
+    If CurToken.Kind = TK_OP Then
+    Begin
+      If (CurToken.Val = '=:=') Or (CurToken.Val = '=\=') Or
+         (CurToken.Val = '<') Or (CurToken.Val = '>') Or
+         (CurToken.Val = '=<') Or (CurToken.Val = '>=') Then
+        IsInfix := True;
+    End;
+
+    If IsInfix Then
+    Begin
+      G.PredName := CurToken.Val;
+      ParserAdvance;
+      { Left side : wrap variable as expression node }
+      G.Args[0].Kind     := FAK_EXPR;
+      G.Args[0].ExprRoot := ArithNodeAdd(ANK_VAR, 0, SaveVar,
+                                          AO_ADD, -1, -1);
+      { Right side }
+      G.Args[1].Kind     := FAK_EXPR;
+      G.Args[1].ExprRoot := ParseArithExpr;
+      G.Arity    := 2;
+      G.ArgCount := 2;
+      Exit;
+    End;
+
+    { Not recognized infix - error }
+    CompileError('operateur attendu apres variable ' + SaveVar +
+                 ' dans le corps de la regle (trouve: ' + CurToken.Val + ')');
+    Exit;
+  End;
+
+  { --- Cas infixe : Integer CompOp Expr (TODO 14) --- }
+  If CurToken.Kind = TK_INTEGER Then
+  Begin
+    SaveInt := CurToken.IntVal;
+    ParserAdvance;
+
+    IsInfix := False;
+    If CurToken.Kind = TK_OP Then
+    Begin
+      If (CurToken.Val = '=:=') Or (CurToken.Val = '=\=') Or
+         (CurToken.Val = '<') Or (CurToken.Val = '>') Or
+         (CurToken.Val = '=<') Or (CurToken.Val = '>=') Then
+        IsInfix := True;
+    End;
+
+    If IsInfix Then
+    Begin
+      G.PredName := CurToken.Val;
+      ParserAdvance;
+      G.Args[0].Kind     := FAK_EXPR;
+      G.Args[0].ExprRoot := ArithNodeAdd(ANK_INT, SaveInt, '',
+                                          AO_ADD, -1, -1);
+      G.Args[1].Kind     := FAK_EXPR;
+      G.Args[1].ExprRoot := ParseArithExpr;
+      G.Arity    := 2;
+      G.ArgCount := 2;
+      Exit;
+    End;
+
+    { Not recognized - error }
+    CompileError('operateur arithmetique attendu apres entier');
+    Exit;
+  End;
+
+  { --- Cas standard : atome ou foncteur(args) --- }
   If CurToken.Kind = TK_ATOM Then
   Begin
     G.PredName := CurToken.Val;
@@ -5457,94 +6038,226 @@ Begin
                 GoalTab[GIdx].PredName + '/' +
                 IntToStr(GoalTab[GIdx].Arity));
 
-    { Charger les arguments du but dans les registres _PL_ARGS }
-    For J := 0 To GoalTab[GIdx].ArgCount - 1 Do
+    { Emettre le code du but (TODO 14 : traitement inline pour is/comp) }
+    If GoalTab[GIdx].PredName = 'is' Then
     Begin
-      Case GoalTab[GIdx].Args[J].Kind Of
-        FAK_ATOM :
-        Begin
-          TagVal := (TAG_ATOM Shl TAG_SHIFT) Or
-                    (GoalTab[GIdx].Args[J].AtomIdx And VAL_MASK);
-          Str(TagVal, NS);
-          EmitInstrAB('MOV', 'WORD PTR [_PL_ARGS + ' +
-                      IntToStr(J * 2) + ']', NS);
-          EmitComment('atom ' + AtomName(GoalTab[GIdx].Args[J].AtomIdx));
-        End;
-
-        FAK_INT :
-        Begin
-          TagVal := (TAG_INT Shl TAG_SHIFT) Or
-                    (Integer(GoalTab[GIdx].Args[J].IntVal) And VAL_MASK);
-          Str(TagVal, NS);
-          EmitInstrAB('MOV', 'WORD PTR [_PL_ARGS + ' +
-                      IntToStr(J * 2) + ']', NS);
-          EmitComment('int ' + IntToStr(GoalTab[GIdx].Args[J].IntVal));
-        End;
-
-        FAK_VAR :
-        Begin
-          VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[J].VarName);
-          EmitComment('var ' + GoalTab[GIdx].Args[J].VarName);
-          EmitInstrAB('MOV', 'AX',
-                      'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
-          EmitInstrAB('MOV', 'WORD PTR [_PL_ARGS + ' +
-                      IntToStr(J * 2) + ']', 'AX');
-        End;
-
-        FAK_ANON :
-        Begin
-          { Variable anonyme : creer une REF libre }
-          EmitComment('anon _');
-          EmitInstrAB('MOV', 'AX', 'WORD PTR [_PL_HTOP]');
-          EmitInstrAB('MOV', 'SI', 'AX');
-          EmitInstrAB('SHL', 'SI', '1');
-          EmitInstrAB('ADD', 'SI', 'OFFSET _PL_HEAP');
-          EmitInstrAB('MOV', 'WORD PTR [SI]', 'AX');
-          EmitInstr('INC    WORD PTR [_PL_HTOP]');
-          EmitInstrAB('MOV', 'WORD PTR [_PL_ARGS + ' +
-                      IntToStr(J * 2) + ']', 'AX');
-        End;
-
-        FAK_LIST :
-        Begin
-          { Liste : construire sur le heap (TODO 13) }
-          EmitComment('list');
-          EmitBuildListToAX(GoalTab[GIdx].Args[J], True);
-          EmitInstrAB('MOV', 'WORD PTR [_PL_ARGS + ' +
-                      IntToStr(J * 2) + ']', 'AX');
-        End;
+      { --- is/2 : Variable is Expression (TODO 14) --- }
+      EmitComment('is/2 inline');
+      { Evaluer l expression (arg1) dans AX (entier brut) }
+      If GoalTab[GIdx].Args[1].Kind = FAK_EXPR Then
+        EmitArithEval(GoalTab[GIdx].Args[1].ExprRoot)
+      Else If GoalTab[GIdx].Args[1].Kind = FAK_INT Then
+      Begin
+        Str(Integer(GoalTab[GIdx].Args[1].IntVal), NS);
+        EmitInstrAB('MOV', 'AX', NS);
+      End
+      Else If GoalTab[GIdx].Args[1].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[1].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitDeref;
+        EmitInstr('CALL    _PLRT_DEREF_INT');
+      End
       Else
-        EmitInstrAB('MOV', 'WORD PTR [_PL_ARGS + ' +
-                    IntToStr(J * 2) + ']', '0');
+      Begin
+        EmitComment('is/2: expression type non gere');
+        EmitInstrAB('MOV', 'AX', '0');
       End;
-    End;
 
-    { Appeler le predicat du but }
-    Clean   := SymNameClean(GoalTab[GIdx].PredName);
-    PredLbl := PL_PRED_PFX + Clean + '_' + IntToStr(GoalTab[GIdx].Arity);
+      { Creer un entier tague a partir de AX }
+      EmitInstr('CALL    _PLRT_MKINT');
+      EmitInstrAB('MOV', 'BX', 'AX');
 
-    If IsLast Then
+      { Charger la variable cible (arg0) dans AX }
+      If GoalTab[GIdx].Args[0].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[0].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+      End
+      Else
+      Begin
+        EmitComment('is/2: cible non-variable');
+        EmitInstrAB('MOV', 'AX', '0');
+      End;
+
+      { Lier la variable au resultat }
+      EmitBind;
+      EmitComment('is/2 done');
+    End
+    Else If (GoalTab[GIdx].PredName = '=:=') Or
+            (GoalTab[GIdx].PredName = '=\=') Or
+            (GoalTab[GIdx].PredName = '<') Or
+            (GoalTab[GIdx].PredName = '>') Or
+            (GoalTab[GIdx].PredName = '=<') Or
+            (GoalTab[GIdx].PredName = '>=') Then
     Begin
-      { Optimisation appel terminal (last call) : deallocate + JMP }
-      EmitComment('last call optimization');
-      EmitInstrAB('MOV', 'SP', 'BP');
-      EmitInstrA('POP', 'BP');
-      EmitInstrA('JMP', PredLbl);
-      { Pas de label_fail apres JMP terminal : si le dernier but echoue, }
-      { le CF est propage automatiquement par le RET du predicat appele. }
+      { --- Comparaison arithmetique inline (TODO 14) --- }
+      EmitComment('arith cmp ' + GoalTab[GIdx].PredName + ' inline');
 
-      { Emettre quand meme le label d echec pour les buts precedents }
-      EmitBlankLine;
-      EmitLabel(ClauseTab[CIdx].FailLabel);
-      EmitInstr('STC');
-      EmitEpilog;
-      Exit;
+      { Evaluer arg0 (gauche) dans AX }
+      If GoalTab[GIdx].Args[0].Kind = FAK_EXPR Then
+        EmitArithEval(GoalTab[GIdx].Args[0].ExprRoot)
+      Else If GoalTab[GIdx].Args[0].Kind = FAK_INT Then
+      Begin
+        Str(Integer(GoalTab[GIdx].Args[0].IntVal), NS);
+        EmitInstrAB('MOV', 'AX', NS);
+      End
+      Else If GoalTab[GIdx].Args[0].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[0].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitDeref;
+        EmitInstr('CALL    _PLRT_DEREF_INT');
+      End
+      Else
+      Begin
+        EmitComment('cmp: gauche non gere');
+        EmitInstrAB('MOV', 'AX', '0');
+      End;
+
+      EmitInstrA('PUSH', 'AX');
+
+      { Evaluer arg1 (droite) dans AX }
+      If GoalTab[GIdx].Args[1].Kind = FAK_EXPR Then
+        EmitArithEval(GoalTab[GIdx].Args[1].ExprRoot)
+      Else If GoalTab[GIdx].Args[1].Kind = FAK_INT Then
+      Begin
+        Str(Integer(GoalTab[GIdx].Args[1].IntVal), NS);
+        EmitInstrAB('MOV', 'AX', NS);
+      End
+      Else If GoalTab[GIdx].Args[1].Kind = FAK_VAR Then
+      Begin
+        VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[1].VarName);
+        EmitInstrAB('MOV', 'AX',
+                    'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+        EmitDeref;
+        EmitInstr('CALL    _PLRT_DEREF_INT');
+      End
+      Else
+      Begin
+        EmitComment('cmp: droite non gere');
+        EmitInstrAB('MOV', 'AX', '0');
+      End;
+
+      EmitInstrAB('MOV', 'BX', 'AX');
+      EmitInstrA('POP', 'AX');
+      EmitInstrAB('CMP', 'AX', 'BX');
+
+      { Emettre le saut conditionnel selon l operateur }
+      NS := LabelGen;
+      If GoalTab[GIdx].PredName = '=:=' Then
+        EmitInstrA('JE', NS)
+      Else If GoalTab[GIdx].PredName = '=\=' Then
+        EmitInstrA('JNE', NS)
+      Else If GoalTab[GIdx].PredName = '<' Then
+        EmitInstrA('JL', NS)
+      Else If GoalTab[GIdx].PredName = '>' Then
+        EmitInstrA('JG', NS)
+      Else If GoalTab[GIdx].PredName = '=<' Then
+        EmitInstrA('JLE', NS)
+      Else If GoalTab[GIdx].PredName = '>=' Then
+        EmitInstrA('JGE', NS);
+
+      { Si on tombe ici, la comparaison a echoue }
+      EmitInstrA('JMP', ClauseTab[CIdx].FailLabel);
+      EmitLabel(NS);
+      EmitComment('arith cmp ok');
     End
     Else
     Begin
-      EmitInstrA('CALL', PredLbl);
-      EmitInstrA('JC', ClauseTab[CIdx].FailLabel);
-    End;
+      { --- But standard : charger args + appeler predicat --- }
+      { Charger les arguments du but dans les registres _PL_ARGS }
+      For J := 0 To GoalTab[GIdx].ArgCount - 1 Do
+      Begin
+        Case GoalTab[GIdx].Args[J].Kind Of
+          FAK_ATOM :
+          Begin
+            TagVal := (TAG_ATOM Shl TAG_SHIFT) Or
+                      (GoalTab[GIdx].Args[J].AtomIdx And VAL_MASK);
+            Str(TagVal, NS);
+            EmitInstrAB('MOV', 'WORD PTR [_PL_ARGS + ' +
+                        IntToStr(J * 2) + ']', NS);
+            EmitComment('atom ' + AtomName(GoalTab[GIdx].Args[J].AtomIdx));
+          End;
+
+          FAK_INT :
+          Begin
+            TagVal := (TAG_INT Shl TAG_SHIFT) Or
+                      (Integer(GoalTab[GIdx].Args[J].IntVal) And VAL_MASK);
+            Str(TagVal, NS);
+            EmitInstrAB('MOV', 'WORD PTR [_PL_ARGS + ' +
+                        IntToStr(J * 2) + ']', NS);
+            EmitComment('int ' + IntToStr(GoalTab[GIdx].Args[J].IntVal));
+          End;
+
+          FAK_VAR :
+          Begin
+            VarIdx := RuleVarFindOrAdd(GoalTab[GIdx].Args[J].VarName);
+            EmitComment('var ' + GoalTab[GIdx].Args[J].VarName);
+            EmitInstrAB('MOV', 'AX',
+                        'WORD PTR [BP-' + IntToStr((VarIdx + 1) * 2) + ']');
+            EmitInstrAB('MOV', 'WORD PTR [_PL_ARGS + ' +
+                        IntToStr(J * 2) + ']', 'AX');
+          End;
+
+          FAK_ANON :
+          Begin
+            { Variable anonyme : creer une REF libre }
+            EmitComment('anon _');
+            EmitInstrAB('MOV', 'AX', 'WORD PTR [_PL_HTOP]');
+            EmitInstrAB('MOV', 'SI', 'AX');
+            EmitInstrAB('SHL', 'SI', '1');
+            EmitInstrAB('ADD', 'SI', 'OFFSET _PL_HEAP');
+            EmitInstrAB('MOV', 'WORD PTR [SI]', 'AX');
+            EmitInstr('INC    WORD PTR [_PL_HTOP]');
+            EmitInstrAB('MOV', 'WORD PTR [_PL_ARGS + ' +
+                        IntToStr(J * 2) + ']', 'AX');
+          End;
+
+          FAK_LIST :
+          Begin
+            { Liste : construire sur le heap (TODO 13) }
+            EmitComment('list');
+            EmitBuildListToAX(GoalTab[GIdx].Args[J], True);
+            EmitInstrAB('MOV', 'WORD PTR [_PL_ARGS + ' +
+                        IntToStr(J * 2) + ']', 'AX');
+          End;
+        Else
+          EmitInstrAB('MOV', 'WORD PTR [_PL_ARGS + ' +
+                      IntToStr(J * 2) + ']', '0');
+        End;
+      End;
+
+      { Appeler le predicat du but }
+      Clean   := SymNameClean(GoalTab[GIdx].PredName);
+      PredLbl := PL_PRED_PFX + Clean + '_' + IntToStr(GoalTab[GIdx].Arity);
+
+      If IsLast Then
+      Begin
+        { Optimisation appel terminal (last call) : deallocate + JMP }
+        EmitComment('last call optimization');
+        EmitInstrAB('MOV', 'SP', 'BP');
+        EmitInstrA('POP', 'BP');
+        EmitInstrA('JMP', PredLbl);
+        { Pas de label_fail apres JMP terminal : si le dernier but echoue, }
+        { le CF est propage automatiquement par le RET du predicat appele. }
+
+        { Emettre quand meme le label d echec pour les buts precedents }
+        EmitBlankLine;
+        EmitLabel(ClauseTab[CIdx].FailLabel);
+        EmitInstr('STC');
+        EmitEpilog;
+        Exit;
+      End
+      Else
+      Begin
+        EmitInstrA('CALL', PredLbl);
+        EmitInstrA('JC', ClauseTab[CIdx].FailLabel);
+      End;
+    End; { else standard goal }
   End;
 
   { Si le corps est vide (ne devrait pas arriver pour une regle) }
@@ -5753,7 +6466,7 @@ Begin
 
   EmitBlankLine;
   EmitComment('=======================================');
-  EmitComment('  Clauses compilees (TODO 10 + 11 + 12 + 13)');
+  EmitComment('  Clauses compilees (TODO 10 + 11 + 12 + 13 + 14)');
   EmitComment('=======================================');
 
   { Emettre le code de chaque clause individuelle }
@@ -5808,7 +6521,7 @@ Begin
 End;
 
 { ============================================================
-  STUBS POUR LES TODOS RESTANTS (14..25)
+  STUBS POUR LES TODOS RESTANTS (15..25)
   ============================================================ }
 
 Procedure Run;
