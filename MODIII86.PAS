@@ -349,7 +349,7 @@
              DISPOSE(ptr) : liberation (stub, pas de GC reel sur DOS)
              NIL : valeur nulle pour toute reference -> AX=0
 
-   TODO 23 - MODULES GENERIQUES (GENERIC)
+   TODO 23 - MODULES GENERIQUES (GENERIC) [IMPLEMENTE]
              GENERIC INTERFACE Nom(ParamFormel1, ParamFormel2);
                Declarations parametrees par des interfaces formelles
              GENERIC MODULE Nom(ParamFormel1, ParamFormel2);
@@ -439,6 +439,9 @@ Const
   MAX_OPAQUE    = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
   MAX_EXCEPTION = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
   MAX_TRY_NEST  = 8;
+  MAX_GENERIC       = {$IFDEF FPC}16{$ELSE}4{$ENDIF};
+  MAX_GENERIC_INST  = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
+  MAX_GENERIC_PARAM = 8;
 
   (* Prefixe statique (TODO 09) *)
   M3_STA_PFX  = '_M3S_';     (* variable statique locale             *)
@@ -452,6 +455,7 @@ Const
   M3_TYPE_PFX = '_M3T_';     (* type / vtable                       *)
   M3_OBJ_PFX  = '_M3O_';     (* objet data                          *)
   M3_EXC_PFX  = '_M3X_';     (* exception handler                   *)
+  M3_GEN_PFX  = '_M3G_';     (* generic instance (TODO 23)          *)
 
   (* Codes de sortie *)
   EXIT_OK    = 0;
@@ -723,6 +727,26 @@ Type
     SymIdx     : Integer;     (* index dans SymTab                      *)
   End;
 
+  (* ---- Modules generiques (TODO 23) --------------------------- *)
+  TGenericKind = (GK_INTERFACE, GK_MODULE);
+
+  TGenericEntry = Record
+    Name        : TString;     (* nom du generique (ex: GenStack)       *)
+    Kind        : TGenericKind; (* GENERIC INTERFACE ou GENERIC MODULE  *)
+    FormalParams: Array[0..MAX_GENERIC_PARAM - 1] Of TString;
+    FormalCount : Integer;     (* nombre de parametres formels          *)
+    BodyStart   : Integer;     (* index debut body dans TokenPool       *)
+    BodyEnd     : Integer;     (* index fin body dans TokenPool         *)
+  End;
+
+  TGenericInst = Record
+    InstName    : TString;     (* nom de l instanciation                *)
+    GenIdx      : Integer;     (* index dans GenericTab du generique    *)
+    Kind        : TGenericKind; (* INTERFACE ou MODULE instanciation    *)
+    ActualParams: Array[0..MAX_GENERIC_PARAM - 1] Of TString;
+    ActualCount : Integer;     (* nombre de parametres actuels          *)
+  End;
+
 (* ============================================================
    VARIABLES GLOBALES
    ============================================================ *)
@@ -767,6 +791,12 @@ Var
   ExcTab       : Array[0..MAX_EXCEPTION - 1] Of TExceptionEntry;
   ExcCount     : Integer;
   ExcTryNest   : Integer;
+
+  (* Modules generiques (TODO 23) *)
+  GenericTab   : Array[0..MAX_GENERIC - 1] Of TGenericEntry;
+  GenericCount : Integer;
+  GenInstTab   : Array[0..MAX_GENERIC_INST - 1] Of TGenericInst;
+  GenInstCount : Integer;
 
   (* Segment de donnees (TODO 03) *)
   DataTab    : Array[0..MAX_DATA-1] Of TDataRec;
@@ -3396,6 +3426,20 @@ Begin
     EmitBlankLine;
   End;
 
+  (* --- Generic instances (TODO 23) --- *)
+  If GenInstCount > 0 Then
+  Begin
+    EmitComment('--- Instances generiques (GENERIC) ---');
+    For I := 0 To GenInstCount - 1 Do
+    Begin
+      EmitComment('  ' + GenInstTab[I].InstName + ' = ' +
+        GenericTab[GenInstTab[I].GenIdx].Name + '(...)');
+      EmitRaw('        EXTRN ' + M3_GEN_PFX +
+              GenInstTab[I].InstName + '_INIT:NEAR');
+    End;
+    EmitBlankLine;
+  End;
+
   EmitComment('--- Segment de code ---');
   EmitRaw('_TEXT   SEGMENT WORD PUBLIC ''CODE''');
   EmitRaw('        ASSUME  CS:_TEXT, DS:_DATA');
@@ -4298,6 +4342,15 @@ Var
   (* TODO 21 - EXCEPTION declarations *)
   HasExcArg   : Boolean;
   ExcArgTIdx  : Integer;
+  (* TODO 23 - GENERIC modules *)
+  GenKind      : TGenericKind;
+  GenName      : TString;
+  GenFormalCnt : Integer;
+  GenBodyStart : Integer;
+  GenDepth     : Integer;
+  GenIdx       : Integer;
+  GenInstName  : TString;
+  GenActCnt    : Integer;
 Begin
   P       := 0;
   InVar   := False;
@@ -4306,6 +4359,125 @@ Begin
   ImportCount := 0;
   ModuleName  := '';
   ExportsName := '';
+  GenericCount := 0;
+  GenInstCount := 0;
+
+  (* ---- TODO 23 : scanner d abord les GENERIC definitions ---- *)
+  (* Un fichier peut contenir GENERIC INTERFACE/MODULE avant le  *)
+  (* MODULE/INTERFACE principal (instanciation)                   *)
+  While P < TokenCount Do
+  Begin
+    If (TokenPool[P].Kind = TK_KEYWORD) And
+       (TokenPool[P].Val = 'GENERIC') Then
+    Begin
+      Inc(P); (* passer GENERIC *)
+      (* Determiner INTERFACE ou MODULE *)
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) Then
+      Begin
+        If TokenPool[P].Val = 'INTERFACE' Then
+          GenKind := GK_INTERFACE
+        Else
+          GenKind := GK_MODULE;
+        Inc(P); (* passer INTERFACE/MODULE *)
+      End;
+      (* Lire le nom du generique *)
+      GenName := '';
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+      Begin
+        GenName := TokenPool[P].Val;
+        Inc(P);
+      End;
+      (* Lire les parametres formels : (Param1, Param2, ...) *)
+      GenFormalCnt := 0;
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = '(') Then
+      Begin
+        Inc(P); (* passer '(' *)
+        While (P < TokenCount) And Not
+              ((TokenPool[P].Kind = TK_PUNCT) And
+               (TokenPool[P].Val = ')')) Do
+        Begin
+          If (TokenPool[P].Kind = TK_IDENT) And
+             (GenFormalCnt < MAX_GENERIC_PARAM) Then
+          Begin
+            If GenericCount < MAX_GENERIC Then
+              GenericTab[GenericCount].FormalParams[GenFormalCnt] :=
+                TokenPool[P].Val;
+            Inc(GenFormalCnt);
+          End;
+          Inc(P);
+        End;
+        If P < TokenCount Then Inc(P); (* passer ')' *)
+      End;
+      (* Passer le ';' *)
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ';') Then
+        Inc(P);
+      (* Enregistrer le debut du body *)
+      GenBodyStart := P;
+      (* Avancer jusqu a END GenName. *)
+      GenDepth := 0;
+      While P < TokenCount Do
+      Begin
+        If (TokenPool[P].Kind = TK_KEYWORD) And
+           ((TokenPool[P].Val = 'BEGIN') Or
+            (TokenPool[P].Val = 'RECORD') Or
+            (TokenPool[P].Val = 'OBJECT')) Then
+          Inc(GenDepth);
+        If (TokenPool[P].Kind = TK_KEYWORD) And
+           (TokenPool[P].Val = 'END') Then
+        Begin
+          If GenDepth > 0 Then
+            Dec(GenDepth)
+          Else
+          Begin
+            (* Enregistrer dans GenericTab *)
+            If GenericCount < MAX_GENERIC Then
+            Begin
+              GenericTab[GenericCount].Name       := GenName;
+              GenericTab[GenericCount].Kind       := GenKind;
+              GenericTab[GenericCount].FormalCount := GenFormalCnt;
+              GenericTab[GenericCount].BodyStart  := GenBodyStart;
+              GenericTab[GenericCount].BodyEnd    := P;
+              Inc(GenericCount);
+            End;
+            If Opts.DebugMode Then
+            Begin
+              Write('  GENERIC ');
+              If GenKind = GK_INTERFACE Then
+                Write('INTERFACE ')
+              Else
+                Write('MODULE ');
+              Write(GenName, '(');
+              For I := 0 To GenFormalCnt - 1 Do
+              Begin
+                If I > 0 Then Write(', ');
+                Write(GenericTab[GenericCount - 1].FormalParams[I]);
+              End;
+              WriteLn(')');
+            End;
+            (* Passer END *)
+            Inc(P);
+            (* Passer le nom *)
+            If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+              Inc(P);
+            (* Passer '.' ou ';' *)
+            If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) Then
+              Inc(P);
+            Break;
+          End;
+        End;
+        Inc(P);
+      End;
+      Continue;
+    End;
+    (* Arreter au MODULE ou INTERFACE non-GENERIC *)
+    If (TokenPool[P].Kind = TK_KEYWORD) And
+       ((TokenPool[P].Val = 'MODULE') Or
+        (TokenPool[P].Val = 'INTERFACE')) Then
+      Break;
+    Inc(P);
+  End;
 
   (* Chercher le mot-cle MODULE ou INTERFACE pour commencer - TODO 18 *)
   While (P < TokenCount) And Not
@@ -4326,6 +4498,90 @@ Begin
   Begin
     ModuleName := TokenPool[P].Val;
     Inc(P);
+  End;
+
+  (* ---- TODO 23 : detecter instanciation generique ---- *)
+  (* INTERFACE Inst = GenName(Param1, Param2) END Inst.   *)
+  (* MODULE Inst = GenName(Param1, Param2) END Inst.      *)
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_OP) And
+     (TokenPool[P].Val = '=') Then
+  Begin
+    Inc(P); (* passer '=' *)
+    GenName := '';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+    Begin
+      GenName := TokenPool[P].Val;
+      Inc(P);
+    End;
+    (* Lire les parametres actuels : (Param1, Param2, ...) *)
+    GenActCnt := 0;
+    GenIdx := -1;
+    (* Chercher le generique dans GenericTab *)
+    For I := 0 To GenericCount - 1 Do
+      If GenericTab[I].Name = GenName Then
+        GenIdx := I;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P); (* passer '(' *)
+      While (P < TokenCount) And Not
+            ((TokenPool[P].Kind = TK_PUNCT) And
+             (TokenPool[P].Val = ')')) Do
+      Begin
+        If (TokenPool[P].Kind = TK_IDENT) And
+           (GenActCnt < MAX_GENERIC_PARAM) Then
+        Begin
+          If GenInstCount < MAX_GENERIC_INST Then
+            GenInstTab[GenInstCount].ActualParams[GenActCnt] :=
+              TokenPool[P].Val;
+          Inc(GenActCnt);
+        End;
+        Inc(P);
+      End;
+      If P < TokenCount Then Inc(P); (* passer ')' *)
+    End;
+    (* Enregistrer l instanciation *)
+    GenInstName := ModuleName;
+    If GenInstCount < MAX_GENERIC_INST Then
+    Begin
+      GenInstTab[GenInstCount].InstName    := GenInstName;
+      GenInstTab[GenInstCount].GenIdx      := GenIdx;
+      If Opts.IsIface Then
+        GenInstTab[GenInstCount].Kind := GK_INTERFACE
+      Else
+        GenInstTab[GenInstCount].Kind := GK_MODULE;
+      GenInstTab[GenInstCount].ActualCount := GenActCnt;
+      Inc(GenInstCount);
+    End;
+    If Opts.DebugMode Then
+    Begin
+      If Opts.IsIface Then
+        Write('  INTERFACE ')
+      Else
+        Write('  MODULE ');
+      Write(GenInstName, ' = ', GenName, '(');
+      For I := 0 To GenActCnt - 1 Do
+      Begin
+        If I > 0 Then Write(', ');
+        Write(GenInstTab[GenInstCount - 1].ActualParams[I]);
+      End;
+      WriteLn(')');
+    End;
+    (* Enregistrer dans SymTab *)
+    If (GenInstName <> '') And (SymFind(GenInstName) < 0) Then
+      SymAdd(GenInstName, SK_MODULE, TY_UNKNOWN, 0);
+    (* Passer END InstName. *)
+    While (P < TokenCount) And Not
+          ((TokenPool[P].Kind = TK_KEYWORD) And
+           (TokenPool[P].Val = 'END')) Do
+      Inc(P);
+    If P < TokenCount Then Inc(P); (* passer END *)
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+      Inc(P); (* passer InstName *)
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) Then
+      Inc(P); (* passer '.' *)
+    (* Pour une instanciation, pas de body a compiler *)
+    Exit;
   End;
 
   (* Detecter EXPORTS InterfaceName - TODO 18 *)
@@ -9214,6 +9470,8 @@ Begin
   OpaqueCount  := 0;
   ExcCount     := 0;
   ExcTryNest   := 0;
+  GenericCount := 0;
+  GenInstCount := 0;
   OutFOpen   := False;
   LexOpened  := False;
 
@@ -9269,6 +9527,8 @@ Begin
     WriteLn('  Imports        : ', ImportCount);
     WriteLn('  Types objets   : ', ObjTypeCount);
     WriteLn('  Exceptions     : ', ExcCount);
+    WriteLn('  Generiques     : ', GenericCount);
+    WriteLn('  Instances gen. : ', GenInstCount);
   End;
 
   (* Phase 3 : emettre le fichier assembleur *)
