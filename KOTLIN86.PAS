@@ -2880,8 +2880,8 @@ Begin
       (* AX = gauche, BX = droite *)
       (* --- String concatenation : + avec chaine --- *)
       If (Op = '+') And
-         ((Res.TypeIdx = TY_IDX_STRING) Or
-          (Right.TypeIdx = TY_IDX_STRING)) Then
+         (Res.TypeIdx = TY_IDX_STRING) And
+         (Right.TypeIdx = TY_IDX_STRING) Then
       Begin
         EmitInstrAB('MOV', 'SI', 'AX');
         EmitInstrAB('MOV', 'DI', 'BX');
@@ -3043,8 +3043,8 @@ Begin
          (Op = '<') Or (Op = '<=') Or (Op = '>') Or (Op = '>=') Then
         Res.TypeIdx := TY_IDX_BOOLEAN
       Else If (Op = '+') And
-              ((Res.TypeIdx = TY_IDX_STRING) Or
-               (Right.TypeIdx = TY_IDX_STRING)) Then
+              (Res.TypeIdx = TY_IDX_STRING) And
+              (Right.TypeIdx = TY_IDX_STRING) Then
         Res.TypeIdx := TY_IDX_STRING
       Else
         Res.TypeIdx := TY_IDX_INT;
