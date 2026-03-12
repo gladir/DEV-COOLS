@@ -249,7 +249,7 @@
               -> JMP _PYL_WTEST_N ou _PYL_FINCR_N
             LoopPush / LoopPop : pile de labels pour break/continue
 
-  TODO 15 - LISTES (list)
+  TODO 15 - LISTES (list) [IMPLEMENTE]
             Liste vide : [] -> allocation d un tableau vide sur le heap
             Liste literale : [e0, e1, e2] -> allocation + stockage DW par element
             Acces par index : lst[i] -> calcul offset + MOV AX,[BX+offset]
@@ -730,7 +730,8 @@ Procedure EnsureVarInData(SIdx : Integer); Forward;
 Procedure ParseAssign(FirstSymIdx : Integer); Forward;
 { TODO 10 - Forward declarations expressions primaires }
 Procedure ParseCallArgs(SIdx : Integer; Var Res : TExprVal); Forward;
-Procedure EmitBuiltinCall(SIdx : Integer; Var Res : TExprVal); Forward;
+Procedure EmitBuiltinCall(SIdx : Integer; ArgTypeIdx : Integer;
+                         Var Res : TExprVal); Forward;
 Procedure ParseListLiteral(Var Res : TExprVal);  Forward;
 Procedure ParseDictLiteral(Var Res : TExprVal);  Forward;
 { TODO 11 - Forward declarations expressions binaires }
@@ -743,6 +744,8 @@ Procedure ParseIfStmt;   Forward;
 { TODO 14 - Forward declarations boucles }
 Procedure ParseWhileStmt; Forward;
 Procedure ParseForStmt;   Forward;
+{ TODO 15 - Forward declaration runtime listes }
+Procedure EmitListRuntime; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -2306,6 +2309,8 @@ Begin
   EmitExprRuntime;
   { Emettre les routines d entrees/sorties (TODO 12) }
   EmitIORuntime;
+  { Emettre les routines runtime pour listes (TODO 15) }
+  EmitListRuntime;
   { Fermer le segment de code }
   EmitRaw('');
   EmitRaw('_TEXT   ENDS');
@@ -2610,6 +2615,38 @@ Begin
     Exit;
   End;
 
+  { ---- TODO 15 : Concatenation list + list ----------------- }
+  If (Op = '+') And (L.TypeIdx = TY_IDX_LIST) Then
+  Begin
+    ExprFlushToAX(L);
+    EmitInstr('MOV    SI, AX');      { SI = liste gauche }
+    EmitInstr('PUSH   SI');
+    ExprFlushToAX(R);
+    EmitInstr('MOV    DI, AX');      { DI = liste droite }
+    EmitInstr('POP    SI');
+    EmitInstr('CALL   ' + PY_RT_PFX + 'LISTCONCAT');
+    L.Kind    := EK_AX;
+    L.TypeIdx := TY_IDX_LIST;
+    L.SymIdx  := -1;
+    Exit;
+  End;
+
+  { ---- TODO 15 : Repetition list * n ----------------------- }
+  If (Op = '*') And (L.TypeIdx = TY_IDX_LIST) Then
+  Begin
+    ExprFlushToAX(L);
+    EmitInstr('MOV    SI, AX');      { SI = liste }
+    EmitInstr('PUSH   SI');
+    ExprFlushToAX(R);
+    EmitInstr('MOV    CX, AX');      { CX = count }
+    EmitInstr('POP    SI');
+    EmitInstr('CALL   ' + PY_RT_PFX + 'LISTMUL');
+    L.Kind    := EK_AX;
+    L.TypeIdx := TY_IDX_LIST;
+    L.SymIdx  := -1;
+    Exit;
+  End;
+
   { ---- TODO 11 : Comparaison str (==, !=, <, <=, >, >=) --- }
   If ((Op = '==') Or (Op = '!=') Or (Op = '<') Or
       (Op = '<=') Or (Op = '>') Or (Op = '>=')) And
@@ -2825,6 +2862,9 @@ Var
   E      : TExprVal;
   IdxSym : Integer;
   IdxE   : TExprVal;
+  LblNeg : TString;
+  AttrName : TString;
+  ArgE   : TExprVal;
 Begin
   ExprMakeNone(Res);
   Case CurToken.Kind Of
@@ -2982,11 +3022,20 @@ Begin
       End
       Else
       Begin
-        { Index simple : expr[i] }
+        { Index simple : expr[i] (TODO 15 : skip count header + neg) }
         EmitComment('index [i]');
         ExprFlushToAX(IdxE);
-        EmitInstr('SHL    AX, 1');     { AX = i * 2 (taille mot) }
-        EmitInstr('ADD    SI, AX');
+        EmitInstr('PUSH   SI');
+        EmitInstr('MOV    BX, AX');
+        LblNeg := LabelGen;
+        EmitInstr('TEST   BX, BX');
+        EmitInstr('JGE    ' + LblNeg);
+        EmitInstr('ADD    BX, [SI]');    { index negatif : i + len }
+        EmitLabel(LblNeg);
+        EmitInstr('SHL    BX, 1');
+        EmitInstr('ADD    BX, 2');       { sauter l en-tete count }
+        EmitInstr('POP    SI');
+        EmitInstr('ADD    SI, BX');
         EmitInstr('MOV    AX, [SI]');
       End;
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
@@ -2997,25 +3046,92 @@ Begin
     End
     Else If CurToken.Val = '.' Then
     Begin
-      { Acces attribut : expr.attr }
+      { Acces attribut : expr.attr (TODO 15 : methodes liste) }
       ExprFlushToAX(Res);
       EmitInstr('MOV    SI, AX');   { SI = instance }
       ParserAdvance;
       If CurToken.Kind = TK_IDENT Then
       Begin
-        EmitComment('attr: .' + CurToken.Val);
-        { Attribut stub : offset 0 pour l instant }
-        EmitInstr('MOV    AX, [SI]');
+        AttrName := CurToken.Val;
+        EmitComment('attr: .' + AttrName);
         ParserAdvance;
-        { Appel de methode : obj.method(args) }
-        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+
+        { --- Methodes de liste (TODO 15) --- }
+        If (Res.TypeIdx = TY_IDX_LIST) And
+           (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
         Begin
+          If AttrName = 'append' Then
+          Begin
+            { lst.append(val) : SI=liste, AX=val }
+            EmitInstr('PUSH   SI');
+            ParserAdvance;  { consommer '(' }
+            ParseExpr(ArgE);
+            ExprFlushToAX(ArgE);
+            EmitInstr('POP    SI');
+            EmitInstr('CALL   ' + PY_RT_PFX + 'LISTAPPEND');
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance;
+            ExprMakeAX(TY_IDX_NONE, Res);
+          End
+          Else If AttrName = 'pop' Then
+          Begin
+            { lst.pop() : SI=liste -> AX=element }
+            ParserAdvance;  { consommer '(' }
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance;
+            EmitInstr('CALL   ' + PY_RT_PFX + 'LISTPOP');
+            ExprMakeAX(TY_IDX_INT, Res);
+          End
+          Else If AttrName = 'insert' Then
+          Begin
+            { lst.insert(i, val) : SI=liste, AX=index, BX=val }
+            EmitInstr('PUSH   SI');
+            ParserAdvance;  { consommer '(' }
+            ParseExpr(ArgE);
+            ExprFlushToAX(ArgE);
+            EmitInstr('PUSH   AX');  { sauver index }
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+              ParserAdvance;
+            ParseExpr(ArgE);
+            ExprFlushToAX(ArgE);
+            EmitInstr('MOV    BX, AX');  { BX = val }
+            EmitInstr('POP    AX');      { AX = index }
+            EmitInstr('POP    SI');      { SI = liste }
+            EmitInstr('CALL   ' + PY_RT_PFX + 'LISTINSERT');
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance;
+            ExprMakeAX(TY_IDX_NONE, Res);
+          End
+          Else
+          Begin
+            { Methode inconnue : stub generique }
+            EmitInstr('MOV    AX, [SI]');
+            ParserAdvance;  { consommer '(' }
+            While (CurToken.Kind <> TK_EOF) And
+                  Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+              ParserAdvance;
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance;
+            ExprMakeAX(TY_IDX_INT, Res);
+          End;
+        End
+        Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          { Appel de methode generique : obj.method(args) }
+          EmitInstr('MOV    AX, [SI]');
           ParserAdvance;
           While (CurToken.Kind <> TK_EOF) And
                 Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
             ParserAdvance;
           If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
             ParserAdvance;
+          ExprMakeAX(TY_IDX_INT, Res);
+        End
+        Else
+        Begin
+          { Attribut simple : offset 0 pour l instant }
+          EmitInstr('MOV    AX, [SI]');
+          ExprMakeAX(TY_IDX_INT, Res);
         End;
       End
       Else
@@ -3387,6 +3503,228 @@ Begin
   EmitInstr('IMUL   BX');
   EmitInstr('LOOP   ' + PY_RT_PFX + 'PW_LP');
   EmitLabel(PY_RT_PFX + 'PW_END');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+End;
+
+{ ============================================================
+  TODO 15 - LISTES : RUNTIME [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- EmitListRuntime : routines runtime pour les listes ------ }
+{ Layout liste : [count DW][elem0 DW][elem1 DW]...              }
+{   _PYRT_SLICE       : SI=list, AX=start, BX=end -> AX=new    }
+{   _PYRT_LISTAPPEND  : SI=list, AX=val -> modifie en place     }
+{   _PYRT_LISTPOP     : SI=list -> AX=dernier element           }
+{   _PYRT_LISTINSERT  : SI=list, AX=index, BX=val               }
+{   _PYRT_LISTCONCAT  : SI=lst1, DI=lst2 -> AX=new list         }
+{   _PYRT_LISTMUL     : SI=list, CX=repeat -> AX=new list       }
+Procedure EmitListRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('-- Runtime : listes (TODO 15) --');
+
+  { _PYRT_SLICE : SI=list, AX=start, BX=end -> AX=ptr new list }
+  { Si BX = FFFFh, utiliser [SI] comme fin                       }
+  EmitLabel(PY_RT_PFX + 'SLICE');
+  EmitInstr('PUSH   DX');
+  EmitInstr('CMP    BX, 0FFFFh');
+  EmitInstr('JNE    ' + PY_RT_PFX + 'SL_OK');
+  EmitInstr('MOV    BX, [SI]');          { BX = len si sentinel }
+  EmitLabel(PY_RT_PFX + 'SL_OK');
+  EmitInstr('MOV    CX, BX');
+  EmitInstr('SUB    CX, AX');            { CX = count = end - start }
+  EmitInstr('PUSH   CX');               { sauver count }
+  EmitInstr('PUSH   SI');               { sauver src list }
+  EmitInstr('PUSH   AX');               { sauver start }
+  { Allouer nouvelle liste sur le heap }
+  EmitInstr('MOV    DI, [_PY_HEAPTOP]');
+  EmitInstr('ADD    DI, OFFSET _PY_HEAP');
+  EmitInstr('MOV    [DI], CX');          { ecrire count }
+  { Calculer adresse source : SI + 2 + start*2 }
+  EmitInstr('POP    AX');               { AX = start }
+  EmitInstr('SHL    AX, 1');
+  EmitInstr('POP    SI');               { SI = src list }
+  EmitInstr('ADD    SI, AX');
+  EmitInstr('ADD    SI, 2');             { sauter count header }
+  { Copier CX elements }
+  EmitInstr('POP    CX');               { CX = count }
+  EmitInstr('PUSH   DI');               { sauver ptr new list }
+  EmitInstr('PUSH   CX');
+  EmitInstr('ADD    DI, 2');             { dest = new list + 2 }
+  EmitInstr('TEST   CX, CX');
+  EmitInstr('JLE    ' + PY_RT_PFX + 'SL_DN');
+  EmitLabel(PY_RT_PFX + 'SL_CP');
+  EmitInstr('MOVSW');
+  EmitInstr('LOOP   ' + PY_RT_PFX + 'SL_CP');
+  EmitLabel(PY_RT_PFX + 'SL_DN');
+  { Mettre a jour HEAPTOP }
+  EmitInstr('POP    CX');               { CX = count }
+  EmitInstr('INC    CX');               { +1 pour header }
+  EmitInstr('SHL    CX, 1');
+  EmitInstr('ADD    [_PY_HEAPTOP], CX');
+  EmitInstr('POP    AX');               { AX = ptr new list }
+  EmitInstr('POP    DX');
+  EmitInstr('RET');
+
+  { _PYRT_LISTAPPEND : SI=list, AX=val -> modifie en place }
+  EmitLabel(PY_RT_PFX + 'LISTAPPEND');
+  EmitInstr('MOV    CX, [SI]');          { CX = count }
+  EmitInstr('MOV    BX, CX');
+  EmitInstr('SHL    BX, 1');
+  EmitInstr('ADD    BX, 2');             { offset = 2 + count*2 }
+  EmitInstr('MOV    [SI+BX], AX');       { stocker val apres dernier }
+  EmitInstr('INC    WORD PTR [SI]');     { count++ }
+  EmitInstr('ADD    WORD PTR [_PY_HEAPTOP], 2');
+  EmitInstr('RET');
+
+  { _PYRT_LISTPOP : SI=list -> AX=dernier element }
+  EmitLabel(PY_RT_PFX + 'LISTPOP');
+  EmitInstr('MOV    CX, [SI]');          { CX = count }
+  EmitInstr('DEC    WORD PTR [SI]');     { count-- }
+  EmitInstr('SHL    CX, 1');             { CX = count*2 }
+  EmitInstr('MOV    AX, [SI+CX]');       { AX = dernier element }
+  EmitInstr('RET');
+
+  { _PYRT_LISTINSERT : SI=list, AX=index, BX=val }
+  { Decaler les elements vers la droite a partir de la fin }
+  EmitLabel(PY_RT_PFX + 'LISTINSERT');
+  EmitInstr('PUSH   DX');
+  EmitInstr('MOV    DX, BX');            { DX = val a inserer }
+  EmitInstr('MOV    CX, [SI]');          { CX = count }
+  EmitInstr('MOV    BX, CX');            { BX = idx copie (count) }
+  EmitLabel(PY_RT_PFX + 'LI_SH');
+  EmitInstr('CMP    BX, AX');
+  EmitInstr('JLE    ' + PY_RT_PFX + 'LI_IN');
+  { Decaler : [SI + 2 + BX*2] = [SI + 2 + (BX-1)*2] }
+  EmitInstr('PUSH   AX');
+  EmitInstr('MOV    AX, BX');
+  EmitInstr('SHL    AX, 1');
+  EmitInstr('ADD    AX, 2');
+  EmitInstr('PUSH   SI');
+  EmitInstr('ADD    SI, AX');
+  EmitInstr('MOV    AX, [SI-2]');
+  EmitInstr('MOV    [SI], AX');
+  EmitInstr('POP    SI');
+  EmitInstr('POP    AX');
+  EmitInstr('DEC    BX');
+  EmitInstr('JMP    ' + PY_RT_PFX + 'LI_SH');
+  EmitLabel(PY_RT_PFX + 'LI_IN');
+  { Inserer : [SI + 2 + AX*2] = DX }
+  EmitInstr('SHL    AX, 1');
+  EmitInstr('ADD    AX, 2');
+  EmitInstr('ADD    SI, AX');
+  EmitInstr('MOV    [SI], DX');
+  EmitInstr('SUB    SI, AX');            { restaurer SI }
+  EmitInstr('INC    WORD PTR [SI]');     { count++ }
+  EmitInstr('ADD    WORD PTR [_PY_HEAPTOP], 2');
+  EmitInstr('POP    DX');
+  EmitInstr('RET');
+
+  { _PYRT_LISTCONCAT : SI=lst1, DI=lst2 -> AX=new list }
+  EmitLabel(PY_RT_PFX + 'LISTCONCAT');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   DX');
+  EmitInstr('MOV    AX, [SI]');          { AX = count1 }
+  EmitInstr('MOV    BX, [DI]');          { BX = count2 }
+  EmitInstr('MOV    CX, AX');
+  EmitInstr('ADD    CX, BX');            { CX = total count }
+  EmitInstr('PUSH   CX');               { sauver total }
+  EmitInstr('PUSH   SI');               { sauver lst1 }
+  EmitInstr('PUSH   DI');               { sauver lst2 }
+  EmitInstr('PUSH   AX');               { sauver count1 }
+  EmitInstr('PUSH   BX');               { sauver count2 }
+  { Allouer sur le heap }
+  EmitInstr('MOV    DI, [_PY_HEAPTOP]');
+  EmitInstr('ADD    DI, OFFSET _PY_HEAP');
+  EmitInstr('MOV    [DI], CX');          { ecrire total count }
+  EmitInstr('PUSH   DI');               { sauver ptr new list }
+  EmitInstr('ADD    DI, 2');             { dest = new + 2 }
+  { Copier lst1 }
+  EmitInstr('POP    BX');               { BX = ptr new list (on va PUSH apres) }
+  EmitInstr('PUSH   BX');
+  EmitInstr('MOV    CX, [SP+8]');        { count1 = [SP+8] }
+  { Utiliser une autre approche : depiler count1, count2 }
+  { Annuler et reprendre proprement }
+  EmitInstr('POP    DI');               { DI = ptr new list }
+  EmitInstr('POP    CX');               { CX = count2 }
+  EmitInstr('POP    AX');               { AX = count1 }
+  EmitInstr('POP    BX');               { BX = ptr lst2 }
+  EmitInstr('POP    SI');               { SI = ptr lst1 }
+  EmitInstr('POP    DX');               { DX = total count }
+  { Ecrire total count }
+  EmitInstr('MOV    [DI], DX');
+  EmitInstr('PUSH   DI');               { sauver ptr new list }
+  EmitInstr('PUSH   BX');               { sauver ptr lst2 }
+  EmitInstr('PUSH   CX');               { sauver count2 }
+  EmitInstr('ADD    DI, 2');
+  { Copier count1 elements depuis lst1 }
+  EmitInstr('ADD    SI, 2');
+  EmitInstr('MOV    CX, AX');
+  EmitInstr('TEST   CX, CX');
+  EmitInstr('JLE    ' + PY_RT_PFX + 'LC_P2');
+  EmitLabel(PY_RT_PFX + 'LC_L1');
+  EmitInstr('MOVSW');
+  EmitInstr('LOOP   ' + PY_RT_PFX + 'LC_L1');
+  EmitLabel(PY_RT_PFX + 'LC_P2');
+  { Copier count2 elements depuis lst2 }
+  EmitInstr('POP    CX');               { CX = count2 }
+  EmitInstr('POP    SI');               { SI = ptr lst2 }
+  EmitInstr('ADD    SI, 2');
+  EmitInstr('TEST   CX, CX');
+  EmitInstr('JLE    ' + PY_RT_PFX + 'LC_DN');
+  EmitLabel(PY_RT_PFX + 'LC_L2');
+  EmitInstr('MOVSW');
+  EmitInstr('LOOP   ' + PY_RT_PFX + 'LC_L2');
+  EmitLabel(PY_RT_PFX + 'LC_DN');
+  { Mettre a jour HEAPTOP }
+  EmitInstr('POP    AX');               { AX = ptr new list }
+  EmitInstr('MOV    CX, [AX]');         { CX = total count }
+  EmitInstr('INC    CX');               { +1 pour header }
+  EmitInstr('SHL    CX, 1');
+  EmitInstr('ADD    [_PY_HEAPTOP], CX');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+
+  { _PYRT_LISTMUL : SI=list, CX=repeat -> AX=new list }
+  EmitLabel(PY_RT_PFX + 'LISTMUL');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   DX');
+  EmitInstr('MOV    AX, [SI]');          { AX = elem count }
+  EmitInstr('MOV    BX, AX');
+  EmitInstr('IMUL   CX');               { AX = total elements }
+  EmitInstr('MOV    DX, AX');            { DX = total }
+  { Allouer sur le heap }
+  EmitInstr('MOV    DI, [_PY_HEAPTOP]');
+  EmitInstr('ADD    DI, OFFSET _PY_HEAP');
+  EmitInstr('MOV    [DI], DX');          { ecrire total count }
+  EmitInstr('PUSH   DI');               { sauver ptr new list }
+  EmitInstr('ADD    DI, 2');
+  EmitInstr('TEST   CX, CX');
+  EmitInstr('JLE    ' + PY_RT_PFX + 'LM_DN');
+  EmitLabel(PY_RT_PFX + 'LM_LP');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   SI');
+  EmitInstr('ADD    SI, 2');
+  EmitInstr('MOV    CX, BX');            { CX = elem count per iter }
+  EmitInstr('TEST   CX, CX');
+  EmitInstr('JLE    ' + PY_RT_PFX + 'LM_NX');
+  EmitLabel(PY_RT_PFX + 'LM_CP');
+  EmitInstr('MOVSW');
+  EmitInstr('LOOP   ' + PY_RT_PFX + 'LM_CP');
+  EmitLabel(PY_RT_PFX + 'LM_NX');
+  EmitInstr('POP    SI');
+  EmitInstr('POP    CX');
+  EmitInstr('LOOP   ' + PY_RT_PFX + 'LM_LP');
+  EmitLabel(PY_RT_PFX + 'LM_DN');
+  { Mettre a jour HEAPTOP }
+  EmitInstr('POP    AX');               { AX = ptr new list }
+  EmitInstr('MOV    CX, [AX]');
+  EmitInstr('INC    CX');
+  EmitInstr('SHL    CX, 1');
+  EmitInstr('ADD    [_PY_HEAPTOP], CX');
   EmitInstr('POP    DX');
   EmitInstr('POP    BX');
   EmitInstr('RET');
@@ -4230,6 +4568,9 @@ Begin
         ParseExpr(RHS);
         ExprFlushToAX(RHS);
         EmitStoreVar(Targets[0]);
+        { Propager le type de l expression vers la variable (TODO 15) }
+        If RHS.TypeIdx <> TY_UNKNOWN Then
+          SymTab[Targets[0]].TypeIdx := RHS.TypeIdx;
       End
       Else
       Begin
@@ -4323,7 +4664,8 @@ End;
 { ---- EmitBuiltinCall : emettre l appel d un builtin ---------- }
 { len(x) -> CALL _PYRT_LEN ; abs(x) -> CALL _PYRT_ABS ; etc.    }
 { L argument est dans AX a l entree ; resultat dans AX.           }
-Procedure EmitBuiltinCall(SIdx : Integer; Var Res : TExprVal);
+Procedure EmitBuiltinCall(SIdx : Integer; ArgTypeIdx : Integer;
+                         Var Res : TExprVal);
 Var
   Name : TString;
 Begin
@@ -4339,7 +4681,10 @@ Begin
   If Name = 'len' Then
   Begin
     EmitInstr('MOV    SI, AX');
-    EmitInstr('CALL   ' + PY_RT_PFX + 'LEN');
+    If ArgTypeIdx = TY_IDX_LIST Then
+      EmitInstr('MOV    AX, [SI]')   { liste : count en tete }
+    Else
+      EmitInstr('CALL   ' + PY_RT_PFX + 'LEN');  { chaine ASCIIZ }
     ExprMakeAX(TY_IDX_INT, Res);
   End
   Else If Name = 'abs' Then
@@ -4447,16 +4792,18 @@ End;
 { TODO 12 : traitement special pour print() et input()           }
 Procedure ParseCallArgs(SIdx : Integer; Var Res : TExprVal);
 Var
-  ArgE     : TExprVal;
-  ArgCount : Integer;
-  IsBuiltin: Boolean;
-  IsPrint  : Boolean;
-  IsInput  : Boolean;
-  FuncName : TString;
+  ArgE       : TExprVal;
+  ArgCount   : Integer;
+  IsBuiltin  : Boolean;
+  IsPrint    : Boolean;
+  IsInput    : Boolean;
+  FuncName   : TString;
+  FirstArgTy : Integer;
 Begin
   { Consommer le '(' }
   ParserAdvance;
   ArgCount := 0;
+  FirstArgTy := TY_UNKNOWN;
 
   IsBuiltin := False;
   IsPrint := False;
@@ -4551,6 +4898,7 @@ Begin
   Begin
     { Premier argument }
     ParseExpr(ArgE);
+    FirstArgTy := ArgE.TypeIdx;
     ExprFlushToAX(ArgE);
     EmitInstr('PUSH   AX');
     Inc(ArgCount);
@@ -4580,7 +4928,7 @@ Begin
     Else
       EmitInstr('XOR    AX, AX');
     { Appeler le builtin specifique }
-    EmitBuiltinCall(SIdx, Res);
+    EmitBuiltinCall(SIdx, FirstArgTy, Res);
     { Nettoyer les arguments supplementaires }
     If ArgCount > 1 Then
       EmitInstr('ADD    SP, ' + IntToStr_((ArgCount - 1) * 2));
@@ -4610,7 +4958,7 @@ Begin
 End;
 
 { ---- ParseListLiteral : [e0, e1, e2, ...] -------------------- }
-{ Cree un bloc DK_LIST dans DataTab et remplit les elements.      }
+{ Layout heap : [count DW][elem0 DW][elem1 DW]...                }
 Procedure ParseListLiteral(Var Res : TExprVal);
 Var
   ElemE    : TExprVal;
@@ -4621,11 +4969,15 @@ Begin
   ParserAdvance;
   ElemCount := 0;
 
-  { Liste vide : [] }
+  { Liste vide : [] -> heap [count=0] }
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
   Begin
     ParserAdvance;
-    EmitInstr('XOR    AX, AX');
+    EmitInstr('MOV    DI, [_PY_HEAPTOP]');
+    EmitInstr('ADD    DI, OFFSET _PY_HEAP');
+    EmitInstr('MOV    WORD PTR [DI], 0');  { count = 0 }
+    EmitInstr('ADD    WORD PTR [_PY_HEAPTOP], 2');
+    EmitInstr('MOV    AX, DI');
     ExprMakeAX(TY_IDX_LIST, Res);
     Exit;
   End;
@@ -4634,10 +4986,10 @@ Begin
   EmitInstr('MOV    DI, [_PY_HEAPTOP]');
   EmitInstr('ADD    DI, OFFSET _PY_HEAP');
 
-  { Parser chaque element et stocker dans [DI + 2*i] }
+  { Parser chaque element et stocker dans [DI + 2 + 2*i] }
   ParseExpr(ElemE);
   ExprFlushToAX(ElemE);
-  EmitInstr('MOV    [DI], AX');
+  EmitInstr('MOV    [DI+2], AX');        { elem 0 a offset 2 }
   Inc(ElemCount);
   While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
   Begin
@@ -4646,13 +4998,15 @@ Begin
       Break;  { virgule terminale }
     ParseExpr(ElemE);
     ExprFlushToAX(ElemE);
-    EmitInstr('MOV    [DI+' + IntToStr_(ElemCount * 2) + '], AX');
+    EmitInstr('MOV    [DI+' + IntToStr_(2 + ElemCount * 2) + '], AX');
     Inc(ElemCount);
   End;
 
-  { Mettre a jour le HEAPTOP }
-  EmitInstr('MOV    AX, ' + IntToStr_(ElemCount * 2));
-  EmitInstr('ADD    [_PY_HEAPTOP], AX');
+  { Ecrire le count en tete }
+  EmitInstr('MOV    WORD PTR [DI], ' + IntToStr_(ElemCount));
+  { Mettre a jour le HEAPTOP : (count + 1) * 2 }
+  EmitInstr('ADD    WORD PTR [_PY_HEAPTOP], ' +
+            IntToStr_((ElemCount + 1) * 2));
   { Retourner le pointeur vers le bloc }
   EmitInstr('MOV    AX, DI');
 
@@ -5274,8 +5628,9 @@ End;
 
 Procedure Run;
 Var
-  VarName : TString;
-  Idx     : Integer;
+  VarName  : TString;
+  Idx      : Integer;
+  LblSkip  : TString;
 Begin
   GlobalInit;
   SymInit;
@@ -5422,6 +5777,65 @@ Begin
       If Idx < 0 Then
         Idx := SymAdd(VarName, SK_VAR, TY_UNKNOWN, 0);
       ParserAdvance;
+      { TODO 15 : Detecter affectation par index : ident[i] = val }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
+      Begin
+        ExprLoadToAX(Idx);
+        EmitInstr('PUSH   AX');            { sauver ptr liste }
+        ParserAdvance;                     { consommer '[' }
+        ParseExpr(GExprDummy);
+        ExprFlushToAX(GExprDummy);
+        EmitInstr('PUSH   AX');            { sauver index }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+          ParserAdvance
+        Else
+          CompileError(''']'' attendue', CurToken.Line);
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+        Begin
+          { Affectation par index : ident[i] = val }
+          EmitComment('index assign: ' + VarName + '[i] = val');
+          ParserAdvance;                   { consommer '=' }
+          ParseExpr(GExprDummy);
+          ExprFlushToAX(GExprDummy);
+          EmitInstr('MOV    BX, AX');      { BX = valeur }
+          EmitInstr('POP    AX');          { AX = index }
+          EmitInstr('POP    SI');          { SI = ptr liste }
+          LblSkip := LabelGen;
+          EmitInstr('TEST   AX, AX');
+          EmitInstr('JGE    ' + LblSkip);
+          EmitInstr('ADD    AX, [SI]');    { index negatif }
+          EmitLabel(LblSkip);
+          EmitInstr('SHL    AX, 1');
+          EmitInstr('ADD    AX, 2');       { sauter count header }
+          EmitInstr('ADD    SI, AX');
+          EmitInstr('MOV    [SI], BX');
+          If CurToken.Kind = TK_NEWLINE Then ParserAdvance;
+          Continue;
+        End
+        Else
+        Begin
+          { Pas une affectation : acces index en expression }
+          EmitComment('index access: ' + VarName + '[i]');
+          EmitInstr('POP    BX');          { BX = index }
+          EmitInstr('POP    SI');          { SI = ptr liste }
+          LblSkip := LabelGen;
+          EmitInstr('TEST   BX, BX');
+          EmitInstr('JGE    ' + LblSkip);
+          EmitInstr('ADD    BX, [SI]');
+          EmitLabel(LblSkip);
+          EmitInstr('SHL    BX, 1');
+          EmitInstr('ADD    BX, 2');
+          EmitInstr('ADD    SI, BX');
+          EmitInstr('MOV    AX, [SI]');
+          GExprDummy.Kind    := EK_AX;
+          GExprDummy.TypeIdx := TY_IDX_INT;
+          GExprDummy.Offset  := 0;
+          GExprDummy.SymIdx  := -1;
+          GExprDummy.ImmVal  := 0;
+        End;
+        If CurToken.Kind = TK_NEWLINE Then ParserAdvance;
+        Continue;
+      End;
       { Detecter affectation simple/augmentee/multiple }
       If ((CurToken.Kind = TK_OP) And IsAssignOp(CurToken.Val)) Or
          ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',')) Then
@@ -5445,6 +5859,71 @@ Begin
         { Appel de fonction : f(args) (TODO 10) }
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
           ParseCallArgs(Idx, GExprDummy);
+        { TODO 15 : Appel de methode : ident.method(args) }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
+        Begin
+          ExprFlushToAX(GExprDummy);
+          EmitInstr('MOV    SI, AX');
+          ParserAdvance;  { consommer '.' }
+          If CurToken.Kind = TK_IDENT Then
+          Begin
+            VarName := CurToken.Val;
+            EmitComment('method: .' + VarName);
+            ParserAdvance;
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+            Begin
+              If (SymTab[Idx].TypeIdx = TY_IDX_LIST) And
+                 (VarName = 'append') Then
+              Begin
+                EmitInstr('PUSH   SI');
+                ParserAdvance;
+                ParseExpr(GExprDummy);
+                ExprFlushToAX(GExprDummy);
+                EmitInstr('POP    SI');
+                EmitInstr('CALL   ' + PY_RT_PFX + 'LISTAPPEND');
+                If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+                  ParserAdvance;
+              End
+              Else If (SymTab[Idx].TypeIdx = TY_IDX_LIST) And
+                      (VarName = 'pop') Then
+              Begin
+                ParserAdvance;
+                If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+                  ParserAdvance;
+                EmitInstr('CALL   ' + PY_RT_PFX + 'LISTPOP');
+              End
+              Else If (SymTab[Idx].TypeIdx = TY_IDX_LIST) And
+                      (VarName = 'insert') Then
+              Begin
+                EmitInstr('PUSH   SI');
+                ParserAdvance;
+                ParseExpr(GExprDummy);
+                ExprFlushToAX(GExprDummy);
+                EmitInstr('PUSH   AX');
+                If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+                  ParserAdvance;
+                ParseExpr(GExprDummy);
+                ExprFlushToAX(GExprDummy);
+                EmitInstr('MOV    BX, AX');
+                EmitInstr('POP    AX');
+                EmitInstr('POP    SI');
+                EmitInstr('CALL   ' + PY_RT_PFX + 'LISTINSERT');
+                If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+                  ParserAdvance;
+              End
+              Else
+              Begin
+                { Methode generique : sauter les arguments }
+                ParserAdvance;
+                While (CurToken.Kind <> TK_EOF) And
+                      Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+                  ParserAdvance;
+                If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+                  ParserAdvance;
+              End;
+            End;
+          End;
+        End;
         { Si un operateur binaire suit, continuer le parsing }
         If (CurToken.Kind = TK_OP) And (BinOpPrec(CurToken.Val) > 0) Then
         Begin
