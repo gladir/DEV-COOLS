@@ -279,7 +279,7 @@
             Boucle for k in d : iterer sur les cles du dictionnaire
             Table de hachage interne : MAX_HASH_PAIRS paires par dict
 
-  TODO 17 - FONCTIONS (def) ET RETURN
+  TODO 17 - FONCTIONS (def) ET RETURN [IMPLEMENTE]
             ParseDefStmt : def nom(params): bloc
             Parametres positionnels : passage par valeur sur la pile
             Parametres par defaut : def f(a, b=10): -> valeur par defaut
@@ -643,6 +643,11 @@ Var
   LoopElseStack  : Array[0..MAX_LOOP_NEST - 1] Of TString;
   LoopTop        : Integer;
 
+  { Gestion des fonctions (TODO 17) }
+  FuncRetLabel   : TString;    { label d epilogue pour return       }
+  FuncLocalsSize : Integer;    { taille des locaux en octets        }
+  InFunction     : Boolean;    { True si on compile le corps d un def }
+
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
@@ -749,6 +754,9 @@ Procedure ParseForStmt;   Forward;
 Procedure EmitListRuntime; Forward;
 { TODO 16 - Forward declaration runtime dicts }
 Procedure EmitDictRuntime; Forward;
+{ TODO 17 - Forward declarations fonctions }
+Procedure ParseDefStmt;    Forward;
+Procedure ParseReturnStmt; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -991,6 +999,10 @@ Begin
   CurScope  := 0;
   { TODO 14 : pile de boucles }
   LoopTop   := 0;
+  { TODO 17 : fonctions }
+  FuncRetLabel   := '';
+  FuncLocalsSize := 0;
+  InFunction     := False;
 End;
 
 { ============================================================
@@ -5663,6 +5675,188 @@ Begin
 End;
 
 { ============================================================
+  TODO 17 - FONCTIONS (def) ET RETURN [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseDefStmt : parser une definition de fonction -------- }
+{ def nom(param1, param2, ..., paramN=default): bloc             }
+{ Convention d appel cdecl 16 bits :                              }
+{   Arguments empiles droite a gauche par l appelant               }
+{   Pile a l entree : [paramN][...][param1][ret addr]             }
+{   Prologue : PUSH BP / MOV BP,SP / SUB SP, locals_size          }
+{   Acces params : [BP+4] = param1, [BP+6] = param2, ...         }
+{   Acces locaux : [BP-2] = local1, [BP-4] = local2, ...         }
+{   Epilogue : label_ret: MOV SP,BP / POP BP / RET               }
+{   Return : MOV AX, val + JMP label_ret                         }
+Procedure ParseDefStmt;
+Var
+  FuncName     : TString;
+  FuncIdx      : Integer;
+  ParamName    : TString;
+  ParamCount   : Integer;
+  ParamIdx     : Integer;
+  DefaultVal   : TExprVal;
+  HasDefault   : Boolean;
+  LblSkipFunc  : TString;
+  LblRet       : TString;
+  SaveRetLabel : TString;
+  SaveLocals   : Integer;
+  SaveInFunc   : Boolean;
+  I            : Integer;
+Begin
+  EmitComment('-- def --');
+  ParserAdvance;  { consommer 'def' }
+
+  { Nom de la fonction }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('nom de fonction attendu apres ''def''', CurToken.Line);
+    Exit;
+  End;
+  FuncName := CurToken.Val;
+  ParserAdvance;
+
+  { Enregistrer la fonction dans la table des symboles }
+  FuncIdx := SymFind(FuncName);
+  If FuncIdx < 0 Then
+    FuncIdx := SymAdd(FuncName, SK_FUNC, TY_IDX_INT, 0)
+  Else
+  Begin
+    SymTab[FuncIdx].Kind := SK_FUNC;
+    SymTab[FuncIdx].MangledName := PY_FN_PFX + SymNameClean(FuncName);
+  End;
+
+  { Saut au-dela du corps de la fonction dans le flux d execution }
+  LblSkipFunc := LabelGen;
+  EmitInstr('JMP    ' + LblSkipFunc);
+  EmitBlankLine;
+
+  { Label de la fonction }
+  EmitLabel(PY_FN_PFX + SymNameClean(FuncName));
+
+  { Generer le label d epilogue }
+  LblRet := LabelGen;
+
+  { Sauvegarder le contexte englobant }
+  SaveRetLabel := FuncRetLabel;
+  SaveLocals   := FuncLocalsSize;
+  SaveInFunc   := InFunction;
+  FuncRetLabel   := LblRet;
+  FuncLocalsSize := 0;
+  InFunction     := True;
+
+  { Entrer dans la portee de la fonction }
+  SymEnterScope;
+
+  { Parser les parametres }
+  ParamCount := 0;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+  Begin
+    ParserAdvance;  { consommer '(' }
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+    Begin
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        ParamName := CurToken.Val;
+        ParserAdvance;
+        { Verifier parametre par defaut }
+        HasDefault := False;
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+        Begin
+          ParserAdvance;  { consommer '=' }
+          HasDefault := True;
+          { Sauter la valeur par defaut (on la gere cote appelant) }
+          While (CurToken.Kind <> TK_EOF) And
+                Not ((CurToken.Kind = TK_PUNCT) And
+                     ((CurToken.Val = ',') Or (CurToken.Val = ')'))) Do
+            ParserAdvance;
+        End;
+        { Ajouter le parametre : offset = +4 + ParamCount*2 }
+        { +4 pour sauter old BP (2) + return address (2)    }
+        ParamIdx := SymAdd(ParamName, SK_PARAM, TY_UNKNOWN,
+                           4 + ParamCount * 2);
+        Inc(ParamCount);
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance;
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance;  { consommer ')' }
+  End;
+
+  { Attendre ':' }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+    ParserAdvance
+  Else
+    CompileError(''':'' attendue apres la liste de parametres', CurToken.Line);
+
+  { Prologue de la fonction }
+  EmitProlog(0);   { locaux = 0 pour l instant (on n alloue pas) }
+
+  { Parser le corps de la fonction }
+  ParseBlock;
+
+  { Si pas de return explicite, retourner None (AX=0) }
+  EmitInstr('XOR    AX, AX');
+
+  { Epilogue de la fonction }
+  EmitLabel(LblRet);
+  EmitEpilog;
+  EmitBlankLine;
+
+  { Quitter la portee de la fonction }
+  SymLeaveScope;
+
+  { Restaurer le contexte englobant }
+  FuncRetLabel   := SaveRetLabel;
+  FuncLocalsSize := SaveLocals;
+  InFunction     := SaveInFunc;
+
+  { Label pour reprendre l execution apres le def }
+  EmitLabel(LblSkipFunc);
+End;
+
+{ ---- ParseReturnStmt : parser une instruction return --------- }
+{ return expr  -> MOV AX, val + JMP label_ret                    }
+{ return       -> XOR AX, AX + JMP label_ret (None)              }
+Procedure ParseReturnStmt;
+Var
+  RetE : TExprVal;
+Begin
+  EmitComment('return');
+  ParserAdvance;  { consommer 'return' }
+
+  If Not InFunction Then
+  Begin
+    CompileError('return en dehors d''une fonction', CurToken.Line);
+    { Sauter jusqu a la fin de ligne }
+    While (CurToken.Kind <> TK_EOF) And
+          (CurToken.Kind <> TK_NEWLINE) Do
+      ParserAdvance;
+    Exit;
+  End;
+
+  { return avec valeur ou sans valeur ? }
+  If (CurToken.Kind <> TK_NEWLINE) And
+     (CurToken.Kind <> TK_EOF) And
+     (CurToken.Kind <> TK_DEDENT) Then
+  Begin
+    { return expr }
+    ParseExpr(RetE);
+    ExprFlushToAX(RetE);
+  End
+  Else
+  Begin
+    { return sans valeur -> None (AX=0) }
+    EmitInstr('XOR    AX, AX');
+  End;
+
+  { Sauter vers l epilogue }
+  EmitInstr('JMP    ' + FuncRetLabel);
+End;
+
+{ ============================================================
   TODO 13 - IF / ELIF / ELSE [IMPLEMENTE]
   ============================================================ }
 
@@ -5746,6 +5940,20 @@ Begin
     Begin
       EmitComment('pass');
       ParserAdvance;
+      If CurToken.Kind = TK_NEWLINE Then ParserAdvance;
+      Continue;
+    End;
+    { return (TODO 17) }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'return') Then
+    Begin
+      ParseReturnStmt;
+      If CurToken.Kind = TK_NEWLINE Then ParserAdvance;
+      Continue;
+    End;
+    { def (TODO 17) }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'def') Then
+    Begin
+      ParseDefStmt;
       If CurToken.Kind = TK_NEWLINE Then ParserAdvance;
       Continue;
     End;
@@ -6018,6 +6226,20 @@ Begin
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
           ParserAdvance;
       End;
+      Continue;
+    End;
+    { Instruction def (TODO 17) }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'def') Then
+    Begin
+      ParseDefStmt;
+      If CurToken.Kind = TK_NEWLINE Then ParserAdvance;
+      Continue;
+    End;
+    { Instruction return (TODO 17) }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'return') Then
+    Begin
+      ParseReturnStmt;
+      If CurToken.Kind = TK_NEWLINE Then ParserAdvance;
       Continue;
     End;
     { Instruction if / elif / else (TODO 13) }
