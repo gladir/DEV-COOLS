@@ -4764,7 +4764,6 @@ Var
   LblEnd   : TString;
   LblElse  : TString;
   CondRes  : TExprVal;
-  HasElse  : Boolean;
 Begin
   EmitComment('-- while --');
   ParserAdvance; { consommer 'while' }
@@ -4804,10 +4803,8 @@ Begin
 
   { Bloc else optionnel (execute si la boucle termine normalement) }
   EmitLabel(LblElse);
-  HasElse := False;
   If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'else') Then
   Begin
-    HasElse := True;
     EmitComment('-- while else --');
     ParserAdvance;
 
@@ -4834,7 +4831,6 @@ Var
   VarIdx    : Integer;
   StartRes, EndRes, StepRes : TExprVal;
   HasStep   : Boolean;
-  HasElse   : Boolean;
 Begin
   EmitComment('-- for --');
   ParserAdvance; { consommer 'for' }
@@ -4981,10 +4977,8 @@ Begin
 
   { Bloc else optionnel }
   EmitLabel(LblElse);
-  HasElse := False;
   If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'else') Then
   Begin
-    HasElse := True;
     EmitComment('-- for else --');
     ParserAdvance;
 
