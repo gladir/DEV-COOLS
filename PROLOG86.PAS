@@ -4633,6 +4633,25 @@ Var
   PredLbl  : TString;
   Clean    : TString;
 Begin
+  { Reconstruire la table des variables locales pour cette regle }
+  { (ParseRuleBody a ete appele avant pour toutes les clauses,   }
+  {  donc RuleVarTab doit etre reconstruit pour chaque emission) }
+  RuleVarCount := 0;
+  For I := 0 To ClauseTab[CIdx].ArgCount - 1 Do
+  Begin
+    If ClauseTab[CIdx].Args[I].Kind = FAK_VAR Then
+      RuleVarFindOrAdd(ClauseTab[CIdx].Args[I].VarName);
+  End;
+  For I := 0 To ClauseTab[CIdx].BodyLen - 1 Do
+  Begin
+    GIdx := ClauseTab[CIdx].BodyStart + I;
+    For J := 0 To GoalTab[GIdx].ArgCount - 1 Do
+    Begin
+      If GoalTab[GIdx].Args[J].Kind = FAK_VAR Then
+        RuleVarFindOrAdd(GoalTab[GIdx].Args[J].VarName);
+    End;
+  End;
+
   EmitBlankLine;
   EmitComment('--- Regle ' + ClauseTab[CIdx].PredName + '/' +
               IntToStr(ClauseTab[CIdx].Arity) +
