@@ -306,7 +306,7 @@
             Allocation : CALL _KTRT_NEW(CX=sizeof) -> AX=ptr objet
             Representation objet : [vtable:word] [champ1:word] [champ2:word] ...
 
-  TODO 17 - FONCTIONS ET LAMBDAS
+  TODO 17 - FONCTIONS ET LAMBDAS [IMPLEMENTE]
             ParseFunDecl : fun nom(params): RetType { bloc }
               ou fun nom(params): RetType = expr (expression body)
             Parametres : nom: Type, valeurs par defaut (nom: Type = val)
@@ -554,6 +554,7 @@ Const
   MAX_ARR_ELEM  = 64;   { elements max par tableau literal inline }
   MAX_CLASS_FIELDS = 16; { champs max par classe                  }
   MAX_CLASSES      = 32; { classes max dans le programme           }
+  MAX_FUN_PARAMS   = 8;  { parametres max par fonction utilisateur }
   STACK_SIZE    = 1024;
 
   { Caracteres speciaux (evite les accolades dans le source TP) }
@@ -800,6 +801,13 @@ Var
   ClassCount   : Integer;
   ObjTempCount : Integer;  { compteur pour labels _KTO_N            }
 
+  { Fonctions et lambdas (TODO 17) }
+  FunDeclCount : Integer;  { nombre de fun declarations             }
+  LambdaCount  : Integer;  { compteur pour labels _KTF_LAMBDA_N     }
+  SaveFrameSize : Integer; { sauvegarde CurFrameSize pendant fun    }
+  SaveFnRetLbl  : TString; { sauvegarde CurFnRetLbl pendant fun     }
+  SaveFnName    : TString; { sauvegarde CurFnName pendant fun       }
+
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
@@ -907,6 +915,9 @@ Function  ClassFind(Const Name : TString) : Integer; Forward;
 Function  ClassFieldFind(ClsIdx : Integer;
                          Const FName : TString) : Integer; Forward;
 Function  ClassFindByTypeIdx(TIdx : Integer) : Integer; Forward;
+{ TODO 17 - Fonctions et lambdas }
+Procedure ParseFunDecl;     Forward;
+Procedure ParseReturnStmt;  Forward;
 { General }
 Procedure ParserAdvance; Forward;
 Procedure ParseStmt;     Forward;
@@ -1211,6 +1222,11 @@ Begin
   ArrayTempCount := 0;
   ClassCount     := 0;
   ObjTempCount   := 0;
+  FunDeclCount   := 0;
+  LambdaCount    := 0;
+  SaveFrameSize  := 0;
+  SaveFnRetLbl   := '';
+  SaveFnName     := '';
   CurFrameSize   := 0;
   LabelGenSeq    := 0;
   GExprDummy.Kind    := EK_NONE;
@@ -4517,6 +4533,277 @@ Begin
 End;
 
 { ============================================================
+  TODO 17 - FONCTIONS ET LAMBDAS [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- ParseFunDecl : fun nom(params): RetType { bloc } ------ *)
+(* ou fun nom(params): RetType = expr (expression body)          *)
+(* ou fun Type.nom(params): RetType { bloc } (extension)         *)
+(* Genere :                                                       *)
+(*   JMP _KTL_SKIP_N          (sauter par-dessus le corps)       *)
+(*   _KTF_nom PROC NEAR                                          *)
+(*     PUSH BP / MOV BP,SP / SUB SP, locals_size                  *)
+(*     ... corps ...                                              *)
+(*   _KTL_RET_N:                                                  *)
+(*     MOV SP,BP / POP BP / RET                                   *)
+(*   _KTL_SKIP_N:                                                 *)
+Procedure ParseFunDecl;
+Var
+  FnName    : TString;
+  FnLabel   : TString;
+  SkipLbl   : TString;
+  RetLbl    : TString;
+  RetTIdx   : Integer;
+  SIdx      : Integer;
+  ParamName : TString;
+  ParamTIdx : Integer;
+  ParamIdx  : Integer;
+  ParamCnt  : Integer;
+  ParamOfs  : Integer;
+  IsExprBody : Boolean;
+  Res       : TExprVal;
+  I         : Integer;
+  ExtType   : TString;
+  IsExt     : Boolean;
+Begin
+  ParserAdvance; { consomme 'fun' }
+  Inc(FunDeclCount);
+  IsExt := False;
+  ExtType := '';
+
+  { Lire le nom de la fonction }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('nom de fonction attendu apres "fun"');
+    Exit;
+  End;
+  FnName := CurToken.Val;
+  ParserAdvance; { consomme le nom }
+
+  { Verifier fonction d extension : Type.nom }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
+  Begin
+    IsExt := True;
+    ExtType := FnName;
+    ParserAdvance; { consomme '.' }
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      FnName := ExtType + '_' + CurToken.Val;
+      ParserAdvance; { consomme le nom reel }
+    End
+    Else
+    Begin
+      CompileError('nom de methode attendu apres "' + ExtType + '."');
+      Exit;
+    End;
+  End;
+
+  FnLabel := KT_FN_PFX + SymNameClean(FnName);
+  SkipLbl := LabelGen;
+  RetLbl  := LabelGen;
+
+  { Registrer le symbole SK_FUN avant le corps (pour recursion) }
+  SIdx := SymFind(FnName);
+  If SIdx < 0 Then
+    SIdx := SymAdd(FnName, SK_FUN, TY_IDX_INT, 0);
+  SymTab[SIdx].MangledName := FnLabel;
+
+  { Sauvegarder le contexte englobant }
+  SaveFrameSize := CurFrameSize;
+  SaveFnRetLbl  := CurFnRetLbl;
+  SaveFnName    := CurFnName;
+  CurFnRetLbl   := RetLbl;
+  CurFnName     := FnName;
+  CurFrameSize  := 0;
+  Inc(CurFnDepth);
+
+  { JMP skip : sauter par-dessus le corps de la fonction }
+  EmitInstrA('JMP', SkipLbl);
+  EmitBlankLine;
+  EmitComment('--- fun ' + FnName + ' ---');
+  EmitLabel(FnLabel);
+  EmitProlog;
+
+  SymEnterScope;
+
+  { Parser les parametres }
+  ParamCnt := 0;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+  Begin
+    ParserAdvance; { consomme '(' }
+    While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) And
+          (CurToken.Kind <> TK_EOF) Do
+    Begin
+      If ParamCnt >= MAX_FUN_PARAMS Then
+      Begin
+        WarnMsg('trop de parametres (max=' + IntToStr(MAX_FUN_PARAMS) + ')');
+        Break;
+      End;
+      { Lire nom du parametre }
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        ParamName := CurToken.Val;
+        ParserAdvance; { consomme le nom }
+      End
+      Else
+      Begin
+        ParamName := 'p' + IntToStr(ParamCnt);
+        ParserAdvance;
+      End;
+      { Parser le type annotation optionnel }
+      ParamTIdx := TY_IDX_INT;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+      Begin
+        ParserAdvance; { consomme ':' }
+        If CurToken.Kind = TK_IDENT Then
+        Begin
+          ParamTIdx := TypeLookupName(CurToken.Val);
+          If ParamTIdx < 0 Then
+            ParamTIdx := TY_IDX_INT;
+          ParserAdvance;
+          { Nullable ? }
+          If (CurToken.Kind = TK_OP) And (CurToken.Val = '?') Then
+            ParserAdvance;
+        End
+        Else If CurToken.Kind = TK_KEYWORD Then
+        Begin
+          ParamTIdx := TypeLookupName(CurToken.Val);
+          If ParamTIdx < 0 Then
+            ParamTIdx := TY_IDX_INT;
+          ParserAdvance;
+        End;
+      End;
+      { Valeur par defaut optionnelle : skip }
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+      Begin
+        ParserAdvance; { consomme '=' }
+        { Sauter la valeur par defaut }
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And
+                   ((CurToken.Val = ',') Or (CurToken.Val = ')'))) Do
+          ParserAdvance;
+      End;
+      { Enregistrer le parametre : [BP+4+ParamCnt*2] }
+      { BP+0=ancien BP, BP+2=adresse retour, BP+4=dernier arg empile }
+      ParamOfs := 4 + ParamCnt * 2;
+      ParamIdx := SymAdd(ParamName, SK_PARAM, ParamTIdx, ParamOfs);
+
+      Inc(ParamCnt);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance; { consomme ',' }
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance; { consomme ')' }
+  End;
+
+  { Parser le type de retour optionnel }
+  RetTIdx := TY_IDX_UNIT;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+  Begin
+    ParserAdvance; { consomme ':' }
+    If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+    Begin
+      RetTIdx := TypeLookupName(CurToken.Val);
+      If RetTIdx < 0 Then
+        RetTIdx := TY_IDX_INT;
+      ParserAdvance;
+      { Nullable ? }
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '?') Then
+        ParserAdvance;
+    End;
+  End;
+  SymTab[SIdx].TypeIdx := RetTIdx;
+
+  { Reserver l espace pile pour les locaux (estime a 16 mots max) }
+  EmitInstrAB('SUB', 'SP', IntToStr(MAX_FUN_PARAMS * 2));
+
+  (* Verifier si c est une expression body (=) ou un bloc *)
+  IsExprBody := False;
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+  Begin
+    IsExprBody := True;
+    ParserAdvance; { consomme '=' }
+  End;
+
+  { Parser le corps de la fonction }
+  If IsExprBody Then
+  Begin
+    ParseExpr(Res);
+    ExprFlushToAX(Res);
+    EmitInstrA('JMP', RetLbl);
+  End
+  Else
+  Begin
+    (* Bloc de code *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = CH_LBRACE) Then
+    Begin
+      ParserAdvance; { consomme accolade ouvrante }
+      While (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_PUNCT) And
+                 (CurToken.Val = CH_RBRACE)) Do
+        ParseStmt;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = CH_RBRACE) Then
+        ParserAdvance; { consomme accolade fermante }
+    End;
+  End;
+
+  { Epilogue de fonction }
+  EmitLabel(RetLbl);
+  EmitEpilog;
+  EmitBlankLine;
+
+  SymLeaveScope;
+
+  { Restaurer le contexte englobant }
+  Dec(CurFnDepth);
+  CurFrameSize := SaveFrameSize;
+  CurFnRetLbl  := SaveFnRetLbl;
+  CurFnName    := SaveFnName;
+
+  { Label skip pour sauter le corps }
+  EmitLabel(SkipLbl);
+End;
+
+(* ---- ParseReturnStmt : return [expr] ----------------------- *)
+(* Genere : MOV AX, val / JMP _KTL_RET_N                        *)
+Procedure ParseReturnStmt;
+Var
+  Res : TExprVal;
+Begin
+  ParserAdvance; { consomme 'return' }
+  If CurFnDepth = 0 Then
+  Begin
+    { return au niveau global : exit du programme }
+    EmitInstrAB('MOV', 'AX', '4C00h');
+    EmitInstr('INT 21h');
+    Exit;
+  End;
+  { Si le token suivant est sur la meme ligne et n est pas }
+  { une fermeture de bloc, on parse l expression }
+  If (CurToken.Kind <> TK_EOF) And
+     (CurToken.Kind <> TK_PUNCT) Or
+     ((CurToken.Kind = TK_PUNCT) And
+      (CurToken.Val <> CH_RBRACE) And (CurToken.Val <> '}')) Then
+  Begin
+    { Essayer de parser une expression de retour }
+    If (CurToken.Kind = TK_INTEGER) Or (CurToken.Kind = TK_LONG) Or
+       (CurToken.Kind = TK_FLOAT) Or (CurToken.Kind = TK_STRING) Or
+       (CurToken.Kind = TK_CHAR) Or (CurToken.Kind = TK_IDENT) Or
+       ((CurToken.Kind = TK_KEYWORD) And
+        ((CurToken.Val = 'true') Or (CurToken.Val = 'false') Or
+         (CurToken.Val = 'null') Or (CurToken.Val = 'this'))) Or
+       ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Or
+       ((CurToken.Kind = TK_OP) And
+        ((CurToken.Val = '-') Or (CurToken.Val = '!') Or (CurToken.Val = '+'))) Then
+    Begin
+      ParseExpr(Res);
+      ExprFlushToAX(Res);
+    End;
+  End;
+  EmitInstrA('JMP', CurFnRetLbl);
+End;
+
+{ ============================================================
   TODO 12 - ENTREES/SORTIES [IMPLEMENTE]
   ============================================================ }
 
@@ -5158,6 +5445,8 @@ Begin
         { Arrays et classes utilisent MOV (semantique pointeur : la variable contient un ptr objet) }
         If (K = TYK_ARRAY) Or (K = TYK_INTARRAY) Or (K = TYK_CLASS) Then
           EmitInstrAB('MOV', 'AX', Addr)
+        Else If (E.SymIdx >= 0) And (SymTab[E.SymIdx].Kind = SK_PARAM) Then
+          EmitInstrAB('MOV', 'AX', Addr)
         Else If TypeIsPtr(E.TypeIdx) Then
           EmitInstrAB('LEA', 'AX', Addr)
         Else
@@ -5200,6 +5489,8 @@ Begin
   K := TypeKindOf(Res.TypeIdx);
   { Arrays et classes : MOV car la variable contient un pointeur objet }
   If (K = TYK_ARRAY) Or (K = TYK_INTARRAY) Or (K = TYK_CLASS) Then
+    EmitInstrAB('MOV', 'AX', Addr)
+  Else If SymTab[SIdx].Kind = SK_PARAM Then
     EmitInstrAB('MOV', 'AX', Addr)
   Else If TypeIsPtr(Res.TypeIdx) Then
     EmitInstrAB('LEA', 'AX', Addr)
@@ -5892,8 +6183,34 @@ Begin
       ParserAdvance; { consomme le modificateur }
       If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'class') Then
         ParseClassDecl
+      Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'fun') Then
+        ParseFunDecl
       Else
         ParserAdvance;
+      Exit;
+    End;
+    { TODO 17 - fun declaration }
+    If Kw = 'fun' Then
+    Begin
+      ParseFunDecl;
+      Exit;
+    End;
+    If Kw = 'return' Then
+    Begin
+      ParseReturnStmt;
+      Exit;
+    End;
+    { Modificateurs de fonction : inline, infix, private, internal }
+    If (Kw = 'inline') Or (Kw = 'infix') Or
+       (Kw = 'private') Or (Kw = 'internal') Or
+       (Kw = 'protected') Or (Kw = 'public') Or
+       (Kw = 'override') Then
+    Begin
+      ParserAdvance; { consomme le modificateur }
+      If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'fun') Then
+        ParseFunDecl
+      Else
+        Exit; { autre modificateur : skip }
       Exit;
     End;
   End;
