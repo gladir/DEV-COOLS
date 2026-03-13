@@ -111,6 +111,7 @@
     Section 13 : Conversion de code ARM en 80386
     Section 14 : Conversion de code 68000 en 80386
     Section 15 : Conversion de code PowerPC en 80386
+    Section 16 : Conversion de code Z8000 en 80386
 
 ==============================================================================
 2. ARCHITECTURE ET REGISTRES
@@ -9727,6 +9728,618 @@
     Le mecanisme Load-Link / Store-Conditional du PowerPC pour la
     synchronisation multiprocesseur n'a pas d'equivalent direct en 80386.
     Il faut utiliser le prefixe LOCK avec XCHG ou, sur 486+, CMPXCHG.
+
+==============================================================================
+16. CONVERSION DE CODE Z8000 EN 80386
+==============================================================================
+
+  Cette section explique comment convertir du code assembleur Zilog Z8000
+  (architecture CISC 16 bits segmentee, commercialisee en 1979) en code
+  assembleur Intel 80386. Les deux architectures sont CISC, mais le Z8000
+  utilise un modele a registres reguliers et un adressage segmente, tandis
+  que le 80386 offre un espace d'adressage plat de 32 bits et des registres
+  specialises.
+
+------------------------------------------------------------------------------
+16.1 Principes generaux (Z8000 vs 80386)
+------------------------------------------------------------------------------
+
+  Le Zilog Z8000 existe en deux variantes :
+
+  Z8001 (version segmentee) :
+  - Espace d'adressage de 8 Mo (23 bits, 7 bits de segment + 16 bits offset)
+  - Adresses longues (segment:offset) sur 32 bits
+  - Instructions prefixees par le numero de segment
+
+  Z8002 (version non segmentee) :
+  - Espace d'adressage de 64 Ko (16 bits)
+  - Adresses courtes sur 16 bits
+  - Instructions plus simples (pas de segment)
+
+  Caracteristiques communes :
+  - 16 registres generaux de 16 bits (R0-R15)
+  - Registres combinables en paires 32 bits (RR0, RR2, ..., RR14)
+  - Registres combinables en quadruplets 64 bits (RQ0, RQ4, RQ8, RQ12)
+  - R15 = pointeur de pile (par convention)
+  - R14 = souvent utilise comme frame pointer
+  - Registre d'etat FCW (Flags and Control Word) avec drapeaux C, Z, S, V
+  - Architecture big-endian
+  - Instructions de taille variable (2, 4 ou 6 octets, toujours pair)
+  - Operations sur 8 bits (.B), 16 bits (.W) et 32 bits (.L)
+  - Pas d'execution conditionnelle des instructions
+  - Instructions de manipulation de chaines (LDIR, CPIR, etc.)
+
+  Le 80386 est une architecture CISC 32 bits :
+  - 8 registres generaux 32 bits (EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP)
+  - Registre EFLAGS (drapeaux CF, ZF, SF, OF analogues a C, Z, S, V)
+  - Architecture little-endian
+  - Espace d'adressage plat de 4 Go (mode protege, modele FLAT)
+  - Instructions de taille variable (1 a 15 octets)
+  - Pile dediee avec ESP et instructions PUSH/POP
+  - Instructions de chaines (REP MOVSB/W/D, REP CMPSB, etc.)
+
+  Regles de base pour la conversion :
+  (a) Mapper les 16 registres Z8000 vers les 8 registres x86 + memoire
+  (b) Convertir les registres paires (RR) et quadruplets (RQ) en registres
+      32 bits ou paires de registres x86
+  (c) Gerer la difference d'endianness (big-endian -> little-endian)
+  (d) Supprimer la segmentation Z8001 (passage en modele FLAT)
+  (e) Adapter les drapeaux FCW en EFLAGS (correspondance quasi directe)
+  (f) Convertir les conventions d'appel Z8000 -> CDECL ou STDCALL
+
+------------------------------------------------------------------------------
+16.2 Correspondance des registres
+------------------------------------------------------------------------------
+
+  Le Z8000 possede 16 registres de 16 bits. Le 80386 en a 8 de 32 bits.
+  Il faut utiliser des variables memoire pour les registres excedentaires.
+
+  Correspondance suggeree :
+
+    Z8000       80386         Commentaire
+    -------     --------      ------------------------------------
+    R0          AX (bas EAX)  usage general / temporaire
+    R1          BX (bas EBX)  usage general / base
+    R2          CX (bas ECX)  compteur / temporaire
+    R3          DX (bas EDX)  donnees / temporaire
+    R4          ESI (bas SI)  usage general / index source
+    R5          EDI (bas DI)  usage general / index dest
+    R6-R13      (memoire)     registres supplementaires -> memoire
+    R14         EBP           frame pointer (par convention)
+    R15         ESP           pointeur de pile
+
+  Registres paires 32 bits (RR) :
+
+    Z8000       80386         Commentaire
+    -------     --------      ------------------------------------
+    RR0         EAX           R0:R1 -> EAX (32 bits natif)
+    RR2         ECX           R2:R3 -> utiliser ECX ou EDX
+    RR4         ESI           R4:R5 -> ESI (32 bits natif)
+    RR6-RR12    (memoire)     paires -> variables DD en memoire
+    RR14        (EBP:ESP)     rarement utilise comme paire
+
+  Les registres Z8000 supplementaires doivent etre stockes en memoire :
+
+    _z8k_r6    DD 0
+    _z8k_r7    DD 0
+    _z8k_r8    DD 0
+    _z8k_r9    DD 0
+    _z8k_r10   DD 0
+    _z8k_r11   DD 0
+    _z8k_r12   DD 0
+    _z8k_r13   DD 0
+
+  Note : en mode 32 bits sur le 80386, les registres EAX, EBX, ECX, EDX
+  contiennent naturellement 32 bits, ce qui permet de representer
+  directement une paire RRn du Z8000.
+
+------------------------------------------------------------------------------
+16.3 Conversion des drapeaux
+------------------------------------------------------------------------------
+
+  Les drapeaux du Z8000 (dans le registre FCW) ont des equivalents
+  directs dans le registre EFLAGS du 80386 :
+
+    Z8000 (FCW)    80386 (EFLAGS)    Signification
+    -----------    ---------------    -------------------------
+    C (Carry)      CF (Carry Flag)    Retenue / emprunt
+    Z (Zero)       ZF (Zero Flag)     Resultat nul
+    S (Sign)       SF (Sign Flag)     Bit de signe du resultat
+    V (Overflow)   OF (Overflow Flag) Depassement de capacite
+    D (Decimal)    -                  Ajustement decimal (DAA)
+    H (Half-carry) AF (Aux Flag)      Retenue auxiliaire (BCD)
+
+  La correspondance est quasi directe. Les instructions conditionnelles
+  du Z8000 se traduisent naturellement en branchements x86.
+
+------------------------------------------------------------------------------
+16.4 Conversion des instructions de transfert de donnees
+------------------------------------------------------------------------------
+
+  (a) Chargement et stockage
+
+    Z8000                            80386
+    ----------------------------------  ---------------------------------
+    LD   R0, R1                      MOV AX, BX
+    LD   R0, #imm16                  MOV AX, imm16
+    LD   R0, @R1                     MOV AX, [EBX]
+    LD   R0, addr                    MOV AX, [addr]
+    LD   R0, addr(R1)               MOV AX, [EBX+addr]
+    LDB  RH0, @R1                   MOV AL, [EBX]
+    LDB  RL0, #imm8                 MOV AL, imm8
+    LDL  RR0, @R1                   MOV EAX, [EBX]
+    LDL  RR0, #imm32                MOV EAX, imm32
+
+  (b) Chargement d'adresse
+
+    Z8000                            80386
+    ----------------------------------  ---------------------------------
+    LDA  R0, addr                    LEA AX, [addr]
+    LDA  R0, addr(R1)               LEA AX, [EBX+addr]
+
+  (c) Echanges et mouvements multiples
+
+    Z8000                            80386
+    ----------------------------------  ---------------------------------
+    EX   R0, R1                      XCHG AX, BX
+    EX   R0, @R1                    XCHG AX, [EBX]
+
+  (d) Instructions de pile
+
+    Z8000                            80386
+    ----------------------------------  ---------------------------------
+    PUSH @R15, R0                    PUSH AX
+    POP  R0, @R15                    POP  AX
+    PUSHL @R15, RR0                  PUSH EAX
+    POPL  RR0, @R15                  POP  EAX
+
+  Note : en Z8000, PUSH et POP prennent explicitement le registre de
+  pile en parametre. En x86, ESP est implicite.
+
+------------------------------------------------------------------------------
+16.5 Conversion des instructions arithmetiques
+------------------------------------------------------------------------------
+
+  (a) Addition et soustraction
+
+    Z8000                            80386
+    ----------------------------------  ---------------------------------
+    ADD  R0, R1                      ADD AX, BX
+    ADD  R0, #imm                    ADD AX, imm
+    ADD  R0, @R1                     ADD AX, [EBX]
+    ADDB RH0, RH1                    ADD AL, BL    (nota : BH sur x86)
+    ADDL RR0, RR2                    ADD EAX, ECX
+    ADC  R0, R1                      ADC AX, BX
+    SUB  R0, R1                      SUB AX, BX
+    SUBL RR0, RR2                    SUB EAX, ECX
+    SBC  R0, R1                      SBB AX, BX
+    NEG  R0                          NEG AX
+    NEGL RR0                         NEG EAX
+
+  (b) Increment et decrement
+
+    Z8000                            80386
+    ----------------------------------  ---------------------------------
+    INC  R0, #n                      ADD AX, n     (n = 1..16)
+    DEC  R0, #n                      SUB AX, n     (n = 1..16)
+    INCB RH0, #n                     ADD AL, n
+    DECB RH0, #n                     SUB AL, n
+
+  Note : sur le Z8000, INC/DEC prennent une valeur immediate de 1 a 16.
+  En x86, on utilise INC/DEC (pour n=1) ou ADD/SUB pour n > 1.
+
+  (c) Multiplication et division
+
+    Z8000                            80386
+    ----------------------------------  ---------------------------------
+    MULT RR0, R2                     MUL CX         (DX:AX = AX * CX)
+    MULTL RQ0, RR2                   (emulation 32x32->64 en memoire)
+    DIV  RR0, R2                     DIV CX         (AX=quot, DX=rem)
+    DIVL RQ0, RR2                    (emulation 64/32 en memoire)
+
+  Note : sur le Z8000, MULT RR0,R2 multiplie R1 par R2, resultat 32 bits
+  dans RR0 (R0:R1). DIV RR0,R2 divise le 32 bits RR0 par R2, quotient
+  dans R1, reste dans R0. La correspondance avec MUL/DIV du x86 est
+  similaire (DX:AX pour les resultats 32 bits).
+
+------------------------------------------------------------------------------
+16.6 Conversion des instructions logiques
+------------------------------------------------------------------------------
+
+    Z8000                            80386
+    ----------------------------------  ---------------------------------
+    AND  R0, R1                      AND AX, BX
+    AND  R0, #imm                    AND AX, imm
+    ANDB RH0, RH1                    AND AL, BL
+    OR   R0, R1                      OR  AX, BX
+    OR   R0, #imm                    OR  AX, imm
+    XOR  R0, R1                      XOR AX, BX
+    XOR  R0, #imm                    XOR AX, imm
+    COM  R0                          NOT AX
+    COMB RH0                         NOT AL
+    COML RR0                         NOT EAX
+
+  Le Z8000 utilise COM (complement) pour l'inversion bit a bit, le 80386
+  utilise NOT. La correspondance est directe.
+
+------------------------------------------------------------------------------
+16.7 Conversion des instructions de decalage et rotation
+------------------------------------------------------------------------------
+
+    Z8000                            80386
+    ----------------------------------  ---------------------------------
+    SLL  R0, #n                      SHL AX, n
+    SRL  R0, #n                      SHR AX, n
+    SRA  R0, #n                      SAR AX, n
+    SLA  R0, #n                      SHL AX, n      (identique a SLL)
+    SLLB RH0, #n                     SHL AL, n
+    SLLL RR0, #n                     SHL EAX, n
+    SLL  R0, R1                      MOV CL, BL / SHL AX, CL
+    SRL  R0, R1                      MOV CL, BL / SHR AX, CL
+    RL   R0, #n                      ROL AX, n
+    RR   R0, #n                      ROR AX, n
+    RLC  R0, #n                      RCL AX, n
+    RRC  R0, #n                      RCR AX, n
+    RLDB RH0, RH1                    (emulation : rotation de 4 bits BCD)
+
+  Note : les decalages dynamiques (SLL R0, R1) necessitent de charger le
+  compteur dans CL sur le x86, car seul CL peut servir de compteur de
+  decalage variable.
+
+  RLDB (Rotate Left Digit Byte) est une instruction BCD specifique au
+  Z8000 qui fait pivoter un digit de 4 bits entre deux registres. Elle
+  n'a pas d'equivalent direct en x86 et doit etre emulee.
+
+------------------------------------------------------------------------------
+16.8 Conversion des instructions de test et comparaison
+------------------------------------------------------------------------------
+
+    Z8000                            80386
+    ----------------------------------  ---------------------------------
+    CP   R0, R1                      CMP AX, BX
+    CP   R0, #imm                    CMP AX, imm
+    CP   R0, @R1                     CMP AX, [EBX]
+    CPB  RH0, RH1                    CMP AL, BL
+    CPL  RR0, RR2                    CMP EAX, ECX
+    BIT  R0, #b                      BT  AX, b      (ou TEST AX, masque)
+    SET  R0, #b                      BTS AX, b      (ou OR AX, masque)
+    RES  R0, #b                      BTR AX, b      (ou AND AX, NOT masque)
+    TSET R0                          (emulation : test-and-set atomique)
+    TEST R0                          TEST AX, AX    (positionne les drapeaux)
+    TESTB RH0                        TEST AL, AL
+
+  Note : BIT/SET/RES du Z8000 operent sur un bit individuel d'un registre.
+  Le 80386 offre les instructions BT/BTS/BTR equivalentes. On peut aussi
+  utiliser TEST/OR/AND avec un masque de bit.
+
+  TSET (Test and Set) est une instruction atomique qui teste un octet
+  en memoire et le met a FFh. Elle est utilisee pour la synchronisation.
+  En x86, on utilise XCHG (qui possede un verrou implicite) ou LOCK BTS.
+
+------------------------------------------------------------------------------
+16.9 Conversion des branchements conditionnels
+------------------------------------------------------------------------------
+
+  Les conditions du Z8000 et du 80386 ont des equivalences directes
+  grace a la correspondance des drapeaux :
+
+    Z8000       80386       Condition
+    -------     --------    --------------------------------
+    JR EQ       JE / JZ     Z = 1 (egal / zero)
+    JR NE       JNE / JNZ   Z = 0 (different / non zero)
+    JR LT       JL          S xor V = 1 (inferieur, signe)
+    JR GT       JG          Z=0 et S xor V=0 (superieur, signe)
+    JR LE       JLE         Z=1 ou S xor V=1 (inf ou egal, signe)
+    JR GE       JGE         S xor V = 0 (sup ou egal, signe)
+    JR ULT      JB / JC     C = 1 (inferieur, non signe)
+    JR UGT      JA          C=0 et Z=0 (superieur, non signe)
+    JR ULE      JBE         C=1 ou Z=1 (inf ou egal, non signe)
+    JR UGE      JAE / JNC   C = 0 (sup ou egal, non signe)
+    JR OV       JO          V = 1 (depassement)
+    JR NOV      JNO         V = 0 (pas de depassement)
+    JR MI       JS          S = 1 (negatif)
+    JR PL       JNS         S = 0 (positif ou zero)
+    JR C        JC          C = 1 (retenue)
+    JR NC       JNC         C = 0 (pas de retenue)
+    JR          JMP         saut inconditionnel (court)
+    JP          JMP         saut inconditionnel (long)
+    CALL        CALL        appel de sous-routine
+    RET         RET         retour de sous-routine
+    DJNZ R0, label          DEC AX / JNZ label  (ou LOOP si CX)
+
+  Note : JR (Jump Relative) du Z8000 est un saut relatif court
+  (deplacement 8 bits signe, -256 a +254 octets). JP (Jump) est un
+  saut absolu long. En x86, JMP gere les deux cas automatiquement.
+
+  DJNZ (Decrement and Jump if Not Zero) est tres similaire a l'instruction
+  LOOP du x86 quand on utilise ECX comme compteur. Pour un autre registre,
+  il faut utiliser DEC + JNZ.
+
+------------------------------------------------------------------------------
+16.10 Conversion des instructions de manipulation de chaines
+------------------------------------------------------------------------------
+
+  Le Z8000 possede des instructions de manipulation de blocs memoire
+  similaires aux instructions de chaines du x86 :
+
+    Z8000                            80386
+    ----------------------------------  ---------------------------------
+    LDIR @R1, @R2, R0               REP MOVSB  (ESI=src, EDI=dst, ECX=cnt)
+    LDIRB @R1, @R2, R0              REP MOVSB
+    LDIRW @R1, @R2, R0              REP MOVSW
+    LDIR  @R1, @R2, R0              REP MOVSD  (si transfert 32 bits)
+    CPIR  @R1, R0, R2               REPNE SCASB (EDI=ptr, AL=val, ECX=cnt)
+    CPIRB @R1, RH0, R2              REPNE SCASB
+    LDDR  @R1, @R2, R0              STD / REP MOVSB (direction descendante)
+
+  Le mapping des registres pour les instructions de chaines :
+    Z8000 R1 (destination)  -> EDI (destination x86)
+    Z8000 R2 (source)       -> ESI (source x86)
+    Z8000 R0 (compteur)     -> ECX (compteur x86)
+
+  Avant d'utiliser les instructions de chaines x86, s'assurer que :
+  - Le drapeau de direction DF est correctement positionne (CLD ou STD)
+  - Les registres ESI, EDI et ECX sont charges avec les bonnes valeurs
+
+  Note : les instructions LDIR/CPIR du Z8000 incrementent toujours les
+  pointeurs. Pour la direction descendante, le Z8000 utilise LDDR/CPDR.
+  En x86, la direction est controlee par le drapeau DF (CLD=ascendant,
+  STD=descendant) avec les memes instructions REP MOVSB.
+
+------------------------------------------------------------------------------
+16.11 Conversion des instructions d'entree/sortie
+------------------------------------------------------------------------------
+
+    Z8000                            80386
+    ----------------------------------  ---------------------------------
+    IN   R0, #port                   IN  AX, port
+    INB  RH0, #port                  IN  AL, port
+    OUT  #port, R0                   OUT port, AX
+    OUTB #port, RH0                  OUT port, AL
+    IND  @R1, @R2, R0               REP INSW   (port DX, EDI, ECX)
+    OUTD @R1, @R2, R0               REP OUTSW  (port DX, ESI, ECX)
+    INDB @R1, @R2, R0               REP INSB
+    OUTDB @R1, @R2, R0              REP OUTSB
+
+  La correspondance est quasi directe. En x86, les instructions de
+  blocs d'E/S (INS/OUTS) utilisent DX pour le port, EDI/ESI pour
+  l'adresse memoire et ECX pour le compteur.
+
+------------------------------------------------------------------------------
+16.12 Conversion de la segmentation (Z8001)
+------------------------------------------------------------------------------
+
+  Le Z8001 utilise un modele d'adressage segmente avec un numero de
+  segment de 7 bits et un offset de 16 bits, pour un espace d'adressage
+  total de 8 Mo.
+
+  En mode FLAT 32 bits sur le 80386, la segmentation n'est plus necessaire.
+  La conversion consiste a :
+
+  1. Supprimer les numeros de segment des adresses
+  2. Calculer les adresses lineaires : addr = segment * 65536 + offset
+     (ou utiliser une table de mapping si le programme utilise les segments
+     de maniere non lineaire)
+  3. Remplacer les instructions segmentees :
+     LDCTL PSAP, RR0  ->  (configuration du systeme, pas d'equivalent direct)
+     LDCTL FCW, R0    ->  (registre de controle, pas d'equivalent direct)
+
+  Pour un programme Z8002 (non segmente), la conversion est plus simple :
+  toutes les adresses 16 bits sont etendues a 32 bits en ajoutant des
+  zeros dans les 16 bits de poids fort.
+
+------------------------------------------------------------------------------
+16.13 Conversion des conventions d'appel
+------------------------------------------------------------------------------
+
+  Convention d'appel Z8000 typique :
+  - Parametres passes dans R3-R6, puis sur la pile
+  - Valeur de retour dans R0 (ou RR0 pour 32 bits)
+  - R15 = pointeur de pile
+  - CALL empile l'adresse de retour (PC) sur la pile
+  - RET depile l'adresse de retour
+
+  Conversion en convention CDECL (x86) :
+  - Tous les parametres passent sur la pile (PUSH)
+  - Valeur de retour dans EAX
+  - L'appelant nettoie la pile (ADD ESP, n)
+  - CALL empile EIP, RET le depile
+
+  Exemple :
+
+    ; Z8000 : appel de fonction avec parametres dans R3, R4
+    LD   R3, #10            ; 1er parametre
+    LD   R4, #20            ; 2e parametre
+    CALL fonction
+    LD   R5, R0             ; recuperer la valeur de retour
+
+    ; 80386 equivalent (CDECL)
+    PUSH DWORD 20           ; 2e parametre (empile en premier)
+    PUSH DWORD 10           ; 1er parametre
+    CALL fonction
+    ADD  ESP, 8             ; nettoyer la pile (2 x 4 octets)
+    MOV  ESI, EAX           ; recuperer la valeur de retour
+
+  Prologue / epilogue de fonction :
+
+    ; Z8000
+    PUSH @R15, R14          ; sauver frame pointer
+    LD   R14, R15           ; nouveau frame pointer
+    SUB  R15, #taille       ; allouer espace local
+    ...
+    ADD  R15, #taille       ; liberer espace local
+    POP  R14, @R15          ; restaurer frame pointer
+    RET
+
+    ; 80386
+    PUSH EBP                ; sauver frame pointer
+    MOV  EBP, ESP           ; nouveau frame pointer
+    SUB  ESP, taille        ; allouer espace local
+    ...
+    MOV  ESP, EBP           ; ou LEAVE
+    POP  EBP
+    RET
+
+------------------------------------------------------------------------------
+16.14 Conversion des instructions systeme et de controle
+------------------------------------------------------------------------------
+
+    Z8000                            80386
+    ----------------------------------  ---------------------------------
+    SC   #n (System Call)            INT n  (ou appel systeme via CALL)
+    HALT                             HLT
+    NOP                              NOP
+    DI   (Disable Interrupts)        CLI
+    EI   (Enable Interrupts)         STI
+    LDCTL R0, FCW                    PUSHF / POP EAX  (lire drapeaux)
+    LDCTL FCW, R0                    PUSH EAX / POPF  (ecrire drapeaux)
+    LDCTLB RH0, FLAGS                LAHF              (charger AH depuis flags)
+    LDCTLB FLAGS, RH0                SAHF              (stocker AH dans flags)
+    IRET                             IRETD
+    MREQ (memory request)           (pas d'equivalent direct)
+
+  Note : SC (System Call) du Z8000 declenche un appel systeme par trap
+  logiciel. En x86, on utilise INT (ou SYSENTER sur Pentium II+).
+  L'equivalent exact depend du systeme d'exploitation cible.
+
+  LDCTL/LDCTLB permettent d'acceder aux registres de controle du Z8000.
+  Sur le 80386, les registres de controle (CR0-CR3) sont accessibles via
+  MOV CRn, reg (niveau de privilege 0 uniquement).
+
+------------------------------------------------------------------------------
+16.15 Aide-memoire de conversion rapide
+------------------------------------------------------------------------------
+
+  Resume des correspondances les plus courantes :
+
+    Z8000                            80386
+    ----------------------------------  ---------------------------------
+    LD   Rd, Rs                      MOV dest, source
+    LD   Rd, #imm                    MOV dest, imm
+    LD   Rd, @Rs                     MOV dest, [source]
+    LD   Rd, addr(Rs)               MOV dest, [source+addr]
+    LDB  Rd, @Rs                     MOV dest8, [source]
+    LDL  RRd, @Rs                    MOV dest32, [source]
+    LDA  Rd, addr                    LEA dest, [addr]
+    EX   Rd, Rs                      XCHG dest, source
+    PUSH @R15, Rs                    PUSH source
+    POP  Rd, @R15                    POP  dest
+    ADD  Rd, Rs                      ADD dest, source
+    ADDL RRd, RRs                    ADD dest32, source32
+    ADC  Rd, Rs                      ADC dest, source
+    SUB  Rd, Rs                      SUB dest, source
+    SBC  Rd, Rs                      SBB dest, source
+    NEG  Rd                          NEG dest
+    INC  Rd, #n                      ADD dest, n
+    DEC  Rd, #n                      SUB dest, n
+    MULT RRd, Rs                     MUL source (DX:AX)
+    DIV  RRd, Rs                     DIV source (AX quot, DX rem)
+    AND  Rd, Rs                      AND dest, source
+    OR   Rd, Rs                      OR  dest, source
+    XOR  Rd, Rs                      XOR dest, source
+    COM  Rd                          NOT dest
+    SLL  Rd, #n                      SHL dest, n
+    SRL  Rd, #n                      SHR dest, n
+    SRA  Rd, #n                      SAR dest, n
+    RL   Rd, #n                      ROL dest, n
+    RR   Rd, #n                      ROR dest, n
+    CP   Rd, Rs                      CMP dest, source
+    BIT  Rd, #b                      BT  dest, b
+    SET  Rd, #b                      BTS dest, b
+    RES  Rd, #b                      BTR dest, b
+    TEST Rd                          TEST dest, dest
+    JR   cc, label                   Jcc label
+    JP   label                       JMP label
+    CALL label                       CALL label
+    RET                              RET
+    DJNZ Rd, label                   DEC dest / JNZ label
+    LDIR @Rd, @Rs, Rc               REP MOVSB (EDI, ESI, ECX)
+    CPIR @Rd, Rs, Rc                REPNE SCASB (EDI, AL, ECX)
+    IN   Rd, #port                   IN  dest, port
+    OUT  #port, Rs                   OUT port, source
+    SC   #n                          INT n
+    HALT                             HLT
+    DI                               CLI
+    EI                               STI
+    NOP                              NOP
+
+------------------------------------------------------------------------------
+16.16 Pieges et differences fondamentales
+------------------------------------------------------------------------------
+
+  (a) Nombre de registres
+
+    Le Z8000 a 16 registres de 16 bits, le 80386 a 8 registres de 32 bits.
+    La moitie des registres Z8000 doit etre emulee en memoire. Cependant,
+    les registres x86 etant 32 bits, une paire RRn du Z8000 tient dans
+    un seul registre x86.
+
+  (b) Endianness
+
+    Le Z8000 est big-endian, le x86 est little-endian. Les donnees brutes
+    (fichiers, protocoles reseau, structures binaires) doivent etre
+    converties octet par octet. Les valeurs calculees en interne n'ont
+    pas besoin de conversion.
+
+  (c) Registres paires et quadruplets
+
+    Le Z8000 permet de combiner des registres en paires 32 bits (RR0 = R0:R1)
+    ou quadruplets 64 bits (RQ0 = R0:R1:R2:R3). Sur le 80386, les registres
+    sont nativement 32 bits, donc une paire RRn tient dans un seul registre.
+    Pour les quadruplets 64 bits, il faut utiliser deux registres 32 bits
+    ou de la memoire.
+
+  (d) Segmentation Z8001
+
+    La segmentation du Z8001 (7 bits segment + 16 bits offset) est tres
+    differente de celle du x86. En mode FLAT 32 bits, la segmentation
+    disparait completement. Il faut lineariser toutes les adresses
+    segmentees du Z8001.
+
+  (e) Instructions INC/DEC avec valeur immediate
+
+    Sur le Z8000, INC et DEC acceptent une valeur immediate de 1 a 16.
+    Sur le x86, INC et DEC n'incrementent/decrementent que de 1.
+    Pour des valeurs superieures, utiliser ADD/SUB.
+
+  (f) Instruction TSET (Test and Set)
+
+    TSET est une instruction atomique du Z8000 utilisee pour les
+    semaphores et la synchronisation. Elle lit un octet, positionne les
+    drapeaux selon sa valeur, puis ecrit FFh. En x86, l'equivalent est
+    XCHG avec une valeur de FFh (XCHG possede un verrou implicite) :
+      TSET @R1  ->  MOV AL, 0FFh / XCHG AL, [EBX]
+
+  (g) Instructions BCD (DAB)
+
+    Le Z8000 possede une instruction DAB (Decimal Adjust Byte) pour
+    l'arithmetique BCD. Le 80386 a DAA (Decimal Adjust after Addition)
+    et DAS (Decimal Adjust after Subtraction) qui sont fonctionnellement
+    equivalentes.
+
+  (h) Instruction RLDB (Rotate Left Digit Byte)
+
+    RLDB est une instruction BCD specifique au Z8000 qui fait pivoter un
+    digit hexadecimal (4 bits) entre deux registres. Elle n'a pas
+    d'equivalent direct en x86 et doit etre emulee avec des decalages
+    et des masques :
+      RLDB RH0, RH1  ->  MOV CL, AL / SHL AL, 4 / SHR BL, 4 / OR AL, BL
+                          MOV BL, CL / AND BL, 0F0h / SHR BL, 4
+
+  (i) Alignement memoire
+
+    Le Z8000 exige un alignement sur les adresses paires pour les acces
+    16 bits (les instructions elles-memes doivent etre alignees sur des
+    adresses paires). Le 80386 tolere les acces non alignes (avec une
+    penalite de performance).
+
+  (j) Appels systeme
+
+    Le Z8000 utilise SC (System Call) comme trap logiciel. Le mecanisme
+    exact depend du systeme d'exploitation (ZEUS, PLUTO, etc.). En x86,
+    les appels systeme se font via INT (DOS, Linux) ou CALL vers des
+    DLL (Win32). La conversion des appels systeme est specifique a
+    chaque combinaison OS source/OS cible.
 
 ==============================================================================
   FIN DU DOCUMENT - ASSEMBLEUR 80386
