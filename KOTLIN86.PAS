@@ -2292,8 +2292,6 @@ Var
   ArrLbl   : TString;
   LblNull  : TString;
   LblEnd   : TString;
-  LblLoop  : TString;
-  SavedTy  : Integer;
 Begin
   Case CurToken.Kind Of
     TK_INTEGER, TK_LONG, TK_FLOAT, TK_CHAR :
@@ -2493,6 +2491,7 @@ Begin
           End;
           ArrLbl := '_KTA_' + IntToStr(ArrayTempCount);
           Inc(ArrayTempCount);
+          { Taille fixe MAX_ARR_ELEM : le count reel est ecrit a l execution }
           DataAddArray(ArrLbl, MAX_ARR_ELEM);
           EmitInstrA('POP', 'CX');
           EmitComment('IntArray(n) : stocker count');
@@ -2570,10 +2569,8 @@ Begin
   While True Do
   Begin
     (* Acces membre : expr.membre ou appel methode expr.membre(args) *)
-    If ((CurToken.Kind = TK_PUNCT) Or (CurToken.Kind = TK_OP)) And
-       (CurToken.Val = '.') Then
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
     Begin
-      SavedTy := Res.TypeIdx;
       ExprFlushToAX(Res);
       ParserAdvance; { consomme '.' }
       If CurToken.Kind = TK_IDENT Then
@@ -2812,7 +2809,6 @@ Begin
     (* Acces index : expr[i] *)
     Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
     Begin
-      SavedTy := Res.TypeIdx;
       ExprFlushToAX(Res);
       EmitInstrA('PUSH', 'AX'); { sauver base du tableau }
       ParserAdvance; { consomme '[' }
