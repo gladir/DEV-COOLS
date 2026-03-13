@@ -2881,8 +2881,11 @@ Begin
             ParserAdvance; { consomme ( }
             EmitComment('struct constructor ' + ModeTab[CtorMIdx].Name);
             { Allouer l espace sur la pile }
-            Str(ModeTab[CtorMIdx].Size, CtorSize);
-            EmitInstr('SUB    SP, ' + CtorSize);
+            If ModeTab[CtorMIdx].Size > 0 Then
+            Begin
+              Str(ModeTab[CtorMIdx].Size, CtorSize);
+              EmitInstr('SUB    SP, ' + CtorSize);
+            End;
             EmitInstr('MOV    BX, SP');
             { Remplir les champs dans l ordre }
             CtorFldI := 0;
@@ -6127,6 +6130,9 @@ Begin
                    IntToStr(MAX_MODE) + ')');
       Exit;
     End;
+    { Arrondir la taille au mot superieur (pair) pour REP MOVSW }
+    If (TotalSize > 0) And ((TotalSize Mod 2) <> 0) Then
+      Inc(TotalSize);
     NewMIdx := ModeCount;
     ModeTab[NewMIdx].Name     := ModeName;
     ModeTab[NewMIdx].Kind     := MK_STRUCT;
