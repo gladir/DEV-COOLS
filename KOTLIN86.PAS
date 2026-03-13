@@ -554,6 +554,10 @@ Const
   MAX_ARR_ELEM  = 64;   { elements max par tableau literal inline }
   STACK_SIZE    = 1024;
 
+  { Caracteres speciaux (evite les accolades dans le source TP) }
+  CH_LBRACE = Chr(123);  (* open brace  *)
+  CH_RBRACE = Chr(125);  (* close brace *)
+
   { Prefixes de nommage ASM }
   KT_VAR_PFX  = '_KTV_';    { variable val/var                    }
   KT_FN_PFX   = '_KTF_';    { fonction / methode                  }
@@ -4601,13 +4605,13 @@ End;
 (* seule instruction.                                            *)
 Procedure ParseBlock;
 Begin
-  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = Chr(123)) Then
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = CH_LBRACE) Then
   Begin
     ParserAdvance; (* consomme open-brace *)
     While (CurToken.Kind <> TK_EOF) And
-          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = Chr(125))) Do
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = CH_RBRACE)) Do
       ParseStmt;
-    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = Chr(125)) Then
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = CH_RBRACE) Then
       ParserAdvance  (* consomme close-brace *)
     Else
       CompileError('"}" attendue pour fermer le bloc');
@@ -4712,14 +4716,14 @@ Begin
   End;
   { Accolade ouvrante }
   If (CurToken.Kind = TK_PUNCT) And
-     (CurToken.Val = Chr(123)) Then
+     (CurToken.Val = CH_LBRACE) Then
     ParserAdvance (* consomme open-brace *)
   Else
     CompileError('accolade attendue apres when');
   { Boucle de branches }
   While (CurToken.Kind <> TK_EOF) And
         Not ((CurToken.Kind = TK_PUNCT) And
-             (CurToken.Val = Chr(125))) Do
+             (CurToken.Val = CH_RBRACE)) Do
   Begin
     LblNext := LabelGen;
     { else -> ... }
@@ -4790,7 +4794,7 @@ Begin
   End;
   { Accolade fermante }
   If (CurToken.Kind = TK_PUNCT) And
-     (CurToken.Val = Chr(125)) Then
+     (CurToken.Val = CH_RBRACE) Then
     ParserAdvance (* consomme close-brace *)
   Else
     CompileError('accolade fermante attendue when');
