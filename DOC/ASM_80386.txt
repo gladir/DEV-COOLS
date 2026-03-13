@@ -835,7 +835,585 @@
 4. JEU D'INSTRUCTIONS (OPCODES)
 ==============================================================================
 
-  (a completer)
+  4.1 Vue d'ensemble
+  ------------------
+
+  Le 80386 herite du jeu d'instructions du 8086/80286 et l'etend
+  avec de nouvelles instructions 32 bits. Toutes les instructions
+  existantes sont disponibles en version 32 bits grace aux prefixes
+  de taille d'operande (66h) et de taille d'adresse (67h).
+
+  Le jeu d'instructions se divise en categories :
+    - Transfert de donnees
+    - Arithmetique entiere
+    - Logique et manipulation de bits
+    - Comparaison et test
+    - Branchements et sauts
+    - Operations sur les chaines
+    - Manipulation des drapeaux
+    - Entrees/sorties
+    - Instructions systeme et mode protege
+    - Conversions de type
+    - Instructions nouvelles du 80386
+
+  Conventions de notation utilisees dans cette section :
+    reg    : Registre general (8, 16 ou 32 bits)
+    r/m    : Registre ou operande memoire
+    imm    : Valeur immediate (constante)
+    mem    : Operande memoire
+    seg    : Registre de segment
+    acc    : Accumulateur (AL, AX ou EAX)
+    [F]    : Drapeaux affectes
+
+  4.2 Transfert de donnees
+  ------------------------
+
+  Ces instructions copient des donnees entre registres, memoire et
+  valeurs immediates sans modifier les drapeaux (sauf indication).
+
+  4.2.1 Transfert general
+
+  MOV  dest, src         Copier src dans dest
+                         Formes : reg<-reg, reg<-mem, mem<-reg,
+                                  reg<-imm, mem<-imm, reg<-seg,
+                                  seg<-r/m
+                         MOV ne peut pas : mem<-mem, seg<-imm
+
+  XCHG reg, r/m          Echanger les contenus de deux operandes
+                         XCHG EAX,reg a un codage sur 1 octet (90h+r)
+                         XCHG avec memoire implique un verrou LOCK
+
+  4.2.2 Pile
+
+  PUSH src               Empiler : ESP -= taille, [ESP] <- src
+                         Formes : reg, mem, imm, seg
+                         PUSH imm est nouveau depuis le 80186
+
+  POP  dest              Depiler : dest <- [ESP], ESP += taille
+                         Formes : reg, mem, seg (sauf CS)
+
+  PUSHA                  Empiler les 8 registres generaux
+  PUSHAD                 (version 32 bits : EAX,ECX,EDX,EBX,
+                          ESP_original,EBP,ESI,EDI)
+
+  POPA                   Depiler les 8 registres generaux
+  POPAD                  (version 32 bits, restaure dans l'ordre inverse)
+
+  PUSHF                  Empiler le registre EFLAGS (16 bits : FLAGS)
+  PUSHFD                 Empiler le registre EFLAGS (32 bits)
+
+  POPF                   Depiler dans FLAGS [F: tous]
+  POPFD                  Depiler dans EFLAGS [F: tous]
+
+  4.2.3 Chargement d'adresse et de pointeur
+
+  LEA  reg, mem          Charger l'adresse effective de mem dans reg
+                         (pas d'acces memoire, calcul d'adresse seul)
+                         Souvent utilise pour l'arithmetique :
+                           LEA EAX, [EBX+ECX*4+8]
+
+  LDS  reg, mem          Charger un pointeur FAR 48 bits :
+                         reg <- [mem], DS <- [mem+4]
+
+  LES  reg, mem          Idem avec ES
+  LFS  reg, mem          Idem avec FS (nouveau 80386)
+  LGS  reg, mem          Idem avec GS (nouveau 80386)
+  LSS  reg, mem          Idem avec SS (nouveau 80386)
+
+  4.2.4 Conversion et extension
+
+  CBW                    Etendre AL (signe) dans AX
+  CWDE                   Etendre AX (signe) dans EAX (nouveau 80386)
+  CWD                    Etendre AX (signe) dans DX:AX
+  CDQ                    Etendre EAX (signe) dans EDX:EAX (nouveau 80386)
+
+  MOVZX reg, r/m         Charger avec extension zero (nouveau 80386)
+                         reg16 <- r/m8, reg32 <- r/m8, reg32 <- r/m16
+
+  MOVSX reg, r/m         Charger avec extension de signe (nouveau 80386)
+                         reg16 <- r/m8, reg32 <- r/m8, reg32 <- r/m16
+
+  4.2.5 Transfert conditionnel de drapeaux
+
+  LAHF                   AH <- FLAGS (bits SF, ZF, AF, PF, CF)
+  SAHF                   FLAGS <- AH [F: SF, ZF, AF, PF, CF]
+
+  4.3 Arithmetique entiere
+  -------------------------
+
+  4.3.1 Addition
+
+  ADD  dest, src         dest <- dest + src [F: OF,SF,ZF,AF,PF,CF]
+  ADC  dest, src         dest <- dest + src + CF [F: OF,SF,ZF,AF,PF,CF]
+                         (addition avec retenue, pour l'arithmetique
+                          multi-precision)
+
+  INC  r/m               r/m <- r/m + 1 [F: OF,SF,ZF,AF,PF]
+                         (ne modifie pas CF, utile dans les boucles)
+
+  4.3.2 Soustraction
+
+  SUB  dest, src         dest <- dest - src [F: OF,SF,ZF,AF,PF,CF]
+  SBB  dest, src         dest <- dest - src - CF [F: OF,SF,ZF,AF,PF,CF]
+                         (soustraction avec emprunt)
+
+  DEC  r/m               r/m <- r/m - 1 [F: OF,SF,ZF,AF,PF]
+                         (ne modifie pas CF)
+
+  NEG  r/m               r/m <- 0 - r/m [F: OF,SF,ZF,AF,PF,CF]
+                         (complement a deux, negation)
+
+  4.3.3 Multiplication
+
+  MUL  r/m               Multiplication non signee
+                         8 bits  : AX <- AL * r/m8
+                         16 bits : DX:AX <- AX * r/m16
+                         32 bits : EDX:EAX <- EAX * r/m32
+                         [F: OF,CF (definis si partie haute non nulle)]
+
+  IMUL r/m               Multiplication signee (meme format que MUL)
+
+  IMUL reg, r/m          reg <- reg * r/m (forme a 2 operandes)
+                         (nouveau 80386, resultat tronque a la taille
+                          du registre destination)
+
+  IMUL reg, r/m, imm     reg <- r/m * imm (forme a 3 operandes)
+                         (nouveau 80186)
+
+  4.3.4 Division
+
+  DIV  r/m               Division non signee
+                         8 bits  : AL <- AX / r/m8, AH <- AX MOD r/m8
+                         16 bits : AX <- DX:AX / r/m16, DX <- reste
+                         32 bits : EAX <- EDX:EAX / r/m32, EDX <- reste
+                         Exception #DE si diviseur = 0 ou quotient
+                         depasse la taille du registre destination
+
+  IDIV r/m               Division signee (meme format que DIV)
+
+  4.3.5 Ajustement BCD (decimal code binaire)
+
+  DAA                    Ajustement decimal apres addition (AL)
+  DAS                    Ajustement decimal apres soustraction (AL)
+  AAA                    Ajustement ASCII apres addition (AX)
+  AAS                    Ajustement ASCII apres soustraction (AX)
+  AAM                    Ajustement ASCII apres multiplication (AX)
+  AAD                    Ajustement ASCII avant division (AX)
+
+  Note : Ces instructions operent uniquement sur AL/AX et sont
+  rarement utilisees en programmation 32 bits moderne.
+
+  4.4 Logique et manipulation de bits
+  ------------------------------------
+
+  4.4.1 Operations logiques
+
+  AND  dest, src         dest <- dest AND src [F: OF=0,SF,ZF,PF,CF=0]
+  OR   dest, src         dest <- dest OR src  [F: OF=0,SF,ZF,PF,CF=0]
+  XOR  dest, src         dest <- dest XOR src [F: OF=0,SF,ZF,PF,CF=0]
+  NOT  r/m               r/m <- NOT r/m (complement a un) [F: aucun]
+
+  Idiomes courants :
+    XOR EAX, EAX         Mettre EAX a zero (2 octets, plus rapide
+                          que MOV EAX, 0 qui fait 5 octets)
+    OR  EAX, EAX         Tester si EAX est zero (positionne ZF)
+    AND EAX, 0FFh        Masquer les bits de poids fort
+
+  4.4.2 Decalages
+
+  SHL  r/m, count        Decalage logique a gauche [F: CF,OF,SF,ZF,PF]
+  SHR  r/m, count        Decalage logique a droite [F: CF,OF,SF,ZF,PF]
+  SAR  r/m, count        Decalage arithmetique a droite (preserve signe)
+  SAL  r/m, count        Synonyme de SHL
+
+  Le compteur (count) peut etre :
+    1    : Decalage d'une position (codage specifique)
+    imm8 : Constante immediate (masquee a 5 bits, max 31)
+    CL   : Valeur du registre CL (masquee a 5 bits)
+
+  Note : SHL de n positions equivaut a une multiplication par 2^n.
+  SHR de n positions equivaut a une division non signee par 2^n.
+  SAR de n positions equivaut a une division signee par 2^n.
+
+  4.4.3 Rotations
+
+  ROL  r/m, count        Rotation a gauche [F: CF,OF]
+  ROR  r/m, count        Rotation a droite [F: CF,OF]
+  RCL  r/m, count        Rotation a gauche a travers CF [F: CF,OF]
+  RCR  r/m, count        Rotation a droite a travers CF [F: CF,OF]
+
+  Les rotations sont circulaires : les bits qui sortent d'un cote
+  rentrent de l'autre. RCL/RCR incluent CF dans la rotation,
+  formant une chaine de (n+1) bits.
+
+  4.4.4 Decalage double (nouveau 80386)
+
+  SHLD dest, src, count  Decalage a gauche double precision
+                         Les bits sortants de src remplissent dest
+                         [F: CF,SF,ZF,PF]
+
+  SHRD dest, src, count  Decalage a droite double precision
+                         Les bits sortants de src remplissent dest
+                         [F: CF,SF,ZF,PF]
+
+  Ces instructions sont tres utiles pour les operations sur des
+  entiers de plus de 32 bits et pour les operations sur les bitmaps.
+
+  4.4.5 Test et recherche de bits (nouveau 80386)
+
+  BT   r/m, reg/imm      Test du bit : CF <- bit selectionne
+  BTS  r/m, reg/imm      Test et mise a 1 : CF <- bit, bit <- 1
+  BTR  r/m, reg/imm      Test et mise a 0 : CF <- bit, bit <- 0
+  BTC  r/m, reg/imm      Test et complement : CF <- bit, bit <- NOT bit
+
+  BSF  reg, r/m          Recherche du premier bit a 1 (depuis bit 0)
+                         reg <- index du bit, ZF=1 si aucun bit a 1
+
+  BSR  reg, r/m          Recherche du dernier bit a 1 (depuis bit MSB)
+                         reg <- index du bit, ZF=1 si aucun bit a 1
+
+  4.5 Comparaison et test
+  ------------------------
+
+  CMP  dest, src         Calcule dest - src, positionne les drapeaux
+                         mais ne stocke pas le resultat
+                         [F: OF,SF,ZF,AF,PF,CF]
+
+  TEST dest, src         Calcule dest AND src, positionne les drapeaux
+                         mais ne stocke pas le resultat
+                         [F: OF=0,SF,ZF,PF,CF=0]
+
+  Utilisation typique :
+    CMP EAX, 10          Comparer EAX avec 10
+    JE  _egal            Sauter si egal (ZF=1)
+
+    TEST EAX, EAX        Tester si EAX est zero
+    JZ  _est_zero        Sauter si zero (ZF=1)
+
+    TEST AL, 01h         Tester si le bit 0 est a 1
+    JNZ _impair          Sauter si non-zero (bit 0 = 1)
+
+  4.6 Branchements et sauts
+  --------------------------
+
+  4.6.1 Saut inconditionnel
+
+  JMP  cible             Saut inconditionnel
+                         Court (rel8), proche (rel32), ou lointain
+                         (seg:offset pour inter-segment)
+                         Peut etre direct (label) ou indirect ([reg])
+
+  4.6.2 Sauts conditionnels
+
+  Les sauts conditionnels testent les drapeaux positionnes par
+  CMP, TEST, ou toute instruction arithmetique/logique precedente.
+
+  Sur le 80386, tous les sauts conditionnels acceptent les
+  deplacements rel8 (court) et rel32 (proche), alors que le 8086
+  ne supportait que rel8.
+
+  Condition             Mnemoniques         Drapeaux testes
+  --------------------  ------------------  ----------------
+  Egal / zero           JE   / JZ           ZF = 1
+  Non egal / non zero   JNE  / JNZ          ZF = 0
+  Retenue / inf. (ns)   JC   / JB  / JNAE   CF = 1
+  Pas de retenue         JNC  / JNB / JAE    CF = 0
+  Signe (negatif)       JS                   SF = 1
+  Pas de signe          JNS                  SF = 0
+  Debordement           JO                   OF = 1
+  Pas de debordement    JNO                  OF = 0
+  Parite paire          JP   / JPE           PF = 1
+  Parite impaire        JNP  / JPO           PF = 0
+
+  Comparaisons non signees (unsigned) :
+  Inferieur             JB   / JNAE / JC     CF = 1
+  Inf. ou egal          JBE  / JNA           CF = 1 ou ZF = 1
+  Superieur             JA   / JNBE          CF = 0 et ZF = 0
+  Sup. ou egal          JAE  / JNB / JNC     CF = 0
+
+  Comparaisons signees (signed) :
+  Inferieur             JL   / JNGE          SF <> OF
+  Inf. ou egal          JLE  / JNG           SF <> OF ou ZF = 1
+  Superieur             JG   / JNLE          SF = OF et ZF = 0
+  Sup. ou egal          JGE  / JNL           SF = OF
+
+  4.6.3 Boucles
+
+  LOOP  cible            ECX <- ECX - 1, sauter si ECX <> 0
+  LOOPE cible            ECX <- ECX - 1, sauter si ECX <> 0 et ZF = 1
+  LOOPNE cible           ECX <- ECX - 1, sauter si ECX <> 0 et ZF = 0
+  JECXZ cible            Sauter si ECX = 0 (sans modifier ECX)
+
+  Note : LOOP et JECXZ n'acceptent que des deplacements rel8.
+  En mode 16 bits, LOOP utilise CX au lieu de ECX.
+
+  4.6.4 Appels de sous-programmes
+
+  CALL cible             Empiler EIP, sauter a cible
+                         Proche (rel32 ou r/m32) : PUSH EIP, JMP cible
+                         Lointain (seg:offset) : PUSH CS, PUSH EIP,
+                           puis saut inter-segment
+
+  RET                    Depiler EIP et reprendre l'execution
+  RET  imm16             Depiler EIP, puis ESP <- ESP + imm16
+                         (pour nettoyer les parametres de la pile,
+                          convention stdcall)
+
+  ENTER imm16, level     Creer un cadre de pile :
+                         PUSH EBP, EBP <- ESP, ESP <- ESP - imm16
+                         (level > 0 pour les cadres imbriques)
+
+  LEAVE                  Detruire un cadre de pile :
+                         ESP <- EBP, POP EBP
+                         (equivalent a MOV ESP,EBP / POP EBP)
+
+  4.6.5 Interruptions logicielles
+
+  INT  imm8              Appel d'interruption logicielle
+                         PUSH EFLAGS, PUSH CS, PUSH EIP,
+                         IF <- 0, TF <- 0, saut via IDT[imm8]
+
+  INTO                   INT 4 si OF = 1 (debordement)
+
+  IRET                   Retour d'interruption
+  IRETD                  POP EIP, POP CS, POP EFLAGS
+
+  4.6.6 Positionnement conditionnel d'octets (nouveau 80386)
+
+  SETcc r/m8             Mettre r/m8 a 1 si condition vraie, 0 sinon
+
+  Les suffixes cc sont les memes que pour les sauts Jcc :
+    SETE/SETZ, SETNE/SETNZ, SETB/SETC, SETNB/SETNC,
+    SETS, SETNS, SETO, SETNO, SETP, SETNP,
+    SETL, SETLE, SETG, SETGE, SETA, SETBE, SETAE, SETB
+
+  Utilisation typique :
+    CMP  EAX, EBX
+    SETL AL               ; AL = 1 si EAX < EBX (signe), sinon 0
+    MOVZX EAX, AL          ; etendre a 32 bits
+
+  4.7 Operations sur les chaines
+  -------------------------------
+
+  Les instructions de chaines operent sur des blocs de memoire.
+  Elles utilisent :
+    - ESI (source) avec DS par defaut
+    - EDI (destination) avec ES obligatoire
+    - ECX comme compteur (avec REP)
+    - DF (Direction Flag) : 0 = incrementer, 1 = decrementer
+
+  4.7.1 Instructions de base
+
+  MOVSB / MOVSW / MOVSD  Copier [ESI] vers ES:[EDI], avancer les deux
+                         (B=octet, W=mot, D=double mot)
+
+  CMPSB / CMPSW / CMPSD  Comparer [ESI] avec ES:[EDI], avancer
+                         [F: OF,SF,ZF,AF,PF,CF]
+
+  SCASB / SCASW / SCASD  Comparer AL/AX/EAX avec ES:[EDI], avancer
+                         [F: OF,SF,ZF,AF,PF,CF]
+
+  LODSB / LODSW / LODSD  Charger [ESI] dans AL/AX/EAX, avancer ESI
+
+  STOSB / STOSW / STOSD  Stocker AL/AX/EAX dans ES:[EDI], avancer EDI
+
+  INSB / INSW / INSD     Lire port DX dans ES:[EDI], avancer EDI
+  OUTSB / OUTSW / OUTSD  Ecrire [ESI] vers port DX, avancer ESI
+
+  4.7.2 Prefixes de repetition
+
+  REP                    Repeter ECX fois (pour MOVS, STOS, INS, OUTS)
+  REPE / REPZ            Repeter tant que ECX <> 0 et ZF = 1
+                         (pour CMPS, SCAS)
+  REPNE / REPNZ          Repeter tant que ECX <> 0 et ZF = 0
+                         (pour CMPS, SCAS)
+
+  Exemples :
+    ; Copier 100 octets de ESI vers EDI
+    MOV  ECX, 100
+    CLD                    ; direction = incrementer
+    REP  MOVSB
+
+    ; Remplir 256 octets a zero
+    MOV  ECX, 64           ; 256 / 4 = 64 double mots
+    XOR  EAX, EAX
+    CLD
+    REP  STOSD
+
+    ; Chercher un octet nul dans une chaine (strlen)
+    MOV  ECX, -1           ; compter le maximum
+    XOR  AL, AL            ; chercher 0
+    CLD
+    REPNE SCASB
+    NOT  ECX
+    DEC  ECX               ; ECX = longueur de la chaine
+
+  4.8 Manipulation des drapeaux
+  ------------------------------
+
+  CLC                    CF <- 0 (Clear Carry)
+  STC                    CF <- 1 (Set Carry)
+  CMC                    CF <- NOT CF (Complement Carry)
+
+  CLD                    DF <- 0 (direction = incrementer)
+  STD                    DF <- 1 (direction = decrementer)
+
+  CLI                    IF <- 0 (desactiver les interruptions)
+  STI                    IF <- 1 (activer les interruptions)
+
+  Note : CLI/STI sont des instructions privilegiees en mode
+  protege et ne peuvent etre executees qu'au niveau de privilege
+  IOPL ou superieur.
+
+  4.9 Entrees/sorties
+  --------------------
+
+  IN   acc, port         Lire un port d'E/S dans l'accumulateur
+                         IN AL, imm8   (port 0-255, codage compact)
+                         IN AL, DX     (port 0-65535, via DX)
+                         IN AX, DX     (lecture 16 bits)
+                         IN EAX, DX    (lecture 32 bits, nouveau 80386)
+
+  OUT  port, acc         Ecrire l'accumulateur vers un port d'E/S
+                         OUT imm8, AL  (port 0-255)
+                         OUT DX, AL    (port 0-65535, via DX)
+                         OUT DX, AX    (ecriture 16 bits)
+                         OUT DX, EAX   (ecriture 32 bits, nouveau 80386)
+
+  Note : Les instructions IN/OUT sont privilegiees en mode protege.
+  L'acces est controle par le bitmap d'E/S dans le TSS et le
+  niveau IOPL dans EFLAGS.
+
+  4.10 Instructions systeme et mode protege
+  -------------------------------------------
+
+  4.10.1 Registres de controle et descripteurs
+
+  LGDT mem               Charger le registre GDTR (limite + base)
+  SGDT mem               Stocker GDTR en memoire
+  LIDT mem               Charger le registre IDTR (limite + base)
+  SIDT mem               Stocker IDTR en memoire
+  LLDT r/m16             Charger le registre LDTR (selecteur)
+  SLDT r/m16             Stocker LDTR
+  LTR  r/m16             Charger le registre TR (Task Register)
+  STR  r/m16             Stocker TR
+  LMSW r/m16             Charger le mot d'etat machine (bits bas de CR0)
+  SMSW r/m16             Stocker le mot d'etat machine
+
+  4.10.2 Registres de controle (nouveau 80386)
+
+  MOV  CRn, reg32        Charger un registre de controle (CR0-CR3)
+  MOV  reg32, CRn        Lire un registre de controle
+  MOV  DRn, reg32        Charger un registre de debug (DR0-DR7)
+  MOV  reg32, DRn        Lire un registre de debug
+  MOV  TRn, reg32        Charger un registre de test (TR6-TR7)
+  MOV  reg32, TRn        Lire un registre de test
+
+  4.10.3 Verification et protection
+
+  ARPL r/m16, reg16      Ajuster le champ RPL d'un selecteur
+  LAR  reg, r/m16        Charger les droits d'acces d'un descripteur
+  LSL  reg, r/m16        Charger la limite d'un segment
+  VERR r/m16             Verifier qu'un segment est lisible (ZF=1 si oui)
+  VERW r/m16             Verifier qu'un segment est inscriptible
+
+  4.10.4 Commutation de taches et divers
+
+  CLTS                   Effacer le drapeau TS dans CR0
+                         (utilise apres une commutation de tache
+                          pour eviter les exceptions #NM)
+
+  HLT                    Arreter le processeur jusqu'a une interruption
+                         ou un signal RESET
+
+  WAIT / FWAIT           Attendre que le coprocesseur ait termine
+  NOP                    Pas d'operation (XCHG EAX, EAX, codage 90h)
+  LOCK                   Prefixe de verrouillage du bus (pour les
+                         operations atomiques en multiprocesseur)
+
+  4.11 Instructions nouvelles du 80386
+  --------------------------------------
+
+  Le 80386 ajoute les instructions suivantes par rapport au 80286 :
+
+  Extensions 32 bits de toutes les instructions existantes :
+    - Tous les registres peuvent etre utilises en 32 bits
+    - Les deplacements sont de 32 bits en mode protege
+    - Les sauts conditionnels acceptent rel32
+
+  Nouvelles instructions :
+
+  Instruction            Description
+  ---------------------  ------------------------------------------
+  MOVZX reg, r/m         Extension zero (8->16, 8->32, 16->32)
+  MOVSX reg, r/m         Extension de signe (8->16, 8->32, 16->32)
+  CWDE                   Etendre AX signe dans EAX
+  CDQ                    Etendre EAX signe dans EDX:EAX
+  PUSHAD / POPAD         Empiler/depiler tous les registres 32 bits
+  PUSHFD / POPFD         Empiler/depiler EFLAGS 32 bits
+  SHLD  dest, src, cnt   Decalage double a gauche
+  SHRD  dest, src, cnt   Decalage double a droite
+  BT    r/m, reg/imm     Test de bit
+  BTS   r/m, reg/imm     Test et mise a 1
+  BTR   r/m, reg/imm     Test et mise a 0
+  BTC   r/m, reg/imm     Test et complement
+  BSF   reg, r/m         Recherche de bit vers l'avant
+  BSR   reg, r/m         Recherche de bit vers l'arriere
+  SETcc r/m8             Positionnement conditionnel d'octet
+  JECXZ cible            Saut si ECX = 0
+  LFS   reg, mem         Charger pointeur avec FS
+  LGS   reg, mem         Charger pointeur avec GS
+  LSS   reg, mem         Charger pointeur avec SS
+  MOV   CRn, reg32       Acces aux registres de controle
+  MOV   DRn, reg32       Acces aux registres de debug
+  MOV   TRn, reg32       Acces aux registres de test
+  MOVSD                  MOVS en 32 bits (double mot)
+  CMPSD                  CMPS en 32 bits
+  SCASD                  SCAS en 32 bits
+  LODSD                  LODS en 32 bits
+  STOSD                  STOS en 32 bits
+  INSD                   INS en 32 bits
+  OUTSD                  OUTS en 32 bits
+
+  4.12 Resume et tableau recapitulatif
+  --------------------------------------
+
+  Nombre approximatif d'instructions par categorie :
+
+  Categorie                          Nombre
+  ---------------------------------  ------
+  Transfert de donnees                  25
+  Arithmetique entiere                  20
+  Logique et bits                       18
+  Comparaison et test                    2
+  Sauts conditionnels                   30+
+  Boucles et branchements               8
+  Chaines                              12
+  Drapeaux                              7
+  Entrees/sorties                       4
+  Systeme et mode protege              20+
+  Positionnement conditionnel          30+
+  Divers (NOP, HLT, LOCK, etc.)        5
+  ---------------------------------  ------
+  Total (hors variantes de taille)    ~180
+
+  Instructions les plus frequemment utilisees en pratique :
+
+  Instruction   Usage typique
+  -----------   ------------------------------------------
+  MOV           Transfert de donnees (40-50% des instructions)
+  PUSH/POP      Passage de parametres, sauvegarde de registres
+  ADD/SUB       Arithmetique de base
+  CMP/TEST      Preparation des sauts conditionnels
+  JMP/Jcc       Controle de flux
+  CALL/RET      Appels de fonctions
+  LEA           Calcul d'adresses et arithmetique rapide
+  XOR           Mise a zero de registres
+  AND/OR        Masquage et combinaison de bits
+  SHL/SHR       Multiplications/divisions par puissances de 2
+  INC/DEC       Compteurs de boucles
+  MOVZX/MOVSX   Conversions de taille (nouveau 80386)
+  IMUL          Multiplication avec resultat dans un registre
 
 ==============================================================================
 5. CODAGE DES INSTRUCTIONS (FORMAT BINAIRE)
