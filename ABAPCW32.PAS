@@ -7469,6 +7469,24 @@ Begin
   Else AsmParseImm := 0;
 End;
 
+{ Returns True if bracket contents reference a register (not a label) }
+Function AsmIsRegBased(Const S : String) : Boolean;
+Var Base : String;
+    I : Integer;
+Begin
+  AsmIsRegBased := False;
+  Base := S;
+  For I := 1 To Length(Base) Do
+    If (Base[I] = '+') Or (Base[I] = '-') Or (Base[I] = '*') Then
+    Begin
+      Base := Copy(Base, 1, I - 1);
+      Break;
+    End;
+  While (Length(Base) > 0) And (Base[Length(Base)] = ' ') Do
+    Delete(Base, Length(Base), 1);
+  AsmIsRegBased := (AsmRegIdx32(Base) >= 0);
+End;
+
 Function AsmTrimLine(Const S : String) : String;
 Var I, J, K : Integer; R : String;
 Begin
@@ -7566,6 +7584,8 @@ Var
   Base, Idx : String;
   BaseR, IdxR : Integer;
   Disp : LongInt;
+  StarP, PlusP2, ScaleV, ScaleF : Integer;
+  IdxName, ScaleAndRest, ScaleStr, DispStr : String;
 Begin
   PlusPos := 0; MinusPos := 0;
   For I := 1 To Length(Bracket) Do
@@ -7612,8 +7632,67 @@ Begin
     IdxR := AsmRegIdx32(Idx);
     If (BaseR >= 0) And (IdxR >= 0) Then
     Begin { [base+index] needs SIB }
-      BinEmitByte((0 Shl 6) Or (RegField Shl 3) Or 4);
-      BinEmitByte((0 Shl 6) Or (IdxR Shl 3) Or BaseR);
+      If BaseR = 5 Then
+      Begin { [EBP+index] needs mod=01 disp8=0 }
+        BinEmitByte((1 Shl 6) Or (RegField Shl 3) Or 4);
+        BinEmitByte((0 Shl 6) Or (IdxR Shl 3) Or BaseR);
+        BinEmitByte(0);
+      End
+      Else
+      Begin
+        BinEmitByte((0 Shl 6) Or (RegField Shl 3) Or 4);
+        BinEmitByte((0 Shl 6) Or (IdxR Shl 3) Or BaseR);
+      End;
+    End
+    Else If (BaseR >= 0) And (Pos('*', Idx) > 0) Then
+    Begin { [base+index*scale] or [base+index*scale+disp] }
+      { Parse index*scale and optional +disp }
+      Disp := 0;
+      StarP := Pos('*', Idx);
+      IdxName := Copy(Idx, 1, StarP - 1);
+      While (Length(IdxName) > 0) And (IdxName[Length(IdxName)] = ' ') Do
+        Delete(IdxName, Length(IdxName), 1);
+      ScaleAndRest := Copy(Idx, StarP + 1, Length(Idx) - StarP);
+      While (Length(ScaleAndRest) > 0) And (ScaleAndRest[1] = ' ') Do
+        Delete(ScaleAndRest, 1, 1);
+      PlusP2 := Pos('+', ScaleAndRest);
+      If PlusP2 > 0 Then
+      Begin
+        ScaleStr := Copy(ScaleAndRest, 1, PlusP2 - 1);
+        DispStr := Copy(ScaleAndRest, PlusP2 + 1, Length(ScaleAndRest) - PlusP2);
+        ScaleV := AsmParseImm(ScaleStr);
+        Disp := AsmParseImm(DispStr);
+      End
+      Else
+      Begin
+        ScaleV := AsmParseImm(ScaleAndRest);
+        Disp := 0;
+      End;
+      IdxR := AsmRegIdx32(IdxName);
+      Case ScaleV Of
+        1: ScaleF := 0;
+        2: ScaleF := 1;
+        4: ScaleF := 2;
+        8: ScaleF := 3;
+      Else ScaleF := 0;
+      End;
+      If (Disp = 0) And (BaseR <> 5) Then
+      Begin
+        BinEmitByte((0 Shl 6) Or (RegField Shl 3) Or 4);
+        BinEmitByte((ScaleF Shl 6) Or (IdxR Shl 3) Or BaseR);
+      End
+      Else If (Disp >= -128) And (Disp <= 127) Then
+      Begin
+        BinEmitByte((1 Shl 6) Or (RegField Shl 3) Or 4);
+        BinEmitByte((ScaleF Shl 6) Or (IdxR Shl 3) Or BaseR);
+        BinEmitByte(Byte(Disp And $FF));
+      End
+      Else
+      Begin
+        BinEmitByte((2 Shl 6) Or (RegField Shl 3) Or 4);
+        BinEmitByte((ScaleF Shl 6) Or (IdxR Shl 3) Or BaseR);
+        BinEmitDWord(Disp);
+      End;
     End
     Else If BaseR >= 0 Then
     Begin { [base+disp] }
@@ -7702,10 +7781,18 @@ Begin
     If AsmStartsWith(Op1, 'DWORD PTR [') Then
     Begin
       Bracket := AsmExtractBracket(Op1);
-      BinEmitByte($FF);
-      BinEmitByte($35);
-      BinAddFixup(BinCodeLen, BFK_ABS32, Bracket, True);
-      BinEmitDWord(0);
+      If AsmIsRegBased(Bracket) Then
+      Begin { Register-based: FF /6 + ModRM/SIB }
+        BinEmitByte($FF);
+        AsmEncodeMemory(Bracket, 6);
+      End
+      Else
+      Begin { Direct memory label }
+        BinEmitByte($FF);
+        BinEmitByte($35);
+        BinAddFixup(BinCodeLen, BFK_ABS32, Bracket, True);
+        BinEmitDWord(0);
+      End;
       Exit;
     End;
     R1 := AsmRegIdx32(Op1);
@@ -7736,13 +7823,18 @@ Begin
   { ---- MOV ---- }
   If Mnem = 'MOV' Then
   Begin
-    { MOV DWORD PTR [label], reg32 }
+    { MOV DWORD PTR [mem], reg32 }
     If AsmStartsWith(Op1, 'DWORD PTR [') Then
     Begin
       Bracket := AsmExtractBracket(Op1);
       R2 := AsmRegIdx32(Op2);
-      If R2 = 0 Then
-      Begin
+      If AsmIsRegBased(Bracket) Then
+      Begin { Register-based addressing: use 89 + ModRM/SIB }
+        BinEmitByte($89);
+        AsmEncodeMemory(Bracket, R2);
+      End
+      Else If R2 = 0 Then
+      Begin { Direct memory with EAX: use A3 short form }
         BinEmitByte($A3);
         BinAddFixup(BinCodeLen, BFK_ABS32, Bracket, True);
         BinEmitDWord(0);
@@ -7775,19 +7867,24 @@ Begin
       End;
       Exit;
     End;
-    { MOV reg, DWORD PTR [label] }
+    { MOV reg, DWORD PTR [mem] }
     If AsmStartsWith(Op2, 'DWORD PTR [') Then
     Begin
       Bracket := AsmExtractBracket(Op2);
       R1 := AsmRegIdx32(Op1);
-      If R1 = 0 Then
-      Begin
+      If AsmIsRegBased(Bracket) Then
+      Begin { Register-based addressing: use 8B + ModRM/SIB }
+        BinEmitByte($8B);
+        AsmEncodeMemory(Bracket, R1);
+      End
+      Else If R1 = 0 Then
+      Begin { Direct memory with EAX: use A1 short form }
         BinEmitByte($A1);
         BinAddFixup(BinCodeLen, BFK_ABS32, Bracket, True);
         BinEmitDWord(0);
       End
       Else
-      Begin
+      Begin { Direct memory with other reg }
         BinEmitByte($8B);
         BinEmitByte((0 Shl 6) Or (R1 Shl 3) Or 5);
         BinAddFixup(BinCodeLen, BFK_ABS32, Bracket, True);
