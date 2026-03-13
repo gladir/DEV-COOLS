@@ -5145,6 +5145,7 @@ Begin
             ClassTab[ClsIdx].Meths[MethCount].Name       := MethName;
             ClassTab[ClsIdx].Meths[MethCount].AsmLabel    := MethLabel;
             ClassTab[ClsIdx].Meths[MethCount].VtOfs       := MethCount * 2;
+            (* open class : methodes heritent open sauf si final *)
             ClassTab[ClsIdx].Meths[MethCount].IsOpen      := IsOpenM Or IsOpen;
             ClassTab[ClsIdx].Meths[MethCount].IsAbstract  := IsAbstractM;
             ClassTab[ClsIdx].Meths[MethCount].IsOverride  := False;
@@ -5533,10 +5534,13 @@ Begin
   EmitComment('--- _KTRT_VCALL : BX=obj, CX=vtable offset -> CALL ---');
   EmitLabel(KT_RT_PFX + 'VCALL');
   EmitInstrA('PUSH', 'SI');
-  EmitInstrAB('MOV', 'SI', '[BX]');   { SI = ptr vtable }
-  EmitInstrAB('ADD', 'SI', 'CX');     { SI = vtable + offset }
-  EmitInstrAB('MOV', 'SI', '[SI]');   { SI = adresse methode }
-  EmitInstr('CALL SI');
+  EmitInstrAB('MOV', 'SI', '[BX]');   (* SI = vtable ptr from [BX+0] *)
+  EmitInstrAB('ADD', 'SI', 'CX');     (* SI = vtable + offset *)
+  EmitInstrAB('MOV', 'SI', '[SI]');   (* SI = adresse methode *)
+  EmitInstrA('PUSH', 'AX');
+  EmitInstrAB('MOV', 'AX', 'SI');
+  EmitInstrA('POP', 'AX');
+  EmitInstr('CALL SI');               (* MASM accepte CALL reg16 *)
   EmitInstrA('POP', 'SI');
   EmitInstr('RET');
   EmitBlankLine;
