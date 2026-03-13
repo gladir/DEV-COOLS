@@ -209,7 +209,7 @@
             Indexation de tableau : expr[indice] -> calcul offset element
             Tranche de tableau : expr[lo:up] -> nouveau descripteur
 
-  TODO 12 - EXPRESSIONS BINAIRES ET FORMULES
+  TODO 12 - EXPRESSIONS BINAIRES ET FORMULES [IMPLEMENTE]
             ParseFormula(MinPrio) : boucle de Pratt avec priorites 1 a 9
             Arithmetique entiere : ADD/SUB/IMUL/IDIV pour +, -, *, OVER
             MOD : IDIV -> resultat dans DX (reste)
@@ -3140,6 +3140,7 @@ Var
   LVal     : LongInt;
   RVal     : LongInt;
   FoldOK   : Boolean;
+  IsStrCmp : Boolean; { comparaison sur STRING }
 Begin
   ParseUnary(Res);
 
@@ -3167,8 +3168,8 @@ Begin
 
     ParserAdvance; { consommer l operateur }
 
-    { ---- Court-circuit AND ---- }
-    If Op = 'AND' Then
+    { ---- Court-circuit AND (logique BOOL) / Bitwise AND (BITS) ---- }
+    If (Op = 'AND') And (ModeKindOf(Res.ModeIdx) <> MK_BITS) Then
     Begin
       If Res.Kind = EK_IMM Then
       Begin
@@ -3203,8 +3204,8 @@ Begin
       Continue;
     End;
 
-    { ---- Court-circuit OR ---- }
-    If Op = 'OR' Then
+    { ---- Court-circuit OR (logique BOOL) / Bitwise OR (BITS) ---- }
+    If (Op = 'OR') And (ModeKindOf(Res.ModeIdx) <> MK_BITS) Then
     Begin
       If Res.Kind = EK_IMM Then
       Begin
@@ -3352,6 +3353,23 @@ Begin
         Res.ImmVal := 1
       Else If Op = 'UPB' Then
         Res.ImmVal := LVal
+      { AND / OR bitwise sur BITS (pliage de constantes) }
+      Else If Op = 'AND' Then
+        Res.ImmVal := LVal And RVal
+      Else If Op = 'OR' Then
+        Res.ImmVal := LVal Or RVal
+      { ELEM : test de bit (resultat BOOL) }
+      Else If Op = 'ELEM' Then
+      Begin
+        If (RVal >= 0) And (RVal < 16) Then
+        Begin
+          If ((LVal Shr RVal) And 1) = 1 Then Res.ImmVal := 1
+          Else Res.ImmVal := 0;
+        End
+        Else
+          Res.ImmVal := 0;
+        Res.ModeIdx := TY_IDX_BOOL;
+      End
       Else
       Begin
         FoldOK := False; { operateur inconnu : pas de pliage }
@@ -3368,9 +3386,18 @@ Begin
     EmitInstr('MOV    BX, AX');
     EmitInstr('POP    AX');
 
-    { Arithmetique }
+    { Arithmetique / Concatenation STRING }
     If Op = '+' Then
-      EmitInstr('ADD    AX, BX')
+    Begin
+      If ModeKindOf(Res.ModeIdx) = MK_STRING Then
+      Begin
+        { Concatenation de chaines : AX=ptr1, BX=ptr2 -> AX=resultat }
+        EmitInstr('CALL   ' + A68_RT_PFX + 'CONCAT');
+        Res.ModeIdx := TY_IDX_STRING;
+      End
+      Else
+        EmitInstr('ADD    AX, BX');
+    End
     Else If Op = '-' Then
       EmitInstr('SUB    AX, BX')
     Else If Op = '*' Then
@@ -3391,78 +3418,29 @@ Begin
       { Appel runtime : AX=base, BX=exp -> AX=resultat }
       EmitInstr('CALL   ' + A68_RT_PFX + 'POWER');
     End
-    { Comparaisons -> CMP + SETcc emulee }
-    Else If Op = '=' Then
+    { Comparaisons -> CMP + SETcc emulee (STRING : CALL _A68RT_STRCMP) }
+    Else If (Op = '=') Or (Op = '/=') Or (Op = '<') Or
+            (Op = '<=') Or (Op = '>') Or (Op = '>=') Then
     Begin
+      IsStrCmp := (ModeKindOf(Res.ModeIdx) = MK_STRING);
+      If IsStrCmp Then
+        EmitInstr('CALL   ' + A68_RT_PFX + 'STRCMP')
+      Else
+        EmitInstr('CMP    AX, BX');
       LblSkip := LabelGen;
       LblEnd  := LabelGen;
-      EmitInstr('CMP    AX, BX');
-      EmitInstr('JE     ' + LblSkip);
-      EmitInstr('XOR    AX, AX');
-      EmitInstr('JMP    ' + LblEnd);
-      EmitLabel(LblSkip);
-      EmitInstr('MOV    AX, 1');
-      EmitLabel(LblEnd);
-      Res.ModeIdx := TY_IDX_BOOL;
-    End
-    Else If Op = '/=' Then
-    Begin
-      LblSkip := LabelGen;
-      LblEnd  := LabelGen;
-      EmitInstr('CMP    AX, BX');
-      EmitInstr('JNE    ' + LblSkip);
-      EmitInstr('XOR    AX, AX');
-      EmitInstr('JMP    ' + LblEnd);
-      EmitLabel(LblSkip);
-      EmitInstr('MOV    AX, 1');
-      EmitLabel(LblEnd);
-      Res.ModeIdx := TY_IDX_BOOL;
-    End
-    Else If Op = '<' Then
-    Begin
-      LblSkip := LabelGen;
-      LblEnd  := LabelGen;
-      EmitInstr('CMP    AX, BX');
-      EmitInstr('JL     ' + LblSkip);
-      EmitInstr('XOR    AX, AX');
-      EmitInstr('JMP    ' + LblEnd);
-      EmitLabel(LblSkip);
-      EmitInstr('MOV    AX, 1');
-      EmitLabel(LblEnd);
-      Res.ModeIdx := TY_IDX_BOOL;
-    End
-    Else If Op = '<=' Then
-    Begin
-      LblSkip := LabelGen;
-      LblEnd  := LabelGen;
-      EmitInstr('CMP    AX, BX');
-      EmitInstr('JLE    ' + LblSkip);
-      EmitInstr('XOR    AX, AX');
-      EmitInstr('JMP    ' + LblEnd);
-      EmitLabel(LblSkip);
-      EmitInstr('MOV    AX, 1');
-      EmitLabel(LblEnd);
-      Res.ModeIdx := TY_IDX_BOOL;
-    End
-    Else If Op = '>' Then
-    Begin
-      LblSkip := LabelGen;
-      LblEnd  := LabelGen;
-      EmitInstr('CMP    AX, BX');
-      EmitInstr('JG     ' + LblSkip);
-      EmitInstr('XOR    AX, AX');
-      EmitInstr('JMP    ' + LblEnd);
-      EmitLabel(LblSkip);
-      EmitInstr('MOV    AX, 1');
-      EmitLabel(LblEnd);
-      Res.ModeIdx := TY_IDX_BOOL;
-    End
-    Else If Op = '>=' Then
-    Begin
-      LblSkip := LabelGen;
-      LblEnd  := LabelGen;
-      EmitInstr('CMP    AX, BX');
-      EmitInstr('JGE    ' + LblSkip);
+      If Op = '=' Then
+        EmitInstr('JE     ' + LblSkip)
+      Else If Op = '/=' Then
+        EmitInstr('JNE    ' + LblSkip)
+      Else If Op = '<' Then
+        EmitInstr('JL     ' + LblSkip)
+      Else If Op = '<=' Then
+        EmitInstr('JLE    ' + LblSkip)
+      Else If Op = '>' Then
+        EmitInstr('JG     ' + LblSkip)
+      Else { >= }
+        EmitInstr('JGE    ' + LblSkip);
       EmitInstr('XOR    AX, AX');
       EmitInstr('JMP    ' + LblEnd);
       EmitLabel(LblSkip);
@@ -3486,8 +3464,22 @@ Begin
     Begin
       WarnMsg('COMPL non supporte sur 8086, partie IM ignoree');
     End
-    { ELEM UP DOWN LWB UPB : stubs pour tableaux }
-    Else If (Op = 'ELEM') Or (Op = 'UP') Or (Op = 'DOWN') Or
+    { AND bitwise (BITS mode - logique court-circuit traite plus haut) }
+    Else If Op = 'AND' Then
+      EmitInstr('AND    AX, BX')
+    { OR bitwise (BITS mode - logique court-circuit traite plus haut) }
+    Else If Op = 'OR' Then
+      EmitInstr('OR     AX, BX')
+    { ELEM : test de bit BX dans AX -> BOOL }
+    Else If Op = 'ELEM' Then
+    Begin
+      EmitInstr('MOV    CL, BL');
+      EmitInstr('SHR    AX, CL');
+      EmitInstr('AND    AX, 1');
+      Res.ModeIdx := TY_IDX_BOOL;
+    End
+    { UP DOWN LWB UPB : stubs pour tableaux }
+    Else If (Op = 'UP') Or (Op = 'DOWN') Or
             (Op = 'LWB') Or (Op = 'UPB') Then
     Begin
       WarnMsg(Op + ' : stub, traite comme NOP');
@@ -3498,11 +3490,73 @@ Begin
 End;
 
 { ---- ParseExpr : point d entree pour une expression ---------- }
-{ Appelle ParseFormula avec priorite minimale 1.                 }
+{ Appelle ParseFormula avec priorite minimale 1.
+  Gere egalement les operateurs d affectation composes :
+  +:= (plusab), -:= (minusab), *:= (timesab), /:= (divab).     }
 
 Procedure ParseExpr(Var Res : TExprVal);
+Var
+  AssignOp : TString;
+  Rhs      : TExprVal;
+  SIdx     : Integer;
+  S        : TString;
 Begin
   ParseFormula(1, Res);
+
+  { Operateurs d affectation composes : +:= -:= *:= /:= }
+  If (CurToken.Kind = TK_OP) And IsAssignOp(CurToken.Val) And
+     (CurToken.Val <> ':=') Then
+  Begin
+    AssignOp := CurToken.Val;
+    { L operande gauche doit etre une lvalue (variable) }
+    If (Res.Kind <> EK_MEM) Or (Res.SymIdx < 0) Then
+    Begin
+      CompileError('operande gauche de ' + AssignOp +
+                   ' doit etre une variable');
+      ParserAdvance;
+      ParseFormula(1, Rhs);
+      Exit;
+    End;
+    SIdx := Res.SymIdx;
+    { Charger la valeur actuelle de la variable }
+    ExprFlushToAX(Res);
+    EmitInstr('PUSH   AX');
+    ParserAdvance; { consommer l operateur compose }
+    ParseFormula(1, Rhs);
+    ExprFlushToAX(Rhs);
+    EmitInstr('MOV    BX, AX');
+    EmitInstr('POP    AX');
+    { Appliquer l operation }
+    If AssignOp = '+:=' Then
+      EmitInstr('ADD    AX, BX')
+    Else If AssignOp = '-:=' Then
+      EmitInstr('SUB    AX, BX')
+    Else If AssignOp = '*:=' Then
+      EmitInstr('IMUL   BX')
+    Else If AssignOp = '/:=' Then
+    Begin
+      EmitInstr('CWD');
+      EmitInstr('IDIV   BX');
+    End;
+    { Stocker le resultat dans la variable }
+    If SymTab[SIdx].ScopeLevel = 0 Then
+    Begin
+      If (ModeKindOf(SymTab[SIdx].ModeIdx) = MK_BOOL) Or
+         (ModeKindOf(SymTab[SIdx].ModeIdx) = MK_CHAR) Then
+        EmitInstr('MOV    [' + SymTab[SIdx].MangledName + '], AL')
+      Else
+        EmitInstr('MOV    [' + SymTab[SIdx].MangledName + '], AX');
+    End
+    Else
+    Begin
+      Str(SymTab[SIdx].Offset, S);
+      If SymTab[SIdx].Offset >= 0 Then
+        EmitInstr('MOV    [BP+' + S + '], AX')
+      Else
+        EmitInstr('MOV    [BP' + S + '], AX');
+    End;
+    Res.Kind := EK_AX;
+  End;
 End;
 
 { ============================================================
