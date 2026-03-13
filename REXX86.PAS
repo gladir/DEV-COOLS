@@ -278,7 +278,7 @@
               _RXRT_PARSEDELIM, _RXRT_PARSEPOS selon le template
             Affectation des resultats dans les variables cibles
 
-  TODO 17 - PROCEDURES ET FONCTIONS INTERNES
+  TODO 17 - PROCEDURES ET FONCTIONS INTERNES [IMPLEMENTE]
             ParseCallStmt : CALL nom [arg1, arg2, ...]
               Arguments passes par valeur (chaines)
               Convention d appel : empiler args droite a gauche + CALL
@@ -838,6 +838,11 @@ Procedure EmitBifRuntime;      Forward;
 (* TODO 16 - INSTRUCTION PARSE *)
 Procedure EmitParseRuntime;    Forward;
 Procedure ParseParseStmt;      Forward;
+
+(* TODO 17 - PROCEDURES ET FONCTIONS INTERNES *)
+Procedure ParseCallStmt;       Forward;
+Procedure ParseSignalStmt;     Forward;
+Procedure ParseProcKeyword;    Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -4306,6 +4311,8 @@ Begin
   DataAddBuffer('_RX_PARSEBUF', 256);             (* buffer resultat PARSE     *)
   DataAddWord('_RX_PARSEPOS', 0);                  (* position courante PARSE   *)
   DataAddWord('_RX_PARSESRC', 0);                  (* pointeur source PARSE     *)
+  (* TODO 17 - Buffer pour RESULT des procedures *)
+  DataAddBuffer('_RX_RESBUF', 256);               (* buffer RESULT procedure   *)
 End;
 
 (* ============================================================
@@ -5063,6 +5070,15 @@ Begin
   Res.ImmVal := 0;
   Res.Offset := -1;
   Res.SymIdx := -1;
+
+  (* TODO 17 : stocker le resultat dans _RX_RESBUF et RESULT *)
+  If Not IsBuiltinFunc(UName) Then
+  Begin
+    EmitInstr('MOV', 'SI, AX');
+    EmitInstr('LEA', 'DI, _RX_RESBUF');
+    EmitInstr('CALL', '_RXRT_STRCPY');
+    EmitInstr('LEA', 'AX, _RX_RESBUF');
+  End;
 End;
 
 { ============================================================
@@ -6987,6 +7003,187 @@ Begin
 
   LoopPop;
 End;
+
+{ ============================================================
+  TODO 17 - PROCEDURES ET FONCTIONS INTERNES [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- ParseCallStmt : parser CALL nom [arg1, arg2, ...] ------- *)
+(* CALL invoque une procedure interne definie par un label.         *)
+(* Arguments : evalues et empiles de droite a gauche (convention C) *)
+(* La valeur de retour (AX) est stockee dans _RX_RESBUF et la      *)
+(* variable speciale RESULT pointe dessus.                          *)
+Procedure ParseCallStmt;
+Var
+  ProcName : TString;
+  UName    : TString;
+  ArgCount : Integer;
+  Res      : TExprVal;
+  StackAdj : Integer;
+  I        : Integer;
+Begin
+  (* Sauter les EOL *)
+  While CurToken.Kind = TK_EOL Do
+    ParserAdvance;
+
+  (* Lire le nom de la procedure *)
+  If (CurToken.Kind <> TK_IDENT) And (CurToken.Kind <> TK_KEYWORD) Then
+  Begin
+    CompileError('nom de procedure attendu apres CALL');
+    Exit;
+  End;
+  ProcName := CurToken.Val;
+  UName := StrUpperCase(ProcName);
+  ParserAdvance;
+
+  EmitComment('CALL ' + UName);
+
+  (* Compter et empiler les arguments *)
+  ArgCount := 0;
+  While (CurToken.Kind <> TK_EOL) And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If ArgCount >= MAX_PARAM Then
+    Begin
+      CompileError('trop d''arguments pour CALL');
+      Exit;
+    End;
+    ParseExpr(Res);
+    ExprFlushToAX(Res);
+    EmitInstrA('PUSH', 'AX');
+    Inc(ArgCount);
+    (* Consommer virgule optionnelle *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+  End;
+
+  StackAdj := ArgCount * 2;
+
+  (* Verifier si c est une fonction integree connue *)
+  If IsBuiltinFunc(UName) Then
+  Begin
+    (* Dispatcher vers la fonction integree via ParseFuncCall *)
+    (* On a deja empile les args, il suffit d appeler la routine *)
+    EmitInstr('CALL', RX_BLT_PFX + SymNameClean(UName));
+  End
+  Else
+  Begin
+    (* Appel de procedure utilisateur *)
+    EmitInstr('CALL', RX_PROC_PFX + SymNameClean(UName));
+  End;
+
+  (* Nettoyer la pile des arguments *)
+  If StackAdj > 0 Then
+    EmitInstr('ADD', 'SP, ' + IntToStr(StackAdj));
+
+  (* Stocker la valeur de retour (AX) dans _RX_RESBUF *)
+  EmitInstr('MOV', 'SI, AX');
+  EmitInstr('LEA', 'DI, _RX_RESBUF');
+  EmitInstr('CALL', '_RXRT_STRCPY');
+
+  (* Mettre a jour la variable RESULT pour pointer sur _RX_RESBUF *)
+  I := VarAlloc('RESULT');
+  EmitInstr('LEA', 'AX, _RX_RESBUF');
+  VarStore(I);
+End;
+
+(* ---- ParseSignalStmt : parser SIGNAL nom ---------------------- *)
+(* SIGNAL effectue un saut inconditionnel vers un label.            *)
+(* Pas de retour : equivalent a un GOTO.                            *)
+Procedure ParseSignalStmt;
+Var
+  LblName : TString;
+  UName   : TString;
+Begin
+  (* Sauter les EOL *)
+  While CurToken.Kind = TK_EOL Do
+    ParserAdvance;
+
+  If (CurToken.Kind <> TK_IDENT) And (CurToken.Kind <> TK_KEYWORD) Then
+  Begin
+    CompileError('nom de label attendu apres SIGNAL');
+    Exit;
+  End;
+
+  LblName := CurToken.Val;
+  UName := StrUpperCase(LblName);
+  ParserAdvance;
+
+  EmitComment('SIGNAL ' + UName);
+
+  (* Mettre a jour SIGL avec le numero de ligne courant *)
+  EmitInstr('MOV', 'WORD PTR _RX_SIGL, ' + IntToStr(CurToken.Line));
+
+  (* Saut inconditionnel vers le label *)
+  EmitRaw('        JMP     ' + RX_PROC_PFX + SymNameClean(UName));
+End;
+
+(* ---- ParseProcKeyword : parser PROCEDURE [EXPOSE var1 var2 ...] *)
+(* PROCEDURE definit une portee locale pour les variables.           *)
+(* EXPOSE liste les variables du scope parent accessibles ici.       *)
+(* Doit etre le premier mot apres un label : label: PROCEDURE        *)
+Procedure ParseProcKeyword;
+Var
+  VarName : TString;
+  Idx     : Integer;
+Begin
+  EmitComment('PROCEDURE');
+
+  (* Entrer dans un nouveau scope *)
+  Inc(CurFnDepth);
+  CurFnRetLbl := LabelGen;
+  CurFnName   := '';  (* sera mis a jour par l appelant *)
+  CurFrameSize := 0;
+
+  SymEnterScope;
+
+  (* Verifier s il y a EXPOSE *)
+  While CurToken.Kind = TK_EOL Do
+    ParserAdvance;
+
+  If (CurToken.Kind = TK_KEYWORD) And
+     (StrUpperCase(CurToken.Val) = 'EXPOSE') Then
+  Begin
+    ParserAdvance;
+    EmitComment('EXPOSE');
+
+    (* Lire la liste de variables exposees *)
+    While (CurToken.Kind = TK_IDENT) Or
+          ((CurToken.Kind = TK_KEYWORD) And
+           Not ((StrUpperCase(CurToken.Val) = 'SAY') Or
+                (StrUpperCase(CurToken.Val) = 'IF') Or
+                (StrUpperCase(CurToken.Val) = 'DO') Or
+                (StrUpperCase(CurToken.Val) = 'RETURN') Or
+                (StrUpperCase(CurToken.Val) = 'CALL') Or
+                (StrUpperCase(CurToken.Val) = 'SELECT') Or
+                (StrUpperCase(CurToken.Val) = 'PARSE') Or
+                (StrUpperCase(CurToken.Val) = 'EXIT'))) Do
+    Begin
+      If (CurToken.Kind <> TK_IDENT) Then Break;
+      VarName := StrUpperCase(CurToken.Val);
+      ParserAdvance;
+
+      (* Chercher la variable dans le scope parent (global) *)
+      Idx := SymFind(VarName);
+      If Idx < 0 Then
+      Begin
+        (* La variable n existe pas encore au niveau global, la creer *)
+        Idx := VarAlloc(VarName);
+      End;
+
+      (* Ajouter un alias dans le scope courant pointant vers *)
+      (* la meme variable globale : on reutilise le meme symbole *)
+      (* en marquant IsExposed = True *)
+      If Idx >= 0 Then
+      Begin
+        SymTab[Idx].IsExposed := True;
+      End;
+    End;
+  End;
+
+  (* Emettre le prologue de la procedure *)
+  EmitProlog;
+End;
+
 (* Gere les mots-cles, les affectations et les expressions comme  *)
 (* instructions.                                                   *)
 Procedure ParseStmt;
@@ -7001,11 +7198,33 @@ Begin
 
   If CurToken.Kind = TK_EOF Then Exit;
 
-  (* --- Labels : ignorer pour l instant (TODO futur) --- *)
+  (* --- Labels : point d entree pour CALL/SIGNAL (TODO 17) --- *)
   If CurToken.Kind = TK_LABEL Then
   Begin
-    EmitLabel('_RXL_' + SymNameClean(StrUpperCase(CurToken.Val)));
+    SaveName := StrUpperCase(CurToken.Val);
+    EmitLabel(RX_PROC_PFX + SymNameClean(SaveName));
     ParserAdvance;
+
+    (* Tous les labels sont des cibles potentielles de CALL.    *)
+    (* On incremente CurFnDepth pour que RETURN genere un RET.  *)
+    (* Si PROCEDURE suit, on aura en plus le prologue et le scope. *)
+    Inc(CurFnDepth);
+    CurFnRetLbl := LabelGen;
+    CurFnName   := SaveName;
+
+    (* Verifier si le label est suivi de PROCEDURE *)
+    While CurToken.Kind = TK_EOL Do
+      ParserAdvance;
+
+    If (CurToken.Kind = TK_KEYWORD) And
+       (StrUpperCase(CurToken.Val) = 'PROCEDURE') Then
+    Begin
+      ParserAdvance;
+      (* ParseProcKeyword va re-incrementer CurFnDepth, *)
+      (* donc on decremente d abord pour eviter le double comptage *)
+      Dec(CurFnDepth);
+      ParseProcKeyword;
+    End;
     Exit;
   End;
 
@@ -7019,6 +7238,22 @@ Begin
     Begin
       ParserAdvance;
       ParseSayStmt;
+      Exit;
+    End;
+
+    (* CALL nom [arg1, arg2, ...] (TODO 17) *)
+    If U = 'CALL' Then
+    Begin
+      ParserAdvance;
+      ParseCallStmt;
+      Exit;
+    End;
+
+    (* SIGNAL nom (TODO 17) *)
+    If U = 'SIGNAL' Then
+    Begin
+      ParserAdvance;
+      ParseSignalStmt;
       Exit;
     End;
 
@@ -7139,9 +7374,46 @@ Begin
       Begin
         ParseExpr(Res);
         ExprFlushToAX(Res);
+      End
+      Else
+      Begin
+        (* RETURN sans valeur : retourner chaine vide *)
+        EmitInstr('LEA', 'AX, _RX_NULL_STR');
       End;
-      (* RETURN simple : revenir a l appelant (stub) *)
-      EmitRaw('        JMP     _RXP_Exit');
+
+      (* Si dans une procedure/label appele : emettre epilogue et RET *)
+      If CurFnDepth > 0 Then
+      Begin
+        EmitLabel(CurFnRetLbl);
+        If CurScope > 0 Then
+        Begin
+          (* PROCEDURE : epilogue complet (POP BP + RET) *)
+          EmitEpilog;
+          SymLeaveScope;
+        End
+        Else
+        Begin
+          (* Label simple sans PROCEDURE : juste RET *)
+          EmitRaw('        RET');
+        End;
+        Dec(CurFnDepth);
+        CurFrameSize := 0;
+        CurFnRetLbl  := '';
+        CurFnName    := '';
+      End
+      Else
+      Begin
+        (* RETURN au niveau global : equivalent a EXIT *)
+        EmitRaw('        JMP     _RXP_Exit');
+      End;
+      Exit;
+    End;
+
+    (* PROCEDURE [EXPOSE ...] : peut apparaitre sans label (rare) *)
+    If U = 'PROCEDURE' Then
+    Begin
+      ParserAdvance;
+      ParseProcKeyword;
       Exit;
     End;
 
