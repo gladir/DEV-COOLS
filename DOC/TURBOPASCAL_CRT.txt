@@ -1,0 +1,761 @@
+==============================================================================
+  TURBO PASCAL 7.0 - Unite CRT (Console et Clavier)
+==============================================================================
+
+  Ce document decrit le contenu de l'unite CRT de Turbo Pascal 7.0.
+  Cette unite fournit des routines de gestion de l'ecran texte, du
+  clavier, du son et des fenetres texte. Elle doit etre declaree
+  dans la clause Uses :
+
+    Uses Crt;
+
+  Directives de compilation de l'unite :
+    {$D-}  Pas d'information de debogage
+    {$I-}  Pas de verification I/O
+    {$S-}  Pas de verification de pile
+
+  En mode DOS 16 bits, CRT accede directement a la memoire video
+  ($B800:0000 pour couleur, $B000:0000 pour monochrome).
+  En Win32, les fonctions sont emulees via l'API Console Windows.
+
+==============================================================================
+  1. CONSTANTES - MODES CRT
+==============================================================================
+
+  Les constantes de mode definissent le type d'affichage texte.
+  Elles sont utilisees avec la procedure TextMode.
+
+  Const
+    BW40    = 0;     { Adaptateur couleur, 40x25, noir/blanc      }
+    CO40    = 1;     { Adaptateur couleur, 40x25, couleur          }
+    BW80    = 2;     { Adaptateur couleur, 80x25, noir/blanc      }
+    CO80    = 3;     { Adaptateur couleur, 80x25, couleur          }
+    Mono    = 7;     { Adaptateur monochrome, 80x25                }
+    Font8x8 = 256;  { Police 8x8 supplementaire en ROM (EGA/VGA)  }
+
+  Constantes de compatibilite Turbo Pascal 3.0 :
+
+    C40 = CO40;      { Alias pour CO40 }
+    C80 = CO80;      { Alias pour CO80 }
+
+  Le mode par defaut au demarrage est CO80 (80 colonnes, 25 lignes,
+  couleur). Font8x8 peut etre combine avec OR pour obtenir 43 ou
+  50 lignes sur EGA/VGA : TextMode(CO80 + Font8x8).
+
+  NOTE : en Win32, les modes 40 colonnes ne sont generalement pas
+  supportes. Le mode standard est 80x25 via la console Windows.
+
+==============================================================================
+  2. CONSTANTES - COULEURS
+==============================================================================
+
+  Les couleurs sont codees sur 4 bits (0-15) pour le premier plan
+  et 3 bits (0-7) pour l'arriere-plan. L'attribut complet est :
+
+    TextAttr = (Arriere-plan Shl 4) Or Premier_plan Or Blink
+
+  2.1 Couleurs de premier plan ET d'arriere-plan (0-7)
+  -----------------------------------------------------
+
+  Const
+    Black      = 0;    { Noir         }
+    Blue       = 1;    { Bleu         }
+    Green      = 2;    { Vert         }
+    Cyan       = 3;    { Cyan         }
+    Red        = 4;    { Rouge        }
+    Magenta    = 5;    { Magenta      }
+    Brown      = 6;    { Marron       }
+    LightGray  = 7;    { Gris clair   }
+
+  Ces 8 couleurs peuvent etre utilisees a la fois pour le premier
+  plan (TextColor) et pour l'arriere-plan (TextBackground).
+
+  2.2 Couleurs de premier plan uniquement (8-15)
+  ------------------------------------------------
+
+  Const
+    DarkGray      = 8;    { Gris fonce       }
+    LightBlue     = 9;    { Bleu clair       }
+    LightGreen    = 10;   { Vert clair       }
+    LightCyan     = 11;   { Cyan clair       }
+    LightRed      = 12;   { Rouge clair      }
+    LightMagenta  = 13;   { Magenta clair    }
+    Yellow        = 14;   { Jaune            }
+    White         = 15;   { Blanc            }
+
+  Ces couleurs ne peuvent etre utilisees que pour le premier plan.
+  L'arriere-plan n'accepte que les valeurs 0-7.
+
+  2.3 Attribut de clignotement
+  -----------------------------
+
+  Const
+    Blink = 128;   { Clignotement du texte }
+
+  Peut etre ajoute a la couleur du premier plan par OR :
+    TextColor(Red + Blink);   { texte rouge clignotant }
+
+  NOTE : le clignotement ne fonctionne pas sur tous les systemes.
+  En Win32, il est generalement ignore par la console.
+
+  2.4 Encodage de l'attribut texte (TextAttr)
+  ---------------------------------------------
+
+    Bit 7     : Clignotement (Blink)
+    Bits 6-4  : Couleur d'arriere-plan (0-7)
+    Bits 3-0  : Couleur de premier plan (0-15)
+
+    Exemples :
+      $07 = LightGray sur Black      (defaut)
+      $1E = Yellow sur Blue
+      $4F = White sur Red
+      $70 = Black sur LightGray      (video inverse)
+      $8F = White sur Black + Blink
+
+    Calcul : TextAttr := (Background Shl 4) Or Foreground;
+    Avec clignotement : TextAttr := (Background Shl 4) Or Foreground Or $80;
+
+==============================================================================
+  3. VARIABLES
+==============================================================================
+
+  Var
+    CheckBreak  : Boolean;   { Active la detection de Ctrl+Break     }
+    CheckEOF    : Boolean;   { Active la detection de Ctrl+Z (EOF)   }
+    DirectVideo : Boolean;   { Active l'ecriture directe en memoire  }
+    CheckSnow   : Boolean;   { Active le filtre anti-neige CGA       }
+    LastMode    : Word;      { Dernier mode texte utilise             }
+    TextAttr    : Byte;      { Attribut de texte courant              }
+    WindMin     : Word;      { Coin superieur gauche de la fenetre    }
+    WindMax     : Word;      { Coin inferieur droit de la fenetre     }
+
+  3.1 CheckBreak (defaut : True)
+  -------------------------------
+  Quand True, une pression sur Ctrl+Break interrompt le programme.
+  Mettre a False pour ignorer Ctrl+Break :
+    CheckBreak := False;
+
+  3.2 CheckEOF (defaut : False)
+  ------------------------------
+  Quand True, Ctrl+Z est interprete comme fin de fichier (EOF)
+  lors de la lecture depuis la console. Par defaut, Ctrl+Z est
+  traite comme un caractere normal.
+
+  3.3 DirectVideo (defaut : True)
+  --------------------------------
+  Quand True, Write et WriteLn ecrivent directement dans la memoire
+  video ($B800:0000) au lieu de passer par les appels BIOS. C'est
+  beaucoup plus rapide mais ne fonctionne pas via connexion serie.
+  NOTE : en Win32, cette variable est ignoree (utilise l'API Console).
+
+  3.4 CheckSnow (defaut : True sur CGA)
+  ---------------------------------------
+  Quand True, les ecritures en memoire video attendent le retrace
+  vertical pour eviter la "neige" sur les anciennes cartes CGA.
+  Inutile sur EGA, VGA et Win32.
+
+  3.5 LastMode
+  -------------
+  Contient le mode texte actif au moment de l'initialisation de CRT.
+  Utilise pour restaurer le mode original :
+    TextMode(LastMode);
+
+  3.6 TextAttr
+  -------------
+  Attribut de couleur utilise par toutes les operations d'ecriture.
+  Modifie par TextColor, TextBackground, LowVideo, HighVideo,
+  NormVideo. Peut aussi etre assigne directement :
+    TextAttr := Yellow + Blue * 16;  { jaune sur bleu }
+
+  3.7 WindMin et WindMax
+  -----------------------
+  Definissent la fenetre texte active. Format encode :
+    WindMin := Lo(X1-1) Or (Hi(Y1-1) Shl 8);
+    WindMax := Lo(X2-1) Or (Hi(Y2-1) Shl 8);
+
+  Modifiees par Window(). Les coordonnees GotoXY et WhereX/WhereY
+  sont relatives a cette fenetre.
+
+  Extraction des coordonnees :
+    X1 := Lo(WindMin) + 1;   Y1 := Hi(WindMin) + 1;
+    X2 := Lo(WindMax) + 1;   Y2 := Hi(WindMax) + 1;
+
+==============================================================================
+  4. PROCEDURES ET FONCTIONS - CLAVIER
+==============================================================================
+
+  4.1 Lecture du clavier
+  -----------------------
+
+  Function KeyPressed : Boolean;
+    - Retourne True si une touche est disponible dans le tampon
+    - Ne retire PAS la touche du tampon
+    - Utilisee pour tester sans bloquer l'execution
+    - Exemple :
+        While Not KeyPressed Do
+          { ... animations ... };
+        Ch := ReadKey;
+
+  Function ReadKey : Char;
+    - Attend et retourne un caractere du clavier
+    - Le caractere N'EST PAS affiche a l'ecran (pas d'echo)
+    - Bloquante : attend jusqu'a ce qu'une touche soit pressee
+    - Pour les touches speciales (F1-F12, fleches, etc.) :
+        Premier appel retourne #0 (Chr(0))
+        Deuxieme appel retourne le code etendu (scan code)
+    - Exemple simple :
+        Ch := ReadKey;
+        WriteLn('Vous avez tape : ', Ch);
+    - Exemple touches speciales :
+        Ch := ReadKey;
+        If Ch = #0 Then
+        Begin
+          Ch := ReadKey;  { lire le scan code }
+          Case Ord(Ch) Of
+            59 : WriteLn('F1');
+            60 : WriteLn('F2');
+            72 : WriteLn('Fleche Haut');
+            75 : WriteLn('Fleche Gauche');
+            77 : WriteLn('Fleche Droite');
+            80 : WriteLn('Fleche Bas');
+          End;
+        End;
+
+  Codes etendus des touches speciales (second octet apres #0) :
+
+    Touche        | Code  | Touche         | Code
+    --------------+-------+----------------+------
+    F1            |  59   | Shift+F1       |  84
+    F2            |  60   | Shift+F2       |  85
+    F3            |  61   | Shift+F3       |  86
+    F4            |  62   | Shift+F4       |  87
+    F5            |  63   | Shift+F5       |  88
+    F6            |  64   | Shift+F6       |  89
+    F7            |  65   | Shift+F7       |  90
+    F8            |  66   | Shift+F8       |  91
+    F9            |  67   | Shift+F9       |  92
+    F10           |  68   | Shift+F10      |  93
+    Home          |  71   | Ctrl+F1        |  94
+    Fleche Haut   |  72   | Ctrl+F2        |  95
+    Page Up       |  73   | Ctrl+F3        |  96
+    Fleche Gauche |  75   | Ctrl+F4        |  97
+    Fleche Droite |  77   | Ctrl+F5        |  98
+    End           |  79   | Ctrl+F6        |  99
+    Fleche Bas    |  80   | Ctrl+F7        | 100
+    Page Down     |  81   | Ctrl+F8        | 101
+    Insert        |  82   | Ctrl+F9        | 102
+    Delete        |  83   | Ctrl+F10       | 103
+    Alt+F1        | 104   | Ctrl+Home      | 119
+    Alt+F2        | 105   | Ctrl+End       | 117
+    Alt+F3        | 106   | Ctrl+PgUp      | 132
+    Alt+F4        | 107   | Ctrl+PgDn      | 118
+    Alt+F5        | 108   | Ctrl+Gauche    | 115
+    Alt+F6        | 109   | Ctrl+Droite    | 116
+    Alt+F7        | 110   |
+    Alt+F8        | 111   |
+    Alt+F9        | 112   |
+    Alt+F10       | 113   |
+
+  4.2 Assignation CRT
+  ---------------------
+
+  Procedure AssignCrt(Var F : Text);
+    - Associe un fichier texte a la sortie CRT
+    - Apres Rewrite(F), les Write/WriteLn sur F utilisent CRT
+    - Plus rapide que la sortie standard car bypass le DOS
+    - Utile pour rediriger la sortie vers la console CRT
+    - Exemple :
+        Var F : Text;
+        AssignCrt(F);
+        Rewrite(F);
+        WriteLn(F, 'Sortie via CRT');
+        Close(F);
+
+==============================================================================
+  5. PROCEDURES ET FONCTIONS - ECRAN
+==============================================================================
+
+  5.1 Mode texte
+  ---------------
+
+  Procedure TextMode(Mode : Integer);
+    - Change le mode texte de l'ecran
+    - Efface l'ecran et reinitialise la fenetre
+    - TextAttr est remis a $07 (LightGray sur Black)
+    - WindMin/WindMax sont remis a plein ecran
+    - LastMode est mis a jour avec le mode precedent
+    - Modes valides : BW40, CO40, BW80, CO80, Mono
+    - Peut etre combine avec Font8x8 :
+        TextMode(CO80 + Font8x8);  { 80x50 sur VGA }
+    - Exemple : TextMode(CO80);
+
+  5.2 Fenetre texte
+  ------------------
+
+  Procedure Window(X1, Y1, X2, Y2 : Byte);
+    - Definit une fenetre texte (zone de sortie)
+    - X1,Y1 = coin superieur gauche (1,1 = haut gauche ecran)
+    - X2,Y2 = coin inferieur droit
+    - Toutes les coordonnees deviennent relatives a la fenetre
+    - Le curseur est deplace en (1,1) de la fenetre
+    - Le defilement se fait a l'interieur de la fenetre
+    - Exemple :
+        Window(10, 5, 70, 20);  { fenetre de 61x16 }
+        ClrScr;                 { efface seulement la fenetre }
+        WriteLn('Dans la fenetre');
+    - Pour restaurer le plein ecran :
+        Window(1, 1, 80, 25);
+
+  5.3 Positionnement du curseur
+  ------------------------------
+
+  Procedure GotoXY(X, Y : Byte);
+    - Deplace le curseur a la position (X, Y)
+    - Coordonnees relatives a la fenetre active
+    - X = colonne (1 = gauche), Y = ligne (1 = haut)
+    - Exemple : GotoXY(1, 1);  { coin superieur gauche }
+
+  Function WhereX : Byte;
+    - Retourne la colonne courante du curseur (1-based)
+    - Relative a la fenetre active
+    - Exemple : Col := WhereX;
+
+  Function WhereY : Byte;
+    - Retourne la ligne courante du curseur (1-based)
+    - Relative a la fenetre active
+    - Exemple : Lig := WhereY;
+
+  5.4 Effacement
+  ----------------
+
+  Procedure ClrScr;
+    - Efface la fenetre texte active
+    - Remplit avec des espaces et l'attribut TextAttr courant
+    - Deplace le curseur en (1, 1) de la fenetre
+    - Si aucune fenetre n'est definie, efface tout l'ecran
+    - Exemple :
+        TextBackground(Blue);
+        ClrScr;  { ecran bleu }
+
+  Procedure ClrEol;
+    - Efface depuis le curseur jusqu'a la fin de la ligne
+    - Remplit avec des espaces et l'attribut TextAttr courant
+    - Le curseur ne bouge pas
+    - Exemple :
+        GotoXY(10, 5);
+        ClrEol;  { efface colonnes 10 a 80 sur la ligne 5 }
+
+  5.5 Insertion et suppression de lignes
+  ----------------------------------------
+
+  Procedure InsLine;
+    - Insere une ligne vide a la position du curseur
+    - La ligne courante et celles en dessous descendent d'une ligne
+    - La derniere ligne de la fenetre est perdue
+    - La nouvelle ligne est remplie avec TextAttr courant
+    - Le curseur ne bouge pas
+    - Exemple :
+        GotoXY(1, 5);
+        InsLine;  { insere une ligne vide en ligne 5 }
+
+  Procedure DelLine;
+    - Supprime la ligne a la position du curseur
+    - Les lignes en dessous remontent d'une ligne
+    - La derniere ligne de la fenetre est remplie de blancs
+    - Le curseur ne bouge pas
+    - Exemple :
+        GotoXY(1, 5);
+        DelLine;  { supprime la ligne 5 }
+
+==============================================================================
+  6. PROCEDURES - COULEURS ET ATTRIBUTS
+==============================================================================
+
+  Procedure TextColor(Color : Byte);
+    - Change la couleur du premier plan (0-15)
+    - Peut inclure Blink (128) : TextColor(Red + Blink)
+    - Modifie les bits 0-3 et 7 de TextAttr
+    - N'affecte pas le texte deja affiche
+    - Exemple : TextColor(Yellow);
+
+  Procedure TextBackground(Color : Byte);
+    - Change la couleur d'arriere-plan (0-7)
+    - Modifie les bits 4-6 de TextAttr
+    - N'affecte pas le texte deja affiche
+    - Exemple : TextBackground(Blue);
+
+  Procedure LowVideo;
+    - Desactive le bit d'intensite du premier plan
+    - Remet les couleurs 8-15 a 0-7 (version sombre)
+    - Equivalent a : TextAttr := TextAttr And $F7;
+    - Exemple :
+        TextColor(White);   { couleur 15 }
+        LowVideo;           { devient LightGray (couleur 7) }
+
+  Procedure HighVideo;
+    - Active le bit d'intensite du premier plan
+    - Force les couleurs 0-7 vers 8-15 (version claire)
+    - Equivalent a : TextAttr := TextAttr Or $08;
+    - Exemple :
+        TextColor(Red);     { couleur 4 }
+        HighVideo;          { devient LightRed (couleur 12) }
+
+  Procedure NormVideo;
+    - Restaure l'attribut texte normal (celui du demarrage)
+    - Remet TextAttr a la valeur initiale lors du lancement
+    - Typiquement $07 (LightGray sur Black)
+    - Exemple :
+        TextColor(Yellow);
+        TextBackground(Blue);
+        WriteLn('Colore');
+        NormVideo;
+        WriteLn('Normal');
+
+==============================================================================
+  7. PROCEDURES - SON
+==============================================================================
+
+  Procedure Sound(Hz : Word);
+    - Active le haut-parleur interne a la frequence Hz (en Hertz)
+    - Le son continue indefiniment jusqu'a l'appel de NoSound
+    - Sur PC, utilise le timer 8253 canal 2
+    - Exemple : Sound(440);  { La 440 Hz }
+
+  Procedure NoSound;
+    - Desactive le haut-parleur interne
+    - Doit etre appele apres Sound pour arreter le son
+    - Exemple :
+        Sound(1000);
+        Delay(500);    { attendre 500 ms }
+        NoSound;
+
+  NOTE : en Win32, Sound peut etre emule par l'API Beep(Hz, Duration)
+  mais le comportement asynchrone (son continu) n'est pas toujours
+  reproduit. La paire Sound/Delay/NoSound est le patron typique.
+
+==============================================================================
+  8. PROCEDURE - TEMPORISATION
+==============================================================================
+
+  Procedure Delay(MS : Word);
+    - Attend MS millisecondes environ
+    - Bloquante : le programme est suspendu pendant la duree
+    - Precision limitee (depend du timer systeme)
+    - En DOS, utilise une boucle calibree sur le timer 8253
+    - En Win32, peut etre emule par Sleep(MS)
+    - MS est un Word : valeur maximale = 65535 ms (~65 secondes)
+    - Exemple :
+        WriteLn('Debut');
+        Delay(2000);        { attendre 2 secondes }
+        WriteLn('Fin');
+
+==============================================================================
+  9. FREQUENCES DES NOTES MUSICALES
+==============================================================================
+
+  Pour utiliser Sound() avec des notes musicales, voici les
+  frequences standard (La 440 Hz, temperament egal) :
+
+  Note    | Octave 3 | Octave 4 | Octave 5 | Octave 6
+  --------+----------+----------+----------+---------
+  Do (C)  |   131    |   262    |   523    |  1047
+  Re (D)  |   147    |   294    |   587    |  1175
+  Mi (E)  |   165    |   330    |   659    |  1319
+  Fa (F)  |   175    |   349    |   698    |  1397
+  Sol (G) |   196    |   392    |   784    |  1568
+  La (A)  |   220    |   440    |   880    |  1760
+  Si (B)  |   247    |   494    |   988    |  1976
+
+  Exemple - gamme de Do majeur :
+
+    Const Notes : Array[1..8] Of Word =
+      (262, 294, 330, 349, 392, 440, 494, 523);
+    Var I : Integer;
+    Begin
+      For I := 1 To 8 Do
+      Begin
+        Sound(Notes[I]);
+        Delay(200);
+      End;
+      NoSound;
+    End.
+
+==============================================================================
+  10. TABLEAU DES ATTRIBUTS COULEUR COURANTS
+==============================================================================
+
+  TextAttr | Premier plan  | Arriere-plan  | Aspect
+  ---------+---------------+---------------+----------------------------
+    $07    | LightGray (7) | Black (0)     | Gris sur noir (defaut)
+    $0F    | White (15)    | Black (0)     | Blanc sur noir
+    $1E    | Yellow (14)   | Blue (1)      | Jaune sur bleu
+    $1F    | White (15)    | Blue (1)      | Blanc sur bleu
+    $2A    | LightGreen(10)| Green (2)     | Vert clair sur vert
+    $4E    | Yellow (14)   | Red (4)       | Jaune sur rouge
+    $4F    | White (15)    | Red (4)       | Blanc sur rouge
+    $70    | Black (0)     | LightGray (7) | Noir sur gris (inverse)
+    $74    | Red (4)       | LightGray (7) | Rouge sur gris
+
+==============================================================================
+  11. EXEMPLES D'UTILISATION
+==============================================================================
+
+  11.1 Programme de base avec CRT
+  --------------------------------
+
+  Program DemoCrt;
+  Uses Crt;
+  Var Ch : Char;
+  Begin
+    ClrScr;
+    TextColor(Yellow);
+    TextBackground(Blue);
+    ClrScr;
+    GotoXY(30, 12);
+    WriteLn('Appuyez sur une touche...');
+    Ch := ReadKey;
+    NormVideo;
+    ClrScr;
+  End.
+
+  11.2 Fenetre avec bordure
+  --------------------------
+
+  Program DemoFenetre;
+  Uses Crt;
+  Var I : Integer;
+  Begin
+    ClrScr;
+    { Dessiner la bordure }
+    TextColor(White);
+    TextBackground(Blue);
+    For I := 10 To 70 Do
+    Begin
+      GotoXY(I, 5);  Write(Chr(196));     { ligne horizontale haut }
+      GotoXY(I, 20); Write(Chr(196));     { ligne horizontale bas  }
+    End;
+    For I := 5 To 20 Do
+    Begin
+      GotoXY(10, I); Write(Chr(179));     { ligne verticale gauche }
+      GotoXY(70, I); Write(Chr(179));     { ligne verticale droite }
+    End;
+    GotoXY(10, 5);  Write(Chr(218));      { coin haut gauche       }
+    GotoXY(70, 5);  Write(Chr(191));      { coin haut droit        }
+    GotoXY(10, 20); Write(Chr(192));      { coin bas gauche        }
+    GotoXY(70, 20); Write(Chr(217));      { coin bas droit         }
+    { Contenu de la fenetre }
+    Window(11, 6, 69, 19);
+    ClrScr;
+    WriteLn('Contenu de la fenetre');
+    ReadKey;
+    Window(1, 1, 80, 25);
+    NormVideo;
+    ClrScr;
+  End.
+
+  11.3 Attente avec animation
+  ----------------------------
+
+  Program DemoAnim;
+  Uses Crt;
+  Const Spinner : Array[1..4] Of Char = ('|', '/', '-', '\');
+  Var I : Integer;
+  Begin
+    ClrScr;
+    Write('Chargement... ');
+    I := 1;
+    While Not KeyPressed Do
+    Begin
+      Write(Spinner[I], #8);   { afficher puis reculer }
+      Inc(I);
+      If I > 4 Then I := 1;
+      Delay(100);
+    End;
+    ReadKey;  { consommer la touche }
+    WriteLn('Termine !');
+  End.
+
+  11.4 Son et melodie
+  ---------------------
+
+  Program DemoSon;
+  Uses Crt;
+  Begin
+    WriteLn('Bip !');
+    Sound(1000);
+    Delay(200);
+    NoSound;
+    Delay(100);
+    Sound(1500);
+    Delay(200);
+    NoSound;
+    WriteLn('Fin');
+  End.
+
+==============================================================================
+  12. NOTES D'IMPLEMENTATION POUR TPCW32
+==============================================================================
+
+  12.1 Emulation en Win32
+  ------------------------
+
+  En Win32, l'unite CRT n'a pas acces direct a la memoire video.
+  Les fonctions sont emulees via l'API Console Windows :
+
+  Fonction CRT        | API Win32 correspondante
+  ---------------------+------------------------------------------
+  ClrScr              | FillConsoleOutputCharacterA +
+                      | FillConsoleOutputAttribute +
+                      | SetConsoleCursorPosition
+  ClrEol              | FillConsoleOutputCharacterA +
+                      | FillConsoleOutputAttribute
+  GotoXY              | SetConsoleCursorPosition
+  WhereX / WhereY     | GetConsoleScreenBufferInfo
+  TextColor           | SetConsoleTextAttribute
+  TextBackground      | SetConsoleTextAttribute
+  KeyPressed          | PeekConsoleInputA / GetNumberOfConsoleInputEvents
+  ReadKey             | ReadConsoleInputA
+  Sound               | Beep (kernel32.dll)
+  NoSound             | (rien, Beep est synchrone en Win32)
+  Delay               | Sleep (kernel32.dll)
+  Window              | SetConsoleWindowInfo / ScrollConsoleScreenBuffer
+  InsLine / DelLine   | ScrollConsoleScreenBufferA
+  TextMode            | SetConsoleScreenBufferSize
+
+  12.2 Variables en memoire
+  --------------------------
+
+  Les variables CRT sont stockees dans le segment de donnees :
+
+    CHECKBREAK  DD 1           ; Boolean (True par defaut)
+    CHECKEOF    DD 0           ; Boolean (False par defaut)
+    DIRECTVIDEO DD 1           ; Boolean (True par defaut)
+    CHECKSNOW   DD 0           ; Boolean (False en Win32)
+    LASTMODE    DD 3           ; Word (CO80 par defaut)
+    TEXTATTR    DD 7           ; Byte ($07 = LightGray/Black)
+    WINDMIN     DD 0           ; Word (0,0 = encode de 1,1)
+    WINDMAX     DD 184Fh       ; Word (79,24 = 80x25)
+
+  12.3 Mapping des couleurs CRT vers Console Windows
+  ----------------------------------------------------
+
+  Les couleurs CRT (0-15) mappent directement vers les attributs
+  de la console Windows car l'encodage est identique :
+
+    CRT Color  | Valeur | Win32 Console Attribute
+    -----------+--------+-------------------------
+    Black      |   0    | 0
+    Blue       |   1    | FOREGROUND_BLUE (1)
+    Green      |   2    | FOREGROUND_GREEN (2)
+    Cyan       |   3    | FOREGROUND_GREEN | FOREGROUND_BLUE (3)
+    Red        |   4    | FOREGROUND_RED (4)
+    Magenta    |   5    | FOREGROUND_RED | FOREGROUND_BLUE (5)
+    Brown      |   6    | FOREGROUND_RED | FOREGROUND_GREEN (6)
+    LightGray  |   7    | FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE (7)
+    DarkGray   |   8    | FOREGROUND_INTENSITY (8)
+    LightBlue  |   9    | FOREGROUND_BLUE | FOREGROUND_INTENSITY (9)
+    LightGreen |  10    | FOREGROUND_GREEN | FOREGROUND_INTENSITY (10)
+    LightCyan  |  11    | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY
+    LightRed   |  12    | FOREGROUND_RED | FOREGROUND_INTENSITY (12)
+    LightMagenta| 13    | FOREGROUND_RED | FOREGROUND_BLUE | FOREGROUND_INTENSITY
+    Yellow     |  14    | FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY
+    White      |  15    | Toutes les composantes + INTENSITY (15)
+
+  L'arriere-plan utilise les memes bits decales de 4 :
+    BACKGROUND_BLUE = $10, BACKGROUND_GREEN = $20, etc.
+
+==============================================================================
+  13. INTERFACE COMPLETE
+==============================================================================
+
+  Unit Crt;
+
+  {$D-,I-,S-}
+
+  INTERFACE
+
+  Const
+    { Modes CRT }
+    BW40     = 0;
+    CO40     = 1;
+    BW80     = 2;
+    CO80     = 3;
+    Mono     = 7;
+    Font8x8  = 256;
+
+    { Compatibilite TP 3.0 }
+    C40 = CO40;
+    C80 = CO80;
+
+    { Couleurs premier plan et arriere-plan }
+    Black        = 0;
+    Blue         = 1;
+    Green        = 2;
+    Cyan         = 3;
+    Red          = 4;
+    Magenta      = 5;
+    Brown        = 6;
+    LightGray    = 7;
+
+    { Couleurs premier plan uniquement }
+    DarkGray     = 8;
+    LightBlue    = 9;
+    LightGreen   = 10;
+    LightCyan    = 11;
+    LightRed     = 12;
+    LightMagenta = 13;
+    Yellow       = 14;
+    White        = 15;
+
+    { Clignotement }
+    Blink = 128;
+
+  Var
+    CheckBreak  : Boolean;
+    CheckEOF    : Boolean;
+    DirectVideo : Boolean;
+    CheckSnow   : Boolean;
+    LastMode    : Word;
+    TextAttr    : Byte;
+    WindMin     : Word;
+    WindMax     : Word;
+
+  { Clavier }
+  Procedure AssignCrt(Var F : Text);
+  Function  KeyPressed : Boolean;
+  Function  ReadKey : Char;
+
+  { Mode et fenetre }
+  Procedure TextMode(Mode : Integer);
+  Procedure Window(X1, Y1, X2, Y2 : Byte);
+
+  { Curseur }
+  Procedure GotoXY(X, Y : Byte);
+  Function  WhereX : Byte;
+  Function  WhereY : Byte;
+
+  { Effacement }
+  Procedure ClrScr;
+  Procedure ClrEol;
+
+  { Lignes }
+  Procedure InsLine;
+  Procedure DelLine;
+
+  { Couleurs et attributs }
+  Procedure TextColor(Color : Byte);
+  Procedure TextBackground(Color : Byte);
+  Procedure LowVideo;
+  Procedure HighVideo;
+  Procedure NormVideo;
+
+  { Temporisation et son }
+  Procedure Delay(MS : Word);
+  Procedure Sound(Hz : Word);
+  Procedure NoSound;
+
+  IMPLEMENTATION
+
+==============================================================================
+  FIN DU DOCUMENT
+==============================================================================
