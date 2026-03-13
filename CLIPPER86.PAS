@@ -314,7 +314,7 @@
               du contexte englobant (fermeture / closure simplifiee)
               -> stocker les pointeurs vers les variables capturees dans le descripteur
 
-  TODO 19 - FICHIERS DBF (BASE DE DONNEES)
+  TODO 19 - FICHIERS DBF (BASE DE DONNEES) [IMPLEMENTE]
             USE nomFichier [ALIAS cAlias] [NEW] [SHARED/EXCLUSIVE] :
               Ouvrir un fichier .DBF
               -> CALL _CLRT_DBOPEN(SI=nom, AL=mode) -> handle dans work area
@@ -527,6 +527,9 @@ Const
   MAX_HEAP_SIZE = 4096;  { taille du heap en octets pour tableaux }
   MAX_ARRAY_ELEM = 64;   { nombre maximum d elements par tableau  }
   MAX_STR_BUF  = 256;   { taille buffer pour operations chaines }
+  MAX_WORK_AREAS = 10;   { nombre maximum de work areas DBF       }
+  MAX_DBF_REC_SIZE = 512; { taille max d un enregistrement DBF    }
+  MAX_DBF_FIELDS = 32;   { nombre max de champs par fichier DBF   }
 
   { Indices de types primitifs Clipper }
   TY_IDX_NIL    = 0;     { NIL : valeur non initialisee          }
@@ -739,6 +742,9 @@ Var
   { Code blocks (TODO 18) }
   CodeBlockCount : Integer;   { compteur de code blocks generes      }
 
+  { Work areas DBF (TODO 19) }
+  CurWorkArea    : Integer;   { zone de travail active (1..10)       }
+
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
@@ -887,6 +893,20 @@ Procedure ParseDoCallStmt; Forward;
 { Code blocks (TODO 18) }
 Procedure ParseCodeBlock(Var Res : TExprVal); Forward;
 Procedure EmitCodeBlockRuntime; Forward;
+
+{ Fichiers DBF (TODO 19) }
+Procedure ParseUseStmt; Forward;
+Procedure ParseSelectStmt; Forward;
+Procedure ParseCloseStmt; Forward;
+Procedure ParseGoStmt; Forward;
+Procedure ParseSkipStmt; Forward;
+Procedure ParseAppendStmt; Forward;
+Procedure ParseReplaceStmt; Forward;
+Procedure ParseDeleteStmt; Forward;
+Procedure ParseRecallStmt; Forward;
+Procedure ParsePackStmt; Forward;
+Procedure ParseZapStmt; Forward;
+Procedure EmitDBFRuntime; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1362,6 +1382,72 @@ Begin
             CompileError('INIT PROCEDURE : nom attendu');
         End;
       End
+      { USE : ouvrir un fichier DBF (TODO 19) }
+      Else If Kw = 'USE' Then
+      Begin
+        ParserAdvance;
+        ParseUseStmt;
+      End
+      { SELECT : changer la zone de travail active (TODO 19) }
+      Else If Kw = 'SELECT' Then
+      Begin
+        ParserAdvance;
+        ParseSelectStmt;
+      End
+      { CLOSE : fermer les fichiers DBF (TODO 19) }
+      Else If Kw = 'CLOSE' Then
+      Begin
+        ParserAdvance;
+        ParseCloseStmt;
+      End
+      { GO / GOTO : navigation dans le fichier DBF (TODO 19) }
+      Else If (Kw = 'GO') Or (Kw = 'GOTO') Then
+      Begin
+        ParserAdvance;
+        ParseGoStmt;
+      End
+      { SKIP : avancer/reculer dans le fichier DBF (TODO 19) }
+      Else If Kw = 'SKIP' Then
+      Begin
+        ParserAdvance;
+        ParseSkipStmt;
+      End
+      { APPEND : ajouter un enregistrement (TODO 19) }
+      Else If (Kw = 'APPEND') Or (Kw = 'APPE') Then
+      Begin
+        ParserAdvance;
+        ParseAppendStmt;
+      End
+      { REPLACE : modifier un champ (TODO 19) }
+      Else If (Kw = 'REPLACE') Or (Kw = 'REPL') Then
+      Begin
+        ParserAdvance;
+        ParseReplaceStmt;
+      End
+      { DELETE : marquer pour suppression (TODO 19) }
+      Else If (Kw = 'DELETE') Or (Kw = 'DELE') Then
+      Begin
+        ParserAdvance;
+        ParseDeleteStmt;
+      End
+      { RECALL : annuler la marque de suppression (TODO 19) }
+      Else If Kw = 'RECALL' Then
+      Begin
+        ParserAdvance;
+        ParseRecallStmt;
+      End
+      { PACK : supprimer physiquement les enregistrements marques (TODO 19) }
+      Else If Kw = 'PACK' Then
+      Begin
+        ParserAdvance;
+        ParsePackStmt;
+      End
+      { ZAP : supprimer tous les enregistrements (TODO 19) }
+      Else If Kw = 'ZAP' Then
+      Begin
+        ParserAdvance;
+        ParseZapStmt;
+      End
       Else
       Begin
         { Autres mots-cles : stub pour TODOs futurs }
@@ -1476,7 +1562,14 @@ Begin
      (U = 'READ')       Or (U = 'CLEAR')      Or (U = 'SET')      Or
      (U = 'SAY')        Or (U = 'GET')        Or (U = 'PICTURE')  Or
      (U = 'VALID')      Or (U = 'SCREEN')     Or (U = 'COLOR')    Or
-     (U = 'DOUBLE')     Or (U = 'INIT') Then
+     (U = 'DOUBLE')     Or (U = 'INIT')       Or
+     (U = 'USE')        Or (U = 'SELECT')     Or (U = 'CLOSE')    Or
+     (U = 'GO')         Or (U = 'GOTO')       Or (U = 'SKIP')     Or
+     (U = 'APPEND')     Or (U = 'REPLACE')    Or (U = 'DELETE')   Or
+     (U = 'RECALL')     Or (U = 'PACK')       Or (U = 'ZAP')     Or
+     (U = 'ALIAS')      Or (U = 'SHARED')     Or (U = 'EXCLUSIVE') Or
+     (U = 'NEW')        Or (U = 'BLANK')      Or (U = 'TOP')     Or
+     (U = 'BOTTOM')     Or (U = 'ALL')        Or (U = 'DATABASES') Then
   Begin
     IsKeyword := True;
     Exit;
@@ -1505,6 +1598,13 @@ Begin
     If Copy('CLEAR',      1, Length(U)) = U Then Begin IsKeyword := True; Exit; End;
     If Copy('PICTURE',    1, Length(U)) = U Then Begin IsKeyword := True; Exit; End;
     If Copy('SCREEN',     1, Length(U)) = U Then Begin IsKeyword := True; Exit; End;
+    If Copy('APPEND',     1, Length(U)) = U Then Begin IsKeyword := True; Exit; End;
+    If Copy('REPLACE',    1, Length(U)) = U Then Begin IsKeyword := True; Exit; End;
+    If Copy('DELETE',     1, Length(U)) = U Then Begin IsKeyword := True; Exit; End;
+    If Copy('SHARED',     1, Length(U)) = U Then Begin IsKeyword := True; Exit; End;
+    If Copy('EXCLUSIVE',  1, Length(U)) = U Then Begin IsKeyword := True; Exit; End;
+    If Copy('BOTTOM',     1, Length(U)) = U Then Begin IsKeyword := True; Exit; End;
+    If Copy('DATABASES',  1, Length(U)) = U Then Begin IsKeyword := True; Exit; End;
   End;
 End;
 
@@ -1528,7 +1628,14 @@ Begin
      (U = 'STORE')   Or (U = 'READ')   Or (U = 'CLEAR')   Or
      (U = 'SET')     Or (U = 'SAY')    Or (U = 'GET')     Or
      (U = 'PICTURE') Or (U = 'VALID')  Or (U = 'SCREEN')  Or
-     (U = 'COLOR')   Or (U = 'DOUBLE') Or (U = 'INIT') Then
+     (U = 'COLOR')   Or (U = 'DOUBLE') Or (U = 'INIT')    Or
+     (U = 'USE')     Or (U = 'SELECT') Or (U = 'CLOSE')   Or
+     (U = 'GO')      Or (U = 'GOTO')   Or (U = 'SKIP')    Or
+     (U = 'APPEND')  Or (U = 'REPLACE') Or (U = 'DELETE')  Or
+     (U = 'RECALL')  Or (U = 'PACK')   Or (U = 'ZAP')     Or
+     (U = 'ALIAS')   Or (U = 'SHARED') Or (U = 'EXCLUSIVE') Or
+     (U = 'NEW')     Or (U = 'BLANK')  Or (U = 'TOP')     Or
+     (U = 'BOTTOM')  Or (U = 'ALL')    Or (U = 'DATABASES') Then
   Begin
     ExpandKeyword := U;
     Exit;
@@ -1555,6 +1662,13 @@ Begin
   If (Length(U) >= 4) And (Copy('CLEAR',      1, Length(U)) = U) Then Begin ExpandKeyword := 'CLEAR';      Exit; End;
   If (Length(U) >= 4) And (Copy('PICTURE',    1, Length(U)) = U) Then Begin ExpandKeyword := 'PICTURE';    Exit; End;
   If (Length(U) >= 4) And (Copy('SCREEN',     1, Length(U)) = U) Then Begin ExpandKeyword := 'SCREEN';     Exit; End;
+  If (Length(U) >= 4) And (Copy('APPEND',     1, Length(U)) = U) Then Begin ExpandKeyword := 'APPEND';     Exit; End;
+  If (Length(U) >= 4) And (Copy('REPLACE',    1, Length(U)) = U) Then Begin ExpandKeyword := 'REPLACE';    Exit; End;
+  If (Length(U) >= 4) And (Copy('DELETE',     1, Length(U)) = U) Then Begin ExpandKeyword := 'DELETE';     Exit; End;
+  If (Length(U) >= 4) And (Copy('SHARED',     1, Length(U)) = U) Then Begin ExpandKeyword := 'SHARED';     Exit; End;
+  If (Length(U) >= 4) And (Copy('EXCLUSIVE',  1, Length(U)) = U) Then Begin ExpandKeyword := 'EXCLUSIVE';  Exit; End;
+  If (Length(U) >= 4) And (Copy('BOTTOM',     1, Length(U)) = U) Then Begin ExpandKeyword := 'BOTTOM';     Exit; End;
+  If (Length(U) >= 4) And (Copy('DATABASES',  1, Length(U)) = U) Then Begin ExpandKeyword := 'DATABASES';  Exit; End;
 
   { Mots-cles complets qui n ont pas d abreviation }
   ExpandKeyword := U;
@@ -2471,6 +2585,17 @@ Begin
   WriteLn(OutF, '_CL_STRBUF  DB  ', IntToStr(MAX_STR_BUF), ' DUP(0)');
   WriteLn(OutF, '_CL_STRBUF2 DB  ', IntToStr(MAX_STR_BUF), ' DUP(0)');
   WriteLn(OutF, '_CL_CHRBUF  DB  2 DUP(0)');
+  { Work areas DBF (TODO 19) }
+  WriteLn(OutF, '; -- work area table: 10 entries x 64 bytes each --');
+  WriteLn(OutF, '; layout per entry: handle(2) + recno(2) + reccnt(2) + recsize(2)');
+  WriteLn(OutF, ';   + hdrsize(2) + flags(2) + alias(12) + fldcount(2) + reserved(38)');
+  WriteLn(OutF, '_CL_WATAB   DB  640 DUP(0)');    { 10 * 64 bytes }
+  WriteLn(OutF, '_CL_CURWA   DW  0');              { current work area (0-based index) }
+  WriteLn(OutF, '_CL_DBFBUF  DB  ', IntToStr(MAX_DBF_REC_SIZE), ' DUP(0)');
+  WriteLn(OutF, '_CL_DBFNAME DB  80 DUP(0)');      { buffer pour nom fichier }
+  WriteLn(OutF, '_CL_DBFHDR  DB  32 DUP(0)');      { buffer en-tete DBF }
+  WriteLn(OutF, '_CL_DBFFLD  DB  32 DUP(0)');      { buffer descripteur champ }
+  WriteLn(OutF, '_CL_DBFEXT  DB  ''.DBF'',0');     { extension par defaut }
   { Entrees DataTab }
   For I := 0 To DataCount - 1 Do
   Begin
@@ -3784,6 +3909,179 @@ Begin
         End;
         Res.Kind := EK_AX;
         Res.TypeIdx := TY_IDX_CHAR;
+        Res.SymIdx := -1;
+      End
+
+      { --- EOF : fin de fichier DBF (TODO 19) --- }
+      Else If IdName = 'EOF' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'DBEOF');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_LOGIC;
+        Res.SymIdx := -1;
+      End
+      { --- BOF : debut de fichier DBF (TODO 19) --- }
+      Else If IdName = 'BOF' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'DBBOF');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_LOGIC;
+        Res.SymIdx := -1;
+      End
+      { --- RECNO : numero d enregistrement courant (TODO 19) --- }
+      Else If IdName = 'RECNO' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'DBRECNO');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_NUM;
+        Res.SymIdx := -1;
+      End
+      { --- RECCOUNT / LASTREC : nombre total d enregistrements (TODO 19) --- }
+      Else If (IdName = 'RECCOUNT') Or (IdName = 'LASTREC') Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'DBRECCOUNT');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_NUM;
+        Res.SymIdx := -1;
+      End
+      { --- DELETED : enregistrement marque pour suppression (TODO 19) --- }
+      Else If IdName = 'DELETED' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'DBDELETED');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_LOGIC;
+        Res.SymIdx := -1;
+      End
+      { --- FCOUNT : nombre de champs (TODO 19) --- }
+      Else If IdName = 'FCOUNT' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'DBFCOUNT');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_NUM;
+        Res.SymIdx := -1;
+      End
+      { --- FIELDNAME / FIELD : nom du champ n (TODO 19) --- }
+      Else If (IdName = 'FIELDNAME') Or (IdName = 'FIELDNAM') Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          ParseExpr(Arg);  { field number }
+          ExprFlushToAX(Arg);
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'DBFIELDNAME');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_CHAR;
+        Res.SymIdx := -1;
+      End
+      { --- ALIAS : nom de l alias de la zone courante (TODO 19) --- }
+      Else If IdName = 'ALIAS' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
+            ParseExpr(Arg);  { optional work area number }
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'DBALIAS');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_CHAR;
+        Res.SymIdx := -1;
+      End
+      { --- DBSTRUCT : retourner structure sous forme de tableau (TODO 19) --- }
+      Else If IdName = 'DBSTRUCT' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'DBSTRUCT');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_ARRAY;
+        Res.SymIdx := -1;
+      End
+      { --- SELECT : retourner numero de zone de travail (TODO 19) --- }
+      Else If (IdName = 'SELECT') Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
+            ParseExpr(Arg);  { optional alias expr }
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrAB('MOV', 'AX', '[_CL_CURWA]');
+        EmitInstr('INC    AX');   { 1-based }
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_NUM;
+        Res.SymIdx := -1;
+      End
+      { --- USED : zone de travail en utilisation (TODO 19) --- }
+      Else If IdName = 'USED' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'DBUSED');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_LOGIC;
         Res.SymIdx := -1;
       End
 
@@ -9123,6 +9421,885 @@ Begin
   EmitInstr('RET');
 End;
 
+{ ============================================================
+  TODO 19 - FICHIERS DBF (BASE DE DONNEES) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseUseStmt : USE nomFichier [ALIAS cAlias] [SHARED] --- }
+(* Ouvrir un fichier DBF dans la zone de travail courante.
+   USE sans argument ferme le fichier DBF de la zone courante.
+   USE nom ALIAS al : ouvrir avec alias specifique.
+   USE nom NEW      : ouvrir dans la prochaine zone libre.
+   USE nom SHARED   : ouvrir en mode partage.
+   USE nom EXCLUSIVE : ouvrir en mode exclusif.                  *)
+
+Procedure ParseUseStmt;
+Var
+  FN  : TString;
+  AL  : TString;
+  HasNew, HasShared : Boolean;
+  DIdx : Integer;
+Begin
+  EmitComment('USE statement (TODO 19)');
+  HasNew := False;
+  HasShared := False;
+  AL := '';
+  { USE sans argument = fermer la zone courante }
+  If (CurToken.Kind = TK_EOF) Or
+     ((CurToken.Kind = TK_KEYWORD) And
+      ((CurToken.Val = 'IF') Or (CurToken.Val = 'DO') Or
+       (CurToken.Val = 'LOCAL') Or (CurToken.Val = 'RETURN') Or
+       (CurToken.Val = '?') Or (CurToken.Val = '??'))) Then
+  Begin
+    EmitInstrA('CALL', CL_RT_PFX + 'DBCLOSE');
+    Exit;
+  End;
+  { Lire le nom du fichier }
+  If CurToken.Kind = TK_STRING Then
+  Begin
+    FN := CurToken.Val;
+    ParserAdvance;
+  End
+  Else If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+  Begin
+    FN := CurToken.Val;
+    ParserAdvance;
+  End
+  Else
+  Begin
+    CompileError('USE : nom de fichier attendu');
+    Exit;
+  End;
+  { Options : ALIAS, NEW, SHARED, EXCLUSIVE }
+  While (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Do
+  Begin
+    If (CurToken.Val = 'ALIAS') Or (CurToken.Val = 'ALIA') Then
+    Begin
+      ParserAdvance;
+      If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Or
+         (CurToken.Kind = TK_STRING) Then
+      Begin
+        AL := CurToken.Val;
+        ParserAdvance;
+      End;
+    End
+    Else If CurToken.Val = 'NEW' Then
+    Begin
+      HasNew := True;
+      ParserAdvance;
+    End
+    Else If (CurToken.Val = 'SHARED') Or (CurToken.Val = 'SHAR') Then
+    Begin
+      HasShared := True;
+      ParserAdvance;
+    End
+    Else If (CurToken.Val = 'EXCLUSIVE') Or (CurToken.Val = 'EXCL') Then
+    Begin
+      HasShared := False;
+      ParserAdvance;
+    End
+    Else
+      Break;
+  End;
+  { Generer le code : charger le nom dans SI, mode dans AL }
+  EmitComment('USE ' + FN);
+  { Creer une constante chaine pour le nom du fichier }
+  DIdx := DataAddStr(FN);
+  EmitInstrAB('LEA', 'SI', '[' + DataTab[DIdx].LblName + ']');
+  If HasShared Then
+    EmitInstrAB('MOV', 'AL', '1')
+  Else
+    EmitInstrAB('MOV', 'AL', '0');
+  If HasNew Then
+    EmitInstrAB('MOV', 'AH', '1')
+  Else
+    EmitInstrAB('MOV', 'AH', '0');
+  EmitInstrA('CALL', CL_RT_PFX + 'DBOPEN');
+  { Si un alias est specifie, le stocker }
+  If AL <> '' Then
+  Begin
+    DIdx := DataAddStr(AL);
+    EmitInstrAB('LEA', 'SI', '[' + DataTab[DIdx].LblName + ']');
+    EmitInstrA('CALL', CL_RT_PFX + 'DBSETALIAS');
+  End;
+End;
+
+{ ---- ParseSelectStmt : SELECT n / SELECT cAlias -------------- }
+(* Changer la zone de travail active.
+   SELECT 0     : premiere zone libre
+   SELECT 1..10 : zone specifique
+   SELECT A..J  : zone par lettre
+   SELECT alias : zone par nom d alias                          *)
+
+Procedure ParseSelectStmt;
+Var
+  Arg : TExprVal;
+Begin
+  EmitComment('SELECT statement (TODO 19)');
+  { Verifier si c est une lettre A-J }
+  If (CurToken.Kind = TK_IDENT) And (Length(CurToken.Val) = 1) And
+     (CurToken.Val[1] >= 'A') And (CurToken.Val[1] <= 'J') Then
+  Begin
+    EmitInstrAB('MOV', 'AX', IntToStr(Ord(CurToken.Val[1]) - Ord('A')));
+    EmitInstrAB('MOV', '[_CL_CURWA]', 'AX');
+    ParserAdvance;
+  End
+  Else
+  Begin
+    { Expression numerique ou alias }
+    ParseExpr(Arg);
+    ExprFlushToAX(Arg);
+    EmitInstr('DEC    AX');  { convertir 1-based en 0-based }
+    EmitInstrAB('MOV', '[_CL_CURWA]', 'AX');
+  End;
+End;
+
+{ ---- ParseCloseStmt : CLOSE / CLOSE ALL / CLOSE DATABASES --- }
+
+Procedure ParseCloseStmt;
+Begin
+  EmitComment('CLOSE statement (TODO 19)');
+  If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
+  Begin
+    If (CurToken.Val = 'ALL') Or (CurToken.Val = 'DATABASES') Or
+       (CurToken.Val = 'DATA') Then
+    Begin
+      ParserAdvance;
+      EmitInstrA('CALL', CL_RT_PFX + 'DBCLOSEALL');
+    End
+    Else
+    Begin
+      EmitInstrA('CALL', CL_RT_PFX + 'DBCLOSE');
+    End;
+  End
+  Else
+    EmitInstrA('CALL', CL_RT_PFX + 'DBCLOSE');
+End;
+
+{ ---- ParseGoStmt : GO TOP / GO BOTTOM / GO n / GOTO n ------- }
+
+Procedure ParseGoStmt;
+Var
+  Arg : TExprVal;
+Begin
+  EmitComment('GO statement (TODO 19)');
+  If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
+  Begin
+    If CurToken.Val = 'TOP' Then
+    Begin
+      ParserAdvance;
+      EmitInstrA('CALL', CL_RT_PFX + 'DBGOTOP');
+    End
+    Else If (CurToken.Val = 'BOTTOM') Or (CurToken.Val = 'BOTT') Then
+    Begin
+      ParserAdvance;
+      EmitInstrA('CALL', CL_RT_PFX + 'DBGOBOTTOM');
+    End
+    Else
+    Begin
+      ParseExpr(Arg);
+      ExprFlushToAX(Arg);
+      EmitInstrA('CALL', CL_RT_PFX + 'DBGOTO');
+    End;
+  End
+  Else If CurToken.Kind = TK_INTEGER Then
+  Begin
+    ParseExpr(Arg);
+    ExprFlushToAX(Arg);
+    EmitInstrA('CALL', CL_RT_PFX + 'DBGOTO');
+  End
+  Else
+    CompileError('GO : TOP, BOTTOM ou expression attendu');
+End;
+
+{ ---- ParseSkipStmt : SKIP [n] ------------------------------- }
+
+Procedure ParseSkipStmt;
+Var
+  Arg : TExprVal;
+Begin
+  EmitComment('SKIP statement (TODO 19)');
+  { SKIP sans argument = SKIP 1 }
+  If (CurToken.Kind = TK_EOF) Or
+     ((CurToken.Kind = TK_KEYWORD) And
+      ((CurToken.Val = 'IF') Or (CurToken.Val = 'DO') Or
+       (CurToken.Val = 'RETURN') Or (CurToken.Val = '?') Or
+       (CurToken.Val = '??') Or (CurToken.Val = 'USE') Or
+       (CurToken.Val = 'CLOSE') Or (CurToken.Val = 'SELECT') Or
+       (CurToken.Val = 'GO') Or (CurToken.Val = 'GOTO') Or
+       (CurToken.Val = 'SKIP') Or (CurToken.Val = 'APPEND') Or
+       (CurToken.Val = 'REPLACE') Or (CurToken.Val = 'DELETE') Or
+       (CurToken.Val = 'RECALL') Or (CurToken.Val = 'PACK') Or
+       (CurToken.Val = 'ZAP') Or (CurToken.Val = 'FUNCTION') Or
+       (CurToken.Val = 'FUNC') Or (CurToken.Val = 'PROCEDURE') Or
+       (CurToken.Val = 'PROC') Or (CurToken.Val = 'LOCAL') Or
+       (CurToken.Val = 'STATIC'))) Then
+  Begin
+    EmitInstrAB('MOV', 'AX', '1');
+    EmitInstrA('CALL', CL_RT_PFX + 'DBSKIP');
+  End
+  Else
+  Begin
+    ParseExpr(Arg);
+    ExprFlushToAX(Arg);
+    EmitInstrA('CALL', CL_RT_PFX + 'DBSKIP');
+  End;
+End;
+
+{ ---- ParseAppendStmt : APPEND BLANK ------------------------- }
+
+Procedure ParseAppendStmt;
+Begin
+  EmitComment('APPEND statement (TODO 19)');
+  If (CurToken.Kind = TK_KEYWORD) And
+     ((CurToken.Val = 'BLANK') Or (CurToken.Val = 'BLAN')) Then
+  Begin
+    ParserAdvance;
+    EmitInstrA('CALL', CL_RT_PFX + 'DBAPPEND');
+  End
+  Else
+    CompileError('APPEND : BLANK attendu');
+End;
+
+{ ---- ParseReplaceStmt : REPLACE champ WITH expr [, ...] ----- }
+(* REPLACE field1 WITH expr1 [, field2 WITH expr2 ...]          *)
+
+Procedure ParseReplaceStmt;
+Var
+  Arg     : TExprVal;
+  FldName : TString;
+  DIdx    : Integer;
+Begin
+  EmitComment('REPLACE statement (TODO 19)');
+  Repeat
+    { Lire le nom du champ }
+    If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+    Begin
+      FldName := CurToken.Val;
+      ParserAdvance;
+    End
+    Else
+    Begin
+      CompileError('REPLACE : nom de champ attendu');
+      Exit;
+    End;
+    { WITH }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'WITH') Then
+      ParserAdvance
+    Else
+    Begin
+      CompileError('REPLACE : WITH attendu');
+      Exit;
+    End;
+    { Expression de la valeur }
+    ParseExpr(Arg);
+    ExprFlushToAX(Arg);
+    EmitInstr('PUSH   AX');    { valeur sur la pile }
+    { Charger le nom du champ dans SI }
+    DIdx := DataAddStr(FldName);
+    EmitInstrAB('LEA', 'SI', '[' + DataTab[DIdx].LblName + ']');
+    EmitInstr('POP    AX');    { restaurer la valeur }
+    EmitInstrA('CALL', CL_RT_PFX + 'DBREPLACE');
+    { Virgule = champ suivant }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance
+    Else
+      Break;
+  Until (CurToken.Kind = TK_EOF);
+End;
+
+{ ---- ParseDeleteStmt : DELETE -------------------------------- }
+(* Marquer l enregistrement courant pour suppression.            *)
+
+Procedure ParseDeleteStmt;
+Begin
+  EmitComment('DELETE statement (TODO 19)');
+  EmitInstrA('CALL', CL_RT_PFX + 'DBDELETE');
+End;
+
+{ ---- ParseRecallStmt : RECALL -------------------------------- }
+(* Annuler la marque de suppression.                             *)
+
+Procedure ParseRecallStmt;
+Begin
+  EmitComment('RECALL statement (TODO 19)');
+  EmitInstrA('CALL', CL_RT_PFX + 'DBRECALL');
+End;
+
+{ ---- ParsePackStmt : PACK ------------------------------------ }
+(* Supprimer physiquement les enregistrements marques.           *)
+
+Procedure ParsePackStmt;
+Begin
+  EmitComment('PACK statement (TODO 19)');
+  EmitInstrA('CALL', CL_RT_PFX + 'DBPACK');
+End;
+
+{ ---- ParseZapStmt : ZAP -------------------------------------- }
+(* Supprimer tous les enregistrements du fichier DBF.            *)
+
+Procedure ParseZapStmt;
+Begin
+  EmitComment('ZAP statement (TODO 19)');
+  EmitInstrA('CALL', CL_RT_PFX + 'DBZAP');
+End;
+
+{ ---- EmitDBFRuntime : routines runtime fichiers DBF (TODO 19) ----- }
+(* Genere les routines assembleur 8086 pour les operations sur
+   fichiers dBASE III (.DBF).
+   Utilise les interruptions DOS (INT 21h) pour les E/S fichier.
+   Work areas : 10 zones independantes de 64 octets chacune dans _CL_WATAB.
+   Layout par zone :
+     +0  : handle fichier DOS (DW) - 0 = non utilise
+     +2  : recno courant (DW)
+     +4  : nombre total d enregistrements (DW)
+     +6  : taille d un enregistrement (DW)
+     +8  : taille de l en-tete (DW)
+     +10 : flags: bit 0=eof, bit 1=bof, bit 2=deleted (DW)
+     +12 : alias (11 octets ASCIIZ + 1 padding = 12 bytes)
+     +24 : nombre de champs (DW)
+     +26 : reserved (38 bytes)
+   Total : 64 octets par zone.
+
+   Routines generees :
+     _CLRT_DBWAPTR  : SI -> offset dans _CL_WATAB pour zone courante
+     _CLRT_DBOPEN   : ouvrir un fichier DBF (SI=nom, AL=mode, AH=new)
+     _CLRT_DBCLOSE  : fermer le DBF de la zone courante
+     _CLRT_DBCLOSEALL : fermer tous les DBF ouverts
+     _CLRT_DBSETALIAS : definir l alias (SI=nom ASCIIZ)
+     _CLRT_DBGOTOP  : aller au premier enregistrement
+     _CLRT_DBGOBOTTOM : aller au dernier enregistrement
+     _CLRT_DBGOTO   : aller a l enregistrement AX
+     _CLRT_DBSKIP   : avancer de AX enregistrements
+     _CLRT_DBEOF    : retourner AX=1 si fin de fichier
+     _CLRT_DBBOF    : retourner AX=1 si debut de fichier
+     _CLRT_DBRECNO  : retourner AX=numero d enregistrement
+     _CLRT_DBRECCOUNT : retourner AX=nombre d enregistrements
+     _CLRT_DBAPPEND : ajouter un enregistrement vide
+     _CLRT_DBREPLACE : modifier un champ (SI=nom, AX=valeur)
+     _CLRT_DBDELETE : marquer l enregistrement pour suppression
+     _CLRT_DBRECALL : annuler la marque de suppression
+     _CLRT_DBPACK   : supprimer physiquement les enregistrements
+     _CLRT_DBZAP    : supprimer tous les enregistrements
+     _CLRT_DBDELETED : retourner AX=1 si marque pour suppression
+     _CLRT_DBUSED   : retourner AX=1 si zone en utilisation
+     _CLRT_DBFCOUNT : retourner AX=nombre de champs
+     _CLRT_DBFIELDNAME : retourner AX=ptr nom du champ n (AX=n)
+     _CLRT_DBALIAS  : retourner AX=ptr alias de la zone courante
+     _CLRT_DBSTRUCT : retourner AX=ptr structure (stub)           *)
+
+Procedure EmitDBFRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('==== DBF Runtime (TODO 19) ====');
+  EmitBlankLine;
+
+  { --- _CLRT_DBWAPTR : calculer le pointeur vers la zone courante --- }
+  (* Entree : rien (utilise _CL_CURWA)
+     Sortie : SI = offset dans _CL_WATAB pour la zone courante
+     Detruit : AX, SI                                             *)
+  EmitLabel(CL_RT_PFX + 'DBWAPTR');
+  EmitInstrAB('MOV', 'AX', '[_CL_CURWA]');
+  EmitComment('AX * 64 = AX * 4 * 16 = SHL 6');
+  EmitInstrAB('MOV', 'CL', '6');
+  EmitInstrAB('SHL', 'AX', 'CL');
+  EmitInstrAB('LEA', 'SI', '[_CL_WATAB]');
+  EmitInstrAB('ADD', 'SI', 'AX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_DBOPEN : ouvrir un fichier DBF --- }
+  (* Entree : SI=nom fichier ASCIIZ, AL=mode (0=excl,1=shared), AH=new flag
+     Sortie : handle dans la zone courante
+     Utilise INT 21h AH=3Dh (open file)                          *)
+  EmitLabel(CL_RT_PFX + 'DBOPEN');
+  EmitInstr('PUSH   BP');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   DX');
+  EmitInstr('PUSH   AX');      { sauver mode/new flag }
+  { Copier le nom dans _CL_DBFNAME }
+  EmitInstrAB('MOV', 'DI', 'OFFSET _CL_DBFNAME');
+  EmitLabel(CL_RT_PFX + 'DBOPEN_CP');
+  EmitInstr('LODSB');
+  EmitInstr('STOSB');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstrA('JNZ', CL_RT_PFX + 'DBOPEN_CP');
+  { Ouvrir le fichier avec INT 21h AH=3Dh }
+  EmitInstr('POP    AX');       { restaurer mode }
+  EmitInstrAB('MOV', 'DX', 'OFFSET _CL_DBFNAME');
+  EmitInstrAB('MOV', 'AH', '3Dh');
+  EmitInstrAB('MOV', 'AL', '02h');  { lecture+ecriture }
+  EmitInstr('INT    21h');
+  EmitInstrA('JC', CL_RT_PFX + 'DBOPEN_ERR');
+  { Stocker le handle dans la zone courante }
+  EmitInstr('PUSH   AX');       { sauver handle }
+  EmitInstrA('CALL', CL_RT_PFX + 'DBWAPTR');
+  EmitInstr('POP    AX');
+  EmitInstrAB('MOV', '[SI]', 'AX');       { +0 = handle }
+  EmitInstrAB('MOV', 'WORD PTR [SI+2]', '1');  { +2 = recno = 1 }
+  EmitInstrAB('MOV', 'WORD PTR [SI+10]', '0'); { +10 = flags = 0 }
+  { Lire l en-tete DBF (32 octets) }
+  EmitInstrAB('MOV', 'BX', 'AX');         { handle dans BX }
+  EmitInstrAB('MOV', 'DX', 'OFFSET _CL_DBFHDR');
+  EmitInstrAB('MOV', 'CX', '32');
+  EmitInstrAB('MOV', 'AH', '3Fh');        { DOS read file }
+  EmitInstr('INT    21h');
+  { Extraire nb_records (offset 4, 4 octets en little-endian, on prend 2) }
+  EmitInstrAB('MOV', 'AX', '[_CL_DBFHDR+4]');
+  EmitInstrAB('MOV', '[SI+4]', 'AX');     { +4 = reccnt }
+  { Extraire taille en-tete (offset 8, 2 octets) }
+  EmitInstrAB('MOV', 'AX', '[_CL_DBFHDR+8]');
+  EmitInstrAB('MOV', '[SI+8]', 'AX');     { +8 = hdrsize }
+  { Extraire taille enregistrement (offset 10, 2 octets) }
+  EmitInstrAB('MOV', 'AX', '[_CL_DBFHDR+10]');
+  EmitInstrAB('MOV', '[SI+6]', 'AX');     { +6 = recsize }
+  { Calculer le nombre de champs : (hdrsize - 33) / 32 }
+  EmitInstrAB('MOV', 'AX', '[SI+8]');
+  EmitInstrAB('SUB', 'AX', '33');
+  EmitInstrAB('MOV', 'CL', '5');
+  EmitInstrAB('SHR', 'AX', 'CL');         { diviser par 32 }
+  EmitInstrAB('MOV', '[SI+24]', 'AX');    { +24 = fldcount }
+  { Verifier si le fichier est vide }
+  EmitInstrAB('MOV', 'AX', '[SI+4]');
+  EmitInstrAB('OR', 'AX', 'AX');
+  EmitInstrA('JNZ', CL_RT_PFX + 'DBOPEN_OK');
+  EmitInstrAB('OR', 'WORD PTR [SI+10]', '1');  { mettre flag EOF }
+  EmitLabel(CL_RT_PFX + 'DBOPEN_OK');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    BX');
+  EmitInstr('POP    BP');
+  EmitInstr('RET');
+  EmitLabel(CL_RT_PFX + 'DBOPEN_ERR');
+  EmitComment('Erreur ouverture : handle = 0');
+  EmitInstrA('CALL', CL_RT_PFX + 'DBWAPTR');
+  EmitInstrAB('MOV', 'WORD PTR [SI]', '0');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    BX');
+  EmitInstr('POP    BP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_DBCLOSE : fermer le DBF de la zone courante --- }
+  EmitLabel(CL_RT_PFX + 'DBCLOSE');
+  EmitInstr('PUSH   BX');
+  EmitInstrA('CALL', CL_RT_PFX + 'DBWAPTR');
+  EmitInstrAB('MOV', 'BX', '[SI]');
+  EmitInstrAB('OR', 'BX', 'BX');
+  EmitInstrA('JZ', CL_RT_PFX + 'DBCLOSE_DN');
+  EmitInstrAB('MOV', 'AH', '3Eh');   { DOS close file }
+  EmitInstr('INT    21h');
+  { Effacer l entree de la zone }
+  EmitInstrAB('MOV', 'WORD PTR [SI]', '0');
+  EmitInstrAB('MOV', 'WORD PTR [SI+2]', '0');
+  EmitInstrAB('MOV', 'WORD PTR [SI+4]', '0');
+  EmitLabel(CL_RT_PFX + 'DBCLOSE_DN');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_DBCLOSEALL : fermer tous les DBF ouverts --- }
+  EmitLabel(CL_RT_PFX + 'DBCLOSEALL');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   BX');
+  EmitInstrAB('MOV', 'CX', IntToStr(MAX_WORK_AREAS));
+  EmitInstrAB('LEA', 'SI', '[_CL_WATAB]');
+  EmitLabel(CL_RT_PFX + 'DBCLSALL_LP');
+  EmitInstrAB('MOV', 'BX', '[SI]');
+  EmitInstrAB('OR', 'BX', 'BX');
+  EmitInstrA('JZ', CL_RT_PFX + 'DBCLSALL_NX');
+  EmitInstrAB('MOV', 'AH', '3Eh');
+  EmitInstr('INT    21h');
+  EmitInstrAB('MOV', 'WORD PTR [SI]', '0');
+  EmitLabel(CL_RT_PFX + 'DBCLSALL_NX');
+  EmitInstrAB('ADD', 'SI', '64');
+  EmitInstr('LOOP   ' + CL_RT_PFX + 'DBCLSALL_LP');
+  EmitInstr('POP    BX');
+  EmitInstr('POP    CX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_DBSETALIAS : definir l alias de la zone courante --- }
+  (* Entree : SI=nom alias ASCIIZ. Copie dans la zone +12.       *)
+  EmitLabel(CL_RT_PFX + 'DBSETALIAS');
+  EmitInstr('PUSH   DI');
+  EmitInstr('PUSH   CX');
+  EmitInstrA('CALL', CL_RT_PFX + 'DBWAPTR');
+  EmitComment('SI pointe sur WATAB, on veut ecrire a SI+12');
+  EmitInstr('PUSH   SI');     { sauver ptr zone }
+  EmitInstr('POP    DI');
+  EmitInstrAB('ADD', 'DI', '12');
+  { Recharger SI depuis la pile d appel (param original) }
+  EmitInstrAB('MOV', 'SI', '[SP+6]'); { SI original sauve avant CALL }
+  EmitComment('Copie du pointeur alias dans la zone');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    DI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_DBGOTOP : aller au premier enregistrement --- }
+  EmitLabel(CL_RT_PFX + 'DBGOTOP');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  EmitInstrA('CALL', CL_RT_PFX + 'DBWAPTR');
+  EmitInstrAB('MOV', 'WORD PTR [SI+2]', '1');  { recno = 1 }
+  EmitInstrAB('AND', 'WORD PTR [SI+10]', '0FFFCh'); { clear EOF+BOF }
+  { Verifier si le fichier est vide }
+  EmitInstrAB('CMP', 'WORD PTR [SI+4]', '0');
+  EmitInstrA('JNE', CL_RT_PFX + 'DBTOP_OK');
+  EmitInstrAB('OR', 'WORD PTR [SI+10]', '3');  { set EOF+BOF }
+  EmitLabel(CL_RT_PFX + 'DBTOP_OK');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_DBGOBOTTOM : aller au dernier enregistrement --- }
+  EmitLabel(CL_RT_PFX + 'DBGOBOTTOM');
+  EmitInstr('PUSH   BX');
+  EmitInstrA('CALL', CL_RT_PFX + 'DBWAPTR');
+  EmitInstrAB('MOV', 'AX', '[SI+4]');  { reccnt }
+  EmitInstrAB('MOV', '[SI+2]', 'AX');  { recno = reccnt }
+  EmitInstrAB('AND', 'WORD PTR [SI+10]', '0FFFCh');
+  EmitInstrAB('CMP', 'WORD PTR [SI+4]', '0');
+  EmitInstrA('JNE', CL_RT_PFX + 'DBBOT_OK');
+  EmitInstrAB('OR', 'WORD PTR [SI+10]', '3');
+  EmitLabel(CL_RT_PFX + 'DBBOT_OK');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_DBGOTO : aller a l enregistrement AX --- }
+  EmitLabel(CL_RT_PFX + 'DBGOTO');
+  EmitInstr('PUSH   BX');
+  EmitInstrA('CALL', CL_RT_PFX + 'DBWAPTR');
+  EmitInstrAB('MOV', '[SI+2]', 'AX');  { recno = AX }
+  EmitInstrAB('AND', 'WORD PTR [SI+10]', '0FFFCh');
+  { Verifier les bornes }
+  EmitInstrAB('CMP', 'AX', '0');
+  EmitInstrA('JG', CL_RT_PFX + 'DBGO_CHK2');
+  EmitInstrAB('MOV', 'WORD PTR [SI+2]', '1');
+  EmitInstrAB('OR', 'WORD PTR [SI+10]', '2');  { BOF }
+  EmitInstrA('JMP', CL_RT_PFX + 'DBGO_DN');
+  EmitLabel(CL_RT_PFX + 'DBGO_CHK2');
+  EmitInstrAB('CMP', 'AX', '[SI+4]');
+  EmitInstrA('JLE', CL_RT_PFX + 'DBGO_DN');
+  EmitInstrAB('MOV', 'AX', '[SI+4]');
+  EmitInstrAB('INC', 'AX', '');
+  EmitInstrAB('MOV', '[SI+2]', 'AX');
+  EmitInstrAB('OR', 'WORD PTR [SI+10]', '1');  { EOF }
+  EmitLabel(CL_RT_PFX + 'DBGO_DN');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_DBSKIP : avancer de AX enregistrements --- }
+  EmitLabel(CL_RT_PFX + 'DBSKIP');
+  EmitInstr('PUSH   BX');
+  EmitInstrA('CALL', CL_RT_PFX + 'DBWAPTR');
+  EmitInstrAB('ADD', 'AX', '[SI+2]');  { recno + skip }
+  EmitInstrAB('MOV', '[SI+2]', 'AX');
+  EmitInstrAB('AND', 'WORD PTR [SI+10]', '0FFFCh');
+  { Verifier EOF }
+  EmitInstrAB('CMP', 'AX', '[SI+4]');
+  EmitInstrA('JLE', CL_RT_PFX + 'DBSKIP_CHK');
+  EmitInstrAB('MOV', 'AX', '[SI+4]');
+  EmitInstr('INC    AX');
+  EmitInstrAB('MOV', '[SI+2]', 'AX');
+  EmitInstrAB('OR', 'WORD PTR [SI+10]', '1');
+  EmitInstrA('JMP', CL_RT_PFX + 'DBSKIP_DN');
+  EmitLabel(CL_RT_PFX + 'DBSKIP_CHK');
+  { Verifier BOF }
+  EmitInstrAB('CMP', 'WORD PTR [SI+2]', '1');
+  EmitInstrA('JGE', CL_RT_PFX + 'DBSKIP_DN');
+  EmitInstrAB('MOV', 'WORD PTR [SI+2]', '1');
+  EmitInstrAB('OR', 'WORD PTR [SI+10]', '2');
+  EmitLabel(CL_RT_PFX + 'DBSKIP_DN');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_DBEOF : retourner AX=1 si EOF --- }
+  EmitLabel(CL_RT_PFX + 'DBEOF');
+  EmitInstrA('CALL', CL_RT_PFX + 'DBWAPTR');
+  EmitInstrAB('MOV', 'AX', '[SI+10]');
+  EmitInstrAB('AND', 'AX', '1');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_DBBOF : retourner AX=1 si BOF --- }
+  EmitLabel(CL_RT_PFX + 'DBBOF');
+  EmitInstrA('CALL', CL_RT_PFX + 'DBWAPTR');
+  EmitInstrAB('MOV', 'AX', '[SI+10]');
+  EmitInstrAB('AND', 'AX', '2');
+  EmitInstrAB('SHR', 'AX', '1');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_DBRECNO : retourner AX=numero enregistrement --- }
+  EmitLabel(CL_RT_PFX + 'DBRECNO');
+  EmitInstrA('CALL', CL_RT_PFX + 'DBWAPTR');
+  EmitInstrAB('MOV', 'AX', '[SI+2]');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_DBRECCOUNT : retourner AX=nombre d enregistrements --- }
+  EmitLabel(CL_RT_PFX + 'DBRECCOUNT');
+  EmitInstrA('CALL', CL_RT_PFX + 'DBWAPTR');
+  EmitInstrAB('MOV', 'AX', '[SI+4]');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_DBAPPEND : ajouter un enregistrement vide --- }
+  (* Incremente le nombre d enregistrements, positionne recno
+     a la fin, et ecrit un enregistrement vide dans le fichier.  *)
+  EmitLabel(CL_RT_PFX + 'DBAPPEND');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  EmitInstrA('CALL', CL_RT_PFX + 'DBWAPTR');
+  EmitInstr('INC    WORD PTR [SI+4]');  { reccnt++ }
+  EmitInstrAB('MOV', 'AX', '[SI+4]');
+  EmitInstrAB('MOV', '[SI+2]', 'AX');  { recno = reccnt }
+  EmitInstrAB('AND', 'WORD PTR [SI+10]', '0FFFCh'); { clear flags }
+  { Calculer la position dans le fichier : hdrsize + (recno-1) * recsize }
+  EmitInstrAB('MOV', 'BX', '[SI]');    { handle }
+  EmitInstrAB('MOV', 'AX', '[SI+2]');
+  EmitInstr('DEC    AX');
+  EmitInstrAB('MUL', 'WORD PTR [SI+6]', ''); { AX = (recno-1) * recsize }
+  EmitInstrAB('ADD', 'AX', '[SI+8]');  { + hdrsize }
+  EmitInstrAB('MOV', 'DX', 'AX');      { offset dans DX }
+  EmitInstrAB('MOV', 'AH', '42h');     { DOS seek }
+  EmitInstrAB('MOV', 'AL', '0');       { from start }
+  EmitInstrAB('XOR', 'CX', 'CX');      { high word = 0 }
+  EmitInstr('INT    21h');
+  { Ecrire un enregistrement de zeros }
+  EmitInstrAB('MOV', 'DX', 'OFFSET _CL_DBFBUF');
+  EmitInstrA('CALL', CL_RT_PFX + 'DBWAPTR');
+  EmitInstrAB('MOV', 'CX', '[SI+6]');  { recsize }
+  EmitInstrAB('MOV', 'BX', '[SI]');
+  EmitInstrAB('MOV', 'AH', '40h');     { DOS write }
+  EmitInstr('INT    21h');
+  { Mettre a jour le header : nb_records a offset 4 }
+  EmitInstrA('CALL', CL_RT_PFX + 'DBWAPTR');
+  EmitInstrAB('MOV', 'BX', '[SI]');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitInstrAB('MOV', 'DX', '4');
+  EmitInstrAB('MOV', 'AH', '42h');
+  EmitInstrAB('MOV', 'AL', '0');
+  EmitInstr('INT    21h');
+  EmitInstrA('CALL', CL_RT_PFX + 'DBWAPTR');
+  EmitInstrAB('MOV', 'AX', '[SI+4]');
+  EmitInstrAB('MOV', '[_CL_DBFHDR]', 'AX');
+  EmitInstrAB('MOV', 'WORD PTR [_CL_DBFHDR+2]', '0');
+  EmitInstrAB('MOV', 'DX', 'OFFSET _CL_DBFHDR');
+  EmitInstrAB('MOV', 'CX', '4');
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstr('INT    21h');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_DBREPLACE : modifier un champ --- }
+  (* Entree : SI=nom champ ASCIIZ, AX=valeur
+     Stub simplifie : ecrit la valeur en position courante.       *)
+  EmitLabel(CL_RT_PFX + 'DBREPLACE');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  EmitInstr('PUSH   AX');      { sauver la valeur }
+  EmitInstr('PUSH   SI');      { sauver ptr nom champ }
+  EmitInstrA('CALL', CL_RT_PFX + 'DBWAPTR');
+  { Positionner dans le fichier au debut de l enregistrement }
+  EmitInstrAB('MOV', 'BX', '[SI]');    { handle }
+  EmitInstrAB('MOV', 'AX', '[SI+2]');  { recno }
+  EmitInstr('DEC    AX');
+  EmitInstrAB('MUL', 'WORD PTR [SI+6]', '');
+  EmitInstrAB('ADD', 'AX', '[SI+8]');
+  EmitInstrAB('MOV', 'DX', 'AX');
+  EmitInstrAB('MOV', 'AH', '42h');
+  EmitInstrAB('MOV', 'AL', '0');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitInstr('INT    21h');
+  { Ecrire la valeur (stub : on ecrit 2 octets au debut + 1 flag) }
+  EmitInstr('POP    SI');       { nom champ (ignore dans stub) }
+  EmitInstr('POP    AX');       { valeur }
+  EmitInstrAB('MOV', '[_CL_DBFBUF+1]', 'AX');
+  EmitInstrAB('MOV', 'DX', 'OFFSET _CL_DBFBUF');
+  EmitInstrA('CALL', CL_RT_PFX + 'DBWAPTR');
+  EmitInstrAB('MOV', 'CX', '[SI+6]');  { recsize }
+  EmitInstrAB('MOV', 'BX', '[SI]');
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstr('INT    21h');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_DBDELETE : marquer pour suppression --- }
+  EmitLabel(CL_RT_PFX + 'DBDELETE');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  EmitInstrA('CALL', CL_RT_PFX + 'DBWAPTR');
+  EmitInstrAB('OR', 'WORD PTR [SI+10]', '4');  { set deleted flag }
+  { Ecrire le marqueur '*' en position 0 de l enregistrement }
+  EmitInstrAB('MOV', 'BX', '[SI]');
+  EmitInstrAB('MOV', 'AX', '[SI+2]');
+  EmitInstr('DEC    AX');
+  EmitInstrAB('MUL', 'WORD PTR [SI+6]', '');
+  EmitInstrAB('ADD', 'AX', '[SI+8]');
+  EmitInstrAB('MOV', 'DX', 'AX');
+  EmitInstrAB('MOV', 'AH', '42h');
+  EmitInstrAB('MOV', 'AL', '0');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitInstr('INT    21h');
+  EmitInstrAB('MOV', 'BYTE PTR [_CL_DBFBUF]', '2Ah'); { '*' }
+  EmitInstrAB('MOV', 'DX', 'OFFSET _CL_DBFBUF');
+  EmitInstrAB('MOV', 'CX', '1');
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstr('INT    21h');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_DBRECALL : annuler la marque de suppression --- }
+  EmitLabel(CL_RT_PFX + 'DBRECALL');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  EmitInstrA('CALL', CL_RT_PFX + 'DBWAPTR');
+  EmitInstrAB('AND', 'WORD PTR [SI+10]', '0FFFBh');  { clear deleted }
+  EmitInstrAB('MOV', 'BX', '[SI]');
+  EmitInstrAB('MOV', 'AX', '[SI+2]');
+  EmitInstr('DEC    AX');
+  EmitInstrAB('MUL', 'WORD PTR [SI+6]', '');
+  EmitInstrAB('ADD', 'AX', '[SI+8]');
+  EmitInstrAB('MOV', 'DX', 'AX');
+  EmitInstrAB('MOV', 'AH', '42h');
+  EmitInstrAB('MOV', 'AL', '0');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitInstr('INT    21h');
+  EmitInstrAB('MOV', 'BYTE PTR [_CL_DBFBUF]', '20h'); { ' ' }
+  EmitInstrAB('MOV', 'DX', 'OFFSET _CL_DBFBUF');
+  EmitInstrAB('MOV', 'CX', '1');
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstr('INT    21h');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_DBPACK : supprimer les enregistrements marques --- }
+  (* Stub simplifie : reinitialise le compteur. En vrai il faudrait
+     reecrire le fichier sans les enregistrements marques.        *)
+  EmitLabel(CL_RT_PFX + 'DBPACK');
+  EmitInstrA('CALL', CL_RT_PFX + 'DBWAPTR');
+  EmitInstrAB('MOV', 'WORD PTR [SI+2]', '1');
+  EmitInstrAB('AND', 'WORD PTR [SI+10]', '0FFF8h');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_DBZAP : supprimer tous les enregistrements --- }
+  (* Remet le compteur a 0 et tronque le fichier apres le header. *)
+  EmitLabel(CL_RT_PFX + 'DBZAP');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  EmitInstrA('CALL', CL_RT_PFX + 'DBWAPTR');
+  EmitInstrAB('MOV', 'WORD PTR [SI+4]', '0');  { reccnt = 0 }
+  EmitInstrAB('MOV', 'WORD PTR [SI+2]', '0');  { recno = 0 }
+  EmitInstrAB('OR', 'WORD PTR [SI+10]', '1');   { EOF }
+  { Tronquer : seek a hdrsize, puis write 0 octets }
+  EmitInstrAB('MOV', 'BX', '[SI]');
+  EmitInstrAB('MOV', 'DX', '[SI+8]');  { hdrsize }
+  EmitInstrAB('MOV', 'AH', '42h');
+  EmitInstrAB('MOV', 'AL', '0');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitInstr('INT    21h');
+  { Ecrire 0 octets = tronquer (AH=40h CX=0) }
+  EmitInstrAB('MOV', 'CX', '0');
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstr('INT    21h');
+  { Mettre a jour l en-tete : nb_records = 0 }
+  EmitInstrA('CALL', CL_RT_PFX + 'DBWAPTR');
+  EmitInstrAB('MOV', 'BX', '[SI]');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitInstrAB('MOV', 'DX', '4');
+  EmitInstrAB('MOV', 'AH', '42h');
+  EmitInstrAB('MOV', 'AL', '0');
+  EmitInstr('INT    21h');
+  EmitInstrAB('MOV', 'WORD PTR [_CL_DBFHDR]', '0');
+  EmitInstrAB('MOV', 'WORD PTR [_CL_DBFHDR+2]', '0');
+  EmitInstrAB('MOV', 'DX', 'OFFSET _CL_DBFHDR');
+  EmitInstrAB('MOV', 'CX', '4');
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstr('INT    21h');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_DBDELETED : retourner AX=1 si marque supprime --- }
+  EmitLabel(CL_RT_PFX + 'DBDELETED');
+  EmitInstrA('CALL', CL_RT_PFX + 'DBWAPTR');
+  EmitInstrAB('MOV', 'AX', '[SI+10]');
+  EmitInstrAB('AND', 'AX', '4');
+  EmitInstrAB('SHR', 'AX', '1');
+  EmitInstrAB('SHR', 'AX', '1');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_DBUSED : retourner AX=1 si zone en utilisation --- }
+  EmitLabel(CL_RT_PFX + 'DBUSED');
+  EmitInstrA('CALL', CL_RT_PFX + 'DBWAPTR');
+  EmitInstrAB('MOV', 'AX', '[SI]');   { handle }
+  EmitInstrAB('OR', 'AX', 'AX');
+  EmitInstrA('JZ', CL_RT_PFX + 'DBUSED_NO');
+  EmitInstrAB('MOV', 'AX', '1');
+  EmitInstr('RET');
+  EmitLabel(CL_RT_PFX + 'DBUSED_NO');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_DBFCOUNT : retourner AX=nombre de champs --- }
+  EmitLabel(CL_RT_PFX + 'DBFCOUNT');
+  EmitInstrA('CALL', CL_RT_PFX + 'DBWAPTR');
+  EmitInstrAB('MOV', 'AX', '[SI+24]');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_DBFIELDNAME : retourner AX=ptr nom du champ n --- }
+  (* Entree : AX=numero du champ (1-based)
+     Sortie : AX=pointeur vers nom ASCIIZ (stub: retourne _CL_DBFNAME) *)
+  EmitLabel(CL_RT_PFX + 'DBFIELDNAME');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _CL_DBFNAME');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_DBALIAS : retourner AX=ptr alias zone courante --- }
+  EmitLabel(CL_RT_PFX + 'DBALIAS');
+  EmitInstrA('CALL', CL_RT_PFX + 'DBWAPTR');
+  EmitInstrAB('LEA', 'AX', '[SI+12]');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_DBSTRUCT : retourner AX=ptr structure (stub) --- }
+  EmitLabel(CL_RT_PFX + 'DBSTRUCT');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstr('RET');
+  EmitBlankLine;
+End;
+
 { ---- EmitRuntime : emettre les routines runtime inline ------- }
 (* Appelle EmitExprRuntime pour les routines d expressions binaires
    et EmitIORuntime pour les routines I/O ecran (TODO 12).
@@ -9137,6 +10314,7 @@ Begin
   EmitArrayRuntime;
   EmitStringRuntime;
   EmitCodeBlockRuntime;
+  EmitDBFRuntime;
 End;
 
 { ---- EmitClose : finaliser le fichier ASM -------------------- }
