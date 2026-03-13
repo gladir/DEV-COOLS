@@ -298,7 +298,7 @@
             Epilogue : MOV SP,BP / POP BP / RET
             Recursion : supportee (chaque appel a son propre cadre)
 
-  TODO 18 - FONCTIONS INTEGREES (partie 2 : mots, conversion, divers)
+  TODO 18 - FONCTIONS INTEGREES (partie 2 : mots, conversion, divers) [IMPLEMENTE]
             Fonctions sur les mots :
               WORD(str, n) : n-ieme mot de la chaine
               WORDS(str) : nombre de mots -> AX
@@ -843,6 +843,9 @@ Procedure ParseParseStmt;      Forward;
 Procedure ParseCallStmt;       Forward;
 Procedure ParseSignalStmt;     Forward;
 Procedure ParseProcKeyword;    Forward;
+
+(* TODO 18 - FONCTIONS INTEGREES partie 2 *)
+Procedure EmitBif2Runtime;     Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -3065,6 +3068,11 @@ Begin
   EmitBifRuntime;
 
   (* ============================================================ *)
+  (*  TODO 18 - Runtime fonctions integrees (partie 2)            *)
+  (* ============================================================ *)
+  EmitBif2Runtime;
+
+  (* ============================================================ *)
   (*  TODO 16 - Runtime PARSE (decoupage de chaines)              *)
   (* ============================================================ *)
   EmitParseRuntime;
@@ -3937,6 +3945,1215 @@ Begin
   EmitBlankLine;
 End;
 
+(* ---- EmitBif2Runtime : fonctions integrees partie 2 ------------ *)
+(* Emet les routines assembleur 8086 pour les fonctions integrees    *)
+(* de mots, conversion et fonctions diverses (TODO 18).              *)
+Procedure EmitBif2Runtime;
+Begin
+  EmitComment('--- Runtime BIF partie 2 (TODO 18) ---');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_WORDS(str) : nombre de mots dans la chaine              *)
+  (*  1 arg : str=[BP+4]                                           *)
+  (*  Retour : AX = nombre de mots                                 *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_WORDS');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', '[BP+4]');
+  EmitInstrAB('XOR', 'AX', 'AX');       (* AX = word count *)
+  EmitInstrAB('XOR', 'DX', 'DX');       (* DX = in-word flag *)
+  EmitLabel('_RXB2_WS_LP');
+  EmitInstrAB('MOV', 'BL', '[SI]');
+  EmitInstrAB('CMP', 'BL', '0');
+  EmitInstrA('JE', '_RXB2_WS_DN');
+  EmitInstrAB('CMP', 'BL', ''' ''');
+  EmitInstrA('JE', '_RXB2_WS_SP');
+  (* non-space char *)
+  EmitInstrAB('CMP', 'DX', '0');
+  EmitInstrA('JNE', '_RXB2_WS_NX');
+  EmitInstrA('INC', 'AX');              (* new word *)
+  EmitInstrAB('MOV', 'DX', '1');
+  EmitInstrA('JMP', '_RXB2_WS_NX');
+  EmitLabel('_RXB2_WS_SP');
+  EmitInstrAB('XOR', 'DX', 'DX');       (* left word *)
+  EmitLabel('_RXB2_WS_NX');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', '_RXB2_WS_LP');
+  EmitLabel('_RXB2_WS_DN');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_WORD(str, n) : extraire le n-ieme mot                   *)
+  (*  2 args : str=[BP+6], n=[BP+4]                                *)
+  (*  Retour : AX = OFFSET _RX_BIF2BUF                            *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_WORD');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', '[BP+6]');
+  EmitInstrAB('MOV', 'CX', '[BP+4]');   (* CX = target word # *)
+  EmitInstrAB('LEA', 'DI', '_RX_BIF2BUF');
+  EmitInstrAB('XOR', 'DX', 'DX');       (* DX = current word # *)
+  (* skip to n-th word *)
+  EmitLabel('_RXB2_W_SKP');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstrA('JE', '_RXB2_W_EMP');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', ''' ''');
+  EmitInstrA('JNE', '_RXB2_W_FW');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', '_RXB2_W_SKP');
+  EmitLabel('_RXB2_W_FW');
+  EmitInstrA('INC', 'DX');               (* found a word *)
+  EmitInstrAB('CMP', 'DX', 'CX');
+  EmitInstrA('JE', '_RXB2_W_CPY');
+  (* skip rest of this word *)
+  EmitLabel('_RXB2_W_SRW');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstrA('JE', '_RXB2_W_EMP');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', ''' ''');
+  EmitInstrA('JE', '_RXB2_W_SKP');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', '_RXB2_W_SRW');
+  (* copy the word *)
+  EmitLabel('_RXB2_W_CPY');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', '_RXB2_W_END');
+  EmitInstrAB('CMP', 'AL', ''' ''');
+  EmitInstrA('JE', '_RXB2_W_END');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', '_RXB2_W_CPY');
+  EmitLabel('_RXB2_W_EMP');
+  EmitLabel('_RXB2_W_END');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _RX_BIF2BUF');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_WORDINDEX(str, n) : position 1-based du n-ieme mot      *)
+  (*  2 args : str=[BP+6], n=[BP+4]                                *)
+  (*  Retour : AX = position (1-based), 0 si non trouve            *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_WORDINDEX');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', '[BP+6]');
+  EmitInstrAB('MOV', 'CX', '[BP+4]');
+  EmitInstrAB('XOR', 'DX', 'DX');       (* word counter *)
+  EmitInstrAB('XOR', 'BX', 'BX');       (* position counter *)
+  EmitLabel('_RXB2_WI_LP');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstrA('JE', '_RXB2_WI_NF');
+  EmitInstrA('INC', 'BX');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', ''' ''');
+  EmitInstrA('JNE', '_RXB2_WI_FW');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', '_RXB2_WI_LP');
+  EmitLabel('_RXB2_WI_FW');
+  EmitInstrA('INC', 'DX');
+  EmitInstrAB('CMP', 'DX', 'CX');
+  EmitInstrA('JE', '_RXB2_WI_OK');
+  (* skip rest of word *)
+  EmitLabel('_RXB2_WI_SK');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstrA('JE', '_RXB2_WI_NF');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', ''' ''');
+  EmitInstrA('JE', '_RXB2_WI_LP');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'BX');
+  EmitInstrA('JMP', '_RXB2_WI_SK');
+  EmitLabel('_RXB2_WI_OK');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstrA('JMP', '_RXB2_WI_DN');
+  EmitLabel('_RXB2_WI_NF');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitLabel('_RXB2_WI_DN');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_WORDLENGTH(str, n) : longueur du n-ieme mot             *)
+  (*  2 args : str=[BP+6], n=[BP+4]                                *)
+  (*  Retour : AX = longueur, 0 si non trouve                     *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_WORDLENGTH');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', '[BP+6]');
+  EmitInstrAB('MOV', 'CX', '[BP+4]');
+  EmitInstrAB('XOR', 'DX', 'DX');
+  (* find n-th word *)
+  EmitLabel('_RXB2_WL_LP');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstrA('JE', '_RXB2_WL_NF');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', ''' ''');
+  EmitInstrA('JNE', '_RXB2_WL_FW');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', '_RXB2_WL_LP');
+  EmitLabel('_RXB2_WL_FW');
+  EmitInstrA('INC', 'DX');
+  EmitInstrAB('CMP', 'DX', 'CX');
+  EmitInstrA('JE', '_RXB2_WL_CT');
+  (* skip this word *)
+  EmitLabel('_RXB2_WL_SK');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstrA('JE', '_RXB2_WL_NF');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', ''' ''');
+  EmitInstrA('JE', '_RXB2_WL_LP');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', '_RXB2_WL_SK');
+  (* count length of current word *)
+  EmitLabel('_RXB2_WL_CT');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitLabel('_RXB2_WL_CL');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstrA('JE', '_RXB2_WL_DN');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', ''' ''');
+  EmitInstrA('JE', '_RXB2_WL_DN');
+  EmitInstrA('INC', 'AX');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', '_RXB2_WL_CL');
+  EmitLabel('_RXB2_WL_NF');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitLabel('_RXB2_WL_DN');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_WORDPOS(phrase, str, start) : position du mot            *)
+  (*  3 args : phrase=[BP+8], str=[BP+6], start=[BP+4]             *)
+  (*  Simplifie : cherche le 1er mot de phrase dans str             *)
+  (*  Retour : AX = numero de mot (1-based), 0 si non trouve       *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_WORDPOS');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'SI');
+  (* Extract first word of phrase into BIF2BUF *)
+  EmitInstrAB('MOV', 'SI', '[BP+8]');
+  EmitLabel('_RXB2_WP_SS');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', ''' ''');
+  EmitInstrA('JNE', '_RXB2_WP_S1');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', '_RXB2_WP_SS');
+  EmitLabel('_RXB2_WP_S1');
+  EmitInstrAB('LEA', 'DI', '_RX_BIF2BUF');
+  EmitLabel('_RXB2_WP_CW');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', '_RXB2_WP_CE');
+  EmitInstrAB('CMP', 'AL', ''' ''');
+  EmitInstrA('JE', '_RXB2_WP_CE');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', '_RXB2_WP_CW');
+  EmitLabel('_RXB2_WP_CE');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  (* Now scan words of str *)
+  EmitInstrAB('MOV', 'SI', '[BP+6]');
+  EmitInstrAB('XOR', 'DX', 'DX');       (* word counter *)
+  EmitLabel('_RXB2_WP_NW');
+  (* skip spaces *)
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstrA('JE', '_RXB2_WP_NF');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', ''' ''');
+  EmitInstrA('JNE', '_RXB2_WP_GW');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', '_RXB2_WP_NW');
+  EmitLabel('_RXB2_WP_GW');
+  EmitInstrA('INC', 'DX');
+  (* Compare this word with BIF2BUF *)
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('LEA', 'DI', '_RX_BIF2BUF');
+  EmitLabel('_RXB2_WP_CM');
+  EmitInstrAB('MOV', 'AL', '[DI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JNE', '_RXB2_WP_C2');
+  (* end of phrase word: check str word also ended *)
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', ''' ''');
+  EmitInstrA('JE', '_RXB2_WP_FD');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstrA('JE', '_RXB2_WP_FD');
+  EmitInstrA('JMP', '_RXB2_WP_NM');
+  EmitLabel('_RXB2_WP_C2');
+  EmitInstrAB('MOV', 'BL', '[SI]');
+  EmitInstrAB('CMP', 'AL', 'BL');
+  EmitInstrA('JNE', '_RXB2_WP_NM');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', '_RXB2_WP_CM');
+  EmitLabel('_RXB2_WP_NM');
+  EmitInstrA('POP', 'SI');
+  (* skip rest of word *)
+  EmitLabel('_RXB2_WP_SR');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstrA('JE', '_RXB2_WP_NF');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', ''' ''');
+  EmitInstrA('JE', '_RXB2_WP_NW');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', '_RXB2_WP_SR');
+  EmitLabel('_RXB2_WP_FD');
+  EmitInstrA('POP', 'SI');             (* balance the push *)
+  EmitInstrAB('MOV', 'AX', 'DX');
+  EmitInstrA('JMP', '_RXB2_WP_DN');
+  EmitLabel('_RXB2_WP_NF');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitLabel('_RXB2_WP_DN');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_SUBWORD(str, n, len) : extraire mots n a n+len-1        *)
+  (*  3 args : str=[BP+8], n=[BP+6], len=[BP+4]                   *)
+  (*  len=0 -> tous les mots restants                              *)
+  (*  Retour : AX = OFFSET _RX_BIF2BUF                            *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_SUBWORD');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', '[BP+8]');
+  EmitInstrAB('MOV', 'CX', '[BP+6]');   (* n = target word *)
+  EmitInstrAB('MOV', 'BX', '[BP+4]');   (* len *)
+  EmitInstrAB('LEA', 'DI', '_RX_BIF2BUF');
+  EmitInstrAB('XOR', 'DX', 'DX');       (* word counter *)
+  (* skip to word n *)
+  EmitLabel('_RXB2_SW_SK');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstrA('JE', '_RXB2_SW_ED');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', ''' ''');
+  EmitInstrA('JNE', '_RXB2_SW_FW');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', '_RXB2_SW_SK');
+  EmitLabel('_RXB2_SW_FW');
+  EmitInstrA('INC', 'DX');
+  EmitInstrAB('CMP', 'DX', 'CX');
+  EmitInstrA('JGE', '_RXB2_SW_CP');
+  (* skip this word *)
+  EmitLabel('_RXB2_SW_S2');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstrA('JE', '_RXB2_SW_ED');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', ''' ''');
+  EmitInstrA('JE', '_RXB2_SW_SK');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', '_RXB2_SW_S2');
+  (* copy words: BX words or rest if BX=0 *)
+  EmitLabel('_RXB2_SW_CP');
+  EmitInstrAB('CMP', 'BX', '0');
+  EmitInstrA('JE', '_RXB2_SW_AL');
+  (* copy BX words *)
+  EmitInstrAB('MOV', 'CX', 'BX');
+  EmitLabel('_RXB2_SW_CW');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', '_RXB2_SW_ED');
+  (* skip leading spaces between words *)
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstrA('JE', '_RXB2_SW_ED');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', ''' ''');
+  EmitInstrA('JNE', '_RXB2_SW_CC');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', ''' ''');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', '_RXB2_SW_CW');
+  EmitLabel('_RXB2_SW_CC');
+  (* copy one word *)
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', '_RXB2_SW_D2');
+  EmitInstrAB('CMP', 'AL', ''' ''');
+  EmitInstrA('JE', '_RXB2_SW_D2');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', '_RXB2_SW_CC');
+  EmitLabel('_RXB2_SW_D2');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', '_RXB2_SW_CW');
+  (* copy all remaining *)
+  EmitLabel('_RXB2_SW_AL');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', '_RXB2_SW_ED');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', '_RXB2_SW_AL');
+  EmitLabel('_RXB2_SW_ED');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _RX_BIF2BUF');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_DELWORD(str, n, len) : supprimer mots n a n+len-1       *)
+  (*  3 args : str=[BP+8], n=[BP+6], len=[BP+4]                   *)
+  (*  len=0 -> supprimer tous les mots a partir de n               *)
+  (*  Retour : AX = OFFSET _RX_BIF2BUF                            *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_DELWORD');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', '[BP+8]');
+  EmitInstrAB('MOV', 'CX', '[BP+6]');   (* n *)
+  EmitInstrAB('MOV', 'BX', '[BP+4]');   (* len *)
+  EmitInstrAB('LEA', 'DI', '_RX_BIF2BUF');
+  EmitInstrAB('XOR', 'DX', 'DX');       (* word counter *)
+  (* copy words before n *)
+  EmitLabel('_RXB2_DW_LP');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstrA('JE', '_RXB2_DW_ED');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', ''' ''');
+  EmitInstrA('JNE', '_RXB2_DW_FW');
+  (* space: copy if before word n *)
+  EmitInstrAB('MOV', 'AL', ''' ''');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', '_RXB2_DW_LP');
+  EmitLabel('_RXB2_DW_FW');
+  EmitInstrA('INC', 'DX');
+  EmitInstrAB('CMP', 'DX', 'CX');
+  EmitInstrA('JGE', '_RXB2_DW_DL');
+  (* copy this word *)
+  EmitLabel('_RXB2_DW_CW');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', '_RXB2_DW_ED');
+  EmitInstrAB('CMP', 'AL', ''' ''');
+  EmitInstrA('JE', '_RXB2_DW_LP');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', '_RXB2_DW_CW');
+  (* delete phase: skip len words *)
+  EmitLabel('_RXB2_DW_DL');
+  EmitInstrAB('CMP', 'BX', '0');
+  EmitInstrA('JE', '_RXB2_DW_RA');     (* len=0 -> delete all rest *)
+  EmitInstrAB('MOV', 'CX', 'BX');       (* CX = words to delete *)
+  EmitLabel('_RXB2_DW_DS');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', '_RXB2_DW_CR');
+  (* skip spaces *)
+  EmitLabel('_RXB2_DW_D2');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstrA('JE', '_RXB2_DW_ED');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', ''' ''');
+  EmitInstrA('JNE', '_RXB2_DW_D3');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', '_RXB2_DW_D2');
+  EmitLabel('_RXB2_DW_D3');
+  (* skip one word *)
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstrA('JE', '_RXB2_DW_ED');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', ''' ''');
+  EmitInstrA('JE', '_RXB2_DW_D4');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', '_RXB2_DW_D3');
+  EmitLabel('_RXB2_DW_D4');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', '_RXB2_DW_DS');
+  (* copy remaining after deleted section *)
+  EmitLabel('_RXB2_DW_CR');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', '_RXB2_DW_ED');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', '_RXB2_DW_CR');
+  EmitLabel('_RXB2_DW_RA');
+  (* len=0: delete all remaining, done *)
+  EmitLabel('_RXB2_DW_ED');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _RX_BIF2BUF');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_C2D(str) : premier caractere -> valeur ASCII            *)
+  (*  1 arg : str=[BP+4]                                           *)
+  (*  Retour : AX = code ASCII                                     *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_C2D');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', '[BP+4]');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_C2X(str) : premier caractere -> 2 chiffres hex          *)
+  (*  1 arg : str=[BP+4]                                           *)
+  (*  Retour : AX = OFFSET _RX_BIF2BUF                            *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_C2X');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', '[BP+4]');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('LEA', 'DI', '_RX_BIF2BUF');
+  (* high nibble *)
+  EmitInstrAB('MOV', 'BL', 'AL');
+  EmitInstrAB('SHR', 'BL', '1');
+  EmitInstrAB('SHR', 'BL', '1');
+  EmitInstrAB('SHR', 'BL', '1');
+  EmitInstrAB('SHR', 'BL', '1');
+  EmitInstrAB('AND', 'BL', '0Fh');
+  EmitInstrAB('CMP', 'BL', '10');
+  EmitInstrA('JB', '_RXB2_C2X_D1');
+  EmitInstrAB('ADD', 'BL', '''A''');
+  EmitInstrAB('SUB', 'BL', '10');
+  EmitInstrA('JMP', '_RXB2_C2X_S1');
+  EmitLabel('_RXB2_C2X_D1');
+  EmitInstrAB('ADD', 'BL', '''0''');
+  EmitLabel('_RXB2_C2X_S1');
+  EmitInstrAB('MOV', '[DI]', 'BL');
+  EmitInstrA('INC', 'DI');
+  (* low nibble *)
+  EmitInstrAB('MOV', 'BL', 'AL');
+  EmitInstrAB('AND', 'BL', '0Fh');
+  EmitInstrAB('CMP', 'BL', '10');
+  EmitInstrA('JB', '_RXB2_C2X_D2');
+  EmitInstrAB('ADD', 'BL', '''A''');
+  EmitInstrAB('SUB', 'BL', '10');
+  EmitInstrA('JMP', '_RXB2_C2X_S2');
+  EmitLabel('_RXB2_C2X_D2');
+  EmitInstrAB('ADD', 'BL', '''0''');
+  EmitLabel('_RXB2_C2X_S2');
+  EmitInstrAB('MOV', '[DI]', 'BL');
+  EmitInstrA('INC', 'DI');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _RX_BIF2BUF');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_D2C(n) : entier -> caractere (1 char string)            *)
+  (*  1 arg : n=[BP+4]                                             *)
+  (*  Retour : AX = OFFSET _RX_BIF2BUF                            *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_D2C');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('LEA', 'DI', '_RX_BIF2BUF');
+  EmitInstrAB('MOV', 'AX', '[BP+4]');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrAB('MOV', 'BYTE PTR [DI+1]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _RX_BIF2BUF');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_D2X(n) : entier -> chaine hexadecimale                  *)
+  (*  1 arg : n=[BP+4]                                             *)
+  (*  Retour : AX = OFFSET _RX_BIF2BUF                            *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_D2X');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'AX', '[BP+4]');
+  EmitInstrAB('LEA', 'DI', '_RX_BIF2BUF');
+  EmitInstrAB('ADD', 'DI', '8');         (* write from end *)
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrA('DEC', 'DI');
+  EmitInstrAB('MOV', 'BX', '16');
+  EmitInstrAB('OR', 'AX', 'AX');
+  EmitInstrA('JNZ', '_RXB2_D2X_LP');
+  (* special case: 0 *)
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '''0''');
+  EmitInstrA('JMP', '_RXB2_D2X_R');
+  EmitLabel('_RXB2_D2X_LP');
+  EmitInstrAB('XOR', 'DX', 'DX');
+  EmitInstrA('DIV', 'BX');
+  EmitInstrAB('CMP', 'DL', '10');
+  EmitInstrA('JB', '_RXB2_D2X_DG');
+  EmitInstrAB('ADD', 'DL', '''A''');
+  EmitInstrAB('SUB', 'DL', '10');
+  EmitInstrA('JMP', '_RXB2_D2X_ST');
+  EmitLabel('_RXB2_D2X_DG');
+  EmitInstrAB('ADD', 'DL', '''0''');
+  EmitLabel('_RXB2_D2X_ST');
+  EmitInstrAB('MOV', '[DI]', 'DL');
+  EmitInstrA('DEC', 'DI');
+  EmitInstrAB('OR', 'AX', 'AX');
+  EmitInstrA('JNZ', '_RXB2_D2X_LP');
+  EmitInstrA('INC', 'DI');
+  EmitLabel('_RXB2_D2X_R');
+  (* DI points to start of hex string, copy to front of BIF2BUF *)
+  EmitInstrAB('MOV', 'SI', 'DI');
+  EmitInstrAB('LEA', 'DI', '_RX_BIF2BUF');
+  EmitInstrAB('CMP', 'SI', 'DI');
+  EmitInstrA('JE', '_RXB2_D2X_DN');
+  EmitInstrA('CALL', '_RXRT_STRCPY');
+  EmitLabel('_RXB2_D2X_DN');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _RX_BIF2BUF');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_X2C(hex) : 2 chiffres hex -> 1 caractere                *)
+  (*  1 arg : hex=[BP+4]                                           *)
+  (*  Retour : AX = OFFSET _RX_BIF2BUF                            *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_X2C');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', '[BP+4]');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  (* high nibble *)
+  EmitInstrAB('MOV', 'BL', '[SI]');
+  EmitInstrAB('CMP', 'BL', '0');
+  EmitInstrA('JE', '_RXB2_X2C_DN');
+  EmitInstrAB('CMP', 'BL', '''a''');
+  EmitInstrA('JB', '_RXB2_X2C_UA');
+  EmitInstrAB('SUB', 'BL', '32');        (* to upper *)
+  EmitLabel('_RXB2_X2C_UA');
+  EmitInstrAB('CMP', 'BL', '''A''');
+  EmitInstrA('JB', '_RXB2_X2C_D1');
+  EmitInstrAB('SUB', 'BL', '''A''');
+  EmitInstrAB('ADD', 'BL', '10');
+  EmitInstrA('JMP', '_RXB2_X2C_H1');
+  EmitLabel('_RXB2_X2C_D1');
+  EmitInstrAB('SUB', 'BL', '''0''');
+  EmitLabel('_RXB2_X2C_H1');
+  EmitInstrAB('SHL', 'BL', '1');
+  EmitInstrAB('SHL', 'BL', '1');
+  EmitInstrAB('SHL', 'BL', '1');
+  EmitInstrAB('SHL', 'BL', '1');
+  EmitInstrAB('MOV', 'AL', 'BL');
+  (* low nibble *)
+  EmitInstrA('INC', 'SI');
+  EmitInstrAB('MOV', 'BL', '[SI]');
+  EmitInstrAB('CMP', 'BL', '0');
+  EmitInstrA('JE', '_RXB2_X2C_DN');
+  EmitInstrAB('CMP', 'BL', '''a''');
+  EmitInstrA('JB', '_RXB2_X2C_UB');
+  EmitInstrAB('SUB', 'BL', '32');
+  EmitLabel('_RXB2_X2C_UB');
+  EmitInstrAB('CMP', 'BL', '''A''');
+  EmitInstrA('JB', '_RXB2_X2C_D2');
+  EmitInstrAB('SUB', 'BL', '''A''');
+  EmitInstrAB('ADD', 'BL', '10');
+  EmitInstrA('JMP', '_RXB2_X2C_H2');
+  EmitLabel('_RXB2_X2C_D2');
+  EmitInstrAB('SUB', 'BL', '''0''');
+  EmitLabel('_RXB2_X2C_H2');
+  EmitInstrAB('OR', 'AL', 'BL');
+  EmitLabel('_RXB2_X2C_DN');
+  EmitInstrAB('LEA', 'DI', '_RX_BIF2BUF');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrAB('MOV', 'BYTE PTR [DI+1]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _RX_BIF2BUF');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_X2D(hex) : chaine hex -> entier                         *)
+  (*  1 arg : hex=[BP+4]                                           *)
+  (*  Retour : AX = valeur entiere                                 *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_X2D');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', '[BP+4]');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitLabel('_RXB2_X2D_LP');
+  EmitInstrAB('MOV', 'BL', '[SI]');
+  EmitInstrAB('CMP', 'BL', '0');
+  EmitInstrA('JE', '_RXB2_X2D_DN');
+  EmitInstrAB('CMP', 'BL', '''a''');
+  EmitInstrA('JB', '_RXB2_X2D_UA');
+  EmitInstrAB('SUB', 'BL', '32');
+  EmitLabel('_RXB2_X2D_UA');
+  EmitInstrAB('SHL', 'AX', '1');
+  EmitInstrAB('SHL', 'AX', '1');
+  EmitInstrAB('SHL', 'AX', '1');
+  EmitInstrAB('SHL', 'AX', '1');
+  EmitInstrAB('CMP', 'BL', '''A''');
+  EmitInstrA('JB', '_RXB2_X2D_DG');
+  EmitInstrAB('SUB', 'BL', '''A''');
+  EmitInstrAB('ADD', 'BL', '10');
+  EmitInstrA('JMP', '_RXB2_X2D_AD');
+  EmitLabel('_RXB2_X2D_DG');
+  EmitInstrAB('SUB', 'BL', '''0''');
+  EmitLabel('_RXB2_X2D_AD');
+  EmitInstrAB('XOR', 'BH', 'BH');
+  EmitInstrAB('OR', 'AX', 'BX');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', '_RXB2_X2D_LP');
+  EmitLabel('_RXB2_X2D_DN');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_B2X(bin) : chaine binaire -> chaine hex                  *)
+  (*  1 arg : bin=[BP+4]                                           *)
+  (*  Retour : AX = OFFSET _RX_BIF2BUF                            *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_B2X');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', '[BP+4]');
+  (* First: convert binary string to number in AX *)
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitLabel('_RXB2_B2X_LP');
+  EmitInstrAB('MOV', 'BL', '[SI]');
+  EmitInstrAB('CMP', 'BL', '0');
+  EmitInstrA('JE', '_RXB2_B2X_CV');
+  EmitInstrAB('SHL', 'AX', '1');
+  EmitInstrAB('CMP', 'BL', '''1''');
+  EmitInstrA('JNE', '_RXB2_B2X_NX');
+  EmitInstrA('INC', 'AX');
+  EmitLabel('_RXB2_B2X_NX');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', '_RXB2_B2X_LP');
+  EmitLabel('_RXB2_B2X_CV');
+  (* Now AX has the value, convert to hex like D2X *)
+  EmitInstrAB('LEA', 'DI', '_RX_BIF2BUF');
+  EmitInstrAB('ADD', 'DI', '8');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrA('DEC', 'DI');
+  EmitInstrAB('MOV', 'BX', '16');
+  EmitInstrAB('OR', 'AX', 'AX');
+  EmitInstrA('JNZ', '_RXB2_B2X_DL');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '''0''');
+  EmitInstrA('JMP', '_RXB2_B2X_R');
+  EmitLabel('_RXB2_B2X_DL');
+  EmitInstrAB('XOR', 'DX', 'DX');
+  EmitInstrA('DIV', 'BX');
+  EmitInstrAB('CMP', 'DL', '10');
+  EmitInstrA('JB', '_RXB2_B2X_D');
+  EmitInstrAB('ADD', 'DL', '''A''');
+  EmitInstrAB('SUB', 'DL', '10');
+  EmitInstrA('JMP', '_RXB2_B2X_S');
+  EmitLabel('_RXB2_B2X_D');
+  EmitInstrAB('ADD', 'DL', '''0''');
+  EmitLabel('_RXB2_B2X_S');
+  EmitInstrAB('MOV', '[DI]', 'DL');
+  EmitInstrA('DEC', 'DI');
+  EmitInstrAB('OR', 'AX', 'AX');
+  EmitInstrA('JNZ', '_RXB2_B2X_DL');
+  EmitInstrA('INC', 'DI');
+  EmitLabel('_RXB2_B2X_R');
+  EmitInstrAB('MOV', 'SI', 'DI');
+  EmitInstrAB('LEA', 'DI', '_RX_BIF2BUF');
+  EmitInstrAB('CMP', 'SI', 'DI');
+  EmitInstrA('JE', '_RXB2_B2X_DN');
+  EmitInstrA('CALL', '_RXRT_STRCPY');
+  EmitLabel('_RXB2_B2X_DN');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _RX_BIF2BUF');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_X2B(hex) : chaine hex -> chaine binaire                  *)
+  (*  1 arg : hex=[BP+4]                                           *)
+  (*  Retour : AX = OFFSET _RX_BIF2BUF                            *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_X2B');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', '[BP+4]');
+  EmitInstrAB('LEA', 'DI', '_RX_BIF2BUF');
+  EmitLabel('_RXB2_X2B_LP');
+  EmitInstrAB('MOV', 'BL', '[SI]');
+  EmitInstrAB('CMP', 'BL', '0');
+  EmitInstrA('JE', '_RXB2_X2B_DN');
+  (* convert hex char to 4 bits *)
+  EmitInstrAB('CMP', 'BL', '''a''');
+  EmitInstrA('JB', '_RXB2_X2B_UA');
+  EmitInstrAB('SUB', 'BL', '32');
+  EmitLabel('_RXB2_X2B_UA');
+  EmitInstrAB('CMP', 'BL', '''A''');
+  EmitInstrA('JB', '_RXB2_X2B_DG');
+  EmitInstrAB('SUB', 'BL', '''A''');
+  EmitInstrAB('ADD', 'BL', '10');
+  EmitInstrA('JMP', '_RXB2_X2B_CV');
+  EmitLabel('_RXB2_X2B_DG');
+  EmitInstrAB('SUB', 'BL', '''0''');
+  EmitLabel('_RXB2_X2B_CV');
+  (* BL = 0..15, emit 4 bits *)
+  EmitInstrAB('MOV', 'CX', '4');
+  EmitLabel('_RXB2_X2B_BT');
+  EmitInstrAB('TEST', 'BL', '8');
+  EmitInstrA('JZ', '_RXB2_X2B_B0');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '''1''');
+  EmitInstrA('JMP', '_RXB2_X2B_BN');
+  EmitLabel('_RXB2_X2B_B0');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '''0''');
+  EmitLabel('_RXB2_X2B_BN');
+  EmitInstrA('INC', 'DI');
+  EmitInstrAB('SHL', 'BL', '1');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JNZ', '_RXB2_X2B_BT');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', '_RXB2_X2B_LP');
+  EmitLabel('_RXB2_X2B_DN');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _RX_BIF2BUF');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_ABS(n) : valeur absolue                                 *)
+  (*  1 arg : n=[BP+4] (pointeur chaine)                           *)
+  (*  Retour : AX = |n| (entier)                                   *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_ABS');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', '[BP+4]');
+  EmitInstrA('CALL', '_RXRT_STRTONUM');
+  EmitInstrAB('OR', 'AX', 'AX');
+  EmitInstrA('JNS', '_RXB2_ABS_DN');
+  EmitInstrA('NEG', 'AX');
+  EmitLabel('_RXB2_ABS_DN');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_SIGN(n) : signe (-1, 0, +1)                            *)
+  (*  1 arg : n=[BP+4] (pointeur chaine)                           *)
+  (*  Retour : AX = -1, 0 ou 1                                    *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_SIGN');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', '[BP+4]');
+  EmitInstrA('CALL', '_RXRT_STRTONUM');
+  EmitInstrAB('CMP', 'AX', '0');
+  EmitInstrA('JE', '_RXB2_SGN_DN');
+  EmitInstrA('JG', '_RXB2_SGN_P');
+  EmitInstrAB('MOV', 'AX', '-1');
+  EmitInstrA('JMP', '_RXB2_SGN_DN');
+  EmitLabel('_RXB2_SGN_P');
+  EmitInstrAB('MOV', 'AX', '1');
+  EmitLabel('_RXB2_SGN_DN');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_MAX(a, b) : maximum de deux entiers                     *)
+  (*  2 args : a=[BP+6], b=[BP+4] (pointeurs chaine)              *)
+  (*  Retour : AX = max(a, b)                                     *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_MAX');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', '[BP+6]');
+  EmitInstrA('CALL', '_RXRT_STRTONUM');
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstrAB('MOV', 'SI', '[BP+4]');
+  EmitInstrA('CALL', '_RXRT_STRTONUM');
+  EmitInstrAB('CMP', 'BX', 'AX');
+  EmitInstrA('JLE', '_RXB2_MAX_DN');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitLabel('_RXB2_MAX_DN');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_MIN(a, b) : minimum de deux entiers                     *)
+  (*  2 args : a=[BP+6], b=[BP+4] (pointeurs chaine)              *)
+  (*  Retour : AX = min(a, b)                                     *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_MIN');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', '[BP+6]');
+  EmitInstrA('CALL', '_RXRT_STRTONUM');
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstrAB('MOV', 'SI', '[BP+4]');
+  EmitInstrA('CALL', '_RXRT_STRTONUM');
+  EmitInstrAB('CMP', 'BX', 'AX');
+  EmitInstrA('JGE', '_RXB2_MIN_DN');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitLabel('_RXB2_MIN_DN');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_TRUNC(n, d) : tronquer (pour d=0 : partie entiere)     *)
+  (*  2 args : n=[BP+6] (ptr chaine), d=[BP+4] (entier)           *)
+  (*  Retour : AX = partie entiere                                 *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_TRUNC');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', '[BP+6]');
+  EmitInstrA('CALL', '_RXRT_STRTONUM');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_FORMAT(n) : formater un nombre (simplifie : = TRUNC)    *)
+  (*  1 arg : n=[BP+4] (ptr chaine)                                *)
+  (*  Retour : AX = entier                                         *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_FORMAT');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', '[BP+4]');
+  EmitInstrA('CALL', '_RXRT_STRTONUM');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_RANDOM(min, max, seed) : nombre pseudo-aleatoire         *)
+  (*  3 args : min=[BP+8], max=[BP+6], seed=[BP+4]                *)
+  (*  Retour : AX = nombre entre min et max                        *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_RANDOM');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'DX');
+  (* Get timer tick for pseudo-random *)
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstrAB('MOV', 'AH', '0');
+  EmitRaw('        INT     1Ah');       (* CX:DX = timer ticks *)
+  EmitInstrAB('MOV', 'AX', 'DX');       (* use low word *)
+  (* AX = pseudo-random, compute AX mod (max-min+1) + min *)
+  EmitInstrAB('MOV', 'BX', '[BP+6]');   (* max *)
+  EmitInstrAB('SUB', 'BX', '[BP+8]');   (* max - min *)
+  EmitInstrA('INC', 'BX');              (* range = max - min + 1 *)
+  EmitInstrAB('XOR', 'DX', 'DX');
+  EmitInstrA('DIV', 'BX');              (* DX = AX mod range *)
+  EmitInstrAB('MOV', 'AX', 'DX');
+  EmitInstrAB('ADD', 'AX', '[BP+8]');   (* AX = remainder + min *)
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_TIME(opt) : heure courante "HH:MM:SS"                   *)
+  (*  1 arg : opt=[BP+4] (ignore)                                  *)
+  (*  Retour : AX = OFFSET _RX_BIF2BUF                            *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_TIME');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('LEA', 'DI', '_RX_BIF2BUF');
+  EmitInstrAB('MOV', 'AH', '2Ch');
+  EmitRaw('        INT     21h');       (* CH=hour CL=min DH=sec *)
+  (* Write HH *)
+  EmitInstrAB('MOV', 'AL', 'CH');
+  EmitInstrAB('XOR', 'AH', 'AH');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrAB('MOV', 'BL', '10');
+  EmitInstrAB('XOR', 'AH', 'AH');
+  EmitInstrA('DIV', 'BL');              (* AL=tens, AH=ones *)
+  EmitInstrAB('ADD', 'AL', '''0''');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'DI');
+  EmitInstrAB('ADD', 'AH', '''0''');
+  EmitInstrAB('MOV', '[DI]', 'AH');
+  EmitInstrA('INC', 'DI');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', ''':''');
+  EmitInstrA('INC', 'DI');
+  (* Write MM *)
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrAB('MOV', 'AL', 'CL');
+  EmitInstrAB('XOR', 'AH', 'AH');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrAB('MOV', 'BL', '10');
+  EmitInstrA('DIV', 'BL');
+  EmitInstrAB('ADD', 'AL', '''0''');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'DI');
+  EmitInstrAB('ADD', 'AH', '''0''');
+  EmitInstrAB('MOV', '[DI]', 'AH');
+  EmitInstrA('INC', 'DI');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', ''':''');
+  EmitInstrA('INC', 'DI');
+  (* Write SS *)
+  EmitInstrA('POP', 'DX');
+  EmitInstrAB('MOV', 'AL', 'DH');
+  EmitInstrAB('XOR', 'AH', 'AH');
+  EmitInstrAB('MOV', 'BL', '10');
+  EmitInstrA('DIV', 'BL');
+  EmitInstrAB('ADD', 'AL', '''0''');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'DI');
+  EmitInstrAB('ADD', 'AH', '''0''');
+  EmitInstrAB('MOV', '[DI]', 'AH');
+  EmitInstrA('INC', 'DI');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _RX_BIF2BUF');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_DATE(opt) : date courante "DD/MM/YYYY"                   *)
+  (*  1 arg : opt=[BP+4] (ignore)                                  *)
+  (*  Retour : AX = OFFSET _RX_BIF2BUF                            *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_DATE');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('LEA', 'DI', '_RX_BIF2BUF');
+  EmitInstrAB('MOV', 'AH', '2Ah');
+  EmitRaw('        INT     21h');       (* CX=year DH=month DL=day *)
+  EmitInstrA('PUSH', 'CX');             (* save year *)
+  (* Write DD *)
+  EmitInstrAB('MOV', 'AL', 'DL');
+  EmitInstrAB('XOR', 'AH', 'AH');
+  EmitInstrAB('MOV', 'BL', '10');
+  EmitInstrA('DIV', 'BL');
+  EmitInstrAB('ADD', 'AL', '''0''');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'DI');
+  EmitInstrAB('ADD', 'AH', '''0''');
+  EmitInstrAB('MOV', '[DI]', 'AH');
+  EmitInstrA('INC', 'DI');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '''/''');
+  EmitInstrA('INC', 'DI');
+  (* Write MM *)
+  EmitInstrAB('MOV', 'AL', 'DH');
+  EmitInstrAB('XOR', 'AH', 'AH');
+  EmitInstrAB('MOV', 'BL', '10');
+  EmitInstrA('DIV', 'BL');
+  EmitInstrAB('ADD', 'AL', '''0''');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'DI');
+  EmitInstrAB('ADD', 'AH', '''0''');
+  EmitInstrAB('MOV', '[DI]', 'AH');
+  EmitInstrA('INC', 'DI');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '''/''');
+  EmitInstrA('INC', 'DI');
+  (* Write YYYY : CX = year (e.g. 1993) *)
+  EmitInstrA('POP', 'AX');              (* AX = year *)
+  EmitInstrAB('MOV', 'BX', '1000');
+  EmitInstrAB('XOR', 'DX', 'DX');
+  EmitInstrA('DIV', 'BX');              (* AX=thousands *)
+  EmitInstrAB('ADD', 'AL', '''0''');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'DI');
+  EmitInstrAB('MOV', 'AX', 'DX');       (* remainder *)
+  EmitInstrAB('MOV', 'BL', '100');
+  EmitInstrAB('XOR', 'AH', 'AH');
+  EmitInstrA('DIV', 'BL');              (* AL=hundreds, AH=remainder *)
+  EmitInstrAB('ADD', 'AL', '''0''');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'DI');
+  EmitInstrAB('MOV', 'AL', 'AH');
+  EmitInstrAB('XOR', 'AH', 'AH');
+  EmitInstrAB('MOV', 'BL', '10');
+  EmitInstrA('DIV', 'BL');
+  EmitInstrAB('ADD', 'AL', '''0''');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'DI');
+  EmitInstrAB('ADD', 'AH', '''0''');
+  EmitInstrAB('MOV', '[DI]', 'AH');
+  EmitInstrA('INC', 'DI');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _RX_BIF2BUF');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_DATATYPE(str, type) : verifier le type de donnees        *)
+  (*  2 args : str=[BP+6], type=[BP+4]                             *)
+  (*  Simplifie : retourne "NUM" si numerique, "CHAR" sinon        *)
+  (*  Retour : AX = OFFSET _RX_BIF2BUF                            *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_DATATYPE');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', '[BP+6]');
+  EmitInstrAB('LEA', 'DI', '_RX_BIF2BUF');
+  (* Scan string: check if all chars are digit/sign/dot/space *)
+  EmitLabel('_RXB2_DT_LP');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', '_RXB2_DT_NUM');
+  EmitInstrAB('CMP', 'AL', ''' ''');
+  EmitInstrA('JE', '_RXB2_DT_NX');
+  EmitInstrAB('CMP', 'AL', '''+''');
+  EmitInstrA('JE', '_RXB2_DT_NX');
+  EmitInstrAB('CMP', 'AL', '''-''');
+  EmitInstrA('JE', '_RXB2_DT_NX');
+  EmitInstrAB('CMP', 'AL', '''.''');
+  EmitInstrA('JE', '_RXB2_DT_NX');
+  EmitInstrAB('CMP', 'AL', '''0''');
+  EmitInstrA('JB', '_RXB2_DT_CHR');
+  EmitInstrAB('CMP', 'AL', '''9''');
+  EmitInstrA('JA', '_RXB2_DT_CHR');
+  EmitLabel('_RXB2_DT_NX');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', '_RXB2_DT_LP');
+  EmitLabel('_RXB2_DT_NUM');
+  (* Write "NUM" *)
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '''N''');
+  EmitInstrAB('MOV', 'BYTE PTR [DI+1]', '''U''');
+  EmitInstrAB('MOV', 'BYTE PTR [DI+2]', '''M''');
+  EmitInstrAB('MOV', 'BYTE PTR [DI+3]', '0');
+  EmitInstrA('JMP', '_RXB2_DT_DN');
+  EmitLabel('_RXB2_DT_CHR');
+  (* Write "CHAR" *)
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '''C''');
+  EmitInstrAB('MOV', 'BYTE PTR [DI+1]', '''H''');
+  EmitInstrAB('MOV', 'BYTE PTR [DI+2]', '''A''');
+  EmitInstrAB('MOV', 'BYTE PTR [DI+3]', '''R''');
+  EmitInstrAB('MOV', 'BYTE PTR [DI+4]', '0');
+  EmitLabel('_RXB2_DT_DN');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _RX_BIF2BUF');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_SYMBOL(name) : type de symbole (simplifie : "LIT")      *)
+  (*  1 arg : name=[BP+4]                                          *)
+  (*  Retour : AX = OFFSET _RX_BIF2BUF                            *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_SYMBOL');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('LEA', 'DI', '_RX_BIF2BUF');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '''L''');
+  EmitInstrAB('MOV', 'BYTE PTR [DI+1]', '''I''');
+  EmitInstrAB('MOV', 'BYTE PTR [DI+2]', '''T''');
+  EmitInstrAB('MOV', 'BYTE PTR [DI+3]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _RX_BIF2BUF');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_VALUE(name) : valeur (simplifie : retourne l argument)  *)
+  (*  1 arg : name=[BP+4]                                          *)
+  (*  Retour : AX = [BP+4]                                        *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_VALUE');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrAB('MOV', 'AX', '[BP+4]');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_ERRORTEXT(n) : texte erreur (simplifie : vide)          *)
+  (*  1 arg : n=[BP+4]                                             *)
+  (*  Retour : AX = OFFSET _RX_BIF2BUF (chaine vide)              *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_ERRORTEXT');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('LEA', 'DI', '_RX_BIF2BUF');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _RX_BIF2BUF');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+End;
+
 { ============================================================
   TODO 16 - INSTRUCTION PARSE [IMPLEMENTE]
   ============================================================ }
@@ -4313,6 +5530,8 @@ Begin
   DataAddWord('_RX_PARSESRC', 0);                  (* pointeur source PARSE     *)
   (* TODO 17 - Buffer pour RESULT des procedures *)
   DataAddBuffer('_RX_RESBUF', 256);               (* buffer RESULT procedure   *)
+  (* TODO 18 - Buffer fonctions integrees partie 2 *)
+  DataAddBuffer('_RX_BIF2BUF', 256);              (* buffer BIF partie 2       *)
 End;
 
 (* ============================================================
@@ -4818,16 +6037,34 @@ Begin
   End
   Else If UName = 'WORDPOS' Then
   Begin
+    If ArgCount < 3 Then
+    Begin
+      EmitInstrAB('MOV', 'AX', '1');  (* start=1 par defaut *)
+      EmitInstrA('PUSH', 'AX');
+      Inc(StackAdj, 2);
+    End;
     EmitInstr('CALL', '_RXB_WORDPOS');
     Res.TypeIdx := TY_IDX_INTEGER;
   End
   Else If UName = 'SUBWORD' Then
   Begin
+    If ArgCount < 3 Then
+    Begin
+      EmitInstrAB('MOV', 'AX', '0');
+      EmitInstrA('PUSH', 'AX');
+      Inc(StackAdj, 2);
+    End;
     EmitInstr('CALL', '_RXB_SUBWORD');
     Res.TypeIdx := TY_IDX_STRING;
   End
   Else If UName = 'DELWORD' Then
   Begin
+    If ArgCount < 3 Then
+    Begin
+      EmitInstrAB('MOV', 'AX', '0');
+      EmitInstrA('PUSH', 'AX');
+      Inc(StackAdj, 2);
+    End;
     EmitInstr('CALL', '_RXB_DELWORD');
     Res.TypeIdx := TY_IDX_STRING;
   End
@@ -4855,6 +6092,12 @@ Begin
   End
   Else If UName = 'TRUNC' Then
   Begin
+    If ArgCount < 2 Then
+    Begin
+      EmitInstrAB('MOV', 'AX', '0');
+      EmitInstrA('PUSH', 'AX');
+      Inc(StackAdj, 2);
+    End;
     EmitInstr('CALL', '_RXB_TRUNC');
     Res.TypeIdx := TY_IDX_INTEGER;
   End
@@ -4865,6 +6108,24 @@ Begin
   End
   Else If UName = 'RANDOM' Then
   Begin
+    If ArgCount < 3 Then
+    Begin
+      EmitInstrAB('MOV', 'AX', '0');
+      EmitInstrA('PUSH', 'AX');
+      Inc(StackAdj, 2);
+    End;
+    If ArgCount < 2 Then
+    Begin
+      EmitInstrAB('MOV', 'AX', '999'); (* max=999 par defaut *)
+      EmitInstrA('PUSH', 'AX');
+      Inc(StackAdj, 2);
+    End;
+    If ArgCount < 1 Then
+    Begin
+      EmitInstrAB('MOV', 'AX', '0');
+      EmitInstrA('PUSH', 'AX');
+      Inc(StackAdj, 2);
+    End;
     EmitInstr('CALL', '_RXB_RANDOM');
     Res.TypeIdx := TY_IDX_INTEGER;
   End
@@ -4914,6 +6175,12 @@ Begin
   (* --- Fonctions d information --- *)
   Else If UName = 'DATATYPE' Then
   Begin
+    If ArgCount < 2 Then
+    Begin
+      EmitInstrAB('MOV', 'AX', '0');
+      EmitInstrA('PUSH', 'AX');
+      Inc(StackAdj, 2);
+    End;
     EmitInstr('CALL', '_RXB_DATATYPE');
     Res.TypeIdx := TY_IDX_STRING;
   End
