@@ -2009,7 +2009,761 @@
 6. MODE PROTEGE ET DESCRIPTEURS
 ==============================================================================
 
-  (a completer)
+  6.1 Vue d'ensemble du mode protege
+  ------------------------------------
+
+  Le 80386 peut fonctionner dans trois modes principaux :
+
+  1. Mode reel (Real Mode)
+     - Compatible 8086. Segments de 64 Ko max.
+     - Adressage : segment << 4 + offset = adresse physique (20 bits).
+     - Pas de protection memoire ni de privileges.
+     - C'est le mode au demarrage (reset).
+
+  2. Mode protege (Protected Mode)
+     - Adressage 32 bits (4 Go d'espace lineaire).
+     - Segments decrits par des descripteurs dans des tables.
+     - Protection memoire par niveaux de privilege (rings 0 a 3).
+     - Pagination optionnelle (adresses lineaires -> physiques).
+     - Support du multitache materiel (TSS).
+
+  3. Mode virtuel 8086 (Virtual 8086 Mode, V86)
+     - Sous-mode du mode protege.
+     - Permet d'executer des programmes 8086 dans un environnement
+       protege, sous le controle d'un moniteur en ring 0.
+     - Active par le bit VM (bit 17) du registre EFLAGS.
+
+  Le mode protege est le mode de fonctionnement principal du 80386
+  pour les systemes d'exploitation modernes. Il offre :
+    - Un espace d'adressage de 4 Go par processus
+    - L'isolation des processus par la segmentation et la pagination
+    - Quatre niveaux de privilege pour le controle d'acces
+    - Un mecanisme de commutation de taches (task switching)
+    - La gestion des interruptions et exceptions via l'IDT
+
+  6.2 Descripteurs de segments
+  ----------------------------
+
+  En mode protege, chaque segment de memoire est decrit par un
+  descripteur de 8 octets (64 bits). Les descripteurs contiennent
+  toutes les informations necessaires pour definir un segment :
+  son adresse de base, sa limite, son type et ses droits d'acces.
+
+  6.2.1 Format general d'un descripteur de segment
+
+  Un descripteur occupe 8 octets consecutifs en memoire.
+  La disposition est la suivante (les octets sont numerotes 0 a 7) :
+
+  Octet 7     Octet 6     Octet 5     Octet 4
+  +--------+  +--------+  +--------+  +--------+
+  |Base    |  |G|D|0|AVL|  |P|DPL|S|  |Base    |
+  |[31:24] |  |Lim[19:16]| |  Type |  |[23:16] |
+  +--------+  +--------+  +--------+  +--------+
+
+  Octet 3     Octet 2     Octet 1     Octet 0
+  +--------+  +--------+  +--------+  +--------+
+  |  Base  |  |  Base  |  | Limite |  | Limite |
+  | [15:8] |  | [7:0]  |  | [15:8] |  | [7:0]  |
+  +--------+  +--------+  +--------+  +--------+
+
+  Champs du descripteur :
+
+  Base (32 bits)   : Adresse lineaire de debut du segment.
+                     Repartie dans les octets 2-3 (bits 0-15),
+                     octet 4 (bits 16-23) et octet 7 (bits 24-31).
+
+  Limite (20 bits) : Taille du segment - 1.
+                     Repartie dans les octets 0-1 (bits 0-15) et
+                     les bits 0-3 de l'octet 6 (bits 16-19).
+                     Avec G=0 : en octets (max 1 Mo).
+                     Avec G=1 : en pages de 4 Ko (max 4 Go).
+
+  G (bit 7, octet 6) : Granularite
+    0 = Limite en octets (resolution a l'octet)
+    1 = Limite en pages de 4096 octets
+
+  D/B (bit 6, octet 6) : Taille par defaut
+    Pour un segment de code :
+      0 = Operandes et adresses 16 bits par defaut
+      1 = Operandes et adresses 32 bits par defaut
+    Pour un segment de pile (SS) :
+      0 = SP 16 bits
+      1 = ESP 32 bits
+
+  AVL (bit 4, octet 6) : Disponible pour le systeme d'exploitation.
+    Le processeur ne l'utilise pas.
+
+  P (bit 7, octet 5) : Present
+    1 = Le segment est present en memoire
+    0 = Le segment n'est pas present (genere #NP si on y accede)
+
+  DPL (bits 6-5, octet 5) : Descriptor Privilege Level
+    Niveau de privilege du segment (0 a 3).
+    0 = plus privilegie (noyau), 3 = moins privilegie (utilisateur).
+
+  S (bit 4, octet 5) : Type de descripteur
+    1 = Descripteur de segment (code ou donnees)
+    0 = Descripteur systeme (TSS, LDT, porte)
+
+  Type (bits 3-0, octet 5) : Sous-type du segment
+    Depend du bit S. Voir ci-dessous.
+
+  6.2.2 Types de descripteurs de segments (S=1)
+
+  Pour les segments de donnees (bit 3 = 0) :
+
+  Type  E  W  A  Description
+  ----  -  -  -  ------------------------------------
+  0000  0  0  0  Donnees, lecture seule
+  0001  0  0  1  Donnees, lecture seule, accede
+  0010  0  1  0  Donnees, lecture/ecriture
+  0011  0  1  1  Donnees, lecture/ecriture, accede
+  0100  1  0  0  Donnees, expand-down, lecture seule
+  0101  1  0  1  Donnees, expand-down, lecture seule, accede
+  0110  1  1  0  Donnees, expand-down, lecture/ecriture
+  0111  1  1  1  Donnees, expand-down, lecture/ecriture, accede
+
+  E (Expand-Down) : Utilise pour les segments de pile.
+    Le segment grandit vers les adresses basses.
+    La limite definit l'adresse la plus basse accessible.
+
+  W (Writable) : Indique si le segment est inscriptible.
+    Un segment de donnees sans W ne peut etre que lu.
+
+  A (Accessed) : Mis a 1 par le processeur a chaque acces.
+    Utile pour le systeme d'exploitation (LRU, swapping).
+
+  Pour les segments de code (bit 3 = 1) :
+
+  Type  C  R  A  Description
+  ----  -  -  -  ------------------------------------
+  1000  0  0  0  Code, execute seul
+  1001  0  0  1  Code, execute seul, accede
+  1010  0  1  0  Code, execute/lecture
+  1011  0  1  1  Code, execute/lecture, accede
+  1100  1  0  0  Code, conforming, execute seul
+  1101  1  0  1  Code, conforming, execute seul, accede
+  1110  1  1  0  Code, conforming, execute/lecture
+  1111  1  1  1  Code, conforming, execute/lecture, accede
+
+  C (Conforming) : Le segment de code peut etre appele depuis un
+    niveau de privilege inferieur sans changement de CPL.
+    Utile pour les bibliotheques partagees du systeme.
+
+  R (Readable) : Le segment de code peut etre lu (en plus d'etre
+    execute). Necessaire pour lire des constantes dans le code.
+
+  6.2.3 Types de descripteurs systeme (S=0)
+
+  Type   Description
+  ----   --------------------------------------------------
+  0000   Reserve
+  0001   TSS 16 bits (disponible)
+  0010   LDT (Local Descriptor Table)
+  0011   TSS 16 bits (occupe/busy)
+  0100   Porte d'appel 16 bits (Call Gate)
+  0101   Porte de tache (Task Gate)
+  0110   Porte d'interruption 16 bits (Interrupt Gate)
+  0111   Porte de trappe 16 bits (Trap Gate)
+  1000   Reserve
+  1001   TSS 32 bits (disponible)       (nouveau 80386)
+  1010   Reserve
+  1011   TSS 32 bits (occupe/busy)       (nouveau 80386)
+  1100   Porte d'appel 32 bits           (nouveau 80386)
+  1101   Reserve
+  1110   Porte d'interruption 32 bits    (nouveau 80386)
+  1111   Porte de trappe 32 bits         (nouveau 80386)
+
+  6.3 Tables de descripteurs
+  --------------------------
+
+  Les descripteurs sont regroupes dans des tables en memoire.
+  Le 80386 utilise trois types de tables :
+
+  6.3.1 GDT (Global Descriptor Table)
+
+  Table de descripteurs globale, partagee par toutes les taches.
+  Elle contient les descripteurs accessibles a l'ensemble du systeme :
+    - Segments de code et de donnees du noyau
+    - Segments partages entre les taches
+    - Descripteurs de TSS pour chaque tache
+    - Descripteurs de LDT pour chaque tache
+
+  La GDT est localisee par le registre GDTR :
+    - Base  : adresse lineaire 32 bits de la table
+    - Limite : taille de la table en octets - 1
+
+  L'entree 0 de la GDT (descripteur nul) est reservee et ne peut
+  pas etre utilisee. Un selecteur qui pointe vers l'entree 0
+  est appele "selecteur nul" et genere #GP s'il est charge dans
+  CS ou SS.
+
+  Instructions associees :
+    LGDT mem48  : Charge GDTR depuis la memoire (ring 0 seulement)
+    SGDT mem48  : Sauvegarde GDTR en memoire
+
+  6.3.2 LDT (Local Descriptor Table)
+
+  Table de descripteurs locale, propre a chaque tache.
+  Elle contient les descripteurs prives d'une tache :
+    - Segments de code et de donnees de l'application
+    - Segments de pile de l'application
+
+  La LDT est elle-meme decrite par un descripteur dans la GDT.
+  Le registre LDTR contient le selecteur de ce descripteur.
+
+  Chaque tache peut avoir sa propre LDT, ce qui permet l'isolation
+  des espaces d'adressage entre les taches.
+
+  Instructions associees :
+    LLDT reg16  : Charge LDTR depuis un selecteur (ring 0)
+    SLDT reg16  : Sauvegarde le selecteur de LDTR
+
+  6.3.3 IDT (Interrupt Descriptor Table)
+
+  Table des descripteurs d'interruptions. Elle contient les
+  descripteurs de portes (interrupt gates, trap gates, task gates)
+  pour les 256 vecteurs d'interruption possibles.
+
+  L'IDT est localisee par le registre IDTR :
+    - Base  : adresse lineaire 32 bits
+    - Limite : taille en octets - 1 (max 256 * 8 = 2048 octets)
+
+  Instructions associees :
+    LIDT mem48  : Charge IDTR depuis la memoire (ring 0)
+    SIDT mem48  : Sauvegarde IDTR en memoire
+
+  6.4 Selecteurs de segments
+  --------------------------
+
+  Un selecteur de segment est une valeur de 16 bits chargee dans un
+  registre de segment (CS, DS, ES, FS, GS, SS). Il identifie un
+  descripteur dans une table de descripteurs.
+
+  Format d'un selecteur :
+
+    15                  3  2  1  0
+  +---------------------+--+-----+
+  |       Index         |TI| RPL |
+  +---------------------+--+-----+
+         13 bits         1b   2b
+
+  Index (bits 15-3) : Numero d'entree dans la table de descripteurs.
+    Permet d'adresser jusqu'a 8192 descripteurs (2^13).
+
+  TI (bit 2) : Table Indicator
+    0 = Le descripteur est dans la GDT
+    1 = Le descripteur est dans la LDT
+
+  RPL (bits 1-0) : Requested Privilege Level
+    Niveau de privilege demande (0 a 3).
+    Utilise dans les verifications de privilege.
+
+  L'adresse du descripteur dans la table est :
+    Adresse = Base_de_la_table + Index * 8
+
+  Chaque table peut contenir jusqu'a 8192 descripteurs.
+  Avec la GDT et une LDT par tache, on peut definir :
+    - 8192 segments globaux (GDT)
+    - 8192 segments locaux par tache (LDT)
+  soit 16384 segments accessibles par tache, totalisant un espace
+  d'adressage logique de 64 To (16384 segments * 4 Go chacun).
+
+  Exemples de selecteurs :
+
+    08h = Index 1, GDT, RPL 0   (premier segment utile de la GDT)
+    10h = Index 2, GDT, RPL 0
+    23h = Index 4, GDT, RPL 3   (segment utilisateur)
+    0Fh = Index 1, LDT, RPL 3
+
+  6.5 Traduction d'adresses en mode protege
+  -------------------------------------------
+
+  En mode protege, une adresse logique (selecteur:offset) est
+  traduite en adresse lineaire par l'unite de segmentation :
+
+  1. Le selecteur est utilise pour trouver le descripteur dans
+     la GDT ou la LDT.
+  2. Le processeur verifie les droits d'acces (privilege, type,
+     presence, limites).
+  3. L'adresse de base du descripteur est ajoutee a l'offset
+     pour former l'adresse lineaire.
+
+  Schema :
+
+    Adresse logique     Unite de segmentation     Adresse lineaire
+    selecteur:offset -> descripteur -> base+offset -> 32 bits
+
+  Si la pagination est activee (CR0.PG = 1), l'adresse lineaire
+  est ensuite traduite en adresse physique par l'unite de
+  pagination (voir section 7).
+
+  Si la pagination est desactivee (CR0.PG = 0), l'adresse lineaire
+  est egale a l'adresse physique.
+
+  Verifications effectuees lors de l'acces a un segment :
+
+  a) Verification de la limite :
+     L'offset ne doit pas depasser la limite du segment.
+     Pour G=0 : offset <= limite (en octets)
+     Pour G=1 : offset <= limite * 4096 + 4095
+     Violation : exception #GP (General Protection Fault)
+
+  b) Verification du type :
+     - On ne peut pas executer un segment de donnees
+     - On ne peut pas ecrire dans un segment de code
+     - On ne peut pas ecrire dans un segment de donnees sans W
+     Violation : exception #GP
+
+  c) Verification de la presence :
+     Si P=0, le segment n'est pas en memoire.
+     Violation : exception #NP (Segment Not Present)
+
+  d) Verification des privileges :
+     Voir section 6.6 ci-dessous.
+
+  6.6 Niveaux de privilege
+  -------------------------
+
+  Le 80386 implemente un systeme de protection a 4 niveaux de
+  privilege, souvent appeles "anneaux" (rings) :
+
+    Ring 0 : Noyau du systeme d'exploitation (plus privilegie)
+    Ring 1 : Services du systeme d'exploitation
+    Ring 2 : Extensions du systeme
+    Ring 3 : Applications utilisateur (moins privilegie)
+
+  En pratique, la plupart des systemes d'exploitation n'utilisent
+  que les rings 0 (noyau) et 3 (utilisateur).
+
+  6.6.1 Types de niveaux de privilege
+
+  CPL (Current Privilege Level) :
+    Niveau de privilege courant du code en execution.
+    Stocke dans les bits RPL du selecteur de CS.
+    CPL = CS.RPL a tout moment.
+
+  DPL (Descriptor Privilege Level) :
+    Niveau de privilege du segment ou de la porte.
+    Stocke dans le descripteur lui-meme.
+
+  RPL (Requested Privilege Level) :
+    Niveau de privilege demande, stocke dans le selecteur.
+    Peut etre utilise pour restreindre les droits d'acces
+    (le niveau effectif est max(CPL, RPL)).
+
+  6.6.2 Regles de verification des privileges
+
+  Pour acceder a un segment de donnees :
+    max(CPL, RPL) <= DPL
+
+  Un programme ne peut acceder qu'aux segments de donnees dont
+  le DPL est numeriquement superieur ou egal a son niveau effectif.
+
+  Pour transferer le controle a un segment de code :
+
+  a) Code non-conforming (C=0) :
+     CPL == DPL  (le niveau doit etre exactement le meme)
+     Exception : les portes d'appel permettent les transitions.
+
+  b) Code conforming (C=1) :
+     CPL >= DPL  (le code appele peut etre plus privilegie)
+     Le CPL ne change pas apres le transfert.
+
+  Pour utiliser une porte d'appel (Call Gate) :
+     max(CPL, RPL) <= DPL de la porte
+     CPL >= DPL du segment de code cible
+
+  6.6.3 Schema des anneaux de privilege
+
+              +-------------------+
+              |      Ring 0       |
+              |      Noyau        |
+              |  +-------------+  |
+              |  |   Ring 1    |  |
+              |  |  Services   |  |
+              |  | +---------+ |  |
+              |  | |  Ring 2 | |  |
+              |  | | Ext. OS | |  |
+              |  | | +-----+ | |  |
+              |  | | |Ring 3| | |  |
+              |  | | | Appli| | |  |
+              |  | | +-----+ | |  |
+              |  | +---------+ |  |
+              |  +-------------+  |
+              +-------------------+
+
+  Les transitions entre anneaux se font par :
+    - Portes d'appel (CALL via call gate) : ring 3 -> ring 0
+    - Instructions INT/IRET : via l'IDT
+    - Commutation de taches : via TSS
+    - Instructions SYSENTER/SYSEXIT (a partir du Pentium II)
+
+  6.7 Portes (Gates)
+  -------------------
+
+  Les portes sont des descripteurs systeme (S=0) qui permettent
+  des transitions controlees entre niveaux de privilege.
+
+  6.7.1 Porte d'appel (Call Gate)
+
+  Format (8 octets) :
+
+  Octet 7     Octet 6     Octet 5     Octet 4
+  +--------+  +--------+  +--------+  +--------+
+  | Offset |  | Offset |  |P|DPL|0|  |000|Param|
+  | [31:24]|  | [23:16]|  |  1100 |  |  Count |
+  +--------+  +--------+  +--------+  +--------+
+
+  Octet 3     Octet 2     Octet 1     Octet 0
+  +--------+  +--------+  +--------+  +--------+
+  |Selecteur  |Selecteur  | Offset |  | Offset |
+  |  [15:8]   |  [7:0]    | [15:8] |  | [7:0]  |
+  +--------+  +--------+  +--------+  +--------+
+
+  Selecteur : Selecteur du segment de code cible
+  Offset    : Offset du point d'entree dans le segment cible
+  DPL       : Niveau de privilege requis pour utiliser la porte
+  Param Count : Nombre de parametres (DWords) a copier de la pile
+              de l'appelant vers la pile du noyau (0 a 31)
+  Type      : 1100 (Call Gate 32 bits)
+
+  Fonctionnement d'un CALL via une porte d'appel :
+  1. Le processeur verifie : max(CPL, RPL) <= DPL de la porte
+  2. Il verifie : CPL >= DPL du segment de code cible
+  3. Si changement de privilege :
+     a. Il charge SS et ESP depuis le TSS pour le nouveau ring
+     b. Il empile sur la nouvelle pile : SS ancien, ESP ancien,
+        les parametres copies, CS ancien, EIP ancien
+  4. Il charge CS:EIP depuis la porte (selecteur + offset)
+  5. L'execution continue au point d'entree avec le nouveau CPL
+
+  Le retour se fait par RET (ou RETF) qui restaure CS:EIP et
+  eventuellement SS:ESP si le privilege change.
+
+  6.7.2 Porte d'interruption (Interrupt Gate)
+
+  Format identique a la porte d'appel, mais avec Type = 1110.
+
+  Difference avec la porte d'appel :
+    - Utilisee pour les interruptions (materielles et logicielles)
+    - Le drapeau IF est mis a 0 automatiquement (interruptions
+      desactivees pendant le handler)
+    - Pas de copie de parametres
+
+  Le processeur empile automatiquement sur la pile du handler :
+    - EFLAGS, CS, EIP (toujours)
+    - SS, ESP (si changement de privilege)
+    - Code d'erreur (pour certaines exceptions)
+
+  6.7.3 Porte de trappe (Trap Gate)
+
+  Format identique a la porte d'interruption, mais avec Type = 1111.
+
+  Difference avec la porte d'interruption :
+    - Le drapeau IF n'est PAS modifie (les interruptions restent
+      dans l'etat ou elles etaient)
+    - Utilisee typiquement pour les exceptions (debug, breakpoints)
+
+  6.7.4 Porte de tache (Task Gate)
+
+  Format (8 octets) :
+
+  Octet 5 contient P|DPL|0|0101 (Type = 0101)
+  Octets 2-3 contiennent le selecteur du TSS de la tache cible.
+  Les autres champs sont reserves.
+
+  Lorsqu'une porte de tache est activee (par CALL, JMP, INT ou
+  exception), le processeur effectue une commutation de tache
+  complete vers le TSS reference par le selecteur.
+
+  6.8 Segment d'etat de tache (TSS)
+  -----------------------------------
+
+  Le TSS (Task State Segment) est une structure de donnees en
+  memoire qui stocke l'etat complet d'une tache. Le 80386 utilise
+  le TSS pour la commutation de taches materielle.
+
+  6.8.1 Format du TSS 32 bits
+
+  Le TSS 32 bits occupe au minimum 104 octets (68h) :
+
+  Offset  Taille  Contenu
+  ------  ------  -------------------------------------------
+  00h     WORD    Lien arriere (selecteur du TSS precedent)
+  02h     WORD    Reserve
+  04h     DWORD   ESP0 (pile pour Ring 0)
+  08h     WORD    SS0  (segment de pile pour Ring 0)
+  0Ah     WORD    Reserve
+  0Ch     DWORD   ESP1 (pile pour Ring 1)
+  10h     WORD    SS1
+  12h     WORD    Reserve
+  14h     DWORD   ESP2 (pile pour Ring 2)
+  18h     WORD    SS2
+  1Ah     WORD    Reserve
+  1Ch     DWORD   CR3 (repertoire de pages)
+  20h     DWORD   EIP
+  24h     DWORD   EFLAGS
+  28h     DWORD   EAX
+  2Ch     DWORD   ECX
+  30h     DWORD   EDX
+  34h     DWORD   EBX
+  38h     DWORD   ESP
+  3Ch     DWORD   EBP
+  40h     DWORD   ESI
+  44h     DWORD   EDI
+  48h     WORD    ES
+  4Ah     WORD    Reserve
+  4Ch     WORD    CS
+  4Eh     WORD    Reserve
+  50h     WORD    SS
+  52h     WORD    Reserve
+  54h     WORD    DS
+  56h     WORD    Reserve
+  58h     WORD    FS
+  5Ah     WORD    Reserve
+  5Ch     WORD    GS
+  5Eh     WORD    Reserve
+  60h     WORD    Selecteur LDT
+  62h     WORD    Reserve
+  64h     WORD    Bit T (debug trap) | Reserve
+  66h     WORD    Offset de la carte d'E/S (I/O Map Base)
+
+  Apres l'offset 68h, on peut placer la carte de permissions
+  d'E/S (I/O Permission Bitmap), terminee par un octet FFh.
+
+  6.8.2 Piles par niveau de privilege
+
+  Le TSS contient trois paires SS:ESP (pour les rings 0, 1 et 2).
+  Lorsqu'un appel passe a un niveau de privilege superieur,
+  le processeur charge automatiquement la pile correspondante
+  depuis le TSS de la tache courante.
+
+  Cela garantit que chaque niveau de privilege dispose de sa
+  propre pile, evitant qu'un programme utilisateur puisse
+  corrompre la pile du noyau.
+
+  6.8.3 Carte de permissions d'E/S (I/O Permission Bitmap)
+
+  La carte d'E/S est un tableau de bits ou chaque bit correspond
+  a un port d'E/S. Elle permet de controler l'acces aux ports
+  pour les programmes en ring > IOPL.
+
+    Bit = 0 : L'acces au port est autorise
+    Bit = 1 : L'acces au port genere une exception #GP
+
+  L'offset de la carte dans le TSS est donne par le champ
+  "I/O Map Base" a l'offset 66h. La carte peut couvrir jusqu'a
+  65536 ports (8192 octets).
+
+  Si IOPL >= CPL, tous les acces E/S sont autorises sans
+  consulter la carte.
+
+  6.8.4 Commutation de taches
+
+  Une commutation de taches peut etre declenchee par :
+    - JMP ou CALL vers un descripteur de TSS dans la GDT
+    - JMP ou CALL via une porte de tache (Task Gate)
+    - Une interruption ou exception via une porte de tache dans l'IDT
+    - IRET lorsque le flag NT (Nested Task) est a 1
+
+  Lors d'une commutation de tache, le processeur :
+
+  1. Sauvegarde l'etat complet de la tache courante dans son TSS
+     (EAX-EDI, EIP, EFLAGS, segments, CR3)
+  2. Marque le TSS courant comme "busy" (occupe)
+  3. Charge le registre TR avec le selecteur du nouveau TSS
+  4. Charge l'etat complet depuis le nouveau TSS
+  5. Si CALL ou INT : met le flag NT a 1 et sauvegarde le
+     selecteur de l'ancien TSS dans le champ "lien arriere"
+  6. Reprend l'execution au EIP du nouveau TSS
+
+  Le registre TR (Task Register) contient le selecteur du TSS
+  de la tache courante :
+    LTR reg16  : Charge TR avec un selecteur (ring 0)
+    STR reg16  : Sauvegarde le selecteur de TR
+
+  6.9 Passage en mode protege
+  ----------------------------
+
+  La sequence typique pour passer du mode reel au mode protege :
+
+  1. Desactiver les interruptions (CLI)
+
+  2. Activer la ligne d'adresse A20
+     (necessaire pour adresser au-dela de 1 Mo)
+     Typiquement via le controleur de clavier 8042 :
+       MOV AL, 0D1h
+       OUT 64h, AL        ; commande d'ecriture au port de sortie
+       MOV AL, 0DFh
+       OUT 60h, AL        ; activer A20
+
+  3. Preparer la GDT en memoire avec au minimum :
+     - Descripteur nul (entree 0, obligatoire)
+     - Descripteur de code (entree 1, ex: base=0, limite=FFFFFh, G=1)
+     - Descripteur de donnees (entree 2, ex: base=0, limite=FFFFFh, G=1)
+
+  4. Charger GDTR :
+       LGDT [gdtr_value]
+     ou gdtr_value est une structure de 6 octets :
+       dw taille_gdt - 1   ; limite (16 bits)
+       dd adresse_gdt       ; base (32 bits)
+
+  5. Activer le bit PE (Protection Enable) dans CR0 :
+       MOV EAX, CR0
+       OR  EAX, 1          ; bit 0 = PE
+       MOV CR0, EAX
+
+  6. Effectuer un JMP FAR vers un selecteur de code protege
+     pour vider le pipeline et charger CS :
+       JMP 08h:debut_protege
+     (08h = selecteur du descripteur de code dans la GDT)
+
+  7. Charger les registres de segment de donnees :
+       MOV AX, 10h         ; selecteur du descripteur de donnees
+       MOV DS, AX
+       MOV ES, AX
+       MOV FS, AX
+       MOV GS, AX
+       MOV SS, AX
+
+  8. Charger la pile :
+       MOV ESP, adresse_sommet_pile
+
+  9. Charger l'IDT si necessaire :
+       LIDT [idtr_value]
+
+  10. Reactiver les interruptions (STI) si un PIC est configure
+
+  Note : Le JMP FAR a l'etape 6 est crucial. Sans lui, CS contient
+  toujours un selecteur de mode reel et le processeur se comporte
+  de facon imprevisible.
+
+  6.10 Instructions specifiques au mode protege
+  -----------------------------------------------
+
+  Le 80386 fournit des instructions dediees a la gestion du mode
+  protege. La plupart sont reservees au ring 0 (privilege maximum).
+
+  6.10.1 Instructions pour les tables de descripteurs
+
+  LGDT mem48   Charge GDTR (base + limite)               Ring 0
+  SGDT mem48   Sauvegarde GDTR                            Tous
+  LIDT mem48   Charge IDTR (base + limite)               Ring 0
+  SIDT mem48   Sauvegarde IDTR                            Tous
+  LLDT reg16   Charge LDTR depuis un selecteur            Ring 0
+  SLDT reg16   Sauvegarde le selecteur de LDTR            Tous
+  LTR  reg16   Charge le Task Register                    Ring 0
+  STR  reg16   Sauvegarde le Task Register                Tous
+
+  6.10.2 Instructions de verification des privileges
+
+  ARPL reg16, reg16   Ajuste le RPL d'un selecteur
+                       Met RPL(dest) = max(RPL(dest), RPL(src))
+                       Met ZF=1 si modifie
+
+  LAR  reg, r/m16     Charge les droits d'acces d'un descripteur
+                       Retourne les octets 4-7 du descripteur
+                       Met ZF=1 si le descripteur est valide
+
+  LSL  reg, r/m16     Charge la limite d'un segment
+                       Retourne la limite en octets ou en pages
+                       Met ZF=1 si le descripteur est valide
+
+  VERR r/m16          Verifie si un segment est lisible
+                       Met ZF=1 si le segment peut etre lu
+                       au niveau de privilege courant
+
+  VERW r/m16          Verifie si un segment est inscriptible
+                       Met ZF=1 si le segment peut etre ecrit
+                       au niveau de privilege courant
+
+  6.10.3 Instructions pour les registres de controle
+
+  MOV CRn, reg32      Ecriture dans un registre de controle    Ring 0
+  MOV reg32, CRn      Lecture d'un registre de controle         Ring 0
+
+  Registres de controle du 80386 :
+
+  CR0 : Controle du processeur
+    Bit 0  (PE) : Protection Enable (active le mode protege)
+    Bit 1  (MP) : Monitor Coprocessor
+    Bit 2  (EM) : Emulation (FPU absent, emuler par logiciel)
+    Bit 3  (TS) : Task Switched (mis a 1 lors d'un task switch)
+    Bit 4  (ET) : Extension Type (type de FPU : 80287 ou 80387)
+    Bit 16 (WP) : Write Protect (protege les pages en ring 0)
+    Bit 31 (PG) : Paging (active la pagination)
+
+  CR2 : Adresse lineaire de la faute de page
+    Contient l'adresse qui a cause la derniere exception #PF.
+
+  CR3 : Adresse physique du repertoire de pages (PDBR)
+    Bits 31-12 : Adresse physique du repertoire (alignee 4 Ko)
+    Bit 4 (PCD) : Page Cache Disable
+    Bit 3 (PWT) : Page Write-Through
+
+  6.10.4 Instructions pour les registres de debug
+
+  MOV DRn, reg32      Ecriture dans un registre de debug       Ring 0
+  MOV reg32, DRn      Lecture d'un registre de debug            Ring 0
+
+  DR0-DR3 : Adresses lineaires des points d'arret materiels
+  DR6      : Etat du debug (indique quel breakpoint a ete touche)
+  DR7      : Controle du debug (active/configure les breakpoints)
+    Chaque breakpoint peut etre configure pour :
+    - Arret sur execution
+    - Arret sur ecriture memoire
+    - Arret sur lecture/ecriture memoire
+    - Arret sur acces E/S
+
+  6.10.5 Exemple : configuration minimale du mode protege
+
+  ; --- Descripteurs GDT ---
+  gdt_start:
+    dq 0                        ; Descripteur nul (obligatoire)
+
+  gdt_code:                     ; Descripteur de code ring 0
+    dw 0FFFFh                   ; Limite [15:0]
+    dw 0                        ; Base [15:0]
+    db 0                        ; Base [23:16]
+    db 10011010b                ; P=1, DPL=0, S=1, Type=1010 (code R/X)
+    db 11001111b                ; G=1, D=1, Limit[19:16]=Fh
+    db 0                        ; Base [31:24]
+
+  gdt_data:                     ; Descripteur de donnees ring 0
+    dw 0FFFFh                   ; Limite [15:0]
+    dw 0                        ; Base [15:0]
+    db 0                        ; Base [23:16]
+    db 10010010b                ; P=1, DPL=0, S=1, Type=0010 (data R/W)
+    db 11001111b                ; G=1, D=1, Limit[19:16]=Fh
+    db 0                        ; Base [31:24]
+  gdt_end:
+
+  ; --- GDTR ---
+  gdtr_value:
+    dw gdt_end - gdt_start - 1 ; Limite
+    dd gdt_start                ; Base
+
+  ; --- Passage en mode protege ---
+    CLI
+    LGDT [gdtr_value]
+    MOV EAX, CR0
+    OR  EAX, 1
+    MOV CR0, EAX
+    JMP 08h:protege_start       ; 08h = selecteur du code
+
+  protege_start:
+    MOV AX, 10h                 ; 10h = selecteur des donnees
+    MOV DS, AX
+    MOV ES, AX
+    MOV SS, AX
+    MOV ESP, 90000h             ; Sommet de pile
+
+  Cet exemple configure un modele "flat" (base=0, limite=4Go)
+  couramment utilise par les systemes d'exploitation modernes.
+  Tous les segments couvrent l'integralite de l'espace d'adressage,
+  et la protection est assuree principalement par la pagination
+  (voir section 7).
 
 ==============================================================================
 7. PAGINATION ET MEMOIRE VIRTUELLE
