@@ -199,7 +199,7 @@
               Parentheses
             Tous les calculs en registres 32 bits (EAX, EBX, ECX, EDX)
 
-  TODO 09 - GENERATION DE CODE : OPERATIONS ARITHMETIQUES 80386
+  TODO 09 - GENERATION DE CODE : OPERATIONS ARITHMETIQUES 80386 [IMPLEMENTE]
             Procedure GenLoadVar(sym_idx: Integer)
               TYPE I : MOV EAX, DWORD PTR [_AB_x] ou [EBP-n]
               TYPE C : LEA EAX, [_AB_x] ou [EBP-n]
@@ -766,6 +766,8 @@ Const
   KW_PLACES          = 149;
   KW_ALL             = 150;
   KW_FIRST           = 151;
+  KW_MOD             = 152;   { MOD (operateur modulo)   }
+  KW_DIV             = 153;   { DIV (division entiere)   }
 
   { Types de donnees ABAP }
   TYPE_UNKNOWN  =  0;
@@ -1076,6 +1078,12 @@ Procedure EmitBlank; Forward;
 Function  NewLabel : TString; Forward;
 Function  AddStringLit(Const S : TString) : TString; Forward;
 Function  ParseExpr : Integer; Forward;
+
+{ ============================================================ }
+{ DECLARATIONS FORWARD (GENERATION DE CODE TODO 09)            }
+{ ============================================================ }
+
+Procedure GenStoreVar32(SymIdx : Integer); Forward;
 
 { ============================================================ }
 { FONCTIONS UTILITAIRES                                        }
@@ -1790,6 +1798,8 @@ Begin
   If S = 'PLACES'              Then Begin IsKeyword := KW_PLACES;        Exit; End;
   If S = 'ALL'                 Then Begin IsKeyword := KW_ALL;           Exit; End;
   If S = 'FIRST'               Then Begin IsKeyword := KW_FIRST;         Exit; End;
+  If S = 'MOD'                 Then Begin IsKeyword := KW_MOD;           Exit; End;
+  If S = 'DIV'                 Then Begin IsKeyword := KW_DIV;           Exit; End;
   IsKeyword := KW_NONE;
 End;
 
@@ -2658,7 +2668,7 @@ Begin
 End;
 
 { ============================================================ }
-{ GENERATION DE CODE INLINE (helpers pour TODO 08)             }
+{ GENERATION DE CODE INLINE (helpers pour TODO 08/09)          }
 { ============================================================ }
 
 { ---- GenLoadVar32 : charger une variable dans EAX ----------- }
@@ -2695,6 +2705,38 @@ Begin
   End;
 End;
 
+{ ---- GenStoreVar32 : stocker EAX dans une variable (TODO 09)- }
+Procedure GenStoreVar32(SymIdx : Integer);
+Var SC, DT, BP : Integer; Lbl : TString;
+Begin
+  If (SymIdx < 1) Or (SymIdx > SymCount) Then
+  Begin EmitComment('GenStoreVar32: idx invalide'); Exit; End;
+  SC  := SymTab[SymIdx].StoreClass;
+  DT  := SymTab[SymIdx].DataType;
+  BP  := SymTab[SymIdx].BpOffset;
+  Lbl := SymTab[SymIdx].AsmLabel;
+  If SC = STORE_CONSTANT Then
+  Begin WarnMsg('Affectation a une CONSTANT ignoree'); Exit; End;
+  Case DT Of
+    TYPE_C, TYPE_STRING, TYPE_D, TYPE_T, TYPE_N, TYPE_XSTRING:
+    Begin
+      { Chaine : EAX = adresse source -> copier vers dest }
+      EmitI('MOV     ESI, EAX');
+      If SC = STORE_AUTO Then
+        EmitI('LEA     EDI, [EBP' + IntToStr_(BP) + ']')
+      Else
+        EmitI('LEA     EDI, [' + Lbl + ']');
+      EmitI('CALL    ' + AB_RT_PFX + 'STRCOPY');
+    End;
+  Else
+    { Numerique : MOV DWORD PTR }
+    If SC = STORE_AUTO Then
+      EmitI('MOV     DWORD PTR [EBP' + IntToStr_(BP) + '], EAX')
+    Else
+      EmitI('MOV     DWORD PTR [' + Lbl + '], EAX');
+  End;
+End;
+
 { ---- GenBinOp32 : emettre l operation binaire 32 bits ------- }
 Procedure GenBinOp32(Op : Integer);
 Begin
@@ -2707,9 +2749,21 @@ Begin
       EmitI('CDQ');
       EmitI('IDIV    EBX');
     End;
+    TOK_CONCAT: EmitComment('&& concatenation (stub)');
   Else
     EmitComment('GenBinOp32: op inconnu');
   End;
+End;
+
+{ ---- GenModDiv32 : division entiere ou modulo 32 bits ------- }
+{   is_div = True  -> resultat = quotient  (EAX apres IDIV)    }
+{   is_div = False -> resultat = reste     (EDX apres IDIV)     }
+Procedure GenModDiv32(IsDiv : Boolean);
+Begin
+  EmitI('CDQ');
+  EmitI('IDIV    EBX');
+  If Not IsDiv Then
+    EmitI('MOV     EAX, EDX');
 End;
 
 { ---- GenCompare32 : comparaison 32 bits -> EAX=1/0 --------- }
@@ -2903,19 +2957,27 @@ Begin
   End;
 End;
 
-{ ---- ParseMulExpr : multiplication / division --------------- }
+{ ---- ParseMulExpr : multiplication / division / MOD / DIV --- }
 Function ParseMulExpr : Integer;
-Var Op : Integer;
+Var Op : Integer; IsMod, IsDiv : Boolean;
 Begin
   ParseMulExpr := ParsePrimaryExpr;
-  While (CurTokType = TOK_STAR) Or (CurTokType = TOK_SLASH) Do
+  While (CurTokType = TOK_STAR) Or (CurTokType = TOK_SLASH)
+     Or TokIsKw(KW_MOD) Or TokIsKw(KW_DIV) Do
   Begin
+    IsMod := TokIsKw(KW_MOD);
+    IsDiv := TokIsKw(KW_DIV);
     Op := CurTokType; Consume;
     EmitI('PUSH    EAX');
     ParseMulExpr := ParsePrimaryExpr;
     EmitI('MOV     EBX, EAX');
     EmitI('POP     EAX');
-    GenBinOp32(Op);
+    If IsMod Then
+      GenModDiv32(False)
+    Else If IsDiv Then
+      GenModDiv32(True)
+    Else
+      GenBinOp32(Op);
   End;
 End;
 
@@ -3305,7 +3367,7 @@ Begin
         If CurTokType = TOK_DOT Then Consume;
       End
       Else
-        Break;  { instruction non traitee par TODO 08 }
+        Break;  { instruction non traitee par TODO 09 }
     End;
     WriteLn('ABAPCW32: symboles declares: ', SymCount);
     WriteLn('ABAPCW32: labels generes: ', LabelCount);
@@ -3314,7 +3376,7 @@ Begin
     { Sauter les tokens restants }
     If CurTokType <> TOK_EOF Then
     Begin
-      WriteLn('ABAPCW32: TODO 09..25 non encore implementes.');
+      WriteLn('ABAPCW32: TODO 10..25 non encore implementes.');
       While CurTokType <> TOK_EOF Do
         Consume;
     End;

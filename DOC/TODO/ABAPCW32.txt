@@ -180,7 +180,7 @@
               Parentheses
             Tous les calculs en registres 32 bits (EAX, EBX, ECX, EDX)
 
-  TODO 09 - GENERATION DE CODE : OPERATIONS ARITHMETIQUES 80386
+  TODO 09 - GENERATION DE CODE : OPERATIONS ARITHMETIQUES 80386 [IMPLEMENTE]
             Procedure GenLoadVar(sym_idx: Integer)
               TYPE I : MOV EAX, DWORD PTR [_AB_x] ou [EBP-n]
               TYPE C : LEA EAX, [_AB_x] ou [EBP-n]
