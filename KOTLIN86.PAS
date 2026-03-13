@@ -442,7 +442,7 @@
             Inline : fun inline avec lambda -> corps substitue directement
               Evite le cout d appel + allocation de fermeture
 
-  TODO 23 - EXCEPTIONS (try / catch / finally / throw)
+  TODO 23 - EXCEPTIONS (try / catch / finally / throw) [IMPLEMENTE]
             ParseTryStmt : try { bloc } catch (e: ExType) { bloc } [finally { bloc }]
               Catches multiples : catch (e: Type1) { } catch (e: Type2) { }
             Mecanisme sans support OS :
@@ -882,6 +882,9 @@ Var
   ExtFunCount    : Integer;  { compteur de fonctions d extension      }
   HOFLambdaCount : Integer;  { compteur pour labels _KTF_LAMBDA_N     }
 
+  { Exceptions (TODO 23) }
+  TryCatchCount  : Integer;  { compteur pour labels try/catch/finally  }
+
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
@@ -1008,6 +1011,10 @@ Procedure EmitInheritanceRuntime; Forward;
 Function  InterfaceFind(Const Name : TString) : Integer; Forward;
 { TODO 22 - Extensions et fonctions d ordre superieur }
 Procedure EmitExtensionRuntime;   Forward;
+{ TODO 23 - Exceptions (try / catch / finally / throw) }
+Procedure ParseTryExpr(Var Res : TExprVal);  Forward;
+Procedure ParseThrowStmt;                     Forward;
+Procedure EmitExceptionRuntime;               Forward;
 { General }
 Procedure ParserAdvance; Forward;
 Procedure ParseStmt;     Forward;
@@ -1328,6 +1335,7 @@ Begin
   ObjectCount    := 0;
   ExtFunCount    := 0;
   HOFLambdaCount := 0;
+  TryCatchCount  := 0;
   LabelGenSeq    := 0;
   GExprDummy.Kind    := EK_NONE;
   GExprDummy.ImmVal  := 0;
@@ -2678,6 +2686,11 @@ Begin
         Res.Offset  := 0;
         Res.SymIdx  := -1;
       End
+      (* TODO 23 - try comme expression : val x = try { expr } catch ... *)
+      Else If CurToken.Val = 'try' Then
+      Begin
+        ParseTryExpr(Res);
+      End
       Else
       Begin
         (* Mot-cle non-litteral : pas une expression primaire *)
@@ -2879,9 +2892,88 @@ Begin
           Res.Offset  := 0;
           Res.SymIdx  := -1;
         End
+        (* TODO 23 - require(cond) { msg } -> throw IAE si !cond *)
+        Else If IdName = 'require' Then
+        Begin
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+          Begin
+            ParserAdvance; { consomme '(' }
+            ParseExpr(Res);
+            ExprFlushToAX(Res);
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance; { consomme ')' }
+            LblEnd := LabelGen;
+            EmitComment('require(cond)');
+            EmitInstrAB('TEST', 'AX', 'AX');
+            EmitInstrA('JNZ', LblEnd);
+            { Condition fausse : throw IllegalArgumentException }
+            EmitInstrAB('MOV', 'AX', '3'); (* 3 = IAE *)
+            EmitInstrAB('MOV', 'BX', '0');
+            (* Trailing lambda optionnel *)
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = CH_LBRACE) Then
+            Begin
+              ParserAdvance; (* consomme accolade ouvrante *)
+              If CurToken.Kind = TK_STRING Then
+              Begin
+                Lbl := LabelGen;
+                DataAdd(Lbl, DK_STR, 0, CurToken.Val);
+                EmitInstrAB('MOV', 'BX', 'OFFSET ' + Lbl);
+                ParserAdvance;
+              End;
+              If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = CH_RBRACE) Then
+                ParserAdvance; (* consomme accolade fermante *)
+            End;
+            EmitInstr('CALL _KTRT_THROW');
+            EmitLabel(LblEnd);
+          End;
+          Res.Kind    := EK_AX;
+          Res.ImmVal  := 0;
+          Res.TypeIdx := TY_IDX_UNIT;
+          Res.Offset  := 0;
+          Res.SymIdx  := -1;
+        End
+        (* TODO 23 - check(cond) { msg } -> throw ISE si !cond *)
+        Else If IdName = 'check' Then
+        Begin
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+          Begin
+            ParserAdvance; { consomme '(' }
+            ParseExpr(Res);
+            ExprFlushToAX(Res);
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance; { consomme ')' }
+            LblEnd := LabelGen;
+            EmitComment('check(cond)');
+            EmitInstrAB('TEST', 'AX', 'AX');
+            EmitInstrA('JNZ', LblEnd);
+            { Condition fausse : throw IllegalStateException }
+            EmitInstrAB('MOV', 'AX', '4'); (* 4 = ISE *)
+            EmitInstrAB('MOV', 'BX', '0');
+            (* Trailing lambda optionnel *)
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = CH_LBRACE) Then
+            Begin
+              ParserAdvance; (* consomme accolade ouvrante *)
+              If CurToken.Kind = TK_STRING Then
+              Begin
+                Lbl := LabelGen;
+                DataAdd(Lbl, DK_STR, 0, CurToken.Val);
+                EmitInstrAB('MOV', 'BX', 'OFFSET ' + Lbl);
+                ParserAdvance;
+              End;
+              If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = CH_RBRACE) Then
+                ParserAdvance; (* consomme accolade fermante *)
+            End;
+            EmitInstr('CALL _KTRT_THROW');
+            EmitLabel(LblEnd);
+          End;
+          Res.Kind    := EK_AX;
+          Res.ImmVal  := 0;
+          Res.TypeIdx := TY_IDX_UNIT;
+          Res.Offset  := 0;
+          Res.SymIdx  := -1;
+        End
         Else
         Begin
-          { TODO 16 - Appel constructeur de classe : Nom(args) }
           ClsIdx := ClassFind(IdName);
           If ClsIdx >= 0 Then
           Begin
@@ -4735,6 +4827,7 @@ Begin
   EmitNullSafetyRuntime;
   EmitInheritanceRuntime;
   EmitExtensionRuntime;
+  EmitExceptionRuntime;
 End;
 
 (* ---- EmitExprRuntime : routines runtime pour expressions ------ *)
@@ -5734,6 +5827,82 @@ Begin
   EmitInstrA('PUSH', 'BX');   (* empiler argument *)
   EmitInstr('CALL AX');        (* appel indirect *)
   EmitInstrAB('ADD', 'SP', '2'); (* nettoyer la pile *)
+  EmitInstr('RET');
+  EmitBlankLine;
+End;
+
+(* ---- EmitExceptionRuntime : routines exceptions (TODO 23) ---- *)
+(* _KTRT_THROW : lever une exception                              *)
+(*   Entree : AX = type exception (0=Exc,1=RTE,2=NPE,3=IAE,      *)
+(*            4=ISE,5=IOOB), BX = ptr message (ou 0)              *)
+(*   Si _KTX_HANDLER <> 0 : saute au handler courant              *)
+(*   Sinon : affiche "Unhandled exception" et termine             *)
+(* _KTL_UNHANDLED : affiche message et exit code 1                *)
+Procedure EmitExceptionRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=========================================================');
+  EmitComment('TODO 23 - EXCEPTION RUNTIME');
+  EmitComment('=========================================================');
+
+  { _KTRT_THROW : lever une exception }
+  EmitBlankLine;
+  EmitComment('--- _KTRT_THROW : AX=type, BX=msg -> jump handler ---');
+  EmitLabel(KT_RT_PFX + 'THROW');
+  EmitInstrAB('MOV', 'WORD PTR [_KTX_EXCTYP]', 'AX');
+  EmitInstrAB('MOV', 'WORD PTR [_KTX_EXCOBJ]', 'BX');
+  EmitInstrAB('CMP', 'WORD PTR [_KTX_HANDLER]', '0');
+  EmitInstrA('JZ', KT_RT_PFX + 'UNHANDLED');
+  { Restaurer SP/BP du try et sauter au handler }
+  EmitInstrAB('MOV', 'SP', 'WORD PTR [_KTX_SAVESP]');
+  EmitInstrAB('MOV', 'BP', 'WORD PTR [_KTX_SAVEBP]');
+  EmitInstrAB('MOV', 'BX', 'WORD PTR [_KTX_HANDLER]');
+  EmitInstr('JMP BX');
+
+  { _KTRT_UNHANDLED : exception non capturee -> afficher et exit }
+  EmitBlankLine;
+  EmitComment('--- _KTRT_UNHANDLED : affiche exception + exit 1 ---');
+  EmitLabel(KT_RT_PFX + 'UNHANDLED');
+  EmitInstrAB('MOV', 'SI', 'OFFSET _KT_UNH_MSG');
+  EmitInstr('CALL _KTRT_PRINTSTR');
+  { Afficher le type d exception }
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [_KTX_EXCTYP]');
+  EmitInstrAB('CMP', 'AX', '0');
+  EmitInstrA('JNZ', KT_RT_PFX + 'UNH_CHK1');
+  EmitInstrAB('MOV', 'SI', 'OFFSET _KT_EXC_MSG');
+  EmitInstrA('JMP', KT_RT_PFX + 'UNH_PRINT');
+  EmitLabel(KT_RT_PFX + 'UNH_CHK1');
+  EmitInstrAB('CMP', 'AX', '1');
+  EmitInstrA('JNZ', KT_RT_PFX + 'UNH_CHK2');
+  EmitInstrAB('MOV', 'SI', 'OFFSET _KT_RTEXC_MSG');
+  EmitInstrA('JMP', KT_RT_PFX + 'UNH_PRINT');
+  EmitLabel(KT_RT_PFX + 'UNH_CHK2');
+  EmitInstrAB('CMP', 'AX', '2');
+  EmitInstrA('JNZ', KT_RT_PFX + 'UNH_CHK3');
+  EmitInstrAB('MOV', 'SI', 'OFFSET _KT_NPE_MSG');
+  EmitInstrA('JMP', KT_RT_PFX + 'UNH_PRINT');
+  EmitLabel(KT_RT_PFX + 'UNH_CHK3');
+  EmitInstrAB('CMP', 'AX', '3');
+  EmitInstrA('JNZ', KT_RT_PFX + 'UNH_CHK4');
+  EmitInstrAB('MOV', 'SI', 'OFFSET _KT_IAEXC_MSG');
+  EmitInstrA('JMP', KT_RT_PFX + 'UNH_PRINT');
+  EmitLabel(KT_RT_PFX + 'UNH_CHK4');
+  EmitInstrAB('CMP', 'AX', '4');
+  EmitInstrA('JNZ', KT_RT_PFX + 'UNH_CHK5');
+  EmitInstrAB('MOV', 'SI', 'OFFSET _KT_ISEXC_MSG');
+  EmitInstrA('JMP', KT_RT_PFX + 'UNH_PRINT');
+  EmitLabel(KT_RT_PFX + 'UNH_CHK5');
+  EmitInstrAB('CMP', 'AX', '5');
+  EmitInstrA('JNZ', KT_RT_PFX + 'UNH_DEF');
+  EmitInstrAB('MOV', 'SI', 'OFFSET _KT_IOOB_MSG');
+  EmitInstrA('JMP', KT_RT_PFX + 'UNH_PRINT');
+  EmitLabel(KT_RT_PFX + 'UNH_DEF');
+  EmitInstrAB('MOV', 'SI', 'OFFSET _KT_EXC_MSG');
+  EmitLabel(KT_RT_PFX + 'UNH_PRINT');
+  EmitInstr('CALL _KTRT_PRINTSTR');
+  EmitInstr('CALL _KTRT_NEWLINE');
+  EmitInstrAB('MOV', 'AX', '4C01h');
+  EmitInstr('INT 21h');
   EmitInstr('RET');
   EmitBlankLine;
 End;
@@ -7170,6 +7339,18 @@ Begin
   DataTab[DataCount - 1].ElemCount := 128;
   { TODO 20 - Null safety data }
   DataAdd('_KT_NPE_MSG',   DK_STR, 0, 'NullPointerException');
+  { TODO 23 - Exception data }
+  DataAdd('_KTX_HANDLER',  DK_WORD, 0, '');
+  DataAdd('_KTX_SAVESP',   DK_WORD, 0, '');
+  DataAdd('_KTX_SAVEBP',   DK_WORD, 0, '');
+  DataAdd('_KTX_EXCOBJ',   DK_WORD, 0, '');
+  DataAdd('_KTX_EXCTYP',   DK_WORD, 0, '');
+  DataAdd('_KT_EXC_MSG',   DK_STR, 0, 'Exception');
+  DataAdd('_KT_RTEXC_MSG', DK_STR, 0, 'RuntimeException');
+  DataAdd('_KT_IAEXC_MSG', DK_STR, 0, 'IllegalArgumentException');
+  DataAdd('_KT_ISEXC_MSG', DK_STR, 0, 'IllegalStateException');
+  DataAdd('_KT_IOOB_MSG',  DK_STR, 0, 'IndexOutOfBoundsException');
+  DataAdd('_KT_UNH_MSG',   DK_STR, 0, 'Unhandled exception: ');
 End;
 
 { --- TODO 09 : Variables et Affectations [IMPLEMENTE] --------- }
@@ -7884,6 +8065,287 @@ Begin
   ScopeBlockLeave;
 End;
 
+{ ============================================================
+  TODO 23 - EXCEPTIONS (try / catch / finally / throw) [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- ParseTryExpr : try { bloc } catch (e:T) { bloc } finally { bloc } *)
+(* Genere :                                                                 *)
+(*   MOV [_KTX_SAVESP], SP     ; sauvegarder le SP                         *)
+(*   MOV [_KTX_SAVEBP], BP     ; sauvegarder le BP                         *)
+(*   PUSH WORD PTR [_KTX_HANDLER] ; sauvegarder ancien handler             *)
+(*   MOV WORD PTR [_KTX_HANDLER], OFFSET _KTL_CATCH_N                      *)
+(*   ... try body ...                                                       *)
+(*   JMP _KTL_FINALLY_N                                                     *)
+(* _KTL_CATCH_N:                                                            *)
+(*   ... catch body ...                                                     *)
+(* _KTL_FINALLY_N:                                                          *)
+(*   POP WORD PTR [_KTX_HANDLER] ; restaurer ancien handler                 *)
+(*   ... finally body (si present) ...                                      *)
+(* _KTL_ENDTRY_N:                                                           *)
+Procedure ParseTryExpr(Var Res : TExprVal);
+Var
+  N           : Integer;
+  CatchLbl    : TString;
+  FinallyLbl  : TString;
+  EndTryLbl   : TString;
+  HasCatch    : Boolean;
+  HasFinally  : Boolean;
+  ExcVarName  : TString;
+  ExcTypeName : TString;
+  ExcTypeCode : Integer;
+  ExcSIdx     : Integer;
+  ExcAddr     : TString;
+  NextCatch   : TString;
+  CatchN      : Integer;
+Begin
+  N := TryCatchCount;
+  Inc(TryCatchCount);
+  CatchLbl   := '_KTL_CATCH_' + IntToStr(N);
+  FinallyLbl := '_KTL_FINALLY_' + IntToStr(N);
+  EndTryLbl  := '_KTL_ENDTRY_' + IntToStr(N);
+  HasCatch   := False;
+  HasFinally := False;
+
+  ParserAdvance; { consomme 'try' }
+  EmitComment('try (block ' + IntToStr(N) + ')');
+
+  { Sauvegarder SP/BP et installer handler }
+  EmitInstrAB('MOV', 'WORD PTR [_KTX_SAVESP]', 'SP');
+  EmitInstrAB('MOV', 'WORD PTR [_KTX_SAVEBP]', 'BP');
+  EmitInstrA('PUSH', 'WORD PTR [_KTX_HANDLER]');
+  EmitInstrAB('MOV', 'WORD PTR [_KTX_HANDLER]', 'OFFSET ' + CatchLbl);
+
+  { Corps du try : accolade ouvrante }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = CH_LBRACE) Then
+  Begin
+    ParserAdvance; (* consomme accolade ouvrante *)
+    While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = CH_RBRACE))
+          And Not (CurToken.Kind = TK_EOF) Do
+      ParseStmt;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = CH_RBRACE) Then
+      ParserAdvance (* consomme accolade fermante *)
+    Else
+      CompileError('accolade fermante attendue pour try');
+  End
+  Else
+    CompileError('accolade ouvrante attendue apres try');
+
+  { Sauter au finally (pas de catch execute si le try reussit) }
+  EmitInstrA('JMP', FinallyLbl);
+
+  { Emettre les labels catch }
+  EmitLabel(CatchLbl);
+  CatchN := 0;
+
+  { Parser zero ou plusieurs blocs catch }
+  While (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'catch') Do
+  Begin
+    HasCatch := True;
+    ParserAdvance; { consomme 'catch' }
+
+    { ( e: Type ) }
+    ExcVarName  := 'e';
+    ExcTypeName := 'Exception';
+    ExcTypeCode := 0;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      ParserAdvance; { consomme '(' }
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        ExcVarName := CurToken.Val;
+        ParserAdvance; { consomme nom variable }
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+      Begin
+        ParserAdvance; { consomme ':' }
+        If CurToken.Kind = TK_IDENT Then
+        Begin
+          ExcTypeName := CurToken.Val;
+          ParserAdvance; { consomme nom type }
+        End;
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        ParserAdvance; { consomme ')' }
+    End;
+
+    { Mapper le nom de type -> code interne }
+    If ExcTypeName = 'Exception' Then
+      ExcTypeCode := 0
+    Else If ExcTypeName = 'RuntimeException' Then
+      ExcTypeCode := 1
+    Else If ExcTypeName = 'NullPointerException' Then
+      ExcTypeCode := 2
+    Else If ExcTypeName = 'IllegalArgumentException' Then
+      ExcTypeCode := 3
+    Else If ExcTypeName = 'IllegalStateException' Then
+      ExcTypeCode := 4
+    Else If ExcTypeName = 'IndexOutOfBoundsException' Then
+      ExcTypeCode := 5
+    Else
+      ExcTypeCode := 0; { Par defaut : Exception capture tout }
+
+    EmitComment('catch (' + ExcVarName + ': ' + ExcTypeName + ')');
+
+    { Si le type n est pas Exception (= capture tout), verifier le type }
+    If ExcTypeCode <> 0 Then
+    Begin
+      NextCatch := '_KTL_CATCH_' + IntToStr(N) + '_' + IntToStr(CatchN + 1);
+      EmitInstrAB('CMP', 'WORD PTR [_KTX_EXCTYP]',
+                  IntToStr(ExcTypeCode));
+      EmitInstrA('JNZ', NextCatch);
+    End;
+
+    { Declarer la variable e dans le scope courant }
+    ScopeBlockEnter;
+    ExcSIdx := DeclAllocSym(ExcVarName, SK_VAR);
+    SymTab[ExcSIdx].TypeIdx := TY_IDX_INT;
+    ExcAddr := ExprAddrOf(ExcSIdx);
+    EmitInstrAB('MOV', 'AX', 'WORD PTR [_KTX_EXCOBJ]');
+    EmitInstrAB('MOV', ExcAddr, 'AX');
+
+    { Corps du catch }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = CH_LBRACE) Then
+    Begin
+      ParserAdvance; (* consomme accolade ouvrante *)
+      While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = CH_RBRACE))
+            And Not (CurToken.Kind = TK_EOF) Do
+        ParseStmt;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = CH_RBRACE) Then
+        ParserAdvance (* consomme accolade fermante *)
+      Else
+        CompileError('accolade fermante attendue pour catch');
+    End;
+    ScopeBlockLeave;
+
+    EmitInstrA('JMP', FinallyLbl);
+
+    { Emettre le label pour le prochain catch si type filtre }
+    If ExcTypeCode <> 0 Then
+      EmitLabel('_KTL_CATCH_' + IntToStr(N) + '_' + IntToStr(CatchN + 1));
+
+    Inc(CatchN);
+  End;
+
+  { Si aucun catch n a capture, propager }
+  If HasCatch Then
+  Begin
+    EmitComment('re-throw si aucun catch ne correspond');
+    EmitInstrAB('MOV', 'AX', 'WORD PTR [_KTX_EXCTYP]');
+    EmitInstrAB('MOV', 'BX', 'WORD PTR [_KTX_EXCOBJ]');
+    EmitInstr('CALL _KTRT_THROW');
+  End;
+
+  { Label finally }
+  EmitLabel(FinallyLbl);
+
+  { Restaurer l ancien handler }
+  EmitInstrA('POP', 'WORD PTR [_KTX_HANDLER]');
+
+  { Parser le bloc finally s il est present }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'finally') Then
+  Begin
+    HasFinally := True;
+    ParserAdvance; { consomme 'finally' }
+    EmitComment('finally');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = CH_LBRACE) Then
+    Begin
+      ParserAdvance; (* consomme accolade ouvrante *)
+      While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = CH_RBRACE))
+            And Not (CurToken.Kind = TK_EOF) Do
+        ParseStmt;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = CH_RBRACE) Then
+        ParserAdvance (* consomme accolade fermante *)
+      Else
+        CompileError('accolade fermante attendue pour finally');
+    End;
+  End;
+
+  EmitLabel(EndTryLbl);
+  { Le resultat du try est la derniere valeur dans AX }
+  Res.Kind    := EK_AX;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_IDX_ANY;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseThrowStmt : throw ExceptionType("message") ------- *)
+(* Genere :                                                       *)
+(*   MOV AX, type_code   ; code du type d exception               *)
+(*   MOV BX, msg_ptr     ; pointeur vers message ou 0             *)
+(*   CALL _KTRT_THROW                                             *)
+Procedure ParseThrowStmt;
+Var
+  ExcName     : TString;
+  ExcTypeCode : Integer;
+  MsgLbl      : TString;
+  Res         : TExprVal;
+Begin
+  ParserAdvance; { consomme 'throw' }
+  EmitComment('throw');
+
+  ExcTypeCode := 0;
+  ExcName := '';
+
+  { Nom du type d exception }
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    ExcName := CurToken.Val;
+    ParserAdvance; { consomme le nom }
+
+    If ExcName = 'Exception' Then
+      ExcTypeCode := 0
+    Else If ExcName = 'RuntimeException' Then
+      ExcTypeCode := 1
+    Else If ExcName = 'NullPointerException' Then
+      ExcTypeCode := 2
+    Else If ExcName = 'IllegalArgumentException' Then
+      ExcTypeCode := 3
+    Else If ExcName = 'IllegalStateException' Then
+      ExcTypeCode := 4
+    Else If ExcName = 'IndexOutOfBoundsException' Then
+      ExcTypeCode := 5
+    Else
+      ExcTypeCode := 0;
+
+    { Optionnel : ("message") }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      ParserAdvance; { consomme '(' }
+      If (CurToken.Kind = TK_STRING) Then
+      Begin
+        MsgLbl := LabelGen;
+        DataAdd(MsgLbl, DK_STR, 0, CurToken.Val);
+        EmitInstrAB('MOV', 'BX', 'OFFSET ' + MsgLbl);
+        ParserAdvance; { consomme la chaine }
+      End
+      Else If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
+      Begin
+        ParseExpr(Res);
+        ExprFlushToAX(Res);
+        EmitInstrAB('MOV', 'BX', 'AX');
+      End
+      Else
+        EmitInstrAB('MOV', 'BX', '0');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        ParserAdvance; { consomme ')' }
+    End
+    Else
+      EmitInstrAB('MOV', 'BX', '0');
+  End
+  Else
+  Begin
+    { throw expr  -> expression quelconque }
+    ParseExpr(Res);
+    ExprFlushToAX(Res);
+    EmitInstrAB('MOV', 'BX', 'AX');
+  End;
+
+  EmitInstrAB('MOV', 'AX', IntToStr(ExcTypeCode));
+  EmitInstr('CALL _KTRT_THROW');
+End;
+
 Procedure ParserAdvance;
 Begin
   LexNextToken;
@@ -8002,6 +8464,17 @@ Begin
     If Kw = 'return' Then
     Begin
       ParseReturnStmt;
+      Exit;
+    End;
+    { TODO 23 - Exceptions }
+    If Kw = 'try' Then
+    Begin
+      ParseTryExpr(Res);
+      Exit;
+    End;
+    If Kw = 'throw' Then
+    Begin
+      ParseThrowStmt;
       Exit;
     End;
     { Modificateurs de fonction : inline, infix, private, internal }
