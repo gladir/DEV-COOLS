@@ -2552,11 +2552,8 @@ Begin
   { Evaluer l index }
   ParseExpr(IdxExpr);
   ExprFlushToAX(IdxExpr);
-  { BX = arr ptr, AX = index }
-  EmitInstrAB('MOV', 'BX', 'AX');
-  EmitInstr('POP    AX');
-  { AX = arr, BX = index -> echanger pour convention AGET(BX=arr, AX=idx) }
-  EmitInstr('XCHG   AX, BX');
+  { AX = index, pile = arr ptr -> POP BX pour AGET(BX=arr, AX=idx) }
+  EmitInstr('POP    BX');
   EmitInstrA('CALL', CL_RT_PFX + 'AGET');
   Res.Kind    := EK_AX;
   Res.TypeIdx := TY_UNKNOWN;
@@ -2568,9 +2565,7 @@ Begin
     EmitInstr('PUSH   AX');
     ParseExpr(IdxExpr);
     ExprFlushToAX(IdxExpr);
-    EmitInstrAB('MOV', 'BX', 'AX');
-    EmitInstr('POP    AX');
-    EmitInstr('XCHG   AX, BX');
+    EmitInstr('POP    BX');
     EmitInstrA('CALL', CL_RT_PFX + 'AGET');
   End;
   { Consommer ']' }
@@ -2698,7 +2693,8 @@ Begin
       End
       Else If CurToken.Val = '?' Then
       Begin
-        { ? et ?? sont traites dans Run, pas comme expression }
+        { ? et ?? sont des commandes d affichage gerees dans Run ;
+          si on arrive ici en position d expression, retourner void }
         ExprMakeNone(Res);
       End
       Else
