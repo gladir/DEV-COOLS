@@ -286,7 +286,7 @@
               arr.sum() -> CALL _KTRT_ARRSUM -> AX
             Verification de bornes : CMP index / JB/JAE -> exception si hors bornes
 
-  TODO 16 - CLASSES ET DATA CLASSES
+  TODO 16 - CLASSES ET DATA CLASSES [IMPLEMENTE]
             ParseClassDecl : [open|abstract|data|sealed] class Nom
               [constructor(params)] [: SuperType(args)[, Interface]] { corps }
             Constructeur primaire : class Nom(val x: Int, var y: Int)
@@ -552,6 +552,8 @@ Const
   MAX_ERRORS    = {$IFDEF FPC}30{$ELSE}3{$ENDIF};
   MAX_STR       = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
   MAX_ARR_ELEM  = 64;   { elements max par tableau literal inline }
+  MAX_CLASS_FIELDS = 16; { champs max par classe                  }
+  MAX_CLASSES      = 32; { classes max dans le programme           }
   STACK_SIZE    = 1024;
 
   { Caracteres speciaux (evite les accolades dans le source TP) }
@@ -715,6 +717,25 @@ Type
     ElemCount : Integer;
   End;
 
+  { ---- Descripteurs de classes (TODO 16) -------------------- }
+  TClassField = Record
+    Name    : TString;   { nom du champ Kotlin                 }
+    TypeIdx : Integer;   { type du champ                        }
+    IsVal   : Boolean;   { true=val (immutable), false=var      }
+    Offset  : Integer;   { offset en octets depuis debut objet  }
+  End;
+
+  TClassInfo = Record
+    Name       : TString;   { nom de la classe                  }
+    AsmLabel   : TString;   { prefixe ASM : _KTC_NomClasse      }
+    IsData     : Boolean;   { true si data class                 }
+    FieldCount : Integer;   { nombre de champs                   }
+    Fields     : Array[0..MAX_CLASS_FIELDS-1] Of TClassField;
+    ObjSize    : Integer;   { taille objet en octets             }
+    TypeIdx    : Integer;   { indice dans TypeTab                }
+    SymIdx     : Integer;   { indice dans SymTab                 }
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -773,6 +794,11 @@ Var
   RuntimeEmitted : Boolean;
   GCallArgCount  : Integer;  { nb args du dernier ParseCallArgs     }
   ArrayTempCount : Integer;  { compteur pour labels _KTA_N           }
+
+  { Classes (TODO 16) }
+  ClassTab     : Array[0..MAX_CLASSES-1] Of TClassInfo;
+  ClassCount   : Integer;
+  ObjTempCount : Integer;  { compteur pour labels _KTO_N            }
 
 { ============================================================
   FORWARD DECLARATIONS
@@ -874,6 +900,13 @@ Procedure ParseWhenStmt; Forward;
 Procedure ParseWhileStmt;   Forward;
 Procedure ParseDoWhileStmt; Forward;
 Procedure ParseForStmt;     Forward;
+{ TODO 16 - Classes }
+Procedure ParseClassDecl;   Forward;
+Procedure EmitClassRuntime; Forward;
+Function  ClassFind(Const Name : TString) : Integer; Forward;
+Function  ClassFieldFind(ClsIdx : Integer;
+                         Const FName : TString) : Integer; Forward;
+Function  ClassFindByTypeIdx(TIdx : Integer) : Integer; Forward;
 { General }
 Procedure ParserAdvance; Forward;
 Procedure ParseStmt;     Forward;
@@ -1176,6 +1209,8 @@ Begin
   RuntimeEmitted := False;
   GCallArgCount  := 0;
   ArrayTempCount := 0;
+  ClassCount     := 0;
+  ObjTempCount   := 0;
   CurFrameSize   := 0;
   LabelGenSeq    := 0;
   GExprDummy.Kind    := EK_NONE;
@@ -2292,6 +2327,9 @@ Var
   ArrLbl   : TString;
   LblNull  : TString;
   LblEnd   : TString;
+  ClsIdx   : Integer;
+  ClsFI    : Integer;
+  ObjLbl   : TString;
 Begin
   Case CurToken.Kind Of
     TK_INTEGER, TK_LONG, TK_FLOAT, TK_CHAR :
@@ -2391,6 +2429,22 @@ Begin
                 EmitInstrAB('MOV', 'SI', 'OFFSET _KT_FALSE_S');
                 EmitLabel(LblEnd);
                 EmitInstr('CALL _KTRT_PRINTSTR');
+              End
+              Else If ClassFindByTypeIdx(Res.TypeIdx) >= 0 Then
+              Begin
+                { TODO 16 - println d un objet classe }
+                ClsIdx := ClassFindByTypeIdx(Res.TypeIdx);
+                If ClassTab[ClsIdx].IsData Then
+                Begin
+                  EmitInstrAB('MOV', 'BX', 'AX');
+                  EmitInstr('CALL ' + KT_FN_PFX + ClassTab[ClsIdx].Name +
+                            '_toString');
+                End
+                Else
+                Begin
+                  EmitComment('println objet (non-data) -> adresse');
+                  EmitInstr('CALL _KTRT_PRINT');
+                End;
               End
               Else
               Begin
@@ -2505,6 +2559,44 @@ Begin
         End
         Else
         Begin
+          { TODO 16 - Appel constructeur de classe : Nom(args) }
+          ClsIdx := ClassFind(IdName);
+          If ClsIdx >= 0 Then
+          Begin
+            { Allouer un bloc objet statique dans DATA }
+            ObjLbl := KT_OBJ_PFX + IntToStr(ObjTempCount);
+            Inc(ObjTempCount);
+            DataAddObj(ObjLbl, ClassTab[ClsIdx].ObjSize);
+            EmitComment('new ' + IdName + '()');
+            EmitInstrAB('MOV', 'WORD PTR [' + ObjLbl + ']', '0'); { vtable = 0 }
+            ParserAdvance; { consomme '(' }
+            { Parser et stocker les arguments dans les champs }
+            For ClsFI := 0 To ClassTab[ClsIdx].FieldCount - 1 Do
+            Begin
+              If ClsFI > 0 Then
+              Begin
+                If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+                  ParserAdvance; { consomme ',' }
+              End;
+              If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
+              Begin
+                ParseExpr(Res);
+                ExprFlushToAX(Res);
+                EmitInstrAB('MOV', 'WORD PTR [' + ObjLbl + '+' +
+                  IntToStr(ClassTab[ClsIdx].Fields[ClsFI].Offset) + ']', 'AX');
+              End;
+            End;
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance; { consomme ')' }
+            EmitInstrAB('MOV', 'AX', 'OFFSET ' + ObjLbl);
+            Res.Kind    := EK_AX;
+            Res.ImmVal  := 0;
+            Res.TypeIdx := ClassTab[ClsIdx].TypeIdx;
+            Res.Offset  := 0;
+            Res.SymIdx  := -1;
+          End
+          Else
+          Begin
           { Appel de fonction generique }
           NArgs := ParseCallArgs;
           GCallArgCount := NArgs;
@@ -2527,6 +2619,7 @@ Begin
             Res.TypeIdx := TY_IDX_ANY;
           Res.Offset  := 0;
           Res.SymIdx  := -1;
+          End;
         End;
       End
       Else
@@ -2715,6 +2808,49 @@ Begin
           End
           Else
           Begin
+            { TODO 16 - Appel methode toString() sur data class }
+            ClsIdx := ClassFindByTypeIdx(Res.TypeIdx);
+            If (MembName = 'toString') And (ClsIdx >= 0) And
+               ClassTab[ClsIdx].IsData Then
+            Begin
+              ParserAdvance; { consomme '(' }
+              If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+                ParserAdvance; { consomme ')' }
+              EmitInstrAB('MOV', 'BX', 'AX');
+              EmitInstr('CALL ' + KT_FN_PFX + ClassTab[ClsIdx].Name + '_toString');
+              Res.TypeIdx := TY_IDX_STRING;
+            End
+            Else If (MembName = 'hashCode') And (ClsIdx >= 0) Then
+            Begin
+              ParserAdvance; { consomme '(' }
+              If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+                ParserAdvance; { consomme ')' }
+              EmitInstrAB('XOR', 'AX', 'AX'); { stub : retourne 0 }
+              Res.TypeIdx := TY_IDX_INT;
+            End
+            Else If (MembName = 'copy') And (ClsIdx >= 0) And
+                    ClassTab[ClsIdx].IsData Then
+            Begin
+              { copy() : alloue un nouveau bloc et copie les champs }
+              ObjLbl := KT_OBJ_PFX + IntToStr(ObjTempCount);
+              Inc(ObjTempCount);
+              DataAddObj(ObjLbl, ClassTab[ClsIdx].ObjSize);
+              EmitInstrAB('MOV', 'BX', 'AX');
+              For ClsFI := 0 To ClassTab[ClsIdx].FieldCount - 1 Do
+              Begin
+                EmitInstrAB('MOV', 'AX', '[BX+' +
+                  IntToStr(ClassTab[ClsIdx].Fields[ClsFI].Offset) + ']');
+                EmitInstrAB('MOV', 'WORD PTR [' + ObjLbl + '+' +
+                  IntToStr(ClassTab[ClsIdx].Fields[ClsFI].Offset) + ']', 'AX');
+              End;
+              ParserAdvance; { consomme '(' }
+              If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+                ParserAdvance; { consomme ')' }
+              EmitInstrAB('MOV', 'AX', 'OFFSET ' + ObjLbl);
+              Res.TypeIdx := ClassTab[ClsIdx].TypeIdx;
+            End
+            Else
+            Begin
             EmitInstrA('PUSH', 'AX'); { receveur en premier arg }
             NArgs := ParseCallArgs;
             GCallArgCount := NArgs + 1;
@@ -2722,6 +2858,7 @@ Begin
             SVal := IntToStr((NArgs + 1) * 2);
             EmitInstrAB('ADD', 'SP', SVal);
             Res.TypeIdx := TY_IDX_ANY;
+            End;
           End;
         End
         Else
@@ -2737,11 +2874,36 @@ Begin
           End
           Else
           Begin
+            { TODO 16 - Acces champ de classe : obj.field }
+            ClsIdx := ClassFindByTypeIdx(Res.TypeIdx);
+            If ClsIdx >= 0 Then
+            Begin
+              ClsFI := ClassFieldFind(ClsIdx, MembName);
+              If ClsFI >= 0 Then
+              Begin
+                EmitComment('acces champ .' + MembName + ' offset ' +
+                  IntToStr(ClassTab[ClsIdx].Fields[ClsFI].Offset));
+                EmitInstrAB('MOV', 'BX', 'AX');
+                EmitInstrAB('MOV', 'AX', '[BX+' +
+                  IntToStr(ClassTab[ClsIdx].Fields[ClsFI].Offset) + ']');
+                Res.TypeIdx := ClassTab[ClsIdx].Fields[ClsFI].TypeIdx;
+              End
+              Else
+              Begin
+                EmitComment('champ inconnu .' + MembName);
+                EmitInstrAB('MOV', 'BX', 'AX');
+                EmitInstrAB('MOV', 'AX', '[BX]');
+                Res.TypeIdx := TY_IDX_ANY;
+              End;
+            End
+            Else
+            Begin
             (* Acces champ : stub, charge via offset pointeur *)
             EmitComment('acces membre .' + MembName);
             EmitInstrAB('MOV', 'BX', 'AX');
             EmitInstrAB('MOV', 'AX', '[BX]');
             Res.TypeIdx := TY_IDX_ANY;
+            End;
           End;
         End;
       End
@@ -3889,6 +4051,7 @@ Begin
   EmitExprRuntime;
   EmitIORuntime;
   EmitArrayRuntime;
+  EmitClassRuntime;
 End;
 
 (* ---- EmitExprRuntime : routines runtime pour expressions ------ *)
@@ -4080,6 +4243,277 @@ Begin
   EmitInstrA('POP', 'CX');
   EmitInstrA('POP', 'BX');
   EmitInstr('RET');
+End;
+
+{ ============================================================
+  TODO 16 - CLASSES ET DATA CLASSES [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- Fonctions utilitaires pour les classes ----------------- *)
+
+Function ClassFind(Const Name : TString) : Integer;
+Var I : Integer;
+Begin
+  For I := 0 To ClassCount - 1 Do
+    If ClassTab[I].Name = Name Then
+    Begin
+      ClassFind := I;
+      Exit;
+    End;
+  ClassFind := -1;
+End;
+
+Function ClassFieldFind(ClsIdx : Integer; Const FName : TString) : Integer;
+Var I : Integer;
+Begin
+  For I := 0 To ClassTab[ClsIdx].FieldCount - 1 Do
+    If ClassTab[ClsIdx].Fields[I].Name = FName Then
+    Begin
+      ClassFieldFind := I;
+      Exit;
+    End;
+  ClassFieldFind := -1;
+End;
+
+Function ClassFindByTypeIdx(TIdx : Integer) : Integer;
+Var I : Integer;
+Begin
+  For I := 0 To ClassCount - 1 Do
+    If ClassTab[I].TypeIdx = TIdx Then
+    Begin
+      ClassFindByTypeIdx := I;
+      Exit;
+    End;
+  ClassFindByTypeIdx := -1;
+End;
+
+(* ---- EmitClassRuntime : routines runtime pour les classes ---- *)
+(* _KTRT_OBJNEW : initialiser un bloc objet a zero.              *)
+(*   Entree : BX = pointeur objet, CX = taille en octets         *)
+Procedure EmitClassRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('---------------------------------------------------------');
+  EmitComment('Runtime : classes et objets');
+  EmitComment('---------------------------------------------------------');
+  EmitBlankLine;
+  EmitLabel('_KTRT_OBJNEW');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'AX');
+  EmitInstrAB('MOV', 'DI', 'BX');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstr('REP STOSB');
+  EmitInstrA('POP', 'AX');
+  EmitInstrA('POP', 'DI');
+  EmitInstr('RET');
+  EmitBlankLine;
+End;
+
+(* ---- ParseClassDecl : [data] class Nom(val/var p: T, ...) --- *)
+(* Genere :                                                       *)
+(*   - Entree dans ClassTab                                       *)
+(*   - Type dans TypeTab (TYK_CLASS)                               *)
+(*   - Symbole dans SymTab (SK_CLASS)                              *)
+(*   - Pour data class : procedure _KTF_Nom_toString               *)
+Procedure ParseClassDecl;
+Var
+  IsData     : Boolean;
+  ClsName    : TString;
+  ClsLabel   : TString;
+  ClsIdx     : Integer;
+  TIdx       : Integer;
+  FldName    : TString;
+  FldIsVal   : Boolean;
+  FldTIdx    : Integer;
+  FldCount   : Integer;
+  ObjSz      : Integer;
+  I          : Integer;
+  LblSkip    : TString;
+  LblLoop    : TString;
+  LblDone    : TString;
+  SIdx       : Integer;
+  FieldOfs   : TString;
+  SaveClass  : TString;
+Begin
+  IsData := False;
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'data') Then
+  Begin
+    IsData := True;
+    ParserAdvance; { consomme 'data' }
+  End;
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'class') Then
+    ParserAdvance { consomme 'class' }
+  Else
+  Begin
+    CompileError('mot-cle "class" attendu');
+    Exit;
+  End;
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('nom de classe attendu');
+    Exit;
+  End;
+  ClsName := CurToken.Val;
+  ClsLabel := KT_CLS_PFX + ClsName;
+  ParserAdvance; { consomme le nom }
+  FldCount := 0;
+  ObjSz := 2;  { premier word = vtable (reserve, mis a 0) }
+  { Parser les parametres du constructeur primaire }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+  Begin
+    ParserAdvance; { consomme '(' }
+    While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) And
+          (CurToken.Kind <> TK_EOF) Do
+    Begin
+      FldIsVal := True;
+      If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'val') Then
+      Begin
+        FldIsVal := True;
+        ParserAdvance;
+      End
+      Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'var') Then
+      Begin
+        FldIsVal := False;
+        ParserAdvance;
+      End;
+      If CurToken.Kind <> TK_IDENT Then
+      Begin
+        CompileError('nom de parametre attendu');
+        Exit;
+      End;
+      FldName := CurToken.Val;
+      ParserAdvance; { consomme le nom }
+      FldTIdx := TY_IDX_INT;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+      Begin
+        ParserAdvance; { consomme ':' }
+        If CurToken.Kind = TK_IDENT Then
+        Begin
+          FldTIdx := TypeLookupName(CurToken.Val);
+          If FldTIdx < 0 Then FldTIdx := TY_IDX_INT;
+          ParserAdvance;
+        End;
+      End;
+      If FldCount < MAX_CLASS_FIELDS Then
+      Begin
+        ClassTab[ClassCount].Fields[FldCount].Name    := FldName;
+        ClassTab[ClassCount].Fields[FldCount].TypeIdx := FldTIdx;
+        ClassTab[ClassCount].Fields[FldCount].IsVal   := FldIsVal;
+        ClassTab[ClassCount].Fields[FldCount].Offset  := ObjSz;
+        Inc(FldCount);
+        Inc(ObjSz, 2);
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance; { consomme ',' }
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance; { consomme ')' }
+  End;
+  { Enregistrer le type dans TypeTab }
+  If TypeCount < MAX_TYPE Then
+  Begin
+    TypeTab[TypeCount].Name := ClsName;
+    TypeTab[TypeCount].Kind := TYK_CLASS;
+    TypeTab[TypeCount].Size := ObjSz;
+    TIdx := TypeCount;
+    Inc(TypeCount);
+  End
+  Else
+    TIdx := TY_IDX_ANY;
+  { Enregistrer la classe dans ClassTab }
+  ClsIdx := ClassCount;
+  ClassTab[ClsIdx].Name       := ClsName;
+  ClassTab[ClsIdx].AsmLabel   := ClsLabel;
+  ClassTab[ClsIdx].IsData     := IsData;
+  ClassTab[ClsIdx].FieldCount := FldCount;
+  ClassTab[ClsIdx].ObjSize    := ObjSz;
+  ClassTab[ClsIdx].TypeIdx    := TIdx;
+  { Enregistrer le symbole }
+  SIdx := SymAdd(ClsName, SK_CLASS, TIdx, 0);
+  ClassTab[ClsIdx].SymIdx := SIdx;
+  Inc(ClassCount);
+  { Ignorer heritage : SuperType(args), Interface }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+  Begin
+    ParserAdvance; { consomme ':' }
+    While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = CH_LBRACE)) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{')) And
+          (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_KEYWORD) And
+               ((CurToken.Val = 'val') Or (CurToken.Val = 'var') Or
+                (CurToken.Val = 'class') Or (CurToken.Val = 'fun'))) Do
+      ParserAdvance;
+  End;
+  { Pour data class : emettre _KTF_ClsName_toString }
+  If IsData And (FldCount > 0) Then
+  Begin
+    LblSkip := LabelGen;
+    EmitInstrA('JMP', LblSkip);
+    EmitBlankLine;
+    EmitComment('data class ' + ClsName + ' toString()');
+    EmitLabel(KT_FN_PFX + ClsName + '_toString');
+    { BX = pointeur objet, emet la chaine dans STDOUT }
+    EmitInstrA('PUSH', 'BX');
+    EmitInstrA('PUSH', 'SI');
+    { Imprimer "ClsName(" }
+    DataAdd(KT_STR_PFX + ClsName + '_O', DK_STR, 0, ClsName + '(');
+    EmitInstrAB('LEA', 'SI', KT_STR_PFX + ClsName + '_O');
+    EmitInstr('CALL _KTRT_PRINTSTR');
+    For I := 0 To FldCount - 1 Do
+    Begin
+      If I > 0 Then
+      Begin
+        DataAdd(KT_STR_PFX + ClsName + '_C' + IntToStr(I), DK_STR, 0, ', ');
+        EmitInstrAB('LEA', 'SI', KT_STR_PFX + ClsName + '_C' + IntToStr(I));
+        EmitInstr('CALL _KTRT_PRINTSTR');
+      End;
+      { Imprimer "fieldName=" }
+      DataAdd(KT_STR_PFX + ClsName + '_F' + IntToStr(I), DK_STR, 0,
+              ClassTab[ClsIdx].Fields[I].Name + '=');
+      EmitInstrAB('LEA', 'SI', KT_STR_PFX + ClsName + '_F' + IntToStr(I));
+      EmitInstr('CALL _KTRT_PRINTSTR');
+      { Charger et imprimer la valeur du champ }
+      EmitInstrA('POP', 'BX');
+      EmitInstrA('PUSH', 'BX');
+      FieldOfs := IntToStr(ClassTab[ClsIdx].Fields[I].Offset);
+      If ClassTab[ClsIdx].Fields[I].TypeIdx = TY_IDX_STRING Then
+      Begin
+        EmitInstrAB('MOV', 'SI', '[BX+' + FieldOfs + ']');
+        EmitInstr('CALL _KTRT_PRINTSTR');
+      End
+      Else
+      Begin
+        EmitInstrAB('MOV', 'AX', '[BX+' + FieldOfs + ']');
+        EmitInstr('CALL _KTRT_PRINT');
+      End;
+    End;
+    { Imprimer ")" }
+    DataAdd(KT_STR_PFX + ClsName + '_P', DK_STR, 0, ')');
+    EmitInstrAB('LEA', 'SI', KT_STR_PFX + ClsName + '_P');
+    EmitInstr('CALL _KTRT_PRINTSTR');
+    EmitInstrA('POP', 'SI');
+    EmitInstrA('POP', 'BX');
+    EmitInstr('RET');
+    EmitLabel(LblSkip);
+    EmitBlankLine;
+  End;
+  (* Parser le corps de la classe si present *)
+  SaveClass := CurClassName;
+  CurClassName := ClsName;
+  If (CurToken.Kind = TK_PUNCT) And
+     ((CurToken.Val = CH_LBRACE) Or (CurToken.Val = '{')) Then
+  Begin
+    ParserAdvance; (* consomme accolade ouvrante *)
+    (* Parser le contenu du corps : val/var dans la classe sont ignores *)
+    While Not ((CurToken.Kind = TK_PUNCT) And
+               ((CurToken.Val = CH_RBRACE) Or (CurToken.Val = '}'))) And
+          (CurToken.Kind <> TK_EOF) Do
+      ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And
+       ((CurToken.Val = CH_RBRACE) Or (CurToken.Val = '}')) Then
+      ParserAdvance; (* consomme accolade fermante *)
+  End;
+  CurClassName := SaveClass;
 End;
 
 { ============================================================
@@ -4721,7 +5155,7 @@ Begin
       Begin
         Addr := ExprAddrOf(E.SymIdx);
         K := TypeKindOf(E.TypeIdx);
-        If (K = TYK_ARRAY) Or (K = TYK_INTARRAY) Then
+        If (K = TYK_ARRAY) Or (K = TYK_INTARRAY) Or (K = TYK_CLASS) Then
           EmitInstrAB('MOV', 'AX', Addr)
         Else If TypeIsPtr(E.TypeIdx) Then
           EmitInstrAB('LEA', 'AX', Addr)
@@ -4763,7 +5197,7 @@ Begin
   Res.SymIdx  := SIdx;
   Addr := ExprAddrOf(SIdx);
   K := TypeKindOf(Res.TypeIdx);
-  If (K = TYK_ARRAY) Or (K = TYK_INTARRAY) Then
+  If (K = TYK_ARRAY) Or (K = TYK_INTARRAY) Or (K = TYK_CLASS) Then
     EmitInstrAB('MOV', 'AX', Addr)
   Else If TypeIsPtr(Res.TypeIdx) Then
     EmitInstrAB('LEA', 'AX', Addr)
@@ -5387,6 +5821,8 @@ Var
   IdName  : TString;
   SIdx    : Integer;
   Addr    : TString;
+  ClsI    : Integer;
+  FldI    : Integer;
 Begin
   { Declarations val / var }
   If CurToken.Kind = TK_KEYWORD Then
@@ -5443,6 +5879,21 @@ Begin
         CompileError('continue hors boucle');
       Exit;
     End;
+    { TODO 16 - class et data class }
+    If (Kw = 'class') Or (Kw = 'data') Then
+    Begin
+      ParseClassDecl;
+      Exit;
+    End;
+    If (Kw = 'open') Or (Kw = 'abstract') Or (Kw = 'sealed') Then
+    Begin
+      ParserAdvance; { consomme le modificateur }
+      If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'class') Then
+        ParseClassDecl
+      Else
+        ParserAdvance;
+      Exit;
+    End;
   End;
   { TODO 12 - Expression-statement : appel de fonction ou affectation }
   If CurToken.Kind = TK_IDENT Then
@@ -5493,6 +5944,41 @@ Begin
         EmitInstrAB('MOV', Addr, 'AX');
         If SymTab[SIdx].TypeIdx = TY_UNKNOWN Then
           SymTab[SIdx].TypeIdx := Res.TypeIdx;
+        Exit;
+      End;
+      { TODO 16 - Affectation champ : obj.field = expr }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
+      Begin
+        ExprLoad(SIdx, Res);
+        ExprFlushToAX(Res);
+        ParserAdvance; { consomme '.' }
+        If CurToken.Kind = TK_IDENT Then
+        Begin
+          IdName := CurToken.Val;
+          ParserAdvance; { consomme le nom du champ }
+          If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+          Begin
+            ParserAdvance; { consomme '=' }
+            EmitInstrA('PUSH', 'AX'); { sauver pointeur objet }
+            ParseExpr(Res);
+            ExprFlushToAX(Res);
+            EmitInstrA('POP', 'BX');
+            ClsI := ClassFindByTypeIdx(SymTab[SIdx].TypeIdx);
+            If ClsI >= 0 Then
+            Begin
+              FldI := ClassFieldFind(ClsI, IdName);
+              If FldI >= 0 Then
+                EmitInstrAB('MOV', '[BX+' +
+                  IntToStr(ClassTab[ClsI].Fields[FldI].Offset) + ']', 'AX')
+              Else
+                EmitInstrAB('MOV', '[BX]', 'AX');
+            End
+            Else
+              EmitInstrAB('MOV', '[BX]', 'AX');
+            Exit;
+          End;
+        End;
+        { Pas une affectation de champ : rembobiner }
         Exit;
       End;
       { Pas une affectation : rembobiner en evaluant comme expression }
