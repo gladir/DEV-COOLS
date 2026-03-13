@@ -3358,7 +3358,8 @@ Begin
         Res.ImmVal := LVal And RVal
       Else If Op = 'OR' Then
         Res.ImmVal := LVal Or RVal
-      { ELEM : test de bit (resultat BOOL) }
+      { ELEM : test de bit (resultat BOOL)
+        RVal < 16 car BITS est un mot 16 bits sur 8086 }
       Else If Op = 'ELEM' Then
       Begin
         If (RVal >= 0) And (RVal < 16) Then
