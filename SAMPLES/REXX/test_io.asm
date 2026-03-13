@@ -1052,6 +1052,985 @@ _RXB_LPO_DN:
         POP   BP
         RET
 
+; --- Runtime BIF partie 2 (TODO 18) ---
+
+_RXB_WORDS:
+        PUSH   BP
+        MOV   BP, SP
+        PUSH   SI
+        MOV   SI, [BP+4]
+        XOR   AX, AX
+        XOR   DX, DX
+_RXB2_WS_LP:
+        MOV   BL, [SI]
+        CMP   BL, 0
+        JE   _RXB2_WS_DN
+        CMP   BL, ' '
+        JE   _RXB2_WS_SP
+        CMP   DX, 0
+        JNE   _RXB2_WS_NX
+        INC   AX
+        MOV   DX, 1
+        JMP   _RXB2_WS_NX
+_RXB2_WS_SP:
+        XOR   DX, DX
+_RXB2_WS_NX:
+        INC   SI
+        JMP   _RXB2_WS_LP
+_RXB2_WS_DN:
+        POP   SI
+        POP   BP
+        RET
+
+_RXB_WORD:
+        PUSH   BP
+        MOV   BP, SP
+        PUSH   DI
+        PUSH   SI
+        MOV   SI, [BP+6]
+        MOV   CX, [BP+4]
+        LEA   DI, _RX_BIF2BUF
+        XOR   DX, DX
+_RXB2_W_SKP:
+        CMP   BYTE PTR [SI], 0
+        JE   _RXB2_W_EMP
+        CMP   BYTE PTR [SI], ' '
+        JNE   _RXB2_W_FW
+        INC   SI
+        JMP   _RXB2_W_SKP
+_RXB2_W_FW:
+        INC   DX
+        CMP   DX, CX
+        JE   _RXB2_W_CPY
+_RXB2_W_SRW:
+        CMP   BYTE PTR [SI], 0
+        JE   _RXB2_W_EMP
+        CMP   BYTE PTR [SI], ' '
+        JE   _RXB2_W_SKP
+        INC   SI
+        JMP   _RXB2_W_SRW
+_RXB2_W_CPY:
+        MOV   AL, [SI]
+        CMP   AL, 0
+        JE   _RXB2_W_END
+        CMP   AL, ' '
+        JE   _RXB2_W_END
+        MOV   [DI], AL
+        INC   SI
+        INC   DI
+        JMP   _RXB2_W_CPY
+_RXB2_W_EMP:
+_RXB2_W_END:
+        MOV   BYTE PTR [DI], 0
+        MOV   AX, OFFSET _RX_BIF2BUF
+        POP   SI
+        POP   DI
+        POP   BP
+        RET
+
+_RXB_WORDINDEX:
+        PUSH   BP
+        MOV   BP, SP
+        PUSH   SI
+        MOV   SI, [BP+6]
+        MOV   CX, [BP+4]
+        XOR   DX, DX
+        XOR   BX, BX
+_RXB2_WI_LP:
+        CMP   BYTE PTR [SI], 0
+        JE   _RXB2_WI_NF
+        INC   BX
+        CMP   BYTE PTR [SI], ' '
+        JNE   _RXB2_WI_FW
+        INC   SI
+        JMP   _RXB2_WI_LP
+_RXB2_WI_FW:
+        INC   DX
+        CMP   DX, CX
+        JE   _RXB2_WI_OK
+_RXB2_WI_SK:
+        CMP   BYTE PTR [SI], 0
+        JE   _RXB2_WI_NF
+        CMP   BYTE PTR [SI], ' '
+        JE   _RXB2_WI_LP
+        INC   SI
+        INC   BX
+        JMP   _RXB2_WI_SK
+_RXB2_WI_OK:
+        MOV   AX, BX
+        JMP   _RXB2_WI_DN
+_RXB2_WI_NF:
+        XOR   AX, AX
+_RXB2_WI_DN:
+        POP   SI
+        POP   BP
+        RET
+
+_RXB_WORDLENGTH:
+        PUSH   BP
+        MOV   BP, SP
+        PUSH   SI
+        MOV   SI, [BP+6]
+        MOV   CX, [BP+4]
+        XOR   DX, DX
+_RXB2_WL_LP:
+        CMP   BYTE PTR [SI], 0
+        JE   _RXB2_WL_NF
+        CMP   BYTE PTR [SI], ' '
+        JNE   _RXB2_WL_FW
+        INC   SI
+        JMP   _RXB2_WL_LP
+_RXB2_WL_FW:
+        INC   DX
+        CMP   DX, CX
+        JE   _RXB2_WL_CT
+_RXB2_WL_SK:
+        CMP   BYTE PTR [SI], 0
+        JE   _RXB2_WL_NF
+        CMP   BYTE PTR [SI], ' '
+        JE   _RXB2_WL_LP
+        INC   SI
+        JMP   _RXB2_WL_SK
+_RXB2_WL_CT:
+        XOR   AX, AX
+_RXB2_WL_CL:
+        CMP   BYTE PTR [SI], 0
+        JE   _RXB2_WL_DN
+        CMP   BYTE PTR [SI], ' '
+        JE   _RXB2_WL_DN
+        INC   AX
+        INC   SI
+        JMP   _RXB2_WL_CL
+_RXB2_WL_NF:
+        XOR   AX, AX
+_RXB2_WL_DN:
+        POP   SI
+        POP   BP
+        RET
+
+_RXB_WORDPOS:
+        PUSH   BP
+        MOV   BP, SP
+        PUSH   DI
+        PUSH   SI
+        MOV   SI, [BP+8]
+_RXB2_WP_SS:
+        CMP   BYTE PTR [SI], ' '
+        JNE   _RXB2_WP_S1
+        INC   SI
+        JMP   _RXB2_WP_SS
+_RXB2_WP_S1:
+        LEA   DI, _RX_BIF2BUF
+_RXB2_WP_CW:
+        MOV   AL, [SI]
+        CMP   AL, 0
+        JE   _RXB2_WP_CE
+        CMP   AL, ' '
+        JE   _RXB2_WP_CE
+        MOV   [DI], AL
+        INC   SI
+        INC   DI
+        JMP   _RXB2_WP_CW
+_RXB2_WP_CE:
+        MOV   BYTE PTR [DI], 0
+        MOV   SI, [BP+6]
+        XOR   DX, DX
+_RXB2_WP_NW:
+        CMP   BYTE PTR [SI], 0
+        JE   _RXB2_WP_NF
+        CMP   BYTE PTR [SI], ' '
+        JNE   _RXB2_WP_GW
+        INC   SI
+        JMP   _RXB2_WP_NW
+_RXB2_WP_GW:
+        INC   DX
+        PUSH   SI
+        LEA   DI, _RX_BIF2BUF
+_RXB2_WP_CM:
+        MOV   AL, [DI]
+        CMP   AL, 0
+        JNE   _RXB2_WP_C2
+        CMP   BYTE PTR [SI], ' '
+        JE   _RXB2_WP_FD
+        CMP   BYTE PTR [SI], 0
+        JE   _RXB2_WP_FD
+        JMP   _RXB2_WP_NM
+_RXB2_WP_C2:
+        MOV   BL, [SI]
+        CMP   AL, BL
+        JNE   _RXB2_WP_NM
+        INC   SI
+        INC   DI
+        JMP   _RXB2_WP_CM
+_RXB2_WP_NM:
+        POP   SI
+_RXB2_WP_SR:
+        CMP   BYTE PTR [SI], 0
+        JE   _RXB2_WP_NF
+        CMP   BYTE PTR [SI], ' '
+        JE   _RXB2_WP_NW
+        INC   SI
+        JMP   _RXB2_WP_SR
+_RXB2_WP_FD:
+        POP   SI
+        MOV   AX, DX
+        JMP   _RXB2_WP_DN
+_RXB2_WP_NF:
+        XOR   AX, AX
+_RXB2_WP_DN:
+        POP   SI
+        POP   DI
+        POP   BP
+        RET
+
+_RXB_SUBWORD:
+        PUSH   BP
+        MOV   BP, SP
+        PUSH   DI
+        PUSH   SI
+        MOV   SI, [BP+8]
+        MOV   CX, [BP+6]
+        MOV   BX, [BP+4]
+        LEA   DI, _RX_BIF2BUF
+        XOR   DX, DX
+_RXB2_SW_SK:
+        CMP   BYTE PTR [SI], 0
+        JE   _RXB2_SW_ED
+        CMP   BYTE PTR [SI], ' '
+        JNE   _RXB2_SW_FW
+        INC   SI
+        JMP   _RXB2_SW_SK
+_RXB2_SW_FW:
+        INC   DX
+        CMP   DX, CX
+        JGE   _RXB2_SW_CP
+_RXB2_SW_S2:
+        CMP   BYTE PTR [SI], 0
+        JE   _RXB2_SW_ED
+        CMP   BYTE PTR [SI], ' '
+        JE   _RXB2_SW_SK
+        INC   SI
+        JMP   _RXB2_SW_S2
+_RXB2_SW_CP:
+        CMP   BX, 0
+        JE   _RXB2_SW_AL
+        MOV   CX, BX
+_RXB2_SW_CW:
+        CMP   CX, 0
+        JE   _RXB2_SW_ED
+        CMP   BYTE PTR [SI], 0
+        JE   _RXB2_SW_ED
+        CMP   BYTE PTR [SI], ' '
+        JNE   _RXB2_SW_CC
+        MOV   BYTE PTR [DI], ' '
+        INC   DI
+        INC   SI
+        JMP   _RXB2_SW_CW
+_RXB2_SW_CC:
+        MOV   AL, [SI]
+        CMP   AL, 0
+        JE   _RXB2_SW_D2
+        CMP   AL, ' '
+        JE   _RXB2_SW_D2
+        MOV   [DI], AL
+        INC   SI
+        INC   DI
+        JMP   _RXB2_SW_CC
+_RXB2_SW_D2:
+        DEC   CX
+        JMP   _RXB2_SW_CW
+_RXB2_SW_AL:
+        MOV   AL, [SI]
+        CMP   AL, 0
+        JE   _RXB2_SW_ED
+        MOV   [DI], AL
+        INC   SI
+        INC   DI
+        JMP   _RXB2_SW_AL
+_RXB2_SW_ED:
+        MOV   BYTE PTR [DI], 0
+        MOV   AX, OFFSET _RX_BIF2BUF
+        POP   SI
+        POP   DI
+        POP   BP
+        RET
+
+_RXB_DELWORD:
+        PUSH   BP
+        MOV   BP, SP
+        PUSH   DI
+        PUSH   SI
+        MOV   SI, [BP+8]
+        MOV   CX, [BP+6]
+        MOV   BX, [BP+4]
+        LEA   DI, _RX_BIF2BUF
+        XOR   DX, DX
+_RXB2_DW_LP:
+        CMP   BYTE PTR [SI], 0
+        JE   _RXB2_DW_ED
+        CMP   BYTE PTR [SI], ' '
+        JNE   _RXB2_DW_FW
+        MOV   AL, ' '
+        MOV   [DI], AL
+        INC   DI
+        INC   SI
+        JMP   _RXB2_DW_LP
+_RXB2_DW_FW:
+        INC   DX
+        CMP   DX, CX
+        JGE   _RXB2_DW_DL
+_RXB2_DW_CW:
+        MOV   AL, [SI]
+        CMP   AL, 0
+        JE   _RXB2_DW_ED
+        CMP   AL, ' '
+        JE   _RXB2_DW_LP
+        MOV   [DI], AL
+        INC   SI
+        INC   DI
+        JMP   _RXB2_DW_CW
+_RXB2_DW_DL:
+        CMP   BX, 0
+        JE   _RXB2_DW_RA
+        MOV   CX, BX
+_RXB2_DW_DS:
+        CMP   CX, 0
+        JE   _RXB2_DW_CR
+_RXB2_DW_D2:
+        CMP   BYTE PTR [SI], 0
+        JE   _RXB2_DW_ED
+        CMP   BYTE PTR [SI], ' '
+        JNE   _RXB2_DW_D3
+        INC   SI
+        JMP   _RXB2_DW_D2
+_RXB2_DW_D3:
+        CMP   BYTE PTR [SI], 0
+        JE   _RXB2_DW_ED
+        CMP   BYTE PTR [SI], ' '
+        JE   _RXB2_DW_D4
+        INC   SI
+        JMP   _RXB2_DW_D3
+_RXB2_DW_D4:
+        DEC   CX
+        JMP   _RXB2_DW_DS
+_RXB2_DW_CR:
+        MOV   AL, [SI]
+        CMP   AL, 0
+        JE   _RXB2_DW_ED
+        MOV   [DI], AL
+        INC   SI
+        INC   DI
+        JMP   _RXB2_DW_CR
+_RXB2_DW_RA:
+_RXB2_DW_ED:
+        MOV   BYTE PTR [DI], 0
+        MOV   AX, OFFSET _RX_BIF2BUF
+        POP   SI
+        POP   DI
+        POP   BP
+        RET
+
+_RXB_C2D:
+        PUSH   BP
+        MOV   BP, SP
+        PUSH   SI
+        MOV   SI, [BP+4]
+        XOR   AX, AX
+        MOV   AL, [SI]
+        POP   SI
+        POP   BP
+        RET
+
+_RXB_C2X:
+        PUSH   BP
+        MOV   BP, SP
+        PUSH   DI
+        PUSH   SI
+        MOV   SI, [BP+4]
+        XOR   AX, AX
+        MOV   AL, [SI]
+        LEA   DI, _RX_BIF2BUF
+        MOV   BL, AL
+        SHR   BL, 1
+        SHR   BL, 1
+        SHR   BL, 1
+        SHR   BL, 1
+        AND   BL, 0Fh
+        CMP   BL, 10
+        JB   _RXB2_C2X_D1
+        ADD   BL, 'A'
+        SUB   BL, 10
+        JMP   _RXB2_C2X_S1
+_RXB2_C2X_D1:
+        ADD   BL, '0'
+_RXB2_C2X_S1:
+        MOV   [DI], BL
+        INC   DI
+        MOV   BL, AL
+        AND   BL, 0Fh
+        CMP   BL, 10
+        JB   _RXB2_C2X_D2
+        ADD   BL, 'A'
+        SUB   BL, 10
+        JMP   _RXB2_C2X_S2
+_RXB2_C2X_D2:
+        ADD   BL, '0'
+_RXB2_C2X_S2:
+        MOV   [DI], BL
+        INC   DI
+        MOV   BYTE PTR [DI], 0
+        MOV   AX, OFFSET _RX_BIF2BUF
+        POP   SI
+        POP   DI
+        POP   BP
+        RET
+
+_RXB_D2C:
+        PUSH   BP
+        MOV   BP, SP
+        PUSH   DI
+        LEA   DI, _RX_BIF2BUF
+        MOV   AX, [BP+4]
+        MOV   [DI], AL
+        MOV   BYTE PTR [DI+1], 0
+        MOV   AX, OFFSET _RX_BIF2BUF
+        POP   DI
+        POP   BP
+        RET
+
+_RXB_D2X:
+        PUSH   BP
+        MOV   BP, SP
+        PUSH   DI
+        PUSH   SI
+        MOV   AX, [BP+4]
+        LEA   DI, _RX_BIF2BUF
+        ADD   DI, 8
+        MOV   BYTE PTR [DI], 0
+        DEC   DI
+        MOV   BX, 16
+        OR   AX, AX
+        JNZ   _RXB2_D2X_LP
+        MOV   BYTE PTR [DI], '0'
+        JMP   _RXB2_D2X_R
+_RXB2_D2X_LP:
+        XOR   DX, DX
+        DIV   BX
+        CMP   DL, 10
+        JB   _RXB2_D2X_DG
+        ADD   DL, 'A'
+        SUB   DL, 10
+        JMP   _RXB2_D2X_ST
+_RXB2_D2X_DG:
+        ADD   DL, '0'
+_RXB2_D2X_ST:
+        MOV   [DI], DL
+        DEC   DI
+        OR   AX, AX
+        JNZ   _RXB2_D2X_LP
+        INC   DI
+_RXB2_D2X_R:
+        MOV   SI, DI
+        LEA   DI, _RX_BIF2BUF
+        CMP   SI, DI
+        JE   _RXB2_D2X_DN
+        CALL   _RXRT_STRCPY
+_RXB2_D2X_DN:
+        MOV   AX, OFFSET _RX_BIF2BUF
+        POP   SI
+        POP   DI
+        POP   BP
+        RET
+
+_RXB_X2C:
+        PUSH   BP
+        MOV   BP, SP
+        PUSH   DI
+        PUSH   SI
+        MOV   SI, [BP+4]
+        XOR   AX, AX
+        MOV   BL, [SI]
+        CMP   BL, 0
+        JE   _RXB2_X2C_DN
+        CMP   BL, 'a'
+        JB   _RXB2_X2C_UA
+        SUB   BL, 32
+_RXB2_X2C_UA:
+        CMP   BL, 'A'
+        JB   _RXB2_X2C_D1
+        SUB   BL, 'A'
+        ADD   BL, 10
+        JMP   _RXB2_X2C_H1
+_RXB2_X2C_D1:
+        SUB   BL, '0'
+_RXB2_X2C_H1:
+        SHL   BL, 1
+        SHL   BL, 1
+        SHL   BL, 1
+        SHL   BL, 1
+        MOV   AL, BL
+        INC   SI
+        MOV   BL, [SI]
+        CMP   BL, 0
+        JE   _RXB2_X2C_DN
+        CMP   BL, 'a'
+        JB   _RXB2_X2C_UB
+        SUB   BL, 32
+_RXB2_X2C_UB:
+        CMP   BL, 'A'
+        JB   _RXB2_X2C_D2
+        SUB   BL, 'A'
+        ADD   BL, 10
+        JMP   _RXB2_X2C_H2
+_RXB2_X2C_D2:
+        SUB   BL, '0'
+_RXB2_X2C_H2:
+        OR   AL, BL
+_RXB2_X2C_DN:
+        LEA   DI, _RX_BIF2BUF
+        MOV   [DI], AL
+        MOV   BYTE PTR [DI+1], 0
+        MOV   AX, OFFSET _RX_BIF2BUF
+        POP   SI
+        POP   DI
+        POP   BP
+        RET
+
+_RXB_X2D:
+        PUSH   BP
+        MOV   BP, SP
+        PUSH   SI
+        MOV   SI, [BP+4]
+        XOR   AX, AX
+_RXB2_X2D_LP:
+        MOV   BL, [SI]
+        CMP   BL, 0
+        JE   _RXB2_X2D_DN
+        CMP   BL, 'a'
+        JB   _RXB2_X2D_UA
+        SUB   BL, 32
+_RXB2_X2D_UA:
+        SHL   AX, 1
+        SHL   AX, 1
+        SHL   AX, 1
+        SHL   AX, 1
+        CMP   BL, 'A'
+        JB   _RXB2_X2D_DG
+        SUB   BL, 'A'
+        ADD   BL, 10
+        JMP   _RXB2_X2D_AD
+_RXB2_X2D_DG:
+        SUB   BL, '0'
+_RXB2_X2D_AD:
+        XOR   BH, BH
+        OR   AX, BX
+        INC   SI
+        JMP   _RXB2_X2D_LP
+_RXB2_X2D_DN:
+        POP   SI
+        POP   BP
+        RET
+
+_RXB_B2X:
+        PUSH   BP
+        MOV   BP, SP
+        PUSH   DI
+        PUSH   SI
+        MOV   SI, [BP+4]
+        XOR   AX, AX
+_RXB2_B2X_LP:
+        MOV   BL, [SI]
+        CMP   BL, 0
+        JE   _RXB2_B2X_CV
+        SHL   AX, 1
+        CMP   BL, '1'
+        JNE   _RXB2_B2X_NX
+        INC   AX
+_RXB2_B2X_NX:
+        INC   SI
+        JMP   _RXB2_B2X_LP
+_RXB2_B2X_CV:
+        LEA   DI, _RX_BIF2BUF
+        ADD   DI, 8
+        MOV   BYTE PTR [DI], 0
+        DEC   DI
+        MOV   BX, 16
+        OR   AX, AX
+        JNZ   _RXB2_B2X_DL
+        MOV   BYTE PTR [DI], '0'
+        JMP   _RXB2_B2X_R
+_RXB2_B2X_DL:
+        XOR   DX, DX
+        DIV   BX
+        CMP   DL, 10
+        JB   _RXB2_B2X_D
+        ADD   DL, 'A'
+        SUB   DL, 10
+        JMP   _RXB2_B2X_S
+_RXB2_B2X_D:
+        ADD   DL, '0'
+_RXB2_B2X_S:
+        MOV   [DI], DL
+        DEC   DI
+        OR   AX, AX
+        JNZ   _RXB2_B2X_DL
+        INC   DI
+_RXB2_B2X_R:
+        MOV   SI, DI
+        LEA   DI, _RX_BIF2BUF
+        CMP   SI, DI
+        JE   _RXB2_B2X_DN
+        CALL   _RXRT_STRCPY
+_RXB2_B2X_DN:
+        MOV   AX, OFFSET _RX_BIF2BUF
+        POP   SI
+        POP   DI
+        POP   BP
+        RET
+
+_RXB_X2B:
+        PUSH   BP
+        MOV   BP, SP
+        PUSH   DI
+        PUSH   SI
+        MOV   SI, [BP+4]
+        LEA   DI, _RX_BIF2BUF
+_RXB2_X2B_LP:
+        MOV   BL, [SI]
+        CMP   BL, 0
+        JE   _RXB2_X2B_DN
+        CMP   BL, 'a'
+        JB   _RXB2_X2B_UA
+        SUB   BL, 32
+_RXB2_X2B_UA:
+        CMP   BL, 'A'
+        JB   _RXB2_X2B_DG
+        SUB   BL, 'A'
+        ADD   BL, 10
+        JMP   _RXB2_X2B_CV
+_RXB2_X2B_DG:
+        SUB   BL, '0'
+_RXB2_X2B_CV:
+        MOV   CX, 4
+_RXB2_X2B_BT:
+        TEST   BL, 8
+        JZ   _RXB2_X2B_B0
+        MOV   BYTE PTR [DI], '1'
+        JMP   _RXB2_X2B_BN
+_RXB2_X2B_B0:
+        MOV   BYTE PTR [DI], '0'
+_RXB2_X2B_BN:
+        INC   DI
+        SHL   BL, 1
+        DEC   CX
+        JNZ   _RXB2_X2B_BT
+        INC   SI
+        JMP   _RXB2_X2B_LP
+_RXB2_X2B_DN:
+        MOV   BYTE PTR [DI], 0
+        MOV   AX, OFFSET _RX_BIF2BUF
+        POP   SI
+        POP   DI
+        POP   BP
+        RET
+
+_RXB_ABS:
+        PUSH   BP
+        MOV   BP, SP
+        PUSH   SI
+        MOV   SI, [BP+4]
+        CALL   _RXRT_STRTONUM
+        OR   AX, AX
+        JNS   _RXB2_ABS_DN
+        NEG   AX
+_RXB2_ABS_DN:
+        POP   SI
+        POP   BP
+        RET
+
+_RXB_SIGN:
+        PUSH   BP
+        MOV   BP, SP
+        PUSH   SI
+        MOV   SI, [BP+4]
+        CALL   _RXRT_STRTONUM
+        CMP   AX, 0
+        JE   _RXB2_SGN_DN
+        JG   _RXB2_SGN_P
+        MOV   AX, -1
+        JMP   _RXB2_SGN_DN
+_RXB2_SGN_P:
+        MOV   AX, 1
+_RXB2_SGN_DN:
+        POP   SI
+        POP   BP
+        RET
+
+_RXB_MAX:
+        PUSH   BP
+        MOV   BP, SP
+        PUSH   SI
+        MOV   SI, [BP+6]
+        CALL   _RXRT_STRTONUM
+        MOV   BX, AX
+        MOV   SI, [BP+4]
+        CALL   _RXRT_STRTONUM
+        CMP   BX, AX
+        JLE   _RXB2_MAX_DN
+        MOV   AX, BX
+_RXB2_MAX_DN:
+        POP   SI
+        POP   BP
+        RET
+
+_RXB_MIN:
+        PUSH   BP
+        MOV   BP, SP
+        PUSH   SI
+        MOV   SI, [BP+6]
+        CALL   _RXRT_STRTONUM
+        MOV   BX, AX
+        MOV   SI, [BP+4]
+        CALL   _RXRT_STRTONUM
+        CMP   BX, AX
+        JGE   _RXB2_MIN_DN
+        MOV   AX, BX
+_RXB2_MIN_DN:
+        POP   SI
+        POP   BP
+        RET
+
+_RXB_TRUNC:
+        PUSH   BP
+        MOV   BP, SP
+        PUSH   SI
+        MOV   SI, [BP+6]
+        CALL   _RXRT_STRTONUM
+        POP   SI
+        POP   BP
+        RET
+
+_RXB_FORMAT:
+        PUSH   BP
+        MOV   BP, SP
+        PUSH   SI
+        MOV   SI, [BP+4]
+        CALL   _RXRT_STRTONUM
+        POP   SI
+        POP   BP
+        RET
+
+_RXB_RANDOM:
+        PUSH   BP
+        MOV   BP, SP
+        PUSH   DX
+        MOV   AH, 0
+        INT     1Ah
+        MOV   AX, DX
+        MOV   BX, [BP+6]
+        SUB   BX, [BP+8]
+        INC   BX
+        XOR   DX, DX
+        DIV   BX
+        MOV   AX, DX
+        ADD   AX, [BP+8]
+        POP   DX
+        POP   BP
+        RET
+
+_RXB_TIME:
+        PUSH   BP
+        MOV   BP, SP
+        PUSH   DI
+        LEA   DI, _RX_BIF2BUF
+        MOV   AH, 2Ch
+        INT     21h
+        MOV   AL, CH
+        XOR   AH, AH
+        PUSH   CX
+        PUSH   DX
+        MOV   BL, 10
+        XOR   AH, AH
+        DIV   BL
+        ADD   AL, '0'
+        MOV   [DI], AL
+        INC   DI
+        ADD   AH, '0'
+        MOV   [DI], AH
+        INC   DI
+        MOV   BYTE PTR [DI], ':'
+        INC   DI
+        POP   DX
+        POP   CX
+        MOV   AL, CL
+        XOR   AH, AH
+        PUSH   DX
+        MOV   BL, 10
+        DIV   BL
+        ADD   AL, '0'
+        MOV   [DI], AL
+        INC   DI
+        ADD   AH, '0'
+        MOV   [DI], AH
+        INC   DI
+        MOV   BYTE PTR [DI], ':'
+        INC   DI
+        POP   DX
+        MOV   AL, DH
+        XOR   AH, AH
+        MOV   BL, 10
+        DIV   BL
+        ADD   AL, '0'
+        MOV   [DI], AL
+        INC   DI
+        ADD   AH, '0'
+        MOV   [DI], AH
+        INC   DI
+        MOV   BYTE PTR [DI], 0
+        MOV   AX, OFFSET _RX_BIF2BUF
+        POP   DI
+        POP   BP
+        RET
+
+_RXB_DATE:
+        PUSH   BP
+        MOV   BP, SP
+        PUSH   DI
+        LEA   DI, _RX_BIF2BUF
+        MOV   AH, 2Ah
+        INT     21h
+        PUSH   CX
+        MOV   AL, DL
+        XOR   AH, AH
+        MOV   BL, 10
+        DIV   BL
+        ADD   AL, '0'
+        MOV   [DI], AL
+        INC   DI
+        ADD   AH, '0'
+        MOV   [DI], AH
+        INC   DI
+        MOV   BYTE PTR [DI], '/'
+        INC   DI
+        MOV   AL, DH
+        XOR   AH, AH
+        MOV   BL, 10
+        DIV   BL
+        ADD   AL, '0'
+        MOV   [DI], AL
+        INC   DI
+        ADD   AH, '0'
+        MOV   [DI], AH
+        INC   DI
+        MOV   BYTE PTR [DI], '/'
+        INC   DI
+        POP   AX
+        MOV   BX, 1000
+        XOR   DX, DX
+        DIV   BX
+        ADD   AL, '0'
+        MOV   [DI], AL
+        INC   DI
+        MOV   AX, DX
+        XOR   DX, DX
+        MOV   BX, 100
+        DIV   BX
+        ADD   AL, '0'
+        MOV   [DI], AL
+        INC   DI
+        MOV   AX, DX
+        XOR   DX, DX
+        MOV   BX, 10
+        DIV   BX
+        ADD   AL, '0'
+        MOV   [DI], AL
+        INC   DI
+        ADD   DL, '0'
+        MOV   [DI], DL
+        INC   DI
+        MOV   BYTE PTR [DI], 0
+        MOV   AX, OFFSET _RX_BIF2BUF
+        POP   DI
+        POP   BP
+        RET
+
+_RXB_DATATYPE:
+        PUSH   BP
+        MOV   BP, SP
+        PUSH   DI
+        PUSH   SI
+        MOV   SI, [BP+6]
+        LEA   DI, _RX_BIF2BUF
+_RXB2_DT_LP:
+        MOV   AL, [SI]
+        CMP   AL, 0
+        JE   _RXB2_DT_NUM
+        CMP   AL, ' '
+        JE   _RXB2_DT_NX
+        CMP   AL, '+'
+        JE   _RXB2_DT_NX
+        CMP   AL, '-'
+        JE   _RXB2_DT_NX
+        CMP   AL, '.'
+        JE   _RXB2_DT_NX
+        CMP   AL, '0'
+        JB   _RXB2_DT_CHR
+        CMP   AL, '9'
+        JA   _RXB2_DT_CHR
+_RXB2_DT_NX:
+        INC   SI
+        JMP   _RXB2_DT_LP
+_RXB2_DT_NUM:
+        MOV   BYTE PTR [DI], 'N'
+        MOV   BYTE PTR [DI+1], 'U'
+        MOV   BYTE PTR [DI+2], 'M'
+        MOV   BYTE PTR [DI+3], 0
+        JMP   _RXB2_DT_DN
+_RXB2_DT_CHR:
+        MOV   BYTE PTR [DI], 'C'
+        MOV   BYTE PTR [DI+1], 'H'
+        MOV   BYTE PTR [DI+2], 'A'
+        MOV   BYTE PTR [DI+3], 'R'
+        MOV   BYTE PTR [DI+4], 0
+_RXB2_DT_DN:
+        MOV   AX, OFFSET _RX_BIF2BUF
+        POP   SI
+        POP   DI
+        POP   BP
+        RET
+
+_RXB_SYMBOL:
+        PUSH   BP
+        MOV   BP, SP
+        PUSH   DI
+        LEA   DI, _RX_BIF2BUF
+        MOV   BYTE PTR [DI], 'L'
+        MOV   BYTE PTR [DI+1], 'I'
+        MOV   BYTE PTR [DI+2], 'T'
+        MOV   BYTE PTR [DI+3], 0
+        MOV   AX, OFFSET _RX_BIF2BUF
+        POP   DI
+        POP   BP
+        RET
+
+_RXB_VALUE:
+        PUSH   BP
+        MOV   BP, SP
+        MOV   AX, [BP+4]
+        POP   BP
+        RET
+
+_RXB_ERRORTEXT:
+        PUSH   BP
+        MOV   BP, SP
+        PUSH   DI
+        LEA   DI, _RX_BIF2BUF
+        MOV   BYTE PTR [DI], 0
+        MOV   AX, OFFSET _RX_BIF2BUF
+        POP   DI
+        POP   BP
+        RET
+
 ; --- Runtime PARSE (TODO 16) ---
 
 _RXRT_PARSEINIT:
@@ -1271,6 +2250,8 @@ _RX_BIFBUF DB 256 DUP(0)
 _RX_PARSEBUF DB 256 DUP(0)
 _RX_PARSEPOS DW 0
 _RX_PARSESRC DW 0
+_RX_RESBUF DB 256 DUP(0)
+_RX_BIF2BUF DB 256 DUP(0)
 _RXK_1 DB 'Hello, World!',0
 _RXK_2 DB 'Resultat:',0
 _RXK_3 DB ' 10',0

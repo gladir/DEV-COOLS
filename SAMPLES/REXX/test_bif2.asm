@@ -1,4 +1,4 @@
-; REXX86 v1.0 - SAMPLES/REXX/test_if.rexx
+; REXX86 v1.0 - SAMPLES/REXX/test_bif2.rexx
 .MODEL SMALL
 .STACK 1024
 
@@ -10,268 +10,168 @@ _RXP_Main:
         MOV   AX, _DATA
         MOV   DS, AX
 
-; assign: X = ...
-        MOV     AX, 1
-        MOV     SI, AX
-        LEA     DI, _RXV_X
-        CALL     _RXRT_STRCPY
-; IF
-        LEA     AX, _RXV_X
-        PUSH     AX
-        MOV     AX, 1
-        MOV     BX, AX
-        POP     AX
-        MOV     SI, AX
-        MOV     DI, BX
-        CALL    _RXRT_STRCMP
-        OR     AX, AX
-        MOV     AX, 0
-        JNE     _RXL_1
-        INC     AX
-_RXL_1:
-        TEST   AX, AX
-        JZ      _RXL_2
-; SAY
+; assign: S = ...
         LEA     AX, _RXK_1
-        MOV   SI, AX
+        MOV     SI, AX
+        LEA     DI, _RXV_S
+        CALL     _RXRT_STRCPY
+; SAY
+; call: WORDS(...)
+        LEA     AX, _RXV_S
+        PUSH     AX
+        CALL     _RXB_WORDS
+        ADD     SP, 2
+        CALL   _RXRT_NUMTOSTR
         CALL   _RXRT_PRINTLN
-_RXL_2:
-; IF
-        LEA     AX, _RXV_X
+; SAY
+; call: WORD(...)
+        LEA     AX, _RXV_S
         PUSH     AX
         MOV     AX, 2
-        MOV     BX, AX
-        POP     AX
-        MOV     SI, AX
-        MOV     DI, BX
-        CALL    _RXRT_STRCMP
-        OR     AX, AX
-        MOV     AX, 0
-        JNE     _RXL_4
-        INC     AX
-_RXL_4:
-        TEST   AX, AX
-        JZ      _RXL_5
-; SAY
-        LEA     AX, _RXK_2
+        PUSH     AX
+        CALL     _RXB_WORD
+        ADD     SP, 4
         MOV   SI, AX
         CALL   _RXRT_PRINTLN
-_RXL_5:
-; assign: Y = ...
+; SAY
+; call: WORDINDEX(...)
+        LEA     AX, _RXV_S
+        PUSH     AX
+        MOV     AX, 2
+        PUSH     AX
+        CALL     _RXB_WORDINDEX
+        ADD     SP, 4
+        CALL   _RXRT_NUMTOSTR
+        CALL   _RXRT_PRINTLN
+; SAY
+; call: WORDLENGTH(...)
+        LEA     AX, _RXV_S
+        PUSH     AX
+        MOV     AX, 2
+        PUSH     AX
+        CALL     _RXB_WORDLENGTH
+        ADD     SP, 4
+        CALL   _RXRT_NUMTOSTR
+        CALL   _RXRT_PRINTLN
+; SAY
+; call: SUBWORD(...)
+        LEA     AX, _RXV_S
+        PUSH     AX
+        MOV     AX, 2
+        PUSH     AX
+        MOV     AX, 2
+        PUSH     AX
+        CALL     _RXB_SUBWORD
+        ADD     SP, 6
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SAY
+; call: DELWORD(...)
+        LEA     AX, _RXV_S
+        PUSH     AX
+        MOV     AX, 2
+        PUSH     AX
+        MOV     AX, 1
+        PUSH     AX
+        CALL     _RXB_DELWORD
+        ADD     SP, 6
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SAY
+; call: ABS(...)
+        MOV     AX, -42
+        PUSH     AX
+        CALL     _RXB_ABS
+        ADD     SP, 2
+        CALL   _RXRT_NUMTOSTR
+        CALL   _RXRT_PRINTLN
+; SAY
+; call: SIGN(...)
+        MOV     AX, -7
+        PUSH     AX
+        CALL     _RXB_SIGN
+        ADD     SP, 2
+        CALL   _RXRT_NUMTOSTR
+        CALL   _RXRT_PRINTLN
+; SAY
+; call: SIGN(...)
+        MOV     AX, 0
+        PUSH     AX
+        CALL     _RXB_SIGN
+        ADD     SP, 2
+        CALL   _RXRT_NUMTOSTR
+        CALL   _RXRT_PRINTLN
+; SAY
+; call: SIGN(...)
         MOV     AX, 5
-        MOV     SI, AX
-        LEA     DI, _RXV_Y
-        CALL     _RXRT_STRCPY
-; IF
-        LEA     AX, _RXV_Y
         PUSH     AX
-        MOV     AX, 3
-        MOV     BX, AX
-        POP     AX
-        MOV     SI, AX
-        MOV     DI, BX
-        CALL    _RXRT_STRCMP
-        CMP     AX, 1
-        MOV     AX, 0
-        JNE     _RXL_7
-        INC     AX
-_RXL_7:
-        TEST   AX, AX
-        JZ      _RXL_8
-; SAY
-        LEA     AX, _RXK_3
-        MOV   SI, AX
-        CALL   _RXRT_PRINTLN
-        JMP     _RXL_9
-_RXL_8:
-; SAY
-        LEA     AX, _RXK_4
-        MOV   SI, AX
-        CALL   _RXRT_PRINTLN
-_RXL_9:
-; assign: Z = ...
-        MOV     AX, 10
-        MOV     SI, AX
-        LEA     DI, _RXV_Z
-        CALL     _RXRT_STRCPY
-; IF
-        LEA     AX, _RXV_Z
-        PUSH     AX
-        MOV     AX, 10
-        MOV     BX, AX
-        POP     AX
-        MOV     SI, AX
-        MOV     DI, BX
-        CALL    _RXRT_STRCMP
-        OR     AX, AX
-        MOV     AX, 0
-        JNE     _RXL_10
-        INC     AX
-_RXL_10:
-        TEST   AX, AX
-        JZ      _RXL_11
-; DO block
-; SAY
-        LEA     AX, _RXK_5
-        MOV   SI, AX
-        CALL   _RXRT_PRINTLN
-; SAY
-        LEA     AX, _RXK_6
-        MOV   SI, AX
-        CALL   _RXRT_PRINTLN
-_RXL_11:
-; assign: A = ...
-        MOV     AX, 0
-        MOV     SI, AX
-        LEA     DI, _RXV_A
-        CALL     _RXRT_STRCPY
-; IF
-        LEA     AX, _RXV_A
-        PUSH     AX
-        MOV     AX, 1
-        MOV     BX, AX
-        POP     AX
-        MOV     SI, AX
-        MOV     DI, BX
-        CALL    _RXRT_STRCMP
-        OR     AX, AX
-        MOV     AX, 0
-        JNE     _RXL_13
-        INC     AX
-_RXL_13:
-        TEST   AX, AX
-        JZ      _RXL_14
-; DO block
-; SAY
-        LEA     AX, _RXK_7
-        MOV   SI, AX
-        CALL   _RXRT_PRINTLN
-        JMP     _RXL_15
-_RXL_14:
-; DO block
-; SAY
-        LEA     AX, _RXK_8
-        MOV   SI, AX
-        CALL   _RXRT_PRINTLN
-; SAY
-        LEA     AX, _RXK_9
-        MOV   SI, AX
-        CALL   _RXRT_PRINTLN
-_RXL_15:
-; assign: CODE = ...
-        MOV     AX, 2
-        MOV     SI, AX
-        LEA     DI, _RXV_CODE
-        CALL     _RXRT_STRCPY
-; SELECT
-; WHEN
-        LEA     AX, _RXV_CODE
-        PUSH     AX
-        MOV     AX, 1
-        MOV     BX, AX
-        POP     AX
-        MOV     SI, AX
-        MOV     DI, BX
-        CALL    _RXRT_STRCMP
-        OR     AX, AX
-        MOV     AX, 0
-        JNE     _RXL_17
-        INC     AX
-_RXL_17:
-        TEST   AX, AX
-        JZ      _RXL_18
-; SAY
-        LEA     AX, _RXK_10
-        MOV   SI, AX
-        CALL   _RXRT_PRINTLN
-        JMP     _RXL_16
-_RXL_18:
-; WHEN
-        LEA     AX, _RXV_CODE
-        PUSH     AX
-        MOV     AX, 2
-        MOV     BX, AX
-        POP     AX
-        MOV     SI, AX
-        MOV     DI, BX
-        CALL    _RXRT_STRCMP
-        OR     AX, AX
-        MOV     AX, 0
-        JNE     _RXL_19
-        INC     AX
-_RXL_19:
-        TEST   AX, AX
-        JZ      _RXL_20
-; SAY
-        LEA     AX, _RXK_11
-        MOV   SI, AX
-        CALL   _RXRT_PRINTLN
-        JMP     _RXL_16
-_RXL_20:
-; WHEN
-        LEA     AX, _RXV_CODE
-        PUSH     AX
-        MOV     AX, 3
-        MOV     BX, AX
-        POP     AX
-        MOV     SI, AX
-        MOV     DI, BX
-        CALL    _RXRT_STRCMP
-        OR     AX, AX
-        MOV     AX, 0
-        JNE     _RXL_21
-        INC     AX
-_RXL_21:
-        TEST   AX, AX
-        JZ      _RXL_22
-; SAY
-        LEA     AX, _RXK_12
-        MOV   SI, AX
-        CALL   _RXRT_PRINTLN
-        JMP     _RXL_16
-_RXL_22:
-; OTHERWISE
-; SAY
-        LEA     AX, _RXK_13
-        MOV   SI, AX
-        CALL   _RXRT_PRINTLN
-_RXL_16:
-; assign: B = ...
-        MOV     AX, 0
-        MOV     SI, AX
-        LEA     DI, _RXV_B
-        CALL     _RXRT_STRCPY
-; IF
-        LEA     AX, _RXV_B
-        PUSH     AX
-        MOV     AX, 0
-        MOV     BX, AX
-        POP     AX
-        MOV     SI, AX
-        MOV     DI, BX
-        CALL    _RXRT_STRCMP
-        OR     AX, AX
-        MOV     AX, 0
-        JNE     _RXL_23
-        INC     AX
-_RXL_23:
-        TEST   AX, AX
-        JZ      _RXL_24
-; NOP
-        JMP     _RXL_25
-_RXL_24:
-; SAY
-        LEA     AX, _RXK_14
-        MOV   SI, AX
-        CALL   _RXRT_PRINTLN
-_RXL_25:
-; SAY
-        MOV     AX, 1
+        CALL     _RXB_SIGN
+        ADD     SP, 2
         CALL   _RXRT_NUMTOSTR
         CALL   _RXRT_PRINTLN
 ; SAY
-        MOV     AX, 1
+; call: MAX(...)
+        MOV     AX, 10
+        PUSH     AX
+        MOV     AX, 20
+        PUSH     AX
+        CALL     _RXB_MAX
+        ADD     SP, 4
         CALL   _RXRT_NUMTOSTR
+        CALL   _RXRT_PRINTLN
+; SAY
+; call: MIN(...)
+        MOV     AX, 10
+        PUSH     AX
+        MOV     AX, 20
+        PUSH     AX
+        CALL     _RXB_MIN
+        ADD     SP, 4
+        CALL   _RXRT_NUMTOSTR
+        CALL   _RXRT_PRINTLN
+; SAY
+; call: TRUNC(...)
+        MOV     AX, 42
+        PUSH     AX
+        MOV   AX, 0
+        PUSH   AX
+        CALL     _RXB_TRUNC
+        ADD     SP, 4
+        CALL   _RXRT_NUMTOSTR
+        CALL   _RXRT_PRINTLN
+; SAY
+; call: C2D(...)
+        LEA     AX, _RXK_2
+        PUSH     AX
+        CALL     _RXB_C2D
+        ADD     SP, 2
+        CALL   _RXRT_NUMTOSTR
+        CALL   _RXRT_PRINTLN
+; SAY
+; call: D2C(...)
+        MOV     AX, 65
+        PUSH     AX
+        CALL     _RXB_D2C
+        ADD     SP, 2
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SAY
+; call: D2X(...)
+        MOV     AX, 255
+        PUSH     AX
+        CALL     _RXB_D2X
+        ADD     SP, 2
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SAY
+; call: DATE(...)
+        CALL     _RXB_DATE
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SAY
+; call: TIME(...)
+        CALL     _RXB_TIME
+        MOV   SI, AX
         CALL   _RXRT_PRINTLN
         JMP     _RXP_Exit
 
@@ -2455,32 +2355,10 @@ _RX_PARSEPOS DW 0
 _RX_PARSESRC DW 0
 _RX_RESBUF DB 256 DUP(0)
 _RX_BIF2BUF DB 256 DUP(0)
-_RXV_X DB 256 DUP(0)
-_RXV_X_D DB 'X',0
-_RXK_1 DB 'x vaut 1',0
-_RXK_2 DB 'x vaut 2',0
-_RXV_Y DB 256 DUP(0)
-_RXV_Y_D DB 'Y',0
-_RXK_3 DB 'y est grand',0
-_RXK_4 DB 'y est petit',0
-_RXV_Z DB 256 DUP(0)
-_RXV_Z_D DB 'Z',0
-_RXK_5 DB 'z vaut 10',0
-_RXK_6 DB 'dans le bloc DO',0
-_RXV_A DB 256 DUP(0)
-_RXV_A_D DB 'A',0
-_RXK_7 DB 'a vaut 1',0
-_RXK_8 DB 'a ne vaut pas 1',0
-_RXK_9 DB 'branche else',0
-_RXV_CODE DB 256 DUP(0)
-_RXV_CODE_D DB 'CODE',0
-_RXK_10 DB 'code un',0
-_RXK_11 DB 'code deux',0
-_RXK_12 DB 'code trois',0
-_RXK_13 DB 'code inconnu',0
-_RXV_B DB 256 DUP(0)
-_RXV_B_D DB 'B',0
-_RXK_14 DB 'b non nul',0
+_RXV_S DB 256 DUP(0)
+_RXV_S_D DB 'S',0
+_RXK_1 DB 'Hello World Foo Bar',0
+_RXK_2 DB 'A',0
 _DATA ENDS
 
 END _RXP_Main
