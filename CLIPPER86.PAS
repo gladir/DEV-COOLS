@@ -143,7 +143,7 @@
             Declaration STATIC s := expr : init une seule fois (premier appel)
             STORE expr TO var1, var2 : affectation multiple (syntaxe dBASE)
 
-  TODO 10 - EXPRESSIONS PRIMAIRES
+  TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
             ParsePrimary : literal entier, literal chaine, date, booleen, NIL
             Acces variable : recherche symbole -> emit chargement tag+valeur
             Acces champ DBF : FIELD->nom ou alias->nom -> CALL _CLRT_GETFIELD
@@ -816,6 +816,14 @@ Procedure DeclInitUndef(SIdx : Integer); Forward;
 Procedure ParseDeclStmt(Const Kw : TString); Forward;
 Procedure ParseStoreStmt; Forward;
 Procedure ParseExprStmt; Forward;
+{ Expressions primaires (TODO 10) }
+Procedure ParseIIF(Var Res : TExprVal); Forward;
+Procedure ParseEVAL(Var Res : TExprVal); Forward;
+Procedure ParseFieldAccess(Const AliasName : TString;
+                           Var Res : TExprVal); Forward;
+Procedure ParseArrayAccess(Var Res : TExprVal); Forward;
+Procedure ParseMacro(Var Res : TExprVal); Forward;
+Procedure ParseFuncCall(SIdx : Integer; Var Res : TExprVal); Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1151,6 +1159,11 @@ Begin
       End
       Else
         ParserAdvance;
+    End
+    Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '&') Then
+    Begin
+      { Macro &variable en position d instruction (TODO 10) }
+      ParseExprStmt;
     End
     Else
     Begin
@@ -2393,14 +2406,273 @@ Begin
   End;
 End;
 
+{ ============================================================
+  TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseIIF : IIF(cond, exprTrue, exprFalse) --------------- }
+(* Expression conditionnelle inline Clipper.
+   Genere : eval cond / TEST AX,AX / JZ lblFalse /
+            eval exprTrue / JMP lblEnd /
+            lblFalse: eval exprFalse / lblEnd:              *)
+
+Procedure ParseIIF(Var Res : TExprVal);
+Var
+  LblFalse, LblEnd : TString;
+Begin
+  EmitComment('IIF(cond, exprT, exprF)');
+  { Consommer '(' apres IIF }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    ParserAdvance
+  Else
+  Begin
+    CompileError('IIF : attendu ''(''');
+    ExprMakeNone(Res);
+    Exit;
+  End;
+  LblFalse := LabelGen;
+  LblEnd   := LabelGen;
+  { Evaluer la condition }
+  ParseExpr(Res);
+  ExprFlushToAX(Res);
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JZ', LblFalse);
+  { Consommer la virgule }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+    ParserAdvance;
+  { Evaluer exprTrue }
+  ParseExpr(Res);
+  ExprFlushToAX(Res);
+  EmitInstrA('JMP', LblEnd);
+  { Consommer la virgule }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+    ParserAdvance;
+  { Evaluer exprFalse }
+  EmitLabel(LblFalse);
+  ParseExpr(Res);
+  ExprFlushToAX(Res);
+  EmitLabel(LblEnd);
+  { Consommer ')' }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance;
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_UNKNOWN;
+  Res.SymIdx  := -1;
+End;
+
+{ ---- ParseEVAL : EVAL(bCodeBlock [, arg1, arg2 ...]) --------- }
+(* Evalue un code block Clipper.
+   Genere : PUSH args (droite a gauche) / PUSH codeblock /
+            CALL _CLRT_EVAL / ADD SP, n                      *)
+
+Procedure ParseEVAL(Var Res : TExprVal);
+Var
+  ArgCount : Integer;
+  Arg      : TExprVal;
+Begin
+  EmitComment('EVAL(codeblock, args...)');
+  If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+  Begin
+    CompileError('EVAL : attendu ''(''');
+    ExprMakeNone(Res);
+    Exit;
+  End;
+  ParserAdvance; { consomme '(' }
+  ArgCount := 0;
+  { Premier argument : le code block }
+  ParseExpr(Arg);
+  ExprFlushToAX(Arg);
+  EmitInstr('PUSH   AX');
+  Inc(ArgCount);
+  { Arguments supplementaires }
+  While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
+  Begin
+    ParserAdvance; { consomme ',' }
+    ParseExpr(Arg);
+    ExprFlushToAX(Arg);
+    EmitInstr('PUSH   AX');
+    Inc(ArgCount);
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance;
+  EmitInstrA('CALL', CL_RT_PFX + 'EVAL');
+  If ArgCount > 0 Then
+    EmitInstrAB('ADD', 'SP', IntToStr(ArgCount * 2));
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_UNKNOWN;
+  Res.SymIdx  := -1;
+End;
+
+{ ---- ParseFieldAccess : FIELD->nom ou alias->nom ------------- }
+(* Genere : LEA SI, _CLK_n (nom du champ en DATA)
+            CALL _CLRT_GETFIELD -> resultat en AX             *)
+
+Procedure ParseFieldAccess(Const AliasName : TString; Var Res : TExprVal);
+Var
+  FieldName : TString;
+  DIdx      : Integer;
+Begin
+  EmitComment('field access ' + AliasName + '->' + '...');
+  ParserAdvance; { consomme '->' }
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    FieldName := CurToken.Val;
+    ParserAdvance;
+    EmitComment('FIELD->' + FieldName);
+    { Stocker le nom du champ dans DATA pour le passer au runtime }
+    DIdx := DataAddStr(FieldName);
+    EmitInstrAB('MOV', 'SI', 'OFFSET ' + DataTab[DIdx].LblName);
+    EmitInstrA('CALL', CL_RT_PFX + 'GETFIELD');
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_UNKNOWN;
+    Res.SymIdx  := -1;
+  End
+  Else
+  Begin
+    CompileError('attendu un nom de champ apres ->');
+    ExprMakeNone(Res);
+  End;
+End;
+
+{ ---- ParseArrayAccess : arr[i] ou arr[i,j] ------------------- }
+(* Genere : PUSH AX (arr ptr) / eval index / MOV BX,AX (=idx)
+            POP AX (=arr) / -> resultat CALL _CLRT_AGET
+   Pour indices multiples [i,j] : acces sequentiel.            *)
+
+Procedure ParseArrayAccess(Var Res : TExprVal);
+Var
+  IdxExpr : TExprVal;
+Begin
+  EmitComment('array access arr[...]');
+  { AX contient deja le pointeur du tableau }
+  ExprFlushToAX(Res);
+  ParserAdvance; { consomme '[' }
+  { Sauvegarder le pointeur tableau }
+  EmitInstr('PUSH   AX');
+  { Evaluer l index }
+  ParseExpr(IdxExpr);
+  ExprFlushToAX(IdxExpr);
+  { BX = arr ptr, AX = index }
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstr('POP    AX');
+  { AX = arr, BX = index -> echanger pour convention AGET(BX=arr, AX=idx) }
+  EmitInstr('XCHG   AX, BX');
+  EmitInstrA('CALL', CL_RT_PFX + 'AGET');
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_UNKNOWN;
+  Res.SymIdx  := -1;
+  { Indices supplementaires [i,j] : acces en cascade }
+  While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
+  Begin
+    ParserAdvance; { consomme ',' }
+    EmitInstr('PUSH   AX');
+    ParseExpr(IdxExpr);
+    ExprFlushToAX(IdxExpr);
+    EmitInstrAB('MOV', 'BX', 'AX');
+    EmitInstr('POP    AX');
+    EmitInstr('XCHG   AX, BX');
+    EmitInstrA('CALL', CL_RT_PFX + 'AGET');
+  End;
+  { Consommer ']' }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+    ParserAdvance;
+End;
+
+{ ---- ParseMacro : &variable ---------------------------------- }
+(* Macro substitution Clipper : &nom ou &(expr)
+   Genere : LEA SI, [var_addr] / CALL _CLRT_MACRO -> AX       *)
+
+Procedure ParseMacro(Var Res : TExprVal);
+Var
+  SIdx : Integer;
+  MExpr : TExprVal;
+Begin
+  EmitComment('macro &substitution');
+  ParserAdvance; { consomme '&' }
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    { &varName : substituer le contenu de la variable }
+    SIdx := SymFind(CurToken.Val);
+    If SIdx < 0 Then
+    Begin
+      If Opts.Warnings Then
+        WarnMsg('variable implicite PRIVATE pour macro : ' + CurToken.Val);
+      SIdx := DeclAllocSym(CurToken.Val, SC_PRIVATE);
+    End;
+    EmitComment('macro &' + CurToken.Val);
+    ExprLoad(SIdx, Res);
+    ExprFlushToAX(Res);
+    EmitInstrAB('MOV', 'SI', 'AX');
+    EmitInstrA('CALL', CL_RT_PFX + 'MACRO');
+    ParserAdvance;
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_UNKNOWN;
+    Res.SymIdx  := -1;
+  End
+  Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+  Begin
+    { &(expr) : evaluer l expression puis substituer }
+    ParserAdvance; { consomme '(' }
+    ParseExpr(MExpr);
+    ExprFlushToAX(MExpr);
+    EmitInstrAB('MOV', 'SI', 'AX');
+    EmitInstrA('CALL', CL_RT_PFX + 'MACRO');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance;
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_UNKNOWN;
+    Res.SymIdx  := -1;
+  End
+  Else
+  Begin
+    CompileError('attendu un identificateur ou ''('' apres &');
+    ExprMakeNone(Res);
+  End;
+End;
+
+{ ---- ParseFuncCall : appel de fonction nom(args) ------------- }
+(* Consomme les arguments entre parentheses, les pousse sur la
+   pile, puis emet CALL _CLP_nom et nettoie la pile.           *)
+
+Procedure ParseFuncCall(SIdx : Integer; Var Res : TExprVal);
+Var
+  ArgCount : Integer;
+  Arg      : TExprVal;
+Begin
+  EmitComment('call ' + SymTab[SIdx].MangledName);
+  ParserAdvance; { consomme '(' }
+  ArgCount := 0;
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+  Begin
+    ParseExpr(Arg);
+    ExprFlushToAX(Arg);
+    EmitInstr('PUSH   AX');
+    Inc(ArgCount);
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance;
+  EmitInstrA('CALL', SymTab[SIdx].MangledName);
+  If ArgCount > 0 Then
+    EmitInstrAB('ADD', 'SP', IntToStr(ArgCount * 2));
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := SymTab[SIdx].TypeIdx;
+  Res.SymIdx  := -1;
+End;
+
 { ---- ParsePrimary : atome du parseur Pratt ------------------- }
 (* Gere : litteraux entiers, flottants, chaines, booleens
-   (.T./.F.), NIL, identificateurs (stub), parentheses.
-   Les variables/fonctions seront gerees par TODO 05+.           *)
+   (.T./.F.), NIL, SELF, identificateurs, fonctions, tableaux,
+   acces FIELD->nom, IIF(), EVAL(), macro &var, parentheses.  *)
 
 Procedure ParsePrimary(Var Res : TExprVal);
 Var
-  SIdx : Integer;
+  SIdx    : Integer;
+  IdName  : TString;
+  ArgCount : Integer;
+  Arg      : TExprVal;
 Begin
   SIdx := -1;
   Case CurToken.Kind Of
@@ -2419,9 +2691,15 @@ Begin
       End
       Else If CurToken.Val = 'SELF' Then
       Begin
-        { SELF : stub, sera gere au TODO OOP }
+        { SELF : reference a l objet courant (stub OOP) }
+        EmitComment('SELF (stub OOP)');
         ExprMakeImm(0, TY_IDX_OBJECT, Res);
         ParserAdvance;
+      End
+      Else If CurToken.Val = '?' Then
+      Begin
+        { ? et ?? sont traites dans Run, pas comme expression }
+        ExprMakeNone(Res);
       End
       Else
       Begin
@@ -2431,66 +2709,112 @@ Begin
     End;
     TK_IDENT :
     Begin
-      { Identificateur : rechercher dans la table des symboles }
-      SIdx := SymFind(CurToken.Val);
-      If SIdx >= 0 Then
+      IdName := CurToken.Val;
+      { --- IIF : expression conditionnelle inline --- }
+      If IdName = 'IIF' Then
       Begin
-        { Symbole trouve : charger la valeur }
-        ExprLoad(SIdx, Res);
-        ParserAdvance;
+        ParserAdvance; { consomme IIF }
+        ParseIIF(Res);
+      End
+      { --- EVAL : evaluer un code block --- }
+      Else If IdName = 'EVAL' Then
+      Begin
+        ParserAdvance; { consomme EVAL }
+        ParseEVAL(Res);
+      End
+      { --- FIELD : acces champ explicite --- }
+      Else If IdName = 'FIELD' Then
+      Begin
+        ParserAdvance; { consomme FIELD }
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '->') Then
+          ParseFieldAccess('FIELD', Res)
+        Else
+        Begin
+          { FIELD sans -> : chercher comme identifiant normal }
+          SIdx := SymFind('FIELD');
+          If SIdx >= 0 Then
+            ExprLoad(SIdx, Res)
+          Else
+          Begin
+            SIdx := DeclAllocSym('FIELD', SC_PRIVATE);
+            ExprLoad(SIdx, Res);
+          End;
+        End;
       End
       Else
       Begin
-        { Symbole inconnu : creer une variable PRIVATE implicite }
-        If Opts.Warnings Then
-          WarnMsg('variable implicite PRIVATE : ' + CurToken.Val);
-        SIdx := DeclAllocSym(CurToken.Val, SC_PRIVATE);
-        ExprLoad(SIdx, Res);
-        ParserAdvance;
-      End;
-      { Appel de fonction : ident(...) - consommer les arguments }
-      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
-      Begin
-        { Si c est une FUNC/PROC connue : emettre CALL }
-        If (SIdx >= 0) And
-           ((SymTab[SIdx].Cat = SC_FUNC) Or (SymTab[SIdx].Cat = SC_PROC)) Then
+        { Identificateur normal : rechercher dans la table des symboles }
+        SIdx := SymFind(CurToken.Val);
+        If SIdx >= 0 Then
         Begin
-          EmitComment('call ' + SymTab[SIdx].MangledName);
-          { Consommer arguments }
-          ParserAdvance; { consomme '(' }
-          While (CurToken.Kind <> TK_EOF) And
-                Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
-          Begin
-            ParseExpr(Res);
-            ExprFlushToAX(Res);
-            EmitInstr('PUSH   AX');
-            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
-              ParserAdvance;
-          End;
-          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
-            ParserAdvance;
-          EmitInstrA('CALL', SymTab[SIdx].MangledName);
-          Res.Kind    := EK_AX;
-          Res.TypeIdx := SymTab[SIdx].TypeIdx;
-          Res.SymIdx  := -1;
+          ExprLoad(SIdx, Res);
+          ParserAdvance;
         End
         Else
         Begin
-          { Appel generique }
-          ParserAdvance; { consomme '(' }
-          While (CurToken.Kind <> TK_EOF) And
-                Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
-          Begin
-            ParseExpr(Res);
-            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
-              ParserAdvance;
-          End;
-          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
-            ParserAdvance;
-          Res.Kind    := EK_AX;
-          Res.TypeIdx := TY_UNKNOWN;
-          Res.SymIdx  := -1;
+          { Symbole inconnu : creer une variable PRIVATE implicite }
+          If Opts.Warnings Then
+            WarnMsg('variable implicite PRIVATE : ' + CurToken.Val);
+          SIdx := DeclAllocSym(CurToken.Val, SC_PRIVATE);
+          ExprLoad(SIdx, Res);
+          ParserAdvance;
         End;
+        { --- Acces champ alias->nom --- }
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '->') Then
+        Begin
+          ParseFieldAccess(IdName, Res);
+        End
+        { --- Appel de fonction : ident(...) --- }
+        Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          If (SIdx >= 0) And
+             ((SymTab[SIdx].Cat = SC_FUNC) Or
+              (SymTab[SIdx].Cat = SC_PROC)) Then
+          Begin
+            ParseFuncCall(SIdx, Res);
+          End
+          Else
+          Begin
+            { Appel generique (fonction inconnue) }
+            EmitComment('call generic ' + IdName);
+            ParserAdvance; { consomme '(' }
+            ArgCount := 0;
+            While (CurToken.Kind <> TK_EOF) And
+                  Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+            Begin
+              ParseExpr(Arg);
+              ExprFlushToAX(Arg);
+              EmitInstr('PUSH   AX');
+              Inc(ArgCount);
+              If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+                ParserAdvance;
+            End;
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance;
+            EmitInstrA('CALL', CL_FN_PFX + IdName);
+            If ArgCount > 0 Then
+              EmitInstrAB('ADD', 'SP', IntToStr(ArgCount * 2));
+            Res.Kind    := EK_AX;
+            Res.TypeIdx := TY_UNKNOWN;
+            Res.SymIdx  := -1;
+          End;
+        End;
+        { --- Acces tableau : ident[i] --- }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
+          ParseArrayAccess(Res);
+      End;
+    End;
+    TK_OP :
+    Begin
+      { --- Macro &variable ou &(expr) --- }
+      If CurToken.Val = '&' Then
+      Begin
+        ParseMacro(Res);
+      End
+      Else
+      Begin
+        { Autre operateur : laisser ParseUnary gerer }
+        ExprMakeNone(Res);
       End;
     End;
     TK_PUNCT :
