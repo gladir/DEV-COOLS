@@ -31,7 +31,7 @@
               _ABE_ (evenement), _ABX_ (exception handler)
             Utilitaires : ItoS, ItoSI, UpCaseStr, AsmIdent
 
-  TODO 02 - TOKENISEUR ABAP (LEXER)
+  TODO 02 - TOKENISEUR ABAP (LEXER) [IMPLEMENTE]
             Procedure LexInit : ouvrir le fichier source, initialiser
               l etat du lexeur (ligne, colonne, caractere courant)
             Procedure LexClose : fermer le fichier source

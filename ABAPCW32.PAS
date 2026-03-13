@@ -50,7 +50,7 @@
               _ABE_ (evenement), _ABX_ (exception handler)
             Utilitaires : ItoS, ItoSI, UpCaseStr, AsmIdent
 
-  TODO 02 - TOKENISEUR ABAP (LEXER)
+  TODO 02 - TOKENISEUR ABAP (LEXER) [IMPLEMENTE]
             Procedure LexInit : ouvrir le fichier source, initialiser
               l etat du lexeur (ligne, colonne, caractere courant)
             Procedure LexClose : fermer le fichier source
@@ -582,6 +582,37 @@ Const
   MAX_DATA      = {$IFDEF FPC}512{$ELSE}64{$ENDIF};
   STACK_SIZE    = 4096;  { taille pile Win32 }
 
+  { Types de tokens ABAP }
+  TOK_UNKNOWN  =  0;
+  TOK_IDENT    =  1;   { identificateur / mot-cle (majuscules)    }
+  TOK_NUMBER   =  2;   { litteral entier : 123                    }
+  TOK_FLOAT    =  3;   { litteral decimal : 1.5 / 1E3             }
+  TOK_STRING   =  4;   { 'texte' (apostrophe doublee '')          }
+  TOK_PLUS     =  5;   { +                                        }
+  TOK_MINUS    =  6;   { -                                        }
+  TOK_STAR     =  7;   { *                                        }
+  TOK_SLASH    =  8;   { /  (aussi separateur WRITE)              }
+  TOK_LPAREN   =  9;   { (                                        }
+  TOK_RPAREN   = 10;   { )                                        }
+  TOK_COMMA    = 11;   { ,                                        }
+  TOK_DOT      = 12;   { .  (terminateur d instruction)           }
+  TOK_COLON    = 13;   { :  (declaration DATA: ... )              }
+  TOK_EQ       = 14;   { =  (affectation et comparaison)          }
+  TOK_NE       = 15;   { <> (different)                           }
+  TOK_LT       = 16;   { <                                        }
+  TOK_GT       = 17;   { >                                        }
+  TOK_LE       = 18;   { <=                                       }
+  TOK_GE       = 19;   { >=                                       }
+  TOK_CONCAT   = 20;   { && (concatenation expressions)           }
+  TOK_LBRACKET = 21;   { [  (indice tableau)                      }
+  TOK_RBRACKET = 22;   { ]                                        }
+  TOK_HASH     = 23;   { #  (debut pragma)                        }
+  TOK_PIPE     = 24;   { |  (chaine template ABAP 7.4, stub)      }
+  TOK_AT       = 25;   { @  (reference inline ABAP 7.4, stub)     }
+  TOK_EOF      = 99;
+
+  MAX_IDENT    = 48;   { longueur max d un identificateur ABAP    }
+
   { Prefixes de nommage ASM }
   AB_VAR_PFX   = '_AB_';       { variable globale              }
   AB_FN_PFX    = '_ABF_';      { FORM / FUNCTION               }
@@ -673,6 +704,17 @@ Var
   OutF       : Text;
   OutFOpen   : Boolean;
 
+  { Lexeur }
+  LexSrcF    : Text;       { handle du fichier source              }
+  LexOpened  : Boolean;    { fichier source ouvert ?               }
+  LexLine    : TString;    { ligne courante                        }
+  LexLineNo  : Integer;    { numero de ligne courante (1-based)    }
+  LexColNo   : Integer;    { colonne courante dans LexLine         }
+  LexEOF     : Boolean;    { fin de fichier atteinte ?             }
+  CurTokType : Integer;    { type du token courant (TOK_xxx)       }
+  CurTokStr  : TString;    { valeur textuelle du token courant     }
+  CurTokNum  : LongInt;    { valeur entiere (TOK_NUMBER)           }
+
 {$IFDEF FPC}
   { Variables binaires }
   BinCode     : Array[0..MAX_BIN_CODE - 1] of Byte;
@@ -698,6 +740,17 @@ Const
     'GetProcessHeap', 'HeapAlloc', 'HeapFree'
   );
 {$ENDIF}
+
+{ ============================================================ }
+{ DECLARATIONS FORWARD (LEXEUR)                                }
+{ ============================================================ }
+
+Procedure LexInit;       Forward;
+Procedure LexClose;      Forward;
+Procedure LexNextLine;   Forward;
+Procedure LexNextToken;  Forward;
+Procedure LexError(Const Msg : TString); Forward;
+Procedure PrintToken;    Forward;
 
 { ============================================================ }
 { FONCTIONS UTILITAIRES                                        }
@@ -822,6 +875,453 @@ Begin
   If Not Opts.Warnings Then Exit;
   WriteLn('ABAPCW32: warning: ', Msg);
   Inc(WarnCount);
+End;
+
+{ ============================================================ }
+{ TOKENISEUR ABAP (LEXER)                                     }
+{ ============================================================ }
+
+{ ---- Fonctions de base du lexeur -------------------------- }
+
+Function LexCurChar : Char;
+Begin
+  If LexEOF Or (LexColNo > Length(LexLine)) Then
+    LexCurChar := #0
+  Else
+    LexCurChar := LexLine[LexColNo];
+End;
+
+Function LexPeek : Char;
+Begin
+  If LexEOF Or (LexColNo + 1 > Length(LexLine)) Then
+    LexPeek := #0
+  Else
+    LexPeek := LexLine[LexColNo + 1];
+End;
+
+Procedure LexAdvance;
+Begin
+  Inc(LexColNo);
+End;
+
+Procedure LexNextLine;
+Begin
+  If EOF(LexSrcF) Then
+  Begin
+    LexEOF   := True;
+    LexLine  := '';
+    LexColNo := 1;
+  End Else
+  Begin
+    ReadLn(LexSrcF, LexLine);
+    Inc(LexLineNo);
+    Inc(TotalLines);
+    LexColNo := 1;
+  End;
+End;
+
+Procedure LexError(Const Msg : TString);
+Begin
+  WriteLn('ABAPCW32: ligne ', LexLineNo, ': ', Msg);
+  Inc(ErrorCount);
+  If ErrorCount >= MAX_ERRORS Then
+    FatalError('trop d''erreurs, abandon');
+End;
+
+{ ---- LexSkipWS : sauter espaces, TAB et commentaires ------ }
+Procedure LexSkipWS;
+Var Done : Boolean;
+Begin
+  Done := False;
+  While Not Done Do
+  Begin
+    Done := True;
+    { Lire la prochaine ligne si necessaire }
+    While (Not LexEOF) And (LexColNo > Length(LexLine)) Do
+      LexNextLine;
+    If LexEOF Then Exit;
+    { Commentaire '*' en colonne 1 : sauter toute la ligne }
+    If (LexColNo = 1) And (Length(LexLine) > 0) And
+       (LexLine[1] = '*') Then
+    Begin
+      LexColNo := Length(LexLine) + 1;
+      Done := False;
+      Continue;
+    End;
+    { Pragma '#' en colonne 1 : sauter toute la ligne }
+    If (LexColNo = 1) And (Length(LexLine) > 0) And
+       (LexLine[1] = '#') Then
+    Begin
+      LexColNo := Length(LexLine) + 1;
+      Done := False;
+      Continue;
+    End;
+    { Sauter espaces et tabulations }
+    While (LexColNo <= Length(LexLine)) And
+          ((LexLine[LexColNo] = ' ') Or (LexLine[LexColNo] = #9)) Do
+    Begin
+      Inc(LexColNo);
+      Done := False;
+    End;
+    { Commentaire inline ABAP : " jusqu'a fin de ligne }
+    If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '"') Then
+    Begin
+      LexColNo := Length(LexLine) + 1;
+      Done := False;
+    End;
+  End;
+End;
+
+{ ---- LexNextToken : produire le prochain token ABAP ------- }
+Procedure LexNextToken;
+Var
+  C, C2 : Char;
+  S     : TString;
+  N     : LongInt;
+  Flt   : Boolean;
+Begin
+  CurTokStr  := '';
+  CurTokNum  := 0;
+
+  LexSkipWS;
+
+  { ---- EOF ---- }
+  If LexEOF Or (LexColNo > Length(LexLine)) Then
+  Begin
+    CurTokType := TOK_EOF;
+    CurTokStr  := '';
+    Exit;
+  End;
+
+  C := LexCurChar;
+
+  { ---- Separateurs simples ---- }
+  Case C Of
+    '(': Begin CurTokType := TOK_LPAREN;   CurTokStr := '(';
+           LexAdvance; Exit; End;
+    ')': Begin CurTokType := TOK_RPAREN;   CurTokStr := ')';
+           LexAdvance; Exit; End;
+    '[': Begin CurTokType := TOK_LBRACKET; CurTokStr := '[';
+           LexAdvance; Exit; End;
+    ']': Begin CurTokType := TOK_RBRACKET; CurTokStr := ']';
+           LexAdvance; Exit; End;
+    ',': Begin CurTokType := TOK_COMMA;    CurTokStr := ',';
+           LexAdvance; Exit; End;
+    '.': Begin CurTokType := TOK_DOT;      CurTokStr := '.';
+           LexAdvance; Exit; End;
+    ':': Begin CurTokType := TOK_COLON;    CurTokStr := ':';
+           LexAdvance; Exit; End;
+    '+': Begin CurTokType := TOK_PLUS;     CurTokStr := '+';
+           LexAdvance; Exit; End;
+    '/': Begin CurTokType := TOK_SLASH;    CurTokStr := '/';
+           LexAdvance; Exit; End;
+    '@': Begin CurTokType := TOK_AT;       CurTokStr := '@';
+           LexAdvance; Exit; End;
+    '#': Begin CurTokType := TOK_HASH;     CurTokStr := '#';
+           LexAdvance; Exit; End;
+    '-': Begin CurTokType := TOK_MINUS;    CurTokStr := '-';
+           LexAdvance; Exit; End;
+    '*': Begin CurTokType := TOK_STAR;     CurTokStr := '*';
+           LexAdvance; Exit; End;
+    '=': Begin CurTokType := TOK_EQ;       CurTokStr := '=';
+           LexAdvance; Exit; End;
+  End;
+
+  { ---- Operateurs multi-caracteres ---- }
+  { '<' et '<>' et '<=' }
+  If C = '<' Then
+  Begin
+    LexAdvance;
+    C2 := LexCurChar;
+    If C2 = '>' Then
+    Begin LexAdvance; CurTokType := TOK_NE; CurTokStr := '<>'; End
+    Else If C2 = '=' Then
+    Begin LexAdvance; CurTokType := TOK_LE; CurTokStr := '<='; End
+    Else
+    Begin CurTokType := TOK_LT; CurTokStr := '<'; End;
+    Exit;
+  End;
+  { '>' et '>=' }
+  If C = '>' Then
+  Begin
+    LexAdvance;
+    C2 := LexCurChar;
+    If C2 = '=' Then
+    Begin LexAdvance; CurTokType := TOK_GE; CurTokStr := '>='; End
+    Else
+    Begin CurTokType := TOK_GT; CurTokStr := '>'; End;
+    Exit;
+  End;
+  { '&&' concatenation ou '&' seul }
+  If C = '&' Then
+  Begin
+    LexAdvance;
+    If LexCurChar = '&' Then
+    Begin LexAdvance; CurTokType := TOK_CONCAT; CurTokStr := '&&'; End
+    Else
+    Begin CurTokType := TOK_UNKNOWN; CurTokStr := '&'; End;
+    Exit;
+  End;
+
+  { ---- Pipe '|' : chaine template ABAP 7.4 (stub) ---- }
+  If C = '|' Then
+  Begin
+    LexAdvance;
+    S := '';
+    While (LexColNo <= Length(LexLine)) And (LexCurChar <> '|') Do
+    Begin
+      If Length(S) < MAX_STR Then
+        S := S + LexCurChar;
+      LexAdvance;
+    End;
+    If (LexColNo <= Length(LexLine)) And (LexCurChar = '|') Then
+      LexAdvance;
+    CurTokType := TOK_STRING;
+    CurTokStr  := S;
+    Exit;
+  End;
+
+  { ---- Chaine ABAP : '...' avec '' pour apostrophe ---- }
+  If C = '''' Then
+  Begin
+    LexAdvance;
+    S := '';
+    While True Do
+    Begin
+      If (LexColNo > Length(LexLine)) Then
+      Begin
+        LexError('Chaine non terminee');
+        Break;
+      End;
+      C2 := LexCurChar;
+      If C2 = '''' Then
+      Begin
+        LexAdvance;
+        { Apostrophe doublee '' = apostrophe dans la chaine }
+        If (LexColNo <= Length(LexLine)) And (LexCurChar = '''') Then
+        Begin
+          If Length(S) < MAX_STR Then
+            S := S + '''';
+          LexAdvance;
+        End
+        Else
+          Break; { fin de la chaine }
+      End
+      Else
+      Begin
+        If Length(S) < MAX_STR Then
+          S := S + C2;
+        LexAdvance;
+      End;
+    End;
+    CurTokType := TOK_STRING;
+    CurTokStr  := S;
+    Exit;
+  End;
+
+  { ---- Litteraux numeriques ---- }
+  If (C >= '0') And (C <= '9') Then
+  Begin
+    N   := Ord(C) - 48;
+    S   := C;
+    Flt := False;
+    LexAdvance;
+    { Partie entiere }
+    While (LexColNo <= Length(LexLine)) And
+          (LexCurChar >= '0') And (LexCurChar <= '9') Do
+    Begin
+      N := N * 10 + (Ord(LexCurChar) - 48);
+      S := S + LexCurChar;
+      LexAdvance;
+    End;
+    { Partie decimale : '.' suivi d'un chiffre = flottant }
+    If (LexColNo <= Length(LexLine)) And (LexCurChar = '.') Then
+    Begin
+      C2 := LexPeek;
+      If (C2 >= '0') And (C2 <= '9') Then
+      Begin
+        Flt := True;
+        S := S + '.';
+        LexAdvance; { consomme le '.' }
+        While (LexColNo <= Length(LexLine)) And
+              (LexCurChar >= '0') And (LexCurChar <= '9') Do
+        Begin
+          S := S + LexCurChar;
+          LexAdvance;
+        End;
+      End;
+      { Sinon le '.' est le terminateur d'instruction, on ne le consomme pas }
+    End;
+    { Exposant E/e }
+    If (LexColNo <= Length(LexLine)) And
+       ((LexCurChar = 'E') Or (LexCurChar = 'e')) Then
+    Begin
+      Flt := True;
+      S := S + LexCurChar;
+      LexAdvance;
+      If (LexColNo <= Length(LexLine)) And
+         ((LexCurChar = '+') Or (LexCurChar = '-')) Then
+      Begin
+        S := S + LexCurChar;
+        LexAdvance;
+      End;
+      While (LexColNo <= Length(LexLine)) And
+            (LexCurChar >= '0') And (LexCurChar <= '9') Do
+      Begin
+        S := S + LexCurChar;
+        LexAdvance;
+      End;
+    End;
+    If Flt Then CurTokType := TOK_FLOAT
+    Else        CurTokType := TOK_NUMBER;
+    CurTokNum := N;
+    CurTokStr := S;
+    Exit;
+  End;
+
+  { ---- Identificateurs et mots-cles ABAP ---- }
+  If ((C >= 'A') And (C <= 'Z')) Or ((C >= 'a') And (C <= 'z')) Or
+     (C = '_') Then
+  Begin
+    S := '';
+    If (C >= 'a') And (C <= 'z') Then
+      S := Chr(Ord(C) - 32)
+    Else
+      S := C;
+    LexAdvance;
+    While True Do
+    Begin
+      If LexColNo > Length(LexLine) Then Break;
+      C2 := LexCurChar;
+      { Caractere standard d'identificateur }
+      If ((C2 >= 'A') And (C2 <= 'Z')) Or ((C2 >= 'a') And (C2 <= 'z')) Or
+         (C2 = '_') Or ((C2 >= '0') And (C2 <= '9')) Then
+      Begin
+        If Length(S) < MAX_IDENT Then
+        Begin
+          If (C2 >= 'a') And (C2 <= 'z') Then
+            S := S + Chr(Ord(C2) - 32)
+          Else
+            S := S + C2;
+        End;
+        LexAdvance;
+        Continue;
+      End;
+      { '-' dans un ident ABAP (SY-SUBRC, START-OF-SELECTION, etc.)
+        Consommer le '-' seulement si suivi d'alpha/_ }
+      If C2 = '-' Then
+      Begin
+        C2 := LexPeek;
+        If ((C2 >= 'A') And (C2 <= 'Z')) Or ((C2 >= 'a') And (C2 <= 'z')) Or
+           (C2 = '_') Then
+        Begin
+          If Length(S) < MAX_IDENT Then
+            S := S + '-';
+          LexAdvance;
+          Continue;
+        End;
+      End;
+      Break;
+    End;
+    CurTokType := TOK_IDENT;
+    CurTokStr  := S;
+    Exit;
+  End;
+
+  { ---- Caractere inconnu ---- }
+  CurTokType := TOK_UNKNOWN;
+  CurTokStr  := C;
+  LexAdvance;
+End;
+
+{ ---- PrintToken : afficher le token courant (mode debug) -- }
+Procedure PrintToken;
+Var Kind : TString;
+Begin
+  Case CurTokType Of
+    TOK_IDENT    : Kind := 'IDENT';
+    TOK_NUMBER   : Kind := 'NUMBER';
+    TOK_FLOAT    : Kind := 'FLOAT';
+    TOK_STRING   : Kind := 'STRING';
+    TOK_PLUS     : Kind := 'PLUS';
+    TOK_MINUS    : Kind := 'MINUS';
+    TOK_STAR     : Kind := 'STAR';
+    TOK_SLASH    : Kind := 'SLASH';
+    TOK_LPAREN   : Kind := 'LPAREN';
+    TOK_RPAREN   : Kind := 'RPAREN';
+    TOK_COMMA    : Kind := 'COMMA';
+    TOK_DOT      : Kind := 'DOT';
+    TOK_COLON    : Kind := 'COLON';
+    TOK_EQ       : Kind := 'EQ';
+    TOK_NE       : Kind := 'NE';
+    TOK_LT       : Kind := 'LT';
+    TOK_GT       : Kind := 'GT';
+    TOK_LE       : Kind := 'LE';
+    TOK_GE       : Kind := 'GE';
+    TOK_CONCAT   : Kind := 'CONCAT';
+    TOK_LBRACKET : Kind := 'LBRACKET';
+    TOK_RBRACKET : Kind := 'RBRACKET';
+    TOK_HASH     : Kind := 'HASH';
+    TOK_PIPE     : Kind := 'PIPE';
+    TOK_AT       : Kind := 'AT';
+    TOK_EOF      : Kind := 'EOF';
+    Else           Kind := 'UNKNOWN';
+  End;
+  Write('[', LexLineNo, ':', LexColNo, '] ', Kind);
+  If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_STRING) Or
+     (CurTokType = TOK_NUMBER) Or (CurTokType = TOK_FLOAT) Then
+    Write(' <', CurTokStr, '>');
+  WriteLn;
+End;
+
+{ ---- LexInit : ouvrir le fichier source et lire le 1er token }
+Procedure LexInit;
+Begin
+  LexOpened  := False;
+  Assign(LexSrcF, Opts.SrcFile);
+  Reset(LexSrcF);
+  If IOResult <> 0 Then
+    FatalError('impossible d''ouvrir: ' + Opts.SrcFile);
+  LexOpened  := True;
+  LexEOF     := False;
+  LexLineNo  := 0;
+  LexColNo   := 1;
+  LexLine    := '';
+  CurTokType := TOK_EOF;
+  CurTokStr  := '';
+  CurTokNum  := 0;
+  LexNextLine;
+  LexNextToken;
+End;
+
+{ ---- LexClose : fermer le fichier source ------------------- }
+Procedure LexClose;
+Begin
+  If LexOpened Then
+  Begin
+    Close(LexSrcF);
+    LexOpened := False;
+  End;
+End;
+
+{ ---- Helpers de parsing ----------------------------------- }
+Procedure Consume;
+Begin
+  LexNextToken;
+End;
+
+Procedure Expect(TT : Integer; Const What : TString);
+Begin
+  If CurTokType <> TT Then
+    LexError('Attendu ' + What + ', trouve: ''' + CurTokStr + '''');
+  Consume;
+End;
+
+Procedure SkipToDot;
+Begin
+  While (CurTokType <> TOK_DOT) And (CurTokType <> TOK_EOF) Do
+    Consume;
+  If CurTokType = TOK_DOT Then Consume;
 End;
 
 { ============================================================ }
@@ -1002,9 +1502,24 @@ End;
 
 Procedure Run;
 Begin
-  { TODO 02..25 : corps du compilateur }
-  WriteLn('ABAPCW32: compilation de ', Opts.SrcFile, ' ...');
-  WriteLn('ABAPCW32: TODO 02..25 non encore implementes.');
+  LexInit;
+  If Opts.DebugMode Then
+  Begin
+    { Mode debug : afficher tous les tokens }
+    While CurTokType <> TOK_EOF Do
+    Begin
+      PrintToken;
+      LexNextToken;
+    End;
+    PrintToken; { afficher le token EOF }
+  End
+  Else
+  Begin
+    { TODO 03..25 : corps du compilateur }
+    WriteLn('ABAPCW32: compilation de ', Opts.SrcFile, ' ...');
+    WriteLn('ABAPCW32: TODO 03..25 non encore implementes.');
+  End;
+  LexClose;
 End;
 
 { ============================================================ }
