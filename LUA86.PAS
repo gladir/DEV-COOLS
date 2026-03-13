@@ -142,7 +142,7 @@
             Affectation de table : t[k] = expr -> CALL _LUART_TSET
             Affectation composee : pas native en Lua (pas de += -= etc.)
 
-  TODO 10 - EXPRESSIONS PRIMAIRES
+  TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
             ParsePrimary : literal nombre, literal chaine, ident, appel, nil,
               true -> MOV AX,1   false -> XOR AX,AX
               nil -> XOR AX,AX
@@ -691,6 +691,7 @@ Var
 
   { Etat general }
   RuntimeEmitted : Boolean;
+  CallArgCount   : Integer;   { compteur d arguments pour appels }
 
 { ============================================================
   FORWARD DECLARATIONS
@@ -787,6 +788,11 @@ Function  EnsureGlobalVar(Const Name : TString) : Integer; Forward;
 Procedure ParseLocalDecl; Forward;
 Procedure ParseAssignment(Const FirstName : TString); Forward;
 Procedure ParseStmt; Forward;
+
+{ Expressions primaires (TODO 10) }
+Procedure ParseCallArgs(SIdx : Integer; Var Res : TExprVal); Forward;
+Procedure EmitBuiltinCall(SIdx : Integer; Var Res : TExprVal); Forward;
+Procedure EmitExprRuntime; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1187,10 +1193,10 @@ Begin
   EmitBlankLine;
 End;
 
-{ EmitRuntime : emettre les routines runtime (stub pour TODO 24) }
+{ EmitRuntime : emettre les routines runtime }
 Procedure EmitRuntime;
 Begin
-  { Stub : sera implemente dans TODO 24 }
+  EmitExprRuntime;
 End;
 
 { EmitClose : terminer le fichier ASM (DOS exit, runtime, DATA, END) }
@@ -1320,6 +1326,12 @@ Begin
   DataAddBuffer('_LUA_STRBUF', 512);
   { Buffer temporaire pour conversions (256 octets) }
   DataAddBuffer('_LUA_TMPBUF', 256);
+  { Chaine de type 'number' pour _LUART_TYPE }
+  DataAdd(LUA_RT_PFX + 'TNUM', DK_STR, 0, 'number');
+  { Message d erreur pour _LUART_PANIC }
+  DataAdd(LUA_ERR_PFX + 'MSG', DK_STR, 0, 'LUA ERROR: ');
+  { Espace pour separateur print }
+  DataAdd('_LUA_SPACE', DK_STR, 0, ' ');
 End;
 
 { ---- ExprMakeImm : construire une valeur immediate ---------- }
@@ -1857,9 +1869,7 @@ Begin
     Else
     Begin
       { Pas une affectation : c est une expression commencant par ident }
-      { Rembobiner : on a deja lu l ident, il faut le traiter comme expr }
-      { Construire un ExprVal pour cet ident et continuer ParseExprPrec }
-      { Note : l ident est deja consomme, donc on construit le resultat }
+      { Construire un ExprVal pour cet ident }
       E.Kind    := EK_MEM;
       E.ImmVal  := 0;
       E.TypeIdx := TY_UNKNOWN;
@@ -1872,10 +1882,35 @@ Begin
         E.TypeIdx := SymTab[E.SymIdx].TypeIdx;
         E.Offset  := SymTab[E.SymIdx].Offset;
       End;
-      { Continuer a parser la suite comme une expression (appels, etc.) }
-      { Pour l instant, on flush juste dans AX (le resultat est jete)  }
-      { Les appels de fonctions, etc. seront geres par TODO 10+        }
-      ExprFlushToAX(E);
+      { Appel de fonction : ident suivi de ( }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        If (E.SymIdx >= 0) And
+           (SymTab[E.SymIdx].Kind = SK_FUNCTION) Then
+          EmitBuiltinCall(E.SymIdx, E)
+        Else
+        Begin
+          ExprFlushToAX(E);
+          ParseCallArgs(-1, E);
+        End;
+      End
+      { Acces table par point : ident.champ }
+      Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
+      Begin
+        ExprFlushToAX(E);
+        { La boucle postfixe dans ParseExprPrec gerera le reste }
+        { Ici on flush juste dans AX }
+      End
+      { Appel de methode : ident:methode(args) }
+      Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+      Begin
+        ExprFlushToAX(E);
+      End
+      Else
+      Begin
+        { Expression simple : flush dans AX (resultat jete) }
+        ExprFlushToAX(E);
+      End;
       { Consommer ';' optionnel }
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
         ParserAdvance;
@@ -2922,18 +2957,97 @@ Begin
 End;
 
 { ---- EmitBinOp : emettre le code pour un operateur binaire --- }
-{ Stub pour TODO 07. L = AX, R = BX -> resultat dans AX.        }
-{ Pour les operateurs arithmetiques :                            }
-{   + -> ADD AX,BX   - -> SUB AX,BX   * -> IMUL BX             }
-{   / -> CWD IDIV BX (quotient AX)   % -> CWD IDIV BX MOV AX,DX }
-{   // -> CWD IDIV BX (div entiere)                              }
-{   ^ -> CALL _LUART_POW   .. -> CALL _LUART_CONCAT             }
-{ Pour les comparaisons : CMP AX,BX + Jcc                       }
-{ Pour les bitwise (5.3+) : AND/OR/XOR/SAL/SAR                  }
+{ L = gauche (peut etre IMM/MEM/AX), R = droite (idem).         }
+{ Apres emission : L.Kind = EK_AX, resultat dans AX.            }
+{ Arithmetique : ADD/SUB/IMUL/IDIV                               }
+{ Comparaisons : CMP + Jcc -> AX=1 ou AX=0                      }
+{ Concatenation .. : CALL _LUART_CONCAT                          }
+{ Puissance ^ : CALL _LUART_POW                                  }
 Procedure EmitBinOp(Const Op : TString;
                     Var L : TExprVal; Const R : TExprVal);
+Var
+  LblTrue, LblEnd : TString;
 Begin
-  { Stub : marquer le resultat dans AX }
+  { Flush gauche dans AX, PUSH AX }
+  ExprFlushToAX(L);
+  EmitInstrA('PUSH', 'AX');
+  { Flush droite dans AX, MOV BX,AX }
+  ExprFlushToAX(R);
+  EmitInstrAB('MOV', 'BX', 'AX');
+  { POP AX : gauche dans AX, droite dans BX }
+  EmitInstrA('POP', 'AX');
+
+  { Arithmetique }
+  If Op = '+' Then
+    EmitInstrAB('ADD', 'AX', 'BX')
+  Else If Op = '-' Then
+    EmitInstrAB('SUB', 'AX', 'BX')
+  Else If Op = '*' Then
+    EmitInstrA('IMUL', 'BX')
+  Else If (Op = '/') Or (Op = '//') Then
+  Begin
+    EmitInstr('CWD');
+    EmitInstrA('IDIV', 'BX');
+  End
+  Else If Op = '%' Then
+  Begin
+    EmitInstr('CWD');
+    EmitInstrA('IDIV', 'BX');
+    EmitInstrAB('MOV', 'AX', 'DX');
+  End
+  Else If Op = '^' Then
+    EmitInstrA('CALL', LUA_RT_PFX + 'POW')
+  Else If Op = '..' Then
+  Begin
+    EmitInstrAB('MOV', 'SI', 'AX');
+    EmitInstrAB('MOV', 'DI', 'BX');
+    EmitInstrA('CALL', LUA_RT_PFX + 'CONCAT');
+  End
+  { Comparaisons }
+  Else If (Op = '==') Or (Op = '~=') Or
+          (Op = '<') Or (Op = '<=') Or
+          (Op = '>') Or (Op = '>=') Then
+  Begin
+    LblTrue := LabelGen;
+    LblEnd  := LabelGen;
+    EmitInstrAB('CMP', 'AX', 'BX');
+    If Op = '==' Then
+      EmitInstrA('JE', LblTrue)
+    Else If Op = '~=' Then
+      EmitInstrA('JNE', LblTrue)
+    Else If Op = '<' Then
+      EmitInstrA('JL', LblTrue)
+    Else If Op = '<=' Then
+      EmitInstrA('JLE', LblTrue)
+    Else If Op = '>' Then
+      EmitInstrA('JG', LblTrue)
+    Else If Op = '>=' Then
+      EmitInstrA('JGE', LblTrue);
+    EmitInstrAB('XOR', 'AX', 'AX');
+    EmitInstrA('JMP', LblEnd);
+    EmitLabel(LblTrue);
+    EmitInstrAB('MOV', 'AX', '1');
+    EmitLabel(LblEnd);
+  End
+  { Bitwise Lua 5.3+ }
+  Else If Op = '&' Then
+    EmitInstrAB('AND', 'AX', 'BX')
+  Else If Op = '|' Then
+    EmitInstrAB('OR', 'AX', 'BX')
+  Else If Op = '~' Then
+    EmitInstrAB('XOR', 'AX', 'BX')
+  Else If Op = '<<' Then
+  Begin
+    EmitInstrAB('MOV', 'CX', 'BX');
+    EmitInstrAB('SHL', 'AX', 'CL');
+  End
+  Else If Op = '>>' Then
+  Begin
+    EmitInstrAB('MOV', 'CX', 'BX');
+    EmitInstrAB('SHR', 'AX', 'CL');
+  End;
+
+  { Resultat dans AX }
   L.Kind := EK_AX;
 End;
 
@@ -2942,8 +3056,11 @@ End;
 { identifiant, parentheses, constructeur de table (stub)         }
 Procedure ParsePrimary(Var Res : TExprVal);
 Var
-  VName : TString;
-  SIdx  : Integer;
+  VName   : TString;
+  SIdx    : Integer;
+  FldName : TString;
+  FldLbl  : TString;
+  Done    : Boolean;
 Begin
   Case CurToken.Kind Of
     TK_INTEGER, TK_FLOAT, TK_STRING :
@@ -2979,14 +3096,10 @@ Begin
     End;
     TK_IDENT :
     Begin
-      { TODO 09 : resoudre la variable dans SymTab }
       VName := CurToken.Val;
       SIdx := SymFind(VName);
       If SIdx < 0 Then
-      Begin
-        { Variable non declaree : creer implicitement comme globale }
         SIdx := EnsureGlobalVar(VName);
-      End;
       Res.Kind    := EK_MEM;
       Res.ImmVal  := 0;
       If SIdx >= 0 Then
@@ -3039,6 +3152,84 @@ Begin
     ExprMakeNone(Res);
     ParserAdvance;
   End;
+
+  { ---- Boucle postfixe : appels, acces table, methode ---- }
+  Done := False;
+  While Not Done Do
+  Begin
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      { Appel de fonction : f(args) }
+      SIdx := Res.SymIdx;
+      If (SIdx >= 0) And (SymTab[SIdx].Kind = SK_FUNCTION) Then
+        EmitBuiltinCall(SIdx, Res)
+      Else
+      Begin
+        ExprFlushToAX(Res);
+        ParseCallArgs(-1, Res);
+      End;
+    End
+    Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
+    Begin
+      { Acces table par point : t.champ -> sucre pour t["champ"] }
+      ParserAdvance; { consomme '.' }
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        FldName := CurToken.Val;
+        ParserAdvance;
+        ExprFlushToAX(Res);
+        EmitInstrAB('MOV', 'BX', 'AX');
+        FldLbl := DataAddStr(FldName);
+        EmitInstrAB('MOV', 'DI', 'OFFSET ' + FldLbl);
+        EmitInstrA('CALL', LUA_RT_PFX + 'TGET');
+        Res.Kind    := EK_AX;
+        Res.TypeIdx := TY_UNKNOWN;
+        Res.SymIdx  := -1;
+      End
+      Else
+        CompileError('identifiant attendu apres "."');
+    End
+    Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
+    Begin
+      { Acces table par crochet : t[expr] }
+      ParserAdvance; { consomme '[' }
+      ExprFlushToAX(Res);
+      EmitInstrA('PUSH', 'AX');
+      ParseExpr(Res);
+      ExprFlushToAX(Res);
+      EmitInstrAB('MOV', 'DI', 'AX');
+      EmitInstrA('POP', 'BX');
+      EmitInstrA('CALL', LUA_RT_PFX + 'TGET');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+        ParserAdvance
+      Else
+        CompileError('"]" attendue');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_UNKNOWN;
+      Res.SymIdx  := -1;
+    End
+    Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+    Begin
+      { Appel de methode : obj:methode(args) }
+      ParserAdvance; { consomme ':' }
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        FldName := CurToken.Val;
+        ParserAdvance;
+        ExprFlushToAX(Res);
+        EmitInstrA('PUSH', 'AX');
+        EmitInstrAB('MOV', 'BX', 'AX');
+        FldLbl := DataAddStr(FldName);
+        EmitInstrAB('MOV', 'DI', 'OFFSET ' + FldLbl);
+        EmitInstrA('CALL', LUA_RT_PFX + 'TGET');
+        ParseCallArgs(-1, Res);
+      End
+      Else
+        CompileError('nom de methode attendu apres ":"');
+    End
+    Else
+      Done := True;
+  End;
 End;
 
 { ---- ParseUnary : operateurs unaires prefixes Lua ----------- }
@@ -3050,6 +3241,7 @@ End;
 Procedure ParseUnary(Var Res : TExprVal);
 Var
   Op : TString;
+  LblTrue, LblEnd : TString;
 Begin
   { Unaire prefixe : - }
   If (CurToken.Kind = TK_OP) And (CurToken.Val = '-') Then
@@ -3061,7 +3253,7 @@ Begin
     Else
     Begin
       ExprFlushToAX(Res);
-      { TODO 07 : NEG AX }
+      EmitInstrA('NEG', 'AX');
       Res.Kind    := EK_AX;
       Res.TypeIdx := TY_IDX_NUMBER;
     End;
@@ -3090,7 +3282,8 @@ Begin
     Else
     Begin
       ExprFlushToAX(Res);
-      { TODO 07 : CALL _LUART_LEN }
+      EmitInstrAB('MOV', 'SI', 'AX');
+      EmitInstrA('CALL', LUA_RT_PFX + 'STRLEN');
       Res.Kind := EK_AX;
     End;
     Res.TypeIdx := TY_IDX_NUMBER;
@@ -3113,7 +3306,15 @@ Begin
     Else
     Begin
       ExprFlushToAX(Res);
-      { TODO 07 : OR AX,AX / SETZ AL / MOVZX AX,AL ou equiv. }
+      LblEnd  := LabelGen;
+      LblTrue := LabelGen;
+      EmitInstrAB('TEST', 'AX', 'AX');
+      EmitInstrA('JZ', LblTrue);
+      EmitInstrAB('XOR', 'AX', 'AX');
+      EmitInstrA('JMP', LblEnd);
+      EmitLabel(LblTrue);
+      EmitInstrAB('MOV', 'AX', '1');
+      EmitLabel(LblEnd);
       Res.Kind    := EK_AX;
       Res.TypeIdx := TY_IDX_BOOLEAN;
     End;
@@ -3131,7 +3332,7 @@ Begin
     Else
     Begin
       ExprFlushToAX(Res);
-      { TODO 07 : NOT AX }
+      EmitInstrA('NOT', 'AX');
       Res.Kind := EK_AX;
     End;
     Res.TypeIdx := TY_IDX_NUMBER;
@@ -3403,6 +3604,485 @@ End;
 Procedure ParseExpr(Var Res : TExprVal);
 Begin
   ParseExprPrec(1, Res);
+End;
+
+{ ============================================================
+  TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseCallArgs : parser les arguments d un appel --------- }
+{ Attend '(' deja visible. Parse (e1, e2, ...) en empilant.      }
+{ Apres : Res.Kind = EK_AX avec le resultat de l appel.          }
+Procedure ParseCallArgs(SIdx : Integer; Var Res : TExprVal);
+Var
+  Arg      : TExprVal;
+  ArgCount : Integer;
+  NS       : TString;
+Begin
+  ArgCount := 0;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    ParserAdvance   { consomme '(' }
+  Else
+  Begin
+    CompileError('"(" attendue pour appel de fonction');
+    Exit;
+  End;
+  { Parser les arguments, empiler de gauche a droite }
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+  Begin
+    ParseExpr(Arg);
+    ExprFlushToAX(Arg);
+    EmitInstrA('PUSH', 'AX');
+    Inc(ArgCount);
+    { Virgule entre arguments }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance
+    Else
+      Break;
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance   { consomme ')' }
+  Else
+    CompileError('")" attendue');
+  { Appel de fonction via AX (pointeur de fonction) }
+  EmitInstrA('CALL', 'AX');
+  { Nettoyer la pile si arguments empiles }
+  If ArgCount > 0 Then
+  Begin
+    Str(ArgCount * 2, NS);
+    EmitInstrAB('ADD', 'SP', NS);
+  End;
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_UNKNOWN;
+  Res.SymIdx  := -1;
+  CallArgCount := ArgCount;
+End;
+
+{ ---- EmitBuiltinCall : appel specialise pour fonctions Lua std -- }
+{ Gere print, type, tostring, tonumber, assert, error.              }
+Procedure EmitBuiltinCall(SIdx : Integer; Var Res : TExprVal);
+Var
+  FuncName : TString;
+  Arg      : TExprVal;
+  ArgCount : Integer;
+  NS       : TString;
+  LblOk    : TString;
+Begin
+  FuncName := SymTab[SIdx].Name;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    ParserAdvance
+  Else
+  Begin
+    CompileError('"(" attendue pour appel de ' + FuncName);
+    Exit;
+  End;
+
+  If FuncName = 'print' Then
+  Begin
+    { print(a, b, c) : afficher chaque argument separe par tabulation }
+    ArgCount := 0;
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+    Begin
+      ParseExpr(Arg);
+      ExprFlushToAX(Arg);
+      { Afficher un espace entre les arguments }
+      If ArgCount > 0 Then
+        EmitInstrA('CALL', LUA_RT_PFX + 'PRINTTAB');
+      { Selon le type : chaine ou nombre }
+      If Arg.TypeIdx = TY_IDX_STRING Then
+        EmitInstrA('CALL', LUA_RT_PFX + 'PRINTSTR')
+      Else If (Arg.TypeIdx = TY_IDX_NUMBER) Or
+              (Arg.TypeIdx = TY_IDX_BOOLEAN) Then
+        EmitInstrA('CALL', LUA_RT_PFX + 'PRINTNUM')
+      Else If Arg.TypeIdx = TY_IDX_NIL Then
+        EmitInstrA('CALL', LUA_RT_PFX + 'PRINTNIL')
+      Else
+        EmitInstrA('CALL', LUA_RT_PFX + 'PRINTNUM');
+      Inc(ArgCount);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance
+      Else
+        Break;
+    End;
+    { Fin de ligne }
+    EmitInstrA('CALL', LUA_RT_PFX + 'PRINTNL');
+    Res.Kind    := EK_NONE;
+    Res.TypeIdx := TY_IDX_NIL;
+    Res.SymIdx  := -1;
+  End
+  Else If FuncName = 'type' Then
+  Begin
+    ParseExpr(Arg);
+    ExprFlushToAX(Arg);
+    EmitInstrA('CALL', LUA_RT_PFX + 'TYPE');
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_STRING;
+    Res.SymIdx  := -1;
+  End
+  Else If FuncName = 'tostring' Then
+  Begin
+    ParseExpr(Arg);
+    ExprFlushToAX(Arg);
+    EmitInstrA('CALL', LUA_RT_PFX + 'NUMTOSTR');
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_STRING;
+    Res.SymIdx  := -1;
+  End
+  Else If FuncName = 'tonumber' Then
+  Begin
+    ParseExpr(Arg);
+    ExprFlushToAX(Arg);
+    EmitInstrA('CALL', LUA_RT_PFX + 'STRTONUM');
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_NUMBER;
+    Res.SymIdx  := -1;
+  End
+  Else If FuncName = 'assert' Then
+  Begin
+    ParseExpr(Arg);
+    ExprFlushToAX(Arg);
+    LblOk := LabelGen;
+    EmitInstrAB('TEST', 'AX', 'AX');
+    EmitInstrA('JNZ', LblOk);
+    EmitInstrA('CALL', LUA_RT_PFX + 'PANIC');
+    EmitLabel(LblOk);
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_UNKNOWN;
+    Res.SymIdx  := -1;
+  End
+  Else If FuncName = 'error' Then
+  Begin
+    ParseExpr(Arg);
+    ExprFlushToAX(Arg);
+    EmitInstrA('CALL', LUA_RT_PFX + 'PANIC');
+    Res.Kind    := EK_NONE;
+    Res.TypeIdx := TY_IDX_NIL;
+    Res.SymIdx  := -1;
+  End
+  Else
+  Begin
+    { Fonction standard non geree : appel generique }
+    ArgCount := 0;
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+    Begin
+      ParseExpr(Arg);
+      ExprFlushToAX(Arg);
+      EmitInstrA('PUSH', 'AX');
+      Inc(ArgCount);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance
+      Else
+        Break;
+    End;
+    EmitInstrA('CALL', LUA_FN_PFX + SymNameClean(FuncName));
+    If ArgCount > 0 Then
+    Begin
+      Str(ArgCount * 2, NS);
+      EmitInstrAB('ADD', 'SP', NS);
+    End;
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_UNKNOWN;
+    Res.SymIdx  := -1;
+  End;
+
+  { Consommer ')' }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance;
+End;
+
+{ ---- EmitExprRuntime : routines runtime pour expressions ------ }
+{ Emettre les sous-programmes en ASM 8086 : CONCAT, STRCMP,       }
+{ POW, STRLEN, PRINTSTR, PRINTNL, NUMTOSTR, PRINTNUM, etc.       }
+Procedure EmitExprRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=== Routines runtime TODO 10 (expressions) ===');
+  EmitBlankLine;
+
+  { _LUART_PRINTSTR : afficher chaine ASCIIZ pointee par AX via DOS }
+  EmitLabel(LUA_RT_PFX + 'PRINTSTR');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitLabel(LUA_RT_PFX + 'PS_LP');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', LUA_RT_PFX + 'PS_DN');
+  EmitInstrAB('MOV', 'DL', 'AL');
+  EmitInstrAB('MOV', 'AH', '02h');
+  EmitInstr('INT    21h');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', LUA_RT_PFX + 'PS_LP');
+  EmitLabel(LUA_RT_PFX + 'PS_DN');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _LUART_PRINTNIL : afficher "nil" }
+  EmitLabel(LUA_RT_PFX + 'PRINTNIL');
+  EmitInstrAB('MOV', 'AX', 'OFFSET ' + LUA_NIL_LBL);
+  EmitInstrA('JMP', LUA_RT_PFX + 'PRINTSTR');
+  EmitBlankLine;
+
+  { _LUART_PRINTTAB : afficher tabulation (Lua print separe par tab) }
+  EmitLabel(LUA_RT_PFX + 'PRINTTAB');
+  EmitInstrA('PUSH', 'AX');
+  EmitInstrAB('MOV', 'DL', '9');       { 9 = ASCII tab }
+  EmitInstrAB('MOV', 'AH', '02h');     { DOS: print char }
+  EmitInstr('INT    21h');
+  EmitInstrA('POP', 'AX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _LUART_PRINTNL : afficher retour a la ligne CR LF }
+  EmitLabel(LUA_RT_PFX + 'PRINTNL');
+  EmitInstrA('PUSH', 'AX');
+  EmitInstrAB('MOV', 'DL', '13');      { 13 = ASCII CR }
+  EmitInstrAB('MOV', 'AH', '02h');
+  EmitInstr('INT    21h');
+  EmitInstrAB('MOV', 'DL', '10');      { 10 = ASCII LF }
+  EmitInstrAB('MOV', 'AH', '02h');
+  EmitInstr('INT    21h');
+  EmitInstrA('POP', 'AX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _LUART_PRINTNUM : afficher nombre entier signe 16 bits en AX }
+  EmitLabel(LUA_RT_PFX + 'PRINTNUM');
+  EmitInstrA('PUSH', 'AX');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrAB('MOV', 'CX', '0');
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JNS', LUA_RT_PFX + 'PN_POS');
+  { Negatif : afficher '-' puis negater }
+  EmitInstrA('PUSH', 'AX');
+  EmitInstrAB('MOV', 'DL', '45');      { 45 = ASCII '-' }
+  EmitInstrAB('MOV', 'AH', '02h');
+  EmitInstr('INT    21h');
+  EmitInstrA('POP', 'AX');
+  EmitInstrA('NEG', 'AX');
+  EmitLabel(LUA_RT_PFX + 'PN_POS');
+  EmitInstrAB('MOV', 'BX', '10');      { diviseur base 10 }
+  EmitLabel(LUA_RT_PFX + 'PN_DIV');
+  EmitInstrAB('XOR', 'DX', 'DX');
+  EmitInstrA('DIV', 'BX');
+  EmitInstrAB('ADD', 'DL', '48');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrA('INC', 'CX');
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JNZ', LUA_RT_PFX + 'PN_DIV');
+  EmitLabel(LUA_RT_PFX + 'PN_OUT');
+  EmitInstrA('POP', 'DX');
+  EmitInstrAB('MOV', 'AH', '02h');
+  EmitInstr('INT    21h');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JNZ', LUA_RT_PFX + 'PN_OUT');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstrA('POP', 'AX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _LUART_NUMTOSTR : AX = nombre -> AX = ptr vers _LUA_TMPBUF }
+  EmitLabel(LUA_RT_PFX + 'NUMTOSTR');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _LUA_TMPBUF');
+  EmitInstrAB('ADD', 'DI', '11');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrA('DEC', 'DI');
+  EmitInstrAB('MOV', 'CX', 'AX');
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JNS', LUA_RT_PFX + 'NS_POS');
+  EmitInstrA('NEG', 'AX');
+  EmitLabel(LUA_RT_PFX + 'NS_POS');
+  EmitInstrAB('MOV', 'BX', '10');
+  EmitLabel(LUA_RT_PFX + 'NS_DIV');
+  EmitInstrAB('XOR', 'DX', 'DX');
+  EmitInstrA('DIV', 'BX');
+  EmitInstrAB('ADD', 'DL', '48');
+  EmitInstrAB('MOV', '[DI]', 'DL');
+  EmitInstrA('DEC', 'DI');
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JNZ', LUA_RT_PFX + 'NS_DIV');
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JNS', LUA_RT_PFX + 'NS_END');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '45');
+  EmitInstrA('DEC', 'DI');
+  EmitLabel(LUA_RT_PFX + 'NS_END');
+  EmitInstrA('INC', 'DI');
+  EmitInstrAB('MOV', 'AX', 'DI');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _LUART_STRLEN : SI = ptr chaine ASCIIZ -> AX = longueur }
+  EmitLabel(LUA_RT_PFX + 'STRLEN');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitLabel(LUA_RT_PFX + 'SL_LP');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstrA('JE', LUA_RT_PFX + 'SL_DN');
+  EmitInstrA('INC', 'AX');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', LUA_RT_PFX + 'SL_LP');
+  EmitLabel(LUA_RT_PFX + 'SL_DN');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _LUART_CONCAT : SI = ptr str gauche, DI = ptr str droite }
+  { Resultat dans AX = ptr vers _LUA_STRBUF                   }
+  EmitLabel(LUA_RT_PFX + 'CONCAT');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrAB('MOV', 'BX', 'OFFSET _LUA_STRBUF');
+  { Copier gauche }
+  EmitLabel(LUA_RT_PFX + 'CC_L');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', LUA_RT_PFX + 'CC_R');
+  EmitInstrAB('MOV', '[BX]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'BX');
+  EmitInstrA('JMP', LUA_RT_PFX + 'CC_L');
+  { Copier droite }
+  EmitLabel(LUA_RT_PFX + 'CC_R');
+  EmitInstrAB('MOV', 'AL', '[DI]');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', LUA_RT_PFX + 'CC_DN');
+  EmitInstrAB('MOV', '[BX]', 'AL');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('INC', 'BX');
+  EmitInstrA('JMP', LUA_RT_PFX + 'CC_R');
+  EmitLabel(LUA_RT_PFX + 'CC_DN');
+  EmitInstrAB('MOV', 'BYTE PTR [BX]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _LUA_STRBUF');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _LUART_POW : AX = base, BX = exposant -> AX = base^exp }
+  EmitLabel(LUA_RT_PFX + 'POW');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrAB('MOV', 'CX', 'BX');
+  EmitInstrAB('MOV', 'DX', 'AX');
+  EmitInstrAB('MOV', 'AX', '1');
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JZ', LUA_RT_PFX + 'PW_DN');
+  EmitLabel(LUA_RT_PFX + 'PW_LP');
+  EmitInstrA('IMUL', 'DX');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JNZ', LUA_RT_PFX + 'PW_LP');
+  EmitLabel(LUA_RT_PFX + 'PW_DN');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _LUART_STRCMP : SI = str1, DI = str2 -> flags (ZF si egales) }
+  EmitLabel(LUA_RT_PFX + 'STRCMP');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitLabel(LUA_RT_PFX + 'SC_LP');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('CMP', 'AL', '[DI]');
+  EmitInstrA('JNE', LUA_RT_PFX + 'SC_DN');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', LUA_RT_PFX + 'SC_DN');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', LUA_RT_PFX + 'SC_LP');
+  EmitLabel(LUA_RT_PFX + 'SC_DN');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _LUART_STRTONUM : AX = ptr chaine -> AX = nombre (atoi) }
+  EmitLabel(LUA_RT_PFX + 'STRTONUM');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '45');
+  EmitInstrA('JNE', LUA_RT_PFX + 'SN_LP');
+  EmitInstrAB('MOV', 'CX', '1');
+  EmitInstrA('INC', 'SI');
+  EmitLabel(LUA_RT_PFX + 'SN_LP');
+  EmitInstrAB('MOV', 'BL', '[SI]');
+  EmitInstrAB('TEST', 'BL', 'BL');
+  EmitInstrA('JZ', LUA_RT_PFX + 'SN_DN');
+  EmitInstrAB('SUB', 'BL', '48');
+  EmitInstrAB('CMP', 'BL', '9');
+  EmitInstrA('JA', LUA_RT_PFX + 'SN_DN');
+  EmitInstrAB('MOV', 'DX', '10');
+  EmitInstrA('IMUL', 'DX');
+  EmitInstrAB('XOR', 'BH', 'BH');
+  EmitInstrAB('ADD', 'AX', 'BX');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', LUA_RT_PFX + 'SN_LP');
+  EmitLabel(LUA_RT_PFX + 'SN_DN');
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JZ', LUA_RT_PFX + 'SN_END');
+  EmitInstrA('NEG', 'AX');
+  EmitLabel(LUA_RT_PFX + 'SN_END');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _LUART_PANIC : afficher erreur et terminer DOS }
+  EmitLabel(LUA_RT_PFX + 'PANIC');
+  EmitInstrA('PUSH', 'AX');
+  EmitInstrAB('MOV', 'AX', 'OFFSET ' + LUA_ERR_PFX + 'MSG');
+  EmitInstrA('CALL', LUA_RT_PFX + 'PRINTSTR');
+  EmitInstrA('POP', 'AX');
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JZ', LUA_RT_PFX + 'PK_NL');
+  EmitInstrA('CALL', LUA_RT_PFX + 'PRINTSTR');
+  EmitLabel(LUA_RT_PFX + 'PK_NL');
+  EmitInstrA('CALL', LUA_RT_PFX + 'PRINTNL');
+  EmitInstrAB('MOV', 'AX', '4C01h');
+  EmitInstr('INT    21h');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _LUART_TGET : BX = ptr_table, DI = ptr_cle -> AX = valeur }
+  { Stub : retourne 0 (sera implemente completement dans TODO 15) }
+  EmitLabel(LUA_RT_PFX + 'TGET');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _LUART_TYPE : AX = valeur -> AX = ptr chaine du type }
+  { Stub simplifie : retourne 'number' ou 'nil' }
+  EmitLabel(LUA_RT_PFX + 'TYPE');
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JZ', LUA_RT_PFX + 'TY_NIL');
+  EmitInstrAB('MOV', 'AX', 'OFFSET ' + LUA_RT_PFX + 'TNUM');
+  EmitInstr('RET');
+  EmitLabel(LUA_RT_PFX + 'TY_NIL');
+  EmitInstrAB('MOV', 'AX', 'OFFSET ' + LUA_NIL_LBL);
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  RuntimeEmitted := True;
 End;
 
 { ---- ParserAdvance : lire le prochain token et afficher ----- }
