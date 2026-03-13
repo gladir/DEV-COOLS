@@ -1583,9 +1583,10 @@ Begin
         ParserAdvance;
         EmitComment('BREAK');
         { BREAK [expr] : si une expression suit, evaluer dans AX }
-        If (CurToken.Kind <> TK_EOF) And
-           (CurToken.Kind <> TK_KEYWORD) And
-           (CurToken.Kind <> TK_PUNCT) Then
+        If (CurToken.Kind = TK_INTEGER) Or (CurToken.Kind = TK_FLOAT) Or
+           (CurToken.Kind = TK_STRING) Or (CurToken.Kind = TK_IDENT) Or
+           ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Or
+           ((CurToken.Kind = TK_OP) And (CurToken.Val = '-')) Then
         Begin
           ParseExpr(SetExpr);
           ExprFlushToAX(SetExpr);
@@ -7382,9 +7383,10 @@ Begin
       Begin
         ParserAdvance;
         EmitComment('BREAK');
-        If (CurToken.Kind <> TK_EOF) And
-           Not ((CurToken.Kind = TK_KEYWORD) And
-                (IsBlockTerminator(CurToken.Val))) Then
+        If (CurToken.Kind = TK_INTEGER) Or (CurToken.Kind = TK_FLOAT) Or
+           (CurToken.Kind = TK_STRING) Or (CurToken.Kind = TK_IDENT) Or
+           ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Or
+           ((CurToken.Kind = TK_OP) And (CurToken.Val = '-')) Then
         Begin
           ParseExpr(RetExpr);
           ExprFlushToAX(RetExpr);
