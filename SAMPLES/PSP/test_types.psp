@@ -1,0 +1,16 @@
+<html>
+<body>
+<%
+const
+  MAX : Integer = 100;
+  CH : Char = 'A';
+  FLAG : Boolean = true;
+  NAME : String = 'PSP86';
+  HALF : Byte = 50;
+  OK = 42;
+  DELTA = MAX - OK;
+%>
+<h1>Test Type System</h1>
+<%= OK %>
+</body>
+</html>

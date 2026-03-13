@@ -1,0 +1,22 @@
+<html>
+<body>
+<%
+const
+  MAX = 100;
+
+var
+  x, y: Integer;
+  name: String;
+  flag: Boolean;
+  count: Byte;
+
+x := 42;
+y := MAX - x;
+name := 'Hello PSP86';
+flag := true;
+count := 7;
+%>
+<h1>Variable Test</h1>
+<%= x %>
+</body>
+</html>

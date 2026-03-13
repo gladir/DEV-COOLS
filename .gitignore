@@ -1,2 +1,4 @@
-REXX86
 *.o
+*.obj
+*.ppu
+
