@@ -1,0 +1,354 @@
+==============================================================================
+     ASSEMBLEUR 80386 - Jeu d'instructions et architecture
+     Intel 80386 (i386) - Documentation de reference
+==============================================================================
+
+  Document de reference sur le processeur Intel 80386 (i386), son
+  architecture, son jeu d'instructions, ses modes d'adressage et les
+  techniques de programmation en langage assembleur associees.
+
+  Date:       Mars 2026
+  Processeur: Intel 80386 (1985), 32 bits
+  Norme:      Intel Architecture Software Developer's Manual
+
+==============================================================================
+1. INTRODUCTION
+==============================================================================
+
+  1.1 Presentation generale
+  -------------------------
+
+  Le processeur Intel 80386, commercialise en octobre 1985, est le
+  premier microprocesseur x86 entierement 32 bits. Il marque une
+  evolution majeure par rapport au 80286 en introduisant :
+
+    - Un bus de donnees de 32 bits
+    - Un bus d'adresses de 32 bits (espace adressable de 4 Go)
+    - Des registres generaux etendus a 32 bits (EAX, EBX, ECX, EDX,
+      ESI, EDI, EBP, ESP)
+    - Un mode protege ameliore avec pagination
+    - Un mode virtuel 8086 (V86) pour la compatibilite DOS
+    - Une unite de gestion memoire (MMU) integree
+
+  Le 80386 est retrocompatible avec le 8086, le 80186 et le 80286.
+  Il peut executer le code 16 bits existant sans modification, tout
+  en offrant un environnement 32 bits natif bien plus puissant.
+
+  1.2 Variantes du 80386
+  ----------------------
+
+  Intel a produit plusieurs variantes du 80386 :
+
+    80386DX  : Version originale, bus externe 32 bits (1985)
+    80386SX  : Version economique, bus externe 16 bits (1988)
+    80386SL  : Version basse consommation pour portables (1990)
+    80386EX  : Version embarquee avec peripheriques integres (1994)
+
+  Toutes ces variantes partagent le meme jeu d'instructions 32 bits.
+  Les differences portent sur la largeur du bus externe et les
+  fonctionnalites d'economie d'energie.
+
+  1.3 Contexte historique
+  -----------------------
+
+  Le 80386 a ete utilise dans les premiers PC 32 bits, notamment :
+    - Les premiers systemes sous Windows 3.0 en mode 386 ameliore
+    - Les premieres versions de Linux (0.01, 1991)
+    - Les systemes OS/2 2.0 d'IBM
+    - Les jeux DOS 32 bits via DOS/4GW et DOS/32A
+    - Les compilateurs Watcom C, Borland C++ 3.x, DJGPP
+
+  L'assembleur 80386 reste pertinent car :
+    - Il constitue la base de l'architecture x86 32 bits (IA-32)
+    - Les processeurs modernes (Pentium, Core) restent compatibles
+    - Les systemes d'exploitation 32 bits l'utilisent encore
+    - Il est la cible de nombreux compilateurs du projet DEV-COOLS
+      (ABAPCW32, CLIPPER86 en mode 32 bits, etc.)
+
+  1.4 Modes de fonctionnement
+  ---------------------------
+
+  Le 80386 dispose de trois modes de fonctionnement :
+
+    Mode reel (Real Mode) :
+      - Compatibilite complete avec le 8086
+      - Espace adressable de 1 Mo (20 bits d'adresse)
+      - Pas de protection memoire
+      - Segments de 64 Ko maximum
+      - Mode par defaut au demarrage (RESET)
+
+    Mode protege (Protected Mode) :
+      - Acces a l'espace d'adressage complet de 4 Go
+      - Protection memoire entre processus
+      - 4 niveaux de privilege (anneaux 0 a 3)
+      - Pagination optionnelle (pages de 4 Ko)
+      - Segments de taille variable (jusqu'a 4 Go)
+      - Multitache materiel via le TSS (Task State Segment)
+
+    Mode virtuel 8086 (Virtual 8086 Mode) :
+      - Emulation du mode reel dans un environnement protege
+      - Permet d'executer des programmes DOS dans une machine
+        virtuelle supervisee par le noyau en mode protege
+      - Utilise pour la compatibilite DOS sous Windows 3.x et OS/2
+      - Active via le drapeau VM (bit 17) du registre EFLAGS
+
+  1.5 Organisation du document
+  ----------------------------
+
+  Ce document est organise comme suit :
+
+    Section 2 : Architecture et registres du 80386
+    Section 3 : Modes d'adressage
+    Section 4 : Jeu d'instructions (opcodes)
+    Section 5 : Codage des instructions (format binaire)
+    Section 6 : Mode protege et descripteurs
+    Section 7 : Pagination et memoire virtuelle
+    Section 8 : Interruptions et exceptions
+    Section 9 : Optimisation possible du 80386
+    Section 10 : Directives assembleur (MASM/TASM)
+    Section 11 : Exemples de code
+
+==============================================================================
+2. ARCHITECTURE ET REGISTRES
+==============================================================================
+
+  (a completer)
+
+==============================================================================
+3. MODES D'ADRESSAGE
+==============================================================================
+
+  (a completer)
+
+==============================================================================
+4. JEU D'INSTRUCTIONS (OPCODES)
+==============================================================================
+
+  (a completer)
+
+==============================================================================
+5. CODAGE DES INSTRUCTIONS (FORMAT BINAIRE)
+==============================================================================
+
+  (a completer)
+
+==============================================================================
+6. MODE PROTEGE ET DESCRIPTEURS
+==============================================================================
+
+  (a completer)
+
+==============================================================================
+7. PAGINATION ET MEMOIRE VIRTUELLE
+==============================================================================
+
+  (a completer)
+
+==============================================================================
+8. INTERRUPTIONS ET EXCEPTIONS
+==============================================================================
+
+  (a completer)
+
+==============================================================================
+9. OPTIMISATION POSSIBLE DU 80386
+==============================================================================
+
+  Cette section decrit les differents niveaux d'optimisation applicables
+  lors de la generation de code assembleur ciblant le processeur 80386.
+  Les niveaux sont classes par ordre croissant de complexite et d'impact
+  sur les performances.
+
+  9.1 Niveau 0 - Aucune optimisation (code naif)
+  ------------------------------------------------
+
+  Le code est genere de maniere directe, instruction par instruction,
+  sans aucune tentative d'amelioration. Chaque operation du langage
+  source est traduite independamment.
+
+  Caracteristiques :
+    - Chaque variable est lue depuis la memoire avant utilisation
+    - Chaque resultat est ecrit en memoire immediatement
+    - Pas de reutilisation des registres entre instructions
+    - Les expressions sont evaluees via la pile (PUSH/POP)
+    - Les branchements sont generes sans analyse de flot
+
+  Exemple (a = b + c) :
+      MOV  EAX, DWORD PTR [_b]      ; charger b
+      PUSH EAX                       ; sauvegarder sur la pile
+      MOV  EAX, DWORD PTR [_c]      ; charger c
+      POP  EBX                       ; recuperer b
+      ADD  EAX, EBX                  ; additionner
+      MOV  DWORD PTR [_a], EAX      ; stocker resultat
+
+  Avantage  : Simplicite de generation, debogage facile
+  Inconvenient : Code volumineux et lent
+
+  9.2 Niveau 1 - Optimisations de base (peephole)
+  -------------------------------------------------
+
+  Des motifs d'instructions redondants sont detectes et remplaces
+  par des sequences plus courtes apres generation. C'est une
+  optimisation locale, limitee a une fenetre de quelques instructions.
+
+  Techniques appliquees :
+    - Suppression des PUSH/POP consecutifs sur le meme registre
+        PUSH EAX / POP EAX  ->  (supprime)
+    - Remplacement de MOV reg, 0 par XOR reg, reg
+        MOV EAX, 0  ->  XOR EAX, EAX
+    - Suppression des MOV reg, reg identiques
+        MOV EAX, EAX  ->  (supprime)
+    - Remplacement de multiplications par des puissances de 2
+        IMUL EAX, 4  ->  SHL EAX, 2
+    - Simplification des branchements sur le prochain label
+        JMP label_suivant / label_suivant:  ->  label_suivant:
+    - Remplacement de IMUL EAX, 1 par rien
+    - Remplacement de ADD EAX, 0 par rien
+    - Utilisation de LEA pour des calculs d'adresses combines
+        MOV EAX, [_b] / ADD EAX, [_c]  ->  LEA EAX, [EBX+ECX]
+
+  Exemple ameliore (a = b + c) :
+      MOV  EAX, DWORD PTR [_b]
+      ADD  EAX, DWORD PTR [_c]
+      MOV  DWORD PTR [_a], EAX
+
+  Avantage  : Gains significatifs pour un cout d'implementation faible
+  Inconvenient : Optimisation locale uniquement
+
+  9.3 Niveau 2 - Allocation de registres
+  ----------------------------------------
+
+  Les variables les plus utilisees sont conservees dans des registres
+  du processeur au lieu d'etre rechargees depuis la memoire a chaque
+  acces. Cela reduit considerablement les acces memoire.
+
+  Techniques appliquees :
+    - Analyse de la duree de vie des variables (liveness analysis)
+    - Attribution de registres aux variables locales actives
+    - Registres disponibles pour l'allocation : EAX, EBX, ECX, EDX,
+      ESI, EDI (EBP et ESP reserves pour la pile)
+    - Spilling : si plus de variables actives que de registres, les
+      moins utilisees sont releguees en memoire (pile)
+    - Propagation des constantes dans les registres
+    - Elimination des rechargements inutiles (un registre contenant
+      deja la bonne valeur n'est pas recharge)
+
+  Exemple avec allocation (boucle i = 0 a 99, somme += i) :
+      XOR  ECX, ECX                  ; i = 0, dans ECX
+      XOR  EAX, EAX                  ; somme = 0, dans EAX
+    _boucle:
+      ADD  EAX, ECX                  ; somme += i
+      INC  ECX                       ; i++
+      CMP  ECX, 100                  ; i < 100 ?
+      JL   _boucle
+      MOV  DWORD PTR [_somme], EAX   ; stocker resultat final
+
+  Avantage  : Reduction massive des acces memoire
+  Inconvenient : Complexite d'implementation (analyse de graphe)
+
+  9.4 Niveau 3 - Optimisations de boucles
+  -----------------------------------------
+
+  Les boucles sont les zones les plus critiques pour les performances.
+  Ce niveau applique des transformations specifiques aux boucles.
+
+  Techniques appliquees :
+    - Deplacement du code invariant hors de la boucle
+      (loop-invariant code motion) : les calculs dont le resultat
+      ne change pas a chaque iteration sont places avant la boucle
+    - Reduction de force (strength reduction) : remplacement des
+      multiplications par des additions incrementales
+        i * 4  ->  compteur incremente de 4 a chaque iteration
+    - Deroulement de boucles (loop unrolling) : le corps de la
+      boucle est duplique pour reduire le cout des branchements
+    - Inversion de boucle (loop inversion) : transformation d'une
+      boucle WHILE en DO-WHILE precedee d'un test, pour eliminer
+      un branchement par iteration
+    - Utilisation de LOOP/REP pour les boucles simples
+    - Fusion de boucles adjacentes ayant les memes bornes
+
+  Exemple de deroulement (boucle de copie, 4 elements par iteration) :
+      MOV  ECX, _count
+      SHR  ECX, 2                    ; count / 4
+    _boucle:
+      MOV  EAX, [ESI]
+      MOV  [EDI], EAX
+      MOV  EAX, [ESI+4]
+      MOV  [EDI+4], EAX
+      MOV  EAX, [ESI+8]
+      MOV  [EDI+8], EAX
+      MOV  EAX, [ESI+12]
+      MOV  [EDI+12], EAX
+      ADD  ESI, 16
+      ADD  EDI, 16
+      DEC  ECX
+      JNZ  _boucle
+
+  Avantage  : Amelioration majeure des boucles intensives
+  Inconvenient : Augmentation de la taille du code
+
+  9.5 Niveau 4 - Optimisations globales et specifiques au 80386
+  ---------------------------------------------------------------
+
+  Ce niveau regroupe les optimisations avancees qui tirent parti
+  des specificites du pipeline et du cache du 80386, ainsi que des
+  analyses inter-procedurales.
+
+  Techniques appliquees :
+
+    Ordonnancement des instructions (instruction scheduling) :
+      - Eviter les blocages de pipeline en intercalant des
+        instructions independantes entre une lecture memoire et
+        son utilisation
+      - Le 80386 a un pipeline a 6 etapes (Bus Interface, Code
+        Prefetch, Instruction Decode, Execution, Segment, Page)
+      - Eviter les dependances de donnees consecutives
+
+    Alignement des donnees et du code :
+      - Aligner les donnees 32 bits sur des adresses multiples de 4
+        (ALIGN 4) pour eviter les penalites d'acces non alignes
+      - Aligner les cibles de branchement sur des adresses paires
+        ou multiples de 4 pour optimiser le prefetch
+      - Aligner le debut des procedures sur des limites de 16 octets
+
+    Utilisation optimale de LEA :
+      - LEA permet de calculer des expressions complexes en une
+        instruction sans affecter les drapeaux
+      - LEA EAX, [EBX+ECX*4+8] combine addition et multiplication
+
+    Optimisations specifiques au 80386 :
+      - Preferer MOVZX/MOVSX aux sequences XOR+MOV pour les
+        extensions de taille (8 vers 32 bits, 16 vers 32 bits)
+      - Utiliser les modes d'adressage bases+index*echelle
+        (SIB byte) pour les acces aux tableaux
+      - Utiliser CDQ au lieu de XOR EDX,EDX / OR EAX,EAX / ...
+        avant IDIV pour l'extension de signe
+      - Preferer TEST reg, reg a CMP reg, 0 pour tester si nul
+      - Preferer INC/DEC a ADD/SUB 1 (plus compact, 1 octet)
+      - Eviter les prefixes de taille d'operande (melange 16/32
+        bits) qui causent des penalites de decodage
+
+    Optimisations inter-procedurales :
+      - Inlining de petites fonctions (expansion en ligne)
+      - Propagation des constantes a travers les appels
+      - Elimination du code mort (dead code elimination)
+      - Optimisation des appels terminaux (tail call optimization)
+
+  Avantage  : Performance maximale pour le 80386
+  Inconvenient : Complexite elevee, temps de compilation accru
+
+==============================================================================
+10. DIRECTIVES ASSEMBLEUR (MASM/TASM)
+==============================================================================
+
+  (a completer)
+
+==============================================================================
+11. EXEMPLES DE CODE
+==============================================================================
+
+  (a completer)
+
+==============================================================================
+  FIN DU DOCUMENT - ASSEMBLEUR 80386
+==============================================================================
