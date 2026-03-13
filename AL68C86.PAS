@@ -254,7 +254,7 @@
               INT x = IF cond THEN 1 ELSE 2 FI
               Le mode des deux branches doit etre compatible
 
-  TODO 15 - CLAUSES REPETITIVES (BOUCLES)
+  TODO 15 - CLAUSES REPETITIVES (BOUCLES) [IMPLEMENTE]
             ParseLoopClause :
               FOR id FROM debut TO fin BY pas WHILE cond DO unites OD
               Tous les mots-cles sauf DO/OD sont optionnels
@@ -696,6 +696,7 @@ Var
   LabelGenSeq  : Integer;    { compteur unique pour LabelGen        }
   IfCount      : Integer;    { compteur pour labels IF abreges      }
   CaseCount    : Integer;    { compteur pour labels CASE abreges    }
+  LoopCount    : Integer;    { compteur pour labels LOOP             }
 
   { Segment de donnees (TODO 09) }
   DataTab   : Array[0..MAX_DATA - 1] Of TDataRec;
@@ -841,7 +842,7 @@ Procedure ParseIfClause(Var Res : TExprVal); Forward;
 Procedure ParseCaseClause(Var Res : TExprVal); Forward;
 
 { TODO 15 - Boucles }
-Procedure ParseLoopClause; Forward;
+Procedure ParseLoopClause(Var Res : TExprVal); Forward;
 
 { TODO 16 - Structures }
 Procedure ParseStructDecl; Forward;
@@ -1153,6 +1154,7 @@ Begin
   LabelGenSeq    := 0;
   IfCount        := 0;
   CaseCount      := 0;
+  LoopCount      := 0;
   GExprDummy.Kind    := EK_NONE;
   GExprDummy.ImmVal  := 0;
   GExprDummy.ModeIdx := -1;
@@ -1207,6 +1209,7 @@ Begin
     (S = 'OUT')     Or (S = 'ESAC')    Or (S = 'FOR')      Or
     (S = 'FROM')    Or (S = 'TO')      Or (S = 'BY')       Or
     (S = 'WHILE')   Or (S = 'DO')      Or (S = 'OD')       Or
+    (S = 'DOWNTO')  Or
     (S = 'GOTO')    Or (S = 'GO')      Or (S = 'OUSE')     Or
     { Declarations }
     (S = 'PROC')    Or (S = 'OP')      Or (S = 'PRIO')     Or
@@ -2776,6 +2779,12 @@ Begin
       Else If CurToken.Val = 'CASE' Then
       Begin
         ParseCaseClause(Res);
+      End
+      { TODO 15 - Boucles : FOR / WHILE / DO }
+      Else If (CurToken.Val = 'FOR') Or (CurToken.Val = 'WHILE') Or
+              (CurToken.Val = 'DO') Then
+      Begin
+        ParseLoopClause(Res);
       End
       { GOTO label ou GO TO label -> JMP _A68L_name }
       Else If CurToken.Val = 'GOTO' Then
@@ -5286,9 +5295,213 @@ Begin
   End;
 End;
 
-Procedure ParseLoopClause;
+{ ============================================================
+  TODO 15 - CLAUSES REPETITIVES (BOUCLES)
+  ============================================================
+  FOR id FROM debut TO fin BY pas WHILE cond DO unites OD
+  Tous les mots-cles sauf DO/OD sont optionnels.
+  FOR id : variable de boucle locale, mode INT, non modifiable.
+  FROM debut : valeur initiale (defaut 1).
+  TO fin : borne superieure (si absent, boucle infinie).
+  DOWNTO n : equivalent a BY -1 TO n.
+  BY pas : increment (defaut 1, negatif autorise).
+  WHILE cond : condition testee a chaque iteration avant DO.
+  DO unites OD : corps de la boucle.
+  Boucle infinie : DO ... OD (sans FOR/TO/WHILE).
+  Labels : _A68L_LTEST_N, _A68L_LINCR_N, _A68L_LEND_N       }
+
+Procedure ParseLoopClause(Var Res : TExprVal);
+Var
+  HasFor, HasTo, HasWhile, IsDown : Boolean;
+  LoopVarName : TString;
+  LoopVarOfs, LimOfs : Integer;
+  LoopVarSym  : Integer;
+  InitRes, LimRes, StepRes, CondRes, BodyRes : TExprVal;
+  LblTest, LblIncr, LblEnd : TString;
+  MyLoop      : Integer;
+  S, S2       : TString;
+  StepVal     : LongInt;
+  OldFrameSize: Integer;
+  AllocCount  : Integer;
 Begin
-  { TODO 15 }
+  Inc(LoopCount);
+  MyLoop := LoopCount;
+
+  LblTest := A68_LBL_PFX + 'LTEST_' + IntToStr(MyLoop);
+  LblIncr := A68_LBL_PFX + 'LINCR_' + IntToStr(MyLoop);
+  LblEnd  := A68_LBL_PFX + 'LEND_'  + IntToStr(MyLoop);
+
+  { Empiler le contexte de boucle pour les boucles imbriquees }
+  If LoopTop < MAX_LOOP_NEST Then
+  Begin
+    LoopBreakLbl[LoopTop] := LblEnd;
+    LoopContLbl[LoopTop]  := LblIncr;
+    Inc(LoopTop);
+  End;
+
+  HasFor   := False;
+  HasTo    := False;
+  HasWhile := False;
+  IsDown   := False;
+  LoopVarName := '';
+  LoopVarSym  := -1;
+  LoopVarOfs  := 0;
+  LimOfs      := 0;
+  StepVal     := 1;
+  AllocCount  := 0;
+  OldFrameSize := CurFrameSize;
+
+  SymEnterScope;
+
+  { ---- FOR identificateur ---- }
+  If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'FOR') Then
+  Begin
+    HasFor := True;
+    ParserAdvance; { consomme FOR }
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      LoopVarName := CurToken.Val;
+      ParserAdvance; { consomme l identificateur }
+    End
+    Else
+      CompileError('identificateur attendu apres FOR');
+  End;
+
+  { ---- FROM init (defaut 1) ---- }
+  If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'FROM') Then
+  Begin
+    ParserAdvance; { consomme FROM }
+    ParseExpr(InitRes);
+  End
+  Else
+    ExprMakeImm(1, TY_IDX_INT, InitRes);
+
+  { ---- Allouer et stocker la variable de boucle ---- }
+  If HasFor Then
+  Begin
+    ExprFlushToAX(InitRes);
+    LoopVarOfs := SymNextOffset;
+    LoopVarSym := SymAdd(LoopVarName, SC_IDENT, TY_IDX_INT, LoopVarOfs);
+    SymTab[LoopVarSym].IsConst := True;
+    EmitInstr('SUB    SP, 2');
+    Str(LoopVarOfs, S);
+    EmitInstr('MOV    WORD PTR [BP' + S + '], AX');
+    Inc(CurFrameSize, 2);
+    Inc(AllocCount);
+  End;
+
+  { ---- TO limite ou DOWNTO limite ---- }
+  If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'TO') Then
+  Begin
+    HasTo := True;
+    ParserAdvance; { consomme TO }
+    ParseExpr(LimRes);
+    ExprFlushToAX(LimRes);
+    LimOfs := SymNextOffset;
+    SymAdd('_lim' + IntToStr(MyLoop), SC_VAR, TY_IDX_INT, LimOfs);
+    EmitInstr('SUB    SP, 2');
+    Str(LimOfs, S);
+    EmitInstr('MOV    WORD PTR [BP' + S + '], AX');
+    Inc(CurFrameSize, 2);
+    Inc(AllocCount);
+  End
+  Else If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'DOWNTO') Then
+  Begin
+    HasTo  := True;
+    IsDown := True;
+    StepVal := -1;
+    ParserAdvance; { consomme DOWNTO }
+    ParseExpr(LimRes);
+    ExprFlushToAX(LimRes);
+    LimOfs := SymNextOffset;
+    SymAdd('_lim' + IntToStr(MyLoop), SC_VAR, TY_IDX_INT, LimOfs);
+    EmitInstr('SUB    SP, 2');
+    Str(LimOfs, S);
+    EmitInstr('MOV    WORD PTR [BP' + S + '], AX');
+    Inc(CurFrameSize, 2);
+    Inc(AllocCount);
+  End;
+
+  { ---- BY pas (defaut 1, ou -1 si DOWNTO) ---- }
+  If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'BY') Then
+  Begin
+    ParserAdvance; { consomme BY }
+    ParseExpr(StepRes);
+    If StepRes.Kind = EK_IMM Then
+      StepVal := StepRes.ImmVal;
+  End;
+
+  { ---- Emettre le label de test ---- }
+  EmitLabel(LblTest);
+
+  { ---- Comparaison TO ---- }
+  If HasTo And HasFor Then
+  Begin
+    Str(LoopVarOfs, S);
+    EmitInstr('MOV    AX, WORD PTR [BP' + S + ']');
+    Str(LimOfs, S2);
+    EmitInstr('CMP    AX, WORD PTR [BP' + S2 + ']');
+    If IsDown Or (StepVal < 0) Then
+      EmitInstr('JL     ' + LblEnd)
+    Else
+      EmitInstr('JG     ' + LblEnd);
+  End;
+
+  { ---- WHILE condition ---- }
+  If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'WHILE') Then
+  Begin
+    HasWhile := True;
+    ParserAdvance; { consomme WHILE }
+    ParseExpr(CondRes);
+    ExprFlushToAX(CondRes);
+    EmitInstr('TEST   AX, AX');
+    EmitInstr('JZ     ' + LblEnd);
+  End;
+
+  { ---- DO ... OD ---- }
+  If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'DO') Then
+    ParserAdvance { consomme DO }
+  Else
+    CompileError('DO attendu');
+
+  { Corps de la boucle }
+  ParseSerialClause(BodyRes);
+
+  If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'OD') Then
+    ParserAdvance { consomme OD }
+  Else
+    CompileError('OD attendu');
+
+  { ---- Increment ---- }
+  EmitLabel(LblIncr);
+  If HasFor Then
+  Begin
+    Str(LoopVarOfs, S);
+    EmitInstr('MOV    AX, WORD PTR [BP' + S + ']');
+    Str(StepVal, S2);
+    EmitInstr('ADD    AX, ' + S2);
+    EmitInstr('MOV    WORD PTR [BP' + S + '], AX');
+  End;
+  EmitInstr('JMP    ' + LblTest);
+
+  { ---- Fin de boucle ---- }
+  EmitLabel(LblEnd);
+
+  { Desallouer les variables locales de la boucle }
+  If AllocCount > 0 Then
+  Begin
+    Str(AllocCount * 2, S);
+    EmitInstr('ADD    SP, ' + S);
+  End;
+
+  { Depiler le contexte de boucle }
+  If LoopTop > 0 Then
+    Dec(LoopTop);
+
+  CurFrameSize := OldFrameSize;
+  SymLeaveScope;
+
+  ExprMakeVoid(Res);
 End;
 
 Procedure ParseStructDecl;
