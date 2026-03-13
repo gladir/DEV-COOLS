@@ -501,7 +501,7 @@
               _KTRT_ALLOC(CX=nb_bytes) -> AX=ptr dans le heap statique
             _KTRT_STRBUF[0..511] : buffer de travail pour concatenation
 
-  TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES
+  TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES [IMPLEMENTE]
             EmitClose : END _KTF_main dans _TEXT ENDS / DATA ENDS
             Run : pipeline complet LexInit -> ParseTopLevel ->
               EmitRuntime -> _TEXT ENDS / EmitDataSeg / END _KTF_main
@@ -8715,13 +8715,20 @@ Begin
   LexClose;
   EmitClose;
 
+  { TODO 25 - Rapport de compilation }
   If Opts.Verbose Then
   Begin
     WriteLn('Compilation terminee : ', Opts.SrcFile, ' -> ', Opts.OutFile);
-    WriteLn('  Lignes         : ', TotalLines);
-    WriteLn('  Symboles       : ', TotalSyms);
-    WriteLn('  Erreurs        : ', ErrorCount);
-    WriteLn('  Avertissements : ', WarnCount);
+    WriteLn('  Lignes            : ', TotalLines);
+    WriteLn('  Symboles          : ', TotalSyms);
+    WriteLn('  Donnees (strings) : ', DataCount);
+    WriteLn('  Classes           : ', ClassCount);
+    WriteLn('  Interfaces        : ', InterfaceCount);
+    WriteLn('  Enums             : ', EnumCount);
+    WriteLn('  Extensions        : ', ExtFunCount);
+    WriteLn('  Try/Catch         : ', TryCatchCount);
+    WriteLn('  Erreurs           : ', ErrorCount);
+    WriteLn('  Avertissements    : ', WarnCount);
   End;
 
   If ErrorCount > 0 Then
