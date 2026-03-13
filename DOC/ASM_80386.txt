@@ -441,7 +441,395 @@
 3. MODES D'ADRESSAGE
 ==============================================================================
 
-  (a completer)
+  3.1 Vue d'ensemble
+  ------------------
+
+  Le 80386 dispose d'un jeu de modes d'adressage riche et regulier.
+  Chaque operande d'une instruction peut etre :
+
+    - Une valeur immediate (constante codee dans l'instruction)
+    - Un registre (general, segment ou de controle)
+    - Un emplacement memoire designe par une adresse effective
+
+  L'adresse effective (Effective Address, EA) est calculee a partir
+  d'une combinaison de :
+
+    Base          : Un registre general 32 bits (EAX..ESP, EBP..EDI)
+    Index         : Un registre general 32 bits sauf ESP
+    Echelle       : Un facteur multiplicatif (1, 2, 4 ou 8)
+    Deplacement   : Une constante signee de 0, 8 ou 32 bits
+
+  La formule generale de l'adresse effective est :
+
+    EA = Base + (Index * Echelle) + Deplacement
+
+  Chaque composant est optionnel. Les differentes combinaisons
+  donnent les modes d'adressage decrits ci-dessous.
+
+  En mode reel, le calcul d'adresse physique ajoute la base du
+  segment (segment << 4). En mode protege, la base du segment est
+  obtenue via le descripteur reference par le selecteur de segment.
+
+  3.2 Adressage immediat
+  ----------------------
+
+  L'operande est une constante codee directement dans l'instruction.
+  Il ne peut etre utilise que comme operande source (jamais comme
+  destination).
+
+  Syntaxe :
+    MOV  reg, imm          ; charger une constante dans un registre
+    ADD  reg, imm          ; additionner une constante
+    CMP  reg, imm          ; comparer avec une constante
+    PUSH imm               ; empiler une constante (nouveau 80386)
+
+  Tailles possibles :
+    imm8   : Constante de 8 bits (-128 a +127 ou 0 a 255)
+    imm16  : Constante de 16 bits (-32768 a +32767 ou 0 a 65535)
+    imm32  : Constante de 32 bits (nouveau 80386)
+
+  Exemples :
+    MOV  EAX, 42                   ; EAX = 42 (imm32)
+    MOV  AL, 0FFh                  ; AL = 255 (imm8)
+    ADD  ECX, 1000                 ; ECX += 1000
+    PUSH 12345678h                 ; empiler une constante 32 bits
+    CMP  BYTE PTR [ESI], 0        ; comparer un octet avec zero
+    AND  EAX, 0FF00FF00h          ; masquage de bits
+
+  Remarques :
+    - Les constantes 8 bits sont souvent etendues avec signe a
+      32 bits, ce qui donne des instructions plus compactes
+    - PUSH imm est une nouveaute du 80186, etendue a 32 bits
+      sur le 80386
+    - Les formes avec AL/AX/EAX ont un codage special plus court
+
+  3.3 Adressage par registre
+  --------------------------
+
+  L'operande est un registre du processeur. C'est le mode le plus
+  rapide car aucun acces memoire n'est necessaire.
+
+  Syntaxe :
+    MOV  reg1, reg2        ; copier un registre dans un autre
+    ADD  reg1, reg2        ; additionner deux registres
+    XCHG reg1, reg2        ; echanger deux registres
+
+  Registres utilisables :
+    32 bits : EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP
+    16 bits : AX, BX, CX, DX, SI, DI, BP, SP
+     8 bits : AL, AH, BL, BH, CL, CH, DL, DH
+    Segment : CS, DS, ES, FS, GS, SS
+
+  Exemples :
+    MOV  EAX, EBX                  ; EAX = EBX
+    ADD  ECX, EDX                  ; ECX += EDX
+    XOR  EAX, EAX                 ; EAX = 0 (idiome classique)
+    MOV  DS, AX                   ; charger un selecteur de segment
+    MOVZX EAX, CL                 ; etendre CL (8 bits) vers EAX
+    PUSH EBP                      ; sauvegarder le pointeur de base
+
+  Remarques :
+    - Les operations registre-registre s'executent en 1 cycle
+      (pas d'acces memoire)
+    - Les melanges de taille (ex: MOV EAX, BX) ne sont pas
+      autorises directement; utiliser MOVZX ou MOVSX
+    - ESP ne peut pas etre utilise comme registre d'index
+
+  3.4 Adressage direct (deplacement seul)
+  ----------------------------------------
+
+  L'adresse effective est une constante de 32 bits codee dans
+  l'instruction. Elle designe directement un emplacement memoire.
+
+  Formule : EA = Deplacement32
+
+  Syntaxe :
+    MOV  reg, [depl32]     ; charger depuis une adresse fixe
+    MOV  [depl32], reg     ; stocker a une adresse fixe
+
+  Exemples :
+    MOV  EAX, [00401000h]          ; lire le DWORD a l'adresse 401000h
+    MOV  EAX, DWORD PTR [_var]     ; lire la variable globale _var
+    MOV  BYTE PTR [_flag], 1       ; mettre _flag a 1
+    INC  DWORD PTR [_compteur]     ; incrementer un compteur global
+    FLD  QWORD PTR [_pi]           ; charger un flottant 64 bits
+
+  Utilisation typique :
+    - Acces aux variables globales
+    - Acces aux constantes en memoire
+    - Acces aux tables de donnees a adresse fixe
+
+  Remarques :
+    - Sur le 80386, le deplacement est toujours 32 bits en mode
+      protege (contrairement au 16 bits du 8086)
+    - L'assembleur traduit automatiquement les noms de variables
+      en adresses (deplacements)
+
+  3.5 Adressage indirect par registre
+  ------------------------------------
+
+  L'adresse effective est contenue dans un registre. Le registre
+  sert de pointeur vers l'emplacement memoire.
+
+  Formule : EA = [Registre]
+
+  Syntaxe :
+    MOV  reg, [base_reg]   ; charger depuis l'adresse dans base_reg
+    MOV  [base_reg], reg   ; stocker a l'adresse dans base_reg
+
+  Registres de base utilisables :
+    EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP
+    (tous les registres generaux 32 bits)
+
+  Segment implicite :
+    [EBP] et [ESP] utilisent SS par defaut
+    Tous les autres utilisent DS par defaut
+    Peut etre surcharge par un prefixe de segment (ex: ES:[EAX])
+
+  Exemples :
+    MOV  EAX, [EBX]                ; lire le DWORD pointe par EBX
+    MOV  [ESI], ECX                ; stocker ECX a l'adresse dans ESI
+    MOV  AL, [EDI]                 ; lire un octet pointe par EDI
+    CALL [EAX]                     ; appel indirect via un pointeur
+    JMP  [EBX]                     ; saut indirect via un pointeur
+
+  Utilisation typique :
+    - Dereferencement de pointeurs
+    - Parcours de listes chainees
+    - Appels de fonctions via des tables de pointeurs (vtable)
+
+  Remarques :
+    - Sur le 8086, seuls BX, SI, DI et BP pouvaient etre utilises
+      comme registres de base. Le 80386 autorise tous les registres
+      generaux, ce qui simplifie grandement la programmation
+    - [ESP] utilise un octet SIB supplementaire dans l'encodage
+
+  3.6 Adressage base + deplacement
+  ---------------------------------
+
+  L'adresse effective est la somme d'un registre de base et d'un
+  deplacement (constante). C'est le mode le plus utilise pour
+  acceder aux variables locales et aux parametres de fonctions.
+
+  Formule : EA = Base + Deplacement
+
+  Syntaxe :
+    MOV  reg, [base_reg + depl]
+    MOV  [base_reg + depl], reg
+
+  Tailles de deplacement :
+    disp8  : Deplacement signe de 8 bits (-128 a +127)
+    disp32 : Deplacement signe de 32 bits
+
+  L'assembleur choisit automatiquement la taille la plus compacte.
+
+  Exemples :
+    MOV  EAX, [EBP+8]             ; 1er parametre (convention cdecl)
+    MOV  EAX, [EBP+12]            ; 2e parametre
+    MOV  EAX, [EBP-4]             ; 1ere variable locale
+    MOV  EAX, [EBP-8]             ; 2e variable locale
+    MOV  EAX, [EBX+16]            ; champ d'une structure
+    MOV  AL, [ESI+3]              ; 4e octet d'un buffer
+
+  Utilisation typique :
+    - Acces aux parametres de fonctions via EBP
+      (convention : [EBP+8], [EBP+12], [EBP+16], ...)
+    - Acces aux variables locales via EBP
+      (convention : [EBP-4], [EBP-8], [EBP-12], ...)
+    - Acces aux champs d'une structure via un pointeur
+    - Acces aux elements d'un tableau via un pointeur de base
+
+  Organisation typique du cadre de pile (stack frame) :
+
+    [EBP+16]   3e parametre
+    [EBP+12]   2e parametre
+    [EBP+8]    1er parametre
+    [EBP+4]    Adresse de retour (empilee par CALL)
+    [EBP+0]    Ancien EBP (empile par PUSH EBP)
+    [EBP-4]    1ere variable locale
+    [EBP-8]    2e variable locale
+
+  3.7 Adressage indexe (base + index)
+  ------------------------------------
+
+  L'adresse effective est la somme d'un registre de base et d'un
+  registre d'index. Ce mode est utile pour le parcours de tableaux
+  avec un pointeur de base fixe et un index variable.
+
+  Formule : EA = Base + Index
+
+  Syntaxe :
+    MOV  reg, [base_reg + index_reg]
+    MOV  [base_reg + index_reg], reg
+
+  Le registre d'index peut etre n'importe quel registre general
+  32 bits sauf ESP.
+
+  Exemples :
+    MOV  EAX, [EBX+ESI]           ; tableau pointe par EBX, index ESI
+    MOV  [EDI+ECX], AL            ; ecrire un octet dans un buffer
+    MOV  EAX, [EBP+ECX]           ; variable locale indexee
+    LEA  EAX, [EBX+EDX]           ; calculer une adresse sans lire
+
+  Utilisation typique :
+    - Parcours de tableaux (base = debut du tableau, index = offset)
+    - Copie de blocs memoire element par element
+
+  3.8 Adressage indexe avec echelle (SIB)
+  ----------------------------------------
+
+  C'est le mode d'adressage le plus puissant du 80386, nouveau
+  par rapport au 8086/80286. L'adresse effective combine un registre
+  de base, un registre d'index multiplie par un facteur d'echelle,
+  et un deplacement optionnel.
+
+  Formule : EA = Base + (Index * Echelle) + Deplacement
+
+  Facteurs d'echelle possibles : 1, 2, 4 ou 8
+
+  L'octet SIB (Scale-Index-Base) est un octet supplementaire dans
+  l'encodage de l'instruction qui specifie les trois composants :
+    - Bits 7-6 : Echelle (00=1, 01=2, 10=4, 11=8)
+    - Bits 5-3 : Registre d'index (sauf ESP = pas d'index)
+    - Bits 2-0 : Registre de base
+
+  Syntaxe :
+    MOV  reg, [base + index * echelle]
+    MOV  reg, [base + index * echelle + depl]
+    MOV  reg, [index * echelle + depl]        ; sans base
+
+  Exemples :
+
+    Acces a un tableau de DWORD (4 octets par element) :
+      MOV  EAX, [EBX+ECX*4]       ; tab[i], EBX=tab, ECX=i
+      MOV  EAX, [_tab+ECX*4]      ; tab[i], adresse directe
+
+    Acces a un tableau de WORD (2 octets par element) :
+      MOV  AX, [ESI+EDI*2]        ; tab[i], ESI=tab, EDI=i
+
+    Acces a un tableau de QWORD (8 octets par element) :
+      FLD  QWORD PTR [EBX+ECX*8]  ; tab_double[i]
+
+    Acces a un champ dans un tableau de structures :
+      MOV  EAX, [EBX+ECX*8+4]     ; tab[i].champ2
+                                   ; (structures de 8 octets,
+                                   ;  champ2 a l'offset 4)
+
+    Table de sauts (jump table) :
+      JMP  [_jtable+EAX*4]        ; saut indirect indexe
+
+    Calcul d'adresse avec LEA :
+      LEA  EAX, [EAX+EAX*4]       ; EAX = EAX * 5
+      LEA  EAX, [EBX+ECX*8+12]    ; calcul sans acces memoire
+
+  Utilisation typique :
+    - Acces aux tableaux de types scalaires (WORD, DWORD, QWORD)
+      sans avoir a calculer l'offset manuellement
+    - Acces aux champs dans des tableaux de structures
+    - Tables de sauts pour les instructions switch/case
+    - Calculs arithmetiques rapides via LEA (multiplication
+      par 2, 3, 4, 5, 8, 9 sans utiliser MUL/IMUL)
+
+  Correspondance echelle / type de donnees :
+    Echelle 1 : BYTE (octets, caracteres)
+    Echelle 2 : WORD (entiers 16 bits, Unicode)
+    Echelle 4 : DWORD (entiers 32 bits, pointeurs, float)
+    Echelle 8 : QWORD (entiers 64 bits, double)
+
+  3.9 Adressage relatif (branchements)
+  -------------------------------------
+
+  Les instructions de branchement (JMP, Jcc, CALL, LOOP) utilisent
+  un deplacement relatif par rapport a l'adresse de l'instruction
+  suivante. Ce mode n'est pas utilise pour les operandes memoire
+  mais uniquement pour le calcul de la cible des sauts.
+
+  Formule : Cible = EIP + Deplacement
+
+  Tailles de deplacement :
+    rel8  : Deplacement signe de 8 bits (-128 a +127 octets)
+            Utilise pour les sauts courts (short jump)
+    rel32 : Deplacement signe de 32 bits (nouveau 80386)
+            Utilise pour les sauts proches (near jump)
+
+  Exemples :
+    JMP  SHORT _boucle             ; saut court (rel8)
+    JMP  NEAR PTR _fonction        ; saut proche (rel32)
+    JE   _si_egal                  ; saut conditionnel (rel8 ou rel32)
+    CALL _ma_procedure             ; appel relatif (rel32)
+    LOOP _boucle                   ; boucle (rel8 uniquement)
+    JECXZ _vide                    ; saut si ECX=0 (rel8)
+
+  Remarques :
+    - Les sauts conditionnels (Jcc) n'acceptaient que rel8 sur le
+      8086. Le 80386 ajoute les sauts conditionnels rel32
+      (prefixe 0Fh), ce qui elimine le besoin de sauts
+      intermediaires pour les branches distantes
+    - L'adressage relatif rend le code relogeable (position-
+      independent) car les adresses ne sont pas absolues
+    - LOOP et JECXZ n'existent qu'en version rel8
+
+  3.10 Prefixes de surcharge de segment
+  ---------------------------------------
+
+  Par defaut, chaque mode d'adressage utilise un registre de
+  segment implicite :
+
+    DS : Pour la plupart des acces memoire (MOV, ADD, etc.)
+    SS : Pour les acces via EBP ou ESP ([EBP+x], [ESP+x])
+    CS : Pour le fetch des instructions (implicite)
+    ES : Pour la destination des instructions de chaines
+         (MOVS, STOS, SCAS, CMPS via ES:[EDI])
+
+  Un prefixe de segment peut surcharger le segment par defaut :
+
+    MOV  EAX, ES:[EBX]            ; utiliser ES au lieu de DS
+    MOV  EAX, FS:[0]              ; utiliser FS (ex: TEB Windows)
+    MOV  EAX, GS:[EDI+8]          ; utiliser GS
+    MOV  EAX, CS:[_table]         ; lire dans le segment de code
+    MOV  EAX, SS:[ECX+4]          ; forcer le segment de pile
+
+  Utilisation typique :
+    - FS : Acces au Thread Environment Block (TEB) sous Windows
+      (FS:[0] = chaine SEH, FS:[18h] = pointeur TEB)
+    - GS : Utilise par certains systemes d'exploitation
+    - ES : Destination implicite pour les instructions de chaines
+    - CS : Acces a des donnees dans le segment de code (tables
+      de constantes dans du code relogeable)
+
+  En mode FLAT 32 bits (Windows, Linux), les segments CS, DS, ES
+  et SS pointent generalement sur le meme espace lineaire. Les
+  prefixes de segment sont alors rarement necessaires, sauf pour
+  FS et GS qui sont souvent configures differemment.
+
+  3.11 Resume et tableau comparatif
+  ----------------------------------
+
+  Mode                     Syntaxe                  Formule EA
+  -----------------------  -----------------------  ---------------------
+  Immediat                 MOV EAX, 42              (pas d'EA, source)
+  Registre                 MOV EAX, EBX             (pas d'EA)
+  Direct                   MOV EAX, [_var]          EA = depl32
+  Indirect registre        MOV EAX, [EBX]           EA = base
+  Base + deplacement       MOV EAX, [EBP+8]         EA = base + depl
+  Base + index             MOV EAX, [EBX+ESI]       EA = base + index
+  Index * echelle + depl   MOV EAX, [ECX*4+_tab]    EA = idx*s + depl
+  Base + index * echelle   MOV EAX, [EBX+ECX*4]     EA = base + idx*s
+  Complet (SIB)            MOV EAX, [EBX+ECX*4+8]   EA = base+idx*s+depl
+  Relatif (sauts)          JMP _label               cible = EIP + rel
+
+  Comparaison avec le 8086 :
+
+  Caracteristique             8086              80386
+  --------------------------  ----------------  ----------------------
+  Registres de base           BX, BP            EAX..EDI (tous les 8)
+  Registres d'index           SI, DI            EAX..EDI sauf ESP
+  Facteur d'echelle           Non               1, 2, 4, 8
+  Taille deplacement          0, 8, 16 bits     0, 8, 32 bits
+  Taille adresse effective    16 bits            32 bits
+  Sauts conditionnels         rel8 uniquement    rel8 et rel32
+  Segments supplementaires    Non                FS, GS
+  Octet SIB                   Non               Oui
 
 ==============================================================================
 4. JEU D'INSTRUCTIONS (OPCODES)
