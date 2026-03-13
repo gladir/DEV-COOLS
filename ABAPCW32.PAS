@@ -284,7 +284,7 @@
               Parametres a [EBP+8], [EBP+12], [EBP+16]...
               Variables locales a [EBP-4], [EBP-8]...
 
-  TODO 14 - PARSEUR : WRITE / SKIP / NEW-LINE (SORTIE CONSOLE WIN32)
+  TODO 14 - PARSEUR : WRITE / SKIP / NEW-LINE (SORTIE CONSOLE WIN32) [IMPLEMENTE]
             Procedure ParseWrite
             Syntaxe :
               WRITE nom_var.
@@ -768,6 +768,9 @@ Const
   KW_FIRST           = 151;
   KW_MOD             = 152;   { MOD (operateur modulo)   }
   KW_DIV             = 153;   { DIV (division entiere)   }
+  KW_LEFT_JUSTIFIED  = 154;   { LEFT-JUSTIFIED (WRITE)   }
+  KW_NO_GAP          = 155;   { NO-GAP (WRITE)           }
+  KW_RIGHT_JUSTIFIED = 156;   { RIGHT-JUSTIFIED (WRITE)  }
 
   { Types de donnees ABAP }
   TYPE_UNKNOWN  =  0;
@@ -1113,6 +1116,13 @@ Procedure ParseDo; Forward;
 
 Procedure ParseForm; Forward;
 Procedure ParsePerform; Forward;
+
+{ ============================================================ }
+{ DECLARATIONS FORWARD (WRITE / SKIP / NEW-LINE TODO 14)       }
+{ ============================================================ }
+
+Procedure ParseWrite; Forward;
+Procedure EmitWriteRuntime; Forward;
 
 { ============================================================ }
 { FONCTIONS UTILITAIRES                                        }
@@ -1829,6 +1839,9 @@ Begin
   If S = 'FIRST'               Then Begin IsKeyword := KW_FIRST;         Exit; End;
   If S = 'MOD'                 Then Begin IsKeyword := KW_MOD;           Exit; End;
   If S = 'DIV'                 Then Begin IsKeyword := KW_DIV;           Exit; End;
+  If S = 'LEFT-JUSTIFIED'     Then Begin IsKeyword := KW_LEFT_JUSTIFIED;Exit; End;
+  If S = 'NO-GAP'             Then Begin IsKeyword := KW_NO_GAP;        Exit; End;
+  If S = 'RIGHT-JUSTIFIED'    Then Begin IsKeyword := KW_RIGHT_JUSTIFIED;Exit;End;
   IsKeyword := KW_NONE;
 End;
 
@@ -3245,6 +3258,7 @@ End;
 { Analyse une instruction ABAP complete (terminee par un .)     }
 Procedure ParseStatement;
 Var ExprType : Integer;
+    SkipN    : Integer;
 Begin
   If CurTokType = TOK_EOF Then Exit;
   If CurTokType = TOK_DOT Then Begin Consume; Exit; End;
@@ -3289,6 +3303,43 @@ Begin
   { PERFORM nomform (TODO 13) }
   If TokIsKw(KW_PERFORM) Then
   Begin Consume; ParsePerform; Exit; End;
+
+  { WRITE / WRITE: (TODO 14) }
+  If TokIsKw(KW_WRITE) Then
+  Begin Consume; ParseWrite; Exit; End;
+
+  { SKIP [n]. (TODO 14) }
+  If TokIsKw(KW_SKIP) Then
+  Begin
+    Consume;
+    EmitComment('SKIP');
+    If (CurTokType = TOK_NUMBER) Then
+    Begin
+      { SKIP n : emettre n CRLF }
+      SkipN := CurTokNum;
+      Consume;
+      While SkipN > 0 Do
+      Begin
+        EmitI('CALL    ' + AB_RT_PFX + 'CRLF');
+        Dec(SkipN);
+      End;
+    End
+    Else
+      { SKIP sans argument : 1 saut de ligne }
+      EmitI('CALL    ' + AB_RT_PFX + 'CRLF');
+    If CurTokType = TOK_DOT Then Consume;
+    Exit;
+  End;
+
+  { NEW-LINE. (TODO 14) }
+  If TokIsKw(KW_NEW_LINE) Then
+  Begin
+    Consume;
+    EmitComment('NEW-LINE');
+    EmitI('CALL    ' + AB_RT_PFX + 'CRLF');
+    If CurTokType = TOK_DOT Then Consume;
+    Exit;
+  End;
 
   { EXIT : sortir de la boucle courante }
   If TokIsKw(KW_EXIT) Then
@@ -3952,6 +4003,212 @@ Begin
   { Consommer le point }
   If CurTokType = TOK_DOT Then Consume
   Else LexError('Point attendu apres PERFORM');
+End;
+
+{ ============================================================ }
+{ PARSEUR : WRITE / SKIP / NEW-LINE (TODO 14)                  }
+{ ============================================================ }
+
+{ ---- EmitWriteOneItem : emet le code pour un item WRITE ------ }
+{ Gere : nombre litteral, chaine litteral, '/' (CRLF), variable }
+Procedure EmitWriteOneItem;
+Var SIdx : Integer; SLbl : TString;
+Begin
+  { '/' : saut de ligne }
+  If CurTokType = TOK_SLASH Then
+  Begin
+    EmitI('CALL    ' + AB_RT_PFX + 'CRLF');
+    Consume;
+    Exit;
+  End;
+  { Nombre litteral : afficher le nombre }
+  If CurTokType = TOK_NUMBER Then
+  Begin
+    EmitI('MOV     EAX, ' + IntToStr_(CurTokNum));
+    EmitI('CALL    ' + AB_RT_PFX + 'PRINTINT');
+    Consume;
+    Exit;
+  End;
+  { Chaine litterale : afficher la chaine }
+  If CurTokType = TOK_STRING Then
+  Begin
+    SLbl := AddStringLit(CurTokStr);
+    EmitI('LEA     EAX, [' + SLbl + ']');
+    EmitI('CALL    ' + AB_RT_PFX + 'PRINT');
+    Consume;
+    Exit;
+  End;
+  { Variable identifiant }
+  If CurTokType = TOK_IDENT Then
+  Begin
+    SIdx := FindSym(CurTokStr);
+    If SIdx > 0 Then
+    Begin
+      GenLoadVar32(SIdx);
+      Case SymTab[SIdx].DataType Of
+        TYPE_I, TYPE_P:
+          EmitI('CALL    ' + AB_RT_PFX + 'PRINTINT');
+      Else
+        EmitI('CALL    ' + AB_RT_PFX + 'PRINT');
+      End;
+    End
+    Else
+    Begin
+      EmitComment('WRITE: variable inconnue: ' + CurTokStr);
+    End;
+    Consume;
+    { Ignorer les options de formatage (LEFT-JUSTIFIED, NO-GAP, etc.) }
+    While TokIsKw(KW_LEFT_JUSTIFIED) Or TokIsKw(KW_RIGHT_JUSTIFIED) Or
+          TokIsKw(KW_NO_GAP) Do
+      Consume;
+    Exit;
+  End;
+  { Token inattendu : ignorer }
+  Consume;
+End;
+
+{ ---- ParseWrite : parser l instruction WRITE ------------------ }
+{ WRITE item.  ou  WRITE: item1, item2, ... item_n.             }
+Procedure ParseWrite;
+Var Multi : Boolean;
+Begin
+  EmitComment('WRITE');
+  { Verifier la forme avec deux-points (WRITE: items) }
+  Multi := (CurTokType = TOK_COLON);
+  If Multi Then Consume;
+  If Multi Then
+  Begin
+    { WRITE: item1, item2, ... item_n. }
+    While (CurTokType <> TOK_EOF) And (CurTokType <> TOK_DOT) Do
+    Begin
+      EmitWriteOneItem;
+      If CurTokType = TOK_COMMA Then
+        Consume
+      Else If CurTokType <> TOK_DOT Then
+        Break;
+    End;
+  End
+  Else
+  Begin
+    { WRITE item. (un seul item) }
+    EmitWriteOneItem;
+  End;
+  If CurTokType = TOK_DOT Then Consume;
+End;
+
+{ ---- EmitWriteRuntime : emet les routines runtime I/O --------- }
+{ _ABRT_CRLF    : ecrire CR+LF sur stdout via WriteFile          }
+{ _ABRT_PRINT   : EAX=ptr ASCIIZ -> WriteFile(hStdOut)           }
+{ _ABRT_NUMTOSTR: EAX=integer -> ASCIIZ dans _ABRT_NUMBUF        }
+{ _ABRT_PRINTINT: EAX=integer -> NUMTOSTR + PRINT                }
+{ _ABRT_STRLEN  : EAX=ptr ASCIIZ -> EAX=longueur (sans le 0)    }
+Procedure EmitWriteRuntime;
+Begin
+  EmitBlank;
+  EmitComment('========================================');
+  EmitComment('RUNTIME : WRITE / SKIP / NEW-LINE (TODO 14)');
+  EmitComment('========================================');
+
+  { ---- _ABRT_STRLEN : EAX=ptr -> EAX=len (ASCIIZ) ----------- }
+  EmitBlank;
+  EmitLabel(AB_RT_PFX + 'STRLEN');
+  EmitI('PUSH    ECX');
+  EmitI('PUSH    EDI');
+  EmitI('MOV     EDI, EAX');
+  EmitI('XOR     ECX, ECX');
+  EmitLabel(AB_RT_PFX + 'STRLEN_LP');
+  EmitI('CMP     BYTE PTR [EDI+ECX], 0');
+  EmitI('JE      ' + AB_RT_PFX + 'STRLEN_DN');
+  EmitI('INC     ECX');
+  EmitI('JMP     ' + AB_RT_PFX + 'STRLEN_LP');
+  EmitLabel(AB_RT_PFX + 'STRLEN_DN');
+  EmitI('MOV     EAX, ECX');
+  EmitI('POP     EDI');
+  EmitI('POP     ECX');
+  EmitI('RET');
+
+  { ---- _ABRT_PRINT : EAX=ptr ASCIIZ -> WriteFile(stdout) ----- }
+  { Appelle _ABRT_STRLEN pour obtenir la longueur, puis WriteFile }
+  EmitBlank;
+  EmitLabel(AB_RT_PFX + 'PRINT');
+  EmitI('PUSH    EAX');             { sauvegarder ptr }
+  EmitI('CALL    ' + AB_RT_PFX + 'STRLEN');
+  EmitI('MOV     ECX, EAX');        { ECX = longueur }
+  EmitI('POP     EAX');             { EAX = ptr chaine }
+  EmitI('TEST    ECX, ECX');
+  EmitI('JZ      ' + AB_RT_PFX + 'PRINT_DN');
+  { WriteFile(hStdOut, lpBuffer, nLen, lpWritten, NULL) }
+  EmitI('PUSH    0');               { lpOverlapped = NULL }
+  EmitI('LEA     EDX, [' + AB_RT_PFX + 'WRITTEN]');
+  EmitI('PUSH    EDX');             { lpNumberOfBytesWritten }
+  EmitI('PUSH    ECX');             { nNumberOfBytesToWrite }
+  EmitI('PUSH    EAX');             { lpBuffer }
+  EmitI('PUSH    DWORD PTR [' + AB_RT_PFX + 'HSTDOUT]');
+  EmitI('CALL    _WriteFile@20');
+  EmitLabel(AB_RT_PFX + 'PRINT_DN');
+  EmitI('RET');
+
+  { ---- _ABRT_CRLF : ecrire CR+LF sur stdout ------------------- }
+  EmitBlank;
+  EmitLabel(AB_RT_PFX + 'CRLF');
+  EmitI('LEA     EAX, [' + AB_RT_PFX + 'CRLF_DATA]');
+  EmitI('CALL    ' + AB_RT_PFX + 'PRINT');
+  EmitI('RET');
+
+  { ---- _ABRT_NUMTOSTR : EAX=integer -> ASCIIZ _ABRT_NUMBUF --- }
+  { Convertit un entier 32 bits signe en chaine decimale ASCIIZ  }
+  { Resultat : EAX pointe vers le debut de la chaine dans NUMBUF }
+  EmitBlank;
+  EmitLabel(AB_RT_PFX + 'NUMTOSTR');
+  EmitI('PUSH    EBX');
+  EmitI('PUSH    ECX');
+  EmitI('PUSH    EDX');
+  EmitI('PUSH    EDI');
+  EmitI('MOV     ECX, EAX');         { ECX = valeur originale (signe) }
+  EmitI('LEA     EDI, [' + AB_RT_PFX + 'NUMBUF+11]');
+  EmitI('MOV     BYTE PTR [EDI], 0'); { terminaison ASCIIZ }
+  EmitI('TEST    EAX, EAX');
+  EmitI('JNS     ' + AB_RT_PFX + 'NTS_POS');
+  EmitI('NEG     EAX');              { rendre positif }
+  EmitLabel(AB_RT_PFX + 'NTS_POS');
+  EmitI('MOV     EBX, 10');
+  EmitLabel(AB_RT_PFX + 'NTS_LP');
+  EmitI('XOR     EDX, EDX');
+  EmitI('DIV     EBX');              { EAX / 10 -> quotient EAX, reste EDX }
+  EmitI('ADD     DL, 48');           { chiffre ASCII }
+  EmitI('DEC     EDI');
+  EmitI('MOV     BYTE PTR [EDI], DL');
+  EmitI('TEST    EAX, EAX');
+  EmitI('JNZ     ' + AB_RT_PFX + 'NTS_LP');
+  { Signe negatif ? }
+  EmitI('TEST    ECX, ECX');
+  EmitI('JNS     ' + AB_RT_PFX + 'NTS_DN');
+  EmitI('DEC     EDI');
+  EmitI('MOV     BYTE PTR [EDI], 45'); { '-' = 45 }
+  EmitLabel(AB_RT_PFX + 'NTS_DN');
+  EmitI('MOV     EAX, EDI');         { EAX = debut de la chaine }
+  EmitI('POP     EDI');
+  EmitI('POP     EDX');
+  EmitI('POP     ECX');
+  EmitI('POP     EBX');
+  EmitI('RET');
+
+  { ---- _ABRT_PRINTINT : EAX=integer -> afficher sur stdout ---- }
+  { Appelle NUMTOSTR (qui retourne EAX=ptr) puis PRINT           }
+  EmitBlank;
+  EmitLabel(AB_RT_PFX + 'PRINTINT');
+  EmitI('CALL    ' + AB_RT_PFX + 'NUMTOSTR');
+  EmitI('CALL    ' + AB_RT_PFX + 'PRINT');
+  EmitI('RET');
+
+  { ---- Donnees runtime pour WRITE ----------------------------- }
+  EmitBlank;
+  EmitComment('--- Donnees runtime WRITE (TODO 14) ---');
+  Emit(AB_RT_PFX + 'HSTDOUT   DD 0');
+  Emit(AB_RT_PFX + 'WRITTEN   DD 0');
+  Emit(AB_RT_PFX + 'NUMBUF    DB 12 DUP(0)');
+  Emit(AB_RT_PFX + 'CRLF_DATA DB 13, 10, 0');
+  Emit(AB_RT_PFX + 'SPACE_DATA DB 32, 0');
 End;
 
 Procedure InitOptions;

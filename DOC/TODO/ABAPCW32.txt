@@ -265,7 +265,7 @@
               Parametres a [EBP+8], [EBP+12], [EBP+16]...
               Variables locales a [EBP-4], [EBP-8]...
 
-  TODO 14 - PARSEUR : WRITE / SKIP / NEW-LINE (SORTIE CONSOLE WIN32)
+  TODO 14 - PARSEUR : WRITE / SKIP / NEW-LINE (SORTIE CONSOLE WIN32) [IMPLEMENTE]
             Procedure ParseWrite
             Syntaxe :
               WRITE nom_var.
