@@ -225,7 +225,7 @@
               -> JMP _CLL_WEND_N ou _CLL_FEND_N
             LoopPush / LoopPop : pile de labels pour LOOP/EXIT imbriques
 
-  TODO 15 - TABLEAUX
+  TODO 15 - TABLEAUX [IMPLEMENTE]
             Declaration : LOCAL arr[n] ou LOCAL arr := {e1, e2, e3}
               DECLARE arr[n] ou DECLARE arr[n1, n2] (multidimensionnel)
             Tableaux dynamiques : taille modifiable a l execution
@@ -524,6 +524,8 @@ Const
   MAX_TYPE      = {$IFDEF FPC}32{$ELSE}16{$ENDIF};
   STACK_SIZE    = 1024;
   MAX_LOOP_NEST = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
+  MAX_HEAP_SIZE = 4096;  { taille du heap en octets pour tableaux }
+  MAX_ARRAY_ELEM = 64;   { nombre maximum d elements par tableau  }
 
   { Indices de types primitifs Clipper }
   TY_IDX_NIL    = 0;     { NIL : valeur non initialisee          }
@@ -717,6 +719,9 @@ Var
   LoopBrkLbl  : Array[0..MAX_LOOP_NEST - 1] Of TString;
   LoopTop     : Integer;   { profondeur d imbrication des boucles   }
 
+  { Heap pour tableaux dynamiques (TODO 15) }
+  ArrayTempCount : Integer;   { compteur de tableaux temporaires     }
+
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
@@ -848,6 +853,10 @@ Procedure LoopPop; Forward;
 Procedure ParseDoWhileStmt; Forward;
 Procedure ParseForStmt; Forward;
 Procedure ParseForEachStmt; Forward;
+
+{ Tableaux (TODO 15) }
+Procedure EmitArrayRuntime; Forward;
+Procedure ParseArrayLiteral(Var Res : TExprVal); Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1094,6 +1103,7 @@ Begin
   SymNextOffset := 0;
   ParamNextOffset := 4;   { [BP+4] est le premier parametre }
   LoopTop      := 0;
+  ArrayTempCount := 0;
   TypeInit;
   SymInit;
 End;
@@ -2350,6 +2360,11 @@ Begin
   WriteLn(OutF, '_CL_GETCOUNT DW  0');
   WriteLn(OutF, '_CL_GETLIST DB  640 DUP(0)');  { 16 GETs x 40 bytes each }
   WriteLn(OutF, '_CL_COLOR   DB  07h');  { default: white on black }
+  { Heap pour tableaux (TODO 15) }
+  WriteLn(OutF, '_CL_HEAPPTR DW  _CL_HEAP');
+  WriteLn(OutF, '_CL_HEAP    DB  ', IntToStr(MAX_HEAP_SIZE), ' DUP(0)');
+  WriteLn(OutF, '_CL_ARRPTR  DW  0');
+  WriteLn(OutF, '_CL_ARRIDX  DW  0');
   { Entrees DataTab }
   For I := 0 To DataCount - 1 Do
   Begin
@@ -2688,10 +2703,13 @@ Begin
   ExprFlushToAX(IdxExpr);
   { AX = index, pile = arr ptr -> POP BX pour AGET(BX=arr, AX=idx) }
   EmitInstr('POP    BX');
+  { Sauvegarder arr ptr et index pour affectation potentielle (TODO 15) }
+  EmitInstrAB('MOV', '[_CL_ARRPTR]', 'BX');
+  EmitInstrAB('MOV', '[_CL_ARRIDX]', 'AX');
   EmitInstrA('CALL', CL_RT_PFX + 'AGET');
   Res.Kind    := EK_AX;
   Res.TypeIdx := TY_UNKNOWN;
-  Res.SymIdx  := -1;
+  Res.SymIdx  := -2;   { marqueur : acces tableau pour affectation }
   { Indices supplementaires [i,j] : acces en cascade }
   While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
   Begin
@@ -2957,6 +2975,218 @@ Begin
         End;
         ExprMakeImm(79, TY_IDX_NUM, Res);
       End
+      { --- LEN : longueur tableau ou chaine (TODO 15) --- }
+      Else If IdName = 'LEN' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          ParseExpr(Arg);
+          ExprFlushToAX(Arg);
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'ALEN');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_NUM;
+        Res.SymIdx := -1;
+      End
+      { --- AADD : ajouter element (TODO 15) --- }
+      Else If IdName = 'AADD' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          ParseExpr(Arg);  { arr }
+          ExprFlushToAX(Arg);
+          EmitInstr('PUSH   AX');
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+            ParserAdvance;
+          ParseExpr(Arg);  { val }
+          ExprFlushToAX(Arg);
+          EmitInstr('POP    BX');
+          EmitInstrA('CALL', CL_RT_PFX + 'AADD');
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_ARRAY;
+        Res.SymIdx := -1;
+      End
+      { --- ADEL : supprimer element (TODO 15) --- }
+      Else If IdName = 'ADEL' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          ParseExpr(Arg);  { arr }
+          ExprFlushToAX(Arg);
+          EmitInstr('PUSH   AX');
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+            ParserAdvance;
+          ParseExpr(Arg);  { index }
+          ExprFlushToAX(Arg);
+          EmitInstr('POP    BX');
+          EmitInstrA('CALL', CL_RT_PFX + 'ADEL');
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_ARRAY;
+        Res.SymIdx := -1;
+      End
+      { --- AINS : inserer element (TODO 15) --- }
+      Else If IdName = 'AINS' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          ParseExpr(Arg);  { arr }
+          ExprFlushToAX(Arg);
+          EmitInstr('PUSH   AX');
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+            ParserAdvance;
+          ParseExpr(Arg);  { index }
+          ExprFlushToAX(Arg);
+          EmitInstr('POP    BX');
+          EmitInstrA('CALL', CL_RT_PFX + 'AINS');
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_ARRAY;
+        Res.SymIdx := -1;
+      End
+      { --- ASIZE : redimensionner (TODO 15) --- }
+      Else If IdName = 'ASIZE' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          ParseExpr(Arg);  { arr }
+          ExprFlushToAX(Arg);
+          EmitInstr('PUSH   AX');
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+            ParserAdvance;
+          ParseExpr(Arg);  { new size }
+          ExprFlushToAX(Arg);
+          EmitInstr('POP    BX');
+          EmitInstrA('CALL', CL_RT_PFX + 'ASIZE');
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_ARRAY;
+        Res.SymIdx := -1;
+      End
+      { --- ACLONE : copier tableau (TODO 15) --- }
+      Else If IdName = 'ACLONE' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          ParseExpr(Arg);  { arr }
+          ExprFlushToAX(Arg);
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'ACLONE');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_ARRAY;
+        Res.SymIdx := -1;
+      End
+      { --- ASORT : trier (TODO 15) --- }
+      Else If IdName = 'ASORT' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          ParseExpr(Arg);  { arr }
+          ExprFlushToAX(Arg);
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'ASORT');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_ARRAY;
+        Res.SymIdx := -1;
+      End
+      { --- ASCAN : recherche (TODO 15) --- }
+      Else If IdName = 'ASCAN' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          ParseExpr(Arg);  { arr }
+          ExprFlushToAX(Arg);
+          EmitInstr('PUSH   AX');
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+            ParserAdvance;
+          ParseExpr(Arg);  { val }
+          ExprFlushToAX(Arg);
+          EmitInstr('POP    BX');
+          EmitInstrA('CALL', CL_RT_PFX + 'ASCAN');
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_NUM;
+        Res.SymIdx := -1;
+      End
+      { --- AFILL : remplir (TODO 15) --- }
+      Else If IdName = 'AFILL' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          ParseExpr(Arg);  { arr }
+          ExprFlushToAX(Arg);
+          EmitInstr('PUSH   AX');
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+            ParserAdvance;
+          ParseExpr(Arg);  { val }
+          ExprFlushToAX(Arg);
+          EmitInstr('POP    BX');
+          EmitInstrA('CALL', CL_RT_PFX + 'AFILL');
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_ARRAY;
+        Res.SymIdx := -1;
+      End
+      { --- ACOPY : copier elements (TODO 15) --- }
+      Else If IdName = 'ACOPY' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          ParseExpr(Arg);  { src }
+          ExprFlushToAX(Arg);
+          EmitInstr('PUSH   AX');
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+            ParserAdvance;
+          ParseExpr(Arg);  { dst }
+          ExprFlushToAX(Arg);
+          EmitInstr('POP    BX');
+          EmitInstrA('CALL', CL_RT_PFX + 'ACOPY');
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_ARRAY;
+        Res.SymIdx := -1;
+      End
       Else
       Begin
         { Identificateur normal : rechercher dans la table des symboles }
@@ -3041,6 +3271,10 @@ Begin
         ParseExpr(Res);
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
           ParserAdvance;
+      End
+      Else If CurToken.Val = '{' Then
+      Begin
+        ParseArrayLiteral(Res);
       End
       Else
       Begin
@@ -3677,8 +3911,19 @@ Begin
     ExprFlushToAX(Right);
     If Op = ':=' Then
     Begin
-      { Affectation simple : stocker AX dans le lvalue }
-      ExprStore(Res.SymIdx);
+      If Res.SymIdx = -2 Then
+      Begin
+        { Affectation element tableau : arr[i] := val (TODO 15) }
+        EmitComment('arr[i] := val (ASET)');
+        EmitInstrAB('MOV', 'BX', '[_CL_ARRPTR]');
+        EmitInstrAB('MOV', 'CX', '[_CL_ARRIDX]');
+        EmitInstrA('CALL', CL_RT_PFX + 'ASET');
+      End
+      Else
+      Begin
+        { Affectation simple : stocker AX dans le lvalue }
+        ExprStore(Res.SymIdx);
+      End;
       Res.Kind    := EK_AX;
       Res.TypeIdx := Right.TypeIdx;
       Res.SymIdx  := -1;
@@ -6288,20 +6533,24 @@ Begin
 End;
 
 { ---- ParseForEachStmt : FOR EACH elem IN collection ... NEXT -- }
-(* Version simplifiee : necessite le support des tableaux (TODO 15).
-   Parse la syntaxe, genere un stub JMP vers la fin.                *)
+(* Iteration sur un tableau (TODO 15).
+   Genere une boucle qui parcourt chaque element du tableau
+   en utilisant un compteur d index dans le segment de donnees.    *)
 
 Procedure ParseForEachStmt;
 Var
   ElemName : TString;
   CollExpr : TExprVal;
+  ElemSIdx : Integer;
   LblTest  : TString;
   LblIncr  : TString;
   LblEnd   : TString;
+  IdxLbl   : TString;
+  ArrLbl   : TString;
 Begin
-  EmitComment('FOR EACH (stub - necessite TODO 15 TABLEAUX)');
+  EmitComment('FOR EACH');
 
-  { Nom de la variable element }
+  { Lire le nom de la variable element }
   If CurToken.Kind <> TK_IDENT Then
   Begin
     CompileError('FOR EACH : identificateur attendu');
@@ -6310,16 +6559,36 @@ Begin
   ElemName := CurToken.Val;
   ParserAdvance;
 
-  { Mot-cle IN }
+  { Declarer la variable si necessaire }
+  ElemSIdx := SymFind(ElemName);
+  If ElemSIdx < 0 Then
+    ElemSIdx := DeclAllocSym(ElemName, SC_LOCAL);
+
+  { Consommer IN }
   If Not ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'IN')) Then
   Begin
-    CompileError('FOR EACH : mot-cle IN attendu');
+    CompileError('FOR EACH : IN attendu');
     Exit;
   End;
   ParserAdvance;
 
-  { Expression collection : parser et ignorer pour le moment }
+  { Evaluer l expression collection }
   ParseExpr(CollExpr);
+  ExprFlushToAX(CollExpr);
+  { AX = pointeur tableau }
+
+  { Creer des variables temporaires dans le DATA segment }
+  Inc(ArrayTempCount);
+  IdxLbl := '_CL_FEIDX' + IntToStr(ArrayTempCount);
+  ArrLbl := '_CL_FEARR' + IntToStr(ArrayTempCount);
+  DataAddWord(IdxLbl, 1);
+  DataAddWord(ArrLbl, 0);
+
+  { Stocker le pointeur tableau }
+  EmitInstrAB('MOV', '[' + ArrLbl + ']', 'AX');
+
+  { Initialiser index a 1 }
+  EmitInstrAB('MOV', 'WORD PTR [' + IdxLbl + ']', '1');
 
   LblTest := LabelGen;
   LblIncr := LabelGen;
@@ -6327,14 +6596,27 @@ Begin
 
   LoopPush(LblIncr, LblEnd);
 
-  { Stub : sauter directement a la fin }
-  EmitInstrA('JMP', LblEnd);
+  { Test : index <= LEN(arr) }
   EmitLabel(LblTest);
-  EmitLabel(LblIncr);
+  EmitInstr('PUSH   SI');
+  EmitInstrAB('MOV', 'SI', '[' + ArrLbl + ']');
+  EmitInstrAB('MOV', 'AX', '[SI]');
+  EmitInstr('POP    SI');
+  EmitInstrAB('CMP', '[' + IdxLbl + ']', 'AX');
+  EmitInstrA('JA', LblEnd);
+
+  { Charger l element courant dans la variable }
+  EmitInstrAB('MOV', 'AX', '[' + IdxLbl + ']');
+  EmitInstrAB('MOV', 'BX', '[' + ArrLbl + ']');
+  EmitInstrA('CALL', CL_RT_PFX + 'AGET');
+  ExprStore(ElemSIdx);
 
   { Corps de la boucle }
   ParseStmtBlock;
 
+  { Increment }
+  EmitLabel(LblIncr);
+  EmitInstrA('INC', 'WORD PTR [' + IdxLbl + ']');
   EmitInstrA('JMP', LblTest);
 
   { Consommer NEXT }
@@ -6347,14 +6629,450 @@ Begin
   LoopPop;
 End;
 
+{ ============================================================
+  TODO 15 - TABLEAUX [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseArrayLiteral : (e1, e2, ...) ---------------------- }
+(* Alloue un tableau sur le heap :
+     [_CL_HEAPPTR] pointe le prochain slot libre
+     Format heap : (count:Word, elem1:Word, elem2:Word, ...)
+   Retourne AX = pointeur vers le bloc tableau (debut = count)  *)
+
+Procedure ParseArrayLiteral(Var Res : TExprVal);
+Var
+  ElemCount : Integer;
+Begin
+  EmitComment('array literal {...}');
+  ParserAdvance; (* consomme '{' *)
+
+  { Sauvegarder le pointeur heap courant -> c est notre tableau }
+  EmitInstrAB('MOV', 'DI', '[_CL_HEAPPTR]');
+  EmitInstr('PUSH   DI');           { sauv debut du tableau }
+
+  { Reserver la place pour le compteur (2 octets) }
+  EmitInstrAB('ADD', 'WORD PTR [_CL_HEAPPTR]', '2');
+
+  ElemCount := 0;
+
+  { Parser les elements separes par des virgules }
+  If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Then
+  Begin
+    Repeat
+      ParseExpr(Res);
+      ExprFlushToAX(Res);
+      { Stocker l element a la position courante du heap }
+      EmitInstrAB('MOV', 'DI', '[_CL_HEAPPTR]');
+      EmitInstrAB('MOV', '[DI]', 'AX');
+      EmitInstrAB('ADD', 'WORD PTR [_CL_HEAPPTR]', '2');
+      Inc(ElemCount);
+
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance
+      Else
+        Break;
+    Until (CurToken.Kind = TK_EOF) Or
+          ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}'));
+  End;
+
+  (* Consommer accolade fermante *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+    ParserAdvance;
+
+  { Ecrire le nombre d elements au debut du bloc }
+  EmitInstr('POP    DI');           { DI = debut du tableau }
+  EmitInstrAB('MOV', 'WORD PTR [DI]', IntToStr(ElemCount));
+  { AX = pointeur vers le tableau }
+  EmitInstrAB('MOV', 'AX', 'DI');
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_ARRAY;
+  Res.SymIdx  := -1;
+End;
+
+{ ---- EmitArrayRuntime : routines d execution pour tableaux --- }
+(* Routines :
+   _CLRT_ANEW  : BX=taille -> AX=ptr nouveau tableau
+   _CLRT_AGET  : BX=arr, AX=index(1-base) -> AX=valeur
+   _CLRT_ASET  : BX=arr, CX=index(1-base), AX=val -> stocke
+   _CLRT_ALEN  : AX=arr -> AX=nombre d elements
+   _CLRT_AADD  : BX=arr, AX=val -> ajoute, AX=arr
+   _CLRT_ADEL  : BX=arr, AX=index -> supprime (shift gauche)
+   _CLRT_AINS  : BX=arr, AX=index -> insere 0 (shift droit)
+   _CLRT_ASIZE : BX=arr, AX=new_size -> redimensionne
+   _CLRT_ACLONE: AX=arr -> AX=copie
+   _CLRT_ASORT : AX=arr -> tri bulle
+   _CLRT_ASCAN : BX=arr, AX=val -> AX=position ou 0
+   _CLRT_AFILL : BX=arr, AX=val -> remplit
+   _CLRT_ACOPY : BX=src, AX=dst -> copie elements               *)
+
+Procedure EmitArrayRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=== Runtime Tableaux (TODO 15) ===');
+  EmitBlankLine;
+
+  { --- _CLRT_ANEW : allouer un nouveau tableau --- }
+  EmitLabel(CL_RT_PFX + 'ANEW');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DI');
+  EmitInstrAB('MOV', 'DI', '[_CL_HEAPPTR]');
+  EmitInstrAB('MOV', 'AX', 'DI');
+  EmitInstr('PUSH   AX');
+  EmitInstrAB('MOV', '[DI]', 'BX');
+  EmitInstrAB('ADD', 'DI', '2');
+  EmitInstrAB('MOV', 'CX', 'BX');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', CL_RT_PFX + 'ANW_DN');
+  EmitLabel(CL_RT_PFX + 'ANW_LP');
+  EmitInstrAB('MOV', 'WORD PTR [DI]', '0');
+  EmitInstrAB('ADD', 'DI', '2');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JNZ', CL_RT_PFX + 'ANW_LP');
+  EmitLabel(CL_RT_PFX + 'ANW_DN');
+  EmitInstrAB('MOV', '[_CL_HEAPPTR]', 'DI');
+  EmitInstr('POP    AX');
+  EmitInstr('POP    DI');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_AGET : lire element tableau --- }
+  EmitLabel(CL_RT_PFX + 'AGET');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   SI');
+  EmitInstrAB('MOV', 'SI', 'BX');
+  EmitInstrAB('CMP', 'AX', '0');
+  EmitInstrA('JLE', CL_RT_PFX + 'AGT_ER');
+  EmitInstrAB('CMP', 'AX', '[SI]');
+  EmitInstrA('JA', CL_RT_PFX + 'AGT_ER');
+  EmitInstrA('DEC', 'AX');
+  EmitInstrAB('SHL', 'AX', '1');
+  EmitInstrAB('ADD', 'AX', '2');
+  EmitInstrAB('ADD', 'SI', 'AX');
+  EmitInstrAB('MOV', 'AX', '[SI]');
+  EmitInstrA('JMP', CL_RT_PFX + 'AGT_DN');
+  EmitLabel(CL_RT_PFX + 'AGT_ER');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitLabel(CL_RT_PFX + 'AGT_DN');
+  EmitInstr('POP    SI');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_ASET : ecrire element tableau --- }
+  EmitLabel(CL_RT_PFX + 'ASET');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   DI');
+  EmitInstr('PUSH   CX');
+  EmitInstrAB('MOV', 'DI', 'BX');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JLE', CL_RT_PFX + 'AST_DN');
+  EmitInstrAB('CMP', 'CX', '[DI]');
+  EmitInstrA('JA', CL_RT_PFX + 'AST_DN');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrAB('SHL', 'CX', '1');
+  EmitInstrAB('ADD', 'CX', '2');
+  EmitInstrAB('ADD', 'DI', 'CX');
+  EmitInstrAB('MOV', '[DI]', 'AX');
+  EmitLabel(CL_RT_PFX + 'AST_DN');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    DI');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_ALEN : nombre d elements --- }
+  EmitLabel(CL_RT_PFX + 'ALEN');
+  EmitInstr('PUSH   SI');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrAB('CMP', 'SI', '0');
+  EmitInstrA('JE', CL_RT_PFX + 'ALN_Z');
+  EmitInstrAB('MOV', 'AX', '[SI]');
+  EmitInstrA('JMP', CL_RT_PFX + 'ALN_DN');
+  EmitLabel(CL_RT_PFX + 'ALN_Z');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitLabel(CL_RT_PFX + 'ALN_DN');
+  EmitInstr('POP    SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_AADD : ajouter element a la fin --- }
+  EmitLabel(CL_RT_PFX + 'AADD');
+  EmitInstr('PUSH   DI');
+  EmitInstr('PUSH   CX');
+  EmitInstrAB('MOV', 'DI', 'BX');
+  EmitInstrAB('MOV', 'CX', '[DI]');
+  EmitInstr('PUSH   AX');
+  EmitInstrAB('MOV', 'AX', 'CX');
+  EmitInstrAB('SHL', 'AX', '1');
+  EmitInstrAB('ADD', 'AX', '2');
+  EmitInstrAB('ADD', 'DI', 'AX');
+  EmitInstr('POP    AX');
+  EmitInstrAB('MOV', '[DI]', 'AX');
+  EmitInstrAB('MOV', 'DI', 'BX');
+  EmitInstrA('INC', 'WORD PTR [DI]');
+  EmitInstrAB('ADD', 'WORD PTR [_CL_HEAPPTR]', '2');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    DI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_ADEL : supprimer element (shift gauche) --- }
+  EmitLabel(CL_RT_PFX + 'ADEL');
+  EmitInstr('PUSH   SI');
+  EmitInstr('PUSH   DI');
+  EmitInstr('PUSH   CX');
+  EmitInstrAB('MOV', 'SI', 'BX');
+  EmitInstrAB('MOV', 'CX', '[SI]');
+  EmitInstrAB('CMP', 'AX', 'CX');
+  EmitInstrA('JA', CL_RT_PFX + 'ADL_DN');
+  EmitInstrAB('CMP', 'AX', '0');
+  EmitInstrA('JLE', CL_RT_PFX + 'ADL_DN');
+  EmitInstrA('DEC', 'AX');
+  EmitInstrAB('SHL', 'AX', '1');
+  EmitInstrAB('ADD', 'AX', '2');
+  EmitInstrAB('MOV', 'DI', 'BX');
+  EmitInstrAB('ADD', 'DI', 'AX');
+  EmitInstrAB('MOV', 'SI', 'DI');
+  EmitInstrAB('ADD', 'SI', '2');
+  EmitLabel(CL_RT_PFX + 'ADL_LP');
+  EmitInstr('PUSH   AX');
+  EmitInstrAB('MOV', 'AX', '[BX]');
+  EmitInstrAB('SHL', 'AX', '1');
+  EmitInstrAB('ADD', 'AX', '2');
+  EmitInstrAB('ADD', 'AX', 'BX');
+  EmitInstrAB('CMP', 'SI', 'AX');
+  EmitInstr('POP    AX');
+  EmitInstrA('JAE', CL_RT_PFX + 'ADL_SH');
+  EmitInstr('PUSH   AX');
+  EmitInstrAB('MOV', 'AX', '[SI]');
+  EmitInstrAB('MOV', '[DI]', 'AX');
+  EmitInstr('POP    AX');
+  EmitInstrAB('ADD', 'DI', '2');
+  EmitInstrAB('ADD', 'SI', '2');
+  EmitInstrA('JMP', CL_RT_PFX + 'ADL_LP');
+  EmitLabel(CL_RT_PFX + 'ADL_SH');
+  EmitInstrAB('MOV', 'WORD PTR [DI]', '0');
+  EmitInstrA('DEC', 'WORD PTR [BX]');
+  EmitLabel(CL_RT_PFX + 'ADL_DN');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    DI');
+  EmitInstr('POP    SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_AINS : inserer element vide (shift droit) --- }
+  EmitLabel(CL_RT_PFX + 'AINS');
+  EmitInstr('PUSH   SI');
+  EmitInstr('PUSH   DI');
+  EmitInstr('PUSH   CX');
+  EmitInstrAB('MOV', 'CX', '[BX]');
+  EmitInstrAB('CMP', 'AX', 'CX');
+  EmitInstrA('JA', CL_RT_PFX + 'AIN_DN');
+  EmitInstrAB('CMP', 'AX', '0');
+  EmitInstrA('JLE', CL_RT_PFX + 'AIN_DN');
+  EmitInstr('PUSH   AX');
+  EmitInstrAB('MOV', 'AX', 'CX');
+  EmitInstrA('DEC', 'AX');
+  EmitInstrAB('SHL', 'AX', '1');
+  EmitInstrAB('ADD', 'AX', '2');
+  EmitInstrAB('MOV', 'SI', 'BX');
+  EmitInstrAB('ADD', 'SI', 'AX');
+  EmitInstrAB('MOV', 'DI', 'SI');
+  EmitInstrAB('ADD', 'DI', '2');
+  EmitInstr('POP    AX');
+  EmitInstr('PUSH   AX');
+  EmitInstrA('DEC', 'AX');
+  EmitInstrAB('SHL', 'AX', '1');
+  EmitInstrAB('ADD', 'AX', '2');
+  EmitInstrAB('ADD', 'AX', 'BX');
+  EmitLabel(CL_RT_PFX + 'AIN_LP');
+  EmitInstrAB('CMP', 'SI', 'AX');
+  EmitInstrA('JB', CL_RT_PFX + 'AIN_SH');
+  EmitInstr('PUSH   CX');
+  EmitInstrAB('MOV', 'CX', '[SI]');
+  EmitInstrAB('MOV', '[DI]', 'CX');
+  EmitInstr('POP    CX');
+  EmitInstrAB('SUB', 'SI', '2');
+  EmitInstrAB('SUB', 'DI', '2');
+  EmitInstrA('JMP', CL_RT_PFX + 'AIN_LP');
+  EmitLabel(CL_RT_PFX + 'AIN_SH');
+  EmitInstr('POP    AX');
+  EmitInstrAB('MOV', 'DI', 'AX');
+  EmitInstrAB('MOV', 'WORD PTR [DI]', '0');
+  EmitInstrA('INC', 'WORD PTR [BX]');
+  EmitInstrAB('ADD', 'WORD PTR [_CL_HEAPPTR]', '2');
+  EmitLabel(CL_RT_PFX + 'AIN_DN');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    DI');
+  EmitInstr('POP    SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_ASIZE : redimensionner tableau --- }
+  EmitLabel(CL_RT_PFX + 'ASIZE');
+  EmitInstrAB('MOV', '[BX]', 'AX');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_ACLONE : copier tableau --- }
+  EmitLabel(CL_RT_PFX + 'ACLONE');
+  EmitInstr('PUSH   SI');
+  EmitInstr('PUSH   DI');
+  EmitInstr('PUSH   CX');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrAB('MOV', 'CX', '[SI]');
+  EmitInstrAB('MOV', 'DI', '[_CL_HEAPPTR]');
+  EmitInstr('PUSH   DI');
+  EmitInstrA('INC', 'CX');                 { CX = count+1 (compteur + elements) }
+  EmitLabel(CL_RT_PFX + 'ACL_LP');
+  EmitInstrAB('MOV', 'AX', '[SI]');
+  EmitInstrAB('MOV', '[DI]', 'AX');
+  EmitInstrAB('ADD', 'SI', '2');
+  EmitInstrAB('ADD', 'DI', '2');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JNZ', CL_RT_PFX + 'ACL_LP');
+  EmitInstrAB('MOV', '[_CL_HEAPPTR]', 'DI');
+  EmitInstr('POP    AX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    DI');
+  EmitInstr('POP    SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_ASORT : tri bulle --- }
+  EmitLabel(CL_RT_PFX + 'ASORT');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   SI');
+  EmitInstr('PUSH   DI');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitLabel(CL_RT_PFX + 'ASR_OUT');
+  EmitInstrAB('MOV', 'DX', '0');
+  EmitInstrAB('MOV', 'CX', '[BX]');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JLE', CL_RT_PFX + 'ASR_DN');
+  EmitInstrAB('LEA', 'SI', '[BX+2]');
+  EmitLabel(CL_RT_PFX + 'ASR_INN');
+  EmitInstrAB('MOV', 'AX', '[SI]');
+  EmitInstrAB('MOV', 'DI', '[SI+2]');
+  EmitInstrAB('CMP', 'AX', 'DI');
+  EmitInstrA('JLE', CL_RT_PFX + 'ASR_NSP');
+  EmitInstrAB('MOV', '[SI]', 'DI');
+  EmitInstrAB('MOV', '[SI+2]', 'AX');
+  EmitInstrAB('MOV', 'DX', '1');
+  EmitLabel(CL_RT_PFX + 'ASR_NSP');
+  EmitInstrAB('ADD', 'SI', '2');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JNZ', CL_RT_PFX + 'ASR_INN');
+  EmitInstrAB('CMP', 'DX', '0');
+  EmitInstrA('JNE', CL_RT_PFX + 'ASR_OUT');
+  EmitLabel(CL_RT_PFX + 'ASR_DN');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    DI');
+  EmitInstr('POP    SI');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_ASCAN : recherche lineaire --- }
+  EmitLabel(CL_RT_PFX + 'ASCAN');
+  EmitInstr('PUSH   SI');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  EmitInstrAB('MOV', 'DX', 'AX');
+  EmitInstrAB('MOV', 'SI', 'BX');
+  EmitInstrAB('MOV', 'CX', '[SI]');
+  EmitInstrAB('ADD', 'SI', '2');
+  EmitInstrAB('MOV', 'AX', '1');
+  EmitLabel(CL_RT_PFX + 'ASC_LP');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', CL_RT_PFX + 'ASC_NF');
+  EmitInstrAB('CMP', '[SI]', 'DX');
+  EmitInstrA('JE', CL_RT_PFX + 'ASC_DN');
+  EmitInstrAB('ADD', 'SI', '2');
+  EmitInstrA('INC', 'AX');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', CL_RT_PFX + 'ASC_LP');
+  EmitLabel(CL_RT_PFX + 'ASC_NF');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitLabel(CL_RT_PFX + 'ASC_DN');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_AFILL : remplir tous les elements --- }
+  EmitLabel(CL_RT_PFX + 'AFILL');
+  EmitInstr('PUSH   DI');
+  EmitInstr('PUSH   CX');
+  EmitInstrAB('MOV', 'DI', 'BX');
+  EmitInstrAB('MOV', 'CX', '[DI]');
+  EmitInstrAB('ADD', 'DI', '2');
+  EmitLabel(CL_RT_PFX + 'AFL_LP');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', CL_RT_PFX + 'AFL_DN');
+  EmitInstrAB('MOV', '[DI]', 'AX');
+  EmitInstrAB('ADD', 'DI', '2');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', CL_RT_PFX + 'AFL_LP');
+  EmitLabel(CL_RT_PFX + 'AFL_DN');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    DI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_ACOPY : copier elements de src vers dst --- }
+  EmitLabel(CL_RT_PFX + 'ACOPY');
+  EmitInstr('PUSH   SI');
+  EmitInstr('PUSH   DI');
+  EmitInstr('PUSH   CX');
+  EmitInstrAB('MOV', 'SI', 'BX');
+  EmitInstrAB('MOV', 'DI', 'AX');
+  EmitInstrAB('MOV', 'CX', '[SI]');
+  EmitInstrAB('MOV', '[DI]', 'CX');
+  EmitInstrAB('ADD', 'SI', '2');
+  EmitInstrAB('ADD', 'DI', '2');
+  EmitLabel(CL_RT_PFX + 'ACP_LP');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', CL_RT_PFX + 'ACP_DN');
+  EmitInstrAB('MOV', 'AX', '[SI]');
+  EmitInstrAB('MOV', '[DI]', 'AX');
+  EmitInstrAB('ADD', 'SI', '2');
+  EmitInstrAB('ADD', 'DI', '2');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', CL_RT_PFX + 'ACP_LP');
+  EmitLabel(CL_RT_PFX + 'ACP_DN');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    DI');
+  EmitInstr('POP    SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+End;
+
 { ---- EmitRuntime : emettre les routines runtime inline ------- }
 (* Appelle EmitExprRuntime pour les routines d expressions binaires
-   et EmitIORuntime pour les routines I/O ecran (TODO 12).         *)
+   et EmitIORuntime pour les routines I/O ecran (TODO 12).
+   EmitArrayRuntime pour les routines de tableaux (TODO 15).       *)
 
 Procedure EmitRuntime;
 Begin
   EmitExprRuntime;
   EmitIORuntime;
+  EmitArrayRuntime;
 End;
 
 { ---- EmitClose : finaliser le fichier ASM -------------------- }
