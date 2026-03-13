@@ -467,7 +467,7 @@
             require(cond) { msg } : si !cond -> throw IllegalArgumentException
             check(cond) { msg } : si !cond -> throw IllegalStateException
 
-  TODO 24 - RUNTIME MINIMAL
+  TODO 24 - RUNTIME MINIMAL [IMPLEMENTE]
             _KTRT_PRINT(BX=handle, SI=msg, CX=len) : INT 21h AH=40h
             _KTRT_PRINTLN : _KTRT_PRINT + CR+LF via _KT_CRLF DB 13,10,0
             _KTRT_STRLEN(SI=str) : compte octets jusqu a 0 -> AX
@@ -1015,6 +1015,8 @@ Procedure EmitExtensionRuntime;   Forward;
 Procedure ParseTryExpr(Var Res : TExprVal);  Forward;
 Procedure ParseThrowStmt;                     Forward;
 Procedure EmitExceptionRuntime;               Forward;
+{ TODO 24 - Runtime minimal }
+Procedure EmitMinimalRuntime;                 Forward;
 { General }
 Procedure ParserAdvance; Forward;
 Procedure ParseStmt;     Forward;
@@ -4828,6 +4830,7 @@ Begin
   EmitInheritanceRuntime;
   EmitExtensionRuntime;
   EmitExceptionRuntime;
+  EmitMinimalRuntime;
 End;
 
 (* ---- EmitExprRuntime : routines runtime pour expressions ------ *)
@@ -6914,6 +6917,103 @@ Begin
   EmitInstrA('POP', 'DX');
   EmitInstr('RET');
 End;
+
+(* ---- EmitMinimalRuntime : routines runtime complementaires ---- *)
+(* TODO 24 - Fonctions utilitaires du runtime minimal.             *)
+(* _KTRT_PRINTLN : affiche chaine + retour a la ligne              *)
+(* _KTRT_ABS     : valeur absolue AX -> AX                        *)
+(* _KTRT_MAX     : maximum AX, BX -> AX                           *)
+(* _KTRT_MIN     : minimum AX, BX -> AX                           *)
+(* _KTRT_ALLOC   : allocation dans heap statique CX -> AX          *)
+(* _KTRT_TYPECODE: lecture typecode objet BX -> AX                 *)
+(* _KTRT_CHKIDX  : verification bornes tableau AX, BX, CX         *)
+Procedure EmitMinimalRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=========================================================');
+  EmitComment('TODO 24 - RUNTIME MINIMAL KOTLIN86');
+  EmitComment('=========================================================');
+
+  { --- _KTRT_PRINTLN : SI = str ASCIIZ -> STDOUT + CRLF --- }
+  EmitBlankLine;
+  EmitComment('--- _KTRT_PRINTLN : SI = str ASCIIZ -> STDOUT + CRLF ---');
+  EmitLabel('_KTRT_PRINTLN');
+  EmitInstr('CALL _KTRT_PRINTSTR');
+  EmitInstr('CALL _KTRT_NEWLINE');
+  EmitInstr('RET');
+
+  { --- _KTRT_ABS : AX = n -> AX = |n| --- }
+  EmitBlankLine;
+  EmitComment('--- _KTRT_ABS : AX = n -> AX = |n| ---');
+  EmitLabel('_KTRT_ABS');
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JNS', '_KTRT_ABS_OK');
+  EmitInstr('NEG AX');
+  EmitLabel('_KTRT_ABS_OK');
+  EmitInstr('RET');
+
+  { --- _KTRT_MAX : AX = a, BX = b -> AX = max(a,b) --- }
+  EmitBlankLine;
+  EmitComment('--- _KTRT_MAX : AX = a, BX = b -> AX = max(a,b) ---');
+  EmitLabel('_KTRT_MAX');
+  EmitInstrAB('CMP', 'AX', 'BX');
+  EmitInstrA('JGE', '_KTRT_MAX_OK');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitLabel('_KTRT_MAX_OK');
+  EmitInstr('RET');
+
+  { --- _KTRT_MIN : AX = a, BX = b -> AX = min(a,b) --- }
+  EmitBlankLine;
+  EmitComment('--- _KTRT_MIN : AX = a, BX = b -> AX = min(a,b) ---');
+  EmitLabel('_KTRT_MIN');
+  EmitInstrAB('CMP', 'AX', 'BX');
+  EmitInstrA('JLE', '_KTRT_MIN_OK');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitLabel('_KTRT_MIN_OK');
+  EmitInstr('RET');
+
+  { --- _KTRT_ALLOC : CX = nb_octets -> AX = ptr dans heap --- }
+  EmitBlankLine;
+  EmitComment('--- _KTRT_ALLOC : CX = nb_octets -> AX = ptr heap ---');
+  EmitLabel('_KTRT_ALLOC');
+  EmitLabel('_KTRT_NEW');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrAB('MOV', 'BX', '[_KT_HEAPTOP]');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _KT_HEAP');
+  EmitInstrAB('ADD', 'AX', 'BX');
+  EmitInstrAB('ADD', 'BX', 'CX');
+  EmitInstrAB('MOV', '[_KT_HEAPTOP]', 'BX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+
+  { --- _KTRT_TYPECODE : BX = ptr_objet -> AX = [BX] --- }
+  EmitBlankLine;
+  EmitComment('--- _KTRT_TYPECODE : BX = ptr_objet -> AX = typecode ---');
+  EmitLabel('_KTRT_TYPECODE');
+  EmitInstrAB('MOV', 'AX', '[BX]');
+  EmitInstr('RET');
+
+  { --- _KTRT_CHKIDX : AX = index, BX = lo, CX = hi --- }
+  EmitBlankLine;
+  EmitComment('--- _KTRT_CHKIDX : AX=index, BX=lo, CX=hi ---');
+  EmitComment('Si AX < BX ou AX > CX -> IndexOutOfBoundsException');
+  EmitLabel('_KTRT_CHKIDX');
+  EmitInstrAB('CMP', 'AX', 'BX');
+  EmitInstrA('JL', '_KTRT_CHKIDX_ERR');
+  EmitInstrAB('CMP', 'AX', 'CX');
+  EmitInstrA('JG', '_KTRT_CHKIDX_ERR');
+  EmitInstr('RET');
+  EmitLabel('_KTRT_CHKIDX_ERR');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', 'OFFSET _KT_IOOB_MSG');
+  EmitInstr('CALL _KTRT_PRINTSTR');
+  EmitInstr('CALL _KTRT_NEWLINE');
+  EmitInstrA('POP', 'SI');
+  EmitInstrAB('MOV', 'AX', '4C01h');
+  EmitInstr('INT 21h');
+  EmitInstr('RET');
+End;
+
 Procedure EmitClose;
 Begin
   EmitBlankLine;
@@ -7351,6 +7451,10 @@ Begin
   DataAdd('_KT_ISEXC_MSG', DK_STR, 0, 'IllegalStateException');
   DataAdd('_KT_IOOB_MSG',  DK_STR, 0, 'IndexOutOfBoundsException');
   DataAdd('_KT_UNH_MSG',   DK_STR, 0, 'Unhandled exception: ');
+  { TODO 24 - Heap statique et donnees runtime minimal }
+  DataAdd('_KT_HEAP',       DK_BYTE, 0, '');
+  DataTab[DataCount - 1].ElemCount := 4096;
+  DataAdd('_KT_HEAPTOP',    DK_WORD, 0, '');
 End;
 
 { --- TODO 09 : Variables et Affectations [IMPLEMENTE] --------- }
