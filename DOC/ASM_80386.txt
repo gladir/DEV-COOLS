@@ -2769,7 +2769,661 @@
 7. PAGINATION ET MEMOIRE VIRTUELLE
 ==============================================================================
 
-  (a completer)
+  7.1 Vue d'ensemble de la pagination
+  -------------------------------------
+
+  La pagination est un mecanisme materiel optionnel du 80386 qui
+  traduit les adresses lineaires (produites par la segmentation)
+  en adresses physiques. Elle permet :
+
+    - La memoire virtuelle : chaque processus dispose de son propre
+      espace d'adressage de 4 Go, independamment de la quantite de
+      RAM physique disponible
+    - L'isolation des processus : deux processus peuvent utiliser les
+      memes adresses lineaires sans conflit, car elles sont mappees
+      vers des pages physiques differentes
+    - Le swapping : les pages peu utilisees peuvent etre transferees
+      sur le disque et rechargees a la demande
+    - La protection fine : chaque page peut etre protegee
+      individuellement (lecture seule, superviseur/utilisateur)
+
+  La pagination divise la memoire en blocs de taille fixe appeles
+  "pages" de 4096 octets (4 Ko). L'espace d'adressage lineaire
+  de 4 Go est ainsi divise en 1 048 576 pages (2^20).
+
+  La pagination est activee par le bit PG (bit 31) du registre CR0.
+  Elle est independante de la segmentation : les deux mecanismes
+  s'appliquent en serie.
+
+  Chaine de traduction complete :
+
+    Adresse logique  ->  Segmentation  ->  Adresse lineaire
+    (selecteur:offset)                     (32 bits)
+
+    Adresse lineaire ->  Pagination    ->  Adresse physique
+    (32 bits)                              (32 bits)
+
+  Si la pagination est desactivee (CR0.PG = 0), l'adresse lineaire
+  est directement utilisee comme adresse physique.
+
+  7.2 Repertoire de pages et tables de pages
+  --------------------------------------------
+
+  Le 80386 utilise un schema de pagination a deux niveaux pour
+  eviter de stocker une table unique de 4 Mo (2^20 entrees * 4 octets)
+  en memoire pour chaque processus.
+
+  Structure a deux niveaux :
+
+  Niveau 1 : Repertoire de pages (Page Directory)
+    - Une seule table de 1024 entrees de 4 octets chacune (4 Ko)
+    - Chaque entree pointe vers une table de pages (niveau 2)
+    - Localise par le registre CR3
+
+  Niveau 2 : Tables de pages (Page Tables)
+    - Jusqu'a 1024 tables de 1024 entrees de 4 octets chacune
+    - Chaque entree mappe une page lineaire vers une page physique
+    - Seules les tables necessaires doivent etre presentes en memoire
+
+  Schema hierarchique :
+
+    CR3 ──> Repertoire de pages (4 Ko, 1024 entrees)
+              |
+              ├──> Table de pages 0    (4 Ko, 1024 entrees)
+              |      ├──> Page physique 0
+              |      ├──> Page physique 1
+              |      └──> ...
+              |
+              ├──> Table de pages 1    (4 Ko, 1024 entrees)
+              |      ├──> Page physique 1024
+              |      └──> ...
+              |
+              └──> Table de pages 1023 (4 Ko, 1024 entrees)
+                     └──> Page physique 1048575
+
+  Chaque table de pages couvre 4 Mo d'espace lineaire
+  (1024 pages * 4 Ko = 4 Mo).
+
+  L'espace memoire necessaire pour la pagination est minimal :
+    - 4 Ko pour le repertoire de pages (toujours present)
+    - 4 Ko par table de pages utilisee
+    - Un processus utilisant 16 Mo n'a besoin que de 4 tables
+      de pages = 4 Ko + 4 * 4 Ko = 20 Ko de tables
+
+  7.3 Entrees de repertoire de pages (PDE)
+  ------------------------------------------
+
+  Chaque entree du repertoire de pages (Page Directory Entry, PDE)
+  occupe 4 octets (32 bits) :
+
+    31                  12 11  9 8 7 6 5 4  3  2  1  0
+  +----------------------+------+-+-+-+-+--+--+--+--+--+
+  | Adresse table pages  | AVL  |0|0|D|A|PCD|PWT|U/S|R/W| P|
+  |      [31:12]         |      | | | | |   |   |   |   |  |
+  +----------------------+------+-+-+-+-+--+--+--+--+--+
+
+  Champs :
+
+  Adresse [31:12] (20 bits) : Adresse physique de la table de pages
+    alignee sur 4 Ko (les 12 bits de poids faible sont implicitement 0).
+
+  P (bit 0) : Present
+    1 = La table de pages est presente en memoire
+    0 = La table de pages n'est pas presente
+        (les bits 31-1 sont libres pour le systeme d'exploitation)
+        L'acces genere une exception #PF (Page Fault)
+
+  R/W (bit 1) : Read/Write
+    0 = Les pages de cette table sont en lecture seule
+    1 = Les pages de cette table sont en lecture/ecriture
+    (combine avec le bit R/W de la PTE : acces = PDE.R/W AND PTE.R/W)
+
+  U/S (bit 2) : User/Supervisor
+    0 = Acces superviseur uniquement (ring 0, 1, 2)
+    1 = Acces utilisateur autorise (ring 3)
+    (combine avec la PTE : acces = PDE.U/S AND PTE.U/S)
+
+  PWT (bit 3) : Page Write-Through
+    0 = Politique de cache write-back pour cette table
+    1 = Politique de cache write-through
+
+  PCD (bit 4) : Page Cache Disable
+    0 = La table de pages peut etre mise en cache
+    1 = Le cache est desactive pour cette table
+
+  A (bit 5) : Accessed
+    Mis a 1 par le processeur lorsqu'une page de cette table
+    est accedee (lecture ou ecriture). Jamais remis a 0 par
+    le processeur (le systeme d'exploitation doit le faire).
+
+  D (bit 6) : Dirty (reserve dans le PDE, utilise dans le PTE)
+    Reserve (mis a 0) dans le repertoire de pages.
+
+  AVL (bits 11-9) : Available
+    3 bits disponibles pour le systeme d'exploitation.
+    Le processeur ne les modifie pas.
+
+  7.4 Entrees de tables de pages (PTE)
+  --------------------------------------
+
+  Chaque entree de table de pages (Page Table Entry, PTE) occupe
+  4 octets (32 bits) :
+
+    31                  12 11  9 8 7 6 5 4  3  2  1  0
+  +----------------------+------+-+-+-+-+--+--+--+--+--+
+  | Adresse page phys.   | AVL  |0|0|D|A|PCD|PWT|U/S|R/W| P|
+  |      [31:12]         |      | | | | |   |   |   |   |  |
+  +----------------------+------+-+-+-+-+--+--+--+--+--+
+
+  Champs :
+
+  Adresse [31:12] (20 bits) : Adresse physique de la page de 4 Ko.
+    Les 12 bits de poids faible sont implicitement 0 (alignement 4 Ko).
+
+  P (bit 0) : Present
+    1 = La page physique est presente en memoire
+    0 = La page n'est pas presente (swappee sur disque ou non allouee)
+        L'acces genere une exception #PF
+        Les bits 31-1 sont libres pour le systeme (ex: offset disque)
+
+  R/W (bit 1) : Read/Write
+    0 = Page en lecture seule (pour ring 3)
+    1 = Page en lecture/ecriture
+    Note : en ring 0, toutes les pages sont inscriptibles
+    sauf si CR0.WP = 1
+
+  U/S (bit 2) : User/Supervisor
+    0 = Page accessible uniquement au superviseur (CPL 0-2)
+    1 = Page accessible a tous les niveaux (CPL 0-3)
+
+  PWT (bit 3) : Page Write-Through
+    Politique de cache pour cette page specifique.
+
+  PCD (bit 4) : Page Cache Disable
+    Desactive le cache pour cette page (utile pour les E/S
+    mappees en memoire, MMIO).
+
+  A (bit 5) : Accessed
+    Mis a 1 par le processeur lors de tout acces a la page.
+    Utilise par le systeme pour les algorithmes de remplacement
+    (LRU, clock algorithm).
+
+  D (bit 6) : Dirty
+    Mis a 1 par le processeur lors d'une ecriture dans la page.
+    Utilise par le systeme pour savoir si la page doit etre
+    ecrite sur le disque avant d'etre reutilisee.
+
+  AVL (bits 11-9) : Available
+    3 bits libres pour le systeme d'exploitation.
+
+  7.5 Traduction d'adresses lineaires en adresses physiques
+  -----------------------------------------------------------
+
+  L'adresse lineaire de 32 bits est decomposee en trois champs :
+
+    31         22 21        12 11          0
+  +-------------+------------+-------------+
+  |  Directory  |   Table    |   Offset    |
+  |  (10 bits)  | (10 bits)  |  (12 bits)  |
+  +-------------+------------+-------------+
+
+  Directory (bits 31-22) : Index dans le repertoire de pages (0-1023)
+  Table    (bits 21-12)  : Index dans la table de pages (0-1023)
+  Offset   (bits 11-0)   : Offset dans la page physique (0-4095)
+
+  Etapes de la traduction :
+
+  1. Le processeur lit CR3 pour obtenir l'adresse physique du
+     repertoire de pages.
+
+  2. Il utilise les bits 31-22 (Directory) comme index dans le
+     repertoire de pages pour lire la PDE correspondante.
+     Adresse de la PDE = CR3 + Directory * 4
+
+  3. Il verifie le bit P de la PDE :
+     - Si P=0 : exception #PF (table de pages absente)
+     - Si P=1 : il extrait l'adresse de la table de pages
+       (bits 31-12 de la PDE)
+
+  4. Il utilise les bits 21-12 (Table) comme index dans la
+     table de pages pour lire la PTE correspondante.
+     Adresse de la PTE = Adresse_table + Table * 4
+
+  5. Il verifie le bit P de la PTE :
+     - Si P=0 : exception #PF (page absente)
+     - Si P=1 : il extrait l'adresse physique de la page
+       (bits 31-12 de la PTE)
+
+  6. Il concatene l'adresse de la page (20 bits de poids fort)
+     avec l'offset (12 bits de poids faible) pour former
+     l'adresse physique de 32 bits.
+     Adresse physique = PTE[31:12] | Offset[11:0]
+
+  Schema de traduction :
+
+    Adresse lineaire : [ Directory | Table | Offset ]
+                           |           |        |
+                           v           |        |
+    CR3 ──> Page Directory |           |        |
+            [Directory] ───+           |        |
+                           |           v        |
+                           +──> Page Table      |
+                                [Table] ────────+
+                                        |       |
+                                        v       v
+                               Page physique + Offset
+                                        |
+                                        v
+                               Adresse physique
+
+  Exemple concret :
+
+  Adresse lineaire = 00401000h
+    Directory = 00401000h >> 22 = 1         (bits 31-22)
+    Table     = (00401000h >> 12) & 3FFh = 1 (bits 21-12)
+    Offset    = 00401000h & FFFh = 000h     (bits 11-0)
+
+  Le processeur :
+    1. Lit la PDE a l'index 1 du repertoire
+    2. Lit la PTE a l'index 1 de la table de pages
+    3. Combine l'adresse de la page avec l'offset 000h
+
+  7.6 Le registre CR3 (PDBR)
+  ----------------------------
+
+  Le registre CR3, aussi appele PDBR (Page Directory Base Register),
+  contient l'adresse physique du repertoire de pages de la tache
+  courante.
+
+    31                  12 11  5  4  3  2        0
+  +----------------------+------+---+---+---------+
+  | Adresse repertoire   |  0   |PCD|PWT|    0    |
+  |      [31:12]         |      |   |   |         |
+  +----------------------+------+---+---+---------+
+
+  Adresse [31:12] : Adresse physique du repertoire de pages
+    alignee sur 4 Ko.
+
+  PWT (bit 3) : Write-Through pour le repertoire de pages.
+  PCD (bit 4) : Cache Disable pour le repertoire de pages.
+
+  Le registre CR3 est modifie :
+    - Par MOV CR3, reg32 (instruction privilegiee, ring 0)
+    - Automatiquement lors d'une commutation de taches via le TSS
+      (le champ CR3 du TSS est charge dans CR3)
+
+  Important : l'ecriture dans CR3 invalide automatiquement toutes
+  les entrees du TLB (Translation Lookaside Buffer), sauf celles
+  marquees "globales" (bit G, a partir du Pentium).
+
+  Chaque processus a son propre repertoire de pages. Lors du
+  changement de contexte, le systeme d'exploitation charge CR3
+  avec l'adresse du repertoire du nouveau processus, ce qui
+  change instantanement tout le mapping memoire.
+
+  7.7 Cache de traduction (TLB)
+  ------------------------------
+
+  La traduction d'une adresse lineaire en adresse physique
+  necessite deux acces memoire supplementaires (PDE + PTE), ce
+  qui triplerait le temps d'acces. Pour eviter cette penalite,
+  le 80386 utilise un TLB (Translation Lookaside Buffer).
+
+  Le TLB est un cache interne au processeur qui stocke les
+  traductions recentes (page lineaire -> page physique).
+
+  Caracteristiques du TLB du 80386 :
+    - 32 entrees (pages)
+    - Associatif a 4 voies (4-way set associative)
+    - Couvre 32 * 4 Ko = 128 Ko d'espace d'adressage
+    - Taux de succes (hit rate) typique : > 98%
+
+  Fonctionnement :
+
+  1. Le processeur cherche la traduction dans le TLB
+     (comparaison des 20 bits de poids fort de l'adresse lineaire)
+
+  2. Si TLB hit : l'adresse physique est retournee immediatement
+     (aucun acces memoire supplementaire)
+
+  3. Si TLB miss : le processeur effectue un "page table walk"
+     (lecture PDE puis PTE en memoire), met a jour le TLB
+     avec la nouvelle traduction, puis retente l'acces
+
+  Invalidation du TLB :
+
+  Le TLB doit etre invalide lorsque les tables de pages sont
+  modifiees. Sur le 80386, cela se fait par :
+
+    - MOV CR3, reg32 : invalide tout le TLB
+    - Commutation de tache : invalide tout le TLB (via CR3)
+
+  Note : le 80486 et les processeurs suivants ajoutent
+  l'instruction INVLPG adresse qui invalide une seule entree
+  du TLB, ce qui est plus efficace.
+
+  Impact sur les performances :
+
+  Avec un taux de hit de 98%, la penalite moyenne de la
+  pagination est tres faible :
+    Temps moyen = 0.98 * T_cache + 0.02 * (T_cache + 2 * T_mem)
+  soit environ 1% de surcharge par rapport a un acces direct.
+
+  7.8 Protection par la pagination
+  ----------------------------------
+
+  La pagination fournit un deuxieme niveau de protection, en
+  complement de la protection par segmentation.
+
+  7.8.1 Protection en lecture/ecriture (R/W)
+
+  Le bit R/W des PDE et PTE controle l'acces en ecriture :
+
+  PDE.R/W  PTE.R/W  Acces effectif (ring 3)
+  -------  -------  --------------------------------
+    0        0       Lecture seule
+    0        1       Lecture seule (PDE prioritaire)
+    1        0       Lecture seule
+    1        1       Lecture/ecriture
+
+  L'acces effectif est le AND logique des bits R/W de la PDE
+  et de la PTE.
+
+  En ring 0 (superviseur), toutes les pages sont inscriptibles
+  par defaut, sauf si le bit WP (Write Protect, bit 16 de CR0)
+  est a 1. Le bit WP a ete ajoute dans le 80486 mais est
+  retro-applique dans les descriptions du 80386 tardives.
+  Avec CR0.WP=1, le noyau ne peut pas ecrire dans les pages
+  marquees en lecture seule, ce qui est essentiel pour
+  implementer le copy-on-write (fork() sous Unix).
+
+  7.8.2 Protection superviseur/utilisateur (U/S)
+
+  Le bit U/S controle l'acces selon le niveau de privilege :
+
+  PDE.U/S  PTE.U/S  Ring 0-2        Ring 3
+  -------  -------  --------------- ---------------
+    0        0       Acces complet   #PF (interdit)
+    0        1       Acces complet   #PF (interdit)
+    1        0       Acces complet   #PF (interdit)
+    1        1       Acces complet   Acces autorise
+
+  Les deux bits doivent etre a 1 pour autoriser l'acces en
+  ring 3. Le superviseur peut toujours acceder a toutes les pages.
+
+  7.8.3 Combinaison segmentation + pagination
+
+  La protection effective est la plus restrictive des deux
+  mecanismes :
+
+  - La segmentation verifie les privileges des segments
+    (CPL, DPL, RPL) et les types de segments (code, donnees)
+  - La pagination verifie les droits par page (R/W, U/S)
+
+  Un acces est autorise seulement si les deux mecanismes
+  l'autorisent. Cela permet une protection tres fine :
+  par exemple, un segment de donnees en lecture/ecriture peut
+  contenir des pages en lecture seule pour proteger certaines
+  zones (tables du systeme, code partage, etc.).
+
+  7.9 Faute de page (exception #PF)
+  ------------------------------------
+
+  L'exception #PF (Page Fault, vecteur 14) est generee lorsque :
+
+  a) Le bit P (Present) d'une PDE ou PTE est a 0
+     (la page ou la table de pages n'est pas en memoire)
+
+  b) Une violation de protection est detectee :
+     - Ecriture dans une page en lecture seule (R/W=0) en ring 3
+     - Acces a une page superviseur (U/S=0) depuis le ring 3
+     - Ecriture dans une page en lecture seule depuis le ring 0
+       si CR0.WP=1
+
+  7.9.1 Code d'erreur de #PF
+
+  Le processeur empile un code d'erreur de 32 bits sur la pile
+  du handler :
+
+    31                               4  3  2  1  0
+  +----------------------------------+--+--+--+--+
+  |              Reserve             |RS|U/S|W/R| P|
+  +----------------------------------+--+--+--+--+
+
+  P (bit 0) : Cause de la faute
+    0 = Page non presente (P=0 dans la PDE ou PTE)
+    1 = Violation de protection (page presente mais acces interdit)
+
+  W/R (bit 1) : Type d'acces qui a cause la faute
+    0 = L'acces fautif etait une lecture
+    1 = L'acces fautif etait une ecriture
+
+  U/S (bit 2) : Niveau de privilege au moment de la faute
+    0 = Le processeur etait en mode superviseur (CPL 0-2)
+    1 = Le processeur etait en mode utilisateur (CPL 3)
+
+  RS (bit 3) : Reserved bit set (a partir du Pentium)
+    1 = La faute a ete causee par un bit reserve mis a 1
+        dans une entree de page
+
+  7.9.2 Registre CR2
+
+  Lors d'une exception #PF, le processeur charge le registre CR2
+  avec l'adresse lineaire qui a cause la faute. Le handler
+  peut lire CR2 pour savoir quelle page doit etre traitee.
+
+    MOV EAX, CR2    ; Lire l'adresse fautive
+
+  7.9.3 Traitement typique d'une faute de page
+
+  Le handler de #PF du systeme d'exploitation effectue
+  typiquement les operations suivantes :
+
+  1. Lire CR2 pour obtenir l'adresse fautive
+  2. Lire le code d'erreur sur la pile
+  3. Determiner la cause :
+
+     a) Page non presente (P=0) :
+        - Verifier si l'adresse est valide pour le processus
+        - Si oui : charger la page depuis le disque (swap in),
+          mettre a jour la PTE (adresse physique + P=1),
+          invalider le TLB si necessaire, puis IRET
+        - Si non : envoyer un signal SIGSEGV (segfault) au
+          processus
+
+     b) Violation de protection (P=1) :
+        - Verifier si c'est un copy-on-write :
+          Si W/R=1 et la page est partagee, copier la page,
+          mettre a jour la PTE avec la copie, IRET
+        - Sinon : erreur de protection, SIGSEGV
+
+     c) Ecriture dans une page en lecture seule :
+        - Implementer le copy-on-write si applicable
+        - Sinon : SIGSEGV
+
+  7.10 Activation de la pagination
+  ----------------------------------
+
+  La sequence typique pour activer la pagination :
+
+  Prerequis :
+    - Le processeur doit etre en mode protege (CR0.PE = 1)
+    - Un repertoire de pages et au moins une table de pages
+      doivent etre prepares en memoire physique
+    - Le code d'activation doit etre mappe de facon identique
+      (identity mapping) pour eviter un saut dans le vide
+      apres l'activation
+
+  7.10.1 Preparation du repertoire et des tables de pages
+
+  ; Allouer une page physique pour le repertoire (alignee 4 Ko)
+  ; Initialiser toutes les entrees a 0 (non present)
+  ; Creer une table de pages pour les 4 premiers Mo (identity map)
+
+  page_directory  equ 100000h     ; Adresse du repertoire
+  page_table_0    equ 101000h     ; Adresse de la premiere table
+
+  ; Remplir la table de pages 0 : identity mapping des 4 premiers Mo
+  ; Chaque entree mappe page N vers l'adresse physique N * 4096
+
+    MOV EDI, page_table_0
+    MOV EAX, 3                  ; P=1, R/W=1, U/S=0
+    MOV ECX, 1024
+  .fill_pt0:
+    STOSD                       ; Ecrire l'entree
+    ADD EAX, 1000h              ; Page suivante (+4096)
+    LOOP .fill_pt0
+
+  ; Remplir l'entree 0 du repertoire de pages
+
+    MOV DWORD PTR [page_directory], page_table_0 OR 3
+    ; Adresse de la table | P=1, R/W=1
+
+  7.10.2 Activation de la pagination
+
+    ; Charger CR3 avec l'adresse du repertoire
+    MOV EAX, page_directory
+    MOV CR3, EAX
+
+    ; Activer la pagination (bit PG de CR0)
+    MOV EAX, CR0
+    OR  EAX, 80000000h         ; Bit 31 = PG
+    MOV CR0, EAX
+
+    ; JMP pour vider le pipeline de prefetch
+    JMP .paging_enabled
+  .paging_enabled:
+    ; La pagination est maintenant active
+    ; Toutes les adresses lineaires sont desormais traduites
+
+  Important : Apres l'activation de la pagination, le code en
+  cours d'execution doit etre accessible via le nouveau mapping.
+  C'est pourquoi un identity mapping (adresse lineaire = adresse
+  physique) est necessaire au minimum pour la zone de code.
+
+  7.10.3 Configuration typique pour un systeme d'exploitation
+
+  Un systeme d'exploitation moderne utilise typiquement :
+
+  - Identity mapping des premiers Mo pour le code du noyau
+  - Le noyau mappe dans les adresses hautes (ex: C0000000h-FFFFFFFFh)
+    de chaque processus (higher-half kernel)
+  - Chaque processus a son propre repertoire de pages
+  - Les pages du noyau sont marquees superviseur (U/S=0)
+  - Les pages utilisateur sont marquees U/S=1
+
+  Avec un higher-half kernel a l'adresse C0000000h :
+    - Les PDE 0-767   couvrent l'espace utilisateur (0-BFFFFFFFh)
+    - Les PDE 768-1023 couvrent l'espace noyau (C0000000h-FFFFFFFFh)
+
+  Lors du changement de processus, seules les PDE 0-767 changent.
+  Les PDE du noyau restent identiques dans tous les repertoires.
+
+  7.11 Memoire virtuelle et swapping
+  -------------------------------------
+
+  La pagination permet d'implementer la memoire virtuelle, ou
+  l'espace d'adressage total des processus peut depasser la
+  quantite de RAM physique disponible.
+
+  7.11.1 Principe du swapping
+
+  Quand la RAM physique est pleine et qu'une nouvelle page
+  doit etre chargee :
+
+  1. Le systeme choisit une page "victime" a evincer
+     (algorithme de remplacement de pages)
+  2. Si la page victime est "dirty" (D=1), il l'ecrit sur le
+     disque (swap out)
+  3. Il marque la PTE de la page victime comme non presente (P=0)
+     et stocke l'emplacement sur le disque dans les bits libres
+  4. Il charge la nouvelle page depuis le disque (swap in)
+  5. Il met a jour la PTE avec la nouvelle adresse physique (P=1)
+  6. Il invalide l'entree du TLB correspondante
+
+  7.11.2 Bits A et D pour le remplacement de pages
+
+  Les bits Accessed (A) et Dirty (D) sont essentiels pour les
+  algorithmes de remplacement de pages :
+
+  Bit A (Accessed) :
+    - Mis a 1 automatiquement par le processeur a chaque acces
+    - Le systeme le remet periodiquement a 0
+    - Si A=0 apres un certain temps, la page est "peu utilisee"
+      et peut etre evincee en priorite
+
+  Bit D (Dirty) :
+    - Mis a 1 automatiquement lors d'une ecriture
+    - Indique que la page a ete modifiee et doit etre
+      sauvegardee sur le disque avant eviction
+    - Une page "clean" (D=0) peut etre evincee sans ecriture
+      disque (gain de performance)
+
+  7.11.3 Algorithmes de remplacement courants
+
+  Les systemes d'exploitation utilisent differents algorithmes
+  pour choisir la page a evincer :
+
+  - Clock algorithm (horloge) :
+    Parcourt les pages en cercle, remet A a 0.
+    Evince la premiere page avec A=0.
+    Bonne approximation de LRU, facile a implementer.
+
+  - LRU approxime (Least Recently Used) :
+    Utilise le bit A pour estimer l'ordre d'acces.
+    Evince la page la moins recemment accedee.
+
+  - NRU (Not Recently Used) :
+    Classe les pages en 4 categories selon A et D :
+      Classe 0 : A=0, D=0 (non accedee, non modifiee) - meilleure victime
+      Classe 1 : A=0, D=1 (non accedee, modifiee)
+      Classe 2 : A=1, D=0 (accedee, non modifiee)
+      Classe 3 : A=1, D=1 (accedee, modifiee) - pire victime
+
+  7.11.4 Informations dans une PTE non presente
+
+  Quand une page est swappee (P=0), le systeme d'exploitation
+  peut utiliser les 31 bits restants (bits 31-1) de la PTE
+  pour stocker des informations :
+
+    31                               1 0
+  +-----------------------------------+-+
+  | Information systeme (emplacement)  |0|  <- P=0
+  +-----------------------------------+-+
+
+  Typiquement, ces bits contiennent :
+    - L'offset dans le fichier de swap (partition ou fichier disque)
+    - Un indicateur du type de page (swap, fichier mappe, etc.)
+    - Le processeur ne lit jamais ces bits si P=0
+
+  7.11.5 Exemple : tailles de memoire virtuelle
+
+  Avec 16 Mo de RAM physique et 256 Mo de swap :
+
+  - Chaque processus peut avoir un espace de 4 Go
+  - Le systeme peut maintenir environ 272 Mo de pages
+    (16 Mo RAM + 256 Mo swap)
+  - Les pages actives restent en RAM
+  - Les pages inactives sont deplacees sur le swap
+  - L'exception #PF gere transparentement les chargements
+
+  7.11.6 Resume : comparaison segmentation vs pagination
+
+  Critere              Segmentation          Pagination
+  ──────────────────   ──────────────────    ──────────────────
+  Unite de memoire     Segment (variable)    Page (4 Ko fixe)
+  Fragmentation        Externe               Interne (faible)
+  Tables               GDT/LDT              Page Directory/Tables
+  Protection           DPL, type segment     U/S, R/W par page
+  Memoire virtuelle    Limitee (NP flag)     Complete (swap)
+  Taille typique       Variable (1 a 4 Go)  Fixe (4096 octets)
+  Localisation         GDTR, LDTR            CR3 (PDBR)
+  Transparence         Non (selecteurs)      Oui (adresses plates)
+
+  En pratique, les systemes d'exploitation modernes utilisent
+  un modele "flat" avec segmentation minimale (base=0, limite=4Go)
+  et s'appuient presque exclusivement sur la pagination pour
+  la gestion de la memoire et la protection.
 
 ==============================================================================
 8. INTERRUPTIONS ET EXCEPTIONS
