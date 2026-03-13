@@ -277,7 +277,7 @@
               STUFF(str, pos, del, ins) -> AX = ptr insertion/suppression
               TRANSFORM(val, mask)  -> AX = ptr valeur formatee avec masque
 
-  TODO 17 - PROCEDURES ET FONCTIONS
+  TODO 17 - PROCEDURES ET FONCTIONS [IMPLEMENTE]
             ParseFuncDecl : FUNCTION nom([params]) ... RETURN expr
             ParseProcDecl : PROCEDURE nom([params]) ... RETURN
             Parametres : passes par valeur (copie tag+val sur la pile)
@@ -723,6 +723,19 @@ Var
   { Heap pour tableaux dynamiques (TODO 15) }
   ArrayTempCount : Integer;   { compteur de tableaux temporaires     }
 
+  { Procedures et fonctions (TODO 17) }
+  InFuncDecl     : Boolean;   { True si on est dans une FUNCTION     }
+  InProcDecl     : Boolean;   { True si on est dans une PROCEDURE    }
+  CurFuncName    : TString;   { nom de la fonction/procedure courante}
+  SaveFrameSize  : Integer;   { sauvegarde CurFrameSize de l appelant}
+  SaveFnRetLbl   : TString;   { sauvegarde CurFnRetLbl de l appelant }
+  SaveSymOffset  : Integer;   { sauvegarde SymNextOffset             }
+  SaveParamOfs   : Integer;   { sauvegarde ParamNextOffset           }
+  InitProcTab    : Array[0..15] Of TString;
+  InitProcCount  : Integer;   { nombre de INIT PROCEDURE             }
+  ExitProcTab    : Array[0..15] Of TString;
+  ExitProcCount  : Integer;   { nombre de EXIT PROCEDURE             }
+
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
@@ -861,6 +874,12 @@ Procedure ParseArrayLiteral(Var Res : TExprVal); Forward;
 
 { Chaines de caracteres (TODO 16) }
 Procedure EmitStringRuntime; Forward;
+
+{ Procedures et fonctions (TODO 17) }
+Procedure ParseFuncDecl; Forward;
+Procedure ParseProcDecl; Forward;
+Procedure ParseReturnStmt; Forward;
+Procedure ParseDoCallStmt; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1108,6 +1127,15 @@ Begin
   ParamNextOffset := 4;   { [BP+4] est le premier parametre }
   LoopTop      := 0;
   ArrayTempCount := 0;
+  InFuncDecl   := False;
+  InProcDecl   := False;
+  CurFuncName  := '';
+  SaveFrameSize := 0;
+  SaveFnRetLbl := '';
+  SaveSymOffset := 0;
+  SaveParamOfs := 0;
+  InitProcCount := 0;
+  ExitProcCount := 0;
   TypeInit;
   SymInit;
 End;
@@ -1213,7 +1241,7 @@ Begin
         ParserAdvance;
         ParseIfStmt;
       End
-      { DO [CASE/WHILE] (TODO 13/14) }
+      { DO [CASE/WHILE/procname] (TODO 13/14/17) }
       Else If Kw = 'DO' Then
       Begin
         ParserAdvance;
@@ -1226,6 +1254,11 @@ Begin
         Begin
           ParserAdvance;
           ParseDoWhileStmt;
+        End
+        Else If (CurToken.Kind = TK_IDENT) Then
+        Begin
+          { DO procname [WITH arg1, arg2] (TODO 17) }
+          ParseDoCallStmt;
         End;
       End
       { FOR / FOR EACH (TODO 14) }
@@ -1252,17 +1285,74 @@ Begin
         Else
           CompileError('LOOP en dehors d une boucle');
       End
-      { EXIT (TODO 14) }
+      { EXIT (TODO 14) / EXIT PROCEDURE (TODO 17) }
       Else If Kw = 'EXIT' Then
       Begin
         ParserAdvance;
-        If LoopTop > 0 Then
+        If (CurToken.Kind = TK_KEYWORD) And
+           ((CurToken.Val = 'PROCEDURE') Or (CurToken.Val = 'PROC')) Then
+        Begin
+          { EXIT PROCEDURE declaration (TODO 17) }
+          ParserAdvance;
+          If CurToken.Kind = TK_IDENT Then
+          Begin
+            If ExitProcCount < 16 Then
+            Begin
+              ExitProcTab[ExitProcCount] := CL_FN_PFX + SymNameClean(CurToken.Val);
+              Inc(ExitProcCount);
+            End;
+            ParseProcDecl;
+          End
+          Else
+            CompileError('EXIT PROCEDURE : nom attendu');
+        End
+        Else If LoopTop > 0 Then
         Begin
           EmitComment('EXIT');
           EmitInstrA('JMP', LoopBrkLbl[LoopTop - 1]);
         End
         Else
           CompileError('EXIT en dehors d une boucle');
+      End
+      { FUNCTION declaration (TODO 17) }
+      Else If (Kw = 'FUNCTION') Or (Kw = 'FUNC') Then
+      Begin
+        ParserAdvance;
+        ParseFuncDecl;
+      End
+      { PROCEDURE declaration (TODO 17) }
+      Else If (Kw = 'PROCEDURE') Or (Kw = 'PROC') Then
+      Begin
+        ParserAdvance;
+        ParseProcDecl;
+      End
+      { RETURN statement (TODO 17) }
+      Else If (Kw = 'RETURN') Or (Kw = 'RETU') Then
+      Begin
+        ParserAdvance;
+        ParseReturnStmt;
+      End
+      { INIT PROCEDURE (TODO 17) }
+      Else If Kw = 'INIT' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_KEYWORD) And
+           ((CurToken.Val = 'PROCEDURE') Or (CurToken.Val = 'PROC')) Then
+        Begin
+          ParserAdvance;
+          { Lire le nom de la procedure INIT }
+          If CurToken.Kind = TK_IDENT Then
+          Begin
+            If InitProcCount < 16 Then
+            Begin
+              InitProcTab[InitProcCount] := CL_FN_PFX + SymNameClean(CurToken.Val);
+              Inc(InitProcCount);
+            End;
+            ParseProcDecl;
+          End
+          Else
+            CompileError('INIT PROCEDURE : nom attendu');
+        End;
       End
       Else
       Begin
@@ -1378,7 +1468,7 @@ Begin
      (U = 'READ')       Or (U = 'CLEAR')      Or (U = 'SET')      Or
      (U = 'SAY')        Or (U = 'GET')        Or (U = 'PICTURE')  Or
      (U = 'VALID')      Or (U = 'SCREEN')     Or (U = 'COLOR')    Or
-     (U = 'DOUBLE') Then
+     (U = 'DOUBLE')     Or (U = 'INIT') Then
   Begin
     IsKeyword := True;
     Exit;
@@ -1430,7 +1520,7 @@ Begin
      (U = 'STORE')   Or (U = 'READ')   Or (U = 'CLEAR')   Or
      (U = 'SET')     Or (U = 'SAY')    Or (U = 'GET')     Or
      (U = 'PICTURE') Or (U = 'VALID')  Or (U = 'SCREEN')  Or
-     (U = 'COLOR')   Or (U = 'DOUBLE') Then
+     (U = 'COLOR')   Or (U = 'DOUBLE') Or (U = 'INIT') Then
   Begin
     ExpandKeyword := U;
     Exit;
@@ -5732,6 +5822,8 @@ Begin
   { Initialiser DS sur le segment de donnees }
   EmitInstrAB('MOV', 'AX', '_DATA');
   EmitInstrAB('MOV', 'DS', 'AX');
+  { Appeler les INIT PROCEDUREs (TODO 17) - le bloc sera emis a la fin }
+  EmitInstrA('CALL', '_CLL_INITBLOCK');
   EmitBlankLine;
   EmitComment('--- debut du code genere ---');
   EmitBlankLine;
@@ -6510,13 +6602,13 @@ Begin
                        (Kw = 'ELSEIF') Or (Kw = 'ENDCASE') Or
                        (Kw = 'CASE') Or (Kw = 'OTHERWISE') Or
                        (Kw = 'ENDDO') Or (Kw = 'NEXT') Or
-                       (Kw = 'FUNCTION') Or (Kw = 'PROCEDURE') Or
-                       (Kw = 'RETURN');
+                       (Kw = 'FUNCTION') Or (Kw = 'PROCEDURE');
 End;
 
 Procedure ParseStmtBlock;
 Var
-  Kw : TString;
+  Kw      : TString;
+  RetExpr : TExprVal;
 Begin
   While CurToken.Kind <> TK_EOF Do
   Begin
@@ -6596,6 +6688,11 @@ Begin
         Begin
           ParserAdvance;
           ParseDoWhileStmt;
+        End
+        Else If (CurToken.Kind = TK_IDENT) Then
+        Begin
+          { DO procname [WITH arg1, arg2] (TODO 17) }
+          ParseDoCallStmt;
         End;
       End
       Else If Kw = 'FOR' Then
@@ -6630,6 +6727,38 @@ Begin
         End
         Else
           CompileError('EXIT en dehors d une boucle');
+      End
+      { RETURN inside a block (TODO 17) }
+      Else If (Kw = 'RETURN') Or (Kw = 'RETU') Then
+      Begin
+        ParserAdvance;
+        If CurFnRetLbl <> '' Then
+        Begin
+          { Inside a FUNCTION : RETURN expr }
+          If (CurToken.Kind <> TK_EOF) And
+             Not ((CurToken.Kind = TK_KEYWORD) And
+                  (IsBlockTerminator(CurToken.Val))) And
+             Not ((CurToken.Kind = TK_KEYWORD) And
+                  ((CurToken.Val = 'RETURN') Or (CurToken.Val = 'RETU'))) Then
+          Begin
+            EmitComment('RETURN expr');
+            ParseExpr(RetExpr);
+            ExprFlushToAX(RetExpr);
+          End
+          Else
+          Begin
+            EmitComment('RETURN NIL');
+            EmitInstrAB('XOR', 'AX', 'AX');
+          End;
+          EmitInstrA('JMP', CurFnRetLbl);
+        End
+        Else
+        Begin
+          { Global level RETURN }
+          EmitComment('RETURN (global)');
+          EmitInstrAB('MOV', 'AX', '4C00h');
+          EmitInstr('INT    21h');
+        End;
       End
       Else
       Begin
@@ -8292,6 +8421,416 @@ Begin
   EmitBlankLine;
 End;
 
+{ ============================================================
+  TODO 17 - PROCEDURES ET FONCTIONS [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseFuncBody : corps commun FUNCTION/PROCEDURE --------- }
+(* Parse le corps d une function/procedure : les instructions
+   entre la declaration et le prochain FUNCTION/PROCEDURE ou EOF.
+   Gere le scope, le cadre de pile, le prologue et l epilogue.
+   IsFunc=True pour FUNCTION, False pour PROCEDURE.
+   FnLabel est le label ASM de la routine.                       *)
+
+Procedure ParseFuncBody(IsFunc : Boolean; Const FnLabel : TString);
+Var
+  SkipLbl  : TString;
+  Kw       : TString;
+  RetExpr  : TExprVal;
+  OldFrame : Integer;
+Begin
+  { Sauvegarder le contexte courant }
+  SaveFrameSize := CurFrameSize;
+  SaveFnRetLbl  := CurFnRetLbl;
+  SaveSymOffset := SymNextOffset;
+  SaveParamOfs  := ParamNextOffset;
+
+  { Initialiser le nouveau contexte de fonction }
+  CurFrameSize    := 0;
+  CurFnRetLbl     := LabelGen;
+  SymNextOffset   := 0;
+  ParamNextOffset := 4;  { [BP+4] est le premier parametre }
+  If IsFunc Then
+    InFuncDecl := True
+  Else
+    InProcDecl := True;
+
+  { Entrer dans un nouveau scope }
+  SymEnterScope;
+
+  { Emettre un JMP pour sauter le corps de la fonction dans le flux principal }
+  SkipLbl := LabelGen;
+  EmitInstrA('JMP', SkipLbl);
+  EmitBlankLine;
+
+  { Emettre le label de la fonction }
+  EmitComment(FnLabel);
+  EmitLabel(FnLabel);
+
+  { Parser la liste de parametres si presente : (p1, p2, ...) }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+  Begin
+    ParserAdvance;  { consommer ( }
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+    Begin
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        DeclAllocSym(CurToken.Val, SC_PARAM);
+        ParserAdvance;
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance;
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance;  { consommer ) }
+  End;
+
+  { Emettre le prologue : le CurFrameSize sera ajuste apres les LOCALs }
+  { On reserve le prologue, on le patchera pas - on emet directement }
+  { puisqu on ne connait pas encore le nombre de LOCALs on emet un }
+  { prologue minimal et on ajustera via les declarations LOCAL }
+  EmitInstr('PUSH   BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+
+  { Parser le corps : les declarations LOCAL/STATIC et les instructions }
+  { jusqu a RETURN, ou prochain FUNCTION/PROCEDURE, ou EOF }
+  While CurToken.Kind <> TK_EOF Do
+  Begin
+    If CurToken.Kind = TK_KEYWORD Then
+    Begin
+      Kw := CurToken.Val;
+      { RETURN met fin au corps }
+      If (Kw = 'RETURN') Or (Kw = 'RETU') Then
+      Begin
+        ParserAdvance;
+        If IsFunc Then
+        Begin
+          { RETURN expr : evaluer l expression et charger dans AX }
+          If (CurToken.Kind <> TK_EOF) And
+             Not ((CurToken.Kind = TK_KEYWORD) And
+                  (IsBlockTerminator(CurToken.Val))) And
+             Not ((CurToken.Kind = TK_KEYWORD) And
+                  ((CurToken.Val = 'RETURN') Or (CurToken.Val = 'RETU'))) Then
+          Begin
+            EmitComment('RETURN expr');
+            ParseExpr(RetExpr);
+            ExprFlushToAX(RetExpr);
+          End
+          Else
+          Begin
+            { RETURN sans valeur dans FUNCTION : retourne NIL (0) }
+            EmitComment('RETURN NIL');
+            EmitInstrAB('XOR', 'AX', 'AX');
+          End;
+        End
+        Else
+        Begin
+          { PROCEDURE : RETURN sans valeur }
+          EmitComment('RETURN');
+        End;
+        EmitInstrA('JMP', CurFnRetLbl);
+        Break;
+      End;
+      { FUNCTION ou PROCEDURE termine aussi le corps courant }
+      If (Kw = 'FUNCTION') Or (Kw = 'FUNC') Or
+         (Kw = 'PROCEDURE') Or (Kw = 'PROC') Then
+        Break;
+    End;
+    { Parser une instruction du corps (comme dans ParseStmtBlock) }
+    If CurToken.Kind = TK_KEYWORD Then
+    Begin
+      Kw := CurToken.Val;
+      If (Kw = 'LOCAL') Or (Kw = 'LOCA') Or
+         (Kw = 'STATIC') Or (Kw = 'STAT') Or
+         (Kw = 'PRIVATE') Or (Kw = 'PRIV') Or
+         (Kw = 'PUBLIC') Or (Kw = 'PUBL') Or
+         (Kw = 'DECLARE') Or (Kw = 'DECL') Or
+         (Kw = 'PARAMETERS') Or (Kw = 'PARA') Then
+      Begin
+        If (Kw = 'LOCA') Then Kw := 'LOCAL';
+        If (Kw = 'STAT') Then Kw := 'STATIC';
+        If (Kw = 'PRIV') Then Kw := 'PRIVATE';
+        If (Kw = 'PUBL') Then Kw := 'PUBLIC';
+        If (Kw = 'DECL') Then Kw := 'DECLARE';
+        If (Kw = 'PARA') Then Kw := 'PARAMETERS';
+        OldFrame := CurFrameSize;
+        ParserAdvance;
+        ParseDeclStmt(Kw);
+        { Ajuster SP pour les nouvelles variables locales }
+        If CurFrameSize > OldFrame Then
+          EmitInstrAB('SUB', 'SP', IntToStr((CurFrameSize - OldFrame) * 2));
+      End
+      Else If Kw = 'STORE' Then
+      Begin
+        ParserAdvance;
+        ParseStoreStmt;
+      End
+      Else If Kw = '?' Then
+      Begin
+        ParserAdvance;
+        ParseQOutStmt(True);
+      End
+      Else If Kw = '??' Then
+      Begin
+        ParserAdvance;
+        ParseQOutStmt(False);
+      End
+      Else If Kw = 'READ' Then
+      Begin
+        ParserAdvance;
+        ParseReadStmt;
+      End
+      Else If Kw = 'CLEAR' Then
+      Begin
+        ParserAdvance;
+        ParseClearStmt;
+      End
+      Else If Kw = 'SET' Then
+      Begin
+        ParserAdvance;
+        ParseSetColorStmt;
+      End
+      Else If Kw = 'IF' Then
+      Begin
+        ParserAdvance;
+        ParseIfStmt;
+      End
+      Else If Kw = 'DO' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'CASE') Then
+        Begin
+          ParserAdvance;
+          ParseDoCaseStmt;
+        End
+        Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'WHILE') Then
+        Begin
+          ParserAdvance;
+          ParseDoWhileStmt;
+        End
+        Else If (CurToken.Kind = TK_IDENT) Then
+          ParseDoCallStmt;
+      End
+      Else If Kw = 'FOR' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'EACH') Then
+        Begin
+          ParserAdvance;
+          ParseForEachStmt;
+        End
+        Else
+          ParseForStmt;
+      End
+      Else If Kw = 'LOOP' Then
+      Begin
+        ParserAdvance;
+        If LoopTop > 0 Then
+        Begin
+          EmitComment('LOOP');
+          EmitInstrA('JMP', LoopContLbl[LoopTop - 1]);
+        End
+        Else
+          CompileError('LOOP en dehors d une boucle');
+      End
+      Else If Kw = 'EXIT' Then
+      Begin
+        ParserAdvance;
+        If LoopTop > 0 Then
+        Begin
+          EmitComment('EXIT');
+          EmitInstrA('JMP', LoopBrkLbl[LoopTop - 1]);
+        End
+        Else
+          CompileError('EXIT en dehors d une boucle');
+      End
+      Else
+        ParserAdvance;
+    End
+    Else If CurToken.Kind = TK_IDENT Then
+      ParseExprStmt
+    Else If CurToken.Kind = TK_PUNCT Then
+      ParserAdvance
+    Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '&') Then
+      ParseExprStmt
+    Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '@') Then
+    Begin
+      ParserAdvance;
+      ParseAtStmt;
+    End
+    Else
+      ParserAdvance;
+  End;
+
+  { Emettre l epilogue }
+  EmitLabel(CurFnRetLbl);
+  If CurFrameSize > 0 Then
+    EmitInstrAB('MOV', 'SP', 'BP');
+  EmitInstr('POP    BP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { Quitter le scope }
+  SymLeaveScope;
+
+  { Restaurer le contexte precedent }
+  CurFrameSize    := SaveFrameSize;
+  CurFnRetLbl     := SaveFnRetLbl;
+  SymNextOffset   := SaveSymOffset;
+  ParamNextOffset := SaveParamOfs;
+  InFuncDecl      := False;
+  InProcDecl      := False;
+
+  { Label de saut pour le flux principal }
+  EmitLabel(SkipLbl);
+End;
+
+{ ---- ParseFuncDecl : parser une declaration FUNCTION --------- }
+(* Syntaxe Clipper :
+     FUNCTION nom([param1, param2, ...])
+       LOCAL ...
+       ... body ...
+     RETURN expr
+
+   Le mot-cle FUNCTION a deja ete consomme.
+   Enregistre le symbole SC_FUNC dans la table.
+   Emet le code assembleur avec prologue/epilogue standard.      *)
+
+Procedure ParseFuncDecl;
+Var
+  FnName  : TString;
+  FnLabel : TString;
+Begin
+  If (CurToken.Kind <> TK_IDENT) And (CurToken.Kind <> TK_KEYWORD) Then
+  Begin
+    CompileError('FUNCTION : nom attendu');
+    Exit;
+  End;
+  FnName := CurToken.Val;
+  ParserAdvance;
+
+  { Enregistrer le symbole fonction }
+  FnLabel := CL_FN_PFX + SymNameClean(FnName);
+  SymAdd(FnName, SC_FUNC, TY_IDX_NIL, 0);
+  CurFuncName := StrUpper(FnName);
+
+  If Opts.Verbose Then
+    WriteLn('  FUNCTION ', CurFuncName, ' -> ', FnLabel);
+
+  ParseFuncBody(True, FnLabel);
+  CurFuncName := '';
+End;
+
+{ ---- ParseProcDecl : parser une declaration PROCEDURE -------- }
+(* Syntaxe Clipper :
+     PROCEDURE nom([param1, param2, ...])
+       LOCAL ...
+       ... body ...
+     RETURN
+   ou :
+     INIT PROCEDURE nom
+     EXIT PROCEDURE nom
+
+   Le mot-cle PROCEDURE a deja ete consomme.
+   Detecte INIT/EXIT pour l execution automatique au demarrage/fin.*)
+
+Procedure ParseProcDecl;
+Var
+  ProcName  : TString;
+  ProcLabel : TString;
+Begin
+  If (CurToken.Kind <> TK_IDENT) And (CurToken.Kind <> TK_KEYWORD) Then
+  Begin
+    CompileError('PROCEDURE : nom attendu');
+    Exit;
+  End;
+  ProcName := CurToken.Val;
+  ParserAdvance;
+
+  { Enregistrer le symbole procedure }
+  ProcLabel := CL_FN_PFX + SymNameClean(ProcName);
+  SymAdd(ProcName, SC_PROC, TY_IDX_NIL, 0);
+  CurFuncName := StrUpper(ProcName);
+
+  If Opts.Verbose Then
+    WriteLn('  PROCEDURE ', CurFuncName, ' -> ', ProcLabel);
+
+  ParseFuncBody(False, ProcLabel);
+  CurFuncName := '';
+End;
+
+{ ---- ParseReturnStmt : parser RETURN [expr] en contexte global  }
+(* En dehors d une FUNCTION/PROCEDURE, RETURN met fin au programme.
+   A l interieur, il est gere par ParseFuncBody.
+   Le mot-cle RETURN a deja ete consomme.                        *)
+
+Procedure ParseReturnStmt;
+Begin
+  { En contexte global, RETURN termine le programme }
+  EmitComment('RETURN (global)');
+  EmitInstrAB('MOV', 'AX', '4C00h');
+  EmitInstr('INT    21h');
+End;
+
+{ ---- ParseDoCallStmt : parser DO procname [WITH args] -------- }
+(* Syntaxe dBASE/Clipper :
+     DO procname [WITH arg1, arg2, ...]
+   Le mot-cle DO a deja ete consomme.
+   Le token courant est l identificateur du nom de procedure.
+   Genere PUSH args + CALL _CLP_name + ADD SP, n*2.             *)
+
+Procedure ParseDoCallStmt;
+Var
+  ProcName  : TString;
+  ProcLabel : TString;
+  ArgCount  : Integer;
+  Arg       : TExprVal;
+  SI        : Integer;
+Begin
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('DO : nom de procedure attendu');
+    Exit;
+  End;
+  ProcName := CurToken.Val;
+  ParserAdvance;
+
+  { Verifier si le symbole existe, sinon le creer comme forward ref }
+  SI := SymFind(ProcName);
+  If SI < 0 Then
+  Begin
+    { Forward reference : creer le symbole }
+    ProcLabel := CL_FN_PFX + SymNameClean(ProcName);
+    SI := SymAdd(ProcName, SC_PROC, TY_IDX_NIL, 0);
+  End
+  Else
+    ProcLabel := SymTab[SI].MangledName;
+
+  EmitComment('DO ' + StrUpper(ProcName));
+  ArgCount := 0;
+
+  { Parser les arguments optionnels : WITH arg1, arg2, ... }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'WITH') Then
+  Begin
+    ParserAdvance;  { consommer WITH }
+    Repeat
+      ParseExpr(Arg);
+      ExprFlushToAX(Arg);
+      EmitInstr('PUSH   AX');
+      Inc(ArgCount);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance
+      Else
+        Break;
+    Until CurToken.Kind = TK_EOF;
+  End;
+
+  EmitInstrA('CALL', ProcLabel);
+  If ArgCount > 0 Then
+    EmitInstrAB('ADD', 'SP', IntToStr(ArgCount * 2));
+End;
+
 { ---- EmitRuntime : emettre les routines runtime inline ------- }
 (* Appelle EmitExprRuntime pour les routines d expressions binaires
    et EmitIORuntime pour les routines I/O ecran (TODO 12).
@@ -8309,16 +8848,37 @@ End;
 { ---- EmitClose : finaliser le fichier ASM -------------------- }
 
 Procedure EmitClose;
+Var
+  I : Integer;
 Begin
   EmitBlankLine;
   EmitComment('--- fin du code genere ---');
   EmitBlankLine;
+  { Appeler les EXIT PROCEDUREs avant de quitter (TODO 17) }
+  If ExitProcCount > 0 Then
+  Begin
+    EmitComment('EXIT PROCEDURE calls');
+    For I := 0 To ExitProcCount - 1 Do
+      EmitInstrA('CALL', ExitProcTab[I]);
+    EmitBlankLine;
+  End;
   { Sortie DOS propre }
   EmitInstrAB('MOV', 'AX', '4C00h');
   EmitInstr('INT    21h');
   EmitBlankLine;
   { Routines runtime inline }
   EmitRuntime;
+  { Bloc d initialisation INIT PROCEDURE (TODO 17) }
+  EmitBlankLine;
+  EmitComment('INIT PROCEDURE block');
+  EmitLabel('_CLL_INITBLOCK');
+  If InitProcCount > 0 Then
+  Begin
+    For I := 0 To InitProcCount - 1 Do
+      EmitInstrA('CALL', InitProcTab[I]);
+  End;
+  EmitInstr('RET');
+  EmitBlankLine;
   { Fermer le segment de code }
   EmitRaw('_TEXT   ENDS');
   EmitBlankLine;
