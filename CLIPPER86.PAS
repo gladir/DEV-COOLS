@@ -387,7 +387,7 @@
               description, fileName, operation, severity, subCode
             BREAK sans handler : affiche 'Unhandled error' + Halt
 
-  TODO 22 - PREPROCESSEUR (#command, #translate, #define, #include)
+  TODO 22 - PREPROCESSEUR (#command, #translate, #define, #include) [IMPLEMENTE]
             Passe de preprocessing avant la compilation :
             #include "fichier.ch" : inclure un fichier header Clipper
               Fichiers standards : STD.CH, SET.CH, DBSTRUCT.CH
@@ -530,6 +530,10 @@ Const
   MAX_WORK_AREAS = 10;   { nombre maximum de work areas DBF       }
   MAX_DBF_REC_SIZE = 512; { taille max d un enregistrement DBF    }
   MAX_DBF_FIELDS = 32;   { nombre max de champs par fichier DBF   }
+  MAX_PP_DEFS    = {$IFDEF FPC}128{$ELSE}32{$ENDIF};  { definitions #define    }
+  MAX_PP_DEPTH   = 8;    { profondeur max #ifdef imbriques        }
+  MAX_PP_CMDS    = {$IFDEF FPC}64{$ELSE}16{$ENDIF};   { #command/#translate    }
+  MAX_PP_INCLUDE = 4;    { profondeur max #include imbriques      }
 
   { Indices de types primitifs Clipper }
   TY_IDX_NIL    = 0;     { NIL : valeur non initialisee          }
@@ -748,6 +752,22 @@ Var
   { Gestion des erreurs (TODO 21) }
   SeqCount       : Integer;   { compteur de blocs SEQUENCE generes   }
 
+  { Preprocesseur (TODO 22) }
+  PPDefNames     : Array[0..MAX_PP_DEFS-1] Of TString;   { noms des #define         }
+  PPDefValues    : Array[0..MAX_PP_DEFS-1] Of TString;   { valeurs des #define      }
+  PPDefCount     : Integer;                               { nombre de definitions    }
+  PPCondStack    : Array[0..MAX_PP_DEPTH-1] Of Integer;   { pile compilation cond.   }
+                       { 0=skip, 1=active, 2=done (else taken)                       }
+  PPCondTop      : Integer;   { sommet pile conditionnelle (-1=vide)  }
+  PPCmdPatterns  : Array[0..MAX_PP_CMDS-1] Of TString;   { patterns #command        }
+  PPCmdResults   : Array[0..MAX_PP_CMDS-1] Of TString;   { resultats #command       }
+  PPCmdCaseSens  : Array[0..MAX_PP_CMDS-1] Of Boolean;   { #xcommand=True           }
+  PPCmdIsTransl  : Array[0..MAX_PP_CMDS-1] Of Boolean;   { #translate=True           }
+  PPCmdCount     : Integer;                               { nombre de commandes      }
+  PPIncFiles     : Array[0..MAX_PP_INCLUDE-1] Of Text;    { pile fichiers inclus     }
+  PPIncLineNo    : Array[0..MAX_PP_INCLUDE-1] Of Integer; { num ligne sauvegarde     }
+  PPIncTop       : Integer;   { sommet pile d inclusion (-1=vide)     }
+
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
@@ -922,6 +942,10 @@ Procedure EmitIdxRuntime; Forward;
 { Gestion des erreurs (TODO 21) }
 Procedure ParseBeginSequenceStmt; Forward;
 Procedure EmitErrRuntime; Forward;
+
+{ Preprocesseur (TODO 22) }
+Procedure PreProcInit; Forward;
+Function  PreProcLine : Boolean; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1867,20 +1891,40 @@ End;
 { ---- LexNextLine : lire la prochaine ligne source ----------- }
 
 Procedure LexNextLine;
+Var
+  GotLine : Boolean;
 Begin
   If LexEOF Then Exit;
-  If EOF(LexSrcF) Then
+  GotLine := False;
+  While Not GotLine Do
   Begin
-    LexEOF   := True;
-    LexLine  := '';
-    LexColNo := 1;
-  End
-  Else
-  Begin
-    ReadLn(LexSrcF, LexLine);
-    Inc(LexLineNo);
-    Inc(TotalLines);
-    LexColNo := 1;
+    If EOF(LexSrcF) Then
+    Begin
+      { Verifier si on est dans un #include }
+      If PPIncTop >= 0 Then
+      Begin
+        Close(LexSrcF);
+        LexSrcF := PPIncFiles[PPIncTop];
+        LexLineNo := PPIncLineNo[PPIncTop];
+        Dec(PPIncTop);
+        Continue;  { Reprendre la lecture du fichier parent }
+      End;
+      LexEOF   := True;
+      LexLine  := '';
+      LexColNo := 1;
+      GotLine  := True;
+    End
+    Else
+    Begin
+      ReadLn(LexSrcF, LexLine);
+      Inc(LexLineNo);
+      Inc(TotalLines);
+      LexColNo := 1;
+      { Preprocesseur (TODO 22) : traiter la ligne }
+      If PreProcLine Then
+        GotLine := True;
+      { Sinon, la ligne a ete consommee (directive), lire la suivante }
+    End;
   End;
 End;
 
@@ -1888,6 +1932,8 @@ End;
 
 Procedure LexInit;
 Begin
+  { Initialiser le preprocesseur (TODO 22) }
+  PreProcInit;
   Assign(LexSrcF, Opts.SrcFile);
   Reset(LexSrcF);
   If IOResult <> 0 Then
@@ -11099,6 +11145,623 @@ Begin
   EmitInstrAB('MOV', 'AX', '[_CL_ERRORBLOCK]');
   EmitInstr('RET');
   EmitBlankLine;
+End;
+
+{ ============================================================
+  TODO 22 - PREPROCESSEUR (#command, #translate, #define, #include) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- PreProcInit : initialiser le preprocesseur --------------- }
+
+Procedure PreProcInit;
+Begin
+  PPDefCount := 0;
+  PPCondTop  := -1;
+  PPCmdCount := 0;
+  PPIncTop   := -1;
+End;
+
+{ ---- PPUpperStr : convertir chaine en majuscules -------------- }
+
+Function PPUpperStr(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do
+    If (R[I] >= 'a') And (R[I] <= 'z') Then
+      R[I] := Chr(Ord(R[I]) - 32);
+  PPUpperStr := R;
+End;
+
+{ ---- PPTrimLeft : supprimer espaces en debut de chaine -------- }
+
+Function PPTrimLeft(Const S : TString) : TString;
+Var
+  I : Integer;
+Begin
+  I := 1;
+  While (I <= Length(S)) And ((S[I] = ' ') Or (S[I] = #9)) Do
+    Inc(I);
+  PPTrimLeft := Copy(S, I, Length(S) - I + 1);
+End;
+
+{ ---- PPTrimRight : supprimer espaces en fin de chaine --------- }
+
+Function PPTrimRight(Const S : TString) : TString;
+Var
+  L : Integer;
+Begin
+  L := Length(S);
+  While (L > 0) And ((S[L] = ' ') Or (S[L] = #9)) Do
+    Dec(L);
+  PPTrimRight := Copy(S, 1, L);
+End;
+
+{ ---- PPFindDef : trouver un #define par nom ------------------- }
+(* Retourne l indice dans PPDefNames ou -1 si non trouve          *)
+
+Function PPFindDef(Const Name : TString) : Integer;
+Var
+  I  : Integer;
+  NU : TString;
+Begin
+  NU := PPUpperStr(Name);
+  For I := 0 To PPDefCount - 1 Do
+    If PPUpperStr(PPDefNames[I]) = NU Then
+    Begin
+      PPFindDef := I;
+      Exit;
+    End;
+  PPFindDef := -1;
+End;
+
+{ ---- PPAddDef : ajouter ou mettre a jour un #define ----------- }
+
+Procedure PPAddDef(Const Name, Value : TString);
+Var
+  Idx : Integer;
+Begin
+  Idx := PPFindDef(Name);
+  If Idx >= 0 Then
+  Begin
+    PPDefValues[Idx] := Value;
+    Exit;
+  End;
+  If PPDefCount >= MAX_PP_DEFS Then
+  Begin
+    WarnMsg('table #define pleine, definition ignoree: ' + Name);
+    Exit;
+  End;
+  PPDefNames[PPDefCount]  := Name;
+  PPDefValues[PPDefCount] := Value;
+  Inc(PPDefCount);
+End;
+
+{ ---- PPRemoveDef : supprimer un #define ----------------------- }
+
+Procedure PPRemoveDef(Const Name : TString);
+Var
+  Idx, I : Integer;
+Begin
+  Idx := PPFindDef(Name);
+  If Idx < 0 Then Exit;
+  For I := Idx To PPDefCount - 2 Do
+  Begin
+    PPDefNames[I]  := PPDefNames[I + 1];
+    PPDefValues[I] := PPDefValues[I + 1];
+  End;
+  Dec(PPDefCount);
+End;
+
+{ ---- PPIsActive : est-ce que le code courant est actif -------- }
+(* Retourne True si aucune condition #ifdef n est en mode skip     *)
+
+Function PPIsActive : Boolean;
+Var
+  I : Integer;
+Begin
+  If PPCondTop < 0 Then
+  Begin
+    PPIsActive := True;
+    Exit;
+  End;
+  For I := 0 To PPCondTop Do
+    If PPCondStack[I] <> 1 Then
+    Begin
+      PPIsActive := False;
+      Exit;
+    End;
+  PPIsActive := True;
+End;
+
+{ ---- PPExpandMacros : remplacer les macros dans une ligne ------ }
+(* Expansion simple : remplace chaque occurrence d un nom #define
+   par sa valeur. Limite a 5 passes pour eviter la recursion infinie.
+   Ignore le contenu entre guillemets simples, doubles et crochets. *)
+
+Procedure PPExpandMacros(Var Line : String);
+Var
+  I, P, Pass : Integer;
+  NU         : TString;
+  Found      : Boolean;
+  Before, After : String;
+  Ch : Char;
+  InStr : Char;  { caractere de fermeture de chaine, #0 si hors chaine }
+Begin
+  If PPDefCount = 0 Then Exit;
+  For Pass := 1 To 5 Do
+  Begin
+    Found := False;
+    For I := 0 To PPDefCount - 1 Do
+    Begin
+      If Length(PPDefNames[I]) = 0 Then Continue;
+      If Length(PPDefValues[I]) = 0 Then Continue; { skip empty flags }
+      NU := PPDefNames[I];
+      P := 1;
+      InStr := #0;
+      While P <= Length(Line) - Length(NU) + 1 Do
+      Begin
+        { Gerer les chaines de caracteres }
+        Ch := Line[P];
+        If InStr <> #0 Then
+        Begin
+          If Ch = InStr Then
+            InStr := #0;
+          Inc(P);
+          Continue;
+        End;
+        If (Ch = '''') Or (Ch = '"') Then
+        Begin
+          InStr := Ch;
+          Inc(P);
+          Continue;
+        End;
+        If Ch = '[' Then
+        Begin
+          InStr := ']';
+          Inc(P);
+          Continue;
+        End;
+        { Verifier si on trouve le nom a la position P }
+        If PPUpperStr(Copy(Line, P, Length(NU))) = PPUpperStr(NU) Then
+        Begin
+          { Verifier les frontieres de mot }
+          If P > 1 Then
+          Begin
+            Ch := Line[P - 1];
+            If ((Ch >= 'A') And (Ch <= 'Z')) Or
+               ((Ch >= 'a') And (Ch <= 'z')) Or
+               ((Ch >= '0') And (Ch <= '9')) Or (Ch = '_') Then
+            Begin
+              Inc(P);
+              Continue;
+            End;
+          End;
+          If (P + Length(NU)) <= Length(Line) Then
+          Begin
+            Ch := Line[P + Length(NU)];
+            If ((Ch >= 'A') And (Ch <= 'Z')) Or
+               ((Ch >= 'a') And (Ch <= 'z')) Or
+               ((Ch >= '0') And (Ch <= '9')) Or (Ch = '_') Then
+            Begin
+              Inc(P);
+              Continue;
+            End;
+          End;
+          { Remplacer }
+          Before := Copy(Line, 1, P - 1);
+          After  := Copy(Line, P + Length(NU), Length(Line));
+          Line   := Before + PPDefValues[I] + After;
+          Found  := True;
+          P := P + Length(PPDefValues[I]);
+        End
+        Else
+          Inc(P);
+      End;
+    End;
+    If Not Found Then Break;
+  End;
+End;
+
+{ ---- PPAddCommand : ajouter un #command ou #translate ---------- }
+
+Procedure PPAddCommand(Const Pattern, Result : TString;
+                       CaseSens, IsTransl : Boolean);
+Begin
+  If PPCmdCount >= MAX_PP_CMDS Then
+  Begin
+    WarnMsg('table #command pleine, commande ignoree');
+    Exit;
+  End;
+  PPCmdPatterns[PPCmdCount]  := Pattern;
+  PPCmdResults[PPCmdCount]   := Result;
+  PPCmdCaseSens[PPCmdCount]  := CaseSens;
+  PPCmdIsTransl[PPCmdCount]  := IsTransl;
+  Inc(PPCmdCount);
+End;
+
+{ ---- PPMatchWord : extraire le prochain mot d une chaine ------- }
+
+Function PPMatchWord(Const S : TString; Var Pos : Integer) : TString;
+Var
+  Start : Integer;
+Begin
+  While (Pos <= Length(S)) And ((S[Pos] = ' ') Or (S[Pos] = #9)) Do
+    Inc(Pos);
+  Start := Pos;
+  While (Pos <= Length(S)) And (S[Pos] <> ' ') And (S[Pos] <> #9) And
+        (S[Pos] <> ',') And (S[Pos] <> '(') And (S[Pos] <> ')') Do
+    Inc(Pos);
+  PPMatchWord := Copy(S, Start, Pos - Start);
+End;
+
+{ ---- PPApplyCommands : appliquer les #command/#translate ------- }
+(* Tentative de correspondance simplifiee : compare le premier mot
+   du pattern avec le premier mot de la ligne. Si ca correspond,
+   extrait les marqueurs <xxx> et substitue dans le resultat.        *)
+
+Procedure PPApplyCommands(Var Line : String);
+Var
+  I, PP, LP    : Integer;
+  PatW, LinW   : TString;
+  PatRest      : TString;
+  ResultStr    : TString;
+  MarkerName   : TString;
+  MarkerVal    : TString;
+  TrimLine     : String;
+  P, MarkStart : Integer;
+  FoundCmd     : Boolean;
+Begin
+  TrimLine := PPTrimLeft(Line);
+  If Length(TrimLine) = 0 Then Exit;
+  For I := 0 To PPCmdCount - 1 Do
+  Begin
+    PP := 1;
+    LP := 1;
+    { Extraire le premier mot du pattern }
+    PatW := PPMatchWord(PPCmdPatterns[I], PP);
+    LinW := PPMatchWord(TrimLine, LP);
+    If Length(PatW) = 0 Then Continue;
+    If Length(LinW) = 0 Then Continue;
+    FoundCmd := False;
+    If PPCmdCaseSens[I] Then
+      FoundCmd := (PatW = LinW)
+    Else
+      FoundCmd := (PPUpperStr(PatW) = PPUpperStr(LinW));
+    If Not FoundCmd Then Continue;
+    { Premier mot correspond, tenter substitution basique }
+    { Extraire la valeur restante de la ligne apres le premier mot }
+    MarkerVal := PPTrimLeft(Copy(TrimLine, LP, Length(TrimLine)));
+    { Construire le resultat en remplacant les marqueurs <xxx> }
+    ResultStr := PPCmdResults[I];
+    { Remplacer tous les marqueurs par MarkerVal (simplifie) }
+    P := 1;
+    While P <= Length(ResultStr) Do
+    Begin
+      If ResultStr[P] = '<' Then
+      Begin
+        MarkStart := P;
+        Inc(P);
+        { Lire le nom du marqueur }
+        MarkerName := '';
+        While (P <= Length(ResultStr)) And (ResultStr[P] <> '>') Do
+        Begin
+          MarkerName := MarkerName + ResultStr[P];
+          Inc(P);
+        End;
+        If (P <= Length(ResultStr)) And (ResultStr[P] = '>') Then
+        Begin
+          Inc(P);
+          { Remplacer <xxx> par MarkerVal }
+          ResultStr := Copy(ResultStr, 1, MarkStart - 1) + MarkerVal +
+                       Copy(ResultStr, P, Length(ResultStr));
+          P := MarkStart + Length(MarkerVal);
+        End;
+      End
+      Else
+        Inc(P);
+    End;
+    Line := ResultStr;
+    Break;
+  End;
+End;
+
+{ ---- PPParseDirective : analyser et executer une directive PP -- }
+(* Traite une ligne commencant par # (apres trim). Retourne True
+   si la ligne a ete consommee (ne pas passer au lexeur).          *)
+
+Function PPParseDirective(Var Line : String) : Boolean;
+Var
+  Trimmed : TString;
+  Cmd     : TString;
+  Rest    : TString;
+  P       : Integer;
+  Name    : TString;
+  Value   : TString;
+  PatStr  : TString;
+  ResStr  : TString;
+  ArrowP  : Integer;
+  IncName : TString;
+  IncPath : TString;
+  Idx     : Integer;
+Begin
+  PPParseDirective := True;
+  Trimmed := PPTrimLeft(Line);
+  If Length(Trimmed) = 0 Then Exit;
+  If Trimmed[1] <> '#' Then
+  Begin
+    PPParseDirective := False;
+    Exit;
+  End;
+
+  { Extraire la commande apres # }
+  P := 2;
+  While (P <= Length(Trimmed)) And (Trimmed[P] = ' ') Do Inc(P);
+  Cmd := '';
+  While (P <= Length(Trimmed)) And (Trimmed[P] <> ' ') And (Trimmed[P] <> #9) Do
+  Begin
+    Cmd := Cmd + Trimmed[P];
+    Inc(P);
+  End;
+  Cmd := PPUpperStr(Cmd);
+  Rest := PPTrimLeft(Copy(Trimmed, P, Length(Trimmed)));
+
+  { --- #define NOM [valeur] --- }
+  If Cmd = 'DEFINE' Then
+  Begin
+    If Not PPIsActive Then Exit;
+    P := 1;
+    Name := '';
+    While (P <= Length(Rest)) And (Rest[P] <> ' ') And (Rest[P] <> #9) Do
+    Begin
+      Name := Name + Rest[P];
+      Inc(P);
+    End;
+    Value := PPTrimLeft(Copy(Rest, P, Length(Rest)));
+    If Length(Name) > 0 Then
+      PPAddDef(Name, Value);
+    Exit;
+  End;
+
+  { --- #undef NOM --- }
+  If Cmd = 'UNDEF' Then
+  Begin
+    If Not PPIsActive Then Exit;
+    Name := PPTrimLeft(Rest);
+    P := 1;
+    While (P <= Length(Name)) And (Name[P] <> ' ') And (Name[P] <> #9) Do
+      Inc(P);
+    Name := Copy(Name, 1, P - 1);
+    If Length(Name) > 0 Then
+      PPRemoveDef(Name);
+    Exit;
+  End;
+
+  { --- #ifdef NOM --- }
+  If Cmd = 'IFDEF' Then
+  Begin
+    If PPCondTop >= MAX_PP_DEPTH - 1 Then
+    Begin
+      WarnMsg('#ifdef trop imbrique');
+      Exit;
+    End;
+    { Verifier si le parent est actif AVANT de pousser }
+    If Not PPIsActive Then
+    Begin
+      Inc(PPCondTop);
+      PPCondStack[PPCondTop] := 0;  { parent inactif, enfant aussi }
+      Exit;
+    End;
+    { Parent actif : verifier la condition }
+    Name := PPTrimLeft(Rest);
+    P := 1;
+    While (P <= Length(Name)) And (Name[P] <> ' ') And (Name[P] <> #9) Do
+      Inc(P);
+    Name := Copy(Name, 1, P - 1);
+    Idx := PPFindDef(Name);
+    Inc(PPCondTop);
+    If Idx >= 0 Then
+      PPCondStack[PPCondTop] := 1   { actif }
+    Else
+      PPCondStack[PPCondTop] := 0;  { inactif }
+    Exit;
+  End;
+
+  { --- #ifndef NOM --- }
+  If Cmd = 'IFNDEF' Then
+  Begin
+    If PPCondTop >= MAX_PP_DEPTH - 1 Then
+    Begin
+      WarnMsg('#ifndef trop imbrique');
+      Exit;
+    End;
+    { Verifier si le parent est actif AVANT de pousser }
+    If Not PPIsActive Then
+    Begin
+      Inc(PPCondTop);
+      PPCondStack[PPCondTop] := 0;
+      Exit;
+    End;
+    { Parent actif : verifier la condition }
+    Name := PPTrimLeft(Rest);
+    P := 1;
+    While (P <= Length(Name)) And (Name[P] <> ' ') And (Name[P] <> #9) Do
+      Inc(P);
+    Name := Copy(Name, 1, P - 1);
+    Idx := PPFindDef(Name);
+    Inc(PPCondTop);
+    If Idx < 0 Then
+      PPCondStack[PPCondTop] := 1   { actif (nom non defini) }
+    Else
+      PPCondStack[PPCondTop] := 0;  { inactif (nom defini) }
+    Exit;
+  End;
+
+  { --- #else --- }
+  If Cmd = 'ELSE' Then
+  Begin
+    If PPCondTop < 0 Then
+    Begin
+      WarnMsg('#else sans #ifdef correspondant');
+      Exit;
+    End;
+    { Verifier si le parent est actif }
+    If PPCondTop > 0 Then
+    Begin
+      If PPCondStack[PPCondTop - 1] <> 1 Then
+        Exit;  { Parent inactif, on reste inactif }
+    End;
+    If PPCondStack[PPCondTop] = 1 Then
+      PPCondStack[PPCondTop] := 2   { etait actif, maintenant fait }
+    Else If PPCondStack[PPCondTop] = 0 Then
+      PPCondStack[PPCondTop] := 1;  { etait inactif, maintenant actif }
+    Exit;
+  End;
+
+  { --- #endif --- }
+  If Cmd = 'ENDIF' Then
+  Begin
+    If PPCondTop < 0 Then
+    Begin
+      WarnMsg('#endif sans #ifdef correspondant');
+      Exit;
+    End;
+    Dec(PPCondTop);
+    Exit;
+  End;
+
+  { --- #include "fichier" --- }
+  If Cmd = 'INCLUDE' Then
+  Begin
+    If Not PPIsActive Then Exit;
+    IncName := PPTrimLeft(Rest);
+    { Enlever guillemets si presents }
+    If (Length(IncName) >= 2) And
+       ((IncName[1] = '"') Or (IncName[1] = '<')) Then
+    Begin
+      IncName := Copy(IncName, 2, Length(IncName) - 2);
+    End;
+    If Length(IncName) = 0 Then
+    Begin
+      WarnMsg('#include sans nom de fichier');
+      Exit;
+    End;
+    If PPIncTop >= MAX_PP_INCLUDE - 1 Then
+    Begin
+      WarnMsg('#include trop imbrique');
+      Exit;
+    End;
+    { Construire le chemin : meme repertoire que le source }
+    IncPath := '';
+    For P := Length(Opts.SrcFile) DownTo 1 Do
+    Begin
+      If (Opts.SrcFile[P] = '\') Or (Opts.SrcFile[P] = '/') Then
+      Begin
+        IncPath := Copy(Opts.SrcFile, 1, P);
+        Break;
+      End;
+    End;
+    IncPath := IncPath + IncName;
+    { Sauvegarder l etat courant }
+    Inc(PPIncTop);
+    PPIncFiles[PPIncTop] := LexSrcF;
+    PPIncLineNo[PPIncTop] := LexLineNo;
+    { Ouvrir le fichier inclus }
+    Assign(LexSrcF, IncPath);
+    {$I-}
+    Reset(LexSrcF);
+    {$I+}
+    If IOResult <> 0 Then
+    Begin
+      { Essayer sans le chemin }
+      Assign(LexSrcF, IncName);
+      {$I-}
+      Reset(LexSrcF);
+      {$I+}
+      If IOResult <> 0 Then
+      Begin
+        WarnMsg('#include fichier introuvable: ' + IncName);
+        LexSrcF := PPIncFiles[PPIncTop];
+        LexLineNo := PPIncLineNo[PPIncTop];
+        Dec(PPIncTop);
+        Exit;
+      End;
+    End;
+    LexLineNo := 0;
+    Exit;
+  End;
+
+  { --- #command PATTERN => RESULT --- }
+  If (Cmd = 'COMMAND') Or (Cmd = 'TRANSLATE') Or
+     (Cmd = 'XCOMMAND') Or (Cmd = 'XTRANSLATE') Then
+  Begin
+    If Not PPIsActive Then Exit;
+    { Trouver le => }
+    ArrowP := 0;
+    For P := 1 To Length(Rest) - 1 Do
+    Begin
+      If (Rest[P] = '=') And (Rest[P + 1] = '>') Then
+      Begin
+        ArrowP := P;
+        Break;
+      End;
+    End;
+    If ArrowP = 0 Then
+    Begin
+      WarnMsg('#' + Cmd + ' sans =>, ignoree');
+      Exit;
+    End;
+    PatStr := PPTrimRight(Copy(Rest, 1, ArrowP - 1));
+    ResStr := PPTrimLeft(Copy(Rest, ArrowP + 2, Length(Rest)));
+    PPAddCommand(PatStr, ResStr,
+                 (Cmd = 'XCOMMAND') Or (Cmd = 'XTRANSLATE'),
+                 (Cmd = 'TRANSLATE') Or (Cmd = 'XTRANSLATE'));
+    Exit;
+  End;
+
+  { Directive inconnue : ignorer avec avertissement }
+  If PPIsActive Then
+    WarnMsg('directive preprocesseur inconnue: #' + Cmd);
+End;
+
+{ ---- PreProcLine : traiter la ligne courante du preprocesseur -- }
+(* Appelee apres ReadLn dans LexNextLine. Retourne True si la ligne
+   doit etre passee au lexeur, False si elle a ete consommee.
+   Gere les directives, la compilation conditionnelle et l expansion
+   des macros.                                                       *)
+
+Function PreProcLine : Boolean;
+Var
+  Trimmed : TString;
+Begin
+  PreProcLine := True;
+
+  { Verifier si c est une directive # }
+  Trimmed := PPTrimLeft(LexLine);
+  If (Length(Trimmed) > 0) And (Trimmed[1] = '#') Then
+  Begin
+    PPParseDirective(LexLine);
+    PreProcLine := False;
+    Exit;
+  End;
+
+  { Si on est dans une zone #ifdef inactive, ignorer la ligne }
+  If Not PPIsActive Then
+  Begin
+    PreProcLine := False;
+    Exit;
+  End;
+
+  { Expanser les macros #define dans la ligne }
+  PPExpandMacros(LexLine);
+
+  { Appliquer les #command/#translate }
+  If PPCmdCount > 0 Then
+    PPApplyCommands(LexLine);
+
+  PreProcLine := True;
 End;
 
 { ---- EmitRuntime : emettre les routines runtime inline ------- }
