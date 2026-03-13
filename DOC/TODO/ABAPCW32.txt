@@ -117,7 +117,7 @@
               STORE_TABLE (donnees lineaires .DATA),
               STORE_CONSTANT (valeur immediate)
 
-  TODO 05 - GESTION DES SCOPES (REPORT, FORM, METHOD)
+  TODO 05 - GESTION DES SCOPES (REPORT, FORM, METHOD) [IMPLEMENTE]
             Pile de scopes : chaque scope maintient ses propres
               variables locales, un offset EBP courant, un label sortie
             Procedure EnterScope(kind: Integer; form_idx: Integer)

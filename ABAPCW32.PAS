@@ -136,7 +136,7 @@
               STORE_TABLE (donnees lineaires .DATA),
               STORE_CONSTANT (valeur immediate)
 
-  TODO 05 - GESTION DES SCOPES (REPORT, FORM, METHOD)
+  TODO 05 - GESTION DES SCOPES (REPORT, FORM, METHOD) [IMPLEMENTE]
             Pile de scopes : chaque scope maintient ses propres
               variables locales, un offset EBP courant, un label sortie
             Procedure EnterScope(kind: Integer; form_idx: Integer)
@@ -795,6 +795,13 @@ Const
   PARAM_CHANGING = 1;   { passage par adresse (ref)                 }
   PARAM_TABLES   = 2;   { table interne (adresse)                   }
 
+  { Types de scopes }
+  SK_GLOBAL  = 0;   { scope global REPORT / PROGRAM             }
+  SK_FORM    = 1;   { scope FORM / FUNCTION                     }
+  SK_BLOCK   = 2;   { sous-bloc implicite                       }
+  SK_LOOP    = 3;   { boucle (DO / WHILE / LOOP)                }
+  SK_EVENT   = 4;   { evenement (START-OF-SELECTION etc.)        }
+
   { Prefixes de nommage ASM }
   AB_VAR_PFX   = '_AB_';       { variable globale              }
   AB_FN_PFX    = '_ABF_';      { FORM / FUNCTION               }
@@ -905,6 +912,18 @@ Type
     ParamTypes    : Array[1..MAX_PARAM] of Integer;   { TYPE_xxx  }
   End;
 
+  { ---- Entree de la pile de scopes (32 bits) ----------------- }
+  TScopeEntry = Record
+    Kind      : Integer;         { SK_xxx                        }
+    FormIdx   : Integer;         { index dans FormTab si SK_FORM }
+    EbpTop    : Integer;         { prochain offset EBP negatif   }
+    SymStart  : Integer;         { premier sym index du scope    }
+    SymEnd    : Integer;         { dernier sym index du scope    }
+    LblExit   : String[32];     { etiquette de sortie (EXIT)    }
+    LblCont   : String[32];     { etiquette continue (LOOP)     }
+    LblEnd    : String[32];     { etiquette fin de bloc (END*)  }
+  End;
+
 { ============================================================ }
 { VARIABLES GLOBALES                                           }
 { ============================================================ }
@@ -955,6 +974,10 @@ Var
   FormTab     : Array[1..MAX_FORM] of TFormEntry;
   FormCount   : Integer;
 
+  { Pile de scopes }
+  ScopeStack  : Array[0..MAX_DEPTH] of TScopeEntry;
+  ScopeTop    : Integer;
+
 Const
 {$IFDEF FPC}
   BinAPIDecorated : Array[0..PE_NUM_API - 1] Of String[32] = (
@@ -992,6 +1015,24 @@ Function  AddSym(Const Name : TString; DT, SC : Integer) : Integer; Forward;
 Function  FindForm(Const Name : TString) : Integer; Forward;
 Function  AddForm(Const Name : TString) : Integer; Forward;
 Procedure DeclSysVars;   Forward;
+
+{ ============================================================ }
+{ DECLARATIONS FORWARD (GESTION DES SCOPES)                    }
+{ ============================================================ }
+
+Procedure InitScopes;    Forward;
+Procedure EnterScope(Kind : Integer; FormIdx : Integer); Forward;
+Procedure LeaveScope;    Forward;
+Function  AllocLocalEbp(Bytes : Integer) : Integer; Forward;
+Function  CurrentEbpTop : Integer; Forward;
+Procedure SetExitLabel(Const Lbl : String); Forward;
+Procedure SetContLabel(Const Lbl : String); Forward;
+Procedure SetEndLabel(Const Lbl : String);  Forward;
+Function  CurrentExitLabel : TString; Forward;
+Function  CurrentContLabel : TString; Forward;
+Function  CurrentEndLabel  : TString; Forward;
+Function  InForm : Boolean; Forward;
+Function  CurrentFormIdx : Integer; Forward;
 
 { ============================================================ }
 { FONCTIONS UTILITAIRES                                        }
@@ -1852,7 +1893,7 @@ Var I : Integer;
 Begin
   U := StrUpperCase(Name);
   For I := SymCount DownTo 1 Do
-    If (SymTab[I].Name = U) And (SymTab[I].ScopeLev = 0) Then
+    If (SymTab[I].Name = U) And (SymTab[I].ScopeLev = ScopeTop) Then
     Begin FindSymLocal := I; Exit; End;
   FindSymLocal := 0;
 End;
@@ -1886,7 +1927,7 @@ Begin
   SymTab[SymCount].InitNum     := 0;
   SymTab[SymCount].HasInit     := False;
   SymTab[SymCount].IsConst     := False;
-  SymTab[SymCount].ScopeLev    := 0;
+  SymTab[SymCount].ScopeLev    := ScopeTop;
   AddSym := SymCount;
 End;
 
@@ -1960,6 +2001,144 @@ Begin
   DeclSY('SY-DATUM',  TYPE_D, 8);    { date systeme YYYYMMDD           }
   DeclSY('SY-UZEIT',  TYPE_T, 6);    { heure systeme HHMMSS            }
   DeclSY('SY-UNAME',  TYPE_C, 12);   { nom utilisateur (stub)          }
+End;
+
+{ ============================================================ }
+{ GESTION DES SCOPES (TODO 05)                                 }
+{ ============================================================ }
+
+{ ---- InitScopes : initialiser la pile de scopes ------------- }
+{ Le scope 0 est toujours SK_GLOBAL (niveau REPORT/PROGRAM).   }
+Procedure InitScopes;
+Begin
+  ScopeTop := 0;
+  ScopeStack[0].Kind     := SK_GLOBAL;
+  ScopeStack[0].FormIdx  := 0;
+  ScopeStack[0].EbpTop   := 0;
+  ScopeStack[0].SymStart := 1;
+  ScopeStack[0].SymEnd   := 0;
+  ScopeStack[0].LblExit  := '';
+  ScopeStack[0].LblCont  := '';
+  ScopeStack[0].LblEnd   := '';
+End;
+
+{ ---- EnterScope : empiler un nouveau scope ------------------- }
+{ Kind    : SK_GLOBAL / SK_FORM / SK_BLOCK / SK_LOOP / SK_EVENT  }
+{ FormIdx : index dans FormTab si SK_FORM, sinon 0               }
+Procedure EnterScope(Kind : Integer; FormIdx : Integer);
+Begin
+  If ScopeTop >= MAX_DEPTH Then
+  Begin
+    LexError('Trop d''imbrications de scopes (max=' +
+             IntToStr_(MAX_DEPTH) + ')');
+    Exit;
+  End;
+  Inc(ScopeTop);
+  ScopeStack[ScopeTop].Kind     := Kind;
+  ScopeStack[ScopeTop].FormIdx  := FormIdx;
+  ScopeStack[ScopeTop].EbpTop   := 0;           { repart a 0 en local }
+  ScopeStack[ScopeTop].SymStart := SymCount + 1;
+  ScopeStack[ScopeTop].SymEnd   := SymCount;
+  ScopeStack[ScopeTop].LblExit  := '';
+  ScopeStack[ScopeTop].LblCont  := '';
+  ScopeStack[ScopeTop].LblEnd   := '';
+End;
+
+{ ---- LeaveScope : depiler le scope courant ------------------- }
+{ Attention : ne depile jamais le scope global (niveau 0).       }
+Procedure LeaveScope;
+Begin
+  If ScopeTop = 0 Then
+  Begin
+    LexError('LeaveScope hors scope');
+    Exit;
+  End;
+  ScopeStack[ScopeTop].SymEnd := SymCount;
+  Dec(ScopeTop);
+End;
+
+{ ---- CurrentEbpTop : profondeur EBP courante ----------------- }
+{ Retourne la valeur negative de l offset EBP du scope courant.  }
+Function CurrentEbpTop : Integer;
+Begin
+  CurrentEbpTop := ScopeStack[ScopeTop].EbpTop;
+End;
+
+{ ---- AllocLocalEbp : allouer des octets sur la pile locale --- }
+{ Decremente EbpTop du scope courant.                            }
+{ Retourne l offset EBP du nouvel emplacement (negatif).         }
+{ Convention Win32 : alignement sur DWORD (4 octets).            }
+Function AllocLocalEbp(Bytes : Integer) : Integer;
+Var Aligned : Integer;
+Begin
+  { Aligner sur 4 octets (DWORD) }
+  Aligned := (Bytes + 3) And (Not 3);
+  Dec(ScopeStack[ScopeTop].EbpTop, Aligned);
+  AllocLocalEbp := ScopeStack[ScopeTop].EbpTop;
+End;
+
+{ ---- Setters de labels du scope courant ---------------------- }
+
+Procedure SetExitLabel(Const Lbl : String);
+Begin ScopeStack[ScopeTop].LblExit := Lbl; End;
+
+Procedure SetContLabel(Const Lbl : String);
+Begin ScopeStack[ScopeTop].LblCont := Lbl; End;
+
+Procedure SetEndLabel(Const Lbl : String);
+Begin ScopeStack[ScopeTop].LblEnd := Lbl; End;
+
+{ ---- Getters de labels : remonte la pile de scopes ----------- }
+
+{ Retourne le label EXIT du scope le plus proche qui en a un.    }
+Function CurrentExitLabel : TString;
+Var I : Integer;
+Begin
+  For I := ScopeTop DownTo 0 Do
+    If ScopeStack[I].LblExit <> '' Then
+    Begin CurrentExitLabel := ScopeStack[I].LblExit; Exit; End;
+  CurrentExitLabel := '';
+End;
+
+{ Retourne le label CONTINUE du scope de boucle le plus proche. }
+Function CurrentContLabel : TString;
+Var I : Integer;
+Begin
+  For I := ScopeTop DownTo 0 Do
+    If ScopeStack[I].LblCont <> '' Then
+    Begin CurrentContLabel := ScopeStack[I].LblCont; Exit; End;
+  CurrentContLabel := '';
+End;
+
+{ Retourne le label END du scope de boucle le plus proche.      }
+Function CurrentEndLabel : TString;
+Var I : Integer;
+Begin
+  For I := ScopeTop DownTo 0 Do
+    If ScopeStack[I].LblEnd <> '' Then
+    Begin CurrentEndLabel := ScopeStack[I].LblEnd; Exit; End;
+  CurrentEndLabel := '';
+End;
+
+{ ---- InForm : vrai si on est dans une FORM ------------------- }
+Function InForm : Boolean;
+Var I : Integer;
+Begin
+  For I := ScopeTop DownTo 1 Do
+    If ScopeStack[I].Kind = SK_FORM Then
+    Begin InForm := True; Exit; End;
+  InForm := False;
+End;
+
+{ ---- CurrentFormIdx : index de la FORM englobante ------------ }
+{ Retourne 0 si pas dans une FORM.                               }
+Function CurrentFormIdx : Integer;
+Var I : Integer;
+Begin
+  For I := ScopeTop DownTo 1 Do
+    If ScopeStack[I].Kind = SK_FORM Then
+    Begin CurrentFormIdx := ScopeStack[I].FormIdx; Exit; End;
+  CurrentFormIdx := 0;
 End;
 
 { ============================================================ }
@@ -2141,6 +2320,7 @@ End;
 Procedure Run;
 Begin
   InitSymTable;
+  InitScopes;
   DeclSysVars;
   LexInit;
   If Opts.DebugMode Then
@@ -2155,10 +2335,11 @@ Begin
   End
   Else
   Begin
-    { TODO 05..25 : corps du compilateur }
+    { TODO 06..25 : corps du compilateur }
     WriteLn('ABAPCW32: compilation de ', Opts.SrcFile, ' ...');
     WriteLn('ABAPCW32: symboles declares: ', SymCount, ' (systeme)');
-    WriteLn('ABAPCW32: TODO 05..25 non encore implementes.');
+    WriteLn('ABAPCW32: scope initial: SK_GLOBAL (niveau ', ScopeTop, ')');
+    WriteLn('ABAPCW32: TODO 06..25 non encore implementes.');
   End;
   LexClose;
 End;
