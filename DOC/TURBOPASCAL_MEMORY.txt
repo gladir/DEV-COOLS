@@ -1,0 +1,598 @@
+=========================================================================
+  TURBO PASCAL 7.0 - Unité MEMORY - Documentation de référence
+=========================================================================
+
+  L'unité Memory fait partie de Turbo Vision et fournit un
+  gestionnaire de mémoire avancé au-dessus du tas (heap) standard
+  de Turbo Pascal. Elle introduit trois niveaux de mémoire :
+
+  1. Mémoire permanente  - allocations normales (GetMem/New)
+  2. Mémoire cache        - libérable automatiquement si besoin
+  3. Mémoire tampon       - blocs de taille variable, libérables
+
+  Ce système permet à Turbo Vision de gérer la mémoire de manière
+  plus souple que le tas standard, en libérant automatiquement
+  les caches et tampons quand la mémoire permanente devient
+  insuffisante.
+
+  Uses Memory;
+
+  Copyright (c) 1991,92 Borland International
+  Turbo Vision Unit
+
+  Directives de compilation : {$O+,F+,X+,I-,S-}
+    $O+ : Compatible overlay
+    $F+ : Appels far
+    $X+ : Syntaxe étendue
+    $I- : Pas de vérification d'E/S
+    $S- : Pas de vérification de pile
+
+=========================================================================
+  1. CONSTANTES
+=========================================================================
+
+  const MaxHeapSize : Word = 655360 div 16;   { = 40960 }
+  ---------------------------------------------------------------
+  Taille maximale du tas en paragraphes (unités de 16 octets).
+  Valeur par défaut : 40960 paragraphes = 655 360 octets = 640 Ko.
+
+  Détermine la quantité maximale de mémoire DOS que le programme
+  réserve pour le tas. Peut être réduite avant l'appel à
+  InitMemory pour libérer de la mémoire DOS pour d'autres usages
+  (exécution de programmes enfants via Exec, par exemple).
+
+  Exemple :
+    MaxHeapSize := 320000 div 16;  { limiter à ~320 Ko }
+    InitMemory;
+
+  ---------------------------------------------------------------
+  const LowMemSize : Word = 4096 div 16;     { = 256 }
+  ---------------------------------------------------------------
+  Seuil de mémoire basse en paragraphes. Valeur par défaut :
+  256 paragraphes = 4 096 octets = 4 Ko.
+
+  Quand la mémoire libre du tas descend en dessous de ce seuil,
+  la fonction LowMemory retourne True, signalant que le programme
+  doit libérer de la mémoire ou refuser de nouvelles allocations.
+
+  Ce seuil est la « zone de sécurité » : tant qu'il reste au
+  moins LowMemSize paragraphes libres, le système fonctionne
+  normalement. En dessous, les caches sont automatiquement
+  libérés.
+
+  ---------------------------------------------------------------
+  const MaxBufMem : Word = 65536 div 16;     { = 4096 }
+  ---------------------------------------------------------------
+  Quantité maximale de mémoire allouable aux tampons (buffers)
+  en paragraphes. Valeur par défaut : 4096 paragraphes =
+  65 536 octets = 64 Ko.
+
+  Limite la mémoire totale que les tampons (NewBuffer) peuvent
+  consommer. Si cette limite est atteinte, les nouvelles
+  demandes de tampon échouent ou les tampons existants sont
+  réduits.
+
+=========================================================================
+  2. ARCHITECTURE MÉMOIRE
+=========================================================================
+
+  Le gestionnaire de mémoire de Turbo Vision organise le tas
+  en trois zones de priorité décroissante :
+
+  ┌─────────────────────────────────┐  Adresse haute
+  │  Mémoire DOS libre              │  (au-dessus de MemTop)
+  ├─────────────────────────────────┤  ← MemTop (SetMemTop)
+  │  Tampons (Buffers)              │  Libérables, redim.
+  ├─────────────────────────────────┤
+  │  Caches                         │  Libérables auto.
+  ├─────────────────────────────────┤
+  │  Mémoire permanente             │  Allocations normales
+  ├─────────────────────────────────┤
+  │  Zone de sécurité (LowMemSize) │  Réserve
+  ├─────────────────────────────────┤
+  │  Variables globales, pile       │  Adresse basse
+  └─────────────────────────────────┘
+
+  Quand une allocation permanente ne trouve plus assez de
+  mémoire, le gestionnaire libère d'abord les caches, puis
+  réduit les tampons, pour satisfaire la demande.
+
+=========================================================================
+  3. INITIALISATION ET FINALISATION
+=========================================================================
+
+  procedure InitMemory;
+  ---------------------------------------------------------------
+  Initialise le gestionnaire de mémoire de Turbo Vision. Doit
+  être appelée au début du programme, avant toute utilisation
+  des fonctions de cette unité.
+
+  Actions :
+  - Installe le gestionnaire de tas personnalisé (HeapError)
+  - Configure la taille maximale du tas selon MaxHeapSize
+  - Initialise les listes de caches et de tampons
+
+  Note : dans une application Turbo Vision standard, InitMemory
+  est appelée automatiquement par TApplication.Init. Il n'est
+  nécessaire de l'appeler explicitement que si l'on utilise
+  l'unité Memory sans Turbo Vision.
+
+  ---------------------------------------------------------------
+  procedure DoneMemory;
+  ---------------------------------------------------------------
+  Finalise le gestionnaire de mémoire. Libère toutes les
+  ressources internes (caches, tampons) et restaure le
+  gestionnaire de tas standard.
+
+  Doit être appelée à la fin du programme, après la dernière
+  utilisation des fonctions mémoire.
+
+  Note : TApplication.Done appelle DoneMemory automatiquement.
+
+  ---------------------------------------------------------------
+  procedure InitDosMem;
+  ---------------------------------------------------------------
+  Initialise la gestion de la mémoire DOS conventionnelle.
+  Réduit l'allocation mémoire du programme à MaxHeapSize
+  paragraphes, libérant le reste pour le DOS.
+
+  Utilisée en conjonction avec SetMemTop pour libérer de la
+  mémoire avant d'exécuter un programme enfant (Exec).
+
+  Typiquement appelée par InitMemory en interne.
+
+  ---------------------------------------------------------------
+  procedure DoneDosMem;
+  ---------------------------------------------------------------
+  Finalise la gestion de la mémoire DOS. Restaure l'allocation
+  mémoire complète du programme.
+
+  Typiquement appelée par DoneMemory en interne.
+
+=========================================================================
+  4. VÉRIFICATION DE MÉMOIRE BASSE
+=========================================================================
+
+  function LowMemory : Boolean;
+  ---------------------------------------------------------------
+  Indique si la mémoire disponible est en dessous du seuil
+  de sécurité (LowMemSize).
+
+  Retour :
+    True   La mémoire est basse (< LowMemSize paragraphes
+           libres). Des caches ont peut-être été libérés pour
+           satisfaire la dernière allocation.
+    False  La mémoire est suffisante.
+
+  Utilisation typique :
+    P := MemAlloc(MonSize);
+    if LowMemory then
+    begin
+      { Annuler l'allocation ou alerter l'utilisateur }
+      FreeMem(P, MonSize);
+      MessageBox('Mémoire insuffisante', nil, mfError);
+    end;
+
+  Note : après un retour True, il est recommandé de libérer
+  des ressources (fermer des fenêtres, etc.) et de réessayer.
+
+=========================================================================
+  5. ALLOCATION DE MÉMOIRE PERMANENTE
+=========================================================================
+
+  function MemAlloc(Size : Word) : Pointer;
+  ---------------------------------------------------------------
+  Alloue Size octets de mémoire permanente sur le tas.
+  Si la mémoire est insuffisante, les caches sont libérés
+  automatiquement pour tenter de satisfaire la demande.
+
+  Paramètres :
+    Size  Nombre d'octets à allouer
+
+  Retour :
+    Pointeur vers le bloc alloué, ou nil si l'allocation
+    a échoué même après libération des caches.
+
+  Différence avec GetMem :
+  - GetMem provoque une erreur d'exécution si la mémoire est
+    insuffisante (sauf HeapError personnalisé).
+  - MemAlloc retourne nil et libère d'abord les caches.
+
+  Exemple :
+    P := MemAlloc(1024);
+    if P = nil then
+      WriteLn('Pas assez de mémoire')
+    else
+    begin
+      { utiliser P }
+      FreeMem(P, 1024);
+    end;
+
+  ---------------------------------------------------------------
+  function MemAllocSeg(Size : Word) : Pointer;
+  ---------------------------------------------------------------
+  Alloue Size octets de mémoire permanente, alignée sur une
+  frontière de segment (offset = 0). Le pointeur retourné a
+  toujours un offset de 0.
+
+  Paramètres :
+    Size  Nombre d'octets à allouer (max 65 521 octets,
+          car 15 octets supplémentaires peuvent être nécessaires
+          pour l'alignement)
+
+  Retour :
+    Pointeur aligné sur segment (Ofs = 0), ou nil si échec.
+
+  Utile pour les blocs qui doivent être alignés sur 16 octets
+  (accès DMA, tampons vidéo, etc.).
+
+  La mémoire allouée par MemAllocSeg doit être libérée avec
+  FreeMem en utilisant la taille réelle allouée (Size + padding).
+
+=========================================================================
+  6. GESTION DES CACHES
+=========================================================================
+
+  Les caches sont des blocs de mémoire que le gestionnaire peut
+  libérer automatiquement quand la mémoire permanente devient
+  insuffisante. Ils sont idéaux pour les données recalculables
+  ou rechargeable (fichiers relus du disque, calculs répétables).
+
+  Quand le gestionnaire a besoin de mémoire, il libère les
+  caches dans l'ordre inverse de leur création (LIFO : le plus
+  récent d'abord).
+
+  procedure NewCache(var P : Pointer; Size : Word);
+  ---------------------------------------------------------------
+  Alloue un bloc de mémoire cache.
+
+  Paramètres :
+    P     (sortie) Pointeur vers le bloc alloué
+    Size  Nombre d'octets à allouer
+
+  Après l'appel, P pointe vers le bloc si l'allocation réussit,
+  ou P = nil si la mémoire est insuffisante.
+
+  ATTENTION : le pointeur P peut devenir nil à tout moment si
+  le gestionnaire décide de libérer le cache pour satisfaire
+  une allocation permanente. Il faut donc TOUJOURS vérifier
+  P <> nil avant d'accéder au cache.
+
+  Exemple :
+    var
+      MonCache : Pointer;
+    begin
+      NewCache(MonCache, 8192);
+      if MonCache <> nil then
+      begin
+        { remplir le cache }
+        FillChar(MonCache^, 8192, 0);
+      end;
+      { ... plus tard ... }
+      if MonCache <> nil then
+        { le cache est encore valide, l'utiliser }
+      else
+        { le cache a été libéré, recalculer/recharger }
+    end;
+
+  ---------------------------------------------------------------
+  procedure DisposeCache(P : Pointer);
+  ---------------------------------------------------------------
+  Libère explicitement un bloc de mémoire cache.
+
+  Paramètres :
+    P  Pointeur vers le bloc cache (obtenu par NewCache)
+
+  Si P est nil (cache déjà libéré automatiquement), ne fait
+  rien. Sinon, libère le bloc et le retire de la liste des
+  caches.
+
+=========================================================================
+  7. GESTION DES TAMPONS (BUFFERS)
+=========================================================================
+
+  Les tampons sont des blocs de mémoire de taille variable,
+  libérables et redimensionnables. Ils ont une priorité
+  inférieure aux caches : les tampons sont réduits ou libérés
+  en dernier recours, après les caches.
+
+  La quantité totale de mémoire allouée aux tampons est limitée
+  par MaxBufMem.
+
+  procedure NewBuffer(var P : Pointer; Size : Word);
+  ---------------------------------------------------------------
+  Alloue un nouveau tampon.
+
+  Paramètres :
+    P     (sortie) Pointeur vers le tampon alloué
+    Size  Taille souhaitée en octets
+
+  Si la mémoire est insuffisante ou si MaxBufMem est dépassé,
+  P est mis à nil.
+
+  ---------------------------------------------------------------
+  procedure DisposeBuffer(P : Pointer);
+  ---------------------------------------------------------------
+  Libère un tampon précédemment alloué par NewBuffer.
+
+  Paramètres :
+    P  Pointeur vers le tampon
+
+  ---------------------------------------------------------------
+  function GetBufferSize(P : Pointer) : Word;
+  ---------------------------------------------------------------
+  Retourne la taille courante d'un tampon.
+
+  Paramètres :
+    P  Pointeur vers le tampon
+
+  Retour :
+    Taille en octets du tampon
+
+  Note : la taille peut être inférieure à celle demandée lors
+  de NewBuffer si le tampon a été réduit par SetBufferSize.
+
+  ---------------------------------------------------------------
+  function SetBufferSize(P : Pointer; Size : Word) : Boolean;
+  ---------------------------------------------------------------
+  Redimensionne un tampon existant.
+
+  Paramètres :
+    P     Pointeur vers le tampon
+    Size  Nouvelle taille souhaitée en octets
+
+  Retour :
+    True   Le redimensionnement a réussi
+    False  La nouvelle taille n'a pas pu être allouée
+
+  Les données existantes sont préservées jusqu'à
+  Min(ancienne taille, nouvelle taille).
+
+=========================================================================
+  8. MÉMOIRE TAMPON BAS NIVEAU
+=========================================================================
+
+  procedure GetBufMem(var P : Pointer; Size : Word);
+  ---------------------------------------------------------------
+  Alloue un bloc de mémoire pour tampon à un niveau plus bas
+  que NewBuffer. Utilisée en interne par le gestionnaire de
+  tampons.
+
+  Paramètres :
+    P     (sortie) Pointeur vers le bloc alloué
+    Size  Nombre d'octets à allouer
+
+  Si l'allocation échoue, P est mis à nil.
+
+  ---------------------------------------------------------------
+  procedure FreeBufMem(P : Pointer);
+  ---------------------------------------------------------------
+  Libère un bloc alloué par GetBufMem.
+
+  Paramètres :
+    P  Pointeur vers le bloc à libérer
+
+=========================================================================
+  9. GESTION DE LA LIMITE MÉMOIRE DOS
+=========================================================================
+
+  procedure SetMemTop(MemTop : Pointer);
+  ---------------------------------------------------------------
+  Définit la limite haute de la mémoire utilisée par le
+  programme. Toute la mémoire au-dessus de MemTop est rendue
+  au DOS et peut être utilisée par des programmes enfants
+  lancés via Exec.
+
+  Paramètres :
+    MemTop  Pointeur marquant la limite haute du tas
+
+  Utilisation typique pour Exec :
+    var
+      OldMemTop : Pointer;
+    begin
+      OldMemTop := Ptr(HeapOrg.Seg, HeapOrg.Ofs);
+      SetMemTop(HeapPtr);  { réduire au strict nécessaire }
+      Exec('COMMAND.COM', '/C DIR');
+      SetMemTop(OldMemTop);  { restaurer }
+    end;
+
+  ATTENTION : ne pas placer MemTop en dessous de HeapPtr, cela
+  corromprait le tas. SetMemTop est normalement utilisée en
+  conjonction avec InitDosMem/DoneDosMem.
+
+=========================================================================
+  10. PRIORITÉ DE LIBÉRATION
+=========================================================================
+
+  Quand une allocation permanente (MemAlloc, New, GetMem) ne
+  peut pas être satisfaite, le gestionnaire de mémoire tente
+  de libérer de la mémoire dans cet ordre :
+
+  1. Libérer les caches (du plus récent au plus ancien)
+  2. Réduire les tampons
+  3. Si toujours insuffisant : retourner nil (MemAlloc) ou
+     déclencher une erreur d'exécution (GetMem/New)
+
+  Ce mécanisme permet aux applications Turbo Vision de gérer
+  gracieusement les situations de mémoire limitée.
+
+=========================================================================
+  11. EXEMPLES
+=========================================================================
+
+  --- Exemple 1 : Utilisation basique ---
+
+  program MemDemo;
+  uses Memory;
+  var
+    P : Pointer;
+  begin
+    MaxHeapSize := 320000 div 16;  { limiter à ~320 Ko }
+    LowMemSize := 8192 div 16;    { seuil de 8 Ko }
+    InitMemory;
+
+    P := MemAlloc(4096);
+    if P <> nil then
+    begin
+      WriteLn('4 Ko alloués avec succès');
+      if LowMemory then
+        WriteLn('ATTENTION : mémoire basse !')
+      else
+        WriteLn('Mémoire OK');
+      FreeMem(P, 4096);
+    end
+    else
+      WriteLn('Allocation échouée');
+
+    DoneMemory;
+  end.
+
+  --- Exemple 2 : Cache de données ---
+
+  program CacheDemo;
+  uses Memory;
+  var
+    Cache : Pointer;
+    Data  : Pointer;
+  begin
+    InitMemory;
+
+    { Allouer un cache de 16 Ko }
+    NewCache(Cache, 16384);
+    if Cache <> nil then
+      WriteLn('Cache alloué : 16 Ko');
+
+    { Allocation permanente qui pourrait libérer le cache }
+    Data := MemAlloc(32768);
+    if Data <> nil then
+    begin
+      WriteLn('32 Ko alloués');
+      FreeMem(Data, 32768);
+    end;
+
+    { Vérifier si le cache est toujours valide }
+    if Cache <> nil then
+    begin
+      WriteLn('Cache encore en mémoire');
+      DisposeCache(Cache);
+    end
+    else
+      WriteLn('Cache libéré automatiquement');
+
+    DoneMemory;
+  end.
+
+  --- Exemple 3 : Tampons redimensionnables ---
+
+  program BufferDemo;
+  uses Memory;
+  var
+    Buf : Pointer;
+  begin
+    MaxBufMem := 32768 div 16;  { limiter tampons à 32 Ko }
+    InitMemory;
+
+    NewBuffer(Buf, 8192);
+    if Buf <> nil then
+    begin
+      WriteLn('Tampon : ', GetBufferSize(Buf), ' octets');
+
+      if SetBufferSize(Buf, 16384) then
+        WriteLn('Agrandi à : ', GetBufferSize(Buf), ' octets')
+      else
+        WriteLn('Impossible d''agrandir');
+
+      DisposeBuffer(Buf);
+    end;
+
+    DoneMemory;
+  end.
+
+  --- Exemple 4 : Préparation pour Exec ---
+
+  program ExecDemo;
+  uses Memory, Dos;
+  begin
+    InitMemory;
+
+    { Libérer la mémoire au-dessus du tas pour Exec }
+    SetMemTop(HeapPtr);
+
+    SwapVectors;
+    Exec(GetEnv('COMSPEC'), '/C DIR');
+    SwapVectors;
+
+    if DosError <> 0 then
+      WriteLn('Erreur Exec : ', DosError)
+    else
+      WriteLn('Code retour : ', DosExitCode);
+
+    DoneMemory;
+  end.
+
+=========================================================================
+  12. RÉCAPITULATIF DE L'INTERFACE
+=========================================================================
+
+  --- Constantes typées ---
+  MaxHeapSize : Word = 655360 div 16    Taille max. du tas
+  LowMemSize  : Word = 4096 div 16     Seuil mémoire basse
+  MaxBufMem   : Word = 65536 div 16    Max. mémoire tampons
+
+  --- Initialisation/Finalisation ---
+  Procedure InitMemory;
+  Procedure DoneMemory;
+  Procedure InitDosMem;
+  Procedure DoneDosMem;
+
+  --- Vérification ---
+  Function  LowMemory : Boolean;
+
+  --- Allocation permanente ---
+  Function  MemAlloc(Size : Word) : Pointer;
+  Function  MemAllocSeg(Size : Word) : Pointer;
+
+  --- Caches ---
+  Procedure NewCache(var P : Pointer; Size : Word);
+  Procedure DisposeCache(P : Pointer);
+
+  --- Tampons ---
+  Procedure NewBuffer(var P : Pointer; Size : Word);
+  Procedure DisposeBuffer(P : Pointer);
+  Function  GetBufferSize(P : Pointer) : Word;
+  Function  SetBufferSize(P : Pointer; Size : Word) : Boolean;
+
+  --- Mémoire tampon bas niveau ---
+  Procedure GetBufMem(var P : Pointer; Size : Word);
+  Procedure FreeBufMem(P : Pointer);
+
+  --- Limite mémoire DOS ---
+  Procedure SetMemTop(MemTop : Pointer);
+
+=========================================================================
+  13. RÉSUMÉ PAR CATÉGORIE
+=========================================================================
+
+  Catégorie                   Nombre   Éléments
+  -------------------------   ------   ----------------------------------
+  Initialisation/Finalisation    4     InitMemory, DoneMemory,
+                                       InitDosMem, DoneDosMem
+  Vérification                   1     LowMemory
+  Allocation permanente          2     MemAlloc, MemAllocSeg
+  Gestion des caches             2     NewCache, DisposeCache
+  Gestion des tampons            4     NewBuffer, DisposeBuffer,
+                                       GetBufferSize, SetBufferSize
+  Mémoire tampon bas niveau      2     GetBufMem, FreeBufMem
+  Limite mémoire DOS             1     SetMemTop
+  -------------------------   ------   ----------------------------------
+  TOTAL procédures/fonctions    16
+
+  Constantes typées exportées : 3   (MaxHeapSize, LowMemSize,
+                                     MaxBufMem)
+  Variables exportées : 0
+  Types exportés : 0
+  Dépendance : aucune (unité autonome)
+
+=========================================================================
+  Fin du document - Unité MEMORY - Turbo Pascal 7.0
+=========================================================================

@@ -1,0 +1,325 @@
+=========================================================================
+  TURBO PASCAL 7.0 - Unité PRINTER - Documentation de référence
+=========================================================================
+
+  L'unité Printer fournit un accès simplifié à l'imprimante
+  via une variable fichier texte pré-assignée. C'est l'une des
+  unités les plus simples de Turbo Pascal : elle ne contient
+  qu'une seule variable.
+
+  En ajoutant « Uses Printer », le programme dispose de la
+  variable Lst, un fichier texte connecté au périphérique
+  d'impression DOS (LPT1). Il suffit alors d'utiliser Write
+  et WriteLn avec Lst pour envoyer du texte à l'imprimante.
+
+  Uses Printer;
+
+  Copyright (C) 1988,92 Borland International
+
+  Directives de compilation : {$D-,I-,S-}
+    $D- : Pas d'information de débogage
+    $I- : Pas de vérification d'E/S
+    $S- : Pas de vérification de pile
+
+=========================================================================
+  1. DÉPENDANCE
+=========================================================================
+
+  L'unité Printer n'a aucune dépendance. Elle n'utilise aucune
+  autre unité dans sa clause Uses.
+
+=========================================================================
+  2. VARIABLE
+=========================================================================
+
+  var Lst : Text;
+  ---------------------------------------------------------------
+  Variable fichier texte pré-assignée et pré-ouverte au
+  périphérique d'impression par défaut du DOS (LPT1:).
+
+  À l'initialisation de l'unité (section initialization),
+  Lst est automatiquement :
+    1. Assignée au périphérique 'LPT1' (AssignLst ou Assign)
+    2. Ouverte en écriture (Rewrite)
+
+  Le programme peut immédiatement écrire sur l'imprimante
+  sans aucune opération préalable.
+
+  Le nom « Lst » vient de « Listing » ou « List device »,
+  terme historique désignant l'imprimante dans les systèmes
+  CP/M et premiers DOS.
+
+=========================================================================
+  3. UTILISATION DE BASE
+=========================================================================
+
+  L'utilisation est identique à celle de Write/WriteLn avec
+  n'importe quel fichier texte :
+
+    Write(Lst, expression);       { écrire sans saut de ligne }
+    WriteLn(Lst, expression);     { écrire avec saut de ligne }
+    WriteLn(Lst);                 { saut de ligne seul }
+
+  Toutes les spécifications de format standard fonctionnent :
+
+    WriteLn(Lst, Valeur:10);       { largeur de champ }
+    WriteLn(Lst, Reel:10:2);       { décimales }
+    WriteLn(Lst, 'Texte':20);      { cadrage à droite }
+
+  Le caractère de saut de page (form feed) peut être envoyé
+  pour éjecter la page courante :
+
+    Write(Lst, #12);               { saut de page (FF) }
+
+=========================================================================
+  4. GESTION D'ERREURS
+=========================================================================
+
+  Comme l'unité est compilée avec {$I-}, les erreurs d'E/S ne
+  provoquent pas d'arrêt immédiat du programme. Cependant, le
+  programme utilisateur doit gérer les erreurs potentielles :
+
+  - Imprimante éteinte ou déconnectée
+  - Imprimante hors ligne
+  - Plus de papier
+  - Erreur de port parallèle
+
+  Pour vérifier les erreurs :
+
+    {$I-}
+    WriteLn(Lst, 'Test impression');
+    if IOResult <> 0 then
+      WriteLn('Erreur d''imprimante !');
+    {$I+}
+
+=========================================================================
+  5. CARACTÈRES DE CONTRÔLE COURANTS
+=========================================================================
+
+  Les codes de contrôle suivants sont fréquemment envoyés à
+  l'imprimante via Lst :
+
+  Code   Valeur   Description
+  ----   ------   ------------------------------------------
+  BEL      #7     Signal sonore (certaines imprimantes)
+  BS       #8     Retour arrière (backspace)
+  HT       #9     Tabulation horizontale
+  LF      #10     Saut de ligne (line feed)
+  FF      #12     Saut de page (form feed)
+  CR      #13     Retour chariot (carriage return)
+  ESC     #27     Début de séquence d'échappement
+
+  Les séquences d'échappement (ESC + commande) dépendent du
+  modèle d'imprimante. Exemples courants (Epson/compatible) :
+
+    Write(Lst, #27, 'E');          { gras activé }
+    Write(Lst, #27, 'F');          { gras désactivé }
+    Write(Lst, #27, '0');          { interligne 1/8 pouce }
+    Write(Lst, #27, '2');          { interligne 1/6 pouce }
+    Write(Lst, #27, #15);         { mode condensé }
+
+=========================================================================
+  6. EXEMPLES
+=========================================================================
+
+  --- Exemple 1 : Impression simple ---
+
+  program ImprimerTexte;
+  uses Printer;
+  begin
+    WriteLn(Lst, 'Bonjour depuis Turbo Pascal !');
+    WriteLn(Lst, '============================');
+    WriteLn(Lst);
+    WriteLn(Lst, 'Date : ', Date);
+    Write(Lst, #12);  { éjecter la page }
+  end.
+
+  --- Exemple 2 : Impression d'un tableau ---
+
+  program ImprimerTableau;
+  uses Printer;
+  var
+    I : Integer;
+  begin
+    WriteLn(Lst, '  N    N²     N³');
+    WriteLn(Lst, '---  -----  ------');
+    for I := 1 to 20 do
+      WriteLn(Lst, I:3, I*I:7, I*I*I:8);
+    Write(Lst, #12);
+  end.
+
+  --- Exemple 3 : Impression d'un fichier texte ---
+
+  program ImprimerFichier;
+  uses Printer;
+  var
+    F    : Text;
+    Line : String;
+    Page : Integer;
+    Num  : Integer;
+  begin
+    Assign(F, ParamStr(1));
+    {$I-}
+    Reset(F);
+    {$I+}
+    if IOResult <> 0 then
+    begin
+      WriteLn('Fichier non trouvé : ', ParamStr(1));
+      Halt(1);
+    end;
+
+    Page := 1;
+    Num := 0;
+    WriteLn(Lst, 'Fichier : ', ParamStr(1),
+            '  Page ', Page);
+    WriteLn(Lst, '----------------------------------------');
+
+    while not Eof(F) do
+    begin
+      ReadLn(F, Line);
+      Inc(Num);
+      WriteLn(Lst, Num:4, ' | ', Line);
+      if Num mod 60 = 0 then
+      begin
+        Write(Lst, #12);  { saut de page }
+        Inc(Page);
+        WriteLn(Lst, 'Fichier : ', ParamStr(1),
+                '  Page ', Page);
+        WriteLn(Lst, '-------------------------------');
+      end;
+    end;
+
+    Write(Lst, #12);  { éjecter dernière page }
+    Close(F);
+  end.
+
+  --- Exemple 4 : Gestion d'erreur d'impression ---
+
+  program SafePrint;
+  uses Printer;
+
+    function PrinterReady : Boolean;
+    begin
+      {$I-}
+      Write(Lst, '');
+      PrinterReady := (IOResult = 0);
+      {$I+}
+    end;
+
+  begin
+    if not PrinterReady then
+    begin
+      WriteLn('Imprimante non prête !');
+      WriteLn('Vérifiez la connexion et l''alimentation.');
+      Halt(1);
+    end;
+
+    WriteLn(Lst, 'Impression réussie.');
+    Write(Lst, #12);
+  end.
+
+=========================================================================
+  7. REDIRECTION VERS UN AUTRE PORT
+=========================================================================
+
+  Par défaut, Lst est connecté à LPT1. Pour imprimer sur un
+  autre port, il est possible de fermer Lst et de le réassigner :
+
+    Close(Lst);
+    Assign(Lst, 'LPT2');
+    Rewrite(Lst);
+    WriteLn(Lst, 'Impression sur LPT2');
+
+  Ou vers un fichier pour tester sans imprimante :
+
+    Close(Lst);
+    Assign(Lst, 'SORTIE.PRN');
+    Rewrite(Lst);
+    WriteLn(Lst, 'Sortie redirigée vers fichier');
+    Close(Lst);
+
+  Ports disponibles sous DOS :
+    LPT1  Premier port parallèle (= PRN)
+    LPT2  Deuxième port parallèle
+    LPT3  Troisième port parallèle
+    COM1  Premier port série
+    COM2  Deuxième port série
+
+=========================================================================
+  8. COMPARAISON AVEC LES ALTERNATIVES
+=========================================================================
+
+  Méthode                    Avantage / Inconvénient
+  -------------------------  -----------------------------------
+  Uses Printer; (Lst)        Le plus simple, prêt à l'emploi
+  Assign(F,'LPT1');Rewrite   Contrôle total, choix du port
+  Assign(F,'PRN');Rewrite    Identique à LPT1, nom alternatif
+  INT 17h (BIOS)             Accès bas niveau, caractère par
+                             caractère
+  Port[$378] (direct)        Accès matériel direct, très rapide
+                             mais non portable
+
+  L'unité Printer est recommandée pour la grande majorité des
+  besoins d'impression en Turbo Pascal.
+
+=========================================================================
+  9. NOTES TECHNIQUES
+=========================================================================
+
+  - La section d'initialisation de l'unité exécute
+    automatiquement l'équivalent de :
+      Assign(Lst, 'LPT1');
+      Rewrite(Lst);
+
+  - Lst est un fichier texte standard avec un tampon de 128
+    octets. L'impression est tamponnée : les données ne sont
+    envoyées à l'imprimante que lorsque le tampon est plein ou
+    lors d'un WriteLn (qui provoque un flush).
+
+  - Il n'est pas nécessaire de fermer Lst à la fin du programme :
+    la section de finalisation de l'unité s'en charge. Cependant,
+    un Close(Lst) explicite peut être utile pour forcer l'envoi
+    des dernières données tamponnées.
+
+  - Sous DOS, l'impression via LPT1 est bloquante : si
+    l'imprimante n'est pas prête, le programme se bloque jusqu'à
+    ce qu'elle le devienne (ou que l'utilisateur annule via
+    Ctrl-Break).
+
+  - L'unité est compatible avec les overlays ($O+) et peut
+    être placée dans un overlay si nécessaire.
+
+=========================================================================
+  10. RÉCAPITULATIF DE L'INTERFACE
+=========================================================================
+
+  --- Variables ---
+  Lst : Text          Fichier texte pré-assigné à LPT1
+
+  --- Constantes ---
+  (aucune)
+
+  --- Types ---
+  (aucun)
+
+  --- Procédures/Fonctions ---
+  (aucune)
+
+=========================================================================
+  11. RÉSUMÉ PAR CATÉGORIE
+=========================================================================
+
+  Catégorie                   Nombre   Éléments
+  -------------------------   ------   ----------------------------------
+  Variables exportées             1    Lst
+  Constantes exportées            0
+  Types exportés                  0
+  Procédures/Fonctions            0
+  -------------------------   ------   ----------------------------------
+  TOTAL éléments exportés         1
+
+  Dépendance : aucune
+
+=========================================================================
+  Fin du document - Unité PRINTER - Turbo Pascal 7.0
+=========================================================================
