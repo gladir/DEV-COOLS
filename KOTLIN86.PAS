@@ -4591,10 +4591,11 @@ End;
 
 Procedure ParseStmt;
 Var
-  Kw   : TString;
-  Res  : TExprVal;
-  SIdx : Integer;
-  Addr : TString;
+  Kw      : TString;
+  Res     : TExprVal;
+  IdName  : TString;
+  SIdx    : Integer;
+  Addr    : TString;
 Begin
   { Declarations val / var }
   If CurToken.Kind = TK_KEYWORD Then
@@ -4610,14 +4611,12 @@ Begin
   { TODO 12 - Expression-statement : appel de fonction ou affectation }
   If CurToken.Kind = TK_IDENT Then
   Begin
-    { Verifier si c est une affectation : ident = expr }
-    Kw := CurToken.Val;
-    SIdx := SymFind(Kw);
+    IdName := CurToken.Val;
+    SIdx := SymFind(IdName);
+    { Affectation : ident = expr (variable deja declaree, non-fonction) }
     If (SIdx >= 0) And (SymTab[SIdx].Kind <> SK_FUN) Then
     Begin
-      { Possiblement une affectation : ident = expr ou ident op= expr }
-      ParseExpr(Res);
-      { Si l expression suivante est '=', c est une affectation }
+      ParserAdvance; { consomme l identifiant }
       If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
       Begin
         ParserAdvance; { consomme '=' }
@@ -4627,9 +4626,13 @@ Begin
         EmitInstrAB('MOV', Addr, 'AX');
         If SymTab[SIdx].TypeIdx = TY_UNKNOWN Then
           SymTab[SIdx].TypeIdx := Res.TypeIdx;
-      End
-      Else
-        ExprFlushToAX(Res);
+        Exit;
+      End;
+      { Pas une affectation : rembobiner en evaluant comme expression }
+      { L identifiant a deja ete consomme, charger la variable }
+      ExprLoad(SIdx, Res);
+      { Continuer avec les suffixes et operateurs dans ParseExprPrec }
+      ExprFlushToAX(Res);
       Exit;
     End;
     { Expression-statement (appel de fonction, etc.) }
