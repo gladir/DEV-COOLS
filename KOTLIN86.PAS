@@ -5442,10 +5442,9 @@ Begin
       Begin
         Addr := ExprAddrOf(E.SymIdx);
         K := TypeKindOf(E.TypeIdx);
-        { Arrays et classes utilisent MOV (semantique pointeur : la variable contient un ptr objet) }
-        If (K = TYK_ARRAY) Or (K = TYK_INTARRAY) Or (K = TYK_CLASS) Then
-          EmitInstrAB('MOV', 'AX', Addr)
-        Else If (E.SymIdx >= 0) And (SymTab[E.SymIdx].Kind = SK_PARAM) Then
+        { Arrays, classes et parametres : MOV car la variable contient deja la valeur }
+        If (K = TYK_ARRAY) Or (K = TYK_INTARRAY) Or (K = TYK_CLASS) Or
+           ((E.SymIdx >= 0) And (SymTab[E.SymIdx].Kind = SK_PARAM)) Then
           EmitInstrAB('MOV', 'AX', Addr)
         Else If TypeIsPtr(E.TypeIdx) Then
           EmitInstrAB('LEA', 'AX', Addr)
@@ -5487,10 +5486,9 @@ Begin
   Res.SymIdx  := SIdx;
   Addr := ExprAddrOf(SIdx);
   K := TypeKindOf(Res.TypeIdx);
-  { Arrays et classes : MOV car la variable contient un pointeur objet }
-  If (K = TYK_ARRAY) Or (K = TYK_INTARRAY) Or (K = TYK_CLASS) Then
-    EmitInstrAB('MOV', 'AX', Addr)
-  Else If SymTab[SIdx].Kind = SK_PARAM Then
+  { Arrays, classes et parametres : MOV car la variable contient deja la valeur }
+  If (K = TYK_ARRAY) Or (K = TYK_INTARRAY) Or (K = TYK_CLASS) Or
+     (SymTab[SIdx].Kind = SK_PARAM) Then
     EmitInstrAB('MOV', 'AX', Addr)
   Else If TypeIsPtr(Res.TypeIdx) Then
     EmitInstrAB('LEA', 'AX', Addr)
@@ -6208,9 +6206,7 @@ Begin
     Begin
       ParserAdvance; { consomme le modificateur }
       If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'fun') Then
-        ParseFunDecl
-      Else
-        Exit; { autre modificateur : skip }
+        ParseFunDecl;
       Exit;
     End;
   End;
