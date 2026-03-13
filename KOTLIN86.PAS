@@ -2568,7 +2568,7 @@ Begin
             Inc(ObjTempCount);
             DataAddObj(ObjLbl, ClassTab[ClsIdx].ObjSize);
             EmitComment('new ' + IdName + '()');
-            EmitInstrAB('MOV', 'WORD PTR [' + ObjLbl + ']', '0'); { vtable = 0 }
+            EmitInstrAB('MOV', 'WORD PTR [' + ObjLbl + ']', '0'); { vtable = 0 : pas de dispatch virtuel, reserve pour usage futur }
             ParserAdvance; { consomme '(' }
             { Parser et stocker les arguments dans les champs }
             For ClsFI := 0 To ClassTab[ClsIdx].FieldCount - 1 Do
@@ -2825,7 +2825,7 @@ Begin
               ParserAdvance; { consomme '(' }
               If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
                 ParserAdvance; { consomme ')' }
-              EmitInstrAB('XOR', 'AX', 'AX'); { stub : retourne 0 }
+              EmitInstrAB('XOR', 'AX', 'AX'); { stub : retourne 0 - une impl reelle calculerait un hash base sur les champs }
               Res.TypeIdx := TY_IDX_INT;
             End
             Else If (MembName = 'copy') And (ClsIdx >= 0) And
@@ -4357,7 +4357,7 @@ Begin
   ClsLabel := KT_CLS_PFX + ClsName;
   ParserAdvance; { consomme le nom }
   FldCount := 0;
-  ObjSz := 2;  { premier word = vtable (reserve, mis a 0) }
+  ObjSz := 2;  { premier word = vtable (reserve pour dispatch virtuel futur, mis a 0) }
   { Parser les parametres du constructeur primaire }
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
   Begin
@@ -5155,6 +5155,7 @@ Begin
       Begin
         Addr := ExprAddrOf(E.SymIdx);
         K := TypeKindOf(E.TypeIdx);
+        { Arrays et classes utilisent MOV (semantique pointeur : la variable contient un ptr objet) }
         If (K = TYK_ARRAY) Or (K = TYK_INTARRAY) Or (K = TYK_CLASS) Then
           EmitInstrAB('MOV', 'AX', Addr)
         Else If TypeIsPtr(E.TypeIdx) Then
@@ -5197,6 +5198,7 @@ Begin
   Res.SymIdx  := SIdx;
   Addr := ExprAddrOf(SIdx);
   K := TypeKindOf(Res.TypeIdx);
+  { Arrays et classes : MOV car la variable contient un pointeur objet }
   If (K = TYK_ARRAY) Or (K = TYK_INTARRAY) Or (K = TYK_CLASS) Then
     EmitInstrAB('MOV', 'AX', Addr)
   Else If TypeIsPtr(Res.TypeIdx) Then
