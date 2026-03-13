@@ -437,7 +437,7 @@
                 MOV DWORD PTR [_AB_SY_SUBRC], 4
             Variables systeme : SY-SUBRC, SY-TABIX, SY-DBCNT
 
-  TODO 22 - PARSEUR : CALL FUNCTION / FUNCTION / ENDFUNCTION (STUBS)
+  TODO 22 - PARSEUR : CALL FUNCTION / FUNCTION / ENDFUNCTION (STUBS) [IMPLEMENTE]
             Procedure ParseCallFunction
             Syntaxe :
               CALL FUNCTION 'NOM_FM'
@@ -1189,6 +1189,13 @@ Procedure ParseReturn; Forward;
 { ============================================================ }
 
 Procedure ParseSelect; Forward;
+
+{ ============================================================ }
+{ DECLARATIONS FORWARD (CALL FUNCTION / FUNCTION TODO 22)      }
+{ ============================================================ }
+
+Procedure ParseCallFunction; Forward;
+Procedure ParseFunctionDecl; Forward;
 
 { ============================================================ }
 { FONCTIONS UTILITAIRES                                        }
@@ -3552,6 +3559,14 @@ Begin
   If TokIsKw(KW_SELECT) Then
   Begin Consume; ParseSelect; Exit; End;
 
+  { CALL FUNCTION 'nom'. (TODO 22) }
+  If TokIsKw(KW_CALL) Then
+  Begin Consume; ParseCallFunction; Exit; End;
+
+  { FUNCTION nom. ... ENDFUNCTION. (TODO 22) }
+  If TokIsKw(KW_FUNCTION) Then
+  Begin Consume; ParseFunctionDecl; Exit; End;
+
   { var = expr. (style ABAP Objet / assignation directe, TODO 15) }
   If (CurTokType = TOK_IDENT) And (CurTokKw = KW_NONE) Then
   Begin
@@ -4729,6 +4744,181 @@ Begin
   SyDbcntIdx := FindSym('SY-DBCNT');
   If SyDbcntIdx > 0 Then
     EmitI('MOV     DWORD PTR [' + SymTab[SyDbcntIdx].AsmLabel + '], 0');
+End;
+
+{ ============================================================ }
+{ TODO 22 : CALL FUNCTION / FUNCTION / ENDFUNCTION (STUBS)      }
+{ ============================================================ }
+
+{ ---- ParseCallFunction : CALL FUNCTION 'nom' ---------------  }
+{ Stub : pas d appel reel.                                       }
+{   - Parse les clauses EXPORTING / IMPORTING / TABLES /         }
+{     EXCEPTIONS.                                                }
+{   - Emet un commentaire de stub.                                }
+{   - Positionne SY-SUBRC = 0.                                   }
+{ ============================================================ }
+Procedure ParseCallFunction;
+Var FMName      : TString;
+    SySubrcIdx  : Integer;
+Begin
+  { On attend FUNCTION apres CALL }
+  If Not TokIsKw(KW_FUNCTION) Then
+  Begin LexError('FUNCTION attendu apres CALL'); SkipToDot; Exit; End;
+  Consume;
+
+  { Nom du module fonction (chaine litterale entre quotes) }
+  If CurTokType = TOK_STRING Then
+  Begin
+    FMName := CurTokStr;
+    Consume;
+  End
+  Else
+  Begin
+    { Accepter aussi un identifiant sans quotes }
+    FMName := CurTokStr;
+    Consume;
+  End;
+
+  EmitBlank;
+  EmitComment('---- CALL FUNCTION ' + FMName + ' (stub) ----');
+
+  { Parser les clauses optionnelles avant le point terminal }
+  While (CurTokType <> TOK_EOF) And (CurTokType <> TOK_DOT) Do
+  Begin
+    { EXPORTING param = val ... }
+    If TokIsKw(KW_EXPORTING) Then
+    Begin
+      Consume;
+      EmitComment('  EXPORTING');
+      While (CurTokType <> TOK_EOF) And (CurTokType <> TOK_DOT) And
+            (Not TokIsKw(KW_IMPORTING)) And (Not TokIsKw(KW_TABLES)) And
+            (Not TokIsKw(KW_EXCEPTIONS)) Do
+      Begin
+        { param = val : ignorer }
+        Consume;
+      End;
+    End
+    Else
+    { IMPORTING param = var ... }
+    If TokIsKw(KW_IMPORTING) Then
+    Begin
+      Consume;
+      EmitComment('  IMPORTING');
+      While (CurTokType <> TOK_EOF) And (CurTokType <> TOK_DOT) And
+            (Not TokIsKw(KW_EXPORTING)) And (Not TokIsKw(KW_TABLES)) And
+            (Not TokIsKw(KW_EXCEPTIONS)) Do
+      Begin
+        Consume;
+      End;
+    End
+    Else
+    { TABLES itab = itab2 ... }
+    If TokIsKw(KW_TABLES) Then
+    Begin
+      Consume;
+      EmitComment('  TABLES');
+      While (CurTokType <> TOK_EOF) And (CurTokType <> TOK_DOT) And
+            (Not TokIsKw(KW_EXPORTING)) And (Not TokIsKw(KW_IMPORTING)) And
+            (Not TokIsKw(KW_EXCEPTIONS)) Do
+      Begin
+        Consume;
+      End;
+    End
+    Else
+    { EXCEPTIONS exception_name = n ... }
+    If TokIsKw(KW_EXCEPTIONS) Then
+    Begin
+      Consume;
+      EmitComment('  EXCEPTIONS');
+      While (CurTokType <> TOK_EOF) And (CurTokType <> TOK_DOT) And
+            (Not TokIsKw(KW_EXPORTING)) And (Not TokIsKw(KW_IMPORTING)) And
+            (Not TokIsKw(KW_TABLES)) Do
+      Begin
+        Consume;
+      End;
+    End
+    Else
+      { Token non reconnu dans CALL FUNCTION : avancer }
+      Consume;
+  End;
+
+  { SY-SUBRC = 0 (appel reussi en stub) }
+  SySubrcIdx := FindSym('SY-SUBRC');
+  If SySubrcIdx > 0 Then
+    EmitI('MOV     DWORD PTR [' + SymTab[SySubrcIdx].AsmLabel + '], 0');
+
+  { Consommer le point terminal }
+  If CurTokType = TOK_DOT Then Consume;
+End;
+
+{ ---- ParseFunctionDecl : FUNCTION nom. ... ENDFUNCTION. -----  }
+{ Generer comme une FORM : label _ABF_FM_nom                     }
+{   Prologue / Epilogue Win32 STDCALL                            }
+{ ============================================================ }
+Procedure ParseFunctionDecl;
+Var FuncName    : TString;
+    AsmLbl      : TString;
+    LblSkip     : TString;
+    LblEpi      : TString;
+Begin
+  EmitComment('---- FUNCTION ----');
+
+  { Nom de la fonction }
+  If CurTokType <> TOK_IDENT Then
+  Begin LexError('Nom attendu apres FUNCTION'); SkipToDot; Exit; End;
+  FuncName := CurTokStr;
+  Consume;
+
+  AsmLbl := AB_FN_PFX + 'FM_' + AsmIdent(FuncName);
+
+  { Consommer le point }
+  If CurTokType = TOK_DOT Then Consume
+  Else LexError('Point attendu apres nom FUNCTION');
+
+  EmitBlank;
+  EmitComment('---- FUNCTION ' + FuncName + ' ----');
+
+  { Sauter par-dessus le corps (le mainline ne doit pas l executer) }
+  LblSkip := NewLabel + '_FKS';
+  EmitI('JMP     ' + LblSkip);
+
+  { Label d entree de la FUNCTION }
+  EmitLabel(AsmLbl);
+
+  { Prologue Win32 STDCALL }
+  EmitI('PUSH    EBP');
+  EmitI('MOV     EBP, ESP');
+
+  { Entrer le scope FORM (reutilise pour FUNCTION) }
+  EnterScope(SK_FORM, 0);
+
+  { Label epilogue pour EXIT/RETURN }
+  LblEpi := NewLabel + '_FKE';
+  SetExitLabel(LblEpi);
+
+  { Corps de la FUNCTION : parser jusqu a ENDFUNCTION }
+  ParseBlock(KW_ENDFUNCTION, KW_NONE, KW_NONE);
+
+  { Epilogue Win32 STDCALL }
+  EmitLabel(LblEpi);
+  EmitI('MOV     ESP, EBP');
+  EmitI('POP     EBP');
+  EmitI('RET');
+
+  LeaveScope;
+
+  { Label pour sauter par-dessus le corps }
+  EmitLabel(LblSkip);
+
+  { ENDFUNCTION. }
+  If TokIsKw(KW_ENDFUNCTION) Then
+  Begin
+    Consume;
+    If CurTokType = TOK_DOT Then Consume
+    Else LexError('Point attendu apres ENDFUNCTION');
+  End
+  Else
+    LexError('ENDFUNCTION attendu');
 End;
 
 { ============================================================ }

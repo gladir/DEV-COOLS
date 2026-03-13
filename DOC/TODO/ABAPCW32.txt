@@ -418,7 +418,7 @@
                 MOV DWORD PTR [_AB_SY_SUBRC], 4
             Variables systeme : SY-SUBRC, SY-TABIX, SY-DBCNT
 
-  TODO 22 - PARSEUR : CALL FUNCTION / FUNCTION / ENDFUNCTION (STUBS)
+  TODO 22 - PARSEUR : CALL FUNCTION / FUNCTION / ENDFUNCTION (STUBS) [IMPLEMENTE]
             Procedure ParseCallFunction
             Syntaxe :
               CALL FUNCTION 'NOM_FM'
