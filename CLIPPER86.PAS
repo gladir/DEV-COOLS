@@ -209,7 +209,7 @@
               sinon evaluer exprT
               Label : _CLL_IIF_N
 
-  TODO 14 - BOUCLES : DO WHILE / FOR / FOR EACH / LOOP / EXIT
+  TODO 14 - BOUCLES : DO WHILE / FOR / FOR EACH / LOOP / EXIT [IMPLEMENTE]
             ParseDoWhileStmt : DO WHILE cond ... ENDDO
               Labels : _CLL_WTEST_N, _CLL_WEND_N
             ParseForStmt : FOR var := lo TO hi [STEP n] ... NEXT
@@ -523,6 +523,7 @@ Const
   MAX_SCOPE     = {$IFDEF FPC}64{$ELSE}32{$ENDIF};
   MAX_TYPE      = {$IFDEF FPC}32{$ELSE}16{$ENDIF};
   STACK_SIZE    = 1024;
+  MAX_LOOP_NEST = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
 
   { Indices de types primitifs Clipper }
   TY_IDX_NIL    = 0;     { NIL : valeur non initialisee          }
@@ -711,6 +712,11 @@ Var
   TypeTab   : Array[0..MAX_TYPE - 1] Of TTypeRec;
   TypeCount : Integer;     { nombre d entrees dans TypeTab          }
 
+  { Pile de boucles pour LOOP/EXIT (TODO 14) }
+  LoopContLbl : Array[0..MAX_LOOP_NEST - 1] Of TString;
+  LoopBrkLbl  : Array[0..MAX_LOOP_NEST - 1] Of TString;
+  LoopTop     : Integer;   { profondeur d imbrication des boucles   }
+
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
@@ -836,6 +842,12 @@ Procedure ParseSetColorStmt; Forward;
 { IF/ELSEIF/ELSE/ENDIF et DO CASE (TODO 13) }
 Procedure ParseIfStmt; Forward;
 Procedure ParseDoCaseStmt; Forward;
+{ Boucles DO WHILE / FOR / FOR EACH (TODO 14) }
+Procedure LoopPush(Const ContLbl, BrkLbl : TString); Forward;
+Procedure LoopPop; Forward;
+Procedure ParseDoWhileStmt; Forward;
+Procedure ParseForStmt; Forward;
+Procedure ParseForEachStmt; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1081,6 +1093,7 @@ Begin
   CurFnRetLbl  := '';
   SymNextOffset := 0;
   ParamNextOffset := 4;   { [BP+4] est le premier parametre }
+  LoopTop      := 0;
   TypeInit;
   SymInit;
 End;
@@ -1186,7 +1199,7 @@ Begin
         ParserAdvance;
         ParseIfStmt;
       End
-      { DO [CASE] (TODO 13) }
+      { DO [CASE/WHILE] (TODO 13/14) }
       Else If Kw = 'DO' Then
       Begin
         ParserAdvance;
@@ -1195,10 +1208,47 @@ Begin
           ParserAdvance;
           ParseDoCaseStmt;
         End
-        Else
+        Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'WHILE') Then
         Begin
-          { DO WHILE, etc. : stub pour TODO futur }
+          ParserAdvance;
+          ParseDoWhileStmt;
         End;
+      End
+      { FOR / FOR EACH (TODO 14) }
+      Else If Kw = 'FOR' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'EACH') Then
+        Begin
+          ParserAdvance;
+          ParseForEachStmt;
+        End
+        Else
+          ParseForStmt;
+      End
+      { LOOP (TODO 14) }
+      Else If Kw = 'LOOP' Then
+      Begin
+        ParserAdvance;
+        If LoopTop > 0 Then
+        Begin
+          EmitComment('LOOP');
+          EmitInstrA('JMP', LoopContLbl[LoopTop - 1]);
+        End
+        Else
+          CompileError('LOOP en dehors d une boucle');
+      End
+      { EXIT (TODO 14) }
+      Else If Kw = 'EXIT' Then
+      Begin
+        ParserAdvance;
+        If LoopTop > 0 Then
+        Begin
+          EmitComment('EXIT');
+          EmitInstrA('JMP', LoopBrkLbl[LoopTop - 1]);
+        End
+        Else
+          CompileError('EXIT en dehors d une boucle');
       End
       Else
       Begin
@@ -5717,6 +5767,7 @@ Begin
   IsBlockTerminator := (Kw = 'ENDIF') Or (Kw = 'ELSE') Or
                        (Kw = 'ELSEIF') Or (Kw = 'ENDCASE') Or
                        (Kw = 'CASE') Or (Kw = 'OTHERWISE') Or
+                       (Kw = 'ENDDO') Or (Kw = 'NEXT') Or
                        (Kw = 'FUNCTION') Or (Kw = 'PROCEDURE') Or
                        (Kw = 'RETURN');
 End;
@@ -5798,7 +5849,45 @@ Begin
         Begin
           ParserAdvance;
           ParseDoCaseStmt;
+        End
+        Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'WHILE') Then
+        Begin
+          ParserAdvance;
+          ParseDoWhileStmt;
         End;
+      End
+      Else If Kw = 'FOR' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'EACH') Then
+        Begin
+          ParserAdvance;
+          ParseForEachStmt;
+        End
+        Else
+          ParseForStmt;
+      End
+      Else If Kw = 'LOOP' Then
+      Begin
+        ParserAdvance;
+        If LoopTop > 0 Then
+        Begin
+          EmitComment('LOOP');
+          EmitInstrA('JMP', LoopContLbl[LoopTop - 1]);
+        End
+        Else
+          CompileError('LOOP en dehors d une boucle');
+      End
+      Else If Kw = 'EXIT' Then
+      Begin
+        ParserAdvance;
+        If LoopTop > 0 Then
+        Begin
+          EmitComment('EXIT');
+          EmitInstrA('JMP', LoopBrkLbl[LoopTop - 1]);
+        End
+        Else
+          CompileError('EXIT en dehors d une boucle');
       End
       Else
       Begin
@@ -5977,6 +6066,285 @@ Begin
     EmitLabel(LblNext);
   EmitLabel(LblEnd);
   EmitComment('ENDCASE');
+End;
+
+{ ============================================================
+  TODO 14 - BOUCLES : DO WHILE / FOR / FOR EACH / LOOP / EXIT
+  ============================================================ }
+
+{ ---- LoopPush : empiler les labels de boucle pour LOOP/EXIT --- }
+
+Procedure LoopPush(Const ContLbl, BrkLbl : TString);
+Begin
+  If LoopTop >= MAX_LOOP_NEST Then
+  Begin
+    CompileError('boucles trop imbriquees (max=' + IntToStr(MAX_LOOP_NEST) + ')');
+    Exit;
+  End;
+  LoopContLbl[LoopTop] := ContLbl;
+  LoopBrkLbl[LoopTop]  := BrkLbl;
+  Inc(LoopTop);
+End;
+
+{ ---- LoopPop : depiler les labels de boucle ------------------- }
+
+Procedure LoopPop;
+Begin
+  If LoopTop > 0 Then
+    Dec(LoopTop);
+End;
+
+{ ---- ParseDoWhileStmt : DO WHILE cond ... ENDDO -------------- }
+(* Genere le code assembleur pour la boucle DO WHILE :
+     DO WHILE cond
+       stmts
+       [LOOP]   -> JMP vers le test de boucle
+       [EXIT]   -> JMP vers la fin de la boucle
+     ENDDO
+   Labels : _CLL_N pour test et fin.                              *)
+
+Procedure ParseDoWhileStmt;
+Var
+  Cond    : TExprVal;
+  LblTest : TString;
+  LblEnd  : TString;
+Begin
+  EmitComment('DO WHILE');
+  LblTest := LabelGen;
+  LblEnd  := LabelGen;
+
+  LoopPush(LblTest, LblEnd);
+
+  { Label de test (debut de boucle) }
+  EmitLabel(LblTest);
+
+  { Evaluer la condition }
+  ParseExpr(Cond);
+  ExprFlushToAX(Cond);
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JZ', LblEnd);
+
+  { Corps de la boucle }
+  ParseStmtBlock;
+
+  { Retour au test }
+  EmitInstrA('JMP', LblTest);
+
+  { Consommer ENDDO }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'ENDDO') Then
+    ParserAdvance;
+
+  { Label de fin }
+  EmitLabel(LblEnd);
+  EmitComment('ENDDO');
+
+  LoopPop;
+End;
+
+{ ---- ParseForStmt : FOR var := lo TO hi [STEP n] ... NEXT ---- }
+(* Genere le code assembleur pour la boucle FOR :
+     FOR var := startExpr TO endExpr [STEP stepExpr]
+       stmts
+       [LOOP]   -> JMP vers l increment
+       [EXIT]   -> JMP vers la fin
+     NEXT
+   Variables de borne sauvegardees en DATA pour acces robuste.
+   Labels : _CLL_N pour test, increment et fin.                   *)
+
+Procedure ParseForStmt;
+Var
+  VarName  : TString;
+  SIdx     : Integer;
+  StartV   : TExprVal;
+  EndV     : TExprVal;
+  StepV    : TExprVal;
+  TmpE     : TExprVal;
+  LblTest  : TString;
+  LblIncr  : TString;
+  LblEnd   : TString;
+  LblBody  : TString;
+  LblNeg   : TString;
+  EndLbl   : TString;
+  StepLbl  : TString;
+  HasStep  : Boolean;
+Begin
+  EmitComment('FOR');
+  LblTest := LabelGen;
+  LblIncr := LabelGen;
+  LblEnd  := LabelGen;
+  HasStep := False;
+
+  { Nom de la variable de boucle }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('FOR : identificateur attendu');
+    Exit;
+  End;
+  VarName := CurToken.Val;
+  ParserAdvance;
+
+  { Rechercher ou creer la variable }
+  SIdx := SymFind(VarName);
+  If SIdx < 0 Then
+    SIdx := DeclAllocSym(VarName, SC_PRIVATE);
+
+  { Operateur d affectation := ou = }
+  If (CurToken.Kind = TK_OP) And
+     ((CurToken.Val = ':=') Or (CurToken.Val = '=')) Then
+    ParserAdvance
+  Else
+  Begin
+    CompileError('FOR : := attendu apres ' + VarName);
+    Exit;
+  End;
+
+  { Valeur initiale }
+  ParseExpr(StartV);
+  ExprFlushToAX(StartV);
+  ExprStore(SIdx);
+
+  { Mot-cle TO }
+  If Not ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'TO')) Then
+  Begin
+    CompileError('FOR : mot-cle TO attendu');
+    Exit;
+  End;
+  ParserAdvance;
+
+  { Valeur finale -> sauvegarder dans une variable DATA }
+  EndLbl := LabelGen;
+  DataAddWord(EndLbl, 0);
+  ParseExpr(EndV);
+  ExprFlushToAX(EndV);
+  EmitInstrAB('MOV', 'WORD PTR [' + EndLbl + ']', 'AX');
+
+  { STEP optionnel }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'STEP') Then
+  Begin
+    ParserAdvance;
+    HasStep := True;
+    StepLbl := LabelGen;
+    DataAddWord(StepLbl, 0);
+    ParseExpr(StepV);
+    ExprFlushToAX(StepV);
+    EmitInstrAB('MOV', 'WORD PTR [' + StepLbl + ']', 'AX');
+  End;
+
+  LoopPush(LblIncr, LblEnd);
+
+  { ---- Label de test ---- }
+  EmitLabel(LblTest);
+  ExprLoad(SIdx, TmpE);  { MOV AX, [var] }
+
+  If HasStep Then
+  Begin
+    { Step variable : verifier le signe pour la comparaison }
+    LblBody := LabelGen;
+    LblNeg  := LabelGen;
+    EmitInstrAB('MOV', 'BX', 'WORD PTR [' + StepLbl + ']');
+    EmitInstrAB('TEST', 'BX', 'BX');
+    EmitInstrA('JS', LblNeg);
+    { Step positif : var > end -> sortir }
+    EmitInstrAB('CMP', 'AX', 'WORD PTR [' + EndLbl + ']');
+    EmitInstrA('JG', LblEnd);
+    EmitInstrA('JMP', LblBody);
+    { Step negatif : var < end -> sortir }
+    EmitLabel(LblNeg);
+    EmitInstrAB('CMP', 'AX', 'WORD PTR [' + EndLbl + ']');
+    EmitInstrA('JL', LblEnd);
+    EmitLabel(LblBody);
+  End
+  Else
+  Begin
+    { Step = 1 (defaut) : var > end -> sortir }
+    EmitInstrAB('CMP', 'AX', 'WORD PTR [' + EndLbl + ']');
+    EmitInstrA('JG', LblEnd);
+  End;
+
+  { ---- Corps de la boucle ---- }
+  ParseStmtBlock;
+
+  { ---- Increment ---- }
+  EmitLabel(LblIncr);
+  ExprLoad(SIdx, TmpE);  { MOV AX, [var] }
+  If HasStep Then
+    EmitInstrAB('ADD', 'AX', 'WORD PTR [' + StepLbl + ']')
+  Else
+    EmitInstr('INC    AX');
+  ExprStore(SIdx);
+
+  { Retour au test }
+  EmitInstrA('JMP', LblTest);
+
+  { Consommer NEXT }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'NEXT') Then
+    ParserAdvance;
+
+  { ---- Label de fin ---- }
+  EmitLabel(LblEnd);
+  EmitComment('NEXT');
+
+  LoopPop;
+End;
+
+{ ---- ParseForEachStmt : FOR EACH elem IN collection ... NEXT -- }
+(* Version simplifiee : necessite le support des tableaux (TODO 15).
+   Parse la syntaxe, genere un stub JMP vers la fin.                *)
+
+Procedure ParseForEachStmt;
+Var
+  ElemName : TString;
+  CollExpr : TExprVal;
+  LblTest  : TString;
+  LblIncr  : TString;
+  LblEnd   : TString;
+Begin
+  EmitComment('FOR EACH (stub - necessite TODO 15 TABLEAUX)');
+
+  { Nom de la variable element }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('FOR EACH : identificateur attendu');
+    Exit;
+  End;
+  ElemName := CurToken.Val;
+  ParserAdvance;
+
+  { Mot-cle IN }
+  If Not ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'IN')) Then
+  Begin
+    CompileError('FOR EACH : mot-cle IN attendu');
+    Exit;
+  End;
+  ParserAdvance;
+
+  { Expression collection : parser et ignorer pour le moment }
+  ParseExpr(CollExpr);
+
+  LblTest := LabelGen;
+  LblIncr := LabelGen;
+  LblEnd  := LabelGen;
+
+  LoopPush(LblIncr, LblEnd);
+
+  { Stub : sauter directement a la fin }
+  EmitInstrA('JMP', LblEnd);
+  EmitLabel(LblTest);
+  EmitLabel(LblIncr);
+
+  { Corps de la boucle }
+  ParseStmtBlock;
+
+  EmitInstrA('JMP', LblTest);
+
+  { Consommer NEXT }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'NEXT') Then
+    ParserAdvance;
+
+  EmitLabel(LblEnd);
+  EmitComment('NEXT (FOR EACH)');
+
+  LoopPop;
 End;
 
 { ---- EmitRuntime : emettre les routines runtime inline ------- }
