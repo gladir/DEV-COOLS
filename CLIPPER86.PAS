@@ -1294,7 +1294,7 @@ Begin
         Begin
           { EXIT PROCEDURE declaration (TODO 17) }
           ParserAdvance;
-          If CurToken.Kind = TK_IDENT Then
+          If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
           Begin
             If ExitProcCount < 16 Then
             Begin
@@ -1341,7 +1341,7 @@ Begin
         Begin
           ParserAdvance;
           { Lire le nom de la procedure INIT }
-          If CurToken.Kind = TK_IDENT Then
+          If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
           Begin
             If InitProcCount < 16 Then
             Begin
@@ -8805,7 +8805,11 @@ Begin
     SI := SymAdd(ProcName, SC_PROC, TY_IDX_NIL, 0);
   End
   Else
+  Begin
     ProcLabel := SymTab[SI].MangledName;
+    If ProcLabel = '' Then
+      ProcLabel := CL_FN_PFX + SymNameClean(ProcName);
+  End;
 
   EmitComment('DO ' + StrUpper(ProcName));
   ArgCount := 0;
