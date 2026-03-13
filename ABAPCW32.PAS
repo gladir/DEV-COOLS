@@ -267,7 +267,7 @@
               _ABL_top: corps + JMP _ABL_top (EXIT -> JMP _ABL_end)
             Pile de boucles pour CONTINUE / EXIT imbriques
 
-  TODO 13 - PARSEUR : PERFORM / FORM / ENDFORM (SOUS-ROUTINES 32 BITS)
+  TODO 13 - PARSEUR : PERFORM / FORM / ENDFORM (SOUS-ROUTINES 32 BITS) [IMPLEMENTE]
             Procedure ParsePerform
             Syntaxe :
               PERFORM nom [USING arg1 arg2 ...] [CHANGING arg1 ...].
@@ -1106,6 +1106,13 @@ Procedure ParseCase; Forward;
 
 Procedure ParseWhile; Forward;
 Procedure ParseDo; Forward;
+
+{ ============================================================ }
+{ DECLARATIONS FORWARD (PERFORM / FORM TODO 13)                }
+{ ============================================================ }
+
+Procedure ParseForm; Forward;
+Procedure ParsePerform; Forward;
 
 { ============================================================ }
 { FONCTIONS UTILITAIRES                                        }
@@ -2709,6 +2716,32 @@ Begin
     EmitI('MOV     EAX, ' + IntToStr_(SymTab[SymIdx].InitNum));
     Exit;
   End;
+  { STORE_PARAM : parametre de FORM (TODO 13) }
+  If SC = STORE_PARAM Then
+  Begin
+    If SymTab[SymIdx].ParamKind = PARAM_CHANGING Then
+    Begin
+      { CHANGING : argument passe par adresse (dereference) }
+      EmitI('MOV     ECX, DWORD PTR [EBP+' + IntToStr_(BP) + ']');
+      Case DT Of
+        TYPE_C, TYPE_STRING, TYPE_D, TYPE_T, TYPE_N, TYPE_XSTRING:
+          EmitI('MOV     EAX, ECX');
+      Else
+        EmitI('MOV     EAX, DWORD PTR [ECX]');
+      End;
+    End
+    Else
+    Begin
+      { USING : argument passe par valeur (acces direct) }
+      Case DT Of
+        TYPE_C, TYPE_STRING, TYPE_D, TYPE_T, TYPE_N, TYPE_XSTRING:
+          EmitI('LEA     EAX, [EBP+' + IntToStr_(BP) + ']');
+      Else
+        EmitI('MOV     EAX, DWORD PTR [EBP+' + IntToStr_(BP) + ']');
+      End;
+    End;
+    Exit;
+  End;
   Case DT Of
     TYPE_C, TYPE_STRING, TYPE_D, TYPE_T, TYPE_N, TYPE_XSTRING:
     Begin
@@ -2739,6 +2772,40 @@ Begin
   Lbl := SymTab[SymIdx].AsmLabel;
   If SC = STORE_CONSTANT Then
   Begin WarnMsg('Affectation a une CONSTANT ignoree'); Exit; End;
+  { STORE_PARAM : parametre de FORM (TODO 13) }
+  If SC = STORE_PARAM Then
+  Begin
+    If SymTab[SymIdx].ParamKind = PARAM_CHANGING Then
+    Begin
+      { CHANGING : ecrire a travers le pointeur }
+      EmitI('MOV     ECX, DWORD PTR [EBP+' + IntToStr_(BP) + ']');
+      Case DT Of
+        TYPE_C, TYPE_STRING, TYPE_D, TYPE_T, TYPE_N, TYPE_XSTRING:
+        Begin
+          EmitI('MOV     ESI, EAX');
+          EmitI('MOV     EDI, ECX');
+          EmitI('CALL    ' + AB_RT_PFX + 'STRCOPY');
+        End;
+      Else
+        EmitI('MOV     DWORD PTR [ECX], EAX');
+      End;
+    End
+    Else
+    Begin
+      { USING : ecrire directement dans la pile }
+      Case DT Of
+        TYPE_C, TYPE_STRING, TYPE_D, TYPE_T, TYPE_N, TYPE_XSTRING:
+        Begin
+          EmitI('MOV     ESI, EAX');
+          EmitI('LEA     EDI, [EBP+' + IntToStr_(BP) + ']');
+          EmitI('CALL    ' + AB_RT_PFX + 'STRCOPY');
+        End;
+      Else
+        EmitI('MOV     DWORD PTR [EBP+' + IntToStr_(BP) + '], EAX');
+      End;
+    End;
+    Exit;
+  End;
   Case DT Of
     TYPE_C, TYPE_STRING, TYPE_D, TYPE_T, TYPE_N, TYPE_XSTRING:
     Begin
@@ -3215,6 +3282,14 @@ Begin
   If TokIsKw(KW_DO) Then
   Begin Consume; ParseDo; Exit; End;
 
+  { FORM / ENDFORM (TODO 13) }
+  If TokIsKw(KW_FORM) Then
+  Begin Consume; ParseForm; Exit; End;
+
+  { PERFORM nomform (TODO 13) }
+  If TokIsKw(KW_PERFORM) Then
+  Begin Consume; ParsePerform; Exit; End;
+
   { EXIT : sortir de la boucle courante }
   If TokIsKw(KW_EXIT) Then
   Begin
@@ -3572,6 +3647,311 @@ Begin
   End
   Else
     LexError('ENDDO attendu');
+End;
+
+{ ============================================================ }
+{ TODO 13 : PERFORM / FORM / ENDFORM (SOUS-ROUTINES 32 BITS)  }
+{ ============================================================ }
+
+{ ---- ParseFormParamType : parser un type de parametre FORM --- }
+{ Lit optionnellement TYPE t apres un nom de parametre.           }
+{ Retourne TYPE_I par defaut si pas de TYPE specifie.              }
+Function ParseFormParamType : Integer;
+Begin
+  ParseFormParamType := TYPE_I;
+  If Not TokIsKw(KW_TYPE) Then Exit;
+  Consume;
+  If CurTokType <> TOK_IDENT Then Exit;
+  If StrUpperCase(CurTokStr) = 'I' Then
+    ParseFormParamType := TYPE_I
+  Else If StrUpperCase(CurTokStr) = 'F' Then
+    ParseFormParamType := TYPE_F
+  Else If StrUpperCase(CurTokStr) = 'C' Then
+    ParseFormParamType := TYPE_C
+  Else If StrUpperCase(CurTokStr) = 'N' Then
+    ParseFormParamType := TYPE_N
+  Else If StrUpperCase(CurTokStr) = 'D' Then
+    ParseFormParamType := TYPE_D
+  Else If StrUpperCase(CurTokStr) = 'T' Then
+    ParseFormParamType := TYPE_T
+  Else If StrUpperCase(CurTokStr) = 'P' Then
+    ParseFormParamType := TYPE_P
+  Else If StrUpperCase(CurTokStr) = 'STRING' Then
+    ParseFormParamType := TYPE_STRING
+  Else If StrUpperCase(CurTokStr) = 'XSTRING' Then
+    ParseFormParamType := TYPE_XSTRING
+  Else
+    ParseFormParamType := TYPE_I;
+  Consume;
+End;
+
+{ ---- GenLoadVarAddr32 : charger l adresse d une variable ----- }
+{ Met dans EAX l adresse de la variable (pour CHANGING).           }
+Procedure GenLoadVarAddr32(SymIdx : Integer);
+Var SC, BP : Integer; Lbl : TString;
+Begin
+  If (SymIdx < 1) Or (SymIdx > SymCount) Then
+  Begin EmitComment('GenLoadVarAddr32: idx invalide'); Exit; End;
+  SC  := SymTab[SymIdx].StoreClass;
+  BP  := SymTab[SymIdx].BpOffset;
+  Lbl := SymTab[SymIdx].AsmLabel;
+  If SC = STORE_AUTO Then
+    EmitI('LEA     EAX, [EBP' + IntToStr_(BP) + ']')
+  Else If SC = STORE_PARAM Then
+  Begin
+    If SymTab[SymIdx].ParamKind = PARAM_CHANGING Then
+      EmitI('MOV     EAX, DWORD PTR [EBP+' + IntToStr_(BP) + ']')
+    Else
+      EmitI('LEA     EAX, [EBP+' + IntToStr_(BP) + ']');
+  End
+  Else
+    EmitI('LEA     EAX, [' + Lbl + ']');
+End;
+
+{ ---- ParseForm : FORM nom [USING p1...] [CHANGING p1...] ---- }
+{ Syntaxe :                                                       }
+{   FORM nom [USING p1 [TYPE t] ...] [CHANGING p1 [TYPE t] ...]. }
+{     instructions.                                                }
+{   ENDFORM.                                                       }
+{ Convention d appel Win32 STDCALL 32 bits.                        }
+{ ============================================================ }
+Procedure ParseForm;
+Var
+  FormName    : TString;
+  FIdx        : Integer;
+  PIdx        : Integer;
+  PName       : TString;
+  PType       : Integer;
+  LblSkip     : TString;
+  LblEpi      : TString;
+  SymIdx      : Integer;
+  I           : Integer;
+  TotalParams : Integer;
+Begin
+  EmitComment('---- FORM ----');
+
+  { Nom de la FORM }
+  If CurTokType <> TOK_IDENT Then
+  Begin LexError('Nom attendu apres FORM'); SkipToDot; Exit; End;
+  FormName := CurTokStr;
+  Consume;
+
+  { Creer ou retrouver l entree dans FormTab }
+  FIdx := AddForm(FormName);
+  If FIdx = 0 Then Begin SkipToDot; Exit; End;
+
+  If FormTab[FIdx].Defined Then
+  Begin LexError('FORM ' + FormName + ' deja definie'); SkipToDot; Exit; End;
+
+  PIdx := 0;
+
+  { Parser les parametres USING }
+  If TokIsKw(KW_USING) Then
+  Begin
+    Consume;
+    While (CurTokType = TOK_IDENT) And
+          (CurTokKw <> KW_CHANGING) And
+          (CurTokKw <> KW_TABLES) And
+          (CurTokType <> TOK_DOT) Do
+    Begin
+      Inc(PIdx);
+      PName := CurTokStr;
+      Consume;
+      PType := ParseFormParamType;
+      FormTab[FIdx].ParamNames[PIdx] := StrUpperCase(PName);
+      FormTab[FIdx].ParamKinds[PIdx] := PARAM_USING;
+      FormTab[FIdx].ParamTypes[PIdx] := PType;
+      Inc(FormTab[FIdx].UsingCount);
+    End;
+  End;
+
+  { Parser les parametres CHANGING }
+  If TokIsKw(KW_CHANGING) Then
+  Begin
+    Consume;
+    While (CurTokType = TOK_IDENT) And
+          (CurTokKw <> KW_TABLES) And
+          (CurTokType <> TOK_DOT) Do
+    Begin
+      Inc(PIdx);
+      PName := CurTokStr;
+      Consume;
+      PType := ParseFormParamType;
+      FormTab[FIdx].ParamNames[PIdx] := StrUpperCase(PName);
+      FormTab[FIdx].ParamKinds[PIdx] := PARAM_CHANGING;
+      FormTab[FIdx].ParamTypes[PIdx] := PType;
+      Inc(FormTab[FIdx].ChangingCount);
+    End;
+  End;
+
+  FormTab[FIdx].ParamCount := PIdx;
+  TotalParams := PIdx;
+
+  { Consommer le point }
+  If CurTokType = TOK_DOT Then Consume
+  Else LexError('Point attendu apres parametres FORM');
+
+  { Sauter par-dessus le corps (le mainline ne doit pas l executer) }
+  LblSkip := NewLabel + '_FS';
+  EmitI('JMP     ' + LblSkip);
+
+  { Label d entree de la FORM }
+  EmitLabel(FormTab[FIdx].AsmLabel);
+  EmitComment('FORM ' + FormName);
+
+  { Prologue Win32 STDCALL }
+  EmitI('PUSH    EBP');
+  EmitI('MOV     EBP, ESP');
+
+  { Entrer le scope FORM }
+  EnterScope(SK_FORM, FIdx);
+
+  { Label epilogue pour EXIT }
+  LblEpi := NewLabel + '_FE';
+  SetExitLabel(LblEpi);
+
+  { Declarer les parametres comme symboles }
+  For I := 1 To TotalParams Do
+  Begin
+    SymIdx := AddSym(FormTab[FIdx].ParamNames[I],
+                     FormTab[FIdx].ParamTypes[I],
+                     STORE_PARAM);
+    If SymIdx > 0 Then
+    Begin
+      SymTab[SymIdx].IsParam   := True;
+      SymTab[SymIdx].ParamIdx  := I;
+      SymTab[SymIdx].ParamKind := FormTab[FIdx].ParamKinds[I];
+      SymTab[SymIdx].BpOffset  := 8 + (I - 1) * 4;
+    End;
+  End;
+
+  { Corps de la FORM }
+  ParseBlock(KW_ENDFORM, KW_NONE, KW_NONE);
+
+  { Epilogue Win32 STDCALL }
+  EmitLabel(LblEpi);
+  EmitI('MOV     ESP, EBP');
+  EmitI('POP     EBP');
+  If TotalParams > 0 Then
+    EmitI('RET     ' + IntToStr_(TotalParams * 4))
+  Else
+    EmitI('RET');
+
+  LeaveScope;
+
+  FormTab[FIdx].Defined := True;
+
+  { Label pour sauter par-dessus le corps }
+  EmitLabel(LblSkip);
+
+  { ENDFORM. }
+  If TokIsKw(KW_ENDFORM) Then
+  Begin
+    Consume;
+    If CurTokType = TOK_DOT Then Consume
+    Else LexError('Point attendu apres ENDFORM');
+  End
+  Else
+    LexError('ENDFORM attendu');
+End;
+
+{ ---- ParsePerform : PERFORM nom [USING ...] [CHANGING ...] -- }
+{ Syntaxe :                                                       }
+{   PERFORM nom [USING arg1 arg2 ...] [CHANGING arg1 ...].       }
+{ Convention d appel Win32 STDCALL : arguments empiles de droite  }
+{ a gauche, la FORM depile avec RET n.                            }
+{ ============================================================ }
+Procedure ParsePerform;
+Var
+  FormName : TString;
+  FIdx     : Integer;
+  UNames   : Array[1..MAX_PARAM] of TString;
+  CNames   : Array[1..MAX_PARAM] of TString;
+  UCount   : Integer;
+  CCount   : Integer;
+  I        : Integer;
+  SymIdx   : Integer;
+Begin
+  EmitComment('---- PERFORM ----');
+
+  { Nom de la FORM a appeler }
+  If CurTokType <> TOK_IDENT Then
+  Begin LexError('Nom de FORM attendu apres PERFORM'); SkipToDot; Exit; End;
+  FormName := CurTokStr;
+  Consume;
+
+  { Creer ou retrouver l entree (reference avant possible) }
+  FIdx := AddForm(FormName);
+  If FIdx = 0 Then Begin SkipToDot; Exit; End;
+
+  UCount := 0;
+  CCount := 0;
+
+  { Collecter les arguments USING (par valeur) }
+  If TokIsKw(KW_USING) Then
+  Begin
+    Consume;
+    While (CurTokType <> TOK_DOT) And (CurTokType <> TOK_EOF) And
+          (Not TokIsKw(KW_CHANGING)) Do
+    Begin
+      Inc(UCount);
+      UNames[UCount] := CurTokStr;
+      Consume;
+    End;
+  End;
+
+  { Collecter les arguments CHANGING (par adresse) }
+  If TokIsKw(KW_CHANGING) Then
+  Begin
+    Consume;
+    While (CurTokType <> TOK_DOT) And (CurTokType <> TOK_EOF) Do
+    Begin
+      Inc(CCount);
+      CNames[CCount] := CurTokStr;
+      Consume;
+    End;
+  End;
+
+  { Empiler les arguments de droite a gauche (STDCALL) }
+  { D abord CHANGING de droite a gauche }
+  For I := CCount DownTo 1 Do
+  Begin
+    SymIdx := FindSym(CNames[I]);
+    If SymIdx > 0 Then
+    Begin
+      GenLoadVarAddr32(SymIdx);
+      EmitI('PUSH    EAX');
+    End
+    Else
+    Begin
+      EmitComment('CHANGING arg inconnu: ' + CNames[I]);
+      EmitI('PUSH    0');
+    End;
+  End;
+
+  { Puis USING de droite a gauche }
+  For I := UCount DownTo 1 Do
+  Begin
+    SymIdx := FindSym(UNames[I]);
+    If SymIdx > 0 Then
+    Begin
+      GenLoadVar32(SymIdx);
+      EmitI('PUSH    EAX');
+    End
+    Else
+    Begin
+      { Tenter un nombre literal }
+      EmitComment('USING arg: ' + UNames[I] + ' (comme literal)');
+      EmitI('PUSH    0');
+    End;
+  End;
+
+  { Appel de la FORM }
+  EmitI('CALL    ' + FormTab[FIdx].AsmLabel);
+
+  { Consommer le point }
+  If CurTokType = TOK_DOT Then Consume
+  Else LexError('Point attendu apres PERFORM');
 End;
 
 Procedure InitOptions;
