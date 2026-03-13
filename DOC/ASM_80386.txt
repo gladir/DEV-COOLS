@@ -4486,7 +4486,979 @@
 10. DIRECTIVES ASSEMBLEUR (MASM/TASM)
 ==============================================================================
 
-  (a completer)
+  Les directives assembleur ne sont pas des instructions executees par
+  le processeur. Ce sont des commandes interpretees par l'assembleur
+  (MASM, TASM, WASM, etc.) pour controler l'assemblage : organisation
+  de la memoire, definition de donnees, macros, assemblage conditionnel,
+  etc. Cette section couvre les directives les plus courantes pour le
+  mode 32 bits (80386+).
+
+  10.1 Directives de processeur
+  -------------------------------
+
+  Ces directives indiquent a l'assembleur quel jeu d'instructions
+  est autorise. Elles doivent apparaitre en debut de fichier.
+
+    .8086           ; Jeu d'instructions 8086 uniquement (defaut)
+    .186            ; Ajout des instructions du 80186
+    .286            ; Ajout des instructions du 80286
+    .286P           ; 80286, instructions privilegiees autorisees
+    .386            ; Ajout des instructions du 80386
+    .386P           ; 80386, instructions privilegiees autorisees
+    .486            ; Ajout des instructions du 80486
+    .486P           ; 80486, instructions privilegiees autorisees
+    .586            ; Ajout des instructions du Pentium
+    .586P           ; Pentium, instructions privilegiees autorisees
+    .686            ; Ajout des instructions du Pentium Pro
+    .686P           ; Pentium Pro, instructions privilegiees autorisees
+
+  Directives de coprocesseur :
+
+    .8087           ; Instructions du coprocesseur 8087
+    .287            ; Instructions du coprocesseur 80287
+    .387            ; Instructions du coprocesseur 80387
+    .NO87           ; Desactive les instructions de coprocesseur
+
+  Note : .386 et superieur active automatiquement les registres 32 bits
+  (EAX, EBX, etc.) et les modes d'adressage etendus du 80386.
+
+  Sans suffixe P, seules les instructions non privilegiees sont
+  autorisees. Avec le suffixe P, les instructions privilegiees
+  comme LGDT, LIDT, MOV CR0, etc. sont egalement acceptees.
+
+  10.2 Directives de modele memoire (.MODEL)
+  --------------------------------------------
+
+  La directive .MODEL definit le modele memoire utilise par le
+  programme. Elle controle la taille par defaut des pointeurs
+  (NEAR ou FAR) et la convention d'appel.
+
+  Syntaxe :
+
+    .MODEL modele [, convention] [, type_pile]
+
+  Modeles memoire :
+
+  Modele      Segments de  Segments de   Pointeurs
+              code         donnees       par defaut
+  ----------  -----------  -----------   --------------------
+  TINY        1            1 (=code)     NEAR (COM, < 64Ko)
+  SMALL       1            1             NEAR code, NEAR data
+  MEDIUM      Plusieurs    1             FAR code, NEAR data
+  COMPACT     1            Plusieurs     NEAR code, FAR data
+  LARGE       Plusieurs    Plusieurs     FAR code, FAR data
+  HUGE        Plusieurs    Plusieurs     FAR, tableaux > 64Ko
+  FLAT        1 (32 bits)  1 (32 bits)   NEAR 32 bits (0-4Go)
+
+  Le modele FLAT est le plus utilise pour la programmation 32 bits
+  (Win32, Linux 32 bits). Il utilise un espace d'adressage plat
+  de 4 Go avec des pointeurs NEAR 32 bits.
+
+  Conventions d'appel :
+
+    C           Convention C : parametres empiles de droite a gauche,
+                l'appelant nettoie la pile. Noms prefixes par _.
+    STDCALL     Convention Windows : parametres de droite a gauche,
+                l'appele nettoie la pile (RET n). Noms decores @.
+    PASCAL      Convention Pascal : parametres de gauche a droite,
+                l'appele nettoie la pile.
+    BASIC       Similaire a Pascal.
+    FORTRAN     Similaire a Pascal.
+    SYSCALL     Convention des appels systeme OS/2.
+
+  Exemples :
+
+    .MODEL SMALL, C              ; Mode 16 bits, convention C
+    .MODEL FLAT, STDCALL         ; Mode 32 bits Win32
+    .MODEL FLAT, C               ; Mode 32 bits, convention C
+
+  10.3 Directives de segment simplifiees
+  -----------------------------------------
+
+  Les directives simplifiees creent automatiquement les segments
+  standards. Elles necessitent une directive .MODEL prealable.
+
+    .CODE [nom]     ; Ouvre le segment de code (ou un segment
+                    ; de code nomme en modele MEDIUM/LARGE)
+    .DATA           ; Ouvre le segment de donnees initialisees
+    .DATA?          ; Ouvre le segment de donnees non initialisees
+    .CONST          ; Ouvre le segment de constantes (lecture seule)
+    .STACK [taille] ; Definit le segment de pile
+                    ; (defaut : 1024 octets)
+
+  Exemple typique (programme 32 bits Win32) :
+
+    .386
+    .MODEL FLAT, STDCALL
+    OPTION CASEMAP:NONE
+
+    .STACK 4096
+
+    .DATA
+    message  DB 'Hello, World!', 0
+    nombre   DD 42
+
+    .DATA?
+    buffer   DB 256 DUP(?)
+
+    .CODE
+    main PROC
+      ; ... code du programme ...
+      RET
+    main ENDP
+    END main
+
+  10.4 Directives de segment completes
+  ---------------------------------------
+
+  Les directives completes offrent un controle total sur la
+  definition des segments.
+
+  Syntaxe :
+
+    nom SEGMENT [align] [combine] [use] ['class']
+      ; ... contenu du segment ...
+    nom ENDS
+
+  Parametres :
+
+  align (alignement) :
+    BYTE      ; Aucun alignement
+    WORD      ; Aligne sur 2 octets
+    DWORD     ; Aligne sur 4 octets
+    PARA      ; Aligne sur 16 octets (paragraphe, defaut)
+    PAGE      ; Aligne sur 256 octets
+
+  combine (combinaison) :
+    PRIVATE   ; Le segment n'est pas combine (defaut)
+    PUBLIC    ; Les segments de meme nom sont concatenes
+    COMMON    ; Les segments de meme nom se superposent
+    STACK     ; Concatenation pour le segment de pile
+    AT adresse; Le segment est place a une adresse fixe
+
+  use (mode) :
+    USE16     ; Segment 16 bits (defaut si .286 ou inferieur)
+    USE32     ; Segment 32 bits (defaut si .386 ou superieur)
+
+  'class' : Chaine de classification pour le linker.
+    'CODE'    ; Segment de code
+    'DATA'    ; Segment de donnees
+    'STACK'   ; Segment de pile
+    'BSS'     ; Segment de donnees non initialisees
+
+  Exemple (mode 16 bits) :
+
+    _TEXT SEGMENT PARA PUBLIC USE16 'CODE'
+      ; ... code ...
+    _TEXT ENDS
+
+    _DATA SEGMENT PARA PUBLIC USE16 'DATA'
+      ; ... donnees ...
+    _DATA ENDS
+
+    STACK SEGMENT PARA STACK USE16 'STACK'
+      DB 256 DUP(?)
+    STACK ENDS
+
+  Exemple (mode 32 bits) :
+
+    _TEXT SEGMENT DWORD PUBLIC USE32 'CODE'
+      ; ... code 32 bits ...
+    _TEXT ENDS
+
+    _DATA SEGMENT DWORD PUBLIC USE32 'DATA'
+      ; ... donnees 32 bits ...
+    _DATA ENDS
+
+  10.5 Directives ASSUME et GROUP
+  ---------------------------------
+
+  ASSUME indique a l'assembleur quel registre de segment pointe
+  vers quel segment. Essentiel en mode 16 bits segmente, moins
+  utile en mode FLAT 32 bits.
+
+    ASSUME CS:_TEXT, DS:_DATA, SS:STACK
+    ASSUME ES:NOTHING           ; Pas d'association pour ES
+    ASSUME NOTHING              ; Retire toutes les associations
+
+  GROUP regroupe plusieurs segments sous un meme nom de groupe
+  pour qu'ils partagent un registre de segment :
+
+    DGROUP GROUP _DATA, _BSS, STACK
+
+  En mode FLAT (32 bits), ASSUME est rarement necessaire car
+  tous les segments partagent la meme base.
+
+  10.6 Directives de donnees
+  ----------------------------
+
+  10.6.1 Definition de variables
+
+  Les directives de donnees reservent et initialisent de la memoire.
+
+    DB   (Define Byte)       1 octet   (8 bits)
+    DW   (Define Word)       2 octets  (16 bits)
+    DD   (Define Doubleword) 4 octets  (32 bits)
+    DF   (Define Fword)      6 octets  (48 bits, pointeur far 32)
+    DQ   (Define Quadword)   8 octets  (64 bits)
+    DT   (Define Tenbyte)   10 octets  (80 bits, extended float)
+
+  Syntaxe :
+
+    [nom]  directive  valeur [, valeur, ...]
+
+  Exemples :
+
+    octet1    DB  42              ; Un octet = 42
+    mot1      DW  1234h           ; Un mot = 1234h
+    dword1    DD  12345678h       ; Un double mot
+    qword1    DQ  0               ; Un quadruple mot = 0
+    float1    DD  3.14            ; Flottant simple precision
+    double1   DQ  2.718281828     ; Flottant double precision
+    extend1   DT  1.0             ; Flottant etendu 80 bits
+
+  Chaines de caracteres :
+
+    msg1      DB  'Hello', 0      ; Chaine terminee par un zero
+    msg2      DB  'A', 'B', 'C'   ; Equivalent a DB 41h, 42h, 43h
+    msg3      DB  "Guillemets"    ; Guillemets doubles aussi acceptes
+    crlf      DB  0Dh, 0Ah       ; Retour chariot + saut de ligne
+
+  Tableaux et repetitions (DUP) :
+
+    tab1      DB  10 DUP(0)       ; 10 octets initialises a 0
+    tab2      DW  5  DUP(?)       ; 5 mots non initialises
+    tab3      DD  3  DUP(1)       ; 3 double mots = 1, 1, 1
+    matrice   DB  4  DUP(8 DUP(0)); Matrice 4x8 d'octets
+    buf256    DB  256 DUP(?)      ; Tampon de 256 octets
+
+  Valeur speciale ? : donnee non initialisee. L'assembleur
+  reserve l'espace sans ecrire de valeur. Utilisee dans .DATA?
+  pour les variables BSS.
+
+  10.6.2 Constantes symboliques
+
+  EQU - Constante textuelle ou numerique (non modifiable) :
+
+    MAX_SIZE    EQU  256          ; Constante numerique
+    CR          EQU  0Dh         ; Retour chariot
+    LF          EQU  0Ah         ; Saut de ligne
+    GREETING    EQU  <'Hello'>   ; Constante textuelle
+    PSIZE       EQU  <DWORD PTR> ; Alias de type
+
+  = - Constante numerique (modifiable, MASM seulement) :
+
+    compteur    =    0            ; Valeur initiale
+    compteur    =    compteur + 1 ; Reassignation autorisee
+
+  Difference entre EQU et = :
+    - EQU ne peut pas etre redefini. = peut l'etre.
+    - EQU accepte du texte et des nombres. = uniquement des nombres.
+    - EQU est supporte par MASM et TASM. = est MASM seulement.
+
+  10.6.3 Operateurs de type et de taille
+
+    BYTE PTR [addr]   ; Force l'acces en 8 bits
+    WORD PTR [addr]   ; Force l'acces en 16 bits
+    DWORD PTR [addr]  ; Force l'acces en 32 bits
+    QWORD PTR [addr]  ; Force l'acces en 64 bits
+    FWORD PTR [addr]  ; Force l'acces en 48 bits
+    TBYTE PTR [addr]  ; Force l'acces en 80 bits
+
+    TYPE variable     ; Retourne la taille en octets de la variable
+    LENGTHOF tableau  ; Nombre d'elements du tableau (MASM 6+)
+    SIZEOF tableau    ; Taille totale en octets (MASM 6+)
+    LENGTH tableau    ; Nombre d'elements (ancienne syntaxe)
+    SIZE tableau      ; Taille totale (ancienne syntaxe)
+
+    OFFSET variable   ; Adresse (offset) de la variable
+    SEG variable      ; Segment de la variable (mode 16 bits)
+    ADDR variable     ; Adresse pour INVOKE (MASM)
+    THIS type         ; Cree un alias a la position courante
+
+  Exemples :
+
+    MOV AL, BYTE PTR [ESI]       ; Lire un octet
+    MOV EAX, DWORD PTR [ESI]    ; Lire un double mot
+    MOV ECX, LENGTHOF tableau   ; Nombre d'elements
+    LEA EAX, [variable]         ; Charger l'adresse effective
+    PUSH OFFSET message         ; Empiler l'adresse du message
+
+  10.7 Directives de procedures
+  --------------------------------
+
+  10.7.1 PROC et ENDP
+
+  PROC definit une procedure avec gestion automatique du prologue,
+  de l'epilogue et des parametres (MASM 6+).
+
+  Syntaxe simple :
+
+    nom PROC [distance]
+      ; ... corps de la procedure ...
+      RET
+    nom ENDP
+
+  Distance :
+    NEAR    ; Appel intra-segment (defaut en FLAT)
+    FAR     ; Appel inter-segment
+
+  Syntaxe etendue (MASM 6+) avec parametres :
+
+    nom PROC [distance] [convention] [USES regs] [, params]
+      ; ... corps ...
+      RET
+    nom ENDP
+
+  USES : liste des registres a sauvegarder automatiquement
+  (PUSH au debut, POP a la fin).
+
+  Parametres : nom:type declares apres le nom de la procedure.
+
+  Exemple :
+
+    Addition PROC STDCALL USES EBX ECX, a:DWORD, b:DWORD
+      MOV EAX, a          ; Acces au parametre a = [EBP+8]
+      ADD EAX, b          ; Acces au parametre b = [EBP+12]
+      RET                 ; Retour avec nettoyage de la pile
+    Addition ENDP
+
+  L'assembleur genere automatiquement :
+    - PUSH EBP / MOV EBP, ESP (prologue)
+    - PUSH EBX / PUSH ECX (sauvegarde USES)
+    - POP ECX / POP EBX (restauration USES)
+    - MOV ESP, EBP / POP EBP (epilogue)
+    - RET 8 (nettoyage de 2 parametres DWORD en STDCALL)
+
+  10.7.2 LOCAL
+
+  LOCAL declare des variables locales sur la pile a l'interieur
+  d'une procedure PROC.
+
+    nom PROC ...
+      LOCAL var1:DWORD           ; 1 variable locale de 4 octets
+      LOCAL buf[256]:BYTE        ; Tableau local de 256 octets
+      LOCAL x:DWORD, y:DWORD    ; Plusieurs variables locales
+      ; ...
+    nom ENDP
+
+  L'assembleur genere SUB ESP, n dans le prologue pour reserver
+  l'espace des variables locales et les rend accessibles par
+  nom (traduites en [EBP-offset]).
+
+  10.7.3 INVOKE (MASM seulement)
+
+  INVOKE appelle une procedure avec verification automatique
+  du nombre et du type des parametres, et empile les arguments
+  dans l'ordre correct selon la convention d'appel.
+
+  Syntaxe :
+
+    INVOKE nom_procedure, arg1, arg2, ...
+
+  Necessite une declaration PROTO :
+
+    nom_procedure PROTO [convention] :type1, :type2, ...
+
+  Exemple :
+
+    ; Declaration du prototype
+    MessageBoxA PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD
+
+    ; Appel
+    INVOKE MessageBoxA, 0, ADDR message, ADDR titre, 0
+
+  INVOKE genere automatiquement :
+    - PUSH des arguments dans l'ordre inverse (convention C/STDCALL)
+    - CALL nom_procedure
+    - ADD ESP, n si convention C (nettoyage par l'appelant)
+
+  10.7.4 PROTO
+
+  PROTO declare le prototype d'une procedure (MASM 6+).
+
+    nom PROTO [convention] [:type1 [, :type2, ...]]
+
+  Exemples :
+
+    Addition PROTO STDCALL :DWORD, :DWORD
+    ExitProcess PROTO STDCALL :DWORD
+    printf PROTO C :DWORD, :VARARG     ; Nombre variable d'arguments
+
+  PROTO permet a INVOKE de verifier les types des arguments
+  et a l'assembleur de generer le bon code d'appel.
+
+  10.8 Directives de declarations externes et publiques
+  -------------------------------------------------------
+
+  PUBLIC - Rend un symbole visible pour le linker :
+
+    PUBLIC nom_symbole
+    PUBLIC _main, _data_table
+
+  EXTRN / EXTERN - Declare un symbole defini dans un autre module :
+
+    EXTRN symbole:type           ; Syntaxe ancienne (MASM 5)
+    EXTERN symbole:type          ; Syntaxe MASM 6+ (alias)
+    EXTERNDEF symbole:type       ; Definition+declaration (MASM 6+)
+
+  Types pour EXTRN/EXTERN :
+    BYTE, WORD, DWORD, QWORD     ; Variables
+    NEAR, FAR                     ; Procedures
+    PROC                          ; Procedure (MASM 6+)
+    ABS                           ; Constante absolue
+
+  Exemples :
+
+    EXTRN _printf:NEAR            ; Fonction C externe
+    EXTRN ExitProcess@4:NEAR      ; Fonction Win32
+    EXTERN MessageBoxA@16:NEAR    ; Fonction Win32 decoree
+    PUBLIC _main                  ; Exporter le point d'entree
+
+  EXTERNDEF (MASM 6+) : combine PUBLIC et EXTERN. Si le symbole
+  est defini dans le module courant, il est exporte. Sinon, il
+  est importe. Utile dans les fichiers d'en-tete .INC.
+
+    EXTERNDEF compteur:DWORD     ; Export si defini, import sinon
+
+  10.9 Directives d'inclusion et de liaison
+  --------------------------------------------
+
+  INCLUDE - Inclut un fichier source dans le fichier courant :
+
+    INCLUDE fichier.inc           ; Insere le contenu du fichier
+    INCLUDE windows.inc           ; En-tetes Win32 pour MASM
+    INCLUDE macros.inc            ; Fichier de macros personnalisees
+
+  INCLUDELIB - Indique une bibliotheque a lier :
+
+    INCLUDELIB kernel32.lib       ; Liaison avec kernel32.dll
+    INCLUDELIB user32.lib         ; Liaison avec user32.dll
+    INCLUDELIB msvcrt.lib         ; Liaison avec la CRT Microsoft
+
+  INCLUDELIB ne lie pas directement la bibliotheque, mais insere
+  une directive dans le fichier objet pour que le linker la trouve.
+
+  COMMENT - Commentaire multi-lignes :
+
+    COMMENT * 
+    Ceci est un commentaire
+    sur plusieurs lignes.
+    *
+
+  Le delimiteur est le premier caractere non-blanc apres COMMENT.
+  Le commentaire se termine a la prochaine occurrence de ce caractere.
+
+  10.10 Directives d'assemblage conditionnel
+  ---------------------------------------------
+
+  L'assemblage conditionnel permet d'inclure ou d'exclure du code
+  selon des conditions evaluees au moment de l'assemblage.
+
+  10.10.1 Conditions sur des expressions
+
+    IF expression               ; Si expression <> 0
+      ; ... code assemble ...
+    ELSEIF expression2          ; Sinon si expression2 <> 0
+      ; ... code alternatif ...
+    ELSE                        ; Sinon
+      ; ... code par defaut ...
+    ENDIF                       ; Fin de la condition
+
+  Exemples :
+
+    DEBUG = 1
+
+    IF DEBUG
+      CALL AfficherRegistres    ; Code de debug
+    ENDIF
+
+    IF ($ - debut) GT 100h
+      ; Le code depasse 256 octets
+    ENDIF
+
+  10.10.2 Conditions sur des symboles
+
+    IFDEF symbole               ; Si le symbole est defini
+    IFNDEF symbole              ; Si le symbole n'est pas defini
+    IFB <argument>              ; Si l'argument est vide (blank)
+    IFNB <argument>             ; Si l'argument n'est pas vide
+    IFIDN <s1>, <s2>           ; Si les chaines sont identiques
+    IFIDNI <s1>, <s2>          ; Idem, insensible a la casse
+    IFDIF <s1>, <s2>           ; Si les chaines sont differentes
+    IFDIFI <s1>, <s2>          ; Idem, insensible a la casse
+
+  Exemples :
+
+    IFDEF _WIN32
+      .MODEL FLAT, STDCALL
+    ELSE
+      .MODEL SMALL, C
+    ENDIF
+
+    IFNDEF MAX_BUF
+      MAX_BUF EQU 256
+    ENDIF
+
+  10.10.3 Conditions sur les types (MASM seulement)
+
+    IF1                         ; Passe 1 de l'assemblage
+    IF2                         ; Passe 2 de l'assemblage
+    IFE expression              ; Si expression = 0
+
+  10.11 Directives de macro
+  ----------------------------
+
+  10.11.1 Definition et appel
+
+  MACRO/ENDM definit une macro-instruction. A chaque appel,
+  le corps de la macro est expanse avec substitution des
+  parametres.
+
+  Syntaxe :
+
+    nom MACRO [param1 [, param2, ...]]
+      ; ... corps de la macro ...
+    ENDM
+
+  Exemple :
+
+    ; Definition de la macro
+    PushAll MACRO
+      PUSH EAX
+      PUSH EBX
+      PUSH ECX
+      PUSH EDX
+    ENDM
+
+    ; Utilisation
+    PushAll                      ; Expanse les 4 PUSH
+
+  Macro avec parametres :
+
+    PrintStr MACRO addr
+      PUSH OFFSET addr
+      CALL _puts
+      ADD ESP, 4
+    ENDM
+
+    ; Utilisation
+    PrintStr message             ; Affiche la chaine 'message'
+
+  Macro avec parametres par defaut :
+
+    AllocBuf MACRO taille:=<256>
+      SUB ESP, taille
+    ENDM
+
+    AllocBuf                     ; SUB ESP, 256
+    AllocBuf 512                 ; SUB ESP, 512
+
+  10.11.2 Operateurs de macro
+
+    &           ; Operateur de substitution (colle le texte)
+    <>          ; Litteraux de texte
+    !           ; Caractere litteral (echappe les caracteres speciaux)
+    %          ; Expression evaluee comme texte
+    ;;          ; Commentaire de macro (non expanse)
+
+  Exemple avec & :
+
+    DeclareVar MACRO nom, taille
+      _&nom  DB taille DUP(0)   ;; Genere _buffer DB 64 DUP(0)
+    ENDM
+
+    DeclareVar buffer, 64
+
+  10.11.3 Directives dans les macros
+
+    LOCAL label1, label2         ; Etiquettes locales a la macro
+                                 ; (renommees automatiquement a
+                                 ; chaque expansion pour eviter
+                                 ; les conflits)
+
+    EXITM [valeur]               ; Sortie prematuree de la macro
+                                 ; (retourne une valeur optionnelle)
+
+    .ERR [message]               ; Genere une erreur d'assemblage
+    .ERRNZ expression            ; Erreur si expression <> 0
+    .ERRE expression             ; Erreur si expression = 0
+    .ERRB <texte>                ; Erreur si texte est vide
+    .ERRNB <texte>               ; Erreur si texte n'est pas vide
+    .ERRIDN <s1>, <s2>          ; Erreur si chaines identiques
+    .ERRDIF <s1>, <s2>          ; Erreur si chaines differentes
+
+  Exemple avec LOCAL :
+
+    CompareAndJump MACRO val, dest
+      LOCAL skip
+      CMP EAX, val
+      JNE skip
+      JMP dest
+    skip:
+    ENDM
+
+  10.11.4 Macros de repetition
+
+    REPT n                       ; Repete le bloc n fois
+      ; ... corps ...
+    ENDM
+
+    IRP param, <val1, val2, ...> ; Repete pour chaque valeur
+      ; ... corps avec param ...
+    ENDM
+
+    IRPC param, chaine           ; Repete pour chaque caractere
+      ; ... corps avec param ...
+    ENDM
+
+  Exemples :
+
+    ; Generer 10 NOP
+    REPT 10
+      NOP
+    ENDM
+
+    ; Empiler plusieurs registres
+    IRP reg, <EAX, EBX, ECX, EDX>
+      PUSH reg
+    ENDM
+
+    ; Generer des DB pour chaque caractere
+    IRPC c, HELLO
+      DB '&c'
+    ENDM
+
+  10.11.5 Macros fonctions (MASM seulement)
+
+  Les macros fonctions retournent une valeur via EXITM :
+
+    IsEven MACRO n
+      IF (n) MOD 2 EQ 0
+        EXITM <1>                ;; Retourne 1 (pair)
+      ELSE
+        EXITM <0>                ;; Retourne 0 (impair)
+      ENDIF
+    ENDM
+
+    IF IsEven(42)
+      DB "Pair"
+    ENDIF
+
+  10.12 Directives d'alignement et d'organisation
+  ---------------------------------------------------
+
+  ALIGN n - Aligne la position courante sur une frontiere de
+  n octets (n doit etre une puissance de 2) :
+
+    ALIGN 4                      ; Aligne sur 4 octets (DWORD)
+    ALIGN 16                     ; Aligne sur 16 octets (paragraphe)
+    ALIGN 256                    ; Aligne sur 256 octets (page)
+
+  L'assembleur insere des octets de remplissage (NOP dans le code,
+  00h dans les donnees) pour atteindre l'alignement demande.
+
+  EVEN - Aligne sur une frontiere de mot (2 octets) :
+
+    EVEN                         ; Equivalent a ALIGN 2
+
+  ORG expression - Fixe le compteur de position a l'adresse
+  specifiee :
+
+    ORG 0100h                    ; Debut a l'offset 100h (fichiers COM)
+    ORG $ + 10                   ; Saute 10 octets
+
+  $ - Symbole special representant la position courante du
+  compteur de localisation :
+
+    msg      DB  'Hello', 0
+    msg_len  EQU $ - msg         ; Longueur de la chaine = 6
+
+    tableau  DD  1, 2, 3, 4, 5
+    nb_elem  EQU ($ - tableau) / 4  ; Nombre d'elements = 5
+
+  $$ - Adresse de debut du segment courant.
+
+  10.13 Directives OPTION (MASM seulement)
+  -------------------------------------------
+
+  OPTION configure divers comportements de l'assembleur.
+
+    OPTION CASEMAP:NONE          ; Sensible a la casse (majuscules
+                                 ; et minuscules distinguees)
+    OPTION CASEMAP:ALL           ; Insensible a la casse
+    OPTION CASEMAP:NOTPUBLIC     ; Sensible sauf pour PUBLIC/EXTRN
+    OPTION DOTNAME               ; Autorise les points dans les noms
+    OPTION PROC:PRIVATE          ; Les procedures sont privees
+                                 ; par defaut
+    OPTION PROLOGUE:nom          ; Utilise un prologue personnalise
+    OPTION EPILOGUE:nom          ; Utilise un epilogue personnalise
+    OPTION LANGUAGE:convention   ; Convention d'appel par defaut
+    OPTION SCOPED                ; Etiquettes locales aux procedures
+    OPTION NOSCOPED              ; Etiquettes globales (defaut)
+    OPTION LJMP                  ; Active les sauts longs automatiques
+    OPTION NOLJMP                ; Desactive les sauts longs auto
+
+  La combinaison la plus courante en Win32 :
+
+    .386
+    .MODEL FLAT, STDCALL
+    OPTION CASEMAP:NONE
+
+  10.14 Directives de base de numeration
+  -----------------------------------------
+
+  .RADIX base - Change la base par defaut des nombres :
+
+    .RADIX 16                    ; Base hexadecimale par defaut
+    .RADIX 10                    ; Base decimale (defaut)
+    .RADIX 8                     ; Base octale
+    .RADIX 2                     ; Base binaire
+
+  Sans .RADIX, la base par defaut est decimale (10).
+
+  Suffixes explicites (toujours valides quelle que soit la base) :
+
+    42              ; Decimal (ou depend de .RADIX)
+    42d             ; Decimal explicite
+    2Ah             ; Hexadecimal (suffixe h)
+    0FFh            ; Hexadecimal (doit commencer par un chiffre)
+    52o             ; Octal (suffixe o ou q)
+    52q             ; Octal (suffixe q)
+    101010b         ; Binaire (suffixe b)
+
+  Attention : avec .RADIX 16, les nombres comme 0FFh doivent
+  etre ecrits 0FFt ou avec le suffixe t pour eviter l'ambiguite
+  avec le suffixe h qui devient un chiffre hexadecimal.
+
+  10.15 Directive END
+  ---------------------
+
+  END marque la fin du fichier source et specifie optionnellement
+  le point d'entree du programme.
+
+    END [point_entree]
+
+  Exemples :
+
+    END                          ; Fin du module (pas de point d'entree)
+    END main                     ; Fin du programme, entree a 'main'
+    END _start                   ; Point d'entree _start
+
+  Le point d'entree n'est specifie que dans le module principal.
+  Les modules secondaires utilisent END sans argument.
+
+  10.16 Directives de structures et unions
+  -------------------------------------------
+
+  STRUCT/STRUC et UNION permettent de definir des types composes.
+
+  10.16.1 Structures
+
+    nom STRUCT
+      champ1  type  valeur_initiale
+      champ2  type  valeur_initiale
+      ; ...
+    nom ENDS
+
+  Exemple :
+
+    POINT STRUCT
+      x  DD  0
+      y  DD  0
+    POINT ENDS
+
+    RECT STRUCT
+      gauche  DD  0
+      haut    DD  0
+      droite  DD  0
+      bas     DD  0
+    RECT ENDS
+
+  Utilisation :
+
+    ; Declaration d'une variable de type POINT
+    MonPoint  POINT  <10, 20>         ; x=10, y=20
+    MonPoint2 POINT  <>               ; Valeurs par defaut (0, 0)
+    MonPoint3 POINT  <, 30>           ; x=defaut(0), y=30
+
+    ; Acces aux champs
+    MOV EAX, MonPoint.x               ; Lire x
+    MOV MonPoint.y, 50                ; Ecrire y
+
+    ; Acces via un registre pointeur
+    LEA ESI, MonPoint
+    MOV EAX, [ESI].POINT.x           ; Lire x via pointeur
+    MOV [ESI].POINT.y, 100           ; Ecrire y via pointeur
+
+    ; Taille de la structure
+    MOV ECX, SIZEOF POINT             ; ECX = 8 (2 * 4 octets)
+
+  10.16.2 Unions
+
+    nom UNION
+      champ1  type  valeur_initiale
+      champ2  type  valeur_initiale
+    nom ENDS
+
+  Tous les champs d'une union occupent la meme zone memoire.
+  La taille de l'union est la taille du plus grand champ.
+
+  Exemple :
+
+    VARIANT UNION
+      b  DB  ?
+      w  DW  ?
+      d  DD  ?
+    VARIANT ENDS
+    ; SIZEOF VARIANT = 4 (taille du plus grand champ DD)
+
+  10.16.3 Structures imbriquees
+
+    FENETRE STRUCT
+      pos     POINT   <>
+      taille  POINT   <>
+      titre   DD      0
+    FENETRE ENDS
+
+    fen1  FENETRE  <<10,20>, <640,480>, OFFSET str_titre>
+
+  10.17 Directives de listing et de debug
+  -------------------------------------------
+
+  Ces directives controlent le fichier listing (.LST) genere
+  par l'assembleur.
+
+    .LIST            ; Active la generation du listing
+    .NOLIST          ; Desactive la generation du listing
+    .XLIST           ; Desactive completement le listing
+    .LISTALL         ; Liste tout, y compris les macros
+    .LISTMACRO       ; Liste le corps des macros expandees
+    .LISTMACROALL    ; Liste toutes les expansions de macros
+
+    TITLE texte      ; Titre en haut de chaque page du listing
+    SUBTITLE texte   ; Sous-titre
+    PAGE [lignes, colonnes] ; Dimensions de la page du listing
+    PAGE +           ; Nouvelle page dans le listing
+
+    .CREF            ; Active la table des references croisees
+    .NOCREF          ; Desactive les references croisees
+
+  10.18 Differences entre MASM et TASM
+  ----------------------------------------
+
+  MASM (Microsoft Macro Assembler) et TASM (Turbo Assembler de
+  Borland) partagent la majorite de la syntaxe, mais presentent
+  quelques differences :
+
+  10.18.1 Mode IDEAL (TASM seulement)
+
+  TASM supporte un mode alternatif appele IDEAL qui clarifie
+  certaines ambiguites de la syntaxe MASM :
+
+    IDEAL                         ; Active le mode IDEAL
+    MASM                          ; Retour au mode MASM (defaut)
+
+  Differences en mode IDEAL :
+    - Les crochets [] sont obligatoires pour l'acces memoire
+    - Les crochets signifient toujours "contenu a l'adresse"
+    - Les types sont ecrits avant l'operande : [DWORD PTR var]
+      devient [DWORD var]
+    - OFFSET est obligatoire pour obtenir l'adresse d'une variable
+    - Les structures utilisent la syntaxe . pour les champs
+
+  Exemple (MASM vs IDEAL) :
+
+    ; MASM :
+    MOV EAX, variable             ; Acces memoire
+    MOV EAX, OFFSET variable      ; Adresse
+    MOV EAX, DWORD PTR [ESI]     ; Acces via pointeur
+
+    ; IDEAL :
+    MOV EAX, [variable]           ; Acces memoire
+    MOV EAX, OFFSET variable      ; Adresse
+    MOV EAX, [DWORD ESI]         ; Acces via pointeur
+
+  10.18.2 Directives specifiques a TASM
+
+    IDEAL           ; Mode de syntaxe IDEAL
+    MASM            ; Mode de syntaxe MASM (defaut)
+    QUIRKS          ; Active les compatibilites MASM (bugs inclus)
+    SMART           ; Optimisation automatique des sauts
+    NOSMART         ; Desactive l'optimisation des sauts
+    JUMPS           ; Genere des sauts longs si necessaire
+    NOJUMPS         ; Pas de sauts longs automatiques
+    LOCALS prefix   ; Active les etiquettes locales (@@)
+    NOLOCALS        ; Desactive les etiquettes locales
+    WARN            ; Active tous les avertissements
+    NOWARN          ; Desactive les avertissements
+    EMUL            ; Active l'emulation du coprocesseur
+    NOEMUL          ; Pas d'emulation
+
+  10.18.3 Directives specifiques a MASM 6+
+
+    OPTION          ; Configuration de l'assembleur (voir 10.13)
+    INVOKE          ; Appel de procedure avec verification de types
+    PROTO           ; Prototype de procedure
+    EXTERNDEF       ; Declaration/definition externe
+    .WHILE          ; Boucle while de haut niveau
+    .ENDW           ; Fin de la boucle while
+    .REPEAT         ; Boucle repeat
+    .UNTIL condition; Fin de la boucle repeat (condition de sortie)
+    .BREAK          ; Sortie de boucle
+    .CONTINUE       ; Iteration suivante
+    .IF condition   ; Condition de haut niveau
+    .ELSEIF condition
+    .ELSE
+    .ENDIF
+
+  Exemple de constructions de haut niveau (MASM 6+) :
+
+    .IF EAX == 0
+      CALL GererErreur
+    .ELSEIF EAX > 100
+      MOV EAX, 100
+    .ELSE
+      INC EAX
+    .ENDIF
+
+    .WHILE ECX > 0
+      LODSB
+      CALL TraiterOctet
+      DEC ECX
+    .ENDW
+
+    .REPEAT
+      CALL LireOctet
+    .UNTIL AL == 0
+
+  L'assembleur traduit ces constructions en CMP/Jcc et JMP
+  standards. Elles n'ajoutent aucun surcout par rapport au
+  code ecrit manuellement.
+
+  10.19 Resume des directives par categorie
+  --------------------------------------------
+
+  Categorie          Directives principales
+  -----------------  -------------------------------------------
+  Processeur         .386, .486, .586, .686, .387, .NO87
+  Modele             .MODEL, .CODE, .DATA, .DATA?, .STACK, .CONST
+  Segments           SEGMENT, ENDS, ASSUME, GROUP
+  Donnees            DB, DW, DD, DQ, DT, DUP, EQU, =
+  Types              BYTE PTR, WORD PTR, DWORD PTR, TYPE,
+                     SIZEOF, LENGTHOF, OFFSET, SEG, THIS
+  Procedures         PROC, ENDP, LOCAL, INVOKE, PROTO, USES
+  Visibilite         PUBLIC, EXTRN, EXTERN, EXTERNDEF
+  Inclusion          INCLUDE, INCLUDELIB, COMMENT
+  Conditionnel       IF, ELSE, ELSEIF, ENDIF, IFDEF, IFNDEF,
+                     IFB, IFNB, IFIDN, IFDIF
+  Macros             MACRO, ENDM, LOCAL, EXITM, REPT, IRP, IRPC
+  Alignement         ALIGN, EVEN, ORG
+  Structures         STRUCT, UNION, ENDS
+  Configuration      OPTION, .RADIX, END
+  Haut niveau        .IF, .ELSE, .ENDIF, .WHILE, .ENDW,
+  (MASM 6+)          .REPEAT, .UNTIL, .BREAK, .CONTINUE
+  Listing            .LIST, .NOLIST, TITLE, PAGE, .CREF
 
 ==============================================================================
 11. EXEMPLES DE CODE
