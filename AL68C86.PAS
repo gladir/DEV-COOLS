@@ -196,7 +196,7 @@
               p est un alias vers la variable x (meme adresse)
             Initialisation obligatoire en Algol 68
 
-  TODO 11 - EXPRESSIONS PRIMAIRES (UNITES PRIMAIRES)
+  TODO 11 - EXPRESSIONS PRIMAIRES (UNITES PRIMAIRES) [IMPLEMENTE]
             ParsePrimary : denotation, identificateur, appel de proc
             Clause fermee : (expr) ou BEGIN expr END
             Clause conditionnelle : IF/THEN/ELSE/FI ou (cond|val1|val2)
@@ -2658,12 +2658,27 @@ Begin
     Begin
       If E.SymIdx >= 0 Then
       Begin
-        { Variable locale : [BP+Offset] }
-        Str(E.Offset, S);
-        If E.Offset >= 0 Then
-          EmitInstr('MOV    AX, [BP+' + S + ']')
+        If SymTab[E.SymIdx].ScopeLevel = 0 Then
+        Begin
+          { Global variable/ident : load from data segment }
+          If (ModeKindOf(E.ModeIdx) = MK_BOOL) Or
+             (ModeKindOf(E.ModeIdx) = MK_CHAR) Then
+          Begin
+            EmitInstr('XOR    AX, AX');
+            EmitInstr('MOV    AL, [' + SymTab[E.SymIdx].MangledName + ']');
+          End
+          Else
+            EmitInstr('MOV    AX, [' + SymTab[E.SymIdx].MangledName + ']');
+        End
         Else
-          EmitInstr('MOV    AX, [BP' + S + ']');
+        Begin
+          { Variable locale : [BP+Offset] }
+          Str(E.Offset, S);
+          If E.Offset >= 0 Then
+            EmitInstr('MOV    AX, [BP+' + S + ']')
+          Else
+            EmitInstr('MOV    AX, [BP' + S + ']');
+        End;
       End
       Else
       Begin
@@ -2690,7 +2705,13 @@ End;
 
 Procedure ParsePrimary(Var Res : TExprVal);
 Var
-  Idx : Integer;
+  Idx      : Integer;
+  ProcName : TString;
+  ArgRes   : TExprVal;
+  ArgCount : Integer;
+  ArgSStr  : TString;
+  IdxRes   : TExprVal;
+  UpRes    : TExprVal;
 Begin
   Case CurToken.Kind Of
     { ---- Denotations numeriques et booleennes ---- }
@@ -2768,22 +2789,85 @@ Begin
         ExprMakeImm(0, TY_IDX_INT, Res);
       End;
       ParserAdvance;
-      { Appel de procedure : nom(args) -> stub TODO 19 }
-      If (CurToken.Kind = TK_OPEN) Then
+      { Appel de procedure : nom(args) -> PUSH args + CALL }
+      If (Idx >= 0) And (SymTab[Idx].Cat = SC_PROC) And
+         (CurToken.Kind = TK_OPEN) Then
       Begin
-        { Stub : consommer les arguments entre parentheses }
+        ProcName := SymTab[Idx].MangledName;
+        ArgCount := 0;
         ParserAdvance; { consomme ( }
         While (CurToken.Kind <> TK_CLOSE) And
               (CurToken.Kind <> TK_EOF) Do
         Begin
-          ParseExpr(Res);
+          ParseExpr(ArgRes);
+          ExprFlushToAX(ArgRes);
+          EmitInstr('PUSH   AX');
+          Inc(ArgCount);
           If CurToken.Kind = TK_COMMA Then
             ParserAdvance;
         End;
         If CurToken.Kind = TK_CLOSE Then
           ParserAdvance;
-        Res.Kind := EK_AX;
+        EmitInstr('CALL   ' + ProcName);
+        If ArgCount > 0 Then
+        Begin
+          Str(ArgCount * 2, ArgSStr);
+          EmitInstr('ADD    SP, ' + ArgSStr);
+        End;
+        Res.Kind    := EK_AX;
         Res.ModeIdx := TY_IDX_INT;
+        Res.SymIdx  := -1;
+      End
+      { Simple identifier (not a call) - check postfix OF, [, etc. }
+      Else If Idx >= 0 Then
+      Begin
+        { Selection de champ : expr OF struct }
+        If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'OF') Then
+        Begin
+          ExprFlushToAX(Res);
+          ParserAdvance; { consomme OF }
+          EmitComment('field selection (OF) - stub offset 0');
+          EmitInstr('ADD    AX, 0');
+          If CurToken.Kind = TK_IDENT Then
+            ParserAdvance;
+          Res.Kind   := EK_AX;
+          Res.SymIdx := -1;
+        End
+        { Indexation de tableau : expr[indice] }
+        Else If CurToken.Kind = TK_SUB Then
+        Begin
+          ExprFlushToAX(Res);
+          EmitInstr('PUSH   AX');
+          ParserAdvance; { consomme [ }
+          ParseExpr(IdxRes);
+          { Detect slice lo:up }
+          If CurToken.Kind = TK_COLON Then
+          Begin
+            { Tranche : expr[lo:up] }
+            ExprFlushToAX(IdxRes);
+            EmitInstr('PUSH   AX'); { lo }
+            ParserAdvance; { consomme : }
+            ParseExpr(UpRes);
+            ExprFlushToAX(UpRes);
+            EmitInstr('PUSH   AX'); { up }
+            EmitInstr('CALL   _A68RT_STRTRIM');
+            EmitInstr('ADD    SP, 6');
+          End
+          Else
+          Begin
+            { Simple indexation }
+            ExprFlushToAX(IdxRes);
+            EmitComment('array index');
+            EmitInstr('SHL    AX, 1');
+            EmitInstr('POP    BX');
+            EmitInstr('ADD    BX, AX');
+            EmitInstr('MOV    AX, [BX]');
+          End;
+          If CurToken.Kind = TK_BUS2 Then
+            ParserAdvance; { consomme ] }
+          Res.Kind   := EK_AX;
+          Res.SymIdx := -1;
+        End;
       End;
     End;
 
@@ -4738,21 +4822,189 @@ End;
 { ParsePrimary, ParseExpr, ExprFlushToAX : implementes dans TODO 04 ci-dessus }
 
 Procedure ParseSerialClause(Var Res : TExprVal);
+Var
+  WasDecl : Boolean;
 Begin
-  { TODO 13 }
-  Res := GExprDummy;
+  ExprMakeNone(Res);
+  While (CurToken.Kind <> TK_EOF) Do
+  Begin
+    { Check for closing delimiters }
+    If (CurToken.Kind = TK_BOLD) And
+       ((CurToken.Val = 'END') Or (CurToken.Val = 'FI') Or
+        (CurToken.Val = 'OD') Or (CurToken.Val = 'ESAC') Or
+        (CurToken.Val = 'ELSE') Or (CurToken.Val = 'ELIF') Or
+        (CurToken.Val = 'THEN') Or (CurToken.Val = 'IN') Or
+        (CurToken.Val = 'OUT') Or (CurToken.Val = 'DO') Or
+        (CurToken.Val = 'OUSE')) Then
+      Break;
+    If CurToken.Kind = TK_CLOSE Then
+      Break;
+
+    WasDecl := False;
+
+    { Try declaration or expression }
+    If (CurToken.Kind = TK_BOLD) And
+       ((CurToken.Val = 'INT') Or (CurToken.Val = 'REAL') Or
+        (CurToken.Val = 'BOOL') Or (CurToken.Val = 'CHAR') Or
+        (CurToken.Val = 'STRING') Or (CurToken.Val = 'BITS') Or
+        (CurToken.Val = 'BYTES') Or (CurToken.Val = 'COMPL') Or
+        (CurToken.Val = 'VOID') Or
+        (CurToken.Val = 'REF') Or (CurToken.Val = 'LOC') Or
+        (CurToken.Val = 'HEAP')) Then
+    Begin
+      ParseDeclStmt;
+      WasDecl := True;
+    End
+    Else
+      ParseExpr(Res);
+
+    { ParseDeclStmt already consumes its trailing semicolon }
+    If Not WasDecl Then
+    Begin
+      If CurToken.Kind = TK_SEMI Then
+        ParserAdvance
+      Else
+        Break;
+    End;
+  End;
 End;
 
 Procedure ParseIfClause(Var Res : TExprVal);
+Var
+  LblElse, LblEnd : TString;
+  CondRes : TExprVal;
 Begin
-  { TODO 14 }
-  Res := GExprDummy;
+  { IF deja vu ou consomme par l'appelant pour ELIF }
+  ParserAdvance; { consomme IF }
+
+  { Parse condition }
+  ParseExpr(CondRes);
+  ExprFlushToAX(CondRes);
+
+  LblElse := LabelGen;
+  LblEnd  := LabelGen;
+
+  EmitInstr('TEST   AX, AX');
+  EmitInstr('JZ     ' + LblElse);
+
+  { THEN clause }
+  If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'THEN') Then
+    ParserAdvance
+  Else
+    CompileError('THEN attendu');
+
+  ParseSerialClause(Res);
+
+  EmitInstr('JMP    ' + LblEnd);
+
+  { ELSE / ELIF / FI }
+  EmitLabel(LblElse);
+
+  If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'ELIF') Then
+  Begin
+    { ELIF -> recursive IF }
+    ParseIfClause(Res);
+    { ELIF chain ends with FI consumed by deepest call }
+  End
+  Else If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'ELSE') Then
+  Begin
+    ParserAdvance; { consomme ELSE }
+    ParseSerialClause(Res);
+    If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'FI') Then
+      ParserAdvance
+    Else
+      CompileError('FI attendu');
+  End
+  Else If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'FI') Then
+  Begin
+    { No ELSE branch }
+    ExprMakeVoid(Res);
+    ParserAdvance; { consomme FI }
+  End
+  Else
+    CompileError('ELSE, ELIF ou FI attendu');
+
+  EmitLabel(LblEnd);
+  If Res.Kind <> EK_NONE Then
+  Begin
+    Res.Kind   := EK_AX;
+    Res.SymIdx := -1;
+  End;
 End;
 
 Procedure ParseCaseClause(Var Res : TExprVal);
+Var
+  SelRes     : TExprVal;
+  CaseRes    : TExprVal;
+  LblEnd     : TString;
+  LblNext    : TString;
+  CaseIdx    : Integer;
+  CaseS      : TString;
 Begin
-  { TODO 14 }
-  Res := GExprDummy;
+  ParserAdvance; { consomme CASE }
+
+  { Parse selector expression }
+  ParseExpr(SelRes);
+  ExprFlushToAX(SelRes);
+  EmitInstr('MOV    BX, AX');
+
+  LblEnd := LabelGen;
+
+  { IN clause }
+  If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'IN') Then
+    ParserAdvance
+  Else
+    CompileError('IN attendu');
+
+  CaseIdx := 1;
+  ExprMakeNone(Res);
+
+  { Parse comma-separated case values, indexing from 1 }
+  While (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If (CurToken.Kind = TK_BOLD) And
+       ((CurToken.Val = 'OUT') Or (CurToken.Val = 'ESAC')) Then
+      Break;
+
+    LblNext  := LabelGen;
+
+    Str(CaseIdx, CaseS);
+    EmitInstr('CMP    BX, ' + CaseS);
+    EmitInstr('JNE    ' + LblNext);
+
+    ParseSerialClause(CaseRes);
+    Res := CaseRes;
+    EmitInstr('JMP    ' + LblEnd);
+
+    EmitLabel(LblNext);
+    Inc(CaseIdx);
+
+    If CurToken.Kind = TK_COMMA Then
+      ParserAdvance
+    Else
+      Break;
+  End;
+
+  { OUT clause (default) }
+  If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'OUT') Then
+  Begin
+    ParserAdvance; { consomme OUT }
+    ParseSerialClause(CaseRes);
+    Res := CaseRes;
+  End;
+
+  { ESAC }
+  If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'ESAC') Then
+    ParserAdvance
+  Else
+    CompileError('ESAC attendu');
+
+  EmitLabel(LblEnd);
+  If Res.Kind <> EK_NONE Then
+  Begin
+    Res.Kind   := EK_AX;
+    Res.SymIdx := -1;
+  End;
 End;
 
 Procedure ParseLoopClause;
@@ -4820,6 +5072,7 @@ End;
 Procedure ParseStmt;
 Var
   IsDeclKw : Boolean;
+  StmtRes  : TExprVal;
 Begin
   { Detecter si le token courant debute une declaration }
   IsDeclKw := False;
@@ -4841,7 +5094,10 @@ Begin
   Else If CurToken.Kind = TK_SEMI Then
     ParserAdvance   { point-virgule seul = go-on vide }
   Else If CurToken.Kind <> TK_EOF Then
-    ParserAdvance;  { stub : consommer un token pour eviter boucle infinie }
+  Begin
+    { Expression-statement }
+    ParseExpr(StmtRes);
+  End;
 End;
 
 Procedure ParserAdvance;
