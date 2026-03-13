@@ -1,4 +1,4 @@
-; REXX86 v1.0 - SAMPLES/REXX/test_io.rexx
+; REXX86 v1.0 - SAMPLES/REXX/test_parse.rexx
 .MODEL SMALL
 .STACK 1024
 
@@ -10,64 +10,223 @@ _RXP_Main:
         MOV   AX, _DATA
         MOV   DS, AX
 
-; SAY
+; assign: LINE = ...
         LEA     AX, _RXK_1
-        MOV   SI, AX
-        CALL   _RXRT_PRINTLN
-; SAY
-        MOV     AX, 42
-        CALL   _RXRT_NUMTOSTR
-        CALL   _RXRT_PRINTLN
-; SAY
-        MOV     AX, 5
-        CALL   _RXRT_NUMTOSTR
-        CALL   _RXRT_PRINTLN
-; SAY
-        LEA     AX, _RXK_2
-        PUSH     AX
-        LEA     AX, _RXK_3
-        MOV     BX, AX
-        POP     AX
         MOV     SI, AX
-        MOV     DI, BX
-        CALL    _RXRT_CONCAT
+        LEA     DI, _RXV_LINE
+        CALL     _RXRT_STRCPY
+; PARSE
+; PARSE VAR LINE
+        LEA     AX, _RXV_LINE
         MOV   SI, AX
-        CALL   _RXRT_PRINTLN
-; SAY
-        MOV   SI, OFFSET _RX_CRLF
-        CALL   _RXRT_PRINT
-; assign: X = ...
-        LEA     AX, _RXK_4
+        CALL   _RXRT_PARSEINIT
+        CALL   _RXRT_PARSEWORD
         MOV     SI, AX
-        LEA     DI, _RXV_X
+        LEA     DI, _RXV_W1
+        CALL     _RXRT_STRCPY
+        CALL   _RXRT_PARSEWORD
+        MOV     SI, AX
+        LEA     DI, _RXV_W2
+        CALL     _RXRT_STRCPY
+        CALL   _RXRT_PARSEREST
+        MOV     SI, AX
+        LEA     DI, _RXV_W3
         CALL     _RXRT_STRCPY
 ; SAY
-        LEA     AX, _RXV_X
+        LEA     AX, _RXV_W1
         MOV   SI, AX
         CALL   _RXRT_PRINTLN
-; assign: NOM = ...
+; SAY
+        LEA     AX, _RXV_W2
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SAY
+        LEA     AX, _RXV_W3
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; assign: DATA = ...
+        LEA     AX, _RXK_2
+        MOV     SI, AX
+        LEA     DI, _RXV_DATA
+        CALL     _RXRT_STRCPY
+; PARSE
+; PARSE VAR DATA
+        LEA     AX, _RXV_DATA
+        MOV   SI, AX
+        CALL   _RXRT_PARSEINIT
+        CALL   _RXRT_PARSEWORD
+        MOV     SI, AX
+        LEA     DI, _RXV_A
+        CALL     _RXRT_STRCPY
+        CALL   _RXRT_PARSEWORD
+        MOV     SI, AX
+        LEA     DI, _RXV_B
+        CALL     _RXRT_STRCPY
+        CALL   _RXRT_PARSEREST
+        MOV     SI, AX
+        LEA     DI, _RXV_REST
+        CALL     _RXRT_STRCPY
+; SAY
+        LEA     AX, _RXV_A
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SAY
+        LEA     AX, _RXV_B
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SAY
+        LEA     AX, _RXV_REST
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; assign: CSV = ...
+        LEA     AX, _RXK_3
+        MOV     SI, AX
+        LEA     DI, _RXV_CSV
+        CALL     _RXRT_STRCPY
+; PARSE
+; PARSE VAR CSV
+        LEA     AX, _RXV_CSV
+        MOV   SI, AX
+        CALL   _RXRT_PARSEINIT
+        MOV   DI, OFFSET _RXK_4
+        CALL   _RXRT_PARSEDELIM
+        MOV     SI, AX
+        LEA     DI, _RXV_F1
+        CALL     _RXRT_STRCPY
+        MOV   DI, OFFSET _RXK_4
+        CALL   _RXRT_PARSEDELIM
+        MOV     SI, AX
+        LEA     DI, _RXV_F2
+        CALL     _RXRT_STRCPY
+        CALL   _RXRT_PARSEREST
+        MOV     SI, AX
+        LEA     DI, _RXV_F3
+        CALL     _RXRT_STRCPY
+; SAY
+        LEA     AX, _RXV_F1
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SAY
+        LEA     AX, _RXV_F2
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SAY
+        LEA     AX, _RXV_F3
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; assign: FIXED = ...
         LEA     AX, _RXK_5
         MOV     SI, AX
-        LEA     DI, _RXV_NOM
+        LEA     DI, _RXV_FIXED
+        CALL     _RXRT_STRCPY
+; PARSE
+; PARSE VAR FIXED
+        LEA     AX, _RXV_FIXED
+        MOV   SI, AX
+        CALL   _RXRT_PARSEINIT
+        MOV   BX, 4
+        CALL   _RXRT_PARSEABS
+        MOV     SI, AX
+        LEA     DI, _RXV_P1
+        CALL     _RXRT_STRCPY
+        MOV   BX, 7
+        CALL   _RXRT_PARSEABS
+        MOV     SI, AX
+        LEA     DI, _RXV_P2
+        CALL     _RXRT_STRCPY
+        CALL   _RXRT_PARSEREST
+        MOV     SI, AX
+        LEA     DI, _RXV_P3
         CALL     _RXRT_STRCPY
 ; SAY
-        LEA     AX, _RXV_NOM
+        LEA     AX, _RXV_P1
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SAY
+        LEA     AX, _RXV_P2
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SAY
+        LEA     AX, _RXV_P3
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; assign: INFO = ...
         LEA     AX, _RXK_6
-        PUSH     AX
-        MOV     BX, AX
-        POP     AX
-        PUSH     BX
         MOV     SI, AX
-        MOV     DI, OFFSET _RX_SPC_S
-        CALL    _RXRT_CONCAT
+        LEA     DI, _RXV_INFO
+        CALL     _RXRT_STRCPY
+; PARSE
+; PARSE VAR INFO
+        LEA     AX, _RXV_INFO
+        MOV   SI, AX
+        CALL   _RXRT_PARSEINIT
+        CALL   _RXRT_PARSEWORD
+        CALL   _RXRT_PARSEWORD
         MOV     SI, AX
-        POP     DI
-        PUSH     DI
-        MOV     DI, OFFSET _RX_TMPBUF
-        CALL    _RXRT_STRCPY
-        MOV     SI, OFFSET _RX_TMPBUF
-        POP     DI
-        CALL    _RXRT_CONCAT
+        LEA     DI, _RXV_W1
+        CALL     _RXRT_STRCPY
+        CALL   _RXRT_PARSEWORD
+        CALL   _RXRT_PARSEREST
+        MOV     SI, AX
+        LEA     DI, _RXV_W2
+        CALL     _RXRT_STRCPY
+; SAY
+        LEA     AX, _RXV_W1
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SAY
+        LEA     AX, _RXV_W2
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; assign: MIXED = ...
+        LEA     AX, _RXK_7
+        MOV     SI, AX
+        LEA     DI, _RXV_MIXED
+        CALL     _RXRT_STRCPY
+; PARSE
+; PARSE VAR MIXED
+        LEA     AX, _RXV_MIXED
+        MOV   SI, AX
+        CALL   _RXRT_UPPER
+        CALL   _RXRT_PARSEINIT
+        CALL   _RXRT_PARSEWORD
+        MOV     SI, AX
+        LEA     DI, _RXV_U1
+        CALL     _RXRT_STRCPY
+        CALL   _RXRT_PARSEREST
+        MOV     SI, AX
+        LEA     DI, _RXV_U2
+        CALL     _RXRT_STRCPY
+; SAY
+        LEA     AX, _RXV_U1
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SAY
+        LEA     AX, _RXV_U2
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; PARSE
+; PARSE VERSION
+        MOV   SI, OFFSET _RXK_8
+        CALL   _RXRT_PARSEINIT
+        CALL   _RXRT_PARSEREST
+        MOV     SI, AX
+        LEA     DI, _RXV_VER
+        CALL     _RXRT_STRCPY
+; SAY
+        LEA     AX, _RXV_VER
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; PARSE
+; PARSE SOURCE
+        MOV   SI, OFFSET _RXK_9
+        CALL   _RXRT_PARSEINIT
+        CALL   _RXRT_PARSEREST
+        MOV     SI, AX
+        LEA     DI, _RXV_SRC
+        CALL     _RXRT_STRCPY
+; SAY
+        LEA     AX, _RXV_SRC
         MOV   SI, AX
         CALL   _RXRT_PRINTLN
         JMP     _RXP_Exit
@@ -1272,16 +1431,59 @@ _RX_BIFBUF DB 256 DUP(0)
 _RX_PARSEBUF DB 256 DUP(0)
 _RX_PARSEPOS DW 0
 _RX_PARSESRC DW 0
-_RXK_1 DB 'Hello, World!',0
-_RXK_2 DB 'Resultat:',0
-_RXK_3 DB ' 10',0
-_RXV_X DB 256 DUP(0)
-_RXV_X_D DB 'X',0
-_RXK_4 DB 'Bonjour',0
-_RXV_NOM DB 256 DUP(0)
-_RXV_NOM_D DB 'NOM',0
-_RXK_5 DB 'REXX',0
-_RXK_6 DB 'Langage:',0
+_RXV_LINE DB 256 DUP(0)
+_RXV_LINE_D DB 'LINE',0
+_RXK_1 DB 'hello world REXX',0
+_RXV_W1 DB 256 DUP(0)
+_RXV_W1_D DB 'W1',0
+_RXV_W2 DB 256 DUP(0)
+_RXV_W2_D DB 'W2',0
+_RXV_W3 DB 256 DUP(0)
+_RXV_W3_D DB 'W3',0
+_RXV_DATA DB 256 DUP(0)
+_RXV_DATA_D DB 'DATA',0
+_RXK_2 DB 'one two three four five',0
+_RXV_A DB 256 DUP(0)
+_RXV_A_D DB 'A',0
+_RXV_B DB 256 DUP(0)
+_RXV_B_D DB 'B',0
+_RXV_REST DB 256 DUP(0)
+_RXV_REST_D DB 'REST',0
+_RXV_CSV DB 256 DUP(0)
+_RXV_CSV_D DB 'CSV',0
+_RXK_3 DB 'apple,banana,cherry',0
+_RXK_4 DB ',',0
+_RXV_F1 DB 256 DUP(0)
+_RXV_F1_D DB 'F1',0
+_RXV_F2 DB 256 DUP(0)
+_RXV_F2_D DB 'F2',0
+_RXV_F3 DB 256 DUP(0)
+_RXV_F3_D DB 'F3',0
+_RXV_FIXED DB 256 DUP(0)
+_RXV_FIXED_D DB 'FIXED',0
+_RXK_5 DB 'ABCDEFGHIJ',0
+_RXV_P1 DB 256 DUP(0)
+_RXV_P1_D DB 'P1',0
+_RXV_P2 DB 256 DUP(0)
+_RXV_P2_D DB 'P2',0
+_RXV_P3 DB 256 DUP(0)
+_RXV_P3_D DB 'P3',0
+_RXV_INFO DB 256 DUP(0)
+_RXV_INFO_D DB 'INFO',0
+_RXK_6 DB 'skip1 keep1 skip2 keep2',0
+_RXV_MIXED DB 256 DUP(0)
+_RXV_MIXED_D DB 'MIXED',0
+_RXK_7 DB 'Hello World',0
+_RXV_U1 DB 256 DUP(0)
+_RXV_U1_D DB 'U1',0
+_RXV_U2 DB 256 DUP(0)
+_RXV_U2_D DB 'U2',0
+_RXK_8 DB 'REXX86 1.0',0
+_RXV_VER DB 256 DUP(0)
+_RXV_VER_D DB 'VER',0
+_RXK_9 DB 'DOS COMMAND REXX86',0
+_RXV_SRC DB 256 DUP(0)
+_RXV_SRC_D DB 'SRC',0
 _DATA ENDS
 
 END _RXP_Main

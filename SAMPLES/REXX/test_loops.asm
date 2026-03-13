@@ -1275,6 +1275,197 @@ _RXB_LPO_DN:
         POP   BP
         RET
 
+; --- Runtime PARSE (TODO 16) ---
+
+_RXRT_PARSEINIT:
+        PUSH   DI
+        MOV   WORD PTR [_RX_PARSESRC], OFFSET _RX_TMPBUF
+        MOV   WORD PTR [_RX_PARSEPOS], 0
+        LEA   DI, _RX_TMPBUF
+        CALL   _RXRT_STRCPY
+        POP   DI
+        RET
+
+_RXRT_PARSEWORD:
+        PUSH   SI
+        PUSH   DI
+        MOV   SI, WORD PTR [_RX_PARSESRC]
+        ADD   SI, WORD PTR [_RX_PARSEPOS]
+        LEA   DI, _RX_PARSEBUF
+_RXRT_PW_SKIP:
+        MOV   AL, BYTE PTR [SI]
+        CMP   AL, 0
+        JE   _RXRT_PW_END
+        CMP   AL, ' '
+        JNE   _RXRT_PW_COPY
+        INC   SI
+        JMP   _RXRT_PW_SKIP
+_RXRT_PW_COPY:
+        MOV   AL, BYTE PTR [SI]
+        CMP   AL, 0
+        JE   _RXRT_PW_END
+        CMP   AL, ' '
+        JE   _RXRT_PW_END
+        MOV   BYTE PTR [DI], AL
+        INC   SI
+        INC   DI
+        JMP   _RXRT_PW_COPY
+_RXRT_PW_END:
+        MOV   BYTE PTR [DI], 0
+        MOV   AX, SI
+        SUB   AX, WORD PTR [_RX_PARSESRC]
+        MOV   WORD PTR [_RX_PARSEPOS], AX
+        MOV   AX, OFFSET _RX_PARSEBUF
+        POP   DI
+        POP   SI
+        RET
+
+_RXRT_PARSEREST:
+        PUSH   SI
+        PUSH   DI
+        MOV   SI, WORD PTR [_RX_PARSESRC]
+        ADD   SI, WORD PTR [_RX_PARSEPOS]
+        LEA   DI, _RX_PARSEBUF
+_RXRT_PR_SKIP:
+        MOV   AL, BYTE PTR [SI]
+        CMP   AL, 0
+        JE   _RXRT_PR_END
+        CMP   AL, ' '
+        JNE   _RXRT_PR_COPY
+        INC   SI
+        JMP   _RXRT_PR_SKIP
+_RXRT_PR_COPY:
+        MOV   AL, BYTE PTR [SI]
+        CMP   AL, 0
+        JE   _RXRT_PR_END
+        MOV   BYTE PTR [DI], AL
+        INC   SI
+        INC   DI
+        JMP   _RXRT_PR_COPY
+_RXRT_PR_END:
+        MOV   BYTE PTR [DI], 0
+        MOV   AX, SI
+        SUB   AX, WORD PTR [_RX_PARSESRC]
+        MOV   WORD PTR [_RX_PARSEPOS], AX
+        MOV   AX, OFFSET _RX_PARSEBUF
+        POP   DI
+        POP   SI
+        RET
+
+_RXRT_PARSEDELIM:
+        PUSH   SI
+        PUSH   BX
+        PUSH   CX
+        PUSH   DX
+        MOV   SI, WORD PTR [_RX_PARSESRC]
+        ADD   SI, WORD PTR [_RX_PARSEPOS]
+        MOV   BX, SI
+        PUSH   SI
+        MOV   SI, DI
+        CALL   _RXRT_STRLEN
+        POP   SI
+        MOV   DX, CX
+_RXRT_PD_SCAN:
+        MOV   AL, BYTE PTR [SI]
+        CMP   AL, 0
+        JE   _RXRT_PD_NFND
+        PUSH   SI
+        PUSH   DI
+        MOV   CX, DX
+_RXRT_PD_CMPL:
+        CMP   CX, 0
+        JE   _RXRT_PD_FOUN
+        MOV   AL, BYTE PTR [SI]
+        CMP   AL, BYTE PTR [DI]
+        JNE   _RXRT_PD_NMAT
+        INC   SI
+        INC   DI
+        DEC   CX
+        JMP   _RXRT_PD_CMPL
+_RXRT_PD_FOUN:
+        POP   DI
+        POP   SI
+        PUSH   DI
+        MOV   CX, SI
+        SUB   CX, BX
+        PUSH   SI
+        MOV   SI, BX
+        LEA   DI, _RX_PARSEBUF
+_RXRT_PD_CPF:
+        CMP   CX, 0
+        JE   _RXRT_PD_CPD
+        MOV   AL, BYTE PTR [SI]
+        MOV   BYTE PTR [DI], AL
+        INC   SI
+        INC   DI
+        DEC   CX
+        JMP   _RXRT_PD_CPF
+_RXRT_PD_CPD:
+        MOV   BYTE PTR [DI], 0
+        POP   SI
+        POP   DI
+        ADD   SI, DX
+        MOV   AX, SI
+        SUB   AX, WORD PTR [_RX_PARSESRC]
+        MOV   WORD PTR [_RX_PARSEPOS], AX
+        JMP   _RXRT_PD_DONE
+_RXRT_PD_NMAT:
+        POP   DI
+        POP   SI
+        INC   SI
+        JMP   _RXRT_PD_SCAN
+_RXRT_PD_NFND:
+        PUSH   DI
+        PUSH   SI
+        MOV   SI, BX
+        LEA   DI, _RX_PARSEBUF
+        CALL   _RXRT_STRCPY
+        POP   SI
+        POP   DI
+        MOV   AX, SI
+        SUB   AX, WORD PTR [_RX_PARSESRC]
+        MOV   WORD PTR [_RX_PARSEPOS], AX
+_RXRT_PD_DONE:
+        MOV   AX, OFFSET _RX_PARSEBUF
+        POP   DX
+        POP   CX
+        POP   BX
+        POP   SI
+        RET
+
+_RXRT_PARSEABS:
+        PUSH   SI
+        PUSH   DI
+        PUSH   CX
+        LEA   DI, _RX_PARSEBUF
+        MOV   SI, WORD PTR [_RX_PARSESRC]
+        ADD   SI, WORD PTR [_RX_PARSEPOS]
+        DEC   BX
+        MOV   CX, BX
+        SUB   CX, WORD PTR [_RX_PARSEPOS]
+        CMP   CX, 0
+        JLE   _RXRT_PA_EMP
+_RXRT_PA_COPY:
+        MOV   AL, BYTE PTR [SI]
+        CMP   AL, 0
+        JE   _RXRT_PA_END
+        MOV   BYTE PTR [DI], AL
+        INC   SI
+        INC   DI
+        DEC   CX
+        CMP   CX, 0
+        JG   _RXRT_PA_COPY
+        JMP   _RXRT_PA_END
+_RXRT_PA_EMP:
+_RXRT_PA_END:
+        MOV   BYTE PTR [DI], 0
+        MOV   WORD PTR [_RX_PARSEPOS], BX
+        MOV   AX, OFFSET _RX_PARSEBUF
+        POP   CX
+        POP   DI
+        POP   SI
+        RET
+
 
 ; --- sortie DOS ---
         MOV   AX, 4C00h
@@ -1301,6 +1492,9 @@ _RX_NUMBUF DB 12 DUP(0)
 _RX_CATBUF DB 256 DUP(0)
 _RX_INPUTBF DB 256 DUP(0)
 _RX_BIFBUF DB 256 DUP(0)
+_RX_PARSEBUF DB 256 DUP(0)
+_RX_PARSEPOS DW 0
+_RX_PARSESRC DW 0
 _RXV_I DB 256 DUP(0)
 _RXV_I_D DB 'I',0
 _RXV_J DB 256 DUP(0)

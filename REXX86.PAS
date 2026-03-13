@@ -257,7 +257,7 @@
             POS(needle, haystack [,start]) : position de sous-chaine -> AX
             LASTPOS(needle, haystack [,start]) : derniere position -> AX
 
-  TODO 16 - INSTRUCTION PARSE
+  TODO 16 - INSTRUCTION PARSE [IMPLEMENTE]
             PARSE [UPPER] source template
             Sources :
               PARSE ARG : arguments de la procedure ou du programme
@@ -522,6 +522,7 @@ Const
   MAX_ERRORS    = {$IFDEF FPC}30{$ELSE}3{$ENDIF};
   MAX_STR       = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
   MAX_STEM      = {$IFDEF FPC}256{$ELSE}64{$ENDIF};
+  MAX_PARSE_VARS = 16;
   STACK_SIZE    = 1024;
 
   (* --- Prefixes de nommage ASM --- *)
@@ -814,7 +815,6 @@ Procedure ParserAdvance;       Forward;
 (* TODO 12 - Entrees/Sorties *)
 Procedure ParseSayStmt;        Forward;
 Procedure ParsePullStmt;       Forward;
-Procedure ParseParsePullStmt;  Forward;
 Procedure EmitIORuntime;       Forward;
 
 (* TODO 13 - IF/THEN/ELSE/SELECT *)
@@ -834,6 +834,10 @@ Procedure ParseDoExpr;         Forward;
 
 (* TODO 15 - CHAINES ET FONCTIONS INTEGREES partie 1 *)
 Procedure EmitBifRuntime;      Forward;
+
+(* TODO 16 - INSTRUCTION PARSE *)
+Procedure EmitParseRuntime;    Forward;
+Procedure ParseParseStmt;      Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1804,6 +1808,16 @@ Begin
       Inc(LexColNo);
       CurToken.Kind   := TK_PUNCT;
       CurToken.Val    := ':';
+      CurToken.IntVal := 0;
+      Scanning := False;
+    End
+
+    (* Point : placeholder dans PARSE template (TODO 16) *)
+    Else If Ch = '.' Then
+    Begin
+      Inc(LexColNo);
+      CurToken.Kind   := TK_PUNCT;
+      CurToken.Val    := '.';
       CurToken.IntVal := 0;
       Scanning := False;
     End
@@ -3044,6 +3058,11 @@ Begin
   (*  TODO 15 - Runtime fonctions integrees (chaines partie 1)    *)
   (* ============================================================ *)
   EmitBifRuntime;
+
+  (* ============================================================ *)
+  (*  TODO 16 - Runtime PARSE (decoupage de chaines)              *)
+  (* ============================================================ *)
+  EmitParseRuntime;
 End;
 
 { ============================================================
@@ -3912,7 +3931,274 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 End;
-(* Emet la sortie DOS, le runtime, ferme _TEXT, ecrit _DATA,      *)
+
+{ ============================================================
+  TODO 16 - INSTRUCTION PARSE [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- EmitParseRuntime : routines runtime pour PARSE ------------ *)
+(* Emet les routines assembleur 8086 pour l instruction PARSE :      *)
+(*   _RXRT_PARSEINIT : initialiser la position de decoupage          *)
+(*   _RXRT_PARSEWORD : extraire le prochain mot (whitespace delim)   *)
+(*   _RXRT_PARSEREST : obtenir le reste de la chaine                 *)
+(*   _RXRT_PARSEDELIM : decouper sur un delimiteur litteral          *)
+(*   _RXRT_PARSEABS  : se positionner a une colonne absolue          *)
+(* Convention : utilise les globaux _RX_PARSESRC / _RX_PARSEPOS.     *)
+(* Resultat toujours dans _RX_PARSEBUF, AX = ptr.                   *)
+Procedure EmitParseRuntime;
+Begin
+  EmitComment('--- Runtime PARSE (TODO 16) ---');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXRT_PARSEINIT : initialiser le decoupage                   *)
+  (*  Entree : SI = pointeur source ASCIIZ                         *)
+  (*  Copie la source vers _RX_TMPBUF et initialise la position.   *)
+  (* ============================================================ *)
+  EmitLabel('_RXRT_PARSEINIT');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('MOV', 'WORD PTR [_RX_PARSESRC]', 'OFFSET _RX_TMPBUF');
+  EmitInstrAB('MOV', 'WORD PTR [_RX_PARSEPOS]', '0');
+  EmitInstrAB('LEA', 'DI', '_RX_TMPBUF');
+  EmitInstrA('CALL', '_RXRT_STRCPY');
+  EmitInstrA('POP', 'DI');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXRT_PARSEWORD : extraire le prochain mot                   *)
+  (*  Saute les espaces, copie le mot dans _RX_PARSEBUF.           *)
+  (*  Met a jour _RX_PARSEPOS. AX = ptr _RX_PARSEBUF.             *)
+  (* ============================================================ *)
+  EmitLabel('_RXRT_PARSEWORD');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  (* Calculer adresse courante dans la source *)
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [_RX_PARSESRC]');
+  EmitInstrAB('ADD', 'SI', 'WORD PTR [_RX_PARSEPOS]');
+  EmitInstrAB('LEA', 'DI', '_RX_PARSEBUF');
+  (* Sauter les espaces de tete *)
+  EmitLabel('_RXRT_PW_SKIP');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [SI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', '_RXRT_PW_END');
+  EmitInstrAB('CMP', 'AL', ''' ''');
+  EmitInstrA('JNE', '_RXRT_PW_COPY');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', '_RXRT_PW_SKIP');
+  (* Copier les caracteres du mot (non-espace, non-nul) *)
+  EmitLabel('_RXRT_PW_COPY');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [SI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', '_RXRT_PW_END');
+  EmitInstrAB('CMP', 'AL', ''' ''');
+  EmitInstrA('JE', '_RXRT_PW_END');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', '_RXRT_PW_COPY');
+  (* Fin : terminer chaine et mettre a jour la position *)
+  EmitLabel('_RXRT_PW_END');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  (* Calculer le nouvel offset *)
+  EmitInstrAB('MOV', 'AX', 'SI');
+  EmitInstrAB('SUB', 'AX', 'WORD PTR [_RX_PARSESRC]');
+  EmitInstrAB('MOV', 'WORD PTR [_RX_PARSEPOS]', 'AX');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _RX_PARSEBUF');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXRT_PARSEREST : obtenir le reste de la chaine               *)
+  (*  Saute les espaces de tete, copie tout le reste.               *)
+  (*  AX = ptr _RX_PARSEBUF.                                       *)
+  (* ============================================================ *)
+  EmitLabel('_RXRT_PARSEREST');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [_RX_PARSESRC]');
+  EmitInstrAB('ADD', 'SI', 'WORD PTR [_RX_PARSEPOS]');
+  EmitInstrAB('LEA', 'DI', '_RX_PARSEBUF');
+  (* Sauter les espaces de tete *)
+  EmitLabel('_RXRT_PR_SKIP');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [SI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', '_RXRT_PR_END');
+  EmitInstrAB('CMP', 'AL', ''' ''');
+  EmitInstrA('JNE', '_RXRT_PR_COPY');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', '_RXRT_PR_SKIP');
+  (* Copier tout le reste *)
+  EmitLabel('_RXRT_PR_COPY');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [SI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', '_RXRT_PR_END');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', '_RXRT_PR_COPY');
+  EmitLabel('_RXRT_PR_END');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  (* Mettre a jour la position a la fin *)
+  EmitInstrAB('MOV', 'AX', 'SI');
+  EmitInstrAB('SUB', 'AX', 'WORD PTR [_RX_PARSESRC]');
+  EmitInstrAB('MOV', 'WORD PTR [_RX_PARSEPOS]', 'AX');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _RX_PARSEBUF');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXRT_PARSEDELIM : decouper sur un delimiteur litteral        *)
+  (*  Entree : DI = pointeur vers chaine delimiteur ASCIIZ         *)
+  (*  Copie tout de la position courante jusqu au delimiteur dans   *)
+  (*  _RX_PARSEBUF. Avance la position apres le delimiteur.         *)
+  (*  Si le delimiteur n est pas trouve, copie tout le reste.       *)
+  (*  AX = ptr _RX_PARSEBUF.                                       *)
+  (* ============================================================ *)
+  EmitLabel('_RXRT_PARSEDELIM');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  (* SI = source + pos courante *)
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [_RX_PARSESRC]');
+  EmitInstrAB('ADD', 'SI', 'WORD PTR [_RX_PARSEPOS]');
+  (* BX = debut de la zone a copier *)
+  EmitInstrAB('MOV', 'BX', 'SI');
+  (* Calculer la longueur du delimiteur dans CX *)
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', 'DI');
+  EmitInstrA('CALL', '_RXRT_STRLEN');
+  EmitInstrA('POP', 'SI');
+  EmitInstrAB('MOV', 'DX', 'CX');
+  (* DX = longueur du delimiteur *)
+  (* Chercher le delimiteur dans la source *)
+  EmitLabel('_RXRT_PD_SCAN');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [SI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', '_RXRT_PD_NFND');
+  (* Comparer DX octets *)
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('MOV', 'CX', 'DX');
+  EmitLabel('_RXRT_PD_CMPL');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', '_RXRT_PD_FOUN');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [SI]');
+  EmitInstrAB('CMP', 'AL', 'BYTE PTR [DI]');
+  EmitInstrA('JNE', '_RXRT_PD_NMAT');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', '_RXRT_PD_CMPL');
+  (* Match trouve *)
+  EmitLabel('_RXRT_PD_FOUN');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  (* Copier de BX a SI-1 dans _RX_PARSEBUF *)
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('MOV', 'CX', 'SI');
+  EmitInstrAB('SUB', 'CX', 'BX');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', 'BX');
+  EmitInstrAB('LEA', 'DI', '_RX_PARSEBUF');
+  EmitLabel('_RXRT_PD_CPF');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', '_RXRT_PD_CPD');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [SI]');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', '_RXRT_PD_CPF');
+  EmitLabel('_RXRT_PD_CPD');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DI');
+  (* Avancer la position apres le delimiteur *)
+  EmitInstrAB('ADD', 'SI', 'DX');
+  EmitInstrAB('MOV', 'AX', 'SI');
+  EmitInstrAB('SUB', 'AX', 'WORD PTR [_RX_PARSESRC]');
+  EmitInstrAB('MOV', 'WORD PTR [_RX_PARSEPOS]', 'AX');
+  EmitInstrA('JMP', '_RXRT_PD_DONE');
+  (* Pas de match : avancer d un caractere *)
+  EmitLabel('_RXRT_PD_NMAT');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', '_RXRT_PD_SCAN');
+  (* Delimiteur non trouve : copier tout le reste *)
+  EmitLabel('_RXRT_PD_NFND');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', 'BX');
+  EmitInstrAB('LEA', 'DI', '_RX_PARSEBUF');
+  EmitInstrA('CALL', '_RXRT_STRCPY');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DI');
+  (* Position = fin de chaine *)
+  EmitInstrAB('MOV', 'AX', 'SI');
+  EmitInstrAB('SUB', 'AX', 'WORD PTR [_RX_PARSESRC]');
+  EmitInstrAB('MOV', 'WORD PTR [_RX_PARSEPOS]', 'AX');
+  EmitLabel('_RXRT_PD_DONE');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _RX_PARSEBUF');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstrA('POP', 'SI');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXRT_PARSEABS : positionner a une colonne absolue           *)
+  (*  Entree : BX = colonne absolue (1-based)                      *)
+  (*  Copie de la position courante a colonne BX-1 dans PARSEBUF.  *)
+  (*  Si BX > position courante : copie la portion ; sinon vide.   *)
+  (*  Met a jour PARSEPOS = BX-1.                                  *)
+  (*  AX = ptr _RX_PARSEBUF.                                       *)
+  (* ============================================================ *)
+  EmitLabel('_RXRT_PARSEABS');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrAB('LEA', 'DI', '_RX_PARSEBUF');
+  (* Calculer adresse de debut *)
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [_RX_PARSESRC]');
+  EmitInstrAB('ADD', 'SI', 'WORD PTR [_RX_PARSEPOS]');
+  (* Calculer nombre de caracteres a copier *)
+  EmitInstrA('DEC', 'BX');
+  EmitInstrAB('MOV', 'CX', 'BX');
+  EmitInstrAB('SUB', 'CX', 'WORD PTR [_RX_PARSEPOS]');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JLE', '_RXRT_PA_EMP');
+  (* Copier CX caracteres *)
+  EmitLabel('_RXRT_PA_COPY');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [SI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', '_RXRT_PA_END');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JG', '_RXRT_PA_COPY');
+  EmitInstrA('JMP', '_RXRT_PA_END');
+  (* Position en arriere : chaine vide *)
+  EmitLabel('_RXRT_PA_EMP');
+  EmitLabel('_RXRT_PA_END');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('MOV', 'WORD PTR [_RX_PARSEPOS]', 'BX');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _RX_PARSEBUF');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitRaw('        RET');
+  EmitBlankLine;
+End;
 (* puis la directive END avec le point d entree _RXP_Main.         *)
 Procedure EmitClose;
 Begin
@@ -4017,6 +4303,10 @@ Begin
   DataAddBuffer('_RX_INPUTBF', 256);              (* buffer entree DOS AH=0Ah *)
   (* TODO 15 - Buffer fonctions integrees *)
   DataAddBuffer('_RX_BIFBUF', 256);               (* buffer fonctions integrees *)
+  (* TODO 16 - Buffers pour PARSE *)
+  DataAddBuffer('_RX_PARSEBUF', 256);             (* buffer resultat PARSE     *)
+  DataAddWord('_RX_PARSEPOS', 0);                  (* position courante PARSE   *)
+  DataAddWord('_RX_PARSESRC', 0);                  (* pointeur source PARSE     *)
 End;
 
 (* ============================================================
@@ -5675,13 +5965,30 @@ Begin
   End;
 End;
 
-(* ---- ParseParsePullStmt : parser PARSE [UPPER] PULL var ----- *)
-(* Gere aussi PARSE [UPPER] ARG pour les arguments du programme.  *)
-Procedure ParseParsePullStmt;
+(* ---- ParseParseStmt : parser PARSE [UPPER] source template ---- *)
+(* Gere les sources PULL, ARG, VAR, VALUE, SOURCE, VERSION, LINEIN *)
+(* et les templates de decoupage : mots, delimiteur, position.     *)
+Procedure ParseParseStmt;
+Const
+  PT_WORD  = 0;  (* extraction par mots (defaut) *)
+  PT_DELIM = 1;  (* decoupage sur delimiteur     *)
+  PT_ABS   = 2;  (* position absolue             *)
+  PT_REL   = 3;  (* position relative            *)
 Var
-  DoUpper : Boolean;
-  VarName : TString;
-  Idx     : Integer;
+  DoUpper   : Boolean;
+  U         : TString;
+  VarName   : TString;
+  SrcExpr   : TExprVal;
+  SrcLbl    : TString;
+  Idx       : Integer;
+  I         : Integer;
+  VarCount  : Integer;
+  VarNames  : Array[0..MAX_PARSE_VARS - 1] Of TString;
+  TriggType : Array[0..MAX_PARSE_VARS - 1] Of Integer;
+  TriggVal  : Array[0..MAX_PARSE_VARS - 1] Of TString;
+  TriggInt  : Array[0..MAX_PARSE_VARS - 1] Of Integer;
+  CurTrigI  : Integer;
+  DelimLbl  : TString;
 Begin
   EmitComment('PARSE');
   DoUpper := False;
@@ -5694,72 +6001,246 @@ Begin
     ParserAdvance;
   End;
 
-  (* Dispatcher selon le mot-cle suivant *)
-  If (CurToken.Kind = TK_KEYWORD) And
-     (StrUpperCase(CurToken.Val) = 'PULL') Then
+  If (CurToken.Kind <> TK_KEYWORD) And (CurToken.Kind <> TK_IDENT) Then
   Begin
-    ParserAdvance;  (* consommer PULL *)
+    WarnMsg('PARSE : mot-cle source attendu (PULL, ARG, VAR, VALUE, etc.)');
+    While (CurToken.Kind <> TK_EOL) And (CurToken.Kind <> TK_EOF) Do
+      ParserAdvance;
+    Exit;
+  End;
 
-    (* Lire une ligne depuis STDIN *)
+  U := StrUpperCase(CurToken.Val);
+
+  (* ---- PARSE PULL ---- *)
+  If U = 'PULL' Then
+  Begin
+    ParserAdvance;
+    EmitComment('PARSE PULL');
     EmitInstrA('CALL', '_RXRT_INPUT');
-
-    (* Convertir en majuscules si PARSE UPPER PULL *)
+    EmitInstrAB('MOV', 'SI', 'AX');
     If DoUpper Then
-    Begin
-      EmitInstrAB('MOV', 'SI', 'AX');
       EmitInstrA('CALL', '_RXRT_UPPER');
-    End;
-
-    (* Stocker dans la variable *)
-    If CurToken.Kind = TK_IDENT Then
-    Begin
-      VarName := StrUpperCase(CurToken.Val);
-      Idx := VarAlloc(VarName);
-      EmitInstrAB('LEA', 'AX', '_RX_STRBUF');
-      VarStore(Idx);
-      ParserAdvance;
-
-      While (CurToken.Kind = TK_IDENT) Do
-      Begin
-        VarName := StrUpperCase(CurToken.Val);
-        Idx := VarAlloc(VarName);
-        EmitInstrAB('MOV', 'AX', 'OFFSET _RX_NULL_STR');
-        VarStore(Idx);
-        ParserAdvance;
-      End;
-    End;
+    EmitInstrA('CALL', '_RXRT_PARSEINIT');
   End
-  Else If (CurToken.Kind = TK_KEYWORD) And
-          (StrUpperCase(CurToken.Val) = 'ARG') Then
+  (* ---- PARSE LINEIN ---- *)
+  Else If U = 'LINEIN' Then
   Begin
-    ParserAdvance;  (* consommer ARG *)
-    EmitComment('PARSE ARG (stub - arguments non disponibles en DOS .COM)');
-
-    (* Stocker chaine vide dans la variable (simplifie) *)
-    If CurToken.Kind = TK_IDENT Then
+    ParserAdvance;
+    EmitComment('PARSE LINEIN');
+    EmitInstrA('CALL', '_RXRT_INPUT');
+    EmitInstrAB('MOV', 'SI', 'AX');
+    If DoUpper Then
+      EmitInstrA('CALL', '_RXRT_UPPER');
+    EmitInstrA('CALL', '_RXRT_PARSEINIT');
+  End
+  (* ---- PARSE ARG ---- *)
+  Else If U = 'ARG' Then
+  Begin
+    ParserAdvance;
+    EmitComment('PARSE ARG');
+    (* En DOS .COM les arguments ne sont pas accessibles facilement *)
+    (* On utilise une chaine vide par defaut *)
+    EmitInstrAB('MOV', 'SI', 'OFFSET _RX_NULL_STR');
+    If DoUpper Then
+      EmitInstrA('CALL', '_RXRT_UPPER');
+    EmitInstrA('CALL', '_RXRT_PARSEINIT');
+  End
+  (* ---- PARSE VAR nom ---- *)
+  Else If U = 'VAR' Then
+  Begin
+    ParserAdvance;
+    If CurToken.Kind <> TK_IDENT Then
     Begin
-      VarName := StrUpperCase(CurToken.Val);
-      Idx := VarAlloc(VarName);
-      EmitInstrAB('MOV', 'AX', 'OFFSET _RX_NULL_STR');
-      VarStore(Idx);
-      ParserAdvance;
-
-      While (CurToken.Kind = TK_IDENT) Do
-      Begin
-        VarName := StrUpperCase(CurToken.Val);
-        Idx := VarAlloc(VarName);
-        EmitInstrAB('MOV', 'AX', 'OFFSET _RX_NULL_STR');
-        VarStore(Idx);
+      CompileError('PARSE VAR : nom de variable attendu');
+      While (CurToken.Kind <> TK_EOL) And (CurToken.Kind <> TK_EOF) Do
         ParserAdvance;
-      End;
+      Exit;
     End;
+    VarName := StrUpperCase(CurToken.Val);
+    ParserAdvance;
+    EmitComment('PARSE VAR ' + VarName);
+    Idx := VarAlloc(VarName);
+    VarLoad(Idx);
+    EmitInstrAB('MOV', 'SI', 'AX');
+    If DoUpper Then
+      EmitInstrA('CALL', '_RXRT_UPPER');
+    EmitInstrA('CALL', '_RXRT_PARSEINIT');
+  End
+  (* ---- PARSE VALUE expr WITH ---- *)
+  Else If U = 'VALUE' Then
+  Begin
+    ParserAdvance;
+    EmitComment('PARSE VALUE ... WITH');
+    ParseExpr(SrcExpr);
+    ExprFlushToAX(SrcExpr);
+    EmitInstrAB('MOV', 'SI', 'AX');
+    If DoUpper Then
+      EmitInstrA('CALL', '_RXRT_UPPER');
+    EmitInstrA('CALL', '_RXRT_PARSEINIT');
+    (* Consommer WITH si present *)
+    If (CurToken.Kind = TK_KEYWORD) And
+       (StrUpperCase(CurToken.Val) = 'WITH') Then
+      ParserAdvance;
+  End
+  (* ---- PARSE SOURCE ---- *)
+  Else If U = 'SOURCE' Then
+  Begin
+    ParserAdvance;
+    EmitComment('PARSE SOURCE');
+    SrcLbl := DataAddStr('DOS COMMAND REXX86');
+    EmitInstrAB('MOV', 'SI', 'OFFSET ' + SrcLbl);
+    EmitInstrA('CALL', '_RXRT_PARSEINIT');
+  End
+  (* ---- PARSE VERSION ---- *)
+  Else If U = 'VERSION' Then
+  Begin
+    ParserAdvance;
+    EmitComment('PARSE VERSION');
+    SrcLbl := DataAddStr('REXX86 1.0');
+    EmitInstrAB('MOV', 'SI', 'OFFSET ' + SrcLbl);
+    EmitInstrA('CALL', '_RXRT_PARSEINIT');
   End
   Else
   Begin
-    WarnMsg('PARSE : mot-cle PULL ou ARG attendu');
-    (* Sauter jusqu a la fin de la ligne *)
+    WarnMsg('PARSE ' + U + ' : source non reconnue');
+    ParserAdvance;
     While (CurToken.Kind <> TK_EOL) And (CurToken.Kind <> TK_EOF) Do
       ParserAdvance;
+    Exit;
+  End;
+
+  (* ---- Parser le template ---- *)
+  (* Le template est une sequence de :                              *)
+  (*   identifiant (variable cible) ou '.' (throwaway)             *)
+  (*   chaine litterale (delimiteur entre variables)                *)
+  (*   nombre (position absolue entre variables)                    *)
+  (*   +nombre ou -nombre (position relative entre variables)       *)
+  (* Un trigger (delimiteur/position) entre deux variables indique  *)
+  (* comment extraire la portion : il est stocke comme FollowTrig  *)
+  (* de la variable qui le precede.                                 *)
+  VarCount := 0;
+  For I := 0 To MAX_PARSE_VARS - 1 Do
+  Begin
+    VarNames[I]  := '';
+    TriggType[I] := PT_WORD;
+    TriggVal[I]  := '';
+    TriggInt[I]  := 0;
+  End;
+
+  While (CurToken.Kind <> TK_EOL) And (CurToken.Kind <> TK_EOF) And
+        (VarCount < MAX_PARSE_VARS) Do
+  Begin
+    (* Variable cible ou '.' *)
+    If (CurToken.Kind = TK_IDENT) Or
+       ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.')) Then
+    Begin
+      If CurToken.Val = '.' Then
+        VarNames[VarCount] := '.'
+      Else
+        VarNames[VarCount] := StrUpperCase(CurToken.Val);
+      TriggType[VarCount] := PT_WORD;  (* defaut : extraction par mot *)
+      TriggVal[VarCount]  := '';
+      TriggInt[VarCount]  := 0;
+      Inc(VarCount);
+      ParserAdvance;
+    End
+    (* Delimiteur litteral : chaine entre quotes *)
+    (* Stocke comme FollowTrig de la variable precedente *)
+    Else If CurToken.Kind = TK_STRING Then
+    Begin
+      If VarCount > 0 Then
+      Begin
+        TriggType[VarCount - 1] := PT_DELIM;
+        TriggVal[VarCount - 1]  := CurToken.Val;
+      End;
+      ParserAdvance;
+    End
+    (* Position absolue : nombre *)
+    Else If CurToken.Kind = TK_NUMBER Then
+    Begin
+      If VarCount > 0 Then
+      Begin
+        TriggType[VarCount - 1] := PT_ABS;
+        TriggInt[VarCount - 1]  := CurToken.IntVal;
+      End;
+      ParserAdvance;
+    End
+    (* Position relative : +nombre ou -nombre *)
+    Else If (CurToken.Kind = TK_OP) And
+            ((CurToken.Val = '+') Or (CurToken.Val = '-')) Then
+    Begin
+      CurTrigI := 1;
+      If CurToken.Val = '-' Then
+        CurTrigI := -1;
+      ParserAdvance;
+      If CurToken.Kind = TK_NUMBER Then
+      Begin
+        CurTrigI := CurTrigI * CurToken.IntVal;
+        ParserAdvance;
+      End;
+      If VarCount > 0 Then
+      Begin
+        TriggType[VarCount - 1] := PT_REL;
+        TriggInt[VarCount - 1]  := CurTrigI;
+      End;
+    End
+    Else
+    Begin
+      (* Token inattendu dans le template : on arrete *)
+      Break;
+    End;
+  End;
+
+  (* ---- Emettre le code de decoupage ---- *)
+  If VarCount = 0 Then
+  Begin
+    (* Pas de variables : rien a faire *)
+    Exit;
+  End;
+
+  For I := 0 To VarCount - 1 Do
+  Begin
+    If I = VarCount - 1 Then
+    Begin
+      (* Derniere variable : prendre le reste de la chaine *)
+      EmitInstrA('CALL', '_RXRT_PARSEREST');
+    End
+    Else
+    Begin
+      (* Variable intermediaire : methode selon FollowTrig *)
+      If TriggType[I] = PT_DELIM Then
+      Begin
+        (* Extraire tout jusqu au delimiteur *)
+        DelimLbl := DataAddStr(TriggVal[I]);
+        EmitInstrAB('MOV', 'DI', 'OFFSET ' + DelimLbl);
+        EmitInstrA('CALL', '_RXRT_PARSEDELIM');
+      End
+      Else If TriggType[I] = PT_ABS Then
+      Begin
+        (* Extraire jusqu a la position absolue *)
+        EmitInstrAB('MOV', 'BX', IntToStr(TriggInt[I]));
+        EmitInstrA('CALL', '_RXRT_PARSEABS');
+      End
+      Else If TriggType[I] = PT_REL Then
+      Begin
+        (* Extraire puis avancer de la position relative *)
+        EmitInstrA('CALL', '_RXRT_PARSEWORD');
+        EmitInstrAB('MOV', 'AX', 'WORD PTR [_RX_PARSEPOS]');
+        EmitInstrAB('ADD', 'AX', IntToStr(TriggInt[I]));
+        EmitInstrAB('MOV', 'WORD PTR [_RX_PARSEPOS]', 'AX');
+        EmitInstrAB('MOV', 'AX', 'OFFSET _RX_PARSEBUF');
+      End
+      Else
+        (* Extraction par mot (defaut) *)
+        EmitInstrA('CALL', '_RXRT_PARSEWORD');
+    End;
+
+    (* Stocker le resultat (AX = ptr vers _RX_PARSEBUF) *)
+    If VarNames[I] <> '.' Then
+    Begin
+      Idx := VarAlloc(VarNames[I]);
+      VarStore(Idx);
+    End;
   End;
 End;
 
@@ -6549,11 +7030,11 @@ Begin
       Exit;
     End;
 
-    (* PARSE [UPPER] PULL|ARG var *)
+    (* PARSE [UPPER] PULL|ARG|VAR|VALUE|SOURCE|VERSION|LINEIN *)
     If U = 'PARSE' Then
     Begin
       ParserAdvance;
-      ParseParsePullStmt;
+      ParseParseStmt;
       Exit;
     End;
 
