@@ -3966,12 +3966,20 @@ Begin
     If CurTokType = TOK_DOT Then Consume
     Else LexError('Point attendu apres DO n TIMES');
 
+    { Initialiser SY-INDEX a 0 (sera incremente au debut du corps) }
+    EmitI('MOV     DWORD PTR [_SY_INDEX], 0');
+
     EmitLabel(LblTop);
     EmitI('TEST    ECX, ECX');
     EmitI('JZ      ' + LblEnd);
 
     { Sauvegarder ECX avant le corps }
     EmitI('PUSH    ECX');
+
+    { Incrementer SY-INDEX }
+    EmitI('MOV     EAX, DWORD PTR [_SY_INDEX]');
+    EmitI('INC     EAX');
+    EmitI('MOV     DWORD PTR [_SY_INDEX], EAX');
 
     { Corps }
     EnterScope(SK_LOOP, 0);
@@ -3991,7 +3999,15 @@ Begin
     If CurTokType = TOK_DOT Then Consume
     Else LexError('Point attendu apres DO');
 
+    { Initialiser SY-INDEX a 0 }
+    EmitI('MOV     DWORD PTR [_SY_INDEX], 0');
+
     EmitLabel(LblTop);
+
+    { Incrementer SY-INDEX }
+    EmitI('MOV     EAX, DWORD PTR [_SY_INDEX]');
+    EmitI('INC     EAX');
+    EmitI('MOV     DWORD PTR [_SY_INDEX], EAX');
 
     EnterScope(SK_LOOP, 0);
     SetExitLabel(LblEnd);
@@ -6645,11 +6661,8 @@ Begin
   EmitI('POP     EBX');
   EmitI('RET');
 
-  { ---- Donnees chaines (TODO 17) ------------------------------- }
-  EmitBlank;
-  EmitComment('--- Donnees chaines (TODO 17) ---');
-  Emit(AB_RT_PFX + 'STRBUF    DB 512 DUP(0)');
-  Emit(AB_RT_PFX + 'CATBUF    DB 512 DUP(0)');
+  { NOTE: Les donnees STRBUF et CATBUF sont emises dans _DATA     }
+  { par EmitDataSeg. Ne PAS les emettre ici dans _TEXT.           }
 End;
 
 { ---- EmitWriteOneItem : emet le code pour un item WRITE ------ }
@@ -6844,19 +6857,13 @@ Begin
   EmitI('CALL    ' + AB_RT_PFX + 'PRINT');
   EmitI('RET');
 
-  { ---- Donnees runtime pour WRITE ----------------------------- }
-  EmitBlank;
-  EmitComment('--- Donnees runtime WRITE (TODO 14) ---');
-  Emit(AB_RT_PFX + 'HSTDOUT   DD 0');
-  Emit(AB_RT_PFX + 'WRITTEN   DD 0');
-  Emit(AB_RT_PFX + 'NUMBUF    DB 12 DUP(0)');
-  Emit(AB_RT_PFX + 'CRLF_DATA DB 13, 10, 0');
-  Emit(AB_RT_PFX + 'SPACE_DATA DB 32, 0');
+  { NOTE: Les donnees runtime (HSTDOUT, WRITTEN, NUMBUF, CRLF_DATA, }
+  { SPACE_DATA, STRBUF, CATBUF, tables) sont emises dans la section }
+  { _DATA par EmitDataSeg. Ne PAS les emettre ici dans _TEXT car    }
+  { cela creerait des doublons avec InCode=True et provoquerait des }
+  { ecritures dans la section code (lecture seule) -> crash.        }
 
-  { ---- Donnees tables internes (TODO 16) ----------------------- }
-  EmitTableRuntime;
-
-  { ---- Runtime et donnees chaines (TODO 17) -------------------- }
+  { ---- Runtime chaines (TODO 17) - code seulement --------------- }
   EmitStringRuntime;
 End;
 
@@ -7825,28 +7832,51 @@ Begin
   { ---- MOV ---- }
   If Mnem = 'MOV' Then
   Begin
-    { MOV DWORD PTR [mem], reg32 }
+    { MOV DWORD PTR [mem], reg32 or imm32 }
     If AsmStartsWith(Op1, 'DWORD PTR [') Then
     Begin
       Bracket := AsmExtractBracket(Op1);
       R2 := AsmRegIdx32(Op2);
-      If AsmIsRegBased(Bracket) Then
-      Begin { Register-based addressing: use 89 + ModRM/SIB }
-        BinEmitByte($89);
-        AsmEncodeMemory(Bracket, R2);
-      End
-      Else If R2 = 0 Then
-      Begin { Direct memory with EAX: use A3 short form }
-        BinEmitByte($A3);
-        BinAddFixup(BinCodeLen, BFK_ABS32, Bracket, True);
-        BinEmitDWord(0);
+      If R2 >= 0 Then
+      Begin
+        { MOV DWORD PTR [mem], reg32 }
+        If AsmIsRegBased(Bracket) Then
+        Begin { Register-based addressing: use 89 + ModRM/SIB }
+          BinEmitByte($89);
+          AsmEncodeMemory(Bracket, R2);
+        End
+        Else If R2 = 0 Then
+        Begin { Direct memory with EAX: use A3 short form }
+          BinEmitByte($A3);
+          BinAddFixup(BinCodeLen, BFK_ABS32, Bracket, True);
+          BinEmitDWord(0);
+        End
+        Else
+        Begin
+          BinEmitByte($89);
+          BinEmitByte((0 Shl 6) Or (R2 Shl 3) Or 5);
+          BinAddFixup(BinCodeLen, BFK_ABS32, Bracket, True);
+          BinEmitDWord(0);
+        End;
       End
       Else
       Begin
-        BinEmitByte($89);
-        BinEmitByte((0 Shl 6) Or (R2 Shl 3) Or 5);
-        BinAddFixup(BinCodeLen, BFK_ABS32, Bracket, True);
-        BinEmitDWord(0);
+        { MOV DWORD PTR [mem], imm32 : opcode C7 /0 }
+        Imm := AsmParseImm(Op2);
+        If AsmIsRegBased(Bracket) Then
+        Begin
+          BinEmitByte($C7);
+          AsmEncodeMemory(Bracket, 0); { /0 = reg field 0 }
+          BinEmitDWord(Imm);
+        End
+        Else
+        Begin
+          BinEmitByte($C7);
+          BinEmitByte($05); { mod=00, reg=0 (/0), r/m=5 (disp32) }
+          BinAddFixup(BinCodeLen, BFK_ABS32, Bracket, True);
+          BinEmitDWord(0);
+          BinEmitDWord(Imm);
+        End;
       End;
       Exit;
     End;
@@ -8205,7 +8235,16 @@ Begin
     Exit;
   End;
 
-  { ---- IMUL reg, reg, imm ---- }
+  { ---- IDIV ---- }
+  If Mnem = 'IDIV' Then
+  Begin
+    R1 := AsmRegIdx32(Op1);
+    If R1 >= 0 Then
+    Begin BinEmitByte($F7); BinEmitByte($F8 Or R1); End;
+    Exit;
+  End;
+
+  { ---- IMUL ---- }
   If Mnem = 'IMUL' Then
   Begin
     R1 := AsmRegIdx32(Op1);
@@ -8214,6 +8253,7 @@ Begin
       If Op2[I] = ',' Then Begin CommaPos := I; Break; End;
     If CommaPos > 0 Then
     Begin
+      { IMUL reg, reg, imm (3-operand form) }
       Op3 := Copy(Op2, CommaPos + 1, Length(Op2) - CommaPos);
       Op2 := Copy(Op2, 1, CommaPos - 1);
       While (Length(Op2) > 0) And (Op2[Length(Op2)] = ' ') Do
@@ -8234,6 +8274,14 @@ Begin
         BinEmitByte((3 Shl 6) Or (R1 Shl 3) Or R2);
         BinEmitDWord(Imm);
       End;
+    End
+    Else If Length(Op2) > 0 Then
+    Begin
+      { IMUL reg, reg (2-operand form) : 0F AF /r }
+      R2 := AsmRegIdx32(Op2);
+      BinEmitByte($0F);
+      BinEmitByte($AF);
+      BinEmitByte((3 Shl 6) Or (R1 Shl 3) Or R2);
     End;
     Exit;
   End;
