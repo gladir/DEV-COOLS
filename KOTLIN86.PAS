@@ -3310,14 +3310,16 @@ Begin
            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
         Begin
           EmitComment('?.let ...');
-          EmitInstrA('PUSH', 'AX'); (* sauver valeur non-null *)
+          EmitInstrA('PUSH', 'AX'); (* sauver valeur non-null (1 mot = 2 octets) *)
           ParserAdvance; (* consomme accolade ouvrante *)
           While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}'))
                 And Not (CurToken.Kind = TK_EOF) Do
             ParseStmt;
           If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
-          ParserAdvance; (* consomme accolade fermante *)
-          EmitInstrAB('ADD', 'SP', '2'); (* depiler valeur *)
+            ParserAdvance (* consomme accolade fermante *)
+          Else
+            CompileError('accolade fermante "}" attendue pour bloc let');
+          EmitInstrAB('ADD', 'SP', '2'); (* depiler le mot empile par PUSH AX *)
         End
         (* Appel methode safe : expr?.membre(args) *)
         Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
@@ -5748,7 +5750,7 @@ Begin
   EmitInstr('CALL _KTRT_PRINTSTR');
   EmitInstr('CALL _KTRT_NEWLINE');
   EmitInstrA('POP', 'SI');
-  EmitInstrAB('MOV', 'AX', '4C01h');
+  EmitInstrAB('MOV', 'AX', '4C01h'); { DOS Terminate, exit code 1 }
   EmitInstr('INT 21h');
   EmitInstr('RET');
 
