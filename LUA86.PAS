@@ -3096,9 +3096,11 @@ Begin
     End;
     TK_IDENT :
     Begin
+      { Resoudre la variable dans SymTab }
       VName := CurToken.Val;
       SIdx := SymFind(VName);
       If SIdx < 0 Then
+        { Variable non declaree : creer implicitement comme globale }
         SIdx := EnsureGlobalVar(VName);
       Res.Kind    := EK_MEM;
       Res.ImmVal  := 0;
