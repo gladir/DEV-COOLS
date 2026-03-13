@@ -112,6 +112,7 @@
     Section 14 : Conversion de code 68000 en 80386
     Section 15 : Conversion de code PowerPC en 80386
     Section 16 : Conversion de code Z8000 en 80386
+    Section 17 : Conversion de code i860 en 80386
 
 ==============================================================================
 2. ARCHITECTURE ET REGISTRES
@@ -10340,6 +10341,902 @@
     les appels systeme se font via INT (DOS, Linux) ou CALL vers des
     DLL (Win32). La conversion des appels systeme est specifique a
     chaque combinaison OS source/OS cible.
+
+==============================================================================
+17. CONVERSION DE CODE i860 EN 80386
+==============================================================================
+
+  Cette section explique comment convertir du code assembleur Intel i860
+  (aussi appele 80860, architecture RISC 32/64 bits, commercialisee en
+  1989 par Intel) en code assembleur Intel 80386. Bien que les deux
+  processeurs soient des produits Intel, leurs architectures sont
+  radicalement differentes : le i860 est un processeur RISC avec
+  execution pipelinee, double operation (entier + flottant en parallele),
+  et un modele Load/Store, tandis que le 80386 est un processeur CISC
+  avec des instructions de taille variable et des acces memoire directs.
+
+------------------------------------------------------------------------------
+17.1 Principes generaux (i860 vs 80386)
+------------------------------------------------------------------------------
+
+  Le i860 est une architecture RISC (Reduced Instruction Set Computer) :
+  - Instructions de taille fixe (32 bits, 4 octets)
+  - Architecture Load/Store : seuls ld/st et variantes accedent memoire
+  - 32 registres entiers 32 bits (r0-r31, r0 cable a 0)
+  - 32 registres flottants simple precision (f0-f31)
+  - Les registres flottants peuvent etre combines par paires pour
+    former 16 registres double precision (f0:f1, f2:f3, ...)
+  - Mode dual-instruction : une instruction entiere et une instruction
+    flottante peuvent etre emises simultanement (suffixe d.)
+  - Mode pipeline : les operations flottantes s'executent dans un
+    pipeline a plusieurs etages (mode scalaire ou pipeline)
+  - Branchements avec delai (branch delay slot)
+  - Cache de donnees gere par logiciel (pas de coherence automatique)
+  - Supporte big-endian et little-endian
+  - Pas de pile materielle dediee (r2 utilise par convention comme SP)
+  - Pas de registre d'indicateurs generaux (les conditions sont
+    calculees dans des registres)
+
+  Le 80386 est une architecture CISC (Complex Instruction Set Computer) :
+  - Instructions de taille variable (1 a 15 octets)
+  - Operations directement sur la memoire (MOV [mem], reg / ADD [mem], imm)
+  - 8 registres generaux 32 bits (EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP)
+  - Registre EFLAGS unique pour toutes les conditions
+  - Pile materielle dediee avec ESP et PUSH/POP
+  - Modes d'adressage complexes (base+index*scale+displacement)
+  - Instructions specialisees (LOOP, REP MOVS, ENTER/LEAVE, MUL/DIV...)
+  - Architecture little-endian
+  - Pas de branchement avec delai (branch delay slot)
+  - Pas de mode dual-instruction
+  - Coprocesseur flottant 80387 separe (pile FPU x87)
+
+  Regles de base pour la conversion :
+  (a) Mapper les 32 registres entiers du i860 vers les 8 registres x86
+      + variables en memoire
+  (b) Remplacer l'architecture Load/Store par des acces memoire directs
+  (c) Eliminer les branch delay slots (l'instruction dans le slot doit
+      etre deplacee avant le branchement)
+  (d) Convertir les operations flottantes en instructions x87 (FPU)
+  (e) Supprimer les instructions dual-mode (d.) et les sequentialiser
+  (f) Gerer la difference de pipeline flottant (mode pipeline i860
+      vs pile FPU x87)
+  (g) Adapter les conventions d'appel (i860 ABI -> CDECL ou STDCALL)
+
+------------------------------------------------------------------------------
+17.2 Correspondance des registres
+------------------------------------------------------------------------------
+
+  Le i860 possede 32 registres entiers de 32 bits. Le 80386 n'en a que 8.
+  Il faut donc utiliser des variables memoire pour les registres
+  excedentaires.
+
+  Correspondance suggeree (registres entiers) :
+
+    i860        80386         Commentaire
+    -------     --------      ------------------------------------
+    r0          (aucun)       cable a 0, lire = 0, ecriture ignoree
+    r1          [_i860_r1]    lien de retour (adresse retour d'appel)
+    r2          ESP           pointeur de pile (convention ABI i860)
+    r3          EBP           pointeur de cadre (frame pointer)
+    r4          EAX           valeur de retour
+    r5          EDX           2e valeur de retour / registre scratch
+    r6          ECX           registre scratch
+    r7          EBX           registre scratch
+    r8-r15      (memoire)     registres scratch -> _i860_r8.._i860_r15
+    r16         ESI           registre preserve
+    r17         EDI           registre preserve
+    r18-r31     (memoire)     registres preserves -> _i860_r18.._i860_r31
+
+  Declaration des variables memoire pour les registres excedentaires :
+
+    _i860_r1    DD 0    ; lien de retour
+    _i860_r8    DD 0
+    _i860_r9    DD 0
+    ...
+    _i860_r15   DD 0
+    _i860_r18   DD 0
+    ...
+    _i860_r31   DD 0
+
+  Correspondance des registres flottants :
+
+    Le i860 possede 32 registres flottants (f0-f31). f0 et f1 sont
+    speciaux (f0 = 0.0, f1 = 1.0). Le 80386 utilise le coprocesseur
+    x87 avec une pile de 8 registres (ST(0)-ST(7)).
+
+    Il n'y a pas de correspondance directe. Les valeurs flottantes
+    doivent etre stockees en memoire et chargees sur la pile FPU
+    au besoin :
+
+    _i860_f2    DD 0.0    ; registres flottants simple precision
+    _i860_f3    DD 0.0
+    ...
+    _i860_f31   DD 0.0
+
+  Note sur r0 : en i860, r0 est cable a 0. Toute lecture retourne 0,
+  toute ecriture est ignoree. Il n'y a pas d'equivalent x86. Lors de
+  la conversion, remplacer les references a r0 par la valeur immediate 0.
+
+  Note sur r1 : en i860, r1 contient l'adresse de retour apres un CALL.
+  En x86, l'adresse de retour est empilee automatiquement par CALL et
+  recuperee par RET. Sauvegarder r1 en memoire si necessaire.
+
+------------------------------------------------------------------------------
+17.3 Conversion des drapeaux et conditions
+------------------------------------------------------------------------------
+
+  Le i860 n'a PAS de registre d'indicateurs (flags) global comme
+  EFLAGS du 80386. Les comparaisons produisent un resultat dans un
+  registre de destination ou positionnent des bits de condition
+  internes (CC = condition code, 1 bit).
+
+  Le bit CC est positionne par les instructions de comparaison entiere
+  (les instructions pfXXX pour les flottants ont leur propre mecanisme).
+
+  Conversion des mecanismes de condition :
+
+    i860                                 80386
+    -----------------------------------  ----------------------------------
+    CC (condition code, 1 bit)           EFLAGS (ZF, SF, CF, OF, PF)
+
+  En pratique, les comparaisons i860 sont souvent converties en une
+  paire CMP + Jcc en x86. Par exemple :
+
+    ; i860 : comparaison et branchement
+    ixfr    r4, f8           ; comparer (via transfert et test)
+    bc      label            ; branchement si CC = 1
+
+    ; Equivalent 80386 :
+    CMP     EDX, 0           ; ou l'operation de comparaison appropriee
+    JNZ     label            ; branchement si condition vraie
+
+  Pour les conditions flottantes, les instructions pfeq, pfgt, pfle
+  du i860 positionnent CC. En x87, il faut utiliser FCOM/FCOMP suivi
+  de FSTSW AX et SAHF pour transferer les indicateurs FPU vers EFLAGS.
+
+------------------------------------------------------------------------------
+17.4 Conversion des instructions de transfert de donnees
+------------------------------------------------------------------------------
+
+  Le i860 utilise le modele Load/Store pur. Les instructions de
+  transfert memoire ont la forme : ld.x src(base), dest (chargement)
+  et st.x source, offset(base) (ecriture).
+
+  (a) Chargement depuis la memoire (Load)
+
+    i860                                 80386
+    -----------------------------------  ----------------------------------
+    ld.l    0(r16), r4                   MOV EAX, [ESI]
+    ld.l    8(r16), r4                   MOV EAX, [ESI+8]
+    ld.l    offset(r2), r4              MOV EAX, [ESP+offset]
+    ld.b    0(r16), r4                   MOVZX EAX, BYTE PTR [ESI]
+    ld.s    0(r16), r4                   MOVZX EAX, WORD PTR [ESI]
+    ld.l    r5(r16), r4                  MOV EAX, [ESI+EDX]
+
+    ld.b = Load Byte (8 bits, extension zero)
+    ld.s = Load Short (16 bits, extension zero)
+    ld.l = Load Long (32 bits)
+
+  (b) Ecriture en memoire (Store)
+
+    i860                                 80386
+    -----------------------------------  ----------------------------------
+    st.l    r4, 0(r16)                   MOV [ESI], EAX
+    st.l    r4, 8(r16)                   MOV [ESI+8], EAX
+    st.l    r4, offset(r2)              MOV [ESP+offset], EAX
+    st.b    r4, 0(r16)                   MOV BYTE PTR [ESI], AL
+    st.s    r4, 0(r16)                   MOV WORD PTR [ESI], AX
+    st.l    r4, r5(r16)                  MOV [ESI+EDX], EAX
+
+  (c) Chargement de registres flottants
+
+    i860                                 80386
+    -----------------------------------  ----------------------------------
+    fld.l   0(r16), f2                   FLD DWORD PTR [ESI]
+    fld.d   0(r16), f2                   FLD QWORD PTR [ESI]
+    fld.l   offset(r2), f4              FLD DWORD PTR [ESP+offset]
+
+    fld.l = Load Float single precision (32 bits)
+    fld.d = Load Float double precision (64 bits)
+
+  (d) Ecriture de registres flottants
+
+    i860                                 80386
+    -----------------------------------  ----------------------------------
+    fst.l   f2, 0(r16)                  FST DWORD PTR [ESI]
+    fst.d   f2, 0(r16)                  FST QWORD PTR [ESI]
+
+  (e) Transfert registre a registre
+
+    i860                                 80386
+    -----------------------------------  ----------------------------------
+    mov     r4, r5       (alias or)      MOV EDX, EAX
+    or      r0, r4, r5  (copie via OR)   MOV EDX, EAX
+
+    Note : le i860 n'a pas d'instruction MOV dediee pour les registres
+    entiers. La copie se fait via OR avec r0 (r0 = 0) :
+      or r0, rSrc, rDst  signifie  rDst = 0 | rSrc = rSrc
+
+  (f) Chargement d'immediat
+
+    Le i860 charge les immediats sur 16 bits. Pour une valeur 32 bits,
+    deux instructions sont necessaires (partie haute + partie basse).
+
+    i860                                 80386
+    -----------------------------------  ----------------------------------
+    or      r0, 42, r4                   MOV EAX, 42
+    orh     ha%addr, r0, r4             MOV EAX, addr
+    or      l%addr, r4, r4              (une seule instruction x86)
+
+    orh = OR High (charge les 16 bits hauts)
+    Pour charger une adresse complete 32 bits en i860 :
+      orh   ha%label, r0, r4     ; partie haute
+      or    l%label, r4, r4      ; partie basse
+    En x86, une seule instruction suffit :
+      MOV   EAX, OFFSET label
+
+  (g) Transfert entre registres entiers et flottants
+
+    i860                                 80386
+    -----------------------------------  ----------------------------------
+    ixfr    r4, f2                       MOV [_tmp], EAX
+                                         FLD DWORD PTR [_tmp]
+    fxfr    f2, r4                       FST DWORD PTR [_tmp]
+                                         MOV EAX, [_tmp]
+
+    Le i860 peut transferer directement entre registres entiers et
+    flottants. En x86, il faut passer par la memoire.
+
+------------------------------------------------------------------------------
+17.5 Conversion des instructions arithmetiques
+------------------------------------------------------------------------------
+
+  Le i860 utilise des operations a 3 operandes (RISC classique) :
+    op src1, src2, dest    (dest = src1 op src2)
+
+  Le 80386 utilise des operations a 2 operandes :
+    op dest, source        (dest = dest op source)
+
+  (a) Instructions arithmetiques entieres
+
+    i860                                 80386
+    -----------------------------------  ----------------------------------
+    adds    r4, r5, r6                   MOV EBX, EAX
+                                         ADD EBX, EDX
+    adds    42, r4, r5                   MOV EDX, EAX
+                                         ADD EDX, 42
+    addu    r4, r5, r6                   MOV EBX, EAX
+                                         ADD EBX, EDX
+    subs    r4, r5, r6                   MOV EBX, EDX
+                                         SUB EBX, EAX
+    subu    r4, r5, r6                   MOV EBX, EDX
+                                         SUB EBX, EAX
+
+    Note : adds = Add Signed, addu = Add Unsigned, subs = Subtract Signed,
+    subu = Subtract Unsigned. Sur le 80386, ADD et SUB fonctionnent de
+    la meme maniere pour les valeurs signees et non signees (les
+    drapeaux CF et OF indiquent les depassements).
+
+    Attention a l'ordre des operandes : en i860, subs src1, src2, dest
+    signifie dest = src2 - src1. En x86, SUB dest, src signifie
+    dest = dest - src.
+
+  (b) Multiplication entiere
+
+    Le i860 n'a PAS d'instruction de multiplication entiere materielle.
+    La multiplication entiere doit etre realisee par logiciel ou en
+    utilisant le multiplicateur flottant. Le 80386 a IMUL :
+
+    i860 (emulation logicielle)          80386
+    -----------------------------------  ----------------------------------
+    (routine de multiplication)          IMUL EAX, EDX
+
+  (c) Instructions arithmetiques flottantes
+
+    i860                                 80386 (x87)
+    -----------------------------------  ----------------------------------
+    fadd.ss  f2, f4, f6                  FLD [_i860_f2]
+                                         FADD [_i860_f4]
+                                         FSTP [_i860_f6]
+    fadd.dd  f2, f4, f6                  FLD QWORD PTR [_i860_f2]
+                                         FADD QWORD PTR [_i860_f4]
+                                         FSTP QWORD PTR [_i860_f6]
+    fsub.ss  f2, f4, f6                  FLD [_i860_f2]
+                                         FSUB [_i860_f4]
+                                         FSTP [_i860_f6]
+    fmul.ss  f2, f4, f6                  FLD [_i860_f2]
+                                         FMUL [_i860_f4]
+                                         FSTP [_i860_f6]
+    frcp.ss  f2, f4                      FLD1
+                                         FDIV [_i860_f2]
+                                         FSTP [_i860_f4]
+
+    fadd.ss = Float Add Single-Single
+    fadd.dd = Float Add Double-Double
+    frcp.ss = Float Reciprocal (1/x)
+
+  (d) Mode pipeline flottant
+
+    Le i860 possede un mode pipeline pour les operations flottantes
+    (prefixe p : pfadd, pfmul, etc.) ou les resultats sortent avec
+    un delai de plusieurs cycles. Les resultats intermediaires sont
+    dans des registres de pipeline internes (KR, KI, T).
+
+    En x86, il n'y a pas de mode pipeline explicite. Les operations
+    pipelinees du i860 doivent etre sequentialisees :
+
+    ; i860 mode pipeline
+    pfadd.ss  f2, f4, f6     ; lance l'addition dans le pipeline
+    pfmul.ss  f8, f10, f12   ; lance la multiplication en parallele
+    ; ... plusieurs instructions plus tard ...
+    ; les resultats sont disponibles dans f6 et f12
+
+    ; Equivalent 80386 (sequentiel) :
+    FLD  [_i860_f2]
+    FADD [_i860_f4]
+    FSTP [_i860_f6]
+    FLD  [_i860_f8]
+    FMUL [_i860_f10]
+    FSTP [_i860_f12]
+
+------------------------------------------------------------------------------
+17.6 Conversion des instructions logiques
+------------------------------------------------------------------------------
+
+    i860                                 80386
+    -----------------------------------  ----------------------------------
+    and     r4, r5, r6                   MOV EBX, EAX
+                                         AND EBX, EDX
+    and     0FFh, r4, r5                 MOV EDX, EAX
+                                         AND EDX, 0FFh
+    andnot  r4, r5, r6                   MOV EBX, EDX
+                                         NOT EAX
+                                         AND EBX, EAX
+    or      r4, r5, r6                   MOV EBX, EAX
+                                         OR  EBX, EDX
+    or      42, r4, r5                   MOV EDX, EAX
+                                         OR  EDX, 42
+    xor     r4, r5, r6                   MOV EBX, EAX
+                                         XOR EBX, EDX
+    andh    imm16, r4, r5                MOV EDX, EAX
+                                         AND EDX, imm16 SHL 16
+    orh     imm16, r0, r4               MOV EAX, imm16 SHL 16
+
+    Note : andnot src1, src2, dest = dest AND (NOT src1). C'est une
+    instruction AND-NOT (bit clear). En x86, il faut d'abord inverser
+    puis faire AND.
+
+    orh (OR High) met les 16 bits hauts. Souvent utilise avec or pour
+    charger une constante 32 bits complete.
+
+------------------------------------------------------------------------------
+17.7 Conversion des instructions de decalage et rotation
+------------------------------------------------------------------------------
+
+    i860                                 80386
+    -----------------------------------  ----------------------------------
+    shl     5, r4, r5                    MOV EDX, EAX
+                                         SHL EDX, 5
+    shl     r6, r4, r5                   MOV EDX, EAX
+                                         MOV CL, BL
+                                         SHL EDX, CL
+    shr     5, r4, r5                    MOV EDX, EAX
+                                         SHR EDX, 5
+    shra    5, r4, r5                    MOV EDX, EAX
+                                         SAR EDX, 5
+    shrd    r4, r5, r6                   SHRD EBX, EAX, CL
+
+    shl  = Shift Left (logique)
+    shr  = Shift Right (logique, insertion de zeros)
+    shra = Shift Right Arithmetic (extension de signe)
+    shrd = Shift Right Double (decalage double precision)
+
+    Note : le i860 encode le compte de decalage dans src1.
+    En x86, les decalages par un registre doivent utiliser CL.
+
+    Le i860 n'a pas d'instructions de rotation. Si une rotation est
+    necessaire, elle doit etre simulee avec des decalages :
+      ROL EAX, n  (x86 natif, pas d'equivalent direct i860)
+
+------------------------------------------------------------------------------
+17.8 Conversion des instructions de comparaison
+------------------------------------------------------------------------------
+
+  Le i860 n'a pas d'instruction CMP traditionnelle. Les comparaisons
+  se font par soustraction ou via des instructions de test, et le
+  resultat est stocke dans le bit CC ou dans un registre.
+
+    i860                                 80386
+    -----------------------------------  ----------------------------------
+    subs    r4, r5, r0                   CMP EDX, EAX
+    (soustraction avec dest=r0 pour
+     positionner CC sans sauvegarder)
+
+    ; Comparaison flottante
+    pfeq.ss f2, f4, f0                  FLD [_i860_f2]
+                                         FCOMP [_i860_f4]
+                                         FSTSW AX
+                                         SAHF
+    pfgt.ss f2, f4, f0                  FLD [_i860_f2]
+                                         FCOMP [_i860_f4]
+                                         FSTSW AX
+                                         SAHF
+    pfle.ss f2, f4, f0                  FLD [_i860_f4]
+                                         FCOMP [_i860_f2]
+                                         FSTSW AX
+                                         SAHF
+
+    pfeq = Pipeline Float Equal
+    pfgt = Pipeline Float Greater Than
+    pfle = Pipeline Float Less or Equal
+
+------------------------------------------------------------------------------
+17.9 Conversion des branchements conditionnels
+------------------------------------------------------------------------------
+
+  Le i860 utilise des branchements bases sur le bit CC (condition code).
+  Les branchements ont un branch delay slot : l'instruction qui suit
+  le branchement est TOUJOURS executee (sauf si annulee).
+
+  IMPORTANT : lors de la conversion vers le 80386, il faut eliminer le
+  branch delay slot en deplacant l'instruction du slot AVANT le
+  branchement x86.
+
+  (a) Branchements simples
+
+    i860                                 80386
+    -----------------------------------  ----------------------------------
+    br      label                        JMP label
+    nop     (delay slot)
+
+    call    label                        CALL label
+    nop     (delay slot)
+
+    ; Branchement conditionnel
+    bc      label                        Jcc label
+    nop     (delay slot)                 (selon la condition precedente)
+
+    bnc     label                        JNcc label
+    nop     (delay slot)
+
+    bc  = Branch if CC = 1
+    bnc = Branch if CC = 0
+
+  (b) Branch delay slot
+
+    En i860, l'instruction dans le delay slot est executee AVANT que
+    le branchement prenne effet. En x86, il n'y a pas de delay slot.
+
+    Exemple de conversion :
+
+    ; i860 (avec delay slot)
+    adds    r4, r5, r6       ; compare
+    bc      target           ; branchement si CC=1
+    adds    1, r7, r7        ; delay slot : r7 = r7 + 1 (TOUJOURS execute)
+
+    ; Equivalent 80386 :
+    MOV  EBX, EAX
+    ADD  EBX, EDX            ; compare
+    INC  [_i860_r7]          ; instruction du delay slot AVANT le saut
+    JNZ  target              ; branchement
+
+  (c) Branchement indirect et retour
+
+    i860                                 80386
+    -----------------------------------  ----------------------------------
+    bri     r1                           RET
+    nop     (delay slot)                 (r1 contient l'adresse de retour)
+
+    calli   r1                           CALL [_i860_r1]
+    nop     (delay slot)
+
+  (d) Branchements avec annulation du delay slot (suffixe .t)
+
+    Les branchements avec suffixe .t (bc.t, bnc.t) annulent le delay
+    slot si le branchement n'est PAS pris. En x86, simplement convertir
+    en branchement conditionnel normal et placer l'instruction du slot
+    apres le branchement conditionnel dans la branche "prise" :
+
+    ; i860
+    bc.t    target
+    adds    1, r4, r4        ; execute seulement si branchement pris
+
+    ; Equivalent 80386 :
+    JNZ     .skip
+    INC     EAX              ; instruction du delay slot
+    JMP     target
+    .skip:
+
+------------------------------------------------------------------------------
+17.10 Conversion des modes d'adressage
+------------------------------------------------------------------------------
+
+  Le i860 a des modes d'adressage simples (typique RISC) :
+
+    i860                                 80386
+    -----------------------------------  ----------------------------------
+    ld.l  offset(rBase), rDst            MOV reg, [base+offset]
+    ld.l  rIndex(rBase), rDst            MOV reg, [base+index]
+    st.l  rSrc, offset(rBase)            MOV [base+offset], reg
+
+  Le 80386 a des modes d'adressage bien plus puissants :
+    [base + index * scale + displacement]
+
+  Cela signifie que certaines sequences i860 de calcul d'adresse
+  (shifts + adds pour calculer un index) peuvent etre simplifiees
+  en un seul mode d'adressage x86 :
+
+    ; i860 : acces a un tableau de DWORD
+    shl     2, r5, r6         ; r6 = index * 4
+    adds    r4, r6, r6        ; r6 = base + index*4
+    ld.l    0(r6), r7         ; charger l'element
+
+    ; Equivalent 80386 (une seule instruction) :
+    MOV  EBX, [EAX + EDX*4]  ; base + index * 4
+
+------------------------------------------------------------------------------
+17.11 Conversion des instructions de pile et appels de fonctions
+------------------------------------------------------------------------------
+
+  Le i860 n'a pas d'instructions PUSH/POP dediees. La pile est geree
+  manuellement via le pointeur de pile (r2 par convention) avec des
+  instructions de chargement/ecriture et d'arithmetique sur le pointeur.
+
+  (a) Operations de pile
+
+    i860                                 80386
+    -----------------------------------  ----------------------------------
+    addu    -4, r2, r2                   PUSH EAX
+    st.l    r4, 0(r2)                    (une seule instruction x86)
+
+    ld.l    0(r2), r4                    POP EAX
+    addu    4, r2, r2                    (une seule instruction x86)
+
+    addu    -framesize, r2, r2           SUB ESP, framesize
+
+  (b) Appel de fonction (convention i860)
+
+    En i860, l'appel de fonction place l'adresse de retour dans r1 :
+
+    ; i860 : appel de fonction
+    call    func              ; r1 = PC + 8, saute a func
+    nop                       ; delay slot
+
+    ; Prologue de fonction i860
+    addu    -framesize, r2, r2   ; allouer le cadre
+    st.l    r1, retoff(r2)       ; sauvegarder r1 (adresse retour)
+    st.l    r3, fpoff(r2)        ; sauvegarder r3 (frame pointer)
+    addu    framesize, r2, r3    ; r3 = nouveau frame pointer
+
+    ; Epilogue de fonction i860
+    ld.l    retoff(r2), r1       ; restaurer r1
+    ld.l    fpoff(r2), r3        ; restaurer r3
+    addu    framesize, r2, r2    ; liberer le cadre
+    bri     r1                   ; retour
+    nop                          ; delay slot
+
+    ; Equivalent 80386 :
+    ; Appel
+    CALL    func
+
+    ; Prologue
+    PUSH    EBP
+    MOV     EBP, ESP
+    SUB     ESP, localsize
+
+    ; Epilogue
+    MOV     ESP, EBP
+    POP     EBP
+    RET
+
+  (c) Passage de parametres
+
+    En i860, les parametres sont passes dans les registres r16-r19
+    (et sur la pile pour les parametres supplementaires).
+
+    En x86 (convention CDECL), tous les parametres sont passes sur la
+    pile :
+
+    ; i860 : appel f(a, b, c)
+    or      r0, a, r16        ; param 1 dans r16
+    or      r0, b, r17        ; param 2 dans r17
+    or      r0, c, r18        ; param 3 dans r18
+    call    f
+    nop
+
+    ; Equivalent 80386 (CDECL) :
+    PUSH    c
+    PUSH    b
+    PUSH    a
+    CALL    f
+    ADD     ESP, 12
+
+------------------------------------------------------------------------------
+17.12 Conversion des instructions dual-mode
+------------------------------------------------------------------------------
+
+  Le i860 possede un mode d'execution unique : le mode dual-instruction.
+  Lorsque le bit d (dual) est positionne dans une instruction, le
+  processeur execute simultanement une instruction entiere du core et
+  une instruction du pipeline flottant.
+
+  Syntaxe i860 (prefixe d.) :
+
+    d.pfadd.ss  f2, f4, f6    ; flottant : pipeline add
+    adds        r4, r5, r6    ; entier  : addition (execute en parallele)
+
+  En x86, il n'y a pas d'execution parallele entier/flottant explicite.
+  Les deux operations doivent etre sequentialisees :
+
+    ; Equivalent 80386 :
+    ; D'abord l'operation entiere
+    MOV  EBX, EAX
+    ADD  EBX, EDX
+    ; Puis l'operation flottante
+    FLD  [_i860_f2]
+    FADD [_i860_f4]
+    FSTP [_i860_f6]
+
+  Attention : dans le code i860 optimise, l'ordre relatif des
+  instructions entieres et flottantes dans les blocs dual-mode peut
+  etre important pour les dependances de donnees. Verifier soigneusement
+  que la sequentialisation ne viole pas les dependances.
+
+------------------------------------------------------------------------------
+17.13 Conversion des instructions de controle de cache
+------------------------------------------------------------------------------
+
+  Le i860 possede un cache de donnees gere explicitement par le logiciel.
+  Les instructions flush et lock controlent le comportement du cache.
+
+    i860                                 80386
+    -----------------------------------  ----------------------------------
+    flush   0(r4)                        (pas d'equivalent, ignorer)
+    ld.c    csr, r4                      (pas d'equivalent)
+    st.c    r4, csr                      (pas d'equivalent)
+    lock                                 (pas d'equivalent direct)
+
+  Le 80386 gere son cache automatiquement (write-through ou write-back
+  selon la configuration). Les instructions de controle de cache du
+  i860 peuvent generalement etre ignorees lors de la conversion, sauf
+  si elles ont un impact fonctionnel (ordre des ecritures memoire en
+  contexte multiprocesseur).
+
+  Pour forcer un vidage de cache sur 80486+, utiliser WBINVD ou INVD.
+  Sur le 80386 (sans cache integre), ces instructions n'existent pas.
+
+------------------------------------------------------------------------------
+17.14 Conversion de l'endianness
+------------------------------------------------------------------------------
+
+  Le i860 supporte a la fois big-endian et little-endian (configurable
+  au reset via le bit BE du registre EPSR). Le 80386 est exclusivement
+  little-endian.
+
+  Si le code i860 source est configure en little-endian, aucune
+  conversion d'endianness n'est necessaire.
+
+  Si le code i860 source est en big-endian, il faut convertir l'ordre
+  des octets pour toutes les donnees multi-octets :
+
+    ; Conversion big-endian -> little-endian pour une valeur 32 bits
+    BSWAP   EAX               ; disponible uniquement sur 80486+
+
+    ; Pour le 80386 (pas de BSWAP) :
+    MOV     ECX, EAX
+    SHL     EAX, 24
+    MOV     EDX, ECX
+    AND     EDX, 0000FF00h
+    SHL     EDX, 8
+    OR      EAX, EDX
+    MOV     EDX, ECX
+    AND     EDX, 00FF0000h
+    SHR     EDX, 8
+    OR      EAX, EDX
+    SHR     ECX, 24
+    OR      EAX, ECX
+
+  Pour les donnees 16 bits :
+    XCHG    AL, AH            ; echange les octets (swap)
+
+------------------------------------------------------------------------------
+17.15 Exemple complet de conversion
+------------------------------------------------------------------------------
+
+  Exemple : fonction calculant la somme des elements d'un tableau.
+
+  Code i860 :
+
+    ; int sum(int *arr, int count)
+    ; r16 = arr (pointeur), r17 = count
+    _sum:
+        or      r0, r0, r4        ; r4 = 0 (accumulateur)
+        or      r0, r0, r5        ; r5 = 0 (index)
+    .loop:
+        subs    r17, r5, r0       ; comparer count - index
+        bc      .done             ; si index >= count, terminer
+        nop                       ; delay slot
+        shl     2, r5, r6         ; r6 = index * 4
+        adds    r16, r6, r6       ; r6 = arr + index*4
+        ld.l    0(r6), r7         ; r7 = arr[index]
+        adds    r4, r7, r4        ; r4 += arr[index]
+        adds    1, r5, r5         ; index++
+        br      .loop
+        nop                       ; delay slot
+    .done:
+        bri     r1                ; retour, r4 = resultat
+        nop                       ; delay slot
+
+  Code 80386 equivalent :
+
+    ; int sum(int *arr, int count)
+    ; [EBP+8] = arr, [EBP+12] = count
+    _sum:
+        PUSH    EBP
+        MOV     EBP, ESP
+        MOV     ESI, [EBP+8]     ; ESI = arr
+        MOV     ECX, [EBP+12]    ; ECX = count
+        XOR     EAX, EAX         ; EAX = 0 (accumulateur)
+        XOR     EDX, EDX         ; EDX = 0 (index)
+    .loop:
+        CMP     EDX, ECX         ; comparer index, count
+        JGE     .done            ; si index >= count, terminer
+        ADD     EAX, [ESI+EDX*4] ; EAX += arr[index]
+        INC     EDX              ; index++
+        JMP     .loop
+    .done:
+        POP     EBP
+        RET
+
+  Observations :
+  - Le mode d'adressage [ESI+EDX*4] du x86 remplace 3 instructions
+    i860 (shl + adds + ld.l).
+  - Les branch delay slots sont elimines.
+  - PUSH/POP et CALL/RET remplacent la gestion manuelle de la pile.
+  - r0 cable a 0 est remplace par XOR reg, reg ou MOV reg, 0.
+  - La boucle x86 est plus compacte grace aux modes d'adressage.
+
+------------------------------------------------------------------------------
+17.16 Resume : aide-memoire de conversion i860 -> 80386
+------------------------------------------------------------------------------
+
+    i860                     80386              Notes
+    -----------------------  -----------------  ----------------------------
+    or r0, rS, rD            MOV rD, rS         copie registre
+    or r0, imm, rD           MOV rD, imm        chargement immediat
+    or r0, r0, rD            XOR rD, rD         mise a zero
+    orh ha%v, r0, rD         MOV rD, v          chargement 32 bits
+    + or l%v, rD, rD                            (2 instr i860, 1 en x86)
+    adds rA, rB, rD          MOV rD, rB         addition
+                              ADD rD, rA
+    subs rA, rB, rD          MOV rD, rB         soustraction
+                              SUB rD, rA         (dest = rB - rA)
+    and rA, rB, rD           MOV rD, rB         ET logique
+                              AND rD, rA
+    andnot rA, rB, rD        MOV rD, rA         ET-NON
+                              NOT rD
+                              AND rD, rB
+    or rA, rB, rD            MOV rD, rB         OU logique
+                              OR rD, rA
+    xor rA, rB, rD           MOV rD, rB         OU exclusif
+                              XOR rD, rA
+    shl n, rA, rD            MOV rD, rA         decalage gauche
+                              SHL rD, n
+    shr n, rA, rD            MOV rD, rA         decalage droite logique
+                              SHR rD, n
+    shra n, rA, rD           MOV rD, rA         decalage droite arithm.
+                              SAR rD, n
+    ld.l off(rB), rD         MOV rD, [rB+off]   chargement 32 bits
+    ld.s off(rB), rD         MOVZX rD, WORD..   chargement 16 bits
+    ld.b off(rB), rD         MOVZX rD, BYTE..   chargement 8 bits
+    st.l rS, off(rB)         MOV [rB+off], rS   ecriture 32 bits
+    st.s rS, off(rB)         MOV WORD.., rS     ecriture 16 bits
+    st.b rS, off(rB)         MOV BYTE.., rS     ecriture 8 bits
+    fld.l off(rB), fD        FLD DWORD [rB+off] chargement flottant SP
+    fld.d off(rB), fD        FLD QWORD [rB+off] chargement flottant DP
+    fst.l fS, off(rB)        FST DWORD [rB+off] ecriture flottant SP
+    fst.d fS, off(rB)        FST QWORD [rB+off] ecriture flottant DP
+    fadd.ss fA, fB, fD       FLD+FADD+FSTP      addition flottante SP
+    fsub.ss fA, fB, fD       FLD+FSUB+FSTP      soustraction flottante SP
+    fmul.ss fA, fB, fD       FLD+FMUL+FSTP      multiplication flottante
+    fadd.dd fA, fB, fD       FLD+FADD+FSTP      addition flottante DP
+    br label                 JMP label           saut inconditionnel
+    call label               CALL label          appel de fonction
+    bri r1                   RET                 retour de fonction
+    bc label                 Jcc label           saut si CC=1
+    bnc label                JNcc label           saut si CC=0
+    ixfr rS, fD              MOV [tmp],rS        transfert int->float
+                              FLD [tmp]
+    fxfr fS, rD              FST [tmp]           transfert float->int
+                              MOV rD, [tmp]
+    flush                    (ignorer)            controle de cache
+    lock                     (ignorer)            controle de cache
+    nop                      NOP                  pas d'operation
+
+------------------------------------------------------------------------------
+17.17 Pieges et differences fondamentales
+------------------------------------------------------------------------------
+
+  (a) Branch delay slots
+
+    C'est la difference la plus critique. En i860, l'instruction apres
+    un branchement (dans le delay slot) est TOUJOURS executee, meme si
+    le branchement est pris. En x86, il n'y a pas de delay slot.
+    Il faut systematiquement deplacer l'instruction du delay slot
+    AVANT le branchement lors de la conversion. Si l'instruction du
+    delay slot affecte les conditions du branchement, une restructuration
+    plus complexe est necessaire.
+
+  (b) Registre r0 cable a zero
+
+    En i860, r0 vaut toujours 0 et les ecritures vers r0 sont ignorees.
+    C'est utilise pour des idiomes comme : or r0, rS, rD (copie),
+    adds r4, r0, r0 (test sans sauvegarde). En x86, il n'y a pas de
+    registre a zero. Remplacer r0 par la valeur 0 ou par XOR reg, reg.
+
+  (c) Mode dual-instruction
+
+    Le i860 peut executer simultanement une instruction entiere et une
+    instruction flottante (mode dual, prefixe d.). En x86, les instructions
+    sont sequentielles. Le code dual-mode doit etre linearise, ce qui
+    peut reduire les performances mais ne change pas la semantique si
+    les dependances de donnees sont respectees.
+
+  (d) Pipeline flottant explicite
+
+    Le pipeline flottant du i860 a une latence visible par le logiciel.
+    Les resultats des operations pfadd/pfmul ne sont pas immediatement
+    disponibles mais apparaissent apres plusieurs cycles. Le code i860
+    est souvent ecrit avec des instructions intermediaires pour remplir
+    le pipeline (software pipelining). En x86/x87, les resultats sont
+    disponibles immediatement (ou geres par le hardware). Le code
+    pipeline i860 peut etre simplifie lors de la conversion.
+
+  (e) Absence de multiplication entiere materielle
+
+    Le i860 n'a pas d'instruction MUL/IMUL pour les entiers. Les
+    multiplications entieres sont realisees par logiciel ou en utilisant
+    le multiplicateur flottant (conversion int->float, fmul, puis
+    float->int). Le 80386 a IMUL natif, ce qui simplifie la conversion.
+
+  (f) Gestion de cache explicite
+
+    Le cache de donnees du i860 est gere par logiciel via flush et lock.
+    Un store normal peut aller dans le cache sans etre ecrit en memoire
+    principale. L'instruction flush force l'ecriture. En x86, le cache
+    est gere automatiquement par le materiel (protocole de coherence).
+    Les instructions flush/lock peuvent etre ignorees, sauf en contexte
+    multiprocesseur ou pour les periheriques mappes en memoire.
+
+  (g) Endianness configurable
+
+    Le i860 peut etre big-endian ou little-endian. Si le code source
+    utilise le mode big-endian, toutes les donnees multi-octets doivent
+    etre converties en little-endian pour le x86. Verifier le bit BE
+    du registre EPSR pour determiner le mode.
+
+  (h) Pas de pile materielle
+
+    Le i860 n'a pas de PUSH/POP ni de pile geree par le materiel.
+    La pile est geree par convention (r2 = SP) avec des ld/st et des
+    ajustements manuels de r2. En x86, PUSH/POP/CALL/RET gerent
+    automatiquement la pile via ESP.
+
+  (i) Registre de condition simplifie
+
+    Le i860 n'a qu'un seul bit CC pour les conditions entieres, contre
+    6 drapeaux (CF, ZF, SF, OF, PF, AF) en x86. Les comparaisons i860
+    doivent etre converties en CMP + Jcc ou TEST + Jcc en x86, en
+    choisissant le bon code de condition.
+
+  (j) Instructions graphiques (Z-buffer, pixels)
+
+    Le i860 possede des instructions specialisees pour le rendu 3D
+    (fzchkl, fzchks, faddp, faddz, etc.) qui n'ont pas d'equivalent
+    sur le 80386. Ces operations doivent etre emulee en logiciel pur
+    si elles sont presentes dans le code source. Elles sont specifiques
+    au i860 et etaient utilisees pour les applications de visualisation
+    scientifique et de graphisme 3D.
 
 ==============================================================================
   FIN DU DOCUMENT - ASSEMBLEUR 80386
