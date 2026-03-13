@@ -5425,7 +5425,13 @@ Begin
   EmitInstr('PUSH   SI');
   EmitInstr('PUSH   DI');
   EmitInstr('PUSH   AX');
-  { Verifier si AX est un pointeur chaine (heuristique : >= 256) }
+  { Heuristique type : AX >= 256 -> pointeur chaine (DATA >= 100h),
+    AX < 256 -> numerique. Fonctionne car les donnees DATA sont
+    au-dela de 256 octets dans le segment et les valeurs entieres
+    courantes (0..255) restent en dessous. Limitation connue :
+    les entiers >= 256 seront traites comme des pointeurs chaine.
+    Le TODO 24 (runtime complet) implementera un vrai systeme de
+    tags dynamiques pour discriminer les types.                      }
   EmitInstrAB('CMP', 'AX', '256');
   EmitInstrA('JB', CL_RT_PFX + 'PV_NUM');
   { Traiter comme pointeur chaine }
@@ -5619,8 +5625,14 @@ Begin
   EmitBlankLine;
 
   { --- _CLRT_READGETS : activer la saisie des GETs --- }
-  (* Stub : juste remet le compteur a zero et retourne.
-     Une implementation complete lirait chaque GET enregistre.      *)
+  (* Stub : remet le compteur a zero et retourne sans saisie.
+     LIMITATION : les @ GET enregistres ne sont pas traites ;
+     aucune interaction utilisateur ne se produit. Le formulaire
+     est ignore silencieusement. Une implementation complete
+     bouclerait sur _CL_GETLIST, afficherait la valeur courante
+     de chaque variable a sa position (row,col), accepterait la
+     saisie clavier avec navigation Tab/Enter/Esc, et appliquerait
+     les masques PICTURE et validations VALID.                       *)
   EmitLabel(CL_RT_PFX + 'READGETS');
   EmitInstrAB('MOV', 'WORD PTR [_CL_GETCOUNT]', '0');
   EmitInstr('RET');
