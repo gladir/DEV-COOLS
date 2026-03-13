@@ -343,7 +343,7 @@
             Sauvegarde registres : SI, DI preserves dans chaque fonction
             CurFrameSize : taille courante du cadre local (nb de words)
 
-  TODO 19 - CHAINES ET METHODES STRING
+  TODO 19 - CHAINES ET METHODES STRING [IMPLEMENTE]
             Representation : pointeur vers zone DATA terminee par 0
             Interpolation : "Hello, $name!" -> concat de segments
               "${expr}" -> evaluation expr + _KTRT_NUMTOSTR si numerique
@@ -813,6 +813,9 @@ Var
                            { sauvegarde CurFrameSize par portee      }
   CaptureCount    : Integer; { compteur de cellules capturees        }
 
+  { Chaines et methodes String (TODO 19) }
+  StringBufCount  : Integer; { compteur pour buffers string temp      }
+
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
@@ -927,6 +930,8 @@ Procedure ParseReturnStmt;  Forward;
 Procedure ScopeBlockEnter;  Forward;
 Procedure ScopeBlockLeave;  Forward;
 Procedure EmitScopeRuntime; Forward;
+{ TODO 19 - Chaines et methodes String }
+Procedure EmitStringRuntime; Forward;
 { General }
 Procedure ParserAdvance; Forward;
 Procedure ParseStmt;     Forward;
@@ -1238,6 +1243,7 @@ Begin
   SaveFnName     := '';
   CurFrameSize   := 0;
   CaptureCount   := 0;
+  StringBufCount := 0;
   LabelGenSeq    := 0;
   GExprDummy.Kind    := EK_NONE;
   GExprDummy.ImmVal  := 0;
@@ -2356,6 +2362,15 @@ Var
   ClsIdx   : Integer;
   ClsFI    : Integer;
   ObjLbl   : TString;
+  { TODO 19 - Interpolation de chaines }
+  IntpStr  : TString;
+  IntpSeg  : TString;
+  IntpPos  : Integer;
+  IntpCh   : Char;
+  IntpVNam : TString;
+  IntpHas  : Boolean;
+  IntpFirst: Boolean;
+  IntpVIdx : Integer;
 Begin
   Case CurToken.Kind Of
     TK_INTEGER, TK_LONG, TK_FLOAT, TK_CHAR :
@@ -2365,10 +2380,124 @@ Begin
     End;
     TK_STRING :
     Begin
-      (* Chaine litterale : creer entree dans DATA + LEA AX *)
-      Lbl := DataAddStr(CurToken.Val);
+      IntpStr := CurToken.Val;
       ParserAdvance;
-      EmitInstrAB('LEA', 'AX', Lbl);
+      (* TODO 19 - Detecter l interpolation $var ou $[expr] *)
+      IntpHas := False;
+      For IntpPos := 1 To Length(IntpStr) Do
+        If IntpStr[IntpPos] = '$' Then IntpHas := True;
+      If Not IntpHas Then
+      Begin
+        { Chaine simple sans interpolation }
+        Lbl := DataAddStr(IntpStr);
+        EmitInstrAB('LEA', 'AX', Lbl);
+      End
+      Else
+      Begin
+        { Interpolation : decouper en segments }
+        IntpFirst := True;
+        IntpPos := 1;
+        While IntpPos <= Length(IntpStr) Do
+        Begin
+          If IntpStr[IntpPos] = '$' Then
+          Begin
+            Inc(IntpPos);
+            If IntpPos > Length(IntpStr) Then Break;
+            If IntpStr[IntpPos] = CH_LBRACE Then
+            Begin
+              (* $-expr - extraire le nom comme variable simple *)
+              Inc(IntpPos);
+              IntpVNam := '';
+              While (IntpPos <= Length(IntpStr)) And
+                    (IntpStr[IntpPos] <> CH_RBRACE) Do
+              Begin
+                IntpVNam := IntpVNam + IntpStr[IntpPos];
+                Inc(IntpPos);
+              End;
+              If (IntpPos <= Length(IntpStr)) And
+                 (IntpStr[IntpPos] = CH_RBRACE) Then
+                Inc(IntpPos);
+            End
+            Else
+            Begin
+              { $var - extraire le nom de variable }
+              IntpVNam := '';
+              While (IntpPos <= Length(IntpStr)) And
+                    ((IntpStr[IntpPos] >= 'A') And (IntpStr[IntpPos] <= 'Z') Or
+                     (IntpStr[IntpPos] >= 'a') And (IntpStr[IntpPos] <= 'z') Or
+                     (IntpStr[IntpPos] >= '0') And (IntpStr[IntpPos] <= '9') Or
+                     (IntpStr[IntpPos] = '_')) Do
+              Begin
+                IntpVNam := IntpVNam + IntpStr[IntpPos];
+                Inc(IntpPos);
+              End;
+            End;
+            { Emettre la valeur de la variable interpolee }
+            If IntpVNam <> '' Then
+            Begin
+              If Not IntpFirst Then
+                EmitInstrA('PUSH', 'AX');
+              IntpVIdx := SymFind(IntpVNam);
+              If IntpVIdx >= 0 Then
+              Begin
+                If SymTab[IntpVIdx].TypeIdx = TY_IDX_STRING Then
+                Begin
+                  ExprLoad(IntpVIdx, Res);
+                End
+                Else
+                Begin
+                  ExprLoad(IntpVIdx, Res);
+                  EmitInstr('CALL _KTRT_NUMTOSTR');
+                  EmitInstrAB('MOV', 'AX', 'SI');
+                End;
+              End
+              Else
+              Begin
+                Lbl := DataAddStr(IntpVNam);
+                EmitInstrAB('LEA', 'AX', Lbl);
+              End;
+              If Not IntpFirst Then
+              Begin
+                EmitInstrAB('MOV', 'DI', 'AX');
+                EmitInstrA('POP', 'SI');
+                EmitInstr('CALL _KTRT_CONCAT');
+              End;
+              IntpFirst := False;
+            End;
+          End
+          Else
+          Begin
+            { Segment litteral }
+            IntpSeg := '';
+            While (IntpPos <= Length(IntpStr)) And
+                  (IntpStr[IntpPos] <> '$') Do
+            Begin
+              IntpSeg := IntpSeg + IntpStr[IntpPos];
+              Inc(IntpPos);
+            End;
+            If IntpSeg <> '' Then
+            Begin
+              If Not IntpFirst Then
+                EmitInstrA('PUSH', 'AX');
+              Lbl := DataAddStr(IntpSeg);
+              EmitInstrAB('LEA', 'AX', Lbl);
+              If Not IntpFirst Then
+              Begin
+                EmitInstrAB('MOV', 'DI', 'AX');
+                EmitInstrA('POP', 'SI');
+                EmitInstr('CALL _KTRT_CONCAT');
+              End;
+              IntpFirst := False;
+            End;
+          End;
+        End;
+        { Si la chaine etait vide ou aucun segment, generer une chaine vide }
+        If IntpFirst Then
+        Begin
+          Lbl := DataAddStr('');
+          EmitInstrAB('LEA', 'AX', Lbl);
+        End;
+      End;
       Res.Kind    := EK_AX;
       Res.ImmVal  := 0;
       Res.TypeIdx := TY_IDX_STRING;
@@ -2832,6 +2961,209 @@ Begin
             EmitInstr('CALL _KTRT_ARRSORT');
             Res.TypeIdx := TY_IDX_ARRAY;
           End
+          { TODO 19 - Methodes String }
+          Else If (MembName = 'get') And (Res.TypeIdx = TY_IDX_STRING) Then
+          Begin
+            EmitInstrAB('MOV', 'SI', 'AX');
+            ParserAdvance; { consomme '(' }
+            ParseExpr(Res);
+            ExprFlushToAX(Res);
+            EmitInstrAB('MOV', 'CX', 'AX');
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance; { consomme ')' }
+            EmitInstr('CALL _KTRT_STRCHAR');
+            Res.TypeIdx := TY_IDX_STRING;
+          End
+          Else If (MembName = 'substring') And (Res.TypeIdx = TY_IDX_STRING) Then
+          Begin
+            EmitInstrA('PUSH', 'AX');
+            ParserAdvance; { consomme '(' }
+            ParseExpr(Res);
+            ExprFlushToAX(Res);
+            EmitInstrA('PUSH', 'AX');  { start }
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+              ParserAdvance;
+            ParseExpr(Res);
+            ExprFlushToAX(Res);
+            EmitInstrAB('MOV', 'CX', 'AX');  { end }
+            EmitInstrA('POP', 'BX');          { start }
+            EmitInstrA('POP', 'SI');          { str }
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance; { consomme ')' }
+            EmitInstr('CALL _KTRT_STRSUB');
+            Res.TypeIdx := TY_IDX_STRING;
+          End
+          Else If (MembName = 'indexOf') And (Res.TypeIdx = TY_IDX_STRING) Then
+          Begin
+            EmitInstrA('PUSH', 'AX');
+            ParserAdvance; { consomme '(' }
+            ParseExpr(Res);
+            ExprFlushToAX(Res);
+            EmitInstrAB('MOV', 'DI', 'AX');  { sub }
+            EmitInstrA('POP', 'SI');          { str }
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance; { consomme ')' }
+            EmitInstr('CALL _KTRT_STRINDEXOF');
+            Res.TypeIdx := TY_IDX_INT;
+          End
+          Else If (MembName = 'contains') And (Res.TypeIdx = TY_IDX_STRING) Then
+          Begin
+            EmitInstrA('PUSH', 'AX');
+            ParserAdvance; { consomme '(' }
+            ParseExpr(Res);
+            ExprFlushToAX(Res);
+            EmitInstrAB('MOV', 'DI', 'AX');
+            EmitInstrA('POP', 'SI');
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance; { consomme ')' }
+            EmitInstr('CALL _KTRT_STRINDEXOF');
+            LblEnd := LabelGen;
+            LblNull := LabelGen;
+            EmitInstrAB('CMP', 'AX', '-1');
+            EmitInstrA('JE', LblNull);
+            EmitInstrAB('MOV', 'AX', '1');
+            EmitInstrA('JMP', LblEnd);
+            EmitLabel(LblNull);
+            EmitInstrAB('XOR', 'AX', 'AX');
+            EmitLabel(LblEnd);
+            Res.TypeIdx := TY_IDX_BOOLEAN;
+          End
+          Else If (MembName = 'startsWith') And (Res.TypeIdx = TY_IDX_STRING) Then
+          Begin
+            EmitInstrA('PUSH', 'AX');
+            ParserAdvance; { consomme '(' }
+            ParseExpr(Res);
+            ExprFlushToAX(Res);
+            EmitInstrAB('MOV', 'DI', 'AX');
+            EmitInstrA('POP', 'SI');
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance; { consomme ')' }
+            EmitInstr('CALL _KTRT_STRSTARTW');
+            Res.TypeIdx := TY_IDX_BOOLEAN;
+          End
+          Else If (MembName = 'endsWith') And (Res.TypeIdx = TY_IDX_STRING) Then
+          Begin
+            EmitInstrA('PUSH', 'AX');
+            ParserAdvance; { consomme '(' }
+            ParseExpr(Res);
+            ExprFlushToAX(Res);
+            EmitInstrAB('MOV', 'DI', 'AX');
+            EmitInstrA('POP', 'SI');
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance; { consomme ')' }
+            EmitInstr('CALL _KTRT_STRENDW');
+            Res.TypeIdx := TY_IDX_BOOLEAN;
+          End
+          Else If (MembName = 'uppercase') And (Res.TypeIdx = TY_IDX_STRING) Then
+          Begin
+            EmitInstrAB('MOV', 'SI', 'AX');
+            ParserAdvance; { consomme '(' }
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance; { consomme ')' }
+            EmitInstr('CALL _KTRT_STRTOUPPER');
+            Res.TypeIdx := TY_IDX_STRING;
+          End
+          Else If (MembName = 'lowercase') And (Res.TypeIdx = TY_IDX_STRING) Then
+          Begin
+            EmitInstrAB('MOV', 'SI', 'AX');
+            ParserAdvance; { consomme '(' }
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance; { consomme ')' }
+            EmitInstr('CALL _KTRT_STRTOLOWER');
+            Res.TypeIdx := TY_IDX_STRING;
+          End
+          Else If (MembName = 'trim') And (Res.TypeIdx = TY_IDX_STRING) Then
+          Begin
+            EmitInstrAB('MOV', 'SI', 'AX');
+            ParserAdvance; { consomme '(' }
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance; { consomme ')' }
+            EmitInstr('CALL _KTRT_STRTRIM');
+            Res.TypeIdx := TY_IDX_STRING;
+          End
+          Else If (MembName = 'reversed') And (Res.TypeIdx = TY_IDX_STRING) Then
+          Begin
+            EmitInstrAB('MOV', 'SI', 'AX');
+            ParserAdvance; { consomme '(' }
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance; { consomme ')' }
+            EmitInstr('CALL _KTRT_STRREV');
+            Res.TypeIdx := TY_IDX_STRING;
+          End
+          Else If (MembName = 'repeat') And (Res.TypeIdx = TY_IDX_STRING) Then
+          Begin
+            EmitInstrA('PUSH', 'AX');
+            ParserAdvance; { consomme '(' }
+            ParseExpr(Res);
+            ExprFlushToAX(Res);
+            EmitInstrAB('MOV', 'CX', 'AX');
+            EmitInstrA('POP', 'SI');
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance; { consomme ')' }
+            EmitInstr('CALL _KTRT_STRREPEAT');
+            Res.TypeIdx := TY_IDX_STRING;
+          End
+          Else If (MembName = 'split') And (Res.TypeIdx = TY_IDX_STRING) Then
+          Begin
+            EmitInstrA('PUSH', 'AX');
+            ParserAdvance; { consomme '(' }
+            ParseExpr(Res);
+            ExprFlushToAX(Res);
+            EmitInstrAB('MOV', 'DI', 'AX');
+            EmitInstrA('POP', 'SI');
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance; { consomme ')' }
+            EmitComment('split stub : retourne la chaine originale');
+            EmitInstrAB('MOV', 'AX', 'SI');
+            Res.TypeIdx := TY_IDX_ARRAY;
+          End
+          Else If (MembName = 'replace') And (Res.TypeIdx = TY_IDX_STRING) Then
+          Begin
+            EmitInstrA('PUSH', 'AX');
+            ParserAdvance; { consomme '(' }
+            ParseExpr(Res);
+            ExprFlushToAX(Res);
+            EmitInstrA('PUSH', 'AX');  { old }
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+              ParserAdvance;
+            ParseExpr(Res);
+            ExprFlushToAX(Res);
+            EmitInstrAB('MOV', 'BX', 'AX');  { new }
+            EmitInstrA('POP', 'DI');          { old }
+            EmitInstrA('POP', 'SI');          { str }
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance; { consomme ')' }
+            EmitInstr('CALL _KTRT_STRRPLS');
+            Res.TypeIdx := TY_IDX_STRING;
+          End
+          { TODO 19 - Methodes Char }
+          Else If (MembName = 'isLetter') And (Res.TypeIdx = TY_IDX_CHAR) Then
+          Begin
+            ParserAdvance; { consomme '(' }
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance; { consomme ')' }
+            EmitInstrAB('XOR', 'BX', 'BX');  { mode 0 = isLetter }
+            EmitInstr('CALL _KTRT_CHKCHAR');
+            Res.TypeIdx := TY_IDX_BOOLEAN;
+          End
+          Else If (MembName = 'isDigit') And (Res.TypeIdx = TY_IDX_CHAR) Then
+          Begin
+            ParserAdvance; { consomme '(' }
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance; { consomme ')' }
+            EmitInstrAB('MOV', 'BX', '1');   { mode 1 = isDigit }
+            EmitInstr('CALL _KTRT_CHKCHAR');
+            Res.TypeIdx := TY_IDX_BOOLEAN;
+          End
+          Else If (MembName = 'isWhitespace') And (Res.TypeIdx = TY_IDX_CHAR) Then
+          Begin
+            ParserAdvance; { consomme '(' }
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance; { consomme ')' }
+            EmitInstrAB('MOV', 'BX', '2');   { mode 2 = isWhitespace }
+            EmitInstr('CALL _KTRT_CHKCHAR');
+            Res.TypeIdx := TY_IDX_BOOLEAN;
+          End
           Else
           Begin
             { TODO 16 - Appel methode toString() sur data class }
@@ -2896,6 +3228,20 @@ Begin
             EmitComment('arr.size -> count word');
             EmitInstrAB('MOV', 'BX', 'AX');
             EmitInstrAB('MOV', 'AX', '[BX]');
+            Res.TypeIdx := TY_IDX_INT;
+          End
+          { TODO 19 - Propriete str.length }
+          Else If (MembName = 'length') And (Res.TypeIdx = TY_IDX_STRING) Then
+          Begin
+            EmitComment('str.length');
+            EmitInstr('CALL _KTRT_STRLENAX');
+            Res.TypeIdx := TY_IDX_INT;
+          End
+          { TODO 19 - Propriete char.code }
+          Else If (MembName = 'code') And (Res.TypeIdx = TY_IDX_CHAR) Then
+          Begin
+            EmitComment('char.code -> ordinal');
+            EmitInstrAB('AND', 'AX', '00FFh');
             Res.TypeIdx := TY_IDX_INT;
           End
           Else
@@ -2998,6 +3344,23 @@ Begin
     Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
     Begin
       ExprFlushToAX(Res);
+      { TODO 19 - Indexation string : s[i] }
+      If Res.TypeIdx = TY_IDX_STRING Then
+      Begin
+        EmitInstrAB('MOV', 'SI', 'AX');
+        ParserAdvance; { consomme '[' }
+        ParseExpr(Res);
+        ExprFlushToAX(Res);
+        EmitInstrAB('MOV', 'CX', 'AX');
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+          ParserAdvance; { consomme ']' }
+        EmitInstr('CALL _KTRT_STRCHAR');
+        Res.Kind    := EK_AX;
+        Res.TypeIdx := TY_IDX_STRING;
+        Res.SymIdx  := -1;
+      End
+      Else
+      Begin
       EmitInstrA('PUSH', 'AX'); { sauver base du tableau }
       ParserAdvance; { consomme '[' }
       ParseExpr(Res);
@@ -3012,6 +3375,7 @@ Begin
       Res.Kind    := EK_AX;
       Res.TypeIdx := TY_IDX_INT;
       Res.SymIdx  := -1;
+      End;
     End
     Else
       Break;
@@ -4085,6 +4449,7 @@ Begin
   EmitArrayRuntime;
   EmitClassRuntime;
   EmitScopeRuntime;
+  EmitStringRuntime;
 End;
 
 (* ---- EmitExprRuntime : routines runtime pour expressions ------ *)
@@ -4866,11 +5231,459 @@ Begin
 End;
 
 { ============================================================
-  TODO 12 - ENTREES/SORTIES [IMPLEMENTE]
+  TODO 19 - CHAINES ET METHODES STRING [IMPLEMENTE]
   ============================================================ }
 
-(* ---- EmitIORuntime : routines runtime pour entrees/sorties -- *)
-(* _KTRT_STRLEN   : longueur d une chaine ASCIIZ                *)
+(* ---- EmitStringRuntime : routines runtime pour chaines ------ *)
+(* _KTRT_STRLENAX : longueur chaine -> AX                        *)
+(*   Entree : AX = ptr chaine ASCIIZ                             *)
+(*   Sortie : AX = longueur                                      *)
+(* _KTRT_STRCHAR  : caractere a un index                         *)
+(*   Entree : SI = ptr chaine, CX = index                        *)
+(*   Sortie : AX = ptr vers _KT_CHRBUF (1 char + 0)             *)
+(* _KTRT_STRSUB   : sous-chaine                                  *)
+(*   Entree : SI = ptr chaine, BX = debut, CX = fin              *)
+(*   Sortie : AX = ptr vers _KT_STRBUF2                          *)
+(* _KTRT_STRINDEXOF : recherche sous-chaine                      *)
+(*   Entree : SI = chaine, DI = sous-chaine                      *)
+(*   Sortie : AX = index ou -1                                   *)
+(* _KTRT_STRSTARTW : verifier si commence par                    *)
+(*   Entree : SI = chaine, DI = prefixe                          *)
+(*   Sortie : AX = 1 si oui, 0 sinon                            *)
+(* _KTRT_STRENDW   : verifier si termine par                     *)
+(*   Entree : SI = chaine, DI = suffixe                          *)
+(*   Sortie : AX = 1 si oui, 0 sinon                            *)
+(* _KTRT_STRTOUPPER : majuscules                                 *)
+(*   Entree : SI = ptr chaine                                    *)
+(*   Sortie : AX = ptr vers _KT_STRBUF2                          *)
+(* _KTRT_STRTOLOWER : minuscules                                 *)
+(*   Entree : SI = ptr chaine                                    *)
+(*   Sortie : AX = ptr vers _KT_STRBUF2                          *)
+(* _KTRT_STRTRIM    : supprimer espaces debut/fin                *)
+(*   Entree : SI = ptr chaine                                    *)
+(*   Sortie : AX = ptr vers _KT_STRBUF2                          *)
+(* _KTRT_STRREV     : inverser chaine                            *)
+(*   Entree : SI = ptr chaine                                    *)
+(*   Sortie : AX = ptr vers _KT_STRBUF2                          *)
+(* _KTRT_STRREPEAT  : repeter chaine                             *)
+(*   Entree : SI = ptr chaine, CX = nombre                       *)
+(*   Sortie : AX = ptr vers _KT_STRBUF2                          *)
+(* _KTRT_STRRPLS    : remplacer sous-chaine                      *)
+(*   Entree : SI = chaine, DI = ancien, BX = nouveau             *)
+(*   Sortie : AX = ptr vers _KT_STRBUF2                          *)
+(* _KTRT_CHKCHAR    : verifier type de caractere                 *)
+(*   Entree : AX = caractere, BX = mode (0=letter,1=digit,2=ws) *)
+(*   Sortie : AX = 1 si vrai, 0 sinon                           *)
+Procedure EmitStringRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=========================================================');
+  EmitComment('TODO 19 - RUNTIME CHAINES ET METHODES STRING');
+  EmitComment('=========================================================');
+
+  { --- _KTRT_STRLENAX : AX = ptr str -> AX = longueur --- }
+  EmitBlankLine;
+  EmitComment('--- _KTRT_STRLENAX : AX = ptr str -> AX = longueur ---');
+  EmitLabel('_KTRT_STRLENAX');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitLabel('_KTRT_SLA1');
+  EmitInstr('LODSB');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', '_KTRT_SLA2');
+  EmitInstrA('INC', 'CX');
+  EmitInstrA('JMP', '_KTRT_SLA1');
+  EmitLabel('_KTRT_SLA2');
+  EmitInstrAB('MOV', 'AX', 'CX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+
+  { --- _KTRT_STRCHAR : SI = str, CX = index -> AX = ptr _KT_CHRBUF --- }
+  EmitBlankLine;
+  EmitComment('--- _KTRT_STRCHAR : SI=str, CX=idx -> AX=ptr _KT_CHRBUF ---');
+  EmitLabel('_KTRT_STRCHAR');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrAB('MOV', 'BX', 'SI');
+  EmitInstrAB('ADD', 'BX', 'CX');
+  EmitInstrAB('MOV', 'AL', '[BX]');
+  EmitInstrAB('MOV', 'BYTE PTR [_KT_CHRBUF]', 'AL');
+  EmitInstrAB('MOV', 'BYTE PTR [_KT_CHRBUF+1]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _KT_CHRBUF');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+
+  { --- _KTRT_STRSUB : SI=str, BX=debut, CX=fin -> AX=ptr _KT_STRBUF2 --- }
+  EmitBlankLine;
+  EmitComment('--- _KTRT_STRSUB : SI=str, BX=start, CX=end -> AX=buf ---');
+  EmitLabel('_KTRT_STRSUB');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('ADD', 'SI', 'BX');
+  EmitInstrAB('SUB', 'CX', 'BX');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _KT_STRBUF2');
+  EmitLabel('_KTRT_SSB1');
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JZ', '_KTRT_SSB2');
+  EmitInstr('LODSB');
+  EmitInstr('STOSB');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', '_KTRT_SSB1');
+  EmitLabel('_KTRT_SSB2');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _KT_STRBUF2');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DI');
+  EmitInstr('RET');
+
+  { --- _KTRT_STRINDEXOF : SI=str, DI=sub -> AX=index/-1 --- }
+  EmitBlankLine;
+  EmitComment('--- _KTRT_STRINDEXOF : SI=str, DI=sub -> AX=idx/-1 ---');
+  EmitLabel('_KTRT_STRINDEXOF');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrAB('XOR', 'BX', 'BX');           { BX = current position }
+  EmitLabel('_KTRT_SIO1');
+  EmitInstrAB('MOV', 'AL', '[SI+BX]');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', '_KTRT_SIO4');            { fin chaine, pas trouve }
+  EmitComment('Comparer sub a partir de SI+BX');
+  EmitInstrAB('XOR', 'CX', 'CX');           { CX = offset dans sub }
+  EmitLabel('_KTRT_SIO2');
+  EmitInstrAB('MOV', 'DL', '[DI+CX]');
+  EmitInstrAB('TEST', 'DL', 'DL');
+  EmitInstrA('JZ', '_KTRT_SIO3');            { fin sub = trouve }
+  EmitInstrAB('MOV', 'DH', 'BX');
+  EmitInstrAB('ADD', 'DH', 'CL');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrAB('XOR', 'BH', 'BH');
+  EmitInstrAB('MOV', 'BL', 'DH');
+  EmitInstrAB('MOV', 'AL', '[SI+BX]');
+  EmitInstrA('POP', 'BX');
+  EmitInstrAB('CMP', 'AL', 'DL');
+  EmitInstrA('JNE', '_KTRT_SIO5');
+  EmitInstrA('INC', 'CX');
+  EmitInstrA('JMP', '_KTRT_SIO2');
+  EmitLabel('_KTRT_SIO5');
+  EmitInstrA('INC', 'BX');
+  EmitInstrA('JMP', '_KTRT_SIO1');
+  EmitLabel('_KTRT_SIO3');
+  EmitComment('Trouve a position BX');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitLabel('_KTRT_SIO4');
+  EmitComment('Pas trouve');
+  EmitInstrAB('MOV', 'AX', '-1');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+
+  { --- _KTRT_STRSTARTW : SI=str, DI=prefix -> AX=0/1 --- }
+  EmitBlankLine;
+  EmitComment('--- _KTRT_STRSTARTW : SI=str, DI=prefix -> AX=0/1 ---');
+  EmitLabel('_KTRT_STRSTARTW');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrAB('XOR', 'BX', 'BX');
+  EmitLabel('_KTRT_SSW1');
+  EmitInstrAB('MOV', 'AL', '[DI+BX]');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', '_KTRT_SSW2');     { fin prefix -> match }
+  EmitInstrAB('CMP', 'AL', '[SI+BX]');
+  EmitInstrA('JNE', '_KTRT_SSW3');
+  EmitInstrA('INC', 'BX');
+  EmitInstrA('JMP', '_KTRT_SSW1');
+  EmitLabel('_KTRT_SSW2');
+  EmitInstrAB('MOV', 'AX', '1');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitLabel('_KTRT_SSW3');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+
+  { --- _KTRT_STRENDW : SI=str, DI=suffix -> AX=0/1 --- }
+  EmitBlankLine;
+  EmitComment('--- _KTRT_STRENDW : SI=str, DI=suffix -> AX=0/1 ---');
+  EmitLabel('_KTRT_STRENDW');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitComment('Longueur de str');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstr('CALL _KTRT_STRLEN');
+  EmitInstrAB('MOV', 'DX', 'CX');         { DX = len(str) }
+  EmitInstrA('POP', 'SI');
+  EmitComment('Longueur de suffix');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', 'DI');
+  EmitInstr('CALL _KTRT_STRLEN');
+  EmitInstrAB('MOV', 'BX', 'CX');         { BX = len(suffix) }
+  EmitInstrA('POP', 'SI');
+  EmitComment('Verifier que str >= suffix');
+  EmitInstrAB('CMP', 'DX', 'BX');
+  EmitInstrA('JB', '_KTRT_SEW3');
+  EmitComment('Comparer depuis la fin');
+  EmitInstrAB('SUB', 'DX', 'BX');         { DX = offset debut comparaison }
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitLabel('_KTRT_SEW1');
+  EmitInstrAB('CMP', 'CX', 'BX');
+  EmitInstrA('JE', '_KTRT_SEW2');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrAB('MOV', 'BX', 'DX');
+  EmitInstrAB('ADD', 'BX', 'CX');
+  EmitInstrAB('MOV', 'AL', '[SI+BX]');
+  EmitInstrA('POP', 'BX');
+  EmitInstrAB('CMP', 'AL', '[DI+CX]');
+  EmitInstrA('JNE', '_KTRT_SEW3');
+  EmitInstrA('INC', 'CX');
+  EmitInstrA('JMP', '_KTRT_SEW1');
+  EmitLabel('_KTRT_SEW2');
+  EmitInstrAB('MOV', 'AX', '1');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitLabel('_KTRT_SEW3');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+
+  { --- _KTRT_STRTOUPPER : SI=str -> AX=ptr _KT_STRBUF2 --- }
+  EmitBlankLine;
+  EmitComment('--- _KTRT_STRTOUPPER : SI=str -> AX=ptr _KT_STRBUF2 ---');
+  EmitLabel('_KTRT_STRTOUPPER');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _KT_STRBUF2');
+  EmitLabel('_KTRT_STU1');
+  EmitInstr('LODSB');
+  EmitInstrAB('CMP', 'AL', '''a''');
+  EmitInstrA('JB', '_KTRT_STU2');
+  EmitInstrAB('CMP', 'AL', '''z''');
+  EmitInstrA('JA', '_KTRT_STU2');
+  EmitInstrAB('SUB', 'AL', '32');
+  EmitLabel('_KTRT_STU2');
+  EmitInstr('STOSB');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JNZ', '_KTRT_STU1');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _KT_STRBUF2');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+
+  { --- _KTRT_STRTOLOWER : SI=str -> AX=ptr _KT_STRBUF2 --- }
+  EmitBlankLine;
+  EmitComment('--- _KTRT_STRTOLOWER : SI=str -> AX=ptr _KT_STRBUF2 ---');
+  EmitLabel('_KTRT_STRTOLOWER');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _KT_STRBUF2');
+  EmitLabel('_KTRT_STL1');
+  EmitInstr('LODSB');
+  EmitInstrAB('CMP', 'AL', '''A''');
+  EmitInstrA('JB', '_KTRT_STL2');
+  EmitInstrAB('CMP', 'AL', '''Z''');
+  EmitInstrA('JA', '_KTRT_STL2');
+  EmitInstrAB('ADD', 'AL', '32');
+  EmitLabel('_KTRT_STL2');
+  EmitInstr('STOSB');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JNZ', '_KTRT_STL1');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _KT_STRBUF2');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+
+  { --- _KTRT_STRTRIM : SI=str -> AX=ptr _KT_STRBUF2 --- }
+  EmitBlankLine;
+  EmitComment('--- _KTRT_STRTRIM : SI=str -> AX=ptr _KT_STRBUF2 ---');
+  EmitLabel('_KTRT_STRTRIM');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'CX');
+  EmitComment('Sauter les espaces au debut');
+  EmitLabel('_KTRT_STM1');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('CMP', 'AL', ''' ''');
+  EmitInstrA('JE', '_KTRT_STM1A');
+  EmitInstrAB('CMP', 'AL', '9');         { tab }
+  EmitInstrA('JE', '_KTRT_STM1A');
+  EmitInstrA('JMP', '_KTRT_STM2');
+  EmitLabel('_KTRT_STM1A');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', '_KTRT_STM1');
+  EmitLabel('_KTRT_STM2');
+  EmitComment('Copier dans buf');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _KT_STRBUF2');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitLabel('_KTRT_STM3');
+  EmitInstr('LODSB');
+  EmitInstr('STOSB');
+  EmitInstrA('INC', 'CX');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JNZ', '_KTRT_STM3');
+  EmitComment('Supprimer espaces a la fin');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _KT_STRBUF2');
+  EmitInstrAB('ADD', 'DI', 'CX');
+  EmitInstrAB('SUB', 'DI', '2');         { DI pointe dernier char }
+  EmitLabel('_KTRT_STM4');
+  EmitInstrAB('CMP', 'DI', 'OFFSET _KT_STRBUF2');
+  EmitInstrA('JB', '_KTRT_STM5');
+  EmitInstrAB('MOV', 'AL', '[DI]');
+  EmitInstrAB('CMP', 'AL', ''' ''');
+  EmitInstrA('JE', '_KTRT_STM4A');
+  EmitInstrAB('CMP', 'AL', '9');
+  EmitInstrA('JE', '_KTRT_STM4A');
+  EmitInstrA('JMP', '_KTRT_STM5');
+  EmitLabel('_KTRT_STM4A');
+  EmitInstrA('DEC', 'DI');
+  EmitInstrA('JMP', '_KTRT_STM4');
+  EmitLabel('_KTRT_STM5');
+  EmitInstrA('INC', 'DI');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _KT_STRBUF2');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+
+  { --- _KTRT_STRREV : SI=str -> AX=ptr _KT_STRBUF2 --- }
+  EmitBlankLine;
+  EmitComment('--- _KTRT_STRREV : SI=str -> AX=ptr _KT_STRBUF2 ---');
+  EmitLabel('_KTRT_STRREV');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'CX');
+  EmitComment('Calculer longueur');
+  EmitInstr('CALL _KTRT_STRLEN');
+  EmitComment('Pointer DI vers la fin du buf, copier a l envers');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _KT_STRBUF2');
+  EmitInstrAB('ADD', 'DI', 'CX');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrA('DEC', 'DI');
+  EmitLabel('_KTRT_SRV1');
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JZ', '_KTRT_SRV2');
+  EmitInstr('LODSB');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('DEC', 'DI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', '_KTRT_SRV1');
+  EmitLabel('_KTRT_SRV2');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _KT_STRBUF2');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+
+  { --- _KTRT_STRREPEAT : SI=str, CX=count -> AX=ptr _KT_STRBUF2 --- }
+  EmitBlankLine;
+  EmitComment('--- _KTRT_STRREPEAT : SI=str, CX=count -> AX=buf ---');
+  EmitLabel('_KTRT_STRREPEAT');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrAB('MOV', 'BX', 'SI');         { BX = original string }
+  EmitInstrAB('MOV', 'DI', 'OFFSET _KT_STRBUF2');
+  EmitLabel('_KTRT_SRP1');
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JZ', '_KTRT_SRP3');
+  EmitInstrAB('MOV', 'SI', 'BX');
+  EmitLabel('_KTRT_SRP2');
+  EmitInstr('LODSB');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', '_KTRT_SRP2A');
+  EmitInstr('STOSB');
+  EmitInstrA('JMP', '_KTRT_SRP2');
+  EmitLabel('_KTRT_SRP2A');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', '_KTRT_SRP1');
+  EmitLabel('_KTRT_SRP3');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _KT_STRBUF2');
+  EmitInstrA('POP', 'BX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+
+  { --- _KTRT_STRRPLS : SI=str, DI=old, BX=new -> AX=ptr _KT_STRBUF2 --- }
+  EmitBlankLine;
+  EmitComment('--- _KTRT_STRRPLS : SI=str, DI=old, BX=new -> AX=buf ---');
+  EmitLabel('_KTRT_STRRPLS');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitComment('Simple impl : copier str a _KT_STRBUF2 (stub)');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _KT_STRBUF2');
+  EmitLabel('_KTRT_SRP_C1');
+  EmitInstr('LODSB');
+  EmitInstr('STOSB');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JNZ', '_KTRT_SRP_C1');
+  EmitInstrA('POP', 'DI');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _KT_STRBUF2');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+
+  { --- _KTRT_CHKCHAR : AX=char, BX=mode -> AX=0/1 --- }
+  { mode 0=isLetter, 1=isDigit, 2=isWhitespace }
+  EmitBlankLine;
+  EmitComment('--- _KTRT_CHKCHAR : AX=char, BX=mode -> AX=0/1 ---');
+  EmitLabel('_KTRT_CHKCHAR');
+  EmitInstrAB('CMP', 'BX', '0');
+  EmitInstrA('JE', '_KTRT_CHK_LET');
+  EmitInstrAB('CMP', 'BX', '1');
+  EmitInstrA('JE', '_KTRT_CHK_DIG');
+  EmitComment('isWhitespace');
+  EmitInstrAB('CMP', 'AL', ''' ''');
+  EmitInstrA('JE', '_KTRT_CHK_Y');
+  EmitInstrAB('CMP', 'AL', '9');
+  EmitInstrA('JE', '_KTRT_CHK_Y');
+  EmitInstrAB('CMP', 'AL', '10');
+  EmitInstrA('JE', '_KTRT_CHK_Y');
+  EmitInstrAB('CMP', 'AL', '13');
+  EmitInstrA('JE', '_KTRT_CHK_Y');
+  EmitInstrA('JMP', '_KTRT_CHK_N');
+  EmitLabel('_KTRT_CHK_LET');
+  EmitInstrAB('CMP', 'AL', '''A''');
+  EmitInstrA('JB', '_KTRT_CHK_LET2');
+  EmitInstrAB('CMP', 'AL', '''Z''');
+  EmitInstrA('JBE', '_KTRT_CHK_Y');
+  EmitLabel('_KTRT_CHK_LET2');
+  EmitInstrAB('CMP', 'AL', '''a''');
+  EmitInstrA('JB', '_KTRT_CHK_N');
+  EmitInstrAB('CMP', 'AL', '''z''');
+  EmitInstrA('JBE', '_KTRT_CHK_Y');
+  EmitInstrA('JMP', '_KTRT_CHK_N');
+  EmitLabel('_KTRT_CHK_DIG');
+  EmitInstrAB('CMP', 'AL', '''0''');
+  EmitInstrA('JB', '_KTRT_CHK_N');
+  EmitInstrAB('CMP', 'AL', '''9''');
+  EmitInstrA('JBE', '_KTRT_CHK_Y');
+  EmitInstrA('JMP', '_KTRT_CHK_N');
+  EmitLabel('_KTRT_CHK_Y');
+  EmitInstrAB('MOV', 'AX', '1');
+  EmitInstr('RET');
+  EmitLabel('_KTRT_CHK_N');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstr('RET');
+End;
 (*   Entree : SI = ptr chaine ASCIIZ                             *)
 (*   Sortie : CX = longueur (sans le zero final)                 *)
 (* _KTRT_NUMTOSTR : conversion entier signe 16 bits -> chaine   *)
@@ -5459,6 +6272,11 @@ Begin
   { Tampon de travail }
   DataAdd('_KT_STRBUF',    DK_BYTE, 0, '');
   DataTab[DataCount - 1].ElemCount := 256;
+  { TODO 19 - Buffers pour methodes String }
+  DataAdd('_KT_STRBUF2',   DK_BYTE, 0, '');
+  DataTab[DataCount - 1].ElemCount := 256;
+  DataAdd('_KT_CHRBUF',    DK_BYTE, 0, '');
+  DataTab[DataCount - 1].ElemCount := 4;
   { TODO 12 - Donnees E/S }
   DataAdd('_KT_NUMBUF',    DK_BYTE, 0, '');
   DataTab[DataCount - 1].ElemCount := 12;
@@ -5504,8 +6322,9 @@ Begin
       Begin
         Addr := ExprAddrOf(E.SymIdx);
         K := TypeKindOf(E.TypeIdx);
-        { Arrays, classes et parametres : MOV car la variable contient deja la valeur }
+        { Arrays, classes, strings et parametres : MOV car la variable contient deja la valeur }
         If (K = TYK_ARRAY) Or (K = TYK_INTARRAY) Or (K = TYK_CLASS) Or
+           (K = TYK_STRING) Or
            ((E.SymIdx >= 0) And (SymTab[E.SymIdx].Kind = SK_PARAM)) Then
           EmitInstrAB('MOV', 'AX', Addr)
         Else If TypeIsPtr(E.TypeIdx) Then
@@ -5548,8 +6367,9 @@ Begin
   Res.SymIdx  := SIdx;
   Addr := ExprAddrOf(SIdx);
   K := TypeKindOf(Res.TypeIdx);
-  { Arrays, classes et parametres : MOV car la variable contient deja la valeur }
+  { Arrays, classes, strings et parametres : MOV car la variable contient deja la valeur }
   If (K = TYK_ARRAY) Or (K = TYK_INTARRAY) Or (K = TYK_CLASS) Or
+     (K = TYK_STRING) Or
      (SymTab[SIdx].Kind = SK_PARAM) Then
     EmitInstrAB('MOV', 'AX', Addr)
   Else If TypeIsPtr(Res.TypeIdx) Then
