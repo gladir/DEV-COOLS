@@ -195,7 +195,7 @@
             INKEY([nSec]) : attendre touche -> AX=code touche (INT 16h)
             LASTKEY() : retourner le code de la derniere touche pressee
 
-  TODO 13 - IF / ELSEIF / ELSE / DO CASE
+  TODO 13 - IF / ELSEIF / ELSE / DO CASE [IMPLEMENTE]
             ParseIfStmt : IF cond ... [ELSEIF cond ...] [ELSE ...] ENDIF
               Emission TEST AX,AX / JZ pour condition fausse
               Labels : _CLL_ELSIF_N, _CLL_ELSE_N, _CLL_ENDIF_N
@@ -833,6 +833,9 @@ Procedure ParseAtStmt; Forward;
 Procedure ParseReadStmt; Forward;
 Procedure ParseClearStmt; Forward;
 Procedure ParseSetColorStmt; Forward;
+{ IF/ELSEIF/ELSE/ENDIF et DO CASE (TODO 13) }
+Procedure ParseIfStmt; Forward;
+Procedure ParseDoCaseStmt; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1176,6 +1179,26 @@ Begin
       Begin
         ParserAdvance;
         ParseSetColorStmt;
+      End
+      { IF (TODO 13) }
+      Else If Kw = 'IF' Then
+      Begin
+        ParserAdvance;
+        ParseIfStmt;
+      End
+      { DO [CASE] (TODO 13) }
+      Else If Kw = 'DO' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'CASE') Then
+        Begin
+          ParserAdvance;
+          ParseDoCaseStmt;
+        End
+        Else
+        Begin
+          { DO WHILE, etc. : stub pour TODO futur }
+        End;
       End
       Else
       Begin
@@ -5678,6 +5701,282 @@ Begin
   EmitInstr('POP    DX');
   EmitInstr('RET');
   EmitBlankLine;
+End;
+
+{ ============================================================
+  TODO 13 - IF / ELSEIF / ELSE / DO CASE [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseStmtBlock : parse une sequence d instructions ------ }
+(* Parse des instructions jusqu a rencontrer un des mots-cles
+   terminaux (ENDIF, ELSE, ELSEIF, ENDCASE, CASE, OTHERWISE, EOF).
+   Retourne le mot-cle terminal qui a cause l arret.             *)
+
+Function IsBlockTerminator(Const Kw : TString) : Boolean;
+Begin
+  IsBlockTerminator := (Kw = 'ENDIF') Or (Kw = 'ELSE') Or
+                       (Kw = 'ELSEIF') Or (Kw = 'ENDCASE') Or
+                       (Kw = 'CASE') Or (Kw = 'OTHERWISE') Or
+                       (Kw = 'FUNCTION') Or (Kw = 'PROCEDURE') Or
+                       (Kw = 'RETURN');
+End;
+
+Procedure ParseStmtBlock;
+Var
+  Kw : TString;
+Begin
+  While CurToken.Kind <> TK_EOF Do
+  Begin
+    { Stop at block terminators }
+    If CurToken.Kind = TK_KEYWORD Then
+    Begin
+      Kw := CurToken.Val;
+      If IsBlockTerminator(Kw) Then
+        Exit;
+    End;
+
+    { Parse a single statement (mirror of Run dispatch) }
+    If CurToken.Kind = TK_KEYWORD Then
+    Begin
+      Kw := CurToken.Val;
+      { Declarations de variables }
+      If (Kw = 'LOCAL') Or (Kw = 'LOCA') Or
+         (Kw = 'STATIC') Or (Kw = 'STAT') Or
+         (Kw = 'PRIVATE') Or (Kw = 'PRIV') Or
+         (Kw = 'PUBLIC') Or (Kw = 'PUBL') Or
+         (Kw = 'DECLARE') Or (Kw = 'DECL') Or
+         (Kw = 'PARAMETERS') Or (Kw = 'PARA') Then
+      Begin
+        If (Kw = 'LOCA') Then Kw := 'LOCAL';
+        If (Kw = 'STAT') Then Kw := 'STATIC';
+        If (Kw = 'PRIV') Then Kw := 'PRIVATE';
+        If (Kw = 'PUBL') Then Kw := 'PUBLIC';
+        If (Kw = 'DECL') Then Kw := 'DECLARE';
+        If (Kw = 'PARA') Then Kw := 'PARAMETERS';
+        ParserAdvance;
+        ParseDeclStmt(Kw);
+      End
+      Else If Kw = 'STORE' Then
+      Begin
+        ParserAdvance;
+        ParseStoreStmt;
+      End
+      Else If Kw = '?' Then
+      Begin
+        ParserAdvance;
+        ParseQOutStmt(True);
+      End
+      Else If Kw = '??' Then
+      Begin
+        ParserAdvance;
+        ParseQOutStmt(False);
+      End
+      Else If Kw = 'READ' Then
+      Begin
+        ParserAdvance;
+        ParseReadStmt;
+      End
+      Else If Kw = 'CLEAR' Then
+      Begin
+        ParserAdvance;
+        ParseClearStmt;
+      End
+      Else If Kw = 'SET' Then
+      Begin
+        ParserAdvance;
+        ParseSetColorStmt;
+      End
+      Else If Kw = 'IF' Then
+      Begin
+        ParserAdvance;
+        ParseIfStmt;
+      End
+      Else If Kw = 'DO' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'CASE') Then
+        Begin
+          ParserAdvance;
+          ParseDoCaseStmt;
+        End;
+      End
+      Else
+      Begin
+        ParserAdvance;
+      End;
+    End
+    Else If CurToken.Kind = TK_IDENT Then
+    Begin
+      ParseExprStmt;
+    End
+    Else If CurToken.Kind = TK_PUNCT Then
+    Begin
+      ParserAdvance;
+    End
+    Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '&') Then
+    Begin
+      ParseExprStmt;
+    End
+    Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '@') Then
+    Begin
+      ParserAdvance;
+      ParseAtStmt;
+    End
+    Else
+    Begin
+      ParserAdvance;
+    End;
+  End;
+End;
+
+{ ---- ParseIfStmt : IF ... [ELSEIF ...] [ELSE ...] ENDIF ----- }
+(* Genere le code assembleur pour les structures conditionnelles :
+     IF cond
+       stmts
+     [ELSEIF cond
+       stmts] ...
+     [ELSE
+       stmts]
+     ENDIF
+   Labels : _CLL_N pour les sauts JZ (condition fausse) et JMP (fin). *)
+
+Procedure ParseIfStmt;
+Var
+  Cond     : TExprVal;
+  LblNext  : TString;  { label du prochain ELSEIF/ELSE }
+  LblEnd   : TString;  { label ENDIF }
+Begin
+  EmitComment('IF');
+  LblEnd := LabelGen;  { label de fin du IF complet }
+
+  { ---- Branche IF ---- }
+  ParseExpr(Cond);
+  ExprFlushToAX(Cond);
+  LblNext := LabelGen;
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JZ', LblNext);
+
+  { Body du IF }
+  ParseStmtBlock;
+
+  { ---- Traiter ELSEIF / ELSE / ENDIF ---- }
+  While (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'ELSEIF') Do
+  Begin
+    EmitInstrA('JMP', LblEnd);   { sauter a la fin depuis la branche precedente }
+    EmitLabel(LblNext);           { label ou on arrive si la condition etait fausse }
+    ParserAdvance;                { consommer ELSEIF }
+    EmitComment('ELSEIF');
+
+    ParseExpr(Cond);
+    ExprFlushToAX(Cond);
+    LblNext := LabelGen;
+    EmitInstrAB('TEST', 'AX', 'AX');
+    EmitInstrA('JZ', LblNext);
+
+    { Body du ELSEIF }
+    ParseStmtBlock;
+  End;
+
+  { ---- Branche ELSE ---- }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'ELSE') Then
+  Begin
+    EmitInstrA('JMP', LblEnd);
+    EmitLabel(LblNext);
+    ParserAdvance;  { consommer ELSE }
+    EmitComment('ELSE');
+
+    { Body du ELSE }
+    ParseStmtBlock;
+    LblNext := '';  { pas de label supplementaire }
+  End
+  Else
+  Begin
+    { Pas de ELSE : le label Next pointe directement vers la fin }
+  End;
+
+  { ---- ENDIF ---- }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'ENDIF') Then
+    ParserAdvance;  { consommer ENDIF }
+
+  { Emettre le label de fin }
+  If LblNext <> '' Then
+    EmitLabel(LblNext);  { si pas de ELSE, le dernier JZ saute ici }
+  EmitLabel(LblEnd);
+  EmitComment('ENDIF');
+End;
+
+{ ---- ParseDoCaseStmt : DO CASE ... CASE ... OTHERWISE ... ENDCASE }
+(* Genere le code assembleur pour la structure DO CASE :
+     DO CASE
+       CASE cond1
+         stmts
+       CASE cond2
+         stmts
+       [OTHERWISE
+         stmts]
+     ENDCASE
+   Chaque CASE evalue sa condition; si fausse, JZ vers le prochain.
+   Un JMP vers la fin apres chaque corps.                           *)
+
+Procedure ParseDoCaseStmt;
+Var
+  Cond     : TExprVal;
+  LblNext  : TString;  { label du prochain CASE }
+  LblEnd   : TString;  { label ENDCASE }
+  First    : Boolean;
+Begin
+  EmitComment('DO CASE');
+  LblEnd  := LabelGen;
+  LblNext := '';
+  First   := True;
+
+  { ---- Boucle sur les CASE ---- }
+  While (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'CASE') Do
+  Begin
+    If Not First Then
+    Begin
+      EmitInstrA('JMP', LblEnd);
+      EmitLabel(LblNext);
+    End;
+    First := False;
+
+    ParserAdvance;  { consommer CASE }
+    EmitComment('CASE');
+
+    ParseExpr(Cond);
+    ExprFlushToAX(Cond);
+    LblNext := LabelGen;
+    EmitInstrAB('TEST', 'AX', 'AX');
+    EmitInstrA('JZ', LblNext);
+
+    { Body du CASE }
+    ParseStmtBlock;
+  End;
+
+  { ---- OTHERWISE ---- }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'OTHERWISE') Then
+  Begin
+    If Not First Then
+    Begin
+      EmitInstrA('JMP', LblEnd);
+      EmitLabel(LblNext);
+      LblNext := '';
+    End;
+    ParserAdvance;  { consommer OTHERWISE }
+    EmitComment('OTHERWISE');
+
+    { Body du OTHERWISE }
+    ParseStmtBlock;
+  End;
+
+  { ---- ENDCASE ---- }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'ENDCASE') Then
+    ParserAdvance;  { consommer ENDCASE }
+
+  If (LblNext <> '') And (Not First) Then
+    EmitLabel(LblNext);
+  EmitLabel(LblEnd);
+  EmitComment('ENDCASE');
 End;
 
 { ---- EmitRuntime : emettre les routines runtime inline ------- }
