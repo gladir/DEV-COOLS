@@ -12298,12 +12298,20 @@ Begin
   { --- _CLRT_NEW : allocation heap statique ---
     CX = nombre d octets a allouer
     Retour : AX = pointeur vers le bloc alloue
-    Avance _CL_HEAPTOP de CX octets.                                  }
+    Avance _CL_HEAPTOP de CX octets.
+    Si depassement du heap, appelle PANIC.                             }
   EmitLabel(CL_RT_PFX + 'NEW');
   EmitInstr('PUSH   BX');
   EmitInstrAB('MOV', 'AX', '[_CL_HEAPTOP]');  { position courante }
   EmitInstrAB('MOV', 'BX', 'AX');
   EmitInstrAB('ADD', 'BX', 'CX');              { nouvelle position }
+  { Verifier depassement : BX doit rester <= _CL_HEAP + MAX_HEAP_SIZE }
+  EmitInstrAB('CMP', 'BX', 'OFFSET _CL_HEAP + ' + IntToStr(MAX_HEAP_SIZE));
+  EmitInstrA('JBE', CL_RT_PFX + 'NEW_OK');
+  { Depassement : signaler erreur }
+  EmitInstrAB('MOV', 'SI', 'OFFSET _CL_PANICMSG');
+  EmitInstrA('CALL', CL_RT_PFX + 'PANIC');
+  EmitLabel(CL_RT_PFX + 'NEW_OK');
   EmitInstrAB('MOV', '[_CL_HEAPTOP]', 'BX');
   EmitInstr('POP    BX');
   EmitInstr('RET');
