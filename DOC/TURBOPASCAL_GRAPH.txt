@@ -1,0 +1,1538 @@
+=========================================================================
+  TURBO PASCAL 7.0 - Unité GRAPH - Documentation de référence
+=========================================================================
+
+  L'unité Graph fournit un ensemble complet de routines graphiques BGI
+  (Borland Graphics Interface) permettant de dessiner des primitives
+  géométriques, gérer les couleurs et palettes, afficher du texte en
+  mode graphique, et manipuler des images bitmap. Elle supporte de
+  nombreuses cartes graphiques DOS (CGA, EGA, VGA, Hercules, 8514...).
+
+  Uses Graph;
+
+=========================================================================
+  1. CODES D'ERREUR (GraphResult)
+=========================================================================
+
+  GraphResult retourne un entier indiquant le résultat de la dernière
+  opération graphique. Après lecture, la valeur est réinitialisée à
+  grOk (0).
+
+  Constante             Valeur   Signification
+  --------------------  ------   ------------------------------------------
+  grOk                     0     Pas d'erreur
+  grNoInitGraph           -1     Graphique non initialisé (InitGraph)
+  grNotDetected           -2     Matériel graphique non détecté
+  grFileNotFound          -3     Fichier pilote (.BGI) non trouvé
+  grInvalidDriver         -4     Fichier pilote invalide
+  grNoLoadMem             -5     Mémoire insuffisante pour charger le pilote
+  grNoScanMem             -6     Mémoire insuffisante (scan fill)
+  grNoFloodMem            -7     Mémoire insuffisante (flood fill)
+  grFontNotFound          -8     Fichier de police (.CHR) non trouvé
+  grNoFontMem             -9     Mémoire insuffisante pour charger la police
+  grInvalidMode          -10     Mode graphique invalide pour le pilote
+  grError                -11     Erreur graphique générique
+  grIOerror              -12     Erreur d'entrée/sortie graphique
+  grInvalidFont          -13     Fichier de police invalide
+  grInvalidFontNum       -14     Numéro de police invalide
+  grInvalidVersion       -18     Version du pilote invalide
+
+  Exemple :
+    InitGraph(Gd, Gm, '');
+    ErrCode := GraphResult;
+    if ErrCode <> grOk then
+    begin
+      WriteLn('Erreur graphique : ', GraphErrorMsg(ErrCode));
+      Halt(1);
+    end;
+
+=========================================================================
+  2. PILOTES GRAPHIQUES (GraphDriver)
+=========================================================================
+
+  Constantes identifiant les pilotes BGI. Passées à InitGraph ou
+  retournées par DetectGraph.
+
+  Constante       Valeur   Carte graphique
+  -------------   ------   ----------------------------
+  Detect             0     Auto-détection du matériel
+  CGA                1     CGA (Color Graphics Adapter)
+  MCGA               2     MCGA (Multi-Color GA)
+  EGA                3     EGA (Enhanced GA)
+  EGA64              4     EGA avec 64 Ko de mémoire
+  EGAMono            5     EGA monochrome
+  IBM8514            6     IBM 8514/A
+  HercMono           7     Hercules monochrome
+  ATT400             8     AT&T 400
+  VGA                9     VGA (Video GA)
+  PC3270            10     PC 3270
+
+  CurrentDriver = -128 : valeur spéciale passée à GetModeRange pour
+  obtenir la plage de modes du pilote actuellement utilisé.
+
+=========================================================================
+  3. MODES GRAPHIQUES
+=========================================================================
+
+  Chaque pilote supporte un ou plusieurs modes graphiques. Le mode est
+  passé en second paramètre à InitGraph ou à SetGraphMode.
+
+  --- CGA (pilote 1) ---
+  CGAC0     = 0    320x200  4 couleurs  palette 0  1 page
+  CGAC1     = 1    320x200  4 couleurs  palette 1  1 page
+  CGAC2     = 2    320x200  4 couleurs  palette 2  1 page
+  CGAC3     = 3    320x200  4 couleurs  palette 3  1 page
+  CGAHi     = 4    640x200  2 couleurs             1 page
+
+  --- MCGA (pilote 2) ---
+  MCGAC0    = 0    320x200  4 couleurs  palette 0  1 page
+  MCGAC1    = 1    320x200  4 couleurs  palette 1  1 page
+  MCGAC2    = 2    320x200  4 couleurs  palette 2  1 page
+  MCGAC3    = 3    320x200  4 couleurs  palette 3  1 page
+  MCGAMed   = 4    640x200  2 couleurs             1 page
+  MCGAHi    = 5    640x480  2 couleurs             1 page
+
+  --- EGA (pilote 3) ---
+  EGALo     = 0    640x200  16 couleurs            4 pages
+  EGAHi     = 1    640x350  16 couleurs            2 pages
+
+  --- EGA64 (pilote 4) ---
+  EGA64Lo   = 0    640x200  16 couleurs            1 page
+  EGA64Hi   = 1    640x350   4 couleurs            1 page
+
+  --- EGAMono (pilote 5) ---
+  EGAMonoHi = 3    640x350  monochr.   64Ko=1p, 256Ko=2p
+
+  --- IBM8514 (pilote 6) ---
+  IBM8514Lo = 0    640x480  256 couleurs
+  IBM8514Hi = 1   1024x768  256 couleurs
+
+  --- HercMono (pilote 7) ---
+  HercMonoHi= 0    720x348  monochrome             2 pages
+
+  --- ATT400 (pilote 8) ---
+  ATT400C0  = 0    320x200  4 couleurs  palette 0  1 page
+  ATT400C1  = 1    320x200  4 couleurs  palette 1  1 page
+  ATT400C2  = 2    320x200  4 couleurs  palette 2  1 page
+  ATT400C3  = 3    320x200  4 couleurs  palette 3  1 page
+  ATT400Med = 4    640x200  2 couleurs             1 page
+  ATT400Hi  = 5    640x400  2 couleurs             1 page
+
+  --- VGA (pilote 9) ---
+  VGALo     = 0    640x200  16 couleurs            4 pages
+  VGAMed    = 1    640x350  16 couleurs            2 pages
+  VGAHi     = 2    640x480  16 couleurs            1 page
+
+  --- PC3270 (pilote 10) ---
+  PC3270Hi  = 0    720x350  monochrome             1 page
+
+  Palettes CGA :
+    Palette 0 : LightGreen, LightRed, Yellow
+    Palette 1 : LightCyan, LightMagenta, White
+    Palette 2 : Green, Red, Brown
+    Palette 3 : Cyan, Magenta, LightGray
+
+=========================================================================
+  4. COULEURS STANDARD (0..15)
+=========================================================================
+
+  Constantes de couleur utilisées avec SetColor, SetBkColor,
+  SetPalette, SetAllPalette, SetFillStyle, etc.
+
+  Constante       Valeur   Couleur
+  -------------   ------   -------------------------
+  Black              0     Noir
+  Blue               1     Bleu
+  Green              2     Vert
+  Cyan               3     Cyan
+  Red                4     Rouge
+  Magenta            5     Magenta
+  Brown              6     Marron
+  LightGray          7     Gris clair
+  DarkGray           8     Gris foncé
+  LightBlue          9     Bleu clair
+  LightGreen        10     Vert clair
+  LightCyan         11     Cyan clair
+  LightRed          12     Rouge clair
+  LightMagenta      13     Magenta clair
+  Yellow            14     Jaune
+  White             15     Blanc
+
+=========================================================================
+  5. COULEURS EGA POUR IBM 8514
+=========================================================================
+
+  Constantes permettant de définir les couleurs EGA standard sur la
+  carte IBM 8514 sans connaître leurs valeurs de palette internes.
+
+  Constante            Valeur   Couleur
+  -------------------  ------   -------------------
+  EGABlack                0     Noir
+  EGABlue                 1     Bleu
+  EGAGreen                2     Vert
+  EGACyan                 3     Cyan
+  EGARed                  4     Rouge
+  EGAMagenta              5     Magenta
+  EGABrown               20     Marron
+  EGALightgray            7     Gris clair
+  EGADarkgray            56     Gris foncé
+  EGALightblue           57     Bleu clair
+  EGALightgreen          58     Vert clair
+  EGALightcyan           59     Cyan clair
+  EGALightred            60     Rouge clair
+  EGALightmagenta        61     Magenta clair
+  EGAYellow              62     Jaune
+  EGAWhite               63     Blanc
+
+=========================================================================
+  6. STYLES ET LARGEURS DE LIGNE
+=========================================================================
+
+  Utilisés avec SetLineStyle et GetLineSettings.
+
+  --- Styles de ligne ---
+  SolidLn    = 0    Ligne continue       ________________
+  DottedLn   = 1    Ligne pointillée     . . . . . . . .
+  CenterLn   = 2    Ligne mixte          _ . _ . _ . _ .
+  DashedLn   = 3    Ligne tiretée        - - - - - - - -
+  UserBitLn  = 4    Style utilisateur    (motif 16 bits)
+
+  --- Largeurs de ligne ---
+  NormWidth  = 1    Épaisseur normale (1 pixel)
+  ThickWidth = 3    Épaisseur épaisse (3 pixels)
+
+  Le motif utilisateur (UserBitLn) est un word de 16 bits : chaque bit
+  à 1 trace un pixel, chaque bit à 0 laisse un espace. Le motif se
+  répète le long de la ligne.
+
+  Exemple :
+    SetLineStyle(UserBitLn, $F0F0, NormWidth);
+    { Motif binaire : 1111000011110000 = tirets de 4 pixels }
+
+=========================================================================
+  7. POLICES DE CARACTÈRES
+=========================================================================
+
+  Utilisées avec SetTextStyle et GetTextSettings.
+
+  --- Polices ---
+  DefaultFont   = 0    Police bitmap 8x8 (intégrée au pilote)
+  TriplexFont   = 1    Police vectorielle Triplex (TRIP.CHR)
+  SmallFont     = 2    Police vectorielle Small (LITT.CHR)
+  SansSerifFont = 3    Police vectorielle Sans-Serif (SANS.CHR)
+  GothicFont    = 4    Police vectorielle Gothic (GOTH.CHR)
+
+  La DefaultFont est une police bitmap point par point. Les polices
+  1 à 4 sont des polices vectorielles (stroked) chargées depuis des
+  fichiers .CHR, redimensionnables sans perte de qualité.
+
+  --- Directions ---
+  HorizDir = 0    Texte horizontal (gauche → droite)
+  VertDir  = 1    Texte vertical (bas → haut)
+
+  --- Taille ---
+  UserCharSize = 0    Taille définie par SetUserCharSize
+
+  Pour les polices vectorielles, CharSize = 1..10 est un facteur
+  multiplicateur. CharSize = UserCharSize (0) active la taille
+  personnalisée définie par SetUserCharSize.
+
+  Pour DefaultFont, CharSize multiplie la matrice 8x8 :
+    CharSize = 1 → 8x8, CharSize = 2 → 16x16, etc.
+
+=========================================================================
+  8. MOTIFS DE REMPLISSAGE
+=========================================================================
+
+  Utilisés avec SetFillStyle et GetFillSettings.
+
+  Constante         Valeur  Description
+  ----------------  ------  ------------------------------------------
+  EmptyFill            0    Remplissage en couleur de fond
+  SolidFill            1    Remplissage en couleur unie
+  LineFill             2    Remplissage par lignes horizontales ---
+  LtSlashFill          3    Remplissage par barres fines ///
+  SlashFill            4    Remplissage par barres épaisses ///
+  BkSlashFill          5    Remplissage par barres épaisses \\\
+  LtBkSlashFill        6    Remplissage par barres fines \\\
+  HatchFill            7    Remplissage hachuré léger
+  XHatchFill           8    Remplissage hachuré croisé
+  InterleaveFill       9    Remplissage par lignes entrelacées
+  WideDotFill         10    Points largement espacés
+  CloseDotFill        11    Points étroitement espacés
+  UserFill            12    Motif défini par l'utilisateur
+
+  Le motif utilisateur (UserFill) est défini par SetFillPattern :
+  un tableau de 8 octets formant une matrice 8x8. Chaque bit à 1
+  trace un pixel en couleur de remplissage, chaque bit à 0 utilise
+  la couleur de fond.
+
+=========================================================================
+  9. OPÉRATEURS BitBlt (PutImage)
+=========================================================================
+
+  Constantes déterminant comment l'image est combinée avec les pixels
+  existants lors de l'appel à PutImage.
+
+  Constante     Valeur  Opération         Effet
+  ----------    ------  --------          ---------------------------------
+  NormalPut        0    MOV               Copie directe (alias CopyPut)
+  CopyPut          0    MOV               Copie directe
+  XORPut           1    XOR               OU exclusif (réversible)
+  OrPut            2    OR                OU logique
+  AndPut           3    AND               ET logique
+  NotPut           4    NOT               Inversion puis copie
+
+  XORPut est particulièrement utile pour l'animation : appliquer
+  deux fois la même image au même endroit restaure le fond original.
+
+=========================================================================
+  10. JUSTIFICATION DU TEXTE
+=========================================================================
+
+  Constantes utilisées avec SetTextJustify.
+
+  --- Justification horizontale ---
+  LeftText   = 0    Texte aligné à gauche du point courant
+  CenterText = 1    Texte centré sur le point courant
+  RightText  = 2    Texte aligné à droite du point courant
+
+  --- Justification verticale ---
+  BottomText = 0    Texte au-dessus du point courant
+  CenterText = 1    Texte centré verticalement
+  TopText    = 2    Texte en dessous du point courant
+
+  La justification par défaut est (LeftText, TopText).
+
+=========================================================================
+  11. CONSTANTES DIVERSES
+=========================================================================
+
+  --- Capture (Clipping) ---
+  ClipOn  = True     Activer le clipping dans le viewport
+  ClipOff = False    Désactiver le clipping dans le viewport
+
+  --- Bar3D ---
+  TopOn  = True      Dessiner le sommet de la barre 3D
+  TopOff = False     Ne pas dessiner le sommet (barres empilées)
+
+  --- MaxColors ---
+  MaxColors = 15     Indice maximal du tableau Colors de PaletteType
+
+=========================================================================
+  12. TYPES
+=========================================================================
+
+  --- PaletteType ---
+    PaletteType = record
+      Size   : Byte;                        { nombre de couleurs }
+      Colors : array[0..MaxColors] of ShortInt;  { valeurs palette }
+    end;
+
+  Utilisé par GetPalette, GetDefaultPalette. Size indique le nombre
+  d'entrées valides. Colors[i] contient la valeur de couleur matérielle
+  pour l'entrée logique i.
+
+  --- LineSettingsType ---
+    LineSettingsType = record
+      LineStyle : Word;     { SolidLn..UserBitLn }
+      Pattern   : Word;     { motif 16 bits si UserBitLn }
+      Thickness : Word;     { NormWidth ou ThickWidth }
+    end;
+
+  Retourné par GetLineSettings.
+
+  --- TextSettingsType ---
+    TextSettingsType = record
+      Font      : Word;    { DefaultFont..GothicFont }
+      Direction : Word;    { HorizDir ou VertDir }
+      CharSize  : Word;    { facteur de taille 1..10 ou 0=User }
+      Horiz     : Word;    { LeftText, CenterText, RightText }
+      Vert      : Word;    { BottomText, CenterText, TopText }
+    end;
+
+  Retourné par GetTextSettings.
+
+  --- FillSettingsType ---
+    FillSettingsType = record
+      Pattern : Word;      { EmptyFill..UserFill }
+      Color   : Word;      { couleur de remplissage }
+    end;
+
+  Retourné par GetFillSettings. Décrit le style de remplissage
+  prédéfini actuellement actif.
+
+  --- FillPatternType ---
+    FillPatternType = array[1..8] of Byte;
+
+  Motif de remplissage défini par l'utilisateur : matrice 8x8 bits.
+  Chaque octet représente une ligne de 8 pixels (MSB à gauche).
+  Utilisé par SetFillPattern et GetFillPattern.
+
+  --- PointType ---
+    PointType = record
+      X, Y : Integer;
+    end;
+
+  Coordonnées d'un point. Utilisé par DrawPoly et FillPoly pour
+  définir les sommets du polygone (tableau de PointType).
+
+  --- ViewPortType ---
+    ViewPortType = record
+      x1, y1, x2, y2 : Integer;    { coins du viewport }
+      Clip            : Boolean;    { clipping actif }
+    end;
+
+  Retourné par GetViewSettings. Décrit le viewport courant.
+
+  --- ArcCoordsType ---
+    ArcCoordsType = record
+      X, Y           : Integer;    { centre de l'arc }
+      Xstart, Ystart : Integer;    { point de départ }
+      Xend, Yend     : Integer;    { point d'arrivée }
+    end;
+
+  Retourné par GetArcCoords après un appel à Arc. Fournit les
+  coordonnées exactes du centre et des extrémités pour permettre
+  de tracer des lignes raccordées à l'arc.
+
+=========================================================================
+  13. VARIABLES
+=========================================================================
+
+  GraphGetMemPtr  : Pointer
+    Pointeur vers une routine d'allocation mémoire personnalisée.
+    Permet de remplacer l'allocateur par défaut du tas pour les
+    opérations graphiques internes.
+    Signature attendue : procedure(Size : Word) retournant un pointeur.
+
+  GraphFreeMemPtr : Pointer
+    Pointeur vers une routine de libération mémoire personnalisée.
+    Permet de remplacer le désallocateur par défaut du tas.
+    Signature attendue : procedure(P : Pointer; Size : Word).
+
+=========================================================================
+  14. INITIALISATION ET FERMETURE
+=========================================================================
+
+  procedure DetectGraph(var GraphDriver, GraphMode : Integer);
+  ---------------------------------------------------------------
+  Détecte le matériel graphique installé et retourne le pilote et
+  le mode graphique les plus appropriés.
+
+  Paramètres :
+    GraphDriver  [sortie]  Code du pilote détecté (CGA..PC3270)
+    GraphMode    [sortie]  Mode graphique le plus élevé pour ce pilote
+
+  Si aucun matériel n'est détecté, GraphDriver = grNotDetected (-2).
+  DetectGraph ne modifie pas l'état graphique : elle ne fait que
+  tester le matériel.
+
+  Exemple :
+    DetectGraph(Gd, Gm);
+    WriteLn('Pilote détecté : ', Gd, ' Mode : ', Gm);
+
+  ---------------------------------------------------------------
+  procedure InitGraph(var GraphDriver : Integer;
+                      var GraphMode   : Integer;
+                      PathToDriver    : String);
+  ---------------------------------------------------------------
+  Initialise le mode graphique.
+
+  Paramètres :
+    GraphDriver  [entrée/sortie]  
+      - En entrée : Detect (0) pour auto-détection,
+        ou un code de pilote spécifique (CGA..PC3270).
+      - En sortie : le pilote effectivement utilisé.
+    GraphMode    [entrée/sortie]
+      - En entrée : le mode souhaité (ignoré si Detect).
+      - En sortie : le mode effectivement activé.
+    PathToDriver
+      - Chemin vers les fichiers .BGI et .CHR.
+      - '' (chaîne vide) = répertoire courant.
+
+  Fonctionnement :
+    1. Si GraphDriver = Detect, appelle DetectGraph en interne.
+    2. Charge le fichier pilote .BGI correspondant.
+    3. Active le mode graphique.
+    4. Initialise toutes les valeurs par défaut (GraphDefaults).
+
+  Vérifier toujours GraphResult après InitGraph.
+
+  Exemple :
+    Gd := Detect;
+    InitGraph(Gd, Gm, 'C:\TP\BGI');
+    if GraphResult <> grOk then Halt(1);
+
+  ---------------------------------------------------------------
+  procedure CloseGraph;
+  ---------------------------------------------------------------
+  Ferme le mode graphique, libère la mémoire allouée au pilote et
+  aux polices, et restaure le mode texte précédent.
+
+  À appeler systématiquement avant la fin du programme graphique.
+
+  ---------------------------------------------------------------
+  procedure RestoreCrtMode;
+  ---------------------------------------------------------------
+  Restaure temporairement le mode vidéo texte qui était actif avant
+  InitGraph, sans libérer les ressources graphiques. Permet d'afficher
+  du texte en mode console, puis de revenir en mode graphique avec
+  SetGraphMode.
+
+  Exemple :
+    RestoreCrtMode;
+    WriteLn('Mode texte temporaire');
+    ReadLn;
+    SetGraphMode(GetGraphMode);
+
+  ---------------------------------------------------------------
+  procedure SetGraphMode(Mode : Integer);
+  ---------------------------------------------------------------
+  Active un mode graphique du pilote courant et réinitialise toutes
+  les valeurs par défaut (équivalent à un GraphDefaults implicite).
+
+  Paramètres :
+    Mode  Mode graphique valide pour le pilote chargé.
+
+  ---------------------------------------------------------------
+  procedure GraphDefaults;
+  ---------------------------------------------------------------
+  Réinitialise tous les paramètres graphiques à leurs valeurs par
+  défaut :
+    - Viewport = écran entier, clipping activé
+    - Position courante = (0, 0)
+    - Palette = palette par défaut du pilote
+    - Couleur de dessin = GetMaxColor
+    - Couleur de fond = 0
+    - Style de ligne = SolidLn, NormWidth
+    - Style de remplissage = SolidFill, GetMaxColor
+    - Police = DefaultFont, HorizDir, taille 1
+    - Justification texte = LeftText, TopText
+    - Mode d'écriture = CopyPut
+
+=========================================================================
+  15. INFORMATION ET GESTION DES PILOTES
+=========================================================================
+
+  function GraphErrorMsg(ErrorCode : Integer) : String;
+  ---------------------------------------------------------------
+  Retourne un message d'erreur en anglais correspondant à un code
+  d'erreur GraphResult.
+
+  Paramètres :
+    ErrorCode  Code d'erreur (grOk..grInvalidVersion)
+  Retour :     Chaîne descriptive de l'erreur.
+
+  Exemple :
+    WriteLn(GraphErrorMsg(GraphResult));
+
+  ---------------------------------------------------------------
+  function GraphResult : Integer;
+  ---------------------------------------------------------------
+  Retourne le code d'erreur de la dernière opération graphique.
+  Après lecture, la valeur interne est réinitialisée à grOk (0).
+
+  Important : lire GraphResult dans une variable locale car la
+  prochaine lecture retournera toujours grOk.
+
+  ---------------------------------------------------------------
+  function GetDriverName : String;
+  ---------------------------------------------------------------
+  Retourne le nom du pilote graphique courant (ex: 'EGAVGA').
+
+  ---------------------------------------------------------------
+  function RegisterBGIdriver(Driver : Pointer) : Integer;
+  ---------------------------------------------------------------
+  Enregistre un pilote BGI lié en mémoire (via BINOBJ et {$L}).
+  Retourne un numéro de pilote interne, ou un code d'erreur négatif.
+
+  Cela évite de charger le fichier .BGI depuis le disque.
+
+  ---------------------------------------------------------------
+  function RegisterBGIfont(Font : Pointer) : Integer;
+  ---------------------------------------------------------------
+  Enregistre une police CHR liée en mémoire (via BINOBJ et {$L}).
+  Retourne un numéro de police, ou un code d'erreur négatif.
+
+  ---------------------------------------------------------------
+  function InstallUserDriver(DriverFileName : String;
+                             AutoDetectPtr  : Pointer) : Integer;
+  ---------------------------------------------------------------
+  Installe un pilote BGI tiers non standard. Le pilote est ajouté
+  à la table interne des pilotes.
+
+  Paramètres :
+    DriverFileName  Nom du fichier .BGI (sans chemin)
+    AutoDetectPtr   Pointeur vers la fonction d'auto-détection,
+                    ou nil si pas d'auto-détection.
+  Retour :          Numéro de pilote attribué.
+
+  ---------------------------------------------------------------
+  function InstallUserFont(FontFileName : String) : Integer;
+  ---------------------------------------------------------------
+  Installe une police vectorielle .CHR supplémentaire. La police
+  est ajoutée à la table interne des polices.
+
+  Paramètres :
+    FontFileName  Nom du fichier .CHR
+  Retour :        Numéro de police attribué (utilisable avec
+                  SetTextStyle).
+
+  ---------------------------------------------------------------
+  procedure SetGraphBufSize(BufSize : Word);
+  ---------------------------------------------------------------
+  Définit la taille du tampon interne utilisé pour le scan-fill
+  et le flood-fill. Par défaut : 4096 octets. Doit être appelé
+  AVANT InitGraph.
+
+  Des remplissages complexes (grandes zones, formes irrégulières)
+  peuvent nécessiter un tampon plus grand.
+
+=========================================================================
+  16. INFORMATION SUR LES MODES
+=========================================================================
+
+  function GetMaxMode : Integer;
+  ---------------------------------------------------------------
+  Retourne le numéro du mode graphique le plus élevé pour le pilote
+  courant. Les modes valides vont de 0 à GetMaxMode.
+
+  ---------------------------------------------------------------
+  procedure GetModeRange(GraphDriver : Integer;
+                         var LoMode, HiMode : Integer);
+  ---------------------------------------------------------------
+  Retourne la plage de modes valides pour un pilote donné.
+
+  Paramètres :
+    GraphDriver  Code de pilote (CGA..PC3270), ou CurrentDriver (-128)
+                 pour le pilote courant.
+    LoMode       [sortie]  Mode le plus bas
+    HiMode       [sortie]  Mode le plus élevé
+
+  Si le pilote est invalide, LoMode et HiMode valent -1.
+
+  ---------------------------------------------------------------
+  function GetModeName(GraphMode : Integer) : String;
+  ---------------------------------------------------------------
+  Retourne le nom d'un mode graphique sous forme de chaîne
+  (ex: '640x200 EGA' ou '640x480 VGA').
+
+  ---------------------------------------------------------------
+  function GetGraphMode : Integer;
+  ---------------------------------------------------------------
+  Retourne le numéro du mode graphique actuellement actif.
+
+=========================================================================
+  17. POSITION COURANTE ET DIMENSIONS
+=========================================================================
+
+  function GetX : Integer;
+  ---------------------------------------------------------------
+  Retourne la coordonnée X de la position courante du curseur
+  graphique (CP), relative au viewport courant.
+
+  ---------------------------------------------------------------
+  function GetY : Integer;
+  ---------------------------------------------------------------
+  Retourne la coordonnée Y de la position courante (CP), relative
+  au viewport courant.
+
+  ---------------------------------------------------------------
+  function GetMaxX : Integer;
+  ---------------------------------------------------------------
+  Retourne la résolution horizontale maximale - 1.
+  Pour VGAHi : GetMaxX = 639 (résolution 640).
+
+  ---------------------------------------------------------------
+  function GetMaxY : Integer;
+  ---------------------------------------------------------------
+  Retourne la résolution verticale maximale - 1.
+  Pour VGAHi : GetMaxY = 479 (résolution 480).
+
+  ---------------------------------------------------------------
+  procedure MoveTo(X, Y : Integer);
+  ---------------------------------------------------------------
+  Déplace la position courante (CP) en (X, Y) sans rien dessiner.
+
+  ---------------------------------------------------------------
+  procedure MoveRel(Dx, Dy : Integer);
+  ---------------------------------------------------------------
+  Déplace la position courante de façon relative : CP ← CP + (Dx, Dy).
+
+=========================================================================
+  18. VIEWPORT ET PAGES
+=========================================================================
+
+  procedure SetViewPort(x1, y1, x2, y2 : Integer; Clip : Boolean);
+  ---------------------------------------------------------------
+  Définit une fenêtre de visualisation (viewport) rectangulaire.
+
+  Paramètres :
+    x1, y1  Coin supérieur gauche (coordonnées absolues écran)
+    x2, y2  Coin inférieur droit
+    Clip    ClipOn (True) = activer le clipping au viewport
+            ClipOff (False) = dessin hors limites autorisé
+
+  Après appel, la position courante est réinitialisée à (0, 0)
+  et toutes les coordonnées de dessin sont relatives au viewport.
+
+  Exemple :
+    SetViewPort(10, 10, 310, 190, ClipOn);
+
+  ---------------------------------------------------------------
+  procedure GetViewSettings(var ViewPort : ViewPortType);
+  ---------------------------------------------------------------
+  Retourne les paramètres du viewport courant.
+
+  ---------------------------------------------------------------
+  procedure ClearDevice;
+  ---------------------------------------------------------------
+  Efface tout l'écran graphique (toutes les pages), réinitialise
+  le viewport à l'écran entier et la position courante à (0, 0).
+
+  ---------------------------------------------------------------
+  procedure ClearViewPort;
+  ---------------------------------------------------------------
+  Efface uniquement le contenu du viewport courant en le remplissant
+  avec la couleur de fond. La position courante est remise à (0, 0).
+
+  ---------------------------------------------------------------
+  procedure SetVisualPage(Page : Word);
+  ---------------------------------------------------------------
+  Définit la page vidéo affichée à l'écran. Disponible uniquement
+  pour les modes supportant plusieurs pages.
+
+  ---------------------------------------------------------------
+  procedure SetActivePage(Page : Word);
+  ---------------------------------------------------------------
+  Définit la page vidéo sur laquelle les opérations de dessin
+  s'effectuent. Permet le double-buffering :
+    - Dessiner sur une page inactive (SetActivePage)
+    - Afficher l'autre page (SetVisualPage)
+    - Alterner pour une animation fluide.
+
+=========================================================================
+  19. DESSIN DE BASE (PIXELS ET LIGNES)
+=========================================================================
+
+  procedure PutPixel(X, Y : Integer; Pixel : Word);
+  ---------------------------------------------------------------
+  Dessine un pixel de couleur Pixel à la position (X, Y).
+
+  ---------------------------------------------------------------
+  function GetPixel(X, Y : Integer) : Word;
+  ---------------------------------------------------------------
+  Retourne la couleur du pixel à la position (X, Y).
+
+  ---------------------------------------------------------------
+  procedure SetWriteMode(WriteMode : Integer);
+  ---------------------------------------------------------------
+  Définit le mode d'écriture pour Line, LineTo, LineRel, Rectangle,
+  DrawPoly.
+
+  Paramètres :
+    WriteMode  CopyPut (0) = copie directe (par défaut)
+               XORPut  (1) = OU exclusif avec le fond
+
+  Note : SetWriteMode n'affecte que les lignes, pas les remplissages
+  ni le texte.
+
+  ---------------------------------------------------------------
+  procedure Line(x1, y1, x2, y2 : Integer);
+  ---------------------------------------------------------------
+  Trace une ligne du point (x1, y1) au point (x2, y2).
+  N'affecte pas la position courante (CP).
+
+  ---------------------------------------------------------------
+  procedure LineTo(X, Y : Integer);
+  ---------------------------------------------------------------
+  Trace une ligne de la position courante (CP) au point (X, Y),
+  puis déplace CP en (X, Y).
+
+  ---------------------------------------------------------------
+  procedure LineRel(Dx, Dy : Integer);
+  ---------------------------------------------------------------
+  Trace une ligne de CP à CP + (Dx, Dy), puis déplace CP.
+
+  ---------------------------------------------------------------
+  procedure GetLineSettings(var LineInfo : LineSettingsType);
+  ---------------------------------------------------------------
+  Retourne les paramètres actuels du style de ligne.
+
+  ---------------------------------------------------------------
+  procedure SetLineStyle(LineStyle : Word;
+                         Pattern   : Word;
+                         Thickness : Word);
+  ---------------------------------------------------------------
+  Définit le style de trait pour toutes les lignes.
+
+  Paramètres :
+    LineStyle   SolidLn, DottedLn, CenterLn, DashedLn, UserBitLn
+    Pattern     Motif 16 bits (utilisé seulement avec UserBitLn)
+    Thickness   NormWidth (1) ou ThickWidth (3)
+
+=========================================================================
+  20. FORMES GÉOMÉTRIQUES
+=========================================================================
+
+  procedure Rectangle(x1, y1, x2, y2 : Integer);
+  ---------------------------------------------------------------
+  Dessine un rectangle non rempli avec le style de ligne courant.
+
+  ---------------------------------------------------------------
+  procedure Bar(x1, y1, x2, y2 : Integer);
+  ---------------------------------------------------------------
+  Dessine un rectangle rempli avec le motif et la couleur de
+  remplissage courants. Pas de contour.
+
+  ---------------------------------------------------------------
+  procedure Bar3D(x1, y1, x2, y2 : Integer;
+                  Depth : Word; Top : Boolean);
+  ---------------------------------------------------------------
+  Dessine une barre 3D (parallélépipède) avec une face remplie
+  et un effet de profondeur.
+
+  Paramètres :
+    x1,y1,x2,y2  Rectangle de la face avant
+    Depth         Profondeur en pixels du côté 3D
+    Top           TopOn = dessiner le sommet
+                  TopOff = ne pas dessiner le sommet (empilage)
+
+  Formule pour la profondeur typique :
+    Depth := (x2 - x1) div 4;
+
+  Exemple d'empilement de barres :
+    Bar3D(10, 100, 50, 200, 10, TopOff);  { barre du bas }
+    Bar3D(10, 50, 50, 100, 10, TopOn);    { barre du haut }
+
+  ---------------------------------------------------------------
+  procedure DrawPoly(NumPoints : Word; var PolyPoints);
+  ---------------------------------------------------------------
+  Dessine le contour d'un polygone (non rempli).
+
+  Paramètres :
+    NumPoints   Nombre de sommets
+    PolyPoints  Tableau non typé de PointType
+
+  Pour fermer le polygone, le dernier point doit être identique
+  au premier. NumPoints doit donc inclure ce point de fermeture.
+
+  Exemple :
+    var Pts : array[1..4] of PointType;
+    begin
+      Pts[1].X := 10; Pts[1].Y := 10;
+      Pts[2].X := 100; Pts[2].Y := 10;
+      Pts[3].X := 50; Pts[3].Y := 80;
+      Pts[4] := Pts[1];  { fermer le polygone }
+      DrawPoly(4, Pts);
+    end;
+
+  ---------------------------------------------------------------
+  procedure FillPoly(NumPoints : Word; var PolyPoints);
+  ---------------------------------------------------------------
+  Dessine et remplit un polygone avec le motif de remplissage
+  courant. Le polygone est automatiquement fermé (pas besoin de
+  dupliquer le premier point).
+
+  ---------------------------------------------------------------
+  procedure Circle(X, Y : Integer; Radius : Word);
+  ---------------------------------------------------------------
+  Dessine un cercle de centre (X, Y) et de rayon Radius.
+  Utilise le rapport d'aspect courant pour corriger la déformation
+  due aux pixels non carrés.
+
+  ---------------------------------------------------------------
+  procedure Arc(X, Y : Integer;
+                StAngle, EndAngle, Radius : Word);
+  ---------------------------------------------------------------
+  Dessine un arc de cercle.
+
+  Paramètres :
+    X, Y       Centre
+    StAngle    Angle de départ en degrés (0 = droite, 90 = haut)
+    EndAngle   Angle de fin en degrés
+    Radius     Rayon
+
+  Convention d'angles : sens anti-horaire, 0° = Est (→),
+  90° = Nord (↑), 180° = Ouest (←), 270° = Sud (↓).
+
+  Cas spécial : StAngle = 0 et EndAngle = 360 dessine un cercle
+  complet.
+
+  ---------------------------------------------------------------
+  procedure GetArcCoords(var ArcCoords : ArcCoordsType);
+  ---------------------------------------------------------------
+  Retourne les coordonnées du dernier arc dessiné (centre et
+  extrémités). Utile pour raccorder des lignes aux extrémités
+  d'un arc.
+
+  Exemple :
+    Arc(200, 150, 0, 90, 50);
+    GetArcCoords(AC);
+    Line(AC.Xstart, AC.Ystart, AC.Xend, AC.Yend);
+
+  ---------------------------------------------------------------
+  procedure Ellipse(X, Y : Integer;
+                    StAngle, EndAngle : Word;
+                    XRadius, YRadius  : Word);
+  ---------------------------------------------------------------
+  Dessine un arc d'ellipse (contour, non rempli).
+
+  Paramètres :
+    X, Y       Centre
+    StAngle    Angle de départ
+    EndAngle   Angle de fin
+    XRadius    Rayon horizontal
+    YRadius    Rayon vertical
+
+  StAngle = 0 et EndAngle = 360 dessine une ellipse complète.
+
+  ---------------------------------------------------------------
+  procedure FillEllipse(X, Y : Integer;
+                        XRadius, YRadius : Word);
+  ---------------------------------------------------------------
+  Dessine et remplit une ellipse complète avec le motif de
+  remplissage courant.
+
+  ---------------------------------------------------------------
+  procedure PieSlice(X, Y : Integer;
+                     StAngle, EndAngle, Radius : Word);
+  ---------------------------------------------------------------
+  Dessine et remplit une part de camembert (secteur circulaire).
+
+  Paramètres :
+    X, Y       Centre
+    StAngle    Angle de départ
+    EndAngle   Angle de fin
+    Radius     Rayon
+
+  Le secteur est délimité par deux rayons et un arc, puis rempli
+  avec le motif courant.
+
+  ---------------------------------------------------------------
+  procedure Sector(X, Y : Integer;
+                   StAngle, EndAngle,
+                   XRadius, YRadius : Word);
+  ---------------------------------------------------------------
+  Dessine et remplit un secteur elliptique (part de camembert
+  avec des rayons différents en X et Y).
+
+  ---------------------------------------------------------------
+  procedure FloodFill(X, Y : Integer; Border : Word);
+  ---------------------------------------------------------------
+  Remplit une zone fermée à partir du point (X, Y).
+
+  Paramètres :
+    X, Y     Point de départ du remplissage (graine)
+    Border   Couleur de la frontière qui délimite la zone
+
+  Le remplissage s'étend dans toutes les directions jusqu'à
+  rencontrer des pixels de couleur Border ou le bord de l'écran.
+  Utilise le motif de remplissage courant.
+
+  Attention : la zone doit être complètement fermée, sinon le
+  remplissage déborde dans les zones adjacentes.
+
+=========================================================================
+  21. REMPLISSAGE
+=========================================================================
+
+  procedure GetFillSettings(var FillInfo : FillSettingsType);
+  ---------------------------------------------------------------
+  Retourne le motif et la couleur de remplissage prédéfini courant.
+
+  ---------------------------------------------------------------
+  procedure GetFillPattern(var FillPattern : FillPatternType);
+  ---------------------------------------------------------------
+  Retourne le motif de remplissage utilisateur courant (8 octets).
+
+  ---------------------------------------------------------------
+  procedure SetFillStyle(Pattern : Word; Color : Word);
+  ---------------------------------------------------------------
+  Définit le motif de remplissage prédéfini et sa couleur.
+
+  Paramètres :
+    Pattern   EmptyFill..CloseDotFill (0..11)
+    Color     Couleur de remplissage (0..GetMaxColor)
+
+  Note : pour utiliser un motif utilisateur (UserFill = 12),
+  employer SetFillPattern au lieu de SetFillStyle.
+
+  ---------------------------------------------------------------
+  procedure SetFillPattern(Pattern : FillPatternType;
+                           Color   : Word);
+  ---------------------------------------------------------------
+  Définit un motif de remplissage personnalisé.
+
+  Paramètres :
+    Pattern  Tableau de 8 octets (matrice 8x8 bits)
+    Color    Couleur de remplissage
+
+  Chaque octet représente une ligne horizontale du motif :
+    bit 7 (MSB) = pixel le plus à gauche
+    bit 0 (LSB) = pixel le plus à droite
+
+  Exemple (damier) :
+    var P : FillPatternType;
+    begin
+      P[1] := $AA;  { 10101010 }
+      P[2] := $55;  { 01010101 }
+      P[3] := $AA;
+      P[4] := $55;
+      P[5] := $AA;
+      P[6] := $55;
+      P[7] := $AA;
+      P[8] := $55;
+      SetFillPattern(P, White);
+    end;
+
+=========================================================================
+  22. COULEURS ET PALETTE
+=========================================================================
+
+  procedure SetColor(Color : Word);
+  ---------------------------------------------------------------
+  Définit la couleur de dessin utilisée par les lignes, contours,
+  et le texte.
+
+  Paramètres :
+    Color  Couleur logique (0..GetMaxColor)
+
+  ---------------------------------------------------------------
+  function GetColor : Word;
+  ---------------------------------------------------------------
+  Retourne la couleur de dessin courante.
+
+  ---------------------------------------------------------------
+  procedure SetBkColor(ColorNum : Word);
+  ---------------------------------------------------------------
+  Définit la couleur de fond de l'écran graphique.
+
+  ---------------------------------------------------------------
+  function GetBkColor : Word;
+  ---------------------------------------------------------------
+  Retourne la couleur de fond courante.
+
+  ---------------------------------------------------------------
+  function GetMaxColor : Word;
+  ---------------------------------------------------------------
+  Retourne la valeur maximale de couleur utilisable avec le pilote
+  et le mode courants. Pour VGA 16 couleurs : GetMaxColor = 15.
+  Pour IBM8514 256 couleurs : GetMaxColor = 255.
+
+  ---------------------------------------------------------------
+  procedure SetPalette(ColorNum : Word; Color : ShortInt);
+  ---------------------------------------------------------------
+  Modifie une seule entrée de la palette.
+
+  Paramètres :
+    ColorNum  Numéro de l'entrée palette (0..GetMaxColor)
+    Color     Nouvelle valeur de couleur matérielle
+
+  Le changement est immédiat : tous les pixels utilisant cette
+  entrée changent instantanément de couleur à l'écran.
+
+  ---------------------------------------------------------------
+  procedure SetAllPalette(var Palette);
+  ---------------------------------------------------------------
+  Modifie toutes les entrées de la palette en une seule opération.
+
+  Paramètres :
+    Palette  Structure non typée commençant par un Word (Size)
+             suivi de Size valeurs ShortInt.
+
+  Une valeur de -1 dans une entrée signifie "ne pas modifier".
+
+  ---------------------------------------------------------------
+  procedure GetPalette(var Palette : PaletteType);
+  ---------------------------------------------------------------
+  Retourne la palette courante.
+
+  ---------------------------------------------------------------
+  function GetPaletteSize : Integer;
+  ---------------------------------------------------------------
+  Retourne le nombre d'entrées de la palette courante.
+  Équivalent à Palette.Size après GetPalette.
+
+  ---------------------------------------------------------------
+  procedure GetDefaultPalette(var Palette : PaletteType);
+  ---------------------------------------------------------------
+  Retourne la palette par défaut du pilote (telle qu'initialisée
+  par InitGraph).
+
+  ---------------------------------------------------------------
+  procedure SetRGBPalette(ColorNum,
+                          RedValue, GreenValue, BlueValue : Integer);
+  ---------------------------------------------------------------
+  Définit une entrée de palette en composantes RVB.
+  Disponible uniquement pour les pilotes IBM8514 et VGA 256 couleurs.
+
+  Paramètres :
+    ColorNum    Numéro de l'entrée (0..255)
+    RedValue    Composante rouge (0..63), bits 0..5 utilisés
+    GreenValue  Composante verte (0..63)
+    BlueValue   Composante bleue (0..63)
+
+=========================================================================
+  23. RAPPORT D'ASPECT
+=========================================================================
+
+  procedure GetAspectRatio(var Xasp, Yasp : Word);
+  ---------------------------------------------------------------
+  Retourne le rapport d'aspect courant utilisé pour corriger les
+  cercles et arcs (pixels non carrés sur certains modes).
+
+  Le rapport est exprimé en deux valeurs : pour obtenir un cercle
+  parfait, le rayon Y effectif = Radius * (Xasp / Yasp).
+
+  ---------------------------------------------------------------
+  procedure SetAspectRatio(Xasp, Yasp : Word);
+  ---------------------------------------------------------------
+  Modifie le rapport d'aspect. Utile si le ratio détecté
+  automatiquement ne produit pas des cercles parfaits.
+
+  Paramètres :
+    Xasp, Yasp  Nouvelles valeurs du rapport (typiquement ~10000)
+
+=========================================================================
+  24. IMAGES (BITMAP)
+=========================================================================
+
+  function ImageSize(x1, y1, x2, y2 : Integer) : Word;
+  ---------------------------------------------------------------
+  Calcule la taille mémoire en octets nécessaire pour stocker
+  l'image rectangulaire définie par (x1,y1)-(x2,y2).
+
+  Le résultat inclut l'en-tête interne (4 octets : largeur et
+  hauteur sur 2 mots).
+
+  Si la taille dépasse 64 Ko - 1 (65535), retourne 0 et
+  GraphResult = grError.
+
+  ---------------------------------------------------------------
+  procedure GetImage(x1, y1, x2, y2 : Integer; var BitMap);
+  ---------------------------------------------------------------
+  Capture l'image rectangulaire de l'écran dans un tampon mémoire.
+
+  Paramètres :
+    x1,y1,x2,y2  Rectangle source
+    BitMap        Tampon non typé (doit avoir au moins
+                  ImageSize(x1,y1,x2,y2) octets)
+
+  Le tampon est habituellement alloué dynamiquement :
+    Size := ImageSize(x1, y1, x2, y2);
+    GetMem(P, Size);
+    GetImage(x1, y1, x2, y2, P^);
+
+  ---------------------------------------------------------------
+  procedure PutImage(X, Y : Integer; var BitMap; BitBlt : Word);
+  ---------------------------------------------------------------
+  Affiche une image précédemment capturée par GetImage.
+
+  Paramètres :
+    X, Y      Position du coin supérieur gauche
+    BitMap    Tampon contenant l'image (format GetImage)
+    BitBlt    Opérateur de combinaison :
+              CopyPut (0), XORPut (1), OrPut (2),
+              AndPut (3), NotPut (4)
+
+  Exemple d'animation par XOR :
+    GetImage(10, 10, 40, 40, Buf^);
+    PutImage(10, 10, Buf^, XORPut);  { effacer }
+    PutImage(20, 10, Buf^, XORPut);  { afficher à nouvelle position }
+
+=========================================================================
+  25. TEXTE GRAPHIQUE
+=========================================================================
+
+  procedure OutText(TextString : String);
+  ---------------------------------------------------------------
+  Affiche une chaîne à la position courante (CP).
+  Avec la police par défaut (DefaultFont) en direction horizontale,
+  CP avance après le texte. Avec les polices vectorielles, CP
+  n'avance que si la justification est (LeftText, TopText).
+
+  ---------------------------------------------------------------
+  procedure OutTextXY(X, Y : Integer; TextString : String);
+  ---------------------------------------------------------------
+  Affiche une chaîne à la position spécifiée (X, Y).
+  Ne modifie pas la position courante (CP).
+
+  ---------------------------------------------------------------
+  procedure SetTextStyle(Font, Direction : Word; CharSize : Word);
+  ---------------------------------------------------------------
+  Définit la police, la direction et la taille du texte.
+
+  Paramètres :
+    Font       DefaultFont, TriplexFont, SmallFont,
+               SansSerifFont, GothicFont, ou police utilisateur
+    Direction  HorizDir (0) ou VertDir (1)
+    CharSize   1..10 = facteur multiplicateur
+               0 (UserCharSize) = taille définie par SetUserCharSize
+
+  ---------------------------------------------------------------
+  procedure SetUserCharSize(MultX, DivX, MultY, DivY : Word);
+  ---------------------------------------------------------------
+  Définit une taille de caractère personnalisée pour les polices
+  vectorielles.
+
+  Le facteur d'échelle horizontal = MultX / DivX
+  Le facteur d'échelle vertical   = MultY / DivY
+
+  Actif uniquement quand CharSize = UserCharSize (0) dans
+  SetTextStyle.
+
+  Exemple :
+    SetTextStyle(TriplexFont, HorizDir, UserCharSize);
+    SetUserCharSize(3, 1, 2, 1);  { 3x horizontal, 2x vertical }
+
+  ---------------------------------------------------------------
+  procedure SetTextJustify(Horiz, Vert : Word);
+  ---------------------------------------------------------------
+  Définit l'alignement du texte par rapport au point d'affichage.
+
+  Paramètres :
+    Horiz  LeftText (0), CenterText (1), RightText (2)
+    Vert   BottomText (0), CenterText (1), TopText (2)
+
+  Par défaut : (LeftText, TopText) = le texte commence en haut
+  à gauche du point.
+
+  ---------------------------------------------------------------
+  procedure GetTextSettings(var TextInfo : TextSettingsType);
+  ---------------------------------------------------------------
+  Retourne les paramètres de texte courants (police, direction,
+  taille, justification).
+
+  ---------------------------------------------------------------
+  function TextHeight(TextString : String) : Word;
+  ---------------------------------------------------------------
+  Retourne la hauteur en pixels de la chaîne avec les paramètres
+  de texte courants. Utile pour calculer l'espacement des lignes.
+
+  ---------------------------------------------------------------
+  function TextWidth(TextString : String) : Word;
+  ---------------------------------------------------------------
+  Retourne la largeur en pixels de la chaîne avec les paramètres
+  de texte courants. Utile pour centrer du texte ou vérifier
+  qu'il tient dans un viewport.
+
+=========================================================================
+  26. EXEMPLES COMPLETS
+=========================================================================
+
+  --- Exemple 1 : Programme graphique minimal ---
+
+  program GraphDemo;
+  uses Graph;
+  var
+    Gd, Gm : Integer;
+  begin
+    Gd := Detect;
+    InitGraph(Gd, Gm, '');
+    if GraphResult <> grOk then
+    begin
+      WriteLn('Erreur : ', GraphErrorMsg(GraphResult));
+      Halt(1);
+    end;
+
+    SetColor(Yellow);
+    Rectangle(10, 10, GetMaxX - 10, GetMaxY - 10);
+    Circle(GetMaxX div 2, GetMaxY div 2, 100);
+    OutTextXY(10, GetMaxY - 30, 'Appuyez sur Entree...');
+    ReadLn;
+    CloseGraph;
+  end.
+
+  --- Exemple 2 : Barres colorées avec remplissage ---
+
+  program BarChart;
+  uses Graph;
+  var
+    Gd, Gm, I : Integer;
+  begin
+    Gd := Detect;
+    InitGraph(Gd, Gm, '');
+    if GraphResult <> grOk then Halt(1);
+
+    for I := 0 to 10 do
+    begin
+      SetFillStyle(I, White);
+      Bar(I * 50 + 10, 50, I * 50 + 50, 300);
+      Rectangle(I * 50 + 10, 50, I * 50 + 50, 300);
+    end;
+
+    ReadLn;
+    CloseGraph;
+  end.
+
+  --- Exemple 3 : Animation par double buffering ---
+
+  program Animation;
+  uses Graph, Crt;
+  var
+    Gd, Gm, X, Page : Integer;
+  begin
+    Gd := VGA; Gm := VGALo;  { 4 pages disponibles }
+    InitGraph(Gd, Gm, '');
+    if GraphResult <> grOk then Halt(1);
+
+    X := 0;
+    Page := 0;
+    while not KeyPressed do
+    begin
+      SetActivePage(1 - Page);
+      ClearDevice;
+      SetColor(LightCyan);
+      Circle(X, 100, 30);
+      SetVisualPage(1 - Page);
+      Page := 1 - Page;
+      X := (X + 2) mod GetMaxX;
+      Delay(20);
+    end;
+
+    CloseGraph;
+  end.
+
+  --- Exemple 4 : Camembert (PieSlice) ---
+
+  program PieChart;
+  uses Graph;
+  var
+    Gd, Gm : Integer;
+  begin
+    Gd := Detect;
+    InitGraph(Gd, Gm, '');
+    if GraphResult <> grOk then Halt(1);
+
+    SetFillStyle(SolidFill, Red);
+    PieSlice(320, 240, 0, 120, 100);
+
+    SetFillStyle(SolidFill, Green);
+    PieSlice(320, 240, 120, 240, 100);
+
+    SetFillStyle(SolidFill, Blue);
+    PieSlice(320, 240, 240, 360, 100);
+
+    ReadLn;
+    CloseGraph;
+  end.
+
+  --- Exemple 5 : Capture et affichage d'image ---
+
+  program ImageDemo;
+  uses Graph;
+  var
+    Gd, Gm : Integer;
+    P       : Pointer;
+    Size    : Word;
+  begin
+    Gd := Detect;
+    InitGraph(Gd, Gm, '');
+    if GraphResult <> grOk then Halt(1);
+
+    { Dessiner un objet }
+    SetColor(Yellow);
+    SetFillStyle(SolidFill, Red);
+    FillEllipse(50, 50, 30, 20);
+
+    { Capturer }
+    Size := ImageSize(20, 30, 80, 70);
+    GetMem(P, Size);
+    GetImage(20, 30, 80, 70, P^);
+
+    { Dupliquer }
+    PutImage(200, 100, P^, CopyPut);
+    PutImage(300, 200, P^, XORPut);
+
+    ReadLn;
+    FreeMem(P, Size);
+    CloseGraph;
+  end.
+
+=========================================================================
+  27. RÉCAPITULATIF DE L'INTERFACE
+=========================================================================
+
+  --- Fonctions d'erreur et information ---
+  Function  GraphErrorMsg(ErrorCode : Integer) : String;
+  Function  GraphResult : Integer;
+  Procedure DetectGraph(var GraphDriver, GraphMode : Integer);
+  Function  GetDriverName : String;
+
+  --- Initialisation / Fermeture ---
+  Procedure InitGraph(var GraphDriver : Integer;
+                      var GraphMode : Integer;
+                      PathToDriver : String);
+  Procedure CloseGraph;
+  Procedure RestoreCrtMode;
+  Procedure SetGraphMode(Mode : Integer);
+  Function  GetGraphMode : Integer;
+  Procedure GraphDefaults;
+
+  --- Pilotes et polices ---
+  Function  RegisterBGIdriver(Driver : Pointer) : Integer;
+  Function  RegisterBGIfont(Font : Pointer) : Integer;
+  Function  InstallUserDriver(DriverFileName : String;
+                              AutoDetectPtr : Pointer) : Integer;
+  Function  InstallUserFont(FontFileName : String) : Integer;
+  Procedure SetGraphBufSize(BufSize : Word);
+
+  --- Modes ---
+  Function  GetMaxMode : Integer;
+  Procedure GetModeRange(GraphDriver : Integer;
+                         var LoMode, HiMode : Integer);
+  Function  GetModeName(GraphMode : Integer) : String;
+
+  --- Position et dimensions ---
+  Function  GetX : Integer;
+  Function  GetY : Integer;
+  Function  GetMaxX : Integer;
+  Function  GetMaxY : Integer;
+  Procedure MoveTo(X, Y : Integer);
+  Procedure MoveRel(Dx, Dy : Integer);
+
+  --- Viewport et pages ---
+  Procedure SetViewPort(x1, y1, x2, y2 : Integer; Clip : Boolean);
+  Procedure GetViewSettings(var ViewPort : ViewPortType);
+  Procedure ClearDevice;
+  Procedure ClearViewPort;
+  Procedure SetVisualPage(Page : Word);
+  Procedure SetActivePage(Page : Word);
+
+  --- Pixels et lignes ---
+  Procedure PutPixel(X, Y : Integer; Pixel : Word);
+  Function  GetPixel(X, Y : Integer) : Word;
+  Procedure SetWriteMode(WriteMode : Integer);
+  Procedure Line(x1, y1, x2, y2 : Integer);
+  Procedure LineTo(X, Y : Integer);
+  Procedure LineRel(Dx, Dy : Integer);
+  Procedure GetLineSettings(var LineInfo : LineSettingsType);
+  Procedure SetLineStyle(LineStyle, Pattern, Thickness : Word);
+
+  --- Formes ---
+  Procedure Rectangle(x1, y1, x2, y2 : Integer);
+  Procedure Bar(x1, y1, x2, y2 : Integer);
+  Procedure Bar3D(x1, y1, x2, y2 : Integer;
+                  Depth : Word; Top : Boolean);
+  Procedure DrawPoly(NumPoints : Word; var PolyPoints);
+  Procedure FillPoly(NumPoints : Word; var PolyPoints);
+  Procedure Circle(X, Y : Integer; Radius : Word);
+  Procedure Arc(X, Y : Integer;
+                StAngle, EndAngle, Radius : Word);
+  Procedure GetArcCoords(var ArcCoords : ArcCoordsType);
+  Procedure Ellipse(X, Y : Integer;
+                    StAngle, EndAngle, XRadius, YRadius : Word);
+  Procedure FillEllipse(X, Y : Integer; XRadius, YRadius : Word);
+  Procedure PieSlice(X, Y : Integer;
+                     StAngle, EndAngle, Radius : Word);
+  Procedure Sector(X, Y : Integer;
+                   StAngle, EndAngle, XRadius, YRadius : Word);
+  Procedure FloodFill(X, Y : Integer; Border : Word);
+
+  --- Remplissage ---
+  Procedure GetFillSettings(var FillInfo : FillSettingsType);
+  Procedure GetFillPattern(var FillPattern : FillPatternType);
+  Procedure SetFillStyle(Pattern, Color : Word);
+  Procedure SetFillPattern(Pattern : FillPatternType; Color : Word);
+
+  --- Couleurs et palette ---
+  Procedure SetColor(Color : Word);
+  Function  GetColor : Word;
+  Procedure SetBkColor(ColorNum : Word);
+  Function  GetBkColor : Word;
+  Function  GetMaxColor : Word;
+  Procedure SetPalette(ColorNum : Word; Color : ShortInt);
+  Procedure SetAllPalette(var Palette);
+  Procedure GetPalette(var Palette : PaletteType);
+  Function  GetPaletteSize : Integer;
+  Procedure GetDefaultPalette(var Palette : PaletteType);
+  Procedure SetRGBPalette(ColorNum,
+                          RedValue, GreenValue, BlueValue : Integer);
+
+  --- Rapport d'aspect ---
+  Procedure GetAspectRatio(var Xasp, Yasp : Word);
+  Procedure SetAspectRatio(Xasp, Yasp : Word);
+
+  --- Images ---
+  Function  ImageSize(x1, y1, x2, y2 : Integer) : Word;
+  Procedure GetImage(x1, y1, x2, y2 : Integer; var BitMap);
+  Procedure PutImage(X, Y : Integer; var BitMap; BitBlt : Word);
+
+  --- Texte graphique ---
+  Procedure OutText(TextString : String);
+  Procedure OutTextXY(X, Y : Integer; TextString : String);
+  Procedure SetTextStyle(Font, Direction, CharSize : Word);
+  Procedure SetUserCharSize(MultX, DivX, MultY, DivY : Word);
+  Procedure SetTextJustify(Horiz, Vert : Word);
+  Procedure GetTextSettings(var TextInfo : TextSettingsType);
+  Function  TextHeight(TextString : String) : Word;
+  Function  TextWidth(TextString : String) : Word;
+
+=========================================================================
+  28. RÉSUMÉ PAR CATÉGORIE
+=========================================================================
+
+  Catégorie                   Nombre   Routines
+  -------------------------   ------   ----------------------------------
+  Erreur / Information           4     GraphErrorMsg, GraphResult,
+                                       DetectGraph, GetDriverName
+  Initialisation / Fermeture     5     InitGraph, CloseGraph,
+                                       RestoreCrtMode, SetGraphMode,
+                                       GraphDefaults
+  Pilotes / Polices              4     RegisterBGIdriver,
+                                       RegisterBGIfont,
+                                       InstallUserDriver,
+                                       InstallUserFont
+  Modes                          4     GetMaxMode, GetModeRange,
+                                       GetModeName, GetGraphMode
+  Tampon                         1     SetGraphBufSize
+  Position / Dimensions          6     GetX, GetY, GetMaxX, GetMaxY,
+                                       MoveTo, MoveRel
+  Viewport / Pages               6     SetViewPort, GetViewSettings,
+                                       ClearDevice, ClearViewPort,
+                                       SetVisualPage, SetActivePage
+  Pixels / Lignes                7     PutPixel, GetPixel,
+                                       SetWriteMode, Line, LineTo,
+                                       LineRel, SetLineStyle
+  Info lignes                    1     GetLineSettings
+  Formes                        11     Rectangle, Bar, Bar3D,
+                                       DrawPoly, FillPoly, Circle,
+                                       Arc, Ellipse, FillEllipse,
+                                       PieSlice, Sector
+  Info arcs                      1     GetArcCoords
+  Remplissage libre              1     FloodFill
+  Remplissage réglages           4     GetFillSettings,
+                                       GetFillPattern, SetFillStyle,
+                                       SetFillPattern
+  Couleurs / Palette            10     SetColor, GetColor, SetBkColor,
+                                       GetBkColor, GetMaxColor,
+                                       SetPalette, SetAllPalette,
+                                       GetPalette, GetPaletteSize,
+                                       GetDefaultPalette
+  RVB                            1     SetRGBPalette
+  Aspect                         2     GetAspectRatio, SetAspectRatio
+  Images                         3     ImageSize, GetImage, PutImage
+  Texte graphique                7     OutText, OutTextXY,
+                                       SetTextStyle, SetUserCharSize,
+                                       SetTextJustify,
+                                       GetTextSettings, TextHeight,
+                                       TextWidth
+  -------------------------   ------   ----------------------------------
+  TOTAL                         78     procédures et fonctions
+
+  Types exportés : 8  (PaletteType, LineSettingsType,
+                       TextSettingsType, FillSettingsType,
+                       FillPatternType, PointType,
+                       ViewPortType, ArcCoordsType)
+
+  Variables exportées : 2  (GraphGetMemPtr, GraphFreeMemPtr)
+
+  Constantes exportées : ~120 (codes erreur, pilotes, modes,
+                               couleurs, styles, polices, motifs,
+                               opérateurs BitBlt, justification)
+
+=========================================================================
+  Fin du document - Unité GRAPH - Turbo Pascal 7.0
+=========================================================================

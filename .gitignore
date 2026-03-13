@@ -1,4 +1,4 @@
-CLIPPER86
-CLIPPER86.o
+
 *.o
-SAMPLES/CLIPPER/*.asm
+*.obj
+*.ppu

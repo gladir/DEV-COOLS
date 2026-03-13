@@ -1,0 +1,1417 @@
+==============================================================================
+  DPMI - DOS Protected Mode Interface
+  Documentation de reference (version 0.9 et 1.0)
+==============================================================================
+
+  Le DPMI (DOS Protected Mode Interface) est une specification qui definit
+  une interface standard permettant aux programmes DOS de fonctionner en
+  mode protege du processeur x86 tout en continuant d'acceder aux services
+  du DOS, du BIOS et du materiel.
+
+  Cette interface a ete introduite par Microsoft en 1989 et standardisee
+  par un consortium regroupant Borland, Phar Lap, Rational Systems,
+  Qualcomm et d'autres. Elle est decrite dans les specifications DPMI 0.9
+  et DPMI 1.0.
+
+  INT 31h est l'interruption reservee pour les services DPMI. Tous les
+  appels aux services DPMI sont effectues via cette interruption.
+
+  Le DPMI est utilise par :
+    - Les compilateurs Borland (Turbo Pascal 7.0, Borland C++ 3.x)
+    - DJGPP (GNU C pour DOS 32 bits)
+    - Les jeux DOS 32 bits (via DOS/4GW, DOS/32A, etc.)
+    - Les applications Rational DOS Extender
+
+==============================================================================
+  1. INTRODUCTION AU DPMI
+==============================================================================
+
+  1.1 Historique et motivation
+  ----------------------------
+
+  Avant le DPMI, les programmeurs DOS devaient choisir entre :
+    - Rester en mode reel (limite a 1 Mo de memoire)
+    - Utiliser des techniques non standards (VCPI, DPMI proprietaire)
+    - Ecrire leurs propres extenseurs DOS
+
+  Le mode protege du 80286/80386 offre plusieurs avantages :
+    - Acces a plus de memoire (16 Mo sur 286, 4 Go sur 386)
+    - Protection memoire entre programmes
+    - Mecanismes de privileges (anneaux 0 a 3)
+    - Gestion avancee de la memoire virtuelle (386+)
+
+  Le DPMI resout le probleme de standardisation en definissant une API
+  commune. Un "serveur DPMI" (hote) s'installe en memoire et fournit
+  les services requis. Les programmes clients (les programmes DOS en
+  mode protege) appellent ces services via INT 31h.
+
+  1.2 Versions du DPMI
+  --------------------
+
+    DPMI 0.9 (1990) :
+      - Premiere version publiee
+      - Support du 16 bits et 32 bits
+      - Gestion des descripteurs de segment
+      - Gestion de la memoire etendue (XMS, EMS)
+      - Interface pour appels DOS en mode reel
+
+    DPMI 1.0 (1992) :
+      - Ajoute la gestion des pages memoire (protection, commit)
+      - Ajoute la memoire partagee entre clients
+      - Ajoute la gestion des exceptions avancee
+      - Ajoute des services de synchronisation
+
+  1.3 Architecture generale
+  -------------------------
+
+    +---------------------------+
+    |    Programme client       |  <- votre programme en mode protege
+    |    (anneau 3)             |
+    +---------------------------+
+              | INT 31h
+              v
+    +---------------------------+
+    |    Serveur DPMI           |  <- fournit les services
+    |    (anneau 0 ou 1)        |     (Windows, CWSDPMI, HDPMI, etc.)
+    +---------------------------+
+              |
+              v
+    +---------------------------+
+    |    DOS / BIOS             |  <- code mode reel
+    |    (mode reel emule)      |
+    +---------------------------+
+
+==============================================================================
+  2. CONCEPTS FONDAMENTAUX DU MODE PROTEGE
+==============================================================================
+
+  2.1 Segments et selecteurs
+  --------------------------
+
+  En mode reel, une adresse est composee de Segment:Offset (20 bits).
+  En mode protege, le "segment" est remplace par un "selecteur" de 16 bits
+  qui indexe une table de descripteurs.
+
+  Un selecteur 16 bits contient :
+    Bits 15-3  : Index dans la table GDT ou LDT (13 bits)
+    Bit  2     : TI (Table Indicator) : 0=GDT, 1=LDT
+    Bits 1-0   : RPL (Requested Privilege Level) : 0=noyau, 3=utilisateur
+
+  Exemple de selecteur :
+    $0008 = Index 1, GDT, privilege 0  (segment code noyau typique)
+    $001B = Index 3, GDT, privilege 3  (segment code application)
+    $0023 = Index 4, GDT, privilege 3  (segment donnees application)
+
+  2.2 Descripteurs de segment
+  ---------------------------
+
+  Chaque entree dans la GDT ou LDT est un descripteur de 8 octets qui
+  decrit un segment : base, limite, type, droits d'acces.
+
+  Structure d'un descripteur (8 octets) :
+    Octets 0-1 : Limite[15:0]
+    Octets 2-4 : Base[23:0]
+    Octet  5   : Droits d'acces (type, DPL, P)
+    Octet  6   : Limite[19:16] + flags (G, D/B, AVL)
+    Octet  7   : Base[31:24]
+
+  Octet de droits d'acces :
+    Bit 7 : P    (Present) : 1 = descripteur valide
+    Bits 6-5 : DPL (Descriptor Privilege Level) : 0-3
+    Bit 4 : S    (Segment) : 1 = code/donnees, 0 = systeme
+    Bits 3-0 : Type :
+      1010 = Code, non-conformant, lecture autorisee
+      0010 = Donnees, en expansion vers le haut, ecriture autorisee
+      0110 = Donnees, en expansion vers le bas, ecriture autorisee
+
+  Octet de flags (bits hauts du second octet de limite) :
+    Bit 7 : G   (Granularite) : 0 = octets, 1 = pages de 4 Ko
+    Bit 6 : D/B (Default/Big) : 0 = 16 bits, 1 = 32 bits
+    Bit 5 : L   (64-bit code, DPMI 1.0)
+    Bit 4 : AVL (Available for system use)
+
+  2.3 Tables de descripteurs
+  --------------------------
+
+    GDT (Global Descriptor Table) :
+      - Table globale, partagee par tous les programmes
+      - Gere par le systeme d'exploitation (le serveur DPMI)
+      - Le client ne peut pas modifier la GDT directement
+
+    LDT (Local Descriptor Table) :
+      - Table locale, propre a chaque programme client DPMI
+      - Le client peut allouer/modifier des descripteurs LDT
+      - Via les services DPMI 0000h-000Fh
+
+    IDT (Interrupt Descriptor Table) :
+      - Contient les gestionnaires d'interruptions
+      - Le DPMI fournit des services pour modifier l'IDT
+
+  2.4 Niveaux de privilege (anneaux)
+  -----------------------------------
+
+    Anneau 0 (Ring 0) : noyau du systeme, acces total au materiel
+    Anneau 1 (Ring 1) : services systeme (rarement utilise)
+    Anneau 2 (Ring 2) : services systeme (rarement utilise)
+    Anneau 3 (Ring 3) : applications, acces limite
+
+  Les programmes DPMI s'executent en anneau 3. Les services DPMI
+  sont fournis en anneau 0 ou 1 selon le serveur.
+
+  2.5 Gestion de la memoire 32 bits (386+)
+  -----------------------------------------
+
+  En mode protege 32 bits avec pagination activee :
+    - Adresse lineaire = Base du selecteur + Offset (0..4 Go)
+    - Adresse physique = traduite par la MMU via les tables de pages
+
+  Une page fait 4096 octets (4 Ko).
+  La table de pages permet la memoire virtuelle et la protection.
+
+  Avec DPMI, le client peut demander de la memoire en blocs contigus
+  dans l'espace d'adressage virtuel (service AX=0501h).
+
+==============================================================================
+  3. ENTREE EN MODE DPMI
+==============================================================================
+
+  3.1 Detection du serveur DPMI
+  ------------------------------
+
+  Pour verifier si un serveur DPMI est present, on utilise INT 2Fh,
+  fonction AX=1687h :
+
+    Procedure DetectDPMI;
+    Begin
+      AX := $1687;
+      INT $2F;
+      If AX = 0 Then
+        DPMI_Present := True;
+      { BX = flags (bit 0 = 1 si 32 bits supporte)      }
+      { CL = version majeure du processeur (3=80386)     }
+      { DH = version DPMI majeure                        }
+      { DL = version DPMI mineure                        }
+      { SI = nombre de paragraphes pour le commutateur   }
+      { ES:DI = adresse du point d'entree DPMI           }
+    End;
+
+  En Pascal (Turbo Pascal 7.0) :
+
+    Uses Dos;
+
+    Function IsDPMIPresent : Boolean;
+    Var Regs : Registers;
+    Begin
+      Regs.AX := $1687;
+      Intr($2F, Regs);
+      IsDPMIPresent := (Regs.AX = 0);
+    End;
+
+  3.2 Commutation en mode protege
+  --------------------------------
+
+  Pour passer en mode protege, le client appelle le point d'entree
+  retourne par INT 2Fh/AX=1687h. Il faut d'abord allouer SI paragraphes
+  de memoire DOS pour le commutateur de mode.
+
+    - Si support 32 bits : AX = 1 avant l'appel
+    - Si support 16 bits seulement : AX = 0
+
+  Apres l'appel, si CF=0, le programme est en mode protege :
+    - CS pointe sur un selecteur de code
+    - DS, ES, SS pointent sur des selecteurs de donnees
+    - L'offset 32 bits est disponible (si mode 32 bits)
+
+  En pratique, les extenseurs DOS (DJGPP, Borland) gerent cette
+  transition automatiquement. Les programmes utilisateur voient
+  directement un environnement 32 bits propre.
+
+  3.3 Retour en mode reel
+  ------------------------
+
+  Un programme DPMI termine en appellant normalement INT 21h/AH=4Ch
+  (Exit). Le serveur DPMI gere la transition retour en mode reel.
+
+==============================================================================
+  4. SERVICES DPMI - GESTION DES DESCRIPTEURS (INT 31h)
+==============================================================================
+
+  4.1 AX=0000h - Allouer des descripteurs LDT
+  ---------------------------------------------
+
+    Entree :
+      AX = 0000h
+      CX = nombre de descripteurs a allouer
+
+    Sortie :
+      CF = 0 si succes :
+        AX = selecteur du premier descripteur alloue
+             (les suivants sont AX+8, AX+16, etc.)
+      CF = 1 si erreur :
+        AX = code d'erreur (8011h = descripteurs insuffisants)
+
+    Exemple Pascal :
+      Regs.AX := $0000;
+      Regs.CX := 1;
+      Intr($31, Regs);
+      If (Regs.Flags And FCarry) = 0 Then
+        Sel := Regs.AX;
+
+  4.2 AX=0001h - Liberer un descripteur LDT
+  -------------------------------------------
+
+    Entree :
+      AX = 0001h
+      BX = selecteur a liberer
+
+    Sortie :
+      CF = 0 si succes
+      CF = 1 si erreur (AX = code erreur)
+
+  4.3 AX=0002h - Obtenir le selecteur correspondant a un segment reel
+  ---------------------------------------------------------------------
+
+    Entree :
+      AX = 0002h
+      BX = valeur du segment en mode reel
+
+    Sortie :
+      CF = 0 si succes :
+        AX = selecteur permettant d'acceder a ce segment
+      CF = 1 si erreur
+
+    Note : ce service cree un selecteur dont la base est
+           BX * 16 et dont la limite est 64 Ko - 1.
+
+    Exemple : acceder au segment video $B800
+      Regs.AX := $0002;
+      Regs.BX := $B800;
+      Intr($31, Regs);
+      VideoSel := Regs.AX;
+
+  4.4 AX=0003h - Incrementer le droit d'acces d'un selecteur
+  ------------------------------------------------------------
+
+    Entree :
+      AX = 0003h
+      BX = selecteur
+
+    Sortie :
+      CF = 0 si succes :
+        AX = bit 0 : 0=selecteur de donnees, 1=selecteur de code
+
+  4.5 AX=0006h - Obtenir la base d'un segment
+  ---------------------------------------------
+
+    Entree :
+      AX = 0006h
+      BX = selecteur
+
+    Sortie :
+      CF = 0 si succes :
+        CX:DX = adresse de base 32 bits (CX = bits 31-16, DX = bits 15-0)
+      CF = 1 si erreur
+
+    Exemple Pascal :
+      Regs.AX := $0006;
+      Regs.BX := DataSel;
+      Intr($31, Regs);
+      Base := (LongInt(Regs.CX) Shl 16) Or Regs.DX;
+
+  4.6 AX=0007h - Fixer la base d'un segment
+  -------------------------------------------
+
+    Entree :
+      AX = 0007h
+      BX = selecteur
+      CX:DX = nouvelle base 32 bits
+
+    Sortie :
+      CF = 0 si succes
+      CF = 1 si erreur
+
+  4.7 AX=0008h - Fixer la limite d'un segment
+  ---------------------------------------------
+
+    Entree :
+      AX = 0008h
+      BX = selecteur
+      CX:DX = nouvelle limite 32 bits
+
+    Sortie :
+      CF = 0 si succes
+      CF = 1 si erreur
+
+    Note : la limite peut etre en octets (si G=0) ou en pages de 4 Ko
+           (si G=1). DPMI fixe automatiquement le bit G selon la taille.
+
+  4.8 AX=0009h - Fixer les droits d'acces d'un segment
+  -------------------------------------------------------
+
+    Entree :
+      AX = 0009h
+      BX = selecteur
+      CX = droits d'acces (format : octet droits + octet flags)
+             Bits 15-8 : octet de flags (G, D, etc.)
+             Bits  7-0 : octet de droits (P, DPL, S, type)
+
+    Sortie :
+      CF = 0 si succes
+      CF = 1 si erreur
+
+    Valeurs courantes de CX :
+      $C09B = Segment de code 32 bits execute/lu, present, DPL 0
+      $C093 = Segment de donnees 32 bits lire/ecrire, present, DPL 0
+      $40FB = Segment de code 16 bits execute/lu, present, DPL 3
+      $40F3 = Segment de donnees 16 bits lire/ecrire, present, DPL 3
+
+  4.9 AX=000Ah - Creer un alias de donnees pour un selecteur de code
+  -------------------------------------------------------------------
+
+    Entree :
+      AX = 000Ah
+      BX = selecteur de code source
+
+    Sortie :
+      CF = 0 si succes :
+        AX = nouveau selecteur de donnees avec meme base/limite
+      CF = 1 si erreur
+
+  4.A AX=000Bh - Obtenir le descripteur brut
+  -------------------------------------------
+
+    Entree :
+      AX = 000Bh
+      BX = selecteur
+      ES:DI = adresse d'un buffer de 8 octets (en mode protege)
+
+    Sortie :
+      CF = 0 si succes : ES:DI pointe sur les 8 octets du descripteur
+      CF = 1 si erreur
+
+  4.B AX=000Ch - Fixer le descripteur brut
+  -----------------------------------------
+
+    Entree :
+      AX = 000Ch
+      BX = selecteur
+      ES:DI = adresse d'un buffer de 8 octets contenant le descripteur
+
+    Sortie :
+      CF = 0 si succes
+      CF = 1 si erreur
+
+  4.C AX=000Dh - Allouer un descripteur LDT specifique (DPMI 1.0)
+  ----------------------------------------------------------------
+
+    Entree :
+      AX = 000Dh
+      BX = index du descripteur souhaite
+
+    Sortie :
+      CF = 0 si succes : AX = selecteur alloue
+      CF = 1 si erreur
+
+  4.D AX=000Eh - Obtenir le selecteur de l'alias machine
+  -------------------------------------------------------
+
+    Entree :
+      AX = 000Eh
+      BX = selecteur
+
+    Sortie :
+      CF = 0 si succes :
+        AX = selecteur dont le base = 0 et limite = 4 Go - 1
+             (alias de tout l'espace d'adressage)
+      CF = 1 si erreur
+
+==============================================================================
+  5. SERVICES DPMI - GESTION DE LA MEMOIRE ETENDUE (INT 31h)
+==============================================================================
+
+  5.1 AX=0100h - Allouer de la memoire DOS (memoire basse)
+  ----------------------------------------------------------
+
+    Entree :
+      AX = 0100h
+      BX = nombre de paragraphes (blocs de 16 octets) a allouer
+
+    Sortie :
+      CF = 0 si succes :
+        AX = adresse du segment en mode reel (ex: $1234 -> 0x12340)
+        DX = selecteur pour acceder a ce bloc en mode protege
+      CF = 1 si erreur :
+        AX = code erreur
+        BX = nombre de paragraphes disponibles
+
+    Exemple Pascal (allocation de 4 Ko en memoire basse) :
+      Regs.AX := $0100;
+      Regs.BX := 256;   { 256 * 16 = 4096 octets }
+      Intr($31, Regs);
+      If (Regs.Flags And FCarry) = 0 Then
+      Begin
+        RealSeg := Regs.AX;
+        ProtSel := Regs.DX;
+      End;
+
+  5.2 AX=0101h - Liberer de la memoire DOS
+  -----------------------------------------
+
+    Entree :
+      AX = 0101h
+      DX = selecteur retourne par AX=0100h
+
+    Sortie :
+      CF = 0 si succes
+      CF = 1 si erreur
+
+  5.3 AX=0102h - Redimensionner un bloc de memoire DOS
+  -----------------------------------------------------
+
+    Entree :
+      AX = 0102h
+      BX = nouveau nombre de paragraphes
+      DX = selecteur du bloc a redimensionner
+
+    Sortie :
+      CF = 0 si succes
+      CF = 1 si erreur (BX = taille maximale disponible)
+
+  5.4 AX=0500h - Obtenir des informations sur la memoire etendue
+  ---------------------------------------------------------------
+
+    Entree :
+      AX = 0500h
+      ES:DI = adresse d'un buffer de 48 octets (DPMI Memory Info)
+
+    Sortie :
+      CF = 0 si succes : buffer rempli
+      CF = 1 si erreur
+
+    Structure du buffer (48 octets, champs de 8 octets chacun) :
+      +00 : memoire physique disponible (octets)
+      +08 : pages libres dans le swap (octets)
+      +10 : pages swap lineaires libres (octets)
+      +18 : taille maximale du swap (octets)
+      +20 : espace execute disponible (octets)
+      +28 : espace execute total (octets)
+
+    Exemple Pascal :
+      Type
+        TDPMIMemInfo = Record
+          LargestFreeBlock     : LongInt;
+          MaxUnlockedPage      : LongInt;
+          MaxLockedPage        : LongInt;
+          LinearAddrSpace      : LongInt;
+          NumFreePages         : LongInt;
+          NumPhysPages         : LongInt;
+          { ... autres champs ... }
+        End;
+
+  5.5 AX=0501h - Allouer un bloc de memoire etendue
+  ---------------------------------------------------
+
+    Entree :
+      AX = 0501h
+      BX:CX = taille en octets (BX = bits 31-16, CX = bits 15-0)
+
+    Sortie :
+      CF = 0 si succes :
+        BX:CX = adresse lineaire 32 bits du bloc alloue
+        SI:DI = handle du bloc (a conserver pour liberer)
+      CF = 1 si erreur :
+        AX = code erreur (8012h = memoire insuffisante)
+
+    Note : pour les programmes 32 bits, BX:CX forme directement
+           le pointeur 32 bits accessible via DS ou un selecteur plat.
+
+    Exemple Pascal (allouer 1 Mo) :
+      Regs.AX := $0501;
+      Regs.BX := $00;     { bits 31-16 de 1 Mo = 0 }
+      Regs.CX := $100000; { bits 15-0 de 1 Mo }
+      Intr($31, Regs);
+      If (Regs.Flags And FCarry) = 0 Then
+      Begin
+        LinearAddr := (LongInt(Regs.BX) Shl 16) Or Regs.CX;
+        Handle     := (LongInt(Regs.SI) Shl 16) Or Regs.DI;
+      End;
+
+  5.6 AX=0502h - Liberer un bloc de memoire etendue
+  ---------------------------------------------------
+
+    Entree :
+      AX = 0502h
+      SI:DI = handle du bloc (retourne par AX=0501h)
+
+    Sortie :
+      CF = 0 si succes
+      CF = 1 si erreur
+
+  5.7 AX=0503h - Redimensionner un bloc de memoire etendue
+  ----------------------------------------------------------
+
+    Entree :
+      AX = 0503h
+      SI:DI = handle du bloc
+      BX:CX = nouvelle taille en octets
+
+    Sortie :
+      CF = 0 si succes :
+        BX:CX = nouvelle adresse lineaire
+        SI:DI = nouveau handle (peut avoir change)
+      CF = 1 si erreur
+
+  5.8 AX=0600h - Verrouiller une region de memoire lineaire
+  ----------------------------------------------------------
+
+    Entree :
+      AX = 0600h
+      BX:CX = adresse lineaire 32 bits debut
+      SI:DI = taille en octets
+
+    Sortie :
+      CF = 0 si succes (pages en memoire physique garanties)
+      CF = 1 si erreur
+
+    Note : utile pour les gestionnaires d'interruptions qui ne peuvent
+           pas provoquer de faute de page.
+
+  5.9 AX=0601h - Deverrouiller une region de memoire lineaire
+  ------------------------------------------------------------
+
+    Entree :
+      AX = 0601h
+      BX:CX = adresse lineaire 32 bits debut
+      SI:DI = taille en octets
+
+    Sortie :
+      CF = 0 si succes
+      CF = 1 si erreur
+
+  5.A AX=0604h - Obtenir la taille des pages
+  -------------------------------------------
+
+    Entree :
+      AX = 0604h
+
+    Sortie :
+      CF = 0 si succes :
+        BX:CX = taille d'une page en octets (generalement 4096)
+      CF = 1 si erreur
+
+==============================================================================
+  6. SERVICES DPMI - GESTION DES INTERRUPTIONS (INT 31h)
+==============================================================================
+
+  6.1 AX=0200h - Obtenir le vecteur d'interruption mode reel
+  ------------------------------------------------------------
+
+    Entree :
+      AX = 0200h
+      BL = numero de l'interruption (0..FFh)
+
+    Sortie :
+      CF = 0 si succes :
+        CX = segment du vecteur en mode reel
+        DX = offset du vecteur en mode reel
+      CF = 1 si erreur
+
+  6.2 AX=0201h - Fixer le vecteur d'interruption mode reel
+  ----------------------------------------------------------
+
+    Entree :
+      AX = 0201h
+      BL = numero de l'interruption
+      CX = nouveau segment (mode reel)
+      DX = nouvel offset (mode reel)
+
+    Sortie :
+      CF = 0 si succes
+      CF = 1 si erreur
+
+  6.3 AX=0202h - Obtenir le gestionnaire d'exception protege
+  -----------------------------------------------------------
+
+    Entree :
+      AX = 0202h
+      BL = numero de l'exception (00h..1Fh)
+
+    Sortie :
+      CF = 0 si succes :
+        CX = selecteur du gestionnaire
+        EDX = offset du gestionnaire (32 bits si mode 32 bits)
+      CF = 1 si erreur
+
+    Exceptions courantes :
+      00h = Divide by Zero (division par zero)
+      01h = Debug (pas a pas)
+      03h = Breakpoint (INT 3)
+      04h = Overflow (depassement)
+      06h = Invalid Opcode (instruction invalide)
+      0Bh = Segment Not Present (segment absent)
+      0Ch = Stack Fault (faute de pile)
+      0Dh = General Protection Fault (GPF)
+      0Eh = Page Fault (faute de page)
+
+  6.4 AX=0203h - Fixer le gestionnaire d'exception protege
+  ---------------------------------------------------------
+
+    Entree :
+      AX = 0203h
+      BL = numero de l'exception
+      CX = selecteur du nouveau gestionnaire
+      EDX = offset du nouveau gestionnaire
+
+    Sortie :
+      CF = 0 si succes
+      CF = 1 si erreur
+
+  6.5 AX=0204h - Obtenir le vecteur d'interruption mode protege
+  -------------------------------------------------------------
+
+    Entree :
+      AX = 0204h
+      BL = numero de l'interruption
+
+    Sortie :
+      CF = 0 si succes :
+        CX = selecteur du gestionnaire
+        EDX = offset du gestionnaire
+      CF = 1 si erreur
+
+  6.6 AX=0205h - Fixer le vecteur d'interruption mode protege
+  ------------------------------------------------------------
+
+    Entree :
+      AX = 0205h
+      BL = numero de l'interruption
+      CX = selecteur du nouveau gestionnaire
+      EDX = offset du nouveau gestionnaire
+
+    Sortie :
+      CF = 0 si succes
+      CF = 1 si erreur
+
+    Note : ce service permet d'intercepter les interruptions materiel
+           (IRQ0..IRQ15 = INT 08h..0Fh et 70h..77h) depuis le mode
+           protege. Le gestionnaire doit sauvegarder/restaurer tous les
+           registres et terminer par IRET (ou IRETD en 32 bits).
+
+==============================================================================
+  7. SERVICES DPMI - APPELS DOS ET BIOS (INT 31h)
+==============================================================================
+
+  7.1 AX=0300h - Simuler un appel d'interruption en mode reel
+  ------------------------------------------------------------
+
+    Entree :
+      AX = 0300h
+      BL = numero de l'interruption
+      BH = nombre de mots a copier de la pile protege -> pile reel (0..FFh)
+      ES:EDI = adresse (protege) d'une structure RealModeCallStructure
+      CX = 0 (reserve)
+
+    Sortie :
+      CF = 0 si succes : structure mise a jour avec les registres retour
+      CF = 1 si erreur
+
+    Structure RealModeCallStructure (50 octets) :
+      +00 : EDI  (4 octets)
+      +04 : ESI  (4 octets)
+      +08 : EBP  (4 octets)
+      +0C : reserve (4 octets)
+      +10 : EBX  (4 octets)
+      +14 : EDX  (4 octets)
+      +18 : ECX  (4 octets)
+      +1C : EAX  (4 octets)
+      +20 : flags (2 octets, word)
+      +22 : ES   (2 octets)
+      +24 : DS   (2 octets)
+      +26 : FS   (2 octets)
+      +28 : GS   (2 octets)
+      +2A : IP   (2 octets) - ignore pour AX=0300h
+      +2C : CS   (2 octets) - ignore pour AX=0300h
+      +2E : SP   (2 octets)
+      +30 : SS   (2 octets)
+
+    Exemple Pascal (appel DOS INT 21h pour afficher un caractere) :
+      Type
+        TRMCallStruct = Record
+          EDI, ESI, EBP, Res : LongInt;
+          EBX, EDX, ECX, EAX : LongInt;
+          Flags, ES, DS, FS, GS : Word;
+          IP, CS, SP, SS : Word;
+        End;
+
+      Var
+        RM : TRMCallStruct;
+        Regs : Registers;
+      Begin
+        FillChar(RM, SizeOf(RM), 0);
+        RM.EAX := $0200;     { AH=02h, DL=caractere }
+        RM.EDX := Ord('A');
+        Regs.AX := $0300;
+        Regs.BX := $21;      { INT 21h }
+        Regs.CX := 0;
+        Regs.ES := Seg(RM);
+        Regs.DI := Ofs(RM);
+        Intr($31, Regs);
+      End;
+
+  7.2 AX=0301h - Appeler un point d'entree mode reel avec registres
+  ------------------------------------------------------------------
+
+    Entree :
+      AX = 0301h
+      BH = nombre de mots a copier depuis la pile protege
+      ES:EDI = adresse de la structure RealModeCallStructure
+               (champs CS:IP = adresse du code mode reel a appeler)
+      CX = 0 (reserve)
+
+    Sortie :
+      CF = 0 si succes
+      CF = 1 si erreur
+
+    Note : similaire a AX=0300h mais appelle une procedure CALL/RET
+           plutot qu'une interruption.
+
+  7.3 AX=0302h - Appeler une procedure mode reel retournant avec IRET
+  --------------------------------------------------------------------
+
+    Entree :
+      AX = 0302h
+      BH = nombre de mots a copier depuis la pile protege
+      ES:EDI = adresse de la structure RealModeCallStructure
+      CX = 0 (reserve)
+
+    Sortie :
+      CF = 0 si succes
+      CF = 1 si erreur
+
+  7.4 AX=0303h - Allouer un rappel mode reel (Real-Mode Callback)
+  ---------------------------------------------------------------
+
+    Entree :
+      AX = 0303h
+      DS:ESI = adresse du gestionnaire en mode protege
+      ES:EDI = adresse d'une structure RealModeCallStructure a utiliser
+
+    Sortie :
+      CF = 0 si succes :
+        CX:DX = adresse mode reel (segment:offset) du rappel
+      CF = 1 si erreur (AX = code erreur)
+
+    Utilisation : permet a du code mode reel d'appeler du code en
+    mode protege. Le serveur DPMI cree un "trampoline" en memoire basse.
+
+  7.5 AX=0304h - Liberer un rappel mode reel
+  -------------------------------------------
+
+    Entree :
+      AX = 0304h
+      CX:DX = adresse mode reel du rappel (retournee par AX=0303h)
+
+    Sortie :
+      CF = 0 si succes
+      CF = 1 si erreur
+
+  7.6 AX=0305h - Obtenir l'etat de commutation
+  ----------------------------------------------
+
+    Entree :
+      AX = 0305h
+
+    Sortie :
+      CF = 0 si succes :
+        AX = version DPMI * 100 (ex: 90 pour DPMI 0.9)
+        BX = flags de capacites
+               Bit 0 : 1 = 32 bits supporte
+               Bit 1 : 1 = memoire virtuelle disponible
+               Bit 2 : 1 = EMS emule
+               Bit 3 : 1 : memoire reelle emule
+        CL = processeur : 02=286, 03=386, 04=486
+        DH = version majeure DPMI
+        DL = version mineure DPMI
+        SI = nombre max de rappels mode reel disponibles
+
+  7.7 AX=0306h - Obtenir les adresses de la pile de commutation
+  -------------------------------------------------------------
+
+    Entree :
+      AX = 0306h
+
+    Sortie :
+      CF = 0 si succes :
+        BX:CX = adresse lineaire de la pile mode reel vers mode protege
+        SI:DI = adresse lineaire de la pile mode protege vers mode reel
+      CF = 1 si erreur
+
+==============================================================================
+  8. SERVICES DPMI - GESTION DE LA MEMOIRE VIRTUELLE (DPMI 1.0)
+==============================================================================
+
+  8.1 AX=0800h - Mapper de la memoire physique
+  ---------------------------------------------
+
+    Entree :
+      AX = 0800h
+      BX:CX = adresse physique 32 bits (BX = bits 31-16)
+      SI:DI = taille en octets
+
+    Sortie :
+      CF = 0 si succes :
+        BX:CX = adresse lineaire 32 bits du mappage
+      CF = 1 si erreur
+
+    Utilisation : acceder a de la memoire MMIO (E/S en memoire),
+    comme la memoire video VESA (LFB = Linear Frame Buffer).
+
+    Exemple (acceder a la memoire video VESA a $E0000000) :
+      Regs.AX := $0800;
+      Regs.BX := $E000;      { bits 31-16 = $E000 }
+      Regs.CX := $0000;      { bits 15-0  = $0000 }
+      Regs.SI := $00;
+      Regs.DI := $200000;    { 2 Mo }
+      Intr($31, Regs);
+
+  8.2 AX=0801h - Liberer un mappage physique
+  -------------------------------------------
+
+    Entree :
+      AX = 0801h
+      BX:CX = adresse lineaire retournee par AX=0800h
+
+    Sortie :
+      CF = 0 si succes
+      CF = 1 si erreur
+
+  8.3 AX=0900h - Obtenir le statut de la memoirvirtualle
+  --------------------------------------------------------
+
+    Entree :
+      AX = 0900h
+      BX:CX = adresse lineaire de debut
+      SI:DI = taille en octets
+      ES:EDI = buffer pour les informations de statut
+
+    Sortie :
+      CF = 0 si succes : buffer rempli avec statut par page
+      CF = 1 si erreur
+
+    Statut par page (1 octet par page) :
+      Bit 0 : 1 = presente en memoire physique
+      Bit 1 : 1 = verrouille
+      Bit 2 : 1 = accessible par le code utilisateur (DPL=3)
+      Bit 3 : 1 = page accessible en ecriture
+      Bit 6 : 1 = page modifiee (dirty)
+      Bit 7 : 1 = page accedee (accessed)
+
+  8.4 AX=0A00h - Obtenir les capacites du serveur (DPMI 1.0)
+  -----------------------------------------------------------
+
+    Entree :
+      AX = 0A00h
+      ES:EDI = buffer de 128 octets
+
+    Sortie :
+      CF = 0 si succes :
+        AX = 0 si le serveur est DPMI 1.0 ou plus
+        Buffer rempli avec les capacites
+      CF = 1 si erreur ou DPMI < 1.0
+
+==============================================================================
+  9. CODES D'ERREUR DPMI
+==============================================================================
+
+  Lorsque CF=1, le registre AX contient le code d'erreur.
+
+  $8001 = Unsupported Function
+           Fonction non supportee par ce serveur DPMI.
+
+  $8002 = Invalid State
+           Etat invalide pour cette operation.
+
+  $8003 = System Integrity
+           L'operation compromettrait l'integrite du systeme.
+
+  $8004 = Deadlock
+           Un interblocage a ete detecte.
+
+  $8005 = Request Cancelled
+           La requete a ete annulee.
+
+  $8010 = Resource Unavailable
+           Ressource demandee non disponible.
+
+  $8011 = Descriptor Unavailable
+           Pas assez de descripteurs LDT disponibles.
+
+  $8012 = Linear Memory Unavailable
+           Pas assez de memoire lineaire disponible.
+
+  $8013 = Physical Memory Unavailable
+           Pas assez de memoire physique disponible.
+
+  $8014 = Backing Store Unavailable
+           Pas assez d'espace swap disponible.
+
+  $8015 = Callback Unavailable
+           Pas assez de rappels mode reel disponibles.
+
+  $8016 = Handle Unavailable
+           Pas de handle disponible pour cette operation.
+
+  $8017 = Lock Count Exceeded
+           Compteur de verrous depasse.
+
+  $8018 = Resource Owned Exclusively
+           Ressource deja utilisee en mode exclusif.
+
+  $8019 = Resource Owned Shared
+           Ressource deja utilisee en mode partage.
+
+  $8021 = Invalid Value
+           Valeur invalide pour ce parametre.
+
+  $8022 = Invalid Selector
+           Selecteur invalide ou non alloue par DPMI.
+
+  $8023 = Invalid Handle
+           Handle memoire invalide.
+
+  $8024 = Invalid Callback
+           Adresse de rappel mode reel invalide.
+
+  $8025 = Invalid Linear Address
+           Adresse lineaire invalide pour cette operation.
+
+  $8026 = Invalid Request
+           Requete invalide (parametres incoherents).
+
+  Exemple de gestion d'erreur en Pascal :
+    Procedure CheckDPMI(Regs : Registers; Msg : String);
+    Begin
+      If (Regs.Flags And FCarry) <> 0 Then
+      Begin
+        WriteLn('Erreur DPMI: ', Msg);
+        WriteLn('Code: $', HexStr(Regs.AX, 4));
+        Halt(1);
+      End;
+    End;
+
+==============================================================================
+  10. PROGRAMMATION DPMI EN TURBO PASCAL
+==============================================================================
+
+  10.1 Acces a la memoire video (mode texte VGA)
+  -----------------------------------------------
+
+  En mode protege, l'adresse $B8000 n'est pas directement accessible
+  comme un segment. Il faut creer un selecteur pointant dessus.
+
+    Uses Dos;
+
+    Const
+      VIDEO_SEG = $B800;
+
+    Var
+      VideoSel : Word;
+      Regs     : Registers;
+
+    Procedure InitVideoSelector;
+    Begin
+      Regs.AX := $0002;
+      Regs.BX := VIDEO_SEG;
+      Intr($31, Regs);
+      If (Regs.Flags And FCarry) <> 0 Then
+      Begin
+        WriteLn('Impossible d obtenir selecteur video');
+        Halt(1);
+      End;
+      VideoSel := Regs.AX;
+    End;
+
+    { Ecrire un caractere a la position (X, Y) }
+    Procedure PutChar(X, Y : Integer; Ch : Char; Attr : Byte);
+    Var
+      Offset : Word;
+    Begin
+      Offset := (Y * 80 + X) * 2;
+      { Avec Turbo Pascal en mode protege, on peut utiliser     }
+      { un ptr absolu via les services DPMI ou MemW[sel:offset] }
+      MemW[VideoSel:Offset] := (Word(Attr) Shl 8) Or Ord(Ch);
+    End;
+
+  10.2 Allocation de memoire etendue
+  ------------------------------------
+
+    Var
+      Handle     : LongInt;
+      LinearAddr : LongInt;
+      DataSel    : Word;
+      Regs       : Registers;
+
+    Procedure AllocExtended(SizeBytes : LongInt);
+    Begin
+      { Allouer le bloc memoire }
+      Regs.AX := $0501;
+      Regs.BX := SizeBytes Shr 16;
+      Regs.CX := SizeBytes And $FFFF;
+      Intr($31, Regs);
+      If (Regs.Flags And FCarry) <> 0 Then
+      Begin
+        WriteLn('Erreur allocation memoire etendue');
+        Halt(1);
+      End;
+      LinearAddr := (LongInt(Regs.BX) Shl 16) Or Regs.CX;
+      Handle     := (LongInt(Regs.SI) Shl 16) Or Regs.DI;
+
+      { Allouer un selecteur pour acceder au bloc }
+      Regs.AX := $0000;
+      Regs.CX := 1;
+      Intr($31, Regs);
+      DataSel := Regs.AX;
+
+      { Fixer la base du selecteur }
+      Regs.AX := $0007;
+      Regs.BX := DataSel;
+      Regs.CX := LinearAddr Shr 16;
+      Regs.DX := LinearAddr And $FFFF;
+      Intr($31, Regs);
+
+      { Fixer la limite du selecteur }
+      Regs.AX := $0008;
+      Regs.BX := DataSel;
+      Regs.CX := (SizeBytes - 1) Shr 16;
+      Regs.DX := (SizeBytes - 1) And $FFFF;
+      Intr($31, Regs);
+    End;
+
+    Procedure FreeExtended;
+    Begin
+      { Liberer le selecteur }
+      Regs.AX := $0001;
+      Regs.BX := DataSel;
+      Intr($31, Regs);
+
+      { Liberer le bloc memoire }
+      Regs.AX := $0502;
+      Regs.SI := Handle Shr 16;
+      Regs.DI := Handle And $FFFF;
+      Intr($31, Regs);
+    End;
+
+  10.3 Appel DOS depuis le mode protege
+  ---------------------------------------
+
+  Pour appeler un service DOS qui utilise des tampons memoire basse,
+  il faut utiliser AX=0100h pour allouer un bloc en memoire DOS,
+  puis AX=0300h pour simuler l'interruption INT 21h.
+
+    Type
+      TRMCall = Record
+        EDI, ESI, EBP, Res : LongInt;
+        EBX, EDX, ECX, EAX : LongInt;
+        Flags               : Word;
+        ES, DS, FS, GS      : Word;
+        IP, CS, SP, SS      : Word;
+      End;
+
+    Procedure DOSPrintString(S : String);
+    Var
+      Regs    : Registers;
+      RM      : TRMCall;
+      RMSeg   : Word;
+      RMSel   : Word;
+      I       : Integer;
+    Begin
+      { Allouer un bloc DOS pour la chaine }
+      Regs.AX := $0100;
+      Regs.BX := (Length(S) + 16) Shr 4 + 1;
+      Intr($31, Regs);
+      RMSeg := Regs.AX;
+      RMSel := Regs.DX;
+
+      { Copier la chaine dans le bloc DOS (via le selecteur) }
+      For I := 1 To Length(S) Do
+        Mem[RMSel:(I-1)] := Ord(S[I]);
+      Mem[RMSel:Length(S)] := Ord('$');  { terminateur DOS }
+
+      { Preparer l'appel INT 21h / AH=09h }
+      FillChar(RM, SizeOf(RM), 0);
+      RM.EAX := $0900;      { AH = 09h : afficher chaine '$' }
+      RM.DS  := RMSeg;
+      RM.EDX := 0;
+
+      Regs.AX := $0300;     { simuler INT 21h }
+      Regs.BX := $21;
+      Regs.CX := 0;
+      Regs.ES := Seg(RM);
+      Regs.DI := Ofs(RM);
+      Intr($31, Regs);
+
+      { Liberer le bloc DOS }
+      Regs.AX := $0101;
+      Regs.DX := RMSel;
+      Intr($31, Regs);
+    End;
+
+  10.4 Gestion des exceptions
+  ----------------------------
+
+  Pour intercepter une exception (ex: division par zero = 00h) :
+
+    Var
+      OldExSel : Word;
+      OldExOfs : LongInt;
+      Regs     : Registers;
+
+    Procedure SaveException(ExNum : Byte);
+    Begin
+      Regs.AX := $0202;
+      Regs.BL := ExNum;
+      Intr($31, Regs);
+      OldExSel := Regs.CX;
+      OldExOfs := Regs.EDX;
+    End;
+
+    { Le gestionnaire doit etre en assembleur et terminer par IRET }
+    { Ici, illustration simplifiee }
+    Procedure SetException(ExNum : Byte; HandlerSel : Word;
+                           HandlerOfs : LongInt);
+    Begin
+      Regs.AX := $0203;
+      Regs.BL := ExNum;
+      Regs.CX := HandlerSel;
+      Regs.EDX := HandlerOfs;
+      Intr($31, Regs);
+    End;
+
+==============================================================================
+  11. SERVEURS DPMI ET EXTENSEURS DOS
+==============================================================================
+
+  11.1 Serveurs DPMI courants
+  ----------------------------
+
+    Windows 3.x / 95 / 98 / ME :
+      - Fournissent un serveur DPMI integre
+      - Accessible depuis les boites DOS et les applications Win16
+      - Supporte DPMI 0.9 (Windows 3.x) et partiellement 1.0
+
+    CWSDPMI (CW-DPMI) :
+      - Serveur DPMI gratuit et open source
+      - Fourni avec DJGPP
+      - Supporte DPMI 0.9 complet, memoire virtuelle avec swap
+      - Fonctionne en mode reel DOS pur (pas besoin de Windows)
+
+    HDPMI32 :
+      - Serveur DPMI haute performance
+      - Utilise par HX DOS Extender
+      - Support DPMI 1.0 partiel
+
+    DOS/4GW :
+      - Extenseur DOS commercial (Watcom, id Software, Epic)
+      - Inclus avec de nombreux jeux (DOOM, Quake, etc.)
+      - Fournit son propre serveur DPMI minimal
+
+    DOS/4GWP et DOS/32A :
+      - Alternatives libres a DOS/4GW
+      - DOS/32A supporte plus de fonctionnalites
+
+    DPMI16 (Borland) :
+      - Fourni avec Turbo Pascal 7.0 et Borland C++
+      - Fournit DPMI 16 bits pour les applications Borland
+
+  11.2 Extenseurs DOS populaires
+  --------------------------------
+
+    Phar Lap TNT DOS Extender :
+      - Extenseur commercial 32 bits
+      - Precurseur du DPMI, a contribue a la specification
+
+    DJGPP (DJ's GNU C/C++ for DOS) :
+      - Compilateur GNU pour DOS 32 bits
+      - Utilise CWSDPMI comme serveur DPMI
+      - Produit des programmes .exe 32 bits natifs
+
+    Watcom C/C++ :
+      - Compilateur commercial avec extenseur DOS/4GW
+      - Utilise par de nombreux jeux des annees 90
+
+    Borland Pascal 7.0 / Turbo Pascal 7.0 :
+      - Support DPMI 16 bits via l'unite DPMI
+      - Permets d'acceder a la memoire etendue depuis Pascal
+
+  11.3 Detection du mode d'execution
+  ------------------------------------
+
+    On peut detecter si le programme tourne sous Windows/DPMI
+    via INT 2Fh/AX=1600h (Windows) ou INT 2Fh/AX=1687h (DPMI) :
+
+      Procedure DetectEnvironment;
+      Var Regs : Registers;
+      Begin
+        { Test Windows }
+        Regs.AX := $1600;
+        Intr($2F, Regs);
+        If Regs.AL In [$03, $04] Then
+          WriteLn('Windows 3.x/95 detecte');
+
+        { Test DPMI }
+        Regs.AX := $1687;
+        Intr($2F, Regs);
+        If Regs.AX = 0 Then
+          WriteLn('Serveur DPMI detecte, version ', Regs.DH, '.', Regs.DL);
+      End;
+
+==============================================================================
+  12. TABLEAU RECAPITULATIF DES SERVICES DPMI (INT 31h)
+==============================================================================
+
+  AX    | Description                              | Version
+  ------+------------------------------------------+---------
+  0000h | Allouer descripteurs LDT                 | 0.9
+  0001h | Liberer descripteur LDT                  | 0.9
+  0002h | Selecteur pour segment mode reel         | 0.9
+  0003h | Incrementer droit d'acces selecteur      | 0.9
+  0006h | Obtenir base de segment                  | 0.9
+  0007h | Fixer base de segment                    | 0.9
+  0008h | Fixer limite de segment                  | 0.9
+  0009h | Fixer droits d'acces de segment          | 0.9
+  000Ah | Creer alias donnees pour code            | 0.9
+  000Bh | Obtenir descripteur brut                 | 0.9
+  000Ch | Fixer descripteur brut                   | 0.9
+  000Dh | Allouer descripteur specifique           | 1.0
+  000Eh | Obtenir selecteur alias machine          | 1.0
+  ------+------------------------------------------+---------
+  0100h | Allouer memoire DOS (basse)              | 0.9
+  0101h | Liberer memoire DOS                      | 0.9
+  0102h | Redimensionner memoire DOS               | 0.9
+  ------+------------------------------------------+---------
+  0200h | Obtenir vecteur interruption mode reel   | 0.9
+  0201h | Fixer vecteur interruption mode reel     | 0.9
+  0202h | Obtenir gestionnaire exception           | 0.9
+  0203h | Fixer gestionnaire exception             | 0.9
+  0204h | Obtenir vecteur interruption protege     | 0.9
+  0205h | Fixer vecteur interruption protege       | 0.9
+  ------+------------------------------------------+---------
+  0300h | Simuler interruption mode reel           | 0.9
+  0301h | Appeler procedure mode reel (CALL/RET)   | 0.9
+  0302h | Appeler procedure mode reel (CALL/IRET)  | 0.9
+  0303h | Allouer rappel mode reel                 | 0.9
+  0304h | Liberer rappel mode reel                 | 0.9
+  0305h | Obtenir etat de commutation              | 0.9
+  0306h | Obtenir adresses pile de commutation     | 0.9
+  ------+------------------------------------------+---------
+  0400h | Obtenir version DPMI                     | 0.9
+  ------+------------------------------------------+---------
+  0500h | Obtenir informations memoire etendue     | 0.9
+  0501h | Allouer bloc memoire etendue             | 0.9
+  0502h | Liberer bloc memoire etendue             | 0.9
+  0503h | Redimensionner bloc memoire etendue      | 0.9
+  0600h | Verrouiller region memoire lineaire      | 0.9
+  0601h | Deverrouiller region memoire lineaire    | 0.9
+  0602h | Verrouiller memoire DOS lineaire         | 0.9
+  0603h | Deverrouiller memoire DOS lineaire       | 0.9
+  0604h | Obtenir taille des pages                 | 0.9
+  ------+------------------------------------------+---------
+  0700h | Marquer pages comme inactives (swap)     | 1.0
+  0701h | Marquer pages comme actives              | 1.0
+  0702h | Marquer pages comme modifiables          | 1.0
+  0703h | Annuler modification de pages            | 1.0
+  0800h | Mapper memoire physique                  | 0.9
+  0801h | Liberer mappage physique                 | 0.9
+  0900h | Obtenir statut memoire virtuelle         | 1.0
+  0A00h | Obtenir capacites du serveur             | 1.0
+
+==============================================================================
+  13. GLOSSAIRE
+==============================================================================
+
+  Base (d'un segment) :
+    Adresse lineaire de debut du segment. En mode protege 32 bits,
+    la base peut etre n'importe quelle adresse de 0 a 4 Go.
+
+  Bit G (Granularite) :
+    Bit du descripteur de segment. Si G=0, la limite est en octets.
+    Si G=1, la limite est en pages de 4 Ko. Permet des segments
+    jusqu'a 4 Go.
+
+  Client DPMI :
+    Programme qui fonctionne en mode protege et utilise les services
+    DPMI via INT 31h.
+
+  DPL (Descriptor Privilege Level) :
+    Niveau de privilege du descripteur de segment (0 a 3).
+    Un segment avec DPL=3 est accessible depuis l'anneau 3.
+
+  DPMI (DOS Protected Mode Interface) :
+    Specification d'interface permettant aux programmes DOS d'utiliser
+    le mode protege du processeur x86 de maniere standardisee.
+
+  Exception :
+    Interruption generee par le processeur en reponse a une erreur
+    (division par zero, faute de page, instruction invalide, etc.).
+
+  Extenseur DOS :
+    Programme qui etend les capacites du DOS en permettant l'execution
+    de code en mode protege 32 bits. Exemples : DOS/4GW, DJGPP.
+
+  GDT (Global Descriptor Table) :
+    Table de descripteurs globale, partagee par tout le systeme.
+    Gere par le serveur DPMI. Le client ne peut pas la modifier directement.
+
+  Handle memoire :
+    Identificateur opaque retourne par DPMI pour identifier un bloc
+    de memoire alloue. Necessaire pour liberer ou redimensionner le bloc.
+
+  IDT (Interrupt Descriptor Table) :
+    Table des gestionnaires d'interruptions en mode protege.
+
+  LDT (Local Descriptor Table) :
+    Table de descripteurs locale, specifique a chaque programme client.
+    Le client peut allouer et modifier des descripteurs LDT via DPMI.
+
+  Limite (d'un segment) :
+    Taille maximale du segment moins 1. Un acces au-dela de la limite
+    provoque une exception de protection generale (GPF, INT 0Dh).
+
+  Mode protege :
+    Mode de fonctionnement du processeur x86 (80286 et superieur) dans
+    lequel la memoire est protegee par des mecanismes materiels.
+
+  Mode reel :
+    Mode de fonctionnement du processeur x86 compatible 8086.
+    Adressage Segment:Offset, limite de 1 Mo, pas de protection.
+
+  MMU (Memory Management Unit) :
+    Unite materielle du processeur qui traduit les adresses lineaires
+    en adresses physiques via les tables de pages.
+
+  Page :
+    Bloc de memoire de 4096 octets (4 Ko) utilise par la MMU.
+
+  Rappel mode reel (Real-Mode Callback) :
+    Mecanisme DPMI permettant a du code mode reel d'appeler une
+    fonction se trouvant en mode protege.
+
+  RPL (Requested Privilege Level) :
+    Bits 1-0 d'un selecteur. Indique le niveau de privilege demande
+    pour acceder au segment.
+
+  Selecteur :
+    Valeur 16 bits utilisee comme "segment" en mode protege. Indexe
+    un descripteur dans la GDT ou la LDT.
+
+  Serveur DPMI (hote) :
+    Programme (ou OS) qui implemente les services DPMI et gere la
+    transition entre mode reel et mode protege.
+
+  XMS (eXtended Memory Specification) :
+    Specification d'acces a la memoire au-dela de 1 Mo en mode reel,
+    via le gestionnaire HIMEM.SYS. Complementaire au DPMI.
+
+==============================================================================
+  FIN DU DOCUMENT - DPMI.txt
+==============================================================================

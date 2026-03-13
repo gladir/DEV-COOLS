@@ -1,0 +1,112 @@
+<%
+{ test_scope.psp - Tests portee, pile et cadres d appel (TODO 17) }
+
+{ --- Test 1 : parametre var simple (swap global) --- }
+var a: Integer;
+var b: Integer;
+
+procedure Swap(var x: Integer; var y: Integer);
+var tmp: Integer;
+begin
+  tmp := x;
+  x := y;
+  y := tmp;
+end;
+
+a := 10;
+b := 20;
+Swap(a, b);
+write(a);
+write(' ');
+write(b);
+writeln;
+{ Attendu: 20 10 }
+
+{ --- Test 2 : parametre var avec variable locale --- }
+procedure Inc10(var v: Integer);
+begin
+  v := v + 10;
+end;
+
+var c: Integer;
+c := 5;
+Inc10(c);
+write(c);
+writeln;
+{ Attendu: 15 }
+
+{ --- Test 3 : parametre mixte (val et var) --- }
+procedure AddTo(val: Integer; var dest: Integer);
+begin
+  dest := dest + val;
+end;
+
+var d: Integer;
+d := 100;
+AddTo(50, d);
+write(d);
+writeln;
+{ Attendu: 150 }
+
+{ --- Test 4 : var param passe a travers (chainage) --- }
+procedure DoubleVar(var n: Integer);
+begin
+  n := n + n;
+end;
+
+procedure CallDouble(var m: Integer);
+begin
+  DoubleVar(m);
+end;
+
+var e: Integer;
+e := 7;
+CallDouble(e);
+write(e);
+writeln;
+{ Attendu: 14 }
+
+{ --- Test 5 : fonction avec variables locales (SI/DI preserves) --- }
+function Fib(n: Integer): Integer;
+var fa: Integer;
+var fb: Integer;
+var fc: Integer;
+var i: Integer;
+begin
+  if n < 2 then
+  begin
+    Fib := n;
+    exit;
+  end;
+  fa := 0;
+  fb := 1;
+  i := 2;
+  while i <= n do
+  begin
+    fc := fa + fb;
+    fa := fb;
+    fb := fc;
+    i := i + 1;
+  end;
+  Fib := fb;
+end;
+
+write(Fib(10));
+writeln;
+{ Attendu: 55 }
+
+{ --- Test 6 : portee locale ne fuit pas --- }
+function Hidden(x: Integer): Integer;
+var localvar: Integer;
+begin
+  localvar := x + 1;
+  Hidden := localvar;
+end;
+
+var f: Integer;
+f := Hidden(41);
+write(f);
+writeln;
+{ Attendu: 42 }
+
+%>

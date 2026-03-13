@@ -1,0 +1,1032 @@
+==============================================================================
+  TURBO PASCAL 7.0 - Unite DOS (Services DOS et Fichiers)
+==============================================================================
+
+  Ce document decrit le contenu de l'unite DOS de Turbo Pascal 7.0.
+  Cette unite fournit des routines d'acces aux services du systeme
+  d'exploitation : date/heure, attributs de fichiers, recherche de
+  fichiers, execution de programmes, variables d'environnement, etc.
+
+  Elle doit etre declaree dans la clause Uses :
+
+    Uses Dos;
+
+  Directives de compilation de l'unite :
+    {$D-}  Pas d'information de debogage
+    {$I-}  Pas de verification I/O
+    {$S-}  Pas de verification de pile
+    {$O+}  Support des overlays
+
+  En mode DOS 16 bits, ces routines appellent directement les
+  interruptions DOS (INT 21h). En Win32, elles sont emulees via
+  les API Windows (kernel32.dll).
+
+==============================================================================
+  1. CONSTANTES - DRAPEAUX DU PROCESSEUR
+==============================================================================
+
+  Ces constantes representent les bits du registre FLAGS du processeur
+  x86. Elles sont utilisees avec le champ Flags de l'enregistrement
+  Registers lors d'appels a Intr ou MsDos.
+
+  Const
+    FCarry     = $0001;   { Bit 0  : drapeau de retenue (Carry)      }
+    FParity    = $0004;   { Bit 2  : drapeau de parite                }
+    FAuxiliary = $0010;   { Bit 4  : drapeau de retenue auxiliaire    }
+    FZero      = $0040;   { Bit 6  : drapeau zero                     }
+    FSign      = $0080;   { Bit 7  : drapeau de signe                 }
+    FOverflow  = $0800;   { Bit 11 : drapeau de depassement           }
+
+  Utilisation typique :
+    MsDos(Regs);
+    If (Regs.Flags And FCarry) <> 0 Then
+      WriteLn('Erreur DOS');
+
+==============================================================================
+  2. CONSTANTES - MODES DE FICHIER
+==============================================================================
+
+  Ces constantes representent l'etat interne d'une variable fichier
+  (champ Mode de FileRec et TextRec). Elles permettent de verifier
+  si un fichier est ouvert, ferme, ou dans quel mode.
+
+  Const
+    fmClosed = $D7B0;   { Fichier ferme                              }
+    fmInput  = $D7B1;   { Fichier ouvert en lecture (Reset sur Text)  }
+    fmOutput = $D7B2;   { Fichier ouvert en ecriture (Rewrite)        }
+    fmInOut  = $D7B3;   { Fichier ouvert en lecture/ecriture (Reset)   }
+
+  Utilisation typique :
+    Var F : Text;
+    If TextRec(F).Mode = fmInput Then
+      WriteLn('Fichier ouvert en lecture');
+
+  NOTE : ces valeurs "magiques" ($D7Bx) sont specifiques au runtime
+  Turbo Pascal. Elles evitent une confusion avec des valeurs courantes
+  (0, 1, 2, 3).
+
+==============================================================================
+  3. CONSTANTES - ATTRIBUTS DE FICHIER
+==============================================================================
+
+  Ces constantes representent les attributs de fichier DOS. Elles
+  sont utilisees avec FindFirst, GetFAttr et SetFAttr.
+
+  Const
+    ReadOnly  = $01;   { Fichier en lecture seule                     }
+    Hidden    = $02;   { Fichier cache                                }
+    SysFile   = $04;   { Fichier systeme                              }
+    VolumeID  = $08;   { Etiquette de volume                          }
+    Directory = $10;   { Repertoire                                    }
+    Archive   = $20;   { Bit d'archivage (modifie depuis sauvegarde)  }
+    AnyFile   = $3F;   { Tous les attributs combines                   }
+
+  Les attributs peuvent etre combines par OR :
+    FindFirst('*.*', ReadOnly + Hidden + Archive, SR);
+    FindFirst('*.*', AnyFile, SR);  { cherche tout }
+
+  Pour tester un attribut :
+    If (SR.Attr And Directory) <> 0 Then
+      WriteLn(SR.Name, ' est un repertoire');
+
+  Correspondance avec les attributs Win32 :
+    ReadOnly  -> FILE_ATTRIBUTE_READONLY  ($01)
+    Hidden    -> FILE_ATTRIBUTE_HIDDEN    ($02)
+    SysFile   -> FILE_ATTRIBUTE_SYSTEM    ($04)
+    Directory -> FILE_ATTRIBUTE_DIRECTORY ($10)
+    Archive   -> FILE_ATTRIBUTE_ARCHIVE   ($20)
+    VolumeID n'a pas d'equivalent direct en Win32.
+
+==============================================================================
+  4. TYPES - CHAINES SPECIALISEES
+==============================================================================
+
+  type
+    ComStr  = String[127];   { Ligne de commande (max 127 caracteres)   }
+    PathStr = String[79];    { Chemin complet (unite:rep\nom.ext)        }
+    DirStr  = String[67];    { Unite et repertoire (C:\REP\SOUS\)       }
+    NameStr = String[8];     { Nom de fichier seul (max 8 caracteres)   }
+    ExtStr  = String[4];     { Extension avec point (.PAS, .EXE)        }
+
+  Ces types sont adaptes aux limites du systeme de fichiers DOS (8.3).
+  Ils sont utilises par les procedures FSplit, FSearch, FExpand et Exec.
+
+  Exemple :
+    Var
+      Dir  : DirStr;
+      Name : NameStr;
+      Ext  : ExtStr;
+    FSplit('C:\TP\BIN\TPC.EXE', Dir, Name, Ext);
+    { Dir = 'C:\TP\BIN\', Name = 'TPC', Ext = '.EXE' }
+
+  NOTE : en Win32 avec noms longs, ces tailles peuvent etre
+  insuffisantes. Les implementations modernes utilisent souvent
+  String[255] a la place.
+
+==============================================================================
+  5. TYPES - ENREGISTREMENT REGISTERS
+==============================================================================
+
+  type
+    Registers = record
+      case Integer of
+        0: (AX, BX, CX, DX, BP, SI, DI, DS, ES, Flags : Word);
+        1: (AL, AH, BL, BH, CL, CH, DL, DH : Byte);
+    end;
+
+  Enregistrement a variantes (union) representant les registres du
+  processeur x86 en mode 16 bits. Utilise avec Intr et MsDos.
+
+  La variante 0 donne acces aux registres 16 bits complets.
+  La variante 1 donne acces aux octets bas (xL) et hauts (xH)
+  des registres AX, BX, CX, DX.
+
+  Exemple :
+    Var Regs : Registers;
+    Regs.AH := $30;            { fonction : obtenir version DOS }
+    MsDos(Regs);
+    WriteLn('DOS ', Regs.AL, '.', Regs.AH);
+
+  NOTE : en Win32, Intr et MsDos ne sont plus fonctionnels. Les
+  appels DOS doivent etre remplaces par les API Windows.
+
+==============================================================================
+  6. TYPES - ENREGISTREMENTS DE FICHIER
+==============================================================================
+
+  6.1 FileRec (fichier type et non-type)
+  ----------------------------------------
+
+  type
+    FileRec = record
+      Handle   : Word;                   { Handle fichier DOS/Win32   }
+      Mode     : Word;                   { Mode (fmClosed/Input/...)  }
+      RecSize  : Word;                   { Taille d'enregistrement    }
+      Private  : Array[1..26] Of Byte;   { Donnees internes runtime   }
+      UserData : Array[1..16] Of Byte;   { Donnees utilisateur        }
+      Name     : Array[0..79] Of Char;   { Nom du fichier (ASCIIZ)    }
+    end;
+
+  Structure interne d'une variable File et File of T. Permet
+  d'inspecter ou modifier les champs internes :
+    Var F : File;
+    WriteLn('Handle = ', FileRec(F).Handle);
+    WriteLn('Nom = ', FileRec(F).Name);
+
+  RecSize est positionne par Reset(F, N) ou Rewrite(F, N).
+  Par defaut, RecSize = 128 pour File, SizeOf(T) pour File of T.
+
+  6.2 TextRec et TextBuf (fichier texte)
+  ----------------------------------------
+
+  type
+    TextBuf = Array[0..127] Of Char;
+
+    TextRec = record
+      Handle    : Word;            { Handle fichier DOS/Win32      }
+      Mode      : Word;            { Mode (fmClosed/Input/Output)  }
+      BufSize   : Word;            { Taille du tampon              }
+      Private   : Word;            { Donnees internes              }
+      BufPos    : Word;            { Position dans le tampon        }
+      BufEnd    : Word;            { Fin des donnees dans tampon    }
+      BufPtr    : ^TextBuf;        { Pointeur vers le tampon        }
+      OpenFunc  : Pointer;         { Fonction d'ouverture           }
+      InOutFunc : Pointer;         { Fonction de lecture/ecriture   }
+      FlushFunc : Pointer;         { Fonction de vidage tampon      }
+      CloseFunc : Pointer;         { Fonction de fermeture          }
+      UserData  : Array[1..16] Of Byte;  { Donnees utilisateur     }
+      Name      : Array[0..79] Of Char;  { Nom du fichier (ASCIIZ) }
+      Buffer    : TextBuf;         { Tampon integre (128 octets)    }
+    end;
+
+  Structure interne d'une variable Text. Le tampon integre fait
+  128 octets par defaut. SetTextBuf peut rediriger BufPtr vers
+  un tampon plus grand.
+
+  Les quatre pointeurs de fonction (OpenFunc, InOutFunc, FlushFunc,
+  CloseFunc) permettent de creer des pilotes de peripheriques texte
+  personnalises (device drivers).
+
+  6.3 SearchRec (recherche de fichiers)
+  --------------------------------------
+
+  type
+    SearchRec = record
+      Fill : Array[1..21] Of Byte;  { Donnees internes DOS (DTA)    }
+      Attr : Byte;                  { Attributs du fichier trouve    }
+      Time : LongInt;               { Date/heure (format compacte)  }
+      Size : LongInt;               { Taille en octets               }
+      Name : String[12];            { Nom du fichier (format 8.3)    }
+    end;
+
+  Utilise par FindFirst et FindNext. Le champ Fill contient les
+  donnees internes du DOS (DTA = Disk Transfer Area) necessaires
+  pour FindNext.
+
+  Le champ Time est au format compacte DOS (voir PackTime/UnpackTime).
+  Le champ Name contient le nom en format 8.3 (ex: 'HELLO.PAS').
+
+  6.4 DateTime (date et heure)
+  ------------------------------
+
+  type
+    DateTime = record
+      Year  : Word;   { Annee (1980..2099)  }
+      Month : Word;   { Mois (1..12)        }
+      Day   : Word;   { Jour (1..31)        }
+      Hour  : Word;   { Heure (0..23)       }
+      Min   : Word;   { Minute (0..59)      }
+      Sec   : Word;   { Seconde (0..59)     }
+    end;
+
+  Utilise par UnpackTime et PackTime pour convertir entre l'horodatage
+  compacte DOS (LongInt) et des champs lisibles.
+
+  Format compacte DOS du LongInt :
+    Bits 0-4   : Secondes / 2 (0..29 -> 0..58 secondes)
+    Bits 5-10  : Minutes (0..59)
+    Bits 11-15 : Heures (0..23)
+    Bits 16-20 : Jour (1..31)
+    Bits 21-24 : Mois (1..12)
+    Bits 25-31 : Annee - 1980 (0..119 -> 1980..2099)
+
+==============================================================================
+  7. VARIABLE DOSERROR
+==============================================================================
+
+  Var
+    DosError : Integer;
+
+  Contient le code d'erreur de la derniere operation de l'unite DOS.
+  Mis a jour par FindFirst, FindNext, Exec et d'autres procedures.
+
+  Codes d'erreur DOS courants :
+    0   = Pas d'erreur
+    2   = Fichier non trouve
+    3   = Chemin non trouve
+    5   = Acces refuse
+    6   = Handle invalide
+    8   = Memoire insuffisante
+    10  = Environnement invalide
+    11  = Format invalide
+    18  = Plus de fichiers (FindNext epuise)
+
+  Exemple :
+    FindFirst('*.PAS', AnyFile, SR);
+    If DosError <> 0 Then
+      WriteLn('Aucun fichier .PAS trouve');
+
+==============================================================================
+  8. PROCEDURES ET FONCTIONS - VERSION DOS
+==============================================================================
+
+  Function DosVersion : Word;
+    - Retourne le numero de version du DOS
+    - Lo(DosVersion) = numero majeur
+    - Hi(DosVersion) = numero mineur
+    - Exemple :
+        V := DosVersion;
+        WriteLn('DOS ', Lo(V), '.', Hi(V));
+        { DOS 6.22 -> Lo=6, Hi=22 }
+
+  NOTE : en Win32, retourne generalement la version de
+  compatibilite DOS du sous-systeme Windows.
+
+==============================================================================
+  9. PROCEDURES - INTERRUPTIONS DOS
+==============================================================================
+
+  Procedure Intr(IntNo : Byte; Var Regs : Registers);
+    - Execute l'interruption logicielle IntNo
+    - Les registres sont charges depuis Regs avant l'appel
+    - Les registres sont sauvegardes dans Regs apres l'appel
+    - Permet d'appeler n'importe quel service BIOS ou DOS
+    - Exemple (INT 10h, service 0 = changer mode video) :
+        Regs.AH := $00;
+        Regs.AL := $13;     { mode 320x200x256 }
+        Intr($10, Regs);
+
+  Procedure MsDos(Var Regs : Registers);
+    - Equivalent a Intr($21, Regs)
+    - Appelle directement l'interruption DOS (INT 21h)
+    - Plus lisible que Intr($21, Regs)
+    - Exemple (obtenir version DOS) :
+        Regs.AH := $30;
+        MsDos(Regs);
+        WriteLn('Version = ', Regs.AL, '.', Regs.AH);
+
+  NOTE : en Win32, ces procedures ne sont plus fonctionnelles.
+  Les interruptions DOS ne sont pas disponibles en mode protege
+  Win32. Elles doivent etre remplacees par les API Windows.
+
+==============================================================================
+  10. PROCEDURES - DATE ET HEURE
+==============================================================================
+
+  Procedure GetDate(Var Year, Month, Day, DayOfWeek : Word);
+    - Retourne la date systeme courante
+    - Year  : annee (1980..2099)
+    - Month : mois (1..12)
+    - Day   : jour du mois (1..31)
+    - DayOfWeek : jour de la semaine (0=Dimanche, 1=Lundi, ..., 6=Samedi)
+    - Exemple :
+        GetDate(Y, M, D, DOW);
+        WriteLn('Date : ', D, '/', M, '/', Y);
+
+  Procedure SetDate(Year, Month, Day : Word);
+    - Modifie la date systeme
+    - Requiert les privileges administrateur sur certains systemes
+    - Exemple : SetDate(2026, 3, 13);
+
+  Procedure GetTime(Var Hour, Minute, Second, Sec100 : Word);
+    - Retourne l'heure systeme courante
+    - Hour   : heure (0..23)
+    - Minute : minute (0..59)
+    - Second : seconde (0..59)
+    - Sec100 : centiemes de seconde (0..99)
+    - Exemple :
+        GetTime(H, Mi, S, S100);
+        WriteLn('Heure : ', H, ':', Mi, ':', S);
+
+  Procedure SetTime(Hour, Minute, Second, Sec100 : Word);
+    - Modifie l'heure systeme
+    - Requiert les privileges administrateur sur certains systemes
+    - Exemple : SetTime(14, 30, 0, 0);
+
+  API Win32 correspondantes :
+    GetDate -> GetLocalTime (structure SYSTEMTIME)
+    SetDate -> SetLocalTime
+    GetTime -> GetLocalTime
+    SetTime -> SetLocalTime
+
+==============================================================================
+  11. PROCEDURES - CONTROLE SYSTEME
+==============================================================================
+
+  Procedure GetCBreak(Var Break : Boolean);
+    - Retourne l'etat du Ctrl+Break DOS
+    - True = le DOS verifie Ctrl+C/Break a chaque appel systeme
+    - False = verification uniquement lors des E/S console
+    - Exemple :
+        GetCBreak(B);
+        WriteLn('Ctrl+Break = ', B);
+
+  Procedure SetCBreak(Break : Boolean);
+    - Active ou desactive la verification etendue Ctrl+Break
+    - Exemple : SetCBreak(False);  { ignorer Ctrl+Break }
+
+  Procedure GetVerify(Var Verify : Boolean);
+    - Retourne l'etat de la verification d'ecriture disque
+    - True = le DOS relit chaque secteur ecrit pour verification
+    - False = pas de relecture (plus rapide mais moins sur)
+
+  Procedure SetVerify(Verify : Boolean);
+    - Active ou desactive la verification d'ecriture disque
+    - Exemple : SetVerify(True);  { activer la verification }
+
+  NOTE : en Win32, GetCBreak/SetCBreak et GetVerify/SetVerify
+  n'ont plus de sens. Elles peuvent etre implementees comme
+  des stubs (ne rien faire / retourner une valeur par defaut).
+
+==============================================================================
+  12. PROCEDURES ET FONCTIONS - ESPACE DISQUE
+==============================================================================
+
+  Function DiskFree(Drive : Byte) : LongInt;
+    - Retourne l'espace libre en octets sur le lecteur Drive
+    - Drive : 0 = lecteur courant, 1 = A:, 2 = B:, 3 = C:, etc.
+    - Retourne -1 si le lecteur est invalide
+    - Exemple :
+        Free := DiskFree(3);     { espace libre sur C: }
+        WriteLn('Libre : ', Free, ' octets');
+    - NOTE : limite a 2 Go (LongInt = 32 bits signe)
+
+  Function DiskSize(Drive : Byte) : LongInt;
+    - Retourne la capacite totale en octets du lecteur Drive
+    - Meme convention que DiskFree pour Drive
+    - Retourne -1 si le lecteur est invalide
+    - Exemple :
+        Total := DiskSize(3);    { taille totale de C: }
+        WriteLn('Total : ', Total, ' octets');
+
+  API Win32 correspondante :
+    GetDiskFreeSpaceA(root, sectPerClust, bytesPerSect,
+                      freeClust, totalClust)
+
+==============================================================================
+  13. PROCEDURES - ATTRIBUTS ET HORODATAGE DE FICHIERS
+==============================================================================
+
+  13.1 Attributs de fichier
+  --------------------------
+
+  Procedure GetFAttr(Var F; Var Attr : Word);
+    - Retourne les attributs du fichier associe a F
+    - F doit avoir ete associe par Assign (pas necessairement ouvert)
+    - Attr recoit la combinaison des attributs (ReadOnly, Hidden, etc.)
+    - Met a jour DosError en cas d'erreur
+    - Exemple :
+        Assign(F, 'TEST.PAS');
+        GetFAttr(F, A);
+        If DosError = 0 Then
+        Begin
+          If (A And ReadOnly) <> 0 Then WriteLn('Lecture seule');
+          If (A And Hidden) <> 0 Then WriteLn('Cache');
+          If (A And Directory) <> 0 Then WriteLn('Repertoire');
+        End;
+
+  Procedure SetFAttr(Var F; Attr : Word);
+    - Modifie les attributs du fichier associe a F
+    - F doit etre ferme
+    - Met a jour DosError en cas d'erreur
+    - Exemple :
+        Assign(F, 'TEST.PAS');
+        SetFAttr(F, ReadOnly + Archive);
+
+  API Win32 correspondantes :
+    GetFAttr -> GetFileAttributesA
+    SetFAttr -> SetFileAttributesA
+
+  13.2 Horodatage de fichier
+  ----------------------------
+
+  Procedure GetFTime(Var F; Var Time : LongInt);
+    - Retourne la date/heure de derniere modification du fichier F
+    - F doit etre OUVERT (apres Reset ou Rewrite)
+    - Time est au format compacte DOS (voir PackTime/UnpackTime)
+    - Met a jour DosError en cas d'erreur
+    - Exemple :
+        Assign(F, 'TEST.PAS');
+        Reset(F);
+        GetFTime(F, T);
+        UnpackTime(T, DT);
+        WriteLn('Date : ', DT.Day, '/', DT.Month, '/', DT.Year);
+        Close(F);
+
+  Procedure SetFTime(Var F; Time : LongInt);
+    - Modifie la date/heure de derniere modification du fichier F
+    - F doit etre OUVERT
+    - Time est au format compacte DOS
+    - Exemple :
+        PackTime(DT, T);
+        SetFTime(F, T);
+
+==============================================================================
+  14. PROCEDURES - RECHERCHE DE FICHIERS
+==============================================================================
+
+  Procedure FindFirst(Path : PathStr; Attr : Word; Var F : SearchRec);
+    - Recherche le premier fichier correspondant au masque Path
+    - Path peut contenir des jokers : '*' et '?'
+    - Attr specifie les attributs a inclure dans la recherche
+    - F recoit les informations du premier fichier trouve
+    - Met a jour DosError : 0 = trouve, 18 = aucun fichier
+    - Exemple :
+        FindFirst('*.PAS', AnyFile, SR);
+        While DosError = 0 Do
+        Begin
+          WriteLn(SR.Name, ' (', SR.Size, ' octets)');
+          FindNext(SR);
+        End;
+
+  Procedure FindNext(Var F : SearchRec);
+    - Recherche le fichier suivant apres FindFirst
+    - F doit etre le meme SearchRec passe a FindFirst
+    - Met a jour DosError : 0 = trouve, 18 = plus de fichiers
+    - Exemple : voir FindFirst ci-dessus
+
+  Remarque sur les attributs :
+    - Les fichiers normaux (sans attributs speciaux) sont toujours
+      inclus dans la recherche, independamment du parametre Attr
+    - Attr specifie les fichiers SUPPLEMENTAIRES a inclure
+    - Pour trouver uniquement les repertoires, il faut filtrer :
+        FindFirst('*.*', Directory, SR);
+        While DosError = 0 Do
+        Begin
+          If (SR.Attr And Directory) <> 0 Then
+            WriteLn('[', SR.Name, ']');
+          FindNext(SR);
+        End;
+
+  API Win32 correspondantes :
+    FindFirst -> FindFirstFileA (retourne un handle)
+    FindNext  -> FindNextFileA
+    (apres la boucle) -> FindClose (liberer le handle)
+
+  ATTENTION : en Win32, il faut appeler FindClose apres la
+  boucle de recherche pour liberer les ressources. En DOS,
+  ce n'est pas necessaire (le DTA est un simple tampon).
+
+==============================================================================
+  15. PROCEDURES - CONVERSION DATE/HEURE
+==============================================================================
+
+  Procedure UnpackTime(P : LongInt; Var T : DateTime);
+    - Convertit un horodatage compacte DOS en champs lisibles
+    - P : horodatage au format compacte (de GetFTime ou SearchRec.Time)
+    - T : enregistrement DateTime avec Year, Month, Day, Hour, Min, Sec
+    - Exemple :
+        UnpackTime(SR.Time, DT);
+        WriteLn(DT.Year, '-', DT.Month, '-', DT.Day, ' ',
+                DT.Hour, ':', DT.Min, ':', DT.Sec);
+
+  Procedure PackTime(Var T : DateTime; Var P : LongInt);
+    - Convertit des champs DateTime en horodatage compacte DOS
+    - T : enregistrement avec les champs a compacter
+    - P : recoit l'horodatage compacte
+    - Exemple :
+        DT.Year := 2026; DT.Month := 3; DT.Day := 13;
+        DT.Hour := 14; DT.Min := 30; DT.Sec := 0;
+        PackTime(DT, T);
+
+  Formule de conversion :
+    Pack :
+      P := (Sec Shr 1) Or (Min Shl 5) Or (Hour Shl 11) Or
+           (Day Shl 16) Or (Month Shl 21) Or ((Year - 1980) Shl 25);
+
+    Unpack :
+      Sec   := (P And $1F) * 2;
+      Min   := (P Shr 5) And $3F;
+      Hour  := (P Shr 11) And $1F;
+      Day   := (P Shr 16) And $1F;
+      Month := (P Shr 21) And $0F;
+      Year  := (P Shr 25) And $7F + 1980;
+
+==============================================================================
+  16. PROCEDURES - VECTEURS D'INTERRUPTION
+==============================================================================
+
+  Procedure GetIntVec(IntNo : Byte; Var Vector : Pointer);
+    - Retourne l'adresse du vecteur d'interruption IntNo
+    - IntNo : numero d'interruption (0..255)
+    - Vector : recoit l'adresse du handler
+    - Exemple :
+        GetIntVec($1C, OldTimer);  { sauver le timer user tick }
+
+  Procedure SetIntVec(IntNo : Byte; Vector : Pointer);
+    - Installe un nouveau vecteur d'interruption
+    - IntNo : numero d'interruption (0..255)
+    - Vector : adresse du nouveau handler
+    - ATTENTION : le handler doit etre declare avec la directive Far
+      et doit etre une procedure d'interruption
+    - Exemple :
+        SetIntVec($1C, @MyTimerHandler);
+
+  Procedure SwapVectors;
+    - Echange les vecteurs d'interruption sauvegardes par le runtime
+      avec les vecteurs courants
+    - Doit etre appelee AVANT et APRES Exec pour que le programme
+      execute puisse fonctionner correctement
+    - Exemple :
+        SwapVectors;
+        Exec('COMMAND.COM', '/C DIR');
+        SwapVectors;
+
+  NOTE : en Win32, les vecteurs d'interruption ne sont pas accessibles.
+  Ces procedures sont des stubs (ne font rien) ou provoquent une erreur.
+
+==============================================================================
+  17. PROCEDURES ET FONCTIONS - CHEMINS ET FICHIERS
+==============================================================================
+
+  Function FSearch(Path : PathStr; DirList : String) : PathStr;
+    - Recherche un fichier dans une liste de repertoires
+    - Path : nom du fichier a chercher
+    - DirList : liste de repertoires separes par ';'
+    - Retourne le chemin complet si trouve, '' (vide) sinon
+    - Cherche d'abord dans le repertoire courant
+    - Exemple :
+        S := FSearch('TPC.EXE', GetEnv('PATH'));
+        If S <> '' Then
+          WriteLn('Trouve : ', S)
+        Else
+          WriteLn('Non trouve');
+
+  Function FExpand(Path : PathStr) : PathStr;
+    - Developpe un chemin relatif en chemin absolu complet
+    - Ajoute l'unite et le repertoire courants si necessaire
+    - Convertit en majuscules (convention DOS)
+    - Resout les '.' et '..'
+    - Exemple :
+        WriteLn(FExpand('TEST.PAS'));
+        { -> 'C:\TP\PROJETS\TEST.PAS' }
+
+  Procedure FSplit(Path : PathStr; Var Dir : DirStr;
+                   Var Name : NameStr; Var Ext : ExtStr);
+    - Decompose un chemin en ses composantes
+    - Dir  : unite + repertoire (avec '\' final)
+    - Name : nom du fichier (sans extension)
+    - Ext  : extension (avec le '.')
+    - Exemple :
+        FSplit('C:\TP\BIN\TPC.EXE', Dir, Name, Ext);
+        { Dir = 'C:\TP\BIN\', Name = 'TPC', Ext = '.EXE' }
+    - Si une composante est absente, la chaine est vide :
+        FSplit('TEST', Dir, Name, Ext);
+        { Dir = '', Name = 'TEST', Ext = '' }
+
+  API Win32 correspondante :
+    FExpand -> GetFullPathNameA
+
+==============================================================================
+  18. PROCEDURES ET FONCTIONS - ENVIRONNEMENT
+==============================================================================
+
+  Function EnvCount : Integer;
+    - Retourne le nombre de variables d'environnement
+    - Exemple :
+        WriteLn('Variables : ', EnvCount);
+
+  Function EnvStr(Index : Integer) : String;
+    - Retourne la N-ieme variable d'environnement (1-based)
+    - Format : 'NOM=VALEUR'
+    - Exemple :
+        For I := 1 To EnvCount Do
+          WriteLn(EnvStr(I));
+        { Affiche toutes les variables d'environnement }
+
+  Function GetEnv(EnvVar : String) : String;
+    - Retourne la valeur d'une variable d'environnement
+    - EnvVar : nom de la variable (insensible a la casse)
+    - Retourne '' si la variable n'existe pas
+    - Exemple :
+        WriteLn('PATH = ', GetEnv('PATH'));
+        WriteLn('HOME = ', GetEnv('HOME'));
+
+  API Win32 correspondante :
+    GetEnv -> GetEnvironmentVariableA
+
+==============================================================================
+  19. PROCEDURES ET FONCTIONS - EXECUTION DE PROGRAMMES
+==============================================================================
+
+  Procedure Exec(Path : PathStr; ComLine : ComStr);
+    - Execute un programme externe
+    - Path : chemin du programme a executer (.EXE ou .COM)
+    - ComLine : ligne de commande a passer au programme
+    - Bloquant : attend la fin du programme
+    - Met a jour DosError : 0 = succes, autre = erreur
+    - DosExitCode retourne le code de sortie apres Exec
+    - IMPORTANT : appeler SwapVectors avant et apres Exec
+    - Exemple :
+        SwapVectors;
+        Exec(GetEnv('COMSPEC'), '/C DIR *.PAS');
+        SwapVectors;
+        If DosError <> 0 Then
+          WriteLn('Erreur exec : ', DosError)
+        Else
+          WriteLn('Code retour : ', Lo(DosExitCode));
+
+  Function DosExitCode : Word;
+    - Retourne le code de sortie du dernier programme execute par Exec
+    - Lo(DosExitCode) : code de sortie du programme (Halt(N))
+    - Hi(DosExitCode) : methode de terminaison :
+        0 = terminaison normale
+        1 = termine par Ctrl+C
+        2 = termine par erreur critique
+        3 = termine par programme resident (TSR)
+    - Exemple :
+        If Lo(DosExitCode) = 0 Then
+          WriteLn('Programme termine normalement');
+
+  Procedure Keep(ExitCode : Word);
+    - Termine le programme et le rend resident en memoire (TSR)
+    - ExitCode : code de sortie
+    - Le programme reste en memoire apres sa terminaison
+    - Utilise pour les pilotes residentiels et les utilitaires TSR
+    - Equivalent a l'interruption DOS INT 21h, fonction 31h
+    - Exemple :
+        Keep(0);  { rester en memoire avec code de sortie 0 }
+
+  NOTE : Keep n'a pas de sens en Win32. Exec est emule par
+  CreateProcessA + WaitForSingleObject + GetExitCodeProcess.
+
+  API Win32 correspondantes :
+    Exec         -> CreateProcessA + WaitForSingleObject
+    DosExitCode  -> GetExitCodeProcess
+
+==============================================================================
+  20. EXEMPLES D'UTILISATION
+==============================================================================
+
+  20.1 Lister les fichiers d'un repertoire
+  ------------------------------------------
+
+  Program ListDir;
+  Uses Dos;
+  Var
+    SR : SearchRec;
+    DT : DateTime;
+  Begin
+    FindFirst('*.*', AnyFile, SR);
+    While DosError = 0 Do
+    Begin
+      UnpackTime(SR.Time, DT);
+      Write(SR.Name:14);
+      If (SR.Attr And Directory) <> 0 Then
+        Write('<REP>':10)
+      Else
+        Write(SR.Size:10);
+      WriteLn('  ', DT.Day:2, '/', DT.Month:2, '/', DT.Year);
+      FindNext(SR);
+    End;
+  End.
+
+  20.2 Obtenir la date et l'heure
+  ---------------------------------
+
+  Program DateHeure;
+  Uses Dos;
+  Const Jours : Array[0..6] Of String[9] =
+    ('Dimanche','Lundi','Mardi','Mercredi',
+     'Jeudi','Vendredi','Samedi');
+  Var Y, M, D, DOW, H, Mi, S, S100 : Word;
+  Begin
+    GetDate(Y, M, D, DOW);
+    GetTime(H, Mi, S, S100);
+    WriteLn(Jours[DOW], ' ', D, '/', M, '/', Y);
+    WriteLn(H, ':', Mi, ':', S, '.', S100);
+  End.
+
+  20.3 Decomposer un chemin de fichier
+  ---------------------------------------
+
+  Program DecomposeChemin;
+  Uses Dos;
+  Var
+    Dir  : DirStr;
+    Name : NameStr;
+    Ext  : ExtStr;
+    Full : PathStr;
+  Begin
+    Full := FExpand(ParamStr(1));
+    FSplit(Full, Dir, Name, Ext);
+    WriteLn('Chemin complet : ', Full);
+    WriteLn('Repertoire     : ', Dir);
+    WriteLn('Nom            : ', Name);
+    WriteLn('Extension      : ', Ext);
+  End.
+
+  20.4 Executer un programme externe
+  ------------------------------------
+
+  Program LancerProg;
+  Uses Dos;
+  Begin
+    SwapVectors;
+    Exec(GetEnv('COMSPEC'), '/C DIR *.PAS /W');
+    SwapVectors;
+    If DosError <> 0 Then
+      WriteLn('Erreur : ', DosError)
+    Else
+      WriteLn('Code retour : ', Lo(DosExitCode));
+  End.
+
+  20.5 Afficher les variables d'environnement
+  ---------------------------------------------
+
+  Program AfficherEnv;
+  Uses Dos;
+  Var I : Integer;
+  Begin
+    WriteLn('Nombre de variables : ', EnvCount);
+    WriteLn;
+    For I := 1 To EnvCount Do
+      WriteLn(EnvStr(I));
+    WriteLn;
+    WriteLn('PATH = ', GetEnv('PATH'));
+  End.
+
+==============================================================================
+  21. NOTES D'IMPLEMENTATION POUR TPCW32
+==============================================================================
+
+  21.1 Emulation en Win32
+  ------------------------
+
+  Fonction DOS             | API Win32 correspondante
+  -------------------------+----------------------------------------
+  DosVersion               | GetVersion / GetVersionExA
+  GetDate / SetDate        | GetLocalTime / SetLocalTime
+  GetTime / SetTime        | GetLocalTime / SetLocalTime
+  DiskFree / DiskSize      | GetDiskFreeSpaceA
+  GetFAttr                 | GetFileAttributesA
+  SetFAttr                 | SetFileAttributesA
+  FindFirst                | FindFirstFileA
+  FindNext                 | FindNextFileA
+  (fin de recherche)       | FindClose
+  FExpand                  | GetFullPathNameA
+  GetEnv                   | GetEnvironmentVariableA
+  Exec                     | CreateProcessA + WaitForSingleObject
+  DosExitCode              | GetExitCodeProcess
+  Intr / MsDos             | (non supportees, stubs)
+  GetIntVec / SetIntVec    | (non supportees, stubs)
+  SwapVectors              | (stub, pas necessaire)
+  Keep                     | (non supportee)
+  GetCBreak / SetCBreak    | (stubs)
+  GetVerify / SetVerify    | (stubs)
+
+  21.2 Structure SearchRec en Win32
+  ----------------------------------
+
+  En Win32, FindFirstFileA retourne un handle et remplit une
+  structure WIN32_FIND_DATAA. L'implementation doit :
+  1. Stocker le handle FindFirstFile dans le champ Fill
+  2. Convertir WIN32_FIND_DATAA vers SearchRec :
+     - Attr = dwFileAttributes (masque avec $3F)
+     - Size = nFileSizeLow
+     - Time = conversion FileTime -> DOS packed time
+     - Name = cFileName (tronque a 12 caracteres si > 8.3)
+
+  21.3 Conversion DateTime en Win32
+  -----------------------------------
+
+  Win32 utilise SYSTEMTIME (Year, Month, Day, Hour, Minute,
+  Second, Milliseconds) et FILETIME (64 bits depuis 1601).
+  La conversion entre le format DOS compact et SYSTEMTIME est :
+
+    DOS -> SYSTEMTIME :
+      Appeler UnpackTime puis remplir SYSTEMTIME.
+
+    SYSTEMTIME -> DOS :
+      Remplir DateTime depuis SYSTEMTIME puis appeler PackTime.
+
+==============================================================================
+  22. INTERFACE COMPLETE
+==============================================================================
+
+  Unit Dos;
+
+  {$D-,I-,S-,O+}
+
+  INTERFACE
+
+  Const
+    { Drapeaux du processeur }
+    FCarry     = $0001;
+    FParity    = $0004;
+    FAuxiliary = $0010;
+    FZero      = $0040;
+    FSign      = $0080;
+    FOverflow  = $0800;
+
+    { Modes de fichier }
+    fmClosed = $D7B0;
+    fmInput  = $D7B1;
+    fmOutput = $D7B2;
+    fmInOut  = $D7B3;
+
+    { Attributs de fichier }
+    ReadOnly  = $01;
+    Hidden    = $02;
+    SysFile   = $04;
+    VolumeID  = $08;
+    Directory = $10;
+    Archive   = $20;
+    AnyFile   = $3F;
+
+  Type
+    ComStr  = String[127];
+    PathStr = String[79];
+    DirStr  = String[67];
+    NameStr = String[8];
+    ExtStr  = String[4];
+
+    Registers = record
+      case Integer of
+        0: (AX, BX, CX, DX, BP, SI, DI, DS, ES, Flags : Word);
+        1: (AL, AH, BL, BH, CL, CH, DL, DH : Byte);
+    end;
+
+    FileRec = record
+      Handle   : Word;
+      Mode     : Word;
+      RecSize  : Word;
+      Private  : Array[1..26] Of Byte;
+      UserData : Array[1..16] Of Byte;
+      Name     : Array[0..79] Of Char;
+    end;
+
+    TextBuf = Array[0..127] Of Char;
+
+    TextRec = record
+      Handle    : Word;
+      Mode      : Word;
+      BufSize   : Word;
+      Private   : Word;
+      BufPos    : Word;
+      BufEnd    : Word;
+      BufPtr    : ^TextBuf;
+      OpenFunc  : Pointer;
+      InOutFunc : Pointer;
+      FlushFunc : Pointer;
+      CloseFunc : Pointer;
+      UserData  : Array[1..16] Of Byte;
+      Name      : Array[0..79] Of Char;
+      Buffer    : TextBuf;
+    end;
+
+    SearchRec = record
+      Fill : Array[1..21] Of Byte;
+      Attr : Byte;
+      Time : LongInt;
+      Size : LongInt;
+      Name : String[12];
+    end;
+
+    DateTime = record
+      Year, Month, Day, Hour, Min, Sec : Word;
+    end;
+
+  Var
+    DosError : Integer;
+
+  { Version et interruptions }
+  Function  DosVersion : Word;
+  Procedure Intr(IntNo : Byte; Var Regs : Registers);
+  Procedure MsDos(Var Regs : Registers);
+
+  { Date et heure }
+  Procedure GetDate(Var Year, Month, Day, DayOfWeek : Word);
+  Procedure SetDate(Year, Month, Day : Word);
+  Procedure GetTime(Var Hour, Minute, Second, Sec100 : Word);
+  Procedure SetTime(Hour, Minute, Second, Sec100 : Word);
+
+  { Controle systeme }
+  Procedure GetCBreak(Var Break : Boolean);
+  Procedure SetCBreak(Break : Boolean);
+  Procedure GetVerify(Var Verify : Boolean);
+  Procedure SetVerify(Verify : Boolean);
+
+  { Espace disque }
+  Function  DiskFree(Drive : Byte) : LongInt;
+  Function  DiskSize(Drive : Byte) : LongInt;
+
+  { Attributs et horodatage }
+  Procedure GetFAttr(Var F; Var Attr : Word);
+  Procedure SetFAttr(Var F; Attr : Word);
+  Procedure GetFTime(Var F; Var Time : LongInt);
+  Procedure SetFTime(Var F; Time : LongInt);
+
+  { Recherche de fichiers }
+  Procedure FindFirst(Path : PathStr; Attr : Word; Var F : SearchRec);
+  Procedure FindNext(Var F : SearchRec);
+
+  { Conversion date/heure }
+  Procedure UnpackTime(P : LongInt; Var T : DateTime);
+  Procedure PackTime(Var T : DateTime; Var P : LongInt);
+
+  { Vecteurs d'interruption }
+  Procedure GetIntVec(IntNo : Byte; Var Vector : Pointer);
+  Procedure SetIntVec(IntNo : Byte; Vector : Pointer);
+  Procedure SwapVectors;
+
+  { Chemins et fichiers }
+  Function  FSearch(Path : PathStr; DirList : String) : PathStr;
+  Function  FExpand(Path : PathStr) : PathStr;
+  Procedure FSplit(Path : PathStr; Var Dir : DirStr;
+                   Var Name : NameStr; Var Ext : ExtStr);
+
+  { Environnement }
+  Function  EnvCount : Integer;
+  Function  EnvStr(Index : Integer) : String;
+  Function  GetEnv(EnvVar : String) : String;
+
+  { Execution de programmes }
+  Procedure Exec(Path : PathStr; ComLine : ComStr);
+  Function  DosExitCode : Word;
+  Procedure Keep(ExitCode : Word);
+
+  IMPLEMENTATION
+
+==============================================================================
+  23. RESUME PAR CATEGORIE
+==============================================================================
+
+  CATEGORIE              | ELEMENTS
+  -----------------------+-------------------------------------------
+  Drapeaux processeur    | FCarry, FParity, FAuxiliary, FZero,
+                         | FSign, FOverflow
+  Modes fichier          | fmClosed, fmInput, fmOutput, fmInOut
+  Attributs fichier      | ReadOnly, Hidden, SysFile, VolumeID,
+                         | Directory, Archive, AnyFile
+  Types chaines          | ComStr, PathStr, DirStr, NameStr, ExtStr
+  Types enregistrements  | Registers, FileRec, TextRec, TextBuf,
+                         | SearchRec, DateTime
+  Variable               | DosError
+  Version DOS            | DosVersion
+  Interruptions          | Intr, MsDos
+  Date et heure          | GetDate, SetDate, GetTime, SetTime
+  Controle systeme       | GetCBreak, SetCBreak, GetVerify, SetVerify
+  Espace disque          | DiskFree, DiskSize
+  Attributs fichier      | GetFAttr, SetFAttr
+  Horodatage fichier     | GetFTime, SetFTime
+  Recherche fichiers     | FindFirst, FindNext
+  Conversion date        | UnpackTime, PackTime
+  Vecteurs interruption  | GetIntVec, SetIntVec, SwapVectors
+  Chemins                | FSearch, FExpand, FSplit
+  Environnement          | EnvCount, EnvStr, GetEnv
+  Execution programmes   | Exec, DosExitCode, Keep
+
+==============================================================================
+  FIN DU DOCUMENT
+==============================================================================
