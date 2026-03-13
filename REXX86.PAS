@@ -367,7 +367,7 @@
             Conversion nombre -> chaine : CALL _RXRT_NUMTOSTR
             Verification DATATYPE('num', 'N') avant operation arithmetique
 
-  TODO 21 - SIGNAL ET TRAITEMENT DE CONDITIONS
+  TODO 21 - SIGNAL ET TRAITEMENT DE CONDITIONS [IMPLEMENTE]
             SIGNAL [VALUE] label : saut inconditionnel (goto)
               Termine toutes les boucles et blocs en cours
               -> JMP _RXP_label
@@ -853,6 +853,9 @@ Procedure EmitStemRuntime;     Forward;
 (* TODO 20 - ARITHMETIQUE ET NUMERIC DIGITS *)
 Procedure EmitArithRuntime;    Forward;
 Procedure ParseNumericStmt;    Forward;
+
+(* TODO 21 - SIGNAL ET TRAITEMENT DE CONDITIONS *)
+Procedure EmitSignalRuntime;   Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -3093,6 +3096,11 @@ Begin
   (*  TODO 20 - Runtime arithmetique et NUMERIC                   *)
   (* ============================================================ *)
   EmitArithRuntime;
+
+  (* ============================================================ *)
+  (*  TODO 21 - Runtime signal et traitement de conditions        *)
+  (* ============================================================ *)
+  EmitSignalRuntime;
 End;
 
 { ============================================================
@@ -5891,6 +5899,19 @@ Begin
   DataAdd('_RX_FORM_SCI', DK_STR, 0, 'SCIENTIFIC');   (* chaine SCIENTIFIC   *)
   DataAdd('_RX_FORM_ENG', DK_STR, 0, 'ENGINEERING');  (* chaine ENGINEERING  *)
   DataAddBuffer('_RX_ARITHBUF', 256);              (* buffer arithmetique       *)
+  (* TODO 21 - Trap handlers pour conditions *)
+  DataAddWord('_RX_TRAP_ERROR', 0);                (* handler ERROR    (offset 0)  *)
+  DataAddWord('_RX_TRAP_FAILURE', 0);              (* handler FAILURE  (offset 2)  *)
+  DataAddWord('_RX_TRAP_HALT', 0);                 (* handler HALT     (offset 4)  *)
+  DataAddWord('_RX_TRAP_NOVALUE', 0);              (* handler NOVALUE  (offset 6)  *)
+  DataAddWord('_RX_TRAP_NOTREADY', 0);             (* handler NOTREADY (offset 8)  *)
+  DataAddWord('_RX_TRAP_SYNTAX', 0);               (* handler SYNTAX   (offset 10) *)
+  DataAddWord('_RX_TRAP_LOSTDGT', 0);              (* handler LOSTDIGITS (offset 12) *)
+  DataAdd('_RX_COND_ERROR', DK_STR, 0, 'ERROR');        (* nom condition ERROR      *)
+  DataAdd('_RX_COND_FAILURE', DK_STR, 0, 'FAILURE');    (* nom condition FAILURE    *)
+  DataAdd('_RX_COND_HALT', DK_STR, 0, 'HALT');          (* nom condition HALT       *)
+  DataAdd('_RX_COND_NOVALUE', DK_STR, 0, 'NOVALUE');    (* nom condition NOVALUE    *)
+  DataAdd('_RX_COND_SYNTAX', DK_STR, 0, 'SYNTAX');      (* nom condition SYNTAX     *)
 End;
 
 (* ============================================================
@@ -8874,6 +8895,9 @@ Procedure ParseSignalStmt;
 Var
   LblName : TString;
   UName   : TString;
+  CondName: TString;
+  Handler : TString;
+  TrapVar : TString;
 Begin
   (* Sauter les EOL *)
   While CurToken.Kind = TK_EOL Do
@@ -8887,6 +8911,138 @@ Begin
 
   LblName := CurToken.Val;
   UName := StrUpperCase(LblName);
+
+  (* ============================================================ *)
+  (*  SIGNAL ON condition [NAME handler] (TODO 21)                 *)
+  (*  Active un piege pour la condition specifiee                  *)
+  (* ============================================================ *)
+  If UName = 'ON' Then
+  Begin
+    ParserAdvance;
+    (* Sauter les EOL *)
+    While CurToken.Kind = TK_EOL Do
+      ParserAdvance;
+    If (CurToken.Kind <> TK_IDENT) And (CurToken.Kind <> TK_KEYWORD) Then
+    Begin
+      CompileError('nom de condition attendu apres SIGNAL ON');
+      Exit;
+    End;
+    CondName := StrUpperCase(CurToken.Val);
+    ParserAdvance;
+
+    (* Determiner la variable trap correspondante *)
+    TrapVar := '';
+    If CondName = 'ERROR' Then TrapVar := '_RX_TRAP_ERROR'
+    Else If CondName = 'FAILURE' Then TrapVar := '_RX_TRAP_FAILURE'
+    Else If CondName = 'HALT' Then TrapVar := '_RX_TRAP_HALT'
+    Else If CondName = 'NOVALUE' Then TrapVar := '_RX_TRAP_NOVALUE'
+    Else If CondName = 'NOTREADY' Then TrapVar := '_RX_TRAP_NOTREADY'
+    Else If CondName = 'SYNTAX' Then TrapVar := '_RX_TRAP_SYNTAX'
+    Else If CondName = 'LOSTDIGITS' Then TrapVar := '_RX_TRAP_LOSTDGT'
+    Else
+    Begin
+      WarnMsg('SIGNAL ON: condition "' + CondName + '" inconnue');
+      While (CurToken.Kind <> TK_EOL) And (CurToken.Kind <> TK_EOF) Do
+        ParserAdvance;
+      Exit;
+    End;
+
+    (* Verifier si NAME handler est specifie *)
+    Handler := CondName;
+    While CurToken.Kind = TK_EOL Do
+      ParserAdvance;
+    If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+    Begin
+      If StrUpperCase(CurToken.Val) = 'NAME' Then
+      Begin
+        ParserAdvance;
+        While CurToken.Kind = TK_EOL Do
+          ParserAdvance;
+        If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+        Begin
+          Handler := StrUpperCase(CurToken.Val);
+          ParserAdvance;
+        End
+        Else
+        Begin
+          CompileError('nom de handler attendu apres NAME');
+          Exit;
+        End;
+      End;
+    End;
+
+    EmitComment('SIGNAL ON ' + CondName + ' NAME ' + Handler);
+    EmitInstr('MOV', 'WORD PTR [' + TrapVar + '], OFFSET '
+              + RX_PROC_PFX + SymNameClean(Handler));
+    Exit;
+  End;
+
+  (* ============================================================ *)
+  (*  SIGNAL OFF condition (TODO 21)                               *)
+  (*  Desactive un piege pour la condition specifiee               *)
+  (* ============================================================ *)
+  If UName = 'OFF' Then
+  Begin
+    ParserAdvance;
+    (* Sauter les EOL *)
+    While CurToken.Kind = TK_EOL Do
+      ParserAdvance;
+    If (CurToken.Kind <> TK_IDENT) And (CurToken.Kind <> TK_KEYWORD) Then
+    Begin
+      CompileError('nom de condition attendu apres SIGNAL OFF');
+      Exit;
+    End;
+    CondName := StrUpperCase(CurToken.Val);
+    ParserAdvance;
+
+    TrapVar := '';
+    If CondName = 'ERROR' Then TrapVar := '_RX_TRAP_ERROR'
+    Else If CondName = 'FAILURE' Then TrapVar := '_RX_TRAP_FAILURE'
+    Else If CondName = 'HALT' Then TrapVar := '_RX_TRAP_HALT'
+    Else If CondName = 'NOVALUE' Then TrapVar := '_RX_TRAP_NOVALUE'
+    Else If CondName = 'NOTREADY' Then TrapVar := '_RX_TRAP_NOTREADY'
+    Else If CondName = 'SYNTAX' Then TrapVar := '_RX_TRAP_SYNTAX'
+    Else If CondName = 'LOSTDIGITS' Then TrapVar := '_RX_TRAP_LOSTDGT'
+    Else
+    Begin
+      WarnMsg('SIGNAL OFF: condition "' + CondName + '" inconnue');
+      While (CurToken.Kind <> TK_EOL) And (CurToken.Kind <> TK_EOF) Do
+        ParserAdvance;
+      Exit;
+    End;
+
+    EmitComment('SIGNAL OFF ' + CondName);
+    EmitInstr('MOV', 'WORD PTR [' + TrapVar + '], 0');
+    Exit;
+  End;
+
+  (* ============================================================ *)
+  (*  SIGNAL VALUE expr (TODO 21)                                  *)
+  (*  Saut via expression (computed SIGNAL)                        *)
+  (*  Simplifie : traite VALUE comme un nom statique               *)
+  (* ============================================================ *)
+  If UName = 'VALUE' Then
+  Begin
+    ParserAdvance;
+    While CurToken.Kind = TK_EOL Do
+      ParserAdvance;
+    If (CurToken.Kind <> TK_IDENT) And (CurToken.Kind <> TK_KEYWORD) Then
+    Begin
+      CompileError('expression attendue apres SIGNAL VALUE');
+      Exit;
+    End;
+    LblName := CurToken.Val;
+    UName := StrUpperCase(LblName);
+    ParserAdvance;
+    EmitComment('SIGNAL VALUE ' + UName);
+    EmitInstr('MOV', 'WORD PTR _RX_SIGL, ' + IntToStr(CurToken.Line));
+    EmitRaw('        JMP     ' + RX_PROC_PFX + SymNameClean(UName));
+    Exit;
+  End;
+
+  (* ============================================================ *)
+  (*  SIGNAL label : saut inconditionnel (deja dans TODO 17)       *)
+  (* ============================================================ *)
   ParserAdvance;
 
   EmitComment('SIGNAL ' + UName);
@@ -9114,6 +9270,94 @@ Begin
   EmitLabel('_RXB_SOURCELINE');
   EmitInstrAB('XOR', 'AX', 'AX');
   EmitRaw('        RET');
+  EmitBlankLine;
+End;
+
+{ ============================================================
+  TODO 21 - SIGNAL ET TRAITEMENT DE CONDITIONS [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- EmitSignalRuntime : routines runtime pour conditions ------- *)
+(* Emet les routines assembleur 8086 pour le traitement des           *)
+(* conditions REXX (SIGNAL ON/OFF) :                                   *)
+(*   _RXRT_CHKERR      : verifie le piege ERROR                       *)
+(*   _RXRT_CHKHALT     : verifie le piege HALT                        *)
+(*   _RXRT_CHKNOVALUE  : verifie le piege NOVALUE (variable non init) *)
+(*   _RXRT_CONDMSG     : affiche un message de condition + EXIT        *)
+Procedure EmitSignalRuntime;
+Var
+  LblSkip1 : TString;
+  LblSkip2 : TString;
+  LblSkip3 : TString;
+Begin
+  EmitComment('--- Runtime SIGNAL / CONDITIONS (TODO 21) ---');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXRT_CHKERR : verifie si le piege ERROR est actif           *)
+  (*  Si actif -> met a jour SIGL et saute vers le handler         *)
+  (*  Si inactif -> retourne normalement                           *)
+  (* ============================================================ *)
+  LblSkip1 := LabelGen;
+  EmitLabel('_RXRT_CHKERR');
+  EmitInstrAB('CMP', 'WORD PTR [_RX_TRAP_ERROR]', '0');
+  EmitRaw('        JZ      ' + LblSkip1);
+  EmitComment('piege ERROR actif : sauter vers handler');
+  EmitRaw('        JMP     WORD PTR [_RX_TRAP_ERROR]');
+  EmitLabel(LblSkip1);
+  EmitComment('pas de piege ERROR : message par defaut');
+  EmitInstrAB('MOV', 'SI', 'OFFSET _RX_COND_ERROR');
+  EmitRaw('        CALL    _RXRT_CONDMSG');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXRT_CHKHALT : verifie si le piege HALT est actif           *)
+  (*  Si actif -> saute vers le handler                            *)
+  (*  Si inactif -> affiche message + EXIT                         *)
+  (* ============================================================ *)
+  LblSkip2 := LabelGen;
+  EmitLabel('_RXRT_CHKHALT');
+  EmitInstrAB('CMP', 'WORD PTR [_RX_TRAP_HALT]', '0');
+  EmitRaw('        JZ      ' + LblSkip2);
+  EmitComment('piege HALT actif : sauter vers handler');
+  EmitRaw('        JMP     WORD PTR [_RX_TRAP_HALT]');
+  EmitLabel(LblSkip2);
+  EmitComment('pas de piege HALT : message par defaut');
+  EmitInstrAB('MOV', 'SI', 'OFFSET _RX_COND_HALT');
+  EmitRaw('        CALL    _RXRT_CONDMSG');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXRT_CHKNOVALUE : verifie si le piege NOVALUE est actif     *)
+  (*  Appelee quand une variable non initialisee est lue            *)
+  (*  Si actif -> saute vers le handler                            *)
+  (*  Si inactif -> retourne (comportement normal REXX : nom=val)  *)
+  (* ============================================================ *)
+  LblSkip3 := LabelGen;
+  EmitLabel('_RXRT_CHKNOVALUE');
+  EmitInstrAB('CMP', 'WORD PTR [_RX_TRAP_NOVALUE]', '0');
+  EmitRaw('        JZ      ' + LblSkip3);
+  EmitComment('piege NOVALUE actif : sauter vers handler');
+  EmitRaw('        JMP     WORD PTR [_RX_TRAP_NOVALUE]');
+  EmitLabel(LblSkip3);
+  EmitComment('pas de piege NOVALUE : comportement normal');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXRT_CONDMSG : affiche un message de condition et EXIT       *)
+  (*  Entree : SI = ptr vers nom de la condition (ASCIIZ)          *)
+  (*  Affiche le nom de la condition puis termine avec code 1      *)
+  (* ============================================================ *)
+  EmitLabel('_RXRT_CONDMSG');
+  EmitRaw('        CALL    _RXRT_PRINT');
+  EmitInstr('MOV', 'SI, OFFSET _RX_CRLF');
+  EmitRaw('        CALL    _RXRT_PRINT');
+  EmitComment('Quitter avec code erreur 1');
+  EmitInstr('MOV', 'AX, 4C01h');
+  EmitRaw('        INT     21h');
   EmitBlankLine;
 End;
 

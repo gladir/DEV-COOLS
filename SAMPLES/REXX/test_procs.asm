@@ -2567,6 +2567,47 @@ _RXB_SOURCELINE:
         XOR   AX, AX
         RET
 
+; --- Runtime SIGNAL / CONDITIONS (TODO 21) ---
+
+_RXRT_CHKERR:
+        CMP   WORD PTR [_RX_TRAP_ERROR], 0
+        JZ      _RXL_27
+; piege ERROR actif : sauter vers handler
+        JMP     WORD PTR [_RX_TRAP_ERROR]
+_RXL_27:
+; pas de piege ERROR : message par defaut
+        MOV   SI, OFFSET _RX_COND_ERROR
+        CALL    _RXRT_CONDMSG
+        RET
+
+_RXRT_CHKHALT:
+        CMP   WORD PTR [_RX_TRAP_HALT], 0
+        JZ      _RXL_28
+; piege HALT actif : sauter vers handler
+        JMP     WORD PTR [_RX_TRAP_HALT]
+_RXL_28:
+; pas de piege HALT : message par defaut
+        MOV   SI, OFFSET _RX_COND_HALT
+        CALL    _RXRT_CONDMSG
+        RET
+
+_RXRT_CHKNOVALUE:
+        CMP   WORD PTR [_RX_TRAP_NOVALUE], 0
+        JZ      _RXL_29
+; piege NOVALUE actif : sauter vers handler
+        JMP     WORD PTR [_RX_TRAP_NOVALUE]
+_RXL_29:
+; pas de piege NOVALUE : comportement normal
+        RET
+
+_RXRT_CONDMSG:
+        CALL    _RXRT_PRINT
+        MOV     SI, OFFSET _RX_CRLF
+        CALL    _RXRT_PRINT
+; Quitter avec code erreur 1
+        MOV     AX, 4C01h
+        INT     21h
+
 
 ; --- sortie DOS ---
         MOV   AX, 4C00h
@@ -2608,6 +2649,18 @@ _RX_FORM DW 0
 _RX_FORM_SCI DB 'SCIENTIFIC',0
 _RX_FORM_ENG DB 'ENGINEERING',0
 _RX_ARITHBUF DB 256 DUP(0)
+_RX_TRAP_ERROR DW 0
+_RX_TRAP_FAILURE DW 0
+_RX_TRAP_HALT DW 0
+_RX_TRAP_NOVALUE DW 0
+_RX_TRAP_NOTREADY DW 0
+_RX_TRAP_SYNTAX DW 0
+_RX_TRAP_LOSTDGT DW 0
+_RX_COND_ERROR DB 'ERROR',0
+_RX_COND_FAILURE DB 'FAILURE',0
+_RX_COND_HALT DB 'HALT',0
+_RX_COND_NOVALUE DB 'NOVALUE',0
+_RX_COND_SYNTAX DB 'SYNTAX',0
 _RXV_RESULT DB 256 DUP(0)
 _RXV_RESULT_D DB 'RESULT',0
 _RXV_X DB 256 DUP(0)

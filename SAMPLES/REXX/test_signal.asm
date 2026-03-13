@@ -1,4 +1,4 @@
-; REXX86 v1.0 - SAMPLES/REXX/test_bif2.rexx
+; REXX86 v1.0 - SAMPLES/REXX/test_signal.rexx
 .MODEL SMALL
 .STACK 1024
 
@@ -10,169 +10,121 @@ _RXP_Main:
         MOV   AX, _DATA
         MOV   DS, AX
 
-; assign: S = ...
+; SIGNAL ON HALT NAME HALT_HANDLER
+        MOV     WORD PTR [_RX_TRAP_HALT], OFFSET _RXP_HALT_HANDLER
+; SAY
         LEA     AX, _RXK_1
-        MOV     SI, AX
-        LEA     DI, _RXV_S
-        CALL     _RXRT_STRCPY
-; SAY
-; call: WORDS(...)
-        LEA     AX, _RXV_S
-        PUSH     AX
-        CALL     _RXB_WORDS
-        ADD     SP, 2
-        CALL   _RXRT_NUMTOSTR
-        CALL   _RXRT_PRINTLN
-; SAY
-; call: WORD(...)
-        LEA     AX, _RXV_S
-        PUSH     AX
-        MOV     AX, 2
-        PUSH     AX
-        CALL     _RXB_WORD
-        ADD     SP, 4
         MOV   SI, AX
         CALL   _RXRT_PRINTLN
+; SIGNAL OFF HALT
+        MOV     WORD PTR [_RX_TRAP_HALT], 0
 ; SAY
-; call: WORDINDEX(...)
-        LEA     AX, _RXV_S
-        PUSH     AX
-        MOV     AX, 2
-        PUSH     AX
-        CALL     _RXB_WORDINDEX
-        ADD     SP, 4
-        CALL   _RXRT_NUMTOSTR
-        CALL   _RXRT_PRINTLN
-; SAY
-; call: WORDLENGTH(...)
-        LEA     AX, _RXV_S
-        PUSH     AX
-        MOV     AX, 2
-        PUSH     AX
-        CALL     _RXB_WORDLENGTH
-        ADD     SP, 4
-        CALL   _RXRT_NUMTOSTR
-        CALL   _RXRT_PRINTLN
-; SAY
-; call: SUBWORD(...)
-        LEA     AX, _RXV_S
-        PUSH     AX
-        MOV     AX, 2
-        PUSH     AX
-        MOV     AX, 2
-        PUSH     AX
-        CALL     _RXB_SUBWORD
-        ADD     SP, 6
-        MOV   SI, AX
-        CALL   _RXRT_PRINTLN
-; SAY
-; call: DELWORD(...)
-        LEA     AX, _RXV_S
-        PUSH     AX
-        MOV     AX, 2
-        PUSH     AX
-        MOV     AX, 1
-        PUSH     AX
-        CALL     _RXB_DELWORD
-        ADD     SP, 6
-        MOV   SI, AX
-        CALL   _RXRT_PRINTLN
-; SAY
-; call: ABS(...)
-        MOV     AX, -42
-        PUSH     AX
-        CALL     _RXB_ABS
-        ADD     SP, 2
-        CALL   _RXRT_NUMTOSTR
-        CALL   _RXRT_PRINTLN
-; SAY
-; call: SIGN(...)
-        MOV     AX, -7
-        PUSH     AX
-        CALL     _RXB_SIGN
-        ADD     SP, 2
-        CALL   _RXRT_NUMTOSTR
-        CALL   _RXRT_PRINTLN
-; SAY
-; call: SIGN(...)
-        MOV     AX, 0
-        PUSH     AX
-        CALL     _RXB_SIGN
-        ADD     SP, 2
-        CALL   _RXRT_NUMTOSTR
-        CALL   _RXRT_PRINTLN
-; SAY
-; call: SIGN(...)
-        MOV     AX, 5
-        PUSH     AX
-        CALL     _RXB_SIGN
-        ADD     SP, 2
-        CALL   _RXRT_NUMTOSTR
-        CALL   _RXRT_PRINTLN
-; SAY
-; call: MAX(...)
-        MOV     AX, 10
-        PUSH     AX
-        MOV     AX, 20
-        PUSH     AX
-        CALL     _RXB_MAX
-        ADD     SP, 4
-        CALL   _RXRT_NUMTOSTR
-        CALL   _RXRT_PRINTLN
-; SAY
-; call: MIN(...)
-        MOV     AX, 10
-        PUSH     AX
-        MOV     AX, 20
-        PUSH     AX
-        CALL     _RXB_MIN
-        ADD     SP, 4
-        CALL   _RXRT_NUMTOSTR
-        CALL   _RXRT_PRINTLN
-; SAY
-; call: TRUNC(...)
-        MOV     AX, 42
-        PUSH     AX
-        MOV   AX, 0
-        PUSH   AX
-        CALL     _RXB_TRUNC
-        ADD     SP, 4
-        CALL   _RXRT_NUMTOSTR
-        CALL   _RXRT_PRINTLN
-; SAY
-; call: C2D(...)
         LEA     AX, _RXK_2
-        PUSH     AX
-        CALL     _RXB_C2D
-        ADD     SP, 2
-        CALL   _RXRT_NUMTOSTR
+        MOV   SI, AX
         CALL   _RXRT_PRINTLN
+; SIGNAL ON NOVALUE NAME NOVALUE_HANDLER
+        MOV     WORD PTR [_RX_TRAP_NOVALUE], OFFSET _RXP_NOVALUE_HANDLER
 ; SAY
-; call: D2C(...)
-        MOV     AX, 65
-        PUSH     AX
-        CALL     _RXB_D2C
-        ADD     SP, 2
+        LEA     AX, _RXK_3
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SIGNAL OFF NOVALUE
+        MOV     WORD PTR [_RX_TRAP_NOVALUE], 0
+; SAY
+        LEA     AX, _RXK_4
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SIGNAL ON ERROR NAME ERROR_HANDLER
+        MOV     WORD PTR [_RX_TRAP_ERROR], OFFSET _RXP_ERROR_HANDLER
+; SAY
+        LEA     AX, _RXK_5
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SIGNAL OFF ERROR
+        MOV     WORD PTR [_RX_TRAP_ERROR], 0
+; SAY
+        LEA     AX, _RXK_6
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SIGNAL ON SYNTAX NAME SYNTAX_HANDLER
+        MOV     WORD PTR [_RX_TRAP_SYNTAX], OFFSET _RXP_SYNTAX_HANDLER
+; SAY
+        LEA     AX, _RXK_7
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SIGNAL OFF SYNTAX
+        MOV     WORD PTR [_RX_TRAP_SYNTAX], 0
+; SAY
+        LEA     AX, _RXK_8
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SIGNAL JUMP_HERE
+        MOV     WORD PTR _RX_SIGL, 33
+        JMP     _RXP_JUMP_HERE
+; SAY
+        LEA     AX, _RXK_9
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+_RXP_JUMP_HERE:
+; SAY
+        LEA     AX, _RXK_10
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SIGNAL VALUE JUMP_THERE
+        MOV     WORD PTR _RX_SIGL, 39
+        JMP     _RXP_JUMP_THERE
+; SAY
+        LEA     AX, _RXK_11
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+_RXP_JUMP_THERE:
+; SAY
+        LEA     AX, _RXK_12
         MOV   SI, AX
         CALL   _RXRT_PRINTLN
 ; SAY
-; call: D2X(...)
-        MOV     AX, 255
-        PUSH     AX
-        CALL     _RXB_D2X
-        ADD     SP, 2
+        LEA     AX, _RXK_13
         MOV   SI, AX
         CALL   _RXRT_PRINTLN
+; EXIT
+        MOV   AX, 4C00h
+        INT     21h
+_RXP_HALT_HANDLER:
 ; SAY
-; call: DATE(...)
-        CALL     _RXB_DATE
+        LEA     AX, _RXK_14
         MOV   SI, AX
         CALL   _RXRT_PRINTLN
+; RETURN
+        LEA     AX, _RX_NULL_STR
+_RXL_3:
+        RET
+_RXP_NOVALUE_HANDLER:
 ; SAY
-; call: TIME(...)
-        CALL     _RXB_TIME
+        LEA     AX, _RXK_15
         MOV   SI, AX
         CALL   _RXRT_PRINTLN
+; RETURN
+        LEA     AX, _RX_NULL_STR
+_RXL_4:
+        RET
+_RXP_ERROR_HANDLER:
+; SAY
+        LEA     AX, _RXK_16
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; RETURN
+        LEA     AX, _RX_NULL_STR
+_RXL_5:
+        RET
+_RXP_SYNTAX_HANDLER:
+; SAY
+        LEA     AX, _RXK_17
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; RETURN
+        LEA     AX, _RX_NULL_STR
+_RXL_6:
+        RET
         JMP     _RXP_Exit
 
 
@@ -2144,72 +2096,72 @@ _RXRT_STEMGET:
         PUSH   DI
         MOV   CX, WORD PTR [_RX_STEMCNT]
         OR   CX, CX
-        JZ   _RXL_1
+        JZ   _RXL_7
         MOV   BX, OFFSET _RX_STEMTAB
         XOR   DX, DX
-_RXL_2:
+_RXL_8:
         PUSH   SI
         MOV   DI, BX
         CALL     _RXRT_STRCMPS
         POP   SI
         OR   AX, AX
-        JZ   _RXL_3
+        JZ   _RXL_9
         ADD   BX, 128
         INC   DX
         CMP   DX, CX
-        JB   _RXL_2
-        JMP   _RXL_1
-_RXL_3:
+        JB   _RXL_8
+        JMP   _RXL_7
+_RXL_9:
         MOV   AX, BX
         ADD   AX, 32
-        JMP   _RXL_4
-_RXL_1:
+        JMP   _RXL_10
+_RXL_7:
         PUSH   SI
         LEA   DI, _RX_STEMBUF
-_RXL_5:
+_RXL_11:
         MOV   AL, BYTE PTR [SI]
         MOV   BYTE PTR [DI], AL
         OR   AL, AL
-        JZ   _RXL_6
+        JZ   _RXL_12
         CMP   AL, 2Eh
-        JE   _RXL_7
+        JE   _RXL_13
         INC   SI
         INC   DI
-        JMP   _RXL_5
-_RXL_7:
+        JMP   _RXL_11
+_RXL_13:
         INC   DI
         MOV   BYTE PTR [DI], 0
-        JMP   _RXL_8
-_RXL_6:
+        JMP   _RXL_14
+_RXL_12:
         POP   SI
         MOV   AX, SI
-        JMP   _RXL_4
-_RXL_8:
+        JMP   _RXL_10
+_RXL_14:
         POP   SI
         PUSH   SI
         LEA   SI, _RX_STEMBUF
         MOV   CX, WORD PTR [_RX_STEMCNT]
         MOV   BX, OFFSET _RX_STEMTAB
         XOR   DX, DX
-_RXL_9:
+_RXL_15:
         PUSH   SI
         MOV   DI, BX
         CALL     _RXRT_STRCMPS
         POP   SI
         OR   AX, AX
-        JZ   _RXL_10
+        JZ   _RXL_16
         ADD   BX, 128
         INC   DX
         CMP   DX, CX
-        JB   _RXL_9
+        JB   _RXL_15
         POP   SI
         MOV   AX, SI
-        JMP   _RXL_4
-_RXL_10:
+        JMP   _RXL_10
+_RXL_16:
         POP   SI
         MOV   AX, BX
         ADD   AX, 32
-_RXL_4:
+_RXL_10:
         POP   DI
         POP   SI
         POP   DX
@@ -2226,10 +2178,10 @@ _RXRT_STEMSET:
         PUSH   DI
         MOV   CX, WORD PTR [_RX_STEMCNT]
         OR   CX, CX
-        JZ   _RXL_11
+        JZ   _RXL_17
         MOV   BX, OFFSET _RX_STEMTAB
         XOR   DX, DX
-_RXL_12:
+_RXL_18:
         PUSH   SI
         PUSH   DI
         MOV   DI, BX
@@ -2237,14 +2189,14 @@ _RXL_12:
         POP   DI
         POP   SI
         OR   AX, AX
-        JZ   _RXL_13
+        JZ   _RXL_19
         ADD   BX, 128
         INC   DX
         CMP   DX, CX
-        JB   _RXL_12
-_RXL_11:
+        JB   _RXL_18
+_RXL_17:
         CMP   WORD PTR [_RX_STEMCNT], 32
-        JAE   _RXL_14
+        JAE   _RXL_20
         MOV   AX, WORD PTR [_RX_STEMCNT]
         MOV   DX, 128
         MUL     DX
@@ -2263,16 +2215,16 @@ _RXL_11:
         ADD   DI, 32
         CALL     _RXRT_STRCPY
         POP   SI
-        JMP   _RXL_15
-_RXL_13:
+        JMP   _RXL_21
+_RXL_19:
         PUSH   SI
         MOV   SI, DI
         MOV   DI, BX
         ADD   DI, 32
         CALL     _RXRT_STRCPY
         POP   SI
-_RXL_14:
-_RXL_15:
+_RXL_20:
+_RXL_21:
         POP   DI
         POP   SI
         POP   DX
@@ -2291,9 +2243,9 @@ _RXRT_STEMDROP:
         CALL     _RXRT_STRLEN
         MOV   DX, CX
         XOR   CX, CX
-_RXL_16:
+_RXL_22:
         CMP   CX, WORD PTR [_RX_STEMCNT]
-        JAE   _RXL_17
+        JAE   _RXL_23
         PUSH   DX
         PUSH   CX
         MOV   AX, CX
@@ -2311,10 +2263,10 @@ _RXL_16:
         REPE CMPSB
         POP   SI
         POP   CX
-        JNE   _RXL_18
+        JNE   _RXL_24
         DEC   WORD PTR [_RX_STEMCNT]
         CMP   CX, WORD PTR [_RX_STEMCNT]
-        JAE   _RXL_19
+        JAE   _RXL_25
         PUSH   CX
         PUSH   SI
         PUSH   DX
@@ -2330,13 +2282,13 @@ _RXL_16:
         POP   DX
         POP   SI
         POP   CX
-        JMP   _RXL_16
-_RXL_19:
-        JMP   _RXL_16
-_RXL_18:
+        JMP   _RXL_22
+_RXL_25:
+        JMP   _RXL_22
+_RXL_24:
         INC   CX
-        JMP   _RXL_16
-_RXL_17:
+        JMP   _RXL_22
+_RXL_23:
         POP   DI
         POP   SI
         POP   DX
@@ -2543,10 +2495,10 @@ _RXB_DIGITS:
 
 _RXB_FORM:
         CMP   WORD PTR [_RX_FORM], 0
-        JNE     _RXL_20
+        JNE     _RXL_26
         MOV   AX, OFFSET _RX_FORM_SCI
         RET
-_RXL_20:
+_RXL_26:
         MOV   AX, OFFSET _RX_FORM_ENG
         RET
 
@@ -2566,10 +2518,10 @@ _RXB_SOURCELINE:
 
 _RXRT_CHKERR:
         CMP   WORD PTR [_RX_TRAP_ERROR], 0
-        JZ      _RXL_21
+        JZ      _RXL_27
 ; piege ERROR actif : sauter vers handler
         JMP     WORD PTR [_RX_TRAP_ERROR]
-_RXL_21:
+_RXL_27:
 ; pas de piege ERROR : message par defaut
         MOV   SI, OFFSET _RX_COND_ERROR
         CALL    _RXRT_CONDMSG
@@ -2577,10 +2529,10 @@ _RXL_21:
 
 _RXRT_CHKHALT:
         CMP   WORD PTR [_RX_TRAP_HALT], 0
-        JZ      _RXL_22
+        JZ      _RXL_28
 ; piege HALT actif : sauter vers handler
         JMP     WORD PTR [_RX_TRAP_HALT]
-_RXL_22:
+_RXL_28:
 ; pas de piege HALT : message par defaut
         MOV   SI, OFFSET _RX_COND_HALT
         CALL    _RXRT_CONDMSG
@@ -2588,10 +2540,10 @@ _RXL_22:
 
 _RXRT_CHKNOVALUE:
         CMP   WORD PTR [_RX_TRAP_NOVALUE], 0
-        JZ      _RXL_23
+        JZ      _RXL_29
 ; piege NOVALUE actif : sauter vers handler
         JMP     WORD PTR [_RX_TRAP_NOVALUE]
-_RXL_23:
+_RXL_29:
 ; pas de piege NOVALUE : comportement normal
         RET
 
@@ -2656,10 +2608,23 @@ _RX_COND_FAILURE DB 'FAILURE',0
 _RX_COND_HALT DB 'HALT',0
 _RX_COND_NOVALUE DB 'NOVALUE',0
 _RX_COND_SYNTAX DB 'SYNTAX',0
-_RXV_S DB 256 DUP(0)
-_RXV_S_D DB 'S',0
-_RXK_1 DB 'Hello World Foo Bar',0
-_RXK_2 DB 'A',0
+_RXK_1 DB 'SIGNAL ON HALT active',0
+_RXK_2 DB 'SIGNAL OFF HALT fait',0
+_RXK_3 DB 'SIGNAL ON NOVALUE active',0
+_RXK_4 DB 'SIGNAL OFF NOVALUE fait',0
+_RXK_5 DB 'SIGNAL ON ERROR active',0
+_RXK_6 DB 'SIGNAL OFF ERROR fait',0
+_RXK_7 DB 'SIGNAL ON SYNTAX active',0
+_RXK_8 DB 'SIGNAL OFF SYNTAX fait',0
+_RXK_9 DB 'NEVER',0
+_RXK_10 DB 'JUMPED OK',0
+_RXK_11 DB 'NEVER2',0
+_RXK_12 DB 'VALUE JUMPED OK',0
+_RXK_13 DB 'Test SIGNAL termine.',0
+_RXK_14 DB 'HALT caught',0
+_RXK_15 DB 'NOVALUE caught',0
+_RXK_16 DB 'ERROR caught',0
+_RXK_17 DB 'SYNTAX caught',0
 _DATA ENDS
 
 END _RXP_Main
