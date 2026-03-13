@@ -109,7 +109,7 @@
               PLACES ALL FIRST ROWS
             Constantes KW_REPORT..KW_FIRST (151 mots-cles)
 
-  TODO 04 - TABLE DES SYMBOLES (32 BITS)
+  TODO 04 - TABLE DES SYMBOLES (32 BITS) [IMPLEMENTE]
             Type TSymEntry : Name (String[48]), AsmLabel (String[48]),
               DataType (Integer), StoreClass (Integer),
               BpOffset (Integer), ArraySize (Integer),
@@ -767,6 +767,34 @@ Const
   KW_ALL             = 150;
   KW_FIRST           = 151;
 
+  { Types de donnees ABAP }
+  TYPE_UNKNOWN  =  0;
+  TYPE_I        =  1;   { I        : entier 32 bits (DD, 4 octets)  }
+  TYPE_F        =  2;   { F        : flottant 8 octets (DQ, stub)   }
+  TYPE_C        =  3;   { C(n)     : chaine de longueur fixe        }
+  TYPE_N        =  4;   { N(n)     : chaine numerique (texte)       }
+  TYPE_D        =  5;   { D        : date 8 chars YYYYMMDD          }
+  TYPE_T        =  6;   { T        : heure 6 chars HHMMSS           }
+  TYPE_P        =  7;   { P        : packed decimal (DD, stub)      }
+  TYPE_STRING   =  8;   { STRING   : chaine longueur variable       }
+  TYPE_XSTRING  =  9;   { XSTRING  : octetstring (stub)             }
+  TYPE_TABLE    = 10;   { TABLE OF : table interne                  }
+  TYPE_STRUCT   = 11;   { structure (BEGIN OF ... END OF)           }
+  TYPE_REF      = 12;   { REF TO   : reference objet (stub)         }
+  TYPE_VOID     = 13;   { pas de type de retour (FORM/EVENT)        }
+
+  { Classes d entreposage }
+  STORE_AUTO     = 0;   { variable locale FORM (pile EBP)           }
+  STORE_STATIC   = 1;   { variable globale REPORT (segment .DATA)   }
+  STORE_PARAM    = 2;   { parametre USING/CHANGING d une FORM       }
+  STORE_TABLE    = 3;   { table interne (tableau en .DATA)          }
+  STORE_CONSTANT = 4;   { CONSTANTS (valeur immediate, pas de DD)   }
+
+  { Types de parametre FORM (USING / CHANGING / TABLES) }
+  PARAM_USING    = 0;   { passage par valeur                        }
+  PARAM_CHANGING = 1;   { passage par adresse (ref)                 }
+  PARAM_TABLES   = 2;   { table interne (adresse)                   }
+
   { Prefixes de nommage ASM }
   AB_VAR_PFX   = '_AB_';       { variable globale              }
   AB_FN_PFX    = '_ABF_';      { FORM / FUNCTION               }
@@ -841,6 +869,42 @@ Type
   End;
 {$ENDIF}
 
+  { ---- Entree de la table des symboles (32 bits) ----------- }
+  TSymEntry = Record
+    Name        : String[48];   { Nom ABAP (upper-case)              }
+    AsmLabel    : String[48];   { Etiquette ASM : _AB_nom            }
+    DataType    : Integer;       { TYPE_xxx                          }
+    StoreClass  : Integer;       { STORE_xxx                         }
+    BpOffset    : Integer;       { offset EBP si locale (negatif)    }
+    ArraySize   : Integer;       { 0 si scalaire, n si table         }
+    CharLen     : Integer;       { longueur TYPE C(n) ou N(n)        }
+    DecPrec     : Integer;       { precision TYPE P / F              }
+    DecScale    : Integer;       { DECIMALS n pour TYPE P            }
+    IsParam     : Boolean;       { True si parametre de FORM         }
+    ParamIdx    : Integer;       { index du parametre (1-base)       }
+    ParamKind   : Integer;       { PARAM_USING / CHANGING / TABLES   }
+    InitStr     : String[64];   { valeur VALUE en chaine            }
+    InitNum     : LongInt;       { valeur VALUE numerique            }
+    HasInit     : Boolean;       { True si VALUE specifie            }
+    IsConst     : Boolean;       { True si CONSTANTS                 }
+    ScopeLev    : Integer;       { niveau de scope (0 = global)      }
+  End;
+
+  { ---- Entree de la table des FORMs / FUNCTIONs ------------ }
+  TFormEntry = Record
+    Name          : String[48];
+    AsmLabel      : String[48];    { ex: _ABF_nomform              }
+    ParamCount    : Integer;       { total USING + CHANGING        }
+    UsingCount    : Integer;
+    ChangingCount : Integer;
+    TablesCount   : Integer;
+    Defined       : Boolean;
+    IsFunction    : Boolean;       { True si FUNCTION vs FORM      }
+    ParamNames    : Array[1..MAX_PARAM] of String[48];
+    ParamKinds    : Array[1..MAX_PARAM] of Integer;   { PARAM_xxx }
+    ParamTypes    : Array[1..MAX_PARAM] of Integer;   { TYPE_xxx  }
+  End;
+
 { ============================================================ }
 { VARIABLES GLOBALES                                           }
 { ============================================================ }
@@ -883,6 +947,14 @@ Var
   BinInCode   : Boolean;
 {$ENDIF}
 
+  { Table des symboles }
+  SymTab      : Array[1..MAX_SYM]  of TSymEntry;
+  SymCount    : Integer;
+
+  { Table des FORMs / FUNCTIONs }
+  FormTab     : Array[1..MAX_FORM] of TFormEntry;
+  FormCount   : Integer;
+
 Const
 {$IFDEF FPC}
   BinAPIDecorated : Array[0..PE_NUM_API - 1] Of String[32] = (
@@ -908,6 +980,18 @@ Procedure LexError(Const Msg : TString); Forward;
 Procedure PrintToken;    Forward;
 Function  IsKeyword(Const S : TString) : Integer; Forward;
 Procedure Consume;       Forward;
+
+{ ============================================================ }
+{ DECLARATIONS FORWARD (TABLE DES SYMBOLES)                    }
+{ ============================================================ }
+
+Procedure InitSymTable;  Forward;
+Function  FindSym(Const Name : TString) : Integer; Forward;
+Function  FindSymLocal(Const Name : TString) : Integer; Forward;
+Function  AddSym(Const Name : TString; DT, SC : Integer) : Integer; Forward;
+Function  FindForm(Const Name : TString) : Integer; Forward;
+Function  AddForm(Const Name : TString) : Integer; Forward;
+Procedure DeclSysVars;   Forward;
 
 { ============================================================ }
 { FONCTIONS UTILITAIRES                                        }
@@ -1699,6 +1783,186 @@ Begin
 End;
 
 { ============================================================ }
+{ TABLE DES SYMBOLES (TODO 04)                                 }
+{ ============================================================ }
+
+{ ---- InitSymTable : initialiser les tables des symboles ----- }
+Procedure InitSymTable;
+Var I, J : Integer;
+Begin
+  SymCount  := 0;
+  FormCount := 0;
+  For I := 1 To MAX_SYM Do
+  Begin
+    SymTab[I].Name        := '';
+    SymTab[I].AsmLabel    := '';
+    SymTab[I].DataType    := TYPE_UNKNOWN;
+    SymTab[I].StoreClass  := STORE_STATIC;
+    SymTab[I].BpOffset    := 0;
+    SymTab[I].ArraySize   := 0;
+    SymTab[I].CharLen     := 1;
+    SymTab[I].DecPrec     := 0;
+    SymTab[I].DecScale    := 0;
+    SymTab[I].IsParam     := False;
+    SymTab[I].ParamIdx    := 0;
+    SymTab[I].ParamKind   := PARAM_USING;
+    SymTab[I].InitStr     := '';
+    SymTab[I].InitNum     := 0;
+    SymTab[I].HasInit     := False;
+    SymTab[I].IsConst     := False;
+    SymTab[I].ScopeLev    := 0;
+  End;
+  For I := 1 To MAX_FORM Do
+  Begin
+    FormTab[I].Name          := '';
+    FormTab[I].AsmLabel      := '';
+    FormTab[I].ParamCount    := 0;
+    FormTab[I].UsingCount    := 0;
+    FormTab[I].ChangingCount := 0;
+    FormTab[I].TablesCount   := 0;
+    FormTab[I].Defined       := False;
+    FormTab[I].IsFunction    := False;
+    For J := 1 To MAX_PARAM Do
+    Begin
+      FormTab[I].ParamNames[J] := '';
+      FormTab[I].ParamKinds[J] := PARAM_USING;
+      FormTab[I].ParamTypes[J] := TYPE_UNKNOWN;
+    End;
+  End;
+End;
+
+{ ---- FindSym : recherche dans la table des symboles ----------
+  Cherche de la fin vers le debut pour respecter la portee la
+  plus proche. Retourne l index (1-base) ou 0 si non trouve.   }
+Function FindSym(Const Name : TString) : Integer;
+Var I : Integer;
+    U : TString;
+Begin
+  U := StrUpperCase(Name);
+  For I := SymCount DownTo 1 Do
+    If SymTab[I].Name = U Then
+    Begin FindSym := I; Exit; End;
+  FindSym := 0;
+End;
+
+{ ---- FindSymLocal : recherche dans le scope courant seul ---- }
+Function FindSymLocal(Const Name : TString) : Integer;
+Var I : Integer;
+    U : TString;
+Begin
+  U := StrUpperCase(Name);
+  For I := SymCount DownTo 1 Do
+    If (SymTab[I].Name = U) And (SymTab[I].ScopeLev = 0) Then
+    Begin FindSymLocal := I; Exit; End;
+  FindSymLocal := 0;
+End;
+
+{ ---- AddSym : ajouter un symbole dans la table --------------
+  Retourne l index (1-base) du nouveau symbole, ou 0 si pleine. }
+Function AddSym(Const Name : TString; DT, SC : Integer) : Integer;
+Var U : TString;
+Begin
+  U := StrUpperCase(Name);
+  If SymCount >= MAX_SYM Then
+  Begin
+    LexError('Table des symboles pleine (max=' + IntToStr_(MAX_SYM) + ')');
+    AddSym := 0;
+    Exit;
+  End;
+  Inc(SymCount);
+  SymTab[SymCount].Name        := U;
+  SymTab[SymCount].AsmLabel    := AB_VAR_PFX + AsmIdent(U);
+  SymTab[SymCount].DataType    := DT;
+  SymTab[SymCount].StoreClass  := SC;
+  SymTab[SymCount].BpOffset    := 0;
+  SymTab[SymCount].ArraySize   := 0;
+  SymTab[SymCount].CharLen     := 1;
+  SymTab[SymCount].DecPrec     := 0;
+  SymTab[SymCount].DecScale    := 0;
+  SymTab[SymCount].IsParam     := False;
+  SymTab[SymCount].ParamIdx    := 0;
+  SymTab[SymCount].ParamKind   := PARAM_USING;
+  SymTab[SymCount].InitStr     := '';
+  SymTab[SymCount].InitNum     := 0;
+  SymTab[SymCount].HasInit     := False;
+  SymTab[SymCount].IsConst     := False;
+  SymTab[SymCount].ScopeLev    := 0;
+  AddSym := SymCount;
+End;
+
+{ ---- FindForm : recherche dans la table des FORMs ----------- }
+Function FindForm(Const Name : TString) : Integer;
+Var I : Integer;
+    U : TString;
+Begin
+  U := StrUpperCase(Name);
+  For I := 1 To FormCount Do
+    If FormTab[I].Name = U Then
+    Begin FindForm := I; Exit; End;
+  FindForm := 0;
+End;
+
+{ ---- AddForm : ajouter une FORM / FUNCTION ------------------
+  Si la FORM existe deja (forward reference), retourne l index
+  existant. Sinon cree une nouvelle entree.                     }
+Function AddForm(Const Name : TString) : Integer;
+Var U        : TString;
+    Existing : Integer;
+Begin
+  U        := StrUpperCase(Name);
+  Existing := FindForm(U);
+  If Existing > 0 Then
+  Begin AddForm := Existing; Exit; End;
+  If FormCount >= MAX_FORM Then
+  Begin
+    LexError('Table des FORMs pleine (max=' + IntToStr_(MAX_FORM) + ')');
+    AddForm := 0;
+    Exit;
+  End;
+  Inc(FormCount);
+  FormTab[FormCount].Name          := U;
+  FormTab[FormCount].AsmLabel      := AB_FN_PFX + AsmIdent(U);
+  FormTab[FormCount].ParamCount    := 0;
+  FormTab[FormCount].UsingCount    := 0;
+  FormTab[FormCount].ChangingCount := 0;
+  FormTab[FormCount].TablesCount   := 0;
+  FormTab[FormCount].Defined       := False;
+  FormTab[FormCount].IsFunction    := False;
+  AddForm := FormCount;
+End;
+
+{ ---- DeclSysVars : declarer les variables systeme ABAP ------
+  Appellee au debut de la compilation, avant tout parsage.
+  Ces variables sont globales TYPE I (DD) en .DATA.              }
+Procedure DeclSysVars;
+Var Idx : Integer;
+
+  Procedure DeclSY(Const Nm : TString; DT : Integer; CLen : Integer);
+  Begin
+    Idx := AddSym(Nm, DT, STORE_STATIC);
+    If Idx > 0 Then
+    Begin
+      SymTab[Idx].AsmLabel := '_SY_' + AsmIdent(Copy(Nm, 4, 255));
+      SymTab[Idx].HasInit  := True;
+      SymTab[Idx].InitNum  := 0;
+      If CLen > 0 Then
+        SymTab[Idx].CharLen := CLen;
+    End;
+  End;
+
+Begin
+  DeclSY('SY-SUBRC',  TYPE_I, 0);    { code retour dernier SELECT/CALL }
+  DeclSY('SY-TABIX',  TYPE_I, 0);    { index courant dans LOOP AT      }
+  DeclSY('SY-DBCNT',  TYPE_I, 0);    { nb lignes SQL affectees         }
+  DeclSY('SY-INDEX',  TYPE_I, 0);    { compteur DO TIMES               }
+  DeclSY('SY-LANGU',  TYPE_C, 1);    { langue (stub = 'F')             }
+  DeclSY('SY-MANDT',  TYPE_C, 3);    { mandant (stub = '000')          }
+  DeclSY('SY-DATUM',  TYPE_D, 8);    { date systeme YYYYMMDD           }
+  DeclSY('SY-UZEIT',  TYPE_T, 6);    { heure systeme HHMMSS            }
+  DeclSY('SY-UNAME',  TYPE_C, 12);   { nom utilisateur (stub)          }
+End;
+
+{ ============================================================ }
 { INITIALISATION DES OPTIONS                                   }
 { ============================================================ }
 
@@ -1876,6 +2140,8 @@ End;
 
 Procedure Run;
 Begin
+  InitSymTable;
+  DeclSysVars;
   LexInit;
   If Opts.DebugMode Then
   Begin
@@ -1889,9 +2155,10 @@ Begin
   End
   Else
   Begin
-    { TODO 04..25 : corps du compilateur }
+    { TODO 05..25 : corps du compilateur }
     WriteLn('ABAPCW32: compilation de ', Opts.SrcFile, ' ...');
-    WriteLn('ABAPCW32: TODO 04..25 non encore implementes.');
+    WriteLn('ABAPCW32: symboles declares: ', SymCount, ' (systeme)');
+    WriteLn('ABAPCW32: TODO 05..25 non encore implementes.');
   End;
   LexClose;
 End;

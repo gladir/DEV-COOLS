@@ -90,7 +90,7 @@
               PLACES ALL FIRST ROWS
             Constantes KW_REPORT..KW_FIRST (151 mots-cles)
 
-  TODO 04 - TABLE DES SYMBOLES (32 BITS)
+  TODO 04 - TABLE DES SYMBOLES (32 BITS) [IMPLEMENTE]
             Type TSymEntry : Name (String[48]), AsmLabel (String[48]),
               DataType (Integer), StoreClass (Integer),
               BpOffset (Integer), ArraySize (Integer),
