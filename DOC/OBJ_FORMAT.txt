@@ -1,0 +1,733 @@
+==============================================================================
+     FORMAT DE FICHIER OBJ - Object Module Format (OMF)
+     Intel / Microsoft / TIS (Tool Interface Standard)
+==============================================================================
+
+Document de reference du format .OBJ (OMF) tel qu'utilise par les
+compilateurs et assembleurs x86 pour DOS et les premiers systemes
+Windows 16 bits, et tel qu'implemente dans le programme LINK.PAS
+du projet DEV-COOLS.
+
+Date:       Mars 2026
+Norme:      Tool Interface Standard (TIS) Relocatable Object Module
+            Format (OMF), version 1.1
+
+==============================================================================
+1. VUE D'ENSEMBLE
+==============================================================================
+
+Un fichier .OBJ est une sequence d'enregistrements binaires (records)
+decrivant un module objet relocalisable. Chaque module est delimite
+par un record THEADR (debut) et un record MODEND (fin).
+
+Un meme fichier .OBJ peut theoriquement contenir plusieurs modules,
+mais la pratique courante est un module par fichier.
+
+Le format est utilise par :
+  - MASM (Microsoft Macro Assembler)
+  - TASM (Turbo Assembler de Borland)
+  - Turbo Pascal / Free Pascal (sortie .OBJ)
+  - Microsoft C/C++, Borland C++, Watcom C
+  - Les editeurs de liens comme LINK.EXE, TLINK.EXE, et LINK.PAS
+
+==============================================================================
+2. STRUCTURE GENERALE D'UN ENREGISTREMENT OMF
+==============================================================================
+
+Chaque enregistrement (record) a la structure suivante :
+
+  +----------+----------+----------------------------+----------+
+  | RecType  | RecLen   |         Payload            | Checksum |
+  | (1 octet)| (2 oct.) |     (RecLen - 1 octets)    | (1 octet)|
+  +----------+----------+----------------------------+----------+
+
+  RecType   : Identifiant du type de record (1 octet).
+              Le bit 0 indique souvent la variante 32 bits :
+              - Valeur paire  = 16 bits (ex: $A0 = LEDATA)
+              - Valeur impaire = 32 bits (ex: $A1 = LEDATA32)
+
+  RecLen    : Longueur totale du payload + checksum (Word, Little-Endian).
+              La taille du payload utile est donc RecLen - 1.
+
+  Payload   : Contenu variable selon le type de record.
+
+  Checksum  : Octet de verification. La somme de tous les octets du record
+              (RecType + RecLen[lo] + RecLen[hi] + Payload + Checksum)
+              doit etre 0 modulo 256. En pratique, souvent mis a 0.
+
+==============================================================================
+3. TYPE D'INDEX OMF
+==============================================================================
+
+Plusieurs records referencent des segments, groupes ou noms par index.
+Ces index sont encodes sur 1 ou 2 octets :
+
+  - Si le premier octet < $80 : l'index est sur 1 octet (valeur 0..127)
+  - Si le premier octet >= $80 : l'index est sur 2 octets :
+      index = ((premier AND $7F) SHL 8) OR second
+
+Cet encodage est utilise partout dans les records (SEGDEF, EXTDEF,
+PUBDEF, FIXUPP, GRPDEF, etc.) et est implemente dans LINK.PAS par
+la fonction ReadOmfIndex.
+
+==============================================================================
+4. TABLE DES TYPES DE RECORDS
+==============================================================================
+
+4.1 RECORDS FONDAMENTAUX
+--------------------------
+
+  Code    Nom         Description
+  ------  ----------  --------------------------------------------------
+  $80     THEADR      En-tete de module (Translator Header)
+  $82     LHEADR      En-tete de bibliotheque (Library Header)
+  $88     COMENT      Commentaire / directive du compilateur
+  $8A     MODEND      Fin de module 16 bits
+  $8B     MODEND32    Fin de module 32 bits
+
+4.2 DEFINITIONS DE NOMS ET SEGMENTS
+-------------------------------------
+
+  Code    Nom         Description
+  ------  ----------  --------------------------------------------------
+  $96     LNAMES      Table de noms logiques (segments, classes, overlays)
+  $97     LLNAMES     Noms logiques locaux (variante)
+  $98     SEGDEF      Definition de segment 16 bits
+  $99     SEGDEF32    Definition de segment 32 bits
+  $9A     GRPDEF      Definition de groupe 16 bits
+  $9B     GRPDEF32    Definition de groupe 32 bits
+
+4.3 SYMBOLES
+--------------
+
+  Code    Nom         Description
+  ------  ----------  --------------------------------------------------
+  $8C     EXTDEF      Reference externe
+  $8D     EXTDEF32    Reference externe (variante 32 bits)
+  $8E     TYPDEF      Definition de type (aussi ancien PUBDEF dans
+                      certains formats)
+  $8F     TYPDEF32    Definition de type 32 bits
+  $90     PUBDEF      Definition de symbole public 16 bits
+  $91     PUBDEF32    Definition de symbole public 32 bits
+  $92     LPUBDEF     Definition publique locale 16 bits
+  $93     LPUBDEF32   Definition publique locale 32 bits
+  $B0     COMDEF      Symbole communal (common definition)
+  $B4     LEXTDEF     Reference externe locale
+  $B5     LEXTDEF32   Reference externe locale 32 bits
+  $B6     LPUBDEF     Definition publique locale (variante)
+  $B7     LPUBDEF32   Definition publique locale (variante 32 bits)
+  $B8     LCOMDEF     Symbole communal local
+  $C6     ALIAS       Definition d'alias (paire nom/substitut)
+  $C7     ALIAS32     Alias 32 bits
+  $CA     LLNAMES     Noms logiques locaux (variante)
+  $CB     LLNAMES32   Noms logiques locaux 32 bits
+  $CC     CEXTDEF     Reference externe via COMDAT
+  $CD     CEXTDEF32   Reference externe via COMDAT 32 bits
+
+4.4 DONNEES
+--------------
+
+  Code    Nom         Description
+  ------  ----------  --------------------------------------------------
+  $84     PEDATA      Donnees (ancien format, compatibilite)
+  $86     PIDATA      Donnees iterees (ancien format, compatibilite)
+  $A0     LEDATA      Donnees de segment 16 bits (Logical Enumerated Data)
+  $A1     LEDATA32    Donnees de segment 32 bits
+  $A2     LIDATA      Donnees iterees de segment 16 bits
+  $A3     LIDATA32    Donnees iterees de segment 32 bits
+  $C2     COMDAT      Donnees communales initialisees 16 bits
+  $C3     COMDAT32    Donnees communales initialisees 32 bits
+
+4.5 RELOCALISATIONS ET CORRECTIFS
+------------------------------------
+
+  Code    Nom         Description
+  ------  ----------  --------------------------------------------------
+  $9C     FIXUPP      Corrections/relocalisations 16 bits
+  $9D     FIXUPP32    Corrections/relocalisations 32 bits
+  $A4     BAKPAT      Correctif retroactif (backpatch) 16 bits
+  $A5     BAKPAT32    Correctif retroactif 32 bits
+  $B2     BAKPAT      Correctif retroactif (variante) 16 bits
+  $B3     BAKPAT32    Correctif retroactif (variante) 32 bits
+  $C8     NBKPAT      Correctif retroactif nomme 16 bits
+  $C9     NBKPAT32    Correctif retroactif nomme 32 bits
+
+4.6 INFORMATION DE DEBOGAGE
+------------------------------
+
+  Code    Nom         Description
+  ------  ----------  --------------------------------------------------
+  $94     LINNUM      Numeros de lignes source 16 bits
+  $95     LINNUM32    Numeros de lignes source 32 bits
+  $A6     LINSYM      Lignes source associees a un symbole 16 bits
+  $A7     LINSYM32    Lignes source associees a un symbole 32 bits
+  $C4     LINSYM      Lignes (variante)
+  $C5     LINSYM32    Lignes (variante 32 bits)
+
+4.7 EXTENSIONS
+----------------
+
+  Code    Nom         Description
+  ------  ----------  --------------------------------------------------
+  $9E-$9F             Records historiques/reserves (ignores)
+  $CE     VENDEXT     Extension specifique vendeur (TIS 1.1)
+  $CF-$FF             Extensions/reserves (format non standardise)
+
+==============================================================================
+5. DETAIL DES RECORDS PRINCIPAUX
+==============================================================================
+
+5.1 THEADR / LHEADR ($80 / $82) - En-tete de module
+------------------------------------------------------
+
+Premier record obligatoire d'un module. Contient le nom du module source.
+
+  Offset  Taille  Champ
+  ------  ------  ----------------------------------
+  +0      1       Longueur du nom (N)
+  +1      N       Nom du module (ASCII)
+
+Exemple: Pour "HELLO.ASM", le payload est:
+  09 48 45 4C 4C 4F 2E 41 53 4D [checksum]
+
+5.2 LNAMES ($96) - Noms logiques
+----------------------------------
+
+Definit les noms logiques utilises comme references par SEGDEF et GRPDEF.
+Les noms sont indexes sequentiellement a partir de 1 dans l'ordre ou
+ils apparaissent.
+
+  Le payload contient une serie de chaines prefixees par longueur :
+
+  +0      1       Longueur du nom 1 (N1)
+  +1      N1      Nom 1 (ASCII)
+  +1+N1   1       Longueur du nom 2 (N2)
+  ...     ...     (repete jusqu'a la fin du payload)
+
+Noms typiques : '', 'CODE', 'DATA', '_TEXT', '_DATA', '_BSS', 'STACK',
+                'DGROUP', 'CONST'
+
+Le premier LNAMES contient souvent une chaine vide (longueur 0) comme
+index 1, qui sert de valeur "aucun nom" par defaut.
+
+5.3 SEGDEF ($98) - Definition de segment
+-------------------------------------------
+
+Definit les attributs d'un segment. Les segments sont indexes 
+sequentiellement a partir de 1.
+
+  Offset  Taille  Champ
+  ------  ------  ----------------------------------
+  +0      1       ACBP (attributs/alignement/combinaison)
+  +1      2       Taille du segment (16 bits, Word LE)
+                  Pour SEGDEF32 ($99): 4 octets (DWord LE)
+  +3      index   Index du nom dans LNAMES (nom du segment)
+  +?      index   Index de la classe dans LNAMES
+  +?      index   Index de l'overlay dans LNAMES
+
+L'octet ACBP encode :
+  Bits 7-5 : Alignement (A)
+    000 = Absolu (segment a adresse fixe)
+    001 = BYTE (alignement octet)
+    010 = WORD (alignement mot, 2 octets)
+    011 = PARA (alignement paragraphe, 16 octets)
+    100 = PAGE (alignement page, 256 octets)
+    101 = DWORD (alignement double-mot, 4 octets)
+    110 = Reserve
+    111 = Reserve
+
+  Bits 4-2 : Combinaison (C)
+    000 = Private (non combinable)
+    010 = Public (concatene avec segments de meme nom/classe)
+    100 = Public (synonyme)
+    101 = Stack (combine en pile, taille = somme)
+    110 = Common (superpose, taille = max)
+
+  Bit 1 : Big (B)
+    Si actif et taille=0, le segment fait 64 Ko (16 bits) ou 4 Go (32 bits)
+
+  Bit 0 : Use32 (P)
+    0 = segment 16 bits (USE16)
+    1 = segment 32 bits (USE32)
+
+5.4 GRPDEF ($9A) - Definition de groupe
+------------------------------------------
+
+Un groupe rassemble plusieurs segments sous un meme selecteur de segment.
+Le cas typique est DGROUP qui regroupe _DATA, _BSS, STACK, CONST.
+
+  Offset  Taille  Champ
+  ------  ------  ----------------------------------
+  +0      index   Index du nom du groupe dans LNAMES
+  +?      n*      Liste de composants
+
+Chaque composant consiste en :
+  +0      1       Type de composant :
+                    $FF = Segment (suivi d'un index SEGDEF)
+                    $FE = Reference externe
+                    $FD = Reference groupe
+  +1      index   Index du segment/externe/groupe
+
+5.5 EXTDEF ($8C) - References externes
+-----------------------------------------
+
+Declare les symboles externes dont le module a besoin. Ils sont indexes
+sequentiellement a partir de 1 et references par les records FIXUPP.
+
+  Le payload contient une serie de :
+  +0      1       Longueur du nom (N)
+  +1      N       Nom du symbole (ASCII)
+  +1+N    index   Index de type (generalement 0 = pas de type)
+
+Variantes :
+  $8D = EXTDEF32
+  $B4 = LEXTDEF  (reference externe locale, non exportee)
+  $B5 = LEXTDEF32
+  $CC = CEXTDEF  (reference externe via COMDAT)
+  $CD = CEXTDEF32
+
+5.6 PUBDEF ($90) - Symboles publics
+--------------------------------------
+
+Declare les symboles publics exportes par le module pour etre utilises
+par d'autres modules.
+
+  Offset  Taille  Champ
+  ------  ------  ----------------------------------
+  +0      index   Index du groupe de base (GRPDEF)
+  +?      index   Index du segment de base (SEGDEF)
+  [+?     2|4     Frame explicite si index segment = 0]
+
+  Ensuite une serie de symboles :
+  +0      1       Longueur du nom (N)
+  +1      N       Nom du symbole
+  +1+N    2       Offset public (Word LE)
+                  Pour PUBDEF32 ($91): 4 octets (DWord LE)
+  +3+N    index   Index de type (souvent 0)
+
+Variantes :
+  $92 = LPUBDEF   (symbole public local, non exporte)
+  $93 = LPUBDEF32
+  $B6 = LPUBDEF   (variante)
+  $B7 = LPUBDEF32
+
+5.7 LEDATA ($A0) - Donnees enumerees
+---------------------------------------
+
+Contient les octets effectifs d'un segment a une position donnee.
+C'est le record principal pour les donnees de code et constantes.
+
+  Offset  Taille  Champ
+  ------  ------  ----------------------------------
+  +0      index   Index du segment cible (SEGDEF)
+  +?      2       Offset de depart dans le segment (Word LE)
+                  Pour LEDATA32 ($A1): 4 octets (DWord LE)
+  +?      n       Donnees brutes
+
+La taille des donnees = RecLen - tailleIndex - tailleOffset - 1 (checksum)
+
+Un record LEDATA ne depasse generalement pas 1024 octets de donnees
+(limite historique de certains editeurs de liens).
+
+5.8 LIDATA ($A2) - Donnees iterees
+-------------------------------------
+
+Contient des donnees avec repetition (compression simple).
+
+  Offset  Taille  Champ
+  ------  ------  ----------------------------------
+  +0      index   Index du segment cible (SEGDEF)
+  +?      2       Offset de depart (Word LE)
+                  Pour LIDATA32 ($A3): 4 octets (DWord LE)
+  +?      n*      Blocs d'iteration
+
+Chaque bloc d'iteration 16 bits :
+  +0      2       Nombre de repetitions (Word LE)
+  +2      2       Nombre de sous-blocs (Word LE)
+  Si sous-blocs = 0 :
+    +4    1       Longueur des donnees (N)
+    +5    N       Donnees brutes
+  Si sous-blocs > 0 :
+    +4    n*      Sous-blocs imbriques (recursivement)
+
+Pour LIDATA32, le nombre de repetitions est sur 4 octets (DWord).
+
+Utilisation typique : initialisation de tableaux a zero,
+remplissage de la pile avec un pattern, etc.
+
+5.9 FIXUPP ($9C) - Corrections et relocalisations
+----------------------------------------------------
+
+C'est le record le plus complexe du format OMF. Il s'applique au
+dernier LEDATA, LIDATA ou COMDAT lu et contient une serie de
+sous-records (subrecords) de deux types.
+
+STRUCTURE GENERALE :
+  Le payload contient une succession de sous-records. Le bit 7 du
+  premier octet determine le type :
+    - Bit 7 = 0 : THREAD subrecord (etablit un contexte reutilisable)
+    - Bit 7 = 1 : FIXUP subrecord (correction effective)
+
+THREAD SUBRECORD :
+  Etablit un "thread" (contexte) reutilisable par les FIXUPs suivants.
+  Il y a 4 threads Frame (0-3) et 4 threads Target (0-3).
+
+  Octet 1 (bits) :
+    Bit 7   = 0 (identifie un THREAD)
+    Bit 6   = D : 0=Target, 1=Frame
+    Bits 4-5 = Methode (0-3 pour Target, 0-5 pour Frame)
+    Bits 2-3 = Numero de thread (0-3)
+  [Octet 2 = Index optionnel selon la methode]
+
+FIXUP SUBRECORD :
+  Premiere paire d'octets (LOCAT) :
+    Bit 15  = 1 (identifie un FIXUP)
+    Bit 14  = M : 0=self-relative, 1=segment-relative
+    Bits 10-13 = Location type :
+      0 = Low byte   (8 bits)
+      1 = Offset     (16 bits)
+      2 = Base/Segment (16 bits, selecteur)
+      3 = Pointer    (32 bits : offset 16 + segment 16)
+      4 = High byte  (octet haut)
+      5 = Offset loader-resolved (16 bits)
+      9 = Offset 32 bits
+      11 = Pointer 48 bits (offset 32 + segment 16)
+      13 = Offset 32 bits loader-resolved
+    Bits 0-9 = Offset dans le dernier LEDATA/LIDATA
+
+  Octet FIXDAT :
+    Bit 7   = F : 0=Frame explicite, 1=Frame via thread
+    Bits 4-6 = Frame method/thread number
+    Bit 3   = T : 0=Target explicite, 1=Target via thread
+    Bits 0-1 = Target method
+    Bit 2   = P : 0=Displacement present, 1=Displacement=0
+
+  Frame Methods (si F=0) :
+    0 = Frame SEGDEF  (index suit)
+    1 = Frame GRPDEF  (index suit)
+    2 = Frame EXTDEF  (index suit)
+    3 = Frame numero absolu (rarement utilise)
+    4 = Frame du segment LEDATA courant
+    5 = Frame du target
+
+  Target Methods :
+    0 = Target SEGDEF   (index + displacement)
+    1 = Target GRPDEF   (index + displacement)
+    2 = Target EXTDEF   (index + displacement)
+    3 = Target numero absolu (rarement utilise)
+
+  Displacement : Word LE (16 bits) ou DWord LE (32 bits selon variante)
+
+Le FIXUPP est crucial pour l'editeur de liens car il decrit toutes les
+adresses qui doivent etre ajustees lors de la combinaison des segments.
+
+Pour generer un executable MZ, seuls les types BASE (2) et POINTER (3)
+generent des entrees de relocation dans l'en-tete EXE. Le type OFFSET (1)
+est resolu en ajoutant l'adresse de base du segment au moment de l'edition.
+
+5.10 MODEND ($8A) - Fin de module
+------------------------------------
+
+Marque la fin du module et contient optionnellement le point d'entree.
+
+  Offset  Taille  Champ
+  ------  ------  ----------------------------------
+  +0      1       MODTYP
+                    Bit 7 : Module principal (a un point d'entree)
+                    Bit 6 : Adresse de depart presente dans le record
+                    Bit 0 : Segment (0) ou Main (1)
+
+  Si bit 6 = 1 (adresse de depart presente) :
+  +1      1       End Data
+                    Bits 4-6 = Frame method
+                    Bit 7 = F (frame thread)
+                    Bits 0-1 = Target method
+                    Bit 3 = T (target thread)
+                    Bit 2 = P (displacement absent si 1)
+  +2      index   Frame datum (si F=0 et methode 0-2)
+  +?      index   Target datum (si T=0 et methode 0-2)
+  +?      2|4     Displacement (si P=0; 4 octets pour MODEND32)
+
+Le linker utilise le point d'entree du module principal pour initialiser
+les registres CS:IP de l'executable.
+
+5.11 COMENT ($88) - Commentaire / directive
+----------------------------------------------
+
+Transporte des meta-donnees et directives du compilateur/assembleur.
+
+  Offset  Taille  Champ
+  ------  ------  ----------------------------------
+  +0      1       Drapeaux
+                    Bit 7 : NoPurge (conserver meme apres manip)
+                    Bit 6 : NoList (ne pas afficher dans le listing)
+  +1      1       Code de classe
+  +2      n       Texte/donnees du commentaire
+
+Codes de classe courants :
+  $00         Traducteur (nom du compilateur/assembleur)
+  $01         Copyright Intel
+  $81         Recherche par defaut de bibliotheques
+  $9C         Extension MS (DOS version, etc.)
+  $9D         Modele memoire
+  $9E         DOSSEG (ordre de tri des segments DOS)
+  $9F         Bibliotheque par defaut
+  $A0         Extension OMF (IMPDEF, EXPDEF, etc.)
+  $A1         Nouveau format OMF
+  $A2         Linkpass (2e passe d'edition)
+  $DA         Commentaire de debogage (Borland)
+  $E9         Dependance (Borland)
+  $FB-$FF     Extensions Microsoft specifiques
+
+La classe $9F est particulierement importante : elle indique au linker
+les bibliotheques (.LIB) par defaut a inclure automatiquement.
+
+5.12 COMDEF ($B0) - Definitions communales
+---------------------------------------------
+
+Declare des symboles communaux (variables globales non initialisees
+partagees entre modules, equivalent du "common" de Fortran ou des
+symboles BSS non-static en C).
+
+  Le payload contient une serie de :
+  +0      1       Longueur du nom (N)
+  +1      N       Nom du symbole
+  +1+N    index   Index de type
+  +?      1       Type de donnee communale :
+                    $61 = FAR communal (taille = nombre * element)
+                    $62 = NEAR communal (taille directe)
+  +?      var     Taille encodee en format "communal number"
+
+Format "communal number" :
+  Si octet < $80 : valeur directe (1 octet)
+  Si octet = $81 : suivi de 2 octets (Word LE)
+  Si octet = $84 : suivi de 3 octets
+  Si octet = $88 : suivi de 4 octets (DWord LE)
+
+5.13 ALIAS ($C6) - Definitions d'alias
+-----------------------------------------
+
+Definit des paires <alias, substitut> pour renommer des symboles.
+
+  Le payload contient une serie de :
+  +0      1       Longueur du nom alias (N1)
+  +1      N1      Nom alias
+  +1+N1   1       Longueur du nom substitut (N2)
+  +2+N1   N2      Nom substitut
+
+Le linker remplace toute reference a l'alias par le nom substitut.
+
+5.14 COMDAT ($C2) - Donnees communales initialisees
+------------------------------------------------------
+
+Extension OMF pour les templates C++, fonctions inline et autres donnees
+qui peuvent apparaitre dans plusieurs modules mais ne doivent etre
+linkees qu'une seule fois.
+
+  Offset  Taille  Champ
+  ------  ------  ----------------------------------
+  +0      1       Flags
+                    Bit 0 : Continuation (meme COMDAT que le precedent)
+                    Bit 1 : Donnees iterees (format LIDATA)
+                    Bit 2 : Local (visible seulement dans le module)
+                    Bit 3 : Ordonne par le compilateur
+  +1      1       Attributs
+                    Bits 0-3 : Type d'allocation
+                      0 = Explicite (segment specifie)
+                      1 = Far code
+                      2 = Far data
+                      3 = Code
+                      4 = Data
+  +2      1       Align
+  +3      2|4     Enumerated data offset (Word ou DWord)
+  +?      index   Type index
+  [+?     index   Group index (si alloc type = 0)]
+  [+?     index   Segment index (si alloc type = 0)]
+  +?      1       Longueur du nom (N)
+  +?      N       Nom public du COMDAT
+  +?      n       Donnees
+
+5.15 BAKPAT ($A4) - Correctif retroactif
+-------------------------------------------
+
+Permet de modifier des donnees precedemment emises (backpatching).
+Utilise quand le compilateur ne connait pas une valeur au moment
+d'emettre LEDATA mais la connait plus tard dans le meme module.
+
+  Offset  Taille  Champ
+  ------  ------  ----------------------------------
+  +0      index   Index du segment (SEGDEF)
+  +?      1       Type de correctif (location type)
+
+  Suivi de paires :
+  +0      2|4     Offset dans le segment (Word ou DWord)
+  +2|4    2|4     Valeur du correctif (Word ou DWord)
+
+5.16 LINNUM ($94) - Numeros de lignes
+-----------------------------------------
+
+Associe des offsets de code aux numeros de lignes du source pour
+le debogage.
+
+  Offset  Taille  Champ
+  ------  ------  ----------------------------------
+  +0      index   Index du groupe (GRPDEF)
+  +?      index   Index du segment (SEGDEF)
+
+  Suivi de paires :
+  +0      2       Numero de ligne (Word LE)
+  +2      2|4     Offset du code (Word ou DWord)
+
+==============================================================================
+6. CHAINES DE CARACTERES OMF
+==============================================================================
+
+Toutes les chaines dans le format OMF utilisent le format Pascal :
+un octet de longueur suivi des caracteres (sans terminateur null).
+
+  +0    1     Longueur (N), maximum 255
+  +1    N     Caracteres ASCII
+
+Les noms de symboles sont case-sensitive dans le fichier OBJ.
+Le linker peut etre configure en case-insensitive (/NOCASE).
+
+==============================================================================
+7. ORDRE TYPIQUE DES RECORDS DANS UN FICHIER .OBJ
+==============================================================================
+
+Un fichier .OBJ bien forme suit generalement cet ordre :
+
+  1. THEADR      - Nom du module
+  2. COMENT      - Commentaires (compilateur, options, libs par defaut)
+  3. LNAMES      - Noms logiques utilises (peut etre repete)
+  4. SEGDEF      - Definition de chaque segment (repete)
+  5. GRPDEF      - Definition de groupes (optionnel, repete)
+  6. EXTDEF      - References externes (optionnel, repete)
+  7. PUBDEF      - Symboles publics (optionnel, repete)
+  8. COMDEF      - Symboles communaux (optionnel, repete)
+  [Repete pour chaque bloc de code/donnees :]
+    9. LEDATA    - Donnees du segment
+    10. FIXUPP   - Relocalisations pour le LEDATA precedent
+    ou
+    9. LIDATA    - Donnees iterees
+    10. FIXUPP   - Relocalisations pour le LIDATA precedent
+  11. LINNUM     - Info debogage lignes (optionnel)
+  12. MODEND     - Fin de module (avec point d'entree optionnel)
+
+Le premier module d'un executable doit contenir un MODEND avec point
+d'entree. Les autres modules ont un MODEND sans point d'entree.
+
+==============================================================================
+8. EDITION DE LIENS (LINKING)
+==============================================================================
+
+Le processus d'edition de liens tel qu'implemente dans LINK.PAS suit
+ces etapes :
+
+  Phase 1 - Collecte :
+    - Lecture de tous les fichiers .OBJ
+    - Construction des tables LNAMES, SEGDEF, GRPDEF
+    - Collecte des PUBDEF (exports) et EXTDEF (imports)
+    - Determination des tailles de segments via LEDATA/LIDATA
+    - Collecte des FIXUPP pour les relocalisations
+
+  Phase 2 - Resolution :
+    - Attribution des adresses lineaires a chaque segment
+    - Resolution des references externes (EXTDEF -> PUBDEF)
+    - Application des ALIAS pour renommer des symboles
+    - Recherche dans les bibliotheques (.LIB) si non resolu
+
+  Phase 3 - Emission :
+    - Generation de l'en-tete MZ (pour les EXE DOS)
+    - Ecriture des donnees de segments a leurs positions finales
+    - Application des correctifs FIXUPP (relocalisations)
+    - Ecriture de la table de relocation MZ
+    - Mise a jour du point d'entree (CS:IP) depuis MODEND
+
+==============================================================================
+9. FORMAT DE BIBLIOTHEQUE (.LIB)
+==============================================================================
+
+Un fichier .LIB est un conteneur de modules .OBJ precedés d'un
+dictionnaire de symboles. Le format est aussi defini par la norme OMF :
+
+  +---------------------------+
+  | En-tete de bibliotheque   |  Record type $F0 (Library Header)
+  |  (taille de page)         |
+  +---------------------------+
+  | Module OBJ #1             |  THEADR ... MODEND
+  | (padde a la page)         |
+  +---------------------------+
+  | Module OBJ #2             |
+  | (padde a la page)         |
+  +---------------------------+
+  | ...                       |
+  +---------------------------+
+  | Dictionnaire              |  Record type $F1 (Library End)
+  |  (table de hachage des    |
+  |   symboles publics)       |
+  +---------------------------+
+
+La taille de page est definie dans l'en-tete ($F0) et vaut typiquement
+16 octets. Chaque module est aligne sur une frontiere de page.
+
+Le dictionnaire en fin de bibliotheque permet au linker de trouver
+rapidement quel module contient un symbole public donne.
+
+==============================================================================
+10. LIMITES PRATIQUES
+==============================================================================
+
+Contraintes du format OMF 16 bits :
+  - Segment maximum : 64 Ko (65536 octets)
+  - Offset de donnees dans LEDATA : 16 bits (0-65535)
+  - Noms de symboles : jusqu'a 255 caracteres (mais souvent tronques
+    a 32 ou 64 par les linkers)
+  - Nombre de segments, symboles, groupes : illimite en theorie,
+    mais les outils ont des limites pratiques
+
+Limites de LINK.PAS :
+  - MAX_SEGMENTS   = 128
+  - MAX_SYMBOLS    = 1024
+  - MAX_RELOCATIONS= 2048
+  - MAX_GROUPS     = 128
+  - MAX_LNAMES     = 2048
+  - MAX_LINENUMS   = 4096
+  - MAX_ALIASES    = 1024
+
+==============================================================================
+11. RESUME DES CODES DE RECORDS PAR VALEUR HEXADECIMALE
+==============================================================================
+
+  $80 THEADR     $82 LHEADR     $84 PEDATA     $86 PIDATA
+  $88 COMENT     $8A MODEND     $8B MODEND32
+  $8C EXTDEF     $8D EXTDEF32   $8E TYPDEF     $8F TYPDEF32
+  $90 PUBDEF     $91 PUBDEF32   $92 LPUBDEF    $93 LPUBDEF32
+  $94 LINNUM     $95 LINNUM32
+  $96 LNAMES     $97 LLNAMES    $98 SEGDEF     $99 SEGDEF32
+  $9A GRPDEF     $9B GRPDEF32   $9C FIXUPP     $9D FIXUPP32
+  $9E (reserve)  $9F (reserve)
+  $A0 LEDATA     $A1 LEDATA32   $A2 LIDATA     $A3 LIDATA32
+  $A4 BAKPAT     $A5 BAKPAT32   $A6 LINSYM     $A7 LINSYM32
+  $B0 COMDEF     $B2 BAKPAT     $B3 BAKPAT32
+  $B4 LEXTDEF    $B5 LEXTDEF32  $B6 LPUBDEF    $B7 LPUBDEF32
+  $B8 LCOMDEF
+  $C2 COMDAT     $C3 COMDAT32   $C4 LINSYM     $C5 LINSYM32
+  $C6 ALIAS      $C7 ALIAS32    $C8 NBKPAT     $C9 NBKPAT32
+  $CA LLNAMES    $CB LLNAMES32  $CC CEXTDEF    $CD CEXTDEF32
+  $CE VENDEXT
+  $F0 LIBHDR     $F1 LIBEND
+
+==============================================================================
+12. REFERENCES
+==============================================================================
+
+  - Tool Interface Standard (TIS) Committee,
+    "OMF: Relocatable Object Module Format", version 1.1
+  - Intel, "8086 Relocatable Object Module Formats" (1981)
+  - Microsoft, "MS-DOS Programmer's Reference" (1991)
+  - LINK.PAS dans le projet DEV-COOLS (implementation de reference)
+
+==============================================================================
+FIN DU DOCUMENT
+==============================================================================

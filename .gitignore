@@ -1,3 +1,3 @@
 *.o
-PYTHON86
-SAMPLES/PYTHON/*.asm
+*.obj
+*.ppu
