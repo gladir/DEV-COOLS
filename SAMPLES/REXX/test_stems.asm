@@ -2600,6 +2600,117 @@ _RXRT_CONDMSG:
         MOV     AX, 4C01h
         INT     21h
 
+; --- Runtime PILE DE DONNEES (TODO 22) ---
+
+_RXRT_QUEUE:
+        PUSH   BX
+        PUSH   CX
+        PUSH   DI
+        PUSH   SI
+        CALL   _RXRT_STRLEN
+        POP   SI
+        LEA   DI, _RX_STACK
+        ADD   DI, WORD PTR [_RX_STKTOP]
+        MOV   WORD PTR [DI], CX
+        ADD   DI, 2
+        PUSH   CX
+        REP     MOVSB
+        POP   CX
+        ADD   CX, 2
+        ADD   WORD PTR [_RX_STKTOP], CX
+        INC     WORD PTR [_RX_STKCOUNT]
+        POP   DI
+        POP   CX
+        POP   BX
+        RET
+
+_RXRT_PUSH:
+        PUSH   BX
+        PUSH   CX
+        PUSH   DX
+        PUSH   DI
+        PUSH   SI
+        CALL   _RXRT_STRLEN
+        POP   SI
+        MOV   DX, CX
+        ADD   DX, 2
+        PUSH   CX
+        PUSH   SI
+        MOV   CX, WORD PTR [_RX_STKTOP]
+        OR   CX, CX
+        JZ      _RXL_24
+        LEA   SI, _RX_STACK
+        ADD   SI, WORD PTR [_RX_STKTOP]
+        DEC   SI
+        MOV   DI, SI
+        ADD   DI, DX
+        STD
+        REP     MOVSB
+        CLD
+_RXL_24:
+        POP   SI
+        POP   CX
+        LEA   DI, _RX_STACK
+        MOV   WORD PTR [DI], CX
+        ADD   DI, 2
+        PUSH   CX
+        REP     MOVSB
+        POP   CX
+        ADD   WORD PTR [_RX_STKTOP], DX
+        INC     WORD PTR [_RX_STKCOUNT]
+        POP   DI
+        POP   DX
+        POP   CX
+        POP   BX
+        RET
+
+_RXRT_PULL:
+        PUSH   BX
+        PUSH   CX
+        PUSH   DX
+        PUSH   DI
+        PUSH   SI
+        CMP   WORD PTR [_RX_STKCOUNT], 0
+        JZ      _RXL_25
+        LEA   SI, _RX_STACK
+        MOV   CX, WORD PTR [SI]
+        ADD   SI, 2
+        LEA   DI, _RX_STKBUF
+        PUSH   CX
+        REP     MOVSB
+        POP   CX
+        MOV   BYTE PTR [DI], 0
+        MOV   DX, CX
+        ADD   DX, 2
+        LEA   SI, _RX_STACK
+        ADD   SI, DX
+        LEA   DI, _RX_STACK
+        MOV   CX, WORD PTR [_RX_STKTOP]
+        SUB   CX, DX
+        REP     MOVSB
+        SUB   WORD PTR [_RX_STKTOP], DX
+        DEC     WORD PTR [_RX_STKCOUNT]
+        LEA   AX, _RX_STKBUF
+        JMP     _RXL_26
+_RXL_25:
+        POP   SI
+        POP   DI
+        POP   DX
+        POP   CX
+        POP   BX
+        JMP     _RXRT_INPUT
+_RXL_26:
+        POP   SI
+        POP   DI
+        POP   DX
+        POP   CX
+        POP   BX
+        RET
+
+_RXB_QUEUED:
+        MOV   AX, WORD PTR [_RX_STKCOUNT]
+        RET
+
 
 ; --- sortie DOS ---
         MOV   AX, 4C00h
@@ -2653,6 +2764,10 @@ _RX_COND_FAILURE DB 'FAILURE',0
 _RX_COND_HALT DB 'HALT',0
 _RX_COND_NOVALUE DB 'NOVALUE',0
 _RX_COND_SYNTAX DB 'SYNTAX',0
+_RX_STACK DB 2048 DUP(0)
+_RX_STKTOP DW 0
+_RX_STKCOUNT DW 0
+_RX_STKBUF DB 256 DUP(0)
 _RXK_1 DB 'TAB.1',0
 _RXK_2 DB 'un',0
 _RXK_3 DB 'TAB.2',0

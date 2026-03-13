@@ -9307,7 +9307,7 @@ End;
 (* PULL retire le premier element (offset 0) et decale le reste.     *)
 Procedure EmitStackRuntime;
 Var
-  LblDone, LblLoop, LblEmpty : TString;
+  LblDone, LblEmpty : TString;
 Begin
   EmitComment('--- Runtime PILE DE DONNEES (TODO 22) ---');
   EmitBlankLine;
