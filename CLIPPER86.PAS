@@ -174,7 +174,7 @@
             Logique .NOT. / ! : XOR AX,1
             Verification de type dynamique avant chaque operation
 
-  TODO 12 - ENTREES/SORTIES ECRAN
+  TODO 12 - ENTREES/SORTIES ECRAN [IMPLEMENTE]
             ? expr [, expr ...] : afficher avec retour a la ligne
               -> CALL _CLRT_PRINTVAL pour chaque expr + CALL _CLRT_PRINTLN
             ?? expr [, expr ...] : afficher sans retour a la ligne
@@ -826,6 +826,13 @@ Procedure ParseMacro(Var Res : TExprVal); Forward;
 Procedure ParseFuncCall(SIdx : Integer; Var Res : TExprVal); Forward;
 { Expressions binaires (TODO 11) }
 Procedure EmitExprRuntime; Forward;
+{ Entrees/sorties ecran (TODO 12) }
+Procedure EmitIORuntime; Forward;
+Procedure ParseQOutStmt(WithCRLF : Boolean); Forward;
+Procedure ParseAtStmt; Forward;
+Procedure ParseReadStmt; Forward;
+Procedure ParseClearStmt; Forward;
+Procedure ParseSetColorStmt; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1140,6 +1147,36 @@ Begin
         ParserAdvance; { consommer STORE }
         ParseStoreStmt;
       End
+      { ? : affichage avec retour a la ligne (TODO 12) }
+      Else If Kw = '?' Then
+      Begin
+        ParserAdvance;
+        ParseQOutStmt(True);
+      End
+      { ?? : affichage sans retour a la ligne (TODO 12) }
+      Else If Kw = '??' Then
+      Begin
+        ParserAdvance;
+        ParseQOutStmt(False);
+      End
+      { READ (TODO 12) }
+      Else If Kw = 'READ' Then
+      Begin
+        ParserAdvance;
+        ParseReadStmt;
+      End
+      { CLEAR [SCREEN] (TODO 12) }
+      Else If (Kw = 'CLEAR') Then
+      Begin
+        ParserAdvance;
+        ParseClearStmt;
+      End
+      { SET (TODO 12) }
+      Else If Kw = 'SET' Then
+      Begin
+        ParserAdvance;
+        ParseSetColorStmt;
+      End
       Else
       Begin
         { Autres mots-cles : stub pour TODOs futurs }
@@ -1153,19 +1190,18 @@ Begin
     End
     Else If CurToken.Kind = TK_PUNCT Then
     Begin
-      { ? et ?? pour affichage (sera gere au TODO 12) }
-      If CurToken.Val = '?' Then
-      Begin
-        ParserAdvance;
-        { Stub : sera gere au TODO 12 }
-      End
-      Else
-        ParserAdvance;
+      ParserAdvance;
     End
     Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '&') Then
     Begin
       { Macro &variable en position d instruction (TODO 10) }
       ParseExprStmt;
+    End
+    Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '@') Then
+    Begin
+      { @ row,col SAY/GET/TO (TODO 12) }
+      ParserAdvance;
+      ParseAtStmt;
     End
     Else
     Begin
@@ -1251,7 +1287,11 @@ Begin
      (U = 'SEQUENCE')   Or (U = 'RECOVER')    Or (U = 'END')        Or
      (U = 'EXIT')       Or (U = 'LOOP')       Or (U = 'NIL')        Or
      (U = 'SELF')       Or (U = 'EACH')       Or (U = 'IN')         Or
-     (U = 'WITH')       Or (U = 'CLASS')      Or (U = 'STORE') Then
+     (U = 'WITH')       Or (U = 'CLASS')      Or (U = 'STORE')    Or
+     (U = 'READ')       Or (U = 'CLEAR')      Or (U = 'SET')      Or
+     (U = 'SAY')        Or (U = 'GET')        Or (U = 'PICTURE')  Or
+     (U = 'VALID')      Or (U = 'SCREEN')     Or (U = 'COLOR')    Or
+     (U = 'DOUBLE') Then
   Begin
     IsKeyword := True;
     Exit;
@@ -1277,6 +1317,9 @@ Begin
     If Copy('ENDIF',      1, Length(U)) = U Then Begin IsKeyword := True; Exit; End;
     If Copy('ENDDO',      1, Length(U)) = U Then Begin IsKeyword := True; Exit; End;
     If Copy('WHILE',      1, Length(U)) = U Then Begin IsKeyword := True; Exit; End;
+    If Copy('CLEAR',      1, Length(U)) = U Then Begin IsKeyword := True; Exit; End;
+    If Copy('PICTURE',    1, Length(U)) = U Then Begin IsKeyword := True; Exit; End;
+    If Copy('SCREEN',     1, Length(U)) = U Then Begin IsKeyword := True; Exit; End;
   End;
 End;
 
@@ -1297,7 +1340,10 @@ Begin
      (U = 'END')     Or (U = 'EXIT')   Or (U = 'LOOP')    Or
      (U = 'NIL')     Or (U = 'SELF')   Or (U = 'EACH')    Or
      (U = 'IN')      Or (U = 'WITH')   Or (U = 'CLASS')   Or
-     (U = 'STORE') Then
+     (U = 'STORE')   Or (U = 'READ')   Or (U = 'CLEAR')   Or
+     (U = 'SET')     Or (U = 'SAY')    Or (U = 'GET')     Or
+     (U = 'PICTURE') Or (U = 'VALID')  Or (U = 'SCREEN')  Or
+     (U = 'COLOR')   Or (U = 'DOUBLE') Then
   Begin
     ExpandKeyword := U;
     Exit;
@@ -1321,6 +1367,9 @@ Begin
   If (Length(U) >= 4) And (Copy('ENDIF',      1, Length(U)) = U) Then Begin ExpandKeyword := 'ENDIF';      Exit; End;
   If (Length(U) >= 4) And (Copy('ENDDO',      1, Length(U)) = U) Then Begin ExpandKeyword := 'ENDDO';      Exit; End;
   If (Length(U) >= 4) And (Copy('WHILE',      1, Length(U)) = U) Then Begin ExpandKeyword := 'WHILE';      Exit; End;
+  If (Length(U) >= 4) And (Copy('CLEAR',      1, Length(U)) = U) Then Begin ExpandKeyword := 'CLEAR';      Exit; End;
+  If (Length(U) >= 4) And (Copy('PICTURE',    1, Length(U)) = U) Then Begin ExpandKeyword := 'PICTURE';    Exit; End;
+  If (Length(U) >= 4) And (Copy('SCREEN',     1, Length(U)) = U) Then Begin ExpandKeyword := 'SCREEN';     Exit; End;
 
   { Mots-cles complets qui n ont pas d abreviation }
   ExpandKeyword := U;
@@ -2220,6 +2269,14 @@ Begin
   WriteLn(OutF, '_CL_FALSE_S DB  ''.F.'',0');
   { Buffer de concatenation (TODO 11) }
   WriteLn(OutF, '_CL_CATBUF  DB  256 DUP(0)');
+  { I/O buffers and data (TODO 12) }
+  WriteLn(OutF, '_CL_CRLF    DB  13,10,0');
+  WriteLn(OutF, '_CL_INPBUF  DB  128 DUP(0)');
+  WriteLn(OutF, '_CL_FMTBUF  DB  64 DUP(0)');
+  WriteLn(OutF, '_CL_LASTKEY DW  0');
+  WriteLn(OutF, '_CL_GETCOUNT DW  0');
+  WriteLn(OutF, '_CL_GETLIST DB  640 DUP(0)');  { 16 GETs x 40 bytes each }
+  WriteLn(OutF, '_CL_COLOR   DB  07h');  { default: white on black }
   { Entrees DataTab }
   For I := 0 To DataCount - 1 Do
   Begin
@@ -2740,6 +2797,92 @@ Begin
             ExprLoad(SIdx, Res);
           End;
         End;
+      End
+      { --- INKEY : attendre touche (TODO 12) --- }
+      Else If IdName = 'INKEY' Then
+      Begin
+        ParserAdvance; { consomme INKEY }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
+            ParseExpr(Arg);  { skip optional nSec argument }
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'INKEY');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_NUM;
+        Res.SymIdx := -1;
+      End
+      { --- LASTKEY : derniere touche pressee (TODO 12) --- }
+      Else If IdName = 'LASTKEY' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrAB('MOV', 'AX', '[_CL_LASTKEY]');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_NUM;
+        Res.SymIdx := -1;
+      End
+      { --- ROW : position ligne curseur (TODO 12) --- }
+      Else If IdName = 'ROW' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'GETROW');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_NUM;
+        Res.SymIdx := -1;
+      End
+      { --- COL : position colonne curseur (TODO 12) --- }
+      Else If IdName = 'COL' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'GETCOL');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_NUM;
+        Res.SymIdx := -1;
+      End
+      { --- MAXROW : derniere ligne ecran (TODO 12) --- }
+      Else If IdName = 'MAXROW' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        ExprMakeImm(24, TY_IDX_NUM, Res);
+      End
+      { --- MAXCOL : derniere colonne ecran (TODO 12) --- }
+      Else If IdName = 'MAXCOL' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        ExprMakeImm(79, TY_IDX_NUM, Res);
       End
       Else
       Begin
@@ -5032,13 +5175,507 @@ Begin
   EmitBlankLine;
 End;
 
+{ ============================================================
+  TODO 12 - ENTREES/SORTIES ECRAN [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseQOutStmt : ? expr, ... et ?? expr, ... ------------- }
+(* ? affiche les expressions separees par des espaces + retour a la ligne.
+   ?? affiche sans retour a la ligne.                              *)
+
+Procedure ParseQOutStmt(WithCRLF : Boolean);
+Var
+  Arg    : TExprVal;
+  First  : Boolean;
+Begin
+  EmitComment('? / ?? display');
+  First := True;
+  { Parse comma-separated expressions }
+  While (CurToken.Kind <> TK_EOF) Do
+  Begin
+    { Stop at end of statement }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then Break;
+    { Stop at next keyword that is a statement }
+    If (CurToken.Kind = TK_KEYWORD) Then
+    Begin
+      If (CurToken.Val = '?') Or (CurToken.Val = '??') Or
+         (CurToken.Val = 'IF') Or (CurToken.Val = 'DO') Or
+         (CurToken.Val = 'FOR') Or (CurToken.Val = 'RETURN') Or
+         (CurToken.Val = 'FUNCTION') Or (CurToken.Val = 'PROCEDURE') Or
+         (CurToken.Val = 'LOCAL') Or (CurToken.Val = 'PRIVATE') Or
+         (CurToken.Val = 'PUBLIC') Or (CurToken.Val = 'STORE') Or
+         (CurToken.Val = 'READ') Or (CurToken.Val = 'CLEAR') Or
+         (CurToken.Val = 'SET') Or (CurToken.Val = 'ENDIF') Or
+         (CurToken.Val = 'ENDDO') Or (CurToken.Val = 'NEXT') Or
+         (CurToken.Val = 'ELSE') Or (CurToken.Val = 'ELSEIF') Then
+        Break;
+    End;
+
+    { Separator: if not first, print a space }
+    If Not First Then
+    Begin
+      EmitInstrAB('MOV', 'AL', '32');  { space char }
+      EmitInstrA('CALL', CL_RT_PFX + 'PRINTCHAR');
+    End;
+
+    ParseExpr(Arg);
+    ExprFlushToAX(Arg);
+    EmitInstrA('CALL', CL_RT_PFX + 'PRINTVAL');
+    First := False;
+
+    { Comma separator }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance
+    Else
+      Break;
+  End;
+
+  If WithCRLF Then
+    EmitInstrA('CALL', CL_RT_PFX + 'PRINTLN');
+End;
+
+{ ---- ParseAtStmt : @ row,col SAY/GET/TO ---------------------- }
+
+Procedure ParseAtStmt;
+Var
+  RowExpr, ColExpr, ValExpr : TExprVal;
+  SIdx : Integer;
+Begin
+  { @ already consumed }
+  { Parse row expression }
+  ParseExpr(RowExpr);
+  ExprFlushToAX(RowExpr);
+  EmitInstr('PUSH   AX');  { save row }
+
+  { Expect comma }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+    ParserAdvance
+  Else
+    CompileError('attendu '','' apres @ row');
+
+  { Parse col expression }
+  ParseExpr(ColExpr);
+  ExprFlushToAX(ColExpr);
+  EmitInstrAB('MOV', 'DL', 'AL');  { DL = col }
+  EmitInstr('POP    AX');
+  EmitInstrAB('MOV', 'DH', 'AL');  { DH = row }
+  EmitInstrA('CALL', CL_RT_PFX + 'GOTOXY');
+
+  { Determine: SAY, GET, or TO }
+  If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
+  Begin
+    If StrUpperCase(CurToken.Val) = 'SAY' Then
+    Begin
+      ParserAdvance;  { consume SAY }
+      EmitComment('@ SAY');
+      ParseExpr(ValExpr);
+      ExprFlushToAX(ValExpr);
+      EmitInstrA('CALL', CL_RT_PFX + 'PRINTVAL');
+      { Optional PICTURE clause - skip it }
+      If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
+      Begin
+        If StrUpperCase(CurToken.Val) = 'PICTURE' Then
+        Begin
+          ParserAdvance;  { consume PICTURE }
+          ParseExpr(ValExpr);  { consume mask expr, ignore for now }
+          EmitComment('PICTURE (ignored - stub)');
+        End;
+      End;
+    End
+    Else If StrUpperCase(CurToken.Val) = 'GET' Then
+    Begin
+      ParserAdvance;  { consume GET }
+      EmitComment('@ GET (stub)');
+      { Parse the variable }
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        SIdx := SymFind(CurToken.Val);
+        If SIdx < 0 Then
+          SIdx := DeclAllocSym(CurToken.Val, SC_PRIVATE);
+        ParserAdvance;
+        { Register the GET: push addr into GETLIST }
+        EmitComment('register GET ' + SymTab[SIdx].Name);
+        EmitInstrAB('MOV', 'BX', '[_CL_GETCOUNT]');
+        EmitInstrAB('SHL', 'BX', '1');  { multiply by 2 for word index }
+        { Store variable address }
+        EmitInstrA('CALL', CL_RT_PFX + 'ADDGET');
+      End
+      Else
+        CompileError('attendu un identificateur apres GET');
+      { Optional PICTURE }
+      If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
+        If StrUpperCase(CurToken.Val) = 'PICTURE' Then
+        Begin
+          ParserAdvance;
+          ParseExpr(ValExpr);
+          EmitComment('GET PICTURE (ignored - stub)');
+        End;
+      { Optional VALID }
+      If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
+        If StrUpperCase(CurToken.Val) = 'VALID' Then
+        Begin
+          ParserAdvance;
+          ParseExpr(ValExpr);
+          EmitComment('GET VALID (ignored - stub)');
+        End;
+    End
+    Else If StrUpperCase(CurToken.Val) = 'TO' Then
+    Begin
+      ParserAdvance;  { consume TO }
+      EmitComment('@ TO (draw box)');
+      { Parse row2 }
+      ParseExpr(RowExpr);
+      ExprFlushToAX(RowExpr);
+      EmitInstr('PUSH   AX');  { save row2 }
+      { Expect comma }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance;
+      { Parse col2 }
+      ParseExpr(ColExpr);
+      ExprFlushToAX(ColExpr);
+      EmitInstr('PUSH   AX');  { save col2 }
+      { Optional DOUBLE keyword }
+      If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
+      Begin
+        If StrUpperCase(CurToken.Val) = 'DOUBLE' Then
+        Begin
+          ParserAdvance;
+          EmitInstrAB('MOV', 'CL', '1');  { double=1 }
+        End
+        Else
+          EmitInstrAB('MOV', 'CL', '0');  { single=0 }
+      End
+      Else
+        EmitInstrAB('MOV', 'CL', '0');
+      EmitInstrA('CALL', CL_RT_PFX + 'DRAWBOX');
+      EmitInstrAB('ADD', 'SP', '4');  { cleanup 2 pushed args }
+    End
+    Else
+    Begin
+      { Not SAY/GET/TO - maybe just positioning cursor }
+      EmitComment('@ row,col (position only)');
+    End;
+  End;
+End;
+
+{ ---- ParseReadStmt ------------------------------------------- }
+Procedure ParseReadStmt;
+Begin
+  EmitComment('READ');
+  EmitInstrA('CALL', CL_RT_PFX + 'READGETS');
+End;
+
+{ ---- ParseClearStmt ------------------------------------------ }
+Procedure ParseClearStmt;
+Begin
+  EmitComment('CLEAR SCREEN');
+  { Check for optional SCREEN keyword }
+  If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
+  Begin
+    If StrUpperCase(CurToken.Val) = 'SCREEN' Then
+      ParserAdvance;
+  End;
+  EmitInstrA('CALL', CL_RT_PFX + 'CLEARSCR');
+End;
+
+{ ---- ParseSetColorStmt --------------------------------------- }
+Procedure ParseSetColorStmt;
+Var
+  Arg : TExprVal;
+Begin
+  { SET already consumed, expecting COLOR }
+  If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
+  Begin
+    If StrUpperCase(CurToken.Val) = 'COLOR' Then
+    Begin
+      ParserAdvance;  { consume COLOR }
+      { Expect TO }
+      If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
+      Begin
+        If StrUpperCase(CurToken.Val) = 'TO' Then
+          ParserAdvance;
+      End;
+      ParseExpr(Arg);
+      ExprFlushToAX(Arg);
+      EmitComment('SET COLOR TO');
+      EmitInstrAB('MOV', '[_CL_COLOR]', 'AL');
+    End
+    Else
+    Begin
+      EmitComment('SET (unknown) - ignored');
+      ParserAdvance;
+    End;
+  End;
+End;
+
+{ ---- EmitIORuntime : routines runtime entrees/sorties ecran --- }
+(* Genere les routines assembleur pour l affichage ecran,
+   la saisie clavier, et le positionnement curseur (TODO 12).     *)
+
+Procedure EmitIORuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=== Routines runtime I/O ecran (TODO 12) ===');
+  EmitBlankLine;
+
+  { --- _CLRT_PRINTVAL : afficher une valeur (AX) --- }
+  (* AX contient un entier (dans cette version simplifiee).
+     Convertit en chaine via NUMTOSTR puis affiche via PRINTSTR.   *)
+  EmitLabel(CL_RT_PFX + 'PRINTVAL');
+  EmitInstr('PUSH   SI');
+  EmitInstr('PUSH   DI');
+  EmitInstr('PUSH   AX');
+  { Verifier si AX est un pointeur chaine (heuristique : >= 256) }
+  EmitInstrAB('CMP', 'AX', '256');
+  EmitInstrA('JB', CL_RT_PFX + 'PV_NUM');
+  { Traiter comme pointeur chaine }
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrA('CALL', CL_RT_PFX + 'PRINTSTR');
+  EmitInstrA('JMP', CL_RT_PFX + 'PV_DN');
+  { Traiter comme nombre }
+  EmitLabel(CL_RT_PFX + 'PV_NUM');
+  EmitInstr('POP    AX');
+  EmitInstr('PUSH   AX');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _CL_FMTBUF');
+  EmitInstrA('CALL', CL_RT_PFX + 'NUMTOSTR');
+  EmitInstrAB('MOV', 'SI', 'OFFSET _CL_FMTBUF');
+  EmitInstrA('CALL', CL_RT_PFX + 'PRINTSTR');
+  EmitLabel(CL_RT_PFX + 'PV_DN');
+  EmitInstr('POP    AX');
+  EmitInstr('POP    DI');
+  EmitInstr('POP    SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_PRINTLN : afficher retour a la ligne (CR+LF) --- }
+  EmitLabel(CL_RT_PFX + 'PRINTLN');
+  EmitInstr('PUSH   AX');
+  EmitInstr('PUSH   DX');
+  EmitInstrAB('MOV', 'AH', '02h');
+  EmitInstrAB('MOV', 'DL', '13');  { CR }
+  EmitInstr('INT    21h');
+  EmitInstrAB('MOV', 'DL', '10');  { LF }
+  EmitInstr('INT    21h');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    AX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_PRINTSTR : afficher chaine ASCIIZ --- }
+  (* SI = pointeur vers chaine terminee par 0.
+     Affiche caractere par caractere via INT 21h AH=02h.           *)
+  EmitLabel(CL_RT_PFX + 'PRINTSTR');
+  EmitInstr('PUSH   AX');
+  EmitInstr('PUSH   DX');
+  EmitInstr('PUSH   SI');
+  EmitLabel(CL_RT_PFX + 'PS_LP');
+  EmitInstr('LODSB');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', CL_RT_PFX + 'PS_DN');
+  EmitInstrAB('MOV', 'DL', 'AL');
+  EmitInstrAB('MOV', 'AH', '02h');
+  EmitInstr('INT    21h');
+  EmitInstrA('JMP', CL_RT_PFX + 'PS_LP');
+  EmitLabel(CL_RT_PFX + 'PS_DN');
+  EmitInstr('POP    SI');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    AX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_PRINTCHAR : afficher un caractere --- }
+  (* AL = caractere a afficher via INT 21h AH=02h.                 *)
+  EmitLabel(CL_RT_PFX + 'PRINTCHAR');
+  EmitInstr('PUSH   AX');
+  EmitInstr('PUSH   DX');
+  EmitInstrAB('MOV', 'DL', 'AL');
+  EmitInstrAB('MOV', 'AH', '02h');
+  EmitInstr('INT    21h');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    AX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_NUMTOSTR : convertir entier en chaine ASCII --- }
+  (* AX = nombre signe, DI = buffer destination.
+     Ecrit la representation decimale terminee par 0.              *)
+  EmitLabel(CL_RT_PFX + 'NUMTOSTR');
+  EmitInstr('PUSH   AX');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  EmitInstr('PUSH   DI');
+  EmitInstrAB('MOV', 'CX', '0');   { compteur de chiffres }
+  EmitInstrAB('CMP', 'AX', '0');
+  EmitInstrA('JGE', CL_RT_PFX + 'NTS_POS');
+  { Nombre negatif : ecrire '-' et prendre la valeur absolue }
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '45');  { 45 = '-' }
+  EmitInstrA('INC', 'DI');
+  EmitInstr('NEG    AX');
+  EmitLabel(CL_RT_PFX + 'NTS_POS');
+  EmitInstrAB('MOV', 'BX', '10');
+  { Empiler les chiffres (ordre inverse) }
+  EmitLabel(CL_RT_PFX + 'NTS_DV');
+  EmitInstrAB('MOV', 'DX', '0');
+  EmitInstr('DIV    BX');           { AX = quotient, DX = reste }
+  EmitInstrAB('ADD', 'DL', '48');   { 48 = '0' }
+  EmitInstr('PUSH   DX');
+  EmitInstrA('INC', 'CX');
+  EmitInstrAB('CMP', 'AX', '0');
+  EmitInstrA('JNE', CL_RT_PFX + 'NTS_DV');
+  { Depiler les chiffres dans le buffer }
+  EmitLabel(CL_RT_PFX + 'NTS_WR');
+  EmitInstr('POP    DX');
+  EmitInstrAB('MOV', '[DI]', 'DL');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JNZ', CL_RT_PFX + 'NTS_WR');
+  { Terminer la chaine }
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstr('POP    DI');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('POP    AX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_GOTOXY : positionner le curseur --- }
+  (* DH = ligne (row), DL = colonne (col).
+     Utilise INT 10h AH=02h BH=0 (page video 0).                  *)
+  EmitLabel(CL_RT_PFX + 'GOTOXY');
+  EmitInstr('PUSH   AX');
+  EmitInstr('PUSH   BX');
+  EmitInstrAB('MOV', 'AH', '02h');
+  EmitInstrAB('MOV', 'BH', '0');   { page video 0 }
+  EmitInstr('INT    10h');
+  EmitInstr('POP    BX');
+  EmitInstr('POP    AX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_CLEARSCR : effacer l ecran --- }
+  (* INT 10h AH=00h AL=03h -> mode texte 80x25, efface l ecran.   *)
+  EmitLabel(CL_RT_PFX + 'CLEARSCR');
+  EmitInstr('PUSH   AX');
+  EmitInstrAB('MOV', 'AX', '0003h');  { AH=00 set mode, AL=03 80x25 texte }
+  EmitInstr('INT    10h');
+  EmitInstr('POP    AX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_INKEY : attendre/verifier touche clavier --- }
+  (* INT 16h AH=01h : verifier si touche disponible.
+     Si oui, INT 16h AH=00h pour la lire.
+     Retourne AX = code touche, stocke dans _CL_LASTKEY.          *)
+  EmitLabel(CL_RT_PFX + 'INKEY');
+  EmitInstrAB('MOV', 'AH', '01h');
+  EmitInstr('INT    16h');
+  EmitInstrA('JZ', CL_RT_PFX + 'IK_NONE');
+  { Touche disponible : la lire }
+  EmitInstrAB('MOV', 'AH', '00h');
+  EmitInstr('INT    16h');
+  EmitInstrAB('MOV', '[_CL_LASTKEY]', 'AX');
+  EmitInstr('RET');
+  EmitLabel(CL_RT_PFX + 'IK_NONE');
+  EmitInstrAB('MOV', 'AX', '0');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_GETROW : obtenir la ligne courante du curseur --- }
+  (* INT 10h AH=03h BH=0 -> DH = ligne.
+     Retourne AX = numero de ligne.                                *)
+  EmitLabel(CL_RT_PFX + 'GETROW');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  EmitInstrAB('MOV', 'AH', '03h');
+  EmitInstrAB('MOV', 'BH', '0');
+  EmitInstr('INT    10h');
+  EmitInstrAB('MOV', 'AL', 'DH');
+  EmitInstrAB('MOV', 'AH', '0');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_GETCOL : obtenir la colonne courante du curseur --- }
+  (* INT 10h AH=03h BH=0 -> DL = colonne.
+     Retourne AX = numero de colonne.                              *)
+  EmitLabel(CL_RT_PFX + 'GETCOL');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  EmitInstrAB('MOV', 'AH', '03h');
+  EmitInstrAB('MOV', 'BH', '0');
+  EmitInstr('INT    10h');
+  EmitInstrAB('MOV', 'AL', 'DL');
+  EmitInstrAB('MOV', 'AH', '0');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_READGETS : activer la saisie des GETs --- }
+  (* Stub : juste remet le compteur a zero et retourne.
+     Une implementation complete lirait chaque GET enregistre.      *)
+  EmitLabel(CL_RT_PFX + 'READGETS');
+  EmitInstrAB('MOV', 'WORD PTR [_CL_GETCOUNT]', '0');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_ADDGET : enregistrer un GET dans la liste --- }
+  (* Stub : incremente le compteur et retourne.                    *)
+  EmitLabel(CL_RT_PFX + 'ADDGET');
+  EmitInstr('PUSH   AX');
+  EmitInstrAB('MOV', 'AX', '[_CL_GETCOUNT]');
+  EmitInstrA('INC', 'AX');
+  EmitInstrAB('MOV', '[_CL_GETCOUNT]', 'AX');
+  EmitInstr('POP    AX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_DRAWBOX : dessiner un cadre ecran --- }
+  (* Stub : les parametres sont sur la pile, juste retourne.
+     Une implementation complete dessinerait le cadre avec
+     les caracteres de bordure simple ou double.                   *)
+  EmitLabel(CL_RT_PFX + 'DRAWBOX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_INPUT : lire une ligne depuis stdin --- }
+  (* Utilise DOS INT 21h AH=0Ah pour la saisie bufferisee.
+     Stocke le resultat dans _CL_INPBUF.
+     Retourne AX = OFFSET _CL_INPBUF + 2 (debut des donnees).    *)
+  EmitLabel(CL_RT_PFX + 'INPUT');
+  EmitInstr('PUSH   DX');
+  EmitInstrAB('MOV', 'BYTE PTR [_CL_INPBUF]', '126');  { taille max }
+  EmitInstrAB('MOV', 'DX', 'OFFSET _CL_INPBUF');
+  EmitInstrAB('MOV', 'AH', '0Ah');
+  EmitInstr('INT    21h');
+  { Terminer la chaine par un 0 }
+  EmitInstr('PUSH   BX');
+  EmitInstrAB('MOV', 'BL', '[_CL_INPBUF+1]');  { longueur saisie }
+  EmitInstrAB('MOV', 'BH', '0');
+  EmitInstrAB('MOV', 'BYTE PTR [_CL_INPBUF+2+BX]', '0');
+  EmitInstr('POP    BX');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _CL_INPBUF');
+  EmitInstrAB('ADD', 'AX', '2');  { pointer vers les donnees }
+  EmitInstr('POP    DX');
+  EmitInstr('RET');
+  EmitBlankLine;
+End;
+
 { ---- EmitRuntime : emettre les routines runtime inline ------- }
-(* Appelle EmitExprRuntime pour les routines d expressions binaires.
-   Sera enrichi dans les TODOs futures (24, etc.)                  *)
+(* Appelle EmitExprRuntime pour les routines d expressions binaires
+   et EmitIORuntime pour les routines I/O ecran (TODO 12).         *)
 
 Procedure EmitRuntime;
 Begin
   EmitExprRuntime;
+  EmitIORuntime;
 End;
 
 { ---- EmitClose : finaliser le fichier ASM -------------------- }
