@@ -6902,7 +6902,12 @@ Begin
   EmitInstrAB('SUB', 'DI', '2');
   EmitInstrA('JMP', CL_RT_PFX + 'AIN_LP');
   EmitLabel(CL_RT_PFX + 'AIN_SH');
-  EmitInstr('POP    AX');
+  { Recalculer l adresse d insertion et mettre 0 }
+  EmitInstr('POP    AX');              { AX = index original (1-base) }
+  EmitInstrA('DEC', 'AX');
+  EmitInstrAB('SHL', 'AX', '1');
+  EmitInstrAB('ADD', 'AX', '2');
+  EmitInstrAB('ADD', 'AX', 'BX');     { AX = adresse insertion }
   EmitInstrAB('MOV', 'DI', 'AX');
   EmitInstrAB('MOV', 'WORD PTR [DI]', '0');
   EmitInstrA('INC', 'WORD PTR [BX]');
