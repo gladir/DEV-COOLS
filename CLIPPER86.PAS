@@ -364,7 +364,7 @@
             SET EXACT ON/OFF : comparaison exacte ou partielle pour SEEK
             SET DELETED ON/OFF : masquer les enregistrements marques
 
-  TODO 21 - GESTION DES ERREURS (BEGIN SEQUENCE / RECOVER)
+  TODO 21 - GESTION DES ERREURS (BEGIN SEQUENCE / RECOVER) [IMPLEMENTE]
             ParseBeginSequenceStmt :
               BEGIN SEQUENCE
                 stmts
@@ -745,6 +745,9 @@ Var
   { Work areas DBF (TODO 19) }
   CurWorkArea    : Integer;   { zone de travail active (1..10)       }
 
+  { Gestion des erreurs (TODO 21) }
+  SeqCount       : Integer;   { compteur de blocs SEQUENCE generes   }
+
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
@@ -915,6 +918,10 @@ Procedure ParseLocateStmt; Forward;
 Procedure ParseContinueStmt; Forward;
 Procedure ParseReindexStmt; Forward;
 Procedure EmitIdxRuntime; Forward;
+
+{ Gestion des erreurs (TODO 21) }
+Procedure ParseBeginSequenceStmt; Forward;
+Procedure EmitErrRuntime; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1172,6 +1179,7 @@ Begin
   InitProcCount := 0;
   ExitProcCount := 0;
   CodeBlockCount := 0;
+  SeqCount := 0;
   TypeInit;
   SymInit;
 End;
@@ -1556,6 +1564,36 @@ Begin
       Begin
         ParserAdvance;
         ParseReindexStmt;
+      End
+      { BEGIN SEQUENCE (TODO 21) }
+      Else If Kw = 'BEGIN' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'SEQUENCE') Then
+        Begin
+          ParserAdvance;
+          ParseBeginSequenceStmt;
+        End
+        Else
+          CompileError('BEGIN : SEQUENCE attendu');
+      End
+      { BREAK : sortir du bloc SEQUENCE courant (TODO 21) }
+      Else If Kw = 'BREAK' Then
+      Begin
+        ParserAdvance;
+        EmitComment('BREAK');
+        { BREAK [expr] : si une expression suit, evaluer dans AX }
+        If (CurToken.Kind <> TK_EOF) And
+           (CurToken.Kind <> TK_KEYWORD) And
+           (CurToken.Kind <> TK_PUNCT) Then
+        Begin
+          ParseExpr(SetExpr);
+          ExprFlushToAX(SetExpr);
+        End
+        Else
+          EmitInstrAB('XOR', 'AX', 'AX');
+        { JMP [_CL_SEQHANDLER] }
+        EmitInstrA('JMP', 'WORD PTR [_CL_SEQHANDLER]');
       End
       Else
       Begin
@@ -2736,6 +2774,11 @@ Begin
   WriteLn(OutF, '_CL_IDXNAME DB  80 DUP(0)');      { buffer nom fichier index }
   WriteLn(OutF, '_CL_IDXKEY  DB  256 DUP(0)');     { buffer expression cle }
   WriteLn(OutF, '_CL_IDXBUF  DB  256 DUP(0)');     { buffer lecture index }
+  { Gestion des erreurs (TODO 21) }
+  WriteLn(OutF, '_CL_SEQHANDLER DW  _CLRT_ERRDEFAULT'); { ptr vers handler RECOVER courant }
+  WriteLn(OutF, '_CL_ERRORBLOCK DW  0');             { code block d erreur global }
+  WriteLn(OutF, '_CL_ERRMSG  DB  ''Unhandled BREAK'',13,10,''$''');
+  WriteLn(OutF, '_CL_SEQSAVE DW  0');               { sauvegarde handler precedent }
   { Entrees DataTab }
   For I := 0 To DataCount - 1 Do
   Begin
@@ -4297,6 +4340,34 @@ Begin
         EmitInstrA('CALL', CL_RT_PFX + 'IDXORDCOUNT');
         Res.Kind := EK_AX;
         Res.TypeIdx := TY_IDX_NUM;
+        Res.SymIdx := -1;
+      End
+      { --- ERRORBLOCK : get/set le bloc d erreur global (TODO 21) --- }
+      Else If IdName = 'ERRORBLOCK' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
+          Begin
+            { ERRORBLOCK(bNewBlock) : set + retourner ancien }
+            ParseExpr(Arg);
+            ExprFlushToAX(Arg);
+            EmitInstrA('CALL', CL_RT_PFX + 'ERRSETBLOCK');
+          End
+          Else
+          Begin
+            { ERRORBLOCK() : retourner bloc courant }
+            EmitInstrA('CALL', CL_RT_PFX + 'ERRGETBLOCK');
+          End;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End
+        Else
+          EmitInstrA('CALL', CL_RT_PFX + 'ERRGETBLOCK');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_BLOCK;
         Res.SymIdx := -1;
       End
 
@@ -7167,7 +7238,8 @@ Begin
                        (Kw = 'ELSEIF') Or (Kw = 'ENDCASE') Or
                        (Kw = 'CASE') Or (Kw = 'OTHERWISE') Or
                        (Kw = 'ENDDO') Or (Kw = 'NEXT') Or
-                       (Kw = 'FUNCTION') Or (Kw = 'PROCEDURE');
+                       (Kw = 'FUNCTION') Or (Kw = 'PROCEDURE') Or
+                       (Kw = 'RECOVER') Or (Kw = 'END');
 End;
 
 Procedure ParseStmtBlock;
@@ -7292,6 +7364,34 @@ Begin
         End
         Else
           CompileError('EXIT en dehors d une boucle');
+      End
+      { BEGIN SEQUENCE (TODO 21) }
+      Else If Kw = 'BEGIN' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'SEQUENCE') Then
+        Begin
+          ParserAdvance;
+          ParseBeginSequenceStmt;
+        End
+        Else
+          CompileError('BEGIN : SEQUENCE attendu');
+      End
+      { BREAK : sortir du bloc SEQUENCE courant (TODO 21) }
+      Else If Kw = 'BREAK' Then
+      Begin
+        ParserAdvance;
+        EmitComment('BREAK');
+        If (CurToken.Kind <> TK_EOF) And
+           Not ((CurToken.Kind = TK_KEYWORD) And
+                (IsBlockTerminator(CurToken.Val))) Then
+        Begin
+          ParseExpr(RetExpr);
+          ExprFlushToAX(RetExpr);
+        End
+        Else
+          EmitInstrAB('XOR', 'AX', 'AX');
+        EmitInstrA('JMP', 'WORD PTR [_CL_SEQHANDLER]');
       End
       { RETURN inside a block (TODO 17) }
       Else If (Kw = 'RETURN') Or (Kw = 'RETU') Then
@@ -10866,6 +10966,139 @@ Begin
   EmitBlankLine;
 End;
 
+{ ============================================================
+  TODO 21 - GESTION DES ERREURS (BEGIN SEQUENCE / RECOVER) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseBeginSequenceStmt ---------------------------------- }
+(* Genere le code assembleur pour :
+     BEGIN SEQUENCE
+       stmts
+     [RECOVER [USING oError]]
+       stmts_recuperation
+     END [SEQUENCE]
+
+   Mecanisme :
+     1. Sauvegarder l ancien handler dans la pile
+     2. Installer le nouveau handler (RECOVER label) dans _CL_SEQHANDLER
+     3. Executer le bloc principal
+     4. Si BREAK est appele : JMP [_CL_SEQHANDLER] -> va au RECOVER
+     5. RECOVER : AX contient la valeur d erreur
+     6. END SEQUENCE : restaurer l ancien handler                    *)
+
+Procedure ParseBeginSequenceStmt;
+Var
+  LblRecover : TString;
+  LblEnd     : TString;
+  OErrIdx    : Integer;
+  NS         : TString;
+Begin
+  Inc(SeqCount);
+  Str(SeqCount, NS);
+  LblRecover := CL_LBL_PFX + 'SEQRCV_' + NS;
+  LblEnd     := CL_LBL_PFX + 'SEQEND_' + NS;
+
+  EmitComment('BEGIN SEQUENCE #' + NS);
+
+  { 1. Sauvegarder l ancien handler }
+  EmitInstrAB('MOV', 'AX', '[_CL_SEQHANDLER]');
+  EmitInstr('PUSH   AX');
+
+  { 2. Installer le nouveau handler : adresse du RECOVER }
+  EmitInstrAB('MOV', 'WORD PTR [_CL_SEQHANDLER]', 'OFFSET ' + LblRecover);
+
+  { 3. Parser le bloc principal }
+  ParseStmtBlock;
+
+  { 4. Si pas de BREAK : sauter apres RECOVER }
+  EmitInstrA('JMP', LblEnd);
+
+  { 5. RECOVER }
+  EmitLabel(LblRecover);
+  EmitComment('RECOVER');
+
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'RECOVER') Then
+  Begin
+    ParserAdvance;
+    { RECOVER USING oError : stocker AX dans la variable oError }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'USING') Then
+    Begin
+      ParserAdvance;
+      If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+      Begin
+        OErrIdx := SymFind(CurToken.Val);
+        If OErrIdx < 0 Then
+          OErrIdx := DeclAllocSym(CurToken.Val, SC_PRIVATE);
+        EmitComment('RECOVER USING ' + CurToken.Val);
+        ExprStore(OErrIdx);
+        ParserAdvance;
+      End
+      Else
+        CompileError('RECOVER USING : identificateur attendu');
+    End;
+    { Parser le bloc de recuperation }
+    ParseStmtBlock;
+  End;
+
+  { 6. END [SEQUENCE] : restaurer l ancien handler }
+  EmitLabel(LblEnd);
+  EmitComment('END SEQUENCE');
+  EmitInstr('POP    AX');
+  EmitInstrAB('MOV', '[_CL_SEQHANDLER]', 'AX');
+
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'END') Then
+  Begin
+    ParserAdvance;
+    { Consommer SEQUENCE optionnel apres END }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'SEQUENCE') Then
+      ParserAdvance;
+  End;
+End;
+
+{ ---- EmitErrRuntime : routines runtime gestion d erreurs (TODO 21) -- }
+(* Genere les routines assembleur pour la gestion des erreurs.
+
+   Routines generees :
+     _CLRT_ERRDEFAULT   : handler par defaut (affiche msg + halt)
+     _CLRT_ERRSETBLOCK  : definir le bloc d erreur (AX=bloc -> ancien en AX)
+     _CLRT_ERRGETBLOCK  : retourner le bloc d erreur courant (-> AX)       *)
+
+Procedure EmitErrRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('==== Error Handling Runtime (TODO 21) ====');
+  EmitBlankLine;
+
+  { --- _CLRT_ERRDEFAULT : handler par defaut (BREAK sans RECOVER) --- }
+  (* Si BREAK est appele sans BEGIN SEQUENCE actif, on arrive ici.
+     Affiche un message d erreur et termine le programme.            *)
+  EmitLabel(CL_RT_PFX + 'ERRDEFAULT');
+  EmitInstrAB('MOV', 'DX', 'OFFSET _CL_ERRMSG');
+  EmitInstrAB('MOV', 'AH', '09h');
+  EmitInstr('INT    21h');
+  EmitInstrAB('MOV', 'AX', '4C01h');
+  EmitInstr('INT    21h');
+  EmitBlankLine;
+
+  { --- _CLRT_ERRSETBLOCK : definir le bloc d erreur global --- }
+  (* Entree : AX = nouveau bloc d erreur
+     Sortie : AX = ancien bloc d erreur
+     Echange _CL_ERRORBLOCK avec AX.                                 *)
+  EmitLabel(CL_RT_PFX + 'ERRSETBLOCK');
+  EmitInstrAB('MOV', 'BX', '[_CL_ERRORBLOCK]');
+  EmitInstrAB('MOV', '[_CL_ERRORBLOCK]', 'AX');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_ERRGETBLOCK : retourner le bloc d erreur courant --- }
+  (* Sortie : AX = bloc d erreur courant                             *)
+  EmitLabel(CL_RT_PFX + 'ERRGETBLOCK');
+  EmitInstrAB('MOV', 'AX', '[_CL_ERRORBLOCK]');
+  EmitInstr('RET');
+  EmitBlankLine;
+End;
+
 { ---- EmitRuntime : emettre les routines runtime inline ------- }
 (* Appelle EmitExprRuntime pour les routines d expressions binaires
    et EmitIORuntime pour les routines I/O ecran (TODO 12).
@@ -10873,7 +11106,8 @@ End;
    EmitStringRuntime pour les routines de chaines (TODO 16).
    EmitCodeBlockRuntime pour les routines de code blocks (TODO 18).
    EmitDBFRuntime pour les routines fichiers DBF (TODO 19).
-   EmitIdxRuntime pour les routines index et recherche (TODO 20). *)
+   EmitIdxRuntime pour les routines index et recherche (TODO 20).
+   EmitErrRuntime pour les routines de gestion d erreurs (TODO 21). *)
 
 Procedure EmitRuntime;
 Begin
@@ -10884,6 +11118,7 @@ Begin
   EmitCodeBlockRuntime;
   EmitDBFRuntime;
   EmitIdxRuntime;
+  EmitErrRuntime;
 End;
 
 { ---- EmitClose : finaliser le fichier ASM -------------------- }
