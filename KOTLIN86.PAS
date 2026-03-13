@@ -206,7 +206,7 @@
               shr -> SHR, ushr -> SHR (non signe), and -> AND, or -> OR,
               xor -> XOR, inv -> NOT (unaire)
 
-  TODO 12 - ENTREES/SORTIES (println / readLine / print)
+  TODO 12 - ENTREES/SORTIES (println / readLine / print) [IMPLEMENTE]
             println(args) : affiche chaque argument converti en chaine + \n
               Detection du type compile -> _KTRT_NUMTOSTR ou chaine directe
               Separateur : pas de separateur entre arguments
@@ -847,8 +847,9 @@ Function  DataAddWord(Const Lbl : TString; AIntVal : LongInt) : Integer; Forward
 Function  DataAddArray(Const Lbl : TString; ACount : Integer) : Integer; Forward;
 Function  DataAddObj(Const Lbl : TString; ASize : Integer) : Integer; Forward;
 Procedure DataInit;      Forward;
-Procedure EmitRuntime;   Forward;
+Procedure EmitRuntime;     Forward;
 Procedure EmitExprRuntime; Forward;
+Procedure EmitIORuntime;   Forward;
 Procedure EmitHeader;    Forward;
 { TODO 09 - Variables }
 Function  ExprAddrOf(SIdx : Integer) : TString; Forward;
@@ -2343,27 +2344,97 @@ Begin
       (* Appel de fonction : nom(args) *)
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
       Begin
-        NArgs := ParseCallArgs;
-        GCallArgCount := NArgs;
-        SIdx := SymFind(IdName);
-        If (SIdx >= 0) And (SymTab[SIdx].Kind = SK_FUN) Then
-          EmitInstrA('CALL', SymTab[SIdx].MangledName)
-        Else
-          EmitInstrA('CALL', KT_FN_PFX + SymNameClean(IdName));
-        (* Nettoyer la pile si arguments *)
-        If NArgs > 0 Then
+        { TODO 12 - Gestion speciale des fonctions I/O builtin }
+        If (IdName = 'println') Or (IdName = 'print') Then
         Begin
-          SVal := IntToStr(NArgs * 2);
-          EmitInstrAB('ADD', 'SP', SVal);
-        End;
-        Res.Kind    := EK_AX;
-        Res.ImmVal  := 0;
-        If SIdx >= 0 Then
-          Res.TypeIdx := SymTab[SIdx].TypeIdx
+          ParserAdvance; { consomme '(' }
+          NArgs := 0;
+          If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
+          Begin
+            Repeat
+              ParseExpr(Res);
+              ExprFlushToAX(Res);
+              { Detecter le type pour choisir la routine }
+              If (Res.TypeIdx = TY_IDX_STRING) Or
+                 (Res.TypeIdx = TY_IDX_CHAR) Then
+              Begin
+                EmitInstrAB('MOV', 'SI', 'AX');
+                EmitInstr('CALL _KTRT_PRINTSTR');
+              End
+              Else If Res.TypeIdx = TY_IDX_BOOLEAN Then
+              Begin
+                EmitComment('boolean -> "true"/"false"');
+                LblEnd := LabelGen;
+                LblNull := LabelGen;
+                EmitInstrAB('TEST', 'AX', 'AX');
+                EmitInstrA('JZ', LblNull);
+                EmitInstrAB('MOV', 'SI', 'OFFSET _KT_TRUE_S');
+                EmitInstrA('JMP', LblEnd);
+                EmitLabel(LblNull);
+                EmitInstrAB('MOV', 'SI', 'OFFSET _KT_FALSE_S');
+                EmitLabel(LblEnd);
+                EmitInstr('CALL _KTRT_PRINTSTR');
+              End
+              Else
+              Begin
+                { Entier ou autre type numerique }
+                EmitInstr('CALL _KTRT_PRINT');
+              End;
+              Inc(NArgs);
+              If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+                ParserAdvance
+              Else
+                Break;
+            Until False;
+          End;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance; { consomme ')' }
+          { println ajoute un saut de ligne final }
+          If IdName = 'println' Then
+            EmitInstr('CALL _KTRT_NEWLINE');
+          Res.Kind    := EK_AX;
+          Res.ImmVal  := 0;
+          Res.TypeIdx := TY_IDX_UNIT;
+          Res.Offset  := 0;
+          Res.SymIdx  := -1;
+        End
+        Else If (IdName = 'readLine') Or (IdName = 'readln') Then
+        Begin
+          ParserAdvance; { consomme '(' }
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance; { consomme ')' }
+          EmitInstr('CALL _KTRT_READLINE');
+          Res.Kind    := EK_AX;
+          Res.ImmVal  := 0;
+          Res.TypeIdx := TY_IDX_STRING;
+          Res.Offset  := 0;
+          Res.SymIdx  := -1;
+        End
         Else
-          Res.TypeIdx := TY_IDX_ANY;
-        Res.Offset  := 0;
-        Res.SymIdx  := -1;
+        Begin
+          { Appel de fonction generique }
+          NArgs := ParseCallArgs;
+          GCallArgCount := NArgs;
+          SIdx := SymFind(IdName);
+          If (SIdx >= 0) And (SymTab[SIdx].Kind = SK_FUN) Then
+            EmitInstrA('CALL', SymTab[SIdx].MangledName)
+          Else
+            EmitInstrA('CALL', KT_FN_PFX + SymNameClean(IdName));
+          (* Nettoyer la pile si arguments *)
+          If NArgs > 0 Then
+          Begin
+            SVal := IntToStr(NArgs * 2);
+            EmitInstrAB('ADD', 'SP', SVal);
+          End;
+          Res.Kind    := EK_AX;
+          Res.ImmVal  := 0;
+          If SIdx >= 0 Then
+            Res.TypeIdx := SymTab[SIdx].TypeIdx
+          Else
+            Res.TypeIdx := TY_IDX_ANY;
+          Res.Offset  := 0;
+          Res.SymIdx  := -1;
+        End;
       End
       Else
       Begin
@@ -2416,12 +2487,54 @@ Begin
         (* Appel methode : expr.membre(args) *)
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
         Begin
-          EmitInstrA('PUSH', 'AX'); { receveur en premier arg }
-          NArgs := ParseCallArgs;
-          GCallArgCount := NArgs + 1;
-          EmitInstrA('CALL', KT_FN_PFX + MembName);
-          SVal := IntToStr((NArgs + 1) * 2);
-          EmitInstrAB('ADD', 'SP', SVal);
+          { TODO 12 - Methodes de conversion builtin }
+          If MembName = 'toString' Then
+          Begin
+            ParserAdvance; { consomme '(' }
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance; { consomme ')' }
+            EmitInstr('CALL _KTRT_NUMTOSTR');
+            EmitInstrAB('MOV', 'AX', 'SI');
+            Res.TypeIdx := TY_IDX_STRING;
+          End
+          Else If MembName = 'toInt' Then
+          Begin
+            ParserAdvance; { consomme '(' }
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance; { consomme ')' }
+            If Res.TypeIdx = TY_IDX_STRING Then
+            Begin
+              EmitInstrAB('MOV', 'SI', 'AX');
+              EmitInstr('CALL _KTRT_STRTONUM');
+            End;
+            Res.TypeIdx := TY_IDX_INT;
+          End
+          Else If MembName = 'toChar' Then
+          Begin
+            ParserAdvance; { consomme '(' }
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance; { consomme ')' }
+            EmitInstrAB('AND', 'AX', '00FFh');
+            Res.TypeIdx := TY_IDX_CHAR;
+          End
+          Else If (MembName = 'toByte') Or (MembName = 'toShort') Or
+                  (MembName = 'toLong') Then
+          Begin
+            ParserAdvance; { consomme '(' }
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance; { consomme ')' }
+            { Stub : AX reste tel quel }
+            Res.TypeIdx := TY_IDX_INT;
+          End
+          Else
+          Begin
+            EmitInstrA('PUSH', 'AX'); { receveur en premier arg }
+            NArgs := ParseCallArgs;
+            GCallArgCount := NArgs + 1;
+            EmitInstrA('CALL', KT_FN_PFX + MembName);
+            SVal := IntToStr((NArgs + 1) * 2);
+            EmitInstrAB('ADD', 'SP', SVal);
+          End;
         End
         Else
         Begin
@@ -3573,6 +3686,7 @@ Begin
   EmitComment('RUNTIME MINIMAL KOTLIN86');
   EmitComment('=========================================================');
   EmitExprRuntime;
+  EmitIORuntime;
 End;
 
 (* ---- EmitExprRuntime : routines runtime pour expressions ------ *)
@@ -3649,7 +3763,190 @@ Begin
   EmitInstr('RET');
 End;
 
-(* ---- EmitClose : fermer le fichier de sortie ASM ----------- *)
+{ ============================================================
+  TODO 12 - ENTREES/SORTIES [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- EmitIORuntime : routines runtime pour entrees/sorties -- *)
+(* _KTRT_STRLEN   : longueur d une chaine ASCIIZ                *)
+(*   Entree : SI = ptr chaine ASCIIZ                             *)
+(*   Sortie : CX = longueur (sans le zero final)                 *)
+(* _KTRT_NUMTOSTR : conversion entier signe 16 bits -> chaine   *)
+(*   Entree : AX = valeur entiere                                *)
+(*   Sortie : SI = ptr chaine ASCIIZ, CX = longueur              *)
+(* _KTRT_STRTONUM : conversion chaine ASCIIZ -> entier 16 bits  *)
+(*   Entree : SI = ptr chaine ASCIIZ                             *)
+(*   Sortie : AX = valeur entiere                                *)
+(* _KTRT_PRINTSTR : afficher une chaine ASCIIZ sur STDOUT       *)
+(*   Entree : SI = ptr chaine ASCIIZ                             *)
+(* _KTRT_PRINT    : afficher un entier sur STDOUT                *)
+(*   Entree : AX = valeur entiere                                *)
+(* _KTRT_NEWLINE  : afficher CR+LF sur STDOUT                   *)
+(* _KTRT_READLINE : lire une ligne depuis STDIN                  *)
+(*   Sortie : AX = ptr chaine ASCIIZ (dans _KT_INPUTBF)         *)
+Procedure EmitIORuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=========================================================');
+  EmitComment('TODO 12 - RUNTIME E/S KOTLIN86');
+  EmitComment('=========================================================');
+
+  { --- _KTRT_STRLEN : longueur chaine ASCIIZ --- }
+  EmitBlankLine;
+  EmitComment('--- _KTRT_STRLEN : SI = str ASCIIZ -> CX = longueur ---');
+  EmitLabel('_KTRT_STRLEN');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitLabel('_KTRT_SL1');
+  EmitInstr('LODSB');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', '_KTRT_SL2');
+  EmitInstrA('INC', 'CX');
+  EmitInstrA('JMP', '_KTRT_SL1');
+  EmitLabel('_KTRT_SL2');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+
+  { --- _KTRT_NUMTOSTR : AX = entier -> SI = ptr, CX = len --- }
+  EmitBlankLine;
+  EmitComment('--- _KTRT_NUMTOSTR : AX = entier signe -> SI = ptr, CX = len ---');
+  EmitLabel('_KTRT_NUMTOSTR');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'DX');
+  EmitComment('Ecrire les chiffres depuis la fin du buffer');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _KT_NUMBUF');
+  EmitInstrAB('ADD', 'DI', '11');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');   { terminateur nul }
+  EmitInstrA('DEC', 'DI');
+  EmitInstrAB('MOV', 'BX', '10');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitComment('Sauver le signe');
+  EmitInstrAB('MOV', 'SI', 'AX');         { sauver signe dans SI }
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JNS', '_KTRT_NS0');
+  EmitInstr('NEG AX');
+  EmitLabel('_KTRT_NS0');
+  EmitComment('Boucle extraction chiffres (AX = valeur positive)');
+  EmitLabel('_KTRT_NS1');
+  EmitInstrAB('XOR', 'DX', 'DX');
+  EmitInstr('DIV BX');
+  EmitInstrAB('ADD', 'DL', '''0''');
+  EmitInstrAB('MOV', '[DI]', 'DL');
+  EmitInstrA('DEC', 'DI');
+  EmitInstrA('INC', 'CX');
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JNZ', '_KTRT_NS1');
+  EmitComment('Ajouter le signe - si necessaire');
+  EmitInstrAB('TEST', 'SI', 'SI');
+  EmitInstrA('JNS', '_KTRT_NS2');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '45');    { 45 = '-' en ASCII }
+  EmitInstrA('DEC', 'DI');
+  EmitInstrA('INC', 'CX');
+  EmitLabel('_KTRT_NS2');
+  EmitComment('SI = debut de la chaine (DI+1)');
+  EmitInstrA('INC', 'DI');
+  EmitInstrAB('MOV', 'SI', 'DI');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'BX');
+  EmitInstrA('POP', 'DI');
+  EmitInstr('RET');
+
+  { --- _KTRT_STRTONUM : SI = str ASCIIZ -> AX = entier --- }
+  EmitBlankLine;
+  EmitComment('--- _KTRT_STRTONUM : SI = str ASCIIZ -> AX = entier ---');
+  EmitLabel('_KTRT_STRTONUM');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitInstrAB('MOV', 'BX', '10');
+  EmitComment('Verifier signe negatif');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '45');    { 45 = '-' en ASCII }
+  EmitInstrA('JNE', '_KTRT_SN1');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'CL');
+  EmitLabel('_KTRT_SN1');
+  EmitInstrAB('MOV', 'DL', '[SI]');
+  EmitInstrA('INC', 'SI');
+  EmitInstrAB('TEST', 'DL', 'DL');
+  EmitInstrA('JZ', '_KTRT_SN2');
+  EmitInstrAB('SUB', 'DL', '''0''');
+  EmitInstrAB('CMP', 'DL', '9');
+  EmitInstrA('JA', '_KTRT_SN2');
+  EmitInstr('MUL BX');
+  EmitInstrAB('XOR', 'DH', 'DH');
+  EmitInstrAB('ADD', 'AX', 'DX');
+  EmitInstrA('JMP', '_KTRT_SN1');
+  EmitLabel('_KTRT_SN2');
+  EmitComment('Appliquer le signe si negatif');
+  EmitInstrAB('TEST', 'CL', 'CL');
+  EmitInstrA('JZ', '_KTRT_SN3');
+  EmitInstr('NEG AX');
+  EmitLabel('_KTRT_SN3');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+
+  { --- _KTRT_PRINTSTR : SI = str ASCIIZ -> STDOUT --- }
+  EmitBlankLine;
+  EmitComment('--- _KTRT_PRINTSTR : SI = str ASCIIZ -> STDOUT ---');
+  EmitLabel('_KTRT_PRINTSTR');
+  EmitInstrA('PUSH', 'AX');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstr('CALL _KTRT_STRLEN');
+  EmitInstrAB('MOV', 'DX', 'SI');
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstrAB('MOV', 'BX', '1');
+  EmitInstr('INT 21h');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstrA('POP', 'AX');
+  EmitInstr('RET');
+
+  { --- _KTRT_PRINT : AX = entier -> STDOUT --- }
+  EmitBlankLine;
+  EmitComment('--- _KTRT_PRINT : AX = entier -> STDOUT ---');
+  EmitLabel('_KTRT_PRINT');
+  EmitInstr('CALL _KTRT_NUMTOSTR');
+  EmitInstr('CALL _KTRT_PRINTSTR');
+  EmitInstr('RET');
+
+  { --- _KTRT_NEWLINE : afficher CR+LF sur STDOUT --- }
+  EmitBlankLine;
+  EmitComment('--- _KTRT_NEWLINE : CR+LF sur STDOUT ---');
+  EmitLabel('_KTRT_NEWLINE');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', 'OFFSET _KT_CRLF');
+  EmitInstr('CALL _KTRT_PRINTSTR');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+
+  { --- _KTRT_READLINE : lire une ligne STDIN -> AX = ptr --- }
+  EmitBlankLine;
+  EmitComment('--- _KTRT_READLINE : lire ligne STDIN -> AX = ptr ---');
+  EmitLabel('_KTRT_READLINE');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrAB('MOV', 'AH', '0Ah');
+  EmitInstrAB('MOV', 'DX', 'OFFSET _KT_INPUTMX');
+  EmitInstr('INT 21h');
+  EmitComment('Convertir le buffer DOS en ASCIIZ');
+  EmitInstrAB('XOR', 'BX', 'BX');
+  EmitInstrAB('MOV', 'BL', '[_KT_INPUTLN]');
+  EmitInstrAB('MOV', 'BYTE PTR [_KT_INPUTBF+BX]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _KT_INPUTBF');
+  EmitComment('Afficher un retour a la ligne apres la saisie');
+  EmitInstr('CALL _KTRT_NEWLINE');
+  EmitInstrA('POP', 'BX');
+  EmitInstrA('POP', 'DX');
+  EmitInstr('RET');
+End;
 Procedure EmitClose;
 Begin
   EmitBlankLine;
@@ -4060,6 +4357,14 @@ Begin
   { Tampon de travail }
   DataAdd('_KT_STRBUF',    DK_BYTE, 0, '');
   DataTab[DataCount - 1].ElemCount := 256;
+  { TODO 12 - Donnees E/S }
+  DataAdd('_KT_NUMBUF',    DK_BYTE, 0, '');
+  DataTab[DataCount - 1].ElemCount := 12;
+  DataAdd('_KT_SPACE',     DK_STR, 0, ' ');
+  DataAdd('_KT_INPUTMX',   DK_BYTE, 126, '');
+  DataAdd('_KT_INPUTLN',   DK_BYTE, 0, '');
+  DataAdd('_KT_INPUTBF',   DK_BYTE, 0, '');
+  DataTab[DataCount - 1].ElemCount := 128;
 End;
 
 { --- TODO 09 : Variables et Affectations [IMPLEMENTE] --------- }
@@ -4286,7 +4591,10 @@ End;
 
 Procedure ParseStmt;
 Var
-  Kw : TString;
+  Kw   : TString;
+  Res  : TExprVal;
+  SIdx : Integer;
+  Addr : TString;
 Begin
   { Declarations val / var }
   If CurToken.Kind = TK_KEYWORD Then
@@ -4299,7 +4607,37 @@ Begin
       Exit;
     End;
   End;
-  { Autres statements : stub pour les TODOs suivants }
+  { TODO 12 - Expression-statement : appel de fonction ou affectation }
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    { Verifier si c est une affectation : ident = expr }
+    Kw := CurToken.Val;
+    SIdx := SymFind(Kw);
+    If (SIdx >= 0) And (SymTab[SIdx].Kind <> SK_FUN) Then
+    Begin
+      { Possiblement une affectation : ident = expr ou ident op= expr }
+      ParseExpr(Res);
+      { Si l expression suivante est '=', c est une affectation }
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+      Begin
+        ParserAdvance; { consomme '=' }
+        ParseExpr(Res);
+        ExprFlushToAX(Res);
+        Addr := ExprAddrOf(SIdx);
+        EmitInstrAB('MOV', Addr, 'AX');
+        If SymTab[SIdx].TypeIdx = TY_UNKNOWN Then
+          SymTab[SIdx].TypeIdx := Res.TypeIdx;
+      End
+      Else
+        ExprFlushToAX(Res);
+      Exit;
+    End;
+    { Expression-statement (appel de fonction, etc.) }
+    ParseExpr(Res);
+    ExprFlushToAX(Res);
+    Exit;
+  End;
+  { Autres tokens : avancer }
   If CurToken.Kind <> TK_EOF Then
     ParserAdvance;
 End;
