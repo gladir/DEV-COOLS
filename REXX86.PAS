@@ -389,7 +389,7 @@
             RC : variable speciale = code retour de la derniere commande
             Condition par defaut (pas de handler) : afficher erreur + EXIT
 
-  TODO 22 - PILE DE DONNEES (QUEUE / PUSH / PULL)
+  TODO 22 - PILE DE DONNEES (QUEUE / PUSH / PULL) [IMPLEMENTE]
             Pile de donnees REXX (data stack / external queue) :
               Structure FIFO (QUEUE) et LIFO (PUSH) combinee
             QUEUE expr : ajouter en fin de pile (FIFO)
@@ -856,6 +856,11 @@ Procedure ParseNumericStmt;    Forward;
 
 (* TODO 21 - SIGNAL ET TRAITEMENT DE CONDITIONS *)
 Procedure EmitSignalRuntime;   Forward;
+
+(* TODO 22 - PILE DE DONNEES (QUEUE / PUSH / PULL) *)
+Procedure EmitStackRuntime;    Forward;
+Procedure ParseQueueStmt;      Forward;
+Procedure ParsePushStmt;       Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -3101,6 +3106,11 @@ Begin
   (*  TODO 21 - Runtime signal et traitement de conditions        *)
   (* ============================================================ *)
   EmitSignalRuntime;
+
+  (* ============================================================ *)
+  (*  TODO 22 - Runtime pile de donnees (QUEUE/PUSH/PULL)         *)
+  (* ============================================================ *)
+  EmitStackRuntime;
 End;
 
 { ============================================================
@@ -5912,6 +5922,11 @@ Begin
   DataAdd('_RX_COND_HALT', DK_STR, 0, 'HALT');          (* nom condition HALT       *)
   DataAdd('_RX_COND_NOVALUE', DK_STR, 0, 'NOVALUE');    (* nom condition NOVALUE    *)
   DataAdd('_RX_COND_SYNTAX', DK_STR, 0, 'SYNTAX');      (* nom condition SYNTAX     *)
+  (* TODO 22 - Pile de donnees REXX *)
+  DataAddBuffer('_RX_STACK', 2048);                 (* zone memoire pile          *)
+  DataAddWord('_RX_STKTOP', 0);                      (* offset prochain libre      *)
+  DataAddWord('_RX_STKCOUNT', 0);                    (* nombre d elements          *)
+  DataAddBuffer('_RX_STKBUF', 256);                 (* buffer temporaire pile     *)
 End;
 
 (* ============================================================
@@ -7751,7 +7766,7 @@ Begin
   EmitComment('PULL');
 
   (* Lire une ligne depuis STDIN *)
-  EmitInstrA('CALL', '_RXRT_INPUT');  (* AX = ptr vers chaine *)
+  EmitInstrA('CALL', '_RXRT_PULL');   (* AX = ptr (pile ou STDIN) *)
 
   (* Convertir en majuscules (PULL = PARSE UPPER PULL) *)
   EmitInstrAB('MOV', 'SI', 'AX');
@@ -7833,7 +7848,7 @@ Begin
   Begin
     ParserAdvance;
     EmitComment('PARSE PULL');
-    EmitInstrA('CALL', '_RXRT_INPUT');
+    EmitInstrA('CALL', '_RXRT_PULL');
     EmitInstrAB('MOV', 'SI', 'AX');
     If DoUpper Then
       EmitInstrA('CALL', '_RXRT_UPPER');
@@ -9274,6 +9289,231 @@ Begin
 End;
 
 { ============================================================
+  TODO 22 - PILE DE DONNEES (QUEUE / PUSH / PULL) [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- EmitStackRuntime : routines runtime pour la pile REXX ----- *)
+(* Emet les routines assembleur 8086 pour la pile de donnees REXX :  *)
+(*   _RXRT_QUEUE(SI=str)   : ajouter en fin de pile (FIFO)          *)
+(*   _RXRT_PUSH(SI=str)    : ajouter en debut de pile (LIFO)        *)
+(*   _RXRT_PULL -> AX      : retirer du debut (ou STDIN si vide)    *)
+(*   _RXB_QUEUED -> AX     : nombre d elements dans la pile          *)
+(* La pile est implementee comme un tableau lineaire dans _RX_STACK. *)
+(* Chaque element : 2 octets longueur (word) + contenu chaine.       *)
+(* _RX_STKTOP = offset du prochain octet libre dans _RX_STACK.       *)
+(* _RX_STKCOUNT = nombre d elements actuellement dans la pile.       *)
+(* QUEUE ajoute a la fin (apres le dernier element).                 *)
+(* PUSH decale tout vers le haut et insere au debut.                 *)
+(* PULL retire le premier element (offset 0) et decale le reste.     *)
+Procedure EmitStackRuntime;
+Var
+  LblDone, LblLoop, LblEmpty : TString;
+Begin
+  EmitComment('--- Runtime PILE DE DONNEES (TODO 22) ---');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXRT_QUEUE(SI=str) : ajouter une chaine en fin de pile      *)
+  (*  (FIFO : la chaine sera la derniere a etre retiree)           *)
+  (*  Entree : SI = pointeur vers chaine ASCIIZ                    *)
+  (*  Stocke [longueur:2][chaine:len] a _RX_STACK + _RX_STKTOP    *)
+  (* ============================================================ *)
+  EmitLabel('_RXRT_QUEUE');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'SI');
+  (* Calculer la longueur de la chaine *)
+  EmitInstrA('CALL', '_RXRT_STRLEN');
+  (* CX = longueur *)
+  EmitInstrA('POP', 'SI');
+  (* DI = _RX_STACK + _RX_STKTOP *)
+  EmitInstrAB('LEA', 'DI', '_RX_STACK');
+  EmitInstrAB('ADD', 'DI', 'WORD PTR [_RX_STKTOP]');
+  (* Stocker la longueur en premier (word) *)
+  EmitInstrAB('MOV', 'WORD PTR [DI]', 'CX');
+  EmitInstrAB('ADD', 'DI', '2');
+  (* Copier la chaine *)
+  EmitInstrA('PUSH', 'CX');
+  EmitRaw('        REP     MOVSB');
+  EmitInstrA('POP', 'CX');
+  (* Mettre a jour _RX_STKTOP : += 2 + len *)
+  EmitInstrAB('ADD', 'CX', '2');
+  EmitInstrAB('ADD', 'WORD PTR [_RX_STKTOP]', 'CX');
+  (* Incrementer le compteur *)
+  EmitRaw('        INC     WORD PTR [_RX_STKCOUNT]');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXRT_PUSH(SI=str) : ajouter une chaine en debut de pile     *)
+  (*  (LIFO : la chaine sera la premiere a etre retiree)           *)
+  (*  Entree : SI = pointeur vers chaine ASCIIZ                    *)
+  (*  Decale tout le contenu existant vers le haut de (2+len)      *)
+  (*  octets, puis insere le nouvel element a l offset 0.          *)
+  (* ============================================================ *)
+  EmitLabel('_RXRT_PUSH');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'SI');
+  (* Calculer la longueur de la chaine *)
+  EmitInstrA('CALL', '_RXRT_STRLEN');
+  (* CX = longueur de la chaine *)
+  EmitInstrA('POP', 'SI');
+  (* DX = taille du nouvel element = 2 + CX *)
+  EmitInstrAB('MOV', 'DX', 'CX');
+  EmitInstrAB('ADD', 'DX', '2');
+  (* Decaler les donnees existantes vers le haut de DX octets *)
+  (* Source : _RX_STACK + _RX_STKTOP - 1 (dernier octet)     *)
+  (* Dest   : _RX_STACK + _RX_STKTOP - 1 + DX               *)
+  (* Count  : _RX_STKTOP                                      *)
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'CX', 'WORD PTR [_RX_STKTOP]');
+  EmitInstrAB('OR', 'CX', 'CX');
+  LblDone := LabelGen;
+  EmitRaw('        JZ      ' + LblDone);
+  (* SI = _RX_STACK + _RX_STKTOP - 1 (source = dernier octet) *)
+  EmitInstrAB('LEA', 'SI', '_RX_STACK');
+  EmitInstrAB('ADD', 'SI', 'WORD PTR [_RX_STKTOP]');
+  EmitInstrA('DEC', 'SI');
+  (* DI = SI + DX (destination) *)
+  EmitInstrAB('MOV', 'DI', 'SI');
+  EmitInstrAB('ADD', 'DI', 'DX');
+  (* Copier de la fin vers le debut (direction inverse) *)
+  EmitRaw('        STD');
+  EmitRaw('        REP     MOVSB');
+  EmitRaw('        CLD');
+  EmitLabel(LblDone);
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'CX');
+  (* Inserer le nouvel element a l offset 0 *)
+  EmitInstrAB('LEA', 'DI', '_RX_STACK');
+  (* Stocker la longueur en premier (word) *)
+  EmitInstrAB('MOV', 'WORD PTR [DI]', 'CX');
+  EmitInstrAB('ADD', 'DI', '2');
+  (* Copier la chaine *)
+  EmitInstrA('PUSH', 'CX');
+  EmitRaw('        REP     MOVSB');
+  EmitInstrA('POP', 'CX');
+  (* Mettre a jour _RX_STKTOP : += DX *)
+  EmitInstrAB('ADD', 'WORD PTR [_RX_STKTOP]', 'DX');
+  (* Incrementer le compteur *)
+  EmitRaw('        INC     WORD PTR [_RX_STKCOUNT]');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXRT_PULL : retirer le premier element de la pile            *)
+  (*  Si la pile est vide, lire une ligne depuis STDIN              *)
+  (*  Sortie : AX = pointeur vers chaine dans _RX_STKBUF           *)
+  (* ============================================================ *)
+  LblEmpty := LabelGen;
+  LblDone  := LabelGen;
+  EmitLabel('_RXRT_PULL');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'SI');
+  (* Verifier si la pile est vide *)
+  EmitInstrAB('CMP', 'WORD PTR [_RX_STKCOUNT]', '0');
+  EmitRaw('        JZ      ' + LblEmpty);
+  (* Pile non vide : lire le premier element *)
+  EmitInstrAB('LEA', 'SI', '_RX_STACK');
+  (* Lire la longueur *)
+  EmitInstrAB('MOV', 'CX', 'WORD PTR [SI]');
+  EmitInstrAB('ADD', 'SI', '2');
+  (* Copier la chaine dans _RX_STKBUF *)
+  EmitInstrAB('LEA', 'DI', '_RX_STKBUF');
+  EmitInstrA('PUSH', 'CX');
+  EmitRaw('        REP     MOVSB');
+  EmitInstrA('POP', 'CX');
+  (* Null-terminer *)
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  (* DX = taille element = 2 + CX *)
+  EmitInstrAB('MOV', 'DX', 'CX');
+  EmitInstrAB('ADD', 'DX', '2');
+  (* Decaler les elements restants vers le bas *)
+  (* Source : _RX_STACK + DX *)
+  (* Dest   : _RX_STACK      *)
+  (* Count  : _RX_STKTOP - DX *)
+  EmitInstrAB('LEA', 'SI', '_RX_STACK');
+  EmitInstrAB('ADD', 'SI', 'DX');
+  EmitInstrAB('LEA', 'DI', '_RX_STACK');
+  EmitInstrAB('MOV', 'CX', 'WORD PTR [_RX_STKTOP]');
+  EmitInstrAB('SUB', 'CX', 'DX');
+  EmitRaw('        REP     MOVSB');
+  (* Mettre a jour _RX_STKTOP et _RX_STKCOUNT *)
+  EmitInstrAB('SUB', 'WORD PTR [_RX_STKTOP]', 'DX');
+  EmitRaw('        DEC     WORD PTR [_RX_STKCOUNT]');
+  (* Retourner pointeur vers _RX_STKBUF *)
+  EmitInstrAB('LEA', 'AX', '_RX_STKBUF');
+  EmitRaw('        JMP     ' + LblDone);
+  (* Pile vide : lire depuis STDIN *)
+  EmitLabel(LblEmpty);
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitRaw('        JMP     _RXRT_INPUT');
+  EmitLabel(LblDone);
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_QUEUED() : retourne le nombre d elements dans la pile    *)
+  (*  0 arg                                                         *)
+  (*  Retour : AX = nombre d elements                              *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_QUEUED');
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [_RX_STKCOUNT]');
+  EmitRaw('        RET');
+  EmitBlankLine;
+End;
+
+(* ---- ParseQueueStmt : parser QUEUE expr ----------------------- *)
+(* Evalue l expression et l ajoute en fin de pile (FIFO).           *)
+Procedure ParseQueueStmt;
+Var
+  Res : TExprVal;
+Begin
+  EmitComment('QUEUE');
+  ParseExpr(Res);
+  ExprFlushToAX(Res);
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrA('CALL', '_RXRT_QUEUE');
+End;
+
+(* ---- ParsePushStmt : parser PUSH expr ------------------------- *)
+(* Evalue l expression et l ajoute en debut de pile (LIFO).         *)
+Procedure ParsePushStmt;
+Var
+  Res : TExprVal;
+Begin
+  EmitComment('PUSH');
+  ParseExpr(Res);
+  ExprFlushToAX(Res);
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrA('CALL', '_RXRT_PUSH');
+End;
+
+{ ============================================================
   TODO 21 - SIGNAL ET TRAITEMENT DE CONDITIONS [IMPLEMENTE]
   ============================================================ }
 
@@ -9438,6 +9678,22 @@ Begin
     Begin
       ParserAdvance;
       ParsePullStmt;
+      Exit;
+    End;
+
+    (* QUEUE expr (TODO 22) *)
+    If U = 'QUEUE' Then
+    Begin
+      ParserAdvance;
+      ParseQueueStmt;
+      Exit;
+    End;
+
+    (* PUSH expr (TODO 22) *)
+    If U = 'PUSH' Then
+    Begin
+      ParserAdvance;
+      ParsePushStmt;
       Exit;
     End;
 
