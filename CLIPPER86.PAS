@@ -156,7 +156,7 @@
             Parentheses : (expr) -> groupement
             IIF(cond, exprVrai, exprFaux) : expression conditionnelle inline
 
-  TODO 11 - EXPRESSIONS BINAIRES
+  TODO 11 - EXPRESSIONS BINAIRES [IMPLEMENTE]
             ParseExprPrec(MinPrec) : boucle de precedence (Pratt)
             Arithmetique entiere : ADD/SUB/IMUL/IDIV pour +, -, *, /
             MOD (%) : IDIV -> resultat dans DX (reste)
@@ -824,6 +824,8 @@ Procedure ParseFieldAccess(Const AliasName : TString;
 Procedure ParseArrayAccess(Var Res : TExprVal); Forward;
 Procedure ParseMacro(Var Res : TExprVal); Forward;
 Procedure ParseFuncCall(SIdx : Integer; Var Res : TExprVal); Forward;
+{ Expressions binaires (TODO 11) }
+Procedure EmitExprRuntime; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -2216,6 +2218,8 @@ Begin
   WriteLn(OutF, '_CL_NIL_S   DB  ''NIL'',0');
   WriteLn(OutF, '_CL_TRUE_S  DB  ''.T.'',0');
   WriteLn(OutF, '_CL_FALSE_S DB  ''.F.'',0');
+  { Buffer de concatenation (TODO 11) }
+  WriteLn(OutF, '_CL_CATBUF  DB  256 DUP(0)');
   { Entrees DataTab }
   For I := 0 To DataCount - 1 Do
   Begin
@@ -2924,8 +2928,10 @@ End;
    - Pliage de constantes pour +, -, *, /, %, comparaisons
    - Court-circuit .AND./.OR. via labels
    - Puissance ** / ^ via appel runtime _CLRT_POWER
-   - Containment $ via appel runtime _CLRT_CONTAINS
+   - Containment $ via appel runtime _CLRT_INSTR
    - Concatenation chaine + via appel runtime _CLRT_CONCAT
+   - Soustraction chaine - via _CLRT_STRTRIMR + _CLRT_CONCAT
+   - Comparaison chaines = via _CLRT_STRCMP, == via _CLRT_STRCMPEXACT
    - Affectation := += -= *= /= %= geree apres la boucle        *)
 
 Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal);
@@ -2935,6 +2941,7 @@ Var
   Right     : TExprVal;
   LeftIsImm : Boolean;
   LeftImm   : LongInt;
+  LeftType  : Integer;
   LblSkip   : TString;
   LblEnd    : TString;
   ImmStr    : TString;
@@ -3041,8 +3048,9 @@ Begin
     End;
 
     { --- Sauvegarder operande gauche --- }
-    LeftIsImm := (Res.Kind = EK_IMM);
-    LeftImm   := Res.ImmVal;
+    LeftIsImm  := (Res.Kind = EK_IMM);
+    LeftImm    := Res.ImmVal;
+    LeftType   := TypeInfer(Res);
     If Not LeftIsImm Then
     Begin
       ExprFlushToAX(Res);
@@ -3116,11 +3124,41 @@ Begin
         Str(LeftImm, ImmStr);
         EmitInstrAB('MOV', 'AX', ImmStr);
       End;
-      { Emettre l operation }
+
+      { --- Operateur + : numerique ADD ou chaine CONCAT --- }
       If Op = '+' Then
-        EmitInstrAB('ADD', 'AX', 'BX')
+      Begin
+        If (LeftType = TY_IDX_CHAR) Or
+           (TypeInfer(Right) = TY_IDX_CHAR) Then
+        Begin
+          { Concatenation chaines : _CLRT_CONCAT(SI=gauche, DI=droite) }
+          EmitInstrAB('MOV', 'SI', 'AX');
+          EmitInstrAB('MOV', 'DI', 'BX');
+          EmitInstrA('CALL', CL_RT_PFX + 'CONCAT');
+          Res.TypeIdx := TY_IDX_CHAR;
+        End
+        Else
+          EmitInstrAB('ADD', 'AX', 'BX');
+      End
+
+      { --- Operateur - : numerique SUB ou chaine STRTRIMR+CONCAT --- }
       Else If Op = '-' Then
-        EmitInstrAB('SUB', 'AX', 'BX')
+      Begin
+        If (LeftType = TY_IDX_CHAR) And
+           (TypeInfer(Right) = TY_IDX_CHAR) Then
+        Begin
+          { Soustraction chaines : trim droite de gauche puis concat }
+          EmitInstrAB('MOV', 'SI', 'AX');
+          EmitInstrA('CALL', CL_RT_PFX + 'STRTRIMR');
+          EmitInstrAB('MOV', 'SI', 'AX');
+          EmitInstrAB('MOV', 'DI', 'BX');
+          EmitInstrA('CALL', CL_RT_PFX + 'CONCAT');
+          Res.TypeIdx := TY_IDX_CHAR;
+        End
+        Else
+          EmitInstrAB('SUB', 'AX', 'BX');
+      End
+
       Else If Op = '*' Then
         EmitInstrA('IMUL', 'BX')
       Else If (Op = '/') Then
@@ -3160,91 +3198,232 @@ Begin
       End
       Else If Op = '$' Then
       Begin
-        { Containment $ : appel runtime _CLRT_CONTAINS(AX=sub, BX=str) }
-        EmitInstrA('PUSH', 'BX');
-        EmitInstrA('PUSH', 'AX');
-        EmitInstrA('CALL', CL_RT_PFX + 'CONTAINS');
-        EmitInstrAB('ADD', 'SP', '4');
+        { Containment $ : _CLRT_INSTR(SI=sub, DI=str) -> AX=0|1 }
+        EmitInstrAB('MOV', 'SI', 'AX');
+        EmitInstrAB('MOV', 'DI', 'BX');
+        EmitInstrA('CALL', CL_RT_PFX + 'INSTR');
         Res.TypeIdx := TY_IDX_LOGIC;
       End
-      Else If (Op = '==') Or (Op = '=') Then
+
+      { --- Comparaison == (exact) --- }
+      Else If Op = '==' Then
       Begin
-        LblSkip := LabelGen;
-        LblEnd  := LabelGen;
-        EmitInstrAB('CMP', 'AX', 'BX');
-        EmitInstrA('JE', LblSkip);
-        EmitInstrAB('MOV', 'AX', '0');
-        EmitInstrA('JMP', LblEnd);
-        EmitLabel(LblSkip);
-        EmitInstrAB('MOV', 'AX', '1');
-        EmitLabel(LblEnd);
+        If (LeftType = TY_IDX_CHAR) Or
+           (TypeInfer(Right) = TY_IDX_CHAR) Then
+        Begin
+          { Comparaison exacte chaines : _CLRT_STRCMPEXACT }
+          EmitInstrAB('MOV', 'SI', 'AX');
+          EmitInstrAB('MOV', 'DI', 'BX');
+          EmitInstrA('CALL', CL_RT_PFX + 'STRCMPEXACT');
+        End
+        Else
+        Begin
+          { Comparaison numerique == }
+          LblSkip := LabelGen;
+          LblEnd  := LabelGen;
+          EmitInstrAB('CMP', 'AX', 'BX');
+          EmitInstrA('JE', LblSkip);
+          EmitInstrAB('MOV', 'AX', '0');
+          EmitInstrA('JMP', LblEnd);
+          EmitLabel(LblSkip);
+          EmitInstrAB('MOV', 'AX', '1');
+          EmitLabel(LblEnd);
+        End;
         Res.TypeIdx := TY_IDX_LOGIC;
       End
+
+      { --- Comparaison = (souple) --- }
+      Else If Op = '=' Then
+      Begin
+        If (LeftType = TY_IDX_CHAR) Or
+           (TypeInfer(Right) = TY_IDX_CHAR) Then
+        Begin
+          { Comparaison souple chaines : _CLRT_STRCMP }
+          EmitInstrAB('MOV', 'SI', 'AX');
+          EmitInstrAB('MOV', 'DI', 'BX');
+          EmitInstrA('CALL', CL_RT_PFX + 'STRCMP');
+        End
+        Else
+        Begin
+          LblSkip := LabelGen;
+          LblEnd  := LabelGen;
+          EmitInstrAB('CMP', 'AX', 'BX');
+          EmitInstrA('JE', LblSkip);
+          EmitInstrAB('MOV', 'AX', '0');
+          EmitInstrA('JMP', LblEnd);
+          EmitLabel(LblSkip);
+          EmitInstrAB('MOV', 'AX', '1');
+          EmitLabel(LblEnd);
+        End;
+        Res.TypeIdx := TY_IDX_LOGIC;
+      End
+
+      { --- Comparaison != <> # --- }
       Else If (Op = '!=') Or (Op = '<>') Or (Op = '#') Then
       Begin
-        LblSkip := LabelGen;
-        LblEnd  := LabelGen;
-        EmitInstrAB('CMP', 'AX', 'BX');
-        EmitInstrA('JNE', LblSkip);
-        EmitInstrAB('MOV', 'AX', '0');
-        EmitInstrA('JMP', LblEnd);
-        EmitLabel(LblSkip);
-        EmitInstrAB('MOV', 'AX', '1');
-        EmitLabel(LblEnd);
+        If (LeftType = TY_IDX_CHAR) Or
+           (TypeInfer(Right) = TY_IDX_CHAR) Then
+        Begin
+          { Comparaison chaines != : _CLRT_STRCMP + XOR 1 }
+          EmitInstrAB('MOV', 'SI', 'AX');
+          EmitInstrAB('MOV', 'DI', 'BX');
+          EmitInstrA('CALL', CL_RT_PFX + 'STRCMP');
+          EmitInstrAB('XOR', 'AX', '1');
+        End
+        Else
+        Begin
+          LblSkip := LabelGen;
+          LblEnd  := LabelGen;
+          EmitInstrAB('CMP', 'AX', 'BX');
+          EmitInstrA('JNE', LblSkip);
+          EmitInstrAB('MOV', 'AX', '0');
+          EmitInstrA('JMP', LblEnd);
+          EmitLabel(LblSkip);
+          EmitInstrAB('MOV', 'AX', '1');
+          EmitLabel(LblEnd);
+        End;
         Res.TypeIdx := TY_IDX_LOGIC;
       End
+
+      { --- Comparaison < --- }
       Else If Op = '<' Then
       Begin
-        LblSkip := LabelGen;
-        LblEnd  := LabelGen;
-        EmitInstrAB('CMP', 'AX', 'BX');
-        EmitInstrA('JL', LblSkip);
-        EmitInstrAB('MOV', 'AX', '0');
-        EmitInstrA('JMP', LblEnd);
-        EmitLabel(LblSkip);
-        EmitInstrAB('MOV', 'AX', '1');
-        EmitLabel(LblEnd);
+        If (LeftType = TY_IDX_CHAR) Or
+           (TypeInfer(Right) = TY_IDX_CHAR) Then
+        Begin
+          { Comparaison chaines < : _CLRT_STRCMP -> -1 si inferieur }
+          EmitInstrAB('MOV', 'SI', 'AX');
+          EmitInstrAB('MOV', 'DI', 'BX');
+          EmitInstrA('CALL', CL_RT_PFX + 'STRCMP');
+          { AX=1 si egal, AX=0 sinon ; on utilise drapeaux de STRCMP }
+          { _CLRT_STRCMP renvoie -1/0/1 ; < veut dire AX < 0 }
+          LblSkip := LabelGen;
+          LblEnd  := LabelGen;
+          EmitInstrAB('CMP', 'AX', '0');
+          EmitInstrA('JL', LblSkip);
+          EmitInstrAB('MOV', 'AX', '0');
+          EmitInstrA('JMP', LblEnd);
+          EmitLabel(LblSkip);
+          EmitInstrAB('MOV', 'AX', '1');
+          EmitLabel(LblEnd);
+        End
+        Else
+        Begin
+          LblSkip := LabelGen;
+          LblEnd  := LabelGen;
+          EmitInstrAB('CMP', 'AX', 'BX');
+          EmitInstrA('JL', LblSkip);
+          EmitInstrAB('MOV', 'AX', '0');
+          EmitInstrA('JMP', LblEnd);
+          EmitLabel(LblSkip);
+          EmitInstrAB('MOV', 'AX', '1');
+          EmitLabel(LblEnd);
+        End;
         Res.TypeIdx := TY_IDX_LOGIC;
       End
+
+      { --- Comparaison <= --- }
       Else If Op = '<=' Then
       Begin
-        LblSkip := LabelGen;
-        LblEnd  := LabelGen;
-        EmitInstrAB('CMP', 'AX', 'BX');
-        EmitInstrA('JLE', LblSkip);
-        EmitInstrAB('MOV', 'AX', '0');
-        EmitInstrA('JMP', LblEnd);
-        EmitLabel(LblSkip);
-        EmitInstrAB('MOV', 'AX', '1');
-        EmitLabel(LblEnd);
+        If (LeftType = TY_IDX_CHAR) Or
+           (TypeInfer(Right) = TY_IDX_CHAR) Then
+        Begin
+          EmitInstrAB('MOV', 'SI', 'AX');
+          EmitInstrAB('MOV', 'DI', 'BX');
+          EmitInstrA('CALL', CL_RT_PFX + 'STRCMP');
+          LblSkip := LabelGen;
+          LblEnd  := LabelGen;
+          EmitInstrAB('CMP', 'AX', '0');
+          EmitInstrA('JLE', LblSkip);
+          EmitInstrAB('MOV', 'AX', '0');
+          EmitInstrA('JMP', LblEnd);
+          EmitLabel(LblSkip);
+          EmitInstrAB('MOV', 'AX', '1');
+          EmitLabel(LblEnd);
+        End
+        Else
+        Begin
+          LblSkip := LabelGen;
+          LblEnd  := LabelGen;
+          EmitInstrAB('CMP', 'AX', 'BX');
+          EmitInstrA('JLE', LblSkip);
+          EmitInstrAB('MOV', 'AX', '0');
+          EmitInstrA('JMP', LblEnd);
+          EmitLabel(LblSkip);
+          EmitInstrAB('MOV', 'AX', '1');
+          EmitLabel(LblEnd);
+        End;
         Res.TypeIdx := TY_IDX_LOGIC;
       End
+
+      { --- Comparaison > --- }
       Else If Op = '>' Then
       Begin
-        LblSkip := LabelGen;
-        LblEnd  := LabelGen;
-        EmitInstrAB('CMP', 'AX', 'BX');
-        EmitInstrA('JG', LblSkip);
-        EmitInstrAB('MOV', 'AX', '0');
-        EmitInstrA('JMP', LblEnd);
-        EmitLabel(LblSkip);
-        EmitInstrAB('MOV', 'AX', '1');
-        EmitLabel(LblEnd);
+        If (LeftType = TY_IDX_CHAR) Or
+           (TypeInfer(Right) = TY_IDX_CHAR) Then
+        Begin
+          EmitInstrAB('MOV', 'SI', 'AX');
+          EmitInstrAB('MOV', 'DI', 'BX');
+          EmitInstrA('CALL', CL_RT_PFX + 'STRCMP');
+          LblSkip := LabelGen;
+          LblEnd  := LabelGen;
+          EmitInstrAB('CMP', 'AX', '0');
+          EmitInstrA('JG', LblSkip);
+          EmitInstrAB('MOV', 'AX', '0');
+          EmitInstrA('JMP', LblEnd);
+          EmitLabel(LblSkip);
+          EmitInstrAB('MOV', 'AX', '1');
+          EmitLabel(LblEnd);
+        End
+        Else
+        Begin
+          LblSkip := LabelGen;
+          LblEnd  := LabelGen;
+          EmitInstrAB('CMP', 'AX', 'BX');
+          EmitInstrA('JG', LblSkip);
+          EmitInstrAB('MOV', 'AX', '0');
+          EmitInstrA('JMP', LblEnd);
+          EmitLabel(LblSkip);
+          EmitInstrAB('MOV', 'AX', '1');
+          EmitLabel(LblEnd);
+        End;
         Res.TypeIdx := TY_IDX_LOGIC;
       End
+
+      { --- Comparaison >= --- }
       Else If Op = '>=' Then
       Begin
-        LblSkip := LabelGen;
-        LblEnd  := LabelGen;
-        EmitInstrAB('CMP', 'AX', 'BX');
-        EmitInstrA('JGE', LblSkip);
-        EmitInstrAB('MOV', 'AX', '0');
-        EmitInstrA('JMP', LblEnd);
-        EmitLabel(LblSkip);
-        EmitInstrAB('MOV', 'AX', '1');
-        EmitLabel(LblEnd);
+        If (LeftType = TY_IDX_CHAR) Or
+           (TypeInfer(Right) = TY_IDX_CHAR) Then
+        Begin
+          EmitInstrAB('MOV', 'SI', 'AX');
+          EmitInstrAB('MOV', 'DI', 'BX');
+          EmitInstrA('CALL', CL_RT_PFX + 'STRCMP');
+          LblSkip := LabelGen;
+          LblEnd  := LabelGen;
+          EmitInstrAB('CMP', 'AX', '0');
+          EmitInstrA('JGE', LblSkip);
+          EmitInstrAB('MOV', 'AX', '0');
+          EmitInstrA('JMP', LblEnd);
+          EmitLabel(LblSkip);
+          EmitInstrAB('MOV', 'AX', '1');
+          EmitLabel(LblEnd);
+        End
+        Else
+        Begin
+          LblSkip := LabelGen;
+          LblEnd  := LabelGen;
+          EmitInstrAB('CMP', 'AX', 'BX');
+          EmitInstrA('JGE', LblSkip);
+          EmitInstrAB('MOV', 'AX', '0');
+          EmitInstrA('JMP', LblEnd);
+          EmitLabel(LblSkip);
+          EmitInstrAB('MOV', 'AX', '1');
+          EmitLabel(LblEnd);
+        End;
         Res.TypeIdx := TY_IDX_LOGIC;
       End
+
       Else
       Begin
         { Operateur inconnu : stub }
@@ -4605,12 +4784,244 @@ Begin
   EmitInstr('RET');
 End;
 
+{ ============================================================
+  TODO 11 - EXPRESSIONS BINAIRES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- EmitExprRuntime : routines x86 pour expressions binaires }
+(* Emet les routines assembleur utilisees par ParseExprPrec :
+   _CLRT_POWER     : puissance entiere (AX=base, BX=exp) -> AX
+   _CLRT_CONCAT    : concatenation chaines (SI=src1, DI=src2) -> AX=ptr
+   _CLRT_STRCMP     : comparaison souple (SI=s1, DI=s2) -> AX=-1/0/1
+   _CLRT_STRCMPEXACT: comparaison exacte (SI=s1, DI=s2) -> AX=0|1
+   _CLRT_INSTR     : recherche sous-chaine (SI=sub, DI=str) -> AX=0|1
+   _CLRT_STRTRIMR  : trim espaces a droite (SI=str) -> AX=ptr
+   _CL_CATBUF      : buffer de concatenation (256 octets) dans DATA    *)
+
+Procedure EmitExprRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=== Routines runtime expressions binaires (TODO 11) ===');
+  EmitBlankLine;
+
+  { --- _CLRT_POWER : puissance entiere --- }
+  (* AX=base (1er param [SP+2]), BX=exposant (2e param [SP+4])
+     Resultat dans AX. Exposant negatif -> AX=0.                    *)
+  EmitLabel(CL_RT_PFX + 'POWER');
+  EmitInstr('PUSH   BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrAB('MOV', 'AX', '[BP+4]');   { base }
+  EmitInstrAB('MOV', 'CX', '[BP+6]');   { exposant }
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JG', CL_RT_PFX + 'POW_LP');
+  EmitInstrAB('MOV', 'AX', '1');        { base^0 = 1 }
+  EmitInstrA('JMP', CL_RT_PFX + 'POW_DN');
+  EmitLabel(CL_RT_PFX + 'POW_LP');
+  EmitInstrAB('MOV', 'BX', 'AX');       { BX = accumulateur }
+  EmitInstrA('DEC', 'CX');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', CL_RT_PFX + 'POW_DN');
+  EmitLabel(CL_RT_PFX + 'POW_L2');
+  EmitInstrA('IMUL', 'BX');             { AX = AX * BX }
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JNZ', CL_RT_PFX + 'POW_L2');
+  EmitLabel(CL_RT_PFX + 'POW_DN');
+  EmitInstr('POP    BP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_CONCAT : concatenation de chaines --- }
+  (* SI=source1, DI=source2
+     Copie src1 puis src2 dans _CL_CATBUF, retourne AX=OFFSET _CL_CATBUF *)
+  EmitLabel(CL_RT_PFX + 'CONCAT');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstrAB('MOV', 'BX', 'DI');       { BX = src2 sauvegarde }
+  EmitInstrAB('MOV', 'DI', 'OFFSET _CL_CATBUF');
+  EmitInstrAB('MOV', 'CX', '0');
+  { Copier src1 }
+  EmitLabel(CL_RT_PFX + 'CAT_L1');
+  EmitInstr('LODSB');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', CL_RT_PFX + 'CAT_S2');
+  EmitInstr('STOSB');
+  EmitInstrA('INC', 'CX');
+  EmitInstrAB('CMP', 'CX', '254');
+  EmitInstrA('JAE', CL_RT_PFX + 'CAT_EN');
+  EmitInstrA('JMP', CL_RT_PFX + 'CAT_L1');
+  { Copier src2 }
+  EmitLabel(CL_RT_PFX + 'CAT_S2');
+  EmitInstrAB('MOV', 'SI', 'BX');       { SI = source2 }
+  EmitLabel(CL_RT_PFX + 'CAT_L2');
+  EmitInstr('LODSB');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', CL_RT_PFX + 'CAT_EN');
+  EmitInstr('STOSB');
+  EmitInstrA('INC', 'CX');
+  EmitInstrAB('CMP', 'CX', '254');
+  EmitInstrA('JAE', CL_RT_PFX + 'CAT_EN');
+  EmitInstrA('JMP', CL_RT_PFX + 'CAT_L2');
+  EmitLabel(CL_RT_PFX + 'CAT_EN');
+  EmitInstrAB('MOV', 'AL', '0');
+  EmitInstr('STOSB');            { terminateur nul }
+  EmitInstrAB('MOV', 'AX', 'OFFSET _CL_CATBUF');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_STRCMP : comparaison souple de chaines --- }
+  (* SI=str1, DI=str2
+     Compare octet par octet, s arrete a la longueur de str2
+     Retourne AX = -1 (inf), 0 (sup/diff), 1 (egal)
+     Semantique Clipper : = compare sur la longueur de droite      *)
+  EmitLabel(CL_RT_PFX + 'STRCMP');
+  EmitInstr('PUSH   SI');
+  EmitInstr('PUSH   DI');
+  EmitLabel(CL_RT_PFX + 'SCMP_LP');
+  EmitInstrAB('MOV', 'AL', '[DI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', CL_RT_PFX + 'SCMP_EQ');  { fin de str2 -> egal }
+  EmitInstrAB('MOV', 'AH', '[SI]');
+  EmitInstrAB('CMP', 'AH', '0');
+  EmitInstrA('JE', CL_RT_PFX + 'SCMP_LT');  { str1 plus courte -> inferieur }
+  EmitInstrAB('CMP', 'AH', 'AL');
+  EmitInstrA('JB', CL_RT_PFX + 'SCMP_LT');
+  EmitInstrA('JA', CL_RT_PFX + 'SCMP_GT');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', CL_RT_PFX + 'SCMP_LP');
+  EmitLabel(CL_RT_PFX + 'SCMP_EQ');
+  EmitInstrAB('MOV', 'AX', '1');    { egal }
+  EmitInstrA('JMP', CL_RT_PFX + 'SCMP_DN');
+  EmitLabel(CL_RT_PFX + 'SCMP_LT');
+  EmitInstrAB('MOV', 'AX', '-1');   { inferieur }
+  EmitInstrA('JMP', CL_RT_PFX + 'SCMP_DN');
+  EmitLabel(CL_RT_PFX + 'SCMP_GT');
+  EmitInstrAB('MOV', 'AX', '0');    { superieur/different }
+  EmitLabel(CL_RT_PFX + 'SCMP_DN');
+  EmitInstr('POP    DI');
+  EmitInstr('POP    SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_STRCMPEXACT : comparaison exacte == --- }
+  (* SI=str1, DI=str2
+     Compare longueur + contenu exact.
+     Retourne AX=1 si identique, AX=0 sinon.                      *)
+  EmitLabel(CL_RT_PFX + 'STRCMPEXACT');
+  EmitInstr('PUSH   SI');
+  EmitInstr('PUSH   DI');
+  EmitLabel(CL_RT_PFX + 'SXCMP_LP');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('MOV', 'AH', '[DI]');
+  EmitInstrAB('CMP', 'AL', 'AH');
+  EmitInstrA('JNE', CL_RT_PFX + 'SXCMP_NE');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', CL_RT_PFX + 'SXCMP_EQ');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', CL_RT_PFX + 'SXCMP_LP');
+  EmitLabel(CL_RT_PFX + 'SXCMP_EQ');
+  EmitInstrAB('MOV', 'AX', '1');
+  EmitInstrA('JMP', CL_RT_PFX + 'SXCMP_DN');
+  EmitLabel(CL_RT_PFX + 'SXCMP_NE');
+  EmitInstrAB('MOV', 'AX', '0');
+  EmitLabel(CL_RT_PFX + 'SXCMP_DN');
+  EmitInstr('POP    DI');
+  EmitInstr('POP    SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_INSTR : recherche sous-chaine --- }
+  (* SI=sous-chaine, DI=chaine
+     Retourne AX=1 si trouvee, AX=0 sinon.
+     Parcourt DI a la recherche de SI.                             *)
+  EmitLabel(CL_RT_PFX + 'INSTR');
+  EmitInstr('PUSH   SI');
+  EmitInstr('PUSH   DI');
+  EmitInstr('PUSH   BX');
+  EmitInstrAB('MOV', 'BX', 'SI');       { BX = debut sous-chaine }
+  EmitLabel(CL_RT_PFX + 'INS_OLP');
+  EmitInstrAB('MOV', 'AL', '[DI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', CL_RT_PFX + 'INS_NF');  { fin chaine -> pas trouve }
+  EmitInstrAB('MOV', 'SI', 'BX');       { reset sous-chaine }
+  EmitInstr('PUSH   DI');
+  EmitLabel(CL_RT_PFX + 'INS_ILP');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', CL_RT_PFX + 'INS_FD');  { fin sous-chaine -> trouve }
+  EmitInstrAB('MOV', 'AH', '[DI]');
+  EmitInstrAB('CMP', 'AH', '0');
+  EmitInstrA('JE', CL_RT_PFX + 'INS_NI');  { fin chaine -> pas ici }
+  EmitInstrAB('CMP', 'AL', 'AH');
+  EmitInstrA('JNE', CL_RT_PFX + 'INS_NI');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', CL_RT_PFX + 'INS_ILP');
+  EmitLabel(CL_RT_PFX + 'INS_FD');
+  EmitInstr('POP    DI');               { jeter DI sauvegarde }
+  EmitInstrAB('MOV', 'AX', '1');
+  EmitInstrA('JMP', CL_RT_PFX + 'INS_DN');
+  EmitLabel(CL_RT_PFX + 'INS_NI');
+  EmitInstr('POP    DI');               { restaurer DI }
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', CL_RT_PFX + 'INS_OLP');
+  EmitLabel(CL_RT_PFX + 'INS_NF');
+  EmitInstrAB('MOV', 'AX', '0');
+  EmitLabel(CL_RT_PFX + 'INS_DN');
+  EmitInstr('POP    BX');
+  EmitInstr('POP    DI');
+  EmitInstr('POP    SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_STRTRIMR : trim espaces a droite --- }
+  (* SI=chaine source, copie dans _CL_CATBUF sans espaces a droite
+     Retourne AX = OFFSET _CL_CATBUF                               *)
+  EmitLabel(CL_RT_PFX + 'STRTRIMR');
+  EmitInstr('PUSH   SI');
+  EmitInstr('PUSH   DI');
+  EmitInstr('PUSH   CX');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _CL_CATBUF');
+  EmitInstrAB('MOV', 'CX', '0');
+  { Copier la chaine }
+  EmitLabel(CL_RT_PFX + 'STR_L1');
+  EmitInstr('LODSB');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', CL_RT_PFX + 'STR_TR');
+  EmitInstr('STOSB');
+  EmitInstrA('INC', 'CX');
+  EmitInstrAB('CMP', 'CX', '254');
+  EmitInstrA('JAE', CL_RT_PFX + 'STR_TR');
+  EmitInstrA('JMP', CL_RT_PFX + 'STR_L1');
+  { Trim espaces a droite }
+  EmitLabel(CL_RT_PFX + 'STR_TR');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', CL_RT_PFX + 'STR_DN');
+  EmitInstrA('DEC', 'DI');
+  EmitInstrAB('CMP', 'BYTE PTR [DI]', '32');
+  EmitInstrA('JNE', CL_RT_PFX + 'STR_DN');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', CL_RT_PFX + 'STR_TR');
+  EmitLabel(CL_RT_PFX + 'STR_DN');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _CL_CATBUF');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    DI');
+  EmitInstr('POP    SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+End;
+
 { ---- EmitRuntime : emettre les routines runtime inline ------- }
-(* Stub : sera implemente dans TODO 24 (RUNTIME MINIMAL)        *)
+(* Appelle EmitExprRuntime pour les routines d expressions binaires.
+   Sera enrichi dans les TODOs futures (24, etc.)                  *)
 
 Procedure EmitRuntime;
 Begin
-  { Stub : TODO 24 }
+  EmitExprRuntime;
 End;
 
 { ---- EmitClose : finaliser le fichier ASM -------------------- }
