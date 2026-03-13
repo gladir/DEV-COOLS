@@ -3356,6 +3356,8 @@ Begin
     EmitComment('---- WHEN ----');
 
     { Evaluer la premiere valeur -> EAX, comparer avec EDX }
+    { NB : ParseAndExpr (pas ParseExpr) pour eviter que OR }
+    { soit consomme comme operateur logique                 }
     ParseAndExpr;
     EmitI('CMP     EDX, EAX');
 
@@ -3364,7 +3366,7 @@ Begin
     Begin
       EmitI('JE      ' + LblBody); { correspond -> sauter au corps }
       Consume; { skip OR }
-      ParseAndExpr; { valeur suivante -> EAX }
+      ParseAndExpr; { valeur suivante dans EAX }
       EmitI('CMP     EDX, EAX');
     End;
 
