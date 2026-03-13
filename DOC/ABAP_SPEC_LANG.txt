@@ -7,7 +7,7 @@ SPECIFICATIONS DU LANGAGE DE PROGRAMMATION ABAP
   Annee          : 1983 (ABAP/4), evolue en ABAP Objects (1999)
   Paradigme      : Procedural, oriente evenements, oriente objet (partiel)
   Utilisation    : Applications de gestion SAP (ERP, CRM, SCM)
-  Compilateur    : ABAPCW32.PAS (cible Win32, 80386)
+  Compilateur    : ABAPCW32.PAS (cible Win32, 80386), ABAP86.PAS (cible assembleur 8086)
 
 
 TABLE DES MATIERES

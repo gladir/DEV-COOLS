@@ -189,7 +189,7 @@
             Function ParseCompareExpr: Integer (EQ NE LT GT LE GE
               = <> < > <= >= BETWEEN a AND b / IS INITIAL)
             Function ParseAddExpr: Integer    (+ / -)
-            Function ParseMulExpr: Integer    (* / / DIV / MOD)
+            Function ParseMulExpr: Integer    ( * / / DIV / MOD)
             Function ParseUnaryExpr: Integer  (- / NOT)
             Function ParsePrimaryExpr: Integer
               Constante numerique -> MOV EAX, imm32
@@ -927,7 +927,7 @@ Type
     SymEnd    : Integer;         { dernier sym index du scope    }
     LblExit   : String[32];     { etiquette de sortie (EXIT)    }
     LblCont   : String[32];     { etiquette continue (LOOP)     }
-    LblEnd    : String[32];     { etiquette fin de bloc (END*)  }
+    LblEnd    : String[32];     { etiquette fin de bloc (END* ) }
   End;
 
 { ============================================================ }
@@ -4728,7 +4728,7 @@ Begin
     Consume;
   End;
 
-  { Consommer les champs (identifiants ou *) }
+  { Consommer les champs (identifiants ou * ) }
   While (CurTokType <> TOK_EOF) And (CurTokType <> TOK_DOT) And
         (Not TokIsKw(KW_FROM)) Do
   Begin
