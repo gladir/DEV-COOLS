@@ -239,7 +239,7 @@
             Declaration locale dans une clause :
               BEGIN INT x := 5; x + 1 END -> resultat 6
 
-  TODO 14 - CLAUSES CONDITIONNELLES (IF ET CASE)
+  TODO 14 - CLAUSES CONDITIONNELLES (IF ET CASE) [IMPLEMENTE]
             ParseIfClause : IF cond THEN unites ELIF cond THEN unites ELSE unites FI
               Forme abregee : (cond | val_vrai | val_faux)
               Emission TEST AX,AX / JZ pour condition fausse
@@ -694,6 +694,8 @@ Var
   LoopBreakLbl : Array[0..MAX_LOOP_NEST - 1] Of TString;
   LoopContLbl  : Array[0..MAX_LOOP_NEST - 1] Of TString;
   LabelGenSeq  : Integer;    { compteur unique pour LabelGen        }
+  IfCount      : Integer;    { compteur pour labels IF abreges      }
+  CaseCount    : Integer;    { compteur pour labels CASE abreges    }
 
   { Segment de donnees (TODO 09) }
   DataTab   : Array[0..MAX_DATA - 1] Of TDataRec;
@@ -1149,6 +1151,8 @@ Begin
   RuntimeEmitted := False;
   CurFrameSize   := 0;
   LabelGenSeq    := 0;
+  IfCount        := 0;
+  CaseCount      := 0;
   GExprDummy.Kind    := EK_NONE;
   GExprDummy.ImmVal  := 0;
   GExprDummy.ModeIdx := -1;
@@ -1203,7 +1207,7 @@ Begin
     (S = 'OUT')     Or (S = 'ESAC')    Or (S = 'FOR')      Or
     (S = 'FROM')    Or (S = 'TO')      Or (S = 'BY')       Or
     (S = 'WHILE')   Or (S = 'DO')      Or (S = 'OD')       Or
-    (S = 'GOTO')    Or (S = 'GO')      Or
+    (S = 'GOTO')    Or (S = 'GO')      Or (S = 'OUSE')     Or
     { Declarations }
     (S = 'PROC')    Or (S = 'OP')      Or (S = 'PRIO')     Or
     (S = 'MODE')    Or (S = 'STRUCT')  Or (S = 'UNION')    Or
@@ -2715,6 +2719,12 @@ Var
   ArgSStr  : TString;
   IdxRes   : TExprVal;
   UpRes    : TExprVal;
+  LblElse  : TString;
+  LblEnd   : TString;
+  LblNext  : TString;
+  CaseS    : TString;
+  CaseIdx  : Integer;
+  CaseRes  : TExprVal;
 Begin
   Case CurToken.Kind Of
     { ---- Denotations numeriques et booleennes ---- }
@@ -2905,17 +2915,112 @@ Begin
       End;
     End;
 
-    { ---- Parenthese ouvrante ( -> clause fermee avec portee ---- }
+    { ---- Parenthese ouvrante ( -> clause fermee ou forme abregee - }
     TK_OPEN :
     Begin
       ParserAdvance; { consomme ( }
       SymEnterScope;
       ParseSerialClause(Res);
-      SymLeaveScope;
-      If CurToken.Kind = TK_CLOSE Then
-        ParserAdvance  { consomme ) }
+
+      { Forme abregee : (expr | ...) }
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '|') Then
+      Begin
+        ExprFlushToAX(Res);
+        ParserAdvance; { consomme premier | }
+
+        If Res.ModeIdx = TY_IDX_BOOL Then
+        Begin
+          { Forme abregee IF : (cond | then_val | else_val) }
+          Inc(IfCount);
+          LblElse := A68_LBL_PFX + 'ELSE_' + IntToStr(IfCount);
+          LblEnd  := A68_LBL_PFX + 'FI_' + IntToStr(IfCount);
+
+          EmitInstr('TEST   AX, AX');
+          EmitInstr('JZ     ' + LblElse);
+
+          { Branche THEN }
+          ParseSerialClause(Res);
+          ExprFlushToAX(Res);
+          EmitInstr('JMP    ' + LblEnd);
+
+          { Branche ELSE }
+          EmitLabel(LblElse);
+          If (CurToken.Kind = TK_OP) And (CurToken.Val = '|') Then
+          Begin
+            ParserAdvance; { consomme second | }
+            ParseSerialClause(Res);
+            ExprFlushToAX(Res);
+          End
+          Else
+            EmitInstr('XOR    AX, AX'); { pas de ELSE -> 0 }
+
+          EmitLabel(LblEnd);
+          Res.Kind   := EK_AX;
+          Res.SymIdx := -1;
+        End
+        Else
+        Begin
+          { Forme abregee CASE : (expr | v1, v2, ... | defaut) }
+          Inc(CaseCount);
+          LblEnd := A68_LBL_PFX + 'CESAC_' + IntToStr(CaseCount);
+          EmitInstr('MOV    BX, AX'); { sauvegarde selecteur }
+
+          CaseIdx := 1;
+          ExprMakeNone(Res);
+          While (CurToken.Kind <> TK_CLOSE) And
+                (CurToken.Kind <> TK_EOF) Do
+          Begin
+            If (CurToken.Kind = TK_OP) And (CurToken.Val = '|') Then
+              Break; { marqueur OUT/defaut }
+
+            LblNext := A68_LBL_PFX + 'CASE_' + IntToStr(CaseCount)
+                       + '_' + IntToStr(CaseIdx);
+            Str(CaseIdx, CaseS);
+            EmitInstr('CMP    BX, ' + CaseS);
+            EmitInstr('JNE    ' + LblNext);
+
+            ParseSerialClause(CaseRes);
+            ExprFlushToAX(CaseRes);
+            Res := CaseRes;
+            EmitInstr('JMP    ' + LblEnd);
+
+            EmitLabel(LblNext);
+            Inc(CaseIdx);
+
+            If CurToken.Kind = TK_COMMA Then
+              ParserAdvance
+            Else
+              Break;
+          End;
+
+          { Defaut (equivalent OUT) }
+          If (CurToken.Kind = TK_OP) And (CurToken.Val = '|') Then
+          Begin
+            ParserAdvance; { consomme | }
+            ParseSerialClause(CaseRes);
+            ExprFlushToAX(CaseRes);
+            Res := CaseRes;
+          End;
+
+          EmitLabel(LblEnd);
+          Res.Kind   := EK_AX;
+          Res.SymIdx := -1;
+        End;
+
+        SymLeaveScope;
+        If CurToken.Kind = TK_CLOSE Then
+          ParserAdvance
+        Else
+          CompileError(') attendu');
+      End
       Else
-        CompileError(') attendu');
+      Begin
+        SymLeaveScope;
+        If CurToken.Kind = TK_CLOSE Then
+          ParserAdvance  { consomme ) }
+        Else
+          CompileError(') attendu');
+      End;
     End;
 
   Else
@@ -4990,16 +5095,19 @@ Procedure ParseIfClause(Var Res : TExprVal);
 Var
   LblElse, LblEnd : TString;
   CondRes : TExprVal;
+  MyIf    : Integer;
 Begin
   { IF deja vu ou consomme par l'appelant pour ELIF }
-  ParserAdvance; { consomme IF }
+  ParserAdvance; { consomme IF ou ELIF }
+  Inc(IfCount);
+  MyIf := IfCount;
 
   { Parse condition }
   ParseExpr(CondRes);
   ExprFlushToAX(CondRes);
 
-  LblElse := LabelGen;
-  LblEnd  := LabelGen;
+  LblElse := A68_LBL_PFX + 'ELSE_' + IntToStr(MyIf);
+  LblEnd  := A68_LBL_PFX + 'FI_' + IntToStr(MyIf);
 
   EmitInstr('TEST   AX, AX');
   EmitInstr('JZ     ' + LblElse);
@@ -5011,6 +5119,7 @@ Begin
     CompileError('THEN attendu');
 
   ParseSerialClause(Res);
+  ExprFlushToAX(Res);
 
   EmitInstr('JMP    ' + LblEnd);
 
@@ -5027,6 +5136,7 @@ Begin
   Begin
     ParserAdvance; { consomme ELSE }
     ParseSerialClause(Res);
+    ExprFlushToAX(Res);
     If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'FI') Then
       ParserAdvance
     Else
@@ -5057,15 +5167,18 @@ Var
   LblNext    : TString;
   CaseIdx    : Integer;
   CaseS      : TString;
+  MyCase     : Integer;
 Begin
   ParserAdvance; { consomme CASE }
+  Inc(CaseCount);
+  MyCase := CaseCount;
 
   { Parse selector expression }
   ParseExpr(SelRes);
   ExprFlushToAX(SelRes);
   EmitInstr('MOV    BX, AX');
 
-  LblEnd := LabelGen;
+  LblEnd := A68_LBL_PFX + 'CESAC_' + IntToStr(MyCase);
 
   { IN clause }
   If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'IN') Then
@@ -5080,16 +5193,19 @@ Begin
   While (CurToken.Kind <> TK_EOF) Do
   Begin
     If (CurToken.Kind = TK_BOLD) And
-       ((CurToken.Val = 'OUT') Or (CurToken.Val = 'ESAC')) Then
+       ((CurToken.Val = 'OUT') Or (CurToken.Val = 'ESAC') Or
+        (CurToken.Val = 'OUSE')) Then
       Break;
 
-    LblNext  := LabelGen;
+    LblNext := A68_LBL_PFX + 'CASE_' + IntToStr(MyCase)
+               + '_' + IntToStr(CaseIdx);
 
     Str(CaseIdx, CaseS);
     EmitInstr('CMP    BX, ' + CaseS);
     EmitInstr('JNE    ' + LblNext);
 
     ParseSerialClause(CaseRes);
+    ExprFlushToAX(CaseRes);
     Res := CaseRes;
     EmitInstr('JMP    ' + LblEnd);
 
@@ -5102,11 +5218,57 @@ Begin
       Break;
   End;
 
+  { OUSE clause : CASE chain (like ELIF for IF) }
+  If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'OUSE') Then
+  Begin
+    ParserAdvance; { consomme OUSE }
+    Inc(CaseCount);
+    { Parse new selector }
+    ParseExpr(SelRes);
+    ExprFlushToAX(SelRes);
+    EmitInstr('MOV    BX, AX');
+
+    If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'IN') Then
+      ParserAdvance
+    Else
+      CompileError('IN attendu apres OUSE');
+
+    CaseIdx := 1;
+    While (CurToken.Kind <> TK_EOF) Do
+    Begin
+      If (CurToken.Kind = TK_BOLD) And
+         ((CurToken.Val = 'OUT') Or (CurToken.Val = 'ESAC') Or
+          (CurToken.Val = 'OUSE')) Then
+        Break;
+
+      LblNext := A68_LBL_PFX + 'CASE_' + IntToStr(CaseCount)
+                 + '_' + IntToStr(CaseIdx);
+
+      Str(CaseIdx, CaseS);
+      EmitInstr('CMP    BX, ' + CaseS);
+      EmitInstr('JNE    ' + LblNext);
+
+      ParseSerialClause(CaseRes);
+      ExprFlushToAX(CaseRes);
+      Res := CaseRes;
+      EmitInstr('JMP    ' + LblEnd);
+
+      EmitLabel(LblNext);
+      Inc(CaseIdx);
+
+      If CurToken.Kind = TK_COMMA Then
+        ParserAdvance
+      Else
+        Break;
+    End;
+  End;
+
   { OUT clause (default) }
   If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'OUT') Then
   Begin
     ParserAdvance; { consomme OUT }
     ParseSerialClause(CaseRes);
+    ExprFlushToAX(CaseRes);
     Res := CaseRes;
   End;
 
