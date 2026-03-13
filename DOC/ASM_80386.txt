@@ -113,6 +113,7 @@
     Section 15 : Conversion de code PowerPC en 80386
     Section 16 : Conversion de code Z8000 en 80386
     Section 17 : Conversion de code i860 en 80386
+    Section 18 : Conversion de code Itanium en 80386
 
 ==============================================================================
 2. ARCHITECTURE ET REGISTRES
@@ -11237,6 +11238,733 @@
     si elles sont presentes dans le code source. Elles sont specifiques
     au i860 et etaient utilisees pour les applications de visualisation
     scientifique et de graphisme 3D.
+
+==============================================================================
+18. CONVERSION DE CODE ITANIUM (IA-64) EN 80386
+==============================================================================
+
+  Cette section explique comment convertir du code assembleur Intel
+  Itanium (architecture IA-64, commercialisee en 2001 avec le processeur
+  Itanium, puis l'Itanium 2 en 2002) en code assembleur Intel 80386.
+  Malgre le fait que les deux processeurs sont des produits Intel, leurs
+  architectures sont fondamentalement differentes : l'Itanium est un
+  processeur EPIC (Explicitly Parallel Instruction Computing) 64 bits
+  avec des bundles de 3 instructions, un tres grand nombre de registres
+  et un mecanisme de predication unique, tandis que le 80386 est un
+  processeur CISC 32 bits classique.
+
+------------------------------------------------------------------------------
+18.1 Principes generaux (Itanium vs 80386)
+------------------------------------------------------------------------------
+
+  L'Itanium (IA-64) est une architecture EPIC :
+  - Instructions groupees en bundles de 128 bits (3 instructions de
+    41 bits + un template de 5 bits indiquant le parallelisme)
+  - 128 registres entiers generaux 64 bits (r0-r127, r0 cable a 0)
+  - 128 registres flottants 82 bits (f0-f127, f0=0.0, f1=1.0)
+  - 64 registres de predicat 1 bit (p0-p63, p0 cable a 1)
+  - 8 registres de branchement 64 bits (b0-b7)
+  - 128 registres d'application (ar0-ar127, incluant ar.pfs, ar.lc,
+    ar.ec, ar.bsp, ar.rnat, etc.)
+  - Pile de registres tournante (Register Stack Engine, RSE) avec
+    allocation/liberation automatique des cadres de registres
+  - Predication : chaque instruction peut etre conditionnee par un
+    registre de predicat (qp). Si qp=0, l'instruction est annulee.
+  - Speculation : chargements speculatifs (ld.s) et de verification
+    (chk.s) pour anticiper les acces memoire
+  - Branchements avec hint (prediction statique)
+  - Architecture Load/Store pure
+  - Little-endian par defaut (supporte big-endian)
+  - Pas d'indicateurs globaux (flags) de type EFLAGS
+  - Comparaisons qui ecrivent dans des registres de predicat
+
+  Le 80386 est une architecture CISC :
+  - Instructions de taille variable (1 a 15 octets)
+  - 8 registres generaux 32 bits (EAX, EBX, ECX, EDX, ESI, EDI,
+    EBP, ESP)
+  - Registre EFLAGS unique pour toutes les conditions
+  - Pile materielle dediee avec ESP et PUSH/POP
+  - Modes d'adressage complexes (base+index*scale+displacement)
+  - Coprocesseur flottant 80387 separe (pile FPU x87 de 8 registres)
+  - Architecture little-endian
+  - Pas de predication, pas de speculation, pas de bundles
+  - Pas de pile de registres tournante
+
+  Regles de base pour la conversion :
+  (a) Mapper les 128 registres entiers IA-64 vers 8 registres x86
+      + variables en memoire
+  (b) Decomposer les bundles de 3 instructions en instructions
+      sequentielles x86
+  (c) Eliminer la predication en la convertissant en branchements
+      conditionnels (CMP + Jcc) ou en instructions CMOVcc sur 80486+
+  (d) Reduire les valeurs 64 bits en 32 bits ou utiliser des paires
+      de registres 32 bits pour l'arithmetique 64 bits
+  (e) Convertir les operations flottantes IA-64 en instructions x87
+  (f) Remplacer la pile de registres tournante (RSE) par un cadre
+      de pile classique (PUSH/POP, EBP, ESP)
+  (g) Adapter les conventions d'appel (IA-64 ABI -> CDECL ou STDCALL)
+  (h) Supprimer les chargements speculatifs (ld.s -> MOV/LD simple)
+  (i) Sequentialiser les stops (;;) et le parallelisme explicite
+
+------------------------------------------------------------------------------
+18.2 Correspondance des registres
+------------------------------------------------------------------------------
+
+  L'Itanium possede 128 registres entiers de 64 bits. Le 80386 n'en
+  a que 8 de 32 bits. Il faut donc utiliser des variables memoire pour
+  la grande majorite des registres IA-64.
+
+  Correspondance suggeree (registres entiers) :
+
+    IA-64       80386         Commentaire
+    -------     --------      ------------------------------------
+    r0          (aucun)       cable a 0, lire = 0, ecriture ignoree
+    r1 (gp)     [_ia64_gp]    pointeur global (Global Pointer)
+    r2-r3       [_ia64_rN]    registres scratch
+    r4-r7       [_ia64_rN]    registres preserves (callee-saved)
+    r8          EAX           valeur de retour
+    r9          EDX           2e valeur de retour
+    r10         ECX           3e valeur de retour / scratch
+    r11         EBX           scratch
+    r12 (sp)    ESP           pointeur de pile
+    r13 (tp)    [_ia64_tp]    pointeur de thread (Thread Pointer)
+    r14-r31     (memoire)     registres scratch -> _ia64_r14.._ia64_r31
+    r32-r127    (memoire)     registres stacked (pile tournante)
+                              -> _ia64_r32.._ia64_r127
+
+  Declaration des variables memoire pour les registres excedentaires :
+
+    _ia64_gp    DD 0    ; r1 - Global Pointer
+    _ia64_tp    DD 0    ; r13 - Thread Pointer
+    _ia64_r2    DD 0
+    _ia64_r3    DD 0
+    _ia64_r4    DD 0
+    ...
+    _ia64_r7    DD 0
+    _ia64_r14   DD 0
+    _ia64_r15   DD 0
+    ...
+    _ia64_r31   DD 0
+    _ia64_r32   DD 0    ; debut de la zone de pile tournante
+    ...
+    _ia64_r127  DD 0
+
+  Correspondance des registres flottants :
+
+    L'Itanium possede 128 registres flottants de 82 bits (format
+    etendu Intel). f0 = 0.0 (cable), f1 = 1.0 (cable). Le 80386
+    utilise le coprocesseur x87 avec une pile de 8 registres
+    ST(0)-ST(7) en format 80 bits etendu.
+
+    Les valeurs flottantes doivent etre stockees en memoire et
+    chargees sur la pile FPU x87 au besoin :
+
+    _ia64_f2    DQ 0.0    ; registres flottants double precision
+    _ia64_f3    DQ 0.0
+    ...
+    _ia64_f127  DQ 0.0
+
+  Correspondance des registres de predicat :
+
+    L'Itanium possede 64 registres de predicat de 1 bit (p0-p63).
+    p0 est cable a 1 (toujours vrai). Ces registres sont utilises
+    pour la predication et les comparaisons. En x86, il n'y a pas
+    d'equivalent. On les mappe en memoire :
+
+    _ia64_p1    DB 0    ; registres de predicat (0 ou 1)
+    _ia64_p2    DB 0
+    ...
+    _ia64_p63   DB 0
+
+  Correspondance des registres de branchement :
+
+    L'Itanium possede 8 registres de branchement (b0-b7) contenant
+    des adresses cible. b0 est l'adresse de retour (comme LR en ARM).
+    En x86, les branchements utilisent des adresses immediates ou la
+    pile (CALL/RET).
+
+    _ia64_b0    DD 0    ; adresse de retour (equivalent RET addr)
+    _ia64_b1    DD 0
+    ...
+    _ia64_b7    DD 0
+
+  Note sur r0 : en IA-64, r0 est cable a 0. Toute lecture retourne 0,
+  toute ecriture est ignoree. Lors de la conversion, remplacer les
+  references a r0 par la valeur immediate 0.
+
+  Note sur f0/f1 : en IA-64, f0=0.0 et f1=1.0 sont cables. Lors de
+  la conversion, remplacer les references a f0 par FLDZ et a f1 par
+  FLD1 en x87.
+
+  Note sur p0 : en IA-64, p0 est cable a 1 (toujours vrai). Les
+  instructions predicatees par p0 sont toujours executees (pas de
+  condition). On peut les convertir directement sans branchement.
+
+------------------------------------------------------------------------------
+18.3 Conversion des predicats et conditions
+------------------------------------------------------------------------------
+
+  L'Itanium utilise un systeme de predication unique : chaque
+  instruction peut etre prefixee par un registre de predicat (qp).
+  Si qp=0 (faux), l'instruction est annulee (NOP logique). Cela
+  elimine de nombreux branchements.
+
+  En x86, il n'y a pas de predication. Chaque instruction predicatee
+  doit etre convertie en un branchement conditionnel.
+
+  Conversion de la predication en branchements :
+
+    ; IA-64 : instruction predicatee
+    (p6) add r14 = r15, r16     ; execute seulement si p6 = 1
+
+    ; Equivalent 80386 :
+    CMP     BYTE PTR [_ia64_p6], 0
+    JE      skip_add
+    MOV     EAX, [_ia64_r15]
+    ADD     EAX, [_ia64_r16]
+    MOV     [_ia64_r14], EAX
+    skip_add:
+
+  Conversion des comparaisons :
+
+    L'Itanium utilise des instructions de comparaison qui ecrivent
+    dans une paire de registres de predicat. Par exemple :
+
+    ; IA-64 : comparaison
+    cmp.eq p6, p7 = r14, r15   ; p6=1 si r14==r15, p7=1 sinon
+
+    ; Equivalent 80386 :
+    MOV     EAX, [_ia64_r14]
+    CMP     EAX, [_ia64_r15]
+    JE      _cmp_eq
+    MOV     BYTE PTR [_ia64_p6], 0
+    MOV     BYTE PTR [_ia64_p7], 1
+    JMP     _cmp_done
+    _cmp_eq:
+    MOV     BYTE PTR [_ia64_p6], 1
+    MOV     BYTE PTR [_ia64_p7], 0
+    _cmp_done:
+
+  Types de comparaisons IA-64 et equivalents x86 :
+
+    IA-64           Description              80386
+    --------------- ----------------------   ----------------------------
+    cmp.eq          egal                     CMP + JE/JNE
+    cmp.ne          different                CMP + JNE/JE
+    cmp.lt          inferieur (signe)        CMP + JL/JGE
+    cmp.le          inferieur ou egal        CMP + JLE/JG
+    cmp.gt          superieur (signe)        CMP + JG/JLE
+    cmp.ge          superieur ou egal        CMP + JGE/JL
+    cmp.ltu         inferieur (non signe)    CMP + JB/JAE
+    cmp.leu         inferieur ou egal (ns)   CMP + JBE/JA
+    cmp.gtu         superieur (non signe)    CMP + JA/JBE
+    cmp.geu         superieur ou egal (ns)   CMP + JAE/JB
+
+  Optimisation : si une instruction predicatee est suivie de son
+  complement (p6 / p7), on peut utiliser un simple branchement
+  sans stocker les predicats en memoire.
+
+------------------------------------------------------------------------------
+18.4 Conversion des instructions de transfert de donnees
+------------------------------------------------------------------------------
+
+  L'IA-64 utilise un modele Load/Store pur. Les instructions de
+  transfert de donnees comprennent les chargements (ld), les
+  rangements (st) et les mouvements inter-registres (mov).
+
+  Chargements (Load) :
+
+    IA-64                                80386
+    -----------------------------------  ----------------------------------
+    ld1 r14 = [r15]                      MOVZX EAX, BYTE PTR [ESI]
+                                         MOV [_ia64_r14], EAX
+    ld2 r14 = [r15]                      MOVZX EAX, WORD PTR [ESI]
+                                         MOV [_ia64_r14], EAX
+    ld4 r14 = [r15]                      MOV EAX, [ESI]
+                                         MOV [_ia64_r14], EAX
+    ld8 r14 = [r15]                      MOV EAX, [ESI]
+                                         MOV [_ia64_r14], EAX
+                                         MOV EAX, [ESI+4]
+                                         MOV [_ia64_r14+4], EAX
+                                         (chargement 64 bits en 2 parties)
+    ld.s r14 = [r15]                     MOV EAX, [ESI]
+                                         MOV [_ia64_r14], EAX
+                                         (speculatif -> ignore, charge normal)
+
+  Rangements (Store) :
+
+    IA-64                                80386
+    -----------------------------------  ----------------------------------
+    st1 [r15] = r14                      MOV AL, BYTE PTR [_ia64_r14]
+                                         MOV BYTE PTR [ESI], AL
+    st2 [r15] = r14                      MOV AX, WORD PTR [_ia64_r14]
+                                         MOV WORD PTR [ESI], AX
+    st4 [r15] = r14                      MOV EAX, [_ia64_r14]
+                                         MOV [ESI], EAX
+    st8 [r15] = r14                      MOV EAX, [_ia64_r14]
+                                         MOV [ESI], EAX
+                                         MOV EAX, [_ia64_r14+4]
+                                         MOV [ESI+4], EAX
+                                         (rangement 64 bits en 2 parties)
+
+  Mouvements :
+
+    IA-64                                80386
+    -----------------------------------  ----------------------------------
+    mov r14 = r15                        MOV EAX, [_ia64_r15]
+                                         MOV [_ia64_r14], EAX
+    mov r14 = imm                        MOV DWORD PTR [_ia64_r14], imm
+    mov r14 = ip                         (pas d'equiv. direct : utiliser
+                                          CALL/POP pour obtenir EIP)
+    addl r14 = imm, r15                  MOV EAX, [_ia64_r15]
+                                         ADD EAX, imm
+                                         MOV [_ia64_r14], EAX
+    movl r14 = imm64                     MOV DWORD PTR [_ia64_r14], lo32
+                                         MOV DWORD PTR [_ia64_r14+4], hi32
+                                         (immediat 64 bits en 2 parties)
+
+  Post-increment :
+
+    L'IA-64 supporte les chargements/rangements avec post-increment :
+
+    IA-64                                80386
+    -----------------------------------  ----------------------------------
+    ld4 r14 = [r15], 4                   MOV EAX, [ESI]
+                                         MOV [_ia64_r14], EAX
+                                         ADD ESI, 4
+
+------------------------------------------------------------------------------
+18.5 Conversion des instructions arithmetiques et logiques
+------------------------------------------------------------------------------
+
+  Operations arithmetiques entieres :
+
+    IA-64                                80386
+    -----------------------------------  ----------------------------------
+    add r14 = r15, r16                   MOV EAX, [_ia64_r15]
+                                         ADD EAX, [_ia64_r16]
+                                         MOV [_ia64_r14], EAX
+    add r14 = imm, r15                   MOV EAX, [_ia64_r15]
+                                         ADD EAX, imm
+                                         MOV [_ia64_r14], EAX
+    sub r14 = r15, r16                   MOV EAX, [_ia64_r15]
+                                         SUB EAX, [_ia64_r16]
+                                         MOV [_ia64_r14], EAX
+    addp4 r14 = r15, r16                 MOV EAX, [_ia64_r15]
+                                         ADD EAX, [_ia64_r16]
+                                         MOV [_ia64_r14], EAX
+                                         (addp4 = add pointer 32 bits)
+    shladd r14 = r15, count, r16         MOV EAX, [_ia64_r15]
+                                         SHL EAX, count
+                                         ADD EAX, [_ia64_r16]
+                                         MOV [_ia64_r14], EAX
+
+  Operations logiques :
+
+    IA-64                                80386
+    -----------------------------------  ----------------------------------
+    and r14 = r15, r16                   MOV EAX, [_ia64_r15]
+                                         AND EAX, [_ia64_r16]
+                                         MOV [_ia64_r14], EAX
+    or r14 = r15, r16                    MOV EAX, [_ia64_r15]
+                                         OR  EAX, [_ia64_r16]
+                                         MOV [_ia64_r14], EAX
+    xor r14 = r15, r16                   MOV EAX, [_ia64_r15]
+                                         XOR EAX, [_ia64_r16]
+                                         MOV [_ia64_r14], EAX
+    andcm r14 = r15, r16                 MOV EAX, [_ia64_r16]
+                                         NOT EAX
+                                         AND EAX, [_ia64_r15]
+                                         MOV [_ia64_r14], EAX
+                                         (AND complement : r15 AND NOT r16)
+
+  Decalages et rotations :
+
+    IA-64                                80386
+    -----------------------------------  ----------------------------------
+    shl r14 = r15, r16                   MOV EAX, [_ia64_r15]
+                                         MOV ECX, [_ia64_r16]
+                                         SHL EAX, CL
+                                         MOV [_ia64_r14], EAX
+    shr r14 = r15, r16                   MOV EAX, [_ia64_r15]
+                                         MOV ECX, [_ia64_r16]
+                                         SAR EAX, CL
+                                         MOV [_ia64_r14], EAX
+    shr.u r14 = r15, r16                 MOV EAX, [_ia64_r15]
+                                         MOV ECX, [_ia64_r16]
+                                         SHR EAX, CL
+                                         MOV [_ia64_r14], EAX
+    extr r14 = r15, pos, len             MOV EAX, [_ia64_r15]
+                                         SHR EAX, pos
+                                         AND EAX, (1 SHL len) - 1
+                                         MOV [_ia64_r14], EAX
+                                         (extraction de champ de bits)
+    dep r14 = r15, r16, pos, len         (insertion de champ de bits :
+                                          complexe, utiliser SHL/AND/OR)
+
+  Multiplication et division :
+
+    L'IA-64 n'a pas d'instruction de division entiere directe. La
+    division est faite via les instructions flottantes. La
+    multiplication utilise des combinaisons d'instructions.
+
+    IA-64                                80386
+    -----------------------------------  ----------------------------------
+    (multiplication via setf/xma/getf)   IMUL EAX, [_ia64_r15]
+                                         MOV [_ia64_r14], EAX
+
+    Pour la division, le code IA-64 typique utilise un algorithme
+    de Newton-Raphson en virgule flottante :
+
+    ; IA-64 : division entiere a/b (typique)
+    setf.sig f6 = r14          ; convertir a en flottant
+    setf.sig f7 = r15          ; convertir b en flottant
+    frcpa.s0 f8, p6 = f6, f7  ; reciproque approchee de b
+    ...                        ; iterations Newton-Raphson
+    getf.sig r16 = f8          ; resultat entier
+
+    ; Equivalent 80386 :
+    MOV     EAX, [_ia64_r14]
+    CDQ
+    IDIV    DWORD PTR [_ia64_r15]
+    MOV     [_ia64_r16], EAX    ; quotient
+    MOV     [_ia64_r17], EDX    ; reste
+
+------------------------------------------------------------------------------
+18.6 Conversion des branchements
+------------------------------------------------------------------------------
+
+  L'IA-64 utilise des registres de branchement (b0-b7) et des
+  instructions de branchement avec hints de prediction.
+
+  Branchements :
+
+    IA-64                                80386
+    -----------------------------------  ----------------------------------
+    br.cond label                        JMP label
+    (p6) br.cond label                   CMP BYTE PTR [_ia64_p6], 0
+                                         JNE label
+    br.call b0 = target                  CALL target
+                                         (b0 = adresse retour, geree par
+                                          CALL qui empile EIP)
+    br.ret b0                            RET
+                                         (depile l'adresse de retour)
+    br.cloop label                       DEC ECX
+                                         JNZ label
+                                         (boucle comptee via ar.lc)
+    br.ctop label                        (boucle avec pile tournante :
+                                          DEC ECX / JNZ + gestion manuelle
+                                          des registres rotatifs)
+    br.ia b6                             JMP DWORD PTR [_ia64_b6]
+                                         (branchement indirect)
+
+  Branchement conditionnel avec predicat :
+
+    ; IA-64 : branchement predicat
+    cmp.eq p6, p7 = r14, r15
+    (p6) br.cond target
+
+    ; Equivalent 80386 :
+    MOV     EAX, [_ia64_r14]
+    CMP     EAX, [_ia64_r15]
+    JE      target
+
+  Note : les hints de prediction (sptk, spnt, dptk, dpnt, etc.)
+  du branchement IA-64 sont ignores lors de la conversion. Le 80386
+  ne supporte pas les hints de prediction de branchement.
+
+  Note sur br.cloop : cette instruction decremente le registre
+  ar.lc (application register, loop count) et branche si ar.lc != 0.
+  En x86, utiliser ECX avec LOOP ou DEC ECX + JNZ.
+
+------------------------------------------------------------------------------
+18.7 Conversion des operations flottantes
+------------------------------------------------------------------------------
+
+  L'Itanium possede 128 registres flottants de 82 bits avec support
+  natif de la simple precision (32 bits), double precision (64 bits)
+  et precision etendue (80 bits). Le 80386 utilise le coprocesseur
+  x87 avec une pile de 8 registres de 80 bits.
+
+  Operations flottantes de base :
+
+    IA-64                                80386
+    -----------------------------------  ----------------------------------
+    fadd f6 = f7, f8                     FLD QWORD PTR [_ia64_f7]
+                                         FADD QWORD PTR [_ia64_f8]
+                                         FSTP QWORD PTR [_ia64_f6]
+    fsub f6 = f7, f8                     FLD QWORD PTR [_ia64_f7]
+                                         FSUB QWORD PTR [_ia64_f8]
+                                         FSTP QWORD PTR [_ia64_f6]
+    fmpy f6 = f7, f8                     FLD QWORD PTR [_ia64_f7]
+                                         FMUL QWORD PTR [_ia64_f8]
+                                         FSTP QWORD PTR [_ia64_f6]
+    fma f6 = f7, f8, f9                  FLD QWORD PTR [_ia64_f7]
+                                         FMUL QWORD PTR [_ia64_f8]
+                                         FADD QWORD PTR [_ia64_f9]
+                                         FSTP QWORD PTR [_ia64_f6]
+                                         (fused multiply-add)
+    fms f6 = f7, f8, f9                  FLD QWORD PTR [_ia64_f7]
+                                         FMUL QWORD PTR [_ia64_f8]
+                                         FSUB QWORD PTR [_ia64_f9]
+                                         FSTP QWORD PTR [_ia64_f6]
+                                         (fused multiply-subtract)
+    fnma f6 = f7, f8, f9                 FLD QWORD PTR [_ia64_f7]
+                                         FMUL QWORD PTR [_ia64_f8]
+                                         FCHS
+                                         FADD QWORD PTR [_ia64_f9]
+                                         FSTP QWORD PTR [_ia64_f6]
+                                         (neg fused multiply-add)
+    frcpa f6, p6 = f7, f8               FLDL QWORD PTR [_ia64_f8]
+                                         FLD1
+                                         FDIVR
+                                         FSTP QWORD PTR [_ia64_f6]
+                                         (reciproque approchee -> division)
+    frsqrta f6, p6 = f7                  (reciproque racine carree approchee
+                                          -> FSQRT + FDIVR)
+
+  Conversions entier <-> flottant :
+
+    IA-64                                80386
+    -----------------------------------  ----------------------------------
+    setf.sig f6 = r14                    FILD DWORD PTR [_ia64_r14]
+                                         FSTP QWORD PTR [_ia64_f6]
+                                         (entier -> flottant)
+    getf.sig r14 = f6                    FLD QWORD PTR [_ia64_f6]
+                                         FISTP DWORD PTR [_ia64_r14]
+                                         (flottant -> entier)
+    fcvt.fx f6 = f7                      FLD QWORD PTR [_ia64_f7]
+                                         FISTP QWORD PTR [_ia64_f6]
+                                         (conversion en entier fixe)
+    fcvt.xf f6 = f7                      FILD QWORD PTR [_ia64_f7]
+                                         FSTP QWORD PTR [_ia64_f6]
+                                         (conversion en flottant)
+
+  Comparaisons flottantes :
+
+    IA-64                                80386
+    -----------------------------------  ----------------------------------
+    fcmp.eq p6, p7 = f6, f7             FLD QWORD PTR [_ia64_f6]
+                                         FCOMP QWORD PTR [_ia64_f7]
+                                         FSTSW AX
+                                         SAHF
+                                         JE _fc_eq / JNE _fc_neq
+
+------------------------------------------------------------------------------
+18.8 Conversion des bundles et du parallelisme
+------------------------------------------------------------------------------
+
+  L'Itanium groupe les instructions en bundles de 128 bits contenant
+  3 syllabes d'instruction de 41 bits et un template de 5 bits. Le
+  template indique quelles instructions peuvent s'executer en
+  parallele et a quelle unite fonctionnelle elles sont destinees.
+
+  Types de syllabes :
+    M : acces memoire (load/store)
+    I : operations entieres (ALU, shift, etc.)
+    A : operations ALU simples (sous-ensemble de M et I)
+    F : operations flottantes
+    B : branchements
+    L : immediats longs (combine 2 syllabes pour movl)
+
+  Exemples de templates :
+    MII  : memoire, entier, entier
+    MMI  : memoire, memoire, entier
+    MFI  : memoire, flottant, entier
+    MBB  : memoire, branchement, branchement
+    MLX  : memoire, immediat long (64 bits)
+
+  Les stops (;;) separent les groupes d'instructions qui doivent
+  attendre la fin du groupe precedent avant de s'executer.
+
+  Conversion en 80386 :
+
+    ; IA-64 bundle (MII) :
+    ld4 r14 = [r15]           ; M-slot : chargement
+    add r16 = r17, r18        ; I-slot : addition
+    shl r19 = r20, 2 ;;       ; I-slot : decalage + stop
+
+    ; Equivalent 80386 (sequentialise) :
+    MOV     ESI, [_ia64_r15]       ; adresse
+    MOV     EAX, [ESI]             ; ld4
+    MOV     [_ia64_r14], EAX
+    MOV     EAX, [_ia64_r17]       ; add
+    ADD     EAX, [_ia64_r18]
+    MOV     [_ia64_r16], EAX
+    MOV     EAX, [_ia64_r20]       ; shl
+    SHL     EAX, 2
+    MOV     [_ia64_r19], EAX
+
+  Les instructions en parallele dans un meme groupe (avant un stop)
+  sont converties en instructions sequentielles en x86. L'ordre
+  doit respecter les dependances de donnees. Si deux instructions
+  du meme groupe lisent et ecrivent le meme registre, il faut
+  utiliser des temporaires pour preserver la semantique parallele.
+
+------------------------------------------------------------------------------
+18.9 Conversion de la pile de registres tournante (RSE)
+------------------------------------------------------------------------------
+
+  L'Itanium possede un mecanisme unique : la pile de registres
+  tournante (Register Stack Engine). Les registres r32-r127 forment
+  une pile circulaire. A chaque appel de fonction, un nouveau cadre
+  de registres est alloue automatiquement via l'instruction alloc.
+
+    alloc r14 = ar.pfs, inputs, locals, outputs, rotating
+
+  En x86, ce mecanisme n'existe pas. Il doit etre remplace par un
+  cadre de pile classique :
+
+    ; IA-64 : prologue de fonction
+    alloc r35 = ar.pfs, 3, 5, 2, 0   ; 3 in, 5 local, 2 out
+    mov r33 = b0                       ; sauver adresse retour
+
+    ; Equivalent 80386 :
+    PUSH    EBP
+    MOV     EBP, ESP
+    SUB     ESP, 20           ; 5 locals * 4 octets
+    ; (les parametres d'entree sont a [EBP+8], [EBP+12], ...)
+    ; (les variables locales sont a [EBP-4], [EBP-8], ...)
+    ; (pas besoin de sauver b0, CALL gere l'adresse de retour)
+
+    ; IA-64 : epilogue de fonction
+    mov ar.pfs = r35                   ; restaurer pfs
+    mov b0 = r33                       ; restaurer adresse retour
+    br.ret.sptk b0                     ; retour
+
+    ; Equivalent 80386 :
+    MOV     ESP, EBP
+    POP     EBP
+    RET
+
+  Les registres rotatifs (pour les boucles pipelinee avec br.ctop)
+  n'ont pas d'equivalent en x86. Le code doit etre deroulé ou
+  converti en boucle classique avec des MOV explicites.
+
+------------------------------------------------------------------------------
+18.10 Conversion de la speculation
+------------------------------------------------------------------------------
+
+  L'Itanium supporte les chargements speculatifs : un chargement
+  ld.s peut etre place avant un branchement pour anticiper un acces
+  memoire. Si le chargement provoque une exception (page fault, etc.),
+  l'exception est differee dans un NaT (Not a Thing) bit associe au
+  registre. L'instruction chk.s verifie le NaT et branche vers un
+  code de recuperation si necessaire.
+
+    ; IA-64 : speculation
+    ld4.s r14 = [r15]         ; chargement speculatif
+    ...                       ; autres instructions
+    chk.s r14, recovery       ; verifier si le chargement a reussi
+    ; utiliser r14
+    ...
+    recovery:
+    ld4 r14 = [r15]           ; recharger normalement si echec
+
+    ; Equivalent 80386 :
+    ; La speculation n'existe pas en x86.
+    ; Convertir simplement en chargement normal :
+    MOV     ESI, [_ia64_r15]
+    MOV     EAX, [ESI]
+    MOV     [_ia64_r14], EAX
+    ; (le chk.s est elimine)
+
+  Les chargements avances (ld.a / ld.c) suivent le meme principe :
+  le ld.a anticipe un chargement et le ld.c verifie qu'il est
+  toujours valide (pas de store intermediaire sur la meme adresse).
+  En x86, convertir simplement en chargement normal.
+
+------------------------------------------------------------------------------
+18.11 Differences architecturales notables
+------------------------------------------------------------------------------
+
+  (a) Largeur des donnees : 64 bits vs 32 bits
+
+    L'Itanium est nativement 64 bits. Toutes les operations entieres
+    travaillent sur 64 bits. Le 80386 est 32 bits. Les valeurs 64 bits
+    doivent etre gerees en deux parties de 32 bits :
+
+    ; IA-64 : addition 64 bits
+    add r14 = r15, r16
+
+    ; Equivalent 80386 (64 bits emule) :
+    MOV     EAX, [_ia64_r15]       ; partie basse
+    ADD     EAX, [_ia64_r16]
+    MOV     [_ia64_r14], EAX
+    MOV     EAX, [_ia64_r15+4]     ; partie haute
+    ADC     EAX, [_ia64_r16+4]
+    MOV     [_ia64_r14+4], EAX
+
+    Si le code source IA-64 n'utilise que des valeurs 32 bits (ce
+    qui est courant pour les programmes portes), la partie haute peut
+    etre ignoree et la conversion simplifiee.
+
+  (b) Nombre de registres : 128+128+64+8 vs 8
+
+    Le nombre massif de registres de l'Itanium est son principal
+    avantage. En x86, la pression sur les registres est beaucoup
+    plus forte. Le code converti sera significativement plus gros
+    et plus lent a cause des acces memoire supplementaires pour
+    simuler les registres manquants.
+
+  (c) Predication vs branchements
+
+    La predication de l'Itanium elimine de nombreux branchements,
+    ce qui ameliore les performances du pipeline. En x86, chaque
+    instruction predicatee devient un branchement conditionnel,
+    ce qui augmente la taille du code et les penalites de prediction
+    de branchement.
+
+  (d) Bundles et parallelisme explicite
+
+    Le compilateur IA-64 expose le parallelisme au materiel via les
+    bundles et les templates. En x86, le processeur doit decouvrir
+    le parallelisme dynamiquement (execution dans le desordre).
+    La conversion sequentialise naturellement le code.
+
+  (e) Pile de registres tournante (RSE)
+
+    Le RSE de l'Itanium permet des appels de fonction tres rapides
+    sans sauvegarder/restaurer explicitement les registres. En x86,
+    chaque appel necessite PUSH/POP ou MOV pour sauvegarder les
+    registres. Le code converti aura plus d'instructions de pile.
+
+  (f) Chargements speculatifs et avances
+
+    Ces mecanismes n'existent pas en x86 et sont simplement elimines
+    lors de la conversion. Le code x86 resultant est correct mais
+    perd l'avantage de performance de la speculation.
+
+  (g) Fused Multiply-Add (FMA)
+
+    L'Itanium supporte nativement les operations fused multiply-add
+    (fma, fms, fnma) qui effectuent une multiplication et une
+    addition en une seule instruction avec un seul arrondi. En x87,
+    ces operations doivent etre decomposees en FMUL + FADD, ce qui
+    introduit un arrondi supplementaire et peut modifier legerement
+    les resultats numeriques.
+
+  (h) Adressage et modele memoire
+
+    L'Itanium utilise un modele memoire relaxe (weak ordering) ou
+    les acces memoire peuvent etre reordonnees. Le 80386 a un modele
+    plus strict. Les instructions de barriere memoire IA-64 (mf,
+    mf.a) peuvent etre ignorees en x86 mono-processeur.
+
+  (i) Instructions systeme
+
+    L'Itanium possede de nombreuses instructions systeme specifiques
+    (rfi, bsw, ptc.l, ptc.g, itc.d, itc.i, tak, thash, etc.) qui
+    n'ont pas d'equivalent en 80386. Ces instructions sont utilisees
+    par le noyau du systeme d'exploitation et ne se trouvent
+    normalement pas dans le code utilisateur.
+
+  (j) NaT (Not a Thing)
+
+    Chaque registre entier IA-64 possede un bit NaT qui indique si
+    la valeur est valide. Ce mecanisme n'existe pas en x86. Les
+    verifications de NaT (tnat, chk.s) sont eliminees lors de la
+    conversion.
 
 ==============================================================================
   FIN DU DOCUMENT - ASSEMBLEUR 80386
