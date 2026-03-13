@@ -2934,6 +2934,13 @@ Begin
             EmitComment('--- trailing lambda ---');
             EmitLabel(LamLbl);
             EmitProlog;
+            SaveFrameSize := CurFrameSize;
+            SaveFnRetLbl  := CurFnRetLbl;
+            SaveFnName    := CurFnName;
+            CurFrameSize  := 0;
+            CurFnRetLbl   := LamRet;
+            CurFnName     := 'lambda';
+            Inc(CurFnDepth);
             SymEnterScope;
             SymAdd('it', SK_PARAM, TY_IDX_INT, 4);
             ParserAdvance; { consomme accolade ouvrante }
@@ -2945,6 +2952,10 @@ Begin
             EmitLabel(LamRet);
             EmitEpilog;
             SymLeaveScope;
+            Dec(CurFnDepth);
+            CurFrameSize := SaveFrameSize;
+            CurFnRetLbl  := SaveFnRetLbl;
+            CurFnName    := SaveFnName;
             EmitLabel(LamSkp);
             EmitInstrAB('MOV', 'AX', 'OFFSET ' + LamLbl);
             EmitInstrA('PUSH', 'AX');
@@ -5826,8 +5837,7 @@ Begin
   ParamCnt := 0;
   If IsExt Then
   Begin
-    ParamOfs := 4 + ParamCnt * 2;
-    SymAdd('this', SK_PARAM, TypeLookupName(ExtType), ParamOfs);
+    SymAdd('this', SK_PARAM, TypeLookupName(ExtType), 4);
     Inc(ParamCnt);
   End;
 
