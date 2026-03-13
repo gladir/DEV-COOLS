@@ -402,7 +402,7 @@
             RuntimeEmitted : flag pour n emettre le runtime qu une seule fois
             Heap statique : _PY_HEAP DB 4096 DUP(0) + _PY_HEAPTOP DW 0
 
-  TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES
+  TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES [IMPLEMENTE]
             EmitClose : END _PYF___main__ dans _TEXT ENDS / DATA ENDS
             Run : pipeline complet LexInit -> ParseModule ->
               EmitRuntime -> _TEXT ENDS / EmitDataSeg / END _PYF___main__
