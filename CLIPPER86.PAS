@@ -4783,7 +4783,7 @@ Begin
             ParserAdvance;
         End;
         { Retourner "N" pour les nombres (approche simplifiee) }
-        EmitInstrAB('MOV', 'BYTE PTR [_CL_VALTBUF]', '78');  { 'N' }
+        EmitInstrAB('MOV', 'BYTE PTR [_CL_VALTBUF]', '78');  { 78 = 'N' (numeric) }
         EmitInstrAB('MOV', 'BYTE PTR [_CL_VALTBUF+1]', '0');
         EmitInstrAB('MOV', 'AX', 'OFFSET _CL_VALTBUF');
         Res.Kind := EK_AX;
@@ -4802,7 +4802,7 @@ Begin
           If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
             ParserAdvance;
         End;
-        EmitInstrAB('MOV', 'BYTE PTR [_CL_VALTBUF]', '85');  { 'U' }
+        EmitInstrAB('MOV', 'BYTE PTR [_CL_VALTBUF]', '85');  { 85 = 'U' (undefined) }
         EmitInstrAB('MOV', 'BYTE PTR [_CL_VALTBUF+1]', '0');
         EmitInstrAB('MOV', 'AX', 'OFFSET _CL_VALTBUF');
         Res.Kind := EK_AX;
