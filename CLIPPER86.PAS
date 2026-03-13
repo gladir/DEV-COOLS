@@ -3238,10 +3238,20 @@ Begin
         If (LeftType = TY_IDX_CHAR) Or
            (TypeInfer(Right) = TY_IDX_CHAR) Then
         Begin
-          { Comparaison souple chaines : _CLRT_STRCMP }
+          { Comparaison souple chaines : _CLRT_STRCMP -> 0 si egal }
           EmitInstrAB('MOV', 'SI', 'AX');
           EmitInstrAB('MOV', 'DI', 'BX');
           EmitInstrA('CALL', CL_RT_PFX + 'STRCMP');
+          { Convertir : AX=0 (egal) -> AX=1, sinon -> AX=0 }
+          LblSkip := LabelGen;
+          LblEnd  := LabelGen;
+          EmitInstrAB('CMP', 'AX', '0');
+          EmitInstrA('JE', LblSkip);
+          EmitInstrAB('MOV', 'AX', '0');
+          EmitInstrA('JMP', LblEnd);
+          EmitLabel(LblSkip);
+          EmitInstrAB('MOV', 'AX', '1');
+          EmitLabel(LblEnd);
         End
         Else
         Begin
@@ -3264,11 +3274,20 @@ Begin
         If (LeftType = TY_IDX_CHAR) Or
            (TypeInfer(Right) = TY_IDX_CHAR) Then
         Begin
-          { Comparaison chaines != : _CLRT_STRCMP + XOR 1 }
+          { Comparaison chaines != : _CLRT_STRCMP -> AX!=0 si different }
           EmitInstrAB('MOV', 'SI', 'AX');
           EmitInstrAB('MOV', 'DI', 'BX');
           EmitInstrA('CALL', CL_RT_PFX + 'STRCMP');
-          EmitInstrAB('XOR', 'AX', '1');
+          { Convertir : AX!=0 -> AX=1, AX==0 -> AX=0 }
+          LblSkip := LabelGen;
+          LblEnd  := LabelGen;
+          EmitInstrAB('CMP', 'AX', '0');
+          EmitInstrA('JNE', LblSkip);
+          EmitInstrAB('MOV', 'AX', '0');
+          EmitInstrA('JMP', LblEnd);
+          EmitLabel(LblSkip);
+          EmitInstrAB('MOV', 'AX', '1');
+          EmitLabel(LblEnd);
         End
         Else
         Begin
@@ -3291,12 +3310,10 @@ Begin
         If (LeftType = TY_IDX_CHAR) Or
            (TypeInfer(Right) = TY_IDX_CHAR) Then
         Begin
-          { Comparaison chaines < : _CLRT_STRCMP -> -1 si inferieur }
+          { Comparaison chaines < : _CLRT_STRCMP -> AX<0 si inferieur }
           EmitInstrAB('MOV', 'SI', 'AX');
           EmitInstrAB('MOV', 'DI', 'BX');
           EmitInstrA('CALL', CL_RT_PFX + 'STRCMP');
-          { AX=1 si egal, AX=0 sinon ; on utilise drapeaux de STRCMP }
-          { _CLRT_STRCMP renvoie -1/0/1 ; < veut dire AX < 0 }
           LblSkip := LabelGen;
           LblEnd  := LabelGen;
           EmitInstrAB('CMP', 'AX', '0');
@@ -4805,7 +4822,7 @@ Begin
   EmitBlankLine;
 
   { --- _CLRT_POWER : puissance entiere --- }
-  (* AX=base (1er param [SP+2]), BX=exposant (2e param [SP+4])
+  (* base = 1er param [BP+4], exposant = 2e param [BP+6]
      Resultat dans AX. Exposant negatif -> AX=0.                    *)
   EmitLabel(CL_RT_PFX + 'POWER');
   EmitInstr('PUSH   BP');
@@ -4873,7 +4890,7 @@ Begin
   { --- _CLRT_STRCMP : comparaison souple de chaines --- }
   (* SI=str1, DI=str2
      Compare octet par octet, s arrete a la longueur de str2
-     Retourne AX = -1 (inf), 0 (sup/diff), 1 (egal)
+     Retourne AX = -1 (inferieur), 0 (egal), 1 (superieur)
      Semantique Clipper : = compare sur la longueur de droite      *)
   EmitLabel(CL_RT_PFX + 'STRCMP');
   EmitInstr('PUSH   SI');
@@ -4892,13 +4909,13 @@ Begin
   EmitInstrA('INC', 'DI');
   EmitInstrA('JMP', CL_RT_PFX + 'SCMP_LP');
   EmitLabel(CL_RT_PFX + 'SCMP_EQ');
-  EmitInstrAB('MOV', 'AX', '1');    { egal }
+  EmitInstrAB('MOV', 'AX', '0');    { egal }
   EmitInstrA('JMP', CL_RT_PFX + 'SCMP_DN');
   EmitLabel(CL_RT_PFX + 'SCMP_LT');
   EmitInstrAB('MOV', 'AX', '-1');   { inferieur }
   EmitInstrA('JMP', CL_RT_PFX + 'SCMP_DN');
   EmitLabel(CL_RT_PFX + 'SCMP_GT');
-  EmitInstrAB('MOV', 'AX', '0');    { superieur/different }
+  EmitInstrAB('MOV', 'AX', '1');    { superieur }
   EmitLabel(CL_RT_PFX + 'SCMP_DN');
   EmitInstr('POP    DI');
   EmitInstr('POP    SI');
@@ -5001,7 +5018,7 @@ Begin
   EmitInstrAB('CMP', 'CX', '0');
   EmitInstrA('JE', CL_RT_PFX + 'STR_DN');
   EmitInstrA('DEC', 'DI');
-  EmitInstrAB('CMP', 'BYTE PTR [DI]', '32');
+  EmitInstrAB('CMP', 'BYTE PTR [DI]', '32');  { 32 = espace }
   EmitInstrA('JNE', CL_RT_PFX + 'STR_DN');
   EmitInstrA('DEC', 'CX');
   EmitInstrA('JMP', CL_RT_PFX + 'STR_TR');
