@@ -11406,7 +11406,6 @@ Procedure PPApplyCommands(Var Line : String);
 Var
   I, PP, LP    : Integer;
   PatW, LinW   : TString;
-  PatRest      : TString;
   ResultStr    : TString;
   MarkerName   : TString;
   MarkerVal    : TString;
