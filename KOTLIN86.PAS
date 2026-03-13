@@ -393,7 +393,7 @@
             let : x?.let { bloc avec it } -> if (x != null) { bloc }
               Emission comme if/else avec variable temporaire
 
-  TODO 21 - HERITAGE, INTERFACES ET OBJETS
+  TODO 21 - HERITAGE, INTERFACES ET OBJETS [IMPLEMENTE]
             Heritage : open class Parent / class Enfant : Parent(args)
               open : permet l heritage (par defaut les classes sont final)
               Surcharge : override fun methode() dans la sous-classe
@@ -554,6 +554,10 @@ Const
   MAX_ARR_ELEM  = 64;   { elements max par tableau literal inline }
   MAX_CLASS_FIELDS = 16; { champs max par classe                  }
   MAX_CLASSES      = 32; { classes max dans le programme           }
+  MAX_CLASS_METHODS = 16; { methodes max par classe (vtable)       }
+  MAX_INTERFACES   = 16; { interfaces max dans le programme        }
+  MAX_ITF_METHODS  = 8;  { methodes max par interface              }
+  MAX_ENUM_ENTRIES = 32; { entrees max par enum class              }
   MAX_FUN_PARAMS   = 8;  { parametres max par fonction utilisateur }
   STACK_SIZE    = 1024;
 
@@ -726,15 +730,61 @@ Type
     Offset  : Integer;   { offset en octets depuis debut objet  }
   End;
 
+  { ---- Methodes de classe pour vtable (TODO 21) ------------ }
+  TClassMethod = Record
+    Name     : TString;  { nom de la methode                    }
+    AsmLabel : TString;  { label ASM : _KTF_Classe_methode      }
+    VtOfs    : Integer;  { offset dans la vtable (en words)     }
+    IsOpen   : Boolean;  { open -> peut etre surchargee         }
+    IsAbstract : Boolean; { abstract -> pas de corps             }
+    IsOverride : Boolean; { override -> surcharge parent         }
+  End;
+
   TClassInfo = Record
     Name       : TString;   { nom de la classe                  }
     AsmLabel   : TString;   { prefixe ASM : _KTC_NomClasse      }
     IsData     : Boolean;   { true si data class                 }
+    IsOpen     : Boolean;   { true si open class (heritage ok)   }
+    IsAbstract : Boolean;   { true si abstract class             }
     FieldCount : Integer;   { nombre de champs                   }
     Fields     : Array[0..MAX_CLASS_FIELDS-1] Of TClassField;
     ObjSize    : Integer;   { taille objet en octets             }
     TypeIdx    : Integer;   { indice dans TypeTab                }
     SymIdx     : Integer;   { indice dans SymTab                 }
+    ParentIdx  : Integer;   { indice ClassTab du parent, -1 sinon }
+    MethCount  : Integer;   { nombre de methodes dans vtable     }
+    Meths      : Array[0..MAX_CLASS_METHODS-1] Of TClassMethod;
+    ItfCount   : Integer;   { nombre d interfaces implementees   }
+    ItfIdxs    : Array[0..3] Of Integer; { indices InterfaceTab  }
+  End;
+
+  { ---- Descripteurs d interfaces (TODO 21) ----------------- }
+  TItfMethod = Record
+    Name     : TString;  { nom de la methode                    }
+  End;
+
+  TInterfaceInfo = Record
+    Name       : TString;   { nom de l interface                 }
+    AsmLabel   : TString;   { prefixe ASM : _KTI_NomInterface   }
+    MethCount  : Integer;   { nombre de methodes declarees       }
+    Meths      : Array[0..MAX_ITF_METHODS-1] Of TItfMethod;
+    TypeIdx    : Integer;   { indice dans TypeTab                }
+    SymIdx     : Integer;   { indice dans SymTab                 }
+  End;
+
+  { ---- Descripteurs d enum class (TODO 21) ----------------- }
+  TEnumEntry = Record
+    Name     : TString;  { nom de l entree (ex: NORTH)          }
+    Ordinal  : Integer;  { valeur ordinale 0,1,2,...             }
+  End;
+
+  TEnumInfo = Record
+    Name       : TString;   { nom de l enum class               }
+    AsmLabel   : TString;   { prefixe ASM : _KTE_Nom            }
+    EntryCount : Integer;
+    Entries    : Array[0..MAX_ENUM_ENTRIES-1] Of TEnumEntry;
+    TypeIdx    : Integer;
+    SymIdx     : Integer;
   End;
 
 { ============================================================
@@ -819,6 +869,14 @@ Var
   { Null safety (TODO 20) }
   NullSafeCount     : Integer; { compteur pour labels null safety     }
   GLastTypeNullable : Boolean; { flag nullable apres ParseTypeAnnotation }
+
+  { Heritage, interfaces et objets (TODO 21) }
+  InterfaceTab   : Array[0..MAX_INTERFACES-1] Of TInterfaceInfo;
+  InterfaceCount : Integer;  { nombre d interfaces declarees          }
+  EnumTab        : Array[0..MAX_CLASSES-1] Of TEnumInfo;
+  EnumCount      : Integer;  { nombre d enum classes declarees        }
+  VtableCount    : Integer;  { compteur pour vtables emises           }
+  ObjectCount    : Integer;  { compteur pour object singletons        }
 
 { ============================================================
   FORWARD DECLARATIONS
@@ -938,6 +996,12 @@ Procedure EmitScopeRuntime; Forward;
 Procedure EmitStringRuntime; Forward;
 { TODO 20 - Null safety }
 Procedure EmitNullSafetyRuntime; Forward;
+{ TODO 21 - Heritage, interfaces et objets }
+Procedure ParseInterfaceDecl;     Forward;
+Procedure ParseEnumClassDecl;     Forward;
+Procedure ParseObjectDecl;        Forward;
+Procedure EmitInheritanceRuntime; Forward;
+Function  InterfaceFind(Const Name : TString) : Integer; Forward;
 { General }
 Procedure ParserAdvance; Forward;
 Procedure ParseStmt;     Forward;
@@ -1252,6 +1316,10 @@ Begin
   StringBufCount := 0;
   NullSafeCount  := 0;
   GLastTypeNullable := False;
+  InterfaceCount := 0;
+  EnumCount      := 0;
+  VtableCount    := 0;
+  ObjectCount    := 0;
   LabelGenSeq    := 0;
   GExprDummy.Kind    := EK_NONE;
   GExprDummy.ImmVal  := 0;
@@ -4498,6 +4566,7 @@ Begin
   EmitScopeRuntime;
   EmitStringRuntime;
   EmitNullSafetyRuntime;
+  EmitInheritanceRuntime;
 End;
 
 (* ---- EmitExprRuntime : routines runtime pour expressions ------ *)
@@ -4755,15 +4824,20 @@ Begin
   EmitBlankLine;
 End;
 
-(* ---- ParseClassDecl : [data] class Nom(val/var p: T, ...) --- *)
+(* ---- ParseClassDecl : [open|abstract|data] class Nom(val/var p: T, ...) --- *)
+(* [: Parent(args), Interface, ...] { corps avec fun/override }                *)
 (* Genere :                                                       *)
-(*   - Entree dans ClassTab                                       *)
+(*   - Entree dans ClassTab avec heritage (ParentIdx)             *)
 (*   - Type dans TypeTab (TYK_CLASS)                               *)
 (*   - Symbole dans SymTab (SK_CLASS)                              *)
 (*   - Pour data class : procedure _KTF_Nom_toString               *)
+(*   - Methodes dans ClassTab.Meths[] avec vtable offsets          *)
+(*   - Vtable dans DATA _KTC_Nom_VT avec ptrs de methodes         *)
 Procedure ParseClassDecl;
 Var
   IsData     : Boolean;
+  IsOpen     : Boolean;
+  IsAbstract : Boolean;
   ClsName    : TString;
   ClsLabel   : TString;
   ClsIdx     : Integer;
@@ -4780,12 +4854,36 @@ Var
   SIdx       : Integer;
   FieldOfs   : TString;
   SaveClass  : TString;
+  ParentName : TString;
+  ParentIdx  : Integer;
+  MethName   : TString;
+  MethLabel  : TString;
+  MethCount  : Integer;
+  ItfName    : TString;
+  ItfIdx     : Integer;
+  ItfCount   : Integer;
+  IsOverride : Boolean;
+  IsOpenM    : Boolean;
+  IsAbstractM: Boolean;
+  SkipLbl    : TString;
+  FnRetLbl   : TString;
 Begin
   IsData := False;
-  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'data') Then
+  IsOpen := False;
+  IsAbstract := False;
+  { Detecter les modificateurs }
+  While (CurToken.Kind = TK_KEYWORD) And
+        ((CurToken.Val = 'data') Or (CurToken.Val = 'open') Or
+         (CurToken.Val = 'abstract') Or (CurToken.Val = 'sealed')) Do
   Begin
-    IsData := True;
-    ParserAdvance; { consomme 'data' }
+    If CurToken.Val = 'data' Then IsData := True
+    Else If CurToken.Val = 'open' Then IsOpen := True
+    Else If CurToken.Val = 'abstract' Then
+    Begin
+      IsAbstract := True;
+      IsOpen := True; { abstract implique open }
+    End;
+    ParserAdvance;
   End;
   If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'class') Then
     ParserAdvance { consomme 'class' }
@@ -4803,7 +4901,10 @@ Begin
   ClsLabel := KT_CLS_PFX + ClsName;
   ParserAdvance; { consomme le nom }
   FldCount := 0;
-  ObjSz := 2;  { premier word = vtable (reserve pour dispatch virtuel futur, mis a 0) }
+  ObjSz := 2;  { premier word = vtable ptr }
+  MethCount := 0;
+  ParentIdx := -1;
+  ItfCount := 0;
   { Parser les parametres du constructeur primaire }
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
   Begin
@@ -4855,6 +4956,59 @@ Begin
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
       ParserAdvance; { consomme ')' }
   End;
+  { Parser heritage : SuperType(args), Interface1, Interface2 }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+  Begin
+    ParserAdvance; { consomme ':' }
+    { Premier element : peut etre parent class ou interface }
+    While (CurToken.Kind = TK_IDENT) And (CurToken.Kind <> TK_EOF) Do
+    Begin
+      ParentName := CurToken.Val;
+      ParserAdvance;
+      { Si suivi de '(' c est un constructeur parent }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        { C est un parent class }
+        ParentIdx := ClassFind(ParentName);
+        { Copier les champs du parent }
+        If ParentIdx >= 0 Then
+        Begin
+          { Copier les methodes du parent dans notre vtable }
+          For I := 0 To ClassTab[ParentIdx].MethCount - 1 Do
+          Begin
+            If MethCount < MAX_CLASS_METHODS Then
+            Begin
+              ClassTab[ClassCount].Meths[MethCount] :=
+                ClassTab[ParentIdx].Meths[I];
+              Inc(MethCount);
+            End;
+          End;
+        End;
+        { Consommer les args du constructeur parent (ignores) }
+        ParserAdvance; { consomme '(' }
+        While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) And
+              (CurToken.Kind <> TK_EOF) Do
+          ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+      End
+      Else
+      Begin
+        { C est une interface }
+        ItfIdx := InterfaceFind(ParentName);
+        If (ItfIdx >= 0) And (ItfCount < 4) Then
+        Begin
+          ClassTab[ClassCount].ItfIdxs[ItfCount] := ItfIdx;
+          Inc(ItfCount);
+        End;
+      End;
+      { Virgule => plus d heritage }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance
+      Else
+        Break;
+    End;
+  End;
   { Enregistrer le type dans TypeTab }
   If TypeCount < MAX_TYPE Then
   Begin
@@ -4871,25 +5025,18 @@ Begin
   ClassTab[ClsIdx].Name       := ClsName;
   ClassTab[ClsIdx].AsmLabel   := ClsLabel;
   ClassTab[ClsIdx].IsData     := IsData;
+  ClassTab[ClsIdx].IsOpen     := IsOpen;
+  ClassTab[ClsIdx].IsAbstract := IsAbstract;
   ClassTab[ClsIdx].FieldCount := FldCount;
   ClassTab[ClsIdx].ObjSize    := ObjSz;
   ClassTab[ClsIdx].TypeIdx    := TIdx;
+  ClassTab[ClsIdx].ParentIdx  := ParentIdx;
+  ClassTab[ClsIdx].MethCount  := MethCount;
+  ClassTab[ClsIdx].ItfCount   := ItfCount;
   { Enregistrer le symbole }
   SIdx := SymAdd(ClsName, SK_CLASS, TIdx, 0);
   ClassTab[ClsIdx].SymIdx := SIdx;
   Inc(ClassCount);
-  { Ignorer heritage : SuperType(args), Interface }
-  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
-  Begin
-    ParserAdvance; { consomme ':' }
-    While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = CH_LBRACE)) And
-          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{')) And
-          (CurToken.Kind <> TK_EOF) And
-          Not ((CurToken.Kind = TK_KEYWORD) And
-               ((CurToken.Val = 'val') Or (CurToken.Val = 'var') Or
-                (CurToken.Val = 'class') Or (CurToken.Val = 'fun'))) Do
-      ParserAdvance;
-  End;
   { Pour data class : emettre _KTF_ClsName_toString }
   If IsData And (FldCount > 0) Then
   Begin
@@ -4950,16 +5097,449 @@ Begin
      ((CurToken.Val = CH_LBRACE) Or (CurToken.Val = '{')) Then
   Begin
     ParserAdvance; (* consomme accolade ouvrante *)
-    (* Parser le contenu du corps : val/var dans la classe sont ignores *)
     While Not ((CurToken.Kind = TK_PUNCT) And
                ((CurToken.Val = CH_RBRACE) Or (CurToken.Val = '}'))) And
           (CurToken.Kind <> TK_EOF) Do
-      ParserAdvance;
+    Begin
+      (* Methodes : open/override/abstract fun nom(...) bloc *)
+      IsOverride := False;
+      IsOpenM := False;
+      IsAbstractM := False;
+      If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'override') Then
+      Begin
+        IsOverride := True;
+        ParserAdvance;
+      End;
+      If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'open') Then
+      Begin
+        IsOpenM := True;
+        ParserAdvance;
+      End;
+      If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'abstract') Then
+      Begin
+        IsAbstractM := True;
+        ParserAdvance;
+      End;
+      If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'fun') Then
+      Begin
+        ParserAdvance; { consomme 'fun' }
+        If CurToken.Kind = TK_IDENT Then
+        Begin
+          MethName := CurToken.Val;
+          MethLabel := KT_FN_PFX + ClsName + '_' + MethName;
+          ParserAdvance; { consomme le nom }
+          { Enregistrer la methode dans la vtable }
+          If IsOverride Then
+          Begin
+            { Chercher la methode dans la vtable heritee pour la surcharger }
+            For I := 0 To ClassTab[ClsIdx].MethCount - 1 Do
+              If ClassTab[ClsIdx].Meths[I].Name = MethName Then
+              Begin
+                ClassTab[ClsIdx].Meths[I].AsmLabel := MethLabel;
+                ClassTab[ClsIdx].Meths[I].IsOverride := True;
+                Break;
+              End;
+          End
+          Else If MethCount < MAX_CLASS_METHODS Then
+          Begin
+            ClassTab[ClsIdx].Meths[MethCount].Name       := MethName;
+            ClassTab[ClsIdx].Meths[MethCount].AsmLabel    := MethLabel;
+            ClassTab[ClsIdx].Meths[MethCount].VtOfs       := MethCount * 2;
+            ClassTab[ClsIdx].Meths[MethCount].IsOpen      := IsOpenM Or IsOpen;
+            ClassTab[ClsIdx].Meths[MethCount].IsAbstract  := IsAbstractM;
+            ClassTab[ClsIdx].Meths[MethCount].IsOverride  := False;
+            Inc(MethCount);
+            ClassTab[ClsIdx].MethCount := MethCount;
+          End;
+          { Consommer parametres ( ... ) }
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+          Begin
+            ParserAdvance;
+            While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) And
+                  (CurToken.Kind <> TK_EOF) Do
+              ParserAdvance;
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance;
+          End;
+          { Consommer type de retour : Type }
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+          Begin
+            ParserAdvance;
+            If CurToken.Kind = TK_IDENT Then ParserAdvance;
+          End;
+          { Corps de la methode : emettre le code }
+          If Not IsAbstractM Then
+          Begin
+            If (CurToken.Kind = TK_PUNCT) And
+               ((CurToken.Val = CH_LBRACE) Or (CurToken.Val = '{')) Then
+            Begin
+              SkipLbl := LabelGen;
+              FnRetLbl := LabelGen;
+              EmitInstrA('JMP', SkipLbl);
+              EmitBlankLine;
+              EmitComment('method ' + ClsName + '.' + MethName);
+              EmitLabel(MethLabel);
+              EmitInstrA('PUSH', 'BP');
+              EmitInstrAB('MOV', 'BP', 'SP');
+              ParserAdvance; (* consomme { *)
+              While Not ((CurToken.Kind = TK_PUNCT) And
+                         ((CurToken.Val = CH_RBRACE) Or (CurToken.Val = '}'))) And
+                    (CurToken.Kind <> TK_EOF) Do
+                ParseStmt;
+              If (CurToken.Kind = TK_PUNCT) And
+                 ((CurToken.Val = CH_RBRACE) Or (CurToken.Val = '}')) Then
+                ParserAdvance;
+              EmitLabel(FnRetLbl);
+              EmitInstrAB('MOV', 'SP', 'BP');
+              EmitInstrA('POP', 'BP');
+              EmitInstr('RET');
+              EmitLabel(SkipLbl);
+              EmitBlankLine;
+            End;
+          End
+          Else
+          Begin
+            { Abstract : pas de corps, emettre un stub }
+            EmitBlankLine;
+            EmitComment('abstract method ' + ClsName + '.' + MethName + ' (stub)');
+          End;
+        End;
+      End
+      Else
+      Begin
+        { Autre contenu dans le corps : proprietes, init, etc. -> ignorer }
+        ParserAdvance;
+      End;
+    End;
     If (CurToken.Kind = TK_PUNCT) And
        ((CurToken.Val = CH_RBRACE) Or (CurToken.Val = '}')) Then
       ParserAdvance; (* consomme accolade fermante *)
   End;
+  { Emettre la vtable dans DATA si la classe a des methodes }
+  If ClassTab[ClsIdx].MethCount > 0 Then
+  Begin
+    EmitBlankLine;
+    EmitComment('vtable for ' + ClsName);
+    For I := 0 To ClassTab[ClsIdx].MethCount - 1 Do
+    Begin
+      DataAdd(ClsLabel + '_VT' + IntToStr(I), DK_WORD, 0,
+              ClassTab[ClsIdx].Meths[I].AsmLabel);
+    End;
+    Inc(VtableCount);
+  End;
   CurClassName := SaveClass;
+End;
+
+{ ============================================================
+  TODO 21 - HERITAGE, INTERFACES ET OBJETS [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- InterfaceFind : recherche une interface par nom --------- *)
+Function InterfaceFind(Const Name : TString) : Integer;
+Var I : Integer;
+Begin
+  InterfaceFind := -1;
+  For I := 0 To InterfaceCount - 1 Do
+    If InterfaceTab[I].Name = Name Then
+    Begin
+      InterfaceFind := I;
+      Exit;
+    End;
+End;
+
+(* ---- ParseInterfaceDecl : interface Nom { fun m(); val p: T } *)
+Procedure ParseInterfaceDecl;
+Var
+  ItfName  : TString;
+  ItfLabel : TString;
+  ItfIdx   : Integer;
+  TIdx     : Integer;
+  SIdx     : Integer;
+  MName    : TString;
+  MCount   : Integer;
+Begin
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'interface') Then
+    ParserAdvance { consomme 'interface' }
+  Else
+  Begin
+    CompileError('mot-cle "interface" attendu');
+    Exit;
+  End;
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('nom d''interface attendu');
+    Exit;
+  End;
+  ItfName := CurToken.Val;
+  ItfLabel := KT_ITF_PFX + ItfName;
+  ParserAdvance; { consomme le nom }
+  MCount := 0;
+  { Enregistrer le type dans TypeTab }
+  If TypeCount < MAX_TYPE Then
+  Begin
+    TypeTab[TypeCount].Name := ItfName;
+    TypeTab[TypeCount].Kind := TYK_INTERFACE;
+    TypeTab[TypeCount].Size := 2; { ptr vtable }
+    TIdx := TypeCount;
+    Inc(TypeCount);
+  End
+  Else
+    TIdx := TY_IDX_ANY;
+  { Enregistrer dans InterfaceTab }
+  ItfIdx := InterfaceCount;
+  InterfaceTab[ItfIdx].Name     := ItfName;
+  InterfaceTab[ItfIdx].AsmLabel := ItfLabel;
+  InterfaceTab[ItfIdx].TypeIdx  := TIdx;
+  { Enregistrer le symbole }
+  SIdx := SymAdd(ItfName, SK_INTERFACE, TIdx, 0);
+  InterfaceTab[ItfIdx].SymIdx := SIdx;
+  { Parser le corps de l interface }
+  If (CurToken.Kind = TK_PUNCT) And
+     ((CurToken.Val = CH_LBRACE) Or (CurToken.Val = '{')) Then
+  Begin
+    ParserAdvance; { consomme { }
+    While Not ((CurToken.Kind = TK_PUNCT) And
+               ((CurToken.Val = CH_RBRACE) Or (CurToken.Val = '}'))) And
+          (CurToken.Kind <> TK_EOF) Do
+    Begin
+      If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'fun') Then
+      Begin
+        ParserAdvance; { consomme 'fun' }
+        If CurToken.Kind = TK_IDENT Then
+        Begin
+          MName := CurToken.Val;
+          If MCount < MAX_ITF_METHODS Then
+          Begin
+            InterfaceTab[ItfIdx].Meths[MCount].Name := MName;
+            Inc(MCount);
+          End;
+          ParserAdvance; { consomme le nom }
+        End;
+        { Consommer parametres }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) And
+                (CurToken.Kind <> TK_EOF) Do
+            ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        { Consommer type de retour }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+        Begin
+          ParserAdvance;
+          If CurToken.Kind = TK_IDENT Then ParserAdvance;
+        End;
+        { Corps optionnel (methode par defaut) -> ignorer }
+        If (CurToken.Kind = TK_PUNCT) And
+           ((CurToken.Val = CH_LBRACE) Or (CurToken.Val = '{')) Then
+        Begin
+          ParserAdvance;
+          While Not ((CurToken.Kind = TK_PUNCT) And
+                     ((CurToken.Val = CH_RBRACE) Or (CurToken.Val = '}'))) And
+                (CurToken.Kind <> TK_EOF) Do
+            ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And
+             ((CurToken.Val = CH_RBRACE) Or (CurToken.Val = '}')) Then
+            ParserAdvance;
+        End;
+      End
+      Else
+        ParserAdvance;
+    End;
+    If (CurToken.Kind = TK_PUNCT) And
+       ((CurToken.Val = CH_RBRACE) Or (CurToken.Val = '}')) Then
+      ParserAdvance;
+  End;
+  InterfaceTab[ItfIdx].MethCount := MCount;
+  Inc(InterfaceCount);
+  EmitBlankLine;
+  EmitComment('interface ' + ItfName + ' (' + IntToStr(MCount) + ' methods)');
+End;
+
+(* ---- ParseEnumClassDecl : enum class Nom { A, B, C } -------- *)
+Procedure ParseEnumClassDecl;
+Var
+  EnmName  : TString;
+  EnmLabel : TString;
+  EnmIdx   : Integer;
+  TIdx     : Integer;
+  SIdx     : Integer;
+  EntName  : TString;
+  EntCount : Integer;
+  Ord      : Integer;
+Begin
+  { 'enum' deja consomme, consommer 'class' }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'class') Then
+    ParserAdvance
+  Else
+  Begin
+    CompileError('mot-cle "class" attendu apres "enum"');
+    Exit;
+  End;
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('nom d''enum attendu');
+    Exit;
+  End;
+  EnmName := CurToken.Val;
+  EnmLabel := KT_ENM_PFX + EnmName;
+  ParserAdvance;
+  EntCount := 0;
+  Ord := 0;
+  { Enregistrer le type }
+  If TypeCount < MAX_TYPE Then
+  Begin
+    TypeTab[TypeCount].Name := EnmName;
+    TypeTab[TypeCount].Kind := TYK_ENUM;
+    TypeTab[TypeCount].Size := 2;
+    TIdx := TypeCount;
+    Inc(TypeCount);
+  End
+  Else
+    TIdx := TY_IDX_ANY;
+  { Enregistrer dans EnumTab }
+  EnmIdx := EnumCount;
+  EnumTab[EnmIdx].Name     := EnmName;
+  EnumTab[EnmIdx].AsmLabel := EnmLabel;
+  EnumTab[EnmIdx].TypeIdx  := TIdx;
+  { Enregistrer le symbole }
+  SIdx := SymAdd(EnmName, SK_ENUM, TIdx, 0);
+  EnumTab[EnmIdx].SymIdx := SIdx;
+  (* Parser le corps : A, B, C *)
+  If (CurToken.Kind = TK_PUNCT) And
+     ((CurToken.Val = CH_LBRACE) Or (CurToken.Val = '{')) Then
+  Begin
+    ParserAdvance;
+    While Not ((CurToken.Kind = TK_PUNCT) And
+               ((CurToken.Val = CH_RBRACE) Or (CurToken.Val = '}'))) And
+          (CurToken.Kind <> TK_EOF) Do
+    Begin
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        EntName := CurToken.Val;
+        If EntCount < MAX_ENUM_ENTRIES Then
+        Begin
+          EnumTab[EnmIdx].Entries[EntCount].Name    := EntName;
+          EnumTab[EnmIdx].Entries[EntCount].Ordinal := Ord;
+          Inc(EntCount);
+          Inc(Ord);
+          { Ajouter comme constante dans SymTab }
+          SIdx := SymAdd(EnmName + '_' + EntName, SK_VAL, TY_IDX_INT, 0);
+          SymTab[SIdx].IsConst := True;
+          { Ajouter dans DATA }
+          DataAdd(EnmLabel + '_' + EntName, DK_WORD, Ord - 1, '');
+          DataAdd(EnmLabel + '_N_' + EntName, DK_STR, 0, EntName);
+        End;
+        ParserAdvance;
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance
+      Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      Begin
+        ParserAdvance;
+        { Apres le ';' il peut y avoir des methodes -> ignorer }
+        While Not ((CurToken.Kind = TK_PUNCT) And
+                   ((CurToken.Val = CH_RBRACE) Or (CurToken.Val = '}'))) And
+              (CurToken.Kind <> TK_EOF) Do
+          ParserAdvance;
+      End;
+    End;
+    If (CurToken.Kind = TK_PUNCT) And
+       ((CurToken.Val = CH_RBRACE) Or (CurToken.Val = '}')) Then
+      ParserAdvance;
+  End;
+  EnumTab[EnmIdx].EntryCount := EntCount;
+  Inc(EnumCount);
+  EmitBlankLine;
+  EmitComment('enum class ' + EnmName + ' (' + IntToStr(EntCount) + ' entries)');
+End;
+
+(* ---- ParseObjectDecl : object Nom { ... } ------------------- *)
+(* Singleton : instance unique dans DATA                          *)
+Procedure ParseObjectDecl;
+Var
+  ObjName  : TString;
+  ObjLabel : TString;
+  TIdx     : Integer;
+  SIdx     : Integer;
+Begin
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'object') Then
+    ParserAdvance
+  Else
+  Begin
+    CompileError('mot-cle "object" attendu');
+    Exit;
+  End;
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('nom d''object attendu');
+    Exit;
+  End;
+  ObjName := CurToken.Val;
+  ObjLabel := KT_OBJ_PFX + ObjName;
+  ParserAdvance;
+  { Enregistrer le type }
+  If TypeCount < MAX_TYPE Then
+  Begin
+    TypeTab[TypeCount].Name := ObjName;
+    TypeTab[TypeCount].Kind := TYK_CLASS;
+    TypeTab[TypeCount].Size := 2;
+    TIdx := TypeCount;
+    Inc(TypeCount);
+  End
+  Else
+    TIdx := TY_IDX_ANY;
+  { Enregistrer le symbole }
+  SIdx := SymAdd(ObjName, SK_OBJECT, TIdx, 0);
+  { Ajouter une instance dans DATA }
+  DataAdd(ObjLabel, DK_WORD, 0, '');
+  Inc(ObjectCount);
+  { Parser le corps si present }
+  If (CurToken.Kind = TK_PUNCT) And
+     ((CurToken.Val = CH_LBRACE) Or (CurToken.Val = '{')) Then
+  Begin
+    ParserAdvance;
+    While Not ((CurToken.Kind = TK_PUNCT) And
+               ((CurToken.Val = CH_RBRACE) Or (CurToken.Val = '}'))) And
+          (CurToken.Kind <> TK_EOF) Do
+    Begin
+      If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'fun') Then
+        ParseFunDecl
+      Else
+        ParserAdvance;
+    End;
+    If (CurToken.Kind = TK_PUNCT) And
+       ((CurToken.Val = CH_RBRACE) Or (CurToken.Val = '}')) Then
+      ParserAdvance;
+  End;
+  EmitBlankLine;
+  EmitComment('object singleton ' + ObjName);
+End;
+
+(* ---- EmitInheritanceRuntime : routines heritage (TODO 21) ---- *)
+Procedure EmitInheritanceRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=========================================================');
+  EmitComment('TODO 21 - INHERITANCE RUNTIME');
+  EmitComment('=========================================================');
+
+  { _KTRT_VCALL : appel virtuel via vtable }
+  { Entree : BX = pointeur objet, CX = offset methode dans vtable }
+  { L objet a un ptr vtable a [BX+0] }
+  EmitBlankLine;
+  EmitComment('--- _KTRT_VCALL : BX=obj, CX=vtable offset -> CALL ---');
+  EmitLabel(KT_RT_PFX + 'VCALL');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', '[BX]');   { SI = ptr vtable }
+  EmitInstrAB('ADD', 'SI', 'CX');     { SI = vtable + offset }
+  EmitInstrAB('MOV', 'SI', '[SI]');   { SI = adresse methode }
+  EmitInstr('CALL SI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
 End;
 
 { ============================================================
@@ -7160,13 +7740,35 @@ Begin
     End;
     If (Kw = 'open') Or (Kw = 'abstract') Or (Kw = 'sealed') Then
     Begin
-      ParserAdvance; { consomme le modificateur }
-      If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'class') Then
-        ParseClassDecl
-      Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'fun') Then
-        ParseFunDecl
-      Else
-        ParserAdvance;
+      { Ne pas consommer : ParseClassDecl gere les modificateurs }
+      If (CurToken.Kind = TK_KEYWORD) Then
+      Begin
+        { Regarder si le prochain vrai mot-cle est 'class' ou 'fun' }
+        ParserAdvance; { consomme le modificateur }
+        If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'class') Then
+          ParseClassDecl
+        Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'fun') Then
+          ParseFunDecl
+        Else
+          ParserAdvance;
+      End;
+      Exit;
+    End;
+    { TODO 21 - interface, object, enum class }
+    If Kw = 'interface' Then
+    Begin
+      ParseInterfaceDecl;
+      Exit;
+    End;
+    If Kw = 'object' Then
+    Begin
+      ParseObjectDecl;
+      Exit;
+    End;
+    If Kw = 'enum' Then
+    Begin
+      ParserAdvance; { consomme 'enum' }
+      ParseEnumClassDecl;
       Exit;
     End;
     { TODO 17 - fun declaration }
