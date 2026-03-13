@@ -5464,7 +5464,711 @@
 11. EXEMPLES DE CODE
 ==============================================================================
 
-  (a completer)
+  Cette section presente des exemples complets de programmes assembleur
+  80386, illustrant les concepts decrits dans les sections precedentes.
+  Tous les exemples utilisent la syntaxe MASM en mode 32 bits FLAT.
+
+  11.1 Hello World (Win32 Console)
+  ----------------------------------
+
+  Programme minimal affichant "Hello, World!" sur la console Windows
+  en utilisant les API WriteConsoleA et ExitProcess.
+
+    .386
+    .MODEL FLAT, STDCALL
+    OPTION CASEMAP:NONE
+
+    ; Declarations externes des fonctions Win32
+    EXTRN GetStdHandle@4:NEAR
+    EXTRN WriteConsoleA@20:NEAR
+    EXTRN ExitProcess@4:NEAR
+
+    .STACK 4096
+
+    .DATA
+    message   DB  'Hello, World!', 0Dh, 0Ah, 0
+    msg_len   EQU $ - message - 1     ; Longueur sans le zero final
+
+    .DATA?
+    hStdOut   DD  ?                    ; Handle de la sortie standard
+    written   DD  ?                    ; Nombre de caracteres ecrits
+
+    .CODE
+    main PROC
+      ; Obtenir le handle de la sortie standard
+      PUSH -11                         ; STD_OUTPUT_HANDLE
+      CALL GetStdHandle@4
+      MOV [hStdOut], EAX
+
+      ; Ecrire le message
+      PUSH 0                           ; Parametre reserve (NULL)
+      PUSH OFFSET written              ; Adresse du compteur
+      PUSH msg_len                     ; Nombre de caracteres
+      PUSH OFFSET message              ; Adresse du message
+      PUSH [hStdOut]                   ; Handle de sortie
+      CALL WriteConsoleA@20
+
+      ; Terminer le programme
+      PUSH 0                           ; Code de sortie 0
+      CALL ExitProcess@4
+    main ENDP
+    END main
+
+  11.2 Calcul factoriel (iteratif et recursif)
+  -----------------------------------------------
+
+  11.2.1 Version iterative
+
+    ; Calcule n! de maniere iterative
+    ; Entree : ECX = n
+    ; Sortie : EAX = n!
+    Factoriel_Iter PROC
+      MOV EAX, 1                 ; Resultat = 1
+      CMP ECX, 1                 ; Si n <= 1, retourner 1
+      JLE @fin
+    @boucle:
+      MUL ECX                    ; EAX = EAX * ECX
+      DEC ECX                    ; ECX = ECX - 1
+      CMP ECX, 1                 ; Continuer si ECX > 1
+      JG  @boucle
+    @fin:
+      RET
+    Factoriel_Iter ENDP
+
+  11.2.2 Version recursive
+
+    ; Calcule n! de maniere recursive
+    ; Parametre sur la pile : n (DWORD)
+    ; Sortie : EAX = n!
+    Factoriel_Rec PROC
+      PUSH EBP
+      MOV EBP, ESP
+      MOV EAX, [EBP+8]          ; EAX = n
+
+      CMP EAX, 1                ; Si n <= 1
+      JLE @cas_base              ; Retourner 1
+
+      DEC EAX                    ; n - 1
+      PUSH EAX                   ; Empiler (n-1)
+      CALL Factoriel_Rec         ; EAX = (n-1)!
+      ADD ESP, 4                 ; Nettoyer la pile
+
+      MOV ECX, [EBP+8]          ; ECX = n
+      MUL ECX                    ; EAX = (n-1)! * n
+      JMP @fin
+
+    @cas_base:
+      MOV EAX, 1                 ; Retourner 1
+
+    @fin:
+      MOV ESP, EBP
+      POP EBP
+      RET
+    Factoriel_Rec ENDP
+
+  11.3 Manipulation de chaines
+  -------------------------------
+
+  11.3.1 Longueur d'une chaine (strlen)
+
+    ; Calcule la longueur d'une chaine terminee par zero
+    ; Entree : ESI = adresse de la chaine
+    ; Sortie : ECX = longueur
+    StrLen PROC
+      PUSH ESI                   ; Sauvegarder ESI
+      XOR ECX, ECX               ; Compteur = 0
+    @boucle:
+      LODSB                      ; AL = [ESI], ESI++
+      TEST AL, AL                ; AL == 0 ?
+      JZ @fin                    ; Oui : fin de chaine
+      INC ECX                    ; Compteur++
+      JMP @boucle
+    @fin:
+      POP ESI                    ; Restaurer ESI
+      RET
+    StrLen ENDP
+
+  11.3.2 Copie de chaine (strcpy)
+
+    ; Copie une chaine source vers une destination
+    ; Entree : EDI = destination, ESI = source
+    StrCpy PROC
+      PUSH ESI
+      PUSH EDI
+    @boucle:
+      LODSB                      ; AL = [ESI], ESI++
+      STOSB                      ; [EDI] = AL, EDI++
+      TEST AL, AL                ; Caractere nul ?
+      JNZ @boucle                ; Non : continuer
+      POP EDI
+      POP ESI
+      RET
+    StrCpy ENDP
+
+  11.3.3 Comparaison de chaines (strcmp)
+
+    ; Compare deux chaines
+    ; Entree : ESI = chaine1, EDI = chaine2
+    ; Sortie : Flags ZF=1 si egales, EAX = difference
+    StrCmp PROC
+      PUSH ESI
+      PUSH EDI
+    @boucle:
+      LODSB                      ; AL = [ESI], ESI++
+      MOV AH, [EDI]              ; AH = [EDI]
+      INC EDI
+      CMP AL, AH                 ; Comparer les caracteres
+      JNE @different             ; Differents : sortir
+      TEST AL, AL                ; Fin de chaine ?
+      JNZ @boucle                ; Non : continuer
+      XOR EAX, EAX               ; Egal : retourner 0
+      JMP @fin
+    @different:
+      MOVZX EAX, AL              ; Etendre AL en EAX
+      MOVZX ECX, AH              ; Etendre AH en ECX
+      SUB EAX, ECX               ; Difference
+    @fin:
+      POP EDI
+      POP ESI
+      RET
+    StrCmp ENDP
+
+  11.3.4 Recherche de caractere (strchr)
+
+    ; Recherche un caractere dans une chaine
+    ; Entree : ESI = chaine, AL = caractere a chercher
+    ; Sortie : EDI = adresse du caractere (0 si non trouve)
+    StrChr PROC
+      MOV AH, AL                 ; Sauvegarder le caractere
+    @boucle:
+      MOV AL, [ESI]
+      CMP AL, AH                 ; Caractere trouve ?
+      JE @trouve
+      TEST AL, AL                ; Fin de chaine ?
+      JZ @pas_trouve
+      INC ESI
+      JMP @boucle
+    @trouve:
+      MOV EDI, ESI               ; Retourner l'adresse
+      RET
+    @pas_trouve:
+      XOR EDI, EDI               ; Retourner 0
+      RET
+    StrChr ENDP
+
+  11.4 Conversion nombre-chaine
+  --------------------------------
+
+  11.4.1 Entier en chaine decimale (itoa)
+
+    ; Convertit un entier 32 bits non signe en chaine decimale
+    ; Entree : EAX = nombre, EDI = tampon de sortie (min 11 octets)
+    IntToStr PROC
+      PUSH EBX
+      PUSH ECX
+      PUSH EDX
+      PUSH EDI
+
+      MOV EBX, 10                ; Diviseur = 10
+      XOR ECX, ECX               ; Compteur de chiffres = 0
+
+      ; Extraire les chiffres (ordre inverse)
+    @extraire:
+      XOR EDX, EDX               ; Preparer la division
+      DIV EBX                    ; EAX = quotient, EDX = reste
+      ADD DL, '0'                ; Convertir en ASCII
+      PUSH EDX                   ; Empiler le chiffre
+      INC ECX                    ; Compteur++
+      TEST EAX, EAX              ; Quotient = 0 ?
+      JNZ @extraire              ; Non : continuer
+
+      ; Depiler les chiffres (ordre correct)
+      POP EDI                    ; Restaurer EDI
+      PUSH EDI                   ; Re-empiler pour la fin
+    @ecrire:
+      POP EDX                    ; Depiler un chiffre
+      MOV [EDI], DL              ; Ecrire dans le tampon
+      INC EDI
+      DEC ECX
+      JNZ @ecrire
+
+      MOV BYTE PTR [EDI], 0     ; Terminateur nul
+
+      POP EDI
+      POP EDX
+      POP ECX
+      POP EBX
+      RET
+    IntToStr ENDP
+
+  11.4.2 Chaine decimale en entier (atoi)
+
+    ; Convertit une chaine decimale en entier 32 bits non signe
+    ; Entree : ESI = adresse de la chaine
+    ; Sortie : EAX = valeur
+    StrToInt PROC
+      PUSH EBX
+      PUSH ECX
+      XOR EAX, EAX               ; Resultat = 0
+      MOV EBX, 10                ; Multiplicateur
+
+    @boucle:
+      MOVZX ECX, BYTE PTR [ESI]  ; Lire un caractere
+      TEST CL, CL                ; Fin de chaine ?
+      JZ @fin
+      SUB CL, '0'                ; Convertir en valeur
+      CMP CL, 9                  ; Chiffre valide ?
+      JA @fin                    ; Non : arreter
+      MUL EBX                    ; EAX = EAX * 10
+      ADD EAX, ECX               ; EAX = EAX + chiffre
+      INC ESI
+      JMP @boucle
+
+    @fin:
+      POP ECX
+      POP EBX
+      RET
+    StrToInt ENDP
+
+  11.5 Tri a bulles (Bubble Sort)
+  ---------------------------------
+
+    ; Tri a bulles d'un tableau de DWORD
+    ; Entree : ESI = adresse du tableau, ECX = nombre d'elements
+    BubbleSort PROC
+      PUSH EAX
+      PUSH EBX
+      PUSH ECX
+      PUSH EDX
+      PUSH ESI
+
+      DEC ECX                    ; n-1 comparaisons max
+      JLE @fin                   ; Tableau vide ou 1 element
+
+    @passe:
+      XOR EDX, EDX               ; Flag echange = 0
+      MOV EBX, ECX               ; Compteur de la passe
+      PUSH ESI                   ; Sauvegarder le debut du tableau
+
+    @comparer:
+      MOV EAX, [ESI]             ; EAX = element courant
+      CMP EAX, [ESI+4]           ; Comparer avec le suivant
+      JLE @pas_echanger          ; Ordre correct : passer
+
+      ; Echanger les deux elements
+      XCHG EAX, [ESI+4]         ; Echanger EAX <-> [ESI+4]
+      MOV [ESI], EAX             ; Stocker dans [ESI]
+      INC EDX                    ; Flag echange = 1
+
+    @pas_echanger:
+      ADD ESI, 4                 ; Element suivant
+      DEC EBX                    ; Decrementation compteur
+      JNZ @comparer              ; Continuer la passe
+
+      POP ESI                    ; Restaurer le debut du tableau
+      TEST EDX, EDX              ; Des echanges ont ete faits ?
+      JZ @fin                    ; Non : tableau trie
+      DEC ECX                    ; Reduire la zone a trier
+      JNZ @passe                 ; Passe suivante
+
+    @fin:
+      POP ESI
+      POP EDX
+      POP ECX
+      POP EBX
+      POP EAX
+      RET
+    BubbleSort ENDP
+
+  11.6 Recherche binaire (Binary Search)
+  -----------------------------------------
+
+    ; Recherche binaire dans un tableau de DWORD trie
+    ; Entree : ESI = tableau, ECX = nombre d'elements,
+    ;          EAX = valeur recherchee
+    ; Sortie : EDI = index (ou -1 si non trouve)
+    BinarySearch PROC
+      PUSH EBX
+      PUSH EDX
+
+      XOR EBX, EBX               ; gauche = 0
+      DEC ECX                    ; droite = n - 1
+
+    @boucle:
+      CMP EBX, ECX               ; gauche > droite ?
+      JG @non_trouve
+
+      MOV EDI, EBX               ; milieu = (gauche + droite) / 2
+      ADD EDI, ECX
+      SHR EDI, 1
+
+      MOV EDX, [ESI + EDI*4]    ; EDX = tableau[milieu]
+      CMP EAX, EDX               ; Comparer avec la valeur cherchee
+      JE @trouve                 ; Egal : trouve !
+      JL @gauche                 ; Inferieur : chercher a gauche
+
+      ; Chercher a droite
+      LEA EBX, [EDI+1]          ; gauche = milieu + 1
+      JMP @boucle
+
+    @gauche:
+      LEA ECX, [EDI-1]          ; droite = milieu - 1
+      JMP @boucle
+
+    @non_trouve:
+      MOV EDI, -1                ; Retourner -1 (non trouve)
+
+    @trouve:                     ; EDI contient l'index
+      POP EDX
+      POP EBX
+      RET
+    BinarySearch ENDP
+
+  11.7 Operations sur les bits
+  ------------------------------
+
+  11.7.1 Compter les bits a 1 (popcount)
+
+    ; Compte le nombre de bits a 1 dans un registre 32 bits
+    ; Entree : EAX = valeur
+    ; Sortie : ECX = nombre de bits a 1
+    PopCount PROC
+      XOR ECX, ECX               ; Compteur = 0
+    @boucle:
+      TEST EAX, EAX              ; EAX == 0 ?
+      JZ @fin
+      MOV EDX, EAX
+      DEC EDX                    ; EDX = EAX - 1
+      AND EAX, EDX               ; Effacer le bit le plus bas
+      INC ECX                    ; Compteur++
+      JMP @boucle
+    @fin:
+      RET
+    PopCount ENDP
+
+  11.7.2 Inversion des bits (bit reverse)
+
+    ; Inverse l'ordre des bits dans EAX (bit 0 <-> bit 31, etc.)
+    ; Entree/Sortie : EAX
+    BitReverse PROC
+      PUSH EBX
+      PUSH ECX
+      MOV ECX, 32                ; 32 bits a traiter
+      XOR EBX, EBX               ; Resultat = 0
+    @boucle:
+      SHL EBX, 1                 ; Decaler le resultat a gauche
+      MOV EDX, EAX
+      AND EDX, 1                 ; Extraire le bit de poids faible
+      OR EBX, EDX                ; Ajouter au resultat
+      SHR EAX, 1                 ; Bit suivant de la source
+      DEC ECX
+      JNZ @boucle
+      MOV EAX, EBX               ; Resultat dans EAX
+      POP ECX
+      POP EBX
+      RET
+    BitReverse ENDP
+
+  11.7.3 Plus grande puissance de 2 inferieure ou egale
+
+    ; Trouve la plus grande puissance de 2 <= EAX
+    ; Entree : EAX = valeur (> 0)
+    ; Sortie : EAX = puissance de 2
+    FloorPow2 PROC
+      BSR ECX, EAX               ; ECX = position du bit le plus haut
+      MOV EAX, 1
+      SHL EAX, CL                ; EAX = 2^ECX
+      RET
+    FloorPow2 ENDP
+
+  11.8 Utilisation de la pile et cadres de pile
+  ------------------------------------------------
+
+    ; Exemple de fonction avec variables locales et cadre de pile
+    ;
+    ; int Exemple(int a, int b) {
+    ;   int temp = a + b;
+    ;   int result = temp * 2;
+    ;   return result;
+    ; }
+
+    Exemple PROC
+      PUSH EBP                   ; Sauvegarder l'ancien cadre
+      MOV EBP, ESP               ; Etablir le nouveau cadre
+      SUB ESP, 8                 ; Reserver 2 variables locales
+
+      ; [EBP+8]  = parametre a
+      ; [EBP+12] = parametre b
+      ; [EBP-4]  = variable locale temp
+      ; [EBP-8]  = variable locale result
+
+      MOV EAX, [EBP+8]          ; EAX = a
+      ADD EAX, [EBP+12]         ; EAX = a + b
+      MOV [EBP-4], EAX          ; temp = a + b
+
+      SHL EAX, 1                 ; EAX = temp * 2
+      MOV [EBP-8], EAX          ; result = temp * 2
+
+      MOV EAX, [EBP-8]          ; Retourner result dans EAX
+
+      MOV ESP, EBP               ; Restaurer la pile
+      POP EBP                    ; Restaurer l'ancien cadre
+      RET                        ; Retourner a l'appelant
+    Exemple ENDP
+
+    ; Appel de la fonction :
+    ;   PUSH 20                  ; Parametre b = 20
+    ;   PUSH 10                  ; Parametre a = 10
+    ;   CALL Exemple
+    ;   ADD ESP, 8               ; Nettoyer la pile (convention C)
+    ;   ; EAX = (10 + 20) * 2 = 60
+
+    ; Etat de la pile pendant l'execution :
+    ;
+    ;   ESP -> [EBP-8] result
+    ;          [EBP-4] temp
+    ;   EBP -> [EBP]   ancien EBP
+    ;          [EBP+4] adresse de retour
+    ;          [EBP+8] parametre a = 10
+    ;          [EBP+12] parametre b = 20
+
+  11.9 Acces memoire avec modes d'adressage avances
+  -----------------------------------------------------
+
+    ; Exemples des modes d'adressage du 80386
+
+    .DATA
+    tableau   DD 10, 20, 30, 40, 50   ; Tableau de 5 DWORD
+    matrice   DD 1, 2, 3              ; Ligne 0
+              DD 4, 5, 6              ; Ligne 1
+              DD 7, 8, 9              ; Ligne 2
+    COLS      EQU 3                    ; 3 colonnes
+
+    .CODE
+    ExempleAdressage PROC
+      ; Adressage direct
+      MOV EAX, [tableau]              ; Premier element
+
+      ; Adressage base + deplacement
+      MOV ESI, OFFSET tableau
+      MOV EAX, [ESI + 8]              ; Troisieme element (offset 8)
+
+      ; Adressage indexe avec facteur d'echelle
+      MOV ECX, 2                       ; Index = 2
+      MOV EAX, [tableau + ECX*4]      ; tableau[2] = 30
+
+      ; Adressage base + index * echelle + deplacement
+      ; Acces matrice[ligne][colonne] :
+      ; adresse = matrice + (ligne * COLS + colonne) * 4
+      MOV EBX, 1                       ; ligne = 1
+      IMUL EBX, COLS                   ; EBX = ligne * COLS
+      ADD EBX, 2                       ; EBX = ligne * COLS + colonne
+      MOV EAX, [matrice + EBX*4]      ; matrice[1][2] = 6
+
+      ; Meme chose avec LEA
+      MOV ESI, OFFSET matrice
+      MOV EBX, 1                       ; ligne = 1
+      IMUL EBX, COLS * 4              ; EBX = ligne * COLS * 4
+      MOV ECX, 2                       ; colonne = 2
+      LEA EAX, [ESI + EBX + ECX*4]   ; Adresse de matrice[1][2]
+      MOV EAX, [EAX]                  ; Valeur = 6
+
+      RET
+    ExempleAdressage ENDP
+
+  11.10 Utilisation des instructions de chaine (REP)
+  -----------------------------------------------------
+
+    ; Copie rapide de bloc memoire (memcpy)
+    ; Entree : EDI = destination, ESI = source, ECX = taille en octets
+    MemCopy PROC
+      PUSH ECX
+      PUSH ESI
+      PUSH EDI
+      CLD                        ; Direction : increment
+
+      ; Copier par blocs de 4 octets (DWORD)
+      MOV EBX, ECX               ; Sauvegarder la taille totale
+      SHR ECX, 2                 ; Nombre de DWORD
+      REP MOVSD                  ; Copier les DWORD
+
+      ; Copier les octets restants
+      MOV ECX, EBX
+      AND ECX, 3                 ; Reste = taille MOD 4
+      REP MOVSB                  ; Copier les octets restants
+
+      POP EDI
+      POP ESI
+      POP ECX
+      RET
+    MemCopy ENDP
+
+    ; Remplissage de bloc memoire (memset)
+    ; Entree : EDI = destination, AL = valeur, ECX = taille en octets
+    MemSet PROC
+      PUSH ECX
+      PUSH EDI
+      CLD
+
+      ; Etendre AL sur les 4 octets de EAX
+      MOV AH, AL                 ; AX = AL:AL
+      MOV BX, AX
+      SHL EAX, 16
+      MOV AX, BX                 ; EAX = AL:AL:AL:AL
+
+      ; Remplir par blocs de 4 octets
+      MOV EBX, ECX
+      SHR ECX, 2
+      REP STOSD
+
+      ; Remplir les octets restants
+      MOV ECX, EBX
+      AND ECX, 3
+      REP STOSB
+
+      POP EDI
+      POP ECX
+      RET
+    MemSet ENDP
+
+    ; Recherche d'un octet dans un bloc (memchr)
+    ; Entree : EDI = bloc, AL = octet, ECX = taille
+    ; Sortie : EDI = adresse (0 si non trouve), ZF = 1 si trouve
+    MemChr PROC
+      CLD
+      REPNE SCASB                ; Chercher AL dans [EDI]
+      JNE @non_trouve
+      DEC EDI                    ; Revenir sur l'octet trouve
+      RET
+    @non_trouve:
+      XOR EDI, EDI               ; Retourner 0
+      RET
+    MemChr ENDP
+
+  11.11 Exemple avec macro et assemblage conditionnel
+  -------------------------------------------------------
+
+    ; Macro de trace pour le debug
+    DEBUG_MODE = 1
+
+    PrintDebug MACRO msg
+      IF DEBUG_MODE
+        PUSH OFFSET msg
+        CALL _puts
+        ADD ESP, 4
+      ENDIF
+    ENDM
+
+    ; Macro d'assertion
+    ASSERT MACRO condition
+      LOCAL ok
+      IF DEBUG_MODE
+        condition
+        JMP ok
+        INT 3                    ; Point d'arret en mode debug
+      ok:
+      ENDIF
+    ENDM
+
+    ; Macro pour declarer une chaine avec sa longueur
+    DEFSTR MACRO nom, texte
+      nom       DB texte, 0
+      nom&_len  EQU $ - nom - 1
+    ENDM
+
+    .DATA
+    DEFSTR salut, 'Bonjour le monde'
+    ; Genere :
+    ;   salut     DB 'Bonjour le monde', 0
+    ;   salut_len EQU 16
+
+    ; Macro de boucle FOR (haut niveau)
+    FOR_LOOP MACRO reg, debut, fin
+      MOV reg, debut
+    ENDM
+
+    FOR_NEXT MACRO reg, etiq_debut
+      INC reg
+      JMP etiq_debut
+    ENDM
+
+  11.12 Programme complet : Conversion hexadecimale
+  ----------------------------------------------------
+
+  Programme Win32 complet qui convertit un nombre 32 bits en
+  sa representation hexadecimale et l'affiche sur la console.
+
+    .386
+    .MODEL FLAT, STDCALL
+    OPTION CASEMAP:NONE
+
+    EXTRN GetStdHandle@4:NEAR
+    EXTRN WriteConsoleA@20:NEAR
+    EXTRN ExitProcess@4:NEAR
+
+    .STACK 4096
+
+    .DATA
+    hexchars  DB '0123456789ABCDEF'   ; Table de conversion
+    buffer    DB '00000000', 0Dh, 0Ah, 0  ; 8 chiffres + CRLF + nul
+    buf_len   EQU 10                   ; 8 chiffres + CR + LF
+    nombre    DD 0DEADBEEFh           ; Valeur a convertir
+
+    .DATA?
+    hStdOut   DD ?
+    written   DD ?
+
+    .CODE
+    ; Convertit EAX en hexadecimal dans le buffer
+    DwordToHex PROC
+      PUSH EBX
+      PUSH ECX
+      PUSH EDI
+
+      MOV EDI, OFFSET buffer + 7 ; Pointer sur le dernier chiffre
+      MOV ECX, 8                  ; 8 chiffres hexadecimaux
+
+    @boucle:
+      MOV EBX, EAX
+      AND EBX, 0Fh               ; Extraire le quartet bas
+      MOV BL, [hexchars + EBX]  ; Convertir en caractere
+      MOV [EDI], BL              ; Ecrire dans le buffer
+      SHR EAX, 4                 ; Quartet suivant
+      DEC EDI                    ; Position precedente
+      DEC ECX
+      JNZ @boucle
+
+      POP EDI
+      POP ECX
+      POP EBX
+      RET
+    DwordToHex ENDP
+
+    main PROC
+      ; Obtenir le handle de sortie
+      PUSH -11
+      CALL GetStdHandle@4
+      MOV [hStdOut], EAX
+
+      ; Convertir le nombre en hexadecimal
+      MOV EAX, [nombre]
+      CALL DwordToHex
+
+      ; Afficher le resultat
+      PUSH 0
+      PUSH OFFSET written
+      PUSH buf_len
+      PUSH OFFSET buffer
+      PUSH [hStdOut]
+      CALL WriteConsoleA@20
+
+      ; Quitter
+      PUSH 0
+      CALL ExitProcess@4
+    main ENDP
+    END main
+
+    ; Sortie attendue : DEADBEEF
 
 ==============================================================================
   FIN DU DOCUMENT - ASSEMBLEUR 80386
