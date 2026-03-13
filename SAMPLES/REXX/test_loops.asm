@@ -2254,6 +2254,217 @@ _RXB_ERRORTEXT:
         POP   BP
         RET
 
+; === TODO 19 : Runtime variables composees (stems) ===
+
+_RXRT_STEMGET:
+        PUSH   BX
+        PUSH   CX
+        PUSH   DX
+        PUSH   SI
+        PUSH   DI
+        MOV   CX, WORD PTR [_RX_STEMCNT]
+        OR   CX, CX
+        JZ   _RXL_31
+        MOV   BX, OFFSET _RX_STEMTAB
+        XOR   DX, DX
+_RXL_32:
+        PUSH   SI
+        MOV   DI, BX
+        CALL     _RXRT_STRCMPS
+        POP   SI
+        OR   AX, AX
+        JZ   _RXL_33
+        ADD   BX, 128
+        INC   DX
+        CMP   DX, CX
+        JB   _RXL_32
+        JMP   _RXL_31
+_RXL_33:
+        MOV   AX, BX
+        ADD   AX, 32
+        JMP   _RXL_34
+_RXL_31:
+        PUSH   SI
+        LEA   DI, _RX_STEMBUF
+_RXL_35:
+        MOV   AL, BYTE PTR [SI]
+        MOV   BYTE PTR [DI], AL
+        OR   AL, AL
+        JZ   _RXL_36
+        CMP   AL, 2Eh
+        JE   _RXL_37
+        INC   SI
+        INC   DI
+        JMP   _RXL_35
+_RXL_37:
+        INC   DI
+        MOV   BYTE PTR [DI], 0
+        JMP   _RXL_38
+_RXL_36:
+        POP   SI
+        MOV   AX, SI
+        JMP   _RXL_34
+_RXL_38:
+        POP   SI
+        PUSH   SI
+        LEA   SI, _RX_STEMBUF
+        MOV   CX, WORD PTR [_RX_STEMCNT]
+        MOV   BX, OFFSET _RX_STEMTAB
+        XOR   DX, DX
+_RXL_39:
+        PUSH   SI
+        MOV   DI, BX
+        CALL     _RXRT_STRCMPS
+        POP   SI
+        OR   AX, AX
+        JZ   _RXL_40
+        ADD   BX, 128
+        INC   DX
+        CMP   DX, CX
+        JB   _RXL_39
+        POP   SI
+        MOV   AX, SI
+        JMP   _RXL_34
+_RXL_40:
+        POP   SI
+        MOV   AX, BX
+        ADD   AX, 32
+_RXL_34:
+        POP   DI
+        POP   SI
+        POP   DX
+        POP   CX
+        POP   BX
+        RET
+
+_RXRT_STEMSET:
+        PUSH   AX
+        PUSH   BX
+        PUSH   CX
+        PUSH   DX
+        PUSH   SI
+        PUSH   DI
+        MOV   CX, WORD PTR [_RX_STEMCNT]
+        OR   CX, CX
+        JZ   _RXL_41
+        MOV   BX, OFFSET _RX_STEMTAB
+        XOR   DX, DX
+_RXL_42:
+        PUSH   SI
+        PUSH   DI
+        MOV   DI, BX
+        CALL     _RXRT_STRCMPS
+        POP   DI
+        POP   SI
+        OR   AX, AX
+        JZ   _RXL_43
+        ADD   BX, 128
+        INC   DX
+        CMP   DX, CX
+        JB   _RXL_42
+_RXL_41:
+        CMP   WORD PTR [_RX_STEMCNT], 32
+        JAE   _RXL_44
+        MOV   AX, WORD PTR [_RX_STEMCNT]
+        MOV   DX, 128
+        MUL     DX
+        ADD   AX, OFFSET _RX_STEMTAB
+        MOV   BX, AX
+        PUSH   DI
+        PUSH   SI
+        MOV   DI, BX
+        CALL     _RXRT_STRCPY
+        POP   SI
+        POP   DI
+        INC   WORD PTR [_RX_STEMCNT]
+        PUSH   SI
+        MOV   SI, DI
+        MOV   DI, BX
+        ADD   DI, 32
+        CALL     _RXRT_STRCPY
+        POP   SI
+        JMP   _RXL_45
+_RXL_43:
+        PUSH   SI
+        MOV   SI, DI
+        MOV   DI, BX
+        ADD   DI, 32
+        CALL     _RXRT_STRCPY
+        POP   SI
+_RXL_44:
+_RXL_45:
+        POP   DI
+        POP   SI
+        POP   DX
+        POP   CX
+        POP   BX
+        POP   AX
+        RET
+
+_RXRT_STEMDROP:
+        PUSH   AX
+        PUSH   BX
+        PUSH   CX
+        PUSH   DX
+        PUSH   SI
+        PUSH   DI
+        CALL     _RXRT_STRLEN
+        MOV   DX, CX
+        XOR   CX, CX
+_RXL_46:
+        CMP   CX, WORD PTR [_RX_STEMCNT]
+        JAE   _RXL_47
+        PUSH   DX
+        PUSH   CX
+        MOV   AX, CX
+        MOV   BX, 128
+        MUL     BX
+        ADD   AX, OFFSET _RX_STEMTAB
+        MOV   BX, AX
+        POP   CX
+        POP   DX
+        PUSH   CX
+        PUSH   SI
+        MOV   DI, BX
+        MOV   CX, DX
+        CLD
+        REPE CMPSB
+        POP   SI
+        POP   CX
+        JNE   _RXL_48
+        DEC   WORD PTR [_RX_STEMCNT]
+        CMP   CX, WORD PTR [_RX_STEMCNT]
+        JAE   _RXL_49
+        PUSH   CX
+        PUSH   SI
+        PUSH   DX
+        MOV   AX, WORD PTR [_RX_STEMCNT]
+        MOV   DX, 128
+        MUL     DX
+        ADD   AX, OFFSET _RX_STEMTAB
+        MOV   SI, AX
+        MOV   DI, BX
+        MOV   CX, 128
+        CLD
+        REP MOVSB
+        POP   DX
+        POP   SI
+        POP   CX
+        JMP   _RXL_46
+_RXL_49:
+        JMP   _RXL_46
+_RXL_48:
+        INC   CX
+        JMP   _RXL_46
+_RXL_47:
+        POP   DI
+        POP   SI
+        POP   DX
+        POP   CX
+        POP   BX
+        POP   AX
+        RET
+
 ; --- Runtime PARSE (TODO 16) ---
 
 _RXRT_PARSEINIT:
@@ -2475,6 +2686,10 @@ _RX_PARSEPOS DW 0
 _RX_PARSESRC DW 0
 _RX_RESBUF DB 256 DUP(0)
 _RX_BIF2BUF DB 256 DUP(0)
+_RX_STEMKEY DB 64 DUP(0)
+_RX_STEMBUF DB 256 DUP(0)
+_RX_STEMCNT DW 0
+_RX_STEMTAB DB 4096 DUP(0)
 _RXV_I DB 256 DUP(0)
 _RXV_I_D DB 'I',0
 _RXV_J DB 256 DUP(0)

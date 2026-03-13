@@ -1,4 +1,4 @@
-; REXX86 v1.0 - SAMPLES/REXX/test_procs.rexx
+; REXX86 v1.0 - SAMPLES/REXX/test_stems.rexx
 .MODEL SMALL
 .STACK 1024
 
@@ -10,174 +10,166 @@ _RXP_Main:
         MOV   AX, _DATA
         MOV   DS, AX
 
-; CALL GREETING
-        CALL     _RXP_GREETING
-        MOV     SI, AX
-        LEA     DI, _RX_RESBUF
+; stem assign: TAB.1
+; stem key: TAB.1
+        MOV     SI, OFFSET _RXK_1
+        LEA     DI, _RX_STEMBUF
         CALL     _RXRT_STRCPY
-        LEA     AX, _RX_RESBUF
-        MOV     SI, AX
-        LEA     DI, _RXV_RESULT
-        CALL     _RXRT_STRCPY
-; SAY
-        LEA     AX, _RXV_RESULT
-        MOV   SI, AX
-        CALL   _RXRT_PRINTLN
-; CALL DOUBLE
-        CALL     _RXP_DOUBLE
-        MOV     SI, AX
-        LEA     DI, _RX_RESBUF
-        CALL     _RXRT_STRCPY
-        LEA     AX, _RX_RESBUF
-        MOV     SI, AX
-        LEA     DI, _RXV_RESULT
-        CALL     _RXRT_STRCPY
-; SAY
-        LEA     AX, _RXV_RESULT
-        MOV   SI, AX
-        CALL   _RXRT_PRINTLN
-; assign: X = ...
-; call: TRIPLE(...)
-        LEA     AX, _RXK_1
-        PUSH     AX
-        CALL     _RXP_TRIPLE
-        ADD     SP, 2
-        MOV     SI, AX
-        LEA     DI, _RX_RESBUF
-        CALL     _RXRT_STRCPY
-        LEA     AX, _RX_RESBUF
-        MOV     SI, AX
-        LEA     DI, _RXV_X
-        CALL     _RXRT_STRCPY
-; SAY
-        LEA     AX, _RXV_X
-        MOV   SI, AX
-        CALL   _RXRT_PRINTLN
-; assign: COUNT = ...
-        LEA     AX, _RXV_COUNT_D
-        MOV     SI, AX
-        LEA     DI, _RXV_COUNT
-        CALL     _RXRT_STRCPY
-; CALL INCREMENT
-        CALL     _RXP_INCREMENT
-        MOV     SI, AX
-        LEA     DI, _RX_RESBUF
-        CALL     _RXRT_STRCPY
-        LEA     AX, _RX_RESBUF
-        MOV     SI, AX
-        LEA     DI, _RXV_RESULT
-        CALL     _RXRT_STRCPY
-; SAY
-        LEA     AX, _RXV_COUNT
-        MOV   SI, AX
-        CALL   _RXRT_PRINTLN
-; SAY
-; call: ADDONE(...)
         LEA     AX, _RXK_2
-        PUSH     AX
-        CALL     _RXP_ADDONE
-        ADD     SP, 2
-        MOV     SI, AX
-        LEA     DI, _RX_RESBUF
+        MOV     DI, AX
+        LEA     SI, _RX_STEMBUF
+        CALL     _RXRT_STEMSET
+; stem assign: TAB.2
+; stem key: TAB.2
+        MOV     SI, OFFSET _RXK_3
+        LEA     DI, _RX_STEMBUF
         CALL     _RXRT_STRCPY
-        LEA     AX, _RX_RESBUF
-        MOV   SI, AX
-        CALL   _RXRT_PRINTLN
-; SIGNAL SKIP_THIS
-        MOV     WORD PTR _RX_SIGL, 25
-        JMP     _RXP_SKIP_THIS
-; SAY
-        LEA     AX, _RXK_3
-        MOV   SI, AX
-        CALL   _RXRT_PRINTLN
-_RXP_SKIP_THIS:
-; SAY
         LEA     AX, _RXK_4
+        MOV     DI, AX
+        LEA     SI, _RX_STEMBUF
+        CALL     _RXRT_STEMSET
+; stem assign: TAB.3
+; stem key: TAB.3
+        MOV     SI, OFFSET _RXK_5
+        LEA     DI, _RX_STEMBUF
+        CALL     _RXRT_STRCPY
+        LEA     AX, _RXK_6
+        MOV     DI, AX
+        LEA     SI, _RX_STEMBUF
+        CALL     _RXRT_STEMSET
+; SAY
+; stem read: TAB.1
+; stem key: TAB.1
+        MOV     SI, OFFSET _RXK_1
+        CALL     _RXRT_STEMGET
         MOV   SI, AX
         CALL   _RXRT_PRINTLN
-; EXIT
-        MOV   AX, 4C00h
-        INT     21h
-_RXP_GREETING:
-; RETURN
-        LEA     AX, _RXK_5
-_RXL_2:
-        RET
-_RXP_DOUBLE:
-; PROCEDURE
-        PUSH   BP
-        MOV   BP, SP
-; RETURN
-        LEA     AX, _RXK_6
-_RXL_3:
-        POP   BP
-        RET
-_RXP_TRIPLE:
-; PROCEDURE
-        PUSH   BP
-        MOV   BP, SP
-; PARSE
-; PARSE ARG
-        MOV   SI, OFFSET _RX_NULL_STR
-        CALL   _RXRT_PARSEINIT
-        CALL   _RXRT_PARSEREST
-        MOV     SI, AX
-        LEA     DI, [BP-2]
+; SAY
+; stem read: TAB.2
+; stem key: TAB.2
+        MOV     SI, OFFSET _RXK_3
+        CALL     _RXRT_STEMGET
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SAY
+; stem read: TAB.3
+; stem key: TAB.3
+        MOV     SI, OFFSET _RXK_5
+        CALL     _RXRT_STEMGET
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; stem assign: DEF.
+; stem key: DEF.
+        MOV     SI, OFFSET _RXK_7
+        LEA     DI, _RX_STEMBUF
         CALL     _RXRT_STRCPY
-; RETURN
-        MOV     AX, WORD PTR [BP-2]
-        PUSH     AX
-        MOV     AX, 3
-        MOV     BX, AX
-        POP     AX
-        IMUL     BX
-_RXL_4:
-        MOV   SP, BP
-        POP   BP
-        RET
-_RXP_INCREMENT:
-; PROCEDURE
-; EXPOSE
-        PUSH   BP
-        MOV   BP, SP
-; assign: COUNT = ...
-        LEA     AX, _RXV_COUNT
-        PUSH     AX
+        LEA     AX, _RXK_8
+        MOV     DI, AX
+        LEA     SI, _RX_STEMBUF
+        CALL     _RXRT_STEMSET
+; SAY
+; stem read: DEF.1
+; stem key: DEF.1
+        MOV     SI, OFFSET _RXK_9
+        CALL     _RXRT_STEMGET
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; SAY
+; stem read: DEF.99
+; stem key: DEF.99
+        MOV     SI, OFFSET _RXK_10
+        CALL     _RXRT_STEMGET
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; assign: I = ...
         MOV     AX, 1
-        MOV     BX, AX
-        POP     AX
-        ADD     AX, BX
         MOV     SI, AX
-        LEA     DI, _RXV_COUNT
+        LEA     DI, _RXV_I
         CALL     _RXRT_STRCPY
-; RETURN
-        LEA     AX, _RX_NULL_STR
-_RXL_5:
-        POP   BP
-        RET
-_RXP_ADDONE:
-; PROCEDURE
-        PUSH   BP
-        MOV   BP, SP
-; PARSE
-; PARSE ARG
-        MOV   SI, OFFSET _RX_NULL_STR
-        CALL   _RXRT_PARSEINIT
-        CALL   _RXRT_PARSEREST
+; stem assign: ARR.I
+; stem key: ARR.I
+        MOV     SI, OFFSET _RXK_11
+        LEA     DI, _RX_STEMKEY
+        CALL     _RXRT_STRCPY
+        LEA     AX, _RXV_I
+        MOV     DI, AX
+        LEA     SI, _RX_STEMKEY
+        CALL     _RXRT_CONCAT
         MOV     SI, AX
-        LEA     DI, [BP-2]
+        LEA     DI, _RX_STEMKEY
         CALL     _RXRT_STRCPY
-; RETURN
-        MOV     AX, WORD PTR [BP-2]
-        PUSH     AX
-        MOV     AX, 1
-        MOV     BX, AX
-        POP     AX
-        ADD     AX, BX
-_RXL_6:
-        MOV   SP, BP
-        POP   BP
-        RET
+        LEA     SI, _RX_STEMKEY
+        LEA     DI, _RX_STEMBUF
+        CALL     _RXRT_STRCPY
+        LEA     AX, _RXK_12
+        MOV     DI, AX
+        LEA     SI, _RX_STEMBUF
+        CALL     _RXRT_STEMSET
+; SAY
+; stem read: ARR.1
+; stem key: ARR.1
+        MOV     SI, OFFSET _RXK_13
+        CALL     _RXRT_STEMGET
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; assign: J = ...
+        MOV     AX, 2
+        MOV     SI, AX
+        LEA     DI, _RXV_J
+        CALL     _RXRT_STRCPY
+; stem assign: TAB.J
+; stem key: TAB.J
+        MOV     SI, OFFSET _RXK_14
+        LEA     DI, _RX_STEMKEY
+        CALL     _RXRT_STRCPY
+        LEA     AX, _RXV_J
+        MOV     DI, AX
+        LEA     SI, _RX_STEMKEY
+        CALL     _RXRT_CONCAT
+        MOV     SI, AX
+        LEA     DI, _RX_STEMKEY
+        CALL     _RXRT_STRCPY
+        LEA     SI, _RX_STEMKEY
+        LEA     DI, _RX_STEMBUF
+        CALL     _RXRT_STRCPY
+        LEA     AX, _RXK_15
+        MOV     DI, AX
+        LEA     SI, _RX_STEMBUF
+        CALL     _RXRT_STEMSET
+; SAY
+; stem read: TAB.2
+; stem key: TAB.2
+        MOV     SI, OFFSET _RXK_3
+        CALL     _RXRT_STEMGET
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; stem assign: TAB.1
+; stem key: TAB.1
+        MOV     SI, OFFSET _RXK_1
+        LEA     DI, _RX_STEMBUF
+        CALL     _RXRT_STRCPY
+        LEA     AX, _RXK_16
+        MOV     DI, AX
+        LEA     SI, _RX_STEMBUF
+        CALL     _RXRT_STEMSET
+; SAY
+; stem read: TAB.1
+; stem key: TAB.1
+        MOV     SI, OFFSET _RXK_1
+        CALL     _RXRT_STEMGET
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
+; DROP
+; DROP stem: TAB.
+        MOV     SI, OFFSET _RXK_14
+        CALL     _RXRT_STEMDROP
+; SAY
+; stem read: TAB.1
+; stem key: TAB.1
+        MOV     SI, OFFSET _RXK_1
+        CALL     _RXRT_STEMGET
+        MOV   SI, AX
+        CALL   _RXRT_PRINTLN
         JMP     _RXP_Exit
 
 
@@ -2149,72 +2141,72 @@ _RXRT_STEMGET:
         PUSH   DI
         MOV   CX, WORD PTR [_RX_STEMCNT]
         OR   CX, CX
-        JZ   _RXL_7
+        JZ   _RXL_1
         MOV   BX, OFFSET _RX_STEMTAB
         XOR   DX, DX
-_RXL_8:
+_RXL_2:
         PUSH   SI
         MOV   DI, BX
         CALL     _RXRT_STRCMPS
         POP   SI
         OR   AX, AX
-        JZ   _RXL_9
+        JZ   _RXL_3
         ADD   BX, 128
         INC   DX
         CMP   DX, CX
-        JB   _RXL_8
-        JMP   _RXL_7
-_RXL_9:
+        JB   _RXL_2
+        JMP   _RXL_1
+_RXL_3:
         MOV   AX, BX
         ADD   AX, 32
-        JMP   _RXL_10
-_RXL_7:
+        JMP   _RXL_4
+_RXL_1:
         PUSH   SI
         LEA   DI, _RX_STEMBUF
-_RXL_11:
+_RXL_5:
         MOV   AL, BYTE PTR [SI]
         MOV   BYTE PTR [DI], AL
         OR   AL, AL
-        JZ   _RXL_12
+        JZ   _RXL_6
         CMP   AL, 2Eh
-        JE   _RXL_13
+        JE   _RXL_7
         INC   SI
         INC   DI
-        JMP   _RXL_11
-_RXL_13:
+        JMP   _RXL_5
+_RXL_7:
         INC   DI
         MOV   BYTE PTR [DI], 0
-        JMP   _RXL_14
-_RXL_12:
+        JMP   _RXL_8
+_RXL_6:
         POP   SI
         MOV   AX, SI
-        JMP   _RXL_10
-_RXL_14:
+        JMP   _RXL_4
+_RXL_8:
         POP   SI
         PUSH   SI
         LEA   SI, _RX_STEMBUF
         MOV   CX, WORD PTR [_RX_STEMCNT]
         MOV   BX, OFFSET _RX_STEMTAB
         XOR   DX, DX
-_RXL_15:
+_RXL_9:
         PUSH   SI
         MOV   DI, BX
         CALL     _RXRT_STRCMPS
         POP   SI
         OR   AX, AX
-        JZ   _RXL_16
+        JZ   _RXL_10
         ADD   BX, 128
         INC   DX
         CMP   DX, CX
-        JB   _RXL_15
+        JB   _RXL_9
         POP   SI
         MOV   AX, SI
-        JMP   _RXL_10
-_RXL_16:
+        JMP   _RXL_4
+_RXL_10:
         POP   SI
         MOV   AX, BX
         ADD   AX, 32
-_RXL_10:
+_RXL_4:
         POP   DI
         POP   SI
         POP   DX
@@ -2231,10 +2223,10 @@ _RXRT_STEMSET:
         PUSH   DI
         MOV   CX, WORD PTR [_RX_STEMCNT]
         OR   CX, CX
-        JZ   _RXL_17
+        JZ   _RXL_11
         MOV   BX, OFFSET _RX_STEMTAB
         XOR   DX, DX
-_RXL_18:
+_RXL_12:
         PUSH   SI
         PUSH   DI
         MOV   DI, BX
@@ -2242,14 +2234,14 @@ _RXL_18:
         POP   DI
         POP   SI
         OR   AX, AX
-        JZ   _RXL_19
+        JZ   _RXL_13
         ADD   BX, 128
         INC   DX
         CMP   DX, CX
-        JB   _RXL_18
-_RXL_17:
+        JB   _RXL_12
+_RXL_11:
         CMP   WORD PTR [_RX_STEMCNT], 32
-        JAE   _RXL_20
+        JAE   _RXL_14
         MOV   AX, WORD PTR [_RX_STEMCNT]
         MOV   DX, 128
         MUL     DX
@@ -2268,16 +2260,16 @@ _RXL_17:
         ADD   DI, 32
         CALL     _RXRT_STRCPY
         POP   SI
-        JMP   _RXL_21
-_RXL_19:
+        JMP   _RXL_15
+_RXL_13:
         PUSH   SI
         MOV   SI, DI
         MOV   DI, BX
         ADD   DI, 32
         CALL     _RXRT_STRCPY
         POP   SI
-_RXL_20:
-_RXL_21:
+_RXL_14:
+_RXL_15:
         POP   DI
         POP   SI
         POP   DX
@@ -2296,9 +2288,9 @@ _RXRT_STEMDROP:
         CALL     _RXRT_STRLEN
         MOV   DX, CX
         XOR   CX, CX
-_RXL_22:
+_RXL_16:
         CMP   CX, WORD PTR [_RX_STEMCNT]
-        JAE   _RXL_23
+        JAE   _RXL_17
         PUSH   DX
         PUSH   CX
         MOV   AX, CX
@@ -2316,10 +2308,10 @@ _RXL_22:
         REPE CMPSB
         POP   SI
         POP   CX
-        JNE   _RXL_24
+        JNE   _RXL_18
         DEC   WORD PTR [_RX_STEMCNT]
         CMP   CX, WORD PTR [_RX_STEMCNT]
-        JAE   _RXL_25
+        JAE   _RXL_19
         PUSH   CX
         PUSH   SI
         PUSH   DX
@@ -2335,13 +2327,13 @@ _RXL_22:
         POP   DX
         POP   SI
         POP   CX
-        JMP   _RXL_22
-_RXL_25:
-        JMP   _RXL_22
-_RXL_24:
+        JMP   _RXL_16
+_RXL_19:
+        JMP   _RXL_16
+_RXL_18:
         INC   CX
-        JMP   _RXL_22
-_RXL_23:
+        JMP   _RXL_16
+_RXL_17:
         POP   DI
         POP   SI
         POP   DX
@@ -2575,18 +2567,26 @@ _RX_STEMKEY DB 64 DUP(0)
 _RX_STEMBUF DB 256 DUP(0)
 _RX_STEMCNT DW 0
 _RX_STEMTAB DB 4096 DUP(0)
-_RXV_RESULT DB 256 DUP(0)
-_RXV_RESULT_D DB 'RESULT',0
-_RXV_X DB 256 DUP(0)
-_RXV_X_D DB 'X',0
-_RXK_1 DB '3',0
-_RXV_COUNT DB 256 DUP(0)
-_RXV_COUNT_D DB 'COUNT',0
-_RXK_2 DB '10',0
-_RXK_3 DB 'NEVER',0
-_RXK_4 DB 'JUMPED',0
-_RXK_5 DB 'Hello from procedure',0
-_RXK_6 DB '14',0
+_RXK_1 DB 'TAB.1',0
+_RXK_2 DB 'un',0
+_RXK_3 DB 'TAB.2',0
+_RXK_4 DB 'deux',0
+_RXK_5 DB 'TAB.3',0
+_RXK_6 DB 'trois',0
+_RXK_7 DB 'DEF.',0
+_RXK_8 DB 'zero',0
+_RXK_9 DB 'DEF.1',0
+_RXK_10 DB 'DEF.99',0
+_RXV_I DB 256 DUP(0)
+_RXV_I_D DB 'I',0
+_RXK_11 DB 'ARR.',0
+_RXK_12 DB 'premier',0
+_RXK_13 DB 'ARR.1',0
+_RXV_J DB 256 DUP(0)
+_RXV_J_D DB 'J',0
+_RXK_14 DB 'TAB.',0
+_RXK_15 DB 'DEUX',0
+_RXK_16 DB 'UN',0
 _DATA ENDS
 
 END _RXP_Main

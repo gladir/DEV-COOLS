@@ -330,7 +330,7 @@
               VALUE(nom) : valeur d une variable par nom -> ptr chaine
               ERRORTEXT(n) : message d erreur REXX -> ptr chaine
 
-  TODO 19 - VARIABLES COMPOSEES (TIGES / STEMS)
+  TODO 19 - VARIABLES COMPOSEES (TIGES / STEMS) [IMPLEMENTE]
             Variable composee : nom.queue (stem.tail)
               Exemple : tab.1 tab.2 tab.compteur
               La queue est evaluee dynamiquement (concatenation des parties)
@@ -846,6 +846,9 @@ Procedure ParseProcKeyword;    Forward;
 
 (* TODO 18 - FONCTIONS INTEGREES partie 2 *)
 Procedure EmitBif2Runtime;     Forward;
+
+(* TODO 19 - VARIABLES COMPOSEES (STEMS) *)
+Procedure EmitStemRuntime;     Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -3073,6 +3076,11 @@ Begin
   EmitBif2Runtime;
 
   (* ============================================================ *)
+  (*  TODO 19 - Runtime variables composees (stems)               *)
+  (* ============================================================ *)
+  EmitStemRuntime;
+
+  (* ============================================================ *)
   (*  TODO 16 - Runtime PARSE (decoupage de chaines)              *)
   (* ============================================================ *)
   EmitParseRuntime;
@@ -5154,6 +5162,337 @@ Begin
 End;
 
 { ============================================================
+  TODO 19 - VARIABLES COMPOSEES (STEMS) [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- EmitStemRuntime : routines runtime pour stems/composees --- *)
+(* Emet les routines assembleur 8086 pour les variables composees :  *)
+(*   _RXRT_STEMGET : chercher valeur par cle composee -> AX          *)
+(*   _RXRT_STEMSET : ecrire valeur par cle composee                  *)
+(*   _RXRT_STEMDROP : supprimer toutes les entrees d une tige        *)
+(* Structure table : 32 entrees x 128 octets (32 cle + 96 valeur)   *)
+Procedure EmitStemRuntime;
+Var
+  Lbl1, Lbl2, Lbl3, Lbl4, Lbl5 : TString;
+  Lbl6, Lbl7, Lbl8, Lbl9       : TString;
+  LblA, LblB, LblC, LblD       : TString;
+  LblE, LblF, LblG, LblH       : TString;
+Begin
+  EmitComment('=== TODO 19 : Runtime variables composees (stems) ===');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXRT_STEMGET : lire une variable composee                  *)
+  (*  Entree : SI = cle composee ASCIIZ (ex "TAB.1")             *)
+  (*  Sortie : AX = pointeur vers la valeur                       *)
+  (*  Si cle exacte trouvee -> AX = ptr valeur                   *)
+  (*  Sinon si tige par defaut trouvee -> AX = ptr valeur defaut *)
+  (*  Sinon -> AX = SI (nom = valeur par defaut REXX)            *)
+  (* ============================================================ *)
+  EmitLabel('_RXRT_STEMGET');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+
+  (* CX = compteur d entrees *)
+  EmitInstrAB('MOV', 'CX', 'WORD PTR [_RX_STEMCNT]');
+  EmitInstrAB('OR', 'CX', 'CX');
+  Lbl1 := LabelGen;
+  EmitInstrA('JZ', Lbl1);   (* table vide -> defaut *)
+
+  (* BX = adresse de base de la table *)
+  EmitInstrAB('MOV', 'BX', 'OFFSET _RX_STEMTAB');
+  EmitInstrAB('XOR', 'DX', 'DX');  (* DX = index *)
+
+  Lbl2 := LabelGen;
+  EmitLabel(Lbl2);  (* boucle de recherche *)
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'DI', 'BX');
+  EmitInstr('CALL', '_RXRT_STRCMPS');
+  EmitInstrA('POP', 'SI');
+  EmitInstrAB('OR', 'AX', 'AX');
+  Lbl3 := LabelGen;
+  EmitInstrA('JZ', Lbl3);   (* trouvee *)
+
+  (* entree suivante : BX += 128 *)
+  EmitInstrAB('ADD', 'BX', '128');
+  EmitInstrA('INC', 'DX');
+  EmitInstrAB('CMP', 'DX', 'CX');
+  EmitInstrA('JB', Lbl2);
+
+  (* Pas trouvee : essayer la tige par defaut *)
+  EmitInstrA('JMP', Lbl1);
+
+  (* Trouvee : AX = BX + 32 (valeur) *)
+  EmitLabel(Lbl3);
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstrAB('ADD', 'AX', '32');
+  Lbl4 := LabelGen;
+  EmitInstrA('JMP', Lbl4);  (* sortie *)
+
+  (* Chercher tige par defaut : extraire prefixe jusqu au premier point *)
+  EmitLabel(Lbl1);
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('LEA', 'DI', '_RX_STEMBUF');
+  Lbl5 := LabelGen;
+  EmitLabel(Lbl5);
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [SI]');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', 'AL');
+  EmitInstrAB('OR', 'AL', 'AL');
+  Lbl6 := LabelGen;
+  EmitInstrA('JZ', Lbl6);   (* fin de chaine sans point *)
+  EmitInstrAB('CMP', 'AL', '2Eh');  (* 2Eh = '.' *)
+  Lbl7 := LabelGen;
+  EmitInstrA('JE', Lbl7);   (* premier point trouve *)
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', Lbl5);
+
+  (* Point trouve : terminer apres le point *)
+  EmitLabel(Lbl7);
+  EmitInstrA('INC', 'DI');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  Lbl8 := LabelGen;
+  EmitInstrA('JMP', Lbl8);
+
+  (* Fin sans point : pas de tige par defaut, retourner SI *)
+  EmitLabel(Lbl6);
+  EmitInstrA('POP', 'SI');
+  EmitInstrAB('MOV', 'AX', 'SI');
+  EmitInstrA('JMP', Lbl4);
+
+  (* Chercher le prefixe dans la table *)
+  EmitLabel(Lbl8);
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('LEA', 'SI', '_RX_STEMBUF');
+  EmitInstrAB('MOV', 'CX', 'WORD PTR [_RX_STEMCNT]');
+  EmitInstrAB('MOV', 'BX', 'OFFSET _RX_STEMTAB');
+  EmitInstrAB('XOR', 'DX', 'DX');
+
+  Lbl9 := LabelGen;
+  EmitLabel(Lbl9);
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'DI', 'BX');
+  EmitInstr('CALL', '_RXRT_STRCMPS');
+  EmitInstrA('POP', 'SI');
+  EmitInstrAB('OR', 'AX', 'AX');
+  LblA := LabelGen;
+  EmitInstrA('JZ', LblA);   (* trouvee defaut *)
+  EmitInstrAB('ADD', 'BX', '128');
+  EmitInstrA('INC', 'DX');
+  EmitInstrAB('CMP', 'DX', 'CX');
+  EmitInstrA('JB', Lbl9);
+
+  (* Tige par defaut pas trouvee : retourner SI original *)
+  EmitInstrA('POP', 'SI');
+  EmitInstrAB('MOV', 'AX', 'SI');
+  EmitInstrA('JMP', Lbl4);
+
+  (* Tige par defaut trouvee : AX = BX + 32 *)
+  EmitLabel(LblA);
+  EmitInstrA('POP', 'SI');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstrAB('ADD', 'AX', '32');
+
+  (* Sortie commune *)
+  EmitLabel(Lbl4);
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXRT_STEMSET : ecrire une variable composee                *)
+  (*  Entree : SI = cle composee ASCIIZ (ex "TAB.1")             *)
+  (*           DI = valeur ASCIIZ a stocker                       *)
+  (*  Cherche l'entree existante ou en ajoute une nouvelle        *)
+  (* ============================================================ *)
+  EmitLabel('_RXRT_STEMSET');
+  EmitInstrA('PUSH', 'AX');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+
+  (* Chercher l entree existante *)
+  EmitInstrAB('MOV', 'CX', 'WORD PTR [_RX_STEMCNT]');
+  EmitInstrAB('OR', 'CX', 'CX');
+  LblB := LabelGen;
+  EmitInstrA('JZ', LblB);   (* table vide -> ajouter *)
+
+  EmitInstrAB('MOV', 'BX', 'OFFSET _RX_STEMTAB');
+  EmitInstrAB('XOR', 'DX', 'DX');
+
+  LblC := LabelGen;
+  EmitLabel(LblC);
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('MOV', 'DI', 'BX');
+  EmitInstr('CALL', '_RXRT_STRCMPS');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstrAB('OR', 'AX', 'AX');
+  LblD := LabelGen;
+  EmitInstrA('JZ', LblD);   (* trouvee -> mettre a jour *)
+
+  EmitInstrAB('ADD', 'BX', '128');
+  EmitInstrA('INC', 'DX');
+  EmitInstrAB('CMP', 'DX', 'CX');
+  EmitInstrA('JB', LblC);
+
+  (* Pas trouvee : ajouter *)
+  EmitLabel(LblB);
+  EmitInstrAB('CMP', 'WORD PTR [_RX_STEMCNT]', '32');
+  LblE := LabelGen;
+  EmitInstrA('JAE', LblE);  (* table pleine *)
+
+  (* BX = _RX_STEMTAB + _RX_STEMCNT * 128 *)
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [_RX_STEMCNT]');
+  EmitInstrAB('MOV', 'DX', '128');
+  EmitRaw('        MUL     DX');
+  EmitInstrAB('ADD', 'AX', 'OFFSET _RX_STEMTAB');
+  EmitInstrAB('MOV', 'BX', 'AX');
+
+  (* Copier la cle dans [BX] *)
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'DI', 'BX');
+  EmitInstr('CALL', '_RXRT_STRCPY');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DI');
+
+  EmitInstrA('INC', 'WORD PTR [_RX_STEMCNT]');
+
+  (* Copier la valeur dans [BX+32] *)
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', 'DI');
+  EmitInstrAB('MOV', 'DI', 'BX');
+  EmitInstrAB('ADD', 'DI', '32');
+  EmitInstr('CALL', '_RXRT_STRCPY');
+  EmitInstrA('POP', 'SI');
+  LblH := LabelGen;
+  EmitInstrA('JMP', LblH);
+
+  (* Entree trouvee : mettre a jour la valeur *)
+  EmitLabel(LblD);
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', 'DI');
+  EmitInstrAB('MOV', 'DI', 'BX');
+  EmitInstrAB('ADD', 'DI', '32');
+  EmitInstr('CALL', '_RXRT_STRCPY');
+  EmitInstrA('POP', 'SI');
+
+  (* Sortie *)
+  EmitLabel(LblE);
+  EmitLabel(LblH);
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstrA('POP', 'AX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXRT_STEMDROP : supprimer toutes les entrees d une tige    *)
+  (*  Entree : SI = prefixe ASCIIZ (ex "TAB.")                   *)
+  (*  Efface toutes les entrees dont la cle commence par SI       *)
+  (* ============================================================ *)
+  EmitLabel('_RXRT_STEMDROP');
+  EmitInstrA('PUSH', 'AX');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+
+  (* Calculer la longueur du prefixe dans DX *)
+  EmitInstr('CALL', '_RXRT_STRLEN');
+  EmitInstrAB('MOV', 'DX', 'CX');
+
+  EmitInstrAB('XOR', 'CX', 'CX');
+  LblF := LabelGen;
+
+  EmitLabel(LblF);
+  EmitInstrAB('CMP', 'CX', 'WORD PTR [_RX_STEMCNT]');
+  LblG := LabelGen;
+  EmitInstrA('JAE', LblG);
+
+  (* BX = adresse entree = _RX_STEMTAB + CX * 128 *)
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrAB('MOV', 'AX', 'CX');
+  EmitInstrAB('MOV', 'BX', '128');
+  EmitRaw('        MUL     BX');
+  EmitInstrAB('ADD', 'AX', 'OFFSET _RX_STEMTAB');
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'DX');
+
+  (* Comparer les DX premiers octets *)
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'DI', 'BX');
+  EmitInstrAB('MOV', 'CX', 'DX');
+  EmitRaw('        CLD');
+  EmitRaw('        REPE CMPSB');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'CX');
+  Lbl1 := LabelGen;
+  EmitInstrA('JNE', Lbl1);
+
+  (* Match : remplacer par la derniere entree *)
+  EmitInstrA('DEC', 'WORD PTR [_RX_STEMCNT]');
+  EmitInstrAB('CMP', 'CX', 'WORD PTR [_RX_STEMCNT]');
+  Lbl2 := LabelGen;
+  EmitInstrA('JAE', Lbl2);
+
+  (* Copier la derniere entree sur l entree courante *)
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [_RX_STEMCNT]');
+  EmitInstrAB('MOV', 'DX', '128');
+  EmitRaw('        MUL     DX');
+  EmitInstrAB('ADD', 'AX', 'OFFSET _RX_STEMTAB');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrAB('MOV', 'DI', 'BX');
+  EmitInstrAB('MOV', 'CX', '128');
+  EmitRaw('        CLD');
+  EmitRaw('        REP MOVSB');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('JMP', LblF);
+
+  EmitLabel(Lbl2);
+  EmitInstrA('JMP', LblF);
+
+  EmitLabel(Lbl1);
+  EmitInstrA('INC', 'CX');
+  EmitInstrA('JMP', LblF);
+
+  (* Sortie *)
+  EmitLabel(LblG);
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstrA('POP', 'AX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+End;
+
+{ ============================================================
   TODO 16 - INSTRUCTION PARSE [IMPLEMENTE]
   ============================================================ }
 
@@ -5531,6 +5870,11 @@ Begin
   DataAddBuffer('_RX_RESBUF', 256);               (* buffer RESULT procedure   *)
   (* TODO 18 - Buffer fonctions integrees partie 2 *)
   DataAddBuffer('_RX_BIF2BUF', 256);              (* buffer BIF partie 2       *)
+  (* TODO 19 - Buffers et table des stems *)
+  DataAddBuffer('_RX_STEMKEY', 64);               (* buffer construction cle    *)
+  DataAddBuffer('_RX_STEMBUF', 256);              (* buffer sauvegarde cle      *)
+  DataAddWord('_RX_STEMCNT', 0);                   (* nombre d entrees stem      *)
+  DataAddBuffer('_RX_STEMTAB', 4096);             (* table stems 32x128 octets  *)
 End;
 
 (* ============================================================
@@ -5676,6 +6020,9 @@ Var
   VarName : TString;
   Idx     : Integer;
   DefLbl  : TString;
+  StemLbl : TString;
+  DotPos  : Integer;
+  StemPfx : TString;
 Begin
   EmitComment('DROP');
 
@@ -5683,30 +6030,42 @@ Begin
   While (CurToken.Kind = TK_IDENT) Do
   Begin
     VarName := StrUpperCase(CurToken.Val);
-    Idx := SymFind(VarName);
-    If Idx < 0 Then
-      Idx := VarAlloc(VarName);
-
-    (* Copier la valeur par defaut (le nom) dans la variable *)
-    If (Idx >= 0) And (SymTab[Idx].Offset >= 0) Then
-    Begin
-      DefLbl := SymTab[Idx].MangledName + '_D';
-      EmitInstr('LEA', 'SI, ' + DefLbl);
-      EmitInstr('LEA', 'DI, ' + SymTab[Idx].MangledName);
-      EmitInstr('CALL', '_RXRT_STRCPY');
-    End
-    Else If Idx >= 0 Then
-    Begin
-      (* Variable locale : remettre pointeur vers nom par defaut *)
-      (* On cree la constante nom dans DATA si pas deja fait *)
-      DefLbl := DataAddStr(VarName);
-      EmitInstr('MOV', 'SI, OFFSET ' + DefLbl);
-      EmitInstr('LEA', 'DI, [BP' +
-                IntToStr(SymTab[Idx].Offset) + ']');
-      EmitInstr('CALL', '_RXRT_STRCPY');
-    End;
-
     ParserAdvance;
+
+    (* TODO 19 : DROP stem. -> effacer toutes les entrees *)
+    DotPos := Pos('.', VarName);
+    If DotPos > 0 Then
+    Begin
+      (* Le nom contient un point : c est un stem *)
+      StemPfx := Copy(VarName, 1, DotPos);
+      EmitComment('DROP stem: ' + StemPfx);
+      StemLbl := DataAddStr(StemPfx);
+      EmitInstr('MOV', 'SI, OFFSET ' + StemLbl);
+      EmitInstr('CALL', '_RXRT_STEMDROP');
+    End
+    Else
+    Begin
+      (* DROP variable simple *)
+      Idx := SymFind(VarName);
+      If Idx < 0 Then
+        Idx := VarAlloc(VarName);
+
+      If (Idx >= 0) And (SymTab[Idx].Offset >= 0) Then
+      Begin
+        DefLbl := SymTab[Idx].MangledName + '_D';
+        EmitInstr('LEA', 'SI, ' + DefLbl);
+        EmitInstr('LEA', 'DI, ' + SymTab[Idx].MangledName);
+        EmitInstr('CALL', '_RXRT_STRCPY');
+      End
+      Else If Idx >= 0 Then
+      Begin
+        DefLbl := DataAddStr(VarName);
+        EmitInstr('MOV', 'SI, OFFSET ' + DefLbl);
+        EmitInstr('LEA', 'DI, [BP' +
+                  IntToStr(SymTab[Idx].Offset) + ']');
+        EmitInstr('CALL', '_RXRT_STRCPY');
+      End;
+    End;
   End;
 End;
 
@@ -6762,6 +7121,134 @@ Begin
   Res.SymIdx := -1;
 End;
 
+(* ---- StemBuildKey : construire la cle composee en assembleur ------ *)
+(* Recoit le nom complet du composee (ex: "TAB.1", "TAB.I", "DEF."). *)
+(* Le nom a deja ete tokenise comme un seul TK_IDENT par le lexeur.  *)
+(* Extrait prefixe et parties de queue, determine si statique ou      *)
+(* dynamique, et emet le code ASM correspondant.                      *)
+(* En sortie : SI pointe vers la cle (constante ou _RX_STEMKEY).     *)
+Procedure StemBuildKey(Const CompoundName : TString);
+Var
+  DotPos    : Integer;
+  Prefix    : TString;
+  Tail      : TString;
+  PartIsStc : Array[0..7] Of Boolean;
+  PartVal   : Array[0..7] Of TString;
+  PartCnt   : Integer;
+  AllStatic : Boolean;
+  I, J      : Integer;
+  CurPart   : TString;
+  IsNum     : Boolean;
+  Lbl       : TString;
+  PartIdx   : Integer;
+Begin
+  (* Trouver le premier point *)
+  DotPos := Pos('.', CompoundName);
+  If DotPos = 0 Then
+  Begin
+    Lbl := DataAddStr(CompoundName);
+    EmitInstr('MOV', 'SI, OFFSET ' + Lbl);
+    Exit;
+  End;
+
+  Prefix := Copy(CompoundName, 1, DotPos);  (* inclut le point *)
+  Tail   := Copy(CompoundName, DotPos + 1, Length(CompoundName) - DotPos);
+
+  (* Decouper la queue en parties separees par des points *)
+  PartCnt := 0;
+  CurPart := '';
+  For I := 1 To Length(Tail) Do
+  Begin
+    If Tail[I] = '.' Then
+    Begin
+      If (CurPart <> '') And (PartCnt < 8) Then
+      Begin
+        PartVal[PartCnt] := CurPart;
+        Inc(PartCnt);
+      End;
+      CurPart := '';
+    End
+    Else
+    Begin
+      If Length(CurPart) < MAX_STR Then
+        CurPart := CurPart + Tail[I];
+    End;
+  End;
+  If (CurPart <> '') And (PartCnt < 8) Then
+  Begin
+    PartVal[PartCnt] := CurPart;
+    Inc(PartCnt);
+  End;
+
+  (* Determiner si chaque partie est statique (nombre) ou dynamique *)
+  AllStatic := True;
+  For I := 0 To PartCnt - 1 Do
+  Begin
+    IsNum := True;
+    For J := 1 To Length(PartVal[I]) Do
+      If (PartVal[I][J] < '0') Or (PartVal[I][J] > '9') Then
+        IsNum := False;
+    PartIsStc[I] := IsNum;
+    If Not IsNum Then
+      AllStatic := False;
+  End;
+
+  EmitComment('stem key: ' + CompoundName);
+
+  If AllStatic Then
+  Begin
+    (* Cle entierement statique : utiliser le nom tel quel *)
+    Lbl := DataAddStr(CompoundName);
+    EmitInstr('MOV', 'SI, OFFSET ' + Lbl);
+  End
+  Else
+  Begin
+    (* Cle dynamique : construire a l execution *)
+    Lbl := DataAddStr(Prefix);
+    EmitInstr('MOV', 'SI, OFFSET ' + Lbl);
+    EmitInstr('LEA', 'DI, _RX_STEMKEY');
+    EmitInstr('CALL', '_RXRT_STRCPY');
+
+    For I := 0 To PartCnt - 1 Do
+    Begin
+      If I > 0 Then
+      Begin
+        Lbl := DataAddStr('.');
+        EmitInstr('LEA', 'SI, _RX_STEMKEY');
+        EmitInstr('MOV', 'DI, OFFSET ' + Lbl);
+        EmitInstr('CALL', '_RXRT_CONCAT');
+        EmitInstr('MOV', 'SI, AX');
+        EmitInstr('LEA', 'DI, _RX_STEMKEY');
+        EmitInstr('CALL', '_RXRT_STRCPY');
+      End;
+
+      If PartIsStc[I] Then
+      Begin
+        Lbl := DataAddStr(PartVal[I]);
+        EmitInstr('LEA', 'SI, _RX_STEMKEY');
+        EmitInstr('MOV', 'DI, OFFSET ' + Lbl);
+        EmitInstr('CALL', '_RXRT_CONCAT');
+      End
+      Else
+      Begin
+        PartIdx := SymFind(StrUpperCase(PartVal[I]));
+        If PartIdx < 0 Then
+          PartIdx := VarAlloc(PartVal[I]);
+        VarLoad(PartIdx);
+        EmitInstr('MOV', 'DI, AX');
+        EmitInstr('LEA', 'SI, _RX_STEMKEY');
+        EmitInstr('CALL', '_RXRT_CONCAT');
+      End;
+
+      EmitInstr('MOV', 'SI, AX');
+      EmitInstr('LEA', 'DI, _RX_STEMKEY');
+      EmitInstr('CALL', '_RXRT_STRCPY');
+    End;
+
+    EmitInstr('LEA', 'SI, _RX_STEMKEY');
+  End;
+End;
+
 (* ---- ParsePrimary : litteraux, identificateurs, appels fonctions *)
 (* Gere : nombres, chaines, identificateurs (variables / builtins), *)
 (* appels de fonctions ident(...), parentheses (expr).              *)
@@ -6798,6 +7285,18 @@ Begin
       Begin
         ParserAdvance; (* consommer '(' *)
         ParseFuncCall(SaveName, Res);
+      End
+      (* TODO 19 : variable composee (le nom contient un point) *)
+      Else If Pos('.', SaveName) > 0 Then
+      Begin
+        EmitComment('stem read: ' + SaveName);
+        StemBuildKey(SaveName);
+        EmitInstr('CALL', '_RXRT_STEMGET');
+        Res.Kind    := EK_AX;
+        Res.ImmVal  := 0;
+        Res.TypeIdx := TY_IDX_STRING;
+        Res.Offset  := 0;
+        Res.SymIdx  := -1;
       End
       Else
       Begin
@@ -8683,6 +9182,36 @@ Begin
   Begin
     SaveName := CurToken.Val;
     ParserAdvance;
+
+    (* TODO 19 : variable composee (le nom contient un point) *)
+    If Pos('.', SaveName) > 0 Then
+    Begin
+      (* Verifier si c est une affectation : stem = expr *)
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+      Begin
+        ParserAdvance;  (* consommer = *)
+        EmitComment('stem assign: ' + SaveName);
+        StemBuildKey(SaveName);
+        (* SI = cle composee, sauver dans _RX_STEMBUF *)
+        EmitInstr('LEA', 'DI, _RX_STEMBUF');
+        EmitInstr('CALL', '_RXRT_STRCPY');
+        (* Evaluer l expression *)
+        ParseExpr(Res);
+        ExprFlushToAX(Res);
+        (* AX = ptr vers valeur *)
+        EmitInstr('MOV', 'DI, AX');
+        EmitInstr('LEA', 'SI, _RX_STEMBUF');
+        EmitInstr('CALL', '_RXRT_STEMSET');
+      End
+      Else
+      Begin
+        (* Pas une affectation : lecture stem comme expression *)
+        EmitComment('stem read: ' + SaveName);
+        StemBuildKey(SaveName);
+        EmitInstr('CALL', '_RXRT_STEMGET');
+      End;
+      Exit;
+    End;
 
     (* Verifier si c est une affectation : ident = expr *)
     If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
