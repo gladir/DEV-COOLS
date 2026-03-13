@@ -236,7 +236,7 @@
               Chaine ELSEIF avec liste de labels de saut
               JMP _ABL_endif apres chaque branche
 
-  TODO 11 - PARSEUR : CASE / WHEN / WHEN OTHERS / ENDCASE
+  TODO 11 - PARSEUR : CASE / WHEN / WHEN OTHERS / ENDCASE [IMPLEMENTE]
             Procedure ParseCase
             Syntaxe :
               CASE variable.
@@ -1078,6 +1078,7 @@ Procedure EmitBlank; Forward;
 Function  NewLabel : TString; Forward;
 Function  AddStringLit(Const S : TString) : TString; Forward;
 Function  ParseExpr : Integer; Forward;
+Function  ParseAndExpr : Integer; Forward;
 
 { ============================================================ }
 { DECLARATIONS FORWARD (GENERATION DE CODE TODO 09)            }
@@ -1092,6 +1093,12 @@ Procedure GenStoreVar32(SymIdx : Integer); Forward;
 Procedure ParseStatement; Forward;
 Procedure ParseBlock(Stop1, Stop2, Stop3 : Integer); Forward;
 Procedure ParseIf; Forward;
+
+{ ============================================================ }
+{ DECLARATIONS FORWARD (CASE / WHEN / ENDCASE TODO 11)         }
+{ ============================================================ }
+
+Procedure ParseCase; Forward;
 
 { ============================================================ }
 { FONCTIONS UTILITAIRES                                        }
@@ -3189,6 +3196,10 @@ Begin
   If TokIsKw(KW_IF) Then
   Begin Consume; ParseIf; Exit; End;
 
+  { CASE / WHEN / ENDCASE }
+  If TokIsKw(KW_CASE) Then
+  Begin Consume; ParseCase; Exit; End;
+
   { instruction non reconnue : sauter jusqu au prochain point }
   If CurTokType = TOK_DOT Then
     Consume
@@ -3292,6 +3303,100 @@ Begin
 
   { Etiquette de fin commune a toutes les branches }
   EmitLabel(LblEnd);
+End;
+
+{ ============================================================ }
+{ TODO 11 : PARSEUR CASE / WHEN / WHEN OTHERS / ENDCASE        }
+{ ============================================================ }
+
+{ ---- ParseCase : CASE / WHEN / WHEN OTHERS / ENDCASE --------- }
+{ Syntaxe ABAP :                                                  }
+{   CASE variable.                                                }
+{     WHEN valeur. instructions.                                  }
+{     WHEN valeur1 OR valeur2. instructions.                      }
+{     WHEN OTHERS. instructions.                                  }
+{   ENDCASE.                                                      }
+Procedure ParseCase;
+Var LblEndCase, LblNext, LblBody : TString;
+Begin
+  EmitComment('---- CASE ----');
+
+  { Evaluer la variable selecteur -> EAX, puis sauvegarder dans EDX }
+  ParseExpr;
+  EmitI('MOV     EDX, EAX');
+
+  { Consommer le point apres la variable }
+  If CurTokType = TOK_DOT Then Consume
+  Else LexError('Point attendu apres variable CASE');
+
+  LblEndCase := NewLabel + '_EC';
+
+  { --- Boucle sur les clauses WHEN --- }
+  While TokIsKw(KW_WHEN) Do
+  Begin
+    Consume; { skip WHEN }
+
+    { WHEN OTHERS : clause par defaut }
+    If TokIsKw(KW_OTHERS) Then
+    Begin
+      Consume; { skip OTHERS }
+      If CurTokType = TOK_DOT Then Consume
+      Else LexError('Point attendu apres WHEN OTHERS');
+      EmitComment('---- WHEN OTHERS ----');
+      EnterScope(SK_BLOCK, 0);
+      ParseBlock(KW_ENDCASE, KW_NONE, KW_NONE);
+      LeaveScope;
+      EmitI('JMP     ' + LblEndCase);
+      Break; { WHEN OTHERS termine la liste des clauses }
+    End;
+
+    { WHEN valeur [OR valeur2 ...] }
+    LblNext := NewLabel + '_WN';
+    LblBody := NewLabel + '_WB';
+    EmitComment('---- WHEN ----');
+
+    { Evaluer la premiere valeur -> EAX, comparer avec EDX }
+    ParseAndExpr;
+    EmitI('CMP     EDX, EAX');
+
+    { Valeurs supplementaires separees par OR }
+    While TokIsKw(KW_OR) Do
+    Begin
+      EmitI('JE      ' + LblBody); { correspond -> sauter au corps }
+      Consume; { skip OR }
+      ParseAndExpr; { valeur suivante -> EAX }
+      EmitI('CMP     EDX, EAX');
+    End;
+
+    { Apres la derniere valeur : sauter si pas egal }
+    EmitI('JNE     ' + LblNext);
+
+    { --- Corps de la clause --- }
+    EmitLabel(LblBody);
+    If CurTokType = TOK_DOT Then Consume
+    Else LexError('Point attendu apres valeur(s) WHEN');
+
+    EnterScope(SK_BLOCK, 0);
+    ParseBlock(KW_WHEN, KW_ENDCASE, KW_NONE);
+    LeaveScope;
+    EmitI('JMP     ' + LblEndCase);
+
+    { Etiquette pour la clause suivante }
+    EmitLabel(LblNext);
+  End; { While WHEN }
+
+  { --- ENDCASE. --- }
+  If TokIsKw(KW_ENDCASE) Then
+  Begin
+    Consume; { skip ENDCASE }
+    If CurTokType = TOK_DOT Then Consume
+    Else LexError('Point attendu apres ENDCASE');
+  End
+  Else
+    LexError('ENDCASE attendu');
+
+  { Etiquette de fin du CASE }
+  EmitLabel(LblEndCase);
 End;
 
 Procedure InitOptions;

@@ -217,7 +217,7 @@
               Chaine ELSEIF avec liste de labels de saut
               JMP _ABL_endif apres chaque branche
 
-  TODO 11 - PARSEUR : CASE / WHEN / WHEN OTHERS / ENDCASE
+  TODO 11 - PARSEUR : CASE / WHEN / WHEN OTHERS / ENDCASE [IMPLEMENTE]
             Procedure ParseCase
             Syntaxe :
               CASE variable.
