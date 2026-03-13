@@ -421,7 +421,7 @@
             Procedure ParseReturn
               RETURN. -> MOV ESP,EBP / POP EBP / RET
 
-  TODO 21 - PARSEUR : SELECT / ENDSELECT (ACCES BD, STUB SANS BD)
+  TODO 21 - PARSEUR : SELECT / ENDSELECT (ACCES BD, STUB SANS BD) [IMPLEMENTE]
             Procedure ParseSelect
             Syntaxe :
               SELECT [SINGLE] champ(s) / * FROM table
@@ -1183,6 +1183,12 @@ Procedure ParseFree; Forward;
 Procedure ParseCheck; Forward;
 Procedure ParseStop; Forward;
 Procedure ParseReturn; Forward;
+
+{ ============================================================ }
+{ DECLARATIONS FORWARD (SELECT / ENDSELECT TODO 21)            }
+{ ============================================================ }
+
+Procedure ParseSelect; Forward;
 
 { ============================================================ }
 { FONCTIONS UTILITAIRES                                        }
@@ -3542,6 +3548,10 @@ Begin
   If TokIsKw(KW_RETURN) Then
   Begin Consume; ParseReturn; Exit; End;
 
+  { SELECT ... [ENDSELECT.] (TODO 21) }
+  If TokIsKw(KW_SELECT) Then
+  Begin Consume; ParseSelect; Exit; End;
+
   { var = expr. (style ABAP Objet / assignation directe, TODO 15) }
   If (CurTokType = TOK_IDENT) And (CurTokKw = KW_NONE) Then
   Begin
@@ -4568,6 +4578,157 @@ Begin
     EmitI('CALL    _ExitProcess@4');
   End;
   If CurTokType = TOK_DOT Then Consume;
+End;
+
+{ ============================================================ }
+{ TODO 21 : SELECT / ENDSELECT (STUB SANS BD)                   }
+{ ============================================================ }
+
+{ ---- ParseSelect : SELECT ... FROM ... [ENDSELECT.] --------- }
+{ Stub : pas de base de donnees reelle.                          }
+{   - Parse les clauses SELECT / FROM / INTO / WHERE / etc.      }
+{   - Emet un commentaire de stub.                                }
+{   - Si pas SINGLE : consomme le bloc jusqu a ENDSELECT.        }
+{   - Positionne SY-SUBRC = 4 (non trouve).                      }
+{   - Positionne SY-DBCNT = 0 (aucun enregistrement).            }
+{ ============================================================ }
+Procedure ParseSelect;
+Var IsSingle    : Boolean;
+    IntoTable   : Boolean;
+    SySubrcIdx  : Integer;
+    SyDbcntIdx  : Integer;
+    SelectInfo  : TString;
+Begin
+  EmitComment('---- SELECT (stub sans BD) ----');
+  SelectInfo := 'SELECT';
+
+  { SELECT SINGLE ... }
+  IsSingle := False;
+  IntoTable := False;
+  If TokIsKw(KW_SINGLE) Then
+  Begin
+    IsSingle := True;
+    SelectInfo := SelectInfo + ' SINGLE';
+    Consume;
+  End;
+
+  { Consommer les champs (identifiants ou *) }
+  While (CurTokType <> TOK_EOF) And (CurTokType <> TOK_DOT) And
+        (Not TokIsKw(KW_FROM)) Do
+  Begin
+    If CurTokType = TOK_STAR Then
+      SelectInfo := SelectInfo + ' *'
+    Else If CurTokType = TOK_IDENT Then
+      SelectInfo := SelectInfo + ' ' + CurTokStr;
+    Consume;
+  End;
+
+  { FROM table }
+  If TokIsKw(KW_FROM) Then
+  Begin
+    Consume;
+    If CurTokType = TOK_IDENT Then
+    Begin
+      SelectInfo := SelectInfo + ' FROM ' + CurTokStr;
+      Consume;
+    End;
+  End;
+
+  { INTO [CORRESPONDING FIELDS OF] var / TABLE itab }
+  If TokIsKw(KW_INTO) Then
+  Begin
+    Consume;
+    If TokIsKw(KW_CORRESPONDING) Then
+    Begin
+      Consume;
+      { FIELDS }
+      If (CurTokType = TOK_IDENT) And
+         (StrUpperCase(CurTokStr) = 'FIELDS') Then
+        Consume;
+      { OF }
+      If TokIsKw(KW_OF) Then Consume;
+    End;
+    If TokIsKw(KW_TABLE) Then
+    Begin
+      IntoTable := True;
+      Consume;
+    End;
+    { nom de la variable/table cible }
+    If CurTokType = TOK_IDENT Then
+      Consume;
+  End;
+
+  { WHERE condition (skip tokens jusqu au point ou ORDER/UP) }
+  If TokIsKw(KW_WHERE) Then
+  Begin
+    Consume;
+    While (CurTokType <> TOK_EOF) And (CurTokType <> TOK_DOT) And
+          (Not TokIsKw(KW_ORDER)) And
+          (Not (TokIsKw(KW_ENDSELECT))) And
+          (Not ((CurTokType = TOK_IDENT) And (StrUpperCase(CurTokStr) = 'UP'))) Do
+      Consume;
+  End;
+
+  { ORDER BY champ }
+  If TokIsKw(KW_ORDER) Then
+  Begin
+    Consume;
+    { BY }
+    If TokIsKw(KW_BY) Then Consume;
+    { nom du champ }
+    If CurTokType = TOK_IDENT Then Consume;
+  End;
+
+  { UP TO n ROWS }
+  If (CurTokType = TOK_IDENT) And (StrUpperCase(CurTokStr) = 'UP') Then
+  Begin
+    Consume;
+    { TO }
+    If TokIsKw(KW_TO) Then Consume;
+    { n }
+    If CurTokType = TOK_NUMBER Then Consume;
+    { ROWS }
+    If TokIsKw(KW_ROWS) Then Consume;
+  End;
+
+  EmitComment('  ' + SelectInfo + ' (stub - pas de BD)');
+
+  { Consommer le point de fin de clause SELECT }
+  If CurTokType = TOK_DOT Then Consume;
+
+  { Si pas SINGLE et pas INTO TABLE, il faut un bloc ENDSELECT }
+  If (Not IsSingle) And (Not IntoTable) Then
+  Begin
+    { Boucle vide : sauter directement le corps }
+    EmitComment('  SELECT non-SINGLE : boucle vide (0 iterations)');
+    { Parser et ignorer les instructions entre SELECT et ENDSELECT }
+    While (CurTokType <> TOK_EOF) And (Not TokIsKw(KW_ENDSELECT)) Do
+    Begin
+      { Sauter les tokens jusqu au prochain point }
+      While (CurTokType <> TOK_EOF) And (CurTokType <> TOK_DOT) And
+            (Not TokIsKw(KW_ENDSELECT)) Do
+        Consume;
+      If CurTokType = TOK_DOT Then Consume;
+    End;
+    { Consommer ENDSELECT. }
+    If TokIsKw(KW_ENDSELECT) Then
+    Begin
+      Consume;
+      If CurTokType = TOK_DOT Then Consume;
+    End
+    Else
+      LexError('ENDSELECT attendu');
+  End;
+
+  { SY-SUBRC = 4 (non trouve) }
+  SySubrcIdx := FindSym('SY-SUBRC');
+  If SySubrcIdx > 0 Then
+    EmitI('MOV     DWORD PTR [' + SymTab[SySubrcIdx].AsmLabel + '], 4');
+
+  { SY-DBCNT = 0 (aucun enregistrement) }
+  SyDbcntIdx := FindSym('SY-DBCNT');
+  If SyDbcntIdx > 0 Then
+    EmitI('MOV     DWORD PTR [' + SymTab[SyDbcntIdx].AsmLabel + '], 0');
 End;
 
 { ============================================================ }

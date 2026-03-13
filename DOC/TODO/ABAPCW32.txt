@@ -402,7 +402,7 @@
             Procedure ParseReturn
               RETURN. -> MOV ESP,EBP / POP EBP / RET
 
-  TODO 21 - PARSEUR : SELECT / ENDSELECT (ACCES BD, STUB SANS BD)
+  TODO 21 - PARSEUR : SELECT / ENDSELECT (ACCES BD, STUB SANS BD) [IMPLEMENTE]
             Procedure ParseSelect
             Syntaxe :
               SELECT [SINGLE] champ(s) / * FROM table
