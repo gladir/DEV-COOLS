@@ -4956,7 +4956,7 @@ Begin
   Else
     CompileError('IN attendu');
 
-  CaseIdx := 1;
+  CaseIdx := 1; { Algol 68 : CASE indices commencent a 1 }
   ExprMakeNone(Res);
 
   { Parse comma-separated case values, indexing from 1 }
