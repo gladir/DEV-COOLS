@@ -3009,20 +3009,21 @@ Begin
     EmitI('POP     EAX');
     EmitI('PUSH    EAX');
     EmitI('CMP     EAX, EBX');
-    EmitI('JL      ' + Lbl_F);
+    EmitI('JGE     ' + Lbl_F);
+    { var < lo : pile non consommee -> nettoyer et faux }
+    EmitI('ADD     ESP, 4');
+    EmitI('XOR     EAX, EAX');
+    EmitI('JMP     ' + Lbl_E);
+    EmitLabel(Lbl_F);
     EatKw(KW_AND);
     ParseAddExpr;
     EmitI('MOV     EBX, EAX');
     EmitI('POP     EAX');
     EmitI('CMP     EAX, EBX');
-    EmitI('JG      ' + Lbl_F);
+    EmitI('JG      ' + Lbl_F + '_hi');
     EmitI('MOV     EAX, 1');
     EmitI('JMP     ' + Lbl_E);
-    EmitLabel(Lbl_F);
-    If CurTokType <> TOK_DOT Then
-    Begin
-      { Si BETWEEN a echoue au JL, la pile a un element non consomme }
-    End;
+    EmitLabel(Lbl_F + '_hi');
     EmitI('XOR     EAX, EAX');
     EmitLabel(Lbl_E);
   End
