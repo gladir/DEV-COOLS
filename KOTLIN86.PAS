@@ -2405,7 +2405,7 @@ Begin
             If IntpPos > Length(IntpStr) Then Break;
             If IntpStr[IntpPos] = CH_LBRACE Then
             Begin
-              (* $-expr - extraire le nom comme variable simple *)
+              (* interpolation $-delimited expression *)
               Inc(IntpPos);
               IntpVNam := '';
               While (IntpPos <= Length(IntpStr)) And
@@ -3113,7 +3113,7 @@ Begin
             EmitInstrA('POP', 'SI');
             If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
               ParserAdvance; { consomme ')' }
-            EmitComment('split stub : retourne la chaine originale');
+            EmitComment('split stub : retourne ptr chaine (impl. complete requiert tableau)');
             EmitInstrAB('MOV', 'AX', 'SI');
             Res.TypeIdx := TY_IDX_ARRAY;
           End
