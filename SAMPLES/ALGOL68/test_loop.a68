@@ -50,3 +50,4 @@ INT sum8 := 0;
 FOR p FROM 5 TO 1 BY -1 DO
   sum8 +:= p
 OD
+
