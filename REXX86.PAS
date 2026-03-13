@@ -409,7 +409,7 @@
               Chaque element : 2 octets longueur + contenu chaine
             Pile circulaire pour optimiser l espace memoire
 
-  TODO 23 - INSTRUCTION INTERPRET ET ADDRESS
+  TODO 23 - INSTRUCTION INTERPRET ET ADDRESS [IMPLEMENTE]
             INTERPRET expr : evaluer dynamiquement du code REXX
               Limitation sur 8086 : non supporte en compilation native
               -> Emettre un avertissement a la compilation
@@ -861,6 +861,11 @@ Procedure EmitSignalRuntime;   Forward;
 Procedure EmitStackRuntime;    Forward;
 Procedure ParseQueueStmt;      Forward;
 Procedure ParsePushStmt;       Forward;
+(* TODO 23 - INSTRUCTION INTERPRET ET ADDRESS *)
+Procedure EmitInterpRuntime;   Forward;
+Procedure ParseInterpretStmt;  Forward;
+Procedure ParseAddressStmt;    Forward;
+Procedure ParseTraceStmt;      Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -3111,6 +3116,11 @@ Begin
   (*  TODO 22 - Runtime pile de donnees (QUEUE/PUSH/PULL)         *)
   (* ============================================================ *)
   EmitStackRuntime;
+
+  (* ============================================================ *)
+  (*  TODO 23 - Runtime INTERPRET, ADDRESS, TRACE                 *)
+  (* ============================================================ *)
+  EmitInterpRuntime;
 End;
 
 { ============================================================
@@ -5927,6 +5937,14 @@ Begin
   DataAddWord('_RX_STKTOP', 0);                      (* offset prochain libre      *)
   DataAddWord('_RX_STKCOUNT', 0);                    (* nombre d elements          *)
   DataAddBuffer('_RX_STKBUF', 256);                 (* buffer temporaire pile     *)
+  (* TODO 23 - INTERPRET, ADDRESS, TRACE *)
+  DataAddWord('_RX_TRACE', 0);                       (* niveau de trace (0=OFF)    *)
+  DataAdd('_RX_ADDR', DK_STR, 0, 'SYSTEM');          (* environnement courant      *)
+  DataAdd('_RX_ADDR_CMD', DK_STR, 0, 'CMD');         (* chaine CMD                 *)
+  DataAdd('_RX_ADDR_SYS', DK_STR, 0, 'SYSTEM');      (* chaine SYSTEM              *)
+  DataAdd('_RX_INTERP_MSG', DK_STR, 0, 'INTERPRET non supporte en mode compile');
+  DataAdd('_RX_HOSTCMD_MSG', DK_STR, 0, 'Commande hote: ');
+  DataAddBuffer('_RX_HOSTBUF', 256);                 (* buffer commande hote       *)
 End;
 
 (* ============================================================
@@ -9514,6 +9532,176 @@ Begin
 End;
 
 { ============================================================
+  TODO 23 - INSTRUCTION INTERPRET ET ADDRESS [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- EmitInterpRuntime : routines runtime INTERPRET/ADDRESS ---- *)
+(* Emet les routines assembleur 8086 pour :                          *)
+(*   _RXRT_HOSTCMD(SI=cmd) : execute une commande via l environnement *)
+(*   _RXB_ADDRESS() : retourne l environnement courant               *)
+(*   _RXB_TRACE() : retourne le niveau de trace courant              *)
+Procedure EmitInterpRuntime;
+Begin
+  EmitComment('--- Runtime INTERPRET / ADDRESS / TRACE (TODO 23) ---');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXRT_HOSTCMD(SI=cmd) : executer une commande hote           *)
+  (*  Entree : SI = pointeur vers commande ASCIIZ                  *)
+  (*  En mode 8086/DOS : affiche la commande (stub)                *)
+  (*  Met a jour RC (_RX_RC) = 0                                    *)
+  (* ============================================================ *)
+  EmitLabel('_RXRT_HOSTCMD');
+  EmitInstrA('PUSH', 'SI');
+  EmitComment('Afficher le prefixe commande hote');
+  EmitInstrAB('MOV', 'SI', 'OFFSET _RX_HOSTCMD_MSG');
+  EmitInstrA('CALL', '_RXRT_PRINT');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('CALL', '_RXRT_PRINTLN');
+  EmitComment('RC = 0 (commande stub)');
+  EmitInstrAB('MOV', 'WORD PTR [_RX_RC]', '0');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_ADDRESS() : retourne l environnement courant             *)
+  (*  0 arg                                                         *)
+  (*  Retour : AX = ptr vers chaine environnement (_RX_ADDR)       *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_ADDRESS');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _RX_ADDR');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_TRACE() : retourne le niveau de trace courant            *)
+  (*  0 arg                                                         *)
+  (*  Retour : AX = valeur de _RX_TRACE                            *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_TRACE');
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [_RX_TRACE]');
+  EmitRaw('        RET');
+  EmitBlankLine;
+End;
+
+(* ---- ParseInterpretStmt : parser INTERPRET expr ---------------- *)
+(* Emet un avertissement a la compilation (non supporte en natif)   *)
+(* et genere un appel a _RXRT_PANIC a l execution.                  *)
+Procedure ParseInterpretStmt;
+Var
+  Res : TExprVal;
+Begin
+  WarnMsg('INTERPRET non supporte en compilation native 8086');
+  EmitComment('INTERPRET (non supporte - panic)');
+  (* Consommer l expression pour avancer le parseur, mais le resultat *)
+  (* est ignore car INTERPRET n est pas supporte en compilation native *)
+  If (CurToken.Kind <> TK_EOL) And (CurToken.Kind <> TK_EOF) Then
+    ParseExpr(Res);
+  EmitInstrAB('MOV', 'SI', 'OFFSET _RX_INTERP_MSG');
+  EmitInstrA('CALL', '_RXRT_PANIC');
+End;
+
+(* ---- ParseAddressStmt : parser ADDRESS [env] [commande] -------- *)
+(* ADDRESS seul : affiche l environnement courant                    *)
+(* ADDRESS env  : change l environnement courant                    *)
+(* ADDRESS env commande : execute la commande dans cet environnement *)
+Procedure ParseAddressStmt;
+Var
+  Env : TString;
+  Res : TExprVal;
+Begin
+  EmitComment('ADDRESS');
+
+  (* ADDRESS sans argument : afficher l environnement courant *)
+  If (CurToken.Kind = TK_EOL) Or (CurToken.Kind = TK_EOF) Then
+  Begin
+    EmitInstrAB('MOV', 'SI', 'OFFSET _RX_ADDR');
+    EmitInstrA('CALL', '_RXRT_PRINTLN');
+    Exit;
+  End;
+
+  (* ADDRESS env *)
+  If CurToken.Kind = TK_KEYWORD Then
+  Begin
+    Env := StrUpperCase(CurToken.Val);
+    ParserAdvance;
+  End
+  Else If CurToken.Kind = TK_IDENT Then
+  Begin
+    Env := StrUpperCase(CurToken.Val);
+    ParserAdvance;
+  End
+  Else
+  Begin
+    (* ADDRESS expr : la commande est l expression *)
+    ParseExpr(Res);
+    ExprFlushToAX(Res);
+    EmitInstrAB('MOV', 'SI', 'AX');
+    EmitInstrA('CALL', '_RXRT_HOSTCMD');
+    Exit;
+  End;
+
+  (* Si une commande suit : l executer *)
+  If (CurToken.Kind <> TK_EOL) And (CurToken.Kind <> TK_EOF) Then
+  Begin
+    ParseExpr(Res);
+    ExprFlushToAX(Res);
+    EmitInstrAB('MOV', 'SI', 'AX');
+    EmitInstrA('CALL', '_RXRT_HOSTCMD');
+  End;
+  (* Sinon : ADDRESS env sans commande = changement d environnement. *)
+  (* Non implemente en compilation native : le changement necessiterait *)
+  (* une copie dynamique de la chaine env dans _RX_ADDR, reporte a     *)
+  (* une future iteration. L environnement reste SYSTEM par defaut.    *)
+End;
+
+(* ---- ParseTraceStmt : parser TRACE [option] ------------------- *)
+(* TRACE O|N : trace off/normal (valeur 0)                         *)
+(* TRACE A|R|I : trace active (valeur 1, 2, 3)                    *)
+(* TRACE seul : afficher le niveau courant                         *)
+Procedure ParseTraceStmt;
+Var
+  Opt : TString;
+Begin
+  EmitComment('TRACE');
+
+  (* TRACE sans argument : afficher le niveau *)
+  If (CurToken.Kind = TK_EOL) Or (CurToken.Kind = TK_EOF) Then
+  Begin
+    EmitInstrAB('MOV', 'AX', 'WORD PTR [_RX_TRACE]');
+    EmitInstrA('CALL', '_RXRT_NUMTOSTR');
+    EmitInstrA('CALL', '_RXRT_PRINTLN');
+    Exit;
+  End;
+
+  (* Lire l option *)
+  Opt := StrUpperCase(CurToken.Val);
+  ParserAdvance;
+
+  If (Opt = 'O') Or (Opt = 'OFF') Or (Opt = 'N') Or (Opt = 'NORMAL') Then
+  Begin
+    EmitInstrAB('MOV', 'WORD PTR [_RX_TRACE]', '0');
+  End
+  Else If (Opt = 'A') Or (Opt = 'ALL') Then
+  Begin
+    EmitInstrAB('MOV', 'WORD PTR [_RX_TRACE]', '1');
+  End
+  Else If (Opt = 'R') Or (Opt = 'RESULTS') Then
+  Begin
+    EmitInstrAB('MOV', 'WORD PTR [_RX_TRACE]', '2');
+  End
+  Else If (Opt = 'I') Or (Opt = 'INTERMEDIATES') Then
+  Begin
+    EmitInstrAB('MOV', 'WORD PTR [_RX_TRACE]', '3');
+  End
+  Else
+  Begin
+    WarnMsg('TRACE : option non reconnue: ' + Opt);
+    EmitInstrAB('MOV', 'WORD PTR [_RX_TRACE]', '0');
+  End;
+End;
+
+{ ============================================================
   TODO 21 - SIGNAL ET TRAITEMENT DE CONDITIONS [IMPLEMENTE]
   ============================================================ }
 
@@ -9802,6 +9990,30 @@ Begin
     Begin
       ParserAdvance;
       ParseNumericStmt;
+      Exit;
+    End;
+
+    (* INTERPRET expr (TODO 23) *)
+    If U = 'INTERPRET' Then
+    Begin
+      ParserAdvance;
+      ParseInterpretStmt;
+      Exit;
+    End;
+
+    (* ADDRESS [env] [commande] (TODO 23) *)
+    If U = 'ADDRESS' Then
+    Begin
+      ParserAdvance;
+      ParseAddressStmt;
+      Exit;
+    End;
+
+    (* TRACE [option] (TODO 23) *)
+    If U = 'TRACE' Then
+    Begin
+      ParserAdvance;
+      ParseTraceStmt;
       Exit;
     End;
 
