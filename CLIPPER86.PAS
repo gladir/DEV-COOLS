@@ -1195,8 +1195,8 @@ End;
 Procedure Run;
 Var
   Kw : TString;
-  ExprTmp20 : TExprVal;    { temporaire pour SET ... (TODO 20) }
-  DIdx20    : Integer;      { index DataTab pour SET RELATION (TODO 20) }
+  SetExpr    : TExprVal;   { temporaire pour SET ... (TODO 20) }
+  SetDataIdx : Integer;    { index DataTab pour SET RELATION (TODO 20) }
 Begin
   GlobalInit;
   If Opts.Verbose Then
@@ -1286,8 +1286,8 @@ Begin
           EmitComment('SET ORDER TO (TODO 20)');
           If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'TO') Then
             ParserAdvance;
-          ParseExpr(ExprTmp20);
-          ExprFlushToAX(ExprTmp20);
+          ParseExpr(SetExpr);
+          ExprFlushToAX(SetExpr);
           EmitInstrA('CALL', CL_RT_PFX + 'IDXSETORDER');
         End
         Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'FILTER') Then
@@ -1302,8 +1302,8 @@ Begin
                   ((CurToken.Val = '?') Or (CurToken.Val = 'IF') Or
                    (CurToken.Val = 'DO') Or (CurToken.Val = 'RETURN'))) Then
           Begin
-            ParseExpr(ExprTmp20);
-            ExprFlushToAX(ExprTmp20);
+            ParseExpr(SetExpr);
+            ExprFlushToAX(SetExpr);
           End
           Else
             EmitInstrAB('XOR', 'AX', 'AX');
@@ -1315,15 +1315,15 @@ Begin
           EmitComment('SET RELATION TO (TODO 20)');
           If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'TO') Then
             ParserAdvance;
-          ParseExpr(ExprTmp20);
-          ExprFlushToAX(ExprTmp20);
+          ParseExpr(SetExpr);
+          ExprFlushToAX(SetExpr);
           EmitInstr('PUSH   AX');
           If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'INTO') Then
             ParserAdvance;
           If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
           Begin
-            DIdx20 := DataAddStr(CurToken.Val);
-            EmitInstrAB('LEA', 'SI', '[' + DataTab[DIdx20].LblName + ']');
+            SetDataIdx := DataAddStr(CurToken.Val);
+            EmitInstrAB('LEA', 'SI', '[' + DataTab[SetDataIdx].LblName + ']');
             ParserAdvance;
           End;
           EmitInstr('POP    AX');
@@ -10201,7 +10201,7 @@ Begin
   EmitInstrAB('CMP', 'AX', '[SI+4]');
   EmitInstrA('JLE', CL_RT_PFX + 'DBGO_DN');
   EmitInstrAB('MOV', 'AX', '[SI+4]');
-  EmitInstrAB('INC', 'AX', '');
+  EmitInstrA('INC', 'AX');
   EmitInstrAB('MOV', '[SI+2]', 'AX');
   EmitInstrAB('OR', 'WORD PTR [SI+10]', '1');  { EOF }
   EmitLabel(CL_RT_PFX + 'DBGO_DN');
@@ -10282,7 +10282,7 @@ Begin
   EmitInstrAB('MOV', 'BX', '[SI]');    { handle }
   EmitInstrAB('MOV', 'AX', '[SI+2]');
   EmitInstr('DEC    AX');
-  EmitInstrAB('MUL', 'WORD PTR [SI+6]', ''); { AX = (recno-1) * recsize }
+  EmitInstrA('MUL', 'WORD PTR [SI+6]'); { AX = (recno-1) * recsize }
   EmitInstrAB('ADD', 'AX', '[SI+8]');  { + hdrsize }
   EmitInstrAB('MOV', 'DX', 'AX');      { offset dans DX }
   EmitInstrAB('MOV', 'AH', '42h');     { DOS seek }
@@ -10332,7 +10332,7 @@ Begin
   EmitInstrAB('MOV', 'BX', '[SI]');    { handle }
   EmitInstrAB('MOV', 'AX', '[SI+2]');  { recno }
   EmitInstr('DEC    AX');
-  EmitInstrAB('MUL', 'WORD PTR [SI+6]', '');
+  EmitInstrA('MUL', 'WORD PTR [SI+6]');
   EmitInstrAB('ADD', 'AX', '[SI+8]');
   EmitInstrAB('MOV', 'DX', 'AX');
   EmitInstrAB('MOV', 'AH', '42h');
@@ -10366,7 +10366,7 @@ Begin
   EmitInstrAB('MOV', 'BX', '[SI]');
   EmitInstrAB('MOV', 'AX', '[SI+2]');
   EmitInstr('DEC    AX');
-  EmitInstrAB('MUL', 'WORD PTR [SI+6]', '');
+  EmitInstrA('MUL', 'WORD PTR [SI+6]');
   EmitInstrAB('ADD', 'AX', '[SI+8]');
   EmitInstrAB('MOV', 'DX', 'AX');
   EmitInstrAB('MOV', 'AH', '42h');
@@ -10394,7 +10394,7 @@ Begin
   EmitInstrAB('MOV', 'BX', '[SI]');
   EmitInstrAB('MOV', 'AX', '[SI+2]');
   EmitInstr('DEC    AX');
-  EmitInstrAB('MUL', 'WORD PTR [SI+6]', '');
+  EmitInstrA('MUL', 'WORD PTR [SI+6]');
   EmitInstrAB('ADD', 'AX', '[SI+8]');
   EmitInstrAB('MOV', 'DX', 'AX');
   EmitInstrAB('MOV', 'AH', '42h');
