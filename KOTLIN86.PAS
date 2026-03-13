@@ -327,14 +327,14 @@
             Types fonctionnels : (Int, Int) -> Int -> ptr code
               Appel indirect : CALL AX
 
-  TODO 18 - PORTEE, PILE ET CADRES
+  TODO 18 - PORTEE, PILE ET CADRES [IMPLEMENTE]
             Convention d appel : cdecl 16 bits, args empiles gauche a droite
             Prologue fonction : PUSH BP / MOV BP,SP / SUB SP, locals_size
             Epilogue : MOV SP,BP / POP BP / RET
             Variables val/var locales : allouees sur pile [BP-offset]
             Parametres : acces [BP+offset] (apres BP sauvegarde et adresse retour)
             Portee de bloc : { } cree une nouvelle portee
-              SymEnterScope a l ouverture, SymLeaveScope a la fermeture
+              SymEnterScope a l ouverture, ScopeBlockLeave a la fermeture
               Variables de bloc : SUB SP,2 a l entree, ADD SP,2 a la sortie
             Fermetures (lambdas capturant des variables) :
               Variables capturees allouees dans DATA (cellules partagees)
@@ -808,6 +808,11 @@ Var
   SaveFnRetLbl  : TString; { sauvegarde CurFnRetLbl pendant fun     }
   SaveFnName    : TString; { sauvegarde CurFnName pendant fun       }
 
+  { Portee, pile et cadres (TODO 18) }
+  ScopeFrameStack : Array[0..MAX_SCOPE - 1] Of Integer;
+                           { sauvegarde CurFrameSize par portee      }
+  CaptureCount    : Integer; { compteur de cellules capturees        }
+
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
@@ -918,6 +923,10 @@ Function  ClassFindByTypeIdx(TIdx : Integer) : Integer; Forward;
 { TODO 17 - Fonctions et lambdas }
 Procedure ParseFunDecl;     Forward;
 Procedure ParseReturnStmt;  Forward;
+{ TODO 18 - Portee, pile et cadres }
+Procedure ScopeBlockEnter;  Forward;
+Procedure ScopeBlockLeave;  Forward;
+Procedure EmitScopeRuntime; Forward;
 { General }
 Procedure ParserAdvance; Forward;
 Procedure ParseStmt;     Forward;
@@ -1228,6 +1237,7 @@ Begin
   SaveFnRetLbl   := '';
   SaveFnName     := '';
   CurFrameSize   := 0;
+  CaptureCount   := 0;
   LabelGenSeq    := 0;
   GExprDummy.Kind    := EK_NONE;
   GExprDummy.ImmVal  := 0;
@@ -3917,15 +3927,21 @@ Begin
 End;
 
 (* ---- EmitProlog : preambule de fonction (cadre BP) ---------- *)
+(* TODO 18 : PUSH BP / MOV BP,SP / PUSH SI / PUSH DI             *)
 Procedure EmitProlog;
 Begin
   EmitInstr('PUSH BP');
   EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstr('PUSH SI');
+  EmitInstr('PUSH DI');
 End;
 
 (* ---- EmitEpilog : epilogue de fonction ---------------------- *)
+(* TODO 18 : POP DI / POP SI / MOV SP,BP / POP BP / RET          *)
 Procedure EmitEpilog;
 Begin
+  EmitInstr('POP DI');
+  EmitInstr('POP SI');
   EmitInstrAB('MOV', 'SP', 'BP');
   EmitInstr('POP BP');
   EmitInstr('RET');
@@ -4068,6 +4084,7 @@ Begin
   EmitIORuntime;
   EmitArrayRuntime;
   EmitClassRuntime;
+  EmitScopeRuntime;
 End;
 
 (* ---- EmitExprRuntime : routines runtime pour expressions ------ *)
@@ -4714,8 +4731,8 @@ Begin
   End;
   SymTab[SIdx].TypeIdx := RetTIdx;
 
-  { Reserver l espace pile pour les locaux (estime a 16 mots max) }
-  EmitInstrAB('SUB', 'SP', IntToStr(MAX_FUN_PARAMS * 2));
+  { TODO 18 : espace pile pour les locaux alloue dynamiquement }
+  { On reserve initialement 0 ; chaque DeclAllocSym emet SUB SP,2 }
 
   (* Verifier si c est une expression body (=) ou un bloc *)
   IsExprBody := False;
@@ -4801,6 +4818,51 @@ Begin
     End;
   End;
   EmitInstrA('JMP', CurFnRetLbl);
+End;
+
+{ ============================================================
+  TODO 18 - PORTEE, PILE ET CADRES [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- ScopeBlockEnter : entrer dans une portee de bloc { } --- *)
+(* Sauvegarde CurFrameSize dans ScopeFrameStack et appelle        *)
+(* SymEnterScope. Les variables declarees dans le bloc seront     *)
+(* allouees sur la pile avec SUB SP,2 dans DeclAllocSym.          *)
+Procedure ScopeBlockEnter;
+Begin
+  If ScopeTop < MAX_SCOPE Then
+    ScopeFrameStack[ScopeTop] := CurFrameSize;
+  SymEnterScope;
+End;
+
+(* ---- ScopeBlockLeave : quitter une portee de bloc { } ------- *)
+(* Restaure les symboles et libere l espace pile alloue via        *)
+(* ADD SP,n pour les variables locales du bloc.                    *)
+Procedure ScopeBlockLeave;
+Var
+  SavedFrame : Integer;
+  DeltaWords : Integer;
+Begin
+  If ScopeTop > 0 Then
+    SavedFrame := ScopeFrameStack[ScopeTop - 1]
+  Else
+    SavedFrame := CurFrameSize;
+  DeltaWords := CurFrameSize - SavedFrame;
+  SymLeaveScope;
+  If DeltaWords > 0 Then
+  Begin
+    EmitInstrAB('ADD', 'SP', IntToStr(DeltaWords * 2));
+    CurFrameSize := SavedFrame;
+  End;
+End;
+
+(* ---- EmitScopeRuntime : routines runtime pour les portees ---- *)
+(* Actuellement pas de routines runtime specifiques necessaires :  *)
+(* la gestion des portees est entierement compile-time.            *)
+(* Les cellules de capture pour closures sont allouees dans DATA.  *)
+Procedure EmitScopeRuntime;
+Begin
+  EmitComment('; --- scope runtime (TODO 18) ---');
 End;
 
 { ============================================================
@@ -5516,7 +5578,11 @@ Begin
   If CurFnDepth = 0 Then
     Offset := 0
   Else
+  Begin
     Offset := -SymNextOffset;
+    { TODO 18 : emettre SUB SP,2 pour allouer l espace pile }
+    EmitInstrAB('SUB', 'SP', '2');
+  End;
   SIdx := SymAdd(Name, Kind, TY_UNKNOWN, Offset);
   { Variable globale : entree dans le segment de donnees }
   If CurFnDepth = 0 Then
@@ -5690,9 +5756,9 @@ Begin
   EmitInstrAB('TEST', 'AX', 'AX');
   EmitInstrA('JZ', LblElse);
   { Bloc then }
-  SymEnterScope;
+  ScopeBlockEnter;
   ParseBlock;
-  SymLeaveScope;
+  ScopeBlockLeave;
   { Verifier else }
   If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'else') Then
   Begin
@@ -5707,9 +5773,9 @@ Begin
     Else
     Begin
       { else bloc }
-      SymEnterScope;
+      ScopeBlockEnter;
       ParseBlock;
-      SymLeaveScope;
+      ScopeBlockLeave;
     End;
     EmitLabel(LblEnd);
   End
@@ -5776,9 +5842,9 @@ Begin
         ParserAdvance
       Else
         CompileError('"->" attendu apres "else"');
-      SymEnterScope;
+      ScopeBlockEnter;
       ParseBlock;
-      SymLeaveScope;
+      ScopeBlockLeave;
       EmitInstrA('JMP', LblEnd);
     End
     Else If HasSubj Then
@@ -5807,9 +5873,9 @@ Begin
         ParserAdvance
       Else
         CompileError('"->" attendu apres valeur when');
-      SymEnterScope;
+      ScopeBlockEnter;
       ParseBlock;
-      SymLeaveScope;
+      ScopeBlockLeave;
       EmitInstrA('JMP', LblEnd);
       EmitLabel(LblNext);
     End
@@ -5825,9 +5891,9 @@ Begin
         ParserAdvance
       Else
         CompileError('"->" attendu apres condition');
-      SymEnterScope;
+      ScopeBlockEnter;
       ParseBlock;
-      SymLeaveScope;
+      ScopeBlockLeave;
       EmitInstrA('JMP', LblEnd);
       EmitLabel(LblNext);
     End;
@@ -5894,9 +5960,9 @@ Begin
   EmitInstrAB('TEST', 'AX', 'AX');
   EmitInstrA('JZ', LblEnd);
   { Bloc }
-  SymEnterScope;
+  ScopeBlockEnter;
   ParseBlock;
-  SymLeaveScope;
+  ScopeBlockLeave;
   EmitInstrA('JMP', LblTest);
   EmitLabel(LblEnd);
   LoopPop;
@@ -5918,9 +5984,9 @@ Begin
   LoopPush(LblEnd, LblTest);
   EmitLabel(LblBeg);
   { Bloc }
-  SymEnterScope;
+  ScopeBlockEnter;
   ParseBlock;
-  SymLeaveScope;
+  ScopeBlockLeave;
   EmitLabel(LblTest);
   { while (cond) }
   If (CurToken.Kind = TK_KEYWORD) And
@@ -5994,7 +6060,7 @@ Begin
   Else
     CompileError('"in" attendu dans for');
   { Scope pour la variable de boucle }
-  SymEnterScope;
+  ScopeBlockEnter;
   SIdx := DeclAllocSym(VarName, SK_VAR);
   SymTab[SIdx].TypeIdx := TY_IDX_INT;
   Addr := ExprAddrOf(SIdx);
@@ -6097,7 +6163,7 @@ Begin
   EmitInstrA('JMP', LblTest);
   EmitLabel(LblEnd);
   LoopPop;
-  SymLeaveScope;
+  ScopeBlockLeave;
 End;
 
 Procedure ParserAdvance;
