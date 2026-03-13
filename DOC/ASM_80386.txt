@@ -110,6 +110,7 @@
     Section 12 : Conversion de code 8086 en 80386
     Section 13 : Conversion de code ARM en 80386
     Section 14 : Conversion de code 68000 en 80386
+    Section 15 : Conversion de code PowerPC en 80386
 
 ==============================================================================
 2. ARCHITECTURE ET REGISTRES
@@ -8768,6 +8769,964 @@
     Le x87 du 80386 utilise aussi 8 registres 80 bits (ST(0)-ST(7)),
     mais en pile (FILO). La conversion des operations flottantes
     necessite une reorganisation des acces aux registres.
+
+==============================================================================
+15. CONVERSION DE CODE POWERPC EN 80386
+==============================================================================
+
+  Cette section explique comment convertir du code assembleur PowerPC
+  (architecture RISC 32 bits, developpee par l'alliance Apple-IBM-Motorola)
+  en code assembleur Intel 80386. La conversion PowerPC -> x86 est
+  complexe car les deux architectures ont des philosophies tres differentes
+  (RISC vs CISC), des jeux de registres asymetriques et des modeles
+  d'acces memoire distincts.
+
+------------------------------------------------------------------------------
+15.1 Principes generaux (PowerPC vs 80386)
+------------------------------------------------------------------------------
+
+  PowerPC est une architecture RISC (Reduced Instruction Set Computer) :
+  - Instructions de taille fixe (32 bits, 4 octets)
+  - Architecture Load/Store : seuls LWZ/STW et variantes accedent memoire
+  - 32 registres generaux 32 bits (GPR : r0-r31)
+  - 32 registres flottants 64 bits (FPR : f0-f31)
+  - Registre de condition CR (8 champs de 4 bits : CR0-CR7)
+  - Registre de lien LR (adresse de retour)
+  - Registre de comptage CTR (pour boucles et branchements indirects)
+  - Registre XER (indicateurs de retenue et depassement)
+  - Architecture big-endian (ou bi-endian selon l'implementation)
+  - Pas de registre d'indicateurs unique (conditions dans CR)
+  - Branchements conditionnels bases sur les champs CR
+  - Pas de pile materielle dediee (r1 utilise par convention)
+
+  Le 80386 est une architecture CISC (Complex Instruction Set Computer) :
+  - Instructions de taille variable (1 a 15 octets)
+  - Operations directement sur la memoire (MOV [mem], reg / ADD [mem], imm)
+  - 8 registres generaux 32 bits (EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP)
+  - Registre EFLAGS unique pour toutes les conditions
+  - Pile materielle dediee avec ESP et PUSH/POP
+  - Modes d'adressage complexes (base+index*scale+displacement)
+  - Instructions specialisees (LOOP, REP MOVS, ENTER/LEAVE, MUL/DIV...)
+  - Architecture little-endian
+
+  Regles de base pour la conversion :
+  (a) Mapper les 32 registres PowerPC vers les 8 registres x86 + memoire
+  (b) Remplacer l'architecture Load/Store par des acces memoire directs
+  (c) Convertir le registre de condition CR en drapeaux EFLAGS
+  (d) Convertir LR/CTR en variables memoire ou utilisation de la pile
+  (e) Gerer la difference d'endianness (big-endian -> little-endian)
+  (f) Adapter les conventions d'appel (PowerPC ABI -> CDECL ou STDCALL)
+
+------------------------------------------------------------------------------
+15.2 Correspondance des registres
+------------------------------------------------------------------------------
+
+  PowerPC possede 32 GPR de 32 bits. Le 80386 n'en a que 8.
+  Il faut donc utiliser des variables memoire pour les registres
+  excedentaires.
+
+  Correspondance suggeree :
+
+    PowerPC     80386         Commentaire
+    -------     --------      ------------------------------------
+    r0          (special)     r0 vaut 0 dans certains contextes PPC
+    r1          ESP           pointeur de pile (par convention ABI)
+    r2          (memoire)     table des contenus (TOC) -> non utilise x86
+    r3          EAX           valeur de retour / 1er parametre
+    r4          EDX           2e parametre
+    r5          ECX           3e parametre
+    r6          EBX           4e parametre / registre preserve
+    r7-r10      (memoire)     parametres supplementaires -> pile x86
+    r11         (memoire)     registre temporaire (scratch)
+    r12         (memoire)     registre temporaire (scratch)
+    r13-r31     (memoire)     registres preserves -> variables en memoire
+    LR          [_ppc_lr]     lien de retour -> CALL/RET x86 (pile)
+    CTR         [_ppc_ctr]    compteur -> variable memoire
+    CR          [_ppc_cr]     registre de condition -> EFLAGS + memoire
+    XER         [_ppc_xer]    retenue/depassement -> EFLAGS (CF, OF)
+
+  En pratique, un mapping simplifie est souvent suffisant :
+
+    r3  -> EAX    (retour de fonction, 1er argument)
+    r4  -> EDX    (2e argument)
+    r5  -> ECX    (3e argument)
+    r6  -> EBX    (preserve)
+    r1  -> ESP    (pile)
+    r31 -> EBP    (cadre de pile, si utilise comme frame pointer)
+    r30 -> ESI    (preserve, usage general)
+    r29 -> EDI    (preserve, usage general)
+
+  Les autres registres (r0, r2, r7-r28) doivent etre stockes en memoire :
+
+    _ppc_r0   DD 0
+    _ppc_r2   DD 0
+    _ppc_r7   DD 0
+    ...
+    _ppc_r28  DD 0
+
+  Note sur r0 : en PowerPC, r0 a un comportement special dans certains
+  modes d'adressage (il est lu comme la valeur 0 au lieu du contenu du
+  registre). Il n'y a pas d'equivalent direct en x86.
+
+------------------------------------------------------------------------------
+15.3 Conversion des instructions de transfert de donnees
+------------------------------------------------------------------------------
+
+  PowerPC utilise le modele Load/Store : les operations arithmetiques
+  ne peuvent porter que sur des registres. Les transferts memoire se
+  font exclusivement via des instructions dediees.
+
+  (a) Chargement depuis la memoire (Load)
+
+    PowerPC                          80386
+    ----------------------------------  ---------------------------------
+    LWZ   r3, 0(r4)                    MOV EAX, [EDX]
+    LWZ   r3, 8(r4)                    MOV EAX, [EDX+8]
+    LWZ   r3, offset(r1)              MOV EAX, [ESP+offset]
+    LBZ   r3, 0(r4)                    MOVZX EAX, BYTE PTR [EDX]
+    LHZ   r3, 0(r4)                    MOVZX EAX, WORD PTR [EDX]
+    LHA   r3, 0(r4)                    MOVSX EAX, WORD PTR [EDX]
+    LWZX  r3, r4, r5                   MOV EAX, [EDX+ECX]
+    LBZX  r3, r4, r5                   MOVZX EAX, BYTE PTR [EDX+ECX]
+
+    LWZ = Load Word and Zero (32 bits, extension zero)
+    LBZ = Load Byte and Zero (8 bits, extension zero)
+    LHZ = Load Half-word and Zero (16 bits, extension zero)
+    LHA = Load Half-word Algebraic (16 bits, extension de signe)
+    LWZX = Load Word and Zero indeXed (base+index)
+
+  (b) Ecriture en memoire (Store)
+
+    PowerPC                          80386
+    ----------------------------------  ---------------------------------
+    STW   r3, 0(r4)                    MOV [EDX], EAX
+    STW   r3, 8(r4)                    MOV [EDX+8], EAX
+    STW   r3, offset(r1)              MOV [ESP+offset], EAX
+    STB   r3, 0(r4)                    MOV BYTE PTR [EDX], AL
+    STH   r3, 0(r4)                    MOV WORD PTR [EDX], AX
+    STWX  r3, r4, r5                   MOV [EDX+ECX], EAX
+
+  (c) Chargement/ecriture avec mise a jour (Update)
+
+    Les instructions avec suffixe U (LWZU, STWU) modifient le registre
+    de base apres l'acces memoire. C'est specifique a PowerPC.
+
+    PowerPC                          80386
+    ----------------------------------  ---------------------------------
+    LWZU  r3, 4(r4)                    MOV EAX, [EDX+4]
+                                       ADD EDX, 4
+    STWU  r3, -16(r1)                 SUB ESP, 16
+                                       MOV [ESP], EAX
+
+    Note : STWU r1, -N(r1) est l'idiome PowerPC pour allouer un cadre
+    de pile. L'equivalent x86 est SUB ESP, N ou ENTER N, 0.
+
+  (d) Transfert registre a registre
+
+    PowerPC                          80386
+    ----------------------------------  ---------------------------------
+    MR    r3, r4                       MOV EAX, EDX
+    (alias de OR r3, r4, r4)
+
+  (e) Chargement d'immediat
+
+    PowerPC ne peut charger qu'un immediat 16 bits a la fois.
+    Pour une valeur 32 bits, deux instructions sont necessaires.
+
+    PowerPC                          80386
+    ----------------------------------  ---------------------------------
+    LI    r3, 42                       MOV EAX, 42
+    LI    r3, -1                       MOV EAX, -1
+    LIS   r3, hi16(addr)              MOV EAX, addr
+    ORI   r3, r3, lo16(addr)          (une seule instruction x86)
+
+    LI = Load Immediate (signe sur 16 bits)
+    LIS = Load Immediate Shifted (charge dans les 16 bits hauts)
+
+    Pour charger une adresse 32 bits en PowerPC :
+      LIS  r3, ha16(label)     ; partie haute
+      ADDI r3, r3, lo16(label) ; partie basse
+
+    En x86, une seule instruction suffit :
+      MOV  EAX, OFFSET label
+
+------------------------------------------------------------------------------
+15.4 Conversion des instructions arithmetiques et logiques
+------------------------------------------------------------------------------
+
+  En PowerPC, les operations arithmetiques sont a 3 operandes :
+    op rD, rA, rB    (rD = rA op rB)
+
+  En x86, les operations sont a 2 operandes (le resultat ecrase
+  l'un des operandes) :
+    op dest, source   (dest = dest op source)
+
+  Il faut souvent un MOV supplementaire si le registre destination
+  est different des deux sources.
+
+  (a) Instructions arithmetiques
+
+    PowerPC                          80386
+    ----------------------------------  ---------------------------------
+    ADD   r3, r4, r5                   MOV EAX, EDX    ; si r3 != r4
+                                       ADD EAX, ECX
+    ADD   r3, r3, r5                   ADD EAX, ECX    ; si r3 == r4
+    ADDI  r3, r4, 100                  MOV EAX, EDX
+                                       ADD EAX, 100
+    ADDIS r3, r4, 0x1234              MOV EAX, EDX
+                                       ADD EAX, 0x12340000
+    SUBF  r3, r4, r5                   MOV EAX, ECX    ; rD = rB - rA
+                                       SUB EAX, EDX
+    SUBFIC r3, r4, 100                 MOV EAX, 100
+                                       SUB EAX, EDX
+    NEG   r3, r4                       MOV EAX, EDX
+                                       NEG EAX
+    MULLW r3, r4, r5                   MOV EAX, EDX
+                                       IMUL EAX, ECX
+    MULHW r3, r4, r5                   MOV EAX, EDX
+                                       IMUL ECX
+                                       MOV EAX, EDX   ; partie haute
+    DIVW  r3, r4, r5                   MOV EAX, EDX
+                                       CDQ
+                                       IDIV ECX
+    DIVWU r3, r4, r5                   MOV EAX, EDX
+                                       XOR EDX, EDX
+                                       DIV ECX
+
+    Note sur SUBF : en PowerPC, SUBF rD, rA, rB calcule rD = rB - rA
+    (le sens est inverse par rapport a l'intuition). SUBFIC calcule
+    rD = imm - rA. Attention a l'ordre des operandes lors de la conversion.
+
+  (b) Instructions logiques
+
+    PowerPC                          80386
+    ----------------------------------  ---------------------------------
+    AND   r3, r4, r5                   MOV EAX, EDX
+                                       AND EAX, ECX
+    ANDI. r3, r4, 0xFF                MOV EAX, EDX
+                                       AND EAX, 0xFF
+    OR    r3, r4, r5                   MOV EAX, EDX
+                                       OR  EAX, ECX
+    ORI   r3, r4, 0xFF                MOV EAX, EDX
+                                       OR  EAX, 0xFF
+    XOR   r3, r4, r5                   MOV EAX, EDX
+                                       XOR EAX, ECX
+    XORI  r3, r4, 0xFF                MOV EAX, EDX
+                                       XOR EAX, 0xFF
+    NAND  r3, r4, r5                   MOV EAX, EDX
+                                       AND EAX, ECX
+                                       NOT EAX
+    NOR   r3, r4, r5                   MOV EAX, EDX
+                                       OR  EAX, ECX
+                                       NOT EAX
+    EQV   r3, r4, r5                   MOV EAX, EDX    ; EQV = XNOR
+                                       XOR EAX, ECX
+                                       NOT EAX
+    ANDC  r3, r4, r5                   MOV EAX, ECX
+                                       NOT EAX
+                                       AND EAX, EDX
+    ORC   r3, r4, r5                   MOV EAX, ECX
+                                       NOT EAX
+                                       OR  EAX, EDX
+    EXTSB r3, r4                       MOVSX EAX, DL    ; extension signe 8->32
+    EXTSH r3, r4                       MOVSX EAX, DX    ; extension signe 16->32
+    CNTLZW r3, r4                      BSR EAX, EDX     ; bit scan reverse
+                                       JZ  @zero
+                                       SUB EAX, 31
+                                       NEG EAX
+                                       JMP @done
+                                @zero: MOV EAX, 32
+                                @done:
+
+    Note : CNTLZW (Count Leading Zeros Word) n'a pas d'equivalent direct
+    en 80386. BSR trouve le bit le plus significatif a 1. Il faut ensuite
+    calculer 31 - BSR pour obtenir le nombre de zeros en tete.
+    (Le LZCNT n'est disponible qu'a partir de Haswell/ABM.)
+
+  (c) Instructions avec mise a jour du registre de condition (suffixe .)
+
+    En PowerPC, le suffixe "." (point) sur une instruction met a jour
+    le champ CR0 du registre de condition. En x86, la plupart des
+    instructions arithmetiques et logiques mettent a jour EFLAGS
+    automatiquement.
+
+    PowerPC                          80386
+    ----------------------------------  ---------------------------------
+    ADD.  r3, r4, r5                   MOV EAX, EDX
+                                       ADD EAX, ECX
+                                       ; EFLAGS mis a jour automatiquement
+    ANDI. r3, r4, 0xFF                MOV EAX, EDX
+                                       AND EAX, 0xFF
+                                       ; EFLAGS mis a jour automatiquement
+
+    Note : le CR0 du PowerPC contient LT, GT, EQ, SO (Summary Overflow).
+    Les drapeaux x86 SF, ZF suffisent pour LT, GT, EQ. Le SO n'a pas
+    d'equivalent direct et doit etre gere separement si utilise.
+
+------------------------------------------------------------------------------
+15.5 Conversion des decalages et rotations
+------------------------------------------------------------------------------
+
+    PowerPC                          80386
+    ----------------------------------  ---------------------------------
+    SLW   r3, r4, r5                   MOV EAX, EDX
+                                       MOV CL, (reg r5)
+                                       SHL EAX, CL
+    SRW   r3, r4, r5                   MOV EAX, EDX
+                                       MOV CL, (reg r5)
+                                       SHR EAX, CL
+    SRAW  r3, r4, r5                   MOV EAX, EDX
+                                       MOV CL, (reg r5)
+                                       SAR EAX, CL
+    SRAWI r3, r4, 5                    MOV EAX, EDX
+                                       SAR EAX, 5
+    SLWI  r3, r4, 5                    MOV EAX, EDX
+                                       SHL EAX, 5
+    SRWI  r3, r4, 5                    MOV EAX, EDX
+                                       SHR EAX, 5
+    ROTLW r3, r4, r5                   MOV EAX, EDX
+                                       MOV CL, (reg r5)
+                                       ROL EAX, CL
+    ROTLWI r3, r4, 5                   MOV EAX, EDX
+                                       ROL EAX, 5
+    ROTRWI r3, r4, 5                   MOV EAX, EDX
+                                       ROR EAX, 5
+
+  Note : en x86, les decalages/rotations par un registre doivent
+  utiliser CL. Si le compteur n'est pas dans ECX, il faut d'abord
+  le copier dans CL (ou echanger les registres).
+
+  L'instruction PowerPC RLWINM (Rotate Left Word Immediate then
+  AND with Mask) est tres puissante et n'a pas d'equivalent unique
+  en x86. Elle effectue une rotation puis applique un masque de bits.
+
+    PowerPC                          80386
+    ----------------------------------  ---------------------------------
+    RLWINM r3, r4, 5, 0, 26           MOV EAX, EDX
+                                       ROL EAX, 5
+                                       AND EAX, masque   ; masque calcule
+                                                          ; selon MB et ME
+
+  Le masque est genere par les parametres MB (Mask Begin) et ME (Mask End)
+  qui definissent une plage de bits a conserver. Il faut precalculer le
+  masque a la compilation.
+
+  RLWINM est utilise en PowerPC pour extraire des champs de bits,
+  des decalages masques, des multiplications par des puissances de 2
+  avec troncature, etc.
+
+------------------------------------------------------------------------------
+15.6 Conversion des branchements et conditions
+------------------------------------------------------------------------------
+
+  Le systeme de branchement du PowerPC est fondamentalement different
+  de celui du x86. En PowerPC, les conditions sont stockees dans le
+  registre CR (Condition Register) compose de 8 champs de 4 bits
+  (CR0-CR7). Chaque champ contient les bits LT, GT, EQ, SO.
+
+  (a) Comparaison
+
+    PowerPC                          80386
+    ----------------------------------  ---------------------------------
+    CMPW  r3, r4                       CMP EAX, EDX
+    CMPWI r3, 0                        CMP EAX, 0    (ou TEST EAX, EAX)
+    CMPWI r3, 100                      CMP EAX, 100
+    CMPLW r3, r4                       CMP EAX, EDX  (non signe)
+    CMPLWI r3, 100                     CMP EAX, 100  (non signe)
+
+    CMPW  = Compare Word (signe)
+    CMPLW = Compare Logical Word (non signe)
+
+    En PowerPC, on peut specifier un champ CR cible :
+      CMPW  cr3, r3, r4     ; compare dans CR3 au lieu de CR0
+    En x86, il n'y a qu'un seul jeu de drapeaux (EFLAGS). Si le code
+    PowerPC utilise plusieurs champs CR simultanement, il faut
+    sauvegarder/restaurer EFLAGS entre les comparaisons (PUSHFD/POPFD)
+    ou utiliser des SETcc pour sauvegarder les resultats intermediaires.
+
+  (b) Branchements conditionnels
+
+    PowerPC                          80386
+    ----------------------------------  ---------------------------------
+    BEQ   label                        JE  label
+    BNE   label                        JNE label
+    BLT   label                        JL  label       (signe)
+    BGT   label                        JG  label       (signe)
+    BLE   label                        JLE label       (signe)
+    BGE   label                        JGE label       (signe)
+    BLT   label  (non signe)           JB  label       (CMPLW utilise)
+    BGT   label  (non signe)           JA  label       (CMPLW utilise)
+    BLE   label  (non signe)           JBE label       (CMPLW utilise)
+    BGE   label  (non signe)           JAE label       (CMPLW utilise)
+
+    Note : en PowerPC, les mnemoniques BEQ/BNE/BLT/BGT sont des formes
+    simplifiees de l'instruction BC (Branch Conditional). La forme
+    complete est BC BO, BI, target ou BO specifie le type de test
+    et BI le bit du CR a tester.
+
+  (c) Branchement inconditionnel
+
+    PowerPC                          80386
+    ----------------------------------  ---------------------------------
+    B     label                        JMP label
+    BA    abs_addr                     JMP abs_addr
+    BL    label                        CALL label
+    BLR                                RET
+
+    BL (Branch and Link) sauvegarde l'adresse de retour dans LR.
+    L'equivalent x86 est CALL qui empile l'adresse de retour.
+    BLR (Branch to Link Register) branche vers LR.
+    L'equivalent x86 est RET qui depile l'adresse de retour.
+
+  (d) Branchement via CTR (compteur)
+
+    PowerPC                          80386
+    ----------------------------------  ---------------------------------
+    MTCTR r3                           MOV [_ppc_ctr], EAX
+    BDNZ  label                        DEC DWORD PTR [_ppc_ctr]
+                                       JNZ label
+    BDNZT EQ, label                    DEC DWORD PTR [_ppc_ctr]
+                                       JZ  @skip
+                                       JE  label      ; test condition
+                                @skip:
+    BCTR                               JMP [_ppc_ctr]  (branchement indirect)
+    BCTRL                              CALL [_ppc_ctr] (appel indirect)
+
+    BDNZ = Branch Decrement Not Zero (similaire a LOOP en x86, mais
+    LOOP utilise ECX et compare a 0).
+
+    Note : si CTR est mappe dans ECX, on peut utiliser LOOP directement :
+      MTCTR r3  ->  MOV ECX, EAX
+      BDNZ  lab ->  LOOP lab
+
+------------------------------------------------------------------------------
+15.7 Conversion des acces memoire (Load/Store vs CISC)
+------------------------------------------------------------------------------
+
+  En PowerPC, les operations arithmetiques ne peuvent pas acceder
+  directement a la memoire. En x86, la plupart des instructions
+  acceptent un operande memoire.
+
+  Cela signifie qu'une sequence PowerPC de 3 instructions peut souvent
+  etre reduite a 1 ou 2 instructions x86 :
+
+    PowerPC (3 instructions) :       80386 (1 instruction) :
+    ----------------------------------  ---------------------------------
+    LWZ   r5, var(r2)                  ADD [var], 10
+    ADDI  r5, r5, 10
+    STW   r5, var(r2)
+
+    LWZ   r5, array(r4)               INC DWORD PTR [array+EDX]
+    ADDI  r5, r5, 1
+    STW   r5, array(r4)
+
+  Cependant, attention : cette optimisation n'est valide que si aucune
+  autre instruction entre le Load et le Store n'utilise la meme
+  adresse memoire (pas d'alias).
+
+------------------------------------------------------------------------------
+15.8 Conversion des modes d'adressage
+------------------------------------------------------------------------------
+
+  Le PowerPC a des modes d'adressage plus simples que le x86 (RISC),
+  mais certains n'ont pas d'equivalent direct :
+
+    PowerPC                          80386 equivalent
+    ----------------------------------  ---------------------------------
+    0(r4)      base + depl. 0          [EDX]
+    8(r4)      base + depl. 8          [EDX+8]
+    r4, r5     base + index            [EDX+ECX]
+    (r1)       indirect via pile       [ESP]
+
+  Le x86 offre en plus le mode base+index*scale+displacement qui
+  n'existe pas en PowerPC :
+
+    PowerPC (2 instructions) :       80386 (1 instruction) :
+    ----------------------------------  ---------------------------------
+    SLWI  r5, r3, 2                    MOV EAX, [EDX+ECX*4+table]
+    LWZX  r6, r4, r5
+    (avec r4 = base de table)
+
+  Le x86 peut encoder [base + index*scale + displacement] en une
+  seule instruction, tandis que PowerPC doit calculer l'adresse
+  effective explicitement.
+
+  Pour l'adressage de donnees globales, PowerPC utilise typiquement
+  le registre r2 (TOC - Table of Contents) comme base :
+
+    PowerPC                          80386
+    ----------------------------------  ---------------------------------
+    LWZ   r3, var@toc(r2)             MOV EAX, [var]
+    STW   r3, var@toc(r2)             MOV [var], EAX
+
+  En x86 en mode plat (FLAT), les variables globales sont accedees
+  directement par leur adresse.
+
+------------------------------------------------------------------------------
+15.9 Conversion des instructions de pile
+------------------------------------------------------------------------------
+
+  PowerPC n'a pas d'instructions PUSH/POP dediees. La pile est geree
+  manuellement via r1 (pointeur de pile) avec des STWU/LWZ.
+
+    PowerPC                          80386
+    ----------------------------------  ---------------------------------
+    STWU  r1, -16(r1)                 SUB ESP, 16       ; allouer cadre
+    STW   r3, 8(r1)                   MOV [ESP+8], EAX  ; sauvegarder r3
+    STW   r4, 12(r1)                  MOV [ESP+12], EDX ; sauvegarder r4
+    ...
+    LWZ   r3, 8(r1)                   MOV EAX, [ESP+8]  ; restaurer r3
+    LWZ   r4, 12(r1)                  MOV EDX, [ESP+12] ; restaurer r4
+    ADDI  r1, r1, 16                  ADD ESP, 16       ; liberer cadre
+
+  Empiler/depiler une valeur unique :
+
+    PowerPC                          80386
+    ----------------------------------  ---------------------------------
+    STWU  r3, -4(r1)                  PUSH EAX
+    LWZ   r3, 0(r1)                   POP  EAX
+    ADDI  r1, r1, 4
+
+  Sauvegarde multiple de registres (prologue de fonction PowerPC) :
+
+    PowerPC                          80386
+    ----------------------------------  ---------------------------------
+    MFLR  r0                           ; CALL empile deja l'adresse retour
+    STW   r0, 4(r1)                    ; (implicite via CALL)
+    STWU  r1, -32(r1)                 PUSH EBP
+                                       MOV  EBP, ESP
+                                       SUB  ESP, 24      ; variables locales
+    STW   r30, 24(r1)                 PUSH ESI           ; sauver preserves
+    STW   r31, 28(r1)                 PUSH EDI
+
+  MFLR = Move From Link Register (copier LR dans un GPR).
+  En x86, l'adresse de retour est empilee par CALL, pas besoin de MFLR.
+
+------------------------------------------------------------------------------
+15.10 Conversion des appels de fonctions et conventions d'appel
+------------------------------------------------------------------------------
+
+  (a) Convention PowerPC (SVR4 ABI / macOS ABI)
+
+    - Les 8 premiers arguments entiers passent dans r3-r10
+    - Les 8 premiers arguments flottants passent dans f1-f8
+    - La valeur de retour est dans r3 (et r4 pour 64 bits)
+    - LR contient l'adresse de retour (sauvee par l'appelant si besoin)
+    - r1 = pointeur de pile (croissance vers le bas)
+    - r13-r31 sont preserves par l'appele (callee-saved)
+    - r0, r3-r12 sont temporaires (caller-saved)
+    - Une zone de liaison (linkage area) est reservee en haut du cadre
+
+  (b) Convention x86 CDECL
+
+    - Tous les arguments passent par la pile (PUSH de droite a gauche)
+    - La valeur de retour est dans EAX (et EDX:EAX pour 64 bits)
+    - L'appelant depile les arguments apres le CALL (ADD ESP, N)
+    - EBX, ESI, EDI, EBP sont preserves par l'appele
+    - EAX, ECX, EDX sont temporaires
+
+  (c) Exemple de conversion d'appel de fonction
+
+    PowerPC :
+      MR    r3, r5          ; 1er argument = r5
+      MR    r4, r6          ; 2e argument = r6
+      LI    r5, 42          ; 3e argument = 42
+      BL    ma_fonction     ; appel (LR = adresse retour)
+      MR    r7, r3          ; resultat dans r3
+
+    80386 (CDECL) :
+      PUSH  42              ; 3e argument (empile en dernier = droite a gauche)
+      PUSH  (reg r6)        ; 2e argument
+      PUSH  (reg r5)        ; 1er argument
+      CALL  ma_fonction
+      ADD   ESP, 12         ; nettoyer 3 arguments de 4 octets
+      MOV   (reg r7), EAX   ; resultat dans EAX
+
+  (d) Prologue / epilogue de fonction
+
+    PowerPC :
+      MFLR  r0              ; sauver LR
+      STW   r0, 4(r1)
+      STWU  r1, -frame(r1) ; allouer cadre de pile
+      STW   r31, -4(r1)    ; sauver registres preserves
+      MR    r31, r1         ; frame pointer
+
+    80386 :
+      PUSH  EBP
+      MOV   EBP, ESP
+      SUB   ESP, locals     ; allouer variables locales
+      PUSH  ESI             ; sauver registres preserves
+      PUSH  EDI
+
+    PowerPC (retour) :
+      LWZ   r31, -4(r1)    ; restaurer registres
+      ADDI  r1, r1, frame   ; liberer cadre
+      LWZ   r0, 4(r1)
+      MTLR  r0              ; restaurer LR
+      BLR                   ; retour
+
+    80386 (retour) :
+      POP   EDI
+      POP   ESI
+      MOV   ESP, EBP
+      POP   EBP
+      RET
+
+------------------------------------------------------------------------------
+15.11 Conversion des instructions de comparaison et registre CR
+------------------------------------------------------------------------------
+
+  Le registre de condition CR du PowerPC est fondamentalement different
+  d'EFLAGS. CR contient 8 champs independants (CR0-CR7), chacun de
+  4 bits (LT, GT, EQ, SO). Cela permet de conserver plusieurs resultats
+  de comparaison simultanement.
+
+  En x86, il n'y a qu'un seul jeu de drapeaux. Les strategies de
+  conversion sont :
+
+  (a) Si un seul champ CR est utilise a la fois (cas le plus frequent) :
+      -> Convertir directement en CMP + Jcc
+
+  (b) Si plusieurs champs CR sont utilises simultanement :
+      -> Sauvegarder les resultats intermediaires avec SETcc
+
+    PowerPC :
+      CMPWI cr0, r3, 10    ; comparer r3 avec 10 dans CR0
+      CMPWI cr1, r4, 20    ; comparer r4 avec 20 dans CR1
+      BLT   cr0, lab1      ; si r3 < 10
+      BEQ   cr1, lab2      ; si r4 == 20
+
+    80386 :
+      CMP   EAX, 10
+      SETL  [_cr0_lt]       ; sauver resultat LT de cr0
+      CMP   EDX, 20
+      SETE  [_cr1_eq]       ; sauver resultat EQ de cr1
+      CMP   BYTE PTR [_cr0_lt], 1
+      JE    lab1
+      CMP   BYTE PTR [_cr1_eq], 1
+      JE    lab2
+
+  (c) Operations logiques sur les bits CR
+
+    PowerPC permet des operations booleennes entre bits du CR :
+      CRAND, CROR, CRXOR, CRNAND, CRNOR, CRANDC, CRORC, CREQV
+
+    Ces instructions combinent deux bits CR et placent le resultat dans
+    un troisieme bit CR. En x86, il faut emuler avec des operations
+    logiques sur les valeurs sauvegardees en memoire.
+
+    PowerPC :
+      CRAND 0, 2, 6         ; CR[0] = CR[2] AND CR[6]
+
+    80386 :
+      MOV   AL, [_cr_bit2]
+      AND   AL, [_cr_bit6]
+      MOV   [_cr_bit0], AL
+
+------------------------------------------------------------------------------
+15.12 Conversion des instructions speciales PowerPC
+------------------------------------------------------------------------------
+
+  (a) MFSPR / MTSPR (Move From/To Special Purpose Register)
+
+    PowerPC                          80386
+    ----------------------------------  ---------------------------------
+    MFLR  r0                           ; pas d'equivalent (LR gere par pile)
+    MTLR  r0                           ; pas d'equivalent
+    MFCTR r3                           MOV EAX, [_ppc_ctr]
+    MTCTR r3                           MOV [_ppc_ctr], EAX
+    MFXER r3                           PUSHFD
+                                       POP EAX  ; approximation partielle
+    MFCR  r3                           ; emuler via SETcc multiples
+
+  (b) SYNC / ISYNC / EIEIO (barrieres memoire)
+
+    PowerPC                          80386
+    ----------------------------------  ---------------------------------
+    SYNC                               ; pas necessaire en x86 uniprocesseur
+                                       ; LOCK prefix ou MFENCE (SSE2+)
+    ISYNC                              ; pas d'equivalent 80386
+    EIEIO                              ; pas necessaire en x86 (ordonne)
+
+    Note : le 80386 a un modele memoire plus strict que PowerPC.
+    Le x86 garantit l'ordre des ecritures (Total Store Order), tandis
+    que PowerPC est plus relache (weak ordering). Les barrieres memoire
+    PowerPC ne sont generalement pas necessaires en x86.
+
+  (c) TW / TWI (Trap Word)
+
+    PowerPC                          80386
+    ----------------------------------  ---------------------------------
+    TWI   6, r3, 0                     CMP EAX, 0
+                                       JNE @skip
+                                       INT 3       ; ou autre gestionnaire
+                                @skip:
+
+    Les traps PowerPC generent une exception si une condition est vraie.
+    En x86, on evalue la condition et on appelle un gestionnaire manuellement.
+
+  (d) LWARX / STWCX. (Load/Store conditionnel pour synchronisation)
+
+    PowerPC                          80386
+    ----------------------------------  ---------------------------------
+    LWARX  r3, 0, r4                   ; pas d'equivalent direct 80386
+    STWCX. r5, 0, r4                   ; utiliser LOCK CMPXCHG (486+)
+                                       ; ou LOCK XCHG (80386)
+
+    LWARX/STWCX. implementent le mecanisme Load-Link / Store-Conditional
+    pour les operations atomiques. Le 80386 n'a pas d'equivalent direct.
+    Il faut utiliser le prefixe LOCK avec des instructions comme XCHG
+    ou, sur 486+, CMPXCHG.
+
+------------------------------------------------------------------------------
+15.13 Conversion de l'endianness
+------------------------------------------------------------------------------
+
+  PowerPC est nativement big-endian (certaines implementations supportent
+  le little-endian, mais la plupart du code PowerPC est big-endian).
+  Le 80386 est little-endian.
+
+  Si le code manipule des donnees binaires (fichiers, protocoles reseau,
+  structures partagees), il faut convertir l'ordre des octets :
+
+    Big-endian (PowerPC) :    0x12345678 en memoire -> 12 34 56 78
+    Little-endian (80386) :   0x12345678 en memoire -> 78 56 34 12
+
+  Conversion d'un mot de 32 bits (byte swap) :
+
+    80386 :
+      MOV   EAX, [source]    ; charger en little-endian
+      BSWAP EAX              ; inverser les octets (486+)
+      MOV   [dest], EAX
+
+    Sur 80386 strict (pas de BSWAP, introduit avec le 486) :
+
+      MOV   EAX, [source]
+      XCHG  AL, AH           ; echanger octets bas du mot bas
+      ROL   EAX, 16          ; echanger mots haut et bas
+      XCHG  AL, AH           ; echanger octets bas du nouveau mot bas
+
+  Conversion d'un mot de 16 bits :
+
+      MOV   AX, [source]
+      XCHG  AL, AH
+      MOV   [dest], AX
+
+  Note : si le programme ne fait que des calculs internes (pas d'I/O
+  binaire), la conversion d'endianness n'est pas necessaire. Les valeurs
+  sont simplement stockees dans l'ordre natif de la plateforme cible.
+
+  Les structures de donnees avec des champs de tailles differentes
+  necessitent une conversion champ par champ, pas une conversion
+  globale de la structure.
+
+------------------------------------------------------------------------------
+15.14 Exemple complet de conversion
+------------------------------------------------------------------------------
+
+  Voici un exemple complet de conversion d'une fonction PowerPC qui
+  calcule la somme des elements d'un tableau :
+
+  PowerPC (syntaxe AIX/GCC) :
+  ----------------------------
+
+    ; int somme_tableau(int *tab, int n)
+    ; r3 = tab (pointeur), r4 = n (nombre d'elements)
+    somme_tableau:
+        MFLR  r0                  ; sauver LR
+        STW   r0, 4(r1)
+        STWU  r1, -16(r1)        ; allouer cadre
+        LI    r5, 0              ; r5 = somme = 0
+        LI    r6, 0              ; r6 = i = 0
+        CMPW  r6, r4             ; comparer i avec n
+        BGE   .done              ; si i >= n, fin
+    .loop:
+        SLWI  r7, r6, 2          ; r7 = i * 4 (taille int)
+        LWZX  r8, r3, r7         ; r8 = tab[i]
+        ADD   r5, r5, r8         ; somme += tab[i]
+        ADDI  r6, r6, 1          ; i++
+        CMPW  r6, r4             ; comparer i avec n
+        BLT   .loop              ; si i < n, continuer
+    .done:
+        MR    r3, r5             ; retour = somme
+        ADDI  r1, r1, 16         ; liberer cadre
+        LWZ   r0, 4(r1)
+        MTLR  r0                 ; restaurer LR
+        BLR                      ; retour
+
+  80386 (MASM, convention CDECL) :
+  ---------------------------------
+
+    ; int somme_tableau(int *tab, int n)
+    ; [ESP+4] = tab, [ESP+8] = n
+    somme_tableau:
+        PUSH  EBP
+        MOV   EBP, ESP
+        PUSH  ESI
+        PUSH  EDI
+        MOV   ESI, [EBP+8]       ; ESI = tab
+        MOV   ECX, [EBP+12]      ; ECX = n
+        XOR   EAX, EAX           ; EAX = somme = 0
+        XOR   EDX, EDX           ; EDX = i = 0
+        CMP   EDX, ECX
+        JGE   .done
+    .loop:
+        ADD   EAX, [ESI+EDX*4]   ; somme += tab[i] (base+index*4)
+        INC   EDX                 ; i++
+        CMP   EDX, ECX
+        JL    .loop
+    .done:
+        POP   EDI
+        POP   ESI
+        POP   EBP
+        RET                       ; retour (EAX = somme)
+
+  Observations :
+  - Le code x86 est plus compact (moins d'instructions)
+  - Le mode base+index*scale (ESI+EDX*4) remplace SLWI+LWZX
+  - CALL/RET remplacent la gestion explicite de LR
+  - Les variables intermediaires r7, r8 sont eliminees
+  - Le cadre de pile x86 est plus simple (PUSH EBP / MOV EBP, ESP)
+
+------------------------------------------------------------------------------
+15.15 Resume : aide-memoire de conversion PowerPC -> 80386
+------------------------------------------------------------------------------
+
+    Instruction PowerPC          Equivalent 80386
+    --------------------------   ---------------------------------
+    LI    rD, imm16              MOV reg, imm32
+    LIS   rD, imm16             MOV reg, imm16 SHL 16
+    LWZ   rD, d(rA)             MOV reg, [base+d]
+    LBZ   rD, d(rA)             MOVZX reg, BYTE PTR [base+d]
+    LHZ   rD, d(rA)             MOVZX reg, WORD PTR [base+d]
+    LHA   rD, d(rA)             MOVSX reg, WORD PTR [base+d]
+    LWZX  rD, rA, rB            MOV reg, [base+index]
+    LWZU  rD, d(rA)             MOV reg, [base+d] / ADD base, d
+    STW   rS, d(rA)             MOV [base+d], reg
+    STB   rS, d(rA)             MOV BYTE PTR [base+d], reg8
+    STH   rS, d(rA)             MOV WORD PTR [base+d], reg16
+    STWU  rS, d(rA)             ADD base, d / MOV [base], reg
+    MR    rD, rS                MOV dest, source
+    ADD   rD, rA, rB            MOV dest, rA / ADD dest, rB
+    ADDI  rD, rA, imm           MOV dest, rA / ADD dest, imm (ou LEA)
+    SUBF  rD, rA, rB            MOV dest, rB / SUB dest, rA
+    NEG   rD, rA                MOV dest, rA / NEG dest
+    MULLW rD, rA, rB            IMUL dest, rA, rB  (ou MOV+IMUL)
+    DIVW  rD, rA, rB            MOV EAX, rA / CDQ / IDIV rB
+    AND   rD, rA, rB            MOV dest, rA / AND dest, rB
+    OR    rD, rA, rB            MOV dest, rA / OR dest, rB
+    XOR   rD, rA, rB            MOV dest, rA / XOR dest, rB
+    NOT   rD, rS                MOV dest, rS / NOT dest
+    SLW   rD, rA, rB            MOV dest, rA / MOV CL, rB / SHL dest, CL
+    SRW   rD, rA, rB            MOV dest, rA / MOV CL, rB / SHR dest, CL
+    SRAW  rD, rA, rB            MOV dest, rA / MOV CL, rB / SAR dest, CL
+    ROTLW rD, rA, rB            MOV dest, rA / MOV CL, rB / ROL dest, CL
+    RLWINM rD,rA,n,MB,ME        ROL dest, n / AND dest, masque
+    CMPW  rA, rB                CMP regA, regB
+    CMPWI rA, imm               CMP regA, imm
+    CMPLW rA, rB                CMP regA, regB (non signe)
+    BEQ   label                  JE  label
+    BNE   label                  JNE label
+    BLT   label                  JL  label (signe) / JB (non signe)
+    BGT   label                  JG  label (signe) / JA (non signe)
+    BLE   label                  JLE label (signe) / JBE (non signe)
+    BGE   label                  JGE label (signe) / JAE (non signe)
+    B     label                  JMP label
+    BL    label                  CALL label
+    BLR                          RET
+    MTCTR rS                     MOV [_ppc_ctr], reg (ou MOV ECX, reg)
+    BDNZ  label                  DEC ECX / JNZ label (ou LOOP label)
+    BCTR                         JMP [_ppc_ctr] (ou JMP ECX indirect)
+    BCTRL                        CALL [_ppc_ctr]
+    MFLR  r0                     ; implicite (CALL empile l'adresse)
+    MTLR  r0                     ; implicite (RET depile l'adresse)
+    STWU  r1, -N(r1)            SUB ESP, N (ou PUSH EBP / SUB ESP, N)
+    EXTSB rD, rS                 MOVSX dest, reg8
+    EXTSH rD, rS                 MOVSX dest, reg16
+    CNTLZW rD, rS               BSR + calcul (pas de LZCNT en 80386)
+    NOP                          NOP
+
+------------------------------------------------------------------------------
+15.16 Pieges et differences fondamentales
+------------------------------------------------------------------------------
+
+  (a) Nombre de registres
+
+    PowerPC a 32 GPR + 32 FPR, le 80386 n'a que 8 GPR + 8 FPR (x87).
+    La plupart des registres PowerPC doivent etre emules en memoire.
+    Cela peut avoir un impact significatif sur les performances.
+
+  (b) Architecture Load/Store vs CISC
+
+    En PowerPC, aucune instruction arithmetique n'accede directement
+    a la memoire. En x86, la plupart le peuvent. Cela permet de
+    fusionner des sequences LWZ+op+STW en une seule instruction x86,
+    mais attention aux cas ou le registre intermediaire est utilise
+    ailleurs.
+
+  (c) Endianness
+
+    PowerPC est big-endian, x86 est little-endian. Les donnees brutes
+    (fichiers, reseau, structures binaires) doivent etre converties
+    octet par octet. Les valeurs calculees en interne n'ont pas besoin
+    de conversion.
+
+  (d) Registre de condition CR vs EFLAGS
+
+    Le CR du PowerPC contient 8 champs independants de 4 bits.
+    EFLAGS du x86 est un registre unique. Les comparaisons multiples
+    simultanees du PowerPC doivent etre emulees avec des variables
+    temporaires en x86.
+
+  (e) Link Register (LR) et pile
+
+    En PowerPC, l'adresse de retour est stockee dans LR (pas sur la pile).
+    En x86, CALL empile l'adresse de retour et RET la depile.
+    La conversion est generalement transparente, mais attention aux
+    fonctions qui manipulent explicitement LR (MFLR/MTLR).
+
+  (f) Instruction RLWINM (rotation + masque)
+
+    Cette instruction PowerPC tres versatile combine rotation et masquage
+    en une seule instruction. Elle est utilisee pour l'extraction de
+    champs de bits, les decalages masques, les multiplications par
+    puissances de 2, etc. En x86, il faut decomposer en ROL + AND.
+
+  (g) Instructions a 3 operandes vs 2 operandes
+
+    PowerPC utilise des instructions a 3 operandes (rD = rA op rB).
+    Le x86 utilise 2 operandes (dest = dest op source). Il faut souvent
+    ajouter un MOV pour preserver la valeur source quand dest != source.
+    L'instruction LEA peut parfois eviter ce MOV supplementaire :
+      ADDI r5, r3, 100  ->  LEA ECX, [EAX+100]
+
+  (h) Branchement conditionnel et prediction
+
+    En PowerPC, les branchements incluent un indice de prediction
+    (bit + ou -). Le 80386 n'a pas de mecanisme de prediction logiciel
+    (les hints de branchement ne sont apparus qu'avec le Pentium 4).
+
+  (i) Alignement memoire
+
+    PowerPC exige un alignement naturel pour les acces memoire
+    (LWZ sur une adresse multiple de 4, LHZ sur multiple de 2).
+    Un acces non aligne genere une exception. Le 80386 tolere les acces
+    non alignes (avec une penalite de performance). Il faut donc verifier
+    que le code converti respecte l'alignement si necessaire.
+
+  (j) Registres flottants
+
+    PowerPC a 32 registres flottants 64 bits (f0-f31) avec un modele
+    plat (acces direct a chaque registre). Le x87 du 80386 utilise
+    8 registres 80 bits organises en pile (ST(0)-ST(7), modele FILO).
+    La conversion des operations flottantes PowerPC necessite une
+    reorganisation complete pour gerer le modele en pile du x87.
+
+  (k) Instructions atomiques (LWARX/STWCX.)
+
+    Le mecanisme Load-Link / Store-Conditional du PowerPC pour la
+    synchronisation multiprocesseur n'a pas d'equivalent direct en 80386.
+    Il faut utiliser le prefixe LOCK avec XCHG ou, sur 486+, CMPXCHG.
 
 ==============================================================================
   FIN DU DOCUMENT - ASSEMBLEUR 80386
