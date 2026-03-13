@@ -54,7 +54,7 @@
               TOK_PIPE, TOK_AT, TOK_EOF)
             Stocker dans CurTokType / CurTokStr / CurTokNum
 
-  TODO 03 - RECONNAISSANCE DES MOTS-CLES ABAP/4
+  TODO 03 - RECONNAISSANCE DES MOTS-CLES ABAP/4 [IMPLEMENTE]
             Function IsKeyword(Const s: String): Integer
             Mots-cles complets a reconnaitre :
               REPORT PROGRAM DATA TYPES CONSTANTS CLASS-DATA

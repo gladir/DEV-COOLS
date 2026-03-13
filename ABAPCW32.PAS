@@ -73,7 +73,7 @@
               TOK_PIPE, TOK_AT, TOK_EOF)
             Stocker dans CurTokType / CurTokStr / CurTokNum
 
-  TODO 03 - RECONNAISSANCE DES MOTS-CLES ABAP/4
+  TODO 03 - RECONNAISSANCE DES MOTS-CLES ABAP/4 [IMPLEMENTE]
             Function IsKeyword(Const s: String): Integer
             Mots-cles complets a reconnaitre :
               REPORT PROGRAM DATA TYPES CONSTANTS CLASS-DATA
@@ -613,6 +613,160 @@ Const
 
   MAX_IDENT    = 48;   { longueur max d un identificateur ABAP    }
 
+  { Codes des mots-cles ABAP }
+  KW_NONE            =   0;
+  KW_REPORT          =   1;
+  KW_PROGRAM         =   2;
+  KW_DATA            =   3;
+  KW_TYPES           =   4;
+  KW_CONSTANTS       =   5;
+  KW_CLASS_DATA      =   6;
+  KW_IF              =   7;
+  KW_ELSEIF          =   8;
+  KW_ELSE            =   9;
+  KW_ENDIF           =  10;
+  KW_CASE            =  11;
+  KW_WHEN            =  12;
+  KW_OTHERS          =  13;
+  KW_ENDCASE         =  14;
+  KW_WHILE           =  15;
+  KW_ENDWHILE        =  16;
+  KW_DO              =  17;
+  KW_TIMES           =  18;
+  KW_ENDDO           =  19;
+  KW_LOOP            =  20;
+  KW_AT              =  21;
+  KW_INTO            =  22;
+  KW_ENDLOOP         =  23;
+  KW_FORM            =  24;
+  KW_ENDFORM         =  25;
+  KW_PERFORM         =  26;
+  KW_USING           =  27;
+  KW_CHANGING        =  28;
+  KW_TABLES          =  29;
+  KW_FUNCTION        =  30;
+  KW_ENDFUNCTION     =  31;
+  KW_WRITE           =  32;
+  KW_SKIP            =  33;
+  KW_LINE            =  34;
+  KW_NEW_LINE        =  35;
+  KW_MOVE            =  36;
+  KW_TO              =  37;
+  KW_MOVE_CORR       =  38;
+  KW_COMPUTE         =  39;
+  KW_ADD             =  40;
+  KW_SUBTRACT        =  41;
+  KW_MULTIPLY        =  42;
+  KW_BY              =  43;
+  KW_DIVIDE          =  44;
+  KW_FROM            =  45;
+  KW_GIVING          =  46;
+  KW_APPEND          =  47;
+  KW_INSERT          =  48;
+  KW_DELETE          =  49;
+  KW_MODIFY          =  50;
+  KW_READ            =  51;
+  KW_SORT            =  52;
+  KW_COLLECT         =  53;
+  KW_SELECT          =  54;
+  KW_WHERE           =  55;
+  KW_CORRESPONDING   =  56;
+  KW_FIELDS          =  57;
+  KW_ENDSELECT       =  58;
+  KW_CALL            =  59;
+  KW_RAISING         =  60;
+  KW_EXCEPTIONS      =  61;
+  KW_SINGLE          =  62;
+  KW_CLEAR           =  63;
+  KW_REFRESH         =  64;
+  KW_FREE            =  65;
+  KW_INITIALIZE      =  66;
+  KW_CONCATENATE     =  67;
+  KW_SPLIT           =  68;
+  KW_SHIFT           =  69;
+  KW_REPLACE         =  70;
+  KW_TRANSLATE       =  71;
+  KW_CONDENSE        =  72;
+  KW_FIND            =  73;
+  KW_CHECK           =  74;
+  KW_RETURN          =  75;
+  KW_EXIT            =  76;
+  KW_STOP            =  77;
+  KW_CONTINUE        =  78;
+  KW_START_OF_SEL    =  79;   { START-OF-SELECTION }
+  KW_END_OF_SEL      =  80;   { END-OF-SELECTION   }
+  KW_TOP_OF_PAGE     =  81;
+  KW_END_OF_PAGE     =  82;
+  KW_PARAMETERS      =  83;
+  KW_SELECT_OPTIONS  =  84;
+  KW_LIKE            =  85;
+  KW_TYPE            =  86;
+  KW_VALUE           =  87;
+  KW_DEFAULT         =  88;
+  KW_CLASS           =  89;
+  KW_ENDCLASS        =  90;
+  KW_METHOD          =  91;
+  KW_ENDMETHOD       =  92;
+  KW_PUBLIC          =  93;
+  KW_PRIVATE         =  94;
+  KW_PROTECTED       =  95;
+  KW_RAISE           =  96;
+  KW_EXCEPTION       =  97;
+  KW_TRY             =  98;
+  KW_CATCH           =  99;
+  KW_CLEANUP         = 100;
+  KW_ENDTRY          = 101;
+  KW_EQ              = 102;   { EQ (comparaison verbale) }
+  KW_NE              = 103;   { NE                       }
+  KW_LT              = 104;   { LT                       }
+  KW_GT              = 105;   { GT                       }
+  KW_LE              = 106;   { LE                       }
+  KW_GE              = 107;   { GE                       }
+  KW_BETWEEN         = 108;
+  KW_IN              = 109;
+  KW_AND             = 110;
+  KW_OR              = 111;
+  KW_NOT             = 112;
+  KW_IS              = 113;
+  KW_INITIAL         = 114;
+  KW_BOUND           = 115;
+  KW_ASCENDING       = 116;
+  KW_DESCENDING      = 117;
+  KW_LEFT            = 118;
+  KW_RIGHT           = 119;
+  KW_UPPER           = 120;   { UPPER CASE }
+  KW_LOWER           = 121;   { LOWER CASE }
+  KW_NO_GAPS         = 122;   { NO-GAPS    }
+  KW_MATCH           = 123;
+  KW_OFFSET          = 124;
+  KW_OCCURRENCE      = 125;
+  KW_OCCURRENCES     = 126;
+  KW_SEPARATED       = 127;
+  KW_LINE_SEL        = 128;   { LINE-SELECTION  }
+  KW_USER_CMD        = 129;   { USER-COMMAND    }
+  KW_OF              = 130;
+  KW_BEGIN           = 131;
+  KW_END             = 132;
+  KW_TABLE           = 133;
+  KW_WITH            = 134;
+  KW_KEY             = 135;
+  KW_INDEX           = 136;
+  KW_DECIMALS        = 137;
+  KW_LENGTH          = 138;
+  KW_MESSAGE_ID      = 139;
+  KW_STRLEN          = 140;
+  KW_ABS             = 141;
+  KW_CASE_UPPER      = 142;   { UPPER CASE (suite de TRANSLATE) }
+  KW_CASE_LOWER      = 143;   { LOWER CASE                      }
+  KW_ROWS            = 144;   { UP TO n ROWS (SELECT)           }
+  KW_EXPORTING       = 145;
+  KW_IMPORTING       = 146;
+  KW_ORDER           = 147;
+  KW_CIRCULAR        = 148;
+  KW_PLACES          = 149;
+  KW_ALL             = 150;
+  KW_FIRST           = 151;
+
   { Prefixes de nommage ASM }
   AB_VAR_PFX   = '_AB_';       { variable globale              }
   AB_FN_PFX    = '_ABF_';      { FORM / FUNCTION               }
@@ -714,6 +868,7 @@ Var
   CurTokType : Integer;    { type du token courant (TOK_xxx)       }
   CurTokStr  : TString;    { valeur textuelle du token courant     }
   CurTokNum  : LongInt;    { valeur entiere (TOK_NUMBER)           }
+  CurTokKw   : Integer;    { code mot-cle (KW_xxx) ou KW_NONE     }
 
 {$IFDEF FPC}
   { Variables binaires }
@@ -751,6 +906,8 @@ Procedure LexNextLine;   Forward;
 Procedure LexNextToken;  Forward;
 Procedure LexError(Const Msg : TString); Forward;
 Procedure PrintToken;    Forward;
+Function  IsKeyword(Const S : TString) : Integer; Forward;
+Procedure Consume;       Forward;
 
 { ============================================================ }
 { FONCTIONS UTILITAIRES                                        }
@@ -982,6 +1139,7 @@ Var
 Begin
   CurTokStr  := '';
   CurTokNum  := 0;
+  CurTokKw   := KW_NONE;
 
   LexSkipWS;
 
@@ -1225,6 +1383,7 @@ Begin
     End;
     CurTokType := TOK_IDENT;
     CurTokStr  := S;
+    CurTokKw   := IsKeyword(S);
     Exit;
   End;
 
@@ -1271,7 +1430,221 @@ Begin
   If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_STRING) Or
      (CurTokType = TOK_NUMBER) Or (CurTokType = TOK_FLOAT) Then
     Write(' <', CurTokStr, '>');
+  If (CurTokType = TOK_IDENT) And (CurTokKw <> KW_NONE) Then
+    Write(' kw=', CurTokKw);
   WriteLn;
+End;
+
+{ ============================================================ }
+{ RECONNAISSANCE DES MOTS-CLES ABAP/4 (TODO 03)               }
+{ ============================================================ }
+
+{ IsKeyword : retourne le code KW_xxx si S est un mot-cle ABAP,
+  ou KW_NONE si ce n est pas un mot-cle.
+  S doit etre en MAJUSCULES (garanti par le lexeur).           }
+Function IsKeyword(Const S : TString) : Integer;
+Begin
+  If S = 'REPORT'              Then Begin IsKeyword := KW_REPORT;        Exit; End;
+  If S = 'PROGRAM'             Then Begin IsKeyword := KW_PROGRAM;       Exit; End;
+
+  If S = 'DATA'                Then Begin IsKeyword := KW_DATA;          Exit; End;
+  If S = 'TYPES'               Then Begin IsKeyword := KW_TYPES;         Exit; End;
+  If S = 'CONSTANTS'           Then Begin IsKeyword := KW_CONSTANTS;     Exit; End;
+  If S = 'CLASS-DATA'          Then Begin IsKeyword := KW_CLASS_DATA;    Exit; End;
+
+  If S = 'IF'                  Then Begin IsKeyword := KW_IF;            Exit; End;
+  If S = 'ELSEIF'              Then Begin IsKeyword := KW_ELSEIF;        Exit; End;
+  If S = 'ELSE'                Then Begin IsKeyword := KW_ELSE;          Exit; End;
+  If S = 'ENDIF'               Then Begin IsKeyword := KW_ENDIF;         Exit; End;
+  If S = 'CASE'                Then Begin IsKeyword := KW_CASE;          Exit; End;
+  If S = 'WHEN'                Then Begin IsKeyword := KW_WHEN;          Exit; End;
+  If S = 'OTHERS'              Then Begin IsKeyword := KW_OTHERS;        Exit; End;
+  If S = 'ENDCASE'             Then Begin IsKeyword := KW_ENDCASE;       Exit; End;
+
+  If S = 'WHILE'               Then Begin IsKeyword := KW_WHILE;         Exit; End;
+  If S = 'ENDWHILE'            Then Begin IsKeyword := KW_ENDWHILE;      Exit; End;
+  If S = 'DO'                  Then Begin IsKeyword := KW_DO;            Exit; End;
+  If S = 'TIMES'               Then Begin IsKeyword := KW_TIMES;         Exit; End;
+  If S = 'ENDDO'               Then Begin IsKeyword := KW_ENDDO;         Exit; End;
+  If S = 'LOOP'                Then Begin IsKeyword := KW_LOOP;          Exit; End;
+  If S = 'AT'                  Then Begin IsKeyword := KW_AT;            Exit; End;
+  If S = 'INTO'                Then Begin IsKeyword := KW_INTO;          Exit; End;
+  If S = 'ENDLOOP'             Then Begin IsKeyword := KW_ENDLOOP;       Exit; End;
+
+  If S = 'FORM'                Then Begin IsKeyword := KW_FORM;          Exit; End;
+  If S = 'ENDFORM'             Then Begin IsKeyword := KW_ENDFORM;       Exit; End;
+  If S = 'PERFORM'             Then Begin IsKeyword := KW_PERFORM;       Exit; End;
+  If S = 'USING'               Then Begin IsKeyword := KW_USING;         Exit; End;
+  If S = 'CHANGING'            Then Begin IsKeyword := KW_CHANGING;      Exit; End;
+  If S = 'TABLES'              Then Begin IsKeyword := KW_TABLES;        Exit; End;
+
+  If S = 'FUNCTION'            Then Begin IsKeyword := KW_FUNCTION;      Exit; End;
+  If S = 'ENDFUNCTION'         Then Begin IsKeyword := KW_ENDFUNCTION;   Exit; End;
+
+  If S = 'WRITE'               Then Begin IsKeyword := KW_WRITE;         Exit; End;
+  If S = 'SKIP'                Then Begin IsKeyword := KW_SKIP;          Exit; End;
+  If S = 'LINE'                Then Begin IsKeyword := KW_LINE;          Exit; End;
+  If S = 'NEW-LINE'            Then Begin IsKeyword := KW_NEW_LINE;      Exit; End;
+
+  If S = 'MOVE'                Then Begin IsKeyword := KW_MOVE;          Exit; End;
+  If S = 'TO'                  Then Begin IsKeyword := KW_TO;            Exit; End;
+  If S = 'MOVE-CORRESPONDING'  Then Begin IsKeyword := KW_MOVE_CORR;     Exit; End;
+  If S = 'COMPUTE'             Then Begin IsKeyword := KW_COMPUTE;       Exit; End;
+  If S = 'ADD'                 Then Begin IsKeyword := KW_ADD;           Exit; End;
+  If S = 'SUBTRACT'            Then Begin IsKeyword := KW_SUBTRACT;      Exit; End;
+  If S = 'MULTIPLY'            Then Begin IsKeyword := KW_MULTIPLY;      Exit; End;
+  If S = 'BY'                  Then Begin IsKeyword := KW_BY;            Exit; End;
+  If S = 'DIVIDE'              Then Begin IsKeyword := KW_DIVIDE;        Exit; End;
+  If S = 'FROM'                Then Begin IsKeyword := KW_FROM;          Exit; End;
+  If S = 'GIVING'              Then Begin IsKeyword := KW_GIVING;        Exit; End;
+
+  If S = 'APPEND'              Then Begin IsKeyword := KW_APPEND;        Exit; End;
+  If S = 'INSERT'              Then Begin IsKeyword := KW_INSERT;        Exit; End;
+  If S = 'DELETE'              Then Begin IsKeyword := KW_DELETE;        Exit; End;
+  If S = 'MODIFY'              Then Begin IsKeyword := KW_MODIFY;        Exit; End;
+  If S = 'READ'                Then Begin IsKeyword := KW_READ;          Exit; End;
+  If S = 'SORT'                Then Begin IsKeyword := KW_SORT;          Exit; End;
+  If S = 'COLLECT'             Then Begin IsKeyword := KW_COLLECT;       Exit; End;
+
+  If S = 'SELECT'              Then Begin IsKeyword := KW_SELECT;        Exit; End;
+  If S = 'WHERE'               Then Begin IsKeyword := KW_WHERE;         Exit; End;
+  If S = 'CORRESPONDING'       Then Begin IsKeyword := KW_CORRESPONDING; Exit; End;
+  If S = 'FIELDS'              Then Begin IsKeyword := KW_FIELDS;        Exit; End;
+  If S = 'ENDSELECT'           Then Begin IsKeyword := KW_ENDSELECT;     Exit; End;
+
+  If S = 'CALL'                Then Begin IsKeyword := KW_CALL;          Exit; End;
+  If S = 'RAISING'             Then Begin IsKeyword := KW_RAISING;       Exit; End;
+  If S = 'EXCEPTIONS'          Then Begin IsKeyword := KW_EXCEPTIONS;    Exit; End;
+  If S = 'SINGLE'              Then Begin IsKeyword := KW_SINGLE;        Exit; End;
+
+  If S = 'CLEAR'               Then Begin IsKeyword := KW_CLEAR;         Exit; End;
+  If S = 'REFRESH'             Then Begin IsKeyword := KW_REFRESH;       Exit; End;
+  If S = 'FREE'                Then Begin IsKeyword := KW_FREE;          Exit; End;
+  If S = 'INITIALIZE'          Then Begin IsKeyword := KW_INITIALIZE;    Exit; End;
+
+  If S = 'CONCATENATE'         Then Begin IsKeyword := KW_CONCATENATE;   Exit; End;
+  If S = 'SPLIT'               Then Begin IsKeyword := KW_SPLIT;         Exit; End;
+  If S = 'SHIFT'               Then Begin IsKeyword := KW_SHIFT;         Exit; End;
+  If S = 'REPLACE'             Then Begin IsKeyword := KW_REPLACE;       Exit; End;
+  If S = 'TRANSLATE'           Then Begin IsKeyword := KW_TRANSLATE;     Exit; End;
+  If S = 'CONDENSE'            Then Begin IsKeyword := KW_CONDENSE;      Exit; End;
+  If S = 'FIND'                Then Begin IsKeyword := KW_FIND;          Exit; End;
+
+  If S = 'CHECK'               Then Begin IsKeyword := KW_CHECK;         Exit; End;
+  If S = 'RETURN'              Then Begin IsKeyword := KW_RETURN;        Exit; End;
+  If S = 'EXIT'                Then Begin IsKeyword := KW_EXIT;          Exit; End;
+  If S = 'STOP'                Then Begin IsKeyword := KW_STOP;          Exit; End;
+  If S = 'CONTINUE'            Then Begin IsKeyword := KW_CONTINUE;      Exit; End;
+
+  If S = 'START-OF-SELECTION'  Then Begin IsKeyword := KW_START_OF_SEL;  Exit; End;
+  If S = 'END-OF-SELECTION'    Then Begin IsKeyword := KW_END_OF_SEL;    Exit; End;
+  If S = 'TOP-OF-PAGE'         Then Begin IsKeyword := KW_TOP_OF_PAGE;   Exit; End;
+  If S = 'END-OF-PAGE'         Then Begin IsKeyword := KW_END_OF_PAGE;   Exit; End;
+
+  If S = 'PARAMETERS'          Then Begin IsKeyword := KW_PARAMETERS;    Exit; End;
+  If S = 'SELECT-OPTIONS'      Then Begin IsKeyword := KW_SELECT_OPTIONS; Exit; End;
+
+  If S = 'LIKE'                Then Begin IsKeyword := KW_LIKE;          Exit; End;
+  If S = 'TYPE'                Then Begin IsKeyword := KW_TYPE;          Exit; End;
+  If S = 'VALUE'               Then Begin IsKeyword := KW_VALUE;         Exit; End;
+  If S = 'DEFAULT'             Then Begin IsKeyword := KW_DEFAULT;       Exit; End;
+  If S = 'DECIMALS'            Then Begin IsKeyword := KW_DECIMALS;      Exit; End;
+  If S = 'LENGTH'              Then Begin IsKeyword := KW_LENGTH;        Exit; End;
+
+  If S = 'CLASS'               Then Begin IsKeyword := KW_CLASS;         Exit; End;
+  If S = 'ENDCLASS'            Then Begin IsKeyword := KW_ENDCLASS;      Exit; End;
+  If S = 'METHOD'              Then Begin IsKeyword := KW_METHOD;        Exit; End;
+  If S = 'ENDMETHOD'           Then Begin IsKeyword := KW_ENDMETHOD;     Exit; End;
+  If S = 'PUBLIC'              Then Begin IsKeyword := KW_PUBLIC;        Exit; End;
+  If S = 'PRIVATE'             Then Begin IsKeyword := KW_PRIVATE;       Exit; End;
+  If S = 'PROTECTED'           Then Begin IsKeyword := KW_PROTECTED;     Exit; End;
+
+  If S = 'RAISE'               Then Begin IsKeyword := KW_RAISE;         Exit; End;
+  If S = 'EXCEPTION'           Then Begin IsKeyword := KW_EXCEPTION;     Exit; End;
+  If S = 'TRY'                 Then Begin IsKeyword := KW_TRY;           Exit; End;
+  If S = 'CATCH'               Then Begin IsKeyword := KW_CATCH;         Exit; End;
+  If S = 'CLEANUP'             Then Begin IsKeyword := KW_CLEANUP;       Exit; End;
+  If S = 'ENDTRY'              Then Begin IsKeyword := KW_ENDTRY;        Exit; End;
+
+  If S = 'EQ'                  Then Begin IsKeyword := KW_EQ;            Exit; End;
+  If S = 'NE'                  Then Begin IsKeyword := KW_NE;            Exit; End;
+  If S = 'LT'                  Then Begin IsKeyword := KW_LT;            Exit; End;
+  If S = 'GT'                  Then Begin IsKeyword := KW_GT;            Exit; End;
+  If S = 'LE'                  Then Begin IsKeyword := KW_LE;            Exit; End;
+  If S = 'GE'                  Then Begin IsKeyword := KW_GE;            Exit; End;
+  If S = 'BETWEEN'             Then Begin IsKeyword := KW_BETWEEN;       Exit; End;
+  If S = 'IN'                  Then Begin IsKeyword := KW_IN;            Exit; End;
+
+  If S = 'AND'                 Then Begin IsKeyword := KW_AND;           Exit; End;
+  If S = 'OR'                  Then Begin IsKeyword := KW_OR;            Exit; End;
+  If S = 'NOT'                 Then Begin IsKeyword := KW_NOT;           Exit; End;
+
+  If S = 'IS'                  Then Begin IsKeyword := KW_IS;            Exit; End;
+  If S = 'INITIAL'             Then Begin IsKeyword := KW_INITIAL;       Exit; End;
+  If S = 'BOUND'               Then Begin IsKeyword := KW_BOUND;         Exit; End;
+
+  If S = 'ASCENDING'           Then Begin IsKeyword := KW_ASCENDING;     Exit; End;
+  If S = 'DESCENDING'          Then Begin IsKeyword := KW_DESCENDING;    Exit; End;
+
+  If S = 'LEFT'                Then Begin IsKeyword := KW_LEFT;          Exit; End;
+  If S = 'RIGHT'               Then Begin IsKeyword := KW_RIGHT;         Exit; End;
+  If S = 'UPPER'               Then Begin IsKeyword := KW_UPPER;         Exit; End;
+  If S = 'LOWER'               Then Begin IsKeyword := KW_LOWER;         Exit; End;
+  If S = 'NO-GAPS'             Then Begin IsKeyword := KW_NO_GAPS;       Exit; End;
+
+  If S = 'MATCH'               Then Begin IsKeyword := KW_MATCH;         Exit; End;
+  If S = 'OFFSET'              Then Begin IsKeyword := KW_OFFSET;        Exit; End;
+  If S = 'OCCURRENCE'          Then Begin IsKeyword := KW_OCCURRENCE;    Exit; End;
+  If S = 'OCCURRENCES'         Then Begin IsKeyword := KW_OCCURRENCES;   Exit; End;
+  If S = 'SEPARATED'           Then Begin IsKeyword := KW_SEPARATED;     Exit; End;
+
+  If S = 'LINE-SELECTION'      Then Begin IsKeyword := KW_LINE_SEL;      Exit; End;
+  If S = 'USER-COMMAND'        Then Begin IsKeyword := KW_USER_CMD;      Exit; End;
+
+  If S = 'OF'                  Then Begin IsKeyword := KW_OF;            Exit; End;
+  If S = 'BEGIN'               Then Begin IsKeyword := KW_BEGIN;         Exit; End;
+  If S = 'END'                 Then Begin IsKeyword := KW_END;           Exit; End;
+  If S = 'TABLE'               Then Begin IsKeyword := KW_TABLE;         Exit; End;
+  If S = 'WITH'                Then Begin IsKeyword := KW_WITH;          Exit; End;
+  If S = 'KEY'                 Then Begin IsKeyword := KW_KEY;           Exit; End;
+  If S = 'INDEX'               Then Begin IsKeyword := KW_INDEX;         Exit; End;
+  If S = 'MESSAGE-ID'          Then Begin IsKeyword := KW_MESSAGE_ID;    Exit; End;
+
+  If S = 'STRLEN'              Then Begin IsKeyword := KW_STRLEN;        Exit; End;
+  If S = 'ABS'                 Then Begin IsKeyword := KW_ABS;           Exit; End;
+
+  If S = 'ROWS'                Then Begin IsKeyword := KW_ROWS;          Exit; End;
+  If S = 'ORDER'               Then Begin IsKeyword := KW_ORDER;         Exit; End;
+  If S = 'EXPORTING'           Then Begin IsKeyword := KW_EXPORTING;     Exit; End;
+  If S = 'IMPORTING'           Then Begin IsKeyword := KW_IMPORTING;     Exit; End;
+
+  If S = 'CIRCULAR'            Then Begin IsKeyword := KW_CIRCULAR;      Exit; End;
+  If S = 'PLACES'              Then Begin IsKeyword := KW_PLACES;        Exit; End;
+  If S = 'ALL'                 Then Begin IsKeyword := KW_ALL;           Exit; End;
+  If S = 'FIRST'               Then Begin IsKeyword := KW_FIRST;         Exit; End;
+  IsKeyword := KW_NONE;
+End;
+
+{ ---- TokIsKw : vrai si le token courant est le mot-cle kw -- }
+Function TokIsKw(Kw : Integer) : Boolean;
+Begin
+  TokIsKw := (CurTokType = TOK_IDENT) And (CurTokKw = Kw);
+End;
+
+{ ---- EatKw : consomme si le token est le mot-cle kw --------- }
+Function EatKw(Kw : Integer) : Boolean;
+Begin
+  If TokIsKw(Kw) Then
+  Begin Consume; EatKw := True; End
+  Else EatKw := False;
+End;
+
+{ ---- ExpectKw : verifie et consomme le mot-cle kw ----------- }
+Procedure ExpectKw(Kw : Integer; Const What : TString);
+Begin
+  If Not TokIsKw(Kw) Then
+    LexError('Attendu ' + What + ', trouve: ''' + CurTokStr + '''');
+  Consume;
 End;
 
 { ---- LexInit : ouvrir le fichier source et lire le 1er token }
@@ -1290,6 +1663,7 @@ Begin
   CurTokType := TOK_EOF;
   CurTokStr  := '';
   CurTokNum  := 0;
+  CurTokKw   := KW_NONE;
   LexNextLine;
   LexNextToken;
 End;
@@ -1515,9 +1889,9 @@ Begin
   End
   Else
   Begin
-    { TODO 03..25 : corps du compilateur }
+    { TODO 04..25 : corps du compilateur }
     WriteLn('ABAPCW32: compilation de ', Opts.SrcFile, ' ...');
-    WriteLn('ABAPCW32: TODO 03..25 non encore implementes.');
+    WriteLn('ABAPCW32: TODO 04..25 non encore implementes.');
   End;
   LexClose;
 End;
