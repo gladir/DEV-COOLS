@@ -2893,6 +2893,9 @@ End;
 { ------------------------------------------------------------ }
 
 Procedure SymRegisterBuiltins;
+Var
+  DosSearchRecIdx : Integer;
+  DosSymIdx       : Integer;
 
   { Registrer un type predefini }
   Procedure RegType(Const Name : TString);
@@ -3095,6 +3098,26 @@ Begin
   RegProc('SWAPVECTORS'); RegProc('GETINTVEC');
   RegProc('SETINTVEC');
   RegProc('MSDOS');       RegProc('INTR');
+
+  { Constantes DOS predefinies }
+  RegConst('READONLY', $01);
+  RegConst('HIDDEN',   $02);
+  RegConst('SYSFILE',  $04);
+  RegConst('VOLUMEID', $08);
+  RegConst('DIRECTORY',$10);
+  RegConst('ARCHIVE',  $20);
+  RegConst('ANYFILE',  $3F);
+
+  { Type SearchRec predefini }
+  { Deplace dans le code principal apres TypeInit }
+
+  { Variable DosError : mappe sur le label BSS DOSERROR }
+  DosSymIdx := SymAdd('DOSERROR', SK_VAR, TY_IDX_INTEGER);
+  If DosSymIdx >= 0 Then
+  Begin
+    SymTab[DosSymIdx].MangledName := 'DOSERROR';
+    SymTab[DosSymIdx].IsGlobal    := True;
+  End;
 
   { ---------------------------------------------------------- }
   { Procedures et fonctions de l unite Graph (TODO 20)         }
@@ -3381,6 +3404,37 @@ Begin
     TypeSizeofIdx := TypeTab[Idx].Size
   Else
     TypeSizeofIdx := 4;  { taille par defaut = DWORD 32 bits }
+End;
+
+{ ------------------------------------------------------------ }
+{ RegisterSearchRecType : enregistrer le type SearchRec du DOS }
+{ Doit etre appele APRES TypeInit (TypeAdd doit etre disponible)}
+{ Layout : Attr(2) pad(2) Time(4) Size(4) Name(256) = 268     }
+{ ------------------------------------------------------------ }
+
+Procedure RegisterSearchRecType;
+Var
+  TI, SI : Integer;
+Begin
+  TI := TypeAdd(TYK_RECORD, 'SEARCHREC', 268, 4, False, -1);
+  If TI >= 0 Then
+  Begin
+    TypeTab[TI].FieldCount := 4;
+    TypeTab[TI].Fields[0].Name    := 'ATTR';
+    TypeTab[TI].Fields[0].TypeIdx := TY_IDX_WORD;
+    TypeTab[TI].Fields[0].Offset  := 0;
+    TypeTab[TI].Fields[1].Name    := 'TIME';
+    TypeTab[TI].Fields[1].TypeIdx := TY_IDX_LONGINT;
+    TypeTab[TI].Fields[1].Offset  := 4;
+    TypeTab[TI].Fields[2].Name    := 'SIZE';
+    TypeTab[TI].Fields[2].TypeIdx := TY_IDX_LONGINT;
+    TypeTab[TI].Fields[2].Offset  := 8;
+    TypeTab[TI].Fields[3].Name    := 'NAME';
+    TypeTab[TI].Fields[3].TypeIdx := TY_IDX_STRING;
+    TypeTab[TI].Fields[3].Offset  := 12;
+    SI := SymAdd('SEARCHREC', SK_TYPE, TI);
+    If SI >= 0 Then SymTab[SI].IsGlobal := True;
+  End;
 End;
 
 { ------------------------------------------------------------ }
@@ -4060,6 +4114,17 @@ Begin
   EmitRaw('DOS_PROCINFO DB 16 DUP(0)');{ PROCESS_INFORMATION (16 bytes)         }
   EmitRaw('DOS_STARTINFO DB 68 DUP(0)');{ STARTUPINFOA (68 bytes)               }
   EmitRaw('DOS_EXITVAL DD 0');          { code sortie processus                  }
+  EmitBlankLine;
+
+  { Variables File I/O }
+  EmitComment('--- Variables File I/O (lecture fichier texte) ---');
+  EmitRaw('FILE_NAMEBUF DB 260 DUP(0)');  { buffer nom fichier (MAX_PATH)    }
+  EmitRaw('FILE_RDBUF   DB 256 DUP(0)');  { buffer lecture fichier           }
+  EmitRaw('FILE_BUFPOS  DD 0');            { position courante dans buffer    }
+  EmitRaw('FILE_BUFEND  DD 0');            { octets valides dans buffer       }
+  EmitRaw('FILE_EOFFLG  DD 0');            { 1 si EOF atteint                 }
+  EmitRaw('FILE_BYTESRD DD 0');            { octets lus par ReadFile          }
+  EmitRaw('STDIN_EOF    DD 0');            { 1 si EOF stdin (Ctrl+Z)          }
   EmitBlankLine;
 
   { Variables ParamStr/ParamCount }
@@ -7827,6 +7892,66 @@ Begin
       Exit;
     End;
 
+    { EOF / EOF(f) : tester fin de fichier }
+    If Up = 'EOF' Then
+    Begin
+      Inc(EP);
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = '(') Then
+      Begin
+        Inc(EP);  { consommer ( }
+        If Not EPAtEnd Then
+        Begin
+          Up := StrUpperCase(TokenPool[EP].Val);
+          If Up = 'INPUT' Then
+          Begin
+            { EOF(Input) = EOF stdin }
+            Inc(EP);
+            EmitInstr('MOV EAX,DWORD PTR [STDIN_EOF]');
+          End
+          Else
+          Begin
+            { EOF(f) : f est une variable Text }
+            GenLoadAddr(PI, TokenPool[EP].Val);
+            Inc(EP);
+            EmitInstr('PUSH EAX');
+            EmitInstr('CALL ' + TP_RT_PFX + 'EOF_FILE');
+            EmitInstr('ADD ESP,4');
+          End;
+        End;
+        EPMatch(')');
+      End
+      Else
+      Begin
+        { EOF sans argument = EOF(Input) }
+        EmitInstr('MOV EAX,DWORD PTR [STDIN_EOF]');
+      End;
+      Exit;
+    End;
+
+    { EOLN / EOLN(f) : stub, retourne False }
+    If Up = 'EOLN' Then
+    Begin
+      Inc(EP);
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = '(') Then
+      Begin
+        Inc(EP);
+        If Not EPAtEnd Then Inc(EP);
+        EPMatch(')');
+      End;
+      EmitInstr('XOR EAX,EAX');  { retourne False }
+      Exit;
+    End;
+
+    { IORESULT : retourne la derniere erreur I/O (stub=0) }
+    If Up = 'IORESULT' Then
+    Begin
+      Inc(EP);
+      EmitInstr('XOR EAX,EAX');  { toujours 0 pour l instant }
+      Exit;
+    End;
+
     { LOW(T) / HIGH(T) }
     If (Up = 'LOW') Or (Up = 'HIGH') Then
     Begin
@@ -8003,8 +8128,9 @@ Begin
         EmitInstr('POP EBX');      { Pos }
         EmitInstr('POP ESI');      { Source ptr }
         EmitInstr('CALL ' + TP_RT_PFX + 'COPY');
-        { Resultat : EAX = pointeur vers STRBUF1 }
+        { Resultat : EAX = pointeur vers STRBUF1 (ASCIIZ) }
         LastVarTypeIdx := TY_IDX_STRING;
+        LastExprIsPascalStr := False;
         EPMatch(')');
       End;
       Exit;
@@ -8148,6 +8274,7 @@ Begin
       EmitInstr('CALL ' + TP_RT_PFX + 'PARAMSTR');
       EmitInstr('ADD ESP,4');
       LastVarTypeIdx := TY_IDX_STRING;
+      LastExprIsPascalStr := False;
       Exit;
     End;
 
@@ -8196,11 +8323,16 @@ Begin
       If EPMatch('(') Then
       Begin
         ParseExpr(PI);
+        { Si l argument est un Pascal String, sauter l octet de longueur }
+        If LastExprIsPascalStr Then
+          EmitInstr('INC EAX');
         EPMatch(')');
       End;
       EmitInstr('PUSH EAX');
       EmitInstr('CALL ' + TP_RT_PFX + 'GETENV');
       EmitInstr('ADD ESP,4');
+      LastVarTypeIdx := TY_IDX_STRING;
+      LastExprIsPascalStr := False;
       Exit;
     End;
 
@@ -8211,14 +8343,20 @@ Begin
       If EPMatch('(') Then
       Begin
         ParseExpr(PI);
+        If LastExprIsPascalStr Then
+          EmitInstr('INC EAX');
         EmitInstr('PUSH EAX');
         EPMatch(',');
         ParseExpr(PI);
+        If LastExprIsPascalStr Then
+          EmitInstr('INC EAX');
         EmitInstr('PUSH EAX');
         EPMatch(')');
       End;
       EmitInstr('CALL ' + TP_RT_PFX + 'FSEARCH');
       EmitInstr('ADD ESP,8');
+      LastVarTypeIdx := TY_IDX_STRING;
+      LastExprIsPascalStr := False;
       Exit;
     End;
 
@@ -8229,11 +8367,15 @@ Begin
       If EPMatch('(') Then
       Begin
         ParseExpr(PI);
+        If LastExprIsPascalStr Then
+          EmitInstr('INC EAX');
         EPMatch(')');
       End;
       EmitInstr('PUSH EAX');
       EmitInstr('CALL ' + TP_RT_PFX + 'FEXPAND');
       EmitInstr('ADD ESP,4');
+      LastVarTypeIdx := TY_IDX_STRING;
+      LastExprIsPascalStr := False;
       Exit;
     End;
 
@@ -9169,6 +9311,15 @@ Begin
              ((TypeTab[LastVarTypeIdx].Kind = TYK_RECORD) Or
               (TypeTab[LastVarTypeIdx].Kind = TYK_OBJECT)) Then
             { EAX pointe deja sur le sous-record }
+          Else If (LastVarTypeIdx >= 0) And (LastVarTypeIdx < TypeCount) And
+                  (TypeTab[LastVarTypeIdx].Kind = TYK_STRING) Then
+          Begin
+            { EAX pointe sur le champ String (Pascal string) }
+            LastExprIsPascalStr := True;
+          End
+          Else If (LastVarTypeIdx >= 0) And (LastVarTypeIdx < TypeCount) And
+                  (TypeTab[LastVarTypeIdx].Kind = TYK_ARRAY) Then
+            { EAX pointe sur le debut du tableau }
           Else If FSize = 1 Then
             EmitInstr('MOVZX EAX,BYTE PTR [EAX]')
           Else
@@ -9592,6 +9743,8 @@ Var
   Up : TString;
   SI, LI : Integer;
   ResultType : Integer;
+  FUp : TString;
+  FJ  : Integer;
 
   { Descendre dans les types ARRAY si un '[' suit }
   Function ResolveArrayElement(TI : Integer) : Integer;
@@ -9675,7 +9828,27 @@ Begin
     If SI >= 0 Then
     Begin
       ResultType := SymTab[SI].TypeIdx;
-      InferExprType := ResolveArrayElement(ResultType);
+      ResultType := ResolveArrayElement(ResultType);
+      { Resoudre l acces champ record : Var.Field }
+      If (EP + 2 < EPEnd) And
+         (TokenPool[EP + 1].Kind = TK_PUNCT) And
+         (TokenPool[EP + 1].Val = '.') And
+         (TokenPool[EP + 2].Kind = TK_IDENT) Then
+      Begin
+        If (ResultType >= 0) And (ResultType < TypeCount) And
+           ((TypeTab[ResultType].Kind = TYK_RECORD) Or
+            (TypeTab[ResultType].Kind = TYK_OBJECT)) Then
+        Begin
+          FUp := StrUpperCase(TokenPool[EP + 2].Val);
+          For FJ := 0 To TypeTab[ResultType].FieldCount - 1 Do
+            If TypeTab[ResultType].Fields[FJ].Name = FUp Then
+            Begin
+              ResultType := TypeTab[ResultType].Fields[FJ].TypeIdx;
+              Break;
+            End;
+        End;
+      End;
+      InferExprType := ResultType;
       Exit;
     End;
   End;
@@ -9873,6 +10046,8 @@ Var
   VName, Up : TString;
   SI, LI    : Integer;
   TIdx      : Integer;
+  IsFileRead: Boolean;
+  FVarTIdx  : Integer;
 Begin
   If IsReadLn Then
     EmitComment('readln')
@@ -9891,8 +10066,44 @@ Begin
   { Consommer ( }
   Inc(EP);
 
-  { Lire une ligne dans INBUF }
-  EmitInstr('CALL ' + TP_RT_PFX + 'READLN');
+  { Detecter si le premier argument est une variable fichier Text }
+  IsFileRead := False;
+  If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_IDENT) Then
+  Begin
+    Up := StrUpperCase(TokenPool[EP].Val);
+    FVarTIdx := TY_IDX_INTEGER;  { defaut }
+    If PI >= 0 Then
+    Begin
+      LI := FindLocal(PI, Up);
+      If LI >= 0 Then FVarTIdx := ProcTab[PI].Locals[LI].TypeIdx;
+    End;
+    If FVarTIdx <> TY_IDX_TEXT Then
+    Begin
+      SI := SymFind(Up);
+      If SI >= 0 Then FVarTIdx := SymTab[SI].TypeIdx;
+    End;
+    If FVarTIdx = TY_IDX_TEXT Then
+    Begin
+      { Lecture depuis un fichier }
+      IsFileRead := True;
+      GenLoadAddr(PI, TokenPool[EP].Val);
+      Inc(EP);
+      EmitInstr('MOV EAX,DWORD PTR [EAX]');  { charger le handle }
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + TP_RT_PFX + 'READLN_FILE');
+      EmitInstr('ADD ESP,4');
+      { Sauter la virgule si presente }
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ',') Then
+        Inc(EP);
+    End;
+  End;
+
+  If Not IsFileRead Then
+  Begin
+    { Lire une ligne depuis STDIN dans INBUF }
+    EmitInstr('CALL ' + TP_RT_PFX + 'READLN');
+  End;
 
   { Boucle sur les variables }
   While Not EPAtEnd Do
@@ -11389,6 +11600,113 @@ Begin
       Exit;
     End;
 
+    { ASSIGN(f, filename) : associer variable fichier et nom }
+    If Up = 'ASSIGN' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        { f : variable fichier Text, charger son adresse }
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_IDENT) Then
+        Begin
+          GenLoadAddr(PI, TokenPool[EP].Val);
+          Inc(EP);
+        End;
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);            { filename }
+        If LastExprIsPascalStr Then
+          EmitInstr('INC EAX');   { Pascal -> ASCIIZ }
+        EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'ASSIGN');
+      EmitInstr('ADD ESP,8');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { RESET(f) : ouvrir fichier en lecture }
+    If Up = 'RESET' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_IDENT) Then
+        Begin
+          GenLoadAddr(PI, TokenPool[EP].Val);
+          Inc(EP);
+        End;
+        EmitInstr('PUSH EAX');
+        { Ignorer le parametre optionnel de taille de bloc }
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+           (TokenPool[EP].Val = ',') Then
+        Begin
+          Inc(EP);
+          ParseExpr(PI);  { consommer le parametre }
+        End;
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'RESET');
+      EmitInstr('ADD ESP,4');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { REWRITE(f) : ouvrir fichier en ecriture }
+    If Up = 'REWRITE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_IDENT) Then
+        Begin
+          GenLoadAddr(PI, TokenPool[EP].Val);
+          Inc(EP);
+        End;
+        EmitInstr('PUSH EAX');
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+           (TokenPool[EP].Val = ',') Then
+        Begin
+          Inc(EP);
+          ParseExpr(PI);
+        End;
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'REWRITE');
+      EmitInstr('ADD ESP,4');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { CLOSE(f) : fermer fichier }
+    If Up = 'CLOSE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_IDENT) Then
+        Begin
+          GenLoadAddr(PI, TokenPool[EP].Val);
+          Inc(EP);
+        End;
+        EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'CLOSE');
+      EmitInstr('ADD ESP,4');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
     { FINDFIRST(Path, Attr, SearchRec) }
     If Up = 'FINDFIRST' Then
     Begin
@@ -11396,6 +11714,8 @@ Begin
       If EPMatch('(') Then
       Begin
         ParseExpr(PI);            { Path }
+        If LastExprIsPascalStr Then
+          EmitInstr('INC EAX');   { Pascal -> ASCIIZ }
         EmitInstr('PUSH EAX');
         EPMatch(',');
         ParseExpr(PI);            { Attr (ignored for Win32, kept for compat) }
@@ -14082,8 +14402,14 @@ Begin
   EmitInstr('PUSH OFFSET INBUF');          { lpBuffer             }
   EmitInstr('PUSH DWORD PTR [HSTDIN]');    { hFile                }
   EmitInstr('CALL ReadFile');
-  { Retirer CR/LF de fin et terminer par NUL }
+  { Verifier EOF stdin (0 octets lus ou Ctrl+Z) }
   EmitInstr('MOV ECX,DWORD PTR [BYTESRD]');
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'RL_OK');
+  EmitInstr('MOV DWORD PTR [STDIN_EOF],1');
+  EmitInstr('JMP ' + TP_RT_PFX + 'RL_DN');
+  EmitLabel(TP_RT_PFX + 'RL_OK');
+  { Retirer CR/LF de fin et terminer par NUL }
   EmitLabel(TP_RT_PFX + 'RL_TR');
   EmitInstr('TEST ECX,ECX');
   EmitInstr('JZ ' + TP_RT_PFX + 'RL_DN');
@@ -14822,45 +15148,37 @@ Begin
   EmitInstr('RET');
 
   { ------ _TPRT_GETENV : lire variable d environnement --------- }
-  { Parametre : [ESP+4] = pointeur chaine nom (Pascal string)      }
-  { Retourne pointeur vers chaine resultat dans EAX                 }
+  { Parametre : [ESP+4] = pointeur chaine ASCIIZ du nom de variable }
+  { Retourne : EAX = pointeur vers chaine resultat ASCIIZ (DOS_ENVBUF) }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'GETENV');
   EmitInstr('PUSH EBP');
   EmitInstr('MOV EBP,ESP');
   EmitInstr('PUSH ECX');
   EmitInstr('PUSH EDX');
-  { Convertir Pascal string en ASCIIZ (sauter octet longueur) }
+  { Charger le pointeur vers le nom (deja ASCIIZ) }
   EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
-  EmitInstr('INC EAX');
   { GetEnvironmentVariableA(name, buf, bufsize) }
   EmitInstr('PUSH 255');
   EmitInstr('PUSH OFFSET DOS_ENVBUF');
   EmitInstr('PUSH EAX');
   EmitInstr('CALL GetEnvironmentVariableA');
-  { Construire chaine Pascal dans STRBUF : longueur + contenu }
-  EmitInstr('MOV BYTE PTR [STRBUF],AL');     { longueur }
+  { EAX = nombre de caracteres copies, 0 si pas trouve }
+  { DOS_ENVBUF contient le resultat ASCIIZ             }
+  { Si pas trouve, mettre NUL en debut de buffer       }
   EmitInstr('TEST EAX,EAX');
-  EmitInstr('JZ ' + TP_RT_PFX + 'GE_DN');
-  { Copier DOS_ENVBUF -> STRBUF+1 }
-  EmitInstr('MOV ECX,EAX');
-  EmitInstr('PUSH ESI');
-  EmitInstr('PUSH EDI');
-  EmitInstr('LEA ESI,[DOS_ENVBUF]');
-  EmitInstr('LEA EDI,[STRBUF+1]');
-  EmitInstr('REP MOVSB');
-  EmitInstr('POP EDI');
-  EmitInstr('POP ESI');
-  EmitLabel(TP_RT_PFX + 'GE_DN');
-  EmitInstr('LEA EAX,[STRBUF]');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'GE_OK');
+  EmitInstr('MOV BYTE PTR [DOS_ENVBUF],0');
+  EmitLabel(TP_RT_PFX + 'GE_OK');
+  EmitInstr('LEA EAX,[DOS_ENVBUF]');
   EmitInstr('POP EDX');
   EmitInstr('POP ECX');
   EmitInstr('POP EBP');
   EmitInstr('RET');
 
   { ------ _TPRT_FEXPAND : retourner chemin complet -------------- }
-  { Parametre : [ESP+4] = pointeur chaine chemin (Pascal string)    }
-  { Retourne pointeur vers chemin complet dans EAX                  }
+  { Parametre : [ESP+4] = pointeur chaine chemin ASCIIZ              }
+  { Retourne : EAX = pointeur vers DOS_PATHBUF (ASCIIZ)              }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'FEXPAND');
   EmitInstr('PUSH EBP');
@@ -14868,35 +15186,25 @@ Begin
   EmitInstr('PUSH ECX');
   EmitInstr('PUSH EDX');
   EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
-  EmitInstr('INC EAX');       { sauter octet longueur }
   { GetFullPathNameA(filename, bufsize, buf, &filepart) }
   EmitInstr('PUSH 0');        { lpFilePart (NULL) }
   EmitInstr('PUSH OFFSET DOS_PATHBUF');
   EmitInstr('PUSH 259');
   EmitInstr('PUSH EAX');
   EmitInstr('CALL GetFullPathNameA');
-  { Construire chaine Pascal dans STRBUF2 }
-  EmitInstr('MOV BYTE PTR [STRBUF2],AL');
   EmitInstr('TEST EAX,EAX');
-  EmitInstr('JZ ' + TP_RT_PFX + 'FE_DN');
-  EmitInstr('MOV ECX,EAX');
-  EmitInstr('PUSH ESI');
-  EmitInstr('PUSH EDI');
-  EmitInstr('LEA ESI,[DOS_PATHBUF]');
-  EmitInstr('LEA EDI,[STRBUF2+1]');
-  EmitInstr('REP MOVSB');
-  EmitInstr('POP EDI');
-  EmitInstr('POP ESI');
-  EmitLabel(TP_RT_PFX + 'FE_DN');
-  EmitInstr('LEA EAX,[STRBUF2]');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'FE_OK');
+  EmitInstr('MOV BYTE PTR [DOS_PATHBUF],0');
+  EmitLabel(TP_RT_PFX + 'FE_OK');
+  EmitInstr('LEA EAX,[DOS_PATHBUF]');
   EmitInstr('POP EDX');
   EmitInstr('POP ECX');
   EmitInstr('POP EBP');
   EmitInstr('RET');
 
   { ------ _TPRT_FSEARCH : chercher fichier dans liste dirs ------ }
-  { Params : [ESP+4]=name, [ESP+8]=dirlist (Pascal strings)         }
-  { Retourne pointeur vers chemin trouve ou chaine vide              }
+  { Params : [ESP+4]=name ASCIIZ, [ESP+8]=dirlist ASCIIZ             }
+  { Retourne pointeur vers chemin trouve ASCIIZ ou chaine vide       }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'FSEARCH');
   EmitInstr('PUSH EBP');
@@ -14904,7 +15212,6 @@ Begin
   EmitInstr('PUSH ECX');
   { Essayer GetFileAttributesA sur le nom seul d abord }
   EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
-  EmitInstr('INC EAX');
   EmitInstr('PUSH EAX');
   EmitInstr('CALL GetFileAttributesA');
   EmitInstr('CMP EAX,-1');
@@ -14914,8 +15221,8 @@ Begin
   EmitInstr('JMP ' + TP_RT_PFX + 'FS_DN');
   EmitLabel(TP_RT_PFX + 'FS_NF');
   { Non trouve - retourner chaine vide }
-  EmitInstr('MOV BYTE PTR [STRBUF],0');
-  EmitInstr('LEA EAX,[STRBUF]');
+  EmitInstr('MOV BYTE PTR [DOS_ENVBUF],0');
+  EmitInstr('LEA EAX,[DOS_ENVBUF]');
   EmitLabel(TP_RT_PFX + 'FS_DN');
   EmitInstr('POP ECX');
   EmitInstr('POP EBP');
@@ -14949,7 +15256,7 @@ Begin
   EmitInstr('RET');
 
   { ------ _TPRT_FINDFIRST : FindFirst(Path, Attr, SR) ---------- }
-  { Params : [ESP+4]=Path, [ESP+8]=Attr, [ESP+12]=SearchRec addr    }
+  { Stack (pushed L-to-R) : [EBP+16]=Path, [EBP+12]=Attr, [EBP+8]=SR }
   { DosError mis a 0 si OK, 18 si pas trouve                        }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'FINDFIRST');
@@ -14957,8 +15264,7 @@ Begin
   EmitInstr('MOV EBP,ESP');
   EmitInstr('PUSHAD');
   { FindFirstFileA(path, &finddata) }
-  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');   { Path (Pascal string) }
-  EmitInstr('INC EAX');                       { sauter octet longueur }
+  EmitInstr('MOV EAX,DWORD PTR [EBP+16]');  { Path (ASCIIZ, first pushed) }
   EmitInstr('PUSH OFFSET DOS_FINDDATA');
   EmitInstr('PUSH EAX');
   EmitInstr('CALL FindFirstFileA');
@@ -14966,7 +15272,7 @@ Begin
   EmitInstr('CMP EAX,-1');
   EmitInstr('JE ' + TP_RT_PFX + 'FF_NF');
   { Succes : remplir SearchRec = (Attr:Word, Time:LongInt, Size:LongInt, Name:String) }
-  EmitInstr('MOV EDI,DWORD PTR [EBP+16]');  { SearchRec address }
+  EmitInstr('MOV EDI,DWORD PTR [EBP+8]');   { SearchRec addr (last pushed) }
   { Attr = dwFileAttributes (offset 0 dans WIN32_FIND_DATA) }
   EmitInstr('MOV EAX,DWORD PTR [DOS_FINDDATA]');
   EmitInstr('MOV WORD PTR [EDI],AX');        { SR.Attr }
@@ -15184,6 +15490,211 @@ Begin
   EmitInstr('POP EBX');
   EmitInstr('POP EBP');
   EmitInstr('RET');
+
+  { ================================================================ }
+  { ========== ROUTINES FILE I/O (Assign, Reset, Close, EOF) ======= }
+  { ================================================================ }
+
+  { ------ _TPRT_ASSIGN : associer fichier et nom --------------- }
+  { [ESP+4]=adresse variable fichier, [ESP+8]=nom ASCIIZ         }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'ASSIGN');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSHAD');
+  { Stack (pushed L-to-R) : [EBP+12]=f addr (first), [EBP+8]=name (last) }
+  EmitInstr('MOV EDI,DWORD PTR [EBP+12]');   { adresse variable fichier (first pushed) }
+  EmitInstr('MOV DWORD PTR [EDI],-1');         { handle = invalide }
+  { Copier le nom de fichier dans FILE_NAMEBUF }
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');    { nom ASCIIZ (last pushed) }
+  EmitInstr('LEA EDI,[FILE_NAMEBUF]');
+  EmitLabel(TP_RT_PFX + 'AS_CP');
+  EmitInstr('LODSB');
+  EmitInstr('STOSB');
+  EmitInstr('TEST AL,AL');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'AS_CP');
+  EmitInstr('POPAD');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_RESET : ouvrir fichier en lecture --------------- }
+  { [ESP+4]=adresse variable fichier                               }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'RESET');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSHAD');
+  { CreateFileA(FILE_NAMEBUF, GENERIC_READ, FILE_SHARE_READ, }
+  {             NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL) }
+  EmitInstr('PUSH 0');                          { hTemplateFile }
+  EmitInstr('PUSH 128');                        { FILE_ATTRIBUTE_NORMAL }
+  EmitInstr('PUSH 3');                          { OPEN_EXISTING }
+  EmitInstr('PUSH 0');                          { lpSecurityAttributes }
+  EmitInstr('PUSH 1');                          { FILE_SHARE_READ }
+  EmitInstr('PUSH 80000000h');                  { GENERIC_READ }
+  EmitInstr('PUSH OFFSET FILE_NAMEBUF');        { lpFileName }
+  EmitInstr('CALL CreateFileA');
+  { Stocker le handle dans la variable fichier }
+  EmitInstr('MOV EDI,DWORD PTR [EBP+8]');
+  EmitInstr('MOV DWORD PTR [EDI],EAX');
+  { Initialiser le buffer de lecture }
+  EmitInstr('MOV DWORD PTR [FILE_BUFPOS],0');
+  EmitInstr('MOV DWORD PTR [FILE_BUFEND],0');
+  EmitInstr('MOV DWORD PTR [FILE_EOFFLG],0');
+  EmitInstr('POPAD');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_REWRITE : ouvrir fichier en ecriture ----------- }
+  { [ESP+4]=adresse variable fichier                               }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'REWRITE');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSHAD');
+  EmitInstr('PUSH 0');                          { hTemplateFile }
+  EmitInstr('PUSH 128');                        { FILE_ATTRIBUTE_NORMAL }
+  EmitInstr('PUSH 2');                          { CREATE_ALWAYS }
+  EmitInstr('PUSH 0');                          { lpSecurityAttributes }
+  EmitInstr('PUSH 0');                          { dwShareMode }
+  EmitInstr('PUSH 40000000h');                  { GENERIC_WRITE }
+  EmitInstr('PUSH OFFSET FILE_NAMEBUF');        { lpFileName }
+  EmitInstr('CALL CreateFileA');
+  EmitInstr('MOV EDI,DWORD PTR [EBP+8]');
+  EmitInstr('MOV DWORD PTR [EDI],EAX');
+  EmitInstr('MOV DWORD PTR [FILE_BUFPOS],0');
+  EmitInstr('MOV DWORD PTR [FILE_BUFEND],0');
+  EmitInstr('MOV DWORD PTR [FILE_EOFFLG],0');
+  EmitInstr('POPAD');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_CLOSE : fermer fichier ------------------------- }
+  { [ESP+4]=adresse variable fichier                               }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'CLOSE');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSHAD');
+  EmitInstr('MOV EDI,DWORD PTR [EBP+8]');
+  EmitInstr('MOV EAX,DWORD PTR [EDI]');       { handle }
+  EmitInstr('CMP EAX,-1');
+  EmitInstr('JE ' + TP_RT_PFX + 'CL_DN');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL CloseHandle');
+  EmitInstr('MOV EDI,DWORD PTR [EBP+8]');
+  EmitInstr('MOV DWORD PTR [EDI],-1');
+  EmitLabel(TP_RT_PFX + 'CL_DN');
+  EmitInstr('POPAD');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_EOF_FILE : tester EOF d un fichier ------------- }
+  { [ESP+4]=adresse variable fichier                               }
+  { Retourne EAX=1 si EOF, EAX=0 sinon                            }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'EOF_FILE');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH EDI');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');    { adresse variable fichier }
+  EmitInstr('MOV EAX,DWORD PTR [EBX]');       { handle }
+  EmitInstr('CMP EAX,-1');
+  EmitInstr('JE ' + TP_RT_PFX + 'EF_YES');
+  { Verifier s il y a des donnees en buffer }
+  EmitInstr('MOV EAX,DWORD PTR [FILE_BUFPOS]');
+  EmitInstr('CMP EAX,DWORD PTR [FILE_BUFEND]');
+  EmitInstr('JB ' + TP_RT_PFX + 'EF_NO');
+  { Buffer vide : verifier le flag EOF }
+  EmitInstr('CMP DWORD PTR [FILE_EOFFLG],1');
+  EmitInstr('JE ' + TP_RT_PFX + 'EF_YES');
+  { Tenter de remplir le buffer }
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH OFFSET FILE_BYTESRD');
+  EmitInstr('PUSH 256');
+  EmitInstr('PUSH OFFSET FILE_RDBUF');
+  EmitInstr('PUSH DWORD PTR [EBX]');           { file handle }
+  EmitInstr('CALL ReadFile');
+  EmitInstr('MOV EAX,DWORD PTR [FILE_BYTESRD]');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'EF_SET');
+  { Des donnees ont ete lues }
+  EmitInstr('MOV DWORD PTR [FILE_BUFEND],EAX');
+  EmitInstr('MOV DWORD PTR [FILE_BUFPOS],0');
+  EmitLabel(TP_RT_PFX + 'EF_NO');
+  EmitInstr('XOR EAX,EAX');                   { retourne 0 = pas EOF }
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
+  EmitInstr('POP EBX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'EF_SET');
+  EmitInstr('MOV DWORD PTR [FILE_EOFFLG],1');
+  EmitLabel(TP_RT_PFX + 'EF_YES');
+  EmitInstr('MOV EAX,1');                     { retourne 1 = EOF }
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
+  EmitInstr('POP EBX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_READLN_FILE : lire une ligne depuis fichier ---- }
+  { [ESP+4]=handle fichier                                         }
+  { Sortie : INBUF contient la ligne, terminee par NUL             }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'READLN_FILE');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSHAD');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');    { file handle }
+  EmitInstr('XOR ECX,ECX');                    { compteur octets dans INBUF }
+  EmitLabel(TP_RT_PFX + 'RF_NX');
+  { Verifier si le buffer est vide }
+  EmitInstr('MOV EAX,DWORD PTR [FILE_BUFPOS]');
+  EmitInstr('CMP EAX,DWORD PTR [FILE_BUFEND]');
+  EmitInstr('JB ' + TP_RT_PFX + 'RF_GC');
+  { Remplir le buffer depuis le fichier }
+  EmitInstr('PUSH ECX');                       { sauver compteur }
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH OFFSET FILE_BYTESRD');
+  EmitInstr('PUSH 256');
+  EmitInstr('PUSH OFFSET FILE_RDBUF');
+  EmitInstr('PUSH EBX');                       { file handle }
+  EmitInstr('CALL ReadFile');
+  EmitInstr('POP ECX');                        { restaurer compteur }
+  EmitInstr('MOV EAX,DWORD PTR [FILE_BYTESRD]');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'RF_EF');     { 0 octets = EOF }
+  EmitInstr('MOV DWORD PTR [FILE_BUFEND],EAX');
+  EmitInstr('MOV DWORD PTR [FILE_BUFPOS],0');
+  EmitInstr('XOR EAX,EAX');
+  EmitLabel(TP_RT_PFX + 'RF_GC');
+  { Lire un caractere du buffer }
+  EmitInstr('LEA ESI,[FILE_RDBUF]');
+  EmitInstr('ADD ESI,EAX');
+  EmitInstr('INC DWORD PTR [FILE_BUFPOS]');
+  EmitInstr('MOVZX EAX,BYTE PTR [ESI]');
+  EmitInstr('CMP AL,10');                      { LF = fin de ligne }
+  EmitInstr('JE ' + TP_RT_PFX + 'RF_DN');
+  EmitInstr('CMP AL,13');                      { CR = sauter }
+  EmitInstr('JE ' + TP_RT_PFX + 'RF_NX');
+  { Stocker le caractere dans INBUF }
+  EmitInstr('MOV BYTE PTR [INBUF+ECX],AL');
+  EmitInstr('INC ECX');
+  EmitInstr('CMP ECX,254');
+  EmitInstr('JAE ' + TP_RT_PFX + 'RF_DN');
+  EmitInstr('JMP ' + TP_RT_PFX + 'RF_NX');
+  EmitLabel(TP_RT_PFX + 'RF_EF');
+  EmitInstr('MOV DWORD PTR [FILE_EOFFLG],1');
+  EmitLabel(TP_RT_PFX + 'RF_DN');
+  EmitInstr('MOV BYTE PTR [INBUF+ECX],0');    { terminer par NUL }
+  EmitInstr('POPAD');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ================================================================ }
 
   { ------ _TPRT_PARSECMD : parser la ligne de commande -------- }
   { Appele une seule fois, remplit PARAM_PTRS et PARAM_ARGC/COUNT }
@@ -18828,6 +19339,15 @@ Begin
   BcDefineDataLabel('DOS_STARTINFO');BcDataZeros(68);
   BcDefineDataLabel('DOS_EXITVAL'); BcDataD(0);
 
+  { Variables File I/O }
+  BcDefineDataLabel('FILE_NAMEBUF'); BcDataZeros(260);
+  BcDefineDataLabel('FILE_RDBUF');   BcDataZeros(256);
+  BcDefineDataLabel('FILE_BUFPOS');  BcDataD(0);
+  BcDefineDataLabel('FILE_BUFEND');  BcDataD(0);
+  BcDefineDataLabel('FILE_EOFFLG'); BcDataD(0);
+  BcDefineDataLabel('FILE_BYTESRD');BcDataD(0);
+  BcDefineDataLabel('STDIN_EOF');    BcDataD(0);
+
   { Variables ParamStr/ParamCount }
   BcDefineDataLabel('PARAM_PARSED'); BcDataD(0);
   BcDefineDataLabel('PARAM_COUNT');  BcDataD(0);
@@ -20163,6 +20683,9 @@ Begin
 
   { Initialiser le systeme de types (TODO 06) }
   TypeInit;
+
+  { Enregistrer le type SearchRec apres TypeInit (TypeAdd disponible) }
+  RegisterSearchRecType;
 
   { Initialiser le preprocesseur }
   PPInitDefines;
