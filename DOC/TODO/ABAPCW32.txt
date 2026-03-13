@@ -281,7 +281,7 @@
             Initialiser _ABRT_HSTDOUT via GetStdHandle(STD_OUTPUT_HANDLE)
             Tampon : _ABRT_NUMBUF (12 octets), _ABRT_CRLF_DATA DB 13,10,0
 
-  TODO 15 - PARSEUR : MOVE / COMPUTE / FORMES VERBALES ARITHMETIQUES
+  TODO 15 - PARSEUR : MOVE / COMPUTE / FORMES VERBALES ARITHMETIQUES [IMPLEMENTE]
             Procedure ParseMove
             Syntaxe : MOVE source TO destination.
             Equivalent a : destination = source.

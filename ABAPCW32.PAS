@@ -300,7 +300,7 @@
             Initialiser _ABRT_HSTDOUT via GetStdHandle(STD_OUTPUT_HANDLE)
             Tampon : _ABRT_NUMBUF (12 octets), _ABRT_CRLF_DATA DB 13,10,0
 
-  TODO 15 - PARSEUR : MOVE / COMPUTE / FORMES VERBALES ARITHMETIQUES
+  TODO 15 - PARSEUR : MOVE / COMPUTE / FORMES VERBALES ARITHMETIQUES [IMPLEMENTE]
             Procedure ParseMove
             Syntaxe : MOVE source TO destination.
             Equivalent a : destination = source.
@@ -1123,6 +1123,17 @@ Procedure ParsePerform; Forward;
 
 Procedure ParseWrite; Forward;
 Procedure EmitWriteRuntime; Forward;
+
+{ ============================================================ }
+{ DECLARATIONS FORWARD (MOVE / COMPUTE / VERBALES TODO 15)     }
+{ ============================================================ }
+
+Procedure ParseMove; Forward;
+Procedure ParseAdd; Forward;
+Procedure ParseSubtract; Forward;
+Procedure ParseMultiply; Forward;
+Procedure ParseDivide; Forward;
+Procedure ParseClear; Forward;
 
 { ============================================================ }
 { FONCTIONS UTILITAIRES                                        }
@@ -3259,6 +3270,8 @@ End;
 Procedure ParseStatement;
 Var ExprType : Integer;
     SkipN    : Integer;
+    SavedName : TString;
+    DestIdx  : Integer;
 Begin
   If CurTokType = TOK_EOF Then Exit;
   If CurTokType = TOK_DOT Then Begin Consume; Exit; End;
@@ -3271,14 +3284,54 @@ Begin
   If TokIsKw(KW_TYPES) Then
   Begin Consume; ParseTypes; Exit; End;
 
-  { COMPUTE var = expr. }
+  { COMPUTE var = expr. (TODO 15) }
   If TokIsKw(KW_COMPUTE) Then
   Begin
     Consume;
-    ExprType := ParseExpr;
+    EmitComment('COMPUTE');
+    { var = expr }
+    If CurTokType = TOK_IDENT Then
+    Begin
+      SavedName := CurTokStr;
+      Consume;
+      If CurTokType = TOK_EQ Then
+      Begin
+        Consume;
+        ExprType := ParseExpr;
+        DestIdx := FindSym(SavedName);
+        If DestIdx > 0 Then
+          GenStoreVar32(DestIdx)
+        Else
+          EmitComment('COMPUTE: variable inconnue: ' + SavedName);
+      End;
+    End;
     If CurTokType = TOK_DOT Then Consume;
     Exit;
   End;
+
+  { MOVE source TO destination (TODO 15) }
+  If TokIsKw(KW_MOVE) Then
+  Begin Consume; ParseMove; Exit; End;
+
+  { ADD val TO var (TODO 15) }
+  If TokIsKw(KW_ADD) Then
+  Begin Consume; ParseAdd; Exit; End;
+
+  { SUBTRACT val FROM var (TODO 15) }
+  If TokIsKw(KW_SUBTRACT) Then
+  Begin Consume; ParseSubtract; Exit; End;
+
+  { MULTIPLY var BY val (TODO 15) }
+  If TokIsKw(KW_MULTIPLY) Then
+  Begin Consume; ParseMultiply; Exit; End;
+
+  { DIVIDE var BY val (TODO 15) }
+  If TokIsKw(KW_DIVIDE) Then
+  Begin Consume; ParseDivide; Exit; End;
+
+  { CLEAR variable (TODO 15) }
+  If TokIsKw(KW_CLEAR) Then
+  Begin Consume; ParseClear; Exit; End;
 
   { IF / ELSEIF / ELSE / ENDIF }
   If TokIsKw(KW_IF) Then
@@ -3363,6 +3416,34 @@ Begin
       LexError('CONTINUE en dehors d''une boucle');
     If CurTokType = TOK_DOT Then Consume;
     Exit;
+  End;
+
+  { var = expr. (style ABAP Objet / assignation directe, TODO 15) }
+  If (CurTokType = TOK_IDENT) And (CurTokKw = KW_NONE) Then
+  Begin
+    SavedName := CurTokStr;
+    DestIdx := FindSym(SavedName);
+    If DestIdx > 0 Then
+    Begin
+      Consume;
+      If CurTokType = TOK_EQ Then
+      Begin
+        Consume;
+        EmitComment(SavedName + ' = expr');
+        ExprType := ParseExpr;
+        GenStoreVar32(DestIdx);
+        If CurTokType = TOK_DOT Then Consume;
+        Exit;
+      End
+      Else
+      Begin
+        { pas un signe = : retomber dans le cas generique (skip) }
+        While (CurTokType <> TOK_EOF) And (CurTokType <> TOK_DOT) Do
+          Consume;
+        If CurTokType = TOK_DOT Then Consume;
+        Exit;
+      End;
+    End;
   End;
 
   { instruction non reconnue : sauter jusqu au prochain point }
@@ -4003,6 +4084,247 @@ Begin
   { Consommer le point }
   If CurTokType = TOK_DOT Then Consume
   Else LexError('Point attendu apres PERFORM');
+End;
+
+{ ============================================================ }
+{ PARSEUR : MOVE / COMPUTE / FORMES VERBALES (TODO 15)         }
+{ ============================================================ }
+
+{ ---- ParseMove : MOVE source TO destination. ----------------- }
+{ Evalue source (expr), puis stocke dans destination.            }
+Procedure ParseMove;
+Var DestName : TString;
+    DestIdx  : Integer;
+Begin
+  EmitComment('MOVE source TO dest');
+  { Evaluer la source (expression) }
+  ParseExpr;
+  { Consommer TO }
+  If TokIsKw(KW_TO) Then
+    Consume
+  Else
+    LexError('Attendu TO apres MOVE source');
+  { Lire la destination }
+  If CurTokType = TOK_IDENT Then
+  Begin
+    DestName := CurTokStr;
+    Consume;
+    DestIdx := FindSym(DestName);
+    If DestIdx > 0 Then
+      GenStoreVar32(DestIdx)
+    Else
+      EmitComment('MOVE: variable inconnue: ' + DestName);
+  End
+  Else
+    LexError('Attendu nom de variable apres TO');
+  If CurTokType = TOK_DOT Then Consume;
+End;
+
+{ ---- ParseAdd : ADD val TO var. / ADD v1 TO v2 GIVING var. -- }
+Procedure ParseAdd;
+Var ValName, DestName : TString;
+    ValIdx, DestIdx  : Integer;
+Begin
+  EmitComment('ADD');
+  { Evaluer le premier operande (val) }
+  ParseExpr;
+  EmitI('PUSH    EAX');
+  { Consommer TO }
+  If TokIsKw(KW_TO) Then
+    Consume
+  Else
+    LexError('Attendu TO apres ADD val');
+  { Lire le second operande (var / val2) }
+  If CurTokType = TOK_IDENT Then
+  Begin
+    DestName := CurTokStr;
+    DestIdx  := FindSym(DestName);
+    Consume;
+    { Verifier si GIVING suit }
+    If TokIsKw(KW_GIVING) Then
+    Begin
+      Consume;
+      { ADD val1 TO val2 GIVING var }
+      { val2 est dans EAX via load }
+      If DestIdx > 0 Then
+        GenLoadVar32(DestIdx)
+      Else
+        EmitI('XOR     EAX, EAX');
+      EmitI('POP     EBX');
+      EmitI('ADD     EAX, EBX');
+      { Lire la destination GIVING }
+      If CurTokType = TOK_IDENT Then
+      Begin
+        DestName := CurTokStr;
+        Consume;
+        DestIdx := FindSym(DestName);
+        If DestIdx > 0 Then
+          GenStoreVar32(DestIdx)
+        Else
+          EmitComment('ADD GIVING: variable inconnue: ' + DestName);
+      End
+      Else
+        LexError('Attendu nom de variable apres GIVING');
+    End
+    Else
+    Begin
+      { ADD val TO var : var = var + val }
+      If DestIdx > 0 Then
+      Begin
+        GenLoadVar32(DestIdx);
+        EmitI('POP     EBX');
+        EmitI('ADD     EAX, EBX');
+        GenStoreVar32(DestIdx);
+      End
+      Else
+      Begin
+        EmitI('POP     EBX');
+        EmitComment('ADD: variable inconnue: ' + DestName);
+      End;
+    End;
+  End
+  Else
+  Begin
+    EmitI('POP     EBX');
+    LexError('Attendu nom de variable apres TO');
+  End;
+  If CurTokType = TOK_DOT Then Consume;
+End;
+
+{ ---- ParseSubtract : SUBTRACT val FROM var. ------------------ }
+Procedure ParseSubtract;
+Var DestName : TString;
+    DestIdx  : Integer;
+Begin
+  EmitComment('SUBTRACT');
+  { Evaluer la valeur a soustraire }
+  ParseExpr;
+  EmitI('PUSH    EAX');
+  { Consommer FROM }
+  If TokIsKw(KW_FROM) Then
+    Consume
+  Else
+    LexError('Attendu FROM apres SUBTRACT val');
+  { Lire la destination }
+  If CurTokType = TOK_IDENT Then
+  Begin
+    DestName := CurTokStr;
+    Consume;
+    DestIdx := FindSym(DestName);
+    If DestIdx > 0 Then
+    Begin
+      GenLoadVar32(DestIdx);
+      EmitI('POP     EBX');
+      EmitI('SUB     EAX, EBX');
+      GenStoreVar32(DestIdx);
+    End
+    Else
+    Begin
+      EmitI('POP     EBX');
+      EmitComment('SUBTRACT: variable inconnue: ' + DestName);
+    End;
+  End
+  Else
+  Begin
+    EmitI('POP     EBX');
+    LexError('Attendu nom de variable apres FROM');
+  End;
+  If CurTokType = TOK_DOT Then Consume;
+End;
+
+{ ---- ParseMultiply : MULTIPLY var BY val. -------------------- }
+Procedure ParseMultiply;
+Var VarName : TString;
+    VarIdx  : Integer;
+Begin
+  EmitComment('MULTIPLY');
+  { Lire la variable cible }
+  If CurTokType = TOK_IDENT Then
+  Begin
+    VarName := CurTokStr;
+    VarIdx  := FindSym(VarName);
+    Consume;
+    { Consommer BY }
+    If TokIsKw(KW_BY) Then
+      Consume
+    Else
+      LexError('Attendu BY apres MULTIPLY var');
+    { Evaluer la valeur multiplicatrice }
+    ParseExpr;
+    If VarIdx > 0 Then
+    Begin
+      EmitI('PUSH    EAX');
+      GenLoadVar32(VarIdx);
+      EmitI('POP     EBX');
+      EmitI('IMUL    EAX, EBX');
+      GenStoreVar32(VarIdx);
+    End
+    Else
+      EmitComment('MULTIPLY: variable inconnue: ' + VarName);
+  End
+  Else
+    LexError('Attendu nom de variable apres MULTIPLY');
+  If CurTokType = TOK_DOT Then Consume;
+End;
+
+{ ---- ParseDivide : DIVIDE var BY val. ------------------------ }
+Procedure ParseDivide;
+Var VarName : TString;
+    VarIdx  : Integer;
+Begin
+  EmitComment('DIVIDE');
+  { Lire la variable cible }
+  If CurTokType = TOK_IDENT Then
+  Begin
+    VarName := CurTokStr;
+    VarIdx  := FindSym(VarName);
+    Consume;
+    { Consommer BY }
+    If TokIsKw(KW_BY) Then
+      Consume
+    Else
+      LexError('Attendu BY apres DIVIDE var');
+    { Evaluer le diviseur }
+    ParseExpr;
+    If VarIdx > 0 Then
+    Begin
+      EmitI('MOV     EBX, EAX');
+      GenLoadVar32(VarIdx);
+      EmitI('CDQ');
+      EmitI('IDIV    EBX');
+      GenStoreVar32(VarIdx);
+    End
+    Else
+      EmitComment('DIVIDE: variable inconnue: ' + VarName);
+  End
+  Else
+    LexError('Attendu nom de variable apres DIVIDE');
+  If CurTokType = TOK_DOT Then Consume;
+End;
+
+{ ---- ParseClear : CLEAR variable. ---------------------------- }
+{ Met a 0 (numerique) ou vide (chaine) la variable.              }
+Procedure ParseClear;
+Var VarName : TString;
+    VarIdx  : Integer;
+Begin
+  EmitComment('CLEAR');
+  If CurTokType = TOK_IDENT Then
+  Begin
+    VarName := CurTokStr;
+    VarIdx  := FindSym(VarName);
+    Consume;
+    If VarIdx > 0 Then
+    Begin
+      EmitI('XOR     EAX, EAX');
+      GenStoreVar32(VarIdx);
+    End
+    Else
+      EmitComment('CLEAR: variable inconnue: ' + VarName);
+  End
+  Else
+    LexError('Attendu nom de variable apres CLEAR');
+  If CurTokType = TOK_DOT Then Consume;
 End;
 
 { ============================================================ }
