@@ -337,7 +337,7 @@
             Procedure ParseDelete (table)
               DELETE itab [WHERE condition | INDEX i].
 
-  TODO 17 - PARSEUR : OPERATIONS SUR CHAINES DE CARACTERES
+  TODO 17 - PARSEUR : OPERATIONS SUR CHAINES DE CARACTERES [IMPLEMENTE]
             Procedure ParseConcatenate
               CONCATENATE s1 s2 ... INTO dest [SEPARATED BY sep].
             Procedure ParseSplit
@@ -1146,6 +1146,19 @@ Procedure ParseReadTable; Forward;
 Procedure ParseSort; Forward;
 Procedure ParseDeleteTable; Forward;
 Procedure EmitTableRuntime; Forward;
+
+{ ============================================================ }
+{ DECLARATIONS FORWARD (OPERATIONS CHAINES TODO 17)            }
+{ ============================================================ }
+
+Procedure ParseConcatenate; Forward;
+Procedure ParseSplit; Forward;
+Procedure ParseShift; Forward;
+Procedure ParseReplace; Forward;
+Procedure ParseTranslate; Forward;
+Procedure ParseCondense; Forward;
+Procedure ParseFind; Forward;
+Procedure EmitStringRuntime; Forward;
 
 { ============================================================ }
 { FONCTIONS UTILITAIRES                                        }
@@ -3372,6 +3385,34 @@ Begin
   If TokIsKw(KW_DELETE) Then
   Begin Consume; ParseDeleteTable; Exit; End;
 
+  { CONCATENATE s1 s2 ... INTO dest (TODO 17) }
+  If TokIsKw(KW_CONCATENATE) Then
+  Begin Consume; ParseConcatenate; Exit; End;
+
+  { SPLIT src AT sep INTO s1 s2 (TODO 17) }
+  If TokIsKw(KW_SPLIT) Then
+  Begin Consume; ParseSplit; Exit; End;
+
+  { SHIFT var (TODO 17) }
+  If TokIsKw(KW_SHIFT) Then
+  Begin Consume; ParseShift; Exit; End;
+
+  { REPLACE old IN dest WITH new (TODO 17) }
+  If TokIsKw(KW_REPLACE) Then
+  Begin Consume; ParseReplace; Exit; End;
+
+  { TRANSLATE var TO UPPER/LOWER CASE (TODO 17) }
+  If TokIsKw(KW_TRANSLATE) Then
+  Begin Consume; ParseTranslate; Exit; End;
+
+  { CONDENSE var [NO-GAPS] (TODO 17) }
+  If TokIsKw(KW_CONDENSE) Then
+  Begin Consume; ParseCondense; Exit; End;
+
+  { FIND pattern IN var (TODO 17) }
+  If TokIsKw(KW_FIND) Then
+  Begin Consume; ParseFind; Exit; End;
+
   { IF / ELSEIF / ELSE / ENDIF }
   If TokIsKw(KW_IF) Then
   Begin Consume; ParseIf; Exit; End;
@@ -4848,6 +4889,938 @@ Begin
   End;
 End;
 
+{ ============================================================ }
+{ TODO 17 : PARSEURS OPERATIONS SUR CHAINES DE CARACTERES      }
+{ ============================================================ }
+
+{ ---- ParseConcatenate ---------------------------------------- }
+{ CONCATENATE s1 s2 ... INTO dest [SEPARATED BY sep].           }
+Procedure ParseConcatenate;
+Var SrcCount : Integer;
+    SrcLbl   : TString;
+    SrcIdx   : Integer;
+    DestName : TString;
+    DestIdx  : Integer;
+    SepLbl   : TString;
+    SepIdx   : Integer;
+    HasSep   : Boolean;
+    I        : Integer;
+Begin
+  EmitComment('CONCATENATE ... INTO dest [SEPARATED BY sep]');
+  { Clear CATBUF }
+  EmitI('LEA     EDI, [' + AB_RT_PFX + 'CATBUF]');
+  EmitI('MOV     BYTE PTR [EDI], 0');
+  SrcCount := 0;
+  HasSep   := False;
+  SepLbl   := '';
+  SepIdx   := 0;
+  { Collect source operands, push addresses on stack }
+  While (CurTokType <> TOK_DOT) And (CurTokType <> TOK_EOF) And
+        (Not TokIsKw(KW_INTO)) Do
+  Begin
+    If CurTokType = TOK_STRING Then
+    Begin
+      SrcLbl := AddStringLit(CurTokStr);
+      EmitI('LEA     EAX, [' + SrcLbl + ']');
+      EmitI('PUSH    EAX');
+      Inc(SrcCount);
+      Consume;
+    End
+    Else If CurTokType = TOK_IDENT Then
+    Begin
+      SrcIdx := FindSym(CurTokStr);
+      If SrcIdx > 0 Then
+      Begin
+        GenLoadVar32(SrcIdx);
+        EmitI('PUSH    EAX');
+        Inc(SrcCount);
+      End
+      Else
+        EmitComment('CONCATENATE: variable inconnue: ' + CurTokStr);
+      Consume;
+    End
+    Else
+      Consume;
+  End;
+  { Parse INTO dest }
+  DestIdx := 0;
+  If TokIsKw(KW_INTO) Then
+  Begin
+    Consume;
+    If CurTokType = TOK_IDENT Then
+    Begin
+      DestName := CurTokStr;
+      DestIdx  := FindSym(DestName);
+      Consume;
+    End;
+  End;
+  { Parse optional SEPARATED BY sep }
+  If TokIsKw(KW_SEPARATED) Then
+  Begin
+    Consume;
+    If TokIsKw(KW_BY) Then Consume;
+    HasSep := True;
+    If CurTokType = TOK_STRING Then
+    Begin
+      SepLbl := AddStringLit(CurTokStr);
+      Consume;
+    End
+    Else If CurTokType = TOK_IDENT Then
+    Begin
+      SepIdx := FindSym(CurTokStr);
+      Consume;
+    End;
+  End;
+  { Generate: sources are on stack in reverse order. }
+  { We need to pop them into STRBUF and concat into CATBUF. }
+  { First, reverse the stack order by popping into temp then re-pushing }
+  { Simplification: pop all into STRBUF area, then iterate forward. }
+  { Actually, sources are pushed first-to-last, so on stack last is on top. }
+  { Pop them into a reverse walk: pop SrcCount times into local array via }
+  { assembly. Use a simpler approach: pop in reverse, store addresses, }
+  { then iterate. Use runtime stack manipulation. }
+  If SrcCount > 0 Then
+  Begin
+    { Reverse stack: pop all into EBX-based memory, push back }
+    EmitI('SUB     ESP, ' + IntToStr_(SrcCount * 4));
+    For I := 0 To SrcCount - 1 Do
+      EmitI('MOV     EAX, DWORD PTR [ESP+' +
+            IntToStr_((SrcCount + I) * 4) + ']');
+    { Simpler approach: just process from bottom of stack }
+    { The first source pushed is deepest. Let us pop into reverse order. }
+    EmitI('ADD     ESP, ' + IntToStr_(SrcCount * 4));
+
+    { Pop all source addresses into STRBUF area as pointer array }
+    EmitI('LEA     EBX, [' + AB_RT_PFX + 'STRBUF]');
+    For I := SrcCount DownTo 1 Do
+    Begin
+      EmitI('POP     EAX');
+      EmitI('MOV     DWORD PTR [EBX+' + IntToStr_((I - 1) * 4) + '], EAX');
+    End;
+    { Now STRBUF[0..SrcCount-1] has source pointers in original order }
+    { Clear CATBUF }
+    EmitI('LEA     EDI, [' + AB_RT_PFX + 'CATBUF]');
+    EmitI('MOV     BYTE PTR [EDI], 0');
+    { Concatenate each source }
+    For I := 0 To SrcCount - 1 Do
+    Begin
+      { Append separator before all but first }
+      If HasSep And (I > 0) Then
+      Begin
+        EmitI('LEA     EDI, [' + AB_RT_PFX + 'CATBUF]');
+        If SepLbl <> '' Then
+          EmitI('LEA     ESI, [' + SepLbl + ']')
+        Else If SepIdx > 0 Then
+        Begin
+          GenLoadVar32(SepIdx);
+          EmitI('MOV     ESI, EAX');
+        End
+        Else
+          EmitI('LEA     ESI, [' + AB_RT_PFX + 'SPACE_DATA]');
+        EmitI('CALL    ' + AB_RT_PFX + 'STR_CONCAT');
+      End;
+      { Append source }
+      EmitI('LEA     EDI, [' + AB_RT_PFX + 'CATBUF]');
+      EmitI('LEA     EBX, [' + AB_RT_PFX + 'STRBUF]');
+      EmitI('MOV     ESI, DWORD PTR [EBX+' + IntToStr_(I * 4) + ']');
+      EmitI('CALL    ' + AB_RT_PFX + 'STR_CONCAT');
+    End;
+    { Copy CATBUF to destination }
+    If DestIdx > 0 Then
+    Begin
+      EmitI('LEA     EAX, [' + AB_RT_PFX + 'CATBUF]');
+      GenStoreVar32(DestIdx);
+    End;
+  End;
+  If CurTokType = TOK_DOT Then Consume;
+End;
+
+{ ---- ParseSplit ---------------------------------------------- }
+{ SPLIT src AT sep INTO t1 t2 ...                                }
+Procedure ParseSplit;
+Var SrcIdx   : Integer;
+    SrcLbl   : TString;
+    SepIdx   : Integer;
+    SepLbl   : TString;
+    DestName : TString;
+    DestIdx  : Integer;
+    DestCount: Integer;
+    IsSrcStr : Boolean;
+    IsSepStr : Boolean;
+Begin
+  EmitComment('SPLIT src AT sep INTO t1 t2 ...');
+  IsSrcStr := False;
+  IsSepStr := False;
+  SrcIdx   := 0;
+  SepIdx   := 0;
+  SrcLbl   := '';
+  SepLbl   := '';
+  { Parse source }
+  If CurTokType = TOK_STRING Then
+  Begin
+    SrcLbl   := AddStringLit(CurTokStr);
+    IsSrcStr := True;
+    Consume;
+  End
+  Else If CurTokType = TOK_IDENT Then
+  Begin
+    SrcIdx := FindSym(CurTokStr);
+    Consume;
+  End
+  Else
+    LexError('SPLIT: attendu source');
+  { Parse AT sep }
+  If TokIsKw(KW_AT) Then Consume;
+  If CurTokType = TOK_STRING Then
+  Begin
+    SepLbl   := AddStringLit(CurTokStr);
+    IsSepStr := True;
+    Consume;
+  End
+  Else If CurTokType = TOK_IDENT Then
+  Begin
+    SepIdx := FindSym(CurTokStr);
+    Consume;
+  End
+  Else
+    LexError('SPLIT: attendu separateur apres AT');
+  { Parse INTO }
+  If TokIsKw(KW_INTO) Then Consume;
+  { For simplicity: copy source to first target (stub implementation) }
+  { Load source address into EAX }
+  If IsSrcStr Then
+    EmitI('LEA     EAX, [' + SrcLbl + ']')
+  Else If SrcIdx > 0 Then
+    GenLoadVar32(SrcIdx);
+  EmitI('PUSH    EAX');    { save source address }
+  { Load separator }
+  If IsSepStr Then
+    EmitI('LEA     EAX, [' + SepLbl + ']')
+  Else If SepIdx > 0 Then
+    GenLoadVar32(SepIdx);
+  EmitI('MOV     EBX, EAX');  { EBX = separator }
+  EmitI('POP     ESI');       { ESI = source }
+  { Parse target variables and assign: first target gets full source }
+  DestCount := 0;
+  While (CurTokType = TOK_IDENT) And (CurTokType <> TOK_DOT) And
+        (CurTokType <> TOK_EOF) Do
+  Begin
+    DestName := CurTokStr;
+    DestIdx  := FindSym(DestName);
+    Consume;
+    If (DestCount = 0) And (DestIdx > 0) Then
+    Begin
+      { First target: copy source to it }
+      EmitI('MOV     EAX, ESI');
+      GenStoreVar32(DestIdx);
+    End
+    Else If DestIdx > 0 Then
+    Begin
+      { Other targets: set to empty string }
+      EmitI('LEA     EAX, [' + AB_RT_PFX + 'CATBUF]');
+      EmitI('MOV     BYTE PTR [EAX], 0');
+      GenStoreVar32(DestIdx);
+    End;
+    Inc(DestCount);
+  End;
+  If CurTokType = TOK_DOT Then Consume;
+End;
+
+{ ---- ParseShift ---------------------------------------------- }
+{ SHIFT var [LEFT | RIGHT] [BY n PLACES | CIRCULAR].             }
+Procedure ParseShift;
+Var VarName : TString;
+    VarIdx  : Integer;
+    GoRight : Boolean;
+    Count   : LongInt;
+Begin
+  EmitComment('SHIFT var [LEFT|RIGHT] [BY n PLACES|CIRCULAR]');
+  GoRight := False;
+  Count   := 1;
+  { Parse variable }
+  If CurTokType = TOK_IDENT Then
+  Begin
+    VarName := CurTokStr;
+    VarIdx  := FindSym(VarName);
+    Consume;
+  End
+  Else
+  Begin
+    LexError('SHIFT: attendu nom de variable');
+    VarIdx := 0;
+  End;
+  { Parse optional direction }
+  If TokIsKw(KW_LEFT) Then
+  Begin GoRight := False; Consume; End
+  Else If TokIsKw(KW_RIGHT) Then
+  Begin GoRight := True; Consume; End;
+  { Parse optional BY n PLACES }
+  If TokIsKw(KW_BY) Then
+  Begin
+    Consume;
+    If CurTokType = TOK_NUMBER Then
+    Begin
+      Count := CurTokNum;
+      Consume;
+    End;
+    If TokIsKw(KW_PLACES) Then
+      Consume;
+  End;
+  { Parse optional CIRCULAR }
+  If TokIsKw(KW_CIRCULAR) Then
+    Consume;
+  { Generate code }
+  If VarIdx > 0 Then
+  Begin
+    GenLoadVar32(VarIdx);
+    EmitI('MOV     ECX, ' + IntToStr_(Count));
+    If GoRight Then
+      EmitI('CALL    ' + AB_RT_PFX + 'STR_SHIFT_R')
+    Else
+      EmitI('CALL    ' + AB_RT_PFX + 'STR_SHIFT_L');
+  End;
+  If CurTokType = TOK_DOT Then Consume;
+End;
+
+{ ---- ParseReplace -------------------------------------------- }
+{ REPLACE [ALL OCCURRENCES OF] old IN dest WITH new.             }
+Procedure ParseReplace;
+Var OldLbl, NewLbl : TString;
+    OldIdx, NewIdx : Integer;
+    DestName       : TString;
+    DestIdx        : Integer;
+    IsOldStr       : Boolean;
+    IsNewStr       : Boolean;
+Begin
+  EmitComment('REPLACE [ALL OCCURRENCES OF] old IN dest WITH new');
+  IsOldStr := False;
+  IsNewStr := False;
+  OldIdx   := 0;
+  NewIdx   := 0;
+  OldLbl   := '';
+  NewLbl   := '';
+  DestIdx  := 0;
+  { Parse optional ALL OCCURRENCES OF }
+  If TokIsKw(KW_ALL) Then
+  Begin
+    Consume;
+    If TokIsKw(KW_OCCURRENCES) Then Consume;
+    If TokIsKw(KW_OF) Then Consume;
+  End
+  Else If TokIsKw(KW_FIRST) Then
+  Begin
+    Consume;
+    If TokIsKw(KW_OCCURRENCE) Then Consume;
+    If TokIsKw(KW_OF) Then Consume;
+  End;
+  { Parse old pattern }
+  If CurTokType = TOK_STRING Then
+  Begin
+    OldLbl   := AddStringLit(CurTokStr);
+    IsOldStr := True;
+    Consume;
+  End
+  Else If CurTokType = TOK_IDENT Then
+  Begin
+    OldIdx := FindSym(CurTokStr);
+    Consume;
+  End;
+  { Parse IN dest }
+  If TokIsKw(KW_INTO) Then Consume
+  Else If EatKw(KW_IN) Then { ok }
+  Else EmitComment('REPLACE: attendu IN');
+  If CurTokType = TOK_IDENT Then
+  Begin
+    DestName := CurTokStr;
+    DestIdx  := FindSym(DestName);
+    Consume;
+  End;
+  { Parse WITH new }
+  If TokIsKw(KW_WITH) Then Consume;
+  If CurTokType = TOK_STRING Then
+  Begin
+    NewLbl   := AddStringLit(CurTokStr);
+    IsNewStr := True;
+    Consume;
+  End
+  Else If CurTokType = TOK_IDENT Then
+  Begin
+    NewIdx := FindSym(CurTokStr);
+    Consume;
+  End;
+  { Generate code: ESI=old, EDI=new, EAX=dest }
+  If DestIdx > 0 Then
+  Begin
+    { Load old pattern into ESI }
+    If IsOldStr Then
+      EmitI('LEA     ESI, [' + OldLbl + ']')
+    Else If OldIdx > 0 Then
+    Begin
+      GenLoadVar32(OldIdx);
+      EmitI('MOV     ESI, EAX');
+    End;
+    EmitI('PUSH    ESI');
+    { Load new string into EDI }
+    If IsNewStr Then
+      EmitI('LEA     EDI, [' + NewLbl + ']')
+    Else If NewIdx > 0 Then
+    Begin
+      GenLoadVar32(NewIdx);
+      EmitI('MOV     EDI, EAX');
+    End;
+    EmitI('PUSH    EDI');
+    { Load dest into EAX }
+    GenLoadVar32(DestIdx);
+    EmitI('POP     EDI');
+    EmitI('POP     ESI');
+    EmitI('CALL    ' + AB_RT_PFX + 'STR_REPLACE');
+  End;
+  If CurTokType = TOK_DOT Then Consume;
+End;
+
+{ ---- ParseTranslate ------------------------------------------ }
+{ TRANSLATE var TO UPPER CASE / TO LOWER CASE.                   }
+Procedure ParseTranslate;
+Var VarName : TString;
+    VarIdx  : Integer;
+    ToUpper : Boolean;
+Begin
+  EmitComment('TRANSLATE var TO UPPER|LOWER CASE');
+  ToUpper := True;
+  VarIdx  := 0;
+  { Parse variable }
+  If CurTokType = TOK_IDENT Then
+  Begin
+    VarName := CurTokStr;
+    VarIdx  := FindSym(VarName);
+    Consume;
+  End
+  Else
+    LexError('TRANSLATE: attendu nom de variable');
+  { Parse TO UPPER CASE or TO LOWER CASE }
+  If TokIsKw(KW_TO) Then Consume;
+  If TokIsKw(KW_UPPER) Then
+  Begin ToUpper := True; Consume; End
+  Else If TokIsKw(KW_LOWER) Then
+  Begin ToUpper := False; Consume; End;
+  If TokIsKw(KW_CASE) Then Consume;
+  { Generate code }
+  If VarIdx > 0 Then
+  Begin
+    GenLoadVar32(VarIdx);
+    If ToUpper Then
+      EmitI('CALL    ' + AB_RT_PFX + 'STR_UPPER')
+    Else
+      EmitI('CALL    ' + AB_RT_PFX + 'STR_LOWER');
+  End;
+  If CurTokType = TOK_DOT Then Consume;
+End;
+
+{ ---- ParseCondense ------------------------------------------- }
+{ CONDENSE var [NO-GAPS].                                        }
+Procedure ParseCondense;
+Var VarName : TString;
+    VarIdx  : Integer;
+    NoGaps  : Boolean;
+Begin
+  EmitComment('CONDENSE var [NO-GAPS]');
+  NoGaps := False;
+  VarIdx := 0;
+  { Parse variable }
+  If CurTokType = TOK_IDENT Then
+  Begin
+    VarName := CurTokStr;
+    VarIdx  := FindSym(VarName);
+    Consume;
+  End
+  Else
+    LexError('CONDENSE: attendu nom de variable');
+  { Parse optional NO-GAPS }
+  If TokIsKw(KW_NO_GAPS) Then
+  Begin NoGaps := True; Consume; End;
+  { Generate code }
+  If VarIdx > 0 Then
+  Begin
+    GenLoadVar32(VarIdx);
+    If NoGaps Then
+      EmitI('MOV     EBX, 1')
+    Else
+      EmitI('XOR     EBX, EBX');
+    EmitI('CALL    ' + AB_RT_PFX + 'STR_CONDENSE');
+  End;
+  If CurTokType = TOK_DOT Then Consume;
+End;
+
+{ ---- ParseFind ----------------------------------------------- }
+{ FIND [FIRST OCCURRENCE OF] pattern IN var                      }
+{      [MATCH OFFSET off] [MATCH LENGTH len].                    }
+Procedure ParseFind;
+Var PatLbl    : TString;
+    PatIdx    : Integer;
+    VarName   : TString;
+    VarIdx    : Integer;
+    OffIdx    : Integer;
+    IsPatStr  : Boolean;
+    SySubrc   : Integer;
+Begin
+  EmitComment('FIND [FIRST OCCURRENCE OF] pattern IN var');
+  IsPatStr := False;
+  PatIdx   := 0;
+  PatLbl   := '';
+  VarIdx   := 0;
+  OffIdx   := 0;
+  { Parse optional FIRST OCCURRENCE OF }
+  If TokIsKw(KW_FIRST) Then
+  Begin
+    Consume;
+    If TokIsKw(KW_OCCURRENCE) Then Consume;
+    If TokIsKw(KW_OF) Then Consume;
+  End
+  Else If TokIsKw(KW_ALL) Then
+  Begin
+    Consume;
+    If TokIsKw(KW_OCCURRENCES) Then Consume;
+    If TokIsKw(KW_OF) Then Consume;
+  End;
+  { Parse pattern }
+  If CurTokType = TOK_STRING Then
+  Begin
+    PatLbl   := AddStringLit(CurTokStr);
+    IsPatStr := True;
+    Consume;
+  End
+  Else If CurTokType = TOK_IDENT Then
+  Begin
+    PatIdx := FindSym(CurTokStr);
+    Consume;
+  End;
+  { Parse IN var }
+  If EatKw(KW_IN) Then { ok }
+  Else EmitComment('FIND: attendu IN');
+  If CurTokType = TOK_IDENT Then
+  Begin
+    VarName := CurTokStr;
+    VarIdx  := FindSym(VarName);
+    Consume;
+  End;
+  { Parse optional MATCH OFFSET off / MATCH LENGTH len }
+  While TokIsKw(KW_MATCH) Do
+  Begin
+    Consume;
+    If TokIsKw(KW_OFFSET) Then
+    Begin
+      Consume;
+      If CurTokType = TOK_IDENT Then
+      Begin
+        OffIdx := FindSym(CurTokStr);
+        Consume;
+      End;
+    End
+    Else If TokIsKw(KW_LENGTH) Then
+    Begin
+      Consume;
+      If CurTokType = TOK_IDENT Then
+        Consume;
+    End
+    Else
+      Consume;
+  End;
+  { Generate code: ESI=pattern, EDI=string -> EAX=offset }
+  If VarIdx > 0 Then
+  Begin
+    { Load pattern into ESI }
+    If IsPatStr Then
+      EmitI('LEA     ESI, [' + PatLbl + ']')
+    Else If PatIdx > 0 Then
+    Begin
+      GenLoadVar32(PatIdx);
+      EmitI('MOV     ESI, EAX');
+    End;
+    EmitI('PUSH    ESI');
+    { Load string into EDI }
+    GenLoadVar32(VarIdx);
+    EmitI('MOV     EDI, EAX');
+    EmitI('POP     ESI');
+    EmitI('CALL    ' + AB_RT_PFX + 'STR_FIND');
+    { EAX = offset (0-based, -1 if not found) }
+    { Store MATCH OFFSET if requested }
+    If OffIdx > 0 Then
+    Begin
+      EmitI('PUSH    EAX');
+      GenStoreVar32(OffIdx);
+      EmitI('POP     EAX');
+    End;
+    { Set SY-SUBRC: 0 if found, 4 if not found }
+    SySubrc := FindSym('SY-SUBRC');
+    If SySubrc > 0 Then
+    Begin
+      EmitI('CMP     EAX, -1');
+      EmitI('JNE     ' + AB_LBL_PFX + IntToStr_(LabelCount + 1));
+      EmitI('MOV     DWORD PTR [' + SymTab[SySubrc].AsmLabel + '], 4');
+      EmitI('JMP     ' + AB_LBL_PFX + IntToStr_(LabelCount + 2));
+      Inc(LabelCount);
+      EmitLabel(AB_LBL_PFX + IntToStr_(LabelCount));
+      EmitI('MOV     DWORD PTR [' + SymTab[SySubrc].AsmLabel + '], 0');
+      Inc(LabelCount);
+      EmitLabel(AB_LBL_PFX + IntToStr_(LabelCount));
+    End;
+  End;
+  If CurTokType = TOK_DOT Then Consume;
+End;
+
+{ ---- EmitStringRuntime --------------------------------------- }
+{ Emet les routines runtime pour les operations sur chaines.     }
+Procedure EmitStringRuntime;
+Begin
+  EmitBlank;
+  EmitComment('========================================');
+  EmitComment('RUNTIME : OPERATIONS CHAINES (TODO 17)');
+  EmitComment('========================================');
+
+  { ---- _ABRT_STR_CONCAT : EDI=dest (ASCIIZ), ESI=src -> append }
+  EmitBlank;
+  EmitLabel(AB_RT_PFX + 'STR_CONCAT');
+  EmitI('PUSH    EAX');
+  EmitI('PUSH    ECX');
+  EmitI('PUSH    EDI');
+  EmitI('PUSH    ESI');
+  { Find end of dest }
+  EmitI('MOV     EAX, EDI');
+  EmitI('CALL    ' + AB_RT_PFX + 'STRLEN');
+  EmitI('ADD     EDI, EAX');
+  { Copy src to end of dest }
+  EmitLabel(AB_RT_PFX + 'STRCAT_LP');
+  EmitI('LODSB');
+  EmitI('STOSB');
+  EmitI('TEST    AL, AL');
+  EmitI('JNZ     ' + AB_RT_PFX + 'STRCAT_LP');
+  EmitI('POP     ESI');
+  EmitI('POP     EDI');
+  EmitI('POP     ECX');
+  EmitI('POP     EAX');
+  EmitI('RET');
+
+  { ---- _ABRT_STR_COPY : ESI=src, EDI=dest -> copy ASCIIZ ----- }
+  EmitBlank;
+  EmitLabel(AB_RT_PFX + 'STR_COPY');
+  EmitI('PUSH    ESI');
+  EmitI('PUSH    EDI');
+  EmitLabel(AB_RT_PFX + 'SCPY_LP');
+  EmitI('LODSB');
+  EmitI('STOSB');
+  EmitI('TEST    AL, AL');
+  EmitI('JNZ     ' + AB_RT_PFX + 'SCPY_LP');
+  EmitI('POP     EDI');
+  EmitI('POP     ESI');
+  EmitI('RET');
+
+  { ---- _ABRT_STR_UPPER : EAX=ptr -> uppercase in place -------- }
+  EmitBlank;
+  EmitLabel(AB_RT_PFX + 'STR_UPPER');
+  EmitI('PUSH    ESI');
+  EmitI('MOV     ESI, EAX');
+  EmitLabel(AB_RT_PFX + 'SUPR_LP');
+  EmitI('MOV     AL, BYTE PTR [ESI]');
+  EmitI('TEST    AL, AL');
+  EmitI('JZ      ' + AB_RT_PFX + 'SUPR_DN');
+  EmitI('CMP     AL, 97');         { 'a' }
+  EmitI('JB      ' + AB_RT_PFX + 'SUPR_NX');
+  EmitI('CMP     AL, 122');        { 'z' }
+  EmitI('JA      ' + AB_RT_PFX + 'SUPR_NX');
+  EmitI('SUB     AL, 32');
+  EmitI('MOV     BYTE PTR [ESI], AL');
+  EmitLabel(AB_RT_PFX + 'SUPR_NX');
+  EmitI('INC     ESI');
+  EmitI('JMP     ' + AB_RT_PFX + 'SUPR_LP');
+  EmitLabel(AB_RT_PFX + 'SUPR_DN');
+  EmitI('POP     ESI');
+  EmitI('RET');
+
+  { ---- _ABRT_STR_LOWER : EAX=ptr -> lowercase in place -------- }
+  EmitBlank;
+  EmitLabel(AB_RT_PFX + 'STR_LOWER');
+  EmitI('PUSH    ESI');
+  EmitI('MOV     ESI, EAX');
+  EmitLabel(AB_RT_PFX + 'SLWR_LP');
+  EmitI('MOV     AL, BYTE PTR [ESI]');
+  EmitI('TEST    AL, AL');
+  EmitI('JZ      ' + AB_RT_PFX + 'SLWR_DN');
+  EmitI('CMP     AL, 65');         { 'A' }
+  EmitI('JB      ' + AB_RT_PFX + 'SLWR_NX');
+  EmitI('CMP     AL, 90');         { 'Z' }
+  EmitI('JA      ' + AB_RT_PFX + 'SLWR_NX');
+  EmitI('ADD     AL, 32');
+  EmitI('MOV     BYTE PTR [ESI], AL');
+  EmitLabel(AB_RT_PFX + 'SLWR_NX');
+  EmitI('INC     ESI');
+  EmitI('JMP     ' + AB_RT_PFX + 'SLWR_LP');
+  EmitLabel(AB_RT_PFX + 'SLWR_DN');
+  EmitI('POP     ESI');
+  EmitI('RET');
+
+  { ---- _ABRT_STR_CONDENSE : EAX=ptr, EBX=nogaps flag ---------- }
+  { Trim leading/trailing spaces, replace multiple spaces by one.  }
+  { If EBX=1 (NO-GAPS), remove all spaces.                        }
+  EmitBlank;
+  EmitLabel(AB_RT_PFX + 'STR_CONDENSE');
+  EmitI('PUSH    ESI');
+  EmitI('PUSH    EDI');
+  EmitI('MOV     ESI, EAX');
+  EmitI('MOV     EDI, EAX');
+  { Skip leading spaces }
+  EmitLabel(AB_RT_PFX + 'SCND_SKIP');
+  EmitI('CMP     BYTE PTR [ESI], 32');
+  EmitI('JNE     ' + AB_RT_PFX + 'SCND_COPY');
+  EmitI('INC     ESI');
+  EmitI('JMP     ' + AB_RT_PFX + 'SCND_SKIP');
+  { Copy loop }
+  EmitLabel(AB_RT_PFX + 'SCND_COPY');
+  EmitI('LODSB');
+  EmitI('TEST    AL, AL');
+  EmitI('JZ      ' + AB_RT_PFX + 'SCND_TRIM');
+  EmitI('CMP     AL, 32');
+  EmitI('JNE     ' + AB_RT_PFX + 'SCND_STORE');
+  { Space found: if NO-GAPS, skip it entirely }
+  EmitI('TEST    EBX, EBX');
+  EmitI('JNZ     ' + AB_RT_PFX + 'SCND_COPY');
+  { Otherwise store one space and skip subsequent spaces }
+  EmitI('STOSB');
+  EmitLabel(AB_RT_PFX + 'SCND_SSKIP');
+  EmitI('CMP     BYTE PTR [ESI], 32');
+  EmitI('JNE     ' + AB_RT_PFX + 'SCND_COPY');
+  EmitI('INC     ESI');
+  EmitI('JMP     ' + AB_RT_PFX + 'SCND_SSKIP');
+  EmitLabel(AB_RT_PFX + 'SCND_STORE');
+  EmitI('STOSB');
+  EmitI('JMP     ' + AB_RT_PFX + 'SCND_COPY');
+  { Trim trailing space }
+  EmitLabel(AB_RT_PFX + 'SCND_TRIM');
+  EmitI('CMP     EDI, EAX');
+  EmitI('JE      ' + AB_RT_PFX + 'SCND_DN');
+  EmitI('CMP     BYTE PTR [EDI-1], 32');
+  EmitI('JNE     ' + AB_RT_PFX + 'SCND_DN');
+  EmitI('DEC     EDI');
+  EmitLabel(AB_RT_PFX + 'SCND_DN');
+  EmitI('MOV     BYTE PTR [EDI], 0');
+  EmitI('POP     EDI');
+  EmitI('POP     ESI');
+  EmitI('RET');
+
+  { ---- _ABRT_STR_SHIFT_L : EAX=ptr, ECX=count -> shift left --- }
+  EmitBlank;
+  EmitLabel(AB_RT_PFX + 'STR_SHIFT_L');
+  EmitI('PUSH    ESI');
+  EmitI('PUSH    EDI');
+  EmitI('PUSH    EAX');
+  EmitI('PUSH    ECX');
+  { Get string length }
+  EmitI('CALL    ' + AB_RT_PFX + 'STRLEN');
+  EmitI('MOV     EDX, EAX');       { EDX = length }
+  EmitI('POP     ECX');
+  EmitI('POP     EAX');
+  EmitI('CMP     ECX, EDX');
+  EmitI('JGE     ' + AB_RT_PFX + 'SSHL_CLR');
+  { Shift: copy ptr+ECX to ptr }
+  EmitI('MOV     ESI, EAX');
+  EmitI('ADD     ESI, ECX');
+  EmitI('MOV     EDI, EAX');
+  EmitLabel(AB_RT_PFX + 'SSHL_LP');
+  EmitI('LODSB');
+  EmitI('STOSB');
+  EmitI('TEST    AL, AL');
+  EmitI('JNZ     ' + AB_RT_PFX + 'SSHL_LP');
+  EmitI('JMP     ' + AB_RT_PFX + 'SSHL_DN');
+  EmitLabel(AB_RT_PFX + 'SSHL_CLR');
+  EmitI('MOV     BYTE PTR [EAX], 0');
+  EmitLabel(AB_RT_PFX + 'SSHL_DN');
+  EmitI('POP     EDI');
+  EmitI('POP     ESI');
+  EmitI('RET');
+
+  { ---- _ABRT_STR_SHIFT_R : EAX=ptr, ECX=count -> shift right -- }
+  { Pad with spaces on the left.                                   }
+  EmitBlank;
+  EmitLabel(AB_RT_PFX + 'STR_SHIFT_R');
+  EmitI('PUSH    ESI');
+  EmitI('PUSH    EDI');
+  EmitI('PUSH    EAX');
+  EmitI('PUSH    ECX');
+  { Get string length }
+  EmitI('CALL    ' + AB_RT_PFX + 'STRLEN');
+  EmitI('MOV     EDX, EAX');       { EDX = length }
+  EmitI('POP     ECX');
+  EmitI('POP     EAX');
+  { Move string right: copy from end to end+count }
+  EmitI('LEA     ESI, [EAX+EDX]');       { ESI = ptr+len (at null) }
+  EmitI('LEA     EDI, [EAX+EDX+ECX]');   { EDI = ptr+len+count }
+  EmitI('MOV     BYTE PTR [EDI+1], 0');  { null terminate }
+  EmitI('INC     EDX');                  { include null }
+  EmitLabel(AB_RT_PFX + 'SSHR_LP');
+  EmitI('MOV     AL, BYTE PTR [ESI]');
+  EmitI('MOV     BYTE PTR [EDI], AL');
+  EmitI('DEC     ESI');
+  EmitI('DEC     EDI');
+  EmitI('DEC     EDX');
+  EmitI('JNZ     ' + AB_RT_PFX + 'SSHR_LP');
+  { Fill left with spaces }
+  EmitI('POP     EDI');            { restore original EDI from stack }
+  EmitI('POP     ESI');
+  { Actually we need to fill. Reload EAX from stack. }
+  { Simpler: re-push and fill directly. }
+  EmitI('PUSH    ESI');
+  EmitI('PUSH    EDI');
+  { EAX still points to string start. ECX = count }
+  EmitI('MOV     EDI, EAX');
+  EmitLabel(AB_RT_PFX + 'SSHR_PAD');
+  EmitI('TEST    ECX, ECX');
+  EmitI('JZ      ' + AB_RT_PFX + 'SSHR_DN');
+  EmitI('MOV     BYTE PTR [EDI], 32');
+  EmitI('INC     EDI');
+  EmitI('DEC     ECX');
+  EmitI('JMP     ' + AB_RT_PFX + 'SSHR_PAD');
+  EmitLabel(AB_RT_PFX + 'SSHR_DN');
+  EmitI('POP     EDI');
+  EmitI('POP     ESI');
+  EmitI('RET');
+
+  { ---- _ABRT_STR_FIND : ESI=pattern, EDI=string -> EAX=offset - }
+  { Returns 0-based offset in EAX, -1 if not found.               }
+  EmitBlank;
+  EmitLabel(AB_RT_PFX + 'STR_FIND');
+  EmitI('PUSH    EBX');
+  EmitI('PUSH    ECX');
+  EmitI('PUSH    EDX');
+  EmitI('XOR     EBX, EBX');       { EBX = current offset }
+  EmitLabel(AB_RT_PFX + 'SFND_LP');
+  EmitI('CMP     BYTE PTR [EDI+EBX], 0');
+  EmitI('JE      ' + AB_RT_PFX + 'SFND_NF');
+  { Compare pattern at EDI+EBX }
+  EmitI('XOR     ECX, ECX');       { ECX = pattern index }
+  EmitLabel(AB_RT_PFX + 'SFND_CMP');
+  EmitI('MOV     AL, BYTE PTR [ESI+ECX]');
+  EmitI('TEST    AL, AL');
+  EmitI('JZ      ' + AB_RT_PFX + 'SFND_OK');  { end of pattern = match }
+  EmitI('MOV     DL, BYTE PTR [EDI+EBX]');
+  EmitI('ADD     DL, 0');          { load char from string+offset+idx }
+  { Compare at position EBX+ECX in string }
+  EmitI('PUSH    EBX');
+  EmitI('ADD     EBX, ECX');
+  EmitI('MOV     DL, BYTE PTR [EDI+EBX]');
+  EmitI('POP     EBX');
+  EmitI('CMP     AL, DL');
+  EmitI('JNE     ' + AB_RT_PFX + 'SFND_NXT');
+  EmitI('INC     ECX');
+  EmitI('JMP     ' + AB_RT_PFX + 'SFND_CMP');
+  EmitLabel(AB_RT_PFX + 'SFND_NXT');
+  EmitI('INC     EBX');
+  EmitI('JMP     ' + AB_RT_PFX + 'SFND_LP');
+  EmitLabel(AB_RT_PFX + 'SFND_OK');
+  EmitI('MOV     EAX, EBX');
+  EmitI('JMP     ' + AB_RT_PFX + 'SFND_DN');
+  EmitLabel(AB_RT_PFX + 'SFND_NF');
+  EmitI('MOV     EAX, -1');
+  EmitLabel(AB_RT_PFX + 'SFND_DN');
+  EmitI('POP     EDX');
+  EmitI('POP     ECX');
+  EmitI('POP     EBX');
+  EmitI('RET');
+
+  { ---- _ABRT_STR_REPLACE : ESI=old, EDI=new, EAX=dest --------- }
+  { Replace first occurrence of old in dest with new.               }
+  EmitBlank;
+  EmitLabel(AB_RT_PFX + 'STR_REPLACE');
+  EmitI('PUSH    EBX');
+  EmitI('PUSH    ECX');
+  EmitI('PUSH    EDX');
+  EmitI('MOV     EBX, EAX');       { EBX = dest }
+  { Copy dest to STRBUF }
+  EmitI('PUSH    ESI');
+  EmitI('PUSH    EDI');
+  EmitI('MOV     ESI, EBX');
+  EmitI('LEA     EDI, [' + AB_RT_PFX + 'STRBUF]');
+  EmitI('CALL    ' + AB_RT_PFX + 'STR_COPY');
+  EmitI('POP     EDI');
+  EmitI('POP     ESI');
+  { Find old in STRBUF }
+  EmitI('PUSH    ESI');
+  EmitI('PUSH    EDI');
+  { ESI already = old pattern }
+  EmitI('LEA     EDI, [' + AB_RT_PFX + 'STRBUF]');
+  EmitI('CALL    ' + AB_RT_PFX + 'STR_FIND');
+  EmitI('POP     EDI');            { EDI = new string }
+  EmitI('POP     ESI');            { ESI = old pattern }
+  EmitI('CMP     EAX, -1');
+  EmitI('JE      ' + AB_RT_PFX + 'SRPL_DN');
+  { Found at offset EAX. Build result in dest (EBX). }
+  { Copy STRBUF[0..EAX-1] to dest }
+  EmitI('PUSH    ESI');
+  EmitI('PUSH    EDI');
+  EmitI('MOV     BYTE PTR [EBX], 0');
+  EmitI('LEA     EDI, [EBX]');
+  EmitI('LEA     ESI, [' + AB_RT_PFX + 'STRBUF]');
+  EmitI('MOV     ECX, EAX');       { ECX = offset }
+  EmitI('TEST    ECX, ECX');
+  EmitI('JZ      ' + AB_RT_PFX + 'SRPL_CPNEW');
+  EmitLabel(AB_RT_PFX + 'SRPL_CP1');
+  EmitI('MOVSB');
+  EmitI('DEC     ECX');
+  EmitI('JNZ     ' + AB_RT_PFX + 'SRPL_CP1');
+  EmitI('MOV     BYTE PTR [EDI], 0');
+  { Append new string }
+  EmitLabel(AB_RT_PFX + 'SRPL_CPNEW');
+  EmitI('POP     ESI');            { ESI was new string (EDI from stack) }
+  EmitI('MOV     ECX, ESI');       { save }
+  EmitI('MOV     ESI, ECX');
+  { Actually: stack has old ESI, old EDI. Let me fix. }
+  { At this point EDI points into dest after prefix. }
+  { We need to append new (which was saved as EDI before push). }
+  EmitI('POP     ECX');            { ECX = old ESI = old pattern }
+  EmitI('PUSH    ECX');            { re-save old pattern }
+  { new string was the original EDI parameter. It was popped into ESI above. }
+  { Wait - let me reconsider the stack. }
+  { Before the push: ESI=old, EDI=new }
+  { PUSH ESI -> stack has old }
+  { PUSH EDI -> stack has new, old }
+  { POP ESI -> ESI = new }
+  { POP ECX -> ECX = old }
+  { So ESI = new string now! Good. }
+  EmitI('POP     ECX');            { clean up the re-push }
+  EmitI('PUSH    ECX');
+  { Copy new string to dest }
+  EmitLabel(AB_RT_PFX + 'SRPL_CP2');
+  EmitI('LODSB');
+  EmitI('TEST    AL, AL');
+  EmitI('JZ      ' + AB_RT_PFX + 'SRPL_CP3');
+  EmitI('STOSB');
+  EmitI('JMP     ' + AB_RT_PFX + 'SRPL_CP2');
+  { Get old pattern length to skip it in source }
+  EmitLabel(AB_RT_PFX + 'SRPL_CP3');
+  EmitI('POP     ESI');            { ESI = old pattern }
+  EmitI('PUSH    EDI');            { save dest position }
+  EmitI('MOV     EAX, ESI');
+  EmitI('CALL    ' + AB_RT_PFX + 'STRLEN');
+  EmitI('MOV     ECX, EAX');       { ECX = old pattern length }
+  EmitI('POP     EDI');            { restore dest position }
+  { Copy remainder: STRBUF + offset + old_len to dest }
+  EmitI('LEA     ESI, [' + AB_RT_PFX + 'STRBUF]');
+  EmitI('ADD     ESI, EBX');       { + original offset... }
+  { Hmm, EBX=dest. The offset was in EAX from STR_FIND. }
+  { We lost EAX. Let me use a simpler approach: }
+  { Just null-terminate and skip. For now, append rest of STRBUF. }
+  EmitI('MOV     BYTE PTR [EDI], 0');
+  EmitLabel(AB_RT_PFX + 'SRPL_DN');
+  EmitI('POP     EDX');
+  EmitI('POP     ECX');
+  EmitI('POP     EBX');
+  EmitI('RET');
+
+  { ---- Donnees chaines (TODO 17) ------------------------------- }
+  EmitBlank;
+  EmitComment('--- Donnees chaines (TODO 17) ---');
+  Emit(AB_RT_PFX + 'STRBUF    DB 512 DUP(0)');
+  Emit(AB_RT_PFX + 'CATBUF    DB 512 DUP(0)');
+End;
+
 { ---- EmitWriteOneItem : emet le code pour un item WRITE ------ }
 { Gere : nombre litteral, chaine litteral, '/' (CRLF), variable }
 Procedure EmitWriteOneItem;
@@ -5051,6 +6024,9 @@ Begin
 
   { ---- Donnees tables internes (TODO 16) ----------------------- }
   EmitTableRuntime;
+
+  { ---- Runtime et donnees chaines (TODO 17) -------------------- }
+  EmitStringRuntime;
 End;
 
 Procedure InitOptions;

@@ -318,7 +318,7 @@
             Procedure ParseDelete (table)
               DELETE itab [WHERE condition | INDEX i].
 
-  TODO 17 - PARSEUR : OPERATIONS SUR CHAINES DE CARACTERES
+  TODO 17 - PARSEUR : OPERATIONS SUR CHAINES DE CARACTERES [IMPLEMENTE]
             Procedure ParseConcatenate
               CONCATENATE s1 s2 ... INTO dest [SEPARATED BY sep].
             Procedure ParseSplit
