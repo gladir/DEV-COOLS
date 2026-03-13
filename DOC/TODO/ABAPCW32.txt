@@ -475,7 +475,7 @@
             Procedure ParseBlock(stop_kw: Integer)
               Appeler ParseStatement en boucle jusqu a stop_kw ou EOF
 
-  TODO 24 - PARSEUR : EVENEMENTS ABAP ET ECRAN DE SELECTION (STUBS)
+  TODO 24 - PARSEUR : EVENEMENTS ABAP ET ECRAN DE SELECTION (STUBS) [IMPLEMENTE]
             Evenements ABAP de haut niveau :
               START-OF-SELECTION. -> label _ABE_START + ParseBlock
               END-OF-SELECTION.   -> label _ABE_END   + ParseBlock

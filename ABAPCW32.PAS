@@ -494,7 +494,7 @@
             Procedure ParseBlock(stop_kw: Integer)
               Appeler ParseStatement en boucle jusqu a stop_kw ou EOF
 
-  TODO 24 - PARSEUR : EVENEMENTS ABAP ET ECRAN DE SELECTION (STUBS)
+  TODO 24 - PARSEUR : EVENEMENTS ABAP ET ECRAN DE SELECTION (STUBS) [IMPLEMENTE]
             Evenements ABAP de haut niveau :
               START-OF-SELECTION. -> label _ABE_START + ParseBlock
               END-OF-SELECTION.   -> label _ABE_END   + ParseBlock
@@ -997,6 +997,11 @@ Var
                 End;
   StrLitCount : Integer;
 
+  { Evenements ABAP definis (TODO 24) }
+  EventStartDefined : Boolean;
+  EventEndDefined   : Boolean;
+  TryCount          : Integer;
+
 Const
 {$IFDEF FPC}
   BinAPIDecorated : Array[0..PE_NUM_API - 1] Of String[32] = (
@@ -1205,6 +1210,12 @@ Procedure ParseTry; Forward;
 Procedure ParseRaise; Forward;
 Procedure ParseEvent(EventKw : Integer); Forward;
 Procedure ParseSelScreen(IsParam : Boolean); Forward;
+
+{ ============================================================ }
+{ DECLARATIONS FORWARD (EVENEMENTS ET SELECTION TODO 24)       }
+{ ============================================================ }
+
+Function  IsEventKeyword : Boolean; Forward;
 
 { ============================================================ }
 { FONCTIONS UTILITAIRES                                        }
@@ -4975,15 +4986,30 @@ Begin
 End;
 
 { ============================================================ }
-{ TODO 23 : STUBS DISPATCHER (TRY, RAISE, EVENT, SEL-SCREEN)   }
+{ TODO 23+24 : STUBS DISPATCHER (TRY, RAISE, EVENT, SEL-SCREEN)}
 { ============================================================ }
 
+{ ---- IsEventKeyword : verifie si le token courant est un     }
+{ mot-cle d evenement ABAP (TODO 24)                            }
+{ ============================================================ }
+Function IsEventKeyword : Boolean;
+Begin
+  IsEventKeyword := TokIsKw(KW_START_OF_SEL) Or TokIsKw(KW_END_OF_SEL) Or
+                    TokIsKw(KW_TOP_OF_PAGE) Or TokIsKw(KW_END_OF_PAGE) Or
+                    TokIsKw(KW_LINE_SEL) Or TokIsKw(KW_USER_CMD);
+End;
+
 { ---- ParseTry : TRY. ... CATCH cx. ... [CLEANUP.] ENDTRY. -- }
-{ Stub : parser les blocs sans gestion reelle des exceptions    }
+{ Stub : parser les blocs avec labels _ABX_catch/_ABX_cleanup   }
 { ============================================================ }
 Procedure ParseTry;
+Var TryIdx  : Integer;
+    TryLbl  : TString;
 Begin
-  EmitComment('---- TRY (stub) ----');
+  Inc(TryCount);
+  TryIdx := TryCount;
+  TryLbl := IntToStr_(TryIdx);
+  EmitComment('---- TRY #' + TryLbl + ' (stub) ----');
 
   { Consommer le point apres TRY }
   If CurTokType = TOK_DOT Then Consume;
@@ -4991,9 +5017,10 @@ Begin
   { Corps du TRY : parser jusqu a CATCH, CLEANUP ou ENDTRY }
   ParseBlock(KW_CATCH, KW_CLEANUP, KW_ENDTRY);
 
-  { CATCH cx_name. ... }
+  { CATCH cx_name. ... (TODO 24: label _ABX_catch_N) }
   While TokIsKw(KW_CATCH) Do
   Begin
+    EmitLabel('_ABX_catch_' + TryLbl);
     EmitComment('CATCH (stub)');
     Consume; { CATCH }
     { Nom de la classe exception : consommer }
@@ -5009,9 +5036,10 @@ Begin
     ParseBlock(KW_CATCH, KW_CLEANUP, KW_ENDTRY);
   End;
 
-  { CLEANUP. ... }
+  { CLEANUP. ... (TODO 24: label _ABX_cleanup_N) }
   If TokIsKw(KW_CLEANUP) Then
   Begin
+    EmitLabel('_ABX_cleanup_' + TryLbl);
     EmitComment('CLEANUP (stub)');
     Consume;
     If CurTokType = TOK_DOT Then Consume;
@@ -5027,7 +5055,7 @@ Begin
   Else
     LexError('ENDTRY attendu');
 
-  EmitComment('---- FIN TRY (stub) ----');
+  EmitComment('---- FIN TRY #' + TryLbl + ' (stub) ----');
 End;
 
 { ---- ParseRaise : RAISE [EXCEPTION [TYPE cx_name]]. --------- }
@@ -5042,10 +5070,12 @@ Begin
 End;
 
 { ---- ParseEvent : START-OF-SELECTION / END-OF-SELECTION / etc }
-{ Stub : emettre un label, consommer le point                   }
+{ TODO 24 : label + bloc + RET pour START/END-OF-SELECTION      }
+{           stub vide pour TOP-OF-PAGE, END-OF-PAGE, etc.       }
 { ============================================================ }
 Procedure ParseEvent(EventKw : Integer);
 Var LblName : TString;
+    SkipLbl : TString;
 Begin
   Case EventKw Of
     KW_START_OF_SEL : LblName := '_ABE_START';
@@ -5057,12 +5087,42 @@ Begin
   Else
     LblName := '_ABE_UNKNOWN';
   End;
-  EmitBlank;
-  EmitComment('---- EVENT ' + LblName + ' ----');
-  EmitLabel(LblName);
 
   { Consommer le point }
   If CurTokType = TOK_DOT Then Consume;
+
+  { START-OF-SELECTION et END-OF-SELECTION : label + bloc + RET }
+  If (EventKw = KW_START_OF_SEL) Or (EventKw = KW_END_OF_SEL) Then
+  Begin
+    SkipLbl := NewLabel;
+    EmitBlank;
+    EmitComment('---- EVENT ' + LblName + ' ----');
+    EmitI('JMP     ' + SkipLbl);
+    EmitLabel(LblName);
+    { Marquer l evenement comme defini }
+    If EventKw = KW_START_OF_SEL Then
+      EventStartDefined := True
+    Else
+      EventEndDefined := True;
+    { Parser le corps : instructions jusqu au prochain evenement, }
+    { FORM, FUNCTION ou fin de fichier                            }
+    While (CurTokType <> TOK_EOF) And
+          (Not IsEventKeyword) And
+          (Not TokIsKw(KW_FORM)) And
+          (Not TokIsKw(KW_FUNCTION)) Do
+      ParseStatement;
+    { Emettre RET pour revenir a l appelant }
+    EmitI('RET');
+    EmitLabel(SkipLbl);
+  End
+  Else
+  Begin
+    { Autres evenements : stub vide (label seul) }
+    EmitBlank;
+    EmitComment('---- EVENT ' + LblName + ' (stub) ----');
+    EmitLabel(LblName);
+    EmitI('RET');
+  End;
 End;
 
 { ---- ParseSelScreen : PARAMETERS / SELECT-OPTIONS (stubs) --- }
@@ -5123,10 +5183,35 @@ Begin
   End
   Else
   Begin
-    EmitComment('---- SELECT-OPTIONS (stub) ----');
-    { SELECT-OPTIONS s FOR var. }
-    { Consommer tout jusqu au point }
-    SkipToDot;
+    { SELECT-OPTIONS s FOR var (TODO 24 : LOW / HIGH vars) }
+    EmitComment('---- SELECT-OPTIONS ----');
+    If CurTokType <> TOK_IDENT Then
+    Begin LexError('Nom attendu apres SELECT-OPTIONS'); SkipToDot; Exit; End;
+    ParName := CurTokStr;
+    Consume;
+    { Parser FOR var }
+    If (CurTokType = TOK_IDENT) And (StrUpperCase(CurTokStr) = 'FOR') Then
+    Begin
+      Consume;
+      If CurTokType = TOK_IDENT Then Consume;
+    End;
+    { Consommer options supplementaires jusqu au point }
+    While (CurTokType <> TOK_DOT) And (CurTokType <> TOK_EOF) Do
+      Consume;
+    If CurTokType = TOK_DOT Then Consume;
+    { Creer les deux variables globales LOW et HIGH (DD) }
+    Idx := FindSym(ParName + '-LOW');
+    If Idx <= 0 Then
+    Begin
+      Idx := AddSym(ParName + '-LOW', TYPE_I, STORE_STATIC);
+      EmitComment('SELOPT ' + ParName + '-LOW');
+    End;
+    Idx := FindSym(ParName + '-HIGH');
+    If Idx <= 0 Then
+    Begin
+      Idx := AddSym(ParName + '-HIGH', TYPE_I, STORE_STATIC);
+      EmitComment('SELOPT ' + ParName + '-HIGH');
+    End;
   End;
 End;
 
@@ -7313,6 +7398,9 @@ Begin
   ProgName    := 'ZPROGRAM';
   LabelCount  := 0;
   StrLitCount := 0;
+  EventStartDefined := False;  { TODO 24 }
+  EventEndDefined   := False;  { TODO 24 }
+  TryCount          := 0;      { TODO 24 }
   LexInit;
   If Opts.DebugMode Then
   Begin
@@ -7362,8 +7450,15 @@ Begin
       ParseStatement;
     End;
 
-    { Emettre la sortie du programme (TODO 19) }
+    { Emettre la sortie du programme (TODO 19+24) }
     EmitBlank;
+    EmitComment('--- Appel des evenements ABAP (TODO 24) ---');
+    { Appeler START-OF-SELECTION si defini }
+    If EventStartDefined Then
+      EmitI('CALL    _ABE_START');
+    { Appeler END-OF-SELECTION si defini }
+    If EventEndDefined Then
+      EmitI('CALL    _ABE_END');
     EmitComment('--- Sortie du programme ---');
     EmitI('PUSH    0');
     EmitI('CALL    _ExitProcess@4');
