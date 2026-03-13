@@ -286,7 +286,7 @@
             Comparaison de structures : pas d operateur = par defaut
               (l utilisateur peut definir un OP = avec STRUCT)
 
-  TODO 17 - REFERENCES ET AFFECTATIONS
+  TODO 17 - REFERENCES ET AFFECTATIONS [IMPLEMENTE]
             REF MODE : reference (pointeur) vers un objet de mode MODE
               Tout variable est implicitement un REF
             Affectation := : expr_dest := expr_source
@@ -3887,7 +3887,8 @@ End;
 
 { ---- ParseExpr : point d entree pour une expression ---------- }
 { Appelle ParseFormula avec priorite minimale 1.
-  Gere egalement les operateurs d affectation composes :
+  Gere egalement les operateurs d affectation :
+  := (becomes), =: (reverse assign),
   +:= (plusab), -:= (minusab), *:= (timesab), /:= (divab).     }
 
 Procedure ParseExpr(Var Res : TExprVal);
@@ -3896,11 +3897,139 @@ Var
   Rhs      : TExprVal;
   SIdx     : Integer;
   S        : TString;
+  { TODO 17 }
+  DestIdx  : Integer;
+  IsLblRef : TString;
 Begin
   ParseFormula(1, Res);
 
+  { TODO 17 - Affectation de base := }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
+  Begin
+    { L operande gauche doit etre une lvalue (variable) }
+    If (Res.Kind <> EK_MEM) Or (Res.SymIdx < 0) Then
+    Begin
+      CompileError('operande gauche de := doit etre une variable');
+      ParserAdvance;
+      ParseFormula(1, Rhs);
+      Exit;
+    End;
+    SIdx := Res.SymIdx;
+    ParserAdvance; { consommer := }
+    ParseFormula(1, Rhs);
+    ExprFlushToAX(Rhs);
+    EmitComment('assign := to ' + SymTab[SIdx].Name);
+    { Stocker dans la variable }
+    If SymTab[SIdx].ScopeLevel = 0 Then
+    Begin
+      If (ModeKindOf(SymTab[SIdx].ModeIdx) = MK_BOOL) Or
+         (ModeKindOf(SymTab[SIdx].ModeIdx) = MK_CHAR) Then
+        EmitInstr('MOV    [' + SymTab[SIdx].MangledName + '], AL')
+      Else If (SymTab[SIdx].ModeIdx >= 0) And
+              (SymTab[SIdx].ModeIdx < ModeCount) And
+              (ModeTab[SymTab[SIdx].ModeIdx].Kind = MK_STRUCT) Then
+      Begin
+        { Struct assignment : copier via REP MOVSW }
+        EmitInstr('MOV    SI, AX');
+        EmitInstr('MOV    DI, OFFSET ' + SymTab[SIdx].MangledName);
+        Str(ModeTab[SymTab[SIdx].ModeIdx].Size Div 2, S);
+        EmitInstr('MOV    CX, ' + S);
+        EmitInstr('CLD');
+        EmitInstr('REP MOVSW');
+      End
+      Else
+        EmitInstr('MOV    [' + SymTab[SIdx].MangledName + '], AX');
+    End
+    Else
+    Begin
+      Str(SymTab[SIdx].Offset, S);
+      If (SymTab[SIdx].ModeIdx >= 0) And
+         (SymTab[SIdx].ModeIdx < ModeCount) And
+         (ModeTab[SymTab[SIdx].ModeIdx].Kind = MK_STRUCT) Then
+      Begin
+        { Struct local : copier via REP MOVSW }
+        EmitInstr('MOV    SI, AX');
+        If SymTab[SIdx].Offset >= 0 Then
+          EmitInstr('LEA    DI, [BP+' + S + ']')
+        Else
+          EmitInstr('LEA    DI, [BP' + S + ']');
+        Str(ModeTab[SymTab[SIdx].ModeIdx].Size Div 2, S);
+        EmitInstr('MOV    CX, ' + S);
+        EmitInstr('CLD');
+        EmitInstr('REP MOVSW');
+      End
+      Else If SymTab[SIdx].Offset >= 0 Then
+        EmitInstr('MOV    [BP+' + S + '], AX')
+      Else
+        EmitInstr('MOV    [BP' + S + '], AX');
+    End;
+    Res.Kind := EK_AX;
+  End
+  { TODO 17 - Affectation inversee =: }
+  Else If CurToken.Kind = TK_BUS Then
+  Begin
+    { expr_source =: dest }
+    ExprFlushToAX(Res);
+    EmitInstr('PUSH   AX');
+    ParserAdvance; { consommer =: }
+    { Lire la destination }
+    ParseFormula(1, Rhs);
+    If (Rhs.Kind <> EK_MEM) Or (Rhs.SymIdx < 0) Then
+    Begin
+      CompileError('operande droite de =: doit etre une variable');
+      Exit;
+    End;
+    DestIdx := Rhs.SymIdx;
+    EmitInstr('POP    AX');
+    EmitComment('reverse assign =: to ' + SymTab[DestIdx].Name);
+    If SymTab[DestIdx].ScopeLevel = 0 Then
+      EmitInstr('MOV    [' + SymTab[DestIdx].MangledName + '], AX')
+    Else
+    Begin
+      Str(SymTab[DestIdx].Offset, S);
+      If SymTab[DestIdx].Offset >= 0 Then
+        EmitInstr('MOV    [BP+' + S + '], AX')
+      Else
+        EmitInstr('MOV    [BP' + S + '], AX');
+    End;
+    Res.Kind := EK_AX;
+  End
+  { TODO 17 - IS / ISNT identity test }
+  Else If (CurToken.Kind = TK_BOLD) And
+          ((CurToken.Val = 'IS') Or (CurToken.Val = 'ISNT')) Then
+  Begin
+    IsLblRef := CurToken.Val;
+    ExprFlushToAX(Res);
+    EmitInstr('PUSH   AX');
+    ParserAdvance; { consommer IS ou ISNT }
+    ParseFormula(1, Rhs);
+    ExprFlushToAX(Rhs);
+    EmitInstr('POP    BX');
+    EmitInstr('CMP    BX, AX');
+    Inc(LabelGenSeq);
+    Str(LabelGenSeq, S);
+    If IsLblRef = 'IS' Then
+    Begin
+      EmitComment('IS identity test');
+      EmitInstr('MOV    AX, 0');
+      EmitInstr('JNE    _A68L_IS_' + S);
+      EmitInstr('MOV    AX, 1');
+      EmitLabel('_A68L_IS_' + S);
+    End
+    Else
+    Begin
+      EmitComment('ISNT identity test');
+      EmitInstr('MOV    AX, 0');
+      EmitInstr('JE     _A68L_ISNT_' + S);
+      EmitInstr('MOV    AX, 1');
+      EmitLabel('_A68L_ISNT_' + S);
+    End;
+    Res.Kind    := EK_AX;
+    Res.ModeIdx := TY_IDX_BOOL;
+    Res.SymIdx  := -1;
+  End
   { Operateurs d affectation composes : +:= -:= *:= /:= }
-  If (CurToken.Kind = TK_OP) And IsAssignOp(CurToken.Val) And
+  Else If (CurToken.Kind = TK_OP) And IsAssignOp(CurToken.Val) And
      (CurToken.Val <> ':=') Then
   Begin
     AssignOp := CurToken.Val;
@@ -6056,9 +6185,18 @@ Begin
     ParserAdvance;
 End;
 
+{ ============================================================
+  TODO 17 - REFERENCES ET AFFECTATIONS [IMPLEMENTE]
+  ============================================================ }
+
 Procedure ParseAssignment;
+{ L affectation standalone est geree dans ParseExpr.
+  Cette procedure est pour les cas speciaux ou on veut
+  forcer un contexte d affectation. }
+Var
+  Res : TExprVal;
 Begin
-  { TODO 17 }
+  ParseExpr(Res);
 End;
 
 Procedure ParseRowDecl;

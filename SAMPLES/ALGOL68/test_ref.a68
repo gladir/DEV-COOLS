@@ -1,0 +1,32 @@
+CO Test TODO 17 - REFERENCES ET AFFECTATIONS CO
+
+CO Affectation de base := CO
+INT x := 10;
+x := 42;
+INT y := 0;
+y := x;
+
+CO Affectation inversee =: CO
+INT z := 0;
+99 =: z;
+
+CO IS et ISNT pour identite CO
+INT a := 5;
+INT b := 5;
+BOOL same := a IS b;
+BOOL diff := a ISNT b;
+
+CO NIL test CO
+REF INT p := NIL;
+BOOL isnil := p IS NIL;
+BOOL notnil := p ISNT NIL;
+
+CO HEAP allocation CO
+HEAP INT h;
+
+CO Affectation composee CO
+INT c := 10;
+c +:= 5;
+c -:= 2;
+c *:= 3;
+c /:= 2
