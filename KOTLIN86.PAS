@@ -419,7 +419,7 @@
               values() -> tableau de toutes les entrees
               valueOf(s) -> recherche par nom -> ordinal
 
-  TODO 22 - EXTENSIONS ET FONCTIONS D ORDRE SUPERIEUR
+  TODO 22 - EXTENSIONS ET FONCTIONS D ORDRE SUPERIEUR [IMPLEMENTE]
             Fonctions d extension : fun String.hello() { println(this) }
               -> _KTF_String_hello : premier param = receveur (this dans BX)
               Appel : "abc".hello() -> PUSH ptr_chaine + CALL _KTF_String_hello
@@ -878,6 +878,10 @@ Var
   VtableCount    : Integer;  { compteur pour vtables emises           }
   ObjectCount    : Integer;  { compteur pour object singletons        }
 
+  { Extensions et fonctions d ordre superieur (TODO 22) }
+  ExtFunCount    : Integer;  { compteur de fonctions d extension      }
+  HOFLambdaCount : Integer;  { compteur pour labels _KTF_LAMBDA_N     }
+
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
@@ -1002,6 +1006,8 @@ Procedure ParseEnumClassDecl;     Forward;
 Procedure ParseObjectDecl;        Forward;
 Procedure EmitInheritanceRuntime; Forward;
 Function  InterfaceFind(Const Name : TString) : Integer; Forward;
+{ TODO 22 - Extensions et fonctions d ordre superieur }
+Procedure EmitExtensionRuntime;   Forward;
 { General }
 Procedure ParserAdvance; Forward;
 Procedure ParseStmt;     Forward;
@@ -1320,6 +1326,8 @@ Begin
   EnumCount      := 0;
   VtableCount    := 0;
   ObjectCount    := 0;
+  ExtFunCount    := 0;
+  HOFLambdaCount := 0;
   LabelGenSeq    := 0;
   GExprDummy.Kind    := EK_NONE;
   GExprDummy.ImmVal  := 0;
@@ -2389,11 +2397,18 @@ End;
 (* ---- ParseCallArgs : empiler les arguments d un appel ------ *)
 (* Lit les expressions separees par ',' jusqu au ')' fermant.    *)
 (* Les arguments sont empiles gauche a droite (PUSH AX).         *)
+(* TODO 22 : supporte aussi { bloc } lambda en argument          *)
 (* Retourne le nombre d arguments.                               *)
 Function ParseCallArgs : Integer;
 Var
-  N   : Integer;
-  Arg : TExprVal;
+  N      : Integer;
+  Arg    : TExprVal;
+  LamLbl : TString;
+  LamSkp : TString;
+  LamRet : TString;
+  SaveFS : Integer;
+  SaveRL : TString;
+  SaveNM : TString;
 Begin
   N := 0;
   ParserAdvance; { consomme '(' }
@@ -2404,10 +2419,53 @@ Begin
     Exit;
   End;
   Repeat
-    ParseExpr(Arg);
-    ExprFlushToAX(Arg);
-    EmitInstrA('PUSH', 'AX');
-    Inc(N);
+    (* TODO 22 - Lambda inline comme argument *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = CH_LBRACE) Then
+    Begin
+      LamLbl := KT_FN_PFX + 'LAMBDA_' + IntToStr(HOFLambdaCount);
+      LamSkp := LabelGen;
+      LamRet := LabelGen;
+      Inc(HOFLambdaCount);
+      EmitInstrA('JMP', LamSkp);
+      EmitBlankLine;
+      EmitComment('--- lambda inline ---');
+      EmitLabel(LamLbl);
+      EmitProlog;
+      SaveFS := CurFrameSize;
+      SaveRL := CurFnRetLbl;
+      SaveNM := CurFnName;
+      CurFrameSize := 0;
+      CurFnRetLbl := LamRet;
+      CurFnName := 'lambda';
+      Inc(CurFnDepth);
+      SymEnterScope;
+      { Parametre implicite it a [BP+4] }
+      SymAdd('it', SK_PARAM, TY_IDX_INT, 4);
+      ParserAdvance; { consomme accolade ouvrante }
+      While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = CH_RBRACE))
+            And Not (CurToken.Kind = TK_EOF) Do
+        ParseStmt;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = CH_RBRACE) Then
+        ParserAdvance; { consomme accolade fermante }
+      EmitLabel(LamRet);
+      EmitEpilog;
+      SymLeaveScope;
+      Dec(CurFnDepth);
+      CurFrameSize := SaveFS;
+      CurFnRetLbl := SaveRL;
+      CurFnName := SaveNM;
+      EmitLabel(LamSkp);
+      EmitInstrAB('MOV', 'AX', 'OFFSET ' + LamLbl);
+      EmitInstrA('PUSH', 'AX');
+      Inc(N);
+    End
+    Else
+    Begin
+      ParseExpr(Arg);
+      ExprFlushToAX(Arg);
+      EmitInstrA('PUSH', 'AX');
+      Inc(N);
+    End;
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
       ParserAdvance  { consomme ',' }
     Else
@@ -2447,6 +2505,10 @@ Var
   IntpHas  : Boolean;
   IntpFirst: Boolean;
   IntpVIdx : Integer;
+  { TODO 22 - Trailing lambda }
+  LamLbl   : TString;
+  LamSkp   : TString;
+  LamRet   : TString;
 Begin
   Case CurToken.Kind Of
     TK_INTEGER, TK_LONG, TK_FLOAT, TK_CHAR :
@@ -2788,6 +2850,35 @@ Begin
           Res.Offset  := 0;
           Res.SymIdx  := -1;
         End
+        (* TODO 22 - with(obj) scope function *)
+        Else If IdName = 'with' Then
+        Begin
+          ParserAdvance; { consomme '(' }
+          ParseExpr(Res);
+          ExprFlushToAX(Res);
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance; { consomme ')' }
+          EmitComment('with(obj) ...');
+          EmitInstrA('PUSH', 'AX'); { empiler obj comme this }
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = CH_LBRACE) Then
+          Begin
+            ParserAdvance; { consomme accolade ouvrante }
+            While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = CH_RBRACE))
+                  And Not (CurToken.Kind = TK_EOF) Do
+              ParseStmt;
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = CH_RBRACE) Then
+              ParserAdvance { consomme accolade fermante }
+            Else
+              CompileError('accolade fermante attendue pour with()');
+          End;
+          EmitInstrAB('ADD', 'SP', '2'); { depiler this }
+          { AX = resultat du dernier statement du bloc }
+          Res.Kind    := EK_AX;
+          Res.ImmVal  := 0;
+          Res.TypeIdx := TY_IDX_ANY;
+          Res.Offset  := 0;
+          Res.SymIdx  := -1;
+        End
         Else
         Begin
           { TODO 16 - Appel constructeur de classe : Nom(args) }
@@ -2831,8 +2922,45 @@ Begin
           { Appel de fonction generique }
           NArgs := ParseCallArgs;
           GCallArgCount := NArgs;
+          (* TODO 22 - Trailing lambda : func(args) then lambda *)
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = CH_LBRACE) Then
+          Begin
+            LamLbl := KT_FN_PFX + 'LAMBDA_' + IntToStr(HOFLambdaCount);
+            LamSkp := LabelGen;
+            LamRet := LabelGen;
+            Inc(HOFLambdaCount);
+            EmitInstrA('JMP', LamSkp);
+            EmitBlankLine;
+            EmitComment('--- trailing lambda ---');
+            EmitLabel(LamLbl);
+            EmitProlog;
+            SymEnterScope;
+            SymAdd('it', SK_PARAM, TY_IDX_INT, 4);
+            ParserAdvance; { consomme accolade ouvrante }
+            While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = CH_RBRACE))
+                  And Not (CurToken.Kind = TK_EOF) Do
+              ParseStmt;
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = CH_RBRACE) Then
+              ParserAdvance;
+            EmitLabel(LamRet);
+            EmitEpilog;
+            SymLeaveScope;
+            EmitLabel(LamSkp);
+            EmitInstrAB('MOV', 'AX', 'OFFSET ' + LamLbl);
+            EmitInstrA('PUSH', 'AX');
+            Inc(NArgs);
+            GCallArgCount := NArgs;
+          End;
           SIdx := SymFind(IdName);
-          If (SIdx >= 0) And (SymTab[SIdx].Kind = SK_FUN) Then
+          { TODO 22 - Appel indirect : param de type fonction }
+          If (SIdx >= 0) And (SymTab[SIdx].Kind = SK_PARAM) Then
+          Begin
+            EmitComment('appel indirect HOF : ' + IdName);
+            ExprLoad(SIdx, Res);
+            ExprFlushToAX(Res);
+            EmitInstr('CALL AX');
+          End
+          Else If (SIdx >= 0) And (SymTab[SIdx].Kind = SK_FUN) Then
             EmitInstrA('CALL', SymTab[SIdx].MangledName)
           Else
             EmitInstrA('CALL', KT_FN_PFX + SymNameClean(IdName));
@@ -2901,6 +3029,34 @@ Begin
       Begin
         MembName := CurToken.Val;
         ParserAdvance;
+        (* TODO 22 - Scope functions : .let{} .also{} .run{} .apply{} *)
+        If ((MembName = 'let') Or (MembName = 'also') Or
+            (MembName = 'run') Or (MembName = 'apply')) And
+           (CurToken.Kind = TK_PUNCT) And (CurToken.Val = CH_LBRACE) Then
+        Begin
+          EmitComment('scope function .' + MembName + ' ...');
+          If (MembName = 'also') Or (MembName = 'apply') Then
+            EmitInstrA('PUSH', 'AX'); { sauver obj pour retour }
+          EmitInstrA('PUSH', 'AX'); { empiler it/this pour le bloc }
+          ParserAdvance; { consomme accolade ouvrante }
+          While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = CH_RBRACE))
+                And Not (CurToken.Kind = TK_EOF) Do
+            ParseStmt;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = CH_RBRACE) Then
+            ParserAdvance { consomme accolade fermante }
+          Else
+            CompileError('accolade fermante attendue pour .' + MembName);
+          EmitInstrAB('ADD', 'SP', '2'); { depiler it/this }
+          If (MembName = 'also') Or (MembName = 'apply') Then
+          Begin
+            EmitInstrA('POP', 'AX'); { restaurer obj original }
+          End;
+          { let/run : AX = resultat du bloc (derniere expr) }
+          { also/apply : AX = objet original restaure }
+          Res.Kind    := EK_AX;
+          Res.SymIdx  := -1;
+        End
+        Else
         (* Appel methode : expr.membre(args) *)
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
         Begin
@@ -4567,6 +4723,7 @@ Begin
   EmitStringRuntime;
   EmitNullSafetyRuntime;
   EmitInheritanceRuntime;
+  EmitExtensionRuntime;
 End;
 
 (* ---- EmitExprRuntime : routines runtime pour expressions ------ *)
@@ -5546,6 +5703,30 @@ Begin
   EmitBlankLine;
 End;
 
+(* ---- EmitExtensionRuntime : routines pour HOF (TODO 22) ------ *)
+(* _KTRT_HOFCALL : appel indirect via pointeur de fonction        *)
+(*   Entree : AX = ptr fonction, BX = argument                    *)
+(*   PUSH BX / CALL AX / ADD SP,2                                 *)
+Procedure EmitExtensionRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=========================================================');
+  EmitComment('TODO 22 - EXTENSION / HOF RUNTIME');
+  EmitComment('=========================================================');
+
+  { _KTRT_HOFCALL : appel indirect de fonction }
+  { Entree : AX = ptr fonction, BX = argument a passer }
+  { Resultat : AX = retour de la fonction appelee }
+  EmitBlankLine;
+  EmitComment('--- _KTRT_HOFCALL : AX=funcptr, BX=arg -> AX=result ---');
+  EmitLabel(KT_RT_PFX + 'HOFCALL');
+  EmitInstrA('PUSH', 'BX');   (* empiler argument *)
+  EmitInstr('CALL AX');        (* appel indirect *)
+  EmitInstrAB('ADD', 'SP', '2'); (* nettoyer la pile *)
+  EmitInstr('RET');
+  EmitBlankLine;
+End;
+
 { ============================================================
   TODO 17 - FONCTIONS ET LAMBDAS [IMPLEMENTE]
   ============================================================ }
@@ -5610,6 +5791,7 @@ Begin
       CompileError('nom de methode attendu apres "' + ExtType + '."');
       Exit;
     End;
+    Inc(ExtFunCount); { TODO 22 : compter les fonctions d extension }
   End;
 
   FnLabel := KT_FN_PFX + SymNameClean(FnName);
@@ -5640,8 +5822,16 @@ Begin
 
   SymEnterScope;
 
-  { Parser les parametres }
+  { TODO 22 - Fonctions d extension : this est le premier parametre implicite }
   ParamCnt := 0;
+  If IsExt Then
+  Begin
+    ParamOfs := 4 + ParamCnt * 2;
+    SymAdd('this', SK_PARAM, TypeLookupName(ExtType), ParamOfs);
+    Inc(ParamCnt);
+  End;
+
+  { Parser les parametres }
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
   Begin
     ParserAdvance; { consomme '(' }
@@ -5669,7 +5859,25 @@ Begin
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
       Begin
         ParserAdvance; { consomme ':' }
-        If CurToken.Kind = TK_IDENT Then
+        { TODO 22 - Type fonctionnel : (T) -> R ou (T, U) -> R }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          { Consommer (types...) -> RetType }
+          ParserAdvance; { consomme '(' }
+          While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')'))
+                And (CurToken.Kind <> TK_EOF) Do
+            ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance; { consomme ')' }
+          { Consommer -> }
+          If (CurToken.Kind = TK_OP) And (CurToken.Val = '->') Then
+            ParserAdvance;
+          { Consommer le type retour }
+          If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+            ParserAdvance;
+          ParamTIdx := TY_IDX_INT; { ptr de fonction = word 16 bits }
+        End
+        Else If CurToken.Kind = TK_IDENT Then
         Begin
           ParamTIdx := TypeLookupName(CurToken.Val);
           If ParamTIdx < 0 Then
