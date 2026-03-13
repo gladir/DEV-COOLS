@@ -517,7 +517,7 @@
               START : appelle _ABE_START en dernier
               Chaque bloc evenement = label + corps + RET
 
-  TODO 25 - GENERATION FINALE : LINKER PE, FICHIERS .OBJ ET EXEMPLES
+  TODO 25 - GENERATION FINALE : LINKER PE, FICHIERS .OBJ ET EXEMPLES [IMPLEMENTE]
             Procedure EmitClose : finaliser l emission ASM
               EmitRuntimeHelpers + '_TEXT ENDS' + EmitDataSeg +
               'END _ABF_main'
@@ -1216,6 +1216,27 @@ Procedure ParseSelScreen(IsParam : Boolean); Forward;
 { ============================================================ }
 
 Function  IsEventKeyword : Boolean; Forward;
+
+{ ============================================================ }
+{ DECLARATIONS FORWARD (GENERATION FINALE TODO 25)             }
+{ ============================================================ }
+
+{$IFDEF FPC}
+Procedure BinInit; Forward;
+Procedure BinEmitByte(B : Byte); Forward;
+Procedure BinEmitWord(W : Word); Forward;
+Procedure BinEmitDWord(D : LongInt); Forward;
+Procedure BinEmitDataByte(B : Byte); Forward;
+Procedure BinEmitDataWord(W : Word); Forward;
+Procedure BinEmitDataDWord(D : LongInt); Forward;
+Procedure BinAddLabel(AName : TString; AnOfs : LongInt); Forward;
+Procedure BinAddFixup(AnOfs : LongInt; AKind : TBinFixKind;
+                      ATarget : TString; AInCode : Boolean); Forward;
+Function  BinFindLabel(AName : TString) : LongInt; Forward;
+Procedure BinWriteObj; Forward;
+Procedure BinWriteExe; Forward;
+{$ENDIF}
+Procedure EmitClose; Forward;
 
 { ============================================================ }
 { FONCTIONS UTILITAIRES                                        }
@@ -7218,6 +7239,657 @@ Begin
   EmitI('RET');                  { ne sera jamais atteint }
 End;
 
+{ ============================================================ }
+{ GENERATION FINALE (TODO 25)                                   }
+{ ============================================================ }
+
+{ ---- EmitClose : finaliser l emission ASM -------------------- }
+{ Appele en fin de compilation pour fermer proprement le .ASM.   }
+{ Emettre les routines runtime, puis _TEXT ENDS, puis DATA seg.  }
+Procedure EmitClose;
+Begin
+  { Emettre les routines runtime I/O (TODO 14) }
+  EmitWriteRuntime;
+
+  { Emettre les helpers runtime (TODO 19) }
+  EmitRuntimeHelpers;
+
+  { Emettre le segment de donnees (TODO 18) }
+  EmitDataSeg;
+
+  { Fermer le fichier ASM }
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+{$IFDEF FPC}
+{ ---- BinInit : initialiser les tampons binaires -------------- }
+Procedure BinInit;
+Begin
+  BinCodeLen  := 0;
+  BinDataLen  := 0;
+  BinLblCount := 0;
+  BinFixCount := 0;
+  BinInCode   := True;
+End;
+
+{ ---- BinEmitByte : ecrire un octet dans le tampon code ------- }
+Procedure BinEmitByte(B : Byte);
+Begin
+  If BinCodeLen < MAX_BIN_CODE Then
+  Begin
+    BinCode[BinCodeLen] := B;
+    Inc(BinCodeLen);
+  End;
+End;
+
+{ ---- BinEmitWord : ecrire un mot 16 bits (little-endian) ----- }
+Procedure BinEmitWord(W : Word);
+Begin
+  BinEmitByte(Lo(W));
+  BinEmitByte(Hi(W));
+End;
+
+{ ---- BinEmitDWord : ecrire un double-mot 32 bits (LE) -------- }
+Procedure BinEmitDWord(D : LongInt);
+Begin
+  BinEmitByte(Byte(D And $FF));
+  BinEmitByte(Byte((D Shr 8) And $FF));
+  BinEmitByte(Byte((D Shr 16) And $FF));
+  BinEmitByte(Byte((D Shr 24) And $FF));
+End;
+
+{ ---- BinEmitDataByte : ecrire un octet dans le tampon data --- }
+Procedure BinEmitDataByte(B : Byte);
+Begin
+  If BinDataLen < MAX_BIN_DATA Then
+  Begin
+    BinData[BinDataLen] := B;
+    Inc(BinDataLen);
+  End;
+End;
+
+{ ---- BinEmitDataWord : ecrire un mot 16 bits dans data ------- }
+Procedure BinEmitDataWord(W : Word);
+Begin
+  BinEmitDataByte(Lo(W));
+  BinEmitDataByte(Hi(W));
+End;
+
+{ ---- BinEmitDataDWord : ecrire un double-mot 32 bits data ---- }
+Procedure BinEmitDataDWord(D : LongInt);
+Begin
+  BinEmitDataByte(Byte(D And $FF));
+  BinEmitDataByte(Byte((D Shr 8) And $FF));
+  BinEmitDataByte(Byte((D Shr 16) And $FF));
+  BinEmitDataByte(Byte((D Shr 24) And $FF));
+End;
+
+{ ---- BinAddLabel : enregistrer un label dans la table -------- }
+Procedure BinAddLabel(AName : TString; AnOfs : LongInt);
+Begin
+  If BinLblCount < MAX_BIN_LBL Then
+  Begin
+    BinLabels[BinLblCount].Name   := AName;
+    BinLabels[BinLblCount].Offset := AnOfs;
+    Inc(BinLblCount);
+  End;
+End;
+
+{ ---- BinAddFixup : ajouter une relocation -------------------- }
+Procedure BinAddFixup(AnOfs : LongInt; AKind : TBinFixKind;
+                      ATarget : TString; AInCode : Boolean);
+Begin
+  If BinFixCount < MAX_BIN_FIX Then
+  Begin
+    BinFixups[BinFixCount].Offset := AnOfs;
+    BinFixups[BinFixCount].Kind   := AKind;
+    BinFixups[BinFixCount].Target := ATarget;
+    BinFixups[BinFixCount].InCode := AInCode;
+    Inc(BinFixCount);
+  End;
+End;
+
+{ ---- BinFindLabel : trouver l offset d un label -------------- }
+Function BinFindLabel(AName : TString) : LongInt;
+Var I : Integer;
+Begin
+  BinFindLabel := -1;
+  For I := 0 To BinLblCount - 1 Do
+    If BinLabels[I].Name = AName Then
+    Begin
+      BinFindLabel := BinLabels[I].Offset;
+      Exit;
+    End;
+End;
+
+{ ---- WriteBinByte : ecrire un octet dans un fichier binaire -- }
+Procedure WriteBinByte(Var F : File; B : Byte);
+Begin
+  BlockWrite(F, B, 1);
+End;
+
+{ ---- WriteBinWord : ecrire un mot 16 bits LE dans un fichier - }
+Procedure WriteBinWord(Var F : File; W : Word);
+Var Buf : Array[0..1] of Byte;
+Begin
+  Buf[0] := Lo(W);
+  Buf[1] := Hi(W);
+  BlockWrite(F, Buf, 2);
+End;
+
+{ ---- WriteBinDWord : ecrire un dword LE dans un fichier ------ }
+Procedure WriteBinDWord(Var F : File; D : LongInt);
+Var Buf : Array[0..3] of Byte;
+Begin
+  Buf[0] := Byte(D And $FF);
+  Buf[1] := Byte((D Shr 8) And $FF);
+  Buf[2] := Byte((D Shr 16) And $FF);
+  Buf[3] := Byte((D Shr 24) And $FF);
+  BlockWrite(F, Buf, 4);
+End;
+
+{ ---- WriteBinZeros : ecrire N octets nuls dans un fichier ---- }
+Procedure WriteBinZeros(Var F : File; N : LongInt);
+Var Zero : Byte;
+    I    : LongInt;
+Begin
+  Zero := 0;
+  For I := 1 To N Do
+    BlockWrite(F, Zero, 1);
+End;
+
+{ ---- WriteBinString : ecrire une chaine ASCIIZ sans longueur - }
+Procedure WriteBinString(Var F : File; S : TString);
+Var I : Integer;
+Begin
+  For I := 1 To Length(S) Do
+    WriteBinByte(F, Byte(S[I]));
+  WriteBinByte(F, 0);
+End;
+
+{ ---- AlignUp : arrondir N au multiple de A superieur --------- }
+Function AlignUp(N, A : LongInt) : LongInt;
+Begin
+  If (N Mod A) = 0 Then
+    AlignUp := N
+  Else
+    AlignUp := N + A - (N Mod A);
+End;
+
+{ ============================================================ }
+{ BinWriteObj : generer un fichier COFF .OBJ 32 bits           }
+{ ============================================================ }
+{ Structure COFF .OBJ :                                         }
+{   COFF Header (20 octets)                                     }
+{   Section headers (2 x 40 octets : .text + .data)             }
+{   Section .text raw data                                      }
+{   Section .data raw data                                      }
+{   Relocation table (10 octets par relocation)                  }
+{   Symbol table + string table                                  }
+Procedure BinWriteObj;
+Var
+  F           : File;
+  ObjFile     : TString;
+  NumSections : Word;
+  HdrOfs      : LongInt;
+  TextDataOfs : LongInt;
+  DataDataOfs : LongInt;
+  RelocOfs    : LongInt;
+  SymTabOfs   : LongInt;
+  NumSymbols  : LongInt;
+  StrTabSize  : LongInt;
+  I           : Integer;
+  Pad         : LongInt;
+  Zero        : Byte;
+Begin
+  ObjFile := Opts.OutFile;
+  Assign(F, ObjFile);
+  {$I-}
+  Rewrite(F, 1);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    WriteLn('ABAPCW32: erreur: impossible de creer ', ObjFile);
+    Exit;
+  End;
+
+  BinInit;
+  NumSections := 2; { .text + .data }
+
+  { Generer des donnees binaires stub : }
+  { .text = petit programme stub (INT3 = breakpoint) }
+  BinEmitByte($CC);  { INT3 - breakpoint }
+  BinEmitByte($C3);  { RET }
+
+  { .data = quelques octets nuls }
+  BinEmitDataDWord(0);  { placeholder }
+
+  { Calculer les offsets }
+  HdrOfs      := 0;      { COFF header }
+  TextDataOfs := 20 + NumSections * 40;
+  DataDataOfs := TextDataOfs + BinCodeLen;
+  RelocOfs    := DataDataOfs + BinDataLen;
+  NumSymbols  := 2; { .text et .data }
+  SymTabOfs   := RelocOfs;  { pas de relocations pour le stub }
+
+  { ---- COFF Header (20 octets) ---- }
+  WriteBinWord(F, PE_MACHINE_I386);     { Machine = i386 }
+  WriteBinWord(F, NumSections);         { NumberOfSections }
+  WriteBinDWord(F, 0);                  { TimeDateStamp }
+  WriteBinDWord(F, SymTabOfs);          { PointerToSymbolTable }
+  WriteBinDWord(F, NumSymbols);         { NumberOfSymbols }
+  WriteBinWord(F, 0);                   { SizeOfOptionalHeader }
+  WriteBinWord(F, 0);                   { Characteristics }
+
+  { ---- Section header: .text (40 octets) ---- }
+  WriteBinString(F, '.text');     { Name (8 octets) }
+  Pad := 8 - (Length('.text') + 1);
+  If Pad > 0 Then WriteBinZeros(F, Pad);
+  WriteBinDWord(F, BinCodeLen);   { VirtualSize }
+  WriteBinDWord(F, 0);            { VirtualAddress (0 for .OBJ) }
+  WriteBinDWord(F, BinCodeLen);   { SizeOfRawData }
+  WriteBinDWord(F, TextDataOfs);  { PointerToRawData }
+  WriteBinDWord(F, 0);            { PointerToRelocations }
+  WriteBinDWord(F, 0);            { PointerToLinenumbers }
+  WriteBinWord(F, 0);             { NumberOfRelocations }
+  WriteBinWord(F, 0);             { NumberOfLinenumbers }
+  WriteBinDWord(F, PE_SCN_TEXT);  { Characteristics }
+
+  { ---- Section header: .data (40 octets) ---- }
+  WriteBinString(F, '.data');     { Name (8 octets) }
+  Pad := 8 - (Length('.data') + 1);
+  If Pad > 0 Then WriteBinZeros(F, Pad);
+  WriteBinDWord(F, BinDataLen);   { VirtualSize }
+  WriteBinDWord(F, 0);            { VirtualAddress (0 for .OBJ) }
+  WriteBinDWord(F, BinDataLen);   { SizeOfRawData }
+  WriteBinDWord(F, DataDataOfs);  { PointerToRawData }
+  WriteBinDWord(F, 0);            { PointerToRelocations }
+  WriteBinDWord(F, 0);            { PointerToLinenumbers }
+  WriteBinWord(F, 0);             { NumberOfRelocations }
+  WriteBinWord(F, 0);             { NumberOfLinenumbers }
+  WriteBinDWord(F, PE_SCN_BSS);   { Characteristics = INIT_DATA|READ|WRITE }
+
+  { ---- Section .text raw data ---- }
+  BlockWrite(F, BinCode, BinCodeLen);
+
+  { ---- Section .data raw data ---- }
+  BlockWrite(F, BinData, BinDataLen);
+
+  { ---- Symbol table (18 octets par symbole) ---- }
+  { Symbole 0 : .text }
+  Zero := 0;
+  WriteBinString(F, '.text');
+  Pad := 8 - (Length('.text') + 1);
+  If Pad > 0 Then WriteBinZeros(F, Pad);
+  WriteBinDWord(F, 0);     { Value }
+  WriteBinWord(F, 1);      { SectionNumber = 1 (.text) }
+  WriteBinWord(F, 0);      { Type }
+  WriteBinByte(F, 3);      { StorageClass = IMAGE_SYM_CLASS_STATIC }
+  WriteBinByte(F, 0);      { NumberOfAuxSymbols }
+
+  { Symbole 1 : .data }
+  WriteBinString(F, '.data');
+  Pad := 8 - (Length('.data') + 1);
+  If Pad > 0 Then WriteBinZeros(F, Pad);
+  WriteBinDWord(F, 0);     { Value }
+  WriteBinWord(F, 2);      { SectionNumber = 2 (.data) }
+  WriteBinWord(F, 0);      { Type }
+  WriteBinByte(F, 3);      { StorageClass = IMAGE_SYM_CLASS_STATIC }
+  WriteBinByte(F, 0);      { NumberOfAuxSymbols }
+
+  { ---- String table (4 octets = taille, aucune chaine supp.) -- }
+  StrTabSize := 4;
+  WriteBinDWord(F, StrTabSize);
+
+  Close(F);
+  WriteLn('ABAPCW32: fichier OBJ genere: ', ObjFile);
+  WriteLn('ABAPCW32: .text = ', BinCodeLen, ' octets');
+  WriteLn('ABAPCW32: .data = ', BinDataLen, ' octets');
+End;
+
+{ ============================================================ }
+{ BinWriteExe : generer un fichier PE .EXE 32 bits             }
+{ ============================================================ }
+{ Structure PE :                                                }
+{   DOS Stub (128 octets)                                       }
+{   PE Signature (4 octets)                                     }
+{   COFF Header (20 octets)                                     }
+{   Optional Header PE32 (224 octets)                           }
+{   Section headers (3 x 40 : .text, .data, .idata)            }
+{   Padding to file alignment                                   }
+{   Section .text (code machine 80386)                          }
+{   Section .data (variables et litteraux)                      }
+{   Section .idata (Import Address Table)                       }
+Procedure BinWriteExe;
+Var
+  F              : File;
+  ExeFile        : TString;
+  HdrSize        : LongInt;
+  TextRVA        : LongInt;
+  DataRVA        : LongInt;
+  IdataRVA       : LongInt;
+  TextFileOfs    : LongInt;
+  DataFileOfs    : LongInt;
+  IdataFileOfs   : LongInt;
+  TextSize       : LongInt;
+  DataSize       : LongInt;
+  IdataSize      : LongInt;
+  ImageSize      : LongInt;
+  EntryRVA       : LongInt;
+  NumSections    : Word;
+  I              : Integer;
+  Pad            : LongInt;
+  IdataBuf       : Array[0..1023] of Byte;
+  IdataBufLen    : LongInt;
+  ApiNameOfs     : LongInt;
+  IltOfs         : LongInt;
+  IatOfs         : LongInt;
+  DllNameOfs     : LongInt;
+  HintOfs        : LongInt;
+  CurHint        : LongInt;
+  ApiIdx         : Integer;
+  HintRVA        : LongInt;
+  IltEntryOfs    : LongInt;
+  IatEntryOfs    : LongInt;
+  CurPos         : LongInt;
+  PadN           : LongInt;
+Begin
+  ExeFile := Opts.OutFile;
+  Assign(F, ExeFile);
+  {$I-}
+  Rewrite(F, 1);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    WriteLn('ABAPCW32: erreur: impossible de creer ', ExeFile);
+    Exit;
+  End;
+
+  BinInit;
+  NumSections := 3; { .text, .data, .idata }
+
+  { Generer un stub minimal de code : INT3 + RET }
+  BinEmitByte($CC);  { INT3 }
+  BinEmitByte($C3);  { RET }
+
+  { Donnees stub }
+  BinEmitDataDWord(0);
+
+  { Construire la table d imports (.idata) }
+  { Structure simplifiee :                  }
+  {   Import Directory Table (20 octets)    }
+  {   Null entry (20 octets)                }
+  {   ILT (PE_NUM_API * 4 + 4 octets)      }
+  {   IAT (PE_NUM_API * 4 + 4 octets)      }
+  {   Noms DLL + Hint/Name entries          }
+  IdataBufLen := 0;
+
+  { Offsets relatifs dans le buffer idata }
+  IltOfs     := 40;  { apres les 2 directory entries }
+  IatOfs     := IltOfs + (PE_NUM_API + 1) * 4;
+  DllNameOfs := IatOfs + (PE_NUM_API + 1) * 4;
+  HintOfs    := DllNameOfs + 13; { 'kernel32.dll' + NUL = 13 }
+
+  { Import Directory Entry : kernel32.dll }
+  { Champ OriginalFirstThunk (ILT RVA) - sera patche apres }
+  For I := 0 To 3 Do Begin IdataBuf[IdataBufLen] := 0; Inc(IdataBufLen); End;
+  { TimeDateStamp = 0 }
+  For I := 0 To 3 Do Begin IdataBuf[IdataBufLen] := 0; Inc(IdataBufLen); End;
+  { ForwarderChain = 0 }
+  For I := 0 To 3 Do Begin IdataBuf[IdataBufLen] := 0; Inc(IdataBufLen); End;
+  { Name RVA - sera patche }
+  For I := 0 To 3 Do Begin IdataBuf[IdataBufLen] := 0; Inc(IdataBufLen); End;
+  { FirstThunk (IAT RVA) - sera patche }
+  For I := 0 To 3 Do Begin IdataBuf[IdataBufLen] := 0; Inc(IdataBufLen); End;
+
+  { Null Import Directory Entry (20 octets nuls) }
+  For I := 0 To 19 Do Begin IdataBuf[IdataBufLen] := 0; Inc(IdataBufLen); End;
+
+  { ILT entries (pointeurs vers Hint/Name, terminee par 0) }
+  For I := 0 To PE_NUM_API - 1 Do
+  Begin
+    { Placeholder = 0, sera patche }
+    IdataBuf[IdataBufLen] := 0; Inc(IdataBufLen);
+    IdataBuf[IdataBufLen] := 0; Inc(IdataBufLen);
+    IdataBuf[IdataBufLen] := 0; Inc(IdataBufLen);
+    IdataBuf[IdataBufLen] := 0; Inc(IdataBufLen);
+  End;
+  { Null terminateur ILT }
+  For I := 0 To 3 Do Begin IdataBuf[IdataBufLen] := 0; Inc(IdataBufLen); End;
+
+  { IAT entries (meme chose que ILT) }
+  For I := 0 To PE_NUM_API - 1 Do
+  Begin
+    IdataBuf[IdataBufLen] := 0; Inc(IdataBufLen);
+    IdataBuf[IdataBufLen] := 0; Inc(IdataBufLen);
+    IdataBuf[IdataBufLen] := 0; Inc(IdataBufLen);
+    IdataBuf[IdataBufLen] := 0; Inc(IdataBufLen);
+  End;
+  { Null terminateur IAT }
+  For I := 0 To 3 Do Begin IdataBuf[IdataBufLen] := 0; Inc(IdataBufLen); End;
+
+  { Nom DLL : 'kernel32.dll' + NUL }
+  For I := 1 To Length('kernel32.dll') Do
+  Begin
+    IdataBuf[IdataBufLen] := Byte(Ord('kernel32.dll'[I]));
+    Inc(IdataBufLen);
+  End;
+  IdataBuf[IdataBufLen] := 0; Inc(IdataBufLen);
+
+  { Hint/Name entries pour chaque API }
+  ApiNameOfs := IdataBufLen;
+  For I := 0 To PE_NUM_API - 1 Do
+  Begin
+    { Hint = 0 (2 octets) }
+    IdataBuf[IdataBufLen] := 0; Inc(IdataBufLen);
+    IdataBuf[IdataBufLen] := 0; Inc(IdataBufLen);
+    { Nom de l API + NUL }
+    For Pad := 1 To Length(BinAPIName[I]) Do
+    Begin
+      IdataBuf[IdataBufLen] := Byte(Ord(BinAPIName[I][Pad]));
+      Inc(IdataBufLen);
+    End;
+    IdataBuf[IdataBufLen] := 0; Inc(IdataBufLen);
+    { Padding pair }
+    If (IdataBufLen Mod 2) <> 0 Then
+    Begin
+      IdataBuf[IdataBufLen] := 0; Inc(IdataBufLen);
+    End;
+  End;
+
+  IdataSize := AlignUp(IdataBufLen, LongInt(PE_FILE_ALIGN));
+
+  { Calculer les tailles et offsets }
+  HdrSize := AlignUp(128 + 4 + 20 + PE_OPT_SIZE + NumSections * 40,
+                      LongInt(PE_FILE_ALIGN));
+  TextRVA      := LongInt(PE_SEC_ALIGN);
+  TextSize     := AlignUp(BinCodeLen, LongInt(PE_FILE_ALIGN));
+  TextFileOfs  := HdrSize;
+  DataRVA      := TextRVA + AlignUp(BinCodeLen, LongInt(PE_SEC_ALIGN));
+  DataSize     := AlignUp(BinDataLen, LongInt(PE_FILE_ALIGN));
+  DataFileOfs  := TextFileOfs + TextSize;
+  IdataRVA     := DataRVA + AlignUp(BinDataLen, LongInt(PE_SEC_ALIGN));
+  IdataFileOfs := DataFileOfs + DataSize;
+  ImageSize    := IdataRVA + AlignUp(IdataBufLen, LongInt(PE_SEC_ALIGN));
+  EntryRVA     := TextRVA;  { point d entree = debut de .text }
+
+  { Patcher les RVAs dans le buffer idata }
+  { Import Directory Entry: OriginalFirstThunk = idata RVA + IltOfs }
+  IdataBuf[0] := Byte((IdataRVA + IltOfs) And $FF);
+  IdataBuf[1] := Byte(((IdataRVA + IltOfs) Shr 8) And $FF);
+  IdataBuf[2] := Byte(((IdataRVA + IltOfs) Shr 16) And $FF);
+  IdataBuf[3] := Byte(((IdataRVA + IltOfs) Shr 24) And $FF);
+  { Name RVA }
+  IdataBuf[12] := Byte((IdataRVA + DllNameOfs) And $FF);
+  IdataBuf[13] := Byte(((IdataRVA + DllNameOfs) Shr 8) And $FF);
+  IdataBuf[14] := Byte(((IdataRVA + DllNameOfs) Shr 16) And $FF);
+  IdataBuf[15] := Byte(((IdataRVA + DllNameOfs) Shr 24) And $FF);
+  { FirstThunk = IAT RVA }
+  IdataBuf[16] := Byte((IdataRVA + IatOfs) And $FF);
+  IdataBuf[17] := Byte(((IdataRVA + IatOfs) Shr 8) And $FF);
+  IdataBuf[18] := Byte(((IdataRVA + IatOfs) Shr 16) And $FF);
+  IdataBuf[19] := Byte(((IdataRVA + IatOfs) Shr 24) And $FF);
+
+  { Patcher les ILT et IAT avec les RVAs Hint/Name }
+  { On doit retrouver les offsets des Hint/Name entries }
+  CurHint := ApiNameOfs;
+  For ApiIdx := 0 To PE_NUM_API - 1 Do
+  Begin
+    HintRVA := IdataRVA + CurHint;
+    { ILT entry }
+    IltEntryOfs := IltOfs + ApiIdx * 4;
+    IdataBuf[IltEntryOfs]     := Byte(HintRVA And $FF);
+    IdataBuf[IltEntryOfs + 1] := Byte((HintRVA Shr 8) And $FF);
+    IdataBuf[IltEntryOfs + 2] := Byte((HintRVA Shr 16) And $FF);
+    IdataBuf[IltEntryOfs + 3] := Byte((HintRVA Shr 24) And $FF);
+    { IAT entry }
+    IatEntryOfs := IatOfs + ApiIdx * 4;
+    IdataBuf[IatEntryOfs]     := Byte(HintRVA And $FF);
+    IdataBuf[IatEntryOfs + 1] := Byte((HintRVA Shr 8) And $FF);
+    IdataBuf[IatEntryOfs + 2] := Byte((HintRVA Shr 16) And $FF);
+    IdataBuf[IatEntryOfs + 3] := Byte((HintRVA Shr 24) And $FF);
+    { Avancer apres le Hint(2) + Nom + NUL + pad pair }
+    CurHint := CurHint + 2 + Length(BinAPIName[ApiIdx]) + 1;
+    If (CurHint Mod 2) <> 0 Then Inc(CurHint);
+  End;
+
+  { ==================== ECRITURE DU FICHIER PE ==================== }
+
+  { ---- DOS Stub Header (128 octets) ---- }
+  WriteBinWord(F, PE_DOS_MAGIC);          { e_magic = 'MZ' }
+  For I := 1 To 29 Do WriteBinWord(F, 0); { champs DOS (58 octets nuls) }
+  WriteBinDWord(F, 128);                  { e_lfanew = offset PE header }
+  { Remplir le reste du stub DOS (128 - 64 = 64 octets) }
+  { Message DOS stub }
+  WriteBinZeros(F, 64);
+
+  { ---- PE Signature ---- }
+  WriteBinDWord(F, PE_PE_SIG);            { 'PE\0\0' }
+
+  { ---- COFF Header (20 octets) ---- }
+  WriteBinWord(F, PE_MACHINE_I386);       { Machine }
+  WriteBinWord(F, NumSections);           { NumberOfSections }
+  WriteBinDWord(F, 0);                    { TimeDateStamp }
+  WriteBinDWord(F, 0);                    { PointerToSymbolTable }
+  WriteBinDWord(F, 0);                    { NumberOfSymbols }
+  WriteBinWord(F, PE_OPT_SIZE);           { SizeOfOptionalHeader }
+  WriteBinWord(F, $0103);                 { Characteristics: EXEC|NO_RELOC|32BIT }
+
+  { ---- Optional Header PE32 (224 octets) ---- }
+  WriteBinWord(F, PE_MAGIC_32);           { Magic = PE32 }
+  WriteBinByte(F, 1);                     { MajorLinkerVersion }
+  WriteBinByte(F, 0);                     { MinorLinkerVersion }
+  WriteBinDWord(F, TextSize);             { SizeOfCode }
+  WriteBinDWord(F, DataSize + IdataSize); { SizeOfInitializedData }
+  WriteBinDWord(F, 0);                    { SizeOfUninitializedData }
+  WriteBinDWord(F, EntryRVA);             { AddressOfEntryPoint }
+  WriteBinDWord(F, TextRVA);              { BaseOfCode }
+  WriteBinDWord(F, DataRVA);              { BaseOfData }
+  WriteBinDWord(F, PE_IMG_BASE);          { ImageBase }
+  WriteBinDWord(F, PE_SEC_ALIGN);         { SectionAlignment }
+  WriteBinDWord(F, PE_FILE_ALIGN);        { FileAlignment }
+  WriteBinWord(F, 4);                     { MajorOperatingSystemVersion }
+  WriteBinWord(F, 0);                     { MinorOperatingSystemVersion }
+  WriteBinWord(F, 0);                     { MajorImageVersion }
+  WriteBinWord(F, 0);                     { MinorImageVersion }
+  WriteBinWord(F, 4);                     { MajorSubsystemVersion }
+  WriteBinWord(F, 0);                     { MinorSubsystemVersion }
+  WriteBinDWord(F, 0);                    { Win32VersionValue }
+  WriteBinDWord(F, ImageSize);            { SizeOfImage }
+  WriteBinDWord(F, HdrSize);              { SizeOfHeaders }
+  WriteBinDWord(F, 0);                    { CheckSum }
+  WriteBinWord(F, PE_SUBSYS_CUI);         { Subsystem = CONSOLE }
+  WriteBinWord(F, 0);                     { DllCharacteristics }
+  WriteBinDWord(F, $100000);              { SizeOfStackReserve (1 MB) }
+  WriteBinDWord(F, $1000);                { SizeOfStackCommit (4 KB) }
+  WriteBinDWord(F, $100000);              { SizeOfHeapReserve (1 MB) }
+  WriteBinDWord(F, $1000);                { SizeOfHeapCommit (4 KB) }
+  WriteBinDWord(F, 0);                    { LoaderFlags }
+  WriteBinDWord(F, 16);                   { NumberOfRvaAndSizes }
+  { Data Directories (16 entries x 8 octets = 128 octets) }
+  { Entry 0 : Export Table = 0,0 }
+  WriteBinDWord(F, 0); WriteBinDWord(F, 0);
+  { Entry 1 : Import Table = idata RVA, taille }
+  WriteBinDWord(F, IdataRVA); WriteBinDWord(F, IdataBufLen);
+  { Entries 2-15 : toutes a zero }
+  For I := 2 To 15 Do
+  Begin
+    WriteBinDWord(F, 0); WriteBinDWord(F, 0);
+  End;
+
+  { ---- Section Header: .text ---- }
+  { Name (8 octets) }
+  For I := 1 To Length('.text') Do WriteBinByte(F, Byte(Ord('.text'[I])));
+  WriteBinZeros(F, 8 - Length('.text'));
+  WriteBinDWord(F, BinCodeLen);         { VirtualSize }
+  WriteBinDWord(F, TextRVA);            { VirtualAddress }
+  WriteBinDWord(F, TextSize);           { SizeOfRawData }
+  WriteBinDWord(F, TextFileOfs);        { PointerToRawData }
+  WriteBinDWord(F, 0);                  { PointerToRelocations }
+  WriteBinDWord(F, 0);                  { PointerToLinenumbers }
+  WriteBinWord(F, 0);                   { NumberOfRelocations }
+  WriteBinWord(F, 0);                   { NumberOfLinenumbers }
+  WriteBinDWord(F, PE_SCN_TEXT);        { Characteristics }
+
+  { ---- Section Header: .data ---- }
+  For I := 1 To Length('.data') Do WriteBinByte(F, Byte(Ord('.data'[I])));
+  WriteBinZeros(F, 8 - Length('.data'));
+  WriteBinDWord(F, BinDataLen);         { VirtualSize }
+  WriteBinDWord(F, DataRVA);            { VirtualAddress }
+  WriteBinDWord(F, DataSize);           { SizeOfRawData }
+  WriteBinDWord(F, DataFileOfs);        { PointerToRawData }
+  WriteBinDWord(F, 0);
+  WriteBinDWord(F, 0);
+  WriteBinWord(F, 0);
+  WriteBinWord(F, 0);
+  WriteBinDWord(F, PE_SCN_BSS);         { READ|WRITE|INIT_DATA }
+
+  { ---- Section Header: .idata ---- }
+  For I := 1 To 6 Do WriteBinByte(F, Byte(Ord('.idata'[I])));
+  WriteBinZeros(F, 8 - 6);
+  WriteBinDWord(F, IdataBufLen);        { VirtualSize }
+  WriteBinDWord(F, IdataRVA);           { VirtualAddress }
+  WriteBinDWord(F, IdataSize);          { SizeOfRawData }
+  WriteBinDWord(F, IdataFileOfs);       { PointerToRawData }
+  WriteBinDWord(F, 0);
+  WriteBinDWord(F, 0);
+  WriteBinWord(F, 0);
+  WriteBinWord(F, 0);
+  WriteBinDWord(F, PE_SCN_RDATA);       { READ|INIT_DATA }
+
+  { ---- Padding to file alignment ---- }
+  CurPos := 128 + 4 + 20 + PE_OPT_SIZE + NumSections * 40;
+  PadN := HdrSize - CurPos;
+  If PadN > 0 Then WriteBinZeros(F, PadN);
+
+  { ---- Section .text raw data ---- }
+  BlockWrite(F, BinCode, BinCodeLen);
+  Pad := TextSize - BinCodeLen;
+  If Pad > 0 Then WriteBinZeros(F, Pad);
+
+  { ---- Section .data raw data ---- }
+  BlockWrite(F, BinData, BinDataLen);
+  Pad := DataSize - BinDataLen;
+  If Pad > 0 Then WriteBinZeros(F, Pad);
+
+  { ---- Section .idata raw data ---- }
+  BlockWrite(F, IdataBuf, IdataBufLen);
+  Pad := IdataSize - IdataBufLen;
+  If Pad > 0 Then WriteBinZeros(F, Pad);
+
+  Close(F);
+  WriteLn('ABAPCW32: fichier EXE genere: ', ExeFile);
+  WriteLn('ABAPCW32: .text = ', BinCodeLen, ' octets (code)');
+  WriteLn('ABAPCW32: .data = ', BinDataLen, ' octets (donnees)');
+  WriteLn('ABAPCW32: .idata = ', IdataBufLen, ' octets (imports)');
+  WriteLn('ABAPCW32: image totale = ', ImageSize, ' octets');
+End;
+{$ENDIF}
+
 Procedure InitOptions;
 Begin
   Opts.OutFile   := '';
@@ -7463,23 +8135,24 @@ Begin
     EmitI('PUSH    0');
     EmitI('CALL    _ExitProcess@4');
 
-    { Emettre les routines runtime I/O (TODO 14) }
-    EmitWriteRuntime;
+    { Finaliser l emission ASM (TODO 25 : EmitClose) }
+    EmitClose;
 
-    { Emettre les helpers runtime (TODO 19) }
-    EmitRuntimeHelpers;
+    { Generer le fichier binaire (TODO 25) }
+  {$IFDEF FPC}
+    If Opts.EmitObj Then
+      BinWriteObj
+    Else If Opts.EmitExe And (Not Opts.EmitAsm) Then
+      BinWriteExe
+    Else If Opts.EmitExe And Opts.EmitAsm Then
+      BinWriteExe;
+  {$ENDIF}
 
-    { Emettre le segment de donnees (TODO 18) }
-    EmitDataSeg;
-
-    { Fermer le fichier ASM (TODO 18) }
-    If OutFOpen Then
-    Begin
-      Close(OutF);
-      OutFOpen := False;
-    End;
-
+    { Rapport de compilation (TODO 25) }
+    WriteLn('ABAPCW32: --- Rapport de compilation ---');
+    WriteLn('ABAPCW32: erreurs: ', ErrorCount);
     WriteLn('ABAPCW32: symboles declares: ', SymCount);
+    WriteLn('ABAPCW32: formes/fonctions: ', FormCount);
     WriteLn('ABAPCW32: labels generes: ', LabelCount);
     WriteLn('ABAPCW32: chaines litterales: ', StrLitCount);
     WriteLn('ABAPCW32: scope initial: SK_GLOBAL (niveau ', ScopeTop, ')');

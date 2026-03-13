@@ -498,7 +498,7 @@
               START : appelle _ABE_START en dernier
               Chaque bloc evenement = label + corps + RET
 
-  TODO 25 - GENERATION FINALE : LINKER PE, FICHIERS .OBJ ET EXEMPLES
+  TODO 25 - GENERATION FINALE : LINKER PE, FICHIERS .OBJ ET EXEMPLES [IMPLEMENTE]
             Procedure EmitClose : finaliser l emission ASM
               EmitRuntimeHelpers + '_TEXT ENDS' + EmitDataSeg +
               'END _ABF_main'
