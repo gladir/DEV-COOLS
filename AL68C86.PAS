@@ -271,7 +271,7 @@
               _A68L_LINCR_N, _A68L_LEND_N
             Boucle infinie : DO ... OD (sans FOR/TO/WHILE)
 
-  TODO 16 - STRUCTURES (STRUCT)
+  TODO 16 - STRUCTURES (STRUCT) [IMPLEMENTE]
             Declaration : MODE POINT = STRUCT(INT x, INT y);
               Champs nommes avec leur mode
               Taille = somme des sizeof de chaque champ
@@ -482,6 +482,7 @@ Const
   MAX_ERRORS    = {$IFDEF FPC}30{$ELSE}3{$ENDIF};
   MAX_STR       = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
   MAX_OP        = {$IFDEF FPC}128{$ELSE}32{$ENDIF};
+  MAX_STRUCT_FIELDS = {$IFDEF FPC}128{$ELSE}32{$ENDIF};
   STACK_SIZE    = 1024;
   STRPOOL_SIZE  = 1024;  { taille du pool de chaines dynamiques }
 
@@ -495,6 +496,7 @@ Const
   A68_OP_PFX   = '_A68O_';    { operateur utilisateur               }
   A68_ARR_PFX  = '_A68A_';    { descripteur de tableau               }
   A68_UNI_PFX  = '_A68U_';    { descripteur d union                  }
+  A68_STR_PFX2 = '_A68S_';    { structure (prefix pour struct data)   }
 
   { Codes de sortie }
   EXIT_OK    = 0;
@@ -605,7 +607,16 @@ Type
     Name    : TString;
     Kind    : TModeKind;
     Size    : Integer;   { octets : INT=2, BOOL=1, ptr=2    }
-    ElemIdx : Integer;   { REF/ROW/PROC : mode element      }
+    ElemIdx : Integer;   { REF/ROW/PROC : mode element ;
+                           STRUCT : index debut StructFieldTab }
+    FieldCnt: Integer;   { nombre de champs (MK_STRUCT seulement) }
+  End;
+
+  { ---- Champs de structure (TODO 16) ----------------------- }
+  TStructField = Record
+    Name    : TString;   { nom du champ                       }
+    ModeIdx : Integer;   { indice mode dans ModeTab           }
+    Offset  : Integer;   { offset en octets depuis le debut   }
   End;
 
   { ---- Valeurs d expression (TODO 11) -------------------- }
@@ -705,6 +716,11 @@ Var
   { Table des operateurs (TODO 20) }
   OpTab     : Array[0..MAX_OP - 1] Of TOpRec;
   OpCount   : Integer;
+
+  { Table des champs de structure (TODO 16) }
+  StructFieldTab   : Array[0..MAX_STRUCT_FIELDS - 1] Of TStructField;
+  StructFieldCount : Integer;
+  StructCount      : Integer;   { nombre de modes STRUCT declares }
 
   { Etat general }
   RuntimeEmitted : Boolean;
@@ -846,6 +862,9 @@ Procedure ParseLoopClause(Var Res : TExprVal); Forward;
 
 { TODO 16 - Structures }
 Procedure ParseStructDecl; Forward;
+Procedure ParseModeDecl; Forward;
+Function  StructFieldLookup(ModeIdx : Integer;
+                            Const FieldName : TString) : Integer; Forward;
 
 { TODO 17 - References }
 Procedure ParseAssignment; Forward;
@@ -1155,6 +1174,8 @@ Begin
   IfCount        := 0;
   CaseCount      := 0;
   LoopCount      := 0;
+  StructFieldCount := 0;
+  StructCount    := 0;
   GExprDummy.Kind    := EK_NONE;
   GExprDummy.ImmVal  := 0;
   GExprDummy.ModeIdx := -1;
@@ -2728,6 +2749,17 @@ Var
   CaseS    : TString;
   CaseIdx  : Integer;
   CaseRes  : TExprVal;
+  { TODO 16 - Struct field selection }
+  FieldIdent : TString;
+  StructRes  : TExprVal;
+  StructMIdx : Integer;
+  FldIdx     : Integer;
+  FldOfs     : Integer;
+  FldMode    : Integer;
+  SOfs       : TString;
+  CtorMIdx   : Integer;
+  CtorFldI   : Integer;
+  CtorSize   : TString;
 Begin
   Case CurToken.Kind Of
     { ---- Denotations numeriques et booleennes ---- }
@@ -2834,14 +2866,148 @@ Begin
         Res.ModeIdx := SymTab[Idx].ModeIdx;
         Res.Offset  := SymTab[Idx].Offset;
         Res.SymIdx  := Idx;
+        ParserAdvance;
       End
       Else
       Begin
-        { Identifiant inconnu : on le traite comme 0 pour le moment }
-        WarnMsg('identificateur non declare: ' + CurToken.Val);
-        ExprMakeImm(0, TY_IDX_INT, Res);
+        { Verifier si c est un constructeur de struct : POINT(3, 7) }
+        CtorMIdx := ModeLookupName(CurToken.Val);
+        If (CtorMIdx >= 0) And (ModeTab[CtorMIdx].Kind = MK_STRUCT) Then
+        Begin
+          { Constructeur de structure }
+          ParserAdvance; { consomme le nom du mode }
+          If CurToken.Kind = TK_OPEN Then
+          Begin
+            ParserAdvance; { consomme ( }
+            EmitComment('struct constructor ' + ModeTab[CtorMIdx].Name);
+            { Allouer l espace sur la pile }
+            Str(ModeTab[CtorMIdx].Size, CtorSize);
+            EmitInstr('SUB    SP, ' + CtorSize);
+            EmitInstr('MOV    BX, SP');
+            { Remplir les champs dans l ordre }
+            CtorFldI := 0;
+            While (CurToken.Kind <> TK_CLOSE) And
+                  (CurToken.Kind <> TK_EOF) Do
+            Begin
+              ParseExpr(ArgRes);
+              ExprFlushToAX(ArgRes);
+              If CtorFldI < ModeTab[CtorMIdx].FieldCnt Then
+              Begin
+                FldOfs := StructFieldTab[
+                  ModeTab[CtorMIdx].ElemIdx + CtorFldI].Offset;
+                Str(FldOfs, SOfs);
+                If FldOfs = 0 Then
+                  EmitInstr('MOV    [BX], AX')
+                Else
+                  EmitInstr('MOV    [BX+' + SOfs + '], AX');
+              End;
+              Inc(CtorFldI);
+              If CurToken.Kind = TK_COMMA Then
+                ParserAdvance;
+            End;
+            If CurToken.Kind = TK_CLOSE Then
+              ParserAdvance;
+            { AX = adresse de la structure allouee }
+            EmitInstr('MOV    AX, BX');
+            Res.Kind    := EK_AX;
+            Res.ModeIdx := CtorMIdx;
+            Res.SymIdx  := -1;
+          End
+          Else
+          Begin
+            { Nom de mode sans ( : traiter comme 0 }
+            ExprMakeImm(0, CtorMIdx, Res);
+          End;
+        End
+        Else
+        Begin
+          { Identifiant inconnu : sauvegarder le nom puis avancer }
+          FieldIdent := CurToken.Val;
+          ParserAdvance;
+          { Verifier si c est un selecteur de champ : ident OF expr }
+          If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'OF') Then
+          Begin
+            ParserAdvance; { consomme OF }
+            ParsePrimary(StructRes);
+            StructMIdx := StructRes.ModeIdx;
+            If (StructMIdx >= 0) And (StructMIdx < ModeCount) And
+               (ModeTab[StructMIdx].Kind = MK_STRUCT) Then
+            Begin
+              FldIdx := StructFieldLookup(StructMIdx, FieldIdent);
+              If FldIdx >= 0 Then
+              Begin
+                FldOfs  := StructFieldTab[FldIdx].Offset;
+                FldMode := StructFieldTab[FldIdx].ModeIdx;
+                Str(FldOfs, SOfs);
+                EmitComment('field ' + FieldIdent + ' OF ' +
+                            ModeTab[StructMIdx].Name +
+                            ', offset=' + SOfs);
+                If (StructRes.Kind = EK_MEM) And
+                   (StructRes.SymIdx >= 0) Then
+                Begin
+                  If SymTab[StructRes.SymIdx].ScopeLevel = 0 Then
+                    EmitInstr('MOV    BX, OFFSET ' +
+                              SymTab[StructRes.SymIdx].MangledName)
+                  Else
+                  Begin
+                    Str(StructRes.Offset, SOfs);
+                    If StructRes.Offset >= 0 Then
+                      EmitInstr('LEA    BX, [BP+' + SOfs + ']')
+                    Else
+                      EmitInstr('LEA    BX, [BP' + SOfs + ']');
+                  End;
+                  If FldOfs > 0 Then
+                  Begin
+                    Str(FldOfs, SOfs);
+                    EmitInstr('ADD    BX, ' + SOfs);
+                  End;
+                  If (ModeSizeof(FldMode) = 1) Then
+                  Begin
+                    EmitInstr('XOR    AX, AX');
+                    EmitInstr('MOV    AL, [BX]');
+                  End
+                  Else
+                    EmitInstr('MOV    AX, [BX]');
+                End
+                Else
+                Begin
+                  ExprFlushToAX(StructRes);
+                  EmitInstr('MOV    BX, AX');
+                  If FldOfs > 0 Then
+                  Begin
+                    Str(FldOfs, SOfs);
+                    EmitInstr('ADD    BX, ' + SOfs);
+                  End;
+                  EmitInstr('MOV    AX, [BX]');
+                End;
+                Res.Kind    := EK_AX;
+                Res.ModeIdx := FldMode;
+                Res.SymIdx  := -1;
+              End
+              Else
+              Begin
+                CompileError('champ ' + FieldIdent +
+                             ' inconnu dans ' +
+                             ModeTab[StructMIdx].Name);
+                Res.Kind   := EK_AX;
+                Res.SymIdx := -1;
+              End;
+            End
+            Else
+            Begin
+              ExprFlushToAX(StructRes);
+              EmitComment('field selection (OF) - non-struct');
+              Res.Kind   := EK_AX;
+              Res.SymIdx := -1;
+            End;
+          End
+          Else
+          Begin
+            WarnMsg('identificateur non declare: ' + FieldIdent);
+            ExprMakeImm(0, TY_IDX_INT, Res);
+          End;
+        End;
       End;
-      ParserAdvance;
       { Appel de procedure : nom(args) -> PUSH args + CALL }
       If (Idx >= 0) And (SymTab[Idx].Cat = SC_PROC) And
          (CurToken.Kind = TK_OPEN) Then
@@ -2874,17 +3040,96 @@ Begin
       { Simple identifier (not a call) - check postfix OF, [, etc. }
       Else If Idx >= 0 Then
       Begin
-        { Selection de champ : expr OF struct }
+        { Selection de champ : ident OF struct }
         If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'OF') Then
         Begin
-          ExprFlushToAX(Res);
           ParserAdvance; { consomme OF }
-          EmitComment('field selection (OF) - stub offset 0');
-          EmitInstr('ADD    AX, 0');
-          If CurToken.Kind = TK_IDENT Then
-            ParserAdvance;
-          Res.Kind   := EK_AX;
-          Res.SymIdx := -1;
+          { En Algol 68, la syntaxe est "champ OF struct_expr".
+            L ident lu (Idx) est le NOM DU CHAMP.
+            L expression apres OF est la variable struct. }
+          FieldIdent := SymTab[Idx].Name;
+          { Parser l expression struct apres OF }
+          ParsePrimary(StructRes);
+          StructMIdx := StructRes.ModeIdx;
+          If (StructMIdx >= 0) And (StructMIdx < ModeCount) And
+             (ModeTab[StructMIdx].Kind = MK_STRUCT) Then
+          Begin
+            FldIdx := StructFieldLookup(StructMIdx, FieldIdent);
+            If FldIdx >= 0 Then
+            Begin
+              FldOfs  := StructFieldTab[FldIdx].Offset;
+              FldMode := StructFieldTab[FldIdx].ModeIdx;
+              Str(FldOfs, SOfs);
+              EmitComment('field ' + FieldIdent + ' OF ' +
+                          ModeTab[StructMIdx].Name +
+                          ', offset=' + SOfs);
+              { Calculer l adresse de la struct }
+              If (StructRes.Kind = EK_MEM) And
+                 (StructRes.SymIdx >= 0) Then
+              Begin
+                If SymTab[StructRes.SymIdx].ScopeLevel = 0 Then
+                Begin
+                  { Global struct : adresse via label }
+                  EmitInstr('MOV    BX, OFFSET ' +
+                            SymTab[StructRes.SymIdx].MangledName);
+                End
+                Else
+                Begin
+                  { Local struct : adresse via BP+offset }
+                  Str(StructRes.Offset, SOfs);
+                  If StructRes.Offset >= 0 Then
+                    EmitInstr('LEA    BX, [BP+' + SOfs + ']')
+                  Else
+                    EmitInstr('LEA    BX, [BP' + SOfs + ']');
+                End;
+                { Ajouter l offset du champ }
+                If FldOfs > 0 Then
+                Begin
+                  Str(FldOfs, SOfs);
+                  EmitInstr('ADD    BX, ' + SOfs);
+                End;
+                { Charger la valeur du champ }
+                If (ModeSizeof(FldMode) = 1) Then
+                Begin
+                  EmitInstr('XOR    AX, AX');
+                  EmitInstr('MOV    AL, [BX]');
+                End
+                Else
+                  EmitInstr('MOV    AX, [BX]');
+              End
+              Else
+              Begin
+                { Struct dans AX (adresse) }
+                ExprFlushToAX(StructRes);
+                EmitInstr('MOV    BX, AX');
+                If FldOfs > 0 Then
+                Begin
+                  Str(FldOfs, SOfs);
+                  EmitInstr('ADD    BX, ' + SOfs);
+                End;
+                EmitInstr('MOV    AX, [BX]');
+              End;
+              Res.Kind    := EK_AX;
+              Res.ModeIdx := FldMode;
+              Res.SymIdx  := -1;
+            End
+            Else
+            Begin
+              CompileError('champ ' + FieldIdent +
+                           ' inconnu dans ' +
+                           ModeTab[StructMIdx].Name);
+              Res.Kind   := EK_AX;
+              Res.SymIdx := -1;
+            End;
+          End
+          Else
+          Begin
+            { Pas un struct : traiter comme avant (stub) }
+            ExprFlushToAX(StructRes);
+            EmitComment('field selection (OF) - non-struct');
+            Res.Kind   := EK_AX;
+            Res.SymIdx := -1;
+          End;
         End
         { Indexation de tableau : expr[indice] }
         Else If CurToken.Kind = TK_SUB Then
@@ -4010,10 +4255,11 @@ Procedure ModeInit;
                     ASize : Integer; AElem : Integer);
   Begin
     If ModeCount >= MAX_MODE Then Exit;
-    ModeTab[ModeCount].Name    := AName;
-    ModeTab[ModeCount].Kind    := AKind;
-    ModeTab[ModeCount].Size    := ASize;
-    ModeTab[ModeCount].ElemIdx := AElem;
+    ModeTab[ModeCount].Name     := AName;
+    ModeTab[ModeCount].Kind     := AKind;
+    ModeTab[ModeCount].Size     := ASize;
+    ModeTab[ModeCount].ElemIdx  := AElem;
+    ModeTab[ModeCount].FieldCnt := 0;
     Inc(ModeCount);
   End;
 
@@ -4337,7 +4583,7 @@ End;
 
 Function ModeLookupName(Const Name : TString) : Integer;
 Var
-  I      : Integer;
+  I, J   : Integer;
   Upper  : TString;
   TabUp  : TString;
 Begin
@@ -4348,7 +4594,11 @@ Begin
   For I := 0 To ModeCount - 1 Do
   Begin
     TabUp := ModeTab[I].Name;
-    { ModeTab names are already uppercase }
+    { Convertir aussi le nom du ModeTab en majuscules pour les
+      modes utilisateur (minuscules possibles depuis TODO 16) }
+    For J := 1 To Length(TabUp) Do
+      If (TabUp[J] >= 'a') And (TabUp[J] <= 'z') Then
+        TabUp[J] := Chr(Ord(TabUp[J]) - 32);
     If TabUp = Upper Then
     Begin
       ModeLookupName := I;
@@ -4744,6 +4994,8 @@ Var
   S         : TString;   { chaine temporaire                 }
   Done      : Boolean;   { fin de la liste de declarations   }
   InnerMode : Integer;   { mode apres LOC/HEAP               }
+  IsStructMode : Boolean; { vrai si le mode est MK_STRUCT     }
+  HasInit   : Boolean;   { vrai si un initialiseur est present }
 Begin
   { --- 1. Detecter REF / LOC / HEAP en tete ---- }
   IsRef  := False;
@@ -4938,9 +5190,14 @@ Begin
     Else If IsVar Or IsLoc Then
     Begin
       { Variable locale ou avec LOC explicite }
+      { Determiner si c est un struct }
+      IsStructMode := (MIdx >= 0) And (MIdx < ModeCount) And
+                      (ModeTab[MIdx].Kind = MK_STRUCT);
+      HasInit := (CurToken.Kind <> TK_SEMI) And
+                 (CurToken.Kind <> TK_COMMA) And
+                 (CurToken.Kind <> TK_EOF);
       { Lire l initialiseur }
-      If (CurToken.Kind <> TK_SEMI) And (CurToken.Kind <> TK_COMMA) And
-         (CurToken.Kind <> TK_EOF) Then
+      If HasInit Then
       Begin
         ParseExpr(Res);
         ExprFlushToAX(Res);
@@ -4955,10 +5212,47 @@ Begin
       Begin
         { Variable locale : allouer sur la pile }
         OfsVal := SymNextOffset;
+        { Pour les structures, ajuster l offset selon la taille }
+        If (MIdx >= 0) And (MIdx < ModeCount) And
+           (ModeTab[MIdx].Kind = MK_STRUCT) And
+           (ModeTab[MIdx].Size > 2) Then
+          OfsVal := OfsVal - ModeTab[MIdx].Size + 2;
         SIdx := SymAdd(Name, SC_VAR, MIdx, OfsVal);
         EmitInstr('SUB    SP, ' + IntToStr(ModeSizeof(MIdx)));
         Str(OfsVal, S);
-        If ModeSizeof(MIdx) = 1 Then
+        If IsStructMode Then
+        Begin
+          If HasInit Then
+          Begin
+            { Struct : AX contient l adresse source, copier les donnees }
+            EmitComment('struct copy ' + ModeTab[MIdx].Name +
+                        ' size=' + IntToStr(ModeTab[MIdx].Size));
+            EmitInstr('MOV    SI, AX');       { SI = source }
+            If OfsVal >= 0 Then
+              EmitInstr('LEA    DI, [BP+' + S + ']')
+            Else
+              EmitInstr('LEA    DI, [BP' + S + ']');
+            Str(ModeTab[MIdx].Size Div 2, S);
+            EmitInstr('MOV    CX, ' + S);   { nombre de mots }
+            EmitInstr('CLD');
+            EmitInstr('REP MOVSW');
+          End
+          Else
+          Begin
+            { Struct sans initialiseur : mettre a zero }
+            EmitComment('struct zero ' + ModeTab[MIdx].Name);
+            If OfsVal >= 0 Then
+              EmitInstr('LEA    DI, [BP+' + S + ']')
+            Else
+              EmitInstr('LEA    DI, [BP' + S + ']');
+            Str(ModeTab[MIdx].Size Div 2, S);
+            EmitInstr('MOV    CX, ' + S);
+            EmitInstr('XOR    AX, AX');
+            EmitInstr('CLD');
+            EmitInstr('REP STOSW');
+          End;
+        End
+        Else If ModeSizeof(MIdx) = 1 Then
           EmitInstr('MOV    BYTE PTR [BP' + S + '], AL')
         Else
           EmitInstr('MOV    [BP' + S + '], AX');
@@ -4967,10 +5261,32 @@ Begin
       Else
       Begin
         { Variable globale : stocker dans DATA segment }
-        DIdx := DataAddGlobalVar(Name, MIdx);
-        SIdx := SymAdd(Name, SC_VAR, MIdx, 0);
-        If SIdx >= 0 Then
-          EmitInstr('MOV    [' + SymTab[SIdx].MangledName + '], AX');
+        If IsStructMode Then
+        Begin
+          DIdx := DataAddStruct(A68_VAR_PFX + Name,
+                                ModeTab[MIdx].Size Div 2);
+          SIdx := SymAdd(Name, SC_VAR, MIdx, 0);
+          If (SIdx >= 0) And HasInit Then
+          Begin
+            EmitComment('global struct ' + Name +
+                        ' init, size=' +
+                        IntToStr(ModeTab[MIdx].Size));
+            EmitInstr('MOV    SI, AX');
+            EmitInstr('MOV    DI, OFFSET ' +
+                      SymTab[SIdx].MangledName);
+            Str(ModeTab[MIdx].Size Div 2, S);
+            EmitInstr('MOV    CX, ' + S);
+            EmitInstr('CLD');
+            EmitInstr('REP MOVSW');
+          End;
+        End
+        Else
+        Begin
+          DIdx := DataAddGlobalVar(Name, MIdx);
+          SIdx := SymAdd(Name, SC_VAR, MIdx, 0);
+          If SIdx >= 0 Then
+            EmitInstr('MOV    [' + SymTab[SIdx].MangledName + '], AX');
+        End;
       End;
     End
     Else
@@ -5504,9 +5820,240 @@ Begin
   ExprMakeVoid(Res);
 End;
 
+{ ============================================================
+  TODO 16 - STRUCTURES (STRUCT) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- StructFieldLookup : chercher un champ dans un mode struct - }
+{ Retourne l indice dans StructFieldTab, ou -1 si non trouve.      }
+
+Function StructFieldLookup(ModeIdx : Integer;
+                           Const FieldName : TString) : Integer;
+Var
+  I, First, Count : Integer;
+  Upper, TabUp    : TString;
+Begin
+  StructFieldLookup := -1;
+  If (ModeIdx < 0) Or (ModeIdx >= ModeCount) Then Exit;
+  If ModeTab[ModeIdx].Kind <> MK_STRUCT Then Exit;
+  First := ModeTab[ModeIdx].ElemIdx;
+  Count := ModeTab[ModeIdx].FieldCnt;
+  Upper := FieldName;
+  For I := 1 To Length(Upper) Do
+    If (Upper[I] >= 'A') And (Upper[I] <= 'Z') Then
+      Upper[I] := Chr(Ord(Upper[I]) + 32);
+  For I := First To First + Count - 1 Do
+  Begin
+    If I >= StructFieldCount Then Exit;
+    TabUp := StructFieldTab[I].Name;
+    { Comparaison insensible a la casse }
+    If TabUp = Upper Then
+    Begin
+      StructFieldLookup := I;
+      Exit;
+    End;
+  End;
+End;
+
+{ ---- ParseStructDecl : parser STRUCT(champs) et creer le mode -- }
+{ Syntaxe : STRUCT ( MODE champ , MODE champ , ... )               }
+{ Appele apres que STRUCT ait ete consomme.                        }
+{ Retourne l indice du nouveau mode dans ModeTab (via StructDecl). }
+
 Procedure ParseStructDecl;
 Begin
-  { TODO 16 }
+  { La vraie logique est dans ParseModeDecl }
+End;
+
+{ ---- ParseModeDecl : parser MODE nom = STRUCT(...) ------------- }
+{ Syntaxe :                                                         }
+{   MODE POINT = STRUCT ( INT x , INT y ) ;                         }
+{   MODE ALIAS = INT ;                                              }
+{ Le token courant est MODE quand on entre ici.                     }
+
+Procedure ParseModeDecl;
+Var
+  ModeName   : TString;
+  NewMIdx    : Integer;
+  FieldStart : Integer;
+  FieldCnt   : Integer;
+  TotalSize  : Integer;
+  FldModeName: TString;
+  FldMIdx    : Integer;
+  FldName    : TString;
+  FldOfs     : Integer;
+  AliasMIdx  : Integer;
+Begin
+  ParserAdvance;  { consomme MODE }
+
+  { Lire le nom du mode }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('identificateur attendu apres MODE');
+    Exit;
+  End;
+  ModeName := CurToken.Val;
+  ParserAdvance;
+
+  { Attendre = }
+  If Not ((CurToken.Kind = TK_OP) And (CurToken.Val = '=')) Then
+  Begin
+    CompileError('= attendu apres MODE ' + ModeName);
+    Exit;
+  End;
+  ParserAdvance;  { consomme = }
+
+  { STRUCT(...) ou alias de mode }
+  If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'STRUCT') Then
+  Begin
+    ParserAdvance;  { consomme STRUCT }
+
+    { Attendre ( }
+    If CurToken.Kind <> TK_OPEN Then
+    Begin
+      CompileError('( attendu apres STRUCT');
+      Exit;
+    End;
+    ParserAdvance;  { consomme ( }
+
+    FieldStart := StructFieldCount;
+    FieldCnt   := 0;
+    TotalSize  := 0;
+
+    { Parser la liste de champs : MODE nom , MODE nom , ... }
+    While (CurToken.Kind <> TK_CLOSE) And
+          (CurToken.Kind <> TK_EOF) Do
+    Begin
+      { Lire le mode du champ }
+      FldMIdx := -1;
+      If CurToken.Kind = TK_BOLD Then
+      Begin
+        FldMIdx := ModeLookupName(CurToken.Val);
+        If FldMIdx < 0 Then
+        Begin
+          CompileError('mode inconnu dans STRUCT : ' + CurToken.Val);
+          Exit;
+        End;
+        ParserAdvance;
+      End
+      Else If CurToken.Kind = TK_IDENT Then
+      Begin
+        FldMIdx := ModeLookupName(CurToken.Val);
+        If FldMIdx < 0 Then
+        Begin
+          CompileError('mode inconnu dans STRUCT : ' + CurToken.Val);
+          Exit;
+        End;
+        ParserAdvance;
+      End
+      Else
+      Begin
+        CompileError('mode attendu dans STRUCT, obtenu : ' + CurToken.Val);
+        Exit;
+      End;
+
+      { Lire le nom du champ }
+      If CurToken.Kind <> TK_IDENT Then
+      Begin
+        CompileError('nom de champ attendu dans STRUCT');
+        Exit;
+      End;
+      FldName := CurToken.Val;
+      ParserAdvance;
+
+      { Ajouter le champ dans StructFieldTab }
+      If StructFieldCount >= MAX_STRUCT_FIELDS Then
+      Begin
+        CompileError('trop de champs de structure (max=' +
+                     IntToStr(MAX_STRUCT_FIELDS) + ')');
+        Exit;
+      End;
+      { Stocker le nom en minuscules pour la comparaison }
+      FldOfs := TotalSize;
+      StructFieldTab[StructFieldCount].Name    := FldName;
+      StructFieldTab[StructFieldCount].ModeIdx := FldMIdx;
+      StructFieldTab[StructFieldCount].Offset  := FldOfs;
+      Inc(StructFieldCount);
+      Inc(FieldCnt);
+      TotalSize := TotalSize + ModeSizeof(FldMIdx);
+
+      { Virgule entre les champs }
+      If CurToken.Kind = TK_COMMA Then
+        ParserAdvance
+      Else If CurToken.Kind <> TK_CLOSE Then
+      Begin
+        CompileError(', ou ) attendu dans STRUCT');
+        Exit;
+      End;
+    End;
+
+    { Consommer ) }
+    If CurToken.Kind = TK_CLOSE Then
+      ParserAdvance;
+
+    { Creer le mode dans ModeTab }
+    If ModeCount >= MAX_MODE Then
+    Begin
+      CompileError('table des modes pleine (max=' +
+                   IntToStr(MAX_MODE) + ')');
+      Exit;
+    End;
+    NewMIdx := ModeCount;
+    ModeTab[NewMIdx].Name     := ModeName;
+    ModeTab[NewMIdx].Kind     := MK_STRUCT;
+    ModeTab[NewMIdx].Size     := TotalSize;
+    ModeTab[NewMIdx].ElemIdx  := FieldStart;
+    ModeTab[NewMIdx].FieldCnt := FieldCnt;
+    Inc(ModeCount);
+    Inc(StructCount);
+
+    EmitComment('MODE ' + ModeName + ' = STRUCT, size=' +
+                IntToStr(TotalSize) + ', fields=' +
+                IntToStr(FieldCnt));
+
+    If Opts.DebugMode Then
+      WriteLn('  MODE_ADD[', NewMIdx, ']: ', ModeName,
+              ' STRUCT size=', TotalSize, ' fields=', FieldCnt);
+  End
+  Else
+  Begin
+    { Alias de mode : MODE ALIAS = ExistingMode }
+    AliasMIdx := -1;
+    If CurToken.Kind = TK_BOLD Then
+    Begin
+      AliasMIdx := ModeLookupName(CurToken.Val);
+      ParserAdvance;
+    End
+    Else If CurToken.Kind = TK_IDENT Then
+    Begin
+      AliasMIdx := ModeLookupName(CurToken.Val);
+      ParserAdvance;
+    End;
+    If AliasMIdx < 0 Then
+    Begin
+      CompileError('mode ou STRUCT attendu apres = dans MODE');
+      Exit;
+    End;
+    { Creer un alias dans ModeTab }
+    If ModeCount >= MAX_MODE Then
+    Begin
+      CompileError('table des modes pleine');
+      Exit;
+    End;
+    NewMIdx := ModeCount;
+    ModeTab[NewMIdx].Name     := ModeName;
+    ModeTab[NewMIdx].Kind     := ModeTab[AliasMIdx].Kind;
+    ModeTab[NewMIdx].Size     := ModeTab[AliasMIdx].Size;
+    ModeTab[NewMIdx].ElemIdx  := ModeTab[AliasMIdx].ElemIdx;
+    ModeTab[NewMIdx].FieldCnt := ModeTab[AliasMIdx].FieldCnt;
+    Inc(ModeCount);
+    EmitComment('MODE ' + ModeName + ' = alias for ' +
+                ModeTab[AliasMIdx].Name);
+  End;
+
+  { Optionnel : consommer le ; final }
+  If CurToken.Kind = TK_SEMI Then
+    ParserAdvance;
 End;
 
 Procedure ParseAssignment;
@@ -5579,10 +6126,18 @@ Begin
        (CurToken.Val = 'REF') Or (CurToken.Val = 'LOC') Or
        (CurToken.Val = 'HEAP') Then
       IsDeclKw := True;
+  End
+  Else If CurToken.Kind = TK_IDENT Then
+  Begin
+    { Verifier si c est un mode utilisateur (struct) }
+    If ModeLookupName(CurToken.Val) >= 0 Then
+      IsDeclKw := True;
   End;
 
   If IsDeclKw Then
     ParseDeclStmt
+  Else If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'MODE') Then
+    ParseModeDecl
   Else If CurToken.Kind = TK_SEMI Then
     ParserAdvance   { point-virgule seul = go-on vide }
   Else If CurToken.Kind <> TK_EOF Then
