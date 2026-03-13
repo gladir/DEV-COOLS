@@ -4896,8 +4896,7 @@ Begin
   EmitInstrA('PUSH', 'BP');
   EmitInstrAB('MOV', 'BP', 'SP');
   EmitInstrA('PUSH', 'DX');
-  (* Get timer tick for pseudo-random *)
-  EmitInstrAB('XOR', 'AX', 'AX');
+  (* Get timer tick for pseudo-random : INT 1Ah AH=00h *)
   EmitInstrAB('MOV', 'AH', '0');
   EmitRaw('        INT     1Ah');       (* CX:DX = timer ticks *)
   EmitInstrAB('MOV', 'AX', 'DX');       (* use low word *)
@@ -5024,22 +5023,22 @@ Begin
   EmitInstrAB('ADD', 'AL', '''0''');
   EmitInstrAB('MOV', '[DI]', 'AL');
   EmitInstrA('INC', 'DI');
-  EmitInstrAB('MOV', 'AX', 'DX');       (* remainder *)
-  EmitInstrAB('MOV', 'BL', '100');
-  EmitInstrAB('XOR', 'AH', 'AH');
-  EmitInstrA('DIV', 'BL');              (* AL=hundreds, AH=remainder *)
+  EmitInstrAB('MOV', 'AX', 'DX');       (* remainder 0..999 *)
+  EmitInstrAB('XOR', 'DX', 'DX');
+  EmitInstrAB('MOV', 'BX', '100');
+  EmitInstrA('DIV', 'BX');              (* AX=hundreds, DX=remainder *)
   EmitInstrAB('ADD', 'AL', '''0''');
   EmitInstrAB('MOV', '[DI]', 'AL');
   EmitInstrA('INC', 'DI');
-  EmitInstrAB('MOV', 'AL', 'AH');
-  EmitInstrAB('XOR', 'AH', 'AH');
-  EmitInstrAB('MOV', 'BL', '10');
-  EmitInstrA('DIV', 'BL');
+  EmitInstrAB('MOV', 'AX', 'DX');       (* remainder 0..99 *)
+  EmitInstrAB('XOR', 'DX', 'DX');
+  EmitInstrAB('MOV', 'BX', '10');
+  EmitInstrA('DIV', 'BX');              (* AX=tens, DX=ones *)
   EmitInstrAB('ADD', 'AL', '''0''');
   EmitInstrAB('MOV', '[DI]', 'AL');
   EmitInstrA('INC', 'DI');
-  EmitInstrAB('ADD', 'AH', '''0''');
-  EmitInstrAB('MOV', '[DI]', 'AH');
+  EmitInstrAB('ADD', 'DL', '''0''');
+  EmitInstrAB('MOV', '[DI]', 'DL');
   EmitInstrA('INC', 'DI');
   EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
   EmitInstrAB('MOV', 'AX', 'OFFSET _RX_BIF2BUF');
