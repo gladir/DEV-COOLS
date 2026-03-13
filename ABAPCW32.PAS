@@ -8164,19 +8164,45 @@ Begin
       End;
       Exit;
     End;
-    { CMP reg32, reg32 or CMP reg32, imm32 }
+    { CMP reg32, reg32 or CMP reg32, imm32 or CMP reg32, DWORD PTR [mem] }
     R1 := AsmRegIdx32(Op1);
-    R2 := AsmRegIdx32(Op2);
-    If (R1 >= 0) And (R2 >= 0) Then
+    If R1 >= 0 Then
     Begin
-      BinEmitByte($39);
-      BinEmitByte((3 Shl 6) Or (R2 Shl 3) Or R1);
-      Exit;
-    End;
-    If R1 = 0 Then
-    Begin { CMP EAX, imm32 }
-      BinEmitByte($3D);
-      BinEmitDWord(AsmParseImm(Op2));
+      { CMP reg32, DWORD PTR [mem] }
+      If AsmStartsWith(Op2, 'DWORD PTR [') Then
+      Begin
+        Bracket := AsmExtractBracket(Op2);
+        BinEmitByte($3B);
+        If AsmIsRegBased(Bracket) Then
+          AsmEncodeMemory(Bracket, R1)
+        Else
+        Begin
+          BinEmitByte((0 Shl 6) Or (R1 Shl 3) Or 5);
+          BinAddFixup(BinCodeLen, BFK_ABS32, Bracket, True);
+          BinEmitDWord(0);
+        End;
+        Exit;
+      End;
+      R2 := AsmRegIdx32(Op2);
+      If R2 >= 0 Then
+      Begin
+        BinEmitByte($39);
+        BinEmitByte((3 Shl 6) Or (R2 Shl 3) Or R1);
+        Exit;
+      End;
+      { CMP reg32, imm32 }
+      Imm := AsmParseImm(Op2);
+      If R1 = 0 Then
+      Begin { CMP EAX, imm32 (short form) }
+        BinEmitByte($3D);
+        BinEmitDWord(Imm);
+      End
+      Else
+      Begin { CMP reg32, imm32 (general form) }
+        BinEmitByte($81);
+        BinEmitByte($F8 Or R1);
+        BinEmitDWord(Imm);
+      End;
       Exit;
     End;
     Exit;
@@ -8207,13 +8233,43 @@ Begin
   If Mnem = 'INC' Then
   Begin
     R1 := AsmRegIdx32(Op1);
-    If R1 >= 0 Then BinEmitByte($40 + R1);
+    If R1 >= 0 Then
+      BinEmitByte($40 + R1)
+    Else If AsmStartsWith(Op1, 'DWORD PTR [') Then
+    Begin
+      { INC DWORD PTR [mem] : FF /0 }
+      Bracket := AsmExtractBracket(Op1);
+      BinEmitByte($FF);
+      If AsmIsRegBased(Bracket) Then
+        AsmEncodeMemory(Bracket, 0)
+      Else
+      Begin
+        BinEmitByte($05); { mod=00, reg=0 (/0), r/m=5 (disp32) }
+        BinAddFixup(BinCodeLen, BFK_ABS32, Bracket, True);
+        BinEmitDWord(0);
+      End;
+    End;
     Exit;
   End;
   If Mnem = 'DEC' Then
   Begin
     R1 := AsmRegIdx32(Op1);
-    If R1 >= 0 Then BinEmitByte($48 + R1);
+    If R1 >= 0 Then
+      BinEmitByte($48 + R1)
+    Else If AsmStartsWith(Op1, 'DWORD PTR [') Then
+    Begin
+      { DEC DWORD PTR [mem] : FF /1 }
+      Bracket := AsmExtractBracket(Op1);
+      BinEmitByte($FF);
+      If AsmIsRegBased(Bracket) Then
+        AsmEncodeMemory(Bracket, 1)
+      Else
+      Begin
+        BinEmitByte($0D); { mod=00, reg=1 (/1), r/m=5 (disp32) }
+        BinAddFixup(BinCodeLen, BFK_ABS32, Bracket, True);
+        BinEmitDWord(0);
+      End;
+    End;
     Exit;
   End;
 
@@ -8376,7 +8432,27 @@ Begin
 
   If Directive = 'DD' Then
   Begin
-    BinEmitDataDWord(AsmParseImm(Rest));
+    { Check for DUP syntax: "n DUP(v)" }
+    DupPos := Pos('DUP(', Rest);
+    If DupPos > 0 Then
+    Begin
+      Tok := '';
+      For I := 1 To DupPos - 1 Do
+        If Rest[I] <> ' ' Then Tok := Tok + Rest[I];
+      DupCount := AsmParseImm(Tok);
+      I := DupPos + 4;
+      Tok := '';
+      While (I <= Length(Rest)) And (Rest[I] <> ')') Do
+      Begin
+        If Rest[I] <> ' ' Then Tok := Tok + Rest[I];
+        Inc(I);
+      End;
+      DupVal := AsmParseImm(Tok);
+      For J := 1 To DupCount Do
+        BinEmitDataDWord(DupVal);
+    End
+    Else
+      BinEmitDataDWord(AsmParseImm(Rest));
   End
   Else If Directive = 'DB' Then
   Begin
