@@ -1419,7 +1419,591 @@
 5. CODAGE DES INSTRUCTIONS (FORMAT BINAIRE)
 ==============================================================================
 
-  (a completer)
+  5.1 Vue d'ensemble du format d'instruction
+  -------------------------------------------
+
+  Chaque instruction du 80386 est codee en binaire sous la forme d'une
+  sequence de 1 a 15 octets. Le format general est :
+
+  +----------+--------+----------+-------+--------------+----------+
+  | Prefixes | Opcode | Mod R/M  |  SIB  | Deplacement  | Immediat |
+  | 0-4 oct  | 1-2 o  | 0-1 oct  | 0-1 o | 0,1 ou 4 oct | 0,1,2,4o |
+  +----------+--------+----------+-------+--------------+----------+
+
+  Chaque champ est optionnel sauf l'opcode. La presence des champs
+  Mod R/M, SIB, deplacement et immediat depend de l'instruction et
+  de ses operandes.
+
+  Taille maximale d'une instruction : 15 octets. Si une combinaison
+  de prefixes et d'operandes depasse cette limite, le processeur
+  genere une exception #GP (General Protection Fault).
+
+  5.2 Prefixes d'instruction
+  --------------------------
+
+  Les prefixes sont des octets optionnels places avant l'opcode.
+  Ils modifient le comportement de l'instruction. Il existe quatre
+  groupes de prefixes ; au maximum un prefixe de chaque groupe peut
+  etre utilise simultanement.
+
+  5.2.1 Groupe 1 : Prefixes de verrouillage et de repetition
+
+  F0h  LOCK       Verrouillage du bus (operations atomiques)
+                   Valide uniquement avec : ADD, ADC, AND, BTC, BTR,
+                   BTS, CMPXCHG, DEC, INC, NEG, NOT, OR, SBB, SUB,
+                   XADD, XCHG, XOR (avec operande memoire)
+
+  F2h  REPNE      Repetition tant que ZF=0 et ECX<>0
+       REPNZ      (pour CMPS, SCAS)
+
+  F3h  REP        Repetition tant que ECX<>0
+       REPE       (pour MOVS, STOS, INS, OUTS)
+       REPZ       Repetition tant que ZF=1 et ECX<>0
+                   (pour CMPS, SCAS)
+
+  5.2.2 Groupe 2 : Prefixes de remplacement de segment
+
+  2Eh  CS:        Utiliser le segment CS
+  36h  SS:        Utiliser le segment SS
+  3Eh  DS:        Utiliser le segment DS
+  26h  ES:        Utiliser le segment ES
+  64h  FS:        Utiliser le segment FS (nouveau 80386)
+  65h  GS:        Utiliser le segment GS (nouveau 80386)
+
+  En l'absence de prefixe, le segment par defaut est :
+    - SS pour les acces via EBP ou ESP (pile)
+    - DS pour tous les autres acces memoire
+    - CS pour les lectures d'instructions (fetch)
+    - ES pour la destination des operations sur les chaines
+
+  5.2.3 Groupe 3 : Prefixe de taille d'operande
+
+  66h  Bascule la taille d'operande par defaut :
+       - En mode 32 bits (mode protege avec D=1) :
+         les operandes deviennent 16 bits
+       - En mode 16 bits (mode reel ou D=0) :
+         les operandes deviennent 32 bits
+
+  Exemple :
+    En mode 32 bits, MOV EAX, EBX est l'instruction par defaut.
+    Avec le prefixe 66h, elle devient MOV AX, BX.
+
+  5.2.4 Groupe 4 : Prefixe de taille d'adresse
+
+  67h  Bascule la taille d'adresse par defaut :
+       - En mode 32 bits : les adresses deviennent 16 bits
+         (modes d'adressage du 8086)
+       - En mode 16 bits : les adresses deviennent 32 bits
+         (modes d'adressage etendus du 80386 avec SIB)
+
+  5.3 Opcode (code operation)
+  ----------------------------
+
+  L'opcode identifie l'instruction a executer. Il fait 1 ou 2 octets.
+
+  5.3.1 Opcodes sur 1 octet
+
+  La plupart des instructions courantes utilisent un opcode sur 1 octet.
+  Certains bits de l'opcode encodent des informations supplementaires :
+
+  Bit 0 (w) : Taille de l'operande
+    w=0 : operande 8 bits
+    w=1 : operande 16 ou 32 bits (selon le mode et le prefixe 66h)
+
+  Bit 1 (d) : Direction (pour les instructions a deux operandes)
+    d=0 : r/m <- reg  (le registre est la source)
+    d=1 : reg <- r/m  (le registre est la destination)
+
+  Exemple pour MOV :
+    88h = MOV r/m8, reg8        (d=0, w=0)
+    89h = MOV r/m16/32, reg16/32 (d=0, w=1)
+    8Ah = MOV reg8, r/m8        (d=1, w=0)
+    8Bh = MOV reg16/32, r/m16/32 (d=1, w=1)
+
+  Bit 0-2 (reg) : Certaines instructions a 1 octet encodent le
+  registre directement dans l'opcode :
+    PUSH reg  : 50h + reg   (50h=EAX, 51h=ECX, ..., 57h=EDI)
+    POP reg   : 58h + reg
+    INC reg   : 40h + reg
+    DEC reg   : 48h + reg
+    XCHG EAX, reg : 90h + reg  (90h=NOP car XCHG EAX,EAX)
+    MOV reg, imm  : B8h + reg (32 bits) ou B0h + reg (8 bits)
+
+  5.3.2 Opcodes sur 2 octets (prefixe 0Fh)
+
+  Les instructions ajoutees a partir du 80386 utilisent souvent
+  un opcode de 2 octets commencant par 0Fh :
+
+  0Fh + opcode2    Instruction
+  ---------------  ------------------------------------------
+  0F 80..0F 8F     Jcc rel32 (sauts conditionnels etendus)
+  0F 90..0F 9F     SETcc r/m8
+  0F A3             BT r/m, reg
+  0F A4             SHLD r/m, reg, imm8
+  0F A5             SHLD r/m, reg, CL
+  0F AB             BTS r/m, reg
+  0F AC             SHRD r/m, reg, imm8
+  0F AD             SHRD r/m, reg, CL
+  0F AF             IMUL reg, r/m
+  0F B3             BTR r/m, reg
+  0F B6             MOVZX reg, r/m8
+  0F B7             MOVZX reg, r/m16
+  0F BB             BTC r/m, reg
+  0F BC             BSF reg, r/m
+  0F BD             BSR reg, r/m
+  0F BE             MOVSX reg, r/m8
+  0F BF             MOVSX reg, r/m16
+  0F 20..0F 23     MOV CRn/DRn (registres de controle/debug)
+
+  5.3.3 Extensions d'opcode dans le champ reg
+
+  Pour certains opcodes, le champ reg de l'octet Mod R/M ne designe
+  pas un registre mais sert d'extension d'opcode. On parle alors de
+  "groupe d'instructions". Exemples :
+
+  Opcode 80h-83h (operations arithmetiques/logiques immediates) :
+    reg=0 : ADD r/m, imm
+    reg=1 : OR  r/m, imm
+    reg=2 : ADC r/m, imm
+    reg=3 : SBB r/m, imm
+    reg=4 : AND r/m, imm
+    reg=5 : SUB r/m, imm
+    reg=6 : XOR r/m, imm
+    reg=7 : CMP r/m, imm
+
+  Opcode FEh/FFh (operations unaires) :
+    reg=0 : INC r/m
+    reg=1 : DEC r/m
+    reg=2 : CALL r/m (indirect, proche)
+    reg=3 : CALL mem (indirect, lointain)
+    reg=4 : JMP r/m (indirect, proche)
+    reg=5 : JMP mem (indirect, lointain)
+    reg=6 : PUSH r/m
+
+  Opcode F6h/F7h (operations unaires arithmetiques) :
+    reg=0 : TEST r/m, imm
+    reg=2 : NOT r/m
+    reg=3 : NEG r/m
+    reg=4 : MUL r/m
+    reg=5 : IMUL r/m
+    reg=6 : DIV r/m
+    reg=7 : IDIV r/m
+
+  Opcode D0h-D3h (decalages et rotations) :
+    reg=0 : ROL        reg=4 : SHL/SAL
+    reg=1 : ROR        reg=5 : SHR
+    reg=2 : RCL        reg=7 : SAR
+    reg=3 : RCR
+
+  5.4 Octet Mod R/M
+  ------------------
+
+  L'octet Mod R/M (ModRegR/M) specifie les operandes de l'instruction.
+  Il est present des qu'une instruction utilise un operande registre
+  ou memoire via le format general reg, r/m.
+
+  Structure (8 bits) :
+
+    7  6  5  4  3  2  1  0
+  +-----+--------+--------+
+  | Mod |  Reg   |  R/M   |
+  +-----+--------+--------+
+    2b     3b       3b
+
+  Mod (bits 7-6) : Mode d'adressage
+    00 : Acces memoire, pas de deplacement
+         (sauf R/M=101 : deplacement 32 bits seul, [disp32])
+    01 : Acces memoire + deplacement 8 bits (signe-etendu)
+    10 : Acces memoire + deplacement 32 bits
+    11 : Operande registre (pas d'acces memoire)
+
+  Reg (bits 5-3) : Numero du registre (ou extension d'opcode)
+    000=EAX/AL    001=ECX/CL    010=EDX/DL    011=EBX/BL
+    100=ESP/AH    101=EBP/CH    110=ESI/DH    111=EDI/BH
+
+    Pour les registres 16 bits : AX, CX, DX, BX, SP, BP, SI, DI
+    Pour les registres de segment : ES, CS, SS, DS, FS, GS
+
+  R/M (bits 2-0) : Registre ou mode memoire
+    Si Mod=11 : meme codage que Reg (operande registre)
+    Si Mod<>11 :
+      000 = [EAX]      001 = [ECX]      010 = [EDX]
+      011 = [EBX]      100 = [SIB]      101 = [disp32] (si Mod=00)
+                                               [EBP+disp] (si Mod=01/10)
+      110 = [ESI]      111 = [EDI]
+
+  Note : R/M=100 (ESP) indique toujours la presence d'un octet SIB.
+  R/M=101 avec Mod=00 signifie un deplacement 32 bits absolu sans
+  registre de base.
+
+  Tableau complet du Mod R/M en mode 32 bits :
+
+  Mod  R/M   Mode effectif                Deplacement
+  ---  ---   --------------------------   -----------
+  00   000   [EAX]                        aucun
+  00   001   [ECX]                        aucun
+  00   010   [EDX]                        aucun
+  00   011   [EBX]                        aucun
+  00   100   [SIB]                        aucun
+  00   101   [disp32]                     32 bits
+  00   110   [ESI]                        aucun
+  00   111   [EDI]                        aucun
+  01   000   [EAX + disp8]               8 bits
+  01   001   [ECX + disp8]               8 bits
+  01   010   [EDX + disp8]               8 bits
+  01   011   [EBX + disp8]               8 bits
+  01   100   [SIB + disp8]               8 bits
+  01   101   [EBP + disp8]               8 bits
+  01   110   [ESI + disp8]               8 bits
+  01   111   [EDI + disp8]               8 bits
+  10   000   [EAX + disp32]              32 bits
+  10   001   [ECX + disp32]              32 bits
+  10   010   [EDX + disp32]              32 bits
+  10   011   [EBX + disp32]              32 bits
+  10   100   [SIB + disp32]              32 bits
+  10   101   [EBP + disp32]              32 bits
+  10   110   [ESI + disp32]              32 bits
+  10   111   [EDI + disp32]              32 bits
+  11   000   EAX / AL                    -
+  11   001   ECX / CL                    -
+  11   010   EDX / DL                    -
+  11   011   EBX / BL                    -
+  11   100   ESP / AH                    -
+  11   101   EBP / CH                    -
+  11   110   ESI / DH                    -
+  11   111   EDI / BH                    -
+
+  5.5 Octet SIB (Scale-Index-Base)
+  ---------------------------------
+
+  L'octet SIB est present lorsque le champ R/M du Mod R/M vaut 100
+  (binaire). Il permet les modes d'adressage avec echelle
+  (scaled index) qui sont nouveaux sur le 80386.
+
+  Structure (8 bits) :
+
+    7  6  5  4  3  2  1  0
+  +-----+--------+--------+
+  |Scale| Index  |  Base  |
+  +-----+--------+--------+
+    2b     3b       3b
+
+  Scale (bits 7-6) : Facteur d'echelle pour le registre d'index
+    00 = x1
+    01 = x2
+    10 = x4
+    11 = x8
+
+  Index (bits 5-3) : Registre d'index
+    000=EAX    001=ECX    010=EDX    011=EBX
+    100=(aucun index, echelle ignoree)
+    101=EBP    110=ESI    111=EDI
+
+    Note : Index=100 signifie "pas d'index". Cela permet d'encoder
+    [base] seul quand R/M=100 serait normalement [SIB].
+    ESP ne peut jamais etre utilise comme registre d'index.
+
+  Base (bits 2-0) : Registre de base
+    000=EAX    001=ECX    010=EDX    011=EBX
+    100=ESP    101=EBP (ou disp32 si Mod=00)
+    110=ESI    111=EDI
+
+    Note : Base=101 avec Mod=00 signifie pas de registre de base,
+    seulement [Index*Scale + disp32]. Avec Mod=01 ou 10, la base
+    est EBP normalement.
+
+  Formule d'adresse avec SIB :
+
+    Si Mod=00 et Base=101 :
+      EA = Index * Scale + disp32
+    Si Mod=00 et Base<>101 :
+      EA = Base + Index * Scale
+    Si Mod=01 :
+      EA = Base + Index * Scale + disp8 (signe-etendu)
+    Si Mod=10 :
+      EA = Base + Index * Scale + disp32
+
+  Exemples de SIB :
+
+    [EAX + ECX*4]     : Scale=10, Index=001, Base=000
+                         SIB = 10_001_000 = 88h
+
+    [EBP + ESI*2 + 8] : Scale=01, Index=110, Base=101, Mod=01
+                         SIB = 01_110_101 = 75h, disp8 = 08h
+
+    [EDX*8 + 1000h]   : Scale=11, Index=010, Base=101, Mod=00
+                         SIB = 11_010_101 = D5h, disp32 = 00001000h
+
+    [ESP]              : R/M=100, Scale=00, Index=100, Base=100
+                         SIB = 00_100_100 = 24h
+
+  5.6 Deplacement
+  ----------------
+
+  Le deplacement est une valeur entiere signee ajoutee a l'adresse
+  de base calculee par Mod R/M et SIB. Sa taille depend du champ Mod :
+
+  Mod=00 : Pas de deplacement (sauf cas speciaux R/M=101 ou Base=101)
+  Mod=01 : Deplacement de 8 bits, etendu en signe sur 32 bits
+  Mod=10 : Deplacement de 32 bits
+
+  Cas special (Mod=00, R/M=101) :
+    Deplacement absolu de 32 bits, sans registre de base.
+    Utilise pour l'adressage direct : MOV EAX, [adresse_absolue]
+
+  L'assembleur choisit automatiquement la taille optimale :
+    - Si le deplacement tient dans [-128, +127], il utilise disp8
+    - Sinon, il utilise disp32
+    - Le programmeur peut forcer la taille avec BYTE PTR ou DWORD PTR
+
+  5.7 Valeur immediate
+  ---------------------
+
+  La valeur immediate est une constante codee directement dans
+  l'instruction. Sa taille depend de l'instruction et du bit w :
+
+  w=0 : Immediat 8 bits (instructions sur octets)
+  w=1 : Immediat 16 ou 32 bits (selon la taille d'operande)
+
+  Cas special (opcode 83h) :
+    Immediat de 8 bits etendu en signe sur 16 ou 32 bits.
+    Cela permet de coder ADD EAX, 5 sur 3 octets au lieu de 6 :
+      83 C0 05  au lieu de  05 00000005
+
+  L'immediat est toujours encode en format little-endian :
+    L'octet de poids faible est place en premier.
+    Exemple : MOV EAX, 12345678h est code : B8 78 56 34 12
+
+  5.8 Exemples de codage complets
+  --------------------------------
+
+  Voici des exemples detailles de codage d'instructions courantes.
+  Chaque octet est donne en hexadecimal.
+
+  5.8.1 NOP
+
+  Instruction : NOP
+  Codage      : 90
+  Explication : XCHG EAX, EAX (opcode 90h = 90h + 0 pour EAX)
+
+  5.8.2 MOV EAX, EBX (registre a registre)
+
+  Instruction : MOV EAX, EBX
+  Codage      : 89 D8
+  Explication :
+    89h = MOV r/m32, reg32 (opcode d=0, w=1)
+    D8h = Mod R/M = 11_011_000
+      Mod=11 (registre)
+      Reg=011 (EBX = source)
+      R/M=000 (EAX = destination)
+
+  Variante   : 8B C3  (opcode 8Bh avec d=1 : reg=EAX dest, R/M=EBX src)
+
+  5.8.3 MOV EAX, [EBX] (registre indirect)
+
+  Instruction : MOV EAX, [EBX]
+  Codage      : 8B 03
+  Explication :
+    8Bh = MOV reg32, r/m32 (d=1, w=1)
+    03h = Mod R/M = 00_000_011
+      Mod=00 (memoire, pas de deplacement)
+      Reg=000 (EAX = destination)
+      R/M=011 ([EBX])
+
+  5.8.4 MOV EAX, [EBP+8] (base + deplacement)
+
+  Instruction : MOV EAX, [EBP+8]
+  Codage      : 8B 45 08
+  Explication :
+    8Bh = MOV reg32, r/m32 (d=1, w=1)
+    45h = Mod R/M = 01_000_101
+      Mod=01 (memoire + disp8)
+      Reg=000 (EAX = destination)
+      R/M=101 ([EBP + disp8])
+    08h = deplacement = +8
+
+  5.8.5 MOV EAX, [ESI+ECX*4] (base + index scale)
+
+  Instruction : MOV EAX, [ESI+ECX*4]
+  Codage      : 8B 04 8E
+  Explication :
+    8Bh = MOV reg32, r/m32
+    04h = Mod R/M = 00_000_100
+      Mod=00 (memoire, pas de deplacement)
+      Reg=000 (EAX = destination)
+      R/M=100 (SIB suit)
+    8Eh = SIB = 10_001_110
+      Scale=10 (x4)
+      Index=001 (ECX)
+      Base=110 (ESI)
+
+  5.8.6 MOV EAX, [EBX+ESI*2+100h] (base + index scale + disp32)
+
+  Instruction : MOV EAX, [EBX+ESI*2+100h]
+  Codage      : 8B 84 73 00 01 00 00
+  Explication :
+    8Bh = MOV reg32, r/m32
+    84h = Mod R/M = 10_000_100
+      Mod=10 (memoire + disp32)
+      Reg=000 (EAX = destination)
+      R/M=100 (SIB suit)
+    73h = SIB = 01_110_011
+      Scale=01 (x2)
+      Index=110 (ESI)
+      Base=011 (EBX)
+    00 01 00 00 = deplacement 00000100h = 256
+
+  5.8.7 ADD EAX, 42 (immediat optimise)
+
+  Instruction : ADD EAX, 42
+  Codage      : 83 C0 2A
+  Explication :
+    83h = ADD r/m32, imm8 (extension signe)
+    C0h = Mod R/M = 11_000_000
+      Mod=11 (registre)
+      Reg=000 (extension opcode = ADD)
+      R/M=000 (EAX)
+    2Ah = 42 en hexadecimal
+
+  Codage alternatif (non optimise) :
+    05 2A 00 00 00  (ADD EAX, imm32 : opcode special pour EAX)
+
+  5.8.8 PUSH 0FFFFFFFFh (immediat 32 bits)
+
+  Instruction : PUSH -1
+  Codage      : 6A FF
+  Explication :
+    6Ah = PUSH imm8 (etendu en signe)
+    FFh = -1 en complement a deux (8 bits -> 32 bits)
+
+  5.8.9 JE label (saut conditionnel rel32)
+
+  Instruction : JE label  (avec label a +256 octets)
+  Codage      : 0F 84 00 01 00 00
+  Explication :
+    0Fh 84h = JE rel32 (opcode sur 2 octets)
+    00 01 00 00 = deplacement relatif = +256
+
+  5.8.10 MOV AX, [BX+SI] (mode 16 bits avec prefixe)
+
+  Instruction : MOV AX, [BX+SI]  (en mode 32 bits)
+  Codage      : 67 66 8B 00
+  Explication :
+    67h = prefixe taille d'adresse (-> adresses 16 bits)
+    66h = prefixe taille d'operande (-> operandes 16 bits)
+    8Bh = MOV reg, r/m
+    00h = Mod R/M 16 bits = 00_000_000 = [BX+SI] sans deplacement
+
+  5.8.11 LEA EAX, [EBX+ECX*8+10h]
+
+  Instruction : LEA EAX, [EBX+ECX*8+10h]
+  Codage      : 8D 44 CB 10
+  Explication :
+    8Dh = LEA reg32, mem
+    44h = Mod R/M = 01_000_100
+      Mod=01 (memoire + disp8)
+      Reg=000 (EAX)
+      R/M=100 (SIB suit)
+    CBh = SIB = 11_001_011
+      Scale=11 (x8)
+      Index=001 (ECX)
+      Base=011 (EBX)
+    10h = deplacement = +16
+
+  5.8.12 LOCK XADD [EDI], EAX
+
+  Instruction : LOCK XADD [EDI], EAX
+  Codage      : F0 0F C1 07
+  Explication :
+    F0h = prefixe LOCK (operation atomique)
+    0Fh C1h = XADD r/m32, reg32
+    07h = Mod R/M = 00_000_111
+      Mod=00 (memoire)
+      Reg=000 (EAX)
+      R/M=111 ([EDI])
+
+  5.9 Mod R/M en mode 16 bits (adressage du 8086)
+  -------------------------------------------------
+
+  En mode 16 bits (mode reel ou avec prefixe 67h en mode 32 bits),
+  l'octet Mod R/M utilise un codage different, herite du 8086.
+  Il n'y a pas d'octet SIB et les modes d'adressage sont limites.
+
+  Mod  R/M   Mode effectif 16 bits
+  ---  ---   -------------------------
+  00   000   [BX + SI]
+  00   001   [BX + DI]
+  00   010   [BP + SI]
+  00   011   [BP + DI]
+  00   100   [SI]
+  00   101   [DI]
+  00   110   [disp16]  (adressage direct)
+  00   111   [BX]
+  01   000   [BX + SI + disp8]
+  01   001   [BX + DI + disp8]
+  01   010   [BP + SI + disp8]
+  01   011   [BP + DI + disp8]
+  01   100   [SI + disp8]
+  01   101   [DI + disp8]
+  01   110   [BP + disp8]
+  01   111   [BX + disp8]
+  10   000   [BX + SI + disp16]
+  10   001   [BX + DI + disp16]
+  10   010   [BP + SI + disp16]
+  10   011   [BP + DI + disp16]
+  10   100   [SI + disp16]
+  10   101   [DI + disp16]
+  10   110   [BP + disp16]
+  10   111   [BX + disp16]
+  11   nnn   Registre (meme codage que mode 32 bits)
+
+  Differences avec le mode 32 bits :
+    - Pas d'octet SIB
+    - Pas de facteur d'echelle
+    - Seulement BX et BP comme registres de base
+    - Seulement SI et DI comme registres d'index
+    - Deplacements de 0, 8 ou 16 bits (au lieu de 0, 8 ou 32)
+
+  5.10 Resume du processus de decodage
+  --------------------------------------
+
+  Le processeur decode une instruction selon l'algorithme suivant :
+
+  1. Lire les prefixes (F0h, F2h, F3h, 2Eh, 36h, 3Eh, 26h,
+     64h, 65h, 66h, 67h). Arreter des qu'un octet n'est pas
+     un prefixe reconnu.
+
+  2. Lire l'opcode (1 octet). Si l'opcode est 0Fh, lire un
+     second octet pour former un opcode de 2 octets.
+
+  3. Si l'instruction requiert un Mod R/M, lire l'octet Mod R/M.
+     Determiner si un SIB est necessaire (R/M=100 et Mod<>11).
+
+  4. Si un SIB est necessaire, lire l'octet SIB.
+
+  5. Lire le deplacement (0, 1 ou 4 octets selon Mod et les
+     cas speciaux R/M=101/Base=101).
+
+  6. Lire la valeur immediate si l'instruction en requiert une
+     (0, 1, 2 ou 4 octets).
+
+  7. Executer l'instruction.
+
+  Longueur totale de l'instruction :
+    = prefixes + opcode + [Mod R/M] + [SIB] + [depl.] + [imm.]
+    Minimum : 1 octet (NOP = 90h)
+    Maximum : 15 octets
+
+  Tableau recapitulatif des tailles de chaque champ :
+
+  Champ            Taille (octets)   Condition
+  ---------------  ----------------  ---------------------------
+  Prefixes         0 a 4             Optionnel
+  Opcode           1 ou 2            Toujours present
+  Mod R/M          0 ou 1            Si operande r/m requis
+  SIB              0 ou 1            Si R/M=100 et Mod<>11
+  Deplacement      0, 1 ou 4         Selon Mod (0, 8 ou 32 bits)
+  Immediat         0, 1, 2 ou 4      Si operande immediat requis
 
 ==============================================================================
 6. MODE PROTEGE ET DESCRIPTEURS
