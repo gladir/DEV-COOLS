@@ -348,7 +348,7 @@
             Queues multiples : tab.i.j -> cle = valeur(i).valeur(j)
             Limitation memoire : table de hachage simple dans le heap
 
-  TODO 20 - ARITHMETIQUE ET NUMERIC DIGITS
+  TODO 20 - ARITHMETIQUE ET NUMERIC DIGITS [IMPLEMENTE]
             NUMERIC DIGITS [n] : nombre de chiffres significatifs
               Defaut = 9, sur 8086 limite a la precision entiere 16 bits
               Si DIGITS <= 4 : operations directes sur registres 16 bits
@@ -849,6 +849,10 @@ Procedure EmitBif2Runtime;     Forward;
 
 (* TODO 19 - VARIABLES COMPOSEES (STEMS) *)
 Procedure EmitStemRuntime;     Forward;
+
+(* TODO 20 - ARITHMETIQUE ET NUMERIC DIGITS *)
+Procedure EmitArithRuntime;    Forward;
+Procedure ParseNumericStmt;    Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -3084,6 +3088,11 @@ Begin
   (*  TODO 16 - Runtime PARSE (decoupage de chaines)              *)
   (* ============================================================ *)
   EmitParseRuntime;
+
+  (* ============================================================ *)
+  (*  TODO 20 - Runtime arithmetique et NUMERIC                   *)
+  (* ============================================================ *)
+  EmitArithRuntime;
 End;
 
 { ============================================================
@@ -5875,6 +5884,13 @@ Begin
   DataAddBuffer('_RX_STEMBUF', 256);              (* buffer sauvegarde cle      *)
   DataAddWord('_RX_STEMCNT', 0);                   (* nombre d entrees stem      *)
   DataAddBuffer('_RX_STEMTAB', 4096);             (* table stems 32x128 octets  *)
+  (* TODO 20 - Parametres NUMERIC *)
+  DataAddWord('_RX_DIGITS', 9);                    (* NUMERIC DIGITS (defaut=9)  *)
+  DataAddWord('_RX_FUZZ', 0);                      (* NUMERIC FUZZ (defaut=0)    *)
+  DataAddWord('_RX_FORM', 0);                      (* NUMERIC FORM (0=SCIENTIFIC)*)
+  DataAdd('_RX_FORM_SCI', DK_STR, 0, 'SCIENTIFIC');   (* chaine SCIENTIFIC   *)
+  DataAdd('_RX_FORM_ENG', DK_STR, 0, 'ENGINEERING');  (* chaine ENGINEERING  *)
+  DataAddBuffer('_RX_ARITHBUF', 256);              (* buffer arithmetique       *)
 End;
 
 (* ============================================================
@@ -8937,6 +8953,170 @@ Begin
   EmitProlog;
 End;
 
+{ ============================================================
+  TODO 20 - ARITHMETIQUE ET NUMERIC DIGITS [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- ParseNumericStmt : traiter NUMERIC DIGITS/FORM/FUZZ ----- *)
+(* Le mot-cle NUMERIC a deja ete consomme. On attend DIGITS,      *)
+(* FORM ou FUZZ suivi d une valeur optionnelle.                    *)
+(*                                                                  *)
+(* NUMERIC DIGITS [n] : nombre de chiffres significatifs           *)
+(*   -> MOV WORD PTR [_RX_DIGITS], n                               *)
+(* NUMERIC FORM SCIENTIFIC | ENGINEERING                            *)
+(*   -> MOV WORD PTR [_RX_FORM], 0 ou 1                            *)
+(* NUMERIC FUZZ [n] : chiffres ignores dans les comparaisons       *)
+(*   -> MOV WORD PTR [_RX_FUZZ], n                                 *)
+Procedure ParseNumericStmt;
+Var
+  Sub  : TString;
+  Res  : TExprVal;
+Begin
+  If (CurToken.Kind = TK_EOF) Or (CurToken.Kind = TK_EOL) Then
+  Begin
+    WarnMsg('NUMERIC: mot-cle DIGITS, FORM ou FUZZ attendu');
+    Exit;
+  End;
+
+  Sub := StrUpperCase(CurToken.Val);
+  ParserAdvance;
+
+  (* NUMERIC DIGITS [n] *)
+  If Sub = 'DIGITS' Then
+  Begin
+    EmitComment('NUMERIC DIGITS');
+    If (CurToken.Kind <> TK_EOL) And (CurToken.Kind <> TK_EOF) Then
+    Begin
+      ParseExpr(Res);
+      ExprFlushToAX(Res);
+      EmitInstr('MOV', 'WORD PTR [_RX_DIGITS], AX');
+    End
+    Else
+    Begin
+      (* NUMERIC DIGITS sans argument : retablir le defaut = 9 *)
+      EmitInstr('MOV', 'WORD PTR [_RX_DIGITS], 9');
+    End;
+  End
+
+  (* NUMERIC FORM [SCIENTIFIC | ENGINEERING] *)
+  Else If Sub = 'FORM' Then
+  Begin
+    EmitComment('NUMERIC FORM');
+    If (CurToken.Kind <> TK_EOL) And (CurToken.Kind <> TK_EOF) Then
+    Begin
+      Sub := StrUpperCase(CurToken.Val);
+      ParserAdvance;
+      If Sub = 'ENGINEERING' Then
+        EmitInstr('MOV', 'WORD PTR [_RX_FORM], 1')
+      Else
+        (* SCIENTIFIC est le defaut *)
+        EmitInstr('MOV', 'WORD PTR [_RX_FORM], 0');
+    End
+    Else
+    Begin
+      (* NUMERIC FORM sans argument : retablir SCIENTIFIC *)
+      EmitInstr('MOV', 'WORD PTR [_RX_FORM], 0');
+    End;
+  End
+
+  (* NUMERIC FUZZ [n] *)
+  Else If Sub = 'FUZZ' Then
+  Begin
+    EmitComment('NUMERIC FUZZ');
+    If (CurToken.Kind <> TK_EOL) And (CurToken.Kind <> TK_EOF) Then
+    Begin
+      ParseExpr(Res);
+      ExprFlushToAX(Res);
+      EmitInstr('MOV', 'WORD PTR [_RX_FUZZ], AX');
+    End
+    Else
+    Begin
+      (* NUMERIC FUZZ sans argument : retablir le defaut = 0 *)
+      EmitInstr('MOV', 'WORD PTR [_RX_FUZZ], 0');
+    End;
+  End
+
+  Else
+  Begin
+    WarnMsg('NUMERIC: mot-cle "' + Sub + '" inconnu (attendu DIGITS, FORM ou FUZZ)');
+    While (CurToken.Kind <> TK_EOL) And (CurToken.Kind <> TK_EOF) Do
+      ParserAdvance;
+  End;
+End;
+
+(* ---- EmitArithRuntime : routines runtime pour NUMERIC --------- *)
+(* Emet les routines assembleur 8086 pour les fonctions integrees  *)
+(* liees a l arithmetique et au controle numerique :                *)
+(*   _RXB_DIGITS()     : retourne la valeur courante de NUMERIC DIGITS *)
+(*   _RXB_FORM()       : retourne "SCIENTIFIC" ou "ENGINEERING"    *)
+(*   _RXB_FUZZ()       : retourne la valeur courante de NUMERIC FUZZ   *)
+(*   _RXB_ARG([n[,'O'|'E']]) : retourne le nieme argument         *)
+(*   _RXB_SOURCELINE() : retourne le nombre de lignes source       *)
+Procedure EmitArithRuntime;
+Var
+  Lbl1 : TString;
+Begin
+  EmitComment('--- Runtime ARITHMETIC / NUMERIC (TODO 20) ---');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_DIGITS() : retourne NUMERIC DIGITS courant               *)
+  (*  0 arg (appele sans parametres)                                *)
+  (*  Retour : AX = valeur entiere de DIGITS                       *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_DIGITS');
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [_RX_DIGITS]');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_FORM() : retourne "SCIENTIFIC" ou "ENGINEERING"          *)
+  (*  0 arg                                                         *)
+  (*  Retour : AX = ptr chaine                                     *)
+  (* ============================================================ *)
+  Lbl1 := LabelGen;
+  EmitLabel('_RXB_FORM');
+  EmitInstrAB('CMP', 'WORD PTR [_RX_FORM]', '0');
+  EmitRaw('        JNE     ' + Lbl1);
+  EmitInstrAB('MOV', 'AX', 'OFFSET _RX_FORM_SCI');
+  EmitRaw('        RET');
+  EmitLabel(Lbl1);
+  EmitInstrAB('MOV', 'AX', 'OFFSET _RX_FORM_ENG');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_FUZZ() : retourne NUMERIC FUZZ courant                   *)
+  (*  0 arg                                                         *)
+  (*  Retour : AX = valeur entiere de FUZZ                         *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_FUZZ');
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [_RX_FUZZ]');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_ARG([n[,'O'|'E']]) : retourne argument de la procedure  *)
+  (*  Simplifie : retourne toujours chaine vide (pas d args en DOS) *)
+  (*  1 arg optionnel : [BP+4] = n (ignore)                        *)
+  (*  Retour : AX = ptr vers chaine vide                           *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_ARG');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _RX_NULL_STR');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  _RXB_SOURCELINE() : retourne le nombre de lignes source       *)
+  (*  Simplifie : retourne 0 (information non disponible en DOS)   *)
+  (*  Retour : AX = 0                                              *)
+  (* ============================================================ *)
+  EmitLabel('_RXB_SOURCELINE');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+End;
+
 (* Gere les mots-cles, les affectations et les expressions comme  *)
 (* instructions.                                                   *)
 Procedure ParseStmt;
@@ -9114,6 +9294,14 @@ Begin
     Begin
       ParserAdvance;
       ParseUpper;
+      Exit;
+    End;
+
+    (* NUMERIC DIGITS | FORM | FUZZ (TODO 20) *)
+    If U = 'NUMERIC' Then
+    Begin
+      ParserAdvance;
+      ParseNumericStmt;
       Exit;
     End;
 

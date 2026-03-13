@@ -2432,6 +2432,33 @@ _RXRT_PA_END:
         POP   SI
         RET
 
+; --- Runtime ARITHMETIC / NUMERIC (TODO 20) ---
+
+_RXB_DIGITS:
+        MOV   AX, WORD PTR [_RX_DIGITS]
+        RET
+
+_RXB_FORM:
+        CMP   WORD PTR [_RX_FORM], 0
+        JNE     _RXL_20
+        MOV   AX, OFFSET _RX_FORM_SCI
+        RET
+_RXL_20:
+        MOV   AX, OFFSET _RX_FORM_ENG
+        RET
+
+_RXB_FUZZ:
+        MOV   AX, WORD PTR [_RX_FUZZ]
+        RET
+
+_RXB_ARG:
+        MOV   AX, OFFSET _RX_NULL_STR
+        RET
+
+_RXB_SOURCELINE:
+        XOR   AX, AX
+        RET
+
 
 ; --- sortie DOS ---
         MOV   AX, 4C00h
@@ -2467,6 +2494,12 @@ _RX_STEMKEY DB 64 DUP(0)
 _RX_STEMBUF DB 256 DUP(0)
 _RX_STEMCNT DW 0
 _RX_STEMTAB DB 4096 DUP(0)
+_RX_DIGITS DW 9
+_RX_FUZZ DW 0
+_RX_FORM DW 0
+_RX_FORM_SCI DB 'SCIENTIFIC',0
+_RX_FORM_ENG DB 'ENGINEERING',0
+_RX_ARITHBUF DB 256 DUP(0)
 _RXK_1 DB 'Hello, World!',0
 _RXK_2 DB 'Resultat:',0
 _RXK_3 DB ' 10',0
