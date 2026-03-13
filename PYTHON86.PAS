@@ -71,7 +71,8 @@
             Indices de types primitifs :
               TY_IDX_INT=0, TY_IDX_STR=1, TY_IDX_BOOL=2,
               TY_IDX_NONE=3, TY_IDX_LIST=4, TY_IDX_DICT=5,
-              TY_IDX_FUNC=6, TY_IDX_CLASS=7
+              TY_IDX_FUNC=6, TY_IDX_CLASS=7, TY_IDX_TUPLE=8,
+              TY_IDX_MODULE=9
 
   TODO 04 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
             Arithmetiques  : + - * // % ** (// = division entiere, ** = puissance)
@@ -367,7 +368,7 @@
             Set comprehension : non supporte (avertissement)
             Expressions generatrices : non supportees (avertissement)
 
-  TODO 23 - MODULES ET IMPORT (SIMPLIFIE)
+  TODO 23 - MODULES ET IMPORT (SIMPLIFIE) [IMPLEMENTE]
             import module : importer un module Python externe
               Mecanisme simplifie : un seul fichier source compile a la fois
               Les modules importes sont declares comme externes (EXTRN en ASM)
@@ -452,6 +453,7 @@ Const
   MAX_CLASS      = 32;     { nombre max de classes                    }
   MAX_CLS_ATTR   = 16;     { nombre max d attributs par classe        }
   MAX_CLS_METH   = 16;     { nombre max de methodes par classe        }
+  MAX_IMPORT     = 16;     { nombre max de modules importes (TODO 23) }
 
   { Prefixes de nommage ASM }
   PY_VAR_PFX  = '_PYV_';    { variable globale/locale              }
@@ -477,7 +479,8 @@ Const
   TY_IDX_FUNC  = 6;   { pointeur de code            }
   TY_IDX_CLASS = 7;   { pointeur vtable             }
   TY_IDX_TUPLE = 8;   { pointeur tuple immutable    }
-  TY_PRIM_COUNT = 9;
+  TY_IDX_MODULE= 9;   { module importe (TODO 23)    }
+  TY_PRIM_COUNT = 10;
   TY_UNKNOWN   = -1;
 
 { ============================================================
@@ -567,6 +570,7 @@ Type
     ScopeLevel  : Integer;     { niveau de portee (0=global)      }
     IsGlobal    : Boolean;     { instruction global -> True       }
     IsNonlocal  : Boolean;     { instruction nonlocal -> True     }
+    IsImported  : Boolean;     { importation from module (TODO 23)}
     DeclLine    : Integer;     { ligne de declaration (debug)     }
   End;
 
@@ -680,6 +684,10 @@ Var
   ClassCount     : Integer;    { nombre de classes enregistrees        }
   InClass        : Boolean;    { True si on compile le corps d une class }
   CurClassIdx    : Integer;    { index classe courante dans ClassTab   }
+
+  { Table des modules importes (TODO 23) }
+  ImportTab      : Array[0..MAX_IMPORT - 1] Of TString;
+  ImportCount    : Integer;    { nombre de modules importes            }
 
 { ============================================================
   FORWARD DECLARATIONS
@@ -807,6 +815,9 @@ Procedure ParseRaiseStmt; Forward;
 { TODO 22 - Forward declarations comprehensions }
 Procedure ParseListComprehension(Var Res : TExprVal);  Forward;
 Procedure ParseDictComprehension(Var Res : TExprVal);  Forward;
+{ TODO 23 - Forward declarations modules et import }
+Procedure ParseImportStmt;     Forward;
+Procedure ParseFromImportStmt; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1062,6 +1073,8 @@ Begin
   { TODO 22 : comprehensions }
   CompBufActive := False;
   CompBufCount  := 0;
+  { TODO 23 : modules et import }
+  ImportCount := 0;
 End;
 
 { ============================================================
@@ -3373,6 +3386,142 @@ Begin
         EmitComment('attr: .' + AttrName);
         ParserAdvance;
 
+        { --- Acces module.fonction (TODO 23) --- }
+        If Res.TypeIdx = TY_IDX_MODULE Then
+        Begin
+          { Identifier le module via SymIdx }
+          If (Res.SymIdx >= 0) And (SymTab[Res.SymIdx].Name = 'math') Then
+          Begin
+            { math.abs, math.pow, math.min, math.max }
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+            Begin
+              IdxSym := SymFind(AttrName);
+              If IdxSym < 0 Then
+              Begin
+                { Auto-ajouter pow comme builtin si besoin }
+                If AttrName = 'pow' Then
+                Begin
+                  IdxSym := SymAdd('pow', SK_BUILTIN, TY_IDX_INT, 0);
+                  If IdxSym >= 0 Then
+                    SymTab[IdxSym].IsImported := True;
+                End;
+              End;
+              If IdxSym >= 0 Then
+                ParseCallArgs(IdxSym, Res)
+              Else
+              Begin
+                WarnMsg('math.' + AttrName + ' non supporte', CurToken.Line);
+                ParserAdvance;  { consommer '(' }
+                While (CurToken.Kind <> TK_EOF) And
+                      Not ((CurToken.Kind = TK_PUNCT) And
+                           (CurToken.Val = ')')) Do
+                  ParserAdvance;
+                If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+                  ParserAdvance;
+                ExprMakeAX(TY_IDX_INT, Res);
+              End;
+            End
+            Else
+            Begin
+              WarnMsg('math.' + AttrName + ' utilise sans appel', CurToken.Line);
+              ExprMakeAX(TY_IDX_INT, Res);
+            End;
+          End
+          Else If (Res.SymIdx >= 0) And (SymTab[Res.SymIdx].Name = 'sys') Then
+          Begin
+            If (AttrName = 'exit') And
+               (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+            Begin
+              { sys.exit(code) -> MOV AX,4C00h+code / INT 21h }
+              EmitComment('sys.exit(code)');
+              ParserAdvance;  { consommer '(' }
+              If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              Begin
+                { sys.exit() sans argument = exit(0) }
+                ParserAdvance;
+                EmitInstr('MOV    AX, 4C00h');
+                EmitInstr('INT    21h');
+              End
+              Else
+              Begin
+                ParseExpr(ArgE);
+                ExprFlushToAX(ArgE);
+                EmitInstr('MOV    AH, 4Ch');
+                EmitInstr('INT    21h');
+                If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+                  ParserAdvance;
+              End;
+              ExprMakeAX(TY_IDX_NONE, Res);
+            End
+            Else If AttrName = 'argv' Then
+            Begin
+              WarnMsg('sys.argv non supporte', CurToken.Line);
+              ExprMakeImm(0, TY_IDX_NONE, Res);
+            End
+            Else
+            Begin
+              WarnMsg('sys.' + AttrName + ' non supporte', CurToken.Line);
+              If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+              Begin
+                ParserAdvance;
+                While (CurToken.Kind <> TK_EOF) And
+                      Not ((CurToken.Kind = TK_PUNCT) And
+                           (CurToken.Val = ')')) Do
+                  ParserAdvance;
+                If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+                  ParserAdvance;
+              End;
+              ExprMakeAX(TY_IDX_NONE, Res);
+            End;
+          End
+          Else If (Res.SymIdx >= 0) And (SymTab[Res.SymIdx].Name = 'os') Then
+          Begin
+            WarnMsg('os.' + AttrName + ' non supporte', CurToken.Line);
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+            Begin
+              ParserAdvance;
+              While (CurToken.Kind <> TK_EOF) And
+                    Not ((CurToken.Kind = TK_PUNCT) And
+                         (CurToken.Val = ')')) Do
+                ParserAdvance;
+              If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+                ParserAdvance;
+            End;
+            ExprMakeAX(TY_IDX_NONE, Res);
+          End
+          Else
+          Begin
+            { Module externe : appel module.fonction }
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+            Begin
+              EmitComment('module call: ' + SymTab[Res.SymIdx].Name +
+                          '.' + AttrName);
+              IdxSym := SymFind(AttrName);
+              If IdxSym >= 0 Then
+                ParseCallArgs(IdxSym, Res)
+              Else
+              Begin
+                EmitInstr('CALL   _PYM_' + SymTab[Res.SymIdx].Name +
+                          '_' + AttrName);
+                ParserAdvance;  { consommer '(' }
+                While (CurToken.Kind <> TK_EOF) And
+                      Not ((CurToken.Kind = TK_PUNCT) And
+                           (CurToken.Val = ')')) Do
+                  ParserAdvance;
+                If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+                  ParserAdvance;
+                ExprMakeAX(TY_IDX_INT, Res);
+              End;
+            End
+            Else
+            Begin
+              EmitInstr('MOV    AX, [_PYM_' + SymTab[Res.SymIdx].Name +
+                        '_' + AttrName + ']');
+              ExprMakeAX(TY_IDX_INT, Res);
+            End;
+          End;
+        End
+        Else
         { --- Methodes de liste (TODO 15) --- }
         If (Res.TypeIdx = TY_IDX_LIST) And
            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
@@ -4946,6 +5095,7 @@ Begin
   SymTab[SymCount].ScopeLevel  := CurScope;
   SymTab[SymCount].IsGlobal    := False;
   SymTab[SymCount].IsNonlocal  := False;
+  SymTab[SymCount].IsImported  := False;
   SymTab[SymCount].DeclLine    := CurToken.Line;
 
   If Opts.DebugMode Then
@@ -5592,6 +5742,21 @@ Begin
     EmitInstr('JNE    $+4');
     EmitInstr('INC    AX');
     ExprMakeAX(TY_IDX_BOOL, Res);
+  End
+  Else If Name = 'pow' Then
+  Begin
+    { pow(base, exp) : AX=base (premier arg), CX=exp (deuxieme arg) }
+    EmitInstr('POP    CX');           { CX = exposant }
+    EmitInstr('CALL   ' + PY_RT_PFX + 'POW');
+    ExprMakeAX(TY_IDX_INT, Res);
+  End
+  Else If Name = 'exit' Then
+  Begin
+    { exit(code) : sortie DOS (TODO 23) }
+    EmitComment('exit(code)');
+    EmitInstr('MOV    AH, 4Ch');
+    EmitInstr('INT    21h');
+    ExprMakeAX(TY_IDX_NONE, Res);
   End
   Else
   Begin
@@ -6290,6 +6455,283 @@ Begin
                  CurToken.Line);
 
   ExprMakeAX(TY_IDX_DICT, Res);
+End;
+
+{ ============================================================
+  TODO 23 - MODULES ET IMPORT (SIMPLIFIE) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ImportFind : chercher un module dans ImportTab ----------- }
+Function ImportFind(Const Name : TString) : Integer;
+Var I : Integer;
+Begin
+  ImportFind := -1;
+  For I := 0 To ImportCount - 1 Do
+    If ImportTab[I] = Name Then
+    Begin
+      ImportFind := I;
+      Exit;
+    End;
+End;
+
+{ ---- ImportAdd : enregistrer un module dans ImportTab --------- }
+Function ImportAdd(Const Name : TString) : Integer;
+Begin
+  If ImportFind(Name) >= 0 Then
+  Begin
+    ImportAdd := ImportFind(Name);
+    Exit;
+  End;
+  If ImportCount >= MAX_IMPORT Then
+  Begin
+    CompileError('trop de modules importes (max=' +
+                 IntToStr_(MAX_IMPORT) + ')', CurToken.Line);
+    ImportAdd := -1;
+    Exit;
+  End;
+  ImportTab[ImportCount] := Name;
+  ImportAdd := ImportCount;
+  Inc(ImportCount);
+End;
+
+{ ---- ParseImportStmt : import module_name --------------------- }
+{ Syntaxe : import math / import sys / import os / import other   }
+{ Modules connus (math, sys) : enregistrer dans ImportTab et      }
+{   ajouter un symbole SK_MODULE dans SymTab.                     }
+{ Modules inconnus : emettre une declaration EXTRN en ASM.        }
+Procedure ParseImportStmt;
+Var
+  ModName : TString;
+  Idx     : Integer;
+Begin
+  { CurToken = 'import' deja verifie }
+  ParserAdvance;   { consommer 'import' }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('nom de module attendu apres ''import''', CurToken.Line);
+    Exit;
+  End;
+  ModName := CurToken.Val;
+  EmitComment('import ' + ModName);
+  ParserAdvance;   { consommer le nom du module }
+
+  { Enregistrer le module }
+  ImportAdd(ModName);
+
+  { Module math : ses fonctions sont deja des builtins }
+  If ModName = 'math' Then
+  Begin
+    Idx := SymFind('math');
+    If Idx < 0 Then
+    Begin
+      Idx := SymAdd('math', SK_MODULE, TY_IDX_MODULE, 0);
+      If Idx >= 0 Then
+        SymTab[Idx].IsImported := True;
+    End;
+    { S assurer que pow est declare comme builtin }
+    If SymFind('pow') < 0 Then
+    Begin
+      Idx := SymAdd('pow', SK_BUILTIN, TY_IDX_INT, 0);
+      If Idx >= 0 Then
+        SymTab[Idx].IsImported := True;
+    End;
+  End
+  { Module sys : sys.exit(code) -> sortie DOS }
+  Else If ModName = 'sys' Then
+  Begin
+    Idx := SymFind('sys');
+    If Idx < 0 Then
+    Begin
+      Idx := SymAdd('sys', SK_MODULE, TY_IDX_MODULE, 0);
+      If Idx >= 0 Then
+        SymTab[Idx].IsImported := True;
+    End;
+  End
+  { Module os : non supporte }
+  Else If ModName = 'os' Then
+  Begin
+    WarnMsg('module ''os'' non supporte - instruction ignoree',
+            CurToken.Line);
+    Idx := SymFind('os');
+    If Idx < 0 Then
+    Begin
+      Idx := SymAdd('os', SK_MODULE, TY_IDX_MODULE, 0);
+      If Idx >= 0 Then
+        SymTab[Idx].IsImported := True;
+    End;
+  End
+  Else
+  Begin
+    { Module externe inconnu : declarer EXTRN }
+    Idx := SymFind(ModName);
+    If Idx < 0 Then
+    Begin
+      Idx := SymAdd(ModName, SK_MODULE, TY_IDX_MODULE, 0);
+      If Idx >= 0 Then
+        SymTab[Idx].IsImported := True;
+    End;
+    EmitInstr('EXTRN  _PYM_' + ModName + ':NEAR');
+  End;
+
+  { Consommer les imports multiples : import a, b, c }
+  While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
+  Begin
+    ParserAdvance;  { consommer ',' }
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      ModName := CurToken.Val;
+      EmitComment('import ' + ModName);
+      ImportAdd(ModName);
+      If (ModName <> 'math') And (ModName <> 'sys') And (ModName <> 'os') Then
+      Begin
+        Idx := SymFind(ModName);
+        If Idx < 0 Then
+        Begin
+          Idx := SymAdd(ModName, SK_MODULE, TY_IDX_MODULE, 0);
+          If Idx >= 0 Then
+            SymTab[Idx].IsImported := True;
+        End;
+        EmitInstr('EXTRN  _PYM_' + ModName + ':NEAR');
+      End
+      Else
+      Begin
+        Idx := SymFind(ModName);
+        If Idx < 0 Then
+        Begin
+          Idx := SymAdd(ModName, SK_MODULE, TY_IDX_MODULE, 0);
+          If Idx >= 0 Then
+            SymTab[Idx].IsImported := True;
+        End;
+      End;
+      ParserAdvance;
+    End;
+  End;
+End;
+
+{ ---- ParseFromImportStmt : from module import name1, name2 --- }
+{ Syntaxe : from math import abs, pow, min, max                  }
+{           from sys import exit                                 }
+Procedure ParseFromImportStmt;
+Var
+  ModName, FuncName : TString;
+  Idx : Integer;
+Begin
+  { CurToken = 'from' deja verifie }
+  ParserAdvance;   { consommer 'from' }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('nom de module attendu apres ''from''', CurToken.Line);
+    Exit;
+  End;
+  ModName := CurToken.Val;
+  ParserAdvance;   { consommer le nom du module }
+
+  { Attendre 'import' }
+  If (CurToken.Kind <> TK_KEYWORD) Or (CurToken.Val <> 'import') Then
+  Begin
+    CompileError('''import'' attendu apres ''from ' + ModName + '''',
+                 CurToken.Line);
+    Exit;
+  End;
+  ParserAdvance;   { consommer 'import' }
+
+  EmitComment('from ' + ModName + ' import ...');
+  ImportAdd(ModName);
+
+  { Parser les noms importes }
+  Repeat
+    If CurToken.Kind = TK_OP Then
+    Begin
+      { from module import * }
+      If CurToken.Val = '*' Then
+      Begin
+        EmitComment('  import * (tout)');
+        ParserAdvance;
+        Break;
+      End;
+    End;
+
+    If CurToken.Kind <> TK_IDENT Then
+    Begin
+      CompileError('nom de symbole attendu apres ''import''', CurToken.Line);
+      Exit;
+    End;
+    FuncName := CurToken.Val;
+    EmitComment('  from ' + ModName + ' import ' + FuncName);
+    ParserAdvance;
+
+    { Module math : les fonctions abs, min, max sont deja des builtins }
+    If ModName = 'math' Then
+    Begin
+      { Ajouter pow si pas encore present }
+      If FuncName = 'pow' Then
+      Begin
+        If SymFind('pow') < 0 Then
+        Begin
+          Idx := SymAdd('pow', SK_BUILTIN, TY_IDX_INT, 0);
+          If Idx >= 0 Then
+            SymTab[Idx].IsImported := True;
+        End;
+      End
+      Else If (FuncName = 'sqrt') Or (FuncName = 'log') Or
+              (FuncName = 'sin') Or (FuncName = 'cos') Then
+        WarnMsg('math.' + FuncName +
+                ' non supporte en entier 16 bits - instruction ignoree',
+                CurToken.Line)
+      Else
+      Begin
+        { abs, min, max etc. deja builtins - rien a faire }
+        Idx := SymFind(FuncName);
+        If (Idx >= 0) And (SymTab[Idx].Kind = SK_BUILTIN) Then
+          SymTab[Idx].IsImported := True;
+      End;
+    End
+    { Module sys : exit -> sortie DOS }
+    Else If ModName = 'sys' Then
+    Begin
+      If FuncName = 'exit' Then
+      Begin
+        Idx := SymFind('exit');
+        If Idx < 0 Then
+        Begin
+          Idx := SymAdd('exit', SK_BUILTIN, TY_IDX_NONE, 0);
+          If Idx >= 0 Then
+            SymTab[Idx].IsImported := True;
+        End;
+      End
+      Else If FuncName = 'argv' Then
+        WarnMsg('sys.argv non supporte - instruction ignoree',
+                CurToken.Line)
+      Else
+        WarnMsg('sys.' + FuncName + ' non supporte - instruction ignoree',
+                CurToken.Line);
+    End
+    { Module os : non supporte }
+    Else If ModName = 'os' Then
+      WarnMsg('module ''os'' non supporte - instruction ignoree',
+              CurToken.Line)
+    Else
+    Begin
+      { Module externe : ajouter le symbole comme importe }
+      Idx := SymFind(FuncName);
+      If Idx < 0 Then
+      Begin
+        Idx := SymAdd(FuncName, SK_FUNC, TY_UNKNOWN, 0);
+        If Idx >= 0 Then
+        Begin
+          SymTab[Idx].IsImported := True;
+          SymTab[Idx].MangledName := '_PYM_' + ModName + '_' + FuncName;
+        End;
+      End;
+      EmitInstr('EXTRN  _PYM_' + ModName + '_' + FuncName + ':NEAR');
+    End;
+
+    { Continuer si virgule }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance
+    Else
+      Break;
+  Until False;
 End;
 
 { ---- ParseListLiteral : [e0, e1, e2, ...] -------------------- }
@@ -8212,6 +8654,20 @@ Begin
       If CurToken.Kind = TK_NEWLINE Then ParserAdvance;
       Continue;
     End;
+    { import module (TODO 23) }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'import') Then
+    Begin
+      ParseImportStmt;
+      If CurToken.Kind = TK_NEWLINE Then ParserAdvance;
+      Continue;
+    End;
+    { from module import ... (TODO 23) }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'from') Then
+    Begin
+      ParseFromImportStmt;
+      If CurToken.Kind = TK_NEWLINE Then ParserAdvance;
+      Continue;
+    End;
     { Autres mots-cles (stub) - sauter la ligne }
     If (CurToken.Kind = TK_KEYWORD) And
        (CurToken.Val <> 'True') And (CurToken.Val <> 'False') And
@@ -8665,6 +9121,20 @@ Begin
     If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'raise') Then
     Begin
       ParseRaiseStmt;
+      If CurToken.Kind = TK_NEWLINE Then ParserAdvance;
+      Continue;
+    End;
+    { Instruction import module (TODO 23) }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'import') Then
+    Begin
+      ParseImportStmt;
+      If CurToken.Kind = TK_NEWLINE Then ParserAdvance;
+      Continue;
+    End;
+    { Instruction from module import ... (TODO 23) }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'from') Then
+    Begin
+      ParseFromImportStmt;
       If CurToken.Kind = TK_NEWLINE Then ParserAdvance;
       Continue;
     End;
