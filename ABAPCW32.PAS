@@ -219,7 +219,7 @@
             Primitives d emission : Emit, EmitLabel, EmitComment,
               EmitBlank, NewLabel, AddStringLit
 
-  TODO 10 - PARSEUR : IF / ELSEIF / ELSE / ENDIF
+  TODO 10 - PARSEUR : IF / ELSEIF / ELSE / ENDIF [IMPLEMENTE]
             Procedure ParseIf
             Syntaxe :
               IF condition. instructions.
@@ -1084,6 +1084,14 @@ Function  ParseExpr : Integer; Forward;
 { ============================================================ }
 
 Procedure GenStoreVar32(SymIdx : Integer); Forward;
+
+{ ============================================================ }
+{ DECLARATIONS FORWARD (IF / ELSEIF / ELSE / ENDIF TODO 10)    }
+{ ============================================================ }
+
+Procedure ParseStatement; Forward;
+Procedure ParseBlock(Stop1, Stop2, Stop3 : Integer); Forward;
+Procedure ParseIf; Forward;
 
 { ============================================================ }
 { FONCTIONS UTILITAIRES                                        }
@@ -3148,6 +3156,144 @@ Begin
   End;
 End;
 
+{ ============================================================ }
+{ TODO 10 : PARSEUR IF / ELSEIF / ELSE / ENDIF                }
+{ ============================================================ }
+
+{ ---- ParseStatement : dispatcher d instructions ------------- }
+{ Analyse une instruction ABAP complete (terminee par un .)     }
+Procedure ParseStatement;
+Var ExprType : Integer;
+Begin
+  If CurTokType = TOK_EOF Then Exit;
+  If CurTokType = TOK_DOT Then Begin Consume; Exit; End;
+
+  { DATA / CONSTANTS / TYPES }
+  If TokIsKw(KW_DATA) Then
+  Begin Consume; ParseData(False); Exit; End;
+  If TokIsKw(KW_CONSTANTS) Then
+  Begin Consume; ParseData(True); Exit; End;
+  If TokIsKw(KW_TYPES) Then
+  Begin Consume; ParseTypes; Exit; End;
+
+  { COMPUTE var = expr. }
+  If TokIsKw(KW_COMPUTE) Then
+  Begin
+    Consume;
+    ExprType := ParseExpr;
+    If CurTokType = TOK_DOT Then Consume;
+    Exit;
+  End;
+
+  { IF / ELSEIF / ELSE / ENDIF }
+  If TokIsKw(KW_IF) Then
+  Begin Consume; ParseIf; Exit; End;
+
+  { instruction non reconnue : sauter jusqu au prochain point }
+  If CurTokType = TOK_DOT Then
+    Consume
+  Else
+  Begin
+    While (CurTokType <> TOK_EOF) And (CurTokType <> TOK_DOT) Do
+      Consume;
+    If CurTokType = TOK_DOT Then Consume;
+  End;
+End;
+
+{ ---- ParseBlock : parser un bloc jusqu aux mots-cles d arret }
+{ Stop1, Stop2, Stop3 : mots-cles d arret (KW_NONE si unused)  }
+Procedure ParseBlock(Stop1, Stop2, Stop3 : Integer);
+Begin
+  While (CurTokType <> TOK_EOF) Do
+  Begin
+    If ((Stop1 <> KW_NONE) And TokIsKw(Stop1)) Or
+       ((Stop2 <> KW_NONE) And TokIsKw(Stop2)) Or
+       ((Stop3 <> KW_NONE) And TokIsKw(Stop3)) Then Break;
+    ParseStatement;
+  End;
+End;
+
+{ ---- ParseIf : IF / ELSEIF / ELSE / ENDIF -------------------- }
+{ Syntaxe ABAP :                                                  }
+{   IF condition. instructions.                                   }
+{   [ELSEIF condition. instructions.] ...                         }
+{   [ELSE. instructions.]                                         }
+{   ENDIF.                                                        }
+Procedure ParseIf;
+Var LblNext, LblEnd : TString;
+    FirstBranch     : Boolean;
+Begin
+  LblEnd      := NewLabel + '_EN';
+  FirstBranch := True;
+
+  { --- Boucle IF / ELSEIF --- }
+  Repeat
+    If FirstBranch Then
+      EmitComment('---- IF ----')
+    Else
+      EmitComment('---- ELSEIF ----');
+    FirstBranch := False;
+
+    LblNext := NewLabel + '_NX';
+
+    { Evaluer la condition -> EAX }
+    ParseExpr;
+
+    { Consommer le point terminateur apres la condition }
+    If CurTokType = TOK_DOT Then Consume
+    Else LexError('Point attendu apres condition IF/ELSEIF');
+
+    { Saut conditionnel si faux (EAX = 0) }
+    EmitI('TEST    EAX, EAX');
+    EmitI('JZ      ' + LblNext);
+
+    { Corps de la branche }
+    EnterScope(SK_BLOCK, 0);
+    ParseBlock(KW_ELSEIF, KW_ELSE, KW_ENDIF);
+    LeaveScope;
+
+    { Saut vers la fin apres le corps }
+    EmitI('JMP     ' + LblEnd);
+
+    { Etiquette du prochain ELSEIF ou de la fin de branche }
+    EmitLabel(LblNext);
+
+    { Continuer la boucle si ELSEIF }
+    If TokIsKw(KW_ELSEIF) Then
+    Begin
+      Consume; { skip ELSEIF }
+      Continue;
+    End;
+
+    Break; { pas de ELSEIF : sortir }
+  Until False;
+
+  { --- Branche ELSE optionnelle --- }
+  If TokIsKw(KW_ELSE) Then
+  Begin
+    Consume; { skip ELSE }
+    If CurTokType = TOK_DOT Then Consume
+    Else LexError('Point attendu apres ELSE');
+    EmitComment('---- ELSE ----');
+    EnterScope(SK_BLOCK, 0);
+    ParseBlock(KW_ENDIF, KW_NONE, KW_NONE);
+    LeaveScope;
+  End;
+
+  { --- ENDIF. --- }
+  If TokIsKw(KW_ENDIF) Then
+  Begin
+    Consume; { skip ENDIF }
+    If CurTokType = TOK_DOT Then Consume
+    Else LexError('Point attendu apres ENDIF');
+  End
+  Else
+    LexError('ENDIF attendu');
+
+  { Etiquette de fin commune a toutes les branches }
+  EmitLabel(LblEnd);
+End;
+
 Procedure InitOptions;
 Begin
   Opts.OutFile   := '';
@@ -3320,7 +3466,6 @@ End;
 { ============================================================ }
 
 Procedure Run;
-Var ExprType : Integer;
 Begin
   InitSymTable;
   InitScopes;
@@ -3353,33 +3498,12 @@ Begin
     { Parser les declarations et instructions de haut niveau }
     While (CurTokType <> TOK_EOF) Do
     Begin
-      If TokIsKw(KW_DATA) Then
-      Begin Consume; ParseData(False); End
-      Else If TokIsKw(KW_CONSTANTS) Then
-      Begin Consume; ParseData(True); End
-      Else If TokIsKw(KW_TYPES) Then
-      Begin Consume; ParseTypes; End
-      Else If TokIsKw(KW_COMPUTE) Then
-      Begin
-        { COMPUTE var = expr. }
-        Consume;
-        ExprType := ParseExpr;
-        If CurTokType = TOK_DOT Then Consume;
-      End
-      Else
-        Break;  { instruction non traitee par TODO 09 }
+      ParseStatement;
     End;
     WriteLn('ABAPCW32: symboles declares: ', SymCount);
     WriteLn('ABAPCW32: labels generes: ', LabelCount);
     WriteLn('ABAPCW32: chaines litterales: ', StrLitCount);
     WriteLn('ABAPCW32: scope initial: SK_GLOBAL (niveau ', ScopeTop, ')');
-    { Sauter les tokens restants }
-    If CurTokType <> TOK_EOF Then
-    Begin
-      WriteLn('ABAPCW32: TODO 10..25 non encore implementes.');
-      While CurTokType <> TOK_EOF Do
-        Consume;
-    End;
   End;
   LexClose;
 End;

@@ -200,7 +200,7 @@
             Primitives d emission : Emit, EmitLabel, EmitComment,
               EmitBlank, NewLabel, AddStringLit
 
-  TODO 10 - PARSEUR : IF / ELSEIF / ELSE / ENDIF
+  TODO 10 - PARSEUR : IF / ELSEIF / ELSE / ENDIF [IMPLEMENTE]
             Procedure ParseIf
             Syntaxe :
               IF condition. instructions.
