@@ -381,7 +381,7 @@
             Gestion des chemins d import : non supportee (un seul repertoire)
             Tables d importation/exportation : symboles EXTRN et PUBLIC
 
-  TODO 24 - RUNTIME MINIMAL
+  TODO 24 - RUNTIME MINIMAL [IMPLEMENTE]
             _PYRT_PRINT(BX=handle, SI=msg, CX=len) : INT 21h AH=40h
             _PYRT_PRINTLN : _PYRT_PRINT + CR+LF via _PY_CRLF DB 13,10,0
             _PYRT_STRLEN(SI=str) : compte octets jusqu a 0 -> AX
@@ -689,6 +689,9 @@ Var
   ImportTab      : Array[0..MAX_IMPORT - 1] Of TString;
   ImportCount    : Integer;    { nombre de modules importes            }
 
+  { Flag runtime minimal (TODO 24) }
+  RuntimeEmitted : Boolean;    { True si runtime deja emis             }
+
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
@@ -818,6 +821,8 @@ Procedure ParseDictComprehension(Var Res : TExprVal);  Forward;
 { TODO 23 - Forward declarations modules et import }
 Procedure ParseImportStmt;     Forward;
 Procedure ParseFromImportStmt; Forward;
+{ TODO 24 - Forward declaration runtime minimal }
+Procedure EmitMinimalRuntime;  Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1075,6 +1080,8 @@ Begin
   CompBufCount  := 0;
   { TODO 23 : modules et import }
   ImportCount := 0;
+  { TODO 24 : runtime minimal }
+  RuntimeEmitted := False;
 End;
 
 { ============================================================
@@ -2418,22 +2425,52 @@ Begin
   EmitRaw('_DATA   ENDS');
 End;
 
+{ ============================================================
+  TODO 24 - RUNTIME MINIMAL [IMPLEMENTE]
+  ============================================================ }
+
+{ EmitMinimalRuntime : consolide l emission de toutes les routines runtime }
+{ Protege par RuntimeEmitted pour n emettre qu une seule fois              }
+Procedure EmitMinimalRuntime;
+Begin
+  If RuntimeEmitted Then Exit;
+  RuntimeEmitted := True;
+
+  EmitBlankLine;
+  EmitComment('=== RUNTIME MINIMAL (TODO 24) ===');
+
+  { Routines d expressions binaires (TODO 11) }
+  EmitExprRuntime;
+  { Routines d entrees/sorties (TODO 12) }
+  EmitIORuntime;
+  { Routines pour listes (TODO 15) }
+  EmitListRuntime;
+  { Routines pour dicts (TODO 16) }
+  EmitDictRuntime;
+  { Routines pour classes (TODO 18) }
+  EmitClassRuntime;
+  { Routines pour tuples (TODO 19) }
+  EmitTupleRuntime;
+  { Routines pour chaines avancees (TODO 20) }
+  EmitStrRuntime;
+
+  { _PYRT_PANIC : affiche un message d erreur et termine avec code 1 }
+  { Entree : SI = pointeur chaine ASCIIZ du message                   }
+  EmitBlankLine;
+  EmitComment('_PYRT_PANIC : affiche message + exit code 1');
+  EmitLabel(PY_RT_PFX + 'PANIC');
+  EmitInstr('PUSH   SI');
+  EmitInstr('CALL   ' + PY_RT_PFX + 'PRINTSTR');
+  EmitInstr('MOV    SI, OFFSET _PY_CRLF');
+  EmitInstr('CALL   ' + PY_RT_PFX + 'PRINTSTR');
+  EmitInstr('MOV    AX, 4C01h');
+  EmitInstr('INT    21h');
+End;
+
 Procedure EmitClose;
 Begin
-  { Emettre les routines runtime (TODO 11) }
-  EmitExprRuntime;
-  { Emettre les routines d entrees/sorties (TODO 12) }
-  EmitIORuntime;
-  { Emettre les routines runtime pour listes (TODO 15) }
-  EmitListRuntime;
-  { Emettre les routines runtime pour dicts (TODO 16) }
-  EmitDictRuntime;
-  { Emettre les routines runtime pour classes (TODO 18) }
-  EmitClassRuntime;
-  { Emettre les routines runtime pour tuples (TODO 19) }
-  EmitTupleRuntime;
-  { Emettre les routines runtime pour chaines avancees (TODO 20) }
-  EmitStrRuntime;
+  { Emettre le runtime minimal une seule fois (TODO 24) }
+  EmitMinimalRuntime;
   { Fermer le segment de code }
   EmitRaw('');
   EmitRaw('_TEXT   ENDS');
