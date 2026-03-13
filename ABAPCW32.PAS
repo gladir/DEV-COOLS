@@ -6481,7 +6481,9 @@ Begin
   EmitI('POP     EAX');
   { Move string right: copy from end to end+count }
   EmitI('LEA     ESI, [EAX+EDX]');       { ESI = ptr+len (at null) }
-  EmitI('LEA     EDI, [EAX+EDX+ECX]');   { EDI = ptr+len+count }
+  { EDI = ptr+len+count = EAX+EDX+ECX (3 registres impossible en x86) }
+  EmitI('LEA     EDI, [EAX+EDX]');
+  EmitI('ADD     EDI, ECX');
   EmitI('MOV     BYTE PTR [EDI+1], 0');  { null terminate }
   EmitI('INC     EDX');                  { include null }
   EmitLabel(AB_RT_PFX + 'SSHR_LP');
@@ -7926,10 +7928,18 @@ Begin
   Begin
     R1 := AsmRegIdx32(Op1);
     Bracket := AsmExtractBracket(Op2);
-    BinEmitByte($8D);
-    BinEmitByte((0 Shl 6) Or (R1 Shl 3) Or 5);
-    BinAddFixup(BinCodeLen, BFK_ABS32, Bracket, True);
-    BinEmitDWord(0);
+    If AsmIsRegBased(Bracket) Then
+    Begin { Register-based: LEA reg, [reg+...] }
+      BinEmitByte($8D);
+      AsmEncodeMemory(Bracket, R1);
+    End
+    Else
+    Begin { Label-based: LEA reg, [label] or LEA reg, [label+offset] }
+      BinEmitByte($8D);
+      BinEmitByte((0 Shl 6) Or (R1 Shl 3) Or 5);
+      BinAddFixup(BinCodeLen, BFK_ABS32, Bracket, True);
+      BinEmitDWord(0);
+    End;
     Exit;
   End;
 
@@ -8623,6 +8633,9 @@ Var
   TgtInCode : Boolean;
   Addr : LongInt;
   ApiIdx : Integer;
+  TgtName : TString;
+  LblExtraOfs : LongInt;
+  PlusP : Integer;
 Begin
   For I := 0 To BinFixCount - 1 Do
   Begin
@@ -8640,17 +8653,28 @@ Begin
     End
     Else
     Begin
+      { Parse label+offset if present (e.g. _ABRT_NUMBUF+11) }
+      TgtName := BinFixups[I].Target;
+      LblExtraOfs := 0;
+      PlusP := Pos('+', TgtName);
+      If PlusP > 0 Then
+      Begin
+        LblExtraOfs := AsmParseImm(Copy(TgtName, PlusP + 1, Length(TgtName) - PlusP));
+        TgtName := Copy(TgtName, 1, PlusP - 1);
+      End;
       { Find target label }
       TgtOfs := -1;
       TgtInCode := True;
       For J := 0 To BinLblCount - 1 Do
-        If BinLabels[J].Name = BinFixups[I].Target Then
+        If BinLabels[J].Name = TgtName Then
         Begin
           TgtOfs := BinLabels[J].Offset;
           TgtInCode := BinLabels[J].InCode;
           Break;
         End;
       If TgtOfs < 0 Then Continue;
+
+      TgtOfs := TgtOfs + LblExtraOfs;
 
       If BinFixups[I].Kind = BFK_REL32 Then
       Begin
