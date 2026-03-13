@@ -222,7 +222,7 @@
               toChar() -> MOV AL,valeur (octet bas)
               toByte() / toShort() / toLong() : stubs -> AX tel quel
 
-  TODO 13 - IF / ELSE / WHEN (EXPRESSIONS ET STATEMENTS)
+  TODO 13 - IF / ELSE / WHEN (EXPRESSIONS ET STATEMENTS) [IMPLEMENTE]
             ParseIfStmt : if (cond) bloc [else if (cond) bloc] [else bloc]
               Emission TEST AX,AX / JZ pour condition fausse
               Labels : _KTL_ELIF_N, _KTL_ELSE_N, _KTL_ENDIF_N
@@ -860,6 +860,10 @@ Function  DeclAllocSym(Const Name : TString; Kind : TSymKind) : Integer; Forward
 Procedure ParseDeclStmt(Const Kw : TString); Forward;
 { TODO 10 - Expressions primaires }
 Function  ParseCallArgs : Integer; Forward;
+{ TODO 13 - If / When }
+Procedure ParseBlock;    Forward;
+Procedure ParseIfStmt;   Forward;
+Procedure ParseWhenStmt; Forward;
 { General }
 Procedure ParserAdvance; Forward;
 Procedure ParseStmt;     Forward;
@@ -4583,7 +4587,211 @@ Begin
   End;
 End;
 
-{ --- Stubs generaux ---------------------------------------- }
+{ ============================================================
+  TODO 13 - IF / ELSE / WHEN [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- ParseBlock : bloc { stmts } ou instruction unique ----- *)
+(* Gere les accolades : si le token courant est '{' on parse     *)
+(* une suite de statements jusqu a '}', sinon on parse une       *)
+(* seule instruction.                                            *)
+Procedure ParseBlock;
+Begin
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = Chr(123)) Then
+  Begin
+    ParserAdvance; (* consomme open-brace *)
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = Chr(125))) Do
+      ParseStmt;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = Chr(125)) Then
+      ParserAdvance  (* consomme close-brace *)
+    Else
+      CompileError('"}" attendue pour fermer le bloc');
+  End
+  Else
+    ParseStmt;
+End;
+
+(* ---- ParseIfStmt : if (cond) bloc [else if/else] ----------- *)
+(* Syntaxe Kotlin : if (cond) bloc [else if (cond) bloc] [else bloc] *)
+(* Emission : TEST AX,AX / JZ label_else / ... / JMP label_end  *)
+Procedure ParseIfStmt;
+Var
+  Res     : TExprVal;
+  LblElse : TString;
+  LblEnd  : TString;
+Begin
+  EmitComment('if');
+  LblEnd := LabelGen;
+  ParserAdvance; { consomme 'if' }
+  { Parenthese ouvrante }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    ParserAdvance { consomme '(' }
+  Else
+    CompileError('"(" attendue apres "if"');
+  { Condition }
+  ParseExpr(Res);
+  ExprFlushToAX(Res);
+  { Parenthese fermante }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance { consomme ')' }
+  Else
+    CompileError('")" attendue apres la condition');
+  { TEST AX,AX / JZ else_label }
+  LblElse := LabelGen;
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JZ', LblElse);
+  { Bloc then }
+  SymEnterScope;
+  ParseBlock;
+  SymLeaveScope;
+  { Verifier else }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'else') Then
+  Begin
+    EmitInstrA('JMP', LblEnd);
+    EmitLabel(LblElse);
+    ParserAdvance; { consomme 'else' }
+    { else if -> appel recursif }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'if') Then
+    Begin
+      ParseIfStmt;
+    End
+    Else
+    Begin
+      { else bloc }
+      SymEnterScope;
+      ParseBlock;
+      SymLeaveScope;
+    End;
+    EmitLabel(LblEnd);
+  End
+  Else
+  Begin
+    { Pas de else : le label else est le label de fin }
+    EmitLabel(LblElse);
+    EmitLabel(LblEnd);
+  End;
+End;
+
+(* ---- ParseWhenStmt : when [(expr)] { branches } ------------ *)
+(* Syntaxe :                                                      *)
+(*   when (expr) { val -> stmts; val1, val2 -> stmts; in a..b -> *)
+(*   stmts; else -> stmts }                                      *)
+(*   when { cond -> stmts; else -> stmts }  (sans argument)      *)
+(* Emission : MOV DX,<selector>  pour chaque branche CMP DX,val  *)
+(*   JE branch / JMP next                                        *)
+Procedure ParseWhenStmt;
+Var
+  Res      : TExprVal;
+  HasSubj  : Boolean;
+  LblEnd   : TString;
+  LblNext  : TString;
+  LblBody  : TString;
+  ResB     : TExprVal;
+Begin
+  EmitComment('when');
+  ParserAdvance; { consomme 'when' }
+  LblEnd := LabelGen;
+  HasSubj := False;
+  (* when (expr) ou when sans sujet *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+  Begin
+    ParserAdvance; { consomme '(' }
+    ParseExpr(Res);
+    ExprFlushToAX(Res);
+    EmitInstrAB('MOV', 'DX', 'AX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else
+      CompileError('")" attendue apres when(expr)');
+    HasSubj := True;
+  End;
+  { Accolade ouvrante }
+  If (CurToken.Kind = TK_PUNCT) And
+     (CurToken.Val = Chr(123)) Then
+    ParserAdvance (* consomme open-brace *)
+  Else
+    CompileError('accolade attendue apres when');
+  { Boucle de branches }
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_PUNCT) And
+             (CurToken.Val = Chr(125))) Do
+  Begin
+    LblNext := LabelGen;
+    { else -> ... }
+    If (CurToken.Kind = TK_KEYWORD) And
+       (CurToken.Val = 'else') Then
+    Begin
+      ParserAdvance; { consomme 'else' }
+      If (CurToken.Kind = TK_OP) And
+         (CurToken.Val = '->') Then
+        ParserAdvance
+      Else
+        CompileError('"->" attendu apres "else"');
+      SymEnterScope;
+      ParseBlock;
+      SymLeaveScope;
+      EmitInstrA('JMP', LblEnd);
+    End
+    Else If HasSubj Then
+    Begin
+      { Branche avec sujet : val [, val2] -> stmt }
+      LblBody := LabelGen;
+      ParseExpr(ResB);
+      ExprFlushToAX(ResB);
+      EmitInstrAB('CMP', 'DX', 'AX');
+      EmitInstrA('JE', LblBody);
+      { Valeurs multiples separees par ',' }
+      While (CurToken.Kind = TK_PUNCT) And
+            (CurToken.Val = ',') Do
+      Begin
+        ParserAdvance; { consomme ',' }
+        ParseExpr(ResB);
+        ExprFlushToAX(ResB);
+        EmitInstrAB('CMP', 'DX', 'AX');
+        EmitInstrA('JE', LblBody);
+      End;
+      EmitInstrA('JMP', LblNext);
+      EmitLabel(LblBody);
+      { -> }
+      If (CurToken.Kind = TK_OP) And
+         (CurToken.Val = '->') Then
+        ParserAdvance
+      Else
+        CompileError('"->" attendu apres valeur when');
+      SymEnterScope;
+      ParseBlock;
+      SymLeaveScope;
+      EmitInstrA('JMP', LblEnd);
+      EmitLabel(LblNext);
+    End
+    Else
+    Begin
+      { when sans sujet : cond -> stmt }
+      ParseExpr(ResB);
+      ExprFlushToAX(ResB);
+      EmitInstrAB('TEST', 'AX', 'AX');
+      EmitInstrA('JZ', LblNext);
+      If (CurToken.Kind = TK_OP) And
+         (CurToken.Val = '->') Then
+        ParserAdvance
+      Else
+        CompileError('"->" attendu apres condition');
+      SymEnterScope;
+      ParseBlock;
+      SymLeaveScope;
+      EmitInstrA('JMP', LblEnd);
+      EmitLabel(LblNext);
+    End;
+  End;
+  { Accolade fermante }
+  If (CurToken.Kind = TK_PUNCT) And
+     (CurToken.Val = Chr(125)) Then
+    ParserAdvance (* consomme close-brace *)
+  Else
+    CompileError('accolade fermante attendue when');
+  EmitLabel(LblEnd);
+End;
 Procedure ParserAdvance;
 Begin
   LexNextToken;
@@ -4605,6 +4813,17 @@ Begin
     Begin
       ParserAdvance; { consomme val/var }
       ParseDeclStmt(Kw);
+      Exit;
+    End;
+    { TODO 13 - if / when }
+    If Kw = 'if' Then
+    Begin
+      ParseIfStmt;
+      Exit;
+    End;
+    If Kw = 'when' Then
+    Begin
+      ParseWhenStmt;
       Exit;
     End;
   End;
