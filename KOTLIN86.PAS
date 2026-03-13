@@ -369,7 +369,7 @@
               ch.code -> AX = valeur ordinale (MOVZX ou XOR AH,AH / MOV AL,ch)
               ch.isLetter() / isDigit() / isWhitespace() -> CALL _KTRT_CHKCHAR
 
-  TODO 20 - NULL SAFETY
+  TODO 20 - NULL SAFETY [IMPLEMENTE]
             Types nullable : T? -> meme representation + flag IsNullable
               AX=0 represente null pour tout type nullable
             Safe call ?. : expr?.membre
@@ -816,6 +816,10 @@ Var
   { Chaines et methodes String (TODO 19) }
   StringBufCount  : Integer; { compteur pour buffers string temp      }
 
+  { Null safety (TODO 20) }
+  NullSafeCount     : Integer; { compteur pour labels null safety     }
+  GLastTypeNullable : Boolean; { flag nullable apres ParseTypeAnnotation }
+
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
@@ -932,6 +936,8 @@ Procedure ScopeBlockLeave;  Forward;
 Procedure EmitScopeRuntime; Forward;
 { TODO 19 - Chaines et methodes String }
 Procedure EmitStringRuntime; Forward;
+{ TODO 20 - Null safety }
+Procedure EmitNullSafetyRuntime; Forward;
 { General }
 Procedure ParserAdvance; Forward;
 Procedure ParseStmt;     Forward;
@@ -1244,6 +1250,8 @@ Begin
   CurFrameSize   := 0;
   CaptureCount   := 0;
   StringBufCount := 0;
+  NullSafeCount  := 0;
+  GLastTypeNullable := False;
   LabelGenSeq    := 0;
   GExprDummy.Kind    := EK_NONE;
   GExprDummy.ImmVal  := 0;
@@ -3297,8 +3305,22 @@ Begin
       Begin
         MembName := CurToken.Val;
         ParserAdvance;
+        (* TODO 20 - let : x?.let { bloc } *)
+        If (MembName = 'let') And
+           (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+        Begin
+          EmitComment('?.let ...');
+          EmitInstrA('PUSH', 'AX'); (* sauver valeur non-null *)
+          ParserAdvance; (* consomme accolade ouvrante *)
+          While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}'))
+                And Not (CurToken.Kind = TK_EOF) Do
+            ParseStmt;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+          ParserAdvance; (* consomme accolade fermante *)
+          EmitInstrAB('ADD', 'SP', '2'); (* depiler valeur *)
+        End
         (* Appel methode safe : expr?.membre(args) *)
-        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
         Begin
           EmitInstrA('PUSH', 'AX');
           NArgs := ParseCallArgs;
@@ -3388,7 +3410,8 @@ End;
 (* ++ et -- postfixe geres. !! gere dans ParsePrimary postfixe. *)
 Procedure ParseUnary(Var Res : TExprVal);
 Var
-  Op : TString;
+  Op     : TString;
+  LblEnd : TString;
 Begin
   (* Unaire prefixe sur TK_OP *)
   If CurToken.Kind = TK_OP Then
@@ -3453,11 +3476,16 @@ Begin
   End;
   (* Pas d operateur unaire : appeler ParsePrimary *)
   ParsePrimary(Res);
-  (* Postfixe !! (not-null assertion) *)
+  (* Postfixe !! (not-null assertion) - TODO 20 *)
   If (CurToken.Kind = TK_OP) And (CurToken.Val = '!!') Then
   Begin
+    ExprFlushToAX(Res);
     ParserAdvance;
-    (* !! verifie non-null a l execution : stub, garde la valeur *)
+    LblEnd := LabelGen;
+    EmitInstrAB('CMP', 'AX', '0');
+    EmitInstrA('JNZ', LblEnd);
+    EmitInstrA('CALL', KT_RT_PFX + 'PANIC');
+    EmitLabel(LblEnd);
     Res.Kind := EK_AX;
   End;
   (* Postfixe ++ -- *)
@@ -3478,6 +3506,7 @@ End;
 Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal);
 Var
   Op      : TString;
+  SVal    : TString;
   Prec    : Integer;
   Right   : TExprVal;
   FoldOk  : Boolean;
@@ -3528,6 +3557,14 @@ Begin
     (* Arreter si fin, priorite insuffisante, ou assignation *)
     If (Prec = 0) Or (Prec < MinPrec) Or IsAssignOp(Op) Then Break;
     ParserAdvance;
+
+    { TODO 20 - Detecter as? : si Op='as' et prochain token est '?' }
+    If (Op = 'as') And (CurToken.Kind = TK_OP) And
+       (CurToken.Val = '?') Then
+    Begin
+      Op := 'as?';
+      ParserAdvance; { consomme '?' }
+    End;
 
     (* ---- Court-circuit && ---- *)
     If Op = '&&' Then
@@ -3614,17 +3651,25 @@ Begin
       Continue;
     End;
 
-    (* ---- Type cast as / as? ---- *)
+    (* ---- Type cast as / as? (TODO 20) ---- *)
     If (Op = 'as') Or (Op = 'as?') Then
     Begin
-      (* Stub : le type cible est un identifiant, on le consomme *)
+      ExprFlushToAX(Res);
+      SVal := '';
       If CurToken.Kind = TK_IDENT Then
-        ParserAdvance;
-      If Op = 'as?' Then
       Begin
-        If Opts.Warnings Then
-          WarnMsg('as? (safe cast) : stub, retourne la valeur inchangee');
+        SVal := CurToken.Val;
+        ParserAdvance;
+      End
+      Else If CurToken.Kind = TK_KEYWORD Then
+      Begin
+        SVal := CurToken.Val;
+        ParserAdvance;
       End;
+      If Op = 'as?' Then
+        EmitComment('safe cast as? ' + SVal + ' (stub: keep value)')
+      Else
+        EmitComment('unsafe cast as ' + SVal + ' (stub: keep value)');
       Res.Kind := EK_AX;
       Continue;
     End;
@@ -4450,6 +4495,7 @@ Begin
   EmitClassRuntime;
   EmitScopeRuntime;
   EmitStringRuntime;
+  EmitNullSafetyRuntime;
 End;
 
 (* ---- EmitExprRuntime : routines runtime pour expressions ------ *)
@@ -5684,6 +5730,39 @@ Begin
   EmitInstrAB('XOR', 'AX', 'AX');
   EmitInstr('RET');
 End;
+
+(* ---- EmitNullSafetyRuntime : routines null safety (TODO 20) --- *)
+Procedure EmitNullSafetyRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=========================================================');
+  EmitComment('TODO 20 - NULL SAFETY RUNTIME');
+  EmitComment('=========================================================');
+
+  { _KTRT_PANIC : afficher NullPointerException et terminer }
+  EmitBlankLine;
+  EmitComment('--- _KTRT_PANIC : affiche NPE et quitte (exit code 1) ---');
+  EmitLabel(KT_RT_PFX + 'PANIC');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', 'OFFSET _KT_NPE_MSG');
+  EmitInstr('CALL _KTRT_PRINTSTR');
+  EmitInstr('CALL _KTRT_NEWLINE');
+  EmitInstrA('POP', 'SI');
+  EmitInstrAB('MOV', 'AX', '4C01h');
+  EmitInstr('INT 21h');
+  EmitInstr('RET');
+
+  { _KTRT_CHKNIL : verifier AX, si 0 -> panic }
+  EmitBlankLine;
+  EmitComment('--- _KTRT_CHKNIL : AX=ptr, panic si null ---');
+  EmitLabel(KT_RT_PFX + 'CHKNIL');
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JNZ', KT_RT_PFX + 'CHKNIL_OK');
+  EmitInstrA('JMP', KT_RT_PFX + 'PANIC');
+  EmitLabel(KT_RT_PFX + 'CHKNIL_OK');
+  EmitInstr('RET');
+End;
+
 (*   Entree : SI = ptr chaine ASCIIZ                             *)
 (*   Sortie : CX = longueur (sans le zero final)                 *)
 (* _KTRT_NUMTOSTR : conversion entier signe 16 bits -> chaine   *)
@@ -6285,6 +6364,8 @@ Begin
   DataAdd('_KT_INPUTLN',   DK_BYTE, 0, '');
   DataAdd('_KT_INPUTBF',   DK_BYTE, 0, '');
   DataTab[DataCount - 1].ElemCount := 128;
+  { TODO 20 - Null safety data }
+  DataAdd('_KT_NPE_MSG',   DK_STR, 0, 'NullPointerException');
 End;
 
 { --- TODO 09 : Variables et Affectations [IMPLEMENTE] --------- }
@@ -6418,6 +6499,7 @@ Var
   TIdx  : Integer;
 Begin
   ParseTypeAnnotation := TY_UNKNOWN;
+  GLastTypeNullable := False;
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
   Begin
     ParserAdvance; { consomme ':' }
@@ -6430,9 +6512,12 @@ Begin
       Else
         WarnMsg('type inconnu : ' + TName);
       ParserAdvance;
-      { Nullable ? }
+      { Nullable ? (TODO 20) }
       If (CurToken.Kind = TK_OP) And (CurToken.Val = '?') Then
+      Begin
+        GLastTypeNullable := True;
         ParserAdvance;
+      End;
     End
     Else If CurToken.Kind = TK_KEYWORD Then
     Begin
@@ -6442,7 +6527,10 @@ Begin
         ParseTypeAnnotation := TIdx;
       ParserAdvance;
       If (CurToken.Kind = TK_OP) And (CurToken.Val = '?') Then
+      Begin
+        GLastTypeNullable := True;
         ParserAdvance;
+      End;
     End
     Else
       CompileError('nom de type attendu apres ":"');
@@ -6495,12 +6583,18 @@ Begin
     SymTab[SIdx].TypeIdx := TyIdx;
   SymTab[SIdx].IsConst    := IsConst;
   SymTab[SIdx].IsLateinit := IsLateinit;
+  SymTab[SIdx].IsNullable := GLastTypeNullable; { TODO 20 }
 
   { Initialisation : = expr }
   If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
   Begin
     ParserAdvance; { consomme '=' }
     ParseExpr(Res);
+    { TODO 20 - Verification null safety }
+    If (Not SymTab[SIdx].IsNullable) And
+       (Res.Kind = EK_IMM) And (Res.ImmVal = 0) And
+       (Res.TypeIdx = TY_IDX_ANY) Then
+      WarnMsg('affectation de null a "' + Name + '" (type non-nullable)');
     ExprFlushToAX(Res);
     Addr := ExprAddrOf(SIdx);
     EmitInstrAB('MOV', Addr, 'AX');
