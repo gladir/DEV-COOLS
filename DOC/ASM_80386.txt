@@ -3429,7 +3429,871 @@
 8. INTERRUPTIONS ET EXCEPTIONS
 ==============================================================================
 
-  (a completer)
+  8.1 Vue d'ensemble
+  -------------------
+
+  Les interruptions et exceptions sont des mecanismes qui
+  suspendent l'execution normale du processeur pour traiter
+  un evenement. Le 80386 supporte 256 vecteurs d'interruption
+  (numerotes de 0 a 255), chacun associe a un handler via la
+  table des descripteurs d'interruptions (IDT).
+
+  Terminologie :
+
+  - Interruption : evenement asynchrone externe au processeur
+    (materiel) ou declenche explicitement par logiciel (INT n).
+    L'execution peut reprendre normalement apres le traitement.
+
+  - Exception : evenement synchrone genere par le processeur
+    lui-meme en reponse a une erreur ou condition speciale
+    detectee pendant l'execution d'une instruction.
+
+  Les interruptions et exceptions provoquent :
+    1. Sauvegarde du contexte (EFLAGS, CS, EIP) sur la pile
+    2. Transfert du controle au handler via l'IDT
+    3. Retour par IRET apres le traitement
+
+  8.2 Classification
+  -------------------
+
+  8.2.1 Interruptions materielles (externes)
+
+  Generees par des peripheriques via les lignes d'interruption
+  du processeur :
+
+  - INTR (Interrupt Request) : interruptions masquables.
+    Peuvent etre desactivees par CLI (Clear Interrupt Flag)
+    et reactivees par STI (Set Interrupt Flag).
+    Le drapeau IF de EFLAGS controle leur acceptation.
+
+  - NMI (Non-Maskable Interrupt) : interruption non masquable.
+    Toujours acceptee, vecteur 2. Utilisee pour les erreurs
+    critiques (erreur de parite memoire, watchdog, etc.).
+
+  8.2.2 Interruptions logicielles
+
+  Declenchees explicitement par l'instruction INT n :
+
+    INT 21h     ; Appel systeme DOS (mode reel)
+    INT 80h     ; Appel systeme Linux (mode protege)
+    INT 3       ; Point d'arret (breakpoint, opcode CC)
+    INTO        ; INT 4 si OF=1 (Overflow)
+
+  Les interruptions logicielles ne sont pas affectees par
+  le drapeau IF (elles ne sont pas masquables).
+
+  8.2.3 Exceptions
+
+  Generees par le processeur lors de la detection d'erreurs.
+  Trois categories :
+
+  a) Faults (fautes) :
+     L'exception est signalee AVANT l'execution de l'instruction
+     fautive. CS:EIP pointe sur l'instruction qui a cause la
+     faute. Apres correction, l'instruction peut etre relancee.
+     Exemple : #PF (Page Fault) - la page est chargee puis
+     l'instruction est reexecutee.
+
+  b) Traps (pieges) :
+     L'exception est signalee APRES l'execution de l'instruction.
+     CS:EIP pointe sur l'instruction suivante. L'execution
+     reprend normalement apres le traitement.
+     Exemple : #DB (Debug) apres une instruction en mode trace,
+     INT 3 (Breakpoint).
+
+  c) Aborts (abandons) :
+     L'exception signale une erreur grave qui ne permet pas
+     de localiser precisement l'instruction fautive ni de
+     reprendre l'execution.
+     Exemple : #DF (Double Fault), erreur materielle.
+
+  8.3 Table des descripteurs d'interruptions (IDT)
+  --------------------------------------------------
+
+  L'IDT est une table en memoire contenant jusqu'a 256
+  descripteurs de portes (gates). Chaque descripteur occupe
+  8 octets, soit une taille maximale de 2048 octets (256 * 8).
+
+  Le registre IDTR (IDT Register) contient :
+    - L'adresse lineaire de base de l'IDT (32 bits)
+    - La limite de l'IDT en octets (16 bits)
+
+  Format du registre IDTR :
+
+    47                16 15        0
+  +--------------------+-----------+
+  | Base (32 bits)     | Limite    |
+  +--------------------+-----------+
+
+  Instructions associees :
+
+    LIDT mem48    ; Charger IDTR (instruction privilegiee)
+    SIDT mem48    ; Sauvegarder IDTR (accessible depuis tout CPL)
+
+  Exemple de chargement de l'IDT :
+
+    idt_descriptor:
+      DW  256*8 - 1       ; Limite = 2047
+      DD  idt_table        ; Adresse de base
+
+    LIDT [idt_descriptor]
+
+  L'IDT peut contenir trois types de descripteurs :
+    - Porte d'interruption (Interrupt Gate)
+    - Porte de piege (Trap Gate)
+    - Porte de tache (Task Gate)
+
+  En mode reel, l'equivalent est l'IVT (Interrupt Vector Table)
+  situee a l'adresse 0000:0000, contenant 256 pointeurs far
+  (segment:offset) de 4 octets chacun (1024 octets total).
+
+  8.4 Format des portes d'interruption et trap
+  -----------------------------------------------
+
+  8.4.1 Porte d'interruption (Interrupt Gate, type 0Eh pour 32 bits)
+
+    63           48 47 46 45 44    40 39    37 36  35  32
+  +----------------+--+-----+--------+--------+--+------+
+  | Offset [31:16] | P| DPL | 0D110  |  000   |0 | res  |
+  +----------------+--+-----+--------+--------+--+------+
+    31           16 15                               0
+  +----------------+----------------------------------+
+  | Selecteur seg. |        Offset [15:0]             |
+  +----------------+----------------------------------+
+
+  Champs :
+
+  Offset [31:16] et [15:0] : Adresse du handler dans le segment
+    de code designe par le selecteur. Les deux parties forment
+    l'offset 32 bits complet.
+
+  Selecteur de segment (16 bits) : Selecteur du segment de code
+    contenant le handler. Doit pointer vers un segment de code
+    dans la GDT ou la LDT.
+
+  P (bit 47) : Present
+    1 = Le descripteur est valide
+    0 = Le descripteur n'est pas present (#NP si utilise)
+
+  DPL (bits 46-45) : Descriptor Privilege Level
+    Niveau de privilege requis pour invoquer cette porte
+    via INT n. Le CPL doit etre <= DPL pour les interruptions
+    logicielles. Les exceptions et interruptions materielles
+    ignorent le DPL.
+
+  Type (bits 44-40) : 0D110 pour une porte d'interruption 32 bits
+    D=1 pour 32 bits (type = 0Eh), D=0 pour 16 bits (type = 06h)
+
+  Comportement specifique : quand le processeur passe par une
+  porte d'interruption, le drapeau IF est automatiquement
+  efface (IF=0), desactivant les interruptions masquables.
+  Cela empeche les interruptions imbriquees involontaires.
+
+  8.4.2 Porte de piege (Trap Gate, type 0Fh pour 32 bits)
+
+  Format identique a la porte d'interruption, sauf :
+
+  Type (bits 44-40) : 0D111 pour une porte de piege 32 bits
+    D=1 pour 32 bits (type = 0Fh), D=0 pour 16 bits (type = 07h)
+
+  Difference cle : le drapeau IF n'est PAS modifie lors du
+  passage par une porte de piege. Les interruptions masquables
+  restent activees si elles l'etaient avant.
+
+  Utilisation typique :
+    - Portes d'interruption : pour les interruptions materielles
+      et les handlers qui ne doivent pas etre interrompus
+    - Portes de piege : pour les exceptions (#PF, #GP, etc.)
+      et les appels systeme (INT 80h sous Linux)
+
+  8.4.3 Porte de tache (Task Gate, type 05h)
+
+  Contient un selecteur de TSS au lieu d'un offset de handler.
+  Le processeur effectue un changement de tache complet pour
+  traiter l'interruption. Rarement utilise en pratique sauf
+  pour le Double Fault (#DF) ou certains debuggers.
+
+    63           48 47 46 45 44    40 39              32
+  +----------------+--+-----+--------+-----------------+
+  |   Reserve      | P| DPL | 00101  |    Reserve      |
+  +----------------+--+-----+--------+-----------------+
+    31           16 15                               0
+  +----------------+----------------------------------+
+  | Selecteur TSS  |           Reserve                |
+  +----------------+----------------------------------+
+
+  8.5 Exceptions du 80386
+  -------------------------
+
+  Le 80386 definit 17 exceptions (vecteurs 0 a 16). Les
+  vecteurs 17-31 sont reserves par Intel pour les futurs
+  processeurs. Les vecteurs 32-255 sont disponibles pour
+  les interruptions materielles et logicielles.
+
+  Table complete des exceptions :
+
+  Vec  Mnemo  Type    Err  Description
+  ---  -----  ------  ---  ------------------------------------
+   0   #DE    Fault   Non  Division Error (DIV/IDIV par zero
+                           ou quotient trop grand)
+   1   #DB    Fault/  Non  Debug (point d'arret materiel,
+              Trap         mode trace T=1, registres DRx)
+   2   NMI    Int     Non  Non-Maskable Interrupt (erreur
+                           materielle critique)
+   3   #BP    Trap    Non  Breakpoint (instruction INT 3,
+                           opcode CC sur 1 octet)
+   4   #OF    Trap    Non  Overflow (instruction INTO
+                           quand OF=1 dans EFLAGS)
+   5   #BR    Fault   Non  BOUND Range Exceeded (instruction
+                           BOUND, index hors limites)
+   6   #UD    Fault   Non  Invalid Opcode (opcode inconnu
+                           ou instruction invalide)
+   7   #NM    Fault   Non  Device Not Available (instruction
+                           FPU avec CR0.EM=1 ou CR0.TS=1)
+   8   #DF    Abort   Oui  Double Fault (exception pendant
+                           le traitement d'une exception,
+                           code d'erreur toujours 0)
+   9   ---    Abort   Non  Coprocessor Segment Overrun
+                           (obsolete depuis le 80486)
+  10   #TS    Fault   Oui  Invalid TSS (selecteur TSS invalide
+                           lors d'une commutation de tache)
+  11   #NP    Fault   Oui  Segment Not Present (bit P=0 dans
+                           un descripteur de segment)
+  12   #SS    Fault   Oui  Stack-Segment Fault (depassement
+                           de pile ou segment SS invalide)
+  13   #GP    Fault   Oui  General Protection (violation de
+                           protection generique, la plus
+                           courante des exceptions)
+  14   #PF    Fault   Oui  Page Fault (page non presente ou
+                           violation de protection par page,
+                           voir section 7.9)
+  15   ---    ---     ---  Reserve par Intel
+  16   #MF    Fault   Non  x87 FPU Floating-Point Error
+                           (erreur FPU non masquee)
+
+  Colonne "Err" : indique si le processeur empile un code
+  d'erreur de 32 bits en plus de EFLAGS/CS/EIP.
+
+  8.5.1 Detail des exceptions les plus courantes
+
+  #DE - Division Error (vecteur 0)
+    Declenchee par DIV ou IDIV quand le diviseur est 0 ou
+    quand le quotient ne tient pas dans le registre destination.
+    CS:EIP pointe sur l'instruction DIV/IDIV fautive.
+
+  #DB - Debug (vecteur 1)
+    Declenchee dans plusieurs situations :
+    - Point d'arret materiel (registres DR0-DR3 + DR7)
+    - Mode trace pas-a-pas (TF=1 dans EFLAGS)
+    - Acces aux registres de debug (DR4-DR5 quand GD=1)
+    Le registre DR6 contient les informations sur la cause.
+
+  #BP - Breakpoint (vecteur 3)
+    Declenchee par l'instruction INT 3 (opcode CC, 1 octet).
+    Utilisee par les debuggers pour poser des points d'arret
+    logiciels. L'opcode court (1 octet) permet de remplacer
+    n'importe quelle instruction en memoire.
+
+  #UD - Invalid Opcode (vecteur 6)
+    Declenchee quand le processeur rencontre un opcode
+    invalide ou une combinaison d'operandes illegale.
+    Aussi declenchee si LOCK est utilise avec une instruction
+    qui ne le supporte pas.
+
+  #NM - Device Not Available (vecteur 7)
+    Declenchee par une instruction FPU (WAIT/FWAIT ou ESC)
+    quand CR0.EM=1 (emulation) ou CR0.TS=1 (task switched).
+    Utilisee pour implementer le "lazy FPU context switching" :
+    le contexte FPU n'est sauvegarde/restaure que quand un
+    processus utilise effectivement le FPU.
+
+  #DF - Double Fault (vecteur 8)
+    Declenchee quand une exception se produit pendant le
+    traitement d'une autre exception et que les deux ne
+    peuvent pas etre traitees en serie (voir section 8.11).
+    Le code d'erreur est toujours 0.
+
+  #GP - General Protection (vecteur 13)
+    L'exception la plus generique, couvrant de nombreuses
+    violations :
+    - Acces memoire depassant la limite d'un segment
+    - Ecriture dans un segment en lecture seule
+    - Chargement d'un selecteur invalide dans un registre
+    - Execution d'une instruction privilegiee en ring 3
+    - Acces a une porte avec un DPL insuffisant
+    - Reference a un descripteur NULL (selecteur 0)
+    Le code d'erreur contient le selecteur fautif ou 0.
+
+  #PF - Page Fault (vecteur 14)
+    Voir la section 7.9 pour le detail complet. Le registre
+    CR2 contient l'adresse lineaire fautive. Le code d'erreur
+    indique la cause (P/W-R/U-S).
+
+  #MF - x87 FPU Error (vecteur 16)
+    Declenchee lors de l'execution de WAIT/FWAIT ou d'une
+    instruction FPU quand une exception FPU est en attente
+    (non masquee dans le registre de controle FPU).
+
+  8.6 Interruptions materielles et le PIC 8259A
+  ------------------------------------------------
+
+  8.6.1 Le controleur d'interruptions programmable (PIC)
+
+  Le 80386 ne gere pas directement les interruptions des
+  peripheriques. Un controleur externe, le PIC 8259A, sert
+  d'intermediaire. La configuration standard du PC utilise
+  deux PIC en cascade :
+
+  PIC maitre (ports 20h/21h) :
+    IRQ 0 : Timer systeme (8253/8254)       -> Vecteur 08h (20h)
+    IRQ 1 : Clavier                         -> Vecteur 09h (21h)
+    IRQ 2 : Cascade vers PIC esclave        -> (pas de vecteur)
+    IRQ 3 : Port serie COM2/COM4            -> Vecteur 0Bh (23h)
+    IRQ 4 : Port serie COM1/COM3            -> Vecteur 0Ch (24h)
+    IRQ 5 : Port parallele LPT2 / Son      -> Vecteur 0Dh (25h)
+    IRQ 6 : Controleur de disquettes        -> Vecteur 0Eh (26h)
+    IRQ 7 : Port parallele LPT1            -> Vecteur 0Fh (27h)
+
+  PIC esclave (ports A0h/A1h) :
+    IRQ 8  : Horloge temps reel (RTC)       -> Vecteur 70h (28h)
+    IRQ 9  : Redirection IRQ 2 / ACPI       -> Vecteur 71h (29h)
+    IRQ 10 : Disponible                     -> Vecteur 72h (2Ah)
+    IRQ 11 : Disponible                     -> Vecteur 73h (2Bh)
+    IRQ 12 : Souris PS/2                    -> Vecteur 74h (2Ch)
+    IRQ 13 : Coprocesseur FPU               -> Vecteur 75h (2Dh)
+    IRQ 14 : Controleur IDE primaire        -> Vecteur 76h (2Eh)
+    IRQ 15 : Controleur IDE secondaire      -> Vecteur 77h (2Fh)
+
+  Les vecteurs entre parentheses indiquent le remappage
+  typique en mode protege (base 20h pour le maitre, 28h
+  pour l'esclave) pour eviter les conflits avec les vecteurs
+  d'exceptions Intel (0-1Fh).
+
+  8.6.2 Remappage des IRQ en mode protege
+
+  En mode reel, les IRQ 0-7 utilisent les vecteurs 08h-0Fh,
+  ce qui entre en conflit avec les vecteurs d'exceptions du
+  80386 (vecteurs 8-15). Il est essentiel de remapper les
+  PIC en mode protege.
+
+  Sequence de remappage des PIC :
+
+    ; Reinitialisation des PIC (ICW1)
+    MOV AL, 11h         ; ICW1: initialisation + ICW4 needed
+    OUT 20h, AL         ; PIC maitre
+    OUT A0h, AL         ; PIC esclave
+
+    ; Vecteurs de base (ICW2)
+    MOV AL, 20h         ; IRQ 0-7 -> vecteurs 20h-27h
+    OUT 21h, AL         ; PIC maitre
+    MOV AL, 28h         ; IRQ 8-15 -> vecteurs 28h-2Fh
+    OUT A1h, AL         ; PIC esclave
+
+    ; Cascade (ICW3)
+    MOV AL, 04h         ; IRQ2 = cascade
+    OUT 21h, AL         ; PIC maitre
+    MOV AL, 02h         ; Esclave connecte sur IRQ2
+    OUT A1h, AL         ; PIC esclave
+
+    ; Mode 8086 (ICW4)
+    MOV AL, 01h         ; Mode 8086/88
+    OUT 21h, AL         ; PIC maitre
+    OUT A1h, AL         ; PIC esclave
+
+    ; Masques d'interruption (OCW1)
+    MOV AL, 00h         ; Toutes les IRQ demasquees
+    OUT 21h, AL         ; PIC maitre (ou FFh pour tout masquer)
+    OUT A1h, AL         ; PIC esclave
+
+  8.6.3 Acquittement d'interruption (EOI)
+
+  Apres le traitement d'une IRQ, le handler doit envoyer
+  un signal End-Of-Interrupt (EOI) au PIC pour debloquer
+  les interruptions de meme priorite ou inferieure.
+
+    ; EOI pour le PIC maitre (IRQ 0-7)
+    MOV AL, 20h         ; Commande EOI non specifique
+    OUT 20h, AL
+
+    ; EOI pour le PIC esclave (IRQ 8-15)
+    ; Il faut envoyer l'EOI aux DEUX PIC
+    MOV AL, 20h
+    OUT A0h, AL          ; EOI au PIC esclave
+    MOV AL, 20h
+    OUT 20h, AL          ; EOI au PIC maitre (cascade)
+
+  8.6.4 Masquage des interruptions
+
+  Chaque PIC possede un registre de masque (IMR) accessible
+  via le port de donnees (21h pour le maitre, A1h pour l'esclave).
+  Un bit a 1 masque l'IRQ correspondante.
+
+    ; Masquer IRQ 1 (clavier) uniquement
+    IN  AL, 21h          ; Lire le masque actuel
+    OR  AL, 02h          ; Mettre le bit 1 a 1
+    OUT 21h, AL          ; Ecrire le nouveau masque
+
+    ; Demasquer IRQ 1 (clavier)
+    IN  AL, 21h
+    AND AL, NOT 02h      ; FDh = 11111101b
+    OUT 21h, AL
+
+  8.7 Interruptions logicielles (INT n)
+  ----------------------------------------
+
+  L'instruction INT n declenche l'interruption de vecteur n.
+  Elle est utilisee pour les appels systeme et les services
+  du BIOS/DOS.
+
+  Encodage :
+
+    INT 3       ; Opcode CC (1 octet, cas special breakpoint)
+    INT n       ; Opcode CD n (2 octets, n = 0-255)
+    INTO        ; Opcode CE (INT 4 si OF=1)
+
+  Comportement de INT n :
+
+  1. Le processeur verifie le DPL de la porte dans l'IDT :
+     CPL <= DPL pour les interruptions logicielles.
+     Si CPL > DPL : exception #GP (protection).
+
+  2. Empile EFLAGS, CS et EIP sur la pile (du handler)
+
+  3. Si porte d'interruption : efface IF et TF
+     Si porte de piege : efface seulement TF
+
+  4. Charge CS:EIP depuis le descripteur de la porte
+
+  5. Execute le handler
+
+  Interruptions logicielles courantes (mode reel) :
+
+    INT 10h     ; Services video BIOS
+    INT 13h     ; Services disque BIOS
+    INT 16h     ; Services clavier BIOS
+    INT 21h     ; Services DOS
+    INT 33h     ; Driver souris
+
+  Interruptions logicielles courantes (mode protege) :
+
+    INT 80h     ; Appels systeme Linux (convention i386)
+    INT 2Eh     ; Appels systeme Windows NT (ancienne methode)
+    INT 3       ; Breakpoint (debugger)
+
+  8.8 Mecanisme de dispatch des interruptions
+  ----------------------------------------------
+
+  Quand une interruption ou exception est declenchee, le
+  processeur execute la sequence suivante :
+
+  8.8.1 Sans changement de privilege (intra-privilege)
+
+  Si le handler s'execute au meme niveau de privilege que
+  le code interrompu (meme CPL) :
+
+  1. Empiler EFLAGS (32 bits)
+  2. Empiler CS (16 bits, etendu a 32 bits)
+  3. Empiler EIP (32 bits)
+  4. Si l'exception a un code d'erreur : empiler le code (32 bits)
+  5. Si porte d'interruption : IF = 0, TF = 0
+     Si porte de piege : TF = 0
+  6. Charger CS depuis le selecteur de la porte
+  7. Charger EIP depuis l'offset de la porte
+
+  Etat de la pile apres l'interruption :
+
+    ESP+12 : EFLAGS (ancien)
+    ESP+8  : CS     (ancien)
+    ESP+4  : EIP    (ancien)
+    ESP    : Code d'erreur (si applicable)
+
+  8.8.2 Avec changement de privilege (inter-privilege)
+
+  Si le handler s'execute a un niveau de privilege plus
+  eleve (CPL du handler < CPL du code interrompu), le
+  processeur effectue un changement de pile :
+
+  1. Lire le SS:ESP de la nouvelle pile dans le TSS
+     (champ SS0:ESP0 pour passage au ring 0)
+  2. Empiler l'ancien SS (16 bits, etendu a 32 bits)
+  3. Empiler l'ancien ESP (32 bits)
+  4. Empiler EFLAGS (32 bits)
+  5. Empiler CS (16 bits, etendu a 32 bits)
+  6. Empiler EIP (32 bits)
+  7. Si code d'erreur : empiler le code (32 bits)
+  8. Charger SS:ESP depuis le TSS
+  9. Si porte d'interruption : IF = 0, TF = 0
+  10. Charger CS:EIP depuis la porte
+
+  Etat de la pile (ring 0) apres l'interruption :
+
+    ESP+20 : SS     (ancien, ring 3)
+    ESP+16 : ESP    (ancien, ring 3)
+    ESP+12 : EFLAGS (ancien)
+    ESP+8  : CS     (ancien)
+    ESP+4  : EIP    (ancien)
+    ESP    : Code d'erreur (si applicable)
+
+  Ce mecanisme est essentiel pour la securite : le code
+  utilisateur (ring 3) ne peut pas corrompre la pile du
+  noyau (ring 0) car le processeur change automatiquement
+  de pile avant d'empiler quoi que ce soit.
+
+  8.8.3 Schema du mecanisme de dispatch
+
+    Interruption/Exception
+           |
+           v
+    Lire le descripteur dans l'IDT[vecteur]
+           |
+           v
+    Verifier P=1, DPL >= CPL (pour INT n logiciel)
+           |
+           +--- Changement de privilege necessaire ?
+           |            |                    |
+           |           Oui                  Non
+           |            |                    |
+           |    Lire SS:ESP du TSS   Utiliser la pile
+           |    Changer de pile       actuelle
+           |            |                    |
+           +------------+--------------------+
+           |
+           v
+    Empiler [SS, ESP], EFLAGS, CS, EIP [, Error Code]
+           |
+           v
+    IF = 0 (si Interrupt Gate), TF = 0
+           |
+           v
+    CS:EIP = Handler (depuis la porte IDT)
+           |
+           v
+    Execution du handler
+           |
+           v
+    IRET -> Restauration de CS:EIP, EFLAGS [, SS:ESP]
+
+  8.9 Instructions liees aux interruptions
+  -------------------------------------------
+
+  8.9.1 CLI - Clear Interrupt Flag
+
+    CLI                 ; IF = 0 (desactive les interruptions masquables)
+
+  Opcode : FA
+  Privilege : IOPL (en mode protege, CPL <= IOPL requis)
+  Si CPL > IOPL : exception #GP(0)
+  Utilisation : sections critiques, handlers d'interruptions
+
+  8.9.2 STI - Set Interrupt Flag
+
+    STI                 ; IF = 1 (active les interruptions masquables)
+
+  Opcode : FB
+  Privilege : IOPL (en mode protege, CPL <= IOPL requis)
+  Note importante : les interruptions ne sont activees qu'apres
+  l'instruction SUIVANT STI, ce qui permet la sequence :
+    STI
+    HLT                 ; L'interruption reveille le processeur
+
+  8.9.3 INT n - Software Interrupt
+
+    INT imm8            ; Declenche l'interruption de vecteur n
+
+  Opcode : CD n (2 octets), sauf INT 3 = CC (1 octet)
+  Empile EFLAGS, CS, EIP. Efface IF et TF (si Interrupt Gate).
+  Verifie DPL >= CPL pour les interruptions logicielles.
+
+  8.9.4 INTO - Interrupt on Overflow
+
+    INTO                ; Si OF=1 : INT 4, sinon NOP
+
+  Opcode : CE
+  Utilisee apres des operations arithmetiques signees pour
+  detecter les debordements :
+    ADD EAX, EBX
+    INTO                ; Exception si debordement
+
+  8.9.5 IRET / IRETD - Interrupt Return
+
+    IRET                ; Retour d'interruption 16 bits
+    IRETD               ; Retour d'interruption 32 bits
+
+  Opcode : CF
+  Depile EIP, CS, EFLAGS (et SS, ESP si changement de privilege).
+  Restaure le contexte precedent l'interruption.
+
+  En mode protege 32 bits, IRETD est utilise :
+  - Depile EIP (32 bits)
+  - Depile CS  (32 bits, seuls les 16 bits bas sont utilises)
+  - Depile EFLAGS (32 bits)
+  - Si retour a un niveau de privilege inferieur :
+    depile aussi ESP et SS (retour ring 0 -> ring 3)
+
+  Restrictions :
+  - Le drapeau IOPL ne peut etre modifie que si CPL = 0
+  - Le drapeau IF ne peut etre modifie que si CPL <= IOPL
+  - Le drapeau VM (Virtual 8086) ne peut etre active que depuis ring 0
+
+  8.9.6 BOUND - Check Array Bounds
+
+    BOUND reg16, mem32  ; Verifie reg16 dans [mem:mem+2]
+    BOUND reg32, mem64  ; Verifie reg32 dans [mem:mem+4]
+
+  Opcode : 62 /r
+  Si l'index est hors des limites, declenche l'exception
+  #BR (vecteur 5). Utile pour la verification des bornes
+  de tableaux dans les langages de haut niveau.
+
+    bounds  DD 0, 99          ; Limites : 0 a 99
+    BOUND EAX, [bounds]       ; #BR si EAX < 0 ou EAX > 99
+
+  8.9.7 HLT - Halt
+
+    HLT                 ; Arrete le processeur jusqu'a la
+                        ; prochaine interruption, NMI ou RESET
+
+  Opcode : F4
+  Privilege : instruction privilegiee (CPL = 0 requis)
+  Utilisation typique dans les boucles d'attente du noyau :
+    .idle_loop:
+      STI               ; Activer les interruptions
+      HLT               ; Attendre une interruption
+      JMP .idle_loop    ; Reprendre apres l'interruption
+
+  8.10 Gestion des exceptions avec code d'erreur
+  -------------------------------------------------
+
+  Certaines exceptions empilent un code d'erreur de 32 bits
+  apres EFLAGS/CS/EIP. Le handler doit depiler ce code
+  avant d'executer IRET.
+
+  8.10.1 Format general du code d'erreur
+
+    31                              3  2  1  0
+  +----------------------------------+--+--+--+
+  |        Index de selecteur        |TI|IDT|EXT|
+  +----------------------------------+--+--+--+
+
+  EXT (bit 0) : External event
+    1 = L'exception a ete causee par un evenement externe
+        (interruption materielle)
+    0 = L'exception a ete causee par le code en cours
+
+  IDT (bit 1) : IDT reference
+    1 = L'index fait reference a un descripteur dans l'IDT
+    0 = L'index fait reference a un descripteur dans la
+        GDT ou LDT (selon TI)
+
+  TI (bit 2) : Table Indicator (quand IDT=0)
+    0 = L'index fait reference a la GDT
+    1 = L'index fait reference a la LDT
+
+  Index (bits 15-3) : Index du descripteur dans la table
+    (divise par 8 pour obtenir le selecteur)
+
+  8.10.2 Code d'erreur de #PF (Page Fault)
+
+  Le code d'erreur de #PF a un format different
+  (voir section 7.9.1) :
+
+    Bit 0 (P)   : 0 = page non presente, 1 = violation protection
+    Bit 1 (W/R) : 0 = lecture, 1 = ecriture
+    Bit 2 (U/S) : 0 = superviseur, 1 = utilisateur
+
+  8.10.3 Depilage du code d'erreur dans le handler
+
+  Le handler DOIT depiler le code d'erreur avant IRET,
+  car IRET ne le fait pas automatiquement :
+
+    handler_gp:           ; Handler de #GP
+      POP EAX             ; Depiler le code d'erreur dans EAX
+      ; ... traitement de l'exception ...
+      ; Analyser le code d'erreur dans EAX
+      IRETD               ; Retour (depile EIP, CS, EFLAGS)
+
+  Alternative sans utiliser de registre :
+
+    handler_gp:
+      ADD ESP, 4          ; Ignorer le code d'erreur
+      ; ... traitement ...
+      IRETD
+
+  8.10.4 Exceptions avec et sans code d'erreur
+
+  Avec code d'erreur    : #DF(8), #TS(10), #NP(11), #SS(12),
+                          #GP(13), #PF(14)
+
+  Sans code d'erreur    : #DE(0), #DB(1), NMI(2), #BP(3),
+                          #OF(4), #BR(5), #UD(6), #NM(7),
+                          Copro(9), #MF(16)
+
+  Le handler doit connaitre le type d'exception pour savoir
+  s'il doit depiler un code d'erreur ou non.
+
+  8.11 Double faute et triple faute
+  ------------------------------------
+
+  8.11.1 Double Fault (#DF, vecteur 8)
+
+  Une double faute se produit quand une exception est
+  declenchee pendant le traitement d'une autre exception,
+  et que la combinaison des deux exceptions ne peut pas
+  etre geree en serie.
+
+  Classification des exceptions pour le double fault :
+
+  Classe 1 (Benigne) : #DE, #TS, #NP, #SS, #GP
+  Classe 2 (Contributive) : #PF
+  Classe 3 (Page Fault) : #PF
+
+  Regles de combinaison :
+
+  Premiere exception  Deuxieme exception  Resultat
+  ------------------  ------------------  --------
+  Benigne             Benigne             Traitement en serie
+  Benigne             #PF                 Traitement en serie
+  #PF                 Benigne             Traitement en serie
+  #PF                 #PF                 Double Fault (#DF)
+  Contributive        Contributive        Double Fault (#DF)
+
+  En pratique, la double faute se produit le plus souvent
+  quand une faute de page se produit pendant le traitement
+  d'une autre faute de page (par exemple, si le handler de
+  #PF lui-meme provoque un #PF).
+
+  Le handler de #DF devrait utiliser une porte de tache
+  (Task Gate) dans l'IDT, car cela garantit un changement
+  de pile propre via le TSS, meme si la pile courante est
+  corrompue.
+
+  8.11.2 Triple Fault
+
+  Si une exception se produit pendant le traitement d'une
+  double faute, le processeur ne peut plus recuperer.
+  Il effectue un RESET (triple fault) :
+    - Le processeur revient a l'etat initial (mode reel)
+    - Equivalent a un redemarrage materiel
+    - Aucune interruption n'est generee
+
+  La triple faute est souvent causee par :
+    - Un handler de #DF invalide ou absent
+    - Une IDT corrompue ou inaccessible
+    - Un TSS invalide pour le handler de #DF
+
+  Sequence de degradation :
+
+    Exception initiale --> Exception pendant le traitement
+                           --> Double Fault (#DF)
+                               --> Exception pendant #DF
+                                   --> TRIPLE FAULT (RESET)
+
+  8.12 Exemple : mise en place d'un handler d'interruption
+  -----------------------------------------------------------
+
+  Voici un exemple complet d'installation d'un handler
+  d'interruption pour le timer (IRQ 0) en mode protege.
+
+  8.12.1 Definition du handler
+
+    timer_count  DD 0              ; Compteur de ticks
+
+    timer_handler:
+      PUSH EAX                    ; Sauvegarder les registres utilises
+      PUSH DS
+
+      MOV AX, 10h                 ; Selecteur du segment de donnees
+      MOV DS, AX                  ; Charger DS pour acceder aux donnees
+
+      INC DWORD PTR [timer_count] ; Incrementer le compteur
+
+      ; Envoyer EOI au PIC maitre
+      MOV AL, 20h
+      OUT 20h, AL
+
+      POP DS                      ; Restaurer les registres
+      POP EAX
+      IRETD                       ; Retour d'interruption
+
+  8.12.2 Installation dans l'IDT
+
+  Chaque entree de l'IDT fait 8 octets. Pour le vecteur 20h
+  (IRQ 0 remappee) :
+
+    ; Construire le descripteur de porte d'interruption
+    ; Selecteur de code = 08h, DPL = 0, type = 0Eh (32-bit Int Gate)
+
+    MOV EAX, timer_handler           ; Adresse du handler
+    MOV WORD PTR [idt_table + 20h*8 + 0], AX     ; Offset [15:0]
+    MOV WORD PTR [idt_table + 20h*8 + 2], 08h    ; Selecteur code
+    MOV BYTE PTR [idt_table + 20h*8 + 4], 00h    ; Reserve
+    MOV BYTE PTR [idt_table + 20h*8 + 5], 8Eh    ; P=1,DPL=0,type=0Eh
+    SHR EAX, 16
+    MOV WORD PTR [idt_table + 20h*8 + 6], AX     ; Offset [31:16]
+
+  L'octet d'attribut 8Eh se decompose :
+    1 0 0 0 1 1 1 0
+    P DPL 0 D 1 1 0
+    P=1, DPL=00, type=0Eh (32-bit Interrupt Gate)
+
+  8.12.3 Installation d'un handler d'exception (#GP)
+
+    gp_handler:
+      POP EAX                     ; Depiler le code d'erreur
+      ; EAX contient le code d'erreur (selecteur fautif)
+
+      ; ... afficher un message d'erreur ...
+      ; ... terminer le processus ou faire un HALT ...
+
+      ; Si on veut reprendre (rarement possible pour #GP) :
+      ; IRETD
+
+      ; En pratique, on arrete :
+      HLT
+
+  Installation dans l'IDT pour le vecteur 13 (#GP) :
+
+    MOV EAX, gp_handler
+    MOV WORD PTR [idt_table + 0Dh*8 + 0], AX
+    MOV WORD PTR [idt_table + 0Dh*8 + 2], 08h
+    MOV BYTE PTR [idt_table + 0Dh*8 + 4], 00h
+    MOV BYTE PTR [idt_table + 0Dh*8 + 5], 8Fh    ; Trap Gate, P=1
+    SHR EAX, 16
+    MOV WORD PTR [idt_table + 0Dh*8 + 6], AX
+
+  Note : 8Fh = porte de piege (Trap Gate, type 0Fh) car on
+  veut que les interruptions materielles restent actives
+  pendant le traitement de #GP.
+
+  8.13 Resume des vecteurs d'interruption
+  ------------------------------------------
+
+  Vecteurs  Usage
+  --------  ---------------------------------------------------
+   0 - 16   Exceptions definies par Intel (reserves au processeur)
+  17 - 31   Reserves par Intel (futurs processeurs)
+  32 - 47   IRQ 0-15 (apres remappage typique 20h-2Fh)
+  48 - 255  Disponibles pour les interruptions logicielles
+            (appels systeme, services utilisateur, etc.)
+
+  Registres de controle lies aux interruptions :
+
+  EFLAGS.IF  : Autorise/bloque les interruptions masquables
+  EFLAGS.TF  : Active le mode trace (exception #DB apres
+               chaque instruction)
+  EFLAGS.IOPL: Niveau de privilege requis pour CLI/STI/IN/OUT
+  EFLAGS.NT  : Nested Task (pour IRET avec commutation de tache)
+  EFLAGS.VM  : Virtual 8086 Mode
+
+  IDTR       : Adresse et limite de l'IDT
+  CR0.NE     : Numeric Error (FPU, exception #MF vs IRQ 13)
+
+  En resume, le systeme d'interruptions du 80386 fournit un
+  mecanisme complet et securise pour gerer les evenements
+  asynchrones (interruptions materielles), les appels systeme
+  (interruptions logicielles) et les conditions d'erreur
+  (exceptions), avec des niveaux de protection, un changement
+  automatique de pile et une table de dispatch configurable (IDT).
 
 ==============================================================================
 9. OPTIMISATION POSSIBLE DU 80386
