@@ -150,7 +150,7 @@
             Offset EBP positif pour parametres [EBP+8], [EBP+12]...
             Convention STDCALL Win32 : parametres droite a gauche
 
-  TODO 06 - PARSEUR : REPORT / PROGRAM (EN-TETE DU PROGRAMME)
+  TODO 06 - PARSEUR : REPORT / PROGRAM (EN-TETE DU PROGRAMME) [IMPLEMENTE]
             Procedure ParseReport
             Syntaxe :
               REPORT nom_programme [MESSAGE-ID xx]
@@ -978,6 +978,9 @@ Var
   ScopeStack  : Array[0..MAX_DEPTH] of TScopeEntry;
   ScopeTop    : Integer;
 
+  { Nom du programme (REPORT / PROGRAM) }
+  ProgName    : TString;
+
 Const
 {$IFDEF FPC}
   BinAPIDecorated : Array[0..PE_NUM_API - 1] Of String[32] = (
@@ -1033,6 +1036,12 @@ Function  CurrentContLabel : TString; Forward;
 Function  CurrentEndLabel  : TString; Forward;
 Function  InForm : Boolean; Forward;
 Function  CurrentFormIdx : Integer; Forward;
+
+{ ============================================================ }
+{ DECLARATIONS FORWARD (PARSEUR REPORT/PROGRAM)                }
+{ ============================================================ }
+
+Procedure ParseReport; Forward;
 
 { ============================================================ }
 { FONCTIONS UTILITAIRES                                        }
@@ -2142,6 +2151,45 @@ Begin
 End;
 
 { ============================================================ }
+{ PARSEUR : REPORT / PROGRAM (TODO 06)                         }
+{ ============================================================ }
+
+{ ParseReport
+  Syntaxes :
+    REPORT nom_programme [MESSAGE-ID xx]
+      [NO STANDARD PAGE HEADING] [LINE-SIZE nn] [...].
+    PROGRAM nom_programme.
+  Le mot-cle REPORT ou PROGRAM a deja ete consomme par l appelant.
+  On memorise le nom dans ProgName et on ignore les options.
+  Le label ASM du point d entree sera _ABF_nom.                   }
+Procedure ParseReport;
+Var
+  Name : TString;
+Begin
+  { Le nom du programme est obligatoire }
+  If CurTokType <> TOK_IDENT Then
+  Begin
+    LexError('Nom de programme attendu apres REPORT/PROGRAM');
+    SkipToDot;
+    Exit;
+  End;
+  Name     := StrUpperCase(CurTokStr);
+  ProgName := Name;
+  Consume;
+  { Sauter toutes les options jusqu au '.' }
+  { Options reconnues mais ignorees :
+      MESSAGE-ID xx
+      NO STANDARD PAGE HEADING
+      LINE-SIZE nn
+      LINE-COUNT nn
+  }
+  While (CurTokType <> TOK_DOT) And (CurTokType <> TOK_EOF) Do
+    Consume;
+  { Consommer le '.' final }
+  If CurTokType = TOK_DOT Then Consume;
+End;
+
+{ ============================================================ }
 { INITIALISATION DES OPTIONS                                   }
 { ============================================================ }
 
@@ -2322,6 +2370,7 @@ Begin
   InitSymTable;
   InitScopes;
   DeclSysVars;
+  ProgName := 'ZPROGRAM';
   LexInit;
   If Opts.DebugMode Then
   Begin
@@ -2335,11 +2384,18 @@ Begin
   End
   Else
   Begin
-    { TODO 06..25 : corps du compilateur }
+    { Parser l en-tete REPORT / PROGRAM si present }
+    If TokIsKw(KW_REPORT) Or TokIsKw(KW_PROGRAM) Then
+    Begin
+      Consume;      { consommer REPORT ou PROGRAM }
+      ParseReport;  { parser le nom et les options }
+    End;
     WriteLn('ABAPCW32: compilation de ', Opts.SrcFile, ' ...');
+    WriteLn('ABAPCW32: programme: ', ProgName);
+    WriteLn('ABAPCW32: label ASM: ', AB_FN_PFX, AsmIdent(ProgName));
     WriteLn('ABAPCW32: symboles declares: ', SymCount, ' (systeme)');
     WriteLn('ABAPCW32: scope initial: SK_GLOBAL (niveau ', ScopeTop, ')');
-    WriteLn('ABAPCW32: TODO 06..25 non encore implementes.');
+    WriteLn('ABAPCW32: TODO 07..25 non encore implementes.');
   End;
   LexClose;
 End;
