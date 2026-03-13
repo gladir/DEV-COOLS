@@ -7448,6 +7448,40 @@ Begin
       End;
     End;
 
+    (* Mot-cle utilise comme fonction : ADDRESS(), TRACE(), QUEUED(), etc. *)
+    TK_KEYWORD :
+    Begin
+      SaveName := CurToken.Val;
+      ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        ParserAdvance; (* consommer '(' *)
+        ParseFuncCall(SaveName, Res);
+      End
+      Else
+      Begin
+        (* Mot-cle sans parentheses dans expression : *)
+        (* traiter comme variable (convention REXX)    *)
+        Idx := VarAlloc(SaveName);
+        If Idx >= 0 Then
+        Begin
+          VarLoad(Idx);
+          Res.Kind    := EK_AX;
+          Res.ImmVal  := 0;
+          Res.TypeIdx := TY_IDX_STRING;
+          Res.Offset  := SymTab[Idx].Offset;
+          Res.SymIdx  := Idx;
+        End
+        Else
+        Begin
+          Res.Kind    := EK_AX;
+          Res.ImmVal  := 0;
+          Res.TypeIdx := TY_IDX_STRING;
+          Res.SymIdx  := -1;
+        End;
+      End;
+    End;
+
   Else
     ExprMakeNone(Res);
     ParserAdvance;
@@ -9650,9 +9684,9 @@ Begin
     EmitInstrA('CALL', '_RXRT_HOSTCMD');
   End;
   (* Sinon : ADDRESS env sans commande = changement d environnement. *)
-  (* Non implemente en compilation native : le changement necessiterait *)
-  (* une copie dynamique de la chaine env dans _RX_ADDR, reporte a     *)
-  (* une future iteration. L environnement reste SYSTEM par defaut.    *)
+  (* En mode 8086 natif, on note l environnement mais le changement  *)
+  (* dynamique n est pas implemente. L environnement reste SYSTEM.   *)
+  If Env = '' Then; (* supprimer warning variable non utilisee *)
 End;
 
 (* ---- ParseTraceStmt : parser TRACE [option] ------------------- *)

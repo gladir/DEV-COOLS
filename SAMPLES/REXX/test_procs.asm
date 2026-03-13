@@ -2719,6 +2719,27 @@ _RXB_QUEUED:
         MOV   AX, WORD PTR [_RX_STKCOUNT]
         RET
 
+; --- Runtime INTERPRET / ADDRESS / TRACE (TODO 23) ---
+
+_RXRT_HOSTCMD:
+        PUSH   SI
+; Afficher le prefixe commande hote
+        MOV   SI, OFFSET _RX_HOSTCMD_MSG
+        CALL   _RXRT_PRINT
+        POP   SI
+        CALL   _RXRT_PRINTLN
+; RC = 0 (commande stub)
+        MOV   WORD PTR [_RX_RC], 0
+        RET
+
+_RXB_ADDRESS:
+        MOV   AX, OFFSET _RX_ADDR
+        RET
+
+_RXB_TRACE:
+        MOV   AX, WORD PTR [_RX_TRACE]
+        RET
+
 
 ; --- sortie DOS ---
         MOV   AX, 4C00h
@@ -2776,6 +2797,13 @@ _RX_STACK DB 2048 DUP(0)
 _RX_STKTOP DW 0
 _RX_STKCOUNT DW 0
 _RX_STKBUF DB 256 DUP(0)
+_RX_TRACE DW 0
+_RX_ADDR DB 'SYSTEM',0
+_RX_ADDR_CMD DB 'CMD',0
+_RX_ADDR_SYS DB 'SYSTEM',0
+_RX_INTERP_MSG DB 'INTERPRET non supporte en mode compile',0
+_RX_HOSTCMD_MSG DB 'Commande hote: ',0
+_RX_HOSTBUF DB 256 DUP(0)
 _RXV_RESULT DB 256 DUP(0)
 _RXV_RESULT_D DB 'RESULT',0
 _RXV_X DB 256 DUP(0)

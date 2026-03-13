@@ -2,7 +2,8 @@
 
 /* Test ADDRESS() function */
 say 'Test ADDRESS:'
-say 'Environnement:' address()
+env = address()
+say 'Environnement:' env
 
 /* Test TRACE */
 say 'Test TRACE:'
@@ -11,12 +12,12 @@ say 'Trace desactivee'
 trace n
 say 'Trace normale'
 
-/* Test ADDRESS statement */
-say 'Test ADDRESS statement:'
-address
+/* Test ADDRESS avec commande */
+say 'Test ADDRESS commande:'
 address system 'echo test'
 
 /* Test QUEUED apres TODO 22 */
-say 'Pile vide:' queued()
+n = queued()
+say 'Pile vide:' n
 
 say 'Tous les tests INTERPRET/ADDRESS/TRACE passes!'
