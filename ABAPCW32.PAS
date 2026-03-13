@@ -161,7 +161,7 @@
             Consommer jusqu au point '.' final
             Generer le label du point d entree principal
 
-  TODO 07 - PARSEUR : DATA / TYPES / CONSTANTS (DECLARATIONS 32 BITS)
+  TODO 07 - PARSEUR : DATA / TYPES / CONSTANTS (DECLARATIONS 32 BITS) [IMPLEMENTE]
             Procedure ParseData
             Syntaxe simple :
               DATA nom TYPE I [VALUE 0].
@@ -1042,6 +1042,17 @@ Function  CurrentFormIdx : Integer; Forward;
 { ============================================================ }
 
 Procedure ParseReport; Forward;
+
+{ ============================================================ }
+{ DECLARATIONS FORWARD (PARSEUR DATA / TYPES / CONSTANTS)      }
+{ ============================================================ }
+
+Procedure ParseTypeSpec(SymIdx : Integer); Forward;
+Procedure ParseValue(SymIdx : Integer); Forward;
+Procedure ParseOneVar(Const NameIn : TString; IsConst : Boolean); Forward;
+Procedure ParseTypesBlock; Forward;
+Procedure ParseData(IsConst : Boolean); Forward;
+Procedure ParseTypes; Forward;
 
 { ============================================================ }
 { FONCTIONS UTILITAIRES                                        }
@@ -2190,8 +2201,380 @@ Begin
 End;
 
 { ============================================================ }
-{ INITIALISATION DES OPTIONS                                   }
+{ PARSEUR : DATA / TYPES / CONSTANTS (TODO 07)                 }
 { ============================================================ }
+
+{ ---- SymByteSize : taille en octets d un symbole ------------- }
+Function SymByteSize(SymIdx : Integer) : Integer;
+Begin
+  Case SymTab[SymIdx].DataType Of
+    TYPE_I      : SymByteSize := 4;   { DD = 4 octets   }
+    TYPE_F      : SymByteSize := 8;   { DQ = 8 octets   }
+    TYPE_C      : SymByteSize := SymTab[SymIdx].CharLen;
+    TYPE_N      : SymByteSize := SymTab[SymIdx].CharLen;
+    TYPE_D      : SymByteSize := 8;   { YYYYMMDD         }
+    TYPE_T      : SymByteSize := 6;   { HHMMSS           }
+    TYPE_P      : SymByteSize := 4;   { DD stub          }
+    TYPE_STRING : SymByteSize := 4;   { pointeur 32 bits }
+    TYPE_XSTRING: SymByteSize := 4;   { pointeur 32 bits }
+    TYPE_TABLE  : SymByteSize := 4;   { pointeur 32 bits }
+    TYPE_STRUCT : SymByteSize := 4;   { pointeur stub    }
+    TYPE_REF    : SymByteSize := 4;   { pointeur 32 bits }
+  Else
+    SymByteSize := 4;
+  End;
+End;
+
+{ ---- ParseTypeSpec : parser la clause TYPE / LIKE d une var -- }
+{ Remplit DataType, CharLen, DecScale dans SymTab[SymIdx].
+  Syntaxes reconnues :
+    TYPE I / F / C / C(n) / N / N(n) / D / T / P [DECIMALS n]
+    TYPE STRING / XSTRING
+    TYPE TABLE OF xxx
+    TYPE REF TO xxx
+    LIKE varname
+    LIKE TABLE OF varname                                        }
+Procedure ParseTypeSpec(SymIdx : Integer);
+Var RefName : TString;
+    RefIdx  : Integer;
+Begin
+  { --- LIKE ... --- }
+  If TokIsKw(KW_LIKE) Then
+  Begin
+    Consume;
+    { LIKE TABLE OF var }
+    If TokIsKw(KW_TABLE) Then
+    Begin
+      Consume; EatKw(KW_OF);
+      SymTab[SymIdx].DataType := TYPE_TABLE;
+      SymTab[SymIdx].CharLen  := 0;
+      If CurTokType = TOK_IDENT Then Consume;
+      Exit;
+    End;
+    { LIKE varname : copier le type de la variable reference }
+    RefName := CurTokStr; Consume;
+    RefIdx  := FindSym(RefName);
+    If RefIdx > 0 Then
+    Begin
+      SymTab[SymIdx].DataType := SymTab[RefIdx].DataType;
+      SymTab[SymIdx].CharLen  := SymTab[RefIdx].CharLen;
+      SymTab[SymIdx].DecScale := SymTab[RefIdx].DecScale;
+    End
+    Else
+    Begin
+      WarnMsg('LIKE: variable inconnue ' + RefName + ', TYPE I suppose');
+      SymTab[SymIdx].DataType := TYPE_I;
+    End;
+    Exit;
+  End;
+  { --- TYPE ... --- }
+  If Not TokIsKw(KW_TYPE) Then Exit;
+  Consume;
+  { TABLE OF xxx }
+  If TokIsKw(KW_TABLE) Then
+  Begin
+    Consume; EatKw(KW_OF);
+    SymTab[SymIdx].DataType := TYPE_TABLE;
+    SymTab[SymIdx].CharLen  := 0;
+    If CurTokType = TOK_IDENT Then Consume;
+    Exit;
+  End;
+  { REF TO xxx (stub) }
+  If (CurTokType = TOK_IDENT) And (StrUpperCase(CurTokStr) = 'REF') Then
+  Begin
+    Consume; EatKw(KW_TO);
+    SymTab[SymIdx].DataType := TYPE_REF;
+    If CurTokType = TOK_IDENT Then Consume;
+    Exit;
+  End;
+  { Types scalaires }
+  If CurTokType <> TOK_IDENT Then
+  Begin WarnMsg('Type ABAP attendu'); Exit; End;
+  If StrUpperCase(CurTokStr) = 'I' Then
+  Begin
+    SymTab[SymIdx].DataType := TYPE_I;
+    SymTab[SymIdx].CharLen  := 4;
+    Consume;
+  End
+  Else If StrUpperCase(CurTokStr) = 'F' Then
+  Begin
+    SymTab[SymIdx].DataType := TYPE_F;
+    SymTab[SymIdx].CharLen  := 8;
+    Consume;
+  End
+  Else If StrUpperCase(CurTokStr) = 'C' Then
+  Begin
+    SymTab[SymIdx].DataType := TYPE_C;
+    SymTab[SymIdx].CharLen  := 1;
+    Consume;
+    { TYPE C(n) }
+    If CurTokType = TOK_LPAREN Then
+    Begin
+      Consume;
+      SymTab[SymIdx].CharLen := CurTokNum;
+      If CurTokType = TOK_NUMBER Then Consume;
+      If CurTokType = TOK_RPAREN Then Consume;
+    End;
+  End
+  Else If StrUpperCase(CurTokStr) = 'N' Then
+  Begin
+    SymTab[SymIdx].DataType := TYPE_N;
+    SymTab[SymIdx].CharLen  := 1;
+    Consume;
+    If CurTokType = TOK_LPAREN Then
+    Begin
+      Consume;
+      SymTab[SymIdx].CharLen := CurTokNum;
+      If CurTokType = TOK_NUMBER Then Consume;
+      If CurTokType = TOK_RPAREN Then Consume;
+    End;
+  End
+  Else If StrUpperCase(CurTokStr) = 'D' Then
+  Begin
+    SymTab[SymIdx].DataType := TYPE_D;
+    SymTab[SymIdx].CharLen  := 8;
+    Consume;
+  End
+  Else If StrUpperCase(CurTokStr) = 'T' Then
+  Begin
+    SymTab[SymIdx].DataType := TYPE_T;
+    SymTab[SymIdx].CharLen  := 6;
+    Consume;
+  End
+  Else If StrUpperCase(CurTokStr) = 'P' Then
+  Begin
+    SymTab[SymIdx].DataType := TYPE_P;
+    SymTab[SymIdx].CharLen  := 4;
+    Consume;
+    If CurTokType = TOK_LPAREN Then
+    Begin
+      Consume;
+      SymTab[SymIdx].CharLen := CurTokNum;
+      If CurTokType = TOK_NUMBER Then Consume;
+      If CurTokType = TOK_RPAREN Then Consume;
+    End;
+    { DECIMALS n }
+    If TokIsKw(KW_DECIMALS) Then
+    Begin
+      Consume;
+      SymTab[SymIdx].DecScale := CurTokNum;
+      If CurTokType = TOK_NUMBER Then Consume;
+    End;
+  End
+  Else If StrUpperCase(CurTokStr) = 'STRING' Then
+  Begin
+    SymTab[SymIdx].DataType := TYPE_STRING;
+    SymTab[SymIdx].CharLen  := 255;
+    Consume;
+  End
+  Else If StrUpperCase(CurTokStr) = 'XSTRING' Then
+  Begin
+    SymTab[SymIdx].DataType := TYPE_XSTRING;
+    SymTab[SymIdx].CharLen  := 255;
+    Consume;
+  End
+  Else
+  Begin
+    { Type utilisateur (structure ou table definie par TYPES) : stub }
+    SymTab[SymIdx].DataType := TYPE_STRUCT;
+    SymTab[SymIdx].CharLen  := 4;
+    Consume;
+  End;
+End;
+
+{ ---- ParseValue : parser la clause VALUE d une declaration --- }
+{ Syntaxes :
+    VALUE 42
+    VALUE 'texte'
+    VALUE -5
+    VALUE IS INITIAL                                               }
+Procedure ParseValue(SymIdx : Integer);
+Begin
+  If Not TokIsKw(KW_VALUE) Then Exit;
+  Consume;
+  SymTab[SymIdx].HasInit := True;
+  { VALUE IS INITIAL -> valeur zero }
+  If TokIsKw(KW_IS) Then
+  Begin
+    Consume; EatKw(KW_INITIAL);
+    SymTab[SymIdx].InitNum := 0;
+    SymTab[SymIdx].InitStr := '';
+    Exit;
+  End;
+  If CurTokType = TOK_NUMBER Then
+  Begin
+    SymTab[SymIdx].InitNum := CurTokNum;
+    SymTab[SymIdx].InitStr := IntToStr_(CurTokNum);
+    Consume;
+  End
+  Else If CurTokType = TOK_STRING Then
+  Begin
+    SymTab[SymIdx].InitStr := CurTokStr;
+    SymTab[SymIdx].InitNum := 0;
+    Consume;
+  End
+  Else If CurTokType = TOK_MINUS Then
+  Begin
+    Consume;
+    SymTab[SymIdx].InitNum := -CurTokNum;
+    SymTab[SymIdx].InitStr := '-' + IntToStr_(CurTokNum);
+    If CurTokType = TOK_NUMBER Then Consume;
+  End
+  Else
+    WarnMsg('Valeur VALUE non reconnue dans declaration');
+End;
+
+{ ---- ParseOneVar : parser une declaration de variable -------- }
+{ Le nom de la variable est passe en parametre (deja lu).
+  Parse TYPE/LIKE, VALUE, et enregistre dans la table des
+  symboles. is_const = True pour CONSTANTS.                       }
+Procedure ParseOneVar(Const NameIn : TString; IsConst : Boolean);
+Var VName  : TString;
+    SymIdx : Integer;
+    SC     : Integer;
+    Bytes  : Integer;
+    BpOff  : Integer;
+Begin
+  VName := NameIn;
+  { Classe d entreposage }
+  If ScopeTop = 0 Then SC := STORE_STATIC Else SC := STORE_AUTO;
+  If IsConst Then SC := STORE_CONSTANT;
+  SymIdx := AddSym(VName, TYPE_I, SC);
+  If SymIdx = 0 Then Exit;
+  { Longueur inline : DATA nom(n) TYPE C }
+  If CurTokType = TOK_LPAREN Then
+  Begin
+    Consume;
+    SymTab[SymIdx].CharLen  := CurTokNum;
+    SymTab[SymIdx].DataType := TYPE_C;   { defaut si pas TYPE apres }
+    If CurTokType = TOK_NUMBER Then Consume;
+    If CurTokType = TOK_RPAREN Then Consume;
+  End;
+  { TYPE ... ou LIKE ... }
+  ParseTypeSpec(SymIdx);
+  { VALUE ... }
+  ParseValue(SymIdx);
+  { Auto-ajuster char_len TYPE C si pas de (n) et VALUE fourni }
+  If (SymTab[SymIdx].DataType = TYPE_C) Or
+     (SymTab[SymIdx].DataType = TYPE_N) Then
+  Begin
+    If (SymTab[SymIdx].CharLen <= 1) And
+       SymTab[SymIdx].HasInit And
+       (Length(SymTab[SymIdx].InitStr) > 1) Then
+      SymTab[SymIdx].CharLen := Length(SymTab[SymIdx].InitStr);
+  End;
+  { ---- Allocation memoire ---- }
+  If SC = STORE_CONSTANT Then
+  Begin
+    SymTab[SymIdx].IsConst := True;
+    If Opts.Verbose Then
+      WriteLn('  CONSTANTS ', VName, ' = ', SymTab[SymIdx].InitStr);
+    Exit;
+  End;
+  Bytes := SymByteSize(SymIdx);
+  If SC = STORE_AUTO Then
+  Begin
+    { Variable locale dans une FORM (pile EBP) }
+    If Bytes < 4 Then Bytes := 4;  { alignement 32 bits }
+    BpOff := AllocLocalEbp(Bytes);
+    SymTab[SymIdx].BpOffset := BpOff;
+    If Opts.Verbose Then
+      WriteLn('  LOCAL ', VName, ' : [EBP', BpOff, '] ', Bytes, ' bytes');
+  End
+  Else
+  Begin
+    { Variable globale -> sera emise dans le segment .DATA }
+    If Opts.Verbose Then
+      WriteLn('  GLOBAL ', VName, ' : ', SymTab[SymIdx].AsmLabel,
+              ' ', Bytes, ' bytes');
+  End;
+End;
+
+{ ---- ParseTypesBlock : parser TYPES BEGIN OF / END OF -------- }
+{ Syntaxe :
+    TYPES: BEGIN OF struc,
+             champ1 TYPE I,
+             champ2 TYPE C(20),
+           END OF struc.
+  Les champs sont ignores pour l instant (stub structure).        }
+Procedure ParseTypesBlock;
+Begin
+  EatKw(KW_BEGIN); EatKw(KW_OF);
+  { Nom de la structure }
+  If CurTokType = TOK_IDENT Then Consume;
+  If CurTokType = TOK_COMMA Then Consume;
+  { Sauter les champs jusqu a END OF }
+  While Not (CurTokType = TOK_EOF) Do
+  Begin
+    If TokIsKw(KW_END) Then
+    Begin
+      Consume; EatKw(KW_OF);
+      If CurTokType = TOK_IDENT Then Consume;
+      If CurTokType = TOK_DOT Then Consume;
+      Break;
+    End;
+    Consume;
+  End;
+End;
+
+{ ---- ParseData : parser DATA ou CONSTANTS --------------------
+  Syntaxes :
+    DATA nom TYPE I [VALUE 0].
+    DATA nom(n) TYPE C [VALUE ' '].
+    DATA: nom TYPE I, nom2 TYPE C(20).
+    CONSTANTS nom TYPE I VALUE 42.
+  Le mot-cle DATA ou CONSTANTS a deja ete consomme.              }
+Procedure ParseData(IsConst : Boolean);
+Var Multi : Boolean;
+    VName : TString;
+Begin
+  Multi := (CurTokType = TOK_COLON);
+  If Multi Then Consume;
+  Repeat
+    { TYPES: BEGIN OF ... -> traitement special }
+    If TokIsKw(KW_BEGIN) Then
+    Begin
+      ParseTypesBlock;
+      If Not Multi Then Break;
+      If CurTokType = TOK_COMMA Then Consume Else Break;
+      Continue;
+    End;
+    If CurTokType <> TOK_IDENT Then Break;
+    VName := CurTokStr;
+    Consume;
+    ParseOneVar(VName, IsConst);
+    If (Not Multi) Or (CurTokType <> TOK_COMMA) Then Break;
+    Consume;  { sauter la virgule }
+  Until (CurTokType = TOK_DOT) Or (CurTokType = TOK_EOF);
+  If CurTokType = TOK_DOT Then Consume;
+End;
+
+{ ---- ParseTypes : parser TYPES declarations ------------------
+  Syntaxes :
+    TYPES nom TYPE I.
+    TYPES: BEGIN OF struc, champ TYPE I, END OF struc.
+    TYPES: nom TYPE TABLE OF struc.
+  Le mot-cle TYPES a deja ete consomme.                          }
+Procedure ParseTypes;
+Var Multi : Boolean;
+Begin
+  Multi := (CurTokType = TOK_COLON);
+  If Multi Then Consume;
+  Repeat
+    If TokIsKw(KW_BEGIN) Then
+    Begin ParseTypesBlock; If Not Multi Then Break; End
+    Else
+    Begin
+      { TYPES nom TYPE I : alias de type (stub, ignore) }
+      While (CurTokType <> TOK_DOT) And (CurTokType <> TOK_COMMA)
+            And (CurTokType <> TOK_EOF) Do
+        Consume;
+    End;
+    If (Not Multi) Or (CurTokType <> TOK_COMMA) Then Break;
+    Consume;
+  Until (CurTokType = TOK_DOT) Or (CurTokType = TOK_EOF);
+  If CurTokType = TOK_DOT Then Consume;
+End;
 
 Procedure InitOptions;
 Begin
@@ -2393,9 +2776,27 @@ Begin
     WriteLn('ABAPCW32: compilation de ', Opts.SrcFile, ' ...');
     WriteLn('ABAPCW32: programme: ', ProgName);
     WriteLn('ABAPCW32: label ASM: ', AB_FN_PFX, AsmIdent(ProgName));
-    WriteLn('ABAPCW32: symboles declares: ', SymCount, ' (systeme)');
+    { Parser les declarations de haut niveau }
+    While (CurTokType <> TOK_EOF) Do
+    Begin
+      If TokIsKw(KW_DATA) Then
+      Begin Consume; ParseData(False); End
+      Else If TokIsKw(KW_CONSTANTS) Then
+      Begin Consume; ParseData(True); End
+      Else If TokIsKw(KW_TYPES) Then
+      Begin Consume; ParseTypes; End
+      Else
+        Break;  { instruction non traitee par TODO 07 }
+    End;
+    WriteLn('ABAPCW32: symboles declares: ', SymCount);
     WriteLn('ABAPCW32: scope initial: SK_GLOBAL (niveau ', ScopeTop, ')');
-    WriteLn('ABAPCW32: TODO 07..25 non encore implementes.');
+    { Sauter les tokens restants }
+    If CurTokType <> TOK_EOF Then
+    Begin
+      WriteLn('ABAPCW32: TODO 08..25 non encore implementes.');
+      While CurTokType <> TOK_EOF Do
+        Consume;
+    End;
   End;
   LexClose;
 End;

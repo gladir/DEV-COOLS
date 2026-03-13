@@ -142,7 +142,7 @@
             Consommer jusqu au point '.' final
             Generer le label du point d entree principal
 
-  TODO 07 - PARSEUR : DATA / TYPES / CONSTANTS (DECLARATIONS 32 BITS)
+  TODO 07 - PARSEUR : DATA / TYPES / CONSTANTS (DECLARATIONS 32 BITS) [IMPLEMENTE]
             Procedure ParseData
             Syntaxe simple :
               DATA nom TYPE I [VALUE 0].
