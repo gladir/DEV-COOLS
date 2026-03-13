@@ -433,7 +433,7 @@
             EXIT [expr] : terminer le programme avec code retour
               -> MOV AL, code / MOV AH,4Ch / INT 21h
 
-  TODO 24 - RUNTIME MINIMAL
+  TODO 24 - RUNTIME MINIMAL [IMPLEMENTE]
             _RXRT_PRINT(SI=msg, CX=len) : INT 21h AH=40h BX=1 (STDOUT)
             _RXRT_PRINTLN : _RXRT_PRINT + CR+LF via _RX_CRLF DB 13,10,0
             _RXRT_READLN(DI=buf, CX=maxlen) : INT 21h AH=0Ah -> chaine
@@ -766,6 +766,7 @@ Procedure EmitProlog;          Forward;
 Procedure EmitEpilog;          Forward;
 Procedure EmitDataSeg;         Forward;
 Procedure EmitRuntime;         Forward;
+Procedure EmitMinimalRuntime;  Forward;
 
 (* TODO 08 - Segment de donnees *)
 Function  DataAdd(Const Lbl : TString; Kind : TDataKind;
@@ -2707,15 +2708,15 @@ Begin
   EmitRaw('_DATA ENDS');
 End;
 
-(* ---- EmitRuntime : routines runtime minimales REXX ----------- *)
-(* Emet le runtime minimal necessaire pour SAY et la gestion des  *)
-(* erreurs. Sera etendu dans TODO 24.                              *)
-Procedure EmitRuntime;
+(* ---- EmitMinimalRuntime : routines runtime de base REXX ------- *)
+(* Emet les routines assembleur 8086 fondamentales utilisees par   *)
+(* tout programme REXX : impression, lecture, chaines, copie       *)
+(* memoire, conversion, comparaison, arithmetique de base.         *)
+(* Ces routines sont le socle minimal sur lequel s appuient les    *)
+(* sous-runtimes specifiques (BIF, stems, parse, stack, etc).      *)
+Procedure EmitMinimalRuntime;
 Begin
-  If RuntimeEmitted Then Exit;
-  RuntimeEmitted := True;
-  EmitBlankLine;
-  EmitComment('--- Runtime minimal REXX ---');
+  EmitComment('--- Runtime minimal REXX (TODO 24) ---');
   EmitBlankLine;
 
   (* _RXRT_PRINT : affiche chaine ASCIIZ pointee par SI sur STDOUT *)
@@ -3076,6 +3077,129 @@ Begin
   EmitInstrA('POP', 'SI');
   EmitRaw('        RET');
   EmitBlankLine;
+
+  (* _RXRT_READLN : lire une ligne depuis STDIN via INT 21h AH=0Ah *)
+  (* Alias vers _RXRT_INPUT qui sera emis dans EmitIORuntime.       *)
+  (* Alternative autonome : DI=buffer, retour AX=pointeur ASCIIZ.  *)
+  EmitLabel('_RXRT_READLN');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'BYTE PTR [_RX_INPUTBF]', '253');
+  EmitInstrAB('MOV', 'BYTE PTR [_RX_INPUTBF+1]', '0');
+  EmitInstrAB('MOV', 'AH', '0Ah');
+  EmitInstrAB('LEA', 'DX', '_RX_INPUTBF');
+  EmitRaw('        INT     21h');
+  EmitInstrAB('XOR', 'BH', 'BH');
+  EmitInstrAB('MOV', 'BL', 'BYTE PTR [_RX_INPUTBF+1]');
+  EmitInstrAB('MOV', 'BYTE PTR [_RX_INPUTBF+BX+2]', '0');
+  EmitInstrAB('LEA', 'SI', '_RX_INPUTBF');
+  EmitInstrAB('ADD', 'SI', '2');
+  EmitInstrAB('LEA', 'DI', '_RX_STRBUF');
+  EmitInstrA('CALL', '_RXRT_STRCPY');
+  EmitInstrAB('MOV', 'SI', 'OFFSET _RX_CRLF');
+  EmitInstrA('CALL', '_RXRT_PRINT');
+  EmitInstrAB('LEA', 'AX', '_RX_STRBUF');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* _RXRT_COPY : copie memoire brute de CX octets               *)
+  (* Entree : SI = source, DI = destination, CX = nombre d octets *)
+  (* Sortie : rien (SI et DI avances de CX octets)                *)
+  EmitLabel('_RXRT_COPY');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitRaw('        REP     MOVSB');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'CX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* _RXRT_ABS : valeur absolue de AX                            *)
+  (* Entree : AX = entier signe                                   *)
+  (* Sortie : AX = |AX|                                           *)
+  EmitLabel('_RXRT_ABS');
+  EmitInstrAB('OR', 'AX', 'AX');
+  EmitInstrA('JNS', '_RXRT_ABS_D');
+  EmitInstrA('NEG', 'AX');
+  EmitLabel('_RXRT_ABS_D');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* _RXRT_MAX : maximum de deux entiers signes                   *)
+  (* Entree : AX = a, BX = b                                      *)
+  (* Sortie : AX = max(a, b)                                      *)
+  EmitLabel('_RXRT_MAX');
+  EmitInstrAB('CMP', 'AX', 'BX');
+  EmitInstrA('JGE', '_RXRT_MAX_D');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitLabel('_RXRT_MAX_D');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* _RXRT_MIN : minimum de deux entiers signes                   *)
+  (* Entree : AX = a, BX = b                                      *)
+  (* Sortie : AX = min(a, b)                                      *)
+  EmitLabel('_RXRT_MIN');
+  EmitInstrAB('CMP', 'AX', 'BX');
+  EmitInstrA('JLE', '_RXRT_MIN_D');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitLabel('_RXRT_MIN_D');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* _RXRT_RANDOM : nombre aleatoire entre AX (min) et BX (max)  *)
+  (* Utilise INT 1Ah (horloge BIOS) comme graine                  *)
+  (* Entree : AX = borne inferieure, BX = borne superieure        *)
+  (* Sortie : AX = nombre aleatoire dans [min..max]               *)
+  EmitLabel('_RXRT_RANDOM');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrAB('MOV', 'CX', 'AX');           (* CX = min *)
+  EmitInstrAB('SUB', 'BX', 'AX');           (* BX = max - min *)
+  EmitInstrA('INC', 'BX');                   (* BX = range = max - min + 1 *)
+  (* Lire horloge BIOS pour graine *)
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrAB('MOV', 'AH', '0');
+  EmitRaw('        INT     1Ah');            (* DX:CX = tick count *)
+  EmitInstrA('POP', 'BX');
+  EmitInstrA('PUSH', 'CX');                  (* sauver min original *)
+  EmitInstrAB('MOV', 'AX', 'DX');           (* AX = partie basse du tick *)
+  EmitInstrAB('XOR', 'DX', 'DX');
+  EmitInstrA('DIV', 'BX');                   (* DX = tick MOD range *)
+  EmitInstrA('POP', 'CX');                   (* restaurer min *)
+  EmitInstrAB('MOV', 'AX', 'DX');
+  EmitInstrAB('ADD', 'AX', 'CX');           (* AX = min + (tick MOD range) *)
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+End;
+
+(* ---- EmitRuntime : orchestrateur du runtime complet REXX ------ *)
+(* Emet le runtime minimal puis tous les sous-runtimes specifiques  *)
+(* de chaque fonctionnalite. Le flag RuntimeEmitted garantit que     *)
+(* l emission n a lieu qu une seule fois.                            *)
+Procedure EmitRuntime;
+Begin
+  If RuntimeEmitted Then Exit;
+  RuntimeEmitted := True;
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (*  TODO 24 - Runtime minimal (fonctions de base)                *)
+  (* ============================================================ *)
+  EmitMinimalRuntime;
 
   (* ============================================================ *)
   (*  TODO 12 - Runtime pour entrees/sorties                      *)
@@ -5945,6 +6069,9 @@ Begin
   DataAdd('_RX_INTERP_MSG', DK_STR, 0, 'INTERPRET non supporte en mode compile');
   DataAdd('_RX_HOSTCMD_MSG', DK_STR, 0, 'Commande hote: ');
   DataAddBuffer('_RX_HOSTBUF', 256);                 (* buffer commande hote       *)
+  (* TODO 24 - Heap statique pour le runtime minimal *)
+  DataAddBuffer('_RX_HEAP', 4096);                   (* heap statique 4096 octets  *)
+  DataAddWord('_RX_HEAPTOP', 0);                      (* pointeur sommet du heap    *)
 End;
 
 (* ============================================================

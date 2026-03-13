@@ -97,7 +97,7 @@ _RXP_Main:
         JMP     _RXP_Exit
 
 
-; --- Runtime minimal REXX ---
+; --- Runtime minimal REXX (TODO 24) ---
 
 _RXRT_PRINT:
         PUSH   AX
@@ -391,6 +391,86 @@ _RXRT_SCMP_GT:
 _RXRT_SCMP_DN:
         POP   DI
         POP   SI
+        RET
+
+_RXRT_READLN:
+        PUSH   BX
+        PUSH   CX
+        PUSH   DX
+        PUSH   SI
+        MOV   BYTE PTR [_RX_INPUTBF], 253
+        MOV   BYTE PTR [_RX_INPUTBF+1], 0
+        MOV   AH, 0Ah
+        LEA   DX, _RX_INPUTBF
+        INT     21h
+        XOR   BH, BH
+        MOV   BL, BYTE PTR [_RX_INPUTBF+1]
+        MOV   BYTE PTR [_RX_INPUTBF+BX+2], 0
+        LEA   SI, _RX_INPUTBF
+        ADD   SI, 2
+        LEA   DI, _RX_STRBUF
+        CALL   _RXRT_STRCPY
+        MOV   SI, OFFSET _RX_CRLF
+        CALL   _RXRT_PRINT
+        LEA   AX, _RX_STRBUF
+        POP   SI
+        POP   DX
+        POP   CX
+        POP   BX
+        RET
+
+_RXRT_COPY:
+        PUSH   CX
+        PUSH   SI
+        PUSH   DI
+        REP     MOVSB
+        POP   DI
+        POP   SI
+        POP   CX
+        RET
+
+_RXRT_ABS:
+        OR   AX, AX
+        JNS   _RXRT_ABS_D
+        NEG   AX
+_RXRT_ABS_D:
+        RET
+
+_RXRT_MAX:
+        CMP   AX, BX
+        JGE   _RXRT_MAX_D
+        MOV   AX, BX
+_RXRT_MAX_D:
+        RET
+
+_RXRT_MIN:
+        CMP   AX, BX
+        JLE   _RXRT_MIN_D
+        MOV   AX, BX
+_RXRT_MIN_D:
+        RET
+
+_RXRT_RANDOM:
+        PUSH   BX
+        PUSH   CX
+        PUSH   DX
+        MOV   CX, AX
+        SUB   BX, AX
+        INC   BX
+        PUSH   BX
+        MOV   AH, 0
+        INT     1Ah
+        POP   BX
+        PUSH   CX
+        MOV   AX, DX
+        XOR   DX, DX
+        DIV   BX
+        POP   CX
+        MOV   AX, DX
+        ADD   AX, CX
+        POP   DX
+        POP   CX
+        POP   BX
         RET
 
 ; --- Runtime E/S REXX (TODO 12) ---
@@ -2720,6 +2800,8 @@ _RX_ADDR_SYS DB 'SYSTEM',0
 _RX_INTERP_MSG DB 'INTERPRET non supporte en mode compile',0
 _RX_HOSTCMD_MSG DB 'Commande hote: ',0
 _RX_HOSTBUF DB 256 DUP(0)
+_RX_HEAP DB 4096 DUP(0)
+_RX_HEAPTOP DW 0
 _RXK_1 DB 'Test ADDRESS:',0
 _RXV_ENV DB 256 DUP(0)
 _RXV_ENV_D DB 'ENV',0
