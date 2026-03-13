@@ -1,0 +1,818 @@
+=========================================================================
+  TURBO PASCAL 7.0 - Unité STRINGS - Documentation de référence
+=========================================================================
+
+  L'unité Strings fournit des fonctions de manipulation de chaînes
+  terminées par zéro (null-terminated strings, type PChar). Ces
+  fonctions sont l'équivalent Pascal des fonctions str* de la
+  bibliothèque standard C (string.h). Elles sont essentielles
+  pour la programmation Windows et l'interfaçage avec les API du
+  système d'exploitation qui utilisent des chaînes ASCIIZ.
+
+  Uses Strings;
+
+  Directive de compilation : {$S-}
+    $S- : Pas de vérification de pile
+
+  Copyright (C) 1990,92 Borland International
+
+=========================================================================
+  1. CHAÎNES PASCAL vs CHAÎNES PChar
+=========================================================================
+
+  --- Chaîne Pascal (String) ---
+  - Premier octet = longueur (0..255)
+  - Pas de terminateur
+  - Longueur maximale : 255 caractères
+  - Type : String, String[N]
+
+  --- Chaîne PChar (ASCIIZ) ---
+  - Pas d'octet de longueur
+  - Terminée par un caractère nul (#0)
+  - Longueur maximale : théoriquement illimitée (65 535 en mode réel)
+  - Type : PChar = ^Char
+
+  L'unité Strings permet de travailler avec les chaînes PChar et
+  de convertir entre les deux formats (StrPCopy, StrPas).
+
+=========================================================================
+  2. LONGUEUR ET FIN DE CHAÎNE
+=========================================================================
+
+  function StrLen(Str : PChar) : Word;
+  ---------------------------------------------------------------
+  Retourne le nombre de caractères dans Str, sans compter le
+  terminateur nul.
+
+  Paramètres :
+    Str  Chaîne source (ASCIIZ)
+  Retour :
+    Nombre de caractères (0 si chaîne vide)
+
+  Équivalent C : strlen()
+
+  Exemple :
+    var P : PChar;
+    begin
+      P := 'Hello';
+      WriteLn(StrLen(P));  { → 5 }
+    end;
+
+  Implémentation : utilise l'instruction x86 REPNE SCASB pour
+  rechercher le #0, très rapide (traitement par octet matériel).
+
+  ---------------------------------------------------------------
+  function StrEnd(Str : PChar) : PChar;
+  ---------------------------------------------------------------
+  Retourne un pointeur vers le caractère nul (#0) qui termine Str.
+
+  Paramètres :
+    Str  Chaîne source (ASCIIZ)
+  Retour :
+    Pointeur vers le terminateur nul de Str
+
+  StrEnd(Str) est équivalent à Str + StrLen(Str), mais plus
+  efficace car il ne traverse la chaîne qu'une seule fois.
+
+  Utile pour concaténer efficacement des chaînes :
+    StrCopy(StrEnd(Dest), Source);
+    { équivalent à StrCat(Dest, Source) mais permet d'enchaîner }
+
+=========================================================================
+  3. COPIE ET DÉPLACEMENT
+=========================================================================
+
+  function StrMove(Dest, Source : PChar; Count : Word) : PChar;
+  ---------------------------------------------------------------
+  Copie exactement Count caractères de Source vers Dest.
+
+  Paramètres :
+    Dest    Tampon destination
+    Source  Tampon source
+    Count   Nombre exact d'octets à copier
+  Retour :
+    Dest
+
+  Les zones Source et Dest PEUVENT se chevaucher : StrMove gère
+  correctement les recouvrements (copie arrière si nécessaire).
+
+  ATTENTION : StrMove ne tient pas compte du terminateur nul.
+  C'est une copie brute d'octets, similaire à Move() ou memmove().
+
+  Équivalent C : memmove()
+
+  ---------------------------------------------------------------
+  function StrCopy(Dest, Source : PChar) : PChar;
+  ---------------------------------------------------------------
+  Copie Source (y compris le terminateur nul) dans Dest.
+
+  Paramètres :
+    Dest    Tampon destination (doit avoir assez d'espace)
+    Source  Chaîne source (ASCIIZ)
+  Retour :
+    Dest
+
+  ATTENTION : le tampon Dest doit être assez grand pour contenir
+  Source. Aucune vérification de débordement n'est effectuée.
+
+  Équivalent C : strcpy()
+
+  Exemple :
+    var Buf : array[0..79] of Char;
+    begin
+      StrCopy(Buf, 'Hello, World!');
+      WriteLn(StrPas(Buf));
+    end;
+
+  ---------------------------------------------------------------
+  function StrECopy(Dest, Source : PChar) : PChar;
+  ---------------------------------------------------------------
+  Copie Source dans Dest et retourne un pointeur vers la FIN de
+  la chaîne copiée (le terminateur nul de Dest).
+
+  Paramètres :
+    Dest    Tampon destination
+    Source  Chaîne source (ASCIIZ)
+  Retour :
+    StrEnd(Dest) — pointeur vers le #0 de Dest après la copie
+
+  Cela permet d'enchaîner efficacement plusieurs copies :
+    P := StrECopy(Buf, 'Hello');
+    P := StrECopy(P, ', ');
+    StrCopy(P, 'World!');
+    { Buf = 'Hello, World!' }
+
+  Plus efficace que des appels multiples à StrCat car chaque
+  appel ne retraverse pas toute la chaîne Dest.
+
+  ---------------------------------------------------------------
+  function StrLCopy(Dest, Source : PChar; MaxLen : Word) : PChar;
+  ---------------------------------------------------------------
+  Copie au maximum MaxLen caractères de Source vers Dest, puis
+  ajoute un terminateur nul.
+
+  Paramètres :
+    Dest    Tampon destination (taille >= MaxLen + 1)
+    Source  Chaîne source (ASCIIZ)
+    MaxLen  Nombre maximal de caractères à copier
+  Retour :
+    Dest
+
+  Si Source contient moins de MaxLen caractères, seuls ceux-ci
+  sont copiés (plus le #0). Sinon, exactement MaxLen caractères
+  sont copiés suivis d'un #0.
+
+  Équivalent C : strncpy() (mais avec terminaison garantie)
+
+  Exemple :
+    var Buf : array[0..10] of Char;
+    begin
+      StrLCopy(Buf, 'Turbo Pascal 7.0', 10);
+      WriteLn(StrPas(Buf));  { → 'Turbo Pasc' }
+    end;
+
+  ---------------------------------------------------------------
+  function StrPCopy(Dest : PChar; Source : String) : PChar;
+  ---------------------------------------------------------------
+  Copie une chaîne Pascal (String) dans un tampon PChar (ASCIIZ).
+  Ajoute automatiquement le terminateur nul.
+
+  Paramètres :
+    Dest    Tampon destination (taille >= Length(Source) + 1)
+    Source  Chaîne Pascal source
+  Retour :
+    Dest
+
+  C'est la fonction de conversion String → PChar.
+
+  Exemple :
+    var
+      S   : String;
+      Buf : array[0..255] of Char;
+    begin
+      S := 'Bonjour';
+      StrPCopy(Buf, S);
+      { Buf contient maintenant 'Bonjour'#0 }
+    end;
+
+=========================================================================
+  4. CONCATÉNATION
+=========================================================================
+
+  function StrCat(Dest, Source : PChar) : PChar;
+  ---------------------------------------------------------------
+  Ajoute une copie de Source à la fin de Dest.
+
+  Paramètres :
+    Dest    Chaîne destination (ASCIIZ, doit avoir assez d'espace)
+    Source  Chaîne source (ASCIIZ)
+  Retour :
+    Dest
+
+  Équivalent de : Dest := Dest + Source en chaînes Pascal.
+  Équivalent C : strcat()
+
+  Fonctionnement interne : appelle StrEnd(Dest) puis
+  StrCopy(StrEnd(Dest), Source).
+
+  ATTENTION : Dest doit avoir assez d'espace pour contenir la
+  chaîne résultante (StrLen(Dest) + StrLen(Source) + 1 octets).
+
+  Exemple :
+    var Buf : array[0..79] of Char;
+    begin
+      StrCopy(Buf, 'Hello');
+      StrCat(Buf, ', ');
+      StrCat(Buf, 'World!');
+      WriteLn(StrPas(Buf));  { → 'Hello, World!' }
+    end;
+
+  ---------------------------------------------------------------
+  function StrLCat(Dest, Source : PChar; MaxLen : Word) : PChar;
+  ---------------------------------------------------------------
+  Ajoute au maximum MaxLen - StrLen(Dest) caractères de Source
+  à la fin de Dest.
+
+  Paramètres :
+    Dest    Chaîne destination (ASCIIZ)
+    Source  Chaîne source (ASCIIZ)
+    MaxLen  Longueur maximale TOTALE de la chaîne résultante
+  Retour :
+    Dest
+
+  La chaîne résultante ne dépassera pas MaxLen caractères (plus
+  le terminateur nul). Empêche les débordements de tampon.
+
+  Équivalent C : strncat() (mais avec sémantique de longueur
+  totale au lieu de caractères ajoutés)
+
+  Exemple :
+    var Buf : array[0..19] of Char;
+    begin
+      StrCopy(Buf, 'Hello');
+      StrLCat(Buf, ', World! This is a long string', 19);
+      WriteLn(StrPas(Buf));  { → 'Hello, World! This' (19 car.) }
+    end;
+
+=========================================================================
+  5. COMPARAISON
+=========================================================================
+
+  function StrComp(Str1, Str2 : PChar) : Integer;
+  ---------------------------------------------------------------
+  Compare Str1 et Str2 (sensible à la casse).
+
+  Paramètres :
+    Str1, Str2  Chaînes à comparer (ASCIIZ)
+  Retour :
+    < 0  si Str1 < Str2  (ordre lexicographique ASCII)
+      0  si Str1 = Str2
+    > 0  si Str1 > Str2
+
+  La comparaison est basée sur les valeurs ASCII des caractères.
+  Les majuscules (65..90) sont INFÉRIEURES aux minuscules (97..122).
+
+  Équivalent C : strcmp()
+
+  Exemple :
+    if StrComp(P1, P2) = 0 then
+      WriteLn('Chaînes identiques');
+
+  ---------------------------------------------------------------
+  function StrIComp(Str1, Str2 : PChar) : Integer;
+  ---------------------------------------------------------------
+  Compare Str1 et Str2 sans tenir compte de la casse.
+
+  Paramètres :
+    Str1, Str2  Chaînes à comparer (ASCIIZ)
+  Retour :
+    Même convention que StrComp
+
+  Les lettres 'a'..'z' sont converties en 'A'..'Z' avant
+  comparaison. Seuls les caractères ASCII standard sont
+  convertis (pas les caractères accentués).
+
+  Équivalent C : stricmp() / strcasecmp()
+
+  Exemple :
+    if StrIComp('Hello', 'HELLO') = 0 then
+      WriteLn('Identiques');  { → Identiques }
+
+  ---------------------------------------------------------------
+  function StrLComp(Str1, Str2 : PChar; MaxLen : Word) : Integer;
+  ---------------------------------------------------------------
+  Compare au maximum MaxLen caractères de Str1 et Str2
+  (sensible à la casse).
+
+  Paramètres :
+    Str1, Str2  Chaînes à comparer
+    MaxLen      Nombre maximal de caractères à comparer
+  Retour :
+    Même convention que StrComp
+
+  Utile pour comparer des préfixes de chaînes.
+
+  Équivalent C : strncmp()
+
+  Exemple :
+    if StrLComp('Turbo Pascal', 'Turbo C', 5) = 0 then
+      WriteLn('Même préfixe');  { → Même préfixe (les 5 premiers) }
+
+  ---------------------------------------------------------------
+  function StrLIComp(Str1, Str2 : PChar; MaxLen : Word) : Integer;
+  ---------------------------------------------------------------
+  Compare au maximum MaxLen caractères de Str1 et Str2, sans
+  tenir compte de la casse.
+
+  Paramètres :
+    Str1, Str2  Chaînes à comparer
+    MaxLen      Nombre maximal de caractères à comparer
+  Retour :
+    Même convention que StrComp
+
+  Combinaison de StrLComp et StrIComp.
+
+  Équivalent C : strnicmp() / strncasecmp()
+
+=========================================================================
+  6. RECHERCHE
+=========================================================================
+
+  function StrScan(Str : PChar; Chr : Char) : PChar;
+  ---------------------------------------------------------------
+  Recherche la PREMIÈRE occurrence d'un caractère dans une chaîne.
+
+  Paramètres :
+    Str  Chaîne source (ASCIIZ)
+    Chr  Caractère à rechercher
+  Retour :
+    Pointeur vers la première occurrence de Chr dans Str,
+    ou nil si Chr n'est pas trouvé.
+
+  NOTE : le terminateur nul (#0) est considéré comme faisant
+  partie de la chaîne. StrScan(Str, #0) retourne donc toujours
+  un pointeur vers le terminateur (équivalent à StrEnd).
+
+  Équivalent C : strchr()
+
+  Exemple :
+    var P : PChar;
+    begin
+      P := StrScan('Hello, World!', ',');
+      if P <> nil then
+        WriteLn(StrPas(P));  { → ', World!' }
+    end;
+
+  ---------------------------------------------------------------
+  function StrRScan(Str : PChar; Chr : Char) : PChar;
+  ---------------------------------------------------------------
+  Recherche la DERNIÈRE occurrence d'un caractère dans une chaîne.
+
+  Paramètres :
+    Str  Chaîne source (ASCIIZ)
+    Chr  Caractère à rechercher
+  Retour :
+    Pointeur vers la dernière occurrence de Chr dans Str,
+    ou nil si Chr n'est pas trouvé.
+
+  Le terminateur nul est considéré comme faisant partie de la
+  chaîne (même comportement que StrScan).
+
+  Équivalent C : strrchr()
+
+  Exemple :
+    var P : PChar;
+    begin
+      P := StrRScan('C:\TP\BIN\TURBO.EXE', '\');
+      if P <> nil then
+        WriteLn(StrPas(P));  { → '\TURBO.EXE' }
+    end;
+
+  Implémentation : parcourt la chaîne vers l'avant pour trouver
+  le #0, puis recule avec STD et REPNE SCASB.
+
+  ---------------------------------------------------------------
+  function StrPos(Str1, Str2 : PChar) : PChar;
+  ---------------------------------------------------------------
+  Recherche la première occurrence d'une sous-chaîne dans une
+  chaîne.
+
+  Paramètres :
+    Str1  Chaîne dans laquelle chercher (ASCIIZ)
+    Str2  Sous-chaîne à rechercher (ASCIIZ)
+  Retour :
+    Pointeur vers la première occurrence de Str2 dans Str1,
+    ou nil si Str2 n'est pas trouvé.
+
+  Si Str2 est une chaîne vide, retourne nil.
+
+  Équivalent C : strstr()
+
+  Exemple :
+    var P : PChar;
+    begin
+      P := StrPos('Turbo Pascal 7.0', 'Pascal');
+      if P <> nil then
+        WriteLn(StrPas(P));  { → 'Pascal 7.0' }
+    end;
+
+=========================================================================
+  7. CONVERSION DE CASSE
+=========================================================================
+
+  function StrUpper(Str : PChar) : PChar;
+  ---------------------------------------------------------------
+  Convertit tous les caractères minuscules ('a'..'z') de Str en
+  majuscules ('A'..'Z'). Modifie la chaîne en place.
+
+  Paramètres :
+    Str  Chaîne à convertir (ASCIIZ, modifiée en place)
+  Retour :
+    Str (le même pointeur)
+
+  Seuls les caractères ASCII standard sont convertis
+  (soustraction de $20). Les caractères accentués, chiffres
+  et symboles ne sont pas modifiés.
+
+  Équivalent C : strupr()
+
+  Exemple :
+    var Buf : array[0..79] of Char;
+    begin
+      StrCopy(Buf, 'Hello, World!');
+      StrUpper(Buf);
+      WriteLn(StrPas(Buf));  { → 'HELLO, WORLD!' }
+    end;
+
+  ---------------------------------------------------------------
+  function StrLower(Str : PChar) : PChar;
+  ---------------------------------------------------------------
+  Convertit tous les caractères majuscules ('A'..'Z') de Str en
+  minuscules ('a'..'z'). Modifie la chaîne en place.
+
+  Paramètres :
+    Str  Chaîne à convertir (ASCIIZ, modifiée en place)
+  Retour :
+    Str (le même pointeur)
+
+  Seuls les caractères ASCII standard sont convertis
+  (ajout de $20).
+
+  Équivalent C : strlwr()
+
+=========================================================================
+  8. CONVERSION String ↔ PChar
+=========================================================================
+
+  function StrPas(Str : PChar) : String;
+  ---------------------------------------------------------------
+  Convertit une chaîne PChar (ASCIIZ) en chaîne Pascal (String).
+
+  Paramètres :
+    Str  Chaîne source (ASCIIZ)
+  Retour :
+    Chaîne Pascal correspondante
+
+  Si Str contient plus de 255 caractères, seuls les 255 premiers
+  sont copiés (limite du type String).
+
+  C'est la fonction de conversion PChar → String.
+
+  Exemple :
+    var
+      P : PChar;
+      S : String;
+    begin
+      P := 'Bonjour';
+      S := StrPas(P);
+      WriteLn(S);        { → Bonjour }
+      WriteLn(Length(S)); { → 7 }
+    end;
+
+  ---------------------------------------------------------------
+  function StrPCopy(Dest : PChar; Source : String) : PChar;
+  ---------------------------------------------------------------
+  (Documentée en section 3 — Copie et déplacement)
+
+  C'est la fonction de conversion String → PChar.
+
+  Résumé : copie une chaîne Pascal dans un tampon PChar en
+  ajoutant le terminateur nul.
+
+=========================================================================
+  9. ALLOCATION DYNAMIQUE
+=========================================================================
+
+  function StrNew(Str : PChar) : PChar;
+  ---------------------------------------------------------------
+  Alloue une copie de Str sur le tas (heap) et retourne un
+  pointeur vers la copie.
+
+  Paramètres :
+    Str  Chaîne source (ASCIIZ), ou nil
+  Retour :
+    Pointeur vers la copie allouée, ou nil
+
+  Cas particuliers :
+    - Si Str = nil → retourne nil (pas d'allocation)
+    - Si Str^ = #0 (chaîne vide) → retourne nil (pas d'allocation)
+
+  La mémoire allouée fait StrLen(Str) + 1 octets (pour le #0).
+  L'allocation est effectuée via GetMem.
+
+  Pour libérer la mémoire, utiliser StrDispose (pas FreeMem
+  directement, bien que fonctionnellement équivalent).
+
+  Équivalent C : strdup()
+
+  Exemple :
+    var P, Q : PChar;
+    begin
+      P := 'Original';
+      Q := StrNew(P);       { Q pointe vers une copie sur le tas }
+      WriteLn(StrPas(Q));   { → 'Original' }
+      StrDispose(Q);        { libérer la mémoire }
+    end;
+
+  Implémentation :
+    function StrNew(Str: PChar): PChar;
+    var L: Word; P: PChar;
+    begin
+      StrNew := nil;
+      if (Str <> nil) and (Str^ <> #0) then
+      begin
+        L := StrLen(Str) + 1;
+        GetMem(P, L);
+        if P <> nil then StrNew := StrMove(P, Str, L);
+      end;
+    end;
+
+  ---------------------------------------------------------------
+  procedure StrDispose(Str : PChar);
+  ---------------------------------------------------------------
+  Libère une chaîne précédemment allouée par StrNew.
+
+  Paramètres :
+    Str  Pointeur retourné par StrNew, ou nil
+
+  Si Str = nil, StrDispose ne fait rien (appel sûr).
+
+  La taille libérée est calculée automatiquement comme
+  StrLen(Str) + 1 (via FreeMem).
+
+  IMPORTANT : ne pas appeler StrDispose sur une chaîne qui n'a
+  pas été allouée par StrNew (ou GetMem avec la même taille).
+
+  Implémentation :
+    procedure StrDispose(Str: PChar);
+    begin
+      if Str <> nil then FreeMem(Str, StrLen(Str) + 1);
+    end;
+
+=========================================================================
+  10. CORRESPONDANCE AVEC LA BIBLIOTHÈQUE C
+=========================================================================
+
+  Unité Strings              Bibliothèque C (string.h)
+  -------------------------  -------------------------
+  StrLen(Str)                strlen(str)
+  StrEnd(Str)                str + strlen(str)
+  StrMove(D, S, N)           memmove(d, s, n)
+  StrCopy(D, S)              strcpy(d, s)
+  StrECopy(D, S)             strcpy(d,s); d+strlen(s)
+  StrLCopy(D, S, N)          strncpy(d, s, n)
+  StrPCopy(D, S)             — (conversion Pascal→C)
+  StrCat(D, S)               strcat(d, s)
+  StrLCat(D, S, N)           strncat (sémantique diff.)
+  StrComp(S1, S2)            strcmp(s1, s2)
+  StrIComp(S1, S2)           stricmp / strcasecmp
+  StrLComp(S1, S2, N)        strncmp(s1, s2, n)
+  StrLIComp(S1, S2, N)       strnicmp / strncasecmp
+  StrScan(S, C)              strchr(s, c)
+  StrRScan(S, C)             strrchr(s, c)
+  StrPos(S1, S2)             strstr(s1, s2)
+  StrUpper(S)                strupr(s)
+  StrLower(S)                strlwr(s)
+  StrPas(S)                  — (conversion C→Pascal)
+  StrNew(S)                  strdup(s)
+  StrDispose(S)              free(s)
+
+=========================================================================
+  11. EXEMPLES COMPLETS
+=========================================================================
+
+  --- Exemple 1 : Manipulation de base ---
+
+  program StringsDemo;
+  uses Strings;
+  var
+    Buf : array[0..255] of Char;
+    P   : PChar;
+  begin
+    StrCopy(Buf, 'Turbo');
+    StrCat(Buf, ' ');
+    StrCat(Buf, 'Pascal');
+    WriteLn(StrPas(Buf));       { → 'Turbo Pascal' }
+    WriteLn('Longueur : ', StrLen(Buf)); { → 12 }
+
+    P := StrScan(Buf, ' ');
+    if P <> nil then
+      WriteLn('Après espace : ', StrPas(P)); { → ' Pascal' }
+  end.
+
+  --- Exemple 2 : Concaténation efficace avec StrECopy ---
+
+  program EfficientConcat;
+  uses Strings;
+  var
+    Buf : array[0..255] of Char;
+    P   : PChar;
+  begin
+    P := StrECopy(Buf, 'Fichier : ');
+    P := StrECopy(P, 'C:\TP\BIN\');
+    StrCopy(P, 'TURBO.EXE');
+    WriteLn(StrPas(Buf));
+    { → 'Fichier : C:\TP\BIN\TURBO.EXE' }
+  end.
+
+  --- Exemple 3 : Comparaison insensible à la casse ---
+
+  program CaseCompare;
+  uses Strings;
+  var
+    A, B : array[0..79] of Char;
+  begin
+    StrCopy(A, 'Hello World');
+    StrCopy(B, 'HELLO WORLD');
+
+    if StrComp(A, B) <> 0 then
+      WriteLn('StrComp : différentes');
+
+    if StrIComp(A, B) = 0 then
+      WriteLn('StrIComp : identiques');
+
+    if StrLIComp(A, B, 5) = 0 then
+      WriteLn('5 premiers car. identiques (insensible casse)');
+  end.
+
+  --- Exemple 4 : Allocation dynamique ---
+
+  program DynamicStrings;
+  uses Strings;
+  var
+    Original : PChar;
+    Copie    : PChar;
+  begin
+    Original := 'Chaîne originale';
+
+    Copie := StrNew(Original);
+    if Copie <> nil then
+    begin
+      WriteLn(StrPas(Copie));
+      WriteLn('Taille en mémoire : ', StrLen(Copie) + 1, ' octets');
+      StrUpper(Copie);
+      WriteLn(StrPas(Copie));  { → 'CHAÎNE ORIGINALE' }
+      StrDispose(Copie);
+    end;
+  end.
+
+  --- Exemple 5 : Conversion String ↔ PChar ---
+
+  program ConvertDemo;
+  uses Strings;
+  var
+    PascalStr : String;
+    Buf       : array[0..255] of Char;
+  begin
+    { String → PChar }
+    PascalStr := 'Bonjour le monde';
+    StrPCopy(Buf, PascalStr);
+    WriteLn('PChar : ', StrPas(Buf));
+    WriteLn('Longueur : ', StrLen(Buf));
+
+    { PChar → String }
+    StrCopy(Buf, 'Au revoir');
+    PascalStr := StrPas(Buf);
+    WriteLn('String : ', PascalStr);
+    WriteLn('Length : ', Length(PascalStr));
+  end.
+
+  --- Exemple 6 : Extraction de nom de fichier ---
+
+  program ExtractFileName;
+  uses Strings;
+  var
+    Path : PChar;
+    P    : PChar;
+  begin
+    Path := 'C:\TP\BIN\TURBO.EXE';
+
+    { Trouver le dernier '\' }
+    P := StrRScan(Path, '\');
+    if P <> nil then
+    begin
+      Inc(P);  { avancer après le '\' }
+      WriteLn('Nom fichier : ', StrPas(P));  { → TURBO.EXE }
+    end;
+
+    { Trouver 'BIN' dans le chemin }
+    P := StrPos(Path, 'BIN');
+    if P <> nil then
+      WriteLn('Trouvé à partir de : ', StrPas(P));
+      { → BIN\TURBO.EXE }
+  end.
+
+=========================================================================
+  12. NOTES D'IMPLÉMENTATION
+=========================================================================
+
+  Toutes les fonctions (sauf StrNew et StrDispose) sont implémentées
+  en assembleur x86 inline pour une performance maximale.
+
+  Techniques utilisées :
+  - CLD + REPNE SCASB : recherche rapide du terminateur nul
+  - REP MOVSB : copie rapide de blocs d'octets
+  - STD + REPNE SCASB : recherche arrière (StrRScan)
+  - REPE CMPSB : comparaison rapide de chaînes
+  - Détection de chevauchement (StrMove) avec copie arrière
+
+  Conventions de retour :
+  - Les fonctions retournant PChar placent le résultat dans
+    DX:AX (segment:offset, format far pointer).
+  - Les fonctions retournant Integer placent le résultat dans AX.
+  - StrPas retourne le résultat via @Result (paramètre caché).
+
+  StrNew et StrDispose sont implémentées en Pascal (pas en
+  assembleur) car elles appellent GetMem/FreeMem.
+
+=========================================================================
+  13. RÉCAPITULATIF DE L'INTERFACE
+=========================================================================
+
+  --- Longueur et fin ---
+  Function  StrLen(Str : PChar) : Word;
+  Function  StrEnd(Str : PChar) : PChar;
+
+  --- Copie et déplacement ---
+  Function  StrMove(Dest, Source : PChar; Count : Word) : PChar;
+  Function  StrCopy(Dest, Source : PChar) : PChar;
+  Function  StrECopy(Dest, Source : PChar) : PChar;
+  Function  StrLCopy(Dest, Source : PChar; MaxLen : Word) : PChar;
+  Function  StrPCopy(Dest : PChar; Source : String) : PChar;
+
+  --- Concaténation ---
+  Function  StrCat(Dest, Source : PChar) : PChar;
+  Function  StrLCat(Dest, Source : PChar; MaxLen : Word) : PChar;
+
+  --- Comparaison ---
+  Function  StrComp(Str1, Str2 : PChar) : Integer;
+  Function  StrIComp(Str1, Str2 : PChar) : Integer;
+  Function  StrLComp(Str1, Str2 : PChar; MaxLen : Word) : Integer;
+  Function  StrLIComp(Str1, Str2 : PChar; MaxLen : Word) : Integer;
+
+  --- Recherche ---
+  Function  StrScan(Str : PChar; Chr : Char) : PChar;
+  Function  StrRScan(Str : PChar; Chr : Char) : PChar;
+  Function  StrPos(Str1, Str2 : PChar) : PChar;
+
+  --- Conversion de casse ---
+  Function  StrUpper(Str : PChar) : PChar;
+  Function  StrLower(Str : PChar) : PChar;
+
+  --- Conversion String ↔ PChar ---
+  Function  StrPas(Str : PChar) : String;
+  { StrPCopy est aussi une conversion, listée en Copie }
+
+  --- Allocation dynamique ---
+  Function  StrNew(Str : PChar) : PChar;
+  Procedure StrDispose(Str : PChar);
+
+=========================================================================
+  14. RÉSUMÉ PAR CATÉGORIE
+=========================================================================
+
+  Catégorie                   Nombre   Fonctions
+  -------------------------   ------   ----------------------------------
+  Longueur / Fin                 2     StrLen, StrEnd
+  Copie / Déplacement            5     StrMove, StrCopy, StrECopy,
+                                       StrLCopy, StrPCopy
+  Concaténation                  2     StrCat, StrLCat
+  Comparaison                    4     StrComp, StrIComp,
+                                       StrLComp, StrLIComp
+  Recherche                      3     StrScan, StrRScan, StrPos
+  Conversion de casse            2     StrUpper, StrLower
+  Conversion String ↔ PChar      1     StrPas (+ StrPCopy ci-dessus)
+  Allocation dynamique           2     StrNew, StrDispose
+  -------------------------   ------   ----------------------------------
+  TOTAL                         21     fonctions et procédures
+
+  Types exportés : 0
+  Variables exportées : 0
+  Constantes exportées : 0
+
+  L'unité Strings est purement procédurale : elle ne déclare
+  aucun type, variable ou constante.
+
+=========================================================================
+  Fin du document - Unité STRINGS - Turbo Pascal 7.0
+=========================================================================

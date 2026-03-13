@@ -1,0 +1,2496 @@
+==============================================================================
+  SPECIFICATIONS DU LANGAGE DE PROGRAMMATION PHP
+==============================================================================
+
+  PHP (PHP: Hypertext Preprocessor) est un langage de programmation
+  interprete, a typage dynamique, principalement concu pour le
+  developpement web cote serveur. Il supporte la programmation
+  procedurale, orientee objet et fonctionnelle.
+
+  Version de reference : PHP 8.x
+
+==============================================================================
+  1. SYNTAXE DE BASE
+==============================================================================
+
+  1.1 Balises PHP
+  -----------------------------------------
+
+  Le code PHP est delimite par des balises :
+
+    <?php ... ?>          Balise standard (recommandee)
+    <?= expr ?>           Balise courte d'affichage (echo)
+
+  1.2 Instructions et separateurs
+  -----------------------------------------
+
+  Chaque instruction se termine par un point-virgule :
+
+    $x = 10;
+    echo "Bonjour";
+
+  1.3 Commentaires
+  -----------------------------------------
+
+    // Commentaire sur une ligne
+    # Commentaire sur une ligne (style shell)
+    /* Commentaire
+       sur plusieurs lignes */
+    /** Commentaire de documentation (PHPDoc) */
+
+  1.4 Sensibilite a la casse
+  -----------------------------------------
+
+  Les noms de variables sont sensibles a la casse :
+
+    $nom et $Nom sont deux variables differentes.
+
+  Les mots-clefs, noms de fonctions et noms de classes ne sont
+  pas sensibles a la casse :
+
+    echo, ECHO, Echo sont equivalents.
+
+==============================================================================
+  2. TYPES DE DONNEES
+==============================================================================
+
+  2.1 Types scalaires
+  -----------------------------------------
+
+  Type         Description                    Exemple
+  -------      ---------------------------    ----------------
+  bool         Booleen                        true, false
+  int          Entier                         42, 0x1A, 0b1010, 0o17
+  float        Nombre a virgule flottante     3.14, 1.2e3
+  string       Chaine de caracteres           "texte", 'texte'
+
+  2.2 Types composes
+  -----------------------------------------
+
+  Type         Description
+  -------      ---------------------------
+  array        Tableau ordonne / associatif
+  object       Instance de classe
+  callable     Fonction appelable
+  iterable     Tableau ou objet Traversable
+
+  2.3 Types speciaux
+  -----------------------------------------
+
+  Type         Description
+  -------      ---------------------------
+  resource     Reference a une ressource externe
+  null         Absence de valeur
+  never        Fonction qui ne retourne jamais (PHP 8.1)
+  void         Fonction sans valeur de retour
+  mixed        Tout type (PHP 8.0)
+
+  2.4 Verification de type
+  -----------------------------------------
+
+    gettype($var)            Retourne le type sous forme de chaine
+    is_int($var)             Verifie si entier
+    is_float($var)           Verifie si flottant
+    is_string($var)          Verifie si chaine
+    is_bool($var)            Verifie si booleen
+    is_array($var)           Verifie si tableau
+    is_object($var)          Verifie si objet
+    is_null($var)            Verifie si null
+    is_numeric($var)         Verifie si numerique
+    isset($var)              Verifie si defini et non null
+    empty($var)              Verifie si vide
+    var_dump($var)           Affiche le type et la valeur
+
+  2.5 Transtypage (cast)
+  -----------------------------------------
+
+    (int) $var               Convertir en entier
+    (float) $var             Convertir en flottant
+    (string) $var            Convertir en chaine
+    (bool) $var              Convertir en booleen
+    (array) $var             Convertir en tableau
+    (object) $var            Convertir en objet
+    intval($var)             Convertir en entier (fonction)
+    floatval($var)           Convertir en flottant (fonction)
+    strval($var)             Convertir en chaine (fonction)
+    settype($var, "type")    Changer le type de la variable
+
+==============================================================================
+  3. VARIABLES ET CONSTANTES
+==============================================================================
+
+  3.1 Variables
+  -----------------------------------------
+
+  Les variables commencent par le signe dollar ($) :
+
+    $nom = "PHP";
+    $age = 30;
+    $pi  = 3.14159;
+
+  Les noms de variables doivent commencer par une lettre ou un
+  underscore, suivis de lettres, chiffres ou underscores.
+
+  3.2 Variables variables
+  -----------------------------------------
+
+    $nom = "langage";
+    $$nom = "PHP";       // equivalent a $langage = "PHP"
+
+  3.3 Variables predefinies (superglobales)
+  -----------------------------------------
+
+  Variable         Description
+  -------          -------------------------------------------
+  $GLOBALS         Toutes les variables globales
+  $_SERVER         Informations du serveur et de l'execution
+  $_GET            Variables HTTP GET
+  $_POST           Variables HTTP POST
+  $_FILES          Fichiers envoyes par HTTP
+  $_COOKIE         Cookies HTTP
+  $_SESSION        Variables de session
+  $_REQUEST        Contenu de $_GET, $_POST et $_COOKIE
+  $_ENV            Variables d'environnement
+
+  3.4 Constantes
+  -----------------------------------------
+
+    define("NOM", valeur);           Definir une constante
+    const NOM = valeur;              Definir une constante (classe/global)
+
+  Constantes predefinies :
+
+    PHP_VERSION       Version de PHP
+    PHP_INT_MAX       Entier maximum
+    PHP_INT_MIN       Entier minimum
+    PHP_INT_SIZE      Taille d'un entier en octets
+    PHP_FLOAT_MAX     Flottant maximum
+    PHP_FLOAT_MIN     Flottant minimum positif
+    PHP_EOL           Fin de ligne du systeme
+    PHP_OS            Systeme d'exploitation
+    PHP_SAPI          Interface serveur utilisee
+    DIRECTORY_SEPARATOR  Separateur de repertoire (/ ou \)
+    PATH_SEPARATOR    Separateur de chemin (: ou ;)
+    TRUE              Booleen vrai
+    FALSE             Booleen faux
+    NULL              Valeur nulle
+    PHP_MAJOR_VERSION Version majeure
+    PHP_MINOR_VERSION Version mineure
+    INF               Infini
+    NAN               Not a Number
+    E_ERROR           Erreur fatale
+    E_WARNING         Avertissement
+    E_NOTICE          Notification
+    E_DEPRECATED      Fonctionnalite obsolete
+
+  3.5 Portee des variables
+  -----------------------------------------
+
+  Par defaut, les variables ont une portee locale a la fonction.
+  Pour acceder a une variable globale dans une fonction :
+
+    $x = 10;
+    function test() {
+        global $x;       // Acces a la variable globale
+        echo $x;
+    }
+
+  Le mot-clef static conserve la valeur entre les appels :
+
+    function compteur() {
+        static $n = 0;
+        $n++;
+        return $n;
+    }
+
+==============================================================================
+  4. OPERATEURS
+==============================================================================
+
+  4.1 Operateurs arithmetiques
+  -----------------------------------------
+
+  Operateur    Description             Exemple
+  ---------    --------------------    -----------
+  +            Addition                $a + $b
+  -            Soustraction            $a - $b
+  *            Multiplication          $a * $b
+  /            Division                $a / $b
+  %            Modulo                  $a % $b
+  **           Exponentiation          $a ** $b
+
+  4.2 Operateurs d'affectation
+  -----------------------------------------
+
+  Operateur    Description
+  ---------    --------------------
+  =            Affectation simple
+  +=           Addition et affectation
+  -=           Soustraction et affectation
+  *=           Multiplication et affectation
+  /=           Division et affectation
+  %=           Modulo et affectation
+  **=          Exponentiation et affectation
+  .=           Concatenation et affectation
+  ??=          Affectation si null (PHP 7.4)
+
+  4.3 Operateurs de comparaison
+  -----------------------------------------
+
+  Operateur    Description                     Exemple
+  ---------    ----------------------------    -----------
+  ==           Egal (avec conversion)          $a == $b
+  ===          Identique (type et valeur)      $a === $b
+  !=           Different                       $a != $b
+  <>           Different                       $a <> $b
+  !==          Non identique                   $a !== $b
+  <            Inferieur                       $a < $b
+  >            Superieur                       $a > $b
+  <=           Inferieur ou egal               $a <= $b
+  >=           Superieur ou egal               $a >= $b
+  <=>          Comparaison combinee            $a <=> $b
+
+  L'operateur <=> (spaceship) retourne -1, 0 ou 1.
+
+  4.4 Operateurs logiques
+  -----------------------------------------
+
+  Operateur    Description
+  ---------    --------------------
+  &&           ET logique
+  ||           OU logique
+  !            NON logique
+  and          ET logique (priorite basse)
+  or           OU logique (priorite basse)
+  xor          OU exclusif
+
+  4.5 Operateurs bit a bit
+  -----------------------------------------
+
+  Operateur    Description
+  ---------    --------------------
+  &            ET bit a bit
+  |            OU bit a bit
+  ^            XOR bit a bit
+  ~            NON bit a bit
+  <<           Decalage a gauche
+  >>           Decalage a droite
+
+  4.6 Operateurs de chaine
+  -----------------------------------------
+
+  Operateur    Description
+  ---------    --------------------
+  .            Concatenation
+  .=           Concatenation et affectation
+
+  4.7 Operateurs d'incrementation
+  -----------------------------------------
+
+  Operateur    Description
+  ---------    --------------------
+  ++$a         Pre-incrementation
+  $a++         Post-incrementation
+  --$a         Pre-decrementation
+  $a--         Post-decrementation
+
+  4.8 Operateurs speciaux
+  -----------------------------------------
+
+  Operateur    Description
+  ---------    ----------------------------------------
+  ?:           Operateur ternaire
+  ??           Coalescence nulle (PHP 7.0)
+  ?->          Appel de methode null-safe (PHP 8.0)
+  @            Suppression d'erreur
+  =>           Separateur clef/valeur dans un tableau
+  ->           Acces a un membre d'objet
+  ::           Operateur de resolution de portee
+  ...          Operateur de decomposition (splat)
+  instanceof   Verification de type d'objet
+
+==============================================================================
+  5. STRUCTURES DE CONTROLE
+==============================================================================
+
+  5.1 Conditions
+  -----------------------------------------
+
+  if / elseif / else :
+
+    if ($a > $b) {
+        echo "a est plus grand";
+    } elseif ($a == $b) {
+        echo "a est egal a b";
+    } else {
+        echo "b est plus grand";
+    }
+
+  switch :
+
+    switch ($couleur) {
+        case "rouge":
+            echo "Rouge";
+            break;
+        case "bleu":
+            echo "Bleu";
+            break;
+        default:
+            echo "Autre";
+            break;
+    }
+
+  match (PHP 8.0) :
+
+    $resultat = match ($code) {
+        200     => "OK",
+        404     => "Non trouve",
+        500     => "Erreur serveur",
+        default => "Inconnu",
+    };
+
+  5.2 Boucles
+  -----------------------------------------
+
+  while :
+
+    while ($i < 10) {
+        echo $i;
+        $i++;
+    }
+
+  do...while :
+
+    do {
+        echo $i;
+        $i++;
+    } while ($i < 10);
+
+  for :
+
+    for ($i = 0; $i < 10; $i++) {
+        echo $i;
+    }
+
+  foreach :
+
+    foreach ($tableau as $valeur) {
+        echo $valeur;
+    }
+
+    foreach ($tableau as $clef => $valeur) {
+        echo "$clef : $valeur";
+    }
+
+  5.3 Controle de boucle
+  -----------------------------------------
+
+    break;           Sortir de la boucle
+    break N;         Sortir de N niveaux de boucles
+    continue;        Passer a l'iteration suivante
+    continue N;      Passer a l'iteration suivante de N niveaux
+
+  5.4 Inclusion de fichiers
+  -----------------------------------------
+
+    include "fichier.php";         Inclure (avertissement si absent)
+    include_once "fichier.php";    Inclure une seule fois
+    require "fichier.php";         Inclure (erreur fatale si absent)
+    require_once "fichier.php";    Inclure une seule fois (erreur fatale)
+
+  5.5 Syntaxe alternative
+  -----------------------------------------
+
+  PHP supporte une syntaxe alternative pour les structures de
+  controle, utile dans les gabarits HTML :
+
+    if ($cond):
+        ...
+    elseif ($cond2):
+        ...
+    else:
+        ...
+    endif;
+
+    while ($cond):
+        ...
+    endwhile;
+
+    for (...):
+        ...
+    endfor;
+
+    foreach ($arr as $v):
+        ...
+    endforeach;
+
+    switch ($v):
+        ...
+    endswitch;
+
+==============================================================================
+  6. FONCTIONS
+==============================================================================
+
+  6.1 Declaration de fonction
+  -----------------------------------------
+
+    function nom($param1, $param2) {
+        // corps de la fonction
+        return $resultat;
+    }
+
+  6.2 Parametres par defaut
+  -----------------------------------------
+
+    function saluer($nom = "monde") {
+        echo "Bonjour $nom";
+    }
+
+  6.3 Declaration de type (type hints)
+  -----------------------------------------
+
+    function additionner(int $a, int $b): int {
+        return $a + $b;
+    }
+
+  Types acceptes pour les parametres et le retour :
+
+    int, float, string, bool, array, callable, iterable,
+    object, mixed, void, never, null, false, true,
+    self, parent, static, NomDeClasse, ?Type (nullable)
+
+  6.4 Types d'union et d'intersection (PHP 8.0 / 8.1)
+  -----------------------------------------
+
+    function traiter(int|string $valeur): int|false {
+        // ...
+    }
+
+    function filtrer(Iterator&Countable $collection): void {
+        // ...
+    }
+
+  6.5 Passage par reference
+  -----------------------------------------
+
+    function doubler(&$valeur) {
+        $valeur *= 2;
+    }
+
+    $x = 5;
+    doubler($x);    // $x vaut maintenant 10
+
+  6.6 Nombre variable d'arguments
+  -----------------------------------------
+
+    function somme(int ...$nombres): int {
+        return array_sum($nombres);
+    }
+
+    somme(1, 2, 3);    // 6
+
+  6.7 Arguments nommes (PHP 8.0)
+  -----------------------------------------
+
+    function creerUtilisateur(string $nom, int $age, string $ville) {
+        // ...
+    }
+
+    creerUtilisateur(nom: "Alice", age: 30, ville: "Paris");
+
+  6.8 Fonctions anonymes (closures)
+  -----------------------------------------
+
+    $saluer = function($nom) {
+        echo "Bonjour $nom";
+    };
+
+    $saluer("Alice");
+
+  Capture de variables :
+
+    $message = "Bonjour";
+    $fn = function($nom) use ($message) {
+        echo "$message $nom";
+    };
+
+  6.9 Fonctions flechees (PHP 7.4)
+  -----------------------------------------
+
+    $double = fn($x) => $x * 2;
+
+  Les fonctions flechees capturent automatiquement les variables
+  du scope parent par valeur.
+
+  6.10 Fonctions de premiere classe (PHP 8.1)
+  -----------------------------------------
+
+    $fn = strlen(...);
+    echo $fn("test");    // 4
+
+==============================================================================
+  7. CHAINES DE CARACTERES
+==============================================================================
+
+  7.1 Types de chaines
+  -----------------------------------------
+
+  Guillemets simples (pas d'interpolation) :
+
+    $s = 'Texte litteral avec \'apostrophe\'';
+
+  Guillemets doubles (interpolation de variables) :
+
+    $nom = "PHP";
+    $s = "Bonjour $nom";
+    $s = "Version {$tableau['clef']}";
+
+  Heredoc (interpolation) :
+
+    $texte = <<<EOT
+    Texte sur
+    plusieurs lignes avec $variable
+    EOT;
+
+  Nowdoc (pas d'interpolation) :
+
+    $texte = <<<'EOT'
+    Texte litteral sur
+    plusieurs lignes
+    EOT;
+
+  7.2 Fonctions de chaines principales
+  -----------------------------------------
+
+  Fonction             Description
+  ---------------      -------------------------------------------
+  strlen($s)           Longueur de la chaine
+  strtolower($s)       Convertir en minuscules
+  strtoupper($s)       Convertir en majuscules
+  trim($s)             Supprimer les espaces en debut et fin
+  ltrim($s)            Supprimer les espaces en debut
+  rtrim($s)            Supprimer les espaces en fin
+  substr($s, $d, $l)   Extraire une sous-chaine
+  strpos($s, $c)       Position d'une sous-chaine
+  str_replace($c,$r,$s) Remplacer dans une chaine
+  str_contains($s,$c)  Verifier si contient (PHP 8.0)
+  str_starts_with($s,$p) Verifier le debut (PHP 8.0)
+  str_ends_with($s,$p)   Verifier la fin (PHP 8.0)
+  explode($d, $s)      Decouper en tableau
+  implode($d, $a)      Joindre un tableau en chaine
+  sprintf($fmt, ...)   Formatage de chaine
+  number_format($n)    Formatage de nombre
+  str_repeat($s, $n)   Repeter une chaine
+  str_pad($s,$l,$c,$t) Completer une chaine
+  ucfirst($s)          Premiere lettre en majuscule
+  lcfirst($s)          Premiere lettre en minuscule
+  ucwords($s)          Premiere lettre de chaque mot en majuscule
+  nl2br($s)            Convertir les retours a la ligne en <br>
+  htmlspecialchars($s) Echapper les caracteres HTML
+  htmlentities($s)     Convertir en entites HTML
+  strip_tags($s)       Supprimer les balises HTML
+  md5($s)              Hachage MD5
+  sha1($s)             Hachage SHA1
+  base64_encode($s)    Encodage Base64
+  base64_decode($s)    Decodage Base64
+  urlencode($s)        Encodage URL
+  urldecode($s)        Decodage URL
+  json_encode($v)      Encodage JSON
+  json_decode($s)      Decodage JSON
+
+  7.3 Expressions regulieres (PCRE)
+  -----------------------------------------
+
+    preg_match($motif, $sujet, $resultats)
+    preg_match_all($motif, $sujet, $resultats)
+    preg_replace($motif, $remplacement, $sujet)
+    preg_split($motif, $sujet)
+
+  Exemple :
+
+    if (preg_match('/^[a-z]+$/i', $chaine)) {
+        echo "Que des lettres";
+    }
+
+==============================================================================
+  8. TABLEAUX
+==============================================================================
+
+  8.1 Creation de tableaux
+  -----------------------------------------
+
+  Tableaux indexes :
+
+    $fruits = ["pomme", "banane", "cerise"];
+    $fruits = array("pomme", "banane", "cerise");
+
+  Tableaux associatifs :
+
+    $personne = [
+        "nom"  => "Alice",
+        "age"  => 30,
+        "ville" => "Paris"
+    ];
+
+  8.2 Acces aux elements
+  -----------------------------------------
+
+    $fruits[0]             Premier element
+    $personne["nom"]       Acces par clef
+    $fruits[] = "orange";  Ajouter un element
+
+  8.3 Decomposition de tableaux
+  -----------------------------------------
+
+    [$a, $b, $c] = [1, 2, 3];
+    ["nom" => $nom, "age" => $age] = $personne;
+    [, , $troisieme] = $tableau;    // Ignorer des elements
+
+  8.4 Operateur de decomposition (spread)
+  -----------------------------------------
+
+    $a = [1, 2, 3];
+    $b = [0, ...$a, 4];    // [0, 1, 2, 3, 4]
+
+  8.5 Fonctions de tableaux principales
+  -----------------------------------------
+
+  Fonction                  Description
+  ----------------------    -------------------------------------------
+  count($a)                 Nombre d'elements
+  sizeof($a)                Alias de count
+  array_push($a, $v)        Ajouter a la fin
+  array_pop($a)             Retirer le dernier element
+  array_shift($a)           Retirer le premier element
+  array_unshift($a, $v)     Ajouter au debut
+  array_merge($a, $b)       Fusionner des tableaux
+  array_slice($a, $d, $l)   Extraire une portion
+  array_splice($a,$d,$l,$r) Remplacer une portion
+  array_keys($a)            Obtenir les clefs
+  array_values($a)          Obtenir les valeurs
+  array_key_exists($k, $a)  Verifier si une clef existe
+  in_array($v, $a)          Verifier si une valeur existe
+  array_search($v, $a)      Chercher une valeur
+  array_unique($a)          Supprimer les doublons
+  array_reverse($a)         Inverser l'ordre
+  array_flip($a)            Echanger clefs et valeurs
+  array_map($fn, $a)        Appliquer une fonction
+  array_filter($a, $fn)     Filtrer les elements
+  array_reduce($a, $fn)     Reduire a une seule valeur
+  array_walk($a, $fn)       Appliquer une fonction (en place)
+  array_column($a, $col)    Extraire une colonne
+  array_combine($k, $v)     Creer depuis clefs et valeurs
+  sort($a)                  Trier par valeur
+  rsort($a)                 Trier par valeur (decroissant)
+  asort($a)                 Trier par valeur (conserver clefs)
+  arsort($a)                Trier par valeur decroissant (clefs)
+  ksort($a)                 Trier par clef
+  krsort($a)                Trier par clef (decroissant)
+  usort($a, $fn)            Trier avec fonction personnalisee
+  array_chunk($a, $n)       Decouper en sous-tableaux
+  array_fill($d, $n, $v)    Remplir un tableau
+  array_diff($a, $b)        Difference entre tableaux
+  array_intersect($a, $b)   Intersection de tableaux
+  compact('var1', 'var2')   Creer un tableau depuis des variables
+  extract($a)               Creer des variables depuis un tableau
+  list($a, $b) = $arr       Affecter depuis un tableau
+
+==============================================================================
+  9. CLASSES ET OBJETS
+==============================================================================
+
+  9.1 Declaration de classe
+  -----------------------------------------
+
+    class NomDeClasse {
+        // Proprietes
+        public string $nom;
+        protected int $age;
+        private float $solde;
+
+        // Constante de classe
+        public const VERSION = "1.0";
+
+        // Constructeur
+        public function __construct(string $nom, int $age) {
+            $this->nom = $nom;
+            $this->age = $age;
+        }
+
+        // Methode
+        public function saluer(): string {
+            return "Bonjour, je suis {$this->nom}";
+        }
+    }
+
+  9.2 Promotion de proprietes du constructeur (PHP 8.0)
+  -----------------------------------------
+
+    class Utilisateur {
+        public function __construct(
+            public string $nom,
+            protected int $age,
+            private string $email = ""
+        ) {}
+    }
+
+  9.3 Instanciation
+  -----------------------------------------
+
+    $objet = new NomDeClasse("Alice", 30);
+    echo $objet->nom;
+    echo $objet->saluer();
+    echo NomDeClasse::VERSION;
+
+  9.4 Heritage
+  -----------------------------------------
+
+    class Animal {
+        public function __construct(
+            protected string $nom
+        ) {}
+
+        public function parler(): string {
+            return "...";
+        }
+    }
+
+    class Chat extends Animal {
+        public function parler(): string {
+            return "Miaou";
+        }
+    }
+
+  PHP ne supporte que l'heritage simple (une seule classe parente).
+  Le mot-clef final empeche l'heritage ou la surcharge :
+
+    final class ClasseFinale { }
+    class Base {
+        final public function methode() { }
+    }
+
+  9.5 Classes et methodes abstraites
+  -----------------------------------------
+
+    abstract class Forme {
+        abstract public function aire(): float;
+
+        public function decrire(): string {
+            return "Je suis une forme d'aire " . $this->aire();
+        }
+    }
+
+    class Cercle extends Forme {
+        public function __construct(private float $rayon) {}
+
+        public function aire(): float {
+            return M_PI * $this->rayon ** 2;
+        }
+    }
+
+  9.6 Interfaces
+  -----------------------------------------
+
+    interface Affichable {
+        public function afficher(): string;
+    }
+
+    interface Serialisable {
+        public function serialiser(): string;
+    }
+
+    class Document implements Affichable, Serialisable {
+        public function afficher(): string { /* ... */ }
+        public function serialiser(): string { /* ... */ }
+    }
+
+  Une classe peut implementer plusieurs interfaces.
+
+  9.7 Traits
+  -----------------------------------------
+
+    trait Horodatable {
+        public DateTime $creeA;
+
+        public function initialiserDate(): void {
+            $this->creeA = new DateTime();
+        }
+    }
+
+    trait Journalisable {
+        public function journal(string $msg): void {
+            echo "[LOG] $msg";
+        }
+    }
+
+    class Commande {
+        use Horodatable, Journalisable;
+    }
+
+  Resolution de conflit entre traits :
+
+    class MaClasse {
+        use TraitA, TraitB {
+            TraitA::methode insteadof TraitB;
+            TraitB::methode as methodeB;
+        }
+    }
+
+  9.8 Visibilite
+  -----------------------------------------
+
+  Modificateur    Acces
+  ------------    -------------------------------------------
+  public          Accessible de partout
+  protected       Accessible dans la classe et ses enfants
+  private         Accessible uniquement dans la classe
+  readonly        Propriete en lecture seule (PHP 8.1)
+
+  9.9 Proprietes et methodes statiques
+  -----------------------------------------
+
+    class Compteur {
+        private static int $nombre = 0;
+
+        public static function incrementer(): void {
+            self::$nombre++;
+        }
+
+        public static function obtenir(): int {
+            return self::$nombre;
+        }
+    }
+
+    Compteur::incrementer();
+    echo Compteur::obtenir();
+
+  9.10 Methodes magiques
+  -----------------------------------------
+
+  Methode              Declenchee quand
+  ----------------     -------------------------------------------
+  __construct()        L'objet est cree
+  __destruct()         L'objet est detruit
+  __get($nom)          Acces a une propriete inaccessible
+  __set($nom, $val)    Ecriture sur une propriete inaccessible
+  __isset($nom)        isset() sur une propriete inaccessible
+  __unset($nom)        unset() sur une propriete inaccessible
+  __call($nom, $args)  Appel d'une methode inaccessible
+  __callStatic($n,$a)  Appel statique d'une methode inaccessible
+  __toString()         Conversion en chaine
+  __invoke(...)        L'objet est utilise comme fonction
+  __clone()            L'objet est clone
+  __debugInfo()        var_dump() est appele sur l'objet
+  __serialize()        Serialisation de l'objet
+  __unserialize($d)    Deserialisation de l'objet
+  __sleep()            Avant serialisation (obsolete)
+  __wakeup()           Apres deserialisation (obsolete)
+
+  9.11 Enumerations (PHP 8.1)
+  -----------------------------------------
+
+  Enumeration simple (sans valeur) :
+
+    enum Couleur {
+        case Rouge;
+        case Vert;
+        case Bleu;
+    }
+
+    $c = Couleur::Rouge;
+
+  Enumeration avec valeur (backed enum) :
+
+    enum Statut: string {
+        case Actif = "actif";
+        case Inactif = "inactif";
+        case Suspendu = "suspendu";
+    }
+
+    $s = Statut::Actif;
+    echo $s->value;             // "actif"
+    $s = Statut::from("actif"); // Statut::Actif
+
+  Les enumerations peuvent implementer des interfaces et utiliser
+  des traits. Elles ne peuvent pas etre instanciees avec new.
+
+  9.12 Classes en lecture seule (PHP 8.2)
+  -----------------------------------------
+
+    readonly class Point {
+        public function __construct(
+            public float $x,
+            public float $y
+        ) {}
+    }
+
+  Toutes les proprietes sont automatiquement readonly.
+
+==============================================================================
+  10. ESPACES DE NOMS (NAMESPACES)
+==============================================================================
+
+  10.1 Declaration
+  -----------------------------------------
+
+    namespace App\Models;
+
+    class Utilisateur {
+        // ...
+    }
+
+  10.2 Utilisation
+  -----------------------------------------
+
+    use App\Models\Utilisateur;
+    use App\Models\Utilisateur as User;
+    use App\Services\{ServiceA, ServiceB};
+
+    use function App\Helpers\formater;
+    use const App\Config\VERSION;
+
+  10.3 Resolution de noms
+  -----------------------------------------
+
+  Type               Exemple
+  ------             ----------------------------------
+  Non qualifie       Classe             (resolution relative)
+  Qualifie           SousEspace\Classe  (resolution relative)
+  Pleinement         \App\Models\Classe (resolution absolue)
+  qualifie
+
+==============================================================================
+  11. GESTION DES ERREURS ET EXCEPTIONS
+==============================================================================
+
+  11.1 Exceptions
+  -----------------------------------------
+
+    try {
+        if ($diviseur == 0) {
+            throw new DivisionByZeroError("Division par zero");
+        }
+        $resultat = $dividende / $diviseur;
+    } catch (DivisionByZeroError $e) {
+        echo "Erreur : " . $e->getMessage();
+    } catch (TypeError | ValueError $e) {
+        echo "Erreur de type : " . $e->getMessage();
+    } finally {
+        echo "Bloc toujours execute";
+    }
+
+  11.2 Hierarchie des exceptions
+  -----------------------------------------
+
+    Throwable (interface)
+    +-- Error
+    |   +-- ArithmeticError
+    |   |   +-- DivisionByZeroError
+    |   +-- TypeError
+    |   +-- ValueError
+    |   +-- UnhandledMatchError
+    |   +-- FiberError
+    +-- Exception
+        +-- RuntimeException
+        |   +-- OverflowException
+        |   +-- UnderflowException
+        |   +-- OutOfBoundsException
+        +-- LogicException
+        |   +-- InvalidArgumentException
+        |   +-- LengthException
+        |   +-- OutOfRangeException
+        |   +-- BadMethodCallException
+        |   +-- DomainException
+        +-- BadFunctionCallException
+
+  11.3 Exceptions personnalisees
+  -----------------------------------------
+
+    class MonException extends RuntimeException {
+        public function __construct(
+            string $message,
+            private array $contexte = [],
+            int $code = 0,
+            ?\Throwable $precedente = null
+        ) {
+            parent::__construct($message, $code, $precedente);
+        }
+
+        public function getContexte(): array {
+            return $this->contexte;
+        }
+    }
+
+  11.4 Gestion des erreurs
+  -----------------------------------------
+
+    error_reporting(E_ALL);
+    set_error_handler(function($niveau, $message, $fichier, $ligne) {
+        throw new ErrorException($message, 0, $niveau, $fichier, $ligne);
+    });
+
+    set_exception_handler(function(Throwable $e) {
+        echo "Exception non capturee : " . $e->getMessage();
+    });
+
+==============================================================================
+  12. FONCTIONS INTEGREES PRINCIPALES
+==============================================================================
+
+  12.1 Fonctions mathematiques
+  -----------------------------------------
+
+  Fonction           Description
+  ---------------    -------------------------------------------
+  abs($n)            Valeur absolue
+  ceil($n)           Arrondi superieur
+  floor($n)          Arrondi inferieur
+  round($n, $p)      Arrondi a la precision donnee
+  max($a, $b)        Maximum
+  min($a, $b)        Minimum
+  pow($b, $e)        Puissance
+  sqrt($n)           Racine carree
+  log($n)            Logarithme naturel
+  log10($n)          Logarithme base 10
+  rand($min, $max)   Nombre aleatoire
+  mt_rand($min,$max) Nombre aleatoire (Mersenne Twister)
+  random_int($m,$n)  Nombre aleatoire cryptographique
+  pi()               Valeur de Pi
+  fmod($a, $b)       Modulo flottant
+  intdiv($a, $b)     Division entiere
+  M_PI               Constante Pi
+  M_E                Constante e
+
+  12.2 Fonctions de date et heure
+  -----------------------------------------
+
+  Fonction                Description
+  ---------------------   -------------------------------------------
+  time()                  Timestamp Unix actuel
+  date($format, $t)       Formater une date
+  mktime(h,m,s,M,j,A)    Creer un timestamp
+  strtotime($s)           Convertir une chaine en timestamp
+  microtime(true)         Temps en microsecondes
+  checkdate($m, $j, $a)   Verifier une date
+
+  Classe DateTime :
+
+    $dt = new DateTime("2024-01-15");
+    $dt = new DateTime("now");
+    echo $dt->format("Y-m-d H:i:s");
+    $dt->modify("+1 day");
+    $diff = $dt1->diff($dt2);
+
+  Classe DateTimeImmutable :
+
+    $dt = new DateTimeImmutable("now");
+    $dt2 = $dt->modify("+1 hour");   // $dt n'est pas modifie
+
+  12.3 Fonctions de fichiers
+  -----------------------------------------
+
+  Fonction                    Description
+  -------------------------   -------------------------------------------
+  file_get_contents($f)       Lire un fichier entier
+  file_put_contents($f, $d)   Ecrire dans un fichier
+  file($f)                    Lire un fichier en tableau de lignes
+  fopen($f, $mode)            Ouvrir un fichier
+  fclose($h)                  Fermer un fichier
+  fread($h, $len)             Lire des octets
+  fwrite($h, $data)           Ecrire des octets
+  fgets($h)                   Lire une ligne
+  feof($h)                    Verifier la fin de fichier
+  fseek($h, $pos)             Deplacer le curseur
+  ftell($h)                   Position du curseur
+  rewind($h)                  Remettre le curseur au debut
+  file_exists($f)             Verifier si le fichier existe
+  is_file($f)                 Verifier si c'est un fichier
+  is_dir($f)                  Verifier si c'est un repertoire
+  mkdir($dir, $mode)          Creer un repertoire
+  rmdir($dir)                 Supprimer un repertoire
+  unlink($f)                  Supprimer un fichier
+  rename($ancien, $nouveau)   Renommer/deplacer
+  copy($source, $dest)        Copier un fichier
+  glob($motif)                Rechercher des fichiers par motif
+  filesize($f)                Taille du fichier
+  filetype($f)                Type du fichier
+  pathinfo($f)                Informations sur le chemin
+  basename($f)                Nom du fichier
+  dirname($f)                 Repertoire du fichier
+  realpath($f)                Chemin absolu resolu
+  tempnam($dir, $prefix)      Creer un fichier temporaire
+  scandir($dir)               Lister le contenu d'un repertoire
+
+  Modes d'ouverture :
+
+    "r"    Lecture seule
+    "w"    Ecriture seule (ecrase)
+    "a"    Ecriture en ajout
+    "x"    Creation et ecriture (erreur si existe)
+    "r+"   Lecture et ecriture
+    "w+"   Lecture et ecriture (ecrase)
+    "a+"   Lecture et ecriture en ajout
+    "b"    Mode binaire (ajoute a un autre mode)
+
+  12.4 Fonctions de sortie
+  -----------------------------------------
+
+    echo $expr;              Afficher une ou plusieurs chaines
+    print $expr;             Afficher une chaine (retourne 1)
+    var_dump($var);          Afficher type et valeur
+    print_r($var);           Afficher de maniere lisible
+    var_export($var, true);  Retourner sous forme de code PHP
+
+==============================================================================
+  13. PROGRAMMATION ORIENTEE WEB
+==============================================================================
+
+  13.1 En-tetes HTTP
+  -----------------------------------------
+
+    header("Content-Type: text/html; charset=UTF-8");
+    header("Location: /nouvelle-page.php");
+    header("HTTP/1.1 404 Not Found");
+    http_response_code(200);
+
+  13.2 Sessions
+  -----------------------------------------
+
+    session_start();
+    $_SESSION["utilisateur"] = "Alice";
+    echo $_SESSION["utilisateur"];
+    session_destroy();
+
+  13.3 Cookies
+  -----------------------------------------
+
+    setcookie("nom", "valeur", time() + 3600, "/");
+    echo $_COOKIE["nom"];
+
+  13.4 Recuperation de donnees
+  -----------------------------------------
+
+    // Donnees GET (URL : ?nom=Alice&age=30)
+    $nom = $_GET["nom"];
+
+    // Donnees POST (formulaire)
+    $nom = $_POST["nom"];
+
+    // Filtrage et validation
+    $email = filter_input(INPUT_POST, "email", FILTER_VALIDATE_EMAIL);
+    $age = filter_var($_POST["age"], FILTER_VALIDATE_INT);
+
+  13.5 Envoi de fichiers
+  -----------------------------------------
+
+    // Fichier envoye via formulaire (enctype="multipart/form-data")
+    $fichier = $_FILES["document"];
+    $fichier["name"]       // Nom original
+    $fichier["type"]       // Type MIME
+    $fichier["size"]       // Taille en octets
+    $fichier["tmp_name"]   // Chemin temporaire
+    $fichier["error"]      // Code d'erreur
+
+    move_uploaded_file($fichier["tmp_name"], "/chemin/destination");
+
+==============================================================================
+  14. FONCTIONS AVANCEES
+==============================================================================
+
+  14.1 Generateurs
+  -----------------------------------------
+
+    function fibonacci(): Generator {
+        [$a, $b] = [0, 1];
+        while (true) {
+            yield $a;
+            [$a, $b] = [$b, $a + $b];
+        }
+    }
+
+    foreach (fibonacci() as $nombre) {
+        if ($nombre > 100) break;
+        echo $nombre . " ";
+    }
+
+    yield $clef => $valeur;    Retourner une paire clef/valeur
+    yield from $iterable;      Deleguer a un autre generateur
+
+  14.2 Fibres (PHP 8.1)
+  -----------------------------------------
+
+    $fibre = new Fiber(function (): void {
+        $valeur = Fiber::suspend("suspendu");
+        echo "Recu : $valeur";
+    });
+
+    $resultat = $fibre->start();     // "suspendu"
+    $fibre->resume("bonjour");       // "Recu : bonjour"
+
+  14.3 Attributs (PHP 8.0)
+  -----------------------------------------
+
+    #[Attribute]
+    class Route {
+        public function __construct(
+            public string $chemin,
+            public string $methode = "GET"
+        ) {}
+    }
+
+    #[Route("/utilisateurs", methode: "POST")]
+    function creerUtilisateur() { /* ... */ }
+
+    // Lire les attributs par reflexion
+    $ref = new ReflectionFunction('creerUtilisateur');
+    $attrs = $ref->getAttributes(Route::class);
+    $route = $attrs[0]->newInstance();
+
+  14.4 Clonage d'objets
+  -----------------------------------------
+
+    $copie = clone $objet;
+
+  La methode magique __clone() est appelee apres le clonage
+  pour permettre la copie profonde.
+
+  14.5 Comparaison d'objets
+  -----------------------------------------
+
+    $a == $b     Meme classe et memes proprietes
+    $a === $b    Meme instance (meme reference)
+
+  14.6 Chargement automatique (Autoloading)
+  -----------------------------------------
+
+    spl_autoload_register(function (string $classe) {
+        $fichier = __DIR__ . '/' . str_replace('\\', '/', $classe) . '.php';
+        if (file_exists($fichier)) {
+            require $fichier;
+        }
+    });
+
+  En pratique, le standard PSR-4 et Composer sont utilises :
+
+    // composer.json
+    {
+        "autoload": {
+            "psr-4": {
+                "App\\": "src/"
+            }
+        }
+    }
+
+==============================================================================
+  15. BASE DE DONNEES (PDO)
+==============================================================================
+
+  15.1 Connexion
+  -----------------------------------------
+
+    $pdo = new PDO(
+        "mysql:host=localhost;dbname=mabase;charset=utf8mb4",
+        "utilisateur",
+        "motdepasse",
+        [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            PDO::ATTR_EMULATE_PREPARES => false,
+        ]
+    );
+
+  15.2 Requetes preparees
+  -----------------------------------------
+
+    // Parametres nommes
+    $stmt = $pdo->prepare("SELECT * FROM users WHERE id = :id");
+    $stmt->execute(["id" => 42]);
+    $user = $stmt->fetch();
+
+    // Parametres positionnels
+    $stmt = $pdo->prepare("SELECT * FROM users WHERE age > ?");
+    $stmt->execute([18]);
+    $users = $stmt->fetchAll();
+
+  15.3 Insertion et modification
+  -----------------------------------------
+
+    $stmt = $pdo->prepare(
+        "INSERT INTO users (nom, email) VALUES (:nom, :email)"
+    );
+    $stmt->execute(["nom" => "Alice", "email" => "alice@exemple.fr"]);
+    $id = $pdo->lastInsertId();
+
+  15.4 Transactions
+  -----------------------------------------
+
+    $pdo->beginTransaction();
+    try {
+        $pdo->exec("UPDATE comptes SET solde = solde - 100 WHERE id = 1");
+        $pdo->exec("UPDATE comptes SET solde = solde + 100 WHERE id = 2");
+        $pdo->commit();
+    } catch (Exception $e) {
+        $pdo->rollBack();
+        throw $e;
+    }
+
+==============================================================================
+  16. MOTS-CLEFS RESERVES
+==============================================================================
+
+  abstract    and          array       as           break
+  callable    case         catch       class        clone
+  const       continue     declare     default      do
+  echo        else         elseif      empty        enddeclare
+  endfor      endforeach   endif       endswitch    endwhile
+  enum        eval         exit        extends      false
+  final       finally      fn          for          foreach
+  function    global       goto        if           implements
+  include     include_once instanceof  insteadof    interface
+  isset       list         match       namespace    new
+  null        or           print       private      protected
+  public      readonly     require     require_once return
+  static      switch       throw       trait        true
+  try         unset        use         var          while
+  xor         yield        yield from
+
+==============================================================================
+  17. CONVENTIONS ET STANDARDS
+==============================================================================
+
+  17.1 Standards PSR (PHP-FIG)
+  -----------------------------------------
+
+  PSR-1    Standard de codage de base
+  PSR-4    Chargement automatique (Autoloading)
+  PSR-7    Interfaces de messages HTTP
+  PSR-11   Interface de conteneur
+  PSR-12   Guide de style de codage etendu
+  PSR-15   Gestionnaires de requetes HTTP serveur
+
+  17.2 Conventions de nommage
+  -----------------------------------------
+
+  Element              Convention          Exemple
+  ----------------     ----------------    ----------------
+  Classes              PascalCase          MaClasse
+  Methodes/Fonctions   camelCase           maMethode()
+  Variables            camelCase           $maVariable
+  Constantes           MAJUSCULES          MA_CONSTANTE
+  Espaces de noms      PascalCase          App\Models
+
+  17.3 Outils courants
+  -----------------------------------------
+
+  Outil                Description
+  ----------------     -------------------------------------------
+  Composer             Gestionnaire de dependances
+  PHPUnit              Framework de tests unitaires
+  PHPStan / Psalm      Analyse statique
+  PHP-CS-Fixer         Correction automatique de style
+  Xdebug               Debogueur et profileur
+
+==============================================================================
+  18. REFERENCE DES FONCTIONS PHP PAR VERSION
+==============================================================================
+
+  Cette section liste les fonctions integrees de PHP classees par la
+  version dans laquelle elles ont ete introduites. Chaque fonction est
+  accompagnee d'une breve description.
+
+  18.1 Fonctions introduites en PHP 3
+  -----------------------------------------
+
+  Fonction                          Description
+  --------------------------------  -------------------------------------------
+  abs                               Valeur absolue
+  acos                              Arc cosinus
+  addcslashes                       Ajouter des barres obliques inverses C
+  addslashes                        Ajouter des barres obliques inverses
+  array                             Creer un tableau
+  array_count_values                Compter les valeurs d'un tableau
+  array_flip                        Echanger les clefs et les valeurs
+  array_keys                        Retourner les clefs d'un tableau
+  array_merge                       Fusionner des tableaux
+  array_pad                         Completer un tableau avec une valeur
+  array_pop                         Retirer le dernier element
+  array_push                        Ajouter des elements a la fin
+  array_reverse                     Inverser l'ordre des elements
+  array_shift                       Retirer le premier element
+  array_slice                       Extraire une portion
+  array_splice                      Remplacer une portion
+  array_unique                      Supprimer les doublons
+  array_unshift                     Ajouter des elements au debut
+  array_values                      Retourner les valeurs
+  array_walk                        Appliquer une fonction a chaque element
+  arsort                            Trier par valeur decroissante (clefs)
+  asin                              Arc sinus
+  asort                             Trier par valeur (conserver les clefs)
+  atan                              Arc tangente
+  atan2                             Arc tangente de deux variables
+  base64_decode                     Decoder en Base64
+  base64_encode                     Encoder en Base64
+  base_convert                      Convertir un nombre entre bases
+  basename                          Nom de base d'un chemin
+  bin2hex                           Convertir binaire en hexadecimal
+  bindec                            Convertir binaire en decimal
+  ceil                              Arrondi superieur
+  checkdate                         Verifier une date
+  checkdnsrr                        Verifier un enregistrement DNS
+  chgrp                             Changer le groupe d'un fichier
+  chmod                             Changer les permissions
+  chop                              Alias de rtrim
+  chown                             Changer le proprietaire
+  chr                               Retourner un caractere par son code ASCII
+  chunk_split                       Decouper une chaine en morceaux
+  clearstatcache                    Vider le cache de stat
+  closedir                          Fermer un descripteur de repertoire
+  closelog                          Fermer la connexion au journal systeme
+  compact                           Creer un tableau depuis des variables
+  copy                              Copier un fichier
+  cos                               Cosinus
+  count                             Compter les elements
+  crypt                             Hachage de chaine (unidirectionnel)
+  current                           Element courant d'un tableau
+  date                              Formater une date/heure locale
+  dba_close                         Fermer une base de donnees DBA
+  dba_delete                        Supprimer une entree DBA
+  dba_exists                        Verifier si une clef existe dans DBA
+  dba_fetch                         Lire une entree DBA
+  dba_firstkey                      Premiere clef DBA
+  dba_insert                        Inserer une entree DBA
+  dba_nextkey                       Clef suivante DBA
+  dba_open                          Ouvrir une base DBA
+  dba_optimize                      Optimiser une base DBA
+  dba_replace                       Remplacer une entree DBA
+  dba_sync                          Synchroniser une base DBA
+  dbmclose                          Fermer une base DBM
+  dbmdelete                         Supprimer d'une base DBM
+  dbmexists                         Verifier l'existence dans une base DBM
+  dbmfetch                          Lire depuis une base DBM
+  dbmfirstkey                       Premiere clef d'une base DBM
+  dbminsert                         Inserer dans une base DBM
+  dbmnextkey                        Clef suivante d'une base DBM
+  dbmopen                           Ouvrir une base DBM
+  dbmreplace                        Remplacer dans une base DBM
+  decbin                            Convertir decimal en binaire
+  dechex                            Convertir decimal en hexadecimal
+  decoct                            Convertir decimal en octal
+  define                            Definir une constante
+  defined                           Verifier si une constante existe
+  die                               Afficher un message et terminer
+  dir                               Classe de repertoire
+  dirname                           Repertoire parent d'un chemin
+  dl                                Charger une extension PHP
+  doubleval                         Alias de floatval
+  each                              Paire clef/valeur courante (obsolete)
+  echo                              Afficher une ou plusieurs chaines
+  empty                             Verifier si une variable est vide
+  end                               Dernier element d'un tableau
+  ereg                              Expression reguliere POSIX (obsolete)
+  ereg_replace                      Remplacement POSIX (obsolete)
+  eregi                             Expression reguliere POSIX insensible
+  eregi_replace                     Remplacement POSIX insensible
+  error_log                         Envoyer un message d'erreur
+  error_reporting                   Definir le niveau de rapport d'erreurs
+  escapeshellarg                    Echapper un argument shell
+  escapeshellcmd                    Echapper une commande shell
+  eval                              Evaluer une chaine comme code PHP
+  exec                              Executer une commande externe
+  exit                              Afficher un message et terminer
+  exp                               Exponentielle
+  explode                           Decouper une chaine en tableau
+  extract                           Importer des variables depuis un tableau
+  fclose                            Fermer un fichier
+  feof                              Verifier la fin de fichier
+  fgetc                             Lire un caractere
+  fgets                             Lire une ligne
+  fgetss                            Lire une ligne et supprimer les balises
+  file                              Lire un fichier en tableau de lignes
+  file_exists                       Verifier si un fichier existe
+  fileatime                         Date du dernier acces
+  filectime                         Date de changement d'inode
+  filegroup                         Groupe du fichier
+  fileinode                         Numero d'inode
+  filemtime                         Date de derniere modification
+  fileowner                         Proprietaire du fichier
+  fileperms                         Permissions du fichier
+  filesize                          Taille du fichier
+  filetype                          Type du fichier
+  flock                             Verrou consultatif sur un fichier
+  floor                             Arrondi inferieur
+  flush                             Vider le tampon de sortie
+  fopen                             Ouvrir un fichier ou une URL
+  fpassthru                         Afficher le reste d'un fichier
+  fputs                             Alias de fwrite
+  fread                             Lire des octets depuis un fichier
+  fseek                             Deplacer le curseur
+  fsockopen                         Ouvrir une connexion reseau
+  ftell                             Position du curseur
+  ftruncate                         Tronquer un fichier
+  function_exists                   Verifier si une fonction existe
+  fwrite                            Ecrire dans un fichier
+  getallheaders                     Obtenir les en-tetes HTTP
+  getdate                           Obtenir des informations de date
+  getenv                            Obtenir une variable d'environnement
+  gethostbyaddr                     Nom d'hote par adresse IP
+  gethostbyname                     Adresse IP par nom d'hote
+  gethostbynamel                    Liste d'adresses IP par nom d'hote
+  getimagesize                      Dimensions d'une image
+  getlastmod                        Date de derniere modification du script
+  getmxrr                           Obtenir les enregistrements MX
+  getmyinode                        Inode du script courant
+  getmypid                          PID du processus PHP
+  getmyuid                          UID du proprietaire du script
+  getprotobyname                    Numero de protocole par nom
+  getprotobynumber                  Nom de protocole par numero
+  getrandmax                        Valeur maximale de rand
+  getrusage                         Utilisation des ressources
+  getservbyname                     Numero de port par service
+  getservbyport                     Nom de service par port
+  gettext                           Traduction d'un message
+  gettype                           Type d'une variable
+  gmdate                            Formater une date/heure GMT
+  gmmktime                          Timestamp UNIX pour une date GMT
+  gmstrftime                        Formater une date GMT selon la locale
+  header                            Envoyer un en-tete HTTP
+  hexdec                            Convertir hexadecimal en decimal
+  htmlentities                      Convertir en entites HTML
+  htmlspecialchars                   Echapper les caracteres speciaux HTML
+  imap_append                       Ajouter un message IMAP
+  imap_base64                       Decoder en Base64 (IMAP)
+  imap_body                         Corps d'un message IMAP
+  imap_check                        Verifier la boite IMAP
+  imap_close                        Fermer une connexion IMAP
+  imap_createmailbox                Creer une boite IMAP
+  imap_delete                       Marquer un message pour suppression
+  imap_deletemailbox                Supprimer une boite IMAP
+  imap_expunge                      Purger les messages marques
+  imap_fetchbody                    Lire une partie d'un message
+  imap_fetchstructure               Structure d'un message
+  imap_header                       En-tete d'un message (alias)
+  imap_headers                      Liste des en-tetes de messages
+  imap_listmailbox                  Liste des boites aux lettres
+  imap_mail_copy                    Copier un message
+  imap_mail_move                    Deplacer un message
+  imap_num_msg                      Nombre de messages
+  imap_num_recent                   Nombre de messages recents
+  imap_open                         Ouvrir une connexion IMAP
+  imap_ping                         Verifier la connexion IMAP
+  imap_renamemailbox                Renommer une boite IMAP
+  imap_reopen                       Rouvrir une connexion IMAP
+  imap_subscribe                    S'abonner a une boite
+  imap_undelete                     Annuler la suppression
+  imap_unsubscribe                  Se desabonner d'une boite
+  implode                           Joindre des elements en chaine
+  in_array                          Verifier si une valeur existe
+  intval                            Convertir en entier
+  is_array                          Verifier si c'est un tableau
+  is_bool                           Verifier si c'est un booleen
+  is_dir                            Verifier si c'est un repertoire
+  is_double                         Alias de is_float
+  is_executable                     Verifier si executable
+  is_file                           Verifier si c'est un fichier
+  is_float                          Verifier si c'est un flottant
+  is_int                            Verifier si c'est un entier
+  is_integer                        Alias de is_int
+  is_link                           Verifier si c'est un lien symbolique
+  is_long                           Alias de is_int
+  is_object                         Verifier si c'est un objet
+  is_readable                       Verifier si lisible
+  is_real                           Alias de is_float
+  is_string                         Verifier si c'est une chaine
+  is_writeable                      Verifier si accessible en ecriture
+  isset                             Verifier si defini et non null
+  join                              Alias de implode
+  key                               Clef courante d'un tableau
+  krsort                            Trier par clef decroissante
+  ksort                             Trier par clef
+  ldap_add                          Ajouter une entree LDAP
+  ldap_bind                         Liaison LDAP
+  ldap_close                        Fermer une connexion LDAP
+  ldap_connect                      Ouvrir une connexion LDAP
+  ldap_count_entries                Compter les entrees LDAP
+  ldap_delete                       Supprimer une entree LDAP
+  ldap_first_attribute              Premier attribut LDAP
+  ldap_first_entry                  Premiere entree LDAP
+  ldap_free_result                  Liberer le resultat LDAP
+  ldap_get_attributes               Obtenir les attributs LDAP
+  ldap_get_dn                       Obtenir le DN LDAP
+  ldap_get_entries                   Obtenir les entrees LDAP
+  ldap_get_values                   Obtenir les valeurs LDAP
+  ldap_list                         Recherche a un niveau LDAP
+  ldap_modify                       Modifier une entree LDAP
+  ldap_next_attribute               Attribut suivant LDAP
+  ldap_next_entry                   Entree suivante LDAP
+  ldap_read                         Lire une entree LDAP
+  ldap_search                       Recherche dans LDAP
+  ldap_unbind                       Delier une connexion LDAP
+  leak                              Fuir de la memoire (debug)
+  link                              Creer un lien physique
+  linkinfo                          Informations sur un lien
+  list                              Assigner des variables depuis un tableau
+  log                               Logarithme naturel
+  log10                             Logarithme base 10
+  lstat                             Statistiques d'un lien symbolique
+  ltrim                             Supprimer les espaces en debut
+  mail                              Envoyer un courriel
+  max                               Valeur maximale
+  md5                               Hachage MD5
+  metaphone                         Clef metaphone d'une chaine
+  microtime                         Temps en microsecondes
+  min                               Valeur minimale
+  mkdir                             Creer un repertoire
+  mktime                            Creer un timestamp UNIX
+  msql_affected_rows                Lignes affectees mSQL
+  msql_close                        Fermer une connexion mSQL
+  msql_connect                      Ouvrir une connexion mSQL
+  msql_create_db                    Creer une base mSQL
+  msql_data_seek                    Deplacer le curseur mSQL
+  msql_dbname                       Nom de la base mSQL
+  msql_drop_db                      Supprimer une base mSQL
+  msql_fetch_array                  Lire une ligne mSQL en tableau
+  msql_fetch_field                  Informations d'un champ mSQL
+  msql_fetch_object                 Lire une ligne mSQL en objet
+  msql_fetch_row                    Lire une ligne mSQL
+  msql_fieldflags                   Drapeaux d'un champ mSQL
+  msql_fieldlen                     Longueur d'un champ mSQL
+  msql_fieldname                    Nom d'un champ mSQL
+  msql_fieldtable                   Table d'un champ mSQL
+  msql_fieldtype                    Type d'un champ mSQL
+  msql_free_result                  Liberer le resultat mSQL
+  msql_list_dbs                     Lister les bases mSQL
+  msql_list_fields                  Lister les champs mSQL
+  msql_list_tables                  Lister les tables mSQL
+  msql_num_fields                   Nombre de champs mSQL
+  msql_num_rows                     Nombre de lignes mSQL
+  msql_numfields                    Alias de msql_num_fields
+  msql_numrows                      Alias de msql_num_rows
+  msql_pconnect                     Connexion persistante mSQL
+  msql_query                        Executer une requete mSQL
+  msql_regcase                      Expression reguliere insensible
+  msql_result                       Resultat mSQL
+  msql_select_db                    Selectionner une base mSQL
+  msql_tablename                    Nom d'une table mSQL
+  mt_getrandmax                     Valeur maximale Mersenne Twister
+  mt_rand                           Nombre aleatoire Mersenne Twister
+  mt_srand                          Initialiser Mersenne Twister
+  mysql_affected_rows               Lignes affectees MySQL
+  mysql_close                       Fermer une connexion MySQL
+  mysql_connect                     Ouvrir une connexion MySQL
+  mysql_create_db                   Creer une base MySQL
+  mysql_data_seek                   Deplacer le curseur MySQL
+  mysql_db_query                    Requete sur une base MySQL
+  mysql_drop_db                     Supprimer une base MySQL
+  mysql_errno                       Code d'erreur MySQL
+  mysql_error                       Message d'erreur MySQL
+  mysql_fetch_array                 Lire une ligne en tableau MySQL
+  mysql_fetch_field                 Informations d'un champ MySQL
+  mysql_fetch_lengths               Longueurs des champs MySQL
+  mysql_fetch_object                Lire une ligne en objet MySQL
+  mysql_fetch_row                   Lire une ligne MySQL
+  mysql_field_flags                 Drapeaux d'un champ MySQL
+  mysql_field_len                   Longueur d'un champ MySQL
+  mysql_field_name                  Nom d'un champ MySQL
+  mysql_field_seek                  Deplacer le curseur de champ MySQL
+  mysql_field_table                 Table d'un champ MySQL
+  mysql_field_type                  Type d'un champ MySQL
+  mysql_free_result                 Liberer le resultat MySQL
+  mysql_insert_id                   Dernier identifiant insere MySQL
+  mysql_list_dbs                    Lister les bases MySQL
+  mysql_list_fields                 Lister les champs MySQL
+  mysql_list_tables                 Lister les tables MySQL
+  mysql_num_fields                  Nombre de champs MySQL
+  mysql_num_rows                    Nombre de lignes MySQL
+  mysql_pconnect                    Connexion persistante MySQL
+  mysql_query                       Executer une requete MySQL
+  mysql_result                      Resultat MySQL
+  mysql_select_db                   Selectionner une base MySQL
+  mysql_tablename                   Nom d'une table MySQL
+  next                              Avancer le pointeur de tableau
+  nl2br                             Convertir retours a la ligne en <br>
+  number_format                     Formater un nombre
+  octdec                            Convertir octal en decimal
+  opendir                           Ouvrir un repertoire
+  openlog                           Ouvrir la connexion au journal
+  ord                               Code ASCII d'un caractere
+  pack                              Empaqueter des donnees en chaine binaire
+  parse_str                         Analyser une chaine de requete
+  parse_url                         Analyser une URL
+  passthru                          Executer et afficher la sortie brute
+  pathinfo                          Informations sur un chemin
+  pclose                            Fermer un processus pipe
+  phpinfo                           Afficher les informations PHP
+  phpversion                        Version de PHP
+  pi                                Valeur de Pi
+  popen                             Ouvrir un processus pipe
+  pos                               Alias de current
+  pow                               Puissance
+  preg_match                        Expression reguliere PCRE
+  preg_match_all                    Toutes les correspondances PCRE
+  preg_replace                      Remplacement par expression reguliere
+  preg_split                        Decouper par expression reguliere
+  prev                              Reculer le pointeur de tableau
+  print                             Afficher une chaine
+  print_r                           Afficher de maniere lisible
+  printf                            Afficher une chaine formatee
+  putenv                            Definir une variable d'environnement
+  quoted_printable_decode           Decoder quoted-printable
+  quotemeta                         Echapper les meta-caracteres
+  rand                              Nombre aleatoire
+  range                             Creer un tableau d'intervalle
+  rawurldecode                      Decoder une URL (RFC 3986)
+  rawurlencode                      Encoder une URL (RFC 3986)
+  readdir                           Lire une entree de repertoire
+  readfile                          Lire et afficher un fichier
+  readlink                          Cible d'un lien symbolique
+  register_shutdown_function        Enregistrer une fonction d'arret
+  rename                            Renommer un fichier
+  reset                             Reinitialiser le pointeur de tableau
+  rewind                            Remettre le curseur au debut
+  rewinddir                         Reinitialiser un repertoire
+  rmdir                             Supprimer un repertoire
+  round                             Arrondir un nombre
+  rsort                             Trier par valeur decroissante
+  rtrim                             Supprimer les espaces en fin
+  serialize                         Serialiser une valeur
+  set_error_handler                 Definir un gestionnaire d'erreurs
+  set_time_limit                    Definir la duree maximale d'execution
+  setcookie                         Definir un cookie
+  setlocale                         Definir la locale
+  settype                           Changer le type d'une variable
+  sha1                              Hachage SHA-1
+  shuffle                           Melanger un tableau
+  similar_text                      Similarite entre deux chaines
+  sin                               Sinus
+  sizeof                            Alias de count
+  sleep                             Mettre en pause (secondes)
+  snmpget                           Obtenir une valeur SNMP
+  snmpset                           Definir une valeur SNMP
+  snmpwalk                          Parcourir l'arbre SNMP
+  sort                              Trier un tableau par valeur
+  soundex                           Clef soundex d'une chaine
+  split                             Decouper par expression reguliere POSIX
+  sprintf                           Retourner une chaine formatee
+  sql_regcase                       Expression reguliere insensible (SQL)
+  sqrt                              Racine carree
+  srand                             Initialiser le generateur aleatoire
+  stat                              Statistiques d'un fichier
+  str_pad                           Completer une chaine
+  str_repeat                        Repeter une chaine
+  str_replace                       Remplacer dans une chaine
+  strcasecmp                        Comparaison insensible a la casse
+  strchr                            Alias de strstr
+  strcmp                             Comparaison de chaines
+  strcspn                           Longueur sans caracteres donnes
+  strftime                          Formater selon la locale
+  strip_tags                        Supprimer les balises HTML/PHP
+  stripcslashes                     Supprimer les barres obliques C
+  stripslashes                      Supprimer les barres obliques
+  strlen                            Longueur d'une chaine
+  strpos                            Position d'une sous-chaine
+  strrchr                           Derniere occurrence d'un caractere
+  strrev                            Inverser une chaine
+  strrpos                           Derniere position d'une sous-chaine
+  strspn                            Longueur avec caracteres donnes
+  strstr                            Premiere occurrence d'une sous-chaine
+  strtok                            Decouper en jetons
+  strtolower                        Convertir en minuscules
+  strtoupper                        Convertir en majuscules
+  strtr                             Traduire des caracteres
+  strval                            Convertir en chaine
+  substr                            Extraire une sous-chaine
+  symlink                           Creer un lien symbolique
+  syslog                            Ecrire dans le journal systeme
+  system                            Executer une commande externe
+  tan                               Tangente
+  tempnam                           Creer un nom de fichier temporaire
+  time                              Timestamp UNIX courant
+  touch                             Modifier la date d'un fichier
+  trim                              Supprimer les espaces en debut et fin
+  uasort                            Trier par valeur personnalisee (clefs)
+  ucfirst                           Premiere lettre en majuscule
+  ucwords                           Premiere lettre de chaque mot en maj.
+  uksort                            Trier par clef personnalisee
+  umask                             Definir le masque de creation
+  uniqid                            Identifiant unique
+  unlink                            Supprimer un fichier
+  unpack                            Depaqueter des donnees binaires
+  unserialize                       Deserialiser une valeur
+  unset                             Detruire une variable
+  urldecode                         Decoder une URL
+  urlencode                         Encoder une URL
+  usleep                            Mettre en pause (microsecondes)
+  usort                             Trier par fonction personnalisee
+  var_dump                          Afficher type et valeur
+  virtual                           Sous-requete Apache
+  wordwrap                          Retour a la ligne automatique
+
+  18.2 Fonctions introduites en PHP 4
+  -----------------------------------------
+
+  Fonction                          Description
+  --------------------------------  -------------------------------------------
+  array_chunk                       Decouper en sous-tableaux
+  array_combine                     Creer depuis clefs et valeurs
+  array_diff                        Difference entre tableaux
+  array_diff_assoc                  Difference avec comparaison de clefs
+  array_fill                        Remplir un tableau
+  array_filter                      Filtrer les elements
+  array_intersect                   Intersection de tableaux
+  array_intersect_assoc             Intersection avec comparaison de clefs
+  array_key_exists                  Verifier si une clef existe
+  array_map                         Appliquer une fonction
+  array_multisort                   Trier plusieurs tableaux
+  array_reduce                      Reduire a une seule valeur
+  array_search                      Chercher une valeur
+  array_sum                         Somme des valeurs
+  array_walk_recursive              Appliquer recursivement une fonction
+  assert                            Verifier une assertion
+  assert_options                    Options d'assertion
+  call_user_func                    Appeler une fonction utilisateur
+  call_user_func_array              Appeler avec un tableau d'arguments
+  class_exists                      Verifier si une classe existe
+  constant                          Retourner la valeur d'une constante
+  count_chars                       Compter les caracteres
+  crc32                             Somme de controle CRC32
+  create_function                   Creer une fonction anonyme (obsolete)
+  ctype_alnum                       Verifier alphanumerique
+  ctype_alpha                       Verifier alphabetique
+  ctype_cntrl                       Verifier caractere de controle
+  ctype_digit                       Verifier chiffre
+  ctype_graph                       Verifier caractere imprimable (sauf espace)
+  ctype_lower                       Verifier minuscule
+  ctype_print                       Verifier caractere imprimable
+  ctype_punct                       Verifier ponctuation
+  ctype_space                       Verifier espace
+  ctype_upper                       Verifier majuscule
+  ctype_xdigit                      Verifier chiffre hexadecimal
+  debug_backtrace                   Obtenir la pile d'appels
+  debug_zval_refcount               Compter les references d'une variable
+  error_get_last                    Derniere erreur survenue
+  floatval                          Convertir en flottant
+  foreach                           Structure de boucle (mot-clef)
+  get_browser                       Obtenir les capacites du navigateur
+  get_class                         Nom de la classe d'un objet
+  get_class_methods                 Methodes d'une classe
+  get_class_vars                    Proprietes d'une classe
+  get_current_user                  Proprietaire du script courant
+  get_defined_constants             Constantes definies
+  get_defined_functions             Fonctions definies
+  get_defined_vars                  Variables definies
+  get_extension_funcs               Fonctions d'une extension
+  get_html_translation_table        Table de traduction HTML
+  get_include_path                  Chemin d'inclusion
+  get_loaded_extensions             Extensions chargees
+  get_magic_quotes_gpc              Etat des guillemets magiques (obsolete)
+  get_meta_tags                     Meta-balises d'un fichier HTML
+  get_object_vars                   Proprietes d'un objet
+  get_parent_class                  Classe parente
+  get_resource_type                 Type d'une ressource
+  getallheaders                     En-tetes de la requete HTTP
+  getcwd                            Repertoire courant
+  glob                              Rechercher des fichiers par motif
+  headers_list                      Liste des en-tetes envoyes
+  headers_sent                      Verifier si les en-tetes sont envoyes
+  highlight_file                    Coloration syntaxique d'un fichier
+  highlight_string                  Coloration syntaxique d'une chaine
+  html_entity_decode                Decoder les entites HTML
+  http_build_query                  Construire une chaine de requete
+  ignore_user_abort                 Ignorer la deconnexion du client
+  image_type_to_mime_type           Type MIME d'un type d'image
+  import_request_variables          Importer les variables de requete
+  ini_get                           Obtenir une directive de configuration
+  ini_get_all                       Obtenir toutes les directives
+  ini_restore                       Restaurer une directive
+  ini_set                           Definir une directive
+  ip2long                           Convertir une adresse IP en entier
+  is_a                              Verifier si un objet est d'une classe
+  is_callable                       Verifier si c'est appelable
+  is_finite                         Verifier si fini
+  is_infinite                       Verifier si infini
+  is_nan                            Verifier si NaN
+  is_null                           Verifier si null
+  is_numeric                        Verifier si numerique
+  is_resource                       Verifier si c'est une ressource
+  is_subclass_of                    Verifier si c'est une sous-classe
+  is_uploaded_file                  Verifier si c'est un fichier envoye
+  is_writable                       Verifier si accessible en ecriture
+  key_exists                        Alias de array_key_exists
+  localeconv                        Informations de locale numerique
+  long2ip                           Convertir un entier en adresse IP
+  method_exists                     Verifier si une methode existe
+  money_format                      Formater un montant monetaire
+  move_uploaded_file                Deplacer un fichier envoye
+  natcasesort                       Tri naturel insensible a la casse
+  natsort                           Tri naturel
+  nl_langinfo                       Informations de locale
+  number_format                     Formater un nombre
+  ob_clean                          Vider le tampon de sortie
+  ob_end_clean                      Terminer et vider le tampon
+  ob_end_flush                      Terminer et envoyer le tampon
+  ob_flush                          Envoyer le contenu du tampon
+  ob_get_contents                   Contenu du tampon de sortie
+  ob_get_length                     Longueur du tampon de sortie
+  ob_get_level                      Niveau d'imbrication des tampons
+  ob_implicit_flush                 Vidage implicite du tampon
+  ob_start                          Demarrer le tampon de sortie
+  output_add_rewrite_var            Ajouter une variable de reecriture
+  output_reset_rewrite_vars         Reinitialiser les variables de reecriture
+  parse_ini_file                    Analyser un fichier INI
+  pathinfo                          Informations sur un chemin
+  php_sapi_name                     Nom de l'interface SAPI
+  php_uname                         Informations sur le systeme
+  preg_grep                         Filtrer un tableau par motif PCRE
+  preg_quote                        Echapper les caracteres PCRE
+  preg_replace_callback             Remplacement PCRE avec fonction
+  property_exists                   Verifier si une propriete existe
+  quoted_printable_encode           Encoder en quoted-printable
+  rawurldecode                      Decoder une URL brute
+  rawurlencode                      Encoder une URL brute
+  restore_error_handler             Restaurer le gestionnaire d'erreurs
+  restore_include_path              Restaurer le chemin d'inclusion
+  scandir                           Lister le contenu d'un repertoire
+  session_cache_expire              Delai d'expiration du cache de session
+  session_cache_limiter             Limiteur de cache de session
+  session_decode                    Decoder les donnees de session
+  session_destroy                   Detruire une session
+  session_encode                    Encoder les donnees de session
+  session_get_cookie_params         Parametres du cookie de session
+  session_id                        Identifiant de session
+  session_is_registered             Session enregistree (obsolete)
+  session_module_name               Module de gestion de session
+  session_name                      Nom de la session
+  session_regenerate_id             Regenerer l'identifiant de session
+  session_register                  Enregistrer une variable de session
+  session_save_path                 Chemin de sauvegarde des sessions
+  session_set_cookie_params         Definir les parametres du cookie
+  session_set_save_handler          Definir le gestionnaire de sauvegarde
+  session_start                     Demarrer une session
+  session_unregister                Desenregistrer une variable de session
+  session_unset                     Supprimer les variables de session
+  session_write_close               Ecrire et fermer la session
+  set_exception_handler             Definir le gestionnaire d'exceptions
+  set_include_path                  Definir le chemin d'inclusion
+  setrawcookie                      Definir un cookie brut
+  sha1_file                         Hachage SHA-1 d'un fichier
+  show_source                       Alias de highlight_file
+  sizeof                            Alias de count
+  socket_get_status                 Etat d'une connexion socket
+  socket_set_blocking               Definir le mode blocage
+  socket_set_timeout                Definir le delai d'attente
+  sprintf                           Retourner une chaine formatee
+  sscanf                            Analyser une chaine formatee
+  str_ireplace                      Remplacement insensible a la casse
+  str_rot13                         Appliquer ROT13
+  str_shuffle                       Melanger les caracteres
+  str_split                         Decouper en tableau de caracteres
+  str_word_count                    Compter les mots
+  strcoll                           Comparaison basee sur la locale
+  stream_context_create             Creer un contexte de flux
+  stream_context_get_options        Options d'un contexte de flux
+  stream_context_set_option         Definir une option de contexte
+  stream_context_set_params         Definir les parametres de contexte
+  stream_filter_append              Ajouter un filtre de flux
+  stream_filter_prepend             Inserer un filtre de flux
+  stream_get_meta_data              Meta-donnees d'un flux
+  stream_register_wrapper           Enregistrer un wrapper de flux
+  stream_set_blocking               Definir le mode blocage d'un flux
+  stream_set_timeout                Definir le delai d'un flux
+  stream_set_write_buffer           Definir le tampon d'ecriture
+  stripos                           Position insensible a la casse
+  stristr                           Sous-chaine insensible a la casse
+  strncasecmp                       Comparaison insensible (N caracteres)
+  strncmp                           Comparaison (N caracteres)
+  strpbrk                           Premiere occurrence d'un jeu
+  strripos                          Derniere position insensible
+  strtolower                        Convertir en minuscules
+  strtoupper                        Convertir en majuscules
+  substr_compare                    Comparer des sous-chaines
+  substr_count                      Compter les occurrences
+  substr_replace                    Remplacer une sous-chaine
+  token_get_all                     Analyse lexicale d'un code PHP
+  token_name                        Nom d'un jeton PHP
+  trigger_error                     Declencher une erreur utilisateur
+  trim                              Supprimer les espaces en debut et fin
+  uasort                            Trier par valeur personnalisee (clefs)
+  uksort                            Trier par clef personnalisee
+  user_error                        Alias de trigger_error
+  usort                             Trier par fonction personnalisee
+  var_export                        Exporter une variable en code PHP
+  version_compare                   Comparer deux versions PHP
+  vprintf                           Afficher une chaine formatee (tableau)
+  vsprintf                          Retourner une chaine formatee (tableau)
+
+  18.3 Fonctions introduites en PHP 5
+  -----------------------------------------
+
+  Fonction                          Description
+  --------------------------------  -------------------------------------------
+  __autoload                        Chargement automatique de classes (obsolete)
+  array_column                      Extraire une colonne d'un tableau
+  array_diff_key                    Difference par clefs
+  array_diff_uassoc                 Difference avec fonction de comparaison
+  array_diff_ukey                   Difference de clefs avec fonction
+  array_fill_keys                   Remplir un tableau avec des clefs
+  array_intersect_key               Intersection par clefs
+  array_intersect_uassoc            Intersection avec fonction
+  array_intersect_ukey              Intersection de clefs avec fonction
+  array_product                     Produit des valeurs
+  array_replace                     Remplacer les elements
+  array_replace_recursive           Remplacer recursivement
+  array_walk_recursive              Appliquer recursivement une fonction
+  class_alias                       Creer un alias de classe
+  class_implements                  Interfaces implementees
+  class_parents                     Classes parentes
+  clone                             Cloner un objet (mot-clef)
+  count_chars                       Compter les caracteres
+  curl_close                        Fermer une session cURL
+  curl_copy_handle                  Copier un gestionnaire cURL
+  curl_errno                        Code d'erreur cURL
+  curl_error                        Message d'erreur cURL
+  curl_exec                         Executer une session cURL
+  curl_getinfo                      Informations sur le transfert cURL
+  curl_init                         Initialiser cURL
+  curl_multi_add_handle             Ajouter un gestionnaire multi-cURL
+  curl_multi_close                  Fermer un gestionnaire multi-cURL
+  curl_multi_exec                   Executer les transferts multi-cURL
+  curl_multi_getcontent             Contenu multi-cURL
+  curl_multi_info_read              Informations multi-cURL
+  curl_multi_init                   Initialiser multi-cURL
+  curl_multi_remove_handle          Retirer un gestionnaire multi-cURL
+  curl_multi_select                 Attendre une activite multi-cURL
+  curl_setopt                       Definir une option cURL
+  curl_setopt_array                 Definir des options cURL
+  curl_version                      Version de cURL
+  date_create                       Creer un objet DateTime
+  date_date_set                     Definir la date
+  date_default_timezone_get         Fuseau horaire par defaut
+  date_default_timezone_set         Definir le fuseau horaire par defaut
+  date_diff                         Difference entre deux dates
+  date_format                       Formater une date
+  date_isodate_set                  Definir la date ISO
+  date_modify                       Modifier une date
+  date_offset_get                   Decalage du fuseau horaire
+  date_parse                        Analyser une chaine de date
+  date_sun_info                     Informations sur le lever/coucher
+  date_sunrise                      Heure du lever du soleil
+  date_sunset                       Heure du coucher du soleil
+  date_time_set                     Definir l'heure
+  date_timestamp_get                Obtenir le timestamp
+  date_timestamp_set                Definir le timestamp
+  date_timezone_get                 Obtenir le fuseau horaire
+  date_timezone_set                 Definir le fuseau horaire
+  debug_print_backtrace             Afficher la pile d'appels
+  dns_check_record                  Verifier un enregistrement DNS
+  dns_get_mx                        Obtenir les enregistrements MX
+  dns_get_record                    Obtenir les enregistrements DNS
+  dom_import_simplexml              Importer un noeud SimpleXML dans DOM
+  file_get_contents                 Lire un fichier entier en chaine
+  file_put_contents                 Ecrire dans un fichier
+  filter_has_var                    Verifier si une variable existe
+  filter_id                         Identifiant d'un filtre
+  filter_input                      Filtrer une variable externe
+  filter_input_array                Filtrer des variables externes
+  filter_list                       Liste des filtres disponibles
+  filter_var                        Filtrer une variable
+  filter_var_array                  Filtrer des variables
+  ftp_alloc                         Allouer de l'espace FTP
+  ftp_cdup                          Remonter d'un repertoire FTP
+  ftp_chdir                         Changer de repertoire FTP
+  ftp_chmod                         Changer les permissions FTP
+  ftp_close                         Fermer une connexion FTP
+  ftp_connect                       Ouvrir une connexion FTP
+  ftp_delete                        Supprimer un fichier FTP
+  ftp_fget                          Telecharger dans un fichier FTP
+  ftp_fput                          Envoyer depuis un fichier FTP
+  ftp_get                           Telecharger un fichier FTP
+  ftp_login                         Se connecter au serveur FTP
+  ftp_mdtm                          Date de modification FTP
+  ftp_mkdir                         Creer un repertoire FTP
+  ftp_nb_continue                   Continuer un transfert non-bloquant
+  ftp_nb_fget                       Telecharger non-bloquant dans fichier
+  ftp_nb_fput                       Envoyer non-bloquant depuis fichier
+  ftp_nb_get                        Telecharger non-bloquant FTP
+  ftp_nb_put                        Envoyer non-bloquant FTP
+  ftp_nlist                         Lister un repertoire FTP
+  ftp_pasv                          Mode passif FTP
+  ftp_put                           Envoyer un fichier FTP
+  ftp_pwd                           Repertoire courant FTP
+  ftp_quit                          Alias de ftp_close
+  ftp_raw                           Commande brute FTP
+  ftp_rawlist                       Liste detaillee FTP
+  ftp_rename                        Renommer un fichier FTP
+  ftp_rmdir                         Supprimer un repertoire FTP
+  ftp_set_option                    Definir une option FTP
+  ftp_site                          Commande SITE FTP
+  ftp_size                          Taille d'un fichier FTP
+  ftp_ssl_connect                   Connexion FTP securisee
+  ftp_systype                       Type de systeme FTP
+  func_get_arg                      Obtenir un argument de fonction
+  func_get_args                     Obtenir tous les arguments
+  func_num_args                     Nombre d'arguments
+  gc_collect_cycles                 Forcer la collecte des cycles
+  gc_disable                        Desactiver le ramasse-miettes
+  gc_enable                         Activer le ramasse-miettes
+  gc_enabled                        Verifier si le ramasse-miettes est actif
+  hash                              Calculer un condensat
+  hash_algos                        Algorithmes de hachage disponibles
+  hash_file                         Condensat d'un fichier
+  hash_final                        Finaliser un contexte de hachage
+  hash_hmac                         HMAC d'une chaine
+  hash_hmac_file                    HMAC d'un fichier
+  hash_init                         Initialiser un contexte de hachage
+  hash_update                       Mettre a jour un contexte de hachage
+  hash_update_file                  MAJ d'un contexte depuis un fichier
+  hash_update_stream                MAJ d'un contexte depuis un flux
+  iconv                             Convertir l'encodage d'une chaine
+  iconv_get_encoding                Obtenir l'encodage iconv
+  iconv_mime_decode                 Decoder un en-tete MIME
+  iconv_mime_decode_headers         Decoder des en-tetes MIME
+  iconv_mime_encode                 Encoder un en-tete MIME
+  iconv_set_encoding                Definir l'encodage iconv
+  iconv_strlen                      Longueur d'une chaine (iconv)
+  iconv_strpos                      Position dans une chaine (iconv)
+  iconv_strrpos                     Derniere position (iconv)
+  iconv_substr                      Sous-chaine (iconv)
+  idate                             Formater une date en entier
+  interface_exists                   Verifier si une interface existe
+  is_a                              Verifier le type d'un objet
+  json_decode                       Decoder une chaine JSON
+  json_encode                       Encoder en JSON
+  json_last_error                   Derniere erreur JSON
+  json_last_error_msg               Message de la derniere erreur JSON
+  lcfirst                           Premiere lettre en minuscule
+  mb_check_encoding                 Verifier un encodage
+  mb_convert_case                   Convertir la casse (multi-octets)
+  mb_convert_encoding               Convertir l'encodage
+  mb_detect_encoding                Detecter l'encodage
+  mb_detect_order                   Ordre de detection d'encodage
+  mb_encode_mimeheader              Encoder un en-tete MIME
+  mb_internal_encoding              Encodage interne
+  mb_language                       Langue pour les courriels
+  mb_output_handler                 Gestionnaire de sortie multi-octets
+  mb_parse_str                      Analyser une chaine (multi-octets)
+  mb_preferred_mime_name            Nom MIME prefere d'un encodage
+  mb_regex_encoding                 Encodage des expressions regulieres
+  mb_send_mail                      Envoyer un courriel encode
+  mb_strlen                         Longueur (multi-octets)
+  mb_strpos                         Position (multi-octets)
+  mb_strrpos                        Derniere position (multi-octets)
+  mb_strtolower                     Minuscules (multi-octets)
+  mb_strtoupper                     Majuscules (multi-octets)
+  mb_strwidth                       Largeur d'une chaine
+  mb_substitute_character            Caractere de substitution
+  mb_substr                         Sous-chaine (multi-octets)
+  mb_substr_count                   Compter les occurrences (multi-octets)
+  mysqli_affected_rows              Lignes affectees MySQLi
+  mysqli_close                      Fermer une connexion MySQLi
+  mysqli_connect                    Ouvrir une connexion MySQLi
+  mysqli_connect_errno              Code d'erreur de connexion MySQLi
+  mysqli_connect_error              Message d'erreur de connexion MySQLi
+  mysqli_errno                      Code d'erreur MySQLi
+  mysqli_error                      Message d'erreur MySQLi
+  mysqli_fetch_all                  Toutes les lignes MySQLi
+  mysqli_fetch_array                Lire une ligne en tableau MySQLi
+  mysqli_fetch_assoc                Lire une ligne associative MySQLi
+  mysqli_fetch_field                Informations d'un champ MySQLi
+  mysqli_fetch_object               Lire une ligne en objet MySQLi
+  mysqli_fetch_row                  Lire une ligne MySQLi
+  mysqli_free_result                Liberer le resultat MySQLi
+  mysqli_insert_id                  Dernier identifiant MySQLi
+  mysqli_num_fields                 Nombre de champs MySQLi
+  mysqli_num_rows                   Nombre de lignes MySQLi
+  mysqli_prepare                    Preparer une requete MySQLi
+  mysqli_query                      Executer une requete MySQLi
+  mysqli_real_escape_string         Echapper une chaine MySQLi
+  mysqli_real_connect               Connexion MySQLi avancee
+  mysqli_select_db                  Selectionner une base MySQLi
+  mysqli_set_charset                Definir le jeu de caracteres MySQLi
+  mysqli_stmt_bind_param            Lier des parametres MySQLi
+  mysqli_stmt_bind_result           Lier les resultats MySQLi
+  mysqli_stmt_close                 Fermer une requete preparee MySQLi
+  mysqli_stmt_execute               Executer une requete preparee MySQLi
+  mysqli_stmt_fetch                 Lire le resultat prepare MySQLi
+  number_format                     Formater un nombre
+  password_hash                     Hacher un mot de passe (5.5)
+  password_needs_rehash             Verifier si rehachage necessaire (5.5)
+  password_verify                   Verifier un mot de passe (5.5)
+  pdo_drivers                       Pilotes PDO disponibles
+  php_strip_whitespace              Supprimer les commentaires et espaces
+  preg_last_error                   Derniere erreur PCRE
+  property_exists                   Verifier si une propriete existe
+  realpath                          Chemin absolu resolu
+  register_tick_function            Enregistrer une fonction tick
+  restore_exception_handler         Restaurer le gestionnaire d'exceptions
+  set_exception_handler             Definir le gestionnaire d'exceptions
+  simplexml_import_dom              Importer un noeud DOM dans SimpleXML
+  simplexml_load_file               Charger un fichier XML
+  simplexml_load_string             Charger une chaine XML
+  spl_autoload                      Chargement automatique par defaut
+  spl_autoload_call                 Appeler les fonctions d'autoload
+  spl_autoload_extensions           Extensions d'autoload
+  spl_autoload_functions            Fonctions d'autoload enregistrees
+  spl_autoload_register             Enregistrer une fonction d'autoload
+  spl_autoload_unregister           Desenregistrer une fonction d'autoload
+  spl_classes                       Classes SPL disponibles
+  spl_object_hash                   Identifiant unique d'un objet
+  str_getcsv                        Analyser une chaine CSV
+  stream_copy_to_stream             Copier un flux vers un autre
+  stream_get_contents               Lire le reste d'un flux
+  stream_get_line                   Lire une ligne d'un flux
+  stream_get_transports             Transports de flux disponibles
+  stream_get_wrappers               Wrappers de flux disponibles
+  stream_is_local                   Verifier si un flux est local
+  stream_resolve_include_path       Resoudre un chemin d'inclusion
+  stream_select                     Attendre une activite sur des flux
+  stream_set_chunk_size             Definir la taille des morceaux
+  stream_socket_accept              Accepter une connexion socket
+  stream_socket_client              Ouvrir un socket client
+  stream_socket_enable_crypto       Activer le chiffrement
+  stream_socket_get_name            Nom d'un socket
+  stream_socket_pair                Creer une paire de sockets
+  stream_socket_recvfrom            Recevoir depuis un socket
+  stream_socket_sendto              Envoyer vers un socket
+  stream_socket_server              Ouvrir un socket serveur
+  stream_socket_shutdown            Fermer un socket
+  stream_wrapper_register           Enregistrer un wrapper de flux
+  stream_wrapper_restore            Restaurer un wrapper de flux
+  stream_wrapper_unregister         Desenregistrer un wrapper de flux
+  sys_get_temp_dir                  Repertoire temporaire du systeme
+  time_nanosleep                    Pause en nanosecondes
+  time_sleep_until                  Pause jusqu'a un moment
+  timezone_abbreviations_list       Abreviations de fuseaux horaires
+  timezone_identifiers_list         Identifiants de fuseaux horaires
+  timezone_name_from_abbr           Nom de fuseau depuis abreviation
+  timezone_name_get                 Nom du fuseau horaire
+  timezone_offset_get               Decalage du fuseau horaire
+  timezone_open                     Ouvrir un fuseau horaire
+  timezone_transitions_get          Transitions d'un fuseau horaire
+  trait_exists                      Verifier si un trait existe (5.4)
+  unregister_tick_function          Desenregistrer une fonction tick
+
+  18.4 Fonctions introduites en PHP 7
+  -----------------------------------------
+
+  Fonction                          Description
+  --------------------------------  -------------------------------------------
+  array_column                      Extraire une colonne (ameliore en 7.0)
+  dirname                           Niveaux de profondeur (ameliore en 7.0)
+  error_clear_last                  Effacer la derniere erreur (7.0)
+  get_defined_functions             Exclure les fonctions internes (7.0)
+  getenv                            Sans argument (7.1)
+  hrtime                            Temps haute resolution (7.3)
+  intdiv                            Division entiere (7.0)
+  is_countable                      Verifier si denombrable (7.3)
+  is_iterable                       Verifier si iterable (7.1)
+  openssl_cipher_iv_length          Longueur de l'IV (ameliore en 7.1)
+  openssl_decrypt                   Dechiffrer des donnees OpenSSL
+  openssl_encrypt                   Chiffrer des donnees OpenSSL
+  openssl_get_cipher_methods        Methodes de chiffrement disponibles
+  openssl_get_md_methods            Methodes de condensat disponibles
+  password_algos                    Algorithmes de hachage disponibles (7.4)
+  preg_last_error_msg               Message de la derniere erreur PCRE (7.0)
+  random_bytes                      Octets aleatoires cryptographiques (7.0)
+  random_int                        Entier aleatoire cryptographique (7.0)
+  session_create_id                 Creer un identifiant de session (7.1)
+  session_gc                        Ramasse-miettes de sessions (7.1)
+  spl_object_id                     Identifiant entier d'un objet (7.2)
+  array_key_first                   Premiere clef d'un tableau (7.3)
+  array_key_last                    Derniere clef d'un tableau (7.3)
+  gc_mem_caches                     Liberer la memoire du cache (7.0)
+  gc_status                         Statut du ramasse-miettes (7.3)
+  pcntl_async_signals               Gestion asynchrone des signaux (7.1)
+  pcntl_signal_get_handler          Obtenir le gestionnaire de signal (7.1)
+  socket_addrinfo_bind              Lier une adresse (7.2)
+  socket_addrinfo_connect           Connecter une adresse (7.2)
+  socket_addrinfo_explain           Expliquer une adresse (7.2)
+  socket_addrinfo_lookup            Chercher une adresse (7.2)
+  socket_export_stream              Exporter un socket en flux (7.0)
+
+  Fonctions liees aux types (PHP 7.0+) :
+
+  Fonction                          Description
+  --------------------------------  -------------------------------------------
+  intdiv                            Division entiere
+  preg_replace_callback_array       Remplacements PCRE multiples (7.0)
+  random_bytes                      Octets pseudo-aleatoires securises
+  random_int                        Entier pseudo-aleatoire securise
+
+  Fonctions liees a la cryptographie (PHP 7.2+) :
+
+  Fonction                          Description
+  --------------------------------  -------------------------------------------
+  sodium_bin2base64                 Encoder en Base64 (Sodium)
+  sodium_bin2hex                    Encoder en hexadecimal (Sodium)
+  sodium_compare                    Comparaison constante
+  sodium_crypto_aead_chacha20poly1305_decrypt   Dechiffrer ChaCha20-Poly1305
+  sodium_crypto_aead_chacha20poly1305_encrypt   Chiffrer ChaCha20-Poly1305
+  sodium_crypto_auth                Authentifier un message
+  sodium_crypto_auth_verify         Verifier l'authentification
+  sodium_crypto_box                 Chiffrer a clef publique
+  sodium_crypto_box_keypair         Generer une paire de clefs
+  sodium_crypto_box_open            Dechiffrer a clef publique
+  sodium_crypto_box_publickey       Extraire la clef publique
+  sodium_crypto_box_seal            Chiffrer anonymement
+  sodium_crypto_box_seal_open       Dechiffrer anonymement
+  sodium_crypto_box_secretkey       Extraire la clef secrete
+  sodium_crypto_box_seed_keypair    Paire de clefs depuis graine
+  sodium_crypto_generichash         Condensat generique (BLAKE2b)
+  sodium_crypto_generichash_final   Finaliser un condensat generique
+  sodium_crypto_generichash_init    Initialiser un condensat generique
+  sodium_crypto_generichash_update  Mettre a jour un condensat
+  sodium_crypto_kdf_derive_from_key Deriver une clef
+  sodium_crypto_kdf_keygen          Generer une clef de derivation
+  sodium_crypto_pwhash              Hacher un mot de passe (Argon2)
+  sodium_crypto_pwhash_str          Chaine de hachage de mot de passe
+  sodium_crypto_pwhash_str_verify   Verifier un mot de passe hache
+  sodium_crypto_scalarmult          Multiplication scalaire
+  sodium_crypto_secretbox           Chiffrer a clef secrete
+  sodium_crypto_secretbox_keygen    Generer une clef secrete
+  sodium_crypto_secretbox_open      Dechiffrer a clef secrete
+  sodium_crypto_shorthash           Condensat court (SipHash-2-4)
+  sodium_crypto_shorthash_keygen    Generer une clef SipHash
+  sodium_crypto_sign                Signer un message
+  sodium_crypto_sign_detached       Signature detachee
+  sodium_crypto_sign_ed25519_pk_to_curve25519   Convertir clef Ed25519
+  sodium_crypto_sign_ed25519_sk_to_curve25519   Convertir clef Ed25519
+  sodium_crypto_sign_keypair        Generer une paire de clefs de signature
+  sodium_crypto_sign_open           Ouvrir un message signe
+  sodium_crypto_sign_publickey      Extraire la clef publique de signature
+  sodium_crypto_sign_secretkey      Extraire la clef secrete de signature
+  sodium_crypto_sign_seed_keypair   Paire de clefs depuis graine
+  sodium_crypto_sign_verify_detached Verifier une signature detachee
+  sodium_crypto_stream              Flux de clef
+  sodium_crypto_stream_keygen       Generer une clef de flux
+  sodium_crypto_stream_xor          Chiffrement par flux
+  sodium_hex2bin                    Decoder depuis hexadecimal
+  sodium_increment                  Incrementer un nombre
+  sodium_memcmp                     Comparaison en temps constant
+  sodium_memzero                    Effacer la memoire
+  sodium_pad                        Remplir un tampon
+  sodium_unpad                      Supprimer le remplissage
+
+  Fonctions liees aux tableaux (PHP 7.3+) :
+
+  Fonction                          Description
+  --------------------------------  -------------------------------------------
+  array_key_first                   Premiere clef d'un tableau
+  array_key_last                    Derniere clef d'un tableau
+
+  Fonctions liees aux references faibles (PHP 7.4) :
+
+  Fonction                          Description
+  --------------------------------  -------------------------------------------
+  WeakReference::create             Creer une reference faible
+
+  18.5 Fonctions introduites en PHP 8
+  -----------------------------------------
+
+  PHP 8.0 :
+
+  Fonction                          Description
+  --------------------------------  -------------------------------------------
+  fdiv                              Division flottante securisee
+  get_debug_type                    Type de debogage d'une variable
+  get_resource_id                   Identifiant d'une ressource
+  array_is_list                     Verifier si c'est une liste (8.1)
+  preg_last_error_msg               Message d'erreur PCRE
+  str_contains                      Verifier si une chaine contient
+  str_starts_with                   Verifier si commence par
+  str_ends_with                     Verifier si termine par
+  match                             Expression match (mot-clef)
+  nullsafe                          Operateur ?-> (mot-clef)
+  PhpToken::tokenize                Analyse lexicale objet
+
+  PHP 8.1 :
+
+  Fonction                          Description
+  --------------------------------  -------------------------------------------
+  array_is_list                     Verifier si un tableau est une liste
+  enum_exists                       Verifier si une enumeration existe
+  fiber_get_status                  Obtenir le statut d'une fibre
+  Fiber::start                      Demarrer une fibre
+  Fiber::resume                     Reprendre une fibre
+  Fiber::suspend                    Suspendre une fibre
+  Fiber::getReturn                  Retour d'une fibre
+  Fiber::isStarted                  Fibre demarree
+  Fiber::isRunning                  Fibre en cours
+  Fiber::isSuspended                Fibre suspendue
+  Fiber::isTerminated               Fibre terminee
+  fsync                             Synchroniser un fichier sur disque
+  fdatasync                         Synchroniser les donnees sur disque
+  sodium_crypto_stream_xchacha20    Flux XChaCha20
+  sodium_crypto_stream_xchacha20_keygen  Generer clef XChaCha20
+  sodium_crypto_stream_xchacha20_xor     Chiffrement XChaCha20
+
+  PHP 8.2 :
+
+  Fonction                          Description
+  --------------------------------  -------------------------------------------
+  curl_upkeep                       Maintenance de la connexion cURL
+  ini_parse_quantity                Analyser une quantite INI
+  memory_reset_peak_usage           Reinitialiser le pic memoire
+  mysqli_execute_query              Executer une requete preparee MySQLi
+  openssl_cipher_key_length         Longueur de clef de chiffrement
+  sodium_crypto_stream_xchacha20_xor_ic  Chiffrement XChaCha20 avec compteur
+
+  PHP 8.3 :
+
+  Fonction                          Description
+  --------------------------------  -------------------------------------------
+  json_validate                     Valider une chaine JSON
+  mb_str_pad                        Completer une chaine (multi-octets)
+  override                          Attribut #[\Override] (mot-clef)
+  str_increment                     Incrementer une chaine alphanumerique
+  str_decrement                     Decrementer une chaine alphanumerique
+  DatePeriod::createFromISO8601String Creer depuis une chaine ISO 8601
+  DOMDocument::createEmpty          Creer un document DOM vide (8.4)
+  DOMDocument::createFromFile       Creer depuis un fichier (8.4)
+  DOMDocument::createFromString     Creer depuis une chaine (8.4)
+  ldap_connect_wallet               Connexion LDAP avec portefeuille
+  ldap_exop_sync                    Operation etendue LDAP synchrone
+  Randomizer::getBytesFromString    Octets depuis une chaine (Random)
+  Randomizer::getFloat              Flottant aleatoire (Random)
+  Randomizer::nextFloat             Prochain flottant (Random)
+  stream_context_set_options        Definir les options de contexte
+
+  PHP 8.4 :
+
+  Fonction                          Description
+  --------------------------------  -------------------------------------------
+  array_all                         Verifier si tous satisfont
+  array_any                         Verifier si au moins un satisfait
+  array_find                        Trouver le premier element
+  array_find_key                    Trouver la premiere clef
+  bcfloor                           Arrondi inferieur (BC Math)
+  bcceil                            Arrondi superieur (BC Math)
+  bcround                           Arrondir (BC Math)
+  bcdivmod                          Division et modulo (BC Math)
+  grapheme_str_split                Decouper en graphemes
+  http_get_last_response_headers    Derniers en-tetes de reponse HTTP
+  http_clear_last_response_headers  Effacer les en-tetes de reponse
+  intl_get_error_code               Code d'erreur ICU
+  intl_get_error_message            Message d'erreur ICU
+  mb_ltrim                          Supprimer en debut (multi-octets)
+  mb_rtrim                          Supprimer en fin (multi-octets)
+  mb_trim                           Supprimer debut et fin (multi-octets)
+  mb_ucfirst                        Premiere lettre en majuscule (mb)
+  mb_lcfirst                        Premiere lettre en minuscule (mb)
+  Randomizer::pickArrayKeys         Clefs aleatoires d'un tableau
+  request_parse_body                Analyser le corps de la requete
+  round                             Nouveaux modes d'arrondi
+  ReflectionConstant::__construct   Reflexion sur les constantes
+  ReflectionConstant::getName       Nom d'une constante
+  ReflectionConstant::getNamespaceName  Espace de noms d'une constante
+  ReflectionConstant::getShortName  Nom court d'une constante
+  ReflectionConstant::getValue      Valeur d'une constante
+  ReflectionConstant::isDeprecated  Constante obsolete
+  XMLReader::fromStream             Lire depuis un flux XML
+  XMLReader::fromString             Lire depuis une chaine XML
+  XMLReader::fromUri                Lire depuis une URI XML
+
+==============================================================================
+  FIN DU DOCUMENT
+==============================================================================

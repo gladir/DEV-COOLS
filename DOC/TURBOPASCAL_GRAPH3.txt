@@ -1,0 +1,889 @@
+=========================================================================
+  TURBO PASCAL 7.0 - Unité GRAPH3 - Documentation de référence
+=========================================================================
+
+  L'unité Graph3 assure la compatibilité ascendante avec les
+  routines graphiques de Turbo Pascal 3.0. Elle fournit l'ensemble
+  des primitives graphiques CGA (320×200 4 couleurs et 640×200
+  monochrome) ainsi qu'un système complet de « tortue » (turtle
+  graphics) inspiré du langage Logo.
+
+  En Turbo Pascal 3.0, ces routines faisaient partie intégrante
+  du langage. À partir de la version 4.0, elles ont été remplacées
+  par l'unité Graph (BGI). L'unité Graph3 permet de recompiler
+  les anciens programmes graphiques TP3 sans modification.
+
+  Uses Graph3;   { dépend de l'unité Crt }
+
+  Directives de compilation : {$D-,I-,S-}
+    $D- : Pas d'information de débogage
+    $I- : Pas de vérification d'E/S
+    $S- : Pas de vérification de pile
+
+=========================================================================
+  1. DÉPENDANCE
+=========================================================================
+
+  L'unité Graph3 utilise l'unité Crt dans sa clause Uses :
+
+    Uses Crt;
+
+  L'inclusion de Graph3 entraîne automatiquement l'inclusion de
+  Crt. Les routines CRT (ClrScr, GotoXY, ReadKey, Delay, Sound,
+  etc.) sont donc disponibles sans l'ajouter explicitement.
+
+=========================================================================
+  2. CONSTANTES - DIRECTIONS TURTLE
+=========================================================================
+
+  Les constantes de direction définissent les angles cardinaux
+  pour la tortue graphique (turtle graphics). Les angles sont
+  en degrés, mesurés dans le sens horaire à partir du nord.
+
+  Constante   Valeur   Description
+  ---------   ------   -----------
+  North          0     Nord (haut de l'écran)
+  East          90     Est (droite)
+  South        180     Sud (bas de l'écran)
+  West         270     Ouest (gauche)
+
+  Note : la convention d'angle est celle de la boussole (0° = nord,
+  sens horaire), différente de la convention mathématique usuelle
+  (0° = est, sens anti-horaire).
+
+=========================================================================
+  3. INITIALISATION DU MODE GRAPHIQUE
+=========================================================================
+
+  procedure GraphMode;
+  ---------------------------------------------------------------
+  Active le mode graphique CGA couleur 320×200 pixels, 4 couleurs
+  (palette par défaut). Correspond au mode BIOS vidéo 04h.
+
+  L'écran est effacé et le système graphique est initialisé.
+  Le mode texte peut être restauré avec TextMode (unité Crt).
+
+  Équivalent TP3 : GraphMode activait le mode 320×200.
+
+  ---------------------------------------------------------------
+  procedure GraphColorMode;
+  ---------------------------------------------------------------
+  Active le mode graphique CGA couleur 320×200 pixels, 4 couleurs.
+  Synonyme fonctionnel de GraphMode.
+
+  Ce mode offre 4 couleurs simultanées choisies parmi deux
+  palettes CGA prédéfinies (voir Palette).
+
+  Résolution : 320 × 200 pixels
+  Couleurs   : 4 (couleur de fond + 3 couleurs de palette)
+
+  ---------------------------------------------------------------
+  procedure HiRes;
+  ---------------------------------------------------------------
+  Active le mode graphique CGA haute résolution 640×200 pixels,
+  monochrome (noir et blanc). Correspond au mode BIOS vidéo 06h.
+
+  Résolution : 640 × 200 pixels
+  Couleurs   : 2 (noir et blanc)
+
+  ---------------------------------------------------------------
+  procedure HiResColor(Color : Integer);
+  ---------------------------------------------------------------
+  Active le mode haute résolution 640×200 et définit la couleur
+  de premier plan.
+
+  Paramètres :
+    Color  Couleur de premier plan (0..15)
+
+  En mode HiRes standard, seul le blanc est utilisé. HiResColor
+  permet de choisir une autre couleur sur les adaptateurs
+  compatibles.
+
+=========================================================================
+  4. CONFIGURATION DES COULEURS
+=========================================================================
+
+  procedure Palette(N : Integer);
+  ---------------------------------------------------------------
+  Sélectionne la palette CGA à utiliser en mode 320×200.
+
+  Paramètres :
+    N  Numéro de palette (0..3)
+
+  Les palettes CGA standard sont :
+    Palette 0 : Fond, Vert,    Rouge,    Jaune/Brun
+    Palette 1 : Fond, Cyan,    Magenta,  Blanc
+    Palette 2 : Fond, Vert clair, Rouge clair, Jaune
+    Palette 3 : Fond, Cyan clair, Magenta clair, Blanc intense
+
+  La couleur 0 est toujours la couleur de fond.
+
+  ---------------------------------------------------------------
+  procedure GraphBackground(Color : Integer);
+  ---------------------------------------------------------------
+  Définit la couleur de fond en mode graphique.
+
+  Paramètres :
+    Color  Couleur de fond (0..15)
+
+  Les 16 couleurs de fond CGA sont :
+    0 = Noir          8 = Gris foncé
+    1 = Bleu          9 = Bleu clair
+    2 = Vert         10 = Vert clair
+    3 = Cyan         11 = Cyan clair
+    4 = Rouge        12 = Rouge clair
+    5 = Magenta      13 = Magenta clair
+    6 = Brun         14 = Jaune
+    7 = Gris clair   15 = Blanc
+
+  ---------------------------------------------------------------
+  procedure ColorTable(C1, C2, C3, C4 : Integer);
+  ---------------------------------------------------------------
+  Redéfinit la table de correspondance des couleurs. Permet de
+  remapper les 4 indices de couleur (0..3) vers d'autres valeurs.
+
+  Paramètres :
+    C1  Couleur assignée à l'indice 0
+    C2  Couleur assignée à l'indice 1
+    C3  Couleur assignée à l'indice 2
+    C4  Couleur assignée à l'indice 3
+
+  Exemple :
+    ColorTable(0, 3, 1, 2);  { inverser les couleurs 1 et 3 }
+
+=========================================================================
+  5. FENÊTRE GRAPHIQUE
+=========================================================================
+
+  procedure GraphWindow(X1, Y1, X2, Y2 : Integer);
+  ---------------------------------------------------------------
+  Définit une fenêtre de découpage (clipping) pour les opérations
+  graphiques. Les dessins en dehors de cette zone sont tronqués.
+
+  Paramètres :
+    X1, Y1  Coin supérieur gauche (pixels)
+    X2, Y2  Coin inférieur droit (pixels)
+
+  Coordonnées valides :
+    Mode 320×200 : X1,X2 dans 0..319, Y1,Y2 dans 0..199
+    Mode 640×200 : X1,X2 dans 0..639, Y1,Y2 dans 0..199
+
+  Pour restaurer la fenêtre plein écran :
+    GraphWindow(0, 0, 319, 199);   { mode 320×200 }
+    GraphWindow(0, 0, 639, 199);   { mode 640×200 }
+
+=========================================================================
+  6. PRIMITIVES DE DESSIN
+=========================================================================
+
+  procedure Plot(X, Y, Color : Integer);
+  ---------------------------------------------------------------
+  Allume un pixel à la position (X, Y) avec la couleur spécifiée.
+
+  Paramètres :
+    X      Coordonnée horizontale (pixels)
+    Y      Coordonnée verticale (pixels)
+    Color  Couleur du pixel (0..3 en 320×200, 0..1 en 640×200)
+
+  Exemple :
+    Plot(160, 100, 1);  { pixel au centre, couleur 1 }
+
+  ---------------------------------------------------------------
+  function GetDotColor(X, Y : Integer) : Integer;
+  ---------------------------------------------------------------
+  Retourne la couleur du pixel à la position (X, Y).
+
+  Paramètres :
+    X  Coordonnée horizontale
+    Y  Coordonnée verticale
+
+  Retour :
+    Couleur du pixel (0..3 en 320×200, 0..1 en 640×200)
+
+  ---------------------------------------------------------------
+  procedure Draw(X1, Y1, X2, Y2, Color : Integer);
+  ---------------------------------------------------------------
+  Trace une ligne droite entre deux points.
+
+  Paramètres :
+    X1, Y1  Point de départ
+    X2, Y2  Point d'arrivée
+    Color   Couleur de la ligne
+
+  Utilise l'algorithme de Bresenham pour le tracé.
+
+  Exemple :
+    Draw(0, 0, 319, 199, 2);  { diagonale, couleur 2 }
+
+  ---------------------------------------------------------------
+  procedure Arc(X, Y, Angle, Radius, Color : Integer);
+  ---------------------------------------------------------------
+  Trace un arc de cercle.
+
+  Paramètres :
+    X, Y    Centre de l'arc
+    Angle   Étendue angulaire en degrés
+    Radius  Rayon en pixels
+    Color   Couleur de l'arc
+
+  L'arc commence à la direction courante de la tortue et s'étend
+  sur Angle degrés.
+
+  ---------------------------------------------------------------
+  procedure Circle(X, Y, Radius, Color : Integer);
+  ---------------------------------------------------------------
+  Trace un cercle complet.
+
+  Paramètres :
+    X, Y    Centre du cercle
+    Radius  Rayon en pixels
+    Color   Couleur du cercle
+
+  Note : le rapport d'aspect CGA (320×200 avec pixels non carrés)
+  peut rendre le cercle légèrement ovale. Le ratio d'aspect est
+  compensé automatiquement.
+
+  Exemple :
+    Circle(160, 100, 50, 3);  { cercle au centre, rayon 50 }
+
+=========================================================================
+  7. REMPLISSAGE
+=========================================================================
+
+  procedure FillScreen(Color : Integer);
+  ---------------------------------------------------------------
+  Remplit tout l'écran graphique avec la couleur spécifiée.
+
+  Paramètres :
+    Color  Couleur de remplissage (0..3 ou 0..1)
+
+  Équivalent rapide d'un effacement d'écran en graphique :
+    FillScreen(0);  { fond noir }
+
+  ---------------------------------------------------------------
+  procedure FillShape(X, Y, FillCol, BorderCol : Integer);
+  ---------------------------------------------------------------
+  Remplit une zone fermée par remplissage par diffusion (flood
+  fill) à partir du point (X, Y).
+
+  Paramètres :
+    X, Y       Point de départ du remplissage (intérieur)
+    FillCol    Couleur de remplissage
+    BorderCol  Couleur de la bordure (limite du remplissage)
+
+  Le remplissage s'étend dans toutes les directions jusqu'à
+  rencontrer des pixels de couleur BorderCol.
+
+  Exemple :
+    Circle(160, 100, 50, 1);
+    FillShape(160, 100, 2, 1);  { remplir le cercle }
+
+  ---------------------------------------------------------------
+  procedure FillPattern(X1, Y1, X2, Y2, Color : Integer);
+  ---------------------------------------------------------------
+  Remplit un rectangle avec le motif de remplissage courant.
+
+  Paramètres :
+    X1, Y1  Coin supérieur gauche
+    X2, Y2  Coin inférieur droit
+    Color   Couleur du motif
+
+  Le motif est défini par la procédure Pattern.
+
+  ---------------------------------------------------------------
+  procedure Pattern(var P);
+  ---------------------------------------------------------------
+  Définit le motif de remplissage utilisé par FillPattern.
+
+  Paramètres :
+    P  Tampon de 8 octets décrivant le motif 8×8 pixels
+
+  Le motif est un tableau de 8 octets. Chaque octet représente
+  une ligne du motif, chaque bit un pixel (1 = allumé, 0 = éteint).
+
+  Exemple :
+    var
+      Pat : array[0..7] of Byte;
+    begin
+      Pat[0] := $AA;  { 10101010 }
+      Pat[1] := $55;  { 01010101 }
+      Pat[2] := $AA;  { 10101010 }
+      Pat[3] := $55;  { 01010101 }
+      Pat[4] := $AA;
+      Pat[5] := $55;
+      Pat[6] := $AA;
+      Pat[7] := $55;
+      Pattern(Pat);   { motif en damier }
+    end;
+
+=========================================================================
+  8. CAPTURE ET RESTITUTION D'IMAGES
+=========================================================================
+
+  procedure GetPic(var Buffer; X1, Y1, X2, Y2 : Integer);
+  ---------------------------------------------------------------
+  Capture une zone rectangulaire de l'écran dans un tampon mémoire.
+
+  Paramètres :
+    Buffer     Tampon destination (non typé)
+    X1, Y1     Coin supérieur gauche de la zone
+    X2, Y2     Coin inférieur droit de la zone
+
+  La taille du tampon nécessaire dépend de la zone et du mode :
+    Mode 320×200 : ((X2-X1+1) * (Y2-Y1+1) + 3) div 4 + 6 octets
+    Mode 640×200 : ((X2-X1+1) * (Y2-Y1+1) + 7) div 8 + 6 octets
+  (approximation ; prévoir un tampon large)
+
+  ---------------------------------------------------------------
+  procedure PutPic(var Buffer; X, Y : Integer);
+  ---------------------------------------------------------------
+  Affiche une image précédemment capturée par GetPic.
+
+  Paramètres :
+    Buffer  Tampon contenant l'image (rempli par GetPic)
+    X, Y    Position d'affichage (coin supérieur gauche)
+
+  Exemple :
+    var
+      Buf : array[0..2047] of Byte;
+    begin
+      Circle(50, 50, 20, 1);
+      GetPic(Buf, 30, 30, 70, 70);  { capturer le cercle }
+      PutPic(Buf, 200, 100);         { afficher ailleurs }
+    end;
+
+=========================================================================
+  9. TURTLE GRAPHICS - PRÉSENTATION
+=========================================================================
+
+  L'unité Graph3 inclut un système complet de « tortue graphique »
+  inspiré du langage Logo. La tortue est un curseur invisible ou
+  visible qui se déplace sur l'écran, laissant une trace (ou non)
+  selon que le stylo est abaissé (PenDown) ou relevé (PenUp).
+
+  Concepts fondamentaux :
+  - La tortue a une position (X, Y) et une direction (Heading)
+  - Elle avance (Forwd) ou recule (Back) dans sa direction
+  - Elle tourne à gauche (TurnLeft) ou à droite (TurnRight)
+  - Le stylo trace ou non (PenDown / PenUp)
+  - Elle peut être visible (ShowTurtle) ou cachée (HideTurtle)
+  - Le mode Wrap/NoWrap contrôle le retour automatique
+
+  Direction initiale :
+    La tortue commence orientée vers le Nord (Heading = 0),
+    position au centre de l'écran.
+
+=========================================================================
+  10. TURTLE GRAPHICS - DÉPLACEMENT
+=========================================================================
+
+  procedure Forwd(Dist : Integer);
+  ---------------------------------------------------------------
+  Avance la tortue de Dist pixels dans sa direction courante.
+  Si le stylo est abaissé (PenDown), une ligne est tracée.
+
+  Paramètres :
+    Dist  Distance en pixels (positif = en avant)
+
+  Exemple :
+    Forwd(50);  { avancer de 50 pixels }
+
+  ---------------------------------------------------------------
+  procedure Back(Dist : Integer);
+  ---------------------------------------------------------------
+  Recule la tortue de Dist pixels (direction opposée au cap).
+  Si le stylo est abaissé, une ligne est tracée.
+
+  Paramètres :
+    Dist  Distance en pixels (positif = en arrière)
+
+  Équivalent à : Forwd(-Dist)  ou  TurnRight(180); Forwd(Dist);
+                                    TurnRight(180);
+
+  ---------------------------------------------------------------
+  procedure Home;
+  ---------------------------------------------------------------
+  Ramène la tortue au centre de l'écran (ou centre de la fenêtre
+  tortue) et réinitialise sa direction au Nord (Heading = 0).
+  Si le stylo est abaissé, une ligne est tracée depuis la
+  position courante jusqu'au centre.
+
+  ---------------------------------------------------------------
+  procedure SetPosition(X, Y : Integer);
+  ---------------------------------------------------------------
+  Déplace la tortue à la position absolue (X, Y). Si le stylo
+  est abaissé, une ligne est tracée.
+
+  Paramètres :
+    X  Coordonnée horizontale (pixels)
+    Y  Coordonnée verticale (pixels)
+
+=========================================================================
+  11. TURTLE GRAPHICS - ORIENTATION
+=========================================================================
+
+  procedure SetHeading(Angle : Integer);
+  ---------------------------------------------------------------
+  Définit la direction absolue de la tortue.
+
+  Paramètres :
+    Angle  Direction en degrés (0 = Nord, sens horaire)
+
+  Exemple :
+    SetHeading(East);   { orienter vers la droite }
+    SetHeading(0);      { orienter vers le haut }
+
+  ---------------------------------------------------------------
+  procedure TurnLeft(Angle : Integer);
+  ---------------------------------------------------------------
+  Tourne la tortue vers la gauche (sens anti-horaire).
+
+  Paramètres :
+    Angle  Angle de rotation en degrés
+
+  Exemple :
+    TurnLeft(90);  { tourner à gauche de 90° }
+
+  ---------------------------------------------------------------
+  procedure TurnRight(Angle : Integer);
+  ---------------------------------------------------------------
+  Tourne la tortue vers la droite (sens horaire).
+
+  Paramètres :
+    Angle  Angle de rotation en degrés
+
+  Exemple :
+    TurnRight(45);  { tourner à droite de 45° }
+
+  ---------------------------------------------------------------
+  function Heading : Integer;
+  ---------------------------------------------------------------
+  Retourne la direction courante de la tortue en degrés.
+
+  Retour :
+    Angle en degrés (0..359), 0 = Nord, sens horaire
+
+=========================================================================
+  12. TURTLE GRAPHICS - STYLO ET COULEUR
+=========================================================================
+
+  procedure PenDown;
+  ---------------------------------------------------------------
+  Abaisse le stylo de la tortue. Tout déplacement ultérieur
+  laissera une trace à l'écran.
+
+  C'est l'état par défaut au démarrage.
+
+  ---------------------------------------------------------------
+  procedure PenUp;
+  ---------------------------------------------------------------
+  Relève le stylo de la tortue. Les déplacements ne laissent
+  plus de trace. Utile pour repositionner la tortue sans dessiner.
+
+  Exemple :
+    PenUp;
+    SetPosition(100, 50);  { déplacer sans tracer }
+    PenDown;
+    Forwd(80);             { tracer une ligne }
+
+  ---------------------------------------------------------------
+  procedure SetPenColor(Color : Integer);
+  ---------------------------------------------------------------
+  Définit la couleur du stylo de la tortue.
+
+  Paramètres :
+    Color  Couleur du trait (0..3 en 320×200, 0..1 en 640×200)
+
+=========================================================================
+  13. TURTLE GRAPHICS - VISIBILITÉ ET DÉLAI
+=========================================================================
+
+  procedure ShowTurtle;
+  ---------------------------------------------------------------
+  Rend la tortue visible à l'écran. La tortue est représentée
+  par un petit curseur triangulaire orienté dans sa direction.
+
+  ---------------------------------------------------------------
+  procedure HideTurtle;
+  ---------------------------------------------------------------
+  Rend la tortue invisible. Les déplacements et tracés continuent
+  normalement, mais le curseur tortue n'est pas affiché.
+  Préférable pour les dessins complexes (plus rapide).
+
+  ---------------------------------------------------------------
+  function TurtleThere : Boolean;
+  ---------------------------------------------------------------
+  Indique si la tortue est visible.
+
+  Retour :
+    True   La tortue est visible (après ShowTurtle)
+    False  La tortue est cachée (après HideTurtle)
+
+  ---------------------------------------------------------------
+  procedure TurtleDelay(_Delay : Integer);
+  ---------------------------------------------------------------
+  Définit un délai (en millisecondes) entre chaque pas de la
+  tortue. Permet de ralentir le tracé pour observer l'animation.
+
+  Paramètres :
+    _Delay  Délai en millisecondes (0 = pas de délai)
+
+  Exemple :
+    TurtleDelay(50);  { 50 ms entre chaque pas }
+    Forwd(100);       { ligne tracée lentement }
+
+=========================================================================
+  14. TURTLE GRAPHICS - FENÊTRE ET LIMITES
+=========================================================================
+
+  procedure TurtleWindow(X, Y, W, H : Integer);
+  ---------------------------------------------------------------
+  Définit la zone de la fenêtre tortue (zone dans laquelle la
+  tortue peut se déplacer).
+
+  Paramètres :
+    X  Coordonnée X du coin supérieur gauche
+    Y  Coordonnée Y du coin supérieur gauche
+    W  Largeur de la fenêtre en pixels
+    H  Hauteur de la fenêtre en pixels
+
+  La tortue est repositionnée au centre de cette fenêtre.
+
+  ---------------------------------------------------------------
+  procedure Wrap;
+  ---------------------------------------------------------------
+  Active le mode « retour automatique ». Quand la tortue sort
+  d'un bord de la fenêtre, elle réapparaît du côté opposé
+  (comportement toroïdal).
+
+  C'est le comportement par défaut.
+
+  ---------------------------------------------------------------
+  procedure NoWrap;
+  ---------------------------------------------------------------
+  Désactive le retour automatique. Quand la tortue sort de la
+  fenêtre, elle continue hors de l'écran (le tracé est tronqué).
+
+  ---------------------------------------------------------------
+  procedure ClearScreen;
+  ---------------------------------------------------------------
+  Efface l'écran graphique et réinitialise la tortue (position
+  au centre, direction Nord, stylo abaissé).
+
+  Équivalent combiné de FillScreen(0) + Home.
+
+=========================================================================
+  15. TURTLE GRAPHICS - POSITION
+=========================================================================
+
+  function Xcor : Integer;
+  ---------------------------------------------------------------
+  Retourne la coordonnée X courante de la tortue.
+
+  Retour :
+    Position horizontale en pixels
+
+  ---------------------------------------------------------------
+  function Ycor : Integer;
+  ---------------------------------------------------------------
+  Retourne la coordonnée Y courante de la tortue.
+
+  Retour :
+    Position verticale en pixels
+
+  Exemple :
+    WriteLn('Position : ', Xcor, ', ', Ycor);
+    WriteLn('Direction : ', Heading, '°');
+
+=========================================================================
+  16. EXEMPLES COMPLETS
+=========================================================================
+
+  --- Exemple 1 : Dessin de base en mode CGA ---
+
+  program DessinCGA;
+  uses Graph3;
+  begin
+    GraphColorMode;        { 320×200, 4 couleurs }
+    Palette(1);            { cyan, magenta, blanc }
+    GraphBackground(0);    { fond noir }
+
+    Draw(10, 10, 310, 190, 1);   { diagonale cyan }
+    Circle(160, 100, 80, 2);     { cercle magenta }
+    Plot(160, 100, 3);           { pixel central blanc }
+
+    FillShape(160, 50, 3, 2);    { remplir haut du cercle }
+
+    ReadLn;
+    TextMode(C80);
+  end.
+
+  --- Exemple 2 : Carré en turtle graphics ---
+
+  program CarreTurtle;
+  uses Graph3;
+  var
+    I : Integer;
+  begin
+    GraphColorMode;
+    HideTurtle;
+    SetPenColor(1);
+
+    for I := 1 to 4 do
+    begin
+      Forwd(60);
+      TurnRight(90);
+    end;
+
+    ReadLn;
+    TextMode(C80);
+  end.
+
+  --- Exemple 3 : Spirale avec la tortue ---
+
+  program Spirale;
+  uses Graph3;
+  var
+    I : Integer;
+  begin
+    GraphColorMode;
+    HideTurtle;
+    SetPenColor(2);
+    TurtleDelay(10);
+
+    for I := 1 to 100 do
+    begin
+      Forwd(I);
+      TurnRight(91);
+    end;
+
+    ReadLn;
+    TextMode(C80);
+  end.
+
+  --- Exemple 4 : Étoile à 5 branches ---
+
+  program Etoile;
+  uses Graph3;
+  var
+    I : Integer;
+  begin
+    GraphColorMode;
+    HideTurtle;
+    SetPenColor(3);
+
+    for I := 1 to 5 do
+    begin
+      Forwd(80);
+      TurnRight(144);
+    end;
+
+    ReadLn;
+    TextMode(C80);
+  end.
+
+  --- Exemple 5 : Capture et restitution d'image ---
+
+  program CaptureImage;
+  uses Graph3;
+  var
+    Buf : array[0..4095] of Byte;
+  begin
+    GraphColorMode;
+
+    Circle(50, 50, 30, 1);
+    FillShape(50, 50, 2, 1);
+
+    GetPic(Buf, 20, 20, 80, 80);    { capturer la zone }
+    PutPic(Buf, 150, 80);           { copier ailleurs }
+    PutPic(Buf, 230, 120);          { et encore ailleurs }
+
+    ReadLn;
+    TextMode(C80);
+  end.
+
+  --- Exemple 6 : Flocon de Koch (récursif) ---
+
+  program Flocon;
+  uses Graph3;
+
+    procedure Koch(Longueur, Profondeur : Integer);
+    begin
+      if Profondeur = 0 then
+        Forwd(Longueur)
+      else
+      begin
+        Koch(Longueur div 3, Profondeur - 1);
+        TurnLeft(60);
+        Koch(Longueur div 3, Profondeur - 1);
+        TurnRight(120);
+        Koch(Longueur div 3, Profondeur - 1);
+        TurnLeft(60);
+        Koch(Longueur div 3, Profondeur - 1);
+      end;
+    end;
+
+  var
+    I : Integer;
+  begin
+    HiRes;
+    HideTurtle;
+    PenUp;
+    SetPosition(100, 50);
+    PenDown;
+    SetHeading(East);
+
+    for I := 1 to 3 do
+    begin
+      Koch(240, 3);
+      TurnRight(120);
+    end;
+
+    ReadLn;
+    TextMode(C80);
+  end.
+
+=========================================================================
+  17. COMPARAISON GRAPH3 vs GRAPH (BGI)
+=========================================================================
+
+  Graph3 (TP3 compat.)       Graph (BGI, TP4+)
+  ------------------------   ----------------------------
+  GraphMode / GraphColorMode InitGraph + SetGraphMode
+  HiRes / HiResColor         InitGraph (mode haute rés.)
+  Palette(N)                  SetPalette / SetAllPalette
+  GraphBackground(C)          SetBkColor(C)
+  GraphWindow(...)            SetViewPort(...)
+  Plot(X,Y,C)                PutPixel(X,Y,C)
+  GetDotColor(X,Y)           GetPixel(X,Y)
+  Draw(X1,Y1,X2,Y2,C)       Line(X1,Y1,X2,Y2)
+  Circle(X,Y,R,C)            Circle(X,Y,R)
+  Arc(X,Y,A,R,C)             Arc(X,Y,Start,End,R)
+  FillShape(X,Y,FC,BC)       FloodFill(X,Y,Border)
+  FillScreen(C)               ClearDevice / Bar(...)
+  GetPic / PutPic             GetImage / PutImage
+  Pattern + FillPattern       SetFillPattern + Bar
+  ColorTable                  SetPalette
+  Turtle Graphics             (pas d'équivalent BGI)
+
+  Avantages de Graph3 :
+  - Turtle graphics intégré (absent dans Graph/BGI)
+  - API plus simple (couleur en paramètre direct)
+  - Compatibilité directe avec le code TP3
+
+  Avantages de Graph (BGI) :
+  - Support multi-adaptateur (EGA, VGA, Hercules...)
+  - Résolutions et palettes bien plus étendues
+  - Pilotes graphiques chargeables (.BGI)
+  - API plus riche (polices, remplissage avancé, etc.)
+
+=========================================================================
+  18. RÉCAPITULATIF DE L'INTERFACE
+=========================================================================
+
+  --- Constantes ---
+  North = 0          Direction nord (haut)
+  East  = 90         Direction est (droite)
+  South = 180        Direction sud (bas)
+  West  = 270        Direction ouest (gauche)
+
+  --- Initialisation ---
+  Procedure GraphMode;
+  Procedure GraphColorMode;
+  Procedure HiRes;
+  Procedure HiResColor(Color : Integer);
+
+  --- Couleurs ---
+  Procedure Palette(N : Integer);
+  Procedure GraphBackground(Color : Integer);
+  Procedure ColorTable(C1, C2, C3, C4 : Integer);
+
+  --- Fenêtre graphique ---
+  Procedure GraphWindow(X1, Y1, X2, Y2 : Integer);
+
+  --- Primitives de dessin ---
+  Procedure Plot(X, Y, Color : Integer);
+  Function  GetDotColor(X, Y : Integer) : Integer;
+  Procedure Draw(X1, Y1, X2, Y2, Color : Integer);
+  Procedure Arc(X, Y, Angle, Radius, Color : Integer);
+  Procedure Circle(X, Y, Radius, Color : Integer);
+
+  --- Remplissage ---
+  Procedure FillScreen(Color : Integer);
+  Procedure FillShape(X, Y, FillCol, BorderCol : Integer);
+  Procedure FillPattern(X1, Y1, X2, Y2, Color : Integer);
+  Procedure Pattern(var P);
+
+  --- Capture d'image ---
+  Procedure GetPic(var Buffer; X1, Y1, X2, Y2 : Integer);
+  Procedure PutPic(var Buffer; X, Y : Integer);
+
+  --- Turtle : déplacement ---
+  Procedure Forwd(Dist : Integer);
+  Procedure Back(Dist : Integer);
+  Procedure Home;
+  Procedure SetPosition(X, Y : Integer);
+
+  --- Turtle : orientation ---
+  Procedure SetHeading(Angle : Integer);
+  Procedure TurnLeft(Angle : Integer);
+  Procedure TurnRight(Angle : Integer);
+  Function  Heading : Integer;
+
+  --- Turtle : stylo ---
+  Procedure PenDown;
+  Procedure PenUp;
+  Procedure SetPenColor(Color : Integer);
+
+  --- Turtle : visibilité et délai ---
+  Procedure ShowTurtle;
+  Procedure HideTurtle;
+  Function  TurtleThere : Boolean;
+  Procedure TurtleDelay(_Delay : Integer);
+
+  --- Turtle : fenêtre et limites ---
+  Procedure TurtleWindow(X, Y, W, H : Integer);
+  Procedure Wrap;
+  Procedure NoWrap;
+  Procedure ClearScreen;
+
+  --- Turtle : position ---
+  Function  Xcor : Integer;
+  Function  Ycor : Integer;
+
+=========================================================================
+  19. RÉSUMÉ PAR CATÉGORIE
+=========================================================================
+
+  Catégorie                   Nombre   Éléments
+  -------------------------   ------   ----------------------------------
+  Initialisation graphique       4     GraphMode, GraphColorMode,
+                                       HiRes, HiResColor
+  Configuration couleurs         3     Palette, GraphBackground,
+                                       ColorTable
+  Fenêtre graphique              1     GraphWindow
+  Primitives de dessin           5     Plot, GetDotColor, Draw,
+                                       Arc, Circle
+  Remplissage                    4     FillScreen, FillShape,
+                                       FillPattern, Pattern
+  Capture d'image                2     GetPic, PutPic
+  Turtle - déplacement           4     Forwd, Back, Home, SetPosition
+  Turtle - orientation           4     SetHeading, TurnLeft, TurnRight,
+                                       Heading
+  Turtle - stylo                 3     PenDown, PenUp, SetPenColor
+  Turtle - visibilité/délai      4     ShowTurtle, HideTurtle,
+                                       TurtleThere, TurtleDelay
+  Turtle - fenêtre/limites       4     TurtleWindow, Wrap, NoWrap,
+                                       ClearScreen
+  Turtle - position              2     Xcor, Ycor
+  -------------------------   ------   ----------------------------------
+  TOTAL procédures/fonctions    40
+
+  Constantes exportées : 4   (North, East, South, West)
+  Variables exportées : 0
+  Types exportés : 0
+  Dépendance : Crt
+
+=========================================================================
+  Fin du document - Unité GRAPH3 - Turbo Pascal 7.0
+=========================================================================

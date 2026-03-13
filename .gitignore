@@ -1,6 +1,4 @@
+
 *.o
 *.obj
 *.ppu
-*.asm
-*.exe
-ABAPCW32
