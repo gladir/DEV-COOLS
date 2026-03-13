@@ -1444,7 +1444,7 @@ _RXRT_PARSEABS:
         MOV   CX, BX
         SUB   CX, WORD PTR [_RX_PARSEPOS]
         CMP   CX, 0
-        JLE   _RXRT_PA_EMP
+        JLE   _RXRT_PA_END
 _RXRT_PA_COPY:
         MOV   AL, BYTE PTR [SI]
         CMP   AL, 0
@@ -1456,7 +1456,6 @@ _RXRT_PA_COPY:
         CMP   CX, 0
         JG   _RXRT_PA_COPY
         JMP   _RXRT_PA_END
-_RXRT_PA_EMP:
 _RXRT_PA_END:
         MOV   BYTE PTR [DI], 0
         MOV   WORD PTR [_RX_PARSEPOS], BX

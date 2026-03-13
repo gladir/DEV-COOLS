@@ -4174,7 +4174,7 @@ Begin
   EmitInstrAB('MOV', 'CX', 'BX');
   EmitInstrAB('SUB', 'CX', 'WORD PTR [_RX_PARSEPOS]');
   EmitInstrAB('CMP', 'CX', '0');
-  EmitInstrA('JLE', '_RXRT_PA_EMP');
+  EmitInstrA('JLE', '_RXRT_PA_END');
   (* Copier CX caracteres *)
   EmitLabel('_RXRT_PA_COPY');
   EmitInstrAB('MOV', 'AL', 'BYTE PTR [SI]');
@@ -4187,8 +4187,7 @@ Begin
   EmitInstrAB('CMP', 'CX', '0');
   EmitInstrA('JG', '_RXRT_PA_COPY');
   EmitInstrA('JMP', '_RXRT_PA_END');
-  (* Position en arriere : chaine vide *)
-  EmitLabel('_RXRT_PA_EMP');
+  (* Position en arriere ou zero : chaine vide *)
   EmitLabel('_RXRT_PA_END');
   EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
   EmitInstrAB('MOV', 'WORD PTR [_RX_PARSEPOS]', 'BX');
@@ -6223,12 +6222,13 @@ Begin
       End
       Else If TriggType[I] = PT_REL Then
       Begin
-        (* Extraire puis avancer de la position relative *)
-        EmitInstrA('CALL', '_RXRT_PARSEWORD');
+        (* Position relative : extraire portion et avancer position *)
+        (* +n = avancer de n caracteres depuis la position courante  *)
         EmitInstrAB('MOV', 'AX', 'WORD PTR [_RX_PARSEPOS]');
         EmitInstrAB('ADD', 'AX', IntToStr(TriggInt[I]));
-        EmitInstrAB('MOV', 'WORD PTR [_RX_PARSEPOS]', 'AX');
-        EmitInstrAB('MOV', 'AX', 'OFFSET _RX_PARSEBUF');
+        EmitInstrA('INC', 'AX');
+        EmitInstrAB('MOV', 'BX', 'AX');
+        EmitInstrA('CALL', '_RXRT_PARSEABS');
       End
       Else
         (* Extraction par mot (defaut) *)
