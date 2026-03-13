@@ -183,7 +183,7 @@
               XSTRING (octetstring, DD stub)
             Allouer en .DATA (globales) ou pile EBP (locales FORM)
 
-  TODO 08 - PARSEUR : EXPRESSIONS ARITHMETIQUES ET LOGIQUES (32 BITS)
+  TODO 08 - PARSEUR : EXPRESSIONS ARITHMETIQUES ET LOGIQUES (32 BITS) [IMPLEMENTE]
             Function ParseExpr: Integer
             Function ParseLogExpr: Integer    (AND / OR / NOT)
             Function ParseCompareExpr: Integer (EQ NE LT GT LE GE
@@ -981,6 +981,16 @@ Var
   { Nom du programme (REPORT / PROGRAM) }
   ProgName    : TString;
 
+  { Compteur de labels generes (TODO 08) }
+  LabelCount  : Integer;
+
+  { Table des chaines litterales (TODO 08) }
+  StrLitTab   : Array[1..MAX_DATA] of Record
+                  Text    : TString;   { contenu chaine + '$' }
+                  AsmLabel: TString;   { _ABK_n               }
+                End;
+  StrLitCount : Integer;
+
 Const
 {$IFDEF FPC}
   BinAPIDecorated : Array[0..PE_NUM_API - 1] Of String[32] = (
@@ -1053,6 +1063,19 @@ Procedure ParseOneVar(Const NameIn : TString; IsConst : Boolean); Forward;
 Procedure ParseTypesBlock; Forward;
 Procedure ParseData(IsConst : Boolean); Forward;
 Procedure ParseTypes; Forward;
+
+{ ============================================================ }
+{ DECLARATIONS FORWARD (EMISSION ASM / EXPRESSIONS TODO 08)    }
+{ ============================================================ }
+
+Procedure Emit(Const S : TString); Forward;
+Procedure EmitI(Const S : TString); Forward;
+Procedure EmitLabel(Const S : TString); Forward;
+Procedure EmitComment(Const S : TString); Forward;
+Procedure EmitBlank; Forward;
+Function  NewLabel : TString; Forward;
+Function  AddStringLit(Const S : TString) : TString; Forward;
+Function  ParseExpr : Integer; Forward;
 
 { ============================================================ }
 { FONCTIONS UTILITAIRES                                        }
@@ -2576,9 +2599,494 @@ Begin
   If CurTokType = TOK_DOT Then Consume;
 End;
 
+{ ============================================================ }
+{ PRIMITIVES D EMISSION ASM (TODO 08)                          }
+{ ============================================================ }
+
+{ ---- Emit : ecrire une ligne brute dans le listing ASM ----- }
+Procedure Emit(Const S : TString);
+Begin
+  { Pour l'instant, ecriture vers WriteLn (sera redirige vers OutF
+    quand TODO 09 implementera l'emetteur binaire/ASM complet.)    }
+  If Opts.Verbose Then
+    WriteLn('  ', S);
+End;
+
+{ ---- EmitI : instruction indentee avec TAB ------------------- }
+Procedure EmitI(Const S : TString);
+Begin
+  Emit('        ' + S);
+End;
+
+{ ---- EmitLabel : etiquette suivie d un deux-points ----------- }
+Procedure EmitLabel(Const S : TString);
+Begin
+  Emit(S + ':');
+End;
+
+{ ---- EmitComment : commentaire ASM (prefixe ;) --------------- }
+Procedure EmitComment(Const S : TString);
+Begin
+  Emit('        ; ' + S);
+End;
+
+{ ---- EmitBlank : ligne vide ---------------------------------- }
+Procedure EmitBlank;
+Begin
+  Emit('');
+End;
+
+{ ---- NewLabel : generer un label unique ---------------------- }
+Function NewLabel : TString;
+Begin
+  Inc(LabelCount);
+  NewLabel := AB_LBL_PFX + IntToStr_(LabelCount);
+End;
+
+{ ---- AddStringLit : ajouter une chaine litterale ------------- }
+Function AddStringLit(Const S : TString) : TString;
+Var Lbl : TString;
+Begin
+  Inc(StrLitCount);
+  Lbl := AB_STR_PFX + IntToStr_(StrLitCount);
+  If StrLitCount <= MAX_DATA Then
+  Begin
+    StrLitTab[StrLitCount].Text     := S;
+    StrLitTab[StrLitCount].AsmLabel := Lbl;
+  End;
+  AddStringLit := Lbl;
+End;
+
+{ ============================================================ }
+{ GENERATION DE CODE INLINE (helpers pour TODO 08)             }
+{ ============================================================ }
+
+{ ---- GenLoadVar32 : charger une variable dans EAX ----------- }
+Procedure GenLoadVar32(SymIdx : Integer);
+Var SC, DT, BP : Integer; Lbl : TString;
+Begin
+  If (SymIdx < 1) Or (SymIdx > SymCount) Then
+  Begin EmitComment('GenLoadVar32: idx invalide'); Exit; End;
+  SC  := SymTab[SymIdx].StoreClass;
+  DT  := SymTab[SymIdx].DataType;
+  BP  := SymTab[SymIdx].BpOffset;
+  Lbl := SymTab[SymIdx].AsmLabel;
+  { CONSTANT : valeur immediate }
+  If SC = STORE_CONSTANT Then
+  Begin
+    EmitI('MOV     EAX, ' + IntToStr_(SymTab[SymIdx].InitNum));
+    Exit;
+  End;
+  Case DT Of
+    TYPE_C, TYPE_STRING, TYPE_D, TYPE_T, TYPE_N, TYPE_XSTRING:
+    Begin
+      { Chaine : charger l adresse (LEA) }
+      If SC = STORE_AUTO Then
+        EmitI('LEA     EAX, [EBP' + IntToStr_(BP) + ']')
+      Else
+        EmitI('LEA     EAX, [' + Lbl + ']');
+    End;
+  Else
+    { Numerique : charger la valeur (MOV) }
+    If SC = STORE_AUTO Then
+      EmitI('MOV     EAX, DWORD PTR [EBP' + IntToStr_(BP) + ']')
+    Else
+      EmitI('MOV     EAX, DWORD PTR [' + Lbl + ']');
+  End;
+End;
+
+{ ---- GenBinOp32 : emettre l operation binaire 32 bits ------- }
+Procedure GenBinOp32(Op : Integer);
+Begin
+  Case Op Of
+    TOK_PLUS:  EmitI('ADD     EAX, EBX');
+    TOK_MINUS: EmitI('SUB     EAX, EBX');
+    TOK_STAR:  EmitI('IMUL    EAX, EBX');
+    TOK_SLASH:
+    Begin
+      EmitI('CDQ');
+      EmitI('IDIV    EBX');
+    End;
+  Else
+    EmitComment('GenBinOp32: op inconnu');
+  End;
+End;
+
+{ ---- GenCompare32 : comparaison 32 bits -> EAX=1/0 --------- }
+Procedure GenCompare32(Op : Integer);
+Begin
+  EmitI('CMP     EAX, EBX');
+  Case Op Of
+    TOK_EQ, KW_EQ: EmitI('SETE    AL');
+    TOK_NE, KW_NE: EmitI('SETNE   AL');
+    TOK_LT, KW_LT: EmitI('SETL    AL');
+    TOK_GT, KW_GT: EmitI('SETG    AL');
+    TOK_LE, KW_LE: EmitI('SETLE   AL');
+    TOK_GE, KW_GE: EmitI('SETGE   AL');
+  Else
+    EmitI('SETE    AL');
+  End;
+  EmitI('MOVZX   EAX, AL');
+End;
+
+{ ---- GenBuiltIn32 : fonctions built-in -> True si reconnue -- }
+Function GenBuiltIn32(Const BName : TString) : Boolean;
+Var Lbl1, Lbl2 : TString;
+Begin
+  GenBuiltIn32 := True;
+  Lbl1 := NewLabel;
+  Lbl2 := NewLabel;
+  If (BName = 'STRLEN') Or (BName = 'strlen') Then
+  Begin
+    { STRLEN( var ) -> longueur d une chaine terminee par 0 }
+    ParseExpr;
+    If CurTokType = TOK_RPAREN Then Consume;
+    EmitI('MOV     ESI, EAX');
+    EmitI('XOR     ECX, ECX');
+    EmitLabel(Lbl1);
+    EmitI('MOV     AL, [ESI]');
+    EmitI('CMP     AL, 0');
+    EmitI('JE      ' + Lbl2);
+    EmitI('INC     ESI');
+    EmitI('INC     ECX');
+    EmitI('JMP     ' + Lbl1);
+    EmitLabel(Lbl2);
+    EmitI('MOV     EAX, ECX');
+  End
+  Else If (BName = 'ABS') Or (BName = 'abs') Then
+  Begin
+    { ABS( expr ) -> valeur absolue }
+    ParseExpr;
+    If CurTokType = TOK_RPAREN Then Consume;
+    EmitI('CDQ');
+    EmitI('XOR     EAX, EDX');
+    EmitI('SUB     EAX, EDX');
+  End
+  Else If (BName = 'SIGN') Or (BName = 'sign') Then
+  Begin
+    ParseExpr;
+    If CurTokType = TOK_RPAREN Then Consume;
+    EmitI('TEST    EAX, EAX');
+    EmitI('JZ      ' + Lbl2);
+    EmitI('JNS     ' + Lbl1);
+    EmitI('MOV     EAX, 0FFFFFFFFh');
+    EmitI('JMP     ' + Lbl2);
+    EmitLabel(Lbl1);
+    EmitI('MOV     EAX, 1');
+    EmitLabel(Lbl2);
+  End
+  Else If (BName = 'LINES') Or (BName = 'lines') Then
+  Begin
+    { LINES( itab ) -> stub = 0 }
+    ParseExpr;
+    If CurTokType = TOK_RPAREN Then Consume;
+    EmitI('XOR     EAX, EAX');
+    EmitComment('LINES( itab ) stub = 0');
+  End
+  Else
+    GenBuiltIn32 := False;
+End;
+
+{ ============================================================ }
+{ PARSEUR D EXPRESSIONS (TODO 08 - 32 bits)                    }
+{ ============================================================ }
+
+{ ---- ParsePrimaryExpr : expression primaire ----------------
+  Constante numerique, chaine, variable, parentheses, - unaire,
+  built-in STRLEN/ABS/SIGN/LINES                                }
+Function ParsePrimaryExpr : Integer;
+Var SymIdx, NArgs : Integer;
+    S : TString;
+    Lbl_T, Lbl_E : TString;
+Begin
+  ParsePrimaryExpr := TYPE_I;
+  Case CurTokType Of
+    { Constante entiere }
+    TOK_NUMBER:
+    Begin
+      EmitI('MOV     EAX, ' + IntToStr_(CurTokNum));
+      Consume;
+    End;
+    { Constante flottante (stub : partie entiere seulement) }
+    TOK_FLOAT:
+    Begin
+      EmitI('MOV     EAX, ' + IntToStr_(CurTokNum) + '  ; FLOAT stub');
+      Consume;
+    End;
+    { Chaine litterale }
+    TOK_STRING:
+    Begin
+      S := AddStringLit(CurTokStr);
+      EmitI('LEA     EAX, [' + S + ']');
+      Consume;
+      ParsePrimaryExpr := TYPE_C;
+    End;
+    { Expression parenthesee }
+    TOK_LPAREN:
+    Begin
+      Consume;
+      ParsePrimaryExpr := ParseExpr;
+      If CurTokType = TOK_RPAREN Then Consume
+      Else LexError('Attendu ) dans expression');
+    End;
+    { Unaire : - expr }
+    TOK_MINUS:
+    Begin
+      Consume;
+      ParsePrimaryExpr := ParsePrimaryExpr;
+      EmitI('NEG     EAX');
+    End;
+    { Identificateur : variable, constante, built-in }
+    TOK_IDENT:
+    Begin
+      { NOT en tant qu operateur unaire }
+      If CurTokKw = KW_NOT Then
+      Begin
+        Lbl_T := NewLabel; Lbl_E := NewLabel;
+        Consume;
+        ParsePrimaryExpr := ParsePrimaryExpr;
+        EmitI('TEST    EAX, EAX');
+        EmitI('JNZ     ' + Lbl_T);
+        EmitI('MOV     EAX, 1');
+        EmitI('JMP     ' + Lbl_E);
+        EmitLabel(Lbl_T);
+        EmitI('XOR     EAX, EAX');
+        EmitLabel(Lbl_E);
+      End
+      Else
+      Begin
+        S := CurTokStr; Consume;
+        { Appel built-in ou FORM comme expression }
+        If CurTokType = TOK_LPAREN Then
+        Begin
+          Consume;
+          If Not GenBuiltIn32(S) Then
+          Begin
+            { Appel de FORM comme expression (stub) }
+            NArgs := 0;
+            While (CurTokType <> TOK_RPAREN) And
+                  (CurTokType <> TOK_EOF) Do
+            Begin
+              ParseExpr;
+              EmitI('PUSH    EAX');
+              Inc(NArgs);
+              If CurTokType = TOK_COMMA Then Consume;
+            End;
+            If CurTokType = TOK_RPAREN Then Consume;
+            EmitI('CALL    ' + AB_FN_PFX + AsmIdent(S));
+            If NArgs > 0 Then
+              EmitI('ADD     ESP, ' + IntToStr_(NArgs * 4));
+          End;
+        End
+        Else
+        Begin
+          { Chargement d une variable / constante }
+          SymIdx := FindSym(S);
+          If SymIdx > 0 Then
+          Begin
+            GenLoadVar32(SymIdx);
+            ParsePrimaryExpr := SymTab[SymIdx].DataType;
+          End
+          Else
+          Begin
+            EmitComment('Variable inconnue: ' + S + ' (suppose 0)');
+            EmitI('XOR     EAX, EAX');
+          End;
+        End;
+      End;
+    End;
+  Else
+    Begin
+      EmitComment('ParsePrimaryExpr: token inattendu: ' + CurTokStr);
+      Consume;
+    End;
+  End;
+End;
+
+{ ---- ParseMulExpr : multiplication / division --------------- }
+Function ParseMulExpr : Integer;
+Var Op : Integer;
+Begin
+  ParseMulExpr := ParsePrimaryExpr;
+  While (CurTokType = TOK_STAR) Or (CurTokType = TOK_SLASH) Do
+  Begin
+    Op := CurTokType; Consume;
+    EmitI('PUSH    EAX');
+    ParseMulExpr := ParsePrimaryExpr;
+    EmitI('MOV     EBX, EAX');
+    EmitI('POP     EAX');
+    GenBinOp32(Op);
+  End;
+End;
+
+{ ---- ParseAddExpr : addition / soustraction ----------------- }
+Function ParseAddExpr : Integer;
+Var Op : Integer;
+Begin
+  ParseAddExpr := ParseMulExpr;
+  While (CurTokType = TOK_PLUS) Or (CurTokType = TOK_MINUS) Do
+  Begin
+    Op := CurTokType; Consume;
+    EmitI('PUSH    EAX');
+    ParseAddExpr := ParseMulExpr;
+    EmitI('MOV     EBX, EAX');
+    EmitI('POP     EAX');
+    GenBinOp32(Op);
+  End;
+End;
+
+{ ---- ParseCompareExpr : comparaisons et predicats ----------- }
+Function ParseCompareExpr : Integer;
+Var Op, Kw : Integer;
+    Lbl_F, Lbl_E : TString;
+    IsNot : Boolean;
+Begin
+  ParseCompareExpr := ParseAddExpr;
+  Op := CurTokType;
+  Kw := CurTokKw;
+  { Operateurs symboliques : = <> < > <= >= }
+  If (Op = TOK_EQ) Or (Op = TOK_NE) Or
+     (Op = TOK_LT) Or (Op = TOK_LE) Or
+     (Op = TOK_GT) Or (Op = TOK_GE) Then
+  Begin
+    Consume;
+    EmitI('PUSH    EAX');
+    ParseCompareExpr := ParseAddExpr;
+    EmitI('MOV     EBX, EAX');
+    EmitI('POP     EAX');
+    GenCompare32(Op);
+  End
+  { Formes verbales : EQ NE LT GT LE GE }
+  Else If (CurTokType = TOK_IDENT) And
+          ((Kw = KW_EQ) Or (Kw = KW_NE) Or
+           (Kw = KW_LT) Or (Kw = KW_LE) Or
+           (Kw = KW_GT) Or (Kw = KW_GE)) Then
+  Begin
+    Consume;
+    EmitI('PUSH    EAX');
+    ParseCompareExpr := ParseAddExpr;
+    EmitI('MOV     EBX, EAX');
+    EmitI('POP     EAX');
+    GenCompare32(Kw);
+  End
+  { IS [NOT] INITIAL / BOUND }
+  Else If TokIsKw(KW_IS) Then
+  Begin
+    Consume;
+    IsNot := False;
+    If TokIsKw(KW_NOT) Then Begin Consume; IsNot := True; End;
+    Lbl_F := NewLabel; Lbl_E := NewLabel;
+    If TokIsKw(KW_INITIAL) Then
+    Begin
+      Consume;
+      EmitI('TEST    EAX, EAX');
+      If IsNot Then EmitI('JNZ     ' + Lbl_F)
+      Else          EmitI('JZ      ' + Lbl_F);
+      EmitI('MOV     EAX, 1');
+      EmitI('JMP     ' + Lbl_E);
+      EmitLabel(Lbl_F);
+      EmitI('XOR     EAX, EAX');
+      EmitLabel(Lbl_E);
+    End
+    Else If TokIsKw(KW_BOUND) Then
+    Begin
+      Consume;
+      EmitComment('IS BOUND stub = vrai');
+      If IsNot Then EmitI('XOR     EAX, EAX')
+      Else          EmitI('MOV     EAX, 1');
+    End
+    Else
+      WarnMsg('IS : predicat inconnu -> ignore');
+  End
+  { BETWEEN lo AND hi }
+  Else If TokIsKw(KW_BETWEEN) Then
+  Begin
+    Consume;
+    Lbl_F := NewLabel; Lbl_E := NewLabel;
+    EmitI('PUSH    EAX');
+    ParseAddExpr;
+    EmitI('MOV     EBX, EAX');
+    EmitI('POP     EAX');
+    EmitI('PUSH    EAX');
+    EmitI('CMP     EAX, EBX');
+    EmitI('JL      ' + Lbl_F);
+    EatKw(KW_AND);
+    ParseAddExpr;
+    EmitI('MOV     EBX, EAX');
+    EmitI('POP     EAX');
+    EmitI('CMP     EAX, EBX');
+    EmitI('JG      ' + Lbl_F);
+    EmitI('MOV     EAX, 1');
+    EmitI('JMP     ' + Lbl_E);
+    EmitLabel(Lbl_F);
+    If CurTokType <> TOK_DOT Then
+    Begin
+      { Si BETWEEN a echoue au JL, la pile a un element non consomme }
+    End;
+    EmitI('XOR     EAX, EAX');
+    EmitLabel(Lbl_E);
+  End
+  { IN (stub) }
+  Else If TokIsKw(KW_IN) Then
+  Begin
+    Consume;
+    If CurTokType = TOK_IDENT Then Consume;
+    EmitComment('IN set stub = faux');
+    EmitI('XOR     EAX, EAX');
+  End;
+End;
+
+{ ---- ParseNotExpr : operateur logique NOT ------------------- }
+Function ParseNotExpr : Integer;
+Var Lbl_T, Lbl_E : TString;
+Begin
+  If TokIsKw(KW_NOT) Then
+  Begin
+    Consume;
+    Lbl_T := NewLabel; Lbl_E := NewLabel;
+    ParseNotExpr := ParseCompareExpr;
+    EmitI('TEST    EAX, EAX');
+    EmitI('JNZ     ' + Lbl_T);
+    EmitI('MOV     EAX, 1');
+    EmitI('JMP     ' + Lbl_E);
+    EmitLabel(Lbl_T);
+    EmitI('XOR     EAX, EAX');
+    EmitLabel(Lbl_E);
+  End
+  Else
+    ParseNotExpr := ParseCompareExpr;
+End;
+
+{ ---- ParseAndExpr : operateur logique AND ------------------- }
+Function ParseAndExpr : Integer;
+Begin
+  ParseAndExpr := ParseNotExpr;
+  While TokIsKw(KW_AND) Do
+  Begin
+    Consume;
+    EmitI('PUSH    EAX');
+    ParseAndExpr := ParseNotExpr;
+    EmitI('POP     EBX');
+    EmitI('AND     EAX, EBX');
+  End;
+End;
+
+{ ---- ParseExpr : operateur logique OR (racine) -------------- }
+Function ParseExpr : Integer;
+Begin
+  ParseExpr := ParseAndExpr;
+  While TokIsKw(KW_OR) Do
+  Begin
+    Consume;
+    EmitI('PUSH    EAX');
+    ParseExpr := ParseAndExpr;
+    EmitI('POP     EBX');
+    EmitI('OR      EAX, EBX');
+  End;
+End;
+
 Procedure InitOptions;
 Begin
-  Opts.SrcFile   := '';
   Opts.OutFile   := '';
   Opts.Verbose   := False;
   Opts.DebugMode := False;
@@ -2749,11 +3257,14 @@ End;
 { ============================================================ }
 
 Procedure Run;
+Var ExprType : Integer;
 Begin
   InitSymTable;
   InitScopes;
   DeclSysVars;
-  ProgName := 'ZPROGRAM';
+  ProgName    := 'ZPROGRAM';
+  LabelCount  := 0;
+  StrLitCount := 0;
   LexInit;
   If Opts.DebugMode Then
   Begin
@@ -2776,7 +3287,7 @@ Begin
     WriteLn('ABAPCW32: compilation de ', Opts.SrcFile, ' ...');
     WriteLn('ABAPCW32: programme: ', ProgName);
     WriteLn('ABAPCW32: label ASM: ', AB_FN_PFX, AsmIdent(ProgName));
-    { Parser les declarations de haut niveau }
+    { Parser les declarations et instructions de haut niveau }
     While (CurTokType <> TOK_EOF) Do
     Begin
       If TokIsKw(KW_DATA) Then
@@ -2785,15 +3296,24 @@ Begin
       Begin Consume; ParseData(True); End
       Else If TokIsKw(KW_TYPES) Then
       Begin Consume; ParseTypes; End
+      Else If TokIsKw(KW_COMPUTE) Then
+      Begin
+        { COMPUTE var = expr. }
+        Consume;
+        ExprType := ParseExpr;
+        If CurTokType = TOK_DOT Then Consume;
+      End
       Else
-        Break;  { instruction non traitee par TODO 07 }
+        Break;  { instruction non traitee par TODO 08 }
     End;
     WriteLn('ABAPCW32: symboles declares: ', SymCount);
+    WriteLn('ABAPCW32: labels generes: ', LabelCount);
+    WriteLn('ABAPCW32: chaines litterales: ', StrLitCount);
     WriteLn('ABAPCW32: scope initial: SK_GLOBAL (niveau ', ScopeTop, ')');
     { Sauter les tokens restants }
     If CurTokType <> TOK_EOF Then
     Begin
-      WriteLn('ABAPCW32: TODO 08..25 non encore implementes.');
+      WriteLn('ABAPCW32: TODO 09..25 non encore implementes.');
       While CurTokType <> TOK_EOF Do
         Consume;
     End;

@@ -164,7 +164,7 @@
               XSTRING (octetstring, DD stub)
             Allouer en .DATA (globales) ou pile EBP (locales FORM)
 
-  TODO 08 - PARSEUR : EXPRESSIONS ARITHMETIQUES ET LOGIQUES (32 BITS)
+  TODO 08 - PARSEUR : EXPRESSIONS ARITHMETIQUES ET LOGIQUES (32 BITS) [IMPLEMENTE]
             Function ParseExpr: Integer
             Function ParseLogExpr: Integer    (AND / OR / NOT)
             Function ParseCompareExpr: Integer (EQ NE LT GT LE GE
