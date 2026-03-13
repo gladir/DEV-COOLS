@@ -437,7 +437,7 @@
             Generer comme une FORM : label _ABF_FM_nom
               Prologue/Epilogue Win32 STDCALL
 
-  TODO 23 - PARSEUR : DISPATCHER ET BOUCLE PRINCIPALE
+  TODO 23 - PARSEUR : DISPATCHER ET BOUCLE PRINCIPALE [IMPLEMENTE]
             Procedure ParseStatement
             Dispatcher selon le token courant :
               REPORT / PROGRAM         -> ParseReport

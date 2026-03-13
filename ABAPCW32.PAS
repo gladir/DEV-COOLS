@@ -456,7 +456,7 @@
             Generer comme une FORM : label _ABF_FM_nom
               Prologue/Epilogue Win32 STDCALL
 
-  TODO 23 - PARSEUR : DISPATCHER ET BOUCLE PRINCIPALE
+  TODO 23 - PARSEUR : DISPATCHER ET BOUCLE PRINCIPALE [IMPLEMENTE]
             Procedure ParseStatement
             Dispatcher selon le token courant :
               REPORT / PROGRAM         -> ParseReport
@@ -1196,6 +1196,15 @@ Procedure ParseSelect; Forward;
 
 Procedure ParseCallFunction; Forward;
 Procedure ParseFunctionDecl; Forward;
+
+{ ============================================================ }
+{ DECLARATIONS FORWARD (DISPATCHER TODO 23)                    }
+{ ============================================================ }
+
+Procedure ParseTry; Forward;
+Procedure ParseRaise; Forward;
+Procedure ParseEvent(EventKw : Integer); Forward;
+Procedure ParseSelScreen(IsParam : Boolean); Forward;
 
 { ============================================================ }
 { FONCTIONS UTILITAIRES                                        }
@@ -3567,6 +3576,50 @@ Begin
   If TokIsKw(KW_FUNCTION) Then
   Begin Consume; ParseFunctionDecl; Exit; End;
 
+  { TRY. ... CATCH cx. ... [CLEANUP.] ENDTRY. (TODO 23) }
+  If TokIsKw(KW_TRY) Then
+  Begin Consume; ParseTry; Exit; End;
+
+  { RAISE [EXCEPTION ...]. (TODO 23) }
+  If TokIsKw(KW_RAISE) Then
+  Begin Consume; ParseRaise; Exit; End;
+
+  { START-OF-SELECTION. (TODO 23) }
+  If TokIsKw(KW_START_OF_SEL) Then
+  Begin Consume; ParseEvent(KW_START_OF_SEL); Exit; End;
+
+  { END-OF-SELECTION. (TODO 23) }
+  If TokIsKw(KW_END_OF_SEL) Then
+  Begin Consume; ParseEvent(KW_END_OF_SEL); Exit; End;
+
+  { TOP-OF-PAGE. (TODO 23) }
+  If TokIsKw(KW_TOP_OF_PAGE) Then
+  Begin Consume; ParseEvent(KW_TOP_OF_PAGE); Exit; End;
+
+  { END-OF-PAGE. (TODO 23) }
+  If TokIsKw(KW_END_OF_PAGE) Then
+  Begin Consume; ParseEvent(KW_END_OF_PAGE); Exit; End;
+
+  { AT LINE-SELECTION. (TODO 23) }
+  If TokIsKw(KW_LINE_SEL) Then
+  Begin Consume; ParseEvent(KW_LINE_SEL); Exit; End;
+
+  { AT USER-COMMAND. (TODO 23) }
+  If TokIsKw(KW_USER_CMD) Then
+  Begin Consume; ParseEvent(KW_USER_CMD); Exit; End;
+
+  { PARAMETERS p TYPE I [DEFAULT val]. (TODO 23) }
+  If TokIsKw(KW_PARAMETERS) Then
+  Begin Consume; ParseSelScreen(True); Exit; End;
+
+  { SELECT-OPTIONS s FOR var. (TODO 23) }
+  If TokIsKw(KW_SELECT_OPTIONS) Then
+  Begin Consume; ParseSelScreen(False); Exit; End;
+
+  { REPORT / PROGRAM en cours de programme (ignore, TODO 23) }
+  If TokIsKw(KW_REPORT) Or TokIsKw(KW_PROGRAM) Then
+  Begin Consume; SkipToDot; Exit; End;
+
   { var = expr. (style ABAP Objet / assignation directe, TODO 15) }
   If (CurTokType = TOK_IDENT) And (CurTokKw = KW_NONE) Then
   Begin
@@ -4919,6 +4972,162 @@ Begin
   End
   Else
     LexError('ENDFUNCTION attendu');
+End;
+
+{ ============================================================ }
+{ TODO 23 : STUBS DISPATCHER (TRY, RAISE, EVENT, SEL-SCREEN)   }
+{ ============================================================ }
+
+{ ---- ParseTry : TRY. ... CATCH cx. ... [CLEANUP.] ENDTRY. -- }
+{ Stub : parser les blocs sans gestion reelle des exceptions    }
+{ ============================================================ }
+Procedure ParseTry;
+Begin
+  EmitComment('---- TRY (stub) ----');
+
+  { Consommer le point apres TRY }
+  If CurTokType = TOK_DOT Then Consume;
+
+  { Corps du TRY : parser jusqu a CATCH, CLEANUP ou ENDTRY }
+  ParseBlock(KW_CATCH, KW_CLEANUP, KW_ENDTRY);
+
+  { CATCH cx_name. ... }
+  While TokIsKw(KW_CATCH) Do
+  Begin
+    EmitComment('CATCH (stub)');
+    Consume; { CATCH }
+    { Nom de la classe exception : consommer }
+    If CurTokType = TOK_IDENT Then Consume;
+    { Possible INTO var }
+    If TokIsKw(KW_INTO) Then
+    Begin
+      Consume;
+      If CurTokType = TOK_IDENT Then Consume;
+    End;
+    If CurTokType = TOK_DOT Then Consume;
+    { Corps du CATCH }
+    ParseBlock(KW_CATCH, KW_CLEANUP, KW_ENDTRY);
+  End;
+
+  { CLEANUP. ... }
+  If TokIsKw(KW_CLEANUP) Then
+  Begin
+    EmitComment('CLEANUP (stub)');
+    Consume;
+    If CurTokType = TOK_DOT Then Consume;
+    ParseBlock(KW_ENDTRY, KW_NONE, KW_NONE);
+  End;
+
+  { ENDTRY. }
+  If TokIsKw(KW_ENDTRY) Then
+  Begin
+    Consume;
+    If CurTokType = TOK_DOT Then Consume;
+  End
+  Else
+    LexError('ENDTRY attendu');
+
+  EmitComment('---- FIN TRY (stub) ----');
+End;
+
+{ ---- ParseRaise : RAISE [EXCEPTION [TYPE cx_name]]. --------- }
+{ Stub : consomme la ligne, emet un commentaire                  }
+{ ============================================================ }
+Procedure ParseRaise;
+Begin
+  EmitComment('---- RAISE (stub) ----');
+  { RAISE [EXCEPTION [TYPE cx_name [MESSAGE ...]]] }
+  { Consommer tout jusqu au point }
+  SkipToDot;
+End;
+
+{ ---- ParseEvent : START-OF-SELECTION / END-OF-SELECTION / etc }
+{ Stub : emettre un label, consommer le point                   }
+{ ============================================================ }
+Procedure ParseEvent(EventKw : Integer);
+Var LblName : TString;
+Begin
+  Case EventKw Of
+    KW_START_OF_SEL : LblName := '_ABE_START';
+    KW_END_OF_SEL   : LblName := '_ABE_END';
+    KW_TOP_OF_PAGE  : LblName := '_ABE_TOPPAGE';
+    KW_END_OF_PAGE  : LblName := '_ABE_ENDPAGE';
+    KW_LINE_SEL     : LblName := '_ABE_LINESEL';
+    KW_USER_CMD     : LblName := '_ABE_USERCMD';
+  Else
+    LblName := '_ABE_UNKNOWN';
+  End;
+  EmitBlank;
+  EmitComment('---- EVENT ' + LblName + ' ----');
+  EmitLabel(LblName);
+
+  { Consommer le point }
+  If CurTokType = TOK_DOT Then Consume;
+End;
+
+{ ---- ParseSelScreen : PARAMETERS / SELECT-OPTIONS (stubs) --- }
+{ PARAMETERS p TYPE I [DEFAULT val].                             }
+{   -> generer variable globale (DD) + valeur par defaut         }
+{ SELECT-OPTIONS s FOR var.                                      }
+{   -> stub : generer deux variables LOW / HIGH (DD)             }
+{ ============================================================ }
+Procedure ParseSelScreen(IsParam : Boolean);
+Var ParName : TString;
+    DefVal  : LongInt;
+    Idx     : Integer;
+Begin
+  If IsParam Then
+  Begin
+    EmitComment('---- PARAMETERS (stub) ----');
+    { PARAMETERS p TYPE I [DEFAULT val]. }
+    If CurTokType <> TOK_IDENT Then
+    Begin LexError('Nom attendu apres PARAMETERS'); SkipToDot; Exit; End;
+    ParName := CurTokStr;
+    Consume;
+    DefVal := 0;
+    { Parser TYPE t optionnel }
+    If TokIsKw(KW_TYPE) Then
+    Begin
+      Consume;
+      If CurTokType = TOK_IDENT Then Consume; { type name }
+    End;
+    { Parser LIKE v optionnel }
+    If TokIsKw(KW_LIKE) Then
+    Begin
+      Consume;
+      If CurTokType = TOK_IDENT Then Consume;
+    End;
+    { Parser DEFAULT val optionnel }
+    If TokIsKw(KW_DEFAULT) Then
+    Begin
+      Consume;
+      If CurTokType = TOK_NUMBER Then
+      Begin
+        DefVal := CurTokNum;
+        Consume;
+      End
+      Else If CurTokType = TOK_STRING Then
+        Consume
+      Else If CurTokType = TOK_IDENT Then
+        Consume;
+    End;
+    { Declarer la variable globale si elle n existe pas }
+    Idx := FindSym(ParName);
+    If Idx <= 0 Then
+    Begin
+      Idx := AddSym(ParName, TYPE_I, STORE_STATIC);
+      EmitComment('PARAM ' + ParName + ' = ' + IntToStr_(DefVal));
+    End;
+    { Consommer le point }
+    If CurTokType = TOK_DOT Then Consume;
+  End
+  Else
+  Begin
+    EmitComment('---- SELECT-OPTIONS (stub) ----');
+    { SELECT-OPTIONS s FOR var. }
+    { Consommer tout jusqu au point }
+    SkipToDot;
+  End;
 End;
 
 { ============================================================ }
