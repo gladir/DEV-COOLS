@@ -465,7 +465,7 @@
             RuntimeEmitted : flag pour n emettre le runtime qu une seule fois
             Heap statique : _RX_HEAP DB 4096 DUP(0) + _RX_HEAPTOP DW 0
 
-  TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES
+  TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES [IMPLEMENTE]
             EmitClose : END _RXP_Main dans _TEXT ENDS / DATA ENDS
             Run : pipeline complet LexInit -> ParseProgram ->
               EmitRuntime -> _TEXT ENDS / EmitDataSeg / END _RXP_Main
