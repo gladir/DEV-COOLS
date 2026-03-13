@@ -17,7 +17,10 @@ count = "0"
 call increment
 say count
 
-/* Test 5 : SIGNAL (saut inconditionnel) */
+/* Test 5 : CALL avec argument passe a une PROCEDURE */
+say addone("10")
+
+/* Test 6 : SIGNAL (saut inconditionnel) */
 signal skip_this
 say "NEVER"
 skip_this:
@@ -43,3 +46,8 @@ increment:
   procedure expose count
   count = count + 1
   return
+
+addone:
+  procedure
+  parse arg val
+  return val + 1

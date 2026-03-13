@@ -7146,19 +7146,11 @@ Begin
     ParserAdvance;
     EmitComment('EXPOSE');
 
-    (* Lire la liste de variables exposees *)
-    While (CurToken.Kind = TK_IDENT) Or
-          ((CurToken.Kind = TK_KEYWORD) And
-           Not ((StrUpperCase(CurToken.Val) = 'SAY') Or
-                (StrUpperCase(CurToken.Val) = 'IF') Or
-                (StrUpperCase(CurToken.Val) = 'DO') Or
-                (StrUpperCase(CurToken.Val) = 'RETURN') Or
-                (StrUpperCase(CurToken.Val) = 'CALL') Or
-                (StrUpperCase(CurToken.Val) = 'SELECT') Or
-                (StrUpperCase(CurToken.Val) = 'PARSE') Or
-                (StrUpperCase(CurToken.Val) = 'EXIT'))) Do
+    (* Lire la liste de variables exposees (identifiants jusqu a fin de ligne) *)
+    While (CurToken.Kind = TK_IDENT) And
+          (CurToken.Kind <> TK_EOL) And
+          (CurToken.Kind <> TK_EOF) Do
     Begin
-      If (CurToken.Kind <> TK_IDENT) Then Break;
       VarName := StrUpperCase(CurToken.Val);
       ParserAdvance;
 
@@ -7170,13 +7162,9 @@ Begin
         Idx := VarAlloc(VarName);
       End;
 
-      (* Ajouter un alias dans le scope courant pointant vers *)
-      (* la meme variable globale : on reutilise le meme symbole *)
-      (* en marquant IsExposed = True *)
+      (* Marquer la variable comme exposee pour l acces direct *)
       If Idx >= 0 Then
-      Begin
         SymTab[Idx].IsExposed := True;
-      End;
     End;
   End;
 
@@ -7205,13 +7193,6 @@ Begin
     EmitLabel(RX_PROC_PFX + SymNameClean(SaveName));
     ParserAdvance;
 
-    (* Tous les labels sont des cibles potentielles de CALL.    *)
-    (* On incremente CurFnDepth pour que RETURN genere un RET.  *)
-    (* Si PROCEDURE suit, on aura en plus le prologue et le scope. *)
-    Inc(CurFnDepth);
-    CurFnRetLbl := LabelGen;
-    CurFnName   := SaveName;
-
     (* Verifier si le label est suivi de PROCEDURE *)
     While CurToken.Kind = TK_EOL Do
       ParserAdvance;
@@ -7219,11 +7200,17 @@ Begin
     If (CurToken.Kind = TK_KEYWORD) And
        (StrUpperCase(CurToken.Val) = 'PROCEDURE') Then
     Begin
+      (* PROCEDURE : gere le scope, le prologue et CurFnDepth *)
       ParserAdvance;
-      (* ParseProcKeyword va re-incrementer CurFnDepth, *)
-      (* donc on decremente d abord pour eviter le double comptage *)
-      Dec(CurFnDepth);
+      CurFnName := SaveName;
       ParseProcKeyword;
+    End
+    Else
+    Begin
+      (* Label simple sans PROCEDURE : marquer comme callable *)
+      Inc(CurFnDepth);
+      CurFnRetLbl := LabelGen;
+      CurFnName   := SaveName;
     End;
     Exit;
   End;
