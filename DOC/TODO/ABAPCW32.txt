@@ -2,7 +2,7 @@
   ============================================================
 
 
-  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF
+  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF [IMPLEMENTE]
             TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings,
               EmitExe, EmitObj, EmitAsm)
             ParseArgs : analyser argv (source.abap [-o sortie] [-v]
