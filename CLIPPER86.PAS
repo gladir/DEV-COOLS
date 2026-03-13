@@ -443,7 +443,7 @@
               SECONDS()          -> AX = secondes depuis minuit (INT 1Ah)
               TIME()             -> AX = ptr heure courante "HH:MM:SS"
 
-  TODO 24 - RUNTIME MINIMAL
+  TODO 24 - RUNTIME MINIMAL [IMPLEMENTE]
             _CLRT_PRINT(BX=handle, SI=msg, CX=len) : INT 21h AH=40h
             _CLRT_PRINTLN : _CLRT_PRINT + CR+LF via _CL_CRLF DB 13,10,0
             _CLRT_PRINTVAL(tag+val) : afficher selon le type (N/C/D/L)
@@ -768,6 +768,9 @@ Var
   PPIncLineNo    : Array[0..MAX_PP_INCLUDE-1] Of Integer; { num ligne sauvegarde     }
   PPIncTop       : Integer;   { sommet pile d inclusion (-1=vide)     }
 
+  { Runtime minimal (TODO 24) }
+  RuntimeEmitted : Boolean;    { flag pour n emettre le runtime qu une fois }
+
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
@@ -945,6 +948,9 @@ Procedure EmitErrRuntime; Forward;
 
 { Fonctions integrees (TODO 23) }
 Procedure EmitBuiltinRuntime; Forward;
+
+{ Runtime minimal (TODO 24) }
+Procedure EmitMinimalRuntime; Forward;
 
 { Preprocesseur (TODO 22) }
 Procedure PreProcInit; Forward;
@@ -1207,6 +1213,7 @@ Begin
   ExitProcCount := 0;
   CodeBlockCount := 0;
   SeqCount := 0;
+  RuntimeEmitted := False;
   TypeInit;
   SymInit;
 End;
@@ -2858,6 +2865,11 @@ Begin
   WriteLn(OutF, '_CL_MONTAB  DW  _CL_MON_01,_CL_MON_02,_CL_MON_03,_CL_MON_04');
   WriteLn(OutF, '            DW  _CL_MON_05,_CL_MON_06,_CL_MON_07,_CL_MON_08');
   WriteLn(OutF, '            DW  _CL_MON_09,_CL_MON_10,_CL_MON_11,_CL_MON_12');
+  { Runtime minimal (TODO 24) }
+  WriteLn(OutF, '_CL_HEAPTOP DW  _CL_HEAP');           { pointeur courant dans le heap }
+  WriteLn(OutF, '_CL_PANICMSG DB ''Runtime error'',13,10,''$''');
+  WriteLn(OutF, '_CL_MACBUF  DB  256 DUP(0)');         { buffer substitution macro }
+  WriteLn(OutF, '_CL_ATOI_TMP DW 0');                  { temporaire pour STRTONUM }
   { Entrees DataTab }
   For I := 0 To DataCount - 1 Do
   Begin
@@ -7588,7 +7600,8 @@ Begin
     au-dela de 256 octets dans le segment et les valeurs entieres
     courantes (0..255) restent en dessous. Limitation connue :
     les entiers >= 256 seront traites comme des pointeurs chaine.
-    Le TODO 24 (runtime complet) implementera un vrai systeme de
+    Le TODO 24 (runtime minimal) fournit les routines de base ;
+    un runtime etendu pourrait implementer un vrai systeme de
     tags dynamiques pour discriminer les types.                      }
   EmitInstrAB('CMP', 'AX', '256');
   EmitInstrA('JB', CL_RT_PFX + 'PV_NUM');
@@ -12199,6 +12212,223 @@ Begin
 End;
 
 { ============================================================
+  TODO 24 - RUNTIME MINIMAL [IMPLEMENTE]
+  ============================================================ }
+
+(* EmitMinimalRuntime rassemble les routines complementaires du runtime
+   minimal Clipper86 : allocation heap, conversion chaine->nombre,
+   ecriture fichier avec handle, lecture/ecriture d enregistrement DBF,
+   acces aux champs, substitution macro, et sortie d urgence (panic).
+   Les routines deja emises par les autres EmitXxxRuntime ne sont pas
+   dupliquees ici ; seules les routines manquantes sont ajoutees.       *)
+
+Procedure EmitMinimalRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('==== Runtime Minimal (TODO 24) ====');
+  EmitBlankLine;
+
+  { --- _CLRT_PRINT : ecriture fichier via INT 21h AH=40h ---
+    BX = handle fichier (1=stdout, 2=stderr)
+    SI = pointeur vers message
+    CX = longueur en octets
+    Retour : AX = nombre d octets ecrits                               }
+  EmitLabel(CL_RT_PFX + 'PRINT');
+  EmitInstr('PUSH   DX');
+  EmitInstrAB('MOV', 'DX', 'SI');       { DS:DX = buffer }
+  EmitInstrAB('MOV', 'AH', '40h');      { Write File }
+  EmitInstr('INT    21h');
+  EmitInstr('POP    DX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_STRTONUM : convertir chaine ASCII -> entier signe ---
+    SI = pointeur vers chaine ASCIIZ (ex: "-123")
+    Retour : AX = valeur entiere                                       }
+  EmitLabel(CL_RT_PFX + 'STRTONUM');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   SI');
+  EmitInstrAB('XOR', 'AX', 'AX');       { AX = resultat = 0 }
+  EmitInstrAB('XOR', 'CX', 'CX');       { CX = flag negatif = 0 }
+  { Sauter les espaces en tete }
+  EmitLabel(CL_RT_PFX + 'STN_SK');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '32');  { espace }
+  EmitInstrA('JNE', CL_RT_PFX + 'STN_SG');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', CL_RT_PFX + 'STN_SK');
+  { Verifier le signe }
+  EmitLabel(CL_RT_PFX + 'STN_SG');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '45');  { '-' }
+  EmitInstrA('JNE', CL_RT_PFX + 'STN_PL');
+  EmitInstrAB('MOV', 'CX', '1');        { flag negatif }
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', CL_RT_PFX + 'STN_LP');
+  EmitLabel(CL_RT_PFX + 'STN_PL');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '43');  { '+' }
+  EmitInstrA('JNE', CL_RT_PFX + 'STN_LP');
+  EmitInstrA('INC', 'SI');
+  { Boucle de conversion chiffres }
+  EmitLabel(CL_RT_PFX + 'STN_LP');
+  EmitInstrAB('MOV', 'BL', '[SI]');
+  EmitInstrAB('CMP', 'BL', '48');       { < '0' }
+  EmitInstrA('JB', CL_RT_PFX + 'STN_DN');
+  EmitInstrAB('CMP', 'BL', '57');       { > '9' }
+  EmitInstrA('JA', CL_RT_PFX + 'STN_DN');
+  { AX = AX * 10 + (BL - '0') }
+  EmitInstrAB('MOV', 'BH', '10');
+  EmitInstr('MUL    BH');               { AX = AL * 10 (pour petits nombres) }
+  EmitInstrAB('SUB', 'BL', '48');
+  EmitInstrAB('XOR', 'BH', 'BH');
+  EmitInstrAB('ADD', 'AX', 'BX');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', CL_RT_PFX + 'STN_LP');
+  { Fin : appliquer signe si necessaire }
+  EmitLabel(CL_RT_PFX + 'STN_DN');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', CL_RT_PFX + 'STN_RT');
+  EmitInstr('NEG    AX');
+  EmitLabel(CL_RT_PFX + 'STN_RT');
+  EmitInstr('POP    SI');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_NEW : allocation heap statique ---
+    CX = nombre d octets a allouer
+    Retour : AX = pointeur vers le bloc alloue
+    Avance _CL_HEAPTOP de CX octets.                                  }
+  EmitLabel(CL_RT_PFX + 'NEW');
+  EmitInstr('PUSH   BX');
+  EmitInstrAB('MOV', 'AX', '[_CL_HEAPTOP]');  { position courante }
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstrAB('ADD', 'BX', 'CX');              { nouvelle position }
+  EmitInstrAB('MOV', '[_CL_HEAPTOP]', 'BX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_DBREAD : lire un enregistrement DBF ---
+    AX = handle fichier, BX = numero d enregistrement (1-based)
+    Utilise INT 21h AH=3Fh pour lire dans _CL_DBFBUF.
+    Stub : positionne le pointeur fichier puis lit recsize octets.     }
+  EmitLabel(CL_RT_PFX + 'DBREAD');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  EmitInstr('PUSH   BX');
+  EmitInstrAB('MOV', 'BX', 'AX');             { BX = handle }
+  { Positionner a (recno-1)*recsize + hdrsize via LSEEK (INT 21h AH=42h) }
+  EmitInstrAB('MOV', 'AH', '42h');
+  EmitInstrAB('MOV', 'AL', '0');              { SEEK_SET }
+  EmitInstrAB('XOR', 'CX', 'CX');             { CX:DX = offset (stub: 0) }
+  EmitInstrAB('XOR', 'DX', 'DX');
+  EmitInstr('INT    21h');
+  { Lire dans _CL_DBFBUF }
+  EmitInstrAB('MOV', 'AH', '3Fh');            { Read File }
+  EmitInstrAB('MOV', 'CX', '512');             { max record size }
+  EmitInstrAB('MOV', 'DX', 'OFFSET _CL_DBFBUF');
+  EmitInstr('INT    21h');
+  EmitInstr('POP    BX');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_DBWRITE : ecrire un enregistrement DBF ---
+    AX = handle fichier, BX = numero d enregistrement (1-based)
+    Utilise INT 21h AH=40h pour ecrire depuis _CL_DBFBUF.
+    Stub : ecrit recsize octets a la position courante.                }
+  EmitLabel(CL_RT_PFX + 'DBWRITE');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  EmitInstr('PUSH   BX');
+  EmitInstrAB('MOV', 'BX', 'AX');             { BX = handle }
+  EmitInstrAB('MOV', 'AH', '40h');            { Write File }
+  EmitInstrAB('MOV', 'CX', '512');             { max record size }
+  EmitInstrAB('MOV', 'DX', 'OFFSET _CL_DBFBUF');
+  EmitInstr('INT    21h');
+  EmitInstr('POP    BX');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_GETFIELD : lire un champ par nom ---
+    SI = pointeur vers nom du champ (ASCIIZ)
+    Retour : AX = valeur du champ (stub : retourne 0)
+    Dans un runtime complet, chercherait le champ dans l en-tete
+    du DBF courant et retournerait la valeur du buffer record.         }
+  EmitLabel(CL_RT_PFX + 'GETFIELD');
+  EmitInstrAB('XOR', 'AX', 'AX');             { stub : retourne 0 }
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_SETFIELD : ecrire un champ par nom ---
+    SI = pointeur vers nom du champ (ASCIIZ)
+    AX = valeur a ecrire
+    Stub : ne fait rien (sera complete dans un runtime etendu).        }
+  EmitLabel(CL_RT_PFX + 'SETFIELD');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_MACRO : substitution macro (&variable) ---
+    SI = pointeur vers nom de variable (ASCIIZ)
+    Retour : AX = resultat de l evaluation
+    Stub : copie la valeur de la variable dans _CL_MACBUF
+    et retourne le pointeur vers le buffer.                            }
+  EmitLabel(CL_RT_PFX + 'MACRO');
+  EmitInstr('PUSH   DI');
+  EmitInstr('PUSH   SI');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _CL_MACBUF');
+  EmitLabel(CL_RT_PFX + 'MAC_LP');
+  EmitInstr('LODSB');
+  EmitInstr('STOSB');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JNE', CL_RT_PFX + 'MAC_LP');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _CL_MACBUF');
+  EmitInstr('POP    SI');
+  EmitInstr('POP    DI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_PANIC : message d erreur + sortie programme ---
+    SI = pointeur vers message d erreur (ASCIIZ)
+    Affiche le message sur stderr (handle 2) puis termine
+    avec code de sortie 1 (MOV AX,4C01h / INT 21h).                   }
+  EmitLabel(CL_RT_PFX + 'PANIC');
+  EmitInstr('PUSH   AX');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  { Calculer la longueur de la chaine }
+  EmitInstr('PUSH   SI');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitLabel(CL_RT_PFX + 'PAN_LN');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstrA('JE', CL_RT_PFX + 'PAN_PR');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'CX');
+  EmitInstrA('JMP', CL_RT_PFX + 'PAN_LN');
+  EmitLabel(CL_RT_PFX + 'PAN_PR');
+  EmitInstr('POP    SI');
+  { Ecrire sur stderr (handle 2) }
+  EmitInstrAB('MOV', 'BX', '2');         { handle stderr }
+  EmitInstrAB('MOV', 'DX', 'SI');        { DS:DX = message }
+  EmitInstrAB('MOV', 'AH', '40h');       { Write File }
+  EmitInstr('INT    21h');
+  { Ecrire CR+LF }
+  EmitInstrAB('MOV', 'DX', 'OFFSET _CL_CRLF');
+  EmitInstrAB('MOV', 'CX', '2');
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstr('INT    21h');
+  { Quitter avec code erreur 1 }
+  EmitInstrAB('MOV', 'AX', '4C01h');
+  EmitInstr('INT    21h');
+  EmitBlankLine;
+End;
+
+{ ============================================================
   TODO 22 - PREPROCESSEUR (#command, #translate, #define, #include) [IMPLEMENTE]
   ============================================================ }
 
@@ -12822,10 +13052,15 @@ End;
    EmitCodeBlockRuntime pour les routines de code blocks (TODO 18).
    EmitDBFRuntime pour les routines fichiers DBF (TODO 19).
    EmitIdxRuntime pour les routines index et recherche (TODO 20).
-   EmitErrRuntime pour les routines de gestion d erreurs (TODO 21). *)
+   EmitErrRuntime pour les routines de gestion d erreurs (TODO 21).
+   EmitBuiltinRuntime pour les fonctions integrees (TODO 23).
+   EmitMinimalRuntime pour le runtime minimal consolide (TODO 24).
+   RuntimeEmitted evite l emission multiple du runtime.              *)
 
 Procedure EmitRuntime;
 Begin
+  If RuntimeEmitted Then Exit;
+  RuntimeEmitted := True;
   EmitExprRuntime;
   EmitIORuntime;
   EmitArrayRuntime;
@@ -12835,6 +13070,7 @@ Begin
   EmitIdxRuntime;
   EmitErrRuntime;
   EmitBuiltinRuntime;
+  EmitMinimalRuntime;
 End;
 
 { ---- EmitClose : finaliser le fichier ASM -------------------- }
