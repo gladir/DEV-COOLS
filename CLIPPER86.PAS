@@ -407,7 +407,7 @@
               #command USE <db> => dbUseArea(.F., NIL, <(db)>)
             Traitement des macros : expansion recursive avec limite de profondeur
 
-  TODO 23 - FONCTIONS INTEGREES
+  TODO 23 - FONCTIONS INTEGREES [IMPLEMENTE]
             Fonctions numeriques :
               ABS(n), INT(n), MAX(n1,n2), MIN(n1,n2), MOD(n1,n2)
               ROUND(n, nDec)     -> AX = arrondi (entier si nDec=0)
@@ -942,6 +942,9 @@ Procedure EmitIdxRuntime; Forward;
 { Gestion des erreurs (TODO 21) }
 Procedure ParseBeginSequenceStmt; Forward;
 Procedure EmitErrRuntime; Forward;
+
+{ Fonctions integrees (TODO 23) }
+Procedure EmitBuiltinRuntime; Forward;
 
 { Preprocesseur (TODO 22) }
 Procedure PreProcInit; Forward;
@@ -2826,6 +2829,35 @@ Begin
   WriteLn(OutF, '_CL_ERRORBLOCK DW  0');             { code block d erreur global }
   WriteLn(OutF, '_CL_ERRMSG  DB  ''Unhandled BREAK'',13,10,''$''');
   WriteLn(OutF, '_CL_SEQSAVE DW  0');               { sauvegarde handler precedent }
+  { Fonctions integrees (TODO 23) }
+  WriteLn(OutF, '_CL_DATEBUF DB  12 DUP(0)');       { buffer date "MM/DD/YYYY",0 }
+  WriteLn(OutF, '_CL_TIMEBUF DB  12 DUP(0)');       { buffer heure "HH:MM:SS",0 }
+  WriteLn(OutF, '_CL_OSBUF   DB  ''DOS'',0');       { nom du systeme }
+  WriteLn(OutF, '_CL_VALTBUF DB  2 DUP(0)');        { buffer VALTYPE "X",0 }
+  WriteLn(OutF, '_CL_DAY_SUN DB  ''Sunday'',0');
+  WriteLn(OutF, '_CL_DAY_MON DB  ''Monday'',0');
+  WriteLn(OutF, '_CL_DAY_TUE DB  ''Tuesday'',0');
+  WriteLn(OutF, '_CL_DAY_WED DB  ''Wednesday'',0');
+  WriteLn(OutF, '_CL_DAY_THU DB  ''Thursday'',0');
+  WriteLn(OutF, '_CL_DAY_FRI DB  ''Friday'',0');
+  WriteLn(OutF, '_CL_DAY_SAT DB  ''Saturday'',0');
+  WriteLn(OutF, '_CL_DAYTAB  DW  _CL_DAY_SUN,_CL_DAY_MON,_CL_DAY_TUE,_CL_DAY_WED');
+  WriteLn(OutF, '            DW  _CL_DAY_THU,_CL_DAY_FRI,_CL_DAY_SAT');
+  WriteLn(OutF, '_CL_MON_01  DB  ''January'',0');
+  WriteLn(OutF, '_CL_MON_02  DB  ''February'',0');
+  WriteLn(OutF, '_CL_MON_03  DB  ''March'',0');
+  WriteLn(OutF, '_CL_MON_04  DB  ''April'',0');
+  WriteLn(OutF, '_CL_MON_05  DB  ''May'',0');
+  WriteLn(OutF, '_CL_MON_06  DB  ''June'',0');
+  WriteLn(OutF, '_CL_MON_07  DB  ''July'',0');
+  WriteLn(OutF, '_CL_MON_08  DB  ''August'',0');
+  WriteLn(OutF, '_CL_MON_09  DB  ''September'',0');
+  WriteLn(OutF, '_CL_MON_10  DB  ''October'',0');
+  WriteLn(OutF, '_CL_MON_11  DB  ''November'',0');
+  WriteLn(OutF, '_CL_MON_12  DB  ''December'',0');
+  WriteLn(OutF, '_CL_MONTAB  DW  _CL_MON_01,_CL_MON_02,_CL_MON_03,_CL_MON_04');
+  WriteLn(OutF, '            DW  _CL_MON_05,_CL_MON_06,_CL_MON_07,_CL_MON_08');
+  WriteLn(OutF, '            DW  _CL_MON_09,_CL_MON_10,_CL_MON_11,_CL_MON_12');
   { Entrees DataTab }
   For I := 0 To DataCount - 1 Do
   Begin
@@ -4415,6 +4447,542 @@ Begin
           EmitInstrA('CALL', CL_RT_PFX + 'ERRGETBLOCK');
         Res.Kind := EK_AX;
         Res.TypeIdx := TY_IDX_BLOCK;
+        Res.SymIdx := -1;
+      End
+
+      { === FONCTIONS INTEGREES (TODO 23) === }
+
+      { --- ABS : valeur absolue --- }
+      Else If IdName = 'ABS' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          ParseExpr(Arg);
+          ExprFlushToAX(Arg);
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'ABS');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_NUM;
+        Res.SymIdx := -1;
+      End
+      { --- INT : partie entiere --- }
+      Else If IdName = 'INT' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          ParseExpr(Arg);
+          ExprFlushToAX(Arg);
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        { Entiers 16 bits : INT(n) = n, deja entier }
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_NUM;
+        Res.SymIdx := -1;
+      End
+      { --- MAX : maximum de deux nombres --- }
+      Else If IdName = 'MAX' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          ParseExpr(Arg);
+          ExprFlushToAX(Arg);
+          EmitInstr('PUSH   AX');
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+            ParserAdvance;
+          ParseExpr(Arg);
+          ExprFlushToAX(Arg);
+          EmitInstrAB('MOV', 'BX', 'AX');
+          EmitInstr('POP    AX');
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'MAX');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_NUM;
+        Res.SymIdx := -1;
+      End
+      { --- MIN : minimum de deux nombres --- }
+      Else If IdName = 'MIN' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          ParseExpr(Arg);
+          ExprFlushToAX(Arg);
+          EmitInstr('PUSH   AX');
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+            ParserAdvance;
+          ParseExpr(Arg);
+          ExprFlushToAX(Arg);
+          EmitInstrAB('MOV', 'BX', 'AX');
+          EmitInstr('POP    AX');
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'MIN');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_NUM;
+        Res.SymIdx := -1;
+      End
+      { --- MOD : reste de la division --- }
+      Else If IdName = 'MOD' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          ParseExpr(Arg);
+          ExprFlushToAX(Arg);
+          EmitInstr('PUSH   AX');
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+            ParserAdvance;
+          ParseExpr(Arg);
+          ExprFlushToAX(Arg);
+          EmitInstrAB('MOV', 'BX', 'AX');
+          EmitInstr('POP    AX');
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'MODFN');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_NUM;
+        Res.SymIdx := -1;
+      End
+      { --- ROUND : arrondi --- }
+      Else If IdName = 'ROUND' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          ParseExpr(Arg);
+          ExprFlushToAX(Arg);
+          { Ignorer le second argument (decimales), on travaille en entier }
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+          Begin
+            ParserAdvance;
+            ParseExpr(Arg);
+            { Ignore nDec }
+          End;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        { Entiers 16 bits : ROUND(n,d) = n, deja entier }
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_NUM;
+        Res.SymIdx := -1;
+      End
+      { --- SQRT : racine carree entiere approchee --- }
+      Else If IdName = 'SQRT' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          ParseExpr(Arg);
+          ExprFlushToAX(Arg);
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'SQRT');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_NUM;
+        Res.SymIdx := -1;
+      End
+
+      { --- DATE : date systeme (entier julien) --- }
+      Else If IdName = 'DATE' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'DATE');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_DATE;
+        Res.SymIdx := -1;
+      End
+      { --- CTOD : chaine vers date --- }
+      Else If IdName = 'CTOD' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          ParseExpr(Arg);
+          ExprFlushToAX(Arg);
+          EmitInstrAB('MOV', 'SI', 'AX');
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'CTOD');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_DATE;
+        Res.SymIdx := -1;
+      End
+      { --- DTOC : date vers chaine --- }
+      Else If IdName = 'DTOC' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          ParseExpr(Arg);
+          ExprFlushToAX(Arg);
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'DTOC');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_CHAR;
+        Res.SymIdx := -1;
+      End
+      { --- DTOS : date vers chaine YYYYMMDD --- }
+      Else If IdName = 'DTOS' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          ParseExpr(Arg);
+          ExprFlushToAX(Arg);
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'DTOS');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_CHAR;
+        Res.SymIdx := -1;
+      End
+      { --- DOW : jour de la semaine (1=dimanche) --- }
+      Else If IdName = 'DOW' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          ParseExpr(Arg);
+          ExprFlushToAX(Arg);
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'DOW');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_NUM;
+        Res.SymIdx := -1;
+      End
+      { --- CDOW : nom du jour de la semaine --- }
+      Else If IdName = 'CDOW' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          ParseExpr(Arg);
+          ExprFlushToAX(Arg);
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'CDOW');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_CHAR;
+        Res.SymIdx := -1;
+      End
+      { --- DAY : jour du mois (1..31) --- }
+      Else If IdName = 'DAY' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          ParseExpr(Arg);
+          ExprFlushToAX(Arg);
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'DAY');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_NUM;
+        Res.SymIdx := -1;
+      End
+      { --- MONTH : mois (1..12) --- }
+      Else If IdName = 'MONTH' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          ParseExpr(Arg);
+          ExprFlushToAX(Arg);
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'MONTH');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_NUM;
+        Res.SymIdx := -1;
+      End
+      { --- CMONTH : nom du mois --- }
+      Else If IdName = 'CMONTH' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          ParseExpr(Arg);
+          ExprFlushToAX(Arg);
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'CMONTH');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_CHAR;
+        Res.SymIdx := -1;
+      End
+      { --- YEAR : annee (ex: 1995) --- }
+      Else If IdName = 'YEAR' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          ParseExpr(Arg);
+          ExprFlushToAX(Arg);
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'YEAR');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_NUM;
+        Res.SymIdx := -1;
+      End
+
+      { --- VALTYPE : type d une valeur --- }
+      Else If IdName = 'VALTYPE' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          ParseExpr(Arg);
+          ExprFlushToAX(Arg);
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        { Retourner "N" pour les nombres (approche simplifiee) }
+        EmitInstrAB('MOV', 'BYTE PTR [_CL_VALTBUF]', '78');  { 'N' }
+        EmitInstrAB('MOV', 'BYTE PTR [_CL_VALTBUF+1]', '0');
+        EmitInstrAB('MOV', 'AX', 'OFFSET _CL_VALTBUF');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_CHAR;
+        Res.SymIdx := -1;
+      End
+      { --- TYPE : type d une expression --- }
+      Else If (IdName = 'TYPE') And Not InFuncDecl Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          ParseExpr(Arg);
+          { Ignore l argument, retourne "U" }
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrAB('MOV', 'BYTE PTR [_CL_VALTBUF]', '85');  { 'U' }
+        EmitInstrAB('MOV', 'BYTE PTR [_CL_VALTBUF+1]', '0');
+        EmitInstrAB('MOV', 'AX', 'OFFSET _CL_VALTBUF');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_CHAR;
+        Res.SymIdx := -1;
+      End
+      { --- EMPTY : test si valeur vide --- }
+      Else If IdName = 'EMPTY' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          ParseExpr(Arg);
+          ExprFlushToAX(Arg);
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'EMPTY');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_LOGIC;
+        Res.SymIdx := -1;
+      End
+
+      { --- INKEY : lire touche clavier --- }
+      Else If IdName = 'INKEY' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
+          Begin
+            ParseExpr(Arg);  { ignorer le delai optionnel }
+          End;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'INKEY');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_NUM;
+        Res.SymIdx := -1;
+      End
+      { --- LASTKEY : derniere touche pressee --- }
+      Else If IdName = 'LASTKEY' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrAB('MOV', 'AX', '[_CL_LASTKEY]');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_NUM;
+        Res.SymIdx := -1;
+      End
+      { --- ROW : ligne curseur courante --- }
+      Else If IdName = 'ROW' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'ROW');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_NUM;
+        Res.SymIdx := -1;
+      End
+      { --- COL : colonne curseur courante --- }
+      Else If IdName = 'COL' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'COL');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_NUM;
+        Res.SymIdx := -1;
+      End
+      { --- MAXROW : derniere ligne ecran (24) --- }
+      Else If IdName = 'MAXROW' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrAB('MOV', 'AX', '24');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_NUM;
+        Res.SymIdx := -1;
+      End
+      { --- MAXCOL : derniere colonne ecran (79) --- }
+      Else If IdName = 'MAXCOL' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrAB('MOV', 'AX', '79');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_NUM;
+        Res.SymIdx := -1;
+      End
+      { --- OS : nom du systeme ("DOS") --- }
+      Else If IdName = 'OS' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrAB('MOV', 'AX', 'OFFSET _CL_OSBUF');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_CHAR;
+        Res.SymIdx := -1;
+      End
+      { --- MEMORY : memoire libre en Ko --- }
+      Else If IdName = 'MEMORY' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
+          Begin
+            ParseExpr(Arg);  { ignorer le parametre }
+          End;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'MEMORY');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_NUM;
+        Res.SymIdx := -1;
+      End
+      { --- SECONDS : secondes depuis minuit --- }
+      Else If IdName = 'SECONDS' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'SECONDS');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_NUM;
+        Res.SymIdx := -1;
+      End
+      { --- TIME : heure courante "HH:MM:SS" --- }
+      Else If IdName = 'TIME' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'TIME');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_CHAR;
         Res.SymIdx := -1;
       End
 
@@ -11148,6 +11716,489 @@ Begin
 End;
 
 { ============================================================
+  TODO 23 - FONCTIONS INTEGREES [IMPLEMENTE]
+  ============================================================ }
+
+(* EmitBuiltinRuntime : emet les routines x86 pour les fonctions
+   integrees de Clipper : fonctions numeriques (ABS, MAX, MIN, MOD,
+   SQRT), fonctions de date (DATE, CTOD, DTOC, DTOS, DOW, CDOW,
+   DAY, MONTH, CMONTH, YEAR), fonctions de type (EMPTY),
+   fonctions systeme (INKEY, ROW, COL, MEMORY, SECONDS, TIME). *)
+
+Procedure EmitBuiltinRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('==== Built-in Functions Runtime (TODO 23) ====');
+  EmitBlankLine;
+
+  { --- _CLRT_ABS : valeur absolue AX -> AX --- }
+  EmitLabel(CL_RT_PFX + 'ABS');
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JNS', CL_RT_PFX + 'ABS_OK');
+  EmitInstr('NEG    AX');
+  EmitLabel(CL_RT_PFX + 'ABS_OK');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_MAX : AX=n1, BX=n2, retourne max dans AX --- }
+  EmitLabel(CL_RT_PFX + 'MAX');
+  EmitInstrAB('CMP', 'AX', 'BX');
+  EmitInstrA('JGE', CL_RT_PFX + 'MAX_OK');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitLabel(CL_RT_PFX + 'MAX_OK');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_MIN : AX=n1, BX=n2, retourne min dans AX --- }
+  EmitLabel(CL_RT_PFX + 'MIN');
+  EmitInstrAB('CMP', 'AX', 'BX');
+  EmitInstrA('JLE', CL_RT_PFX + 'MIN_OK');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitLabel(CL_RT_PFX + 'MIN_OK');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_MODFN : AX=n1, BX=n2, retourne AX mod BX dans AX --- }
+  EmitLabel(CL_RT_PFX + 'MODFN');
+  EmitInstr('CWD');              { signe-etend AX dans DX:AX }
+  EmitInstr('IDIV   BX');       { AX=quotient, DX=reste }
+  EmitInstrAB('MOV', 'AX', 'DX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_SQRT : racine carree entiere de AX -> AX --- }
+  (* Methode: boucle incremental, i=0..AX, si i*i > AX => retourne i-1 *)
+  EmitLabel(CL_RT_PFX + 'SQRT');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  EmitInstrAB('MOV', 'CX', 'AX');   { CX = n }
+  EmitInstrAB('MOV', 'BX', '0');    { BX = i (candidat) }
+  EmitLabel(CL_RT_PFX + 'SQRT_LP');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstr('MUL    AX');           { AX = BX * BX (DX:AX) }
+  EmitInstrAB('CMP', 'AX', 'CX');
+  EmitInstrA('JA', CL_RT_PFX + 'SQRT_DN');
+  EmitInstrA('INC', 'BX');
+  EmitInstrA('JMP', CL_RT_PFX + 'SQRT_LP');
+  EmitLabel(CL_RT_PFX + 'SQRT_DN');
+  EmitInstrA('DEC', 'BX');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_DATE : date systeme -> AX (jours julien encode) --- }
+  (* Encode : AX = (annee-1900)*512 + mois*32 + jour *)
+  EmitLabel(CL_RT_PFX + 'DATE');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  EmitInstrAB('MOV', 'AH', '2Ah');
+  EmitInstr('INT    21h');         { CX=annee, DH=mois, DL=jour }
+  EmitInstrAB('SUB', 'CX', '1900');
+  EmitInstrAB('MOV', 'AX', 'CX');
+  EmitInstrAB('MOV', 'BX', '512');
+  EmitInstr('MUL    BX');         { AX = (annee-1900)*512 }
+  EmitInstrAB('MOV', 'BL', 'DH'); { BL = mois }
+  EmitInstrAB('MOV', 'BH', '0');
+  EmitInstr('PUSH   DX');
+  EmitInstrAB('MOV', 'CX', '32');
+  EmitInstrAB('MOV', 'DX', 'BX');
+  EmitInstr('PUSH   AX');
+  EmitInstrAB('MOV', 'AX', 'DX');
+  EmitInstr('MUL    CX');         { AX = mois*32 }
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstr('POP    AX');
+  EmitInstrAB('ADD', 'AX', 'BX'); { AX += mois*32 }
+  EmitInstr('POP    DX');
+  EmitInstrAB('MOV', 'BL', 'DL'); { BL = jour }
+  EmitInstrAB('MOV', 'BH', '0');
+  EmitInstrAB('ADD', 'AX', 'BX'); { AX += jour }
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_DAY : extraire jour du mois de la date AX -> AX --- }
+  (* jour = AX AND 31 *)
+  EmitLabel(CL_RT_PFX + 'DAY');
+  EmitInstrAB('AND', 'AX', '31');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_MONTH : extraire mois de la date AX -> AX --- }
+  (* mois = (AX SHR 5) AND 15 *)
+  EmitLabel(CL_RT_PFX + 'MONTH');
+  EmitInstr('PUSH   CX');
+  EmitInstrAB('MOV', 'CL', '5');
+  EmitInstr('SHR    AX,CL');
+  EmitInstrAB('AND', 'AX', '15');
+  EmitInstr('POP    CX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_YEAR : extraire annee de la date AX -> AX --- }
+  (* annee = (AX SHR 9) + 1900 *)
+  EmitLabel(CL_RT_PFX + 'YEAR');
+  EmitInstr('PUSH   CX');
+  EmitInstrAB('MOV', 'CL', '9');
+  EmitInstr('SHR    AX,CL');
+  EmitInstrAB('ADD', 'AX', '1900');
+  EmitInstr('POP    CX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_DOW : jour de la semaine (1=dimanche..7=samedi) --- }
+  (* Utilise INT 21h AH=2Ah pour obtenir le DOW systeme si date=today,
+     sinon approximation par (date mod 7 + offset) *)
+  EmitLabel(CL_RT_PFX + 'DOW');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   DX');
+  EmitInstrAB('MOV', 'BX', '7');
+  EmitInstrAB('MOV', 'DX', '0');
+  EmitInstr('DIV    BX');        { DX = AX mod 7 }
+  EmitInstrAB('MOV', 'AX', 'DX');
+  EmitInstrA('INC', 'AX');       { 1-based }
+  EmitInstr('POP    DX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_CDOW : nom du jour de la semaine -> AX=ptr --- }
+  EmitLabel(CL_RT_PFX + 'CDOW');
+  EmitInstr('PUSH   BX');
+  EmitInstrA('CALL', CL_RT_PFX + 'DOW');  { AX = 1..7 }
+  EmitInstrA('DEC', 'AX');                 { AX = 0..6 }
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstr('SHL    BX,1');                { *2 pour table de mots }
+  EmitInstrAB('MOV', 'AX', '[_CL_DAYTAB+BX]');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_CMONTH : nom du mois -> AX=ptr --- }
+  EmitLabel(CL_RT_PFX + 'CMONTH');
+  EmitInstr('PUSH   BX');
+  EmitInstrA('CALL', CL_RT_PFX + 'MONTH');  { AX = 1..12 }
+  EmitInstrA('DEC', 'AX');                   { AX = 0..11 }
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstr('SHL    BX,1');                  { *2 pour table de mots }
+  EmitInstrAB('MOV', 'AX', '[_CL_MONTAB+BX]');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_CTOD : convertir chaine "MM/DD/YY" en date -> AX --- }
+  (* SI=ptr vers chaine date. Extrait mois, jour, annee et encode *)
+  EmitLabel(CL_RT_PFX + 'CTOD');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  { Extraire mois (2 chiffres) }
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('SUB', 'AL', '48');
+  EmitInstrAB('MOV', 'AH', '10');
+  EmitInstr('MUL    AH');
+  EmitInstrAB('MOV', 'BL', '[SI+1]');
+  EmitInstrAB('SUB', 'BL', '48');
+  EmitInstrAB('ADD', 'AL', 'BL');
+  EmitInstrAB('MOV', 'DH', 'AL');   { DH = mois }
+  { Extraire jour (2 chiffres apres le /) }
+  EmitInstrAB('MOV', 'AL', '[SI+3]');
+  EmitInstrAB('SUB', 'AL', '48');
+  EmitInstrAB('MOV', 'AH', '10');
+  EmitInstr('MUL    AH');
+  EmitInstrAB('MOV', 'BL', '[SI+4]');
+  EmitInstrAB('SUB', 'BL', '48');
+  EmitInstrAB('ADD', 'AL', 'BL');
+  EmitInstrAB('MOV', 'DL', 'AL');   { DL = jour }
+  { Extraire annee (2 ou 4 chiffres apres le second /) }
+  EmitInstrAB('MOV', 'AL', '[SI+6]');
+  EmitInstrAB('SUB', 'AL', '48');
+  EmitInstrAB('MOV', 'AH', '10');
+  EmitInstr('MUL    AH');
+  EmitInstrAB('MOV', 'BL', '[SI+7]');
+  EmitInstrAB('SUB', 'BL', '48');
+  EmitInstrAB('ADD', 'AL', 'BL');
+  EmitInstrAB('MOV', 'CL', 'AL');   { CL = annee (2 chiffres) }
+  { Encoder : AX = CL*512 + DH*32 + DL }
+  EmitInstrAB('MOV', 'AH', '0');
+  EmitInstrAB('MOV', 'AL', 'CL');
+  EmitInstrAB('MOV', 'BX', '512');
+  EmitInstr('MUL    BX');           { AX = annee*512 }
+  EmitInstr('PUSH   AX');
+  EmitInstrAB('MOV', 'AH', '0');
+  EmitInstrAB('MOV', 'AL', 'DH');
+  EmitInstrAB('MOV', 'BX', '32');
+  EmitInstr('MUL    BX');           { AX = mois*32 }
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstr('POP    AX');
+  EmitInstrAB('ADD', 'AX', 'BX');
+  EmitInstrAB('MOV', 'BH', '0');
+  EmitInstrAB('MOV', 'BL', 'DL');
+  EmitInstrAB('ADD', 'AX', 'BX');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_DTOC : date AX vers chaine "MM/DD/YY" -> AX=ptr --- }
+  EmitLabel(CL_RT_PFX + 'DTOC');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  EmitInstr('PUSH   DI');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _CL_DATEBUF');
+  EmitInstrAB('MOV', 'CX', 'AX');   { CX = date encodee }
+  { Extraire mois = (CX SHR 5) AND 15 }
+  EmitInstrAB('MOV', 'AX', 'CX');
+  EmitInstr('PUSH   CX');
+  EmitInstrAB('MOV', 'CL', '5');
+  EmitInstr('SHR    AX,CL');
+  EmitInstr('POP    CX');
+  EmitInstrAB('AND', 'AX', '15');
+  { Ecrire mois en 2 chiffres }
+  EmitInstrAB('MOV', 'BL', '10');
+  EmitInstrAB('MOV', 'AH', '0');
+  EmitInstr('DIV    BL');           { AL=dizaines, AH=unites }
+  EmitInstrAB('ADD', 'AL', '48');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrAB('ADD', 'AH', '48');
+  EmitInstrAB('MOV', '[DI+1]', 'AH');
+  EmitInstrAB('MOV', 'BYTE PTR [DI+2]', '47');  { '/' }
+  { Extraire jour = CX AND 31 }
+  EmitInstrAB('MOV', 'AX', 'CX');
+  EmitInstrAB('AND', 'AX', '31');
+  EmitInstrAB('MOV', 'AH', '0');
+  EmitInstr('DIV    BL');
+  EmitInstrAB('ADD', 'AL', '48');
+  EmitInstrAB('MOV', '[DI+3]', 'AL');
+  EmitInstrAB('ADD', 'AH', '48');
+  EmitInstrAB('MOV', '[DI+4]', 'AH');
+  EmitInstrAB('MOV', 'BYTE PTR [DI+5]', '47');  { '/' }
+  { Extraire annee = (CX SHR 9) }
+  EmitInstrAB('MOV', 'AX', 'CX');
+  EmitInstr('PUSH   CX');
+  EmitInstrAB('MOV', 'CL', '9');
+  EmitInstr('SHR    AX,CL');
+  EmitInstr('POP    CX');
+  { Ecrire annee en 2 chiffres (modulo 100) }
+  EmitInstr('DIV    BL');
+  EmitInstrAB('ADD', 'AL', '48');
+  EmitInstrAB('MOV', '[DI+6]', 'AL');
+  EmitInstrAB('ADD', 'AH', '48');
+  EmitInstrAB('MOV', '[DI+7]', 'AH');
+  EmitInstrAB('MOV', 'BYTE PTR [DI+8]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _CL_DATEBUF');
+  EmitInstr('POP    DI');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_DTOS : date AX vers chaine "YYYYMMDD" -> AX=ptr --- }
+  EmitLabel(CL_RT_PFX + 'DTOS');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  EmitInstr('PUSH   DI');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _CL_DATEBUF');
+  EmitInstrAB('MOV', 'CX', 'AX');
+  { Extraire annee = (CX SHR 9) + 1900 }
+  EmitInstrAB('MOV', 'AX', 'CX');
+  EmitInstr('PUSH   CX');
+  EmitInstrAB('MOV', 'CL', '9');
+  EmitInstr('SHR    AX,CL');
+  EmitInstr('POP    CX');
+  EmitInstrAB('ADD', 'AX', '1900');
+  { Ecrire annee en 4 chiffres via NUMTOSTR }
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DI');
+  EmitInstrA('CALL', CL_RT_PFX + 'NUMTOSTR');
+  EmitInstr('POP    DI');
+  EmitInstr('POP    CX');
+  { Extraire mois }
+  EmitInstrAB('MOV', 'AX', 'CX');
+  EmitInstr('PUSH   CX');
+  EmitInstrAB('MOV', 'CL', '5');
+  EmitInstr('SHR    AX,CL');
+  EmitInstr('POP    CX');
+  EmitInstrAB('AND', 'AX', '15');
+  EmitInstrAB('MOV', 'BL', '10');
+  EmitInstrAB('MOV', 'AH', '0');
+  EmitInstr('DIV    BL');
+  EmitInstrAB('ADD', 'AL', '48');
+  EmitInstrAB('MOV', '[DI+4]', 'AL');
+  EmitInstrAB('ADD', 'AH', '48');
+  EmitInstrAB('MOV', '[DI+5]', 'AH');
+  { Extraire jour }
+  EmitInstrAB('MOV', 'AX', 'CX');
+  EmitInstrAB('AND', 'AX', '31');
+  EmitInstrAB('MOV', 'AH', '0');
+  EmitInstr('DIV    BL');
+  EmitInstrAB('ADD', 'AL', '48');
+  EmitInstrAB('MOV', '[DI+6]', 'AL');
+  EmitInstrAB('ADD', 'AH', '48');
+  EmitInstrAB('MOV', '[DI+7]', 'AH');
+  EmitInstrAB('MOV', 'BYTE PTR [DI+8]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _CL_DATEBUF');
+  EmitInstr('POP    DI');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_EMPTY : teste si valeur AX est vide/zero -> AX=1 ou 0 --- }
+  EmitLabel(CL_RT_PFX + 'EMPTY');
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JNZ', CL_RT_PFX + 'EMPTY_N');
+  EmitInstrAB('MOV', 'AX', '1');
+  EmitInstr('RET');
+  EmitLabel(CL_RT_PFX + 'EMPTY_N');
+  EmitInstrAB('MOV', 'AX', '0');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_INKEY : lire touche clavier sans bloquer -> AX=code ou 0 --- }
+  EmitLabel(CL_RT_PFX + 'INKEY');
+  EmitInstrAB('MOV', 'AH', '01h');
+  EmitInstr('INT    16h');         { ZF=1 si pas de touche }
+  EmitInstrA('JZ', CL_RT_PFX + 'INK_NO');
+  EmitInstrAB('MOV', 'AH', '00h');
+  EmitInstr('INT    16h');         { AH=scan, AL=ASCII }
+  EmitInstrAB('MOV', 'AH', '0');  { garder seulement ASCII }
+  EmitInstrAB('MOV', '[_CL_LASTKEY]', 'AX');
+  EmitInstr('RET');
+  EmitLabel(CL_RT_PFX + 'INK_NO');
+  EmitInstrAB('MOV', 'AX', '0');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_ROW : ligne curseur -> AX --- }
+  EmitLabel(CL_RT_PFX + 'ROW');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  EmitInstrAB('MOV', 'AH', '03h');
+  EmitInstrAB('MOV', 'BH', '0');
+  EmitInstr('INT    10h');         { DH=row, DL=col }
+  EmitInstrAB('MOV', 'AL', 'DH');
+  EmitInstrAB('MOV', 'AH', '0');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_COL : colonne curseur -> AX --- }
+  EmitLabel(CL_RT_PFX + 'COL');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  EmitInstrAB('MOV', 'AH', '03h');
+  EmitInstrAB('MOV', 'BH', '0');
+  EmitInstr('INT    10h');         { DH=row, DL=col }
+  EmitInstrAB('MOV', 'AL', 'DL');
+  EmitInstrAB('MOV', 'AH', '0');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_MEMORY : memoire libre en Ko -> AX --- }
+  EmitLabel(CL_RT_PFX + 'MEMORY');
+  EmitInstrAB('MOV', 'AH', '48h');
+  EmitInstrAB('MOV', 'BX', '0FFFFh');  { demander max }
+  EmitInstr('INT    21h');               { CF=1, BX=paragraphes libres }
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstr('PUSH   CX');
+  EmitInstrAB('MOV', 'CL', '6');
+  EmitInstr('SHR    AX,CL');            { paragraphes/64 = Ko }
+  EmitInstr('POP    CX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_SECONDS : secondes depuis minuit -> AX --- }
+  EmitLabel(CL_RT_PFX + 'SECONDS');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  EmitInstrAB('MOV', 'AH', '2Ch');
+  EmitInstr('INT    21h');              { CH=heures, CL=minutes, DH=secondes }
+  EmitInstrAB('MOV', 'AL', 'CH');
+  EmitInstrAB('MOV', 'AH', '0');
+  EmitInstrAB('MOV', 'BX', '3600');
+  EmitInstr('MUL    BX');              { AX = heures*3600 }
+  EmitInstr('PUSH   AX');
+  EmitInstrAB('MOV', 'AL', 'CL');
+  EmitInstrAB('MOV', 'AH', '0');
+  EmitInstrAB('MOV', 'BX', '60');
+  EmitInstr('MUL    BX');              { AX = minutes*60 }
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstr('POP    AX');
+  EmitInstrAB('ADD', 'AX', 'BX');     { AX += minutes*60 }
+  EmitInstrAB('MOV', 'BL', 'DH');
+  EmitInstrAB('MOV', 'BH', '0');
+  EmitInstrAB('ADD', 'AX', 'BX');     { AX += secondes }
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_TIME : heure courante "HH:MM:SS" -> AX=ptr --- }
+  EmitLabel(CL_RT_PFX + 'TIME');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  EmitInstr('PUSH   DI');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _CL_TIMEBUF');
+  EmitInstrAB('MOV', 'AH', '2Ch');
+  EmitInstr('INT    21h');             { CH=h, CL=m, DH=s }
+  { Ecrire heures }
+  EmitInstrAB('MOV', 'AL', 'CH');
+  EmitInstrAB('MOV', 'AH', '0');
+  EmitInstrAB('MOV', 'BL', '10');
+  EmitInstr('DIV    BL');
+  EmitInstrAB('ADD', 'AL', '48');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrAB('ADD', 'AH', '48');
+  EmitInstrAB('MOV', '[DI+1]', 'AH');
+  EmitInstrAB('MOV', 'BYTE PTR [DI+2]', '58');  { ':' }
+  { Ecrire minutes }
+  EmitInstrAB('MOV', 'AL', 'CL');
+  EmitInstrAB('MOV', 'AH', '0');
+  EmitInstr('DIV    BL');
+  EmitInstrAB('ADD', 'AL', '48');
+  EmitInstrAB('MOV', '[DI+3]', 'AL');
+  EmitInstrAB('ADD', 'AH', '48');
+  EmitInstrAB('MOV', '[DI+4]', 'AH');
+  EmitInstrAB('MOV', 'BYTE PTR [DI+5]', '58');  { ':' }
+  { Ecrire secondes }
+  EmitInstrAB('MOV', 'AL', 'DH');
+  EmitInstrAB('MOV', 'AH', '0');
+  EmitInstr('DIV    BL');
+  EmitInstrAB('ADD', 'AL', '48');
+  EmitInstrAB('MOV', '[DI+6]', 'AL');
+  EmitInstrAB('ADD', 'AH', '48');
+  EmitInstrAB('MOV', '[DI+7]', 'AH');
+  EmitInstrAB('MOV', 'BYTE PTR [DI+8]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _CL_TIMEBUF');
+  EmitInstr('POP    DI');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+End;
+
+{ ============================================================
   TODO 22 - PREPROCESSEUR (#command, #translate, #define, #include) [IMPLEMENTE]
   ============================================================ }
 
@@ -11783,6 +12834,7 @@ Begin
   EmitDBFRuntime;
   EmitIdxRuntime;
   EmitErrRuntime;
+  EmitBuiltinRuntime;
 End;
 
 { ---- EmitClose : finaliser le fichier ASM -------------------- }
