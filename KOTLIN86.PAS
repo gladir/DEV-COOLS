@@ -263,7 +263,7 @@
             Labels de boucle : label@ for (...) { break@label }
             LoopPush / LoopPop : pile de labels break/continue
 
-  TODO 15 - TABLEAUX (Array / IntArray / arrayOf)
+  TODO 15 - TABLEAUX (Array / IntArray / arrayOf) [IMPLEMENTE]
             arrayOf(e0, e1, e2) : creation d un tableau -> DATA ou pile
             intArrayOf(e0, e1, e2) : creation d un IntArray
             Array(n) { init } : creation avec lambda d initialisation
@@ -772,6 +772,7 @@ Var
   { Etat general }
   RuntimeEmitted : Boolean;
   GCallArgCount  : Integer;  { nb args du dernier ParseCallArgs     }
+  ArrayTempCount : Integer;  { compteur pour labels _KTA_N           }
 
 { ============================================================
   FORWARD DECLARATIONS
@@ -854,6 +855,7 @@ Procedure DataInit;      Forward;
 Procedure EmitRuntime;     Forward;
 Procedure EmitExprRuntime; Forward;
 Procedure EmitIORuntime;   Forward;
+Procedure EmitArrayRuntime; Forward;
 Procedure EmitHeader;    Forward;
 { TODO 09 - Variables }
 Function  ExprAddrOf(SIdx : Integer) : TString; Forward;
@@ -1173,6 +1175,7 @@ Begin
   LoopTop        := 0;
   RuntimeEmitted := False;
   GCallArgCount  := 0;
+  ArrayTempCount := 0;
   CurFrameSize   := 0;
   LabelGenSeq    := 0;
   GExprDummy.Kind    := EK_NONE;
@@ -2281,12 +2284,16 @@ Procedure ParsePrimary(Var Res : TExprVal);
 Var
   IdName   : TString;
   SIdx     : Integer;
+  I        : Integer;
   Lbl      : TString;
   NArgs    : Integer;
   SVal     : TString;
   MembName : TString;
+  ArrLbl   : TString;
   LblNull  : TString;
   LblEnd   : TString;
+  LblLoop  : TString;
+  SavedTy  : Integer;
 Begin
   Case CurToken.Kind Of
     TK_INTEGER, TK_LONG, TK_FLOAT, TK_CHAR :
@@ -2422,6 +2429,81 @@ Begin
           Res.Offset  := 0;
           Res.SymIdx  := -1;
         End
+        { TODO 15 - arrayOf(e0, e1, ...) / intArrayOf(e0, e1, ...) }
+        Else If (IdName = 'arrayOf') Or (IdName = 'intArrayOf') Then
+        Begin
+          ParserAdvance; { consomme '(' }
+          ArrLbl := '_KTA_' + IntToStr(ArrayTempCount);
+          Inc(ArrayTempCount);
+          NArgs := 0;
+          If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
+          Begin
+            Repeat
+              ParseExpr(Res);
+              ExprFlushToAX(Res);
+              EmitInstrA('PUSH', 'AX');
+              Inc(NArgs);
+              If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+                ParserAdvance
+              Else
+                Break;
+            Until False;
+          End;
+          DataAddArray(ArrLbl, NArgs);
+          { Stocker les elements dans l ordre (depiler en sens inverse) }
+          I := NArgs - 1;
+          While I >= 0 Do
+          Begin
+            EmitInstrA('POP', 'AX');
+            SVal := ArrLbl + '_D+' + IntToStr(I * 2);
+            EmitInstrAB('MOV', 'WORD PTR [' + SVal + ']', 'AX');
+            Dec(I);
+          End;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance; { consomme ')' }
+          EmitInstrAB('MOV', 'AX', 'OFFSET ' + ArrLbl);
+          Res.Kind    := EK_AX;
+          Res.ImmVal  := 0;
+          If IdName = 'intArrayOf' Then
+            Res.TypeIdx := TY_IDX_INTARRAY
+          Else
+            Res.TypeIdx := TY_IDX_ARRAY;
+          Res.Offset  := 0;
+          Res.SymIdx  := -1;
+        End
+        { TODO 15 - IntArray(n) : tableau de n entiers init a 0 }
+        Else If IdName = 'IntArray' Then
+        Begin
+          ParserAdvance; { consomme '(' }
+          ParseExpr(Res);
+          ExprFlushToAX(Res);
+          EmitInstrA('PUSH', 'AX');
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance; { consomme ')' }
+          { Ignorer le lambda d initialisation optionnel }
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val[1] = CH_LBRACE) Then
+          Begin
+            NArgs := 1;
+            While (CurToken.Kind <> TK_EOF) And
+                  Not ((CurToken.Kind = TK_PUNCT) And
+                       (CurToken.Val[1] = CH_RBRACE)) Do
+              ParserAdvance;
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val[1] = CH_RBRACE) Then
+              ParserAdvance;
+          End;
+          ArrLbl := '_KTA_' + IntToStr(ArrayTempCount);
+          Inc(ArrayTempCount);
+          DataAddArray(ArrLbl, MAX_ARR_ELEM);
+          EmitInstrA('POP', 'CX');
+          EmitComment('IntArray(n) : stocker count');
+          EmitInstrAB('MOV', 'WORD PTR [' + ArrLbl + ']', 'CX');
+          EmitInstrAB('MOV', 'AX', 'OFFSET ' + ArrLbl);
+          Res.Kind    := EK_AX;
+          Res.ImmVal  := 0;
+          Res.TypeIdx := TY_IDX_INTARRAY;
+          Res.Offset  := 0;
+          Res.SymIdx  := -1;
+        End
         Else
         Begin
           { Appel de fonction generique }
@@ -2488,8 +2570,10 @@ Begin
   While True Do
   Begin
     (* Acces membre : expr.membre ou appel methode expr.membre(args) *)
-    If (CurToken.Kind = TK_OP) And (CurToken.Val = '.') Then
+    If ((CurToken.Kind = TK_PUNCT) Or (CurToken.Kind = TK_OP)) And
+       (CurToken.Val = '.') Then
     Begin
+      SavedTy := Res.TypeIdx;
       ExprFlushToAX(Res);
       ParserAdvance; { consomme '.' }
       If CurToken.Kind = TK_IDENT Then
@@ -2538,6 +2622,100 @@ Begin
             { Stub : AX reste tel quel }
             Res.TypeIdx := TY_IDX_INT;
           End
+          { TODO 15 - Methodes tableau : get, set, indexOf, contains, sum, sorted }
+          Else If (MembName = 'get') And
+                  ((Res.TypeIdx = TY_IDX_ARRAY) Or (Res.TypeIdx = TY_IDX_INTARRAY)) Then
+          Begin
+            EmitInstrA('PUSH', 'AX'); { sauver base tableau }
+            ParserAdvance; { consomme '(' }
+            ParseExpr(Res);
+            ExprFlushToAX(Res);
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance; { consomme ')' }
+            EmitInstrAB('SHL', 'AX', '1');
+            EmitInstrAB('ADD', 'AX', '2');
+            EmitInstrA('POP', 'BX');
+            EmitInstrAB('ADD', 'BX', 'AX');
+            EmitInstrAB('MOV', 'AX', '[BX]');
+            Res.TypeIdx := TY_IDX_INT;
+          End
+          Else If (MembName = 'set') And
+                  ((Res.TypeIdx = TY_IDX_ARRAY) Or (Res.TypeIdx = TY_IDX_INTARRAY)) Then
+          Begin
+            EmitInstrA('PUSH', 'AX'); { sauver base tableau }
+            ParserAdvance; { consomme '(' }
+            ParseExpr(Res);
+            ExprFlushToAX(Res);
+            EmitInstrA('PUSH', 'AX'); { sauver index }
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+              ParserAdvance;
+            ParseExpr(Res);
+            ExprFlushToAX(Res); { AX = valeur }
+            EmitInstrA('POP', 'BX'); { BX = index }
+            EmitInstrAB('SHL', 'BX', '1');
+            EmitInstrAB('ADD', 'BX', '2');
+            EmitInstrA('POP', 'DX'); { DX = base tableau }
+            EmitInstrAB('ADD', 'BX', 'DX');
+            EmitInstrAB('MOV', '[BX]', 'AX');
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance; { consomme ')' }
+            Res.TypeIdx := TY_IDX_UNIT;
+          End
+          Else If (MembName = 'indexOf') And
+                  ((Res.TypeIdx = TY_IDX_ARRAY) Or (Res.TypeIdx = TY_IDX_INTARRAY)) Then
+          Begin
+            EmitInstrA('PUSH', 'AX'); { sauver base tableau }
+            ParserAdvance; { consomme '(' }
+            ParseExpr(Res);
+            ExprFlushToAX(Res); { AX = valeur a chercher }
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance; { consomme ')' }
+            EmitInstrA('POP', 'BX'); { BX = base tableau }
+            EmitInstr('CALL _KTRT_ARRIDXOF');
+            Res.TypeIdx := TY_IDX_INT;
+          End
+          Else If (MembName = 'contains') And
+                  ((Res.TypeIdx = TY_IDX_ARRAY) Or (Res.TypeIdx = TY_IDX_INTARRAY)) Then
+          Begin
+            EmitInstrA('PUSH', 'AX'); { sauver base tableau }
+            ParserAdvance; { consomme '(' }
+            ParseExpr(Res);
+            ExprFlushToAX(Res); { AX = valeur }
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance; { consomme ')' }
+            EmitInstrA('POP', 'BX'); { BX = base tableau }
+            EmitInstr('CALL _KTRT_ARRIDXOF');
+            LblEnd := LabelGen;
+            LblNull := LabelGen;
+            EmitInstrAB('CMP', 'AX', '-1');
+            EmitInstrA('JE', LblNull);
+            EmitInstrAB('MOV', 'AX', '1');
+            EmitInstrA('JMP', LblEnd);
+            EmitLabel(LblNull);
+            EmitInstrAB('XOR', 'AX', 'AX');
+            EmitLabel(LblEnd);
+            Res.TypeIdx := TY_IDX_BOOLEAN;
+          End
+          Else If (MembName = 'sum') And
+                  ((Res.TypeIdx = TY_IDX_ARRAY) Or (Res.TypeIdx = TY_IDX_INTARRAY)) Then
+          Begin
+            EmitInstrAB('MOV', 'BX', 'AX');
+            ParserAdvance; { consomme '(' }
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance; { consomme ')' }
+            EmitInstr('CALL _KTRT_ARRSUM');
+            Res.TypeIdx := TY_IDX_INT;
+          End
+          Else If (MembName = 'sorted') And
+                  ((Res.TypeIdx = TY_IDX_ARRAY) Or (Res.TypeIdx = TY_IDX_INTARRAY)) Then
+          Begin
+            EmitInstrAB('MOV', 'BX', 'AX');
+            ParserAdvance; { consomme '(' }
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance; { consomme ')' }
+            EmitInstr('CALL _KTRT_ARRSORT');
+            Res.TypeIdx := TY_IDX_ARRAY;
+          End
           Else
           Begin
             EmitInstrA('PUSH', 'AX'); { receveur en premier arg }
@@ -2546,20 +2724,33 @@ Begin
             EmitInstrA('CALL', KT_FN_PFX + MembName);
             SVal := IntToStr((NArgs + 1) * 2);
             EmitInstrAB('ADD', 'SP', SVal);
+            Res.TypeIdx := TY_IDX_ANY;
           End;
         End
         Else
         Begin
-          (* Acces champ : stub, charge via offset pointeur *)
-          EmitComment('acces membre .' + MembName);
-          EmitInstrAB('MOV', 'BX', 'AX');
-          EmitInstrAB('MOV', 'AX', '[BX]');
+          { TODO 15 - Propriete arr.size }
+          If (MembName = 'size') And
+             ((Res.TypeIdx = TY_IDX_ARRAY) Or (Res.TypeIdx = TY_IDX_INTARRAY)) Then
+          Begin
+            EmitComment('arr.size -> count word');
+            EmitInstrAB('MOV', 'BX', 'AX');
+            EmitInstrAB('MOV', 'AX', '[BX]');
+            Res.TypeIdx := TY_IDX_INT;
+          End
+          Else
+          Begin
+            (* Acces champ : stub, charge via offset pointeur *)
+            EmitComment('acces membre .' + MembName);
+            EmitInstrAB('MOV', 'BX', 'AX');
+            EmitInstrAB('MOV', 'AX', '[BX]');
+            Res.TypeIdx := TY_IDX_ANY;
+          End;
         End;
       End
       Else
         CompileError('identifiant attendu apres "."');
       Res.Kind    := EK_AX;
-      Res.TypeIdx := TY_IDX_ANY;
       Res.SymIdx  := -1;
     End
     (* Safe call : expr?.membre *)
@@ -2621,13 +2812,15 @@ Begin
     (* Acces index : expr[i] *)
     Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
     Begin
+      SavedTy := Res.TypeIdx;
       ExprFlushToAX(Res);
       EmitInstrA('PUSH', 'AX'); { sauver base du tableau }
       ParserAdvance; { consomme '[' }
       ParseExpr(Res);
       ExprFlushToAX(Res);
       EmitInstrAB('SHL', 'AX', '1');  { index * 2 (taille mot 16 bits) }
-      EmitInstrA('POP', 'BX');          { BX = base tableau }
+      EmitInstrAB('ADD', 'AX', '2');  { +2 pour sauter le count word }
+      EmitInstrA('POP', 'BX');         { BX = base tableau }
       EmitInstrAB('ADD', 'BX', 'AX');
       EmitInstrAB('MOV', 'AX', '[BX]');
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
@@ -3699,6 +3892,7 @@ Begin
   EmitComment('=========================================================');
   EmitExprRuntime;
   EmitIORuntime;
+  EmitArrayRuntime;
 End;
 
 (* ---- EmitExprRuntime : routines runtime pour expressions ------ *)
@@ -3772,6 +3966,123 @@ Begin
   EmitInstrAB('MOV', 'AX', '1');
   EmitInstrA('POP', 'DI');
   EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+End;
+
+{ ============================================================
+  TODO 15 - TABLEAUX [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- EmitArrayRuntime : routines runtime pour tableaux ------ *)
+(* _KTRT_ARRIDXOF : recherche d un element dans un tableau       *)
+(*   Entree : BX = base tableau (count word), AX = valeur         *)
+(*   Sortie : AX = index (0-based) ou -1 si non trouve            *)
+(* _KTRT_ARRSUM : somme des elements d un tableau                 *)
+(*   Entree : BX = base tableau                                   *)
+(*   Sortie : AX = somme                                          *)
+(* _KTRT_ARRSORT : tri en place (bubble sort) d un tableau        *)
+(*   Entree : BX = base tableau                                   *)
+(*   Sortie : AX = BX (meme tableau, trie en place)               *)
+Procedure EmitArrayRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=========================================================');
+  EmitComment('TODO 15 - RUNTIME TABLEAUX KOTLIN86');
+  EmitComment('=========================================================');
+
+  { --- _KTRT_ARRIDXOF : indexOf --- }
+  EmitBlankLine;
+  EmitComment('--- _KTRT_ARRIDXOF : BX=arr, AX=val -> AX=index/-1 ---');
+  EmitLabel('_KTRT_ARRIDXOF');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'CX', '[BX]');
+  EmitInstrAB('ADD', 'BX', '2');
+  EmitInstrAB('XOR', 'SI', 'SI');
+  EmitLabel('_KTRT_AIF1');
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JZ', '_KTRT_AIF2');
+  EmitInstrAB('CMP', 'AX', '[BX]');
+  EmitInstrA('JE', '_KTRT_AIF3');
+  EmitInstrAB('ADD', 'BX', '2');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', '_KTRT_AIF1');
+  EmitLabel('_KTRT_AIF2');
+  EmitComment('non trouve');
+  EmitInstrAB('MOV', 'AX', '-1');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitLabel('_KTRT_AIF3');
+  EmitComment('trouve a index SI');
+  EmitInstrAB('MOV', 'AX', 'SI');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+
+  { --- _KTRT_ARRSUM : somme --- }
+  EmitBlankLine;
+  EmitComment('--- _KTRT_ARRSUM : BX=arr -> AX=somme ---');
+  EmitLabel('_KTRT_ARRSUM');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrAB('MOV', 'CX', '[BX]');
+  EmitInstrAB('ADD', 'BX', '2');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitLabel('_KTRT_ASM1');
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JZ', '_KTRT_ASM2');
+  EmitInstrAB('ADD', 'AX', '[BX]');
+  EmitInstrAB('ADD', 'BX', '2');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', '_KTRT_ASM1');
+  EmitLabel('_KTRT_ASM2');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+
+  { --- _KTRT_ARRSORT : tri en place (bubble sort) --- }
+  EmitBlankLine;
+  EmitComment('--- _KTRT_ARRSORT : BX=arr -> AX=BX (trie) ---');
+  EmitLabel('_KTRT_ARRSORT');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('MOV', 'CX', '[BX]');
+  EmitInstrAB('CMP', 'CX', '2');
+  EmitInstrA('JB', '_KTRT_ASR4');
+  EmitInstrA('DEC', 'CX');
+  EmitLabel('_KTRT_ASR1');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrAB('MOV', 'SI', 'BX');
+  EmitInstrAB('ADD', 'SI', '2');
+  EmitInstrAB('MOV', 'DI', 'CX');
+  EmitLabel('_KTRT_ASR2');
+  EmitInstrAB('MOV', 'AX', '[SI]');
+  EmitInstrAB('MOV', 'DX', '[SI+2]');
+  EmitInstrAB('CMP', 'AX', 'DX');
+  EmitInstrA('JLE', '_KTRT_ASR3');
+  EmitInstrAB('MOV', '[SI]', 'DX');
+  EmitInstrAB('MOV', '[SI+2]', 'AX');
+  EmitLabel('_KTRT_ASR3');
+  EmitInstrAB('ADD', 'SI', '2');
+  EmitInstrA('DEC', 'DI');
+  EmitInstrA('JNZ', '_KTRT_ASR2');
+  EmitInstrA('POP', 'CX');
+  EmitInstr('LOOP _KTRT_ASR1');
+  EmitLabel('_KTRT_ASR4');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
   EmitInstr('RET');
 End;
 
@@ -4401,6 +4712,7 @@ Procedure ExprFlushToAX(Const E : TExprVal);
 Var
   Addr : TString;
   SVal : TString;
+  K    : TTypeKind;
 Begin
   Case E.Kind Of
     EK_IMM :
@@ -4412,7 +4724,10 @@ Begin
       If E.SymIdx >= 0 Then
       Begin
         Addr := ExprAddrOf(E.SymIdx);
-        If TypeIsPtr(E.TypeIdx) Then
+        K := TypeKindOf(E.TypeIdx);
+        If (K = TYK_ARRAY) Or (K = TYK_INTARRAY) Then
+          EmitInstrAB('MOV', 'AX', Addr)
+        Else If TypeIsPtr(E.TypeIdx) Then
           EmitInstrAB('LEA', 'AX', Addr)
         Else
           EmitInstrAB('MOV', 'AX', Addr);
@@ -4443,6 +4758,7 @@ End;
 Procedure ExprLoad(SIdx : Integer; Var Res : TExprVal);
 Var
   Addr : TString;
+  K    : TTypeKind;
 Begin
   Res.Kind    := EK_AX;
   Res.TypeIdx := SymTab[SIdx].TypeIdx;
@@ -4450,7 +4766,10 @@ Begin
   Res.Offset  := SymTab[SIdx].Offset;
   Res.SymIdx  := SIdx;
   Addr := ExprAddrOf(SIdx);
-  If TypeIsPtr(Res.TypeIdx) Then
+  K := TypeKindOf(Res.TypeIdx);
+  If (K = TYK_ARRAY) Or (K = TYK_INTARRAY) Then
+    EmitInstrAB('MOV', 'AX', Addr)
+  Else If TypeIsPtr(Res.TypeIdx) Then
     EmitInstrAB('LEA', 'AX', Addr)
   Else
     EmitInstrAB('MOV', 'AX', Addr);
@@ -5138,6 +5457,37 @@ Begin
     If (SIdx >= 0) And (SymTab[SIdx].Kind <> SK_FUN) Then
     Begin
       ParserAdvance; { consomme l identifiant }
+      { TODO 15 - Affectation tableau : arr[i] = expr }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
+      Begin
+        ExprLoad(SIdx, Res);
+        ExprFlushToAX(Res);
+        EmitInstrA('PUSH', 'AX'); { sauver base tableau }
+        ParserAdvance; { consomme '[' }
+        ParseExpr(Res);
+        ExprFlushToAX(Res); { AX = index }
+        EmitInstrAB('SHL', 'AX', '1');
+        EmitInstrAB('ADD', 'AX', '2');
+        EmitInstrA('POP', 'BX');
+        EmitInstrAB('ADD', 'BX', 'AX');
+        EmitInstrA('PUSH', 'BX'); { sauver adresse element }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+          ParserAdvance; { consomme ']' }
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+        Begin
+          ParserAdvance; { consomme '=' }
+          ParseExpr(Res);
+          ExprFlushToAX(Res);
+          EmitInstrA('POP', 'BX');
+          EmitInstrAB('MOV', '[BX]', 'AX');
+        End
+        Else
+        Begin
+          EmitInstrA('POP', 'BX');
+          EmitInstrAB('MOV', 'AX', '[BX]');
+        End;
+        Exit;
+      End;
       If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
       Begin
         ParserAdvance; { consomme '=' }
