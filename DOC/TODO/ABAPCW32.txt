@@ -232,7 +232,7 @@
               WHEN OTHERS = clause par defaut
               ENDCASE = EmitLabel(_ABL_endcase)
 
-  TODO 12 - PARSEUR : WHILE / ENDWHILE ET DO n TIMES / ENDDO
+  TODO 12 - PARSEUR : WHILE / ENDWHILE ET DO n TIMES / ENDDO [IMPLEMENTE]
             Procedure ParseWhile
             Syntaxe : WHILE condition. instructions. ENDWHILE.
             Generation 32 bits :

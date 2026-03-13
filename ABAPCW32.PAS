@@ -251,7 +251,7 @@
               WHEN OTHERS = clause par defaut
               ENDCASE = EmitLabel(_ABL_endcase)
 
-  TODO 12 - PARSEUR : WHILE / ENDWHILE ET DO n TIMES / ENDDO
+  TODO 12 - PARSEUR : WHILE / ENDWHILE ET DO n TIMES / ENDDO [IMPLEMENTE]
             Procedure ParseWhile
             Syntaxe : WHILE condition. instructions. ENDWHILE.
             Generation 32 bits :
@@ -1099,6 +1099,13 @@ Procedure ParseIf; Forward;
 { ============================================================ }
 
 Procedure ParseCase; Forward;
+
+{ ============================================================ }
+{ DECLARATIONS FORWARD (WHILE / DO TODO 12)                    }
+{ ============================================================ }
+
+Procedure ParseWhile; Forward;
+Procedure ParseDo; Forward;
 
 { ============================================================ }
 { FONCTIONS UTILITAIRES                                        }
@@ -3200,6 +3207,38 @@ Begin
   If TokIsKw(KW_CASE) Then
   Begin Consume; ParseCase; Exit; End;
 
+  { WHILE / ENDWHILE }
+  If TokIsKw(KW_WHILE) Then
+  Begin Consume; ParseWhile; Exit; End;
+
+  { DO [n TIMES] / ENDDO }
+  If TokIsKw(KW_DO) Then
+  Begin Consume; ParseDo; Exit; End;
+
+  { EXIT : sortir de la boucle courante }
+  If TokIsKw(KW_EXIT) Then
+  Begin
+    Consume;
+    If CurrentExitLabel <> '' Then
+      EmitI('JMP     ' + CurrentExitLabel)
+    Else
+      LexError('EXIT en dehors d''une boucle');
+    If CurTokType = TOK_DOT Then Consume;
+    Exit;
+  End;
+
+  { CONTINUE : retour au debut de la boucle courante }
+  If TokIsKw(KW_CONTINUE) Then
+  Begin
+    Consume;
+    If CurrentContLabel <> '' Then
+      EmitI('JMP     ' + CurrentContLabel)
+    Else
+      LexError('CONTINUE en dehors d''une boucle');
+    If CurTokType = TOK_DOT Then Consume;
+    Exit;
+  End;
+
   { instruction non reconnue : sauter jusqu au prochain point }
   If CurTokType = TOK_DOT Then
     Consume
@@ -3399,6 +3438,140 @@ Begin
 
   { Etiquette de fin du CASE }
   EmitLabel(LblEndCase);
+End;
+
+{ ============================================================ }
+{ ParseWhile : WHILE condition. instructions. ENDWHILE.        }
+{ Generation 32 bits :                                         }
+{   _ABL_top: evaluer condition -> EAX                         }
+{   TEST EAX, EAX + JZ _ABL_end                               }
+{   Corps + JMP _ABL_top + EmitLabel(_ABL_end)                 }
+{ ============================================================ }
+Procedure ParseWhile;
+Var LblTop, LblEnd : TString;
+Begin
+  EmitComment('---- WHILE ----');
+
+  LblTop := NewLabel + '_WT';
+  LblEnd := NewLabel + '_WE';
+
+  EmitLabel(LblTop);
+
+  { Evaluer la condition -> EAX }
+  ParseExpr;
+
+  { Consommer le point apres la condition }
+  If CurTokType = TOK_DOT Then Consume
+  Else LexError('Point attendu apres condition WHILE');
+
+  { Saut si faux -> fin }
+  EmitI('TEST    EAX, EAX');
+  EmitI('JZ      ' + LblEnd);
+
+  { Corps de la boucle }
+  EnterScope(SK_LOOP, 0);
+  SetExitLabel(LblEnd);
+  SetContLabel(LblTop);
+  ParseBlock(KW_ENDWHILE, KW_NONE, KW_NONE);
+  LeaveScope;
+
+  { Retour au debut }
+  EmitI('JMP     ' + LblTop);
+  EmitLabel(LblEnd);
+
+  { ENDWHILE. }
+  If TokIsKw(KW_ENDWHILE) Then
+  Begin
+    Consume;
+    If CurTokType = TOK_DOT Then Consume
+    Else LexError('Point attendu apres ENDWHILE');
+  End
+  Else
+    LexError('ENDWHILE attendu');
+End;
+
+{ ============================================================ }
+{ ParseDo : DO [n TIMES]. instructions. ENDDO.                 }
+{ Generation n TIMES (32 bits) :                               }
+{   ParseExpr -> EAX / MOV ECX, EAX                           }
+{   _ABL_top: TEST ECX, ECX / JZ _ABL_end                     }
+{   PUSH ECX / corps / POP ECX / DEC ECX / JMP _ABL_top       }
+{ Generation infinie (sans n) :                                }
+{   _ABL_top: corps + JMP _ABL_top (EXIT -> JMP _ABL_end)      }
+{ ============================================================ }
+Procedure ParseDo;
+Var LblTop, LblEnd : TString;
+    HasCount        : Boolean;
+Begin
+  EmitComment('---- DO ----');
+
+  LblTop := NewLabel + '_DT';
+  LblEnd := NewLabel + '_DE';
+
+  { Detecter si un compteur est fourni (DO n TIMES) ou non (DO infini) }
+  HasCount := Not (TokIsKw(KW_ENDDO) Or (CurTokType = TOK_DOT));
+
+  If HasCount Then
+  Begin
+    { Evaluer n -> EAX, puis ECX }
+    ParseExpr;
+    EmitI('MOV     ECX, EAX');
+
+    { Consommer TIMES }
+    If TokIsKw(KW_TIMES) Then Consume
+    Else LexError('TIMES attendu apres compteur DO');
+
+    { Consommer le point }
+    If CurTokType = TOK_DOT Then Consume
+    Else LexError('Point attendu apres DO n TIMES');
+
+    EmitLabel(LblTop);
+    EmitI('TEST    ECX, ECX');
+    EmitI('JZ      ' + LblEnd);
+
+    { Sauvegarder ECX avant le corps }
+    EmitI('PUSH    ECX');
+
+    { Corps }
+    EnterScope(SK_LOOP, 0);
+    SetExitLabel(LblEnd);
+    SetContLabel(LblTop);
+    ParseBlock(KW_ENDDO, KW_NONE, KW_NONE);
+    LeaveScope;
+
+    { Restaurer ECX, decrementer, boucler }
+    EmitI('POP     ECX');
+    EmitI('DEC     ECX');
+    EmitI('JMP     ' + LblTop);
+  End
+  Else
+  Begin
+    { DO sans compteur : boucle infinie, EXIT pour sortir }
+    If CurTokType = TOK_DOT Then Consume
+    Else LexError('Point attendu apres DO');
+
+    EmitLabel(LblTop);
+
+    EnterScope(SK_LOOP, 0);
+    SetExitLabel(LblEnd);
+    SetContLabel(LblTop);
+    ParseBlock(KW_ENDDO, KW_NONE, KW_NONE);
+    LeaveScope;
+
+    EmitI('JMP     ' + LblTop);
+  End;
+
+  EmitLabel(LblEnd);
+
+  { ENDDO. }
+  If TokIsKw(KW_ENDDO) Then
+  Begin
+    Consume;
+    If CurTokType = TOK_DOT Then Consume
+    Else LexError('Point attendu apres ENDDO');
+  End
+  Else
+    LexError('ENDDO attendu');
 End;
 
 Procedure InitOptions;
