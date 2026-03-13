@@ -294,7 +294,7 @@
               du programme automatiquement
             Variables STATIC dans fonctions : conservent leur valeur entre appels
 
-  TODO 18 - CODE BLOCKS ET EVAL
+  TODO 18 - CODE BLOCKS ET EVAL [IMPLEMENTE]
             Code block literal : {|params| expr}
               {|| expr}          : sans parametre
               {|x| x * 2}       : un parametre
@@ -736,6 +736,9 @@ Var
   ExitProcTab    : Array[0..15] Of TString;
   ExitProcCount  : Integer;   { nombre de EXIT PROCEDURE             }
 
+  { Code blocks (TODO 18) }
+  CodeBlockCount : Integer;   { compteur de code blocks generes      }
+
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
@@ -880,6 +883,10 @@ Procedure ParseFuncDecl; Forward;
 Procedure ParseProcDecl; Forward;
 Procedure ParseReturnStmt; Forward;
 Procedure ParseDoCallStmt; Forward;
+
+{ Code blocks (TODO 18) }
+Procedure ParseCodeBlock(Var Res : TExprVal); Forward;
+Procedure EmitCodeBlockRuntime; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1136,6 +1143,7 @@ Begin
   SaveParamOfs := 0;
   InitProcCount := 0;
   ExitProcCount := 0;
+  CodeBlockCount := 0;
   TypeInit;
   SymInit;
 End;
@@ -2470,8 +2478,13 @@ Begin
     Case DataTab[I].Kind Of
       DK_WORD :
       Begin
-        Str(DataTab[I].IntVal, NS);
-        WriteLn(OutF, '        DW      ', NS);
+        If DataTab[I].StrVal <> '' Then
+          WriteLn(OutF, '        DW      ', DataTab[I].StrVal)
+        Else
+        Begin
+          Str(DataTab[I].IntVal, NS);
+          WriteLn(OutF, '        DW      ', NS);
+        End;
       End;
       DK_BYTE :
       Begin
@@ -3861,7 +3874,46 @@ Begin
       End
       Else If CurToken.Val = '{' Then
       Begin
-        ParseArrayLiteral(Res);
+        (* Distinguer code block de array literal *)
+        (* Si le token suivant est pipe, c est un code block *)
+        ParserAdvance; (* consomme accolade ouvrante *)
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '|') Then
+          ParseCodeBlock(Res)
+        Else
+        Begin
+          (* Array literal : accolade deja consommee *)
+          EmitComment('array literal');
+          (* Sauvegarder le pointeur heap courant *)
+          EmitInstrAB('MOV', 'DI', '[_CL_HEAPPTR]');
+          EmitInstr('PUSH   DI');           (* sauv debut du tableau *)
+          (* Reserver la place pour le compteur (2 octets) *)
+          EmitInstrAB('ADD', 'WORD PTR [_CL_HEAPPTR]', '2');
+          ArgCount := 0;
+          If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Then
+          Begin
+            Repeat
+              ParseExpr(Arg);
+              ExprFlushToAX(Arg);
+              EmitInstrAB('MOV', 'DI', '[_CL_HEAPPTR]');
+              EmitInstrAB('MOV', '[DI]', 'AX');
+              EmitInstrAB('ADD', 'WORD PTR [_CL_HEAPPTR]', '2');
+              Inc(ArgCount);
+              If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+                ParserAdvance
+              Else
+                Break;
+            Until (CurToken.Kind = TK_EOF) Or
+                  ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}'));
+          End;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+            ParserAdvance;
+          EmitInstr('POP    DI');
+          EmitInstrAB('MOV', 'WORD PTR [DI]', IntToStr(ArgCount));
+          EmitInstrAB('MOV', 'AX', 'DI');
+          Res.Kind    := EK_AX;
+          Res.TypeIdx := TY_IDX_ARRAY;
+          Res.SymIdx  := -1;
+        End;
       End
       Else
       Begin
@@ -8835,11 +8887,248 @@ Begin
     EmitInstrAB('ADD', 'SP', IntToStr(ArgCount * 2));
 End;
 
+{ ============================================================
+  TODO 18 - CODE BLOCKS ET EVAL [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- ParseCodeBlock : parser code block literal ---------------
+   Syntaxe Clipper :
+     accolade || expr accolade : sans parametre
+     accolade |x| x * 2 accolade : un parametre
+     accolade |x,y| x + y accolade : plusieurs parametres
+
+   L accolade ouvrante a deja ete consommee par ParsePrimary.
+   Le token courant est '|' (debut de la liste de parametres).
+   Genere une sous-routine anonyme _CLB_N avec :
+     - prologue : PUSH BP / MOV BP,SP
+     - corps : evaluer l expression et resultat dans AX
+     - epilogue : MOV SP,BP / POP BP / RET
+   Le descripteur est stocke en DATA :
+     _CLB_N_D : DB nb_params / DW offset _CLB_N
+   Retourne dans AX l adresse du descripteur, type TY_IDX_BLOCK. *)
+
+Procedure ParseCodeBlock(Var Res : TExprVal);
+Var
+  BlkLabel    : TString;
+  DescLabel   : TString;
+  SkipLbl     : TString;
+  RetLbl      : TString;
+  ParamCount  : Integer;
+  NS          : TString;
+  BodyExpr    : TExprVal;
+  OldFrameSize   : Integer;
+  OldFnRetLbl    : TString;
+  OldSymOffset   : Integer;
+  OldParamOfs    : Integer;
+Begin
+  EmitComment('code block {...}');
+
+  { Generer les labels pour ce code block }
+  Str(CodeBlockCount, NS);
+  BlkLabel  := CL_BLK_PFX + NS;          { _CLB_0, _CLB_1, ... }
+  DescLabel := CL_BLK_PFX + NS + '_D';   { descripteur _CLB_0_D }
+  SkipLbl   := LabelGen;
+  RetLbl    := LabelGen;
+  Inc(CodeBlockCount);
+
+  { Sauvegarder le contexte courant }
+  OldFrameSize := CurFrameSize;
+  OldFnRetLbl  := CurFnRetLbl;
+  OldSymOffset := SymNextOffset;
+  OldParamOfs  := ParamNextOffset;
+
+  { Initialiser le contexte du code block }
+  CurFrameSize    := 0;
+  CurFnRetLbl     := RetLbl;
+  SymNextOffset   := 0;
+  ParamNextOffset := 4;  { [BP+4] est le premier parametre }
+
+  { Entrer dans un nouveau scope pour les parametres }
+  SymEnterScope;
+
+  { Consommer '|' (debut de la liste de parametres) }
+  ParserAdvance;
+  ParamCount := 0;
+
+  { Parser la liste de parametres entre |...| }
+  If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '|')) Then
+  Begin
+    { Il y a des parametres }
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '|')) Do
+    Begin
+      If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+      Begin
+        DeclAllocSym(CurToken.Val, SC_PARAM);
+        Inc(ParamCount);
+        ParserAdvance;
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance;
+    End;
+  End;
+
+  { Consommer '|' (fin de la liste de parametres) }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '|') Then
+    ParserAdvance;
+
+  { Emettre un JMP pour sauter le corps du code block }
+  EmitInstrA('JMP', SkipLbl);
+
+  { Emettre le label du code block }
+  EmitLabel(BlkLabel);
+  EmitInstr('PUSH   BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+
+  (* Parser le corps du code block : une expression unique *)
+  (* Le corps s arrete a l accolade fermante *)
+  If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Then
+  Begin
+    ParseExpr(BodyExpr);
+    ExprFlushToAX(BodyExpr);
+  End
+  Else
+  Begin
+    { Code block vide : retourne NIL (0) }
+    EmitInstrAB('XOR', 'AX', 'AX');
+  End;
+
+  { Epilogue du code block }
+  EmitLabel(RetLbl);
+  EmitInstrAB('MOV', 'SP', 'BP');
+  EmitInstr('POP    BP');
+  EmitInstr('RET');
+
+  { Label de saut pour continuer le flux principal }
+  EmitLabel(SkipLbl);
+
+  (* Consommer accolade fermante *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+    ParserAdvance;
+
+  { Ajouter le descripteur en DATA : DB nb_params, DW code_ptr }
+  Str(ParamCount, NS);
+  DataAdd(DescLabel, DK_BYTE, ParamCount, '');
+  DataAdd(DescLabel + '_P', DK_WORD, 0, BlkLabel);
+
+  { Quitter le scope }
+  SymLeaveScope;
+
+  { Restaurer le contexte precedent }
+  CurFrameSize    := OldFrameSize;
+  CurFnRetLbl     := OldFnRetLbl;
+  SymNextOffset   := OldSymOffset;
+  ParamNextOffset := OldParamOfs;
+
+  { Resultat : AX = adresse du descripteur, type CODEBLOCK }
+  EmitInstrAB('LEA', 'AX', DescLabel);
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_BLOCK;
+  Res.SymIdx  := -1;
+End;
+
+{ ---- EmitCodeBlockRuntime : routines runtime code blocks ------ }
+(* Routines :
+   _CLRT_EVAL : evaluer un code block
+     Entree : arguments sur la pile, premier arg = pointeur descripteur
+              [SP+2] = descripteur, [SP+4].. = args supplementaires
+     Le descripteur contient : DB nb_params, DW code_ptr
+     Empile les args supplementaires, CALL [code_ptr]
+     Resultat dans AX.
+   _CLRT_AEVAL : iterer sur un tableau avec un code block
+     Entree : [SP+2] = tableau, [SP+4] = code block
+     Pour chaque element du tableau, appelle le code block
+     avec l element en parametre.                                  *)
+
+Procedure EmitCodeBlockRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=== Code Block Runtime (TODO 18) ===');
+
+  { _CLRT_EVAL : evaluer un code block }
+  { Entree : [SP+2]=descripteur de code block, [SP+4..]=args }
+  { Le descripteur : [BX]=nb_params (byte), [BX+1]=code_ptr (word) }
+  EmitBlankLine;
+  EmitLabel(CL_RT_PFX + 'EVAL');
+  EmitInstr('PUSH   BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitComment('BX = descripteur du code block');
+  EmitInstrAB('MOV', 'BX', '[BP+4]');       { BX = descripteur }
+  EmitComment('CX = nombre de parametres du block');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitInstrAB('MOV', 'CL', '[BX]');          { CL = nb_params }
+  EmitComment('DX = adresse du code du block');
+  EmitInstrAB('MOV', 'DX', '[BX+1]');        { DX = code_ptr }
+  EmitComment('Copier les arguments supplementaires sur la pile');
+  { Les args supplementaires sont a [BP+6], [BP+8], etc. }
+  { On les re-pousse pour le code block }
+  EmitInstrAB('MOV', 'SI', 'BP');
+  EmitInstrAB('ADD', 'SI', '6');             { SI -> premier arg supplementaire }
+  EmitInstrAB('OR', 'CX', 'CX');
+  EmitInstrA('JZ', CL_RT_PFX + 'EVAL_CALL');
+  EmitComment('Pousser CX args depuis [SI] sur la pile');
+  { Boucle de copie des arguments : du dernier au premier }
+  { Pour n params, dernier arg est a [SI + (n-1)*2] }
+  EmitInstr('PUSH   CX');                    { sauvegarder CX }
+  EmitInstrAB('MOV', 'AX', 'CX');
+  EmitInstr('DEC    AX');
+  EmitInstrAB('SHL', 'AX', '1');             { AX = (CX-1)*2 }
+  EmitInstrAB('ADD', 'SI', 'AX');            { SI -> dernier arg }
+  EmitLabel(CL_RT_PFX + 'EVAL_LP');
+  EmitInstr('PUSH   WORD PTR [SI]');
+  EmitInstrAB('SUB', 'SI', '2');
+  EmitInstr('LOOP   ' + CL_RT_PFX + 'EVAL_LP');
+  EmitInstr('POP    CX');                    { restaurer CX }
+  EmitLabel(CL_RT_PFX + 'EVAL_CALL');
+  EmitComment('Appeler le code du block');
+  EmitInstr('CALL   DX');
+  EmitComment('Nettoyer les args pousses');
+  EmitInstrAB('MOV', 'SP', 'BP');
+  EmitInstr('POP    BP');
+  EmitInstr('RET');
+
+  { _CLP_AEVAL : iterer un code block sur chaque element d un tableau }
+  { Entree : [SP+2]=tableau (ptr), [SP+4]=code block (descripteur ptr) }
+  { Pour chaque element arr[i], empile arr[i] et CALL le code block }
+  EmitBlankLine;
+  EmitLabel(CL_FN_PFX + 'AEVAL');
+  EmitInstr('PUSH   BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstr('PUSH   SI');
+  EmitInstr('PUSH   DI');
+  EmitComment('SI = tableau, DI = code block descriptor');
+  EmitInstrAB('MOV', 'SI', '[BP+4]');       { SI = ptr tableau }
+  EmitInstrAB('MOV', 'DI', '[BP+6]');       { DI = ptr descripteur block }
+  EmitComment('CX = nombre d elements du tableau');
+  EmitInstrAB('MOV', 'CX', '[SI]');          { CX = count }
+  EmitInstrAB('ADD', 'SI', '2');             { SI -> premier element }
+  EmitInstrAB('OR', 'CX', 'CX');
+  EmitInstrA('JZ', CL_FN_PFX + 'AEVAL_DN');
+  EmitLabel(CL_FN_PFX + 'AEVAL_LP');
+  EmitInstr('PUSH   CX');                    { sauv compteur }
+  EmitInstr('PUSH   SI');                    { sauv pointeur element }
+  EmitComment('Empiler l element courant et appeler le block');
+  EmitInstr('PUSH   WORD PTR [SI]');         { arg = element }
+  EmitInstrAB('MOV', 'DX', '[DI+1]');       { DX = code_ptr }
+  EmitInstr('CALL   DX');
+  EmitInstrAB('ADD', 'SP', '2');             { nettoyer l arg }
+  EmitInstr('POP    SI');                    { restaurer pointeur }
+  EmitInstr('POP    CX');                    { restaurer compteur }
+  EmitInstrAB('ADD', 'SI', '2');             { element suivant }
+  EmitInstr('LOOP   ' + CL_FN_PFX + 'AEVAL_LP');
+  EmitLabel(CL_FN_PFX + 'AEVAL_DN');
+  EmitInstr('POP    DI');
+  EmitInstr('POP    SI');
+  EmitInstr('POP    BP');
+  EmitInstr('RET');
+End;
+
 { ---- EmitRuntime : emettre les routines runtime inline ------- }
 (* Appelle EmitExprRuntime pour les routines d expressions binaires
    et EmitIORuntime pour les routines I/O ecran (TODO 12).
    EmitArrayRuntime pour les routines de tableaux (TODO 15).
-   EmitStringRuntime pour les routines de chaines (TODO 16).     *)
+   EmitStringRuntime pour les routines de chaines (TODO 16).
+   EmitCodeBlockRuntime pour les routines de code blocks (TODO 18). *)
 
 Procedure EmitRuntime;
 Begin
@@ -8847,6 +9136,7 @@ Begin
   EmitIORuntime;
   EmitArrayRuntime;
   EmitStringRuntime;
+  EmitCodeBlockRuntime;
 End;
 
 { ---- EmitClose : finaliser le fichier ASM -------------------- }
