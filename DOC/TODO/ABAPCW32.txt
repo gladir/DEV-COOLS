@@ -380,7 +380,7 @@
               _ABRT_STRCONCAT: coller ESI apres EDI (ASCIIZ)
               _ABRT_ERROR    : afficher message + ExitProcess(1)
 
-  TODO 20 - PARSEUR : CLEAR / REFRESH / FREE / CHECK / EXIT / CONTINUE
+  TODO 20 - PARSEUR : CLEAR / REFRESH / FREE / CHECK / EXIT / CONTINUE [IMPLEMENTE]
             Procedure ParseClear
             Syntaxe : CLEAR variable.
             Generation 32 bits :

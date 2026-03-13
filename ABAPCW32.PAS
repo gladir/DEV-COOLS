@@ -399,7 +399,7 @@
               _ABRT_STRCONCAT: coller ESI apres EDI (ASCIIZ)
               _ABRT_ERROR    : afficher message + ExitProcess(1)
 
-  TODO 20 - PARSEUR : CLEAR / REFRESH / FREE / CHECK / EXIT / CONTINUE
+  TODO 20 - PARSEUR : CLEAR / REFRESH / FREE / CHECK / EXIT / CONTINUE [IMPLEMENTE]
             Procedure ParseClear
             Syntaxe : CLEAR variable.
             Generation 32 bits :
@@ -1173,6 +1173,16 @@ Procedure EmitDataSeg; Forward;
 
 Procedure EmitEntryPoint; Forward;
 Procedure EmitRuntimeHelpers; Forward;
+
+{ ============================================================ }
+{ DECLARATIONS FORWARD (CLEAR/REFRESH/FREE/CHECK/STOP TODO 20) }
+{ ============================================================ }
+
+Procedure ParseRefresh; Forward;
+Procedure ParseFree; Forward;
+Procedure ParseCheck; Forward;
+Procedure ParseStop; Forward;
+Procedure ParseReturn; Forward;
 
 { ============================================================ }
 { FONCTIONS UTILITAIRES                                        }
@@ -3512,6 +3522,26 @@ Begin
     Exit;
   End;
 
+  { REFRESH itab. (TODO 20) }
+  If TokIsKw(KW_REFRESH) Then
+  Begin Consume; ParseRefresh; Exit; End;
+
+  { FREE itab. (TODO 20) }
+  If TokIsKw(KW_FREE) Then
+  Begin Consume; ParseFree; Exit; End;
+
+  { CHECK condition. (TODO 20) }
+  If TokIsKw(KW_CHECK) Then
+  Begin Consume; ParseCheck; Exit; End;
+
+  { STOP. (TODO 20) }
+  If TokIsKw(KW_STOP) Then
+  Begin Consume; ParseStop; Exit; End;
+
+  { RETURN. (TODO 20) }
+  If TokIsKw(KW_RETURN) Then
+  Begin Consume; ParseReturn; Exit; End;
+
   { var = expr. (style ABAP Objet / assignation directe, TODO 15) }
   If (CurTokType = TOK_IDENT) And (CurTokKw = KW_NONE) Then
   Begin
@@ -4418,6 +4448,125 @@ Begin
   End
   Else
     LexError('Attendu nom de variable apres CLEAR');
+  If CurTokType = TOK_DOT Then Consume;
+End;
+
+{ ============================================================ }
+{ TODO 20 : REFRESH / FREE / CHECK / STOP / RETURN             }
+{ ============================================================ }
+
+{ ---- ParseRefresh : REFRESH itab. ---------------------------- }
+{ Remet le compteur d elements de la table interne a 0.          }
+Procedure ParseRefresh;
+Var VarName : TString;
+    VarIdx  : Integer;
+    TabLbl  : TString;
+Begin
+  EmitComment('REFRESH');
+  If CurTokType = TOK_IDENT Then
+  Begin
+    VarName := CurTokStr;
+    VarIdx  := FindSym(VarName);
+    Consume;
+    If VarIdx > 0 Then
+    Begin
+      If SymTab[VarIdx].DataType = TYPE_TABLE Then
+      Begin
+        TabLbl := SymTab[VarIdx].AsmLabel;
+        EmitI('MOV     DWORD PTR [' + TabLbl + '_CNT], 0');
+      End
+      Else
+        EmitComment('REFRESH: ' + VarName + ' n''est pas une table');
+    End
+    Else
+      EmitComment('REFRESH: variable inconnue: ' + VarName);
+  End
+  Else
+    LexError('Attendu nom de table apres REFRESH');
+  If CurTokType = TOK_DOT Then Consume;
+End;
+
+{ ---- ParseFree : FREE itab. --------------------------------- }
+{ Stub : meme effet que REFRESH (remet le compteur a 0).          }
+Procedure ParseFree;
+Var VarName : TString;
+    VarIdx  : Integer;
+    TabLbl  : TString;
+Begin
+  EmitComment('FREE');
+  If CurTokType = TOK_IDENT Then
+  Begin
+    VarName := CurTokStr;
+    VarIdx  := FindSym(VarName);
+    Consume;
+    If VarIdx > 0 Then
+    Begin
+      If SymTab[VarIdx].DataType = TYPE_TABLE Then
+      Begin
+        TabLbl := SymTab[VarIdx].AsmLabel;
+        EmitI('MOV     DWORD PTR [' + TabLbl + '_CNT], 0');
+      End
+      Else
+        EmitComment('FREE: ' + VarName + ' n''est pas une table');
+    End
+    Else
+      EmitComment('FREE: variable inconnue: ' + VarName);
+  End
+  Else
+    LexError('Attendu nom de table apres FREE');
+  If CurTokType = TOK_DOT Then Consume;
+End;
+
+{ ---- ParseCheck : CHECK condition. --------------------------- }
+{ Evalue la condition : si faux (EAX=0), JMP au label de sortie  }
+{ de la boucle/form courante.                                     }
+Procedure ParseCheck;
+Var LblOk    : TString;
+    ExprType : Integer;
+Begin
+  EmitComment('CHECK');
+  ExprType := ParseExpr;
+  LblOk := NewLabel + '_CK';
+  EmitI('TEST    EAX, EAX');
+  EmitI('JNZ     ' + LblOk);
+  { Condition fausse : sortir de la boucle ou form }
+  If CurrentExitLabel <> '' Then
+    EmitI('JMP     ' + CurrentExitLabel)
+  Else
+    EmitComment('CHECK: pas de label de sortie actif');
+  EmitLabel(LblOk);
+  If CurTokType = TOK_DOT Then Consume;
+End;
+
+{ ---- ParseStop : STOP. --------------------------------------- }
+{ Termine immediatement le programme (PUSH 0 / CALL ExitProcess). }
+Procedure ParseStop;
+Begin
+  EmitComment('STOP');
+  EmitI('PUSH    0');
+  EmitI('CALL    _ExitProcess@4');
+  If CurTokType = TOK_DOT Then Consume;
+End;
+
+{ ---- ParseReturn : RETURN. ----------------------------------- }
+{ Dans une FORM : JMP vers le label epilogue (exit de la FORM).   }
+{ Au niveau global : termine le programme (comme STOP).            }
+Procedure ParseReturn;
+Begin
+  EmitComment('RETURN');
+  If InForm Then
+  Begin
+    If CurrentExitLabel <> '' Then
+      EmitI('JMP     ' + CurrentExitLabel)
+    Else
+      EmitComment('RETURN: pas de label de sortie');
+  End
+  Else
+  Begin
+    { Au niveau global : sortir du programme }
+    EmitI('PUSH    0');
+    EmitI('CALL    _ExitProcess@4');
+  End;
   If CurTokType = TOK_DOT Then Consume;
 End;
 
