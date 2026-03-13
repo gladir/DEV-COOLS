@@ -6171,5 +6171,592 @@
     ; Sortie attendue : DEADBEEF
 
 ==============================================================================
+12. CONVERSION DE CODE 8086 EN 80386
+==============================================================================
+
+  Cette section presente les techniques et les regles pour convertir du
+  code assembleur 8086 (mode reel 16 bits) en code 80386 (mode protege
+  32 bits). La migration permet d'exploiter les registres etendus, l'espace
+  d'adressage lineaire de 4 Go et les nouveaux modes d'adressage.
+
+  12.1 Principes generaux
+  ---------------------------------------------------------------------------
+
+  Le 80386 est retro-compatible avec le 8086 : tout programme 8086 peut
+  tourner en mode reel sur un 80386 sans modification. Toutefois, pour
+  profiter des capacites 32 bits (mode protege, modele FLAT), il faut
+  adapter le code source. Les grandes lignes de la conversion sont :
+
+    1. Remplacer les registres 16 bits par leurs equivalents 32 bits
+    2. Adapter les directives assembleur (.MODEL, .386, segments)
+    3. Convertir les appels systeme (INT 21h -> API Win32 ou INT 80h)
+    4. Ajuster les tailles de donnees et d'adresses
+    5. Eliminer la segmentation et passer en modele FLAT
+    6. Exploiter les nouveaux modes d'adressage et instructions
+
+  12.2 Correspondance des registres
+  ---------------------------------------------------------------------------
+
+  La table suivante montre l'equivalence directe des registres :
+
+    8086 (16 bits)    80386 (32 bits)    Notes
+    ----------------  -----------------  --------------------------------
+    AX                EAX                Accumulateur etendu a 32 bits
+    BX                EBX                Base etendue
+    CX                ECX                Compteur etendu
+    DX                EDX                Donnees etendu
+    SI                ESI                Index source etendu
+    DI                EDI                Index destination etendu
+    BP                EBP                Pointeur de base etendu
+    SP                ESP                Pointeur de pile etendu
+    IP                EIP                Pointeur d'instruction (implicite)
+    FLAGS             EFLAGS             Registre d'etat etendu
+
+  Les registres de segment (CS, DS, ES, SS) existent toujours mais en
+  mode protege FLAT, ils pointent tous sur le meme descripteur couvrant
+  4 Go. FS et GS sont deux nouveaux registres de segment du 80386.
+
+  Regles de conversion des registres :
+
+    - AX -> EAX, BX -> EBX, CX -> ECX, DX -> EDX
+    - SI -> ESI, DI -> EDI, BP -> EBP, SP -> ESP
+    - AH, AL, BH, BL, CH, CL, DH, DL restent identiques
+    - Les registres 16 bits (AX, BX...) restent utilisables dans du
+      code 32 bits mais provoquent des prefixes de taille (ralentissement)
+
+  12.3 Adaptation des directives assembleur
+  ---------------------------------------------------------------------------
+
+  12.3.1 En-tete du programme
+
+    8086 :                              80386 :
+    --------------------------------    --------------------------------
+    .MODEL SMALL                        .386
+    .STACK 100h                         .MODEL FLAT, STDCALL
+    .DATA                               .DATA
+    ...                                 ...
+    .CODE                               .CODE
+    main:                               main PROC
+      MOV AX, @DATA                       ; Pas besoin de charger DS
+      MOV DS, AX                          ; DS est deja configure
+      ...                                 ...
+      MOV AX, 4C00h                       PUSH 0
+      INT 21h                             CALL ExitProcess@4
+    END main                            main ENDP
+                                        END main
+
+  12.3.2 Directive processeur
+
+    8086 : pas de directive necessaire (defaut)
+    80386 : ajouter .386 ou .386P (mode privilegie) en premiere ligne
+
+  12.3.3 Modele memoire
+
+    8086 : .MODEL TINY / SMALL / MEDIUM / COMPACT / LARGE / HUGE
+    80386 : .MODEL FLAT, STDCALL (un seul segment de 4 Go)
+
+  12.3.4 Initialisation des segments
+
+    En 8086, il faut initialiser DS manuellement :
+
+      MOV AX, @DATA
+      MOV DS, AX
+
+    En 80386 mode FLAT, DS, ES, SS pointent deja sur le meme espace
+    d'adressage. Ces deux lignes doivent etre supprimees.
+
+  12.4 Conversion des types de donnees
+  ---------------------------------------------------------------------------
+
+    8086                    80386                   Notes
+    ----------------------  ----------------------  -----------------------
+    DB  (1 octet)           DB  (1 octet)           Identique
+    DW  (2 octets, WORD)    DW  (2 octets, WORD)    Identique
+    DD  (4 octets, DWORD)   DD  (4 octets, DWORD)   Identique
+    -                       DQ  (8 octets, QWORD)    Nouveau
+    -                       DT  (10 octets, TBYTE)   Nouveau
+
+  Regles de conversion des donnees :
+
+    - Les pointeurs passent de DW (16 bits) a DD (32 bits)
+    - Les offsets passent de 16 a 32 bits
+    - OFFSET retourne 32 bits au lieu de 16
+    - Les tableaux de pointeurs : DW -> DD
+    - Les variables compteur utilisant CX (16 bits max 65535)
+      peuvent maintenant utiliser ECX (32 bits max 4 milliards)
+
+  Exemple :
+
+    ; 8086                          ; 80386
+    msg    DB 'Hello',0             msg    DB 'Hello',0
+    msgptr DW OFFSET msg            msgptr DD OFFSET msg
+    count  DW 0                     count  DD 0
+    buffer DB 256 DUP(0)            buffer DB 256 DUP(0)
+
+  12.5 Conversion des instructions courantes
+  ---------------------------------------------------------------------------
+
+  12.5.1 Instructions de deplacement de donnees
+
+    8086                              80386
+    --------------------------------  --------------------------------
+    MOV AX, valeur                    MOV EAX, valeur
+    MOV AX, [BX]                      MOV EAX, [EBX]
+    MOV AX, [BX+SI]                   MOV EAX, [EBX+ESI]
+    MOV AX, [BX+SI+4]                MOV EAX, [EBX+ESI+4]
+    MOV AL, [BX]                      MOV AL, [EBX]
+    LEA BX, [var]                     LEA EBX, [var]
+    LDS SI, [ptr]                     (non utilise en FLAT)
+    LES DI, [ptr]                     (non utilise en FLAT)
+    XCHG AX, BX                      XCHG EAX, EBX
+    PUSH AX                           PUSH EAX
+    POP AX                            POP EAX
+
+  Note : LDS et LES ne sont plus necessaires en modele FLAT car il
+  n'y a qu'un seul segment. Remplacer par un simple MOV :
+
+    ; 8086                          ; 80386
+    LDS SI, [ptr]                   MOV ESI, [ptr]
+    LES DI, [ptr]                   MOV EDI, [ptr]
+
+  12.5.2 Instructions arithmetiques
+
+    8086                              80386
+    --------------------------------  --------------------------------
+    ADD AX, BX                        ADD EAX, EBX
+    SUB AX, 10                        SUB EAX, 10
+    MUL BX                            MUL EBX         (ou IMUL EAX,EBX)
+    DIV BX                            DIV EBX
+    INC AX                            INC EAX
+    DEC CX                            DEC ECX
+    NEG AX                            NEG EAX
+    CWD                               CDQ              (etend EAX -> EDX:EAX)
+    CBW                               CWDE             (etend AX -> EAX)
+
+  Nouvelles instructions utiles du 80386 :
+
+    IMUL EAX, EBX, 10      ; Multiplication 3 operandes (nouveau)
+    MOVZX EAX, AL           ; Extension zero 8->32 bits (nouveau)
+    MOVSX EAX, AX           ; Extension signe 16->32 bits (nouveau)
+    MOVZX EAX, BYTE PTR [ESI]  ; Chargement avec extension zero
+    MOVSX ECX, WORD PTR [EDI]  ; Chargement avec extension signe
+
+  12.5.3 Instructions de chaines
+
+    8086                              80386
+    --------------------------------  --------------------------------
+    REP MOVSB                         REP MOVSB        (identique)
+    REP MOVSW                         REP MOVSD        (deplacer DWORD)
+    REP STOSB                         REP STOSD        (stocker DWORD)
+    LODSB                             LODSD            (charger DWORD dans EAX)
+    SCASB                             SCASD            (comparer DWORD)
+    CLD                               CLD              (identique)
+
+  En 8086, les operations de chaines utilisent DS:SI et ES:DI.
+  En 80386 mode FLAT, elles utilisent ESI et EDI (meme segment).
+
+  12.5.4 Instructions de branchement
+
+    8086                              80386
+    --------------------------------  --------------------------------
+    JMP SHORT label                   JMP SHORT label   (identique)
+    JMP label                         JMP label         (rel32 maintenant)
+    CALL proc                         CALL proc         (identique)
+    RET                               RET               (identique)
+    Jcc label (rel8 seulement)        Jcc label         (rel8 ou rel32)
+    LOOP label                        LOOP label        (utilise ECX)
+    JCXZ label                        JECXZ label       (teste ECX)
+
+  Note importante : en 8086, les sauts conditionnels (Jcc) ne peuvent
+  atteindre que des cibles a +/-128 octets (rel8). En 80386, ils
+  acceptent aussi des deplacements rel32 (portee quasi illimitee).
+
+  12.5.5 Instructions de pile
+
+    8086                              80386
+    --------------------------------  --------------------------------
+    PUSH AX                           PUSH EAX          (empile 32 bits)
+    POP BX                            POP EBX           (depile 32 bits)
+    PUSH 1234h                        PUSH 12345678h    (immediats 32 bits)
+    PUSHF                             PUSHFD            (EFLAGS 32 bits)
+    POPF                              POPFD             (EFLAGS 32 bits)
+    PUSHA                             PUSHAD            (tous les reg 32 bits)
+    POPA                              POPAD             (tous les reg 32 bits)
+
+  En mode 32 bits, chaque PUSH/POP manipule 4 octets (au lieu de 2).
+
+  12.6 Conversion des appels systeme
+  ---------------------------------------------------------------------------
+
+  C'est le changement le plus important. En 8086 sous DOS, les appels
+  systeme se font par INT 21h. En 80386, on utilise les API du systeme
+  d'exploitation (Win32, Linux, etc.).
+
+  12.6.1 Afficher une chaine de caracteres
+
+    ; 8086 (DOS, INT 21h)              ; 80386 (Win32)
+    ; -------------------------------- ; --------------------------------
+    .DATA                               .DATA
+    msg DB 'Hello$'                     msg DB 'Hello', 0
+                                        written DD 0
+    .CODE                               .CODE
+    MOV AH, 09h                         PUSH -11
+    LEA DX, msg                         CALL GetStdHandle@4
+    INT 21h                             PUSH 0
+                                        PUSH OFFSET written
+                                        PUSH 5
+                                        PUSH OFFSET msg
+                                        PUSH EAX
+                                        CALL WriteConsoleA@20
+
+  12.6.2 Lire un caractere au clavier
+
+    ; 8086 (DOS)                       ; 80386 (Win32)
+    ; -------------------------------- ; --------------------------------
+    MOV AH, 01h                         PUSH -10
+    INT 21h                             CALL GetStdHandle@4
+    ; caractere dans AL                 MOV [hStdIn], EAX
+                                        PUSH 0
+                                        PUSH OFFSET bytesRead
+                                        PUSH 1
+                                        PUSH OFFSET charBuf
+                                        PUSH [hStdIn]
+                                        CALL ReadConsoleA@20
+                                        ; caractere dans charBuf
+
+  12.6.3 Quitter le programme
+
+    ; 8086 (DOS)                       ; 80386 (Win32)
+    ; -------------------------------- ; --------------------------------
+    MOV AX, 4C00h                       PUSH 0
+    INT 21h                             CALL ExitProcess@4
+
+  12.6.4 Ouvrir un fichier
+
+    ; 8086 (DOS)                       ; 80386 (Win32)
+    ; -------------------------------- ; --------------------------------
+    MOV AH, 3Dh                         PUSH 0            ; template
+    MOV AL, 00h  ; lecture              PUSH 80h           ; attribut normal
+    LEA DX, filename                    PUSH 3             ; OPEN_EXISTING
+    INT 21h                             PUSH 0             ; securite
+    ; handle dans AX                    PUSH 1             ; FILE_SHARE_READ
+                                        PUSH 80000000h     ; GENERIC_READ
+                                        PUSH OFFSET filename
+                                        CALL CreateFileA@28
+                                        ; handle dans EAX
+
+  12.6.5 Table de correspondance DOS -> Win32
+
+    Fonction DOS (INT 21h)       API Win32 equivalente
+    --------------------------   ----------------------------
+    AH=01h  Lire caractere       ReadConsoleA
+    AH=02h  Ecrire caractere     WriteConsoleA
+    AH=09h  Afficher chaine $    WriteConsoleA
+    AH=0Ah  Lire chaine          ReadConsoleA
+    AH=3Ch  Creer fichier        CreateFileA
+    AH=3Dh  Ouvrir fichier       CreateFileA
+    AH=3Eh  Fermer fichier       CloseHandle
+    AH=3Fh  Lire fichier         ReadFile
+    AH=40h  Ecrire fichier       WriteFile
+    AH=41h  Supprimer fichier    DeleteFileA
+    AH=43h  Attributs fichier    GetFileAttributesA
+    AH=48h  Allouer memoire      VirtualAlloc / HeapAlloc
+    AH=49h  Liberer memoire      VirtualFree / HeapFree
+    AH=4Ch  Quitter programme    ExitProcess
+
+  12.7 Conversion des modes d'adressage
+  ---------------------------------------------------------------------------
+
+  Le 80386 offre des modes d'adressage beaucoup plus flexibles.
+
+  12.7.1 Adressage indirect
+
+    8086 : seulement [BX], [SI], [DI], [BP]
+    80386 : tout registre sauf ESP -> [EAX], [EBX], [ECX], [EDX],
+            [ESI], [EDI], [EBP]
+
+    ; 8086                          ; 80386 (equivalent + plus)
+    MOV AX, [BX]                    MOV EAX, [EBX]
+    MOV AX, [SI]                    MOV EAX, [ESI]
+                                    MOV EAX, [ECX]       ; nouveau!
+                                    MOV EAX, [EDX]       ; nouveau!
+
+  12.7.2 Adressage base+index
+
+    8086 : seulement [BX+SI], [BX+DI], [BP+SI], [BP+DI]
+    80386 : toute combinaison [reg_base + reg_index]
+
+    ; 8086                          ; 80386
+    MOV AX, [BX+SI]                 MOV EAX, [EBX+ESI]
+    MOV AX, [BP+DI]                 MOV EAX, [EBP+EDI]
+                                    MOV EAX, [EAX+ECX]   ; nouveau!
+                                    MOV EAX, [EDX+EDI]   ; nouveau!
+
+  12.7.3 Adressage avec facteur d'echelle (nouveau 80386)
+
+    Le 80386 introduit le facteur d'echelle (SIB) qui n'existait pas
+    sur le 8086. Il permet de multiplier l'index par 1, 2, 4 ou 8 :
+
+    MOV EAX, [EBX + ESI*4]          ; acces tableau de DWORD
+    MOV EAX, [EBX + ECX*8]          ; acces tableau de QWORD
+    MOV EAX, [array + ESI*4]        ; tableau global indexe
+    LEA EAX, [EAX + EAX*4]          ; EAX = EAX * 5 (astuce)
+    LEA EAX, [EAX + EAX*2]          ; EAX = EAX * 3
+
+  Conversion typique d'acces tableau :
+
+    ; 8086 : acces tableau de WORD       ; 80386 : acces tableau de DWORD
+    MOV BX, index                        MOV ECX, index
+    SHL BX, 1          ; *2              ; pas de shift necessaire
+    MOV AX, [table+BX]                   MOV EAX, [table + ECX*4]
+
+  12.8 Conversion des structures de controle
+  ---------------------------------------------------------------------------
+
+  12.8.1 Boucle avec compteur
+
+    ; 8086                          ; 80386
+    ; --------------------------------  --------------------------------
+    MOV CX, 100                     MOV ECX, 100
+    boucle:                         boucle:
+      ; ... corps ...                 ; ... corps ...
+      LOOP boucle                     LOOP boucle       ; ou DEC ECX/JNZ
+
+  Note : sur 80386, LOOP utilise ECX en mode 32 bits. Si la boucle
+  depasse 65535 iterations, il faut obligatoirement passer en 32 bits.
+
+  12.8.2 Boucle avec index de tableau
+
+    ; 8086                          ; 80386
+    ; --------------------------------  --------------------------------
+    XOR SI, SI                      XOR ESI, ESI
+    MOV CX, 10                      MOV ECX, 10
+    boucle:                         boucle:
+      MOV AX, [table+SI]             MOV EAX, [table + ESI*4]
+      ADD SI, 2                       INC ESI
+      LOOP boucle                     DEC ECX
+                                      JNZ boucle
+
+  12.8.3 Comparaison de chaines
+
+    ; 8086                          ; 80386
+    ; --------------------------------  --------------------------------
+    LEA SI, str1                    LEA ESI, str1
+    LEA DI, str2                    LEA EDI, str2
+    MOV CX, longueur                MOV ECX, longueur
+    CLD                             CLD
+    REPE CMPSB                      REPE CMPSB         ; identique
+    JE egal                         JE egal
+
+  12.9 Conversion des procedures et conventions d'appel
+  ---------------------------------------------------------------------------
+
+  12.9.1 Cadre de pile (stack frame)
+
+    ; 8086                          ; 80386
+    ; --------------------------------  --------------------------------
+    maProc PROC NEAR                maProc PROC
+      PUSH BP                         PUSH EBP
+      MOV BP, SP                       MOV EBP, ESP
+      SUB SP, 4    ; 2 vars locales    SUB ESP, 8    ; 2 vars locales (DD)
+      ; [BP+4] = adr retour            ; [EBP+4] = adr retour
+      ; [BP+6] = 1er parametre         ; [EBP+8] = 1er parametre
+      ; [BP-2] = 1ere locale           ; [EBP-4] = 1ere locale
+      MOV SP, BP                       MOV ESP, EBP
+      POP BP                           POP EBP
+      RET                              RET
+    maProc ENDP                     maProc ENDP
+
+  Differences principales :
+    - BP -> EBP, SP -> ESP
+    - L'adresse de retour occupe 4 octets (au lieu de 2)
+    - Les parametres commencent a [EBP+8] (au lieu de [BP+4])
+    - Chaque variable locale occupe 4 octets (DWORD)
+
+  12.9.2 Passage de parametres
+
+    ; 8086 : convention C             ; 80386 : convention C
+    ; --------------------------------  --------------------------------
+    PUSH word_param2                  PUSH dword_param2
+    PUSH word_param1                  PUSH dword_param1
+    CALL maProc                       CALL maProc
+    ADD SP, 4      ; 2 * 2 octets    ADD ESP, 8     ; 2 * 4 octets
+
+    ; 8086 : convention Pascal        ; 80386 : convention STDCALL
+    ; --------------------------------  --------------------------------
+    PUSH word_param1                  PUSH dword_param1
+    PUSH word_param2                  PUSH dword_param2
+    CALL maProc                       CALL maProc
+    ; pas d'ajustement                ; pas d'ajustement (RET 8)
+
+  12.9.3 Conventions d'appel Win32
+
+    En mode 32 bits Win32, la convention STDCALL est la norme pour
+    les API systeme. Les parametres sont empiles de droite a gauche
+    et la procedure appelee nettoie la pile (RET n).
+
+  12.10 Conversion des interruptions
+  ---------------------------------------------------------------------------
+
+  Les interruptions materielles et BIOS changent en mode protege :
+
+    8086 (mode reel)                  80386 (mode protege)
+    --------------------------------  --------------------------------
+    INT 10h (video BIOS)              API graphiques du SE
+    INT 13h (disque BIOS)             API fichiers du SE
+    INT 16h (clavier BIOS)            API console du SE
+    INT 21h (DOS)                     API Win32 / syscall Linux
+    INT 33h (souris)                  API souris du SE
+    CLI / STI                         Niveau privilege 0 requis
+
+  En mode protege, les interruptions logicielles DOS (INT 21h) ne sont
+  plus disponibles. Il faut les remplacer par les API du systeme cible.
+
+  Sous Linux 32 bits, les appels systeme utilisent INT 80h :
+
+    ; Equivalent de AH=09h INT 21h sous Linux
+    MOV EAX, 4            ; sys_write
+    MOV EBX, 1            ; stdout
+    MOV ECX, OFFSET msg   ; adresse du message
+    MOV EDX, msg_len      ; longueur
+    INT 80h
+
+  12.11 Exemple complet de conversion
+  ---------------------------------------------------------------------------
+
+  Voici un programme 8086 complet et sa version 80386 equivalente.
+
+  Programme original 8086 (DOS) :
+
+    ; Programme : affiche "Hello World" puis quitte
+    .MODEL SMALL
+    .STACK 100h
+    .DATA
+    msg DB 'Hello World!$'
+    .CODE
+    main:
+      MOV AX, @DATA
+      MOV DS, AX
+      MOV AH, 09h
+      LEA DX, msg
+      INT 21h
+      MOV AX, 4C00h
+      INT 21h
+    END main
+
+  Version convertie 80386 (Win32 console) :
+
+    ; Programme : affiche "Hello World" puis quitte
+    .386
+    .MODEL FLAT, STDCALL
+
+    EXTRN GetStdHandle@4  : PROC
+    EXTRN WriteConsoleA@20 : PROC
+    EXTRN ExitProcess@4   : PROC
+
+    .DATA
+    msg     DB 'Hello World!', 0
+    msg_len EQU $ - msg - 1
+    written DD 0
+
+    .CODE
+    main PROC
+      ; Obtenir le handle stdout
+      PUSH -11                       ; STD_OUTPUT_HANDLE
+      CALL GetStdHandle@4
+      ; EAX = handle
+
+      ; Ecrire le message
+      PUSH 0                         ; lpReserved
+      PUSH OFFSET written            ; lpNumberOfCharsWritten
+      PUSH msg_len                   ; nNumberOfCharsToWrite
+      PUSH OFFSET msg                ; lpBuffer
+      PUSH EAX                       ; hConsoleOutput
+      CALL WriteConsoleA@20
+
+      ; Quitter
+      PUSH 0                         ; code de retour
+      CALL ExitProcess@4
+    main ENDP
+    END main
+
+  12.12 Resume : aide-memoire de conversion
+  ---------------------------------------------------------------------------
+
+  Etape   Action
+  ------  ----------------------------------------------------------------
+  1       Ajouter .386 (ou .386P) en premiere ligne
+  2       Remplacer .MODEL SMALL par .MODEL FLAT, STDCALL
+  3       Supprimer .STACK (geree par le SE)
+  4       Supprimer MOV AX,@DATA / MOV DS,AX
+  5       Remplacer AX->EAX, BX->EBX, CX->ECX, DX->EDX
+  6       Remplacer SI->ESI, DI->EDI, BP->EBP, SP->ESP
+  7       Remplacer DW par DD pour les pointeurs et offsets
+  8       Remplacer les INT 21h par les API equivalentes
+  9       Remplacer [BX+SI] par [EBX+ESI] (et profiter du SIB)
+  10      Ajuster [BP+4] -> [EBP+8] dans les cadres de pile
+  11      Remplacer PUSHF/POPF par PUSHFD/POPFD
+  12      Remplacer PUSHA/POPA par PUSHAD/POPAD
+  13      Remplacer CWD par CDQ, CBW par CWDE
+  14      Remplacer JCXZ par JECXZ
+  15      Supprimer LDS/LES (inutiles en FLAT)
+  16      Utiliser MOVZX/MOVSX pour les extensions de taille
+  17      Profiter de IMUL a 3 operandes
+  18      Profiter du facteur d'echelle [reg + reg*n]
+  19      Ajuster ADD SP,n -> ADD ESP,2n (parametres 32 bits)
+  20      Declarer EXTRN pour les API Win32 utilisees
+
+  12.13 Pieges et erreurs frequentes
+  ---------------------------------------------------------------------------
+
+  (a) Oublier le prefixe de taille
+
+    En mode 32 bits, utiliser un registre 16 bits genere un prefixe
+    de remplacement de taille operande (66h), ce qui ralentit le code.
+    Privilegier les registres 32 bits :
+
+      ; Lent (prefixe 66h)            ; Rapide (pas de prefixe)
+      MOV AX, 0                       MOV EAX, 0
+      ADD CX, 1                       ADD ECX, 1
+
+  (b) Melanger tailles de pile
+
+    En mode 32 bits, PUSH empile toujours 4 octets. Ne pas faire :
+
+      PUSH AX            ; empile 2 octets -> desaligne la pile!
+      PUSH EAX           ; correct : empile 4 octets
+
+  (c) Oublier d'ajuster les offsets dans le cadre de pile
+
+    ; 8086 : parametres a [BP+4], [BP+6], [BP+8]...
+    ; 80386 : parametres a [EBP+8], [EBP+12], [EBP+16]...
+    ; (decalage de 4 car l'adresse de retour fait 4 octets)
+
+  (d) Utiliser des adresses segmentees en mode FLAT
+
+    Les instructions FAR (CALL FAR, JMP FAR, RET FAR) ne sont plus
+    necessaires en modele FLAT. Utiliser les versions NEAR :
+
+      ; 8086                          ; 80386
+      CALL FAR proc                   CALL proc
+      JMP FAR label                   JMP label
+      RETF                            RET
+
+  (e) Interruptions DOS en mode protege
+
+    INT 21h n'est pas disponible en mode protege Win32. Tout appel
+    INT 21h provoquera une exception. Utiliser les API Win32.
+
+  (f) Alignement des donnees
+
+    En 80386, les acces memoire alignes sur 4 octets sont plus rapides.
+    Aligner les variables DD avec ALIGN 4 :
+
+      ALIGN 4
+      compteur DD 0
+      ALIGN 4
+      resultat DD 0
+
+==============================================================================
   FIN DU DOCUMENT - ASSEMBLEUR 80386
 ==============================================================================
