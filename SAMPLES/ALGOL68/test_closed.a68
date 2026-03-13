@@ -1,0 +1,23 @@
+BEGIN
+  INT x := 10;
+
+  BEGIN
+    INT y := 20;
+    INT z := x + y
+  END;
+
+  INT a := (3 + 4);
+
+  INT b := (
+    INT tmp := 5;
+    tmp * 2
+  );
+
+  loop:
+    INT c := 1;
+
+  done:
+    SKIP;
+
+  GOTO done
+END

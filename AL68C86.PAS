@@ -225,7 +225,7 @@
             Operateurs d affectation composes : +:= -:= *:= /:=
               Lire la variable, operer, reecrire
 
-  TODO 13 - CLAUSES FERMEES ET CLAUSES SERIE
+  TODO 13 - CLAUSES FERMEES ET CLAUSES SERIE [IMPLEMENTE]
             Clause fermee (closed clause) :
               BEGIN serie END ou ( serie )
               Ouvre une nouvelle portee, la valeur est celle de la derniere unite
@@ -669,6 +669,8 @@ Var
   LexEOF     : Boolean;
   LexOpened  : Boolean;
   CurToken   : TToken;
+  PushedToken   : TToken;    { token remis par pushback (TODO 13) }
+  HasPushedToken: Boolean;   { vrai si PushedToken est valide     }
 
   { Table des symboles (TODO 05) }
   SymTab     : Array[0..MAX_SYM - 1] Of TSymRec;
@@ -1157,6 +1159,7 @@ Begin
   CurToken.IntVal  := 0;
   CurToken.Line    := 0;
   CurToken.Col     := 0;
+  HasPushedToken   := False;
 End;
 
 { ---- Statistiques ----------------------------------------- }
@@ -2746,9 +2749,11 @@ Begin
       End
       Else If CurToken.Val = 'BEGIN' Then
       Begin
-        { BEGIN ... END -> clause serielle }
+        { BEGIN ... END -> clause fermee avec portee }
         ParserAdvance;
+        SymEnterScope;
         ParseSerialClause(Res);
+        SymLeaveScope;
         If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'END') Then
           ParserAdvance
         Else
@@ -2761,6 +2766,35 @@ Begin
       Else If CurToken.Val = 'CASE' Then
       Begin
         ParseCaseClause(Res);
+      End
+      { GOTO label ou GO TO label -> JMP _A68L_name }
+      Else If CurToken.Val = 'GOTO' Then
+      Begin
+        ParserAdvance; { consomme GOTO }
+        If CurToken.Kind = TK_IDENT Then
+        Begin
+          EmitInstr('JMP    ' + A68_LBL_PFX + CurToken.Val);
+          ParserAdvance;
+        End
+        Else
+          CompileError('identificateur attendu apres GOTO');
+        ExprMakeVoid(Res);
+      End
+      Else If CurToken.Val = 'GO' Then
+      Begin
+        ParserAdvance; { consomme GO }
+        If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'TO') Then
+          ParserAdvance { consomme TO }
+        Else
+          CompileError('TO attendu apres GO');
+        If CurToken.Kind = TK_IDENT Then
+        Begin
+          EmitInstr('JMP    ' + A68_LBL_PFX + CurToken.Val);
+          ParserAdvance;
+        End
+        Else
+          CompileError('identificateur attendu apres GO TO');
+        ExprMakeVoid(Res);
       End
       Else
       Begin
@@ -2871,11 +2905,13 @@ Begin
       End;
     End;
 
-    { ---- Parenthese ouvrante ( ---- }
+    { ---- Parenthese ouvrante ( -> clause fermee avec portee ---- }
     TK_OPEN :
     Begin
       ParserAdvance; { consomme ( }
-      ParseExpr(Res);
+      SymEnterScope;
+      ParseSerialClause(Res);
+      SymLeaveScope;
       If CurToken.Kind = TK_CLOSE Then
         ParserAdvance  { consomme ) }
       Else
@@ -4878,7 +4914,9 @@ End;
 
 Procedure ParseSerialClause(Var Res : TExprVal);
 Var
-  WasDecl : Boolean;
+  WasDecl   : Boolean;
+  SavedTok  : TToken;
+  LblSym    : Integer;
 Begin
   ExprMakeNone(Res);
   While (CurToken.Kind <> TK_EOF) Do
@@ -4897,6 +4935,30 @@ Begin
 
     WasDecl := False;
 
+    { Check for label definition : ident followed by : }
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      SavedTok := CurToken;
+      ParserAdvance;
+      If CurToken.Kind = TK_COLON Then
+      Begin
+        { Label definition }
+        ParserAdvance; { consomme : }
+        EmitLabel(A68_LBL_PFX + SavedTok.Val);
+        LblSym := SymAdd(SavedTok.Val, SC_LABEL, -1, 0);
+        WasDecl := True;
+        { Continue to next unit }
+      End
+      Else
+      Begin
+        { Not a label - push back current token and restore ident }
+        PushedToken := CurToken;
+        HasPushedToken := True;
+        CurToken := SavedTok;
+        ParseExpr(Res);
+      End;
+    End
+    Else
     { Try declaration or expression }
     If (CurToken.Kind = TK_BOLD) And
        ((CurToken.Val = 'INT') Or (CurToken.Val = 'REAL') Or
@@ -5157,7 +5219,13 @@ End;
 
 Procedure ParserAdvance;
 Begin
-  LexNextToken;
+  If HasPushedToken Then
+  Begin
+    CurToken := PushedToken;
+    HasPushedToken := False;
+  End
+  Else
+    LexNextToken;
   If Opts.DebugMode Then
     PrintToken(CurToken);
 End;
