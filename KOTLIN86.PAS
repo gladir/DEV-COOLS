@@ -4846,7 +4846,7 @@ Begin
   If ScopeTop > 0 Then
     SavedFrame := ScopeFrameStack[ScopeTop - 1]
   Else
-    SavedFrame := CurFrameSize;
+    SavedFrame := 0;  { niveau global : pas de cadre pile }
   DeltaWords := CurFrameSize - SavedFrame;
   SymLeaveScope;
   If DeltaWords > 0 Then
