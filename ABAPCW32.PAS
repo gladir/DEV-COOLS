@@ -378,7 +378,7 @@
               Chaines litterales : _ABK_1, _ABK_2... DB 'texte',0
             Mode -asm : ecrire fichier .ASM avec commentaires
 
-  TODO 19 - GENERATION : POINT D ENTREE WIN32 ET HELPERS RUNTIME
+  TODO 19 - GENERATION : POINT D ENTREE WIN32 ET HELPERS RUNTIME [IMPLEMENTE]
             Procedure EmitEntryPoint
               _ABF_main:
               PUSH EBP / MOV EBP, ESP
@@ -1166,6 +1166,13 @@ Procedure EmitStringRuntime; Forward;
 
 Procedure EmitHeader; Forward;
 Procedure EmitDataSeg; Forward;
+
+{ ============================================================ }
+{ DECLARATIONS FORWARD (POINT ENTREE + RUNTIME TODO 19)        }
+{ ============================================================ }
+
+Procedure EmitEntryPoint; Forward;
+Procedure EmitRuntimeHelpers; Forward;
 
 { ============================================================ }
 { FONCTIONS UTILITAIRES                                        }
@@ -6170,6 +6177,253 @@ Begin
   Emit('END ' + AB_FN_PFX + AsmIdent(ProgName));
 End;
 
+{ ============================================================ }
+{ GENERATION : POINT D ENTREE WIN32 (TODO 19)                  }
+{ ============================================================ }
+
+{ ---- EmitEntryPoint : generer le point d entree Win32 -------- }
+{ _ABF_main :                                                    }
+{   PUSH EBP / MOV EBP, ESP                                     }
+{   Initialiser stdout : PUSH -11 / CALL GetStdHandle            }
+{   Initialiser stdin  : PUSH -10 / CALL GetStdHandle            }
+{   CALL _ABF_nom_report                                         }
+{   PUSH 0 / CALL ExitProcess                                    }
+Procedure EmitEntryPoint;
+Begin
+  EmitBlank;
+  EmitComment('========================================');
+  EmitComment('POINT D ENTREE Win32 (TODO 19)');
+  EmitComment('========================================');
+  EmitBlank;
+  EmitLabel(AB_FN_PFX + AsmIdent(ProgName));
+  EmitI('PUSH    EBP');
+  EmitI('MOV     EBP, ESP');
+  EmitBlank;
+  EmitComment('--- Initialiser stdout (STD_OUTPUT_HANDLE = -11) ---');
+  EmitI('PUSH    -11');
+  EmitI('CALL    _GetStdHandle@4');
+  EmitI('MOV     DWORD PTR [' + AB_RT_PFX + 'HSTDOUT], EAX');
+  EmitBlank;
+  EmitComment('--- Initialiser stdin (STD_INPUT_HANDLE = -10) ---');
+  EmitI('PUSH    -10');
+  EmitI('CALL    _GetStdHandle@4');
+  EmitI('MOV     DWORD PTR [' + AB_RT_PFX + 'HSTDIN], EAX');
+  EmitBlank;
+End;
+
+{ ============================================================ }
+{ GENERATION : HELPERS RUNTIME (TODO 19)                        }
+{ ============================================================ }
+
+{ ---- EmitRuntimeHelpers : emet les routines runtime ---------- }
+{ Routines supplementaires non couvertes par TODO 14 et 17 :     }
+{   _ABRT_PRINTCHR : AL=caractere -> WriteFile 1 octet           }
+{   _ABRT_READINT  : ReadFile + parsing ASCII -> EAX             }
+{   _ABRT_READSTR  : ReadFile -> copier dans buffer              }
+{   _ABRT_STRCOPY  : ESI=src, EDI=dst, ECX=max -> copie         }
+{   _ABRT_STRCONCAT: coller ESI apres EDI (ASCIIZ)              }
+{   _ABRT_ERROR    : afficher message EAX + ExitProcess(1)       }
+Procedure EmitRuntimeHelpers;
+Begin
+  EmitBlank;
+  EmitComment('========================================');
+  EmitComment('RUNTIME : HELPERS (TODO 19)');
+  EmitComment('========================================');
+
+  { ---- _ABRT_PRINTCHR : AL=caractere -> WriteFile 1 octet ---- }
+  { Ecrit le caractere dans AL sur stdout                         }
+  EmitBlank;
+  EmitLabel(AB_RT_PFX + 'PRINTCHR');
+  EmitI('PUSH    EAX');
+  EmitI('PUSH    EBX');
+  EmitI('SUB     ESP, 4');             { reserve 4 octets sur la pile }
+  EmitI('MOV     BYTE PTR [ESP], AL'); { stocker le caractere }
+  EmitI('PUSH    0');                  { lpOverlapped = NULL }
+  EmitI('LEA     EBX, [' + AB_RT_PFX + 'WRITTEN]');
+  EmitI('PUSH    EBX');                { lpNumberOfBytesWritten }
+  EmitI('PUSH    1');                  { nNumberOfBytesToWrite = 1 }
+  EmitI('LEA     EAX, [ESP+12]');      { lpBuffer = adresse sur pile }
+  EmitI('PUSH    EAX');
+  EmitI('PUSH    DWORD PTR [' + AB_RT_PFX + 'HSTDOUT]');
+  EmitI('CALL    _WriteFile@20');
+  EmitI('ADD     ESP, 4');             { liberer le tampon }
+  EmitI('POP     EBX');
+  EmitI('POP     EAX');
+  EmitI('RET');
+
+  { ---- _ABRT_READINT : ReadFile + parsing ASCII -> EAX -------- }
+  { Lit une ligne depuis stdin et convertit en entier signe 32 b. }
+  { Resultat dans EAX                                             }
+  EmitBlank;
+  EmitLabel(AB_RT_PFX + 'READINT');
+  EmitI('PUSH    EBX');
+  EmitI('PUSH    ECX');
+  EmitI('PUSH    EDX');
+  EmitI('PUSH    ESI');
+  { ReadFile(hStdIn, lpBuffer, nBufSize, lpBytesRead, NULL) }
+  EmitI('PUSH    0');                     { lpOverlapped = NULL }
+  EmitI('LEA     EAX, [' + AB_RT_PFX + 'WRITTEN]');
+  EmitI('PUSH    EAX');                   { lpNumberOfBytesRead }
+  EmitI('PUSH    255');                   { nNumberOfBytesToRead }
+  EmitI('LEA     EAX, [' + AB_RT_PFX + 'INPUTBUF]');
+  EmitI('PUSH    EAX');                   { lpBuffer }
+  EmitI('PUSH    DWORD PTR [' + AB_RT_PFX + 'HSTDIN]');
+  EmitI('CALL    _ReadFile@20');
+  { Parser le buffer : convertir ASCII decimal en entier signe }
+  EmitI('LEA     ESI, [' + AB_RT_PFX + 'INPUTBUF]');
+  EmitI('XOR     EAX, EAX');             { accumulateur = 0 }
+  EmitI('XOR     ECX, ECX');             { drapeau signe = 0 }
+  { Sauter les espaces initiaux }
+  EmitLabel(AB_RT_PFX + 'RI_SKIP');
+  EmitI('MOV     BL, BYTE PTR [ESI]');
+  EmitI('CMP     BL, 32');
+  EmitI('JNE     ' + AB_RT_PFX + 'RI_SIGN');
+  EmitI('INC     ESI');
+  EmitI('JMP     ' + AB_RT_PFX + 'RI_SKIP');
+  { Verifier le signe }
+  EmitLabel(AB_RT_PFX + 'RI_SIGN');
+  EmitI('CMP     BL, 45');               { '-' = 45 }
+  EmitI('JNE     ' + AB_RT_PFX + 'RI_PLUS');
+  EmitI('MOV     ECX, 1');               { marquer negatif }
+  EmitI('INC     ESI');
+  EmitI('JMP     ' + AB_RT_PFX + 'RI_LOOP');
+  EmitLabel(AB_RT_PFX + 'RI_PLUS');
+  EmitI('CMP     BL, 43');               { '+' = 43 }
+  EmitI('JNE     ' + AB_RT_PFX + 'RI_LOOP');
+  EmitI('INC     ESI');
+  { Boucle de conversion }
+  EmitLabel(AB_RT_PFX + 'RI_LOOP');
+  EmitI('MOVZX   EBX, BYTE PTR [ESI]');
+  EmitI('CMP     BL, 48');               { '0' = 48 }
+  EmitI('JB      ' + AB_RT_PFX + 'RI_DONE');
+  EmitI('CMP     BL, 57');               { '9' = 57 }
+  EmitI('JA      ' + AB_RT_PFX + 'RI_DONE');
+  EmitI('SUB     BL, 48');               { chiffre = BL - '0' }
+  EmitI('IMUL    EAX, EAX, 10');         { accumulateur *= 10 }
+  EmitI('ADD     EAX, EBX');             { accumulateur += chiffre }
+  EmitI('INC     ESI');
+  EmitI('JMP     ' + AB_RT_PFX + 'RI_LOOP');
+  { Appliquer le signe }
+  EmitLabel(AB_RT_PFX + 'RI_DONE');
+  EmitI('TEST    ECX, ECX');
+  EmitI('JZ      ' + AB_RT_PFX + 'RI_RET');
+  EmitI('NEG     EAX');
+  EmitLabel(AB_RT_PFX + 'RI_RET');
+  EmitI('POP     ESI');
+  EmitI('POP     EDX');
+  EmitI('POP     ECX');
+  EmitI('POP     EBX');
+  EmitI('RET');
+
+  { ---- _ABRT_READSTR : ReadFile -> copier dans buffer ---------- }
+  { EAX = pointeur vers le buffer destination (ASCIIZ)            }
+  { ECX = taille max du buffer destination                        }
+  { Lit une ligne depuis stdin, supprime CR/LF final, termine \0  }
+  EmitBlank;
+  EmitLabel(AB_RT_PFX + 'READSTR');
+  EmitI('PUSH    EBX');
+  EmitI('PUSH    EDX');
+  EmitI('PUSH    EDI');
+  EmitI('PUSH    ESI');
+  EmitI('MOV     EDI, EAX');             { EDI = buffer destination }
+  EmitI('MOV     EDX, ECX');             { EDX = taille max }
+  { ReadFile(hStdIn, INPUTBUF, 255, &WRITTEN, NULL) }
+  EmitI('PUSH    0');
+  EmitI('LEA     EAX, [' + AB_RT_PFX + 'WRITTEN]');
+  EmitI('PUSH    EAX');
+  EmitI('PUSH    255');
+  EmitI('LEA     EAX, [' + AB_RT_PFX + 'INPUTBUF]');
+  EmitI('PUSH    EAX');
+  EmitI('PUSH    DWORD PTR [' + AB_RT_PFX + 'HSTDIN]');
+  EmitI('CALL    _ReadFile@20');
+  { Copier INPUTBUF vers destination, max EDX octets, sans CR/LF }
+  EmitI('LEA     ESI, [' + AB_RT_PFX + 'INPUTBUF]');
+  EmitI('MOV     ECX, DWORD PTR [' + AB_RT_PFX + 'WRITTEN]');
+  EmitI('XOR     EBX, EBX');             { compteur copie }
+  EmitLabel(AB_RT_PFX + 'RS_LOOP');
+  EmitI('TEST    ECX, ECX');
+  EmitI('JZ      ' + AB_RT_PFX + 'RS_DONE');
+  EmitI('CMP     EBX, EDX');
+  EmitI('JGE     ' + AB_RT_PFX + 'RS_DONE');
+  EmitI('MOV     AL, BYTE PTR [ESI]');
+  EmitI('CMP     AL, 13');               { CR }
+  EmitI('JE      ' + AB_RT_PFX + 'RS_DONE');
+  EmitI('CMP     AL, 10');               { LF }
+  EmitI('JE      ' + AB_RT_PFX + 'RS_DONE');
+  EmitI('CMP     AL, 0');                { NULL }
+  EmitI('JE      ' + AB_RT_PFX + 'RS_DONE');
+  EmitI('MOV     BYTE PTR [EDI+EBX], AL');
+  EmitI('INC     EBX');
+  EmitI('INC     ESI');
+  EmitI('DEC     ECX');
+  EmitI('JMP     ' + AB_RT_PFX + 'RS_LOOP');
+  EmitLabel(AB_RT_PFX + 'RS_DONE');
+  EmitI('MOV     BYTE PTR [EDI+EBX], 0'); { terminaison ASCIIZ }
+  EmitI('POP     ESI');
+  EmitI('POP     EDI');
+  EmitI('POP     EDX');
+  EmitI('POP     EBX');
+  EmitI('RET');
+
+  { ---- _ABRT_STRCOPY : ESI=src, EDI=dst, ECX=max -> copie ----- }
+  { Copie la chaine ASCIIZ de ESI vers EDI (max ECX caracteres)    }
+  EmitBlank;
+  EmitLabel(AB_RT_PFX + 'STRCOPY');
+  EmitI('PUSH    EAX');
+  EmitI('PUSH    EBX');
+  EmitI('XOR     EBX, EBX');             { compteur }
+  EmitLabel(AB_RT_PFX + 'SC_LOOP');
+  EmitI('CMP     EBX, ECX');
+  EmitI('JGE     ' + AB_RT_PFX + 'SC_DONE');
+  EmitI('MOV     AL, BYTE PTR [ESI+EBX]');
+  EmitI('MOV     BYTE PTR [EDI+EBX], AL');
+  EmitI('TEST    AL, AL');
+  EmitI('JZ      ' + AB_RT_PFX + 'SC_RET');
+  EmitI('INC     EBX');
+  EmitI('JMP     ' + AB_RT_PFX + 'SC_LOOP');
+  EmitLabel(AB_RT_PFX + 'SC_DONE');
+  EmitI('MOV     BYTE PTR [EDI+EBX], 0'); { terminaison }
+  EmitLabel(AB_RT_PFX + 'SC_RET');
+  EmitI('POP     EBX');
+  EmitI('POP     EAX');
+  EmitI('RET');
+
+  { ---- _ABRT_STRCONCAT : coller ESI apres EDI (ASCIIZ) -------- }
+  { EDI = destination (ASCIIZ), ESI = source -> append             }
+  EmitBlank;
+  EmitLabel(AB_RT_PFX + 'STRCONCAT');
+  EmitI('PUSH    EAX');
+  EmitI('PUSH    ECX');
+  EmitI('PUSH    EDI');
+  EmitI('PUSH    ESI');
+  { Trouver la fin de la destination }
+  EmitI('MOV     EAX, EDI');
+  EmitI('CALL    ' + AB_RT_PFX + 'STRLEN');
+  EmitI('ADD     EDI, EAX');
+  { Copier source apres la fin de destination }
+  EmitLabel(AB_RT_PFX + 'SCAT_LP');
+  EmitI('LODSB');
+  EmitI('STOSB');
+  EmitI('TEST    AL, AL');
+  EmitI('JNZ     ' + AB_RT_PFX + 'SCAT_LP');
+  EmitI('POP     ESI');
+  EmitI('POP     EDI');
+  EmitI('POP     ECX');
+  EmitI('POP     EAX');
+  EmitI('RET');
+
+  { ---- _ABRT_ERROR : afficher message + ExitProcess(1) -------- }
+  { EAX = pointeur vers message d erreur ASCIIZ                   }
+  EmitBlank;
+  EmitLabel(AB_RT_PFX + 'ERROR');
+  EmitI('CALL    ' + AB_RT_PFX + 'PRINT');
+  EmitI('LEA     EAX, [' + AB_RT_PFX + 'CRLF_DATA]');
+  EmitI('CALL    ' + AB_RT_PFX + 'PRINT');
+  EmitI('PUSH    1');
+  EmitI('CALL    _ExitProcess@4');
+  EmitI('RET');                  { ne sera jamais atteint }
+End;
+
 Procedure InitOptions;
 Begin
   Opts.OutFile   := '';
@@ -6390,11 +6644,26 @@ Begin
     { Emettre l en-tete assembleur (TODO 18) }
     EmitHeader;
 
+    { Emettre le point d entree Win32 (TODO 19) }
+    EmitEntryPoint;
+
     { Parser les declarations et instructions de haut niveau }
     While (CurTokType <> TOK_EOF) Do
     Begin
       ParseStatement;
     End;
+
+    { Emettre la sortie du programme (TODO 19) }
+    EmitBlank;
+    EmitComment('--- Sortie du programme ---');
+    EmitI('PUSH    0');
+    EmitI('CALL    _ExitProcess@4');
+
+    { Emettre les routines runtime I/O (TODO 14) }
+    EmitWriteRuntime;
+
+    { Emettre les helpers runtime (TODO 19) }
+    EmitRuntimeHelpers;
 
     { Emettre le segment de donnees (TODO 18) }
     EmitDataSeg;

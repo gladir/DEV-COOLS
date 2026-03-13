@@ -359,7 +359,7 @@
               Chaines litterales : _ABK_1, _ABK_2... DB 'texte',0
             Mode -asm : ecrire fichier .ASM avec commentaires
 
-  TODO 19 - GENERATION : POINT D ENTREE WIN32 ET HELPERS RUNTIME
+  TODO 19 - GENERATION : POINT D ENTREE WIN32 ET HELPERS RUNTIME [IMPLEMENTE]
             Procedure EmitEntryPoint
               _ABF_main:
               PUSH EBP / MOV EBP, ESP
