@@ -5,7 +5,7 @@ fun main() {
     // try/catch basique
     try {
         println(42)
-        throw Exception("erreur")
+        throw Exception("erreur de test")
     } catch (e: Exception) {
         println(99)
     }
@@ -21,7 +21,7 @@ fun main() {
 
     // throw avec type specifique
     try {
-        throw IllegalArgumentException("bad arg")
+        throw IllegalArgumentException("argument invalide")
     } catch (e: IllegalArgumentException) {
         println(3)
     }

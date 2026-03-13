@@ -8069,6 +8069,28 @@ End;
   TODO 23 - EXCEPTIONS (try / catch / finally / throw) [IMPLEMENTE]
   ============================================================ }
 
+(* ---- ExcTypeNameToCode : convertir nom de type exception -> code --- *)
+(* 0=Exception, 1=RuntimeException, 2=NullPointerException,              *)
+(* 3=IllegalArgumentException, 4=IllegalStateException,                   *)
+(* 5=IndexOutOfBoundsException                                            *)
+Function ExcTypeNameToCode(Const Name : TString) : Integer;
+Begin
+  If Name = 'Exception' Then
+    ExcTypeNameToCode := 0
+  Else If Name = 'RuntimeException' Then
+    ExcTypeNameToCode := 1
+  Else If Name = 'NullPointerException' Then
+    ExcTypeNameToCode := 2
+  Else If Name = 'IllegalArgumentException' Then
+    ExcTypeNameToCode := 3
+  Else If Name = 'IllegalStateException' Then
+    ExcTypeNameToCode := 4
+  Else If Name = 'IndexOutOfBoundsException' Then
+    ExcTypeNameToCode := 5
+  Else
+    ExcTypeNameToCode := 0;
+End;
+
 (* ---- ParseTryExpr : try { bloc } catch (e:T) { bloc } finally { bloc } *)
 (* Genere :                                                                 *)
 (*   MOV [_KTX_SAVESP], SP     ; sauvegarder le SP                         *)
@@ -8169,21 +8191,7 @@ Begin
         ParserAdvance; { consomme ')' }
     End;
 
-    { Mapper le nom de type -> code interne }
-    If ExcTypeName = 'Exception' Then
-      ExcTypeCode := 0
-    Else If ExcTypeName = 'RuntimeException' Then
-      ExcTypeCode := 1
-    Else If ExcTypeName = 'NullPointerException' Then
-      ExcTypeCode := 2
-    Else If ExcTypeName = 'IllegalArgumentException' Then
-      ExcTypeCode := 3
-    Else If ExcTypeName = 'IllegalStateException' Then
-      ExcTypeCode := 4
-    Else If ExcTypeName = 'IndexOutOfBoundsException' Then
-      ExcTypeCode := 5
-    Else
-      ExcTypeCode := 0; { Par defaut : Exception capture tout }
+    ExcTypeCode := ExcTypeNameToCode(ExcTypeName);
 
     EmitComment('catch (' + ExcVarName + ': ' + ExcTypeName + ')');
 
@@ -8294,20 +8302,7 @@ Begin
     ExcName := CurToken.Val;
     ParserAdvance; { consomme le nom }
 
-    If ExcName = 'Exception' Then
-      ExcTypeCode := 0
-    Else If ExcName = 'RuntimeException' Then
-      ExcTypeCode := 1
-    Else If ExcName = 'NullPointerException' Then
-      ExcTypeCode := 2
-    Else If ExcName = 'IllegalArgumentException' Then
-      ExcTypeCode := 3
-    Else If ExcName = 'IllegalStateException' Then
-      ExcTypeCode := 4
-    Else If ExcName = 'IndexOutOfBoundsException' Then
-      ExcTypeCode := 5
-    Else
-      ExcTypeCode := 0;
+    ExcTypeCode := ExcTypeNameToCode(ExcName);
 
     { Optionnel : ("message") }
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
