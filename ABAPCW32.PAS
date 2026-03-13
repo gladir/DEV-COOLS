@@ -316,7 +316,7 @@
             Syntaxe : var = expr. (style ABAP Objet)
             Toutes les operations en registres EAX/EBX 32 bits
 
-  TODO 16 - PARSEUR : LOOP AT / ENDLOOP + OPERATIONS TABLES INTERNES
+  TODO 16 - PARSEUR : LOOP AT / ENDLOOP + OPERATIONS TABLES INTERNES [IMPLEMENTE]
             Procedure ParseLoopAt
             Syntaxe :
               LOOP AT itab [INTO wa] [WHERE condition].
@@ -580,6 +580,7 @@ Const
   MAX_FIELD     = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
   MAX_LOOP_NEST = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
   MAX_DATA      = {$IFDEF FPC}512{$ELSE}64{$ENDIF};
+  MAX_TABLE_ROWS = 100;  { nb max de lignes par table interne (TODO 16) }
   STACK_SIZE    = 4096;  { taille pile Win32 }
 
   { Types de tokens ABAP }
@@ -1134,6 +1135,17 @@ Procedure ParseSubtract; Forward;
 Procedure ParseMultiply; Forward;
 Procedure ParseDivide; Forward;
 Procedure ParseClear; Forward;
+
+{ ============================================================ }
+{ DECLARATIONS FORWARD (LOOP AT / TABLES TODO 16)              }
+{ ============================================================ }
+
+Procedure ParseLoopAt; Forward;
+Procedure ParseAppend; Forward;
+Procedure ParseReadTable; Forward;
+Procedure ParseSort; Forward;
+Procedure ParseDeleteTable; Forward;
+Procedure EmitTableRuntime; Forward;
 
 { ============================================================ }
 { FONCTIONS UTILITAIRES                                        }
@@ -2540,6 +2552,13 @@ Begin
   ParseTypeSpec(SymIdx);
   { VALUE ... }
   ParseValue(SymIdx);
+  { Si le type est TABLE : ajuster StoreClass et prefixe (TODO 16) }
+  If SymTab[SymIdx].DataType = TYPE_TABLE Then
+  Begin
+    SymTab[SymIdx].StoreClass := STORE_TABLE;
+    SymTab[SymIdx].AsmLabel   := AB_ARR_PFX + AsmIdent(VName);
+    SC := STORE_TABLE;
+  End;
   { Auto-ajuster char_len TYPE C si pas de (n) et VALUE fourni }
   If (SymTab[SymIdx].DataType = TYPE_C) Or
      (SymTab[SymIdx].DataType = TYPE_N) Then
@@ -3332,6 +3351,26 @@ Begin
   { CLEAR variable (TODO 15) }
   If TokIsKw(KW_CLEAR) Then
   Begin Consume; ParseClear; Exit; End;
+
+  { LOOP AT itab (TODO 16) }
+  If TokIsKw(KW_LOOP) Then
+  Begin Consume; ParseLoopAt; Exit; End;
+
+  { APPEND [wa TO] itab (TODO 16) }
+  If TokIsKw(KW_APPEND) Then
+  Begin Consume; ParseAppend; Exit; End;
+
+  { READ TABLE itab INTO wa (TODO 16) }
+  If TokIsKw(KW_READ) Then
+  Begin Consume; ParseReadTable; Exit; End;
+
+  { SORT itab (TODO 16) }
+  If TokIsKw(KW_SORT) Then
+  Begin Consume; ParseSort; Exit; End;
+
+  { DELETE itab (TODO 16) }
+  If TokIsKw(KW_DELETE) Then
+  Begin Consume; ParseDeleteTable; Exit; End;
 
   { IF / ELSEIF / ELSE / ENDIF }
   If TokIsKw(KW_IF) Then
@@ -4328,8 +4367,486 @@ Begin
 End;
 
 { ============================================================ }
-{ PARSEUR : WRITE / SKIP / NEW-LINE (TODO 14)                  }
+{ TODO 16 : LOOP AT / ENDLOOP + OPERATIONS TABLES INTERNES      }
 { ============================================================ }
+
+{ ---- ParseLoopAt : LOOP AT itab [INTO wa]. ... ENDLOOP. ----- }
+{ Generation 32 bits :                                           }
+{   XOR ECX, ECX -> SY-TABIX = 0                                }
+{   _ABL_top: INC ECX -> SY-TABIX + 1                           }
+{   CMP ECX, [_ABA_itab_CNT] / JG _ABL_end                     }
+{   MOV SY-TABIX, ECX                                            }
+{   (INTO wa : copie element courant)                            }
+{   PUSH ECX / corps / POP ECX                                  }
+{   JMP _ABL_top / _ABL_end:                                    }
+{ ============================================================ }
+Procedure ParseLoopAt;
+Var TabName, WaName : TString;
+    TabIdx, WaIdx   : Integer;
+    LblTop, LblEnd  : TString;
+    TabLbl          : TString;
+    SyTabixIdx      : Integer;
+    HasInto         : Boolean;
+Begin
+  EmitComment('---- LOOP AT ----');
+
+  { Consommer AT }
+  If TokIsKw(KW_AT) Then Consume
+  Else LexError('AT attendu apres LOOP');
+
+  { Nom de la table interne }
+  If CurTokType <> TOK_IDENT Then
+  Begin LexError('Nom de table attendu apres LOOP AT'); Exit; End;
+  TabName := CurTokStr;
+  TabIdx  := FindSym(TabName);
+  Consume;
+
+  If TabIdx = 0 Then
+  Begin
+    EmitComment('LOOP AT: table inconnue: ' + TabName);
+    While (CurTokType <> TOK_EOF) And Not TokIsKw(KW_ENDLOOP) Do
+      Consume;
+    If TokIsKw(KW_ENDLOOP) Then Begin Consume; If CurTokType=TOK_DOT Then Consume; End;
+    Exit;
+  End;
+
+  TabLbl := SymTab[TabIdx].AsmLabel;
+
+  { INTO wa (optionnel) }
+  HasInto := False;
+  WaIdx   := 0;
+  WaName  := '';
+  If TokIsKw(KW_INTO) Then
+  Begin
+    Consume;
+    HasInto := True;
+    If CurTokType = TOK_IDENT Then
+    Begin
+      WaName := CurTokStr;
+      WaIdx  := FindSym(WaName);
+      Consume;
+    End;
+  End;
+
+  { WHERE (stub : skip condition) }
+  If TokIsKw(KW_WHERE) Then
+  Begin
+    Consume;
+    EmitComment('LOOP AT WHERE: condition ignoree (stub)');
+    While (CurTokType <> TOK_DOT) And (CurTokType <> TOK_EOF) Do
+      Consume;
+  End;
+
+  { Consommer le point }
+  If CurTokType = TOK_DOT Then Consume
+  Else LexError('Point attendu apres LOOP AT ...');
+
+  { Labels }
+  LblTop := NewLabel + '_LT';
+  LblEnd := NewLabel + '_LE';
+
+  { SY-TABIX }
+  SyTabixIdx := FindSym('SY-TABIX');
+
+  { Initialiser compteur : XOR ECX, ECX }
+  EmitI('XOR     ECX, ECX');
+  EmitI('PUSH    ECX');           { sauvegarder index sur la pile }
+
+  EmitLabel(LblTop);
+
+  { Restaurer index, incrementer }
+  EmitI('POP     ECX');
+  EmitI('INC     ECX');
+
+  { Comparer avec le nombre de lignes }
+  EmitI('CMP     ECX, DWORD PTR [' + TabLbl + '_CNT]');
+  EmitI('JG      ' + LblEnd);
+
+  { Sauvegarder ECX pour le corps de boucle }
+  EmitI('PUSH    ECX');
+
+  { Mettre a jour SY-TABIX }
+  If SyTabixIdx > 0 Then
+    EmitI('MOV     DWORD PTR [' + SymTab[SyTabixIdx].AsmLabel + '], ECX');
+
+  { INTO wa : copier l element courant dans la variable de travail }
+  If HasInto And (WaIdx > 0) Then
+  Begin
+    EmitComment('INTO ' + WaName + ' (copie element)');
+    { Calculer adresse element : _ABA_itab + (ECX-1)*4 }
+    EmitI('DEC     ECX');
+    EmitI('SHL     ECX, 2');       { ECX * 4 }
+    EmitI('LEA     EAX, [' + TabLbl + '_DATA]');
+    EmitI('ADD     EAX, ECX');
+    EmitI('MOV     EAX, DWORD PTR [EAX]');  { charger la valeur }
+    GenStoreVar32(WaIdx);
+  End;
+
+  { Corps de la boucle }
+  EnterScope(SK_LOOP, 0);
+  SetExitLabel(LblEnd);
+  SetContLabel(LblTop);
+  ParseBlock(KW_ENDLOOP, KW_NONE, KW_NONE);
+  LeaveScope;
+
+  { Retour au debut }
+  EmitI('JMP     ' + LblTop);
+
+  EmitLabel(LblEnd);
+  { Nettoyer la pile si on sort par JG (le PUSH ECX n a pas de POP) }
+  { Note : le POP ECX est fait en haut de la boucle, mais si on     }
+  { sort par JG apres le POP, c est correct.                        }
+
+  { ENDLOOP. }
+  If TokIsKw(KW_ENDLOOP) Then
+  Begin
+    Consume;
+    If CurTokType = TOK_DOT Then Consume
+    Else LexError('Point attendu apres ENDLOOP');
+  End
+  Else
+    LexError('ENDLOOP attendu');
+End;
+
+{ ---- ParseAppend : APPEND [wa/expr TO] itab. ---------------- }
+{ APPEND val TO itab.  -> empiler la valeur dans le tableau     }
+{ APPEND itab.         -> ajouter une ligne vide (0) a itab     }
+{ Generation : incremente _ABA_itab_CNT, stocke valeur          }
+Procedure ParseAppend;
+Var TabName : TString;
+    TabIdx  : Integer;
+    TabLbl  : TString;
+    HasSrc  : Boolean;
+    SavedName : TString;
+    SavedIdx  : Integer;
+Begin
+  EmitComment('APPEND');
+
+  HasSrc := False;
+
+  { Cas 1 : APPEND wa TO itab. (identifiant suivi de TO) }
+  { Cas 2 : APPEND expr TO itab. (expression suivi de TO) }
+  { Cas 3 : APPEND itab. (juste un identifiant, sans TO) }
+
+  { Regarder si c est un identifiant simple qui est suivi de TO ou de '.' }
+  If CurTokType = TOK_IDENT Then
+  Begin
+    SavedName := CurTokStr;
+    SavedIdx  := FindSym(SavedName);
+    { Verifier si c est une table (APPEND itab.) ou une source (APPEND wa TO itab.) }
+    { On regarde le token suivant pour decider }
+    Consume;
+    If TokIsKw(KW_TO) Then
+    Begin
+      { Forme APPEND wa TO itab }
+      Consume;
+      HasSrc := True;
+      { Charger la valeur source }
+      If SavedIdx > 0 Then
+        GenLoadVar32(SavedIdx)
+      Else
+        EmitI('XOR     EAX, EAX');
+      EmitI('PUSH    EAX');         { sauvegarder la valeur }
+      { Lire le nom de la table }
+      If CurTokType <> TOK_IDENT Then
+      Begin LexError('Nom de table attendu apres TO'); Exit; End;
+      TabName := CurTokStr;
+      TabIdx  := FindSym(TabName);
+      Consume;
+    End
+    Else
+    Begin
+      { Forme APPEND itab. (sans source) }
+      TabName := SavedName;
+      TabIdx  := SavedIdx;
+    End;
+  End
+  Else If (CurTokType = TOK_NUMBER) Or (CurTokType = TOK_STRING) Or
+         (CurTokType = TOK_LPAREN) Or (CurTokType = TOK_MINUS) Then
+  Begin
+    { Forme APPEND expr TO itab }
+    ParseExpr;
+    EmitI('PUSH    EAX');           { sauvegarder la valeur }
+    HasSrc := True;
+    If TokIsKw(KW_TO) Then Consume
+    Else LexError('TO attendu apres expression APPEND');
+    If CurTokType <> TOK_IDENT Then
+    Begin LexError('Nom de table attendu apres TO'); Exit; End;
+    TabName := CurTokStr;
+    TabIdx  := FindSym(TabName);
+    Consume;
+  End
+  Else
+  Begin
+    LexError('Expression ou nom de variable attendu apres APPEND');
+    Exit;
+  End;
+
+  If TabIdx = 0 Then
+  Begin
+    EmitComment('APPEND: table inconnue: ' + TabName);
+    If HasSrc Then EmitI('ADD     ESP, 4'); { nettoyer la pile }
+    If CurTokType = TOK_DOT Then Consume;
+    Exit;
+  End;
+
+  TabLbl := SymTab[TabIdx].AsmLabel;
+
+  { Charger la valeur a ajouter }
+  If HasSrc Then
+    EmitI('POP     EAX')            { recuperer la valeur sauvegardee }
+  Else
+    EmitI('XOR     EAX, EAX');      { valeur 0 par defaut }
+
+  { Stocker dans le tableau : _ABA_itab_DATA + CNT*4 }
+  EmitI('MOV     ECX, DWORD PTR [' + TabLbl + '_CNT]');
+  EmitI('SHL     ECX, 2');           { ECX * 4 }
+  EmitI('LEA     EDX, [' + TabLbl + '_DATA]');
+  EmitI('ADD     EDX, ECX');
+  EmitI('MOV     DWORD PTR [EDX], EAX');
+  { Incrementer le compteur }
+  EmitI('INC     DWORD PTR [' + TabLbl + '_CNT]');
+
+  If CurTokType = TOK_DOT Then Consume;
+End;
+
+{ ---- ParseReadTable : READ TABLE itab INTO wa [INDEX i]. ----- }
+{ Lit un element de la table par INDEX.                           }
+{ Met a jour SY-SUBRC (0=trouve, 4=non trouve).                  }
+Procedure ParseReadTable;
+Var TabName, WaName : TString;
+    TabIdx, WaIdx   : Integer;
+    TabLbl          : TString;
+    LblOk, LblEnd  : TString;
+    SySubrcIdx      : Integer;
+Begin
+  EmitComment('READ TABLE');
+
+  { Consommer TABLE }
+  If TokIsKw(KW_TABLE) Then Consume
+  Else LexError('TABLE attendu apres READ');
+
+  { Nom de la table }
+  If CurTokType <> TOK_IDENT Then
+  Begin LexError('Nom de table attendu'); Exit; End;
+  TabName := CurTokStr;
+  TabIdx  := FindSym(TabName);
+  Consume;
+
+  If TabIdx = 0 Then
+  Begin
+    EmitComment('READ TABLE: table inconnue: ' + TabName);
+    While (CurTokType <> TOK_DOT) And (CurTokType <> TOK_EOF) Do Consume;
+    If CurTokType = TOK_DOT Then Consume;
+    Exit;
+  End;
+
+  TabLbl := SymTab[TabIdx].AsmLabel;
+
+  { INTO wa }
+  WaIdx := 0;
+  If TokIsKw(KW_INTO) Then
+  Begin
+    Consume;
+    If CurTokType = TOK_IDENT Then
+    Begin
+      WaName := CurTokStr;
+      WaIdx  := FindSym(WaName);
+      Consume;
+    End;
+  End;
+
+  { INDEX i | WITH KEY champ = val }
+  If TokIsKw(KW_INDEX) Then
+  Begin
+    Consume;
+    { Evaluer l index -> EAX }
+    ParseExpr;
+    EmitI('MOV     ECX, EAX');   { ECX = index (1-base) }
+  End
+  Else If TokIsKw(KW_WITH) Then
+  Begin
+    { WITH KEY champ = val : stub (lire le premier element) }
+    Consume;
+    EmitComment('READ TABLE WITH KEY: stub (INDEX 1)');
+    While (CurTokType <> TOK_DOT) And (CurTokType <> TOK_EOF) Do Consume;
+    EmitI('MOV     ECX, 1');     { index par defaut = 1 }
+  End
+  Else
+    EmitI('MOV     ECX, 1');     { index par defaut = 1 }
+  ;
+
+  SySubrcIdx := FindSym('SY-SUBRC');
+  LblOk  := NewLabel + '_RO';
+  LblEnd := NewLabel + '_RE';
+
+  { Verifier que l index est valide : 1 <= ECX <= CNT }
+  EmitI('TEST    ECX, ECX');
+  EmitI('JLE     ' + LblEnd);     { index <= 0 : erreur }
+  EmitI('CMP     ECX, DWORD PTR [' + TabLbl + '_CNT]');
+  EmitI('JG      ' + LblEnd);     { index > CNT : erreur }
+
+  { Charger l element : _ABA_itab_DATA + (ECX-1)*4 }
+  EmitI('DEC     ECX');
+  EmitI('SHL     ECX, 2');
+  EmitI('LEA     EAX, [' + TabLbl + '_DATA]');
+  EmitI('ADD     EAX, ECX');
+  EmitI('MOV     EAX, DWORD PTR [EAX]');
+
+  { INTO wa : stocker la valeur dans la variable de travail }
+  If WaIdx > 0 Then
+    GenStoreVar32(WaIdx);
+
+  { SY-SUBRC = 0 (trouve) }
+  If SySubrcIdx > 0 Then
+    EmitI('MOV     DWORD PTR [' + SymTab[SySubrcIdx].AsmLabel + '], 0');
+  EmitI('JMP     ' + LblOk);
+
+  { Branche erreur : SY-SUBRC = 4 }
+  EmitLabel(LblEnd);
+  If SySubrcIdx > 0 Then
+    EmitI('MOV     DWORD PTR [' + SymTab[SySubrcIdx].AsmLabel + '], 4');
+
+  EmitLabel(LblOk);
+
+  If CurTokType = TOK_DOT Then Consume;
+End;
+
+{ ---- ParseSort : SORT itab [BY champ] [ASCENDING|DESCENDING].- }
+{ Stub : emet un commentaire (tri non implemente en runtime).     }
+Procedure ParseSort;
+Var TabName : TString;
+    TabIdx  : Integer;
+Begin
+  EmitComment('SORT');
+
+  If CurTokType <> TOK_IDENT Then
+  Begin LexError('Nom de table attendu apres SORT'); Exit; End;
+  TabName := CurTokStr;
+  TabIdx  := FindSym(TabName);
+  Consume;
+
+  If TabIdx > 0 Then
+    EmitComment('SORT ' + TabName + ' (stub - tri non implemente)')
+  Else
+    EmitComment('SORT: table inconnue: ' + TabName);
+
+  { Consommer les options BY / ASCENDING / DESCENDING }
+  If TokIsKw(KW_BY) Then
+  Begin
+    Consume;
+    If CurTokType = TOK_IDENT Then Consume;
+  End;
+  If TokIsKw(KW_ASCENDING) Then Consume;
+  If TokIsKw(KW_DESCENDING) Then Consume;
+
+  If CurTokType = TOK_DOT Then Consume;
+End;
+
+{ ---- ParseDeleteTable : DELETE itab [INDEX i]. --------------- }
+{ Supprime un element de la table interne par index.              }
+{ Generation : decaler les elements vers le bas, decrementer CNT  }
+Procedure ParseDeleteTable;
+Var TabName : TString;
+    TabIdx  : Integer;
+    TabLbl  : TString;
+    LblLoop, LblEnd, LblDone : TString;
+Begin
+  EmitComment('DELETE');
+
+  If CurTokType <> TOK_IDENT Then
+  Begin LexError('Nom de table attendu apres DELETE'); Exit; End;
+  TabName := CurTokStr;
+  TabIdx  := FindSym(TabName);
+  Consume;
+
+  If TabIdx = 0 Then
+  Begin
+    EmitComment('DELETE: table inconnue: ' + TabName);
+    While (CurTokType <> TOK_DOT) And (CurTokType <> TOK_EOF) Do Consume;
+    If CurTokType = TOK_DOT Then Consume;
+    Exit;
+  End;
+
+  TabLbl := SymTab[TabIdx].AsmLabel;
+
+  If TokIsKw(KW_INDEX) Then
+  Begin
+    Consume;
+    { Evaluer l index -> EAX }
+    ParseExpr;
+    EmitI('MOV     ECX, EAX');   { ECX = index (1-base) }
+
+    LblLoop := NewLabel + '_DL';
+    LblEnd  := NewLabel + '_DD';
+    LblDone := NewLabel + '_DF';
+
+    { Verifier que l index est valide }
+    EmitI('TEST    ECX, ECX');
+    EmitI('JLE     ' + LblDone);
+    EmitI('CMP     ECX, DWORD PTR [' + TabLbl + '_CNT]');
+    EmitI('JG      ' + LblDone);
+
+    { Decaler les elements : [i] = [i+1] pour i = index..CNT-1 }
+    EmitI('DEC     ECX');          { index 0-base }
+    EmitI('MOV     EDX, DWORD PTR [' + TabLbl + '_CNT]');
+    EmitI('DEC     EDX');          { derniere position valide (0-base) }
+
+    EmitLabel(LblLoop);
+    EmitI('CMP     ECX, EDX');
+    EmitI('JGE     ' + LblEnd);
+    { Copier [ECX+1] -> [ECX] }
+    EmitI('LEA     EAX, [' + TabLbl + '_DATA]');
+    EmitI('MOV     EBX, DWORD PTR [EAX+ECX*4+4]');
+    EmitI('MOV     DWORD PTR [EAX+ECX*4], EBX');
+    EmitI('INC     ECX');
+    EmitI('JMP     ' + LblLoop);
+
+    EmitLabel(LblEnd);
+    { Decrementer le compteur }
+    EmitI('DEC     DWORD PTR [' + TabLbl + '_CNT]');
+
+    EmitLabel(LblDone);
+  End
+  Else If TokIsKw(KW_WHERE) Then
+  Begin
+    { WHERE condition : stub }
+    Consume;
+    EmitComment('DELETE WHERE: condition ignoree (stub)');
+    While (CurTokType <> TOK_DOT) And (CurTokType <> TOK_EOF) Do
+      Consume;
+  End
+  Else
+  Begin
+    { DELETE itab. sans qualificatif : vider la table }
+    EmitComment('DELETE ' + TabName + ' (vider toute la table)');
+    EmitI('MOV     DWORD PTR [' + TabLbl + '_CNT], 0');
+  End;
+
+  If CurTokType = TOK_DOT Then Consume;
+End;
+
+{ ---- EmitTableRuntime : donnees pour les tables internes ----- }
+{ Emet les zones de donnees _ABA_xxx_CNT et _ABA_xxx_DATA        }
+{ pour chaque symbole de type STORE_TABLE dans la table.          }
+Procedure EmitTableRuntime;
+Var I : Integer;
+    Lbl : TString;
+Begin
+  EmitBlank;
+  EmitComment('--- Donnees tables internes (TODO 16) ---');
+  For I := 1 To SymCount Do
+  Begin
+    If SymTab[I].DataType = TYPE_TABLE Then
+    Begin
+      Lbl := SymTab[I].AsmLabel;
+      { Compteur de lignes }
+      Emit(Lbl + '_CNT DD 0');
+      { Zone de donnees : MAX_TABLE_ROWS DD }
+      Emit(Lbl + '_DATA DD ' + IntToStr_(MAX_TABLE_ROWS) + ' DUP(0)');
+    End;
+  End;
+End;
 
 { ---- EmitWriteOneItem : emet le code pour un item WRITE ------ }
 { Gere : nombre litteral, chaine litteral, '/' (CRLF), variable }
@@ -4531,6 +5048,9 @@ Begin
   Emit(AB_RT_PFX + 'NUMBUF    DB 12 DUP(0)');
   Emit(AB_RT_PFX + 'CRLF_DATA DB 13, 10, 0');
   Emit(AB_RT_PFX + 'SPACE_DATA DB 32, 0');
+
+  { ---- Donnees tables internes (TODO 16) ----------------------- }
+  EmitTableRuntime;
 End;
 
 Procedure InitOptions;

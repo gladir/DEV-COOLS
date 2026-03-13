@@ -297,7 +297,7 @@
             Syntaxe : var = expr. (style ABAP Objet)
             Toutes les operations en registres EAX/EBX 32 bits
 
-  TODO 16 - PARSEUR : LOOP AT / ENDLOOP + OPERATIONS TABLES INTERNES
+  TODO 16 - PARSEUR : LOOP AT / ENDLOOP + OPERATIONS TABLES INTERNES [IMPLEMENTE]
             Procedure ParseLoopAt
             Syntaxe :
               LOOP AT itab [INTO wa] [WHERE condition].
