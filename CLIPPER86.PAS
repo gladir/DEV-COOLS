@@ -343,7 +343,7 @@
             CLOSE / CLOSE ALL / CLOSE DATABASES : fermer les fichiers DBF
             DELETED()         -> AX=1 si enregistrement marque pour suppression
 
-  TODO 20 - INDEX ET RECHERCHE (NTX/NDX)
+  TODO 20 - INDEX ET RECHERCHE (NTX/NDX) [IMPLEMENTE]
             INDEX ON expr TO nomFichier :
               Creer un fichier index (.NTX format Clipper)
               -> CALL _CLRT_IDXCREATE(SI=expr, DI=fichier)
@@ -908,6 +908,14 @@ Procedure ParsePackStmt; Forward;
 Procedure ParseZapStmt; Forward;
 Procedure EmitDBFRuntime; Forward;
 
+{ Index et recherche (TODO 20) }
+Procedure ParseIndexStmt; Forward;
+Procedure ParseSeekStmt; Forward;
+Procedure ParseLocateStmt; Forward;
+Procedure ParseContinueStmt; Forward;
+Procedure ParseReindexStmt; Forward;
+Procedure EmitIdxRuntime; Forward;
+
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
   ============================================================ }
@@ -1187,6 +1195,8 @@ End;
 Procedure Run;
 Var
   Kw : TString;
+  ExprTmp20 : TExprVal;    { temporaire pour SET ... (TODO 20) }
+  DIdx20    : Integer;      { index DataTab pour SET RELATION (TODO 20) }
 Begin
   GlobalInit;
   If Opts.Verbose Then
@@ -1257,11 +1267,80 @@ Begin
         ParserAdvance;
         ParseClearStmt;
       End
-      { SET (TODO 12) }
+      { SET (TODO 12 / TODO 20) }
       Else If Kw = 'SET' Then
       Begin
         ParserAdvance;
-        ParseSetColorStmt;
+        If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'INDEX') Then
+        Begin
+          ParserAdvance;
+          { SET INDEX TO ... }
+          If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'TO') Then
+            ParserAdvance;
+          ParseIndexStmt;
+        End
+        Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'ORDER') Then
+        Begin
+          ParserAdvance;
+          { SET ORDER TO n }
+          EmitComment('SET ORDER TO (TODO 20)');
+          If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'TO') Then
+            ParserAdvance;
+          ParseExpr(ExprTmp20);
+          ExprFlushToAX(ExprTmp20);
+          EmitInstrA('CALL', CL_RT_PFX + 'IDXSETORDER');
+        End
+        Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'FILTER') Then
+        Begin
+          ParserAdvance;
+          EmitComment('SET FILTER TO (TODO 20)');
+          If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'TO') Then
+            ParserAdvance;
+          { Expression de filtre ou vide pour reset }
+          If (CurToken.Kind <> TK_EOF) And
+             Not ((CurToken.Kind = TK_KEYWORD) And
+                  ((CurToken.Val = '?') Or (CurToken.Val = 'IF') Or
+                   (CurToken.Val = 'DO') Or (CurToken.Val = 'RETURN'))) Then
+          Begin
+            ParseExpr(ExprTmp20);
+            ExprFlushToAX(ExprTmp20);
+          End
+          Else
+            EmitInstrAB('XOR', 'AX', 'AX');
+          EmitInstrA('CALL', CL_RT_PFX + 'IDXSETFILTER');
+        End
+        Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'RELATION') Then
+        Begin
+          ParserAdvance;
+          EmitComment('SET RELATION TO (TODO 20)');
+          If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'TO') Then
+            ParserAdvance;
+          ParseExpr(ExprTmp20);
+          ExprFlushToAX(ExprTmp20);
+          EmitInstr('PUSH   AX');
+          If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'INTO') Then
+            ParserAdvance;
+          If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+          Begin
+            DIdx20 := DataAddStr(CurToken.Val);
+            EmitInstrAB('LEA', 'SI', '[' + DataTab[DIdx20].LblName + ']');
+            ParserAdvance;
+          End;
+          EmitInstr('POP    AX');
+          EmitInstrA('CALL', CL_RT_PFX + 'IDXSETRELATION');
+        End
+        Else If (CurToken.Kind = TK_KEYWORD) And
+                ((CurToken.Val = 'SOFTSEEK') Or (CurToken.Val = 'EXACT') Or
+                 (CurToken.Val = 'DELETED')) Then
+        Begin
+          EmitComment('SET ' + CurToken.Val + ' (TODO 20)');
+          ParserAdvance;
+          { ON/OFF }
+          If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
+            ParserAdvance;
+        End
+        Else
+          ParseSetColorStmt;
       End
       { IF (TODO 13) }
       Else If Kw = 'IF' Then
@@ -1448,6 +1527,36 @@ Begin
         ParserAdvance;
         ParseZapStmt;
       End
+      { INDEX : creer un index (TODO 20) }
+      Else If Kw = 'INDEX' Then
+      Begin
+        ParserAdvance;
+        ParseIndexStmt;
+      End
+      { SEEK : recherche dans l index actif (TODO 20) }
+      Else If Kw = 'SEEK' Then
+      Begin
+        ParserAdvance;
+        ParseSeekStmt;
+      End
+      { LOCATE : recherche sequentielle (TODO 20) }
+      Else If Kw = 'LOCATE' Then
+      Begin
+        ParserAdvance;
+        ParseLocateStmt;
+      End
+      { CONTINUE : continuer la recherche LOCATE (TODO 20) }
+      Else If (Kw = 'CONTINUE') Or (Kw = 'CONT') Then
+      Begin
+        ParserAdvance;
+        ParseContinueStmt;
+      End
+      { REINDEX : reconstruire les index (TODO 20) }
+      Else If Kw = 'REINDEX' Then
+      Begin
+        ParserAdvance;
+        ParseReindexStmt;
+      End
       Else
       Begin
         { Autres mots-cles : stub pour TODOs futurs }
@@ -1569,7 +1678,12 @@ Begin
      (U = 'RECALL')     Or (U = 'PACK')       Or (U = 'ZAP')     Or
      (U = 'ALIAS')      Or (U = 'SHARED')     Or (U = 'EXCLUSIVE') Or
      (U = 'NEW')        Or (U = 'BLANK')      Or (U = 'TOP')     Or
-     (U = 'BOTTOM')     Or (U = 'ALL')        Or (U = 'DATABASES') Then
+     (U = 'BOTTOM')     Or (U = 'ALL')        Or (U = 'DATABASES') Or
+     (U = 'INDEX')      Or (U = 'SEEK')       Or (U = 'LOCATE')  Or
+     (U = 'CONTINUE')   Or (U = 'REINDEX')    Or
+     (U = 'ORDER')      Or (U = 'FILTER')     Or (U = 'RELATION') Or
+     (U = 'INTO')       Or (U = 'ON')         Or (U = 'REST')    Or
+     (U = 'SOFTSEEK')   Or (U = 'EXACT')   Or (U = 'DBEVAL') Then
   Begin
     IsKeyword := True;
     Exit;
@@ -1605,6 +1719,12 @@ Begin
     If Copy('EXCLUSIVE',  1, Length(U)) = U Then Begin IsKeyword := True; Exit; End;
     If Copy('BOTTOM',     1, Length(U)) = U Then Begin IsKeyword := True; Exit; End;
     If Copy('DATABASES',  1, Length(U)) = U Then Begin IsKeyword := True; Exit; End;
+    If Copy('CONTINUE',  1, Length(U)) = U Then Begin IsKeyword := True; Exit; End;
+    If Copy('REINDEX',   1, Length(U)) = U Then Begin IsKeyword := True; Exit; End;
+    If Copy('LOCATE',    1, Length(U)) = U Then Begin IsKeyword := True; Exit; End;
+    If Copy('SOFTSEEK',  1, Length(U)) = U Then Begin IsKeyword := True; Exit; End;
+    If Copy('RELATION',  1, Length(U)) = U Then Begin IsKeyword := True; Exit; End;
+    If Copy('FILTER',    1, Length(U)) = U Then Begin IsKeyword := True; Exit; End;
   End;
 End;
 
@@ -1635,7 +1755,12 @@ Begin
      (U = 'RECALL')  Or (U = 'PACK')   Or (U = 'ZAP')     Or
      (U = 'ALIAS')   Or (U = 'SHARED') Or (U = 'EXCLUSIVE') Or
      (U = 'NEW')     Or (U = 'BLANK')  Or (U = 'TOP')     Or
-     (U = 'BOTTOM')  Or (U = 'ALL')    Or (U = 'DATABASES') Then
+     (U = 'BOTTOM')  Or (U = 'ALL')    Or (U = 'DATABASES') Or
+     (U = 'INDEX')   Or (U = 'SEEK')   Or (U = 'LOCATE')   Or
+     (U = 'CONTINUE') Or (U = 'REINDEX') Or
+     (U = 'ORDER')   Or (U = 'FILTER') Or (U = 'RELATION') Or
+     (U = 'INTO')    Or (U = 'ON')     Or (U = 'REST')     Or
+     (U = 'SOFTSEEK') Or (U = 'EXACT') Or (U = 'DBEVAL') Then
   Begin
     ExpandKeyword := U;
     Exit;
@@ -1669,6 +1794,12 @@ Begin
   If (Length(U) >= 4) And (Copy('EXCLUSIVE',  1, Length(U)) = U) Then Begin ExpandKeyword := 'EXCLUSIVE';  Exit; End;
   If (Length(U) >= 4) And (Copy('BOTTOM',     1, Length(U)) = U) Then Begin ExpandKeyword := 'BOTTOM';     Exit; End;
   If (Length(U) >= 4) And (Copy('DATABASES',  1, Length(U)) = U) Then Begin ExpandKeyword := 'DATABASES';  Exit; End;
+  If (Length(U) >= 4) And (Copy('CONTINUE',   1, Length(U)) = U) Then Begin ExpandKeyword := 'CONTINUE';   Exit; End;
+  If (Length(U) >= 4) And (Copy('REINDEX',    1, Length(U)) = U) Then Begin ExpandKeyword := 'REINDEX';    Exit; End;
+  If (Length(U) >= 4) And (Copy('LOCATE',     1, Length(U)) = U) Then Begin ExpandKeyword := 'LOCATE';     Exit; End;
+  If (Length(U) >= 4) And (Copy('SOFTSEEK',   1, Length(U)) = U) Then Begin ExpandKeyword := 'SOFTSEEK';   Exit; End;
+  If (Length(U) >= 4) And (Copy('RELATION',   1, Length(U)) = U) Then Begin ExpandKeyword := 'RELATION';   Exit; End;
+  If (Length(U) >= 4) And (Copy('FILTER',     1, Length(U)) = U) Then Begin ExpandKeyword := 'FILTER';     Exit; End;
 
   { Mots-cles complets qui n ont pas d abreviation }
   ExpandKeyword := U;
@@ -2596,6 +2727,15 @@ Begin
   WriteLn(OutF, '_CL_DBFHDR  DB  32 DUP(0)');      { buffer en-tete DBF }
   WriteLn(OutF, '_CL_DBFFLD  DB  32 DUP(0)');      { buffer descripteur champ }
   WriteLn(OutF, '_CL_DBFEXT  DB  ''.DBF'',0');     { extension par defaut }
+  { Index et recherche (TODO 20) }
+  WriteLn(OutF, '_CL_IDXCNT  DW  0');              { nombre d index ouverts }
+  WriteLn(OutF, '_CL_IDXORD  DW  0');              { index actif (0-based) }
+  WriteLn(OutF, '_CL_FOUND   DW  0');              { flag FOUND() }
+  WriteLn(OutF, '_CL_IDXHND  DW  8 DUP(0)');      { handles fichiers index (max 8) }
+  WriteLn(OutF, '_CL_NTXEXT  DB  ''.NTX'',0');     { extension index NTX }
+  WriteLn(OutF, '_CL_IDXNAME DB  80 DUP(0)');      { buffer nom fichier index }
+  WriteLn(OutF, '_CL_IDXKEY  DB  256 DUP(0)');     { buffer expression cle }
+  WriteLn(OutF, '_CL_IDXBUF  DB  256 DUP(0)');     { buffer lecture index }
   { Entrees DataTab }
   For I := 0 To DataCount - 1 Do
   Begin
@@ -4082,6 +4222,81 @@ Begin
         EmitInstrA('CALL', CL_RT_PFX + 'DBUSED');
         Res.Kind := EK_AX;
         Res.TypeIdx := TY_IDX_LOGIC;
+        Res.SymIdx := -1;
+      End
+      { --- FOUND : resultat de la derniere recherche SEEK/LOCATE (TODO 20) --- }
+      Else If IdName = 'FOUND' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'IDXFOUND');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_LOGIC;
+        Res.SymIdx := -1;
+      End
+      { --- DBEVAL : iteration conditionnelle sur enregistrements (TODO 20) --- }
+      Else If IdName = 'DBEVAL' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          ParseExpr(Arg);  { block principal }
+          ExprFlushToAX(Arg);
+          EmitInstr('PUSH   AX');
+          ArgCount := 0;
+          While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
+          Begin
+            ParserAdvance;
+            ParseExpr(Arg);
+            ExprFlushToAX(Arg);
+            EmitInstr('PUSH   AX');
+            Inc(ArgCount);
+          End;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+          EmitInstrA('CALL', CL_RT_PFX + 'IDXDBEVAL');
+          EmitInstrAB('ADD', 'SP', IntToStr((ArgCount + 1) * 2));
+        End;
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_NIL;
+        Res.SymIdx := -1;
+      End
+      { --- ORDNAME : nom de l index actif (TODO 20) --- }
+      Else If IdName = 'ORDNAME' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
+            ParseExpr(Arg);
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'IDXORDNAME');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_CHAR;
+        Res.SymIdx := -1;
+      End
+      { --- ORDCOUNT : nombre d index ouverts (TODO 20) --- }
+      Else If IdName = 'ORDCOUNT' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        EmitInstrA('CALL', CL_RT_PFX + 'IDXORDCOUNT');
+        Res.Kind := EK_AX;
+        Res.TypeIdx := TY_IDX_NUM;
         Res.SymIdx := -1;
       End
 
@@ -10300,12 +10515,365 @@ Begin
   EmitBlankLine;
 End;
 
+{ ============================================================
+  TODO 20 - INDEX ET RECHERCHE (NTX/NDX) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseIndexStmt : INDEX ON expr TO fichier --------------- }
+(* Creer un fichier index NTX.
+   Syntaxe : INDEX ON expr TO nomFichier
+   Aussi utilise pour SET INDEX TO fichier [, fichier2 ...]      *)
+
+Procedure ParseIndexStmt;
+Var
+  Arg : TExprVal;
+  DIdx : Integer;
+  FN  : TString;
+Begin
+  EmitComment('INDEX statement (TODO 20)');
+  { INDEX ON expr TO fichier }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'ON') Then
+  Begin
+    ParserAdvance;  { consomme ON }
+    { Lire l expression de cle }
+    ParseExpr(Arg);
+    ExprFlushToAX(Arg);
+    EmitInstr('PUSH   AX');  { sauver expression cle }
+    { TO }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'TO') Then
+      ParserAdvance;
+    { Nom du fichier }
+    If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Or
+       (CurToken.Kind = TK_STRING) Then
+    Begin
+      FN := CurToken.Val;
+      ParserAdvance;
+    End
+    Else
+      FN := 'INDEX';
+    DIdx := DataAddStr(FN);
+    EmitInstrAB('LEA', 'DI', '[' + DataTab[DIdx].LblName + ']');
+    EmitInstr('POP    SI');  { expression cle }
+    EmitInstrA('CALL', CL_RT_PFX + 'IDXCREATE');
+  End
+  Else
+  Begin
+    { SET INDEX TO fichier [, fichier2 ...] }
+    Repeat
+      If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Or
+         (CurToken.Kind = TK_STRING) Then
+      Begin
+        FN := CurToken.Val;
+        ParserAdvance;
+        DIdx := DataAddStr(FN);
+        EmitInstrAB('LEA', 'SI', '[' + DataTab[DIdx].LblName + ']');
+        EmitInstrA('CALL', CL_RT_PFX + 'IDXOPEN');
+      End
+      Else
+        Break;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance
+      Else
+        Break;
+    Until CurToken.Kind = TK_EOF;
+  End;
+End;
+
+{ ---- ParseSeekStmt : SEEK expr ------------------------------- }
+(* Recherche dans l index actif.
+   Met a jour le flag FOUND() selon le resultat.                 *)
+
+Procedure ParseSeekStmt;
+Var
+  Arg : TExprVal;
+Begin
+  EmitComment('SEEK statement (TODO 20)');
+  ParseExpr(Arg);
+  ExprFlushToAX(Arg);
+  EmitInstrA('CALL', CL_RT_PFX + 'IDXSEEK');
+End;
+
+{ ---- ParseLocateStmt : LOCATE FOR cond [options] ------------- }
+(* Recherche sequentielle avec condition.
+   LOCATE FOR cond [WHILE cond] [NEXT n] [REST] [ALL]           *)
+
+Procedure ParseLocateStmt;
+Var
+  Arg : TExprVal;
+  LblTop, LblEnd, LblBody : TString;
+Begin
+  EmitComment('LOCATE statement (TODO 20)');
+  { LOCATE FOR cond }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'FOR') Then
+    ParserAdvance;
+  { Aller au debut }
+  EmitInstrA('CALL', CL_RT_PFX + 'DBGOTOP');
+  LblTop := LabelGen;
+  LblEnd := LabelGen;
+  LblBody := LabelGen;
+  EmitLabel(LblTop);
+  { Verifier EOF }
+  EmitInstrA('CALL', CL_RT_PFX + 'DBEOF');
+  EmitInstrAB('OR', 'AX', 'AX');
+  EmitInstrA('JNZ', LblEnd);
+  { Evaluer la condition }
+  ParseExpr(Arg);
+  ExprFlushToAX(Arg);
+  EmitInstrAB('OR', 'AX', 'AX');
+  EmitInstrA('JNZ', LblBody);
+  { Condition fausse : avancer }
+  EmitInstrAB('MOV', 'AX', '1');
+  EmitInstrA('CALL', CL_RT_PFX + 'DBSKIP');
+  EmitInstrA('JMP', LblTop);
+  { Condition vraie : FOUND = 1 }
+  EmitLabel(LblBody);
+  EmitInstrAB('MOV', 'WORD PTR [_CL_FOUND]', '1');
+  EmitInstrA('JMP', LblEnd + '_OK');
+  { Pas trouve : FOUND = 0 }
+  EmitLabel(LblEnd);
+  EmitInstrAB('MOV', 'WORD PTR [_CL_FOUND]', '0');
+  EmitLabel(LblEnd + '_OK');
+  { Consommer les options optionnelles WHILE/NEXT/REST/ALL }
+  While (CurToken.Kind = TK_KEYWORD) And
+        ((CurToken.Val = 'WHILE') Or (CurToken.Val = 'NEXT') Or
+         (CurToken.Val = 'REST') Or (CurToken.Val = 'ALL')) Do
+  Begin
+    ParserAdvance;
+    { Consommer la valeur associee si presente }
+    If (CurToken.Kind = TK_INTEGER) Or (CurToken.Kind = TK_IDENT) Then
+      ParserAdvance;
+  End;
+End;
+
+{ ---- ParseContinueStmt : CONTINUE --------------------------- }
+(* Continuer la recherche LOCATE.                                *)
+
+Procedure ParseContinueStmt;
+Begin
+  EmitComment('CONTINUE statement (TODO 20)');
+  { Avancer d un enregistrement et refaire LOCATE }
+  EmitInstrAB('MOV', 'AX', '1');
+  EmitInstrA('CALL', CL_RT_PFX + 'DBSKIP');
+  EmitInstrAB('MOV', 'WORD PTR [_CL_FOUND]', '0');
+End;
+
+{ ---- ParseReindexStmt : REINDEX ------------------------------ }
+(* Reconstruire tous les index ouverts.                          *)
+
+Procedure ParseReindexStmt;
+Begin
+  EmitComment('REINDEX statement (TODO 20)');
+  EmitInstrA('CALL', CL_RT_PFX + 'IDXREINDEX');
+End;
+
+{ ---- EmitIdxRuntime : routines runtime index (TODO 20) ------- }
+(* Genere les routines assembleur pour les operations d index
+   et de recherche dans les fichiers NTX/NDX.
+
+   Routines generees :
+     _CLRT_IDXCREATE    : creer un index (SI=expr, DI=fichier)
+     _CLRT_IDXOPEN      : ouvrir un fichier index (SI=nom)
+     _CLRT_IDXSEEK      : recherche dans l index (AX=valeur)
+     _CLRT_IDXREINDEX   : reconstruire les index
+     _CLRT_IDXFOUND     : retourner AX = flag FOUND
+     _CLRT_IDXSETORDER  : activer index n (AX=n)
+     _CLRT_IDXSETFILTER : definir filtre (AX=condition)
+     _CLRT_IDXSETRELATION : definir relation (SI=alias, AX=expr)
+     _CLRT_IDXDBEVAL    : iteration conditionnelle (pile: block, for, while)
+     _CLRT_IDXORDNAME   : retourner AX=ptr nom index actif
+     _CLRT_IDXORDCOUNT  : retourner AX=nombre d index              *)
+
+Procedure EmitIdxRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('==== Index Runtime (TODO 20) ====');
+  EmitBlankLine;
+
+  { --- _CLRT_IDXCREATE : creer un index NTX --- }
+  (* Entree : SI = pointeur expression cle, DI = nom fichier
+     Cree un fichier NTX vide avec l en-tete de base.
+     Stub simplifie : ouvre le fichier et ecrit un header minimal. *)
+  EmitLabel(CL_RT_PFX + 'IDXCREATE');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  EmitInstr('PUSH   SI');      { sauver expr cle }
+  { Copier le nom dans _CL_IDXNAME }
+  EmitInstrAB('MOV', 'SI', 'DI');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _CL_IDXNAME');
+  EmitLabel(CL_RT_PFX + 'IDXCR_CP');
+  EmitInstr('LODSB');
+  EmitInstr('STOSB');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstrA('JNZ', CL_RT_PFX + 'IDXCR_CP');
+  { Creer le fichier avec INT 21h AH=3Ch }
+  EmitInstrAB('MOV', 'DX', 'OFFSET _CL_IDXNAME');
+  EmitInstrAB('MOV', 'CX', '0');       { attributs normaux }
+  EmitInstrAB('MOV', 'AH', '3Ch');     { DOS create file }
+  EmitInstr('INT    21h');
+  EmitInstrA('JC', CL_RT_PFX + 'IDXCR_ERR');
+  { Stocker le handle }
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstrAB('MOV', 'SI', 'OFFSET _CL_IDXHND');
+  EmitInstrAB('MOV', 'CX', '[_CL_IDXCNT]');
+  EmitInstrAB('SHL', 'CX', '1');
+  EmitInstrAB('ADD', 'SI', 'CX');
+  EmitInstrAB('MOV', '[SI]', 'BX');
+  EmitInstr('INC    WORD PTR [_CL_IDXCNT]');
+  { Ecrire un header minimal (16 octets de zeros) }
+  EmitInstrAB('MOV', 'DX', 'OFFSET _CL_IDXBUF');
+  EmitInstrAB('MOV', 'CX', '16');
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstr('INT    21h');
+  EmitLabel(CL_RT_PFX + 'IDXCR_ERR');
+  EmitInstr('POP    SI');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_IDXOPEN : ouvrir un fichier index --- }
+  (* Entree : SI = nom fichier ASCIIZ                             *)
+  EmitLabel(CL_RT_PFX + 'IDXOPEN');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  { Copier le nom dans _CL_IDXNAME }
+  EmitInstrAB('MOV', 'DI', 'OFFSET _CL_IDXNAME');
+  EmitLabel(CL_RT_PFX + 'IDXOP_CP');
+  EmitInstr('LODSB');
+  EmitInstr('STOSB');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstrA('JNZ', CL_RT_PFX + 'IDXOP_CP');
+  { Ouvrir avec INT 21h AH=3Dh }
+  EmitInstrAB('MOV', 'DX', 'OFFSET _CL_IDXNAME');
+  EmitInstrAB('MOV', 'AH', '3Dh');
+  EmitInstrAB('MOV', 'AL', '02h');
+  EmitInstr('INT    21h');
+  EmitInstrA('JC', CL_RT_PFX + 'IDXOP_ERR');
+  { Stocker le handle }
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstrAB('MOV', 'SI', 'OFFSET _CL_IDXHND');
+  EmitInstrAB('MOV', 'CX', '[_CL_IDXCNT]');
+  EmitInstrAB('SHL', 'CX', '1');
+  EmitInstrAB('ADD', 'SI', 'CX');
+  EmitInstrAB('MOV', '[SI]', 'BX');
+  EmitInstr('INC    WORD PTR [_CL_IDXCNT]');
+  EmitLabel(CL_RT_PFX + 'IDXOP_ERR');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_IDXSEEK : recherche dans l index --- }
+  (* Entree : AX = valeur a rechercher
+     Met a jour _CL_FOUND : 1 si trouve, 0 sinon.
+     Stub : recherche sequentielle simplifiee.                    *)
+  EmitLabel(CL_RT_PFX + 'IDXSEEK');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   AX');      { sauver valeur recherchee }
+  { GO TOP }
+  EmitInstrA('CALL', CL_RT_PFX + 'DBGOTOP');
+  EmitInstrAB('MOV', 'WORD PTR [_CL_FOUND]', '0');
+  EmitLabel(CL_RT_PFX + 'IDXSK_LP');
+  EmitInstrA('CALL', CL_RT_PFX + 'DBEOF');
+  EmitInstrAB('OR', 'AX', 'AX');
+  EmitInstrA('JNZ', CL_RT_PFX + 'IDXSK_DN');
+  { Comparer (stub : on compare simplement recno avec la valeur) }
+  EmitInstrA('CALL', CL_RT_PFX + 'DBRECNO');
+  EmitInstrAB('CMP', 'AX', '[SP]');
+  EmitInstrA('JE', CL_RT_PFX + 'IDXSK_FND');
+  EmitInstrAB('MOV', 'AX', '1');
+  EmitInstrA('CALL', CL_RT_PFX + 'DBSKIP');
+  EmitInstrA('JMP', CL_RT_PFX + 'IDXSK_LP');
+  EmitLabel(CL_RT_PFX + 'IDXSK_FND');
+  EmitInstrAB('MOV', 'WORD PTR [_CL_FOUND]', '1');
+  EmitLabel(CL_RT_PFX + 'IDXSK_DN');
+  EmitInstr('POP    AX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_IDXREINDEX : reconstruire les index --- }
+  (* Stub simplifie : ne fait rien de concret.                    *)
+  EmitLabel(CL_RT_PFX + 'IDXREINDEX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_IDXFOUND : retourner AX = flag FOUND --- }
+  EmitLabel(CL_RT_PFX + 'IDXFOUND');
+  EmitInstrAB('MOV', 'AX', '[_CL_FOUND]');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_IDXSETORDER : activer index n --- }
+  (* Entree : AX = numero d index (1-based, 0 = desactiver)      *)
+  EmitLabel(CL_RT_PFX + 'IDXSETORDER');
+  EmitInstrAB('MOV', '[_CL_IDXORD]', 'AX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_IDXSETFILTER : definir le filtre --- }
+  (* Entree : AX = condition (0 = supprimer le filtre)
+     Stub : stocke la valeur pour consultation future.            *)
+  EmitLabel(CL_RT_PFX + 'IDXSETFILTER');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_IDXSETRELATION : definir une relation --- }
+  (* Entree : SI = nom alias cible, AX = expression
+     Stub simplifie.                                              *)
+  EmitLabel(CL_RT_PFX + 'IDXSETRELATION');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_IDXDBEVAL : iteration conditionnelle --- }
+  (* Entree : pile = block [, for [, while]]
+     Parcourt tous les enregistrements et appelle le block.
+     Stub : appelle EVAL pour chaque enregistrement non-EOF.      *)
+  EmitLabel(CL_RT_PFX + 'IDXDBEVAL');
+  EmitInstr('PUSH   BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('CALL', CL_RT_PFX + 'DBGOTOP');
+  EmitLabel(CL_RT_PFX + 'IDXDBE_LP');
+  EmitInstrA('CALL', CL_RT_PFX + 'DBEOF');
+  EmitInstrAB('OR', 'AX', 'AX');
+  EmitInstrA('JNZ', CL_RT_PFX + 'IDXDBE_DN');
+  { Appeler le block (arg sur la pile [BP+4] = block) }
+  EmitInstrAB('MOV', 'AX', '[BP+4]');
+  EmitInstrA('CALL', CL_RT_PFX + 'EVAL');
+  EmitInstrAB('MOV', 'AX', '1');
+  EmitInstrA('CALL', CL_RT_PFX + 'DBSKIP');
+  EmitInstrA('JMP', CL_RT_PFX + 'IDXDBE_LP');
+  EmitLabel(CL_RT_PFX + 'IDXDBE_DN');
+  EmitInstr('POP    BP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_IDXORDNAME : retourner nom de l index actif --- }
+  (* Stub : retourne le pointeur vers _CL_IDXNAME.               *)
+  EmitLabel(CL_RT_PFX + 'IDXORDNAME');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _CL_IDXNAME');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { --- _CLRT_IDXORDCOUNT : retourner nombre d index ouverts --- }
+  EmitLabel(CL_RT_PFX + 'IDXORDCOUNT');
+  EmitInstrAB('MOV', 'AX', '[_CL_IDXCNT]');
+  EmitInstr('RET');
+  EmitBlankLine;
+End;
+
 { ---- EmitRuntime : emettre les routines runtime inline ------- }
 (* Appelle EmitExprRuntime pour les routines d expressions binaires
    et EmitIORuntime pour les routines I/O ecran (TODO 12).
    EmitArrayRuntime pour les routines de tableaux (TODO 15).
    EmitStringRuntime pour les routines de chaines (TODO 16).
-   EmitCodeBlockRuntime pour les routines de code blocks (TODO 18). *)
+   EmitCodeBlockRuntime pour les routines de code blocks (TODO 18).
+   EmitDBFRuntime pour les routines fichiers DBF (TODO 19).
+   EmitIdxRuntime pour les routines index et recherche (TODO 20). *)
 
 Procedure EmitRuntime;
 Begin
@@ -10315,6 +10883,7 @@ Begin
   EmitStringRuntime;
   EmitCodeBlockRuntime;
   EmitDBFRuntime;
+  EmitIdxRuntime;
 End;
 
 { ---- EmitClose : finaliser le fichier ASM -------------------- }
