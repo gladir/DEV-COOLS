@@ -6758,5 +6758,1035 @@
       resultat DD 0
 
 ==============================================================================
+13. CONVERSION DE CODE ARM EN 80386
+==============================================================================
+
+  Cette section explique comment convertir du code assembleur ARM (ARMv4/v7,
+  architecture RISC 32 bits) en code assembleur Intel 80386 (architecture
+  CISC 32 bits). La conversion ARM -> x86 est plus complexe que la
+  conversion 8086 -> 80386 car les deux architectures ont des philosophies
+  fondamentalement differentes.
+
+------------------------------------------------------------------------------
+13.1 Principes generaux (RISC vs CISC)
+------------------------------------------------------------------------------
+
+  ARM est une architecture RISC (Reduced Instruction Set Computer) :
+  - Instructions de taille fixe (32 bits en mode ARM, 16 bits en Thumb)
+  - Architecture Load/Store : seules LDR/STR accedent a la memoire
+  - 16 registres generaux visibles (R0-R15)
+  - Execution conditionnelle sur toute instruction
+  - Barrel shifter integre dans l'ALU
+  - Pas d'acces memoire direct dans les operations arithmetiques
+
+  Le 80386 est une architecture CISC (Complex Instruction Set Computer) :
+  - Instructions de taille variable (1 a 15 octets)
+  - Operations directement sur la memoire (MOV [mem], reg / ADD [mem], imm)
+  - 8 registres generaux (EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP)
+  - Pas d'execution conditionnelle (sauf CMOVcc sur Pentium Pro+)
+  - Modes d'adressage complexes (base+index*scale+disp)
+  - Instructions specialisees (LOOP, REP MOVS, ENTER/LEAVE...)
+
+  Regles de base pour la conversion :
+  (a) Mapper les registres ARM vers les registres x86 + memoire
+  (b) Remplacer l'architecture Load/Store par des acces memoire directs
+  (c) Convertir l'execution conditionnelle en branchements
+  (d) Decomposer les operations avec barrel shifter
+  (e) Adapter les conventions d'appel (AAPCS -> CDECL ou STDCALL)
+
+------------------------------------------------------------------------------
+13.2 Correspondance des registres
+------------------------------------------------------------------------------
+
+  ARM possede 16 registres de 32 bits. Le 80386 n'en a que 8.
+  Il faut donc utiliser des variables memoire pour les registres excedentaires.
+
+  Correspondance suggeree :
+
+    ARM         80386         Commentaire
+    -------     --------      ------------------------------------
+    R0          EAX           Valeur de retour, accumulateur
+    R1          ECX           Second argument, compteur
+    R2          EDX           Troisieme argument
+    R3          EBX           Quatrieme argument
+    R4          ESI           Variable preservee (callee-saved)
+    R5          EDI           Variable preservee (callee-saved)
+    R6          [_arm_r6]     Sauvegarde en memoire
+    R7          [_arm_r7]     Sauvegarde en memoire (frame pointer Thumb)
+    R8          [_arm_r8]     Sauvegarde en memoire
+    R9          [_arm_r9]     Sauvegarde en memoire
+    R10         [_arm_r10]    Sauvegarde en memoire
+    R11 (FP)    EBP           Frame pointer
+    R12 (IP)    [_arm_r12]    Scratch register, en memoire
+    R13 (SP)    ESP           Stack pointer
+    R14 (LR)    [_arm_lr]     Link register -> utiliser CALL/RET
+    R15 (PC)    EIP           Program counter (implicite)
+
+  Declarations pour les registres en memoire :
+
+    SECTION .data
+    _arm_r6   DD 0
+    _arm_r7   DD 0
+    _arm_r8   DD 0
+    _arm_r9   DD 0
+    _arm_r10  DD 0
+    _arm_r12  DD 0
+    _arm_lr   DD 0
+
+  Note : Le registre CPSR (Current Program Status Register) ARM correspond
+  au registre EFLAGS du 80386, mais les drapeaux ne sont pas identiques :
+
+    ARM CPSR      80386 EFLAGS     Signification
+    ----------    ---------------  --------------------------
+    N (bit 31)    SF (bit 7)       Signe / Negatif
+    Z (bit 30)    ZF (bit 6)       Zero
+    C (bit 29)    CF (bit 0)       Carry (retenue)
+    V (bit 28)    OF (bit 11)      Overflow (debordement)
+
+  Attention : le sens du carry pour la soustraction est inverse !
+  ARM : C=1 si pas d'emprunt. x86 : CF=1 si emprunt.
+
+------------------------------------------------------------------------------
+13.3 Conversion des instructions de transfert de donnees
+------------------------------------------------------------------------------
+
+  (a) MOV registre a registre
+
+    ARM :   MOV R0, R1
+    80386 : MOV EAX, ECX
+
+    ARM :   MOV R4, R5
+    80386 : MOV ESI, EDI
+
+    ARM :   MOV R6, R7          ; registres en memoire
+    80386 : MOV EAX, [_arm_r7]
+            MOV [_arm_r6], EAX
+
+  (b) MOV avec immediat
+
+    ARM :   MOV R0, #42
+    80386 : MOV EAX, 42
+
+    ARM :   MOV R0, #0
+    80386 : XOR EAX, EAX        ; plus efficace que MOV EAX, 0
+
+    Note : ARM limite les immediats a 8 bits + rotation. Pour les grandes
+    valeurs, ARM utilise MOVW/MOVT (ARMv7) ou LDR Rd, =valeur (pseudo).
+    Le 80386 accepte des immediats 32 bits directement :
+
+    ARM :   MOVW R0, #0x1234
+            MOVT R0, #0x5678    ; R0 = 0x56781234
+    80386 : MOV EAX, 056781234h
+
+  (c) MVN (Move Not)
+
+    ARM :   MVN R0, R1          ; R0 = NOT R1
+    80386 : MOV EAX, ECX
+            NOT EAX
+
+    ARM :   MVN R0, #0          ; R0 = 0xFFFFFFFF
+    80386 : MOV EAX, 0FFFFFFFFh
+    ou    : OR EAX, -1
+
+  (d) Transferts conditionnels (voir section 13.11)
+
+------------------------------------------------------------------------------
+13.4 Conversion des instructions arithmetiques et logiques
+------------------------------------------------------------------------------
+
+  (a) Addition
+
+    ARM :   ADD R0, R1, R2       ; R0 = R1 + R2
+    80386 : MOV EAX, ECX
+            ADD EAX, EDX
+
+    ARM :   ADD R0, R0, #10      ; R0 = R0 + 10
+    80386 : ADD EAX, 10
+
+    ARM :   ADD R0, R1, R2, LSL #3  ; R0 = R1 + (R2 << 3)
+    80386 : MOV EAX, EDX
+            SHL EAX, 3
+            ADD EAX, ECX
+    ou    : LEA EAX, [ECX + EDX*8]  ; si le facteur est 1, 2, 4 ou 8
+
+  (b) Soustraction
+
+    ARM :   SUB R0, R1, R2       ; R0 = R1 - R2
+    80386 : MOV EAX, ECX
+            SUB EAX, EDX
+
+    ARM :   RSB R0, R1, #0       ; R0 = 0 - R1 = -R1
+    80386 : MOV EAX, ECX
+            NEG EAX
+
+    ARM :   RSB R0, R1, R2       ; R0 = R2 - R1
+    80386 : MOV EAX, EDX
+            SUB EAX, ECX
+
+  (c) Addition/Soustraction avec carry
+
+    ARM :   ADDS R0, R1, R2     ; R0 = R1 + R2, maj flags
+            ADC R3, R4, R5      ; R3 = R4 + R5 + C
+    80386 : MOV EAX, ECX
+            ADD EAX, EDX        ; maj flags
+            MOV EBX, ESI
+            ADC EBX, EDI        ; EBX = ESI + EDI + CF
+
+    Attention : le carry ARM est inverse pour SBC/SBC.
+    ARM :   SBC R0, R1, R2      ; R0 = R1 - R2 - !C
+    80386 : ; Inverser le carry d'abord
+            CMC                  ; complement carry flag
+            MOV EAX, ECX
+            SBB EAX, EDX
+
+  (d) Multiplication
+
+    ARM :   MUL R0, R1, R2       ; R0 = R1 * R2
+    80386 : MOV EAX, ECX
+            IMUL EAX, EDX
+
+    ARM :   MLA R0, R1, R2, R3   ; R0 = R1 * R2 + R3
+    80386 : MOV EAX, ECX
+            IMUL EAX, EDX
+            ADD EAX, EBX
+
+    ARM :   UMULL R0, R1, R2, R3 ; R1:R0 = R2 * R3 (64 bits non signe)
+    80386 : MOV EAX, EDX
+            MUL EBX              ; EDX:EAX = EAX * EBX
+
+    ARM :   SMULL R0, R1, R2, R3 ; R1:R0 = R2 * R3 (64 bits signe)
+    80386 : MOV EAX, EDX
+            IMUL EBX             ; EDX:EAX = EAX * EBX (signe)
+
+  (e) Division
+
+    ARM n'a pas d'instruction de division (avant ARMv7-R/ARMv7-A avec UDIV/SDIV).
+    Elle est souvent realisee par appel de fonction.
+
+    ARM :   ; Appel runtime __aeabi_uidiv
+            BL __aeabi_uidiv      ; R0 = R0 / R1
+    80386 : XOR EDX, EDX
+            DIV ECX               ; EAX = EAX / ECX, EDX = reste
+
+    ARM :   SDIV R0, R1, R2       ; ARMv7, R0 = R1 / R2 (signe)
+    80386 : MOV EAX, ECX
+            CDQ                   ; extension signe EAX -> EDX:EAX
+            IDIV EDX              ; attention: diviseur dans autre registre
+
+  (f) Operations logiques
+
+    ARM :   AND R0, R1, R2
+    80386 : MOV EAX, ECX
+            AND EAX, EDX
+
+    ARM :   ORR R0, R1, R2
+    80386 : MOV EAX, ECX
+            OR EAX, EDX
+
+    ARM :   EOR R0, R1, R2       ; XOR
+    80386 : MOV EAX, ECX
+            XOR EAX, EDX
+
+    ARM :   BIC R0, R1, R2       ; R0 = R1 AND NOT R2
+    80386 : MOV EAX, EDX
+            NOT EAX
+            AND EAX, ECX
+
+    ARM :   ORN R0, R1, R2       ; R0 = R1 OR NOT R2 (Thumb-2)
+    80386 : MOV EAX, EDX
+            NOT EAX
+            OR EAX, ECX
+
+  (g) Comparaison et test
+
+    ARM :   CMP R0, R1           ; flags = R0 - R1
+    80386 : CMP EAX, ECX
+
+    ARM :   CMN R0, R1           ; flags = R0 + R1
+    80386 : MOV EDX, EAX         ; sauvegarder EAX
+            ADD EDX, ECX         ; positionne les flags sans modifier EAX
+    ou    : PUSH EAX
+            ADD EAX, ECX
+            POP EAX
+
+    ARM :   TST R0, R1           ; flags = R0 AND R1
+    80386 : TEST EAX, ECX
+
+    ARM :   TEQ R0, R1           ; flags = R0 XOR R1
+    80386 : MOV EDX, EAX
+            XOR EDX, ECX         ; positionne les flags
+
+  (h) Mise a jour des drapeaux (suffixe S)
+
+    En ARM, les drapeaux ne sont mis a jour que si le suffixe S est present.
+    En x86, la plupart des instructions mettent a jour les flags automatiquement.
+
+    ARM :   ADD R0, R1, R2       ; PAS de maj flags
+    80386 : ; Sauvegarder EFLAGS si necessaire
+            PUSHFD
+            MOV EAX, ECX
+            ADD EAX, EDX
+            POPFD                ; restaurer les flags
+
+    ARM :   ADDS R0, R1, R2      ; maj flags
+    80386 : MOV EAX, ECX
+            ADD EAX, EDX         ; flags mis a jour automatiquement
+
+    En pratique, on optimise en ne protegeant les flags que lorsque c'est
+    strictement necessaire (c'est-a-dire quand une instruction suivante
+    depend des flags d'une instruction precedente).
+
+------------------------------------------------------------------------------
+13.5 Conversion des decalages et rotations
+------------------------------------------------------------------------------
+
+  (a) Decalage logique a gauche
+
+    ARM :   LSL R0, R1, #4       ; R0 = R1 << 4
+    80386 : MOV EAX, ECX
+            SHL EAX, 4
+
+    ARM :   LSL R0, R1, R2       ; R0 = R1 << R2
+    80386 : MOV EAX, ECX
+            MOV CL, DL           ; x86 exige CL pour les decalages variables
+            SHL EAX, CL
+
+  (b) Decalage logique a droite
+
+    ARM :   LSR R0, R1, #4
+    80386 : MOV EAX, ECX
+            SHR EAX, 4
+
+  (c) Decalage arithmetique a droite
+
+    ARM :   ASR R0, R1, #4
+    80386 : MOV EAX, ECX
+            SAR EAX, 4
+
+  (d) Rotation a droite
+
+    ARM :   ROR R0, R1, #4
+    80386 : MOV EAX, ECX
+            ROR EAX, 4
+
+  (e) Rotation a droite etendue (avec carry)
+
+    ARM :   RRX R0, R1           ; R0 = (C << 31) | (R1 >> 1)
+    80386 : MOV EAX, ECX
+            RCR EAX, 1           ; rotation via carry
+
+  Note : En ARM, le decalage de 0 positions a un comportement special
+  (LSL #0 = pas de decalage, LSR #0 = LSR #32, ASR #0 = ASR #32,
+  ROR #0 = RRX). En x86, un decalage de 0 ne fait rien.
+
+------------------------------------------------------------------------------
+13.6 Conversion des branchements et conditions
+------------------------------------------------------------------------------
+
+  (a) Branchement inconditionnel
+
+    ARM :   B label
+    80386 : JMP label
+
+  (b) Branchement avec lien (appel de fonction)
+
+    ARM :   BL fonction           ; LR = adresse retour, PC = fonction
+    80386 : CALL fonction         ; PUSH EIP+n, JMP fonction
+
+  (c) Retour de fonction
+
+    ARM :   BX LR                 ; PC = LR
+    80386 : RET                   ; POP EIP
+
+    ARM :   MOV PC, LR            ; ancien style retour
+    80386 : RET
+
+  (d) Branchements conditionnels
+
+    Les codes condition ARM et x86 sont similaires mais pas identiques :
+
+    ARM         80386       Condition
+    --------    --------    ---------------------------------
+    BEQ label   JE label    Egal (Z=1)
+    BNE label   JNE label   Different (Z=0)
+    BCS/BHS     JC label    Carry set / unsigned >= (C=1)
+                            ATTENTION: pour CMP, utiliser JAE
+    BCC/BLO     JNC label   Carry clear / unsigned < (C=0)
+                            ATTENTION: pour CMP, utiliser JB
+    BMI label   JS label    Negatif (N=1 / SF=1)
+    BPL label   JNS label   Positif ou zero (N=0 / SF=0)
+    BVS label   JO label    Overflow (V=1 / OF=1)
+    BVC label   JNO label   No overflow (V=0 / OF=0)
+    BHI label   JA label    Unsigned superieur (C=1 et Z=0)
+    BLS label   JBE label   Unsigned inferieur ou egal
+    BGE label   JGE label   Signe superieur ou egal
+    BLT label   JL label    Signe inferieur
+    BGT label   JG label    Signe superieur
+    BLE label   JLE label   Signe inferieur ou egal
+    BAL label   JMP label   Toujours (inconditionnel)
+
+    ATTENTION au carry inverse pour les comparaisons non signees :
+    Apres CMP en ARM, C=1 signifie "pas d'emprunt" (>=).
+    Apres CMP en x86, CF=0 signifie "pas d'emprunt" (>=).
+    Donc BCS (ARM) correspond a JAE/JNC (x86), pas a JC.
+    Et BCC (ARM) correspond a JB/JC (x86), pas a JNC.
+
+    Exemple :
+    ARM :   CMP R0, R1
+            BCS superieur_ou_egal   ; branche si R0 >= R1 (non signe)
+    80386 : CMP EAX, ECX
+            JAE superieur_ou_egal   ; JAE = JNC = CF=0
+
+  (e) Branchement indirect
+
+    ARM :   BX R0                 ; PC = R0
+    80386 : JMP EAX
+
+    ARM :   BLX R0                ; LR = PC+4, PC = R0
+    80386 : CALL EAX
+
+  (f) Table de branchement (switch)
+
+    ARM :   ; Table de branchement avec TBB/TBH (Thumb-2)
+            TBB [PC, R0]
+    80386 : JMP DWORD PTR [table + EAX*4]
+
+------------------------------------------------------------------------------
+13.7 Conversion des acces memoire (Load/Store vs CISC)
+------------------------------------------------------------------------------
+
+  L'une des differences fondamentales est que ARM utilise une architecture
+  Load/Store : seules les instructions LDR/STR accedent a la memoire.
+  En x86, presque toute instruction peut acceder a la memoire directement.
+
+  (a) Chargement (Load)
+
+    ARM :   LDR R0, [R1]          ; R0 = mem[R1]
+    80386 : MOV EAX, [ECX]
+
+    ARM :   LDR R0, [R1, #8]      ; R0 = mem[R1 + 8]
+    80386 : MOV EAX, [ECX + 8]
+
+    ARM :   LDR R0, [R1, R2]      ; R0 = mem[R1 + R2]
+    80386 : MOV EAX, [ECX + EDX]
+
+    ARM :   LDR R0, [R1, R2, LSL #2]  ; R0 = mem[R1 + R2*4]
+    80386 : MOV EAX, [ECX + EDX*4]
+
+  (b) Stockage (Store)
+
+    ARM :   STR R0, [R1]          ; mem[R1] = R0
+    80386 : MOV [ECX], EAX
+
+    ARM :   STR R0, [R1, #12]     ; mem[R1+12] = R0
+    80386 : MOV [ECX + 12], EAX
+
+  (c) Chargement/Stockage avec pre-indexation et write-back
+
+    ARM :   LDR R0, [R1, #4]!     ; R1 = R1 + 4, R0 = mem[R1]
+    80386 : ADD ECX, 4
+            MOV EAX, [ECX]
+
+  (d) Post-indexation
+
+    ARM :   LDR R0, [R1], #4      ; R0 = mem[R1], R1 = R1 + 4
+    80386 : MOV EAX, [ECX]
+            ADD ECX, 4
+
+  (e) Acces sur un octet (byte)
+
+    ARM :   LDRB R0, [R1]         ; R0 = zero_extend(mem8[R1])
+    80386 : MOVZX EAX, BYTE PTR [ECX]
+
+    ARM :   LDRSB R0, [R1]        ; R0 = sign_extend(mem8[R1])
+    80386 : MOVSX EAX, BYTE PTR [ECX]
+
+    ARM :   STRB R0, [R1]         ; mem8[R1] = R0[7:0]
+    80386 : MOV BYTE PTR [ECX], AL
+
+  (f) Acces sur un demi-mot (halfword, 16 bits)
+
+    ARM :   LDRH R0, [R1]         ; R0 = zero_extend(mem16[R1])
+    80386 : MOVZX EAX, WORD PTR [ECX]
+
+    ARM :   LDRSH R0, [R1]        ; R0 = sign_extend(mem16[R1])
+    80386 : MOVSX EAX, WORD PTR [ECX]
+
+    ARM :   STRH R0, [R1]         ; mem16[R1] = R0[15:0]
+    80386 : MOV WORD PTR [ECX], AX
+
+  (g) Chargement d'adresse (ADR / LDR =)
+
+    ARM :   ADR R0, label          ; R0 = adresse de label (PC-relative)
+    80386 : LEA EAX, [label]
+    ou    : MOV EAX, OFFSET label
+
+    ARM :   LDR R0, =0x12345678   ; pseudo-instruction, charge constante
+    80386 : MOV EAX, 012345678h
+
+  (h) Acces memoire multiples (LDM/STM) - voir section 13.9
+
+------------------------------------------------------------------------------
+13.8 Conversion des modes d'adressage
+------------------------------------------------------------------------------
+
+  ARM supporte plusieurs modes d'adressage pour LDR/STR.
+  Le 80386 supporte le mode [base + index*scale + deplacement].
+
+  (a) Offset immediat
+
+    ARM :   LDR R0, [R1, #offset]
+    80386 : MOV EAX, [ECX + offset]      ; si offset dans -2^31..+2^31
+
+  (b) Offset registre
+
+    ARM :   LDR R0, [R1, R2]
+    80386 : MOV EAX, [ECX + EDX]
+
+  (c) Offset registre avec decalage
+
+    ARM :   LDR R0, [R1, R2, LSL #2]     ; echelle 1,2,4,8 -> SIB
+    80386 : MOV EAX, [ECX + EDX*4]
+
+    ARM :   LDR R0, [R1, R2, LSL #3]     ; echelle 8
+    80386 : MOV EAX, [ECX + EDX*8]
+
+    Pour les decalages non supportes par SIB (ex: LSL #5) :
+    ARM :   LDR R0, [R1, R2, LSL #5]
+    80386 : MOV EAX, EDX
+            SHL EAX, 5
+            MOV EAX, [ECX + EAX]
+
+  (d) Offset negatif
+
+    ARM :   LDR R0, [R1, #-4]
+    80386 : MOV EAX, [ECX - 4]
+
+    ARM :   LDR R0, [R1, -R2]
+    80386 : MOV EAX, ECX
+            SUB EAX, EDX
+            MOV EAX, [EAX]
+
+  (e) Adressage PC-relatif
+
+    ARM utilise frequemment l'adressage relatif au PC.
+    En x86-32, l'adressage est absolu (sauf en PIC/PIE).
+
+    ARM :   LDR R0, [PC, #offset]
+    80386 : MOV EAX, [label]              ; adresse absolue
+
+------------------------------------------------------------------------------
+13.9 Conversion des instructions de pile (PUSH/POP, STMFD/LDMFD)
+------------------------------------------------------------------------------
+
+  (a) PUSH et POP simples
+
+    ARM :   PUSH {R0}             ; equivalent STR R0, [SP, #-4]!
+    80386 : PUSH EAX
+
+    ARM :   POP {R0}              ; equivalent LDR R0, [SP], #4
+    80386 : POP EAX
+
+  (b) PUSH/POP multiples
+
+    ARM :   PUSH {R4-R7, LR}     ; sauvegarde plusieurs registres
+    80386 : PUSH ESI              ; R4
+            PUSH EDI              ; R5
+            PUSH [_arm_r6]        ; R6
+            PUSH [_arm_r7]        ; R7
+            ; LR est gere par CALL en x86
+
+    ARM :   POP {R4-R7, PC}      ; restaure et retourne
+    80386 : POP [_arm_r7]         ; R7
+            POP [_arm_r6]         ; R6
+            POP EDI               ; R5
+            POP ESI               ; R4
+            RET                   ; PC = adresse retour sur la pile
+
+    Note : ARM empile du registre le plus eleve au plus bas.
+    L'ordre de POP est inverse. En x86, chaque PUSH/POP est individuel.
+
+  (c) STMFD/LDMFD (Full Descending = pile standard)
+
+    ARM :   STMFD SP!, {R0-R3}   ; empiler R0-R3
+    80386 : PUSH EBX              ; R3 d'abord (adresse la plus haute)
+            PUSH EDX              ; R2
+            PUSH ECX              ; R1
+            PUSH EAX              ; R0
+
+    ARM :   LDMFD SP!, {R0-R3}   ; depiler R0-R3
+    80386 : POP EAX               ; R0
+            POP ECX               ; R1
+            POP EDX               ; R2
+            POP EBX               ; R3
+
+  (d) Transfert de blocs (STMIA/LDMIA pour copie memoire)
+
+    ARM :   STMIA R0!, {R4-R7}   ; mem[R0..R0+15] = R4-R7, R0 += 16
+    80386 : MOV [EAX], ESI
+            MOV [EAX+4], EDI
+            MOV EDX, [_arm_r6]
+            MOV [EAX+8], EDX
+            MOV EDX, [_arm_r7]
+            MOV [EAX+12], EDX
+            ADD EAX, 16
+
+------------------------------------------------------------------------------
+13.10 Conversion des appels de fonctions et conventions d'appel
+------------------------------------------------------------------------------
+
+  (a) Convention ARM (AAPCS - ARM Architecture Procedure Call Standard) :
+      - Arguments dans R0-R3, surplus sur la pile
+      - Valeur de retour dans R0 (et R1 pour 64 bits)
+      - R0-R3, R12 : caller-saved (volatile)
+      - R4-R11 : callee-saved (non volatile)
+      - LR (R14) : adresse de retour
+      - SP (R13) doit etre aligne sur 8 octets
+
+  (b) Convention x86 CDECL :
+      - Tous les arguments sur la pile (droite a gauche)
+      - Valeur de retour dans EAX (EDX:EAX pour 64 bits)
+      - EAX, ECX, EDX : caller-saved
+      - EBX, ESI, EDI, EBP : callee-saved
+      - L'appelant nettoie la pile (ADD ESP, n)
+
+  (c) Exemple de conversion d'appel
+
+    ARM :   ; appel : result = mafonction(a, b, c, d, e)
+            LDR R0, [SP, #arg_a]   ; premier argument dans R0
+            LDR R1, [SP, #arg_b]   ; deuxieme dans R1
+            LDR R2, [SP, #arg_c]   ; troisieme dans R2
+            LDR R3, [SP, #arg_d]   ; quatrieme dans R3
+            LDR R4, [SP, #arg_e]
+            PUSH {R4}              ; cinquieme sur la pile
+            BL mafonction
+            ADD SP, SP, #4         ; nettoyer argument 5
+            ; resultat dans R0
+
+    80386 : ; CDECL : tous les arguments sur la pile, droite a gauche
+            PUSH DWORD PTR [arg_e]  ; cinquieme argument
+            PUSH DWORD PTR [arg_d]  ; quatrieme
+            PUSH DWORD PTR [arg_c]  ; troisieme
+            PUSH DWORD PTR [arg_b]  ; deuxieme
+            PUSH DWORD PTR [arg_a]  ; premier
+            CALL mafonction
+            ADD ESP, 20             ; nettoyer 5 * 4 octets
+            ; resultat dans EAX
+
+  (d) Prologue et epilogue de fonction
+
+    ARM :   mafonction:
+              PUSH {R4-R7, LR}      ; sauvegarder registres + LR
+              SUB SP, SP, #16       ; espace pour variables locales
+              ; ... corps ...
+              ADD SP, SP, #16
+              POP {R4-R7, PC}       ; restaurer et retourner
+
+    80386 : mafonction:
+              PUSH EBP
+              MOV EBP, ESP
+              PUSH ESI               ; R4
+              PUSH EDI               ; R5
+              SUB ESP, 16            ; variables locales
+              ; ... corps ...
+              ADD ESP, 16
+              POP EDI
+              POP ESI
+              MOV ESP, EBP
+              POP EBP
+              RET
+
+  (e) Acces aux parametres et variables locales
+
+    ARM :   ; parametre 1 (dans R0 a l'entree, souvent sauvegarde sur pile)
+            STR R0, [SP, #0]       ; var locale 1
+            LDR R1, [SP, #0]       ; relecture
+
+    80386 : ; parametre 1 = [EBP + 8], param 2 = [EBP + 12]...
+            MOV EAX, [EBP + 8]    ; premier parametre
+            MOV [EBP - 4], EAX    ; variable locale 1
+            MOV ECX, [EBP - 4]    ; relecture
+
+------------------------------------------------------------------------------
+13.11 Conversion des instructions conditionnelles ARM
+------------------------------------------------------------------------------
+
+  Une particularite majeure d'ARM est que presque toute instruction peut
+  etre executee conditionnellement avec un suffixe de condition.
+  Le 80386 n'a pas cette capacite (sauf SETcc et CMOVcc sur P6+).
+
+  (a) Instruction conditionnelle simple
+
+    ARM :   MOVEQ R0, #1          ; si Z=1, R0 = 1
+    80386 : JNE skip_moveq
+            MOV EAX, 1
+    skip_moveq:
+
+    ARM :   ADDNE R0, R0, #1      ; si Z=0, R0++
+    80386 : JE skip_addne
+            ADD EAX, 1
+    skip_addne:
+
+  (b) Paire conditionnelle (if-then-else)
+
+    ARM :   CMP R0, R1
+            MOVGT R2, R0          ; if (R0 > R1) R2 = R0
+            MOVLE R2, R1          ; else          R2 = R1
+    80386 : CMP EAX, ECX
+            JLE else_branch
+            MOV EDX, EAX
+            JMP endif_branch
+    else_branch:
+            MOV EDX, ECX
+    endif_branch:
+
+  (c) Bloc conditionnel IT (Thumb-2)
+
+    ARM :   CMP R0, #0
+            ITE NE                 ; If-Then-Else
+            MOVNE R1, #1           ; Then
+            MOVEQ R1, #0           ; Else
+    80386 : CMP EAX, 0
+            JE is_zero
+            MOV ECX, 1
+            JMP done_ite
+    is_zero:
+            MOV ECX, 0
+    done_ite:
+
+  (d) Operations conditionnelles sur les drapeaux
+
+    ARM :   CMP R0, R1
+            ADDGT R2, R2, #1      ; si R0 > R1 (signe), R2++
+            SUBLT R2, R2, #1      ; si R0 < R1 (signe), R2--
+    80386 : CMP EAX, ECX
+            JLE not_gt
+            ADD EDX, 1
+    not_gt:
+            CMP EAX, ECX          ; re-comparer (flags perdus par ADD)
+            JGE not_lt
+            SUB EDX, 1
+    not_lt:
+
+  (e) SETcc comme alternative (pour les booleens)
+
+    ARM :   CMP R0, R1
+            MOVHI R2, #1          ; R2 = (R0 > R1) ? 1 : 0
+            MOVLS R2, #0
+    80386 : CMP EAX, ECX
+            SETA DL               ; DL = 1 si au-dessus (non signe)
+            MOVZX EDX, DL
+
+    Note : SETcc n'est disponible que sur 80386+.
+    CMOVcc est disponible a partir du Pentium Pro (pas sur 80386).
+
+------------------------------------------------------------------------------
+13.12 Conversion du barrel shifter ARM
+------------------------------------------------------------------------------
+
+  Le barrel shifter ARM permet d'appliquer un decalage ou une rotation
+  au second operande de nombreuses instructions ALU, sans cout supplementaire.
+  En x86, il faut decomposer l'operation en instructions separees.
+
+  (a) ADD avec decalage
+
+    ARM :   ADD R0, R1, R2, LSL #3    ; R0 = R1 + (R2 << 3)
+    80386 : MOV EAX, EDX
+            SHL EAX, 3
+            ADD EAX, ECX
+
+    Optimisation avec LEA quand le facteur est 1, 2, 4 ou 8 :
+    ARM :   ADD R0, R1, R2, LSL #2    ; R0 = R1 + R2*4
+    80386 : LEA EAX, [ECX + EDX*4]
+
+  (b) SUB avec decalage
+
+    ARM :   SUB R0, R1, R2, LSR #4    ; R0 = R1 - (R2 >> 4)
+    80386 : MOV EAX, EDX
+            SHR EAX, 4
+            MOV EDX, ECX              ; sauver R1
+            SUB EDX, EAX
+            MOV EAX, EDX
+
+  (c) AND avec decalage
+
+    ARM :   AND R0, R1, R2, ROR #8    ; R0 = R1 AND (R2 ROR 8)
+    80386 : MOV EAX, EDX
+            ROR EAX, 8
+            AND EAX, ECX
+
+  (d) CMP avec decalage
+
+    ARM :   CMP R0, R1, LSL #2        ; flags = R0 - (R1 << 2)
+    80386 : MOV EDX, ECX
+            SHL EDX, 2
+            CMP EAX, EDX
+
+  (e) MOV avec decalage (= decalage simple)
+
+    ARM :   MOV R0, R1, LSL #4        ; R0 = R1 << 4
+    80386 : MOV EAX, ECX
+            SHL EAX, 4
+
+  (f) Decalage par registre
+
+    ARM :   ADD R0, R1, R2, LSL R3    ; R0 = R1 + (R2 << R3)
+    80386 : MOV EAX, EDX
+            PUSH ECX                  ; sauver R1 (ECX)
+            MOV CL, BL               ; decalage dans CL (R3 = EBX)
+            SHL EAX, CL
+            POP ECX
+            ADD EAX, ECX
+
+  Conseil : le barrel shifter ARM est souvent utilise pour multiplier par
+  des constantes. Reconnaitre ces patterns :
+    LSL #1 = *2,  LSL #2 = *4,  LSL #3 = *8,  LSL #4 = *16
+    ADD Rd, Rn, Rn, LSL #1 = Rn * 3
+    ADD Rd, Rn, Rn, LSL #2 = Rn * 5
+    RSB Rd, Rn, Rn, LSL #3 = Rn * 7
+
+  En x86, utiliser LEA ou IMUL :
+    ARM : ADD R0, R1, R1, LSL #2    ; R0 = R1 * 5
+    x86 : LEA EAX, [ECX + ECX*4]    ; EAX = ECX * 5
+
+    ARM : RSB R0, R1, R1, LSL #3    ; R0 = R1 * 7
+    x86 : IMUL EAX, ECX, 7          ; EAX = ECX * 7
+
+------------------------------------------------------------------------------
+13.13 Exemple complet de conversion
+------------------------------------------------------------------------------
+
+  Programme ARM qui calcule la somme des entiers de 1 a N :
+
+  --- Code ARM (AAPCS, appel systeme Linux) ---
+
+    .text
+    .global _start
+
+    _start:
+        MOV R0, #10           ; N = 10
+        BL sum_1_to_n         ; appel de la fonction
+        ; R0 contient le resultat
+        MOV R7, #1            ; syscall exit
+        SWI #0                ; appeler le noyau
+
+    sum_1_to_n:
+        PUSH {R4, LR}         ; sauvegarder R4 et LR
+        MOV R4, R0             ; R4 = N
+        MOV R0, #0             ; somme = 0
+    .loop:
+        CMP R4, #0
+        BLE .done
+        ADD R0, R0, R4         ; somme += compteur
+        SUB R4, R4, #1         ; compteur--
+        B .loop
+    .done:
+        POP {R4, PC}           ; restaurer R4, retourner
+
+  --- Code 80386 equivalent (MASM, Win32 ou Linux) ---
+
+    .386
+    .MODEL FLAT, STDCALL
+
+    .DATA
+        resultat DD 0
+
+    .CODE
+    _start:
+        PUSH 10                  ; N = 10 (argument sur pile)
+        CALL sum_1_to_n
+        ADD ESP, 4               ; nettoyer pile (CDECL)
+        MOV [resultat], EAX      ; sauver resultat
+        ; ... appeler ExitProcess ou sys_exit ...
+        PUSH 0
+        CALL ExitProcess
+
+    sum_1_to_n PROC
+        PUSH EBP
+        MOV EBP, ESP
+        PUSH ESI                 ; sauvegarder ESI (= R4)
+        MOV ESI, [EBP + 8]      ; ESI = N (premier parametre)
+        XOR EAX, EAX            ; somme = 0
+    boucle:
+        CMP ESI, 0
+        JLE fin
+        ADD EAX, ESI             ; somme += compteur
+        DEC ESI                  ; compteur--
+        JMP boucle
+    fin:
+        POP ESI                  ; restaurer ESI
+        MOV ESP, EBP
+        POP EBP
+        RET
+    sum_1_to_n ENDP
+
+    END _start
+
+  Points de conversion illustres dans cet exemple :
+  - BL -> CALL / BX LR -> RET
+  - Arguments R0 -> pile [EBP+8]
+  - Registre preserve R4 -> ESI
+  - PUSH {R4, LR} -> PUSH EBP / MOV EBP, ESP / PUSH ESI
+  - POP {R4, PC} -> POP ESI / MOV ESP, EBP / POP EBP / RET
+  - SWI #0 (syscall ARM) -> CALL ExitProcess (Win32) ou INT 80h (Linux)
+
+------------------------------------------------------------------------------
+13.14 Resume : aide-memoire de conversion ARM -> 80386
+------------------------------------------------------------------------------
+
+  Etape 1  : Identifier les registres utilises et etablir la correspondance
+             R0-R5 -> EAX,ECX,EDX,EBX,ESI,EDI ; R6+ -> memoire
+  Etape 2  : Convertir les LDR/STR en MOV avec adressage memoire
+  Etape 3  : Remplacer les instructions conditionnelles par des branchements
+  Etape 4  : Decomposer les operations avec barrel shifter
+  Etape 5  : Convertir les acces memoire multiples (LDM/STM) en PUSH/POP
+             ou series de MOV
+  Etape 6  : Adapter les conventions d'appel (R0-R3 -> pile)
+  Etape 7  : Convertir BL -> CALL, BX LR -> RET
+  Etape 8  : Remplacer les appels systeme (SWI/SVC -> INT 80h ou API Win32)
+  Etape 9  : Gerer les differences de carry (ARM C inverse pour SUB)
+  Etape 10 : Gerer les flags : ARM ne met pas a jour sans suffixe S,
+             x86 met a jour automatiquement
+  Etape 11 : Adapter les immediats (ARM: 8 bits + rotation, x86: 32 bits)
+  Etape 12 : Convertir les pseudo-instructions ARM (ADR, LDR =value)
+  Etape 13 : Adapter l'alignement de la pile (ARM: 8 octets, x86: 4 ou 16)
+  Etape 14 : Verifier l'endianness (ARM peut etre big ou little endian,
+             x86 est toujours little endian)
+  Etape 15 : Convertir les instructions SIMD/NEON en SSE si necessaire
+             (hors portee de ce document 80386)
+
+  Table de correspondance rapide des instructions :
+
+    ARM                 80386
+    ------------------  ------------------------------------------
+    MOV Rd, Rn          MOV reg, reg
+    MOV Rd, #imm        MOV reg, imm
+    MVN Rd, Rn          MOV reg, reg / NOT reg
+    ADD Rd, Rn, Op2     MOV + ADD (ou LEA)
+    SUB Rd, Rn, Op2     MOV + SUB
+    RSB Rd, Rn, Op2     MOV + SUB (operandes inverses)
+    MUL Rd, Rn, Rm      IMUL reg, reg
+    AND Rd, Rn, Op2     MOV + AND
+    ORR Rd, Rn, Op2     MOV + OR
+    EOR Rd, Rn, Op2     MOV + XOR
+    BIC Rd, Rn, Op2     MOV + NOT + AND
+    CMP Rn, Op2         CMP
+    TST Rn, Op2         TEST
+    LDR Rd, [Rn, off]   MOV reg, [reg + off]
+    STR Rd, [Rn, off]   MOV [reg + off], reg
+    LDRB Rd, [Rn]       MOVZX reg, BYTE PTR [reg]
+    STRB Rd, [Rn]       MOV BYTE PTR [reg], reg8
+    LDRH Rd, [Rn]       MOVZX reg, WORD PTR [reg]
+    STRH Rd, [Rn]       MOV WORD PTR [reg], reg16
+    PUSH {regs}         serie de PUSH
+    POP {regs}          serie de POP
+    B label             JMP label
+    BL fonction         CALL fonction
+    BX LR               RET
+    Bcc label           Jcc label (adapter condition)
+    SWI / SVC           INT 80h (Linux) / CALL API (Win32)
+    NOP                 NOP
+
+------------------------------------------------------------------------------
+13.15 Pieges et differences fondamentales
+------------------------------------------------------------------------------
+
+  (a) Nombre de registres
+
+    ARM a 16 registres generaux, x86 n'en a que 8. Il faut utiliser
+    la pile et des variables memoire pour les registres ARM supplementaires.
+    Cela peut degrader les performances. Sur x86-64, il y a 16 registres.
+
+  (b) Carry inverse pour la soustraction
+
+    C'est le piege le plus courant. Apres une soustraction :
+    - ARM : C=1 signifie "pas d'emprunt" (resultat >= 0 en non signe)
+    - x86 : CF=1 signifie "emprunt" (resultat < 0 en non signe)
+
+    Pour SBC/ADC, il faut utiliser CMC (Complement Carry) avant SBB,
+    ou restructurer la logique.
+
+  (c) Mise a jour des drapeaux
+
+    En ARM, les drapeaux sont mis a jour uniquement avec le suffixe S
+    (ADDS, SUBS, etc.). En x86, la plupart des instructions arithmetiques
+    et logiques mettent a jour les flags automatiquement.
+
+    Cela signifie qu'en x86, des instructions intermediaires peuvent
+    corrompre les flags. Il faut parfois sauvegarder EFLAGS avec PUSHFD
+    ou restructurer le code.
+
+  (d) Architecture Load/Store vs CISC
+
+    En ARM, on ne peut pas faire ADD R0, R1, [memoire]. Il faut d'abord
+    charger la valeur. En x86, on peut : ADD EAX, [memoire].
+    Lors de la conversion ARM -> x86, on peut souvent fusionner un LDR
+    suivi d'une operation en une seule instruction x86 :
+
+    ARM :   LDR R1, [R2]
+            ADD R0, R0, R1
+    80386 : ADD EAX, [EDX]       ; une seule instruction
+
+  (e) Immediats
+
+    ARM limite les immediats a 8 bits avec rotation de 2 bits (soit 256
+    valeurs par rotation). Les grandes constantes necessitent MOVW/MOVT
+    ou un literal pool (LDR Rd, =constante).
+    x86 accepte des immediats 32 bits directement.
+
+  (f) Endianness
+
+    ARM peut fonctionner en little-endian ou big-endian.
+    x86 est toujours little-endian. Si le code ARM source est en mode
+    big-endian, il faut convertir les acces memoire multi-octets
+    avec BSWAP (disponible a partir du 80486) ou une sequence manuelle
+    de decalages.
+
+  (g) Alignement memoire
+
+    ARM (avant ARMv7) exige un alignement strict : LDR sur une adresse
+    alignee a 4 octets, LDRH sur 2 octets. Un acces non aligne provoque
+    une exception ou un comportement indefini.
+    x86 autorise les acces non alignes (avec une penalite de performance).
+    Lors de la conversion, on peut relacher les contraintes d'alignement,
+    mais il est preferable de maintenir l'alignement pour la performance.
+
+  (h) Instructions inexistantes en x86
+
+    Certaines instructions ARM n'ont pas d'equivalent direct en x86 :
+    - CLZ (Count Leading Zeros) : utiliser BSR (Bit Scan Reverse) puis
+      soustraire de 31. BSR n'est pas identique (BSR est indefini si
+      l'operande est 0, CLZ retourne 32).
+    - REV (Byte Reverse) : utiliser BSWAP (80486+)
+    - RBIT (Reverse Bits) : pas d'equivalent, implementer en logiciel
+    - UBFX/SBFX (Bit Field Extract) : utiliser SHR + AND (ou SAR + AND)
+    - PKH (Pack Halfword) : decomposer en operations AND/OR/shift
+
+  (i) Appels systeme
+
+    ARM Linux utilise SWI 0 (ou SVC 0) avec le numero de syscall dans R7.
+    x86 Linux utilise INT 80h avec le numero dans EAX.
+
+    ARM :   MOV R7, #4           ; sys_write
+            MOV R0, #1           ; fd = stdout
+            LDR R1, =message     ; buffer
+            MOV R2, #13          ; longueur
+            SWI #0
+    80386 : MOV EAX, 4           ; sys_write
+            MOV EBX, 1           ; fd = stdout
+            MOV ECX, OFFSET message
+            MOV EDX, 13          ; longueur
+            INT 80h
+
+    En Win32, utiliser les API (WriteFile, etc.) via CALL.
+
+  (j) Coprocesseur flottant
+
+    ARM utilise VFP/NEON (registres S0-S31, D0-D31).
+    Le 80386 utilise le coprocesseur x87 (registres ST(0)-ST(7)) avec
+    une pile flottante, ou SSE sur les processeurs plus recents.
+    La conversion des operations flottantes est hors portee de ce document.
+
+==============================================================================
   FIN DU DOCUMENT - ASSEMBLEUR 80386
 ==============================================================================
