@@ -1,0 +1,82 @@
+comment Test des blocs BEGIN/END et instructions composees (TODO 16) ;
+BEGIN
+  comment Declarations au debut du bloc principal ;
+  INTEGER x, y;
+  REAL z;
+  BOOLEAN flag;
+
+  x := 10;
+  y := 20;
+  z := 3;
+  flag := TRUE;
+
+  comment Bloc imbrique avec variables locales ;
+  BEGIN
+    INTEGER a, b, c;
+    a := 1;
+    b := 2;
+    c := a + b;
+    OUTINTEGER(1, c)
+  END;
+
+  comment Bloc avec masquage de variable (portee locale) ;
+  BEGIN
+    INTEGER x;
+    x := 99;
+    OUTINTEGER(1, x)
+  END;
+
+  comment La variable x du bloc externe est inchangee ;
+  OUTINTEGER(1, x);
+
+  comment Blocs imbriques multiples ;
+  BEGIN
+    INTEGER i;
+    i := 100;
+    BEGIN
+      INTEGER j;
+      j := i + 50;
+      OUTINTEGER(1, j)
+    END;
+    OUTINTEGER(1, i)
+  END;
+
+  comment Bloc avec etiquettes locales ;
+  BEGIN
+    LABEL done;
+    INTEGER r;
+    r := 42;
+    GO TO done;
+    r := 0;
+done:
+    OUTINTEGER(1, r)
+  END;
+
+  comment Instruction composee sans declarations ;
+  BEGIN
+    x := x + 1;
+    y := y - 1
+  END;
+
+  OUTINTEGER(1, x);
+  OUTINTEGER(1, y);
+
+  comment Bloc dans un IF ;
+  IF flag THEN
+  BEGIN
+    INTEGER t;
+    t := 777;
+    OUTINTEGER(1, t)
+  END;
+
+  comment Bloc dans un FOR ;
+  FOR x := 1 STEP 1 UNTIL 3 DO
+  BEGIN
+    INTEGER sq;
+    sq := x * x;
+    OUTINTEGER(1, sq)
+  END;
+
+  newline(1);
+  outstring(1, `Fin test blocs`)
+END.

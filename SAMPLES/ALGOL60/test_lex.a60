@@ -1,0 +1,27 @@
+comment Test lexer with various Algol 60 features ;
+BEGIN
+  REAL pi;
+  OWN INTEGER counter;
+  pi := 3.14;
+  counter := counter + 1;
+  IF flag AND NOT done THEN
+    BEGIN
+      ARRAY a[1:10];
+      GOTO label1;
+      GO TO label2
+    END;
+  SWITCH sw := L1, L2, L3;
+  PROCEDURE square(x); VALUE x; INTEGER x;
+    square := x ** 2;
+  IF pi > 3 THEN outstring(1, "greater")
+    ELSE outstring(1, "less");
+  x := a /\ b \/ c;
+  y := ~flag;
+  z := a IMPL b;
+  w := a EQUIV b;
+  r := 10 DIV 3;
+  s := x ^ 2;
+  t := a != b;
+  u := a <= b;
+  v := a >= b
+END.

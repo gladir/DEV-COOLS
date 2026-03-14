@@ -1,0 +1,99 @@
+comment Test des declarations de procedures (TODO 18) ;
+BEGIN
+
+  comment ----- Procedure sans parametres ----- ;
+  PROCEDURE hello;
+  BEGIN
+    outstring(1, `Hello from procedure`);
+    newline(1)
+  END;
+
+  hello;
+
+  comment ----- Procedure avec parametres VALUE ----- ;
+  PROCEDURE printval(x);
+  VALUE x;
+  INTEGER x;
+  BEGIN
+    outstring(1, `val=`);
+    outinteger(1, x);
+    newline(1)
+  END;
+
+  printval(42);
+  printval(100);
+
+  comment ----- Procedure typee INTEGER retournant une valeur ----- ;
+  INTEGER PROCEDURE double(n);
+  VALUE n;
+  INTEGER n;
+  BEGIN
+    double := n + n
+  END;
+
+  INTEGER r;
+  r := double(21);
+  outstring(1, `double(21)=`);
+  outinteger(1, r);
+  newline(1);
+
+  r := double(5);
+  outstring(1, `double(5)=`);
+  outinteger(1, r);
+  newline(1);
+
+  comment ----- Procedure avec deux parametres ----- ;
+  INTEGER PROCEDURE add(a, b);
+  VALUE a, b;
+  INTEGER a, b;
+  BEGIN
+    add := a + b
+  END;
+
+  r := add(10, 20);
+  outstring(1, `add(10,20)=`);
+  outinteger(1, r);
+  newline(1);
+
+  comment ----- Procedure sans type (void) ----- ;
+  PROCEDURE showsum(a, b);
+  VALUE a, b;
+  INTEGER a, b;
+  BEGIN
+    INTEGER s;
+    s := a + b;
+    outstring(1, `sum=`);
+    outinteger(1, s);
+    newline(1)
+  END;
+
+  showsum(7, 8);
+
+  comment ----- Appel recursif (factorielle) ----- ;
+  INTEGER PROCEDURE fact(n);
+  VALUE n;
+  INTEGER n;
+  BEGIN
+    IF n <= 1 THEN
+      fact := 1
+    ELSE
+    BEGIN
+      INTEGER t;
+      t := fact(n - 1);
+      fact := n * t
+    END
+  END;
+
+  r := fact(5);
+  outstring(1, `fact(5)=`);
+  outinteger(1, r);
+  newline(1);
+
+  r := fact(6);
+  outstring(1, `fact(6)=`);
+  outinteger(1, r);
+  newline(1);
+
+  outstring(1, `Fin test procedures`);
+  newline(1)
+END.

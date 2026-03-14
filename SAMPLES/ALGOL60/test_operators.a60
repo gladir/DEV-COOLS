@@ -1,0 +1,55 @@
+comment Test des operateurs et precedence (TODO 04) ;
+BEGIN
+  INTEGER a, b, c;
+  BOOLEAN p, q, r;
+
+  comment Arithmetique simple ;
+  a := 10 + 5;
+  b := 20 - 3;
+  c := 4 * 7;
+  a := 100 / 5;
+  b := 17 DIV 3;
+  c := 2 ^ 3;
+
+  comment Comparaisons ;
+  p := 10 < 20;
+  q := 5 <= 5;
+  r := 3 = 3;
+  p := 7 > 2;
+  q := 8 >= 8;
+  r := 4 != 5;
+
+  comment Operateurs logiques ;
+  p := TRUE AND FALSE;
+  q := TRUE OR FALSE;
+  r := NOT TRUE;
+  p := TRUE /\ FALSE;
+  q := TRUE \/ FALSE;
+  r := ~ TRUE;
+
+  comment IMPL et EQUIV ;
+  p := FALSE IMPL TRUE;
+  q := TRUE EQUIV TRUE;
+  r := TRUE EQUIV FALSE;
+
+  comment Precedence : * avant + ;
+  a := 2 + 3 * 4;
+  comment Resultat attendu: 2 + 12 = 14 ;
+
+  comment Precedence : ^ avant * ;
+  b := 2 * 3 ^ 2;
+  comment Resultat attendu: 2 * 9 = 18 ;
+
+  comment Parentheses ;
+  c := (2 + 3) * 4;
+  comment Resultat attendu: 5 * 4 = 20 ;
+
+  comment Unaire ;
+  a := -5;
+  b := +3;
+  c := -(-10);
+
+  comment Combinaison logique ;
+  p := TRUE AND TRUE OR FALSE;
+  q := NOT FALSE AND TRUE
+END.

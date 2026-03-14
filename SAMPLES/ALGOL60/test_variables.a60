@@ -1,0 +1,61 @@
+comment Test des variables et affectations (TODO 09) ;
+comment Ce fichier teste la declaration de variables INTEGER/REAL/BOOLEAN,
+  l affectation avec :=, les variables globales (segment DATA),
+  les variables locales dans des blocs imbriques (pile BP),
+  l affectation multiple et les expressions impliquant des variables ;
+BEGIN
+  comment Declarations globales ;
+  INTEGER a;
+  INTEGER b;
+  INTEGER c;
+  REAL pi;
+  BOOLEAN flag;
+
+  comment Affectation simple ;
+  a := 42;
+  b := 10;
+  c := 0;
+
+  comment Affectation avec expression ;
+  c := a + b;
+  c := a - b;
+  c := a * 2;
+
+  comment Affectation de reel ;
+  pi := 3;
+
+  comment Affectation de booleen ;
+  flag := TRUE;
+  flag := FALSE;
+
+  comment Declarations multiples sur une ligne ;
+  INTEGER x, y, z;
+  x := 1;
+  y := 2;
+  z := x + y;
+
+  comment Bloc imbrique avec variables locales ;
+  BEGIN
+    INTEGER local1;
+    INTEGER local2;
+    local1 := 100;
+    local2 := 200;
+    a := local1 + local2
+  END;
+
+  comment Second bloc imbrique ;
+  BEGIN
+    INTEGER m, n;
+    m := a + 1;
+    n := m * 2
+  END;
+
+  comment Variable utilisee comme operande d expression ;
+  a := 5;
+  b := a + 3;
+  c := a * b + 1;
+
+  comment Expression avec variable connue (pas d affectation) ;
+  a + b;
+  x + y + z
+END.

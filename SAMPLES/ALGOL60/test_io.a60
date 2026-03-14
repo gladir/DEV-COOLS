@@ -1,0 +1,49 @@
+comment Test entrees/sorties intrinsics (TODO 12) ;
+BEGIN
+  INTEGER x, y;
+  BOOLEAN flag;
+
+  comment outstring : ecriture chaine sur STDOUT ;
+  outstring(1, `Hello, Algol 60!`);
+  newline(1);
+
+  comment outinteger : ecriture entier positif ;
+  x := 42;
+  outinteger(1, x);
+  newline(1);
+
+  comment outinteger : ecriture entier negatif ;
+  outinteger(1, -7);
+  newline(1);
+
+  comment outinteger : ecriture zero ;
+  outinteger(1, 0);
+  newline(1);
+
+  comment outboolean : ecriture TRUE ;
+  flag := TRUE;
+  outboolean(1, flag);
+  newline(1);
+
+  comment outboolean : ecriture FALSE ;
+  outboolean(1, FALSE);
+  newline(1);
+
+  comment outreal : ecriture reel (stub entier) ;
+  y := 314;
+  outreal(1, y);
+  newline(1);
+
+  comment print : raccourci pour outstring(1, s) ;
+  print(`Fin du test IO.`);
+  newline(1);
+
+  comment newline sans argument -> STDOUT ;
+  newline;
+
+  comment sysact : stub NOP ;
+  sysact(1, 0, 0);
+
+  comment outstring sur canal 2 (STDERR) ;
+  outstring(2, `Message sur STDERR`)
+END.
