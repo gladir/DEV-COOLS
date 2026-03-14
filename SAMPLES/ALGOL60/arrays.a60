@@ -1,0 +1,25 @@
+comment Algol 60 example - tableaux ;
+BEGIN
+  INTEGER ARRAY a[1:5];
+  INTEGER i, s;
+
+  comment Remplir le tableau ;
+  FOR i := 1 STEP 1 UNTIL 5 DO
+    a[i] := i * i;
+
+  comment Afficher les elements ;
+  outstring(1, `carres=`);
+  FOR i := 1 STEP 1 UNTIL 5 DO
+    outinteger(1, a[i]);
+
+  comment Somme des elements ;
+  s := 0;
+  FOR i := 1 STEP 1 UNTIL 5 DO
+    s := s + a[i];
+  outstring(1, ` somme=`);
+  outinteger(1, s);
+
+  comment Acces direct ;
+  outstring(1, ` a[3]=`);
+  outinteger(1, a[3])
+END.

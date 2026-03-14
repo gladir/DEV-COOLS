@@ -1,0 +1,18 @@
+comment Algol 60 example - OWN variables (persistance) ;
+BEGIN
+  PROCEDURE compteur;
+  BEGIN
+    OWN INTEGER c;
+    c := c + 1;
+    outstring(1, ` c=`);
+    outinteger(1, c)
+  END;
+
+  outstring(1, `compteur:`);
+  compteur;
+  compteur;
+  compteur;
+
+  comment Chaque appel incremente c grace a OWN ;
+  outstring(1, ` fin`)
+END.

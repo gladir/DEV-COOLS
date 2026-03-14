@@ -370,7 +370,7 @@
               IF THEN ELSE peut etre instruction (sans valeur) ou expression
               Le contexte determine l interpretation
 
-  TODO 24 - RUNTIME MINIMAL
+  TODO 24 - RUNTIME MINIMAL [IMPLEMENTE]
             _A60RT_PRINT(BX=handle, SI=msg, CX=len) : INT 21h AH=40h
             _A60RT_PRINTLN : _A60RT_PRINT + CR+LF via _A60_CRLF DB 13,10,0
             _A60RT_STRLEN(SI=str) : compte octets jusqu a 0 -> AX
@@ -392,7 +392,7 @@
             RuntimeEmitted : flag pour n emettre le runtime qu une seule fois
             Heap statique : _A60_HEAP DB 4096 DUP(0) + _A60_HEAPTOP DW 0
 
-  TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES
+  TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES [IMPLEMENTE]
             EmitClose : END _A60P_Main dans _TEXT ENDS / DATA ENDS
             Run : pipeline complet LexInit -> ParseProgram ->
               EmitRuntime -> _TEXT ENDS / EmitDataSeg / END _A60P_Main
@@ -623,6 +623,7 @@ Var
   { Etat general }
   RuntimeEmitted : Boolean;
   IOEmitted      : Boolean;
+  MinRTEmitted   : Boolean;
 
   { Label sequentiel }
   LabelSeq   : Integer;
@@ -786,6 +787,8 @@ Procedure ParseProcDecl(RetTypeIdx : Integer); Forward;
 Procedure ParseSwitchDecl; Forward;
 { ---- Forward declarations (TODO 22) ----------------------- }
 Procedure ParseOwnDecl; Forward;
+{ ---- Forward declarations (TODO 24) ----------------------- }
+Procedure EmitMinimalRuntime; Forward;
 { ---- Forward declarations (TODO 06) ----------------------- }
 Procedure TypeInit;      Forward;
 Function  TypeKindOf(TypeIdx : Integer) : TTypeKind; Forward;
@@ -1068,6 +1071,7 @@ Begin
   GExprDummy.SymIdx  := -1;
   RuntimeEmitted := False;
   IOEmitted := False;
+  MinRTEmitted := False;
   IfCount := 0;
   ForCount := 0;
   GotoCount := 0;
@@ -1941,6 +1945,10 @@ Begin
   DataAddArray('_A60_TMPBUF', 128);
   { Sauvegarde du BP de l appelant pour les thunks (TODO 20) }
   DataAddWord('_A60V_SAVEBP', 0);
+  { Heap statique et messages d erreur (TODO 24) }
+  DataAddArray('_A60_HEAP', 2048);
+  DataAddWord('_A60_HEAPTOP', 0);
+  DataAdd('_A60_PANIC_IDX', DK_STR, 0, 'Index out of bounds');
 End;
 
 { ---- EmitDataSeg : emettre le segment _DATA (TODO 08) -------- }
@@ -5476,6 +5484,258 @@ End;
   - ParseSwitchAccess : sw[expr] -> TY_IDX_LABEL (deja en place)       }
 
 { ============================================================
+  TODO 24 - RUNTIME MINIMAL [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- EmitMinimalRuntime : emettre les routines runtime
+  complementaires (TODO 24).
+  _A60RT_PRINT   : BX=handle, SI=msg, CX=len -> ecriture
+  _A60RT_PRINTLN : PRINT + CR+LF
+  _A60RT_STRLEN  : SI=str -> AX=longueur
+  _A60RT_NUMTOSTR: AX=n, DI=buf -> conversion entier->ASCII
+  _A60RT_STRTONUM: SI=str -> AX=entier
+  _A60RT_ABS     : AX=n -> AX=|n|
+  _A60RT_SIGN    : AX=n -> AX=-1/0/1
+  _A60RT_ENTIER  : AX=n -> AX=n (stub identite sur entiers)
+  _A60RT_CHKIDX  : AX=idx, BX=lo, CX=hi -> erreur si hors bornes
+  _A60RT_PANIC   : SI=msg -> affiche + exit(1)                        }
+Procedure EmitMinimalRuntime;
+Begin
+  If MinRTEmitted Then Exit;
+  MinRTEmitted := True;
+
+  EmitBlankLine;
+  EmitComment('--- Runtime minimal (TODO 24) ---');
+  EmitBlankLine;
+
+  { ---- _A60RT_PRINT : ecrire CX octets depuis SI sur handle BX ---
+    Entree : BX = handle, SI = adresse message, CX = longueur
+    Utilise INT 21h AH=40h                                           }
+  EmitLabel(A60_RT_PFX + 'PRINT');
+  EmitPush('AX');
+  EmitPush('DX');
+  EmitMov('DX', 'SI');              { DX = adresse tampon }
+  EmitInstr('MOV', 'AH, 40h');     { ecrire sur handle }
+  EmitInstr('INT', '21h');
+  EmitPop('DX');
+  EmitPop('AX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _A60RT_PRINTLN : ecrire message + CR+LF -------------------
+    Entree : BX = handle, SI = adresse chaine ASCIIZ
+    Appelle OUTSTR puis NEWLINE                                      }
+  EmitLabel(A60_RT_PFX + 'PRINTLN');
+  EmitInstr('CALL', A60_RT_PFX + 'OUTSTR');
+  EmitInstr('CALL', A60_RT_PFX + 'NEWLINE');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _A60RT_STRLEN : longueur d une chaine ASCIIZ ---------------
+    Entree : SI = pointeur chaine ASCIIZ
+    Sortie : AX = nombre d octets avant le NUL                      }
+  EmitLabel(A60_RT_PFX + 'STRLEN');
+  EmitPush('DI');
+  EmitMov('DI', 'SI');
+  EmitInstr('XOR', 'AX, AX');
+  EmitLabel(A60_RT_PFX + 'STRLEN_L');
+  EmitInstr('CMP', 'BYTE PTR [DI], 0');
+  EmitInstr('JE', A60_RT_PFX + 'STRLEN_D');
+  EmitInstr('INC', 'DI');
+  EmitInstr('INC', 'AX');
+  EmitInstr('JMP', A60_RT_PFX + 'STRLEN_L');
+  EmitLabel(A60_RT_PFX + 'STRLEN_D');
+  EmitPop('DI');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _A60RT_NUMTOSTR : entier signe -> ASCII (itoa) -------------
+    Entree : AX = entier signe 16 bits, DI = adresse tampon
+    Sortie : tampon rempli avec la representation decimale + NUL
+    Modifie DI pour pointer apres le dernier caractere               }
+  EmitLabel(A60_RT_PFX + 'NUMTOSTR');
+  EmitPush('BX');
+  EmitPush('CX');
+  EmitPush('DX');
+  EmitPush('SI');
+  { Verifier signe }
+  EmitInstr('CMP', 'AX, 0');
+  EmitInstr('JGE', A60_RT_PFX + 'NTS_POS');
+  EmitInstr('MOV', 'BYTE PTR [DI], 45');   { '-' }
+  EmitInstr('INC', 'DI');
+  EmitInstr('NEG', 'AX');
+  EmitLabel(A60_RT_PFX + 'NTS_POS');
+  { Si AX = 0, ecrire '0' directement }
+  EmitInstr('CMP', 'AX, 0');
+  EmitInstr('JNE', A60_RT_PFX + 'NTS_CVT');
+  EmitInstr('MOV', 'BYTE PTR [DI], 48');   { '0' }
+  EmitInstr('INC', 'DI');
+  EmitInstr('JMP', A60_RT_PFX + 'NTS_NUL');
+  { Conversion : diviser par 10, empiler chiffres }
+  EmitLabel(A60_RT_PFX + 'NTS_CVT');
+  EmitInstr('XOR', 'CX, CX');      { compteur = 0 }
+  EmitLabel(A60_RT_PFX + 'NTS_DIV');
+  EmitInstr('XOR', 'DX, DX');
+  EmitInstr('MOV', 'SI, 10');
+  EmitInstr('DIV', 'SI');           { AX=quotient, DX=reste }
+  EmitInstr('ADD', 'DX, 48');       { reste + '0' }
+  EmitPush('DX');
+  EmitInstr('INC', 'CX');
+  EmitInstr('CMP', 'AX, 0');
+  EmitInstr('JNE', A60_RT_PFX + 'NTS_DIV');
+  { Depiler chiffres dans l ordre correct }
+  EmitLabel(A60_RT_PFX + 'NTS_POP');
+  EmitPop('DX');
+  EmitInstr('MOV', '[DI], DL');
+  EmitInstr('INC', 'DI');
+  EmitInstr('DEC', 'CX');
+  EmitInstr('JNZ', A60_RT_PFX + 'NTS_POP');
+  { Terminer par NUL }
+  EmitLabel(A60_RT_PFX + 'NTS_NUL');
+  EmitInstr('MOV', 'BYTE PTR [DI], 0');
+  EmitPop('SI');
+  EmitPop('DX');
+  EmitPop('CX');
+  EmitPop('BX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _A60RT_STRTONUM : ASCII -> entier (atoi) -------------------
+    Entree : SI = pointeur chaine ASCIIZ (chiffres decimaux, opt. -)
+    Sortie : AX = valeur entiere                                     }
+  EmitLabel(A60_RT_PFX + 'STRTONUM');
+  EmitPush('BX');
+  EmitPush('CX');
+  EmitPush('DX');
+  EmitInstr('XOR', 'BX, BX');      { BX = accumulateur }
+  EmitInstr('XOR', 'CX, CX');      { CX = flag signe }
+  EmitInstr('CMP', 'BYTE PTR [SI], 45');   { '-' ? }
+  EmitInstr('JNE', A60_RT_PFX + 'STN_DIG');
+  EmitInstr('MOV', 'CX, 1');
+  EmitInstr('INC', 'SI');
+  EmitLabel(A60_RT_PFX + 'STN_DIG');
+  EmitInstr('MOV', 'AL, [SI]');
+  EmitInstr('CMP', 'AL, 0');       { NUL -> fin }
+  EmitInstr('JE', A60_RT_PFX + 'STN_END');
+  EmitInstr('CMP', 'AL, 48');      { < '0' -> fin }
+  EmitInstr('JB', A60_RT_PFX + 'STN_END');
+  EmitInstr('CMP', 'AL, 57');      { > '9' -> fin }
+  EmitInstr('JA', A60_RT_PFX + 'STN_END');
+  { BX = BX * 10 + (AL - '0') }
+  EmitInstr('SUB', 'AL, 48');
+  EmitInstr('XOR', 'AH, AH');
+  EmitPush('AX');
+  EmitMov('AX', 'BX');
+  EmitInstr('MOV', 'DX, 10');
+  EmitInstr('MUL', 'DX');           { AX = BX * 10 }
+  EmitPop('DX');
+  EmitInstr('ADD', 'AX, DX');
+  EmitMov('BX', 'AX');
+  EmitInstr('INC', 'SI');
+  EmitInstr('JMP', A60_RT_PFX + 'STN_DIG');
+  EmitLabel(A60_RT_PFX + 'STN_END');
+  EmitMov('AX', 'BX');
+  EmitInstr('CMP', 'CX, 0');
+  EmitInstr('JE', A60_RT_PFX + 'STN_RET');
+  EmitInstr('NEG', 'AX');
+  EmitLabel(A60_RT_PFX + 'STN_RET');
+  EmitPop('DX');
+  EmitPop('CX');
+  EmitPop('BX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _A60RT_ABS : valeur absolue ---------------------------------
+    Entree : AX = entier signe
+    Sortie : AX = |AX|                                               }
+  EmitLabel(A60_RT_PFX + 'ABS');
+  EmitInstr('CMP', 'AX, 0');
+  EmitInstr('JGE', A60_RT_PFX + 'ABS_OK');
+  EmitInstr('NEG', 'AX');
+  EmitLabel(A60_RT_PFX + 'ABS_OK');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _A60RT_SIGN : signe d un entier -----------------------------
+    Entree : AX = entier signe
+    Sortie : AX = -1 si negatif, 0 si nul, +1 si positif             }
+  EmitLabel(A60_RT_PFX + 'SIGN');
+  EmitInstr('CMP', 'AX, 0');
+  EmitInstr('JG', A60_RT_PFX + 'SIGN_P');
+  EmitInstr('JL', A60_RT_PFX + 'SIGN_N');
+  EmitInstr('XOR', 'AX, AX');      { AX = 0 }
+  EmitInstr('RET', '');
+  EmitLabel(A60_RT_PFX + 'SIGN_P');
+  EmitMov('AX', '1');
+  EmitInstr('RET', '');
+  EmitLabel(A60_RT_PFX + 'SIGN_N');
+  EmitMov('AX', '-1');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _A60RT_ENTIER : partie entiere (stub identite) ---------------
+    Entree : AX = entier (sur entiers, identite)
+    Sortie : AX = AX (pas de modification)                            }
+  EmitLabel(A60_RT_PFX + 'ENTIER');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _A60RT_CHKIDX : verification bornes tableau ------------------
+    Entree : AX = index, BX = borne inferieure, CX = borne superieure
+    Sortie : AX inchange si dans les bornes
+    Erreur : appelle _A60RT_PANIC si hors bornes                      }
+  EmitLabel(A60_RT_PFX + 'CHKIDX');
+  EmitInstr('CMP', 'AX, BX');
+  EmitInstr('JL', A60_RT_PFX + 'CHKIDX_ERR');
+  EmitInstr('CMP', 'AX, CX');
+  EmitInstr('JG', A60_RT_PFX + 'CHKIDX_ERR');
+  EmitInstr('RET', '');
+  EmitLabel(A60_RT_PFX + 'CHKIDX_ERR');
+  EmitMov('SI', 'OFFSET _A60_PANIC_IDX');
+  EmitInstr('JMP', A60_RT_PFX + 'PANIC');
+  EmitBlankLine;
+
+  { ---- _A60RT_PANIC : message d erreur + terminaison ----------------
+    Entree : SI = pointeur message ASCIIZ
+    Action : ecrire message sur stderr (handle 2) puis exit(1)        }
+  EmitLabel(A60_RT_PFX + 'PANIC');
+  EmitPush('AX');
+  EmitPush('BX');
+  EmitPush('CX');
+  EmitPush('DX');
+  EmitPush('DI');
+  { Calculer longueur du message }
+  EmitMov('DI', 'SI');
+  EmitInstr('XOR', 'CX, CX');
+  EmitLabel(A60_RT_PFX + 'PANIC_L');
+  EmitInstr('CMP', 'BYTE PTR [DI], 0');
+  EmitInstr('JE', A60_RT_PFX + 'PANIC_W');
+  EmitInstr('INC', 'DI');
+  EmitInstr('INC', 'CX');
+  EmitInstr('JMP', A60_RT_PFX + 'PANIC_L');
+  EmitLabel(A60_RT_PFX + 'PANIC_W');
+  { Ecrire sur stderr (handle = 2) }
+  EmitMov('DX', 'SI');
+  EmitInstr('MOV', 'BX, 2');       { stderr }
+  EmitInstr('MOV', 'AH, 40h');
+  EmitInstr('INT', '21h');
+  { Ecrire CR+LF }
+  EmitInstr('MOV', 'DX, OFFSET _A60_CRLF');
+  EmitInstr('MOV', 'CX, 2');
+  EmitInstr('MOV', 'AH, 40h');
+  EmitInstr('INT', '21h');
+  EmitPop('DI');
+  EmitPop('DX');
+  EmitPop('CX');
+  EmitPop('BX');
+  EmitPop('AX');
+  { Terminer avec code d erreur 1 }
+  EmitInstr('MOV', 'AX, 4C01h');
+  EmitInstr('INT', '21h');
+  EmitBlankLine;
+End;
+
+{ ============================================================
   TODO 21 - DECLARATIONS SWITCH (AIGUILLAGES) [IMPLEMENTE]
   ============================================================ }
 
@@ -5893,11 +6153,12 @@ Begin
   LexClose;
   EmitExprRuntime;                  { routines runtime (TODO 11) }
   EmitIORuntime;                    { routines I/O (TODO 12) }
+  EmitMinimalRuntime;               { runtime minimal (TODO 24) }
   EmitRaw('_TEXT   ENDS');
   EmitBlankLine;
   EmitDataSeg;
   EmitBlankLine;
-  EmitRaw('        END');
+  EmitRaw('        END ' + A60_FN_PFX + 'Main');
   EmitClose;
 
   If Opts.Verbose Then ShowStats;

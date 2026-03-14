@@ -1,0 +1,27 @@
+comment Algol 60 example - blocs et portees imbriquees ;
+BEGIN
+  INTEGER x;
+  x := 10;
+  outstring(1, `x=`);
+  outinteger(1, x);
+
+  BEGIN
+    INTEGER x;
+    x := 20;
+    outstring(1, ` inner x=`);
+    outinteger(1, x);
+
+    BEGIN
+      INTEGER x;
+      x := 30;
+      outstring(1, ` deep x=`);
+      outinteger(1, x)
+    END;
+
+    outstring(1, ` back x=`);
+    outinteger(1, x)
+  END;
+
+  outstring(1, ` outer x=`);
+  outinteger(1, x)
+END.
