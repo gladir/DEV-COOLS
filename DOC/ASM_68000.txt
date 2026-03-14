@@ -1259,3 +1259,951 @@
   donnees, qui facilite l'ecriture de code relogeable. En revanche,
   le 80386 offre le facteur d'echelle (SIB) absent du 68000
   original (ajoute sur le 68020).
+
+==============================================================================
+4. JEU D'INSTRUCTIONS (OPCODES)
+==============================================================================
+
+  4.1 Vue d'ensemble
+  ------------------
+
+  Le 68000 possede un jeu d'instructions orthogonal et regulier.
+  La plupart des instructions acceptent plusieurs modes d'adressage
+  et peuvent operer sur des tailles differentes (.B, .W, .L),
+  ce qui reduit considerablement le nombre de mnemoniques a
+  memoriser.
+
+  Le jeu d'instructions se divise en categories :
+    - Transfert de donnees
+    - Arithmetique entiere
+    - Operations logiques
+    - Decalages et rotations
+    - Manipulation de bits
+    - Arithmetique BCD (decimal code binaire)
+    - Branchements et controle de flux
+    - Operations sur le registre d'etat
+    - Instructions systeme et privilegiees
+
+  Conventions de notation utilisees dans cette section :
+    Dn      : Registre de donnees (D0-D7)
+    An      : Registre d'adresses (A0-A7)
+    Xn      : Registre quelconque (Dn ou An)
+    ea      : Adresse effective (effective address)
+    #imm    : Valeur immediate (constante)
+    label   : Etiquette (adresse cible)
+    .B      : Taille octet (8 bits)
+    .W      : Taille mot (16 bits)
+    .L      : Taille long mot (32 bits)
+    [CCR]   : Drapeaux affectes (X, N, Z, V, C)
+    SR      : Registre d'etat complet (16 bits)
+    CCR     : Partie condition codes du SR (octet bas)
+
+  Tailles par defaut :
+    - Si aucun suffixe n'est specifie, la taille par defaut est .W
+      pour la plupart des instructions
+    - Les instructions sur les registres d'adresses (MOVEA, ADDA,
+      SUBA, CMPA) n'acceptent que .W et .L
+    - Les instructions rapides (MOVEQ, ADDQ, SUBQ) ont des
+      contraintes de taille specifiques
+
+  4.2 Transfert de donnees
+  -------------------------
+
+  Ces instructions copient des donnees entre registres, memoire et
+  valeurs immediates.
+
+  4.2.1 Transfert general
+
+  MOVE.s  ea, ea       Copier la source vers la destination
+                       Formes : presque toutes les combinaisons
+                       d'adresses effectives sont valides
+                       s = B, W ou L
+                       [CCR: N, Z mis a jour; V=0, C=0]
+
+  MOVEA.s ea, An       Copier la source dans un registre d'adresses
+                       s = W (signe-etendu a 32 bits) ou L
+                       [CCR: non modifie]
+
+  MOVEQ   #imm8, Dn   Charger une constante 8 bits signee dans Dn
+                       (signe-etendue a 32 bits)
+                       La constante est codee dans l'instruction
+                       (pas de mot d'extension, tres rapide)
+                       [CCR: N, Z mis a jour; V=0, C=0]
+
+  Exemples :
+    MOVE.L  D0, D1                 ; D1 := D0
+    MOVE.W  #$1234, D0             ; D0.W := $1234
+    MOVE.L  (A0), D1               ; D1 := long mot pointe par A0
+    MOVE.B  D0, (A1)+              ; [A1] := D0.B, A1 += 1
+    MOVEA.L #$00100000, A0         ; A0 := $00100000
+    MOVEQ   #-1, D0                ; D0 := $FFFFFFFF
+    MOVEQ   #0, D0                 ; D0 := 0 (idiome de mise a zero)
+
+  Remarques :
+    - MOVE est l'instruction la plus utilisee (~40% du code)
+    - MOVEQ est prefere a MOVE.L #imm,Dn quand la constante
+      tient sur 8 bits signes (-128 a +127)
+    - MOVE modifie les drapeaux, contrairement a MOV sur x86
+    - MOVEA ne modifie JAMAIS les drapeaux
+
+  4.2.2 Transfert de blocs de registres
+
+  MOVEM.s liste, ea   Sauvegarder plusieurs registres en memoire
+  MOVEM.s ea, liste   Restaurer plusieurs registres depuis la memoire
+                      s = W ou L
+                      La liste specifie les registres concernes
+                      [CCR: non modifie]
+
+  La liste de registres peut etre specifiee de plusieurs manieres :
+    D0-D7/A0-A6       Tous les registres (sauf A7)
+    D0-D3/A0-A2       Registres D0 a D3 et A0 a A2
+    D0/D2/D4/A0       Registres individuels separes par /
+
+  Exemples :
+    MOVEM.L D0-D7/A0-A6, -(A7)    ; sauvegarder tous les registres
+    MOVEM.L (A7)+, D0-D7/A0-A6    ; restaurer tous les registres
+    MOVEM.L D0-D3/A0-A1, -(A7)    ; sauvegarder D0-D3 et A0-A1
+    MOVEM.W (A0), D0-D3            ; charger 4 mots consecutifs
+
+  Remarques :
+    - Pour la sauvegarde (vers memoire), le mode -(An) est
+      typiquement utilise (pre-decrement)
+    - Pour la restauration (depuis memoire), le mode (An)+ est
+      typiquement utilise (post-increment)
+    - MOVEM avec -(An) sauve les registres dans l'ordre inverse
+      (A7 d'abord, D0 en dernier) pour que MOVEM avec (An)+
+      restaure correctement dans l'ordre normal
+
+  4.2.3 Transfert avec les peripheriques
+
+  MOVEP.s Dn, d16(An) Transferer un registre vers des octets alternes
+  MOVEP.s d16(An), Dn  Transferer des octets alternes vers un registre
+                       s = W (2 octets) ou L (4 octets)
+                       [CCR: non modifie]
+
+  MOVEP transfere les octets d'un registre vers des adresses
+  paires (ou impaires) separees de 2 octets. Ceci permet
+  d'acceder a des peripheriques 8 bits connectes sur un bus de
+  donnees 16 bits.
+
+  Exemple :
+    MOVEP.W D0, 0(A0)    ; [A0] := D0 bits 15-8
+                          ; [A0+2] := D0 bits 7-0
+
+  4.2.4 Chargement d'adresse
+
+  LEA  ea, An          Charger l'adresse effective dans An
+                       (pas d'acces memoire, calcul d'adresse seul)
+                       [CCR: non modifie]
+
+  PEA  ea              Empiler l'adresse effective sur la pile
+                       A7 -= 4, [A7] := adresse effective
+                       [CCR: non modifie]
+
+  Exemples :
+    LEA     Table(PC), A0      ; A0 := adresse de Table (PIC)
+    LEA     8(A6), A0          ; A0 := A6 + 8 (adresse parametre)
+    LEA     0(A0,D0.W), A1    ; A1 := A0 + D0.W (adresse calculee)
+    PEA     Buffer(PC)         ; empiler l'adresse de Buffer
+
+  Remarques :
+    - LEA est tres utilisee pour calculer des adresses sans
+      acceder a la memoire
+    - LEA avec PC-relatif permet du code relogeable
+    - PEA est utile pour passer des adresses en parametre
+      sur la pile avant un appel de sous-routine
+
+  4.2.5 Echange et permutation
+
+  EXG  Xn, Xn         Echanger le contenu de deux registres 32 bits
+                       (donnees-donnees, adresses-adresses, ou mixte)
+                       [CCR: non modifie]
+
+  SWAP Dn              Echanger les mots haut et bas d'un registre
+                       Dn[31:16] <-> Dn[15:0]
+                       [CCR: N, Z mis a jour; V=0, C=0]
+
+  Exemples :
+    EXG     D0, D1             ; D0 <-> D1
+    EXG     A0, A1             ; A0 <-> A1
+    EXG     D0, A0             ; D0 <-> A0
+    SWAP    D0                 ; echange mots haut et bas de D0
+
+  4.2.6 Gestion du cadre de pile
+
+  LINK An, #d16        Creer un cadre de pile :
+                       A7 -= 4, [A7] := An, An := A7, A7 += d16
+                       (d16 est generalement negatif pour reserver
+                        de l'espace pour les variables locales)
+                       [CCR: non modifie]
+
+  UNLK An              Detruire un cadre de pile :
+                       A7 := An, An := [A7], A7 += 4
+                       [CCR: non modifie]
+
+  Exemple typique d'appel de fonction :
+    ; Appelant
+    MOVE.L  #param1, -(A7)     ; empiler le parametre
+    JSR     MaFonction         ; appeler la fonction
+    ADDQ.L  #4, A7             ; nettoyer la pile
+
+    ; MaFonction
+    LINK    A6, #-8            ; creer cadre, reserver 8 octets
+    MOVE.L  8(A6), D0          ; D0 := 1er parametre
+    MOVE.W  D0, -2(A6)         ; variable locale
+    ...
+    UNLK    A6                 ; detruire le cadre
+    RTS                        ; retourner a l'appelant
+
+  4.3 Arithmetique entiere
+  -------------------------
+
+  4.3.1 Addition
+
+  ADD.s  ea, Dn        Dn <- Dn + ea [CCR: X, N, Z, V, C]
+  ADD.s  Dn, ea        ea <- ea + Dn [CCR: X, N, Z, V, C]
+
+  ADDA.s ea, An        An <- An + ea (s = W signe-etendu ou L)
+                       [CCR: non modifie]
+
+  ADDI.s #imm, ea      ea <- ea + imm [CCR: X, N, Z, V, C]
+
+  ADDQ.s #imm3, ea     ea <- ea + imm (imm = 1 a 8)
+                       Constante codee dans l'instruction (rapide)
+                       [CCR: X, N, Z, V, C]
+                       (CCR non modifie si destination est An)
+
+  ADDX.s Dn, Dn        Dn <- Dn + Dn + X [CCR: X, N, Z, V, C]
+  ADDX.s -(An), -(An)  Addition avec retenue (multi-precision)
+                       Le drapeau Z n'est mis a zero QUE si le
+                       resultat est non-nul (pour la multi-precision)
+
+  Exemples :
+    ADD.L   D0, D1             ; D1 := D1 + D0
+    ADD.W   #100, D0           ; D0.W := D0.W + 100
+    ADDA.L  #4, A0             ; A0 := A0 + 4 (pas de modif CCR)
+    ADDQ.L  #1, D0             ; D0 := D0 + 1 (tres rapide)
+    ADDQ.W  #2, A7             ; A7 := A7 + 2 (ajuster la pile)
+
+    ; Addition 64 bits : D0:D1 := D0:D1 + D2:D3
+    ADD.L   D3, D1             ; additionner les mots bas
+    ADDX.L  D2, D0             ; additionner les mots hauts + retenue
+
+  4.3.2 Soustraction
+
+  SUB.s  ea, Dn        Dn <- Dn - ea [CCR: X, N, Z, V, C]
+  SUB.s  Dn, ea        ea <- ea - Dn [CCR: X, N, Z, V, C]
+
+  SUBA.s ea, An        An <- An - ea (s = W signe-etendu ou L)
+                       [CCR: non modifie]
+
+  SUBI.s #imm, ea      ea <- ea - imm [CCR: X, N, Z, V, C]
+
+  SUBQ.s #imm3, ea     ea <- ea - imm (imm = 1 a 8)
+                       [CCR: X, N, Z, V, C]
+                       (CCR non modifie si destination est An)
+
+  SUBX.s Dn, Dn        Dn <- Dn - Dn - X [CCR: X, N, Z, V, C]
+  SUBX.s -(An), -(An)  Soustraction avec emprunt (multi-precision)
+
+  NEG.s  ea            ea <- 0 - ea [CCR: X, N, Z, V, C]
+                       (complement a deux, negation)
+
+  NEGX.s ea            ea <- 0 - ea - X [CCR: X, N, Z, V, C]
+                       (negation avec emprunt, multi-precision)
+
+  CLR.s  ea            ea <- 0 [CCR: N=0, Z=1, V=0, C=0]
+
+  Exemples :
+    SUB.L   D0, D1             ; D1 := D1 - D0
+    SUBA.L  #100, A0           ; A0 := A0 - 100
+    SUBQ.L  #1, D7             ; D7 := D7 - 1 (compteur)
+    NEG.L   D0                 ; D0 := -D0
+    CLR.L   D0                 ; D0 := 0
+
+  Remarques :
+    - ADDQ/SUBQ sont les instructions les plus rapides pour
+      ajouter/soustraire une petite constante (1 a 8)
+    - ADDA/SUBA ne modifient pas les drapeaux, ce qui est
+      pratique pour manipuler des pointeurs sans perturber
+      les tests en cours
+    - CLR effectue d'abord une lecture puis une ecriture de
+      la destination (important pour les registres materiels)
+
+  4.3.3 Multiplication
+
+  MULS.W ea, Dn        Dn[31:0] <- Dn[15:0] * ea[15:0] (signe)
+                       Multiplication signee 16x16 -> 32 bits
+                       [CCR: N, Z mis a jour; V=0, C=0]
+
+  MULU.W ea, Dn        Dn[31:0] <- Dn[15:0] * ea[15:0] (non signe)
+                       Multiplication non signee 16x16 -> 32 bits
+                       [CCR: N, Z mis a jour; V=0, C=0]
+
+  Exemples :
+    MULU.W  #10, D0            ; D0 := D0.W * 10 (non signe)
+    MULS.W  D1, D0             ; D0 := D0.W * D1.W (signe)
+    MULU.W  #640, D0           ; D0 := D0.W * 640 (coord. ecran)
+
+  Remarques :
+    - Le 68000 ne fait que des multiplications 16x16 -> 32
+    - Le 68020 ajoute les multiplications 32x32 -> 32/64
+    - La multiplication prend environ 70 cycles sur le 68000,
+      ce qui est relativement lent
+
+  4.3.4 Division
+
+  DIVS.W ea, Dn        Dn[15:0] <- Dn[31:0] / ea[15:0] (quotient)
+                       Dn[31:16] <- Dn[31:0] MOD ea[15:0] (reste)
+                       Division signee 32/16 -> 16 bits
+                       [CCR: N, Z, V mis a jour; C=0]
+                       Exception si ea = 0 (division par zero)
+
+  DIVU.W ea, Dn        Dn[15:0] <- Dn[31:0] / ea[15:0] (quotient)
+                       Dn[31:16] <- Dn[31:0] MOD ea[15:0] (reste)
+                       Division non signee 32/16 -> 16 bits
+                       [CCR: N, Z, V mis a jour; C=0]
+                       Exception si ea = 0 (division par zero)
+
+  Exemples :
+    DIVU.W  #10, D0            ; D0.W := D0 / 10, D0 haut := reste
+    DIVS.W  D1, D0             ; D0.W := D0 / D1.W (signe)
+
+    ; Extraire quotient et reste
+    DIVU.W  #100, D0           ; diviser D0 par 100
+    MOVE.L  D0, D1             ; copier le resultat
+    SWAP    D1                 ; D1.W := reste (etait dans mot haut)
+    ; D0.W = quotient, D1.W = reste
+
+  Remarques :
+    - Le 68000 ne fait que des divisions 32/16 -> 16+16
+    - Le 68020 ajoute les divisions 32/32 -> 32 et 64/32 -> 32
+    - Si le quotient ne tient pas sur 16 bits, V est mis a 1
+      et le registre destination n'est pas modifie
+    - La division prend environ 140 cycles sur le 68000
+    - La division par zero genere l'exception vecteur 5
+
+  4.3.5 Extension de signe
+
+  EXT.W  Dn            Etendre D0.B (bits 7-0) avec signe dans D0.W
+                       (bit 7 copie dans bits 15-8)
+                       [CCR: N, Z mis a jour; V=0, C=0]
+
+  EXT.L  Dn            Etendre D0.W (bits 15-0) avec signe dans D0.L
+                       (bit 15 copie dans bits 31-16)
+                       [CCR: N, Z mis a jour; V=0, C=0]
+
+  Exemples :
+    MOVE.B  #-5, D0            ; D0.B := $FB
+    EXT.W   D0                 ; D0.W := $FFFB (-5 sur 16 bits)
+    EXT.L   D0                 ; D0.L := $FFFFFFFB (-5 sur 32 bits)
+
+  Remarques :
+    - Sur le 68000, il n'y a pas d'extension directe .B -> .L.
+      Il faut faire EXT.W puis EXT.L
+    - Le 68020 ajoute EXTB.L Dn pour l'extension .B -> .L directe
+
+  4.3.6 Test et comparaison
+
+  TST.s  ea            Tester l'operande (comparer avec zero)
+                       [CCR: N, Z mis a jour; V=0, C=0]
+
+  CMP.s  ea, Dn        Calculer Dn - ea, positionner les drapeaux
+                       mais ne stocker pas le resultat
+                       [CCR: N, Z, V, C]
+
+  CMPA.s ea, An        Calculer An - ea, positionner les drapeaux
+                       (s = W signe-etendu ou L)
+                       [CCR: N, Z, V, C]
+
+  CMPI.s #imm, ea      Calculer ea - imm, positionner les drapeaux
+                       [CCR: N, Z, V, C]
+
+  CMPM.s (An)+, (Am)+  Comparer deux blocs memoire element par element
+                       Calcule [Am]+ - [An]+, positionne les drapeaux
+                       (post-increment sur les deux registres)
+                       [CCR: N, Z, V, C]
+
+  Exemples :
+    TST.L   D0                 ; tester si D0 est zero
+    BEQ     _est_zero          ; sauter si D0 = 0
+
+    CMP.W   #100, D0           ; comparer D0.W avec 100
+    BGT     _superieur         ; sauter si D0.W > 100 (signe)
+
+    CMPA.L  A0, A1             ; comparer A1 avec A0
+    BEQ     _meme_adresse      ; sauter si A0 = A1
+
+    ; Comparer deux chaines de 10 octets
+    LEA     Str1, A0
+    LEA     Str2, A1
+    MOVEQ   #9, D7             ; compteur = 10 - 1
+  cmp_loop:
+    CMPM.B  (A0)+, (A1)+       ; comparer octet par octet
+    DBNE    D7, cmp_loop       ; continuer si egal et D7 >= 0
+
+  Remarques :
+    - TST ne modifie PAS X (contrairement a CMP)
+    - CMP ne modifie PAS X (contrairement a SUB)
+    - CMPM est specialement concu pour la comparaison de blocs
+      memoire, avec auto-increment des deux pointeurs
+    - CMPA signe-etend l'operande .W a 32 bits avant la
+      comparaison
+
+  4.4 Operations logiques
+  ------------------------
+
+  4.4.1 Operations logiques de base
+
+  AND.s  ea, Dn        Dn <- Dn AND ea [CCR: N, Z; V=0, C=0]
+  AND.s  Dn, ea        ea <- ea AND Dn [CCR: N, Z; V=0, C=0]
+
+  ANDI.s #imm, ea      ea <- ea AND imm [CCR: N, Z; V=0, C=0]
+
+  OR.s   ea, Dn        Dn <- Dn OR ea [CCR: N, Z; V=0, C=0]
+  OR.s   Dn, ea        ea <- ea OR Dn [CCR: N, Z; V=0, C=0]
+
+  ORI.s  #imm, ea      ea <- ea OR imm [CCR: N, Z; V=0, C=0]
+
+  EOR.s  Dn, ea        ea <- ea XOR Dn [CCR: N, Z; V=0, C=0]
+
+  EORI.s #imm, ea      ea <- ea XOR imm [CCR: N, Z; V=0, C=0]
+
+  NOT.s  ea            ea <- NOT ea (complement a un)
+                       [CCR: N, Z; V=0, C=0]
+
+  Exemples :
+    AND.L   #$FF, D0           ; masquer les bits hauts (garder octet)
+    OR.W    #$8000, D0         ; mettre le bit 15 a 1
+    EOR.L   D0, D0             ; D0 := 0 (idiome de mise a zero)
+    NOT.L   D0                 ; inverser tous les bits de D0
+    ANDI.B  #$0F, D0           ; garder les 4 bits bas
+
+  Remarques :
+    - EOR (XOR) sur le 68000 n'accepte comme source QUE Dn
+      (pas d'autre mode d'adressage en source)
+    - Pour faire ea XOR ea, il faut d'abord charger dans Dn
+    - ANDI/ORI/EORI acceptent les immediats en source
+
+  4.4.2 Operations logiques sur le CCR et le SR
+
+  ANDI.B #imm, CCR     CCR <- CCR AND imm
+  ORI.B  #imm, CCR     CCR <- CCR OR imm
+  EORI.B #imm, CCR     CCR <- CCR XOR imm
+
+  ANDI.W #imm, SR      SR <- SR AND imm (privilegiee)
+  ORI.W  #imm, SR      SR <- SR OR imm (privilegiee)
+  EORI.W #imm, SR      SR <- SR XOR imm (privilegiee)
+
+  Exemples :
+    ANDI.B  #$FE, CCR          ; effacer le drapeau C
+    ORI.B   #$04, CCR          ; mettre le drapeau Z a 1
+    ANDI.W  #$F8FF, SR         ; passer au niveau d'interruption 0
+    ORI.W   #$0700, SR         ; masquer toutes les interruptions
+
+  4.5 Decalages et rotations
+  ---------------------------
+
+  4.5.1 Decalages arithmetiques
+
+  ASL.s  #cnt, Dn      Decalage arithmetique a gauche
+  ASL.s  Dn, Dn        (cnt = 1 a 8 en immediat, ou valeur de Dn)
+  ASL.W  ea             (decalage de 1 position en memoire)
+                       Bit de poids fort -> C et X, 0 -> bit 0
+                       [CCR: X, N, Z, V, C]
+
+  ASR.s  #cnt, Dn      Decalage arithmetique a droite
+  ASR.s  Dn, Dn        (preserve le bit de signe)
+  ASR.W  ea             Bit 0 -> C et X, signe preserve
+                       [CCR: X, N, Z, V, C]
+
+  Exemples :
+    ASL.L   #1, D0             ; D0 := D0 * 2
+    ASL.L   #3, D0             ; D0 := D0 * 8
+    ASR.W   #1, D0             ; D0.W := D0.W / 2 (signe)
+    ASL.W   (A0)               ; decaler le mot en memoire
+
+  4.5.2 Decalages logiques
+
+  LSL.s  #cnt, Dn      Decalage logique a gauche
+  LSL.s  Dn, Dn        Identique a ASL pour le decalage a gauche
+  LSL.W  ea             [CCR: X, N, Z, V=0, C]
+
+  LSR.s  #cnt, Dn      Decalage logique a droite
+  LSR.s  Dn, Dn        0 -> bit de poids fort, bit 0 -> C et X
+  LSR.W  ea             (ne preserve PAS le signe)
+                       [CCR: X, N, Z, V=0, C]
+
+  Exemples :
+    LSL.L   #2, D0             ; D0 := D0 * 4 (non signe)
+    LSR.L   #4, D0             ; D0 := D0 / 16 (non signe)
+    LSL.W   #1, D0             ; equivalent a ASL.W #1, D0
+
+  Remarques :
+    - ASL et LSL produisent le meme resultat
+    - ASR preserve le signe, LSR insere des zeros
+    - Le compteur immediat va de 1 a 8 ; pour des decalages
+      plus grands, utiliser un registre Dn comme compteur
+    - Les decalages en memoire ne deplacent que d'1 position
+      et operent uniquement en .W
+
+  4.5.3 Rotations
+
+  ROL.s  #cnt, Dn      Rotation a gauche
+  ROL.s  Dn, Dn        Bit de poids fort -> C et bit 0
+  ROL.W  ea             [CCR: N, Z, V=0, C]
+
+  ROR.s  #cnt, Dn      Rotation a droite
+  ROR.s  Dn, Dn        Bit 0 -> C et bit de poids fort
+  ROR.W  ea             [CCR: N, Z, V=0, C]
+
+  ROXL.s #cnt, Dn      Rotation a gauche a travers X
+  ROXL.s Dn, Dn        MSB -> C et X, ancien X -> bit 0
+  ROXL.W ea             [CCR: X, N, Z, V=0, C]
+
+  ROXR.s #cnt, Dn      Rotation a droite a travers X
+  ROXR.s Dn, Dn        Bit 0 -> C et X, ancien X -> MSB
+  ROXR.W ea             [CCR: X, N, Z, V=0, C]
+
+  Exemples :
+    ROL.L   #8, D0             ; rotation de D0 de 8 bits a gauche
+    ROR.W   #1, D0             ; rotation de D0.W d'1 bit a droite
+    ROXL.L  #1, D0             ; rotation avec X (multi-precision)
+
+  Remarques :
+    - ROL/ROR n'affectent PAS le drapeau X (seulement C)
+    - ROXL/ROXR incluent X dans la rotation, formant une chaine
+      de (taille+1) bits. C'est utile pour les rotations
+      multi-precision
+    - Les rotations en memoire ne tournent que d'1 position
+
+  4.6 Manipulation de bits
+  -------------------------
+
+  Ces instructions testent, modifient ou complementent un bit
+  individuel dans un registre ou en memoire. Le bit teste est
+  copie (inverse) dans le drapeau Z du CCR.
+
+  BTST  #bit, ea       Tester le bit : Z <- NOT bit selectionne
+  BTST  Dn, ea         [CCR: Z mis a jour]
+
+  BSET  #bit, ea       Tester puis mettre a 1 : Z <- NOT bit, bit <- 1
+  BSET  Dn, ea         [CCR: Z mis a jour]
+
+  BCLR  #bit, ea       Tester puis mettre a 0 : Z <- NOT bit, bit <- 0
+  BCLR  Dn, ea         [CCR: Z mis a jour]
+
+  BCHG  #bit, ea       Tester puis completer : Z <- NOT bit,
+  BCHG  Dn, ea         bit <- NOT bit
+                       [CCR: Z mis a jour]
+
+  Le numero de bit peut etre :
+    - Un immediat (0 a 31 pour Dn, 0 a 7 pour la memoire)
+    - Un registre Dn (modulo 32 pour Dn, modulo 8 pour memoire)
+
+  Quand l'operande est un registre, l'operation porte sur les
+  32 bits du registre (bit 0 a 31).
+  Quand l'operande est en memoire, l'operation porte sur un
+  octet (bit 0 a 7).
+
+  Exemples :
+    BTST    #0, D0             ; tester le bit 0 de D0
+    BNE     _impair            ; sauter si bit 0 = 1
+
+    BSET    #7, D0             ; mettre le bit 7 de D0 a 1
+    BCLR    #31, D0            ; effacer le bit 31 de D0
+    BCHG    D1, D0             ; completer le bit D1 de D0
+
+    BTST    #0, (A0)           ; tester le bit 0 de l'octet [A0]
+    BSET    #7, (A0)           ; mettre le bit 7 de l'octet [A0]
+
+  Remarques :
+    - Le drapeau Z est l'INVERSE du bit teste :
+      Z = 1 si le bit etait 0, Z = 0 si le bit etait 1
+    - Sur le 68000, BTST peut tester n'importe quel mode
+      d'adressage, mais BSET/BCLR/BCHG ne peuvent pas
+      modifier un registre d'adresses directement
+
+  4.7 Arithmetique BCD (decimal code binaire)
+  ---------------------------------------------
+
+  Le 68000 supporte l'arithmetique BCD (Binary Coded Decimal)
+  pour les applications financieres et commerciales.
+
+  ABCD.B Dn, Dn        Dn <- Dn + Dn + X (addition BCD)
+  ABCD.B -(An), -(An)  [CCR: X, C mis a jour; Z non remis a zero]
+
+  SBCD.B Dn, Dn        Dn <- Dn - Dn - X (soustraction BCD)
+  SBCD.B -(An), -(An)  [CCR: X, C mis a jour; Z non remis a zero]
+
+  NBCD.B ea            ea <- 0 - ea - X (negation BCD)
+                       [CCR: X, C mis a jour; Z non remis a zero]
+
+  Exemples :
+    ; Additionner deux nombres BCD de 4 chiffres
+    ; D0 = $1234, D1 = $5678, resultat dans D0
+    MOVE    #$04, CCR          ; mettre X = 0 (effacer la retenue)
+    ABCD.B  D1, D0             ; additionner les octets bas (BCD)
+    SWAP    D0
+    SWAP    D1
+    ABCD.B  D1, D0             ; additionner les octets hauts + retenue
+
+  Remarques :
+    - Les operations BCD ne travaillent que sur des octets
+    - Le drapeau Z n'est PAS remis a zero si le resultat est
+      non-nul (il est seulement mis a 1 si le resultat est 0).
+      Ceci permet de tester le zero sur des operations multi-
+      octets en initialisant Z a 1 au depart
+    - Le mode -(An), -(An) est prevu pour traiter des chaines
+      BCD en memoire de droite a gauche
+
+  4.8 Branchements et controle de flux
+  --------------------------------------
+
+  4.8.1 Sauts inconditionnels
+
+  JMP  ea              Saut inconditionnel a l'adresse effective
+                       PC := ea
+                       [CCR: non modifie]
+
+  BRA  label           Branchement relatif inconditionnel
+  BRA.S label          PC := PC + deplacement (8 ou 16 bits)
+  BRA.W label          [CCR: non modifie]
+
+  Exemples :
+    JMP     (A0)               ; saut via pointeur dans A0
+    JMP     Table(PC,D0.W)     ; saut via table indexee
+    BRA     Boucle             ; branchement relatif
+    BRA.S   Suite              ; branchement court (8 bits)
+
+  Remarques :
+    - BRA est prefere a JMP pour le code relogeable (PIC)
+    - BRA.S (short) utilise un deplacement 8 bits (-128 a +126)
+    - BRA.W utilise un deplacement 16 bits (-32768 a +32766)
+    - JMP accepte les modes indirects et indexes, pas BRA
+
+  4.8.2 Appels de sous-programmes
+
+  JSR  ea              Appel : A7 -= 4, [A7] := PC, PC := ea
+                       [CCR: non modifie]
+
+  BSR  label           Appel relatif : A7 -= 4, [A7] := PC,
+  BSR.S label          PC := PC + deplacement
+  BSR.W label          [CCR: non modifie]
+
+  RTS                  Retour de sous-programme :
+                       PC := [A7], A7 += 4
+                       [CCR: non modifie]
+
+  RTR                  Retour avec restauration CCR :
+                       CCR := [A7], A7 += 2,
+                       PC := [A7], A7 += 4
+                       [CCR: restaure depuis la pile]
+
+  RTE                  Retour d'exception (privilegiee) :
+                       SR := [A7], A7 += 2,
+                       PC := [A7], A7 += 4
+                       [CCR: restaure depuis la pile]
+
+  Exemples :
+    JSR     MaRoutine          ; appel direct
+    BSR     MaRoutine          ; appel relatif (PIC)
+    BSR.S   Proche             ; appel relatif court
+    JSR     (A0)               ; appel indirect via pointeur
+
+  Remarques :
+    - BSR est prefere a JSR pour le code relogeable
+    - RTS depile uniquement PC (4 octets)
+    - RTR depile CCR (2 octets) puis PC (4 octets)
+    - RTE depile SR (2 octets) puis PC (4 octets) et est
+      reservee au mode superviseur
+
+  4.8.3 Branchements conditionnels
+
+  Bcc  label           Branchement si condition cc vraie
+  Bcc.S label          PC := PC + deplacement (8 ou 16 bits)
+  Bcc.W label          [CCR: non modifie]
+
+  Les conditions cc sont :
+
+  Condition            Mnemonique  Drapeaux testes
+  -------------------  ----------  ----------------------
+  Egal / zero          BEQ         Z = 1
+  Non egal             BNE         Z = 0
+  Retenue              BCS         C = 1
+  Pas de retenue       BCC         C = 0
+  Negatif              BMI         N = 1
+  Positif ou zero      BPL         N = 0
+  Debordement          BVS         V = 1
+  Pas de debordement   BVC         V = 0
+
+  Comparaisons non signees (unsigned) :
+  Inferieur            BCS / BLO   C = 1
+  Inf. ou egal         BLS         C = 1 ou Z = 1
+  Superieur            BHI         C = 0 et Z = 0
+  Sup. ou egal         BCC / BHS   C = 0
+
+  Comparaisons signees (signed) :
+  Inferieur            BLT         N xor V = 1
+  Inf. ou egal         BLE         (N xor V) = 1 ou Z = 1
+  Superieur            BGT         (N xor V) = 0 et Z = 0
+  Sup. ou egal         BGE         N xor V = 0
+
+  Toujours vrai         BRA         (inconditionnel)
+  Toujours faux         (pas de mnemonique ; utiliser NOP ou BRA.S *+2)
+
+  Exemples :
+    CMP.W   #10, D0
+    BEQ     _egal              ; sauter si D0.W = 10
+    BNE     _different         ; sauter si D0.W <> 10
+    BGT     _superieur         ; sauter si D0.W > 10 (signe)
+    BHI     _au_dessus         ; sauter si D0.W > 10 (non signe)
+    BLT     _inferieur         ; sauter si D0.W < 10 (signe)
+    BCS     _en_dessous        ; sauter si D0.W < 10 (non signe)
+
+    TST.L   D0
+    BMI     _negatif           ; sauter si D0 < 0
+    BPL     _positif           ; sauter si D0 >= 0
+
+  4.8.4 Boucle avec decrementation (DBcc)
+
+  DBcc Dn, label       Si condition cc est fausse :
+                         Dn.W <- Dn.W - 1
+                         Si Dn.W <> -1 : branchement a label
+                         Sinon : continuer (fin de boucle)
+                       Si condition cc est vraie :
+                         Continuer (sortie anticipee)
+                       [CCR: non modifie]
+
+  Les conditions cc sont les memes que pour Bcc.
+
+  DBF est la forme la plus courante (condition toujours fausse,
+  equivalente a DBRA sur certains assembleurs) :
+
+  DBF  Dn, label       Dn.W -= 1, boucler si Dn.W <> -1
+  DBRA Dn, label       Synonyme de DBF
+
+  Exemples :
+    ; Boucle de 10 iterations
+    MOVEQ   #9, D7             ; compteur = 10 - 1
+  boucle:
+    ...                        ; corps de la boucle
+    DBRA    D7, boucle         ; D7 -= 1, boucler si D7 >= 0
+
+    ; Chercher un zero dans un buffer
+    MOVEQ   #99, D7            ; max 100 octets
+  cherche:
+    TST.B   (A0)+              ; tester l'octet courant
+    DBEQ    D7, cherche        ; sortir si zero ou fin du compteur
+
+  Remarques :
+    - DBcc decremente UNIQUEMENT le mot bas (Dn.W) du registre
+    - La boucle se termine quand Dn.W passe de 0 a -1 ($FFFF)
+    - Pour N iterations, initialiser Dn a N-1
+    - DBcc est tres efficace pour les boucles avec condition
+      de sortie anticipee
+
+  4.8.5 Positionnement conditionnel d'octets (Scc)
+
+  Scc  ea              Si condition cc vraie : ea.B <- $FF
+                       Si condition cc fausse : ea.B <- $00
+                       [CCR: non modifie]
+
+  Les conditions cc sont les memes que pour Bcc.
+
+  Exemples :
+    CMP.W   D0, D1
+    SEQ     D2                 ; D2.B := $FF si D0 = D1, $00 sinon
+    SLT     D3                 ; D3.B := $FF si D1 < D0 (signe)
+    SNE     (A0)               ; [A0] := $FF si D0 <> D1
+
+  Remarques :
+    - Scc positionne un octet entier ($FF ou $00), pas un seul bit
+    - Cela permet d'utiliser le resultat comme masque pour les
+      operations logiques
+    - Equivalent de SETcc sur le 80386, mais utilise $FF au
+      lieu de $01
+
+  4.8.6 Interruptions logicielles
+
+  TRAP #vector         Exception logicielle (vecteur 32 + vector)
+                       vector = 0 a 15
+                       Sauvegarde PC et SR sur la pile superviseur,
+                       puis saut au handler via la table de vecteurs
+                       [CCR: non modifie (SR sauvegarde)]
+
+  TRAPV                Exception si V = 1 (debordement)
+                       Equivalent a : if V then TRAP #7
+                       [CCR: non modifie]
+
+  CHK.W ea, Dn         Verifier les bornes d'un indice :
+                       Si Dn < 0 ou Dn > ea : exception CHK
+                       (vecteur 6)
+                       [CCR: N modifie, autres indefinis]
+
+  Exemples :
+    TRAP    #0                 ; appel systeme (AmigaOS, Atari TOS)
+    TRAP    #15                ; appel au debugger (tradition 68K)
+    TRAPV                      ; exception si debordement
+    CHK.W   #99, D0            ; exception si D0 < 0 ou D0 > 99
+
+  Remarques :
+    - TRAP est le mecanisme standard pour les appels systeme
+      sur les systemes 68000 (AmigaOS, Atari TOS, Mac OS)
+    - Les vecteurs TRAP #0 a TRAP #15 occupent les adresses
+      $80 a $BC dans la table des vecteurs d'exception
+    - CHK est utile pour la verification automatique des
+      bornes de tableaux
+
+  4.9 Operations sur le registre d'etat
+  ---------------------------------------
+
+  4.9.1 Acces au CCR et au SR
+
+  MOVE.W  SR, ea       Lire le registre d'etat complet
+                       (privilegiee sur le 68010+, pas sur le 68000)
+                       [CCR: non modifie]
+
+  MOVE.W  ea, SR       Charger le registre d'etat (privilegiee)
+                       [CCR: modifie selon la valeur chargee]
+
+  MOVE.W  CCR, ea      Lire la partie CCR du registre d'etat
+                       (disponible a partir du 68010)
+
+  MOVE.W  ea, CCR      Charger la partie CCR
+                       (seul l'octet bas est utilise)
+                       [CCR: modifie selon la valeur chargee]
+
+  4.9.2 Acces au pointeur de pile utilisateur
+
+  MOVE.L  USP, An      Lire le pointeur de pile utilisateur
+                       (privilegiee)
+  MOVE.L  An, USP      Charger le pointeur de pile utilisateur
+                       (privilegiee)
+
+  Exemples :
+    MOVE.W  SR, D0             ; D0 := SR (lire le registre d'etat)
+    MOVE.W  #$2700, SR         ; SR := $2700 (niveau interruption 7)
+    MOVE.W  D0, CCR            ; CCR := D0 (bits bas)
+    MOVE.L  USP, A0            ; A0 := pile utilisateur (superviseur)
+
+  4.10 Instructions systeme et privilegiees
+  -------------------------------------------
+
+  4.10.1 Instructions privilegiees
+
+  Les instructions suivantes ne peuvent etre executees qu'en
+  mode superviseur (bit S du SR = 1). Toute tentative d'execution
+  en mode utilisateur genere une exception de violation de privilege
+  (vecteur 8).
+
+  STOP  #imm16         Charger SR avec imm16, puis arreter le
+                       processeur jusqu'a la prochaine interruption,
+                       exception ou reset
+                       [CCR: modifie selon imm16]
+
+  RESET                Envoyer le signal RESET sur le bus externe
+                       (reinitialise les peripheriques sans
+                        affecter le processeur lui-meme)
+                       [CCR: non modifie]
+
+  RTE                  Retour d'exception (voir section 4.8.2)
+
+  MOVE.W ea, SR        Charger le registre d'etat (voir 4.9.1)
+  MOVE.L USP, An       Acces au pointeur de pile utilisateur
+  MOVE.L An, USP       (voir section 4.9.2)
+
+  ANDI.W #imm, SR      Operations logiques sur le SR (voir 4.4.2)
+  ORI.W  #imm, SR
+  EORI.W #imm, SR
+
+  4.10.2 Instructions de controle
+
+  NOP                  Pas d'operation
+                       (force la synchronisation du pipeline)
+                       [CCR: non modifie]
+
+  ILLEGAL              Generer une exception d'instruction illegale
+                       (vecteur 4). Le codage est $4AFC.
+                       Utile pour le debogage et comme point d'arret
+
+  Remarques :
+    - STOP est utilisee dans les boucles d'attente d'interruption
+      pour reduire la consommation (idle loop)
+    - RESET n'affecte pas le processeur lui-meme, seulement
+      les peripheriques connectes au bus
+    - NOP sur le 68000 ne fait pas juste "rien" : elle force
+      la completion de toutes les operations en cours dans le
+      pipeline de pre-lecture
+
+  4.11 Resume et tableau recapitulatif
+  --------------------------------------
+
+  Nombre approximatif d'instructions par categorie :
+
+  Categorie                          Nombre
+  ---------------------------------  ------
+  Transfert de donnees                  15
+  Arithmetique entiere                  22
+  Operations logiques                    8
+  Decalages et rotations                 8
+  Manipulation de bits                   4
+  Arithmetique BCD                       3
+  Branchements et controle              20+
+  Positionnement conditionnel (Scc)     16
+  Boucles (DBcc)                        16
+  Registre d'etat                        8
+  Systeme et privilegiees                5
+  Divers (NOP, ILLEGAL, etc.)           2
+  ---------------------------------  ------
+  Total (hors variantes de taille)    ~130
+
+  Instructions les plus frequemment utilisees en pratique :
+
+  Instruction   Usage typique
+  -----------   ------------------------------------------
+  MOVE          Transfert de donnees (~40% des instructions)
+  MOVEQ         Chargement de petites constantes
+  LEA           Calcul d'adresses
+  ADD/SUB       Arithmetique de base
+  ADDQ/SUBQ     Increment/decrement rapide
+  CMP/TST       Preparation des branchements
+  BRA/Bcc       Controle de flux
+  BSR/JSR/RTS   Appels de fonctions
+  CLR           Mise a zero
+  AND/OR        Masquage et combinaison de bits
+  LSL/LSR       Multiplications/divisions par puissances de 2
+  DBRA          Boucles avec compteur
+  MOVEM         Sauvegarde/restauration de registres
+  LINK/UNLK     Gestion du cadre de pile
+  SWAP          Acces au mot haut d'un registre
+
+  Comparaison avec l'Intel 80386 :
+
+  Aspect                     68000               80386
+  -------------------------  -------------------  ----------------------
+  Nombre d'instructions      ~130                 ~180
+  Tailles d'operandes        .B / .W / .L         8 / 16 / 32 bits
+  Suffixe de taille          Obligatoire          Implicite (registre)
+  Operations memoire-memoire Non (sauf MOVEM,     MOV mem, mem indirect
+                             CMPM, ABCD, SBCD)
+  Multiplication             16x16 -> 32          8/16/32 -> double
+  Division                   32/16 -> 16+16       double -> simple
+  Branchement conditionnel   Bcc (8/16 bits)      Jcc (8/32 bits)
+  Boucle avec condition      DBcc (unique!)       LOOP (sans condition)
+  Positionnement cond.       Scc (-> $FF/$00)     SETcc (-> $01/$00)
+  Instructions de chaines    Non (utiliser DBRA)  MOVS, CMPS, etc.
+  Auto-increment/decrement   (An)+, -(An) en EA   Non (sauf PUSH/POP)
+  Modes d'adressage par instr Uniformes           Variables selon instr
+  Drapeaux apres MOVE        Modifies             Non modifies
+  Retenue etendue (X)        Oui (drapeau X)      Non (C sert pour tout)
+  Arithmetique BCD           ABCD, SBCD, NBCD     DAA, DAS, AAA, AAS
+  Ports E/S                  Memory-mapped         IN/OUT separes
+
+  Le 68000 se distingue par son jeu d'instructions orthogonal :
+  la plupart des instructions acceptent les memes modes d'adressage
+  et les memes tailles d'operandes. Cette regularite simplifie
+  l'apprentissage et la generation de code. Le drapeau X (eXtend)
+  separe de C (Carry) facilite l'arithmetique multi-precision.
+  En revanche, le 80386 offre des instructions de chaines (REP MOVS,
+  etc.) et des operations memoire-memoire plus directes.
