@@ -10076,7 +10076,13 @@ Begin
     If PI >= 0 Then
     Begin
       LI := FindLocal(PI, Up);
-      If LI >= 0 Then FVarTIdx := ProcTab[PI].Locals[LI].TypeIdx;
+      If LI >= 0 Then
+        FVarTIdx := ProcTab[PI].Locals[LI].TypeIdx
+      Else
+      Begin
+        LI := FindParam(PI, Up);
+        If LI >= 0 Then FVarTIdx := ProcTab[PI].Params[LI].TypeIdx;
+      End;
     End;
     If FVarTIdx <> TY_IDX_TEXT Then
     Begin
@@ -10089,8 +10095,7 @@ Begin
       IsFileRead := True;
       GenLoadAddr(PI, TokenPool[EP].Val);
       Inc(EP);
-      EmitInstr('MOV EAX,DWORD PTR [EAX]');  { charger le handle }
-      EmitInstr('PUSH EAX');
+      EmitInstr('PUSH EAX');  { adresse de la variable fichier }
       EmitInstr('CALL ' + TP_RT_PFX + 'READLN_FILE');
       EmitInstr('ADD ESP,4');
       { Sauter la virgule si presente }
@@ -15642,14 +15647,15 @@ Begin
   EmitInstr('RET');
 
   { ------ _TPRT_READLN_FILE : lire une ligne depuis fichier ---- }
-  { [ESP+4]=handle fichier                                         }
+  { [ESP+4]=adresse variable fichier                                }
   { Sortie : INBUF contient la ligne, terminee par NUL             }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'READLN_FILE');
   EmitInstr('PUSH EBP');
   EmitInstr('MOV EBP,ESP');
   EmitInstr('PUSHAD');
-  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');    { file handle }
+  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');    { adresse variable fichier }
+  EmitInstr('MOV EBX,DWORD PTR [EBX]');      { charger le handle }
   EmitInstr('XOR ECX,ECX');                    { compteur octets dans INBUF }
   EmitLabel(TP_RT_PFX + 'RF_NX');
   { Verifier si le buffer est vide }
