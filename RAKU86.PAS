@@ -270,7 +270,7 @@
             Iteration : for %h.kv -> $k, $v { ... }
             Hash en segment DATA pour les variables our
 
-  TODO 17 - SOUS-ROUTINES ET FONCTIONS (sub, return)
+  TODO 17 - SOUS-ROUTINES ET FONCTIONS (sub, return) [IMPLEMENTE]
             ParseSubDecl : sub nom(params) [returns Type] { stmts }
             Parametres positionnels : sub f($a, $b) { ... }
               Empiles de droite a gauche, acces [BP+offset]
@@ -728,6 +728,9 @@ Var
   { Compteurs hash (TODO 16) }
   HashTempCount  : Integer;
 
+  { Compteurs sous-routines (TODO 17) }
+  SubCount : Integer;
+
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
@@ -907,6 +910,10 @@ Procedure ParseHashMethodCall(SIdx : Integer;
                               Var Res : TExprVal);                 Forward;
 Procedure ParseHashStore(SIdx : Integer);                          Forward;
 Procedure EmitHashRuntime;                                         Forward;
+
+{ Forward declarations TODO 17 - Sous-routines et fonctions }
+Procedure ParseSubDecl;                                            Forward;
+Procedure ParseReturnStmt;                                         Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1159,6 +1166,7 @@ Begin
   ForCount     := 0;
   ArrayTempCount := 0;
   HashTempCount  := 0;
+  SubCount       := 0;
   GKwConsumed  := False;
   CurFnRetLbl  := '';
   CurFnName    := '';
@@ -3976,11 +3984,15 @@ Begin
     ExprAddrOf := '';
     Exit;
   End;
-  If (SymTab[SIdx].Cat = SC_MY) Or (SymTab[SIdx].Cat = SC_PARAM) Or
-     (SymTab[SIdx].Cat = SC_HAS) Then
+  If (SymTab[SIdx].Cat = SC_MY) Or (SymTab[SIdx].Cat = SC_HAS) Then
   Begin
     Str(SymTab[SIdx].Offset, S);
     ExprAddrOf := 'WORD PTR [BP-' + S + ']';
+  End
+  Else If SymTab[SIdx].Cat = SC_PARAM Then
+  Begin
+    Str(SymTab[SIdx].Offset, S);
+    ExprAddrOf := 'WORD PTR [BP+' + S + ']';
   End
   Else If (SymTab[SIdx].Cat = SC_OUR) Or (SymTab[SIdx].Cat = SC_CONST) Then
     ExprAddrOf := 'WORD PTR [' + SymTab[SIdx].MangledName + ']'
@@ -3994,11 +4006,15 @@ Var
   S : TString;
 Begin
   If (SIdx < 0) Or (SIdx >= SymCount) Then Exit;
-  If (SymTab[SIdx].Cat = SC_MY) Or (SymTab[SIdx].Cat = SC_PARAM) Or
-     (SymTab[SIdx].Cat = SC_HAS) Then
+  If (SymTab[SIdx].Cat = SC_MY) Or (SymTab[SIdx].Cat = SC_HAS) Then
   Begin
     Str(SymTab[SIdx].Offset, S);
     EmitInstr('MOV', '[BP-' + S + '], AX');
+  End
+  Else If SymTab[SIdx].Cat = SC_PARAM Then
+  Begin
+    Str(SymTab[SIdx].Offset, S);
+    EmitInstr('MOV', '[BP+' + S + '], AX');
   End
   Else If (SymTab[SIdx].Cat = SC_OUR) Or (SymTab[SIdx].Cat = SC_CONST) Then
     EmitInstr('MOV', '[' + SymTab[SIdx].MangledName + '], AX')
@@ -4024,14 +4040,15 @@ Begin
     Exit;
   End;
   Res.TypeIdx := SymTab[SIdx].TypeIdx;
-  If (SymTab[SIdx].Cat = SC_MY) Or (SymTab[SIdx].Cat = SC_PARAM) Or
-     (SymTab[SIdx].Cat = SC_HAS) Then
+  If (SymTab[SIdx].Cat = SC_MY) Or (SymTab[SIdx].Cat = SC_HAS) Then
   Begin
     Str(SymTab[SIdx].Offset, S);
-    If SymTab[SIdx].TypeIdx = TY_IDX_STR Then
-      EmitInstr('MOV', 'AX, [BP-' + S + ']')
-    Else
-      EmitInstr('MOV', 'AX, [BP-' + S + ']');
+    EmitInstr('MOV', 'AX, [BP-' + S + ']');
+  End
+  Else If SymTab[SIdx].Cat = SC_PARAM Then
+  Begin
+    Str(SymTab[SIdx].Offset, S);
+    EmitInstr('MOV', 'AX, [BP+' + S + ']');
   End
   Else If (SymTab[SIdx].Cat = SC_OUR) Or (SymTab[SIdx].Cat = SC_CONST) Then
   Begin
@@ -6931,6 +6948,199 @@ Begin
   LoopPop;
 End;
 
+{ ============================================================
+  TODO 17 - SOUS-ROUTINES ET FONCTIONS (sub, return) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseSubDecl : declaration de sous-routine ---------------- }
+(* Syntaxe : sub nom($a, $b, $c) { corps }                        *)
+{ Convention d appel cdecl 16 bits :                               }
+{   Arguments pousses de gauche a droite par l appelant            }
+{   Prologue : PUSH BP / MOV BP,SP / [SUB SP, locals]             }
+{   Epilogue : MOV SP,BP / POP BP / RET                           }
+{   Valeur de retour dans AX                                      }
+{ Parametres accessibles via [BP + offset positif] :               }
+{   [BP]   = ancien BP                                             }
+{   [BP+2] = adresse de retour                                    }
+{   [BP+4] = dernier param (pousse en dernier)                    }
+{   [BP+6] = avant-dernier param ...                               }
+{   [BP+4+(ParamCount-1-i)*2] = param i (0-base)                  }
+Procedure ParseSubDecl;
+Var
+  SubName     : TString;
+  ParamNames  : Array[0..MAX_PARAM - 1] Of TString;
+  ParamCount  : Integer;
+  LblSkip     : TString;
+  LblRet      : TString;
+  LblProc     : TString;
+  SaveFrame   : Integer;
+  SaveFnDepth : Integer;
+  SaveRetLbl  : TString;
+  SaveFnName  : TString;
+  I           : Integer;
+  Ofs         : Integer;
+  OfsStr      : TString;
+Begin
+  Inc(SubCount);
+  { Attendre le nom de la sous-routine }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('nom de sous-routine attendu apres ''sub''');
+    Exit;
+  End;
+  SubName := CurToken.Val;
+  ParserAdvance;
+
+  { Enregistrer le symbole sub dans la table }
+  SymAdd(SubName, '&', SC_SUB, TY_IDX_CODE, 0);
+
+  { Parser la liste de parametres : ($a, $b, $c) }
+  ParamCount := 0;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+  Begin
+    ParserAdvance;   { consommer '(' }
+    While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) And
+          (CurToken.Kind <> TK_EOF) Do
+    Begin
+      If CurToken.Kind = TK_SCALAR Then
+      Begin
+        If ParamCount < MAX_PARAM Then
+        Begin
+          ParamNames[ParamCount] := CurToken.Val;
+          Inc(ParamCount);
+        End
+        Else
+          CompileError('trop de parametres (max=' +
+                       IntToStr(MAX_PARAM) + ')');
+        ParserAdvance;
+      End
+      Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance   { consommer ',' }
+      Else
+      Begin
+        CompileError('parametre $nom attendu dans la signature de sub ' +
+                     SubName);
+        ParserAdvance;
+      End;
+    End;
+    { Consommer ')' }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else
+      CompileError(''')'' attendue apres les parametres de sub ' + SubName);
+  End;
+
+  { Generer les labels }
+  Str(SubCount, OfsStr);
+  LblSkip := '_RKL_SSKIP_' + OfsStr;
+  LblRet  := '_RKL_SRET_' + OfsStr;
+  LblProc := '_RKS_' + SymNameClean(SubName);
+
+  { Sauvegarder le contexte de la sous-routine courante }
+  SaveFrame   := CurFrameSize;
+  SaveFnDepth := CurFnDepth;
+  SaveRetLbl  := CurFnRetLbl;
+  SaveFnName  := CurFnName;
+
+  CurFrameSize := 0;
+  Inc(CurFnDepth);
+  CurFnRetLbl  := LblRet;
+  CurFnName    := SubName;
+
+  { JMP par-dessus le corps de la sub }
+  EmitInstr('JMP', LblSkip);
+  EmitBlankLine;
+  EmitComment('sub ' + SubName + '(' + IntToStr(ParamCount) + ' params)');
+  EmitRaw(LblProc + ' PROC NEAR');
+
+  { Prologue standard }
+  EmitProlog;
+
+  { Entrer dans une nouvelle portee }
+  SymEnterScope;
+
+  { Enregistrer les parametres dans la table des symboles }
+  { Les params sont pousses de gauche a droite par l'appelant. }
+  { Apres PUSH BP / MOV BP,SP :                                }
+  {   param[i] est a [BP + 4 + (ParamCount - 1 - i) * 2]      }
+  For I := 0 To ParamCount - 1 Do
+  Begin
+    Ofs := 4 + (ParamCount - 1 - I) * 2;
+    SymAdd(ParamNames[I], '$', SC_PARAM, TY_IDX_INT, Ofs);
+    Str(Ofs, OfsStr);
+    EmitComment('param $' + ParamNames[I] + ' [BP+' + OfsStr + ']');
+  End;
+
+  (* Parser le corps : accolade ouvrante, stmts, accolade fermante *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+    ParserAdvance   (* consommer accolade ouvrante *)
+  Else
+    CompileError('''{'' attendue pour le corps de sub ' + SubName);
+
+  While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) And
+        (CurToken.Kind <> TK_EOF) Do
+    ParseStmt;
+
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+    ParserAdvance   (* consommer accolade fermante *)
+  Else
+    CompileError('''}'' attendue a la fin de sub ' + SubName);
+
+  { Label de retour (cible de return) }
+  EmitLabel(LblRet);
+
+  { Epilogue standard }
+  EmitEpilog;
+  EmitRaw(LblProc + ' ENDP');
+  EmitBlankLine;
+
+  { Label de saut apres la sub }
+  EmitLabel(LblSkip);
+
+  { Quitter la portee }
+  SymLeaveScope;
+
+  { Restaurer le contexte }
+  CurFrameSize := SaveFrame;
+  CurFnDepth   := SaveFnDepth;
+  CurFnRetLbl  := SaveRetLbl;
+  CurFnName    := SaveFnName;
+End;
+
+{ ---- ParseReturnStmt : instruction return ---------------------- }
+{ Syntaxe : return expr ;                                          }
+{           return ;                                               }
+{ Evalue l'expression, place le resultat dans AX, puis JMP vers   }
+{ le label epilogue de la sous-routine courante (CurFnRetLbl).    }
+Procedure ParseReturnStmt;
+Var
+  E : TExprVal;
+Begin
+  If CurFnDepth <= 0 Then
+  Begin
+    CompileError('return en dehors d''une sous-routine');
+    Exit;
+  End;
+  { Si ';' immediat -> return void (AX=0) }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+  Begin
+    EmitInstr('XOR', 'AX, AX');
+    ParserAdvance;
+  End
+  Else
+  Begin
+    { Evaluer l'expression de retour }
+    ParseExpr(E);
+    ExprFlushToAX(E);
+    { Consommer ';' si present }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      ParserAdvance;
+  End;
+  { Sauter vers l'epilogue }
+  EmitInstr('JMP', CurFnRetLbl);
+  EmitComment('return de sub ' + CurFnName);
+End;
+
 Procedure ParseStmt;
 Var
   Kw : TString;
@@ -7005,6 +7215,20 @@ Begin
     Begin
       ParserAdvance;   { consommer 'for' }
       ParseForStmt;
+      Exit;
+    End;
+
+    { Sous-routines (TODO 17) }
+    If Kw = 'sub' Then
+    Begin
+      ParserAdvance;   { consommer 'sub' }
+      ParseSubDecl;
+      Exit;
+    End;
+    If Kw = 'return' Then
+    Begin
+      ParserAdvance;   { consommer 'return' }
+      ParseReturnStmt;
       Exit;
     End;
 
@@ -7108,6 +7332,7 @@ Begin
   ForCount       := 0;
   ArrayTempCount := 0;
   HashTempCount  := 0;
+  SubCount       := 0;
   GKwConsumed    := False;
   GCallArgCount  := 0;
   CurFnRetLbl    := '';
