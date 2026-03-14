@@ -2731,6 +2731,7 @@ Var mnem: String;
     invIdx, invCount: Integer;
     ldcIdx: Integer;
     ldcStr: String;
+    dhi, dlo: LongInt;
 Begin
  ParseInstruction := False;
  mnem := CurStr;
@@ -3822,8 +3823,9 @@ Begin
   End
   Else If CurTok = TK_FLOAT Then
   Begin
-   { Double : on utilise CPAddDouble avec representation simplifiee }
-   ldcIdx := CPAddDouble(0, Trunc(CurFloat));
+   { Double : convertir en IEEE 754 via RealToHiLo }
+   RealToHiLo(CurFloat, dhi, dlo);
+   ldcIdx := CPAddDouble(dhi, dlo);
    Consume;
   End
   Else

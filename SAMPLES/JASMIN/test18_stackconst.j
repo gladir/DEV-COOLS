@@ -186,6 +186,9 @@
   ; ldc2_w long
   ldc2_w 100000
   lstore_0
+  ; ldc2_w double
+  ldc2_w 3.14
+  dstore_0
   return
 .end method
 
