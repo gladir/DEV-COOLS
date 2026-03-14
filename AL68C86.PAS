@@ -2724,9 +2724,8 @@ Begin
             EmitInstr('XOR    AX, AX');
             EmitInstr('MOV    AL, [' + SymTab[E.SymIdx].MangledName + ']');
           End
-          Else If ModeKindOf(E.ModeIdx) = MK_ROW Then
-            EmitInstr('MOV    AX, OFFSET ' + SymTab[E.SymIdx].MangledName)
-          Else If ModeKindOf(E.ModeIdx) = MK_UNION Then
+          Else If (ModeKindOf(E.ModeIdx) = MK_ROW) Or
+                  (ModeKindOf(E.ModeIdx) = MK_UNION) Then
             EmitInstr('MOV    AX, OFFSET ' + SymTab[E.SymIdx].MangledName)
           Else
             EmitInstr('MOV    AX, [' + SymTab[E.SymIdx].MangledName + ']');
@@ -2735,17 +2734,10 @@ Begin
         Begin
           { Variable locale : [BP+Offset] }
           Str(E.Offset, S);
-          If ModeKindOf(E.ModeIdx) = MK_ROW Then
+          If (ModeKindOf(E.ModeIdx) = MK_ROW) Or
+             (ModeKindOf(E.ModeIdx) = MK_UNION) Then
           Begin
-            { ROW local : LEA pour obtenir l adresse du descripteur }
-            If E.Offset >= 0 Then
-              EmitInstr('LEA    AX, [BP+' + S + ']')
-            Else
-              EmitInstr('LEA    AX, [BP' + S + ']');
-          End
-          Else If ModeKindOf(E.ModeIdx) = MK_UNION Then
-          Begin
-            { UNION local : LEA pour obtenir l adresse du bloc }
+            { ROW/UNION local : LEA pour obtenir l adresse du bloc }
             If E.Offset >= 0 Then
               EmitInstr('LEA    AX, [BP+' + S + ']')
             Else

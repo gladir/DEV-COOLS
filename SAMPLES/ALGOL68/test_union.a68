@@ -7,7 +7,7 @@ BEGIN
   CO Variable UNION avec valeur INT CO
   NOMBRE x := 42;
 
-  CO Variable UNION avec valeur REAL CO
+  CO Variable UNION avec valeur INT (reel stub = entier tronque) CO
   NOMBRE y := 314;
 
   CO Variable UNION sans initialiseur (EMPTY) CO
