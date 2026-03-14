@@ -289,7 +289,7 @@
             Appel indirect : $code.($args) -> CALL [ptr]
             Recursion : appel direct par nom
 
-  TODO 18 - MULTI DISPATCH (multi sub, proto)
+  TODO 18 - MULTI DISPATCH (multi sub, proto) [IMPLEMENTE]
             Declaraton multi : multi sub f(Int $x) { ... }
               multi sub f(Str $x) { ... }
             proto sub f(|) {*} : prototype (optionnel)
@@ -474,6 +474,8 @@ Const
   MAX_STR       = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
   MAX_MODULE    = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
   MAX_MULTI     = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
+  MAX_MULTI_VAR   = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
+  MAX_MULTI_GROUP = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
   MAX_HASH_PAIRS  = 16;
   MAX_HASH_KEYS   = {$IFDEF FPC}512{$ELSE}100{$ENDIF};
   STACK_SIZE      = 1024;
@@ -643,6 +645,21 @@ Type
     KeyLbl  : TString;
   End;
 
+  { ---- Multi dispatch (TODO 18) -------------------------- }
+  TMultiVarRec = Record
+    LblName    : TString;   { label ASM du candidat (_RKS_f_M1) }
+    ParamCount : Integer;   { nombre de parametres              }
+    TypeIdx0   : Integer;   { type du 1er param (TY_UNKNOWN=any)}
+  End;
+
+  TMultiGroup = Record
+    Name     : TString;     { nom de base (ex: 'f')            }
+    VarCount : Integer;     { nombre de candidats multi         }
+    Vars     : Array[0..MAX_MULTI_VAR - 1] Of TMultiVarRec;
+    DefIdx   : Integer;     { indice du candidat par defaut (-1)}
+    HasProto : Boolean;     { proto sub declare ?               }
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -730,6 +747,11 @@ Var
 
   { Compteurs sous-routines (TODO 17) }
   SubCount : Integer;
+
+  { Multi dispatch (TODO 18) }
+  MultiGroupTab   : Array[0..MAX_MULTI_GROUP - 1] Of TMultiGroup;
+  MultiGroupCount : Integer;
+  MultiCount      : Integer;
 
 { ============================================================
   FORWARD DECLARATIONS
@@ -914,6 +936,13 @@ Procedure EmitHashRuntime;                                         Forward;
 { Forward declarations TODO 17 - Sous-routines et fonctions }
 Procedure ParseSubDecl;                                            Forward;
 Procedure ParseReturnStmt;                                         Forward;
+
+{ Forward declarations TODO 18 - Multi dispatch }
+Function  MultiGroupFind(Const Name : TString) : Integer;         Forward;
+Function  MultiGroupAdd(Const Name : TString) : Integer;          Forward;
+Procedure ParseMultiDecl;                                          Forward;
+Procedure ParseProtoDecl;                                          Forward;
+Procedure EmitMultiDispatchers;                                    Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1167,6 +1196,8 @@ Begin
   ArrayTempCount := 0;
   HashTempCount  := 0;
   SubCount       := 0;
+  MultiGroupCount := 0;
+  MultiCount      := 0;
   GKwConsumed  := False;
   CurFnRetLbl  := '';
   CurFnName    := '';
@@ -1327,6 +1358,7 @@ Begin
   EmitInstr('INT', '21h');
   EmitRaw('_RKS_MAIN ENDP');
   EmitBlankLine;
+  EmitMultiDispatchers;
   EmitRuntime;
   EmitRaw('_TEXT   ENDS');
   EmitBlankLine;
@@ -1466,6 +1498,10 @@ Begin
   DataAdd('_RK_IOBUF',   DK_BYTE, 0, '130 DUP(0)');
   DataAdd('_RK_HEAP',    DK_BYTE, 0, '4096 DUP(0)');
   DataAdd('_RK_HEAPTOP', DK_WORD, 0, '');
+  { Multi dispatch (TODO 18) }
+  DataAdd('_RK_MULTISIG',  DK_WORD, 0, '');
+  DataAdd('_RKK_NOMDISP',  DK_STR, 0,
+          'No matching multi candidate');
 End;
 
 { ============================================================
@@ -4352,15 +4388,21 @@ End;
 { ---- ParseSubCall : appel de sous-routine name(args) ---------- }
 { Pousse les arguments de droite a gauche, puis CALL _RKS_name,   }
 { ADD SP, N*2 pour nettoyer la pile.                              }
+{ Si la sub est multi, emet MOV [_RK_MULTISIG], type du 1er arg  }
+{ avant le CALL pour permettre le dispatch.                       }
 Procedure ParseSubCall(Const SubName : TString;
                        Var Res : TExprVal);
 Var
-  ArgCount : Integer;
-  E        : TExprVal;
-  Lbl      : TString;
+  ArgCount  : Integer;
+  E         : TExprVal;
+  Lbl       : TString;
+  GIdx      : Integer;
+  FirstType : Integer;
+  TS        : TString;
 Begin
   Lbl := '_RKS_' + SymNameClean(SubName);
-  ArgCount := 0;
+  ArgCount  := 0;
+  FirstType := TY_UNKNOWN;
   { Consommer '(' }
   ParserAdvance;
   { Parser les arguments separes par ',' }
@@ -4369,6 +4411,9 @@ Begin
     Repeat
       ParseExpr(E);
       ExprFlushToAX(E);
+      { Memoriser le type du premier argument pour multi dispatch }
+      If ArgCount = 0 Then
+        FirstType := E.TypeIdx;
       EmitPush('AX');
       Inc(ArgCount);
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
@@ -4382,6 +4427,18 @@ Begin
     ParserAdvance
   Else
     CompileError(''')'' attendue apres les arguments de ' + SubName);
+  { Multi dispatch : stocker le type du 1er arg dans _RK_MULTISIG }
+  GIdx := MultiGroupFind(SubName);
+  If GIdx >= 0 Then
+  Begin
+    If FirstType < 0 Then
+      EmitInstr('MOV', 'WORD PTR [_RK_MULTISIG], 0FFFFh')
+    Else
+    Begin
+      Str(FirstType, TS);
+      EmitInstr('MOV', 'WORD PTR [_RK_MULTISIG], ' + TS);
+    End;
+  End;
   { Emettre CALL }
   EmitInstr('CALL', Lbl);
   { Nettoyer la pile }
@@ -7141,6 +7198,380 @@ Begin
   EmitComment('return de sub ' + CurFnName);
 End;
 
+{ ============================================================
+  TODO 18 - MULTI DISPATCH (multi sub, proto) [IMPLEMENTE]
+  MultiGroupFind    : chercher un groupe multi par nom
+  ParseMultiDecl    : multi sub name(Type $param, ...) corps
+  ParseProtoDecl    : proto sub name
+  EmitMultiDispatchers : generer les PROC dispatchers
+  ============================================================ }
+
+{ ---- MultiGroupFind : chercher un groupe multi par nom ------ }
+{ Retourne l indice dans MultiGroupTab ou -1 si non trouve.     }
+Function MultiGroupFind(Const Name : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := 0 To MultiGroupCount - 1 Do
+    If MultiGroupTab[I].Name = Name Then
+    Begin
+      MultiGroupFind := I;
+      Exit;
+    End;
+  MultiGroupFind := -1;
+End;
+
+{ ---- MultiGroupAdd : trouver ou creer un groupe multi ------- }
+Function MultiGroupAdd(Const Name : TString) : Integer;
+Var
+  Idx : Integer;
+Begin
+  Idx := MultiGroupFind(Name);
+  If Idx >= 0 Then
+  Begin
+    MultiGroupAdd := Idx;
+    Exit;
+  End;
+  If MultiGroupCount >= MAX_MULTI_GROUP Then
+  Begin
+    CompileError('trop de groupes multi (max=' +
+                 IntToStr(MAX_MULTI_GROUP) + ')');
+    MultiGroupAdd := -1;
+    Exit;
+  End;
+  Idx := MultiGroupCount;
+  MultiGroupTab[Idx].Name     := Name;
+  MultiGroupTab[Idx].VarCount := 0;
+  MultiGroupTab[Idx].DefIdx   := -1;
+  MultiGroupTab[Idx].HasProto := False;
+  Inc(MultiGroupCount);
+  MultiGroupAdd := Idx;
+End;
+
+{ ---- ParseMultiDecl : declaration multi sub ----------------- }
+(* Syntaxe : multi sub nom(Type $a, Type $b) { corps }          *)
+(*           multi sub nom($a) { corps }  (candidat par defaut) *)
+{ La premiere declaration d un nom cree le symbole &nom.         }
+{ Chaque candidat genere un PROC _RKS_nom_MN avec son corps.    }
+{ Le dispatcher _RKS_nom est genere a la fin via                 }
+{ EmitMultiDispatchers.                                          }
+Procedure ParseMultiDecl;
+Var
+  SubName     : TString;
+  ParamNames  : Array[0..MAX_PARAM - 1] Of TString;
+  ParamTypes  : Array[0..MAX_PARAM - 1] Of Integer;
+  ParamCount  : Integer;
+  GIdx        : Integer;
+  VIdx        : Integer;
+  LblSkip     : TString;
+  LblRet      : TString;
+  LblProc     : TString;
+  SaveFrame   : Integer;
+  SaveFnDepth : Integer;
+  SaveRetLbl  : TString;
+  SaveFnName  : TString;
+  I           : Integer;
+  Ofs         : Integer;
+  OfsStr      : TString;
+  TyIdx       : Integer;
+  CntStr      : TString;
+  HasTyped    : Boolean;
+Begin
+  { Attendre 'sub' apres 'multi' }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'sub') Then
+    ParserAdvance   { consommer 'sub' }
+  Else
+  Begin
+    CompileError('''sub'' attendu apres ''multi''');
+    Exit;
+  End;
+
+  { Nom de la sous-routine }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('nom de sous-routine attendu apres ''multi sub''');
+    Exit;
+  End;
+  SubName := CurToken.Val;
+  ParserAdvance;
+
+  Inc(MultiCount);
+  Inc(SubCount);
+
+  { Trouver ou creer le groupe multi }
+  GIdx := MultiGroupAdd(SubName);
+  If GIdx < 0 Then Exit;
+
+  { Enregistrer le symbole &nom si c est la premiere variante }
+  If SymFind('&' + SubName) < 0 Then
+    SymAdd(SubName, '&', SC_SUB, TY_IDX_CODE, 0);
+
+  { Parser la liste de parametres avec contraintes de type }
+  ParamCount := 0;
+  HasTyped   := False;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+  Begin
+    ParserAdvance;   { consommer '(' }
+    While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) And
+          (CurToken.Kind <> TK_EOF) Do
+    Begin
+      { Verifier si un nom de type precede le $param }
+      TyIdx := TY_UNKNOWN;
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        TyIdx := TypeLookupName(CurToken.Val);
+        If TyIdx >= 0 Then
+        Begin
+          HasTyped := True;
+          ParserAdvance;   { consommer le nom de type }
+        End
+        Else
+          TyIdx := TY_UNKNOWN;
+      End;
+      If CurToken.Kind = TK_SCALAR Then
+      Begin
+        If ParamCount < MAX_PARAM Then
+        Begin
+          ParamNames[ParamCount] := CurToken.Val;
+          ParamTypes[ParamCount] := TyIdx;
+          Inc(ParamCount);
+        End
+        Else
+          CompileError('trop de parametres (max=' +
+                       IntToStr(MAX_PARAM) + ')');
+        ParserAdvance;
+      End
+      Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance
+      Else
+      Begin
+        CompileError('parametre $nom attendu dans multi sub ' + SubName);
+        ParserAdvance;
+      End;
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else
+      CompileError(''')'' attendue apres les parametres de multi sub ' +
+                   SubName);
+  End;
+
+  { Ajouter le candidat au groupe }
+  VIdx := MultiGroupTab[GIdx].VarCount;
+  If VIdx >= MAX_MULTI_VAR Then
+  Begin
+    CompileError('trop de variantes multi pour ' + SubName +
+                 ' (max=' + IntToStr(MAX_MULTI_VAR) + ')');
+    Exit;
+  End;
+
+  Str(VIdx + 1, CntStr);
+  LblProc := '_RKS_' + SymNameClean(SubName) + '_M' + CntStr;
+
+  MultiGroupTab[GIdx].Vars[VIdx].LblName    := LblProc;
+  MultiGroupTab[GIdx].Vars[VIdx].ParamCount := ParamCount;
+  If (ParamCount > 0) And HasTyped Then
+    MultiGroupTab[GIdx].Vars[VIdx].TypeIdx0 := ParamTypes[0]
+  Else
+    MultiGroupTab[GIdx].Vars[VIdx].TypeIdx0 := TY_UNKNOWN;
+  Inc(MultiGroupTab[GIdx].VarCount);
+
+  { Si pas de contrainte de type sur le 1er param -> candidat par defaut }
+  If (Not HasTyped) Or
+     ((ParamCount > 0) And (ParamTypes[0] = TY_UNKNOWN)) Then
+    MultiGroupTab[GIdx].DefIdx := VIdx;
+
+  { Generer les labels }
+  Str(SubCount, OfsStr);
+  LblSkip := '_RKL_SSKIP_' + OfsStr;
+  LblRet  := '_RKL_SRET_' + OfsStr;
+
+  { Sauvegarder le contexte }
+  SaveFrame   := CurFrameSize;
+  SaveFnDepth := CurFnDepth;
+  SaveRetLbl  := CurFnRetLbl;
+  SaveFnName  := CurFnName;
+
+  CurFrameSize := 0;
+  Inc(CurFnDepth);
+  CurFnRetLbl  := LblRet;
+  CurFnName    := SubName;
+
+  { JMP par-dessus le corps du candidat }
+  EmitInstr('JMP', LblSkip);
+  EmitBlankLine;
+  EmitComment('multi sub ' + SubName + ' candidat ' + CntStr +
+              ' (' + IntToStr(ParamCount) + ' params)');
+  EmitRaw(LblProc + ' PROC NEAR');
+
+  { Prologue standard }
+  EmitProlog;
+
+  { Nouvelle portee }
+  SymEnterScope;
+
+  { Enregistrer les parametres }
+  For I := 0 To ParamCount - 1 Do
+  Begin
+    Ofs := 4 + (ParamCount - 1 - I) * 2;
+    SymAdd(ParamNames[I], '$', SC_PARAM, TY_IDX_INT, Ofs);
+    Str(Ofs, OfsStr);
+    EmitComment('param $' + ParamNames[I] + ' [BP+' + OfsStr + ']');
+  End;
+
+  { Parser le corps }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+    ParserAdvance
+  Else
+    CompileError('''{'' attendue pour le corps de multi sub ' + SubName);
+
+  While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) And
+        (CurToken.Kind <> TK_EOF) Do
+    ParseStmt;
+
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+    ParserAdvance
+  Else
+    CompileError('''}'' attendue a la fin de multi sub ' + SubName);
+
+  { Label de retour }
+  EmitLabel(LblRet);
+
+  { Epilogue }
+  EmitEpilog;
+  EmitRaw(LblProc + ' ENDP');
+  EmitBlankLine;
+
+  { Label de saut apres le candidat }
+  EmitLabel(LblSkip);
+
+  { Quitter la portee }
+  SymLeaveScope;
+
+  { Restaurer le contexte }
+  CurFrameSize := SaveFrame;
+  CurFnDepth   := SaveFnDepth;
+  CurFnRetLbl  := SaveRetLbl;
+  CurFnName    := SaveFnName;
+End;
+
+{ ---- ParseProtoDecl : declaration proto sub ----------------- }
+(* Syntaxe : proto sub nom(|) {*}                               *)
+{ Declare le prototype d un groupe multi (optionnel).            }
+Procedure ParseProtoDecl;
+Var
+  SubName : TString;
+  GIdx    : Integer;
+Begin
+  { Attendre 'sub' apres 'proto' }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'sub') Then
+    ParserAdvance
+  Else
+  Begin
+    CompileError('''sub'' attendu apres ''proto''');
+    Exit;
+  End;
+
+  { Nom de la sous-routine }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('nom de sous-routine attendu apres ''proto sub''');
+    Exit;
+  End;
+  SubName := CurToken.Val;
+  ParserAdvance;
+
+  { Trouver ou creer le groupe multi }
+  GIdx := MultiGroupAdd(SubName);
+  If GIdx >= 0 Then
+    MultiGroupTab[GIdx].HasProto := True;
+
+  { Enregistrer le symbole &nom si pas deja fait }
+  If SymFind('&' + SubName) < 0 Then
+    SymAdd(SubName, '&', SC_SUB, TY_IDX_CODE, 0);
+
+  { Consommer (|) ou (*) }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+  Begin
+    ParserAdvance;
+    { Consommer tout jusqu a ')' }
+    While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) And
+          (CurToken.Kind <> TK_EOF) Do
+      ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance;
+  End;
+
+  (* Consommer le corps du proto : {*} ou vide *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+  Begin
+    ParserAdvance;
+    (* Consommer tout jusqu a accolade fermante *)
+    While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) And
+          (CurToken.Kind <> TK_EOF) Do
+      ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+      ParserAdvance;
+  End;
+
+  EmitComment('proto sub ' + SubName + ' (|) {*}');
+End;
+
+{ ---- EmitMultiDispatchers : generer les dispatchers ---------- }
+{ Pour chaque groupe multi, genere un PROC _RKS_nom qui lit     }
+{ _RK_MULTISIG (type du 1er argument) et JMP vers le candidat   }
+{ correspondant. Le candidat par defaut (sans contrainte de      }
+{ type) est utilise en dernier recours.                          }
+Procedure EmitMultiDispatchers;
+Var
+  G       : Integer;
+  V       : Integer;
+  DispLbl : TString;
+  S       : TString;
+Begin
+  If MultiGroupCount = 0 Then Exit;
+
+  EmitBlankLine;
+  EmitComment('=== Multi dispatchers (TODO 18) ===');
+
+  For G := 0 To MultiGroupCount - 1 Do
+  Begin
+    DispLbl := '_RKS_' + SymNameClean(MultiGroupTab[G].Name);
+    EmitBlankLine;
+    EmitComment('dispatcher multi sub ' + MultiGroupTab[G].Name);
+    EmitRaw(DispLbl + ' PROC NEAR');
+    EmitInstr('MOV', 'AX, WORD PTR [_RK_MULTISIG]');
+
+    { Emettre les CMP/JE pour chaque candidat type }
+    For V := 0 To MultiGroupTab[G].VarCount - 1 Do
+    Begin
+      If MultiGroupTab[G].Vars[V].TypeIdx0 <> TY_UNKNOWN Then
+      Begin
+        Str(MultiGroupTab[G].Vars[V].TypeIdx0, S);
+        EmitInstr('CMP', 'AX, ' + S);
+        EmitInstr('JE', MultiGroupTab[G].Vars[V].LblName);
+      End;
+    End;
+
+    { Candidat par defaut ou erreur }
+    If MultiGroupTab[G].DefIdx >= 0 Then
+      EmitInstr('JMP', MultiGroupTab[G].Vars[
+                       MultiGroupTab[G].DefIdx].LblName)
+    Else
+    Begin
+      { Pas de candidat par defaut -> erreur runtime }
+      EmitInstr('MOV', 'AX, OFFSET _RKK_NOMDISP');
+      EmitInstr('CALL', '_RKRT_OUTSTR');
+      EmitInstr('CALL', '_RKRT_NEWLINE');
+      EmitInstr('MOV', 'AX, 4C01h');
+      EmitInstr('INT', '21h');
+    End;
+
+    EmitRaw(DispLbl + ' ENDP');
+  End;
+  EmitBlankLine;
+End;
+
 Procedure ParseStmt;
 Var
   Kw : TString;
@@ -7229,6 +7660,20 @@ Begin
     Begin
       ParserAdvance;   { consommer 'return' }
       ParseReturnStmt;
+      Exit;
+    End;
+
+    { Multi dispatch (TODO 18) }
+    If Kw = 'multi' Then
+    Begin
+      ParserAdvance;   { consommer 'multi' }
+      ParseMultiDecl;
+      Exit;
+    End;
+    If Kw = 'proto' Then
+    Begin
+      ParserAdvance;   { consommer 'proto' }
+      ParseProtoDecl;
       Exit;
     End;
 
@@ -7333,6 +7778,8 @@ Begin
   ArrayTempCount := 0;
   HashTempCount  := 0;
   SubCount       := 0;
+  MultiGroupCount := 0;
+  MultiCount      := 0;
   GKwConsumed    := False;
   GCallArgCount  := 0;
   CurFnRetLbl    := '';

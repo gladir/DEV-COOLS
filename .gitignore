@@ -2,3 +2,6 @@ RAKU86
 RAKU86.o
 *.o
 *.asm
+RAKU86
+RAKU86.o
+*.asm
