@@ -4132,6 +4132,8 @@ Begin
   EmitLabel(LblNext);
 
   { --- Branches elseif --- }
+  { Note : IfCount est global et incremente a chaque if/elseif,    }
+  { garantissant l unicite des labels ELIF_N_1 / ENDIF_N.           }
   While (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'elseif') Do
   Begin
     ParserAdvance; { consomme 'elseif' }
@@ -4189,9 +4191,9 @@ End;
 { ---- EmitIfRuntime : routines runtime pour if (TODO 13) --------- }
 { _LUART_TRUTHY : AX = valeur quelconque -> AX = 0 (faux) ou 1     }
 {   En Lua : nil (AX=0) et false (AX=0) -> faux, tout le reste vrai }
-{   Puisque nil et false sont representes par 0, un simple           }
-{   CMP AX,0 suffit dans le code genere. Cette routine est un       }
-{   placeholder pour des types complexes futurs.                     }
+{   Actuellement le code genere utilise EmitTruthTest en inline qui  }
+{   emet CMP/JE directement. Cette routine est un placeholder pour   }
+{   des types complexes futurs (tables, userdata avec metatables).   }
 Procedure EmitIfRuntime;
 Begin
   EmitBlankLine;
