@@ -654,3 +654,608 @@
     Modele memoire           Lineaire 24 bits   Segmente/Plat 32b
     Endianness               Big-endian         Little-endian
     Separation donnees/adr.  Oui (D/A)          Non
+
+==============================================================================
+3. MODES D'ADRESSAGE
+==============================================================================
+
+  3.1 Vue d'ensemble
+  ------------------
+
+  Le 68000 dispose d'un jeu de modes d'adressage riche et regulier,
+  avec 14 modes d'adressage au total. Ces modes s'appliquent de
+  maniere orthogonale a la plupart des instructions, ce qui rend
+  l'assembleur 68000 particulierement expressif et elegant.
+
+  L'adresse effective (Effective Address, EA) d'un operande memoire
+  est calculee par le processeur en fonction du mode d'adressage
+  specifie. Le 68000 encode le mode d'adressage dans un champ de
+  6 bits de l'instruction : 3 bits pour le mode et 3 bits pour le
+  registre.
+
+  Champ EA (6 bits) :
+
+    Mode  Registre  Description
+    ---   --------  ---------------------------------
+    000   Dn        Registre de donnees direct
+    001   An        Registre d'adresses direct
+    010   An        Indirect par registre d'adresses
+    011   An        Indirect avec post-increment
+    100   An        Indirect avec pre-decrement
+    101   An        Indirect avec deplacement (d16)
+    110   An        Indirect indexe (d8, Xn)
+    111   000       Adressage absolu court (16 bits)
+    111   001       Adressage absolu long (32 bits)
+    111   010       Relatif au PC avec deplacement
+    111   011       Relatif au PC indexe
+    111   100       Immediat
+
+  Contrairement au x86 ou l'adresse effective est calculee a partir
+  d'une combinaison base+index*echelle+deplacement, le 68000 utilise
+  des modes d'adressage distincts, chacun avec sa propre semantique.
+
+  Le 68000 n'a pas de concept de segments memoire. Toutes les
+  adresses sont dans un espace lineaire de 24 bits (16 Mo).
+
+  3.2 Adressage par registre de donnees direct (Dn)
+  --------------------------------------------------
+
+  L'operande est le contenu d'un registre de donnees. Aucun acces
+  memoire n'est effectue. C'est le mode le plus rapide.
+
+  Notation assembleur : Dn (ou n = 0 a 7)
+
+  L'operation porte sur le registre lui-meme. La taille de
+  l'operande (.B, .W ou .L) determine quelle portion du registre
+  est affectee :
+    .B : bits 0-7 (les bits 8-31 ne sont pas modifies)
+    .W : bits 0-15 (les bits 16-31 ne sont pas modifies)
+    .L : bits 0-31 (tout le registre)
+
+  Exemples :
+    MOVE.L  D0, D1         ; D1 := D0 (32 bits)
+    ADD.W   D2, D3         ; D3.W := D3.W + D2.W
+    CLR.B   D4             ; D4 octet bas := 0
+    NOT.L   D5             ; complement de D5 (32 bits)
+    TST.W   D6             ; teste D6.W, positionne CCR
+    SWAP    D7             ; echange les mots haut et bas de D7
+
+  Utilisation typique :
+    - Operandes arithmetiques et logiques
+    - Compteurs de boucles
+    - Valeurs temporaires de calcul
+    - Comparaisons et tests
+
+  Remarques :
+    - Les 8 registres D0-D7 sont interchangeables
+    - Les operations sur les registres de donnees modifient les
+      drapeaux de condition (CCR)
+
+  3.3 Adressage par registre d'adresses direct (An)
+  ---------------------------------------------------
+
+  L'operande est le contenu d'un registre d'adresses. Comme pour
+  les registres de donnees, aucun acces memoire n'est effectue.
+
+  Notation assembleur : An (ou n = 0 a 7)
+
+  Les operations sur les registres d'adresses different de celles
+  sur les registres de donnees :
+    - Seules les tailles .W et .L sont autorisees (pas de .B)
+    - Les operations ne modifient PAS les drapeaux de condition
+      (sauf CMPA)
+    - MOVEA.W signe-etend la valeur 16 bits a 32 bits
+
+  Exemples :
+    MOVEA.L A0, A1         ; A1 := A0 (32 bits)
+    MOVEA.W #$FFF0, A2     ; A2 := $FFFFFFF0 (signe-etendu)
+    ADDA.L  D0, A3         ; A3 := A3 + D0 (pas de modif CCR)
+    SUBA.L  A4, A5         ; A5 := A5 - A4
+    CMPA.W  A6, A7         ; compare A6.W et A7.W (modif CCR)
+    LEA     Table, A0      ; A0 := adresse de Table
+
+  Utilisation typique :
+    - Pointeurs vers des structures de donnees
+    - Pointeurs de base pour l'adressage indirect
+    - Registre de cadre de pile (A6 = frame pointer)
+    - Pointeur de pile (A7 = SP)
+
+  Remarques :
+    - A7 est le pointeur de pile et a un comportement special
+      pour l'auto-increment/decrement en .B (ajuste de 2)
+    - Les operations sur An sont souvent en .L pour manipuler
+      des adresses completes sur 32 bits
+
+  3.4 Adressage indirect par registre d'adresses (An)
+  ----------------------------------------------------
+
+  Le registre d'adresses contient l'adresse de l'operande en
+  memoire. Le processeur lit ou ecrit a l'adresse pointee par An.
+
+  Notation assembleur : (An)
+
+  Formule : EA = [An]
+
+  Exemples :
+    MOVE.L  (A0), D0       ; D0 := contenu a l'adresse dans A0
+    MOVE.W  D1, (A2)       ; stocke D1.W a l'adresse dans A2
+    CLR.B   (A3)           ; met a zero l'octet pointe par A3
+    TST.L   (A4)           ; teste le long mot pointe par A4
+    ADD.W   (A5), D6       ; D6.W := D6.W + [A5]
+    CMP.L   (A0), (A1)     ; ILLEGAL : deux operandes memoire
+                           ; (sauf CMPM avec post-increment)
+
+  Utilisation typique :
+    - Dereferencement de pointeurs
+    - Acces a des structures de donnees via un pointeur
+    - Parcours de listes chainees
+
+  Remarques :
+    - L'adresse dans An doit respecter les contraintes
+      d'alignement : paire pour .W et .L
+    - Ce mode est equivalent a [reg] sur x86
+
+  3.5 Adressage indirect avec post-increment (An)+
+  --------------------------------------------------
+
+  Apres l'acces memoire, le registre d'adresses est automatiquement
+  incremente de la taille de l'operande. Ce mode est ideal pour le
+  parcours sequentiel de donnees (lecture de tableaux, depilage).
+
+  Notation assembleur : (An)+
+
+  Formule : EA = [An], puis An := An + taille
+
+  Increment selon la taille :
+    .B : An += 1 (sauf A7 : An += 2 pour garder l'alignement)
+    .W : An += 2
+    .L : An += 4
+
+  Exemples :
+    MOVE.B  (A0)+, D0      ; D0.B := [A0], puis A0 += 1
+    MOVE.W  (A1)+, D1      ; D1.W := [A1], puis A1 += 2
+    MOVE.L  (A2)+, D2      ; D2.L := [A2], puis A2 += 4
+    MOVE.L  (A7)+, D3      ; equivalent de POP D3
+
+  Parcours d'un tableau de mots :
+    MOVEA.L #Buffer, A0    ; A0 pointe sur le debut
+    MOVEQ   #9, D7         ; compteur = 10 - 1
+  boucle:
+    MOVE.W  (A0)+, D0      ; lire le mot suivant
+    ...                    ; traitement
+    DBRA    D7, boucle     ; D7-- et boucle si D7 >= 0
+
+  Utilisation typique :
+    - Lecture sequentielle de tableaux et buffers
+    - Depilage (equivalent de POP)
+    - Copie de blocs memoire (source)
+    - Instructions CMPM (An)+,(Am)+
+
+  Remarques :
+    - Le post-increment est effectue APRES l'acces memoire
+    - Pour A7, l'increment en .B est toujours 2 pour maintenir
+      l'alignement de la pile sur une adresse paire
+    - C'est l'un des modes les plus utilises en pratique
+
+  3.6 Adressage indirect avec pre-decrement -(An)
+  -------------------------------------------------
+
+  Avant l'acces memoire, le registre d'adresses est automatiquement
+  decremente de la taille de l'operande. Ce mode est l'inverse du
+  post-increment et est ideal pour l'empilage et l'ecriture
+  sequentielle en ordre inverse.
+
+  Notation assembleur : -(An)
+
+  Formule : An := An - taille, puis EA = [An]
+
+  Decrement selon la taille :
+    .B : An -= 1 (sauf A7 : An -= 2 pour garder l'alignement)
+    .W : An -= 2
+    .L : An -= 4
+
+  Exemples :
+    MOVE.B  D0, -(A0)      ; A0 -= 1, puis [A0] := D0.B
+    MOVE.W  D1, -(A1)      ; A1 -= 2, puis [A1] := D1.W
+    MOVE.L  D2, -(A7)      ; equivalent de PUSH D2
+    CLR.L   -(A3)          ; A3 -= 4, puis [A3] := 0
+
+  Empilage et depilage :
+    MOVE.L  D0, -(A7)      ; PUSH D0
+    MOVE.L  (A7)+, D0      ; POP D0
+
+  Utilisation typique :
+    - Empilage (equivalent de PUSH)
+    - Ecriture sequentielle en ordre inverse
+    - Construction de piles de donnees
+    - Sauvegarde de registres avec MOVEM
+
+  Remarques :
+    - Le pre-decrement est effectue AVANT l'acces memoire
+    - Le couple (An)+ et -(An) forme un mecanisme de pile
+      complet : -(An) empile, (An)+ depile
+    - Pour A7, le decrement en .B est toujours 2
+
+  3.7 Adressage indirect avec deplacement d16(An)
+  -------------------------------------------------
+
+  L'adresse effective est la somme du contenu du registre d'adresses
+  et d'un deplacement signe de 16 bits. Ce mode est utilise pour
+  acceder a des champs dans une structure ou a des variables locales
+  dans un cadre de pile.
+
+  Notation assembleur : d16(An) ou (d16,An)
+
+  Formule : EA = [An] + d16  (d16 est signe-etendu a 32 bits)
+
+  Le deplacement est un entier signe de 16 bits (-32768 a +32767).
+
+  Exemples :
+    MOVE.L  8(A6), D0      ; D0 := [A6 + 8] (1er parametre)
+    MOVE.W  -4(A6), D1     ; D1 := [A6 - 4] (variable locale)
+    MOVE.L  D2, 12(A0)     ; [A0 + 12] := D2 (champ structure)
+    CLR.W   0(A3)          ; equivalent de CLR.W (A3)
+    ADD.L   24(A5), D3     ; D3 += [A5 + 24]
+
+  Acces a un cadre de pile (stack frame) :
+    LINK    A6, #-8        ; creer cadre: PUSH A6, A6:=SP, SP-=8
+
+    ; Apres LINK A6, #-8 :
+    ;   12(A6)  2e parametre
+    ;    8(A6)  1er parametre
+    ;    4(A6)  adresse de retour (empilee par JSR)
+    ;    0(A6)  ancien A6 (empile par LINK)
+    ;   -2(A6)  1ere variable locale (word)
+    ;   -4(A6)  2e variable locale (word)
+    ;   -8(A6)  3e et 4e variables locales
+
+    MOVE.L  8(A6), D0      ; lire le 1er parametre
+    MOVE.W  D0, -2(A6)     ; stocker dans la 1ere variable locale
+    UNLK    A6             ; detruire le cadre
+
+  Acces a un champ de structure :
+    ; Supposons une structure Point { X: long, Y: long, Z: long }
+    ; A0 pointe sur une instance de Point
+    MOVE.L  0(A0), D0      ; D0 := Point.X
+    MOVE.L  4(A0), D1      ; D1 := Point.Y
+    MOVE.L  8(A0), D2      ; D2 := Point.Z
+
+  Utilisation typique :
+    - Acces aux parametres de fonctions via A6 (frame pointer)
+    - Acces aux variables locales via A6
+    - Acces aux champs d'une structure via un pointeur
+    - Acces aux elements d'un tableau avec offset fixe
+
+  Remarques :
+    - Ce mode est equivalent a [EBP+disp] sur x86
+    - Le deplacement de 16 bits est suffisant pour la plupart
+      des cadres de pile et des structures de donnees
+    - Un deplacement de 0 est equivalent a l'adressage indirect
+      simple (An), mais prend 2 octets de plus
+
+  3.8 Adressage indirect indexe d8(An,Xn)
+  ----------------------------------------
+
+  L'adresse effective est la somme du registre d'adresses, d'un
+  registre d'index (donnees ou adresses) et d'un deplacement signe
+  de 8 bits. Le registre d'index peut etre utilise en .W (signe-
+  etendu a 32 bits) ou en .L.
+
+  Notation assembleur : d8(An,Xn.s) ou (d8,An,Xn.s)
+    ou s = W ou L (taille du registre d'index)
+
+  Formule : EA = [An] + [Xn.s] + d8
+    (Xn.W est signe-etendu a 32 bits, d8 est signe-etendu a 32 bits)
+
+  Le deplacement est un entier signe de 8 bits (-128 a +127).
+
+  Exemples :
+    MOVE.B  0(A0,D0.W), D1   ; D1.B := [A0 + D0.W + 0]
+    MOVE.W  0(A0,D0.L), D1   ; D1.W := [A0 + D0.L + 0]
+    MOVE.L  4(A2,D3.W), D4   ; D4 := [A2 + D3.W + 4]
+    MOVE.B  0(A1,A2.L), D5   ; D5.B := [A1 + A2.L + 0]
+
+  Acces a un tableau de structures :
+    ; Tableau de records de 10 octets, A0 = base, D0.W = index * 10
+    MOVE.W  0(A0,D0.W), D1   ; 1er champ de l'element D0
+    MOVE.W  2(A0,D0.W), D2   ; 2e champ (offset +2)
+    MOVE.L  4(A0,D0.W), D3   ; 3e champ (offset +4)
+
+  Acces a un tableau a deux dimensions :
+    ; A0 = base du tableau, D0 = offset de la ligne,
+    ; D1 = offset de la colonne
+    ADD.W   D1, D0            ; offset total = ligne + colonne
+    MOVE.B  0(A0,D0.W), D2   ; lire l'element
+
+  Utilisation typique :
+    - Acces a des tableaux via un registre de base et un index
+    - Parcours de tableaux de structures
+    - Tables de correspondance (lookup tables)
+    - Acces a des tableaux a deux dimensions
+
+  Remarques :
+    - Le registre d'index peut etre un registre de donnees (D0-D7)
+      OU un registre d'adresses (A0-A7)
+    - Le deplacement de 8 bits est limite a -128..+127
+    - Le 68020 etend ce mode avec un deplacement de 32 bits et
+      un facteur d'echelle (1, 2, 4, 8) similaire au SIB du 80386
+    - Ce mode n'a pas d'equivalent direct sur le 8086; le mode
+      le plus proche sur le 80386 est [base+index+depl]
+
+  3.9 Adressage absolu court et adressage absolu long
+  ----------------------------------------------------
+
+  L'adresse effective est une constante codee dans l'instruction,
+  designant directement un emplacement memoire.
+
+  3.9.1 Adressage absolu court (xxx).W
+
+  Notation assembleur : (xxx).W ou simplement xxx (si < 16 bits)
+
+  L'adresse est un mot de 16 bits signe-etendu a 32 bits. Cela
+  permet d'adresser les plages :
+    $000000 a $007FFF (0 a 32767)
+    $FF8000 a $FFFFFF (mirroir des adresses hautes)
+
+  Formule : EA = signe_extension_32(adresse_16)
+
+  Exemples :
+    MOVE.L  ($0400).W, D0  ; lire a l'adresse $000400
+    CLR.W   ($1000).W      ; effacer le mot a l'adresse $001000
+
+  Utilisation typique :
+    - Acces aux vecteurs d'exception (zone $000000-$0003FF)
+    - Acces aux registres materiels mappes en memoire basse
+    - Acces a la zone $FF8000-$FFFFFF (registres materiels sur
+      certains systemes comme l'Atari ST)
+
+  3.9.2 Adressage absolu long (xxx).L
+
+  Notation assembleur : (xxx).L ou simplement xxx
+
+  L'adresse est un long mot de 32 bits (seuls les 24 bits bas
+  sont significatifs sur le 68000).
+
+  Formule : EA = adresse_32
+
+  Exemples :
+    MOVE.L  ($00FC0000).L, D0  ; lire dans la ROM
+    MOVE.W  D1, ($00DFF180).L  ; ecrire dans un registre hardware
+    JMP     ($00FC0004).L      ; saut a une adresse absolue
+    LEA     ($00100000).L, A0  ; charger une adresse absolue
+
+  Utilisation typique :
+    - Acces aux variables globales
+    - Acces aux registres materiels (hardware registers)
+    - Tables de donnees a adresse fixe
+    - Sauts et appels a des adresses absolues
+
+  Remarques :
+    - L'adressage absolu court est plus compact (2 octets d'adresse
+      au lieu de 4) mais limite en portee
+    - L'assembleur choisit generalement automatiquement la forme
+      la plus compacte en fonction de l'adresse
+    - Ce mode est equivalent a l'adressage direct [depl32] du x86
+
+  3.10 Adressage immediat #imm
+  -----------------------------
+
+  L'operande est une valeur constante codee directement dans
+  l'instruction. Il ne peut etre utilise que comme operande source.
+
+  Notation assembleur : #imm
+
+  La taille de la constante depend du suffixe de l'instruction :
+    .B : constante de 8 bits (codee sur un mot de 16 bits dans
+         l'instruction, octet de poids fort ignore)
+    .W : constante de 16 bits
+    .L : constante de 32 bits (2 mots d'extension)
+
+  Exemples :
+    MOVE.B  #$FF, D0       ; D0.B := 255
+    MOVE.W  #$1234, D1     ; D1.W := $1234
+    MOVE.L  #$12345678, D2 ; D2 := $12345678
+    ADD.W   #100, D3       ; D3.W := D3.W + 100
+    CMP.L   #0, D4         ; comparer D4 avec zero
+    AND.B   #$0F, D5       ; masquer les 4 bits hauts
+    ADDA.L  #1000, A0      ; A0 := A0 + 1000
+    MOVE.W  #$2700, SR     ; charger le registre d'etat (superviseur)
+
+  Cas special : MOVEQ (Move Quick)
+    MOVEQ   #42, D0        ; D0 := 42 (signe-etendu a 32 bits)
+    MOVEQ   #-1, D0        ; D0 := $FFFFFFFF
+
+    MOVEQ code la constante de 8 bits dans l'instruction elle-meme
+    (pas de mot d'extension), ce qui en fait l'instruction de
+    chargement la plus rapide. La constante est signee (-128 a +127)
+    et est automatiquement signe-etendue a 32 bits.
+
+  Cas special : ADDQ / SUBQ (Add/Subtract Quick)
+    ADDQ.W  #1, D0         ; D0.W += 1
+    SUBQ.L  #8, A7         ; A7 -= 8
+
+    Ces instructions codent la constante (1 a 8) dans l'opcode
+    lui-meme, sans mot d'extension.
+
+  Utilisation typique :
+    - Initialisation de registres
+    - Operations avec des constantes connues a l'assemblage
+    - Comparaisons avec des valeurs fixes
+    - Masquage de bits
+
+  Remarques :
+    - #imm ne peut jamais etre une destination
+    - MOVEQ est prefere a MOVE.L #imm,Dn quand la constante
+      tient sur 8 bits signes (-128 a +127)
+    - ADDQ/SUBQ sont preferes pour les constantes de 1 a 8
+
+  3.11 Adressage relatif au PC avec deplacement d16(PC)
+  ------------------------------------------------------
+
+  L'adresse effective est la somme du compteur programme (PC) et
+  d'un deplacement signe de 16 bits. Ce mode permet d'ecrire du
+  code independant de la position (position-independent code, PIC).
+
+  Notation assembleur : d16(PC) ou label(PC)
+
+  Formule : EA = PC + d16
+    (PC est la valeur du compteur programme au moment du calcul,
+     qui pointe sur le mot d'extension de l'instruction courante)
+
+  Le deplacement est signe, portee : -32768 a +32767 octets
+  par rapport au PC courant.
+
+  Exemples :
+    MOVE.L  Table(PC), D0  ; D0 := [PC + offset vers Table]
+    LEA     Data(PC), A0   ; A0 := adresse de Data (PIC)
+    MOVE.W  Var(PC), D1    ; D1 := valeur de Var (PIC)
+
+  Code position-independent (PIC) :
+    ; Ce code fonctionne quelle que soit son adresse de chargement
+    LEA     MaTable(PC), A0   ; A0 = adresse de MaTable
+    MOVE.W  (A0), D0          ; lire le premier element
+    BRA.S   Suite              ; branchement relatif (toujours PIC)
+
+  Utilisation typique :
+    - Code relogeable (shared libraries, overlays)
+    - Lecture de constantes et tables de donnees en PIC
+    - Acces aux donnees proches du code en cours d'execution
+    - Code ROM qui doit fonctionner a n'importe quelle adresse
+
+  Remarques :
+    - Ce mode ne peut etre utilise que comme SOURCE (lecture seule).
+      On ne peut pas ecrire a une adresse relative au PC :
+      MOVE.L D0, Label(PC) est ILLEGAL
+    - L'assembleur calcule automatiquement le deplacement entre
+      l'instruction et l'etiquette cible
+    - Les instructions de branchement (BRA, Bcc, BSR) utilisent
+      aussi un deplacement relatif au PC, mais c'est un mecanisme
+      separe (deplacement 8 ou 16 bits dans l'opcode)
+    - Portee limitee a +/- 32 Ko du PC courant
+
+  3.12 Adressage indexe relatif au PC d8(PC,Xn)
+  -----------------------------------------------
+
+  L'adresse effective est la somme du compteur programme, d'un
+  registre d'index et d'un deplacement signe de 8 bits. C'est la
+  version indexee de l'adressage PC-relatif.
+
+  Notation assembleur : d8(PC,Xn.s) ou (d8,PC,Xn.s)
+
+  Formule : EA = PC + [Xn.s] + d8
+
+  Exemples :
+    MOVE.B  Table(PC,D0.W), D1  ; D1 := Table[D0]
+    MOVE.W  0(PC,D0.L), D1     ; D1 := [PC + D0.L + 0]
+
+  Acces a une table de constantes en PIC :
+    LEA     JumpTable(PC), A0      ; adresse de la table (PIC)
+    MOVE.W  0(PC,D0.W), D1        ; alternative directe en PIC
+
+  Table de sauts PIC :
+    ; D0 contient l'index * 2 (offset dans la table)
+    MOVE.W  JTable(PC,D0.W), D0   ; lire le deplacement
+    JMP     JTable(PC,D0.W)       ; saut relatif au PC
+
+  Utilisation typique :
+    - Acces indexe a des tables de constantes en PIC
+    - Tables de sauts (switch/case) en code relogeable
+    - Acces a des tableaux en lecture seule proches du code
+
+  Remarques :
+    - Memes restrictions que d16(PC) : source uniquement (pas
+      d'ecriture)
+    - Le deplacement est limite a -128..+127 (8 bits)
+    - Le registre d'index peut etre Dn.W, Dn.L, An.W ou An.L
+    - Le 68020 etend ce mode avec un deplacement de 32 bits
+
+  3.13 Adressage implicite
+  -------------------------
+
+  Certaines instructions utilisent des registres de maniere
+  implicite, sans qu'ils apparaissent dans le champ EA de
+  l'instruction.
+
+  Registres utilises implicitement :
+
+    A7 (SP) :
+      - JSR / BSR : empile l'adresse de retour sur la pile
+        (A7 -= 4, puis [A7] := PC)
+      - RTS : depile l'adresse de retour (PC := [A7], A7 += 4)
+      - RTE : depile SR et PC depuis la pile superviseur
+      - LINK : empile An, puis An := SP, SP -= deplacement
+      - UNLK : SP := An, puis depile An
+
+    PC :
+      - BRA / Bcc : PC := PC + deplacement
+      - BSR : empile PC puis PC := PC + deplacement
+      - DBcc : decremente Dn, branche si Dn != -1 et condition
+        fausse
+      - RTS / RTE / RTR : restaure PC depuis la pile
+
+    SR / CCR :
+      - Scc : positionne un octet selon la condition du CCR
+      - TRAP : sauvegarde SR sur la pile superviseur
+      - RTE : restaure SR depuis la pile
+      - ANDI/ORI/EORI to CCR/SR : modifient CCR ou SR
+      - MOVE to/from SR/CCR
+
+    USP :
+      - MOVE USP,An / MOVE An,USP : acces au pointeur de pile
+        utilisateur (instructions privilegiees)
+
+  Exemples :
+    JSR     SousRoutine    ; SP -= 4, [SP] := PC; PC := adresse
+    RTS                    ; PC := [SP], SP += 4
+    TRAP    #15            ; exception logicielle (vecteur 47)
+    NOP                    ; pas d'operation
+    RESET                  ; reinitialise les peripheriques
+
+  3.14 Resume et tableau comparatif
+  ----------------------------------
+
+  Les 14 modes d'adressage du 68000 :
+
+  No  Mode                      Syntaxe          Formule EA
+  --  ------------------------  ---------------  ---------------------
+   1  Registre donnees direct   Dn               (pas d'EA)
+   2  Registre adresses direct  An               (pas d'EA)
+   3  Indirect registre         (An)             EA = [An]
+   4  Indirect post-increment   (An)+            EA = [An], An += t
+   5  Indirect pre-decrement    -(An)            An -= t, EA = [An]
+   6  Indirect + deplacement    d16(An)          EA = [An] + d16
+   7  Indirect indexe           d8(An,Xn)        EA = [An]+[Xn]+d8
+   8  Absolu court              (xxx).W          EA = sext(addr16)
+   9  Absolu long               (xxx).L          EA = addr32
+  10  Immediat                  #imm             (pas d'EA, source)
+  11  PC + deplacement          d16(PC)          EA = PC + d16
+  12  PC indexe                 d8(PC,Xn)        EA = PC+[Xn]+d8
+  13  Implicite                 (SR, SP, PC)     (implicite)
+  14  (reserve futur)           (extensions 68020+)
+
+  Legende : t = taille de l'operande (1, 2 ou 4 octets)
+            sext = signe-extension a 32 bits
+
+  Comparaison avec l'Intel 80386 :
+
+  Aspect                    68000                80386
+  ------------------------  -------------------  ----------------------
+  Nombre de modes           14                   ~10
+  Auto-increment            (An)+                Non (sauf REP MOVS)
+  Auto-decrement            -(An)                Non (sauf PUSH)
+  PC-relatif (donnees)      d16(PC), d8(PC,Xn)   Non (sauf LEA/RIP 64)
+  Facteur d'echelle         Non (68020+)         1, 2, 4, 8 (SIB)
+  Segments memoire          Non                  6 segments
+  Taille deplacement        8 ou 16 bits         8 ou 32 bits
+  Registres base            A0-A7 (8 reg)        Tous les 8 GPR
+  Registres index           D0-D7, A0-A7         Tous sauf ESP
+  Taille index              .W ou .L             32 bits uniquement
+  Lecture/ecriture memoire  Toujours separes     Registre-memoire
+  Adressage absolu          16 ou 32 bits        32 bits uniquement
+
+  Le 68000 se distingue par ses modes auto-increment et auto-
+  decrement tres utiles pour le parcours de donnees et la gestion
+  de piles, ainsi que par son adressage PC-relatif pour les
+  donnees, qui facilite l'ecriture de code relogeable. En revanche,
+  le 80386 offre le facteur d'echelle (SIB) absent du 68000
+  original (ajoute sur le 68020).
