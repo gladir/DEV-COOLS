@@ -1,0 +1,59 @@
+CO coerce.a68 : coercitions, widening, rowing, voiding (TODO 25) CO
+BEGIN
+  CO Widening : INT -> valeur en contexte CO
+  INT x := 42;
+  print(("INT: ", x, newline));
+
+  CO Voiding : ignorer le resultat d une expression CO
+  INT a := 10;
+  a + 5;
+  print(("apres voiding: a = ", a, newline));
+
+  CO Dereferencing implicite : REF INT -> INT CO
+  INT y := 100;
+  INT z := y;
+  print(("deref: z = ", z, newline));
+
+  CO Coercition dans les arguments de print CO
+  INT val := 55;
+  BOOL flag := TRUE;
+  STRING msg = "test";
+  print((msg, ": ", val, " ", flag, newline));
+
+  CO Coercition dans les conditions IF CO
+  INT n := 1;
+  IF n = 1 THEN
+    print(("n est 1", newline))
+  FI;
+
+  CO Coercition dans les expressions CASE CO
+  INT c := 2;
+  INT r := CASE c IN 10, 20, 30 OUT 0 ESAC;
+  print(("CASE result = ", r, newline));
+
+  CO Voiding d un appel de procedure CO
+  PROC noop = () VOID : SKIP;
+  noop();
+
+  CO Coercition dans les boucles CO
+  INT total := 0;
+  FOR i FROM 1 TO 5 DO
+    total +:= i
+  OD;
+  print(("total = ", total, newline));
+
+  CO Coercition dans assignation composee CO
+  INT m := 10;
+  m +:= 5;
+  m *:= 2;
+  print(("m = ", m, newline));
+
+  CO Widening dans comparaisons CO
+  INT p := 7;
+  BOOL res := p > 3;
+  print(("7 > 3 = ", res, newline));
+
+  CO Voiding de SKIP CO
+  SKIP;
+  print(("fin coerce", newline))
+END

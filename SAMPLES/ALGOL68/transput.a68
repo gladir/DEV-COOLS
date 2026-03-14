@@ -1,0 +1,47 @@
+CO transput.a68 : print, read, newline, space, whole (TODO 25) CO
+BEGIN
+  CO print avec entier CO
+  print((42, newline));
+
+  CO print avec chaine CO
+  print(("Bonjour Algol 68", newline));
+
+  CO print avec booleen CO
+  print((TRUE, newline));
+  print((FALSE, newline));
+
+  CO print avec arguments multiples CO
+  print(("Resultat: ", 100, newline));
+
+  CO print avec caractere CO
+  CHAR c := "A";
+  print((c, newline));
+
+  CO newline comme separateur CO
+  print(("Ligne1", newline, "Ligne2", newline));
+
+  CO space dans print CO
+  print(("A", space, "B", space, "C", newline));
+
+  CO whole : formater un entier en chaine CO
+  STRING s := whole(42, 0);
+  print(("whole(42,0) = ", s, newline));
+
+  CO whole avec nombre negatif CO
+  STRING s2 := whole(-7, 0);
+  print(("whole(-7,0) = ", s2, newline));
+
+  CO print avec expression arithmetique CO
+  INT x := 10;
+  INT y := 20;
+  print(("somme: ", x + y, newline));
+
+  CO print chaine simple sans parentheses internes CO
+  print("Test simple");
+  print((newline));
+
+  CO Affichage de valeurs concatenees CO
+  STRING nom = "Algol";
+  STRING ver = " 68";
+  print((nom + ver, newline))
+END

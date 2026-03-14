@@ -1,0 +1,45 @@
+CO ops.a68 : OP, PRIO, surcharge d operateurs (TODO 25) CO
+BEGIN
+  CO Operateur dyadique : addition personnalisee CO
+  OP ADDX = (INT a, INT b) INT : a + b + 1;
+  INT r1 := 10 ADDX 20;
+  print(("10 ADDX 20 = ", r1, newline));
+
+  CO Operateur monadique : doubler CO
+  OP DBL = (INT x) INT : x + x;
+  INT r2 := DBL 7;
+  print(("DBL 7 = ", r2, newline));
+
+  CO Operateur avec PRIO CO
+  PRIO MYMUL = 5;
+  OP MYMUL = (INT a, INT b) INT : a * b;
+  INT r3 := 3 MYMUL 4;
+  print(("3 MYMUL 4 = ", r3, newline));
+
+  CO Operateur monadique : negation personnalisee CO
+  OP NEG2 = (INT x) INT : 0 - x;
+  INT r4 := NEG2 42;
+  print(("NEG2 42 = ", r4, newline));
+
+  CO Operateur modulo personnalise CO
+  PRIO MODX = 5;
+  OP MODX = (INT a, INT b) INT : a - (a OVER b) * b;
+  INT r5 := 17 MODX 5;
+  print(("17 MODX 5 = ", r5, newline));
+
+  CO Composition d operateurs personnalises CO
+  INT r6 := (10 ADDX 5) MYMUL 2;
+  print(("(10 ADDX 5) MYMUL 2 = ", r6, newline));
+
+  CO Operateur de soustraction personnalise CO
+  OP SUBX = (INT a, INT b) INT : a - b;
+  INT r7 := 100 SUBX 58;
+  print(("100 SUBX 58 = ", r7, newline));
+
+  CO Operateur minimum CO
+  PRIO MIN2 = 3;
+  OP MIN2 = (INT a, INT b) INT :
+    IF a < b THEN a ELSE b FI;
+  INT r8 := 7 MIN2 3;
+  print(("7 MIN2 3 = ", r8, newline))
+END
