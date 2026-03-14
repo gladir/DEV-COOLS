@@ -685,7 +685,7 @@ TABLE DES MATIERES
   L'etiquette est declaree entre doubles chevrons :
     <<Recommencer>>
 
-  L'utilisation du goto est deconseille en Ada, les
+  L'utilisation du goto est deconseillee en Ada, les
   structures de controle etant suffisamment expressives.
 
 6.10 Instruction return
@@ -1231,7 +1231,7 @@ TABLE DES MATIERES
       is abstract;
 
   Un type abstrait ne peut pas etre instancie directement.
-  Les sous-programmes abstraits doivent etre surcharges
+  Les sous-programmes abstraits doivent etre surdefinis
   dans les types derives.
 
 12.5 Interfaces (Ada 2005+)
