@@ -85,7 +85,7 @@
             Recherche en remontant les portees englobantes
             SymNextOffset : allocation locale CurFrameSize += 2
 
-  TODO 06 - SYSTEME DE TYPES
+  TODO 06 - SYSTEME DE TYPES [IMPLEMENTE]
             TTypeKind : TYK_INTEGER (16 bits signe), TYK_REAL (stub entier),
               TYK_BOOLEAN (16 bits, 0 ou 1), TYK_STRING (ptr chaine),
               TYK_LABEL (adresse de code), TYK_SWITCH (tableau de labels),
@@ -532,6 +532,25 @@ Type
     DeclLine    : Integer;   { ligne de declaration (debug)        }
   End;
 
+  { ---- Systeme de types (TODO 06) -------------------------- }
+  TTypeKind = (
+    TYK_INTEGER,   { entier 16 bits signe (INTEGER)              }
+    TYK_REAL,      { reel (stub: entier tronque 16 bits)         }
+    TYK_BOOLEAN,   { booleen 0 ou 1 dans AX (BOOLEAN)            }
+    TYK_STRING,    { pointeur vers chaine dans DATA (STRING)      }
+    TYK_LABEL,     { adresse de code / etiquette (LABEL)          }
+    TYK_SWITCH,    { tableau de labels / aiguillage (SWITCH)      }
+    TYK_PROCEDURE, { pointeur de code / sous-programme (PROCEDURE)}
+    TYK_ARRAY,     { tableau a bornes dynamiques (ARRAY)          }
+    TYK_UNKNOWN    { type inconnu ou non determine                }
+  );
+
+  TTypeRec = Record
+    Name : TString;     { nom du type (INTEGER, REAL, etc.)      }
+    Kind : TTypeKind;   { categorie de type                       }
+    Size : Integer;     { taille en octets (2 pour 16-bit)        }
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -579,6 +598,10 @@ Var
   ScopeTop     : Integer;
   CurScope     : Integer;
   CurFrameSize : Integer;    { taille cadre local courant (en octets) }
+
+  { Table des types (TODO 06) }
+  TypeTab    : Array[0..MAX_TYPE - 1] Of TTypeRec;
+  TypeCount  : Integer;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -646,6 +669,17 @@ Procedure SymEnterScope; Forward;
 Procedure SymLeaveScope; Forward;
 Function  SymNextOffset : Integer; Forward;
 Procedure SymInit;       Forward;
+{ ---- Forward declarations (TODO 06) ----------------------- }
+Procedure TypeInit;      Forward;
+Function  TypeKindOf(TypeIdx : Integer) : TTypeKind; Forward;
+Function  TypeSizeof(TypeIdx : Integer) : Integer; Forward;
+Function  TypeMangle(TypeIdx : Integer) : TString; Forward;
+Function  TypeIsNumeric(TypeIdx : Integer) : Boolean; Forward;
+Function  TypeCanCoerce(SrcIdx, DstIdx : Integer) : Boolean; Forward;
+Function  TypeCoerceResult(LeftIdx, RightIdx : Integer;
+                           Const Op : TString) : Integer; Forward;
+Function  TypeInfer(Const E : TExprVal) : Integer; Forward;
+Function  TypeLookupName(Const Name : TString) : Integer; Forward;
 
 { ---- Erreur fatale ----------------------------------------- }
 Procedure FatalError(Const Msg : TString);
@@ -918,6 +952,8 @@ Begin
   RuntimeEmitted := False;
   { Table des symboles (TODO 05) }
   SymInit;
+  { Systeme de types (TODO 06) }
+  TypeInit;
 End;
 
 { ============================================================
@@ -2476,6 +2512,261 @@ Function SymNextOffset : Integer;
 Begin
   Inc(CurFrameSize, 2);
   SymNextOffset := CurFrameSize;
+End;
+
+{ ============================================================
+  TODO 06 - SYSTEME DE TYPES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- TypeInit : enregistrer les 8 types primitifs Algol 60 -- }
+{ Les indices correspondent aux constantes TY_IDX_* definies
+  dans la section CONSTANTES GENERALES (0=INTEGER, 1=REAL, ...) }
+Procedure TypeInit;
+Begin
+  TypeCount := 0;
+  { TY_IDX_INTEGER = 0 }
+  TypeTab[0].Name := 'INTEGER';
+  TypeTab[0].Kind := TYK_INTEGER;
+  TypeTab[0].Size := 2;
+  { TY_IDX_REAL = 1 }
+  TypeTab[1].Name := 'REAL';
+  TypeTab[1].Kind := TYK_REAL;
+  TypeTab[1].Size := 2;    { stub : reel tronque en entier 16 bits }
+  { TY_IDX_BOOLEAN = 2 }
+  TypeTab[2].Name := 'BOOLEAN';
+  TypeTab[2].Kind := TYK_BOOLEAN;
+  TypeTab[2].Size := 2;    { 0 ou 1 dans AX                        }
+  { TY_IDX_STRING = 3 }
+  TypeTab[3].Name := 'STRING';
+  TypeTab[3].Kind := TYK_STRING;
+  TypeTab[3].Size := 2;    { pointeur near vers chaine DATA         }
+  { TY_IDX_LABEL = 4 }
+  TypeTab[4].Name := 'LABEL';
+  TypeTab[4].Kind := TYK_LABEL;
+  TypeTab[4].Size := 2;    { adresse de code 16 bits                }
+  { TY_IDX_SWITCH = 5 }
+  TypeTab[5].Name := 'SWITCH';
+  TypeTab[5].Kind := TYK_SWITCH;
+  TypeTab[5].Size := 2;    { pointeur vers table de labels          }
+  { TY_IDX_PROCEDURE = 6 }
+  TypeTab[6].Name := 'PROCEDURE';
+  TypeTab[6].Kind := TYK_PROCEDURE;
+  TypeTab[6].Size := 2;    { pointeur de code (near)                }
+  { TY_IDX_ARRAY = 7 }
+  TypeTab[7].Name := 'ARRAY';
+  TypeTab[7].Kind := TYK_ARRAY;
+  TypeTab[7].Size := 2;    { pointeur vers descripteur de tableau   }
+  TypeCount := TY_PRIM_COUNT;  { = 8 }
+End;
+
+{ ---- TypeKindOf : retourner le TTypeKind pour un indice ----- }
+{ Si l indice est invalide, retourne TYK_UNKNOWN.                }
+Function TypeKindOf(TypeIdx : Integer) : TTypeKind;
+Begin
+  If (TypeIdx >= 0) And (TypeIdx < TypeCount) Then
+    TypeKindOf := TypeTab[TypeIdx].Kind
+  Else
+    TypeKindOf := TYK_UNKNOWN;
+End;
+
+{ ---- TypeSizeof : taille en octets d un type par son indice -- }
+{ En Algol 60 sur 8086 16 bits, tous les types font 2 octets
+  (un mot machine). Les REAL sont tronques en entiers 16 bits.   }
+Function TypeSizeof(TypeIdx : Integer) : Integer;
+Begin
+  If (TypeIdx >= 0) And (TypeIdx < TypeCount) Then
+    TypeSizeof := TypeTab[TypeIdx].Size
+  Else
+    TypeSizeof := 2;   { defaut : un mot 16 bits }
+End;
+
+{ ---- TypeMangle : prefixe ASM selon le type Algol 60 -------- }
+{ Utilise pour generer des labels typees dans le segment DATA.
+  INTEGER -> _A60TI_ , REAL -> _A60TR_ , BOOLEAN -> _A60TB_
+  STRING  -> _A60TS_ , LABEL -> _A60TL_ , etc.                  }
+Function TypeMangle(TypeIdx : Integer) : TString;
+Begin
+  Case TypeKindOf(TypeIdx) Of
+    TYK_INTEGER   : TypeMangle := '_A60TI_';
+    TYK_REAL      : TypeMangle := '_A60TR_';
+    TYK_BOOLEAN   : TypeMangle := '_A60TB_';
+    TYK_STRING    : TypeMangle := '_A60TS_';
+    TYK_LABEL     : TypeMangle := '_A60TL_';
+    TYK_SWITCH    : TypeMangle := '_A60TW_';
+    TYK_PROCEDURE : TypeMangle := '_A60TP_';
+    TYK_ARRAY     : TypeMangle := '_A60TA_';
+  Else
+    TypeMangle := '_A60TX_';   { inconnu }
+  End;
+End;
+
+{ ---- TypeIsNumeric : tester si un type est numerique --------- }
+{ Algol 60 : INTEGER et REAL sont numeriques. BOOLEAN est
+  traite comme numerique (0/1) pour les conversions implicites.  }
+Function TypeIsNumeric(TypeIdx : Integer) : Boolean;
+Var
+  K : TTypeKind;
+Begin
+  K := TypeKindOf(TypeIdx);
+  TypeIsNumeric := (K = TYK_INTEGER) Or (K = TYK_REAL) Or
+                   (K = TYK_BOOLEAN);
+End;
+
+{ ---- TypeCanCoerce : conversion implicite possible ? --------- }
+{ Algol 60 permet les conversions implicites suivantes :
+    INTEGER -> REAL    (promotion, avec avertissement)
+    BOOLEAN -> INTEGER (TRUE=1, FALSE=0)
+    INTEGER -> BOOLEAN (0=FALSE, <>0=TRUE)
+    meme type -> meme type (identite)
+  Pas de coercion vers STRING, LABEL, SWITCH, PROCEDURE, ARRAY. }
+Function TypeCanCoerce(SrcIdx, DstIdx : Integer) : Boolean;
+Var
+  SK, DK : TTypeKind;
+Begin
+  If SrcIdx = DstIdx Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  If (SrcIdx = TY_UNKNOWN) Or (DstIdx = TY_UNKNOWN) Then
+  Begin
+    TypeCanCoerce := True;  { type inconnu : accepter }
+    Exit;
+  End;
+  SK := TypeKindOf(SrcIdx);
+  DK := TypeKindOf(DstIdx);
+  { Meme categorie }
+  If SK = DK Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  { INTEGER -> REAL (promotion) }
+  If (SK = TYK_INTEGER) And (DK = TYK_REAL) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  { REAL -> INTEGER (troncature, avec avertissement) }
+  If (SK = TYK_REAL) And (DK = TYK_INTEGER) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  { BOOLEAN <-> INTEGER }
+  If ((SK = TYK_BOOLEAN) And (DK = TYK_INTEGER)) Or
+     ((SK = TYK_INTEGER) And (DK = TYK_BOOLEAN)) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  { BOOLEAN <-> REAL }
+  If ((SK = TYK_BOOLEAN) And (DK = TYK_REAL)) Or
+     ((SK = TYK_REAL) And (DK = TYK_BOOLEAN)) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  TypeCanCoerce := False;
+End;
+
+{ ---- TypeCoerceResult : type resultat d une operation binaire -
+  Arithmetique (+,-,*,/,div,^) :
+    INTEGER op INTEGER -> INTEGER
+    REAL op REAL -> REAL
+    INTEGER op REAL, REAL op INTEGER -> REAL (promotion)
+    BOOLEAN op numerique -> INTEGER (promotion implicite)
+  Comparaisons (<,<=,=,>=,>,!=) : toujours BOOLEAN
+  Logique (AND,OR,NOT,IMPL,EQUIV) : toujours BOOLEAN
+  Concat (~) : toujours STRING (extension)                       }
+Function TypeCoerceResult(LeftIdx, RightIdx : Integer;
+                          Const Op : TString) : Integer;
+Var
+  LK, RK : TTypeKind;
+Begin
+  { Comparaisons -> BOOLEAN }
+  If (Op = '<') Or (Op = '<=') Or (Op = '=') Or
+     (Op = '>=') Or (Op = '>') Or (Op = '!=') Or
+     (Op = '<>') Then
+  Begin
+    TypeCoerceResult := TY_IDX_BOOLEAN;
+    Exit;
+  End;
+  { Logique -> BOOLEAN }
+  If (Op = 'AND') Or (Op = 'OR') Or (Op = '/\') Or
+     (Op = '\/') Or (Op = 'NOT') Or (Op = '~') Or
+     (Op = 'IMPL') Or (Op = 'EQUIV') Then
+  Begin
+    TypeCoerceResult := TY_IDX_BOOLEAN;
+    Exit;
+  End;
+  { Division / : toujours REAL en Algol 60 standard }
+  If Op = '/' Then
+  Begin
+    TypeCoerceResult := TY_IDX_REAL;
+    Exit;
+  End;
+  { Division entiere div : toujours INTEGER }
+  If Op = 'div' Then
+  Begin
+    TypeCoerceResult := TY_IDX_INTEGER;
+    Exit;
+  End;
+  { Autres operateurs arithmetiques : promotion }
+  LK := TypeKindOf(LeftIdx);
+  RK := TypeKindOf(RightIdx);
+  { Si l un des deux est REAL -> REAL }
+  If (LK = TYK_REAL) Or (RK = TYK_REAL) Then
+  Begin
+    TypeCoerceResult := TY_IDX_REAL;
+    Exit;
+  End;
+  { BOOLEAN promu en INTEGER pour l arithmetique }
+  If (LK = TYK_BOOLEAN) And (RK = TYK_BOOLEAN) Then
+  Begin
+    TypeCoerceResult := TY_IDX_INTEGER;
+    Exit;
+  End;
+  { INTEGER op INTEGER -> INTEGER (defaut) }
+  TypeCoerceResult := TY_IDX_INTEGER;
+End;
+
+{ ---- TypeInfer : inferer le type d une expression ----------- }
+{ Si le TypeIdx est deja connu (>= 0), le retourner.
+  Sinon, pour EK_IMM on suppose INTEGER. Pour EK_NONE -> UNKNOWN. }
+Function TypeInfer(Const E : TExprVal) : Integer;
+Begin
+  If E.TypeIdx >= 0 Then
+  Begin
+    TypeInfer := E.TypeIdx;
+    Exit;
+  End;
+  Case E.Kind Of
+    EK_IMM  : TypeInfer := TY_IDX_INTEGER;
+    EK_AX   : TypeInfer := TY_IDX_INTEGER;
+    EK_MEM  : TypeInfer := TY_IDX_INTEGER;
+    EK_NONE : TypeInfer := TY_UNKNOWN;
+  Else
+    TypeInfer := TY_UNKNOWN;
+  End;
+End;
+
+{ ---- TypeLookupName : chercher un type par son nom ----------- }
+{ Recherche insensible a la casse parmi les types enregistres.
+  Retourne l indice (0-base) ou TY_UNKNOWN si non trouve.        }
+Function TypeLookupName(Const Name : TString) : Integer;
+Var
+  I : Integer;
+  U : TString;
+Begin
+  U := StrUpperCase(Name);
+  For I := 0 To TypeCount - 1 Do
+    If StrUpperCase(TypeTab[I].Name) = U Then
+    Begin
+      TypeLookupName := I;
+      Exit;
+    End;
+  TypeLookupName := TY_UNKNOWN;
 End;
 
 { ---- Compilation ------------------------------------------- }
