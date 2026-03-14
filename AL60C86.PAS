@@ -190,7 +190,7 @@
             Canal 1 = STDOUT (handle 1), Canal 2 = STDERR (handle 2)
             Nouvelle ligne : CALL _A60RT_NEWLINE (ecriture CR+LF)
 
-  TODO 13 - INSTRUCTIONS CONDITIONNELLES (IF/THEN/ELSE)
+  TODO 13 - INSTRUCTIONS CONDITIONNELLES (IF/THEN/ELSE) [IMPLEMENTE]
             ParseIfStmt : IF expr THEN stmt [ELSE stmt]
               Emission TEST AX,AX / JZ pour condition fausse
               Labels : _A60L_ELSE_N, _A60L_ENDIF_N
@@ -612,6 +612,7 @@ Var
 
   { Label sequentiel }
   LabelSeq   : Integer;
+  IfCount    : Integer;    { TODO 13 : compteur pour IF/THEN/ELSE }
 
   { Table des symboles (TODO 05) }
   SymTab       : Array[0..MAX_SYM - 1] Of TSymRec;
@@ -712,6 +713,8 @@ Function  DeclAllocSym(Const Name : TString;
 Procedure ParseDeclStmt; Forward;
 Procedure ParseExprStmt; Forward;
 Procedure ParseStmt; Forward;
+{ ---- Forward declarations (TODO 13) ----------------------- }
+Procedure ParseIfStmt; Forward;
 { ---- Forward declarations (TODO 10) ----------------------- }
 Procedure ParseProcCall(Const ProcName : TString;
                         ProcSIdx : Integer;
@@ -1007,6 +1010,7 @@ Begin
   GExprDummy.SymIdx  := -1;
   RuntimeEmitted := False;
   IOEmitted := False;  { TODO 12 }
+  IfCount := 0;        { TODO 13 }
   { Table des symboles (TODO 05) }
   SymInit;
   { Systeme de types (TODO 06) }
@@ -3214,6 +3218,13 @@ Begin
     Exit;
   End;
 
+  { IF/THEN/ELSE statement (TODO 13) }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'IF') Then
+  Begin
+    ParseIfStmt;
+    Exit;
+  End;
+
   { Expression ou affectation }
   ParseExprStmt;
 End;
@@ -3832,6 +3843,13 @@ Begin
       Continue;
     End;
 
+    { IF/THEN/ELSE statement (TODO 13) }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'IF') Then
+    Begin
+      ParseIfStmt;
+      Continue;
+    End;
+
     { Affectation ident := expr (TODO 09) }
     If (CurToken.Kind = TK_IDENT) Then
     Begin
@@ -3859,8 +3877,7 @@ Begin
         (CurToken.Val = 'WHILE') Or (CurToken.Val = 'STEP') Or
         (CurToken.Val = 'UNTIL') Or (CurToken.Val = 'DO') Or
         (CurToken.Val = 'GO') Or (CurToken.Val = 'GOTO') Or
-        (CurToken.Val = 'IF') Or (CurToken.Val = 'THEN') Or
-        (CurToken.Val = 'ELSE') Or (CurToken.Val = 'TO')) Then
+        (CurToken.Val = 'TO')) Then
     Begin
       ParserAdvance;
       Continue;
@@ -3896,6 +3913,120 @@ Begin
     Halt(EXIT_ERROR)
   Else
     Halt(EXIT_OK);
+End;
+
+{ ============================================================
+  TODO 13 - IF/THEN/ELSE STATEMENTS [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseIfStmt : IF expr THEN stmt [ELSE stmt] ----------
+  Genere le code assembleur pour les instructions conditionnelles
+  Algol 60. Le resultat de l expression booleenne est dans AX.
+  On teste AX: si zero (faux), on saute vers ELSE ou vers la fin.
+  Gere les IF imbriques (dangling else par association gloutonne).
+  Supporte les blocs BEGIN/END dans les branches THEN et ELSE.   }
+Procedure ParseIfStmt;
+Var
+  LblElse, LblEnd : TString;
+  MyIfNum : Integer;
+  Cond    : TExprVal;
+Begin
+  Inc(IfCount);
+  MyIfNum := IfCount;
+  EmitComment('IF statement #' + IntToStr_(MyIfNum));
+
+  { Consommer IF }
+  ParserAdvance;
+
+  { Evaluer la condition }
+  ParseExpr(Cond);
+  ExprFlushToAX(Cond);
+
+  { Generer les labels }
+  LblElse := '_A60L_ELSE_' + IntToStr_(MyIfNum);
+  LblEnd  := '_A60L_ENDIF_' + IntToStr_(MyIfNum);
+
+  { Test : si faux -> saut }
+  EmitInstr('OR', 'AX, AX');
+  EmitInstr('JZ', LblElse);
+
+  { Consommer THEN }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'THEN') Then
+    ParserAdvance
+  Else
+    CompileError('THEN attendu apres condition IF');
+
+  { Branche THEN : parser une instruction (ou bloc BEGIN/END) }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'BEGIN') Then
+  Begin
+    SymEnterScope;
+    EmitComment('BEGIN (scope ' + IntToStr_(CurScope) + ')');
+    ParserAdvance;  { consommer BEGIN }
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'END')) Do
+    Begin
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      Begin
+        ParserAdvance;
+        Continue;
+      End;
+      ParseStmt;
+    End;
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'END') Then
+    Begin
+      EmitComment('END (scope ' + IntToStr_(CurScope) + ')');
+      SymLeaveScope;
+      ParserAdvance;  { consommer END }
+    End;
+  End
+  Else
+    ParseStmt;
+
+  { Y a-t-il un ELSE ? }
+  { Sauter les ; eventuels avant ELSE }
+  While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Do
+    ParserAdvance;
+
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'ELSE') Then
+  Begin
+    { Saut inconditionnel vers la fin apres la branche THEN }
+    EmitInstr('JMP', LblEnd);
+    EmitLabel(LblElse);
+    ParserAdvance;  { consommer ELSE }
+
+    { Branche ELSE : parser une instruction (ou bloc BEGIN/END) }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'BEGIN') Then
+    Begin
+      SymEnterScope;
+      EmitComment('BEGIN (scope ' + IntToStr_(CurScope) + ')');
+      ParserAdvance;  { consommer BEGIN }
+      While (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'END')) Do
+      Begin
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        Begin
+          ParserAdvance;
+          Continue;
+        End;
+        ParseStmt;
+      End;
+      If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'END') Then
+      Begin
+        EmitComment('END (scope ' + IntToStr_(CurScope) + ')');
+        SymLeaveScope;
+        ParserAdvance;  { consommer END }
+      End;
+    End
+    Else
+      ParseStmt;
+
+    EmitLabel(LblEnd);
+  End
+  Else
+  Begin
+    { Pas de ELSE : le label else et endif sont le meme point }
+    EmitLabel(LblElse);
+  End;
 End;
 
 { ============================================================
