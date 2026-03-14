@@ -282,3 +282,375 @@
     Section 12 : Conversion de code 80386 en 68000
     Section 13 : Conversion de code ARM en 68000
     Section 14 : Conversion de code Z8000 en 68000
+
+==============================================================================
+2. ARCHITECTURE ET REGISTRES
+==============================================================================
+
+  2.1 Vue d'ensemble de l'architecture
+  -------------------------------------
+
+  Le 68000 est un processeur CISC (Complex Instruction Set Computer)
+  avec une architecture interne 32 bits. Bien que ses registres soient
+  de 32 bits, le 68000 original possede un bus de donnees externe de
+  16 bits, ce qui signifie que les transferts 32 bits necessitent deux
+  cycles de bus. Le bus d'adresses est de 24 bits (les 8 bits de poids
+  fort sont ignores), permettant d'adresser 16 Mo de memoire.
+
+  L'architecture interne comprend :
+
+    - Une unite d'execution avec une ALU 16 bits qui traite les
+      operations 32 bits en deux passes
+    - Un micro-sequenceur microprogramme (ROM de microcode)
+    - Un decodeur d'instructions a deux niveaux
+    - Un bus de donnees interne de 16 bits
+    - Un chemin de donnees de 32 bits pour les registres
+    - Un mecanisme de prefetch d'instructions (file de 2 mots)
+    - Un multiplexeur d'adresses 24 bits
+    - Un controleur de bus asynchrone (pas d'horloge de bus fixe)
+
+  Le 68000 n'a pas de pipeline au sens strict, mais le prefetch des
+  instructions permet un recouvrement partiel entre le chargement de
+  l'instruction suivante et l'execution de l'instruction courante.
+
+  Caracteristiques techniques du 68000 original :
+
+    Frequence d'horloge  : 4, 6, 8, 10, 12, 16 MHz selon le modele
+    Transistors          : environ 68 000 (d'ou le nom)
+    Boitier              : DIP 64 broches
+    Technologie          : HMOS (puis CMOS pour les variantes)
+    Alimentation         : +5V
+    Jeu d'instructions   : 56 instructions de base
+    Modes d'adressage    : 14
+
+  2.2 Registres de donnees (D0-D7)
+  ---------------------------------
+
+  Le 68000 dispose de 8 registres de donnees de 32 bits chacun,
+  nommes D0 a D7. Ces registres sont utilises pour toutes les
+  operations arithmetiques, logiques et de manipulation de donnees.
+
+  Schema de decomposition (exemple avec D0) :
+
+    Bits :  31 ............. 16  15 ......... 8  7 ......... 0
+            |                 |  |            |  |            |
+            |  D0.L (partie   |  | D0.W       |  |            |
+            |   haute, non    |  | (partie    |  |  D0.B      |
+            |   accessible    |  |  basse     |  | (octet     |
+            |   seule)        |  |  16 bits)  |  |  bas)      |
+            |--------- D0.L (32 bits) --------|--|------------|
+
+  Les trois tailles d'operande :
+
+    .B (Byte, 8 bits) : affecte uniquement les bits 0-7 du registre.
+       Les bits 8-31 ne sont pas modifies.
+    .W (Word, 16 bits) : affecte les bits 0-15 du registre.
+       Les bits 16-31 ne sont pas modifies.
+    .L (Long, 32 bits) : affecte l'integralite du registre (bits 0-31).
+
+  Toutes les operations arithmetiques et logiques supportent les trois
+  tailles. Les drapeaux de condition (CCR) sont mis a jour en fonction
+  de la taille de l'operation.
+
+  Exemples :
+
+    MOVE.B  #$FF, D0      ; D0 = xxxxxx FF (seul l'octet bas change)
+    MOVE.W  #$1234, D0    ; D0 = xxxx 1234 (le mot bas change)
+    MOVE.L  #$12345678, D0 ; D0 = 12345678 (tout le registre change)
+    ADD.B   #1, D0        ; additionne 1 a l'octet bas de D0
+    ADD.W   D1, D2        ; D2.W := D2.W + D1.W
+    ADD.L   D3, D4        ; D4.L := D4.L + D3.L
+
+  Les 8 registres de donnees sont interchangeables : aucun n'a de
+  role privilegie. Contrairement au x86 ou certains registres ont
+  des fonctions implicites (AX pour MUL, CX pour les boucles), les
+  registres D0 a D7 du 68000 sont symetriques. Il existe toutefois
+  des conventions d'appel qui reservent certains registres :
+
+    D0     : Valeur de retour des fonctions (convention C)
+    D0-D1  : Registres "scratch" (non preserves par les fonctions)
+    D2-D7  : Registres preserves (sauves/restaures par l'appele)
+
+  2.3 Registres d'adresses (A0-A7)
+  ---------------------------------
+
+  Le 68000 dispose de 8 registres d'adresses de 32 bits chacun,
+  nommes A0 a A7. Ces registres sont dedies au calcul d'adresses et
+  a l'adressage indirect. Ils offrent des modes d'adressage
+  supplementaires (indirect, auto-increment, auto-decrement, indexe)
+  non disponibles avec les registres de donnees.
+
+  Differences cles par rapport aux registres de donnees :
+
+    - Les operations sur les registres d'adresses ne modifient
+      PAS les drapeaux de condition (CCR), sauf CMPA
+    - Les operations en .B ne sont PAS supportees sur les registres
+      d'adresses (seuls .W et .L sont valides)
+    - MOVEA.W signe-etend le mot de 16 bits a 32 bits
+    - ADDA, SUBA, CMPA, MOVEA sont les formes dediees pour les
+      registres d'adresses
+    - LEA (Load Effective Address) charge une adresse calculee
+      dans un registre d'adresses
+
+  Exemples :
+
+    MOVEA.L #$100000, A0  ; A0 = $00100000 (adresse de base)
+    MOVEA.W #$FFF0, A1    ; A1 = $FFFFFFF0 (signe-etendu !)
+    MOVE.L  (A0), D0      ; D0 = contenu a l'adresse dans A0
+    MOVE.L  (A0)+, D0     ; D0 = [A0], puis A0 += 4 (auto-increment)
+    MOVE.L  -(A0), D0     ; A0 -= 4, puis D0 = [A0] (auto-decrement)
+    MOVE.L  8(A0), D0     ; D0 = [A0 + 8] (deplacement)
+    MOVE.L  4(A0,D1.W), D0 ; D0 = [A0 + D1.W signe-etendu + 4]
+    LEA     Table, A2     ; A2 = adresse de Table
+    ADDA.L  #100, A3      ; A3 := A3 + 100 (pas de modif CCR)
+
+  Les registres d'adresses sont egalement interchangeables pour la
+  plupart, sauf A7 qui a un role special :
+
+    A0-A6  : Registres d'adresses generaux
+    A7     : Pointeur de pile (SP, Stack Pointer)
+
+  Conventions d'appel typiques :
+
+    A0-A1  : Registres "scratch" (non preserves)
+    A2-A6  : Registres preserves (sauves/restaures par l'appele)
+    A7     : Pointeur de pile (ne doit pas etre modifie arbitrairement)
+
+  2.4 Le registre A7 et les pointeurs de pile
+  --------------------------------------------
+
+  Le registre A7 a un role special : il sert de pointeur de pile (SP).
+  En realite, le 68000 possede DEUX registres A7 physiques distincts :
+
+    USP (User Stack Pointer) :
+      - Utilise en mode utilisateur
+      - Accessible via A7 quand le bit S du SR est a 0
+      - Peut etre lu/ecrit par le superviseur via MOVE USP,An /
+        MOVE An,USP (instructions privilegiees)
+
+    SSP (Supervisor Stack Pointer) :
+      - Utilise en mode superviseur
+      - Accessible via A7 quand le bit S du SR est a 1
+      - Utilise automatiquement lors du traitement des exceptions
+
+  Cette separation garantit que les erreurs dans le code utilisateur
+  ne corrompent pas la pile du systeme d'exploitation.
+
+  La pile du 68000 croit vers les adresses basses (comme sur x86) :
+
+    PUSH equivalent : MOVE.L  Dn, -(A7)   ; A7 -= 4, puis [A7] = Dn
+    POP equivalent  : MOVE.L  (A7)+, Dn   ; Dn = [A7], puis A7 += 4
+
+  Le 68000 impose que A7 soit toujours aligne sur une adresse paire.
+  Les operations d'empilage et de depilage en .B ajustent A7 de 2
+  (et non de 1) pour maintenir cet alignement.
+
+  2.5 Compteur programme (PC)
+  ---------------------------
+
+  Le compteur programme (PC, Program Counter) est un registre de 32
+  bits dont seuls les 24 bits de poids faible sont significatifs sur
+  le 68000 (les bits 24-31 sont ignores par le bus d'adresses).
+
+  Caracteristiques :
+
+    - Pointe vers l'instruction suivante a executer
+    - Non accessible directement comme operande destination
+    - Utilisable comme base dans deux modes d'adressage :
+      * d16(PC)     : adressage relatif au PC avec deplacement 16 bits
+      * d8(PC,Xn)   : adressage indexe relatif au PC
+    - Modifie par les instructions de branchement : BRA, Bcc, BSR,
+      JMP, JSR, RTS, RTE, RTR, DBcc
+    - Les branchements Bcc et BRA utilisent un deplacement relatif
+      au PC (code relocatable)
+
+  Le PC relatif est un outil essentiel pour ecrire du code
+  independant de la position (position-independent code, PIC) :
+
+    LEA     Table(PC), A0  ; A0 = adresse de Table (PIC)
+    MOVE.L  Var(PC), D0    ; D0 = valeur de Var (PIC, lecture seule)
+
+  Note : l'adressage relatif au PC ne peut pas etre utilise comme
+  destination d'ecriture. On ne peut pas faire :
+    MOVE.L  D0, Var(PC)   ; ILLEGAL - PC relatif en ecriture
+
+  2.6 Registre d'etat (SR)
+  -------------------------
+
+  Le registre d'etat (SR, Status Register) est un registre de 16 bits
+  divise en deux parties :
+
+  Partie utilisateur - CCR (Condition Code Register, bits 0-7) :
+  ---------------------------------------------------------------
+
+    Bit  Sigle  Nom           Description
+    ---  -----  ----------    ------------------------------------
+     0   C      Carry         Retenue/emprunt pour les operations
+                              non signees
+     1   V      Overflow      Debordement pour les operations
+                              signees (complement a 2)
+     2   Z      Zero          1 si le resultat est zero
+     3   N      Negative      1 si le bit de poids fort du resultat
+                              est 1 (resultat negatif en signe)
+     4   X      Extend        Retenue etendue, copie de C pour
+                              certaines instructions. Utilisee pour
+                              l'arithmetique multi-precision
+                              (ADDX, SUBX, NEGX, ROXL, ROXR, ABCD,
+                              SBCD, NBCD)
+
+  Bits 5 a 7 : reserves (toujours 0).
+
+  Particularite du drapeau X :
+    - X est une copie de C pour la plupart des instructions
+      arithmetiques (ADD, SUB, NEG, etc.)
+    - X n'est PAS modifie par les instructions de deplacement
+      de donnees (MOVE), de comparaison (CMP), les operations
+      logiques (AND, OR, EOR) ni les branchements
+    - Cela permet de faire des additions multi-precision sans
+      que les MOVEs intermediaires ne perturbent la retenue
+
+  Exemple d'addition 64 bits avec X :
+
+    ; Addition de deux nombres 64 bits :
+    ;   D1:D0 = D1:D0 + D3:D2
+    ADD.L   D2, D0        ; additionne les 32 bits bas (positionne C et X)
+    ADDX.L  D3, D1        ; additionne les 32 bits hauts avec retenue X
+
+  Partie systeme (bits 8-15) :
+  ----------------------------
+
+    Bit   Sigle  Nom                    Description
+    ----  -----  ---------------------  --------------------------------
+    8-10  I0-I2  Interrupt Mask         Masque de niveau d'interruption
+                                        (0-7). Seules les interruptions
+                                        de niveau > masque sont acceptees.
+                                        Le niveau 7 est NMI (toujours
+                                        accepte)
+    11    (0)    Reserve                Toujours 0
+    12    (0)    Reserve                Toujours 0
+    13    S      Supervisor             1 = mode superviseur
+                                        0 = mode utilisateur
+    14    (0)    Reserve                Toujours 0
+    15    T      Trace                  1 = mode trace actif (exception
+                                        apres chaque instruction)
+
+  Acces au SR :
+
+    MOVE.W  SR, Dn         ; Lire le SR complet (privilegiee sur 68010+)
+    MOVE.W  Dn, SR         ; Ecrire le SR complet (privilegiee)
+    MOVE.W  CCR, Dn        ; Lire le CCR seulement (68010+)
+    MOVE.W  Dn, CCR        ; Ecrire le CCR seulement (non privilegiee)
+    ANDI.W  #mask, SR      ; ET logique sur SR (privilegiee)
+    ORI.W   #mask, SR      ; OU logique sur SR (privilegiee)
+    EORI.W  #mask, SR      ; OU exclusif sur SR (privilegiee)
+    ANDI.W  #mask, CCR     ; ET logique sur CCR (non privilegiee)
+    ORI.W   #mask, CCR     ; OU logique sur CCR (non privilegiee)
+    EORI.W  #mask, CCR     ; OU exclusif sur CCR (non privilegiee)
+
+  Note : sur le 68000 original, MOVE SR,<ea> est non privilegiee.
+  A partir du 68010, cette instruction devient privilegiee et
+  MOVE CCR,<ea> est ajoutee comme alternative non privilegiee.
+
+  2.7 Organisation de la memoire
+  ------------------------------
+
+  Le 68000 possede un espace d'adressage lineaire (non segmente) de
+  16 Mo (24 bits d'adresses). Contrairement au x86 avec ses segments,
+  la memoire du 68000 est un espace plat ou toutes les adresses sont
+  directement accessibles.
+
+  Carte memoire typique :
+
+    Adresse       Contenu
+    -----------   ----------------------------------------
+    $000000       Vecteur de RESET : SSP initial (4 octets)
+    $000004       Vecteur de RESET : PC initial (4 octets)
+    $000008       Vecteur Bus Error (4 octets)
+    $00000C       Vecteur Address Error (4 octets)
+    $000010       Vecteur Illegal Instruction (4 octets)
+    ...           ...
+    $0000FC       Vecteur 63 (dernier vecteur defini)
+    $000100       Debut de la zone utilisable (256 vecteurs
+                  x 4 octets = 1024 octets reserves)
+    ...           ...
+    $FFFFFF       Derniere adresse (16 Mo - 1)
+
+  Les 1024 premiers octets ($000000-$0003FF) sont reserves a la
+  table des vecteurs d'exception (256 entrees de 4 octets chacune).
+
+  Regles d'alignement :
+    - Les acces en mot (.W) et en long mot (.L) doivent etre a
+      des adresses paires
+    - Un acces non aligne genere une exception "Address Error"
+      (vecteur 3)
+    - Les instructions doivent commencer a des adresses paires
+    - Les acces en octet (.B) n'ont pas de contrainte d'alignement
+
+  Le 68000 utilise un bus asynchrone : il n'y a pas de frequence de
+  bus fixe. Le processeur initie un cycle de bus et attend le signal
+  DTACK (Data Transfer Acknowledge) du peripherique ou de la memoire.
+  Cela permet de connecter des memoires et peripheriques de vitesses
+  differentes sans logique d'etats d'attente complexe.
+
+  2.8 Tailles des donnees
+  -----------------------
+
+  Le 68000 supporte nativement trois tailles de donnees, designees
+  par un suffixe sur l'instruction :
+
+    Suffixe  Nom         Taille     Plage signee          Plage non signee
+    -------  ----------  ---------  --------------------  ------------------
+    .B       Byte        8 bits     -128 a +127           0 a 255
+    .W       Word        16 bits    -32768 a +32767       0 a 65535
+    .L       Long Word   32 bits    -2147483648           0 a 4294967295
+                                    a +2147483647
+
+  Le suffixe de taille fait partie de l'instruction et affecte :
+    - La quantite de donnees transferee ou operee
+    - La mise a jour des drapeaux de condition
+    - La taille de l'increment/decrement pour les modes d'adressage
+      auto-increment et auto-decrement
+
+  Taille par defaut :
+    - Si aucun suffixe n'est specifie, la taille par defaut est .W
+      (mot de 16 bits) pour la plupart des instructions
+    - Certaines instructions n'acceptent qu'une seule taille
+      (par exemple, SWAP est toujours .W, EXG est toujours .L)
+
+  Effet sur l'auto-increment/decrement :
+
+    Taille  Increment/Decrement  Sauf pour A7 (pile)
+    ------  -------------------  -------------------
+    .B      1 octet              2 octets (alignement)
+    .W      2 octets             2 octets
+    .L      4 octets             4 octets
+
+  2.9 Resume des registres
+  ------------------------
+
+  Categorie                 Registres            Taille    Nombre
+  ------------------------  -------------------  --------  ------
+  Registres de donnees      D0 D1 D2 D3          32 bits       4
+                            D4 D5 D6 D7          32 bits       4
+  Registres d'adresses      A0 A1 A2 A3          32 bits       4
+                            A4 A5 A6             32 bits       3
+  Pointeur de pile (USP)    A7 (mode utilisateur) 32 bits      1
+  Pointeur de pile (SSP)    A7 (mode superviseur) 32 bits      1
+  Compteur programme        PC                   32 bits       1
+  Registre d'etat           SR                   16 bits       1
+  ------------------------  -------------------  --------  ------
+  Total                                                       19
+
+  Comparaison avec l'Intel 80386 :
+
+    Aspect                   68000              80386
+    ----------------------   -----------------  ------------------
+    Registres generaux       16 x 32 bits       8 x 32 bits
+    Registres de segment     aucun              6 x 16 bits
+    Pointeur d'instruction   PC (32 bits)       EIP (32 bits)
+    Drapeaux                 SR (16 bits)       EFLAGS (32 bits)
+    Registres de controle    aucun              CR0-CR3 (32 bits)
+    Registres de debogage    aucun              DR0-DR7 (32 bits)
+    Modele memoire           Lineaire 24 bits   Segmente/Plat 32b
+    Endianness               Big-endian         Little-endian
+    Separation donnees/adr.  Oui (D/A)          Non
