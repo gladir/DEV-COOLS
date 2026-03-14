@@ -1,0 +1,284 @@
+==============================================================================
+     ASSEMBLEUR 68000 - Jeu d'instructions et architecture
+     Motorola 68000 (M68K) - Documentation de reference
+==============================================================================
+
+  Document de reference sur le processeur Motorola 68000 (M68K), son
+  architecture, son jeu d'instructions, ses modes d'adressage et les
+  techniques de programmation en langage assembleur associees.
+
+  Date:       Mars 2026
+  Processeur: Motorola 68000 (1979), 16/32 bits
+  Norme:      Motorola M68000 Family Programmer's Reference Manual
+
+==============================================================================
+1. INTRODUCTION
+==============================================================================
+
+  1.1 Presentation generale
+  -------------------------
+
+  Le processeur Motorola 68000, commercialise en 1979, est un
+  microprocesseur CISC a architecture interne 32 bits avec un bus de
+  donnees externe de 16 bits et un bus d'adresses de 24 bits (espace
+  adressable de 16 Mo). Il a ete concu par Motorola comme le successeur
+  des processeurs 6800 et 6809, avec une architecture entierement
+  nouvelle et bien plus puissante.
+
+  Le 68000 se distingue par :
+
+    - Une architecture interne 32 bits (registres de 32 bits)
+    - Un bus de donnees externe de 16 bits
+    - Un bus d'adresses de 24 bits (16 Mo adressables)
+    - 8 registres de donnees (D0-D7) de 32 bits
+    - 8 registres d'adresses (A0-A7) de 32 bits, dont A7 est le
+      pointeur de pile (SP)
+    - Un jeu d'instructions orthogonal et regulier
+    - 14 modes d'adressage riches et flexibles
+    - Un modele de programmation clair avec separation entre
+      les registres de donnees et les registres d'adresses
+    - Un mecanisme d'exceptions et d'interruptions vectorise
+    - Deux modes d'execution : superviseur et utilisateur
+
+  Le 68000 a ete largement adopte dans l'industrie informatique des
+  annees 1980 et 1990, alimentant des systemes emblematiques comme le
+  Macintosh d'Apple, l'Amiga de Commodore, l'Atari ST et de nombreuses
+  stations de travail et systemes embarques.
+
+  1.2 Variantes de la famille 68000
+  ----------------------------------
+
+  Motorola a produit une large famille de processeurs derives du 68000 :
+
+    68000   : Version originale, bus donnees 16 bits, bus adresses
+              24 bits (1979)
+    68008   : Version economique, bus donnees 8 bits, bus adresses
+              20 bits (1982)
+    68010   : Amelioration du 68000 avec support de la memoire
+              virtuelle et reprise d'instructions apres un bus error
+              (1982)
+    68012   : Variante du 68010 avec bus d'adresses 31 bits (1983)
+    68020   : Premier 68K entierement 32 bits (bus donnees 32 bits,
+              bus adresses 32 bits, cache d'instructions), nouveaux
+              modes d'adressage, instructions de champ de bits (1984)
+    68030   : Amelioration du 68020 avec MMU integree et cache de
+              donnees (1987)
+    68040   : Integration du coprocesseur flottant (FPU) et de la
+              MMU sur la puce, caches de 4 Ko chacun (1990)
+    68060   : Version superscalaire, double pipeline d'execution,
+              derniere generation de la famille (1994)
+
+  Des variantes embarquees ont aussi ete produites :
+
+    68EC000 : Version economique sans distinction superviseur/
+              utilisateur
+    68EC020 : Version 68020 sans MMU, bus d'adresses 24 bits
+    68EC030 : Version 68030 sans MMU
+    68EC040 : Version 68040 sans FPU ni MMU
+    68330   : Famille CPU32 pour l'embarque (automobile, industriel)
+    68360   : Processeur de communications integre (QUICC)
+
+  Toutes les variantes de la famille partagent le jeu d'instructions
+  de base du 68000. Les processeurs plus avances ajoutent de nouvelles
+  instructions mais restent retrocompatibles avec le code 68000.
+
+  La famille ColdFire de Freescale (puis NXP) est un descendant
+  moderne du 68K, optimise pour l'embarque avec un jeu d'instructions
+  reduit mais compatible avec un sous-ensemble du 68000.
+
+  1.3 Contexte historique
+  -----------------------
+
+  Le 68000 a ete l'un des processeurs les plus importants de l'histoire
+  de l'informatique. Il a ete utilise dans de tres nombreux systemes :
+
+  Ordinateurs personnels :
+    - Apple Macintosh (1984) : le Macintosh original utilisait un
+      68000 a 8 MHz. Tous les Macintosh jusqu'en 1994 ont utilise
+      des processeurs 68K (68000, 68020, 68030, 68040)
+    - Commodore Amiga (1985) : l'Amiga 1000, puis les Amiga 500,
+      2000, 3000, 4000 utilisaient des 68000 a 68040
+    - Atari ST (1985) : l'Atari 520ST et 1040ST utilisaient un
+      68000 a 8 MHz
+    - Sharp X68000 (1987) : ordinateur personnel japonais
+    - NeXT Computer (1988) : station de travail de Steve Jobs,
+      68030 puis 68040
+
+  Consoles de jeux :
+    - Sega Mega Drive / Genesis (1988) : 68000 a 7,67 MHz
+    - SNK Neo Geo (1990) : 68000 a 12 MHz
+    - Sega Saturn (1994) : deux SH-2 + 68000 pour le son
+    - Atari Jaguar (1993) : 68000 comme processeur principal
+
+  Bornes d'arcade :
+    - Capcom CPS-1 et CPS-2 (Street Fighter II, etc.)
+    - Sega System 16 et System 32
+    - SNK MVS (Metal Slug, King of Fighters, etc.)
+    - Nombreux jeux Taito, Konami, Data East, Irem, Jaleco
+
+  Stations de travail :
+    - Sun-1 et Sun-2 (Sun Microsystems, 1982-1985)
+    - HP 9000 series 300 (Hewlett-Packard)
+    - Silicon Graphics IRIS 1000 (premiere generation)
+    - Apollo Computer DN-series
+
+  Systemes embarques et industriels :
+    - Controleurs industriels
+    - Equipements de telecommunications
+    - Systemes de controle de processus
+    - Imprimantes laser (Apple LaserWriter, HP LaserJet)
+
+  L'assembleur 68000 reste pertinent car :
+    - De nombreux systemes retro utilisent toujours le 68000
+    - L'emulation de systemes 68K (Amiga, Atari ST, Mega Drive)
+      est tres populaire
+    - Le 68000 est enseigne dans de nombreuses universites comme
+      exemple d'architecture CISC bien concue
+    - La famille ColdFire continue d'etre utilisee dans l'embarque
+    - Le projet DEV-COOLS reference le 68000 dans ses sections
+      de conversion de code (voir DOC/ASM_80386.txt, section 14)
+
+  1.4 Comparaison avec les autres processeurs de l'epoque
+  --------------------------------------------------------
+
+  Le 68000 etait en concurrence directe avec l'Intel 8086/8088 et
+  le Zilog Z8000 :
+
+    Caracteristique        68000          8086           Z8000
+    -------------------------------------------------------------------
+    Annee                  1979           1978           1979
+    Architecture interne   32 bits        16 bits        16 bits
+    Bus donnees externe    16 bits        16 bits        16 bits
+    Bus adresses           24 bits        20 bits        16/23 bits
+    Registres generaux     16 x 32 bits   8 x 16 bits    16 x 16 bits
+    Modes d'adressage      14             8              8
+    Espace adressable      16 Mo          1 Mo           64 Ko / 8 Mo
+    Modele memoire         Lineaire       Segmente       Segmente
+    Jeu d'instructions     Orthogonal     Irregulier     Semi-regulier
+    Endianness             Big-endian     Little-endian  Big-endian
+
+  Le 68000 etait considere comme techniquement superieur au 8086,
+  avec une architecture plus propre et un modele de memoire lineaire
+  plus simple a programmer. Cependant, le 8086/8088 a domine le
+  marche des PC grace au choix d'IBM pour son PC original (1981),
+  creant ainsi la norme x86 qui perdure encore aujourd'hui.
+
+  1.5 Modele de programmation
+  ---------------------------
+
+  Le 68000 offre un modele de programmation clair et regulier :
+
+  Registres de donnees (D0-D7) :
+    - 8 registres de 32 bits chacun
+    - Utilises pour les operations arithmetiques, logiques et de
+      manipulation de donnees
+    - Supportent les operations sur 8, 16 ou 32 bits via les
+      suffixes .B (byte), .W (word), .L (long)
+    - Les operations sur .B affectent les bits 0-7
+    - Les operations sur .W affectent les bits 0-15
+    - Les operations sur .L affectent les 32 bits
+
+  Registres d'adresses (A0-A7) :
+    - 8 registres de 32 bits chacun
+    - Utilises comme pointeurs et pour le calcul d'adresses
+    - A7 sert de pointeur de pile (SP, Stack Pointer)
+    - En mode superviseur, il existe un second A7 (SSP) distinct
+      du A7 utilisateur (USP)
+    - Les operations sur les registres d'adresses ne modifient
+      pas les drapeaux de condition (sauf CMPA)
+    - Supportent les operations sur 16 ou 32 bits (.W et .L)
+
+  Compteur programme (PC) :
+    - Registre de 32 bits (24 bits effectifs sur le 68000)
+    - Pointe vers la prochaine instruction a executer
+    - Utilisable comme base dans certains modes d'adressage
+      (adressage relatif au PC)
+
+  Registre d'etat (SR, Status Register) :
+    - Registre de 16 bits divise en deux octets :
+      * Octet utilisateur (CCR, Condition Code Register, bits 0-4) :
+        - C (Carry, bit 0) : retenue
+        - V (Overflow, bit 1) : debordement
+        - Z (Zero, bit 2) : resultat nul
+        - N (Negative, bit 3) : resultat negatif
+        - X (Extend, bit 4) : retenue etendue (pour l'arithmetique
+          multi-precision)
+      * Octet systeme (bits 8-15) :
+        - I0-I2 (bits 8-10) : masque de niveau d'interruption (0-7)
+        - S (bit 13) : mode superviseur (1) ou utilisateur (0)
+        - T (bit 15) : mode trace (execution pas a pas)
+
+  1.6 Modes de fonctionnement
+  ---------------------------
+
+  Le 68000 dispose de deux modes de fonctionnement :
+
+    Mode utilisateur (User Mode) :
+      - Mode d'execution normal pour les applications
+      - Acces restreint : certaines instructions sont interdites
+        (STOP, RESET, MOVE to SR, AND/OR/EOR to SR, RTE,
+        MOVE USP)
+      - Utilise le pointeur de pile utilisateur (USP, A7)
+      - Ne peut pas modifier l'octet systeme du registre d'etat
+      - Toute tentative d'executer une instruction privilegiee
+        declenche une exception (vecteur 8, privilege violation)
+
+    Mode superviseur (Supervisor Mode) :
+      - Mode d'execution pour le systeme d'exploitation
+      - Acces complet a toutes les instructions
+      - Utilise le pointeur de pile superviseur (SSP)
+      - Peut modifier l'ensemble du registre d'etat (SR)
+      - Active au demarrage (RESET) et lors du traitement des
+        exceptions et interruptions
+      - Retour au mode utilisateur via l'instruction RTE (Return
+        from Exception) qui restaure SR depuis la pile
+
+  Le passage du mode utilisateur au mode superviseur se fait
+  uniquement par une exception (interruption, TRAP, erreur de bus,
+  instruction illegale, etc.). Le retour se fait via RTE.
+
+  1.7 Ordre des octets (Endianness)
+  ----------------------------------
+
+  Le 68000 utilise l'ordre big-endian (poids fort en premier) :
+
+    - L'octet de poids fort est stocke a l'adresse la plus basse
+    - Pour un mot de 16 bits $1234 a l'adresse $1000 :
+        $1000 : $12 (octet de poids fort)
+        $1001 : $34 (octet de poids faible)
+    - Pour un long mot de 32 bits $12345678 a l'adresse $1000 :
+        $1000 : $12
+        $1001 : $34
+        $1002 : $56
+        $1003 : $78
+
+  C'est l'ordre inverse de l'Intel x86 (little-endian). Cette
+  difference est importante lors de la conversion de code entre
+  les deux architectures (voir DOC/ASM_80386.txt, section 14).
+
+  Le 68000 impose egalement un alignement des acces memoire :
+    - Les acces en mot (16 bits) et en long mot (32 bits) doivent
+      etre a des adresses paires
+    - Un acces a une adresse impaire pour un mot ou un long mot
+      declenche une exception "Address Error" (vecteur 3)
+    - Les acces en octet (8 bits) peuvent etre a n'importe quelle
+      adresse
+
+  1.8 Organisation du document
+  ----------------------------
+
+  Ce document est organise comme suit :
+
+    Section 2  : Architecture et registres du 68000
+    Section 3  : Modes d'adressage
+    Section 4  : Jeu d'instructions (opcodes)
+    Section 5  : Codage des instructions (format binaire)
+    Section 6  : Gestion des exceptions et interruptions
+    Section 7  : Coprocesseur flottant (68881/68882)
+    Section 8  : Techniques de programmation
+    Section 9  : Directives assembleur
+    Section 10 : Exemples de code
+    Section 11 : Conversion de code 8086 en 68000
+    Section 12 : Conversion de code 80386 en 68000
+    Section 13 : Conversion de code ARM en 68000
+    Section 14 : Conversion de code Z8000 en 68000
