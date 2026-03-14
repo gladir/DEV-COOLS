@@ -1,0 +1,518 @@
+{ ---------------------------------------------------------------------------- }
+{  PLAN DE DEVELOPPEMENT - 25 TODOs                                            }
+{  JASMIN.PAS : Assembleur Jasmin -> fichier .class (Java bytecode)            }
+{ ---------------------------------------------------------------------------- }
+
+TODO 01 - Architecture de base, constantes et types internes
+  ---------------------------------------------------------------
+  - Constantes de tokens (TK_IDENT, TK_INTEGER, TK_FLOAT, TK_STRING,
+    TK_COLON, TK_EQUAL, TK_LPAREN, TK_RPAREN, TK_SLASH, TK_SEMI,
+    TK_DOT, TK_LBRACKET, TK_RBRACKET, TK_MINUS, TK_PLUS, TK_EOF,
+    TK_NEWLINE, TK_DIRECTIVE, TK_LABEL, TK_UNKNOWN)
+  - Constantes de directives Jasmin (DIR_CLASS, DIR_SUPER, DIR_IMPLEMENTS,
+    DIR_SOURCE, DIR_FIELD, DIR_METHOD, DIR_END, DIR_LIMIT, DIR_LINE,
+    DIR_VAR, DIR_THROWS, DIR_CATCH, DIR_INTERFACE, DIR_BYTECODE,
+    DIR_ENCLOSING, DIR_SIGNATURE, DIR_DEPRECATED, DIR_ANNOTATION,
+    DIR_INNER, DIR_STACK)
+  - Constantes d'acces (ACC_PUBLIC, ACC_PRIVATE, ACC_PROTECTED,
+    ACC_STATIC, ACC_FINAL, ACC_SYNCHRONIZED, ACC_VOLATILE,
+    ACC_TRANSIENT, ACC_NATIVE, ACC_INTERFACE, ACC_ABSTRACT,
+    ACC_STRICT, ACC_SYNTHETIC, ACC_ANNOTATION, ACC_ENUM, ACC_SUPER)
+  - Constantes de types Constant Pool (CP_UTF8, CP_INTEGER, CP_FLOAT,
+    CP_LONG, CP_DOUBLE, CP_CLASS, CP_STRING, CP_FIELDREF,
+    CP_METHODREF, CP_INTERFACEMETHODREF, CP_NAMEANDTYPE,
+    CP_METHODHANDLE, CP_METHODTYPE, CP_INVOKEDYNAMIC)
+  - Types internes enregistrements :
+    TCPEntry    (Tag, StrVal, IntVal, FloatVal, Ref1, Ref2)
+    TFieldRec   (AccFlags, NameIdx, DescIdx, AttrCount, InitVal)
+    TMethodRec  (AccFlags, NameIdx, DescIdx, MaxStack, MaxLocals,
+                 CodeSize, CodeBuf, ExcCount, ExcHandlers,
+                 LineCount, LineNumbers, LabelCount, Labels)
+    TLabelRec   (Name, Offset, Resolved)
+    TExcHandler (StartLbl, EndLbl, HandlerLbl, CatchType)
+    TLineNumRec (Line, Offset)
+    TInstrRec   (Opcode, Size, Operands)
+  - Variables globales (fichiers source/sortie, options, etat lexeur,
+    tables constant pool/champs/methodes, compteurs, nom de classe)
+  - Constante VERSION = 'Assembleur Jasmin V0.1'
+
+TODO 02 - Lexeur : lecture source et tokenisation
+  ---------------------------------------------------
+  - SrcOpen : ouvrir fichier source .j, initialiser ligne/colonne
+  - SrcGetChar : lecture caractere par caractere, gestion CR/LF
+  - SkipWhitespace : espaces et tabulations (pas les fins de ligne)
+  - SkipComment : commentaires Jasmin (; jusqu'en fin de ligne)
+  - LexIdent : identifiant ou mnemonique d'instruction
+  - LexNumber : entier decimal, entier hexadecimal (0x..),
+    entier octal (0...), flottant (1.5, 1.5E3, 1.5E-3),
+    suffixes L (long), F (float), D (double)
+  - LexString : "..." avec sequences d'echappement (\n, \t, \\, \")
+  - LexDirective : mot commencant par '.' -> TK_DIRECTIVE
+  - LexLabel : identifiant suivi de ':' -> TK_LABEL
+  - NextToken : dispatcher principal -> CurTok / CurStr / CurInt /
+    CurFloat
+  - Consume : avancer au token suivant
+  - Expect, ExpectStr, ExpectNewline : helpers de parsing
+  - UpCaseStr, IntToStr_, StrToInt_ : utilitaires chaines
+
+TODO 03 - Gestion des erreurs, des avertissements et du bilan
+  --------------------------------------------------------------
+  - Error(msg) : incrementer ErrorCount, afficher fichier:ligne + msg
+  - Warning(msg) : avertissement non bloquant
+  - FatalError(msg) : afficher message + Halt(1)
+  - ErrorAt(line, msg) : erreur avec numero de ligne specifique
+  - SkipToEOL : consommer jusqu'en fin de ligne pour resynchroniser
+  - SkipToDirective : consommer jusqu'a la prochaine directive
+  - BilanAssemblage : afficher statistiques (methodes, champs,
+    constantes, taille du code, erreurs, avertissements)
+
+TODO 04 - Bassin de constantes (Constant Pool) : structures et gestion
+  ----------------------------------------------------------------------
+  - CPInit : initialiser le bassin (entree 0 = inutilisee)
+  - CPAddUtf8(s) : ajouter CONSTANT_Utf8, retourner index
+  - CPAddInteger(n) : ajouter CONSTANT_Integer
+  - CPAddFloat(f) : ajouter CONSTANT_Float
+  - CPAddLong(hi,lo) : ajouter CONSTANT_Long (occupe 2 entrees)
+  - CPAddDouble(hi,lo) : ajouter CONSTANT_Double (occupe 2 entrees)
+  - CPAddClass(name) : ajouter CONSTANT_Class (ref vers Utf8)
+  - CPAddString(s) : ajouter CONSTANT_String (ref vers Utf8)
+  - CPAddNameAndType(name, desc) : ajouter CONSTANT_NameAndType
+  - CPAddFieldRef(cls, name, desc) : ajouter CONSTANT_Fieldref
+  - CPAddMethodRef(cls, name, desc) : ajouter CONSTANT_Methodref
+  - CPAddInterfaceMethodRef(cls, name, desc) : CONSTANT_InterfaceMethodref
+  - CPAddMethodHandle(kind, ref) : ajouter CONSTANT_MethodHandle
+  - CPAddMethodType(desc) : ajouter CONSTANT_MethodType
+  - CPAddInvokeDynamic(bootstrap, nat) : ajouter CONSTANT_InvokeDynamic
+  - CPFind(tag, val) : rechercher entree existante (deduplication)
+  - CPEnsureClass(name) : ajouter si absent, retourner index
+  - CPEnsureUtf8(s) : ajouter si absent, retourner index
+  - CPEnsureNameAndType(name, desc) : idem avec deduplication
+
+TODO 05 - Ecriture binaire du fichier .class (Big-endian)
+  ----------------------------------------------------------
+  - BinOpen(filename) : ouvrir fichier binaire en ecriture
+  - BinClose : fermer fichier binaire
+  - BinWriteU1(b) : ecrire 1 octet (unsigned byte)
+  - BinWriteU2(w) : ecrire 2 octets big-endian (unsigned short)
+  - BinWriteU4(d) : ecrire 4 octets big-endian (unsigned int)
+  - BinWriteBytes(buf, len) : ecrire un bloc d'octets
+  - BinWriteUtf8(s) : ecrire longueur U2 + octets UTF-8 modifie
+  - BinWriteFloat(f) : ecrire IEEE 754 single 32 bits big-endian
+  - BinWriteDouble(d) : ecrire IEEE 754 double 64 bits big-endian
+  - BinWriteLong(hi, lo) : ecrire entier 64 bits big-endian
+  - BinGetPos : retourner la position courante dans le fichier
+  - BinPatchU2(pos, w) : ecrire U2 a une position precedente (backpatch)
+  - BinPatchU4(pos, d) : ecrire U4 a une position precedente (backpatch)
+  - Gestion du boutisme (Turbo Pascal = little-endian, JVM = big-endian)
+
+TODO 06 - Directives de classe (.class, .super, .implements, .source)
+  ---------------------------------------------------------------------
+  - ParseClassDirective : .class <access_flags> <classname>
+    -> decoder drapeaux (public, final, abstract, interface, super,
+       enum, annotation, synthetic), stocker nom interne (/ separateur)
+  - ParseSuperDirective : .super <classname>
+    -> defaut java/lang/Object si absent
+  - ParseImplementsDirective : .implements <interfacename>
+    -> ajouter a la liste des interfaces (multiple autorise)
+  - ParseSourceDirective : .source <filename>
+    -> stocker pour l'attribut SourceFile
+  - ParseInterfaceDirective : .interface <access_flags> <name>
+    -> equivalent a .class avec ACC_INTERFACE | ACC_ABSTRACT
+  - ParseBytecodeDirective : .bytecode <major>.<minor>
+    -> definir la version cible du fichier .class
+  - ParseAccessFlags(context) : decoder les mots-cles d'acces en
+    masque de bits (selon contexte classe/champ/methode)
+  - ConvertClassName(name) : convertir '.' en '/' si necessaire
+  - Valeurs par defaut : version 49.0 (Java 5), super java/lang/Object
+
+TODO 07 - Directives de champs (.field avec descripteurs et valeurs)
+  -------------------------------------------------------------------
+  - ParseFieldDirective : .field <access_flags> <name> <descriptor>
+    [= <value>]
+    -> decoder drapeaux (public, private, protected, static, final,
+       volatile, transient, synthetic, enum)
+  - ParseFieldInitValue : = <value> apres le descripteur
+    -> ConstantValue attribute pour static final :
+       entier, flottant, long, double, ou chaine
+  - ParseFieldSignature : .signature <string> pour les generiques
+  - ParseFieldDeprecated : .deprecated sur un champ
+  - ParseFieldAnnotation : .annotation / .end annotation sur un champ
+  - AddField(flags, name, desc) : creer entree dans la table des champs
+  - EmitFieldInfo : ecrire field_info dans le .class
+    (access_flags, name_index, descriptor_index, attributes_count,
+     ConstantValue si present, Signature si present)
+  - Validation du descripteur de champ (I, J, F, D, B, C, S, Z,
+    Lclassname;, [type)
+
+TODO 08 - Directives de methodes (.method, .end method, .limit)
+  ---------------------------------------------------------------
+  - ParseMethodDirective : .method <access_flags> <name><descriptor>
+    -> decoder drapeaux (public, private, protected, static, final,
+       synchronized, native, abstract, strictfp, synthetic, bridge,
+       varargs)
+  - ParseEndMethod : .end method -> finaliser methode courante
+  - ParseLimitDirective : .limit stack <N> / .limit locals <N>
+    -> definir max_stack et max_locals pour la methode courante
+  - ParseLineDirective : .line <N>
+    -> ajouter entree LineNumberTable (pc courant, ligne)
+  - ParseVarDirective : .var <index> is <name> <desc> from <l1> to <l2>
+    -> ajouter entree LocalVariableTable
+  - ParseThrowsDirective : .throws <classname>
+    -> ajouter attribut Exceptions a la methode
+  - EnterMethod : reinitialiser etat d'assemblage (code buffer,
+    labels, exception handlers, compteur PC)
+  - LeaveMethod : verifier labels non resolus, calculer tailles
+  - Methodes speciales : <init> (constructeur), <clinit> (initialiseur
+    statique), main([Ljava/lang/String;)V (point d'entree)
+
+TODO 09 - Descripteurs de types JVM : parsing et validation
+  -----------------------------------------------------------
+  - ParseTypeDescriptor : parser un descripteur de type JVM complet
+    B (byte), C (char), D (double), F (float), I (int), J (long),
+    S (short), Z (boolean), V (void), Lclassname; (reference),
+    [type (tableau)
+  - ParseMethodDescriptor : (param_types)return_type
+    -> compter les parametres, calculer la taille des slots
+      (long et double occupent 2 slots, les autres 1 slot)
+  - DescriptorSlotSize(desc) : retourner le nombre de slots
+    utilises par un type (1 pour I/F/B/C/S/Z/L/[, 2 pour J/D)
+  - DescriptorParamSlots(method_desc) : nombre total de slots
+    pour les parametres (+ 1 pour this si methode d'instance)
+  - DescriptorReturnSlots(method_desc) : nombre de slots du retour
+    (0 pour V, 1 ou 2 selon le type)
+  - ValidateDescriptor(desc) : verifier syntaxe correcte
+  - ValidateMethodDescriptor(desc) : verifier parentheses et types
+  - AutoLocals(method) : calculer max_locals minimum a partir
+    du descripteur et des instructions (si .limit locals absent)
+  - AutoStack(method) : calculer max_stack minimum a partir
+    du flot d'instructions (si .limit stack absent)
+
+TODO 10 - Opcodes de chargement et stockage
+  -------------------------------------------
+  Instructions de chargement depuis les variables locales :
+  - iload <var>, iload_0, iload_1, iload_2, iload_3
+  - lload <var>, lload_0, lload_1, lload_2, lload_3
+  - fload <var>, fload_0, fload_1, fload_2, fload_3
+  - dload <var>, dload_0, dload_1, dload_2, dload_3
+  - aload <var>, aload_0, aload_1, aload_2, aload_3
+  Instructions de stockage dans les variables locales :
+  - istore <var>, istore_0, istore_1, istore_2, istore_3
+  - lstore <var>, lstore_0, lstore_1, lstore_2, lstore_3
+  - fstore <var>, fstore_0, fstore_1, fstore_2, fstore_3
+  - dstore <var>, dstore_0, dstore_1, dstore_2, dstore_3
+  - astore <var>, astore_0, astore_1, astore_2, astore_3
+  Instructions de chargement depuis les tableaux :
+  - iaload, laload, faload, daload, aaload, baload, caload, saload
+  Instructions de stockage dans les tableaux :
+  - iastore, lastore, fastore, dastore, aastore, bastore, castore,
+    sastore
+  - Chaque instruction a un opcode fixe, taille fixe (1 ou 2 octets),
+    et un effet connu sur la pile operande
+  - ParseLoadStore : reconnaitre le mnemonique, emettre l'opcode
+    et l'operande eventuel dans le code buffer
+
+TODO 11 - Opcodes arithmetiques et logiques
+  -------------------------------------------
+  Arithmetique entiere (int) :
+  - iadd, isub, imul, idiv, irem, ineg
+  Arithmetique longue (long) :
+  - ladd, lsub, lmul, ldiv, lrem, lneg
+  Arithmetique flottante (float) :
+  - fadd, fsub, fmul, fdiv, frem, fneg
+  Arithmetique double (double) :
+  - dadd, dsub, dmul, ddiv, drem, dneg
+  Operations sur les bits (int) :
+  - ishl, ishr, iushr, iand, ior, ixor
+  Operations sur les bits (long) :
+  - lshl, lshr, lushr, land, lor, lxor
+  Increment local :
+  - iinc <var> <const> (incrementer variable locale d'une constante)
+  - ParseArithLogic : reconnaitre le mnemonique, emettre l'opcode
+    (1 octet sans operande, sauf iinc = 3 octets)
+
+TODO 12 - Opcodes de conversion de types
+  -----------------------------------------
+  Conversions numeriques :
+  - i2l, i2f, i2d (int vers long/float/double)
+  - l2i, l2f, l2d (long vers int/float/double)
+  - f2i, f2l, f2d (float vers int/long/double)
+  - d2i, d2l, d2f (double vers int/long/float)
+  Conversions de troncature :
+  - i2b (int vers byte, extension de signe)
+  - i2c (int vers char, masquage 16 bits non signe)
+  - i2s (int vers short, extension de signe)
+  - ParseConversion : reconnaitre le mnemonique, emettre l'opcode
+    (1 octet sans operande)
+  - 15 opcodes au total (0x85 a 0x93)
+
+TODO 13 - Opcodes de controle de flux
+  --------------------------------------
+  Branchements inconditionnels :
+  - goto <label>, goto_w <label> (saut 16 bits / 32 bits)
+  - jsr <label>, jsr_w <label> (jump subroutine, deprecie)
+  - ret <var> (retour de subroutine, deprecie)
+  Branchements conditionnels sur un int :
+  - ifeq <label>, ifne <label>, iflt <label>
+  - ifge <label>, ifgt <label>, ifle <label>
+  Branchements de comparaison entre deux int :
+  - if_icmpeq <label>, if_icmpne <label>
+  - if_icmplt <label>, if_icmpge <label>
+  - if_icmpgt <label>, if_icmple <label>
+  Branchements de comparaison de references :
+  - if_acmpeq <label>, if_acmpne <label>
+  - ifnull <label>, ifnonnull <label>
+  Branchements multi-voies :
+  - tableswitch <low> <high> <labels...> default : <label>
+    (table contiguë d'offsets avec padding d'alignement)
+  - lookupswitch <npairs> <key>:<label>... default : <label>
+    (table de paires cle/offset avec padding d'alignement)
+  - ParseBranch : reconnaitre le mnemonique, enregistrer la
+    reference au label (resolution differee au TODO 19)
+  - ParseTableSwitch / ParseLookupSwitch : parser les cas,
+    gerer le padding a 4 octets, calculer les offsets relatifs
+
+TODO 14 - Opcodes d'invocation de methodes
+  -------------------------------------------
+  - invokevirtual <method_spec> : appel methode d'instance (dispatch
+    dynamique via vtable)
+  - invokespecial <method_spec> : appel constructeur <init>, methode
+    privee, ou methode de la superclasse (super.method)
+  - invokestatic <method_spec> : appel methode statique (pas de this)
+  - invokeinterface <method_spec> <count> : appel methode d'interface
+    (dispatch via itable, operande count = nargs + 1, padding 0)
+  - invokedynamic <callsite_spec> : appel dynamique (Java 7+,
+    via bootstrap method, 2 octets padding 00 00)
+  - Format method_spec : classe/nom(descripteur)type_retour
+    Exemples : java/io/PrintStream/println(Ljava/lang/String;)V
+               java/lang/Math/max(II)I
+  - ParseInvoke : parser la specification de methode, creer les
+    entrees Constant Pool (Methodref/InterfaceMethodref + Class +
+    NameAndType + Utf8), emettre l'opcode + index U2
+
+TODO 15 - Opcodes de manipulation de la pile et chargement de constantes
+  -----------------------------------------------------------------------
+  Manipulation de la pile :
+  - pop, pop2 (depiler 1 ou 2 mots)
+  - dup, dup_x1, dup_x2 (dupliquer sommet, 1 ou 2 mots dessous)
+  - dup2, dup2_x1, dup2_x2 (dupliquer 2 mots, 1 ou 2 dessous)
+  - swap (echanger les 2 mots du sommet)
+  - nop (aucune operation)
+  Chargement de constantes :
+  - aconst_null (pousser null)
+  - iconst_m1, iconst_0, iconst_1, iconst_2, iconst_3, iconst_4,
+    iconst_5 (pousser constante int -1 a 5)
+  - lconst_0, lconst_1 (pousser constante long 0 ou 1)
+  - fconst_0, fconst_1, fconst_2 (pousser constante float)
+  - dconst_0, dconst_1 (pousser constante double)
+  - bipush <byte> (pousser byte signe -128..127)
+  - sipush <short> (pousser short signe -32768..32767)
+  - ldc <constant> (pousser int/float/string depuis Constant Pool)
+  - ldc_w <constant> (idem, index large 16 bits)
+  - ldc2_w <constant> (pousser long/double depuis Constant Pool)
+  - ParseStackConst : reconnaitre le mnemonique, emettre l'opcode
+    et l'operande, creer les entrees Constant Pool si necessaire
+    (pour ldc/ldc_w/ldc2_w : entier, flottant, chaine, ou classe)
+
+TODO 16 - Opcodes de creation d'objets et tableaux
+  ---------------------------------------------------
+  - new <classname> : creer nouvel objet (reference non initialisee)
+    -> CPEnsureClass(classname), emettre opcode + index U2
+  - newarray <type> : creer tableau de type primitif
+    type = boolean(4), char(5), float(6), double(7), byte(8),
+           short(9), int(10), long(11)
+  - anewarray <classname> : creer tableau de references
+  - multianewarray <classname> <dimensions> : creer tableau
+    multi-dimensionnel (1 a 255 dimensions)
+  - arraylength : obtenir la longueur d'un tableau
+  - checkcast <classname> : verifier le transtypage
+    (ClassCastException si echec)
+  - instanceof <classname> : tester le type d'un objet
+    (retourne 0 ou 1)
+  - ParseObjArray : reconnaitre le mnemonique, parser la classe
+    ou le type primitif, emettre opcode + operandes
+
+TODO 17 - Opcodes d'acces aux champs
+  -------------------------------------
+  - getfield <field_spec> : charger champ d'instance sur la pile
+    (objectref -> value)
+  - putfield <field_spec> : stocker valeur dans champ d'instance
+    (objectref, value ->)
+  - getstatic <field_spec> : charger champ statique sur la pile
+    (-> value)
+  - putstatic <field_spec> : stocker valeur dans champ statique
+    (value ->)
+  - Format field_spec : classe/nom descripteur
+    Exemples : java/lang/System/out Ljava/io/PrintStream;
+               MonObjet/compteur I
+  - ParseFieldAccess : parser la specification du champ, creer
+    les entrees Constant Pool (Fieldref + Class + NameAndType +
+    Utf8 pour nom + Utf8 pour descripteur), emettre opcode + index U2
+
+TODO 18 - Opcodes de comparaison, retour et divers
+  ---------------------------------------------------
+  Comparaisons :
+  - lcmp (comparer 2 longs -> -1/0/1)
+  - fcmpl, fcmpg (comparer 2 floats, NaN -> -1 ou 1)
+  - dcmpl, dcmpg (comparer 2 doubles, NaN -> -1 ou 1)
+  Instructions de retour :
+  - ireturn (retourner int), lreturn (retourner long)
+  - freturn (retourner float), dreturn (retourner double)
+  - areturn (retourner reference)
+  - return (retourner void)
+  Exceptions :
+  - athrow (lancer une exception, objectref sur la pile)
+  Instructions de moniteur :
+  - monitorenter (acquerir le moniteur d'un objet)
+  - monitorexit (relacher le moniteur d'un objet)
+  Instruction wide :
+  - wide <opcode> <index_u2> : etendre l'index de variable locale
+    a 16 bits (pour iload, istore, fload, fstore, aload, astore,
+    lload, lstore, dload, dstore, ret)
+  - wide iinc <index_u2> <const_s2> : iinc etendu
+  - ParseReturnCmpMisc : reconnaitre et emettre ces opcodes
+
+TODO 19 - Labels, resolution des sauts et calcul des offsets
+  -----------------------------------------------------------
+  - LabelInit : initialiser la table des labels pour la methode
+  - LabelAdd(name) : enregistrer un label a la position PC courante
+  - LabelRef(name, pc, size) : enregistrer une reference a resoudre
+    (le branchement a 'pc' vise le label 'name')
+  - LabelResolve : resoudre toutes les references en fin de methode
+    -> calculer offset relatif = label_pc - branch_pc
+    -> patcher les octets dans le code buffer
+    -> erreur si label non defini
+  - Distinction offset 16 bits signe (goto, ifXX) et 32 bits signe
+    (goto_w, jsr_w)
+  - Gestion des pseudo-labels pour tableswitch et lookupswitch
+    (padding + offsets relatifs au debut du switch)
+  - Validation : detecter les labels dupliques dans une meme methode
+  - Validation : detecter les labels references mais non definis
+  - ForwardRef : support des references avant (label defini apres
+    son utilisation) grace a la resolution differee
+
+TODO 20 - Attribut Code : generation binaire
+  ----------------------------------------------
+  Structure de l'attribut Code (section du .class) :
+  - attribute_name_index (U2, pointe vers "Code" dans le CP)
+  - attribute_length (U4, taille totale de l'attribut)
+  - max_stack (U2), max_locals (U2)
+  - code_length (U4), code[] (octets du bytecode)
+  - exception_table_length (U2)
+  - exception_table[] (start_pc, end_pc, handler_pc, catch_type)
+  - attributes_count (U2)
+  - attributes[] (LineNumberTable, LocalVariableTable, StackMapTable)
+  Procedure EmitCodeAttribute(method) :
+  - Calculer la taille totale avant ecriture (code + exceptions +
+    sous-attributs)
+  - Ecrire le bytecode assemble depuis le code buffer
+  - Convertir les labels des exception handlers en offsets PC
+  - Generer le sous-attribut LineNumberTable si .line utilise
+  - Generer le sous-attribut LocalVariableTable si .var utilise
+  - Backpatcher attribute_length apres ecriture complete
+
+TODO 21 - Directives de gestion des exceptions (.catch, .throws)
+  ----------------------------------------------------------------
+  - ParseCatchDirective : .catch <classname> from <l1> to <l2>
+    using <handler>
+    -> enregistrer un exception handler dans la methode courante
+    -> classname = "all" pour intercepter toutes les exceptions
+       (catch_type = 0 dans la table des exceptions)
+    -> l1, l2, handler sont des labels (resolus au TODO 19)
+  - ParseThrowsDirective : .throws <classname>
+    -> ajouter l'attribut Exceptions a la methode
+    -> contient une liste de classes d'exceptions
+  - EmitExceptionTable(method) : ecrire exception_table dans
+    l'attribut Code (start_pc, end_pc, handler_pc, catch_type
+    comme indices dans le Constant Pool)
+  - EmitExceptionsAttribute(method) : ecrire l'attribut Exceptions
+    separement de l'attribut Code (liste de classes)
+  - Validation : verifier que les labels from/to/using existent
+  - Validation : verifier que start_pc < end_pc
+
+TODO 22 - Attributs supplementaires (SourceFile, LineNumberTable, etc.)
+  ----------------------------------------------------------------------
+  - EmitSourceFileAttr : ecrire attribut SourceFile si .source defini
+    (attribute_name_index -> "SourceFile", U2 source_file_index)
+  - EmitLineNumberTableAttr : ecrire sous-attribut LineNumberTable
+    dans Code (table de paires start_pc / line_number)
+  - EmitLocalVariableTableAttr : ecrire sous-attribut
+    LocalVariableTable (start_pc, length, name_index, desc_index, index)
+  - EmitStackMapTableAttr : ecrire sous-attribut StackMapTable
+    si .stack directive utilisee (verification bytecode Java 7+)
+  - EmitInnerClassesAttr : .inner class <access> <inner> <outer> <name>
+  - EmitDeprecatedAttr : .deprecated -> attribut Deprecated (vide)
+  - EmitSignatureAttr : .signature <string> -> attribut Signature
+    pour les generiques (champs, methodes, classes)
+  - EmitEnclosingMethodAttr : .enclosing method <class> <method> <desc>
+  - Calcul prealable de attributes_count pour chaque structure
+    (classe, champ, methode, attribut Code)
+
+TODO 23 - Programme principal : ligne de commande et generation .class
+  ---------------------------------------------------------------------
+  Architecture du programme principal :
+  - ParseCommandLine : analyser ParamStr(1..ParamCount)
+    -> fichier source .j (obligatoire)
+    -> -o <fichier.class> : nom du fichier de sortie
+    -> -d <repertoire> : repertoire de sortie
+    -> -g : inclure les informations de debogage (LineNumberTable,
+       LocalVariableTable)
+    -> -version : afficher la version et quitter
+    -> -help : afficher l'aide et quitter
+    -> Par defaut : produire un .class portant le nom de la classe
+  - Procedure Assemble :
+    1. Ouvrir le fichier source .j
+    2. Initialiser toutes les tables (CPInit, etc.)
+    3. Parser les directives de classe (TODO 06)
+    4. Parser les champs et methodes (TODO 07, 08)
+    5. Resoudre les references (labels, Constant Pool)
+    6. Ouvrir le fichier binaire .class
+    7. Ecrire l'en-tete : magic (0xCAFEBABE), version
+    8. Ecrire le Constant Pool (CPEmitAll)
+    9. Ecrire access_flags, this_class, super_class
+   10. Ecrire la table des interfaces
+   11. Ecrire la table des champs (EmitFieldInfo)
+   12. Ecrire la table des methodes (EmitMethodInfo + Code)
+   13. Ecrire les attributs de classe (SourceFile, etc.)
+   14. Fermer le fichier binaire
+   15. Afficher le bilan d'assemblage
+  - Main : Begin Assemble; End.
+
+TODO 24 - Validation et verification du bytecode genere
+  -------------------------------------------------------
+  Verifications a l'assemblage :
+  - Verifier que .class et .super sont definis
+  - Verifier que chaque methode non-abstract a un corps
+  - Verifier que .limit stack et .limit locals sont definis
+    (ou calcules automatiquement si absents)
+  - Verifier que tous les labels sont resolus
+  - Verifier la coherence des descripteurs de types
+  - Verifier que les index de variables locales sont dans les
+    limites (0 .. max_locals-1, ou 0 .. max_locals-2 pour
+    long/double)
+  - Verifier que les opcodes ont le bon nombre d'operandes
+  - Verifier que les methodes abstract/native n'ont pas de code
+  - Verifier que le Constant Pool ne depasse pas 65535 entrees
+  - Verifier que le bytecode d'une methode ne depasse pas 65535 octets
+  - Avertissement si max_stack semble insuffisant
+  - Avertissement si max_locals semble insuffisant
+  - Mode -strict : activer les verifications supplementaires
+
+TODO 25 - Exemples SAMPLES/JASMIN/*.j et corrections de bugs
+  -----------------------------------------------------------
+  Creer des fichiers exemples couvrant les fonctionnalites :
+  - Hello.j : HelloWorld minimal (getstatic System.out,
+    ldc "Hello, World!", invokevirtual println, return)
+  - test01_hello.j : affichage chaine simple
+  - test02_variables.j : variables locales int (istore/iload)
+  - test03_arith.j : operations arithmetiques (iadd, isub, imul, idiv)
+  - test04_cond.j : branchements conditionnels (ifeq, if_icmpge)
+  - test05_loop.j : boucle avec goto et comparaison
+  - test06_method.j : appel de methode statique (invokestatic)
+  - test07_field.j : champs d'instance (getfield, putfield)
+  - test08_array.j : creation et manipulation de tableaux
+  - test09_except.j : gestion d'exceptions (.catch, athrow)
+  - test10_stack.j : manipulation de pile (dup, swap, pop)
+  Chaque fichier doit etre un programme Jasmin complet et valide,
+  assemblable par le JASMIN.PAS et par jasmin.jar de reference.
+  Compiler chaque exemple, corriger les bugs trouves, valider
+  que le fichier .class produit est correct et executable par java.
