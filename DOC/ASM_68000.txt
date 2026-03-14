@@ -6066,3 +6066,897 @@
   Ajout rapide            ADDQ.L #n, ea (2 octets)
   Multiplication rapide   LSL.L + ADD.L (decalages + additions)
   Interface C             LINK/UNLK + acces 8(A6), 12(A6)...
+
+==============================================================================
+9. DIRECTIVES ASSEMBLEUR
+==============================================================================
+
+  Les directives assembleur (aussi appelees pseudo-instructions ou
+  pseudo-opcodes) ne generent pas de code machine directement mais
+  controlent le processus d'assemblage : definition de donnees,
+  organisation memoire, symboles, macros, assemblage conditionnel
+  et generation de listing.
+
+  Les directives varient selon l'assembleur utilise (Motorola ASM68K,
+  Devpac, VASM, AS, etc.) mais les concepts fondamentaux sont communs.
+  Cette section presente les directives les plus repandues.
+
+  9.1 Directives de definition de donnees
+  ------------------------------------------
+
+  9.1.1 DC - Define Constant
+
+  La directive DC reserve de la memoire et l'initialise avec des
+  valeurs constantes. Le suffixe de taille determine l'unite :
+
+    Syntaxe : [etiquette]  DC.s  valeur[,valeur,...]
+              s = B (octet), W (mot, defaut), L (long mot)
+
+  Exemples :
+
+    octet1:     DC.B    42               ; 1 octet = $2A
+    octets:     DC.B    1,2,3,4,5        ; 5 octets consecutifs
+    chaine:     DC.B    'Hello',0        ; Chaine terminee par zero
+    mot1:       DC.W    $1234            ; 1 mot = $1234
+    mots:       DC.W    100,200,300      ; 3 mots consecutifs
+    long1:      DC.L    $12345678        ; 1 long mot
+    adresse:    DC.L    ma_routine       ; Adresse 32 bits (relocalisable)
+    mixte:      DC.W    label2-label1    ; Expression (difference d'adresses)
+
+  Notes :
+    - DC.B avec des chaines : chaque caractere occupe un octet
+    - DC.W et DC.L alignent automatiquement sur une adresse paire
+    - Les expressions symboliques sont evaluees a l'assemblage
+    - Certains assembleurs acceptent DC sans suffixe (defaut = .W)
+
+  Codage memoire de DC.B 'AB',0,$FF :
+    Adresse    Contenu
+    --------   -------
+    $xxxx      $41      ; 'A'
+    $xxxx+1    $42      ; 'B'
+    $xxxx+2    $00      ; zero
+    $xxxx+3    $FF      ; $FF
+
+  9.1.2 DCB - Define Constant Block
+
+  DCB reserve un bloc de memoire initialise avec une valeur repetee :
+
+    Syntaxe : [etiquette]  DCB.s  nombre, valeur
+
+  Exemples :
+
+    buffer:     DCB.B   256, 0           ; 256 octets a zero
+    tableau:    DCB.W   100, -1          ; 100 mots a $FFFF
+    longs:      DCB.L   50, $DEADBEEF   ; 50 long mots
+
+  Note : Certains assembleurs utilisent BLKB/BLKW/BLKL a la place.
+
+  9.1.3 DS - Define Storage (reserve sans initialiser)
+
+  DS reserve de l'espace memoire sans initialisation (ou initialise
+  a zero selon l'assembleur) :
+
+    Syntaxe : [etiquette]  DS.s  nombre
+
+  Exemples :
+
+    tampon:     DS.B    512              ; 512 octets reserves
+    variables:  DS.W    10               ; 10 mots reserves
+    pointeurs:  DS.L    8                ; 8 long mots reserves
+
+  Notes :
+    - DS.W 0 est souvent utilise comme synonyme de EVEN (alignement)
+    - L'espace reserve n'est pas forcement initialise a zero en ROM
+    - En section BSS, DS est la directive habituelle
+
+  Equivalences entre assembleurs :
+
+    Motorola     Devpac       VASM/GNU     Description
+    ----------   ----------   ----------   -------------------------
+    DC.B         DC.B         .byte        Definir octet(s)
+    DC.W         DC.W         .word/.short Definir mot(s)
+    DC.L         DC.L         .long        Definir long mot(s)
+    DCB.B n,v    DCB.B n,v    .fill n,1,v  Bloc d'octets
+    DCB.W n,v    DCB.W n,v    .fill n,2,v  Bloc de mots
+    DS.B n       DS.B n       .space n     Reserve octets
+    DS.W n       DS.W n       .skip n*2    Reserve mots
+    DS.L n       DS.L n       .skip n*4    Reserve long mots
+
+  9.2 Directives d'organisation memoire
+  ----------------------------------------
+
+  9.2.1 ORG - Origin (adresse de base)
+
+  ORG definit l'adresse a laquelle le code ou les donnees suivants
+  seront assembles :
+
+    Syntaxe : ORG  adresse
+
+  Exemples :
+
+    ORG     $000000          ; Vecteurs d'exception (debut ROM)
+    DC.L    $00FF0000        ; Vecteur SSP initial
+    DC.L    start            ; Vecteur PC initial (Reset)
+
+    ORG     $001000          ; Code a l'adresse $1000
+    start:
+      LEA     pile, SP
+      ; ...
+
+  Notes :
+    - ORG est principalement utilise pour le code absolu (ROM)
+    - Pour le code relocalisable, on utilise SECTION
+    - ORG n'est pas disponible dans tous les modes d'assemblage
+
+  9.2.2 SECTION - Definition de section
+
+  SECTION definit une section nommee du programme (code, donnees,
+  BSS). L'editeur de liens (linker) combine les sections de meme
+  nom et type.
+
+    Syntaxe : SECTION  nom[,type]
+              type = CODE, DATA, BSS
+
+  Exemples :
+
+    SECTION  "text",CODE     ; Section de code
+    start:
+      MOVE.L  #message, A0
+      BSR     afficher
+      RTS
+
+    SECTION  "data",DATA     ; Section de donnees initialisees
+    message:
+      DC.B    'Bonjour', 10, 0
+
+    SECTION  "bss",BSS       ; Section de donnees non initialisees
+    tampon:
+      DS.B    1024
+
+  Types de sections courants :
+
+    Type     Description                     Contenu typique
+    ------   -----------------------------   -------------------------
+    CODE     Code executable (lecture seule)  Instructions, constantes
+    DATA     Donnees initialisees (R/W)       Variables globales init.
+    BSS      Donnees non initialisees (R/W)   Buffers, variables a zero
+
+  Variantes selon les assembleurs :
+
+    Motorola : SECTION nom,type
+    Devpac   : SECTION nom,type  ou  CODE/DATA/BSS (raccourcis)
+    VASM/GNU : .text / .data / .bss
+    AmigaOS  : SECTION nom,CODE_C (chip), CODE_F (fast), etc.
+
+  9.2.3 ALIGN et EVEN - Alignement
+
+  Ces directives alignent le compteur d'adresse sur une frontiere
+  specifique :
+
+    EVEN                     ; Aligner sur mot (adresse paire)
+    ALIGN   4                ; Aligner sur long mot (multiple de 4)
+    ALIGN   16               ; Aligner sur paragraphe (16 octets)
+    CNOP    0,4              ; Aligner sur multiple de 4
+
+  Exemples d'utilisation :
+
+    chaine:  DC.B   'ABC'    ; 3 octets, adresse suivante impaire
+    EVEN                     ; Insere un octet de padding ($00)
+    mot1:    DC.W   $1234    ; Maintenant aligne sur adresse paire
+
+  Notes :
+    - EVEN est equivalent a ALIGN 2 ou CNOP 0,2
+    - L'alignement est obligatoire pour DC.W et DC.L sur le 68000
+    - L'octet de padding est generalement $00 ou une valeur NOP
+    - CNOP offset,alignment permet un alignement avec decalage
+
+  9.2.4 ODD - Alignement impair
+
+  ODD force l'adresse suivante a etre impaire (rare, mais utile
+  dans certains cas specifiques) :
+
+    ODD                      ; Adresse suivante impaire
+    ; Utilise tres rarement car le 68000 exige des acces pairs
+
+  9.2.5 RORG - Relative Origin
+
+  RORG definit un deplacement relatif au debut de la section
+  courante :
+
+    Syntaxe : RORG  deplacement
+
+    SECTION "data",DATA
+    RORG    $100             ; Aller au deplacement $100 dans DATA
+    table:
+      DC.W  1,2,3,4
+
+  9.2.6 OFFSET - Section virtuelle pour les offsets
+
+  OFFSET cree une section virtuelle pour calculer des offsets
+  de structure sans generer de code :
+
+    Syntaxe : OFFSET  adresse_base
+
+    OFFSET  0
+    obj_type:    DS.W  1     ; Offset 0, taille 2
+    obj_x:       DS.W  1     ; Offset 2, taille 2
+    obj_y:       DS.W  1     ; Offset 4, taille 2
+    obj_sprite:  DS.L  1     ; Offset 6, taille 4
+    obj_SIZE:    DS.W  0     ; Offset 10 = taille totale
+
+    ; Utilisation :
+    MOVE.W  obj_x(A0), D0   ; Charger le champ x de l'objet en A0
+    MOVE.L  obj_sprite(A0), A1
+
+  Cette technique est equivalente a utiliser EQU pour chaque offset,
+  mais DS calcule automatiquement les decalages.
+
+  9.3 Directives de symboles et etiquettes
+  -------------------------------------------
+
+  9.3.1 EQU - Equate (constante symbolique)
+
+  EQU associe une valeur constante a un symbole. La valeur ne peut
+  pas etre changee apres definition.
+
+    Syntaxe : symbole  EQU  expression
+
+  Exemples :
+
+    BUFFER_SIZE  EQU  1024        ; Taille du buffer
+    MAX_SPRITES  EQU  64          ; Nombre max de sprites
+    SCREEN_W     EQU  320         ; Largeur ecran
+    SCREEN_H     EQU  256         ; Hauteur ecran
+    SCREEN_SIZE  EQU  SCREEN_W*SCREEN_H ; Expression calculee
+
+    ; Registres hardware Amiga
+    CUSTOM       EQU  $DFF000     ; Base des registres custom
+    DMACON       EQU  $096        ; Offset DMA control
+    INTENA       EQU  $09A        ; Offset interrupt enable
+    COLOR00      EQU  $180        ; Offset couleur 0
+
+    ; Appels systeme (TRAP)
+    TRAP_DOS     EQU  1           ; Numero TRAP pour le DOS
+    GEMDOS       EQU  1           ; Atari ST : GEMDOS
+    BIOS         EQU  13          ; Atari ST : BIOS
+    XBIOS        EQU  14          ; Atari ST : XBIOS
+
+  9.3.2 SET - Symbol Set (constante modifiable)
+
+  SET est similaire a EQU mais permet de redefinir le symbole :
+
+    Syntaxe : symbole  SET  expression
+
+  Exemples :
+
+    compteur  SET  0
+    ; ...
+    compteur  SET  compteur+1    ; Redefini a 1
+    ; ...
+    compteur  SET  compteur+1    ; Redefini a 2
+
+  Note : SET est utile dans les macros pour creer des compteurs
+  ou des valeurs incrementales.
+
+  9.3.3 = (assignation rapide)
+
+  Certains assembleurs acceptent = comme synonyme de EQU ou SET :
+
+    TAILLE = 256                  ; Equivalent a TAILLE EQU 256
+
+  9.3.4 REG - Register List
+
+  REG definit une liste de registres pour MOVEM :
+
+    Syntaxe : symbole  REG  liste_registres
+
+  Exemples :
+
+    SAVEREGS   REG  D2-D7/A2-A6    ; Registres a sauvegarder
+    WORKREGS   REG  D0-D3/A0-A1    ; Registres de travail
+
+    ; Utilisation :
+    MOVEM.L  SAVEREGS, -(SP)       ; Sauvegarder
+    ; ... travail ...
+    MOVEM.L  (SP)+, SAVEREGS       ; Restaurer
+
+  9.3.5 XDEF / XREF - Symboles globaux et externes
+
+  XDEF exporte un symbole pour le rendre visible a l'editeur de
+  liens. XREF importe un symbole defini dans un autre module.
+
+    Syntaxe : XDEF  symbole[,symbole,...]
+              XREF  symbole[,symbole,...]
+
+  Exemples :
+
+    ; --- Module A (main.asm) ---
+    XREF    init_screen      ; Importer de screen.asm
+    XREF    draw_sprite      ; Importer de sprite.asm
+    XDEF    _start           ; Exporter le point d'entree
+
+    _start:
+      BSR     init_screen
+      BSR     draw_sprite
+      RTS
+
+    ; --- Module B (screen.asm) ---
+    XDEF    init_screen      ; Exporter
+    init_screen:
+      ; ... initialiser l'ecran ...
+      RTS
+
+  Equivalences :
+
+    Motorola  Devpac    VASM/GNU   Description
+    --------  --------  --------   ----------------------------
+    XDEF      XDEF      .global    Exporter symbole
+    XREF      XREF      .extern    Importer symbole
+    PUBLIC    PUBLIC     .globl     Exporter (syntaxe alternative)
+    EXTERN    EXTERN     .extern    Importer (syntaxe alternative)
+
+  9.3.6 LOCAL - Etiquettes locales
+
+  Les etiquettes locales sont visibles uniquement entre deux
+  etiquettes globales. Elles evitent les conflits de noms.
+
+    Syntaxe : .etiquette   (prefixe point)
+              ou : chiffre$  (selon l'assembleur)
+
+  Exemples :
+
+    routine1:
+      MOVEQ    #10, D0
+    .loop:                       ; Locale a routine1
+      DBRA     D0, .loop
+      RTS
+
+    routine2:
+      MOVEQ    #20, D0
+    .loop:                       ; Locale a routine2, pas de conflit
+      DBRA     D0, .loop
+      RTS
+
+  Certains assembleurs utilisent des numeros :
+
+    1$:  NOP                     ; Etiquette locale numerique
+         BRA  1$                 ; Reference avant ou arriere
+
+  9.4 Directives de controle d'assemblage
+  ------------------------------------------
+
+  9.4.1 IF / ELSE / ENDC - Assemblage conditionnel
+
+  L'assemblage conditionnel permet d'inclure ou exclure du code
+  selon des conditions evaluees a l'assemblage :
+
+    Syntaxe : IF[condition]  expression
+              [ELSE]
+              ENDC  (ou ENDIF)
+
+  Variantes :
+
+    IFEQ  expr       ; Si expr == 0
+    IFNE  expr       ; Si expr != 0
+    IFGT  expr       ; Si expr > 0
+    IFGE  expr       ; Si expr >= 0
+    IFLT  expr       ; Si expr < 0
+    IFLE  expr       ; Si expr <= 0
+    IFD   symbole    ; Si symbole est defini
+    IFND  symbole    ; Si symbole n'est pas defini
+    IFC   s1,s2      ; Si les chaines sont identiques
+    IFNC  s1,s2      ; Si les chaines sont differentes
+
+  Exemples :
+
+    DEBUG   EQU  1
+
+    IFEQ  DEBUG
+      ; Code de production uniquement
+    ELSE
+      ; Code de debug uniquement
+      BSR     afficher_debug
+    ENDC
+
+    MACHINE EQU 68020
+
+    IFGE  MACHINE-68020
+      ; Utiliser des instructions 68020+
+      MULU.L  D1, D0           ; Multiplication 32x32
+    ELSE
+      ; Emulation 68000
+      BSR     mul32            ; Appel routine de multiplication
+    ENDC
+
+    IFD   AMIGA
+      ; Code specifique Amiga
+      MOVE.L  4.W, A6          ; ExecBase
+    ENDC
+
+    IFND  STANDALONE
+      ; Code avec OS
+      XREF    _LVOOpenLibrary
+    ENDC
+
+  9.4.2 INCLUDE - Inclusion de fichier source
+
+  INCLUDE insere le contenu d'un autre fichier source a l'endroit
+  de la directive :
+
+    Syntaxe : INCLUDE  "fichier"
+
+  Exemples :
+
+    INCLUDE  "hardware.i"        ; Definitions hardware
+    INCLUDE  "macros.i"          ; Macros utilitaires
+    INCLUDE  "equates.i"         ; Constantes
+
+  Notes :
+    - Les fichiers inclus peuvent eux-memes contenir des INCLUDE
+    - Le chemin est relatif au fichier source ou aux chemins d'inclusion
+    - Convention : extension .i pour les fichiers d'inclusion (includes)
+    - Convention : extension .s ou .asm pour les fichiers source
+
+  9.4.3 INCBIN - Inclusion de fichier binaire
+
+  INCBIN insere le contenu brut d'un fichier binaire dans le code
+  assemble :
+
+    Syntaxe : INCBIN  "fichier"
+
+  Exemples :
+
+    sprite_data:
+      INCBIN   "player.raw"     ; Donnees graphiques brutes
+    font_data:
+      INCBIN   "font8x8.bin"    ; Police de caracteres
+    music_mod:
+      INCBIN   "music.mod"      ; Module musical
+
+  Notes :
+    - Pas de transformation du contenu, insertion octet par octet
+    - Utilise pour les ressources : graphiques, sons, donnees
+    - Certains assembleurs permettent de specifier un offset et une taille :
+      INCBIN "fichier", offset, taille
+
+  9.4.4 OPT - Options d'assemblage
+
+  OPT modifie les options de l'assembleur en cours d'assemblage :
+
+    Syntaxe : OPT  option[,option,...]
+
+  Options courantes (Devpac) :
+
+    OPT    O+          ; Optimisations activees
+    OPT    O-          ; Optimisations desactivees
+    OPT    OW+         ; Optimisation des branches (BRA.W -> BRA.S)
+    OPT    OW-         ; Pas d'optimisation des branches
+    OPT    P+          ; Afficher la passe d'assemblage
+    OPT    D+          ; Informations de debug
+    OPT    L+          ; Listing actif
+    OPT    S+          ; Table des symboles dans le listing
+    OPT    X+          ; Symboles etendus dans l'executable
+
+  Options courantes (Motorola ASM68K) :
+
+    OPT    BRL         ; Permettre les branches longues
+    OPT    CEX         ; Afficher les expansions conditionnelles
+    OPT    MEX         ; Afficher les expansions de macros
+    OPT    NOPAGE      ; Pas de saut de page dans le listing
+
+  9.4.5 FAIL - Arret force de l'assemblage
+
+  FAIL provoque une erreur d'assemblage volontaire, utile dans
+  les conditions non supportees :
+
+    Syntaxe : FAIL  [message]
+
+  Exemple :
+
+    IFND  TARGET
+      FAIL  "TARGET doit etre defini (AMIGA, ATARI, ou GENERIC)"
+    ENDC
+
+  9.4.6 END - Fin du source
+
+  END marque la fin du fichier source. Tout ce qui suit est ignore.
+  Un parametre optionnel indique l'adresse de demarrage :
+
+    Syntaxe : END  [adresse_demarrage]
+
+  Exemples :
+
+    END                          ; Fin sans adresse de demarrage
+    END     start                ; Fin avec point d'entree
+
+  9.5 Directives de listing
+  ----------------------------
+
+  Les directives de listing controlent la generation du fichier
+  listing (.lst) pendant l'assemblage.
+
+  9.5.1 LIST / NOLIST - Activer/desactiver le listing
+
+    LIST                         ; Reprendre le listing
+    NOLIST                       ; Suspendre le listing
+    ; Le code ici n'apparait pas dans le listing
+    LIST                         ; Reprendre
+
+  Utilisation typique :
+
+    NOLIST
+    INCLUDE  "hardware.i"        ; Ne pas lister les definitions
+    LIST
+
+  9.5.2 PAGE - Saut de page
+
+    PAGE                         ; Nouvelle page dans le listing
+
+  9.5.3 TTL / TITLE - Titre du listing
+
+    TTL     "Mon Programme 68000"  ; Titre en haut de chaque page
+
+  9.5.4 SPC - Espacement
+
+    SPC     3                    ; Inserer 3 lignes vides dans le listing
+
+  9.5.5 FORMAT - Format du listing
+
+    FORMAT                       ; Specifique a certains assembleurs
+    PLEN    66                   ; Longueur de page (lignes)
+    LLEN    132                  ; Largeur de ligne (colonnes)
+
+  9.6 Directives de macro
+  --------------------------
+
+  Les macros permettent de definir des blocs de code reutilisables
+  avec des parametres.
+
+  9.6.1 MACRO / ENDM - Definition de macro
+
+    Syntaxe : nom  MACRO
+              ; corps de la macro avec \1, \2, ... pour les parametres
+              ENDM
+
+  Exemple simple :
+
+    PUSH    MACRO
+      MOVE.L  \1, -(SP)           ; \1 = premier parametre
+    ENDM
+
+    POP     MACRO
+      MOVE.L  (SP)+, \1           ; \1 = premier parametre
+    ENDM
+
+    ; Utilisation :
+    PUSH    D0                   ; Genere : MOVE.L D0, -(SP)
+    PUSH    A0                   ; Genere : MOVE.L A0, -(SP)
+    POP     A0                   ; Genere : MOVE.L (SP)+, A0
+    POP     D0                   ; Genere : MOVE.L (SP)+, D0
+
+  9.6.2 Macros avec plusieurs parametres
+
+    SWAP_MEM  MACRO
+      ; Echanger le contenu de deux adresses memoire
+      ; \1 = adresse source, \2 = adresse destination
+      MOVE.L  \1, D0
+      MOVE.L  \2, \1
+      MOVE.L  D0, \2
+    ENDM
+
+    ; Utilisation :
+    SWAP_MEM  var_a, var_b
+
+  9.6.3 NARG - Nombre d'arguments
+
+  NARG contient le nombre de parametres passes a la macro :
+
+    PUSHALL MACRO
+      IFGE  NARG-1
+        MOVE.L  \1, -(SP)
+      ENDC
+      IFGE  NARG-2
+        MOVE.L  \2, -(SP)
+      ENDC
+      IFGE  NARG-3
+        MOVE.L  \3, -(SP)
+      ENDC
+    ENDM
+
+    PUSHALL  D0               ; Empile D0
+    PUSHALL  D0, D1           ; Empile D0 puis D1
+    PUSHALL  D0, D1, A0       ; Empile D0, D1, A0
+
+  9.6.4 MEXIT - Sortie anticipee de macro
+
+  MEXIT termine l'expansion de la macro avant ENDM :
+
+    SAFE_DIV  MACRO
+      ; Division securisee : \1 / \2 -> \1
+      TST.L    \2
+      BNE.S    .\@ok
+      MOVEQ    #0, \1           ; Division par zero -> 0
+      MEXIT
+    .\@ok:
+      DIVS     \2, \1
+    ENDM
+
+  9.6.5 \@ - Etiquettes locales dans les macros
+
+  \@ genere un numero unique a chaque expansion de la macro,
+  evitant les conflits d'etiquettes :
+
+    BSWAP16  MACRO
+      ; Inverser les octets d'un mot dans \1
+      ROL.W    #8, \1
+    ENDM
+
+    WAITVBL  MACRO
+    .\@wait:
+      MOVE.L  $DFF004, D0       ; VPOSR
+      AND.L   #$1FF00, D0
+      CMP.L   #$12C00, D0       ; Ligne 300 ?
+      BNE.S   .\@wait
+    ENDM
+
+    ; Chaque appel de WAITVBL genere des etiquettes uniques :
+    ;   .1wait, .2wait, .3wait, etc.
+
+  9.6.6 Macros recursives
+
+    COUNTDOWN  MACRO
+      IFC   '\1','0'
+        MEXIT                   ; Fin de la recursion
+      ENDC
+      DC.W    \1                ; Generer la valeur
+      COUNTDOWN \1-1            ; Appel recursif (si supporte)
+    ENDM
+
+  Note : La recursion de macros est limitee en profondeur et n'est
+  pas supportee par tous les assembleurs.
+
+  9.6.7 Exemples pratiques de macros
+
+    ; Macro d'appel systeme Amiga
+    CALLEXEC  MACRO
+      MOVE.L  4.W, A6           ; ExecBase
+      JSR     _LVO\1(A6)        ; Appel fonction \1
+    ENDM
+
+    ; Utilisation :
+    CALLEXEC  AllocMem           ; JSR _LVOAllocMem(A6)
+    CALLEXEC  FreeMem            ; JSR _LVOFreeMem(A6)
+
+    ; Macro d'affichage de chaine (Atari ST, GEMDOS)
+    PRINT   MACRO
+      PEA     \1                 ; Adresse de la chaine
+      MOVE.W  #9, -(SP)         ; Fonction Cconws
+      TRAP    #1                 ; GEMDOS
+      ADDQ.L  #6, SP            ; Nettoyer la pile
+    ENDM
+
+    ; Macro pour les structures
+    STRUCT_BEGIN  MACRO
+    \1_BASE  SET  0
+    ENDM
+
+    STRUCT_BYTE  MACRO
+    \1  EQU  \2_BASE
+    \2_BASE  SET  \2_BASE+1
+    ENDM
+
+    STRUCT_WORD  MACRO
+    \1  EQU  \2_BASE
+    \2_BASE  SET  \2_BASE+2
+    ENDM
+
+    STRUCT_LONG  MACRO
+    \1  EQU  \2_BASE
+    \2_BASE  SET  \2_BASE+4
+    ENDM
+
+    STRUCT_END  MACRO
+    \1_SIZE  EQU  \1_BASE
+    ENDM
+
+    ; Definition d'une structure via macros :
+    STRUCT_BEGIN  Player
+    STRUCT_WORD   Player_x, Player
+    STRUCT_WORD   Player_y, Player
+    STRUCT_LONG   Player_score, Player
+    STRUCT_BYTE   Player_lives, Player
+    STRUCT_END    Player
+    ; Genere : Player_x=0, Player_y=2, Player_score=4,
+    ;          Player_lives=8, Player_SIZE=9
+
+  9.7 Directives specifiques aux environnements
+  ------------------------------------------------
+
+  9.7.1 Directives Amiga (assembleur Devpac/VASM)
+
+    MACHINE  68000            ; Processeur cible
+    ; ou
+    MC68000                   ; Alternative
+
+    FPU      68881            ; Coprocesseur flottant
+    ; ou
+    MC68881                   ; Alternative
+
+    NEAR     A4               ; Adressage relatif via A4 (small data)
+    FAR                       ; Adressage absolu (annule NEAR)
+
+    OPT      X+               ; Symboles etendus (pour debugger)
+
+    ; Sections specifiques Amiga :
+    SECTION  "code",CODE_C    ; Code en chip RAM
+    SECTION  "data",DATA_F    ; Donnees en fast RAM
+    SECTION  "bss",BSS_C      ; BSS en chip RAM
+
+  9.7.2 Directives Atari ST (assembleur Devpac ST)
+
+    OPT      D+               ; Debug info pour MonST
+    OPT      X+               ; Symboles dans l'executable
+
+    ; Programme TOS standard :
+    SECTION  TEXT              ; Section code
+    SECTION  DATA              ; Section donnees
+    SECTION  BSS               ; Section non initialisee
+
+    ; Macros systeme :
+    gemdos   MACRO             ; Appel GEMDOS
+      MOVE.W  #\1, -(SP)
+      TRAP    #1
+      ADDQ.L  #2, SP
+    ENDM
+
+  9.7.3 Directives de ciblage processeur
+
+  Ces directives indiquent au assembleur quel jeu d'instructions
+  est autorise :
+
+    MC68000                   ; Instructions 68000 uniquement
+    MC68010                   ; + MOVEC, MOVES, BKPT, RTD
+    MC68020                   ; + BFCHG, BFCLR, CAS, MUL/DIV 32 bits
+    MC68030                   ; + PFLUSH, PLOAD (MMU integree)
+    MC68040                   ; + MOVE16, CINV, CPUSH
+    MC68060                   ; + quelques nouvelles instructions
+    MC68881                   ; Instructions FPU 68881
+    MC68882                   ; Instructions FPU 68882
+    MC68851                   ; Instructions MMU externe
+
+  Equivalences VASM/GNU :
+
+    .cpu 68000
+    .cpu 68020
+    .fpu 68881
+
+  9.8 Tableau recapitulatif des directives
+  -------------------------------------------
+
+  Directive        Syntaxe courte          Description
+  ---------------  ----------------------  --------------------------------
+  DC.B/W/L         DC.W $1234              Definir constante(s)
+  DCB.B/W/L        DCB.W 10,$FF            Bloc de constantes
+  DS.B/W/L         DS.L 100                Reserver espace
+  ORG              ORG $1000               Adresse de base
+  SECTION          SECTION "t",CODE        Section nommee
+  EVEN             EVEN                    Aligner sur mot
+  ALIGN            ALIGN 4                 Aligner sur frontiere
+  CNOP             CNOP 0,4                Aligner (offset,align)
+  EQU              SYM EQU 42              Constante symbolique
+  SET              SYM SET val             Constante modifiable
+  REG              R REG D2-D7/A2-A5      Liste de registres
+  XDEF             XDEF sym                Exporter symbole
+  XREF             XREF sym                Importer symbole
+  IFEQ/IFNE/...    IFEQ DEBUG              Assemblage conditionnel
+  IFD/IFND         IFD AMIGA               Test symbole defini
+  IFC/IFNC         IFC 'a','b'             Test chaines
+  ELSE             ELSE                    Branche alternative
+  ENDC             ENDC                    Fin de condition
+  INCLUDE          INCLUDE "f.i"           Inclure source
+  INCBIN           INCBIN "f.bin"          Inclure binaire
+  OPT              OPT O+,L+              Options assembleur
+  FAIL             FAIL "msg"              Erreur forcee
+  END              END [adr]               Fin du source
+  LIST/NOLIST      NOLIST                  Controle listing
+  PAGE             PAGE                    Saut de page
+  TTL              TTL "titre"             Titre listing
+  SPC              SPC 3                   Espacement listing
+  MACRO/ENDM       NOM MACRO/ENDM          Definition macro
+  MEXIT            MEXIT                   Sortie de macro
+  NARG             IFGE NARG-2             Nombre d'arguments
+  MACHINE          MC68000                 Processeur cible
+
+  9.9 Comparaison avec les directives 80386
+  --------------------------------------------
+
+  Directive 68000       Directive 80386       Description
+  --------------------  --------------------  --------------------------
+  DC.B 'Hello',0        DB 'Hello',0          Definir octets
+  DC.W $1234            DW 1234h              Definir mots
+  DC.L $12345678        DD 12345678h          Definir double mots
+  DCB.B 100,0           DB 100 DUP(0)         Bloc repete
+  DS.B 256              DB 256 DUP(?)         Reserve sans init
+  DS.W 100              DW 100 DUP(?)         Reserve mots
+  ORG $1000             ORG 1000h             Adresse de base
+  SECTION "t",CODE      .CODE                 Section code
+  SECTION "d",DATA      .DATA                 Section donnees
+  SECTION "b",BSS       .DATA?                Section BSS
+  EVEN                  ALIGN 2               Aligner sur mot
+  ALIGN 4               ALIGN 4               Aligner sur dword
+  EQU                   EQU                   Constante
+  SET                   = (redefinissable)     Constante modifiable
+  XDEF                  PUBLIC                Exporter symbole
+  XREF                  EXTRN / EXTERN        Importer symbole
+  IFEQ/IFNE             IF / IFE              Condition
+  ELSE                  ELSE                  Branche sinon
+  ENDC                  ENDIF                 Fin condition
+  IFD                   IFDEF                 Si defini
+  IFND                  IFNDEF                Si non defini
+  INCLUDE "f"           INCLUDE f             Inclure source
+  INCBIN "f"            (pas d'equivalent)    Inclure binaire
+  MACRO/ENDM            MACRO/ENDM            Definition macro
+  \1, \2, ...           ARG1, ARG2, ...       Parametres macro
+  \@                    LOCAL                 Etiquette locale macro
+  NARG                  (pas d'equivalent)    Nombre d'arguments
+  END                   END                   Fin source
+  LIST/NOLIST           .LIST / .NOLIST       Controle listing
+
+  Differences notables :
+
+  - La syntaxe 68000 utilise DC.B/W/L avec suffixe de taille ;
+    le 80386 utilise DB/DW/DD/DQ avec des mnemoniques distincts
+  - Le 68000 utilise \1, \2, ... pour les parametres de macros ;
+    le 80386 (MASM) utilise des noms de parametres explicites
+  - INCBIN n'a pas d'equivalent standard en MASM/TASM ;
+    il faut utiliser des outils externes ou des scripts
+  - DCB (bloc repete) utilise une syntaxe nombre,valeur ;
+    le 80386 utilise DUP(valeur) apres le nombre
+  - Les etiquettes locales de macros utilisent \@ sur 68000 ;
+    MASM utilise la directive LOCAL
+  - SECTION du 68000 est plus flexible (nommage libre) ;
+    le 80386 utilise .CODE/.DATA/.STACK predefinies
+  - OPT du 68000 controle l'assembleur en ligne ;
+    le 80386 utilise OPTION ou des directives separees
+  - REG du 68000 nomme des listes de registres pour MOVEM ;
+    le 80386 n'a pas d'equivalent (PUSHA/POPA couvrent tous les reg.)
+
+  9.10 Resume
+  -------------
+
+  Les directives assembleur du 68000 fournissent un ensemble complet
+  d'outils pour organiser et controler le processus d'assemblage.
+
+  Points cles a retenir :
+
+  - DC.B/W/L definissent des constantes avec alignement automatique
+    pour les tailles mot et long mot
+  - DS.B/W/L reservent de l'espace sans initialisation (section BSS)
+  - DCB.B/W/L creent des blocs repetes d'une valeur
+  - SECTION organise le code en sections CODE, DATA et BSS pour
+    l'editeur de liens
+  - EQU cree des constantes non modifiables, SET des constantes
+    modifiables (utile dans les macros)
+  - XDEF/XREF gerent la visibilite des symboles entre modules
+  - L'assemblage conditionnel (IF/ELSE/ENDC) permet des configurations
+    multi-cibles et multi-processeurs
+  - INCLUDE et INCBIN permettent la modularisation du source et
+    l'inclusion de ressources binaires
+  - Les macros (MACRO/ENDM) avec parametres \1..\9, \@ et NARG
+    offrent une meta-programmation puissante
+  - EVEN et ALIGN sont essentiels sur le 68000 qui exige des acces
+    alignes pour les mots et longs mots
+  - OFFSET fournit un mecanisme elegant pour definir des structures
+
+  Categories de directives :
+
+  Categorie                     Directives principales
+  ----------------------------  --------------------------------
+  Definition de donnees         DC.B/W/L, DCB.B/W/L, DS.B/W/L
+  Organisation memoire          ORG, SECTION, EVEN, ALIGN, CNOP
+  Symboles et etiquettes        EQU, SET, REG, XDEF, XREF
+  Controle assemblage           IF/ELSE/ENDC, INCLUDE, INCBIN
+  Options et erreurs            OPT, FAIL, END
+  Listing                       LIST, NOLIST, PAGE, TTL, SPC
+  Macros                        MACRO/ENDM, MEXIT, NARG, \@
+  Ciblage processeur            MC68000..MC68060, MC68881/MC68882
