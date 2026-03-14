@@ -396,7 +396,7 @@
             fixed(r, width, after) : formater un reel
             Fichiers : open, close, get, put (simplifie)
 
-  TODO 23 - CLAUSES COLLATERALES ET PARALLELES
+  TODO 23 - CLAUSES COLLATERALES ET PARALLELES [IMPLEMENTE]
             Clause collaterale : (unite1, unite2, unite3)
               Les unites sont evaluees dans un ordre indefini
               En pratique, evaluation gauche a droite sur 8086
@@ -709,6 +709,7 @@ Var
   IfCount      : Integer;    { compteur pour labels IF abreges      }
   CaseCount    : Integer;    { compteur pour labels CASE abreges    }
   LoopCount    : Integer;    { compteur pour labels LOOP             }
+  CollCount    : Integer;    { compteur pour clauses collaterales   }
 
   { Segment de donnees (TODO 09) }
   DataTab   : Array[0..MAX_DATA - 1] Of TDataRec;
@@ -1188,6 +1189,7 @@ Begin
   IfCount        := 0;
   CaseCount      := 0;
   LoopCount      := 0;
+  CollCount      := 0;
   StructFieldCount := 0;
   StructCount    := 0;
   RowCount       := 0;
@@ -2899,6 +2901,38 @@ Begin
         Else
           CompileError('identificateur attendu apres GO TO');
         ExprMakeVoid(Res);
+      End
+      { TODO 23 - PAR : clause parallele (evaluation sequentielle + warning) }
+      Else If CurToken.Val = 'PAR' Then
+      Begin
+        WarnMsg('PAR non supporte, evaluation sequentielle');
+        ParserAdvance; { consomme PAR }
+        If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'BEGIN') Then
+        Begin
+          { PAR BEGIN unite1, unite2, ... END }
+          ParserAdvance; { consomme BEGIN }
+          SymEnterScope;
+          ParseSerialClause(Res);
+          SymLeaveScope;
+          If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'END') Then
+            ParserAdvance
+          Else
+            CompileError('END attendu apres PAR BEGIN');
+        End
+        Else If CurToken.Kind = TK_OPEN Then
+        Begin
+          { PAR(unite1, unite2, unite3) }
+          ParserAdvance; { consomme ( }
+          SymEnterScope;
+          ParseSerialClause(Res);
+          SymLeaveScope;
+          If CurToken.Kind = TK_CLOSE Then
+            ParserAdvance
+          Else
+            CompileError(') attendu apres PAR(');
+        End
+        Else
+          CompileError('( ou BEGIN attendu apres PAR');
       End
       Else
       Begin
@@ -8294,9 +8328,33 @@ Begin
 End;
 
 Procedure ParseCollateral(Var Res : TExprVal);
+Var
+  UnitRes : TExprVal;
+  MyColl  : Integer;
 Begin
-  { TODO 23 }
-  Res := GExprDummy;
+  { TODO 23 - Clause collaterale : evaluation sequentielle des unites }
+  Inc(CollCount);
+  MyColl := CollCount;
+  EmitComment('collateral clause #' + IntToStr(MyColl));
+  ExprMakeNone(Res);
+  { Evaluer les unites separees par des virgules }
+  While (CurToken.Kind <> TK_CLOSE) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    ParseExpr(UnitRes);
+    ExprFlushToAX(UnitRes);
+    Res := UnitRes;
+    If CurToken.Kind = TK_COMMA Then
+      ParserAdvance
+    Else
+      Break;
+  End;
+  { Le resultat est celui de la derniere unite }
+  If Res.Kind <> EK_NONE Then
+  Begin
+    Res.Kind   := EK_AX;
+    Res.SymIdx := -1;
+  End;
 End;
 
 Procedure ParseStmt;
