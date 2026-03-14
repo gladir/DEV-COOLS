@@ -2207,3 +2207,1004 @@
   separe de C (Carry) facilite l'arithmetique multi-precision.
   En revanche, le 80386 offre des instructions de chaines (REP MOVS,
   etc.) et des operations memoire-memoire plus directes.
+
+==============================================================================
+5. CODAGE DES INSTRUCTIONS (FORMAT BINAIRE)
+==============================================================================
+
+  5.1 Vue d'ensemble du format d'instruction
+  -------------------------------------------
+
+  Chaque instruction du 68000 est codee en binaire sous la forme d'une
+  sequence de 1 a 5 mots de 16 bits (2 a 10 octets). Le format general
+  est :
+
+  +------------------+---------------------+-------------------+
+  | Mot d'operation  | Mots d'extension EA | Donnee immediate  |
+  | (Operation Word) | 0 a 2 mots          | 0 a 2 mots        |
+  |   1 mot (16 bits)|                     |                   |
+  +------------------+---------------------+-------------------+
+
+  Le premier mot (Operation Word) est toujours present et contient
+  l'opcode de l'instruction ainsi que les informations sur les
+  modes d'adressage et les registres utilises. Les mots d'extension
+  sont optionnels et dependent du mode d'adressage choisi.
+
+  Proprietes fondamentales du codage 68000 :
+    - Toutes les instructions sont alignees sur des adresses paires
+    - Tous les mots sont en format big-endian (octet de poids fort
+      en premier, contrairement au 80386 qui est little-endian)
+    - La taille minimale d'une instruction est de 2 octets (1 mot)
+    - La taille maximale est de 10 octets (5 mots)
+    - Le premier mot contient toujours assez d'information pour
+      determiner la longueur totale de l'instruction
+
+  Convention de notation dans cette section :
+    Bit 15 est le bit de poids fort (MSB, a gauche)
+    Bit 0 est le bit de poids faible (LSB, a droite)
+    Les bits sont souvent notes par groupes : 15-12, 11-8, etc.
+
+  5.2 Premier mot d'instruction (Operation Word)
+  ------------------------------------------------
+
+  Le premier mot de 16 bits encode l'instruction principale.
+  Sa structure varie selon le type d'instruction, mais les 4 bits
+  de poids fort (bits 15-12) identifient generalement la categorie
+  de l'instruction.
+
+  Structure generale du premier mot :
+
+    15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+  |  Opcode   |    Variable selon l'instruction      |
+  | (4 bits)  |    (registre, taille, mode EA, etc.) |
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+
+  Les 4 bits de poids fort definissent les grandes categories :
+
+  Bits 15-12   Categorie d'instructions
+  ----------   -------------------------------------------
+  0000         Operations sur le bit (BTST, BCHG, BCLR, BSET)
+               et operations immediates (ORI, ANDI, SUBI, ADDI,
+               EORI, CMPI) et instructions speciales (MOVEP,
+               MOVE SR/CCR)
+  0001         MOVE.B (transfert octet)
+  0010         MOVE.L (transfert long mot) et MOVEA.L
+  0011         MOVE.W (transfert mot) et MOVEA.W
+  0100         Instructions diverses (LEA, PEA, CHK, TRAP,
+               LINK, UNLK, MOVEM, JSR, JMP, SWAP, EXT, etc.)
+  0101         ADDQ, SUBQ, Scc, DBcc
+  0110         Bcc (branchements conditionnels) et BSR, BRA
+  0111         MOVEQ (chargement rapide)
+  1000         OR, DIV (DIVU, DIVS), SBCD
+  1001         SUB, SUBA, SUBX
+  1010         (Non assigne sur le 68000 - exception ligne A)
+  1011         CMP, CMPA, CMPM, EOR
+  1100         AND, MUL (MULU, MULS), ABCD, EXG
+  1101         ADD, ADDA, ADDX
+  1110         Decalages et rotations (ASL, ASR, LSL, LSR,
+               ROL, ROR, ROXL, ROXR)
+  1111         (Non assigne sur le 68000 - exception ligne F)
+
+  Note : Les codes 1010 et 1111 generent des exceptions sur le 68000.
+  Ils sont reserves pour les extensions futures (68020+) et les
+  emulateurs de coprocesseur. Les emulateurs Macintosh utilisaient
+  la ligne A ($Axxx) pour les appels systeme (Toolbox traps) et la
+  ligne F ($Fxxx) pour l'emulation du coprocesseur mathematique.
+
+  5.3 Codage du champ adresse effective (EA)
+  --------------------------------------------
+
+  Le mode d'adressage effectif (Effective Address) est encode sur
+  6 bits divises en deux champs de 3 bits :
+
+    5   4   3   2   1   0
+  +---+---+---+---+---+---+
+  |  Mode  | Registre     |
+  | (3 b)  |   (3 b)      |
+  +---+---+---+---+---+---+
+
+  Mode (bits 5-3)   Registre (bits 2-0)   Mode d'adressage
+  ---------------   -------------------   -------------------------
+  000               Dn (0-7)              Registre donnees direct
+  001               An (0-7)              Registre adresses direct
+  010               An (0-7)              Indirect registre (An)
+  011               An (0-7)              Post-increment (An)+
+  100               An (0-7)              Pre-decrement -(An)
+  101               An (0-7)              Deplacement d16(An)
+  110               An (0-7)              Indexe d8(An,Xn)
+  111               000                   Absolu court (xxx).W
+  111               001                   Absolu long (xxx).L
+  111               010                   Deplacement PC d16(PC)
+  111               011                   Indexe PC d8(PC,Xn)
+  111               100                   Immediat #imm
+
+  Remarques :
+    - Les modes 000 a 110 utilisent le champ Registre pour
+      designer le registre An ou Dn concerne
+    - Le mode 111 utilise le champ Registre comme sous-mode
+      pour les adressages absolus, PC-relatifs et immediats
+    - Tous les modes d'adressage ne sont pas valides pour
+      toutes les instructions (par ex. MOVE ne peut pas avoir
+      An comme destination en mode octet)
+
+  Position du champ EA dans le mot d'instruction :
+    - Pour la plupart des instructions, le champ EA source
+      occupe les bits 5-0 du premier mot
+    - Pour MOVE, le champ EA destination occupe les bits 11-6
+      (avec mode et registre inverses : reg aux bits 11-9,
+       mode aux bits 8-6)
+
+  5.4 Mots d'extension (Extension Words)
+  ----------------------------------------
+
+  Selon le mode d'adressage, des mots d'extension suivent le
+  premier mot d'instruction. Voici les mots d'extension requis
+  pour chaque mode :
+
+  Mode d'adressage              Mots d'extension     Taille
+  ----------------------------  -------------------  --------
+  Dn (registre donnees)         Aucun                0
+  An (registre adresses)        Aucun                0
+  (An) (indirect)               Aucun                0
+  (An)+ (post-increment)        Aucun                0
+  -(An) (pre-decrement)         Aucun                0
+  d16(An) (deplacement)         1 mot : d16          2 octets
+  d8(An,Xn) (indexe)            1 mot : extension    2 octets
+  (xxx).W (absolu court)        1 mot : adresse 16b  2 octets
+  (xxx).L (absolu long)         2 mots : adresse 32b 4 octets
+  d16(PC) (PC + deplacement)    1 mot : d16          2 octets
+  d8(PC,Xn) (PC indexe)         1 mot : extension    2 octets
+  #imm (immediat)               1 ou 2 mots          2 ou 4 oct
+
+  Pour le mode immediat, le nombre de mots d'extension depend de
+  la taille de l'operande :
+    .B : 1 mot (octet dans la partie basse, partie haute ignoree)
+    .W : 1 mot (valeur 16 bits)
+    .L : 2 mots (32 bits, mot de poids fort en premier)
+
+  5.4.1 Mot d'extension pour le mode indexe d8(An,Xn) / d8(PC,Xn)
+
+  Quand le mode d'adressage est indexe (mode 110 ou mode 111/011),
+  un mot d'extension de 16 bits suit le premier mot :
+
+    15  14 13 12 11  10 9  8  7  6  5  4  3  2  1  0
+  +---+--+--+--+---+--+--+--+--+--+--+--+--+--+--+--+
+  |D/A| Registre |W/L| 0  0  0 |    Deplacement d8    |
+  +---+--+--+--+---+--+--+--+--+--+--+--+--+--+--+--+
+
+  Bit 15 (D/A) : Type de registre d'index
+    0 = Registre de donnees Dn
+    1 = Registre d'adresses An
+
+  Bits 14-12 (Registre) : Numero du registre d'index (0-7)
+
+  Bit 11 (W/L) : Taille du registre d'index
+    0 = Mot (.W) - le registre est signe-etendu a 32 bits
+    1 = Long mot (.L) - le registre complet est utilise
+
+  Bits 10-8 : Toujours a 0 sur le 68000
+
+  Bits 7-0 (d8) : Deplacement signe sur 8 bits (-128 a +127)
+
+  Exemples de mots d'extension indexe :
+    12(A0,D3.W) : D/A=0, Reg=011, W/L=0, d8=$0C
+                  Extension = $3000 | $0C = $300C
+    -4(A2,A1.L) : D/A=1, Reg=001, W/L=1, d8=$FC
+                  Extension = $9800 | $FC = $98FC
+    0(PC,D0.W)  : D/A=0, Reg=000, W/L=0, d8=$00
+                  Extension = $0000
+
+  Note : Le 68020 etend ce format avec des deplacements plus
+  longs et des modes d'adressage indirects memoire, mais ces
+  extensions ne sont pas disponibles sur le 68000.
+
+  5.5 Codage des instructions de transfert
+  ------------------------------------------
+
+  5.5.1 MOVE (transfert general)
+
+  Le MOVE est l'instruction la plus courante et son codage est
+  particulier : les champs source et destination sont tous deux
+  des adresses effectives completes.
+
+    15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+  | 0  0| Taille | Reg dst|Mode dst| Mode src|Reg src|
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+
+  Bits 15-14 : Toujours 00
+  Bits 13-12 (Taille) :
+    01 = .B (octet)
+    11 = .W (mot)
+    10 = .L (long mot)
+    ATTENTION : L'ordre n'est PAS intuitif (01, 11, 10 au lieu de
+    01, 10, 11). C'est une source d'erreur frequente lors de
+    l'ecriture d'assembleurs ou de desassembleurs.
+
+  Bits 11-9 (Reg dst) : Registre destination (numero 0-7)
+  Bits 8-6 (Mode dst) : Mode d'adressage destination (0-7)
+    Note : Dans la destination, registre et mode sont INVERSES
+    par rapport a la source !
+
+  Bits 5-3 (Mode src) : Mode d'adressage source (0-7)
+  Bits 2-0 (Reg src) : Registre source (numero 0-7)
+
+  Exemples de codage MOVE :
+
+    MOVE.L  D0, D1
+      Taille=10(.L), Dst: reg=001(D1) mode=000(Dn)
+      Src: mode=000(Dn) reg=000(D0)
+      = 00 10 001 000 000 000 = $2200
+
+    MOVE.W  (A0), D3
+      Taille=11(.W), Dst: reg=011(D3) mode=000(Dn)
+      Src: mode=010((An)) reg=000(A0)
+      = 00 11 011 000 010 000 = $3610
+
+    MOVE.B  #$42, D0
+      Taille=01(.B), Dst: reg=000(D0) mode=000(Dn)
+      Src: mode=111 reg=100(#imm)
+      = 00 01 000 000 111 100 = $103C
+      Mot d'extension : $0042 (immediat octet)
+
+    MOVE.L  D0, (A1)+
+      Taille=10(.L), Dst: reg=001(A1) mode=011((An)+)
+      Src: mode=000(Dn) reg=000(D0)
+      = 00 10 001 011 000 000 = $22C0
+
+    MOVE.W  $1000, D0
+      Taille=11(.W), Dst: reg=000(D0) mode=000(Dn)
+      Src: mode=111 reg=001((xxx).L)
+      = 00 11 000 000 111 001 = $3039
+      Extension : $0000 $1000 (adresse 32 bits)
+
+  5.5.2 MOVEA (transfert vers registre d'adresses)
+
+  MOVEA a le meme format que MOVE mais le mode destination est
+  toujours 001 (registre An) :
+
+    MOVEA.L  #$10000, A0
+      Taille=10(.L), Dst: reg=000(A0) mode=001(An)
+      Src: mode=111 reg=100(#imm)
+      = 00 10 000 001 111 100 = $207C
+      Extension : $0001 $0000 (valeur 32 bits)
+
+  5.5.3 MOVEQ (chargement rapide)
+
+  MOVEQ encode la donnee directement dans le premier mot.
+  Pas de mot d'extension. C'est l'instruction la plus compacte.
+
+    15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+  | 0  1  1  1| Registre| 0|    Donnee 8 bits       |
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+
+  Bits 15-12 : 0111
+  Bits 11-9 : Registre Dn destination (0-7)
+  Bit 8 : Toujours 0
+  Bits 7-0 : Donnee immediate signee (-128 a +127)
+             Signe-etendue a 32 bits avant le chargement
+
+  Exemples :
+    MOVEQ   #0, D0     = $7000  (D0 := 0)
+    MOVEQ   #1, D0     = $7001  (D0 := 1)
+    MOVEQ   #-1, D0    = $70FF  (D0 := $FFFFFFFF)
+    MOVEQ   #42, D3    = $762A  (D3 := 42)
+    MOVEQ   #-128, D7  = $7E80  (D7 := $FFFFFF80)
+
+  5.5.4 MOVEM (transfert de blocs de registres)
+
+  MOVEM utilise un masque de registres sur 16 bits dans le mot
+  d'extension pour specifier quels registres sont transferes.
+
+    15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+  | 0  1  0  0  1| dr|0  0  1| sz| Mode EA | Reg EA |
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+
+  Bit 10 (dr) : Direction
+    0 = Registres vers memoire
+    1 = Memoire vers registres
+
+  Bit 6 (sz) : Taille
+    0 = .W (mot, signe-etendu a 32 bits au chargement)
+    1 = .L (long mot)
+
+  Le mot d'extension suivant est le masque de registres (16 bits) :
+
+  Pour le mode registres -> memoire avec -(An) :
+    Bit 0=A7, 1=A6, ..., 7=A0, 8=D7, 9=D6, ..., 15=D0
+    (ordre inverse car la pre-decrementation sauve d'abord
+     les registres de poids fort)
+
+  Pour tous les autres modes :
+    Bit 0=D0, 1=D1, ..., 7=D7, 8=A0, 9=A1, ..., 15=A7
+
+  Exemple :
+    MOVEM.L  D0-D3/A0-A2, -(A7)
+      Premier mot : $48E7 (dr=0, sz=1, EA=100/111 = -(A7))
+      Masque : D0-D3 = bits 15-12 = $F000
+               A0-A2 = bits 5-7 = $00E0
+               Total = $F0E0
+      Codage complet : $48E7 $F0E0
+
+  5.5.5 LEA (chargement d'adresse)
+
+    15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+  | 0  1  0  0| Reg An| 1  1  1| Mode EA | Reg EA  |
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+
+  Bits 11-9 : Registre d'adresses destination An
+
+  Exemple :
+    LEA  Table(PC), A0
+      Reg An = 000 (A0), EA: mode=111, reg=010 (d16(PC))
+      = $41FA
+      Extension : deplacement 16 bits vers Table
+
+  5.6 Codage des instructions arithmetiques et logiques
+  -------------------------------------------------------
+
+  5.6.1 ADD / SUB (addition / soustraction)
+
+  Les instructions ADD et SUB partagent un format commun :
+
+    15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+  | 1  1  0  1| Reg Dn|OPmode  | Mode EA | Reg EA  |
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+
+  (Pour ADD : bits 15-12 = 1101, pour SUB : bits 15-12 = 1001)
+
+  Bits 11-9 : Registre de donnees Dn
+  Bits 8-6 (OPmode) : Direction et taille
+    000 = .B, Dn <- Dn op ea
+    001 = .W, Dn <- Dn op ea
+    010 = .L, Dn <- Dn op ea
+    100 = .B, ea <- ea op Dn
+    101 = .W, ea <- ea op Dn
+    110 = .L, ea <- ea op Dn
+
+  Bits 5-0 : Adresse effective (source ou destination selon OPmode)
+
+  Exemples :
+    ADD.L  D0, D1
+      Opcode=1101, Dn=001(D1), OPmode=010(.L, Dn<-), EA=000/000(D0)
+      = $D280
+
+    SUB.W  #100, D3
+      Ceci utilise SUBI, pas SUB (voir section 5.6.3)
+
+  5.6.2 ADDA / SUBA (addition / soustraction vers registre d'adresses)
+
+  Format :
+    15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+  | 1  1  0  1| Reg An|OPmode  | Mode EA | Reg EA  |
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+
+  OPmode :
+    011 = .W (source signe-etendue a 32 bits)
+    111 = .L
+
+  Exemple :
+    ADDA.L  #4, A0   = ADDA.L #4, A0
+      Opcode=1101, An=000(A0), OPmode=111(.L), EA=111/100(#imm)
+      = $D1FC
+      Extension : $0000 $0004
+
+  5.6.3 ADDI / SUBI / CMPI (operations immediates)
+
+  Les operations avec valeur immediate utilisent le groupe 0000 :
+
+    15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+  | 0  0  0  0| OpType| Taille | Mode EA | Reg EA  |
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+
+  OpType (bits 11-9) :
+    000 = ORI   (OR immediat)
+    001 = ANDI  (AND immediat)
+    010 = SUBI  (SUB immediat)
+    011 = ADDI  (ADD immediat)
+    101 = EORI  (XOR immediat)
+    110 = CMPI  (CMP immediat)
+
+  Taille (bits 7-6) :
+    00 = .B (octet)
+    01 = .W (mot)
+    10 = .L (long mot)
+
+  Suivi de la valeur immediate (1 ou 2 mots) puis des mots
+  d'extension EA si necessaire.
+
+  Exemple :
+    ADDI.W  #$100, D0
+      OpType=011(ADDI), Taille=01(.W), EA=000/000(D0)
+      = $0640
+      Extension : $0100 (valeur immediate 16 bits)
+
+    CMPI.L  #$12345678, (A0)
+      OpType=110(CMPI), Taille=10(.L), EA=010/000((A0))
+      = $0C90
+      Extension : $1234 $5678 (valeur immediate 32 bits)
+
+  5.6.4 ADDQ / SUBQ (addition / soustraction rapide)
+
+    15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+  | 0  1  0  1| Donnee| 0| Taille|0/1|Mode EA|Reg EA|
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+
+  Bits 11-9 (Donnee) : Valeur 1 a 8 (0 encode la valeur 8)
+  Bit 8 : 0 = ADDQ, 1 = SUBQ
+  Bits 7-6 (Taille) : 00=.B, 01=.W, 10=.L
+
+  Exemple :
+    ADDQ.L  #1, D0
+      Donnee=001(1), op=0(ADDQ), Taille=10(.L), EA=000/000(D0)
+      = $5280
+
+    SUBQ.W  #4, A7
+      Donnee=100(4), op=1(SUBQ), Taille=01(.W), EA=001/111(A7)
+      = $594F
+
+  5.6.5 AND / OR / EOR (operations logiques)
+
+  Format similaire a ADD/SUB :
+
+    15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+  | Opcode    | Reg Dn|OPmode  | Mode EA | Reg EA  |
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+
+  Opcodes : AND=1100, OR=1000, EOR=1011
+
+  5.6.6 MULU / MULS (multiplication)
+
+    15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+  | 1  1  0  0| Reg Dn| 0/1| 1  1| Mode EA | Reg EA|
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+
+  Bit 8 : 0 = MULU (non signe), 1 = MULS (signe)
+  La taille est toujours .W (16x16 -> 32 bits)
+
+  Exemple :
+    MULU.W  D1, D0
+      Reg=000(D0), bit8=0(MULU), EA=000/001(D1)
+      = $C0C1
+
+  5.6.7 DIVU / DIVS (division)
+
+    15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+  | 1  0  0  0| Reg Dn| 0/1| 1  1| Mode EA | Reg EA|
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+
+  Bit 8 : 0 = DIVU (non signe), 1 = DIVS (signe)
+  La taille est toujours 32/16 -> 16q + 16r
+
+  5.6.8 CMP (comparaison)
+
+    15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+  | 1  0  1  1| Reg Dn|OPmode  | Mode EA | Reg EA  |
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+
+  OPmode : 000=.B, 001=.W, 010=.L (toujours Dn - ea)
+
+  Exemple :
+    CMP.W  #10, D0
+      Ceci utilise CMPI (voir 5.6.3)
+
+    CMP.L  D1, D0
+      Reg=000(D0), OPmode=010(.L), EA=000/001(D1)
+      = $B081
+
+  5.6.9 NEG / CLR / NOT / TST (operations unaires)
+
+    15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+  | 0  1  0  0| OpType| Taille | Mode EA | Reg EA  |
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+
+  OpType (bits 11-9) :
+    000 = NEGX
+    001 = CLR
+    010 = NEG
+    011 = NOT
+    101 = TST
+
+  Taille : 00=.B, 01=.W, 10=.L
+
+  Exemple :
+    CLR.L  D0
+      OpType=001(CLR), Taille=10(.L), EA=000/000(D0)
+      = $4280
+
+    NEG.W  (A0)
+      OpType=010(NEG), Taille=01(.W), EA=010/000((A0))
+      = $4450
+
+  5.7 Codage des branchements
+  ----------------------------
+
+  5.7.1 Bcc (branchement conditionnel)
+
+    15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+  | 0  1  1  0| Condition |   Deplacement 8 bits    |
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+
+  Bits 11-8 (Condition) : Code de condition (4 bits)
+
+  Code  Mnemonique  Condition testee
+  ----  ----------  ----------------------------------
+  0000  BRA (BT)    Toujours vrai (inconditionnel)
+  0001  BSR (BF)    Appel sous-programme (BSR)
+  0010  BHI         C=0 et Z=0 (superieur non signe)
+  0011  BLS         C=1 ou Z=1 (inferieur ou egal ns)
+  0100  BCC (BHS)   C=0 (pas de retenue)
+  0101  BCS (BLO)   C=1 (retenue)
+  0110  BNE         Z=0 (non egal)
+  0111  BEQ         Z=1 (egal)
+  1000  BVC         V=0 (pas de debordement)
+  1001  BVS         V=1 (debordement)
+  1010  BPL         N=0 (positif ou zero)
+  1011  BMI         N=1 (negatif)
+  1100  BGE         N xor V = 0 (superieur ou egal signe)
+  1101  BLT         N xor V = 1 (inferieur signe)
+  1110  BGT         (N xor V)=0 et Z=0 (superieur signe)
+  1111  BLE         (N xor V)=1 ou Z=1 (inferieur ou egal signe)
+
+  Deplacement 8 bits (bits 7-0) :
+    - Si non-nul : deplacement signe sur 8 bits (-128 a +126)
+      L'adresse cible = PC + 2 + deplacement
+      (PC pointe vers le mot suivant le Bcc au moment du calcul)
+    - Si egal a $00 : un mot d'extension de 16 bits suit,
+      donnant un deplacement signe de -32768 a +32766
+
+  Exemples :
+    BEQ.S  +$10
+      Condition=0111(BEQ), deplacement=$10
+      = $6710
+      Cible = PC + 2 + $10 (branchement court, 1 mot)
+
+    BRA.W  +$1000
+      Condition=0000(BRA), deplacement=$00 (-> extension)
+      = $6000
+      Extension : $1000 (deplacement 16 bits)
+      Cible = PC + 2 + $1000 (branchement long, 2 mots)
+
+    BNE.S  -$0A
+      Condition=0110(BNE), deplacement=$F6 (-10 en signe)
+      = $66F6
+      Cible = PC + 2 - 10 (branchement arriere)
+
+  5.7.2 DBcc (branchement avec decrementation)
+
+    15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+  | 0  1  0  1| Condition | 1  1  0  0  1| Reg Dn  |
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+
+  Bits 11-8 : Code de condition (meme codage que Bcc)
+  Bits 2-0 : Registre Dn (compteur)
+  Suivi d'un mot d'extension : deplacement 16 bits signe
+
+  Exemple :
+    DBRA  D7, label
+      Condition=0001(F=toujours faux), Dn=111(D7)
+      = $51CF
+      Extension : deplacement 16 bits vers label
+
+  5.7.3 Scc (positionnement conditionnel)
+
+    15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+  | 0  1  0  1| Condition | 1  1| Mode EA | Reg EA  |
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+
+  Si condition vraie : ea.B <- $FF, sinon : ea.B <- $00
+
+  5.7.4 JMP / JSR (saut et appel indirects)
+
+    15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+  | 0  1  0  0  1  1  1  0  1  1| Mode EA | Reg EA |
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+
+  Ceci est le format de JMP. Pour JSR, les bits 7-6 sont 10
+  au lieu de 11.
+
+  Exemple :
+    JMP  (A0)
+      = $4ED0  (EA: mode=010, reg=000 = (A0))
+
+    JSR  subroutine
+      = $4EB9  (EA: mode=111, reg=001 = (xxx).L)
+      Extension : adresse 32 bits de la sous-routine
+
+  5.8 Codage des decalages et rotations
+  ----------------------------------------
+
+    15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+  | 1  1  1  0|Cnt/Reg| dr| Taille | i/r| Type    |Reg Dn|
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+
+  Bits 11-9 (Cnt/Reg) : Compteur (1-8, 0=8) ou registre Dn
+  Bit 8 (dr) : 0 = droite, 1 = gauche
+  Bits 7-6 (Taille) : 00=.B, 01=.W, 10=.L
+  Bit 5 (i/r) : 0 = compteur immediat, 1 = compteur en registre
+  Bits 4-3 (Type) :
+    00 = AS (arithmetique)
+    01 = LS (logique)
+    10 = ROX (rotation avec X)
+    11 = RO (rotation)
+  Bits 2-0 : Registre Dn operande
+
+  Exemples :
+    LSL.L  #1, D0
+      Cnt=001(1), dr=1(gauche), Taille=10(.L), i/r=0(imm),
+      Type=01(LS), Dn=000(D0)
+      = $E388
+
+    ASR.W  D1, D2
+      Cnt/Reg=001(D1), dr=0(droite), Taille=01(.W), i/r=1(reg),
+      Type=00(AS), Dn=010(D2)
+      = $E262
+
+  Pour les decalages memoire (1 position, taille .W uniquement) :
+
+    15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+  | 1  1  1  0  0| Type| dr| 1  1| Mode EA | Reg EA|
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+
+  5.9 Codage des operations sur les bits
+  -----------------------------------------
+
+  5.9.1 BTST / BCHG / BCLR / BSET avec registre
+
+    15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+  | 0  0  0  0| Reg Dn| OpType | Mode EA | Reg EA  |
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+
+  OpType (bits 7-6) :
+    00 = BTST    01 = BCHG    10 = BCLR    11 = BSET
+
+  5.9.2 BTST / BCHG / BCLR / BSET avec immediat
+
+    15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+  | 0  0  0  0  1  0  0  0| OpType | Mode EA|Reg EA|
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+
+  Suivi d'un mot d'extension contenant le numero de bit (0-31
+  pour Dn, 0-7 pour la memoire).
+
+  5.10 Autres formats d'instruction
+  -----------------------------------
+
+  5.10.1 TRAP
+
+    15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+  | 0  1  0  0  1  1  1  0  0  1  0  0| Vecteur    |
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+
+  Vecteur (bits 3-0) : Numero de trap 0 a 15
+
+  Exemples :
+    TRAP #0  = $4E40
+    TRAP #15 = $4E4F
+
+  5.10.2 LINK / UNLK
+
+  LINK An, #d16 :
+    15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+  | 0  1  0  0  1  1  1  0  0  1  0  1  0| Reg An  |
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+
+  Suivi du deplacement signe 16 bits.
+
+  Exemple :
+    LINK  A6, #-8  = $4E56 $FFF8
+
+  UNLK An :
+    = $4E58 | Reg An
+  Exemple :
+    UNLK  A6  = $4E5E
+
+  5.10.3 RTS / RTE / NOP
+
+  Ces instructions sans operande tiennent sur un seul mot :
+
+  Instruction   Codage
+  -----------   ------
+  NOP           $4E71
+  RTS           $4E75
+  RTE           $4E73
+  RTR           $4E77
+  RESET         $4E70
+  TRAPV         $4E76
+  ILLEGAL       $4AFC
+  STOP #imm     $4E72 suivi de 1 mot
+
+  5.10.4 EXG (echange de registres)
+
+    15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+  | 1  1  0  0| Reg Rx| 1| OPmode       | Reg Ry   |
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+
+  OPmode :
+    01000 = Echange Dn, Dn
+    01001 = Echange An, An
+    10001 = Echange Dn, An
+
+  5.10.5 SWAP
+
+    SWAP Dn : $4840 | Dn
+  Exemple :
+    SWAP D0  = $4840
+
+  5.10.6 EXT (extension de signe)
+
+    EXT.W Dn : $4880 | Dn   (.B -> .W)
+    EXT.L Dn : $48C0 | Dn   (.W -> .L)
+
+  Exemples :
+    EXT.W D0  = $4880
+    EXT.L D0  = $48C0
+
+  5.11 Exemples de codage complets
+  ----------------------------------
+
+  Voici des exemples detailles de codage d'instructions courantes
+  avec tous les octets en hexadecimal (notation big-endian).
+
+  5.11.1 NOP
+
+  Instruction : NOP
+  Codage      : 4E 71
+  Explication : Instruction fixe sans operande
+
+  5.11.2 MOVE.L D0, D1 (registre a registre)
+
+  Instruction : MOVE.L D0, D1
+  Codage      : 22 00
+  Explication :
+    Bits 15-14 = 00 (MOVE)
+    Bits 13-12 = 10 (taille .L)
+    Bits 11-9  = 001 (Reg destination D1)
+    Bits 8-6   = 000 (Mode destination : Dn)
+    Bits 5-3   = 000 (Mode source : Dn)
+    Bits 2-0   = 000 (Reg source D0)
+    = 0010 0010 0000 0000 = $2200
+
+  5.11.3 MOVE.W (A0), D3 (indirect vers registre)
+
+  Instruction : MOVE.W (A0), D3
+  Codage      : 36 10
+  Explication :
+    Bits 15-12 = 0011 (MOVE.W)
+    Bits 11-9  = 011 (D3 destination)
+    Bits 8-6   = 000 (Mode Dn)
+    Bits 5-3   = 010 (Mode (An))
+    Bits 2-0   = 000 (A0)
+    = 0011 0110 0001 0000 = $3610
+
+  5.11.4 MOVE.L #$12345678, D0 (immediat long)
+
+  Instruction : MOVE.L #$12345678, D0
+  Codage      : 20 3C 12 34 56 78
+  Explication :
+    Premier mot : $203C
+      MOVE.L, Dst=D0(Dn), Src=#imm
+    Deuxieme mot : $1234 (poids fort de l'immediat)
+    Troisieme mot : $5678 (poids faible de l'immediat)
+    Total : 6 octets (3 mots)
+
+  5.11.5 MOVEQ #42, D3 (chargement rapide)
+
+  Instruction : MOVEQ #42, D3
+  Codage      : 76 2A
+  Explication :
+    Bits 15-12 = 0111 (MOVEQ)
+    Bits 11-9  = 011 (D3)
+    Bit 8      = 0
+    Bits 7-0   = 00101010 ($2A = 42)
+    = 0111 0110 0010 1010 = $762A
+    Total : 2 octets (1 mot, tres compact)
+
+  5.11.6 ADD.L D0, D1 (addition registre a registre)
+
+  Instruction : ADD.L D0, D1
+  Codage      : D2 80
+  Explication :
+    Bits 15-12 = 1101 (ADD)
+    Bits 11-9  = 001 (D1 destination)
+    Bits 8-6   = 010 (OPmode .L, Dn <- Dn op ea)
+    Bits 5-3   = 000 (Mode Dn)
+    Bits 2-0   = 000 (D0)
+    = 1101 0010 1000 0000 = $D280
+
+  5.11.7 ADDQ.L #1, D0 (increment rapide)
+
+  Instruction : ADDQ.L #1, D0
+  Codage      : 52 80
+  Explication :
+    Bits 15-12 = 0101 (ADDQ/SUBQ)
+    Bits 11-9  = 001 (donnee = 1)
+    Bit 8      = 0 (ADDQ)
+    Bits 7-6   = 10 (taille .L)
+    Bits 5-3   = 000 (Mode Dn)
+    Bits 2-0   = 000 (D0)
+    = 0101 0010 1000 0000 = $5280
+
+  5.11.8 BEQ.S +$10 (branchement court)
+
+  Instruction : BEQ.S *+$12
+  Codage      : 67 10
+  Explication :
+    Bits 15-12 = 0110 (Bcc)
+    Bits 11-8  = 0111 (BEQ)
+    Bits 7-0   = $10 (deplacement = +16)
+    = 0110 0111 0001 0000 = $6710
+    Cible = adresse courante + 2 + 16
+    Total : 2 octets (1 mot)
+
+  5.11.9 LEA Table(PC), A0 (chargement d'adresse PC-relatif)
+
+  Instruction : LEA Table(PC), A0  (Table a +$0100 octets)
+  Codage      : 41 FA 01 00
+  Explication :
+    Bits 15-12 = 0100 (divers)
+    Bits 11-9  = 000 (A0)
+    Bits 8-6   = 111 (LEA)
+    Bits 5-3   = 111 (mode special)
+    Bits 2-0   = 010 (d16(PC))
+    = 0100 0001 1111 1010 = $41FA
+    Extension : $0100 (deplacement 16 bits = +256)
+    Total : 4 octets (2 mots)
+
+  5.11.10 MOVEM.L D0-D7/A0-A6, -(A7) (sauvegarde registres)
+
+  Instruction : MOVEM.L D0-D7/A0-A6, -(A7)
+  Codage      : 48 E7 FF FE
+  Explication :
+    Premier mot : $48E7
+      MOVEM, dir=0(reg->mem), sz=1(.L), EA=100/111(-(A7))
+    Masque : $FFFE
+      En mode -(An), l'ordre est inverse :
+      Bit 0=A7(non), 1=A6, 2=A5, ..., 7=A0,
+      8=D7, 9=D6, ..., 15=D0
+      D0-D7 = bits 15-8 = $FF00
+      A0-A6 = bits 7-1  = $00FE
+      Total masque = $FFFE (tous sauf A7)
+    Total : 4 octets (2 mots)
+
+  5.11.11 JSR subroutine (appel absolu long)
+
+  Instruction : JSR $00010000
+  Codage      : 4E B9 00 01 00 00
+  Explication :
+    Premier mot : $4EB9
+      JSR, EA: mode=111, reg=001((xxx).L)
+    Extension : $0001 $0000 (adresse absolue 32 bits)
+    Total : 6 octets (3 mots)
+
+  5.11.12 DBRA D7, label (boucle)
+
+  Instruction : DBRA D7, label  (label a -$20 octets)
+  Codage      : 51 CF FF E0
+  Explication :
+    Premier mot : $51CF
+      Bits 15-12 = 0101 (ADDQ/SUBQ/Scc/DBcc)
+      Bits 11-8  = 0001 (condition F = toujours faux)
+      Bits 7-3   = 11001 (DBcc)
+      Bits 2-0   = 111 (D7)
+    Extension : $FFE0 (deplacement = -32)
+    Total : 4 octets (2 mots)
+
+  5.12 Comparaison avec le codage Intel 80386
+  ---------------------------------------------
+
+  Aspect                 Motorola 68000         Intel 80386
+  ---------------------  ---------------------  ----------------------
+  Ordre des octets       Big-endian             Little-endian
+  Taille minimale        2 octets (1 mot)       1 octet
+  Taille maximale        10 octets (5 mots)     15 octets
+  Alignement             Sur adresses paires    Aucune contrainte
+  Unite de base          Mot de 16 bits         Octet
+  Format premier mot     Toujours 16 bits       Opcode 1-2 octets
+  Prefixes               Non                    Jusqu'a 4 prefixes
+  Champ SIB              Non                    Oui (echelle/index)
+  Taille dans opcode     Explicite (bits)       Bit w + prefixe 66h
+  EA source              Bits 5-0               Mod R/M + SIB
+  EA destination         Bits 11-6 (pour MOVE)  Implicite (reg)
+  Immediats              1 ou 2 mots suivants   0-4 octets suivants
+  Deplacements           16 bits (ou 8 indexe)  8 ou 32 bits
+  Registre dans opcode   Oui (ex: MOVEQ)        Oui (ex: PUSH reg)
+  Nbre modes EA          12 + implicites        ~10 (via Mod R/M/SIB)
+  Bits condition (Bcc)   4 bits dans opcode     4 bits dans opcode
+  Branchement court      8 bits dans mot 1      8 bits rel8
+  Branchement long       16 bits dans mot 2     32 bits rel32
+  Orthogonalite          Tres regulier          Variable selon instr
+
+  Avantages du codage 68000 :
+    - Regularite : le format EA a 6 bits est reutilise partout
+    - MOVEQ encode une constante 8 bits en 1 seul mot (2 octets)
+    - ADDQ/SUBQ encodent constante + operation en 1 mot
+    - Les 4 bits de poids fort categorisent clairement l'instruction
+    - Le codage big-endian simplifie la lecture en debogage
+
+  Avantages du codage 80386 :
+    - Instructions a 1 octet (PUSH, POP, NOP, RET, etc.)
+    - Le SIB permet des modes d'adressage plus complexes en 1 octet
+    - Deplacements de 32 bits pour les grands offsets
+    - Pas de contrainte d'alignement (plus souple)
+    - Les prefixes permettent d'etendre le jeu d'instructions
+
+  5.13 Resume du processus de decodage
+  --------------------------------------
+
+  Le processeur 68000 decode une instruction selon l'algorithme :
+
+  1. Lire le premier mot de 16 bits (Operation Word) a l'adresse
+     PC courante. Le PC doit etre pair (sinon exception d'erreur
+     d'adresse).
+
+  2. Analyser les bits 15-12 pour determiner la categorie de
+     l'instruction et donc son format exact.
+
+  3. Selon le format, extraire les champs :
+     - Registre(s) concerne(s)
+     - Taille de l'operande (.B, .W, .L)
+     - Mode(s) d'adressage (champ EA de 6 bits)
+     - Direction de l'operation
+
+  4. Si le mode d'adressage necessite des mots d'extension,
+     lire les mots supplementaires :
+     - d16(An) ou d16(PC) : 1 mot (deplacement 16 bits)
+     - d8(An,Xn) ou d8(PC,Xn) : 1 mot (extension indexe)
+     - (xxx).W : 1 mot (adresse 16 bits, signe-etendue)
+     - (xxx).L : 2 mots (adresse 32 bits)
+     - #imm : 1 mot (.B ou .W) ou 2 mots (.L)
+
+  5. Lire eventuellement des mots d'extension supplementaires
+     pour la destination (pour MOVE qui a deux champs EA).
+
+  6. Executer l'instruction et mettre a jour le PC.
+
+  Longueur totale de l'instruction :
+    = 1 mot (operation word)
+    + 0 a 2 mots (extension EA source)
+    + 0 a 2 mots (extension EA destination, pour MOVE)
+    Minimum : 1 mot = 2 octets (MOVEQ, NOP, RTS, etc.)
+    Maximum : 5 mots = 10 octets (MOVE.L (xxx).L, (xxx).L)
+
+  Tableau recapitulatif des tailles par mode d'adressage :
+
+  Mode EA                 Extension (mots)  Extension (octets)
+  ----------------------  ----------------  ------------------
+  Dn                      0                 0
+  An                      0                 0
+  (An)                    0                 0
+  (An)+                   0                 0
+  -(An)                   0                 0
+  d16(An)                 1                 2
+  d8(An,Xn)              1                 2
+  (xxx).W                 1                 2
+  (xxx).L                 2                 4
+  d16(PC)                 1                 2
+  d8(PC,Xn)              1                 2
+  #imm (.B ou .W)         1                 2
+  #imm (.L)               2                 4
