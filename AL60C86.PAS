@@ -322,7 +322,7 @@
             Display : tableau de pointeurs vers les cadres de pile
               des portees englobantes pour acces aux variables non locales
 
-  TODO 21 - DECLARATIONS SWITCH (AIGUILLAGES)
+  TODO 21 - DECLARATIONS SWITCH (AIGUILLAGES) [IMPLEMENTE]
             Declaration : SWITCH sw := label1, label2, label3, ...
               Liste d expressions designationnelles (labels ou IF-THEN-ELSE labels)
             Acces : sw[expr] retourne le label a la position expr
@@ -522,7 +522,7 @@ Type
   End;
 
   { ---- Segment de donnees (TODO 03+) ----------------------- }
-  TDataKind = (DK_WORD, DK_BYTE, DK_STR, DK_ARRAY_BLK);
+  TDataKind = (DK_WORD, DK_BYTE, DK_STR, DK_ARRAY_BLK, DK_SWITCH_TAB);
 
   TDataRec = Record
     LblName   : TString;
@@ -563,6 +563,8 @@ Type
     ProcParamCount : Integer;  { nombre de parametres formels (SK_PROC) }
     { Champs procedure (TODO 20) }
     ProcParamIsVal : Array[0..MAX_PARAM - 1] Of Boolean; { True=VALUE }
+    { Champs switch (TODO 21) }
+    SwitchLabCount : Integer;  { nombre d entrees dans la table switch }
   End;
 
   { ---- Systeme de types (TODO 06) -------------------------- }
@@ -648,6 +650,9 @@ Var
 
   { Compteur THUNK (TODO 20) }
   ThunkCount : Integer;
+
+  { Compteur SWITCH (TODO 21) }
+  SwitchCount : Integer;
 
   { Table des symboles (TODO 05) }
   SymTab       : Array[0..MAX_SYM - 1] Of TSymRec;
@@ -774,6 +779,8 @@ Procedure ParseBlock; Forward;
 Procedure ParseArrayDecl(ElemTypeIdx : Integer); Forward;
 { ---- Forward declarations (TODO 18) ----------------------- }
 Procedure ParseProcDecl(RetTypeIdx : Integer); Forward;
+{ ---- Forward declarations (TODO 21) ----------------------- }
+Procedure ParseSwitchDecl; Forward;
 { ---- Forward declarations (TODO 06) ----------------------- }
 Procedure TypeInit;      Forward;
 Function  TypeKindOf(TypeIdx : Integer) : TTypeKind; Forward;
@@ -1066,6 +1073,7 @@ Begin
   CurFnRetLbl := '';
   CurFnDepth := 0;
   ThunkCount := 0;
+  SwitchCount := 0;
   { Table des symboles (TODO 05) }
   SymInit;
   { Systeme de types (TODO 06) }
@@ -1970,6 +1978,8 @@ Begin
       DK_ARRAY_BLK :
         EmitRaw(DataTab[I].LblName + ' DW ' +
                 IntToStr_(DataTab[I].ElemCount) + ' DUP(0)');
+      DK_SWITCH_TAB :
+        EmitRaw(DataTab[I].LblName + ' DW ' + DataTab[I].StrVal);
     End;
   End;
   EmitRaw('_DATA   ENDS');
@@ -2793,6 +2803,7 @@ Begin
   SymTab[Idx].DeclLine    := CurToken.Line;
   SymTab[Idx].ArrayDim    := 0;
   SymTab[Idx].ArrayElemTy := TY_UNKNOWN;
+  SymTab[Idx].SwitchLabCount := 0;
   Inc(SymCount);
   Inc(TotalSyms);
   { Trace debug si -d }
@@ -3511,6 +3522,14 @@ Begin
   Begin
     ParserAdvance;  { consommer PROCEDURE }
     ParseProcDecl(TY_IDX_INTEGER);
+    Exit;
+  End;
+
+  { Declaration SWITCH (TODO 21) }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'SWITCH') Then
+  Begin
+    ParserAdvance;  { consommer SWITCH }
+    ParseSwitchDecl;
     Exit;
   End;
 
@@ -4662,6 +4681,7 @@ Procedure ParseGotoStmt;
 Var
   LblName, MangledLbl : TString;
   SIdx : Integer;
+  E    : TExprVal;
 Begin
   Inc(GotoCount);
   If CurToken.Kind = TK_IDENT Then
@@ -4671,6 +4691,27 @@ Begin
 
     { Chercher le label dans la table des symboles }
     SIdx := SymFind(LblName);
+
+    { GOTO sw[expr] : saut via table switch (TODO 21) }
+    If (SIdx >= 0) And (SymTab[SIdx].Kind = SK_SWITCH) And
+       (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
+    Begin
+      ParserAdvance;  { consommer [ }
+      ParseExpr(E);
+      ExprFlushToAX(E);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+        ParserAdvance  { consommer ] }
+      Else
+        CompileError('] attendu apres l''index de switch');
+      EmitComment('GOTO ' + LblName + '[expr] (switch)');
+      EmitInstr('DEC', 'AX');          { 1-base -> 0-base }
+      EmitInstr('SHL', 'AX, 1');       { * 2 pour offset mot }
+      EmitInstr('MOV', 'BX, AX');
+      EmitInstr('ADD', 'BX, OFFSET ' + SymTab[SIdx].MangledName);
+      EmitInstr('JMP', 'WORD PTR [BX]');
+      Exit;
+    End;
+
     If SIdx >= 0 Then
     Begin
       { Label deja declare }
@@ -5163,6 +5204,113 @@ Begin
 End;
 
 { ============================================================
+  TODO 21 - DECLARATIONS SWITCH (AIGUILLAGES) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseSwitchDecl : declaration d aiguillage ---------------
+  Syntaxe : SWITCH nom := label1, label2, label3, ...
+  Le mot-cle SWITCH a deja ete consomme par l appelant.
+  Genere une table de mots dans le segment DATA :
+    _A60S_nom DW OFFSET _A60L_label1, OFFSET _A60L_label2, ...
+  Utilisation avec GOTO : GOTO nom[expr]
+    Evalue expr -> index 1-base, accede a la table, JMP [table+off] }
+Procedure ParseSwitchDecl;
+Var
+  SwName     : TString;
+  SIdx       : Integer;
+  LblName    : TString;
+  LblMng     : TString;
+  LblSIdx    : Integer;
+  OfsList    : TString;
+  LabCount   : Integer;
+  N          : TString;
+Begin
+  Inc(SwitchCount);
+
+  { Nom du switch }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('identificateur attendu apres SWITCH');
+    Exit;
+  End;
+  SwName := CurToken.Val;
+  ParserAdvance;  { consommer le nom }
+
+  { Consommer := }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
+    ParserAdvance  { consommer := }
+  Else
+  Begin
+    CompileError(':= attendu apres le nom du switch');
+    Exit;
+  End;
+
+  { Ajouter le symbole switch }
+  SIdx := SymAdd(SwName, SK_SWITCH, TY_IDX_SWITCH, 0);
+  Str(SwitchCount, N);
+  EmitComment('SWITCH ' + SwName + ' (TODO 21)');
+
+  { Parser la liste de labels : label1, label2, ... }
+  OfsList := '';
+  LabCount := 0;
+  While (CurToken.Kind <> TK_EOF) Do
+  Begin
+    { Chaque entree peut etre un identifiant de label ou un entier }
+    If (CurToken.Kind = TK_IDENT) Then
+    Begin
+      LblName := CurToken.Val;
+      ParserAdvance;  { consommer le label }
+      { Chercher ou creer le label }
+      LblSIdx := SymFind(LblName);
+      If LblSIdx < 0 Then
+        LblSIdx := SymAdd(LblName, SK_LABEL, TY_IDX_LABEL, 0);
+      If LblSIdx >= 0 Then
+        LblMng := SymTab[LblSIdx].MangledName
+      Else
+        LblMng := A60_LBL_PFX + SymNameClean(LblName);
+    End
+    Else If (CurToken.Kind = TK_INTEGER) Then
+    Begin
+      LblName := IntToStr_(CurToken.IntVal);
+      ParserAdvance;  { consommer le label numerique }
+      LblSIdx := SymFind(LblName);
+      If LblSIdx < 0 Then
+        LblSIdx := SymAdd(LblName, SK_LABEL, TY_IDX_LABEL, 0);
+      If LblSIdx >= 0 Then
+        LblMng := SymTab[LblSIdx].MangledName
+      Else
+        LblMng := A60_LBL_PFX + LblName;
+    End
+    Else
+      Break;
+
+    { Ajouter a la liste des OFFSET }
+    Inc(LabCount);
+    If LabCount > 1 Then
+      OfsList := OfsList + ', ';
+    OfsList := OfsList + 'OFFSET ' + LblMng;
+
+    { Virgule : entree suivante }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance  { consommer , }
+    Else
+      Break;
+  End;
+
+  { Stocker le nombre d entrees dans le symbole }
+  If SIdx >= 0 Then
+    SymTab[SIdx].SwitchLabCount := LabCount;
+
+  { Ajouter la table switch au segment DATA }
+  If LabCount > 0 Then
+  Begin
+    DataAdd(SymTab[SIdx].MangledName, DK_SWITCH_TAB, 0, OfsList);
+  End
+  Else
+    WarnMsg('switch ' + SwName + ' sans entrees');
+End;
+
+{ ============================================================
   TODO 16 - BLOCS (BEGIN/END) ET INSTRUCTIONS COMPOSEES [IMPLEMENTE]
   ============================================================ }
 
@@ -5244,9 +5392,17 @@ Begin
       Continue;
     End;
 
-    { Mots-cles non encore geres : SWITCH, OWN, etc. }
+    { Declaration SWITCH dans un bloc (TODO 21) }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'SWITCH') Then
+    Begin
+      ParserAdvance;  { consommer SWITCH }
+      ParseSwitchDecl;
+      Continue;
+    End;
+
+    { Mots-cles non encore geres : OWN, etc. }
     If (CurToken.Kind = TK_KEYWORD) And
-       ((CurToken.Val = 'OWN') Or (CurToken.Val = 'SWITCH') Or
+       ((CurToken.Val = 'OWN') Or
         (CurToken.Val = 'VALUE') Or (CurToken.Val = 'COMMENT')) Then
     Begin
       ParserAdvance;  { consommer le mot-cle }
@@ -5424,10 +5580,18 @@ Begin
       Continue;
     End;
 
+    { Declaration SWITCH au top-level (TODO 21) }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'SWITCH') Then
+    Begin
+      ParserAdvance;  { consommer SWITCH }
+      ParseSwitchDecl;
+      Continue;
+    End;
+
     { Mots-cles non-geres : on les saute pour l instant }
     If (CurToken.Kind = TK_KEYWORD) And
        ((CurToken.Val = 'OWN') Or
-        (CurToken.Val = 'VALUE') Or (CurToken.Val = 'SWITCH') Or
+        (CurToken.Val = 'VALUE') Or
         (CurToken.Val = 'COMMENT') Or
         (CurToken.Val = 'THEN') Or
         (CurToken.Val = 'ELSE') Or (CurToken.Val = 'TO')) Then
