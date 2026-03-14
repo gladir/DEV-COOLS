@@ -1,0 +1,25 @@
+comment Test de l emetteur de code ASM (TODO 07) ;
+comment Ce fichier teste la generation du header MASM complet,
+  les directives .MODEL SMALL, .STACK 1024, _TEXT SEGMENT,
+  et les helpers EmitInstrA, EmitInstrAB, EmitPush, EmitPop,
+  EmitMov, EmitProlog, EmitEpilog ;
+BEGIN
+  comment Declarations de base ;
+  INTEGER a, b;
+  REAL x;
+  BOOLEAN flag;
+
+  comment Expressions entieres ;
+  a := 10;
+  b := a + 5;
+
+  comment Expression reelle ;
+  x := 3.14;
+
+  comment Expression booleenne ;
+  flag := TRUE;
+
+  comment Expression composee ;
+  a := (b + 1) * 2;
+  flag := a > b AND NOT flag
+END.
