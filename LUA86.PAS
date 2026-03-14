@@ -1985,6 +1985,7 @@ Var
   { Variables for multi-return (TODO 21) }
   RetValCnt : Integer;
   NSRetV    : TString;
+  I         : Integer;
 Begin
   { Instruction vide : ';' optionnel }
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
@@ -2501,34 +2502,26 @@ Begin
             EmitInstrA('PUSH', 'AX');
             Inc(RetValCnt);
           End;
-          { Empiler les valeurs supplementaires dans l ordre inverse }
-          { Les valeurs sont sur la pile : val1 (dessous) ... valN (dessus) }
-          { Convention : premiere valeur dans AX, suivantes empilees }
-          { Nombre de valeurs dans CX }
+          { Stocker les valeurs supplementaires (val2..valN) dans _LUA_VARGV }
+          { Les valeurs sont empilees : val1(fond) val2 ... valN(dessus) }
+          { On depile valN..val2 et on les stocke dans _LUA_VARGV }
+          If RetValCnt > 1 Then
+          Begin
+            Str(RetValCnt - 1, NSRetV);
+            EmitInstrAB('MOV', 'WORD PTR [_LUA_VARGC]', NSRetV);
+            { Depiler val2..valN dans _LUA_VARGV (ordre inverse) }
+            For I := RetValCnt - 1 DownTo 1 Do
+            Begin
+              Str((I - 1) * 2, NSRetV);
+              EmitInstrA('POP', 'AX');
+              EmitInstrAB('MOV', 'WORD PTR [_LUA_VARGV+' + NSRetV + ']', 'AX');
+            End;
+          End;
+          { Restaurer premiere valeur dans AX }
+          EmitInstrA('POP', 'AX');
+          { CX = nombre total de valeurs retournees }
           Str(RetValCnt, NSRetV);
           EmitInstrAB('MOV', 'CX', NSRetV);
-          { Restaurer premiere valeur dans AX }
-          If RetValCnt > 1 Then
-          Begin
-            Str((RetValCnt - 1) * 2, NSRetV);
-            EmitInstrAB('MOV', 'AX', 'WORD PTR [SP+' + NSRetV + ']');
-          End
-          Else
-            EmitInstrA('POP', 'AX');
-          { Nettoyer la premiere valeur de la pile (les autres restent) }
-          { L appelant les recuperera via CX }
-          If RetValCnt > 1 Then
-          Begin
-            { Decaler les valeurs : supprimer la premiere (la plus profonde) }
-            { Plus simple : on laisse toutes les valeurs sur la pile }
-            { AX = val1, [SP] = val2 ... [SP + (N-2)*2] = valN, dessus = valN }
-            { Ajuster : retirer toutes les valeurs sauf supplementaires }
-            Str(RetValCnt * 2, NSRetV);
-            EmitInstrAB('ADD', 'SP', NSRetV);
-            { Re-empiler les supplementaires (val2..valN) de gauche a droite }
-            { LIMITATION : on stocke simplement dans _LUA_VARGV }
-            { Le caller utilisera CX pour savoir combien depiler }
-          End;
         End
         Else
           EmitInstrAB('MOV', 'CX', '1'); { retour simple : CX = 1 }
@@ -3830,14 +3823,16 @@ Begin
         If Not CurFnIsVararg Then
           CompileError('"..." utilise en dehors d une fonction variadique');
         EmitComment('--- varargs ... (TODO 21) ---');
-        { Charger la premiere valeur variadique dans AX (ou 0 si aucune) }
+        { Charger le nombre de varargs dans CX }
         EmitInstrAB('MOV', 'CX', 'WORD PTR [_LUA_VARGC]');
+        { Charger la premiere valeur variadique dans AX (ou 0 si aucune) }
         EmitInstrAB('XOR', 'AX', 'AX');
         EmitInstrAB('CMP', 'CX', '0');
         FldLbl := LabelGen;
         EmitInstrA('JE', FldLbl);
         EmitInstrAB('MOV', 'AX', 'WORD PTR [_LUA_VARGV]');
         EmitLabel(FldLbl);
+        { AX = premiere valeur, CX = nombre de varargs }
         Res.Kind    := EK_AX;
         Res.TypeIdx := TY_UNKNOWN;
         Res.SymIdx  := -1;
@@ -4562,11 +4557,13 @@ Begin
   Begin
     EmitComment('--- select (TODO 21) ---');
     ParseExpr(Arg);
-    ExprFlushToAX(Arg);
-    { Verifier si le premier argument est '#' (chaine) }
+    { Verifier si le premier argument est la chaine '#' }
+    { Pour un litteral string '#', Arg est EK_IMM avec TypeIdx STRING }
     If Arg.TypeIdx = TY_IDX_STRING Then
     Begin
       { select('#', ...) -> nombre de varargs }
+      { Note : toute valeur string est traitee comme '#' }
+      { (seul cas d usage de select avec un string en Lua) }
       EmitInstrA('CALL', LUA_RT_PFX + 'VARGCOUNT');
       Res.Kind    := EK_AX;
       Res.TypeIdx := TY_IDX_NUMBER;
@@ -4575,6 +4572,7 @@ Begin
     Else
     Begin
       { select(n, ...) -> n-ieme vararg }
+      ExprFlushToAX(Arg);
       EmitInstrAB('MOV', 'CX', 'AX');
       EmitInstrA('CALL', LUA_RT_PFX + 'VARGGET');
       Res.Kind    := EK_AX;
@@ -4589,9 +4587,7 @@ Begin
       If (CurToken.Kind = TK_OP) And (CurToken.Val = '...') Then
         ParserAdvance
       Else
-      Begin
         ParseExpr(Arg); { consommer l argument ignore }
-      End;
     End;
   End
   Else
