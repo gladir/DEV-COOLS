@@ -1,0 +1,56 @@
+comment Test instructions conditionnelles IF/THEN/ELSE (TODO 13) ;
+BEGIN
+  INTEGER x, y, z;
+  BOOLEAN flag;
+
+  comment IF simple sans ELSE ;
+  x := 1;
+  IF x = 1 THEN outstring(1, `x is one`);
+  newline(1);
+
+  comment IF avec ELSE ;
+  y := 0;
+  IF y = 1 THEN outstring(1, `y is one`)
+  ELSE outstring(1, `y is not one`);
+  newline(1);
+
+  comment IF avec condition fausse ;
+  IF FALSE THEN outstring(1, `never`)
+  ELSE outstring(1, `always`);
+  newline(1);
+
+  comment IF avec condition vraie ;
+  IF TRUE THEN outstring(1, `yes`);
+  newline(1);
+
+  comment IF imbrique dans ELSE (ELSE IF) ;
+  z := 3;
+  IF z = 1 THEN outstring(1, `z=1`)
+  ELSE IF z = 2 THEN outstring(1, `z=2`)
+  ELSE outstring(1, `z=other`);
+  newline(1);
+
+  comment IF avec expression booleenne complexe ;
+  x := 5;
+  IF x > 3 THEN outinteger(1, x);
+  newline(1);
+
+  comment IF avec affectation dans THEN ;
+  flag := FALSE;
+  IF flag = FALSE THEN y := 42;
+  outinteger(1, y);
+  newline(1);
+
+  comment Expression conditionnelle IF THEN ELSE en expr ;
+  x := IF TRUE THEN 10 ELSE 20;
+  outinteger(1, x);
+  newline(1);
+
+  comment Expression conditionnelle avec condition fausse ;
+  y := IF FALSE THEN 100 ELSE 200;
+  outinteger(1, y);
+  newline(1);
+
+  outstring(1, `Fin test IF.`);
+  newline(1)
+END.

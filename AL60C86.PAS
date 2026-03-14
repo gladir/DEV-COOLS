@@ -192,7 +192,7 @@
             ParseIOIntrinsic : intercepte les noms I/O dans ParsePrimary
             EmitIORuntime : 7 routines runtime ASM (INT 21h DOS)
 
-  TODO 13 - INSTRUCTIONS CONDITIONNELLES (IF/THEN/ELSE)
+  TODO 13 - INSTRUCTIONS CONDITIONNELLES (IF/THEN/ELSE) [IMPLEMENTE]
             ParseIfStmt : IF expr THEN stmt [ELSE stmt]
               Emission TEST AX,AX / JZ pour condition fausse
               Labels : _A60L_ELSE_N, _A60L_ENDIF_N
@@ -615,6 +615,9 @@ Var
   { Label sequentiel }
   LabelSeq   : Integer;
 
+  { Compteur IF (TODO 13) }
+  IfCount    : Integer;
+
   { Table des symboles (TODO 05) }
   SymTab       : Array[0..MAX_SYM - 1] Of TSymRec;
   SymCount     : Integer;
@@ -728,6 +731,8 @@ Procedure EmitExprRuntime; Forward;
 Procedure ParseIOIntrinsic(Const Name : TString;
                            Var Res : TExprVal); Forward;
 Procedure EmitIORuntime; Forward;
+{ ---- Forward declarations (TODO 13) ----------------------- }
+Procedure ParseIfStmt; Forward;
 { ---- Forward declarations (TODO 06) ----------------------- }
 Procedure TypeInit;      Forward;
 Function  TypeKindOf(TypeIdx : Integer) : TTypeKind; Forward;
@@ -1010,6 +1015,7 @@ Begin
   GExprDummy.SymIdx  := -1;
   RuntimeEmitted := False;
   IOEmitted := False;
+  IfCount := 0;
   { Table des symboles (TODO 05) }
   SymInit;
   { Systeme de types (TODO 06) }
@@ -3204,8 +3210,8 @@ End;
 
 { ---- ParseStmt : dispatcher d instructions ------------------- }
 { Dispatche vers ParseDeclStmt pour les mots-cles de type
-  (INTEGER, REAL, BOOLEAN, STRING), et vers ParseExprStmt
-  pour les identifiants et expressions.                          }
+  (INTEGER, REAL, BOOLEAN, STRING), vers ParseIfStmt pour IF,
+  et vers ParseExprStmt pour les identifiants et expressions.   }
 Procedure ParseStmt;
 Begin
   { Declaration : mot-cle de type }
@@ -3214,6 +3220,14 @@ Begin
       (CurToken.Val = 'BOOLEAN') Or (CurToken.Val = 'STRING')) Then
   Begin
     ParseDeclStmt;
+    Exit;
+  End;
+
+  { Instruction conditionnelle (TODO 13) }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'IF') Then
+  Begin
+    ParserAdvance;  { consommer IF }
+    ParseIfStmt;
     Exit;
   End;
 
@@ -3846,6 +3860,95 @@ Begin
   EmitInstr('RET', '');
   EmitBlankLine;
 End;
+
+{ ============================================================
+  TODO 13 - INSTRUCTIONS CONDITIONNELLES (IF/THEN/ELSE) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseIfStmt : instruction conditionnelle Algol 60 ------
+  Syntaxe : IF condition THEN statement [ELSE statement]
+  Le mot-cle IF a deja ete consomme par l appelant.
+  Emission :
+    - Evaluer condition -> AX
+    - OR AX, AX / JZ _A60L_ELSE_N ou _A60L_ENDIF_N
+    - branche THEN
+    - [JMP _A60L_ENDIF_N / _A60L_ELSE_N: / branche ELSE]
+    - _A60L_ENDIF_N:
+  Le "dangling else" est resolu par liaison au IF le plus
+  proche (greedy matching), conforme a Algol 60.              }
+Procedure ParseIfStmt;
+Var
+  Cond     : TExprVal;
+  LblElse  : TString;
+  LblEnd   : TString;
+  HasElse  : Boolean;
+  N        : TString;
+Begin
+  Inc(IfCount);
+  Str(IfCount, N);
+  LblElse := '_A60L_ELSE_' + N;
+  LblEnd  := '_A60L_ENDIF_' + N;
+
+  EmitComment('IF (n ' + N + ')');
+
+  { Evaluer la condition }
+  ParseExpr(Cond);
+  ExprFlushToAX(Cond);
+
+  { Consommer THEN }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'THEN') Then
+    ParserAdvance
+  Else
+    CompileError('THEN attendu apres condition IF');
+
+  { Determiner si ELSE suit apres la branche THEN }
+  { On ne le sait pas encore -> emettre saut vers LblElse }
+  EmitInstr('OR', 'AX, AX');
+  EmitInstr('JZ', LblElse);
+
+  { Branche THEN : parser UNE instruction }
+  EmitComment('THEN');
+  { IF imbrique dans la branche THEN }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'IF') Then
+  Begin
+    ParserAdvance;
+    ParseIfStmt;
+  End
+  Else
+    ParseStmt;
+
+  { Sauter les points-virgule optionnels entre THEN-stmt et ELSE }
+  While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Do
+    ParserAdvance;
+
+  { Verifier si ELSE suit }
+  HasElse := (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'ELSE');
+
+  If HasElse Then
+  Begin
+    EmitInstr('JMP', LblEnd);
+    EmitLabel(LblElse);
+    ParserAdvance;  { consommer ELSE }
+
+    EmitComment('ELSE');
+    { IF imbrique dans la branche ELSE }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'IF') Then
+    Begin
+      ParserAdvance;
+      ParseIfStmt;
+    End
+    Else
+      ParseStmt;
+
+    EmitLabel(LblEnd);
+  End
+  Else
+  Begin
+    { Pas de ELSE : le label else == label end }
+    EmitLabel(LblElse);
+  End;
+End;
+
 Procedure Run;
 Begin
   GlobalInit;
@@ -3901,6 +4004,14 @@ Begin
       Continue;
     End;
 
+    { Instruction conditionnelle IF (TODO 13) }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'IF') Then
+    Begin
+      ParserAdvance;  { consommer IF }
+      ParseIfStmt;
+      Continue;
+    End;
+
     { Affectation ident := expr (TODO 09) }
     If (CurToken.Kind = TK_IDENT) Then
     Begin
@@ -3928,7 +4039,7 @@ Begin
         (CurToken.Val = 'WHILE') Or (CurToken.Val = 'STEP') Or
         (CurToken.Val = 'UNTIL') Or (CurToken.Val = 'DO') Or
         (CurToken.Val = 'GO') Or (CurToken.Val = 'GOTO') Or
-        (CurToken.Val = 'IF') Or (CurToken.Val = 'THEN') Or
+        (CurToken.Val = 'THEN') Or
         (CurToken.Val = 'ELSE') Or (CurToken.Val = 'TO')) Then
     Begin
       ParserAdvance;
