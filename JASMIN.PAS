@@ -357,6 +357,19 @@ Begin
  IntToStr_ := s;
 End;
 
+Function IntToHex_(n: LongInt; digits: Integer): String;
+Const hexChars: String = '0123456789ABCDEF';
+Var s: String; i: Integer;
+Begin
+ s := '';
+ For i := 1 to digits do
+ Begin
+  s := hexChars[(n and $F) + 1] + s;
+  n := n shr 4;
+ End;
+ IntToHex_ := s;
+End;
+
 Function StrToInt_(Const s: String): LongInt;
 Var v: LongInt; code: Integer;
 Begin
@@ -504,9 +517,7 @@ Begin
  Begin
   { On a deja retourne le LF synthetique, charger la ligne suivante }
   If Not EOF(SrcFile) Then SrcRefillLine
-  Else SrcEof := True;
-  If SrcEof Then
-  Begin SrcGetChar := #0; Exit; End;
+  Else Begin SrcEof := True; SrcGetChar := #0; Exit; End;
  End;
 
  If SrcCol > Length(SrcLine) Then
@@ -1628,7 +1639,7 @@ Begin
  Else
   Error('.class : nom de classe attendu');
  If OptVerbose Then
-  WriteLn('  .class ', ClassName, ' (flags=$', IntToStr_(ClassAccFlags), ')');
+  WriteLn('  .class ', ClassName, ' (flags=$', IntToHex_(ClassAccFlags, 4), ')');
 End;
 
 { --- ParseSuperDirective : .super <classname> --- }
@@ -1723,7 +1734,7 @@ Begin
  Else
   Error('.interface : nom d''interface attendu');
  If OptVerbose Then
-  WriteLn('  .interface ', ClassName, ' (flags=$', IntToStr_(ClassAccFlags), ')');
+  WriteLn('  .interface ', ClassName, ' (flags=$', IntToHex_(ClassAccFlags, 4), ')');
 End;
 
 { --- ParseBytecodeDirective : .bytecode <major>.<minor> --- }
