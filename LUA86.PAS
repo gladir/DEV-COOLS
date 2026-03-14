@@ -9016,16 +9016,14 @@ Begin
   EmitInstrA('CALL', LUA_RT_PFX + 'STRLEN');
   EmitInstrAB('MOV', 'CX', 'AX');
   EmitInstrA('POP', 'DX');
-  { Afficher la chaine }
+  { Afficher la chaine via _LUART_PRINT(BX=1=stdout) }
   EmitInstrAB('MOV', 'BX', '1');        { stdout }
-  EmitInstrAB('MOV', 'AH', '40h');
-  EmitInstr('INT    21h');
-  { Afficher CR+LF }
+  EmitInstrA('CALL', LUA_RT_PFX + 'PRINT');
+  { Afficher CR+LF via _LUART_PRINT }
   EmitInstrAB('MOV', 'DX', 'OFFSET _LUA_CRLF');
   EmitInstrAB('MOV', 'CX', '2');
   EmitInstrAB('MOV', 'BX', '1');        { stdout }
-  EmitInstrAB('MOV', 'AH', '40h');
-  EmitInstr('INT    21h');
+  EmitInstrA('CALL', LUA_RT_PFX + 'PRINT');
   EmitInstr('RET');
   EmitBlankLine;
 End;
