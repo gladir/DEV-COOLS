@@ -148,7 +148,7 @@
             ParseStmt : dispatcher type-keyword -> ParseDeclStmt,
               autre -> ParseExprStmt
 
-  TODO 10 - EXPRESSIONS PRIMAIRES
+  TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
             ParsePrimary : literal entier, literal reel, TRUE/FALSE,
               identificateur, appel de procedure/fonction
             Acces variable simple : MOV AX, [label] ou MOV AX, [BP-offset]
@@ -158,6 +158,9 @@
             Expression conditionnelle : IF b THEN e1 ELSE e2
               (traitee comme expression retournant une valeur dans AX)
             Acces switch : nom[expr] -> expression designationnelle (label)
+            ParseProcCall : push args droite-a-gauche, CALL, ADD SP
+            ParseArrayAccess : arr[i] -> LEA base + index*2, MOV AX,[BX]
+            ParseSwitchAccess : sw[i] -> MOV BX,i / SHL BX,1 / MOV AX,[tbl+BX]
 
   TODO 11 - EXPRESSIONS ARITHMETIQUES ET BOOLEENNES
             ParseExprPrec(MinPrec) : boucle de precedence (Pratt)
@@ -708,6 +711,14 @@ Function  DeclAllocSym(Const Name : TString;
 Procedure ParseDeclStmt; Forward;
 Procedure ParseExprStmt; Forward;
 Procedure ParseStmt; Forward;
+{ ---- Forward declarations (TODO 10) ----------------------- }
+Procedure ParseProcCall(Const ProcName : TString;
+                        ProcSIdx : Integer;
+                        Var Res : TExprVal); Forward;
+Procedure ParseArrayAccess(SIdx : Integer;
+                           Var Res : TExprVal); Forward;
+Procedure ParseSwitchAccess(SIdx : Integer;
+                            Var Res : TExprVal); Forward;
 { ---- Forward declarations (TODO 06) ----------------------- }
 Procedure TypeInit;      Forward;
 Function  TypeKindOf(TypeIdx : Integer) : TTypeKind; Forward;
@@ -2269,6 +2280,7 @@ Procedure ParsePrimary(Var Res : TExprVal);
 Var
   LblElse, LblEnd : TString;
   SIdx : Integer;
+  IdName : TString;
 Begin
   ExprMakeNone(Res);
 
@@ -2345,20 +2357,48 @@ Begin
     Exit;
   End;
 
-  { Identificateur : resolution via SymFind (TODO 09) }
+  { Identificateur : resolution via SymFind (TODO 09+10) }
   If CurToken.Kind = TK_IDENT Then
   Begin
-    SIdx := SymFind(CurToken.Val);
+    IdName := CurToken.Val;
+    SIdx := SymFind(IdName);
+    ParserAdvance;  { consommer l identifiant }
+
     If SIdx >= 0 Then
     Begin
+      { Appel de fonction/procedure : ident( ... ) (TODO 10) }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        ParserAdvance;  { consommer ( }
+        ParseProcCall(IdName, SIdx, Res);
+        Exit;
+      End;
+
+      { Acces tableau : ident[ ... ] (TODO 10) }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
+      Begin
+        ParserAdvance;  { consommer [ }
+        If SymTab[SIdx].Kind = SK_SWITCH Then
+          ParseSwitchAccess(SIdx, Res)
+        Else
+          ParseArrayAccess(SIdx, Res);
+        Exit;
+      End;
+
+      { Variable simple }
       ExprLoad(SIdx, Res);
-      ParserAdvance;
     End
     Else
     Begin
-      WarnMsg('identificateur non resolu: ' + CurToken.Val);
+      { Identifiant non declare : possible appel de fonction externe }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        ParserAdvance;  { consommer ( }
+        ParseProcCall(IdName, -1, Res);
+        Exit;
+      End;
+      WarnMsg('identificateur non resolu: ' + IdName);
       ExprMakeImm(0, TY_IDX_INTEGER, Res);
-      ParserAdvance;
     End;
     Exit;
   End;
@@ -3156,6 +3196,157 @@ Begin
 
   { Expression ou affectation }
   ParseExprStmt;
+End;
+
+{ ============================================================
+  TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseProcCall : appel de procedure/fonction Algol 60 ----
+  Syntaxe : nom(arg1, arg2, ..., argN)
+  Les arguments sont evalues de gauche a droite puis empiles
+  en ordre inverse (convention C). Apres CALL, on nettoie la
+  pile avec ADD SP, N*2. Le resultat est dans AX.               }
+Procedure ParseProcCall(Const ProcName : TString;
+                        ProcSIdx : Integer;
+                        Var Res : TExprVal);
+Var
+  ArgCount : Integer;
+  ArgVals  : Array[0..MAX_PARAM - 1] Of TExprVal;
+  I        : Integer;
+  S        : TString;
+  ProcLbl  : TString;
+Begin
+  { Le ( a deja ete consomme par l appelant }
+  ArgCount := 0;
+
+  { Parser les arguments separes par des virgules }
+  If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
+  Begin
+    While True Do
+    Begin
+      If ArgCount >= MAX_PARAM Then
+      Begin
+        CompileError('trop d''arguments dans l''appel de ' + ProcName);
+        Break;
+      End;
+      ParseExpr(ArgVals[ArgCount]);
+      Inc(ArgCount);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance  { consommer , }
+      Else
+        Break;
+    End;
+  End;
+
+  { Consommer ) }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance
+  Else
+    CompileError(') attendu apres les arguments de ' + ProcName);
+
+  { Empiler les arguments en ordre inverse (convention C) }
+  EmitComment('appel ' + ProcName + '(' + IntToStr_(ArgCount) + ' args)');
+  For I := ArgCount - 1 DownTo 0 Do
+  Begin
+    ExprFlushToAX(ArgVals[I]);
+    EmitPush('AX');
+  End;
+
+  { Generer CALL }
+  If (ProcSIdx >= 0) And (ProcSIdx < SymCount) Then
+    ProcLbl := SymTab[ProcSIdx].MangledName
+  Else
+    ProcLbl := A60_FN_PFX + SymNameClean(ProcName);
+  EmitInstr('CALL', ProcLbl);
+
+  { Nettoyer la pile }
+  If ArgCount > 0 Then
+  Begin
+    Str(ArgCount * 2, S);
+    EmitInstr('ADD', 'SP, ' + S);
+  End;
+
+  { Resultat dans AX }
+  If (ProcSIdx >= 0) And (ProcSIdx < SymCount) Then
+    ExprMakeAX(SymTab[ProcSIdx].TypeIdx, Res)
+  Else
+    ExprMakeAX(TY_IDX_INTEGER, Res);
+End;
+
+{ ---- ParseArrayAccess : acces element de tableau ------------- }
+{ Syntaxe : arr[i] ou arr[i,j] (multidimensionnel lineaire)
+  Calcul d offset : index * 2 (mots de 16 bits)
+  LEA BX, [base] ; ADD BX, offset ; MOV AX, [BX]               }
+Procedure ParseArrayAccess(SIdx : Integer;
+                           Var Res : TExprVal);
+Var
+  E     : TExprVal;
+  Addr  : TString;
+Begin
+  { Le [ a deja ete consomme par l appelant }
+  { Parser le premier index }
+  ParseExpr(E);
+  ExprFlushToAX(E);
+
+  { Pour indices supplementaires (multidim) : ignorer pour l instant }
+  While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
+  Begin
+    ParserAdvance;  { consommer , }
+    ParseExpr(E);
+    ExprFlushToAX(E);
+  End;
+
+  { Consommer ] }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+    ParserAdvance
+  Else
+    CompileError('] attendu apres l''index de tableau');
+
+  { Generer le code d acces : AX = index, BX = base, element = [BX+AX*2] }
+  EmitComment('acces tableau ' + SymTab[SIdx].Name);
+  EmitInstr('SHL', 'AX, 1');  { AX = index * 2 (taille mot) }
+  EmitInstr('MOV', 'BX, AX');
+  { Adresse de base du tableau }
+  If SymTab[SIdx].ScopeLevel = 0 Then
+    Addr := 'OFFSET ' + SymTab[SIdx].MangledName
+  Else
+    Addr := ExprAddrOf(SIdx);
+  EmitInstr('ADD', 'BX, ' + Addr);
+  EmitInstr('MOV', 'AX, [BX]');
+
+  ExprMakeAX(SymTab[SIdx].TypeIdx, Res);
+End;
+
+{ ---- ParseSwitchAccess : acces element de switch (aiguillage)- }
+{ Syntaxe : nom[expr]
+  Un switch est un tableau de labels. On evalue expr (1-base),
+  on convertit en 0-base, on multiplie par 2, et on charge
+  l adresse du label depuis la table.                            }
+Procedure ParseSwitchAccess(SIdx : Integer;
+                            Var Res : TExprVal);
+Var
+  E : TExprVal;
+Begin
+  { Le [ a deja ete consomme par l appelant }
+  ParseExpr(E);
+  ExprFlushToAX(E);
+
+  { Consommer ] }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+    ParserAdvance
+  Else
+    CompileError('] attendu apres l''index de switch');
+
+  { Generer le code : AX = expr (1-base), table a _A60S_nom }
+  EmitComment('acces switch ' + SymTab[SIdx].Name);
+  EmitInstr('DEC', 'AX');          { 1-base -> 0-base }
+  EmitInstr('SHL', 'AX, 1');       { * 2 pour offset mot }
+  EmitInstr('MOV', 'BX, AX');
+  EmitInstr('ADD', 'BX, OFFSET ' + SymTab[SIdx].MangledName);
+  EmitInstr('MOV', 'AX, [BX]');
+
+  ExprMakeAX(TY_IDX_LABEL, Res);
 End;
 
 { ---- Compilation ------------------------------------------- }
