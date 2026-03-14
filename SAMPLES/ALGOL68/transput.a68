@@ -1,4 +1,4 @@
-CO transput.a68 : print, read, newline, space, whole (TODO 25) CO
+CO transput.a68 : print, newline, space, whole (TODO 25) CO
 BEGIN
   CO print avec entier CO
   print((42, newline));

@@ -1,4 +1,4 @@
-CO refs.a68 : REF, LOC, HEAP, :=, IS, ISNT, NIL (TODO 25) CO
+CO refs.a68 : REF, HEAP, :=, =:, IS, ISNT, NIL (TODO 25) CO
 BEGIN
   CO Affectation simple := CO
   INT x := 10;
