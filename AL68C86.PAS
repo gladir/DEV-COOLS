@@ -340,7 +340,7 @@
             Procedures locales (imbriquees) : acces au cadre englobant
               via lien statique (pointeur vers BP du parent)
 
-  TODO 20 - DEFINITIONS D OPERATEURS (OP ET PRIO)
+  TODO 20 - DEFINITIONS D OPERATEURS (OP ET PRIO) [IMPLEMENTE]
             OP + = (INT a, INT b) INT : ... ;
               Definition ou redefinition d un operateur dyadique
             OP - = (INT a) INT : ... ;
@@ -879,6 +879,11 @@ Procedure ParseRowDecl; Forward;
 Procedure ParseProcDecl; Forward;
 
 { TODO 20 - Operateurs }
+Function  OpFind(Const Name : TString; LeftMode, RightMode : Integer) : Integer; Forward;
+Function  OpFindByName(Const Name : TString) : Integer; Forward;
+Function  OpAdd(Const Name : TString; Prio : Integer;
+                LeftMode, RightMode, ResMode : Integer;
+                Const ProcLbl : TString) : Integer; Forward;
 Procedure ParseOpDecl;   Forward;
 Procedure ParsePrioDecl; Forward;
 
@@ -2645,6 +2650,7 @@ End;
     8 : +* I (formation de COMPL)                                }
 
 Function BinOpPrec(Const Op : TString) : Integer;
+Var OIdx : Integer;
 Begin
   If (Op = 'OR') Then
     BinOpPrec := 1
@@ -2667,7 +2673,14 @@ Begin
   Else If (Op = '+*') Or (Op = 'I') Then
     BinOpPrec := 8
   Else
-    BinOpPrec := 0;
+  Begin
+    { Chercher dans les operateurs utilisateur (TODO 20) }
+    OIdx := OpFindByName(Op);
+    If OIdx >= 0 Then
+      BinOpPrec := OpTab[OIdx].Prio
+    Else
+      BinOpPrec := 0;
+  End;
 End;
 
 { ---- BinOpIsRight : operateur droit-associatif --------------- }
@@ -3357,6 +3370,7 @@ Var
   Op      : TString;
   LblSkip : TString;
   LblEnd  : TString;
+  OIdx    : Integer; { index operateur monadique utilisateur (TODO 20) }
 Begin
   { ---- Operateur unaire symbole : - + ~ ---- }
   If (CurToken.Kind = TK_OP) And
@@ -3602,6 +3616,44 @@ Begin
       Res.ModeIdx := TY_IDX_INT;
       Exit;
     End;
+
+    { ---- Operateur monadique utilisateur (TODO 20) ---- }
+    OIdx := OpFindByName(Op);
+    If (OIdx >= 0) And (OpTab[OIdx].LeftMode = -1) Then
+    Begin
+      ParserAdvance;
+      ParseUnary(Res);
+      ExprFlushToAX(Res);
+      EmitComment('OP monadique utilisateur: ' + Op);
+      EmitInstr('PUSH   AX');
+      EmitInstr('CALL   ' + OpTab[OIdx].ProcLabel);
+      EmitInstr('ADD    SP, 2');
+      Res.Kind    := EK_AX;
+      If OpTab[OIdx].ResMode >= 0 Then
+        Res.ModeIdx := OpTab[OIdx].ResMode;
+      Exit;
+    End;
+  End;
+
+  { ---- Operateur monadique utilisateur via TK_IDENT (TODO 20) ---- }
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    OIdx := OpFindByName(CurToken.Val);
+    If (OIdx >= 0) And (OpTab[OIdx].LeftMode = -1) Then
+    Begin
+      Op := CurToken.Val;
+      ParserAdvance;
+      ParseUnary(Res);
+      ExprFlushToAX(Res);
+      EmitComment('OP monadique utilisateur: ' + Op);
+      EmitInstr('PUSH   AX');
+      EmitInstr('CALL   ' + OpTab[OIdx].ProcLabel);
+      EmitInstr('ADD    SP, 2');
+      Res.Kind    := EK_AX;
+      If OpTab[OIdx].ResMode >= 0 Then
+        Res.ModeIdx := OpTab[OIdx].ResMode;
+      Exit;
+    End;
   End;
 
   { ---- Pas d operateur unaire -> expression primaire ---- }
@@ -3624,6 +3676,7 @@ Var
   RVal     : LongInt;
   FoldOK   : Boolean;
   IsStrCmp : Boolean; { comparaison sur STRING }
+  OIdx     : Integer; { index operateur utilisateur (TODO 20) }
 Begin
   ParseUnary(Res);
 
@@ -3641,6 +3694,12 @@ Begin
     End
     { Detecter un operateur bold (OR AND OVER MOD SHL SHR etc.) }
     Else If CurToken.Kind = TK_BOLD Then
+    Begin
+      Op   := CurToken.Val;
+      Prec := BinOpPrec(Op);
+    End
+    { Detecter un operateur utilisateur par identifiant (TODO 20) }
+    Else If CurToken.Kind = TK_IDENT Then
     Begin
       Op   := CurToken.Val;
       Prec := BinOpPrec(Op);
@@ -3982,6 +4041,23 @@ Begin
       EmitInstr('MOV    BX, AX');
       EmitInstr('MOV    AX, [BX+2]');
       Res.ModeIdx := TY_IDX_INT;
+    End
+    { ---- Operateur utilisateur dyadique (TODO 20) ---- }
+    Else
+    Begin
+      OIdx := OpFindByName(Op);
+      If OIdx >= 0 Then
+      Begin
+        { AX = gauche (deja depile), BX = droite }
+        { Convention : PUSH gauche, PUSH droite, CALL, ADD SP,4 }
+        EmitComment('OP utilisateur: ' + Op);
+        EmitInstr('PUSH   AX');  { gauche }
+        EmitInstr('PUSH   BX');  { droite }
+        EmitInstr('CALL   ' + OpTab[OIdx].ProcLabel);
+        EmitInstr('ADD    SP, 4');
+        If OpTab[OIdx].ResMode >= 0 Then
+          Res.ModeIdx := OpTab[OIdx].ResMode;
+      End;
     End;
 
     Res.Kind := EK_AX;
@@ -5890,6 +5966,18 @@ Begin
       ParseProcDecl;
       WasDecl := True;
     End
+    Else If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'OP') Then
+    Begin
+      ParserAdvance; { consomme OP }
+      ParseOpDecl;
+      WasDecl := True;
+    End
+    Else If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'PRIO') Then
+    Begin
+      ParserAdvance; { consomme PRIO }
+      ParsePrioDecl;
+      WasDecl := True;
+    End
     Else If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'MODE') Then
     Begin
       ParseModeDecl;
@@ -6810,14 +6898,411 @@ Begin
     ParserAdvance;
 End;
 
-Procedure ParseOpDecl;
+{ ============================================================
+  TODO 20 - DEFINITIONS D OPERATEURS (OP ET PRIO)
+  ============================================================ }
+
+{ ---- OpFind : chercher un operateur par nom et modes -------- }
+{ LeftMode = -1 pour un operateur monadique.
+  Retourne l index dans OpTab ou -1 si non trouve.               }
+
+Function OpFind(Const Name : TString; LeftMode, RightMode : Integer) : Integer;
+Var I : Integer;
 Begin
-  { TODO 20 }
+  For I := OpCount - 1 DownTo 0 Do
+  Begin
+    If (OpTab[I].Name = Name) And
+       (OpTab[I].LeftMode = LeftMode) And
+       (OpTab[I].RightMode = RightMode) Then
+    Begin
+      OpFind := I;
+      Exit;
+    End;
+  End;
+  OpFind := -1;
 End;
 
-Procedure ParsePrioDecl;
+{ ---- OpFindByName : chercher un operateur par nom seul ------ }
+{ Retourne le premier (plus recent) trouvee, ou -1.              }
+
+Function OpFindByName(Const Name : TString) : Integer;
+Var I : Integer;
 Begin
-  { TODO 20 }
+  For I := OpCount - 1 DownTo 0 Do
+  Begin
+    If OpTab[I].Name = Name Then
+    Begin
+      OpFindByName := I;
+      Exit;
+    End;
+  End;
+  OpFindByName := -1;
+End;
+
+{ ---- OpAdd : ajouter un operateur dans OpTab ---------------- }
+{ Retourne l index ou -1 en cas de debordement.                  }
+
+Function OpAdd(Const Name : TString; Prio : Integer;
+               LeftMode, RightMode, ResMode : Integer;
+               Const ProcLbl : TString) : Integer;
+Var Idx : Integer;
+Begin
+  If OpCount >= MAX_OP Then
+  Begin
+    CompileError('table des operateurs pleine (max=' +
+                 IntToStr(MAX_OP) + ')');
+    OpAdd := -1;
+    Exit;
+  End;
+  Idx := OpCount;
+  OpTab[Idx].Name      := Name;
+  OpTab[Idx].Prio      := Prio;
+  OpTab[Idx].LeftMode  := LeftMode;
+  OpTab[Idx].RightMode := RightMode;
+  OpTab[Idx].ResMode   := ResMode;
+  OpTab[Idx].ProcLabel := ProcLbl;
+  Inc(OpCount);
+
+  If Opts.DebugMode Then
+    WriteLn('  OP_ADD[', Idx, ']: ', Name,
+            ' prio=', Prio,
+            ' left=', LeftMode,
+            ' right=', RightMode,
+            ' res=', ResMode,
+            ' -> ', ProcLbl);
+
+  OpAdd := Idx;
+End;
+
+{ ---- ParseOpDecl : declaration d operateur utilisateur ------ }
+{ Syntaxe Algol 68 :
+    OP opname = (MODE a, MODE b) RETMODE : body ;   (dyadique)
+    OP opname = (MODE a) RETMODE : body ;            (monadique)
+  Le mot OP est deja consomme par l appelant.
+  Convention d appel identique a PROC.                           }
+
+Procedure ParseOpDecl;
+Var
+  OpNameStr       : TString;
+  RetModeIdx      : Integer;
+  ParamCnt        : Integer;
+  ParamNames      : Array[0..MAX_PARAM - 1] Of TString;
+  ParamModes      : Array[0..MAX_PARAM - 1] Of Integer;
+  ParamIsRef      : Array[0..MAX_PARAM - 1] Of Boolean;
+  SavedFrameSize  : Integer;
+  SavedProcRetLbl : TString;
+  SavedProcName   : TString;
+  SavedProcDepth  : Integer;
+  SkipLbl         : TString;
+  RetLbl          : TString;
+  BodyRes         : TExprVal;
+  I, SIdx, OIdx   : Integer;
+  S               : TString;
+  ProcLbl         : TString;
+  PModeIdx        : Integer;
+  MyOp            : Integer;
+  LeftM, RightM   : Integer;
+  DefaultPrio     : Integer;
+Begin
+  { --- 1. Lire le nom/symbole de l operateur --- }
+  If CurToken.Kind = TK_OP Then
+  Begin
+    OpNameStr := CurToken.Val;
+    ParserAdvance;
+  End
+  Else If CurToken.Kind = TK_BOLD Then
+  Begin
+    OpNameStr := CurToken.Val;
+    ParserAdvance;
+  End
+  Else If CurToken.Kind = TK_IDENT Then
+  Begin
+    OpNameStr := CurToken.Val;
+    ParserAdvance;
+  End
+  Else
+  Begin
+    CompileError('nom d operateur attendu apres OP');
+    Exit;
+  End;
+
+  { --- 2. Attend = --- }
+  If (CurToken.Kind <> TK_OP) Or (CurToken.Val <> '=') Then
+  Begin
+    CompileError('"=" attendu dans declaration OP');
+    Exit;
+  End;
+  ParserAdvance; { consomme = }
+
+  { --- 3. Parser la liste de parametres (MODE nom, ...) --- }
+  ParamCnt := 0;
+  If CurToken.Kind = TK_OPEN Then
+  Begin
+    ParserAdvance; { consomme ( }
+    While (CurToken.Kind <> TK_CLOSE) And
+          (CurToken.Kind <> TK_EOF) Do
+    Begin
+      If ParamCnt >= MAX_PARAM Then
+      Begin
+        CompileError('trop de parametres (max=' +
+                     IntToStr(MAX_PARAM) + ')');
+        Break;
+      End;
+      { Mode optionnel REF }
+      ParamIsRef[ParamCnt] := False;
+      If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'REF') Then
+      Begin
+        ParamIsRef[ParamCnt] := True;
+        ParserAdvance;
+      End;
+      { Lire le mode du parametre }
+      PModeIdx := -1;
+      If CurToken.Kind = TK_BOLD Then
+      Begin
+        PModeIdx := ModeLookupName(CurToken.Val);
+        If PModeIdx < 0 Then
+        Begin
+          CompileError('mode inconnu: ' + CurToken.Val);
+          PModeIdx := TY_IDX_INT;
+        End;
+        ParserAdvance;
+      End
+      Else If CurToken.Kind = TK_IDENT Then
+      Begin
+        PModeIdx := ModeLookupName(CurToken.Val);
+        If PModeIdx < 0 Then
+          PModeIdx := TY_IDX_INT;
+        ParserAdvance;
+      End
+      Else
+      Begin
+        CompileError('mode attendu dans parametres de OP');
+        Break;
+      End;
+      ParamModes[ParamCnt] := PModeIdx;
+      { Lire le nom du parametre }
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        ParamNames[ParamCnt] := CurToken.Val;
+        ParserAdvance;
+      End
+      Else
+      Begin
+        CompileError('identificateur attendu pour parametre de OP');
+        Break;
+      End;
+      Inc(ParamCnt);
+      { Virgule -> parametre suivant }
+      If CurToken.Kind = TK_COMMA Then
+        ParserAdvance;
+    End;
+    If CurToken.Kind = TK_CLOSE Then
+      ParserAdvance; { consomme ) }
+  End;
+
+  { Valider le nombre de parametres }
+  If (ParamCnt < 1) Or (ParamCnt > 2) Then
+  Begin
+    CompileError('OP necessite 1 (monadique) ou 2 (dyadique) parametres');
+    Exit;
+  End;
+
+  { --- 4. Lire le mode de retour --- }
+  RetModeIdx := TY_IDX_INT;
+  If CurToken.Kind = TK_BOLD Then
+  Begin
+    RetModeIdx := ModeLookupName(CurToken.Val);
+    If RetModeIdx < 0 Then
+      RetModeIdx := TY_IDX_INT;
+    ParserAdvance;
+  End
+  Else If CurToken.Kind = TK_IDENT Then
+  Begin
+    RetModeIdx := ModeLookupName(CurToken.Val);
+    If RetModeIdx < 0 Then
+      RetModeIdx := TY_IDX_INT;
+    ParserAdvance;
+  End;
+
+  { --- 5. Attend : avant le corps --- }
+  If CurToken.Kind = TK_COLON Then
+    ParserAdvance
+  Else
+    CompileError('":" attendu avant le corps de OP');
+
+  { --- 6. Determiner les modes gauche/droite --- }
+  If ParamCnt = 1 Then
+  Begin
+    { Operateur monadique : pas de mode gauche }
+    LeftM  := -1;
+    RightM := ParamModes[0];
+  End
+  Else
+  Begin
+    { Operateur dyadique }
+    LeftM  := ParamModes[0];
+    RightM := ParamModes[1];
+  End;
+
+  { --- 7. Generer le label de la procedure operateur --- }
+  Inc(ProcCount);
+  MyOp := ProcCount;
+  S := SymNameClean(OpNameStr);
+  ProcLbl := A68_OP_PFX + S + '_' + IntToStr(MyOp);
+
+  { Determiner la priorite par defaut }
+  DefaultPrio := BinOpPrec(OpNameStr);
+  If DefaultPrio = 0 Then
+  Begin
+    { Chercher si une PRIO a ete declaree }
+    OIdx := OpFindByName(OpNameStr);
+    If OIdx >= 0 Then
+      DefaultPrio := OpTab[OIdx].Prio
+    Else
+      DefaultPrio := 7; { priorite par defaut pour nouvel operateur }
+  End;
+
+  { --- 8. Enregistrer dans la table des operateurs --- }
+  OIdx := OpAdd(OpNameStr, DefaultPrio, LeftM, RightM,
+                RetModeIdx, ProcLbl);
+
+  { Enregistrer comme symbole SC_OP }
+  SIdx := SymAdd(OpNameStr, SC_OP, RetModeIdx, 0);
+  If SIdx >= 0 Then
+    SymTab[SIdx].MangledName := ProcLbl;
+
+  { --- 9. Emettre le saut par-dessus le corps --- }
+  SkipLbl := A68_LBL_PFX + 'OPSKIP_' + IntToStr(MyOp);
+  EmitInstr('JMP    ' + SkipLbl);
+
+  { --- 10. Emettre le label et le prologue --- }
+  EmitBlankLine;
+  EmitComment('OP ' + OpNameStr + ' (' + IntToStr(ParamCnt) +
+              ' param' + ')');
+  EmitLabel(ProcLbl);
+
+  { Sauvegarder l etat du contexte englobant }
+  SavedFrameSize  := CurFrameSize;
+  SavedProcRetLbl := CurProcRetLbl;
+  SavedProcName   := CurProcName;
+  SavedProcDepth  := CurProcDepth;
+
+  CurFrameSize := 0;
+  CurProcName  := 'OP_' + S;
+  Inc(CurProcDepth);
+  RetLbl := A68_LBL_PFX + 'OPRET_' + IntToStr(MyOp);
+  CurProcRetLbl := RetLbl;
+
+  { Prologue }
+  EmitInstr('PUSH   BP');
+  EmitInstr('MOV    BP, SP');
+
+  { --- 11. Enregistrer les parametres --- }
+  SymEnterScope;
+  For I := 0 To ParamCnt - 1 Do
+  Begin
+    SymAdd(ParamNames[I], SC_PARAM, ParamModes[I],
+           4 + 2 * (ParamCnt - 1 - I));
+  End;
+
+  { --- 12. Parser le corps --- }
+  ParseExpr(BodyRes);
+  ExprFlushToAX(BodyRes);
+
+  { --- 13. Epilogue --- }
+  EmitLabel(RetLbl);
+  EmitInstr('MOV    SP, BP');
+  EmitInstr('POP    BP');
+  EmitInstr('RET');
+
+  { --- 14. Quitter la portee et restaurer le contexte --- }
+  SymLeaveScope;
+  CurFrameSize  := SavedFrameSize;
+  CurProcRetLbl := SavedProcRetLbl;
+  CurProcName   := SavedProcName;
+  CurProcDepth  := SavedProcDepth;
+
+  { --- 15. Label de saut (apres le corps) --- }
+  EmitLabel(SkipLbl);
+
+  { Consommer le point-virgule optionnel }
+  If CurToken.Kind = TK_SEMI Then
+    ParserAdvance;
+End;
+
+{ ---- ParsePrioDecl : declaration de priorite ----------------- }
+{ Syntaxe Algol 68 :
+    PRIO opname = priority ;
+  Le mot PRIO est deja consomme par l appelant.
+  priority est un entier entre 1 et 9.                           }
+
+Procedure ParsePrioDecl;
+Var
+  OpNameStr : TString;
+  Prio      : Integer;
+  OIdx      : Integer;
+Begin
+  { --- 1. Lire le nom/symbole de l operateur --- }
+  If CurToken.Kind = TK_OP Then
+  Begin
+    OpNameStr := CurToken.Val;
+    ParserAdvance;
+  End
+  Else If CurToken.Kind = TK_BOLD Then
+  Begin
+    OpNameStr := CurToken.Val;
+    ParserAdvance;
+  End
+  Else If CurToken.Kind = TK_IDENT Then
+  Begin
+    OpNameStr := CurToken.Val;
+    ParserAdvance;
+  End
+  Else
+  Begin
+    CompileError('nom d operateur attendu apres PRIO');
+    Exit;
+  End;
+
+  { --- 2. Attend = --- }
+  If (CurToken.Kind <> TK_OP) Or (CurToken.Val <> '=') Then
+  Begin
+    CompileError('"=" attendu dans declaration PRIO');
+    Exit;
+  End;
+  ParserAdvance; { consomme = }
+
+  { --- 3. Lire la priorite (entier 1..9) --- }
+  If CurToken.Kind <> TK_INT_DEN Then
+  Begin
+    CompileError('entier 1..9 attendu apres "=" dans PRIO');
+    Exit;
+  End;
+  Prio := CurToken.IntVal;
+  ParserAdvance;
+
+  If (Prio < 1) Or (Prio > 9) Then
+  Begin
+    CompileError('priorite PRIO doit etre entre 1 et 9');
+    Prio := 7;
+  End;
+
+  { --- 4. Enregistrer ou mettre a jour la priorite --- }
+  OIdx := OpFindByName(OpNameStr);
+  If OIdx >= 0 Then
+    OpTab[OIdx].Prio := Prio
+  Else
+  Begin
+    { Pre-enregistrer avec des modes inconnus (-2) }
+    OpAdd(OpNameStr, Prio, -2, -2, -2, '');
+  End;
+
+  If Opts.DebugMode Then
+    WriteLn('  PRIO ', OpNameStr, ' = ', Prio);
+
+  { Consommer le point-virgule optionnel }
+  If CurToken.Kind = TK_SEMI Then
+    ParserAdvance;
 End;
 
 Procedure ParseUnionDecl;
@@ -6886,6 +7371,16 @@ Begin
   Begin
     ParserAdvance; { consomme PROC }
     ParseProcDecl;
+  End
+  Else If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'OP') Then
+  Begin
+    ParserAdvance; { consomme OP }
+    ParseOpDecl;
+  End
+  Else If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'PRIO') Then
+  Begin
+    ParserAdvance; { consomme PRIO }
+    ParsePrioDecl;
   End
   Else If CurToken.Kind = TK_SEMI Then
     ParserAdvance   { point-virgule seul = go-on vide }
