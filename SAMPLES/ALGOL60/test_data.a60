@@ -1,0 +1,25 @@
+comment Test du segment de donnees et statiques (TODO 08) ;
+comment Ce fichier teste la generation du segment DATA complet :
+  constantes pre-peuplees (_A60_CRLF, _A60_SPACE, _A60_EMPTY,
+  _A60_TRUE_S, _A60_FALSE_S), tampons (_A60_NUMBUF, _A60_TMPBUF),
+  chaines litterales (DB 'texte',0), mots (DW val),
+  et tableaux globaux (DW n DUP(0)) ;
+BEGIN
+  comment Chaines litterales dans DATA ;
+  INTEGER a;
+  a := 42;
+
+  comment Expressions utilisant des chaines ;
+  `Bonjour`;
+  `Test`;
+  ``;
+
+  comment Expressions entieres (valeurs en DATA si globales) ;
+  a := 100 + 200;
+  a := 3 * 7;
+
+  comment Booleens (utilise _A60_TRUE_S / _A60_FALSE_S) ;
+  BOOLEAN flag;
+  flag := TRUE;
+  flag := FALSE
+END.

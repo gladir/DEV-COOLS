@@ -108,11 +108,16 @@
             EmitProlog / EmitEpilog : PUSH BP / MOV BP,SP et MOV SP,BP / POP BP
             EmitDataSeg : ecrire _DATA SEGMENT ... _DATA ENDS
 
-  TODO 08 - SEGMENT DE DONNEES ET STATIQUES
+  TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
             TDataRec : LblName, Kind (DK_WORD/DK_BYTE/DK_STR/DK_ARRAY),
               IntVal, StrVal, ElemCount
             DataTab[0..MAX_DATA-1], DataCount
             DataAdd, DataAddStr : variantes d ajout
+            DataAddArray : reserver un bloc DK_ARRAY_BLK avec ElemCount
+            DataInit : pre-peupler le segment DATA avec les constantes
+              _A60_CRLF (0Dh,0Ah,0), _A60_SPACE (' ',0), _A60_EMPTY (0)
+              _A60_TRUE_S ('TRUE',0), _A60_FALSE_S ('FALSE',0)
+              _A60_NUMBUF (12 octets), _A60_TMPBUF (256 octets)
             Variables globales (declarations au niveau programme) :
               entrees DK_WORD dans DATA
             Chaines litterales : DB 'abc',0 dans DATA avec label _A60K_N
@@ -651,6 +656,10 @@ Procedure EmitPop(Const Reg : TString); Forward;
 Procedure EmitMov(Const Dst, Src : TString); Forward;
 Procedure EmitProlog; Forward;
 Procedure EmitEpilog; Forward;
+{ ---- Forward declarations (TODO 08) ----------------------- }
+Function  DataAddArray(Const Lbl : TString;
+                       ElemCount : Integer) : Integer; Forward;
+Procedure DataInit;    Forward;
 { ---- Forward declarations (TODO 04) ----------------------- }
 Procedure EmitInstr(Const Mnem, Args : TString); Forward;
 Procedure EmitLabel(Const Lbl : TString); Forward;
@@ -962,6 +971,8 @@ Begin
   SymInit;
   { Systeme de types (TODO 06) }
   TypeInit;
+  { Segment de donnees (TODO 08) }
+  DataInit;
 End;
 
 { ============================================================
@@ -1780,7 +1791,44 @@ Begin
   EmitRaw('        RET');
 End;
 
-{ ---- EmitDataSeg : emettre le segment _DATA (stub TODO 08) -- }
+{ ============================================================
+  TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- DataAddArray : reserver un bloc DK_ARRAY_BLK ----------- }
+{ Ajoute une entree tableau dans le segment DATA.
+  Le tableau est emis comme "LblName DW ElemCount DUP(0)".       }
+Function DataAddArray(Const Lbl : TString;
+                      ElemCount : Integer) : Integer;
+Var
+  Idx : Integer;
+Begin
+  Idx := DataAdd(Lbl, DK_ARRAY_BLK, 0, '');
+  DataTab[Idx].ElemCount := ElemCount;
+  DataAddArray := Idx;
+End;
+
+{ ---- DataInit : pre-peupler le segment DATA avec les constantes }
+{ Enregistre les constantes utilitaires necessaires au runtime :
+  _A60_CRLF    : retour chariot + saut de ligne (0Dh, 0Ah, 0)
+  _A60_SPACE   : un espace suivi de NUL (' ', 0)
+  _A60_EMPTY   : chaine vide (NUL seul)
+  _A60_TRUE_S  : chaine 'TRUE' pour affichage des booleens
+  _A60_FALSE_S : chaine 'FALSE' pour affichage des booleens
+  _A60_NUMBUF  : tampon 12 octets pour conversion numerique
+  _A60_TMPBUF  : tampon 256 octets pour operations temporaires   }
+Procedure DataInit;
+Begin
+  DataAdd('_A60_CRLF',    DK_BYTE, 0, '0Dh, 0Ah, 0');
+  DataAdd('_A60_SPACE',   DK_STR,  0, ' ');
+  DataAdd('_A60_EMPTY',   DK_STR,  0, '');
+  DataAdd('_A60_TRUE_S',  DK_STR,  0, 'TRUE');
+  DataAdd('_A60_FALSE_S', DK_STR,  0, 'FALSE');
+  DataAddArray('_A60_NUMBUF', 6);
+  DataAddArray('_A60_TMPBUF', 128);
+End;
+
+{ ---- EmitDataSeg : emettre le segment _DATA (TODO 08) -------- }
 Procedure EmitDataSeg;
 Var
   I, J : Integer;
@@ -1793,7 +1841,12 @@ Begin
       DK_WORD :
         EmitRaw(DataTab[I].LblName + ' DW ' + IntToStr_(DataTab[I].IntVal));
       DK_BYTE :
-        EmitRaw(DataTab[I].LblName + ' DB ' + IntToStr_(DataTab[I].IntVal));
+      Begin
+        If Length(DataTab[I].StrVal) > 0 Then
+          EmitRaw(DataTab[I].LblName + ' DB ' + DataTab[I].StrVal)
+        Else
+          EmitRaw(DataTab[I].LblName + ' DB ' + IntToStr_(DataTab[I].IntVal));
+      End;
       DK_STR :
       Begin
         S := 'DB  ';
