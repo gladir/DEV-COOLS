@@ -162,7 +162,7 @@
             ParseArrayAccess : arr[i] -> LEA base + index*2, MOV AX,[BX]
             ParseSwitchAccess : sw[i] -> MOV BX,i / SHL BX,1 / MOV AX,[tbl+BX]
 
-  TODO 11 - EXPRESSIONS ARITHMETIQUES ET BOOLEENNES
+  TODO 11 - EXPRESSIONS ARITHMETIQUES ET BOOLEENNES [IMPLEMENTE]
             ParseExprPrec(MinPrec) : boucle de precedence (Pratt)
             Arithmetique entiere : ADD/SUB/IMUL/IDIV pour +, -, *, div
             Division reelle / : IDIV avec avertissement (pas de virgule flottante)
@@ -719,6 +719,8 @@ Procedure ParseArrayAccess(SIdx : Integer;
                            Var Res : TExprVal); Forward;
 Procedure ParseSwitchAccess(SIdx : Integer;
                             Var Res : TExprVal); Forward;
+{ ---- Forward declarations (TODO 11) ----------------------- }
+Procedure EmitExprRuntime; Forward;
 { ---- Forward declarations (TODO 06) ----------------------- }
 Procedure TypeInit;      Forward;
 Function  TypeKindOf(TypeIdx : Integer) : TTypeKind; Forward;
@@ -3350,6 +3352,46 @@ Begin
   ExprMakeAX(TY_IDX_LABEL, Res);
 End;
 
+{ ============================================================
+  TODO 11 - EXPRESSIONS ARITHMETIQUES ET BOOLEENNES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- EmitExprRuntime : emettre les routines runtime pour
+  les expressions arithmetiques et booleennes.
+  _A60RT_POWER : AX=base, CX=exposant -> AX=base^CX
+    Si CX=0 retourne 1, sinon boucle iterative IMUL.           }
+Procedure EmitExprRuntime;
+Begin
+  If RuntimeEmitted Then Exit;
+  RuntimeEmitted := True;
+
+  EmitBlankLine;
+  EmitComment('--- Runtime : expressions arithmetiques ---');
+  EmitBlankLine;
+
+  { _A60RT_POWER : exponentiation entiere iterative
+    Entree : AX = base, CX = exposant (>= 0)
+    Sortie : AX = base ^ exposant                              }
+  EmitLabel(A60_RT_PFX + 'POWER');
+  EmitInstr('CMP', 'CX, 0');
+  EmitInstr('JNE', A60_RT_PFX + 'POWER_L1');
+  EmitInstr('MOV', 'AX, 1');        { x^0 = 1 }
+  EmitInstr('RET', '');
+  EmitLabel(A60_RT_PFX + 'POWER_L1');
+  EmitInstr('MOV', 'BX, AX');       { BX = base originale }
+  EmitInstr('DEC', 'CX');           { 1er facteur deja dans AX }
+  EmitLabel(A60_RT_PFX + 'POWER_L2');
+  EmitInstr('CMP', 'CX, 0');
+  EmitInstr('JE', A60_RT_PFX + 'POWER_L3');
+  EmitInstr('IMUL', 'BX');          { AX = AX * base }
+  EmitInstr('DEC', 'CX');
+  EmitInstr('JMP', A60_RT_PFX + 'POWER_L2');
+  EmitLabel(A60_RT_PFX + 'POWER_L3');
+  EmitInstr('RET', '');
+
+  EmitBlankLine;
+End;
+
 { ---- Compilation ------------------------------------------- }
 Procedure Run;
 Begin
@@ -3445,7 +3487,12 @@ Begin
   End;
 
   LexClose;
+  EmitExprRuntime;                  { routines runtime (TODO 11) }
+  EmitRaw('_TEXT   ENDS');
+  EmitBlankLine;
   EmitDataSeg;
+  EmitBlankLine;
+  EmitRaw('        END');
   EmitClose;
 
   If Opts.Verbose Then ShowStats;
