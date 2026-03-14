@@ -33,7 +33,7 @@
 {  TODO 15 [IMPLEMENTE] - Opcodes de manipulation de la pile et chargement de constantes   }
 {  TODO 16 [IMPLEMENTE] - Opcodes de creation d'objets et tableaux            }
 {  TODO 17 [IMPLEMENTE] - Opcodes d'acces aux champs                           }
-{  TODO 18 - Opcodes de comparaison, retour et divers                         }
+{  TODO 18 [IMPLEMENTE] - Opcodes de comparaison, retour et divers            }
 {  TODO 19 - Labels, resolution des sauts et calcul des offsets               }
 {  TODO 20 - Attribut Code : generation binaire                               }
 {  TODO 21 - Directives de gestion des exceptions (.catch, .throws)           }
@@ -2765,6 +2765,8 @@ End;
 { dup_x1, dup_x2, dup2, dup2_x1, dup2_x2, swap) et chargement de    }
 { constantes (aconst_null, iconst_m1..5, lconst_0/1, fconst_0/1/2,   }
 { dconst_0/1, bipush, sipush, ldc, ldc_w, ldc2_w).                    }
+{ TODO 18 : opcodes de retour (ireturn..return), athrow,              }
+{ monitorenter/monitorexit, wide prefix.                               }
 { Les TODOs suivantes ajouteront d'autres familles d'opcodes.          }
 Function ParseInstruction: Boolean;
 Var mnem: String;
@@ -2782,6 +2784,8 @@ Var mnem: String;
     arrType: Integer;
     fldSpec, fldCls, fldName, fldDesc: String;
     fldIdx: Integer;
+    wideOpc: String;
+    wideIdx, wideConst: Integer;
 Begin
  ParseInstruction := False;
  mnem := CurStr;
@@ -4064,6 +4068,77 @@ Begin
   EmitByte(Byte(fldIdx and $FF));
   ParseInstruction := True; Exit;
  End;
+ { ---------------------------------------------------------------- }
+ { Opcodes de retour, exceptions, moniteur et wide - TODO 18        }
+ { ---------------------------------------------------------------- }
+ { ireturn ($AC) : retourner int }
+ If mnem = 'ireturn' Then Begin Consume; EmitByte($AC); ParseInstruction := True; Exit; End;
+ { lreturn ($AD) : retourner long }
+ If mnem = 'lreturn' Then Begin Consume; EmitByte($AD); ParseInstruction := True; Exit; End;
+ { freturn ($AE) : retourner float }
+ If mnem = 'freturn' Then Begin Consume; EmitByte($AE); ParseInstruction := True; Exit; End;
+ { dreturn ($AF) : retourner double }
+ If mnem = 'dreturn' Then Begin Consume; EmitByte($AF); ParseInstruction := True; Exit; End;
+ { areturn ($B0) : retourner reference }
+ If mnem = 'areturn' Then Begin Consume; EmitByte($B0); ParseInstruction := True; Exit; End;
+ { return ($B1) : retourner void }
+ If mnem = 'return' Then Begin Consume; EmitByte($B1); ParseInstruction := True; Exit; End;
+ { athrow ($BF) : lancer une exception }
+ If mnem = 'athrow' Then Begin Consume; EmitByte($BF); ParseInstruction := True; Exit; End;
+ { monitorenter ($C2) : acquerir le moniteur d'un objet }
+ If mnem = 'monitorenter' Then Begin Consume; EmitByte($C2); ParseInstruction := True; Exit; End;
+ { monitorexit ($C3) : relacher le moniteur d'un objet }
+ If mnem = 'monitorexit' Then Begin Consume; EmitByte($C3); ParseInstruction := True; Exit; End;
+ { wide ($C4) : etendre l'index de variable locale a 16 bits }
+ If mnem = 'wide' Then
+ Begin
+  Consume;
+  If CurTok <> TK_IDENT Then
+  Begin Error('wide : opcode attendu apres wide'); Exit; End;
+  wideOpc := CurStr;
+  Consume;
+  { wide iinc <index_u2> <const_s2> }
+  If wideOpc = 'iinc' Then
+  Begin
+   If CurTok <> TK_INTEGER Then
+   Begin Error('wide iinc : index entier attendu'); Exit; End;
+   wideIdx := CurInt;
+   Consume;
+   If CurTok <> TK_INTEGER Then
+   Begin Error('wide iinc : constante entiere attendue'); Exit; End;
+   wideConst := CurInt;
+   Consume;
+   EmitByte($C4); { wide }
+   EmitByte($84); { iinc }
+   EmitByte(Byte((wideIdx shr 8) and $FF));
+   EmitByte(Byte(wideIdx and $FF));
+   EmitByte(Byte((wideConst shr 8) and $FF));
+   EmitByte(Byte(wideConst and $FF));
+   ParseInstruction := True; Exit;
+  End;
+  { wide <load/store/ret> <index_u2> }
+  If CurTok <> TK_INTEGER Then
+  Begin Error('wide ' + wideOpc + ' : index entier attendu'); Exit; End;
+  wideIdx := CurInt;
+  Consume;
+  EmitByte($C4); { wide }
+  If wideOpc = 'iload' Then EmitByte($15)
+  Else If wideOpc = 'lload' Then EmitByte($16)
+  Else If wideOpc = 'fload' Then EmitByte($17)
+  Else If wideOpc = 'dload' Then EmitByte($18)
+  Else If wideOpc = 'aload' Then EmitByte($19)
+  Else If wideOpc = 'istore' Then EmitByte($36)
+  Else If wideOpc = 'lstore' Then EmitByte($37)
+  Else If wideOpc = 'fstore' Then EmitByte($38)
+  Else If wideOpc = 'dstore' Then EmitByte($39)
+  Else If wideOpc = 'astore' Then EmitByte($3A)
+  Else If wideOpc = 'ret' Then EmitByte($A9)
+  Else
+  Begin Error('wide : opcode non supportable : ' + wideOpc); Exit; End;
+  EmitByte(Byte((wideIdx shr 8) and $FF));
+  EmitByte(Byte(wideIdx and $FF));
+  ParseInstruction := True; Exit;
+ End;
 End;
 
 { --- ParseDirectives : dispatcher principal des directives de classe --- }
@@ -4157,9 +4232,9 @@ Begin
      SkipToEOL;
     End;
    Else
-    { Directives non encore implementees (TODO 18+) : sauter la ligne }
+    { Directives non encore implementees (TODO 19+) : sauter la ligne }
     If OptVerbose Then
-     WriteLn('  [skip] directive ', CurStr, ' (TODO 18+)');
+     WriteLn('  [skip] directive ', CurStr, ' (TODO 19+)');
     SkipToEOL;
    End;  { Case }
   End
@@ -4170,7 +4245,7 @@ Begin
    Begin
     { Mnemonique non reconnu : sauter la ligne }
     If OptVerbose Then
-     WriteLn('  [skip] instruction ', CurStr, ' (TODO 18+)');
+     WriteLn('  [skip] instruction ', CurStr, ' (TODO 19+)');
     SkipToEOL;
    End
    Else

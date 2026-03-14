@@ -348,7 +348,7 @@ TODO 17 [IMPLEMENTE] - Opcodes d'acces aux champs
     les entrees Constant Pool (Fieldref + Class + NameAndType +
     Utf8 pour nom + Utf8 pour descripteur), emettre opcode + index U2
 
-TODO 18 - Opcodes de comparaison, retour et divers
+TODO 18 [IMPLEMENTE] - Opcodes de comparaison, retour et divers
   ---------------------------------------------------
   Comparaisons :
   - lcmp (comparer 2 longs -> -1/0/1)
