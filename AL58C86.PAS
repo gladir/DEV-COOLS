@@ -95,7 +95,7 @@
               Allouees dans DATA au lieu de la pile
             Etiquettes : labels numeriques ou symboliques pour go to
 
-  TODO 06 - SYSTEME DE TYPES
+  TODO 06 - SYSTEME DE TYPES [IMPLEMENTE]
             TTypeKind : TYK_INTEGER (16 bits signe), TYK_REAL (stub entier trunc),
               TYK_BOOLEAN (0 ou 1 dans AX), TYK_STRING (ptr chaine DATA),
               TYK_ARRAY (tableau), TYK_LABEL (etiquette), TYK_SWITCH (aiguillage),
@@ -665,6 +665,13 @@ Function  SymAdd(Const Name : TString; Kind : TSymKind;
                  TypeIdx, Offset : Integer) : Integer; Forward;
 Procedure SymEnterScope; Forward;
 Procedure SymLeaveScope; Forward;
+{ TODO 06 - Systeme de types }
+Function  TypeAdd(Kind : TTypeKind; Const AName : TString;
+                  Size : Integer) : Integer; Forward;
+Function  TypeSizeof(TIdx : Integer) : Integer; Forward;
+Function  TypeKindOf(TIdx : Integer) : TTypeKind; Forward;
+Function  TypeIsNumeric(TIdx : Integer) : Boolean; Forward;
+Function  TypeCheckAssign(DstIdx, SrcIdx : Integer) : Boolean; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -2183,18 +2190,147 @@ Begin
 End;
 
 { ============================================================
+  TODO 06 - SYSTEME DE TYPES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- TypeAdd : ajouter un type dans TypeTab ------------------- }
+{ Retourne l index du nouveau type (0-base) ou -1 si plein.      }
+Function TypeAdd(Kind : TTypeKind; Const AName : TString;
+                 Size : Integer) : Integer;
+Begin
+  If TypeCount >= MAX_TYPE Then
+  Begin
+    CompileError('table des types pleine (max=' +
+                 IntToStr_(MAX_TYPE) + ')');
+    TypeAdd := -1;
+    Exit;
+  End;
+  TypeTab[TypeCount].Kind := Kind;
+  TypeTab[TypeCount].Name := AName;
+  TypeTab[TypeCount].Size := Size;
+  If Opts.DebugMode Then
+    WriteLn('  TYPE_ADD[', TypeCount, ']: ', AName,
+            ' kind=', Ord(Kind), ' size=', Size);
+  TypeAdd := TypeCount;
+  Inc(TypeCount);
+End;
+
+{ ---- TypeSizeof : taille en octets d un type par son index ---- }
+{ Retourne 2 (mot 16 bits) par defaut si l index est invalide.    }
+Function TypeSizeof(TIdx : Integer) : Integer;
+Begin
+  If (TIdx >= 0) And (TIdx < TypeCount) Then
+    TypeSizeof := TypeTab[TIdx].Size
+  Else
+    TypeSizeof := 2;
+End;
+
+{ ---- TypeKindOf : retourner le TTypeKind d un indice ---------- }
+{ Si l indice est invalide, retourne TYK_INTEGER par defaut.      }
+Function TypeKindOf(TIdx : Integer) : TTypeKind;
+Begin
+  If (TIdx >= 0) And (TIdx < TypeCount) Then
+    TypeKindOf := TypeTab[TIdx].Kind
+  Else
+    TypeKindOf := TYK_INTEGER;
+End;
+
+{ ---- TypeIsNumeric : le type est-il numerique ? --------------- }
+{ integer, real et boolean sont considerees comme numeriques.      }
+Function TypeIsNumeric(TIdx : Integer) : Boolean;
+Var
+  K : TTypeKind;
+Begin
+  K := TypeKindOf(TIdx);
+  TypeIsNumeric := (K = TYK_INTEGER) Or (K = TYK_REAL)
+                Or (K = TYK_BOOLEAN);
+End;
+
+{ ---- TypeCheckAssign : compatibilite d affectation ------------ }
+{ Retourne True si SrcIdx est assignable a DstIdx.                }
+{ Regles Algol 58 :                                               }
+{   - meme type -> OK                                             }
+{   - integer <-> real -> OK (conversion implicite trunc/extend)  }
+{   - boolean -> integer -> OK (0/1)                              }
+{   - integer -> boolean -> OK (0=false, sinon true)              }
+{   - real -> boolean -> OK (trunc puis 0/1)                      }
+{   - string -> string -> OK                                      }
+{   - label -> label -> OK                                        }
+{   - procedure -> procedure -> OK                                }
+{   - tout autre -> avertissement mais accepte                    }
+Function TypeCheckAssign(DstIdx, SrcIdx : Integer) : Boolean;
+Var
+  DK, SK : TTypeKind;
+Begin
+  TypeCheckAssign := True;
+  { Types identiques : toujours OK }
+  If DstIdx = SrcIdx Then Exit;
+  { Types inconnus : accepter silencieusement }
+  If (DstIdx = TY_UNKNOWN) Or (SrcIdx = TY_UNKNOWN) Then Exit;
+  DK := TypeKindOf(DstIdx);
+  SK := TypeKindOf(SrcIdx);
+  { Numeriques entre eux : toujours OK (conversion implicite) }
+  If TypeIsNumeric(DstIdx) And TypeIsNumeric(SrcIdx) Then Exit;
+  { Meme categorie de type : OK }
+  If DK = SK Then Exit;
+  { Sinon : avertissement de conversion }
+  WarnMsg('conversion implicite de ' + TypeTab[SrcIdx].Name +
+          ' vers ' + TypeTab[DstIdx].Name);
+End;
+
+{ ---- TypeInit : enregistrer les types primitifs Algol 58 ------ }
+{ Place les 7 types de base aux indices reserves TY_IDX_*.        }
+Procedure TypeInit;
+Var
+  I : Integer;
+Begin
+  TypeCount := 0;
+  For I := 0 To MAX_TYPE - 1 Do
+  Begin
+    TypeTab[I].Name := '';
+    TypeTab[I].Kind := TYK_INTEGER;
+    TypeTab[I].Size := 0;
+  End;
+  { TY_IDX_INTEGER = 0 : entier 16 bits signe }
+  TypeTab[TY_IDX_INTEGER].Name := 'integer';
+  TypeTab[TY_IDX_INTEGER].Kind := TYK_INTEGER;
+  TypeTab[TY_IDX_INTEGER].Size := 2;
+  { TY_IDX_REAL = 1 : reel (stub entier tronque) }
+  TypeTab[TY_IDX_REAL].Name := 'real';
+  TypeTab[TY_IDX_REAL].Kind := TYK_REAL;
+  TypeTab[TY_IDX_REAL].Size := 2;
+  { TY_IDX_BOOLEAN = 2 : 0 ou 1 dans AX }
+  TypeTab[TY_IDX_BOOLEAN].Name := 'Boolean';
+  TypeTab[TY_IDX_BOOLEAN].Kind := TYK_BOOLEAN;
+  TypeTab[TY_IDX_BOOLEAN].Size := 2;
+  { TY_IDX_STRING = 3 : pointeur chaine DATA }
+  TypeTab[TY_IDX_STRING].Name := 'string';
+  TypeTab[TY_IDX_STRING].Kind := TYK_STRING;
+  TypeTab[TY_IDX_STRING].Size := 2;
+  { TY_IDX_LABEL = 4 : etiquette }
+  TypeTab[TY_IDX_LABEL].Name := 'label';
+  TypeTab[TY_IDX_LABEL].Kind := TYK_LABEL;
+  TypeTab[TY_IDX_LABEL].Size := 2;
+  { TY_IDX_SWITCH = 5 : aiguillage }
+  TypeTab[TY_IDX_SWITCH].Name := 'switch';
+  TypeTab[TY_IDX_SWITCH].Kind := TYK_SWITCH;
+  TypeTab[TY_IDX_SWITCH].Size := 2;
+  { TY_IDX_PROCEDURE = 6 : procedure }
+  TypeTab[TY_IDX_PROCEDURE].Name := 'procedure';
+  TypeTab[TY_IDX_PROCEDURE].Kind := TYK_PROCEDURE;
+  TypeTab[TY_IDX_PROCEDURE].Size := 2;
+  TypeCount := TY_PRIM_COUNT;
+  If Opts.DebugMode Then
+    WriteLn('  TypeInit : ', TypeCount, ' types primitifs');
+End;
+
+{ ============================================================
   STUBS POUR LES TODOS SUIVANTS
   ============================================================ }
 
 Procedure ParseBlock;
 Begin
   { Stub : ne fait rien pour le moment }
-End;
-
-Procedure TypeInit;
-Begin
-  { Stub : sera implemente dans TODO 06 }
-  TypeCount := 0;
 End;
 
 Procedure EmitOpen;
