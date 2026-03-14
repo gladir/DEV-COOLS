@@ -193,7 +193,7 @@
             Conditions imbriquees : if...then if...then...else
               Regle de rattachement : else lie au if le plus proche
 
-  TODO 14 - BOUCLES FOR
+  TODO 14 - BOUCLES FOR [IMPLEMENTE]
             ParseForStmt : for v := init step incr until limit do stmt
               Variable de boucle : affectee a init au debut
               Increment : ajoute a chaque iteration (step positif ou negatif)
@@ -695,6 +695,8 @@ Procedure ParseWriteStmt(IsLn : Boolean); Forward;
 Procedure ParseReadStmt(IsLn : Boolean); Forward;
 { TODO 13 - If/Then/Else }
 Procedure ParseIfStmt; Forward;
+{ TODO 14 - Boucles For }
+Procedure ParseForStmt; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -2455,6 +2457,282 @@ Begin
 End;
 
 { ============================================================
+  TODO 14 - BOUCLES FOR [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- EmitStoreVar : stocker AX dans une variable par index --- }
+{ Utilise par ParseForStmt pour affecter la variable de boucle.  }
+Procedure EmitStoreVar(VarIdx : Integer);
+Var NS : TString;
+Begin
+  If VarIdx < 0 Then Exit;
+  Case SymTab[VarIdx].Kind Of
+    SK_VAR :
+    Begin
+      If (SymTab[VarIdx].ScopeLevel = 0) Or SymTab[VarIdx].IsOwn Then
+        EmitInstr('MOV', '[' + SymTab[VarIdx].MangledName + '], AX')
+      Else
+      Begin
+        Str(SymTab[VarIdx].Offset, NS);
+        EmitInstr('MOV', '[BP-' + NS + '], AX');
+      End;
+    End;
+    SK_PARAM_VALUE :
+    Begin
+      Str(SymTab[VarIdx].Offset, NS);
+      EmitInstr('MOV', '[BP+' + NS + '], AX');
+    End;
+  End;
+End;
+
+{ ---- EmitLoadVar : charger une variable dans AX par index ---- }
+Procedure EmitLoadVar(VarIdx : Integer);
+Var NS : TString;
+Begin
+  If VarIdx < 0 Then
+  Begin
+    EmitInstr('XOR', 'AX, AX');
+    Exit;
+  End;
+  Case SymTab[VarIdx].Kind Of
+    SK_VAR :
+    Begin
+      If (SymTab[VarIdx].ScopeLevel = 0) Or SymTab[VarIdx].IsOwn Then
+        EmitInstr('MOV', 'AX, [' + SymTab[VarIdx].MangledName + ']')
+      Else
+      Begin
+        Str(SymTab[VarIdx].Offset, NS);
+        EmitInstr('MOV', 'AX, [BP-' + NS + ']');
+      End;
+    End;
+    SK_PARAM_VALUE :
+    Begin
+      Str(SymTab[VarIdx].Offset, NS);
+      EmitInstr('MOV', 'AX, [BP+' + NS + ']');
+    End;
+  Else
+    EmitInstr('XOR', 'AX, AX');
+  End;
+End;
+
+{ ---- ParseForStmt : boucle for Algol 58 ---------------------- }
+{ Le mot-cle 'for' est deja consomme par ParseStmt.              }
+{                                                                 }
+{ Syntaxe Algol 58 :                                              }
+{   for v := clause [, clause]* do stmt                           }
+{ ou clause est l un de :                                         }
+{   expr                              (element simple)            }
+{   expr step expr until expr         (step-until)                }
+{   expr while expr                   (while)                     }
+{                                                                 }
+{ Schema ASM pour step-until :                                    }
+{   MOV AX, init / MOV [v], AX       ; initialisation            }
+{   JMP lbl_test                      ; test initial              }
+{ lbl_incr:                                                       }
+{   MOV AX, [v] / ADD AX, step / MOV [v], AX  ; increment        }
+{ lbl_test:                                                       }
+{   MOV AX, [v] / PUSH AX            ; sauver v                  }
+{   MOV AX, limit / MOV BX, AX       ; limite dans BX            }
+{   POP AX / CMP AX, BX              ; comparer v et limit       }
+{   JG (si step>0) ou JL (si step<0) lbl_end   ; sortir          }
+{   ... corps ...                                                 }
+{   JMP lbl_incr                                                  }
+{ lbl_end:                                                        }
+{                                                                 }
+{ Schema ASM pour while :                                         }
+{ lbl_test:                                                       }
+{   MOV AX, init / MOV [v], AX (1ere iter seulement)             }
+{   ... eval cond ... / TEST AX,AX / JZ lbl_end                  }
+{   ... corps ...                                                 }
+{   JMP lbl_test                                                  }
+{ lbl_end:                                                        }
+Procedure ParseForStmt;
+Var
+  VarName     : TString;
+  VarIdx      : Integer;
+  Init        : TExprVal;
+  Step        : TExprVal;
+  Limit       : TExprVal;
+  Cond        : TExprVal;
+  LblTest     : TString;
+  LblIncr     : TString;
+  LblEnd      : TString;
+  StepNeg     : Boolean;
+  StepLbl     : TString;
+  LimitLbl    : TString;
+  MoreClauses : Boolean;
+Begin
+  { Lire la variable de boucle }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('identificateur attendu apres for');
+    Exit;
+  End;
+  VarName := CurToken.Val;
+  VarIdx  := SymFind(VarName);
+  ParserAdvance;  { consommer l ident }
+
+  { Si la variable n existe pas, declarer implicitement }
+  If VarIdx < 0 Then
+  Begin
+    VarIdx := SymAdd(VarName, SK_VAR, TY_IDX_INTEGER, 0);
+    If VarIdx >= 0 Then
+      DataAddWord(SymTab[VarIdx].MangledName, 0);
+    WarnMsg('variable de boucle implicite: ' + VarName);
+  End;
+
+  { Consommer := }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
+    ParserAdvance
+  Else
+  Begin
+    CompileError(':= attendu apres variable de boucle');
+    Exit;
+  End;
+
+  { Boucle sur les clauses separees par virgule }
+  Repeat
+    MoreClauses := False;
+
+    { Evaluer l expression initiale -> stocker dans v }
+    ParseExpr(Init);
+    ExprFlushToAX(Init);
+    EmitStoreVar(VarIdx);
+
+    { Determiner le type de clause }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'step') Then
+    Begin
+      { ---- Clause step-until --------------------------------- }
+      ParserAdvance;  { consommer step }
+
+      { Evaluer le step -> sauver dans un temporaire DATA }
+      ParseExpr(Step);
+      { Determiner si step est negatif (heuristique compile-time) }
+      StepNeg := (Step.Kind = EK_IMM) And (Step.ImmVal < 0);
+      ExprFlushToAX(Step);
+      StepLbl := NewLabel;
+      DataAddWord(StepLbl, 0);
+      EmitInstr('MOV', '[' + StepLbl + '], AX');
+
+      { Consommer until }
+      If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'until') Then
+        ParserAdvance
+      Else
+        CompileError('until attendu apres step');
+
+      { Evaluer la limite -> sauver dans un temporaire DATA }
+      ParseExpr(Limit);
+      ExprFlushToAX(Limit);
+      LimitLbl := NewLabel;
+      DataAddWord(LimitLbl, 0);
+      EmitInstr('MOV', '[' + LimitLbl + '], AX');
+
+      LblTest := NewLabel;
+      LblIncr := NewLabel;
+      LblEnd  := NewLabel;
+
+      { Test initial : verifier si boucle vide }
+      EmitInstr('JMP', LblTest);
+
+      { Label d increment }
+      EmitLabel(LblIncr);
+      EmitLoadVar(VarIdx);
+      EmitInstr('ADD', 'AX, [' + StepLbl + ']');
+      EmitStoreVar(VarIdx);
+
+      { Label de test }
+      EmitLabel(LblTest);
+      EmitLoadVar(VarIdx);
+      EmitInstr('CMP', 'AX, [' + LimitLbl + ']');
+      If StepNeg Then
+        EmitInstr('JL', LblEnd)    { step < 0 : sortir si v < limit }
+      Else
+        EmitInstr('JG', LblEnd);   { step > 0 : sortir si v > limit }
+
+      { Verifier virgule (clause suivante) ou do }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      Begin
+        MoreClauses := True;
+        ParserAdvance;  { consommer , }
+      End
+      Else
+      Begin
+        { Consommer do }
+        If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'do') Then
+          ParserAdvance
+        Else
+          CompileError('do attendu dans boucle for');
+
+        { Corps de la boucle }
+        ParseStmt;
+
+        { Sauter a l increment }
+        EmitInstr('JMP', LblIncr);
+      End;
+
+      EmitLabel(LblEnd);
+    End
+    Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'while') Then
+    Begin
+      { ---- Clause while -------------------------------------- }
+      ParserAdvance;  { consommer while }
+
+      LblTest := NewLabel;
+      LblEnd  := NewLabel;
+
+      EmitLabel(LblTest);
+      { Evaluer la condition }
+      ParseExpr(Cond);
+      ExprFlushToAX(Cond);
+      EmitInstr('TEST', 'AX, AX');
+      EmitInstr('JZ', LblEnd);
+
+      { Verifier virgule ou do }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      Begin
+        MoreClauses := True;
+        ParserAdvance;
+      End
+      Else
+      Begin
+        If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'do') Then
+          ParserAdvance
+        Else
+          CompileError('do attendu dans boucle for');
+
+        { Corps de la boucle }
+        ParseStmt;
+
+        EmitInstr('JMP', LblTest);
+      End;
+
+      EmitLabel(LblEnd);
+    End
+    Else
+    Begin
+      { ---- Clause simple : for v := expr do stmt ------------- }
+      { La valeur est deja stockee dans v }
+      { Verifier virgule ou do }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      Begin
+        MoreClauses := True;
+        ParserAdvance;
+      End
+      Else
+      Begin
+        If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'do') Then
+          ParserAdvance
+        Else
+          CompileError('do attendu dans boucle for');
+
+        { Corps de la boucle (une seule execution) }
+        ParseStmt;
+      End;
+    End;
+  Until Not MoreClauses;
+End;
+
+{ ============================================================
   TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
   ============================================================ }
 
@@ -3225,6 +3503,16 @@ Begin
     Begin
       ParserAdvance;  { consommer if }
       ParseIfStmt;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+      Exit;
+    End;
+
+    { for v := ... do stmt (TODO 14) }
+    If CurToken.Val = 'for' Then
+    Begin
+      ParserAdvance;  { consommer for }
+      ParseForStmt;
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
         ParserAdvance;
       Exit;
