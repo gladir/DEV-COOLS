@@ -87,7 +87,7 @@
              11. = := += -= etc.
              12. and or not
 
-  TODO 05 - TABLE DES SYMBOLES
+  TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
             TSymKind : SK_MY, SK_OUR, SK_HAS, SK_PARAM, SK_SUB,
               SK_METHOD, SK_CLASS, SK_ROLE, SK_MODULE, SK_CONST
             TSymRec : Name, Sigil, Twigil, MangledName, Kind,
@@ -778,6 +778,22 @@ Procedure ParseUnary(Var Res : TExprVal);                         Forward;
 Procedure ParseExprPrec(MinPrec : Integer;
             Var Res : TExprVal);                                  Forward;
 Procedure ParseExpr(Var Res : TExprVal);                          Forward;
+
+{ Forward declarations TODO 05 - Table des symboles }
+Function  SymNameClean(Const Name : TString) : TString;           Forward;
+Function  SymMangle(Const Name : TString;
+                    Cat : TSymCat) : TString;                     Forward;
+Function  SymFind(Const SgName : TString) : Integer;              Forward;
+Function  SymFindInScope(Const SgName : TString;
+                         Level : Integer) : Integer;              Forward;
+Function  SymAdd(Const AName : TString;
+                 Const ASigil : TString;
+                 ACat : TSymCat;
+                 ATypeIdx : Integer;
+                 AOffset  : Integer) : Integer;                   Forward;
+Procedure SymEnterScope;                                          Forward;
+Procedure SymLeaveScope;                                          Forward;
+Function  SymNextOffset : Integer;                                Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -2975,6 +2991,186 @@ End;
 Procedure ParseExpr(Var Res : TExprVal);
 Begin
   ParseExprPrec(1, Res);
+End;
+
+{ ============================================================
+  TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- SymNameClean : nettoyer un nom pour usage ASM ---------- }
+{ Remplace les caracteres non-alphanumeriques par '_'.          }
+{ Raku permet des noms avec tirets (kebab-case) et apostrophes. }
+Function SymNameClean(Const Name : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+  C : Char;
+Begin
+  R := '';
+  For I := 1 To Length(Name) Do
+  Begin
+    C := Name[I];
+    If ((C >= 'A') And (C <= 'Z')) Or
+       ((C >= 'a') And (C <= 'z')) Or
+       ((C >= '0') And (C <= '9')) Or
+       (C = '_') Then
+      R := R + C
+    Else
+      R := R + '_';
+  End;
+  SymNameClean := R;
+End;
+
+{ ---- SymMangle : generer un label ASM pour un symbole ------- }
+{ Le prefixe depend de la categorie du symbole :                }
+{   SC_MY / SC_OUR / SC_HAS / SC_PARAM / SC_CONST -> _RKV_     }
+{   SC_SUB / SC_METHOD                             -> _RKS_     }
+{   SC_CLASS                                       -> _RKC_     }
+{   SC_ROLE                                        -> _RKR_     }
+{   SC_MODULE                                      -> _RKV_     }
+Function SymMangle(Const Name : TString;
+                   Cat : TSymCat) : TString;
+Var
+  Pfx   : TString;
+  Clean : TString;
+Begin
+  Clean := SymNameClean(Name);
+  Case Cat Of
+    SC_MY     : Pfx := RK_VAR_PFX;
+    SC_OUR    : Pfx := RK_VAR_PFX;
+    SC_HAS    : Pfx := RK_VAR_PFX;
+    SC_PARAM  : Pfx := RK_VAR_PFX;
+    SC_CONST  : Pfx := RK_VAR_PFX;
+    SC_SUB    : Pfx := RK_SUB_PFX;
+    SC_METHOD : Pfx := RK_SUB_PFX;
+    SC_CLASS  : Pfx := RK_CLS_PFX;
+    SC_ROLE   : Pfx := RK_ROLE_PFX;
+    SC_MODULE : Pfx := RK_VAR_PFX;
+  Else
+    Pfx := RK_VAR_PFX;
+  End;
+  SymMangle := Pfx + Clean;
+End;
+
+{ ---- SymFind : chercher un symbole par nom avec sigil ------- }
+{ En Raku, $x, @x, %x, &x sont des symboles distincts.         }
+{ La recherche se fait sur SigilName (nom complet avec sigil).  }
+{ Parcourt du plus recent au plus ancien pour le shadowing.     }
+Function SymFind(Const SgName : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := SymCount - 1 DownTo 0 Do
+    If SymTab[I].SigilName = SgName Then
+    Begin
+      SymFind := I;
+      Exit;
+    End;
+  SymFind := -1;
+End;
+
+{ ---- SymFindInScope : recherche dans une portee specifique -- }
+{ Cherche un symbole dans le scope donne uniquement.            }
+Function SymFindInScope(Const SgName : TString;
+                        Level : Integer) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := SymCount - 1 DownTo 0 Do
+    If (SymTab[I].SigilName = SgName) And
+       (SymTab[I].ScopeLevel = Level) Then
+    Begin
+      SymFindInScope := I;
+      Exit;
+    End;
+  SymFindInScope := -1;
+End;
+
+{ ---- SymAdd : ajouter un symbole dans la table -------------- }
+{ AName    = nom sans sigil (ex: 'x')                           }
+{ ASigil   = sigil ($, @, %, &, ou '' pour sub/class/etc.)      }
+{ SigilName est construit : ASigil + AName                      }
+{ Retourne l index du symbole (0-base) ou -1 si plein.          }
+Function SymAdd(Const AName : TString;
+                Const ASigil : TString;
+                ACat : TSymCat;
+                ATypeIdx : Integer;
+                AOffset  : Integer) : Integer;
+Var
+  Idx  : Integer;
+  SgNm : TString;
+Begin
+  If SymCount >= MAX_SYM Then
+  Begin
+    CompileError('table des symboles pleine (max=' +
+                 IntToStr(MAX_SYM) + ')');
+    SymAdd := -1;
+    Exit;
+  End;
+  Idx := SymCount;
+  SgNm := ASigil + AName;
+  SymTab[Idx].Name        := AName;
+  SymTab[Idx].SigilName   := SgNm;
+  SymTab[Idx].MangledName := SymMangle(AName, ACat);
+  SymTab[Idx].Cat         := ACat;
+  SymTab[Idx].TypeIdx     := ATypeIdx;
+  SymTab[Idx].ScopeLevel  := CurScope;
+  SymTab[Idx].Offset      := AOffset;
+  SymTab[Idx].IsExported  := False;
+  SymTab[Idx].DeclLine    := CurToken.Line;
+
+  If Opts.DebugMode Then
+    WriteLn('  SYM_ADD[', Idx, ']: ', SgNm,
+            ' cat=', Ord(ACat),
+            ' scope=', CurScope,
+            ' offset=', AOffset,
+            ' -> ', SymTab[Idx].MangledName);
+
+  SymAdd := Idx;
+  Inc(SymCount);
+  Inc(TotalSyms);
+End;
+
+{ ---- SymEnterScope : entrer dans une nouvelle portee -------- }
+{ Chaque bloc, sub, class, etc. cree une nouvelle portee.       }
+{ Empile SymCount pour pouvoir retirer les symboles au retour.  }
+Procedure SymEnterScope;
+Begin
+  If ScopeTop >= MAX_SCOPE Then
+  Begin
+    CompileError('portees trop imbriquees (max=' +
+                 IntToStr(MAX_SCOPE) + ')');
+    Exit;
+  End;
+  ScopeStack[ScopeTop] := SymCount;
+  Inc(ScopeTop);
+  Inc(CurScope);
+  If Opts.DebugMode Then
+    WriteLn('  SCOPE_ENTER: level=', CurScope);
+End;
+
+{ ---- SymLeaveScope : quitter la portee courante ------------- }
+{ Les symboles locaux de cette portee sont retires de la table. }
+Procedure SymLeaveScope;
+Begin
+  If ScopeTop <= 0 Then
+  Begin
+    CompileError('SymLeaveScope : pas de scope a quitter');
+    Exit;
+  End;
+  Dec(ScopeTop);
+  SymCount := ScopeStack[ScopeTop];
+  Dec(CurScope);
+  If Opts.DebugMode Then
+    WriteLn('  SCOPE_LEAVE: level=', CurScope);
+End;
+
+{ ---- SymNextOffset : prochain offset local [BP-n] ----------- }
+{ Alloue 2 octets (mot 16 bits) sur le cadre de pile courant.  }
+Function SymNextOffset : Integer;
+Begin
+  Inc(CurFrameSize, 2);
+  SymNextOffset := CurFrameSize;
 End;
 
 { ---- ParseStmt : stub ------------------------------------- }
