@@ -20,7 +20,7 @@
 {  TODO 02 [IMPLEMENTE] - Lexeur : lecture source et tokenisation              }
 {  TODO 03 [IMPLEMENTE] - Gestion des erreurs, des avertissements et du bilan }
 {  TODO 04 [IMPLEMENTE] - Bassin de constantes (Constant Pool) : structures et gestion }
-{  TODO 05 - Ecriture binaire du fichier .class (Big-endian)                  }
+{  TODO 05 [IMPLEMENTE] - Ecriture binaire du fichier .class (Big-endian)     }
 {  TODO 06 - Directives de classe (.class, .super, .implements, .source)      }
 {  TODO 07 - Directives de champs (.field avec descripteurs et valeurs)       }
 {  TODO 08 - Directives de methodes (.method, .end method, .limit)            }
@@ -288,6 +288,7 @@ Var
   OutDir        : String;     { repertoire de sortie (-d)                }
   SrcFile       : Text;       { fichier source                           }
   OutFile       : File of Byte; { fichier binaire de sortie              }
+  BinPos        : LongInt;    { position courante dans le fichier binaire }
 
   { --- Options de ligne de commande --- }
   OptDebug      : Boolean;    { -g : inclure infos de debogage           }
@@ -418,6 +419,21 @@ Function  CPFind(tag: Integer; Const val: String): Integer; Forward;
 Function  CPEnsureUtf8(Const s: String): Integer; Forward;
 Function  CPEnsureClass(Const name: String): Integer; Forward;
 Function  CPEnsureNameAndType(Const name, desc: String): Integer; Forward;
+
+{ --- Declarations forward TODO 05 : Ecriture binaire du fichier .class --- }
+Procedure BinOpen(Const filename: String); Forward;
+Procedure BinClose; Forward;
+Procedure BinWriteU1(b: Byte); Forward;
+Procedure BinWriteU2(w: Integer); Forward;
+Procedure BinWriteU4(d: LongInt); Forward;
+Procedure BinWriteBytes(Var buf; len: Integer); Forward;
+Procedure BinWriteUtf8(Const s: String); Forward;
+Procedure BinWriteFloat(f: Real); Forward;
+Procedure BinWriteDouble(hi, lo: LongInt); Forward;
+Procedure BinWriteLong(hi, lo: LongInt); Forward;
+Function  BinGetPos: LongInt; Forward;
+Procedure BinPatchU2(pos: LongInt; w: Integer); Forward;
+Procedure BinPatchU4(pos: LongInt; d: LongInt); Forward;
 
 { ---------- Ouverture et fermeture du fichier source ---------- }
 
@@ -1367,12 +1383,166 @@ Begin
  Inc(CPCount);
 End;
 
+{ ============================================================================ }
+{ Ecriture binaire du fichier .class (Big-endian)                              }
+{ ============================================================================ }
+
+{ --- BinOpen : ouvrir fichier binaire en ecriture --- }
+Procedure BinOpen(Const filename: String);
+Begin
+ Assign(OutFile, filename);
+ Rewrite(OutFile);
+ If IOResult <> 0 Then
+  FatalError('impossible de creer ' + filename);
+ BinPos := 0;
+End;
+
+{ --- BinClose : fermer fichier binaire --- }
+Procedure BinClose;
+Begin
+ Close(OutFile);
+ If IOResult <> 0 Then { ignorer erreur fermeture };
+End;
+
+{ --- BinWriteU1 : ecrire 1 octet (unsigned byte) --- }
+Procedure BinWriteU1(b: Byte);
+Begin
+ Write(OutFile, b);
+ Inc(BinPos);
+End;
+
+{ --- BinWriteU2 : ecrire 2 octets big-endian (unsigned short) --- }
+Procedure BinWriteU2(w: Integer);
+Var b: Byte;
+Begin
+ b := Byte((w shr 8) and $FF);
+ Write(OutFile, b);
+ b := Byte(w and $FF);
+ Write(OutFile, b);
+ Inc(BinPos, 2);
+End;
+
+{ --- BinWriteU4 : ecrire 4 octets big-endian (unsigned int) --- }
+Procedure BinWriteU4(d: LongInt);
+Var b: Byte;
+Begin
+ b := Byte((d shr 24) and $FF);
+ Write(OutFile, b);
+ b := Byte((d shr 16) and $FF);
+ Write(OutFile, b);
+ b := Byte((d shr 8) and $FF);
+ Write(OutFile, b);
+ b := Byte(d and $FF);
+ Write(OutFile, b);
+ Inc(BinPos, 4);
+End;
+
+{ --- BinWriteBytes : ecrire un bloc d'octets --- }
+Procedure BinWriteBytes(Var buf; len: Integer);
+Var p: ^Byte; i: Integer;
+Begin
+ p := @buf;
+ For i := 1 to len do
+ Begin
+  Write(OutFile, p^);
+  Inc(p);
+ End;
+ Inc(BinPos, len);
+End;
+
+{ --- BinWriteUtf8 : ecrire longueur U2 + octets UTF-8 modifie --- }
+{ Le format CONSTANT_Utf8 dans le .class utilise un encodage UTF-8   }
+{ modifie : longueur sur 2 octets (U2) suivie des octets de la      }
+{ chaine. Les caracteres NUL sont encodes en 0xC0 0x80.             }
+Procedure BinWriteUtf8(Const s: String);
+Var i: Integer; ch: Byte;
+Begin
+ BinWriteU2(Length(s));
+ For i := 1 to Length(s) do
+ Begin
+  ch := Byte(Ord(s[i]));
+  Write(OutFile, ch);
+ End;
+ Inc(BinPos, Length(s));
+End;
+
+{ --- BinWriteFloat : ecrire IEEE 754 single 32 bits big-endian --- }
+{ La valeur Real de Turbo Pascal/FPC est convertie en Single 32b.   }
+{ On utilise un record variant pour acceder aux octets.             }
+Procedure BinWriteFloat(f: Real);
+Var s: Single; bytes: Array[0..3] of Byte absolute s;
+Begin
+ s := f;
+ { Single est en little-endian sur x86 -> ecrire en big-endian }
+ BinWriteU1(bytes[3]);
+ BinWriteU1(bytes[2]);
+ BinWriteU1(bytes[1]);
+ BinWriteU1(bytes[0]);
+End;
+
+{ --- BinWriteDouble : ecrire IEEE 754 double 64 bits big-endian --- }
+{ Recoit hi et lo (moities haute et basse de la representation       }
+{ 64 bits) et les ecrit en big-endian.                               }
+Procedure BinWriteDouble(hi, lo: LongInt);
+Begin
+ BinWriteU4(hi);
+ BinWriteU4(lo);
+End;
+
+{ --- BinWriteLong : ecrire entier 64 bits big-endian --- }
+{ Recoit hi et lo (moities haute et basse) et les ecrit   }
+{ en big-endian (hi puis lo).                              }
+Procedure BinWriteLong(hi, lo: LongInt);
+Begin
+ BinWriteU4(hi);
+ BinWriteU4(lo);
+End;
+
+{ --- BinGetPos : retourner la position courante dans le fichier --- }
+Function BinGetPos: LongInt;
+Begin
+ BinGetPos := BinPos;
+End;
+
+{ --- BinPatchU2 : ecrire U2 a une position precedente (backpatch) --- }
+{ Sauve la position courante, se deplace a pos, ecrit U2, revient.     }
+Procedure BinPatchU2(pos: LongInt; w: Integer);
+Var savePos: LongInt; b: Byte;
+Begin
+ savePos := FilePos(OutFile);
+ Seek(OutFile, pos);
+ b := Byte((w shr 8) and $FF);
+ Write(OutFile, b);
+ b := Byte(w and $FF);
+ Write(OutFile, b);
+ Seek(OutFile, savePos);
+End;
+
+{ --- BinPatchU4 : ecrire U4 a une position precedente (backpatch) --- }
+{ Sauve la position courante, se deplace a pos, ecrit U4, revient.     }
+Procedure BinPatchU4(pos: LongInt; d: LongInt);
+Var savePos: LongInt; b: Byte;
+Begin
+ savePos := FilePos(OutFile);
+ Seek(OutFile, pos);
+ b := Byte((d shr 24) and $FF);
+ Write(OutFile, b);
+ b := Byte((d shr 16) and $FF);
+ Write(OutFile, b);
+ b := Byte((d shr 8) and $FF);
+ Write(OutFile, b);
+ b := Byte(d and $FF);
+ Write(OutFile, b);
+ Seek(OutFile, savePos);
+End;
+
 Procedure GlobalInit;
 Begin
  OutFileName   := '';
  OutDir        := '';
  OptDebug      := False;
  OptVerbose    := False;
+ BinPos        := 0;
 
  SrcLine       := '';
  SrcLineNum    := 0;
@@ -1492,7 +1662,7 @@ Begin
  BilanAssemblage;
 
  WriteLn;
- WriteLn('(Assemblage non encore implemente - voir TODOs 05 a 25)');
+ WriteLn('(Assemblage non encore implemente - voir TODOs 06 a 25)');
 
  SrcClose;
  GlobalCleanup;
