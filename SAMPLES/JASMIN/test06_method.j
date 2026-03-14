@@ -24,7 +24,7 @@
 
 ; Methode statique : int factorial(int n)
 .method public static factorial(I)I
-  .limit stack 2
+  .limit stack 3
   .limit locals 1
   iload_0
   iconst_1
@@ -42,10 +42,8 @@ BaseCase:
 .end method
 
 .method public static main([Ljava/lang/String;)V
-  .limit stack 2
+  .limit stack 3
   .limit locals 1
-
-  ; Afficher add(3, 7) = 10
   getstatic java/lang/System/out Ljava/io/PrintStream;
   iconst_3
   bipush 7

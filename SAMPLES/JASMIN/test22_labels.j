@@ -72,6 +72,8 @@ LabelC:
   iload_0
   iload_1
   if_icmpeq AreEqual
+  iload_0
+  iload_1
   if_icmplt IsLess
   bipush 1
   ireturn

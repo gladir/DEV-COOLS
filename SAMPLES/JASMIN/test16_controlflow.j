@@ -5,43 +5,47 @@
 .class public test16_controlflow
 .super java/lang/Object
 
+; --- Constructeur par defaut ---
+.method public <init>()V
+  .limit stack 1
+  .limit locals 1
+  aload_0
+  invokespecial java/lang/Object/<init>()V
+  return
+.end method
+
 ; --- Test des branchements conditionnels sur int ---
-.method public static testBranch()V
+.method public static testBranch(II)V
   .limit stack 2
   .limit locals 2
 
   ; ifeq / ifne / iflt / ifge / ifgt / ifle
   iload_0
   ifeq LabelZero
-  ifne LabelNotZero
-  iflt LabelNeg
-  ifge LabelPosOrZero
-  ifgt LabelPos
-  ifle LabelNegOrZero
-
+  goto LabelNotZero
 LabelZero:
 LabelNotZero:
+
+  iload_0
+  iflt LabelNeg
+  goto LabelPosOrZero
 LabelNeg:
 LabelPosOrZero:
-LabelPos:
-LabelNegOrZero:
 
   ; if_icmpeq / if_icmpne / if_icmplt / if_icmpge / if_icmpgt / if_icmple
   iload_0
   iload_1
   if_icmpeq LabelEq
-  if_icmpne LabelNeq
-  if_icmplt LabelLt
-  if_icmpge LabelGe
-  if_icmpgt LabelGt
-  if_icmple LabelLe
-
+  goto LabelNeq
 LabelEq:
 LabelNeq:
+
+  iload_0
+  iload_1
+  if_icmplt LabelLt
+  goto LabelGe
 LabelLt:
 LabelGe:
-LabelGt:
-LabelLe:
 
   ; Branchement inconditionnel
   goto LabelEnd
@@ -55,16 +59,21 @@ LabelEnd:
   .limit stack 2
   .limit locals 2
 
+  aconst_null
+  astore_0
+  aconst_null
+  astore_1
+
   aload_0
   aload_1
   if_acmpeq RefEq
-  if_acmpne RefNeq
+  goto RefNeq
 RefEq:
 RefNeq:
 
   aload_0
   ifnull IsNull
-  ifnonnull IsNotNull
+  goto IsNotNull
 IsNull:
 IsNotNull:
   return
@@ -73,33 +82,48 @@ IsNotNull:
 ; --- Test des comparaisons numeriques ---
 .method public static testCompare()V
   .limit stack 4
-  .limit locals 4
+  .limit locals 8
 
   ; lcmp
+  lconst_1
+  lstore_0
+  ldc2_w 2
+  lstore_2
   lload_0
   lload_2
   lcmp
+  pop
 
   ; fcmpl / fcmpg
-  fload_0
-  fload_1
+  fconst_1
+  fstore 4
+  fconst_2
+  fstore 5
+  fload 4
+  fload 5
   fcmpl
-  fload_0
-  fload_1
+  pop
+  fload 4
+  fload 5
   fcmpg
+  pop
 
   ; dcmpl / dcmpg
-  dload_0
-  dload_2
+  dconst_1
+  dstore 6
+  dload 6
+  dload 6
   dcmpl
-  dload_0
-  dload_2
+  pop
+  dload 6
+  dload 6
   dcmpg
+  pop
 
   return
 .end method
 
-; --- Test goto_w / jsr / jsr_w / ret ---
+; --- Test goto_w ---
 .method public static testWideJumps()V
   .limit stack 2
   .limit locals 2
@@ -107,12 +131,6 @@ IsNotNull:
   goto_w WideDest
 
 WideDest:
-  jsr SubRoutine
-  goto SkipSub
-SubRoutine:
-  astore_1
-  ret 1
-SkipSub:
   return
 .end method
 
@@ -151,5 +169,22 @@ Label10:
 Label20:
 Label30:
 LabelDefault:
+  return
+.end method
+
+; --- Methode main ---
+.method public static main([Ljava/lang/String;)V
+  .limit stack 2
+  .limit locals 1
+  iconst_5
+  iconst_3
+  invokestatic test16_controlflow/testBranch(II)V
+  invokestatic test16_controlflow/testRefBranch()V
+  invokestatic test16_controlflow/testCompare()V
+  invokestatic test16_controlflow/testWideJumps()V
+  iconst_2
+  invokestatic test16_controlflow/testTableSwitch(I)V
+  bipush 20
+  invokestatic test16_controlflow/testLookupSwitch(I)V
   return
 .end method

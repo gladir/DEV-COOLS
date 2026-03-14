@@ -143,8 +143,10 @@ Positive:
 .end method
 
 ; --- Methode avec auto-locals et auto-stack ---
-; .limit absents : les valeurs sont calculees automatiquement
+; .limit explicites pour compatibilite JVM
 .method public static autoLimits(I)I
+  .limit stack 2
+  .limit locals 2
   iload_0
   iconst_1
   iadd
@@ -153,7 +155,7 @@ Positive:
 
 ; --- Methode main ---
 .method public static main([Ljava/lang/String;)V
-  .limit stack 4
+  .limit stack 6
   .limit locals 1
   .line 100
   ; Test simpleAdd

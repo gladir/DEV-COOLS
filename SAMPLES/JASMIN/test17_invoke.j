@@ -43,12 +43,13 @@
 .end method
 
 ; --- Test invokevirtual ---
-; Note : les aload_0 dans les methodes statiques ne sont pas valides
-; au niveau JVM, mais le test verifie uniquement l'assemblage correct
-; des opcodes d'invocation (pas la verification de bytecode).
 .method public static testVirtual()V
   .limit stack 2
   .limit locals 2
+  new test17_invoke
+  dup
+  invokespecial test17_invoke/<init>()V
+  astore_0
   aload_0
   invokevirtual test17_invoke/getValue()I
   istore_1
@@ -56,11 +57,14 @@
 .end method
 
 ; --- Test invokeinterface ---
-; Note : test d'assemblage uniquement, aload_0 n'est pas un objet
-; List valide dans une methode statique.
 .method public static testInterface()V
   .limit stack 2
   .limit locals 2
+  ; Creer un ArrayList qui implemente List
+  new java/util/ArrayList
+  dup
+  invokespecial java/util/ArrayList/<init>()V
+  astore_0
   aload_0
   invokeinterface java/util/List/size()I 1
   istore_1
@@ -68,18 +72,22 @@
 .end method
 
 ; --- Test invokevirtual avec descripteurs complexes ---
-; Note : test d'assemblage uniquement, verifie les descripteurs
-; avec types objets (Ljava/lang/String;, Ljava/lang/Object;).
 .method public static testComplexDescriptors()V
   .limit stack 3
   .limit locals 2
   ; Appel avec descripteur objet
-  aload_0
+  getstatic java/lang/System/out Ljava/io/PrintStream;
+  ldc "test"
   invokevirtual java/io/PrintStream/println(Ljava/lang/String;)V
   ; Appel avec plusieurs parametres
+  ldc "hello"
+  astore_0
+  ldc "hello"
+  astore_1
   aload_0
   aload_1
   invokevirtual java/lang/String/equals(Ljava/lang/Object;)Z
+  pop
   return
 .end method
 

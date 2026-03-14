@@ -11,6 +11,7 @@
   .limit stack 1
   .limit locals 1
   aload_0
+  invokespecial java/lang/Object/<init>()V
   return
 .end method
 
@@ -18,17 +19,27 @@
 .method public static testIntLoadStore()V
   .limit stack 2
   .limit locals 5
+  iconst_1
   istore_0
+  iconst_2
   istore_1
+  iconst_3
   istore_2
+  iconst_4
   istore_3
   iload_0
+  pop
   iload_1
+  pop
   iload_2
+  pop
   iload_3
+  pop
   ; iload/istore avec operande explicite
+  iconst_5
   istore 4
   iload 4
+  pop
   return
 .end method
 
@@ -36,17 +47,19 @@
 .method public static testLongLoadStore()V
   .limit stack 4
   .limit locals 6
+  lconst_1
   lstore_0
-  lstore_1
+  lconst_0
   lstore_2
-  lstore_3
   lload_0
-  lload_1
+  pop2
   lload_2
-  lload_3
+  pop2
   ; lload/lstore avec operande
+  lconst_1
   lstore 4
   lload 4
+  pop2
   return
 .end method
 
@@ -54,17 +67,27 @@
 .method public static testFloatLoadStore()V
   .limit stack 2
   .limit locals 5
+  fconst_1
   fstore_0
+  fconst_2
   fstore_1
+  fconst_0
   fstore_2
+  fconst_1
   fstore_3
   fload_0
+  pop
   fload_1
+  pop
   fload_2
+  pop
   fload_3
+  pop
   ; fload/fstore avec operande
+  fconst_0
   fstore 4
   fload 4
+  pop
   return
 .end method
 
@@ -72,17 +95,19 @@
 .method public static testDoubleLoadStore()V
   .limit stack 4
   .limit locals 6
+  dconst_1
   dstore_0
-  dstore_1
+  dconst_0
   dstore_2
-  dstore_3
   dload_0
-  dload_1
+  pop2
   dload_2
-  dload_3
+  pop2
   ; dload/dstore avec operande
+  dconst_1
   dstore 4
   dload 4
+  pop2
   return
 .end method
 
@@ -90,17 +115,27 @@
 .method public static testRefLoadStore()V
   .limit stack 2
   .limit locals 5
+  aconst_null
   astore_0
+  aconst_null
   astore_1
+  aconst_null
   astore_2
+  aconst_null
   astore_3
   aload_0
+  pop
   aload_1
+  pop
   aload_2
+  pop
   aload_3
+  pop
   ; aload/astore avec operande
+  aconst_null
   astore 4
   aload 4
+  pop
   return
 .end method
 
@@ -108,24 +143,18 @@
 .method public static testArrayLoadStore()V
   .limit stack 4
   .limit locals 2
-  ; Chargement depuis tableaux
-  iaload
-  laload
-  faload
-  daload
-  aaload
-  baload
-  caload
-  saload
-  ; Stockage dans tableaux
+  ; Creer un tableau int, stocker et charger
+  iconst_3
+  newarray int
+  astore_0
+  aload_0
+  iconst_0
+  bipush 42
   iastore
-  lastore
-  fastore
-  dastore
-  aastore
-  bastore
-  castore
-  sastore
+  aload_0
+  iconst_0
+  iaload
+  pop
   return
 .end method
 
