@@ -47,6 +47,7 @@ Program JASMIN;
 
 {$A-}
 {$I-}
+{$N+}
 
 { ============================================================================ }
 { Architecture de base : constantes, types internes, variables                 }
@@ -149,7 +150,7 @@ Const
   { ------------------------------------------------------------------ }
   { Limites des tables (dimensionnement)                                }
   { ------------------------------------------------------------------ }
-  MAX_CP       = {$IFDEF FPC}4096{$ELSE}1024{$ENDIF};  { Entrees Constant Pool max          }
+  MAX_CP       = {$IFDEF FPC}4096{$ELSE}100{$ENDIF};  { Entrees Constant Pool max          }
   MAX_FIELDS   = {$IFDEF FPC}256{$ELSE}64{$ENDIF};     { Champs max                         }
   MAX_METHODS  = {$IFDEF FPC}256{$ELSE}64{$ENDIF};     { Methodes max                       }
   MAX_CODE     = {$IFDEF FPC}65535{$ELSE}16384{$ENDIF}; { Taille max bytecode par methode    }
@@ -5114,13 +5115,12 @@ Begin
           (arg = '/?') Or (arg = '/h') Or (arg = '/H') Then
   Begin
    WriteLn('JASMIN - ', VERSION);
+   WriteLn('Cette commande permet d''aassembler un fichier source ',
+           'Jasmin (.j) en fichier .class (bytecode Java) compatible ',
+           'avec la JVM.');
    WriteLn;
    WriteLn('Syntaxe : JASMIN fichier.j [options]');
    WriteLn;
-   WriteLn('  Assemble un fichier source Jasmin (.j) en fichier .class');
-   WriteLn('  (bytecode Java) compatible avec la JVM.');
-   WriteLn;
-   WriteLn('Options :');
    WriteLn('  -o <fichier.class>  Specifier le nom du fichier de sortie');
    WriteLn('  -d <repertoire>     Specifier le repertoire de sortie');
    WriteLn('  -g                  Inclure les informations de debogage');
@@ -5805,11 +5805,12 @@ BEGIN
  If ParamCount = 0 Then
  Begin
   WriteLn('JASMIN - ', VERSION);
+  WriteLn('Cette commande permet d''aassembler un fichier source ',
+          'Jasmin (.j) en fichier .class (bytecode Java) compatible ',
+          'avec la JVM.');
   WriteLn;
   WriteLn('Syntaxe : JASMIN fichier.j [options]');
   WriteLn;
-  WriteLn('  Assemble un fichier source Jasmin (.j) en fichier .class');
-  WriteLn('  (bytecode Java) compatible avec la JVM.');
   WriteLn;
   WriteLn('Options :');
   WriteLn('  -o <fichier.class>  Specifier le nom du fichier de sortie');
