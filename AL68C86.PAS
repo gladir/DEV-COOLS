@@ -2471,7 +2471,7 @@ Begin
   EmitLabel('_A68_SPACE_S');
   EmitRaw('        DB      '' '',0');
   EmitLabel('_A68_FF_S');
-  EmitRaw('        DB      12,0');
+  EmitRaw('        DB      12,0');   { form feed (ASCII 12) }
   EmitLabel('_A68_NUMBUF');
   EmitRaw('        DB      12 DUP(0)');
   EmitLabel('_A68_IOREADBUF');
@@ -8169,7 +8169,10 @@ Begin
       End
       Else
       Begin
-        { Mode inconnu ou composite : traiter comme INT }
+        { Mode inconnu, REAL stub, REF, ROW, STRUCT, UNION :
+          afficher comme entier (valeur brute 16 bits).
+          Les modes composites n ont pas de formatage specifique
+          dans cette implementation simplifiee. }
         EmitInstr('CALL   ' + A68_RT_PFX + 'PRINTINT');
       End;
     End;
@@ -8270,7 +8273,10 @@ Begin
   ParseExpr(ArgRes);
   ExprFlushToAX(ArgRes);
   EmitInstr('PUSH   AX');
-  { Deuxieme argument optionnel : largeur (ignore) }
+  { Deuxieme argument optionnel : largeur.
+    Note: le width est parse mais non utilise dans cette implementation
+    simplifiee. L entier est formate sans remplissage. Le standard
+    Algol 68 specifie un remplissage a gauche avec des espaces. }
   If CurToken.Kind = TK_COMMA Then
   Begin
     ParserAdvance;
