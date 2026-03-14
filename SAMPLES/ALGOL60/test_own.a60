@@ -1,0 +1,55 @@
+comment Test OWN (variables statiques) (TODO 22) ;
+BEGIN
+  comment Variable OWN globale ;
+  OWN INTEGER counter;
+  counter := 0;
+
+  comment Variable OWN dans une procedure ;
+  PROCEDURE increment;
+  BEGIN
+    OWN INTEGER calls;
+    calls := calls + 1;
+    counter := counter + 1;
+    outinteger(1, calls);
+    newline(1)
+  END;
+
+  comment Appels successifs : calls doit persister ;
+  increment;
+  increment;
+  increment;
+
+  comment Afficher le compteur global ;
+  outstring(1, `counter=`);
+  outinteger(1, counter);
+  newline(1);
+
+  comment Variable OWN de type REAL ;
+  OWN REAL total;
+  total := 100;
+  outstring(1, `total=`);
+  outinteger(1, total);
+  newline(1);
+
+  comment Variable OWN BOOLEAN ;
+  OWN BOOLEAN flag;
+  flag := 1;
+  outstring(1, `flag=`);
+  outinteger(1, flag);
+  newline(1);
+
+  comment OWN ARRAY ;
+  OWN ARRAY tab[1:5];
+  tab[1] := 10;
+  tab[2] := 20;
+  tab[3] := 30;
+  outstring(1, `tab1=`);
+  outinteger(1, tab[1]);
+  newline(1);
+  outstring(1, `tab2=`);
+  outinteger(1, tab[2]);
+  newline(1);
+
+  outstring(1, `Fin test OWN.`);
+  newline(1)
+END.

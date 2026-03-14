@@ -337,7 +337,7 @@
               SWITCH sw := L1, IF b THEN L2 ELSE L3, L4
               -> evaluer la condition pour determiner le label effectif
 
-  TODO 22 - VARIABLES OWN (STATIQUES)
+  TODO 22 - VARIABLES OWN (STATIQUES) [IMPLEMENTE]
             Declaration : OWN INTEGER x; OWN REAL y; OWN BOOLEAN z;
               OWN ARRAY a[1:10]
             Semantique : la variable conserve sa valeur entre les appels
@@ -654,6 +654,9 @@ Var
   { Compteur SWITCH (TODO 21) }
   SwitchCount : Integer;
 
+  { Compteur OWN (TODO 22) }
+  OwnCount : Integer;
+
   { Table des symboles (TODO 05) }
   SymTab       : Array[0..MAX_SYM - 1] Of TSymRec;
   SymCount     : Integer;
@@ -781,6 +784,8 @@ Procedure ParseArrayDecl(ElemTypeIdx : Integer); Forward;
 Procedure ParseProcDecl(RetTypeIdx : Integer); Forward;
 { ---- Forward declarations (TODO 21) ----------------------- }
 Procedure ParseSwitchDecl; Forward;
+{ ---- Forward declarations (TODO 22) ----------------------- }
+Procedure ParseOwnDecl; Forward;
 { ---- Forward declarations (TODO 06) ----------------------- }
 Procedure TypeInit;      Forward;
 Function  TypeKindOf(TypeIdx : Integer) : TTypeKind; Forward;
@@ -1074,6 +1079,7 @@ Begin
   CurFnDepth := 0;
   ThunkCount := 0;
   SwitchCount := 0;
+  OwnCount := 0;
   { Table des symboles (TODO 05) }
   SymInit;
   { Systeme de types (TODO 06) }
@@ -2093,6 +2099,8 @@ Begin
       Else If (E.SymIdx >= 0) And (E.SymIdx < SymCount) Then
       Begin
         If SymTab[E.SymIdx].ScopeLevel = 0 Then
+          EmitInstr('MOV', 'AX, WORD PTR [' + SymTab[E.SymIdx].MangledName + ']')
+        Else If SymTab[E.SymIdx].Kind = SK_OWN Then
           EmitInstr('MOV', 'AX, WORD PTR [' + SymTab[E.SymIdx].MangledName + ']')
         Else If SymTab[E.SymIdx].Kind = SK_PARAM Then
         Begin
@@ -3118,7 +3126,8 @@ End;
 { ---- ExprAddrOf : retourner la reference ASM d une variable -- }
 { Globale (scope 0) -> WORD PTR [_A60V_nom]
   Locale  (scope>0) -> WORD PTR [BP-n]
-  Parametre (SK_PARAM) -> WORD PTR [BP+n]   (TODO 18)          }
+  Parametre (SK_PARAM) -> WORD PTR [BP+n]   (TODO 18)
+  OWN (SK_OWN) -> WORD PTR [_A60O_nom] (DATA)  (TODO 22)       }
 Function ExprAddrOf(SIdx : Integer) : TString;
 Var
   S : TString;
@@ -3129,6 +3138,8 @@ Begin
     Exit;
   End;
   If SymTab[SIdx].ScopeLevel = 0 Then
+    ExprAddrOf := 'WORD PTR [' + SymTab[SIdx].MangledName + ']'
+  Else If SymTab[SIdx].Kind = SK_OWN Then
     ExprAddrOf := 'WORD PTR [' + SymTab[SIdx].MangledName + ']'
   Else If SymTab[SIdx].Kind = SK_PARAM Then
   Begin
@@ -3326,7 +3337,8 @@ Begin
 
       { Affectation element de tableau : ident[expr] := expr (TODO 17) }
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') And
-         (SymTab[SIdx].Kind = SK_ARRAY) Then
+         ((SymTab[SIdx].Kind = SK_ARRAY) Or
+          ((SymTab[SIdx].Kind = SK_OWN) And (SymTab[SIdx].ArrayDim >= 1))) Then
       Begin
         ParserAdvance;  { consommer [ }
         { Parser l index et generer le code d adresse }
@@ -3355,7 +3367,8 @@ Begin
           { AX = index relatif ; sauvegarder l adresse cible }
           EmitInstr('SHL', 'AX, 1');  { * 2 pour mots }
           EmitInstr('MOV', 'BX, AX');
-          If SymTab[SIdx].ScopeLevel = 0 Then
+          If (SymTab[SIdx].ScopeLevel = 0) Or
+             (SymTab[SIdx].Kind = SK_OWN) Then
             EmitInstr('ADD', 'BX, OFFSET ' + SymTab[SIdx].MangledName)
           Else
           Begin
@@ -3530,6 +3543,14 @@ Begin
   Begin
     ParserAdvance;  { consommer SWITCH }
     ParseSwitchDecl;
+    Exit;
+  End;
+
+  { Declaration OWN (TODO 22) }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'OWN') Then
+  Begin
+    ParserAdvance;  { consommer OWN }
+    ParseOwnDecl;
     Exit;
   End;
 
@@ -3770,7 +3791,8 @@ Begin
   ExprFlushToAX(E);
 
   { Soustraire la borne inferieure de la 1ere dimension (TODO 17) }
-  If (SymTab[SIdx].Kind = SK_ARRAY) And (SymTab[SIdx].ArrayDim >= 1) Then
+  If ((SymTab[SIdx].Kind = SK_ARRAY) Or (SymTab[SIdx].Kind = SK_OWN)) And
+     (SymTab[SIdx].ArrayDim >= 1) Then
   Begin
     Lo1 := SymTab[SIdx].ArrayLo[1];
     If Lo1 <> 0 Then
@@ -3814,7 +3836,8 @@ Begin
   EmitInstr('SHL', 'AX, 1');  { AX = index * 2 (taille mot) }
   EmitInstr('MOV', 'BX, AX');
   { Adresse de base du tableau }
-  If SymTab[SIdx].ScopeLevel = 0 Then
+  If (SymTab[SIdx].ScopeLevel = 0) Or
+     (SymTab[SIdx].Kind = SK_OWN) Then
     EmitInstr('ADD', 'BX, OFFSET ' + SymTab[SIdx].MangledName)
   Else
   Begin
@@ -3825,7 +3848,7 @@ Begin
   EmitInstr('MOV', 'AX, [BX]');
 
   { Type du resultat : type des elements si connu, sinon type du symbole }
-  If (SymTab[SIdx].Kind = SK_ARRAY) And
+  If ((SymTab[SIdx].Kind = SK_ARRAY) Or (SymTab[SIdx].Kind = SK_OWN)) And
      (SymTab[SIdx].ArrayElemTy >= 0) Then
     ElemTy := SymTab[SIdx].ArrayElemTy
   Else
@@ -5204,6 +5227,217 @@ Begin
 End;
 
 { ============================================================
+  TODO 22 - VARIABLES OWN (STATIQUES) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseOwnDecl : declaration de variables OWN (statiques) --
+  Syntaxe : OWN INTEGER|REAL|BOOLEAN ident [, ident]*
+            OWN ARRAY ident[lo:hi]
+  Le mot-cle OWN a deja ete consomme par l appelant.
+  Les variables OWN sont allouees dans le segment DATA (DW 0)
+  au lieu de la pile, et persistent entre les appels de procedure.
+  Le label utilise est _A60O_[procname_]varname.
+  Les tableaux OWN sont alloues avec DK_ARRAY_BLK dans DATA.     }
+Procedure ParseOwnDecl;
+Var
+  TypeIdx, SIdx : Integer;
+  VarName : TString;
+  Lbl     : TString;
+  E       : TExprVal;
+  { OWN ARRAY }
+  Lo, Hi, ElemCount : Integer;
+Begin
+  Inc(OwnCount);
+
+  { Determiner le type : OWN INTEGER|REAL|BOOLEAN|ARRAY }
+  If (CurToken.Kind <> TK_KEYWORD) Then
+  Begin
+    CompileError('type attendu apres OWN (INTEGER/REAL/BOOLEAN/ARRAY)');
+    Exit;
+  End;
+
+  { OWN ARRAY : deleguer a un traitement special }
+  If CurToken.Val = 'ARRAY' Then
+  Begin
+    ParserAdvance;  { consommer ARRAY }
+
+    { Nom du tableau }
+    If CurToken.Kind <> TK_IDENT Then
+    Begin
+      CompileError('identificateur attendu apres OWN ARRAY');
+      Exit;
+    End;
+    VarName := CurToken.Val;
+    ParserAdvance;  { consommer le nom }
+
+    { Bornes : [lo:hi] }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
+      ParserAdvance;  { consommer [ }
+    Lo := 0;
+    Hi := 0;
+    If CurToken.Kind = TK_INTEGER Then
+    Begin
+      Lo := CurToken.IntVal;
+      ParserAdvance;  { consommer lo }
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+      ParserAdvance;  { consommer : }
+    If CurToken.Kind = TK_INTEGER Then
+    Begin
+      Hi := CurToken.IntVal;
+      ParserAdvance;  { consommer hi }
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+      ParserAdvance;  { consommer ] }
+
+    ElemCount := Hi - Lo + 1;
+    If ElemCount < 1 Then ElemCount := 1;
+
+    { Label OWN : _A60O_[proc_]nom }
+    If CurFnName <> '' Then
+      Lbl := A60_OWN_PFX + SymNameClean(CurFnName) + '_' +
+             SymNameClean(VarName)
+    Else
+      Lbl := A60_OWN_PFX + SymNameClean(VarName);
+
+    { Allouer dans DATA }
+    DataAddArray(Lbl, ElemCount);
+
+    { Ajouter le symbole comme SK_OWN avec infos tableau }
+    SIdx := SymAdd(VarName, SK_OWN, TY_IDX_INTEGER, 0);
+    If SIdx >= 0 Then
+    Begin
+      SymTab[SIdx].MangledName := Lbl;
+      SymTab[SIdx].ArrayDim    := 1;
+      SymTab[SIdx].ArrayElemTy := TY_IDX_INTEGER;
+      SymTab[SIdx].ArrayLo[1]  := Lo;
+      SymTab[SIdx].ArrayHi[1]  := Hi;
+    End;
+
+    EmitComment('OWN ARRAY ' + VarName + '[' + IntToStr_(Lo) +
+                ':' + IntToStr_(Hi) + '] -> DATA ' + Lbl);
+    Exit;
+  End;
+
+  { OWN INTEGER|REAL|BOOLEAN }
+  If CurToken.Val = 'INTEGER' Then
+    TypeIdx := TY_IDX_INTEGER
+  Else If CurToken.Val = 'REAL' Then
+    TypeIdx := TY_IDX_REAL
+  Else If CurToken.Val = 'BOOLEAN' Then
+    TypeIdx := TY_IDX_BOOLEAN
+  Else
+  Begin
+    CompileError('type attendu apres OWN (INTEGER/REAL/BOOLEAN/ARRAY)');
+    Exit;
+  End;
+  ParserAdvance;  { consommer le mot-cle de type }
+
+  { OWN type ARRAY : OWN INTEGER ARRAY id[lo:hi] }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'ARRAY') Then
+  Begin
+    ParserAdvance;  { consommer ARRAY }
+
+    If CurToken.Kind <> TK_IDENT Then
+    Begin
+      CompileError('identificateur attendu apres OWN type ARRAY');
+      Exit;
+    End;
+    VarName := CurToken.Val;
+    ParserAdvance;  { consommer le nom }
+
+    Lo := 0;
+    Hi := 0;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
+      ParserAdvance;
+    If CurToken.Kind = TK_INTEGER Then
+    Begin
+      Lo := CurToken.IntVal;
+      ParserAdvance;
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+      ParserAdvance;
+    If CurToken.Kind = TK_INTEGER Then
+    Begin
+      Hi := CurToken.IntVal;
+      ParserAdvance;
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+      ParserAdvance;
+
+    ElemCount := Hi - Lo + 1;
+    If ElemCount < 1 Then ElemCount := 1;
+
+    If CurFnName <> '' Then
+      Lbl := A60_OWN_PFX + SymNameClean(CurFnName) + '_' +
+             SymNameClean(VarName)
+    Else
+      Lbl := A60_OWN_PFX + SymNameClean(VarName);
+
+    DataAddArray(Lbl, ElemCount);
+
+    SIdx := SymAdd(VarName, SK_OWN, TypeIdx, 0);
+    If SIdx >= 0 Then
+    Begin
+      SymTab[SIdx].MangledName := Lbl;
+      SymTab[SIdx].ArrayDim    := 1;
+      SymTab[SIdx].ArrayElemTy := TypeIdx;
+      SymTab[SIdx].ArrayLo[1]  := Lo;
+      SymTab[SIdx].ArrayHi[1]  := Hi;
+    End;
+
+    EmitComment('OWN ' + TypeMangle(TypeIdx) + ' ARRAY ' + VarName +
+                '[' + IntToStr_(Lo) + ':' + IntToStr_(Hi) +
+                '] -> DATA ' + Lbl);
+    Exit;
+  End;
+
+  { Parser la liste d identifiants : OWN INTEGER x, y, z }
+  While (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If CurToken.Kind <> TK_IDENT Then
+    Begin
+      CompileError('identificateur attendu dans la declaration OWN');
+      Exit;
+    End;
+    VarName := CurToken.Val;
+    ParserAdvance;  { consommer le nom }
+
+    { Label OWN : _A60O_[proc_]nom }
+    If CurFnName <> '' Then
+      Lbl := A60_OWN_PFX + SymNameClean(CurFnName) + '_' +
+             SymNameClean(VarName)
+    Else
+      Lbl := A60_OWN_PFX + SymNameClean(VarName);
+
+    { Allouer dans DATA (DW 0) }
+    DataAddWord(Lbl, 0);
+
+    { Ajouter le symbole comme SK_OWN }
+    SIdx := SymAdd(VarName, SK_OWN, TypeIdx, 0);
+    If SIdx >= 0 Then
+      SymTab[SIdx].MangledName := Lbl;
+
+    EmitComment('OWN ' + VarName + ' -> DATA ' + Lbl);
+
+    { Initialisation optionnelle : OWN INTEGER x := 42 }
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
+    Begin
+      ParserAdvance;  { consommer := }
+      ParseExpr(E);
+      ExprFlushToAX(E);
+      ExprStore(SIdx);
+    End;
+
+    { Virgule : variable suivante }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance  { consommer , }
+    Else
+      Break;
+  End;
+End;
+
+{ ============================================================
   TODO 21 - DECLARATIONS SWITCH (AIGUILLAGES) [IMPLEMENTE]
   ============================================================ }
 
@@ -5400,10 +5634,17 @@ Begin
       Continue;
     End;
 
-    { Mots-cles non encore geres : OWN, etc. }
+    { Declaration OWN dans un bloc (TODO 22) }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'OWN') Then
+    Begin
+      ParserAdvance;  { consommer OWN }
+      ParseOwnDecl;
+      Continue;
+    End;
+
+    { Mots-cles non encore geres : VALUE, COMMENT, etc. }
     If (CurToken.Kind = TK_KEYWORD) And
-       ((CurToken.Val = 'OWN') Or
-        (CurToken.Val = 'VALUE') Or (CurToken.Val = 'COMMENT')) Then
+       ((CurToken.Val = 'VALUE') Or (CurToken.Val = 'COMMENT')) Then
     Begin
       ParserAdvance;  { consommer le mot-cle }
       Continue;
@@ -5588,10 +5829,17 @@ Begin
       Continue;
     End;
 
+    { Declaration OWN au top-level (TODO 22) }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'OWN') Then
+    Begin
+      ParserAdvance;  { consommer OWN }
+      ParseOwnDecl;
+      Continue;
+    End;
+
     { Mots-cles non-geres : on les saute pour l instant }
     If (CurToken.Kind = TK_KEYWORD) And
-       ((CurToken.Val = 'OWN') Or
-        (CurToken.Val = 'VALUE') Or
+       ((CurToken.Val = 'VALUE') Or
         (CurToken.Val = 'COMMENT') Or
         (CurToken.Val = 'THEN') Or
         (CurToken.Val = 'ELSE') Or (CurToken.Val = 'TO')) Then
