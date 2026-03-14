@@ -429,7 +429,7 @@ TODO 21 [IMPLEMENTE] - Directives de gestion des exceptions (.catch, .throws)
   - Validation : verifier que les labels from/to/using existent
   - Validation : verifier que start_pc < end_pc
 
-TODO 22 - Attributs supplementaires (SourceFile, LineNumberTable, etc.)
+TODO 22 [IMPLEMENTE] - Attributs supplementaires (SourceFile, LineNumberTable, etc.)
   ----------------------------------------------------------------------
   - EmitSourceFileAttr : ecrire attribut SourceFile si .source defini
     (attribute_name_index -> "SourceFile", U2 source_file_index)

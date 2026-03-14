@@ -37,7 +37,7 @@
 {  TODO 19 [IMPLEMENTE] - Labels, resolution des sauts et calcul des offsets  }
 {  TODO 20 [IMPLEMENTE] - Attribut Code : generation binaire                  }
 {  TODO 21 [IMPLEMENTE] - Directives de gestion des exceptions (.catch, .throws) }
-{  TODO 22 - Attributs supplementaires (SourceFile, LineNumberTable, etc.)    }
+{  TODO 22 [IMPLEMENTE] - Attributs supplementaires (SourceFile, LineNumberTable, etc.)    }
 {  TODO 23 - Programme principal : ligne de commande et generation .class     }
 {  TODO 24 - Validation et verification du bytecode genere                    }
 {  TODO 25 - Exemples SAMPLES/JASMIN/*.j et corrections de bugs              }
@@ -160,6 +160,7 @@ Const
   MAX_IFACES   = 64;     { Interfaces implementees max                  }
   MAX_THROWS   = 32;     { Exceptions declarees (.throws) max           }
   MAX_LOCALS   = 256;    { Variables locales max (.var)                  }
+  MAX_INNER    = 64;     { Inner classes max (.inner class)              }
 
   { ------------------------------------------------------------------ }
   { Constantes magiques Java .class                                     }
@@ -221,6 +222,14 @@ Type
     Width       : Integer;    { largeur du patch : 2 ou 4 octets          }
   End;
 
+  { --- Entree InnerClasses (TODO 22) --- }
+  TInnerClassRec = Record
+    InnerClass  : String;     { nom interne de la classe interne          }
+    OuterClass  : String;     { nom interne de la classe externe          }
+    InnerName   : String;     { nom simple de la classe interne           }
+    AccFlags    : Integer;    { drapeaux d'acces de la classe interne     }
+  End;
+
   { --- Buffer de code pour une methode --- }
   TCodeBuf = Array[0..MAX_CODE-1] of Byte;
 
@@ -251,6 +260,8 @@ Type
     AttrCount : Integer;     { nombre d'attributs                        }
     HasInit   : Boolean;     { True si valeur initiale ConstantValue     }
     InitCPIdx : Integer;     { index CP de la valeur initiale            }
+    IsDeprecated : Boolean;  { True si .deprecated (TODO 22)             }
+    Signature : String;      { signature generique (TODO 22), '' si aucune }
     Name      : String;      { nom du champ (pour messages d'erreur)     }
     Desc      : String;      { descripteur du champ                      }
   End;
@@ -279,6 +290,8 @@ Type
     HasCode    : Boolean;    { True si methode non-abstract/non-native   }
     HasStack   : Boolean;    { True si .limit stack defini               }
     HasLocals  : Boolean;    { True si .limit locals defini              }
+    IsDeprecated : Boolean;  { True si .deprecated (TODO 22)             }
+    Signature  : String;     { signature generique (TODO 22), '' si aucune }
   End;
 
   { --- Tables principales (tableaux statiques) --- }
@@ -335,6 +348,15 @@ Var
   ClassNameIdx  : Integer;    { index CP de this_class                   }
   SuperNameIdx  : Integer;    { index CP de super_class                  }
   SourceIdx     : Integer;    { index CP de SourceFile                   }
+
+  { --- Attributs supplementaires de classe (TODO 22) --- }
+  ClassDeprecated : Boolean;   { True si .deprecated au niveau classe    }
+  ClassSignature  : String;    { signature generique de la classe        }
+  EnclosingClass  : String;    { classe englobante (.enclosing)          }
+  EnclosingMethod : String;    { methode englobante (.enclosing)         }
+  EnclosingDesc   : String;    { descripteur methode englobante          }
+  InnerTab        : Array[1..MAX_INNER] of TInnerClassRec;
+  InnerCount      : Integer;   { nombre d'inner classes                  }
 
   { --- Version du fichier .class --- }
   ClassMajor    : Integer;    { version majeure (defaut 49)              }
@@ -547,6 +569,17 @@ Procedure EmitCodeAttribute(mIdx: Integer); Forward;
 { --- Declarations forward TODO 21 : Directives exceptions (.catch, .throws) --- }
 Procedure ParseCatchDirective; Forward;
 Procedure EmitExceptionsAttribute(mIdx: Integer); Forward;
+
+{ --- Declarations forward TODO 22 : Attributs supplementaires --- }
+Procedure ParseDeprecatedDirective; Forward;
+Procedure ParseSignatureDirective; Forward;
+Procedure ParseInnerClassDirective; Forward;
+Procedure ParseEnclosingMethodDirective; Forward;
+Procedure EmitSourceFileAttr; Forward;
+Procedure EmitDeprecatedAttr; Forward;
+Procedure EmitSignatureAttr(Const sig: String); Forward;
+Procedure EmitInnerClassesAttr; Forward;
+Procedure EmitEnclosingMethodAttr; Forward;
 
 { ---------- Ouverture et fermeture du fichier source ---------- }
 
@@ -1956,6 +1989,8 @@ Begin
  FieldTab^[FieldCount].AttrCount := 0;
  FieldTab^[FieldCount].HasInit   := False;
  FieldTab^[FieldCount].InitCPIdx := 0;
+ FieldTab^[FieldCount].IsDeprecated := False;
+ FieldTab^[FieldCount].Signature := '';
  FieldTab^[FieldCount].Name      := name;
  FieldTab^[FieldCount].Desc      := desc;
  AddField := FieldCount;
@@ -2159,6 +2194,8 @@ Begin
   HasCode    := ((flags and ACC_ABSTRACT) = 0) And ((flags and ACC_NATIVE) = 0);
   HasStack   := False;
   HasLocals  := False;
+  IsDeprecated := False;
+  Signature  := '';
   { Allouer les buffers }
   If HasCode Then
   Begin
@@ -2564,8 +2601,278 @@ Begin
 End;
 
 { ============================================================================ }
-{ Descripteurs de types JVM : parsing et validation (TODO 09)                  }
+{ Attributs supplementaires (TODO 22)                                          }
 { ============================================================================ }
+
+{ --- ParseDeprecatedDirective : .deprecated --- }
+{ Marque l'element courant (classe, champ, methode) comme deprecated.         }
+Procedure ParseDeprecatedDirective;
+Begin
+ If InMethod Then
+  MethodTab^[CurMethod].IsDeprecated := True
+ Else
+  ClassDeprecated := True;
+ If OptVerbose Then
+  WriteLn('  .deprecated');
+End;
+
+{ --- ParseSignatureDirective : .signature <string> --- }
+{ Enregistre la signature generique pour l'element courant.                   }
+Procedure ParseSignatureDirective;
+Var sig: String;
+Begin
+ If CurTok = TK_STRING Then
+ Begin
+  sig := CurStr;
+  Consume;
+ End
+ Else If CurTok = TK_IDENT Then
+ Begin
+  sig := CurStr;
+  Consume;
+ End
+ Else
+ Begin
+  Error('.signature : chaine attendue');
+  Exit;
+ End;
+ If InMethod Then
+  MethodTab^[CurMethod].Signature := sig
+ Else
+  ClassSignature := sig;
+ If OptVerbose Then
+  WriteLn('  .signature ', sig);
+End;
+
+{ --- ParseInnerClassDirective : .inner class <access> <inner> <outer> <name> --- }
+{ Enregistre une entree InnerClasses pour la classe courante.                     }
+Procedure ParseInnerClassDirective;
+Var accFlags: Integer;
+    innerCls, outerCls, innerName: String;
+Begin
+ { Lire le mot-cle 'class' apres '.inner' }
+ If (CurTok = TK_IDENT) And (UpCaseStr(CurStr) = 'CLASS') Then
+  Consume
+ Else
+ Begin
+  Error('.inner : mot-cle ''class'' attendu');
+  Exit;
+ End;
+ { Decoder les drapeaux d'acces }
+ accFlags := ParseAccessFlags;
+ { Lire le nom de la classe interne }
+ If CurTok = TK_IDENT Then
+ Begin
+  innerCls := CurStr;
+  Consume;
+ End
+ Else
+ Begin
+  Error('.inner class : nom de la classe interne attendu');
+  Exit;
+ End;
+ { Lire le nom de la classe externe (ou 'null') }
+ If CurTok = TK_IDENT Then
+ Begin
+  outerCls := CurStr;
+  Consume;
+ End
+ Else
+  outerCls := '';
+ { Lire le nom simple (ou 'null') }
+ If CurTok = TK_IDENT Then
+ Begin
+  innerName := CurStr;
+  Consume;
+ End
+ Else
+  innerName := '';
+ { Enregistrer }
+ If InnerCount >= MAX_INNER Then
+ Begin
+  Error('.inner class : trop d''inner classes (max ' + IntToStr_(MAX_INNER) + ')');
+  Exit;
+ End;
+ Inc(InnerCount);
+ InnerTab[InnerCount].InnerClass := innerCls;
+ If (outerCls = 'null') Or (outerCls = '') Then
+  InnerTab[InnerCount].OuterClass := ''
+ Else
+  InnerTab[InnerCount].OuterClass := outerCls;
+ If (innerName = 'null') Or (innerName = '') Then
+  InnerTab[InnerCount].InnerName := ''
+ Else
+  InnerTab[InnerCount].InnerName := innerName;
+ InnerTab[InnerCount].AccFlags := accFlags;
+ If OptVerbose Then
+  WriteLn('  .inner class ', innerCls, ' outer=', outerCls, ' name=', innerName);
+End;
+
+{ --- ParseEnclosingMethodDirective : .enclosing method <class> <method> <desc> --- }
+{ Enregistre la methode englobante (pour les classes anonymes/locales).              }
+Procedure ParseEnclosingMethodDirective;
+Var kw: String;
+Begin
+ { Lire le mot-cle 'method' apres '.enclosing' }
+ If (CurTok = TK_IDENT) And (UpCaseStr(CurStr) = 'METHOD') Then
+  Consume
+ Else
+ Begin
+  Error('.enclosing : mot-cle ''method'' attendu');
+  Exit;
+ End;
+ { Lire le nom de la classe englobante }
+ If CurTok = TK_IDENT Then
+ Begin
+  EnclosingClass := CurStr;
+  Consume;
+ End
+ Else
+ Begin
+  Error('.enclosing method : nom de classe attendu');
+  Exit;
+ End;
+ { Lire le nom de la methode englobante (optionnel) }
+ If (CurTok = TK_IDENT) Then
+ Begin
+  kw := CurStr;
+  Consume;
+  { Separer le nom de la methode et le descripteur }
+  { Format: methodName(descriptor) }
+  EnclosingMethod := kw;
+  { Si le descripteur est colle avec le nom: methodName(args)ret }
+  { Chercher la parenthese }
+  If Pos('(', kw) > 0 Then
+  Begin
+   EnclosingMethod := Copy(kw, 1, Pos('(', kw) - 1);
+   EnclosingDesc   := Copy(kw, Pos('(', kw), Length(kw) - Pos('(', kw) + 1);
+  End
+  Else
+  Begin
+   EnclosingMethod := kw;
+   EnclosingDesc   := '';
+   { Lire le descripteur s'il suit }
+   If CurTok = TK_IDENT Then
+   Begin
+    EnclosingDesc := CurStr;
+    Consume;
+   End;
+  End;
+ End
+ Else
+ Begin
+  EnclosingMethod := '';
+  EnclosingDesc   := '';
+ End;
+ If OptVerbose Then
+  WriteLn('  .enclosing method ', EnclosingClass, ' ', EnclosingMethod, EnclosingDesc);
+End;
+
+{ --- EmitSourceFileAttr : ecrire l'attribut SourceFile --- }
+{ Ecrit l'attribut SourceFile au niveau classe si .source a ete defini.       }
+Procedure EmitSourceFileAttr;
+Var nameIdx, fileIdx: Integer;
+Begin
+ If SourceName = '' Then Exit;
+ nameIdx := CPEnsureUtf8('SourceFile');
+ fileIdx := CPEnsureUtf8(SourceName);
+ BinWriteU2(nameIdx);        { attribute_name_index }
+ BinWriteU4(2);              { attribute_length = 2 }
+ BinWriteU2(fileIdx);        { sourcefile_index }
+ If OptVerbose Then
+  WriteLn('    [attr] SourceFile = ', SourceName);
+End;
+
+{ --- EmitDeprecatedAttr : ecrire l'attribut Deprecated (vide) --- }
+{ L'attribut Deprecated n'a pas de contenu (attribute_length = 0).            }
+Procedure EmitDeprecatedAttr;
+Var nameIdx: Integer;
+Begin
+ nameIdx := CPEnsureUtf8('Deprecated');
+ BinWriteU2(nameIdx);        { attribute_name_index }
+ BinWriteU4(0);              { attribute_length = 0 }
+ If OptVerbose Then
+  WriteLn('    [attr] Deprecated');
+End;
+
+{ --- EmitSignatureAttr : ecrire l'attribut Signature --- }
+{ L'attribut Signature contient un index CP vers la signature generique.      }
+Procedure EmitSignatureAttr(Const sig: String);
+Var nameIdx, sigIdx: Integer;
+Begin
+ If sig = '' Then Exit;
+ nameIdx := CPEnsureUtf8('Signature');
+ sigIdx  := CPEnsureUtf8(sig);
+ BinWriteU2(nameIdx);        { attribute_name_index }
+ BinWriteU4(2);              { attribute_length = 2 }
+ BinWriteU2(sigIdx);         { signature_index }
+ If OptVerbose Then
+  WriteLn('    [attr] Signature = ', sig);
+End;
+
+{ --- EmitInnerClassesAttr : ecrire l'attribut InnerClasses --- }
+{ L'attribut InnerClasses contient une table de classes internes.              }
+Procedure EmitInnerClassesAttr;
+Var nameIdx, innerIdx, outerIdx, nmIdx: Integer;
+    i: Integer;
+    attrLenPos, attrStart: LongInt;
+Begin
+ If InnerCount = 0 Then Exit;
+ nameIdx := CPEnsureUtf8('InnerClasses');
+ BinWriteU2(nameIdx);                        { attribute_name_index }
+ attrLenPos := BinGetPos;
+ BinWriteU4(0);                              { attribute_length (placeholder) }
+ attrStart := BinGetPos;
+ BinWriteU2(InnerCount);                     { number_of_classes }
+ For i := 1 to InnerCount do
+ Begin
+  { inner_class_info_index (U2) }
+  If InnerTab[i].InnerClass <> '' Then
+   innerIdx := CPEnsureClass(InnerTab[i].InnerClass)
+  Else
+   innerIdx := 0;
+  BinWriteU2(innerIdx);
+  { outer_class_info_index (U2) }
+  If InnerTab[i].OuterClass <> '' Then
+   outerIdx := CPEnsureClass(InnerTab[i].OuterClass)
+  Else
+   outerIdx := 0;
+  BinWriteU2(outerIdx);
+  { inner_name_index (U2) }
+  If InnerTab[i].InnerName <> '' Then
+   nmIdx := CPEnsureUtf8(InnerTab[i].InnerName)
+  Else
+   nmIdx := 0;
+  BinWriteU2(nmIdx);
+  { inner_class_access_flags (U2) }
+  BinWriteU2(InnerTab[i].AccFlags);
+ End;
+ { Backpatcher attribute_length }
+ BinPatchU4(attrLenPos, BinGetPos - attrStart);
+ If OptVerbose Then
+  WriteLn('    [attr] InnerClasses : ', InnerCount, ' entree(s)');
+End;
+
+{ --- EmitEnclosingMethodAttr : ecrire l'attribut EnclosingMethod --- }
+{ Pour les classes anonymes/locales, indique la methode englobante.           }
+Procedure EmitEnclosingMethodAttr;
+Var nameIdx, clsIdx, natIdx: Integer;
+Begin
+ If EnclosingClass = '' Then Exit;
+ nameIdx := CPEnsureUtf8('EnclosingMethod');
+ clsIdx  := CPEnsureClass(EnclosingClass);
+ { method_index : NameAndType si methode presente, 0 sinon }
+ If EnclosingMethod <> '' Then
+  natIdx  := CPAddNameAndType(EnclosingMethod, EnclosingDesc)
+ Else
+  natIdx := 0;
+ BinWriteU2(nameIdx);        { attribute_name_index }
+ BinWriteU4(4);              { attribute_length = 4 }
+ BinWriteU2(clsIdx);         { class_index }
+ BinWriteU2(natIdx);         { method_index (0 si pas de methode) }
+ If OptVerbose Then
+  WriteLn('    [attr] EnclosingMethod = ', EnclosingClass, '.', EnclosingMethod);
+End;
 
 { --- ParseTypeDescriptor : parser un descripteur de type JVM --- }
 { Avance pos au-dela du type lu. Retourne True si un type valide est lu. }
@@ -4688,10 +4995,34 @@ Begin
      ParseCatchDirective;
      SkipToEOL;
     End;
+    DIR_DEPRECATED:
+    Begin
+     Consume;
+     ParseDeprecatedDirective;
+     SkipToEOL;
+    End;
+    DIR_SIGNATURE:
+    Begin
+     Consume;
+     ParseSignatureDirective;
+     SkipToEOL;
+    End;
+    DIR_INNER:
+    Begin
+     Consume;
+     ParseInnerClassDirective;
+     SkipToEOL;
+    End;
+    DIR_ENCLOSING:
+    Begin
+     Consume;
+     ParseEnclosingMethodDirective;
+     SkipToEOL;
+    End;
    Else
-    { Directives non encore implementees (TODO 22+) : sauter la ligne }
+    { Directives non encore implementees (TODO 23+) : sauter la ligne }
     If OptVerbose Then
-     WriteLn('  [skip] directive ', CurStr, ' (TODO 22+)');
+     WriteLn('  [skip] directive ', CurStr, ' (TODO 23+)');
     SkipToEOL;
    End;  { Case }
   End
@@ -4702,7 +5033,7 @@ Begin
    Begin
     { Mnemonique non reconnu : sauter la ligne }
     If OptVerbose Then
-     WriteLn('  [skip] instruction ', CurStr, ' (TODO 22+)');
+     WriteLn('  [skip] instruction ', CurStr, ' (TODO 23+)');
     SkipToEOL;
    End
    Else
@@ -4754,6 +5085,14 @@ Begin
  ClassNameIdx  := 0;
  SuperNameIdx  := 0;
  SourceIdx     := 0;
+
+ { Attributs supplementaires (TODO 22) }
+ ClassDeprecated := False;
+ ClassSignature  := '';
+ EnclosingClass  := '';
+ EnclosingMethod := '';
+ EnclosingDesc   := '';
+ InnerCount      := 0;
 
  ClassMajor    := CLASS_MAJOR_DEFAULT;
  ClassMinor    := CLASS_MINOR_DEFAULT;
