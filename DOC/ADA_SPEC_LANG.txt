@@ -1,0 +1,1606 @@
+============================================================
+  SPECIFICATIONS DU LANGAGE ADA
+  (Ada 83, Ada 95, Ada 2005, Ada 2012, Ada 2022)
+  Reference : ISO/IEC 8652:1987, 8652:1995,
+              8652:2012, 8652:2023
+============================================================
+
+
+TABLE DES MATIERES
+------------------
+
+1.  Introduction
+2.  Structure lexicale
+3.  Types de donnees
+4.  Declarations
+5.  Expressions
+6.  Instructions
+7.  Sous-programmes (procedures et fonctions)
+8.  Paquetages (packages)
+9.  Generiques (generics)
+10. Gestion des exceptions
+11. Taches et concurrence (tasking)
+12. Programmation orientee objet (Ada 95+)
+13. Bibliotheque standard et conteneurs (Ada 2005+)
+14. Contrats et aspects (Ada 2012+)
+15. Nouveautes Ada 2022
+16. Differences entre les versions
+17. References
+
+
+1. INTRODUCTION
+============================================================
+
+  Ada est un langage de programmation imperatif, fortement
+  type, modulaire et concurrent, concu a l'origine pour les
+  systemes embarques et temps reel. Il doit son nom a Ada
+  Lovelace, consideree comme la premiere programmeuse.
+
+  Le langage a ete commande par le Departement de la Defense
+  des Etats-Unis (DoD) dans les annees 1970 pour unifier
+  les langages utilises dans les systemes embarques militaires.
+  L'equipe dirigee par Jean Ichbiah chez CII-Honeywell Bull
+  a remporte le concours de conception en 1979.
+
+  Ada a connu plusieurs revisions majeures :
+
+    - Ada 83 (ISO 8652:1987) : Version initiale. Langage
+      imperatif, fortement type, avec paquetages, generiques,
+      taches (concurrence), gestion des exceptions.
+
+    - Ada 95 (ISO 8652:1995) : Ajout de la programmation
+      orientee objet (types etiquetes, heritage, polymorphisme,
+      interfaces), types proteges, annexes specialisees
+      (temps reel, systemes distribues, systemes d'information).
+
+    - Ada 2005 (ISO 8652:2005) : Interfaces multiples, type
+      d'acces anonyme ameliore, notation prefixee pour les
+      appels, conteneurs standards (Ada.Containers),
+      iterateurs.
+
+    - Ada 2012 (ISO 8652:2012) : Programmation par contrat
+      (Pre, Post, Type_Invariant), expressions conditionnelles
+      et quantifiees, iterateurs generalises, sous-programmes
+      d'expression.
+
+    - Ada 2022 (ISO 8652:2023) : Gestion legere des
+      parallelismes, types a image personnalisee, operateur
+      delta pour aggregats, clauses de reduction, filtres
+      d'iterateurs, declaration d'objets etendus.
+
+  Ada est reconnu pour sa fiabilite, sa lisibilite et sa
+  capacite a detecter les erreurs des la compilation. Il est
+  utilise dans l'avionique, le spatial, le ferroviaire, la
+  defense et les systemes critiques.
+
+
+2. STRUCTURE LEXICALE
+============================================================
+
+2.1 Jeu de caracteres
+
+  Ada utilise le jeu de caracteres Latin-1 (ISO 8859-1).
+  A partir d'Ada 2005, le jeu Unicode est supporte pour
+  les identificateurs et les chaines de caracteres.
+
+  Le langage n'est PAS sensible a la casse :
+    Variable, VARIABLE et variable sont identiques.
+
+2.2 Identificateurs
+
+  Un identificateur commence par une lettre et peut contenir
+  des lettres, des chiffres et le caractere souligne (_).
+  Le souligne ne peut pas apparaitre en debut, en fin ou
+  en double consecutif.
+
+  Exemples : Compteur, Ma_Variable, X1, Taux_De_Change
+
+2.3 Mots-cles reserves (Ada 83)
+
+  Les mots-cles suivants sont reserves dans Ada 83 :
+
+    ABORT       ABS         ACCEPT      ACCESS
+    ALL         AND         ARRAY       AT
+    BEGIN       BODY        CASE        CONSTANT
+    DECLARE     DELAY       DELTA       DIGITS
+    DO          ELSE        ELSIF       END
+    ENTRY       EXCEPTION   EXIT        FOR
+    FUNCTION    GENERIC     GOTO        IF
+    IN          IS          LIMITED     LOOP
+    MOD         NEW         NOT         NULL
+    OF          OR          OTHERS      OUT
+    PACKAGE     PRAGMA      PRIVATE     PROCEDURE
+    RAISE       RANGE       RECORD      REM
+    RENAMES     RETURN      REVERSE     SELECT
+    SEPARATE    SUBTYPE     TASK        TERMINATE
+    THEN        TYPE        USE         WHEN
+    WHILE       WITH        XOR
+
+  Mots-cles ajoutes par Ada 95 :
+    ABSTRACT    ALIASED     PROTECTED   REQUEUE
+    TAGGED      UNTIL
+
+  Mots-cles ajoutes par Ada 2005 :
+    INTERFACE   OVERRIDING  SYNCHRONIZED
+
+  Mots-cles ajoutes par Ada 2012 :
+    SOME
+
+  Mots-cles ajoutes par Ada 2022 :
+    PARALLEL    REDUCE
+
+2.4 Commentaires
+
+  Les commentaires commencent par deux tirets (--) et
+  s'etendent jusqu'a la fin de la ligne :
+
+    -- Ceci est un commentaire
+    X := 42;  -- commentaire en fin de ligne
+
+  Ada ne possede pas de commentaires multi-lignes.
+
+2.5 Constantes litterales
+
+  Entiers :       0, 42, 1_000_000, 16#FF#, 2#1010_0011#,
+                  8#177#
+                  (les souligne sont des separateurs visuels,
+                   les bases 2 a 16 sont supportees)
+
+  Reels :         3.14, 0.5, 2.99_792_458E+08, 1.0E-6
+
+  Caracteres :    'A', ' ', '''  (entre apostrophes simples)
+
+  Chaines :       "Hello", "Ada ""95"""
+                  (entre guillemets doubles, le guillemet
+                   s'echappe en le doublant)
+
+  Booleens :      True, False (pas des mots-cles, mais des
+                  valeurs du type predefini Boolean)
+
+2.6 Separateurs et delimiteurs
+
+  Operateurs et delimiteurs :
+    &       *       +       -       .       /
+    <       =       >       |       =>      ..
+    **      :=      /=      >=      <=      <<
+    >>      <>      (       )       ,       ;
+    :       '
+
+
+3. TYPES DE DONNEES
+============================================================
+
+  Ada possede un systeme de types riche et fortement type.
+  Tout objet a un type et les conversions implicites sont
+  tres limitees.
+
+3.1 Types scalaires
+
+  a) Types entiers :
+
+    type Index is range 1 .. 100;
+    type Compteur is range 0 .. 999_999;
+
+    Types predefinis :
+      Integer       Entier signe (au moins 16 bits)
+      Natural       Sous-type de Integer (>= 0)
+      Positive      Sous-type de Integer (>= 1)
+      Long_Integer  Entier signe etendu (optionnel)
+
+  b) Types modulaires (non signes, Ada 95+) :
+
+    type Octet is mod 256;       -- 0 .. 255
+    type Mot is mod 2**16;       -- 0 .. 65535
+
+    L'arithmetique modulaire boucle automatiquement
+    (wrap-around) et ne leve pas d'exception de debordement.
+
+  c) Types a virgule flottante :
+
+    type Temperature is digits 6;
+    type Haute_Precision is digits 15 range -1.0 .. 1.0;
+
+    Types predefinis :
+      Float         Flottant simple precision
+      Long_Float    Flottant double precision (optionnel)
+
+  d) Types a virgule fixe :
+
+    type Volt is delta 0.01 range -100.0 .. 100.0;
+    type Duree is delta 0.001 digits 9
+      range 0.0 .. 86_400.0;   -- virgule fixe decimale
+
+  e) Types enumeres :
+
+    type Couleur is (Rouge, Vert, Bleu);
+    type Jour is (Lundi, Mardi, Mercredi, Jeudi,
+                  Vendredi, Samedi, Dimanche);
+
+    Types predefinis :
+      Boolean       (False, True)
+      Character     (256 valeurs Latin-1)
+      Wide_Character (65536 valeurs, Ada 95+)
+
+  f) Type caractere :
+
+    Le type Character est un type enumere predefini
+    correspondant au jeu Latin-1. Les litteraux caracteres
+    sont entre apostrophes : 'A', '0', ' '.
+
+3.2 Types composites
+
+  a) Types tableau (array) :
+
+    -- Tableau contraint
+    type Vecteur is array (1 .. 3) of Float;
+    type Matrice is array (1 .. 3, 1 .. 3) of Float;
+    type Table is array (Jour) of Natural;
+
+    -- Tableau non contraint
+    type Chaine is array (Positive range <>) of Character;
+
+    Types predefinis :
+      String        array (Positive range <>) of Character
+
+  b) Types enregistrement (record) :
+
+    type Point is record
+      X : Float;
+      Y : Float;
+    end record;
+
+    type Personne is record
+      Nom    : String (1 .. 50);
+      Age    : Natural;
+      Actif  : Boolean := True;  -- valeur par defaut
+    end record;
+
+  c) Enregistrements a discriminant :
+
+    type Tampon (Taille : Positive) is record
+      Contenu : String (1 .. Taille);
+      Dernier : Natural := 0;
+    end record;
+
+  d) Enregistrements a variante (discriminated) :
+
+    type Figure (Forme : Type_Forme) is record
+      case Forme is
+        when Cercle =>
+          Rayon : Float;
+        when Rectangle =>
+          Largeur : Float;
+          Hauteur : Float;
+        when Triangle =>
+          Base   : Float;
+          Cote_A : Float;
+          Cote_B : Float;
+      end case;
+    end record;
+
+3.3 Types d'acces (pointeurs)
+
+  type Ptr_Entier is access Integer;
+  type Ptr_Noeud is access Noeud;
+
+  P : Ptr_Entier := new Integer'(42);
+
+  Ada 95 ajoute les niveaux d'accessibilite et les
+  types d'acces a des sous-programmes :
+
+    type Ptr_Fonction is access function (X : Integer)
+      return Integer;
+
+  Ada 2005 ajoute les types d'acces anonymes :
+
+    procedure Traiter (P : access Integer);
+    type Noeud is record
+      Valeur  : Integer;
+      Suivant : access Noeud;  -- acces anonyme
+    end record;
+
+3.4 Types prives et limites
+
+  Les types prives cachent leur implementation :
+
+    package Pile is
+      type Pile_T is private;
+      procedure Empiler (S : in out Pile_T; V : Integer);
+      function  Depiler (S : in out Pile_T) return Integer;
+    private
+      type Pile_T is record
+        Donnees : array (1 .. 100) of Integer;
+        Sommet  : Natural := 0;
+      end record;
+    end Pile;
+
+  Les types limites (limited) interdisent l'affectation
+  et la comparaison d'egalite :
+
+    type Fichier is limited private;
+
+3.5 Sous-types et contraintes
+
+  Un sous-type restreint les valeurs d'un type existant :
+
+    subtype Jour_Ouvrable is Jour range Lundi .. Vendredi;
+    subtype Petit_Entier is Integer range -128 .. 127;
+    subtype Indice is Positive range 1 .. 100;
+
+  La violation d'une contrainte leve l'exception
+  Constraint_Error a l'execution.
+
+
+4. DECLARATIONS
+============================================================
+
+4.1 Declaration de variables
+
+  Syntaxe :
+    <nom> [, <nom>]* : <type> [:= <expression>] ;
+
+  Exemples :
+    X : Integer;
+    A, B, C : Float := 0.0;
+    Nom : String (1 .. 20);
+    Trouve : Boolean := False;
+
+4.2 Declaration de constantes
+
+  Syntaxe :
+    <nom> : constant [<type>] := <expression> ;
+
+  Exemples :
+    Pi : constant Float := 3.14159_26535;
+    Max : constant := 1000;  -- constante nommee universelle
+    Taille : constant Positive := 256;
+
+4.3 Declaration de types
+
+  Syntaxe :
+    type <nom> is <definition_de_type> ;
+
+  Exemples :
+    type Mois is range 1 .. 12;
+    type Direction is (Nord, Sud, Est, Ouest);
+    type Grille is array (1 .. 8, 1 .. 8) of Integer;
+
+4.4 Declaration de sous-types
+
+  Syntaxe :
+    subtype <nom> is <type> [range <debut> .. <fin>] ;
+
+  Exemples :
+    subtype Naturel is Integer range 0 .. Integer'Last;
+    subtype Indice is Integer range 1 .. 10;
+
+4.5 Declaration de renommage
+
+  Ada permet de renommer des entites pour la lisibilite :
+
+    Longueur : Float renames Vecteur.X;
+    procedure Ecrire (S : String) renames Ada.Text_IO.Put_Line;
+    package TIO renames Ada.Text_IO;
+
+4.6 Declaration de nombre
+
+  Les nombres nommes sont des constantes universelles :
+
+    Bits_Par_Octet : constant := 8;
+    Taille_Page    : constant := 4 * 1024;
+
+  Ils n'ont pas de type specifique et sont remplaces
+  a la compilation.
+
+4.7 Attributs
+
+  Les attributs fournissent des informations sur les types
+  et les objets. Syntaxe : <nom>'<attribut>
+
+  Attributs courants :
+    T'First       Premiere valeur du type T
+    T'Last        Derniere valeur du type T
+    T'Range       Equivalent a T'First .. T'Last
+    T'Size        Taille en bits du type T
+    T'Length      Nombre d'elements (pour les tableaux)
+    T'Image(V)    Representation en chaine de la valeur V
+    T'Value(S)    Valeur du type T a partir de la chaine S
+    T'Succ(V)     Successeur de V dans le type T
+    T'Pred(V)     Predecesseur de V dans le type T
+    T'Pos(V)      Position ordinale de V
+    T'Val(N)      Valeur a la position N
+    T'Min(A, B)   Minimum de A et B
+    T'Max(A, B)   Maximum de A et B
+
+
+5. EXPRESSIONS
+============================================================
+
+5.1 Expressions arithmetiques
+
+  Operateurs arithmetiques :
+    +       Addition (ou unaire positif)
+    -       Soustraction (ou negation)
+    *       Multiplication
+    /       Division
+    **      Puissance (exposant entier naturel)
+    MOD     Modulo (resultat du signe du diviseur)
+    REM     Reste (resultat du signe du dividende)
+    ABS     Valeur absolue (unaire)
+
+  Precedence (du plus fort au plus faible) :
+    1. ** , ABS, NOT
+    2. *, /, MOD, REM
+    3. +, - (unaire)
+    4. +, -, & (binaire)
+
+  Exemples :
+    X + Y * Z         =>  X + (Y * Z)
+    2 ** 10            =>  1024
+    -17 MOD 5          =>  3
+    -17 REM 5          =>  -2
+
+5.2 Operateurs relationnels
+
+    =       Egal
+    /=      Different
+    <       Inferieur
+    <=      Inferieur ou egal
+    >       Superieur
+    >=      Superieur ou egal
+
+  Les comparaisons de tableaux et d'enregistrements sont
+  effectuees composant par composant.
+
+  L'operateur IN teste l'appartenance :
+    X in 1 .. 10
+    C in 'A' .. 'Z'
+    J in Jour_Ouvrable
+
+  Ada 2012 ajoute les tests d'appartenance multiples :
+    X in 1 | 3 | 5 | 7
+
+5.3 Operateurs logiques
+
+    AND       Conjonction logique
+    OR        Disjonction logique
+    XOR       Ou exclusif
+    NOT       Negation logique
+
+  Evaluation en court-circuit (Ada 83+) :
+    AND THEN    Conjonction avec court-circuit
+    OR ELSE     Disjonction avec court-circuit
+
+  Exemples :
+    if X /= 0 and then Y / X > Seuil then ...
+    if P = null or else P.Valeur = 0 then ...
+
+5.4 Operateur de concatenation
+
+    &       Concatenation de tableaux et de chaines
+
+  Exemples :
+    "Hello" & " " & "World"       =>  "Hello World"
+    S & Character'('!')           =>  ajout d'un caractere
+
+5.5 Expressions conditionnelles (Ada 2012+)
+
+  Expression if :
+    V := (if X > 0 then X else -X);
+
+  Expression case :
+    Texte := (case Jour is
+                when Lundi .. Vendredi => "Ouvrable",
+                when Samedi | Dimanche => "Weekend");
+
+5.6 Expressions quantifiees (Ada 2012+)
+
+  Quantificateur universel :
+    (for all I in 1 .. N => Tab(I) > 0)
+
+  Quantificateur existentiel :
+    (for some I in 1 .. N => Tab(I) = Cible)
+
+5.7 Aggregats
+
+  Les aggregats construisent des valeurs composites :
+
+  Aggregats de tableau :
+    V : Vecteur := (1.0, 2.0, 3.0);
+    V : Vecteur := (others => 0.0);
+    V : Vecteur := (1 => 1.0, 2 | 3 => 0.0);
+
+  Aggregats de record :
+    P : Point := (X => 1.0, Y => 2.0);
+    P : Point := (1.0, 2.0);  -- notation positionnelle
+
+  Ada 2022 ajoute les aggregats delta :
+    P2 : Point := (P with delta X => 3.0);
+
+
+6. INSTRUCTIONS
+============================================================
+
+6.1 Affectation
+
+  Syntaxe :
+    <variable> := <expression> ;
+
+  Exemples :
+    X := 42;
+    Tab(I) := Tab(I) + 1;
+    P.X := 3.14;
+
+6.2 Instruction conditionnelle (if)
+
+  Syntaxe :
+    if <condition> then
+      <instructions>
+    [elsif <condition> then
+      <instructions>]*
+    [else
+      <instructions>]
+    end if;
+
+  Exemples :
+    if X > 0 then
+      Put_Line ("Positif");
+    elsif X = 0 then
+      Put_Line ("Zero");
+    else
+      Put_Line ("Negatif");
+    end if;
+
+  Notes :
+    - Le mot-cle est ELSIF (et non ELSEIF ni ELSE IF)
+    - L'instruction se termine toujours par END IF
+    - Pas d'ambiguite du dangling else
+
+6.3 Instruction de selection (case)
+
+  Syntaxe :
+    case <expression> is
+      when <choix> => <instructions>
+      [when <choix> => <instructions>]*
+      [when others  => <instructions>]
+    end case;
+
+  Exemples :
+    case Commande is
+      when 'A' | 'a'  => Ajouter;
+      when 'S' | 's'  => Supprimer;
+      when 'Q' | 'q'  => Quitter;
+      when others      => Put_Line ("Invalide");
+    end case;
+
+    case Jour is
+      when Lundi .. Vendredi =>
+        Travailler;
+      when Samedi | Dimanche =>
+        Se_Reposer;
+    end case;
+
+  Notes :
+    - Tous les cas possibles doivent etre couverts
+    - Le compilateur verifie l'exhaustivite des choix
+    - OTHERS couvre les cas restants
+
+6.4 Boucle simple (loop)
+
+  Syntaxe :
+    [<nom> :] loop
+      <instructions>
+      exit [<nom>] [when <condition>] ;
+    end loop [<nom>] ;
+
+  Exemples :
+    loop
+      Get (C);
+      exit when C = 'Q';
+      Traiter (C);
+    end loop;
+
+6.5 Boucle while
+
+  Syntaxe :
+    [<nom> :] while <condition> loop
+      <instructions>
+    end loop [<nom>] ;
+
+  Exemples :
+    while N > 0 loop
+      S := S + N;
+      N := N - 1;
+    end loop;
+
+6.6 Boucle for
+
+  Syntaxe :
+    [<nom> :] for <var> in [reverse] <intervalle> loop
+      <instructions>
+    end loop [<nom>] ;
+
+  Exemples :
+    for I in 1 .. 10 loop
+      Put (Integer'Image (I));
+    end loop;
+
+    for J in reverse 1 .. 10 loop
+      Tab(J) := 0;
+    end loop;
+
+    for C in Character range 'A' .. 'Z' loop
+      Put (C);
+    end loop;
+
+    for D in Jour loop   -- parcourt toutes les valeurs
+      Put_Line (Jour'Image (D));
+    end loop;
+
+  Ada 2012 ajoute les iterateurs generalises :
+    for E of Tab loop       -- iteration sur les elements
+      E := E * 2;
+    end loop;
+
+    for C of Ma_Liste loop  -- sur un conteneur
+      Put_Line (C);
+    end loop;
+
+  Ada 2022 ajoute les filtres d'iterateurs :
+    for I in 1 .. 100 when I mod 2 = 0 loop
+      Put (Integer'Image (I));   -- nombres pairs
+    end loop;
+
+6.7 Instruction de bloc (declare)
+
+  Syntaxe :
+    [<nom> :] declare
+      <declarations>
+    begin
+      <instructions>
+    end [<nom>] ;
+
+  Exemples :
+    declare
+      Temp : Integer;
+    begin
+      Temp := A;
+      A := B;
+      B := Temp;
+    end;
+
+6.8 Instruction nulle
+
+    null;
+
+  L'instruction nulle ne fait rien. Elle est utile comme
+  corps vide ou dans les branches d'un case :
+
+    when others => null;
+
+6.9 Instruction goto
+
+    goto <etiquette>;
+
+  L'etiquette est declaree entre doubles chevrons :
+    <<Recommencer>>
+
+  L'utilisation du goto est deconseillee en Ada, les
+  structures de controle etant suffisamment expressives.
+
+6.10 Instruction return
+
+    return;               -- dans une procedure
+    return <expression>;  -- dans une fonction
+
+  Ada 2005 ajoute les retours etendus :
+    return R : Type_Resultat do
+      R.Champ := Valeur;
+    end return;
+
+6.11 Instruction raise
+
+    raise Constraint_Error;
+    raise Mon_Exception;
+    raise Mon_Exception with "message d'erreur";  -- Ada 2005
+
+  L'instruction raise sans argument releve l'exception
+  courante dans un gestionnaire d'exceptions.
+
+6.12 Instruction delay
+
+    delay 1.5;            -- attente relative (secondes)
+    delay until Heure;    -- attente absolue (Ada 95)
+
+
+7. SOUS-PROGRAMMES (PROCEDURES ET FONCTIONS)
+============================================================
+
+7.1 Procedures
+
+  Syntaxe :
+    procedure <nom> [(<parametres>)] is
+      [<declarations>]
+    begin
+      <instructions>
+    end <nom>;
+
+  Exemples :
+    procedure Saluer is
+    begin
+      Put_Line ("Bonjour !");
+    end Saluer;
+
+    procedure Echanger (A, B : in out Integer) is
+      Temp : Integer := A;
+    begin
+      A := B;
+      B := Temp;
+    end Echanger;
+
+7.2 Fonctions
+
+  Syntaxe :
+    function <nom> [(<parametres>)] return <type> is
+      [<declarations>]
+    begin
+      <instructions>
+      return <expression>;
+    end <nom>;
+
+  Exemples :
+    function Carre (N : Integer) return Integer is
+    begin
+      return N * N;
+    end Carre;
+
+    function Max (A, B : Integer) return Integer is
+    begin
+      return (if A > B then A else B);  -- Ada 2012
+    end Max;
+
+  Ada 2012 ajoute les fonctions d'expression :
+    function Carre (N : Integer) return Integer is (N * N);
+
+7.3 Modes de passage des parametres
+
+  Ada definit trois modes de passage (quatre a partir
+  d'Ada 2012) :
+
+    IN        Lecture seule (defaut). Le parametre formel
+              est une constante initialisee par l'argument.
+
+    OUT       Ecriture. Le parametre formel est une variable
+              non initialisee, utilisee pour retourner une
+              valeur a l'appelant.
+
+    IN OUT    Lecture et ecriture. Le parametre formel est
+              une variable initialisee par l'argument et
+              dont la valeur finale est retournee.
+
+    ACCESS    (Ada 95+) Passage par pointeur explicite.
+
+  Exemples :
+    procedure Lire (Valeur : out Integer);
+    procedure Incrementer (N : in out Integer);
+    procedure Afficher (Msg : in String);
+    procedure Traiter (P : access Noeud);
+
+  Notes :
+    - Ada choisit le mecanisme (copie ou reference) selon
+      le type et la taille des parametres
+    - Les types etiquetes et les taches sont toujours passes
+      par reference
+    - Les scalaires sont passes par copie
+
+7.4 Parametres par defaut
+
+    procedure Ouvrir (Nom  : String;
+                      Mode : Mode_Fichier := Lecture);
+
+  Les parametres avec valeur par defaut peuvent etre
+  omis lors de l'appel.
+
+7.5 Appel avec notation nommee
+
+    Ouvrir (Mode => Ecriture, Nom => "sortie.txt");
+
+  La notation nommee permet de specifier les arguments
+  dans un ordre quelconque.
+
+7.6 Surcharge (overloading)
+
+  Ada permet la surcharge des sous-programmes : plusieurs
+  sous-programmes peuvent avoir le meme nom si leurs
+  profils (types des parametres et/ou type de retour)
+  different :
+
+    function "+" (A, B : Vecteur) return Vecteur;
+    function "+" (A : Vecteur; S : Float) return Vecteur;
+
+  La surcharge s'applique aussi aux operateurs.
+
+7.7 Sous-programmes separes
+
+  Un sous-programme peut etre compile separement :
+
+    procedure Corps_Principal is separate;
+
+  Le corps est dans un fichier separe :
+
+    separate (Paquetage_Parent)
+    procedure Corps_Principal is
+    begin
+      ...
+    end Corps_Principal;
+
+
+8. PAQUETAGES (PACKAGES)
+============================================================
+
+  Les paquetages sont le mecanisme de modularite d'Ada.
+  Ils encapsulent des types, des variables, des constantes
+  et des sous-programmes.
+
+8.1 Specification de paquetage
+
+  Syntaxe :
+    package <nom> is
+      <declarations publiques>
+    [private
+      <declarations privees>]
+    end <nom>;
+
+  Exemples :
+    package Mathematiques is
+      Pi : constant Float := 3.14159_26535;
+      function Sinus (X : Float) return Float;
+      function Cosinus (X : Float) return Float;
+    end Mathematiques;
+
+8.2 Corps de paquetage
+
+  Syntaxe :
+    package body <nom> is
+      <declarations et corps>
+    [begin
+      <instructions d'initialisation>]
+    end <nom>;
+
+  Exemples :
+    package body Mathematiques is
+      function Sinus (X : Float) return Float is
+      begin
+        ...
+      end Sinus;
+
+      function Cosinus (X : Float) return Float is
+      begin
+        ...
+      end Cosinus;
+    end Mathematiques;
+
+8.3 Clause with et use
+
+  La clause WITH rend un paquetage visible.
+  La clause USE rend ses declarations directement
+  accessibles sans prefixe.
+
+    with Ada.Text_IO;
+    with Ada.Integer_Text_IO; use Ada.Integer_Text_IO;
+
+    procedure Demo is
+    begin
+      Ada.Text_IO.Put_Line ("Avec prefixe");
+      Put (42);  -- sans prefixe grace a USE
+    end Demo;
+
+8.4 Paquetages enfants (child packages, Ada 95+)
+
+  Ada 95 permet d'etendre les paquetages avec des enfants :
+
+    package Mathematiques.Trigonometrie is
+      function Tangente (X : Float) return Float;
+    end Mathematiques.Trigonometrie;
+
+  Les paquetages enfants ont acces a la partie privee
+  de leur parent si declares comme enfant prive :
+
+    private package Mathematiques.Interne is
+      ...
+    end Mathematiques.Interne;
+
+8.5 Paquetages predefinis
+
+  Ada fournit une hierarchie de paquetages standards :
+
+    Ada.Text_IO           Entrees/sorties texte
+    Ada.Integer_Text_IO   E/S d'entiers
+    Ada.Float_Text_IO     E/S de flottants
+    Ada.Strings           Manipulation de chaines
+    Ada.Strings.Fixed     Chaines de taille fixe
+    Ada.Strings.Unbounded Chaines de taille variable
+    Ada.Numerics          Constantes mathematiques
+    Ada.Numerics.Elementary_Functions  Sin, Cos, Sqrt...
+    Ada.Calendar          Date et heure
+    Ada.Exceptions        Manipulation des exceptions
+    Ada.Containers        Conteneurs (Ada 2005+)
+    Ada.Command_Line      Arguments de la ligne de commande
+
+
+9. GENERIQUES (GENERICS)
+============================================================
+
+  Les generiques permettent d'ecrire du code parametrable
+  par des types et des sous-programmes.
+
+9.1 Paquetages generiques
+
+  Syntaxe :
+    generic
+      <parametres generiques>
+    package <nom> is
+      ...
+    end <nom>;
+
+  Exemples :
+    generic
+      type Element is private;
+      type Indice is (<>);
+    package Pile_Generique is
+      type Pile is private;
+      procedure Empiler (S : in out Pile; V : Element);
+      function  Depiler (S : in out Pile) return Element;
+      function  Est_Vide (S : Pile) return Boolean;
+    private
+      type Tableau is array (Indice) of Element;
+      type Pile is record
+        Donnees : Tableau;
+        Sommet  : Natural := 0;
+      end record;
+    end Pile_Generique;
+
+9.2 Sous-programmes generiques
+
+    generic
+      type T is private;
+      with function "<" (A, B : T) return Boolean is <>;
+    procedure Tri_Generique (Tab : in out Tableau_T);
+
+9.3 Instanciation
+
+    package Pile_Entiers is new Pile_Generique
+      (Element => Integer, Indice => Positive);
+
+    procedure Trier_Entiers is new Tri_Generique
+      (T => Integer);
+
+9.4 Parametres generiques formels
+
+  Types generiques formels :
+    type T is private;           -- tout type non limite
+    type T is limited private;   -- tout type
+    type T is (<>);              -- type discret
+    type T is range <>;          -- type entier
+    type T is digits <>;         -- type flottant
+    type T is delta <>;          -- type a virgule fixe
+    type T is mod <>;            -- type modulaire (Ada 95)
+    type T is tagged private;    -- type etiquete (Ada 95)
+    type T is new Parent with private; -- derive (Ada 95)
+    type T is access S;          -- type d'acces
+
+  Sous-programmes generiques formels :
+    with function F (X : T) return T;
+    with procedure P (X : in out T);
+    with function "+" (A, B : T) return T is <>;
+
+  Paquetages generiques formels (Ada 95+) :
+    with package P is new Q (<>);
+
+
+10. GESTION DES EXCEPTIONS
+============================================================
+
+  Les exceptions sont le mecanisme de gestion des erreurs
+  en Ada. Elles sont declarees, levees et gerees.
+
+10.1 Declaration d'exceptions
+
+    Mon_Exception : exception;
+    Erreur_Donnees : exception;
+
+  Exceptions predefinies :
+    Constraint_Error    Violation de contrainte (debordement,
+                        indice hors bornes, division par zero)
+    Program_Error       Erreur de programmation (fin de
+                        fonction sans return, elaboration
+                        circulaire)
+    Storage_Error       Memoire insuffisante
+    Tasking_Error       Erreur de tache
+
+10.2 Lever une exception
+
+    raise Mon_Exception;
+    raise Constraint_Error;
+    raise Erreur_Donnees with "Valeur invalide";  -- Ada 2005
+
+10.3 Gerer les exceptions
+
+  Syntaxe :
+    begin
+      <instructions>
+    exception
+      when <nom_exception> =>
+        <instructions de traitement>
+      when others =>
+        <traitement par defaut>
+    end;
+
+  Exemples :
+    begin
+      Resultat := A / B;
+    exception
+      when Constraint_Error =>
+        Put_Line ("Division par zero !");
+        Resultat := 0;
+      when others =>
+        Put_Line ("Erreur inattendue");
+        raise;  -- relever l'exception
+    end;
+
+10.4 Informations sur les exceptions (Ada 95+)
+
+  Le paquetage Ada.Exceptions fournit des informations :
+
+    when E : others =>
+      Put_Line (Ada.Exceptions.Exception_Name (E));
+      Put_Line (Ada.Exceptions.Exception_Message (E));
+
+
+11. TACHES ET CONCURRENCE (TASKING)
+============================================================
+
+  Ada integre la concurrence directement dans le langage
+  depuis Ada 83. Les taches sont des unites d'execution
+  concurrentes.
+
+11.1 Declaration de tache
+
+  Syntaxe :
+    task <nom> is
+      [entry <nom_entree> [(<parametres>)];]*
+    end <nom>;
+
+    task body <nom> is
+      [<declarations>]
+    begin
+      <instructions>
+    end <nom>;
+
+  Exemples :
+    task Producteur;
+
+    task body Producteur is
+    begin
+      for I in 1 .. 10 loop
+        Tampon.Deposer (I);
+      end loop;
+    end Producteur;
+
+11.2 Entrees et rendez-vous
+
+  Les taches communiquent par rendez-vous via des entrees :
+
+    task Serveur is
+      entry Requete (Donnee : in Integer;
+                     Reponse : out Integer);
+    end Serveur;
+
+    task body Serveur is
+    begin
+      loop
+        accept Requete (Donnee : in Integer;
+                        Reponse : out Integer) do
+          Reponse := Traiter (Donnee);
+        end Requete;
+      end loop;
+    end Serveur;
+
+  Appel depuis une autre tache :
+    Serveur.Requete (42, R);
+
+11.3 Instruction select
+
+  Le select permet d'attendre plusieurs entrees :
+
+    select
+      accept Lire (V : out Integer) do
+        V := Valeur;
+      end Lire;
+    or
+      accept Ecrire (V : in Integer) do
+        Valeur := V;
+      end Ecrire;
+    or
+      delay 5.0;
+      Put_Line ("Timeout");
+    or
+      terminate;
+    end select;
+
+11.4 Types proteges (Ada 95+)
+
+  Les types proteges fournissent un acces concurrent
+  securise aux donnees partagees :
+
+    protected type Compteur is
+      procedure Incrementer;
+      function  Valeur return Integer;
+      entry     Attendre_Zero;
+    private
+      N : Integer := 0;
+    end Compteur;
+
+    protected body Compteur is
+      procedure Incrementer is
+      begin
+        N := N + 1;
+      end Incrementer;
+
+      function Valeur return Integer is
+      begin
+        return N;
+      end Valeur;
+
+      entry Attendre_Zero when N = 0 is
+      begin
+        null;
+      end Attendre_Zero;
+    end Compteur;
+
+  Notes :
+    - Les fonctions protegees permettent un acces
+      concurrent en lecture
+    - Les procedures protegees garantissent un acces
+      exclusif en ecriture
+    - Les entrees protegees ont une barriere booleenne
+      qui doit etre vraie pour que l'appel soit accepte
+
+11.5 Instruction requeue (Ada 95+)
+
+    entry Traiter (D : Integer) when Pret is
+    begin
+      if Besoin_Attente then
+        requeue File_Attente;
+      end if;
+    end Traiter;
+
+
+12. PROGRAMMATION ORIENTEE OBJET (ADA 95+)
+============================================================
+
+  Ada 95 introduit la programmation orientee objet avec
+  les types etiquetes (tagged types).
+
+12.1 Types etiquetes (tagged types)
+
+    type Forme is tagged record
+      X : Float;
+      Y : Float;
+    end record;
+
+    function Aire (F : Forme) return Float;
+
+12.2 Derivation et heritage
+
+    type Cercle is new Forme with record
+      Rayon : Float;
+    end record;
+
+    overriding
+    function Aire (C : Cercle) return Float;
+
+    type Rectangle is new Forme with record
+      Largeur : Float;
+      Hauteur : Float;
+    end record;
+
+    overriding
+    function Aire (R : Rectangle) return Float;
+
+12.3 Polymorphisme (dispatch)
+
+  Le type de classe (class-wide type) permet le
+  polymorphisme dynamique :
+
+    procedure Afficher_Aire (F : Forme'Class) is
+    begin
+      Put_Line ("Aire = " & Float'Image (Aire (F)));
+    end Afficher_Aire;
+
+  L'appel Afficher_Aire effectue un dispatch dynamique
+  sur la primitive Aire en fonction du type reel de F.
+
+12.4 Types abstraits
+
+    type Vehicule is abstract tagged record
+      Vitesse : Float;
+    end record;
+
+    function Description (V : Vehicule) return String
+      is abstract;
+
+  Un type abstrait ne peut pas etre instancie directement.
+  Les sous-programmes abstraits doivent etre surdefinis
+  dans les types derives.
+
+12.5 Interfaces (Ada 2005+)
+
+    type Imprimable is interface;
+    procedure Imprimer (Obj : Imprimable) is abstract;
+
+    type Serialisable is interface;
+    procedure Serialiser (Obj : Serialisable) is abstract;
+
+    type Document is new Forme
+      and Imprimable
+      and Serialisable with record
+      Titre : String (1 .. 80);
+    end record;
+
+  Les interfaces permettent l'heritage multiple de
+  specifications (pas d'heritage multiple d'implementation).
+
+12.6 Notation prefixee (Ada 2005+)
+
+  Ada 2005 permet la notation objet.methode :
+
+    Obj.Methode (Args);
+    -- equivalent a : Methode (Obj, Args);
+
+12.7 Mot-cle overriding (Ada 2005+)
+
+    overriding
+    procedure Dessiner (C : Cercle);
+
+    not overriding
+    procedure Tourner (C : in out Cercle; Angle : Float);
+
+  Le compilateur verifie que la declaration est coherente
+  avec l'intention du programmeur.
+
+
+13. BIBLIOTHEQUE STANDARD ET CONTENEURS (ADA 2005+)
+============================================================
+
+13.1 Conteneurs generiques (Ada.Containers)
+
+  Ada 2005 introduit une bibliotheque de conteneurs :
+
+    Ada.Containers.Vectors
+      Tableau dynamique a acces indexe.
+
+    Ada.Containers.Doubly_Linked_Lists
+      Liste doublement chainee.
+
+    Ada.Containers.Hashed_Maps
+      Table de hachage (dictionnaire).
+
+    Ada.Containers.Ordered_Maps
+      Arbre de recherche (dictionnaire ordonne).
+
+    Ada.Containers.Hashed_Sets
+      Ensemble avec hachage.
+
+    Ada.Containers.Ordered_Sets
+      Ensemble ordonne.
+
+  Exemple d'utilisation :
+
+    with Ada.Containers.Vectors;
+
+    package Entiers is new Ada.Containers.Vectors
+      (Index_Type   => Natural,
+       Element_Type => Integer);
+
+    V : Entiers.Vector;
+
+    V.Append (42);
+    V.Append (17);
+    for E of V loop
+      Put_Line (Integer'Image (E));
+    end loop;
+
+13.2 Chaines de caracteres
+
+    Ada.Strings.Fixed        Chaines de taille fixe
+    Ada.Strings.Bounded      Chaines de taille bornee
+    Ada.Strings.Unbounded    Chaines de taille illimitee
+    Ada.Strings.Maps         Tables de correspondance
+    Ada.Strings.Maps.Constants  Tables predefinies
+
+  Exemple :
+    with Ada.Strings.Unbounded;
+    use Ada.Strings.Unbounded;
+
+    S : Unbounded_String := To_Unbounded_String ("Hello");
+    S := S & " World";
+    Put_Line (To_String (S));
+
+13.3 Entrees/Sorties
+
+    Ada.Text_IO               E/S texte
+    Ada.Text_IO.Integer_IO    E/S d'entiers
+    Ada.Text_IO.Float_IO      E/S de flottants
+    Ada.Text_IO.Enumeration_IO  E/S d'enumeres
+    Ada.Sequential_IO         E/S sequentielles
+    Ada.Direct_IO             E/S a acces direct
+    Ada.Streams.Stream_IO     E/S par flux (Ada 95+)
+
+  Exemple :
+    with Ada.Text_IO; use Ada.Text_IO;
+
+    Put ("Entrez un nombre : ");
+    Get_Line (Ligne);
+    Put_Line ("Vous avez entre : " & Ligne);
+
+
+14. CONTRATS ET ASPECTS (ADA 2012+)
+============================================================
+
+  Ada 2012 introduit la programmation par contrat,
+  permettant de specifier formellement le comportement
+  attendu des sous-programmes et des types.
+
+14.1 Preconditions et postconditions
+
+  Syntaxe :
+    function F (X : T) return T
+      with Pre  => <condition_prealable>,
+           Post => <condition_posterieure>;
+
+  Exemples :
+    function Racine_Carree (X : Float) return Float
+      with Pre  => X >= 0.0,
+           Post => Racine_Carree'Result >= 0.0
+                   and then abs (Racine_Carree'Result ** 2
+                                 - X) < 0.001;
+
+    procedure Empiler (S : in out Pile; V : Integer)
+      with Pre  => not Est_Pleine (S),
+           Post => Sommet (S) = V
+                   and Taille (S) = Taille (S)'Old + 1;
+
+14.2 Invariants de type
+
+    type Compteur is private
+      with Type_Invariant => Verifier (Compteur);
+
+    function Verifier (C : Compteur) return Boolean;
+
+  L'invariant est verifie apres chaque operation publique
+  qui modifie un objet du type.
+
+14.3 Predicats de sous-type
+
+  Predicats statiques (verifies a la compilation) :
+    subtype Pair is Integer
+      with Static_Predicate => Pair mod 2 = 0;
+
+  Predicats dynamiques (verifies a l'execution) :
+    subtype Valide is String
+      with Dynamic_Predicate =>
+        Valide'Length > 0
+        and Valide (Valide'First) /= ' ';
+
+14.4 Valeurs par defaut initiales
+
+    type Tableau is array (1 .. 10) of Integer
+      with Default_Component_Value => 0;
+
+    type Enreg is record
+      X : Integer;
+    end record
+      with Default_Value => (X => 0);  -- Ada 2022
+
+14.5 Aspects de representation
+
+  Les aspects permettent de controler la representation
+  en memoire :
+
+    type Registre is record
+      Actif  : Boolean;
+      Code   : Integer range 0 .. 15;
+      Donnee : Integer range 0 .. 255;
+    end record
+      with Size => 16;
+
+    for Registre use record
+      Actif  at 0 range 0 .. 0;
+      Code   at 0 range 1 .. 4;
+      Donnee at 0 range 5 .. 12;
+    end record;
+
+
+15. NOUVEAUTES ADA 2022
+============================================================
+
+  Ada 2022 (ISO/IEC 8652:2023) apporte des ameliorations
+  significatives a la productivite et a l'expressivite.
+
+15.1 Parallelisme leger
+
+  Boucles paralleles :
+    parallel
+    for I in 1 .. N loop
+      Tab(I) := Calculer (I);
+    end loop;
+
+  Blocs paralleles :
+    parallel do
+      Tache_A;
+    and
+      Tache_B;
+    and
+      Tache_C;
+    end do;
+
+15.2 Agregats delta
+
+  Modification partielle d'un agregat :
+    P2 := (P1 with delta X => 3.0);
+
+  Pour les tableaux :
+    T2 := (T1 with delta 1 => 42, 5 => 99);
+
+15.3 Operateur de reduction
+
+  Syntaxe :
+    (for I in 1 .. N => <combinaison>)
+
+  Exemples :
+    Somme := [for I in 1 .. N => "+" (Tab(I), 0)];
+    -- ou avec la notation de reduction :
+    Somme := (for I in Tab'Range => <0, @> + Tab(I));
+
+15.4 Filtres d'iterateurs
+
+    for I in 1 .. 100 when I mod 3 = 0 loop
+      Put (Integer'Image (I));  -- multiples de 3
+    end loop;
+
+    Pairs := [for E of Tab when E mod 2 = 0 => E];
+
+15.5 Declare expressions
+
+    X := (declare
+            T : constant Float := Calculer;
+          begin
+            T * T + 2.0 * T + 1.0);
+
+15.6 Image personnalisee
+
+    type Direction is (Nord, Sud, Est, Ouest)
+      with Put_Image => Afficher_Direction;
+
+    procedure Afficher_Direction
+      (Buffer : in out Ada.Strings.Text_Buffers.Root_Buffer_Type'Class;
+       D      : Direction);
+
+15.7 Agregats de conteneurs
+
+    V : Vector := [1, 2, 3, 4, 5];
+    M : Map := [1 => "un", 2 => "deux", 3 => "trois"];
+
+15.8 Renommage d'objets declares
+
+    Obj : T renames Expr;  -- expression quelconque
+
+
+16. DIFFERENCES ENTRE LES VERSIONS
+============================================================
+
+16.1 Ada 83 (version initiale)
+
+  Le langage original fournit :
+    - Typage fort avec sous-types et contraintes
+    - Paquetages pour la modularite et l'encapsulation
+    - Generiques pour la programmation generique
+    - Taches pour la programmation concurrente
+    - Gestion structuree des exceptions
+    - Compilation separee avec controle de coherence
+    - Representation bas niveau (clauses de representation)
+    - Pragmas pour les directives au compilateur
+
+16.2 Ajouts d'Ada 95
+
+  Principaux ajouts par rapport a Ada 83 :
+    - Types etiquetes (tagged) et heritage
+    - Polymorphisme dynamique (dispatch)
+    - Types abstraits
+    - Paquetages enfants (hierarchie)
+    - Types proteges (concurrence securisee)
+    - Types modulaires (entiers non signes)
+    - Types d'acces a des sous-programmes
+    - Annexes specialisees (temps reel, distribue,
+      systemes d'information, securite, numerique)
+    - ALIASED et acces general
+    - Instruction REQUEUE
+
+16.3 Ajouts d'Ada 2005
+
+  Principaux ajouts par rapport a Ada 95 :
+    - Interfaces multiples
+    - Notation prefixee (Obj.Methode)
+    - Types d'acces anonymes ameliores
+    - Mot-cle OVERRIDING / NOT OVERRIDING
+    - Conteneurs standards (Ada.Containers)
+    - Retours etendus (extended return)
+    - raise avec message
+    - Paquetage Ada.Directories (systeme de fichiers)
+    - Ameliorations du temps reel (EDF, minuteries)
+
+16.4 Ajouts d'Ada 2012
+
+  Principaux ajouts par rapport a Ada 2005 :
+    - Preconditions (Pre) et postconditions (Post)
+    - Invariants de type (Type_Invariant)
+    - Predicats de sous-type (Static_Predicate,
+      Dynamic_Predicate)
+    - Expressions conditionnelles (if et case)
+    - Expressions quantifiees (for all, for some)
+    - Fonctions d'expression
+    - Iterateurs generalises (for ... of)
+    - Valeurs par defaut des composants de tableaux
+    - Aspect Default_Component_Value
+    - Multiprocesseurs (System.Multiprocessors)
+
+16.5 Ajouts d'Ada 2022
+
+  Principaux ajouts par rapport a Ada 2012 :
+    - Parallelisme leger (parallel loops/blocks)
+    - Agregats delta (with delta)
+    - Operateur de reduction
+    - Filtres d'iterateurs (when dans les boucles for)
+    - Declare expressions
+    - Image personnalisee (Put_Image)
+    - Agregats de conteneurs (notation [])
+    - Renommage d'objets declares
+    - Ameliorations de la gestion des acces
+    - Ameliorations des contrats (Global, Nonblocking)
+
+
+17. REFERENCES
+============================================================
+
+  [1] ISO/IEC 8652:1987 - Ada Programming Language
+      (Ada 83), premiere norme internationale.
+
+  [2] ISO/IEC 8652:1995 - Ada Programming Language
+      (Ada 95), revision majeure avec POO.
+
+  [3] ISO/IEC 8652:1995/Amd 1:2007 - Ada 2005,
+      amendement technique.
+
+  [4] ISO/IEC 8652:2012 - Ada Programming Language
+      (Ada 2012), programmation par contrat.
+
+  [5] ISO/IEC 8652:2023 - Ada Programming Language
+      (Ada 2022), parallelisme et agregats.
+
+  [6] J.G.P. Barnes, "Programming in Ada 2012",
+      Cambridge University Press, 2014.
+
+  [7] S.T. Taft, R.A. Duff, R.L. Brukardt, E. Ploedereder,
+      P. Leroy (eds), "Ada 2005 Reference Manual",
+      Springer, LNCS 4348, 2006.
+
+  [8] S.T. Taft et al. (eds), "Ada 2012 Reference Manual",
+      Springer, LNCS 8339, 2014.
+
+  [9] Ada Resource Association, "Ada Information Clearinghouse",
+      http://www.adaic.org
+
+============================================================
+  Fin du document - Specifications du langage Ada
+============================================================
