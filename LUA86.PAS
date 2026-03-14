@@ -208,7 +208,7 @@
                 Si type connu number : toujours vrai (sauf nil)
                 Si type inconnu : CALL _LUART_TRUTHY -> AX=0|1
 
-  TODO 14 - BOUCLES : while / repeat / for / goto
+  TODO 14 - BOUCLES : while / repeat / for / goto [IMPLEMENTE]
             ParseWhileStmt : while cond do stmts end
               Labels : _LUAL_WTEST_N, _LUAL_WEND_N
             ParseRepeatStmt : repeat stmts until cond
@@ -693,6 +693,10 @@ Var
   RuntimeEmitted : Boolean;
   CallArgCount   : Integer;   { compteur d arguments pour appels }
   IfCount        : Integer;   { compteur pour labels if/elseif/else }
+  WhileCount     : Integer;   { compteur pour labels while         }
+  RepeatCount    : Integer;   { compteur pour labels repeat        }
+  ForCount       : Integer;   { compteur pour labels for           }
+  GotoLblCount   : Integer;   { compteur pour labels goto          }
 
 { ============================================================
   FORWARD DECLARATIONS
@@ -802,6 +806,17 @@ Procedure EmitIORuntime; Forward;
 { If / Elseif / Else (TODO 13) }
 Procedure ParseIfStmt; Forward;
 Procedure EmitIfRuntime; Forward;
+
+{ Boucles (TODO 14) }
+Procedure ParseWhileStmt; Forward;
+Procedure ParseRepeatStmt; Forward;
+Procedure ParseForNumStmt; Forward;
+Procedure ParseForInStmt; Forward;
+Procedure ParseGotoStmt; Forward;
+Procedure EmitLoopRuntime; Forward;
+Procedure LoopPush(Const BrkLbl, ContLbl : TString); Forward;
+Procedure LoopPop; Forward;
+Function  LoopBreakLabel : TString; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1079,6 +1094,10 @@ Begin
   CurFrameSize   := 0;
   LabelGenSeq    := 0;
   IfCount        := 0;
+  WhileCount     := 0;
+  RepeatCount    := 0;
+  ForCount       := 0;
+  GotoLblCount   := 0;
   GExprDummy.Kind    := EK_NONE;
   GExprDummy.ImmVal  := 0;
   GExprDummy.TypeIdx := TY_UNKNOWN;
@@ -1209,6 +1228,7 @@ Begin
   EmitExprRuntime;
   EmitIORuntime;
   EmitIfRuntime;
+  EmitLoopRuntime;
 End;
 
 { EmitClose : terminer le fichier ASM (DOS exit, runtime, DATA, END) }
@@ -1853,6 +1873,16 @@ Procedure ParseStmt;
 Var
   E     : TExprVal;
   VName : TString;
+  { Variables for for-num loop (TODO 14) }
+  NSFor     : TString;
+  LblTestF  : TString;
+  LblIncrF  : TString;
+  LblEndF   : TString;
+  VarIdxF   : Integer;
+  StopOffF  : Integer;
+  StepOffF  : Integer;
+  SaveFramF : Integer;
+  NS2F      : TString;
 Begin
   { Instruction vide : ';' optionnel }
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
@@ -1966,19 +1996,263 @@ Begin
       Exit;
     End;
 
-    { while/repeat/for/return/function/goto/break/do : stubs }
-    If (CurToken.Val = 'while') Or
-       (CurToken.Val = 'repeat') Or (CurToken.Val = 'for') Or
-       (CurToken.Val = 'return') Or (CurToken.Val = 'function') Or
-       (CurToken.Val = 'goto') Or (CurToken.Val = 'break') Or
+    { TODO 14 : while }
+    If CurToken.Val = 'while' Then
+    Begin
+      ParseWhileStmt;
+      Exit;
+    End;
+
+    { TODO 14 : repeat }
+    If CurToken.Val = 'repeat' Then
+    Begin
+      ParseRepeatStmt;
+      Exit;
+    End;
+
+    { TODO 14 : for (numerique ou generique) }
+    If CurToken.Val = 'for' Then
+    Begin
+      ParserAdvance; { consomme 'for' }
+      { Determiner si c est for num (=) ou for in }
+      { Regarder au-dela de l identifiant }
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        VName := CurToken.Val;
+        ParserAdvance; { consomme l identifiant }
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+        Begin
+          { for num : for i = start, stop [, step] do ... end }
+          { Remettre le token : on va reparsser dans ParseForNumStmt }
+          { On triche : on cree un faux etat avec VName deja lu      }
+          { On ne peut pas "unparsser", donc on adapte ParseForNumStmt }
+          { a recevoir le nom deja lu. Au lieu de cela, on repart :   }
+          { VName est deja lu, '=' est le token courant.               }
+          { On consomme '=' ici puis on appelle ParseForNumStmt       }
+          { Mais ParseForNumStmt attend de lire le nom. Simplifions : }
+          { on va pousser le contexte directement.                    }
+
+          { En fait, le plus simple : on relit le nom dans le for.    }
+          { Le token courant est '='. VName contient le nom.          }
+          { On va adapter : on passe directement au code de for num.  }
+          { => Inliner la logique ici serait verbeux. Utilisons une   }
+          {    approche : ParseForNumStmt lit le nom et '=' lui-meme. }
+          {    On remet le curseur. Pas possible en TP.               }
+          { => Solution : on modifie ParseForNumStmt pour accepter    }
+          {    que le nom soit deja lu. On passe VName en parametre.  }
+
+          { Pour simplifier : emettre le code inline ici }
+          { ou bien, refactorer. Faisons un appel simple. }
+          { CurToken = '=', VName = nom de la variable }
+          { On va consommer '=' puis appeler le for num avec VName }
+          ParserAdvance; { consomme '=' }
+
+          { === Debut logique for num === }
+          Inc(ForCount);
+          Str(ForCount, NSFor);
+          LblTestF := LUA_LBL_PFX + 'FTEST_' + NSFor;
+          LblIncrF := LUA_LBL_PFX + 'FINCR_' + NSFor;
+          LblEndF  := LUA_LBL_PFX + 'FEND_' + NSFor;
+
+          EmitBlankLine;
+          EmitComment('--- for num (n.' + NSFor + ') ---');
+
+          { Entrer un scope pour la variable de boucle }
+          SaveFramF := CurFrameSize;
+          SymEnterScope;
+
+          { Creer la variable de boucle locale }
+          Inc(CurFrameSize, 2);
+          VarIdxF := SymAdd(VName, SK_LOCAL, TY_IDX_NUMBER,
+                            -CurFrameSize);
+          SymTab[VarIdxF].IsLocal := True;
+
+          { Reserve espace pour stop }
+          Inc(CurFrameSize, 2);
+          StopOffF := -CurFrameSize;
+
+          { Reserve espace pour step }
+          Inc(CurFrameSize, 2);
+          StepOffF := -CurFrameSize;
+
+          { Allouer l espace sur la pile }
+          EmitInstrAB('SUB', 'SP', '6');
+
+          { Evaluer start -> stocker dans variable de boucle }
+          ParseExpr(E);
+          ExprFlushToAX(E);
+          Str(SymTab[VarIdxF].Offset, NS2F);
+          EmitInstrAB('MOV', '[BP' + NS2F + ']', 'AX');
+
+          { Consommer ',' }
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+            ParserAdvance
+          Else
+            CompileError('"," attendu apres start dans for');
+
+          { Evaluer stop -> stocker dans [BP+StopOff] }
+          ParseExpr(E);
+          ExprFlushToAX(E);
+          Str(StopOffF, NS2F);
+          EmitInstrAB('MOV', '[BP' + NS2F + ']', 'AX');
+
+          { Optionnel : ',' step ; par defaut step=1 }
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+          Begin
+            ParserAdvance;
+            ParseExpr(E);
+            ExprFlushToAX(E);
+            Str(StepOffF, NS2F);
+            EmitInstrAB('MOV', '[BP' + NS2F + ']', 'AX');
+          End
+          Else
+          Begin
+            { step = 1 par defaut }
+            EmitInstrAB('MOV', 'AX', '1');
+            Str(StepOffF, NS2F);
+            EmitInstrAB('MOV', '[BP' + NS2F + ']', 'AX');
+          End;
+
+          { Consommer 'do' }
+          If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'do') Then
+            ParserAdvance
+          Else
+            CompileError('"do" attendu apres la clause for');
+
+          { Label du test de boucle }
+          EmitLabel(LblTestF);
+
+          { Test selon signe de step }
+          Str(StepOffF, NS2F);
+          EmitInstrAB('MOV', 'CX', '[BP' + NS2F + ']');
+          EmitInstrAB('CMP', 'CX', '0');
+          EmitInstrA('JL', LUA_LBL_PFX + 'FNEG_' + NSFor);
+          { step >= 0 : var > stop -> fin }
+          Str(SymTab[VarIdxF].Offset, NS2F);
+          EmitInstrAB('MOV', 'AX', '[BP' + NS2F + ']');
+          Str(StopOffF, NS2F);
+          EmitInstrAB('CMP', 'AX', '[BP' + NS2F + ']');
+          EmitInstrA('JG', LblEndF);
+          EmitInstrA('JMP', LUA_LBL_PFX + 'FBODY_' + NSFor);
+          { step < 0 : var < stop -> fin }
+          EmitLabel(LUA_LBL_PFX + 'FNEG_' + NSFor);
+          Str(SymTab[VarIdxF].Offset, NS2F);
+          EmitInstrAB('MOV', 'AX', '[BP' + NS2F + ']');
+          Str(StopOffF, NS2F);
+          EmitInstrAB('CMP', 'AX', '[BP' + NS2F + ']');
+          EmitInstrA('JL', LblEndF);
+          EmitLabel(LUA_LBL_PFX + 'FBODY_' + NSFor);
+
+          { Empiler labels pour break }
+          LoopPush(LblEndF, LblIncrF);
+
+          { Parser le corps de la boucle }
+          While (CurToken.Kind <> TK_EOF) And
+                Not ((CurToken.Kind = TK_KEYWORD) And
+                     (CurToken.Val = 'end')) Do
+            ParseStmt;
+
+          { Depiler labels }
+          LoopPop;
+
+          { Label increment }
+          EmitLabel(LblIncrF);
+          Str(SymTab[VarIdxF].Offset, NS2F);
+          EmitInstrAB('MOV', 'AX', '[BP' + NS2F + ']');
+          Str(StepOffF, NS2F);
+          EmitInstrAB('ADD', 'AX', '[BP' + NS2F + ']');
+          Str(SymTab[VarIdxF].Offset, NS2F);
+          EmitInstrAB('MOV', '[BP' + NS2F + ']', 'AX');
+
+          { Retour au test }
+          EmitInstrA('JMP', LblTestF);
+          EmitLabel(LblEndF);
+
+          { Liberer espace pile }
+          EmitInstrAB('ADD', 'SP', '6');
+
+          { Quitter le scope }
+          SymLeaveScope;
+          CurFrameSize := SaveFramF;
+
+          { Consommer 'end' }
+          If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'end') Then
+            ParserAdvance
+          Else
+            CompileError('"end" attendu pour fermer le bloc for');
+
+          EmitComment('--- fin for num ---');
+          EmitBlankLine;
+          { === Fin logique for num === }
+        End
+        Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        Begin
+          { for k, v in ... : generique }
+          { Sauter jusqu a 'in' }
+          While (CurToken.Kind <> TK_EOF) And
+                Not ((CurToken.Kind = TK_KEYWORD) And
+                     (CurToken.Val = 'in')) Do
+            ParserAdvance;
+          ParseForInStmt;
+        End
+        Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'in') Then
+        Begin
+          { for v in ... : generique, une seule variable }
+          ParseForInStmt;
+        End
+        Else
+        Begin
+          CompileError('"=" ou "in" attendu dans l instruction for');
+          { Sauter jusqu a end }
+          While (CurToken.Kind <> TK_EOF) And
+                Not ((CurToken.Kind = TK_KEYWORD) And
+                     (CurToken.Val = 'end')) Do
+            ParserAdvance;
+          If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'end') Then
+            ParserAdvance;
+        End;
+      End
+      Else
+      Begin
+        CompileError('identificateur attendu apres "for"');
+      End;
+      Exit;
+    End;
+
+    { TODO 14 : goto }
+    If CurToken.Val = 'goto' Then
+    Begin
+      ParserAdvance; { consomme 'goto' }
+      ParseGotoStmt;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+      Exit;
+    End;
+
+    { TODO 14 : break }
+    If CurToken.Val = 'break' Then
+    Begin
+      ParserAdvance; { consomme 'break' }
+      If LoopBreakLabel = '' Then
+        CompileError('"break" utilise en dehors d une boucle')
+      Else
+      Begin
+        EmitComment('--- break ---');
+        EmitInstrA('JMP', LoopBreakLabel);
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+      Exit;
+    End;
+
+    { return/function/do : stubs pour TODOs futurs }
+    If (CurToken.Val = 'return') Or (CurToken.Val = 'function') Or
        (CurToken.Val = 'do') Then
     Begin
       If Opts.Warnings Then
         WarnMsg(CurToken.Val + ' : stub, sera implemente dans un TODO futur');
-      { Sauter le bloc jusqu a end/until pour ne pas bloquer le parser }
-      If (CurToken.Val = 'while') Or
-         (CurToken.Val = 'for') Or (CurToken.Val = 'function') Or
-         (CurToken.Val = 'do') Then
+      { Sauter le bloc jusqu a end pour ne pas bloquer le parser }
+      If (CurToken.Val = 'function') Or (CurToken.Val = 'do') Then
       Begin
         ParserAdvance;
         While (CurToken.Kind <> TK_EOF) And
@@ -1987,19 +2261,6 @@ Begin
           ParserAdvance;
         If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'end') Then
           ParserAdvance;
-      End
-      Else If CurToken.Val = 'repeat' Then
-      Begin
-        ParserAdvance;
-        While (CurToken.Kind <> TK_EOF) And
-              Not ((CurToken.Kind = TK_KEYWORD) And
-                   (CurToken.Val = 'until')) Do
-          ParserAdvance;
-        If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'until') Then
-        Begin
-          ParserAdvance;
-          ParseExpr(E); { parser la condition until }
-        End;
       End
       Else If CurToken.Val = 'return' Then
       Begin
@@ -2011,14 +2272,6 @@ Begin
                  (CurToken.Val = 'elseif') Or (CurToken.Val = 'until'))) And
            Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Then
           ParseExpr(E);
-      End
-      Else If CurToken.Val = 'break' Then
-        ParserAdvance
-      Else If CurToken.Val = 'goto' Then
-      Begin
-        ParserAdvance;
-        If CurToken.Kind = TK_IDENT Then
-          ParserAdvance;
       End
       Else
         ParserAdvance;
@@ -4212,6 +4465,419 @@ Begin
   EmitLabel(LUA_RT_PFX + 'TRUTHY_F');
   EmitInstrAB('XOR', 'AX', 'AX');
   EmitInstr('RET');
+  EmitBlankLine;
+End;
+
+{ ============================================================
+  TODO 14 - BOUCLES : while / repeat / for / goto [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- LoopPush : empiler labels break/continue --------------- }
+Procedure LoopPush(Const BrkLbl, ContLbl : TString);
+Begin
+  If LoopTop >= MAX_LOOP_NEST Then
+  Begin
+    CompileError('boucles imbriquees trop profondes');
+    Exit;
+  End;
+  LoopBreakLbl[LoopTop] := BrkLbl;
+  LoopContLbl[LoopTop]  := ContLbl;
+  Inc(LoopTop);
+End;
+
+{ ---- LoopPop : depiler labels break/continue ---------------- }
+Procedure LoopPop;
+Begin
+  If LoopTop > 0 Then
+    Dec(LoopTop);
+End;
+
+{ ---- LoopBreakLabel : label break de la boucle englobante --- }
+Function LoopBreakLabel : TString;
+Begin
+  If LoopTop > 0 Then
+    LoopBreakLabel := LoopBreakLbl[LoopTop - 1]
+  Else
+    LoopBreakLabel := '';
+End;
+
+{ ---- ParseWhileStmt ----------------------------------------- }
+{ while cond do stmts end                                       }
+{ Labels : _LUAL_WTEST_N -> test condition                      }
+{          _LUAL_WEND_N  -> fin de boucle                       }
+Procedure ParseWhileStmt;
+Var
+  E       : TExprVal;
+  NS      : TString;
+  LblTest : TString;
+  LblEnd  : TString;
+Begin
+  Inc(WhileCount);
+  Str(WhileCount, NS);
+  LblTest := LUA_LBL_PFX + 'WTEST_' + NS;
+  LblEnd  := LUA_LBL_PFX + 'WEND_' + NS;
+
+  { Consommer 'while' }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'while') Then
+    ParserAdvance
+  Else
+  Begin
+    CompileError('"while" attendu');
+    Exit;
+  End;
+
+  EmitBlankLine;
+  EmitComment('--- while (n.' + NS + ') ---');
+
+  { Label du test de condition }
+  EmitLabel(LblTest);
+
+  { Evaluer la condition }
+  ParseExpr(E);
+  ExprFlushToAX(E);
+
+  { Test de verite Lua : nil/false -> saut vers fin }
+  EmitTruthTest(E.TypeIdx, LblEnd);
+
+  { Consommer 'do' }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'do') Then
+    ParserAdvance
+  Else
+    CompileError('"do" attendu apres la condition while');
+
+  { Empiler labels pour break }
+  LoopPush(LblEnd, LblTest);
+
+  { Parser le corps de la boucle }
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_KEYWORD) And
+             (CurToken.Val = 'end')) Do
+    ParseStmt;
+
+  { Depiler labels }
+  LoopPop;
+
+  { Retour au test }
+  EmitInstrA('JMP', LblTest);
+  EmitLabel(LblEnd);
+
+  { Consommer 'end' }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'end') Then
+    ParserAdvance
+  Else
+    CompileError('"end" attendu pour fermer le bloc while');
+
+  EmitComment('--- fin while ---');
+  EmitBlankLine;
+End;
+
+{ ---- ParseRepeatStmt ---------------------------------------- }
+{ repeat stmts until cond                                       }
+{ Labels : _LUAL_RBEG_N  -> debut de boucle                    }
+{          _LUAL_REND_N  -> fin de boucle (pour break)          }
+{ Particularite Lua : locales du bloc visibles dans until cond  }
+Procedure ParseRepeatStmt;
+Var
+  E       : TExprVal;
+  NS      : TString;
+  LblBeg  : TString;
+  LblEnd  : TString;
+Begin
+  Inc(RepeatCount);
+  Str(RepeatCount, NS);
+  LblBeg := LUA_LBL_PFX + 'RBEG_' + NS;
+  LblEnd := LUA_LBL_PFX + 'REND_' + NS;
+
+  { Consommer 'repeat' }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'repeat') Then
+    ParserAdvance
+  Else
+  Begin
+    CompileError('"repeat" attendu');
+    Exit;
+  End;
+
+  EmitBlankLine;
+  EmitComment('--- repeat (n.' + NS + ') ---');
+
+  { Label du debut de boucle }
+  EmitLabel(LblBeg);
+
+  { Empiler labels pour break }
+  LoopPush(LblEnd, LblBeg);
+
+  { Parser le corps de la boucle }
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_KEYWORD) And
+             (CurToken.Val = 'until')) Do
+    ParseStmt;
+
+  { Depiler labels }
+  LoopPop;
+
+  { Consommer 'until' }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'until') Then
+    ParserAdvance
+  Else
+  Begin
+    CompileError('"until" attendu pour fermer le bloc repeat');
+    Exit;
+  End;
+
+  { Evaluer la condition until }
+  ParseExpr(E);
+  ExprFlushToAX(E);
+
+  { En Lua : si condition fausse -> reboucler }
+  { nil/false (AX=0) -> reboucler, sinon -> sortir }
+  EmitTruthTest(E.TypeIdx, LblBeg);
+
+  EmitLabel(LblEnd);
+  EmitComment('--- fin repeat ---');
+  EmitBlankLine;
+End;
+
+{ ---- ParseForNumStmt ---------------------------------------- }
+{ for i = start, stop [, step] do stmts end                    }
+{ Variable de boucle locale automatique, increment par defaut 1 }
+{ Labels : _LUAL_FTEST_N, _LUAL_FINCR_N, _LUAL_FEND_N         }
+{ Strategy : start dans var locale, stop dans [BP-o2],          }
+{   step dans [BP-o3]. Test : (step>0 -> v<=stop, step<0 ->    }
+{   v>=stop). Increment : v := v + step.                        }
+Procedure ParseForNumStmt;
+Var
+  E         : TExprVal;
+  NS        : TString;
+  LblTest   : TString;
+  LblIncr   : TString;
+  LblEnd    : TString;
+  VarName   : TString;
+  VarIdx    : Integer;
+  StopOff   : Integer;
+  StepOff   : Integer;
+  SaveFrame : Integer;
+  NS2       : TString;
+Begin
+  Inc(ForCount);
+  Str(ForCount, NS);
+  LblTest := LUA_LBL_PFX + 'FTEST_' + NS;
+  LblIncr := LUA_LBL_PFX + 'FINCR_' + NS;
+  LblEnd  := LUA_LBL_PFX + 'FEND_' + NS;
+
+  { 'for' deja consomme par l appelant }
+
+  EmitBlankLine;
+  EmitComment('--- for num (n.' + NS + ') ---');
+
+  { Lire le nom de la variable de boucle }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('identificateur attendu apres "for"');
+    Exit;
+  End;
+  VarName := CurToken.Val;
+  ParserAdvance;
+
+  { Consommer '=' }
+  If Not ((CurToken.Kind = TK_OP) And (CurToken.Val = '=')) Then
+  Begin
+    CompileError('"=" attendu apres la variable de boucle for');
+    Exit;
+  End;
+  ParserAdvance;
+
+  { Entrer un scope pour la variable de boucle }
+  SaveFrame := CurFrameSize;
+  SymEnterScope;
+
+  { Creer la variable de boucle locale }
+  Inc(CurFrameSize, 2);
+  VarIdx := SymAdd(VarName, SK_LOCAL, TY_IDX_NUMBER,
+                   -CurFrameSize);
+  SymTab[VarIdx].IsLocal := True;
+
+  { Reserve espace pour stop }
+  Inc(CurFrameSize, 2);
+  StopOff := -CurFrameSize;
+
+  { Reserve espace pour step }
+  Inc(CurFrameSize, 2);
+  StepOff := -CurFrameSize;
+
+  { Allouer l espace sur la pile }
+  EmitInstrAB('SUB', 'SP', '6');
+
+  { Evaluer start -> stocker dans variable de boucle }
+  ParseExpr(E);
+  ExprFlushToAX(E);
+  Str(SymTab[VarIdx].Offset, NS2);
+  EmitInstrAB('MOV', '[BP' + NS2 + ']', 'AX');
+
+  { Consommer ',' }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+    ParserAdvance
+  Else
+    CompileError('"," attendu apres start dans for');
+
+  { Evaluer stop -> stocker dans [BP+StopOff] }
+  ParseExpr(E);
+  ExprFlushToAX(E);
+  Str(StopOff, NS2);
+  EmitInstrAB('MOV', '[BP' + NS2 + ']', 'AX');
+
+  { Optionnel : ',' step ; par defaut step=1 }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+  Begin
+    ParserAdvance;
+    ParseExpr(E);
+    ExprFlushToAX(E);
+    Str(StepOff, NS2);
+    EmitInstrAB('MOV', '[BP' + NS2 + ']', 'AX');
+  End
+  Else
+  Begin
+    { step = 1 par defaut }
+    EmitInstrAB('MOV', 'AX', '1');
+    Str(StepOff, NS2);
+    EmitInstrAB('MOV', '[BP' + NS2 + ']', 'AX');
+  End;
+
+  { Consommer 'do' }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'do') Then
+    ParserAdvance
+  Else
+    CompileError('"do" attendu apres la clause for');
+
+  { Label du test de boucle }
+  EmitLabel(LblTest);
+
+  { Test : step > 0 -> var <= stop, step < 0 -> var >= stop }
+  { Charger step }
+  Str(StepOff, NS2);
+  EmitInstrAB('MOV', 'CX', '[BP' + NS2 + ']');
+  { Charger var }
+  Str(SymTab[VarIdx].Offset, NS2);
+  EmitInstrAB('MOV', 'AX', '[BP' + NS2 + ']');
+  { Charger stop }
+  Str(StopOff, NS2);
+  EmitInstrAB('CMP', 'AX', '[BP' + NS2 + ']');
+  { Si step >= 0 : JG end (var > stop -> fin) }
+  { Si step <  0 : JL end (var < stop -> fin) }
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JL', LUA_LBL_PFX + 'FNEG_' + NS);
+  { step >= 0 }
+  Str(SymTab[VarIdx].Offset, NS2);
+  EmitInstrAB('MOV', 'AX', '[BP' + NS2 + ']');
+  Str(StopOff, NS2);
+  EmitInstrAB('CMP', 'AX', '[BP' + NS2 + ']');
+  EmitInstrA('JG', LblEnd);
+  EmitInstrA('JMP', LUA_LBL_PFX + 'FBODY_' + NS);
+  { step < 0 }
+  EmitLabel(LUA_LBL_PFX + 'FNEG_' + NS);
+  Str(SymTab[VarIdx].Offset, NS2);
+  EmitInstrAB('MOV', 'AX', '[BP' + NS2 + ']');
+  Str(StopOff, NS2);
+  EmitInstrAB('CMP', 'AX', '[BP' + NS2 + ']');
+  EmitInstrA('JL', LblEnd);
+  EmitLabel(LUA_LBL_PFX + 'FBODY_' + NS);
+
+  { Empiler labels pour break }
+  LoopPush(LblEnd, LblIncr);
+
+  { Parser le corps de la boucle }
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_KEYWORD) And
+             (CurToken.Val = 'end')) Do
+    ParseStmt;
+
+  { Depiler labels }
+  LoopPop;
+
+  { Label increment }
+  EmitLabel(LblIncr);
+  { var := var + step }
+  Str(SymTab[VarIdx].Offset, NS2);
+  EmitInstrAB('MOV', 'AX', '[BP' + NS2 + ']');
+  Str(StepOff, NS2);
+  EmitInstrAB('ADD', 'AX', '[BP' + NS2 + ']');
+  Str(SymTab[VarIdx].Offset, NS2);
+  EmitInstrAB('MOV', '[BP' + NS2 + ']', 'AX');
+
+  { Retour au test }
+  EmitInstrA('JMP', LblTest);
+  EmitLabel(LblEnd);
+
+  { Liberer espace pile }
+  EmitInstrAB('ADD', 'SP', '6');
+
+  { Quitter le scope }
+  SymLeaveScope;
+  CurFrameSize := SaveFrame;
+
+  { Consommer 'end' }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'end') Then
+    ParserAdvance
+  Else
+    CompileError('"end" attendu pour fermer le bloc for');
+
+  EmitComment('--- fin for num ---');
+  EmitBlankLine;
+End;
+
+{ ---- ParseForInStmt ----------------------------------------- }
+{ for k, v in pairs(t) do stmts end                            }
+{ for k, v in ipairs(t) do stmts end                           }
+{ Stub : emet un avertissement, iteration table a implementer   }
+{   dans TODO 15/16 avec les tables.                            }
+Procedure ParseForInStmt;
+Var
+  E : TExprVal;
+Begin
+  { 'for' deja consomme, et on a detecte 'in' au lieu de '=' }
+  WarnMsg('for..in : stub, iteration table sera implemente avec les tables');
+
+  { Sauter jusqu a 'do' }
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_KEYWORD) And
+             (CurToken.Val = 'do')) Do
+    ParserAdvance;
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'do') Then
+    ParserAdvance;
+
+  { Sauter le corps jusqu a 'end' }
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_KEYWORD) And
+             (CurToken.Val = 'end')) Do
+    ParserAdvance;
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'end') Then
+    ParserAdvance;
+End;
+
+{ ---- ParseGotoStmt ------------------------------------------ }
+{ goto label -> JMP _LUAL_GOTO_label                            }
+Procedure ParseGotoStmt;
+Var
+  LblName : TString;
+Begin
+  { 'goto' deja consomme par l appelant }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('identificateur attendu apres "goto"');
+    Exit;
+  End;
+  LblName := CurToken.Val;
+  ParserAdvance;
+
+  EmitComment('--- goto ' + LblName + ' ---');
+  EmitInstrA('JMP', LUA_LBL_PFX + 'GOTO_' + LblName);
+End;
+
+{ ---- EmitLoopRuntime : routines runtime pour boucles --------- }
+{ Placeholder pour routines runtime futures (iteration tables).  }
+Procedure EmitLoopRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=== Routines runtime TODO 14 (boucles) ===');
   EmitBlankLine;
 End;
 
