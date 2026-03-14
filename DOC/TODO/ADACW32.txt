@@ -86,7 +86,7 @@
             FatalError(msg) : afficher + Halt(1)
             BilanCompilation : afficher stats (symboles, types, erreurs)
 
-  TODO 04 - TABLE DES SYMBOLES (32 BITS)
+  TODO 04 - TABLE DES SYMBOLES (32 BITS) [IMPLEMENTE]
             Type TSymEntry : Name (String[48]), AsmLabel (String[48]),
               TypeIdx (Integer), StoreClass (Integer),
               BpOffset (Integer), ArraySize (Integer),

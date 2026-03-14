@@ -97,7 +97,7 @@
             FatalError(msg) : afficher + Halt(1)
             BilanCompilation : afficher stats (symboles, types, erreurs)
 
-  TODO 04 - TABLE DES SYMBOLES (32 BITS)
+  TODO 04 - TABLE DES SYMBOLES (32 BITS) [IMPLEMENTE]
             Type TSymEntry : Name (String[48]), AsmLabel (String[48]),
               TypeIdx (Integer), StoreClass (Integer),
               BpOffset (Integer), ArraySize (Integer),
@@ -805,6 +805,22 @@ Type
   End;
 {$ENDIF}
 
+  { ---- Entree de la table des symboles (32 bits) ----------- }
+  TSymEntry = Record
+    Name        : String[48];   { Nom Ada (upper-case)               }
+    AsmLabel    : String[48];   { Etiquette ASM : _ADA_nom           }
+    TypeIdx     : Integer;       { TYPE_xxx                          }
+    StoreClass  : Integer;       { STORE_xxx                         }
+    BpOffset    : Integer;       { offset EBP si locale (negatif)    }
+    ArraySize   : Integer;       { 0 si scalaire, n si tableau       }
+    CharLen     : Integer;       { longueur pour TYPE_STR / TYPE_CHAR}
+    IsConst     : Boolean;       { True si CONSTANT                  }
+    ScopeLev    : Integer;       { niveau de scope (0 = global)      }
+    InitNum     : LongInt;       { valeur initiale numerique         }
+    InitStr     : String[64];    { valeur initiale chaine            }
+    HasInit     : Boolean;       { True si initialisation specifiee  }
+  End;
+
 { ============================================================ }
 { VARIABLES GLOBALES                                           }
 { ============================================================ }
@@ -833,6 +849,11 @@ Var
   CurTokStr  : TString;    { valeur textuelle du token courant     }
   CurTokNum  : LongInt;    { valeur entiere (TOK_INTEGER)          }
   CurTokKw   : Integer;    { code mot-cle (KW_xxx) ou KW_NONE     }
+
+  { Table des symboles (TODO 04) }
+  SymTab     : Array[1..MAX_SYM] of TSymEntry;
+  SymCount   : Integer;    { nombre de symboles enregistres         }
+  ScopeTop   : Integer;    { niveau de scope courant (0 = global)   }
 
 {$IFDEF FPC}
   { Variables binaires }
@@ -1645,10 +1666,153 @@ Begin
   WriteLn('  Source     : ', Opts.SrcFile);
   WriteLn('  Sortie     : ', Opts.OutFile);
   WriteLn('  Lignes     : ', TotalLines);
+  WriteLn('  Symboles   : ', SymCount);
   WriteLn('  Erreurs    : ', ErrorCount);
   WriteLn('  Avertiss.  : ', WarnCount);
   If ErrorCount > 0 Then
     WriteLn('  *** COMPILATION AVEC ERREURS ***');
+End;
+
+{ ============================================================ }
+{ TABLE DES SYMBOLES (TODO 04)                                  }
+{ ============================================================ }
+
+{ ---- PrimTypeSize32 : taille de base d un type predefini ----- }
+{ Retourne la taille en octets pour les types predefinis Ada.     }
+{ Pour les types utilisateur, retourne 4 par defaut (stub).       }
+Function PrimTypeSize32(TypeId : Integer) : Integer;
+Begin
+  Case TypeId Of
+    TYPE_INT    : PrimTypeSize32 := 4;   { Integer   : DD (4 octets)  }
+    TYPE_FLOAT  : PrimTypeSize32 := 8;   { Float     : DQ (8 octets)  }
+    TYPE_BOOL   : PrimTypeSize32 := 1;   { Boolean   : DB (1 octet)   }
+    TYPE_CHAR   : PrimTypeSize32 := 1;   { Character : DB (1 octet)   }
+    TYPE_STR    : PrimTypeSize32 := 4;   { String    : pointeur DD    }
+    TYPE_ACCESS : PrimTypeSize32 := 4;   { Access    : pointeur DD    }
+  Else
+    PrimTypeSize32 := 4;                 { types utilisateur : stub   }
+  End;
+End;
+
+{ ---- AlignDWord : aligner sur un multiple de 4 (pile 32 bits) }
+Function AlignDWord(N : Integer) : Integer;
+Begin
+  If (N Mod 4) <> 0 Then
+    AlignDWord := N + (4 - (N Mod 4))
+  Else
+    AlignDWord := N;
+End;
+
+{ ---- GetSymSize : taille en octets d un symbole -------------- }
+{ Tient compte de ArraySize et CharLen pour les tableaux/chaines.}
+Function GetSymSize(SymIdx : Integer) : Integer;
+Var BaseSz : Integer;
+Begin
+  If (SymIdx < 1) Or (SymIdx > SymCount) Then
+  Begin GetSymSize := 4; Exit; End;
+
+  BaseSz := PrimTypeSize32(SymTab[SymIdx].TypeIdx);
+
+  { TYPE_STR avec CharLen explicite : taille reelle en octets }
+  If SymTab[SymIdx].TypeIdx = TYPE_STR Then
+  Begin
+    If SymTab[SymIdx].CharLen > 0 Then
+      BaseSz := SymTab[SymIdx].CharLen + 1   { +1 pour terminateur 0 }
+    Else
+      BaseSz := 4;
+  End;
+
+  If SymTab[SymIdx].ArraySize > 0 Then
+    GetSymSize := BaseSz * SymTab[SymIdx].ArraySize
+  Else
+    GetSymSize := BaseSz;
+End;
+
+{ ---- InitSymTable : initialiser la table des symboles -------- }
+Procedure InitSymTable;
+Var I : Integer;
+Begin
+  SymCount := 0;
+  ScopeTop := 0;
+  For I := 1 To MAX_SYM Do
+  Begin
+    SymTab[I].Name       := '';
+    SymTab[I].AsmLabel   := '';
+    SymTab[I].TypeIdx    := TYPE_UNKNOWN;
+    SymTab[I].StoreClass := STORE_STATIC;
+    SymTab[I].BpOffset   := 0;
+    SymTab[I].ArraySize  := 0;
+    SymTab[I].CharLen    := 0;
+    SymTab[I].IsConst    := False;
+    SymTab[I].ScopeLev   := 0;
+    SymTab[I].InitNum    := 0;
+    SymTab[I].InitStr    := '';
+    SymTab[I].HasInit    := False;
+  End;
+End;
+
+{ ---- FindSym : recherche dans toutes les portees ------------- }
+{ Parcourt du plus recent au plus ancien pour respecter le       }
+{ shadowing (portee la plus proche d abord).                     }
+{ Retourne l index (1-base) du symbole, ou 0 si non trouve.      }
+Function FindSym(Const Name : TString) : Integer;
+Var
+  I : Integer;
+  U : TString;
+Begin
+  U := StrUpperCase(Name);
+  For I := SymCount DownTo 1 Do
+    If SymTab[I].Name = U Then
+    Begin FindSym := I; Exit; End;
+  FindSym := 0;
+End;
+
+{ ---- FindSymLocal : recherche dans le scope courant seul ----- }
+{ Retourne l index (1-base) du symbole si trouve dans le scope    }
+{ courant, ou 0 si non trouve.                                    }
+Function FindSymLocal(Const Name : TString) : Integer;
+Var
+  I : Integer;
+  U : TString;
+Begin
+  U := StrUpperCase(Name);
+  For I := SymCount DownTo 1 Do
+    If (SymTab[I].Name = U) And (SymTab[I].ScopeLev = ScopeTop) Then
+    Begin FindSymLocal := I; Exit; End;
+  FindSymLocal := 0;
+End;
+
+{ ---- AddSym : ajouter un symbole dans la table --------------- }
+{ Retourne l index (1-base) du nouveau symbole, ou 0 si pleine.  }
+{ Pour STORE_AUTO : calcule BpOffset en utilisant ScopeTop.       }
+Function AddSym(Const Name : TString; TypeId, SC : Integer) : Integer;
+Var
+  U   : TString;
+  Idx : Integer;
+Begin
+  If SymCount >= MAX_SYM Then
+  Begin
+    Error('Table des symboles pleine (MAX_SYM=' +
+          IntToStr_(MAX_SYM) + ')');
+    AddSym := 0;
+    Exit;
+  End;
+  U := StrUpperCase(Name);
+  Inc(SymCount);
+  Idx := SymCount;
+  SymTab[Idx].Name       := U;
+  SymTab[Idx].AsmLabel   := ADA_VAR_PFX + AsmIdent(U);
+  SymTab[Idx].TypeIdx    := TypeId;
+  SymTab[Idx].StoreClass := SC;
+  SymTab[Idx].BpOffset   := 0;
+  SymTab[Idx].ArraySize  := 0;
+  SymTab[Idx].CharLen    := 0;
+  SymTab[Idx].IsConst    := (SC = STORE_CONST);
+  SymTab[Idx].ScopeLev   := ScopeTop;
+  SymTab[Idx].InitNum    := 0;
+  SymTab[Idx].InitStr    := '';
+  SymTab[Idx].HasInit    := False;
+  AddSym := Idx;
 End;
 
 { ---- LexInit : ouvrir le fichier source et lire le 1er token }
@@ -1837,6 +2001,7 @@ Begin
   WriteLn;
   WriteLn('--- Statistiques ---');
   WriteLn('Lignes analysees : ', TotalLines);
+  WriteLn('Symboles         : ', SymCount);
   WriteLn('Erreurs          : ', ErrorCount);
   WriteLn('Avertissements   : ', WarnCount);
 End;
@@ -1860,6 +2025,7 @@ End;
 
 Procedure Run;
 Begin
+  InitSymTable;
   LexInit;
   If Opts.DebugMode Then
   Begin
@@ -1874,7 +2040,7 @@ Begin
   Else
   Begin
     WriteLn('ADACW32: compilation de ', Opts.SrcFile, ' ...');
-    WriteLn('ADACW32: TODO 04+ non encore implemente - lexeur + erreurs OK');
+    WriteLn('ADACW32: TODO 05+ non encore implemente - table symboles OK');
   End;
   LexClose;
   BilanCompilation;
