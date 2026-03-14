@@ -313,7 +313,7 @@ TODO 15 [IMPLEMENTE] - Opcodes de manipulation de la pile et chargement de const
     et l'operande, creer les entrees Constant Pool si necessaire
     (pour ldc/ldc_w/ldc2_w : entier, flottant, chaine, ou classe)
 
-TODO 16 - Opcodes de creation d'objets et tableaux
+TODO 16 [IMPLEMENTE] - Opcodes de creation d'objets et tableaux
   ---------------------------------------------------
   - new <classname> : creer nouvel objet (reference non initialisee)
     -> CPEnsureClass(classname), emettre opcode + index U2

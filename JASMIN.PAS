@@ -31,7 +31,7 @@
 {  TODO 13 [IMPLEMENTE] - Opcodes de controle de flux                         }
 {  TODO 14 [IMPLEMENTE] - Opcodes d'invocation de methodes                    }
 {  TODO 15 [IMPLEMENTE] - Opcodes de manipulation de la pile et chargement de constantes   }
-{  TODO 16 - Opcodes de creation d'objets et tableaux                         }
+{  TODO 16 [IMPLEMENTE] - Opcodes de creation d'objets et tableaux            }
 {  TODO 17 - Opcodes d'acces aux champs                                       }
 {  TODO 18 - Opcodes de comparaison, retour et divers                         }
 {  TODO 19 - Labels, resolution des sauts et calcul des offsets               }
@@ -2732,6 +2732,8 @@ Var mnem: String;
     ldcIdx: Integer;
     ldcStr: String;
     dhi, dlo: LongInt;
+    objIdx: Integer;
+    arrType: Integer;
 Begin
  ParseInstruction := False;
  mnem := CurStr;
@@ -3835,6 +3837,106 @@ Begin
   EmitByte(Byte(ldcIdx and $FF));
   ParseInstruction := True; Exit;
  End;
+ { ---------------------------------------------------------------- }
+ { Opcodes de creation d'objets et tableaux - TODO 16               }
+ { ---------------------------------------------------------------- }
+ { new <classname> ($BB) : creer nouvel objet }
+ If mnem = 'new' Then
+ Begin
+  Consume;
+  If CurTok <> TK_IDENT Then
+  Begin Error('new : nom de classe attendu'); Exit; End;
+  objIdx := CPEnsureClass(CurStr);
+  Consume;
+  EmitByte($BB); { new }
+  EmitByte(Byte((objIdx shr 8) and $FF));
+  EmitByte(Byte(objIdx and $FF));
+  ParseInstruction := True; Exit;
+ End;
+ { newarray <type> ($BC) : creer tableau de type primitif }
+ If mnem = 'newarray' Then
+ Begin
+  Consume;
+  If CurTok <> TK_IDENT Then
+  Begin Error('newarray : type primitif attendu'); Exit; End;
+  arrType := 0;
+  If CurStr = 'boolean' Then arrType := 4
+  Else If CurStr = 'char' Then arrType := 5
+  Else If CurStr = 'float' Then arrType := 6
+  Else If CurStr = 'double' Then arrType := 7
+  Else If CurStr = 'byte' Then arrType := 8
+  Else If CurStr = 'short' Then arrType := 9
+  Else If CurStr = 'int' Then arrType := 10
+  Else If CurStr = 'long' Then arrType := 11;
+  If arrType = 0 Then
+  Begin Error('newarray : type inconnu "' + CurStr + '"'); Consume; Exit; End;
+  Consume;
+  EmitByte($BC); { newarray }
+  EmitByte(Byte(arrType));
+  ParseInstruction := True; Exit;
+ End;
+ { anewarray <classname> ($BD) : creer tableau de references }
+ If mnem = 'anewarray' Then
+ Begin
+  Consume;
+  If CurTok <> TK_IDENT Then
+  Begin Error('anewarray : nom de classe attendu'); Exit; End;
+  objIdx := CPEnsureClass(CurStr);
+  Consume;
+  EmitByte($BD); { anewarray }
+  EmitByte(Byte((objIdx shr 8) and $FF));
+  EmitByte(Byte(objIdx and $FF));
+  ParseInstruction := True; Exit;
+ End;
+ { multianewarray <classname> <dimensions> ($C5) : creer tableau multi-dimensionnel }
+ If mnem = 'multianewarray' Then
+ Begin
+  Consume;
+  If CurTok <> TK_IDENT Then
+  Begin Error('multianewarray : nom de classe attendu'); Exit; End;
+  objIdx := CPEnsureClass(CurStr);
+  Consume;
+  If CurTok <> TK_INTEGER Then
+  Begin Error('multianewarray : nombre de dimensions attendu'); Exit; End;
+  arrType := CurInt;
+  Consume;
+  If (arrType < 1) or (arrType > 255) Then
+  Begin Error('multianewarray : dimensions hors limites 1..255'); Exit; End;
+  EmitByte($C5); { multianewarray }
+  EmitByte(Byte((objIdx shr 8) and $FF));
+  EmitByte(Byte(objIdx and $FF));
+  EmitByte(Byte(arrType));
+  ParseInstruction := True; Exit;
+ End;
+ { arraylength ($BE) : obtenir la longueur d'un tableau }
+ If mnem = 'arraylength' Then
+ Begin Consume; EmitByte($BE); ParseInstruction := True; Exit; End;
+ { checkcast <classname> ($C0) : verifier le transtypage }
+ If mnem = 'checkcast' Then
+ Begin
+  Consume;
+  If CurTok <> TK_IDENT Then
+  Begin Error('checkcast : nom de classe attendu'); Exit; End;
+  objIdx := CPEnsureClass(CurStr);
+  Consume;
+  EmitByte($C0); { checkcast }
+  EmitByte(Byte((objIdx shr 8) and $FF));
+  EmitByte(Byte(objIdx and $FF));
+  ParseInstruction := True; Exit;
+ End;
+ { instanceof <classname> ($C1) : tester le type d'un objet }
+ If mnem = 'instanceof' Then
+ Begin
+  Consume;
+  If CurTok <> TK_IDENT Then
+  Begin Error('instanceof : nom de classe attendu'); Exit; End;
+  objIdx := CPEnsureClass(CurStr);
+  Consume;
+  EmitByte($C1); { instanceof }
+  EmitByte(Byte((objIdx shr 8) and $FF));
+  EmitByte(Byte(objIdx and $FF));
+  ParseInstruction := True; Exit;
+ End;
 End;
 
 { --- ParseDirectives : dispatcher principal des directives de classe --- }
@@ -3928,9 +4030,9 @@ Begin
      SkipToEOL;
     End;
    Else
-    { Directives non encore implementees (TODO 16+) : sauter la ligne }
+    { Directives non encore implementees (TODO 17+) : sauter la ligne }
     If OptVerbose Then
-     WriteLn('  [skip] directive ', CurStr, ' (TODO 16+)');
+     WriteLn('  [skip] directive ', CurStr, ' (TODO 17+)');
     SkipToEOL;
    End;  { Case }
   End
@@ -3941,7 +4043,7 @@ Begin
    Begin
     { Mnemonique non reconnu : sauter la ligne }
     If OptVerbose Then
-     WriteLn('  [skip] instruction ', CurStr, ' (TODO 16+)');
+     WriteLn('  [skip] instruction ', CurStr, ' (TODO 17+)');
     SkipToEOL;
    End
    Else
