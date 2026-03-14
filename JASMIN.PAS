@@ -32,7 +32,7 @@
 {  TODO 14 [IMPLEMENTE] - Opcodes d'invocation de methodes                    }
 {  TODO 15 [IMPLEMENTE] - Opcodes de manipulation de la pile et chargement de constantes   }
 {  TODO 16 [IMPLEMENTE] - Opcodes de creation d'objets et tableaux            }
-{  TODO 17 - Opcodes d'acces aux champs                                       }
+{  TODO 17 [IMPLEMENTE] - Opcodes d'acces aux champs                           }
 {  TODO 18 - Opcodes de comparaison, retour et divers                         }
 {  TODO 19 - Labels, resolution des sauts et calcul des offsets               }
 {  TODO 20 - Attribut Code : generation binaire                               }
@@ -532,6 +532,9 @@ Procedure EmitBranchPlaceholder(w: Integer); Forward;
 
 { --- Declarations forward TODO 14 : Opcodes d'invocation de methodes --- }
 Function ParseMethodSpec(Const spec: String; Var cls, mname, desc: String): Boolean; Forward;
+
+{ --- Declarations forward TODO 17 : Opcodes d'acces aux champs --- }
+Function ParseFieldSpec(Const spec: String; Var cls, fname: String): Boolean; Forward;
 
 { ---------- Ouverture et fermeture du fichier source ---------- }
 
@@ -2701,6 +2704,49 @@ Begin
  ParseMethodSpec := True;
 End;
 
+{ --- ParseFieldSpec : decomposer une specification de champ JVM --- }
+{ Recoit une specification de la forme classe/nom                     }
+{ et la decompose en : cls (nom de classe), fname (nom de champ).    }
+{ Le dernier '/' separe la classe du nom de champ.                    }
+{ Retourne True si le parsing a reussi.                               }
+{ Exemple: java/lang/System/out                                       }
+{          -> cls='java/lang/System' fname='out'                      }
+Function ParseFieldSpec(Const spec: String; Var cls, fname: String): Boolean;
+Var lastSlash, i: Integer;
+Begin
+ ParseFieldSpec := False;
+ cls   := '';
+ fname := '';
+ { Trouver le dernier '/' pour separer classe et nom de champ }
+ lastSlash := 0;
+ For i := Length(spec) downto 1 do
+ Begin
+  If spec[i] = '/' Then
+  Begin
+   lastSlash := i;
+   Break;
+  End;
+ End;
+ If lastSlash = 0 Then
+ Begin
+  Error('specification de champ invalide : "/" manquant dans ' + spec);
+  Exit;
+ End;
+ cls   := Copy(spec, 1, lastSlash - 1);
+ fname := Copy(spec, lastSlash + 1, Length(spec) - lastSlash);
+ If cls = '' Then
+ Begin
+  Error('specification de champ invalide : nom de classe vide dans ' + spec);
+  Exit;
+ End;
+ If fname = '' Then
+ Begin
+  Error('specification de champ invalide : nom de champ vide dans ' + spec);
+  Exit;
+ End;
+ ParseFieldSpec := True;
+End;
+
 { --- ParseInstruction : reconnaitre et emettre un mnemonique JVM --- }
 { Lit CurStr (le mnemonique), emet le(s) octet(s) correspondant(s)    }
 { dans le code buffer de la methode courante via EmitByte.             }
@@ -2734,6 +2780,8 @@ Var mnem: String;
     dhi, dlo: LongInt;
     objIdx: Integer;
     arrType: Integer;
+    fldSpec, fldCls, fldName, fldDesc: String;
+    fldIdx: Integer;
 Begin
  ParseInstruction := False;
  mnem := CurStr;
@@ -3937,6 +3985,85 @@ Begin
   EmitByte(Byte(objIdx and $FF));
   ParseInstruction := True; Exit;
  End;
+ { ---------------------------------------------------------------- }
+ { Opcodes d'acces aux champs - TODO 17                              }
+ { ---------------------------------------------------------------- }
+ { getstatic <field_spec> <descriptor> ($B2) : charger champ statique }
+ If mnem = 'getstatic' Then
+ Begin
+  Consume;
+  If CurTok <> TK_IDENT Then
+  Begin Error('getstatic : specification de champ attendue'); Exit; End;
+  fldSpec := CurStr;
+  Consume;
+  If Not ParseFieldSpec(fldSpec, fldCls, fldName) Then Exit;
+  If CurTok <> TK_IDENT Then
+  Begin Error('getstatic : descripteur de champ attendu'); Exit; End;
+  fldDesc := CurStr;
+  Consume;
+  fldIdx := CPAddFieldRef(fldCls, fldName, fldDesc);
+  EmitByte($B2); { getstatic }
+  EmitByte(Byte((fldIdx shr 8) and $FF));
+  EmitByte(Byte(fldIdx and $FF));
+  ParseInstruction := True; Exit;
+ End;
+ { putstatic <field_spec> <descriptor> ($B3) : stocker valeur dans champ statique }
+ If mnem = 'putstatic' Then
+ Begin
+  Consume;
+  If CurTok <> TK_IDENT Then
+  Begin Error('putstatic : specification de champ attendue'); Exit; End;
+  fldSpec := CurStr;
+  Consume;
+  If Not ParseFieldSpec(fldSpec, fldCls, fldName) Then Exit;
+  If CurTok <> TK_IDENT Then
+  Begin Error('putstatic : descripteur de champ attendu'); Exit; End;
+  fldDesc := CurStr;
+  Consume;
+  fldIdx := CPAddFieldRef(fldCls, fldName, fldDesc);
+  EmitByte($B3); { putstatic }
+  EmitByte(Byte((fldIdx shr 8) and $FF));
+  EmitByte(Byte(fldIdx and $FF));
+  ParseInstruction := True; Exit;
+ End;
+ { getfield <field_spec> <descriptor> ($B4) : charger champ d'instance }
+ If mnem = 'getfield' Then
+ Begin
+  Consume;
+  If CurTok <> TK_IDENT Then
+  Begin Error('getfield : specification de champ attendue'); Exit; End;
+  fldSpec := CurStr;
+  Consume;
+  If Not ParseFieldSpec(fldSpec, fldCls, fldName) Then Exit;
+  If CurTok <> TK_IDENT Then
+  Begin Error('getfield : descripteur de champ attendu'); Exit; End;
+  fldDesc := CurStr;
+  Consume;
+  fldIdx := CPAddFieldRef(fldCls, fldName, fldDesc);
+  EmitByte($B4); { getfield }
+  EmitByte(Byte((fldIdx shr 8) and $FF));
+  EmitByte(Byte(fldIdx and $FF));
+  ParseInstruction := True; Exit;
+ End;
+ { putfield <field_spec> <descriptor> ($B5) : stocker valeur dans champ d'instance }
+ If mnem = 'putfield' Then
+ Begin
+  Consume;
+  If CurTok <> TK_IDENT Then
+  Begin Error('putfield : specification de champ attendue'); Exit; End;
+  fldSpec := CurStr;
+  Consume;
+  If Not ParseFieldSpec(fldSpec, fldCls, fldName) Then Exit;
+  If CurTok <> TK_IDENT Then
+  Begin Error('putfield : descripteur de champ attendu'); Exit; End;
+  fldDesc := CurStr;
+  Consume;
+  fldIdx := CPAddFieldRef(fldCls, fldName, fldDesc);
+  EmitByte($B5); { putfield }
+  EmitByte(Byte((fldIdx shr 8) and $FF));
+  EmitByte(Byte(fldIdx and $FF));
+  ParseInstruction := True; Exit;
+ End;
 End;
 
 { --- ParseDirectives : dispatcher principal des directives de classe --- }
@@ -4030,9 +4157,9 @@ Begin
      SkipToEOL;
     End;
    Else
-    { Directives non encore implementees (TODO 17+) : sauter la ligne }
+    { Directives non encore implementees (TODO 18+) : sauter la ligne }
     If OptVerbose Then
-     WriteLn('  [skip] directive ', CurStr, ' (TODO 17+)');
+     WriteLn('  [skip] directive ', CurStr, ' (TODO 18+)');
     SkipToEOL;
    End;  { Case }
   End
@@ -4043,7 +4170,7 @@ Begin
    Begin
     { Mnemonique non reconnu : sauter la ligne }
     If OptVerbose Then
-     WriteLn('  [skip] instruction ', CurStr, ' (TODO 17+)');
+     WriteLn('  [skip] instruction ', CurStr, ' (TODO 18+)');
     SkipToEOL;
    End
    Else

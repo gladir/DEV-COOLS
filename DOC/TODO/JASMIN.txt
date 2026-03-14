@@ -331,7 +331,7 @@ TODO 16 [IMPLEMENTE] - Opcodes de creation d'objets et tableaux
   - ParseObjArray : reconnaitre le mnemonique, parser la classe
     ou le type primitif, emettre opcode + operandes
 
-TODO 17 - Opcodes d'acces aux champs
+TODO 17 [IMPLEMENTE] - Opcodes d'acces aux champs
   -------------------------------------
   - getfield <field_spec> : charger champ d'instance sur la pile
     (objectref -> value)
