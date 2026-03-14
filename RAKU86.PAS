@@ -99,7 +99,7 @@
             Lexical scoping : my $x visible uniquement dans le bloc courant
             Package scoping : our $x visible dans le package
 
-  TODO 06 - SYSTEME DE TYPES
+  TODO 06 - SYSTEME DE TYPES [IMPLEMENTE]
             TTypeKind : TYK_INT (Int, 16 bits), TYK_BOOL (Bool, 8 bits),
               TYK_STR (Str, ptr chaine), TYK_RAT (Rat, stub entier),
               TYK_ARRAY (Array), TYK_HASH (Hash),
@@ -794,6 +794,18 @@ Function  SymAdd(Const AName : TString;
 Procedure SymEnterScope;                                          Forward;
 Procedure SymLeaveScope;                                          Forward;
 Function  SymNextOffset : Integer;                                Forward;
+
+{ Forward declarations TODO 06 - Systeme de types }
+Function  TypeKindOf(TypeIdx : Integer) : TTypeKind;              Forward;
+Function  TypeSizeof(TypeIdx : Integer) : Integer;                Forward;
+Function  TypeMangle(TypeIdx : Integer) : TString;                Forward;
+Function  TypeIsNumeric(TypeIdx : Integer) : Boolean;             Forward;
+Function  TypeIsPtr(TypeIdx : Integer) : Boolean;                 Forward;
+Function  TypeCanCoerce(SrcIdx, DstIdx : Integer) : Boolean;      Forward;
+Function  TypeCoerceResult(LeftIdx, RightIdx : Integer;
+                           Const Op : TString) : Integer;         Forward;
+Function  TypeInfer(Const E : TExprVal) : Integer;                Forward;
+Function  TypeLookupName(Const Name : TString) : Integer;         Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -3171,6 +3183,280 @@ Function SymNextOffset : Integer;
 Begin
   Inc(CurFrameSize, 2);
   SymNextOffset := CurFrameSize;
+End;
+
+{ ============================================================
+  TODO 06 - SYSTEME DE TYPES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- TypeKindOf : retourner le TTypeKind d un index --------- }
+{ Si l index est invalide, retourne TYK_UNKNOWN.                }
+Function TypeKindOf(TypeIdx : Integer) : TTypeKind;
+Begin
+  If (TypeIdx >= 0) And (TypeIdx < TypeCount) Then
+    TypeKindOf := TypeTab[TypeIdx].Kind
+  Else
+    TypeKindOf := TYK_UNKNOWN;
+End;
+
+{ ---- TypeSizeof : taille en octets d un type par index ------ }
+{ En architecture 16 bits, la plupart des valeurs sont dans     }
+{ un mot (2 octets). Bool est 1 octet, Pair est 4 octets       }
+{ (cle + valeur). Defaut = 2.                                   }
+Function TypeSizeof(TypeIdx : Integer) : Integer;
+Begin
+  If (TypeIdx >= 0) And (TypeIdx < TypeCount) Then
+    TypeSizeof := TypeTab[TypeIdx].Size
+  Else
+    TypeSizeof := 2;
+End;
+
+{ ---- TypeMangle : prefixe ASM selon le type pour les labels - }
+{ Permet de generer des noms de labels typees dans le code ASM. }
+Function TypeMangle(TypeIdx : Integer) : TString;
+Var
+  K : TTypeKind;
+Begin
+  K := TypeKindOf(TypeIdx);
+  Case K Of
+    TYK_INT      : TypeMangle := '_RKT_Int';
+    TYK_BOOL     : TypeMangle := '_RKT_Bool';
+    TYK_STR      : TypeMangle := '_RKT_Str';
+    TYK_RAT      : TypeMangle := '_RKT_Rat';
+    TYK_ARRAY    : TypeMangle := '_RKT_Array';
+    TYK_HASH     : TypeMangle := '_RKT_Hash';
+    TYK_CODE     : TypeMangle := '_RKT_Code';
+    TYK_CLASS    : TypeMangle := '_RKT_Class';
+    TYK_ROLE     : TypeMangle := '_RKT_Role';
+    TYK_MU       : TypeMangle := '_RKT_Mu';
+    TYK_ANY      : TypeMangle := '_RKT_Any';
+    TYK_JUNCTION : TypeMangle := '_RKT_Junct';
+    TYK_PAIR     : TypeMangle := '_RKT_Pair';
+    TYK_REGEX    : TypeMangle := '_RKT_Regex';
+    TYK_MATCH    : TypeMangle := '_RKT_Match';
+    TYK_NIL      : TypeMangle := '_RKT_Nil';
+  Else
+    TypeMangle := '_RKT_Unk';
+  End;
+End;
+
+{ ---- TypeIsNumeric : vrai si le type est un numerique ------- }
+{ En Raku, Int, Bool, Rat sont contextualisables en nombre.     }
+{ Bool est True=1, False=0. Rat est traite comme entier (stub). }
+Function TypeIsNumeric(TypeIdx : Integer) : Boolean;
+Var
+  K : TTypeKind;
+Begin
+  K := TypeKindOf(TypeIdx);
+  TypeIsNumeric :=
+    (K = TYK_INT) Or (K = TYK_BOOL) Or (K = TYK_RAT);
+End;
+
+{ ---- TypeIsPtr : vrai si le type est un pointeur ------------ }
+{ Les types Str, Array, Hash, Code, Class, Role, Regex, Match  }
+{ et Junction sont stockes comme pointeurs (2 octets near).     }
+Function TypeIsPtr(TypeIdx : Integer) : Boolean;
+Var
+  K : TTypeKind;
+Begin
+  K := TypeKindOf(TypeIdx);
+  TypeIsPtr :=
+    (K = TYK_STR)   Or (K = TYK_ARRAY)  Or (K = TYK_HASH) Or
+    (K = TYK_CODE)  Or (K = TYK_CLASS)   Or (K = TYK_ROLE) Or
+    (K = TYK_REGEX) Or (K = TYK_MATCH)   Or
+    (K = TYK_JUNCTION) Or (K = TYK_PAIR);
+End;
+
+{ ---- TypeCanCoerce : peut-on convertir SrcIdx vers DstIdx ? - }
+{ Raku a un systeme de coercion tres souple :                   }
+{   - Tout type -> Mu/Any (supertype)                           }
+{   - Int <-> Bool (numerique <-> booleen)                      }
+{   - Int <-> Str (coercion +$x / ~$x)                         }
+{   - Bool -> Str / Int                                         }
+{   - Nil -> tout type (valeur indefinie)                       }
+{   - Meme type -> toujours OK                                  }
+Function TypeCanCoerce(SrcIdx, DstIdx : Integer) : Boolean;
+Var
+  SK, DK : TTypeKind;
+Begin
+  { Meme type : toujours OK }
+  If SrcIdx = DstIdx Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  { Index invalide ou inconnu : permissif }
+  If (SrcIdx < 0) Or (SrcIdx >= TypeCount) Or
+     (DstIdx < 0) Or (DstIdx >= TypeCount) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  SK := TypeTab[SrcIdx].Kind;
+  DK := TypeTab[DstIdx].Kind;
+  { Nil -> tout type }
+  If SK = TYK_NIL Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  { Tout -> Mu / Any (supertypes Raku) }
+  If (DK = TYK_MU) Or (DK = TYK_ANY) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  { Int <-> Bool }
+  If ((SK = TYK_INT) And (DK = TYK_BOOL)) Or
+     ((SK = TYK_BOOL) And (DK = TYK_INT)) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  { Int <-> Rat }
+  If ((SK = TYK_INT) And (DK = TYK_RAT)) Or
+     ((SK = TYK_RAT) And (DK = TYK_INT)) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  { Int / Bool / Rat -> Str (coercion ~$x) }
+  If (DK = TYK_STR) And
+     ((SK = TYK_INT) Or (SK = TYK_BOOL) Or (SK = TYK_RAT)) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  { Str -> Int / Bool / Rat (coercion +$x / ?$x) }
+  If (SK = TYK_STR) And
+     ((DK = TYK_INT) Or (DK = TYK_BOOL) Or (DK = TYK_RAT)) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  { Sinon : pas de coercion automatique }
+  TypeCanCoerce := False;
+End;
+
+{ ---- TypeCoerceResult : type resultat d un op binaire ------- }
+{ Determine le type de retour en fonction des operandes et de   }
+{ l operateur. Conventions Raku :                               }
+{   - Arithmetique (+,-,*,/,div,mod,%%): Int (ou Rat)           }
+{   - Comparaisons numeriques (==,!=,<,<=,>,>=,<=>): Bool       }
+{   - Comparaisons de chaines (eq,ne,lt,le,gt,ge,leg): Bool     }
+{   - Logiques (&&,||,//,and,or,not): type de l operande gauche }
+{   - Concatenation (~): Str                                    }
+{   - Repetition (x): Str                                       }
+{   - Affectation (=,:=,+=,-= etc.): type de la destination     }
+{   - Smart match (~~): Bool                                    }
+Function TypeCoerceResult(LeftIdx, RightIdx : Integer;
+                          Const Op : TString) : Integer;
+Begin
+  { Comparaisons numeriques -> Bool }
+  If (Op = '==') Or (Op = '!=') Or (Op = '<') Or
+     (Op = '<=') Or (Op = '>') Or (Op = '>=') Or
+     (Op = '<=>') Then
+  Begin
+    TypeCoerceResult := TY_IDX_BOOL;
+    Exit;
+  End;
+  { Comparaisons de chaines -> Bool }
+  If (Op = 'eq') Or (Op = 'ne') Or (Op = 'lt') Or
+     (Op = 'le') Or (Op = 'gt') Or (Op = 'ge') Or
+     (Op = 'leg') Or (Op = 'cmp') Then
+  Begin
+    TypeCoerceResult := TY_IDX_BOOL;
+    Exit;
+  End;
+  { Smart match -> Bool }
+  If Op = '~~' Then
+  Begin
+    TypeCoerceResult := TY_IDX_BOOL;
+    Exit;
+  End;
+  { Logiques : retournent le type de l operande gauche }
+  If (Op = '&&') Or (Op = '||') Or (Op = '//') Or
+     (Op = 'and') Or (Op = 'or') Or (Op = 'not') Then
+  Begin
+    TypeCoerceResult := LeftIdx;
+    Exit;
+  End;
+  { Concatenation -> Str }
+  If Op = '~' Then
+  Begin
+    TypeCoerceResult := TY_IDX_STR;
+    Exit;
+  End;
+  { Repetition -> Str }
+  If Op = 'x' Then
+  Begin
+    TypeCoerceResult := TY_IDX_STR;
+    Exit;
+  End;
+  { Affectation : type de la destination (gauche) }
+  If (Op = '=') Or (Op = ':=') Or
+     (Op = '+=') Or (Op = '-=') Or (Op = '*=') Or
+     (Op = '/=') Or (Op = '~=') Or (Op = 'x=') Then
+  Begin
+    TypeCoerceResult := LeftIdx;
+    Exit;
+  End;
+  { Arithmetique : si les deux sont numeriques -> Int }
+  If (Op = '+') Or (Op = '-') Or (Op = '*') Or
+     (Op = '/') Or (Op = 'div') Or (Op = 'mod') Or
+     (Op = '%%') Then
+  Begin
+    If TypeIsNumeric(LeftIdx) And TypeIsNumeric(RightIdx) Then
+      TypeCoerceResult := TY_IDX_INT
+    Else If LeftIdx <> TY_UNKNOWN Then
+      TypeCoerceResult := LeftIdx
+    Else
+      TypeCoerceResult := TY_IDX_INT;
+    Exit;
+  End;
+  { Intervalles -> Array }
+  If (Op = '..') Or (Op = '..^') Or (Op = '^..') Or
+     (Op = '^..^') Then
+  Begin
+    TypeCoerceResult := TY_IDX_ARRAY;
+    Exit;
+  End;
+  { Par defaut : type de l operande gauche ou Int }
+  If LeftIdx <> TY_UNKNOWN Then
+    TypeCoerceResult := LeftIdx
+  Else
+    TypeCoerceResult := TY_IDX_INT;
+End;
+
+{ ---- TypeInfer : deduire le type d une expression ----------- }
+{ Si le TypeIdx est deja connu, on le retourne directement.     }
+{ Sinon, pour les immediats on suppose Int, pour le reste       }
+{ on retourne TY_UNKNOWN.                                       }
+Function TypeInfer(Const E : TExprVal) : Integer;
+Begin
+  If E.TypeIdx <> TY_UNKNOWN Then
+    TypeInfer := E.TypeIdx
+  Else If E.Kind = EK_IMM Then
+    TypeInfer := TY_IDX_INT
+  Else
+    TypeInfer := TY_UNKNOWN;
+End;
+
+{ ---- TypeLookupName : chercher un type par nom -------------- }
+{ Parcourt TypeTab pour trouver un type par son nom Raku.       }
+{ La recherche est sensible a la casse (convention Raku).       }
+{ Retourne l index (0-base) ou TY_UNKNOWN si non trouve.        }
+Function TypeLookupName(Const Name : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := 0 To TypeCount - 1 Do
+    If TypeTab[I].Name = Name Then
+    Begin
+      TypeLookupName := I;
+      Exit;
+    End;
+  TypeLookupName := TY_UNKNOWN;
 End;
 
 { ---- ParseStmt : stub ------------------------------------- }
