@@ -476,7 +476,7 @@ TODO 23 [IMPLEMENTE] - Programme principal : ligne de commande et generation .cl
    15. Afficher le bilan d'assemblage
   - Main : Begin Assemble; End.
 
-TODO 24 - Validation et verification du bytecode genere
+TODO 24 [IMPLEMENTE] - Validation et verification du bytecode genere
   -------------------------------------------------------
   Verifications a l'assemblage :
   - Verifier que .class et .super sont definis

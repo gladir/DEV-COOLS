@@ -39,7 +39,7 @@
 {  TODO 21 [IMPLEMENTE] - Directives de gestion des exceptions (.catch, .throws) }
 {  TODO 22 [IMPLEMENTE] - Attributs supplementaires (SourceFile, LineNumberTable, etc.)    }
 {  TODO 23 [IMPLEMENTE] - Programme principal : ligne de commande et generation .class     }
-{  TODO 24 - Validation et verification du bytecode genere                    }
+{  TODO 24 [IMPLEMENTE] - Validation et verification du bytecode genere       }
 {  TODO 25 - Exemples SAMPLES/JASMIN/*.j et corrections de bugs              }
 { ---------------------------------------------------------------------------- }
 
@@ -328,6 +328,7 @@ Var
   { --- Options de ligne de commande --- }
   OptDebug      : Boolean;    { -g : inclure infos de debogage           }
   OptVerbose    : Boolean;    { -v : mode verbeux                        }
+  OptStrict     : Boolean;    { -strict : verifications supplementaires  }
 
   { --- Etat du lexeur --- }
   SrcLine       : String;     { ligne courante du fichier source         }
@@ -586,6 +587,9 @@ Procedure ParseCommandLine; Forward;
 Procedure CPEmitAll; Forward;
 Procedure EmitFieldInfo(fIdx: Integer); Forward;
 Procedure EmitMethodInfo(mIdx: Integer); Forward;
+
+{ --- Declarations forward TODO 24 : Validation et verification du bytecode --- }
+Procedure ValidateBytecode; Forward;
 
 { ---------- Ouverture et fermeture du fichier source ---------- }
 
@@ -5026,9 +5030,9 @@ Begin
      SkipToEOL;
     End;
    Else
-    { Directives non encore implementees (TODO 24+) : sauter la ligne }
+    { Directives non encore implementees (TODO 25+) : sauter la ligne }
     If OptVerbose Then
-     WriteLn('  [skip] directive ', CurStr, ' (TODO 24+)');
+     WriteLn('  [skip] directive ', CurStr, ' (TODO 25+)');
     SkipToEOL;
    End;  { Case }
   End
@@ -5039,7 +5043,7 @@ Begin
    Begin
     { Mnemonique non reconnu : sauter la ligne }
     If OptVerbose Then
-     WriteLn('  [skip] instruction ', CurStr, ' (TODO 24+)');
+     WriteLn('  [skip] instruction ', CurStr, ' (TODO 25+)');
     SkipToEOL;
    End
    Else
@@ -5099,6 +5103,8 @@ Begin
    OptDebug := True
   Else If arg = '-v' Then
    OptVerbose := True
+  Else If (arg = '-strict') Or (arg = '--strict') Then
+   OptStrict := True
   Else If (arg = '-version') Or (arg = '--version') Then
   Begin
    WriteLn(VERSION);
@@ -5119,6 +5125,7 @@ Begin
    WriteLn('  -d <repertoire>     Specifier le repertoire de sortie');
    WriteLn('  -g                  Inclure les informations de debogage');
    WriteLn('  -v                  Mode verbeux');
+   WriteLn('  -strict             Verifications supplementaires');
    WriteLn('  -version            Afficher la version et quitter');
    WriteLn('  -help               Afficher cette aide');
    Halt;
@@ -5338,6 +5345,140 @@ Begin
 End;
 
 { ============================================================================ }
+{ TODO 24 : Validation et verification du bytecode genere                      }
+{ ============================================================================ }
+
+{ --- ValidateBytecode : verifier la coherence de l'assemblage --- }
+{ Effectue toutes les verifications avant la generation du .class :            }
+{   - .class et .super definis                                                 }
+{   - methodes non-abstract/non-native ont du code                             }
+{   - methodes abstract/native n'ont pas de code                               }
+{   - .limit stack et .limit locals definis ou calcules                         }
+{   - tous les labels resolus                                                   }
+{   - coherence des descripteurs de types                                       }
+{   - Constant Pool ne depasse pas 65535                                        }
+{   - bytecode ne depasse pas 65535 octets                                     }
+{   - avertissements si max_stack/max_locals semblent insuffisants              }
+{   - mode -strict : verifications supplementaires                              }
+Procedure ValidateBytecode;
+Var i, j: Integer;
+    isAbstractOrNative: Boolean;
+Begin
+ If OptVerbose Then
+ Begin
+  WriteLn;
+  WriteLn('--- Validation du bytecode ---');
+ End;
+
+ { 1. Verifier que .class est defini }
+ If ClassName = '' Then
+  Error('aucune directive .class trouvee');
+
+ { 2. Verifier que .super est defini (sauf pour java/lang/Object) }
+ If (SuperName = '') And (ClassName <> 'java/lang/Object') Then
+  Error('aucune directive .super trouvee');
+
+ { 3. Verifier le Constant Pool ne depasse pas MAX_CP entrees }
+ If CPCount >= MAX_CP Then
+  Error('le Constant Pool depasse la limite (' + IntToStr_(CPCount) +
+        '/' + IntToStr_(MAX_CP) + ')');
+
+ { 4. Verifier chaque methode }
+ For i := 1 to MethodCount do
+ Begin
+  With MethodTab^[i] do
+  Begin
+   isAbstractOrNative := ((AccFlags and ACC_ABSTRACT) <> 0) Or
+                          ((AccFlags and ACC_NATIVE) <> 0);
+
+   { 4a. Methode non-abstract/non-native doit avoir du code }
+   If (Not isAbstractOrNative) And (CodeSize = 0) Then
+    Warning('methode ' + Name + Desc + ' : pas de bytecode (corps vide)');
+
+   { 4b. Methode abstract/native ne doit pas avoir de code }
+   If isAbstractOrNative And (CodeSize > 0) Then
+    Error('methode ' + Name + Desc +
+          ' : abstract/native ne doit pas avoir de code');
+
+   { 4c. Verifier que le bytecode ne depasse pas 65535 octets }
+   If CodeSize > 65535 Then
+    Error('methode ' + Name + Desc + ' : bytecode depasse 65535 octets (' +
+          IntToStr_(CodeSize) + ')');
+
+   { 4d. Verifier .limit stack et .limit locals }
+   If HasCode And (Not HasStack) And (MaxStack <= 0) Then
+    Warning('methode ' + Name + Desc +
+            ' : .limit stack non defini (auto=0)');
+
+   If HasCode And (Not HasLocals) And (MaxLocals <= 0) Then
+    Warning('methode ' + Name + Desc +
+            ' : .limit locals non defini (auto=0)');
+
+   { 4e. Verifier que tous les labels sont resolus }
+   For j := 1 to LabelCount do
+   Begin
+    If Not Labels^[j].Resolved Then
+     Error('methode ' + Name + Desc + ' : label ''' +
+           Labels^[j].Name + ''' non resolu');
+   End;
+
+   { 4f. Verifier la coherence du descripteur de methode }
+   If Not ValidateMethodDescriptor(Desc) Then
+    Error('methode ' + Name + ' : descripteur invalide ''' + Desc + '''');
+
+   { 4g. Avertissement si max_stack semble insuffisant }
+   If HasCode And (MaxStack < 1) And (CodeSize > 0) Then
+    Warning('methode ' + Name + Desc +
+            ' : max_stack=0 mais du bytecode est present');
+
+   { 4h. Verifications supplementaires en mode -strict }
+   If OptStrict Then
+   Begin
+    If HasCode And (MaxLocals < 1) And
+       ((AccFlags and ACC_STATIC) = 0) Then
+     Warning('methode ' + Name + Desc +
+             ' : max_locals=0 pour methode d''instance');
+   End;
+  End; { With }
+ End; { For methods }
+
+ { 5. Verifier la coherence des descripteurs de champs }
+ For i := 1 to FieldCount do
+ Begin
+  With FieldTab^[i] do
+  Begin
+   If Not ValidateDescriptor(Desc) Then
+    Error('champ ' + Name + ' : descripteur invalide ''' + Desc + '''');
+  End;
+ End;
+
+ { 6. Verifications supplementaires en mode -strict }
+ If OptStrict Then
+ Begin
+  For i := 1 to MethodCount do
+  Begin
+   With MethodTab^[i] do
+   Begin
+    If HasCode And (Not HasStack) Then
+     Warning('methode ' + Name + Desc +
+             ' : .limit stack non explicite (calcul automatique)');
+    If HasCode And (Not HasLocals) Then
+     Warning('methode ' + Name + Desc +
+             ' : .limit locals non explicite (calcul automatique)');
+   End;
+  End;
+ End;
+
+ If OptVerbose Then
+ Begin
+  If ErrorCount = 0 Then
+   WriteLn('  Validation : OK')
+  Else
+   WriteLn('  Validation : ', ErrorCount, ' erreur(s) detectee(s)');
+ End;
+End;
+
+{ ============================================================================ }
 { Initialisation globale                                                       }
 { ============================================================================ }
 
@@ -5347,6 +5488,7 @@ Begin
  OutDir        := '';
  OptDebug      := False;
  OptVerbose    := False;
+ OptStrict     := False;
  BinPos        := 0;
 
  SrcLine       := '';
@@ -5460,6 +5602,9 @@ Begin
 
  { Bilan de l'assemblage (parsing) }
  BilanAssemblage;
+
+ { Validation et verification du bytecode (TODO 24) }
+ ValidateBytecode;
 
  { Si des erreurs ont ete detectees, ne pas generer le .class }
  If ErrorCount > 0 Then
@@ -5671,6 +5816,7 @@ BEGIN
   WriteLn('  -d <repertoire>     Specifier le repertoire de sortie');
   WriteLn('  -g                  Inclure les informations de debogage');
   WriteLn('  -v                  Mode verbeux');
+   WriteLn('  -strict             Verifications supplementaires');
   WriteLn('  -version            Afficher la version et quitter');
   WriteLn('  -help               Afficher cette aide');
   Halt;
