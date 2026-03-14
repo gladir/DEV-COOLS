@@ -113,7 +113,7 @@
             Contraintes de type : Int where * > 0 (simplifie)
             Coercion : +$x (numerique), ~$x (chaine), ?$x (booleen)
 
-  TODO 07 - EMETTEUR DE CODE ASM
+  TODO 07 - EMETTEUR DE CODE ASM [IMPLEMENTE]
             TEmitter : OutF (Text), OutFOpen, EmitOpen, EmitClose
             EmitRaw, EmitLabel, EmitInstr (formatage 8 espaces)
             EmitComment, EmitBlankLine
@@ -807,6 +807,15 @@ Function  TypeCoerceResult(LeftIdx, RightIdx : Integer;
 Function  TypeInfer(Const E : TExprVal) : Integer;                Forward;
 Function  TypeLookupName(Const Name : TString) : Integer;         Forward;
 
+{ Forward declarations TODO 07 - Emetteur de code ASM }
+Procedure EmitInstrA(Const Mnem, A1 : TString);                   Forward;
+Procedure EmitInstrAB(Const Mnem, A1, A2 : TString);              Forward;
+Procedure EmitPush(Const Reg : TString);                          Forward;
+Procedure EmitPop(Const Reg : TString);                           Forward;
+Procedure EmitMov(Const Dst, Src : TString);                      Forward;
+Procedure EmitProlog;                                             Forward;
+Procedure EmitEpilog;                                             Forward;
+
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
   ============================================================ }
@@ -1187,6 +1196,62 @@ Begin
   EmitRaw('        END     _RKS_MAIN');
   Close(OutF);
   OutFOpen := False;
+End;
+
+{ ============================================================
+  TODO 07 - EMETTEUR DE CODE ASM [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- EmitInstrA : instruction a 1 operande ------------------- }
+{ Formate : 8 espaces + mnemonique + espace + operande           }
+Procedure EmitInstrA(Const Mnem, A1 : TString);
+Begin
+  EmitRaw('        ' + Mnem + '  ' + A1);
+End;
+
+{ ---- EmitInstrAB : instruction a 2 operandes ----------------- }
+{ Formate : 8 espaces + mnemonique + espace + A1 + ', ' + A2    }
+Procedure EmitInstrAB(Const Mnem, A1, A2 : TString);
+Begin
+  EmitRaw('        ' + Mnem + '  ' + A1 + ', ' + A2);
+End;
+
+{ ---- EmitPush : PUSH registre -------------------------------- }
+Procedure EmitPush(Const Reg : TString);
+Begin
+  EmitInstrA('PUSH', Reg);
+End;
+
+{ ---- EmitPop : POP registre ---------------------------------- }
+Procedure EmitPop(Const Reg : TString);
+Begin
+  EmitInstrA('POP', Reg);
+End;
+
+{ ---- EmitMov : MOV dst, src ---------------------------------- }
+Procedure EmitMov(Const Dst, Src : TString);
+Begin
+  EmitInstrAB('MOV', Dst, Src);
+End;
+
+{ ---- EmitProlog : prologue de sous-routine ------------------- }
+{ PUSH BP / MOV BP,SP                                            }
+{ Etablit le cadre de pile standard 8086 pour sous-routines      }
+{ Raku (sub, method, block).                                     }
+Procedure EmitProlog;
+Begin
+  EmitPush('BP');
+  EmitMov('BP', 'SP');
+End;
+
+{ ---- EmitEpilog : epilogue de sous-routine ------------------- }
+{ MOV SP,BP / POP BP / RET                                       }
+{ Restaure le cadre de pile et retourne a l appelant.            }
+Procedure EmitEpilog;
+Begin
+  EmitMov('SP', 'BP');
+  EmitPop('BP');
+  EmitRaw('        RET');
 End;
 
 { ============================================================
