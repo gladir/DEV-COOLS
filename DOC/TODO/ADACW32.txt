@@ -40,7 +40,7 @@
               _ADAP_ (package), _ADAX_ (exception handler)
             Utilitaires : ItoS, ItoSI, UpCaseStr, AsmIdent
 
-  TODO 02 - LEXEUR (TOKENS ADA)
+  TODO 02 - LEXEUR (TOKENS ADA) [IMPLEMENTE]
             Procedure LexInit : ouvrir le fichier source, initialiser
               l etat du lexeur (ligne, colonne, caractere courant)
             Procedure LexClose : fermer le fichier source

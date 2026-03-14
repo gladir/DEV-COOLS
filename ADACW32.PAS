@@ -51,7 +51,7 @@
               _ADAP_ (package), _ADAX_ (exception handler)
             Utilitaires : ItoS, ItoSI, UpCaseStr, AsmIdent
 
-  TODO 02 - LEXEUR (TOKENS ADA)
+  TODO 02 - LEXEUR (TOKENS ADA) [IMPLEMENTE]
             Procedure LexInit : ouvrir le fichier source, initialiser
               l etat du lexeur (ligne, colonne, caractere courant)
             Procedure LexClose : fermer le fichier source
@@ -822,6 +822,18 @@ Var
   OutF       : Text;
   OutFOpen   : Boolean;
 
+  { Lexeur }
+  LexSrcF    : Text;       { handle du fichier source              }
+  LexOpened  : Boolean;    { fichier source ouvert ?               }
+  LexLine    : TString;    { ligne courante                        }
+  LexLineNo  : Integer;    { numero de ligne courante (1-based)    }
+  LexColNo   : Integer;    { colonne courante dans LexLine         }
+  LexEOF     : Boolean;    { fin de fichier atteinte ?             }
+  CurTokType : Integer;    { type du token courant (TOK_xxx)       }
+  CurTokStr  : TString;    { valeur textuelle du token courant     }
+  CurTokNum  : LongInt;    { valeur entiere (TOK_INTEGER)          }
+  CurTokKw   : Integer;    { code mot-cle (KW_xxx) ou KW_NONE     }
+
 {$IFDEF FPC}
   { Variables binaires }
   BinCode     : Array[0..MAX_BIN_CODE - 1] of Byte;
@@ -971,6 +983,636 @@ Begin
   If Not Opts.Warnings Then Exit;
   WriteLn('ADACW32: warning: ', Msg);
   Inc(WarnCount);
+End;
+
+{ ============================================================ }
+{ LEXEUR ADA (TODO 02)                                         }
+{ ============================================================ }
+
+{ ---- Primitives de bas niveau ----------------------------- }
+
+Function LexCurChar : Char;
+Begin
+  If LexEOF Or (LexColNo > Length(LexLine)) Then
+    LexCurChar := #0
+  Else
+    LexCurChar := LexLine[LexColNo];
+End;
+
+Function LexPeek : Char;
+Begin
+  If LexEOF Or (LexColNo + 1 > Length(LexLine)) Then
+    LexPeek := #0
+  Else
+    LexPeek := LexLine[LexColNo + 1];
+End;
+
+Procedure LexAdvance;
+Begin
+  Inc(LexColNo);
+End;
+
+Procedure LexNextLine;
+Begin
+  If EOF(LexSrcF) Then
+  Begin
+    LexEOF   := True;
+    LexLine  := '';
+    LexColNo := 1;
+  End Else
+  Begin
+    ReadLn(LexSrcF, LexLine);
+    Inc(LexLineNo);
+    Inc(TotalLines);
+    LexColNo := 1;
+  End;
+End;
+
+Procedure LexError(Const Msg : TString);
+Begin
+  WriteLn('ADACW32: ligne ', LexLineNo, ': ', Msg);
+  Inc(ErrorCount);
+  If ErrorCount >= MAX_ERRORS Then
+    FatalError('trop d''erreurs, abandon');
+End;
+
+{ ---- LexSkipWS : sauter espaces, TABs et commentaires Ada (--)  }
+Procedure LexSkipWS;
+Var Done : Boolean;
+Begin
+  Done := False;
+  While Not Done Do
+  Begin
+    Done := True;
+    { Lire la prochaine ligne si necessaire }
+    While (Not LexEOF) And (LexColNo > Length(LexLine)) Do
+      LexNextLine;
+    If LexEOF Then Exit;
+    { Sauter espaces et tabulations }
+    While (LexColNo <= Length(LexLine)) And
+          ((LexLine[LexColNo] = ' ') Or (LexLine[LexColNo] = #9)) Do
+    Begin
+      Inc(LexColNo);
+      Done := False;
+    End;
+    { Commentaire Ada : -- jusqu a fin de ligne }
+    If (LexColNo < Length(LexLine)) And
+       (LexLine[LexColNo] = '-') And (LexLine[LexColNo + 1] = '-') Then
+    Begin
+      LexColNo := Length(LexLine) + 1;
+      Done := False;
+    End;
+  End;
+End;
+
+{ ---- IsKeyword : table des 76 mots-cles Ada (KW_PROCEDURE..KW_INOUT) }
+{ S doit etre en MAJUSCULES (garanti par le lexeur).                    }
+Function IsKeyword(Const S : TString) : Integer;
+Begin
+  IsKeyword := KW_NONE;
+  Case Length(S) of
+    2: Begin
+        If      S = 'AT' Then IsKeyword := KW_AT
+        Else If S = 'DO' Then IsKeyword := KW_DO
+        Else If S = 'IF' Then IsKeyword := KW_IF
+        Else If S = 'IN' Then IsKeyword := KW_IN
+        Else If S = 'IS' Then IsKeyword := KW_IS
+        Else If S = 'OF' Then IsKeyword := KW_OF
+        Else If S = 'OR' Then IsKeyword := KW_OR;
+       End;
+    3: Begin
+        If      S = 'ABS' Then IsKeyword := KW_ABS
+        Else If S = 'ALL' Then IsKeyword := KW_ALL
+        Else If S = 'AND' Then IsKeyword := KW_AND
+        Else If S = 'END' Then IsKeyword := KW_END
+        Else If S = 'FOR' Then IsKeyword := KW_FOR
+        Else If S = 'MOD' Then IsKeyword := KW_MOD
+        Else If S = 'NEW' Then IsKeyword := KW_NEW
+        Else If S = 'NOT' Then IsKeyword := KW_NOT
+        Else If S = 'OUT' Then IsKeyword := KW_OUT
+        Else If S = 'REM' Then IsKeyword := KW_REM
+        Else If S = 'USE' Then IsKeyword := KW_USE
+        Else If S = 'XOR' Then IsKeyword := KW_XOR;
+       End;
+    4: Begin
+        If      S = 'BODY' Then IsKeyword := KW_BODY
+        Else If S = 'CASE' Then IsKeyword := KW_CASE
+        Else If S = 'ELSE' Then IsKeyword := KW_ELSE
+        Else If S = 'EXIT' Then IsKeyword := KW_EXIT
+        Else If S = 'GOTO' Then IsKeyword := KW_GOTO
+        Else If S = 'LOOP' Then IsKeyword := KW_LOOP
+        Else If S = 'NULL' Then IsKeyword := KW_NULL
+        Else If S = 'SOME' Then IsKeyword := KW_SOME
+        Else If S = 'TASK' Then IsKeyword := KW_TASK
+        Else If S = 'THEN' Then IsKeyword := KW_THEN
+        Else If S = 'TRUE' Then IsKeyword := KW_TRUE
+        Else If S = 'TYPE' Then IsKeyword := KW_TYPE
+        Else If S = 'WHEN' Then IsKeyword := KW_WHEN
+        Else If S = 'WITH' Then IsKeyword := KW_WITH;
+       End;
+    5: Begin
+        If      S = 'ARRAY' Then IsKeyword := KW_ARRAY
+        Else If S = 'BEGIN' Then IsKeyword := KW_BEGIN
+        Else If S = 'DELAY' Then IsKeyword := KW_DELAY
+        Else If S = 'DELTA' Then IsKeyword := KW_DELTA
+        Else If S = 'ELSIF' Then IsKeyword := KW_ELSIF
+        Else If S = 'ENTRY' Then IsKeyword := KW_ENTRY
+        Else If S = 'FALSE' Then IsKeyword := KW_FALSE
+        Else If S = 'INOUT' Then IsKeyword := KW_INOUT
+        Else If S = 'RAISE' Then IsKeyword := KW_RAISE
+        Else If S = 'RANGE' Then IsKeyword := KW_RANGE
+        Else If S = 'UNTIL' Then IsKeyword := KW_UNTIL
+        Else If S = 'WHILE' Then IsKeyword := KW_WHILE;
+       End;
+    6: Begin
+        If      S = 'ACCEPT' Then IsKeyword := KW_ACCEPT
+        Else If S = 'ACCESS' Then IsKeyword := KW_ACCESS
+        Else If S = 'DIGITS' Then IsKeyword := KW_DIGITS
+        Else If S = 'OTHERS' Then IsKeyword := KW_OTHERS
+        Else If S = 'PRAGMA' Then IsKeyword := KW_PRAGMA
+        Else If S = 'RECORD' Then IsKeyword := KW_RECORD
+        Else If S = 'RETURN' Then IsKeyword := KW_RETURN
+        Else If S = 'SELECT' Then IsKeyword := KW_SELECT
+        Else If S = 'TAGGED' Then IsKeyword := KW_TAGGED;
+       End;
+    7: Begin
+        If      S = 'DECLARE' Then IsKeyword := KW_DECLARE
+        Else If S = 'GENERIC' Then IsKeyword := KW_GENERIC
+        Else If S = 'LIMITED' Then IsKeyword := KW_LIMITED
+        Else If S = 'PACKAGE' Then IsKeyword := KW_PACKAGE
+        Else If S = 'PRIVATE' Then IsKeyword := KW_PRIVATE
+        Else If S = 'RENAMES' Then IsKeyword := KW_RENAMES
+        Else If S = 'REQUEUE' Then IsKeyword := KW_REQUEUE
+        Else If S = 'REVERSE' Then IsKeyword := KW_REVERSE
+        Else If S = 'SUBTYPE' Then IsKeyword := KW_SUBTYPE;
+       End;
+    8: Begin
+        If      S = 'ABSTRACT' Then IsKeyword := KW_ABSTRACT
+        Else If S = 'CONSTANT' Then IsKeyword := KW_CONSTANT
+        Else If S = 'FUNCTION' Then IsKeyword := KW_FUNCTION
+        Else If S = 'SEPARATE' Then IsKeyword := KW_SEPARATE;
+       End;
+    9: Begin
+        If      S = 'EXCEPTION' Then IsKeyword := KW_EXCEPTION
+        Else If S = 'INTERFACE' Then IsKeyword := KW_INTERFACE
+        Else If S = 'PROCEDURE' Then IsKeyword := KW_PROCEDURE
+        Else If S = 'PROTECTED' Then IsKeyword := KW_PROTECTED
+        Else If S = 'TERMINATE' Then IsKeyword := KW_TERMINATE;
+       End;
+    10: If S = 'OVERRIDING' Then IsKeyword := KW_OVERRIDING;
+    12: If S = 'SYNCHRONIZED' Then IsKeyword := KW_SYNCHRONIZED;
+  End;
+End;
+
+{ ---- LexIdent : scanner un identificateur ou mot-cle Ada ---- }
+{ Ada est insensible a la casse : convertir en majuscules.       }
+Procedure LexIdent;
+Var
+  S  : TString;
+  C  : Char;
+Begin
+  S := '';
+  While (LexColNo <= Length(LexLine)) Do
+  Begin
+    C := LexLine[LexColNo];
+    If ((C >= 'A') And (C <= 'Z')) Or ((C >= 'a') And (C <= 'z')) Or
+       ((C >= '0') And (C <= '9')) Or (C = '_') Then
+    Begin
+      If Length(S) < MAX_IDENT Then
+      Begin
+        If (C >= 'a') And (C <= 'z') Then
+          S := S + Chr(Ord(C) - 32)
+        Else
+          S := S + C;
+      End;
+      LexAdvance;
+    End
+    Else
+      Break;
+  End;
+  CurTokType := TOK_IDENT;
+  CurTokStr  := S;
+  CurTokKw   := IsKeyword(S);
+End;
+
+{ ---- LexNumber : scanner un litteral numerique Ada ----------- }
+{ Entier decimal, base#valeur# (2#1010#, 16#FF#), flottant.      }
+Procedure LexNumber;
+Var
+  S      : TString;
+  IntVal : LongInt;
+  Base   : Integer;
+  C, C2  : Char;
+  Dv     : Integer;
+  IsFloat: Boolean;
+  FltStr : TString;
+Begin
+  S       := '';
+  IntVal  := 0;
+  IsFloat := False;
+  Base    := 10;
+
+  { Accumuler les chiffres decimaux initiaux }
+  While (LexColNo <= Length(LexLine)) Do
+  Begin
+    C := LexCurChar;
+    If (C >= '0') And (C <= '9') Then
+    Begin
+      S      := S + C;
+      IntVal := IntVal * 10 + (Ord(C) - Ord('0'));
+      LexAdvance;
+    End
+    Else If C = '_' Then
+      LexAdvance  { underscores autorises dans les nombres Ada }
+    Else
+      Break;
+  End;
+
+  { Litteral en base n#valeur# }
+  If (LexColNo <= Length(LexLine)) And (LexCurChar = '#') Then
+  Begin
+    Base   := IntVal;
+    IntVal := 0;
+    S      := '';
+    LexAdvance; { consommer le '#' }
+    While (LexColNo <= Length(LexLine)) Do
+    Begin
+      C := LexCurChar;
+      If C = '#' Then Begin LexAdvance; Break; End;
+      If C = '_' Then Begin LexAdvance; Continue; End;
+      { Calculer la valeur du chiffre dans la base }
+      If (C >= '0') And (C <= '9') Then
+        Dv := Ord(C) - Ord('0')
+      Else If (C >= 'A') And (C <= 'F') Then
+        Dv := Ord(C) - Ord('A') + 10
+      Else If (C >= 'a') And (C <= 'f') Then
+        Dv := Ord(C) - Ord('a') + 10
+      Else
+        Break;
+      If Dv >= Base Then Break;
+      S      := S + C;
+      IntVal := IntVal * Base + Dv;
+      LexAdvance;
+    End;
+    CurTokType := TOK_INTEGER;
+    CurTokNum  := IntVal;
+    CurTokStr  := IntToStr_(IntVal);
+    Exit;
+  End;
+
+  { Flottant : partie decimale apres '.' }
+  If (LexColNo <= Length(LexLine)) And (LexCurChar = '.') Then
+  Begin
+    C2 := LexPeek;
+    If C2 = '.' Then
+    Begin
+      { operateur '..' : ne pas consommer le '.' }
+      CurTokType := TOK_INTEGER;
+      CurTokNum  := IntVal;
+      CurTokStr  := S;
+      Exit;
+    End;
+    IsFloat := True;
+    FltStr  := S + '.';
+    LexAdvance; { consommer le '.' }
+    While (LexColNo <= Length(LexLine)) Do
+    Begin
+      C := LexCurChar;
+      If (C >= '0') And (C <= '9') Then
+      Begin
+        FltStr := FltStr + C;
+        LexAdvance;
+      End
+      Else If C = '_' Then
+        LexAdvance
+      Else
+        Break;
+    End;
+  End;
+
+  { Exposant E ou e }
+  If (LexColNo <= Length(LexLine)) And
+     ((LexCurChar = 'E') Or (LexCurChar = 'e')) Then
+  Begin
+    If Not IsFloat Then FltStr := S;
+    IsFloat := True;
+    FltStr  := FltStr + 'E';
+    LexAdvance;
+    If (LexColNo <= Length(LexLine)) And
+       ((LexCurChar = '+') Or (LexCurChar = '-')) Then
+    Begin
+      FltStr := FltStr + LexCurChar;
+      LexAdvance;
+    End;
+    While (LexColNo <= Length(LexLine)) And
+          (LexCurChar >= '0') And (LexCurChar <= '9') Do
+    Begin
+      FltStr := FltStr + LexCurChar;
+      LexAdvance;
+    End;
+  End;
+
+  If IsFloat Then
+  Begin
+    CurTokType := TOK_FLOAT;
+    CurTokStr  := FltStr;
+    CurTokNum  := IntVal;
+  End
+  Else
+  Begin
+    CurTokType := TOK_INTEGER;
+    CurTokNum  := IntVal;
+    CurTokStr  := S;
+  End;
+End;
+
+{ ---- LexCharOrTick : scanner 'c' ou tick d attribut --------- }
+{ En Ada : 'c' est un Character literal.
+  Le tick ' devant un ident est l attribut T'FIRST -> retourne TOK_TICK. }
+Procedure LexCharOrTick;
+Var Ch : Char;
+Begin
+  { On vient de consommer le premier ' }
+  If LexColNo > Length(LexLine) Then
+  Begin
+    CurTokType := TOK_TICK;
+    CurTokStr  := '''';
+    Exit;
+  End;
+  Ch := LexCurChar;
+  If (LexColNo + 1 <= Length(LexLine)) And
+     (LexLine[LexColNo + 1] = '''') Then
+  Begin
+    { 'c' -> litteral caractere }
+    CurTokType := TOK_CHAR;
+    CurTokStr  := Ch;
+    CurTokNum  := Ord(Ch);
+    LexAdvance; { consommer le caractere }
+    LexAdvance; { consommer le ' fermant }
+  End
+  Else
+  Begin
+    { tick d attribut : T'FIRST, T'LENGTH, etc. }
+    CurTokType := TOK_TICK;
+    CurTokStr  := '''';
+  End;
+End;
+
+{ ---- LexString : scanner un litteral chaine "..." ----------- }
+{ En Ada : "" a l interieur = guillemet inclus dans la chaine.   }
+Procedure LexString;
+Var
+  S  : TString;
+  C  : Char;
+Begin
+  S := '';
+  While (LexColNo <= Length(LexLine)) Do
+  Begin
+    C := LexCurChar;
+    If C = '"' Then
+    Begin
+      LexAdvance;
+      { "" -> guillemet double inclus dans la chaine }
+      If (LexColNo <= Length(LexLine)) And (LexCurChar = '"') Then
+      Begin
+        If Length(S) < MAX_STR Then
+          S := S + '"';
+        LexAdvance;
+      End
+      Else
+        Break; { fin de la chaine }
+    End
+    Else
+    Begin
+      If Length(S) < MAX_STR Then
+        S := S + C;
+      LexAdvance;
+    End;
+  End;
+  CurTokType := TOK_STRING;
+  CurTokStr  := S;
+End;
+
+{ ---- LexNextToken : dispatcher principal du lexeur Ada ------- }
+Procedure LexNextToken;
+Var
+  C : Char;
+Begin
+  CurTokStr  := '';
+  CurTokNum  := 0;
+  CurTokKw   := KW_NONE;
+
+  LexSkipWS;
+
+  { ---- EOF ---- }
+  If LexEOF Or (LexColNo > Length(LexLine)) Then
+  Begin
+    CurTokType := TOK_EOF;
+    CurTokStr  := '';
+    Exit;
+  End;
+
+  C := LexCurChar;
+
+  { ---- Identificateurs et mots-cles Ada ---- }
+  If ((C >= 'A') And (C <= 'Z')) Or ((C >= 'a') And (C <= 'z')) Or
+     (C = '_') Then
+  Begin
+    LexIdent;
+    Exit;
+  End;
+
+  { ---- Litteraux numeriques ---- }
+  If (C >= '0') And (C <= '9') Then
+  Begin
+    LexNumber;
+    Exit;
+  End;
+
+  { ---- Litteral caractere ou tick d attribut ---- }
+  If C = '''' Then
+  Begin
+    LexAdvance; { consommer le ' ouvrant }
+    LexCharOrTick;
+    Exit;
+  End;
+
+  { ---- Litteral chaine "..." ---- }
+  If C = '"' Then
+  Begin
+    LexAdvance; { consommer le " ouvrant }
+    LexString;
+    Exit;
+  End;
+
+  { ---- Operateurs et separateurs ---- }
+  LexAdvance; { consommer le caractere courant }
+
+  Case C Of
+    '(': Begin CurTokType := TOK_LPAREN;   CurTokStr := '('; End;
+    ')': Begin CurTokType := TOK_RPAREN;   CurTokStr := ')'; End;
+    ',': Begin CurTokType := TOK_COMMA;    CurTokStr := ','; End;
+    ';': Begin CurTokType := TOK_SEMI;     CurTokStr := ';'; End;
+    '|': Begin CurTokType := TOK_BAR;      CurTokStr := '|'; End;
+    '+': Begin CurTokType := TOK_PLUS;     CurTokStr := '+'; End;
+    '-': Begin CurTokType := TOK_MINUS;    CurTokStr := '-'; End;
+    '&': Begin CurTokType := TOK_AMPERSAND;CurTokStr := '&'; End;
+    ':': Begin
+           If (LexColNo <= Length(LexLine)) And (LexCurChar = '=') Then
+           Begin LexAdvance; CurTokType := TOK_COLONASSIGN; CurTokStr := ':='; End
+           Else Begin CurTokType := TOK_COLON; CurTokStr := ':'; End;
+         End;
+    '/': Begin
+           If (LexColNo <= Length(LexLine)) And (LexCurChar = '=') Then
+           Begin LexAdvance; CurTokType := TOK_NEQ; CurTokStr := '/='; End
+           Else Begin CurTokType := TOK_SLASH; CurTokStr := '/'; End;
+         End;
+    '>': Begin
+           If (LexColNo <= Length(LexLine)) And (LexCurChar = '=') Then
+           Begin LexAdvance; CurTokType := TOK_GE; CurTokStr := '>='; End
+           Else Begin CurTokType := TOK_GT; CurTokStr := '>'; End;
+         End;
+    '<': Begin
+           If (LexColNo <= Length(LexLine)) And (LexCurChar = '=') Then
+           Begin LexAdvance; CurTokType := TOK_LE; CurTokStr := '<='; End
+           Else Begin CurTokType := TOK_LT; CurTokStr := '<'; End;
+         End;
+    '=': Begin
+           If (LexColNo <= Length(LexLine)) And (LexCurChar = '>') Then
+           Begin LexAdvance; CurTokType := TOK_ARROW; CurTokStr := '=>'; End
+           Else Begin CurTokType := TOK_EQ; CurTokStr := '='; End;
+         End;
+    '.': Begin
+           If (LexColNo <= Length(LexLine)) And (LexCurChar = '.') Then
+           Begin LexAdvance; CurTokType := TOK_DOTDOT; CurTokStr := '..'; End
+           Else Begin CurTokType := TOK_DOT; CurTokStr := '.'; End;
+         End;
+    '*': Begin
+           If (LexColNo <= Length(LexLine)) And (LexCurChar = '*') Then
+           Begin LexAdvance; CurTokType := TOK_POWER; CurTokStr := '**'; End
+           Else Begin CurTokType := TOK_STAR; CurTokStr := '*'; End;
+         End;
+    Else Begin
+           CurTokType := TOK_UNKNOWN;
+           CurTokStr  := C;
+         End;
+  End;
+End;
+
+{ ---- PrintToken : afficher le token courant (mode debug) ---- }
+Procedure PrintToken;
+Var Kind : TString;
+Begin
+  Case CurTokType Of
+    TOK_IDENT       : Kind := 'IDENT';
+    TOK_INTEGER     : Kind := 'INTEGER';
+    TOK_FLOAT       : Kind := 'FLOAT';
+    TOK_CHAR        : Kind := 'CHAR';
+    TOK_STRING      : Kind := 'STRING';
+    TOK_LPAREN      : Kind := 'LPAREN';
+    TOK_RPAREN      : Kind := 'RPAREN';
+    TOK_COMMA       : Kind := 'COMMA';
+    TOK_SEMI        : Kind := 'SEMI';
+    TOK_COLON       : Kind := 'COLON';
+    TOK_COLONASSIGN : Kind := 'COLONASSIGN';
+    TOK_DOT         : Kind := 'DOT';
+    TOK_DOTDOT      : Kind := 'DOTDOT';
+    TOK_BAR         : Kind := 'BAR';
+    TOK_LT          : Kind := 'LT';
+    TOK_GT          : Kind := 'GT';
+    TOK_LE          : Kind := 'LE';
+    TOK_GE          : Kind := 'GE';
+    TOK_EQ          : Kind := 'EQ';
+    TOK_NEQ         : Kind := 'NEQ';
+    TOK_ARROW       : Kind := 'ARROW';
+    TOK_PLUS        : Kind := 'PLUS';
+    TOK_MINUS       : Kind := 'MINUS';
+    TOK_STAR        : Kind := 'STAR';
+    TOK_SLASH       : Kind := 'SLASH';
+    TOK_POWER       : Kind := 'POWER';
+    TOK_AMPERSAND   : Kind := 'AMPERSAND';
+    TOK_TICK        : Kind := 'TICK';
+    TOK_EOF         : Kind := 'EOF';
+    Else              Kind := 'UNKNOWN';
+  End;
+  Write('[', LexLineNo, ':', LexColNo, '] ', Kind);
+  If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_STRING) Or
+     (CurTokType = TOK_INTEGER) Or (CurTokType = TOK_FLOAT) Or
+     (CurTokType = TOK_CHAR) Then
+    Write(' <', CurTokStr, '>');
+  If (CurTokType = TOK_IDENT) And (CurTokKw <> KW_NONE) Then
+    Write(' kw=', CurTokKw);
+  WriteLn;
+End;
+
+{ ---- Helpers de parsing ------------------------------------ }
+
+Function TokIsKw(Kw : Integer) : Boolean;
+Begin
+  TokIsKw := (CurTokType = TOK_IDENT) And (CurTokKw = Kw);
+End;
+
+Function TokIsOp(Tok : Integer) : Boolean;
+Begin
+  TokIsOp := (CurTokType = Tok);
+End;
+
+Procedure Consume;
+Begin
+  LexNextToken;
+End;
+
+Procedure Expect(TT : Integer; Const What : TString);
+Begin
+  If CurTokType <> TT Then
+    LexError('Attendu ' + What + ', trouve: ''' + CurTokStr + '''');
+  Consume;
+End;
+
+Procedure ExpectKw(Kw : Integer; Const What : TString);
+Begin
+  If Not TokIsKw(Kw) Then
+    LexError('Attendu ' + What + ', trouve: ''' + CurTokStr + '''');
+  Consume;
+End;
+
+{ ---- SkipToSemi : consommer jusqu a ';' pour resynchroniser -- }
+Procedure SkipToSemi;
+Begin
+  While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) Do
+    Consume;
+  If CurTokType = TOK_SEMI Then Consume;
+End;
+
+{ ---- LexInit : ouvrir le fichier source et lire le 1er token }
+Procedure LexInit;
+Begin
+  LexOpened  := False;
+  Assign(LexSrcF, Opts.SrcFile);
+  Reset(LexSrcF);
+  If IOResult <> 0 Then
+    FatalError('impossible d''ouvrir: ' + Opts.SrcFile);
+  LexOpened  := True;
+  LexEOF     := False;
+  LexLineNo  := 0;
+  LexColNo   := 1;
+  LexLine    := '';
+  CurTokType := TOK_EOF;
+  CurTokStr  := '';
+  CurTokNum  := 0;
+  CurTokKw   := KW_NONE;
+  LexNextLine;
+  LexNextToken;
+End;
+
+{ ---- LexClose : fermer le fichier source -------------------- }
+Procedure LexClose;
+Begin
+  If LexOpened Then
+  Begin
+    Close(LexSrcF);
+    LexOpened := False;
+  End;
 End;
 
 { ============================================================ }
@@ -1151,8 +1793,23 @@ End;
 
 Procedure Run;
 Begin
-  WriteLn('ADACW32: compilation de ', Opts.SrcFile, ' ...');
-  WriteLn('ADACW32: TODO 02+ non encore implemente - infrastructure OK');
+  LexInit;
+  If Opts.DebugMode Then
+  Begin
+    { Mode debug : afficher tous les tokens }
+    While CurTokType <> TOK_EOF Do
+    Begin
+      PrintToken;
+      LexNextToken;
+    End;
+    PrintToken; { afficher le token EOF }
+  End
+  Else
+  Begin
+    WriteLn('ADACW32: compilation de ', Opts.SrcFile, ' ...');
+    WriteLn('ADACW32: TODO 03+ non encore implemente - lexeur OK');
+  End;
+  LexClose;
 End;
 
 { ============================================================ }
