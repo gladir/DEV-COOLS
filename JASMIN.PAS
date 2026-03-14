@@ -182,8 +182,8 @@ Type
     FloatVal: Real;          { valeur pour CP_FLOAT                      }
     Ref1    : Integer;       { premier index reference (class, name, ..) }
     Ref2    : Integer;       { second index reference (type, desc, ..)   }
-    LongHi  : LongInt;      { moitie haute pour CP_LONG/CP_DOUBLE       }
-    LongLo  : LongInt;      { moitie basse pour CP_LONG/CP_DOUBLE       }
+    HiBytes : LongInt;      { moitie haute pour CP_LONG/CP_DOUBLE       }
+    LoBytes : LongInt;      { moitie basse pour CP_LONG/CP_DOUBLE       }
   End;
 
   { --- Label dans une methode --- }
@@ -415,8 +415,8 @@ Begin
   CPTab^[i].FloatVal:= 0.0;
   CPTab^[i].Ref1    := 0;
   CPTab^[i].Ref2    := 0;
-  CPTab^[i].LongHi  := 0;
-  CPTab^[i].LongLo  := 0;
+  CPTab^[i].HiBytes := 0;
+  CPTab^[i].LoBytes := 0;
  End;
 
  FieldCount  := 0;
