@@ -216,7 +216,7 @@
             With/Without : with $x { ... } without $x { ... }
               Test de definitude (defini vs Nil)
 
-  TODO 14 - BOUCLES (loop, while, until, repeat, for)
+  TODO 14 - BOUCLES (loop, while, until, repeat, for) [IMPLEMENTE]
             ParseLoopStmt : loop (init; cond; incr) { stmts }
               Equivalent du for C : init, test, corps, increment
               Labels : _RKL_LINIT_N, _RKL_LTEST_N, _RKL_LINCR_N,
@@ -715,6 +715,13 @@ Var
   IfCount    : Integer;
   GivenCount : Integer;
 
+  { Compteurs boucles (TODO 14) }
+  WhileCount  : Integer;
+  UntilCount  : Integer;
+  LoopCount   : Integer;
+  RepeatCount : Integer;
+  ForCount    : Integer;
+
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
@@ -870,6 +877,15 @@ Procedure EmitIORuntime;                                          Forward;
 Procedure ParseIfStmt;                                            Forward;
 Procedure ParseUnlessStmt;                                        Forward;
 Procedure ParseGivenWhenStmt;                                     Forward;
+
+{ Forward declarations TODO 14 - Boucles }
+Procedure LoopPush(Const BrkLbl, ContLbl, RedoLbl : TString);    Forward;
+Procedure LoopPop;                                                Forward;
+Procedure ParseWhileStmt;                                         Forward;
+Procedure ParseUntilStmt;                                         Forward;
+Procedure ParseLoopStmt;                                          Forward;
+Procedure ParseRepeatStmt;                                        Forward;
+Procedure ParseForStmt;                                           Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1115,6 +1131,11 @@ Begin
   LoopTop      := 0;
   IfCount      := 0;
   GivenCount   := 0;
+  WhileCount   := 0;
+  UntilCount   := 0;
+  LoopCount    := 0;
+  RepeatCount  := 0;
+  ForCount     := 0;
   GKwConsumed  := False;
   CurFnRetLbl  := '';
   CurFnName    := '';
@@ -5263,6 +5284,359 @@ Begin
   { Label de fin }
   EmitLabel(LblEnd);
 End;
+
+{ ============================================================
+  TODO 14 - BOUCLES (loop, while, until, repeat, for) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- LoopPush : empiler les labels de boucle ----------------- }
+Procedure LoopPush(Const BrkLbl, ContLbl, RedoLbl : TString);
+Begin
+  If LoopTop >= MAX_LOOP_NEST Then
+  Begin
+    CompileError('Boucles trop imbriquees (max=' +
+                 IntToStr(MAX_LOOP_NEST) + ')');
+    Exit;
+  End;
+  LoopBreakLbl[LoopTop] := BrkLbl;
+  LoopContLbl[LoopTop]  := ContLbl;
+  LoopRedoLbl[LoopTop]  := RedoLbl;
+  Inc(LoopTop);
+End;
+
+{ ---- LoopPop : depiler un niveau de boucle ------------------- }
+Procedure LoopPop;
+Begin
+  If LoopTop > 0 Then Dec(LoopTop);
+End;
+
+(* ---- ParseWhileStmt : while cond BLOC ----------------------- *)
+(* Syntaxe Raku :                                                  *)
+(*   while cond { stmts }                                          *)
+(* Emission :                                                      *)
+(*   _RKL_WTEST_N:  [eval cond] TEST AX,AX / JZ _RKL_WEND_N      *)
+(*                  [bloc]                                         *)
+(*   _RKL_WCNT_N:   JMP _RKL_WTEST_N                              *)
+(*   _RKL_WEND_N:                                                  *)
+Procedure ParseWhileStmt;
+Var
+  Cond    : TExprVal;
+  LblTest : TString;
+  LblEnd  : TString;
+  LblCont : TString;
+  N       : TString;
+Begin
+  Inc(WhileCount);
+  Str(WhileCount, N);
+  LblTest := '_RKL_WTEST_' + N;
+  LblEnd  := '_RKL_WEND_'  + N;
+  LblCont := '_RKL_WCNT_'  + N;
+  LoopPush(LblEnd, LblCont, LblTest);
+
+  EmitLabel(LblTest);
+  ParseExpr(Cond);
+  ExprFlushToAX(Cond);
+  EmitInstr('TEST', 'AX, AX');
+  EmitInstr('JZ', LblEnd);
+
+  ParseBlock;
+
+  EmitLabel(LblCont);
+  EmitInstr('JMP', LblTest);
+  EmitLabel(LblEnd);
+  LoopPop;
+End;
+
+(* ---- ParseUntilStmt : until cond BLOC ----------------------- *)
+(* Comme while mais sort quand la condition est VRAIE              *)
+(* Emission : TEST AX,AX / JNZ _RKL_UEND_N                       *)
+Procedure ParseUntilStmt;
+Var
+  Cond    : TExprVal;
+  LblTest : TString;
+  LblEnd  : TString;
+  LblCont : TString;
+  N       : TString;
+Begin
+  Inc(UntilCount);
+  Str(UntilCount, N);
+  LblTest := '_RKL_UTEST_' + N;
+  LblEnd  := '_RKL_UEND_'  + N;
+  LblCont := '_RKL_UCNT_'  + N;
+  LoopPush(LblEnd, LblCont, LblTest);
+
+  EmitLabel(LblTest);
+  ParseExpr(Cond);
+  ExprFlushToAX(Cond);
+  EmitInstr('TEST', 'AX, AX');
+  EmitInstr('JNZ', LblEnd);
+
+  ParseBlock;
+
+  EmitLabel(LblCont);
+  EmitInstr('JMP', LblTest);
+  EmitLabel(LblEnd);
+  LoopPop;
+End;
+
+(* ---- ParseLoopStmt : loop BLOC / loop (init;cond;incr) BLOC - *)
+(* Forme 1 : loop { stmts }  -> boucle infinie                    *)
+(*   _RKL_LBEG_N: [bloc] JMP _RKL_LBEG_N                          *)
+(*   _RKL_LEND_N:                                                  *)
+(* Forme 2 : loop (init; cond; incr) { stmts }                    *)
+(*   [init]; _RKL_LTEST_N: [cond] JZ _RKL_LEND_N;                 *)
+(*   JMP _RKL_LBOD_N; _RKL_LINCR_N: [incr] JMP _RKL_LTEST_N;     *)
+(*   _RKL_LBOD_N: [bloc] JMP _RKL_LINCR_N; _RKL_LEND_N:           *)
+Procedure ParseLoopStmt;
+Var
+  LblBeg  : TString;
+  LblEnd  : TString;
+  LblCont : TString;
+  LblIncr : TString;
+  LblBody : TString;
+  N       : TString;
+  Cond    : TExprVal;
+  Dummy   : TExprVal;
+Begin
+  Inc(LoopCount);
+  Str(LoopCount, N);
+  LblBeg  := '_RKL_LBEG_'  + N;
+  LblEnd  := '_RKL_LEND_'  + N;
+  LblCont := '_RKL_LCNT_'  + N;
+
+  (* Detecter la forme : loop (init; cond; incr) vs loop BLOC *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+  Begin
+    (* Forme 2 : loop (init; cond; incr) BLOC *)
+    LblIncr := '_RKL_LINCR_' + N;
+    LblBody := '_RKL_LBOD_'  + N;
+    ParserAdvance;   { consommer '(' }
+
+    { Init }
+    If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Then
+    Begin
+      If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'my') Then
+      Begin
+        ParserAdvance;
+        ParseDeclStmt('my');
+      End
+      Else
+        ParseExprStmt;
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      ParserAdvance;
+
+    LoopPush(LblEnd, LblIncr, LblBeg);
+
+    { Test de condition }
+    EmitLabel(LblBeg);
+    If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Then
+    Begin
+      ParseExpr(Cond);
+      ExprFlushToAX(Cond);
+      EmitInstr('TEST', 'AX, AX');
+      EmitInstr('JZ', LblEnd);
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      ParserAdvance;
+
+    { Sauter au corps, placer l'increment entre }
+    EmitInstr('JMP', LblBody);
+    EmitLabel(LblIncr);
+    If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
+      ParseExpr(Dummy);
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance;
+    EmitInstr('JMP', LblBeg);
+
+    EmitLabel(LblBody);
+    ParseBlock;
+    EmitInstr('JMP', LblIncr);
+    EmitLabel(LblEnd);
+    LoopPop;
+  End
+  Else
+  Begin
+    (* Forme 1 : loop BLOC -> boucle infinie *)
+    LoopPush(LblEnd, LblCont, LblBeg);
+    EmitLabel(LblBeg);
+    ParseBlock;
+    EmitLabel(LblCont);
+    EmitInstr('JMP', LblBeg);
+    EmitLabel(LblEnd);
+    LoopPop;
+  End;
+End;
+
+(* ---- ParseRepeatStmt : repeat BLOC while/until cond --------- *)
+(* Syntaxe Raku :                                                  *)
+(*   repeat { stmts } while cond;                                  *)
+(*   repeat { stmts } until cond;                                  *)
+(* Emission :                                                      *)
+(*   _RKL_RBEG_N: [bloc]                                          *)
+(*   _RKL_RCNT_N: [cond] TEST AX,AX / JNZ ou JZ _RKL_RBEG_N      *)
+(*   _RKL_REND_N:                                                  *)
+Procedure ParseRepeatStmt;
+Var
+  Cond      : TExprVal;
+  LblBeg    : TString;
+  LblEnd    : TString;
+  LblCont   : TString;
+  N         : TString;
+  IsUntil   : Boolean;
+Begin
+  Inc(RepeatCount);
+  Str(RepeatCount, N);
+  LblBeg  := '_RKL_RBEG_'  + N;
+  LblEnd  := '_RKL_REND_'  + N;
+  LblCont := '_RKL_RCNT_'  + N;
+  LoopPush(LblEnd, LblCont, LblBeg);
+
+  EmitLabel(LblBeg);
+  ParseBlock;
+
+  EmitLabel(LblCont);
+  { Attendre while ou until }
+  IsUntil := False;
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'while') Then
+    ParserAdvance
+  Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'until') Then
+  Begin
+    IsUntil := True;
+    ParserAdvance;
+  End
+  Else
+    CompileError('while ou until attendu apres repeat { ... }');
+
+  ParseExpr(Cond);
+  ExprFlushToAX(Cond);
+  EmitInstr('TEST', 'AX, AX');
+  If IsUntil Then
+    EmitInstr('JZ', LblBeg)     { until : reboucler si FAUX }
+  Else
+    EmitInstr('JNZ', LblBeg);   { while : reboucler si VRAI }
+
+  EmitLabel(LblEnd);
+  LoopPop;
+
+  { Consommer point-virgule optionnel }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
+End;
+
+(* ---- ParseForStmt : for RANGE -> $var BLOC ------------------- *)
+(* Syntaxe Raku :                                                  *)
+(*   for RANGE_EXPR -> $var { stmts }                              *)
+(*   for RANGE_EXPR { stmts }  (utilise $_ implicite)             *)
+(* Range simple : START..END  => boucle compteur                   *)
+(* Emission (range) :                                              *)
+(*   MOV [var], START                                              *)
+(*   _RKL_FTEST_N: MOV AX,[var] / CMP AX, END / JG _RKL_FEND_N   *)
+(*   [bloc]                                                        *)
+(*   _RKL_FINCR_N: INC [var] / JMP _RKL_FTEST_N                   *)
+(*   _RKL_FEND_N:                                                  *)
+Procedure ParseForStmt;
+Var
+  LblTest  : TString;
+  LblEnd   : TString;
+  LblIncr  : TString;
+  N        : TString;
+  VarName  : TString;
+  SymIdx   : Integer;
+  StartE   : TExprVal;
+  EndE     : TExprVal;
+  OfsStr   : TString;
+  HasVar   : Boolean;
+Begin
+  Inc(ForCount);
+  Str(ForCount, N);
+  LblTest := '_RKL_FTEST_' + N;
+  LblEnd  := '_RKL_FEND_'  + N;
+  LblIncr := '_RKL_FINCR_' + N;
+
+  HasVar := False;
+  SymIdx := -1;
+  VarName := '$_';
+
+  { Evaluer l'expression de range (start..end) }
+  ParseExpr(StartE);
+  ExprFlushToAX(StartE);
+  EmitInstr('PUSH', 'AX');   { sauvegarder start sur la pile }
+
+  { Detecter .. pour range }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '..') Then
+  Begin
+    ParserAdvance;   { consommer '..' }
+    ParseExpr(EndE);
+    ExprFlushToAX(EndE);
+    EmitInstr('PUSH', 'AX');   { sauvegarder end sur la pile }
+  End
+  Else
+  Begin
+    { Pas de range : stub boucle unique }
+    EmitInstr('PUSH', 'AX');   { end = start (1 iteration) }
+  End;
+
+  { Detecter -> $var pour la variable d'iteration }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '->') Then
+  Begin
+    ParserAdvance;   { consommer '->' }
+    If CurToken.Kind = TK_SCALAR Then
+    Begin
+      VarName := CurToken.Val;
+      ParserAdvance;
+      HasVar := True;
+    End
+    Else
+      CompileError('variable scalaire attendue apres ->');
+  End;
+
+  { Allouer la variable d'iteration locale }
+  SymIdx := DeclAllocSym(VarName, '$', SC_MY, TY_IDX_INT);
+
+  { Initialiser la variable avec la valeur de start }
+  EmitInstr('POP', 'BX');    { BX = end }
+  EmitInstr('POP', 'AX');    { AX = start }
+  If SymIdx >= 0 Then
+  Begin
+    Str(SymTab[SymIdx].Offset, OfsStr);
+    EmitInstr('MOV', 'WORD PTR [BP-' + OfsStr + '], AX');
+  End;
+  { Sauvegarder la borne fin dans CX (on la PUSH pour la retrouver) }
+  EmitInstr('PUSH', 'BX');
+
+  LoopPush(LblEnd, LblIncr, LblTest);
+
+  { Test de boucle }
+  EmitLabel(LblTest);
+  If SymIdx >= 0 Then
+  Begin
+    Str(SymTab[SymIdx].Offset, OfsStr);
+    EmitInstr('MOV', 'AX, WORD PTR [BP-' + OfsStr + ']');
+  End;
+  { Recuperer la borne fin depuis la pile (peek sans pop) }
+  EmitInstr('MOV', 'BX, WORD PTR [SP]');
+  EmitInstr('CMP', 'AX, BX');
+  EmitInstr('JG', LblEnd);
+
+  { Corps de boucle }
+  ParseBlock;
+
+  { Increment }
+  EmitLabel(LblIncr);
+  If SymIdx >= 0 Then
+  Begin
+    Str(SymTab[SymIdx].Offset, OfsStr);
+    EmitInstr('INC', 'WORD PTR [BP-' + OfsStr + ']');
+  End;
+  EmitInstr('JMP', LblTest);
+
+  EmitLabel(LblEnd);
+  { Nettoyer la borne fin de la pile }
+  EmitInstr('ADD', 'SP, 2');
+  LoopPop;
+End;
+
 Procedure ParseStmt;
 Var
   Kw : TString;
@@ -5305,6 +5679,73 @@ Begin
     Begin
       ParserAdvance;   { consommer 'given' }
       ParseGivenWhenStmt;
+      Exit;
+    End;
+
+    { Boucles (TODO 14) }
+    If Kw = 'while' Then
+    Begin
+      ParserAdvance;   { consommer 'while' }
+      ParseWhileStmt;
+      Exit;
+    End;
+    If Kw = 'until' Then
+    Begin
+      ParserAdvance;   { consommer 'until' }
+      ParseUntilStmt;
+      Exit;
+    End;
+    If Kw = 'loop' Then
+    Begin
+      ParserAdvance;   { consommer 'loop' }
+      ParseLoopStmt;
+      Exit;
+    End;
+    If Kw = 'repeat' Then
+    Begin
+      ParserAdvance;   { consommer 'repeat' }
+      ParseRepeatStmt;
+      Exit;
+    End;
+    If Kw = 'for' Then
+    Begin
+      ParserAdvance;   { consommer 'for' }
+      ParseForStmt;
+      Exit;
+    End;
+
+    { Controle de boucle : last, next, redo }
+    If Kw = 'last' Then
+    Begin
+      ParserAdvance;   { consommer 'last' }
+      If LoopTop > 0 Then
+        EmitInstr('JMP', LoopBreakLbl[LoopTop - 1])
+      Else
+        EmitComment('last: hors d''une boucle (ignore)');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+      Exit;
+    End;
+    If Kw = 'next' Then
+    Begin
+      ParserAdvance;   { consommer 'next' }
+      If LoopTop > 0 Then
+        EmitInstr('JMP', LoopContLbl[LoopTop - 1])
+      Else
+        EmitComment('next: hors d''une boucle (ignore)');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+      Exit;
+    End;
+    If Kw = 'redo' Then
+    Begin
+      ParserAdvance;   { consommer 'redo' }
+      If LoopTop > 0 Then
+        EmitInstr('JMP', LoopRedoLbl[LoopTop - 1])
+      Else
+        EmitComment('redo: hors d''une boucle (ignore)');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
       Exit;
     End;
   End;
@@ -5366,6 +5807,11 @@ Begin
   LoopTop        := 0;
   IfCount        := 0;
   GivenCount     := 0;
+  WhileCount     := 0;
+  UntilCount     := 0;
+  LoopCount      := 0;
+  RepeatCount    := 0;
+  ForCount       := 0;
   GKwConsumed    := False;
   GCallArgCount  := 0;
   CurFnRetLbl    := '';
