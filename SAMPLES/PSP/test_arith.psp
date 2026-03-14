@@ -1,0 +1,11 @@
+<html>
+<body>
+<%
+var
+  x, y: Integer;
+begin
+  x := 10 + 5 * 3;
+end.
+%>
+</body>
+</html>

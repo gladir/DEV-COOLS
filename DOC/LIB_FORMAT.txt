@@ -1,0 +1,676 @@
+==============================================================================
+  FORMAT DE FICHIER .LIB (BIBLIOTHEQUE DE MODULES OBJETS)
+==============================================================================
+
+  Document de reference pour les formats de bibliotheque .LIB
+  utilises dans les programmes de ce depot, en particulier :
+
+    - LINK.PAS   : editeur de liens DOS, lit les .LIB au format OMF
+    - CCW32.PAS  : compilateur C vers Win32, accepte des .LIB COFF/PE
+    - PSPCW32.PAS: compilateur PSP vers Win32, meme format COFF/PE
+
+  Il existe deux familles principales de format .LIB :
+
+    1. LIB OMF (Object Module Format)   - DOS 16 bits / TIS OMF
+    2. LIB COFF (Archive Microsoft)      - Win32 / PE-COFF
+
+  Ce document decrit les deux familles en detail.
+
+==============================================================================
+  PREMIERE PARTIE : FORMAT LIB OMF (DOS 16/32 BITS)
+==============================================================================
+
+  Norme : TIS (Tool Interface Standard) OMF 1.1
+  Utilise par : Microsoft LINK, Borland TLINK, Watcom WLINK, LINK.PAS
+  Extension : .LIB
+  Ordre des octets : little-endian (Intel)
+
+==============================================================================
+1. STRUCTURE GENERALE
+==============================================================================
+
+Un fichier .LIB OMF est un conteneur de modules objets (.OBJ) au format
+OMF, precede d'un en-tete de bibliotheque et termine par un dictionnaire
+de symboles publics :
+
+  +=======================================+
+  |  En-tete de bibliotheque (LIBHDR)     |  Record type $F0
+  |  Taille de page, offset dictionnaire  |
+  +=======================================+
+  |  Module OBJ #1                        |  THEADR ... MODEND
+  |  (aligne sur frontiere de page)       |
+  +---------------------------------------+
+  |  Bourrage (padding a la page)         |
+  +=======================================+
+  |  Module OBJ #2                        |  THEADR ... MODEND
+  |  (aligne sur frontiere de page)       |
+  +---------------------------------------+
+  |  Bourrage (padding a la page)         |
+  +=======================================+
+  |  ...                                  |
+  +=======================================+
+  |  Module OBJ #N                        |
+  |  (aligne sur frontiere de page)       |
+  +---------------------------------------+
+  |  Bourrage (padding a la page)         |
+  +=======================================+
+  |  Dictionnaire (LIBEND)                |  Record type $F1
+  |  Table de hachage des symboles        |
+  +=======================================+
+
+==============================================================================
+2. EN-TETE DE BIBLIOTHEQUE (LIBHDR) - Record $F0
+==============================================================================
+
+Le premier enregistrement du fichier est toujours un record OMF de
+type $F0. Sa structure est :
+
+  Offset  Taille  Description
+  ------  ------  -----------------------------------------
+  0       1       Type de record = $F0
+  1       2       Longueur du record (RecLen), little-endian
+  3       4       Offset dans le fichier du dictionnaire
+                  (position du record $F1)
+  7       2       Nombre de blocs du dictionnaire (DictBlocks)
+  9       1       Drapeaux (Flags) :
+                    bit 0 : 1 = index sensible a la casse
+
+Le reste du record (jusqu'a RecLen octets) est du bourrage (octets nuls).
+
+La TAILLE DE PAGE de la bibliotheque est calculee comme :
+
+    PageSize = RecLen + 3
+
+Cela represente la taille totale du record $F0 (1 + 2 + RecLen).
+Chaque module OBJ dans la bibliotheque est aligne sur un multiple
+de PageSize. Valeurs typiques :
+
+    RecLen = 13  -> PageSize = 16 octets
+    RecLen = 253 -> PageSize = 256 octets
+    RecLen = 509 -> PageSize = 512 octets
+
+Le numero de page d'un module est donc :
+
+    NumeroPage = OffsetFichier / PageSize
+
+==============================================================================
+3. MODULES OBJ DANS LA BIBLIOTHEQUE
+==============================================================================
+
+Chaque module est une sequence complete d'enregistrements OMF, comme
+un fichier .OBJ autonome :
+
+  - Commence par THEADR ($80) ou LHEADR ($82)
+  - Contient les records habituels : LNAMES, SEGDEF, PUBDEF, EXTDEF,
+    LEDATA, LIDATA, FIXUPP, COMENT, etc.
+  - Se termine par MODEND ($8A) ou MODEND32 ($8B)
+
+Apres le dernier octet du MODEND, le module est bourre (padding) avec
+des octets nuls ($00) jusqu'a la prochaine frontiere de page.
+
+Le linker LINK.PAS parcourt les modules en utilisant la fonction
+FindNextOmfModuleInLib() qui cherche les records THEADR ($80/$82)
+et determine la fin du module en trouvant le MODEND ($8A/$8B)
+correspondant :
+
+  - TryParseOmfModuleRange() : a partir d'un THEADR, lit tous les
+    records jusqu'au MODEND pour determiner l'etendue (modStart..modEnd)
+  - Le nom du module est extrait du champ Name du record THEADR
+
+==============================================================================
+4. DICTIONNAIRE DE BIBLIOTHEQUE (LIBEND) - Record $F1
+==============================================================================
+
+Le dictionnaire se trouve a la fin du fichier, a l'offset indique par
+l'en-tete $F0. Il est identifie par un record de type $F1.
+
+Sa structure utilise une table de hachage permettant au linker de
+retrouver rapidement quel module contient un symbole public donne.
+
+4.1 Structure du dictionnaire OMF
+----------------------------------
+
+Le dictionnaire est compose de DictBlocks blocs de 512 octets chacun.
+Chaque bloc contient :
+
+  Offset  Taille  Description
+  ------  ------  -----------------------------------------
+  0       37      Table de hachage (37 * 1 octet)
+                  Chaque entree est un index dans les donnees
+                  du bloc (0 = vide, sinon offset / 2)
+  37      475     Zone de donnees : noms de symboles et
+                  numeros de page associes
+
+Chaque entree de symbole dans la zone de donnees contient :
+
+  - 1 octet : longueur du nom
+  - N octets : nom du symbole (ASCII)
+  - 2 octets : numero de page du module (little-endian)
+
+4.2 Algorithme de hachage
+--------------------------
+
+Le hachage OMF utilise deux fonctions :
+
+    hash1(nom) -> index de bloc     (0 .. DictBlocks-1)
+    hash2(nom) -> index de seau     (0 .. 36)
+
+L'algorithme de hachage standard Microsoft pour les bibliotheques OMF
+utilise un XOR rotatif sur les caracteres du nom :
+
+    blockIndex = 0
+    bucketIndex = 0
+    Pour chaque caractere c du nom :
+        blockIndex = (blockIndex XOR c) rotateLeft 2
+        bucketIndex = (bucketIndex XOR c) rotateRight 2
+    blockIndex = blockIndex MOD DictBlocks
+    bucketIndex = bucketIndex MOD 37
+
+En cas de collision, on avance lineairement (bucket + delta) MOD 37,
+ou (block + delta2) MOD DictBlocks.
+
+4.3 Recherche d'un symbole
+----------------------------
+
+  1. Calculer hash1(symbole) -> numBloc
+  2. Calculer hash2(symbole) -> numSeau
+  3. Lire le bloc numBloc du dictionnaire
+  4. Consulter table[numSeau] :
+     - Si 0 : symbole absent
+     - Sinon : lire l'entree a l'offset indique
+  5. Comparer le nom stocke avec le symbole cherche
+  6. Si egal : le numero de page donne l'offset du module
+     (offset = pageNum * pageSize)
+  7. Si different : collision, avancer au prochain seau/bloc
+
+==============================================================================
+5. RESOLUTION DES BIBLIOTHEQUES DANS LINK.PAS
+==============================================================================
+
+LINK.PAS utilise une approche par balayage sequentiel plutot que le
+dictionnaire de hachage. La procedure ResolveLibrariesForExternals()
+effectue des passes multiples :
+
+  1. Compter les symboles externes non resolus
+  2. Pour chaque bibliotheque (.LIB) :
+     a. Ouvrir le fichier et parcourir sequentiellement les modules
+     b. Pour chaque module (FindNextOmfModuleInLib) :
+        - Verifier s'il n'est pas deja charge (IsLibModuleAlreadyLoaded)
+        - Scanner ses records PUBDEF/TYPDEF ($8E-$93, $B6-$B7) pour
+          voir s'il definit un symbole necessaire
+          (ModuleDefinesNeededSymbol / PublicRecordDefinesNeededSymbol)
+        - Si oui : extraire le module vers un fichier OBJ temporaire
+          (~LNKLIB1.OBJ, ~LNKLIB2.OBJ, etc.)
+        - Charger ce fichier temporaire (ReadObjFile)
+        - Appliquer les alias (ApplyAliasToExternalSymbols)
+     c. Arreter le scan si tous les externes sont resolus
+  3. Repeter les passes tant que des modules sont charges (max 32 passes)
+  4. Nettoyer les fichiers temporaires (CleanupTempLibObjFiles)
+
+Limites de LINK.PAS :
+  - MAX_CMD_LIBS = 256              (bibliotheques en entree)
+  - MAX_LIB_TRACKED_MODULES = 256   (modules charges/suivis)
+  - Passes max : 32
+
+Les bibliotheques peuvent etre specifiees :
+  - En ligne de commande (4eme champ du format LINK standard)
+  - Via COMENT DEFAULTLIB dans les fichiers .OBJ
+    (ParseDefaultLibrariesFromComment)
+
+==============================================================================
+  DEUXIEME PARTIE : FORMAT LIB COFF/PE (WINDOWS 32/64 BITS)
+==============================================================================
+
+  Norme : Microsoft PE/COFF Specification (archive format)
+  Utilise par : Microsoft LIB, LINK, Visual C++, MinGW ar
+  Extension : .LIB (aussi .A sous MinGW/GCC)
+  Ordre des octets : little-endian
+
+  CCW32.PAS et PSPCW32.PAS generent du COFF (.OBJ) et du PE (.EXE)
+  et acceptent des fichiers .LIB pour le linkage. Le format de ces
+  .LIB est l'archive COFF Microsoft.
+
+==============================================================================
+6. SIGNATURE DE L'ARCHIVE
+==============================================================================
+
+Tout fichier .LIB COFF commence par la signature ASCII de 8 octets :
+
+    "!<arch>\n"
+
+soit en hexadecimal :
+
+    21 3C 61 72 63 68 3E 0A
+
+Cette signature identifie le format d'archive (inspire du format Unix
+ar). Tout ce qui suit est une sequence de membres d'archive.
+
+==============================================================================
+7. EN-TETE DE MEMBRE D'ARCHIVE
+==============================================================================
+
+Chaque membre de l'archive (y compris les membres speciaux) est precede
+d'un en-tete de 60 octets au format texte ASCII :
+
+  Offset  Taille  Champ         Description
+  ------  ------  -----------   -------------------------------------------
+  0       16      Name          Nom du membre, termine par '/' et padde
+                                avec des espaces (0x20)
+  16      12      Date          Date de modification (secondes Unix, ASCII)
+  28      6       UserID        Identifiant utilisateur (ASCII, souvent "0")
+  34      6       GroupID       Identifiant de groupe (ASCII, souvent "0")
+  40      8       Mode          Mode du fichier (octal ASCII, ex: "100666")
+  48      10      Size          Taille des donnees du membre (ASCII decimal)
+  58      2       EndHeader     Marqueur de fin = "`\n" (0x60 0x0A)
+
+Chaque champ est padde a droite avec des espaces (0x20).
+La taille (Size) indique le nombre d'octets de donnees qui suivent
+immediatement l'en-tete. Si Size est impair, un octet de padding
+('\n' = 0x0A) est ajoute apres les donnees pour aligner le prochain
+membre sur une frontiere paire.
+
+Conventions de nommage :
+  - "/" seul          : Premier membre du linker (1st Linker Member)
+  - "/" seul (2e fois): Deuxieme membre du linker (2nd Linker Member)
+  - "//"              : Membre des noms longs (Longnames Member)
+  - "nom/"            : Membre normal (fichier OBJ ou import)
+  - "/123"            : Nom long (offset 123 dans le Longnames Member)
+
+==============================================================================
+8. PREMIER MEMBRE DU LINKER (1st Linker Member)
+==============================================================================
+
+Le premier membre de l'archive est le "1st Linker Member" (aussi appele
+"Symbol Index" ou "Armap"). Son nom dans l'en-tete est "/" .
+
+Structure des donnees :
+
+  Offset  Taille       Description
+  ------  ----------   -----------------------------------------
+  0       4            Nombre de symboles (N), BIG-ENDIAN (!)
+  4       4*N          Table des offsets : pour chaque symbole,
+                       l'offset dans le fichier du membre qui le
+                       contient (BIG-ENDIAN)
+  4+4*N   variable     Table des noms : N chaines ASCII terminees
+                       par un octet nul, concatenees
+
+ATTENTION : contrairement au reste du format, ce premier membre stocke
+les entiers en big-endian (convention heritee du format ar Unix).
+
+Ce membre permet la recherche de symboles de maniere sequentielle.
+Les symboles sont listes dans l'ordre ou ils apparaissent dans les
+fichiers OBJ sources.
+
+==============================================================================
+9. DEUXIEME MEMBRE DU LINKER (2nd Linker Member)
+==============================================================================
+
+Le deuxieme membre (aussi nomme "/") est specifique a Microsoft et
+optimise pour une recherche rapide. Sa structure est :
+
+  Offset  Taille       Description
+  ------  ----------   -----------------------------------------
+  0       4            Nombre de membres (M), little-endian
+  4       4*M          Table des offsets des membres : offset de
+                       chaque membre d'archive dans le fichier
+  4+4*M   4            Nombre de symboles (N), little-endian
+  +4      2*N          Table d'indices : pour chaque symbole,
+                       l'indice (1-based) du membre contenant ce
+                       symbole (Word, little-endian)
+  +2*N    variable     Table des noms : N chaines ASCII terminees
+                       par un octet nul, concatenees
+
+Contrairement au 1er membre, celui-ci est en little-endian et les
+symboles sont tries par ordre lexicographique, ce qui permet une
+recherche par dichotomie (recherche binaire) tres rapide.
+
+==============================================================================
+10. MEMBRE DES NOMS LONGS (Longnames Member)
+==============================================================================
+
+Si des membres de l'archive ont des noms depassant 15 caracteres, un
+membre special avec le nom "//" est present. Il contient les noms longs
+concatenes, chacun termine par un octet nul :
+
+    "nom_tres_long_1.obj\0nom_tres_long_2.obj\0..."
+
+Quand un nom de membre commence par "/" suivi d'un nombre decimal
+(par exemple "/123"), ce nombre est l'offset dans le Longnames Member
+ou se trouve le vrai nom.
+
+==============================================================================
+11. MEMBRES OBJETS (COFF .OBJ)
+==============================================================================
+
+Les membres normaux de l'archive sont des fichiers COFF .OBJ complets.
+Chaque fichier COFF commence par un en-tete COFF :
+
+  Offset  Taille  Description
+  ------  ------  -----------------------------------------
+  0       2       Machine (ex: $014C = i386, $8664 = x86-64)
+  2       2       NumberOfSections
+  4       4       TimeDateStamp
+  8       4       PointerToSymbolTable
+  12      4       NumberOfSymbols
+  16      2       SizeOfOptionalHeader (0 pour les .OBJ)
+  18      2       Characteristics
+
+Suivi des en-tetes de sections (40 octets chacun) :
+
+  Offset  Taille  Description
+  ------  ------  -----------------------------------------
+  0       8       Name (ex: ".text\0\0\0", ".data\0\0\0")
+  8       4       VirtualSize
+  12      4       VirtualAddress
+  16      4       SizeOfRawData
+  20      4       PointerToRawData
+  24      4       PointerToRelocations
+  28      4       PointerToLinenumbers
+  32      2       NumberOfRelocations
+  34      2       NumberOfLinenumbers
+  36      4       Characteristics (flags de section)
+
+Flags de section courants (utilises dans CCW32.PAS) :
+  $60000020 = IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_READ
+              (.text - code executable)
+  $40000040 = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ
+              (.rdata - donnees en lecture seule)
+  $C0000040 = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE
+              (.data - donnees en lecture/ecriture)
+
+Dans CCW32.PAS, la procedure WriteCOFFFile() genere un .OBJ COFF avec :
+  - En-tete COFF (Machine = $014C, 2 sections)
+  - Section ".text" (code compile)
+  - Section ".data" (donnees globales)
+  - Table des chaines (4 octets minimum = taille de la table elle-meme)
+
+==============================================================================
+12. MEMBRES D'IMPORTATION (Import Library)
+==============================================================================
+
+Les bibliotheques d'importation (.LIB) pour les DLL ne contiennent pas
+de code objet mais des descriptions d'importation. Ce sont les fichiers
+.LIB fournis avec le SDK Windows (kernel32.lib, user32.lib, etc.).
+
+Il existe deux formats :
+
+12.1 Import ancien (Long Format)
+----------------------------------
+
+Un membre OBJ special contenant :
+  - Section .idata$2 : Import Directory Table (IDD)
+  - Section .idata$4 : Import Lookup Table (ILT)
+  - Section .idata$5 : Import Address Table (IAT)
+  - Section .idata$6 : Hint/Name Table
+  - Symboles COFF pour les noms importes
+
+12.2 Import court (Short Format - Import Object Header)
+---------------------------------------------------------
+
+Defini par le standard PE/COFF, ce format compact commence par :
+
+  Offset  Taille  Description
+  ------  ------  -----------------------------------------
+  0       2       Sig1 = IMAGE_FILE_MACHINE_UNKNOWN ($0000)
+  2       2       Sig2 = IMPORT_OBJECT_HDR_SIG2 ($FFFF)
+  4       2       Version (typiquement 0)
+  6       2       Machine ($014C pour i386)
+  8       4       TimeDateStamp
+  12      4       SizeOfData (taille des donnees qui suivent)
+  16      2       Ordinal/Hint
+  18      2       Flags (bits) :
+                    bits 0-1 : IMPORT_OBJECT_TYPE
+                      0 = IMPORT_OBJECT_CODE
+                      1 = IMPORT_OBJECT_DATA
+                      2 = IMPORT_OBJECT_CONST
+                    bits 2-4 : IMPORT_OBJECT_NAME_TYPE
+                      0 = IMPORT_NAME_ORDINAL (import par ordinal)
+                      1 = IMPORT_NAME         (nom identique)
+                      2 = IMPORT_NAME_NOPREFIX (sans prefixe _ ou @)
+                      3 = IMPORT_NAME_UNDECORATE (sans decoration)
+
+Apres l'en-tete, deux chaines ASCII terminees par nul :
+  - Nom du symbole importe
+  - Nom de la DLL source (ex: "KERNEL32.dll")
+
+==============================================================================
+13. UTILISATION DANS CCW32.PAS
+==============================================================================
+
+CCW32.PAS accepte des fichiers .LIB et .OBJ en ligne de commande :
+
+    CCW32 programme.c mylib.lib helper.obj
+
+Le compilateur stocke les fichiers de linkage dans un tableau :
+  - LinkFiles[0..MAX_LINK_FILES-1] : noms des fichiers
+  - LinkCount : nombre de fichiers
+
+Les fichiers sont identifies par leur extension :
+  - ".lib" -> bibliotheque de linkage
+  - ".obj" -> module objet individuel
+
+CCW32.PAS genere directement des executables PE Win32 (.EXE) ou
+des fichiers COFF (.OBJ) grace aux procedures :
+  - WritePEFile() : genere un PE complet avec en-tete DOS MZ,
+    signature PE, en-tete COFF, en-tete optionnel, sections
+    .text/.rdata/.data, et table d'importation
+  - WriteCOFFFile() : genere un fichier COFF minimal avec
+    sections .text et .data
+
+Les constantes PE/COFF definies dans CCW32.PAS :
+  PE_DOS_MAGIC     = $5A4D          'MZ'
+  PE_PE_SIG        = $00004550      'PE\0\0'
+  PE_MACHINE_I386  = $014C          Intel 386
+  PE_OPT_SIZE      = 224            Taille en-tete optionnel PE32
+  PE_MAGIC_32      = $010B          PE32
+  PE_IMG_BASE      = $00400000      Base d'image par defaut
+  PE_SEC_ALIGN     = $1000          Alignement de section (4 Ko)
+  PE_FILE_ALIGN    = $0200          Alignement de fichier (512 o)
+  COFF_RELOC_DIR32 = 6              IMAGE_REL_I386_DIR32
+  COFF_RELOC_REL32 = 20             IMAGE_REL_I386_REL32
+
+==============================================================================
+14. TABLE D'IMPORTATION PE (Import Directory)
+==============================================================================
+
+L'Import Directory est le mecanisme par lequel un executable PE
+reference les fonctions des DLL. Elle est placee dans la section
+.rdata et contient :
+
+14.1 Import Directory Table (IDT)
+-----------------------------------
+
+Tableau d'entrees de 20 octets chacune :
+
+  Offset  Taille  Description
+  ------  ------  -----------------------------------------
+  0       4       RVA de l'Import Lookup Table (ILT)
+  4       4       TimeDateStamp (0)
+  8       4       ForwarderChain (-1 ou 0)
+  12      4       RVA du nom de la DLL (chaine ASCII)
+  16      4       RVA de l'Import Address Table (IAT)
+
+La table se termine par une entree entierement nulle (20 octets a 0).
+
+14.2 Import Lookup Table (ILT)
+--------------------------------
+
+Tableau de DWORDs (32 bits) pour PE32, un par fonction importee :
+
+  bit 31 = 0 : import par nom
+               bits 0-30 = RVA de l'entree Hint/Name
+  bit 31 = 1 : import par ordinal
+               bits 0-15 = numero d'ordinal
+
+Termine par un DWORD nul.
+
+14.3 Hint/Name Table
+-----------------------
+
+Pour chaque import par nom :
+
+  Offset  Taille    Description
+  ------  --------  -----------------------------------------
+  0       2         Hint (index dans la table d'export de la DLL)
+  2       variable  Nom de la fonction (ASCII, termine par nul)
+  ?       0 ou 1    Padding pour alignement sur 2 octets
+
+14.4 Import Address Table (IAT)
+---------------------------------
+
+Identique a l'ILT au moment du chargement. Le loader Windows remplace
+chaque entree par l'adresse reelle de la fonction en memoire. C'est
+par ce mecanisme que les appels "call [__imp_ExitProcess]" fonctionnent.
+
+CCW32.PAS construit cette table d'importation dans WritePEFile() pour
+les API kernel32.dll utilisees (ExitProcess, GetStdHandle, WriteFile,
+HeapAlloc, HeapFree, GetProcessHeap, etc.).
+
+==============================================================================
+15. COMPARAISON OMF LIB vs COFF LIB
+==============================================================================
+
+  Critere               OMF .LIB            COFF .LIB
+  --------------------  ------------------  ----------------------
+  Signature             $F0 (record OMF)    "!<arch>\n"
+  Cible typique         DOS 16-bit          Win32/Win64
+  Format des modules    OMF (.OBJ OMF)      COFF (.OBJ COFF)
+  En-tete de membre     OMF record header   60 octets texte ASCII
+  Dictionnaire          Table de hachage    1st + 2nd Linker Member
+                        (fin de fichier)    (debut de l'archive)
+  Padding modules       Taille de page      Frontiere de 2 octets
+  Endianness index      Little-endian       1er membre: big-endian
+                                            2e membre: little-endian
+  Noms longs            N/A (OMF names)     Membre "//" optionnel
+  Import de DLL         N/A                 Import Object (court)
+  Outils courants       LINK, TLINK, WLINK  LINK.EXE, LIB.EXE (MS)
+  Programme du depot    LINK.PAS            CCW32.PAS, PSPCW32.PAS
+
+==============================================================================
+16. STRUCTURE COMPLETE D'UN FICHIER .LIB OMF (RESUME)
+==============================================================================
+
+  Offset 0
+  +----------------------------------------------------------+
+  | $F0 | RecLen (2 o) | DictOfs (4 o) | DictBlk (2 o) | Fl |
+  |               ... bourrage ...                           |
+  +----------------------------------------------------------+  <- PageSize octets
+  | Module 1 : $80 (THEADR) ... $8A (MODEND)                |
+  |               ... bourrage (align page) ...              |
+  +----------------------------------------------------------+  <- N * PageSize
+  | Module 2 : $80 (THEADR) ... $8A (MODEND)                |
+  |               ... bourrage (align page) ...              |
+  +----------------------------------------------------------+
+  | ...                                                      |
+  +----------------------------------------------------------+  <- DictOfs
+  | $F1 | RecLen | Dictionnaire (DictBlk * 512 octets)       |
+  +----------------------------------------------------------+
+
+==============================================================================
+17. STRUCTURE COMPLETE D'UN FICHIER .LIB COFF (RESUME)
+==============================================================================
+
+  Offset 0
+  +----------------------------------------------------------+
+  | "!<arch>\n"                              (8 octets)      |
+  +----------------------------------------------------------+
+  | En-tete membre "/" (60 octets)                           |
+  | 1er Linker Member (big-endian)                           |
+  |   NbSym (4 o) | Offsets[NbSym] (4 o chaque) | Noms...   |
+  +----------------------------------------------------------+
+  | En-tete membre "/" (60 octets)                           |
+  | 2e Linker Member (little-endian)                         |
+  |   NbMbr (4 o) | OfsMbr[NbMbr] | NbSym (4 o) |          |
+  |   Indices[NbSym] (2 o chaque) | Noms...                 |
+  +----------------------------------------------------------+
+  | En-tete membre "//" (60 octets)     [optionnel]          |
+  | Noms longs concatenes (termine par \0 chacun)            |
+  +----------------------------------------------------------+
+  | En-tete membre "module1.obj/" (60 octets)                |
+  | Contenu COFF OBJ complet (ou import objet court)         |
+  +----------------------------------------------------------+  <- padding 2
+  | En-tete membre "module2.obj/" (60 octets)                |
+  | Contenu COFF OBJ complet (ou import objet court)         |
+  +----------------------------------------------------------+
+  | ...                                                      |
+  +----------------------------------------------------------+
+
+==============================================================================
+18. OUTILS DE CREATION DE BIBLIOTHEQUES
+==============================================================================
+
+  Commande                Description
+  ----------------------  ------------------------------------------
+  LIB.EXE (Microsoft)    Cree/modifie des .LIB OMF ou COFF
+  TLIB.EXE (Borland)     Cree/modifie des .LIB OMF (Turbo C/Pascal)
+  WLIB.EXE (Watcom)      Cree/modifie des .LIB OMF (Open Watcom)
+  ar (GNU/MinGW)         Cree/modifie des archives .a / .lib COFF
+  llvm-ar (LLVM)         Cree/modifie des archives COFF (Clang)
+  dlltool (MinGW)        Cree des .LIB d'importation depuis .DEF
+  lib (MSVC)             Meme outil que LIB.EXE dans Visual Studio
+
+Syntaxe typique :
+
+  LIB biblio.lib +module1.obj +module2.obj   (OMF - ajouter)
+  LIB biblio.lib -module1.obj                (OMF - retirer)
+  LIB /OUT:biblio.lib mod1.obj mod2.obj      (COFF Microsoft)
+  ar rcs biblio.a module1.o module2.o         (GNU)
+
+==============================================================================
+19. DETECTION AUTOMATIQUE DU FORMAT
+==============================================================================
+
+Pour determiner le format d'un fichier .LIB, il suffit de lire les
+premiers octets :
+
+  Octets             Format
+  -----------------  ---------------------------
+  21 3C 61 72 63 68  COFF archive ("!<arch>")
+  3E 0A
+  F0 xx xx           OMF library (record $F0)
+
+Si le premier octet est $F0, c'est un .LIB OMF.
+Si les 8 premiers octets sont "!<arch>\n", c'est un .LIB COFF.
+
+CODE FPC EXEMPLE :
+
+  Var F:File; Sig:Array[0..7] of Byte;
+  Begin
+    Assign(F, LibFileName);
+    Reset(F, 1);
+    BlockRead(F, Sig, 8);
+    If Sig[0] = $F0 Then
+      WriteLn('Format OMF .LIB')
+    Else If (Sig[0]=Ord('!')) And (Sig[1]=Ord('<'))
+        And (Sig[2]=Ord('a')) And (Sig[3]=Ord('r'))
+        And (Sig[4]=Ord('c')) And (Sig[5]=Ord('h'))
+        And (Sig[6]=Ord('>')) And (Sig[7]=$0A) Then
+      WriteLn('Format COFF archive .LIB')
+    Else
+      WriteLn('Format inconnu');
+    Close(F);
+  End;
+
+==============================================================================
+20. REFERENCES
+==============================================================================
+
+  [1] TIS (Tool Interface Standard) OMF 1.1 Specification
+      - Intel Object Module Format, incluant le format de bibliotheque
+  [2] Microsoft PE and COFF Specification
+      - Section "Archive (Library) File Format"
+      https://learn.microsoft.com/en-us/windows/win32/debug/pe-format
+  [3] Microsoft Import Library Format
+      - Import Object Header (Short Format)
+  [4] System V ABI - ar(1) Archive Format
+      - Format d'archive Unix original (base du format COFF .LIB)
+  [5] LINK.PAS (ce depot)
+      - Editeur de liens OMF pour DOS (ResolveLibrariesForExternals)
+  [6] CCW32.PAS (ce depot)
+      - Compilateur C vers Win32, generation COFF/PE
+  [7] PSPCW32.PAS (ce depot)
+      - Compilateur PSP vers Win32, generation COFF/PE
+
+==============================================================================
+  FIN DU DOCUMENT
+==============================================================================

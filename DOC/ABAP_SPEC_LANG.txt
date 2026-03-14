@@ -1,0 +1,1059 @@
+
+SPECIFICATIONS DU LANGAGE DE PROGRAMMATION ABAP
+================================================
+
+  Nom du langage : ABAP (Advanced Business Application Programming)
+  Origine        : SAP AG (Walldorf, Allemagne)
+  Annee          : 1983 (ABAP/4), evolue en ABAP Objects (1999)
+  Paradigme      : Procedural, oriente evenements, oriente objet (partiel)
+  Utilisation    : Applications de gestion SAP (ERP, CRM, SCM)
+  Compilateur    : ABAPCW32.PAS (cible Win32, 80386), ABAP86.PAS (cible assembleur 8086)
+
+
+TABLE DES MATIERES
+------------------
+
+  1.  Structure d'un programme ABAP
+  2.  Commentaires
+  3.  Types de donnees
+  4.  Declarations de donnees
+  5.  Operateurs
+  6.  Expressions et affectations
+  7.  Structures de controle
+  8.  Sous-programmes (FORM/PERFORM)
+  9.  Modules de fonction (FUNCTION)
+  10. Operations d'entree/sortie
+  11. Operations sur les chaines
+  12. Tables internes
+  13. Operations de base de donnees
+  14. Evenements
+  15. Ecran de selection
+  16. Gestion des exceptions
+  17. Variables systeme
+  18. Fonctions integrees
+  19. Mots-cles reserves
+  20. Grammaire BNF simplifiee
+
+
+=========================================================================
+1. STRUCTURE D'UN PROGRAMME ABAP
+=========================================================================
+
+Un programme ABAP commence par une instruction REPORT ou PROGRAM,
+suivie de declarations de donnees, puis des instructions executables.
+Chaque instruction se termine par un point (.).
+
+  Syntaxe :
+
+    REPORT nom_programme [MESSAGE-ID id]
+                         [NO STANDARD PAGE HEADING].
+
+    PROGRAM nom_programme.
+
+  Exemple :
+
+    REPORT ZMONPROG.
+    DATA gv_nombre TYPE I VALUE 10.
+    WRITE gv_nombre.
+
+
+=========================================================================
+2. COMMENTAIRES
+=========================================================================
+
+ABAP supporte deux styles de commentaires :
+
+  - Commentaire ligne entiere  : le caractere * en colonne 1
+  - Commentaire en fin de ligne : le caractere " n'importe ou
+
+  Exemple :
+
+    * Ceci est un commentaire ligne entiere
+    DATA gv_x TYPE I.   " Commentaire en fin de ligne
+
+
+=========================================================================
+3. TYPES DE DONNEES
+=========================================================================
+
+  Type     Description                  Taille     Valeur initiale
+  -------  ---------------------------  ---------  ----------------
+  I        Entier 32 bits signe         4 octets   0
+  F        Nombre a virgule flottante   8 octets   0.0
+  C        Chaine de caracteres fixe    n octets   espaces
+  N        Chaine numerique             n octets   '0...0'
+  D        Date (AAAAMMJJ)              8 octets   '00000000'
+  T        Heure (HHMMSS)               6 octets   '000000'
+  P        Decimal compacte (BCD)       4 octets   0
+  STRING   Chaine longueur variable     4 octets   '' (vide)
+  XSTRING  Chaine binaire               4 octets   '' (vide)
+  TABLE    Table interne                variable   vide
+
+  Les types C et N acceptent une longueur explicite :
+
+    DATA nom TYPE C LENGTH 20.
+    DATA code TYPE N LENGTH 10.
+    DATA nom(20) TYPE C.         " syntaxe courte
+
+
+=========================================================================
+4. DECLARATIONS DE DONNEES
+=========================================================================
+
+4.1 Declaration simple
+----------------------
+
+  DATA nom TYPE type [VALUE valeur_initiale].
+
+  Exemples :
+
+    DATA gv_compteur TYPE I VALUE 0.
+    DATA gv_nom TYPE C LENGTH 30.
+    DATA gv_prix TYPE P DECIMALS 2.
+    DATA gv_texte TYPE STRING.
+
+4.2 Declaration multiple (chaine)
+---------------------------------
+
+  DATA: nom1 TYPE type1,
+        nom2 TYPE type2,
+        nom3 TYPE type3.
+
+  Exemple :
+
+    DATA: gv_x TYPE I VALUE 1,
+          gv_y TYPE I VALUE 2,
+          gv_z TYPE I.
+
+4.3 Constantes
+--------------
+
+  CONSTANTS nom TYPE type VALUE valeur.
+
+  Exemple :
+
+    CONSTANTS gc_pi TYPE F VALUE '3.14159'.
+    CONSTANTS gc_max TYPE I VALUE 100.
+
+4.4 Declaration par reference (LIKE)
+-------------------------------------
+
+  DATA nom LIKE autre_variable.
+
+  Exemple :
+
+    DATA gv_copie LIKE gv_compteur.
+
+4.5 Structures
+--------------
+
+  TYPES: BEGIN OF nom_structure,
+           champ1 TYPE type1,
+           champ2 TYPE type2,
+         END OF nom_structure.
+
+  DATA variable TYPE nom_structure.
+
+  Exemple :
+
+    TYPES: BEGIN OF ty_personne,
+             nom    TYPE C LENGTH 30,
+             age    TYPE I,
+             ville  TYPE C LENGTH 20,
+           END OF ty_personne.
+    DATA gs_pers TYPE ty_personne.
+
+4.6 Tables internes
+-------------------
+
+  DATA nom TYPE TABLE OF type_ligne.
+  DATA nom LIKE TABLE OF variable.
+
+  Exemple :
+
+    DATA gt_personnes TYPE TABLE OF ty_personne.
+
+4.7 Ecran de selection
+-----------------------
+
+  PARAMETERS nom TYPE type [DEFAULT valeur].
+  SELECT-OPTIONS nom FOR variable.
+
+  Exemple :
+
+    PARAMETERS p_count TYPE I DEFAULT 10.
+    SELECT-OPTIONS s_date FOR sy-datum.
+
+
+=========================================================================
+5. OPERATEURS
+=========================================================================
+
+5.1 Operateurs arithmetiques
+-----------------------------
+
+  Symbole  Mot-cle  Description
+  -------  -------  ---------------------
+  +                 Addition
+  -                 Soustraction
+  *                 Multiplication
+  /                 Division
+           DIV      Division entiere
+           MOD      Modulo (reste)
+
+5.2 Operateurs de comparaison
+------------------------------
+
+  Symbole  Mot-cle  Description
+  -------  -------  ---------------------
+  =        EQ       Egal
+  <>       NE       Different
+  <        LT       Inferieur
+  >        GT       Superieur
+  <=       LE       Inferieur ou egal
+  >=       GE       Superieur ou egal
+
+  Les operateurs symboliques (=, <>, <, >, <=, >=) et les mots-cles
+  verbaux (EQ, NE, LT, GT, LE, GE) sont interchangeables.
+
+5.3 Operateurs logiques
+------------------------
+
+  Mot-cle  Description
+  -------  ---------------------
+  AND      ET logique
+  OR       OU logique
+  NOT      Negation logique
+
+5.4 Predicats speciaux
+-----------------------
+
+  Expression                Description
+  ------------------------  ---------------------------------
+  var IS INITIAL            Vrai si var a sa valeur initiale
+  var IS NOT INITIAL        Vrai si var n'est pas initiale
+  var IS BOUND              Vrai si var est liee
+  var BETWEEN lo AND hi     Vrai si lo <= var <= hi
+  var IN range              Vrai si var appartient a range
+
+5.5 Concatenation de chaines
+------------------------------
+
+  Symbole  Description
+  -------  ---------------------
+  &&       Concatenation de chaines
+
+
+=========================================================================
+6. EXPRESSIONS ET AFFECTATIONS
+=========================================================================
+
+6.1 Affectation directe
+------------------------
+
+  variable = expression.
+
+  Exemples :
+
+    gv_total = gv_a + gv_b.
+    gv_result = ( gv_x * gv_y ) / gv_z.
+    gv_reste = gv_a MOD gv_b.
+
+6.2 Instruction COMPUTE
+-------------------------
+
+  COMPUTE variable = expression.
+
+  Exemple :
+
+    COMPUTE gv_somme = gv_a + gv_b + gv_c.
+
+6.3 Instruction MOVE
+---------------------
+
+  MOVE source TO destination.
+
+  Exemple :
+
+    MOVE gv_ancien TO gv_nouveau.
+    MOVE 42 TO gv_nombre.
+
+6.4 Operations arithmetiques verbales
+--------------------------------------
+
+  ADD valeur TO variable.
+  ADD val1 TO val2 GIVING resultat.
+
+  SUBTRACT valeur FROM variable.
+
+  MULTIPLY variable BY valeur.
+
+  DIVIDE variable BY valeur.
+
+  Exemples :
+
+    ADD 1 TO gv_compteur.
+    SUBTRACT gv_taxe FROM gv_prix.
+    MULTIPLY gv_quantite BY gv_prix_unitaire.
+    DIVIDE gv_total BY gv_nombre.
+
+6.5 Instruction CLEAR
+----------------------
+
+  CLEAR variable.
+
+  Remet la variable a sa valeur initiale :
+  - TYPE I, P, F : 0
+  - TYPE C, N    : espaces / zeros
+  - TYPE STRING  : chaine vide
+
+
+=========================================================================
+7. STRUCTURES DE CONTROLE
+=========================================================================
+
+7.1 IF / ELSEIF / ELSE / ENDIF
+-------------------------------
+
+  IF condition.
+    instructions.
+  [ELSEIF condition.
+    instructions.]
+  [ELSE.
+    instructions.]
+  ENDIF.
+
+  Exemple :
+
+    IF gv_note >= 16.
+      WRITE 'Tres bien'.
+    ELSEIF gv_note >= 12.
+      WRITE 'Bien'.
+    ELSEIF gv_note >= 10.
+      WRITE 'Passable'.
+    ELSE.
+      WRITE 'Insuffisant'.
+    ENDIF.
+
+7.2 CASE / WHEN / ENDCASE
+---------------------------
+
+  CASE variable.
+    WHEN valeur1 [OR valeur2].
+      instructions.
+    WHEN valeur3.
+      instructions.
+    WHEN OTHERS.
+      instructions.
+  ENDCASE.
+
+  Exemple :
+
+    CASE gv_jour.
+      WHEN 1.
+        WRITE 'Lundi'.
+      WHEN 6 OR 7.
+        WRITE 'Week-end'.
+      WHEN OTHERS.
+        WRITE 'Autre jour'.
+    ENDCASE.
+
+7.3 WHILE / ENDWHILE
+----------------------
+
+  WHILE condition.
+    instructions.
+  ENDWHILE.
+
+  Exemple :
+
+    DATA gv_i TYPE I VALUE 1.
+    WHILE gv_i <= 10.
+      WRITE gv_i.
+      gv_i = gv_i + 1.
+    ENDWHILE.
+
+7.4 DO / ENDDO
+---------------
+
+  DO [n TIMES].
+    instructions.
+  ENDDO.
+
+  Sans n TIMES, la boucle est infinie (utiliser EXIT pour sortir).
+
+  Exemple :
+
+    DO 5 TIMES.
+      WRITE sy-index.
+    ENDDO.
+
+7.5 Controle de boucle
+------------------------
+
+  EXIT.        " Sort de la boucle courante
+  CONTINUE.    " Passe a l'iteration suivante
+  CHECK cond.  " Si condition fausse, passe a l'iteration suivante
+
+  Exemples :
+
+    DO 100 TIMES.
+      CHECK sy-index MOD 2 = 0.    " Seulement les pairs
+      WRITE sy-index.
+      IF sy-index > 20.
+        EXIT.                       " Sort apres 20
+      ENDIF.
+    ENDDO.
+
+7.6 Controle du programme
+---------------------------
+
+  STOP.        " Arrete le programme
+  RETURN.      " Retourne du sous-programme courant
+
+
+=========================================================================
+8. SOUS-PROGRAMMES (FORM / PERFORM)
+=========================================================================
+
+8.1 Definition d'un sous-programme
+------------------------------------
+
+  FORM nom [USING     p1 [TYPE t1] p2 [TYPE t2] ...]
+           [CHANGING  p1 [TYPE t1] p2 [TYPE t2] ...]
+           [TABLES    t1 [TYPE t1] ...].
+    instructions.
+  ENDFORM.
+
+  - USING    : parametres passes par valeur
+  - CHANGING : parametres passes par reference
+  - TABLES   : parametres de type table interne
+
+8.2 Appel d'un sous-programme
+-------------------------------
+
+  PERFORM nom [USING     arg1 arg2 ...]
+              [CHANGING  arg1 arg2 ...]
+              [TABLES    tab1 ...].
+
+  Exemple :
+
+    PERFORM calculer USING gv_a gv_b CHANGING gv_resultat.
+
+    FORM calculer USING p_a TYPE I p_b TYPE I
+                  CHANGING p_res TYPE I.
+      p_res = p_a + p_b.
+    ENDFORM.
+
+
+=========================================================================
+9. MODULES DE FONCTION (FUNCTION)
+=========================================================================
+
+  FUNCTION nom_fonction.
+    instructions.
+  ENDFUNCTION.
+
+  CALL FUNCTION 'nom_fonction'
+    [EXPORTING  param1 = val1]
+    [IMPORTING  param2 = var2]
+    [TABLES     tab1   = itab1]
+    [EXCEPTIONS exc1   = n].
+
+  IF sy-subrc <> 0.
+    " Gestion de l'erreur
+  ENDIF.
+
+  Remarque : Les modules de fonction sont des stubs dans cette
+  implementation. L'appel est reconnu syntaxiquement et SY-SUBRC
+  est mis a 0.
+
+
+=========================================================================
+10. OPERATIONS D'ENTREE/SORTIE
+=========================================================================
+
+10.1 Instruction WRITE
+-----------------------
+
+  WRITE expression.
+  WRITE: expr1, expr2, expr3.
+
+  Types de sorties :
+  - Chaine litterale  : WRITE 'Bonjour'.
+  - Variable entiere  : WRITE gv_nombre.
+  - Variable chaine   : WRITE gv_nom.
+  - Saut de ligne     : WRITE /.
+
+  Modificateurs :
+  - LEFT-JUSTIFIED    : Aligne a gauche
+  - RIGHT-JUSTIFIED   : Aligne a droite
+  - NO-GAP            : Supprime l'espace automatique
+
+  Exemple :
+
+    WRITE: 'Nom:', gv_nom, / 'Age:', gv_age.
+
+10.2 Instruction SKIP
+-----------------------
+
+  SKIP [n].
+
+  Saute n lignes (1 par defaut).
+
+  Exemple :
+
+    WRITE 'Premiere partie'.
+    SKIP 2.
+    WRITE 'Deuxieme partie'.
+
+10.3 Instruction NEW-LINE
+---------------------------
+
+  NEW-LINE.
+
+  Force un retour a la ligne.
+
+
+=========================================================================
+11. OPERATIONS SUR LES CHAINES
+=========================================================================
+
+11.1 CONCATENATE
+-----------------
+
+  CONCATENATE source1 source2 ... INTO destination
+              [SEPARATED BY separateur].
+
+  Exemple :
+
+    CONCATENATE gv_prenom ' ' gv_nom INTO gv_nom_complet.
+    CONCATENATE 'A' 'B' 'C' INTO gv_abc SEPARATED BY '-'.
+    " Resultat : 'A-B-C'
+
+11.2 SPLIT
+-----------
+
+  SPLIT source AT separateur INTO dest1 dest2 ...
+
+  Exemple :
+
+    DATA: gv_part1 TYPE C LENGTH 20,
+          gv_part2 TYPE C LENGTH 20.
+    SPLIT 'Hello World' AT ' ' INTO gv_part1 gv_part2.
+
+11.3 SHIFT
+-----------
+
+  SHIFT variable [LEFT|RIGHT] [BY n PLACES] [CIRCULAR].
+
+  Exemples :
+
+    SHIFT gv_texte LEFT BY 3 PLACES.
+    SHIFT gv_texte RIGHT CIRCULAR.
+
+11.4 REPLACE
+--------------
+
+  REPLACE [ALL OCCURRENCES OF|FIRST OCCURRENCE OF]
+          ancien IN variable WITH nouveau.
+
+  Exemples :
+
+    REPLACE 'X' IN gv_texte WITH 'Y'.
+    REPLACE ALL OCCURRENCES OF 'a' IN gv_texte WITH 'A'.
+
+11.5 TRANSLATE
+---------------
+
+  TRANSLATE variable TO UPPER CASE.
+  TRANSLATE variable TO LOWER CASE.
+
+  Exemple :
+
+    DATA gv_msg TYPE C LENGTH 20 VALUE 'Bonjour'.
+    TRANSLATE gv_msg TO UPPER CASE.
+    " Resultat : 'BONJOUR'
+
+11.6 CONDENSE
+--------------
+
+  CONDENSE variable [NO-GAPS].
+
+  Supprime les espaces en debut/fin. Avec NO-GAPS, supprime
+  aussi les espaces internes.
+
+  Exemple :
+
+    DATA gv_txt TYPE C LENGTH 30 VALUE '  Hello   World  '.
+    CONDENSE gv_txt.           " Resultat : 'Hello World'
+    CONDENSE gv_txt NO-GAPS.   " Resultat : 'HelloWorld'
+
+11.7 FIND
+----------
+
+  FIND [FIRST OCCURRENCE OF|ALL OCCURRENCES OF]
+       motif IN variable
+       [MATCH OFFSET off] [MATCH LENGTH len].
+
+  Exemple :
+
+    DATA gv_off TYPE I.
+    FIND 'World' IN 'Hello World' MATCH OFFSET gv_off.
+    " gv_off = 6, sy-subrc = 0
+
+
+=========================================================================
+12. TABLES INTERNES
+=========================================================================
+
+12.1 Declaration
+-----------------
+
+  DATA itab TYPE TABLE OF type_ligne.
+
+  Exemple :
+
+    TYPES: BEGIN OF ty_ligne,
+             nom  TYPE C LENGTH 20,
+             age  TYPE I,
+           END OF ty_ligne.
+    DATA gt_personnes TYPE TABLE OF ty_ligne.
+
+12.2 APPEND (ajout en fin)
+---------------------------
+
+  APPEND [work_area TO] itab.
+  APPEND valeur TO itab.
+
+  Exemple :
+
+    DATA gs_pers TYPE ty_ligne.
+    gs_pers-nom = 'Dupont'.
+    gs_pers-age = 35.
+    APPEND gs_pers TO gt_personnes.
+
+12.3 LOOP AT (parcours)
+-------------------------
+
+  LOOP AT itab [INTO work_area] [WHERE condition].
+    instructions.
+  ENDLOOP.
+
+  La variable systeme SY-TABIX contient l'index courant.
+
+  Exemple :
+
+    LOOP AT gt_personnes INTO gs_pers.
+      WRITE: gs_pers-nom, gs_pers-age.
+    ENDLOOP.
+
+12.4 READ TABLE (lecture par index ou cle)
+-------------------------------------------
+
+  READ TABLE itab INTO work_area INDEX n.
+  READ TABLE itab INTO work_area WITH KEY champ = valeur.
+
+  SY-SUBRC = 0 si trouve, 4 sinon.
+
+  Exemple :
+
+    READ TABLE gt_personnes INTO gs_pers INDEX 1.
+    IF sy-subrc = 0.
+      WRITE gs_pers-nom.
+    ENDIF.
+
+12.5 SORT (tri)
+----------------
+
+  SORT itab [BY champ] [ASCENDING|DESCENDING].
+
+  Exemple :
+
+    SORT gt_personnes BY nom ASCENDING.
+
+12.6 DELETE (suppression)
+--------------------------
+
+  DELETE itab INDEX n.
+  DELETE itab [WHERE condition].
+
+  Exemple :
+
+    DELETE gt_personnes INDEX 3.
+
+12.7 REFRESH (reinitialisation)
+--------------------------------
+
+  REFRESH itab.
+
+  Vide completement la table interne.
+
+
+=========================================================================
+13. OPERATIONS DE BASE DE DONNEES
+=========================================================================
+
+  Remarque : Les operations de base de donnees sont reconnues
+  syntaxiquement mais fonctionnent comme des stubs (pas de
+  connexion reelle a une base de donnees).
+
+13.1 SELECT
+------------
+
+  SELECT [SINGLE] champs FROM table
+    [INTO variable|INTO CORRESPONDING FIELDS OF variable]
+    [INTO TABLE itab]
+    [WHERE condition]
+    [ORDER BY champ]
+    [UP TO n ROWS].
+  [ENDSELECT.]
+
+  SY-SUBRC = 0 si des lignes sont trouvees, 4 sinon.
+  SY-DBCNT contient le nombre de lignes traitees.
+
+  Exemple (syntaxe reconnue) :
+
+    SELECT SINGLE * FROM mara INTO gs_material
+      WHERE matnr = '000001'.
+    IF sy-subrc = 0.
+      WRITE gs_material-matnr.
+    ENDIF.
+
+
+=========================================================================
+14. EVENEMENTS
+=========================================================================
+
+Les evenements permettent de structurer le flux d'execution d'un
+programme ABAP de type report.
+
+14.1 START-OF-SELECTION
+------------------------
+
+  START-OF-SELECTION.
+    instructions.
+
+  Evenement principal execute apres l'ecran de selection.
+
+14.2 END-OF-SELECTION
+----------------------
+
+  END-OF-SELECTION.
+    instructions.
+
+  Execute apres le traitement de toutes les donnees.
+
+14.3 TOP-OF-PAGE
+-----------------
+
+  TOP-OF-PAGE.
+    instructions.
+
+  Execute au debut de chaque nouvelle page.
+
+14.4 END-OF-PAGE
+-----------------
+
+  END-OF-PAGE.
+    instructions.
+
+  Execute a la fin de chaque page.
+
+14.5 AT LINE-SELECTION
+-----------------------
+
+  AT LINE-SELECTION.
+    instructions.
+
+  Execute lorsque l'utilisateur selectionne une ligne.
+
+14.6 AT USER-COMMAND
+---------------------
+
+  AT USER-COMMAND.
+    instructions.
+
+  Execute lorsque l'utilisateur active une commande.
+
+
+=========================================================================
+15. ECRAN DE SELECTION
+=========================================================================
+
+15.1 PARAMETERS
+----------------
+
+  PARAMETERS nom TYPE type [DEFAULT valeur].
+
+  Definit un champ de saisie sur l'ecran de selection.
+
+  Exemple :
+
+    PARAMETERS: p_annee TYPE I DEFAULT 2024,
+                p_nom   TYPE C LENGTH 30.
+
+15.2 SELECT-OPTIONS
+--------------------
+
+  SELECT-OPTIONS nom FOR variable.
+
+  Definit un intervalle de selection (LOW et HIGH).
+  Cree automatiquement les variables nom-LOW et nom-HIGH.
+
+  Exemple :
+
+    DATA gv_date TYPE D.
+    SELECT-OPTIONS s_date FOR gv_date.
+
+
+=========================================================================
+16. GESTION DES EXCEPTIONS
+=========================================================================
+
+  TRY.
+    instructions.
+  CATCH cx_exception [INTO variable].
+    instructions.
+  [CLEANUP.
+    instructions.]
+  ENDTRY.
+
+  RAISE EXCEPTION TYPE cx_exception.
+
+  Remarque : La gestion des exceptions est reconnue syntaxiquement.
+  Les blocs TRY/CATCH/CLEANUP/ENDTRY sont analyses mais le
+  mecanisme d'exception reelle n'est pas implemente.
+
+
+=========================================================================
+17. VARIABLES SYSTEME
+=========================================================================
+
+Les variables systeme sont prefixees par SY- et sont accessibles
+en lecture dans tout le programme.
+
+  Variable     Type  Description
+  -----------  ----  ------------------------------------
+  SY-SUBRC     I     Code retour de la derniere operation
+  SY-TABIX     I     Index courant dans LOOP AT
+  SY-DBCNT     I     Nombre de lignes DB traitees
+  SY-INDEX     I     Index d'iteration DO/WHILE
+  SY-LANGU     C(1)  Langue de connexion ('E' par defaut)
+
+  Valeurs de SY-SUBRC :
+  - 0 : Operation reussie
+  - 4 : Enregistrement non trouve (READ TABLE, SELECT)
+  - 8 : Erreur (condition non remplie)
+
+
+=========================================================================
+18. FONCTIONS INTEGREES
+=========================================================================
+
+  Fonction   Description                    Exemple
+  ---------  ----------------------------   ---------------------------
+  STRLEN     Longueur d'une chaine          gv_len = STRLEN( gv_txt ).
+  ABS        Valeur absolue d'un entier     gv_abs = ABS( gv_num ).
+
+
+=========================================================================
+19. MOTS-CLES RESERVES
+=========================================================================
+
+Le langage ABAP tel qu'implemente reconnait 151 mots-cles :
+
+  Groupe                    Mots-cles
+  ------------------------  -------------------------------------------
+  Programme                 REPORT, PROGRAM
+
+  Declarations              DATA, TYPES, CONSTANTS, CLASS-DATA,
+                            TYPE, VALUE, DEFAULT, LIKE, LENGTH,
+                            DECIMALS, BEGIN, END, OF, TABLE, WITH,
+                            KEY
+
+  Controle                  IF, ELSEIF, ELSE, ENDIF,
+                            CASE, WHEN, OTHERS, ENDCASE,
+                            WHILE, ENDWHILE, DO, TIMES, ENDDO,
+                            LOOP, AT, INTO, ENDLOOP,
+                            EXIT, CONTINUE, CHECK, STOP, RETURN
+
+  Sous-programmes           FORM, ENDFORM, PERFORM,
+                            USING, CHANGING, TABLES
+
+  Fonctions                 FUNCTION, ENDFUNCTION, CALL,
+                            EXPORTING, IMPORTING, RAISING,
+                            EXCEPTIONS
+
+  Sortie                    WRITE, SKIP, LINE, NEW-LINE,
+                            LEFT-JUSTIFIED, RIGHT-JUSTIFIED,
+                            NO-GAP
+
+  Affectation               MOVE, TO, MOVE-CORRESPONDING,
+                            COMPUTE, ADD, SUBTRACT, MULTIPLY,
+                            BY, DIVIDE, FROM, GIVING
+
+  Tables                    APPEND, INSERT, DELETE, MODIFY,
+                            READ, SORT, COLLECT, SINGLE
+
+  Chaines                   CONCATENATE, SPLIT, SHIFT, REPLACE,
+                            TRANSLATE, CONDENSE, FIND,
+                            LEFT, RIGHT, UPPER, LOWER, NO-GAPS,
+                            MATCH, OFFSET, OCCURRENCE, OCCURRENCES,
+                            SEPARATED, CIRCULAR, PLACES,
+                            ALL, FIRST
+
+  Base de donnees           SELECT, WHERE, CORRESPONDING, FIELDS,
+                            ENDSELECT, ORDER, ROWS
+
+  Variables                 CLEAR, REFRESH, FREE
+
+  Comparaison               EQ, NE, LT, GT, LE, GE,
+                            BETWEEN, IN, AND, OR, NOT,
+                            IS, INITIAL, BOUND
+
+  Tri                       ASCENDING, DESCENDING, INDEX
+
+  Evenements                START-OF-SELECTION, END-OF-SELECTION,
+                            TOP-OF-PAGE, END-OF-PAGE,
+                            AT LINE-SELECTION, AT USER-COMMAND
+
+  Selection                 PARAMETERS, SELECT-OPTIONS
+
+  Operateurs                MOD, DIV
+
+  Classes (stub)            CLASS, ENDCLASS, METHOD, ENDMETHOD,
+                            PUBLIC, PRIVATE, PROTECTED
+
+  Exceptions (stub)         TRY, CATCH, CLEANUP, ENDTRY,
+                            RAISE, EXCEPTION
+
+  Fonctions integrees       STRLEN, ABS
+
+  Divers                    MESSAGE-ID
+
+
+=========================================================================
+20. GRAMMAIRE BNF SIMPLIFIEE
+=========================================================================
+
+  <programme>    ::= <en-tete> <declarations> <instructions>
+
+  <en-tete>      ::= REPORT <ident> [MESSAGE-ID <ident>] '.'
+                    | PROGRAM <ident> '.'
+
+  <declarations> ::= { <declaration> }
+
+  <declaration>  ::= DATA ':' <liste-var> '.'
+                    | DATA <une-var> '.'
+                    | CONSTANTS ':' <liste-const> '.'
+                    | CONSTANTS <une-const> '.'
+                    | TYPES ':' <liste-type> '.'
+
+  <une-var>      ::= <ident> ['(' <entier> ')']
+                      [TYPE <type> | LIKE <ident>]
+                      [LENGTH <entier>]
+                      [DECIMALS <entier>]
+                      [VALUE <literal>]
+
+  <type>         ::= I | F | C | N | D | T | P | STRING | XSTRING
+                    | TABLE OF <type>
+                    | BEGIN OF <ident> ',' <champs> END OF <ident>
+
+  <instructions> ::= { <instruction> '.' }
+
+  <instruction>  ::= <affectation>
+                    | <if-stmt>
+                    | <case-stmt>
+                    | <while-stmt>
+                    | <do-stmt>
+                    | <loop-stmt>
+                    | <write-stmt>
+                    | <perform-stmt>
+                    | <form-decl>
+                    | <move-stmt>
+                    | <clear-stmt>
+                    | <arith-stmt>
+                    | <string-stmt>
+                    | <table-stmt>
+                    | <select-stmt>
+                    | <event-stmt>
+                    | <try-stmt>
+                    | ...
+
+  <affectation>  ::= <ident> '=' <expression> '.'
+                    | COMPUTE <ident> '=' <expression> '.'
+                    | MOVE <expr> TO <ident> '.'
+
+  <expression>   ::= <or-expr>
+  <or-expr>      ::= <and-expr> { OR <and-expr> }
+  <and-expr>     ::= <not-expr> { AND <not-expr> }
+  <not-expr>     ::= [NOT] <compare>
+  <compare>      ::= <add-expr> [<comp-op> <add-expr>]
+                    | <add-expr> BETWEEN <add-expr> AND <add-expr>
+                    | <add-expr> IS [NOT] INITIAL
+                    | <add-expr> IS BOUND
+                    | <add-expr> IN <ident>
+  <comp-op>      ::= '=' | '<>' | '<' | '>' | '<=' | '>='
+                    | EQ | NE | LT | GT | LE | GE
+  <add-expr>     ::= <mul-expr> { ('+' | '-') <mul-expr> }
+  <mul-expr>     ::= <unary> { ('*' | '/' | DIV | MOD) <unary> }
+  <unary>        ::= ['-'] <primary>
+  <primary>      ::= <entier> | <reel> | <chaine>
+                    | <ident> ['-' <ident>]
+                    | STRLEN '(' <expr> ')'
+                    | ABS '(' <expr> ')'
+                    | '(' <expression> ')'
+
+  <if-stmt>      ::= IF <expression> '.'
+                        <instructions>
+                      { ELSEIF <expression> '.'
+                        <instructions> }
+                      [ ELSE '.'
+                        <instructions> ]
+                      ENDIF '.'
+
+  <case-stmt>    ::= CASE <ident> '.'
+                      { WHEN <valeur> [OR <valeur>] '.'
+                        <instructions> }
+                      [ WHEN OTHERS '.'
+                        <instructions> ]
+                      ENDCASE '.'
+
+  <while-stmt>   ::= WHILE <expression> '.'
+                        <instructions>
+                      ENDWHILE '.'
+
+  <do-stmt>      ::= DO [<entier> TIMES] '.'
+                        <instructions>
+                      ENDDO '.'
+
+  <loop-stmt>    ::= LOOP AT <ident> [INTO <ident>]
+                        [WHERE <expression>] '.'
+                        <instructions>
+                      ENDLOOP '.'
+
+  <write-stmt>   ::= WRITE [':'] <write-item> {',' <write-item>} '.'
+  <write-item>   ::= <expression> | '/'
+
+  <perform-stmt> ::= PERFORM <ident>
+                        [USING <expr> { <expr> }]
+                        [CHANGING <ident> { <ident> }] '.'
+
+  <form-decl>    ::= FORM <ident>
+                        [USING <param> { <param> }]
+                        [CHANGING <param> { <param> }] '.'
+                        <instructions>
+                      ENDFORM '.'
+
+  <param>        ::= <ident> [TYPE <type>]
+
+  <entier>       ::= chiffre { chiffre }
+  <reel>         ::= chiffre { chiffre } '.' chiffre { chiffre }
+  <chaine>       ::= "'" { caractere } "'"
+  <ident>        ::= lettre { lettre | chiffre | '_' | '-' }
+
+
+=========================================================================
+FIN DU DOCUMENT
+=========================================================================

@@ -1,0 +1,532 @@
+  FEUILLE DE ROUTE - 25 TODOS
+  ============================================================
+
+
+  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF [IMPLEMENTE]
+            TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings,
+              EmitExe, EmitObj, EmitAsm)
+            ParseArgs : analyser argv (source.abap [-o sortie] [-v]
+              [-d] [-w] [-obj] [-asm] [-h])
+            Par defaut : produire un .EXE Windows 32 bits (PE)
+            -obj : produire uniquement un .OBJ (format COFF 32 bits)
+            -asm : produire egalement un listing assembleur .ASM lisible
+            -o nom : specifier le nom du fichier de sortie
+            FatalError, WarnMsg, EXIT_OK / EXIT_ERROR / EXIT_USAGE
+            Detecter l extension .abap du fichier source
+            Version, Date, aide en ligne (option -h)
+            Constantes PE/COFF : PE_DOS_MAGIC ($5A4D), PE_PE_SIG,
+              PE_MACHINE_I386, PE_OPT_SIZE, PE_MAGIC_32,
+              PE_IMG_BASE ($00400000), PE_SEC_ALIGN (4096),
+              PE_FILE_ALIGN (512), PE_SUBSYS_CUI (console)
+            Constantes binaires : MAX_BIN_CODE (65536),
+              MAX_BIN_DATA (65536), MAX_BIN_LBL (4096),
+              MAX_BIN_FIX (8192)
+            Limites internes (32 bits) : MAX_SYM=2048, MAX_FORM=256,
+              MAX_LOCAL=128, MAX_PARAM=32, MAX_DEPTH=16,
+              MAX_LABEL=2048, MAX_STR=255, MAX_FIELD=64
+            Prefixes de nommage ASM : _AB_ (variable globale),
+              _ABF_ (FORM/FUNCTION), _ABK_ (constante chaine),
+              _ABRT_ (routine runtime), _ABL_ (label interne),
+              _ABA_ (tableau/table interne), _ABS_ (structure),
+              _ABE_ (evenement), _ABX_ (exception handler)
+            Utilitaires : ItoS, ItoSI, UpCaseStr, AsmIdent
+
+  TODO 02 - TOKENISEUR ABAP (LEXER) [IMPLEMENTE]
+            Procedure LexInit : ouvrir le fichier source, initialiser
+              l etat du lexeur (ligne, colonne, caractere courant)
+            Procedure LexClose : fermer le fichier source
+            Procedure LexNextChar / LexPeekChar
+            Procedure LexNextToken : reconnaitre les tokens ABAP :
+              - Identificateurs : lettres, chiffres, _ , - (max 48 cars)
+                Convertis en majuscules (ABAP insensible a la casse)
+              - Litteraux numeriques : 123, 1.5, 1E3
+              - Litteraux chaines : 'texte' (apostrophe doublee '')
+              - Commentaires ligne : * en colonne 1, " en milieu ligne
+              - Operateurs : + - * / = <> < > <= >= && (concat.)
+              - Separateurs : . , : ( ) [ ]
+              - Pragmas : # en debut de ligne (ignorer)
+              - Pipe | et arobase @ (ABAP 7.4 stubs)
+            Types de tokens (TOK_IDENT, TOK_NUMBER, TOK_FLOAT,
+              TOK_STRING, TOK_PLUS, TOK_MINUS, TOK_STAR, TOK_SLASH,
+              TOK_LPAREN, TOK_RPAREN, TOK_COMMA, TOK_DOT, TOK_COLON,
+              TOK_EQ, TOK_NE, TOK_LT, TOK_GT, TOK_LE, TOK_GE,
+              TOK_CONCAT, TOK_LBRACKET, TOK_RBRACKET, TOK_HASH,
+              TOK_PIPE, TOK_AT, TOK_EOF)
+            Stocker dans CurTokType / CurTokStr / CurTokNum
+
+  TODO 03 - RECONNAISSANCE DES MOTS-CLES ABAP/4 [IMPLEMENTE]
+            Function IsKeyword(Const s: String): Integer
+            Mots-cles complets a reconnaitre :
+              REPORT PROGRAM DATA TYPES CONSTANTS CLASS-DATA
+              IF ELSEIF ELSE ENDIF
+              CASE WHEN OTHERS ENDCASE
+              WHILE ENDWHILE DO TIMES ENDDO
+              LOOP AT INTO ENDLOOP
+              FORM ENDFORM PERFORM USING CHANGING TABLES
+              FUNCTION ENDFUNCTION
+              WRITE SKIP LINE NEW-LINE
+              MOVE TO MOVE-CORRESPONDING
+              COMPUTE ADD SUBTRACT MULTIPLY BY DIVIDE FROM GIVING
+              APPEND INSERT DELETE MODIFY READ SORT COLLECT
+              SELECT WHERE CORRESPONDING FIELDS ENDSELECT
+              CALL RAISING EXCEPTIONS SINGLE
+              CLEAR REFRESH FREE INITIALIZE
+              CONCATENATE SPLIT SHIFT REPLACE TRANSLATE CONDENSE FIND
+              CHECK RETURN EXIT STOP CONTINUE
+              START-OF-SELECTION END-OF-SELECTION
+              TOP-OF-PAGE END-OF-PAGE
+              PARAMETERS SELECT-OPTIONS LIKE TYPE VALUE DEFAULT
+              CLASS ENDCLASS METHOD ENDMETHOD
+              PUBLIC PRIVATE PROTECTED
+              RAISE EXCEPTION TRY CATCH CLEANUP ENDTRY
+              EQ NE LT GT LE GE BETWEEN IN AND OR NOT
+              IS INITIAL BOUND
+              ASCENDING DESCENDING LEFT RIGHT UPPER LOWER NO-GAPS
+              MATCH OFFSET OCCURRENCE OCCURRENCES SEPARATED
+              AT LINE-SELECTION USER-COMMAND
+              OF BEGIN END TABLE WITH KEY INDEX
+              DECIMALS LENGTH MESSAGE-ID
+              STRLEN ABS EXPORTING IMPORTING ORDER CIRCULAR
+              PLACES ALL FIRST ROWS
+            Constantes KW_REPORT..KW_FIRST (151 mots-cles)
+
+  TODO 04 - TABLE DES SYMBOLES (32 BITS) [IMPLEMENTE]
+            Type TSymEntry : Name (String[48]), AsmLabel (String[48]),
+              DataType (Integer), StoreClass (Integer),
+              BpOffset (Integer), ArraySize (Integer),
+              CharLen (Integer), DecPrec (Integer), DecScale (Integer),
+              IsParam (Boolean), ParamIdx (Integer),
+              InitStr (String[64]), InitNum (LongInt),
+              HasInit (Boolean), IsConst (Boolean)
+            Type TFormEntry : Name (String[48]), AsmLabel (String[48]),
+              ParamCount (Integer), Defined (Boolean),
+              UsingCount (Integer), ChangingCount (Integer),
+              ParamNames : Array[1..MAX_PARAM] of String[48],
+              ParamKinds : Array[1..MAX_PARAM] of Integer (U/C/T)
+            SymTab[0..MAX_SYM-1] / SymCount
+            FormTab[0..MAX_FORM-1] / FormCount
+            Procedure InitSymTable / Function FindSym / Function AddSym
+            Function FindForm / Function AddForm
+            Variables systeme auto-declarees :
+              SY-SUBRC (DD 0), SY-TABIX (DD 0), SY-DBCNT (DD 0),
+              SY-LANGU (DD 0), SY-INDEX (DD 0)
+            Tailles 32 bits : TYPE I = DD (4 octets), TYPE C(n) = DB n,
+              TYPE F = DQ (8 octets stub), TYPE P = DD
+            Classes d entreposage : STORE_AUTO (pile EBP),
+              STORE_STATIC (segment .DATA), STORE_PARAM (EBP+n),
+              STORE_TABLE (donnees lineaires .DATA),
+              STORE_CONSTANT (valeur immediate)
+
+  TODO 05 - GESTION DES SCOPES (REPORT, FORM, METHOD) [IMPLEMENTE]
+            Pile de scopes : chaque scope maintient ses propres
+              variables locales, un offset EBP courant, un label sortie
+            Procedure EnterScope(kind: Integer; form_idx: Integer)
+            Procedure LeaveScope
+            Function AllocLocalEbp(bytes: Integer): Integer
+            Function CurrentEbpTop: Integer
+            Scopes supportes : SK_GLOBAL, SK_FORM, SK_BLOCK,
+              SK_LOOP, SK_EVENT
+            Compteur d offset EBP pour allocation variables locales
+            Offset EBP negatif pour locales [EBP-n]
+            Offset EBP positif pour parametres [EBP+8], [EBP+12]...
+            Convention STDCALL Win32 : parametres droite a gauche
+
+  TODO 06 - PARSEUR : REPORT / PROGRAM (EN-TETE DU PROGRAMME) [IMPLEMENTE]
+            Procedure ParseReport
+            Syntaxe :
+              REPORT nom_programme [MESSAGE-ID xx]
+                [NO STANDARD PAGE HEADING].
+              PROGRAM nom_programme.
+            Enregistrer le nom du programme (label ASM _ABF_nom)
+            Ignorer les options MESSAGE-ID et NO STANDARD PAGE HEADING
+            Consommer jusqu au point '.' final
+            Generer le label du point d entree principal
+
+  TODO 07 - PARSEUR : DATA / TYPES / CONSTANTS (DECLARATIONS 32 BITS) [IMPLEMENTE]
+            Procedure ParseData
+            Syntaxe simple :
+              DATA nom TYPE I [VALUE 0].
+              DATA nom(n) TYPE C [VALUE ' '].
+              DATA nom TYPE F [VALUE '0.0'].
+              DATA nom TYPE P [DECIMALS n] [VALUE '0'].
+              DATA: nom TYPE I, nom2 TYPE C(20).
+              CONSTANTS nom TYPE I VALUE 42.
+            Syntaxe TABLE :
+              DATA: ITAB TYPE TABLE OF struc.
+              DATA: ITAB LIKE TABLE OF var.
+            Syntaxe STRUCTURE :
+              TYPES: BEGIN OF struc, champ TYPE I, END OF struc.
+            Types ABAP reconnus et tailles 32 bits :
+              I (entier 32 bits, DD), F (flottant 64 bits, DQ stub),
+              C(n) (chaine fixe, DB n), N(n) (chaine numerique, DB n),
+              D (date 8 cars, DB 8), T (heure 6 cars, DB 6),
+              P (packed decimal, DD stub), STRING (pointeur 32 bits, DD),
+              XSTRING (octetstring, DD stub)
+            Allouer en .DATA (globales) ou pile EBP (locales FORM)
+
+  TODO 08 - PARSEUR : EXPRESSIONS ARITHMETIQUES ET LOGIQUES (32 BITS) [IMPLEMENTE]
+            Function ParseExpr: Integer
+            Function ParseLogExpr: Integer    (AND / OR / NOT)
+            Function ParseCompareExpr: Integer (EQ NE LT GT LE GE
+              = <> < > <= >= BETWEEN a AND b / IS INITIAL)
+            Function ParseAddExpr: Integer    (+ / -)
+            Function ParseMulExpr: Integer    (* / / DIV / MOD)
+            Function ParseUnaryExpr: Integer  (- / NOT)
+            Function ParsePrimaryExpr: Integer
+              Constante numerique -> MOV EAX, imm32
+              Constante chaine    -> LEA EAX, [_ABK_n]
+              Variable scalaire   -> MOV EAX, [_AB_x] ou [EBP-n]
+              Fonction built-in : STRLEN, ABS
+              Parentheses
+            Tous les calculs en registres 32 bits (EAX, EBX, ECX, EDX)
+
+  TODO 09 - GENERATION DE CODE : OPERATIONS ARITHMETIQUES 80386 [IMPLEMENTE]
+            Procedure GenLoadVar(sym_idx: Integer)
+              TYPE I : MOV EAX, DWORD PTR [_AB_x] ou [EBP-n]
+              TYPE C : LEA EAX, [_AB_x] ou [EBP-n]
+            Procedure GenStoreVar(sym_idx: Integer)
+              MOV DWORD PTR [_AB_x], EAX ou MOV [EBP-n], EAX
+            Procedure GenBinOp(op: Integer)
+              + : ADD EAX, EBX
+              - : SUB EAX, EBX
+              * : IMUL EAX, EBX
+              / : CDQ + IDIV EBX (quotient dans EAX)
+              MOD : CDQ + IDIV EBX -> MOV EAX, EDX (reste)
+            Procedure GenCompare(op: Integer)
+              CMP EAX, EBX + SETcc AL + MOVZX EAX, AL
+            Procedure GenBuiltIn(bname: String): Boolean
+              ABS -> CDQ / XOR EAX,EDX / SUB EAX,EDX
+              STRLEN -> CALL _ABRT_STRLEN
+            Primitives d emission : Emit, EmitLabel, EmitComment,
+              EmitBlank, NewLabel, AddStringLit
+
+  TODO 10 - PARSEUR : IF / ELSEIF / ELSE / ENDIF [IMPLEMENTE]
+            Procedure ParseIf
+            Syntaxe :
+              IF condition. instructions.
+              [ELSEIF condition. instructions.] ...
+              [ELSE. instructions.]
+              ENDIF.
+            Conditions speciales ABAP :
+              IF var IS INITIAL.     -> TEST EAX, EAX / JNZ ...
+              IF var IS NOT INITIAL. -> TEST EAX, EAX / JZ ...
+              IF var BETWEEN a AND b.-> CMP + JL + CMP + JG
+            Generation 32 bits :
+              Evaluer condition -> EAX
+              TEST EAX, EAX + JZ _ABL_elseif ou _ABL_else
+              Chaine ELSEIF avec liste de labels de saut
+              JMP _ABL_endif apres chaque branche
+
+  TODO 11 - PARSEUR : CASE / WHEN / WHEN OTHERS / ENDCASE [IMPLEMENTE]
+            Procedure ParseCase
+            Syntaxe :
+              CASE variable.
+                WHEN valeur. instructions.
+                WHEN valeur1 OR valeur2. instructions.
+                WHEN OTHERS. instructions.
+              ENDCASE.
+            Generation 32 bits :
+              Charger variable -> EDX
+              Pour chaque WHEN : CMP EDX, imm32 / JNE _ABL_next
+              WHEN valeur1 OR valeur2 : serie CMP + JE _ABL_match
+              WHEN OTHERS = clause par defaut
+              ENDCASE = EmitLabel(_ABL_endcase)
+
+  TODO 12 - PARSEUR : WHILE / ENDWHILE ET DO n TIMES / ENDDO [IMPLEMENTE]
+            Procedure ParseWhile
+            Syntaxe : WHILE condition. instructions. ENDWHILE.
+            Generation 32 bits :
+              _ABL_top: evaluer condition -> EAX
+              TEST EAX, EAX + JZ _ABL_end
+              Corps + JMP _ABL_top + EmitLabel(_ABL_end)
+            Procedure ParseDo
+            Syntaxe : DO [n TIMES]. instructions. ENDDO.
+            Generation n TIMES :
+              MOV ECX, n / _ABL_top: TEST ECX, ECX / JZ _ABL_end
+              PUSH ECX / corps / POP ECX / DEC ECX / JMP _ABL_top
+            Generation infinie (sans n) :
+              _ABL_top: corps + JMP _ABL_top (EXIT -> JMP _ABL_end)
+            Pile de boucles pour CONTINUE / EXIT imbriques
+
+  TODO 13 - PARSEUR : PERFORM / FORM / ENDFORM (SOUS-ROUTINES 32 BITS) [IMPLEMENTE]
+            Procedure ParsePerform
+            Syntaxe :
+              PERFORM nom [USING arg1 arg2 ...] [CHANGING arg1 ...].
+            Procedure ParseForm
+            Syntaxe :
+              FORM nom [USING p1 TYPE t ...] [CHANGING p1 TYPE t ...].
+                instructions.
+              ENDFORM.
+            Convention d appel Win32 STDCALL :
+              Arguments USING : PUSH EAX (par valeur 32 bits)
+              Arguments CHANGING : LEA EAX, [var] + PUSH EAX (adresse)
+              Prologue : PUSH EBP / MOV EBP, ESP / SUB ESP, locales
+              Epilogue : MOV ESP, EBP / POP EBP / RET n
+              Parametres a [EBP+8], [EBP+12], [EBP+16]...
+              Variables locales a [EBP-4], [EBP-8]...
+
+  TODO 14 - PARSEUR : WRITE / SKIP / NEW-LINE (SORTIE CONSOLE WIN32) [IMPLEMENTE]
+            Procedure ParseWrite
+            Syntaxe :
+              WRITE nom_var.
+              WRITE: 'Texte', nom_var, /.
+              WRITE nom_var LEFT-JUSTIFIED / NO-GAP.
+              SKIP [n].
+              NEW-LINE.
+            Generation Win32 (via WriteFile API) :
+              Variable TYPE I   -> CALL _ABRT_NUMTOSTR + CALL _ABRT_PRINT
+              Variable TYPE C   -> LEA EAX, [var] + CALL _ABRT_PRINT
+              Chaine litterale  -> PUSH OFFSET _ABK_n + CALL _ABRT_PRINT
+              SKIP / '/' (barre) -> CALL _ABRT_CRLF
+            Initialiser _ABRT_HSTDOUT via GetStdHandle(STD_OUTPUT_HANDLE)
+            Tampon : _ABRT_NUMBUF (12 octets), _ABRT_CRLF_DATA DB 13,10,0
+
+  TODO 15 - PARSEUR : MOVE / COMPUTE / FORMES VERBALES ARITHMETIQUES [IMPLEMENTE]
+            Procedure ParseMove
+            Syntaxe : MOVE source TO destination.
+            Equivalent a : destination = source.
+            Procedure ParseCompute
+            Syntaxe : COMPUTE var = expr.
+            Formes verbales ABAP :
+              ADD val TO var.             -> var = var + val
+              ADD val1 TO val2 GIVING var.-> var = val1 + val2
+              SUBTRACT val FROM var.      -> var = var - val
+              MULTIPLY var BY val.        -> var = var * val
+              DIVIDE var BY val.          -> var = var / val (entier)
+            Procedure ParseAssignment
+            Syntaxe : var = expr. (style ABAP Objet)
+            Toutes les operations en registres EAX/EBX 32 bits
+
+  TODO 16 - PARSEUR : LOOP AT / ENDLOOP + OPERATIONS TABLES INTERNES [IMPLEMENTE]
+            Procedure ParseLoopAt
+            Syntaxe :
+              LOOP AT itab [INTO wa] [WHERE condition].
+                instructions.
+              ENDLOOP.
+            Generation 32 bits (tableau lineaire en memoire) :
+              MOV ESI, OFFSET _ABA_itab
+              _ABL_top: CMP ESI, [_ABA_itab_end] + JGE _ABL_end
+              Copier element si INTO fourni (REP MOVSD)
+              ADD ESI, elem_size + JMP _ABL_top
+              Mettre a jour SY-TABIX et SY-INDEX
+            Procedure ParseAppend
+              APPEND [wa TO] itab.
+            Procedure ParseReadTable
+              READ TABLE itab INTO wa [INDEX i | WITH KEY champ = val].
+            Procedure ParseSort
+              SORT itab [BY champ] [ASCENDING | DESCENDING].
+            Procedure ParseDelete (table)
+              DELETE itab [WHERE condition | INDEX i].
+
+  TODO 17 - PARSEUR : OPERATIONS SUR CHAINES DE CARACTERES [IMPLEMENTE]
+            Procedure ParseConcatenate
+              CONCATENATE s1 s2 ... INTO dest [SEPARATED BY sep].
+            Procedure ParseSplit
+              SPLIT src AT sep INTO s1 s2.
+            Procedure ParseShift
+              SHIFT var [LEFT | RIGHT] [BY n PLACES | CIRCULAR].
+            Procedure ParseReplace
+              REPLACE [ALL OCCURRENCES OF] old IN dest WITH new.
+            Procedure ParseTranslate
+              TRANSLATE var TO UPPER CASE / TO LOWER CASE.
+            Procedure ParseCondense
+              CONDENSE var [NO-GAPS].
+            Procedure ParseFind
+              FIND [FIRST OCCURRENCE OF] pattern IN var
+                   [MATCH OFFSET off] [MATCH LENGTH len].
+            Generation : appels aux helpers runtime _ABRT_STR_xxx
+            Tampons : _ABRT_STRBUF (512 octets), _ABRT_CATBUF (512)
+
+  TODO 18 - GENERATION : EN-TETE ASSEMBLEUR 80386 ET SEGMENT .DATA [IMPLEMENTE]
+            Procedure EmitHeader
+              '; Generated by ABAPCW32 V0.1'
+              '.386'
+              '.MODEL FLAT, STDCALL'
+              'OPTION CASEMAP:NONE'
+              Declarations EXTRN pour API Win32 :
+                ExitProcess, GetStdHandle, WriteFile, ReadFile,
+                GetProcessHeap, HeapAlloc, HeapFree
+              '.STACK 4096'
+              '_TEXT SEGMENT DWORD PUBLIC ''CODE'''
+              'ASSUME CS:_TEXT'
+            Procedure EmitDataSeg
+              Variables globales TYPE I : _AB_nom DD 0
+              Variables globales TYPE C(n) : _AB_nom DB n DUP(32)
+              Variables globales TYPE F : _AB_nom DQ 0 (stub)
+              Variables SY systeme : _AB_SY_SUBRC DD 0, ...
+              Tampons runtime : _ABRT_NUMBUF, _ABRT_STRBUF,
+                _ABRT_INPUTBUF, _ABRT_CRLF_DATA, _ABRT_HSTDOUT
+              Chaines litterales : _ABK_1, _ABK_2... DB 'texte',0
+            Mode -asm : ecrire fichier .ASM avec commentaires
+
+  TODO 19 - GENERATION : POINT D ENTREE WIN32 ET HELPERS RUNTIME [IMPLEMENTE]
+            Procedure EmitEntryPoint
+              _ABF_main:
+              PUSH EBP / MOV EBP, ESP
+              Initialiser stdout : PUSH -11 / CALL GetStdHandle
+                MOV [_ABRT_HSTDOUT], EAX
+              CALL _ABF_nom_report (label du REPORT principal)
+              PUSH 0 / CALL ExitProcess
+            Procedure EmitRuntimeHelpers
+              _ABRT_CRLF     : ecrire CR+LF via WriteFile
+              _ABRT_PRINT    : EAX=ptr ASCIIZ -> WriteFile(hStdOut)
+              _ABRT_NUMTOSTR : EAX=entier -> ASCIIZ dans _ABRT_NUMBUF
+              _ABRT_PRINTINT : EAX=entier -> NUMTOSTR + PRINT
+              _ABRT_PRINTCHR : AL=caractere -> WriteFile 1 octet
+              _ABRT_READINT  : ReadFile + parsing ASCII -> EAX
+              _ABRT_READSTR  : ReadFile -> copier dans buffer
+              _ABRT_STRLEN   : EAX=ptr ASCIIZ -> EAX=longueur
+              _ABRT_STRCOPY  : ESI=src, EDI=dst, ECX=max -> copie
+              _ABRT_STRCONCAT: coller ESI apres EDI (ASCIIZ)
+              _ABRT_ERROR    : afficher message + ExitProcess(1)
+
+  TODO 20 - PARSEUR : CLEAR / REFRESH / FREE / CHECK / EXIT / CONTINUE [IMPLEMENTE]
+            Procedure ParseClear
+            Syntaxe : CLEAR variable.
+            Generation 32 bits :
+              TYPE I/N/F/P : MOV DWORD PTR [_AB_x], 0
+              TYPE C(n)    : LEA EDI,[_AB_x] + MOV ECX,n +
+                             MOV AL,32 + REP STOSB
+            Procedure ParseRefresh
+              REFRESH itab. -> remettre compteur elements a 0
+            Procedure ParseFree
+              FREE itab. -> stub REFRESH
+            Procedure ParseCheck
+              CHECK condition. -> si faux, JMP _ABL_exit_courant
+            Procedure ParseExit
+              EXIT. -> JMP _ABL_enddo / _ABL_endloop / _ABL_endform
+            Procedure ParseContinue
+              CONTINUE. -> JMP _ABL_loop_top
+            Procedure ParseStop
+              STOP. -> PUSH 0 / CALL ExitProcess
+            Procedure ParseReturn
+              RETURN. -> MOV ESP,EBP / POP EBP / RET
+
+  TODO 21 - PARSEUR : SELECT / ENDSELECT (ACCES BD, STUB SANS BD) [IMPLEMENTE]
+            Procedure ParseSelect
+            Syntaxe :
+              SELECT [SINGLE] champ(s) / * FROM table
+                INTO [CORRESPONDING FIELDS OF] var / TABLE itab
+                [WHERE condition]
+                [ORDER BY champ]
+                [UP TO n ROWS].
+              [instructions. ENDSELECT.]
+            Stub de generation (pas de BD reelle) :
+              Emettre '; SELECT ... (stub - pas de BD)'
+              Boucle vide -> 0 iterations
+              SY-SUBRC = 4 (non trouve) :
+                MOV DWORD PTR [_AB_SY_SUBRC], 4
+            Variables systeme : SY-SUBRC, SY-TABIX, SY-DBCNT
+
+  TODO 22 - PARSEUR : CALL FUNCTION / FUNCTION / ENDFUNCTION (STUBS) [IMPLEMENTE]
+            Procedure ParseCallFunction
+            Syntaxe :
+              CALL FUNCTION 'NOM_FM'
+                EXPORTING param = val ...
+                IMPORTING param = var ...
+                TABLES    itab  = itab2 ...
+                EXCEPTIONS exception_name = n ...
+            Generation stub :
+              Emettre '; CALL FUNCTION NOM_FM (stub)'
+              MOV DWORD PTR [_AB_SY_SUBRC], 0
+            Procedure ParseFunction
+            Syntaxe :
+              FUNCTION nom.
+                instructions.
+              ENDFUNCTION.
+            Generer comme une FORM : label _ABF_FM_nom
+              Prologue/Epilogue Win32 STDCALL
+
+  TODO 23 - PARSEUR : DISPATCHER ET BOUCLE PRINCIPALE [IMPLEMENTE]
+            Procedure ParseStatement
+            Dispatcher selon le token courant :
+              REPORT / PROGRAM         -> ParseReport
+              DATA / TYPES / CONSTANTS -> ParseData
+              IF                       -> ParseIf
+              CASE                     -> ParseCase
+              WHILE                    -> ParseWhile
+              DO                       -> ParseDo
+              LOOP                     -> ParseLoopAt
+              PERFORM                  -> ParsePerform
+              FORM                     -> ParseForm
+              WRITE                    -> ParseWrite
+              SKIP / NEW-LINE          -> ParseWrite
+              MOVE                     -> ParseMove
+              COMPUTE                  -> ParseCompute
+              ADD / SUBTRACT / MULTIPLY / DIVIDE -> ParseArithVerb
+              APPEND / INSERT / DELETE / MODIFY  -> ParseTableOp
+              READ                     -> ParseReadTable
+              SORT                     -> ParseSort
+              CONCATENATE              -> ParseConcatenate
+              SPLIT                    -> ParseSplit
+              SHIFT / REPLACE / TRANSLATE / CONDENSE / FIND
+                                       -> ParseStringOp
+              CLEAR / REFRESH / FREE   -> ParseClear
+              CHECK                    -> ParseCheck
+              EXIT / CONTINUE / STOP / RETURN -> ParseFlowControl
+              SELECT                   -> ParseSelect
+              CALL                     -> ParseCallFunction
+              TRY                      -> ParseTry
+              RAISE                    -> ParseRaise
+              START-OF-SELECTION       -> ParseEvent(EV_START)
+              END-OF-SELECTION         -> ParseEvent(EV_END)
+              nom '='                  -> ParseAssignment
+              PARAMETERS / SELECT-OPTIONS -> ParseSelectionScreen
+            Procedure ParseBlock(stop_kw: Integer)
+              Appeler ParseStatement en boucle jusqu a stop_kw ou EOF
+
+  TODO 24 - PARSEUR : EVENEMENTS ABAP ET ECRAN DE SELECTION (STUBS) [IMPLEMENTE]
+            Evenements ABAP de haut niveau :
+              START-OF-SELECTION. -> label _ABE_START + ParseBlock
+              END-OF-SELECTION.   -> label _ABE_END   + ParseBlock
+              TOP-OF-PAGE.        -> label _ABE_TOPPAGE (stub vide)
+              END-OF-PAGE.        -> label _ABE_ENDPAGE (stub vide)
+              AT LINE-SELECTION.  -> stub vide
+              AT USER-COMMAND.    -> stub vide
+            Ecran de selection :
+              PARAMETERS p TYPE I DEFAULT 0.
+                -> generer variable globale DD + valeur par defaut
+              SELECT-OPTIONS s FOR var.
+                -> stub (deux variables LOW / HIGH en DD)
+            TRY / CATCH / CLEANUP / ENDTRY :
+              TRY. -> sauvegarder contexte (stub)
+              CATCH cx_nom. -> label _ABX_catch
+              CLEANUP. -> label _ABX_cleanup
+              ENDTRY. -> restaurer contexte
+              RAISE EXCEPTION. -> stub
+            Generation :
+              START : appelle _ABE_START en dernier
+              Chaque bloc evenement = label + corps + RET
+
+  TODO 25 - GENERATION FINALE : LINKER PE, FICHIERS .OBJ ET EXEMPLES [IMPLEMENTE]
+            Procedure EmitClose : finaliser l emission ASM
+              EmitRuntimeHelpers + '_TEXT ENDS' + EmitDataSeg +
+              'END _ABF_main'
+            Procedure BinInit / BinEmit / BinEmitData / BinFixup
+            Si EmitExe (par defaut) :
+              Construire l image PE complete en memoire :
+              - DOS stub header (MZ + message + offset PE)
+              - PE signature + COFF header (Machine=i386)
+              - Optional header (ImageBase=$00400000, EntryPoint,
+                SectionAlignment=4096, FileAlignment=512,
+                Subsystem=CUI console)
+              - Section .text (code machine 80386)
+              - Section .data (variables et litteraux)
+              - Section .idata (Import Address Table pour
+                kernel32.dll : ExitProcess, GetStdHandle,
+                WriteFile, ReadFile, GetProcessHeap,
+                HeapAlloc, HeapFree)
+              Ecrire le fichier .EXE resultant
+            Si EmitObj (-obj) :
+              Construire un fichier COFF .OBJ 32 bits :
+              - COFF header + sections .text, .data
+              - Table de symboles et relocations
+              - Compatible avec les linkers Win32 (LINK.EXE)
+            Si EmitAsm (-asm) :
+              Ecrire le fichier .ASM lisible en parallele
+              (genere pendant la compilation, pas de passe
+              supplementaire)
+            Programme de test : SAMPLES\ABAP\TEST.ABAP
+              REPORT ZTEST01 avec DATA, WHILE, IF/ELSEIF/ELSE,
+              DO TIMES, PERFORM/FORM, MOVE, CLEAR, WRITE, SKIP
+            Rapport de compilation : 0 erreurs, N symboles, M formes

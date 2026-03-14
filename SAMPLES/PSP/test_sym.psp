@@ -1,0 +1,17 @@
+<html>
+<body>
+<%
+const
+  MAX = 100;
+  MIN = 10;
+  DELTA = MAX - MIN;
+  PI_APPROX : Integer = 3;
+  GREETING : String = 'Hello World';
+  FLAG = true;
+  ZERO = false;
+%>
+<h1>Test Symbol Table</h1>
+<%= DELTA %>
+<%= MAX %>
+</body>
+</html>
