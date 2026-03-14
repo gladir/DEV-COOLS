@@ -289,6 +289,12 @@ Var
   SrcFile       : Text;       { fichier source                           }
   OutFile       : File of Byte; { fichier binaire de sortie              }
   BinPos        : LongInt;    { position courante dans le fichier binaire }
+                               { Note : BinPos est synchronisee avec      }
+                               { FilePos(OutFile) par les fonctions       }
+                               { BinWrite*. BinPatchU2/U4 sauvegardent   }
+                               { et restaurent FilePos sans modifier      }
+                               { BinPos (car ils ne changent pas la       }
+                               { position logique d'ecriture).           }
 
   { --- Options de ligne de commande --- }
   OptDebug      : Boolean;    { -g : inclure infos de debogage           }
@@ -1468,7 +1474,9 @@ End;
 
 { --- BinWriteFloat : ecrire IEEE 754 single 32 bits big-endian --- }
 { La valeur Real de Turbo Pascal/FPC est convertie en Single 32b.   }
-{ On utilise un record variant pour acceder aux octets.             }
+{ On utilise 'absolute' pour acceder aux octets de la representation }
+{ IEEE 754 du Single. Cela suppose une plateforme little-endian     }
+{ (x86/x86-64) avec representation IEEE 754 standard.               }
 Procedure BinWriteFloat(f: Real);
 Var s: Single; bytes: Array[0..3] of Byte absolute s;
 Begin
