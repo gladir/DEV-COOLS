@@ -284,7 +284,7 @@
             Procedures imbriquees : acces au cadre englobant via lien statique
               (display ou pointeur vers BP du cadre parent)
 
-  TODO 19 - APPELS DE PROCEDURES ET PARAMETRES
+  TODO 19 - APPELS DE PROCEDURES ET PARAMETRES [IMPLEMENTE]
             Appel de procedure : nom(arg1, arg2, ...)
             Parametres par valeur (VALUE) :
               Evaluer l argument, empiler la valeur sur la pile
@@ -559,6 +559,8 @@ Type
     ArrayElemTy : Integer;   { type des elements (TY_IDX_INTEGER, etc.)  }
     ArrayLo     : Array[1..MAX_ARRAY_DIM] Of Integer; { borne inf     }
     ArrayHi     : Array[1..MAX_ARRAY_DIM] Of Integer; { borne sup     }
+    { Champs procedure (TODO 19) }
+    ProcParamCount : Integer;  { nombre de parametres formels (SK_PROC) }
   End;
 
   { ---- Systeme de types (TODO 06) -------------------------- }
@@ -2450,6 +2452,18 @@ Begin
         Exit;
       End;
 
+      { Appel de procedure sans parentheses en expression (TODO 19) }
+      If (SymTab[SIdx].Kind = SK_PROC) And
+         Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) And
+         Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[')) And
+         Not ((CurToken.Kind = TK_OP) And (CurToken.Val = ':=')) Then
+      Begin
+        EmitComment('appel ' + IdName + ' (sans args, expr, TODO 19)');
+        EmitInstr('CALL', SymTab[SIdx].MangledName);
+        ExprMakeAX(SymTab[SIdx].TypeIdx, Res);
+        Exit;
+      End;
+
       { Acces tableau : ident[ ... ] (TODO 10) }
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
       Begin
@@ -3307,6 +3321,18 @@ Begin
         Exit;
       End;
 
+      { Appel de procedure sans parentheses (TODO 19) }
+      { Ex : hello; -> CALL _A60P_HELLO  (aucun argument) }
+      If (SymTab[SIdx].Kind = SK_PROC) And
+         Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) And
+         Not ((CurToken.Kind = TK_OP) And (CurToken.Val = ':=')) Then
+      Begin
+        EmitComment('appel ' + VarName + ' (sans args, TODO 19)');
+        EmitInstr('CALL', SymTab[SIdx].MangledName);
+        ExprMakeAX(SymTab[SIdx].TypeIdx, E);
+        Exit;
+      End;
+
       { Appel de procedure : procname(args) (TODO 18) }
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') And
          (SymTab[SIdx].Kind = SK_PROC) Then
@@ -3505,6 +3531,16 @@ Begin
       Else
         Break;
     End;
+  End;
+
+  { Verification du nombre d arguments (TODO 19) }
+  If (ProcSIdx >= 0) And (ProcSIdx < SymCount) And
+     (SymTab[ProcSIdx].Kind = SK_PROC) Then
+  Begin
+    If ArgCount <> SymTab[ProcSIdx].ProcParamCount Then
+      WarnMsg('appel de ' + ProcName + ': ' + IntToStr_(ArgCount) +
+              ' argument(s), ' + IntToStr_(SymTab[ProcSIdx].ProcParamCount) +
+              ' attendu(s)');
   End;
 
   { Consommer ) }
@@ -4815,6 +4851,10 @@ Begin
     End;
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
       ParserAdvance;  { consommer ) }
+
+    { Stocker le nombre de parametres formels dans le symbole (TODO 19) }
+    If SIdx >= 0 Then
+      SymTab[SIdx].ProcParamCount := ParamCount;
   End;
 
   { Consommer ; apres la liste de parametres }
@@ -4844,12 +4884,13 @@ Begin
   End;
 
   { ---- Specifications de types des parametres ---- }
-  { Syntaxe : INTEGER p1, p2; REAL p3; BOOLEAN p4; etc. }
+  { Syntaxe : INTEGER p1, p2; REAL p3; BOOLEAN p4;
+    PROCEDURE f; (TODO 19) etc. }
   While (CurToken.Kind = TK_KEYWORD) And
         ((CurToken.Val = 'INTEGER') Or (CurToken.Val = 'REAL') Or
          (CurToken.Val = 'BOOLEAN') Or (CurToken.Val = 'STRING') Or
          (CurToken.Val = 'ARRAY') Or (CurToken.Val = 'LABEL') Or
-         (CurToken.Val = 'SWITCH')) Do
+         (CurToken.Val = 'SWITCH') Or (CurToken.Val = 'PROCEDURE')) Do
   Begin
     { Determiner le type }
     If CurToken.Val = 'INTEGER' Then SpecType := TY_IDX_INTEGER
@@ -4858,12 +4899,15 @@ Begin
     Else If CurToken.Val = 'STRING' Then SpecType := TY_IDX_STRING
     Else If CurToken.Val = 'ARRAY' Then SpecType := TY_IDX_ARRAY
     Else If CurToken.Val = 'LABEL' Then SpecType := TY_IDX_LABEL
+    Else If CurToken.Val = 'PROCEDURE' Then SpecType := TY_IDX_INTEGER
     Else SpecType := TY_IDX_INTEGER;
     ParserAdvance;  { consommer le mot-cle de type }
 
-    { Verifier si c est un PROCEDURE type (spec vs decl imbrique) }
-    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'PROCEDURE') Then
-      Break;  { c est une spec PROCEDURE, pas un type de param }
+    { Si le prochain est un mot-cle de controle, on sort }
+    If (CurToken.Kind = TK_KEYWORD) And
+       ((CurToken.Val = 'BEGIN') Or (CurToken.Val = 'IF') Or
+        (CurToken.Val = 'FOR')) Then
+      Break;
 
     { Parser les noms de parametres avec ce type }
     While (CurToken.Kind = TK_IDENT) Do
