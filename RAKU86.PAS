@@ -326,7 +326,7 @@
             Methodes speciales : BUILD, TWEAK (initialisation)
             .isa(Classe) : test d heritage -> AX=0|1
 
-  TODO 20 - ROLES (role, does)
+  TODO 20 - ROLES (role, does) [IMPLEMENTE]
             ParseRoleDecl : role Nom { has ...; method ...; }
             Composition : class C does Role1 does Role2 { ... }
               Copier les attributs et methodes du role dans la classe
@@ -479,6 +479,10 @@ Const
   MAX_CLASS       = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
   MAX_CLASS_ATTR  = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
   MAX_CLASS_METH  = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
+  MAX_ROLE        = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
+  MAX_ROLE_ATTR   = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
+  MAX_ROLE_METH   = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
+  MAX_CLASS_ROLES = {$IFDEF FPC}8{$ELSE}4{$ENDIF};
   MAX_HASH_PAIRS  = 16;
   MAX_HASH_KEYS   = {$IFDEF FPC}512{$ELSE}100{$ENDIF};
   STACK_SIZE      = 1024;
@@ -688,6 +692,29 @@ Type
     Meths     : Array[0..MAX_CLASS_METH - 1] Of TClassMethodRec;
     InstSize  : Integer;
     VtLbl     : TString;
+    DoesCount : Integer;
+    DoesTab   : Array[0..MAX_CLASS_ROLES - 1] Of Integer;
+  End;
+
+  { ---- Roles (TODO 20) ----------------------------------------- }
+  TRoleAttrRec = Record
+    Name     : TString;
+    IsPublic : Boolean;
+    IsRW     : Boolean;
+  End;
+
+  TRoleMethodRec = Record
+    Name    : TString;
+    LblName : TString;    { label ASM si implementation fournie  }
+    IsStub  : Boolean;     { True = methode requise sans corps    }
+  End;
+
+  TRoleRec = Record
+    Name      : TString;
+    AttrCount : Integer;
+    Attrs     : Array[0..MAX_ROLE_ATTR - 1] Of TRoleAttrRec;
+    MethCount : Integer;
+    Meths     : Array[0..MAX_ROLE_METH - 1] Of TRoleMethodRec;
   End;
 
 { ============================================================
@@ -787,6 +814,10 @@ Var
   ClassTab    : Array[0..MAX_CLASS - 1] Of TClassRec;
   ClassCount  : Integer;
   CurClassIdx : Integer;
+
+  { Roles (TODO 20) }
+  RoleTab    : Array[0..MAX_ROLE - 1] Of TRoleRec;
+  RoleCount  : Integer;
 
 { ============================================================
   FORWARD DECLARATIONS
@@ -986,6 +1017,12 @@ Function  ClassAdd(Const AName : TString;
 Procedure ParseClassDecl;                                          Forward;
 Procedure EmitClassVtables;                                        Forward;
 Procedure EmitClassRuntime;                                        Forward;
+
+{ Forward declarations TODO 20 - Roles }
+Function  RoleFind(Const AName : TString) : Integer;               Forward;
+Function  RoleAdd(Const AName : TString) : Integer;                Forward;
+Procedure ParseRoleDecl;                                            Forward;
+Procedure ComposeRole(CIdx, RIdx : Integer);                       Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1243,6 +1280,7 @@ Begin
   MultiCount      := 0;
   ClassCount      := 0;
   CurClassIdx     := -1;
+  RoleCount       := 0;
   GKwConsumed  := False;
   CurFnRetLbl  := '';
   CurFnName    := '';
@@ -1553,6 +1591,8 @@ Begin
   { Classes et objets (TODO 19) }
   DataAdd('_RK_INSTPTR',   DK_WORD, 0, '');
   DataAdd('_RKK_NOMETHOD', DK_STR, 0, 'Method not found');
+  { Roles (TODO 20) }
+  DataAdd('_RKK_NOROLE',   DK_STR, 0, 'Required method not provided');
 End;
 
 { ============================================================
@@ -4719,6 +4759,7 @@ Procedure ParsePostfix(Var Res : TExprVal);
 Var
   MethName  : TString;
   CIdx      : Integer;
+  RIdx      : Integer;
   MIdx      : Integer;
   AIdx      : Integer;
   MI        : Integer;
@@ -4738,7 +4779,8 @@ Begin
     Begin
       ExprFlushToAX(Res);
       ParserAdvance;   { consommer '.' }
-      If CurToken.Kind = TK_IDENT Then
+      If (CurToken.Kind = TK_IDENT) Or
+         (CurToken.Kind = TK_KEYWORD) Then
       Begin
         MethName := CurToken.Val;
         ParserAdvance;   { consommer le nom }
@@ -4759,6 +4801,38 @@ Begin
           SaveCIdx := CIdx;
           If (CIdx >= 0) And (CIdx < ClassCount) Then
           Begin
+            { .does(Role) : test de composition (TODO 20) }
+            If (MethName = 'does') And (CurToken.Kind = TK_PUNCT) And
+               (CurToken.Val = '(') Then
+            Begin
+              ParserAdvance;   { consommer '(' }
+              If CurToken.Kind = TK_IDENT Then
+              Begin
+                { Chercher le role dans les roles de la classe }
+                RIdx := RoleFind(CurToken.Val);
+                MIdx := -1;
+                If RIdx >= 0 Then
+                  For MI := 0 To ClassTab[CIdx].DoesCount - 1 Do
+                    If ClassTab[CIdx].DoesTab[MI] = RIdx Then
+                    Begin MIdx := MI; Break; End;
+                If MIdx >= 0 Then
+                  EmitInstr('MOV', 'AX, 1')
+                Else
+                  EmitInstr('XOR', 'AX, AX');
+                ParserAdvance;
+              End
+              Else
+                EmitInstr('XOR', 'AX, AX');
+              If (CurToken.Kind = TK_PUNCT) And
+                 (CurToken.Val = ')') Then
+                ParserAdvance;
+              Res.Kind    := EK_AX;
+              Res.ImmVal  := 0;
+              Res.TypeIdx := TY_IDX_BOOL;
+              Res.Offset  := 0;
+            End
+            Else
+            Begin
             { Chercher une methode }
             MIdx := -1;
             For MI := 0 To ClassTab[CIdx].MethCount - 1 Do
@@ -4835,6 +4909,7 @@ Begin
                 Res.Offset  := 0;
               End;
             End;
+            End; { fin else du .does() }
           End
           Else
           Begin
@@ -7876,6 +7951,7 @@ Begin
   ClassTab[Idx].MethCount := 0;
   ClassTab[Idx].InstSize  := 2;   { 2 octets pour pointeur vtable }
   ClassTab[Idx].VtLbl     := '_RKC_' + SymNameClean(AName) + '_VT';
+  ClassTab[Idx].DoesCount := 0;
   Inc(ClassCount);
   ClassAdd := Idx;
 End;
@@ -7911,6 +7987,7 @@ Var
   SelfOfsStr   : TString;
   AccOfs       : Integer;
   AccOfsStr    : TString;
+  RIdx         : Integer;
 Begin
   { Attendre le nom de la classe }
   If CurToken.Kind <> TK_IDENT Then
@@ -7961,6 +8038,23 @@ Begin
     ClassTab[CIdx].InstSize := ClassTab[ParIdx].InstSize;
   End;
 
+  { Composition de roles : does Role1 does Role2 ... (TODO 20) }
+  While (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'does') Do
+  Begin
+    ParserAdvance;   { consommer 'does' }
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      RIdx := RoleFind(CurToken.Val);
+      If RIdx >= 0 Then
+        ComposeRole(CIdx, RIdx)
+      Else
+        WarnMsg('role inconnu : ' + CurToken.Val);
+      ParserAdvance;
+    End
+    Else
+      CompileError('nom de role attendu apres ''does''');
+  End;
+
   { Attendre '{' }
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
     ParserAdvance
@@ -7972,6 +8066,29 @@ Begin
   EmitInstr('JMP', LblClsEnd);
   EmitBlankLine;
   EmitComment('class ' + ClassName);
+
+  { Generer des accesseurs pour les attributs copies des roles (TODO 20) }
+  If ClassTab[CIdx].DoesCount > 0 Then
+    For I := 0 To ClassTab[CIdx].AttrCount - 1 Do
+    Begin
+      If ClassTab[CIdx].Attrs[I].IsPublic Then
+      Begin
+        AccLbl := '_RKS_' + SymNameClean(ClassName) + '_' +
+                  SymNameClean(ClassTab[CIdx].Attrs[I].Name);
+        AccOfs := ClassTab[CIdx].Attrs[I].Offset;
+        Str(AccOfs, AccOfsStr);
+        EmitBlankLine;
+        EmitComment('accesseur ' + ClassName + '.' +
+                    ClassTab[CIdx].Attrs[I].Name +
+                    ' (from role)');
+        EmitRaw(AccLbl + ' PROC NEAR');
+        EmitProlog;
+        EmitInstr('MOV', 'BX, WORD PTR [BP+4]');
+        EmitInstr('MOV', 'AX, WORD PTR [BX+' + AccOfsStr + ']');
+        EmitEpilog;
+        EmitRaw(AccLbl + ' ENDP');
+      End;
+    End;
 
   { Parser le corps de la classe }
   While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) And
@@ -8264,6 +8381,433 @@ Begin
   EmitBlankLine;
 End;
 
+{ ============================================================
+  TODO 20 - ROLES (role, does) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- RoleFind : chercher un role par nom ------------------------ }
+Function RoleFind(Const AName : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  RoleFind := -1;
+  For I := 0 To RoleCount - 1 Do
+    If RoleTab[I].Name = AName Then
+    Begin
+      RoleFind := I;
+      Exit;
+    End;
+End;
+
+{ ---- RoleAdd : ajouter un role dans RoleTab --------------------- }
+Function RoleAdd(Const AName : TString) : Integer;
+Var
+  Idx : Integer;
+Begin
+  If RoleCount >= MAX_ROLE Then
+  Begin
+    CompileError('table des roles pleine (max=' +
+                 IntToStr(MAX_ROLE) + ')');
+    RoleAdd := -1;
+    Exit;
+  End;
+  Idx := RoleCount;
+  RoleTab[Idx].Name      := AName;
+  RoleTab[Idx].AttrCount := 0;
+  RoleTab[Idx].MethCount := 0;
+  Inc(RoleCount);
+  RoleAdd := Idx;
+End;
+
+{ ---- ComposeRole : copier attributs+methodes d un role dans une classe }
+Procedure ComposeRole(CIdx, RIdx : Integer);
+Var
+  I, J  : Integer;
+  Found : Boolean;
+Begin
+  If (CIdx < 0) Or (RIdx < 0) Then Exit;
+
+  { Enregistrer le role dans la classe }
+  If ClassTab[CIdx].DoesCount < MAX_CLASS_ROLES Then
+  Begin
+    ClassTab[CIdx].DoesTab[ClassTab[CIdx].DoesCount] := RIdx;
+    Inc(ClassTab[CIdx].DoesCount);
+  End;
+
+  { Copier les attributs du role dans la classe (aplatissement) }
+  For I := 0 To RoleTab[RIdx].AttrCount - 1 Do
+  Begin
+    { Verifier si l attribut existe deja }
+    Found := False;
+    For J := 0 To ClassTab[CIdx].AttrCount - 1 Do
+      If ClassTab[CIdx].Attrs[J].Name = RoleTab[RIdx].Attrs[I].Name Then
+      Begin Found := True; Break; End;
+    If Not Found Then
+      If ClassTab[CIdx].AttrCount < MAX_CLASS_ATTR Then
+      Begin
+        ClassTab[CIdx].Attrs[ClassTab[CIdx].AttrCount].Name :=
+          RoleTab[RIdx].Attrs[I].Name;
+        ClassTab[CIdx].Attrs[ClassTab[CIdx].AttrCount].IsPublic :=
+          RoleTab[RIdx].Attrs[I].IsPublic;
+        ClassTab[CIdx].Attrs[ClassTab[CIdx].AttrCount].IsRW :=
+          RoleTab[RIdx].Attrs[I].IsRW;
+        ClassTab[CIdx].Attrs[ClassTab[CIdx].AttrCount].Offset :=
+          ClassTab[CIdx].InstSize;
+        ClassTab[CIdx].Attrs[ClassTab[CIdx].AttrCount].TypeIdx :=
+          TY_IDX_INT;
+        Inc(ClassTab[CIdx].AttrCount);
+        ClassTab[CIdx].InstSize := ClassTab[CIdx].InstSize + 2;
+      End;
+  End;
+
+  { Copier les methodes avec implementation du role (aplatissement) }
+  For I := 0 To RoleTab[RIdx].MethCount - 1 Do
+  Begin
+    If RoleTab[RIdx].Meths[I].IsStub Then
+    Begin
+      { Methode requise : verifier que la classe la fournit }
+      Found := False;
+      For J := 0 To ClassTab[CIdx].MethCount - 1 Do
+        If ClassTab[CIdx].Meths[J].Name =
+           RoleTab[RIdx].Meths[I].Name Then
+        Begin Found := True; Break; End;
+      If Not Found Then
+        WarnMsg('role ' + RoleTab[RIdx].Name +
+                ' requiert la methode ' +
+                RoleTab[RIdx].Meths[I].Name +
+                ' non fournie par class ' +
+                ClassTab[CIdx].Name);
+    End
+    Else
+    Begin
+      { Methode avec implementation : copier si pas deja dans la classe }
+      Found := False;
+      For J := 0 To ClassTab[CIdx].MethCount - 1 Do
+        If ClassTab[CIdx].Meths[J].Name =
+           RoleTab[RIdx].Meths[I].Name Then
+        Begin Found := True; Break; End;
+      If Not Found Then
+        If ClassTab[CIdx].MethCount < MAX_CLASS_METH Then
+        Begin
+          ClassTab[CIdx].Meths[ClassTab[CIdx].MethCount].Name :=
+            RoleTab[RIdx].Meths[I].Name;
+          ClassTab[CIdx].Meths[ClassTab[CIdx].MethCount].LblName :=
+            RoleTab[RIdx].Meths[I].LblName;
+          ClassTab[CIdx].Meths[ClassTab[CIdx].MethCount].VtIdx :=
+            ClassTab[CIdx].MethCount;
+          Inc(ClassTab[CIdx].MethCount);
+        End;
+    End;
+  End;
+End;
+
+{ ---- ParseRoleDecl : declaration de role ------------------------ }
+(* Syntaxe : role Nom { has ...; method ...; }                     *)
+Procedure ParseRoleDecl;
+Var
+  RoleName     : TString;
+  RIdx         : Integer;
+  AttrRaw      : TString;
+  AttrName     : TString;
+  IsPublic     : Boolean;
+  IsRW         : Boolean;
+  MethName     : TString;
+  ParamNames   : Array[0..MAX_PARAM - 1] Of TString;
+  ParamCount   : Integer;
+  LblRet       : TString;
+  LblProc      : TString;
+  LblRoleEnd   : TString;
+  SaveFrame    : Integer;
+  SaveFnDepth  : Integer;
+  SaveRetLbl   : TString;
+  SaveFnName   : TString;
+  I            : Integer;
+  Ofs          : Integer;
+  OfsStr       : TString;
+  SelfOfs      : Integer;
+  SelfOfsStr   : TString;
+  IsStub       : Boolean;
+Begin
+  { Attendre le nom du role }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('nom de role attendu apres ''role''');
+    Exit;
+  End;
+  RoleName := CurToken.Val;
+  ParserAdvance;
+
+  { Parametre optionnel : role Nom[Type] (simplifie : consommer) }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
+  Begin
+    ParserAdvance;   { consommer '[' }
+    While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']')) And
+          (CurToken.Kind <> TK_EOF) Do
+      ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+      ParserAdvance;   { consommer ']' }
+  End;
+
+  { Creer l entree role }
+  RIdx := RoleAdd(RoleName);
+  If RIdx < 0 Then Exit;
+
+  { Attendre '{' }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+    ParserAdvance
+  Else
+    CompileError('''{'' attendue pour le corps de role ' + RoleName);
+
+  { JMP par-dessus le code genere pour le role }
+  LblRoleEnd := LabelGen;
+  EmitInstr('JMP', LblRoleEnd);
+  EmitBlankLine;
+  EmitComment('role ' + RoleName);
+
+  { Parser le corps du role }
+  While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    { --- has $.attr [is rw]; --- }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'has') Then
+    Begin
+      ParserAdvance;   { consommer 'has' }
+      IsPublic := True;
+      IsRW     := False;
+      AttrName := '';
+
+      If CurToken.Kind = TK_SCALAR Then
+      Begin
+        AttrRaw := CurToken.Val;
+        ParserAdvance;
+        If (Length(AttrRaw) > 0) And (AttrRaw[1] = '.') Then
+        Begin
+          IsPublic := True;
+          AttrName := Copy(AttrRaw, 2, Length(AttrRaw) - 1);
+        End
+        Else If (Length(AttrRaw) > 0) And (AttrRaw[1] = '!') Then
+        Begin
+          IsPublic := False;
+          AttrName := Copy(AttrRaw, 2, Length(AttrRaw) - 1);
+        End
+        Else
+          AttrName := AttrRaw;
+      End
+      Else
+      Begin
+        CompileError('attribut $.nom ou $!nom attendu apres ''has''');
+        ParserAdvance;
+      End;
+
+      { Verifier 'is rw' optionnel }
+      If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'is') Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_IDENT) And (CurToken.Val = 'rw') Then
+        Begin
+          IsRW := True;
+          ParserAdvance;
+        End;
+      End;
+
+      { Ajouter l attribut au role }
+      If (AttrName <> '') And
+         (RoleTab[RIdx].AttrCount < MAX_ROLE_ATTR) Then
+      Begin
+        RoleTab[RIdx].Attrs[RoleTab[RIdx].AttrCount].Name := AttrName;
+        RoleTab[RIdx].Attrs[RoleTab[RIdx].AttrCount].IsPublic := IsPublic;
+        RoleTab[RIdx].Attrs[RoleTab[RIdx].AttrCount].IsRW := IsRW;
+        Inc(RoleTab[RIdx].AttrCount);
+      End;
+
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+    End
+    (* --- method nom(params) { corps | ... } --- *)
+    Else If (CurToken.Kind = TK_KEYWORD) And
+            (CurToken.Val = 'method') Then
+    Begin
+      ParserAdvance;   { consommer 'method' }
+
+      If CurToken.Kind <> TK_IDENT Then
+      Begin
+        CompileError('nom de methode attendu apres ''method''');
+        ParserAdvance;
+      End
+      Else
+      Begin
+        MethName := CurToken.Val;
+        ParserAdvance;
+
+        { Parser la liste de parametres : (params) }
+        ParamCount := 0;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          While Not ((CurToken.Kind = TK_PUNCT) And
+                     (CurToken.Val = ')')) And
+                (CurToken.Kind <> TK_EOF) Do
+          Begin
+            If CurToken.Kind = TK_SCALAR Then
+            Begin
+              If ParamCount < MAX_PARAM Then
+              Begin
+                ParamNames[ParamCount] := CurToken.Val;
+                Inc(ParamCount);
+              End;
+              ParserAdvance;
+            End
+            Else If (CurToken.Kind = TK_PUNCT) And
+                    (CurToken.Val = ',') Then
+              ParserAdvance
+            Else
+              ParserAdvance;
+          End;
+          If (CurToken.Kind = TK_PUNCT) And
+             (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+
+        { Detecter si c est un stub (methode requise) }
+        { Stub : method nom (corps...) ou method nom;  }
+        IsStub := False;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+        Begin
+          { Regarder si le corps est un stub ou non }
+          IsStub := False;
+        End
+        Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        Begin
+          IsStub := True;
+          ParserAdvance;
+        End;
+
+        If Not IsStub Then
+        Begin
+          { Methode avec corps -> generer le code }
+          Inc(SubCount);
+          LblProc := '_RKS_' + SymNameClean(RoleName) + '_' +
+                      SymNameClean(MethName);
+          Str(SubCount, OfsStr);
+          LblRet  := '_RKL_SRET_' + OfsStr;
+
+          { Enregistrer la methode dans RoleTab }
+          If RoleTab[RIdx].MethCount < MAX_ROLE_METH Then
+          Begin
+            RoleTab[RIdx].Meths[RoleTab[RIdx].MethCount].Name :=
+              MethName;
+            RoleTab[RIdx].Meths[RoleTab[RIdx].MethCount].LblName :=
+              LblProc;
+            RoleTab[RIdx].Meths[RoleTab[RIdx].MethCount].IsStub :=
+              False;
+            Inc(RoleTab[RIdx].MethCount);
+          End;
+
+          { Sauvegarder le contexte }
+          SaveFrame   := CurFrameSize;
+          SaveFnDepth := CurFnDepth;
+          SaveRetLbl  := CurFnRetLbl;
+          SaveFnName  := CurFnName;
+          CurFrameSize := 0;
+          Inc(CurFnDepth);
+          CurFnRetLbl  := LblRet;
+          CurFnName    := RoleName + '.' + MethName;
+
+          EmitBlankLine;
+          EmitComment('role method ' + RoleName + '.' + MethName);
+          EmitRaw(LblProc + ' PROC NEAR');
+          EmitProlog;
+
+          SymEnterScope;
+
+          { self est a [BP + 4 + ParamCount * 2] }
+          SelfOfs := 4 + ParamCount * 2;
+          Str(SelfOfs, SelfOfsStr);
+          SymAdd('self', '$', SC_PARAM, TY_IDX_CLASS, SelfOfs);
+          EmitComment('self [BP+' + SelfOfsStr + ']');
+
+          For I := 0 To ParamCount - 1 Do
+          Begin
+            Ofs := 4 + (ParamCount - 1 - I) * 2;
+            SymAdd(ParamNames[I], '$', SC_PARAM, TY_IDX_INT, Ofs);
+            Str(Ofs, OfsStr);
+            EmitComment('param $' + ParamNames[I] +
+                        ' [BP+' + OfsStr + ']');
+          End;
+
+          { Attendre '{' }
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+            ParserAdvance
+          Else
+            CompileError('''{'' attendue pour le corps de method ' +
+                         MethName);
+
+          { Detecter stub : corps = '...' }
+          If (CurToken.Kind = TK_OP) And (CurToken.Val = '...') Then
+          Begin
+            { C est un stub }
+            ParserAdvance;
+            { Marquer comme stub retroactivement }
+            If RoleTab[RIdx].MethCount > 0 Then
+              RoleTab[RIdx].Meths[RoleTab[RIdx].MethCount - 1].IsStub
+                := True;
+          End
+          Else
+          Begin
+            While Not ((CurToken.Kind = TK_PUNCT) And
+                       (CurToken.Val = '}')) And
+                  (CurToken.Kind <> TK_EOF) Do
+              ParseStmt;
+          End;
+
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+            ParserAdvance
+          Else
+            CompileError('''}'' attendue a la fin de method ' +
+                         MethName);
+
+          EmitLabel(LblRet);
+          EmitEpilog;
+          EmitRaw(LblProc + ' ENDP');
+
+          SymLeaveScope;
+          CurFrameSize := SaveFrame;
+          CurFnDepth   := SaveFnDepth;
+          CurFnRetLbl  := SaveRetLbl;
+          CurFnName    := SaveFnName;
+        End
+        Else
+        Begin
+          { Stub sans corps : enregistrer comme methode requise }
+          If RoleTab[RIdx].MethCount < MAX_ROLE_METH Then
+          Begin
+            RoleTab[RIdx].Meths[RoleTab[RIdx].MethCount].Name :=
+              MethName;
+            RoleTab[RIdx].Meths[RoleTab[RIdx].MethCount].LblName := '';
+            RoleTab[RIdx].Meths[RoleTab[RIdx].MethCount].IsStub :=
+              True;
+            Inc(RoleTab[RIdx].MethCount);
+          End;
+        End;
+      End;
+    End
+    Else
+    Begin
+      { Instruction inconnue dans le corps du role }
+      ParserAdvance;
+    End;
+  End;
+
+  (* Consommer accolade fermante *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+    ParserAdvance;
+
+  { Label de fin de role }
+  EmitLabel(LblRoleEnd);
+
+  EmitComment('end role ' + RoleName);
+End;
+
 Procedure ParseStmt;
 Var
   Kw : TString;
@@ -8377,6 +8921,14 @@ Begin
       Exit;
     End;
 
+    { Roles (TODO 20) }
+    If Kw = 'role' Then
+    Begin
+      ParserAdvance;   { consommer 'role' }
+      ParseRoleDecl;
+      Exit;
+    End;
+
     { Controle de boucle : last, next, redo }
     If Kw = 'last' Then
     Begin
@@ -8482,6 +9034,7 @@ Begin
   MultiCount      := 0;
   ClassCount      := 0;
   CurClassIdx     := -1;
+  RoleCount       := 0;
   GKwConsumed    := False;
   GCallArgCount  := 0;
   CurFnRetLbl    := '';
