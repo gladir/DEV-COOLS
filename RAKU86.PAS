@@ -4411,7 +4411,8 @@ Begin
     ParserAdvance
   Else
     CompileError(''']'' attendue apres l''index du tableau');
-  { AX = index. Calculer offset = index * 2 + 2 (skip count) }
+  { AX = index. Calculer offset = index * 2 + 2                }
+  { +2 pour sauter le mot compteur DW en tete du bloc tableau  }
   EmitInstr('SHL', 'AX, 1');
   EmitInstr('ADD', 'AX, 2');
   { Charger le pointeur tableau dans BX }
