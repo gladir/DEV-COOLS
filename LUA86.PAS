@@ -6607,7 +6607,6 @@ Begin
   EmitInstrAB('SUB', 'SP', '4');
   EmitInstrA('POP', 'DI');
   EmitInstrA('POP', 'SI');
-  EmitInstrAB('MOV', 'SP', 'BP');
   EmitInstrA('POP', 'BP');
   EmitInstr('RET');
 
@@ -6615,6 +6614,7 @@ Begin
   EmitLabel(SkipLabel);
 
   { TODO 18 : initialiser les upvalues capturees depuis la portee parent }
+  { Les offsets locaux sont positifs, acces par [BP-off] ; params par [BP+off] }
   For I := SaveUpCnt To UpvalCount - 1 Do
   Begin
     EmitComment('init upvalue ' + UpvalDataLbl[I]);
@@ -6758,7 +6758,6 @@ Begin
   EmitInstrAB('SUB', 'SP', '4');
   EmitInstrA('POP', 'DI');
   EmitInstrA('POP', 'SI');
-  EmitInstrAB('MOV', 'SP', 'BP');
   EmitInstrA('POP', 'BP');
   EmitInstr('RET');
 
