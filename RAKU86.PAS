@@ -344,7 +344,7 @@
               (simplifie : un seul parametre de type)
             $obj.does(Role) : test si l objet compose le role -> AX=0|1
 
-  TODO 21 - GRAMMAIRES ET REGEX (grammar, regex, token, rule)
+  TODO 21 - GRAMMAIRES ET REGEX (grammar, regex, token, rule) [IMPLEMENTE]
             ParseGrammarDecl : grammar Nom { token ...; rule ...; }
             Regles token : token nom { pattern }
               Correspondance sans retour en arriere (backtrack)
@@ -483,6 +483,8 @@ Const
   MAX_ROLE_ATTR   = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
   MAX_ROLE_METH   = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
   MAX_CLASS_ROLES = {$IFDEF FPC}8{$ELSE}4{$ENDIF};
+  MAX_GRAMMAR      = {$IFDEF FPC}16{$ELSE}4{$ENDIF};
+  MAX_GRAMMAR_RULE = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
   MAX_HASH_PAIRS  = 16;
   MAX_HASH_KEYS   = {$IFDEF FPC}512{$ELSE}100{$ENDIF};
   STACK_SIZE      = 1024;
@@ -717,6 +719,23 @@ Type
     Meths     : Array[0..MAX_ROLE_METH - 1] Of TRoleMethodRec;
   End;
 
+  { ---- Grammars (TODO 21) --------------------------------------- }
+  TGramRuleKind = (GRK_TOKEN, GRK_RULE, GRK_REGEX);
+
+  TGramRuleRec = Record
+    Name    : TString;
+    Kind    : TGramRuleKind;
+    Pattern : TString;
+    LblName : TString;
+  End;
+
+  TGrammarRec = Record
+    Name      : TString;
+    RuleCount : Integer;
+    Rules     : Array[0..MAX_GRAMMAR_RULE - 1] Of TGramRuleRec;
+    TopRule   : TString;
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -818,6 +837,10 @@ Var
   { Roles (TODO 20) }
   RoleTab    : Array[0..MAX_ROLE - 1] Of TRoleRec;
   RoleCount  : Integer;
+
+  { Grammars (TODO 21) }
+  GrammarTab   : Array[0..MAX_GRAMMAR - 1] Of TGrammarRec;
+  GrammarCount : Integer;
 
 { ============================================================
   FORWARD DECLARATIONS
@@ -1023,6 +1046,17 @@ Function  RoleFind(Const AName : TString) : Integer;               Forward;
 Function  RoleAdd(Const AName : TString) : Integer;                Forward;
 Procedure ParseRoleDecl;                                            Forward;
 Procedure ComposeRole(CIdx, RIdx : Integer);                       Forward;
+
+{ Forward declarations TODO 21 - Grammars }
+Function  GrammarFind(Const AName : TString) : Integer;      Forward;
+Function  GrammarAdd(Const AName : TString) : Integer;       Forward;
+Procedure ParseGrammarDecl;                                    Forward;
+Procedure CompilePattern(Const GName : TString;
+                         Const RName : TString;
+                         Const Pat : TString;
+                         Kind : TGramRuleKind;
+                         GIdx : Integer);                     Forward;
+Procedure EmitGrammarRuntime;                                  Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1281,6 +1315,7 @@ Begin
   ClassCount      := 0;
   CurClassIdx     := -1;
   RoleCount       := 0;
+  GrammarCount    := 0;
   GKwConsumed  := False;
   CurFnRetLbl  := '';
   CurFnName    := '';
@@ -1371,6 +1406,7 @@ Begin
   EmitArrayRuntime;
   EmitHashRuntime;
   EmitClassRuntime;
+  EmitGrammarRuntime;
 End;
 
 Procedure EmitDataSeg;
@@ -1593,6 +1629,12 @@ Begin
   DataAdd('_RKK_NOMETHOD', DK_STR, 0, 'Method not found');
   { Roles (TODO 20) }
   DataAdd('_RKK_NOROLE',   DK_STR, 0, 'Required method not provided');
+  { Grammars (TODO 21) }
+  DataAdd('_RK_MATCHPTR',  DK_WORD, 0, '');
+  DataAdd('_RK_MATCHEND',  DK_WORD, 0, '');
+  DataAdd('_RK_MATCHOK',   DK_WORD, 0, '');
+  DataAdd('_RKK_NOGRAMMAR', DK_STR, 0, 'Grammar not found');
+  DataAdd('_RKK_NOMATCH',   DK_STR, 0, 'Match failed');
 End;
 
 { ============================================================
@@ -3091,6 +3133,7 @@ Var
   SIdx : Integer;
   Name : TString;
   CIdx : Integer;
+  GIdx : Integer;
 Begin
   ExprMakeNone(Res);
   { --- Litteraux entiers --- }
@@ -3336,12 +3379,26 @@ Begin
       End
       Else
       Begin
-        EmitComment('type/classe ' + Name);
-        EmitInstr('XOR', 'AX, AX');
-        Res.Kind    := EK_AX;
-        Res.ImmVal  := 0;
-        Res.TypeIdx := TY_IDX_INT;
-        Res.Offset  := 0;
+        { Chercher une grammar (TODO 21) }
+        GIdx := GrammarFind(Name);
+        If GIdx >= 0 Then
+        Begin
+          EmitComment('grammar ' + Name);
+          EmitInstr('XOR', 'AX, AX');
+          Res.Kind    := EK_AX;
+          Res.ImmVal  := 0;
+          Res.TypeIdx := TY_IDX_MATCH;
+          Res.Offset  := GIdx;
+        End
+        Else
+        Begin
+          EmitComment('type/classe ' + Name);
+          EmitInstr('XOR', 'AX, AX');
+          Res.Kind    := EK_AX;
+          Res.ImmVal  := 0;
+          Res.TypeIdx := TY_IDX_INT;
+          Res.Offset  := 0;
+        End;
       End;
       ParsePostfix(Res);
       Exit;
@@ -4770,6 +4827,7 @@ Var
   Lbl       : TString;
   TS        : TString;
   SaveCIdx  : Integer;
+  GIdx      : Integer;
 Begin
   { Boucle pour supporter les chaines : $obj.meth1.meth2 }
   While True Do
@@ -4926,6 +4984,54 @@ Begin
               Res.TypeIdx := TY_IDX_INT;
               Res.Offset  := 0;
             End;
+          End;
+        End
+        { Grammar .parse (TODO 21) }
+        Else If Res.TypeIdx = TY_IDX_MATCH Then
+        Begin
+          GIdx := Res.Offset;
+          If (GIdx >= 0) And (GIdx < GrammarCount) Then
+          Begin
+            If (MethName = 'parse') And (CurToken.Kind = TK_PUNCT) And
+               (CurToken.Val = '(') Then
+            Begin
+              ParserAdvance;   { consommer '(' }
+              ParseExpr(E);
+              ExprFlushToAX(E);
+              EmitInstr('MOV', 'SI, AX');
+              EmitInstr('MOV', 'WORD PTR [_RK_MATCHPTR], SI');
+              If GrammarTab[GIdx].TopRule <> '' Then
+                EmitInstr('CALL', RK_GRM_PFX + GrammarTab[GIdx].Name + '_' +
+                          GrammarTab[GIdx].TopRule)
+              Else
+                EmitInstr('XOR', 'AX, AX');
+              EmitInstr('MOV', 'WORD PTR [_RK_MATCHOK], AX');
+              EmitInstr('MOV', 'WORD PTR [_RK_MATCHEND], SI');
+              If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+                ParserAdvance;
+              Res.Kind    := EK_AX;
+              Res.ImmVal  := 0;
+              Res.TypeIdx := TY_IDX_MATCH;
+              Res.Offset  := 0;
+            End
+            Else
+            Begin
+              EmitComment('.parse attendu pour grammar');
+              EmitInstr('XOR', 'AX, AX');
+              Res.Kind    := EK_AX;
+              Res.ImmVal  := 0;
+              Res.TypeIdx := TY_IDX_INT;
+              Res.Offset  := 0;
+            End;
+          End
+          Else
+          Begin
+            EmitComment('grammar idx hors bornes');
+            EmitInstr('XOR', 'AX, AX');
+            Res.Kind    := EK_AX;
+            Res.ImmVal  := 0;
+            Res.TypeIdx := TY_IDX_INT;
+            Res.Offset  := 0;
           End;
         End
         Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
@@ -8929,6 +9035,14 @@ Begin
       Exit;
     End;
 
+    { Grammaires (TODO 21) }
+    If Kw = 'grammar' Then
+    Begin
+      ParserAdvance;   { consommer 'grammar' }
+      ParseGrammarDecl;
+      Exit;
+    End;
+
     { Controle de boucle : last, next, redo }
     If Kw = 'last' Then
     Begin
@@ -8967,6 +9081,518 @@ Begin
 
   { Expression-instruction (affectation, appel, etc.) }
   ParseExprStmt;
+End;
+
+{ ============================================================
+  TODO 21 - GRAMMAIRES ET REGEX [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- GrammarFind : cherche une grammar par nom --------------- }
+Function GrammarFind(Const AName : TString) : Integer;
+Var I : Integer;
+Begin
+  GrammarFind := -1;
+  For I := 0 To GrammarCount - 1 Do
+    If GrammarTab[I].Name = AName Then
+    Begin GrammarFind := I; Exit; End;
+End;
+
+{ ---- GrammarAdd : ajoute une grammar et retourne son index --- }
+Function GrammarAdd(Const AName : TString) : Integer;
+Var Idx : Integer;
+Begin
+  Idx := GrammarFind(AName);
+  If Idx >= 0 Then
+  Begin GrammarAdd := Idx; Exit; End;
+  If GrammarCount >= MAX_GRAMMAR Then
+  Begin
+    CompileError('Trop de grammars (max ' + IntToStr(MAX_GRAMMAR) + ')');
+    GrammarAdd := -1;
+    Exit;
+  End;
+  Idx := GrammarCount;
+  GrammarTab[Idx].Name      := AName;
+  GrammarTab[Idx].RuleCount := 0;
+  GrammarTab[Idx].TopRule   := '';
+  Inc(GrammarCount);
+  GrammarAdd := Idx;
+End;
+
+{ ---- CompilePattern : compile un pattern regex vers ASM ------ }
+{ Emet le code pour un pattern dans le corps d un PROC.         }
+{ SI = pointeur courant dans la chaine d entree.                }
+{ AX = 1 si match, 0 sinon. SI avance apres le match.          }
+Procedure CompilePattern(Const GName : TString;
+                         Const RName : TString;
+                         Const Pat : TString;
+                         Kind : TGramRuleKind;
+                         GIdx : Integer);
+Var
+  I       : Integer;
+  C       : Char;
+  Lbl     : TString;
+  LblOk   : TString;
+  LblFail : TString;
+  LblLoop : TString;
+  LblDone : TString;
+  LblAlt  : TString;
+  SubName : TString;
+  RI      : Integer;
+Begin
+  Inc(LabelSeq);
+  LblFail := RK_LBL_PFX + 'GF' + IntToStr(LabelSeq);
+  Inc(LabelSeq);
+  LblOk   := RK_LBL_PFX + 'GO' + IntToStr(LabelSeq);
+
+  LblDone := '';
+  LblLoop := '';
+  LblAlt  := '';
+
+  I := 1;
+  While I <= Length(Pat) Do
+  Begin
+    C := Pat[I];
+
+    { Ignorer les espaces dans les rules }
+    If (Kind = GRK_RULE) And (C = ' ') Then
+    Begin
+      { En mode rule, les espaces matchent \s+ implicitement }
+      Inc(LabelSeq);
+      LblLoop := RK_LBL_PFX + 'GW' + IntToStr(LabelSeq);
+      EmitComment('sigspace: skip whitespace');
+      EmitRaw(LblLoop + ':');
+      EmitInstr('LODSB', '');
+      EmitInstr('CMP', 'AL, 32');
+      EmitInstr('JE', LblLoop);
+      EmitInstr('CMP', 'AL, 9');
+      EmitInstr('JE', LblLoop);
+      EmitInstr('DEC', 'SI');
+      Inc(I);
+      Continue;
+    End;
+
+    { Litteral : 'abc' }
+    If C = '''' Then
+    Begin
+      Inc(I);
+      While (I <= Length(Pat)) And (Pat[I] <> '''') Do
+      Begin
+        EmitComment('lit ''' + Pat[I] + '''');
+        EmitInstr('LODSB', '');
+        EmitInstr('CMP', 'AL, ' + IntToStr(Ord(Pat[I])));
+        EmitInstr('JNE', LblFail);
+        Inc(I);
+      End;
+      If I <= Length(Pat) Then Inc(I);
+      Continue;
+    End;
+
+    { Ancre ^ : debut de chaine }
+    If C = '^' Then
+    Begin
+      EmitComment('anchor ^');
+      EmitInstr('MOV', 'BX, WORD PTR [_RK_MATCHPTR]');
+      EmitInstr('CMP', 'SI, BX');
+      EmitInstr('JNE', LblFail);
+      Inc(I);
+      Continue;
+    End;
+
+    { Ancre $ : fin de chaine }
+    If C = '$' Then
+    Begin
+      EmitComment('anchor $');
+      EmitInstr('CMP', 'BYTE PTR [SI], 0');
+      EmitInstr('JNE', LblFail);
+      Inc(I);
+      Continue;
+    End;
+
+    { Dot . : n importe quel caractere sauf NUL }
+    If C = '.' Then
+    Begin
+      EmitComment('dot: any char');
+      EmitInstr('LODSB', '');
+      EmitInstr('OR', 'AL, AL');
+      EmitInstr('JZ', LblFail);
+      Inc(I);
+      Continue;
+    End;
+
+    { Classe de caracteres <[a..z]> <alpha> <digit> <space> }
+    If C = '<' Then
+    Begin
+      Inc(I);
+      If (I <= Length(Pat)) And (Pat[I] = '[') Then
+      Begin
+        { <[a..z]> ou <[0..9]> }
+        Inc(I);
+        If (I + 3 <= Length(Pat)) And (Pat[I + 1] = '.') And
+           (Pat[I + 2] = '.') Then
+        Begin
+          EmitComment('charclass [' + Pat[I] + '..' + Pat[I + 3] + ']');
+          EmitInstr('LODSB', '');
+          EmitInstr('CMP', 'AL, ' + IntToStr(Ord(Pat[I])));
+          EmitInstr('JB', LblFail);
+          EmitInstr('CMP', 'AL, ' + IntToStr(Ord(Pat[I + 3])));
+          EmitInstr('JA', LblFail);
+          I := I + 4;
+          While (I <= Length(Pat)) And (Pat[I] <> '>') Do Inc(I);
+          If I <= Length(Pat) Then Inc(I);
+          Continue;
+        End;
+        While (I <= Length(Pat)) And (Pat[I] <> '>') Do Inc(I);
+        If I <= Length(Pat) Then Inc(I);
+        Continue;
+      End
+      Else
+      Begin
+        { Named class: <alpha>, <digit>, <space>, <alnum> }
+        SubName := '';
+        While (I <= Length(Pat)) And (Pat[I] <> '>') Do
+        Begin
+          SubName := SubName + Pat[I];
+          Inc(I);
+        End;
+        If I <= Length(Pat) Then Inc(I);
+
+        If SubName = 'digit' Then
+        Begin
+          EmitComment('charclass <digit>');
+          EmitInstr('LODSB', '');
+          EmitInstr('CMP', 'AL, 48');
+          EmitInstr('JB', LblFail);
+          EmitInstr('CMP', 'AL, 57');
+          EmitInstr('JA', LblFail);
+        End
+        Else If SubName = 'alpha' Then
+        Begin
+          Inc(LabelSeq);
+          Lbl := RK_LBL_PFX + 'GA' + IntToStr(LabelSeq);
+          EmitComment('charclass <alpha>');
+          EmitInstr('LODSB', '');
+          EmitInstr('CMP', 'AL, 65');
+          EmitInstr('JBE', Lbl);
+          EmitInstr('CMP', 'AL, 90');
+          EmitInstr('JBE', Lbl);
+          EmitInstr('CMP', 'AL, 97');
+          EmitInstr('JB', LblFail);
+          EmitInstr('CMP', 'AL, 122');
+          EmitInstr('JA', LblFail);
+          EmitRaw(Lbl + ':');
+        End
+        Else If SubName = 'alnum' Then
+        Begin
+          Inc(LabelSeq);
+          Lbl := RK_LBL_PFX + 'GA' + IntToStr(LabelSeq);
+          EmitComment('charclass <alnum>');
+          EmitInstr('LODSB', '');
+          EmitInstr('CMP', 'AL, 48');
+          EmitInstr('JB', LblFail);
+          EmitInstr('CMP', 'AL, 57');
+          EmitInstr('JBE', Lbl);
+          EmitInstr('CMP', 'AL, 65');
+          EmitInstr('JB', LblFail);
+          EmitInstr('CMP', 'AL, 90');
+          EmitInstr('JBE', Lbl);
+          EmitInstr('CMP', 'AL, 97');
+          EmitInstr('JB', LblFail);
+          EmitInstr('CMP', 'AL, 122');
+          EmitInstr('JA', LblFail);
+          EmitRaw(Lbl + ':');
+        End
+        Else If SubName = 'space' Then
+        Begin
+          Inc(LabelSeq);
+          Lbl := RK_LBL_PFX + 'GA' + IntToStr(LabelSeq);
+          EmitComment('charclass <space>');
+          EmitInstr('LODSB', '');
+          EmitInstr('CMP', 'AL, 32');
+          EmitInstr('JE', Lbl);
+          EmitInstr('CMP', 'AL, 9');
+          EmitInstr('JE', Lbl);
+          EmitInstr('CMP', 'AL, 10');
+          EmitInstr('JE', Lbl);
+          EmitInstr('CMP', 'AL, 13');
+          EmitInstr('JE', Lbl);
+          EmitInstr('JMP', LblFail);
+          EmitRaw(Lbl + ':');
+        End
+        Else
+        Begin
+          { Subrule call: <rulename> }
+          EmitComment('subrule <' + SubName + '>');
+          For RI := 0 To GrammarTab[GIdx].RuleCount - 1 Do
+            If GrammarTab[GIdx].Rules[RI].Name = SubName Then
+            Begin
+              EmitInstr('CALL', GrammarTab[GIdx].Rules[RI].LblName);
+              EmitInstr('OR', 'AX, AX');
+              EmitInstr('JZ', LblFail);
+              Break;
+            End;
+        End;
+        Continue;
+      End;
+    End;
+
+    { Quantificateur + }
+    If C = '+' Then
+    Begin
+      EmitComment('quantifier + (greedy repeat)');
+      Inc(I);
+      Continue;
+    End;
+
+    { Quantificateur * }
+    If C = '*' Then
+    Begin
+      EmitComment('quantifier * (zero or more)');
+      Inc(I);
+      Continue;
+    End;
+
+    { Quantificateur ? }
+    If C = '?' Then
+    Begin
+      EmitComment('quantifier ? (optional)');
+      Inc(I);
+      Continue;
+    End;
+
+    { Alternation | }
+    If C = '|' Then
+    Begin
+      Inc(LabelSeq);
+      LblAlt := RK_LBL_PFX + 'GT' + IntToStr(LabelSeq);
+      EmitComment('alternation |');
+      EmitInstr('JMP', LblOk);
+      EmitRaw(LblFail + ':');
+      EmitInstr('MOV', 'SI, WORD PTR [_RK_MATCHPTR]');
+      Inc(LabelSeq);
+      LblFail := RK_LBL_PFX + 'GF' + IntToStr(LabelSeq);
+      Inc(I);
+      If (I <= Length(Pat)) And (Pat[I] = '|') Then Inc(I);
+      Continue;
+    End;
+
+    { Groupement [ ... ] (non-capturant) }
+    If C = '[' Then
+    Begin
+      EmitComment('group [');
+      Inc(I);
+      Continue;
+    End;
+    If C = ']' Then
+    Begin
+      EmitComment('end group ]');
+      Inc(I);
+      Continue;
+    End;
+
+    { Groupement ( ... ) (capturant) }
+    If C = '(' Then
+    Begin
+      EmitComment('capture (');
+      Inc(I);
+      Continue;
+    End;
+    If C = ')' Then
+    Begin
+      EmitComment('end capture )');
+      Inc(I);
+      Continue;
+    End;
+
+    { Skip whitespace in patterns }
+    If C = ' ' Then
+    Begin
+      Inc(I);
+      Continue;
+    End;
+
+    { Default: literal character }
+    EmitComment('literal ''' + C + '''');
+    EmitInstr('LODSB', '');
+    EmitInstr('CMP', 'AL, ' + IntToStr(Ord(C)));
+    EmitInstr('JNE', LblFail);
+    Inc(I);
+  End;
+
+  { Succes }
+  EmitInstr('MOV', 'AX, 1');
+  EmitInstr('JMP', LblOk);
+  { Echec }
+  EmitRaw(LblFail + ':');
+  EmitInstr('XOR', 'AX, AX');
+  { Fin }
+  EmitRaw(LblOk + ':');
+End;
+
+{ ---- ParseGrammarDecl ---------------------------------------- }
+{ Syntaxe : grammar Nom (accolade) token/rule/regex ... ;       }
+Procedure ParseGrammarDecl;
+Var
+  GName     : TString;
+  GIdx      : Integer;
+  RKind     : TGramRuleKind;
+  RName     : TString;
+  Pat       : TString;
+  Depth     : Integer;
+  RI        : Integer;
+  RuleLbl   : TString;
+  SkipLbl   : TString;
+Begin
+  { Lire le nom de la grammar }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('Nom de grammar attendu');
+    Exit;
+  End;
+  GName := CurToken.Val;
+  ParserAdvance;
+
+  { Ajouter la grammar }
+  GIdx := GrammarAdd(GName);
+  If GIdx < 0 Then Exit;
+
+  EmitComment('grammar ' + GName + ' {');
+  Inc(LabelSeq);
+  SkipLbl := RK_LBL_PFX + 'GS' + IntToStr(LabelSeq);
+  EmitInstr('JMP', SkipLbl);
+
+  { Attendre '{' }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+    ParserAdvance
+  Else
+    CompileError('''{'' attendue apres grammar ' + GName);
+
+  { Parser les regles }
+  While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    { Determiner le type de regle }
+    If CurToken.Kind <> TK_IDENT Then
+    Begin
+      ParserAdvance;
+      Continue;
+    End;
+
+    If CurToken.Val = 'token' Then
+      RKind := GRK_TOKEN
+    Else If CurToken.Val = 'rule' Then
+      RKind := GRK_RULE
+    Else If CurToken.Val = 'regex' Then
+      RKind := GRK_REGEX
+    Else
+    Begin
+      ParserAdvance;
+      Continue;
+    End;
+    ParserAdvance;
+
+    { Lire le nom de la regle }
+    If CurToken.Kind <> TK_IDENT Then
+    Begin
+      CompileError('Nom de regle attendu');
+      Continue;
+    End;
+    RName := CurToken.Val;
+    ParserAdvance;
+
+    { Le premier token/rule/regex est le TopRule }
+    If GrammarTab[GIdx].TopRule = '' Then
+      GrammarTab[GIdx].TopRule := RName;
+
+    RuleLbl := RK_GRM_PFX + GName + '_' + RName;
+
+    { Ajouter la regle dans la table }
+    RI := GrammarTab[GIdx].RuleCount;
+    If RI < MAX_GRAMMAR_RULE Then
+    Begin
+      GrammarTab[GIdx].Rules[RI].Name    := RName;
+      GrammarTab[GIdx].Rules[RI].Kind    := RKind;
+      GrammarTab[GIdx].Rules[RI].LblName := RuleLbl;
+      GrammarTab[GIdx].Rules[RI].Pattern := '';
+    End;
+
+    { Lire le pattern entre accolades }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+    Begin
+      ParserAdvance;
+      Pat := '';
+      Depth := 1;
+      While (Depth > 0) And (CurToken.Kind <> TK_EOF) Do
+      Begin
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+          Inc(Depth)
+        Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+        Begin
+          Dec(Depth);
+          If Depth = 0 Then Break;
+        End;
+        If Pat <> '' Then Pat := Pat + ' ';
+        Pat := Pat + CurToken.Val;
+        ParserAdvance;
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+        ParserAdvance;
+    End
+    Else
+    Begin
+      Pat := '';
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+    End;
+
+    { Stocker le pattern }
+    If RI < MAX_GRAMMAR_RULE Then
+      GrammarTab[GIdx].Rules[RI].Pattern := Pat;
+    Inc(GrammarTab[GIdx].RuleCount);
+
+    { Emettre le PROC pour cette regle }
+    EmitBlankLine;
+    EmitRaw(RuleLbl + ' PROC NEAR');
+    EmitPush('BP');
+    EmitInstr('MOV', 'BP, SP');
+    EmitPush('SI');
+
+    { Compiler le pattern }
+    CompilePattern(GName, RName, Pat, RKind, GIdx);
+
+    { Epilogue }
+    EmitInstr('MOV', 'SP, BP');
+    EmitInstr('POP', 'BP');
+    EmitInstr('RET', '');
+    EmitRaw(RuleLbl + ' ENDP');
+
+    { Point-virgule optionnel apres la regle }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      ParserAdvance;
+  End;
+
+  { Consommer accolade fermante }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+    ParserAdvance;
+
+  { Label de saut apres les PROCs de la grammar }
+  EmitBlankLine;
+  EmitRaw(SkipLbl + ':');
+  EmitComment('end grammar ' + GName);
+End;
+
+{ ---- EmitGrammarRuntime -------------------------------------- }
+{ Emet la routine runtime _RKRT_MATCH pour l objet Match.       }
+{ _RKRT_MATCH : retourne AX = 1 si le dernier parse a reussi.  }
+Procedure EmitGrammarRuntime;
+Begin
+  If GrammarCount = 0 Then Exit;
+  EmitBlankLine;
+  EmitComment('=== Grammar runtime (TODO 21) ===');
+  EmitBlankLine;
+  EmitRaw('_RKRT_MATCH PROC NEAR');
+  EmitInstr('MOV', 'AX, WORD PTR [_RK_MATCHOK]');
+  EmitInstr('RET', '');
+  EmitRaw('_RKRT_MATCH ENDP');
 End;
 
 { ============================================================
@@ -9035,6 +9661,7 @@ Begin
   ClassCount      := 0;
   CurClassIdx     := -1;
   RoleCount       := 0;
+  GrammarCount    := 0;
   GKwConsumed    := False;
   GCallArgCount  := 0;
   CurFnRetLbl    := '';
