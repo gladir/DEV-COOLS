@@ -1,0 +1,1563 @@
+==============================================================================
+     FORMAT DE FICHIER .CLASS - Java Class File Format
+     Sun Microsystems / Oracle - JVM Specification
+==============================================================================
+
+Document de reference du format binaire .class tel que defini par
+Sun Microsystems (Java 1.0, 1995) et maintenu par Oracle. Ce format
+est la cible de l assembleur Jasmin et du compilateur CCJASMIN.PAS
+du projet DEV-COOLS.
+
+Date:       Mars 2026
+Norme:      The Java Virtual Machine Specification (JVMS)
+            Java SE 21 Edition (2023) - Chapitre 4 "The class File Format"
+            Compatible JDK 1.0.2 (version 45.0) a JDK 21 (version 65.0)
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1.  Vue d ensemble
+  2.  Structure generale du fichier .class
+  3.  En-tete : magic, version
+  4.  Le bassin de constantes (Constant Pool)
+      4.1  Structure cp_info
+      4.2  CONSTANT_Utf8 (tag 1)
+      4.3  CONSTANT_Integer (tag 3)
+      4.4  CONSTANT_Float (tag 4)
+      4.5  CONSTANT_Long (tag 5)
+      4.6  CONSTANT_Double (tag 6)
+      4.7  CONSTANT_Class (tag 7)
+      4.8  CONSTANT_String (tag 8)
+      4.9  CONSTANT_Fieldref (tag 9)
+      4.10 CONSTANT_Methodref (tag 10)
+      4.11 CONSTANT_InterfaceMethodref (tag 11)
+      4.12 CONSTANT_NameAndType (tag 12)
+      4.13 CONSTANT_MethodHandle (tag 15)
+      4.14 CONSTANT_MethodType (tag 16)
+      4.15 CONSTANT_Dynamic (tag 17)
+      4.16 CONSTANT_InvokeDynamic (tag 18)
+      4.17 CONSTANT_Module (tag 19)
+      4.18 CONSTANT_Package (tag 20)
+  5.  Drapeaux d acces de la classe (access_flags)
+  6.  this_class, super_class, interfaces
+  7.  Les champs (field_info)
+  8.  Les methodes (method_info)
+  9.  Les attributs (attribute_info)
+      9.1  Structure generale
+      9.2  Attributs critiques pour le Code
+           9.2.1  Code
+           9.2.2  StackMapTable
+           9.2.3  Exceptions
+           9.2.4  LineNumberTable
+           9.2.5  LocalVariableTable
+           9.2.6  LocalVariableTypeTable
+      9.3  Attributs de champs
+           9.3.1  ConstantValue
+      9.4  Attributs de classe
+           9.4.1  SourceFile
+           9.4.2  InnerClasses
+           9.4.3  EnclosingMethod
+           9.4.4  BootstrapMethods
+           9.4.5  NestHost
+           9.4.6  NestMembers
+           9.4.7  PermittedSubclasses
+           9.4.8  Record
+      9.5  Attributs d annotations
+           9.5.1  RuntimeVisibleAnnotations
+           9.5.2  RuntimeInvisibleAnnotations
+           9.5.3  RuntimeVisibleParameterAnnotations
+           9.5.4  RuntimeInvisibleParameterAnnotations
+           9.5.5  RuntimeVisibleTypeAnnotations
+           9.5.6  RuntimeInvisibleTypeAnnotations
+           9.5.7  AnnotationDefault
+      9.6  Autres attributs
+           9.6.1  Synthetic
+           9.6.2  Deprecated
+           9.6.3  Signature
+           9.6.4  MethodParameters
+           9.6.5  Module
+           9.6.6  ModulePackages
+           9.6.7  ModuleMainClass
+  10. Drapeaux d acces des champs et methodes
+  11. Descripteurs de types et de methodes
+  12. Tableau des versions de fichier .class
+  13. Ordre des octets et encodage
+  14. Verification et contraintes structurelles
+  15. Lien avec le projet DEV-COOLS
+  16. References
+
+==============================================================================
+1. VUE D ENSEMBLE
+==============================================================================
+
+Un fichier .class est le format binaire standard pour representer une
+classe ou interface Java compilee. Il est produit par :
+
+  - javac (compilateur Java de Sun/Oracle)
+  - Les assembleurs Jasmin, Krakatau, ASM
+  - CCJASMIN.PAS du projet DEV-COOLS (via assemblage Jasmin)
+  - Tout compilateur ciblant la JVM (Kotlin, Scala, Groovy, Clojure)
+
+Chaque fichier .class contient exactement une classe ou interface.
+Le format est independant de la plateforme : tous les entiers multi-
+octets sont stockes en big-endian (reseau), contrairement aux formats
+x86 qui utilisent le little-endian.
+
+Le fichier est une sequence lineaire de structures binaires sans
+remplissage (padding). Il n y a pas de table d allocation ni de
+systeme de pointeurs absolus : les references se font via des index
+dans le bassin de constantes (constant pool).
+
+==============================================================================
+2. STRUCTURE GENERALE DU FICHIER .CLASS
+==============================================================================
+
+La structure de haut niveau d un fichier .class est la suivante
+(en pseudo-C, notation de la specification JVM) :
+
+  ClassFile {
+      u4             magic;
+      u2             minor_version;
+      u2             major_version;
+      u2             constant_pool_count;
+      cp_info        constant_pool[constant_pool_count - 1];
+      u2             access_flags;
+      u2             this_class;
+      u2             super_class;
+      u2             interfaces_count;
+      u2             interfaces[interfaces_count];
+      u2             fields_count;
+      field_info     fields[fields_count];
+      u2             methods_count;
+      method_info    methods[methods_count];
+      u2             attributes_count;
+      attribute_info attributes[attributes_count];
+  }
+
+Types de base :
+  u1  = entier non signe sur 1 octet  (0..255)
+  u2  = entier non signe sur 2 octets (0..65535), big-endian
+  u4  = entier non signe sur 4 octets (0..4294967295), big-endian
+
+Disposition en memoire :
+
+  Offset  Taille  Champ
+  ------  ------  --------------------------
+  0       4       magic (CA FE BA BE)
+  4       2       minor_version
+  6       2       major_version
+  8       2       constant_pool_count
+  10      var.    constant_pool (N-1 entrees)
+  var.    2       access_flags
+  var.    2       this_class
+  var.    2       super_class
+  var.    2       interfaces_count
+  var.    var.    interfaces (tableau de u2)
+  var.    2       fields_count
+  var.    var.    fields (tableau de field_info)
+  var.    2       methods_count
+  var.    var.    methods (tableau de method_info)
+  var.    2       attributes_count
+  var.    var.    attributes (tableau)
+
+==============================================================================
+3. EN-TETE : MAGIC, VERSION
+==============================================================================
+
+3.1 Nombre magique (magic)
+--------------------------
+
+  Offset : 0
+  Taille : 4 octets (u4)
+  Valeur : 0xCAFEBABE
+
+  Les quatre premiers octets de tout fichier .class valide sont :
+
+    CA FE BA BE
+
+  Ce nombre magique identifie le fichier comme un fichier de classe
+  Java. Il a ete choisi par James Gosling. Tout fichier ne commencant
+  pas par cette sequence est rejete par la JVM.
+
+3.2 Version mineure (minor_version)
+------------------------------------
+
+  Offset : 4
+  Taille : 2 octets (u2)
+  Valeur : Generalement 0 pour les versions modernes de Java.
+
+  Avec les fichiers .class de version preview, minor_version vaut
+  65535 (0xFFFF).
+
+3.3 Version majeure (major_version)
+------------------------------------
+
+  Offset : 6
+  Taille : 2 octets (u2)
+  Valeur : Voir la table des versions (section 12).
+
+  La version majeure determine quelles fonctionnalites du format sont
+  disponibles. Une JVM de version N accepte les fichiers .class dont
+  la major_version est dans l intervalle [45, N].
+
+  Exemples :
+    45  = JDK 1.0 / 1.1
+    46  = JDK 1.2
+    52  = Java SE 8
+    55  = Java SE 11
+    61  = Java SE 17
+    65  = Java SE 21
+
+==============================================================================
+4. LE BASSIN DE CONSTANTES (CONSTANT POOL)
+==============================================================================
+
+Le bassin de constantes (constant pool) est un tableau indexe a partir
+de 1 (l index 0 est reserve et n est jamais utilise directement).
+
+  constant_pool_count : u2
+    Nombre d entrees + 1. Les index valides sont 1..constant_pool_count-1.
+
+  Chaque entree est une structure cp_info dont le premier octet (tag)
+  determine le type et la taille de l entree.
+
+  Note importante : les constantes CONSTANT_Long et CONSTANT_Double
+  occupent deux emplacements dans le tableau. Si une telle constante
+  est a l index N, l index N+1 est considere invalide et inutilisable.
+
+4.1 Structure cp_info
+---------------------
+
+  cp_info {
+      u1 tag;
+      u1 info[];    // contenu variable selon le tag
+  }
+
+  Tableau des tags :
+
+    Tag  Nom                        Taille totale
+    ---  -------------------------  ----------------
+     1   CONSTANT_Utf8              3 + length octets
+     3   CONSTANT_Integer           5
+     4   CONSTANT_Float             5
+     5   CONSTANT_Long              9 (2 emplacements)
+     6   CONSTANT_Double            9 (2 emplacements)
+     7   CONSTANT_Class             3
+     8   CONSTANT_String            3
+     9   CONSTANT_Fieldref          5
+    10   CONSTANT_Methodref         5
+    11   CONSTANT_InterfaceMethodref 5
+    12   CONSTANT_NameAndType       5
+    15   CONSTANT_MethodHandle      4
+    16   CONSTANT_MethodType        3
+    17   CONSTANT_Dynamic           5
+    18   CONSTANT_InvokeDynamic     5
+    19   CONSTANT_Module            3
+    20   CONSTANT_Package           3
+
+  Note : les tags 2, 13, 14 ne sont pas utilises.
+
+4.2 CONSTANT_Utf8 (tag 1)
+--------------------------
+
+  Structure :
+
+    CONSTANT_Utf8_info {
+        u1 tag;           // = 1
+        u2 length;        // nombre d octets (pas de caracteres)
+        u1 bytes[length]; // chaine en UTF-8 modifie
+    }
+
+  Contient une chaine de caracteres en "UTF-8 modifie" (Modified
+  UTF-8) de Sun. Les differences avec le UTF-8 standard sont :
+
+    - Le caractere nul (U+0000) est encode sur 2 octets (C0 80)
+      au lieu d un seul (00), pour eviter les octets nuls.
+    - Les caracteres supplementaires (U+10000 et plus) sont encodes
+      via une paire de substitution (surrogate pair) en Modified UTF-8.
+
+  La longueur maximale est 65535 octets.
+
+  C est le type le plus fondamental : tous les noms de classes,
+  methodes, champs, descripteurs et chaines littlerales sont stockes
+  comme des CONSTANT_Utf8.
+
+4.3 CONSTANT_Integer (tag 3)
+-----------------------------
+
+  Structure :
+
+    CONSTANT_Integer_info {
+        u1 tag;       // = 3
+        u4 bytes;     // valeur entiere signee 32 bits, big-endian
+    }
+
+  Represente une constante entiere Java de type int.
+  La valeur est interpretee en complement a deux.
+
+4.4 CONSTANT_Float (tag 4)
+---------------------------
+
+  Structure :
+
+    CONSTANT_Float_info {
+        u1 tag;       // = 4
+        u4 bytes;     // flottant IEEE 754 simple precision
+    }
+
+  Represente une constante flottante Java de type float.
+  Encodage IEEE 754 simple precision (32 bits), big-endian.
+
+    Bit 31     : signe (0=positif, 1=negatif)
+    Bits 30-23 : exposant biaise (+127)
+    Bits 22-0  : mantisse
+
+  Valeurs speciales :
+    0x7F800000 = +Infinity
+    0xFF800000 = -Infinity
+    0x7FC00000 = NaN (et toute valeur avec exposant=255, mantisse!=0)
+
+4.5 CONSTANT_Long (tag 5)
+--------------------------
+
+  Structure :
+
+    CONSTANT_Long_info {
+        u1 tag;           // = 5
+        u4 high_bytes;    // 32 bits de poids fort, big-endian
+        u4 low_bytes;     // 32 bits de poids faible, big-endian
+    }
+
+  Represente une constante entiere Java de type long (64 bits).
+  Valeur = (high_bytes << 32) + low_bytes, en complement a deux.
+
+  ATTENTION : cette constante occupe DEUX emplacements dans le
+  constant pool. Si elle est a l index i, l index i+1 est invalide.
+
+4.6 CONSTANT_Double (tag 6)
+-----------------------------
+
+  Structure :
+
+    CONSTANT_Double_info {
+        u1 tag;           // = 6
+        u4 high_bytes;    // 32 bits de poids fort, big-endian
+        u4 low_bytes;     // 32 bits de poids faible, big-endian
+    }
+
+  Represente une constante flottante Java de type double.
+  Encodage IEEE 754 double precision (64 bits), big-endian.
+
+    Bit 63     : signe
+    Bits 62-52 : exposant biaise (+1023)
+    Bits 51-0  : mantisse
+
+  ATTENTION : occupe DEUX emplacements, comme CONSTANT_Long.
+
+4.7 CONSTANT_Class (tag 7)
+----------------------------
+
+  Structure :
+
+    CONSTANT_Class_info {
+        u1 tag;           // = 7
+        u2 name_index;    // index vers CONSTANT_Utf8
+    }
+
+  Represente une classe ou interface. Le name_index pointe vers
+  une entree CONSTANT_Utf8 contenant le nom interne de la classe
+  (avec des / au lieu de ., par exemple "java/lang/Object").
+
+  Pour les tableaux, le nom est le descripteur du type tableau,
+  par exemple "[Ljava/lang/String;" ou "[[I".
+
+4.8 CONSTANT_String (tag 8)
+-----------------------------
+
+  Structure :
+
+    CONSTANT_String_info {
+        u1 tag;           // = 8
+        u2 string_index;  // index vers CONSTANT_Utf8
+    }
+
+  Represente une constante de type java.lang.String.
+  Le string_index pointe vers l entree CONSTANT_Utf8 contenant
+  la sequence de caracteres Unicode de la chaine.
+
+4.9 CONSTANT_Fieldref (tag 9)
+------------------------------
+
+  Structure :
+
+    CONSTANT_Fieldref_info {
+        u1 tag;               // = 9
+        u2 class_index;       // index vers CONSTANT_Class
+        u2 name_and_type_index; // index vers CONSTANT_NameAndType
+    }
+
+  Reference a un champ. Le class_index identifie la classe ou
+  interface qui declare le champ, et le name_and_type_index donne
+  le nom et le descripteur de type du champ.
+
+4.10 CONSTANT_Methodref (tag 10)
+---------------------------------
+
+  Structure :
+
+    CONSTANT_Methodref_info {
+        u1 tag;               // = 10
+        u2 class_index;       // index vers CONSTANT_Class
+        u2 name_and_type_index; // index vers CONSTANT_NameAndType
+    }
+
+  Reference a une methode de classe (pas d interface).
+  Le class_index doit pointer vers une classe (pas une interface).
+
+4.11 CONSTANT_InterfaceMethodref (tag 11)
+------------------------------------------
+
+  Structure :
+
+    CONSTANT_InterfaceMethodref_info {
+        u1 tag;               // = 11
+        u2 class_index;       // index vers CONSTANT_Class
+        u2 name_and_type_index; // index vers CONSTANT_NameAndType
+    }
+
+  Reference a une methode d interface.
+  Le class_index doit pointer vers une interface.
+
+4.12 CONSTANT_NameAndType (tag 12)
+-----------------------------------
+
+  Structure :
+
+    CONSTANT_NameAndType_info {
+        u1 tag;               // = 12
+        u2 name_index;        // index vers CONSTANT_Utf8 (nom)
+        u2 descriptor_index;  // index vers CONSTANT_Utf8 (descripteur)
+    }
+
+  Represente un couple (nom, descripteur) utilise par les Fieldref,
+  Methodref et InterfaceMethodref. Le name_index donne le nom simple
+  du champ ou de la methode. Le descriptor_index donne le descripteur
+  de type (voir section 11).
+
+  Exemples :
+    Champ "count" de type int  : name="count", descriptor="I"
+    Methode "main"             : name="main",
+                                 descriptor="([Ljava/lang/String;)V"
+
+4.13 CONSTANT_MethodHandle (tag 15)
+------------------------------------
+
+  Structure :
+
+    CONSTANT_MethodHandle_info {
+        u1 tag;               // = 15
+        u1 reference_kind;    // 1..9
+        u2 reference_index;   // index vers une reference
+    }
+
+  Introduit en Java SE 7 (version 51.0) pour le support de
+  invokedynamic. Le reference_kind determine le type de reference :
+
+    Kind  Nom                     reference_index pointe vers
+    ----  ----------------------  ----------------------------------
+    1     REF_getField            CONSTANT_Fieldref
+    2     REF_getStatic           CONSTANT_Fieldref
+    3     REF_putField            CONSTANT_Fieldref
+    4     REF_putStatic           CONSTANT_Fieldref
+    5     REF_invokeVirtual       CONSTANT_Methodref
+    6     REF_invokeStatic        CONSTANT_Methodref ou
+                                  CONSTANT_InterfaceMethodref
+    7     REF_invokeSpecial       CONSTANT_Methodref ou
+                                  CONSTANT_InterfaceMethodref
+    8     REF_newInvokeSpecial    CONSTANT_Methodref
+    9     REF_invokeInterface     CONSTANT_InterfaceMethodref
+
+4.14 CONSTANT_MethodType (tag 16)
+----------------------------------
+
+  Structure :
+
+    CONSTANT_MethodType_info {
+        u1 tag;               // = 16
+        u2 descriptor_index;  // index vers CONSTANT_Utf8
+    }
+
+  Introduit en Java SE 7. Represente un type de methode (signature).
+  Le descriptor_index pointe vers un descripteur de methode
+  (par exemple "(II)I" pour une methode a 2 parametres int
+  retournant un int).
+
+4.15 CONSTANT_Dynamic (tag 17)
+-------------------------------
+
+  Structure :
+
+    CONSTANT_Dynamic_info {
+        u1 tag;                        // = 17
+        u2 bootstrap_method_attr_index; // index dans BootstrapMethods
+        u2 name_and_type_index;        // index vers CONSTANT_NameAndType
+    }
+
+  Introduit en Java SE 11 (version 55.0). Represente une constante
+  calculee dynamiquement (computed constant). Le bootstrap_method_attr_index
+  est un index dans le tableau bootstrap_methods de l attribut
+  BootstrapMethods de la classe.
+
+4.16 CONSTANT_InvokeDynamic (tag 18)
+--------------------------------------
+
+  Structure :
+
+    CONSTANT_InvokeDynamic_info {
+        u1 tag;                        // = 18
+        u2 bootstrap_method_attr_index; // index dans BootstrapMethods
+        u2 name_and_type_index;        // index vers CONSTANT_NameAndType
+    }
+
+  Introduit en Java SE 7. Utilise par l instruction invokedynamic.
+  Le bootstrap_method_attr_index pointe vers l attribut
+  BootstrapMethods, et le name_and_type_index donne le nom et
+  le descripteur de la methode dynamique.
+
+4.17 CONSTANT_Module (tag 19)
+------------------------------
+
+  Structure :
+
+    CONSTANT_Module_info {
+        u1 tag;           // = 19
+        u2 name_index;    // index vers CONSTANT_Utf8
+    }
+
+  Introduit en Java SE 9 (version 53.0). Represente un module.
+  Le name_index pointe vers le nom du module.
+
+4.18 CONSTANT_Package (tag 20)
+-------------------------------
+
+  Structure :
+
+    CONSTANT_Package_info {
+        u1 tag;           // = 20
+        u2 name_index;    // index vers CONSTANT_Utf8
+    }
+
+  Introduit en Java SE 9. Represente un paquetage (package)
+  dans un module. Le name_index pointe vers le nom interne du
+  paquetage (avec des / comme separateurs).
+
+==============================================================================
+5. DRAPEAUX D ACCES DE LA CLASSE (access_flags)
+==============================================================================
+
+  Offset : immediatement apres le constant pool
+  Taille : 2 octets (u2)
+
+  Ce champ est un masque de bits definissant les modificateurs d acces
+  et les proprietes de la classe ou interface.
+
+    Drapeau            Valeur   Signification
+    -----------------  ------   -----------------------------------------
+    ACC_PUBLIC         0x0001   Classe publique (accessible hors paquetage)
+    ACC_FINAL          0x0010   Classe finale (pas de sous-classe)
+    ACC_SUPER          0x0020   Utiliser invokespecial semantique moderne
+    ACC_INTERFACE      0x0200   C est une interface, pas une classe
+    ACC_ABSTRACT       0x0400   Classe abstraite (pas d instanciation)
+    ACC_SYNTHETIC      0x1000   Generee par le compilateur (pas dans src)
+    ACC_ANNOTATION     0x2000   C est un type annotation
+    ACC_ENUM           0x4000   C est un type enum
+    ACC_MODULE         0x8000   C est un descripteur de module
+
+  Contraintes :
+    - Si ACC_INTERFACE est positionne, ACC_ABSTRACT doit l etre aussi,
+      et ACC_FINAL, ACC_SUPER, ACC_ENUM, ACC_MODULE ne doivent pas l etre.
+    - Si ACC_INTERFACE n est pas positionne, tout autre drapeau peut
+      l etre sauf ACC_ANNOTATION et ACC_MODULE.
+    - ACC_FINAL et ACC_ABSTRACT sont mutuellement exclusifs.
+    - ACC_SUPER est positionne par tous les compilateurs Java modernes.
+
+==============================================================================
+6. this_class, super_class, interfaces
+==============================================================================
+
+6.1 this_class
+--------------
+
+  Taille : u2
+  Valeur : index dans le constant pool vers CONSTANT_Class
+
+  Identifie la classe ou interface definie par ce fichier .class.
+
+6.2 super_class
+---------------
+
+  Taille : u2
+  Valeur : 0 ou index vers CONSTANT_Class
+
+  Identifie la super-classe directe. La valeur 0 n est valide que
+  pour la classe java.lang.Object, qui est la seule classe sans
+  super-classe. Pour toutes les interfaces, super_class pointe
+  vers java.lang.Object.
+
+6.3 interfaces_count et interfaces[]
+-------------------------------------
+
+  interfaces_count : u2
+    Nombre d interfaces directement implementees (ou etendues,
+    pour une interface).
+
+  interfaces[] : tableau de u2
+    Chaque entree est un index dans le constant pool vers
+    CONSTANT_Class, representant une interface.
+
+  L ordre des interfaces dans le tableau correspond a l ordre de
+  declaration dans le code source (de gauche a droite apres
+  "implements" ou "extends" pour les interfaces).
+
+==============================================================================
+7. LES CHAMPS (field_info)
+==============================================================================
+
+  fields_count : u2
+    Nombre de champs declares dans cette classe ou interface.
+    N inclut pas les champs herites.
+
+  Chaque champ est decrit par la structure field_info :
+
+  field_info {
+      u2             access_flags;
+      u2             name_index;        // index vers CONSTANT_Utf8
+      u2             descriptor_index;  // index vers CONSTANT_Utf8
+      u2             attributes_count;
+      attribute_info attributes[attributes_count];
+  }
+
+  access_flags  : voir section 10 pour les drapeaux de champ.
+  name_index    : nom simple du champ (par exemple "x", "count").
+  descriptor_index : descripteur de type du champ (voir section 11).
+
+  Attributs courants d un champ :
+    - ConstantValue   : valeur initiale pour un champ static final
+    - Synthetic       : champ genere par le compilateur
+    - Deprecated      : champ deprecie
+    - Signature       : signature generique (generics)
+    - RuntimeVisibleAnnotations
+    - RuntimeInvisibleAnnotations
+
+==============================================================================
+8. LES METHODES (method_info)
+==============================================================================
+
+  methods_count : u2
+    Nombre de methodes declarees dans cette classe ou interface.
+    N inclut pas les methodes heritees (sauf si redefinies).
+    Inclut les methodes speciales :
+      - <init>    : constructeur d instance
+      - <clinit>  : initialiseur statique de classe
+
+  Chaque methode est decrite par la structure method_info :
+
+  method_info {
+      u2             access_flags;
+      u2             name_index;        // index vers CONSTANT_Utf8
+      u2             descriptor_index;  // index vers CONSTANT_Utf8
+      u2             attributes_count;
+      attribute_info attributes[attributes_count];
+  }
+
+  access_flags  : voir section 10 pour les drapeaux de methode.
+  name_index    : nom de la methode (par exemple "main", "<init>").
+  descriptor_index : descripteur de methode (voir section 11).
+
+  Attributs courants d une methode :
+    - Code            : le bytecode executable (obligatoire sauf
+                        si native ou abstract)
+    - Exceptions      : les exceptions declarees (throws)
+    - Synthetic, Deprecated, Signature
+    - RuntimeVisibleAnnotations
+    - RuntimeVisibleParameterAnnotations
+    - AnnotationDefault (pour les methodes d annotation)
+    - MethodParameters
+
+==============================================================================
+9. LES ATTRIBUTS (attribute_info)
+==============================================================================
+
+9.1 Structure generale
+-----------------------
+
+  Tous les attributs partagent la meme structure d en-tete :
+
+  attribute_info {
+      u2 attribute_name_index;    // index vers CONSTANT_Utf8
+      u4 attribute_length;        // longueur du contenu en octets
+      u1 info[attribute_length];  // contenu specifique a l attribut
+  }
+
+  L attribut est identifie par son nom (une chaine UTF-8 dans le
+  constant pool), pas par un tag numerique. Cela permet d ajouter
+  de nouveaux attributs sans casser le format : une JVM qui ne
+  reconnait pas un attribut l ignore silencieusement (sauf pour
+  les attributs critiques).
+
+  La specification JVM definit 30 attributs predefinies.
+
+9.2 Attributs critiques pour le Code
+--------------------------------------
+
+9.2.1 Code
+..........
+
+  Contexte : attribut de method_info (obligatoire sauf native/abstract)
+
+  Code_attribute {
+      u2 attribute_name_index;    // "Code"
+      u4 attribute_length;
+      u2 max_stack;               // profondeur max de la pile operande
+      u2 max_locals;              // nombre max de variables locales
+      u4 code_length;             // longueur du bytecode en octets
+      u1 code[code_length];       // le bytecode JVM
+      u2 exception_table_length;
+      {   u2 start_pc;            // debut de la zone protegee
+          u2 end_pc;              // fin de la zone protegee (exclus)
+          u2 handler_pc;          // debut du gestionnaire
+          u2 catch_type;          // 0=finally, sinon index CONSTANT_Class
+      } exception_table[exception_table_length];
+      u2 attributes_count;
+      attribute_info attributes[attributes_count];
+  }
+
+  Le bytecode est une sequence d instructions JVM (voir la section 19
+  du fichier ASM_JASMIN.txt pour la liste complete des opcodes).
+
+  La table des exceptions decrit les blocs try-catch-finally :
+    - [start_pc, end_pc[ : intervalle d instructions protege
+    - handler_pc : premiere instruction du gestionnaire
+    - catch_type : type d exception intercepte (0 = tout, finally)
+
+  max_stack : la JVM alloue une pile operande de cette taille
+  pour la methode. Doit etre >= a la profondeur maximale atteinte
+  par le bytecode a tout point d execution.
+
+  max_locals : nombre de cases de variables locales, incluant :
+    - this (index 0 pour les methodes d instance)
+    - les parametres
+    - les variables locales
+
+  L attribut Code peut lui-meme contenir des sous-attributs :
+    - LineNumberTable
+    - LocalVariableTable
+    - LocalVariableTypeTable
+    - StackMapTable
+
+9.2.2 StackMapTable
+...................
+
+  Contexte : sous-attribut de Code (depuis Java SE 6, version 50.0)
+
+  StackMapTable_attribute {
+      u2 attribute_name_index;    // "StackMapTable"
+      u4 attribute_length;
+      u2 number_of_entries;
+      stack_map_frame entries[number_of_entries];
+  }
+
+  Contient les informations de verification de type pour le
+  verificateur de bytecode (type-checking verifier). Chaque entree
+  decrit l etat des types dans la pile et les variables locales a
+  un point de branchement cible.
+
+  Il existe 7 types de frames :
+
+    Frame                       Tag       Description
+    --------------------------  --------  ----------------------------
+    same_frame                  0-63      Memes locales, pile vide
+    same_locals_1_stack_item    64-127    Memes locales, 1 elem pile
+    same_locals_1_stack_item_extended 247 Idem, offset u2
+    chop_frame                  248-250   k locales en moins
+    same_frame_extended         251       Memes locales, pile vide
+    append_frame                252-254   k locales en plus
+    full_frame                  255       Description complete
+
+9.2.3 Exceptions
+.................
+
+  Contexte : attribut de method_info
+
+  Exceptions_attribute {
+      u2 attribute_name_index;    // "Exceptions"
+      u4 attribute_length;
+      u2 number_of_exceptions;
+      u2 exception_index_table[number_of_exceptions];
+  }
+
+  Liste les exceptions verifiees (checked exceptions) declarees
+  dans la clause throws de la methode. Chaque entree est un index
+  vers CONSTANT_Class dans le constant pool.
+
+9.2.4 LineNumberTable
+.....................
+
+  Contexte : sous-attribut de Code
+
+  LineNumberTable_attribute {
+      u2 attribute_name_index;    // "LineNumberTable"
+      u4 attribute_length;
+      u2 line_number_table_length;
+      {   u2 start_pc;           // offset dans le bytecode
+          u2 line_number;        // numero de ligne source
+      } line_number_table[line_number_table_length];
+  }
+
+  Associe des offsets dans le bytecode a des numeros de lignes
+  dans le fichier source. Utilise par les debogueurs et dans les
+  traces de pile (stack traces).
+
+9.2.5 LocalVariableTable
+.........................
+
+  Contexte : sous-attribut de Code
+
+  LocalVariableTable_attribute {
+      u2 attribute_name_index;    // "LocalVariableTable"
+      u4 attribute_length;
+      u2 local_variable_table_length;
+      {   u2 start_pc;           // debut de la portee
+          u2 length;             // longueur de la portee
+          u2 name_index;         // CONSTANT_Utf8 : nom de la variable
+          u2 descriptor_index;   // CONSTANT_Utf8 : descripteur de type
+          u2 index;              // index dans le tableau de locales
+      } local_variable_table[local_variable_table_length];
+  }
+
+  Fournit les noms et types des variables locales pour le debogage.
+
+9.2.6 LocalVariableTypeTable
+.............................
+
+  Contexte : sous-attribut de Code
+
+  Meme structure que LocalVariableTable mais avec signature_index
+  au lieu de descriptor_index, pour les types generiques.
+
+  LocalVariableTypeTable_attribute {
+      u2 attribute_name_index;    // "LocalVariableTypeTable"
+      u4 attribute_length;
+      u2 local_variable_type_table_length;
+      {   u2 start_pc;
+          u2 length;
+          u2 name_index;
+          u2 signature_index;    // signature generique
+          u2 index;
+      } local_variable_type_table[local_variable_type_table_length];
+  }
+
+9.3 Attributs de champs
+-------------------------
+
+9.3.1 ConstantValue
+....................
+
+  Contexte : attribut de field_info (pour les champs static final)
+
+  ConstantValue_attribute {
+      u2 attribute_name_index;    // "ConstantValue"
+      u4 attribute_length;        // toujours 2
+      u2 constantvalue_index;     // index dans le constant pool
+  }
+
+  Donne la valeur initiale d un champ static final.
+  Le constantvalue_index pointe vers :
+    - CONSTANT_Integer pour int, short, byte, char, boolean
+    - CONSTANT_Float pour float
+    - CONSTANT_Long pour long
+    - CONSTANT_Double pour double
+    - CONSTANT_String pour String
+
+9.4 Attributs de classe
+------------------------
+
+9.4.1 SourceFile
+.................
+
+  Contexte : attribut de ClassFile
+
+  SourceFile_attribute {
+      u2 attribute_name_index;    // "SourceFile"
+      u4 attribute_length;        // toujours 2
+      u2 sourcefile_index;        // CONSTANT_Utf8 : nom du fichier source
+  }
+
+  Indique le nom du fichier source (par exemple "Hello.java").
+
+9.4.2 InnerClasses
+...................
+
+  Contexte : attribut de ClassFile
+
+  InnerClasses_attribute {
+      u2 attribute_name_index;    // "InnerClasses"
+      u4 attribute_length;
+      u2 number_of_classes;
+      {   u2 inner_class_info_index;   // CONSTANT_Class
+          u2 outer_class_info_index;   // CONSTANT_Class ou 0
+          u2 inner_name_index;         // CONSTANT_Utf8 ou 0
+          u2 inner_class_access_flags; // drapeaux d acces
+      } classes[number_of_classes];
+  }
+
+  Decrit les relations entre classes internes et externes.
+
+9.4.3 EnclosingMethod
+.....................
+
+  Contexte : attribut de ClassFile (pour les classes locales/anonymes)
+
+  EnclosingMethod_attribute {
+      u2 attribute_name_index;    // "EnclosingMethod"
+      u4 attribute_length;        // toujours 4
+      u2 class_index;             // CONSTANT_Class : classe englobante
+      u2 method_index;            // CONSTANT_NameAndType ou 0
+  }
+
+9.4.4 BootstrapMethods
+.......................
+
+  Contexte : attribut de ClassFile (depuis Java SE 7)
+
+  BootstrapMethods_attribute {
+      u2 attribute_name_index;    // "BootstrapMethods"
+      u4 attribute_length;
+      u2 num_bootstrap_methods;
+      {   u2 bootstrap_method_ref;     // CONSTANT_MethodHandle
+          u2 num_bootstrap_arguments;
+          u2 bootstrap_arguments[num_bootstrap_arguments];
+      } bootstrap_methods[num_bootstrap_methods];
+  }
+
+  Requis si le constant pool contient au moins une entree
+  CONSTANT_InvokeDynamic ou CONSTANT_Dynamic.
+
+9.4.5 NestHost
+...............
+
+  Contexte : attribut de ClassFile (depuis Java SE 11)
+
+  NestHost_attribute {
+      u2 attribute_name_index;    // "NestHost"
+      u4 attribute_length;        // toujours 2
+      u2 host_class_index;        // CONSTANT_Class
+  }
+
+  Indique la classe hote du nid (nest) pour le controle d acces.
+
+9.4.6 NestMembers
+..................
+
+  Contexte : attribut de ClassFile (depuis Java SE 11)
+
+  NestMembers_attribute {
+      u2 attribute_name_index;    // "NestMembers"
+      u4 attribute_length;
+      u2 number_of_classes;
+      u2 classes[number_of_classes]; // CONSTANT_Class
+  }
+
+  Liste les membres du nid declares par la classe hote.
+
+9.4.7 PermittedSubclasses
+..........................
+
+  Contexte : attribut de ClassFile (depuis Java SE 17)
+
+  PermittedSubclasses_attribute {
+      u2 attribute_name_index;    // "PermittedSubclasses"
+      u4 attribute_length;
+      u2 number_of_classes;
+      u2 classes[number_of_classes]; // CONSTANT_Class
+  }
+
+  Liste les sous-classes autorisees pour une classe sealed.
+
+9.4.8 Record
+.............
+
+  Contexte : attribut de ClassFile (depuis Java SE 16)
+
+  Record_attribute {
+      u2 attribute_name_index;    // "Record"
+      u4 attribute_length;
+      u2 components_count;
+      {   u2 name_index;          // CONSTANT_Utf8
+          u2 descriptor_index;    // CONSTANT_Utf8
+          u2 attributes_count;
+          attribute_info attributes[attributes_count];
+      } components[components_count];
+  }
+
+  Decrit les composantes d un type record.
+
+9.5 Attributs d annotations
+-----------------------------
+
+9.5.1 RuntimeVisibleAnnotations
+................................
+
+  Contexte : attribut de ClassFile, field_info ou method_info
+
+  RuntimeVisibleAnnotations_attribute {
+      u2 attribute_name_index;    // "RuntimeVisibleAnnotations"
+      u4 attribute_length;
+      u2 num_annotations;
+      annotation annotations[num_annotations];
+  }
+
+  Structure annotation :
+    annotation {
+        u2 type_index;            // CONSTANT_Utf8 : descripteur
+        u2 num_element_value_pairs;
+        {   u2 element_name_index; // CONSTANT_Utf8
+            element_value value;
+        } element_value_pairs[num_element_value_pairs];
+    }
+
+  Structure element_value :
+    element_value {
+        u1 tag;    // B,C,D,F,I,J,S,Z,s,e,c,@,[
+        union {
+            u2 const_value_index;        // tag B,C,D,F,I,J,S,Z,s
+            {   u2 type_name_index;
+                u2 const_name_index;
+            } enum_const_value;           // tag e
+            u2 class_info_index;          // tag c
+            annotation annotation_value;  // tag @
+            {   u2 num_values;
+                element_value values[num_values];
+            } array_value;                // tag [
+        } value;
+    }
+
+  Les tags correspondent aux types :
+    B=byte, C=char, D=double, F=float, I=int, J=long,
+    S=short, Z=boolean, s=String, e=enum, c=class,
+    @=annotation, [=tableau
+
+9.5.2 RuntimeInvisibleAnnotations
+..................................
+
+  Meme structure que RuntimeVisibleAnnotations.
+  Annotations non accessibles a l execution (retention CLASS).
+
+9.5.3 RuntimeVisibleParameterAnnotations
+.........................................
+
+  RuntimeVisibleParameterAnnotations_attribute {
+      u2 attribute_name_index;
+      u4 attribute_length;
+      u1 num_parameters;
+      {   u2 num_annotations;
+          annotation annotations[num_annotations];
+      } parameter_annotations[num_parameters];
+  }
+
+9.5.4 RuntimeInvisibleParameterAnnotations
+...........................................
+
+  Meme structure que RuntimeVisibleParameterAnnotations.
+
+9.5.5 RuntimeVisibleTypeAnnotations
+....................................
+
+  Contexte : attribut de ClassFile, field_info, method_info ou Code
+  Introduit en Java SE 8 pour les annotations de type (JSR 308).
+
+  RuntimeVisibleTypeAnnotations_attribute {
+      u2 attribute_name_index;
+      u4 attribute_length;
+      u2 num_annotations;
+      type_annotation annotations[num_annotations];
+  }
+
+  Les type_annotations ajoutent un target_info et un type_path
+  a la structure annotation standard pour localiser precisement
+  l emplacement du type annote.
+
+9.5.6 RuntimeInvisibleTypeAnnotations
+......................................
+
+  Meme structure que RuntimeVisibleTypeAnnotations.
+
+9.5.7 AnnotationDefault
+.........................
+
+  Contexte : attribut de method_info (pour les methodes d annotation)
+
+  AnnotationDefault_attribute {
+      u2 attribute_name_index;    // "AnnotationDefault"
+      u4 attribute_length;
+      element_value default_value;
+  }
+
+  Donne la valeur par defaut d un element d annotation.
+
+9.6 Autres attributs
+---------------------
+
+9.6.1 Synthetic
+................
+
+  Contexte : attribut de ClassFile, field_info ou method_info
+
+  Synthetic_attribute {
+      u2 attribute_name_index;    // "Synthetic"
+      u4 attribute_length;        // toujours 0
+  }
+
+  Indique que l element n apparait pas dans le code source
+  (genere par le compilateur).
+
+9.6.2 Deprecated
+.................
+
+  Contexte : attribut de ClassFile, field_info ou method_info
+
+  Deprecated_attribute {
+      u2 attribute_name_index;    // "Deprecated"
+      u4 attribute_length;        // toujours 0
+  }
+
+  Indique que l element est deprecie.
+
+9.6.3 Signature
+................
+
+  Contexte : attribut de ClassFile, field_info ou method_info
+
+  Signature_attribute {
+      u2 attribute_name_index;    // "Signature"
+      u4 attribute_length;        // toujours 2
+      u2 signature_index;         // CONSTANT_Utf8 : signature generique
+  }
+
+  Enregistre les informations de type generique (effacees par
+  type erasure lors de la compilation).
+
+9.6.4 MethodParameters
+.......................
+
+  Contexte : attribut de method_info (depuis Java SE 8)
+
+  MethodParameters_attribute {
+      u2 attribute_name_index;    // "MethodParameters"
+      u4 attribute_length;
+      u1 parameters_count;
+      {   u2 name_index;          // CONSTANT_Utf8 ou 0
+          u2 access_flags;        // ACC_FINAL, ACC_SYNTHETIC, ACC_MANDATED
+      } parameters[parameters_count];
+  }
+
+  Enregistre les noms et drapeaux des parametres formels.
+
+9.6.5 Module
+.............
+
+  Contexte : attribut de ClassFile (depuis Java SE 9)
+
+  Module_attribute {
+      u2 attribute_name_index;    // "Module"
+      u4 attribute_length;
+      u2 module_name_index;       // CONSTANT_Module
+      u2 module_flags;            // ACC_OPEN, ACC_SYNTHETIC, ACC_MANDATED
+      u2 module_version_index;    // CONSTANT_Utf8 ou 0
+      u2 requires_count;
+      {   u2 requires_index;      // CONSTANT_Module
+          u2 requires_flags;
+          u2 requires_version_index;
+      } requires[requires_count];
+      u2 exports_count;
+      {   u2 exports_index;       // CONSTANT_Package
+          u2 exports_flags;
+          u2 exports_to_count;
+          u2 exports_to_index[exports_to_count]; // CONSTANT_Module
+      } exports[exports_count];
+      u2 opens_count;
+      {   u2 opens_index;         // CONSTANT_Package
+          u2 opens_flags;
+          u2 opens_to_count;
+          u2 opens_to_index[opens_to_count]; // CONSTANT_Module
+      } opens[opens_count];
+      u2 uses_count;
+      u2 uses_index[uses_count];  // CONSTANT_Class
+      u2 provides_count;
+      {   u2 provides_index;      // CONSTANT_Class
+          u2 provides_with_count;
+          u2 provides_with_index[provides_with_count]; // CONSTANT_Class
+      } provides[provides_count];
+  }
+
+  Decrit un module Java (JPMS) avec ses dependances, exportations,
+  services fournis et utilises.
+
+9.6.6 ModulePackages
+.....................
+
+  Contexte : attribut de ClassFile (depuis Java SE 9)
+
+  ModulePackages_attribute {
+      u2 attribute_name_index;    // "ModulePackages"
+      u4 attribute_length;
+      u2 package_count;
+      u2 package_index[package_count]; // CONSTANT_Package
+  }
+
+  Liste tous les paquetages d un module.
+
+9.6.7 ModuleMainClass
+......................
+
+  Contexte : attribut de ClassFile (depuis Java SE 9)
+
+  ModuleMainClass_attribute {
+      u2 attribute_name_index;    // "ModuleMainClass"
+      u4 attribute_length;        // toujours 2
+      u2 main_class_index;        // CONSTANT_Class
+  }
+
+  Indique la classe principale du module.
+
+==============================================================================
+10. DRAPEAUX D ACCES DES CHAMPS ET METHODES
+==============================================================================
+
+10.1 Drapeaux d acces des champs (field_info access_flags)
+-----------------------------------------------------------
+
+    Drapeau            Valeur   Signification
+    -----------------  ------   -----------------------------------------
+    ACC_PUBLIC         0x0001   Accessible hors de la classe
+    ACC_PRIVATE        0x0002   Accessible uniquement dans la classe
+    ACC_PROTECTED      0x0004   Accessible dans la classe et sous-classes
+    ACC_STATIC         0x0008   Champ statique (de classe)
+    ACC_FINAL          0x0010   Non modifiable apres initialisation
+    ACC_VOLATILE       0x0040   Acces atomique (memoire partagee)
+    ACC_TRANSIENT      0x0080   Non serialise
+    ACC_SYNTHETIC      0x1000   Genere par le compilateur
+    ACC_ENUM           0x4000   Element d enumeration
+
+  Contraintes :
+    - Au plus un de ACC_PUBLIC, ACC_PRIVATE, ACC_PROTECTED.
+    - ACC_FINAL et ACC_VOLATILE sont mutuellement exclusifs.
+    - Les champs d interface sont implicitement
+      ACC_PUBLIC + ACC_STATIC + ACC_FINAL.
+
+10.2 Drapeaux d acces des methodes (method_info access_flags)
+--------------------------------------------------------------
+
+    Drapeau            Valeur   Signification
+    -----------------  ------   -----------------------------------------
+    ACC_PUBLIC         0x0001   Accessible hors de la classe
+    ACC_PRIVATE        0x0002   Accessible uniquement dans la classe
+    ACC_PROTECTED      0x0004   Accessible dans la classe et sous-classes
+    ACC_STATIC         0x0008   Methode statique (de classe)
+    ACC_FINAL          0x0010   Non redefinissable
+    ACC_SYNCHRONIZED   0x0020   Acquisition de moniteur a l entree
+    ACC_BRIDGE         0x0040   Methode pont (generee pour generics)
+    ACC_VARARGS        0x0080   Nombre variable d arguments
+    ACC_NATIVE         0x0100   Implementee en code natif (JNI)
+    ACC_ABSTRACT       0x0400   Pas de corps (abstract)
+    ACC_STRICT         0x0800   strictfp (virgule flottante stricte)
+    ACC_SYNTHETIC      0x1000   Generee par le compilateur
+
+  Contraintes :
+    - Au plus un de ACC_PUBLIC, ACC_PRIVATE, ACC_PROTECTED.
+    - ACC_ABSTRACT ne peut pas etre combine avec ACC_PRIVATE,
+      ACC_STATIC, ACC_FINAL, ACC_SYNCHRONIZED, ACC_NATIVE, ACC_STRICT.
+    - Les methodes d interface sont ACC_PUBLIC (implicitement).
+    - <clinit> n a aucun drapeau d acces visible.
+
+==============================================================================
+11. DESCRIPTEURS DE TYPES ET DE METHODES
+==============================================================================
+
+11.1 Descripteurs de types de champs (field descriptors)
+---------------------------------------------------------
+
+  Un descripteur de champ encode le type d un champ ou d une variable :
+
+    Descripteur   Type Java
+    ----------    ----------------
+    B             byte
+    C             char
+    D             double
+    F             float
+    I             int
+    J             long
+    S             short
+    Z             boolean
+    V             void (retour de methode uniquement)
+    L<classe>;    reference a une instance de <classe>
+    [<type>       tableau de <type>
+
+  Exemples :
+    I                           -> int
+    D                           -> double
+    Ljava/lang/String;          -> java.lang.String
+    [I                          -> int[]
+    [[D                         -> double[][]
+    [Ljava/lang/Object;         -> Object[]
+
+11.2 Descripteurs de methodes (method descriptors)
+---------------------------------------------------
+
+  Un descripteur de methode encode la signature complete :
+
+    ( {ParameterDescriptor} ) ReturnDescriptor
+
+  Exemples :
+    ()V                         -> void f()
+    (I)I                        -> int f(int)
+    (II)I                       -> int f(int, int)
+    (Ljava/lang/String;)V       -> void f(String)
+    ([Ljava/lang/String;)V      -> void f(String[])
+    (ILjava/lang/String;)[I    -> int[] f(int, String)
+    ()Ljava/lang/String;        -> String f()
+
+11.3 Noms internes de classes
+------------------------------
+
+  Dans le constant pool, les noms de classes utilisent le
+  separateur / au lieu du . Java :
+
+    java/lang/Object        (au lieu de java.lang.Object)
+    java/io/PrintStream     (au lieu de java.io.PrintStream)
+    java/lang/System        (au lieu de java.lang.System)
+
+==============================================================================
+12. TABLEAU DES VERSIONS DE FICHIER .CLASS
+==============================================================================
+
+  La version du fichier .class (major_version.minor_version) determine
+  les fonctionnalites du format disponibles.
+
+    Version     major  minor  JDK / Java SE
+    ----------  -----  -----  ---------------------------
+    45.0        45     0      JDK 1.0
+    45.3        45     3      JDK 1.1
+    46.0        46     0      JDK 1.2
+    47.0        47     0      JDK 1.3
+    48.0        48     0      JDK 1.4
+    49.0        49     0      Java SE 5.0
+    50.0        50     0      Java SE 6
+    51.0        51     0      Java SE 7
+    52.0        52     0      Java SE 8
+    53.0        53     0      Java SE 9
+    54.0        54     0      Java SE 10
+    55.0        55     0      Java SE 11
+    56.0        56     0      Java SE 12
+    57.0        57     0      Java SE 13
+    58.0        58     0      Java SE 14
+    59.0        59     0      Java SE 15
+    60.0        60     0      Java SE 16
+    61.0        61     0      Java SE 17
+    62.0        62     0      Java SE 18
+    63.0        63     0      Java SE 19
+    64.0        64     0      Java SE 20
+    65.0        65     0      Java SE 21
+    66.0        66     0      Java SE 22
+    67.0        67     0      Java SE 23
+
+  Fonctionnalites cles introduites par version :
+
+    Version  Ajouts au format
+    -------  ------------------------------------------------
+    45.3     Format initial stable (JDK 1.1)
+    49.0     Attribut Signature (generiques, Java 5)
+    50.0     Attribut StackMapTable (verification de types)
+    51.0     CONSTANT_MethodHandle, CONSTANT_MethodType,
+             CONSTANT_InvokeDynamic, invokedynamic (Java 7)
+    52.0     Annotations de type, MethodParameters (Java 8)
+    53.0     CONSTANT_Module, CONSTANT_Package, attribut Module,
+             ModulePackages, ModuleMainClass (Java 9, JPMS)
+    55.0     CONSTANT_Dynamic, NestHost, NestMembers (Java 11)
+    60.0     Record (Java 16)
+    61.0     PermittedSubclasses (sealed classes, Java 17)
+
+==============================================================================
+13. ORDRE DES OCTETS ET ENCODAGE
+==============================================================================
+
+13.1 Big-endian (reseau)
+-------------------------
+
+  TOUS les entiers multi-octets dans un fichier .class sont stockes
+  en big-endian (octet de poids fort en premier) :
+
+    u2 valeur 0x1234 :  octet[0] = 0x12, octet[1] = 0x34
+    u4 valeur 0xCAFEBABE : octet[0]=0xCA, [1]=0xFE, [2]=0xBA, [3]=0xBE
+
+  C est l inverse du format little-endian utilise par les processeurs
+  x86. Un programme lisant un .class sur x86 doit inverser les octets.
+
+  Exemple de lecture d un u2 en Pascal :
+
+    function ReadU2(var F: File): Word;
+    var b1, b2: Byte;
+    begin
+      BlockRead(F, b1, 1);
+      BlockRead(F, b2, 1);
+      ReadU2 := (b1 shl 8) or b2;
+    end;
+
+  Exemple de lecture d un u4 en Pascal :
+
+    function ReadU4(var F: File): LongWord;
+    var b1, b2, b3, b4: Byte;
+    begin
+      BlockRead(F, b1, 1);
+      BlockRead(F, b2, 1);
+      BlockRead(F, b3, 1);
+      BlockRead(F, b4, 1);
+      ReadU4 := (LongWord(b1) shl 24) or (LongWord(b2) shl 16)
+                or (LongWord(b3) shl 8) or LongWord(b4);
+    end;
+
+13.2 Modified UTF-8
+---------------------
+
+  Les chaines dans le constant pool utilisent le "Modified UTF-8"
+  de Sun, qui differe du UTF-8 standard :
+
+    Caractere         UTF-8 standard   Modified UTF-8
+    ----------------  ---------------  ----------------
+    U+0000 (nul)      00               C0 80
+    U+0001..U+007F    1 octet          1 octet (identique)
+    U+0080..U+07FF    2 octets         2 octets (identique)
+    U+0800..U+FFFF    3 octets         3 octets (identique)
+    U+10000..U+10FFFF 4 octets         6 octets (paire surrogee)
+
+  La paire surrogee pour les caracteres supplementaires :
+    - High surrogate : ED A0 80 a ED AF BF
+    - Low surrogate  : ED B0 80 a ED BF BF
+
+==============================================================================
+14. VERIFICATION ET CONTRAINTES STRUCTURELLES
+==============================================================================
+
+La JVM verifie les fichiers .class avant execution. Les contraintes
+sont de trois niveaux :
+
+14.1 Contraintes structurelles du format
+-----------------------------------------
+
+  - Les 4 premiers octets doivent etre CA FE BA BE.
+  - Tous les index dans le constant pool doivent etre valides
+    (entre 1 et constant_pool_count - 1).
+  - Chaque index doit pointer vers le type de constante attendu
+    (par exemple, class_index doit pointer vers CONSTANT_Class).
+  - L attribut Code ne doit pas etre vide (code_length >= 1).
+  - code_length ne doit pas depasser 65535 octets.
+
+14.2 Contraintes statiques du bytecode
+----------------------------------------
+
+  - Chaque instruction doit avoir un opcode valide.
+  - Les cibles de branchement doivent pointer vers le debut
+    d une instruction valide dans la meme methode.
+  - Les index de variables locales ne doivent pas depasser
+    max_locals - 1 (ou max_locals - 2 pour long/double).
+  - La pile operande ne doit pas deborder (overflow) ni
+    etre vide lors d un pop (underflow).
+
+14.3 Verification de types (Type Checking)
+--------------------------------------------
+
+  Depuis Java SE 6 (version 50.0), la JVM utilise un verificateur
+  de types base sur l attribut StackMapTable. Pour chaque point
+  de branchement, les types dans la pile et les variables locales
+  doivent correspondre au frame declare.
+
+  Pour les fichiers de version < 50.0, la JVM utilise l ancien
+  verificateur par inference de types (type inference verifier).
+
+==============================================================================
+15. LIEN AVEC LE PROJET DEV-COOLS
+==============================================================================
+
+15.1 CCJASMIN.PAS
+------------------
+
+  Le compilateur CCJASMIN.PAS du projet DEV-COOLS compile du code
+  source C vers du code assembleur Jasmin (.j), qui est ensuite
+  assemble en fichier .class par l assembleur Jasmin.
+
+  Chaine de compilation :
+    Source .c -> CCJASMIN.PAS -> fichier .j (Jasmin) -> jasmin.jar
+    -> fichier .class -> java (JVM)
+
+  Le fichier .j produit par CCJASMIN.PAS respecte la structure
+  decrite dans ce document : les directives .class, .super, .method,
+  .limit stack/locals, et le bytecode sont convertis par Jasmin en
+  structures ClassFile, constant pool, method_info et Code_attribute.
+
+15.2 Correspondance Jasmin -> .class
+--------------------------------------
+
+  Directive Jasmin           Structure .class
+  -------------------------  ----------------------------------
+  .class <flags> <name>      access_flags + this_class
+  .super <name>              super_class
+  .implements <name>         interfaces[]
+  .field <flags> <n> <desc>  field_info
+  .method <flags> <desc>     method_info
+  .limit stack N             max_stack dans Code_attribute
+  .limit locals N            max_locals dans Code_attribute
+  .throws <class>            Exceptions_attribute
+  .catch <c> from to using   exception_table dans Code_attribute
+  .line N                    LineNumberTable_attribute
+  .end method                fin de la method_info
+
+  Chaque instruction Jasmin (iload, invokevirtual, etc.) est
+  convertie en l opcode JVM correspondant dans le bytecode
+  de l attribut Code (voir ASM_JASMIN.txt section 19 pour la
+  table complete des 256 opcodes).
+
+15.3 Documentation connexe dans DOC/
+--------------------------------------
+
+  ASM_JASMIN.txt              Langage assembleur Jasmin et opcodes JVM
+  APPLICATION_COMPILER.txt    Comment ecrire un compilateur
+  APPLICATION_ASSEMBLER.txt   Comment ecrire un assembleur
+  OBJ_FORMAT.txt              Format de fichier .OBJ (OMF)
+  LIB_FORMAT.txt              Format de fichier .LIB
+
+==============================================================================
+16. REFERENCES
+==============================================================================
+
+  [1] Tim Lindholm, Frank Yellin, Gilad Bracha, Alex Buckley,
+      Daniel Smith.
+      "The Java Virtual Machine Specification, Java SE 21 Edition"
+      Oracle, 2023. Chapitre 4 : The class File Format.
+      https://docs.oracle.com/javase/specs/jvms/se21/html/jvms-4.html
+
+  [2] James Gosling, Bill Joy, Guy Steele, Gilad Bracha.
+      "The Java Language Specification"
+      Sun Microsystems / Oracle.
+
+  [3] Jonathan Meyer, Troy Downing.
+      "Java Virtual Machine" (O Reilly, 1997).
+      Description du format .class et de l assembleur Jasmin.
+
+  [4] Projet Jasmin :
+      https://jasmin.sourceforge.net/
+      Assembleur de bytecode Java.
+
+  [5] Specification originale Sun Microsystems (1995) :
+      "The Java Virtual Machine Specification, First Edition"
+      James Gosling, pour JDK 1.0 (version 45.0).
