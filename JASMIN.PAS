@@ -378,6 +378,21 @@ Begin
  StrToInt_ := v;
 End;
 
+{ --- RealToHiLo : convertir un Real en paire hi/lo IEEE 754 double --- }
+{ Utilise type-punning via 'absolute' pour extraire les 8 octets de la  }
+{ representation IEEE 754 du Double, puis les regrouper en hi et lo.    }
+Procedure RealToHiLo(f: Real; Var hi, lo: LongInt);
+Var d: Double; bytes: Array[0..7] of Byte absolute d;
+Begin
+ d := f;
+ { Double est en little-endian sur x86 : bytes[0] = LSB, bytes[7] = MSB }
+ { hi = octets 7,6,5,4 (big-endian), lo = octets 3,2,1,0               }
+ hi := (LongInt(bytes[7]) shl 24) or (LongInt(bytes[6]) shl 16)
+    or (LongInt(bytes[5]) shl 8) or LongInt(bytes[4]);
+ lo := (LongInt(bytes[3]) shl 24) or (LongInt(bytes[2]) shl 16)
+    or (LongInt(bytes[1]) shl 8) or LongInt(bytes[0]);
+End;
+
 Function UpCaseStr(Const s: String): String;
 Var i: Integer; r: String;
 Begin
@@ -1878,6 +1893,7 @@ End;
 { L'attribut ConstantValue est ajoute au champ.                       }
 Procedure ParseFieldInitValue(fIdx: Integer);
 Var cpIdx: Integer; desc: String;
+    dhi, dlo: LongInt;
 Begin
  { Le token '=' a deja ete consomme par l'appelant }
  desc := FieldTab^[fIdx].Desc;
@@ -1910,8 +1926,9 @@ Begin
  Begin
   If (desc = 'D') Then
   Begin
-   { Double : CONSTANT_Double (approximation via hi=0, lo=float bits) }
-   cpIdx := CPAddDouble(0, Round(CurFloat));
+   { Double : CONSTANT_Double (IEEE 754 via RealToHiLo) }
+   RealToHiLo(CurFloat, dhi, dlo);
+   cpIdx := CPAddDouble(dhi, dlo);
    Consume;
   End
   Else
@@ -1944,7 +1961,8 @@ Begin
   Begin
    If (desc = 'D') Then
    Begin
-    cpIdx := CPAddDouble(0, Round(-CurFloat));
+    RealToHiLo(-CurFloat, dhi, dlo);
+    cpIdx := CPAddDouble(dhi, dlo);
     Consume;
    End
    Else
