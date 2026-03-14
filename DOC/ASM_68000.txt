@@ -10143,3 +10143,921 @@
       aux multiplications/divisions 32 bits, aux modes
       d'adressage avec facteur d'echelle, aux branches 32 bits,
       et a EXTB.L.
+
+==============================================================================
+13. CONVERSION DE CODE ARM EN 68000
+==============================================================================
+
+  Cette section traite de la conversion de programmes ecrits en
+  assembleur ARM (architecture ARM7/ARMv4) vers l'assembleur
+  Motorola 68000. L'ARM et le 68000 sont tous deux des processeurs
+  RISC/CISC 32 bits, mais leurs philosophies de conception different
+  significativement : l'ARM est un processeur RISC a jeu
+  d'instructions fixe de 32 bits avec execution conditionnelle
+  integree, tandis que le 68000 est un processeur CISC a
+  instructions de longueur variable.
+
+  13.1 Differences fondamentales entre ARM et 68000
+  ----------------------------------------------------
+
+  Critere                  ARM (ARMv4)           Motorola 68000
+  -----------------------  --------------------  --------------------
+  Type d'architecture      RISC (load/store)     CISC
+  Taille des instructions  32 bits (fixe)        16-80 bits (variable)
+  Registres generaux       16 (R0-R15)           8 donnees + 8 adresses
+  Registres d'adresse      (inclus dans gen.)    A0-A7 (separes)
+  Taille des registres     32 bits               32 bits
+  Espace d'adressage       4 Go (32 bits)        16 Mo (24 bits)
+  Ordre des octets         Bi-endian (souvent    Big-endian
+                           little-endian)
+  Alignement memoire       Requis (mots sur 4)   Mots sur adresses paires
+  Pile                     Decroissante (R13)    Decroissante (A7)
+  Exec. conditionnelle     Toute instruction     Scc + Bcc seulement
+  Barrel shifter           Integre (operande 2)  Instructions separees
+  Drapeaux (flags)         N,Z,C,V (optionnel)   X,N,Z,V,C (toujours)
+  Modes de privilege       7 modes (USR,SVC,..)  2 modes (user/super)
+  Coprocesseur flottant    VFP/FPA (optionnel)   68881/68882 (separe)
+  Instructions load/store  LDR/STR seulement     MOVE depuis/vers mem.
+
+  Differences cles pour la conversion :
+
+  a) Architecture load/store vs memoire-memoire :
+     L'ARM ne peut acceder a la memoire que via LDR (load) et
+     STR (store). Toutes les operations arithmetiques/logiques
+     travaillent sur des registres uniquement. Le 68000 peut
+     operer directement sur la memoire (ADD.L d(An),Dn par ex.).
+     Lors de la conversion, les sequences LDR+operation+STR de
+     l'ARM peuvent souvent etre remplacees par une seule
+     instruction 68000 travaillant directement en memoire.
+
+  b) Execution conditionnelle :
+     Sur ARM, presque toute instruction peut etre conditionnelle
+     (suffixe de condition : ADDEQ, MOVNE, etc.). Le 68000 n'a
+     que les instructions Bcc (branchement conditionnel) et Scc
+     (positionnement conditionnel). Les instructions ARM
+     conditionnelles doivent etre converties en sequences
+     Bcc + instruction sur le 68000.
+
+  c) Barrel shifter integre :
+     Sur ARM, le second operande peut etre decale/tourne avant
+     l'operation (ADD R0, R1, R2, LSL #3). Le 68000 n'a pas
+     cette fonctionnalite. Il faut decomposer en un decalage
+     suivi de l'operation.
+
+  d) Mise a jour des flags :
+     Sur ARM, les flags ne sont mis a jour que si le suffixe S
+     est present (ADDS, SUBS, etc.). Sur le 68000, la plupart
+     des instructions mettent a jour les flags automatiquement.
+     Cela peut causer des problemes si le code ARM depend de
+     flags non modifies entre deux instructions.
+
+  e) Registres :
+     L'ARM a 16 registres generaux (R0-R15) dont R13 (SP),
+     R14 (LR) et R15 (PC) ont des roles speciaux. Le 68000
+     separe les registres en donnees (D0-D7) et adresses (A0-A7).
+     Certains registres ARM a usage general doivent etre mappes
+     sur des registres d'adresse du 68000 s'ils servent de
+     pointeurs.
+
+  13.2 Correspondance des registres
+  ------------------------------------
+
+  Registre ARM      Equivalent 68000     Notes
+  ----------------  -------------------  --------------------------------
+  R0                D0                   Registre de travail / retour
+  R1                D1                   Registre de travail
+  R2                D2                   Registre de travail
+  R3                D3                   Registre de travail
+  R4                D4                   Variable preservee
+  R5                D5                   Variable preservee
+  R6                D6                   Variable preservee
+  R7                D7                   Variable preservee
+  R8                A0                   Variable preservee / pointeur
+  R9                A1                   Variable preservee / pointeur
+  R10               A2                   Variable preservee / pointeur
+  R11 (FP)          A5 ou A6             Frame pointer
+  R12 (IP)          A3 ou A4             Scratch / pointeur temporaire
+  R13 (SP)          A7 (SP)              Pointeur de pile
+  R14 (LR)          (sur la pile)        Adresse de retour
+  R15 (PC)          PC                   Compteur ordinal
+  CPSR              SR/CCR               Registre d'etat
+
+  Notes sur la correspondance :
+
+  - R0-R7 -> D0-D7 : mappage naturel car l'ARM utilise R0-R7
+    principalement pour les donnees. Les operations arithmetiques
+    et logiques ARM sur R0-R7 se convertissent directement en
+    operations sur D0-D7.
+
+  - R8-R12 -> A0-A4 : les registres hauts de l'ARM servent
+    souvent de pointeurs ou de variables preservees. Ils sont
+    mappes sur les registres d'adresse du 68000. Si un registre
+    ARM haut est utilise pour des calculs arithmetiques, il faut
+    utiliser un registre Dn temporaire sur le 68000 car les
+    registres An ne supportent pas toutes les operations.
+
+  - R14 (LR) : L'ARM stocke l'adresse de retour dans LR lors
+    d'un BL (Branch with Link). Le 68000 empile automatiquement
+    l'adresse de retour avec BSR/JSR. Le LR n'a donc pas
+    d'equivalent direct ; l'adresse de retour est sur la pile.
+
+  - CPSR -> CCR : Les flags ARM (N,Z,C,V) correspondent aux
+    flags 68000 (N,Z,C,V). Le flag X du 68000 n'a pas
+    d'equivalent direct sur ARM. Le champ mode du CPSR (bits
+    0-4) n'a pas d'equivalent direct car le 68000 n'a que
+    2 modes (user/superviseur) contre 7 pour l'ARM.
+
+  13.3 Conversion des instructions de transfert
+  ------------------------------------------------
+
+  L'ARM utilise LDR/STR pour les acces memoire et MOV pour les
+  transferts entre registres. Le 68000 utilise MOVE pour tout.
+
+  ARM                              68000
+  ----------------------------    -----------------------------------
+  MOV R0, R1                      MOVE.L  D1, D0
+  MOV R0, #100                    MOVEQ   #100, D0  ; si -128..127
+                                   ; ou MOVE.L #100, D0
+  MOV R0, #0                      CLR.L   D0
+  MOV R0, #-1                     MOVEQ   #-1, D0
+  MVN R0, R1                      MOVE.L  D1, D0
+                                   NOT.L   D0
+  MVN R0, #0                      MOVEQ   #-1, D0
+
+  Chargement depuis la memoire :
+
+  ARM                              68000
+  ----------------------------    -----------------------------------
+  LDR R0, [R8]                    MOVE.L  (A0), D0
+  LDR R0, [R8, #16]              MOVE.L  16(A0), D0
+  LDR R0, [R8, R1]               MOVE.L  0(A0,D1.L), D0
+  LDR R0, [R8, #16]!             MOVE.L  16(A0), D0  ; pre-indexe
+                                   LEA     16(A0), A0  ; maj base
+  LDR R0, [R8], #16              MOVE.L  (A0)+, D0    ; si offset=4
+                                   ; sinon :
+                                   MOVE.L  (A0), D0
+                                   LEA     16(A0), A0
+  LDRB R0, [R8]                   CLR.L   D0
+                                   MOVE.B  (A0), D0
+  LDRH R0, [R8]                   CLR.L   D0
+                                   MOVE.W  (A0), D0
+  LDRSB R0, [R8]                  MOVE.B  (A0), D0
+                                   EXT.W   D0
+                                   EXT.L   D0
+  LDRSH R0, [R8]                  MOVE.W  (A0), D0
+                                   EXT.L   D0
+
+  Stockage en memoire :
+
+  ARM                              68000
+  ----------------------------    -----------------------------------
+  STR R0, [R8]                    MOVE.L  D0, (A0)
+  STR R0, [R8, #16]              MOVE.L  D0, 16(A0)
+  STR R0, [R8, R1]               MOVE.L  D0, 0(A0,D1.L)
+  STR R0, [R8, #16]!             MOVE.L  D0, 16(A0)
+                                   LEA     16(A0), A0
+  STR R0, [R8], #16              MOVE.L  D0, (A0)
+                                   LEA     16(A0), A0
+  STRB R0, [R8]                   MOVE.B  D0, (A0)
+  STRH R0, [R8]                   MOVE.W  D0, (A0)
+
+  Transferts multiples (LDM/STM) :
+
+  ARM                              68000
+  ----------------------------    -----------------------------------
+  LDMIA R8!, {R0-R3}             MOVEM.L (A0)+, D0-D3
+  STMDB R13!, {R0-R3}            MOVEM.L D0-D3, -(SP)
+  LDMIA R13!, {R0-R3}            MOVEM.L (SP)+, D0-D3
+  PUSH {R4-R7, LR}               MOVEM.L D4-D7, -(SP)
+                                   ; LR est deja sur la pile via BSR
+  POP {R4-R7, PC}                MOVEM.L (SP)+, D4-D7
+                                   RTS
+
+  Note : LDM/STM de l'ARM avec differents modes d'adressage
+  (IA=Increment After, IB=Increment Before, DA=Decrement After,
+  DB=Decrement Before) se convertissent en MOVEM avec les modes
+  (An)+ ou -(An) du 68000. Attention : MOVEM du 68000 ne supporte
+  que (An)+ pour la lecture et -(An) pour l'ecriture.
+
+  Chargement d'adresses :
+
+  ARM                              68000
+  ----------------------------    -----------------------------------
+  ADR R0, label                   LEA     label, A0
+                                   ; ou LEA label(PC), A0
+  LDR R0, =valeur32               MOVE.L  #valeur32, D0
+                                   ; (pas de pool de constantes)
+
+  Note : ARM utilise souvent LDR Rn, =constante pour charger
+  des constantes 32 bits depuis un pool (literal pool). Le 68000
+  charge directement les constantes 32 bits en mode immediat.
+
+  13.4 Conversion des instructions arithmetiques
+  --------------------------------------------------
+
+  ARM                              68000
+  ----------------------------    -----------------------------------
+  ADD R0, R1, R2                  MOVE.L  D1, D0
+                                   ADD.L   D2, D0
+  ADD R0, R1, #100                MOVE.L  D1, D0
+                                   ADD.L   #100, D0
+                                   ; ou ADDQ.L #n (1<=n<=8)
+  ADD R0, R0, R1                  ADD.L   D1, D0
+  ADD R0, R0, #1                  ADDQ.L  #1, D0
+  ADDS R0, R1, R2                 MOVE.L  D1, D0
+                                   ADD.L   D2, D0
+                                   ; flags mis a jour automatiquement
+  ADC R0, R1, R2                  MOVE.L  D1, D0
+                                   ADDX.L  D2, D0
+  SUB R0, R1, R2                  MOVE.L  D1, D0
+                                   SUB.L   D2, D0
+  SUB R0, R0, #1                  SUBQ.L  #1, D0
+  SUBS R0, R1, R2                 MOVE.L  D1, D0
+                                   SUB.L   D2, D0
+  SBC R0, R1, R2                  MOVE.L  D1, D0
+                                   SUBX.L  D2, D0
+  RSB R0, R1, #0                  MOVE.L  D1, D0
+                                   NEG.L   D0
+  RSB R0, R1, R2                  MOVE.L  D2, D0
+                                   SUB.L   D1, D0
+  MUL R0, R1, R2                  ; 68000 : MULU/MULS 16 bits seul.
+                                   ; Pour 32x32 : routine logicielle
+                                   ; ou 68020 MULS.L D1,D0
+  UMULL R0, R1, R2, R3            ; 68000 : routine logicielle
+                                   ; 68020 : MULU.L D2,D0:D1
+  MLA R0, R1, R2, R3              ; R0 = R1*R2 + R3
+                                   ; 68000 : routine logicielle
+
+  CMP R0, R1                      CMP.L   D1, D0
+  CMP R0, #0                      TST.L   D0
+  CMP R0, #100                    CMP.L   #100, D0
+  CMN R0, R1                      MOVE.L  D1, D7    ; copie temp
+                                   NEG.L   D7
+                                   CMP.L   D7, D0
+                                   ; ou ADD.L D1,D0 puis tester flags
+                                   ; (mais modifie D0)
+
+  Note importante : Sur ARM, les instructions a 3 operandes
+  (ADD R0, R1, R2) placent le resultat dans un registre
+  different des sources. Sur le 68000, les operations sont a
+  2 operandes (ADD.L D2,D0 modifie D0). Il faut donc souvent
+  ajouter un MOVE.L prealable pour preserver l'operande source.
+
+  Si R0 = R1 (destination = premiere source), le MOVE.L est
+  inutile et la conversion est directe :
+    ADD R0, R0, R2  ->  ADD.L D2, D0
+
+  13.5 Conversion des instructions logiques et decalage
+  --------------------------------------------------------
+
+  ARM                              68000
+  ----------------------------    -----------------------------------
+  AND R0, R1, R2                  MOVE.L  D1, D0
+                                   AND.L   D2, D0
+  AND R0, R0, #$FF                AND.L   #$FF, D0
+  ORR R0, R1, R2                  MOVE.L  D1, D0
+                                   OR.L    D2, D0
+  EOR R0, R1, R2                  MOVE.L  D1, D0
+                                   EOR.L   D2, D0
+  BIC R0, R1, R2                  MOVE.L  D2, D7    ; copie masque
+                                   NOT.L   D7        ; inverser
+                                   MOVE.L  D1, D0
+                                   AND.L   D7, D0
+  BIC R0, R0, #$80                AND.L   #$FFFFFF7F, D0
+                                   ; ou BCLR #7, D0
+  TST R0, R1                      MOVE.L  D0, D7
+                                   AND.L   D1, D7    ; positionner flags
+  TST R0, #$01                    BTST    #0, D0
+  TEQ R0, R1                      MOVE.L  D0, D7
+                                   EOR.L   D1, D7    ; positionner flags
+  MOV R0, R1, LSL #3              MOVE.L  D1, D0
+                                   LSL.L   #3, D0
+  MOV R0, R1, LSR #3              MOVE.L  D1, D0
+                                   LSR.L   #3, D0
+  MOV R0, R1, ASR #3              MOVE.L  D1, D0
+                                   ASR.L   #3, D0
+  MOV R0, R1, ROR #3              MOVE.L  D1, D0
+                                   ROR.L   #3, D0
+  MOV R0, R1, LSL R2              MOVE.L  D1, D0
+                                   LSL.L   D2, D0
+  MOV R0, R1, RRX                 MOVE.L  D1, D0
+                                   ROXR.L  #1, D0
+
+  Barrel shifter combine (specificite ARM) :
+
+  ARM                              68000
+  ----------------------------    -----------------------------------
+  ADD R0, R1, R2, LSL #3          MOVE.L  D2, D7
+                                   LSL.L   #3, D7
+                                   MOVE.L  D1, D0
+                                   ADD.L   D7, D0
+
+  SUB R0, R1, R2, ASR #2          MOVE.L  D2, D7
+                                   ASR.L   #2, D7
+                                   MOVE.L  D1, D0
+                                   SUB.L   D7, D0
+
+  AND R0, R1, R2, ROR #8          MOVE.L  D2, D7
+                                   ROR.L   #8, D7
+                                   MOVE.L  D1, D0
+                                   AND.L   D7, D0
+
+  CMP R0, R1, LSL #2              MOVE.L  D1, D7
+                                   LSL.L   #2, D7
+                                   CMP.L   D7, D0
+
+  Note : Le barrel shifter integre de l'ARM est l'une des
+  differences les plus significatives. Chaque instruction ARM
+  avec un operande decale necessite un registre temporaire et
+  une instruction de decalage supplementaire sur le 68000.
+  D7 est souvent utilise comme registre temporaire pour cela.
+
+  13.6 Conversion des instructions de branchement
+  ---------------------------------------------------
+
+  ARM                              68000
+  ----------------------------    -----------------------------------
+  B label                          BRA     label
+  BL proc                         BSR     proc    ; ou JSR proc
+  BX LR                           RTS
+  BX R0                           JMP     (A0)    ; si R0 = A0
+
+  Branchements conditionnels :
+
+  ARM                              68000
+  ----------------------------    -----------------------------------
+  BEQ label                       BEQ     label
+  BNE label                       BNE     label
+  BCS / BHS label                 BCC     label   ; Attention: inverse!
+                                   ; ARM CS = Carry Set = C=1
+                                   ; 68000 BCS = Branch if Carry Set
+                                   ; -> utiliser BCS (meme sens)
+  BCS label                       BCS     label
+  BCC / BLO label                 BCC     label
+  BMI label                       BMI     label
+  BPL label                       BPL     label
+  BVS label                       BVS     label
+  BVC label                       BVC     label
+  BHI label                       BHI     label
+  BLS label                       BLS     label
+  BGE label                       BGE     label
+  BLT label                       BLT     label
+  BGT label                       BGT     label
+  BLE label                       BLE     label
+
+  Note sur les conditions : Les conditions ARM et 68000 utilisent
+  les memes noms pour les memes tests logiques. La correspondance
+  est directe car les deux processeurs utilisent les memes flags
+  (N,Z,C,V) avec la meme semantique pour les branchements.
+
+  Boucles :
+
+  ARM                              68000
+  ----------------------------    -----------------------------------
+  ; Boucle ARM comptant de n a 0
+    MOV  R2, #100                  MOVEQ   #100-1, D2
+  .boucle:                       .boucle:
+    ; ... corps ...                ; ... corps ...
+    SUBS R2, R2, #1                DBRA    D2, .boucle
+    BNE  .boucle
+
+  ; Boucle ARM comptant de 0 a n
+    MOV  R2, #0                    CLR.L   D2
+    MOV  R3, #100                  MOVE.L  #100, D3
+  .boucle:                       .boucle:
+    ; ... corps ...                ; ... corps ...
+    ADD  R2, R2, #1                ADDQ.L  #1, D2
+    CMP  R2, R3                    CMP.L   D3, D2
+    BLT  .boucle                   BLT     .boucle
+
+  Note : DBRA du 68000 decremente un compteur 16 bits et boucle
+  si le resultat n'est pas -1. Pour des compteurs 32 bits,
+  utiliser SUBQ.L #1,Dn / BNE .boucle.
+
+  13.7 Conversion des modes d'adressage
+  -----------------------------------------
+
+  L'ARM a un nombre limite de modes d'adressage pour LDR/STR.
+  Le 68000 a 14 modes d'adressage utilisables avec la plupart
+  des instructions.
+
+  ARM                              68000
+  ----------------------------    -----------------------------------
+  ; --- Immediat ---
+  MOV R0, #42                     MOVEQ   #42, D0
+
+  ; --- Registre ---
+  MOV R0, R1                      MOVE.L  D1, D0
+
+  ; --- Indirect registre ---
+  LDR R0, [R8]                    MOVE.L  (A0), D0
+
+  ; --- Indirect avec offset ---
+  LDR R0, [R8, #100]              MOVE.L  100(A0), D0
+
+  ; --- Indirect avec registre index ---
+  LDR R0, [R8, R1]                MOVE.L  0(A0,D1.L), D0
+
+  ; --- Indirect avec index decale ---
+  LDR R0, [R8, R1, LSL #2]        MOVE.L  D1, D7
+                                   LSL.L   #2, D7
+                                   MOVE.L  0(A0,D7.L), D0
+                                   ; 68020 : MOVE.L (A0,D1.L*4),D0
+
+  ; --- Pre-indexe avec ecriture ---
+  LDR R0, [R8, #4]!               ADDQ.L  #4, A0
+                                   MOVE.L  (A0), D0
+
+  ; --- Post-indexe ---
+  LDR R0, [R8], #4                MOVE.L  (A0)+, D0
+
+  ; --- Relatif PC ---
+  LDR R0, [PC, #offset]           MOVE.L  offset(PC), D0
+  LDR R0, label                   MOVE.L  label(PC), D0
+
+  Acces aux tableaux :
+
+  ; ARM : acces a tab[i] (tableau de long mots)
+    LDR R0, [R8, R1, LSL #2]
+
+  ; 68000 : equivalent
+    MOVE.L  D1, D7          ; copie index
+    LSL.L   #2, D7          ; * 4
+    MOVE.L  0(A0,D7.L), D0
+
+  ; 68020+ : equivalent direct
+    MOVE.L  (A0,D1.L*4), D0
+
+  13.8 Conversion des instructions de pile et appels
+  -----------------------------------------------------
+
+  Convention d'appel AAPCS (ARM) :
+
+  ; ARM : appel de func(a, b, c, d)
+  ; R0=a, R1=b, R2=c, R3=d (4 premiers args dans registres)
+    MOV  R0, a
+    MOV  R1, b
+    MOV  R2, c
+    MOV  R3, d
+    BL   func
+
+  ; 68000 : convention C (arguments sur la pile)
+    MOVE.L  d, -(SP)
+    MOVE.L  c, -(SP)
+    MOVE.L  b, -(SP)
+    MOVE.L  a, -(SP)
+    JSR     func
+    LEA     16(SP), SP       ; nettoyer 4 long mots
+
+  Note : La convention d'appel ARM (AAPCS) passe les 4 premiers
+  arguments dans R0-R3, le reste sur la pile. La convention C
+  classique du 68000 passe tout sur la pile. Lors de la conversion,
+  les arguments dans les registres ARM doivent etre empiles pour
+  le 68000, ou bien on peut adopter une convention registre
+  personnalisee pour le 68000 (D0-D3 pour les arguments).
+
+  Prologue/epilogue de fonction :
+
+  ; ARM : prologue
+    PUSH {R4-R7, R11, LR}     ; sauvegarder registres
+    ADD  R11, SP, #16          ; frame pointer
+    SUB  SP, SP, #32           ; variables locales
+
+  ; 68000 : equivalent avec LINK
+    LINK    A6, #-32           ; sauve A6, A6=SP, SP-=32
+    MOVEM.L D4-D7, -(SP)      ; sauvegarder registres
+
+  ; ARM : epilogue
+    SUB  SP, R11, #16
+    POP  {R4-R7, R11, PC}     ; restaurer et retourner
+
+  ; 68000 : equivalent avec UNLK
+    MOVEM.L (SP)+, D4-D7      ; restaurer registres
+    UNLK    A6
+    RTS
+
+  Acces aux parametres et variables locales :
+
+  ; ARM : avec R11 (frame pointer)
+    LDR  R0, [R11, #-8]       ; variable locale
+    LDR  R1, [R11, #4]        ; parametre (sur la pile)
+
+  ; 68000 : avec A6 (frame pointer, apres LINK)
+    MOVE.L  -8(A6), D0        ; variable locale
+    MOVE.L  8(A6), D1         ; 1er parametre
+
+  Sauvegarde/restauration de registres :
+
+  ; ARM : PUSH/POP
+    PUSH {R0-R3}               MOVEM.L D0-D3, -(SP)
+    POP  {R0-R3}               MOVEM.L (SP)+, D0-D3
+
+  ; ARM : STMDB/LDMIA (equivalents de PUSH/POP)
+    STMDB SP!, {R4-R11, LR}   MOVEM.L D4-D7/A0-A3, -(SP)
+    LDMIA SP!, {R4-R11, PC}   MOVEM.L (SP)+, D4-D7/A0-A3
+                                RTS
+
+  13.9 Conversion des instructions specifiques ARM
+  ---------------------------------------------------
+
+  a) Swap (SWP) :
+
+  ARM                              68000
+  ----------------------------    -----------------------------------
+  SWP R0, R1, [R8]                ; Pas d'equivalent atomique
+                                   MOVE.L  (A0), D0    ; lire ancien
+                                   MOVE.L  D1, (A0)    ; ecrire nouveau
+                                   ; Attention : non atomique !
+                                   ; TAS.B est la seule op. atomique
+
+  b) Multiplication longue (UMULL, SMULL, UMLAL, SMLAL) :
+
+  ARM                              68000
+  ----------------------------    -----------------------------------
+  UMULL R0, R1, R2, R3            ; R1:R0 = R2 * R3 (64 bits)
+                                   ; 68000 : routine logicielle
+                                   ; 68020 : MULU.L D2,D0:D1
+  SMLAL R0, R1, R2, R3            ; R1:R0 += R2 * R3
+                                   ; 68000 : routine logicielle
+
+  c) CLZ (Count Leading Zeros, ARMv5+) :
+
+  ARM                              68000
+  ----------------------------    -----------------------------------
+  CLZ R0, R1                      ; Pas d'equivalent direct
+                                   ; Implementer par boucle :
+                                   MOVEQ   #32, D0
+                                   TST.L   D1
+                                   BEQ.S   .fin
+                                   MOVEQ   #0, D0
+                                 .boucle:
+                                   BTST    D0, D1
+                                   BNE.S   .fin
+                                   ADDQ.L  #1, D0
+                                   CMP.L   #32, D0
+                                   BLT.S   .boucle
+                                 .fin:
+                                   ; Note: teste du bit 0 vers 31
+                                   ; CLZ compte du bit 31 vers 0
+                                   ; Ajuster: D0 = 31 - D0
+
+  d) MRS/MSR (acces au registre d'etat) :
+
+  ARM                              68000
+  ----------------------------    -----------------------------------
+  MRS R0, CPSR                    MOVE.W  SR, D0
+                                   ; (mode superviseur requis
+                                   ;  pour lire SR complet)
+  MSR CPSR_f, R0                  ; Pas d'equivalent simple
+                                   ; Utiliser MOVE SR,Dn + AND/OR
+                                   ; pour modifier les flags
+
+  e) SWI (Software Interrupt) :
+
+  ARM                              68000
+  ----------------------------    -----------------------------------
+  SWI #0                          TRAP    #0
+  SWI #imm24                      TRAP    #n  ; n = 0..15
+                                   ; Le 68000 n'a que 16 TRAP
+                                   ; Pour plus de fonctions, passer
+                                   ; le numero dans D0 :
+                                   MOVE.L  #imm24, D0
+                                   TRAP    #0
+
+  f) Instructions Thumb (jeu d'instructions 16 bits) :
+
+  Le mode Thumb de l'ARM utilise des instructions 16 bits pour
+  une meilleure densite de code. Le 68000 n'a pas d'equivalent
+  direct. Les instructions Thumb doivent etre converties dans
+  leur forme ARM equivalente, puis converties en 68000.
+
+  13.10 Conversion de l'execution conditionnelle ARM
+  ------------------------------------------------------
+
+  L'execution conditionnelle est une caracteristique majeure de
+  l'ARM. Presque toute instruction peut etre rendue conditionnelle
+  par un suffixe (EQ, NE, CS, CC, MI, PL, VS, VC, HI, LS, GE,
+  LT, GT, LE, AL).
+
+  Methode de conversion :
+
+  ; ARM : instruction conditionnelle simple
+    MOVEQ R0, #1                   BNE.S   .skip
+                                   MOVEQ   #1, D0
+                                 .skip:
+
+  ; ARM : paire conditionnelle (if/else)
+    MOVEQ R0, #1                   BNE.S   .else
+    MOVNE R0, #0                   MOVEQ   #1, D0
+                                   BRA.S   .fin
+                                 .else:
+                                   CLR.L   D0
+                                 .fin:
+
+  ; ARM : sequence conditionnelle longue
+    ADDEQ R0, R0, #1              BNE.S   .skip
+    SUBEQ R1, R1, #1              ADDQ.L  #1, D0
+    MOVEQ R2, #0                  SUBQ.L  #1, D1
+                                   CLR.L   D2
+                                 .skip:
+
+  Optimisation avec Scc du 68000 :
+
+  ; ARM : set conditionnel
+    MOVEQ R0, #1
+    MOVNE R0, #0
+
+  ; 68000 : optimise avec Scc
+    SEQ     D0        ; D0 = $FF si Z=1, $00 sinon
+    AND.L   #1, D0    ; D0 = 1 si Z=1, 0 sinon
+
+  ; ARM : increment conditionnel
+    CMP   R1, R2
+    ADDGT R0, R0, #1
+
+  ; 68000 : equivalent
+    CMP.L   D2, D1
+    BLE.S   .skip
+    ADDQ.L  #1, D0
+  .skip:
+
+  ; ARM : max(R0, R1)
+    CMP   R0, R1
+    MOVLT R0, R1
+
+  ; 68000 : equivalent
+    CMP.L   D1, D0
+    BGE.S   .skip
+    MOVE.L  D1, D0
+  .skip:
+
+  ; ARM : abs(R0)
+    CMP   R0, #0
+    RSBLT R0, R0, #0
+
+  ; 68000 : equivalent (plus simple !)
+    TST.L   D0
+    BPL.S   .skip
+    NEG.L   D0
+  .skip:
+
+  Note : L'execution conditionnelle ARM evite les branchements
+  (benefique pour le pipeline ARM). Sur le 68000, les branches
+  courtes (BCC.S) avec un deplacement 8 bits sont efficaces et
+  le cout de la conversion est faible.
+
+  13.11 Exemples complets de conversion ARM -> 68000
+  -----------------------------------------------------
+
+  Exemple 1 : Longueur d'une chaine (strlen)
+
+  ; --- ARM ---
+  strlen:
+    MOV   R1, R0              ; sauver debut
+  .boucle:
+    LDRB  R2, [R0], #1        ; charger octet, R0++
+    CMP   R2, #0
+    BNE   .boucle
+    SUB   R0, R0, R1           ; longueur = fin - debut
+    SUB   R0, R0, #1           ; -1 (terminateur)
+    BX    LR
+
+  ; --- 68000 ---
+  strlen:
+    ; A0 = adresse de la chaine (entree)
+    ; D0 = longueur (sortie)
+    MOVEA.L A0, A1             ; sauver debut
+  .boucle:
+    TST.B   (A0)+              ; tester octet, A0++
+    BNE.S   .boucle
+    MOVE.L  A0, D0
+    SUB.L   A1, D0             ; fin - debut
+    SUBQ.L  #1, D0             ; -1 (terminateur)
+    RTS
+
+  Exemple 2 : Copie de memoire (memcpy)
+
+  ; --- ARM ---
+  memcpy:
+    ; R0 = dest, R1 = src, R2 = nombre d'octets
+    PUSH  {R0}                 ; sauver dest pour retour
+  .boucle:
+    SUBS  R2, R2, #1
+    LDRBPL R3, [R1], #1
+    STRBPL R3, [R0], #1
+    BPL   .boucle
+    POP   {R0}
+    BX    LR
+
+  ; --- 68000 ---
+  memcpy:
+    ; A0 = dest, A1 = src, D0 = nombre d'octets
+    MOVEA.L A0, A2             ; sauver dest pour retour
+    SUBQ.L  #1, D0
+    BMI.S   .fin
+  .boucle:
+    MOVE.B  (A1)+, (A0)+
+    DBRA    D0, .boucle
+  .fin:
+    MOVEA.L A2, A0             ; restaurer dest
+    RTS
+
+  Exemple 3 : Recherche dichotomique (binary search)
+
+  ; --- ARM ---
+  bsearch:
+    ; R0 = tableau, R1 = taille, R2 = valeur
+    MOV   R3, #0               ; bas = 0
+  .boucle:
+    CMP   R3, R1
+    BGE   .pas_trouve
+    ADD   R4, R3, R1
+    MOV   R4, R4, LSR #1      ; milieu = (bas+haut)/2
+    LDR   R5, [R0, R4, LSL #2] ; tab[milieu]
+    CMP   R5, R2
+    BEQ   .trouve
+    MOVLT R3, R4
+    ADDLT R3, R3, #1           ; bas = milieu + 1
+    MOVGT R1, R4               ; haut = milieu
+    B     .boucle
+  .trouve:
+    MOV   R0, R4               ; retourner index
+    BX    LR
+  .pas_trouve:
+    MVN   R0, #0               ; retourner -1
+    BX    LR
+
+  ; --- 68000 ---
+  bsearch:
+    ; A0 = tableau, D1 = taille, D0 = valeur cherchee
+    ; Retour : D0 = index ou -1
+    MOVEM.L D2-D5, -(SP)
+    CLR.L   D3                 ; D3 = bas = 0
+  .boucle:
+    CMP.L   D1, D3
+    BGE.S   .pas_trouve
+    MOVE.L  D3, D4
+    ADD.L   D1, D4
+    LSR.L   #1, D4             ; D4 = milieu
+    MOVE.L  D4, D5
+    LSL.L   #2, D5             ; D5 = milieu * 4
+    MOVE.L  0(A0,D5.L), D2    ; D2 = tab[milieu]
+    CMP.L   D0, D2
+    BEQ.S   .trouve
+    BLT.S   .trop_petit
+    ; tab[milieu] > valeur : haut = milieu
+    MOVE.L  D4, D1
+    BRA.S   .boucle
+  .trop_petit:
+    ; tab[milieu] < valeur : bas = milieu + 1
+    MOVE.L  D4, D3
+    ADDQ.L  #1, D3
+    BRA.S   .boucle
+  .trouve:
+    MOVE.L  D4, D0
+    MOVEM.L (SP)+, D2-D5
+    RTS
+  .pas_trouve:
+    MOVEQ   #-1, D0
+    MOVEM.L (SP)+, D2-D5
+    RTS
+
+  Exemple 4 : Inversion d'endianness (utile pour le portage)
+
+  ; --- ARM (little-endian -> big-endian) ---
+  bswap32:
+    ; R0 = valeur a inverser
+    EOR   R1, R0, R0, ROR #16
+    BIC   R1, R1, #$00FF0000
+    MOV   R0, R0, ROR #8
+    EOR   R0, R0, R1, LSR #8
+    BX    LR
+
+  ; --- 68000 (inutile si deja big-endian, mais pour reference) ---
+  bswap32:
+    ; D0 = valeur a inverser
+    ROL.W   #8, D0             ; swap octets mot bas
+    SWAP    D0                 ; echanger mots
+    ROL.W   #8, D0             ; swap octets mot haut
+    RTS
+
+  Exemple 5 : Factorielle recursive
+
+  ; --- ARM ---
+  factorielle:
+    CMP   R0, #1
+    MOVLE R0, #1
+    BXLE  LR
+    PUSH  {R0, LR}
+    SUB   R0, R0, #1
+    BL    factorielle
+    POP   {R1, LR}
+    MUL   R0, R0, R1
+    BX    LR
+
+  ; --- 68000 ---
+  factorielle:
+    ; D0 = n (entree et sortie)
+    CMP.L   #1, D0
+    BGT.S   .recurse
+    MOVEQ   #1, D0
+    RTS
+  .recurse:
+    MOVE.L  D0, -(SP)         ; sauver n
+    SUBQ.L  #1, D0
+    BSR     factorielle        ; D0 = fact(n-1)
+    MOVE.L  (SP)+, D1         ; D1 = n
+    ; Multiplication 16 bits (suffisant pour petites valeurs)
+    MULU.W  D1, D0            ; D0 = n * fact(n-1)
+    RTS
+
+  13.12 Tableau recapitulatif des differences ARM -> 68000
+  -----------------------------------------------------------
+
+  Aspect                   ARM                  68000
+  -----------------------  -------------------  ----------------------
+  Registres generaux       16 (R0-R15)          8 (D0-D7) + 8 (A0-A7)
+  Registres speciaux       SP(R13),LR(R14),     SP(A7), PC
+                           PC(R15)
+  Architecture             RISC load/store      CISC memoire-memoire
+  Taille instructions      32 bits fixe         16-80 bits variable
+  Operandes                3 (Rd, Rn, Op2)      2 (source, dest)
+  Barrel shifter           Integre (Op2)        Instructions separees
+  Exec. conditionnelle     Toute instruction    Bcc/Scc seulement
+  Flags                    Optionnels (suffixe S) Automatiques
+  Chargement memoire       LDR/STR seulement    MOVE depuis/vers mem.
+  Transferts multiples     LDM/STM (flexibles)  MOVEM (An)+/-(An)
+  Appel fonction           BL (LR=retour)       BSR/JSR (pile=retour)
+  Retour fonction          BX LR                RTS
+  Interruption logicielle  SWI #imm24           TRAP #0..15
+  Endianness               Bi (souvent LE)      Big-endian
+  Alignement               4 octets requis      2 octets requis
+  Modes adressage mem.     ~9 modes (LDR/STR)   14 modes (toute instr.)
+  Pool de constantes       Oui (LDR R,=const)   Non (immediat 32 bits)
+  Multiplication 32 bits   MUL (32x32->32)      Routine logicielle
+  Multiplication 64 bits   UMULL/SMULL          Routine logicielle
+  Division                 Aucune (logicielle)  DIVU/DIVS (16 bits)
+  Swap atomique            SWP                  TAS.B (octet seulement)
+  Comptage de zeros        CLZ (ARMv5+)         Boucle manuelle
+
+  13.13 Resume
+  ---------------
+
+  La conversion de code ARM en 68000 presente des defis specifiques
+  lies aux differences fondamentales entre architectures RISC et
+  CISC. Voici les points cles :
+
+  1. Architecture load/store : Les sequences ARM
+     LDR + operation + STR peuvent souvent etre remplacees par
+     une seule instruction 68000 operant directement en memoire.
+     Cela reduit le nombre d'instructions mais change la
+     structure du code.
+
+  2. Operandes a 3 registres : Les instructions ARM a 3 operandes
+     (ADD Rd, Rn, Op2) necessitent un MOVE.L prealable sur le
+     68000 quand la destination differe de la premiere source.
+     Quand Rd = Rn, la conversion est directe.
+
+  3. Barrel shifter : Le decalage integre dans l'operande 2 de
+     l'ARM n'a pas d'equivalent sur le 68000. Il faut decomposer
+     en une instruction de decalage + l'operation, en utilisant
+     un registre temporaire (typiquement D7).
+
+  4. Execution conditionnelle : Les instructions conditionnelles
+     ARM doivent etre converties en sequences Bcc.S + instruction
+     sur le 68000. Pour une instruction isolee, le cout est
+     faible (2 octets pour le BCC.S). Pour des sequences
+     conditionnelles, regrouper sous un seul branchement.
+
+  5. Correspondance des registres : R0-R7 -> D0-D7 pour les
+     donnees, R8-R12 -> A0-A4 pour les pointeurs. R13(SP) -> A7,
+     R14(LR) n'a pas d'equivalent (adresse de retour sur pile),
+     R15(PC) -> PC.
+
+  6. Conventions d'appel : L'ARM passe les 4 premiers arguments
+     dans R0-R3 (AAPCS), le 68000 les passe typiquement sur la
+     pile. BL -> BSR/JSR, BX LR -> RTS. LINK/UNLK remplacent
+     la gestion manuelle du frame pointer ARM.
+
+  7. Transferts multiples : LDM/STM de l'ARM se convertissent
+     en MOVEM du 68000. Attention : MOVEM ne supporte que les
+     modes (An)+ et -(An), pas les variations IA/IB/DA/DB de
+     l'ARM. LDMIA/STMDB sont les plus courants et se
+     convertissent directement.
+
+  8. Flags et conditions : Les flags N,Z,C,V sont les memes sur
+     les deux architectures. La difference majeure est que les
+     flags ARM ne sont mis a jour que si le suffixe S est present,
+     tandis que le 68000 les met a jour automatiquement. Verifier
+     que le code ne depend pas de flags non modifies.
+
+  9. Endianness : L'ARM est souvent en little-endian tandis que
+     le 68000 est big-endian. Pour les donnees binaires (fichiers,
+     protocoles reseau), inverser l'ordre des octets avec la
+     sequence ROL.W #8 + SWAP + ROL.W #8.
+
+  10. Multiplication/Division : L'ARM a MUL 32x32->32 mais pas
+      de division materielle. Le 68000 a DIVU/DIVS 16 bits mais
+      pas de multiplication 32 bits (sauf 68020+). Les deux
+      architectures necessitent des routines logicielles pour
+      les operations qui depassent leurs capacites materielles.
