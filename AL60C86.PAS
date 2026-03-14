@@ -2458,9 +2458,20 @@ Begin
          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[')) And
          Not ((CurToken.Kind = TK_OP) And (CurToken.Val = ':=')) Then
       Begin
-        EmitComment('appel ' + IdName + ' (sans args, expr, TODO 19)');
-        EmitInstr('CALL', SymTab[SIdx].MangledName);
-        ExprMakeAX(SymTab[SIdx].TypeIdx, Res);
+        If SymTab[SIdx].ProcParamCount = 0 Then
+        Begin
+          { Appel sans arguments (TODO 19) }
+          EmitComment('appel ' + IdName + ' (sans args, expr, TODO 19)');
+          EmitInstr('CALL', SymTab[SIdx].MangledName);
+          ExprMakeAX(SymTab[SIdx].TypeIdx, Res);
+        End
+        Else
+        Begin
+          { Passage de procedure comme valeur : OFFSET label (TODO 19) }
+          EmitComment('proc-as-value ' + IdName + ' (TODO 19)');
+          EmitInstr('MOV', 'AX, OFFSET ' + SymTab[SIdx].MangledName);
+          ExprMakeAX(SymTab[SIdx].TypeIdx, Res);
+        End;
         Exit;
       End;
 
@@ -3557,12 +3568,27 @@ Begin
     EmitPush('AX');
   End;
 
-  { Generer CALL }
+  { Generer CALL (TODO 19: indirect si SK_PARAM) }
   If (ProcSIdx >= 0) And (ProcSIdx < SymCount) Then
-    ProcLbl := SymTab[ProcSIdx].MangledName
+  Begin
+    If SymTab[ProcSIdx].Kind = SK_PARAM Then
+    Begin
+      { Appel indirect : parametre contient l adresse de la procedure }
+      Str(SymTab[ProcSIdx].Offset, S);
+      EmitInstr('MOV', 'BX, [BP+' + S + ']');
+      EmitInstr('CALL', 'BX');
+    End
+    Else
+    Begin
+      ProcLbl := SymTab[ProcSIdx].MangledName;
+      EmitInstr('CALL', ProcLbl);
+    End;
+  End
   Else
+  Begin
     ProcLbl := A60_FN_PFX + SymNameClean(ProcName);
-  EmitInstr('CALL', ProcLbl);
+    EmitInstr('CALL', ProcLbl);
+  End;
 
   { Nettoyer la pile }
   If ArgCount > 0 Then
