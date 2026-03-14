@@ -21,7 +21,7 @@
 {  TODO 03 [IMPLEMENTE] - Gestion des erreurs, des avertissements et du bilan }
 {  TODO 04 [IMPLEMENTE] - Bassin de constantes (Constant Pool) : structures et gestion }
 {  TODO 05 [IMPLEMENTE] - Ecriture binaire du fichier .class (Big-endian)     }
-{  TODO 06 - Directives de classe (.class, .super, .implements, .source)      }
+{  TODO 06 [IMPLEMENTE] - Directives de classe (.class, .super, .implements, .source) }
 {  TODO 07 - Directives de champs (.field avec descripteurs et valeurs)       }
 {  TODO 08 - Directives de methodes (.method, .end method, .limit)            }
 {  TODO 09 - Descripteurs de types JVM : parsing et validation                }
@@ -441,6 +441,17 @@ Function  BinGetPos: LongInt; Forward;
 Procedure BinPatchU2(pos: LongInt; w: Integer); Forward;
 Procedure BinPatchU4(pos: LongInt; d: LongInt); Forward;
 
+{ --- Declarations forward TODO 06 : Directives de classe --- }
+Function  ConvertClassName(Const name: String): String; Forward;
+Function  ParseAccessFlags: Integer; Forward;
+Procedure ParseClassDirective; Forward;
+Procedure ParseSuperDirective; Forward;
+Procedure ParseImplementsDirective; Forward;
+Procedure ParseSourceDirective; Forward;
+Procedure ParseInterfaceDirective; Forward;
+Procedure ParseBytecodeDirective; Forward;
+Procedure ParseDirectives; Forward;
+
 { ---------- Ouverture et fermeture du fichier source ---------- }
 
 Procedure SrcOpen(Const FileName: String);
@@ -489,15 +500,21 @@ Begin
  If SrcEof Then
  Begin SrcGetChar := #0; Exit; End;
 
+ If SrcCol > Length(SrcLine) + 1 Then
+ Begin
+  { On a deja retourne le LF synthetique, charger la ligne suivante }
+  If Not EOF(SrcFile) Then SrcRefillLine
+  Else SrcEof := True;
+  If SrcEof Then
+  Begin SrcGetChar := #0; Exit; End;
+ End;
+
  If SrcCol > Length(SrcLine) Then
  Begin
-  { Fin de ligne courante -> retourner LF, passer a la suivante }
-  Inc(SrcCol);
-  If SrcCol > Length(SrcLine) + 1 Then
-  Begin
-   If Not EOF(SrcFile) Then SrcRefillLine
-   Else SrcEof := True;
-  End;
+  { Fin de ligne courante -> retourner LF synthetique }
+  { Positionner SrcCol au-dela pour que le prochain appel charge  }
+  { la ligne suivante, tout en permettant SrcUnget de revenir ici }
+  SrcCol := Length(SrcLine) + 2;
   SrcGetChar := #10;
   Exit;
  End;
@@ -1544,6 +1561,314 @@ Begin
  Seek(OutFile, savePos);
 End;
 
+{ ============================================================================ }
+{ Directives de classe (.class, .super, .implements, .source)                  }
+{ ============================================================================ }
+
+{ --- ConvertClassName : convertir '.' en '/' dans un nom de classe --- }
+{ Les fichiers .j acceptent les deux notations, la JVM utilise '/'.    }
+Function ConvertClassName(Const name: String): String;
+Var i: Integer; r: String;
+Begin
+ r := name;
+ For i := 1 to Length(r) do
+  If r[i] = '.' Then r[i] := '/';
+ ConvertClassName := r;
+End;
+
+{ --- ParseAccessFlags : decoder les mots-cles d'acces en masque de bits --- }
+{ Lit les mots-cles comme public, private, static, etc. et retourne         }
+{ le masque de bits correspondant. S'arrete au premier token non-flag.       }
+Function ParseAccessFlags: Integer;
+Var flags: Integer; s: String;
+Begin
+ flags := 0;
+ While CurTok = TK_IDENT do
+ Begin
+  s := CurStr;
+  If s = 'public' Then flags := flags or ACC_PUBLIC
+  Else If s = 'private' Then flags := flags or ACC_PRIVATE
+  Else If s = 'protected' Then flags := flags or ACC_PROTECTED
+  Else If s = 'static' Then flags := flags or ACC_STATIC
+  Else If s = 'final' Then flags := flags or ACC_FINAL
+  Else If s = 'synchronized' Then flags := flags or ACC_SYNCHRONIZED
+  Else If s = 'super' Then flags := flags or ACC_SUPER
+  Else If s = 'volatile' Then flags := flags or ACC_VOLATILE
+  Else If s = 'bridge' Then flags := flags or ACC_BRIDGE
+  Else If s = 'transient' Then flags := flags or ACC_TRANSIENT
+  Else If s = 'varargs' Then flags := flags or ACC_VARARGS
+  Else If s = 'native' Then flags := flags or ACC_NATIVE
+  Else If s = 'interface' Then flags := flags or ACC_INTERFACE
+  Else If s = 'abstract' Then flags := flags or ACC_ABSTRACT
+  Else If s = 'strictfp' Then flags := flags or ACC_STRICT
+  Else If s = 'strict' Then flags := flags or ACC_STRICT
+  Else If s = 'synthetic' Then flags := flags or ACC_SYNTHETIC
+  Else If s = 'annotation' Then flags := flags or ACC_ANNOTATION
+  Else If s = 'enum' Then flags := flags or ACC_ENUM
+  Else Break;  { mot-cle non reconnu = fin des drapeaux }
+  Consume;
+ End;
+ ParseAccessFlags := flags;
+End;
+
+{ --- ParseClassDirective : .class <access_flags> <classname> --- }
+Procedure ParseClassDirective;
+Var flags: Integer;
+Begin
+ flags := ParseAccessFlags;
+ { Ajouter ACC_SUPER par defaut si pas interface }
+ If (flags and ACC_INTERFACE) = 0 Then
+  flags := flags or ACC_SUPER;
+ ClassAccFlags := flags;
+ If CurTok = TK_IDENT Then
+ Begin
+  ClassName := ConvertClassName(CurStr);
+  Consume;
+ End
+ Else
+  Error('.class : nom de classe attendu');
+ If OptVerbose Then
+  WriteLn('  .class ', ClassName, ' (flags=$', IntToStr_(ClassAccFlags), ')');
+End;
+
+{ --- ParseSuperDirective : .super <classname> --- }
+Procedure ParseSuperDirective;
+Begin
+ If CurTok = TK_IDENT Then
+ Begin
+  SuperName := ConvertClassName(CurStr);
+  Consume;
+ End
+ Else
+  Error('.super : nom de classe attendu');
+ If OptVerbose Then
+  WriteLn('  .super ', SuperName);
+End;
+
+{ --- ParseImplementsDirective : .implements <interfacename> --- }
+Procedure ParseImplementsDirective;
+Var ifName: String;
+Begin
+ If CurTok = TK_IDENT Then
+ Begin
+  ifName := ConvertClassName(CurStr);
+  Consume;
+  If IfaceCount < MAX_IFACES Then
+  Begin
+   Inc(IfaceCount);
+   IfaceTab[IfaceCount] := CPAddClass(ifName);
+  End
+  Else
+   Error('.implements : trop d''interfaces (max ' + IntToStr_(MAX_IFACES) + ')');
+ End
+ Else
+  Error('.implements : nom d''interface attendu');
+ If OptVerbose Then
+  WriteLn('  .implements ', ifName);
+End;
+
+{ --- ParseSourceDirective : .source <filename> --- }
+{ Le nom de fichier peut contenir des '.' (ex: Hello.java),          }
+{ mais le lexeur decoupe sur le '.' (TK_DOT/TK_DIRECTIVE).          }
+{ On concatene donc les parties ident.ident... jusqu'a EOL/newline.  }
+Procedure ParseSourceDirective;
+Var n: String;
+Begin
+ If (CurTok = TK_IDENT) or (CurTok = TK_STRING) Then
+ Begin
+  n := CurStr;
+  Consume;
+  { Concatener les suffixes apres un '.' (ex: Hello.java) }
+  While (CurTok = TK_DOT) or
+        ((CurTok = TK_DIRECTIVE) and (Length(CurStr) > 0) and (CurStr[1] = '.')) do
+  Begin
+   If CurTok = TK_DOT Then
+   Begin
+    n := n + '.';
+    Consume;
+    If CurTok = TK_IDENT Then
+    Begin
+     n := n + CurStr;
+     Consume;
+    End;
+   End
+   Else
+   Begin
+    { Le lexer a lu '.java' comme une directive inconnue }
+    n := n + CurStr;
+    Consume;
+   End;
+  End;
+  SourceName := n;
+ End
+ Else
+  Error('.source : nom de fichier attendu');
+ If OptVerbose Then
+  WriteLn('  .source ', SourceName);
+End;
+
+{ --- ParseInterfaceDirective : .interface <access_flags> <name> --- }
+{ Equivalent a .class avec ACC_INTERFACE | ACC_ABSTRACT ajoutees.   }
+Procedure ParseInterfaceDirective;
+Var flags: Integer;
+Begin
+ flags := ParseAccessFlags;
+ flags := flags or ACC_INTERFACE or ACC_ABSTRACT;
+ ClassAccFlags := flags;
+ If CurTok = TK_IDENT Then
+ Begin
+  ClassName := ConvertClassName(CurStr);
+  Consume;
+ End
+ Else
+  Error('.interface : nom d''interface attendu');
+ If OptVerbose Then
+  WriteLn('  .interface ', ClassName, ' (flags=$', IntToStr_(ClassAccFlags), ')');
+End;
+
+{ --- ParseBytecodeDirective : .bytecode <major>.<minor> --- }
+Procedure ParseBytecodeDirective;
+Var majStr, minStr: String; p: Integer;
+Begin
+ If CurTok = TK_IDENT Then
+ Begin
+  { Le token contient "major.minor" comme un identifiant }
+  majStr := CurStr;
+  p := Pos('.', majStr);
+  If p > 0 Then
+  Begin
+   minStr := Copy(majStr, p + 1, Length(majStr) - p);
+   majStr := Copy(majStr, 1, p - 1);
+   ClassMajor := Integer(StrToInt_(majStr));
+   ClassMinor := Integer(StrToInt_(minStr));
+  End
+  Else
+  Begin
+   ClassMajor := Integer(StrToInt_(majStr));
+   Consume;
+   { Verifier s'il y a un '.' suivi du mineur }
+   If (CurTok = TK_DOT) Then
+   Begin
+    Consume;
+    If CurTok = TK_INTEGER Then
+    Begin
+     ClassMinor := Integer(CurInt);
+     Consume;
+    End
+    Else
+     Error('.bytecode : version mineure attendue apres le point');
+   End;
+   Exit;  { on a deja consomme }
+  End;
+  Consume;
+ End
+ Else If CurTok = TK_INTEGER Then
+ Begin
+  ClassMajor := Integer(CurInt);
+  Consume;
+  If CurTok = TK_DOT Then
+  Begin
+   Consume;
+   If CurTok = TK_INTEGER Then
+   Begin
+    ClassMinor := Integer(CurInt);
+    Consume;
+   End
+   Else
+    Error('.bytecode : version mineure attendue');
+  End;
+ End
+ Else If CurTok = TK_FLOAT Then
+ Begin
+  { Le lexer a pu lire "49.0" comme un float }
+  majStr := CurStr;
+  p := Pos('.', majStr);
+  If p > 0 Then
+  Begin
+   minStr := Copy(majStr, p + 1, Length(majStr) - p);
+   majStr := Copy(majStr, 1, p - 1);
+   ClassMajor := Integer(StrToInt_(majStr));
+   ClassMinor := Integer(StrToInt_(minStr));
+  End
+  Else
+   ClassMajor := Integer(StrToInt_(majStr));
+  Consume;
+ End
+ Else
+  Error('.bytecode : version attendue (ex: 49.0)');
+ If OptVerbose Then
+  WriteLn('  .bytecode ', ClassMajor, '.', ClassMinor);
+End;
+
+{ --- ParseDirectives : dispatcher principal des directives de classe --- }
+{ Parcourt les tokens et dispatche les directives connues.                }
+{ Les directives non encore implementees sont signalees et sautees.       }
+Procedure ParseDirectives;
+Begin
+ While CurTok <> TK_EOF do
+ Begin
+  { Sauter les lignes vides }
+  If CurTok = TK_NEWLINE Then
+  Begin
+   Consume;
+   Continue;
+  End;
+
+  { Dispatcher les directives }
+  If CurTok = TK_DIRECTIVE Then
+  Begin
+   Case CurDir of
+    DIR_CLASS:
+    Begin
+     Consume;
+     ParseClassDirective;
+     SkipToEOL;
+    End;
+    DIR_SUPER:
+    Begin
+     Consume;
+     ParseSuperDirective;
+     SkipToEOL;
+    End;
+    DIR_IMPLEMENTS:
+    Begin
+     Consume;
+     ParseImplementsDirective;
+     SkipToEOL;
+    End;
+    DIR_SOURCE:
+    Begin
+     Consume;
+     ParseSourceDirective;
+     SkipToEOL;
+    End;
+    DIR_INTERFACE:
+    Begin
+     Consume;
+     ParseInterfaceDirective;
+     SkipToEOL;
+    End;
+    DIR_BYTECODE:
+    Begin
+     Consume;
+     ParseBytecodeDirective;
+     SkipToEOL;
+    End;
+   Else
+    { Directives non encore implementees (TODO 07+) : sauter la ligne }
+    If OptVerbose Then
+     WriteLn('  [skip] directive ', CurStr, ' (TODO 07+)');
+    SkipToEOL;
+   End;  { Case }
+  End
+  Else
+  Begin
+   { Token non-directive : labels, instructions, etc. -> sauter la ligne }
+   SkipToEOL;
+  End;
+ End;
+End;
+
 Procedure GlobalInit;
 Begin
  OutFileName   := '';
@@ -1633,44 +1958,31 @@ Begin
  { Lire le premier token }
  NextToken;
 
- { Boucle principale : lire et afficher les tokens (stub TODO 02) }
- While CurTok <> TK_EOF do
- Begin
-  If OptVerbose Then
-  Begin
-   Case CurTok of
-    TK_IDENT     : WriteLn('  IDENT     : ', CurStr);
-    TK_INTEGER   : WriteLn('  INTEGER   : ', CurInt);
-    TK_FLOAT     : WriteLn('  FLOAT     : ', CurStr);
-    TK_STRING    : WriteLn('  STRING    : "', CurStr, '"');
-    TK_DIRECTIVE : WriteLn('  DIRECTIVE : ', CurStr, ' (', CurDir, ')');
-    TK_LABEL     : WriteLn('  LABEL     : ', CurStr, ':');
-    TK_NEWLINE   : ;  { ne pas afficher les newlines }
-    TK_COLON     : WriteLn('  COLON');
-    TK_EQUAL     : WriteLn('  EQUAL');
-    TK_LPAREN    : WriteLn('  LPAREN');
-    TK_RPAREN    : WriteLn('  RPAREN');
-    TK_SLASH     : WriteLn('  SLASH');
-    TK_LBRACKET  : WriteLn('  LBRACKET');
-    TK_RBRACKET  : WriteLn('  RBRACKET');
-    TK_MINUS     : WriteLn('  MINUS');
-    TK_PLUS      : WriteLn('  PLUS');
-   Else
-    WriteLn('  UNKNOWN   : ', CurStr);
-   End;
-  End;
-  NextToken;
- End;
+ { Parser les directives de classe et le contenu (TODO 06) }
+ ParseDirectives;
 
  WriteLn;
  WriteLn('Lignes lues   : ', SrcLineNum);
  WriteLn('Erreurs       : ', ErrorCount);
 
+ { Afficher les informations de classe parsees }
+ If ClassName <> '' Then
+ Begin
+  WriteLn;
+  WriteLn('Classe        : ', ClassName);
+  WriteLn('Super-classe  : ', SuperName);
+  If SourceName <> '' Then
+   WriteLn('Source        : ', SourceName);
+  If IfaceCount > 0 Then
+   WriteLn('Interfaces    : ', IfaceCount);
+  WriteLn('Version       : ', ClassMajor, '.', ClassMinor);
+ End;
+
  { Bilan de l'assemblage }
  BilanAssemblage;
 
  WriteLn;
- WriteLn('(Assemblage non encore implemente - voir TODOs 06 a 25)');
+ WriteLn('(Assemblage non encore implemente - voir TODOs 07 a 25)');
 
  SrcClose;
  GlobalCleanup;

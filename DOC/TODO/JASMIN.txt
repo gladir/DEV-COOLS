@@ -105,7 +105,7 @@ TODO 05 - Ecriture binaire du fichier .class (Big-endian)
   - BinPatchU4(pos, d) : ecrire U4 a une position precedente (backpatch)
   - Gestion du boutisme (Turbo Pascal = little-endian, JVM = big-endian)
 
-TODO 06 - Directives de classe (.class, .super, .implements, .source)
+TODO 06 [IMPLEMENTE] - Directives de classe (.class, .super, .implements, .source)
   ---------------------------------------------------------------------
   - ParseClassDirective : .class <access_flags> <classname>
     -> decoder drapeaux (public, final, abstract, interface, super,
