@@ -4480,6 +4480,7 @@ Begin
     EmitComment('--- assert (TODO 22) ---');
     ParseExpr(Arg);
     ExprFlushToAX(Arg);
+    EmitInstrA('PUSH', 'AX');  { sauver la valeur pour le retour }
     LblOk := LabelGen;
     EmitInstrAB('TEST', 'AX', 'AX');
     EmitInstrA('JNZ', LblOk);
@@ -4494,12 +4495,7 @@ Begin
       EmitInstrAB('MOV', 'AX', 'OFFSET ' + LUA_ERR_PFX + 'ASSERTMSG');
     EmitInstrA('CALL', LUA_RT_PFX + 'PANIC');
     EmitLabel(LblOk);
-    { Consommer le message optionnel s il n a pas ete consomme (success path) }
-    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
-    Begin
-      ParserAdvance;
-      ParseExpr(Arg); { consommer et ignorer le message }
-    End;
+    EmitInstrA('POP', 'AX');  { restaurer la valeur originale }
     Res.Kind    := EK_AX;
     Res.TypeIdx := TY_UNKNOWN;
     Res.SymIdx  := -1;
@@ -4556,6 +4552,7 @@ Begin
     { Nettoyer les arguments }
     If ArgCount > 0 Then
     Begin
+      LblOk := '';
       Str(ArgCount * 2, LblOk);
       EmitInstrAB('ADD', 'SP', LblOk);
     End;
@@ -4625,6 +4622,7 @@ Begin
     { Nettoyer les arguments }
     If ArgCount > 0 Then
     Begin
+      LblOk := '';
       Str(ArgCount * 2, LblOk);
       EmitInstrAB('ADD', 'SP', LblOk);
     End;
@@ -6340,8 +6338,8 @@ Begin
   { Si _LUAX_HANDLER <> 0 : saute vers le handler pcall         }
   {   DI = message d erreur, SP/BP restaures                     }
   { Sinon : affiche message + INT 21h AH=4Ch AL=1               }
+  { Note : cette routine ne retourne jamais                       }
   EmitLabel(LUA_RT_PFX + 'PANIC');
-  EmitInstrA('PUSH', 'BX');
   EmitInstrAB('MOV', 'BX', 'WORD PTR [' + LUA_ERR_PFX + 'HANDLER]');
   EmitInstrAB('TEST', 'BX', 'BX');
   EmitInstrA('JZ', LUA_RT_PFX + 'PK_FATAL');
@@ -6352,7 +6350,6 @@ Begin
   EmitInstrA('JMP', 'BX');
   { Pas de handler : panique fatale }
   EmitLabel(LUA_RT_PFX + 'PK_FATAL');
-  EmitInstrA('POP', 'BX');
   EmitInstrA('PUSH', 'AX');
   EmitInstrAB('MOV', 'AX', 'OFFSET ' + LUA_ERR_PFX + 'MSG');
   EmitInstrA('CALL', LUA_RT_PFX + 'PRINTSTR');
@@ -6364,7 +6361,6 @@ Begin
   EmitInstrA('CALL', LUA_RT_PFX + 'PRINTNL');
   EmitInstrAB('MOV', 'AX', '4C01h');
   EmitInstr('INT    21h');
-  EmitInstr('RET');
   EmitBlankLine;
 
   { _LUART_TYPE : AX = valeur -> AX = ptr chaine du type }
