@@ -1,0 +1,48 @@
+CO refs.a68 : REF, HEAP, :=, =:, IS, ISNT, NIL (TODO 25) CO
+BEGIN
+  CO Affectation simple := CO
+  INT x := 10;
+  x := 42;
+  print(("x = ", x, newline));
+
+  CO Affectation inverse =: CO
+  INT z := 0;
+  99 =: z;
+  print(("z = ", z, newline));
+
+  CO REF : reference CO
+  INT a := 5;
+  INT b := 5;
+
+  CO IS et ISNT : test d identite CO
+  BOOL same := a IS b;
+  BOOL diff := a ISNT b;
+  print(("a IS b = ", same, newline));
+  print(("a ISNT b = ", diff, newline));
+
+  CO NIL : reference nulle CO
+  REF INT p := NIL;
+  BOOL isnil := p IS NIL;
+  BOOL notnil := p ISNT NIL;
+  print(("p IS NIL = ", isnil, newline));
+  print(("p ISNT NIL = ", notnil, newline));
+
+  CO HEAP : allocation dynamique CO
+  HEAP INT h;
+
+  CO Affectations composees CO
+  INT c := 10;
+  c +:= 5;
+  print(("10 + 5 = ", c, newline));
+  c -:= 2;
+  print(("15 - 2 = ", c, newline));
+  c *:= 3;
+  print(("13 * 3 = ", c, newline));
+
+  CO Multiple affectation CO
+  INT m := 0;
+  INT n := 0;
+  m := 100;
+  n := m;
+  print(("m = ", m, " n = ", n, newline))
+END

@@ -1,0 +1,1045 @@
+==============================================================================
+  TURBO PASCAL 7.0 - Unite SYSTEM (Built-in)
+==============================================================================
+
+  Ce document decrit le contenu de l'unite SYSTEM de Turbo Pascal 7.0.
+  Cette unite est automatiquement incluse dans tout programme et n'a
+  pas besoin d'etre declaree dans la clause Uses. Elle fournit les
+  constantes, variables, procedures et fonctions de base du langage.
+
+==============================================================================
+  1. CONSTANTES PREDEFINIES
+==============================================================================
+
+  1.1 Constantes de recouvrement (Overlay)
+  -----------------------------------------
+
+  Const
+    OvrCodeList  : Word    = 0;       { Liste de code de recouvrement      }
+    OvrHeapSize  : Word    = 0;       { Taille du tampon de recouvrement   }
+    OvrDebugPtr  : Pointer = nil;     { Crochet du debogueur overlay       }
+    OvrHeapOrg   : Word    = 0;       { Origine du tampon de recouvrement  }
+    OvrHeapPtr   : Word    = 0;       { Pointeur du tampon de recouvrement }
+    OvrHeapEnd   : Word    = 0;       { Fin du tampon de recouvrement      }
+    OvrLoadList  : Word    = 0;       { Liste de chargement overlays       }
+    OvrDosHandle : Word    = 0;       { Handle DOS du fichier overlay      }
+    OvrEmsHandle : Word    = $FFFF;   { Handle EMS du recouvrement         }
+
+  Les recouvrements (overlays) permettent a un programme de depasser
+  la limite de 640 Ko en chargeant/dechargeant des portions de code
+  a la demande. Sur Win32, ces constantes ne sont plus utilisees.
+
+  1.2 Constantes du tas (Heap)
+  -----------------------------
+
+  Const
+    HeapOrg   : Pointer = nil;   { Adresse de debut du tas               }
+    HeapPtr   : Pointer = nil;   { Pointeur courant d'allocation du tas  }
+    HeapEnd   : Pointer = nil;   { Adresse de fin du tas                 }
+    FreeList  : Pointer = nil;   { Tete de la liste de blocs libres      }
+    FreeZero  : Pointer = nil;   { Sentinelle (doit etre zero)           }
+    HeapError : Pointer = nil;   { Fonction d'erreur du gestionnaire     }
+
+  Le tas est la zone memoire utilisee par New() et GetMem() pour les
+  allocations dynamiques. HeapPtr avance vers HeapEnd. Quand un bloc
+  est libere (Dispose/FreeMem), il est ajoute a FreeList.
+
+  HeapError peut etre assigne a une fonction personnalisee :
+    Function MyHeapFunc(Size : Word) : Integer; Far;
+    { Retourne 0 pour generer une erreur runtime }
+    { Retourne 1 pour retourner nil             }
+    { Retourne 2 pour re-essayer l'allocation   }
+
+  1.3 Constantes de controle du programme
+  -----------------------------------------
+
+  Const
+    ExitProc   : Pointer = nil;   { Adresse de la procedure de sortie    }
+    ExitCode   : Integer = 0;     { Code de sortie du programme          }
+    ErrorAddr  : Pointer = nil;   { Adresse de l'erreur d'execution      }
+
+  ExitProc permet de chainer des procedures de sortie (nettoyage) :
+    Var SaveExit : Pointer;
+    Procedure MyExit; Far;
+    Begin
+      ExitProc := SaveExit;    { restaurer l'ancien ExitProc }
+      { ... nettoyage ... }
+    End;
+    Begin
+      SaveExit := ExitProc;
+      ExitProc := @MyExit;
+    End.
+
+  ExitCode contient le code de sortie apres Halt(N) ou en fin de
+  programme. ErrorAddr est non-nil si une erreur runtime s'est produite.
+
+  1.4 Constantes systeme
+  -----------------------
+
+  Const
+    PrefixSeg  : Word    = 0;    { Segment du PSP (Program Segment Prefix) }
+    StackLimit : Word    = 0;    { Limite basse du pointeur de pile         }
+    InOutRes   : Integer = 0;    { Resultat de la derniere operation I/O    }
+    RandSeed   : Longint = 0;    { Graine du generateur aleatoire          }
+    FileMode   : Byte    = 2;    { Mode d'ouverture par defaut pour Reset   }
+    Test8087   : Byte    = 0;    { Type de coprocesseur detecte             }
+
+  InOutRes : mis a zero par IoResult, contient le code d'erreur de
+  la derniere operation I/O quand {$I-} est actif :
+    0   = pas d'erreur
+    2   = fichier non trouve
+    3   = chemin non trouve
+    4   = trop de fichiers ouverts
+    5   = acces refuse
+    100 = erreur de lecture disque
+    101 = erreur d'ecriture disque
+    102 = fichier non assigne (Assign non appele)
+    103 = fichier non ouvert
+    104 = fichier pas ouvert en lecture
+    105 = fichier pas ouvert en ecriture
+    106 = format de nombre invalide
+
+  FileMode controle le mode d'acces pour Reset() :
+    0 = lecture seule
+    1 = ecriture seule
+    2 = lecture/ecriture (defaut)
+
+  Test8087 indique le type de coprocesseur :
+    0 = aucun coprocesseur
+    1 = 8087
+    2 = 80287
+    3 = 80387 ou superieur
+
+  RandSeed est la graine du generateur pseudo-aleatoire. Assigner une
+  valeur fixe produit une sequence reproductible. Randomize initialise
+  RandSeed a partir de l'horloge systeme.
+
+==============================================================================
+  2. VARIABLES PREDEFINIES
+==============================================================================
+
+  2.1 Fichiers standard
+  ----------------------
+
+  Var
+    Input  : Text;   { Fichier de l'entree standard (stdin)  }
+    Output : Text;   { Fichier de la sortie standard (stdout) }
+
+  Input et Output sont les fichiers texte predéfinis. Quand Read/ReadLn
+  ou Write/WriteLn sont appeles sans argument fichier, ils utilisent
+  respectivement Input et Output.
+
+  WriteLn('Bonjour');         { ecrit dans Output = stdout }
+  ReadLn(S);                  { lit depuis Input = stdin   }
+  WriteLn(Output, 'Bonjour'); { equivalent explicite        }
+
+  2.2 Sauvegarde des vecteurs d'interruption
+  --------------------------------------------
+
+  Var
+    SaveInt00 : Pointer;   { Division par zero               }
+    SaveInt02 : Pointer;   { NMI (Non-Maskable Interrupt)    }
+    SaveInt09 : Pointer;   { Clavier                         }
+    SaveInt1B : Pointer;   { Ctrl+Break                      }
+    SaveInt21 : Pointer;   { Services DOS                    }
+    SaveInt23 : Pointer;   { Ctrl+C handler                  }
+    SaveInt24 : Pointer;   { Erreur critique DOS             }
+    SaveInt34 : Pointer;   { Emulation 8087 (34-3E)          }
+    SaveInt35 : Pointer;
+    SaveInt36 : Pointer;
+    SaveInt37 : Pointer;
+    SaveInt38 : Pointer;
+    SaveInt39 : Pointer;
+    SaveInt3A : Pointer;
+    SaveInt3B : Pointer;
+    SaveInt3C : Pointer;
+    SaveInt3D : Pointer;
+    SaveInt3E : Pointer;
+    SaveInt3F : Pointer;   { Overlay manager                 }
+    SaveInt75 : Pointer;   { IRQ 13 (coprocesseur math)      }
+
+  Au demarrage, le runtime sauvegarde les vecteurs d'interruption
+  qu'il modifie. A la sortie, il les restaure. Sur Win32, ces
+  variables n'ont plus de sens (pas d'interruptions DOS).
+
+==============================================================================
+  3. TYPES PREDEFINIS
+==============================================================================
+
+  Le langage Turbo Pascal definit les types suivants dans System :
+
+  Types ordinaux :
+    Integer   = -32768..32767        (16 bits signe)
+    Word      = 0..65535             (16 bits non signe)
+    Byte      = 0..255               (8 bits non signe)
+    ShortInt  = -128..127            (8 bits signe)
+    LongInt   = -2147483648..2147483647  (32 bits signe)
+    Boolean   = False..True          (8 bits, 0 ou 1)
+    Char      = #0..#255             (8 bits, un caractere)
+
+  Types reels :
+    Real      = 6 octets (format specifique Turbo Pascal)
+    Single    = 4 octets IEEE 754 (requiert coprocesseur)
+    Double    = 8 octets IEEE 754 (requiert coprocesseur)
+    Extended  = 10 octets IEEE 754 (requiert coprocesseur)
+    Comp      = 8 octets entier 64 bits (requiert coprocesseur)
+
+  Types chaines :
+    String    = ShortString, String[255] par defaut
+    String[N] = chaine de N caracteres max (N = 1..255)
+    PChar     = ^Char (pointeur vers chaine ASCIIZ,
+                        disponible a partir de TP 7.0)
+
+  Types pointeurs :
+    Pointer   = pointeur generique non type (Seg:Ofs en real mode)
+
+  Types fichiers :
+    Text      = fichier texte (TextRec, 256 octets en real mode)
+    File      = fichier non type (FileRec)
+    File of T = fichier type (enregistrements de type T)
+
+  Constantes speciales :
+    True      = Boolean(1)
+    False     = Boolean(0)
+    Nil       = pointeur nul
+    MaxInt    = 32767        { valeur maximale d'un Integer }
+    MaxLongInt = 2147483647  { valeur maximale d'un LongInt (TP7) }
+
+==============================================================================
+  4. PROCEDURES ET FONCTIONS - E/S FICHIER
+==============================================================================
+
+  Les procedures d'E/S fichier sont le coeur de la gestion des fichiers
+  en Turbo Pascal. Elles s'appliquent aux types Text, File et File of T.
+
+  4.1 Assignation et ouverture
+  -----------------------------
+
+  Procedure Assign(Var fich : File; nomfich : String);
+    - Associe une variable fichier a un nom de fichier sur disque
+    - Doit etre appelee AVANT Reset, Rewrite ou Append
+    - Exemple : Assign(F, 'DONNEES.TXT');
+
+  Procedure Reset(Var fich : File);
+    - Ouvre un fichier existant
+    - Pour Text : ouvre en lecture seule
+    - Pour File : ouvre en lecture/ecriture (selon FileMode)
+    - Pour File of T : ouvre en lecture/ecriture
+    - Le pointeur de fichier est positionne au debut
+    - Erreur si le fichier n'existe pas
+    - Exemple : Reset(F);
+
+  Procedure Rewrite(Var fich : File);
+    - Cree un nouveau fichier (ou ecrase un existant)
+    - Pour Text : ouvre en ecriture seule
+    - Pour File : cree avec taille de bloc = 128 octets par defaut
+    - Le fichier est vide apres l'appel
+    - Exemple : Rewrite(F);
+
+  Procedure Append(Var fich : Text);
+    - Ouvre un fichier texte EXISTANT en mode ajout
+    - Le pointeur se positionne a la fin du fichier
+    - Les ecritures s'ajoutent apres le contenu existant
+    - Ne fonctionne qu'avec le type Text
+    - Exemple : Append(F);
+
+  4.2 Lecture
+  -----------
+
+  Procedure Read(var1, var2, ...);
+  Procedure Read(Var fich : Text; var1, var2, ...);
+    - Lit des valeurs depuis un fichier texte (ou stdin)
+    - Les types supportes : Integer, LongInt, Real, Char, String
+    - Pour Integer/Real : saute les espaces, lit un nombre
+    - Pour Char : lit un seul caractere
+    - Pour String : lit jusqu'a CR/LF (sans le consommer)
+    - Sans argument fich, lit depuis Input (stdin)
+    - Exemple : Read(F, Nom, Age);
+
+  Procedure ReadLn(var1, var2, ...);
+  Procedure ReadLn(Var fich : Text; var1, var2, ...);
+    - Comme Read, mais consomme aussi le reste de la ligne (CR/LF)
+    - ReadLn sans arguments avance d'une ligne
+    - Ne fonctionne qu'avec Text (pas File of T)
+    - Exemple : ReadLn(F, S);
+
+  Procedure BlockRead(Var fich : File; Var buf; count : Word;
+                       Var result : Word);
+    - Lit count enregistrements dans buf
+    - result recoit le nombre d'enregistrements effectivement lus
+    - Pour fichiers non types (File) avec taille de bloc
+    - Exemple : BlockRead(F, Buffer, SizeOf(Buffer), BytesRead);
+
+  4.3 Ecriture
+  -------------
+
+  Procedure Write(var1, var2, ...);
+  Procedure Write(Var fich : Text; var1, var2, ...);
+    - Ecrit des valeurs dans un fichier texte (ou stdout)
+    - Supporte le formatage : Write(N:8) ou Write(R:10:2)
+    - Types supportes : Integer, LongInt, Real, Char, String, Boolean
+    - Sans argument fich, ecrit dans Output (stdout)
+    - Exemple : Write(F, 'Nom = ', Nom);
+
+  Procedure WriteLn(var1, var2, ...);
+  Procedure WriteLn(Var fich : Text; var1, var2, ...);
+    - Comme Write, mais ajoute CR+LF a la fin
+    - WriteLn sans arguments ecrit une ligne vide
+    - Ne fonctionne qu'avec Text (pas File of T)
+    - Exemple : WriteLn(F, 'Total = ', Total:10:2);
+
+  Procedure BlockWrite(Var fich : File; Var buf; count : Word;
+                        Var result : Word);
+    - Ecrit count enregistrements depuis buf
+    - result recoit le nombre d'enregistrements effectivement ecrits
+    - Pour fichiers non types (File) avec taille de bloc
+    - Exemple : BlockWrite(F, Buffer, BytesRead, BytesWritten);
+
+  4.4 Fermeture et controle
+  --------------------------
+
+  Procedure Close(Var fich : File);
+    - Ferme un fichier ouvert
+    - Vide le tampon d'ecriture avant de fermer
+    - Doit etre appelee apres toute utilisation
+    - Exemple : Close(F);
+
+  Procedure Flush(Var fich : Text);
+    - Vide le tampon d'ecriture d'un fichier texte
+    - Les donnees en tampon sont ecrites sur disque
+    - Ne fonctionne qu'avec Text
+    - Exemple : Flush(F);
+
+  4.5 Tests d'etat
+  -----------------
+
+  Function Eof(Var fich : File) : Boolean;
+  Function Eof : Boolean;
+    - Retourne True si la fin du fichier est atteinte
+    - Sans argument : teste Eof(Input) = stdin
+    - Pour Text : True quand aucun caractere ne peut etre lu
+    - Pour File : True quand FilePos = FileSize
+    - Exemple : While Not Eof(F) Do ReadLn(F, S);
+
+  Function Eoln(Var fich : Text) : Boolean;
+  Function Eoln : Boolean;
+    - Retourne True si le caractere courant est CR ou LF
+    - Ne fonctionne qu'avec Text
+    - Sans argument : teste Eoln(Input)
+    - Exemple : While Not Eoln(F) Do Read(F, Ch);
+
+  Function SeekEof(Var fich : Text) : Boolean;
+    - Comme Eof mais saute les espaces, tabulations et lignes vides
+    - Utile pour lire des nombres separes par des blancs
+    - Ne fonctionne qu'avec Text
+    - Exemple : While Not SeekEof(F) Do Read(F, N);
+
+  Function SeekEoln(Var fich : Text) : Boolean;
+    - Comme Eoln mais saute les espaces et tabulations
+    - Ne fonctionne qu'avec Text
+
+  Function IoResult : Word;
+    - Retourne le code d'erreur de la derniere operation I/O
+    - Remet InOutRes a 0 apres l'appel
+    - Requiert la directive {$I-} pour ne pas generer d'erreur runtime
+    - 0 = succes, autre = code d'erreur (voir section 1.4)
+    - Exemple :
+        {$I-}
+        Reset(F);
+        If IoResult <> 0 Then WriteLn('Erreur ouverture');
+        {$I+}
+
+  4.6 Positionnement
+  -------------------
+
+  Procedure Seek(Var fich : File; Pos : LongInt);
+    - Positionne le pointeur de fichier a l'enregistrement Pos
+    - Pos = 0 pour le debut du fichier
+    - Ne fonctionne PAS avec Text
+    - Exemple : Seek(F, 0);  { retour au debut }
+
+  Function FilePos(Var fich : File) : LongInt;
+    - Retourne la position courante dans le fichier
+    - Pour File : en nombre d'enregistrements
+    - Ne fonctionne PAS avec Text
+    - Exemple : Pos := FilePos(F);
+
+  Function FileSize(Var fich : File) : LongInt;
+    - Retourne la taille du fichier en nombre d'enregistrements
+    - Pour File of T : nombre d'enregistrements de type T
+    - Pour File : nombre de blocs de 128 octets (par defaut)
+    - Ne fonctionne PAS avec Text
+    - Exemple : N := FileSize(F);
+
+  Procedure Truncate(Var fich : File);
+    - Tronque le fichier a la position courante
+    - Tout ce qui suit la position courante est supprime
+    - Ne fonctionne PAS avec Text
+    - Exemple : Seek(F, 10); Truncate(F);
+
+  4.7 Gestion fichier
+  --------------------
+
+  Procedure Rename(Var fich : File; nouveaunom : String);
+    - Renomme un fichier (doit etre ferme)
+    - Exemple : Close(F); Rename(F, 'NOUVEAU.TXT');
+
+  Procedure Erase(Var fich : File);
+    - Supprime un fichier du disque (doit etre ferme)
+    - Exemple : Close(F); Erase(F);
+
+  4.8 Tampon texte
+  -----------------
+
+  Procedure SetTextBuf(Var fich : Text; Var buffer; Taille : Word);
+  Procedure SetTextBuf(Var fich : Text; Var buffer);
+    - Assigne un tampon personnalise a un fichier texte
+    - Doit etre appele ENTRE Assign et Reset/Rewrite
+    - Si Taille est omise, utilise SizeOf(buffer)
+    - Ameliore les performances pour les gros fichiers
+    - Exemple :
+        Var Buf : Array[0..4095] Of Char;
+        Assign(F, 'GROS.TXT');
+        SetTextBuf(F, Buf);
+        Reset(F);
+
+==============================================================================
+  5. PROCEDURES ET FONCTIONS - CHAINES
+==============================================================================
+
+  Ces fonctions operent sur les types String (Pascal ShortString).
+  Voir DOC\TURBOPASCAL_STRING.txt pour les details complets.
+
+  5.1 Fonctions de chaines
+  -------------------------
+
+  Function Length(ch : String) : Integer;
+    - Retourne la longueur de la chaine (valeur de ch[0])
+    - Exemple : Length('TEST') = 4
+
+  Function Copy(S : String; Index, Count : Integer) : String;
+    - Retourne une sous-chaine de Count caracteres a partir de Index
+    - Index est 1-based (S[1] = premier caractere)
+    - Exemple : Copy('ABCDEF', 2, 3) = 'BCD'
+
+  Function Pos(search, source : String) : Integer;
+    - Retourne la position de search dans source (1-based)
+    - Retourne 0 si non trouve
+    - Exemple : Pos('CD', 'ABCDEF') = 3
+
+  Function Concat(ch1, ch2, ... : String) : String;
+    - Concatene plusieurs chaines
+    - Equivalent a ch1 + ch2 + ...
+    - Tronque a 255 caracteres si necessaire
+    - Exemple : Concat('AB', 'CD') = 'ABCD'
+
+  Function UpCase(ch : Char) : Char;
+    - Convertit un caractere minuscule a-z en majuscule A-Z
+    - Les autres caracteres ne sont pas modifies
+    - Ne gere PAS les caracteres accentues
+    - Exemple : UpCase('a') = 'A'
+
+  5.2 Procedures de chaines
+  --------------------------
+
+  Procedure Delete(Var S : String; Pos, nbre : Integer);
+    - Supprime nbre caracteres de S a partir de Pos
+    - Modifie S en place
+    - Exemple : S := 'ABCDEF'; Delete(S, 2, 3); { S = 'AEF' }
+
+  Procedure Insert(ch1 : String; Var ch2 : String; pos : Integer);
+    - Insere ch1 dans ch2 a la position pos
+    - Modifie ch2 en place
+    - Exemple : S := 'AEF'; Insert('BCD', S, 2); { S = 'ABCDEF' }
+
+  Procedure Str(nbre : <type>; Var ch : String);
+  Procedure Str(nbre : <type>:largeur; Var ch : String);
+  Procedure Str(nbre : <type>:largeur:decimales; Var ch : String);
+    - Convertit un nombre en chaine
+    - Supporte Integer, LongInt, Real avec formatage optionnel
+    - Exemple : Str(42, S);       { S = '42'     }
+    - Exemple : Str(3.14:6:2, S); { S = '  3.14' }
+
+  Procedure Val(ch : String; Var nbre; Var err : Integer);
+    - Convertit une chaine en nombre (Integer, LongInt ou Real)
+    - err = 0 si la conversion reussit
+    - err = position du premier caractere invalide sinon
+    - Exemple : Val('42', N, Err);  { N = 42, Err = 0 }
+    - Exemple : Val('3X', N, Err);  { N = ?, Err = 2  }
+
+==============================================================================
+  6. PROCEDURES ET FONCTIONS - ARITHMETIQUE
+==============================================================================
+
+  6.1 Fonctions entieres
+  -----------------------
+
+  Function Abs(n : Integer) : Integer;
+  Function Abs(n : Real) : Real;
+    - Retourne la valeur absolue de n
+    - Exemple : Abs(-5) = 5
+
+  Function Sqr(x : Integer) : Integer;
+  Function Sqr(x : Real) : Real;
+    - Retourne le carre de x (x * x)
+    - Exemple : Sqr(3) = 9
+
+  Function Odd(i : LongInt) : Boolean;
+    - Retourne True si i est impair
+    - Equivalent a (i And 1) = 1
+    - Exemple : Odd(3) = True, Odd(4) = False
+
+  6.2 Fonctions reelles
+  ----------------------
+
+  Function Sqrt(r : Real) : Real;
+    - Retourne la racine carree de r
+    - r doit etre >= 0
+    - Exemple : Sqrt(9.0) = 3.0
+
+  Function Sin(r : Real) : Real;
+    - Retourne le sinus de r (r en radians)
+
+  Function Cos(r : Real) : Real;
+    - Retourne le cosinus de r (r en radians)
+
+  Function ArcTan(r : Real) : Real;
+    - Retourne l'arc tangente de r (en radians)
+
+  Function Exp(r : Real) : Real;
+    - Retourne e^r (exponentielle)
+
+  Function Ln(r : Real) : Real;
+    - Retourne le logarithme neperien de r
+    - r doit etre > 0
+
+  Function Frac(r : Real) : Real;
+    - Retourne la partie fractionnaire de r
+    - Exemple : Frac(3.14) = 0.14
+
+  Function Int(r : Real) : Real;
+    - Retourne la partie entiere de r (comme Real)
+    - Exemple : Int(3.14) = 3.0
+
+  6.3 Fonctions de conversion
+  ----------------------------
+
+  Function Round(n : Real) : LongInt;
+    - Arrondit un reel a l'entier le plus proche
+    - Exemple : Round(3.6) = 4, Round(3.4) = 3
+
+  Function Trunc(r : Real) : LongInt;
+    - Tronque un reel (supprime la partie decimale)
+    - Exemple : Trunc(3.9) = 3, Trunc(-3.9) = -3
+
+==============================================================================
+  7. PROCEDURES ET FONCTIONS - ORDINAUX
+==============================================================================
+
+  Function Ord(s) : LongInt;
+    - Retourne la valeur ordinale de s
+    - Pour Char : code ASCII (Ord('A') = 65)
+    - Pour Boolean : Ord(False) = 0, Ord(True) = 1
+    - Pour enumeration : indice dans le type
+    - Exemple : Ord(S[0]) = longueur de la chaine S
+
+  Function Chr(i : Byte) : Char;
+    - Retourne le caractere de code ASCII i
+    - Inverse de Ord pour les Char
+    - Exemple : Chr(65) = 'A', Chr(13) = CR
+
+  Function Pred(s) : <meme type>;
+    - Retourne le predecesseur de s
+    - Pour Integer : Pred(N) = N - 1
+    - Pour Char : Pred('B') = 'A'
+    - Pour enumeration : element precedent
+    - Erreur si s est le premier element du type
+
+  Function Succ(s) : <meme type>;
+    - Retourne le successeur de s
+    - Pour Integer : Succ(N) = N + 1
+    - Pour Char : Succ('A') = 'B'
+    - Erreur si s est le dernier element du type
+
+  Procedure Inc(Var s);
+  Procedure Inc(Var s; n : LongInt);
+    - Incremente s de 1 (ou de n)
+    - Plus efficace que s := s + 1 (genere INC en assembleur)
+    - Fonctionne avec tous les types ordinaux et pointeurs
+    - Exemple : Inc(I);      { I := I + 1 }
+    - Exemple : Inc(I, 5);   { I := I + 5 }
+
+  Procedure Dec(Var s);
+  Procedure Dec(Var s; n : LongInt);
+    - Decremente s de 1 (ou de n)
+    - Plus efficace que s := s - 1 (genere DEC en assembleur)
+    - Exemple : Dec(I);      { I := I - 1 }
+    - Exemple : Dec(I, 5);   { I := I - 5 }
+
+  Function Hi(i : Word) : Byte;
+    - Retourne l'octet de poids fort de i
+    - Equivalent a (i Shr 8) And $FF
+    - Exemple : Hi($1234) = $12
+
+  Function Lo(i : Word) : Byte;
+    - Retourne l'octet de poids faible de i
+    - Equivalent a i And $FF
+    - Exemple : Lo($1234) = $34
+
+  Function Swap(i : Word) : Word;
+    - Echange les octets haut et bas de i
+    - Exemple : Swap($1234) = $3412
+
+==============================================================================
+  8. PROCEDURES ET FONCTIONS - MEMOIRE ET POINTEURS
+==============================================================================
+
+  8.1 Allocation dynamique
+  -------------------------
+
+  Procedure New(Var p : Pointer);
+  Procedure New(Var p : Pointer; Init : Constructor);
+    - Alloue un bloc de memoire sur le tas de taille SizeOf(p^)
+    - p recoit l'adresse du bloc alloue
+    - La forme avec constructeur est pour les objets
+    - Exemple : New(P);    { alloue SizeOf(P^) octets }
+
+  Procedure Dispose(Var p : Pointer);
+  Procedure Dispose(Var p : Pointer; Destructor);
+    - Libere la memoire allouee par New
+    - La forme avec destructeur est pour les objets
+    - p devient invalide apres l'appel
+    - Exemple : Dispose(P);
+
+  Procedure GetMem(Var p : Pointer; t : Word);
+    - Alloue t octets sur le tas
+    - Plus flexible que New (taille variable)
+    - Exemple : GetMem(P, 100);  { alloue 100 octets }
+
+  Procedure FreeMem(Var p : Pointer; t : Word);
+    - Libere t octets precedemment alloues par GetMem
+    - t DOIT etre identique a la taille passee a GetMem
+    - Exemple : FreeMem(P, 100);
+
+  Procedure Mark(Var p : Pointer);
+    - Enregistre l'etat courant du tas dans p
+    - Utilise avec Release (methode ancienne)
+    - Deconseille : utiliser New/Dispose ou GetMem/FreeMem
+
+  Procedure Release(Var p : Pointer);
+    - Libere toute la memoire du tas depuis la position Mark
+    - Toutes les allocations apres Mark sont perdues
+    - Deconseille : utiliser New/Dispose ou GetMem/FreeMem
+
+  8.2 Information memoire
+  ------------------------
+
+  Function MaxAvail : LongInt;
+    - Retourne la taille du plus grand bloc contigu libre sur le tas
+    - En octets
+    - Exemple : If MaxAvail > 1000 Then GetMem(P, 1000);
+
+  Function MemAvail : LongInt;
+    - Retourne la memoire totale libre sur le tas (tous blocs)
+    - En octets
+    - MemAvail >= MaxAvail
+
+  8.3 Fonctions de pointeur
+  --------------------------
+
+  Function Addr(x) : Pointer;
+    - Retourne l'adresse de x (equivalent a @x)
+    - Exemple : P := Addr(MaVariable);
+
+  Function Assigned(Var P) : Boolean;
+    - Retourne True si P n'est pas nil
+    - Equivalent a P <> nil mais plus lisible
+    - Disponible a partir de TP 7.0
+    - Exemple : If Assigned(P) Then P^.DoSomething;
+
+  Function Ptr(seg, ofs : Word) : Pointer;
+    - Construit un pointeur a partir d'un segment et d'un offset
+    - Specifique au mode reel 16 bits
+    - Exemple : P := Ptr($B800, 0);  { debut de la memoire video }
+
+  Function Ofs(ident) : Word;
+    - Retourne l'offset d'un identifiant dans son segment
+    - Specifique au mode reel 16 bits
+    - Exemple : WriteLn(Ofs(MaVar));
+
+  Function Seg(ident) : Word;     { Note : non dans l'interface ci-dessus }
+    - Retourne le segment d'un identifiant
+    - Specifique au mode reel 16 bits
+
+  8.4 Operations sur la memoire
+  ------------------------------
+
+  Procedure Move(Const orig; Var dest; nbre : Word);
+    - Copie nbre octets de orig vers dest
+    - Les zones peuvent se chevaucher (copie dans le bon sens)
+    - Plus rapide que boucle manuelle (utilise REP MOVSB/MOVSD)
+    - Exemple : Move(Source, Dest, SizeOf(Source));
+
+  Procedure FillChar(Var tampon; nbre : Word; val : Byte);
+  Procedure FillChar(Var tampon; nbre : Word; val : Char);
+    - Remplit nbre octets de tampon avec la valeur val
+    - Utilise pour initialiser des buffers a zero
+    - Exemple : FillChar(Buffer, SizeOf(Buffer), 0);
+    - Exemple : FillChar(S, SizeOf(S), ' ');
+
+==============================================================================
+  9. PROCEDURES ET FONCTIONS - REGISTRES ET SEGMENTS
+==============================================================================
+
+  Function CSeg : Word;
+    - Retourne le segment de code courant (CS)
+    - Specifique au mode reel 16 bits
+
+  Function DSeg : Word;
+    - Retourne le segment de donnees courant (DS)
+    - Specifique au mode reel 16 bits
+
+  Function SSeg : Word;
+    - Retourne le segment de pile courant (SS)
+    - Specifique au mode reel 16 bits
+
+  Function SPtr : Word;
+    - Retourne le pointeur de pile courant (SP)
+    - Specifique au mode reel 16 bits
+
+  NOTE : en Win32 (mode protege 32 bits a plat), CSeg, DSeg, SSeg
+  et SPtr ne sont plus significatifs. Les segments sont tous = 0
+  ou ont des selecteurs systeme.
+
+==============================================================================
+  10. PROCEDURES ET FONCTIONS - REPERTOIRES
+==============================================================================
+
+  Procedure ChDir(rep : String);
+    - Change le repertoire courant
+    - Exemple : ChDir('C:\PROJETS');
+
+  Procedure MkDir(reper : String);
+    - Cree un nouveau repertoire
+    - Exemple : MkDir('C:\PROJETS\NOUVEAU');
+
+  Procedure RmDir(reper : String);
+    - Supprime un repertoire (doit etre vide)
+    - Exemple : RmDir('C:\PROJETS\ANCIEN');
+
+  Procedure GetDir(unite : Word; Var reper : String);
+    - Retourne le repertoire courant d'un lecteur
+    - unite = 0 pour le lecteur courant, 1=A, 2=B, 3=C, etc.
+    - Exemple : GetDir(0, S);  { S = 'C:\PROJETS' }
+
+==============================================================================
+  11. PROCEDURES ET FONCTIONS - ENSEMBLES
+==============================================================================
+
+  Procedure Include(Var S : Set of T; I : T);
+    - Ajoute l'element I a l'ensemble S
+    - Plus efficace que S := S + [I]
+    - Disponible a partir de TP 7.0
+    - Exemple : Include(MonSet, 'A');
+
+  Procedure Exclude(Var S : Set of T; I : T);
+    - Retire l'element I de l'ensemble S
+    - Plus efficace que S := S - [I]
+    - Disponible a partir de TP 7.0
+    - Exemple : Exclude(MonSet, 'A');
+
+==============================================================================
+  12. PROCEDURES ET FONCTIONS - CONTROLE DU PROGRAMME
+==============================================================================
+
+  Procedure Halt;
+  Procedure Halt(nbre : Word);
+    - Termine le programme immediatement
+    - nbre = code de sortie (0 par defaut = pas d'erreur)
+    - Les procedures ExitProc sont executees
+    - Les fichiers ne sont PAS fermes automatiquement
+    - Exemple : Halt(1);  { sortie avec erreur }
+
+  Procedure RunError(nbre : Word);
+    - Genere une erreur d'execution avec le code nbre
+    - Affiche le message d'erreur et termine le programme
+    - Codes courants :
+        1   = invalide function number
+        2   = file not found
+        3   = path not found
+        4   = too many open files
+        5   = file access denied
+        6   = invalid file handle
+        12  = invalid file access code
+        15  = invalid drive number
+        16  = cannot remove current directory
+        17  = cannot rename across drives
+        100 = disk read error
+        101 = disk write error
+        102 = file not assigned
+        103 = file not open
+        104 = file not open for input
+        105 = file not open for output
+        106 = invalid numeric format
+        150 = disk is write-protected
+        151 = bad drive request struct length
+        152 = drive not ready
+        154 = CRC error in data
+        156 = disk seek error
+        157 = unknown media type
+        158 = sector not found
+        159 = printer out of paper
+        160 = device write fault
+        161 = device read fault
+        162 = hardware failure
+        200 = division by zero
+        201 = range check error
+        202 = stack overflow error
+        203 = heap overflow error
+        204 = invalid pointer operation
+        205 = floating-point overflow
+        206 = floating-point underflow
+        207 = invalid floating-point operation
+
+==============================================================================
+  13. PROCEDURES ET FONCTIONS - ALEATOIRE
+==============================================================================
+
+  Function Random(max : Word) : Word;
+  Function Random : Real;
+    - Retourne un nombre pseudo-aleatoire
+    - Random(N) retourne un Word dans [0..N-1]
+    - Random (sans argument) retourne un Real dans [0.0..1.0[
+    - Utilise RandSeed comme graine
+    - Exemple : D := Random(6) + 1;  { de 1en : 1..6 }
+
+  Procedure Randomize;
+    - Initialise RandSeed a partir de l'horloge systeme
+    - Doit etre appele une seule fois, au debut du programme
+    - Sans appel a Randomize, RandSeed = 0 et la sequence
+      pseudo-aleatoire est toujours la meme
+    - Exemple :
+        Randomize;
+        WriteLn(Random(100));
+
+==============================================================================
+  14. PROCEDURES ET FONCTIONS - PARAMETRES DU PROGRAMME
+==============================================================================
+
+  Function ParamCount : Word;
+    - Retourne le nombre de parametres de la ligne de commande
+    - Le nom du programme n'est PAS compte
+    - Exemple : If ParamCount = 0 Then WriteLn('Usage: ...');
+
+  Function ParamStr(N : Word) : String;
+    - Retourne le N-ieme parametre de la ligne de commande
+    - ParamStr(0) = nom et chemin du programme
+    - ParamStr(1) = premier parametre, etc.
+    - NOTE : ParamStr n'est PAS dans l'interface System standard,
+      mais est une procedure intrinseque du runtime.
+
+==============================================================================
+  15. INTERFACE COMPLETE
+==============================================================================
+
+  Unit System;
+
+  INTERFACE
+
+  Const
+    OvrCodeList  : Word    = 0;
+    OvrHeapSize  : Word    = 0;
+    OvrDebugPtr  : Pointer = nil;
+    OvrHeapOrg   : Word    = 0;
+    OvrHeapPtr   : Word    = 0;
+    OvrHeapEnd   : Word    = 0;
+    OvrLoadList  : Word    = 0;
+    OvrDosHandle : Word    = 0;
+    OvrEmsHandle : Word    = $FFFF;
+    HeapOrg      : Pointer = nil;
+    HeapPtr      : Pointer = nil;
+    HeapEnd      : Pointer = nil;
+    FreeList     : Pointer = nil;
+    FreeZero     : Pointer = nil;
+    HeapError    : Pointer = nil;
+    ExitProc     : Pointer = nil;
+    ExitCode     : Integer = 0;
+    ErrorAddr    : Pointer = nil;
+    PrefixSeg    : Word    = 0;
+    StackLimit   : Word    = 0;
+    InOutRes     : Integer = 0;
+    RandSeed     : Longint = 0;
+    FileMode     : Byte    = 2;
+    Test8087     : Byte    = 0;
+
+  Var
+    Input     : Text;
+    Output    : Text;
+    SaveInt00 : Pointer;
+    SaveInt02 : Pointer;
+    SaveInt09 : Pointer;
+    SaveInt1B : Pointer;
+    SaveInt21 : Pointer;
+    SaveInt23 : Pointer;
+    SaveInt24 : Pointer;
+    SaveInt34 : Pointer;
+    SaveInt35 : Pointer;
+    SaveInt36 : Pointer;
+    SaveInt37 : Pointer;
+    SaveInt38 : Pointer;
+    SaveInt39 : Pointer;
+    SaveInt3A : Pointer;
+    SaveInt3B : Pointer;
+    SaveInt3C : Pointer;
+    SaveInt3D : Pointer;
+    SaveInt3E : Pointer;
+    SaveInt3F : Pointer;
+    SaveInt75 : Pointer;
+
+  { --- Arithmetique --- }
+  Function  Abs(n : Integer) : Integer;
+  Function  Abs(n : Real) : Real;
+  Function  Sqr(x : Integer) : Integer;
+  Function  Sqr(x : Real) : Real;
+  Function  Sqrt(r : Real) : Real;
+  Function  Sin(r : Real) : Real;
+  Function  Cos(r : Real) : Real;
+  Function  ArcTan(r : Real) : Real;
+  Function  Exp(r : Real) : Real;
+  Function  Ln(r : Real) : Real;
+  Function  Frac(r : Real) : Real;
+  Function  Int(r : Real) : Real;
+  Function  Round(n : Real) : LongInt;
+  Function  Trunc(r : Real) : LongInt;
+  Function  Odd(i : LongInt) : Boolean;
+  Function  Random(max : Word) : Word;
+  Procedure Randomize;
+
+  { --- Ordinaux --- }
+  Function  Ord(s) : LongInt;
+  Function  Chr(i : Byte) : Char;
+  Function  Pred(s : <type>) : <type>;
+  Function  Succ(s : <type>) : <type>;
+  Procedure Inc(Var s);
+  Procedure Inc(Var s; n : LongInt);
+  Procedure Dec(Var s);
+  Procedure Dec(Var s; n : LongInt);
+  Function  Hi(i : Word) : Byte;
+  Function  Lo(i : Word) : Byte;
+  Function  Swap(i : Word) : Word;
+  Function  UpCase(ch : Char) : Char;
+
+  { --- Chaines --- }
+  Function  Length(ch : String) : Integer;
+  Function  Copy(S : String; Index, Count : Integer) : String;
+  Function  Pos(search, source : String) : Integer;
+  Function  Concat(ch1, ch2, ... : String) : String;
+  Procedure Delete(Var S : String; Pos, nbre : Integer);
+  Procedure Insert(ch1 : String; Var ch2 : String; pos : Integer);
+  Procedure Str(nbre : <format>; Var ch : String);
+  Procedure Val(ch : String; Var nbre; Var err : Integer);
+
+  { --- E/S Fichier --- }
+  Procedure Assign(Var fich : File; nomfich : String);
+  Procedure Reset(Var fich : File);
+  Procedure Rewrite(Var fich : File);
+  Procedure Append(Var fich : Text);
+  Procedure Close(Var fich : File);
+  Procedure Flush(Var fich : Text);
+  Procedure Read(var1, var2, ...);
+  Procedure Read(Var fich : Text; var1, var2, ...);
+  Procedure ReadLn(var1, var2, ...);
+  Procedure ReadLn(Var fich : Text; var1, var2, ...);
+  Procedure Write(var1, var2, ...);
+  Procedure Write(Var fich : Text; var1, var2, ...);
+  Procedure WriteLn(var1, var2, ...);
+  Procedure WriteLn(Var fich : Text; var1, var2, ...);
+  Procedure BlockRead(Var fich : File; Var x; enrs : Word;
+                       Var enrs_lus : Word);
+  Procedure BlockWrite(Var fich : File; Var x; enrs : Word;
+                        Var enrs_ecrit : Word);
+  Function  Eof(Var fich : File) : Boolean;
+  Function  Eoln(Var fich : Text) : Boolean;
+  Function  SeekEof(Var fich : Text) : Boolean;
+  Function  SeekEoln(Var fich : Text) : Boolean;
+  Function  IoResult : Word;
+  Procedure Seek(Var fich : File; nbre : LongInt);
+  Function  FilePos(Var fich : File) : LongInt;
+  Function  FileSize(Var fich : File) : LongInt;
+  Procedure Truncate(Var fich : File);
+  Procedure Rename(Var fich : File; nouveaunom : String);
+  Procedure Erase(Var fich : File);
+  Procedure SetTextBuf(Var fich : Text; Var buffer; Taille : Word);
+
+  { --- Memoire et pointeurs --- }
+  Procedure New(Var p : Pointer);
+  Procedure Dispose(Var p : Pointer);
+  Procedure GetMem(Var p : Pointer; t : Word);
+  Procedure FreeMem(Var p : Pointer; t : Word);
+  Procedure Mark(Var p : Pointer);
+  Procedure Release(Var p : Pointer);
+  Function  MaxAvail : LongInt;
+  Function  MemAvail : LongInt;
+  Function  Addr(x) : Pointer;
+  Function  Assigned(Var P) : Boolean;
+  Function  Ptr(seg, ofs : Word) : Pointer;
+  Function  Ofs(ident) : Word;
+  Procedure Move(Const orig; Var dest; nbre : Word);
+  Procedure FillChar(Var tampon; nbre : Word; val : Byte);
+
+  { --- Repertoires --- }
+  Procedure ChDir(rep : String);
+  Procedure MkDir(reper : String);
+  Procedure RmDir(reper : String);
+  Procedure GetDir(unite : Word; Var reper : String);
+
+  { --- Ensembles (TP7) --- }
+  Procedure Include(Var S : Set of T; I : T);
+  Procedure Exclude(Var S : Set of T; I : T);
+
+  { --- Segments (mode reel 16 bits) --- }
+  Function  CSeg : Word;
+  Function  DSeg : Word;
+  Function  SSeg : Word;
+  Function  SPtr : Word;
+
+  { --- Controle --- }
+  Procedure Halt;
+  Procedure Halt(nbre : Word);
+  Procedure RunError(nbre : Word);
+  Function  ParamCount : Word;
+
+  IMPLEMENTATION
+
+==============================================================================
+  16. RESUME PAR CATEGORIE
+==============================================================================
+
+  CATEGORIE             | PROCEDURES/FONCTIONS
+  ----------------------+--------------------------------------------
+  E/S Fichier ouverture | Assign, Reset, Rewrite, Append, Close
+  E/S Fichier tests     | Eof, Eoln, SeekEof, SeekEoln, IoResult
+  E/S Fichier lecture   | Read, ReadLn, BlockRead
+  E/S Fichier ecriture  | Write, WriteLn, BlockWrite, Flush
+  E/S Fichier position  | Seek, FilePos, FileSize, Truncate
+  E/S Fichier gestion   | Rename, Erase, SetTextBuf
+  Chaines               | Length, Copy, Pos, Concat, Delete, Insert
+  Conversions chaine    | Str, Val, Chr, Ord, UpCase
+  Arithmetique          | Abs, Sqr, Sqrt, Sin, Cos, ArcTan, Exp, Ln
+  Reel                  | Frac, Int, Round, Trunc
+  Ordinaux              | Ord, Chr, Pred, Succ, Inc, Dec, Odd
+  Bits et octets        | Hi, Lo, Swap
+  Memoire               | New, Dispose, GetMem, FreeMem, Mark, Release
+  Info memoire           | MaxAvail, MemAvail
+  Pointeurs             | Addr, Assigned, Ptr, Ofs
+  Bloc memoire          | Move, FillChar
+  Repertoires           | ChDir, MkDir, RmDir, GetDir
+  Ensembles             | Include, Exclude
+  Segments              | CSeg, DSeg, SSeg, SPtr
+  Aleatoire             | Random, Randomize
+  Controle              | Halt, RunError
+  Parametres programme  | ParamCount, ParamStr
+
+==============================================================================
+  FIN DU DOCUMENT
+==============================================================================

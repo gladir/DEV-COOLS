@@ -1,7 +1,3 @@
-# Artefacts de compilation
 *.o
 *.obj
 *.ppu
-*.exe
-AL60C86
-SAMPLES/ALGOL60/*.asm

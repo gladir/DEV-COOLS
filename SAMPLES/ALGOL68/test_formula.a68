@@ -1,0 +1,29 @@
+BEGIN
+  INT a := 10;
+  INT b := 3;
+  INT c := a + b;
+  INT d := a - b;
+  INT e := a * b;
+  INT f := a OVER b;
+  INT g := a MOD b;
+  INT h := 2 ** 8;
+  BOOL p := a = 10;
+  BOOL q := a /= b;
+  BOOL r := a < 20;
+  BOOL s := a <= 10;
+  BOOL t := b > 1;
+  BOOL u := b >= 3;
+  BOOL v := TRUE AND FALSE;
+  BOOL w := TRUE OR FALSE;
+  BOOL x := NOT TRUE;
+  BITS bv := BIN 255;
+  INT shifted := a SHL 2;
+  INT rshift := a SHR 1;
+  a +:= 5;
+  b -:= 1;
+  c *:= 2;
+  d /:= 2;
+  STRING s1 := "hello";
+  STRING s2 := "world";
+  SKIP
+END

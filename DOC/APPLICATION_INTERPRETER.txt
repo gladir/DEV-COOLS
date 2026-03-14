@@ -1,0 +1,1784 @@
+==============================================================================
+  APPLICATION_INTERPRETER.txt
+  Comment ecrire un interpreteur de langage de programmation
+  Inspire des interpreteurs du projet DEV-COOLS
+  (BASIC.PAS, LOGO.PAS)
+==============================================================================
+
+Table des matieres
+------------------
+
+  1.  Introduction
+  2.  Interpreteur vs compilateur
+  3.  Architecture generale d un interpreteur
+  4.  Phase 1 : Les structures de donnees
+  5.  Phase 2 : La boucle REPL (Read-Eval-Print Loop)
+  6.  Phase 3 : L analyse lexicale (extraction de commandes)
+  7.  Phase 4 : La table des commandes
+  8.  Phase 5 : Le dispatch de commandes (aiguillage)
+  9.  Phase 6 : La gestion des variables
+  10. Phase 7 : L evaluation des expressions
+  11. Phase 8 : Les instructions de controle
+  12. Phase 9 : Le stockage et l execution de programmes
+  13. Phase 10 : Les entrees/sorties
+  14. Phase 11 : Les fonctions integrees
+  15. Phase 12 : L environnement graphique (cas de LOGO)
+  16. Le programme principal
+  17. Gestion des erreurs
+  18. Exemples concrets tires de BASIC.PAS
+  19. Exemples concrets tires de LOGO.PAS
+  20. Comparaison des interpreteurs du projet
+  21. Conseils pratiques
+
+==============================================================================
+  1. Introduction
+==============================================================================
+
+  Un interpreteur est un programme qui lit du code source et l execute
+  directement, instruction par instruction, sans produire de fichier
+  executable intermediaire. Contrairement a un compilateur qui traduit
+  tout le programme avant de l executer, l interpreteur traite chaque
+  ligne au moment ou il la rencontre.
+
+  Le projet DEV-COOLS contient deux interpreteurs complets :
+
+    - BASIC.PAS : interpreteur BASIC (1878 lignes)
+      Un interpreteur interactif du langage BASIC avec 92 commandes,
+      54 fonctions integrees, gestion de programmes en memoire avec
+      numeros de lignes, et une boucle REPL interactive.
+
+    - LOGO.PAS : interpreteur LOGO (1278 lignes)
+      Un interpreteur graphique du langage LOGO (tortue graphique)
+      avec 162 commandes, mode graphique VGA, et support bilingue
+      francais/anglais pour les mots-cles.
+
+  Ce document explique, etape par etape, comment ecrire un
+  interpreteur de langage de programmation en s inspirant de ces
+  deux programmes.
+
+  Le projet contient egalement plus de 120 compilateurs (CCW32.PAS,
+  CC8086.PAS, JAVAC86.PAS, KOTLIN86.PAS, etc.) documentes dans
+  DOC/APPLICATION_COMPILER.txt. La difference fondamentale entre
+  interpreteur et compilateur est expliquee a la section 2.
+
+==============================================================================
+  2. Interpreteur vs compilateur
+==============================================================================
+
+  2.1 Definitions
+  ---------------
+
+  Compilateur :
+    Lit le code source en entier, le traduit en code machine ou en
+    assembleur, puis produit un fichier executable (.EXE, .OBJ, .ASM).
+    L execution se fait plus tard, sans le compilateur.
+
+    Code source -> [Compilateur] -> Fichier executable -> [Execution]
+
+  Interpreteur :
+    Lit le code source ligne par ligne et l execute immediatement.
+    Pas de fichier executable produit. L interpreteur est toujours
+    necessaire pour executer le programme.
+
+    Code source -> [Interpreteur : lecture + execution simultanee]
+
+  2.2 Avantages de l interpreteur
+  --------------------------------
+
+    - Execution immediate : pas de phase de compilation
+    - Mode interactif (REPL) : ideal pour l apprentissage
+    - Debogage facile : arret et inspection a tout moment
+    - Portabilite : le meme interpreteur fonctionne partout
+    - Modification a chaud : modifier le programme sans recompiler
+
+  2.3 Avantages du compilateur
+  ----------------------------
+
+    - Performance : le code compile s execute beaucoup plus vite
+    - Distribution : un seul fichier executable suffit
+    - Optimisation : le compilateur peut reorganiser le code
+    - Protection : le code source n est pas distribue
+
+  2.4 Dans le projet DEV-COOLS
+  ----------------------------
+
+    Interpreteurs (execution directe) :
+      BASIC.PAS       -> Execute du BASIC interactivement
+      LOGO.PAS        -> Execute du LOGO avec tortue graphique
+
+    Compilateurs (generation de code) :
+      CCW32.PAS       -> Compile du C vers du code Win32
+      CC8086.PAS      -> Compile du C vers de l assembleur 8086
+      JAVAC86.PAS     -> Compile du Java vers de l assembleur 8086
+      KOTLIN86.PAS    -> Compile du Kotlin vers de l assembleur 8086
+      PYTHON86.PAS    -> Compile du Python vers de l assembleur 8086
+      PERL86.PAS      -> Compile du Perl vers de l assembleur 8086
+      PHP86.PAS       -> Compile du PHP vers de l assembleur 8086
+      ... (120+ compilateurs)
+
+  2.5 Approches hybrides
+  ----------------------
+
+  Certains langages combinent les deux approches :
+
+    - Compilation vers un bytecode intermediaire, puis interpretation
+      du bytecode (Java, Python, C#)
+    - Interpretation avec compilation JIT (Just-In-Time) des parties
+      critiques (JavaScript V8, LuaJIT)
+    - Transpilation : compilation vers un autre langage source
+      (TypeScript -> JavaScript, TP2JS.PAS dans le projet)
+
+==============================================================================
+  3. Architecture generale d un interpreteur
+==============================================================================
+
+  3.1 Schema global
+  -----------------
+
+  Un interpreteur suit un flux plus simple qu un compilateur :
+
+    Utilisateur
+        |
+        v
+    +---------------------------+
+    | Boucle REPL               |  Lire une ligne de l utilisateur
+    | (Read-Eval-Print Loop)    |  ou du fichier programme
+    +---------------------------+
+        |
+        v
+    +---------------------------+
+    | Analyse lexicale          |  Extraire la commande et les
+    |                           |  parametres de la ligne
+    +---------------------------+
+        |
+        v
+    +---------------------------+
+    | Dispatch de commandes     |  Identifier la commande dans la
+    | (aiguillage)              |  table et appeler le gestionnaire
+    +---------------------------+
+        |
+        v
+    +---------------------------+
+    | Evaluation des expressions|  Calculer les valeurs des
+    |                           |  operandes et des arguments
+    +---------------------------+
+        |
+        v
+    +---------------------------+
+    | Execution de la commande  |  Effectuer l action demandee
+    |                           |  (afficher, calculer, dessiner)
+    +---------------------------+
+        |
+        v
+    Resultat (affichage, etat modifie, graphique)
+
+  3.2 Composants principaux
+  -------------------------
+
+  Un interpreteur minimal comprend :
+
+    1. Une table de commandes (mots-cles reconnus)
+    2. Un systeme de variables (stockage de valeurs)
+    3. Un evaluateur d expressions (calcul arithmetique)
+    4. Un dispatch de commandes (aiguillage vers les gestionnaires)
+    5. Une boucle REPL (interaction avec l utilisateur)
+    6. Un stockage de programme (lignes numerotees en memoire)
+
+  3.3 Comparaison avec un compilateur
+  ------------------------------------
+
+    Composant           Compilateur              Interpreteur
+    ------------------  -----------------------  -----------------------
+    Entree              Fichier source complet   Ligne par ligne
+    Analyse lexicale    Lexer avec jetons        Extraction de commande
+    Analyse syntaxique  Parser arbre/recurrence  Dispatch Case/Of
+    Table symboles      TSymbol + portees        VarList[] simple
+    Generation          Code assembleur/binaire  Execution directe
+    Sortie              Fichier .ASM/.OBJ/.EXE   Resultat a l ecran
+    Mode interactif     Non                      Oui (REPL)
+
+==============================================================================
+  4. Phase 1 : Les structures de donnees
+==============================================================================
+
+  4.1 Le type de variable polymorphe
+  -----------------------------------
+
+  Un interpreteur doit stocker des variables de types differents
+  dans une meme structure. La technique classique est le record
+  variant (union discriminee) :
+
+    VarTypeEnum = (_None, _Integer, _LongInt, _Real, _String);
+
+    VarRec = Record
+      Variant : Record Case Integer of
+        0 : (I : Integer);       { Valeur entiere }
+        1 : (L : LongInt);       { Valeur entiere longue }
+        2 : (R : Real);          { Valeur reelle }
+        3 : (S : StrPointer);    { Pointeur vers chaine }
+      End;
+      VarType : VarTypeEnum;     { Discriminant de type }
+      VarName : String[20];      { Nom de la variable }
+    End;
+
+  Cette structure est identique dans BASIC.PAS et LOGO.PAS.
+  Le champ VarType permet de savoir quel membre du variant est actif.
+
+  En C, on utiliserait une union avec un enum de type :
+
+    typedef struct {
+      union { int i; long l; double r; char *s; } val;
+      int type;
+      char name[21];
+    } VarRec;
+
+  4.2 Le tableau de variables
+  ---------------------------
+
+  Les variables sont stockees dans un tableau de pointeurs :
+
+    Const MaxVariable = 100;
+
+    Var
+      VarList : Array[1..MaxVariable] of VarPointer;
+      NumberVariable : Integer;
+
+  Chaque variable est allouee dynamiquement avec GetMem :
+
+    GetMem(P, SizeOf(VarRec));
+    P^.VarName := 'COMPTEUR';
+    P^.VarType := _Integer;
+    P^.Variant.I := 0;
+    VarList[NumberVariable] := P;
+
+  4.3 Le stockage de programme
+  ----------------------------
+
+  Les programmes sont stockes comme un tableau de lignes :
+
+    Const MaxLine = 1024;
+
+    Var
+      PA : Array[1..MaxLine] of StrPointer;  { Programme en memoire }
+      NumberLine : Integer;                   { Nombre de lignes }
+      CurrLinePtr : Integer;                  { Ligne courante }
+      CurrNumberLine : Integer;               { Numero de ligne BASIC }
+
+  Chaque ligne est une chaine allouee dynamiquement :
+
+    Inc(NumberLine);
+    GetMem(P, Length(S) + 1);
+    P^ := S;
+    PA[NumberLine] := P;
+
+  4.4 Les piles de controle
+  -------------------------
+
+  Pour gerer les structures de controle imbriquees (FOR/NEXT,
+  GOSUB/RETURN), on utilise des piles :
+
+    GosubStackRec = Record
+      Line, Col : Word;         { Position dans la ligne }
+      LineNumber : Integer;     { Numero de ligne de retour }
+    End;
+
+    ForStackRec = Record
+      Line, Col : Word;
+      LineNumber : Integer;
+      VarName : String[20];    { Variable de boucle }
+    End;
+
+    Var
+      GosubStack : Array[1..10] of GosubStackRec;
+      GosubPos   : Byte;        { Sommet de la pile GOSUB }
+      ForStack   : Array[1..10] of ForStackRec;
+      ForPos     : Byte;        { Sommet de la pile FOR }
+
+  La profondeur maximale d imbrication est limitee a 10.
+
+  4.5 L etat courant
+  ------------------
+
+  L interpreteur maintient un etat global :
+
+    Var
+      Terminated     : Boolean;    { Fin du programme }
+      Tron           : Boolean;    { Mode trace actif (BASIC) }
+      CurrCommand    : String;     { Commande en cours }
+      CurrLine       : String;     { Ligne courante }
+      CurrPos        : Byte;       { Position dans CurrLine }
+      FileName       : String;     { Fichier charge }
+
+  Pour LOGO, on ajoute l etat graphique :
+
+    Var
+      X, Y           : Integer;    { Position de la tortue }
+      Angle          : Real;       { Direction de la tortue }
+      PenDown        : Boolean;    { Crayon baisse ou leve }
+      MaxX           : Word;       { Largeur de l ecran }
+
+==============================================================================
+  5. Phase 2 : La boucle REPL (Read-Eval-Print Loop)
+==============================================================================
+
+  5.1 Principe du REPL
+  --------------------
+
+  Le REPL est la boucle principale d un interpreteur interactif.
+  Son nom vient des trois etapes qui se repetent :
+
+    Read  : Lire une ligne de l utilisateur
+    Eval  : Evaluer (interpreter) cette ligne
+    Print : Afficher le resultat
+    Loop  : Recommencer
+
+  5.2 REPL de BASIC.PAS
+  ----------------------
+
+  Le REPL de BASIC est le plus simple possible :
+
+    Terminated := False;
+    Repeat
+      WriteLn('Ok');              { Invite de commande }
+      ReadLn(CurrLine);           { Lire la ligne }
+      CurrLine := LTrim(CurrLine); { Enlever les espaces }
+      RunBasic(False);            { Evaluer et executer }
+    Until Terminated;
+
+  La commande SYSTEM met Terminated a True pour quitter.
+
+  Le parametre InList de RunBasic indique si on execute une ligne
+  du programme en memoire (True) ou une commande directe (False).
+
+  5.3 REPL de LOGO.PAS
+  ---------------------
+
+  Le REPL de LOGO est similaire mais avec un mode graphique :
+
+    Repeat
+      ShowPrompt;                { Afficher le prompt }
+      ReadLine(CurrLine);       { Lire avec curseur graphique }
+      RunCommand;               { Evaluer et executer }
+    Until Terminated;
+
+  La difference est que ReadLine gere l affichage graphique du
+  curseur et des caracteres, car LOGO utilise le mode graphique
+  VGA en permanence.
+
+  5.4 Mode fichier vs mode interactif
+  ------------------------------------
+
+  Les deux interpreteurs supportent les deux modes :
+
+  Mode interactif :
+    L utilisateur tape des commandes une par une.
+    Le REPL affiche un prompt et attend la saisie.
+
+  Mode fichier :
+    Un fichier programme est charge et execute automatiquement.
+
+  BASIC.PAS :
+    If FileName <> '' Then Begin
+      CurrLine := 'LOAD "' + FileName + '":RUN';
+      RunBasic(False);
+    End;
+
+  LOGO.PAS :
+    If ParamCount > 0 Then Begin
+      LoadCommand;               { Charger le fichier }
+      RunListCommand;            { Executer toutes les lignes }
+      ReadKey;                   { Attendre une touche }
+    End;
+
+==============================================================================
+  6. Phase 3 : L analyse lexicale (extraction de commandes)
+==============================================================================
+
+  6.1 ExtractCommand
+  ------------------
+
+  L analyse lexicale d un interpreteur est plus simple que celle
+  d un compilateur. Au lieu de produire un flux de jetons, on
+  extrait simplement le mot-cle de commande de la ligne courante.
+
+  La fonction ExtractCommand :
+
+    1. Saute les espaces au debut de la ligne
+    2. Extrait le premier mot (lettres et eventuellement tirets)
+    3. Cherche ce mot dans la table CommandList
+    4. Retourne l index de la commande (ou 255 si non trouvee)
+    5. Avance CurrPos apres le mot-cle
+
+  6.2 Difference avec un lexer de compilateur
+  --------------------------------------------
+
+    Lexer de compilateur :
+      - Produit un flux complet de jetons (tokens)
+      - Chaque jeton a un type (TK_IDENT, TK_NUMBER, TK_STRING, ...)
+      - Le lexer est separe du parseur
+      - Les jetons sont stockes dans un pool
+
+    Lexer d interpreteur :
+      - Extrait une commande a la fois
+      - Utilise directement la chaine CurrLine
+      - Le parsing et l execution sont entrelaces
+      - Pas de stockage intermediaire
+
+  6.3 Fonctions auxiliaires de parsing
+  ------------------------------------
+
+  L interpreteur utilise des fonctions simples pour extraire
+  les parametres de la ligne courante :
+
+    SkipSpace :
+      Avance CurrPos tant que le caractere est un espace.
+
+    GetSeparator :
+      Retourne le prochain caractere non-espace.
+
+    GetStringValue :
+      Extrait une chaine entre guillemets de CurrLine.
+
+    GetNumberValue :
+      Extrait et evalue une expression numerique.
+
+    GetIdentifier :
+      Extrait un nom de variable ou de commande.
+
+  Ces fonctions travaillent toutes sur CurrLine et CurrPos
+  comme variables globales.
+
+==============================================================================
+  7. Phase 4 : La table des commandes
+==============================================================================
+
+  7.1 Structure de la table
+  -------------------------
+
+  La table des commandes est un simple tableau de chaines :
+
+  BASIC.PAS (92 commandes) :
+
+    CommandList : Array[0..91] of String[12] = (
+      'AND', 'AUTO', 'BEEP', 'BLOAD', 'BSAVE', 'CALL',
+      'CAT', 'CHAIN', 'CHDIR', 'CIRCLE', 'CLEAR', 'CLOSE',
+      'CLR', 'CLS', 'COLOR', 'COM', 'COMMON', 'CONT',
+      'DATA', 'DEF', 'DELETE', 'DIM', 'DRAW', 'EDIT',
+      'ELSE', 'END', 'ERASE', 'ERROR', 'FIELD', 'FILES',
+      'FOR', 'GET', 'GOSUB', 'GOTO', 'HELP', 'IF',
+      'INPUT', 'KEY', 'KILL', 'LET', 'LINE', 'LIST',
+      'LLIST', 'LOAD', 'LOCATE', 'LPRINT', 'LSET', 'MERGE',
+      'MKDIR', 'NAME', 'NEW', 'NEXT', 'ON', 'OPEN',
+      'OPTION', 'OR', 'OUT', 'PAINT', 'PALETTE', 'POKE',
+      'PLAY', 'PRESET', 'PRINT', 'PSET', 'PUT', 'RANDOMIZE',
+      'READ', 'REM', 'RENUM', 'RESET', 'RESUME', 'RESTORE',
+      'RETURN', 'RMDIR', 'RSET', 'RUN', 'SAVE', 'SCREEN',
+      'SHELL', 'SLEEP', 'STOP', 'SYSTEM', 'THEN', 'TROFF',
+      'TRON', 'VIEW', 'WAIT', 'WEND', 'WHILE', 'WIDTH',
+      'WINDOW', 'WRITE'
+    );
+
+  LOGO.PAS (162 commandes, bilingue francais/anglais) :
+
+    CommandList : Array[0..161] of String[15] = (
+      'AFFICHE', 'AFFICHER', 'ALLER', 'ALLERX', 'ALLERY',
+      'ANGLE', 'ARG', 'ARGUMENT', 'ARRIERE', 'AV',
+      'AVANCE', 'AVANCER', 'BACK', 'BACK-COLOR', ...
+      'FORWARD', ... 'GAUCHE', ... 'LEFT', ... 'RIGHT', ...
+      'TOURNE-DROITE', 'TOURNE-GAUCHE', ... 'WALK', ...
+    );
+
+  7.2 Table des fonctions
+  -----------------------
+
+  En plus des commandes, BASIC.PAS definit une table de fonctions :
+
+    FunctionList : Array[0..53] of String[12] = (
+      'ABS', 'ASC', 'ATN', 'CHR$', 'CINT', 'COS', 'CSNG',
+      'CSRLIN', 'DATE$', 'EOF', 'EXP', 'FIX', 'FRE',
+      'HEX$', 'INKEY$', 'INPUT$', 'INSTR', 'INT', 'LEFT$',
+      'LEN', 'LOC', 'LOF', 'LOG', 'LPOS', 'MID$', 'MKD$',
+      'MKI$', 'MKS$', 'OCT$', 'PEEK', 'POS', 'RIGHT$',
+      'RND', 'SCREEN', 'SGN', 'SIN', 'SPACE$', 'SPC',
+      'SQR', 'STR$', 'STRING$', 'TAB', 'TAN', 'TIME$',
+      'TIMER', 'USR', 'VAL', 'VARPTR', 'VARPTR$',
+      'NOT', 'AND', 'OR', 'XOR', 'MOD'
+    );
+
+  Les fonctions retournent une valeur et sont utilisees dans les
+  expressions, tandis que les commandes effectuent des actions.
+
+  7.3 Recherche dans la table
+  ---------------------------
+
+  ExtractCommand fait une recherche lineaire dans la table :
+
+    For I := 0 to High(CommandList) do
+      If CurrCommand = CommandList[I] Then Begin
+        ExtractCommand := I;
+        Exit;
+      End;
+    ExtractCommand := 255;  { Non trouve }
+
+  Pour un interpreteur avec peu de commandes (< 200), la recherche
+  lineaire est suffisante. Pour un langage avec des centaines de
+  mots-cles, on pourrait utiliser :
+
+    - Une table de hachage (O(1) en moyenne)
+    - Une recherche binaire (O(log n), table triee)
+    - Un trie (arbre de prefixes)
+
+==============================================================================
+  8. Phase 5 : Le dispatch de commandes (aiguillage)
+==============================================================================
+
+  8.1 Principe du dispatch
+  ------------------------
+
+  Le dispatch est le coeur de l interpreteur. Il associe chaque
+  index de commande a sa procedure de traitement.
+
+  Le mecanisme utilise est un Case/Of (switch/case en C) :
+
+    Case ExtractCommand of
+      0 : CommandeA;
+      1 : CommandeB;
+      2 : CommandeC;
+      ...
+      Else : TraiterCommandeInconnue;
+    End;
+
+  8.2 Dispatch de BASIC.PAS
+  -------------------------
+
+  Le dispatch de BASIC utilise les 92 index de CommandList :
+
+    Case ExtractCommand of
+      0  : { AND }    - operateur logique
+      1  : { AUTO }   - numerotation automatique
+      2  : BeepCommand;
+      8  : ChDirCommand;
+      13 : ClrScr;            { CLS }
+      14 : ColorCommand;
+      29 : FilesCommand;
+      30 : If Not(ForCommand) Then Exit;
+      32 : If Not(GosubCommand) Then Exit;
+      33 : If Not(GotoCommand) Then Exit;
+      35 : IfCommand;
+      36 : InputCommand;
+      41 : ListCommand;
+      43 : LoadCommand;
+      44 : LocateCommand;
+      51 : NextCommand;
+      62 : PrintCommand;
+      67 : RemCommand;         { Commentaire }
+      72 : ReturnCommand;
+      75 : RunCommand;
+      76 : SaveCommand;
+      80 : Exit;               { STOP }
+      81 : Terminated := True; { SYSTEM }
+      84 : TronCommand;
+      85 : TroffCommand;
+      Else : UnknownCommand := True;
+    End;
+
+  8.3 Dispatch de LOGO.PAS
+  ------------------------
+
+  LOGO utilise 162 commandes avec beaucoup de synonymes
+  (francais et anglais pour la meme action) :
+
+    Case ExtractCommand of
+      0  : PrintCommand;       { AFFICHE }
+      1  : PrintCommand;       { AFFICHER }
+      3  : GoXCommand;         { ALLERX }
+      4  : GoYCommand;         { ALLERY }
+      5  : AngleCommand;       { ANGLE }
+      8  : BackwardCommand;    { ARRIERE }
+      10 : ForwardCommand;     { AVANCE }
+      11 : ForwardCommand;     { AVANCER }
+      16 : BackwardCommand;    { BACKWARD }
+      18 : PenDownCommand;     { BAISSER-CRAYON }
+      49 : ForwardCommand;     { FD }
+      55 : ForwardCommand;     { FORWARD }
+      57 : LeftCommand;        { GAUCHE }
+      63 : Terminated := True; { GOODBYE }
+      69 : HomeCommand;        { HOME }
+      72 : LeftCommand;        { LEFT }
+      73 : PenUpCommand;       { LEVE }
+      Else : NoImplementation := True;
+    End;
+
+  Plusieurs index pointent vers la meme procedure (synonymes).
+  Par exemple, AVANCE, AVANCER, FD et FORWARD appellent tous
+  ForwardCommand.
+
+  8.4 Gestion des commandes non implementees
+  -------------------------------------------
+
+  BASIC.PAS signale les commandes inconnues :
+
+    If UnknownCommand Then
+      WriteLn('Commande inconnue : ', CurrCommand);
+
+  LOGO.PAS utilise un drapeau :
+
+    NoImplementation := True;
+
+  Cela permet de continuer l execution sans erreur fatale.
+
+  8.5 Commandes avec retour de succes
+  ------------------------------------
+
+  Certaines commandes peuvent echouer (erreur de syntaxe, fin de
+  fichier, etc.). Elles retournent un Boolean :
+
+    If Not(ForCommand) Then Exit;
+    If Not(GosubCommand) Then Exit;
+    If Not(GotoCommand) Then Exit;
+
+  Si la commande echoue, l execution de la ligne s arrete.
+
+==============================================================================
+  9. Phase 6 : La gestion des variables
+==============================================================================
+
+  9.1 Recherche de variable
+  -------------------------
+
+  La recherche se fait par nom dans le tableau VarList :
+
+    Function VariableExist(S : String) : Boolean;
+    Var I : Integer;
+    Begin
+      VariableExist := False;
+      For I := 1 to NumberVariable do
+        If StrToUpper(S) = VarList[I]^.VarName Then Begin
+          VariableExist := True;
+          Exit;
+        End;
+    End;
+
+  Les noms de variables sont convertis en majuscules pour une
+  comparaison insensible a la casse.
+
+  9.2 Consultation du type
+  ------------------------
+
+    Function VariableType(S : String) : VarTypeEnum;
+    Var I : Integer;
+    Begin
+      VariableType := _None;
+      For I := 1 to NumberVariable do
+        If StrToUpper(S) = VarList[I]^.VarName Then Begin
+          VariableType := VarList[I]^.VarType;
+          Exit;
+        End;
+    End;
+
+  9.3 Creation de variable
+  ------------------------
+
+  Chaque type a sa propre fonction d ajout :
+
+    Function AddVariableInt(S : String; Value : Integer) : Boolean;
+    Var P : VarPointer;
+    Begin
+      If NumberVariable >= MaxVariable Then Begin
+        AddVariableInt := False;
+        Exit;
+      End;
+      Inc(NumberVariable);
+      GetMem(P, SizeOf(VarRec));
+      P^.VarName := Copy(StrToUpper(S), 1, 20);
+      P^.VarType := _Integer;
+      P^.Variant.I := Value;
+      VarList[NumberVariable] := P;
+      AddVariableInt := True;
+    End;
+
+  Fonctions similaires : AddVariableLongInt, AddVariableReal,
+  AddVariableStr.
+
+  9.4 Lecture et ecriture
+  -----------------------
+
+    Function GetVariableInt(S : String) : Integer;
+    Var I : Integer;
+    Begin
+      GetVariableInt := 0;
+      For I := 1 to NumberVariable do
+        If StrToUpper(S) = VarList[I]^.VarName Then Begin
+          GetVariableInt := VarList[I]^.Variant.I;
+          Exit;
+        End;
+    End;
+
+    Procedure SetVariableInt(S : String; Value : Integer);
+    Var I : Integer;
+    Begin
+      For I := 1 to NumberVariable do
+        If S = VarList[I]^.VarName Then Begin
+          VarList[I]^.Variant.I := Value;
+          Exit;
+        End;
+    End;
+
+  9.5 Convention de typage BASIC
+  ------------------------------
+
+  En BASIC, le type de la variable est determine par un suffixe :
+
+    Suffixe  Type        Exemple
+    -------  ----------  --------
+    %        Integer     COMPTEUR%
+    &        LongInt     TOTAL&
+    !        Real        PRIX!
+    #        Double      PI#
+    $        String      NOM$
+
+  L interpreteur detecte le suffixe pour choisir la bonne
+  fonction d ajout/lecture/ecriture.
+
+  9.6 Variables en LOGO
+  ---------------------
+
+  LOGO utilise la commande MAKE pour creer des variables :
+
+    MAKE "TAILLE 100
+
+  Le nom de la variable est precede de guillemets.
+  La lecture se fait avec le prefixe : (deux-points) :
+
+    FORWARD :TAILLE
+
+==============================================================================
+  10. Phase 7 : L evaluation des expressions
+==============================================================================
+
+  10.1 L evaluateur de BASIC
+  --------------------------
+
+  L evaluateur d expressions de BASIC.PAS (GetNumberValue) est
+  un evaluateur a pile qui convertit les expressions infixes en
+  notation postfixe avant de les evaluer.
+
+  Etapes :
+    1. Lire les termes de l expression dans CurrLine
+    2. Convertir en notation postfixe (algorithme de shunting-yard)
+    3. Evaluer la pile postfixe
+
+  10.2 Algorithme general
+  -----------------------
+
+  L algorithme de shunting-yard (gare de triage) :
+
+    Pour chaque element de l expression :
+      Si c est un nombre : l ajouter a la sortie
+      Si c est une variable : resoudre et ajouter a la sortie
+      Si c est une fonction : empiler sur la pile d operateurs
+      Si c est un operateur :
+        Tant que le sommet de la pile a une priorite >= :
+          Depiler vers la sortie
+        Empiler l operateur
+      Si c est ( : empiler
+      Si c est ) : depiler jusqu a (
+    Depiler tous les operateurs restants vers la sortie
+
+  10.3 Priorite des operateurs
+  ----------------------------
+
+  Les operateurs sont evalues selon leur priorite :
+
+    Priorite  Operateurs
+    --------  ----------
+    1 (basse) OR
+    2         AND
+    3         NOT
+    4         =, <>, <, >, <=, >=
+    5         +, -
+    6         *, /
+    7         ^
+    8 (haute) Unaire -, fonctions
+
+  10.4 Evaluation des fonctions integrees
+  ----------------------------------------
+
+  Les fonctions sont evaluees directement lors du parsing :
+
+    Si le mot est dans FunctionList :
+      Lire les arguments entre parentheses
+      Calculer le resultat
+      Ajouter le resultat a la pile
+
+  Exemple pour ABS :
+
+    ABS(-5)
+      -> Evaluer -5 = -5
+      -> Appliquer ABS = 5
+      -> Ajouter 5 a la pile
+
+  10.5 Evaluation recursive
+  -------------------------
+
+  Les arguments de fonctions peuvent contenir des sous-expressions :
+
+    SIN(2 * PI * X / 360)
+
+  L evaluateur s appelle recursivement pour resoudre les
+  sous-expressions dans les parentheses.
+
+  10.6 Gestion des types dans les expressions
+  --------------------------------------------
+
+  L evaluateur detecte le type de chaque operande :
+
+    - Constante numerique : analyse du nombre
+    - Variable : consultation du type dans VarList
+    - Fonction : type de retour connu
+
+  Les conversions sont automatiques :
+    Integer -> Real (promotion)
+    Real -> Integer (troncature avec CINT)
+
+==============================================================================
+  11. Phase 8 : Les instructions de controle
+==============================================================================
+
+  11.1 GOTO et GOSUB
+  ------------------
+
+  GOTO :
+    Cherche la ligne avec le numero indique dans PA[].
+    Modifie CurrLinePtr pour sauter a cette ligne.
+
+    Procedure GotoCommand;
+    Begin
+      CurrNumberLine := GetNumberValue;  { Lire le numero }
+      { Chercher la ligne dans PA[] }
+      For I := 1 to NumberLine do
+        If FirstNumberInStr(PA[I]^) = CurrNumberLine Then Begin
+          CurrLinePtr := I;
+          Exit;
+        End;
+      WriteLn('Ligne inexistante : ', CurrNumberLine);
+    End;
+
+  GOSUB :
+    Meme chose que GOTO, mais empile l adresse de retour :
+
+    Procedure GosubCommand;
+    Begin
+      Inc(GosubPos);
+      GosubStack[GosubPos].LineNumber := CurrNumberLine;
+      GosubStack[GosubPos].Line := CurrLinePtr;
+      GotoCommand;  { Sauter a la sous-routine }
+    End;
+
+  RETURN :
+    Depile et retourne a l adresse sauvegardee :
+
+    Procedure ReturnCommand;
+    Begin
+      CurrLinePtr := GosubStack[GosubPos].Line;
+      Dec(GosubPos);
+    End;
+
+  11.2 FOR/NEXT
+  -------------
+
+  FOR empile le contexte de boucle :
+
+    FOR I = 1 TO 10
+      { Corps de la boucle }
+    NEXT I
+
+  L interpreteur :
+    1. Cree ou met a jour la variable de boucle
+    2. Empile l adresse de debut de boucle dans ForStack
+    3. A NEXT : incremente la variable et compare a la borne
+    4. Si pas fini : retourne au debut (CurrLinePtr = ForStack.Line)
+    5. Si fini : depile et continue
+
+  11.3 IF/THEN/ELSE
+  -----------------
+
+  IF evalue une condition et execute la suite selon le resultat :
+
+    IF condition THEN instruction [ELSE instruction]
+
+  L interpreteur :
+    1. Evalue la condition (GetNumberValue)
+    2. Si vraie (non nulle) : execute apres THEN
+    3. Si fausse (nulle) : cherche ELSE et execute apres
+
+  11.4 WHILE/WEND
+  ---------------
+
+  Boucle tant que la condition est vraie :
+
+    WHILE condition
+      { Corps }
+    WEND
+
+  L interpreteur sauvegarde la position du WHILE et re-evalue
+  la condition a chaque iteration.
+
+  11.5 Differences avec un compilateur
+  ------------------------------------
+
+  Dans un compilateur, les instructions de controle generent
+  des sauts en assembleur (JMP, JZ, JNZ). Dans un interpreteur,
+  elles modifient directement le pointeur de ligne CurrLinePtr
+  ou l index de position CurrPos dans la ligne.
+
+==============================================================================
+  12. Phase 9 : Le stockage et l execution de programmes
+==============================================================================
+
+  12.1 Stockage des lignes
+  ------------------------
+
+  En BASIC, un programme est une suite de lignes numerotees :
+
+    10 PRINT "BONJOUR"
+    20 GOTO 10
+
+  L interpreteur stocke chaque ligne dans le tableau PA[] :
+
+    Function AddLine(S : String) : Boolean;
+    Begin
+      If NumberLine >= MaxLine Then Begin
+        AddLine := False;
+        Exit;
+      End;
+      Inc(NumberLine);
+      GetMem(P, Length(S) + 1);
+      P^ := S;
+      PA[NumberLine] := P;
+      AddLine := True;
+    End;
+
+  12.2 Tri par numero de ligne
+  ----------------------------
+
+  Apres l ajout d une ligne, le tableau est retrie par numero
+  de ligne (tri rapide QuickSort) :
+
+    Procedure ResortList;
+
+  Cela permet d inserer des lignes dans le desordre :
+
+    20 GOTO 10     { Ajoutee en premier }
+    10 PRINT "OK"  { Ajoutee en second, mais triee avant }
+
+  12.3 Commandes de programme directes vs stockees
+  -------------------------------------------------
+
+  BASIC distingue deux types de saisie :
+
+    Avec numero de ligne -> stocker dans PA[]
+      10 PRINT "HELLO"
+
+    Sans numero de ligne -> executer immediatement
+      PRINT "HELLO"
+
+  La fonction RunBasic detecte si la ligne commence par un
+  chiffre :
+
+    Si la ligne commence par un chiffre :
+      AddLine(CurrLine)    { Stocker }
+      ResortList            { Retrier }
+    Sinon :
+      ExtractCommand        { Identifier la commande }
+      Executer              { Traiter immediatement }
+
+  12.4 La commande RUN
+  --------------------
+
+  RUN execute le programme en memoire :
+
+    Procedure RunCommand;
+    Begin
+      CurrLinePtr := 1;
+      While CurrLinePtr <= NumberLine do Begin
+        CurrLine := PA[CurrLinePtr]^;
+        { Extraire le numero de ligne }
+        { Avancer CurrPos apres le numero }
+        RunBasic(True);
+        Inc(CurrLinePtr);
+      End;
+    End;
+
+  Chaque ligne est passee a RunBasic avec InList=True pour
+  indiquer qu on execute depuis le programme stocke.
+
+  12.5 La commande LIST
+  ---------------------
+
+  LIST affiche le programme en memoire :
+
+    Procedure ListCommand;
+    Begin
+      For I := 1 to NumberLine do
+        WriteLn(PA[I]^);
+    End;
+
+  12.6 LOAD et SAVE
+  -----------------
+
+  LOAD lit un fichier .BAS et le charge dans PA[] :
+
+    Procedure LoadCommand;
+    Begin
+      NewCommand;               { Effacer le programme courant }
+      Assign(FileLoad, FileName);
+      Reset(FileLoad);
+      While Not EOF(FileLoad) do Begin
+        ReadLn(FileLoad, S);
+        AddLine(LTrim(S));      { Ajouter chaque ligne }
+      End;
+      Close(FileLoad);
+      ResortList;               { Trier par numero de ligne }
+    End;
+
+  SAVE ecrit PA[] dans un fichier :
+
+    Procedure SaveCommand;
+    Begin
+      Assign(FileLoad, FileName);
+      Rewrite(FileLoad);
+      For I := 1 to NumberLine do
+        WriteLn(FileLoad, PA[I]^);
+      Close(FileLoad);
+    End;
+
+  12.7 La commande NEW
+  --------------------
+
+  NEW efface le programme en memoire :
+
+    Procedure NewCommand;
+    Begin
+      For I := 1 to NumberLine do
+        FreeMem(PA[I], Length(PA[I]^) + 1);
+      NumberLine := 0;
+      NumberVariable := 0;
+    End;
+
+==============================================================================
+  13. Phase 10 : Les entrees/sorties
+==============================================================================
+
+  13.1 PRINT (affichage)
+  ----------------------
+
+  La commande PRINT est la plus utilisee en BASIC. Elle affiche
+  des expressions separees par des virgules ou des points-virgules :
+
+    PRINT "Hello, "; NOM$; " Age:"; AGE%
+
+  L interpreteur boucle sur les elements :
+
+    Procedure PrintCommand;
+    Begin
+      Repeat
+        Si element = chaine : WriteLn la chaine
+        Si element = expression : WriteLn la valeur
+        Si separateur = ';' : pas de saut de ligne
+        Si separateur = ',' : tabulation
+      Until fin de ligne ou ':'
+    End;
+
+  Le separateur ; supprime le saut de ligne, ce qui permet
+  d afficher plusieurs elements sur la meme ligne.
+
+  13.2 INPUT (saisie)
+  -------------------
+
+  INPUT lit une valeur de l utilisateur et la stocke :
+
+    INPUT "Votre nom ? "; NOM$
+
+  L interpreteur :
+    1. Affiche le message (optionnel)
+    2. Lit une ligne de l utilisateur (ReadLn)
+    3. Stocke la valeur dans la variable
+
+  13.3 Entrees/sorties fichier
+  ----------------------------
+
+  BASIC supporte les operations fichier :
+
+    OPEN "fichier.txt" FOR INPUT AS #1
+    INPUT #1, LIGNE$
+    CLOSE #1
+
+  13.4 LOGO : PRINT et READ
+  --------------------------
+
+  En LOGO, l affichage utilise PRINT ou AFFICHE :
+
+    PRINT 42
+    AFFICHE "HELLO
+
+  La commande ecrit le texte dans la zone graphique en utilisant
+  les coordonnees XPos/YPos.
+
+==============================================================================
+  14. Phase 11 : Les fonctions integrees
+==============================================================================
+
+  14.1 Fonctions mathematiques
+  ----------------------------
+
+  BASIC.PAS implemente les fonctions mathematiques standard :
+
+    ABS(x)    Valeur absolue
+    ATN(x)    Arc tangente
+    COS(x)    Cosinus
+    EXP(x)    Exponentielle
+    INT(x)    Partie entiere
+    LOG(x)    Logarithme naturel
+    RND(x)    Nombre aleatoire
+    SGN(x)    Signe (-1, 0, 1)
+    SIN(x)    Sinus
+    SQR(x)    Racine carree
+    TAN(x)    Tangente
+
+  14.2 Fonctions de chaines
+  -------------------------
+
+    ASC(s$)       Code ASCII du premier caractere
+    CHR$(n)       Caractere de code ASCII n
+    LEFT$(s$,n)   n premiers caracteres
+    MID$(s$,p,n)  Sous-chaine a partir de p, longueur n
+    RIGHT$(s$,n)  n derniers caracteres
+    LEN(s$)       Longueur de la chaine
+    STR$(n)       Nombre vers chaine
+    VAL(s$)       Chaine vers nombre
+    INSTR(s$,t$)  Position de t$ dans s$
+    SPACE$(n)     Chaine de n espaces
+    STRING$(n,c$) Chaine de n repetitions de c$
+
+  14.3 Fonctions de conversion
+  ----------------------------
+
+    CINT(x)     Convertit en Integer
+    CSNG(x)     Convertit en Single
+    FIX(x)      Troncature vers zero
+    HEX$(n)     Hexadecimal
+    OCT$(n)     Octal
+
+  14.4 Fonctions systeme
+  ----------------------
+
+    DATE$       Date courante
+    TIME$       Heure courante
+    TIMER       Secondes depuis minuit
+    INKEY$      Touche pressee (sans attente)
+    CSRLIN      Ligne du curseur
+    POS(x)      Colonne du curseur
+
+  14.5 Implementation des fonctions
+  ---------------------------------
+
+  Les fonctions sont evaluees dans GetNumberValue quand un
+  identifiant correspond a un element de FunctionList :
+
+    Si mot = 'ABS' :
+      Lire la parenthese ouvrante
+      Evaluer l argument recursivement
+      Appliquer la fonction Abs()
+      Lire la parenthese fermante
+
+    Si mot = 'LEN' :
+      Lire la parenthese ouvrante
+      Lire la chaine argument
+      Retourner Length(chaine)
+      Lire la parenthese fermante
+
+==============================================================================
+  15. Phase 12 : L environnement graphique (cas de LOGO)
+==============================================================================
+
+  15.1 La tortue graphique
+  ------------------------
+
+  LOGO est un langage centre sur la tortue graphique. L etat
+  de la tortue comprend :
+
+    X, Y     : Position sur l ecran (en pixels)
+    Angle    : Direction de deplacement (en radians)
+    PenDown  : True si le crayon est baisse (dessine)
+
+  15.2 Initialisation graphique
+  ----------------------------
+
+  LOGO initialise le mode graphique VGA :
+
+    Procedure InitScr;
+    Begin
+      Driver := VGA;
+      Mode := VGAHi;
+      InitGraph(Driver, Mode, '');
+      SetColor(White);
+      SetLineStyle(0, 0, 1);
+    End;
+
+  L etat initial de la tortue :
+
+    Procedure Init;
+    Begin
+      PenDown := True;
+      Angle := -PI / 2;     { Vers le haut }
+      X := 320;              { Centre horizontal }
+      Y := 100;              { Haut de l ecran }
+    End;
+
+  15.3 Commandes de deplacement
+  ----------------------------
+
+  ForwardCommand (AVANCE, FORWARD, FD) :
+    Avance la tortue dans la direction Angle.
+    Si PenDown, trace une ligne de (X,Y) a (XNew,YNew).
+
+    Procedure ForwardCommand;
+    Var Distance : Real;
+    Begin
+      Distance := GetNumberValue;
+      XNew := X + Round(Distance * Cos(Angle));
+      YNew := Y + Round(Distance * Sin(Angle));
+      If PenDown Then
+        Line(X, Y, XNew, YNew);
+      X := XNew;
+      Y := YNew;
+    End;
+
+  BackwardCommand (RECULE, BACKWARD) :
+    Meme chose, mais dans la direction opposee.
+
+  15.4 Commandes de rotation
+  --------------------------
+
+  RightCommand (DROITE, RIGHT, RT) :
+    Tourne la tortue vers la droite de N degres.
+
+    Procedure RightCommand;
+    Var Degrees : Real;
+    Begin
+      Degrees := GetNumberValue;
+      Angle := Angle + (Degrees * PI / 180);
+    End;
+
+  LeftCommand (GAUCHE, LEFT, LT) :
+    Tourne vers la gauche.
+
+    Procedure LeftCommand;
+    Var Degrees : Real;
+    Begin
+      Degrees := GetNumberValue;
+      Angle := Angle - (Degrees * PI / 180);
+    End;
+
+  15.5 Commandes de crayon
+  ------------------------
+
+  PenUpCommand (LEVER-CRAYON, PENUP, LC) :
+    PenDown := False;
+
+  PenDownCommand (BAISSER-CRAYON, PENDOWN, BC) :
+    PenDown := True;
+
+  15.6 Commandes de position
+  --------------------------
+
+  HomeCommand (HOME, DEBUT) :
+    Remet la tortue au centre de l ecran.
+
+  GoXCommand (ALLERX, GOX, SETX) :
+    Deplace la tortue a une coordonnee X.
+
+  GoYCommand (ALLERY, GOY, SETY) :
+    Deplace la tortue a une coordonnee Y.
+
+  AngleCommand (ANGLE) :
+    Change la direction de la tortue.
+
+  15.7 Support bilingue
+  ---------------------
+
+  LOGO.PAS supporte les commandes en francais et en anglais :
+
+    Francais         Anglais          Action
+    ---------------  ---------------  -----------------
+    AVANCE           FORWARD          Avancer
+    RECULE           BACKWARD         Reculer
+    DROITE           RIGHT            Tourner a droite
+    GAUCHE           LEFT             Tourner a gauche
+    LEVER-CRAYON     PENUP            Lever le crayon
+    BAISSER-CRAYON   PENDOWN          Baisser le crayon
+    AFFICHE          PRINT            Afficher
+    REPETE           REPEAT           Repeter
+    QUITTER          GOODBYE          Quitter
+
+==============================================================================
+  16. Le programme principal
+==============================================================================
+
+  16.1 Programme principal de BASIC.PAS
+  -------------------------------------
+
+    BEGIN
+      { 1. Verification des arguments }
+      If ParamStr(1) = '/?' Then Begin
+        WriteLn('BASIC : interpreteur de BASIC.');
+        WriteLn('Syntaxe : BASIC [fichier]');
+        Halt;
+      End;
+
+      { 2. Initialisation de l etat }
+      FileName := '';
+      Tron := False;
+      NumberLine := 0;
+      CurrNumberLine := 0;
+      NumberVariable := 0;
+      GosubPos := 0;
+      ForPos := 0;
+
+      { 3. Lire le nom de fichier si fourni }
+      For I := 1 to ParamCount do
+        FileName := ParamStr(I);
+
+      { 4. Afficher le message d accueil }
+      HomeMessage;
+
+      { 5. Si fichier fourni, le charger et l executer }
+      If FileName <> '' Then Begin
+        CurrLine := 'LOAD "' + FileName + '":RUN';
+        RunBasic(False);
+      End;
+
+      { 6. Boucle REPL }
+      Terminated := False;
+      Repeat
+        WriteLn('Ok');
+        ReadLn(CurrLine);
+        CurrLine := LTrim(CurrLine);
+        RunBasic(False);
+      Until Terminated;
+
+      { 7. Nettoyage }
+      Window(1, 1, 80, 25);
+      ClrScr;
+    END.
+
+  16.2 Programme principal de LOGO.PAS
+  ------------------------------------
+
+    BEGIN
+      { 1. Verification des arguments }
+      If ParamStr(1) = '/?' Then Begin
+        WriteLn('LOGO : langage de programmation LOGO');
+        WriteLn('Syntaxe : LOGO [fichier.LGO]');
+        Halt;
+      End;
+
+      { 2. Initialisation }
+      FileName := '';
+      NumberLine := 0;
+      CurrNumberLine := 0;
+      NumberVariable := 0;
+      ForPos := 0;
+      XPos := 1;
+      YPos := 1;
+      Terminated := False;
+
+      { 3. Initialiser la tortue et le mode graphique }
+      Init;       { Position, angle, crayon }
+      InitScr;    { Mode VGA }
+
+      { 4. Mode fichier ou interactif }
+      If ParamCount > 0 Then Begin
+        { Mode fichier : charger et executer }
+        FileName := ParamStr(1);
+        LoadCommand;
+        RunListCommand;
+        ReadKey;
+      End Else Begin
+        { Mode interactif : boucle REPL }
+        Repeat
+          ShowPrompt;
+          ReadLine(CurrLine);
+          RunCommand;
+        Until Terminated;
+      End;
+    END.
+
+==============================================================================
+  17. Gestion des erreurs
+==============================================================================
+
+  17.1 Erreurs de syntaxe
+  -----------------------
+
+  Quand l interpreteur rencontre un element inattendu, il affiche
+  un message d erreur et arrete l execution de la ligne courante :
+
+    WriteLn('Erreur de syntaxe a la position ', CurrPos);
+
+  Contrairement a un compilateur qui collecte toutes les erreurs,
+  un interpreteur s arrete generalement a la premiere erreur
+  de la ligne.
+
+  17.2 Erreurs d execution (runtime)
+  ----------------------------------
+
+  Les erreurs d execution sont detectees pendant l evaluation :
+
+    - Division par zero
+    - Variable non definie
+    - Debordement de pile (GOSUB/FOR trop imbriques)
+    - Ligne GOTO inexistante
+    - Memoire pleine (trop de variables ou de lignes)
+    - Type incompatible
+
+  17.3 Messages d erreur BASIC
+  ----------------------------
+
+  BASIC.PAS utilise des messages simples :
+
+    WriteLn('Commande inconnue : ', CurrCommand);
+    WriteLn('Variable non definie : ', VarName);
+    WriteLn('Ligne inexistante : ', LineNumber);
+    WriteLn('Memory full');
+    WriteLn('Type incompatible');
+
+  17.4 Mode trace (TRON/TROFF)
+  ----------------------------
+
+  BASIC supporte le mode trace avec TRON (Trace On) et TROFF
+  (Trace Off). En mode trace, chaque ligne executee est affichee
+  avec son numero :
+
+    Procedure TronCommand;
+    Begin
+      Tron := True;
+    End;
+
+    { Dans RunCommand : }
+    If Tron Then
+      Write('[', CurrNumberLine, ']');
+
+  Ce mode est tres utile pour le debogage.
+
+  17.5 Resilience de l interpreteur
+  ---------------------------------
+
+  L interpreteur doit etre resilient : une erreur ne doit pas
+  faire planter le programme. Apres une erreur, l interpreteur
+  revient a la boucle REPL et affiche le prompt.
+
+  C est un avantage majeur sur un programme compile qui
+  planterait avec une erreur d execution similaire.
+
+==============================================================================
+  18. Exemples concrets tires de BASIC.PAS
+==============================================================================
+
+  18.1 Structure d un programme BASIC
+  ------------------------------------
+
+  Un programme BASIC typique :
+
+    10 REM Programme de comptage
+    20 FOR I = 1 TO 10
+    30 PRINT I; " au carre = "; I * I
+    40 NEXT I
+    50 END
+
+  18.2 Cycle de vie dans l interpreteur
+  --------------------------------------
+
+  Quand l utilisateur tape ces lignes :
+
+    1. "10 REM..." -> detecte chiffre -> AddLine("10 REM...")
+    2. "20 FOR..." -> detecte chiffre -> AddLine("20 FOR...")
+    3. "30 PRINT.." -> detecte chiffre -> AddLine("30 PRINT...")
+    4. "40 NEXT..." -> detecte chiffre -> AddLine("40 NEXT...")
+    5. "50 END"     -> detecte chiffre -> AddLine("50 END")
+    6. "RUN"        -> pas de chiffre -> execution immediate
+
+  A l etape 6, RunCommand :
+    - CurrLinePtr := 1
+    - Ligne "10 REM..." -> RemCommand (ignore)
+    - Ligne "20 FOR I=1 TO 10" -> ForCommand (empile)
+    - Ligne "30 PRINT..." -> PrintCommand (affiche)
+    - Ligne "40 NEXT I" -> NextCommand (I=2, retour ligne 20)
+    - ... (boucle 10 fois)
+    - Ligne "50 END" -> arret
+
+  18.3 Table des commandes BASIC
+  ------------------------------
+
+  Les 92 commandes de BASIC.PAS :
+
+    Index  Commande     Description
+    -----  ----------   --------------------------
+    0      AND          Operateur logique
+    2      BEEP         Emettre un son
+    8      CHDIR        Changer de repertoire
+    10     CLEAR        Effacer les variables
+    13     CLS          Effacer l ecran
+    14     COLOR        Changer la couleur
+    19     DATA         Definir des donnees
+    20     DEF          Definir une fonction
+    21     DELETE       Supprimer des lignes
+    22     DIM          Dimensionner un tableau
+    24     ELSE         Sinon (dans IF)
+    25     END          Fin du programme
+    29     FILES        Lister les fichiers
+    30     FOR          Debut de boucle
+    32     GOSUB        Appel de sous-routine
+    33     GOTO         Saut inconditionnel
+    35     IF           Condition
+    36     INPUT        Saisie utilisateur
+    39     LET          Assignation
+    41     LIST         Lister le programme
+    43     LOAD         Charger un fichier
+    44     LOCATE       Positionner le curseur
+    50     NEW          Nouveau programme
+    51     NEXT         Fin de boucle FOR
+    62     PRINT        Afficher
+    66     READ         Lire des DATA
+    67     REM          Commentaire
+    72     RETURN       Retour de sous-routine
+    75     RUN          Executer le programme
+    76     SAVE         Sauvegarder
+    80     STOP         Arreter l execution
+    81     SYSTEM       Quitter l interpreteur
+    84     TRON         Activer le trace
+    85     TROFF        Desactiver le trace
+
+  18.4 Commandes multi-instructions
+  ---------------------------------
+
+  BASIC permet plusieurs instructions sur une meme ligne
+  separees par : (deux-points) :
+
+    10 PRINT "A":PRINT "B":GOTO 20
+
+  L interpreteur traite les instructions sequentiellement
+  en coupant la ligne aux separateurs.
+
+==============================================================================
+  19. Exemples concrets tires de LOGO.PAS
+==============================================================================
+
+  19.1 Programme LOGO typique
+  ---------------------------
+
+  Un programme LOGO qui dessine un carre :
+
+    REPEAT 4 [FORWARD 100 RIGHT 90]
+
+  Ou en francais :
+
+    REPETE 4 [AVANCE 100 DROITE 90]
+
+  19.2 Les 162 commandes LOGO
+  ---------------------------
+
+  LOGO.PAS implemente un jeu complet de commandes avec des
+  synonymes en francais et anglais :
+
+    Deplacement :
+      AVANCE / FORWARD / FD
+      RECULE / BACKWARD
+      DROITE / RIGHT / RT
+      GAUCHE / LEFT / LT
+
+    Crayon :
+      BAISSER-CRAYON / PENDOWN / BC
+      LEVER-CRAYON / PENUP / LC
+
+    Position :
+      HOME / DEBUT
+      ALLERX / GOX / SETX
+      ALLERY / GOY / SETY
+      ANGLE / HEADING
+
+    Affichage :
+      AFFICHE / PRINT
+      MONTRE / SHOW
+
+    Controle :
+      REPETE / REPEAT
+      POUR / TO (definition de procedure)
+      SI / IF
+      QUITTER / GOODBYE
+
+  19.3 Dessin d un polygone
+  -------------------------
+
+  Pour dessiner un polygone regulier a N cotes :
+
+    MAKE "N 6
+    REPEAT :N [FORWARD 50 RIGHT 360/:N]
+
+  L interpreteur :
+    1. MAKE cree la variable N = 6
+    2. REPEAT evalue :N = 6
+    3. A chaque iteration :
+       - FORWARD 50 : avance de 50 pixels
+       - RIGHT 360/6 : tourne de 60 degres
+    4. Resultat : un hexagone regulier
+
+  19.4 L affichage graphique
+  --------------------------
+
+  Contrairement a BASIC qui utilise WriteLn pour l affichage
+  texte, LOGO utilise des primitives graphiques :
+
+    OutTextXY(X, Y, Texte)  : afficher du texte a une position
+    Line(X1, Y1, X2, Y2)   : tracer une ligne
+    Bar(X1, Y1, X2, Y2)    : remplir un rectangle
+
+  L affichage se fait dans un mode graphique VGA 640x480.
+
+==============================================================================
+  20. Comparaison des interpreteurs du projet
+==============================================================================
+
+  20.1 BASIC.PAS vs LOGO.PAS
+  --------------------------
+
+    Aspect              BASIC.PAS            LOGO.PAS
+    ------------------  -------------------  -------------------
+    Lignes de code      1878                 1278
+    Commandes           92                   162
+    Fonctions           54                   7
+    Affichage           Texte (Crt)          Graphique (Graph)
+    Mode                Texte + REPL         Graphique + REPL
+    Stockage prog.      Lignes numerotees    Lignes sans numero
+    Structures          FOR, GOSUB, IF       FOR, REPEAT, IF
+    Variables           Suffixe typees       MAKE / :nom
+    Bilingue            Non (anglais)        Oui (FR + EN)
+    Fichiers            .BAS                 .LGO
+
+  20.2 Interpreteur vs compilateur du projet
+  ------------------------------------------
+
+    Aspect              Interpreteur          Compilateur
+    ------------------  --------------------  --------------------
+    Taille typique      1200-1900 lignes      4000-13000 lignes
+    Execution           Directe               Via assembleur
+    Table symboles      VarList[] simple      SymTab[] complexe
+    Expressions         Pile infixe/postfixe  Arbre syntaxique
+    Controle            Modification pointeur  Labels + JMP
+    Sortie              Ecran / graphique     Fichier .ASM/.OBJ
+    Debogage            Mode trace integre    Fichier .MAP
+    REPL                Oui                   Non
+
+  20.3 Complexite relative
+  ------------------------
+
+  Les interpreteurs du projet sont nettement plus simples que les
+  compilateurs. BASIC.PAS fait 1878 lignes alors que CCW32.PAS
+  (compilateur C Win32) fait plus de 8000 lignes, et CLIPPER86.PAS
+  depasse 13000 lignes.
+
+  La raison : un interpreteur n a pas besoin de :
+    - Generer du code assembleur (emission)
+    - Gerer un segment de donnees
+    - Ecrire des fichiers binaires (PE, COFF, MZ)
+    - Implanter un systeme de types complet
+    - Gerer les portees de variables complexes
+
+==============================================================================
+  21. Conseils pratiques
+==============================================================================
+
+  21.1 Par ou commencer ?
+  -----------------------
+
+  Pour ecrire votre propre interpreteur :
+
+    1. Definir la liste des commandes du langage
+    2. Ecrire le REPL (boucle lecture/execution)
+    3. Implementer PRINT pour voir les resultats
+    4. Ajouter les variables (stockage et lecture)
+    5. Implementer l evaluateur d expressions
+    6. Ajouter GOTO et IF pour le controle de flux
+    7. Ajouter FOR/NEXT ou WHILE pour les boucles
+    8. Ajouter GOSUB/RETURN pour les sous-routines
+    9. Ajouter le stockage de programme (lignes numerotees)
+    10. Ajouter LOAD/SAVE pour la persistance
+
+  21.2 Tester a chaque etape
+  --------------------------
+
+  L avantage d un interpreteur est qu on peut le tester
+  immediatement. A chaque nouvelle commande ajoutee :
+
+    1. Lancer l interpreteur
+    2. Taper la commande au prompt
+    3. Verifier le resultat
+    4. Tester les cas limites (erreurs, valeurs extremes)
+
+  21.3 Choisir la bonne representation
+  ------------------------------------
+
+  Variables :
+    - Tableau fixe (simple, rapide, limite)
+    - Liste chainee (flexible, plus lente)
+    - Table de hachage (rapide, plus complexe)
+
+  Programme :
+    - Tableau de chaines (simple, comme BASIC.PAS)
+    - Arbre syntaxique (plus rapide a executer)
+    - Bytecode (compromis entre les deux)
+
+  21.4 Pieges courants
+  --------------------
+
+    - Oublier de reinitialiser CurrPos avant chaque commande
+    - Ne pas gerer les espaces entre les mots-cles et les operandes
+    - Confondre l index de ligne (CurrLinePtr) et le numero
+      de ligne BASIC (CurrNumberLine)
+    - Ne pas liberer la memoire des chaines (fuites memoire)
+    - Oublier de gerer la casse (PRINT vs print vs Print)
+    - Ne pas verifier les debordements de pile (FOR/GOSUB)
+    - Oublier de gerer le separateur : (multi-instructions)
+    - Ne pas convertir les types correctement dans les expressions
+
+  21.5 Ameliorations possibles
+  ----------------------------
+
+  A partir des interpreteurs de base, on peut ajouter :
+
+    - Un veritable parseur avec arbre syntaxique (AST)
+    - Des fonctions definies par l utilisateur (DEF FN)
+    - Des tableaux multi-dimensionnels (DIM)
+    - La gestion des fichiers (OPEN/CLOSE/READ/WRITE)
+    - Un mode graphique (comme LOGO)
+    - Un debugger integre (pas-a-pas, points d arret)
+    - Un editeur de programme integre
+    - La coloration syntaxique
+
+  21.6 Ressources dans le projet
+  ------------------------------
+
+  Pour approfondir, consultez les fichiers suivants du projet :
+
+    BASIC.PAS                     : interpreteur BASIC complet
+    LOGO.PAS                      : interpreteur LOGO graphique
+    DOC/APPLICATION_COMPILER.txt  : comment ecrire un compilateur
+    DOC/APPLICATION_LINKER.txt    : comment ecrire un linker
+    CCW32.PAS                     : compilateur C (pour comparer)
+    CC8086.PAS                    : compilateur C vers 8086
+    TP2JS.PAS                     : transpileur Pascal vers JS
+
+==============================================================================
+  Fin du document
+==============================================================================

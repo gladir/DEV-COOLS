@@ -1,0 +1,1843 @@
+=========================================================================
+  TURBO PASCAL 7.0 - Unité OBJECTS - Documentation de référence
+=========================================================================
+
+  L'unité Objects constitue le fondement du cadre orienté objet
+  de Turbo Pascal 7.0. Elle fournit une hiérarchie de classes de
+  base pour la programmation orientée objet : flux de données
+  (streams), collections, gestion de ressources, chaînes de
+  caractères dynamiques et types géométriques.
+
+  Cette unité est le socle de Turbo Vision et de toute application
+  utilisant la persistance d'objets (sérialisation/désérialisation
+  via les flux). Elle introduit le mécanisme d'enregistrement de
+  types permettant de sauvegarder et recharger des objets
+  polymorphiques.
+
+  Uses Objects;
+
+  Directives de compilation : {$O+,F+,X+,I-,S-}
+    $O+ : Unité compatible overlay
+    $F+ : Appels far (nécessaire pour les méthodes virtuelles)
+    $X+ : Syntaxe étendue (appels de fonctions comme procédures)
+    $I- : Pas de vérification d'E/S
+    $S- : Pas de vérification de pile
+
+=========================================================================
+  1. CONSTANTES - MODES D'ACCÈS TSTREAM
+=========================================================================
+
+  Ces constantes définissent le mode d'ouverture des flux fichier
+  (TDosStream, TBufStream). Elles correspondent aux fonctions
+  DOS INT 21h (AH=3Ch pour création, AH=3Dh pour ouverture).
+
+  Constante      Valeur    Description
+  -----------    -------   ------------------------------------------
+  stCreate       $3C00     Créer un nouveau fichier
+  stOpenRead     $3D00     Ouvrir en lecture seule
+  stOpenWrite    $3D01     Ouvrir en écriture seule
+  stOpen         $3D02     Ouvrir en lecture et écriture
+
+  Utilisation :
+    var S : TBufStream;
+    S.Init('DATA.DAT', stOpenRead, 1024);  { lecture seule }
+    S.Init('NEW.DAT', stCreate, 1024);     { créer }
+
+=========================================================================
+  2. CONSTANTES - CODES D'ERREUR TSTREAM
+=========================================================================
+
+  Les codes d'erreur sont stockés dans le champ Status du flux.
+  Une valeur différente de stOk indique une erreur.
+
+  Constante       Valeur   Description
+  -------------   ------   ------------------------------------------
+  stOk               0     Pas d'erreur
+  stError           -1     Erreur d'accès générale
+  stInitError       -2     Impossible d'initialiser le flux
+  stReadError       -3     Lecture au-delà de la fin du flux
+  stWriteError      -4     Impossible d'étendre le flux (écriture)
+  stGetError        -5     Lecture d'un type d'objet non enregistré
+  stPutError        -6     Écriture d'un type d'objet non enregistré
+
+  Vérification d'erreur typique :
+    S.Read(Buf, SizeOf(Buf));
+    if S.Status <> stOk then
+      WriteLn('Erreur de lecture : ', S.Status);
+
+=========================================================================
+  3. CONSTANTES - TCOLLECTION
+=========================================================================
+
+  Constante            Valeur                  Description
+  ------------------   ---------------------   -------------------------
+  MaxCollectionSize    65520 div SizeOf(Ptr)   Nombre max. d'éléments
+  coIndexError         -1                      Index hors intervalle
+  coOverflow           -2                      Débordement (mémoire)
+
+  MaxCollectionSize vaut 16380 (car SizeOf(Pointer) = 4 sur x86).
+  C'est le nombre maximal de pointeurs dans le tableau Items.
+
+=========================================================================
+  4. CONSTANTE - VMT
+=========================================================================
+
+  Constante       Valeur   Description
+  -----------     ------   ------------------------------------------
+  vmtHeaderSize      8     Taille de l'en-tête de la VMT (Virtual
+                           Method Table) en octets
+
+  La VMT contient : taille de l'objet (Word), taille négatif
+  (Word), et pointeur vers le parent (Pointer) = 8 octets avant
+  le tableau des méthodes virtuelles.
+
+=========================================================================
+  5. CONSTANTE - STREAMERROR
+=========================================================================
+
+  const StreamError : Pointer = nil;
+  ---------------------------------------------------------------
+  Pointeur vers une procédure de gestion d'erreur de flux.
+  Si non nil, cette procédure est appelée par TStream.Error
+  avec les paramètres Code et Info.
+
+  Type attendu :
+    procedure StreamErrorProc(var S: TStream); far;
+
+  Exemple :
+    procedure MonErreurFlux(var S: TStream); far;
+    begin
+      WriteLn('Erreur flux : ', S.Status, ' Info: ', S.ErrorInfo);
+      S.Reset;
+    end;
+    { ... }
+    StreamError := @MonErreurFlux;
+
+=========================================================================
+  6. CONSTANTES - ÉTAT EMS
+=========================================================================
+
+  const EmsCurHandle : Word = $FFFF;
+  const EmsCurPage   : Word = $FFFF;
+  ---------------------------------------------------------------
+  Variables d'état interne pour TEmsStream. Permettent d'optimiser
+  les accès EMS en conservant le dernier handle et la dernière
+  page mappée. Valeur initiale $FFFF = aucun handle/page actif.
+
+  Ces variables ne doivent normalement pas être modifiées
+  directement par le programmeur.
+
+=========================================================================
+  7. CONSTANTES - ENREGISTREMENTS DE FLUX (TStreamRec)
+=========================================================================
+
+  Les constantes typées suivantes enregistrent les types d'objets
+  sérialisables auprès du système de flux. Chaque TStreamRec
+  contient le numéro de type, le lien VMT, et les pointeurs
+  vers les méthodes Load et Store.
+
+  RCollection : TStreamRec
+  ---------------------------------------------------------------
+    ObjType  = 50
+    VmtLink  = Ofs(TypeOf(TCollection)^)
+    Load     = @TCollection.Load
+    Store    = @TCollection.Store
+
+  RStringCollection : TStreamRec
+  ---------------------------------------------------------------
+    ObjType  = 51
+    VmtLink  = Ofs(TypeOf(TStringCollection)^)
+    Load     = @TStringCollection.Load
+    Store    = @TStringCollection.Store
+
+  RStringList : TStreamRec
+  ---------------------------------------------------------------
+    ObjType  = 52
+    VmtLink  = Ofs(TypeOf(TStringList)^)
+    Load     = @TStringList.Load
+    Store    = nil  (lecture seule)
+
+  RStrListMaker : TStreamRec
+  ---------------------------------------------------------------
+    ObjType  = 52  (même numéro que RStringList)
+    VmtLink  = Ofs(TypeOf(TStrListMaker)^)
+    Load     = nil  (écriture seule)
+    Store    = @TStrListMaker.Store
+
+  Note : RStringList et RStrListMaker partagent le même ObjType
+  (52) car ils représentent le même format de données : l'un lit,
+  l'autre écrit.
+
+  Pour enregistrer ces types :
+    RegisterType(RCollection);
+    RegisterType(RStringCollection);
+    { ou simplement : RegisterObjects; }
+
+=========================================================================
+  8. TYPES - ENREGISTREMENTS DE CONVERSION
+=========================================================================
+
+  WordRec = record
+    Lo, Hi : Byte;
+  end;
+  ---------------------------------------------------------------
+  Permet d'accéder individuellement aux octets bas et haut d'un
+  Word. Utile pour le transtypage :
+    var W : Word;
+    WordRec(W).Lo := $FF;
+    WordRec(W).Hi := $00;
+
+  LongRec = record
+    Lo, Hi : Word;
+  end;
+  ---------------------------------------------------------------
+  Permet d'accéder individuellement aux mots bas et haut d'un
+  LongInt. Utile pour le transtypage :
+    var L : LongInt;
+    LongRec(L).Lo := $1234;
+    LongRec(L).Hi := $5678;  { L = $56781234 }
+
+  PtrRec = record
+    Ofs, Seg : Word;
+  end;
+  ---------------------------------------------------------------
+  Permet d'accéder au segment et à l'offset d'un pointeur far.
+  Utile pour la manipulation de pointeurs :
+    var P : Pointer;
+    PtrRec(P).Seg := DSeg;
+    PtrRec(P).Ofs := 0;
+
+=========================================================================
+  9. TYPES - CHAÎNES ET ENSEMBLES
+=========================================================================
+
+  PString = ^String;
+  ---------------------------------------------------------------
+  Pointeur vers une chaîne Pascal (String[255]). Utilisé
+  massivement pour stocker des chaînes allouées dynamiquement
+  sur le tas via NewStr/DisposeStr.
+
+  PCharSet = ^TCharSet;
+  TCharSet = Set of Char;
+  ---------------------------------------------------------------
+  Ensemble de caractères et pointeur associé. Utile pour les
+  opérations de filtrage et de validation de caractères.
+
+  FNameStr = String[79];
+  ---------------------------------------------------------------
+  Type chaîne pour les noms de fichiers DOS (max 79 caractères :
+  chemin complet avec lecteur, répertoire et nom 8.3).
+
+=========================================================================
+  10. TYPES - TABLEAUX GÉNÉRAUX
+=========================================================================
+
+  PByteArray = ^TByteArray;
+  TByteArray = array[0..32767] of Byte;
+  ---------------------------------------------------------------
+  Tableau d'octets de taille maximale (32 Ko). Utilisé avec un
+  pointeur pour accéder à des blocs de mémoire de taille
+  arbitraire. Le pointeur PByteArray permet l'indexation :
+    PByteArray(MonPtr)^[I] := Valeur;
+
+  PWordArray = ^TWordArray;
+  TWordArray = array[0..16383] of Word;
+  ---------------------------------------------------------------
+  Tableau de mots de taille maximale (32 Ko = 16384 × 2 octets).
+  Même usage que TByteArray mais pour des valeurs 16 bits :
+    PWordArray(MonPtr)^[I] := Valeur;
+
+=========================================================================
+  11. TYPE - TITEMLIST (TABLEAU DE COLLECTION)
+=========================================================================
+
+  PItemList = ^TItemList;
+  TItemList = array[0..MaxCollectionSize - 1] of Pointer;
+  ---------------------------------------------------------------
+  Tableau de pointeurs utilisé internement par TCollection pour
+  stocker les éléments. La taille maximale est
+  MaxCollectionSize = 16380 éléments.
+
+  Ce type n'est normalement pas utilisé directement ; il est
+  accédé via le champ Items de TCollection.
+
+=========================================================================
+  12. TYPE - TSTREAMREC
+=========================================================================
+
+  PStreamRec = ^TStreamRec;
+  TStreamRec = record
+    ObjType  : Word;      Identifiant unique du type d'objet
+    VmtLink  : Word;      Offset de la VMT dans le segment de données
+    Load     : Pointer;   Pointeur vers le constructeur Load
+    Store    : Pointer;   Pointeur vers la méthode Store
+    Next     : Word;      Chaîne vers l'enregistrement suivant
+  end;
+  ---------------------------------------------------------------
+  Structure d'enregistrement permettant au système de flux de
+  reconnaître les types d'objets lors de la sérialisation et
+  de la désérialisation.
+
+  Chaque objet sérialisable doit avoir un TStreamRec avec un
+  ObjType unique. Les enregistrements forment une liste chaînée
+  via le champ Next.
+
+  L'enregistrement se fait par RegisterType :
+    const
+      RMonObjet : TStreamRec = (
+        ObjType: 100;
+        VmtLink: Ofs(TypeOf(TMonObjet)^);
+        Load:    @TMonObjet.Load;
+        Store:   @TMonObjet.Store);
+    { ... }
+    RegisterType(RMonObjet);
+
+  Convention de numérotation ObjType :
+    0..99     Réservé pour Turbo Pascal / Turbo Vision
+    100+      Disponible pour les applications utilisateur
+
+=========================================================================
+  13. OBJET TOBJECT
+=========================================================================
+
+  PObject = ^TObject;
+  TObject = object
+    constructor Init;
+    procedure   Free;
+    destructor  Done; virtual;
+  end;
+  ---------------------------------------------------------------
+  Objet racine de toute la hiérarchie. Tout objet de l'unité
+  Objects descend de TObject.
+
+  constructor Init;
+  ---------------------------------------------------------------
+  Constructeur de base. Initialise l'objet (la VMT est connectée
+  automatiquement par le compilateur lors de l'appel au
+  constructeur). Ne fait rien d'autre dans TObject.
+
+  procedure Free;
+  ---------------------------------------------------------------
+  Libère l'objet s'il n'est pas nil. Appelle le destructeur Done
+  puis libère la mémoire sur le tas. Équivalent sûr de :
+    if @Self <> nil then Dispose(PObject(@Self), Done);
+
+  Toujours utiliser Free plutôt que Dispose directement pour
+  éviter les erreurs sur pointeurs nil.
+
+  destructor Done; virtual;
+  ---------------------------------------------------------------
+  Destructeur virtuel. Ne fait rien dans TObject. Doit être
+  surchargé dans les descendants pour libérer les ressources
+  (mémoire allouée, fichiers ouverts, etc.).
+
+  Exemple :
+    type
+      PMonObjet = ^TMonObjet;
+      TMonObjet = object(TObject)
+        Nom : PString;
+        constructor Init(const ANom : String);
+        destructor Done; virtual;
+      end;
+
+    constructor TMonObjet.Init(const ANom : String);
+    begin
+      inherited Init;
+      Nom := NewStr(ANom);
+    end;
+
+    destructor TMonObjet.Done;
+    begin
+      DisposeStr(Nom);
+      inherited Done;
+    end;
+
+=========================================================================
+  14. OBJET TSTREAM
+=========================================================================
+
+  PStream = ^TStream;
+  TStream = object(TObject)
+    Status    : Integer;    Code d'erreur courant (stOk si OK)
+    ErrorInfo : Integer;    Information supplémentaire sur l'erreur
+    ...
+  end;
+  ---------------------------------------------------------------
+  Classe abstraite de flux de données. Définit l'interface commune
+  pour tous les flux (fichier, mémoire, EMS). Les méthodes Read
+  et Write sont virtuelles et doivent être implémentées par les
+  descendants.
+
+  TStream est le cœur du système de persistance d'objets de
+  Turbo Pascal.
+
+  --- Champs ---
+
+  Status : Integer
+    Code d'erreur courant. Vaut stOk (0) si aucune erreur.
+    Après une erreur, toutes les opérations sont ignorées jusqu'à
+    l'appel de Reset.
+
+  ErrorInfo : Integer
+    Information complémentaire sur l'erreur (par exemple, le code
+    d'erreur DOS en cas d'erreur de fichier).
+
+  --- Méthodes ---
+
+  procedure CopyFrom(var S : TStream; Count : LongInt);
+  ---------------------------------------------------------------
+  Copie Count octets depuis le flux S vers le flux courant (Self).
+  Utilise un tampon interne pour la copie.
+
+  Paramètres :
+    S      Flux source
+    Count  Nombre d'octets à copier
+
+  procedure Error(Code, Info : Integer); virtual;
+  ---------------------------------------------------------------
+  Appelée en cas d'erreur. Met à jour Status et ErrorInfo. Si
+  StreamError n'est pas nil, appelle la procédure pointée.
+
+  Paramètres :
+    Code  Code d'erreur (stError, stReadError, etc.)
+    Info  Information complémentaire
+
+  Peut être surchargée pour un traitement d'erreur personnalisé.
+
+  procedure Flush; virtual;
+  ---------------------------------------------------------------
+  Vide le tampon du flux (écrit les données en attente). Ne fait
+  rien dans TStream ; surchargée dans TBufStream.
+
+  function Get : PObject;
+  ---------------------------------------------------------------
+  Lit un objet depuis le flux et retourne un pointeur vers
+  l'objet créé. L'objet doit avoir été préalablement écrit
+  avec Put, et son type doit être enregistré (RegisterType).
+
+  Retour :
+    Pointeur vers l'objet lu (PObject), nil en cas d'erreur
+
+  Mécanisme :
+    1. Lit le numéro ObjType depuis le flux
+    2. Recherche le TStreamRec correspondant
+    3. Appelle le constructeur Load de l'objet
+    4. Retourne le pointeur
+
+  function GetPos : LongInt; virtual;
+  ---------------------------------------------------------------
+  Retourne la position courante dans le flux (en octets).
+  Abstraite dans TStream ; doit être surchargée.
+
+  function GetSize : LongInt; virtual;
+  ---------------------------------------------------------------
+  Retourne la taille totale du flux (en octets).
+  Abstraite dans TStream ; doit être surchargée.
+
+  procedure Put(P : PObject);
+  ---------------------------------------------------------------
+  Écrit un objet dans le flux. Le type de l'objet doit être
+  enregistré (RegisterType).
+
+  Paramètres :
+    P  Pointeur vers l'objet à écrire
+
+  Mécanisme :
+    1. Identifie le type de l'objet via sa VMT
+    2. Écrit le numéro ObjType dans le flux
+    3. Appelle la méthode Store de l'objet
+
+  procedure Read(var Buf; Count : Word); virtual;
+  ---------------------------------------------------------------
+  Lit Count octets depuis le flux dans Buf. Méthode abstraite ;
+  doit être surchargée dans les descendants.
+
+  Paramètres :
+    Buf    Tampon destination
+    Count  Nombre d'octets à lire
+
+  function ReadStr : PString;
+  ---------------------------------------------------------------
+  Lit une chaîne depuis le flux. Alloue la mémoire et retourne
+  un PString. La chaîne a été précédemment écrite par WriteStr.
+
+  Retour :
+    PString pointant vers la chaîne lue (allouée sur le tas)
+
+  procedure Reset;
+  ---------------------------------------------------------------
+  Réinitialise l'état d'erreur du flux. Met Status et ErrorInfo
+  à 0. Doit être appelé après une erreur pour reprendre les
+  opérations.
+
+  procedure Seek(Pos : LongInt); virtual;
+  ---------------------------------------------------------------
+  Positionne le flux à l'offset Pos (en octets, base 0).
+  Abstraite dans TStream ; doit être surchargée.
+
+  procedure Truncate; virtual;
+  ---------------------------------------------------------------
+  Tronque le flux à la position courante. Tout ce qui suit
+  est supprimé. Abstraite dans TStream.
+
+  procedure Write(var Buf; Count : Word); virtual;
+  ---------------------------------------------------------------
+  Écrit Count octets depuis Buf dans le flux. Méthode abstraite ;
+  doit être surchargée dans les descendants.
+
+  Paramètres :
+    Buf    Tampon source
+    Count  Nombre d'octets à écrire
+
+  procedure WriteStr(P : PString);
+  ---------------------------------------------------------------
+  Écrit une chaîne dans le flux à partir d'un PString.
+  La chaîne peut être relue ultérieurement par ReadStr.
+
+  Paramètres :
+    P  Pointeur vers la chaîne à écrire
+
+=========================================================================
+  15. OBJET TDOSSTREAM
+=========================================================================
+
+  PDosStream = ^TDosStream;
+  TDosStream = object(TStream)
+    Handle : Word;    Handle de fichier DOS
+    ...
+  end;
+  ---------------------------------------------------------------
+  Flux basé sur un fichier DOS, sans tampon. Chaque lecture ou
+  écriture provoque un appel système DOS. Pour de meilleures
+  performances, utiliser TBufStream.
+
+  --- Champ ---
+
+  Handle : Word
+    Handle de fichier DOS retourné par INT 21h lors de l'ouverture.
+
+  --- Méthodes ---
+
+  constructor Init(FileName : FNameStr; Mode : Word);
+  ---------------------------------------------------------------
+  Ouvre ou crée un fichier.
+
+  Paramètres :
+    FileName  Nom du fichier (chemin complet ou relatif)
+    Mode      Mode d'accès (stCreate, stOpenRead, stOpenWrite,
+              stOpen)
+
+  En cas d'échec, Status est mis à stInitError.
+
+  Exemple :
+    var S : TDosStream;
+    S.Init('DATA.DAT', stOpenRead);
+    if S.Status <> stOk then
+      WriteLn('Erreur ouverture');
+
+  destructor Done; virtual;
+  ---------------------------------------------------------------
+  Ferme le fichier DOS et libère les ressources.
+
+  function GetPos : LongInt; virtual;
+  ---------------------------------------------------------------
+  Retourne la position courante dans le fichier (appel DOS).
+
+  function GetSize : LongInt; virtual;
+  ---------------------------------------------------------------
+  Retourne la taille du fichier en octets.
+
+  procedure Read(var Buf; Count : Word); virtual;
+  ---------------------------------------------------------------
+  Lit Count octets depuis le fichier. Si moins d'octets sont
+  disponibles, Status est mis à stReadError.
+
+  procedure Seek(Pos : LongInt); virtual;
+  ---------------------------------------------------------------
+  Positionne le pointeur de fichier à l'offset Pos.
+
+  procedure Truncate; virtual;
+  ---------------------------------------------------------------
+  Tronque le fichier à la position courante.
+
+  procedure Write(var Buf; Count : Word); virtual;
+  ---------------------------------------------------------------
+  Écrit Count octets dans le fichier. En cas d'erreur d'écriture
+  (disque plein, etc.), Status est mis à stWriteError.
+
+=========================================================================
+  16. OBJET TBUFSTREAM
+=========================================================================
+
+  PBufStream = ^TBufStream;
+  TBufStream = object(TDosStream)
+    Buffer  : Pointer;    Pointeur vers le tampon
+    BufSize : Word;       Taille du tampon en octets
+    BufPtr  : Word;       Position courante dans le tampon
+    BufEnd  : Word;       Fin des données dans le tampon
+    ...
+  end;
+  ---------------------------------------------------------------
+  Flux fichier avec tampon en mémoire. Descendant de TDosStream
+  avec ajout d'un tampon pour réduire les appels système DOS.
+  C'est le type de flux le plus couramment utilisé.
+
+  --- Champs ---
+
+  Buffer : Pointer
+    Pointeur vers le tampon alloué sur le tas.
+
+  BufSize : Word
+    Taille du tampon en octets. Typiquement 1024 ou 4096.
+
+  BufPtr : Word
+    Position de lecture/écriture courante dans le tampon.
+
+  BufEnd : Word
+    Nombre d'octets valides dans le tampon.
+
+  --- Méthodes ---
+
+  constructor Init(FileName : FNameStr; Mode, Size : Word);
+  ---------------------------------------------------------------
+  Ouvre un fichier avec un tampon de la taille spécifiée.
+
+  Paramètres :
+    FileName  Nom du fichier
+    Mode      Mode d'accès (stCreate, stOpen, etc.)
+    Size      Taille du tampon en octets
+
+  Le tampon est alloué sur le tas. Si l'allocation échoue,
+  Status est mis à stInitError.
+
+  Exemple :
+    var S : TBufStream;
+    S.Init('DATA.DAT', stOpen, 4096);  { tampon de 4 Ko }
+
+  destructor Done; virtual;
+  ---------------------------------------------------------------
+  Vide le tampon (Flush), ferme le fichier et libère le tampon.
+
+  procedure Flush; virtual;
+  ---------------------------------------------------------------
+  Écrit le contenu du tampon dans le fichier si des données
+  sont en attente d'écriture. Doit être appelé explicitement
+  si l'on veut garantir que les données sont sur le disque
+  avant la fermeture.
+
+  function GetPos : LongInt; virtual;
+  ---------------------------------------------------------------
+  Retourne la position logique (tenant compte du tampon).
+
+  function GetSize : LongInt; virtual;
+  ---------------------------------------------------------------
+  Retourne la taille du fichier.
+
+  procedure Read(var Buf; Count : Word); virtual;
+  ---------------------------------------------------------------
+  Lit via le tampon. Peut nécessiter plusieurs remplissages du
+  tampon si Count > BufSize.
+
+  procedure Seek(Pos : LongInt); virtual;
+  ---------------------------------------------------------------
+  Positionne le flux. Si la position est dans le tampon courant,
+  aucun appel DOS n'est nécessaire.
+
+  procedure Truncate; virtual;
+  ---------------------------------------------------------------
+  Vide le tampon et tronque le fichier.
+
+  procedure Write(var Buf; Count : Word); virtual;
+  ---------------------------------------------------------------
+  Écrit via le tampon. Le tampon est vidé automatiquement quand
+  il est plein.
+
+=========================================================================
+  17. OBJET TEMSSTREAM
+=========================================================================
+
+  PEmsStream = ^TEmsStream;
+  TEmsStream = object(TStream)
+    Handle    : Word;      Handle EMS
+    PageCount : Word;      Nombre de pages allouées
+    Size      : LongInt;   Taille des données
+    Position  : LongInt;   Position courante
+    ...
+  end;
+  ---------------------------------------------------------------
+  Flux stocké en mémoire EMS (Expanded Memory Specification).
+  Permet d'utiliser la mémoire étendue au-delà des 640 Ko
+  conventionnels du DOS comme flux de données.
+
+  --- Champs ---
+
+  Handle : Word
+    Handle EMS alloué par le gestionnaire EMM.
+
+  PageCount : Word
+    Nombre de pages EMS de 16 Ko allouées.
+
+  Size : LongInt
+    Taille courante des données dans le flux.
+
+  Position : LongInt
+    Position courante de lecture/écriture.
+
+  --- Méthodes ---
+
+  constructor Init(MinSize, MaxSize : LongInt);
+  ---------------------------------------------------------------
+  Alloue des pages EMS pour le flux.
+
+  Paramètres :
+    MinSize  Taille minimale requise (en octets)
+    MaxSize  Taille maximale souhaitée (en octets)
+
+  Le nombre de pages allouées est suffisant pour MaxSize, avec
+  un minimum de MinSize. En cas d'échec, Status = stInitError.
+
+  Exemple :
+    var S : TEmsStream;
+    S.Init(8192, 65536);  { 8 Ko min, 64 Ko max }
+
+  destructor Done; virtual;
+  ---------------------------------------------------------------
+  Libère les pages EMS allouées.
+
+  function GetPos : LongInt; virtual;
+  ---------------------------------------------------------------
+  Retourne la position courante dans le flux EMS.
+
+  function GetSize : LongInt; virtual;
+  ---------------------------------------------------------------
+  Retourne la taille des données dans le flux EMS.
+
+  procedure Read(var Buf; Count : Word); virtual;
+  ---------------------------------------------------------------
+  Lit des données depuis la mémoire EMS.
+
+  procedure Seek(Pos : LongInt); virtual;
+  ---------------------------------------------------------------
+  Positionne le pointeur dans le flux EMS.
+
+  procedure Truncate; virtual;
+  ---------------------------------------------------------------
+  Tronque le flux à la position courante.
+
+  procedure Write(var Buf; Count : Word); virtual;
+  ---------------------------------------------------------------
+  Écrit des données dans la mémoire EMS. Si la capacité est
+  insuffisante, Status est mis à stWriteError.
+
+=========================================================================
+  18. OBJET TCOLLECTION
+=========================================================================
+
+  PCollection = ^TCollection;
+  TCollection = object(TObject)
+    Items : PItemList;    Tableau de pointeurs
+    Count : Integer;      Nombre d'éléments
+    Limit : Integer;      Capacité courante du tableau
+    Delta : Integer;      Incrément de croissance
+    ...
+  end;
+  ---------------------------------------------------------------
+  Collection polymorphique d'objets. Équivalent d'une liste
+  dynamique de pointeurs avec gestion automatique de la taille.
+  C'est le conteneur fondamental de Turbo Pascal / Turbo Vision.
+
+  --- Champs ---
+
+  Items : PItemList
+    Pointeur vers le tableau de pointeurs (éléments).
+
+  Count : Integer
+    Nombre d'éléments actuellement dans la collection.
+
+  Limit : Integer
+    Capacité courante (taille allouée du tableau Items).
+
+  Delta : Integer
+    Nombre d'éléments ajoutés lors d'un agrandissement automatique.
+    Si Delta = 0, la collection ne peut pas croître au-delà de
+    Limit.
+
+  --- Constructeurs/Destructeur ---
+
+  constructor Init(ALimit, ADelta : Integer);
+  ---------------------------------------------------------------
+  Crée une collection vide.
+
+  Paramètres :
+    ALimit  Capacité initiale
+    ADelta  Incrément de croissance (0 = taille fixe)
+
+  Exemple :
+    var C : PCollection;
+    C := New(PCollection, Init(100, 10));
+    { 100 éléments initiaux, croissance par 10 }
+
+  constructor Load(var S : TStream);
+  ---------------------------------------------------------------
+  Charge une collection depuis un flux. Chaque élément est lu
+  par la méthode virtuelle GetItem.
+
+  destructor Done; virtual;
+  ---------------------------------------------------------------
+  Libère tous les éléments (via FreeAll) et le tableau Items.
+
+  --- Accès par index ---
+
+  function At(Index : Integer) : Pointer;
+  ---------------------------------------------------------------
+  Retourne l'élément à l'index donné (base 0).
+  Appelle Error(coIndexError, Index) si l'index est invalide.
+
+  procedure AtDelete(Index : Integer);
+  ---------------------------------------------------------------
+  Supprime l'élément à l'index sans le libérer. Les éléments
+  suivants sont décalés.
+
+  procedure AtFree(Index : Integer);
+  ---------------------------------------------------------------
+  Supprime l'élément à l'index ET le libère (via FreeItem).
+
+  procedure AtInsert(Index : Integer; Item : Pointer);
+  ---------------------------------------------------------------
+  Insère un élément à l'index. Les éléments suivants sont décalés.
+  La collection croît si nécessaire (si Delta > 0).
+
+  procedure AtPut(Index : Integer; Item : Pointer);
+  ---------------------------------------------------------------
+  Remplace l'élément à l'index par Item (sans libérer l'ancien).
+
+  --- Recherche et suppression ---
+
+  procedure Delete(Item : Pointer);
+  ---------------------------------------------------------------
+  Supprime la première occurrence de Item sans le libérer.
+  Utilise IndexOf pour trouver l'élément.
+
+  procedure DeleteAll;
+  ---------------------------------------------------------------
+  Vide la collection sans libérer les éléments. Met Count à 0.
+
+  procedure Free(Item : Pointer);
+  ---------------------------------------------------------------
+  Supprime la première occurrence de Item ET le libère.
+
+  procedure FreeAll;
+  ---------------------------------------------------------------
+  Libère tous les éléments (via FreeItem) et vide la collection.
+
+  function IndexOf(Item : Pointer) : Integer; virtual;
+  ---------------------------------------------------------------
+  Retourne l'index d'un élément, ou -1 si non trouvé.
+  Recherche linéaire par comparaison de pointeurs.
+
+  --- Insertion ---
+
+  procedure Insert(Item : Pointer); virtual;
+  ---------------------------------------------------------------
+  Ajoute un élément à la fin de la collection.
+
+  --- Itération ---
+
+  function FirstThat(Test : Pointer) : Pointer;
+  ---------------------------------------------------------------
+  Retourne le premier élément pour lequel la fonction Test
+  retourne True. Parcourt la collection du début à la fin.
+
+  Paramètres :
+    Test  Pointeur vers une fonction : function(P: Pointer):
+          Boolean; far;
+
+  Retour :
+    Pointeur vers le premier élément correspondant, nil si aucun.
+
+  procedure ForEach(Action : Pointer);
+  ---------------------------------------------------------------
+  Appelle Action pour chaque élément de la collection.
+
+  Paramètres :
+    Action  Pointeur vers une procédure : procedure(P: Pointer);
+            far;
+
+  Exemple :
+    procedure AfficherNom(P : PMonObjet); far;
+    begin
+      WriteLn(P^.Nom^);
+    end;
+    { ... }
+    MaCollection^.ForEach(@AfficherNom);
+
+  function LastThat(Test : Pointer) : Pointer;
+  ---------------------------------------------------------------
+  Comme FirstThat, mais parcourt la collection de la fin vers
+  le début. Retourne le dernier élément correspondant.
+
+  --- Gestion mémoire ---
+
+  procedure FreeItem(Item : Pointer); virtual;
+  ---------------------------------------------------------------
+  Libère un élément. Par défaut, appelle PObject(Item)^.Free.
+  Surcharger pour les éléments qui ne sont pas des TObject.
+
+  --- Sérialisation ---
+
+  function GetItem(var S : TStream) : Pointer; virtual;
+  ---------------------------------------------------------------
+  Lit un élément depuis un flux. Par défaut, appelle S.Get.
+  Surcharger pour des éléments non-objet.
+
+  procedure PutItem(var S : TStream; Item : Pointer); virtual;
+  ---------------------------------------------------------------
+  Écrit un élément dans un flux. Par défaut, appelle S.Put(Item).
+
+  procedure Store(var S : TStream);
+  ---------------------------------------------------------------
+  Sauvegarde la collection dans un flux. Écrit Count, Limit,
+  Delta puis chaque élément via PutItem.
+
+  --- Gestion de capacité ---
+
+  procedure Pack;
+  ---------------------------------------------------------------
+  Supprime les entrées nil du tableau (compacte la collection).
+
+  procedure SetLimit(ALimit : Integer); virtual;
+  ---------------------------------------------------------------
+  Redimensionne le tableau Items à ALimit éléments.
+
+  --- Erreur ---
+
+  procedure Error(Code, Info : Integer); virtual;
+  ---------------------------------------------------------------
+  Appelée en cas d'erreur de collection. Par défaut, provoque
+  une erreur d'exécution (RunError 212).
+
+  Paramètres :
+    Code  coIndexError (-1) ou coOverflow (-2)
+    Info  Information complémentaire (index fautif, etc.)
+
+=========================================================================
+  19. OBJET TSORTEDCOLLECTION
+=========================================================================
+
+  PSortedCollection = ^TSortedCollection;
+  TSortedCollection = object(TCollection)
+    Duplicates : Boolean;   Autoriser les doublons
+    ...
+  end;
+  ---------------------------------------------------------------
+  Collection triée avec recherche binaire. Les éléments sont
+  maintenus en ordre selon la méthode Compare. La recherche
+  et l'insertion sont en O(log n) grâce à la dichotomie.
+
+  --- Champ ---
+
+  Duplicates : Boolean
+    Si True, les doublons sont autorisés.
+    Si False (défaut), Insert ignore les doublons.
+
+  --- Méthodes ---
+
+  constructor Load(var S : TStream);
+  ---------------------------------------------------------------
+  Charge une collection triée depuis un flux, incluant le champ
+  Duplicates.
+
+  function Compare(Key1, Key2 : Pointer) : Integer; virtual;
+  ---------------------------------------------------------------
+  Compare deux clés. DOIT être surchargée dans les descendants.
+
+  Retour :
+    < 0  si Key1 < Key2
+    = 0  si Key1 = Key2
+    > 0  si Key1 > Key2
+
+  function IndexOf(Item : Pointer) : Integer; virtual;
+  ---------------------------------------------------------------
+  Recherche binaire. Retourne l'index ou -1.
+
+  procedure Insert(Item : Pointer); virtual;
+  ---------------------------------------------------------------
+  Insère en conservant l'ordre de tri. Si Duplicates = False
+  et l'élément existe déjà, l'insertion est ignorée.
+
+  function KeyOf(Item : Pointer) : Pointer; virtual;
+  ---------------------------------------------------------------
+  Retourne la clé de tri d'un élément. Par défaut, retourne
+  Item lui-même. Surcharger si la clé est un sous-champ.
+
+  function Search(Key : Pointer; var Index : Integer) : Boolean;
+    virtual;
+  ---------------------------------------------------------------
+  Recherche binaire d'une clé.
+
+  Paramètres :
+    Key    Clé recherchée
+    Index  (sortie) Index trouvé ou point d'insertion
+
+  Retour :
+    True si trouvé, False sinon
+
+  procedure Store(var S : TStream);
+  ---------------------------------------------------------------
+  Sauvegarde la collection triée (incluant Duplicates).
+
+=========================================================================
+  20. OBJET TSTRINGCOLLECTION
+=========================================================================
+
+  PStringCollection = ^TStringCollection;
+  TStringCollection = object(TSortedCollection)
+    ...
+  end;
+  ---------------------------------------------------------------
+  Collection triée de chaînes Pascal (PString). Tri
+  alphabétique par défaut. C'est la spécialisation la plus
+  courante de TSortedCollection.
+
+  function Compare(Key1, Key2 : Pointer) : Integer; virtual;
+  ---------------------------------------------------------------
+  Comparaison alphabétique de deux chaînes (PString).
+
+  procedure FreeItem(Item : Pointer); virtual;
+  ---------------------------------------------------------------
+  Libère une chaîne via DisposeStr.
+
+  function GetItem(var S : TStream) : Pointer; virtual;
+  ---------------------------------------------------------------
+  Lit une chaîne depuis un flux via S.ReadStr.
+
+  procedure PutItem(var S : TStream; Item : Pointer); virtual;
+  ---------------------------------------------------------------
+  Écrit une chaîne dans un flux via S.WriteStr.
+
+  Exemple :
+    var SC : PStringCollection;
+    SC := New(PStringCollection, Init(50, 10));
+    SC^.Insert(NewStr('Pomme'));
+    SC^.Insert(NewStr('Banane'));
+    SC^.Insert(NewStr('Cerise'));
+    { SC contient : Banane, Cerise, Pomme (trié) }
+
+=========================================================================
+  21. OBJET TRESOURCECOLLECTION
+=========================================================================
+
+  PResourceCollection = ^TResourceCollection;
+  TResourceCollection = object(TStringCollection)
+    ...
+  end;
+  ---------------------------------------------------------------
+  Collection triée d'enregistrements de ressources. Utilisée
+  en interne par TResourceFile pour maintenir l'index des
+  ressources (clé = nom, valeur = position dans le flux).
+
+  procedure FreeItem(Item : Pointer); virtual;
+  ---------------------------------------------------------------
+  Libère un enregistrement de ressource et sa clé.
+
+  function GetItem(var S : TStream) : Pointer; virtual;
+  ---------------------------------------------------------------
+  Lit un enregistrement de ressource depuis le flux.
+
+  function KeyOf(Item : Pointer) : Pointer; virtual;
+  ---------------------------------------------------------------
+  Retourne la clé (nom) de l'enregistrement de ressource.
+
+  procedure PutItem(var S : TStream; Item : Pointer); virtual;
+  ---------------------------------------------------------------
+  Écrit un enregistrement de ressource dans le flux.
+
+=========================================================================
+  22. OBJET TRESOURCEFILE
+=========================================================================
+
+  PResourceFile = ^TResourceFile;
+  TResourceFile = object(TObject)
+    Stream   : PStream;    Flux sous-jacent
+    Modified : Boolean;    Indicateur de modification
+    ...
+  end;
+  ---------------------------------------------------------------
+  Gestionnaire de fichier de ressources. Permet de stocker et
+  retrouver des objets par nom (clé de type String) dans un flux.
+  C'est un dictionnaire persistant d'objets.
+
+  --- Champs ---
+
+  Stream : PStream
+    Pointeur vers le flux sous-jacent (passé au constructeur).
+
+  Modified : Boolean
+    True si des modifications ont été apportées depuis le dernier
+    Flush.
+
+  --- Méthodes ---
+
+  constructor Init(AStream : PStream);
+  ---------------------------------------------------------------
+  Initialise le fichier de ressources sur un flux existant.
+  Lit l'index des ressources depuis le flux.
+
+  Paramètres :
+    AStream  Pointeur vers un flux ouvert (TBufStream, etc.)
+
+  Exemple :
+    var
+      S  : PBufStream;
+      RF : TResourceFile;
+    begin
+      S := New(PBufStream, Init('APP.RES', stOpen, 4096));
+      RF.Init(S);
+    end;
+
+  destructor Done; virtual;
+  ---------------------------------------------------------------
+  Écrit les modifications (Flush) et libère les ressources.
+  Note : ne ferme PAS le flux ; c'est au programmeur de le faire.
+
+  function Count : Integer;
+  ---------------------------------------------------------------
+  Retourne le nombre de ressources dans le fichier.
+
+  procedure Delete(Key : String);
+  ---------------------------------------------------------------
+  Supprime une ressource par son nom.
+
+  procedure Flush;
+  ---------------------------------------------------------------
+  Écrit l'index mis à jour dans le flux si Modified = True.
+
+  function Get(Key : String) : PObject;
+  ---------------------------------------------------------------
+  Lit et retourne l'objet associé à la clé Key.
+
+  Retour :
+    PObject pointant vers l'objet chargé, nil si non trouvé.
+
+  function KeyAt(I : Integer) : String;
+  ---------------------------------------------------------------
+  Retourne le nom (clé) de la ressource à l'index I.
+
+  procedure Put(Item : PObject; Key : String);
+  ---------------------------------------------------------------
+  Stocke un objet avec le nom Key. Si la clé existe déjà,
+  l'ancienne valeur est remplacée.
+
+  function SwitchTo(AStream : PStream; Pack : Boolean) : PStream;
+  ---------------------------------------------------------------
+  Transfère le fichier de ressources vers un autre flux.
+
+  Paramètres :
+    AStream  Nouveau flux destination
+    Pack     Si True, compacte le fichier (élimine l'espace
+             des ressources supprimées)
+
+  Retour :
+    Pointeur vers l'ancien flux
+
+=========================================================================
+  23. OBJET TSTRINGLIST
+=========================================================================
+
+  TStrIndexRec = record
+    Key, Count, Offset : Word;
+  end;
+
+  PStrIndex = ^TStrIndex;
+  TStrIndex = array[0..9999] of TStrIndexRec;
+
+  PStringList = ^TStringList;
+  TStringList = object(TObject)
+    ...
+  end;
+  ---------------------------------------------------------------
+  Liste de chaînes indexées par numéro (Word). Permet un accès
+  rapide à des chaînes stockées dans un flux, groupées par blocs
+  pour l'efficacité de lecture. Lecture seule.
+
+  Utilisée typiquement pour les messages d'interface, les textes
+  d'aide, etc.
+
+  TStrIndexRec : chaque entrée d'index contient la clé de début,
+  le nombre de chaînes dans le bloc, et l'offset dans le flux.
+
+  constructor Load(var S : TStream);
+  ---------------------------------------------------------------
+  Charge la liste de chaînes depuis un flux.
+
+  destructor Done; virtual;
+  ---------------------------------------------------------------
+  Libère la mémoire de l'index.
+
+  function Get(Key : Word) : String;
+  ---------------------------------------------------------------
+  Retourne la chaîne associée au numéro Key.
+
+  Paramètres :
+    Key  Numéro de la chaîne (Word)
+
+  Retour :
+    Chaîne Pascal, ou chaîne vide si la clé n'existe pas.
+
+=========================================================================
+  24. OBJET TSTRLISTMAKER
+=========================================================================
+
+  PStrListMaker = ^TStrListMaker;
+  TStrListMaker = object(TObject)
+    ...
+  end;
+  ---------------------------------------------------------------
+  Objet compagnon de TStringList pour la création de listes de
+  chaînes. Écriture seule (contrairement à TStringList qui est
+  lecture seule).
+
+  constructor Init(AStrSize, AIndexSize : Word);
+  ---------------------------------------------------------------
+  Initialise le créateur de liste de chaînes.
+
+  Paramètres :
+    AStrSize    Taille du tampon de chaînes (octets)
+    AIndexSize  Taille du tampon d'index (octets)
+
+  Exemple :
+    var
+      SLM : TStrListMaker;
+    begin
+      SLM.Init(4096, 256);
+      SLM.Put(0, 'Premier message');
+      SLM.Put(1, 'Deuxième message');
+      SLM.Put(2, 'Troisième message');
+      SLM.Store(MonFlux);
+      SLM.Done;
+    end;
+
+  destructor Done; virtual;
+  ---------------------------------------------------------------
+  Libère les tampons de chaînes et d'index.
+
+  procedure Put(Key : Word; S : String);
+  ---------------------------------------------------------------
+  Ajoute une chaîne avec le numéro Key.
+
+  Paramètres :
+    Key  Numéro de la chaîne
+    S    Contenu de la chaîne
+
+  Note : les clés doivent être ajoutées par ordre croissant.
+
+  procedure Store(var S : TStream);
+  ---------------------------------------------------------------
+  Écrit la liste complète dans le flux S.
+
+=========================================================================
+  25. OBJET TPOINT
+=========================================================================
+
+  TPoint = object
+    X, Y : Integer;
+  end;
+  ---------------------------------------------------------------
+  Point géométrique à coordonnées entières. Objet simple sans
+  méthode, utilisé comme composant de TRect et dans Turbo Vision
+  pour les positions d'écran.
+
+  Champs :
+    X  Coordonnée horizontale
+    Y  Coordonnée verticale
+
+=========================================================================
+  26. OBJET TRECT
+=========================================================================
+
+  TRect = object
+    A, B : TPoint;    A = coin supérieur gauche,
+                       B = coin inférieur droit (exclusif)
+    ...
+  end;
+  ---------------------------------------------------------------
+  Rectangle défini par deux points. Convention : le point B est
+  exclusif (le rectangle va de A.X à B.X-1 et de A.Y à B.Y-1),
+  similaire aux rectangles Windows.
+
+  --- Champs ---
+
+  A : TPoint
+    Coin supérieur gauche (inclus).
+
+  B : TPoint
+    Coin inférieur droit (exclus).
+
+  --- Méthodes ---
+
+  procedure Assign(XA, YA, XB, YB : Integer);
+  ---------------------------------------------------------------
+  Assigne les coordonnées du rectangle.
+
+  Paramètres :
+    XA, YA  Coin supérieur gauche
+    XB, YB  Coin inférieur droit
+
+  Exemple :
+    var R : TRect;
+    R.Assign(10, 5, 70, 20);
+
+  procedure Copy(R : TRect);
+  ---------------------------------------------------------------
+  Copie les coordonnées du rectangle R dans Self.
+
+  procedure Move(ADX, ADY : Integer);
+  ---------------------------------------------------------------
+  Déplace le rectangle de (ADX, ADY) pixels/caractères.
+
+  Paramètres :
+    ADX  Déplacement horizontal
+    ADY  Déplacement vertical
+
+  procedure Grow(ADX, ADY : Integer);
+  ---------------------------------------------------------------
+  Agrandit (ou réduit) le rectangle dans les deux directions.
+  A est déplacé de (-ADX, -ADY) et B de (+ADX, +ADY).
+
+  Paramètres :
+    ADX  Expansion horizontale
+    ADY  Expansion verticale
+
+  Exemple :
+    R.Grow(1, 1);   { agrandir d'un pixel de chaque côté }
+    R.Grow(-2, -2); { réduire de 2 pixels de chaque côté }
+
+  procedure Intersect(R : TRect);
+  ---------------------------------------------------------------
+  Remplace Self par l'intersection de Self et R. Si les
+  rectangles ne se chevauchent pas, le résultat est vide.
+
+  procedure Union(R : TRect);
+  ---------------------------------------------------------------
+  Remplace Self par l'union de Self et R (plus petit rectangle
+  contenant les deux).
+
+  function Contains(P : TPoint) : Boolean;
+  ---------------------------------------------------------------
+  Teste si le point P est à l'intérieur du rectangle.
+
+  Retour :
+    True si A.X <= P.X < B.X et A.Y <= P.Y < B.Y
+
+  function Equals(R : TRect) : Boolean;
+  ---------------------------------------------------------------
+  Teste si deux rectangles sont identiques.
+
+  function Empty : Boolean;
+  ---------------------------------------------------------------
+  Teste si le rectangle est vide (largeur ou hauteur <= 0).
+
+  Retour :
+    True si A.X >= B.X ou A.Y >= B.Y
+
+=========================================================================
+  27. ROUTINES - CHAÎNES DYNAMIQUES
+=========================================================================
+
+  function NewStr(const S : String) : PString;
+  ---------------------------------------------------------------
+  Alloue une chaîne sur le tas et retourne un PString.
+  Si S est vide, retourne nil.
+
+  Paramètres :
+    S  Chaîne à copier
+
+  Retour :
+    PString pointant vers la copie, ou nil si S = ''
+
+  La mémoire allouée est exactement Length(S) + 1 octets
+  (longueur + contenu), économisant la mémoire par rapport
+  à un String[255] de 256 octets.
+
+  Exemple :
+    var P : PString;
+    P := NewStr('Bonjour');
+    WriteLn(P^);          { affiche "Bonjour" }
+    DisposeStr(P);
+
+  procedure DisposeStr(P : PString);
+  ---------------------------------------------------------------
+  Libère une chaîne allouée par NewStr.
+
+  Paramètres :
+    P  Pointeur vers la chaîne (peut être nil)
+
+  Si P est nil, ne fait rien.
+
+=========================================================================
+  28. ROUTINES - OPÉRATIONS LONGINT
+=========================================================================
+
+  function LongMul(X, Y : Integer) : LongInt;
+    Inline($5A/$58/$F7/$EA);
+  ---------------------------------------------------------------
+  Multiplication de deux Integer retournant un LongInt.
+  Évite le dépassement (overflow) qui surviendrait avec une
+  simple multiplication Integer × Integer.
+
+  Paramètres :
+    X, Y  Opérandes Integer
+
+  Retour :
+    Produit LongInt (X × Y)
+
+  Implémentation : instruction IMUL DX:AX (assembleur inline).
+
+  Exemple :
+    var L : LongInt;
+    L := LongMul(30000, 2);  { L = 60000, pas de dépassement }
+
+  function LongDiv(X : LongInt; Y : Integer) : Integer;
+    Inline($59/$58/$5A/$F7/$F9);
+  ---------------------------------------------------------------
+  Division d'un LongInt par un Integer retournant un Integer.
+
+  Paramètres :
+    X  Dividende (LongInt)
+    Y  Diviseur (Integer, non nul)
+
+  Retour :
+    Quotient Integer (X div Y)
+
+  Implémentation : instruction IDIV CX (assembleur inline).
+
+=========================================================================
+  29. ROUTINES - GESTION DES TYPES DE FLUX
+=========================================================================
+
+  procedure RegisterType(var S : TStreamRec);
+  ---------------------------------------------------------------
+  Enregistre un type d'objet pour la sérialisation. Après
+  l'enregistrement, le type peut être lu/écrit par Get/Put.
+
+  Paramètres :
+    S  Enregistrement TStreamRec décrivant le type
+
+  Chaque type doit avoir un ObjType unique. Si un ObjType déjà
+  enregistré est utilisé, une erreur d'exécution se produit.
+
+  Exemple :
+    RegisterType(RCollection);
+    RegisterType(RStringCollection);
+
+  procedure RegisterObjects;
+  ---------------------------------------------------------------
+  Enregistre tous les types d'objets standard de l'unité Objects :
+  TCollection, TStringCollection, TStringList et TStrListMaker.
+
+  Équivalent à :
+    RegisterType(RCollection);
+    RegisterType(RStringCollection);
+    RegisterType(RStringList);
+    RegisterType(RStrListMaker);
+
+=========================================================================
+  30. ROUTINE - ABSTRACT
+=========================================================================
+
+  procedure Abstract;
+  ---------------------------------------------------------------
+  Provoque une erreur d'exécution (RunError 211 : Abstract method
+  called). Doit être appelée dans les méthodes virtuelles
+  abstraites qui n'ont pas d'implémentation dans la classe de
+  base.
+
+  En Turbo Pascal, il n'y a pas de mot-clé « abstract » comme
+  en Delphi. La convention est d'appeler cette procédure :
+
+    function TSortedCollection.Compare(Key1, Key2: Pointer):
+      Integer;
+    begin
+      Abstract;  { doit être surchargée }
+      Compare := 0;
+    end;
+
+=========================================================================
+  31. HIÉRARCHIE DES OBJETS
+=========================================================================
+
+  TObject
+  ├── TStream
+  │   ├── TDosStream
+  │   │   └── TBufStream
+  │   └── TEmsStream
+  ├── TCollection
+  │   └── TSortedCollection
+  │       └── TStringCollection
+  │           └── TResourceCollection
+  ├── TResourceFile
+  ├── TStringList
+  └── TStrListMaker
+
+  Types géométriques (sans parent TObject) :
+  TPoint
+  TRect
+
+  Types d'enregistrement :
+  WordRec, LongRec, PtrRec
+  TStreamRec, TStrIndexRec
+
+=========================================================================
+  32. EXEMPLES COMPLETS
+=========================================================================
+
+  --- Exemple 1 : Collection simple ---
+
+  program CollectionDemo;
+  uses Objects;
+  type
+    PAnimal = ^TAnimal;
+    TAnimal = object(TObject)
+      Nom : PString;
+      Pattes : Integer;
+      constructor Init(const ANom : String; APattes : Integer);
+      destructor Done; virtual;
+    end;
+
+  constructor TAnimal.Init(const ANom: String; APattes: Integer);
+  begin
+    inherited Init;
+    Nom := NewStr(ANom);
+    Pattes := APattes;
+  end;
+
+  destructor TAnimal.Done;
+  begin
+    DisposeStr(Nom);
+    inherited Done;
+  end;
+
+  procedure AfficherAnimal(P : PAnimal); far;
+  begin
+    WriteLn(P^.Nom^, ' : ', P^.Pattes, ' pattes');
+  end;
+
+  var
+    C : PCollection;
+  begin
+    C := New(PCollection, Init(10, 5));
+    C^.Insert(New(PAnimal, Init('Chat', 4)));
+    C^.Insert(New(PAnimal, Init('Poulet', 2)));
+    C^.Insert(New(PAnimal, Init('Araignée', 8)));
+
+    WriteLn('Nombre d''animaux : ', C^.Count);
+    C^.ForEach(@AfficherAnimal);
+
+    Dispose(C, Done);
+  end.
+
+  --- Exemple 2 : Collection triée de chaînes ---
+
+  program StringCollDemo;
+  uses Objects;
+
+  procedure AfficherStr(P : PString); far;
+  begin
+    if P <> nil then WriteLn(P^);
+  end;
+
+  var
+    SC : PStringCollection;
+  begin
+    SC := New(PStringCollection, Init(20, 5));
+    SC^.Insert(NewStr('Orange'));
+    SC^.Insert(NewStr('Pomme'));
+    SC^.Insert(NewStr('Banane'));
+    SC^.Insert(NewStr('Cerise'));
+    SC^.Insert(NewStr('Ananas'));
+
+    WriteLn('Fruits triés :');
+    SC^.ForEach(@AfficherStr);
+    { Affiche : Ananas, Banane, Cerise, Orange, Pomme }
+
+    Dispose(SC, Done);
+  end.
+
+  --- Exemple 3 : Flux fichier avec tampon ---
+
+  program StreamDemo;
+  uses Objects;
+  var
+    S   : TBufStream;
+    I   : Integer;
+    Buf : array[1..100] of Integer;
+  begin
+    { Écriture }
+    S.Init('DONNEES.DAT', stCreate, 1024);
+    for I := 1 to 100 do
+      Buf[I] := I * I;
+    S.Write(Buf, SizeOf(Buf));
+    S.Done;
+
+    { Lecture }
+    FillChar(Buf, SizeOf(Buf), 0);
+    S.Init('DONNEES.DAT', stOpenRead, 1024);
+    S.Read(Buf, SizeOf(Buf));
+    if S.Status = stOk then
+      for I := 1 to 5 do
+        WriteLn('Buf[', I, '] = ', Buf[I]);
+    S.Done;
+  end.
+
+  --- Exemple 4 : Sérialisation d'objets (Get/Put) ---
+
+  program SerialDemo;
+  uses Objects;
+
+  const
+    RMyRec : TStreamRec = (
+      ObjType: 100;
+      VmtLink: Ofs(TypeOf(TStringCollection)^);
+      Load:    @TStringCollection.Load;
+      Store:   @TStringCollection.Store);
+
+  var
+    S  : TBufStream;
+    SC : PStringCollection;
+    P  : PString;
+    I  : Integer;
+  begin
+    RegisterType(RCollection);
+    RegisterType(RStringCollection);
+
+    { Écriture }
+    SC := New(PStringCollection, Init(10, 5));
+    SC^.Insert(NewStr('Alpha'));
+    SC^.Insert(NewStr('Beta'));
+    SC^.Insert(NewStr('Gamma'));
+
+    S.Init('STRINGS.DAT', stCreate, 1024);
+    S.Put(SC);
+    S.Done;
+    Dispose(SC, Done);
+
+    { Lecture }
+    S.Init('STRINGS.DAT', stOpenRead, 1024);
+    SC := PStringCollection(S.Get);
+    S.Done;
+
+    if SC <> nil then
+    begin
+      WriteLn('Chaînes relues :');
+      for I := 0 to SC^.Count - 1 do
+      begin
+        P := SC^.At(I);
+        if P <> nil then WriteLn('  ', P^);
+      end;
+      Dispose(SC, Done);
+    end;
+  end.
+
+  --- Exemple 5 : Rectangles ---
+
+  program RectDemo;
+  uses Objects;
+  var
+    R1, R2 : TRect;
+    P      : TPoint;
+  begin
+    R1.Assign(10, 10, 50, 40);
+    R2.Assign(30, 20, 70, 60);
+
+    WriteLn('R1 vide ? ', R1.Empty);
+
+    P.X := 35; P.Y := 25;
+    WriteLn('R1 contient (35,25) ? ', R1.Contains(P));
+
+    R1.Intersect(R2);
+    WriteLn('Intersection : (',
+      R1.A.X, ',', R1.A.Y, ') - (',
+      R1.B.X, ',', R1.B.Y, ')');
+    { Résultat : (30,20) - (50,40) }
+  end.
+
+  --- Exemple 6 : Liste de chaînes (StringList) ---
+
+  program StringListDemo;
+  uses Objects;
+  var
+    S   : TBufStream;
+    SLM : TStrListMaker;
+    SL  : PStringList;
+  begin
+    RegisterType(RStringList);
+    RegisterType(RStrListMaker);
+
+    { Création }
+    S.Init('MESSAGES.DAT', stCreate, 1024);
+    SLM.Init(2048, 256);
+    SLM.Put(0, 'Erreur inconnue');
+    SLM.Put(1, 'Fichier non trouvé');
+    SLM.Put(2, 'Accès refusé');
+    SLM.Put(3, 'Mémoire insuffisante');
+    SLM.Store(S);
+    SLM.Done;
+    S.Done;
+
+    { Lecture }
+    S.Init('MESSAGES.DAT', stOpenRead, 1024);
+    SL := New(PStringList, Load(S));
+    WriteLn(SL^.Get(0));  { Erreur inconnue }
+    WriteLn(SL^.Get(2));  { Accès refusé }
+    Dispose(SL, Done);
+    S.Done;
+  end.
+
+=========================================================================
+  33. RÉCAPITULATIF DE L'INTERFACE
+=========================================================================
+
+  --- Constantes d'accès ---
+  stCreate       = $3C00
+  stOpenRead     = $3D00
+  stOpenWrite    = $3D01
+  stOpen         = $3D02
+
+  --- Constantes d'erreur flux ---
+  stOk           =  0
+  stError        = -1
+  stInitError    = -2
+  stReadError    = -3
+  stWriteError   = -4
+  stGetError     = -5
+  stPutError     = -6
+
+  --- Constantes collection ---
+  MaxCollectionSize = 65520 div SizeOf(Pointer)
+  coIndexError   = -1
+  coOverflow     = -2
+
+  --- Constante VMT ---
+  vmtHeaderSize  = 8
+
+  --- Constantes typées ---
+  StreamError    : Pointer = nil
+  EmsCurHandle   : Word = $FFFF
+  EmsCurPage     : Word = $FFFF
+  RCollection    : TStreamRec (ObjType 50)
+  RStringCollection : TStreamRec (ObjType 51)
+  RStringList    : TStreamRec (ObjType 52)
+  RStrListMaker  : TStreamRec (ObjType 52)
+
+  --- Types d'enregistrement ---
+  WordRec        (Lo, Hi : Byte)
+  LongRec        (Lo, Hi : Word)
+  PtrRec         (Ofs, Seg : Word)
+  TStreamRec     (ObjType, VmtLink, Load, Store, Next)
+  TStrIndexRec   (Key, Count, Offset : Word)
+  FNameStr       = String[79]
+
+  --- Types pointeur ---
+  PString, PCharSet, PByteArray, PWordArray
+  PObject, PStream, PDosStream, PBufStream, PEmsStream
+  PCollection, PSortedCollection, PStringCollection
+  PResourceCollection, PResourceFile
+  PStringList, PStrListMaker, PItemList, PStreamRec
+  PStrIndex
+
+  --- Types ensemble/tableau ---
+  TCharSet       = Set of Char
+  TByteArray     = array[0..32767] of Byte
+  TWordArray     = array[0..16383] of Word
+  TItemList      = array[0..MaxCollectionSize-1] of Pointer
+  TStrIndex      = array[0..9999] of TStrIndexRec
+
+  --- Objets ---
+  TObject        (Init, Free, Done)
+  TStream        (CopyFrom, Error, Flush, Get, GetPos, GetSize,
+                  Put, Read, ReadStr, Reset, Seek, Truncate,
+                  Write, WriteStr)
+  TDosStream     (Init, Done, GetPos, GetSize, Read, Seek,
+                  Truncate, Write)
+  TBufStream     (Init, Done, Flush, GetPos, GetSize, Read,
+                  Seek, Truncate, Write)
+  TEmsStream     (Init, Done, GetPos, GetSize, Read, Seek,
+                  Truncate, Write)
+  TCollection    (Init, Load, Done, At, AtDelete, AtFree,
+                  AtInsert, AtPut, Delete, DeleteAll, Error,
+                  FirstThat, ForEach, Free, FreeAll, FreeItem,
+                  GetItem, IndexOf, Insert, LastThat, Pack,
+                  PutItem, SetLimit, Store)
+  TSortedCollection (Load, Compare, IndexOf, Insert, KeyOf,
+                     Search, Store)
+  TStringCollection (Compare, FreeItem, GetItem, PutItem)
+  TResourceCollection (FreeItem, GetItem, KeyOf, PutItem)
+  TResourceFile  (Init, Done, Count, Delete, Flush, Get, KeyAt,
+                  Put, SwitchTo)
+  TStringList    (Load, Done, Get)
+  TStrListMaker  (Init, Done, Put, Store)
+  TPoint         (X, Y)
+  TRect          (Assign, Copy, Move, Grow, Intersect, Union,
+                  Contains, Equals, Empty)
+
+  --- Routines globales ---
+  Function  NewStr(const S : String) : PString;
+  Procedure DisposeStr(P : PString);
+  Function  LongMul(X, Y : Integer) : LongInt;
+  Function  LongDiv(X : LongInt; Y : Integer) : Integer;
+  Procedure RegisterType(var S : TStreamRec);
+  Procedure Abstract;
+  Procedure RegisterObjects;
+
+=========================================================================
+  34. RÉSUMÉ PAR CATÉGORIE
+=========================================================================
+
+  Catégorie                   Nombre   Éléments
+  -------------------------   ------   ----------------------------------
+  Objets                         14   TObject, TStream, TDosStream,
+                                      TBufStream, TEmsStream,
+                                      TCollection, TSortedCollection,
+                                      TStringCollection,
+                                      TResourceCollection,
+                                      TResourceFile, TStringList,
+                                      TStrListMaker, TPoint, TRect
+  Types d'enregistrement          5   WordRec, LongRec, PtrRec,
+                                      TStreamRec, TStrIndexRec
+  Types pointeur                 17   PString, PCharSet, PByteArray,
+                                      PWordArray, PObject, PStream,
+                                      PDosStream, PBufStream,
+                                      PEmsStream, PCollection,
+                                      PSortedCollection,
+                                      PStringCollection,
+                                      PResourceCollection,
+                                      PResourceFile, PStringList,
+                                      PStrListMaker, PItemList,
+                                      PStreamRec, PStrIndex
+  Types ensemble/tableau          5   TCharSet, TByteArray, TWordArray,
+                                      TItemList, TStrIndex, FNameStr
+  Constantes simples             14   stCreate..stOpen (4),
+                                      stOk..stPutError (7),
+                                      MaxCollectionSize,
+                                      coIndexError, coOverflow,
+                                      vmtHeaderSize
+  Constantes typées               7   StreamError, EmsCurHandle,
+                                      EmsCurPage, RCollection,
+                                      RStringCollection, RStringList,
+                                      RStrListMaker
+  Routines globales               7   NewStr, DisposeStr, LongMul,
+                                      LongDiv, RegisterType, Abstract,
+                                      RegisterObjects
+  -------------------------   ------   ----------------------------------
+  TOTAL constantes simples       14
+  TOTAL constantes typées         7
+  TOTAL types                    27   (14 objets + 5 records + 3 types
+                                       array + 1 set + 1 string +
+                                       17 pointeurs)
+  TOTAL routines globales         7
+  TOTAL méthodes (~)             90+  (dans les 14 objets)
+  Dépendance : aucune (unité autonome)
+
+=========================================================================
+  Fin du document - Unité OBJECTS - Turbo Pascal 7.0
+=========================================================================

@@ -1,0 +1,34 @@
+BEGIN
+  CO Test des clauses collaterales et paralleles - TODO 23 CO
+
+  CO Clause collaterale simple : (unite1, unite2, unite3) CO
+  CO Evaluation gauche a droite, resultat = derniere unite CO
+  INT a := 10;
+  INT b := 20;
+  INT c := 30;
+
+  CO Clause collaterale dans une expression CO
+  print(("Test collateral", newline));
+
+  CO PAR : clause parallele (avertissement, evaluation sequentielle) CO
+  PAR(
+    INT x := 1;
+    INT y := 2;
+    print(("PAR: x=", x, " y=", y, newline))
+  );
+
+  CO PAR BEGIN...END CO
+  PAR BEGIN
+    INT p := 100;
+    INT q := 200;
+    print(("PAR BEGIN: p=", p, " q=", q, newline))
+  END;
+
+  CO Collateral d elaboration CO
+  PAR(
+    INT m := 42;
+    print(("elaboration: m=", m, newline))
+  );
+
+  SKIP
+END

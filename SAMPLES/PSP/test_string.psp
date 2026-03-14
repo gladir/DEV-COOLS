@@ -1,0 +1,29 @@
+<html>
+  <head>
+    <title>Pascal Server Pages - test_case</title>
+  </head>
+  <body>
+<%
+var
+  msg1: string;
+  msg2: string;
+  result: string;
+
+begin
+  msg1 := 'Hello';
+  msg2 := 'World';
+  
+  writeln('Test des chaînes de caractères:','<br />');
+  writeln('msg1 = ', msg1,'<br />');
+  writeln('msg2 = ', msg2,'<br />');
+  
+  { Test de concaténation }
+  result := msg1 + ' ' + msg2;
+  writeln('Concaténation: ', result,'<br />');
+  
+  { Test de chaîne littérale }
+  writeln('Chaîne littérale: ''Bonjour Pascal!''');
+end.
+%>
+  </body>
+</html>

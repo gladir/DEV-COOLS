@@ -1,0 +1,53 @@
+CO Test TODO 15 - CLAUSES REPETITIVES (BOUCLES) CO
+
+CO Test 1 : FOR i FROM 1 TO 10 DO ... OD CO
+INT sum1 := 0;
+FOR i FROM 1 TO 10 DO
+  sum1 +:= i
+OD;
+
+CO Test 2 : FOR i TO 5 DO (FROM defaults to 1) CO
+INT sum2 := 0;
+FOR j TO 5 DO
+  sum2 +:= j
+OD;
+
+CO Test 3 : FOR i FROM 1 TO 10 BY 2 DO ... OD CO
+INT sum3 := 0;
+FOR k FROM 1 TO 10 BY 2 DO
+  sum3 +:= k
+OD;
+
+CO Test 4 : FOR i FROM 10 DOWNTO 1 DO ... OD CO
+INT sum4 := 0;
+FOR m FROM 10 DOWNTO 1 DO
+  sum4 +:= m
+OD;
+
+CO Test 5 : WHILE condition DO ... OD CO
+INT count := 0;
+INT limit := 5;
+WHILE count < limit DO
+  count +:= 1
+OD;
+
+CO Test 6 : FOR i FROM 1 TO 100 WHILE condition DO ... OD CO
+INT sum6 := 0;
+FOR n FROM 1 TO 100 WHILE sum6 < 20 DO
+  sum6 +:= n
+OD;
+
+CO Test 7 : Boucle imbriquee CO
+INT total := 0;
+FOR a FROM 1 TO 3 DO
+  FOR b FROM 1 TO 3 DO
+    total +:= 1
+  OD
+OD;
+
+CO Test 8 : FOR i FROM 5 TO 1 BY -1 DO ... OD CO
+INT sum8 := 0;
+FOR p FROM 5 TO 1 BY -1 DO
+  sum8 +:= p
+OD
+

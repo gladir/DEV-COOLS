@@ -1,0 +1,19 @@
+BEGIN
+  INT x = 42;
+  INT y := x;
+  INT z := ABS -5;
+  BOOL flag := TRUE;
+  IF flag THEN
+    INT a := 1
+  ELSE
+    INT a := 2
+  FI;
+  CASE 2 IN
+    10,
+    20,
+    30
+  OUT
+    0
+  ESAC;
+  SKIP
+END

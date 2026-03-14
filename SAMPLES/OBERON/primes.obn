@@ -1,0 +1,27 @@
+MODULE Primes;
+IMPORT Out;
+
+VAR
+  i, j, prime, count : INTEGER;
+
+BEGIN
+  count := 0;
+  Out.String("Nombres premiers < 50 :"); Out.Ln;
+  Out.String("  ");
+  FOR i := 2 TO 49 DO
+    prime := 1;
+    j := 2;
+    WHILE j * j <= i DO
+      IF i MOD j = 0 THEN
+        prime := 0
+      END;
+      INC(j)
+    END;
+    IF prime = 1 THEN
+      Out.Int(i, 0); Out.String(" ");
+      INC(count)
+    END
+  END;
+  Out.Ln;
+  Out.String("Total : "); Out.Int(count, 0); Out.Ln
+END Primes.
