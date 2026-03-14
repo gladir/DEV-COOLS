@@ -1,0 +1,44 @@
+comment Test des entrees/sorties intrinsics (TODO 12) ;
+comment Ce fichier teste les intrinsics d E/S fournis par le compilateur :
+  outinteger, outreal, outstring, outboolean, inchar, print, newline, sysact ;
+BEGIN
+  INTEGER x;
+  BOOLEAN flag;
+
+  comment Affichage d une chaine sur le canal 1 (STDOUT) ;
+  outstring(1, `Hello, Algol 60!`);
+  newline;
+
+  comment Affichage d un entier ;
+  x := 42;
+  outinteger(1, x);
+  newline;
+
+  comment Affichage d un entier negatif ;
+  outinteger(1, -7);
+  newline;
+
+  comment Affichage d une expression entiere ;
+  outinteger(1, 3 + 4 * 5);
+  newline;
+
+  comment Affichage d un booleen TRUE ;
+  flag := TRUE;
+  outboolean(1, flag);
+  newline;
+
+  comment Affichage d un booleen FALSE ;
+  outboolean(1, FALSE);
+  newline;
+
+  comment Affichage via outreal (stub vers outinteger) ;
+  outreal(1, 100);
+  newline;
+
+  comment Raccourci print (canal 1 implicite) ;
+  print(`Fin du test`);
+  newline;
+
+  comment sysact stub (ne fait rien) ;
+  sysact(1, 0, 0)
+END.

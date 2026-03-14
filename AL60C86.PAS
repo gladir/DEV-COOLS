@@ -175,7 +175,7 @@
             IMPL (implication) : NOT a OR b -> emission JNZ + OR
             EQUIV (equivalence) : CMP AX,BX -> AX=0|1 ou XOR+NOT
 
-  TODO 12 - ENTREES/SORTIES (INTRINSICS)
+  TODO 12 - ENTREES/SORTIES (INTRINSICS) [IMPLEMENTE]
             Algol 60 ne definit pas d E/S standard ;
             intrinsics fournis par le compilateur :
             outinteger(canal, n)   -> CALL _A60RT_OUTINT (INT 21h AH=40h)
@@ -608,6 +608,7 @@ Var
 
   { Etat general }
   RuntimeEmitted : Boolean;
+  IOEmitted      : Boolean;   { TODO 12 : runtime I/O deja emis ? }
 
   { Label sequentiel }
   LabelSeq   : Integer;
@@ -721,6 +722,9 @@ Procedure ParseSwitchAccess(SIdx : Integer;
                             Var Res : TExprVal); Forward;
 { ---- Forward declarations (TODO 11) ----------------------- }
 Procedure EmitExprRuntime; Forward;
+{ ---- Forward declarations (TODO 12) ----------------------- }
+Procedure ParseIOIntrinsic(Const Name : TString; Var Res : TExprVal); Forward;
+Procedure EmitIORuntime; Forward;
 { ---- Forward declarations (TODO 06) ----------------------- }
 Procedure TypeInit;      Forward;
 Function  TypeKindOf(TypeIdx : Integer) : TTypeKind; Forward;
@@ -1002,6 +1006,7 @@ Begin
   GExprDummy.Offset  := 0;
   GExprDummy.SymIdx  := -1;
   RuntimeEmitted := False;
+  IOEmitted := False;  { TODO 12 }
   { Table des symboles (TODO 05) }
   SymInit;
   { Systeme de types (TODO 06) }
@@ -2363,6 +2368,19 @@ Begin
   If CurToken.Kind = TK_IDENT Then
   Begin
     IdName := CurToken.Val;
+
+    { TODO 12 : intercepter les noms d E/S intrinsics avant SymFind }
+    If (IdName = 'OUTINTEGER') Or (IdName = 'OUTREAL') Or
+       (IdName = 'OUTSTRING') Or (IdName = 'OUTBOOLEAN') Or
+       (IdName = 'ININTEGER') Or (IdName = 'INREAL') Or
+       (IdName = 'INCHAR') Or (IdName = 'PRINT') Or
+       (IdName = 'NEWLINE') Or (IdName = 'SYSACT') Then
+    Begin
+      ParserAdvance;  { consommer le nom d intrinsic }
+      ParseIOIntrinsic(IdName, Res);
+      Exit;
+    End;
+
     SIdx := SymFind(IdName);
     ParserAdvance;  { consommer l identifiant }
 
@@ -3386,6 +3404,378 @@ Begin
   EmitBlankLine;
 End;
 
+{ ============================================================
+  TODO 12 - ENTREES/SORTIES (INTRINSICS) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseIOIntrinsic : parser un appel d E/S intrinsic ------
+  Noms reconnus (en majuscules, le lexeur convertit) :
+    OUTINTEGER(canal, n)   -> push n, push canal, CALL _A60RT_OUTINT
+    OUTREAL(canal, x)      -> push x, push canal, CALL _A60RT_OUTINT (stub)
+    OUTSTRING(canal, s)    -> push s, push canal, CALL _A60RT_OUTSTR
+    OUTBOOLEAN(canal, b)   -> push b, push canal, CALL _A60RT_OUTBOOL
+    ININTEGER(canal)       -> push canal, CALL _A60RT_ININT, resultat AX
+    INREAL(canal)          -> push canal, CALL _A60RT_ININT (stub)
+    INCHAR(canal)          -> push canal, CALL _A60RT_INCHAR, resultat AX
+    PRINT(args)            -> push s, CALL _A60RT_OUTSTR (canal 1 implicite)
+    NEWLINE                -> CALL _A60RT_NEWLINE (pas d arguments)
+    SYSACT(canal,act,r)    -> stub (ignore)
+  Le nom de l intrinsic a deja ete consomme par l appelant.     }
+Procedure ParseIOIntrinsic(Const Name : TString; Var Res : TExprVal);
+Var
+  E1, E2, E3 : TExprVal;
+Begin
+  ExprMakeImm(0, TY_IDX_INTEGER, Res);
+
+  { NEWLINE : pas d arguments, pas de parentheses requises }
+  If Name = 'NEWLINE' Then
+  Begin
+    EmitComment('NEWLINE');
+    EmitInstr('CALL', A60_RT_PFX + 'NEWLINE');
+    Exit;
+  End;
+
+  { Tous les autres intrinsics attendent ( ... ) }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    ParserAdvance  { consommer ( }
+  Else
+  Begin
+    CompileError('( attendu apres ' + Name);
+    Exit;
+  End;
+
+  { ------ OUTINTEGER(canal, n) ------ }
+  If Name = 'OUTINTEGER' Then
+  Begin
+    ParseExpr(E1);  { canal }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+    ParseExpr(E2);  { valeur }
+    ExprFlushToAX(E2);
+    EmitComment('outinteger');
+    EmitPush('AX');  { valeur }
+    ExprFlushToAX(E1);
+    EmitPush('AX');  { canal }
+    EmitInstr('CALL', A60_RT_PFX + 'OUTINT');
+    EmitInstr('ADD', 'SP, 4');
+  End
+
+  { ------ OUTREAL(canal, x) ------ }
+  Else If Name = 'OUTREAL' Then
+  Begin
+    ParseExpr(E1);  { canal }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+    ParseExpr(E2);  { valeur }
+    ExprFlushToAX(E2);
+    EmitComment('outreal (stub -> outinteger)');
+    EmitPush('AX');
+    ExprFlushToAX(E1);
+    EmitPush('AX');
+    EmitInstr('CALL', A60_RT_PFX + 'OUTINT');
+    EmitInstr('ADD', 'SP, 4');
+  End
+
+  { ------ OUTSTRING(canal, s) ------ }
+  Else If Name = 'OUTSTRING' Then
+  Begin
+    ParseExpr(E1);  { canal }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+    ParseExpr(E2);  { chaine }
+    ExprFlushToAX(E2);
+    EmitComment('outstring');
+    EmitPush('AX');  { adresse chaine }
+    ExprFlushToAX(E1);
+    EmitPush('AX');  { canal }
+    EmitInstr('CALL', A60_RT_PFX + 'OUTSTR');
+    EmitInstr('ADD', 'SP, 4');
+  End
+
+  { ------ OUTBOOLEAN(canal, b) ------ }
+  Else If Name = 'OUTBOOLEAN' Then
+  Begin
+    ParseExpr(E1);  { canal }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+    ParseExpr(E2);  { valeur booleenne }
+    ExprFlushToAX(E2);
+    EmitComment('outboolean');
+    EmitPush('AX');  { valeur booleenne }
+    ExprFlushToAX(E1);
+    EmitPush('AX');  { canal }
+    EmitInstr('CALL', A60_RT_PFX + 'OUTBOOL');
+    EmitInstr('ADD', 'SP, 4');
+  End
+
+  { ------ ININTEGER(canal) ------ }
+  Else If Name = 'ININTEGER' Then
+  Begin
+    ParseExpr(E1);  { canal }
+    ExprFlushToAX(E1);
+    EmitComment('ininteger');
+    EmitPush('AX');  { canal }
+    EmitInstr('CALL', A60_RT_PFX + 'ININT');
+    EmitInstr('ADD', 'SP, 2');
+    ExprMakeAX(TY_IDX_INTEGER, Res);
+  End
+
+  { ------ INREAL(canal) ------ }
+  Else If Name = 'INREAL' Then
+  Begin
+    ParseExpr(E1);  { canal }
+    ExprFlushToAX(E1);
+    EmitComment('inreal (stub -> ininteger)');
+    EmitPush('AX');
+    EmitInstr('CALL', A60_RT_PFX + 'ININT');
+    EmitInstr('ADD', 'SP, 2');
+    ExprMakeAX(TY_IDX_INTEGER, Res);
+  End
+
+  { ------ INCHAR(canal) ------ }
+  Else If Name = 'INCHAR' Then
+  Begin
+    ParseExpr(E1);  { canal }
+    ExprFlushToAX(E1);
+    EmitComment('inchar');
+    EmitPush('AX');  { canal }
+    EmitInstr('CALL', A60_RT_PFX + 'INCHAR');
+    EmitInstr('ADD', 'SP, 2');
+    ExprMakeAX(TY_IDX_INTEGER, Res);
+  End
+
+  { ------ PRINT(args) ------ }
+  Else If Name = 'PRINT' Then
+  Begin
+    ParseExpr(E1);  { chaine ou valeur }
+    ExprFlushToAX(E1);
+    EmitComment('print (canal 1 implicite)');
+    EmitPush('AX');  { adresse chaine }
+    EmitInstr('MOV', 'AX, 1');  { canal = STDOUT }
+    EmitPush('AX');
+    EmitInstr('CALL', A60_RT_PFX + 'OUTSTR');
+    EmitInstr('ADD', 'SP, 4');
+  End
+
+  { ------ SYSACT(canal, action, r) ------ }
+  Else If Name = 'SYSACT' Then
+  Begin
+    EmitComment('sysact (stub - ignore)');
+    ParseExpr(E1);  { canal }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+    ParseExpr(E2);  { action }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+    ParseExpr(E3);  { r }
+    { stub : on ne fait rien }
+  End
+
+  Else
+    CompileError('intrinsic I/O inconnu: ' + Name);
+
+  { Consommer ) }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance
+  Else
+    CompileError(') attendu apres ' + Name);
+End;
+
+{ ---- EmitIORuntime : emettre les routines runtime d E/S ------
+  7 routines assembleur 8086 pour les operations d entree/sortie.
+
+  _A60RT_OUTSTR : ecriture chaine ASCIIZ sur un handle DOS
+    Entree : [SP+2] = canal (handle), [SP+4] = ptr chaine ASCIIZ
+    Calcul longueur (strlen), puis INT 21h AH=40h BX=handle CX=len DX=ptr
+
+  _A60RT_OUTINT : ecriture d un entier signe en decimal
+    Entree : [SP+2] = canal, [SP+4] = valeur entiere signee 16 bits
+    Conversion : signe + division repetee par 10, inversion dans _A60_TMPBUF
+
+  _A60RT_OUTBOOL : ecriture de TRUE ou FALSE
+    Entree : [SP+2] = canal, [SP+4] = 0 (false) ou non-0 (true)
+
+  _A60RT_NEWLINE : ecriture CR+LF sur STDOUT
+    Pas de parametres.
+
+  _A60RT_ININT : lecture d un entier au clavier
+    Entree : [SP+2] = canal (ignore, toujours STDIN)
+    Sortie : AX = valeur entiere lue
+
+  _A60RT_INCHAR : lecture d un caractere au clavier
+    Entree : [SP+2] = canal (ignore)
+    Sortie : AX = code ASCII du caractere lu
+
+  _A60RT_OUTREAL : stub vers _A60RT_OUTINT (pas de virgule flottante) }
+Procedure EmitIORuntime;
+Begin
+  If IOEmitted Then Exit;
+  IOEmitted := True;
+  EmitBlankLine;
+  EmitComment('--- Runtime : entrees/sorties (TODO 12) ---');
+
+  { === _A60RT_OUTSTR : afficher chaine ASCIIZ === }
+  { [SP+2] = canal (handle), [SP+4] = ptr chaine }
+  EmitLabel(A60_RT_PFX + 'OUTSTR');
+  EmitInstr('PUSH', 'BP');
+  EmitInstr('MOV', 'BP, SP');
+  EmitInstr('MOV', 'SI, [BP+6]');     { SI = ptr chaine }
+  EmitInstr('MOV', 'BX, [BP+4]');     { BX = canal (handle) }
+  { strlen : compter les caracteres }
+  EmitInstr('XOR', 'CX, CX');         { CX = 0 (compteur) }
+  EmitInstr('MOV', 'DI, SI');         { DI = debut chaine }
+  EmitLabel(A60_RT_PFX + 'OS_LP');
+  EmitInstr('CMP', 'BYTE PTR [DI], 0');
+  EmitInstr('JE', A60_RT_PFX + 'OS_DN');
+  EmitInstr('INC', 'DI');
+  EmitInstr('INC', 'CX');
+  EmitInstr('JMP', A60_RT_PFX + 'OS_LP');
+  EmitLabel(A60_RT_PFX + 'OS_DN');
+  { INT 21h AH=40h : ecrire sur handle }
+  EmitInstr('MOV', 'AH, 40h');
+  EmitInstr('MOV', 'DX, SI');         { DX = ptr chaine }
+  EmitRaw('        INT     21h');
+  EmitInstr('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  { === _A60RT_OUTINT : afficher entier signe en decimal === }
+  { [SP+2] = canal, [SP+4] = valeur }
+  EmitLabel(A60_RT_PFX + 'OUTINT');
+  EmitInstr('PUSH', 'BP');
+  EmitInstr('MOV', 'BP, SP');
+  EmitInstr('MOV', 'AX, [BP+6]');     { AX = valeur }
+  EmitInstr('MOV', 'BX, [BP+4]');     { BX = canal }
+  EmitInstr('PUSH', 'BX');            { sauver canal }
+  { Verifier si negatif }
+  EmitInstr('MOV', 'DI, OFFSET _A60_NUMBUF');
+  EmitInstr('XOR', 'CX, CX');         { CX = nombre de chiffres }
+  EmitInstr('CMP', 'AX, 0');
+  EmitInstr('JGE', A60_RT_PFX + 'OI_POS');
+  { Negatif : ecrire signe - }
+  EmitInstr('MOV', 'BYTE PTR [DI], ''-''');
+  EmitInstr('INC', 'DI');
+  EmitInstr('NEG', 'AX');             { AX = |AX| }
+  EmitLabel(A60_RT_PFX + 'OI_POS');
+  { Division repetee par 10, empiler les chiffres }
+  EmitInstr('MOV', 'SI, DI');         { SI = position courante }
+  EmitLabel(A60_RT_PFX + 'OI_DLP');
+  EmitInstr('XOR', 'DX, DX');
+  EmitInstr('MOV', 'BX, 10');
+  EmitInstr('DIV', 'BX');             { AX = quotient, DX = reste }
+  EmitInstr('ADD', 'DL, 30h');        { chiffre ASCII }
+  EmitInstr('PUSH', 'DX');            { empiler le chiffre }
+  EmitInstr('INC', 'CX');
+  EmitInstr('CMP', 'AX, 0');
+  EmitInstr('JNE', A60_RT_PFX + 'OI_DLP');
+  { Depiler les chiffres dans l ordre (inversion) }
+  EmitLabel(A60_RT_PFX + 'OI_RLP');
+  EmitInstr('POP', 'DX');
+  EmitInstr('MOV', '[DI], DL');
+  EmitInstr('INC', 'DI');
+  EmitInstr('DEC', 'CX');
+  EmitInstr('JNZ', A60_RT_PFX + 'OI_RLP');
+  EmitInstr('MOV', 'BYTE PTR [DI], 0');  { terminateur NUL }
+  { Calculer la longueur et afficher }
+  EmitInstr('MOV', 'CX, DI');
+  EmitInstr('MOV', 'DX, OFFSET _A60_NUMBUF');
+  EmitInstr('SUB', 'CX, DX');         { CX = longueur }
+  EmitInstr('POP', 'BX');             { BX = canal }
+  EmitInstr('MOV', 'AH, 40h');
+  EmitRaw('        INT     21h');
+  EmitInstr('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  { === _A60RT_OUTBOOL : afficher TRUE ou FALSE === }
+  { [SP+2] = canal, [SP+4] = valeur booleenne }
+  EmitLabel(A60_RT_PFX + 'OUTBOOL');
+  EmitInstr('PUSH', 'BP');
+  EmitInstr('MOV', 'BP, SP');
+  EmitInstr('MOV', 'AX, [BP+6]');     { AX = valeur booleenne }
+  EmitInstr('MOV', 'BX, [BP+4]');     { BX = canal }
+  EmitInstr('CMP', 'AX, 0');
+  EmitInstr('JE', A60_RT_PFX + 'OB_F');
+  { TRUE }
+  EmitInstr('MOV', 'DX, OFFSET _A60_TRUE_S');
+  EmitInstr('MOV', 'CX, 4');          { longueur 'TRUE' }
+  EmitInstr('JMP', A60_RT_PFX + 'OB_WR');
+  EmitLabel(A60_RT_PFX + 'OB_F');
+  { FALSE }
+  EmitInstr('MOV', 'DX, OFFSET _A60_FALSE_S');
+  EmitInstr('MOV', 'CX, 5');          { longueur 'FALSE' }
+  EmitLabel(A60_RT_PFX + 'OB_WR');
+  EmitInstr('MOV', 'AH, 40h');
+  EmitRaw('        INT     21h');
+  EmitInstr('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  { === _A60RT_NEWLINE : ecrire CR+LF sur STDOUT === }
+  EmitLabel(A60_RT_PFX + 'NEWLINE');
+  EmitInstr('MOV', 'AH, 40h');
+  EmitInstr('MOV', 'BX, 1');          { STDOUT }
+  EmitInstr('MOV', 'CX, 2');          { 2 octets (CR+LF) }
+  EmitInstr('MOV', 'DX, OFFSET _A60_CRLF');
+  EmitRaw('        INT     21h');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  { === _A60RT_ININT : lire un entier au clavier === }
+  { Lecture caractere par caractere, gestion du signe }
+  { [SP+2] = canal (ignore). Sortie : AX = valeur }
+  EmitLabel(A60_RT_PFX + 'ININT');
+  EmitInstr('PUSH', 'BP');
+  EmitInstr('MOV', 'BP, SP');
+  EmitInstr('XOR', 'BX, BX');         { BX = accumulateur }
+  EmitInstr('XOR', 'CX, CX');         { CX = flag negatif (0=positif) }
+  { Lire premier caractere }
+  EmitInstr('MOV', 'AH, 01h');
+  EmitRaw('        INT     21h');      { AL = caractere }
+  EmitInstr('CMP', 'AL, ''-''');
+  EmitInstr('JNE', A60_RT_PFX + 'II_NNS');
+  EmitInstr('MOV', 'CX, 1');          { flag negatif }
+  EmitInstr('MOV', 'AH, 01h');
+  EmitRaw('        INT     21h');      { lire caractere suivant }
+  EmitLabel(A60_RT_PFX + 'II_NNS');
+  { Boucle de lecture des chiffres }
+  EmitLabel(A60_RT_PFX + 'II_LP');
+  EmitInstr('CMP', 'AL, 30h');        { < '0' ? }
+  EmitInstr('JB', A60_RT_PFX + 'II_DN');
+  EmitInstr('CMP', 'AL, 39h');        { > '9' ? }
+  EmitInstr('JA', A60_RT_PFX + 'II_DN');
+  EmitInstr('SUB', 'AL, 30h');        { chiffre = AL - '0' }
+  EmitInstr('XOR', 'AH, AH');
+  EmitInstr('XCHG', 'AX, BX');        { AX = accum, BX = chiffre }
+  EmitInstr('MOV', 'DX, 10');
+  EmitInstr('MUL', 'DX');             { AX = accum * 10 }
+  EmitInstr('ADD', 'AX, BX');         { AX += chiffre }
+  EmitInstr('MOV', 'BX, AX');         { BX = nouvel accum }
+  { Lire caractere suivant }
+  EmitInstr('MOV', 'AH, 01h');
+  EmitRaw('        INT     21h');
+  EmitInstr('JMP', A60_RT_PFX + 'II_LP');
+  EmitLabel(A60_RT_PFX + 'II_DN');
+  { Appliquer signe si negatif }
+  EmitInstr('MOV', 'AX, BX');
+  EmitInstr('CMP', 'CX, 0');
+  EmitInstr('JE', A60_RT_PFX + 'II_RET');
+  EmitInstr('NEG', 'AX');
+  EmitLabel(A60_RT_PFX + 'II_RET');
+  EmitInstr('POP', 'BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  { === _A60RT_INCHAR : lire un caractere au clavier === }
+  { [SP+2] = canal (ignore). Sortie : AX = code ASCII }
+  EmitLabel(A60_RT_PFX + 'INCHAR');
+  EmitInstr('MOV', 'AH, 01h');
+  EmitRaw('        INT     21h');      { AL = caractere lu }
+  EmitInstr('XOR', 'AH, AH');         { AX = code ASCII }
+  EmitRaw('        RET');
+  EmitBlankLine;
+End;
+
 { ---- Compilation ------------------------------------------- }
 Procedure Run;
 Begin
@@ -3484,6 +3874,8 @@ Begin
 
   { Emettre les routines runtime (TODO 11) }
   EmitExprRuntime;
+  { Emettre les routines runtime d E/S (TODO 12) }
+  EmitIORuntime;
   { Fermer le segment _TEXT }
   EmitBlankLine;
   EmitRaw('_TEXT   ENDS');
