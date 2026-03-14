@@ -359,8 +359,8 @@ Compilateur Lua -> assembleur 8086
          math.randomseed(n)      : initialise la graine
          math.pi                 : 3 (troncature entiere)
          math.huge               : 32767
-         math.maxinteger          : 32767
-         math.mininteger          : -32768
+         math.maxinteger         : 32767
+         math.mininteger         : -32768
          math.tointeger(n)       : pass-through
          math.type(n)            : "integer"
 
