@@ -265,7 +265,7 @@
             Tableaux en parametres : passage par reference (adresse + descripteur)
               Descripteur : pointeur base, bornes inferieures, dimensions
 
-  TODO 18 - DECLARATIONS DE PROCEDURES
+  TODO 18 - DECLARATIONS DE PROCEDURES [IMPLEMENTE]
             ParseProcDecl : [type] PROCEDURE nom(params); [VALUE params;]
               [specifications;] corps
             Specifications des parametres :
@@ -636,6 +636,12 @@ Var
   { Compteur ARRAY (TODO 17) }
   ArrayCount : Integer;
 
+  { Compteur PROCEDURE (TODO 18) }
+  ProcCount   : Integer;
+  CurFnName   : TString;    { nom de la procedure courante ('' si hors proc) }
+  CurFnRetLbl : TString;    { label de retour de la procedure courante       }
+  CurFnDepth  : Integer;    { profondeur d imbrication des procedures        }
+
   { Table des symboles (TODO 05) }
   SymTab       : Array[0..MAX_SYM - 1] Of TSymRec;
   SymCount     : Integer;
@@ -759,6 +765,8 @@ Procedure ParseGotoStmt; Forward;
 Procedure ParseBlock; Forward;
 { ---- Forward declarations (TODO 17) ----------------------- }
 Procedure ParseArrayDecl(ElemTypeIdx : Integer); Forward;
+{ ---- Forward declarations (TODO 18) ----------------------- }
+Procedure ParseProcDecl(RetTypeIdx : Integer); Forward;
 { ---- Forward declarations (TODO 06) ----------------------- }
 Procedure TypeInit;      Forward;
 Function  TypeKindOf(TypeIdx : Integer) : TTypeKind; Forward;
@@ -1046,6 +1054,10 @@ Begin
   GotoCount := 0;
   BlockCount := 0;
   ArrayCount := 0;
+  ProcCount := 0;
+  CurFnName := '';
+  CurFnRetLbl := '';
+  CurFnDepth := 0;
   { Table des symboles (TODO 05) }
   SymInit;
   { Systeme de types (TODO 06) }
@@ -2057,11 +2069,16 @@ Begin
         Else
           EmitInstr('XOR', 'AX, AX');
       End
-      { Variable via SymIdx : globale ou locale }
+      { Variable via SymIdx : globale ou locale ou parametre }
       Else If (E.SymIdx >= 0) And (E.SymIdx < SymCount) Then
       Begin
         If SymTab[E.SymIdx].ScopeLevel = 0 Then
           EmitInstr('MOV', 'AX, WORD PTR [' + SymTab[E.SymIdx].MangledName + ']')
+        Else If SymTab[E.SymIdx].Kind = SK_PARAM Then
+        Begin
+          Str(SymTab[E.SymIdx].Offset, S);
+          EmitInstr('MOV', 'AX, [BP+' + S + ']');
+        End
         Else
         Begin
           Str(SymTab[E.SymIdx].Offset, S);
@@ -3048,7 +3065,8 @@ End;
 
 { ---- ExprAddrOf : retourner la reference ASM d une variable -- }
 { Globale (scope 0) -> WORD PTR [_A60V_nom]
-  Locale  (scope>0) -> WORD PTR [BP-n]                          }
+  Locale  (scope>0) -> WORD PTR [BP-n]
+  Parametre (SK_PARAM) -> WORD PTR [BP+n]   (TODO 18)          }
 Function ExprAddrOf(SIdx : Integer) : TString;
 Var
   S : TString;
@@ -3060,6 +3078,11 @@ Begin
   End;
   If SymTab[SIdx].ScopeLevel = 0 Then
     ExprAddrOf := 'WORD PTR [' + SymTab[SIdx].MangledName + ']'
+  Else If SymTab[SIdx].Kind = SK_PARAM Then
+  Begin
+    Str(SymTab[SIdx].Offset, S);
+    ExprAddrOf := 'WORD PTR [BP+' + S + ']';
+  End
   Else
   Begin
     Str(SymTab[SIdx].Offset, S);
@@ -3147,6 +3170,14 @@ Begin
   Begin
     ParserAdvance;  { consommer ARRAY }
     ParseArrayDecl(TypeIdx);
+    Exit;
+  End;
+
+  { Si le mot-cle suivant est PROCEDURE, deleguer a ParseProcDecl (TODO 18) }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'PROCEDURE') Then
+  Begin
+    ParserAdvance;  { consommer PROCEDURE }
+    ParseProcDecl(TypeIdx);
     Exit;
   End;
 
@@ -3276,9 +3307,26 @@ Begin
         Exit;
       End;
 
+      { Appel de procedure : procname(args) (TODO 18) }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') And
+         (SymTab[SIdx].Kind = SK_PROC) Then
+      Begin
+        ParserAdvance;  { consommer ( }
+        ParseProcCall(VarName, SIdx, E);
+        Exit;
+      End;
+
       If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
       Begin
         ParserAdvance;  { consommer := }
+        { Retour de valeur de procedure : procname := expr (TODO 18) }
+        If (SymTab[SIdx].Kind = SK_PROC) Then
+        Begin
+          ParseExpr(E);
+          ExprFlushToAX(E);
+          EmitComment(VarName + ' := ... (retour procedure)');
+          Exit;
+        End;
         { Affectation possiblement multiple : a := b := expr }
         ParseExpr(E);
         ExprFlushToAX(E);
@@ -3384,6 +3432,14 @@ Begin
   Begin
     ParserAdvance;  { consommer ARRAY }
     ParseArrayDecl(TY_IDX_INTEGER);
+    Exit;
+  End;
+
+  { Declaration PROCEDURE seule (TODO 18) }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'PROCEDURE') Then
+  Begin
+    ParserAdvance;  { consommer PROCEDURE }
+    ParseProcDecl(TY_IDX_INTEGER);
     Exit;
   End;
 
@@ -4671,6 +4727,240 @@ Begin
 End;
 
 { ============================================================
+  TODO 18 - DECLARATIONS DE PROCEDURES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseProcDecl : parser une declaration de procedure ------
+  Syntaxe : [type] PROCEDURE nom(param1, param2, ...);
+            [VALUE param1, param2;]
+            [INTEGER param1; REAL param2; ...]
+            corps
+  Le mot-cle PROCEDURE a deja ete consomme par l appelant.
+  RetTypeIdx est le type de retour (TY_IDX_INTEGER par defaut).
+  Procedures typees : retour de valeur par affectation au nom
+    ex : INTEGER PROCEDURE f(x); f := x + 1
+  Convention d appel : cdecl 16 bits
+    Prologue : PUSH BP / MOV BP,SP
+    Epilogue : MOV SP,BP / POP BP / RET
+  Parametres : [BP+4], [BP+6], etc.                              }
+Procedure ParseProcDecl(RetTypeIdx : Integer);
+Var
+  ProcName   : TString;
+  ProcLbl    : TString;
+  SkipLbl    : TString;
+  RetLbl     : TString;
+  N          : TString;
+  ParamCount : Integer;
+  ParamNames : Array[0..MAX_PARAM - 1] Of TString;
+  ParamTypes : Array[0..MAX_PARAM - 1] Of Integer;
+  ParamIsVal : Array[0..MAX_PARAM - 1] Of Boolean;
+  SaveFrameSize : Integer;
+  SaveFnName    : TString;
+  SaveFnRetLbl  : TString;
+  SaveFnDepth   : Integer;
+  I, SIdx, Off  : Integer;
+  SpecType      : Integer;
+  SpecName      : TString;
+  LocalBytes    : Integer;
+Begin
+  Inc(ProcCount);
+  Str(ProcCount, N);
+
+  { ---- Nom de la procedure ---- }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('identificateur attendu apres PROCEDURE');
+    Exit;
+  End;
+  ProcName := CurToken.Val;
+  ParserAdvance;  { consommer le nom }
+
+  ProcLbl := A60_FN_PFX + SymNameClean(ProcName);
+  SkipLbl := '_A60L_PSKIP_' + N;
+  RetLbl  := '_A60L_PRET_' + N;
+
+  EmitComment('procedure ' + ProcName + ' declaration (TODO 18)');
+
+  { Enregistrer la procedure dans la table des symboles }
+  SIdx := SymAdd(ProcName, SK_PROC, RetTypeIdx, 0);
+
+  { ---- Liste de parametres : (p1, p2, ...) ---- }
+  ParamCount := 0;
+  For I := 0 To MAX_PARAM - 1 Do
+  Begin
+    ParamNames[I] := '';
+    ParamTypes[I] := TY_IDX_INTEGER;
+    ParamIsVal[I] := False;
+  End;
+
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+  Begin
+    ParserAdvance;  { consommer ( }
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+    Begin
+      If ParamCount >= MAX_PARAM Then
+      Begin
+        CompileError('trop de parametres (max=' + IntToStr_(MAX_PARAM) + ')');
+        Break;
+      End;
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        ParamNames[ParamCount] := CurToken.Val;
+        Inc(ParamCount);
+      End;
+      ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance;
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance;  { consommer ) }
+  End;
+
+  { Consommer ; apres la liste de parametres }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
+
+  { ---- Specification VALUE : VALUE p1, p2; ---- }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'VALUE') Then
+  Begin
+    ParserAdvance;  { consommer VALUE }
+    While (CurToken.Kind = TK_IDENT) Do
+    Begin
+      For I := 0 To ParamCount - 1 Do
+      Begin
+        If StrUpperCase(ParamNames[I]) = StrUpperCase(CurToken.Val) Then
+          ParamIsVal[I] := True;
+      End;
+      ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance
+      Else
+        Break;
+    End;
+    { Consommer ; apres VALUE }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      ParserAdvance;
+  End;
+
+  { ---- Specifications de types des parametres ---- }
+  { Syntaxe : INTEGER p1, p2; REAL p3; BOOLEAN p4; etc. }
+  While (CurToken.Kind = TK_KEYWORD) And
+        ((CurToken.Val = 'INTEGER') Or (CurToken.Val = 'REAL') Or
+         (CurToken.Val = 'BOOLEAN') Or (CurToken.Val = 'STRING') Or
+         (CurToken.Val = 'ARRAY') Or (CurToken.Val = 'LABEL') Or
+         (CurToken.Val = 'SWITCH')) Do
+  Begin
+    { Determiner le type }
+    If CurToken.Val = 'INTEGER' Then SpecType := TY_IDX_INTEGER
+    Else If CurToken.Val = 'REAL' Then SpecType := TY_IDX_REAL
+    Else If CurToken.Val = 'BOOLEAN' Then SpecType := TY_IDX_BOOLEAN
+    Else If CurToken.Val = 'STRING' Then SpecType := TY_IDX_STRING
+    Else If CurToken.Val = 'ARRAY' Then SpecType := TY_IDX_ARRAY
+    Else If CurToken.Val = 'LABEL' Then SpecType := TY_IDX_LABEL
+    Else SpecType := TY_IDX_INTEGER;
+    ParserAdvance;  { consommer le mot-cle de type }
+
+    { Verifier si c est un PROCEDURE type (spec vs decl imbrique) }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'PROCEDURE') Then
+      Break;  { c est une spec PROCEDURE, pas un type de param }
+
+    { Parser les noms de parametres avec ce type }
+    While (CurToken.Kind = TK_IDENT) Do
+    Begin
+      SpecName := CurToken.Val;
+      For I := 0 To ParamCount - 1 Do
+      Begin
+        If StrUpperCase(ParamNames[I]) = StrUpperCase(SpecName) Then
+          ParamTypes[I] := SpecType;
+      End;
+      ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance
+      Else
+        Break;
+    End;
+    { Consommer ; apres la spec de type }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      ParserAdvance;
+  End;
+
+  { ---- Generation de code : saut par-dessus le corps ---- }
+  EmitInstr('JMP', SkipLbl);
+
+  { ---- Label de la procedure ---- }
+  EmitLabel(ProcLbl);
+  EmitRaw(ProcLbl + ' PROC NEAR');
+
+  { Prologue }
+  EmitPush('BP');
+  EmitInstr('MOV', 'BP, SP');
+
+  { ---- Entrer dans la portee de la procedure ---- }
+  SaveFrameSize := CurFrameSize;
+  SaveFnName    := CurFnName;
+  SaveFnRetLbl  := CurFnRetLbl;
+  SaveFnDepth   := CurFnDepth;
+
+  CurFrameSize := 0;
+  CurFnName    := ProcName;
+  CurFnRetLbl  := RetLbl;
+  Inc(CurFnDepth);
+
+  SymEnterScope;
+
+  { Enregistrer les parametres dans la table des symboles }
+  For I := 0 To ParamCount - 1 Do
+  Begin
+    Off := 4 + I * 2;  { [BP+4], [BP+6], [BP+8], etc. }
+    SIdx := SymAdd(ParamNames[I], SK_PARAM, ParamTypes[I], Off);
+    If SIdx >= 0 Then
+    Begin
+      SymTab[SIdx].IsValue := ParamIsVal[I];
+      SymTab[SIdx].IsName  := Not ParamIsVal[I];
+    End;
+  End;
+
+  EmitComment('corps procedure ' + ProcName + ' (' +
+              IntToStr_(ParamCount) + ' params)');
+
+  { ---- Parser le corps de la procedure ---- }
+  { Le corps peut etre une instruction simple ou un bloc BEGIN...END }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'BEGIN') Then
+  Begin
+    ParserAdvance;  { consommer BEGIN }
+    ParseBlock;
+  End
+  Else
+    ParseStmt;
+
+  { ---- Label de retour ---- }
+  EmitLabel(RetLbl);
+
+  { Liberer les variables locales si necessaire }
+  LocalBytes := CurFrameSize;
+  If LocalBytes > 0 Then
+    EmitInstr('ADD', 'SP, ' + IntToStr_(LocalBytes));
+
+  { Epilogue }
+  EmitInstr('MOV', 'SP, BP');
+  EmitPop('BP');
+  EmitInstr('RET', '');
+  EmitRaw(ProcLbl + ' ENDP');
+
+  { ---- Label de saut (apres le corps) ---- }
+  EmitLabel(SkipLbl);
+  EmitComment('fin procedure ' + ProcName);
+
+  { ---- Restaurer l etat ---- }
+  SymLeaveScope;
+  CurFrameSize := SaveFrameSize;
+  CurFnName    := SaveFnName;
+  CurFnRetLbl  := SaveFnRetLbl;
+  CurFnDepth   := SaveFnDepth;
+End;
+
+{ ============================================================
   TODO 16 - BLOCS (BEGIN/END) ET INSTRUCTIONS COMPOSEES [IMPLEMENTE]
   ============================================================ }
 
@@ -4744,10 +5034,17 @@ Begin
       Continue;
     End;
 
-    { Mots-cles non encore geres : PROCEDURE, SWITCH, OWN, etc. }
+    { Declaration PROCEDURE dans un bloc (TODO 18) }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'PROCEDURE') Then
+    Begin
+      ParserAdvance;  { consommer PROCEDURE }
+      ParseProcDecl(TY_IDX_INTEGER);  { type par defaut = INTEGER }
+      Continue;
+    End;
+
+    { Mots-cles non encore geres : SWITCH, OWN, etc. }
     If (CurToken.Kind = TK_KEYWORD) And
        ((CurToken.Val = 'OWN') Or (CurToken.Val = 'SWITCH') Or
-        (CurToken.Val = 'PROCEDURE') Or
         (CurToken.Val = 'VALUE') Or (CurToken.Val = 'COMMENT')) Then
     Begin
       ParserAdvance;  { consommer le mot-cle }
@@ -4917,9 +5214,17 @@ Begin
       Continue;
     End;
 
+    { Declaration PROCEDURE au top-level (TODO 18) }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'PROCEDURE') Then
+    Begin
+      ParserAdvance;  { consommer PROCEDURE }
+      ParseProcDecl(TY_IDX_INTEGER);
+      Continue;
+    End;
+
     { Mots-cles non-geres : on les saute pour l instant }
     If (CurToken.Kind = TK_KEYWORD) And
-       ((CurToken.Val = 'PROCEDURE') Or (CurToken.Val = 'OWN') Or
+       ((CurToken.Val = 'OWN') Or
         (CurToken.Val = 'VALUE') Or (CurToken.Val = 'SWITCH') Or
         (CurToken.Val = 'COMMENT') Or
         (CurToken.Val = 'THEN') Or
