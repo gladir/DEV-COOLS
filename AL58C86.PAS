@@ -83,7 +83,7 @@
             EmitBinOp : pliage de constantes + code 8086
             ParsePrimary, ParseUnary, ParseExprPrec : parseur Pratt
 
-  TODO 05 - TABLE DES SYMBOLES
+  TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
             TSymKind : SK_VAR, SK_ARRAY, SK_PROC, SK_LABEL, SK_SWITCH,
               SK_PARAM_VALUE, SK_PARAM_NAME
             TSymRec : Name, MangledName, Kind, TypeIdx, Offset,
@@ -655,6 +655,16 @@ Procedure ParsePrimary(Var Res : TExprVal); Forward;
 Procedure ParseUnary(Var Res : TExprVal); Forward;
 Procedure ParseExprPrec(MinPrec : Integer;
                         Var Res : TExprVal); Forward;
+{ TODO 05 - Table des symboles }
+Function  SymNameClean(Const Name : TString) : TString; Forward;
+Function  SymMangle(Const Name : TString; Kind : TSymKind) : TString; Forward;
+Function  SymFind(Const Name : TString) : Integer; Forward;
+Function  SymFindInScope(Const Name : TString;
+                         Level : Integer) : Integer; Forward;
+Function  SymAdd(Const Name : TString; Kind : TSymKind;
+                 TypeIdx, Offset : Integer) : Integer; Forward;
+Procedure SymEnterScope; Forward;
+Procedure SymLeaveScope; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1810,9 +1820,11 @@ End;
 
 { ---- ParsePrimary : atome du parseur Pratt ------------------- }
 { Gere : literaux entiers/reels, true/false, chaines, ( expr ).  }
-{ Les identificateurs et appels de fonction seront ajoutes dans  }
-{ les TODOs suivants.                                            }
+{ Identificateurs : lookup dans la table des symboles (TODO 05). }
 Procedure ParsePrimary(Var Res : TExprVal);
+Var
+  VarName : TString;
+  VarIdx  : Integer;
 Begin
   ExprMakeNone(Res);
   Case CurToken.Kind Of
@@ -1853,9 +1865,67 @@ Begin
     End;
     TK_IDENT :
     Begin
-      { Stub : sera complete dans TODO 05 (table des symboles) }
-      WarnMsg('identificateur en expression ignore pour l instant: ' + CurToken.Val);
-      ExprMakeImm(0, TY_IDX_INTEGER, Res);
+      { TODO 05 : lookup dans la table des symboles }
+      VarName := CurToken.Val;
+      VarIdx  := SymFind(VarName);
+      If VarIdx < 0 Then
+      Begin
+        WarnMsg('identificateur non declare: ' + VarName);
+        ExprMakeImm(0, TY_IDX_INTEGER, Res);
+      End
+      Else
+      Begin
+        Case SymTab[VarIdx].Kind Of
+          SK_VAR :
+          Begin
+            If SymTab[VarIdx].ScopeLevel = 0 Then
+            Begin
+              { Globale : acces via label DATA }
+              Res.Kind    := EK_MEM;
+              Res.ImmVal  := 0;
+              Res.TypeIdx := SymTab[VarIdx].TypeIdx;
+              Res.Offset  := VarIdx;
+              Res.SymIdx  := VarIdx;
+              EmitInstr('MOV', 'AX, [' + SymTab[VarIdx].MangledName + ']');
+              Res.Kind := EK_AX;
+            End
+            Else
+            Begin
+              { Locale : acces [BP-offset] }
+              Res.Kind    := EK_MEM;
+              Res.ImmVal  := 0;
+              Res.TypeIdx := SymTab[VarIdx].TypeIdx;
+              Res.Offset  := SymTab[VarIdx].Offset;
+              Res.SymIdx  := VarIdx;
+              EmitInstr('MOV', 'AX, [BP-' +
+                        IntToStr_(SymTab[VarIdx].Offset) + ']');
+              Res.Kind := EK_AX;
+            End;
+          End;
+          SK_PARAM_VALUE :
+          Begin
+            Res.Kind    := EK_MEM;
+            Res.ImmVal  := 0;
+            Res.TypeIdx := SymTab[VarIdx].TypeIdx;
+            Res.Offset  := SymTab[VarIdx].Offset;
+            Res.SymIdx  := VarIdx;
+            EmitInstr('MOV', 'AX, [BP+' +
+                      IntToStr_(SymTab[VarIdx].Offset) + ']');
+            Res.Kind := EK_AX;
+          End;
+          SK_LABEL :
+          Begin
+            Res.Kind    := EK_IMM;
+            Res.ImmVal  := 0;
+            Res.TypeIdx := TY_IDX_LABEL;
+            Res.Offset  := 0;
+            Res.SymIdx  := VarIdx;
+          End;
+        Else
+          { Autres categories : stub pour l instant }
+          ExprMakeImm(0, TY_IDX_INTEGER, Res);
+        End;
+      End;
       ParserAdvance;
     End;
   Else
@@ -1960,6 +2030,159 @@ Begin
 End;
 
 { ============================================================
+  TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- SymNameClean : assainir un identificateur pour ASM ------ }
+{ Remplace les caracteres non alphanumeriques par '_'.           }
+Function SymNameClean(Const Name : TString) : TString;
+Var
+  S : TString;
+  I : Integer;
+Begin
+  S := Name;
+  For I := 1 To Length(S) Do
+    If Not ((S[I] >= 'A') And (S[I] <= 'Z'))
+    And Not ((S[I] >= 'a') And (S[I] <= 'z'))
+    And Not ((S[I] >= '0') And (S[I] <= '9'))
+    And (S[I] <> '_') Then
+      S[I] := '_';
+  SymNameClean := S;
+End;
+
+{ ---- SymMangle : construire le label ASM d un symbole -------- }
+{ Prefixe selon la categorie du symbole Algol 58.                }
+Function SymMangle(Const Name : TString; Kind : TSymKind) : TString;
+Var
+  Clean : TString;
+Begin
+  Clean := SymNameClean(Name);
+  Case Kind Of
+    SK_VAR         : SymMangle := A58_VAR_PFX  + Clean;
+    SK_ARRAY       : SymMangle := A58_ARR_PFX  + Clean;
+    SK_PROC        : SymMangle := A58_PROC_PFX + Clean;
+    SK_LABEL       : SymMangle := A58_LBL_PFX  + Clean;
+    SK_SWITCH      : SymMangle := A58_SW_PFX   + Clean;
+    SK_PARAM_VALUE : SymMangle := '';  { acces [BP+n], pas de label }
+    SK_PARAM_NAME  : SymMangle := '';  { acces [BP+n], pas de label }
+  Else
+    SymMangle := A58_VAR_PFX + Clean;
+  End;
+End;
+
+{ ---- SymFind : rechercher un symbole par nom ------------------ }
+{ Parcourt la table en ordre inverse (derniere declaration vue    }
+{ en premier -> shadowing correct dans les portees imbriquees).   }
+{ Retourne l index (0-base) ou -1 si non trouve.                 }
+Function SymFind(Const Name : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := SymCount - 1 DownTo 0 Do
+    If SymTab[I].Name = Name Then
+    Begin
+      SymFind := I;
+      Exit;
+    End;
+  SymFind := -1;
+End;
+
+{ ---- SymFindInScope : recherche dans une portee specifique ---- }
+{ Retourne l index du symbole Name dans la portee Level,          }
+{ ou -1 si non trouve.                                            }
+Function SymFindInScope(Const Name : TString;
+                        Level : Integer) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := SymCount - 1 DownTo 0 Do
+    If (SymTab[I].Name = Name) And
+       (SymTab[I].ScopeLevel = Level) Then
+    Begin
+      SymFindInScope := I;
+      Exit;
+    End;
+  SymFindInScope := -1;
+End;
+
+{ ---- SymAdd : ajouter un symbole dans la table --------------- }
+{ Retourne l index du nouveau symbole (0-base) ou -1 si plein.  }
+Function SymAdd(Const Name : TString; Kind : TSymKind;
+                TypeIdx, Offset : Integer) : Integer;
+Var
+  Idx : Integer;
+  MN  : TString;
+Begin
+  If SymCount >= MAX_SYM Then
+  Begin
+    CompileError('table des symboles pleine (max=' +
+                 IntToStr_(MAX_SYM) + ')');
+    SymAdd := -1;
+    Exit;
+  End;
+  Idx := SymCount;
+  SymTab[Idx].Name        := Name;
+  SymTab[Idx].Kind        := Kind;
+  SymTab[Idx].TypeIdx     := TypeIdx;
+  SymTab[Idx].ScopeLevel  := CurScope;
+  SymTab[Idx].Offset      := Offset;
+  SymTab[Idx].IsOwn       := False;
+  SymTab[Idx].DeclLine    := CurToken.Line;
+  MN := SymMangle(Name, Kind);
+  SymTab[Idx].MangledName := MN;
+  If Opts.DebugMode Then
+    WriteLn('  SYM_ADD[', Idx, ']: ', Name,
+            ' kind=', Ord(Kind),
+            ' scope=', CurScope,
+            ' -> ', MN);
+  SymAdd := Idx;
+  Inc(SymCount);
+  Inc(TotalSyms);
+End;
+
+{ ---- SymEnterScope : entrer dans une nouvelle portee ---------- }
+{ Sauvegarde SymCount pour restaurer a SymLeaveScope.            }
+Procedure SymEnterScope;
+Begin
+  If ScopeTop >= MAX_SCOPE Then
+  Begin
+    CompileError('portees trop imbriquees (max=' +
+                 IntToStr_(MAX_SCOPE) + ')');
+    Exit;
+  End;
+  ScopeStack[ScopeTop] := SymCount;
+  Inc(ScopeTop);
+  Inc(CurScope);
+  If Opts.DebugMode Then
+    WriteLn('  SCOPE_ENTER: level=', CurScope);
+End;
+
+{ ---- SymLeaveScope : quitter la portee courante --------------- }
+{ Les symboles locaux de cette portee sont retires de la table.  }
+Procedure SymLeaveScope;
+Begin
+  If ScopeTop <= 0 Then
+  Begin
+    CompileError('desequilibre de portees : LeaveScope sans EnterScope');
+    Exit;
+  End;
+  Dec(ScopeTop);
+  SymCount := ScopeStack[ScopeTop];
+  Dec(CurScope);
+  If Opts.DebugMode Then
+    WriteLn('  SCOPE_LEAVE: level=', CurScope);
+End;
+
+{ ---- SymInit : initialisation de la table des symboles -------- }
+Procedure SymInit;
+Begin
+  SymCount := 0;
+  ScopeTop := 0;
+  CurScope := 0;
+  TotalSyms := 0;
+End;
+
+{ ============================================================
   STUBS POUR LES TODOS SUIVANTS
   ============================================================ }
 
@@ -1972,12 +2195,6 @@ Procedure TypeInit;
 Begin
   { Stub : sera implemente dans TODO 06 }
   TypeCount := 0;
-End;
-
-Procedure SymInit;
-Begin
-  { Stub : sera implemente dans TODO 05 }
-  SymCount := 0;
 End;
 
 Procedure EmitOpen;
