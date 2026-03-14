@@ -40,7 +40,7 @@
 {  TODO 22 [IMPLEMENTE] - Attributs supplementaires (SourceFile, LineNumberTable, etc.)    }
 {  TODO 23 [IMPLEMENTE] - Programme principal : ligne de commande et generation .class     }
 {  TODO 24 [IMPLEMENTE] - Validation et verification du bytecode genere       }
-{  TODO 25 - Exemples SAMPLES/JASMIN/*.j et corrections de bugs              }
+{  TODO 25 [IMPLEMENTE] - Exemples SAMPLES/JASMIN/*.j et corrections de bugs }
 { ---------------------------------------------------------------------------- }
 
 Program JASMIN;
@@ -5030,9 +5030,9 @@ Begin
      SkipToEOL;
     End;
    Else
-    { Directives non encore implementees (TODO 25+) : sauter la ligne }
+    { Directive non reconnue : sauter la ligne }
     If OptVerbose Then
-     WriteLn('  [skip] directive ', CurStr, ' (TODO 25+)');
+     WriteLn('  [skip] directive non reconnue : ', CurStr);
     SkipToEOL;
    End;  { Case }
   End
@@ -5043,7 +5043,7 @@ Begin
    Begin
     { Mnemonique non reconnu : sauter la ligne }
     If OptVerbose Then
-     WriteLn('  [skip] instruction ', CurStr, ' (TODO 25+)');
+     WriteLn('  [skip] instruction non reconnue : ', CurStr);
     SkipToEOL;
    End
    Else

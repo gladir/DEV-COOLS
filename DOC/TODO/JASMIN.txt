@@ -496,7 +496,7 @@ TODO 24 [IMPLEMENTE] - Validation et verification du bytecode genere
   - Avertissement si max_locals semble insuffisant
   - Mode -strict : activer les verifications supplementaires
 
-TODO 25 - Exemples SAMPLES/JASMIN/*.j et corrections de bugs
+TODO 25 [IMPLEMENTE] - Exemples SAMPLES/JASMIN/*.j et corrections de bugs
   -----------------------------------------------------------
   Creer des fichiers exemples couvrant les fonctionnalites :
   - Hello.j : HelloWorld minimal (getstatic System.out,
