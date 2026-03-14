@@ -152,7 +152,7 @@
             Valeurs par defaut : my $x = 0; (initialisation)
             Affectation destructuree : my ($a, $b) = (1, 2)
 
-  TODO 10 - EXPRESSIONS PRIMAIRES
+  TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
             ParsePrimary : literal entier, literal chaine, ident,
               appel de sub, instanciation Classe.new
             Acces attribut : $obj.attribut -> appel accessor
@@ -836,6 +836,19 @@ Function  DeclAllocSym(Const AName : TString;
                        ATypeIdx : Integer) : Integer;              Forward;
 Procedure ParseDeclStmt(Const Kw : TString);                       Forward;
 Procedure ParseExprStmt;                                           Forward;
+
+{ Forward declarations TODO 10 - Expressions primaires }
+Procedure ParseSubCall(Const SubName : TString;
+                       Var Res : TExprVal);                        Forward;
+Procedure ParseMethodCall(Const MethName : TString;
+                          Var Res : TExprVal);                     Forward;
+Procedure ParseArrayIndex(SIdx : Integer;
+                          Var Res : TExprVal);                     Forward;
+Procedure ParseHashAccess(SIdx : Integer;
+                          Var Res : TExprVal);                     Forward;
+Procedure ParsePostfix(Var Res : TExprVal);                        Forward;
+Procedure ParsePairExpr(Const Key : TString;
+                        Var Res : TExprVal);                       Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -2787,11 +2800,15 @@ Begin
 End;
 
 { ---- ParsePrimary : expression primaire (atome) ------------ }
-{ Gere : litteraux, variables $/@/%/&, parens, not/so/True/etc }
+{ Gere : litteraux, variables $/@/pct/&, parens, not/so/True/  }
+{        appels de sub name(args), paires key => val, self,     }
+{        acces tableau @arr[idx], acces hash pct-h(key),        }
+{        postfixes .method(args) et .attribut                    }
 Procedure ParsePrimary(Var Res : TExprVal);
 Var
   Sub  : TExprVal;
   SIdx : Integer;
+  Name : TString;
 Begin
   ExprMakeNone(Res);
   { --- Litteraux entiers --- }
@@ -2799,6 +2816,7 @@ Begin
   Begin
     LitEval(CurToken, Res);
     ParserAdvance;
+    ParsePostfix(Res);
     Exit;
   End;
   { --- Litteraux rationnels --- }
@@ -2806,6 +2824,7 @@ Begin
   Begin
     LitEval(CurToken, Res);
     ParserAdvance;
+    ParsePostfix(Res);
     Exit;
   End;
   { --- Litteraux chaines --- }
@@ -2813,6 +2832,7 @@ Begin
   Begin
     LitEval(CurToken, Res);
     ParserAdvance;
+    ParsePostfix(Res);
     Exit;
   End;
   { --- Variables scalaires $nom --- }
@@ -2829,38 +2849,61 @@ Begin
       ExprMakeImm(0, TY_IDX_INT, Res);
     End;
     ParserAdvance;
+    { --- Postfix : $obj.method(args), $obj.attr --- }
+    ParsePostfix(Res);
     Exit;
   End;
   { --- Variables tableau @nom --- }
   If CurToken.Kind = TK_ARRAY_SIG Then
   Begin
-    SIdx := SymFind('@' + CurToken.Val);
-    If SIdx >= 0 Then
+    Name := CurToken.Val;
+    SIdx := SymFind('@' + Name);
+    If SIdx < 0 Then
     Begin
-      ExprLoad(SIdx, Res);
+      EmitComment('@' + Name + ' (non declare)');
+      ExprMakeImm(0, TY_IDX_ARRAY, Res);
+      ParserAdvance;
+      ParsePostfix(Res);
+      Exit;
+    End;
+    ParserAdvance;
+    { --- Acces element tableau : @arr[$i] --- }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
+    Begin
+      ParseArrayIndex(SIdx, Res);
     End
     Else
     Begin
-      EmitComment('@' + CurToken.Val + ' (non declare)');
-      ExprMakeImm(0, TY_IDX_ARRAY, Res);
+      ExprLoad(SIdx, Res);
     End;
-    ParserAdvance;
+    ParsePostfix(Res);
     Exit;
   End;
   { --- Variables hash %nom --- }
   If CurToken.Kind = TK_HASH_SIG Then
   Begin
-    SIdx := SymFind('%' + CurToken.Val);
-    If SIdx >= 0 Then
+    Name := CurToken.Val;
+    SIdx := SymFind('%' + Name);
+    If SIdx < 0 Then
     Begin
-      ExprLoad(SIdx, Res);
+      EmitComment('%' + Name + ' (non declare)');
+      ExprMakeImm(0, TY_IDX_HASH, Res);
+      ParserAdvance;
+      ParsePostfix(Res);
+      Exit;
+    End;
+    ParserAdvance;
+    { --- Acces element hash : pct-h(key) ou pct-h<key> --- }
+    If ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{')) Or
+       ((CurToken.Kind = TK_OP) And (CurToken.Val = '<')) Then
+    Begin
+      ParseHashAccess(SIdx, Res);
     End
     Else
     Begin
-      EmitComment('%' + CurToken.Val + ' (non declare)');
-      ExprMakeImm(0, TY_IDX_HASH, Res);
+      ExprLoad(SIdx, Res);
     End;
-    ParserAdvance;
+    ParsePostfix(Res);
     Exit;
   End;
   { --- Variables code &nom --- }
@@ -2877,6 +2920,7 @@ Begin
       ExprMakeImm(0, TY_IDX_CODE, Res);
     End;
     ParserAdvance;
+    ParsePostfix(Res);
     Exit;
   End;
   { --- Mots-cles : True, False, Nil, Mu, Any, Inf, NaN --- }
@@ -2889,6 +2933,20 @@ Begin
     Begin
       LitEval(CurToken, Res);
       ParserAdvance;
+      ParsePostfix(Res);
+      Exit;
+    End;
+    { --- self : reference a l objet courant --- }
+    If CurToken.Val = 'self' Then
+    Begin
+      ParserAdvance;
+      EmitComment('self : reference objet courant');
+      EmitInstr('MOV', 'AX, [BP+4]');
+      Res.Kind    := EK_AX;
+      Res.ImmVal  := 0;
+      Res.TypeIdx := TY_IDX_INT;
+      Res.Offset  := 0;
+      ParsePostfix(Res);
       Exit;
     End;
     { --- not (basse precedence, prefix) --- }
@@ -2923,12 +2981,41 @@ Begin
     ParserAdvance;
     Exit;
   End;
-  { --- Identificateur libre --- }
+  { --- Identificateur libre : sub call, Classe.new, pair key => val --- }
   If CurToken.Kind = TK_IDENT Then
   Begin
-    EmitComment('ident ' + CurToken.Val + ' (stub)');
-    ExprMakeImm(0, TY_IDX_INT, Res);
+    Name := CurToken.Val;
     ParserAdvance;
+    { --- Paire : ident => valeur --- }
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '=>') Then
+    Begin
+      ParsePairExpr(Name, Res);
+      ParsePostfix(Res);
+      Exit;
+    End;
+    { --- Appel de sous-routine : name(args) --- }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      ParseSubCall(Name, Res);
+      ParsePostfix(Res);
+      Exit;
+    End;
+    { --- Instanciation : Classe.new(args) --- }
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '.') Then
+    Begin
+      EmitComment('type/classe ' + Name);
+      EmitInstr('XOR', 'AX, AX');
+      Res.Kind    := EK_AX;
+      Res.ImmVal  := 0;
+      Res.TypeIdx := TY_IDX_INT;
+      Res.Offset  := 0;
+      ParsePostfix(Res);
+      Exit;
+    End;
+    { Identifiant simple (peut etre un nom de type ou bareword) }
+    EmitComment('ident ' + Name);
+    ExprMakeImm(0, TY_IDX_INT, Res);
+    ParsePostfix(Res);
     Exit;
   End;
   { --- Parentheses --- }
@@ -2940,6 +3027,7 @@ Begin
       ParserAdvance
     Else
       CompileError(''')'' attendue');
+    ParsePostfix(Res);
     Exit;
   End;
   { Token non reconnu comme expression primaire }
@@ -3994,8 +4082,9 @@ Begin
     End
     Else
     Begin
-      { Pas d affectation : juste charger la variable }
+      { Pas d affectation : charger la variable + postfixes }
       ExprLoad(SIdx, E);
+      ParsePostfix(E);
     End;
   End
   Else
@@ -4008,6 +4097,340 @@ Begin
   { Consommer le ; optionnel }
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
     ParserAdvance;
+End;
+
+{ ============================================================
+  TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
+  ParseSubCall    : appel de sub name(args) -> PUSH args/CALL/ADD SP
+  ParseMethodCall : appel de methode .method(args) -> CALL
+  ParseArrayIndex : acces @arr[$i] -> offset dans ARRAY
+  ParseHashAccess : acces pct-h(key) ou pct-h<key> -> CALL lookup
+  ParsePostfix    : chaine de postfixes .method/[idx]/(key)
+  ParsePairExpr   : construction de paire key => value
+  ============================================================ }
+
+{ ---- ParseSubCall : appel de sous-routine name(args) ---------- }
+{ Pousse les arguments de droite a gauche, puis CALL _RKS_name,   }
+{ ADD SP, N*2 pour nettoyer la pile.                              }
+Procedure ParseSubCall(Const SubName : TString;
+                       Var Res : TExprVal);
+Var
+  ArgCount : Integer;
+  E        : TExprVal;
+  Lbl      : TString;
+Begin
+  Lbl := '_RKS_' + SymNameClean(SubName);
+  ArgCount := 0;
+  { Consommer '(' }
+  ParserAdvance;
+  { Parser les arguments separes par ',' }
+  If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
+  Begin
+    Repeat
+      ParseExpr(E);
+      ExprFlushToAX(E);
+      EmitPush('AX');
+      Inc(ArgCount);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance
+      Else
+        Break;
+    Until CurToken.Kind = TK_EOF;
+  End;
+  { Consommer ')' }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance
+  Else
+    CompileError(''')'' attendue apres les arguments de ' + SubName);
+  { Emettre CALL }
+  EmitInstr('CALL', Lbl);
+  { Nettoyer la pile }
+  If ArgCount > 0 Then
+    EmitInstr('ADD', 'SP, ' + IntToStr(ArgCount * 2));
+  EmitComment('appel ' + SubName + '(' + IntToStr(ArgCount) + ' args)');
+  Res.Kind    := EK_AX;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_IDX_INT;
+  Res.Offset  := 0;
+End;
+
+{ ---- ParseMethodCall : appel .methode(args) ------------------- }
+{ L objet est deja dans AX. Pousse self + args, CALL label.       }
+Procedure ParseMethodCall(Const MethName : TString;
+                          Var Res : TExprVal);
+Var
+  ArgCount : Integer;
+  E        : TExprVal;
+  Lbl      : TString;
+Begin
+  Lbl := '_RKS_' + SymNameClean(MethName);
+  ArgCount := 0;
+  { Pousser self (AX = objet courant) }
+  EmitPush('AX');
+  Inc(ArgCount);
+  { Consommer '(' si present }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+  Begin
+    ParserAdvance;
+    If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
+    Begin
+      Repeat
+        ParseExpr(E);
+        ExprFlushToAX(E);
+        EmitPush('AX');
+        Inc(ArgCount);
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+          ParserAdvance
+        Else
+          Break;
+      Until CurToken.Kind = TK_EOF;
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else
+      CompileError(''')'' attendue apres les arguments de .' + MethName);
+  End;
+  { Emettre CALL }
+  EmitInstr('CALL', Lbl);
+  If ArgCount > 0 Then
+    EmitInstr('ADD', 'SP, ' + IntToStr(ArgCount * 2));
+  EmitComment('methode .' + MethName + '(' + IntToStr(ArgCount - 1) + ' args)');
+  Res.Kind    := EK_AX;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_IDX_INT;
+  Res.Offset  := 0;
+End;
+
+{ ---- ParseArrayIndex : acces @arr[$i] -> element -------------- }
+{ SIdx = index du symbole @arr dans SymTab.                       }
+{ Charge la base du tableau, evalue l index, calcule offset.      }
+Procedure ParseArrayIndex(SIdx : Integer;
+                          Var Res : TExprVal);
+Var
+  E : TExprVal;
+  S : TString;
+Begin
+  { Consommer '[' }
+  ParserAdvance;
+  { Evaluer l expression d index }
+  ParseExpr(E);
+  ExprFlushToAX(E);
+  { Consommer ']' }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+    ParserAdvance
+  Else
+    CompileError(''']'' attendue apres l''index du tableau');
+  { AX = index. Calculer offset = index * 2 }
+  EmitInstr('SHL', 'AX, 1');
+  { Charger la base du tableau dans BX }
+  If (SIdx >= 0) And (SIdx < SymCount) Then
+  Begin
+    If (SymTab[SIdx].Cat = SC_MY) Or (SymTab[SIdx].Cat = SC_PARAM) Or
+       (SymTab[SIdx].Cat = SC_HAS) Then
+    Begin
+      Str(SymTab[SIdx].Offset, S);
+      EmitInstr('LEA', 'BX, [BP-' + S + ']');
+    End
+    Else If (SymTab[SIdx].Cat = SC_OUR) Or (SymTab[SIdx].Cat = SC_CONST) Then
+      EmitInstr('LEA', 'BX, [' + SymTab[SIdx].MangledName + ']')
+    Else
+      EmitInstr('XOR', 'BX, BX');
+  End
+  Else
+    EmitInstr('XOR', 'BX, BX');
+  { BX = base, AX = offset. Charger l element }
+  EmitInstr('ADD', 'BX, AX');
+  EmitInstr('MOV', 'AX, [BX]');
+  EmitComment('@' + SymTab[SIdx].Name + '[$idx] -> element');
+  Res.Kind    := EK_AX;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_IDX_INT;
+  Res.Offset  := 0;
+End;
+
+(* ---- ParseHashAccess : acces %h{$key} ou %h<key> ------------- *)
+(* SIdx = index du symbole %h dans SymTab.                         *)
+(* Appelle _RKRT_HLOOKUP avec AX=hash ptr, BX=key ptr.            *)
+Procedure ParseHashAccess(SIdx : Integer;
+                          Var Res : TExprVal);
+Var
+  E    : TExprVal;
+  Lbl  : TString;
+  S    : TString;
+Begin
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+  Begin
+    (* %h{$key} : acces avec expression *)
+    ParserAdvance;
+    ParseExpr(E);
+    ExprFlushToAX(E);
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+      ParserAdvance
+    Else
+      CompileError('''}'' attendue apres la clef du hash');
+    { AX = clef. Pousser clef, charger hash ptr }
+    EmitPush('AX');
+    If (SIdx >= 0) And (SIdx < SymCount) Then
+    Begin
+      If (SymTab[SIdx].Cat = SC_MY) Or (SymTab[SIdx].Cat = SC_PARAM) Then
+      Begin
+        Str(SymTab[SIdx].Offset, S);
+        EmitInstr('MOV', 'AX, [BP-' + S + ']');
+      End
+      Else
+        EmitInstr('MOV', 'AX, [' + SymTab[SIdx].MangledName + ']');
+    End
+    Else
+      EmitInstr('XOR', 'AX, AX');
+    EmitPush('AX');
+    EmitInstr('CALL', '_RKRT_HLOOKUP');
+    EmitInstr('ADD', 'SP, 4');
+    EmitComment('%' + SymTab[SIdx].Name + '{key} -> lookup');
+  End
+  Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '<') Then
+  Begin
+    { %h<literal_key> : acces avec clef litterale }
+    ParserAdvance;
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      Lbl := DataAddStr(CurToken.Val);
+      ParserAdvance;
+    End
+    Else
+    Begin
+      CompileError('clef attendue apres ''<''');
+      Lbl := DataAddStr('');
+    End;
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '>') Then
+      ParserAdvance
+    Else
+      CompileError('''>'' attendue apres la clef du hash');
+    { Charger la clef litterale }
+    EmitInstr('MOV', 'AX, OFFSET ' + Lbl);
+    EmitPush('AX');
+    If (SIdx >= 0) And (SIdx < SymCount) Then
+    Begin
+      If (SymTab[SIdx].Cat = SC_MY) Or (SymTab[SIdx].Cat = SC_PARAM) Then
+      Begin
+        Str(SymTab[SIdx].Offset, S);
+        EmitInstr('MOV', 'AX, [BP-' + S + ']');
+      End
+      Else
+        EmitInstr('MOV', 'AX, [' + SymTab[SIdx].MangledName + ']');
+    End
+    Else
+      EmitInstr('XOR', 'AX, AX');
+    EmitPush('AX');
+    EmitInstr('CALL', '_RKRT_HLOOKUP');
+    EmitInstr('ADD', 'SP, 4');
+    EmitComment('%' + SymTab[SIdx].Name + '<key> -> lookup');
+  End
+  Else
+  Begin
+    EmitComment('% acces sans {} ni <> (stub)');
+  End;
+  Res.Kind    := EK_AX;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_IDX_INT;
+  Res.Offset  := 0;
+End;
+
+(* ---- ParsePostfix : chaine de postfixes .method / [idx] / (key) - *)
+(* Apres le parsage d une expression primaire, traite les postfixes  *)
+(* enchaines : $obj.method(args), $obj.attr, @arr[$i], %h{$k}.      *)
+Procedure ParsePostfix(Var Res : TExprVal);
+Var
+  MethName : TString;
+Begin
+  { Boucle pour supporter les chaines : $obj.meth1.meth2 }
+  While True Do
+  Begin
+    { --- .ident : acces attribut ou appel methode --- }
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '.') Then
+    Begin
+      ExprFlushToAX(Res);
+      ParserAdvance;   { consommer '.' }
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        MethName := CurToken.Val;
+        ParserAdvance;   { consommer le nom }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          { Appel de methode .method(args) }
+          ParseMethodCall(MethName, Res);
+        End
+        Else
+        Begin
+          { Acces attribut .attr : stub (CALL accessor) }
+          EmitPush('AX');
+          EmitInstr('CALL', '_RKS_' + SymNameClean(MethName));
+          EmitInstr('ADD', 'SP, 2');
+          EmitComment('.attr ' + MethName);
+          Res.Kind    := EK_AX;
+          Res.ImmVal  := 0;
+          Res.TypeIdx := TY_IDX_INT;
+          Res.Offset  := 0;
+        End;
+      End
+      Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'new') Then
+      Begin
+        { Instanciation : Classe.new(args) }
+        ParserAdvance;   { consommer new }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParseMethodCall('new', Res);
+        End
+        Else
+        Begin
+          EmitComment('.new sans arguments');
+          EmitPush('AX');
+          EmitInstr('CALL', '_RKS_new');
+          EmitInstr('ADD', 'SP, 2');
+          Res.Kind    := EK_AX;
+          Res.ImmVal  := 0;
+          Res.TypeIdx := TY_IDX_INT;
+          Res.Offset  := 0;
+        End;
+      End
+      Else
+      Begin
+        CompileError('identifiant attendu apres ''.''');
+        Break;
+      End;
+    End
+    Else
+      Break;
+  End;
+End;
+
+{ ---- ParsePairExpr : construction de paire clef => valeur ------ }
+{ Detecte par ParsePrimary quand un TK_IDENT est suivi de '=>'.    }
+{ Resultat : AX = pointeur vers Pair (stub : DW key, DW val).     }
+Procedure ParsePairExpr(Const Key : TString;
+                        Var Res : TExprVal);
+Var
+  E    : TExprVal;
+  KLbl : TString;
+Begin
+  { Consommer '=>' }
+  ParserAdvance;
+  { La clef est un litteral chaine }
+  KLbl := DataAddStr(Key);
+  { Evaluer la valeur }
+  ParseExpr(E);
+  ExprFlushToAX(E);
+  { Pousser valeur puis clef, creer Pair }
+  EmitPush('AX');
+  EmitInstr('MOV', 'AX, OFFSET ' + KLbl);
+  EmitPush('AX');
+  EmitComment('Pair : ' + Key + ' => value (stub)');
+  { Stub : laisser AX = pointeur Pair (on recupere simplement la valeur) }
+  EmitPop('AX');      { AX = ptr clef (stub) }
+  EmitPop('AX');      { AX = valeur }
+  Res.Kind    := EK_AX;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_IDX_PAIR;
+  Res.Offset  := 0;
 End;
 
 { ---- ParseStmt : dispatch principal ----------------------------- }
