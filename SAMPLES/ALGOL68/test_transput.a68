@@ -1,0 +1,42 @@
+BEGIN
+  CO Test du transput (entrees/sorties) - TODO 22 CO
+
+  CO print avec un entier CO
+  print((42, newline));
+
+  CO print avec une chaine CO
+  print(("Bonjour", newline));
+
+  CO print avec un booleen CO
+  print((TRUE, newline));
+
+  CO print avec plusieurs arguments CO
+  print(("Resultat: ", 100, newline));
+
+  CO print avec caractere CO
+  CHAR c := "A";
+  print((c, newline));
+
+  CO newline comme identifiant dans print CO
+  print(("Ligne1", newline, "Ligne2", newline));
+
+  CO space dans print CO
+  print(("A", space, "B", newline));
+
+  CO whole : formater un entier en chaine CO
+  STRING s := whole(42, 0);
+  print((s, newline));
+
+  CO print avec expression arithmetique CO
+  INT x := 10;
+  INT y := 20;
+  print(("Somme: ", x + y, newline));
+
+  CO print booleen avec FALSE CO
+  print((FALSE, newline));
+
+  CO print simple sans parenthese interne CO
+  print("Test");
+
+  SKIP
+END

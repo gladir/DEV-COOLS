@@ -375,7 +375,7 @@
             Test de mode : (expr | (INT) : ..., (REAL) : ... | ... )
             EMPTY : mode UNION vide (aucune alternative selectionnee)
 
-  TODO 22 - TRANSPUT (ENTREES/SORTIES)
+  TODO 22 - TRANSPUT (ENTREES/SORTIES) [IMPLEMENTE]
             Procedures standard de transput :
             print((args)) : ecriture sur stdout
               print(("Bonjour", newline))
@@ -451,6 +451,7 @@
               procs.a68    (PROC, recursion, procedures comme valeurs)
               ops.a68      (OP, PRIO, surcharge d operateurs)
               union.a68    (UNION, clause de conformite, CASE IN)
+              transput.a68 (print, read, newline, space, whole)
               coerce.a68   (coercitions, widening, rowing, voiding)
             Smoke tests : AL68C86.EXE -v SAMPLES\ALGOL68\*.a68
 
@@ -897,6 +898,8 @@ Procedure ParseConformityClause(Var Res : TExprVal); Forward;
 { TODO 22 - Transput }
 Procedure ParsePrint; Forward;
 Procedure ParseRead;  Forward;
+Procedure ParseWhole(Var Res : TExprVal); Forward;
+Procedure EmitTransputRuntime; Forward;
 
 { TODO 23 - Collateral / Parallele }
 Procedure ParseCollateral(Var Res : TExprVal); Forward;
@@ -2464,6 +2467,15 @@ Begin
     Structure : DW lwb, upb, elem_size, data_ptr (4 mots = 8 octets) }
   EmitLabel('_A68_SLICEBUF');
   EmitRaw('        DW      0,0,0,0  ; slice desc [lwb,upb,esiz,data]');
+  { Constantes et buffers pour transput (TODO 22) }
+  EmitLabel('_A68_SPACE_S');
+  EmitRaw('        DB      '' '',0');
+  EmitLabel('_A68_FF_S');
+  EmitRaw('        DB      12,0');
+  EmitLabel('_A68_NUMBUF');
+  EmitRaw('        DB      12 DUP(0)');
+  EmitLabel('_A68_IOREADBUF');
+  EmitRaw('        DB      130,0,128 DUP(0)');
   { Entrees dynamiques de DataTab }
   For I := 0 To DataCount - 1 Do
   Begin
@@ -3053,6 +3065,62 @@ Begin
         End;
       End;
       { Appel de procedure : nom(args) -> PUSH args + CALL }
+      { Dispatch special pour transput (TODO 22) }
+      If (Idx >= 0) And (SymTab[Idx].Cat = SC_PROC) And
+         (CurToken.Kind = TK_OPEN) And
+         ((SymTab[Idx].Name = 'print') Or (SymTab[Idx].Name = 'printf')) Then
+      Begin
+        ParsePrint;
+        ExprMakeVoid(Res);
+      End
+      Else If (Idx >= 0) And (SymTab[Idx].Cat = SC_PROC) And
+         (CurToken.Kind = TK_OPEN) And
+         ((SymTab[Idx].Name = 'read') Or (SymTab[Idx].Name = 'readf')) Then
+      Begin
+        ParseRead;
+        ExprMakeVoid(Res);
+      End
+      Else If (Idx >= 0) And (SymTab[Idx].Cat = SC_PROC) And
+         (CurToken.Kind = TK_OPEN) And
+         (SymTab[Idx].Name = 'whole') Then
+      Begin
+        ParseWhole(Res);
+      End
+      Else If (Idx >= 0) And (SymTab[Idx].Cat = SC_PROC) And
+         (CurToken.Kind = TK_OPEN) And
+         (SymTab[Idx].Name = 'newline') Then
+      Begin
+        { newline() appele comme procedure }
+        ParserAdvance; { consomme ( }
+        If CurToken.Kind = TK_CLOSE Then
+          ParserAdvance;
+        EmitInstr('MOV    SI, OFFSET _A68_CRLF');
+        EmitInstr('CALL   ' + A68_RT_PFX + 'PRINTSTR');
+        ExprMakeVoid(Res);
+      End
+      Else If (Idx >= 0) And (SymTab[Idx].Cat = SC_PROC) And
+         (CurToken.Kind = TK_OPEN) And
+         (SymTab[Idx].Name = 'newpage') Then
+      Begin
+        ParserAdvance; { consomme ( }
+        If CurToken.Kind = TK_CLOSE Then
+          ParserAdvance;
+        EmitInstr('MOV    SI, OFFSET _A68_FF_S');
+        EmitInstr('CALL   ' + A68_RT_PFX + 'PRINTSTR');
+        ExprMakeVoid(Res);
+      End
+      Else If (Idx >= 0) And (SymTab[Idx].Cat = SC_PROC) And
+         (CurToken.Kind = TK_OPEN) And
+         (SymTab[Idx].Name = 'space') Then
+      Begin
+        ParserAdvance; { consomme ( }
+        If CurToken.Kind = TK_CLOSE Then
+          ParserAdvance;
+        EmitInstr('MOV    SI, OFFSET _A68_SPACE_S');
+        EmitInstr('CALL   ' + A68_RT_PFX + 'PRINTSTR');
+        ExprMakeVoid(Res);
+      End
+      Else
       If (Idx >= 0) And (SymTab[Idx].Cat = SC_PROC) And
          (CurToken.Kind = TK_OPEN) Then
       Begin
@@ -3084,6 +3152,26 @@ Begin
       { Simple identifier (not a call) - check postfix OF, [, etc. }
       Else If Idx >= 0 Then
       Begin
+        { Identifiants speciaux transput sans parentheses (TODO 22) }
+        If SymTab[Idx].Name = 'newline' Then
+        Begin
+          EmitInstr('MOV    SI, OFFSET _A68_CRLF');
+          EmitInstr('CALL   ' + A68_RT_PFX + 'PRINTSTR');
+          ExprMakeVoid(Res);
+        End
+        Else If SymTab[Idx].Name = 'newpage' Then
+        Begin
+          EmitInstr('MOV    SI, OFFSET _A68_FF_S');
+          EmitInstr('CALL   ' + A68_RT_PFX + 'PRINTSTR');
+          ExprMakeVoid(Res);
+        End
+        Else If SymTab[Idx].Name = 'space' Then
+        Begin
+          EmitInstr('MOV    SI, OFFSET _A68_SPACE_S');
+          EmitInstr('CALL   ' + A68_RT_PFX + 'PRINTSTR');
+          ExprMakeVoid(Res);
+        End
+        Else
         { Selection de champ : ident OF struct }
         If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'OF') Then
         Begin
@@ -5394,6 +5482,196 @@ Begin
   EmitInstr('MOV    [DI+6], AX');
   EmitInstr('MOV    AX, DI');
   EmitInstr('POP    BP');
+  EmitInstr('RET');
+
+  { Runtime: transput (TODO 22) }
+  EmitTransputRuntime;
+End;
+
+{ ---- EmitTransputRuntime : routines d entree/sortie --------------- }
+{ _A68RT_PRINTINT  : afficher un entier signe (AX=valeur)             }
+{ _A68RT_PRINTSTR  : afficher une chaine ASCIIZ (SI=ptr)              }
+{ _A68RT_PRINTBOOL : afficher TRUE ou FALSE (AX=valeur)               }
+{ _A68RT_READINT   : lire un entier depuis stdin -> AX                }
+{ _A68RT_READLINE  : lire une ligne depuis stdin -> AX=ptr chaine     }
+{ _A68RT_WHOLE     : formater un entier en chaine -> AX=ptr           }
+
+Procedure EmitTransputRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=== Transput runtime (TODO 22) ===');
+
+  { _A68RT_PRINTINT : afficher un entier signe dans AX }
+  EmitBlankLine;
+  EmitComment('--- runtime: print INT ---');
+  EmitLabel(A68_RT_PFX + 'PRINTINT');
+  EmitInstr('PUSH   AX');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  EmitInstr('MOV    CX, 0');      { compteur de chiffres }
+  EmitInstr('CMP    AX, 0');
+  EmitInstr('JGE    ' + A68_RT_PFX + 'PI_POS');
+  EmitInstr('PUSH   AX');
+  EmitInstr('MOV    DL, ''-''');
+  EmitInstr('MOV    AH, 02h');
+  EmitInstr('INT    21h');
+  EmitInstr('POP    AX');
+  EmitInstr('NEG    AX');
+  EmitLabel(A68_RT_PFX + 'PI_POS');
+  EmitInstr('MOV    BX, 10');
+  EmitLabel(A68_RT_PFX + 'PI_DIV');
+  EmitInstr('XOR    DX, DX');
+  EmitInstr('DIV    BX');           { AX / 10, reste dans DX }
+  EmitInstr('PUSH   DX');           { empiler le chiffre }
+  EmitInstr('INC    CX');
+  EmitInstr('CMP    AX, 0');
+  EmitInstr('JNE    ' + A68_RT_PFX + 'PI_DIV');
+  EmitLabel(A68_RT_PFX + 'PI_OUT');
+  EmitInstr('POP    DX');
+  EmitInstr('ADD    DL, ''0''');
+  EmitInstr('MOV    AH, 02h');
+  EmitInstr('INT    21h');
+  EmitInstr('LOOP   ' + A68_RT_PFX + 'PI_OUT');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('POP    AX');
+  EmitInstr('RET');
+
+  { _A68RT_PRINTSTR : afficher une chaine ASCIIZ pointee par SI }
+  EmitBlankLine;
+  EmitComment('--- runtime: print STRING ---');
+  EmitLabel(A68_RT_PFX + 'PRINTSTR');
+  EmitInstr('PUSH   AX');
+  EmitInstr('PUSH   SI');
+  EmitLabel(A68_RT_PFX + 'PS_LP');
+  EmitInstr('LODSB');                { AL = [SI], SI++ }
+  EmitInstr('OR     AL, AL');
+  EmitInstr('JZ     ' + A68_RT_PFX + 'PS_DN');
+  EmitInstr('MOV    DL, AL');
+  EmitInstr('MOV    AH, 02h');
+  EmitInstr('INT    21h');
+  EmitInstr('JMP    ' + A68_RT_PFX + 'PS_LP');
+  EmitLabel(A68_RT_PFX + 'PS_DN');
+  EmitInstr('POP    SI');
+  EmitInstr('POP    AX');
+  EmitInstr('RET');
+
+  { _A68RT_PRINTBOOL : afficher TRUE ou FALSE selon AX }
+  EmitBlankLine;
+  EmitComment('--- runtime: print BOOL ---');
+  EmitLabel(A68_RT_PFX + 'PRINTBOOL');
+  EmitInstr('CMP    AX, 0');
+  EmitInstr('JE     ' + A68_RT_PFX + 'PB_F');
+  EmitInstr('MOV    SI, OFFSET _A68_TRUE_S');
+  EmitInstr('JMP    ' + A68_RT_PFX + 'PRINTSTR');
+  EmitLabel(A68_RT_PFX + 'PB_F');
+  EmitInstr('MOV    SI, OFFSET _A68_FALSE_S');
+  EmitInstr('JMP    ' + A68_RT_PFX + 'PRINTSTR');
+
+  { _A68RT_READINT : lire un entier depuis stdin -> AX }
+  EmitBlankLine;
+  EmitComment('--- runtime: read INT ---');
+  EmitLabel(A68_RT_PFX + 'READINT');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  EmitInstr('XOR    BX, BX');     { BX = accumulateur }
+  EmitInstr('XOR    CX, CX');     { CX = signe (0=positif) }
+  EmitLabel(A68_RT_PFX + 'RI_RD');
+  EmitInstr('MOV    AH, 01h');
+  EmitInstr('INT    21h');          { AL = caractere lu }
+  EmitInstr('CMP    AL, ''-''');
+  EmitInstr('JNE    ' + A68_RT_PFX + 'RI_NM');
+  EmitInstr('MOV    CX, 1');
+  EmitInstr('JMP    ' + A68_RT_PFX + 'RI_RD');
+  EmitLabel(A68_RT_PFX + 'RI_NM');
+  EmitInstr('CMP    AL, 13');       { CR = fin de saisie }
+  EmitInstr('JE     ' + A68_RT_PFX + 'RI_DN');
+  EmitInstr('CMP    AL, 10');       { LF = fin de saisie }
+  EmitInstr('JE     ' + A68_RT_PFX + 'RI_DN');
+  EmitInstr('CMP    AL, '' ''');    { espace = fin }
+  EmitInstr('JE     ' + A68_RT_PFX + 'RI_DN');
+  EmitInstr('SUB    AL, ''0''');
+  EmitInstr('XOR    AH, AH');
+  EmitInstr('PUSH   AX');
+  EmitInstr('MOV    AX, BX');
+  EmitInstr('MOV    DX, 10');
+  EmitInstr('MUL    DX');           { AX = BX * 10 }
+  EmitInstr('MOV    BX, AX');
+  EmitInstr('POP    AX');
+  EmitInstr('ADD    BX, AX');
+  EmitInstr('JMP    ' + A68_RT_PFX + 'RI_RD');
+  EmitLabel(A68_RT_PFX + 'RI_DN');
+  EmitInstr('MOV    AX, BX');
+  EmitInstr('CMP    CX, 0');
+  EmitInstr('JE     ' + A68_RT_PFX + 'RI_OK');
+  EmitInstr('NEG    AX');
+  EmitLabel(A68_RT_PFX + 'RI_OK');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+
+  { _A68RT_READLINE : lire une ligne depuis stdin -> AX=ptr chaine }
+  EmitBlankLine;
+  EmitComment('--- runtime: read line ---');
+  EmitLabel(A68_RT_PFX + 'READLINE');
+  EmitInstr('PUSH   DX');
+  EmitInstr('MOV    DX, OFFSET _A68_IOREADBUF');
+  EmitInstr('MOV    AH, 0Ah');
+  EmitInstr('INT    21h');          { DOS buffered input }
+  { Convertir en ASCIIZ : remplacer CR par 0 }
+  EmitInstr('MOV    BX, OFFSET _A68_IOREADBUF');
+  EmitInstr('XOR    AH, AH');
+  EmitInstr('MOV    AL, [BX+1]');   { nombre de chars lus }
+  EmitInstr('ADD    BX, 2');        { debut de la chaine }
+  EmitInstr('ADD    BX, AX');
+  EmitInstr('MOV    BYTE PTR [BX], 0'); { terminer la chaine }
+  EmitInstr('MOV    AX, OFFSET _A68_IOREADBUF');
+  EmitInstr('ADD    AX, 2');        { pointer vers debut des donnees }
+  EmitInstr('POP    DX');
+  EmitInstr('RET');
+
+  { _A68RT_WHOLE : formater un entier AX en chaine -> AX=ptr _A68_NUMBUF }
+  EmitBlankLine;
+  EmitComment('--- runtime: whole ---');
+  EmitLabel(A68_RT_PFX + 'WHOLE');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  EmitInstr('PUSH   DI');
+  EmitInstr('MOV    DI, OFFSET _A68_NUMBUF');
+  EmitInstr('ADD    DI, 11');       { pointer vers la fin du buffer }
+  EmitInstr('MOV    BYTE PTR [DI], 0'); { terminateur ASCIIZ }
+  EmitInstr('DEC    DI');
+  EmitInstr('MOV    CX, 0');        { CX=signe }
+  EmitInstr('CMP    AX, 0');
+  EmitInstr('JGE    ' + A68_RT_PFX + 'WH_POS');
+  EmitInstr('MOV    CX, 1');
+  EmitInstr('NEG    AX');
+  EmitLabel(A68_RT_PFX + 'WH_POS');
+  EmitInstr('MOV    BX, 10');
+  EmitLabel(A68_RT_PFX + 'WH_LP');
+  EmitInstr('XOR    DX, DX');
+  EmitInstr('DIV    BX');
+  EmitInstr('ADD    DL, ''0''');
+  EmitInstr('MOV    [DI], DL');
+  EmitInstr('DEC    DI');
+  EmitInstr('CMP    AX, 0');
+  EmitInstr('JNE    ' + A68_RT_PFX + 'WH_LP');
+  EmitInstr('CMP    CX, 0');
+  EmitInstr('JE     ' + A68_RT_PFX + 'WH_DN');
+  EmitInstr('MOV    BYTE PTR [DI], ''-''');
+  EmitInstr('DEC    DI');
+  EmitLabel(A68_RT_PFX + 'WH_DN');
+  EmitInstr('INC    DI');
+  EmitInstr('MOV    AX, DI');       { AX = pointeur vers le debut de la chaine }
+  EmitInstr('POP    DI');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
   EmitInstr('RET');
 End;
 
@@ -7827,13 +8105,186 @@ Begin
 End;
 
 Procedure ParsePrint;
+Var
+  ArgRes     : TExprVal;
+  HasInner   : Boolean;
 Begin
-  { TODO 22 }
+  EmitComment('print((...))');
+  { print((args)) : ouvrir parenthese externe }
+  If CurToken.Kind = TK_OPEN Then
+    ParserAdvance;
+  { Parenthese interne optionnelle }
+  HasInner := False;
+  If CurToken.Kind = TK_OPEN Then
+  Begin
+    HasInner := True;
+    ParserAdvance;
+  End;
+  { Parser chaque argument }
+  While (CurToken.Kind <> TK_CLOSE) And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    { Verifier si c est un identifiant special : newline, newpage, space }
+    If (CurToken.Kind = TK_IDENT) And (CurToken.Val = 'newline') Then
+    Begin
+      EmitInstr('MOV    SI, OFFSET _A68_CRLF');
+      EmitInstr('CALL   ' + A68_RT_PFX + 'PRINTSTR');
+      ParserAdvance;
+    End
+    Else If (CurToken.Kind = TK_IDENT) And (CurToken.Val = 'newpage') Then
+    Begin
+      EmitInstr('MOV    SI, OFFSET _A68_FF_S');
+      EmitInstr('CALL   ' + A68_RT_PFX + 'PRINTSTR');
+      ParserAdvance;
+    End
+    Else If (CurToken.Kind = TK_IDENT) And (CurToken.Val = 'space') Then
+    Begin
+      EmitInstr('MOV    SI, OFFSET _A68_SPACE_S');
+      EmitInstr('CALL   ' + A68_RT_PFX + 'PRINTSTR');
+      ParserAdvance;
+    End
+    Else
+    Begin
+      ParseExpr(ArgRes);
+      ExprFlushToAX(ArgRes);
+      { Dispatch selon le mode }
+      If (ArgRes.ModeIdx = TY_IDX_INT) Or
+         (ArgRes.ModeIdx = TY_IDX_REAL) Then
+      Begin
+        EmitInstr('CALL   ' + A68_RT_PFX + 'PRINTINT');
+      End
+      Else If ArgRes.ModeIdx = TY_IDX_BOOL Then
+      Begin
+        EmitInstr('CALL   ' + A68_RT_PFX + 'PRINTBOOL');
+      End
+      Else If ArgRes.ModeIdx = TY_IDX_CHAR Then
+      Begin
+        EmitInstr('MOV    DL, AL');
+        EmitInstr('MOV    AH, 02h');
+        EmitInstr('INT    21h');
+      End
+      Else If ArgRes.ModeIdx = TY_IDX_STRING Then
+      Begin
+        EmitInstr('MOV    SI, AX');
+        EmitInstr('CALL   ' + A68_RT_PFX + 'PRINTSTR');
+      End
+      Else
+      Begin
+        { Mode inconnu ou composite : traiter comme INT }
+        EmitInstr('CALL   ' + A68_RT_PFX + 'PRINTINT');
+      End;
+    End;
+    If CurToken.Kind = TK_COMMA Then
+      ParserAdvance;
+  End;
+  { Fermer parenthese interne }
+  If HasInner And (CurToken.Kind = TK_CLOSE) Then
+    ParserAdvance;
+  { Fermer parenthese externe }
+  If CurToken.Kind = TK_CLOSE Then
+    ParserAdvance;
 End;
 
 Procedure ParseRead;
+Var
+  HasInner  : Boolean;
+  ArgIdx    : Integer;
+  SOfs      : TString;
 Begin
-  { TODO 22 }
+  EmitComment('read((...))');
+  { read((args)) : ouvrir parenthese externe }
+  If CurToken.Kind = TK_OPEN Then
+    ParserAdvance;
+  HasInner := False;
+  If CurToken.Kind = TK_OPEN Then
+  Begin
+    HasInner := True;
+    ParserAdvance;
+  End;
+  While (CurToken.Kind <> TK_CLOSE) And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    { Chaque argument doit etre une lvalue (variable) }
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      ArgIdx := SymFind(CurToken.Val);
+      If ArgIdx >= 0 Then
+      Begin
+        If SymTab[ArgIdx].ModeIdx = TY_IDX_CHAR Then
+        Begin
+          EmitComment('read CHAR -> ' + SymTab[ArgIdx].Name);
+          EmitInstr('MOV    AH, 01h');
+          EmitInstr('INT    21h');
+          EmitInstr('XOR    AH, AH');
+        End
+        Else If SymTab[ArgIdx].ModeIdx = TY_IDX_STRING Then
+        Begin
+          EmitComment('read STRING -> ' + SymTab[ArgIdx].Name);
+          EmitInstr('CALL   ' + A68_RT_PFX + 'READLINE');
+        End
+        Else
+        Begin
+          EmitComment('read INT -> ' + SymTab[ArgIdx].Name);
+          EmitInstr('CALL   ' + A68_RT_PFX + 'READINT');
+        End;
+        { Stocker la valeur lue dans la variable }
+        If SymTab[ArgIdx].ScopeLevel = 0 Then
+          EmitInstr('MOV    [' + SymTab[ArgIdx].MangledName + '], AX')
+        Else
+        Begin
+          Str(SymTab[ArgIdx].Offset, SOfs);
+          EmitInstr('MOV    [BP' + SOfs + '], AX');
+        End;
+        ParserAdvance;
+      End
+      Else
+      Begin
+        WarnMsg('read: variable non declaree: ' + CurToken.Val);
+        ParserAdvance;
+      End;
+    End
+    Else
+    Begin
+      WarnMsg('read: identifiant attendu');
+      ParserAdvance;
+    End;
+    If CurToken.Kind = TK_COMMA Then
+      ParserAdvance;
+  End;
+  If HasInner And (CurToken.Kind = TK_CLOSE) Then
+    ParserAdvance;
+  If CurToken.Kind = TK_CLOSE Then
+    ParserAdvance;
+End;
+
+{ ---- ParseWhole : whole(n, width) -> STRING -------------------- }
+{ Formater un entier avec une largeur donnee.                        }
+{ Simplifie : ignore width, appelle _A68RT_WHOLE -> AX = ptr string  }
+Procedure ParseWhole(Var Res : TExprVal);
+Var
+  ArgRes : TExprVal;
+Begin
+  EmitComment('whole(n, width)');
+  { Consomme ( }
+  If CurToken.Kind = TK_OPEN Then
+    ParserAdvance;
+  { Premier argument : valeur entiere }
+  ParseExpr(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstr('PUSH   AX');
+  { Deuxieme argument optionnel : largeur (ignore) }
+  If CurToken.Kind = TK_COMMA Then
+  Begin
+    ParserAdvance;
+    ParseExpr(ArgRes);  { lire et ignorer }
+  End;
+  EmitInstr('POP    AX');
+  EmitInstr('CALL   ' + A68_RT_PFX + 'WHOLE');
+  If CurToken.Kind = TK_CLOSE Then
+    ParserAdvance;
+  Res.Kind    := EK_AX;
+  Res.ModeIdx := TY_IDX_STRING;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
 End;
 
 Procedure ParseCollateral(Var Res : TExprVal);
