@@ -140,7 +140,7 @@
             Tables de methodes virtuelles pour les classes
             Tables de dispatch pour les multi subs
 
-  TODO 09 - VARIABLES ET AFFECTATIONS
+  TODO 09 - VARIABLES ET AFFECTATIONS [IMPLEMENTE]
             Variables my scalaires ($x) : pile BP, acces [BP-offset]
             Variables our scalaires ($x) : segment DATA, label _RKV_nom
             Tableaux my (@arr) : bloc contigu sur la pile
@@ -825,6 +825,17 @@ Function  DataAddArray(Const Lbl : TString;
 Function  DataAddHash(Const Lbl : TString;
                       APairCount : Integer) : Integer;            Forward;
 Procedure DataInit;                                               Forward;
+
+{ Forward declarations TODO 09 - Variables et affectations }
+Function  ExprAddrOf(SIdx : Integer) : TString;                    Forward;
+Procedure ExprStore(SIdx : Integer);                               Forward;
+Procedure ExprLoad(SIdx : Integer; Var Res : TExprVal);            Forward;
+Function  DeclAllocSym(Const AName : TString;
+                       Const ASigil : TString;
+                       ACat : TSymCat;
+                       ATypeIdx : Integer) : Integer;              Forward;
+Procedure ParseDeclStmt(Const Kw : TString);                       Forward;
+Procedure ParseExprStmt;                                           Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -2375,11 +2386,10 @@ Begin
     TK_STRING :
     Begin
       Lbl := DataAddStr(T.Val);
-      Res.Kind    := EK_IMM;
-      Res.ImmVal  := 0;
+      Res.Kind    := EK_MEM;
+      Res.ImmVal  := 0;     { 0 = reference DATA (pas locale) }
       Res.TypeIdx := TY_IDX_STR;
-      { On stocke le label comme offset symbolique ; le code   }
-      { generateur utilisera MOV AX, OFFSET <lbl> pour charger }
+      Res.Offset  := DataCount - 1;  { index dans DataTab }
     End;
 
     { --- Mots-cles booleens et constantes speciales --- }
@@ -2550,20 +2560,35 @@ Begin
   Res.ImmVal  := 0;
   Res.Offset  := 0;
   { ==============================================================
-    Affectation simple '=' et ':=' : stub (pas de table de symboles)
+    Affectation simple '=' et ':=' : traitement via ParseExprStmt
     ============================================================== }
   If (Op = '=') Or (Op = ':=') Then
   Begin
-    EmitComment(Op + ' : affectation (stub)');
+    EmitComment(Op + ' : affectation via ExprEmitBinOp');
+    { AX contient la valeur droite. Left.EK_MEM contient la dest. }
+    If (Left.Kind = EK_MEM) And (Left.ImmVal = 1) Then
+    Begin
+      { Variable locale [BP-n] }
+      EmitInstr('MOV', '[BP-' + IntToStr(Left.Offset) + '], AX');
+    End
+    Else If (Left.Kind = EK_MEM) And (Left.Offset >= 0) And
+            (Left.Offset < DataCount) Then
+    Begin
+      { Variable DATA }
+      EmitInstr('MOV', '[' + DataTab[Left.Offset].LblName + '], AX');
+    End
+    Else
+      EmitComment(Op + ' : cible non resolue');
+    Res.Kind := EK_AX;
     Exit;
   End;
   { ==============================================================
-    Affectations composees : stub
+    Affectations composees : stub (gestion directe dans ParseExprStmt)
     ============================================================== }
   If (Op = '+=') Or (Op = '-=') Or (Op = '*=') Or (Op = '/=') Or
      (Op = '~=') Or (Op = 'x=') Then
   Begin
-    EmitComment(Op + ' : affectation composee (stub)');
+    EmitComment(Op + ' : affectation composee (gere par ParseExprStmt)');
     Exit;
   End;
   { ==============================================================
@@ -2765,7 +2790,8 @@ End;
 { Gere : litteraux, variables $/@/%/&, parens, not/so/True/etc }
 Procedure ParsePrimary(Var Res : TExprVal);
 Var
-  Sub : TExprVal;
+  Sub  : TExprVal;
+  SIdx : Integer;
 Begin
   ExprMakeNone(Res);
   { --- Litteraux entiers --- }
@@ -2792,32 +2818,64 @@ Begin
   { --- Variables scalaires $nom --- }
   If CurToken.Kind = TK_SCALAR Then
   Begin
-    EmitComment('$' + CurToken.Val + ' (variable scalaire, stub)');
-    ExprMakeImm(0, TY_IDX_INT, Res);
+    SIdx := SymFind('$' + CurToken.Val);
+    If SIdx >= 0 Then
+    Begin
+      ExprLoad(SIdx, Res);
+    End
+    Else
+    Begin
+      EmitComment('$' + CurToken.Val + ' (non declare)');
+      ExprMakeImm(0, TY_IDX_INT, Res);
+    End;
     ParserAdvance;
     Exit;
   End;
   { --- Variables tableau @nom --- }
   If CurToken.Kind = TK_ARRAY_SIG Then
   Begin
-    EmitComment('@' + CurToken.Val + ' (variable tableau, stub)');
-    ExprMakeImm(0, TY_IDX_ARRAY, Res);
+    SIdx := SymFind('@' + CurToken.Val);
+    If SIdx >= 0 Then
+    Begin
+      ExprLoad(SIdx, Res);
+    End
+    Else
+    Begin
+      EmitComment('@' + CurToken.Val + ' (non declare)');
+      ExprMakeImm(0, TY_IDX_ARRAY, Res);
+    End;
     ParserAdvance;
     Exit;
   End;
   { --- Variables hash %nom --- }
   If CurToken.Kind = TK_HASH_SIG Then
   Begin
-    EmitComment('%' + CurToken.Val + ' (variable hash, stub)');
-    ExprMakeImm(0, TY_IDX_HASH, Res);
+    SIdx := SymFind('%' + CurToken.Val);
+    If SIdx >= 0 Then
+    Begin
+      ExprLoad(SIdx, Res);
+    End
+    Else
+    Begin
+      EmitComment('%' + CurToken.Val + ' (non declare)');
+      ExprMakeImm(0, TY_IDX_HASH, Res);
+    End;
     ParserAdvance;
     Exit;
   End;
   { --- Variables code &nom --- }
   If CurToken.Kind = TK_CODE_SIG Then
   Begin
-    EmitComment('&' + CurToken.Val + ' (variable code, stub)');
-    ExprMakeImm(0, TY_IDX_CODE, Res);
+    SIdx := SymFind('&' + CurToken.Val);
+    If SIdx >= 0 Then
+    Begin
+      ExprLoad(SIdx, Res);
+    End
+    Else
+    Begin
+      EmitComment('&' + CurToken.Val + ' (non declare)');
+      ExprMakeImm(0, TY_IDX_CODE, Res);
+    End;
     ParserAdvance;
     Exit;
   End;
@@ -3630,12 +3688,357 @@ Begin
   TypeLookupName := TY_UNKNOWN;
 End;
 
-{ ---- ParseStmt : stub ------------------------------------- }
-Procedure ParseStmt;
+{ ============================================================
+  TODO 09 - VARIABLES ET AFFECTATIONS [IMPLEMENTE]
+  ExprAddrOf     : adresse MASM (WORD PTR [...]) pour un symbole
+  ExprStore      : stocker AX dans la variable SymTab[SIdx]
+  ExprLoad       : charger une variable dans AX + remplir TExprVal
+  DeclAllocSym   : allouer une variable my (locale) ou our (DATA)
+  ParseDeclStmt  : my $x; my Int $x = 42; our $x; constant $c = 7;
+  ParseExprStmt  : expression-instruction ($x = expr; etc.)
+  ============================================================ }
+
+{ ---- ExprAddrOf : adresse MASM d un symbole SymTab[SIdx] ---- }
+{ Variables locales  (SC_MY/SC_PARAM) : WORD PTR [BP-N]         }
+{ Variables globales (SC_OUR/SC_CONST) : WORD PTR [_RKV_nom]    }
+{ Retourne '' si SIdx invalide.                                  }
+Function ExprAddrOf(SIdx : Integer) : TString;
+Var
+  S : TString;
 Begin
-  { Stub : avancer d'un token pour eviter boucle infinie }
-  If CurToken.Kind <> TK_EOF Then
+  If (SIdx < 0) Or (SIdx >= SymCount) Then
+  Begin
+    ExprAddrOf := '';
+    Exit;
+  End;
+  If (SymTab[SIdx].Cat = SC_MY) Or (SymTab[SIdx].Cat = SC_PARAM) Or
+     (SymTab[SIdx].Cat = SC_HAS) Then
+  Begin
+    Str(SymTab[SIdx].Offset, S);
+    ExprAddrOf := 'WORD PTR [BP-' + S + ']';
+  End
+  Else If (SymTab[SIdx].Cat = SC_OUR) Or (SymTab[SIdx].Cat = SC_CONST) Then
+    ExprAddrOf := 'WORD PTR [' + SymTab[SIdx].MangledName + ']'
+  Else
+    ExprAddrOf := '';
+End;
+
+{ ---- ExprStore : stocker AX dans la variable SymTab[SIdx] ---- }
+Procedure ExprStore(SIdx : Integer);
+Var
+  S : TString;
+Begin
+  If (SIdx < 0) Or (SIdx >= SymCount) Then Exit;
+  If (SymTab[SIdx].Cat = SC_MY) Or (SymTab[SIdx].Cat = SC_PARAM) Or
+     (SymTab[SIdx].Cat = SC_HAS) Then
+  Begin
+    Str(SymTab[SIdx].Offset, S);
+    EmitInstr('MOV', '[BP-' + S + '], AX');
+  End
+  Else If (SymTab[SIdx].Cat = SC_OUR) Or (SymTab[SIdx].Cat = SC_CONST) Then
+    EmitInstr('MOV', '[' + SymTab[SIdx].MangledName + '], AX')
+  Else
+  Begin
+    CompileError('ExprStore: categorie non supportee pour ' +
+                 SymTab[SIdx].SigilName);
+  End;
+End;
+
+{ ---- ExprLoad : charger une variable dans AX et TExprVal ----- }
+Procedure ExprLoad(SIdx : Integer; Var Res : TExprVal);
+Var
+  S : TString;
+Begin
+  Res.Kind    := EK_AX;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  If (SIdx < 0) Or (SIdx >= SymCount) Then
+  Begin
+    Res.TypeIdx := TY_IDX_INT;
+    EmitInstr('XOR', 'AX, AX');
+    Exit;
+  End;
+  Res.TypeIdx := SymTab[SIdx].TypeIdx;
+  If (SymTab[SIdx].Cat = SC_MY) Or (SymTab[SIdx].Cat = SC_PARAM) Or
+     (SymTab[SIdx].Cat = SC_HAS) Then
+  Begin
+    Str(SymTab[SIdx].Offset, S);
+    If SymTab[SIdx].TypeIdx = TY_IDX_STR Then
+      EmitInstr('MOV', 'AX, [BP-' + S + ']')
+    Else
+      EmitInstr('MOV', 'AX, [BP-' + S + ']');
+  End
+  Else If (SymTab[SIdx].Cat = SC_OUR) Or (SymTab[SIdx].Cat = SC_CONST) Then
+  Begin
+    If SymTab[SIdx].TypeIdx = TY_IDX_STR Then
+      EmitInstr('MOV', 'AX, [' + SymTab[SIdx].MangledName + ']')
+    Else
+      EmitInstr('MOV', 'AX, [' + SymTab[SIdx].MangledName + ']');
+  End
+  Else
+    EmitInstr('XOR', 'AX, AX');
+End;
+
+{ ---- DeclAllocSym : allouer une variable ---------------------- }
+{ my    -> locale [BP-n], SUB SP,2                                }
+{ our   -> globale DATA, DataAddWord                              }
+{ constant -> globale DATA, DataAddWord                           }
+{ Retourne l'index dans SymTab.                                   }
+Function DeclAllocSym(Const AName : TString;
+                      Const ASigil : TString;
+                      ACat : TSymCat;
+                      ATypeIdx : Integer) : Integer;
+Var
+  Ofs : Integer;
+  Idx : Integer;
+  Lbl : TString;
+Begin
+  If ACat = SC_MY Then
+  Begin
+    { Variable locale sur la pile }
+    Ofs := SymNextOffset;
+    EmitInstr('SUB', 'SP, 2');
+    EmitInstr('MOV', 'WORD PTR [BP-' + IntToStr(Ofs) + '], 0');
+    Idx := SymAdd(AName, ASigil, SC_MY, ATypeIdx, Ofs);
+    EmitComment('my ' + ASigil + AName + ' [BP-' + IntToStr(Ofs) + ']');
+    DeclAllocSym := Idx;
+  End
+  Else If ACat = SC_OUR Then
+  Begin
+    { Variable globale dans DATA }
+    Lbl := SymMangle(AName, SC_OUR);
+    DataAddWord(Lbl, 0);
+    Idx := SymAdd(AName, ASigil, SC_OUR, ATypeIdx, 0);
+    EmitComment('our ' + ASigil + AName + ' -> ' + Lbl);
+    DeclAllocSym := Idx;
+  End
+  Else If ACat = SC_CONST Then
+  Begin
+    { Constante dans DATA }
+    Lbl := SymMangle(AName, SC_CONST);
+    DataAddWord(Lbl, 0);
+    Idx := SymAdd(AName, ASigil, SC_CONST, ATypeIdx, 0);
+    EmitComment('constant ' + ASigil + AName + ' -> ' + Lbl);
+    DeclAllocSym := Idx;
+  End
+  Else
+  Begin
+    { Fallback : traiter comme my }
+    Ofs := SymNextOffset;
+    EmitInstr('SUB', 'SP, 2');
+    EmitInstr('MOV', 'WORD PTR [BP-' + IntToStr(Ofs) + '], 0');
+    Idx := SymAdd(AName, ASigil, ACat, ATypeIdx, Ofs);
+    DeclAllocSym := Idx;
+  End;
+End;
+
+{ ---- ParseDeclStmt : declaration de variable ------------------- }
+{ Syntaxe : my [$type] $var [= expr] ;                            }
+{           our [$type] $var [= expr] ;                           }
+{           constant $var = expr ;                                 }
+{           has $.attr ;                                           }
+Procedure ParseDeclStmt(Const Kw : TString);
+Var
+  Cat     : TSymCat;
+  VarName : TString;
+  Sigil   : TString;
+  TyIdx   : Integer;
+  SIdx    : Integer;
+  E       : TExprVal;
+  TyName  : TString;
+Begin
+  { Determiner la categorie }
+  If Kw = 'our' Then Cat := SC_OUR
+  Else If Kw = 'has' Then Cat := SC_HAS
+  Else If Kw = 'constant' Then Cat := SC_CONST
+  Else Cat := SC_MY;   { my par defaut }
+
+  TyIdx := TY_IDX_INT;   { type par defaut : Int }
+
+  { Verifier s il y a un type optionnel avant le sigil }
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    TyName := CurToken.Val;
+    If TypeLookupName(TyName) <> TY_UNKNOWN Then
+    Begin
+      TyIdx := TypeLookupName(TyName);
+      ParserAdvance;   { consommer le nom de type }
+    End;
+  End;
+
+  { Attendre un token sigil : $x, @x, %x, &x }
+  If (CurToken.Kind = TK_SCALAR) Or (CurToken.Kind = TK_ARRAY_SIG) Or
+     (CurToken.Kind = TK_HASH_SIG) Or (CurToken.Kind = TK_CODE_SIG) Then
+  Begin
+    VarName := CurToken.Val;
+    If CurToken.Kind = TK_SCALAR Then
+      Sigil := '$'
+    Else If CurToken.Kind = TK_ARRAY_SIG Then
+    Begin
+      Sigil := '@';
+      TyIdx := TY_IDX_ARRAY;
+    End
+    Else If CurToken.Kind = TK_HASH_SIG Then
+    Begin
+      Sigil := '%';
+      TyIdx := TY_IDX_HASH;
+    End
+    Else
+      Sigil := '&';
+    ParserAdvance;   { consommer la variable }
+  End
+  Else
+  Begin
+    CompileError('identifiant attendu apres ' + Kw);
+    Exit;
+  End;
+
+  { Verifier doublon dans la portee courante }
+  If SymFindInScope(Sigil + VarName, CurScope) >= 0 Then
+  Begin
+    WarnMsg('redeclaration de ' + Sigil + VarName + ' dans la meme portee');
+  End;
+
+  { Allouer le symbole }
+  SIdx := DeclAllocSym(VarName, Sigil, Cat, TyIdx);
+
+  { Initialisation optionnelle : = expr ou := expr (binding) }
+  If (CurToken.Kind = TK_OP) And
+     ((CurToken.Val = '=') Or (CurToken.Val = ':=')) Then
+  Begin
+    ParserAdvance;   { consommer = ou := }
+    ParseExpr(E);
+    ExprFlushToAX(E);
+    If SIdx >= 0 Then ExprStore(SIdx);
+  End;
+
+  { Consommer le ; optionnel }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
     ParserAdvance;
+End;
+
+{ ---- ParseExprStmt : expression-instruction ------------------- }
+{ Gere : $var = expr; $var op= expr; expr;                       }
+Procedure ParseExprStmt;
+Var
+  E      : TExprVal;
+  VarNm  : TString;
+  Sigil  : TString;
+  SIdx   : Integer;
+  Op     : TString;
+Begin
+  { Si c est un scalaire/tableau/hash suivi d un operateur d affectation }
+  If (CurToken.Kind = TK_SCALAR) Or (CurToken.Kind = TK_ARRAY_SIG) Or
+     (CurToken.Kind = TK_HASH_SIG) Then
+  Begin
+    VarNm := CurToken.Val;
+    If CurToken.Kind = TK_SCALAR Then Sigil := '$'
+    Else If CurToken.Kind = TK_ARRAY_SIG Then Sigil := '@'
+    Else Sigil := '%';
+
+    SIdx := SymFind(Sigil + VarNm);
+
+    { Creer automatiquement si inconnu (mode implicite) }
+    If SIdx < 0 Then
+      SIdx := DeclAllocSym(VarNm, Sigil, SC_MY, TY_IDX_INT);
+
+    ParserAdvance;   { consommer la variable }
+
+    If (CurToken.Kind = TK_OP) And (IsAssignOp(CurToken.Val)) Then
+    Begin
+      Op := CurToken.Val;
+      ParserAdvance;   { consommer l operateur }
+      ParseExpr(E);
+      ExprFlushToAX(E);
+
+      If Op = '=' Then
+      Begin
+        EmitComment(Sigil + VarNm + ' = ...');
+        ExprStore(SIdx);
+      End
+      Else If Op = ':=' Then
+      Begin
+        EmitComment(Sigil + VarNm + ' := ...');
+        ExprStore(SIdx);
+      End
+      Else
+      Begin
+        { Affectation composee : charger la valeur courante dans BX }
+        EmitPush('AX');
+        ExprLoad(SIdx, E);
+        EmitInstr('MOV', 'BX, AX');
+        EmitPop('AX');
+        If      Op = '+='  Then EmitInstr('ADD', 'BX, AX')
+        Else If Op = '-='  Then EmitInstr('SUB', 'BX, AX')
+        Else If Op = '*='  Then
+        Begin
+          EmitInstr('XCHG', 'AX, BX');
+          EmitInstr('IMUL', 'BX');
+        End
+        Else If Op = '/='  Then
+        Begin
+          EmitInstr('XCHG', 'AX, BX');
+          EmitInstr('CWD', '');
+          EmitInstr('IDIV', 'BX');
+          EmitInstr('MOV', 'BX, AX');
+        End
+        Else If Op = '~='  Then
+          EmitComment('~= : concat stub')
+        Else If Op = 'x='  Then
+          EmitComment('x= : repeat stub')
+        Else
+          EmitComment(Op + ' : compound assign stub');
+        EmitInstr('MOV', 'AX, BX');
+        ExprStore(SIdx);
+      End;
+    End
+    Else
+    Begin
+      { Pas d affectation : juste charger la variable }
+      ExprLoad(SIdx, E);
+    End;
+  End
+  Else
+  Begin
+    { Expression generale (appel de sub, etc.) }
+    ParseExpr(E);
+    ExprFlushToAX(E);
+  End;
+
+  { Consommer le ; optionnel }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
+End;
+
+{ ---- ParseStmt : dispatch principal ----------------------------- }
+Procedure ParseStmt;
+Var
+  Kw : TString;
+Begin
+  If CurToken.Kind = TK_EOF Then Exit;
+
+  { Commentaire seul sur une ligne -> token suivant }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+  Begin
+    ParserAdvance;
+    Exit;
+  End;
+
+  { Declarateurs : my, our, has, constant }
+  If CurToken.Kind = TK_KEYWORD Then
+  Begin
+    Kw := CurToken.Val;
+    If (Kw = 'my') Or (Kw = 'our') Or (Kw = 'has') Or
+       (Kw = 'constant') Then
+    Begin
+      ParserAdvance;   { consommer le mot-cle }
+      ParseDeclStmt(Kw);
+      Exit;
+    End;
+  End;
+
+  { Expression-instruction (affectation, appel, etc.) }
+  ParseExprStmt;
 End;
 
 { ============================================================
