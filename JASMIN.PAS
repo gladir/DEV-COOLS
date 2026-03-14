@@ -25,7 +25,7 @@
 {  TODO 07 [IMPLEMENTE] - Directives de champs (.field avec descripteurs et valeurs) }
 {  TODO 08 [IMPLEMENTE] - Directives de methodes (.method, .end method, .limit)}
 {  TODO 09 [IMPLEMENTE] - Descripteurs de types JVM : parsing et validation   }
-{  TODO 10 - Opcodes de chargement et stockage                                }
+{  TODO 10 [IMPLEMENTE] - Opcodes de chargement et stockage                   }
 {  TODO 11 - Opcodes arithmetiques et logiques                                }
 {  TODO 12 - Opcodes de conversion de types                                   }
 {  TODO 13 - Opcodes de controle de flux                                      }
@@ -505,6 +505,10 @@ Function  ValidateDescriptor(Const desc: String): Boolean; Forward;
 Function  ValidateMethodDescriptor(Const desc: String): Boolean; Forward;
 Procedure AutoLocals(mIdx: Integer); Forward;
 Procedure AutoStack(mIdx: Integer); Forward;
+
+{ --- Declarations forward TODO 10 : Opcodes de chargement et stockage --- }
+Procedure EmitByte(b: Byte); Forward;
+Function  ParseInstruction: Boolean; Forward;
 
 { ---------- Ouverture et fermeture du fichier source ---------- }
 
@@ -2555,6 +2559,254 @@ Begin
  End;
 End;
 
+{ ============================================================================ }
+{ Opcodes de chargement et stockage (TODO 10)                                  }
+{ ============================================================================ }
+
+{ --- EmitByte : ecrire un octet dans le code buffer de la methode courante --- }
+Procedure EmitByte(b: Byte);
+Begin
+ If Not InMethod Then
+ Begin
+  Error('instruction hors methode');
+  Exit;
+ End;
+ With MethodTab^[CurMethod] do
+ Begin
+  If Not HasCode Then
+  Begin
+   Error('instruction dans methode abstract/native');
+   Exit;
+  End;
+  If CodeSize >= MAX_CODE Then
+  Begin
+   Error('code buffer plein (max ' + IntToStr_(MAX_CODE) + ' octets)');
+   Exit;
+  End;
+  Code^[CodeSize] := b;
+  Inc(CodeSize);
+ End;
+End;
+
+{ --- ParseInstruction : reconnaitre et emettre un mnemonique JVM --- }
+{ Retourne True si le mnemonique a ete reconnu et emis.                }
+{ Pour TODO 10 : opcodes de chargement/stockage.                       }
+Function ParseInstruction: Boolean;
+Var mnem: String;
+    opvar: Integer;
+Begin
+ ParseInstruction := False;
+ mnem := CurStr;
+ { ---------------------------------------------------------------- }
+ { Instructions de chargement depuis les variables locales           }
+ { ---------------------------------------------------------------- }
+ { iload <var> }
+ If mnem = 'iload' Then
+ Begin
+  Consume;
+  If CurTok <> TK_INTEGER Then
+  Begin Error('iload : operande entiere attendue'); Exit; End;
+  opvar := CurInt;
+  Consume;
+  If opvar > 255 Then
+  Begin Error('iload : index > 255 (utiliser wide)'); Exit; End;
+  EmitByte($15); { iload }
+  EmitByte(Byte(opvar));
+  ParseInstruction := True; Exit;
+ End;
+ If mnem = 'iload_0' Then Begin Consume; EmitByte($1A); ParseInstruction := True; Exit; End;
+ If mnem = 'iload_1' Then Begin Consume; EmitByte($1B); ParseInstruction := True; Exit; End;
+ If mnem = 'iload_2' Then Begin Consume; EmitByte($1C); ParseInstruction := True; Exit; End;
+ If mnem = 'iload_3' Then Begin Consume; EmitByte($1D); ParseInstruction := True; Exit; End;
+ { lload <var> }
+ If mnem = 'lload' Then
+ Begin
+  Consume;
+  If CurTok <> TK_INTEGER Then
+  Begin Error('lload : operande entiere attendue'); Exit; End;
+  opvar := CurInt;
+  Consume;
+  If opvar > 255 Then
+  Begin Error('lload : index > 255'); Exit; End;
+  EmitByte($16); { lload }
+  EmitByte(Byte(opvar));
+  ParseInstruction := True; Exit;
+ End;
+ If mnem = 'lload_0' Then Begin Consume; EmitByte($1E); ParseInstruction := True; Exit; End;
+ If mnem = 'lload_1' Then Begin Consume; EmitByte($1F); ParseInstruction := True; Exit; End;
+ If mnem = 'lload_2' Then Begin Consume; EmitByte($20); ParseInstruction := True; Exit; End;
+ If mnem = 'lload_3' Then Begin Consume; EmitByte($21); ParseInstruction := True; Exit; End;
+ { fload <var> }
+ If mnem = 'fload' Then
+ Begin
+  Consume;
+  If CurTok <> TK_INTEGER Then
+  Begin Error('fload : operande entiere attendue'); Exit; End;
+  opvar := CurInt;
+  Consume;
+  If opvar > 255 Then
+  Begin Error('fload : index > 255'); Exit; End;
+  EmitByte($17); { fload }
+  EmitByte(Byte(opvar));
+  ParseInstruction := True; Exit;
+ End;
+ If mnem = 'fload_0' Then Begin Consume; EmitByte($22); ParseInstruction := True; Exit; End;
+ If mnem = 'fload_1' Then Begin Consume; EmitByte($23); ParseInstruction := True; Exit; End;
+ If mnem = 'fload_2' Then Begin Consume; EmitByte($24); ParseInstruction := True; Exit; End;
+ If mnem = 'fload_3' Then Begin Consume; EmitByte($25); ParseInstruction := True; Exit; End;
+ { dload <var> }
+ If mnem = 'dload' Then
+ Begin
+  Consume;
+  If CurTok <> TK_INTEGER Then
+  Begin Error('dload : operande entiere attendue'); Exit; End;
+  opvar := CurInt;
+  Consume;
+  If opvar > 255 Then
+  Begin Error('dload : index > 255'); Exit; End;
+  EmitByte($18); { dload }
+  EmitByte(Byte(opvar));
+  ParseInstruction := True; Exit;
+ End;
+ If mnem = 'dload_0' Then Begin Consume; EmitByte($26); ParseInstruction := True; Exit; End;
+ If mnem = 'dload_1' Then Begin Consume; EmitByte($27); ParseInstruction := True; Exit; End;
+ If mnem = 'dload_2' Then Begin Consume; EmitByte($28); ParseInstruction := True; Exit; End;
+ If mnem = 'dload_3' Then Begin Consume; EmitByte($29); ParseInstruction := True; Exit; End;
+ { aload <var> }
+ If mnem = 'aload' Then
+ Begin
+  Consume;
+  If CurTok <> TK_INTEGER Then
+  Begin Error('aload : operande entiere attendue'); Exit; End;
+  opvar := CurInt;
+  Consume;
+  If opvar > 255 Then
+  Begin Error('aload : index > 255'); Exit; End;
+  EmitByte($19); { aload }
+  EmitByte(Byte(opvar));
+  ParseInstruction := True; Exit;
+ End;
+ If mnem = 'aload_0' Then Begin Consume; EmitByte($2A); ParseInstruction := True; Exit; End;
+ If mnem = 'aload_1' Then Begin Consume; EmitByte($2B); ParseInstruction := True; Exit; End;
+ If mnem = 'aload_2' Then Begin Consume; EmitByte($2C); ParseInstruction := True; Exit; End;
+ If mnem = 'aload_3' Then Begin Consume; EmitByte($2D); ParseInstruction := True; Exit; End;
+ { ---------------------------------------------------------------- }
+ { Instructions de stockage dans les variables locales               }
+ { ---------------------------------------------------------------- }
+ { istore <var> }
+ If mnem = 'istore' Then
+ Begin
+  Consume;
+  If CurTok <> TK_INTEGER Then
+  Begin Error('istore : operande entiere attendue'); Exit; End;
+  opvar := CurInt;
+  Consume;
+  If opvar > 255 Then
+  Begin Error('istore : index > 255'); Exit; End;
+  EmitByte($36); { istore }
+  EmitByte(Byte(opvar));
+  ParseInstruction := True; Exit;
+ End;
+ If mnem = 'istore_0' Then Begin Consume; EmitByte($3B); ParseInstruction := True; Exit; End;
+ If mnem = 'istore_1' Then Begin Consume; EmitByte($3C); ParseInstruction := True; Exit; End;
+ If mnem = 'istore_2' Then Begin Consume; EmitByte($3D); ParseInstruction := True; Exit; End;
+ If mnem = 'istore_3' Then Begin Consume; EmitByte($3E); ParseInstruction := True; Exit; End;
+ { lstore <var> }
+ If mnem = 'lstore' Then
+ Begin
+  Consume;
+  If CurTok <> TK_INTEGER Then
+  Begin Error('lstore : operande entiere attendue'); Exit; End;
+  opvar := CurInt;
+  Consume;
+  If opvar > 255 Then
+  Begin Error('lstore : index > 255'); Exit; End;
+  EmitByte($37); { lstore }
+  EmitByte(Byte(opvar));
+  ParseInstruction := True; Exit;
+ End;
+ If mnem = 'lstore_0' Then Begin Consume; EmitByte($3F); ParseInstruction := True; Exit; End;
+ If mnem = 'lstore_1' Then Begin Consume; EmitByte($40); ParseInstruction := True; Exit; End;
+ If mnem = 'lstore_2' Then Begin Consume; EmitByte($41); ParseInstruction := True; Exit; End;
+ If mnem = 'lstore_3' Then Begin Consume; EmitByte($42); ParseInstruction := True; Exit; End;
+ { fstore <var> }
+ If mnem = 'fstore' Then
+ Begin
+  Consume;
+  If CurTok <> TK_INTEGER Then
+  Begin Error('fstore : operande entiere attendue'); Exit; End;
+  opvar := CurInt;
+  Consume;
+  If opvar > 255 Then
+  Begin Error('fstore : index > 255'); Exit; End;
+  EmitByte($38); { fstore }
+  EmitByte(Byte(opvar));
+  ParseInstruction := True; Exit;
+ End;
+ If mnem = 'fstore_0' Then Begin Consume; EmitByte($43); ParseInstruction := True; Exit; End;
+ If mnem = 'fstore_1' Then Begin Consume; EmitByte($44); ParseInstruction := True; Exit; End;
+ If mnem = 'fstore_2' Then Begin Consume; EmitByte($45); ParseInstruction := True; Exit; End;
+ If mnem = 'fstore_3' Then Begin Consume; EmitByte($46); ParseInstruction := True; Exit; End;
+ { dstore <var> }
+ If mnem = 'dstore' Then
+ Begin
+  Consume;
+  If CurTok <> TK_INTEGER Then
+  Begin Error('dstore : operande entiere attendue'); Exit; End;
+  opvar := CurInt;
+  Consume;
+  If opvar > 255 Then
+  Begin Error('dstore : index > 255'); Exit; End;
+  EmitByte($39); { dstore }
+  EmitByte(Byte(opvar));
+  ParseInstruction := True; Exit;
+ End;
+ If mnem = 'dstore_0' Then Begin Consume; EmitByte($47); ParseInstruction := True; Exit; End;
+ If mnem = 'dstore_1' Then Begin Consume; EmitByte($48); ParseInstruction := True; Exit; End;
+ If mnem = 'dstore_2' Then Begin Consume; EmitByte($49); ParseInstruction := True; Exit; End;
+ If mnem = 'dstore_3' Then Begin Consume; EmitByte($4A); ParseInstruction := True; Exit; End;
+ { astore <var> }
+ If mnem = 'astore' Then
+ Begin
+  Consume;
+  If CurTok <> TK_INTEGER Then
+  Begin Error('astore : operande entiere attendue'); Exit; End;
+  opvar := CurInt;
+  Consume;
+  If opvar > 255 Then
+  Begin Error('astore : index > 255'); Exit; End;
+  EmitByte($3A); { astore }
+  EmitByte(Byte(opvar));
+  ParseInstruction := True; Exit;
+ End;
+ If mnem = 'astore_0' Then Begin Consume; EmitByte($4B); ParseInstruction := True; Exit; End;
+ If mnem = 'astore_1' Then Begin Consume; EmitByte($4C); ParseInstruction := True; Exit; End;
+ If mnem = 'astore_2' Then Begin Consume; EmitByte($4D); ParseInstruction := True; Exit; End;
+ If mnem = 'astore_3' Then Begin Consume; EmitByte($4E); ParseInstruction := True; Exit; End;
+ { ---------------------------------------------------------------- }
+ { Instructions de chargement depuis les tableaux                    }
+ { ---------------------------------------------------------------- }
+ If mnem = 'iaload' Then Begin Consume; EmitByte($2E); ParseInstruction := True; Exit; End;
+ If mnem = 'laload' Then Begin Consume; EmitByte($2F); ParseInstruction := True; Exit; End;
+ If mnem = 'faload' Then Begin Consume; EmitByte($30); ParseInstruction := True; Exit; End;
+ If mnem = 'daload' Then Begin Consume; EmitByte($31); ParseInstruction := True; Exit; End;
+ If mnem = 'aaload' Then Begin Consume; EmitByte($32); ParseInstruction := True; Exit; End;
+ If mnem = 'baload' Then Begin Consume; EmitByte($33); ParseInstruction := True; Exit; End;
+ If mnem = 'caload' Then Begin Consume; EmitByte($34); ParseInstruction := True; Exit; End;
+ If mnem = 'saload' Then Begin Consume; EmitByte($35); ParseInstruction := True; Exit; End;
+ { ---------------------------------------------------------------- }
+ { Instructions de stockage dans les tableaux                        }
+ { ---------------------------------------------------------------- }
+ If mnem = 'iastore' Then Begin Consume; EmitByte($4F); ParseInstruction := True; Exit; End;
+ If mnem = 'lastore' Then Begin Consume; EmitByte($50); ParseInstruction := True; Exit; End;
+ If mnem = 'fastore' Then Begin Consume; EmitByte($51); ParseInstruction := True; Exit; End;
+ If mnem = 'dastore' Then Begin Consume; EmitByte($52); ParseInstruction := True; Exit; End;
+ If mnem = 'aastore' Then Begin Consume; EmitByte($53); ParseInstruction := True; Exit; End;
+ If mnem = 'bastore' Then Begin Consume; EmitByte($54); ParseInstruction := True; Exit; End;
+ If mnem = 'castore' Then Begin Consume; EmitByte($55); ParseInstruction := True; Exit; End;
+ If mnem = 'sastore' Then Begin Consume; EmitByte($56); ParseInstruction := True; Exit; End;
+End;
+
 { --- ParseDirectives : dispatcher principal des directives de classe --- }
 { Parcourt les tokens et dispatche les directives connues.                }
 { Les directives non encore implementees sont signalees et sautees.       }
@@ -2646,15 +2898,33 @@ Begin
      SkipToEOL;
     End;
    Else
-    { Directives non encore implementees (TODO 10+) : sauter la ligne }
+    { Directives non encore implementees (TODO 11+) : sauter la ligne }
     If OptVerbose Then
-     WriteLn('  [skip] directive ', CurStr, ' (TODO 10+)');
+     WriteLn('  [skip] directive ', CurStr, ' (TODO 11+)');
     SkipToEOL;
    End;  { Case }
   End
+  Else If InMethod And (CurTok = TK_IDENT) Then
+  Begin
+   { Essayer de parser une instruction JVM (TODO 10+) }
+   If Not ParseInstruction Then
+   Begin
+    { Mnemonique non reconnu : sauter la ligne }
+    If OptVerbose Then
+     WriteLn('  [skip] instruction ', CurStr, ' (TODO 11+)');
+    SkipToEOL;
+   End
+   Else
+    SkipToEOL;  { consommer le reste de la ligne apres l'instruction }
+  End
+  Else If InMethod And (CurTok = TK_LABEL) Then
+  Begin
+   { Label dans une methode : sauter pour le moment (TODO 19) }
+   SkipToEOL;
+  End
   Else
   Begin
-   { Token non-directive : labels, instructions, etc. -> sauter la ligne }
+   { Token non-directive hors methode : sauter la ligne }
    SkipToEOL;
   End;
  End;
