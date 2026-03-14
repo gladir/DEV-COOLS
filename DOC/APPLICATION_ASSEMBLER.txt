@@ -1,0 +1,1467 @@
+==============================================================================
+  APPLICATION_ASSEMBLER.txt
+  Comment ecrire un assembleur
+  Inspire des assembleurs du projet DEV-COOLS
+  (MASM.PAS, ASM86.PAS, ASM8080.PAS, ASM6502.PAS, ASMZ80.PAS)
+==============================================================================
+
+Table des matieres
+------------------
+
+  1.  Introduction
+  2.  Architecture generale d un assembleur
+  3.  Phase 1 : L analyseur lexical (Lexer)
+  4.  Phase 2 : La table des symboles
+  5.  Phase 3 : La table des opcodes
+  6.  Phase 4 : L evaluation des expressions
+  7.  Phase 5 : L analyse des operandes et modes d adressage
+  8.  Phase 6 : L encodage des instructions
+  9.  Phase 7 : L assemblage en deux passes
+  10. Phase 8 : Les directives (DB, DW, DD, EQU, ORG, ...)
+  11. Phase 9 : Les segments et modeles de memoire
+  12. Phase 10 : Le systeme de macros
+  13. Phase 11 : Les structures (STRUC/ENDS)
+  14. Phase 12 : L assemblage conditionnel (IF/ELSE/ENDIF)
+  15. Phase 13 : La generation du fichier objet (OMF)
+  16. Phase 14 : Le fichier listing (.LST)
+  17. Le programme principal
+  18. Exemples concrets tires de MASM.PAS
+  19. Comparaison des assembleurs du projet
+  20. Conseils pratiques
+
+==============================================================================
+  1. Introduction
+==============================================================================
+
+  Un assembleur est un programme qui traduit du code source ecrit en
+  langage assembleur (mnemoniques, directives, etiquettes) en code
+  machine binaire executable par un processeur. Contrairement a un
+  compilateur de langage de haut niveau qui doit analyser des
+  structures complexes (boucles, classes, expressions), l assembleur
+  effectue une traduction relativement directe : chaque instruction
+  source correspond generalement a une instruction machine.
+
+  Le projet DEV-COOLS contient cinq assembleurs ecrits en Pascal
+  (Free Pascal / Turbo Pascal) ciblant differentes architectures :
+
+    - MASM.PAS    : Macro Assembleur 8086 compatible MASM 5.x
+                    (9381 lignes, format OMF .OBJ)
+    - ASM86.PAS   : Assembleur 8086 simplifie
+                    (2009 lignes, sortie texte et binaire)
+    - ASM8080.PAS : Assembleur Intel 8080
+                    (1065 lignes, sortie .OBJ et .BIN)
+    - ASM6502.PAS : Assembleur MOS 6502 avec macros
+                    (1498 lignes, sortie .OBJ et .BIN)
+    - ASMZ80.PAS  : Assembleur Zilog Z80
+                    (1617 lignes, sortie .OBJ et .BIN)
+
+  Le plus complet est MASM.PAS, un clone de Microsoft Macro Assembler
+  (MASM 5.x) qui produit des fichiers .OBJ au format Intel OMF
+  compatibles avec :
+
+    - Microsoft LINK (MASM 5.x / 6.x)
+    - IBM Macro Assembler
+    - Turbo C / Turbo Pascal TLINK
+    - Borland TLINK
+    - Watcom WLINK
+
+  Ce document explique, etape par etape, comment ecrire un assembleur
+  en s inspirant principalement de MASM.PAS et des autres assembleurs
+  du projet.
+
+==============================================================================
+  2. Architecture generale d un assembleur
+==============================================================================
+
+  Un assembleur suit generalement un pipeline en plusieurs phases.
+  Contrairement a un compilateur, l assembleur effectue typiquement
+  deux passes sur le code source :
+
+    Fichier source (.ASM)
+            |
+            v
+    +-------------------+
+    |  Analyseur lexical |  Decoupe le texte en jetons
+    |  (Lexer)           |  (etiquettes, mnemoniques, operandes)
+    +-------------------+
+            |
+            v
+    +-------------------+
+    |  Passe 1           |  Construit la table des symboles
+    |  (Collecte)        |  Calcule les adresses des etiquettes
+    +-------------------+
+            |
+            v
+    +-------------------+
+    |  Passe 2           |  Encode les instructions en binaire
+    |  (Emission)        |  Resout les references avant
+    +-------------------+
+            |
+            v
+    +-------------------+
+    |  Fichier de sortie |  .OBJ (OMF), .BIN, .COM, .EXE
+    +-------------------+
+
+  2.1 Pourquoi deux passes ?
+  --------------------------
+
+  Le probleme fondamental est la reference avant (forward reference) :
+
+        JMP fin        ; reference a 'fin' pas encore defini
+        MOV AX, 1
+        MOV BX, 2
+    fin:               ; 'fin' est defini ici
+        INT 20h
+
+  En passe 1, l assembleur ne connait pas encore l adresse de 'fin'.
+  Il avance le compteur d adresses (Location Counter) sans emettre
+  de code. En passe 2, toutes les adresses sont connues et le code
+  binaire peut etre genere correctement.
+
+  2.2 Structure des donnees principales
+  --------------------------------------
+
+  Tout assembleur a besoin de :
+
+    - Une table des symboles (etiquettes, constantes, segments)
+    - Une table des opcodes (mnemoniques -> codes machine)
+    - Un compteur d adresses (Location Counter, LC)
+    - Un buffer de sortie (code genere)
+    - Un evaluateur d expressions (calculs d adresses)
+
+  Dans MASM.PAS, ces structures sont definies comme suit :
+
+    MAX_SYM      = 4096   { nombre maximum de symboles }
+    MAX_SEG      = 16     { nombre maximum de segments }
+    MAX_GRP      = 8      { nombre maximum de groupes }
+    MAX_FIXUP    = 8192   { nombre maximum de corrections d adresses }
+    MAX_MACRO    = 256    { nombre maximum de macros }
+    HASH_SIZE    = 256    { taille de la table de hachage }
+
+==============================================================================
+  3. Phase 1 : L analyseur lexical (Lexer)
+==============================================================================
+
+  L analyseur lexical decoupe chaque ligne source en jetons (tokens).
+  Une ligne assembleur typique a la forme :
+
+    [etiquette:]  mnemonique  [operande1 [, operande2]]  [; commentaire]
+
+  3.1 Types de jetons
+  --------------------
+
+  Dans MASM.PAS, les jetons sont classes en six types :
+
+    TTokenKind = (
+      TK_IDENT,      { identificateur, mot-cle, mnemonique }
+      TK_NUMBER,     { literal numerique (decimal, hex, octal, binaire) }
+      TK_STRING,     { chaine entre apostrophes ou guillemets }
+      TK_PUNCT,      { operateur ou ponctuation : ( ) [ ] + - * / . : , }
+      TK_NEWLINE,    { fin de ligne logique }
+      TK_EOF         { fin du fichier source }
+    );
+
+  3.2 Analyse d une ligne
+  ------------------------
+
+  L analyseur lexical doit gerer :
+
+    - Les espaces et tabulations (separateurs)
+    - Les commentaires (apres ';' jusqu a la fin de ligne)
+    - Les nombres en differentes bases :
+        * Decimal  : 1234
+        * Hexadecimal : 0ABCDh ou 0xABCD
+        * Octal : 377o ou 377q
+        * Binaire : 10110101b
+    - Les chaines de caracteres : 'Hello' ou "Hello"
+    - Les identificateurs : etiquettes, mnemoniques, registres
+    - Les operateurs : + - * / ( ) [ ] , : .
+
+  3.3 Exemple de decoupe lexicale
+  --------------------------------
+
+  La ligne :
+
+    start:  MOV  AX, [BX+SI+4]   ; initialiser AX
+
+  Produit les jetons :
+
+    TK_IDENT   'start'
+    TK_PUNCT   ':'
+    TK_IDENT   'MOV'
+    TK_IDENT   'AX'
+    TK_PUNCT   ','
+    TK_PUNCT   '['
+    TK_IDENT   'BX'
+    TK_PUNCT   '+'
+    TK_IDENT   'SI'
+    TK_PUNCT   '+'
+    TK_NUMBER  4
+    TK_PUNCT   ']'
+
+  3.4 Procedures cles dans les assembleurs du projet
+  ---------------------------------------------------
+
+  Dans ASM86.PAS :
+    GetCh        : lire le caractere suivant
+    SkipSpaces   : sauter les espaces
+    GetDec       : lire un nombre decimal
+    GetHex       : lire un nombre hexadecimal
+    GetNumber    : lire un nombre (toute base)
+    GetSymbol    : lire un identificateur
+
+  Dans ASM8080.PAS / ASM6502.PAS / ASMZ80.PAS :
+    GetWord      : extraire le prochain mot
+    LTrim/RTrim  : supprimer les espaces
+    StrToUpper   : convertir en majuscules
+
+  Dans MASM.PAS :
+    LexInit      : initialiser l analyseur lexical
+    LexGetToken  : extraire le prochain jeton
+    LexPeek      : regarder le prochain jeton sans le consommer
+
+==============================================================================
+  4. Phase 2 : La table des symboles
+==============================================================================
+
+  La table des symboles est la structure de donnees centrale de
+  l assembleur. Elle enregistre toutes les etiquettes, constantes,
+  segments, macros et symboles externes.
+
+  4.1 Types de symboles
+  ----------------------
+
+  Dans MASM.PAS, chaque symbole a un type (TSymKind) :
+
+    SK_UNDEF     : reference non encore resolue
+    SK_LABEL     : etiquette de code ou de donnees
+    SK_PUBLIC    : symbole exporte (PUBLIC)
+    SK_EXTERN    : symbole importe (EXTRN)
+    SK_EQU       : constante definie par EQU ou =
+    SK_GROUP     : nom de groupe (GROUP)
+    SK_SEG       : nom de segment (SEGMENT)
+    SK_MACRO     : macro (MACRO/ENDM)
+    SK_STRUCT    : structure de donnees (STRUC/ENDS)
+
+  4.2 Structure d un symbole
+  ---------------------------
+
+  Chaque entree de la table des symboles contient :
+
+    TSymbol = Record
+      name    : TSymString;   { nom du symbole (majuscules) }
+      kind    : TSymKind;     { type du symbole }
+      seg_idx : Integer;      { index dans la table des segments }
+      offset  : TWord;        { offset dans le segment }
+      value   : TLong;        { valeur absolue (EQU, EXTERN, ...) }
+      size    : TWord;        { taille en octets }
+      flags   : TByte;        { bit 0=public, bit 1=extern, bit 2=defini }
+      next    : PSymbol;      { lien suivant dans la chaine de hachage }
+    End;
+
+  4.3 Table de hachage
+  ---------------------
+
+  Pour un acces rapide, MASM.PAS utilise une table de hachage
+  de 256 entrees avec la fonction de hachage DJB2 :
+
+    Function HashName(Const s : TSymString) : Integer;
+    Var h : LongInt;
+    Begin
+      h := 5381;
+      For i := 1 To Length(s) Do
+        h := ((h Shl 5) + h) Xor LongInt(Ord(s[i]));
+      If h < 0 Then h := -h;
+      HashName := Integer(h Mod HASH_SIZE);
+    End;
+
+  Chaque entree de la table est une liste chainee de symboles
+  ayant le meme index de hachage.
+
+  4.4 Operations sur les symboles
+  --------------------------------
+
+  Les procedures principales sont :
+
+    SymFind(name)           : rechercher un symbole par nom
+    SymEnter(name, kind)    : creer ou mettre a jour un symbole
+    SymSetValue(sym, val)   : definir la valeur d un symbole
+    SymSetPublic(sym)       : marquer un symbole comme PUBLIC
+    SymSetExtern(sym)       : marquer un symbole comme EXTERN
+    SymDefineLabel(name)    : definir une etiquette a la position courante
+    SymCheckUndefined       : verifier qu il ne reste pas de symboles
+                              non definis apres la passe 2
+
+  4.5 Symboles predefinis
+  ------------------------
+
+  MASM.PAS initialise des symboles speciaux :
+
+    TRUE       = -1
+    FALSE      = 0
+    @MODEL     = 0     { modele memoire courant }
+    @WORDSIZE  = 2     { 16 bits par defaut }
+    @DATA      = 0     { segment de donnees }
+    @CODE      = 0     { segment de code }
+    @STACK     = 0     { segment de pile }
+    @VERSION   = 100   { version 1.00 }
+
+  4.6 Dans les assembleurs simples
+  ---------------------------------
+
+  Les assembleurs plus simples (ASM8080, ASM6502, ASMZ80) utilisent
+  une liste chainee sans hachage :
+
+    FindSym(name)    : recherche lineaire
+    AddSym(name)     : ajout en tete de liste
+    RefSym(name)     : referencement d un symbole
+    DefSym(name,val) : definition d un symbole avec sa valeur
+
+==============================================================================
+  5. Phase 3 : La table des opcodes
+==============================================================================
+
+  La table des opcodes associe chaque mnemonique (MOV, ADD, JMP, ...)
+  a son code machine et a ses regles d encodage.
+
+  5.1 Table statique (assembleurs simples)
+  -----------------------------------------
+
+  Les assembleurs simples utilisent une table constante :
+
+  Dans ASM8080.PAS (Intel 8080) :
+
+    Instr8080 : Array[0..26] of Record
+      InstrName  : String[7];
+      InstrOpcode : Word;
+    End = (
+      (InstrName:'NOP'; InstrOpcode:$00),
+      (InstrName:'RLC'; InstrOpcode:$07),
+      (InstrName:'RRC'; InstrOpcode:$0F),
+      ...
+    );
+
+  Dans ASM6502.PAS (MOS 6502) :
+
+    Instr6502 : Array[0..28] of Record
+      InstrName  : String[7];
+      InstrOpcode : Byte;
+    End = (
+      (InstrName:'BRK'; InstrOpcode:$00),
+      (InstrName:'PHP'; InstrOpcode:$08),
+      ...
+    );
+
+  Dans ASMZ80.PAS (Zilog Z80) :
+
+    InstrZ80 : Array[0..34] of Record
+      InstrName  : String[7];
+      InstrOpcode : Word;     { Word pour les opcodes prefixes (CB, DD, ED, FD) }
+    End = (
+      (InstrName:'EXX'; InstrOpcode:$D9),
+      (InstrName:'LDI'; InstrOpcode:$EDA0),
+      ...
+    );
+
+  5.2 Procedures de recherche
+  ----------------------------
+
+    InitOpcodes    : charger la table des opcodes en memoire
+    FindOpcode     : rechercher un mnemonique dans la table
+    AddOpcode      : ajouter un opcode a la table
+
+  5.3 Table dynamique (MASM.PAS)
+  --------------------------------
+
+  Pour le 8086, le jeu d instructions est trop complexe pour une
+  simple table statique. MASM.PAS utilise une procedure de dispatch
+  (ParseInstr) qui reconnait chaque mnemonique et applique les regles
+  d encodage specifiques a chaque instruction.
+
+  L encodage depend de la combinaison d operandes :
+
+    MOV AX, BX        ->  registre, registre
+    MOV AX, [1234h]   ->  registre, memoire
+    MOV AX, 42         ->  registre, immediat
+    MOV [BX+4], AL    ->  memoire, registre
+    MOV BYTE PTR [SI], 0  ->  memoire, immediat
+
+  Chaque combinaison produit un encodage different.
+
+==============================================================================
+  6. Phase 4 : L evaluation des expressions
+==============================================================================
+
+  L assembleur doit evaluer des expressions arithmetiques dans les
+  operandes et les directives :
+
+    MOV AX, OFFSET buffer + 10
+    DB  (MAX_SIZE * 2) + 1
+    JMP start + 6
+    count EQU 100 SHL 2
+
+  6.1 Operateurs supportes
+  -------------------------
+
+  MASM.PAS supporte une hierarchie complete de priorites :
+
+    Priorite 1 (la plus faible) : EQ NE LT LE GT GE  (comparaisons)
+    Priorite 2 : AND OR XOR                (operations logiques)
+    Priorite 3 : NOT                       (negation logique)
+    Priorite 4 : + -                       (addition, soustraction)
+    Priorite 5 : * / MOD SHL SHR          (multiplication, division)
+    Priorite 6 : PTR                       (cast de taille)
+    Priorite 7 : OFFSET SEG TYPE SIZE      (operateurs unaires)
+                 LENGTH SHORT BYTE WORD DWORD PTR - +
+    Priorite 8 (la plus forte) : nombres, chaines, $, (), []
+                                 identificateurs
+
+  6.2 Expressions absolues et relocalisables
+  -------------------------------------------
+
+  Un aspect specifique aux assembleurs est la distinction entre
+  expressions absolues et relocalisables :
+
+    - Absolue : valeur connue a l assemblage (constantes, EQU)
+      Exemple : 42, MAX+1, 256 SHL 4
+
+    - Relocalisable : adresse relative a un segment, qui sera
+      ajustee par l editeur de liens
+      Exemple : OFFSET msg, start, [data_ptr]
+
+  Le type TExpr dans MASM.PAS capture cette distinction :
+
+    TExpr = Record
+      val        : TLong;     { valeur numerique }
+      is_reloc   : Boolean;   { True = adresse relocalisable }
+      seg_idx    : Integer;   { index du segment si relocalisable }
+      is_undef   : Boolean;   { True = non defini en passe 1 }
+      ptr_size   : Integer;   { 0=non specifie, 1=BYTE, 2=WORD, 4=DWORD }
+    End;
+
+  6.3 Dans les assembleurs simples
+  ---------------------------------
+
+  Les assembleurs ASM8080, ASM6502 et ASMZ80 utilisent une
+  evaluation par descente recursive plus simple :
+
+    Factor    : nombre, symbole, parentheses, operateurs unaires
+    Term      : Factor ( (* | / | MOD) Factor )*
+    Eval      : Term ( (+ | -) Term )*
+
+  Ils supportent les nombres en plusieurs bases :
+
+    EvalDec   : evaluer un nombre decimal
+    EvalHex   : evaluer un nombre hexadecimal
+    EvalOct   : evaluer un nombre octal
+    EvalBin   : evaluer un nombre binaire (ASM6502 uniquement)
+
+==============================================================================
+  7. Phase 5 : L analyse des operandes et modes d adressage
+==============================================================================
+
+  L analyse des operandes est specifique a chaque architecture.
+  Pour le 8086 (MASM.PAS et ASM86.PAS), c est la partie la plus
+  complexe de l assembleur.
+
+  7.1 Types d operandes (8086)
+  -----------------------------
+
+  Les operandes du 8086 sont classes en cinq categories :
+
+    TOpKind = (
+      OK_NONE,    { pas d operande }
+      OK_REG,     { registre general (AX, BX, CX, DX, ...) }
+      OK_SREG,    { registre de segment (CS, DS, ES, SS) }
+      OK_MEM,     { acces memoire ([BX+SI+4], [1234h], ...) }
+      OK_IMM      { valeur immediate (42, OFFSET msg, ...) }
+    );
+
+  7.2 L octet ModR/M
+  --------------------
+
+  Le coeur de l encodage 8086 est l octet ModR/M (Mode-Register-
+  Memory) qui specifie les operandes :
+
+    Bits 7-6 : mod (mode d adressage)
+    Bits 5-3 : reg (registre ou extension d opcode)
+    Bits 2-0 : r/m (registre ou mode memoire)
+
+  Table des modes memoire (r/m) :
+
+    r/m = 0 : [BX+SI]        r/m = 4 : [SI]
+    r/m = 1 : [BX+DI]        r/m = 5 : [DI]
+    r/m = 2 : [BP+SI]        r/m = 6 : [disp16] (ou [BP] si mod>0)
+    r/m = 3 : [BP+DI]        r/m = 7 : [BX]
+
+  Valeurs de mod :
+
+    mod = 00 : memoire sans deplacement (r/m=6 -> adresse directe)
+    mod = 01 : memoire + deplacement 8 bits
+    mod = 10 : memoire + deplacement 16 bits
+    mod = 11 : registre a registre
+
+  7.3 Encodage des registres
+  ---------------------------
+
+  Les registres 8086 sont encodes sur 3 bits :
+
+    Registres 16 bits :           Registres 8 bits :
+    AX = 0  CX = 1  DX = 2       AL = 0  CL = 1  DL = 2
+    BX = 3  SP = 4  BP = 5       BL = 3  AH = 4  CH = 5
+    SI = 6  DI = 7               DH = 6  BH = 7
+
+    Registres de segment :
+    ES = 0  CS = 1  SS = 2  DS = 3
+
+  7.4 Procedure d analyse d un operande
+  ---------------------------------------
+
+  La procedure ParseOperand() dans MASM.PAS analyse un operande
+  complet en gerant :
+
+    - La detection du type (registre, memoire, immediat)
+    - Le prefixe de segment (CS:, DS:, ES:, SS:)
+    - Le cast de taille (BYTE PTR, WORD PTR, DWORD PTR)
+    - Les crochets pour l adressage memoire [BX+SI+disp]
+    - L evaluation de l expression de deplacement
+
+  La procedure CalcModRM() calcule ensuite l octet ModR/M a
+  partir de la combinaison de registres de base et d index :
+
+    Function CalcModRM(has_bx, has_bp, has_si, has_di : Boolean;
+                       disp : TLong; disp_sz : Integer;
+                       Var rm, mod_out : Integer;
+                       Var disp_out : TLong;
+                       Var dsz_out : Integer) : Boolean;
+
+  7.5 Modes d adressage des autres processeurs
+  ----------------------------------------------
+
+  Chaque processeur a ses propres modes d adressage :
+
+  Intel 8080 (ASM8080.PAS) :
+    - Registre : A, B, C, D, E, H, L
+    - Paire de registres : BC, DE, HL, SP
+    - Immediat 8 bits : MVI A, 42
+    - Immediat 16 bits : LXI H, 1234h
+    - Memoire indirecte : M (via HL)
+
+  MOS 6502 (ASM6502.PAS) :
+    - Immediat : LDA #$42
+    - Page zero : LDA $80
+    - Absolu : LDA $1234
+    - Indexe X/Y : LDA $1234,X
+    - Indirect indexe : LDA ($80,X) et LDA ($80),Y
+
+  Zilog Z80 (ASMZ80.PAS) :
+    - Registre : A, B, C, D, E, H, L
+    - Paire de registres : BC, DE, HL, SP, IX, IY
+    - Immediat : LD A, 42
+    - Memoire : LD A, (1234h)
+    - Indexe : LD A, (IX+5)
+
+==============================================================================
+  8. Phase 6 : L encodage des instructions
+==============================================================================
+
+  L encodage transforme une instruction analysee en octets de code
+  machine. Le format d une instruction 8086 est :
+
+    [prefixe] opcode [ModR/M] [deplacement] [immediat]
+
+  8.1 Procedures d emission
+  --------------------------
+
+  Dans MASM.PAS :
+
+    EmitByte(b)     : emettre un octet (ou avancer LC en passe 1)
+    EmitWord(w)     : emettre un mot 16 bits (little-endian)
+    EmitDWord(d)    : emettre un double mot 32 bits
+    EmitModRM()     : emettre le prefixe de segment + ModR/M +
+                      deplacement
+    EmitRelJmp()    : emettre un saut relatif (opcode + deplacement)
+
+  En passe 1, EmitByte ne fait qu avancer le compteur d adresses
+  (LC) sans ecrire de donnees. En passe 2, les octets sont
+  effectivement emis dans le buffer de sortie.
+
+  8.2 Exemples d encodage
+  -------------------------
+
+  MOV AX, BX :
+    Opcode $89, ModR/M $C3 (mod=11, reg=BX=3, r/m=AX=0)
+    -> 2 octets : 89 C3
+
+  MOV AX, [1234h] :
+    Opcode $8B, ModR/M $06 (mod=00, reg=AX=0, r/m=6=disp16)
+    Deplacement $1234
+    -> 4 octets : 8B 06 34 12
+
+  MOV AX, 42 :
+    Opcode court $B8+reg ($B8 pour AX)
+    Immediat $002A
+    -> 3 octets : B8 2A 00
+
+  ADD [BX+4], CL :
+    Opcode $00, ModR/M $4F (mod=01, reg=CL=1, r/m=BX=7)
+    Deplacement $04
+    -> 3 octets : 00 4F 04
+
+  JMP fin (saut court) :
+    Opcode $EB, deplacement relatif 8 bits
+    -> 2 octets : EB xx
+
+  8.3 Encodage dans les assembleurs simples
+  ------------------------------------------
+
+  Les assembleurs 8080, 6502 et Z80 utilisent une procedure
+  DoOpcode qui gere l encodage instruction par instruction.
+  Pour ces processeurs plus simples, le format est generalement :
+
+    opcode [operande_8bits | operande_16bits]
+
+  La complexite est moindre car il n y a pas d octet ModR/M.
+
+==============================================================================
+  9. Phase 7 : L assemblage en deux passes
+==============================================================================
+
+  L assemblage en deux passes est le coeur de tout assembleur.
+  Tous les assembleurs du projet utilisent cette technique.
+
+  9.1 Passe 1 : collecte des symboles
+  -------------------------------------
+
+  La premiere passe parcourt tout le fichier source :
+
+    - Definit les etiquettes avec leur adresse (LC courant)
+    - Enregistre les constantes EQU
+    - Traite les directives (SEGMENT, PROC, MACRO, ...)
+    - Avance le compteur d adresses sans emettre de code
+    - Detecte les erreurs de syntaxe
+
+  Dans MASM.PAS, la variable no_emit est mise a True :
+
+    Procedure RunPass(pass : Integer);
+    Begin
+      pass_num := pass;
+      no_emit  := (pass = 1);
+      ...
+      While GetNextLine Do
+        AssembleLine;
+      ...
+    End;
+
+  9.2 Passe 2 : generation du code
+  ----------------------------------
+
+  La deuxieme passe parcourt a nouveau le fichier source :
+
+    - Encode chaque instruction en code machine
+    - Resout les references avant (maintenant connues)
+    - Emet les enregistrements LEDATA (donnees) dans le .OBJ
+    - Genere les enregistrements FIXUPP (corrections d adresses)
+    - Produit le fichier listing si demande
+    - Detecte les erreurs de phase (adresse changee entre les passes)
+
+  9.3 Detection des erreurs de phase
+  ------------------------------------
+
+  Une erreur de phase survient quand l adresse d un symbole
+  change entre la passe 1 et la passe 2. Cela peut arriver
+  si la taille d une instruction depend d un symbole non encore
+  defini en passe 1 :
+
+    JMP label_loin    ; en passe 1 : saut court (2 octets) ?
+                      ; en passe 2 : saut long (3 octets) !
+                      ; -> erreur de phase
+
+  MASM.PAS detecte cette situation en comparant les adresses
+  des symboles entre les deux passes.
+
+  9.4 Dans les assembleurs simples
+  ---------------------------------
+
+  Les assembleurs ASM8080, ASM6502 et ASMZ80 utilisent le meme
+  principe avec une procedure DoPass appelee deux fois :
+
+    pass := 1;
+    DoPass;       { collecte des symboles }
+    pass := 2;
+    DoPass;       { generation du code }
+
+==============================================================================
+  10. Phase 8 : Les directives (DB, DW, DD, EQU, ORG, ...)
+==============================================================================
+
+  Les directives ne generent pas d instructions machine mais
+  controlent le comportement de l assembleur.
+
+  10.1 Directives de donnees
+  ---------------------------
+
+    DB (Define Byte)    : definir des octets
+      msg  DB 'Hello', 0Dh, 0Ah, '$'
+      tab  DB 10 DUP(0)
+
+    DW (Define Word)    : definir des mots 16 bits
+      ptr  DW OFFSET msg
+      tab  DW 5 DUP(?)
+
+    DD (Define DWord)   : definir des doubles mots 32 bits
+    DQ (Define QWord)   : definir des quadruples mots 64 bits
+    DT (Define TByte)   : definir des mots de 10 octets
+
+  Dans MASM.PAS, la procedure ParseDataDir gere ces directives
+  avec le support de DUP pour la repetition et des listes
+  separees par des virgules.
+
+  10.2 Directives de constantes
+  -------------------------------
+
+    EQU (equate) : definir une constante non reassignable
+      MAX_SIZE  EQU  256
+      CR        EQU  0Dh
+
+    = (affectation) : definir une constante reassignable
+      count = 0
+      count = count + 1
+
+  10.3 Directives de positionnement
+  -----------------------------------
+
+    ORG (origin) : fixer le compteur d adresses
+      ORG 100h       ; programme .COM (debut a 100h)
+
+    ALIGN n : aligner le compteur d adresses
+      ALIGN 2        ; aligner sur un mot
+      ALIGN 16       ; aligner sur un paragraphe
+
+    EVEN : aligner sur un mot (equivalent a ALIGN 2)
+
+  10.4 Directives de visibilite
+  --------------------------------
+
+    PUBLIC nom [, nom ...] : exporter un symbole
+      PUBLIC main, _printf
+
+    EXTRN nom:type [, nom:type ...] : importer un symbole
+      EXTRN _printf:NEAR, _data:WORD
+
+  10.5 Directives de procedure
+  ------------------------------
+
+    PROC / ENDP : definir une procedure
+      maproc PROC
+        PUSH BP
+        MOV  BP, SP
+        ...
+        POP  BP
+        RET
+      maproc ENDP
+
+  10.6 Directives de controle
+  ----------------------------
+
+    END [point_entree] : fin du fichier source
+      END start
+
+    INCLUDE fichier : inclure un fichier source
+      INCLUDE macros.inc
+
+    Dans MASM.PAS, l inclusion peut etre imbriquee jusqu a
+    8 niveaux (INC_DEPTH = 8).
+
+==============================================================================
+  11. Phase 9 : Les segments et modeles de memoire
+==============================================================================
+
+  La gestion des segments est specifique aux assembleurs 8086.
+  Elle permet d organiser le code, les donnees et la pile dans
+  des segments distincts.
+
+  11.1 Definition manuelle de segments
+  --------------------------------------
+
+    code_seg SEGMENT PARA PUBLIC 'CODE'
+      ...
+    code_seg ENDS
+
+    data_seg SEGMENT WORD PUBLIC 'DATA'
+      msg DB 'Hello$'
+    data_seg ENDS
+
+    stk_seg  SEGMENT PARA STACK 'STACK'
+      DB 256 DUP(?)
+    stk_seg  ENDS
+
+  Chaque segment a des attributs :
+
+    Alignement : BYTE, WORD, PARA (16), PAGE (256), DWORD
+    Combinaison : PRIVATE, PUBLIC, COMMON, STACK, MEMORY, AT
+    Classe : 'CODE', 'DATA', 'STACK', 'BSS', ...
+
+  11.2 Structure d un segment dans MASM.PAS
+  -------------------------------------------
+
+    TSegInfo = Record
+      name       : TSymString;    { nom du segment }
+      class_name : TSymString;    { classe OMF ('CODE','DATA',...) }
+      combine    : TSegCombine;   { type de combinaison }
+      align      : TSegAlign;     { alignement OMF }
+      size       : TWord;         { taille totale en octets }
+      cur_lc     : TWord;         { compteur d adresses courant }
+      lnames_idx : Integer;       { index dans l enregistrement LNAMES }
+      defined    : Boolean;       { True si declare }
+    End;
+
+  11.3 Modeles memoire simplifies
+  ---------------------------------
+
+  La directive .MODEL simplifie la definition des segments :
+
+    .MODEL TINY     : un seul segment (programme .COM)
+    .MODEL SMALL    : un segment de code + un de donnees
+    .MODEL COMPACT  : un segment de code + plusieurs de donnees
+    .MODEL MEDIUM   : plusieurs segments de code + un de donnees
+    .MODEL LARGE    : plusieurs segments de code et de donnees
+    .MODEL HUGE     : comme LARGE + donnees > 64 Ko
+    .MODEL FLAT     : segment unique 32 bits
+
+  Apres .MODEL, on utilise les directives simplifiees :
+
+    .CODE   : basculer vers le segment de code
+    .DATA   : basculer vers le segment de donnees
+    .STACK  : definir le segment de pile (taille optionnelle)
+
+  11.4 Groupes
+  -------------
+
+  La directive GROUP combine plusieurs segments :
+
+    DGROUP GROUP data_seg, bss_seg, stk_seg
+
+  Cela permet a l editeur de liens de regrouper ces segments
+  dans un espace d adressage contigu.
+
+  11.5 ASSUME
+  ------------
+
+  La directive ASSUME indique au compilateur quel registre de
+  segment pointe vers quel segment :
+
+    ASSUME CS:code_seg, DS:DGROUP, SS:DGROUP
+
+  L assembleur utilise cette information pour generer
+  automatiquement les prefixes de segment necessaires.
+
+==============================================================================
+  12. Phase 10 : Le systeme de macros
+==============================================================================
+
+  Les macros permettent de definir des blocs de code reutilisables
+  avec des parametres. C est une des fonctionnalites avancees de
+  MASM.PAS et ASM6502.PAS.
+
+  12.1 Definition et appel d une macro
+  --------------------------------------
+
+  Definition :
+
+    ABS_AX  MACRO
+            LOCAL skipneg
+            OR    AX, AX
+            JNS   skipneg
+            NEG   AX
+    skipneg:
+            ENDM
+
+  Appel :
+
+    ABS_AX              ; genere le code inline
+
+  12.2 Macros avec parametres
+  ----------------------------
+
+  Definition :
+
+    PRINT MACRO msg
+          LEA  DX, msg
+          MOV  AH, 09h
+          INT  21h
+          ENDM
+
+  Appel :
+
+    PRINT hello_msg     ; msg = hello_msg
+
+  12.3 Structure interne dans MASM.PAS
+  --------------------------------------
+
+    TMacroDef = Record
+      mname      : TSymString;     { nom de la macro }
+      param_cnt  : Integer;        { nombre de parametres }
+      params     : Array[1..MAX_MACRO_PARAMS] Of TSymString;
+      body_first : PLineNode;      { liste chainee de lignes }
+      body_cnt   : Integer;        { nombre de lignes }
+      purged     : Boolean;        { True si PURGEe }
+      next       : PMacroDef;      { chaine de macros }
+    End;
+
+  12.4 Expansion de macro
+  -------------------------
+
+  La procedure ExpandMacro dans MASM.PAS effectue :
+
+    1. Empiler un nouveau contexte d expansion
+    2. Parser les arguments separes par des virgules
+    3. Scanner le corps pour les declarations LOCAL
+    4. Substituer :
+       - Les parametres formels par les arguments reels
+       - Les noms LOCAL par des noms uniques (@@0000, @@0001, ...)
+    5. Injecter les lignes expandues dans le flux de lecture
+
+  12.5 Directives de repetition
+  --------------------------------
+
+    REPT n / ENDM        : repeter un bloc n fois
+    IRP  param, <a,b,c> / ENDM  : iterer sur une liste
+    IRPC param, texte / ENDM    : iterer sur des caracteres
+    EXITM                : sortir d une macro prematurement
+
+  12.6 Macros dans ASM6502.PAS
+  ------------------------------
+
+  L assembleur 6502 supporte aussi les macros avec :
+
+    AddMacro        : enregistrer une definition de macro
+    AddMacroParam   : ajouter un parametre
+    GetMacParms     : parser les parametres d appel
+    DoMacParms      : substituer les parametres dans les lignes
+    AddMacroLine    : ajouter une ligne au corps de la macro
+    FindMacro       : rechercher une macro par nom
+
+==============================================================================
+  13. Phase 11 : Les structures (STRUC/ENDS)
+==============================================================================
+
+  Les structures permettent de definir des types de donnees
+  composites avec des champs nommes.
+
+  13.1 Definition d une structure
+  ---------------------------------
+
+    POINT STRUC
+      x  DW  0
+      y  DW  0
+    POINT ENDS
+
+  13.2 Utilisation d une structure
+  ----------------------------------
+
+    monpoint POINT <10, 20>    ; initialiser avec des valeurs
+    monpoint POINT <>          ; valeurs par defaut (0, 0)
+
+  Acces aux champs :
+
+    MOV AX, monpoint.x
+    MOV BX, [SI].POINT.y
+
+  13.3 Implementation dans MASM.PAS
+  -----------------------------------
+
+  MASM.PAS gere les structures avec :
+
+    - MAX_STRUCT : nombre maximum de structures
+    - Suivi des champs : nom, type, offset, taille
+    - ParseStruc/ParseEnds : analyse de la definition
+    - Resolution des acces .champ en offsets numeriques
+
+==============================================================================
+  14. Phase 12 : L assemblage conditionnel (IF/ELSE/ENDIF)
+==============================================================================
+
+  L assemblage conditionnel permet d inclure ou d exclure du code
+  selon des conditions evaluees a l assemblage.
+
+  14.1 Directives conditionnelles
+  ----------------------------------
+
+    IF expression         : si expression non nulle
+    IFE expression        : si expression nulle
+    IFDEF symbole         : si symbole defini
+    IFNDEF symbole        : si symbole non defini
+    IFB <argument>        : si argument est vide (blank)
+    IFNB <argument>       : si argument non vide
+    IFIDN <a>,<b>         : si chaines identiques
+    IFDIF <a>,<b>         : si chaines differentes
+    ELSE                  : branche alternative
+    ENDIF                 : fin de bloc conditionnel
+
+  14.2 Exemple d utilisation
+  ----------------------------
+
+    DEBUG EQU 1
+
+    IF DEBUG
+      MOV AH, 09h
+      LEA DX, debug_msg
+      INT 21h
+    ENDIF
+
+    IFDEF USE_FLOAT
+      INCLUDE float.inc
+    ELSE
+      INCLUDE nofloat.inc
+    ENDIF
+
+  14.3 Implementation dans MASM.PAS
+  -----------------------------------
+
+  MASM.PAS gere l imbrication des blocs conditionnels avec
+  une pile de profondeur MAX_IF_DEPTH = 32 niveaux.
+
+  Quand la condition est fausse, les lignes sont lues mais
+  ignorees (pas d assemblage) jusqu au ELSE ou ENDIF
+  correspondant.
+
+==============================================================================
+  15. Phase 13 : La generation du fichier objet (OMF)
+==============================================================================
+
+  Le format OMF (Object Module Format) est le format standard
+  pour les fichiers objets 16 bits compatibles DOS. C est le
+  format de sortie principal de MASM.PAS.
+
+  15.1 Structure d un fichier OMF
+  ---------------------------------
+
+  Un fichier .OBJ est une sequence d enregistrements :
+
+    THEADR    : nom du module source
+    COMENT    : commentaire (optionnel)
+    LNAMES    : liste de noms (segments, groupes, classes)
+    SEGDEF    : definition de chaque segment
+    GRPDEF    : definition de chaque groupe
+    EXTDEF    : symboles externes (importes)
+    PUBDEF    : symboles publics (exportes)
+    LEDATA    : donnees d un segment (code ou data)
+    FIXUPP    : corrections d adresses (fixups)
+    MODEND    : fin du module (avec point d entree optionnel)
+
+  15.2 Format d un enregistrement OMF
+  --------------------------------------
+
+  Chaque enregistrement a le format :
+
+    Type (1 octet) | Longueur (2 octets) | Donnees | Checksum (1 octet)
+
+  Le checksum est calcule pour que la somme de tous les octets
+  de l enregistrement (type + longueur + donnees + checksum)
+  soit egale a zero modulo 256.
+
+  15.3 Procedures d emission OMF dans MASM.PAS
+  -----------------------------------------------
+
+    ObjBeginRecord(rtype)  : demarrer un enregistrement OMF
+    ObjPutByte(b)          : ecrire un octet avec checksum
+    ObjPutWord(w)          : ecrire un mot 16 bits (little-endian)
+    ObjPutIndex(idx)       : encoder un index OMF (1 ou 2 octets)
+    ObjEndRecord()         : finaliser : ecrire longueur et checksum
+    ObjTHEADR()            : emettre l en-tete du module
+    ObjMODEND()            : emettre la fin du module
+    ObjLNAMES()            : emettre la liste des noms
+    ObjSEGDEF()            : emettre les definitions de segments
+    ObjEXTDEF()            : emettre les symboles externes
+    ObjPUBDEF()            : emettre les symboles publics
+    ObjFIXUPP()            : emettre les corrections d adresses
+    FlushLEDATA()          : emettre les donnees du segment courant
+
+  15.4 Sequence d emission
+  --------------------------
+
+  L ordre des enregistrements dans le fichier .OBJ est :
+
+    THEADR -> COMENT -> LNAMES -> SEGDEF -> GRPDEF
+           -> EXTDEF -> PUBDEF -> LEDATA -> FIXUPP -> MODEND
+
+  Les enregistrements LEDATA et FIXUPP alternent au fur et a mesure
+  que le code est genere pendant la passe 2.
+
+  15.5 Les corrections d adresses (FIXUPP)
+  -------------------------------------------
+
+  Les fixups indiquent a l editeur de liens les endroits du code
+  ou une adresse doit etre ajustee. Chaque fixup contient :
+
+    - L offset dans l enregistrement LEDATA precedent
+    - Le type de correction (segment, offset, relatif)
+    - La cible (segment, symbole externe, groupe)
+    - Le cadre de reference (frame)
+
+  MASM.PAS accumule les fixups pendant l emission du code et
+  les ecrit dans un enregistrement FIXUPP apres chaque LEDATA.
+
+  15.6 Sortie binaire des assembleurs simples
+  ---------------------------------------------
+
+  Les assembleurs ASM8080, ASM6502 et ASMZ80 produisent
+  egalement des fichiers .OBJ et .BIN :
+
+    - Le .OBJ contient un format simplifie
+    - Le .BIN contient le code machine brut (image memoire)
+
+  ASM86.PAS produit un fichier texte reformate et optionnellement
+  un fichier .BIN binaire.
+
+==============================================================================
+  16. Phase 14 : Le fichier listing (.LST)
+==============================================================================
+
+  Le fichier listing est un outil de debogage precieux qui montre
+  le code source annote avec les adresses et les octets generes.
+
+  16.1 Format d une ligne de listing
+  ------------------------------------
+
+    Offset  Octets          Source
+    ------  ------          ------
+    0000    B8 0000    s    MOV AX, @DATA
+    0003    8E D8          MOV DS, AX
+    0005    B4 09          MOV AH, 09h
+    0007    8D 16 0000 r   LEA DX, msg
+    000B    CD 21          INT 21h
+
+  Les marqueurs :
+    's' indique une reference de segment (fixup)
+    'r' indique une reference relocalisable (fixup)
+
+  16.2 Contenu du listing
+  -------------------------
+
+  Un fichier listing complet contient :
+
+    - Le code assembleur annote (adresses + octets)
+    - La table des symboles avec leurs valeurs
+    - La table des segments avec leurs tailles
+    - Le nombre d erreurs et d avertissements
+    - Les statistiques d assemblage
+
+  16.3 Table des symboles dans le listing
+  ------------------------------------------
+
+  Tous les assembleurs du projet affichent la table des symboles
+  en fin d assemblage. La procedure DumpSymTab (ASM8080, ASM6502,
+  ASMZ80) ou SymDump (MASM.PAS) affiche :
+
+    Nom             Type      Valeur    Segment
+    ------          ------    ------    ------
+    START           LABEL     0000      CODE
+    MSG             LABEL     0000      DATA
+    MAX_SIZE        EQU       0100
+    _PRINTF         EXTERN    ----
+
+==============================================================================
+  17. Le programme principal
+==============================================================================
+
+  Le programme principal de chaque assembleur suit un schema
+  similaire.
+
+  17.1 Structure de MASM.PAS
+  ----------------------------
+
+    BEGIN
+      InitTables;       { initialiser toutes les tables }
+      ObjInit;          { initialiser le fichier objet }
+      FixupInit;        { initialiser les corrections d adresses }
+      ModelInit;        { initialiser le modele memoire }
+      StructInit;       { initialiser le systeme STRUC }
+      MacroInit;        { initialiser le systeme de macros }
+      IfInit;           { initialiser la pile IF/ELSE/ENDIF }
+      ProcInit;         { initialiser le support PROC }
+      SrcInit;          { initialiser la pile de fichiers source }
+      LexInit;          { initialiser l analyseur lexical }
+      SymInit;          { initialiser la table des symboles }
+
+      ParseArgs;        { traiter la ligne de commande }
+      Assemble(src_fname, obj_fname);  { assemblage deux passes }
+
+      If err_count > 0 Then Halt(1)
+                        Else Halt(0);
+    END.
+
+  La procedure Assemble effectue :
+
+    1. Afficher "Passe 1..."
+    2. Appeler RunPass(1) : collecter les symboles
+    3. Verifier les erreurs
+    4. Ouvrir le fichier .OBJ
+    5. Emettre les en-tetes OMF (THEADR, LNAMES, SEGDEF, ...)
+    6. Afficher "Passe 2..."
+    7. Appeler RunPass(2) : generer le code
+    8. Emettre MODEND
+    9. Fermer le fichier .OBJ
+    10. Afficher les statistiques
+
+  17.2 Structure des assembleurs simples
+  ----------------------------------------
+
+  Les assembleurs ASM8080, ASM6502 et ASMZ80 suivent le meme
+  schema simplifie :
+
+    BEGIN
+      { Ouvrir les fichiers source, listing, objet, binaire }
+      symTab := NIL;
+      xferAddr := 0;
+      InitOpcodes;           { charger la table des opcodes }
+
+      pass := 1;
+      DoPass;                { passe 1 : collecte des symboles }
+
+      pass := 2;
+      DoPass;                { passe 2 : generation du code }
+
+      WriteLn(errCount, ' erreur(s) total');
+      DumpSymTab;            { afficher la table des symboles }
+
+      { Fermer tous les fichiers }
+      If errCount <> 0 Then Halt(1);
+    END.
+
+  17.3 Options de ligne de commande (MASM.PAS)
+  -----------------------------------------------
+
+  MASM.PAS supporte plusieurs options :
+
+    /A    : trier les segments alphabetiquement
+    /C    : generer un fichier de references croisees (.CRF)
+    /L    : generer un fichier listing (.LST)
+    /ML   : sensibilite a la casse pour les etiquettes
+    /MX   : sensibilite a la casse pour PUBLIC/EXTRN
+    /I    : chemin de recherche pour INCLUDE
+
+==============================================================================
+  18. Exemples concrets tires de MASM.PAS
+==============================================================================
+
+  18.1 Hello World en assembleur
+  --------------------------------
+
+  Fichier SAMPLES/MASM/hello.asm :
+
+    .MODEL  SMALL
+    .STACK  256
+
+    .DATA
+    msg     DB  'Bonjour, MASM.PAS !', 0Dh, 0Ah, '$'
+
+    .CODE
+    start:
+            MOV  AX, @DATA
+            MOV  DS, AX
+            MOV  AH, 09h
+            LEA  DX, msg
+            INT  21h
+            INT  20h
+            END  start
+
+  Assemblage : MASM hello.asm
+  Produit : hello.OBJ (format OMF)
+  Edition de liens : LINK hello.OBJ -> hello.EXE
+
+  18.2 Macros
+  ------------
+
+  Fichier SAMPLES/MASM/macro.asm :
+
+    .MODEL SMALL
+    .STACK 256
+
+    ABS_AX  MACRO
+            LOCAL   skipneg
+            OR      AX, AX
+            JNS     skipneg
+            NEG     AX
+    skipneg:
+            ENDM
+
+    ZERO_AX MACRO
+            XOR     AX, AX
+            ENDM
+
+    SWAP_AX_BX MACRO
+            XCHG    AX, BX
+            ENDM
+
+  Chaque appel de macro genere le code inline avec des
+  etiquettes locales uniques (@@0000, @@0001, ...).
+
+  18.3 Fibonacci
+  ---------------
+
+  Fichier SAMPLES/MASM/fibo.asm :
+
+  Un programme qui calcule les nombres de Fibonacci en
+  utilisant des sous-routines (CALL/RET) et des variables
+  en memoire.
+
+  18.4 Symboles externes
+  ------------------------
+
+  Fichiers SAMPLES/MASM/extern.asm et extern_sub.asm :
+
+  Demonstration de l utilisation de PUBLIC et EXTRN pour
+  lier deux modules assembleur avec l editeur de liens.
+  Le module principal declare EXTRN sub_routine:NEAR et
+  le sous-module declare PUBLIC sub_routine.
+
+==============================================================================
+  19. Comparaison des assembleurs du projet
+==============================================================================
+
+  19.1 Tableau comparatif
+  ------------------------
+
+    Assembleur   Cible    Lignes   Sortie       Macros  Segments
+    ----------   -----    ------   ------       ------  --------
+    MASM.PAS     8086     9381     OMF .OBJ     Oui     Oui
+    ASM86.PAS    8086     2009     Texte/.BIN   Non     Non
+    ASM8080.PAS  8080     1065     .OBJ/.BIN    Non     Non
+    ASM6502.PAS  6502     1498     .OBJ/.BIN    Oui     Non
+    ASMZ80.PAS   Z80      1617     .OBJ/.BIN    Non     Non
+
+  19.2 Points communs
+  --------------------
+
+    - Tous sont ecrits en Pascal (Turbo Pascal / Free Pascal)
+    - Tous utilisent l assemblage en deux passes
+    - Tous gerent une table des symboles
+    - Tous supportent plusieurs bases numeriques
+    - Tous produisent un listing avec table des symboles
+    - Tous signalent les erreurs avec numero de ligne
+
+  19.3 Differences principales
+  ------------------------------
+
+    MASM.PAS est le plus complet :
+    - Format de sortie OMF standard (compatible LINK, TLINK, ...)
+    - Systeme de macros complet (MACRO/ENDM, REPT, IRP, IRPC)
+    - Gestion des segments (.MODEL, .CODE, .DATA, SEGMENT/ENDS)
+    - Structures de donnees (STRUC/ENDS)
+    - Assemblage conditionnel (IF/IFDEF/IFNDEF/...)
+    - INCLUDE avec imbrication
+    - PUBLIC/EXTRN pour la liaison inter-modules
+    - Table de hachage pour les symboles (performance)
+
+    ASM86.PAS est un assembleur 8086 simplifie :
+    - Sortie texte reformatee ou binaire .BIN
+    - Pas de format objet standard
+    - Pas de macros ni de segments
+
+    ASM8080.PAS, ASM6502.PAS et ASMZ80.PAS sont specialises :
+    - Un processeur specifique chacun
+    - Table des symboles par liste chainee
+    - Sortie .OBJ simplifiee et .BIN brut
+    - ASM6502.PAS ajoute le support des macros
+
+  19.4 Complexite relative
+  --------------------------
+
+    MASM.PAS     : ████████████████████  (9381 lignes, complet)
+    ASM86.PAS    : ████                  (2009 lignes, simplifie)
+    ASMZ80.PAS   : ███                   (1617 lignes, specialise)
+    ASM6502.PAS  : ███                   (1498 lignes, avec macros)
+    ASM8080.PAS  : ██                    (1065 lignes, minimal)
+
+==============================================================================
+  20. Conseils pratiques
+==============================================================================
+
+  20.1 Par ou commencer
+  ----------------------
+
+  Pour ecrire un assembleur, commencez par :
+
+    1. Choisir un processeur simple (8080 ou 6502)
+    2. Implementer le lexer (decoupe en jetons)
+    3. Creer la table des opcodes (mnemoniques -> codes)
+    4. Implementer l assemblage en deux passes
+    5. Supporter les directives de base (DB, DW, EQU, ORG)
+    6. Ajouter l evaluation des expressions
+    7. Generer un fichier binaire brut (.BIN)
+
+  Ensuite, on peut ajouter progressivement :
+
+    8. Le format de sortie OMF (.OBJ)
+    9. Les segments et modeles memoire
+    10. Le systeme de macros
+    11. Les structures (STRUC/ENDS)
+    12. L assemblage conditionnel
+    13. Le fichier listing (.LST)
+    14. PUBLIC/EXTRN pour la liaison inter-modules
+
+  L assembleur ASM8080.PAS (1065 lignes) est un excellent point
+  de depart pour comprendre les mecanismes de base.
+
+  20.2 Tester a chaque etape
+  ---------------------------
+
+  Creez des fichiers de test pour chaque fonctionnalite :
+
+    - test_basic.asm    : instructions simples (MOV, ADD, NOP)
+    - test_data.asm     : directives DB, DW, DD
+    - test_expr.asm     : expressions (calculs, EQU)
+    - test_jump.asm     : sauts (JMP, Jcc, CALL, RET)
+    - test_macro.asm    : macros (MACRO/ENDM)
+    - test_segment.asm  : segments (.MODEL, .CODE, .DATA)
+    - test_extern.asm   : liaison (PUBLIC, EXTRN)
+
+  Verifiez la sortie en comparant avec un assembleur de
+  reference (MASM, NASM, TASM) ou en desassemblant avec
+  objdump.
+
+  20.3 Avantages d utiliser Pascal
+  ----------------------------------
+
+    - Compilation rapide du compilateur lui-meme
+    - Syntaxe claire et lisible
+    - Types forts (records, enumerations)
+    - Manipulation facile des chaines de caracteres
+    - Pas de gestion manuelle de memoire complexe
+    - Compatible Turbo Pascal 7 et Free Pascal 3.2
+
+  20.4 Pieges courants
+  ---------------------
+
+    - Oublier les prefixes de segment (CS:, DS:, ES:, SS:)
+    - Confondre les offsets 8 bits et 16 bits dans les sauts
+    - Ne pas gerer le cas r/m=6, mod=00 (adresse directe 16 bits)
+    - Oublier l ordre little-endian pour les mots et doubles mots
+    - Ne pas detecter les erreurs de phase entre les deux passes
+    - Confondre NEAR (2 octets) et FAR (4 octets) pour les appels
+    - Oublier le checksum dans les enregistrements OMF
+    - Ne pas gerer les variantes 32 bits des enregistrements OMF
+      (codes impairs : $99, $91, $A1, ...)
+
+  20.5 Ressources dans le projet
+  -------------------------------
+
+  Pour approfondir, consultez les fichiers suivants du projet :
+
+    MASM.PAS              : macro assembleur 8086 complet (9381 lignes)
+    ASM86.PAS             : assembleur 8086 simplifie (2009 lignes)
+    ASM8080.PAS           : assembleur Intel 8080 (1065 lignes)
+    ASM6502.PAS           : assembleur MOS 6502 avec macros (1498 lignes)
+    ASMZ80.PAS            : assembleur Zilog Z80 (1617 lignes)
+
+    SAMPLES/MASM/         : exemples de programmes assembleur 8086
+    DOC/OBJ_FORMAT.txt    : documentation du format OMF
+    DOC/APPLICATION_COMPILER.txt : comment ecrire un compilateur
+    DOC/APPLICATION_LINKER.txt   : comment ecrire un editeur de liens
+    LINK.PAS              : editeur de liens OMF/MZ (complement naturel)
+
+==============================================================================
+  Fin du document
+==============================================================================
