@@ -153,7 +153,7 @@
             Expression conditionnelle : if cond then expr1 else expr2
               -> evaluation condition, JZ vers expr2, sinon expr1
 
-  TODO 11 - EXPRESSIONS BINAIRES
+  TODO 11 - EXPRESSIONS BINAIRES [IMPLEMENTE]
             ParseExprPrec(MinPrec) : boucle de precedence (Pratt)
             Arithmetique entiere : ADD/SUB pour +, - / IMUL pour *
             Division : IDIV -> AX=quotient (/) ou DX=reste (mod)
@@ -688,6 +688,8 @@ Procedure ParseStmt; Forward;
 { TODO 10 - Expressions primaires }
 Procedure ParseArrayAccess(VarIdx : Integer; Var Res : TExprVal); Forward;
 Procedure ParseFuncCall(VarIdx : Integer; Var Res : TExprVal); Forward;
+{ TODO 11 - Expressions binaires }
+Procedure ParseExpr(Var Res : TExprVal); Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1902,7 +1904,7 @@ Begin
         LblF := NewLabel;  { label false-branch }
         LblE := NewLabel;  { label end }
         { Evaluer la condition }
-        ParseExprPrec(1, Cond);
+        ParseExpr(Cond);
         ExprFlushToAX(Cond);
         EmitInstr('TEST', 'AX, AX');
         EmitInstr('JZ', LblF);
@@ -1912,7 +1914,7 @@ Begin
         Else
           CompileError('then attendu dans expression conditionnelle');
         { Evaluer expr1 (branche vraie) }
-        ParseExprPrec(1, Res);
+        ParseExpr(Res);
         ExprFlushToAX(Res);
         EmitInstr('JMP', LblE);
         { Branche fausse }
@@ -1920,7 +1922,7 @@ Begin
         If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'else') Then
         Begin
           ParserAdvance;  { consommer else }
-          ParseExprPrec(1, Res);
+          ParseExpr(Res);
           ExprFlushToAX(Res);
         End
         Else
@@ -1942,7 +1944,7 @@ Begin
       If CurToken.Val = '(' Then
       Begin
         ParserAdvance;  { consommer ( }
-        ParseExprPrec(1, Res);
+        ParseExpr(Res);
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
           ParserAdvance  { consommer ) }
         Else
@@ -2020,7 +2022,7 @@ Begin
             If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
             Begin
               ParserAdvance;  { consommer [ }
-              ParseExprPrec(1, Res);
+              ParseExpr(Res);
               ExprFlushToAX(Res);
               { AX = index (1-base) -> convertir en offset mot (0-base) }
               EmitInstr('DEC', 'AX');
@@ -2163,6 +2165,28 @@ Begin
     ParseExprPrec(NextPrec, Right);
     EmitBinOp(Op, Res, Right);
   Until False;
+End;
+
+{ ============================================================
+  TODO 11 - EXPRESSIONS BINAIRES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseExpr : wrapper de commodite pour ParseExprPrec ------
+  Appelle ParseExprPrec avec MinPrec=1, ce qui analyse une
+  expression complete incluant tous les niveaux de precedence :
+    eqv(1) imp(2) or(3) and(4) rel(5) +-(6) */div/mod(7) ^(8)
+  Operateurs binaires Algol 58 reconnus :
+    Arithmetiques : +  -  *  /  div  mod  ^  **
+    Relationnels  : =  #  !=  <  <=  >  >=
+    Logiques      : and  or  not (unaire)
+    Derives       : imp (implication)  eqv (equivalence)
+  Pliage de constantes : si les deux operandes sont EK_IMM,
+    le resultat est calcule a la compilation (pas de code emis).
+  Court-circuit : and et or evaluent le cote droit seulement
+    si necessaire (JZ/JNZ).                                      }
+Procedure ParseExpr(Var Res : TExprVal);
+Begin
+  ParseExprPrec(1, Res);
 End;
 
 { ============================================================
@@ -2543,7 +2567,7 @@ Begin
     ParserAdvance;  { consommer [ }
 
     { Evaluer l expression d index }
-    ParseExprPrec(1, IdxE);
+    ParseExpr(IdxE);
     ExprFlushToAX(IdxE);
 
     { Convertir en offset octets : index * 2 (mots 16 bits) }
@@ -2555,7 +2579,7 @@ Begin
     Begin
       ParserAdvance;  { consommer , }
       EmitInstr('PUSH', 'SI');  { sauvegarder premier index }
-      ParseExprPrec(1, IdxE);
+      ParseExpr(IdxE);
       ExprFlushToAX(IdxE);
       EmitInstr('SHL', 'AX, 1');
       EmitInstr('POP', 'SI');
@@ -2601,7 +2625,7 @@ Begin
     If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
     Begin
       Repeat
-        ParseExprPrec(1, ArgE);
+        ParseExpr(ArgE);
         ExprFlushToAX(ArgE);
         EmitInstr('PUSH', 'AX');
         Inc(ArgCount);
@@ -2780,7 +2804,7 @@ Begin
   End;
 
   { Evaluer l expression a droite }
-  ParseExprPrec(1, E);
+  ParseExpr(E);
   ExprFlushToAX(E);
 
   { Stocker AX dans la destination }
