@@ -182,7 +182,7 @@
             Smart match ~~ : dispatch selon type droit
             Ternaire ?? !! : condition -> JZ vers branche fausse
 
-  TODO 12 - ENTREES/SORTIES (say, print, put, get, prompt)
+  TODO 12 - ENTREES/SORTIES (say, print, put, get, prompt) [IMPLEMENTE]
             say($x) : afficher $x + saut de ligne
               -> CALL _RKRT_PRINT + ecriture CR+LF
             print($x) : afficher $x sans saut de ligne
@@ -853,6 +853,15 @@ Procedure ParsePairExpr(Const Key : TString;
 { Forward declarations TODO 11 - Expressions binaires }
 Procedure EmitBinExprRuntime;                                     Forward;
 
+{ Forward declarations TODO 12 - Entrees/sorties }
+Procedure EmitPrintVal(ATypeIdx : Integer);                       Forward;
+Procedure ParseSayExpr(Var Res : TExprVal);                       Forward;
+Procedure ParsePrintExpr(Var Res : TExprVal);                     Forward;
+Procedure ParseNoteExpr(Var Res : TExprVal);                      Forward;
+Procedure ParseGetExpr(Var Res : TExprVal);                       Forward;
+Procedure ParsePromptExpr(Var Res : TExprVal);                    Forward;
+Procedure EmitIORuntime;                                          Forward;
+
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
   ============================================================ }
@@ -1178,6 +1187,7 @@ Begin
   EmitComment('=== Runtime RAKU86 ===');
   EmitBlankLine;
   EmitBinExprRuntime;
+  EmitIORuntime;
 End;
 
 Procedure EmitDataSeg;
@@ -1386,6 +1396,7 @@ Begin
   DataAdd('_RK_STRBUF',  DK_BYTE, 0, '256 DUP(0)');
   DataAdd('_RK_TMPBUF',  DK_BYTE, 0, '256 DUP(0)');
   DataAdd('_RK_NUMBUF',  DK_BYTE, 0, '12 DUP(0)');
+  DataAdd('_RK_IOBUF',   DK_BYTE, 0, '130 DUP(0)');
 End;
 
 { ============================================================
@@ -3059,6 +3070,37 @@ Begin
   If CurToken.Kind = TK_IDENT Then
   Begin
     Name := CurToken.Val;
+    { --- Builtins E/S (TODO 12) : say, put, print, note, get, prompt --- }
+    If (Name = 'say') Or (Name = 'put') Then
+    Begin
+      ParserAdvance;
+      ParseSayExpr(Res);
+      Exit;
+    End;
+    If Name = 'print' Then
+    Begin
+      ParserAdvance;
+      ParsePrintExpr(Res);
+      Exit;
+    End;
+    If Name = 'note' Then
+    Begin
+      ParserAdvance;
+      ParseNoteExpr(Res);
+      Exit;
+    End;
+    If Name = 'get' Then
+    Begin
+      ParserAdvance;
+      ParseGetExpr(Res);
+      Exit;
+    End;
+    If Name = 'prompt' Then
+    Begin
+      ParserAdvance;
+      ParsePromptExpr(Res);
+      Exit;
+    End;
     ParserAdvance;
     { --- Paire : ident => valeur --- }
     If (CurToken.Kind = TK_OP) And (CurToken.Val = '=>') Then
@@ -4613,6 +4655,343 @@ Begin
   EmitRaw('        POP   BX');
   EmitRaw('        RET');
   EmitRaw('_RKRT_POWER ENDP');
+  EmitBlankLine;
+End;
+
+{ ============================================================
+  TODO 12 - ENTREES/SORTIES [IMPLEMENTE]
+  ParseSayExpr   : say expr -> CALL _RKRT_PRINTSTR/PRINTINT + NEWLINE
+  ParsePrintExpr : print expr -> CALL _RKRT_PRINTSTR/PRINTINT
+  ParseNoteExpr  : note expr -> ecrire sur STDOUT + NEWLINE (stub)
+  ParseGetExpr   : get() -> lire une ligne STDIN, retourne Str
+  ParsePromptExpr: prompt("msg") -> afficher msg + lire ligne
+  EmitPrintVal   : helper - emet le code d impression selon le type
+  EmitIORuntime  : runtime E/S (STRLEN, PRINTSTR, PRINTINT, NEWLINE,
+                   GETLINE)
+  ============================================================ }
+
+{ ---- EmitPrintVal : emettre le code d impression selon TypeIdx -- }
+{ AX contient la valeur a imprimer. Selon TypeIdx :                 }
+{   TY_IDX_STR  -> MOV SI, AX / CALL _RKRT_PRINTSTR               }
+{   TY_IDX_BOOL -> dispatch True/False via _RK_TRUE_S/_RK_FALSE_S  }
+{   (default)   -> CALL _RKRT_PRINTINT                             }
+Procedure EmitPrintVal(ATypeIdx : Integer);
+Var
+  LblF, LblE : TString;
+Begin
+  If ATypeIdx = TY_IDX_STR Then
+  Begin
+    EmitInstrAB('MOV', 'SI', 'AX');
+    EmitInstrA('CALL', '_RKRT_PRINTSTR');
+  End
+  Else If ATypeIdx = TY_IDX_BOOL Then
+  Begin
+    LblF := LabelGen;
+    LblE := LabelGen;
+    EmitInstr('TEST', 'AX, AX');
+    EmitInstrA('JZ', LblF);
+    EmitInstrAB('LEA', 'SI', '_RK_TRUE_S');
+    EmitInstrA('JMP', LblE);
+    EmitLabel(LblF);
+    EmitInstrAB('LEA', 'SI', '_RK_FALSE_S');
+    EmitLabel(LblE);
+    EmitInstrA('CALL', '_RKRT_PRINTSTR');
+  End
+  Else
+  Begin
+    EmitInstrA('CALL', '_RKRT_PRINTINT');
+  End;
+End;
+
+{ ---- ParseSayExpr : say expr / say(expr) / put expr ------------- }
+{ Affiche la valeur de l expression suivie d un saut de ligne.       }
+{ Syntaxe acceptee : say expr;  say(expr);  put expr;               }
+{ Retourne True (1) dans AX.                                        }
+Procedure ParseSayExpr(Var Res : TExprVal);
+Var
+  E        : TExprVal;
+  HasParen : Boolean;
+Begin
+  EmitComment('say ...');
+  HasParen := False;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+  Begin
+    HasParen := True;
+    ParserAdvance;
+  End;
+  If Not ((CurToken.Kind = TK_PUNCT) And
+    ((CurToken.Val = ';') Or (CurToken.Val = ')'))) And
+     (CurToken.Kind <> TK_EOF) Then
+  Begin
+    ParseExpr(E);
+    ExprFlushToAX(E);
+    EmitPrintVal(E.TypeIdx);
+  End;
+  EmitInstrA('CALL', '_RKRT_NEWLINE');
+  If HasParen Then
+  Begin
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance;
+  End;
+  ExprMakeImm(1, TY_IDX_BOOL, Res);
+End;
+
+{ ---- ParsePrintExpr : print expr / print(expr) ------------------- }
+{ Affiche la valeur de l expression SANS saut de ligne.              }
+{ Retourne True (1) dans AX.                                        }
+Procedure ParsePrintExpr(Var Res : TExprVal);
+Var
+  E        : TExprVal;
+  HasParen : Boolean;
+Begin
+  EmitComment('print ...');
+  HasParen := False;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+  Begin
+    HasParen := True;
+    ParserAdvance;
+  End;
+  If Not ((CurToken.Kind = TK_PUNCT) And
+    ((CurToken.Val = ';') Or (CurToken.Val = ')'))) And
+     (CurToken.Kind <> TK_EOF) Then
+  Begin
+    ParseExpr(E);
+    ExprFlushToAX(E);
+    EmitPrintVal(E.TypeIdx);
+  End;
+  If HasParen Then
+  Begin
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance;
+  End;
+  ExprMakeImm(1, TY_IDX_BOOL, Res);
+End;
+
+{ ---- ParseNoteExpr : note expr / note(expr) ---------------------- }
+{ Ecrit sur STDOUT suivi d un saut de ligne.                         }
+{ (En Raku, note ecrit sur STDERR ; ici simplifie sur STDOUT.)       }
+{ Retourne True (1) dans AX.                                        }
+Procedure ParseNoteExpr(Var Res : TExprVal);
+Var
+  E        : TExprVal;
+  HasParen : Boolean;
+Begin
+  EmitComment('note ...');
+  HasParen := False;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+  Begin
+    HasParen := True;
+    ParserAdvance;
+  End;
+  If Not ((CurToken.Kind = TK_PUNCT) And
+    ((CurToken.Val = ';') Or (CurToken.Val = ')'))) And
+     (CurToken.Kind <> TK_EOF) Then
+  Begin
+    ParseExpr(E);
+    ExprFlushToAX(E);
+    EmitPrintVal(E.TypeIdx);
+  End;
+  EmitInstrA('CALL', '_RKRT_NEWLINE');
+  If HasParen Then
+  Begin
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance;
+  End;
+  ExprMakeImm(1, TY_IDX_BOOL, Res);
+End;
+
+{ ---- ParseGetExpr : get / get() ---------------------------------- }
+{ Lit une ligne depuis STDIN. Retourne un pointeur Str dans AX.      }
+Procedure ParseGetExpr(Var Res : TExprVal);
+Var
+  HasParen : Boolean;
+Begin
+  EmitComment('get ...');
+  HasParen := False;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+  Begin
+    HasParen := True;
+    ParserAdvance;
+  End;
+  If HasParen Then
+  Begin
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance;
+  End;
+  EmitInstrA('CALL', '_RKRT_GETLINE');
+  Res.Kind    := EK_AX;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_IDX_STR;
+  Res.Offset  := 0;
+End;
+
+{ ---- ParsePromptExpr : prompt("msg") / prompt "msg" -------------- }
+{ Affiche le message, puis lit une ligne depuis STDIN.               }
+{ Retourne un pointeur Str dans AX.                                  }
+Procedure ParsePromptExpr(Var Res : TExprVal);
+Var
+  E        : TExprVal;
+  HasParen : Boolean;
+Begin
+  EmitComment('prompt ...');
+  HasParen := False;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+  Begin
+    HasParen := True;
+    ParserAdvance;
+  End;
+  If Not ((CurToken.Kind = TK_PUNCT) And
+    ((CurToken.Val = ';') Or (CurToken.Val = ')'))) And
+     (CurToken.Kind <> TK_EOF) Then
+  Begin
+    ParseExpr(E);
+    ExprFlushToAX(E);
+    EmitPrintVal(E.TypeIdx);
+  End;
+  If HasParen Then
+  Begin
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance;
+  End;
+  EmitInstrA('CALL', '_RKRT_GETLINE');
+  Res.Kind    := EK_AX;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_IDX_STR;
+  Res.Offset  := 0;
+End;
+
+{ ---- EmitIORuntime : routines runtime pour E/S ------------------- }
+{ Emet les sous-programmes ASM 8086 pour les entrees/sorties :       }
+{   _RKRT_STRLEN   : SI=chaine ASCIIZ -> CX=longueur                }
+{   _RKRT_PRINTSTR : SI=chaine ASCIIZ -> ecriture STDOUT            }
+{   _RKRT_PRINTINT : AX=entier signe  -> decimal sur STDOUT         }
+{   _RKRT_NEWLINE  : ecrire CR+LF sur STDOUT                        }
+{   _RKRT_GETLINE  : lire ligne STDIN -> AX=ptr chaine ASCIIZ       }
+Procedure EmitIORuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=== Runtime ENTREES/SORTIES (TODO 12) ===');
+  EmitBlankLine;
+
+  { _RKRT_STRLEN : SI=str ASCIIZ -> CX=longueur }
+  EmitComment('--- _RKRT_STRLEN : SI=str ASCIIZ -> CX=longueur ---');
+  EmitRaw('_RKRT_STRLEN PROC NEAR');
+  EmitRaw('        PUSH  SI');
+  EmitRaw('        XOR   CX, CX');
+  EmitRaw('_RKRT_SL_LP:');
+  EmitRaw('        CMP   BYTE PTR [SI], 0');
+  EmitRaw('        JE    _RKRT_SL_DN');
+  EmitRaw('        INC   SI');
+  EmitRaw('        INC   CX');
+  EmitRaw('        JMP   _RKRT_SL_LP');
+  EmitRaw('_RKRT_SL_DN:');
+  EmitRaw('        POP   SI');
+  EmitRaw('        RET');
+  EmitRaw('_RKRT_STRLEN ENDP');
+  EmitBlankLine;
+
+  { _RKRT_PRINTSTR : SI=str ASCIIZ -> ecrire sur STDOUT }
+  EmitComment('--- _RKRT_PRINTSTR : SI=str ASCIIZ -> stdout ---');
+  EmitRaw('_RKRT_PRINTSTR PROC NEAR');
+  EmitRaw('        PUSH  AX');
+  EmitRaw('        PUSH  BX');
+  EmitRaw('        PUSH  CX');
+  EmitRaw('        PUSH  DX');
+  EmitRaw('        CALL  _RKRT_STRLEN');
+  EmitRaw('        MOV   DX, SI');
+  EmitRaw('        MOV   BX, 1');
+  EmitRaw('        MOV   AH, 40h');
+  EmitRaw('        INT   21h');
+  EmitRaw('        POP   DX');
+  EmitRaw('        POP   CX');
+  EmitRaw('        POP   BX');
+  EmitRaw('        POP   AX');
+  EmitRaw('        RET');
+  EmitRaw('_RKRT_PRINTSTR ENDP');
+  EmitBlankLine;
+
+  { _RKRT_PRINTINT : AX=entier signe -> afficher decimal sur STDOUT }
+  EmitComment('--- _RKRT_PRINTINT : AX=int16 -> stdout decimal ---');
+  EmitRaw('_RKRT_PRINTINT PROC NEAR');
+  EmitRaw('        PUSH  AX');
+  EmitRaw('        PUSH  BX');
+  EmitRaw('        PUSH  CX');
+  EmitRaw('        PUSH  DX');
+  EmitRaw('        PUSH  SI');
+  EmitRaw('        PUSH  DI');
+  EmitRaw('        LEA   DI, _RK_NUMBUF');
+  EmitRaw('        MOV   BX, AX');
+  EmitRaw('        TEST  AX, AX');
+  EmitRaw('        JNS   _RKRT_PI_POS');
+  EmitRaw('        MOV   BYTE PTR [DI], 2Dh');
+  EmitRaw('        INC   DI');
+  EmitRaw('        NEG   BX');
+  EmitRaw('_RKRT_PI_POS:');
+  EmitRaw('        MOV   AX, BX');
+  EmitRaw('        XOR   CX, CX');
+  EmitRaw('        MOV   BX, 10');
+  EmitRaw('_RKRT_PI_DLP:');
+  EmitRaw('        XOR   DX, DX');
+  EmitRaw('        DIV   BX');
+  EmitRaw('        ADD   DL, 30h');
+  EmitRaw('        PUSH  DX');
+  EmitRaw('        INC   CX');
+  EmitRaw('        TEST  AX, AX');
+  EmitRaw('        JNZ   _RKRT_PI_DLP');
+  EmitRaw('_RKRT_PI_SLP:');
+  EmitRaw('        POP   AX');
+  EmitRaw('        MOV   [DI], AL');
+  EmitRaw('        INC   DI');
+  EmitRaw('        DEC   CX');
+  EmitRaw('        JNZ   _RKRT_PI_SLP');
+  EmitRaw('        MOV   BYTE PTR [DI], 0');
+  EmitRaw('        LEA   SI, _RK_NUMBUF');
+  EmitRaw('        CALL  _RKRT_PRINTSTR');
+  EmitRaw('        POP   DI');
+  EmitRaw('        POP   SI');
+  EmitRaw('        POP   DX');
+  EmitRaw('        POP   CX');
+  EmitRaw('        POP   BX');
+  EmitRaw('        POP   AX');
+  EmitRaw('        RET');
+  EmitRaw('_RKRT_PRINTINT ENDP');
+  EmitBlankLine;
+
+  { _RKRT_NEWLINE : ecrire CR+LF sur STDOUT }
+  EmitComment('--- _RKRT_NEWLINE : ecrire CR+LF sur stdout ---');
+  EmitRaw('_RKRT_NEWLINE PROC NEAR');
+  EmitRaw('        PUSH  SI');
+  EmitRaw('        LEA   SI, _RK_CRLF');
+  EmitRaw('        CALL  _RKRT_PRINTSTR');
+  EmitRaw('        POP   SI');
+  EmitRaw('        RET');
+  EmitRaw('_RKRT_NEWLINE ENDP');
+  EmitBlankLine;
+
+  { _RKRT_GETLINE : lire une ligne STDIN -> AX=ptr ASCIIZ }
+  EmitComment('--- _RKRT_GETLINE : lire ligne STDIN -> AX=ptr ---');
+  EmitRaw('_RKRT_GETLINE PROC NEAR');
+  EmitRaw('        PUSH  BX');
+  EmitRaw('        PUSH  CX');
+  EmitRaw('        PUSH  DX');
+  EmitRaw('        MOV   BYTE PTR [_RK_IOBUF], 126');
+  EmitRaw('        MOV   BYTE PTR [_RK_IOBUF+1], 0');
+  EmitRaw('        LEA   DX, _RK_IOBUF');
+  EmitRaw('        MOV   AH, 0Ah');
+  EmitRaw('        INT   21h');
+  EmitRaw('        LEA   BX, _RK_IOBUF');
+  EmitRaw('        XOR   CH, CH');
+  EmitRaw('        MOV   CL, [BX+1]');
+  EmitRaw('        ADD   BX, 2');
+  EmitRaw('        ADD   BX, CX');
+  EmitRaw('        MOV   BYTE PTR [BX], 0');
+  EmitRaw('        MOV   AX, OFFSET _RK_IOBUF');
+  EmitRaw('        ADD   AX, 2');
+  EmitRaw('        POP   DX');
+  EmitRaw('        POP   CX');
+  EmitRaw('        POP   BX');
+  EmitRaw('        RET');
+  EmitRaw('_RKRT_GETLINE ENDP');
   EmitBlankLine;
 End;
 
