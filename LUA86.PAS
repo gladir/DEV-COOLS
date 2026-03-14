@@ -8928,7 +8928,7 @@ Begin
   { AX contient encore le slot }
   Str(COROUTINE_STACK_SZ, NS);
   EmitInstrAB('MOV', 'CX', NS);
-  EmitInstr('MUL    CX');  { DX:AX = slot * 512 }
+  EmitInstr('MUL    CX');  { AX = slot * 512 (max 3*512=1536, tient dans AX) }
   EmitInstrAB('ADD', 'AX', 'OFFSET ' + LUA_CO_PFX + 'STACKS');
   Str(COROUTINE_STACK_SZ - 4, NS);
   EmitInstrAB('ADD', 'AX', NS);
