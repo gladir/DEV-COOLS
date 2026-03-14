@@ -1,4 +1,4 @@
 RAKU86
-RAKU86.o
 *.o
 *.ppu
+SAMPLES/RAKU/*.asm

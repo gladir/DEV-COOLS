@@ -367,7 +367,7 @@
             Actions : class Actions { method nom($/) { ... } }
               Appel automatique apres correspondance reussie
 
-  TODO 22 - GESTION DES ERREURS (try, CATCH, die, fail)
+  TODO 22 - GESTION DES ERREURS (try, CATCH, die, fail) [IMPLEMENTE]
             ParseTryCatchStmt : try { stmts CATCH { ... } }
               CATCH { when ExceptionType { stmts }
                       default { stmts } }
@@ -485,6 +485,7 @@ Const
   MAX_CLASS_ROLES = {$IFDEF FPC}8{$ELSE}4{$ENDIF};
   MAX_GRAMMAR      = {$IFDEF FPC}16{$ELSE}4{$ENDIF};
   MAX_GRAMMAR_RULE = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
+  MAX_TRY_NEST     = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
   MAX_HASH_PAIRS  = 16;
   MAX_HASH_KEYS   = {$IFDEF FPC}512{$ELSE}100{$ENDIF};
   STACK_SIZE      = 1024;
@@ -842,6 +843,11 @@ Var
   GrammarTab   : Array[0..MAX_GRAMMAR - 1] Of TGrammarRec;
   GrammarCount : Integer;
 
+  { Error handling (TODO 22) }
+  TryCount     : Integer;
+  TryDepth     : Integer;
+  TrySaveLbl   : Array[0..MAX_TRY_NEST - 1] Of TString;
+
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
@@ -1057,6 +1063,10 @@ Procedure CompilePattern(Const GName : TString;
                          Kind : TGramRuleKind;
                          GIdx : Integer);                     Forward;
 Procedure EmitGrammarRuntime;                                  Forward;
+
+{ Forward declarations TODO 22 - Error handling }
+Procedure ParseTryCatchStmt;                                   Forward;
+Procedure EmitErrorRuntime;                                    Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1316,6 +1326,8 @@ Begin
   CurClassIdx     := -1;
   RoleCount       := 0;
   GrammarCount    := 0;
+  TryCount        := 0;
+  TryDepth        := 0;
   GKwConsumed  := False;
   CurFnRetLbl  := '';
   CurFnName    := '';
@@ -1407,6 +1419,7 @@ Begin
   EmitHashRuntime;
   EmitClassRuntime;
   EmitGrammarRuntime;
+  EmitErrorRuntime;
 End;
 
 Procedure EmitDataSeg;
@@ -1635,6 +1648,14 @@ Begin
   DataAdd('_RK_MATCHOK',   DK_WORD, 0, '');
   DataAdd('_RKK_NOGRAMMAR', DK_STR, 0, 'Grammar not found');
   DataAdd('_RKK_NOMATCH',   DK_STR, 0, 'Match failed');
+  { Error handling (TODO 22) }
+  DataAdd('_RK_HANDLER',     DK_WORD, 0, '');
+  DataAdd('_RK_EXC_CODE',    DK_WORD, 0, '');
+  DataAdd('_RK_EXC_MSG',     DK_WORD, 0, '');
+  DataAdd('_RK_SAVEDSP',     DK_WORD, 0, '');
+  DataAdd('_RK_SAVEDBP',     DK_WORD, 0, '');
+  DataAdd('_RKK_UNHANDLED',  DK_STR, 0, 'Unhandled exception: ');
+  DataAdd('_RKK_WARNING',    DK_STR, 0, 'WARNING: ');
 End;
 
 { ============================================================
@@ -1785,8 +1806,8 @@ End;
 
 { ---- Table des mots-cles Raku ----------------------------- }
 Const
-  RAKU_KW_COUNT = 60;
-  RAKU_KW : Array[0..59] Of String[14] = (
+  RAKU_KW_COUNT = 61;
+  RAKU_KW : Array[0..60] Of String[14] = (
     { Declarateurs }
     'my',       'our',       'has',       'constant',
     { Sous-routines et methodes }
@@ -1808,6 +1829,7 @@ Const
     'last',     'next',      'redo',
     { Erreurs }
     'try',      'die',       'fail',      'warn',
+    'CATCH',
     { Logique basse precedence }
     'not',      'and',       'or',
     { Comparaison chaine }
@@ -8917,6 +8939,7 @@ End;
 Procedure ParseStmt;
 Var
   Kw : TString;
+  E  : TExprVal;
 Begin
   If CurToken.Kind = TK_EOF Then Exit;
 
@@ -9040,6 +9063,50 @@ Begin
     Begin
       ParserAdvance;   { consommer 'grammar' }
       ParseGrammarDecl;
+      Exit;
+    End;
+
+    { Gestion des erreurs (TODO 22) }
+    If Kw = 'try' Then
+    Begin
+      ParserAdvance;   { consommer 'try' }
+      ParseTryCatchStmt;
+      Exit;
+    End;
+    If Kw = 'die' Then
+    Begin
+      ParserAdvance;   { consommer 'die' }
+      ParseExpr(E);
+      ExprFlushToAX(E);
+      { AX = ptr message ; lever l exception via _RKRT_DIE }
+      EmitInstr('MOV', 'SI, AX');
+      EmitInstr('CALL', '_RKRT_DIE');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+      Exit;
+    End;
+    If Kw = 'fail' Then
+    Begin
+      ParserAdvance;   { consommer 'fail' }
+      ParseExpr(E);
+      ExprFlushToAX(E);
+      { fail simplifie = die sur 8086 }
+      EmitInstr('MOV', 'SI, AX');
+      EmitInstr('CALL', '_RKRT_DIE');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+      Exit;
+    End;
+    If Kw = 'warn' Then
+    Begin
+      ParserAdvance;   { consommer 'warn' }
+      ParseExpr(E);
+      ExprFlushToAX(E);
+      { AX = ptr message ; avertissement sur STDERR }
+      EmitInstr('MOV', 'SI, AX');
+      EmitInstr('CALL', '_RKRT_WARN');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
       Exit;
     End;
 
@@ -9596,6 +9663,233 @@ Begin
 End;
 
 { ============================================================
+  TODO 22 - GESTION DES ERREURS [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseTryCatchStmt : try CATCH when/default --------------- }
+Procedure ParseTryCatchStmt;
+Var
+  CatchLbl, EndLbl, SaveLbl : TString;
+  TIdx : Integer;
+  Kw   : TString;
+Begin
+  Inc(TryCount);
+  CatchLbl := LabelGen;   (* label du handler CATCH *)
+  EndLbl   := LabelGen;   (* label fin du try-catch *)
+  SaveLbl  := LabelGen;   (* label sauvegarde ancien handler *)
+
+  { Verifier profondeur de try }
+  If TryDepth >= MAX_TRY_NEST Then
+  Begin
+    CompileError('Trop de try imbriques (max ' +
+                 IntToStr(MAX_TRY_NEST) + ')');
+    Exit;
+  End;
+
+  TIdx := TryDepth;
+  TrySaveLbl[TIdx] := SaveLbl;
+  Inc(TryDepth);
+
+  EmitBlankLine;
+  EmitComment('--- try (TODO 22) ---');
+
+  { Sauvegarder ancien handler et SP/BP }
+  EmitInstr('MOV', 'AX, WORD PTR [_RK_HANDLER]');
+  EmitInstr('PUSH', 'AX');
+  EmitInstr('MOV', 'WORD PTR [_RK_SAVEDSP], SP');
+  EmitInstr('MOV', 'WORD PTR [_RK_SAVEDBP], BP');
+
+  { Installer nouveau handler }
+  EmitInstr('MOV', 'WORD PTR [_RK_HANDLER], OFFSET ' + CatchLbl);
+
+  { Consommer accolade ouvrante }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+    ParserAdvance
+  Else
+    CompileError('Attendu ''{'' apres try');
+
+  { Parser le corps du try }
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'CATCH')) And
+        Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+    ParseStmt;
+
+  { Restaurer ancien handler et sauter le CATCH }
+  EmitInstr('POP', 'AX');
+  EmitInstr('MOV', 'WORD PTR [_RK_HANDLER], AX');
+  EmitInstr('JMP', EndLbl);
+
+  { Label du CATCH handler }
+  EmitBlankLine;
+  EmitRaw(CatchLbl + ':');
+  EmitComment('--- CATCH handler ---');
+  { Restaurer SP/BP }
+  EmitInstr('MOV', 'SP, WORD PTR [_RK_SAVEDSP]');
+  EmitInstr('MOV', 'BP, WORD PTR [_RK_SAVEDBP]');
+  { Restaurer ancien handler (depiler) }
+  EmitInstr('POP', 'AX');
+  EmitInstr('MOV', 'WORD PTR [_RK_HANDLER], AX');
+
+  { Parser le bloc CATCH }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'CATCH') Then
+  Begin
+    ParserAdvance;   { consommer 'CATCH' }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+      ParserAdvance;
+
+    { Parser when/default dans le CATCH }
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+    Begin
+      If (CurToken.Kind = TK_KEYWORD) Then
+        Kw := CurToken.Val
+      Else
+        Kw := '';
+
+      If Kw = 'when' Then
+      Begin
+        (* when ExceptionType - simplifie : on execute toujours *)
+        ParserAdvance;   (* consommer 'when' *)
+        (* Consommer le nom de type d exception *)
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{')) Do
+          ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+          ParserAdvance;
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+          ParseStmt;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+          ParserAdvance;
+      End
+      Else If Kw = 'default' Then
+      Begin
+        ParserAdvance;   { consommer 'default' }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+          ParserAdvance;
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+          ParseStmt;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+          ParserAdvance;
+      End
+      Else
+      Begin
+        { Instructions directes dans le CATCH }
+        ParseStmt;
+      End;
+    End;
+
+    { Consommer accolade fermante du CATCH }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+      ParserAdvance;
+  End;
+
+  { Consommer accolade fermante du try (si non consommee) }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+    ParserAdvance;
+
+  { Label de fin }
+  EmitBlankLine;
+  EmitRaw(EndLbl + ':');
+  EmitComment('--- fin try/CATCH ---');
+
+  Dec(TryDepth);
+End;
+
+{ ---- EmitErrorRuntime : routines runtime d erreur -------------- }
+Procedure EmitErrorRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=== Error handling runtime (TODO 22) ===');
+  EmitBlankLine;
+
+  { _RKRT_DIE : lever une exception fatale
+    SI = ptr message ASCIIZ
+    Si _RK_HANDLER <> 0 -> sauter au handler
+    Sinon -> afficher 'Unhandled exception' + message + Halt }
+  EmitRaw('_RKRT_DIE PROC NEAR');
+  EmitInstr('MOV', 'WORD PTR [_RK_EXC_MSG], SI');
+  EmitInstr('MOV', 'WORD PTR [_RK_EXC_CODE], 1');
+  EmitInstr('MOV', 'BX, WORD PTR [_RK_HANDLER]');
+  EmitInstr('OR', 'BX, BX');
+  EmitInstr('JZ', '_RKRT_DIE_UNHANDLED');
+  { Sauter au handler }
+  EmitInstr('JMP', 'BX');
+  EmitRaw('_RKRT_DIE_UNHANDLED:');
+  { Afficher 'Unhandled exception: ' }
+  EmitInstr('MOV', 'AH, 40h');
+  EmitInstr('MOV', 'BX, 2');
+  EmitInstr('MOV', 'DX, OFFSET _RKK_UNHANDLED');
+  EmitInstr('MOV', 'CX, 21');
+  EmitInstr('INT', '21h');
+  { Afficher le message }
+  EmitInstr('MOV', 'SI, WORD PTR [_RK_EXC_MSG]');
+  EmitInstr('CALL', '_RKRT_STRLEN');
+  EmitInstr('MOV', 'CX, AX');
+  EmitInstr('MOV', 'AH, 40h');
+  EmitInstr('MOV', 'BX, 2');
+  EmitInstr('MOV', 'DX, WORD PTR [_RK_EXC_MSG]');
+  EmitInstr('INT', '21h');
+  { Newline }
+  EmitInstr('MOV', 'AH, 40h');
+  EmitInstr('MOV', 'BX, 2');
+  EmitInstr('MOV', 'DX, OFFSET _RK_CRLF');
+  EmitInstr('MOV', 'CX, 2');
+  EmitInstr('INT', '21h');
+  { Halt(1) }
+  EmitInstr('MOV', 'AX, 4C01h');
+  EmitInstr('INT', '21h');
+  EmitRaw('_RKRT_DIE ENDP');
+  EmitBlankLine;
+
+  { _RKRT_WARN : avertissement sur STDERR (handle 2)
+    SI = ptr message ASCIIZ }
+  EmitRaw('_RKRT_WARN PROC NEAR');
+  EmitInstr('PUSH', 'SI');
+  { Afficher 'WARNING: ' }
+  EmitInstr('MOV', 'AH, 40h');
+  EmitInstr('MOV', 'BX, 2');
+  EmitInstr('MOV', 'DX, OFFSET _RKK_WARNING');
+  EmitInstr('MOV', 'CX, 9');
+  EmitInstr('INT', '21h');
+  { Afficher le message }
+  EmitInstr('POP', 'SI');
+  EmitInstr('PUSH', 'SI');
+  EmitInstr('CALL', '_RKRT_STRLEN');
+  EmitInstr('MOV', 'CX, AX');
+  EmitInstr('POP', 'DX');
+  EmitInstr('MOV', 'AH, 40h');
+  EmitInstr('MOV', 'BX, 2');
+  EmitInstr('INT', '21h');
+  { Newline }
+  EmitInstr('MOV', 'AH, 40h');
+  EmitInstr('MOV', 'BX, 2');
+  EmitInstr('MOV', 'DX, OFFSET _RK_CRLF');
+  EmitInstr('MOV', 'CX, 2');
+  EmitInstr('INT', '21h');
+  EmitInstr('RET', '');
+  EmitRaw('_RKRT_WARN ENDP');
+  EmitBlankLine;
+
+  { _RKRT_STRLEN : longueur d une chaine ASCIIZ
+    SI = ptr chaine, retourne AX = longueur }
+  EmitRaw('_RKRT_STRLEN PROC NEAR');
+  EmitInstr('PUSH', 'SI');
+  EmitInstr('XOR', 'AX, AX');
+  EmitRaw('_RKRT_STRLEN_LP:');
+  EmitInstr('CMP', 'BYTE PTR [SI], 0');
+  EmitInstr('JE', '_RKRT_STRLEN_DN');
+  EmitInstr('INC', 'SI');
+  EmitInstr('INC', 'AX');
+  EmitInstr('JMP', '_RKRT_STRLEN_LP');
+  EmitRaw('_RKRT_STRLEN_DN:');
+  EmitInstr('POP', 'SI');
+  EmitInstr('RET', '');
+  EmitRaw('_RKRT_STRLEN ENDP');
+End;
+
+{ ============================================================
   PROCEDURE Run
   ============================================================ }
 Procedure Run;
@@ -9662,6 +9956,8 @@ Begin
   CurClassIdx     := -1;
   RoleCount       := 0;
   GrammarCount    := 0;
+  TryCount        := 0;
+  TryDepth        := 0;
   GKwConsumed    := False;
   GCallArgCount  := 0;
   CurFnRetLbl    := '';
