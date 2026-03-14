@@ -298,7 +298,7 @@
             Prologue : PUSH BP / MOV BP,SP / SUB SP, locals_size
             Epilogue : MOV SP,BP / POP BP / RET
 
-  TODO 18 - PORTEE, PILE ET CADRES
+  TODO 18 - PORTEE, PILE ET CADRES [IMPLEMENTE]
             Convention d appel : cdecl 16 bits, args de droite a gauche sur pile
             Prologue fonction : PUSH BP / MOV BP,SP
             Epilogue : MOV SP,BP / POP BP / RET (appelant nettoie pile)
@@ -502,6 +502,7 @@ Const
   MAX_ERRORS    = {$IFDEF FPC}30{$ELSE}3{$ENDIF};
   MAX_STR       = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
   MAX_RETVALS   = 8;    { nombre max de valeurs de retour multiples }
+  MAX_UPVALS    = 32;   { nombre max d upvalues capturees         }
   STACK_SIZE    = 1024;
 
   { Prefixes de nommage ASM }
@@ -705,6 +706,13 @@ Var
   FuncCount      : Integer;   { compteur pour labels function       }
   AnonFuncCount  : Integer;   { compteur pour fonctions anonymes    }
 
+  { Portee, pile et cadres (TODO 18) }
+  CurFnBaseSymIdx : Integer;   { index SymTab au debut de la fonction }
+  UpvalCount      : Integer;   { nb d upvalues capturees             }
+  UpvalOrigOff    : Array[0..MAX_UPVALS-1] Of Integer;  { offset parent }
+  UpvalOrigKind   : Array[0..MAX_UPVALS-1] Of TSymKind; { kind avant    }
+  UpvalDataLbl    : Array[0..MAX_UPVALS-1] Of TString;  { label DATA    }
+
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
@@ -838,6 +846,11 @@ Procedure EmitMetaRuntime; Forward;
 Procedure ParseFuncDecl(IsLocal : Boolean); Forward;
 Procedure ParseFuncExpr(Var Res : TExprVal); Forward;
 Procedure EmitFuncRuntime; Forward;
+
+{ Portee, pile et cadres (TODO 18) }
+Function  DetectUpvalue(SIdx : Integer) : Boolean; Forward;
+Procedure PromoteToUpvalue(SIdx : Integer); Forward;
+Procedure EmitScopeRuntime; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1122,6 +1135,8 @@ Begin
   TableCount     := 0;
   FuncCount      := 0;
   AnonFuncCount  := 0;
+  CurFnBaseSymIdx := 0;
+  UpvalCount      := 0;
   GExprDummy.Kind    := EK_NONE;
   GExprDummy.ImmVal  := 0;
   GExprDummy.TypeIdx := TY_UNKNOWN;
@@ -1256,6 +1271,7 @@ Begin
   EmitTableRuntime;
   EmitMetaRuntime;
   EmitFuncRuntime;
+  EmitScopeRuntime;
 End;
 
 { EmitClose : terminer le fichier ASM (DOS exit, runtime, DATA, END) }
@@ -1646,6 +1662,12 @@ Begin
     Str(SymTab[SIdx].Offset, NS);
     EmitInstrAB('MOV', 'WORD PTR [BP+' + NS + ']', 'AX');
   End
+  Else If SymTab[SIdx].Kind = SK_UPVALUE Then
+  Begin
+    { Upvalue (closure) : ecriture via cellule DATA }
+    EmitInstrAB('MOV', 'WORD PTR [' +
+                SymTab[SIdx].MangledName + ']', 'AX');
+  End
   Else
   Begin
     { Variable globale }
@@ -1924,6 +1946,10 @@ Var
   StepOffF  : Integer;
   SaveFramF : Integer;
   NS2F      : TString;
+  { Variables for do...end scope (TODO 18) }
+  SaveFramD : Integer;
+  LocalsD   : Integer;
+  NSD       : TString;
 Begin
   { Instruction vide : ';' optionnel }
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
@@ -2403,14 +2429,25 @@ Begin
       Exit;
     End;
 
-    { do ... end : bloc de portee (TODO 17) }
+    { do ... end : bloc de portee (TODO 18) }
     If CurToken.Val = 'do' Then
     Begin
       ParserAdvance; { consomme 'do' }
+      SymEnterScope;
+      SaveFramD := CurFrameSize;
       While (CurToken.Kind <> TK_EOF) And
             Not ((CurToken.Kind = TK_KEYWORD) And
                  (CurToken.Val = 'end')) Do
         ParseStmt;
+      { Fermeture de portee : nettoyer la pile des locales du bloc }
+      LocalsD := CurFrameSize - SaveFramD;
+      If LocalsD > 0 Then
+      Begin
+        Str(LocalsD * 2, NSD);
+        EmitInstrAB('ADD', 'SP', NSD);
+      End;
+      SymLeaveScope;
+      CurFrameSize := SaveFramD;
       If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'end') Then
         ParserAdvance;
       { Consommer ';' optionnel }
@@ -3369,6 +3406,12 @@ Begin
           Str(SymTab[E.SymIdx].Offset, NS);
           EmitInstrAB('MOV', 'AX', 'WORD PTR [BP+' + NS + ']');
         End
+        Else If SymTab[E.SymIdx].Kind = SK_UPVALUE Then
+        Begin
+          { Upvalue (closure) : acces par cellule DATA }
+          EmitInstrAB('MOV', 'AX', 'WORD PTR [' +
+                      SymTab[E.SymIdx].MangledName + ']');
+        End
         Else
         Begin
           { Variable globale : [_LUAV_nom] }
@@ -3551,6 +3594,9 @@ Begin
         SIdx := SymFind(VName);
         If SIdx < 0 Then
           SIdx := EnsureGlobalVar(VName);
+        { TODO 18 : detecter et promouvoir les upvalues }
+        If (SIdx >= 0) And DetectUpvalue(SIdx) Then
+          PromoteToUpvalue(SIdx);
         Res.Kind    := EK_MEM;
         Res.ImmVal  := 0;
         If SIdx >= 0 Then
@@ -6437,6 +6483,8 @@ Var
   SaveDepth  : Integer;
   SaveScope  : Integer;
   SaveSymCnt : Integer;
+  SaveBaseIdx : Integer;    { TODO 18 : sauvegarde CurFnBaseSymIdx }
+  SaveUpCnt   : Integer;    { TODO 18 : sauvegarde UpvalCount      }
 Begin
   { Le mot-cle 'function' est deja consomme par l appelant }
   { CurToken devrait etre le nom de la fonction            }
@@ -6474,21 +6522,26 @@ Begin
   { Emettre le label de la fonction }
   EmitLabel(FuncLabel);
 
-  { Prologue }
+  { Prologue (TODO 18 : sauvegarde SI, DI) }
   EmitInstrA('PUSH', 'BP');
   EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
 
   { Sauvegarder le contexte }
-  SaveFrame  := CurFrameSize;
-  SaveRetLbl := CurFnRetLbl;
-  SaveFnName := CurFnName;
-  SaveDepth  := CurFnDepth;
-  SaveScope  := CurScope;
-  SaveSymCnt := SymCount;
+  SaveFrame   := CurFrameSize;
+  SaveRetLbl  := CurFnRetLbl;
+  SaveFnName  := CurFnName;
+  SaveDepth   := CurFnDepth;
+  SaveScope   := CurScope;
+  SaveSymCnt  := SymCount;
+  SaveBaseIdx := CurFnBaseSymIdx;
+  SaveUpCnt   := UpvalCount;
 
-  CurFrameSize := 0;
-  CurFnRetLbl  := RetLabel;
-  CurFnName    := FuncName;
+  CurFrameSize    := 2;  { TODO 18 : reserve 2 words pour SI, DI sauvegardes }
+  CurFnRetLbl     := RetLabel;
+  CurFnName       := FuncName;
+  CurFnBaseSymIdx := SymCount;  { TODO 18 : les sym < cet index sont du parent }
   Inc(CurFnDepth);
   Inc(CurScope);
 
@@ -6527,7 +6580,7 @@ Begin
 
   { Enregistrer les parametres comme symboles                        }
   { Convention : arguments empiles de gauche a droite par l appelant  }
-  { Apres CALL + PUSH BP / MOV BP,SP :                               }
+  { Apres CALL + PUSH BP / MOV BP,SP / PUSH SI / PUSH DI :          }
   {   [BP+0]=old BP, [BP+2]=ret addr                                 }
   {   [BP+4]=dernier arg, [BP+6]=avant-dernier, ...                  }
   { Donc param[i] = [BP + 4 + (ParamCount - 1 - i) * 2]             }
@@ -6548,8 +6601,12 @@ Begin
   Else
     CompileError('"end" attendu pour fermer la fonction ' + FuncName);
 
-  { Epilogue }
+  { Epilogue (TODO 18 : restauration SI, DI) }
   EmitLabel(RetLabel);
+  EmitInstrAB('MOV', 'SP', 'BP');
+  EmitInstrAB('SUB', 'SP', '4');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
   EmitInstrAB('MOV', 'SP', 'BP');
   EmitInstrA('POP', 'BP');
   EmitInstr('RET');
@@ -6557,13 +6614,32 @@ Begin
   { Label de saut }
   EmitLabel(SkipLabel);
 
+  { TODO 18 : initialiser les upvalues capturees depuis la portee parent }
+  For I := SaveUpCnt To UpvalCount - 1 Do
+  Begin
+    EmitComment('init upvalue ' + UpvalDataLbl[I]);
+    If UpvalOrigKind[I] = SK_LOCAL Then
+    Begin
+      Str(UpvalOrigOff[I], NS);
+      EmitInstrAB('MOV', 'AX', 'WORD PTR [BP-' + NS + ']');
+    End
+    Else If UpvalOrigKind[I] = SK_PARAM Then
+    Begin
+      Str(UpvalOrigOff[I], NS);
+      EmitInstrAB('MOV', 'AX', 'WORD PTR [BP+' + NS + ']');
+    End;
+    EmitInstrAB('MOV', 'WORD PTR [' + UpvalDataLbl[I] + ']', 'AX');
+  End;
+
   { Restaurer le contexte }
-  CurFrameSize := SaveFrame;
-  CurFnRetLbl  := SaveRetLbl;
-  CurFnName    := SaveFnName;
-  CurFnDepth   := SaveDepth;
-  CurScope     := SaveScope;
-  SymCount     := SaveSymCnt;
+  CurFrameSize    := SaveFrame;
+  CurFnRetLbl     := SaveRetLbl;
+  CurFnName       := SaveFnName;
+  CurFnDepth      := SaveDepth;
+  CurScope        := SaveScope;
+  SymCount        := SaveSymCnt;
+  CurFnBaseSymIdx := SaveBaseIdx;
+  UpvalCount      := SaveUpCnt;
 End;
 
 { ---- ParseFuncExpr : parser une fonction anonyme (expression) ---- }
@@ -6586,6 +6662,8 @@ Var
   SaveDepth  : Integer;
   SaveScope  : Integer;
   SaveSymCnt : Integer;
+  SaveBaseIdx : Integer;    { TODO 18 : sauvegarde CurFnBaseSymIdx }
+  SaveUpCnt   : Integer;    { TODO 18 : sauvegarde UpvalCount      }
 Begin
   { Le mot-cle 'function' est deja consomme }
   Inc(AnonFuncCount);
@@ -6600,21 +6678,26 @@ Begin
   { Emettre le label de la fonction anonyme }
   EmitLabel(FuncLabel);
 
-  { Prologue }
+  { Prologue (TODO 18 : sauvegarde SI, DI) }
   EmitInstrA('PUSH', 'BP');
   EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
 
   { Sauvegarder le contexte }
-  SaveFrame  := CurFrameSize;
-  SaveRetLbl := CurFnRetLbl;
-  SaveFnName := CurFnName;
-  SaveDepth  := CurFnDepth;
-  SaveScope  := CurScope;
-  SaveSymCnt := SymCount;
+  SaveFrame   := CurFrameSize;
+  SaveRetLbl  := CurFnRetLbl;
+  SaveFnName  := CurFnName;
+  SaveDepth   := CurFnDepth;
+  SaveScope   := CurScope;
+  SaveSymCnt  := SymCount;
+  SaveBaseIdx := CurFnBaseSymIdx;
+  SaveUpCnt   := UpvalCount;
 
-  CurFrameSize := 0;
-  CurFnRetLbl  := RetLabel;
-  CurFnName    := '_anon_' + NS;
+  CurFrameSize    := 2;  { TODO 18 : reserve 2 words pour SI, DI sauvegardes }
+  CurFnRetLbl     := RetLabel;
+  CurFnName       := '_anon_' + NS;
+  CurFnBaseSymIdx := SymCount;  { TODO 18 }
   Inc(CurFnDepth);
   Inc(CurScope);
 
@@ -6669,8 +6752,12 @@ Begin
   Else
     CompileError('"end" attendu pour fermer la fonction anonyme');
 
-  { Epilogue }
+  { Epilogue (TODO 18 : restauration SI, DI) }
   EmitLabel(RetLabel);
+  EmitInstrAB('MOV', 'SP', 'BP');
+  EmitInstrAB('SUB', 'SP', '4');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
   EmitInstrAB('MOV', 'SP', 'BP');
   EmitInstrA('POP', 'BP');
   EmitInstr('RET');
@@ -6678,13 +6765,32 @@ Begin
   { Label de saut }
   EmitLabel(SkipLabel);
 
+  { TODO 18 : initialiser les upvalues capturees }
+  For I := SaveUpCnt To UpvalCount - 1 Do
+  Begin
+    EmitComment('init upvalue ' + UpvalDataLbl[I]);
+    If UpvalOrigKind[I] = SK_LOCAL Then
+    Begin
+      Str(UpvalOrigOff[I], NS);
+      EmitInstrAB('MOV', 'AX', 'WORD PTR [BP-' + NS + ']');
+    End
+    Else If UpvalOrigKind[I] = SK_PARAM Then
+    Begin
+      Str(UpvalOrigOff[I], NS);
+      EmitInstrAB('MOV', 'AX', 'WORD PTR [BP+' + NS + ']');
+    End;
+    EmitInstrAB('MOV', 'WORD PTR [' + UpvalDataLbl[I] + ']', 'AX');
+  End;
+
   { Restaurer le contexte }
-  CurFrameSize := SaveFrame;
-  CurFnRetLbl  := SaveRetLbl;
-  CurFnName    := SaveFnName;
-  CurFnDepth   := SaveDepth;
-  CurScope     := SaveScope;
-  SymCount     := SaveSymCnt;
+  CurFrameSize    := SaveFrame;
+  CurFnRetLbl     := SaveRetLbl;
+  CurFnName       := SaveFnName;
+  CurFnDepth      := SaveDepth;
+  CurScope        := SaveScope;
+  SymCount        := SaveSymCnt;
+  CurFnBaseSymIdx := SaveBaseIdx;
+  UpvalCount      := SaveUpCnt;
 
   { Retourner l adresse de la fonction comme pointeur de code }
   EmitInstrAB('MOV', 'AX', 'OFFSET ' + FuncLabel);
@@ -6702,6 +6808,67 @@ Begin
   { Placeholder : pas de runtime supplementaire requis }
   EmitBlankLine;
   EmitComment('--- Function runtime (TODO 17) ---');
+End;
+
+{ ============================================================
+  TODO 18 - PORTEE, PILE ET CADRES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- DetectUpvalue : detecter si un symbole est une variable ----- }
+{ locale ou param d une fonction parente (capture par closure).       }
+{ Retourne True si le symbole doit etre promu en upvalue.             }
+Function DetectUpvalue(SIdx : Integer) : Boolean;
+Begin
+  DetectUpvalue := False;
+  If CurFnDepth <= 0 Then Exit;  { pas dans une fonction }
+  If (SIdx < 0) Or (SIdx >= SymCount) Then Exit;
+  If SymTab[SIdx].Kind = SK_UPVALUE Then Exit; { deja promu }
+  If (SymTab[SIdx].Kind <> SK_LOCAL) And
+     (SymTab[SIdx].Kind <> SK_PARAM) Then Exit;
+  { Le symbole est-il du scope parent (avant CurFnBaseSymIdx) ? }
+  If SIdx < CurFnBaseSymIdx Then
+    DetectUpvalue := True;
+End;
+
+{ ---- PromoteToUpvalue : promouvoir une variable locale/param ----- }
+{ en upvalue (cellule DATA globale _LUAU_nom).                        }
+{ Apres promotion, les lectures/ecritures passent par la cellule DATA }
+Procedure PromoteToUpvalue(SIdx : Integer);
+Var
+  ULabel : TString;
+Begin
+  If (SIdx < 0) Or (SIdx >= SymCount) Then Exit;
+  If UpvalCount >= MAX_UPVALS Then
+  Begin
+    WarnMsg('trop d''upvalues (max=' + IntToStr(MAX_UPVALS) + ')');
+    Exit;
+  End;
+  ULabel := LUA_UP_PFX + SymNameClean(SymTab[SIdx].Name);
+  { Enregistrer l info d initialisation avant promotion }
+  UpvalOrigOff[UpvalCount]  := SymTab[SIdx].Offset;
+  UpvalOrigKind[UpvalCount] := SymTab[SIdx].Kind;
+  UpvalDataLbl[UpvalCount]  := ULabel;
+  { Allouer la cellule DATA pour l upvalue }
+  DataAddWord(ULabel, 0);
+  { Promouvoir le symbole }
+  SymTab[SIdx].Kind        := SK_UPVALUE;
+  SymTab[SIdx].MangledName := ULabel;
+  SymTab[SIdx].IsUpvalue   := True;
+  Inc(UpvalCount);
+  { Avertissement si closure profonde }
+  If CurFnDepth > 2 Then
+    WarnMsg('closure profonde (niveau ' + IntToStr(CurFnDepth) +
+            ') pour ''' + SymTab[SIdx].Name + '''');
+End;
+
+{ ---- EmitScopeRuntime : routines runtime portee/pile (TODO 18) -- }
+{ Stub : la gestion de portee est faite inline dans ParseStmt et     }
+{ ParseFuncDecl/ParseFuncExpr. _ENV = stub.                          }
+Procedure EmitScopeRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('--- Scope runtime (TODO 18) ---');
+  EmitComment('_ENV : stub, globales dans DATA');
 End;
 
 { ---- Run : pipeline de compilation ----------------------------- }
