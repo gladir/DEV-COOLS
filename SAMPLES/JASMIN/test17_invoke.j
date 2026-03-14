@@ -43,6 +43,9 @@
 .end method
 
 ; --- Test invokevirtual ---
+; Note : les aload_0 dans les methodes statiques ne sont pas valides
+; au niveau JVM, mais le test verifie uniquement l'assemblage correct
+; des opcodes d'invocation (pas la verification de bytecode).
 .method public static testVirtual()V
   .limit stack 2
   .limit locals 2
@@ -53,6 +56,8 @@
 .end method
 
 ; --- Test invokeinterface ---
+; Note : test d'assemblage uniquement, aload_0 n'est pas un objet
+; List valide dans une methode statique.
 .method public static testInterface()V
   .limit stack 2
   .limit locals 2
@@ -63,6 +68,8 @@
 .end method
 
 ; --- Test invokevirtual avec descripteurs complexes ---
+; Note : test d'assemblage uniquement, verifie les descripteurs
+; avec types objets (Ljava/lang/String;, Ljava/lang/Object;).
 .method public static testComplexDescriptors()V
   .limit stack 3
   .limit locals 2

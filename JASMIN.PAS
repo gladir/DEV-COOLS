@@ -2684,8 +2684,7 @@ Begin
  End;
  If lastSlash = 0 Then
  Begin
-  { Pas de '/' : le nom de classe est vide, tout est le nom de methode }
-  { Cela peut arriver pour des methodes de la classe courante }
+  { Pas de '/' : classe vide = methode de la classe en cours d'assemblage }
   cls   := '';
   mname := Copy(spec, 1, paren - 1);
  End
