@@ -25,9 +25,9 @@ Table des matieres
   16. Assemblage et execution
   17. Differences avec le bytecode Java brut
   18. Ressources dans le projet
+  19. Tableau complet des instructions JVM
 
 ==============================================================================
-  1. Introduction
 ==============================================================================
 
   Jasmin est un langage assembleur pour la machine virtuelle Java (JVM).
@@ -1186,3 +1186,353 @@ Table des matieres
     APPLICATION_COMPILER.txt    Comment ecrire un compilateur
     APPLICATION_ASSEMBLER.txt   Comment ecrire un assembleur
     ASM_80386.txt               Reference assembleur Intel 80386
+
+==============================================================================
+  19. Tableau complet des instructions JVM
+==============================================================================
+
+  Ce tableau recense les 256 opcodes de la machine virtuelle Java.
+  Chaque instruction est identifiee par son code hexadecimal, son
+  mnemonique Jasmin, ses operandes eventuels et son effet sur la pile.
+
+  Notation de la pile :
+    -> val         : empile une valeur
+    val ->         : depile une valeur
+    a, b -> c      : depile a et b, empile c
+    [aucun]        : aucun effet sur la pile
+
+  Abreviations :
+    var   = index de variable locale
+    idx   = index dans le bassin de constantes (constant pool)
+    off   = offset de branchement (etiquette en Jasmin)
+
+  19.1 Instructions 00-0F : constantes et nop
+  --------------------------------------------
+
+    Hex  Mnemonique     Operandes  Pile                Description
+    ---  -------------- ---------  ------------------  ---------------------------
+    00   nop            [aucun]    [aucun]             Ne rien faire
+    01   aconst_null    [aucun]    -> null             Empiler null
+    02   iconst_m1      [aucun]    -> -1               Empiler int -1
+    03   iconst_0       [aucun]    -> 0                Empiler int 0
+    04   iconst_1       [aucun]    -> 1                Empiler int 1
+    05   iconst_2       [aucun]    -> 2                Empiler int 2
+    06   iconst_3       [aucun]    -> 3                Empiler int 3
+    07   iconst_4       [aucun]    -> 4                Empiler int 4
+    08   iconst_5       [aucun]    -> 5                Empiler int 5
+    09   lconst_0       [aucun]    -> 0L               Empiler long 0
+    0A   lconst_1       [aucun]    -> 1L               Empiler long 1
+    0B   fconst_0       [aucun]    -> 0.0f             Empiler float 0.0
+    0C   fconst_1       [aucun]    -> 1.0f             Empiler float 1.0
+    0D   fconst_2       [aucun]    -> 2.0f             Empiler float 2.0
+    0E   dconst_0       [aucun]    -> 0.0d             Empiler double 0.0
+    0F   dconst_1       [aucun]    -> 1.0d             Empiler double 1.0
+
+  19.2 Instructions 10-14 : chargement de constantes
+  ---------------------------------------------------
+
+    Hex  Mnemonique     Operandes  Pile                Description
+    ---  -------------- ---------  ------------------  ---------------------------
+    10   bipush         byte       -> val              Empiler byte signe
+    11   sipush         short      -> val              Empiler short signe
+    12   ldc            idx        -> val              Charger int/float/String
+    13   ldc_w          idx        -> val              Charger (index large)
+    14   ldc2_w         idx        -> val              Charger long/double
+
+  19.3 Instructions 15-2D : chargement depuis variables locales
+  -------------------------------------------------------------
+
+    Hex  Mnemonique     Operandes  Pile                Description
+    ---  -------------- ---------  ------------------  ---------------------------
+    15   iload          var        -> val              Charger int
+    16   lload          var        -> val              Charger long
+    17   fload          var        -> val              Charger float
+    18   dload          var        -> val              Charger double
+    19   aload          var        -> val              Charger reference
+    1A   iload_0        [aucun]    -> val              Charger int var 0
+    1B   iload_1        [aucun]    -> val              Charger int var 1
+    1C   iload_2        [aucun]    -> val              Charger int var 2
+    1D   iload_3        [aucun]    -> val              Charger int var 3
+    1E   lload_0        [aucun]    -> val              Charger long var 0
+    1F   lload_1        [aucun]    -> val              Charger long var 1
+    20   lload_2        [aucun]    -> val              Charger long var 2
+    21   lload_3        [aucun]    -> val              Charger long var 3
+    22   fload_0        [aucun]    -> val              Charger float var 0
+    23   fload_1        [aucun]    -> val              Charger float var 1
+    24   fload_2        [aucun]    -> val              Charger float var 2
+    25   fload_3        [aucun]    -> val              Charger float var 3
+    26   dload_0        [aucun]    -> val              Charger double var 0
+    27   dload_1        [aucun]    -> val              Charger double var 1
+    28   dload_2        [aucun]    -> val              Charger double var 2
+    29   dload_3        [aucun]    -> val              Charger double var 3
+    2A   aload_0        [aucun]    -> val              Charger reference var 0
+    2B   aload_1        [aucun]    -> val              Charger reference var 1
+    2C   aload_2        [aucun]    -> val              Charger reference var 2
+    2D   aload_3        [aucun]    -> val              Charger reference var 3
+
+  19.4 Instructions 2E-35 : chargement depuis tableaux
+  -----------------------------------------------------
+
+    Hex  Mnemonique     Operandes  Pile                Description
+    ---  -------------- ---------  ------------------  ---------------------------
+    2E   iaload         [aucun]    ref, idx -> val     Charger int du tableau
+    2F   laload         [aucun]    ref, idx -> val     Charger long du tableau
+    30   faload         [aucun]    ref, idx -> val     Charger float du tableau
+    31   daload         [aucun]    ref, idx -> val     Charger double du tableau
+    32   aaload         [aucun]    ref, idx -> val     Charger ref du tableau
+    33   baload         [aucun]    ref, idx -> val     Charger byte du tableau
+    34   caload         [aucun]    ref, idx -> val     Charger char du tableau
+    35   saload         [aucun]    ref, idx -> val     Charger short du tableau
+
+  19.5 Instructions 36-4E : stockage dans variables locales
+  ----------------------------------------------------------
+
+    Hex  Mnemonique     Operandes  Pile                Description
+    ---  -------------- ---------  ------------------  ---------------------------
+    36   istore         var        val ->              Stocker int
+    37   lstore         var        val ->              Stocker long
+    38   fstore         var        val ->              Stocker float
+    39   dstore         var        val ->              Stocker double
+    3A   astore         var        val ->              Stocker reference
+    3B   istore_0       [aucun]    val ->              Stocker int var 0
+    3C   istore_1       [aucun]    val ->              Stocker int var 1
+    3D   istore_2       [aucun]    val ->              Stocker int var 2
+    3E   istore_3       [aucun]    val ->              Stocker int var 3
+    3F   lstore_0       [aucun]    val ->              Stocker long var 0
+    40   lstore_1       [aucun]    val ->              Stocker long var 1
+    41   lstore_2       [aucun]    val ->              Stocker long var 2
+    42   lstore_3       [aucun]    val ->              Stocker long var 3
+    43   fstore_0       [aucun]    val ->              Stocker float var 0
+    44   fstore_1       [aucun]    val ->              Stocker float var 1
+    45   fstore_2       [aucun]    val ->              Stocker float var 2
+    46   fstore_3       [aucun]    val ->              Stocker float var 3
+    47   dstore_0       [aucun]    val ->              Stocker double var 0
+    48   dstore_1       [aucun]    val ->              Stocker double var 1
+    49   dstore_2       [aucun]    val ->              Stocker double var 2
+    4A   dstore_3       [aucun]    val ->              Stocker double var 3
+    4B   astore_0       [aucun]    val ->              Stocker reference var 0
+    4C   astore_1       [aucun]    val ->              Stocker reference var 1
+    4D   astore_2       [aucun]    val ->              Stocker reference var 2
+    4E   astore_3       [aucun]    val ->              Stocker reference var 3
+
+  19.6 Instructions 4F-56 : stockage dans tableaux
+  -------------------------------------------------
+
+    Hex  Mnemonique     Operandes  Pile                Description
+    ---  -------------- ---------  ------------------  ---------------------------
+    4F   iastore        [aucun]    ref, idx, val ->    Stocker int dans tableau
+    50   lastore        [aucun]    ref, idx, val ->    Stocker long dans tableau
+    51   fastore        [aucun]    ref, idx, val ->    Stocker float dans tableau
+    52   dastore        [aucun]    ref, idx, val ->    Stocker double dans tableau
+    53   aastore        [aucun]    ref, idx, val ->    Stocker ref dans tableau
+    54   bastore        [aucun]    ref, idx, val ->    Stocker byte dans tableau
+    55   castore        [aucun]    ref, idx, val ->    Stocker char dans tableau
+    56   sastore        [aucun]    ref, idx, val ->    Stocker short dans tableau
+
+  19.7 Instructions 57-5F : manipulation de la pile
+  --------------------------------------------------
+
+    Hex  Mnemonique     Operandes  Pile                Description
+    ---  -------------- ---------  ------------------  ---------------------------
+    57   pop            [aucun]    val ->              Retirer 1 mot
+    58   pop2           [aucun]    val, val ->         Retirer 2 mots
+    59   dup            [aucun]    val -> val, val     Dupliquer sommet
+    5A   dup_x1         [aucun]    b, a -> a, b, a    Dup sous 2e element
+    5B   dup_x2         [aucun]    c, b, a -> a,c,b,a Dup sous 3e element
+    5C   dup2           [aucun]    b, a -> b, a, b, a Dupliquer 2 mots
+    5D   dup2_x1        [aucun]    c,b,a -> b,a,c,b,a Dup2 sous 3e element
+    5E   dup2_x2        [aucun]    d,c,b,a->b,a,d,c.. Dup2 sous 4e element
+    5F   swap           [aucun]    b, a -> a, b       Echanger 2 mots
+
+  19.8 Instructions 60-84 : arithmetique et logique
+  --------------------------------------------------
+
+    Hex  Mnemonique     Operandes  Pile                Description
+    ---  -------------- ---------  ------------------  ---------------------------
+    60   iadd           [aucun]    a, b -> a+b         Addition int
+    61   ladd           [aucun]    a, b -> a+b         Addition long
+    62   fadd           [aucun]    a, b -> a+b         Addition float
+    63   dadd           [aucun]    a, b -> a+b         Addition double
+    64   isub           [aucun]    a, b -> a-b         Soustraction int
+    65   lsub           [aucun]    a, b -> a-b         Soustraction long
+    66   fsub           [aucun]    a, b -> a-b         Soustraction float
+    67   dsub           [aucun]    a, b -> a-b         Soustraction double
+    68   imul           [aucun]    a, b -> a*b         Multiplication int
+    69   lmul           [aucun]    a, b -> a*b         Multiplication long
+    6A   fmul           [aucun]    a, b -> a*b         Multiplication float
+    6B   dmul           [aucun]    a, b -> a*b         Multiplication double
+    6C   idiv           [aucun]    a, b -> a/b         Division int
+    6D   ldiv           [aucun]    a, b -> a/b         Division long
+    6E   fdiv           [aucun]    a, b -> a/b         Division float
+    6F   ddiv           [aucun]    a, b -> a/b         Division double
+    70   irem           [aucun]    a, b -> a%b         Reste int
+    71   lrem           [aucun]    a, b -> a%b         Reste long
+    72   frem           [aucun]    a, b -> a%b         Reste float
+    73   drem           [aucun]    a, b -> a%b         Reste double
+    74   ineg           [aucun]    a -> -a             Negation int
+    75   lneg           [aucun]    a -> -a             Negation long
+    76   fneg           [aucun]    a -> -a             Negation float
+    77   dneg           [aucun]    a -> -a             Negation double
+    78   ishl           [aucun]    a, n -> a<<n        Decalage gauche int
+    79   lshl           [aucun]    a, n -> a<<n        Decalage gauche long
+    7A   ishr           [aucun]    a, n -> a>>n        Decalage droite int (signe)
+    7B   lshr           [aucun]    a, n -> a>>n        Decalage droite long (signe)
+    7C   iushr          [aucun]    a, n -> a>>>n       Decalage droite int (logiq)
+    7D   lushr          [aucun]    a, n -> a>>>n       Decalage droite long (logiq)
+    7E   iand           [aucun]    a, b -> a&b         ET binaire int
+    7F   land           [aucun]    a, b -> a&b         ET binaire long
+    80   ior            [aucun]    a, b -> a|b         OU binaire int
+    81   lor            [aucun]    a, b -> a|b         OU binaire long
+    82   ixor           [aucun]    a, b -> a^b         OU exclusif int
+    83   lxor           [aucun]    a, b -> a^b         OU exclusif long
+    84   iinc           var, n     [aucun]             Incrementer var de n
+
+  19.9 Instructions 85-93 : conversion de types
+  -----------------------------------------------
+
+    Hex  Mnemonique     Operandes  Pile                Description
+    ---  -------------- ---------  ------------------  ---------------------------
+    85   i2l            [aucun]    int -> long         int vers long
+    86   i2f            [aucun]    int -> float        int vers float
+    87   i2d            [aucun]    int -> double       int vers double
+    88   l2i            [aucun]    long -> int         long vers int
+    89   l2f            [aucun]    long -> float       long vers float
+    8A   l2d            [aucun]    long -> double      long vers double
+    8B   f2i            [aucun]    float -> int        float vers int
+    8C   f2l            [aucun]    float -> long       float vers long
+    8D   f2d            [aucun]    float -> double     float vers double
+    8E   d2i            [aucun]    double -> int       double vers int
+    8F   d2l            [aucun]    double -> long      double vers long
+    90   d2f            [aucun]    double -> float     double vers float
+    91   i2b            [aucun]    int -> byte         int vers byte
+    92   i2c            [aucun]    int -> char         int vers char
+    93   i2s            [aucun]    int -> short        int vers short
+
+  19.10 Instructions 94-98 : comparaison
+  ---------------------------------------
+
+    Hex  Mnemonique     Operandes  Pile                Description
+    ---  -------------- ---------  ------------------  ---------------------------
+    94   lcmp           [aucun]    a, b -> res         Comparer deux long
+    95   fcmpl          [aucun]    a, b -> res         Comparer float (NaN=-1)
+    96   fcmpg          [aucun]    a, b -> res         Comparer float (NaN=1)
+    97   dcmpl          [aucun]    a, b -> res         Comparer double (NaN=-1)
+    98   dcmpg          [aucun]    a, b -> res         Comparer double (NaN=1)
+
+  19.11 Instructions 99-A6 : branchements conditionnels
+  ------------------------------------------------------
+
+    Hex  Mnemonique     Operandes  Pile                Description
+    ---  -------------- ---------  ------------------  ---------------------------
+    99   ifeq           off        val ->              Brancher si == 0
+    9A   ifne           off        val ->              Brancher si != 0
+    9B   iflt           off        val ->              Brancher si < 0
+    9C   ifge           off        val ->              Brancher si >= 0
+    9D   ifgt           off        val ->              Brancher si > 0
+    9E   ifle           off        val ->              Brancher si <= 0
+    9F   if_icmpeq      off        a, b ->             Brancher si a == b
+    A0   if_icmpne      off        a, b ->             Brancher si a != b
+    A1   if_icmplt      off        a, b ->             Brancher si a < b
+    A2   if_icmpge      off        a, b ->             Brancher si a >= b
+    A3   if_icmpgt      off        a, b ->             Brancher si a > b
+    A4   if_icmple      off        a, b ->             Brancher si a <= b
+    A5   if_acmpeq      off        a, b ->             Brancher si ref a == ref b
+    A6   if_acmpne      off        a, b ->             Brancher si ref a != ref b
+
+  19.12 Instructions A7-B1 : branchement et retour
+  -------------------------------------------------
+
+    Hex  Mnemonique     Operandes  Pile                Description
+    ---  -------------- ---------  ------------------  ---------------------------
+    A7   goto           off        [aucun]             Saut inconditionnel
+    A8   jsr            off        -> adr              Saut sous-routine
+    A9   ret            var        [aucun]             Retour sous-routine
+    AA   tableswitch    [spec]     idx ->              Switch table contigue
+    AB   lookupswitch   [spec]     cle ->              Switch table dispersee
+    AC   ireturn        [aucun]    val ->              Retourner int
+    AD   lreturn        [aucun]    val ->              Retourner long
+    AE   freturn        [aucun]    val ->              Retourner float
+    AF   dreturn        [aucun]    val ->              Retourner double
+    B0   areturn        [aucun]    val ->              Retourner reference
+    B1   return         [aucun]    [aucun]             Retourner void
+
+  19.13 Instructions B2-B9 : champs et invocations
+  -------------------------------------------------
+
+    Hex  Mnemonique     Operandes  Pile                Description
+    ---  -------------- ---------  ------------------  ---------------------------
+    B2   getstatic      idx        -> val              Lire champ statique
+    B3   putstatic      idx        val ->              Ecrire champ statique
+    B4   getfield       idx        ref -> val          Lire champ d instance
+    B5   putfield       idx        ref, val ->         Ecrire champ d instance
+    B6   invokevirtual  idx        ref, [args] -> [r]  Appel methode virtuelle
+    B7   invokespecial  idx        ref, [args] -> [r]  Appel constructeur/super
+    B8   invokestatic   idx        [args] -> [r]       Appel methode statique
+    B9   invokeinterface idx, n    ref, [args] -> [r]  Appel methode interface
+
+  19.14 Instructions BA-C0 : objets et divers
+  --------------------------------------------
+
+    Hex  Mnemonique     Operandes  Pile                Description
+    ---  -------------- ---------  ------------------  ---------------------------
+    BA   invokedynamic  idx        [args] -> [r]       Appel dynamique (Java 7+)
+    BB   new            idx        -> ref              Creer objet
+    BC   newarray       type       taille -> ref       Creer tableau primitif
+    BD   anewarray      idx        taille -> ref       Creer tableau references
+    BE   arraylength    [aucun]    ref -> longueur     Longueur du tableau
+    BF   athrow         [aucun]    ref ->              Lancer exception
+    C0   checkcast      idx        ref -> ref          Verifier/convertir type
+
+  19.15 Instructions C1-C9 : types, moniteurs et branchements larges
+  -------------------------------------------------------------------
+
+    Hex  Mnemonique     Operandes  Pile                Description
+    ---  -------------- ---------  ------------------  ---------------------------
+    C1   instanceof     idx        ref -> res          Tester type (0 ou 1)
+    C2   monitorenter   [aucun]    ref ->              Entrer moniteur (synchro)
+    C3   monitorexit    [aucun]    ref ->              Sortir moniteur (synchro)
+    C4   wide           [spec]     [aucun]             Prefixe index large
+    C5   multianewarray idx, dim   t1,..,tN -> ref     Creer tableau N dimensions
+    C6   ifnull         off        ref ->              Brancher si null
+    C7   ifnonnull      off        ref ->              Brancher si non null
+    C8   goto_w         off        [aucun]             Saut inconditionnel (large)
+    C9   jsr_w          off        -> adr              Saut sous-routine (large)
+
+  19.16 Instructions CA-FD : reservees
+  -------------------------------------
+
+    Les opcodes CA a FD sont reserves par la specification JVM pour
+    un usage futur ou interne. Ils ne doivent pas etre utilises dans
+    du code Jasmin standard.
+
+    Hex  Mnemonique     Operandes  Pile                Description
+    ---  -------------- ---------  ------------------  ---------------------------
+    CA   breakpoint     [aucun]    [aucun]             Point d arret (debogueur)
+    CB   (reserve)      -          -                   Reserve
+    ...  ...            -          -                   ...
+    FD   (reserve)      -          -                   Reserve
+    FE   impdep1        [aucun]    [aucun]             Specifique implementation
+    FF   impdep2        [aucun]    [aucun]             Specifique implementation
+
+  19.17 Resume par categorie
+  --------------------------
+
+    Categorie                   Opcodes         Nombre
+    --------------------------  --------------  ------
+    Constantes et nop           00-14           21
+    Chargement variables        15-2D           25
+    Chargement tableaux         2E-35           8
+    Stockage variables          36-4E           25
+    Stockage tableaux           4F-56           8
+    Manipulation pile           57-5F           9
+    Arithmetique                60-84           37
+    Conversion types            85-93           15
+    Comparaison                 94-98           5
+    Branchement conditionnel    99-A6           14
+    Branchement et retour       A7-B1           11
+    Champs et invocations       B2-B9           8
+    Objets et divers            BA-C0           7
+    Types et moniteurs          C1-C9           9
+    Reserves                    CA-FF           54
+    --------------------------  --------------  ------
+    Total                       00-FF           256
