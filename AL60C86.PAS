@@ -41,7 +41,7 @@
               10 (notation exposant dans les reels, symbole dix)
             Mode debug -d : affichage de chaque token avec PrintToken
 
-  TODO 03 - LITTERAUX ET CONSTANTES
+  TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
             Entiers decimaux : 0..65535 (unsigned) ou -32768..32767 (signed)
             Reels : 3.14, 6.022|10|23 (notation avec exposant base 10)
               Traitement simplifie : trunc vers entier 16 bits + avertissement
@@ -480,6 +480,33 @@ Type
     Col      : Integer;     { colonne source (1-base)         }
   End;
 
+  { ---- Expressions (TODO 03) ------------------------------- }
+  TExprKind = (
+    EK_NONE,   { void / pas de valeur            }
+    EK_IMM,    { immediate dans ImmVal           }
+    EK_AX,     { valeur dans AX                  }
+    EK_MEM     { adresse [BP+Offset] ou [_A60V_x]}
+  );
+
+  TExprVal = Record
+    Kind    : TExprKind;
+    ImmVal  : LongInt;
+    TypeIdx : Integer;
+    Offset  : Integer;
+    SymIdx  : Integer;
+  End;
+
+  { ---- Segment de donnees (TODO 03+) ----------------------- }
+  TDataKind = (DK_WORD, DK_BYTE, DK_STR, DK_ARRAY_BLK);
+
+  TDataRec = Record
+    LblName   : TString;
+    Kind      : TDataKind;
+    IntVal    : LongInt;
+    StrVal    : TString;
+    ElemCount : Integer;
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -507,6 +534,16 @@ Var
   LexOpened  : Boolean;
   CurToken   : TToken;
 
+  { Segment de donnees (TODO 03) }
+  DataTab    : Array[0..MAX_DATA - 1] Of TDataRec;
+  DataCount  : Integer;
+
+  { Expressions (TODO 03) }
+  GExprDummy : TExprVal;
+
+  { Etat general }
+  RuntimeEmitted : Boolean;
+
   { Label sequentiel }
   LabelSeq   : Integer;
 
@@ -528,6 +565,28 @@ Procedure LexScanString;       Forward;
 Procedure LexSkipComment;      Forward;
 Procedure LexNextToken;        Forward;
 Function  StrUpperCase(Const S : TString) : TString; Forward;
+{ ---- Forward declarations (TODO 03) ----------------------- }
+Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
+                      Var Res : TExprVal); Forward;
+Procedure ExprMakeNone(Var Res : TExprVal); Forward;
+Procedure ExprMakeBool(AVal : Integer; Var Res : TExprVal); Forward;
+Procedure ExprMakeAX(ATypeIdx : Integer; Var Res : TExprVal); Forward;
+Procedure LitEvalInt(Const T : TToken; Var Res : TExprVal); Forward;
+Procedure LitEvalReal(Const T : TToken; Var Res : TExprVal); Forward;
+Procedure LitEvalStr(Const T : TToken; Var Res : TExprVal); Forward;
+Procedure LitEval(Const T : TToken; Var Res : TExprVal); Forward;
+Function  DataAdd(Const Lbl : TString; Kind : TDataKind;
+                  AIntVal : LongInt; Const AStrVal : TString) : Integer; Forward;
+Function  DataAddStr(Const S : TString) : TString; Forward;
+Function  DataAddWord(Const Lbl : TString; AIntVal : LongInt) : Integer; Forward;
+Function  LabelGen : TString; Forward;
+Procedure ParserAdvance; Forward;
+Procedure EmitOpen;      Forward;
+Procedure EmitClose;     Forward;
+Procedure EmitHeader;    Forward;
+Procedure EmitDataSeg;   Forward;
+Procedure EmitRaw(Const S : TString); Forward;
+Procedure EmitComment(Const S : TString); Forward;
 
 { ---- Erreur fatale ----------------------------------------- }
 Procedure FatalError(Const Msg : TString);
@@ -760,6 +819,8 @@ End;
 
 { ---- Initialisation globale -------------------------------- }
 Procedure GlobalInit;
+Var
+  I : Integer;
 Begin
   ErrorCount     := 0;
   WarnCount      := 0;
@@ -778,6 +839,23 @@ Begin
   CurToken.FloatVal := 0.0;
   CurToken.Line    := 0;
   CurToken.Col     := 0;
+  { Segment de donnees }
+  DataCount := 0;
+  For I := 0 To MAX_DATA - 1 Do
+  Begin
+    DataTab[I].LblName   := '';
+    DataTab[I].Kind      := DK_WORD;
+    DataTab[I].IntVal    := 0;
+    DataTab[I].StrVal    := '';
+    DataTab[I].ElemCount := 0;
+  End;
+  { Expression dummy }
+  GExprDummy.Kind    := EK_NONE;
+  GExprDummy.ImmVal  := 0;
+  GExprDummy.TypeIdx := TY_UNKNOWN;
+  GExprDummy.Offset  := 0;
+  GExprDummy.SymIdx  := -1;
+  RuntimeEmitted := False;
 End;
 
 { ============================================================
@@ -1355,23 +1433,254 @@ Begin
   End;
 End;
 
+{ ============================================================
+  TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- LabelGen : generateur de labels uniques _A60L_N ------- }
+Function LabelGen : TString;
+Var
+  S : TString;
+Begin
+  Inc(LabelSeq);
+  Str(LabelSeq, S);
+  LabelGen := A60_LBL_PFX + S;
+End;
+
+{ ---- DataAdd : ajouter une entree dans le segment DATA ----- }
+Function DataAdd(Const Lbl : TString; Kind : TDataKind;
+                 AIntVal : LongInt; Const AStrVal : TString) : Integer;
+Begin
+  If DataCount >= MAX_DATA Then
+  Begin
+    CompileError('segment DATA plein');
+    DataAdd := DataCount - 1;
+    Exit;
+  End;
+  DataTab[DataCount].LblName   := Lbl;
+  DataTab[DataCount].Kind      := Kind;
+  DataTab[DataCount].IntVal    := AIntVal;
+  DataTab[DataCount].StrVal    := AStrVal;
+  DataTab[DataCount].ElemCount := 0;
+  DataAdd := DataCount;
+  Inc(DataCount);
+End;
+
+{ ---- DataAddStr : creer un label _A60K_N et stocker chaine - }
+Function DataAddStr(Const S : TString) : TString;
+Var
+  Lbl : TString;
+Begin
+  Inc(LabelSeq);
+  Str(LabelSeq, Lbl);
+  Lbl := A60_STR_PFX + Lbl;
+  DataAdd(Lbl, DK_STR, 0, S);
+  DataAddStr := Lbl;
+End;
+
+{ ---- DataAddWord : ajouter un mot 16 bits dans DATA -------- }
+Function DataAddWord(Const Lbl : TString; AIntVal : LongInt) : Integer;
+Begin
+  DataAddWord := DataAdd(Lbl, DK_WORD, AIntVal, '');
+End;
+
+{ ---- ExprMakeImm : construire une valeur immediate --------- }
+Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
+                      Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_IMM;
+  Res.ImmVal  := AVal;
+  Res.TypeIdx := ATypeIdx;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+{ ---- ExprMakeNone : expression sans valeur (void) ---------- }
+Procedure ExprMakeNone(Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_NONE;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_UNKNOWN;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+{ ---- ExprMakeBool : valeur booleenne (0 ou 1) -------------- }
+Procedure ExprMakeBool(AVal : Integer; Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_IMM;
+  If AVal <> 0 Then Res.ImmVal := 1 Else Res.ImmVal := 0;
+  Res.TypeIdx := TY_IDX_BOOLEAN;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+{ ---- ExprMakeAX : resultat dans le registre AX ------------- }
+Procedure ExprMakeAX(ATypeIdx : Integer; Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_AX;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := ATypeIdx;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+{ ---- LitEvalInt : evaluer un token TK_INTEGER --------------- }
+Procedure LitEvalInt(Const T : TToken; Var Res : TExprVal);
+Begin
+  ExprMakeImm(T.IntVal, TY_IDX_INTEGER, Res);
+End;
+
+{ ---- LitEvalReal : evaluer un token TK_REAL (tronque) ------- }
+{ Les reels sont tronques en entier 16 bits avec avertissement }
+Procedure LitEvalReal(Const T : TToken; Var Res : TExprVal);
+Var
+  IV : LongInt;
+Begin
+  IV := T.IntVal;  { deja tronque par LexScanNumber }
+  If IV > 32767 Then IV := 32767;
+  If IV < -32768 Then IV := -32768;
+  ExprMakeImm(IV, TY_IDX_REAL, Res);
+End;
+
+{ ---- LitEvalStr : evaluer un token TK_STRING ---------------- }
+{ La chaine est stockee dans le segment DATA avec un label      }
+Procedure LitEvalStr(Const T : TToken; Var Res : TExprVal);
+Begin
+  DataAddStr(T.Val);
+  Res.Kind    := EK_MEM;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_IDX_STRING;
+  Res.Offset  := DataCount - 1;
+  Res.SymIdx  := -1;
+End;
+
+{ ---- LitEval : dispatcher pour les litteraux Algol 60 ------ }
+{ Tokens : TK_INTEGER, TK_REAL, TK_STRING, TK_BOOLEAN          }
+Procedure LitEval(Const T : TToken; Var Res : TExprVal);
+Begin
+  ExprMakeNone(Res);
+  Case T.Kind Of
+    TK_INTEGER : LitEvalInt(T, Res);
+    TK_REAL    : LitEvalReal(T, Res);
+    TK_STRING  : LitEvalStr(T, Res);
+    TK_BOOLEAN : ExprMakeBool(T.IntVal, Res);
+  Else
+    ExprMakeNone(Res);
+  End;
+End;
+
+{ ---- ParserAdvance : avancer d un token -------------------- }
+Procedure ParserAdvance;
+Begin
+  LexNextToken;
+  If Opts.DebugMode Then
+    PrintToken(CurToken);
+End;
+
+{ ---- EmitRaw : ecrire une ligne brute dans le .asm --------- }
+Procedure EmitRaw(Const S : TString);
+Begin
+  If OutFOpen Then
+    WriteLn(OutF, S);
+End;
+
+{ ---- EmitComment : ecrire un commentaire ASM ---------------- }
+Procedure EmitComment(Const S : TString);
+Begin
+  EmitRaw('; ' + S);
+End;
+
+{ ---- EmitOpen : ouvrir le fichier assembleur de sortie ------ }
+Procedure EmitOpen;
+Begin
+  Assign(OutF, Opts.OutFile);
+  {$I-} Rewrite(OutF); {$I+}
+  If IOResult <> 0 Then
+    FatalError('impossible de creer: ' + Opts.OutFile);
+  OutFOpen := True;
+End;
+
+{ ---- EmitHeader : emettre l en-tete MASM (stub TODO 07) ---- }
+Procedure EmitHeader;
+Begin
+  EmitComment('Genere par AL60C86 v' + AL60_VERSION + ' - ' + Opts.SrcFile);
+End;
+
+{ ---- EmitDataSeg : emettre le segment _DATA (stub TODO 08) -- }
+Procedure EmitDataSeg;
+Var
+  I, J : Integer;
+  S    : TString;
+Begin
+  EmitRaw('_DATA   SEGMENT WORD PUBLIC ''DATA''');
+  For I := 0 To DataCount - 1 Do
+  Begin
+    Case DataTab[I].Kind Of
+      DK_WORD :
+        EmitRaw(DataTab[I].LblName + ' DW ' + IntToStr_(DataTab[I].IntVal));
+      DK_BYTE :
+        EmitRaw(DataTab[I].LblName + ' DB ' + IntToStr_(DataTab[I].IntVal));
+      DK_STR :
+      Begin
+        S := 'DB  ';
+        If Length(DataTab[I].StrVal) = 0 Then
+          S := S + '0'
+        Else
+        Begin
+          S := S + '''';
+          For J := 1 To Length(DataTab[I].StrVal) Do
+          Begin
+            If DataTab[I].StrVal[J] = '''' Then
+              S := S + ''''''
+            Else
+              S := S + DataTab[I].StrVal[J];
+          End;
+          S := S + ''', 0';
+        End;
+        EmitRaw(DataTab[I].LblName + ' ' + S);
+      End;
+      DK_ARRAY_BLK :
+        EmitRaw(DataTab[I].LblName + ' DW ' +
+                IntToStr_(DataTab[I].ElemCount) + ' DUP(0)');
+    End;
+  End;
+  EmitRaw('_DATA   ENDS');
+End;
+
+{ ---- EmitClose : fermer le fichier assembleur de sortie ----- }
+Procedure EmitClose;
+Begin
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
 { ---- Compilation ------------------------------------------- }
 Procedure Run;
 Begin
   GlobalInit;
   If Opts.Verbose Then ShowBanner;
 
+  EmitOpen;
+  EmitHeader;
   LexInit;
 
-  { Boucle de lexing pour TODO 02 (debug) }
-  Repeat
-    LexNextToken;
-    PrintToken(CurToken);
-  Until CurToken.Kind = TK_EOF;
+  { Premier token }
+  ParserAdvance;
+
+  { Boucle de lexing + evaluation litteraux (TODO 03 demo) }
+  While CurToken.Kind <> TK_EOF Do
+  Begin
+    { TODO 04+ : ParseProgram }
+    ParserAdvance;
+  End;
 
   LexClose;
-
-  { TODO 03+ : ParseProgram, EmitRuntime, etc. }
+  EmitDataSeg;
+  EmitClose;
 
   If Opts.Verbose Then ShowStats;
 
