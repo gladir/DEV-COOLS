@@ -96,7 +96,7 @@
             Pas de types utilisateur en Algol 60 (pas de RECORD, pas d ENUM)
             Verification de type a la compilation pour les operateurs
 
-  TODO 07 - EMETTEUR DE CODE ASM
+  TODO 07 - EMETTEUR DE CODE ASM [IMPLEMENTE]
             TEmitter : OutF (Text), OutFOpen, EmitOpen, EmitClose
             EmitRaw, EmitLabel, EmitInstr (formatage 8 espaces)
             EmitComment, EmitBlankLine
@@ -643,6 +643,14 @@ Procedure EmitHeader;    Forward;
 Procedure EmitDataSeg;   Forward;
 Procedure EmitRaw(Const S : TString); Forward;
 Procedure EmitComment(Const S : TString); Forward;
+{ ---- Forward declarations (TODO 07) ----------------------- }
+Procedure EmitInstrA(Const Mnem, A : TString); Forward;
+Procedure EmitInstrAB(Const Mnem, A, B : TString); Forward;
+Procedure EmitPush(Const Reg : TString); Forward;
+Procedure EmitPop(Const Reg : TString); Forward;
+Procedure EmitMov(Const Dst, Src : TString); Forward;
+Procedure EmitProlog; Forward;
+Procedure EmitEpilog; Forward;
 { ---- Forward declarations (TODO 04) ----------------------- }
 Procedure EmitInstr(Const Mnem, Args : TString); Forward;
 Procedure EmitLabel(Const Lbl : TString); Forward;
@@ -1699,10 +1707,77 @@ Begin
   OutFOpen := True;
 End;
 
-{ ---- EmitHeader : emettre l en-tete MASM (stub TODO 07) ---- }
+{ ============================================================
+  TODO 07 - EMETTEUR DE CODE ASM [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- EmitHeader : emettre l en-tete MASM (TODO 07) ---------- }
+{ Emet : commentaire de generation, .MODEL SMALL, .STACK,
+  ouverture du segment _TEXT avec ASSUME CS:_TEXT.              }
 Procedure EmitHeader;
+Var
+  NS : TString;
 Begin
+  Str(STACK_SIZE, NS);
   EmitComment('Genere par AL60C86 v' + AL60_VERSION + ' - ' + Opts.SrcFile);
+  EmitComment('Cible : 8086 DOS (.MODEL SMALL)');
+  EmitComment('Pile  : ' + NS + ' octets');
+  EmitBlankLine;
+  EmitRaw('        .MODEL  SMALL');
+  EmitRaw('        .STACK  ' + NS);
+  EmitBlankLine;
+  EmitRaw('_TEXT   SEGMENT PUBLIC ''CODE''');
+  EmitRaw('        ASSUME  CS:_TEXT');
+  EmitBlankLine;
+End;
+
+{ ---- EmitInstrA : ecrire une instruction ASM a 1 operande --- }
+{ Exemple : EmitInstrA('PUSH', 'AX')  ->  "        PUSH AX"    }
+Procedure EmitInstrA(Const Mnem, A : TString);
+Begin
+  EmitRaw('        ' + Mnem + ' ' + A);
+End;
+
+{ ---- EmitInstrAB : ecrire une instruction ASM a 2 operandes - }
+{ Exemple : EmitInstrAB('MOV', 'AX', 'BX')  ->  "        MOV AX, BX" }
+Procedure EmitInstrAB(Const Mnem, A, B : TString);
+Begin
+  EmitRaw('        ' + Mnem + ' ' + A + ', ' + B);
+End;
+
+{ ---- EmitPush : emettre PUSH registre ------------------------ }
+Procedure EmitPush(Const Reg : TString);
+Begin
+  EmitInstrA('PUSH', Reg);
+End;
+
+{ ---- EmitPop : emettre POP registre ------------------------- }
+Procedure EmitPop(Const Reg : TString);
+Begin
+  EmitInstrA('POP', Reg);
+End;
+
+{ ---- EmitMov : emettre MOV destination, source --------------- }
+Procedure EmitMov(Const Dst, Src : TString);
+Begin
+  EmitInstrAB('MOV', Dst, Src);
+End;
+
+{ ---- EmitProlog : emettre le prologue de sous-programme ------ }
+{ PUSH BP  /  MOV BP, SP  : sauvegarde et mise en place du cadre }
+Procedure EmitProlog;
+Begin
+  EmitPush('BP');
+  EmitMov('BP', 'SP');
+End;
+
+{ ---- EmitEpilog : emettre l epilogue de sous-programme ------- }
+{ MOV SP, BP  /  POP BP  /  RET  : restauration du cadre et retour }
+Procedure EmitEpilog;
+Begin
+  EmitMov('SP', 'BP');
+  EmitPop('BP');
+  EmitRaw('        RET');
 End;
 
 { ---- EmitDataSeg : emettre le segment _DATA (stub TODO 08) -- }
