@@ -23,7 +23,7 @@
 {  TODO 05 [IMPLEMENTE] - Ecriture binaire du fichier .class (Big-endian)     }
 {  TODO 06 [IMPLEMENTE] - Directives de classe (.class, .super, .implements, .source) }
 {  TODO 07 [IMPLEMENTE] - Directives de champs (.field avec descripteurs et valeurs) }
-{  TODO 08 - Directives de methodes (.method, .end method, .limit)            }
+{  TODO 08 [IMPLEMENTE] - Directives de methodes (.method, .end method, .limit)}
 {  TODO 09 - Descripteurs de types JVM : parsing et validation                }
 {  TODO 10 - Opcodes de chargement et stockage                                }
 {  TODO 11 - Opcodes arithmetiques et logiques                                }
@@ -486,6 +486,15 @@ Function  AddField(flags: Integer; Const name, desc: String): Integer; Forward;
 Procedure ParseFieldInitValue(fIdx: Integer); Forward;
 Procedure ParseFieldDirective; Forward;
 
+{ --- Declarations forward TODO 08 : Directives de methodes --- }
+Procedure EnterMethod(flags: Integer; Const name, desc: String); Forward;
+Procedure LeaveMethod; Forward;
+Procedure ParseMethodDirective; Forward;
+Procedure ParseEndMethod; Forward;
+Procedure ParseLimitDirective; Forward;
+Procedure ParseLineDirective; Forward;
+Procedure ParseThrowsDirective; Forward;
+
 { ---------- Ouverture et fermeture du fichier source ---------- }
 
 Procedure SrcOpen(Const FileName: String);
@@ -884,6 +893,17 @@ Begin
  End;
 
  ch := SrcGetChar;
+
+ { Si on est tombe sur un espace/tab apres un saut de ligne      }
+ { (SrcRefillLine peut etre appele dans SrcGetChar quand SrcCol   }
+ { depasse Length+1), re-sauter les blancs et relire un caractere }
+ If (ch = ' ') Or (ch = #9) Then
+ Begin
+  SkipWhitespace;
+  If SrcEof Then
+  Begin CurTok := TK_EOF; CurStr := ''; Exit; End;
+  ch := SrcGetChar;
+ End;
 
  { Fin de fichier }
  If ch = #0 Then
@@ -2043,6 +2063,289 @@ Begin
  End;
 End;
 
+{ ============================================================================ }
+{ Directives de methodes (.method, .end method, .limit, .line, .throws)        }
+{ ============================================================================ }
+
+{ --- EnterMethod : initialiser l'etat pour une nouvelle methode --- }
+{ Alloue les buffers, initialise les compteurs, met InMethod a True. }
+Procedure EnterMethod(flags: Integer; Const name, desc: String);
+Begin
+ If InMethod Then
+ Begin
+  Error('.method : methode precedente non terminee (.end method manquant)');
+  LeaveMethod;
+ End;
+ If MethodCount >= MAX_METHODS Then
+ Begin
+  Error('.method : trop de methodes (max ' + IntToStr_(MAX_METHODS) + ')');
+  Exit;
+ End;
+ Inc(MethodCount);
+ CurMethod := MethodCount;
+ InMethod  := True;
+ With MethodTab^[CurMethod] do
+ Begin
+  AccFlags   := flags;
+  NameIdx    := CPEnsureUtf8(name);
+  DescIdx    := CPEnsureUtf8(desc);
+  MaxStack   := 0;
+  MaxLocals  := 0;
+  CodeSize   := 0;
+  ExcCount   := 0;
+  LineCount  := 0;
+  LabelCount := 0;
+  ThrowCount := 0;
+  Name       := name;
+  Desc       := desc;
+  HasCode    := ((flags and ACC_ABSTRACT) = 0) And ((flags and ACC_NATIVE) = 0);
+  HasStack   := False;
+  HasLocals  := False;
+  { Allouer les buffers }
+  If HasCode Then
+  Begin
+   New(Code);
+   FillChar(Code^, SizeOf(TCodeBuf), 0);
+  End
+  Else
+   Code := Nil;
+  New(ExcTab);
+  New(LineTab);
+  New(Labels);
+ End;
+End;
+
+{ --- LeaveMethod : finaliser la methode courante --- }
+{ Verifie les labels non resolus, affiche un avertissement si .limit absent. }
+Procedure LeaveMethod;
+Var i: Integer;
+Begin
+ If Not InMethod Then
+ Begin
+  Error('.end method : pas dans une methode');
+  Exit;
+ End;
+ With MethodTab^[CurMethod] do
+ Begin
+  { Verifier les labels non resolus }
+  For i := 1 to LabelCount do
+  Begin
+   If Not Labels^[i].Resolved Then
+    Warning('.end method : label ''' + Labels^[i].Name + ''' non resolu');
+  End;
+  { Avertissement si .limit stack/locals absent pour methode avec code }
+  If HasCode Then
+  Begin
+   If Not HasStack Then
+    Warning('.method ' + Name + ' : .limit stack non defini, defaut 0');
+   If Not HasLocals Then
+    Warning('.method ' + Name + ' : .limit locals non defini, defaut 0');
+  End;
+ End;
+ InMethod  := False;
+ CurMethod := 0;
+End;
+
+{ --- ParseMethodDirective : .method <access> <name><descriptor> --- }
+{ Parse une declaration de methode et l'ajoute a la table.            }
+Procedure ParseMethodDirective;
+Var flags: Integer;
+    mName, mDesc, combined: String;
+    paren: Integer;
+Begin
+ { Decoder les drapeaux d'acces }
+ flags := ParseAccessFlags;
+ { Lire le nom+descripteur }
+ { En Jasmin, le nom et le descripteur sont colles : add(II)I }
+ { Ou bien pour <init> : <init>()V                            }
+ If CurTok = TK_IDENT Then
+ Begin
+  combined := CurStr;
+  Consume;
+ End
+ Else
+ Begin
+  Error('.method : nom et descripteur attendus');
+  Exit;
+ End;
+ { Separer le nom du descripteur (chercher la premiere parenthese) }
+ paren := Pos('(', combined);
+ If paren = 0 Then
+ Begin
+  { Pas de parenthese : c'est un nom seul (abstract/native sans desc?) }
+  mName := combined;
+  mDesc := '()V';
+  Warning('.method : descripteur manquant pour ' + mName + ', defaut ()V');
+ End
+ Else
+ Begin
+  mName := Copy(combined, 1, paren - 1);
+  mDesc := Copy(combined, paren, Length(combined) - paren + 1);
+ End;
+ If mName = '' Then
+ Begin
+  Error('.method : nom de methode vide');
+  Exit;
+ End;
+ { Entrer dans la methode }
+ EnterMethod(flags, mName, mDesc);
+ If OptVerbose Then
+ Begin
+  Write('  .method ');
+  If (flags and ACC_PUBLIC) <> 0 Then Write('public ');
+  If (flags and ACC_PRIVATE) <> 0 Then Write('private ');
+  If (flags and ACC_PROTECTED) <> 0 Then Write('protected ');
+  If (flags and ACC_STATIC) <> 0 Then Write('static ');
+  If (flags and ACC_FINAL) <> 0 Then Write('final ');
+  If (flags and ACC_SYNCHRONIZED) <> 0 Then Write('synchronized ');
+  If (flags and ACC_NATIVE) <> 0 Then Write('native ');
+  If (flags and ACC_ABSTRACT) <> 0 Then Write('abstract ');
+  If (flags and ACC_STRICT) <> 0 Then Write('strictfp ');
+  WriteLn(mName, mDesc);
+ End;
+End;
+
+{ --- ParseEndMethod : .end method --- }
+{ Consomme le mot 'method' apres .end, puis finalise la methode.  }
+Procedure ParseEndMethod;
+Begin
+ { Le token .end a deja ete consomme, on attend 'method' }
+ If (CurTok = TK_IDENT) And (CurStr = 'method') Then
+  Consume
+ Else
+ Begin
+  Error('.end : mot ''method'' attendu');
+  Exit;
+ End;
+ If Not InMethod Then
+ Begin
+  Error('.end method : pas dans une methode');
+  Exit;
+ End;
+ If OptVerbose Then
+  WriteLn('  .end method (', MethodTab^[CurMethod].Name,
+          MethodTab^[CurMethod].Desc, ', code=',
+          MethodTab^[CurMethod].CodeSize, ' octets, labels=',
+          MethodTab^[CurMethod].LabelCount, ', lines=',
+          MethodTab^[CurMethod].LineCount, ', throws=',
+          MethodTab^[CurMethod].ThrowCount, ')');
+ LeaveMethod;
+End;
+
+{ --- ParseLimitDirective : .limit stack <N> / .limit locals <N> --- }
+{ Definit max_stack ou max_locals pour la methode courante.          }
+Procedure ParseLimitDirective;
+Var what: String;
+Begin
+ If Not InMethod Then
+ Begin
+  Error('.limit : directive valide uniquement dans une methode');
+  Exit;
+ End;
+ { Lire 'stack' ou 'locals' }
+ If CurTok = TK_IDENT Then
+ Begin
+  what := CurStr;
+  Consume;
+ End
+ Else
+ Begin
+  Error('.limit : ''stack'' ou ''locals'' attendu');
+  Exit;
+ End;
+ { Lire la valeur N }
+ If CurTok <> TK_INTEGER Then
+ Begin
+  Error('.limit ' + what + ' : valeur entiere attendue');
+  Exit;
+ End;
+ If what = 'stack' Then
+ Begin
+  MethodTab^[CurMethod].MaxStack := CurInt;
+  MethodTab^[CurMethod].HasStack := True;
+  If OptVerbose Then
+   WriteLn('    .limit stack ', CurInt);
+  Consume;
+ End
+ Else If what = 'locals' Then
+ Begin
+  MethodTab^[CurMethod].MaxLocals := CurInt;
+  MethodTab^[CurMethod].HasLocals := True;
+  If OptVerbose Then
+   WriteLn('    .limit locals ', CurInt);
+  Consume;
+ End
+ Else
+  Error('.limit : ''stack'' ou ''locals'' attendu, pas ''' + what + '''');
+End;
+
+{ --- ParseLineDirective : .line <N> --- }
+{ Ajoute une entree dans la LineNumberTable de la methode courante. }
+Procedure ParseLineDirective;
+Begin
+ If Not InMethod Then
+ Begin
+  Error('.line : directive valide uniquement dans une methode');
+  Exit;
+ End;
+ If CurTok <> TK_INTEGER Then
+ Begin
+  Error('.line : numero de ligne attendu');
+  Exit;
+ End;
+ With MethodTab^[CurMethod] do
+ Begin
+  If LineCount >= MAX_LINES Then
+  Begin
+   Error('.line : trop d''entrees LineNumberTable (max ' + IntToStr_(MAX_LINES) + ')');
+   Consume;
+   Exit;
+  End;
+  Inc(LineCount);
+  LineTab^[LineCount].Line   := CurInt;
+  LineTab^[LineCount].Offset := CodeSize;  { PC courant }
+ End;
+ If OptVerbose Then
+  WriteLn('    .line ', CurInt);
+ Consume;
+End;
+
+{ --- ParseThrowsDirective : .throws <classname> --- }
+{ Ajoute une exception declaree a la methode courante. }
+Procedure ParseThrowsDirective;
+Var cn: String;
+    classIdx: Integer;
+Begin
+ If Not InMethod Then
+ Begin
+  Error('.throws : directive valide uniquement dans une methode');
+  Exit;
+ End;
+ If CurTok = TK_IDENT Then
+ Begin
+  cn := ConvertClassName(CurStr);
+  Consume;
+ End
+ Else
+ Begin
+  Error('.throws : nom de classe attendu');
+  Exit;
+ End;
+ With MethodTab^[CurMethod] do
+ Begin
+  If ThrowCount >= MAX_THROWS Then
+  Begin
+   Error('.throws : trop d''exceptions declarees (max ' + IntToStr_(MAX_THROWS) + ')');
+   Exit;
+  End;
+  classIdx := CPAddClass(cn);
+  Inc(ThrowCount);
+  ThrowIdx[ThrowCount] := classIdx;
+ End;
+ If OptVerbose Then
+  WriteLn('    .throws ', cn);
+End;
+
 { --- ParseDirectives : dispatcher principal des directives de classe --- }
 { Parcourt les tokens et dispatche les directives connues.                }
 { Les directives non encore implementees sont signalees et sautees.       }
@@ -2103,10 +2406,40 @@ Begin
      ParseFieldDirective;
      SkipToEOL;
     End;
+    DIR_METHOD:
+    Begin
+     Consume;
+     ParseMethodDirective;
+     SkipToEOL;
+    End;
+    DIR_END:
+    Begin
+     Consume;
+     ParseEndMethod;
+     SkipToEOL;
+    End;
+    DIR_LIMIT:
+    Begin
+     Consume;
+     ParseLimitDirective;
+     SkipToEOL;
+    End;
+    DIR_LINE:
+    Begin
+     Consume;
+     ParseLineDirective;
+     SkipToEOL;
+    End;
+    DIR_THROWS:
+    Begin
+     Consume;
+     ParseThrowsDirective;
+     SkipToEOL;
+    End;
    Else
-    { Directives non encore implementees (TODO 08+) : sauter la ligne }
+    { Directives non encore implementees (TODO 09+) : sauter la ligne }
     If OptVerbose Then
-     WriteLn('  [skip] directive ', CurStr, ' (TODO 08+)');
+     WriteLn('  [skip] directive ', CurStr, ' (TODO 09+)');
     SkipToEOL;
    End;  { Case }
   End
@@ -2115,6 +2448,12 @@ Begin
    { Token non-directive : labels, instructions, etc. -> sauter la ligne }
    SkipToEOL;
   End;
+ End;
+ { Si on quitte la boucle avec une methode encore ouverte }
+ If InMethod Then
+ Begin
+  Error('fin de fichier dans une methode (manque .end method)');
+  LeaveMethod;
  End;
 End;
 

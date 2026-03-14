@@ -144,7 +144,7 @@ TODO 07 [IMPLEMENTE] - Directives de champs (.field avec descripteurs et valeurs
   - Validation du descripteur de champ (I, J, F, D, B, C, S, Z,
     Lclassname;, [type)
 
-TODO 08 - Directives de methodes (.method, .end method, .limit)
+TODO 08 [IMPLEMENTE] - Directives de methodes (.method, .end method, .limit)
   ---------------------------------------------------------------
   - ParseMethodDirective : .method <access_flags> <name><descriptor>
     -> decoder drapeaux (public, private, protected, static, final,
