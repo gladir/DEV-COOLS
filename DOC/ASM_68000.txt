@@ -4112,3 +4112,936 @@
   ILLEGAL               Force une exception Illegal Instruction
   MOVE to/from SR       Lire/ecrire le registre d'etat
   MOVE USP              Transfert du pointeur de pile utilisateur
+
+==============================================================================
+7. COPROCESSEUR FLOTTANT (68881/68882)
+==============================================================================
+
+  7.1 Presentation generale
+  --------------------------
+
+  Le Motorola 68881 (1982) et le 68882 (1985) sont des coprocesseurs
+  arithmetiques flottants concuts pour fonctionner avec les processeurs
+  de la famille 68000 (68020, 68030, etc.). Ils implementent la
+  norme IEEE 754 pour l'arithmetique en virgule flottante, offrant
+  une precision etendue de 80 bits (64 bits de mantisse).
+
+  Le 68881/68882 se connecte au processeur principal via l'interface
+  coprocesseur du 68020/68030. Le processeur detecte automatiquement
+  la presence du coprocesseur et lui delegue les instructions
+  flottantes. Toutes les instructions FPU commencent par le prefixe
+  "F" (FADD, FMUL, FSQRT, etc.).
+
+  Sur le 68000/68010, le coprocesseur n'est pas directement supporte
+  par le materiel. Les opcodes $Fxxx generent une exception Line F
+  (vecteur 11), et un emulateur logiciel peut etre installe pour
+  simuler les instructions flottantes.
+
+  A partir du 68040, le coprocesseur flottant est integre directement
+  dans le processeur (FPU interne), avec un sous-ensemble des
+  instructions du 68881/68882. Les instructions non implementees en
+  materiel generent une exception Line F qui est traitee par une
+  bibliotheque d'emulation logicielle.
+
+  Caracteristiques principales :
+    - 8 registres flottants de 80 bits (FP0-FP7)
+    - 3 registres de controle (FPCR, FPSR, FPIAR)
+    - Conformite IEEE 754 (arrondi, infinis, NaN, denormes)
+    - 46 operations arithmetiques et transcendantes
+    - Support de 7 formats de donnees
+    - Modes d'arrondi configurables
+    - Exceptions flottantes avec vecteurs dedies
+
+  7.2 Architecture et registres
+  -------------------------------
+
+  7.2.1 Registres de donnees flottants (FP0-FP7)
+
+  Le 68881/68882 possede 8 registres de donnees flottants,
+  chacun de 80 bits au format etendu IEEE 754 :
+
+    79 78          64 63                                     0
+  +----+-------------+----------------------------------------+
+  | S  |  Exposant   |             Mantisse                   |
+  | 1b |   15 bits   |             64 bits                    |
+  +----+-------------+----------------------------------------+
+
+  S (bit 79)        : Signe (0 = positif, 1 = negatif)
+  Exposant (78-64)  : Exposant biaise (biais = 16383)
+  Mantisse (63-0)   : Mantisse avec bit entier explicite (bit 63)
+
+  Contrairement au format double precision IEEE (64 bits) ou le
+  bit entier est implicite, le format etendu 80 bits utilise un
+  bit entier explicite (bit 63 de la mantisse). Cela simplifie
+  le materiel et evite certains cas particuliers.
+
+  Plage de valeurs (format etendu) :
+    - Plus petit normalise : environ 3.4 * 10^-4932
+    - Plus grand normalise : environ 1.2 * 10^+4932
+    - Precision : environ 18-19 chiffres decimaux significatifs
+
+  Tous les calculs internes sont effectues en precision etendue
+  (80 bits), quel que soit le format des operandes sources.
+  La conversion vers un format de precision inferieure se fait
+  lors de l'ecriture du resultat en memoire.
+
+  Les registres FP0-FP7 sont d'usage general, sans role particulier
+  impose par l'architecture (contrairement a la pile du 8087/80387).
+
+  7.2.2 Registre de controle (FPCR - Floating-Point Control Register)
+
+  Le FPCR (32 bits) controle le comportement du coprocesseur :
+
+    31                  16 15     12 11  10  9  8 7      4 3  0
+  +----------------------+---------+---+---+---+-+--------+----+
+  |       (Reserve)      |Exception|RND|RND|PRC|P|  (Res) | EE |
+  |                      |  Enable | 1 | 0 | 1 |R|        |    |
+  +----------------------+---------+---+---+---+-+--------+----+
+
+  Bits 15-8 : Exception Enable byte
+    Chaque bit active la generation d'une exception IEEE 754
+    pour le type d'erreur correspondant :
+
+    Bit  Exception
+    ---  --------------------
+    15   BSUN  (Branch/Set on Unordered)
+    14   SNAN  (Signaling NaN)
+    13   OPERR (Operand Error)
+    12   OVFL  (Overflow)
+    11   UNFL  (Underflow)
+    10   DZ    (Division by Zero)
+     9   INEX2 (Inexact Operation)
+     8   INEX1 (Inexact Decimal Input)
+
+  Bits 5-4 : Rounding Precision (PRC)
+    00 = Precision etendue (80 bits) - defaut
+    01 = Precision simple (32 bits)
+    10 = Precision double (64 bits)
+    11 = (Reserve)
+
+  Bits 7-6 : Rounding Mode (RND)
+    00 = Arrondi au plus proche (Round to Nearest) - defaut IEEE
+    01 = Arrondi vers zero (Round toward Zero / Truncate)
+    10 = Arrondi vers moins l'infini (Round toward -Infinity)
+    11 = Arrondi vers plus l'infini (Round toward +Infinity)
+
+  7.2.3 Registre d'etat (FPSR - Floating-Point Status Register)
+
+  Le FPSR (32 bits) reflete l'etat courant du coprocesseur :
+
+    31  27 26 25 24 23              16 15        8 7       0
+  +------+--+--+--+--+--------------+-----------+---------+
+  | Cond |QS|Q6-Q0  | Except. Byte | Accrued   | (Res)   |
+  +------+--+--+--+--+--------------+-----------+---------+
+
+  Bits 31-24 : Condition Code byte
+    N (bit 27) : Negatif (le resultat est negatif)
+    Z (bit 26) : Zero (le resultat est zero)
+    I (bit 25) : Infini (le resultat est un infini)
+    NAN (bit 24) : Not a Number (le resultat est un NaN)
+
+    Combinaisons utiles pour les comparaisons :
+    N Z I NAN  Signification
+    - - - ---  -------------
+    0 0 0  0   Resultat positif normalise
+    1 0 0  0   Resultat negatif normalise
+    0 1 0  0   Zero positif (+0)
+    1 1 0  0   Zero negatif (-0)
+    0 0 1  0   +Infini
+    1 0 1  0   -Infini
+    0 0 0  1   NaN (non ordonne)
+
+  Bits 23-16 : Exception Status byte
+    Meme disposition que le Exception Enable byte du FPCR.
+    Chaque bit est mis a 1 quand l'exception correspondante
+    se produit. Ces bits sont effaces par le logiciel.
+
+  Bits 15-8 : Accrued Exception byte
+    Bits d'exceptions accumulees (OR logique avec les exceptions
+    precedentes). Ces bits ne sont jamais effaces automatiquement.
+    Utiles pour detecter si une exception s'est produite pendant
+    une sequence de calculs.
+
+  Bits 7-0 : Quotient byte
+    Contient le signe et les 7 bits de poids faible du quotient
+    apres FMOD ou FREM. Utile pour la reduction d'argument
+    dans les fonctions trigonometriques.
+
+  7.2.4 Registre d'adresse d'instruction (FPIAR)
+
+  Le FPIAR (32 bits) contient l'adresse de la derniere instruction
+  FPU executee. Il est automatiquement mis a jour par le coprocesseur
+  avant chaque execution d'instruction. En cas d'exception flottante,
+  le FPIAR permet d'identifier l'instruction fautive.
+
+    FPIAR : Adresse 32 bits de la derniere instruction FPU
+
+  7.3 Formats de donnees
+  ------------------------
+
+  Le 68881/68882 supporte 7 formats de donnees en entree et en
+  sortie. Tous les calculs internes utilisent le format etendu.
+
+  7.3.1 Formats entiers
+
+  Byte Integer (B) : entier signe 8 bits
+    Plage : -128 a +127
+    Taille : 1 octet
+
+  Word Integer (W) : entier signe 16 bits
+    Plage : -32768 a +32767
+    Taille : 2 octets (1 mot)
+
+  Long Integer (L) : entier signe 32 bits
+    Plage : -2147483648 a +2147483647
+    Taille : 4 octets (1 long mot)
+
+  7.3.2 Formats flottants IEEE 754
+
+  Single Precision (S) : 32 bits
+    1 bit signe + 8 bits exposant + 23 bits mantisse (implicite)
+    Precision : environ 7 chiffres decimaux
+    Plage : environ 1.2 * 10^-38 a 3.4 * 10^+38
+
+    31 30    23 22                     0
+  +----+--------+----------------------+
+  | S  |  Exp   |      Mantisse        |
+  | 1b | 8 bits |      23 bits         |
+  +----+--------+----------------------+
+
+  Double Precision (D) : 64 bits
+    1 bit signe + 11 bits exposant + 52 bits mantisse (implicite)
+    Precision : environ 15-16 chiffres decimaux
+    Plage : environ 2.2 * 10^-308 a 1.8 * 10^+308
+
+    63 62       52 51                                    0
+  +----+-----------+-------------------------------------+
+  | S  |    Exp    |            Mantisse                 |
+  | 1b |  11 bits  |            52 bits                  |
+  +----+-----------+-------------------------------------+
+
+  Extended Precision (X) : 80 bits (96 bits en memoire)
+    1 bit signe + 15 bits exposant + 64 bits mantisse (explicite)
+    Precision : environ 18-19 chiffres decimaux
+    Plage : environ 3.4 * 10^-4932 a 1.2 * 10^+4932
+    Note : En memoire, le format etendu occupe 96 bits (12 octets)
+    avec 16 bits de bourrage entre l'exposant et la mantisse.
+
+    95 94     80 79    64 63                              0
+  +----+--------+--------+--------------------------------+
+  | S  |  Exp   |(Unused)|          Mantisse              |
+  | 1b | 15 bits| 16 bits|          64 bits               |
+  +----+--------+--------+--------------------------------+
+
+  7.3.3 Format decimal a virgule flottante (Packed Decimal)
+
+  Packed Decimal (P) : 96 bits (12 octets)
+    Represente un nombre decimal en BCD (Binary Coded Decimal)
+    avec signe, exposant et 17 chiffres de mantisse.
+
+    Utilise principalement pour les conversions entree/sortie
+    (affichage de nombres flottants en decimal). C'est le seul
+    format flottant directement lisible par l'humain.
+
+  7.3.4 Tableau recapitulatif des formats
+
+  Code  Format              Taille    Precision (decimale)
+  ----  ------------------  --------  --------------------
+   B    Byte Integer          1 oct   N/A (entier)
+   W    Word Integer          2 oct   N/A (entier)
+   L    Long Integer          4 oct   N/A (entier)
+   S    Single Precision      4 oct   ~7 chiffres
+   D    Double Precision      8 oct   ~15-16 chiffres
+   X    Extended Precision   12 oct   ~18-19 chiffres
+   P    Packed Decimal       12 oct   17 chiffres BCD
+
+  7.3.5 Valeurs speciales IEEE 754
+
+  Le coprocesseur gere les valeurs speciales definies par IEEE 754 :
+
+  +0.0 et -0.0 : Zero positif et negatif (distincts)
+    Exposant = 0, Mantisse = 0. Le signe distingue +0 de -0.
+
+  +Infini et -Infini : Depassement de capacite
+    Exposant = tous les bits a 1, Mantisse = 0.
+    Resultat de 1.0 / 0.0 = +Infini, -1.0 / 0.0 = -Infini.
+
+  NaN (Not a Number) : Resultat indefini
+    Exposant = tous les bits a 1, Mantisse != 0.
+    Deux types :
+    - QNaN (Quiet NaN) : se propage silencieusement dans les calculs
+    - SNaN (Signaling NaN) : declenche une exception SNAN
+
+  Nombres denormalises : Tres petits nombres proches de zero
+    Exposant = 0, Mantisse != 0.
+    Permettent un underflow progressif (gradual underflow)
+    au lieu d'un passage brutal a zero.
+
+  7.4 Jeu d'instructions
+  ------------------------
+
+  Les instructions du 68881/68882 se divisent en plusieurs
+  categories. Toutes commencent par le prefixe "F".
+
+  7.4.1 Transfert de donnees
+
+  FMOVE    Transfert entre registre FPU, memoire ou registre entier
+
+    FMOVE.X    FP0, FP3         ; Copie FP0 dans FP3
+    FMOVE.S    (A0), FP1        ; Charge un single de memoire dans FP1
+    FMOVE.D    FP2, (A0)        ; Stocke FP2 en double en memoire
+    FMOVE.L    D0, FP0          ; Convertit D0 (entier) en flottant
+    FMOVE.L    FP0, D0          ; Convertit FP0 en entier dans D0
+    FMOVE.W    #5, FP0          ; Charge la constante entiere 5.0
+    FMOVE.P    FP0, (A0){#5}    ; Stocke en packed decimal, 5 chiffres
+
+  FMOVEM   Transfert multiple de registres FPU (equivalent MOVEM)
+
+    FMOVEM.X   FP0-FP3, -(SP)  ; Sauvegarde FP0-FP3 sur la pile
+    FMOVEM.X   (SP)+, FP0-FP3  ; Restaure FP0-FP3 depuis la pile
+    FMOVEM.X   D0, -(SP)       ; Sauvegarde selon masque dans D0
+    FMOVEM.L   FPCR/FPSR, -(SP); Sauvegarde registres de controle
+
+  FMOVECR  Charge une constante ROM dans un registre FP
+
+    FMOVECR.X  #$00, FP0       ; Pi        = 3.14159265358979...
+    FMOVECR.X  #$0B, FP0       ; Log10(2)  = 0.30103...
+    FMOVECR.X  #$0C, FP0       ; e         = 2.71828182845904...
+    FMOVECR.X  #$0D, FP0       ; Log2(e)   = 1.44269...
+    FMOVECR.X  #$0E, FP0       ; Log10(e)  = 0.43429...
+    FMOVECR.X  #$0F, FP0       ; 0.0
+    FMOVECR.X  #$30, FP0       ; Ln(2)     = 0.69314...
+    FMOVECR.X  #$31, FP0       ; Ln(10)    = 2.30258...
+    FMOVECR.X  #$32, FP0       ; 10^0      = 1.0
+    FMOVECR.X  #$33, FP0       ; 10^1      = 10.0
+    FMOVECR.X  #$34, FP0       ; 10^2      = 100.0
+    FMOVECR.X  #$35, FP0       ; 10^4      = 10000.0
+    FMOVECR.X  #$36, FP0       ; 10^8
+    FMOVECR.X  #$37, FP0       ; 10^16
+    FMOVECR.X  #$38, FP0       ; 10^32
+    FMOVECR.X  #$39, FP0       ; 10^64
+    FMOVECR.X  #$3A, FP0       ; 10^128
+    FMOVECR.X  #$3B, FP0       ; 10^256
+    FMOVECR.X  #$3C, FP0       ; 10^512
+    FMOVECR.X  #$3D, FP0       ; 10^1024
+    FMOVECR.X  #$3E, FP0       ; 10^2048
+    FMOVECR.X  #$3F, FP0       ; 10^4096
+
+  7.4.2 Arithmetique de base
+
+  FADD     Addition flottante
+    FADD.S   (A0), FP0         ; FP0 = FP0 + single[A0]
+    FADD.X   FP1, FP0          ; FP0 = FP0 + FP1
+
+  FSUB     Soustraction flottante
+    FSUB.D   (A0), FP0         ; FP0 = FP0 - double[A0]
+    FSUB.X   FP1, FP0          ; FP0 = FP0 - FP1
+
+  FMUL     Multiplication flottante
+    FMUL.S   #"1.5", FP0       ; FP0 = FP0 * 1.5
+    FMUL.X   FP1, FP0          ; FP0 = FP0 * FP1
+
+  FDIV     Division flottante
+    FDIV.D   (A0), FP0         ; FP0 = FP0 / double[A0]
+    FDIV.X   FP1, FP0          ; FP0 = FP0 / FP1
+
+  FSQRT    Racine carree
+    FSQRT.X  FP0               ; FP0 = sqrt(FP0)
+    FSQRT.D  (A0), FP1         ; FP1 = sqrt(double[A0])
+
+  FABS     Valeur absolue
+    FABS.X   FP0               ; FP0 = |FP0|
+    FABS.S   (A0), FP1         ; FP1 = |single[A0]|
+
+  FNEG     Negation (changement de signe)
+    FNEG.X   FP0               ; FP0 = -FP0
+    FNEG.D   (A0), FP1         ; FP1 = -(double[A0])
+
+  FINT     Arrondi a l'entier (selon le mode d'arrondi du FPCR)
+    FINT.X   FP0               ; FP0 = arrondi(FP0)
+
+  FINTRZ   Arrondi a l'entier par troncature (vers zero)
+    FINTRZ.X FP0               ; FP0 = trunc(FP0)
+
+  FMOD     Reste de division (modulo IEEE)
+    FMOD.X   FP1, FP0          ; FP0 = FP0 mod FP1
+
+  FREM     Reste IEEE (arrondi au plus proche)
+    FREM.X   FP1, FP0          ; FP0 = FP0 rem FP1
+
+  FSGLDIV  Division en precision simple (resultat arrondi a 24 bits)
+    FSGLDIV.X FP1, FP0         ; FP0 = FP0 / FP1 (precision S)
+
+  FSGLMUL  Multiplication en precision simple
+    FSGLMUL.X FP1, FP0         ; FP0 = FP0 * FP1 (precision S)
+
+  FSCALE   Mise a l'echelle par une puissance de 2
+    FSCALE.W  D0, FP0          ; FP0 = FP0 * 2^D0
+
+  FGETEXP  Extraire l'exposant
+    FGETEXP.X FP0              ; FP0 = exposant de FP0 (entier flottant)
+
+  FGETMAN  Extraire la mantisse
+    FGETMAN.X FP0              ; FP0 = mantisse de FP0 (1.0 <= |FP0| < 2.0)
+
+  7.4.3 Fonctions trigonometriques
+
+  FSIN     Sinus
+    FSIN.X    FP0              ; FP0 = sin(FP0) (angle en radians)
+
+  FCOS     Cosinus
+    FCOS.X    FP0              ; FP0 = cos(FP0)
+
+  FTAN     Tangente
+    FTAN.X    FP0              ; FP0 = tan(FP0)
+
+  FSINCOS  Sinus et cosinus simultanes
+    FSINCOS.X FP0, FP2:FP0    ; FP0 = cos(FP0), FP2 = sin(FP0)
+
+  FASIN    Arc sinus
+    FASIN.X   FP0              ; FP0 = arcsin(FP0)
+
+  FACOS    Arc cosinus
+    FACOS.X   FP0              ; FP0 = arccos(FP0)
+
+  FATAN    Arc tangente
+    FATAN.X   FP0              ; FP0 = arctan(FP0)
+
+  FATANH   Tangente hyperbolique inverse
+    FATANH.X  FP0              ; FP0 = atanh(FP0)
+
+  FSINH    Sinus hyperbolique
+    FSINH.X   FP0              ; FP0 = sinh(FP0)
+
+  FCOSH    Cosinus hyperbolique
+    FCOSH.X   FP0              ; FP0 = cosh(FP0)
+
+  FTANH    Tangente hyperbolique
+    FTANH.X   FP0              ; FP0 = tanh(FP0)
+
+  7.4.4 Fonctions exponentielles et logarithmiques
+
+  FETOX    Exponentielle e^x
+    FETOX.X   FP0              ; FP0 = e^FP0
+
+  FETOXM1  e^x - 1 (precision accrue pour x proche de 0)
+    FETOXM1.X FP0              ; FP0 = e^FP0 - 1
+
+  FTWOTOX  Puissance de 2 : 2^x
+    FTWOTOX.X FP0              ; FP0 = 2^FP0
+
+  FTENTOX  Puissance de 10 : 10^x
+    FTENTOX.X FP0              ; FP0 = 10^FP0
+
+  FLOGN    Logarithme naturel (base e)
+    FLOGN.X   FP0              ; FP0 = ln(FP0)
+
+  FLOGNP1  ln(x+1) (precision accrue pour x proche de 0)
+    FLOGNP1.X FP0              ; FP0 = ln(FP0 + 1)
+
+  FLOG10   Logarithme decimal (base 10)
+    FLOG10.X  FP0              ; FP0 = log10(FP0)
+
+  FLOG2    Logarithme binaire (base 2)
+    FLOG2.X   FP0              ; FP0 = log2(FP0)
+
+  7.4.5 Comparaisons et tests
+
+  FCMP     Comparaison flottante (positionne les codes condition)
+    FCMP.X    FP1, FP0         ; Compare FP0 avec FP1
+    FCMP.D    (A0), FP0        ; Compare FP0 avec double[A0]
+
+  FTST     Test flottant (compare avec zero)
+    FTST.X    FP0              ; Positionne N, Z, I, NAN selon FP0
+    FTST.S    (A0)             ; Teste le single en memoire
+
+  FBcc     Branchement conditionnel flottant
+
+    Les codes condition flottants sont differents des codes
+    condition entiers. Ils tiennent compte des NaN et des
+    relations IEEE 754 :
+
+    Code   Condition               Test
+    -----  ----------------------  -------------------------
+    FEQ    Equal                   Z
+    FNE    Not Equal               NOT Z
+    FGT    Greater Than            NOT (NAN OR Z OR N)
+    FGE    Greater or Equal        Z OR NOT (NAN OR N)
+    FLT    Less Than               N AND NOT (NAN OR Z)
+    FLE    Less or Equal           Z OR (N AND NOT NAN)
+    FGL    Greater or Less         NOT (NAN OR Z)
+    FGLE   Greater, Less or Equal  NOT NAN
+    FUN    Unordered               NAN
+    FUEQ   Unordered or Equal      NAN OR Z
+    FUGT   Unordered or GT         NAN OR NOT (N OR Z)
+    FUGE   Unordered or GE         NAN OR Z OR NOT N
+    FULT   Unordered or LT         NAN OR (N AND NOT Z)
+    FULE   Unordered or LE         NAN OR Z OR N
+    FT     True (toujours vrai)    1
+    FF     False (toujours faux)   0
+
+    Exemples :
+      FCMP.X   FP1, FP0
+      FBEQ     label_egal       ; Branche si FP0 == FP1
+      FBGT     label_plus_grand ; Branche si FP0 > FP1
+      FBUN     label_nan        ; Branche si comparaison non ordonnee
+
+  FDBcc    Decrement and Branch (boucle flottante)
+    FDBcc    Dn, label          ; Si NOT cc : Dn = Dn - 1, si Dn != -1 : branche
+
+  FScc     Set selon condition flottante
+    FSEQ     D0                 ; D0 = $FF si FP egal, $00 sinon
+    FSGT     (A0)               ; Octet[A0] = $FF si FP plus grand
+
+  7.4.6 Instructions de transfert de registres systeme
+
+  FMOVE.L  FPCR, <ea>          ; Lire le registre de controle
+  FMOVE.L  <ea>, FPCR          ; Ecrire le registre de controle
+  FMOVE.L  FPSR, <ea>          ; Lire le registre d'etat
+  FMOVE.L  <ea>, FPSR          ; Ecrire le registre d'etat
+  FMOVE.L  FPIAR, <ea>         ; Lire l'adresse d'instruction
+  FMOVE.L  <ea>, FPIAR         ; Ecrire l'adresse d'instruction
+
+  FNOP     No Operation (instruction FPU vide)
+    FNOP                        ; Pas d'operation
+
+  FSAVE    Sauvegarde l'etat interne du coprocesseur
+    FSAVE    -(SP)              ; Sauvegarde l'etat complet sur la pile
+    Instruction privilegiee (mode superviseur uniquement).
+    Sauvegarde le cadre d'etat interne (taille variable selon le
+    modele et l'etat courant).
+
+  FRESTORE Restaure l'etat interne du coprocesseur
+    FRESTORE (SP)+              ; Restaure l'etat depuis la pile
+    Instruction privilegiee. Doit etre utilisee avec un cadre
+    genere par FSAVE. Utilise pour le changement de contexte.
+
+  7.4.7 Tableau recapitulatif des instructions
+
+  Instruction  Description                        Operande
+  -----------  ---------------------------------  -------------------
+  FABS         Valeur absolue                     FPm -> FPn ou <ea> -> FPn
+  FACOS        Arc cosinus                        FPm -> FPn ou <ea> -> FPn
+  FADD         Addition                           FPm -> FPn ou <ea> -> FPn
+  FASIN        Arc sinus                          FPm -> FPn ou <ea> -> FPn
+  FATAN        Arc tangente                       FPm -> FPn ou <ea> -> FPn
+  FATANH       Tangente hyperbolique inverse      FPm -> FPn ou <ea> -> FPn
+  FBcc         Branchement conditionnel           label
+  FCMP         Comparaison                        FPm, FPn ou <ea>, FPn
+  FCOS         Cosinus                            FPm -> FPn ou <ea> -> FPn
+  FCOSH        Cosinus hyperbolique               FPm -> FPn ou <ea> -> FPn
+  FDBcc        Decrement and Branch               Dn, label
+  FDIV         Division                           FPm -> FPn ou <ea> -> FPn
+  FETOX        e^x                                FPm -> FPn ou <ea> -> FPn
+  FETOXM1      e^x - 1                            FPm -> FPn ou <ea> -> FPn
+  FGETEXP      Extraire exposant                  FPm -> FPn ou <ea> -> FPn
+  FGETMAN      Extraire mantisse                  FPm -> FPn ou <ea> -> FPn
+  FINT         Arrondi a l'entier                 FPm -> FPn ou <ea> -> FPn
+  FINTRZ       Troncature a l'entier              FPm -> FPn ou <ea> -> FPn
+  FLOG10       Logarithme base 10                 FPm -> FPn ou <ea> -> FPn
+  FLOG2        Logarithme base 2                  FPm -> FPn ou <ea> -> FPn
+  FLOGN        Logarithme naturel                 FPm -> FPn ou <ea> -> FPn
+  FLOGNP1      ln(x+1)                            FPm -> FPn ou <ea> -> FPn
+  FMOD         Modulo IEEE                        FPm -> FPn ou <ea> -> FPn
+  FMOVE        Transfert de donnees               FPm/FPn/<ea>
+  FMOVECR      Charger constante ROM              #cst -> FPn
+  FMOVEM       Transfert multiple                 Masque, <ea>
+  FMUL         Multiplication                     FPm -> FPn ou <ea> -> FPn
+  FNEG         Negation                           FPm -> FPn ou <ea> -> FPn
+  FNOP         No operation                       (aucun)
+  FREM         Reste IEEE                         FPm -> FPn ou <ea> -> FPn
+  FRESTORE     Restaurer etat FPU                 <ea>
+  FSAVE        Sauvegarder etat FPU               <ea>
+  FSCALE       Echelle (mul par 2^n)              FPm -> FPn ou <ea> -> FPn
+  FScc         Set conditionnel                   <ea>
+  FSGLDIV      Division simple precision           FPm -> FPn ou <ea> -> FPn
+  FSGLMUL      Multiplication simple precision     FPm -> FPn ou <ea> -> FPn
+  FSIN         Sinus                              FPm -> FPn ou <ea> -> FPn
+  FSINCOS      Sinus et cosinus                   FPm -> FPc:FPs
+  FSINH        Sinus hyperbolique                 FPm -> FPn ou <ea> -> FPn
+  FSQRT        Racine carree                      FPm -> FPn ou <ea> -> FPn
+  FSUB         Soustraction                       FPm -> FPn ou <ea> -> FPn
+  FTAN         Tangente                           FPm -> FPn ou <ea> -> FPn
+  FTANH        Tangente hyperbolique              FPm -> FPn ou <ea> -> FPn
+  FTENTOX      10^x                               FPm -> FPn ou <ea> -> FPn
+  FTST         Test (comparaison avec zero)       FPm ou <ea>
+  FTWOTOX      2^x                                FPm -> FPn ou <ea> -> FPn
+
+  Total : 46 instructions
+
+  7.5 Codage des instructions FPU
+  ---------------------------------
+
+  Les instructions du coprocesseur flottant utilisent le format
+  de ligne F ($Fxxx). Le premier mot de l'instruction a le format :
+
+    15 14 13 12 11  9  8  6  5        0
+  +--+--+--+--+-----+-----+----------+
+  | 1  1  1  1| CP ID| Type|    EA    |
+  +--+--+--+--+-----+-----+----------+
+
+  Bits 15-12 : 1111 ($F) - identifie une instruction coprocesseur
+  Bits 11-9  : CP ID - identificateur du coprocesseur
+               001 = coprocesseur flottant (68881/68882)
+  Bits 8-6   : Type d'operation
+               000 = operations generales (FMOVE, FADD, etc.)
+               001 = FDBcc, FScc, FTRAPcc
+               010 = FBcc (branchement, deplacement mot)
+               011 = FBcc (branchement, deplacement long)
+               100 = FSAVE
+               101 = FRESTORE
+  Bits 5-0   : Champ EA (mode d'adressage effectif) si applicable
+
+  Le deuxieme mot (command word) precise l'operation :
+
+  7.5.1 Format general (Type = 000)
+
+    15 14 13 12  11 10  9  8  7 6     0
+  +--+--+--+-----+--------+--+-------+
+  |R/M|  0| Src  | Dst Reg|  | OpCode|
+  +--+--+--+-----+--------+--+-------+
+
+  Bit 15 (R/M) : Source
+    0 = Registre FP (FPm) comme source
+    1 = Memoire (<ea>) comme source
+
+  Bit 14 : Reserve (0)
+
+  Bits 13-10 : Source Specifier
+    Si R/M = 0 : Numero du registre source FPm (3 bits, bits 12-10)
+    Si R/M = 1 : Format de la donnee source (3 bits) :
+      000 = Long Integer (L)
+      001 = Single Precision (S)
+      010 = Extended Precision (X)
+      011 = Packed Decimal (P)
+      100 = Word Integer (W)
+      101 = Double Precision (D)
+      110 = Byte Integer (B)
+
+  Bits 9-7 : Destination Register (numero du registre FPn destination)
+
+  Bits 6-0 : Opcode (code de l'operation)
+    Exemples :
+    $00 = FMOVE    $04 = FSQRT    $08 = FETOXM1
+    $01 = FINT     $05 = (reserve) $09 = FTANH
+    $02 = FSINH    $06 = FLOGNP1  $0A = FATAN
+    $03 = FINTRZ   $07 = (reserve) $0B = (reserve)
+    $0C = FASIN    $10 = FETOX    $14 = FLOGN
+    $0D = FATANH   $11 = FTWOTOX  $15 = FLOG10
+    $0E = FSIN     $12 = FTENTOX  $16 = FLOG2
+    $0F = FTAN     $13 = (reserve) $17 = (reserve)
+    $18 = FABS     $1C = FCOS
+    $19 = FCOSH    $1D = FGETEXP
+    $1A = FNEG     $1E = FGETMAN
+    $20 = FDIV     $24 = FSGLDIV  $28 = FSUB
+    $21 = FMOD     $25 = FREM     $29 = (reserve)
+    $22 = FADD     $26 = FSCALE   $30 = FSINCOS (FP0:FPn)
+    $23 = FMUL     $27 = FSGLMUL  $38 = FCMP
+    $3A = FTST
+
+  7.5.2 Exemple de codage : FADD.S (A0), FP2
+
+  Mot 1 : $F200 + EA(A0)
+    1111 001 000 010 000
+    F       CP=1  Type=000  EA = (A0) = mode 010, reg 000
+
+  Mot 2 : R/M=1, Format=001(S), Dst=010(FP2), Op=$22(FADD)
+    1 0 001 010 0 0100010
+    = $4622 (approximation)
+
+  L'instruction complete fait 2 mots (4 octets).
+  Si la source est en memoire avec un mode d'adressage complexe,
+  des mots d'extension supplementaires sont ajoutes (deplacement,
+  adresse absolue, etc.), comme pour les instructions entieres.
+
+  7.5.3 Exemple de codage : FMOVE.X FP1, FP3
+
+  Mot 1 : $F200 (pas de champ EA car registre-a-registre)
+    1111 001 000 000 000
+
+  Mot 2 : R/M=0, Src=001(FP1), Dst=011(FP3), Op=$00(FMOVE)
+    0 0 001 011 0 0000000
+    = $0580
+
+  7.6 Exceptions flottantes
+  ---------------------------
+
+  Le 68881/68882 peut generer 8 types d'exceptions flottantes,
+  chacune pouvant etre activee individuellement via le FPCR.
+  Quand une exception activee se produit, le coprocesseur signale
+  une exception au processeur principal, qui la traite via le
+  mecanisme d'exceptions standard du 68020/68030.
+
+  7.6.1 Types d'exceptions
+
+  BSUN (Branch/Set on Unordered) :
+    Declenchee quand un FBcc ou FScc est execute alors que le
+    bit NAN du FPSR est positionne (comparaison non ordonnee).
+    Permet de detecter les comparaisons avec NaN.
+
+  SNAN (Signaling NaN) :
+    Declenchee quand un SNaN (Signaling Not-a-Number) est utilise
+    comme operande. Les SNaN sont distincts des QNaN (Quiet NaN)
+    qui se propagent silencieusement.
+
+  OPERR (Operand Error) :
+    Declenchee pour les operations mathematiquement indefinies :
+    - 0 / 0 ou Infini / Infini
+    - 0 * Infini
+    - Infini - Infini (meme signe)
+    - sqrt(negatif)
+    - Conversion impossible (valeur hors plage du format cible)
+
+  OVFL (Overflow) :
+    Declenchee quand le resultat est trop grand pour etre
+    represente dans le format de destination.
+    Le resultat est mis a +/- Infini (selon le mode d'arrondi).
+
+  UNFL (Underflow) :
+    Declenchee quand le resultat est trop petit pour etre
+    represente en format normalise. Le resultat peut etre
+    denormalise (underflow progressif IEEE) ou mis a zero.
+
+  DZ (Division by Zero) :
+    Declenchee quand un nombre fini non nul est divise par zero.
+    Le resultat est +/- Infini (signe selon les operandes).
+    Note : 0/0 genere OPERR, pas DZ.
+
+  INEX2 (Inexact Operation) :
+    Declenchee quand le resultat d'une operation ne peut pas
+    etre represente exactement dans le format de destination
+    (arrondi necessaire). C'est l'exception la plus frequente.
+
+  INEX1 (Inexact Decimal Input) :
+    Declenchee quand la conversion d'un nombre en format Packed
+    Decimal ne peut pas etre effectuee exactement.
+
+  7.6.2 Vecteurs d'exception
+
+  Les exceptions du coprocesseur utilisent les vecteurs suivants
+  dans la table des vecteurs du 68020/68030 :
+
+  Vecteur  Adresse  Description
+  -------  -------  -----------------------------------
+  48       $0C0     BSUN (Branch/Set on Unordered)
+  49       $0C4     Inexact Result (INEX1 ou INEX2)
+  50       $0C8     Divide by Zero (DZ)
+  51       $0CC     Underflow (UNFL)
+  52       $0D0     Operand Error (OPERR)
+  53       $0D4     Overflow (OVFL)
+  54       $0D8     Signaling NaN (SNAN)
+
+  Note : ces vecteurs sont dans la plage 48-54 ($0C0-$0D8),
+  qui est dans la zone reservee aux coprocesseurs (vecteurs
+  48-63) de la table des vecteurs du 68000.
+
+  7.6.3 Traitement des exceptions
+
+  Quand une exception FPU est activee dans le FPCR et se produit :
+
+  1. Le coprocesseur positionne le bit correspondant dans le
+     Exception Status byte du FPSR
+  2. Le coprocesseur positionne le bit dans le Accrued Exception
+     byte du FPSR (accumulation)
+  3. Le coprocesseur signale l'exception au processeur principal
+  4. Le processeur empile le cadre de pile d'exception (SR, PC)
+  5. Le processeur charge le PC depuis la table des vecteurs
+  6. Le handler d'exception peut lire le FPSR et le FPIAR pour
+     determiner la cause et l'instruction fautive
+
+  Si l'exception n'est pas activee dans le FPCR, le coprocesseur
+  utilise le comportement par defaut IEEE 754 :
+    - OVFL : resultat = +/- Infini
+    - UNFL : resultat denormalise ou zero
+    - DZ   : resultat = +/- Infini
+    - INEX : resultat arrondi
+    - OPERR: resultat = NaN
+    - SNAN : converti en QNaN
+
+  7.7 Differences entre 68881 et 68882
+  ---------------------------------------
+
+  Le 68882 est une version amelioree du 68881, avec les
+  differences suivantes :
+
+  Caracteristique         68881             68882
+  ----------------------  ----------------  ----------------
+  Annee de sortie         1982              1985
+  Frequence maximale      16 MHz            50 MHz
+  Parallelisme            Non               Oui (pipeline)
+  Execution concurrente   Non               Oui (avec le CPU)
+  Vitesse moyenne         Reference         1.5 a 2x plus rapide
+  Protocole coprocesseur  Standard          Ameliore
+  Brochage                Compatible        Compatible
+  Jeu d'instructions      Identique         Identique
+
+  Ameliorations du 68882 :
+    - Pipeline interne permettant le chevauchement des operations
+    - Execution concurrente : le processeur principal peut
+      continuer a executer des instructions entieres pendant
+      que le 68882 calcule
+    - Meilleur debit sur les sequences d'instructions FPU
+    - Gestion plus efficace du protocole coprocesseur
+    - Frequences d'horloge plus elevees
+
+  Le jeu d'instructions est strictement identique. Un programme
+  ecrit pour le 68881 fonctionne sans modification sur le 68882.
+
+  7.8 Comparaison avec le coprocesseur 80387
+  ---------------------------------------------
+
+  Aspect                  68881/68882        80387 (Intel)
+  ----------------------  -----------------  -----------------
+  Architecture            8 registres plats  8 registres en pile
+  Registres de donnees    FP0-FP7 (80 bits)  ST(0)-ST(7) (80 b)
+  Acces aux registres     Quelconque (FPn)   Pile (sommet ST)
+  Precision interne       80 bits etendu     80 bits etendu
+  Formats supportes       7 (B,W,L,S,D,X,P) 7 (similaires)
+  Norme IEEE 754          Oui                Oui
+  Constantes ROM          22 constantes      7 constantes
+  Sinus/Cosinus           FSIN, FCOS         FSIN, FCOS
+  Sin+Cos simultane       FSINCOS            FSINCOS
+  Arc tangente            FATAN              FPATAN (y/x)
+  Logarithme naturel      FLOGN              FYL2X (y*log2(x))
+  Exponentielle           FETOX              F2XM1 (2^x - 1)
+  Log base 2              FLOG2              FYL2X (y*log2(x))
+  Log base 10             FLOG10             (calcule)
+  Sinh, Cosh, Tanh        Instructions       (par logiciel)
+  Asin, Acos              Instructions       (par logiciel)
+  Atanh                   FATANH             (par logiciel)
+  Branchements FPU        FBcc (16 cond.)    Pas de branch FPU
+  Boucle FPU              FDBcc              (pas d'equivalent)
+  Set conditionnel        FScc               (pas d'equivalent)
+  Modele de calcul        Registre-registre  Pile (implicite)
+  Interface processeur    Coprocesseur       Coprocesseur
+
+  Avantages du 68881/68882 :
+    - Modele registre-registre plus flexible (acces direct a FPn)
+    - Plus de fonctions transcendantes en materiel (sinh, cosh,
+      tanh, asin, acos, atanh : 6 instructions de plus)
+    - 22 constantes ROM contre 7
+    - FBcc : 16 conditions de branchement flottant integrees
+    - FDBcc et FScc : boucles et set conditionnels flottants
+    - FSINCOS calcule sinus ET cosinus en une instruction
+
+  Avantages du 80387 :
+    - Modele de pile simplifie pour les expressions complexes
+    - FPATAN calcule directement arctan(y/x) en une instruction
+    - FYL2X calcule y * log2(x) en une instruction (plus general)
+    - F2XM1 pour les puissances de 2 fractionnaires
+    - Instructions de comparaison avec transfert direct vers
+      les flags du CPU (FCOM + FSTSW AX + SAHF)
+    - Plus repandu (compatibilite PC)
+
+  7.9 Exemples de programmation
+  --------------------------------
+
+  7.9.1 Calcul de la distance euclidienne : sqrt(x^2 + y^2)
+
+    ; x en double precision a l'adresse (A0)
+    ; y en double precision a l'adresse (A1)
+    ; Resultat dans FP0
+
+    FMOVE.D   (A0), FP0       ; FP0 = x
+    FMUL.X    FP0, FP0        ; FP0 = x^2
+    FMOVE.D   (A1), FP1       ; FP1 = y
+    FMUL.X    FP1, FP1        ; FP1 = y^2
+    FADD.X    FP1, FP0        ; FP0 = x^2 + y^2
+    FSQRT.X   FP0             ; FP0 = sqrt(x^2 + y^2)
+
+  7.9.2 Calcul de sin(x)/x (fonction sinc)
+
+    ; x en double precision a l'adresse (A0)
+    ; Resultat dans FP0
+
+    FMOVE.D   (A0), FP0       ; FP0 = x
+    FTST.X    FP0             ; Tester si x == 0
+    FBEQ      .sinc_zero      ; Si x == 0, sinc = 1.0
+    FMOVE.X   FP0, FP1        ; FP1 = x (copie)
+    FSIN.X    FP0             ; FP0 = sin(x)
+    FDIV.X    FP1, FP0        ; FP0 = sin(x) / x
+    BRA.S     .sinc_done
+  .sinc_zero:
+    FMOVE.S   #"1.0", FP0    ; FP0 = 1.0 (limite)
+  .sinc_done:
+
+  7.9.3 Sauvegarde/restauration du contexte FPU
+
+    ; Sauvegarde complete du contexte FPU (pour changement de tache)
+    save_fpu_context:
+      FMOVEM.X   FP0-FP7, -(SP)     ; Sauvegarder 8 registres (96 octets)
+      FMOVEM.L   FPCR/FPSR/FPIAR, -(SP) ; Sauvegarder 3 registres (12 oct)
+      FSAVE      -(SP)               ; Sauvegarder l'etat interne
+      RTS
+
+    ; Restauration complete du contexte FPU
+    restore_fpu_context:
+      FRESTORE   (SP)+               ; Restaurer l'etat interne
+      FMOVEM.L   (SP)+, FPCR/FPSR/FPIAR ; Restaurer registres de controle
+      FMOVEM.X   (SP)+, FP0-FP7     ; Restaurer registres de donnees
+      RTS
+
+  7.9.4 Configuration de la FPU
+
+    ; Initialiser le coprocesseur avec :
+    ;   - Arrondi au plus proche (par defaut)
+    ;   - Precision etendue (par defaut)
+    ;   - Toutes les exceptions desactivees sauf OPERR et DZ
+    init_fpu:
+      FMOVE.L   #$00002800, FPCR   ; OPERR + DZ activees
+      FMOVE.L   #0, FPSR           ; Effacer tous les drapeaux
+      RTS
+
+  7.9.5 Conversion degres vers radians
+
+    ; Angle en degres (single) a l'adresse (A0)
+    ; Resultat en radians dans FP0
+    deg_to_rad:
+      FMOVE.S    (A0), FP0         ; FP0 = angle en degres
+      FMOVECR.X  #$00, FP1         ; FP1 = Pi
+      FMUL.X     FP1, FP0          ; FP0 = angle * Pi
+      FDIV.S     #"180.0", FP0     ; FP0 = angle * Pi / 180
+      RTS
+
+  7.10 Resume
+  -------------
+
+  Le coprocesseur flottant 68881/68882 offre un support complet
+  de l'arithmetique IEEE 754 en virgule flottante pour la famille
+  de processeurs 68000.
+
+  Points cles a retenir :
+
+  - 8 registres de donnees flottants de 80 bits (FP0-FP7)
+  - 3 registres de controle : FPCR (modes), FPSR (etat), FPIAR
+  - 7 formats de donnees : 3 entiers (B, W, L) et 4 flottants (S, D, X, P)
+  - 46 instructions couvrant transferts, arithmetique, trigonometrie,
+    exponentielles, logarithmes, comparaisons et controle
+  - 22 constantes en ROM (Pi, e, ln(2), puissances de 10, etc.)
+  - 16 conditions de branchement flottant (FBcc) tenant compte des NaN
+  - 8 types d'exceptions flottantes configurables individuellement
+  - Conformite complete IEEE 754 (arrondi, infinis, NaN, denormes)
+  - Modele registre-a-registre (plus flexible que la pile du 80387)
+  - Le 68882 est 1.5 a 2x plus rapide que le 68881 grace au pipeline
+  - A partir du 68040, la FPU est integree dans le processeur
+
+  Registres et instructions cles :
+
+  Registre/Instruction  Role
+  --------------------  ----------------------------------------
+  FP0-FP7               Registres de donnees flottants (80 bits)
+  FPCR                  Controle : modes arrondi, exceptions
+  FPSR                  Etat : codes condition, exceptions
+  FPIAR                 Adresse de la derniere instruction FPU
+  FMOVE/FMOVEM          Transfert de donnees (simple/multiple)
+  FMOVECR               Chargement de constante ROM
+  FADD/FSUB/FMUL/FDIV   Arithmetique de base
+  FSQRT/FABS/FNEG       Racine carree, valeur absolue, negation
+  FSIN/FCOS/FTAN         Fonctions trigonometriques
+  FSINCOS               Sinus et cosinus simultanes
+  FASIN/FACOS/FATAN      Fonctions trigonometriques inverses
+  FSINH/FCOSH/FTANH      Fonctions hyperboliques
+  FETOX/FLOGN/FLOG10     Exponentielle et logarithmes
+  FCMP/FTST              Comparaison et test
+  FBcc/FDBcc/FScc        Branchement/boucle/set conditionnel
+  FSAVE/FRESTORE         Sauvegarde/restauration du contexte
