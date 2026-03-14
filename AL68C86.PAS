@@ -357,7 +357,7 @@
             Emission : meme code qu un appel PROC
               PUSH operandes + CALL _A68O_nom_modes
 
-  TODO 21 - MODES UNIS (UNION) ET CLAUSE DE CONFORMITE
+  TODO 21 - MODES UNIS (UNION) ET CLAUSE DE CONFORMITE [IMPLEMENTE]
             Declaration : MODE NOMBRE = UNION(INT, REAL);
               Un mode uni peut contenir l une des alternatives
             Representation : discriminant (DW) + donnees (taille = max des alternatives)
@@ -723,6 +723,7 @@ Var
   StructCount      : Integer;   { nombre de modes STRUCT declares }
   RowCount         : Integer;   { nombre de modes ROW declares }
   ProcCount        : Integer;   { nombre de PROC declarees (TODO 19) }
+  UnionCount       : Integer;   { nombre de modes UNION declares (TODO 21) }
 
   { Etat general }
   RuntimeEmitted : Boolean;
@@ -799,6 +800,8 @@ Function  ModeCoerceResult(LeftIdx, RightIdx : Integer;
 Function  ModeInfer(Const E : TExprVal) : Integer; Forward;
 Function  ModeLookupName(Const Name : TString) : Integer; Forward;
 Function  ModeAddRow(ElemModeIdx : Integer) : Integer; Forward;
+Function  ModeAddUnion(AlterStart, AlterCount : Integer) : Integer; Forward;
+Function  UnionHasMode(UnionMIdx, TestMIdx : Integer) : Boolean; Forward;
 
 { TODO 07 - Coercitions }
 Procedure CoerceDeref(SrcMode : Integer); Forward;
@@ -1186,6 +1189,7 @@ Begin
   StructCount    := 0;
   RowCount       := 0;
   ProcCount      := 0;
+  UnionCount     := 0;
   GExprDummy.Kind    := EK_NONE;
   GExprDummy.ImmVal  := 0;
   GExprDummy.ModeIdx := -1;
@@ -2722,6 +2726,8 @@ Begin
           End
           Else If ModeKindOf(E.ModeIdx) = MK_ROW Then
             EmitInstr('MOV    AX, OFFSET ' + SymTab[E.SymIdx].MangledName)
+          Else If ModeKindOf(E.ModeIdx) = MK_UNION Then
+            EmitInstr('MOV    AX, OFFSET ' + SymTab[E.SymIdx].MangledName)
           Else
             EmitInstr('MOV    AX, [' + SymTab[E.SymIdx].MangledName + ']');
         End
@@ -2732,6 +2738,14 @@ Begin
           If ModeKindOf(E.ModeIdx) = MK_ROW Then
           Begin
             { ROW local : LEA pour obtenir l adresse du descripteur }
+            If E.Offset >= 0 Then
+              EmitInstr('LEA    AX, [BP+' + S + ']')
+            Else
+              EmitInstr('LEA    AX, [BP' + S + ']');
+          End
+          Else If ModeKindOf(E.ModeIdx) = MK_UNION Then
+          Begin
+            { UNION local : LEA pour obtenir l adresse du bloc }
             If E.Offset >= 0 Then
               EmitInstr('LEA    AX, [BP+' + S + ']')
             Else
@@ -4770,6 +4784,15 @@ Begin
     ModeCanCoerce := True;
     Exit;
   End;
+  { M -> UNION(M,...) : uniting (TODO 21) }
+  If DK = MK_UNION Then
+  Begin
+    If UnionHasMode(DstIdx, SrcIdx) Then
+    Begin
+      ModeCanCoerce := True;
+      Exit;
+    End;
+  End;
   ModeCanCoerce := False;
 End;
 
@@ -4949,6 +4972,68 @@ Begin
   Inc(ModeCount);
   Inc(RowCount);
   ModeAddRow := I;
+End;
+
+{ ---- ModeAddUnion : creer un mode UNION dans ModeTab ------------- }
+{ AlterStart = index debut dans StructFieldTab pour les alternatives  }
+{ AlterCount = nombre de modes alternatifs dans le UNION              }
+{ Taille = 2 (discriminant DW) + max(taille alternatives)            }
+{ Retourne l index du nouveau mode dans ModeTab.                      }
+
+Function ModeAddUnion(AlterStart, AlterCount : Integer) : Integer;
+Var
+  I, MaxSz, ASz, TotalSz : Integer;
+Begin
+  ModeAddUnion := -1;
+  If ModeCount >= MAX_MODE Then
+  Begin
+    CompileError('table des modes pleine');
+    Exit;
+  End;
+  MaxSz := 0;
+  For I := AlterStart To AlterStart + AlterCount - 1 Do
+  Begin
+    If I < StructFieldCount Then
+    Begin
+      ASz := ModeSizeof(StructFieldTab[I].ModeIdx);
+      If ASz > MaxSz Then MaxSz := ASz;
+    End;
+  End;
+  TotalSz := 2 + MaxSz;  { discriminant DW + max data }
+  If (TotalSz Mod 2) <> 0 Then Inc(TotalSz);
+  I := ModeCount;
+  ModeTab[I].Name     := 'UNION';
+  ModeTab[I].Kind     := MK_UNION;
+  ModeTab[I].Size     := TotalSz;
+  ModeTab[I].ElemIdx  := AlterStart;
+  ModeTab[I].FieldCnt := AlterCount;
+  Inc(ModeCount);
+  Inc(UnionCount);
+  ModeAddUnion := I;
+End;
+
+{ ---- UnionHasMode : verifier si un mode est dans un UNION -------- }
+{ Retourne True si TestMIdx est l un des modes alternatifs de         }
+{ UnionMIdx. Compare les indices directement.                         }
+
+Function UnionHasMode(UnionMIdx, TestMIdx : Integer) : Boolean;
+Var
+  I, First, Count : Integer;
+Begin
+  UnionHasMode := False;
+  If (UnionMIdx < 0) Or (UnionMIdx >= ModeCount) Then Exit;
+  If ModeTab[UnionMIdx].Kind <> MK_UNION Then Exit;
+  First := ModeTab[UnionMIdx].ElemIdx;
+  Count := ModeTab[UnionMIdx].FieldCnt;
+  For I := First To First + Count - 1 Do
+  Begin
+    If I >= StructFieldCount Then Exit;
+    If StructFieldTab[I].ModeIdx = TestMIdx Then
+    Begin
+      UnionHasMode := True;
+      Exit;
+    End;
+  End;
 End;
 
 { ============================================================
@@ -5748,9 +5833,10 @@ Begin
     Else If IsVar Or IsLoc Then
     Begin
       { Variable locale ou avec LOC explicite }
-      { Determiner si c est un struct }
+      { Determiner si c est un struct ou union }
       IsStructMode := (MIdx >= 0) And (MIdx < ModeCount) And
-                      (ModeTab[MIdx].Kind = MK_STRUCT);
+                      ((ModeTab[MIdx].Kind = MK_STRUCT) Or
+                       (ModeTab[MIdx].Kind = MK_UNION));
       HasInit := (CurToken.Kind <> TK_SEMI) And
                  (CurToken.Kind <> TK_COMMA) And
                  (CurToken.Kind <> TK_EOF);
@@ -5770,9 +5856,10 @@ Begin
       Begin
         { Variable locale : allouer sur la pile }
         OfsVal := SymNextOffset;
-        { Pour les structures, ajuster l offset selon la taille }
+        { Pour les structures et unions, ajuster l offset selon la taille }
         If (MIdx >= 0) And (MIdx < ModeCount) And
-           (ModeTab[MIdx].Kind = MK_STRUCT) And
+           ((ModeTab[MIdx].Kind = MK_STRUCT) Or
+            (ModeTab[MIdx].Kind = MK_UNION)) And
            (ModeTab[MIdx].Size > 2) Then
           OfsVal := OfsVal - ModeTab[MIdx].Size + 2;
         SIdx := SymAdd(Name, SC_VAR, MIdx, OfsVal);
@@ -5780,34 +5867,99 @@ Begin
         Str(OfsVal, S);
         If IsStructMode Then
         Begin
-          If HasInit Then
+          If (MIdx >= 0) And (MIdx < ModeCount) And
+             (ModeTab[MIdx].Kind = MK_UNION) Then
           Begin
-            { Struct : AX contient l adresse source, copier les donnees }
-            EmitComment('struct copy ' + ModeTab[MIdx].Name +
-                        ' size=' + IntToStr(ModeTab[MIdx].Size));
-            EmitInstr('MOV    SI, AX');       { SI = source }
-            If OfsVal >= 0 Then
-              EmitInstr('LEA    DI, [BP+' + S + ']')
+            { UNION variable }
+            If HasInit Then
+            Begin
+              { Determine le mode de l initialiseur }
+              If ModeKindOf(ModeInfer(Res)) = MK_UNION Then
+              Begin
+                { Deja un UNION : copier le bloc entier }
+                EmitComment('union copy ' + ModeTab[MIdx].Name +
+                            ' size=' + IntToStr(ModeTab[MIdx].Size));
+                EmitInstr('MOV    SI, AX');
+                If OfsVal >= 0 Then
+                  EmitInstr('LEA    DI, [BP+' + S + ']')
+                Else
+                  EmitInstr('LEA    DI, [BP' + S + ']');
+                Str(ModeTab[MIdx].Size Div 2, S);
+                EmitInstr('MOV    CX, ' + S);
+                EmitInstr('CLD');
+                EmitInstr('REP MOVSW');
+              End
+              Else If (Res.Kind = EK_NONE) Or
+                      (ModeInfer(Res) = TY_IDX_VOID) Then
+              Begin
+                { EMPTY : discriminant = -1, data = 0 }
+                EmitComment('union EMPTY ' + ModeTab[MIdx].Name);
+                If OfsVal >= 0 Then
+                  EmitInstr('LEA    DI, [BP+' + S + ']')
+                Else
+                  EmitInstr('LEA    DI, [BP' + S + ']');
+                EmitInstr('MOV    WORD PTR [DI], -1');
+                EmitInstr('MOV    WORD PTR [DI+2], 0');
+              End
+              Else
+              Begin
+                { Primitive -> UNION : ecrire discriminant + valeur }
+                EmitComment('union init ' + ModeTab[MIdx].Name +
+                            ' discrim=' + IntToStr(ModeInfer(Res)));
+                If OfsVal >= 0 Then
+                  EmitInstr('LEA    DI, [BP+' + S + ']')
+                Else
+                  EmitInstr('LEA    DI, [BP' + S + ']');
+                EmitInstr('MOV    WORD PTR [DI], ' +
+                          IntToStr(ModeInfer(Res)));
+                If ModeSizeof(ModeInfer(Res)) = 1 Then
+                  EmitInstr('MOV    BYTE PTR [DI+2], AL')
+                Else
+                  EmitInstr('MOV    WORD PTR [DI+2], AX');
+              End;
+            End
             Else
-              EmitInstr('LEA    DI, [BP' + S + ']');
-            Str(ModeTab[MIdx].Size Div 2, S);
-            EmitInstr('MOV    CX, ' + S);   { nombre de mots }
-            EmitInstr('CLD');
-            EmitInstr('REP MOVSW');
+            Begin
+              { UNION sans init : discriminant = -1 (EMPTY), data = 0 }
+              EmitComment('union empty ' + ModeTab[MIdx].Name);
+              If OfsVal >= 0 Then
+                EmitInstr('LEA    DI, [BP+' + S + ']')
+              Else
+                EmitInstr('LEA    DI, [BP' + S + ']');
+              EmitInstr('MOV    WORD PTR [DI], -1');
+              EmitInstr('MOV    WORD PTR [DI+2], 0');
+            End;
           End
           Else
           Begin
-            { Struct sans initialiseur : mettre a zero }
-            EmitComment('struct zero ' + ModeTab[MIdx].Name);
-            If OfsVal >= 0 Then
-              EmitInstr('LEA    DI, [BP+' + S + ']')
+            { STRUCT variable (existing logic) }
+            If HasInit Then
+            Begin
+              EmitComment('struct copy ' + ModeTab[MIdx].Name +
+                          ' size=' + IntToStr(ModeTab[MIdx].Size));
+              EmitInstr('MOV    SI, AX');
+              If OfsVal >= 0 Then
+                EmitInstr('LEA    DI, [BP+' + S + ']')
+              Else
+                EmitInstr('LEA    DI, [BP' + S + ']');
+              Str(ModeTab[MIdx].Size Div 2, S);
+              EmitInstr('MOV    CX, ' + S);
+              EmitInstr('CLD');
+              EmitInstr('REP MOVSW');
+            End
             Else
-              EmitInstr('LEA    DI, [BP' + S + ']');
-            Str(ModeTab[MIdx].Size Div 2, S);
-            EmitInstr('MOV    CX, ' + S);
-            EmitInstr('XOR    AX, AX');
-            EmitInstr('CLD');
-            EmitInstr('REP STOSW');
+            Begin
+              EmitComment('struct zero ' + ModeTab[MIdx].Name);
+              If OfsVal >= 0 Then
+                EmitInstr('LEA    DI, [BP+' + S + ']')
+              Else
+                EmitInstr('LEA    DI, [BP' + S + ']');
+              Str(ModeTab[MIdx].Size Div 2, S);
+              EmitInstr('MOV    CX, ' + S);
+              EmitInstr('XOR    AX, AX');
+              EmitInstr('CLD');
+              EmitInstr('REP STOSW');
+            End;
           End;
         End
         Else If ModeSizeof(MIdx) = 1 Then
@@ -5821,21 +5973,76 @@ Begin
         { Variable globale : stocker dans DATA segment }
         If IsStructMode Then
         Begin
-          DIdx := DataAddStruct(A68_VAR_PFX + Name,
-                                ModeTab[MIdx].Size Div 2);
-          SIdx := SymAdd(Name, SC_VAR, MIdx, 0);
-          If (SIdx >= 0) And HasInit Then
+          If (MIdx >= 0) And (MIdx < ModeCount) And
+             (ModeTab[MIdx].Kind = MK_UNION) Then
           Begin
-            EmitComment('global struct ' + Name +
-                        ' init, size=' +
-                        IntToStr(ModeTab[MIdx].Size));
-            EmitInstr('MOV    SI, AX');
-            EmitInstr('MOV    DI, OFFSET ' +
-                      SymTab[SIdx].MangledName);
-            Str(ModeTab[MIdx].Size Div 2, S);
-            EmitInstr('MOV    CX, ' + S);
-            EmitInstr('CLD');
-            EmitInstr('REP MOVSW');
+            { UNION global }
+            DIdx := DataAddUnionDesc(A68_UNI_PFX + SymNameClean(Name),
+                                     -1, ModeTab[MIdx].Size Div 2);
+            SIdx := SymAdd(Name, SC_VAR, MIdx, 0);
+            If SIdx >= 0 Then
+              SymTab[SIdx].MangledName := A68_UNI_PFX + SymNameClean(Name);
+            If (SIdx >= 0) And HasInit Then
+            Begin
+              If ModeKindOf(ModeInfer(Res)) = MK_UNION Then
+              Begin
+                { Already UNION: copy block }
+                EmitComment('global union ' + Name +
+                            ' copy, size=' +
+                            IntToStr(ModeTab[MIdx].Size));
+                EmitInstr('MOV    SI, AX');
+                EmitInstr('MOV    DI, OFFSET ' +
+                          SymTab[SIdx].MangledName);
+                Str(ModeTab[MIdx].Size Div 2, S);
+                EmitInstr('MOV    CX, ' + S);
+                EmitInstr('CLD');
+                EmitInstr('REP MOVSW');
+              End
+              Else If (Res.Kind = EK_NONE) Or
+                      (ModeInfer(Res) = TY_IDX_VOID) Then
+              Begin
+                { EMPTY }
+                EmitComment('global union ' + Name + ' EMPTY');
+                EmitInstr('MOV    DI, OFFSET ' +
+                          SymTab[SIdx].MangledName);
+                EmitInstr('MOV    WORD PTR [DI], -1');
+                EmitInstr('MOV    WORD PTR [DI+2], 0');
+              End
+              Else
+              Begin
+                { Primitive -> UNION }
+                EmitComment('global union ' + Name +
+                            ' init discrim=' + IntToStr(ModeInfer(Res)));
+                EmitInstr('MOV    DI, OFFSET ' +
+                          SymTab[SIdx].MangledName);
+                EmitInstr('MOV    WORD PTR [DI], ' +
+                          IntToStr(ModeInfer(Res)));
+                If ModeSizeof(ModeInfer(Res)) = 1 Then
+                  EmitInstr('MOV    BYTE PTR [DI+2], AL')
+                Else
+                  EmitInstr('MOV    WORD PTR [DI+2], AX');
+              End;
+            End;
+          End
+          Else
+          Begin
+            { STRUCT global (existing logic) }
+            DIdx := DataAddStruct(A68_VAR_PFX + Name,
+                                  ModeTab[MIdx].Size Div 2);
+            SIdx := SymAdd(Name, SC_VAR, MIdx, 0);
+            If (SIdx >= 0) And HasInit Then
+            Begin
+              EmitComment('global struct ' + Name +
+                          ' init, size=' +
+                          IntToStr(ModeTab[MIdx].Size));
+              EmitInstr('MOV    SI, AX');
+              EmitInstr('MOV    DI, OFFSET ' +
+                        SymTab[SIdx].MangledName);
+              Str(ModeTab[MIdx].Size Div 2, S);
+              EmitInstr('MOV    CX, ' + S);
+              EmitInstr('CLD');
+              EmitInstr('REP MOVSW');
+            End;
           End;
         End
         Else
@@ -5943,7 +6150,15 @@ Begin
         PushedToken := CurToken;
         HasPushedToken := True;
         CurToken := SavedTok;
-        ParseExpr(Res);
+        { Check if ident is a user-defined mode followed by ident (declaration) }
+        If (ModeLookupName(CurToken.Val) >= 0) And
+           (PushedToken.Kind = TK_IDENT) Then
+        Begin
+          ParseDeclStmt;
+          WasDecl := True;
+        End
+        Else
+          ParseExpr(Res);
       End;
     End
     Else
@@ -6074,6 +6289,8 @@ Var
   CaseIdx    : Integer;
   CaseS      : TString;
   MyCase     : Integer;
+  IsConformity : Boolean;
+  PeekTok    : TToken;
 Begin
   ParserAdvance; { consomme CASE }
   Inc(CaseCount);
@@ -6082,15 +6299,49 @@ Begin
   { Parse selector expression }
   ParseExpr(SelRes);
   ExprFlushToAX(SelRes);
-  EmitInstr('MOV    BX, AX');
-
-  LblEnd := A68_LBL_PFX + 'CESAC_' + IntToStr(MyCase);
 
   { IN clause }
   If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'IN') Then
     ParserAdvance
   Else
     CompileError('IN attendu');
+
+  { Detecter clause de conformite : (MODE id) : ... }
+  { Si apres IN on voit ( suivi d un mot de mode, c est conformite }
+  IsConformity := False;
+  If CurToken.Kind = TK_OPEN Then
+  Begin
+    { Sauver le token courant et lire le suivant }
+    PeekTok := CurToken;
+    ParserAdvance;  { consomme ( temporairement }
+    { Si le prochain token est un mode, c est conformite }
+    If CurToken.Kind = TK_BOLD Then
+    Begin
+      If ModeLookupName(CurToken.Val) >= 0 Then
+        IsConformity := True;
+    End
+    Else If CurToken.Kind = TK_IDENT Then
+    Begin
+      If ModeLookupName(CurToken.Val) >= 0 Then
+        IsConformity := True;
+    End;
+    { Remettre les tokens en place via pushback }
+    PushedToken := CurToken;
+    HasPushedToken := True;
+    CurToken := PeekTok;  { restaurer ( }
+  End;
+
+  If IsConformity Then
+  Begin
+    { Clause de conformite (UNION) : deleguer }
+    Dec(CaseCount); { ParseConformityClause incrementera CaseCount }
+    ParseConformityClause(Res);
+    Exit;
+  End;
+
+  { Clause CASE standard (indices entiers) }
+  EmitInstr('MOV    BX, AX');
+  LblEnd := A68_LBL_PFX + 'CESAC_' + IntToStr(MyCase);
 
   CaseIdx := 1; { Algol 68 : CASE indices commencent a 1 }
   ExprMakeNone(Res);
@@ -6598,6 +6849,98 @@ Begin
     If Opts.DebugMode Then
       WriteLn('  MODE_ADD[', NewMIdx, ']: ', ModeName,
               ' STRUCT size=', TotalSize, ' fields=', FieldCnt);
+  End
+  Else If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'UNION') Then
+  Begin
+    { MODE name = UNION(MODE1, MODE2, ...) }
+    ParserAdvance;  { consomme UNION }
+
+    If CurToken.Kind <> TK_OPEN Then
+    Begin
+      CompileError('( attendu apres UNION');
+      Exit;
+    End;
+    ParserAdvance;  { consomme ( }
+
+    FieldStart := StructFieldCount;
+    FieldCnt   := 0;
+
+    { Parser la liste de modes alternatifs }
+    While (CurToken.Kind <> TK_CLOSE) And
+          (CurToken.Kind <> TK_EOF) Do
+    Begin
+      FldMIdx := -1;
+      FldModeName := '';
+      If CurToken.Kind = TK_BOLD Then
+      Begin
+        FldModeName := CurToken.Val;
+        FldMIdx := ModeLookupName(CurToken.Val);
+        If FldMIdx < 0 Then
+        Begin
+          CompileError('mode inconnu dans UNION : ' + CurToken.Val);
+          Exit;
+        End;
+        ParserAdvance;
+      End
+      Else If CurToken.Kind = TK_IDENT Then
+      Begin
+        FldModeName := CurToken.Val;
+        FldMIdx := ModeLookupName(CurToken.Val);
+        If FldMIdx < 0 Then
+        Begin
+          CompileError('mode inconnu dans UNION : ' + CurToken.Val);
+          Exit;
+        End;
+        ParserAdvance;
+      End
+      Else
+      Begin
+        CompileError('mode attendu dans UNION, obtenu : ' + CurToken.Val);
+        Exit;
+      End;
+
+      { Ajouter l alternative dans StructFieldTab }
+      If StructFieldCount >= MAX_STRUCT_FIELDS Then
+      Begin
+        CompileError('trop d alternatives dans UNION');
+        Exit;
+      End;
+      StructFieldTab[StructFieldCount].Name    := FldModeName;
+      StructFieldTab[StructFieldCount].ModeIdx := FldMIdx;
+      StructFieldTab[StructFieldCount].Offset  := FldMIdx; { discriminant = mode index }
+      Inc(StructFieldCount);
+      Inc(FieldCnt);
+
+      If CurToken.Kind = TK_COMMA Then
+        ParserAdvance
+      Else If CurToken.Kind <> TK_CLOSE Then
+      Begin
+        CompileError(', ou ) attendu dans UNION');
+        Exit;
+      End;
+    End;
+
+    { Consommer ) }
+    If CurToken.Kind = TK_CLOSE Then
+      ParserAdvance;
+
+    { Creer le mode UNION via ModeAddUnion }
+    NewMIdx := ModeAddUnion(FieldStart, FieldCnt);
+    If NewMIdx < 0 Then
+    Begin
+      CompileError('impossible de creer le mode UNION');
+      Exit;
+    End;
+    ModeTab[NewMIdx].Name := ModeName;
+
+    EmitComment('MODE ' + ModeName + ' = UNION, size=' +
+                IntToStr(ModeTab[NewMIdx].Size) + ', alternatives=' +
+                IntToStr(FieldCnt));
+
+    If Opts.DebugMode Then
+      WriteLn('  MODE_ADD[', NewMIdx, ']: ', ModeName,
+              ' UNION size=', ModeTab[NewMIdx].Size,
+              ' alternatives=', FieldCnt);
   End
   Else
   Begin
@@ -7307,13 +7650,188 @@ End;
 
 Procedure ParseUnionDecl;
 Begin
-  { TODO 21 }
+  { L allocation de variables UNION est geree dans ParseDeclStmt.
+    Cette procedure est un point d entree pour les cas particuliers
+    de declaration UNION inline. Actuellement non necessaire car
+    ParseModeDecl gere MODE name = UNION(...). }
 End;
 
+{ ---- ParseConformityClause : clause de conformite CASE UNION ----- }
+{ Syntaxe Algol 68 :                                                   }
+{   CASE expr IN                                                       }
+{     (INT i) : body1,                                                 }
+{     (REAL r) : body2                                                 }
+{   OUT                                                                }
+{     default_body                                                     }
+{   ESAC                                                               }
+{                                                                      }
+{ Le token CASE est deja consomme par l appelant (ParseCaseClause).   }
+{ AX contient le selecteur (adresse du bloc UNION).                    }
+{ Format bloc : [discriminant DW][donnees...]                          }
+{ Emission : CMP [BX], modeIdx + JNE pour chaque alternative.         }
+
 Procedure ParseConformityClause(Var Res : TExprVal);
+Var
+  LblEnd      : TString;
+  LblNext     : TString;
+  CaseRes     : TExprVal;
+  MyCase      : Integer;
+  AltMIdx     : Integer;
+  AltName     : TString;
+  AltOfs      : Integer;
+  AltSIdx     : Integer;
+  OldFrameSz  : Integer;
+  S           : TString;
 Begin
-  { TODO 21 }
-  Res := GExprDummy;
+  ExprMakeNone(Res);
+  Inc(CaseCount);
+  MyCase := CaseCount;
+
+  LblEnd := A68_LBL_PFX + 'CESAC_' + IntToStr(MyCase);
+
+  { AX = adresse du bloc UNION (selecteur) }
+  { Sauver dans BX pour acces au discriminant et donnees }
+  EmitInstr('MOV    BX, AX');
+  EmitInstr('PUSH   BX');   { sauver ptr UNION sur la pile }
+
+  { IN deja consomme par l appelant }
+
+  { Parser les alternatives (MODE id) : body }
+  While (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If (CurToken.Kind = TK_BOLD) And
+       ((CurToken.Val = 'OUT') Or (CurToken.Val = 'ESAC') Or
+        (CurToken.Val = 'OUSE')) Then
+      Break;
+
+    { Attendre ( }
+    If CurToken.Kind <> TK_OPEN Then
+    Begin
+      CompileError('( attendu dans clause de conformite');
+      Break;
+    End;
+    ParserAdvance;  { consomme ( }
+
+    { Lire le mode de l alternative }
+    AltMIdx := -1;
+    If CurToken.Kind = TK_BOLD Then
+    Begin
+      AltMIdx := ModeLookupName(CurToken.Val);
+      ParserAdvance;
+    End
+    Else If CurToken.Kind = TK_IDENT Then
+    Begin
+      AltMIdx := ModeLookupName(CurToken.Val);
+      ParserAdvance;
+    End;
+
+    If AltMIdx < 0 Then
+    Begin
+      CompileError('mode attendu dans clause de conformite');
+      Break;
+    End;
+
+    { Lire l identificateur local optionnel }
+    AltName := '';
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      AltName := CurToken.Val;
+      ParserAdvance;
+    End;
+
+    { Consommer ) }
+    If CurToken.Kind = TK_CLOSE Then
+      ParserAdvance
+    Else
+      CompileError(') attendu dans clause de conformite');
+
+    { Consommer : }
+    If CurToken.Kind = TK_COLON Then
+      ParserAdvance
+    Else
+      CompileError(': attendu apres (MODE id)');
+
+    { Generer le test de discriminant }
+    LblNext := A68_LBL_PFX + 'CONF_' + IntToStr(MyCase)
+               + '_' + IntToStr(AltMIdx);
+
+    EmitInstr('POP    BX');
+    EmitInstr('PUSH   BX');   { garder le ptr UNION }
+    EmitInstr('MOV    AX, [BX]');  { AX = discriminant }
+    EmitInstr('CMP    AX, ' + IntToStr(AltMIdx));
+    EmitInstr('JNE    ' + LblNext);
+
+    { Extraire la valeur et la lier a l identificateur local }
+    SymEnterScope;
+    OldFrameSz := CurFrameSize;
+
+    If AltName <> '' Then
+    Begin
+      { Lire la valeur du UNION : [BX+2] }
+      If ModeSizeof(AltMIdx) = 1 Then
+        EmitInstr('MOV    AL, [BX+2]')
+      Else
+        EmitInstr('MOV    AX, [BX+2]');
+
+      { Creer variable locale pour l alternative }
+      AltOfs := SymNextOffset;
+      AltSIdx := SymAdd(AltName, SC_IDENT, AltMIdx, AltOfs);
+      EmitInstr('SUB    SP, ' + IntToStr(ModeSizeof(AltMIdx)));
+      Str(AltOfs, S);
+      If ModeSizeof(AltMIdx) = 1 Then
+        EmitInstr('MOV    BYTE PTR [BP' + S + '], AL')
+      Else
+        EmitInstr('MOV    [BP' + S + '], AX');
+      Inc(CurFrameSize, ModeSizeof(AltMIdx));
+    End;
+
+    { Parser le corps de l alternative }
+    ParseSerialClause(CaseRes);
+    ExprFlushToAX(CaseRes);
+    Res := CaseRes;
+
+    { Liberer la variable locale }
+    If CurFrameSize > OldFrameSz Then
+    Begin
+      Str((CurFrameSize - OldFrameSz) * 2, S);
+      EmitInstr('ADD    SP, ' + S);
+    End;
+    CurFrameSize := OldFrameSz;
+    SymLeaveScope;
+
+    EmitInstr('JMP    ' + LblEnd);
+    EmitLabel(LblNext);
+
+    { Virgule entre les alternatives }
+    If CurToken.Kind = TK_COMMA Then
+      ParserAdvance
+    Else
+      Break;
+  End;
+
+  { OUT clause (default) }
+  If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'OUT') Then
+  Begin
+    ParserAdvance;
+    ParseSerialClause(CaseRes);
+    ExprFlushToAX(CaseRes);
+    Res := CaseRes;
+  End;
+
+  { ESAC }
+  If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'ESAC') Then
+    ParserAdvance
+  Else
+    CompileError('ESAC attendu');
+
+  EmitInstr('POP    BX');   { nettoyer le ptr UNION de la pile }
+  EmitLabel(LblEnd);
+
+  If Res.Kind <> EK_NONE Then
+  Begin
+    Res.Kind   := EK_AX;
+    Res.SymIdx := -1;
+  End;
 End;
 
 Procedure ParsePrint;
