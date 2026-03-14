@@ -142,7 +142,7 @@
             Affectation de tableau : calcul index + MOV [base+offset], AX
             Affectation multiple : a := b := expr (associatif droite)
 
-  TODO 10 - EXPRESSIONS PRIMAIRES
+  TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
             ParsePrimary : literal entier, literal reel, ident, appel proc
             Booleens : true -> MOV AX,1 / false -> XOR AX,AX
             Acces variable simple : MOV AX, [_A58V_nom] ou MOV AX, [BP-n]
@@ -685,6 +685,9 @@ Procedure ParseVarDecl; Forward;
 Procedure ParseOwnDecl; Forward;
 Procedure ParseAssign(VarIdx : Integer); Forward;
 Procedure ParseStmt; Forward;
+{ TODO 10 - Expressions primaires }
+Procedure ParseArrayAccess(VarIdx : Integer; Var Res : TExprVal); Forward;
+Procedure ParseFuncCall(VarIdx : Integer; Var Res : TExprVal); Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1867,11 +1870,16 @@ End;
 
 { ---- ParsePrimary : atome du parseur Pratt ------------------- }
 { Gere : literaux entiers/reels, true/false, chaines, ( expr ).  }
-{ Identificateurs : lookup dans la table des symboles (TODO 05). }
+{ Identificateurs : lookup dans la table des symboles.            }
+{ Tableaux : nom[i] -> ParseArrayAccess. Fonctions : nom(args). }
+{ Expression conditionnelle : if cond then expr1 else expr2.     }
 Procedure ParsePrimary(Var Res : TExprVal);
 Var
   VarName : TString;
   VarIdx  : Integer;
+  LblF    : TString;
+  LblE    : TString;
+  Cond    : TExprVal;
 Begin
   ExprMakeNone(Res);
   Case CurToken.Kind Of
@@ -1886,6 +1894,42 @@ Begin
       Begin
         LitEval(CurToken, Res);
         ParserAdvance;
+      End
+      { Expression conditionnelle : if cond then expr1 else expr2 }
+      Else If CurToken.Val = 'if' Then
+      Begin
+        ParserAdvance;  { consommer if }
+        LblF := NewLabel;  { label false-branch }
+        LblE := NewLabel;  { label end }
+        { Evaluer la condition }
+        ParseExprPrec(1, Cond);
+        ExprFlushToAX(Cond);
+        EmitInstr('TEST', 'AX, AX');
+        EmitInstr('JZ', LblF);
+        { Consommer then }
+        If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'then') Then
+          ParserAdvance
+        Else
+          CompileError('then attendu dans expression conditionnelle');
+        { Evaluer expr1 (branche vraie) }
+        ParseExprPrec(1, Res);
+        ExprFlushToAX(Res);
+        EmitInstr('JMP', LblE);
+        { Branche fausse }
+        EmitLabel(LblF);
+        If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'else') Then
+        Begin
+          ParserAdvance;  { consommer else }
+          ParseExprPrec(1, Res);
+          ExprFlushToAX(Res);
+        End
+        Else
+        Begin
+          { Pas de else : resultat 0 }
+          EmitInstr('XOR', 'AX, AX');
+        End;
+        EmitLabel(LblE);
+        ExprMakeAX(TY_IDX_INTEGER, Res);
       End
       Else
       Begin
@@ -1912,57 +1956,94 @@ Begin
     End;
     TK_IDENT :
     Begin
-      { TODO 05 : lookup dans la table des symboles }
       VarName := CurToken.Val;
       VarIdx  := SymFind(VarName);
       If VarIdx < 0 Then
       Begin
         WarnMsg('identificateur non declare: ' + VarName);
         ExprMakeImm(0, TY_IDX_INTEGER, Res);
+        ParserAdvance;
       End
       Else
       Begin
         Case SymTab[VarIdx].Kind Of
           SK_VAR :
           Begin
+            ParserAdvance;  { consommer l ident }
             If (SymTab[VarIdx].ScopeLevel = 0) Or
                SymTab[VarIdx].IsOwn Then
             Begin
               { Globale ou own : acces via label DATA }
-              Res.Kind    := EK_MEM;
-              Res.ImmVal  := 0;
-              Res.TypeIdx := SymTab[VarIdx].TypeIdx;
-              Res.Offset  := VarIdx;
-              Res.SymIdx  := VarIdx;
               EmitInstr('MOV', 'AX, [' + SymTab[VarIdx].MangledName + ']');
-              Res.Kind := EK_AX;
+              ExprMakeAX(SymTab[VarIdx].TypeIdx, Res);
             End
             Else
             Begin
               { Locale : acces [BP-offset] }
-              Res.Kind    := EK_MEM;
-              Res.ImmVal  := 0;
-              Res.TypeIdx := SymTab[VarIdx].TypeIdx;
-              Res.Offset  := SymTab[VarIdx].Offset;
-              Res.SymIdx  := VarIdx;
               EmitInstr('MOV', 'AX, [BP-' +
                         IntToStr_(SymTab[VarIdx].Offset) + ']');
-              Res.Kind := EK_AX;
+              ExprMakeAX(SymTab[VarIdx].TypeIdx, Res);
             End;
           End;
           SK_PARAM_VALUE :
           Begin
-            Res.Kind    := EK_MEM;
-            Res.ImmVal  := 0;
-            Res.TypeIdx := SymTab[VarIdx].TypeIdx;
-            Res.Offset  := SymTab[VarIdx].Offset;
-            Res.SymIdx  := VarIdx;
+            ParserAdvance;  { consommer l ident }
             EmitInstr('MOV', 'AX, [BP+' +
                       IntToStr_(SymTab[VarIdx].Offset) + ']');
-            Res.Kind := EK_AX;
+            ExprMakeAX(SymTab[VarIdx].TypeIdx, Res);
+          End;
+          SK_PARAM_NAME :
+          Begin
+            ParserAdvance;  { consommer l ident }
+            { Parametre par nom : appeler le thunk pour obtenir la valeur }
+            EmitComment('param by name: ' + VarName);
+            EmitInstr('CALL', 'WORD PTR [BP+' +
+                      IntToStr_(SymTab[VarIdx].Offset) + ']');
+            ExprMakeAX(SymTab[VarIdx].TypeIdx, Res);
+          End;
+          SK_ARRAY :
+          Begin
+            ParserAdvance;  { consommer l ident }
+            { Acces tableau : on attend [ index ] }
+            ParseArrayAccess(VarIdx, Res);
+          End;
+          SK_PROC :
+          Begin
+            ParserAdvance;  { consommer l ident }
+            { Appel de fonction : on attend ( args ) }
+            ParseFuncCall(VarIdx, Res);
+          End;
+          SK_SWITCH :
+          Begin
+            ParserAdvance;  { consommer l ident }
+            { Acces switch : nom[expr] -> charge l adresse du label }
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
+            Begin
+              ParserAdvance;  { consommer [ }
+              ParseExprPrec(1, Res);
+              ExprFlushToAX(Res);
+              { AX = index (1-base) -> convertir en offset mot (0-base) }
+              EmitInstr('DEC', 'AX');
+              EmitInstr('SHL', 'AX, 1');
+              EmitInstr('MOV', 'BX, OFFSET ' + SymTab[VarIdx].MangledName);
+              EmitInstr('ADD', 'BX, AX');
+              EmitInstr('MOV', 'AX, [BX]');
+              ExprMakeAX(TY_IDX_LABEL, Res);
+              If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+                ParserAdvance
+              Else
+                CompileError('] attendue apres index de switch');
+            End
+            Else
+            Begin
+              { Sans index : adresse de la table }
+              EmitInstr('MOV', 'AX, OFFSET ' + SymTab[VarIdx].MangledName);
+              ExprMakeAX(TY_IDX_SWITCH, Res);
+            End;
           End;
           SK_LABEL :
           Begin
+            ParserAdvance;  { consommer l ident }
             Res.Kind    := EK_IMM;
             Res.ImmVal  := 0;
             Res.TypeIdx := TY_IDX_LABEL;
@@ -1970,11 +2051,10 @@ Begin
             Res.SymIdx  := VarIdx;
           End;
         Else
-          { Autres categories : stub pour l instant }
+          ParserAdvance;
           ExprMakeImm(0, TY_IDX_INTEGER, Res);
         End;
       End;
-      ParserAdvance;
     End;
   Else
     CompileError('expression attendue, token inattendu');
@@ -2443,6 +2523,113 @@ Begin
   DataAddArray('_A58_HEAP', 1024);
   { Pointeur sommet du tas }
   DataAddWord('_A58_HEAPTOP', 0);
+End;
+
+{ ============================================================
+  TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseArrayAccess : acces a un element de tableau --------- }
+{ Syntaxe : ident deja consomme, on attend [expr] ou [expr,expr]. }
+{ Genere : MOV BX, OFFSET _A58ARR_nom                            }
+{          calcul index -> SI = (index - lo) * 2                  }
+{          MOV AX, [BX+SI]                                        }
+Procedure ParseArrayAccess(VarIdx : Integer; Var Res : TExprVal);
+Var
+  IdxE : TExprVal;
+Begin
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
+  Begin
+    ParserAdvance;  { consommer [ }
+
+    { Evaluer l expression d index }
+    ParseExprPrec(1, IdxE);
+    ExprFlushToAX(IdxE);
+
+    { Convertir en offset octets : index * 2 (mots 16 bits) }
+    EmitInstr('SHL', 'AX, 1');
+    EmitInstr('MOV', 'SI, AX');
+
+    { Seconde dimension (virgule -> deuxieme index) }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+    Begin
+      ParserAdvance;  { consommer , }
+      EmitInstr('PUSH', 'SI');  { sauvegarder premier index }
+      ParseExprPrec(1, IdxE);
+      ExprFlushToAX(IdxE);
+      EmitInstr('SHL', 'AX, 1');
+      EmitInstr('POP', 'SI');
+      EmitInstr('ADD', 'SI, AX');  { combiner les deux indices }
+    End;
+
+    { Charger l adresse de base du tableau }
+    EmitInstr('MOV', 'BX, OFFSET ' + SymTab[VarIdx].MangledName);
+    { Charger l element : AX = [BX+SI] }
+    EmitInstr('MOV', 'AX, [BX+SI]');
+    ExprMakeAX(SymTab[VarIdx].TypeIdx, Res);
+
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+      ParserAdvance  { consommer ] }
+    Else
+      CompileError('] attendue apres index de tableau');
+  End
+  Else
+  Begin
+    { Pas de [ : retourner l adresse du tableau }
+    EmitInstr('MOV', 'AX, OFFSET ' + SymTab[VarIdx].MangledName);
+    ExprMakeAX(SymTab[VarIdx].TypeIdx, Res);
+  End;
+End;
+
+{ ---- ParseFuncCall : appel de fonction en expression ---------- }
+{ Syntaxe : ident deja consomme, on attend (args).               }
+{ Genere : PUSH arg_n ... PUSH arg_1 + CALL _A58P_nom            }
+{          resultat dans AX.                                      }
+Procedure ParseFuncCall(VarIdx : Integer; Var Res : TExprVal);
+Var
+  ArgE     : TExprVal;
+  ArgCount : Integer;
+  NS       : TString;
+Begin
+  ArgCount := 0;
+
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+  Begin
+    ParserAdvance;  { consommer ( }
+
+    { Boucle sur les arguments }
+    If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
+    Begin
+      Repeat
+        ParseExprPrec(1, ArgE);
+        ExprFlushToAX(ArgE);
+        EmitInstr('PUSH', 'AX');
+        Inc(ArgCount);
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+          ParserAdvance  { consommer , }
+        Else
+          Break;
+      Until False;
+    End;
+
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance  { consommer ) }
+    Else
+      CompileError(') attendue apres les arguments de ' + SymTab[VarIdx].Name);
+  End;
+
+  { Appel de la procedure/fonction }
+  EmitInstr('CALL', SymTab[VarIdx].MangledName);
+
+  { Nettoyer la pile si des arguments ont ete empiles }
+  If ArgCount > 0 Then
+  Begin
+    Str(ArgCount * 2, NS);
+    EmitInstr('ADD', 'SP, ' + NS);
+  End;
+
+  { Le resultat est dans AX }
+  ExprMakeAX(SymTab[VarIdx].TypeIdx, Res);
 End;
 
 { ============================================================
