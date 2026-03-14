@@ -426,7 +426,7 @@
             RuntimeEmitted : flag pour n emettre le runtime qu une seule fois
             Heap statique : _RK_HEAP DB 4096 DUP(0) + _RK_HEAPTOP DW 0
 
-  TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES
+  TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES [IMPLEMENTE]
             EmitClose : END _RKS_MAIN dans _TEXT ENDS / DATA ENDS
             Run : pipeline complet LexInit -> ParseCompUnit ->
               EmitRuntime -> _TEXT ENDS / EmitDataSeg / END _RKS_MAIN
@@ -10316,6 +10316,21 @@ Begin
   EmitInstr('INT', '21h');
   EmitRaw('_RKRT_PANIC ENDP');
 End;
+
+{ ============================================================
+  TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES [IMPLEMENTE]
+  ============================================================ }
+
+{ La generation finale est geree par les procedures existantes :
+    EmitHeader  : .MODEL SMALL / .STACK / _TEXT SEGMENT / _RKS_MAIN PROC
+    EmitClose   : 4C00h INT 21h / _RKS_MAIN ENDP / EmitRuntime /
+                  _TEXT ENDS / EmitDataSeg / END _RKS_MAIN
+    Run         : pipeline complet TypeInit -> SymInit -> DataInit ->
+                  EmitOpen -> LexInit -> ParseStmt* -> EmitClose
+  12 fichiers exemples crees dans SAMPLES/RAKU/ :
+    hello.raku  control.raku  loops.raku   arrays.raku  hashes.raku
+    math.raku   classes.raku  roles.raku   multi.raku   grammar.raku
+    errors.raku modules.raku                                         }
 
 { ============================================================
   PROCEDURE Run
