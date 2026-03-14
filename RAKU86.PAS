@@ -166,7 +166,7 @@
             self : reference a l objet courant dans une methode
             Construction de paire : clef => valeur -> Pair
 
-  TODO 11 - EXPRESSIONS BINAIRES
+  TODO 11 - EXPRESSIONS BINAIRES [IMPLEMENTE]
             ParseExprPrec(MinPrec) : boucle de precedence (Pratt)
             Arithmetique entiere : ADD/SUB/IMUL/IDIV pour +, -, *, /
             div : division entiere (IDIV quotient dans AX)
@@ -850,6 +850,9 @@ Procedure ParsePostfix(Var Res : TExprVal);                        Forward;
 Procedure ParsePairExpr(Const Key : TString;
                         Var Res : TExprVal);                       Forward;
 
+{ Forward declarations TODO 11 - Expressions binaires }
+Procedure EmitBinExprRuntime;                                     Forward;
+
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
   ============================================================ }
@@ -1172,8 +1175,9 @@ Begin
   If RuntimeEmitted Then Exit;
   RuntimeEmitted := True;
   EmitBlankLine;
-  EmitComment('=== Runtime RAKU86 (stub) ===');
+  EmitComment('=== Runtime RAKU86 ===');
   EmitBlankLine;
+  EmitBinExprRuntime;
 End;
 
 Procedure EmitDataSeg;
@@ -2643,8 +2647,11 @@ Begin
   End;
   If Op = '**' Then
   Begin
-    EmitComment('** : puissance (stub)');
-    EmitInstr('MOV', 'AX, 1');
+    { Puissance : BX=base, AX=exposant -> AX=result }
+    EmitInstr('PUSH', 'AX');
+    EmitInstr('MOV', 'AX, BX');
+    EmitPop('CX');
+    EmitInstr('CALL', '_RKRT_POWER');
     Exit;
   End;
   { ==============================================================
@@ -2652,12 +2659,25 @@ Begin
     ============================================================== }
   If Op = '~' Then
   Begin
-    EmitComment('~ : concatenation (stub CALL _RKRT_CONCAT)');
+    { Concatenation : BX=gauche ptr, AX=droite ptr -> AX=STRBUF }
+    EmitInstr('PUSH', 'AX');
+    EmitInstr('MOV', 'BYTE PTR [_RK_STRBUF], 0');
+    EmitInstr('MOV', 'DI, OFFSET _RK_STRBUF');
+    EmitInstr('MOV', 'SI, BX');
+    EmitInstr('CALL', '_RKRT_CONCAT');
+    EmitPop('SI');
+    EmitInstr('CALL', '_RKRT_CONCAT');
+    EmitInstr('MOV', 'AX, OFFSET _RK_STRBUF');
+    Res.TypeIdx := TY_IDX_STR;
     Exit;
   End;
   If Op = 'x' Then
   Begin
-    EmitComment('x : repetition (stub CALL _RKRT_STRREPEAT)');
+    { Repetition : BX=chaine ptr, AX=count -> AX=TMPBUF }
+    EmitInstr('MOV', 'CX, AX');
+    EmitInstr('MOV', 'SI, BX');
+    EmitInstr('CALL', '_RKRT_STRREPEAT');
+    Res.TypeIdx := TY_IDX_STR;
     Exit;
   End;
   { ==============================================================
@@ -2736,9 +2756,61 @@ Begin
   If (Op = 'eq') Or (Op = 'ne') Or (Op = 'lt') Or (Op = 'le') Or
      (Op = 'gt') Or (Op = 'ge') Or (Op = 'leg') Or (Op = 'cmp') Then
   Begin
-    EmitComment(Op + ' : comparaison chaine (stub CALL _RKRT_STRCMP)');
-    EmitInstr('XOR', 'AX, AX');
-    Res.TypeIdx := TY_IDX_BOOL;
+    { Comparaisons de chaines : BX=gauche ptr, AX=droite ptr }
+    EmitInstr('MOV', 'SI, BX');
+    EmitInstr('MOV', 'DI, AX');
+    EmitInstr('CALL', '_RKRT_STRCMP');
+    { AX = -1 (lt), 0 (eq), +1 (gt) apres _RKRT_STRCMP }
+    If Op = 'eq' Then
+    Begin
+      EmitInstr('TEST', 'AX, AX');
+      EmitInstr('SETE', 'AL');
+      EmitInstr('MOVZX', 'AX, AL');
+    End
+    Else If Op = 'ne' Then
+    Begin
+      EmitInstr('TEST', 'AX, AX');
+      EmitInstr('SETNE', 'AL');
+      EmitInstr('MOVZX', 'AX, AL');
+    End
+    Else If Op = 'lt' Then
+    Begin
+      EmitInstr('CMP', 'AX, 0');
+      EmitInstr('SETL', 'AL');
+      EmitInstr('MOVZX', 'AX, AL');
+    End
+    Else If Op = 'le' Then
+    Begin
+      EmitInstr('CMP', 'AX, 0');
+      EmitInstr('SETLE', 'AL');
+      EmitInstr('MOVZX', 'AX, AL');
+    End
+    Else If Op = 'gt' Then
+    Begin
+      EmitInstr('CMP', 'AX, 0');
+      EmitInstr('SETG', 'AL');
+      EmitInstr('MOVZX', 'AX, AL');
+    End
+    Else If Op = 'ge' Then
+    Begin
+      EmitInstr('CMP', 'AX, 0');
+      EmitInstr('SETGE', 'AL');
+      EmitInstr('MOVZX', 'AX, AL');
+    End
+    Else If Op = 'leg' Then
+    Begin
+      { leg = <=> pour chaines : retourne -1/0/+1 }
+      { AX a deja -1/0/+1 }
+    End
+    Else If Op = 'cmp' Then
+    Begin
+      { cmp = alias pour leg }
+      { AX a deja -1/0/+1 }
+    End;
+    If (Op <> 'leg') And (Op <> 'cmp') Then
+      Res.TypeIdx := TY_IDX_BOOL
+    Else
+      Res.TypeIdx := TY_IDX_INT;
     Exit;
   End;
   { ==============================================================
@@ -2746,8 +2818,10 @@ Begin
     ============================================================== }
   If Op = '~~' Then
   Begin
-    EmitComment('~~ : smart match (stub)');
-    EmitInstr('XOR', 'AX, AX');
+    { Smart match : BX=left, AX=right -> comparaison par defaut }
+    EmitInstr('CMP', 'BX, AX');
+    EmitInstr('SETE', 'AL');
+    EmitInstr('MOVZX', 'AX, AL');
     Res.TypeIdx := TY_IDX_BOOL;
     Exit;
   End;
@@ -4431,6 +4505,115 @@ Begin
   Res.ImmVal  := 0;
   Res.TypeIdx := TY_IDX_PAIR;
   Res.Offset  := 0;
+End;
+
+{ ============================================================
+  TODO 11 - EXPRESSIONS BINAIRES [IMPLEMENTE]
+  EmitBinExprRuntime : routines runtime pour les expressions
+    binaires : _RKRT_CONCAT, _RKRT_STRREPEAT, _RKRT_STRCMP,
+    _RKRT_POWER
+  ============================================================ }
+
+{ ---- EmitBinExprRuntime : emettre les routines runtime ---------- }
+{ _RKRT_CONCAT  : SI=src ASCIIZ, DI=dst -> appends src au dst     }
+{                 (DI avance au null-terminator de dst d abord)     }
+{ _RKRT_STRREPEAT : SI=src ASCIIZ, CX=count -> AX=OFFSET TMPBUF   }
+{ _RKRT_STRCMP  : SI=str1, DI=str2 -> AX = -1/0/+1                }
+{ _RKRT_POWER   : AX=base, CX=exposant -> AX=result               }
+Procedure EmitBinExprRuntime;
+Begin
+  EmitComment('--- _RKRT_CONCAT : append ASCIIZ SI a DI ---');
+  EmitRaw('_RKRT_CONCAT PROC NEAR');
+  EmitRaw('        PUSH  SI');
+  EmitRaw('        PUSH  BX');
+  EmitRaw('        MOV   BX, DI');
+  EmitRaw('_RKRT_CC_FEND:');
+  EmitRaw('        CMP   BYTE PTR [DI], 0');
+  EmitRaw('        JE    _RKRT_CC_CPY');
+  EmitRaw('        INC   DI');
+  EmitRaw('        JMP   _RKRT_CC_FEND');
+  EmitRaw('_RKRT_CC_CPY:');
+  EmitRaw('        MOV   AL, [SI]');
+  EmitRaw('        MOV   [DI], AL');
+  EmitRaw('        INC   DI');
+  EmitRaw('        INC   SI');
+  EmitRaw('        TEST  AL, AL');
+  EmitRaw('        JNZ   _RKRT_CC_CPY');
+  EmitRaw('        MOV   AX, BX');
+  EmitRaw('        POP   BX');
+  EmitRaw('        POP   SI');
+  EmitRaw('        RET');
+  EmitRaw('_RKRT_CONCAT ENDP');
+  EmitBlankLine;
+
+  EmitComment('--- _RKRT_STRREPEAT : SI=str, CX=count -> AX=TMPBUF ---');
+  EmitRaw('_RKRT_STRREPEAT PROC NEAR');
+  EmitRaw('        PUSH  BX');
+  EmitRaw('        PUSH  DX');
+  EmitRaw('        MOV   BX, SI');
+  EmitRaw('        MOV   BYTE PTR [_RK_TMPBUF], 0');
+  EmitRaw('        MOV   DI, OFFSET _RK_TMPBUF');
+  EmitRaw('        TEST  CX, CX');
+  EmitRaw('        JLE   _RKRT_SR_DONE');
+  EmitRaw('_RKRT_SR_LOOP:');
+  EmitRaw('        MOV   SI, BX');
+  EmitRaw('        CALL  _RKRT_CONCAT');
+  EmitRaw('        DEC   CX');
+  EmitRaw('        JNZ   _RKRT_SR_LOOP');
+  EmitRaw('_RKRT_SR_DONE:');
+  EmitRaw('        MOV   AX, OFFSET _RK_TMPBUF');
+  EmitRaw('        POP   DX');
+  EmitRaw('        POP   BX');
+  EmitRaw('        RET');
+  EmitRaw('_RKRT_STRREPEAT ENDP');
+  EmitBlankLine;
+
+  EmitComment('--- _RKRT_STRCMP : SI=str1, DI=str2 -> AX=-1/0/+1 ---');
+  EmitRaw('_RKRT_STRCMP PROC NEAR');
+  EmitRaw('        PUSH  BX');
+  EmitRaw('_RKRT_SC_LOOP:');
+  EmitRaw('        MOV   AL, [SI]');
+  EmitRaw('        MOV   BL, [DI]');
+  EmitRaw('        CMP   AL, BL');
+  EmitRaw('        JB    _RKRT_SC_LT');
+  EmitRaw('        JA    _RKRT_SC_GT');
+  EmitRaw('        TEST  AL, AL');
+  EmitRaw('        JZ    _RKRT_SC_EQ');
+  EmitRaw('        INC   SI');
+  EmitRaw('        INC   DI');
+  EmitRaw('        JMP   _RKRT_SC_LOOP');
+  EmitRaw('_RKRT_SC_LT:');
+  EmitRaw('        MOV   AX, 0FFFFh');
+  EmitRaw('        JMP   _RKRT_SC_END');
+  EmitRaw('_RKRT_SC_GT:');
+  EmitRaw('        MOV   AX, 1');
+  EmitRaw('        JMP   _RKRT_SC_END');
+  EmitRaw('_RKRT_SC_EQ:');
+  EmitRaw('        XOR   AX, AX');
+  EmitRaw('_RKRT_SC_END:');
+  EmitRaw('        POP   BX');
+  EmitRaw('        RET');
+  EmitRaw('_RKRT_STRCMP ENDP');
+  EmitBlankLine;
+
+  EmitComment('--- _RKRT_POWER : AX=base, CX=exp -> AX=result ---');
+  EmitRaw('_RKRT_POWER PROC NEAR');
+  EmitRaw('        PUSH  BX');
+  EmitRaw('        PUSH  DX');
+  EmitRaw('        MOV   BX, AX');
+  EmitRaw('        MOV   AX, 1');
+  EmitRaw('        TEST  CX, CX');
+  EmitRaw('        JLE   _RKRT_PW_DONE');
+  EmitRaw('_RKRT_PW_LOOP:');
+  EmitRaw('        IMUL  BX');
+  EmitRaw('        DEC   CX');
+  EmitRaw('        JNZ   _RKRT_PW_LOOP');
+  EmitRaw('_RKRT_PW_DONE:');
+  EmitRaw('        POP   DX');
+  EmitRaw('        POP   BX');
+  EmitRaw('        RET');
+  EmitRaw('_RKRT_POWER ENDP');
+  EmitBlankLine;
 End;
 
 { ---- ParseStmt : dispatch principal ----------------------------- }
