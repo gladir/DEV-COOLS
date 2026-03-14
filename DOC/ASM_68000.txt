@@ -6960,3 +6960,1156 @@
   Listing                       LIST, NOLIST, PAGE, TTL, SPC
   Macros                        MACRO/ENDM, MEXIT, NARG, \@
   Ciblage processeur            MC68000..MC68060, MC68881/MC68882
+
+==============================================================================
+10. EXEMPLES DE CODE
+==============================================================================
+
+  Cette section presente des exemples complets de programmes en
+  assembleur 68000. Chaque exemple est commente et illustre une
+  technique ou un algorithme fondamental. Les exemples utilisent
+  les conventions de l'assembleur Motorola (syntaxe standard).
+
+  Note : Les exemples utilisent TRAP #15 avec des codes de fonction
+  dans D0 pour les entrees/sorties, ce qui est une convention
+  courante dans les simulateurs 68000 (Easy68K, etc.). Sur un
+  systeme reel, les appels systeme varient selon l'OS (AmigaOS,
+  Atari TOS, etc.).
+
+  10.1 Hello World
+  ------------------
+
+  Programme minimal affichant un message a l'ecran.
+
+  ; ------------------------------------------------------------------
+  ; Exemple 10.1 : Hello World
+  ; Affiche "Hello, World!" puis termine le programme.
+  ; Convention : TRAP #15, D0=13 pour afficher chaine (A1=adresse)
+  ;              TRAP #15, D0=9 pour terminer
+  ; ------------------------------------------------------------------
+
+    ORG       $1000
+
+  start:
+    LEA       message(PC), A1    ; Adresse du message dans A1
+    MOVE.B    #14, D0            ; Fonction : afficher chaine (A1)
+    TRAP      #15                ; Appel systeme
+    MOVE.B    #9, D0             ; Fonction : terminer le programme
+    TRAP      #15                ; Fin
+
+  message:
+    DC.B      'Hello, World!', $0D, $0A, 0
+
+    END       start
+
+  Variante Atari ST (GEMDOS) :
+
+    ORG       $1000
+
+  start:
+    PEA       message            ; Empiler adresse du message
+    MOVE.W    #9, -(SP)          ; Fonction Cconws (afficher chaine)
+    TRAP      #1                 ; Appel GEMDOS
+    ADDQ.L    #6, SP             ; Nettoyer la pile
+
+    CLR.W     -(SP)              ; Code de retour 0
+    TRAP      #1                 ; Pterm0 - terminer le programme
+
+  message:
+    DC.B      'Hello, World!', $0D, $0A, 0
+
+    END       start
+
+  Variante AmigaOS :
+
+    XREF      _LVOOpenLibrary
+    XREF      _LVOCloseLibrary
+    XREF      _LVOOutput
+    XREF      _LVOWrite
+
+    ORG       $1000
+
+  start:
+    MOVE.L    4.W, A6            ; ExecBase
+    LEA       dosname(PC), A1    ; "dos.library"
+    MOVEQ     #0, D0             ; Version minimale
+    JSR       _LVOOpenLibrary(A6)
+    MOVE.L    D0, A6             ; DOSBase dans A6
+    BEQ.S     .quit              ; Echec -> sortir
+
+    JSR       _LVOOutput(A6)     ; Obtenir le handle stdout
+    MOVE.L    D0, D1             ; Handle dans D1
+    LEA       message(PC), A0
+    MOVE.L    A0, D2             ; Buffer dans D2
+    MOVEQ     #15, D3            ; Longueur "Hello, World!\n"
+    JSR       _LVOWrite(A6)      ; Ecrire
+
+    MOVE.L    A6, A1             ; DOSBase
+    MOVE.L    4.W, A6            ; ExecBase
+    JSR       _LVOCloseLibrary(A6)
+
+  .quit:
+    RTS
+
+  dosname:
+    DC.B      'dos.library', 0
+  message:
+    DC.B      'Hello, World!', $0A, 0
+    EVEN
+
+    END       start
+
+  10.2 Calcul de factorielle (recursif)
+  ----------------------------------------
+
+  Calcul recursif de N! utilisant la pile pour sauvegarder
+  les valeurs intermediaires.
+
+  ; ------------------------------------------------------------------
+  ; Exemple 10.2 : Factorielle recursive
+  ; Entree : D0.L = N (entier positif)
+  ; Sortie : D0.L = N!
+  ; Utilise la pile pour la recursion.
+  ; ------------------------------------------------------------------
+
+    ORG       $1000
+
+  start:
+    MOVEQ     #7, D0             ; Calculer 7!
+    BSR       factorielle        ; Appel -> D0 = 5040
+
+    ; Afficher le resultat (specifique au simulateur)
+    MOVE.B    #3, D0             ; Fonction : afficher entier D1
+    MOVE.L    D0, D1
+    TRAP      #15
+
+    MOVE.B    #9, D0             ; Terminer
+    TRAP      #15
+
+  ; ------------------------------------------------------------------
+  ; Sous-routine : factorielle
+  ; Entree : D0.L = N
+  ; Sortie : D0.L = N!
+  ; Preservee : D1-D7, A0-A6
+  ; ------------------------------------------------------------------
+  factorielle:
+    TST.L     D0                 ; N == 0 ?
+    BEQ.S     .cas_base          ; Oui -> retourner 1
+    CMP.L     #1, D0             ; N == 1 ?
+    BEQ.S     .cas_base          ; Oui -> retourner 1
+
+    ; Cas recursif : N! = N * (N-1)!
+    MOVE.L    D0, -(SP)          ; Sauvegarder N sur la pile
+    SUBQ.L    #1, D0             ; D0 = N-1
+    BSR       factorielle        ; Appel recursif -> D0 = (N-1)!
+    MOVE.L    (SP)+, D1          ; Restaurer N dans D1
+    MULU      D1, D0             ; D0 = N * (N-1)! (16 bits)
+    RTS
+
+  .cas_base:
+    MOVEQ     #1, D0             ; 0! = 1! = 1
+    RTS
+
+    END       start
+
+  Note : MULU est limite a 16 bits x 16 bits -> 32 bits sur le
+  68000. Pour des valeurs plus grandes, il faudrait une routine
+  de multiplication 32 bits (voir Section 8).
+
+  Version iterative (plus efficace) :
+
+  ; ------------------------------------------------------------------
+  ; Factorielle iterative
+  ; Entree : D0.L = N
+  ; Sortie : D0.L = N!
+  ; ------------------------------------------------------------------
+  fact_iter:
+    MOVE.L    D0, D1             ; D1 = N (compteur)
+    MOVEQ     #1, D0             ; D0 = resultat = 1
+    BRA.S     .test
+  .boucle:
+    MULU      D1, D0             ; resultat = resultat * compteur
+    SUBQ.W    #1, D1             ; compteur--
+  .test:
+    CMP.W     #1, D1             ; compteur > 1 ?
+    BGT.S     .boucle            ; Oui -> continuer
+    RTS
+
+  10.3 Tri a bulles
+  -------------------
+
+  Tri d'un tableau de mots (16 bits) en ordre croissant
+  par l'algorithme du tri a bulles (bubble sort).
+
+  ; ------------------------------------------------------------------
+  ; Exemple 10.3 : Tri a bulles
+  ; Trie un tableau de mots en ordre croissant.
+  ; Entree : A0 = adresse du tableau
+  ;          D7 = nombre d'elements - 1
+  ; ------------------------------------------------------------------
+
+    ORG       $1000
+
+  start:
+    LEA       tableau(PC), A0    ; Adresse du tableau
+    MOVE.W    #7, D7             ; 8 elements - 1
+    BSR       tri_bulles         ; Trier
+
+    ; Afficher le tableau trie
+    LEA       tableau(PC), A0
+    MOVEQ     #7, D7
+  .affiche:
+    MOVE.W    (A0)+, D1          ; Lire element
+    EXT.L     D1                 ; Etendre a 32 bits
+    MOVE.B    #3, D0             ; Afficher entier
+    TRAP      #15
+    MOVE.B    #' ', D1           ; Espace separateur
+    MOVE.B    #6, D0             ; Afficher caractere
+    TRAP      #15
+    DBRA      D7, .affiche
+
+    MOVE.B    #9, D0             ; Terminer
+    TRAP      #15
+
+  ; ------------------------------------------------------------------
+  ; Sous-routine : tri_bulles
+  ; Entree : A0 = adresse du tableau de mots
+  ;          D7 = nombre d'elements - 1
+  ; Modifie : D0-D2, D6-D7, A1
+  ; ------------------------------------------------------------------
+  tri_bulles:
+    MOVEM.L   D0-D2/D6-D7/A0-A1, -(SP)  ; Sauvegarder registres
+
+  .passe:
+    CLR.B     D6                 ; Flag : pas d'echange
+    MOVE.L    A0, A1             ; A1 pointe sur le debut
+    MOVE.W    D7, D2             ; Compteur interne
+
+  .compare:
+    MOVE.W    (A1), D0           ; D0 = element courant
+    MOVE.W    2(A1), D1          ; D1 = element suivant
+    CMP.W     D1, D0             ; Comparer
+    BLE.S     .pas_echange       ; Si courant <= suivant, OK
+
+    ; Echanger les deux elements
+    MOVE.W    D1, (A1)           ; Stocker le plus petit en premier
+    MOVE.W    D0, 2(A1)          ; Stocker le plus grand ensuite
+    MOVE.B    #1, D6             ; Marquer qu'un echange a eu lieu
+
+  .pas_echange:
+    ADDQ.L    #2, A1             ; Avancer au mot suivant
+    SUBQ.W    #1, D2             ; Decrementer compteur
+    BNE.S     .compare           ; Continuer la passe
+
+    TST.B     D6                 ; Y a-t-il eu des echanges ?
+    BNE.S     .passe             ; Oui -> refaire une passe
+
+    MOVEM.L   (SP)+, D0-D2/D6-D7/A0-A1  ; Restaurer registres
+    RTS
+
+  tableau:
+    DC.W      45, 12, 78, 3, 56, 99, 23, 67
+
+    END       start
+
+  10.4 Conversion ASCII vers entier (atoi)
+  -------------------------------------------
+
+  Convertit une chaine de caracteres decimaux en entier 32 bits.
+
+  ; ------------------------------------------------------------------
+  ; Exemple 10.4 : atoi (ASCII to Integer)
+  ; Entree : A0 = adresse de la chaine ASCII terminee par 0
+  ; Sortie : D0.L = valeur entiere
+  ;          D1.B = 0 si OK, $FF si erreur
+  ; Gere le signe negatif en debut de chaine.
+  ; ------------------------------------------------------------------
+
+    ORG       $1000
+
+  start:
+    LEA       chaine(PC), A0     ; Adresse de la chaine
+    BSR       atoi               ; Convertir
+    ; D0 contient maintenant la valeur entiere
+
+    MOVE.L    D0, D1
+    MOVE.B    #3, D0             ; Afficher le resultat
+    TRAP      #15
+    MOVE.B    #9, D0             ; Terminer
+    TRAP      #15
+
+  ; ------------------------------------------------------------------
+  ; Sous-routine : atoi
+  ; ------------------------------------------------------------------
+  atoi:
+    MOVEM.L   D2-D4/A0, -(SP)   ; Sauvegarder registres
+    CLR.L     D0                 ; Resultat = 0
+    CLR.L     D1                 ; Flag erreur = OK
+    CLR.L     D2                 ; Caractere courant
+    MOVEQ     #0, D4             ; Flag signe (0 = positif)
+
+    ; Verifier le signe
+    MOVE.B    (A0), D2
+    CMP.B     #'-', D2           ; Signe negatif ?
+    BNE.S     .test_plus
+    MOVEQ     #1, D4             ; Marquer negatif
+    ADDQ.L    #1, A0             ; Avancer
+    BRA.S     .boucle
+
+  .test_plus:
+    CMP.B     #'+', D2           ; Signe positif explicite ?
+    BNE.S     .boucle
+    ADDQ.L    #1, A0             ; Avancer (signe + ignore)
+
+  .boucle:
+    MOVE.B    (A0)+, D2          ; Lire caractere suivant
+    BEQ.S     .fin               ; Fin de chaine (zero terminal)
+
+    ; Verifier que c'est un chiffre (0-9)
+    CMP.B     #'0', D2
+    BLT.S     .erreur
+    CMP.B     #'9', D2
+    BGT.S     .erreur
+
+    ; resultat = resultat * 10 + chiffre
+    SUB.B     #'0', D2           ; Convertir ASCII -> valeur
+    EXT.W     D2
+    EXT.L     D2
+
+    ; Multiplier D0 par 10 : D0*10 = D0*8 + D0*2
+    MOVE.L    D0, D3
+    LSL.L     #3, D0             ; D0 * 8
+    ADD.L     D3, D0             ; D0 * 9
+    ADD.L     D3, D0             ; D0 * 10
+    ADD.L     D2, D0             ; + chiffre
+    BRA.S     .boucle
+
+  .erreur:
+    MOVE.B    #$FF, D1           ; Marquer erreur
+    BRA.S     .sortie
+
+  .fin:
+    TST.B     D4                 ; Negatif ?
+    BEQ.S     .sortie
+    NEG.L     D0                 ; Inverser le signe
+
+  .sortie:
+    MOVEM.L   (SP)+, D2-D4/A0   ; Restaurer registres
+    RTS
+
+  chaine:
+    DC.B      '-12345', 0
+    EVEN
+
+    END       start
+
+  10.5 Conversion entier vers ASCII (itoa)
+  -------------------------------------------
+
+  Convertit un entier 32 bits signe en chaine ASCII decimale.
+
+  ; ------------------------------------------------------------------
+  ; Exemple 10.5 : itoa (Integer to ASCII)
+  ; Entree : D0.L = valeur entiere signee
+  ;          A0 = adresse du buffer (au moins 12 octets)
+  ; Sortie : A0 = adresse du debut de la chaine dans le buffer
+  ; ------------------------------------------------------------------
+
+    ORG       $1000
+
+  start:
+    MOVE.L    #-9876, D0         ; Valeur a convertir
+    LEA       buffer(PC), A0     ; Buffer de sortie
+    BSR       itoa               ; Convertir
+
+    ; Afficher le resultat
+    MOVE.L    A0, A1
+    MOVE.B    #14, D0            ; Afficher chaine
+    TRAP      #15
+    MOVE.B    #9, D0             ; Terminer
+    TRAP      #15
+
+  ; ------------------------------------------------------------------
+  ; Sous-routine : itoa
+  ; Methode : diviser par 10, empiler les restes, puis depiler.
+  ; ------------------------------------------------------------------
+  itoa:
+    MOVEM.L   D0-D3/A1, -(SP)   ; Sauvegarder registres
+    MOVE.L    A0, A1             ; A1 = debut du buffer
+    CLR.L     D3                 ; Compteur de chiffres
+    TST.L     D0                 ; Nombre negatif ?
+    BPL.S     .positif
+
+    ; Nombre negatif
+    NEG.L     D0                 ; Rendre positif
+    MOVE.B    #'-', (A1)+        ; Ecrire le signe
+
+  .positif:
+    ; Empiler les chiffres (du moins significatif au plus significatif)
+    MOVE.L    A1, A0             ; Sauvegarder position debut chiffres
+
+  .div_boucle:
+    ; Division par 10 : quotient dans D0, reste dans D1
+    MOVE.L    D0, D1
+    DIVU      #10, D0            ; D0[31:16] = reste, D0[15:0] = quotient
+    SWAP      D0                 ; D0[15:0] = reste
+    MOVE.W    D0, D2             ; D2 = reste (chiffre)
+    SWAP      D0                 ; D0[15:0] = quotient
+    AND.L     #$FFFF, D0         ; Nettoyer bits hauts
+
+    ADD.B     #'0', D2           ; Convertir en ASCII
+    MOVE.B    D2, -(SP)          ; Empiler le chiffre
+    ADDQ.L    #1, D3             ; Compteur++
+
+    TST.L     D0                 ; Quotient == 0 ?
+    BNE.S     .div_boucle        ; Non -> continuer
+
+    ; Depiler les chiffres dans le buffer (ordre correct)
+  .depile:
+    MOVE.B    (SP)+, (A1)+       ; Chiffre de la pile vers le buffer
+    SUBQ.L    #1, D3
+    BNE.S     .depile
+
+    MOVE.B    #0, (A1)           ; Terminateur zero
+    MOVEM.L   (SP)+, D0-D3/A1   ; Restaurer registres
+    RTS
+
+  buffer:
+    DS.B      12                 ; Buffer pour la chaine (max 11 + zero)
+
+    END       start
+
+  Note : Cet exemple utilise DIVU (16 bits). Pour des nombres
+  superieurs a 65535, une routine de division 32 bits est necessaire.
+
+  10.6 Recherche binaire
+  ------------------------
+
+  Recherche d'une valeur dans un tableau trie de mots (16 bits)
+  par dichotomie.
+
+  ; ------------------------------------------------------------------
+  ; Exemple 10.6 : Recherche binaire (binary search)
+  ; Entree : A0 = adresse du tableau trie de mots
+  ;          D0.W = nombre d'elements
+  ;          D1.W = valeur cherchee
+  ; Sortie : D0.W = index si trouve, -1 si non trouve
+  ;          CCR : Z=1 si trouve, Z=0 si non trouve
+  ; ------------------------------------------------------------------
+
+    ORG       $1000
+
+  start:
+    LEA       tableau(PC), A0    ; Tableau trie
+    MOVE.W    #10, D0            ; 10 elements
+    MOVE.W    #56, D1            ; Chercher 56
+    BSR       recherche_bin      ; Rechercher
+
+    BEQ.S     .trouve
+    ; Non trouve
+    LEA       msg_non(PC), A1
+    BRA.S     .affiche
+
+  .trouve:
+    ; Trouve a l'index D0
+    MOVE.W    D0, D1
+    EXT.L     D1
+    MOVE.B    #3, D0             ; Afficher index
+    TRAP      #15
+
+  .affiche:
+    MOVE.B    #9, D0             ; Terminer
+    TRAP      #15
+
+  ; ------------------------------------------------------------------
+  ; Sous-routine : recherche_bin
+  ; ------------------------------------------------------------------
+  recherche_bin:
+    MOVEM.L   D2-D5/A1, -(SP)   ; Sauvegarder registres
+    CLR.W     D2                 ; D2 = gauche = 0
+    MOVE.W    D0, D3             ; D3 = droite = n
+    SUBQ.W    #1, D3             ; D3 = n - 1
+
+  .boucle:
+    CMP.W     D3, D2             ; gauche > droite ?
+    BGT.S     .non_trouve        ; Oui -> non trouve
+
+    ; milieu = (gauche + droite) / 2
+    MOVE.W    D2, D4
+    ADD.W     D3, D4
+    LSR.W     #1, D4             ; D4 = milieu
+
+    ; Comparer tableau[milieu] avec la valeur cherchee
+    MOVE.W    D4, D5
+    LSL.W     #1, D5             ; D5 = milieu * 2 (offset en octets)
+    MOVE.W    0(A0,D5.W), D0    ; D0 = tableau[milieu]
+
+    CMP.W     D1, D0             ; Comparer avec valeur cherchee
+    BEQ.S     .trouve            ; Egal -> trouve !
+    BLT.S     .aller_droite      ; tableau[milieu] < valeur
+
+    ; tableau[milieu] > valeur : chercher a gauche
+    MOVE.W    D4, D3             ; droite = milieu - 1
+    SUBQ.W    #1, D3
+    BRA.S     .boucle
+
+  .aller_droite:
+    ; tableau[milieu] < valeur : chercher a droite
+    MOVE.W    D4, D2             ; gauche = milieu + 1
+    ADDQ.W    #1, D2
+    BRA.S     .boucle
+
+  .trouve:
+    MOVE.W    D4, D0             ; D0 = index trouve
+    ; Z flag est deja positionne par CMP.W D1,D0 (BEQ.S .trouve)
+    ORI       #%00000100, CCR    ; Forcer Z=1
+    MOVEM.L   (SP)+, D2-D5/A1
+    RTS
+
+  .non_trouve:
+    MOVE.W    #-1, D0            ; D0 = -1 (non trouve)
+    ANDI      #%11111011, CCR    ; Forcer Z=0
+    MOVEM.L   (SP)+, D2-D5/A1
+    RTS
+
+  msg_non:
+    DC.B      'Non trouve', $0D, $0A, 0
+    EVEN
+
+  tableau:
+    DC.W      3, 12, 23, 34, 45, 56, 67, 78, 89, 99
+
+    END       start
+
+  10.7 Copie de chaine (strcpy)
+  --------------------------------
+
+  Copie une chaine terminee par zero d'une source vers une
+  destination.
+
+  ; ------------------------------------------------------------------
+  ; Exemple 10.7 : strcpy
+  ; Entree : A0 = adresse destination
+  ;          A1 = adresse source
+  ; Sortie : A0 = adresse destination (inchangee)
+  ; ------------------------------------------------------------------
+
+    ORG       $1000
+
+  start:
+    LEA       source(PC), A1     ; Chaine source
+    LEA       dest, A0           ; Buffer destination
+    BSR       strcpy             ; Copier
+
+    ; Afficher la copie
+    MOVE.L    A0, A1
+    MOVE.B    #14, D0
+    TRAP      #15
+
+    MOVE.B    #9, D0
+    TRAP      #15
+
+  ; ------------------------------------------------------------------
+  ; Sous-routine : strcpy (version simple)
+  ; ------------------------------------------------------------------
+  strcpy:
+    MOVE.L    A0, -(SP)          ; Sauvegarder adresse debut
+    MOVE.L    A2, -(SP)          ; Sauvegarder A2
+    MOVE.L    A0, A2             ; A2 = pointeur destination
+
+  .copie:
+    MOVE.B    (A1)+, (A2)+       ; Copier un octet
+    BNE.S     .copie             ; Continuer si pas zero
+
+    MOVE.L    (SP)+, A2          ; Restaurer A2
+    MOVE.L    (SP)+, A0          ; Restaurer adresse debut
+    RTS
+
+  ; ------------------------------------------------------------------
+  ; Sous-routine : strcpy optimisee (copie par long mots)
+  ; Suppose que source et destination sont alignees sur 4 octets
+  ; et que la longueur est connue.
+  ; Entree : A0 = dest (alignee), A1 = src (alignee), D0.L = longueur
+  ; ------------------------------------------------------------------
+  strcpy_fast:
+    MOVEM.L   D0-D1/A0-A1, -(SP)
+
+    ; Copier par blocs de 4 octets
+    MOVE.L    D0, D1
+    LSR.L     #2, D1             ; Nombre de long mots
+    BRA.S     .test_long
+
+  .copie_long:
+    MOVE.L    (A1)+, (A0)+       ; Copier 4 octets
+  .test_long:
+    DBRA      D1, .copie_long
+
+    ; Copier les octets restants
+    AND.L     #3, D0             ; D0 = octets restants
+    BRA.S     .test_reste
+
+  .copie_reste:
+    MOVE.B    (A1)+, (A0)+       ; Copier 1 octet
+  .test_reste:
+    DBRA      D0, .copie_reste
+
+    MOVEM.L   (SP)+, D0-D1/A0-A1
+    RTS
+
+  source:
+    DC.B      'Assembleur 68000 est puissant !', 0
+    EVEN
+
+  dest:
+    DS.B      64                 ; Buffer destination
+
+    END       start
+
+  10.8 Longueur de chaine (strlen)
+  -----------------------------------
+
+  Calcule la longueur d'une chaine terminee par zero.
+
+  ; ------------------------------------------------------------------
+  ; Exemple 10.8 : strlen
+  ; Entree : A0 = adresse de la chaine
+  ; Sortie : D0.L = longueur (sans le zero terminal)
+  ; ------------------------------------------------------------------
+
+    ORG       $1000
+
+  start:
+    LEA       chaine(PC), A0     ; Adresse de la chaine
+    BSR       strlen             ; Calculer longueur
+
+    MOVE.L    D0, D1
+    MOVE.B    #3, D0             ; Afficher longueur
+    TRAP      #15
+    MOVE.B    #9, D0             ; Terminer
+    TRAP      #15
+
+  ; ------------------------------------------------------------------
+  ; Sous-routine : strlen (version simple)
+  ; ------------------------------------------------------------------
+  strlen:
+    MOVE.L    A0, -(SP)          ; Sauvegarder A0
+    CLR.L     D0                 ; Compteur = 0
+
+  .boucle:
+    TST.B     (A0)+              ; Caractere nul ?
+    BEQ.S     .fin               ; Oui -> fin
+    ADDQ.L    #1, D0             ; Compteur++
+    BRA.S     .boucle            ; Continuer
+
+  .fin:
+    MOVE.L    (SP)+, A0          ; Restaurer A0
+    RTS
+
+  ; ------------------------------------------------------------------
+  ; Sous-routine : strlen optimisee
+  ; Utilise la soustraction de pointeurs pour eviter le compteur.
+  ; ------------------------------------------------------------------
+  strlen_fast:
+    MOVE.L    A0, D0             ; Sauvegarder adresse debut
+    MOVE.L    A0, -(SP)
+
+  .scan:
+    TST.B     (A0)+              ; Caractere nul ?
+    BNE.S     .scan              ; Non -> continuer
+
+    SUBQ.L    #1, A0             ; Reculer (on a depasse le zero)
+    SUB.L     D0, A0             ; A0 = adresse_fin - adresse_debut
+    MOVE.L    A0, D0             ; D0 = longueur
+    MOVE.L    (SP)+, A0          ; Restaurer A0
+    RTS
+
+  chaine:
+    DC.B      'Ceci est un test de longueur de chaine', 0
+    EVEN
+
+    END       start
+
+  10.9 Comparaison de chaines (strcmp)
+  ---------------------------------------
+
+  Compare deux chaines terminee par zero.
+
+  ; ------------------------------------------------------------------
+  ; Exemple 10.9 : strcmp
+  ; Entree : A0 = adresse chaine 1
+  ;          A1 = adresse chaine 2
+  ; Sortie : D0.B = 0 si egales
+  ;          D0.B < 0 si chaine1 < chaine2
+  ;          D0.B > 0 si chaine1 > chaine2
+  ; ------------------------------------------------------------------
+
+    ORG       $1000
+
+  start:
+    LEA       ch1(PC), A0
+    LEA       ch2(PC), A1
+    BSR       strcmp
+
+    TST.B     D0
+    BEQ.S     .egales
+    BMI.S     .inf
+    ; Superieur
+    LEA       msg_sup(PC), A1
+    BRA.S     .affiche
+  .inf:
+    LEA       msg_inf(PC), A1
+    BRA.S     .affiche
+  .egales:
+    LEA       msg_egal(PC), A1
+
+  .affiche:
+    MOVE.B    #14, D0
+    TRAP      #15
+    MOVE.B    #9, D0
+    TRAP      #15
+
+  ; ------------------------------------------------------------------
+  ; Sous-routine : strcmp
+  ; ------------------------------------------------------------------
+  strcmp:
+    MOVEM.L   A0-A1, -(SP)
+
+  .boucle:
+    MOVE.B    (A0)+, D0          ; Lire caractere chaine 1
+    CMP.B     (A1)+, D0          ; Comparer avec chaine 2
+    BNE.S     .different          ; Differents -> sortir
+    TST.B     D0                 ; Fin des deux chaines ?
+    BNE.S     .boucle            ; Non -> continuer
+
+    ; Les chaines sont identiques
+    CLR.B     D0                 ; D0 = 0 (egal)
+    MOVEM.L   (SP)+, A0-A1
+    RTS
+
+  .different:
+    ; D0 contient le caractere de chaine 1
+    SUB.B     -1(A1), D0         ; D0 = ch1[i] - ch2[i]
+    MOVEM.L   (SP)+, A0-A1
+    RTS
+
+  ch1:      DC.B  'Hello', 0
+  ch2:      DC.B  'Hello', 0
+  msg_egal: DC.B  'Chaines egales', $0D, $0A, 0
+  msg_inf:  DC.B  'Chaine 1 < Chaine 2', $0D, $0A, 0
+  msg_sup:  DC.B  'Chaine 1 > Chaine 2', $0D, $0A, 0
+    EVEN
+
+    END       start
+
+  10.10 Gestionnaire d'interruption (timer)
+  --------------------------------------------
+
+  Exemple d'installation d'un gestionnaire d'interruption pour
+  un timer. Illustre le mode superviseur, la sauvegarde de
+  registres et le retour par RTE.
+
+  ; ------------------------------------------------------------------
+  ; Exemple 10.10 : Gestionnaire de timer
+  ; Installe un vecteur d'interruption pour le Level 4 Autovector
+  ; (typiquement utilise pour le VBL sur Atari ST ou Amiga).
+  ; ------------------------------------------------------------------
+
+    ORG       $1000
+
+  start:
+    ; Passer en mode superviseur (si necessaire)
+    ; Sur Atari ST : MOVE.L #0,-(SP) / MOVE.W #$20,-(SP) / TRAP #1
+
+    ; Sauvegarder l'ancien vecteur
+    MOVE.L    $70, ancien_vbl    ; Vecteur Level 4 ($70)
+
+    ; Installer le nouveau gestionnaire
+    MOVE.L    #mon_vbl, $70      ; Nouveau vecteur
+
+    ; ... le programme principal tourne ici ...
+    ; Le compteur sera incremente a chaque VBL (50 ou 60 Hz)
+    LEA       compteur_vbl(PC), A0
+
+  .attente:
+    MOVE.L    (A0), D0           ; Lire le compteur
+    CMP.L     #300, D0           ; 300 VBLs = ~5 secondes (60 Hz)
+    BLT.S     .attente           ; Attendre
+
+    ; Restaurer l'ancien vecteur
+    MOVE.L    ancien_vbl, $70
+
+    MOVE.B    #9, D0             ; Terminer
+    TRAP      #15
+
+  ; ------------------------------------------------------------------
+  ; Gestionnaire VBL (interruption Level 4)
+  ; Doit sauvegarder tous les registres utilises et finir par RTE.
+  ; ------------------------------------------------------------------
+  mon_vbl:
+    MOVEM.L   D0/A0, -(SP)      ; Sauvegarder registres utilises
+
+    LEA       compteur_vbl(PC), A0
+    ADDQ.L    #1, (A0)           ; Incrementer le compteur
+
+    MOVEM.L   (SP)+, D0/A0      ; Restaurer registres
+    RTE                          ; Retour d'exception (pas RTS !)
+
+  compteur_vbl:
+    DC.L      0                  ; Compteur de VBLs
+
+  ancien_vbl:
+    DC.L      0                  ; Sauvegarde ancien vecteur
+
+    END       start
+
+  Points importants :
+  - RTE (Return from Exception) depile SR puis PC (6 octets sur
+    68000, 8 octets sur 68010+)
+  - Les registres utilises dans le gestionnaire doivent etre
+    sauvegardes et restaures (MOVEM)
+  - Le gestionnaire doit etre le plus court possible pour ne pas
+    bloquer les autres interruptions
+  - L'acces aux vecteurs d'interruption necessite le mode superviseur
+
+  10.11 Programme complet : recherche dans une chaine
+  ------------------------------------------------------
+
+  Recherche la premiere occurrence d'un caractere dans une chaine.
+
+  ; ------------------------------------------------------------------
+  ; Exemple 10.11 : strchr (recherche de caractere)
+  ; Entree : A0 = adresse de la chaine
+  ;          D0.B = caractere a chercher
+  ; Sortie : A0 = adresse du caractere trouve, ou 0 si non trouve
+  ;          CCR : Z=1 si trouve
+  ; ------------------------------------------------------------------
+
+    ORG       $1000
+
+  start:
+    LEA       chaine(PC), A0
+    MOVE.B    #'e', D0           ; Chercher 'e'
+    BSR       strchr
+
+    TST.L     A0                 ; Trouve ?
+    BEQ.S     .non_trouve
+
+    ; Afficher la sous-chaine a partir du caractere trouve
+    MOVE.L    A0, A1
+    MOVE.B    #14, D0
+    TRAP      #15
+    BRA.S     .fin
+
+  .non_trouve:
+    LEA       msg_non(PC), A1
+    MOVE.B    #14, D0
+    TRAP      #15
+
+  .fin:
+    MOVE.B    #9, D0
+    TRAP      #15
+
+  ; ------------------------------------------------------------------
+  ; Sous-routine : strchr
+  ; ------------------------------------------------------------------
+  strchr:
+    MOVE.L    D1, -(SP)          ; Sauvegarder D1
+
+  .boucle:
+    MOVE.B    (A0), D1           ; Lire caractere courant
+    CMP.B     D0, D1             ; Compare avec le caractere cherche
+    BEQ.S     .trouve            ; Trouve !
+    TST.B     D1                 ; Fin de chaine ?
+    BEQ.S     .non_trouve        ; Oui -> non trouve
+    ADDQ.L    #1, A0             ; Avancer dans la chaine
+    BRA.S     .boucle
+
+  .trouve:
+    ; A0 pointe sur le caractere trouve
+    MOVE.L    (SP)+, D1
+    RTS
+
+  .non_trouve:
+    SUB.L     A0, A0             ; A0 = 0 (NULL)
+    MOVE.L    (SP)+, D1
+    RTS
+
+  chaine:
+    DC.B      'Assembleur 68000', 0
+  msg_non:
+    DC.B      'Caractere non trouve', $0D, $0A, 0
+    EVEN
+
+    END       start
+
+  10.12 Exemples avec le coprocesseur flottant
+  ------------------------------------------------
+
+  Exemples utilisant le coprocesseur flottant 68881/68882.
+
+  ; ------------------------------------------------------------------
+  ; Exemple 10.12a : Calcul de la norme d'un vecteur 2D
+  ; Entree : FP0 = x, FP1 = y
+  ; Sortie : FP0 = sqrt(x*x + y*y)
+  ; Necessite un 68020+ avec 68881/68882 ou 68040+
+  ; ------------------------------------------------------------------
+
+    MC68020
+    MC68881
+
+    ORG       $1000
+
+  start:
+    FMOVE.D   #3.0, FP0          ; x = 3.0
+    FMOVE.D   #4.0, FP1          ; y = 4.0
+    BSR       norme_2d            ; FP0 = sqrt(9+16) = 5.0
+
+    ; Afficher le resultat (specifique au systeme)
+    MOVE.B    #9, D0
+    TRAP      #15
+
+  ; ------------------------------------------------------------------
+  ; Sous-routine : norme_2d
+  ; Calcule sqrt(x^2 + y^2)
+  ; ------------------------------------------------------------------
+  norme_2d:
+    FMUL.X    FP0, FP0            ; FP0 = x*x
+    FMUL.X    FP1, FP1            ; FP1 = y*y
+    FADD.X    FP1, FP0            ; FP0 = x*x + y*y
+    FSQRT.X   FP0                 ; FP0 = sqrt(x*x + y*y)
+    RTS
+
+    END       start
+
+  ; ------------------------------------------------------------------
+  ; Exemple 10.12b : Conversion degres -> radians
+  ; Entree : FP0 = angle en degres
+  ; Sortie : FP0 = angle en radians
+  ; ------------------------------------------------------------------
+
+  deg_to_rad:
+    FMUL.D    #0.01745329251994, FP0  ; FP0 = degres * (PI/180)
+    RTS                              ; Alternative : FMUL PI / FDIV #180
+
+  ; ------------------------------------------------------------------
+  ; Exemple 10.12c : Evaluation du polynome ax^2 + bx + c (Horner)
+  ; Entree : FP0 = x
+  ;          A0 = adresse des coefficients (a, b, c en double)
+  ; Sortie : FP0 = resultat
+  ; Methode de Horner : ((a)*x + b)*x + c
+  ; ------------------------------------------------------------------
+
+  eval_poly2:
+    FMOVE.D   (A0)+, FP1          ; FP1 = a
+    FMUL.X    FP0, FP1            ; FP1 = a*x
+    FADD.D    (A0)+, FP1          ; FP1 = a*x + b
+    FMUL.X    FP0, FP1            ; FP1 = (a*x + b)*x
+    FADD.D    (A0)+, FP1          ; FP1 = (a*x + b)*x + c
+    FMOVE.X   FP1, FP0            ; FP0 = resultat
+    RTS
+
+  ; ------------------------------------------------------------------
+  ; Exemple 10.12d : Calcul de sinus par serie de Taylor
+  ; sin(x) = x - x^3/3! + x^5/5! - x^7/7! + ...
+  ; Entree : FP0 = x (en radians)
+  ; Sortie : FP0 = sin(x)
+  ; Note : La FPU a FSIN, cet exemple est pedagogique.
+  ; ------------------------------------------------------------------
+
+  sin_taylor:
+    FMOVE.X   FP0, FP1            ; FP1 = x (terme courant)
+    FMOVE.X   FP0, FP2            ; FP2 = resultat = x
+    FMUL.X    FP0, FP0            ; FP0 = x*x
+    FMOVE.X   FP0, FP3            ; FP3 = x*x (sauvegarde)
+
+    ; Terme 2 : -x^3/3! = -x^3/6
+    FMUL.X    FP3, FP1            ; FP1 = x^3
+    FDIV.D    #6.0, FP1           ; FP1 = x^3/6
+    FSUB.X    FP1, FP2            ; resultat -= x^3/6
+
+    ; Terme 3 : +x^5/5! = +x^5/120
+    FMUL.X    FP3, FP1            ; FP1 = x^5
+    FDIV.D    #20.0, FP1          ; FP1 = x^5/120 (6*20=120)
+    FADD.X    FP1, FP2            ; resultat += x^5/120
+
+    ; Terme 4 : -x^7/7! = -x^7/5040
+    FMUL.X    FP3, FP1            ; FP1 = x^7
+    FDIV.D    #42.0, FP1          ; FP1 = x^7/5040 (120*42=5040)
+    FSUB.X    FP1, FP2            ; resultat -= x^7/5040
+
+    FMOVE.X   FP2, FP0            ; FP0 = resultat
+    RTS
+
+  10.13 Remplissage de memoire (memset)
+  ----------------------------------------
+
+  Remplit une zone memoire avec une valeur donnee.
+
+  ; ------------------------------------------------------------------
+  ; Exemple 10.13 : memset
+  ; Entree : A0 = adresse de debut
+  ;          D0.L = nombre d'octets
+  ;          D1.B = valeur de remplissage
+  ; Sortie : A0 = adresse de debut (inchangee)
+  ; ------------------------------------------------------------------
+
+  memset:
+    MOVEM.L   D0-D2/A0, -(SP)
+
+    ; Preparer D2 avec la valeur repetee sur 32 bits
+    ; Ex: si D1.B = $FF, alors D2.L = $FFFFFFFF
+    MOVE.B    D1, D2
+    LSL.W     #8, D2
+    MOVE.B    D1, D2             ; D2.W = D1:D1
+    MOVE.W    D2, D1
+    SWAP      D2
+    MOVE.W    D1, D2             ; D2.L = D1:D1:D1:D1
+
+    ; Remplir par long mots si possible
+    MOVE.L    D0, D1
+    LSR.L     #2, D1             ; Nombre de long mots
+    BRA.S     .test_long
+
+  .fill_long:
+    MOVE.L    D2, (A0)+          ; Ecrire 4 octets
+  .test_long:
+    DBRA      D1, .fill_long
+
+    ; Remplir les octets restants
+    AND.L     #3, D0
+    BRA.S     .test_byte
+
+  .fill_byte:
+    MOVE.B    D2, (A0)+          ; Ecrire 1 octet
+  .test_byte:
+    DBRA      D0, .fill_byte
+
+    MOVEM.L   (SP)+, D0-D2/A0
+    RTS
+
+  10.14 Copie de memoire (memcpy)
+  ----------------------------------
+
+  Copie un bloc de memoire d'une source vers une destination.
+
+  ; ------------------------------------------------------------------
+  ; Exemple 10.14 : memcpy
+  ; Entree : A0 = destination
+  ;          A1 = source
+  ;          D0.L = nombre d'octets
+  ; Sortie : A0 = destination (inchangee)
+  ; Gere le chevauchement (copie arriere si necessaire).
+  ; ------------------------------------------------------------------
+
+  memcpy:
+    MOVEM.L   D0-D1/A0-A2, -(SP)
+    MOVE.L    A0, A2             ; Sauvegarder adresse debut
+
+    ; Verifier le chevauchement
+    CMP.L     A1, A0
+    BEQ.S     .fin               ; Source == dest -> rien a faire
+    BHI.S     .copie_arriere     ; dest > source -> copie arriere
+
+    ; Copie avant (source -> destination, croissant)
+    ; Copier par long mots
+    MOVE.L    D0, D1
+    LSR.L     #2, D1
+    BRA.S     .test_fwd_l
+
+  .fwd_long:
+    MOVE.L    (A1)+, (A0)+
+  .test_fwd_l:
+    DBRA      D1, .fwd_long
+
+    ; Octets restants
+    AND.L     #3, D0
+    BRA.S     .test_fwd_b
+
+  .fwd_byte:
+    MOVE.B    (A1)+, (A0)+
+  .test_fwd_b:
+    DBRA      D0, .fwd_byte
+    BRA.S     .fin
+
+  .copie_arriere:
+    ; Copie arriere (fin -> debut, decroissant)
+    ADD.L     D0, A0             ; Pointer apres la fin
+    ADD.L     D0, A1
+
+    ; Octets de queue (pour aligner)
+    MOVE.L    D0, D1
+    AND.L     #3, D1
+    BRA.S     .test_bwd_b
+
+  .bwd_byte:
+    MOVE.B    -(A1), -(A0)
+  .test_bwd_b:
+    DBRA      D1, .bwd_byte
+
+    ; Long mots
+    LSR.L     #2, D0
+    BRA.S     .test_bwd_l
+
+  .bwd_long:
+    MOVE.L    -(A1), -(A0)
+  .test_bwd_l:
+    DBRA      D0, .bwd_long
+
+  .fin:
+    MOVE.L    A2, A0             ; Restaurer adresse debut
+    MOVEM.L   (SP)+, D0-D1/A0-A2
+    RTS
+
+  10.15 Tableau recapitulatif des exemples
+  -------------------------------------------
+
+  N     Exemple                  Concepts illustres
+  ----  -----------------------  ----------------------------------
+  10.1  Hello World              TRAP, LEA, DC.B, ORG, END
+  10.2  Factorielle              Recursion, pile, MULU, BSR/RTS
+  10.3  Tri a bulles             Tableaux, DBRA, echanges, MOVEM
+  10.4  atoi                     Chaines, boucles, multiplication
+  10.5  itoa                     Division DIVU, pile pour inverser
+  10.6  Recherche binaire        Dichotomie, LSR, adressage indexe
+  10.7  strcpy                   Copie octet par octet, auto-incr.
+  10.8  strlen                   Compteur, soustraction pointeurs
+  10.9  strcmp                    Comparaison, CCR, branchements
+  10.10 Gestionnaire timer       Interruptions, RTE, vecteurs, SR
+  10.11 strchr                   Recherche, NULL, CCR
+  10.12 FPU (norme, poly, sin)   68881/82, FSQRT, Horner, Taylor
+  10.13 memset                   Remplissage, optimisation 32 bits
+  10.14 memcpy                   Copie, chevauchement, copie arr.
+
+  10.16 Resume
+  ---------------
+
+  Les exemples presentes dans cette section couvrent les techniques
+  fondamentales de la programmation en assembleur 68000 :
+
+  - Entrees/sorties basiques via TRAP et appels systeme specifiques
+    a chaque plateforme (Atari ST GEMDOS, Amiga Exec/DOS)
+  - Algorithmique : tri, recherche binaire, recursion, conversions
+  - Manipulation de chaines : copie, longueur, comparaison, recherche
+  - Manipulation de memoire : remplissage et copie avec gestion
+    du chevauchement et optimisation par long mots
+  - Gestion des interruptions : installation de vecteurs, sauvegarde
+    de contexte, RTE vs RTS, mode superviseur
+  - Calcul en virgule flottante avec le coprocesseur 68881/68882 :
+    operations de base, methode de Horner, serie de Taylor
+
+  Bonnes pratiques illustrees dans les exemples :
+
+  - Toujours sauvegarder et restaurer les registres utilises
+    dans les sous-routines (MOVEM.L regs, -(SP) / (SP)+, regs)
+  - Utiliser des etiquettes locales (.label) pour eviter les
+    conflits de noms
+  - Commenter chaque sous-routine avec ses entrees, sorties et
+    registres modifies
+  - Optimiser les boucles critiques (copie par long mots au lieu
+    d'octet par octet, decalages au lieu de multiplications)
+  - Utiliser MOVEQ pour les constantes [-128, 127] (plus rapide)
+  - Utiliser ADDQ/SUBQ pour les ajustements de 1 a 8 (plus rapide)
+  - Terminer les chaines par un octet zero pour simplifier le
+    traitement (convention C)
+  - Aligner les donnees avec EVEN apres les chaines de longueur
+    impaire pour eviter les erreurs d'acces sur le bus
