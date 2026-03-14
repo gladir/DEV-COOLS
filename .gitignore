@@ -1,5 +1,6 @@
 # Artefacts de compilation
 *.o
+*.obj
 *.ppu
 *.exe
 AL60C86
