@@ -17,7 +17,7 @@
 
 { ---------------------------------------------------------------------------- }
 {  TODO 01 [IMPLEMENTE] - Architecture de base, constantes et types internes   }
-{  TODO 02 - Lexeur : lecture source et tokenisation                           }
+{  TODO 02 [IMPLEMENTE] - Lexeur : lecture source et tokenisation              }
 {  TODO 03 - Gestion des erreurs, des avertissements et du bilan              }
 {  TODO 04 - Bassin de constantes (Constant Pool) : structures et gestion     }
 {  TODO 05 - Ecriture binaire du fichier .class (Big-endian)                  }
@@ -368,6 +368,566 @@ Begin
 End;
 
 { ============================================================================ }
+{ Lexeur : lecture source et tokenisation                                      }
+{ ============================================================================ }
+
+{ --- Declarations forward --- }
+Procedure SrcOpen(Const FileName: String); Forward;
+Procedure SrcClose; Forward;
+Function  SrcGetChar: Char; Forward;
+Procedure SrcUnget; Forward;
+Function  SrcPeek: Char; Forward;
+Procedure SkipWhitespace; Forward;
+Procedure SkipComment; Forward;
+Procedure LexIdent; Forward;
+Procedure LexNumber(firstCh: Char); Forward;
+Procedure LexString; Forward;
+Procedure LexDirective; Forward;
+Procedure NextToken; Forward;
+Procedure Consume; Forward;
+Procedure Expect(tok: Integer; Const what: String); Forward;
+Procedure ExpectStr(Const s: String); Forward;
+Procedure ExpectNewline; Forward;
+
+{ ---------- Ouverture et fermeture du fichier source ---------- }
+
+Procedure SrcOpen(Const FileName: String);
+Begin
+ Assign(SrcFile, FileName);
+ Reset(SrcFile);
+ If IOResult <> 0 Then
+ Begin
+  WriteLn('Erreur : impossible d''ouvrir ', FileName);
+  Halt(1);
+ End;
+ SrcLine    := '';
+ SrcLineNum := 0;
+ SrcCol     := 1;
+ SrcEof     := False;
+End;
+
+Procedure SrcClose;
+Begin
+ Close(SrcFile);
+ If IOResult <> 0 Then { ignorer erreur fermeture };
+End;
+
+{ ---------- Lecture ligne par ligne ---------- }
+
+Procedure SrcRefillLine;
+Begin
+ If EOF(SrcFile) Then
+ Begin
+  SrcEof  := True;
+  SrcLine := '';
+  SrcCol  := 1;
+  Exit;
+ End;
+ ReadLn(SrcFile, SrcLine);
+ Inc(SrcLineNum);
+ SrcCol := 1;
+End;
+
+{ ---------- Lecture caractere par caractere ---------- }
+
+Function SrcGetChar: Char;
+Var ch: Char;
+Begin
+ { Charger la premiere ligne si necessaire }
+ If (SrcLineNum = 0) And (Not SrcEof) Then
+  SrcRefillLine;
+
+ If SrcEof Then
+ Begin SrcGetChar := #0; Exit; End;
+
+ If SrcCol > Length(SrcLine) Then
+ Begin
+  { Fin de ligne courante -> retourner LF, passer a la suivante }
+  Inc(SrcCol);
+  If SrcCol > Length(SrcLine) + 1 Then
+  Begin
+   If Not EOF(SrcFile) Then SrcRefillLine
+   Else SrcEof := True;
+  End;
+  SrcGetChar := #10;
+  Exit;
+ End;
+
+ ch := SrcLine[SrcCol];
+ Inc(SrcCol);
+ SrcGetChar := ch;
+End;
+
+{ Remet la position d'un caractere en arriere }
+Procedure SrcUnget;
+Begin
+ If SrcCol > 1 Then Dec(SrcCol);
+End;
+
+{ Regarde le caractere courant sans avancer }
+Function SrcPeek: Char;
+Begin
+ If SrcEof Then
+ Begin SrcPeek := #0; Exit; End;
+ If (SrcLineNum = 0) And (Not SrcEof) Then
+  SrcRefillLine;
+ If SrcEof Then
+ Begin SrcPeek := #0; Exit; End;
+ If SrcCol > Length(SrcLine) Then
+  SrcPeek := #10
+ Else
+  SrcPeek := SrcLine[SrcCol];
+End;
+
+{ ---------- Espaces et commentaires ---------- }
+
+{ Sauter espaces et tabulations (pas les fins de ligne) }
+Procedure SkipWhitespace;
+Var ch: Char;
+Begin
+ While Not SrcEof do
+ Begin
+  ch := SrcPeek;
+  If (ch = ' ') Or (ch = #9) Then
+   SrcGetChar
+  Else
+   Exit;
+ End;
+End;
+
+{ Sauter le commentaire Jasmin : ';' jusqu'en fin de ligne }
+Procedure SkipComment;
+Var ch: Char;
+Begin
+ Repeat
+  ch := SrcGetChar;
+ Until (ch = #10) Or (ch = #0);
+End;
+
+{ ---------- LexIdent : identifiant, mnemonique ou label ---------- }
+
+Procedure LexIdent;
+Var s: String; ch: Char;
+Begin
+ s := '';
+ Repeat
+  ch := SrcGetChar;
+  If (ch >= 'A') And (ch <= 'Z') Then s := s + ch
+  Else If (ch >= 'a') And (ch <= 'z') Then s := s + ch
+  Else If (ch >= '0') And (ch <= '9') Then s := s + ch
+  Else If ch = '_' Then s := s + ch
+  Else If ch = '$' Then s := s + ch
+  Else If ch = '/' Then s := s + ch  { noms de classes JVM : java/lang/Object }
+  Else If ch = '<' Then s := s + ch  { <init>, <clinit> }
+  Else If ch = '>' Then s := s + ch  { <init>, <clinit> }
+  Else If ch = ';' Then s := s + ch  { descripteurs JVM : Ljava/lang/String; }
+  Else If ch = '(' Then s := s + ch  { descripteurs de methodes : (II)V }
+  Else If ch = ')' Then s := s + ch  { descripteurs de methodes : (II)V }
+  Else If ch = '[' Then s := s + ch  { descripteurs de tableaux : [I, [[ }
+  Else
+  Begin
+   { Verifier si c'est un label (suivi de ':') }
+   If ch = ':' Then
+   Begin
+    CurTok := TK_LABEL;
+    CurStr := s;
+    Exit;
+   End;
+   SrcUnget;
+   Break;
+  End;
+ Until Length(s) >= 255;
+ CurTok := TK_IDENT;
+ CurStr := s;
+End;
+
+{ ---------- LexNumber : entier/flottant avec prefixes ---------- }
+
+Procedure LexNumber(firstCh: Char);
+Var s      : String;
+    intVal : LongInt;
+    ch     : Char;
+    isFloat: Boolean;
+    isHex  : Boolean;
+    code   : Integer;
+    fltVal : Real;
+Begin
+ s       := '' + firstCh;
+ intVal  := Ord(firstCh) - Ord('0');
+ isFloat := False;
+ isHex   := False;
+
+ { Detecter prefixe hexadecimal 0x ou 0X }
+ If firstCh = '0' Then
+ Begin
+  ch := SrcPeek;
+  If (ch = 'x') Or (ch = 'X') Then
+  Begin
+   SrcGetChar; { consommer le 'x' }
+   isHex  := True;
+   intVal := 0;
+   s      := '0x';
+   { Accumuler les chiffres hexadecimaux }
+   Repeat
+    ch := SrcPeek;
+    If ((ch >= '0') And (ch <= '9')) Or
+       ((ch >= 'a') And (ch <= 'f')) Or
+       ((ch >= 'A') And (ch <= 'F')) Then
+    Begin
+     SrcGetChar;
+     s := s + ch;
+     If (ch >= '0') And (ch <= '9') Then
+      intVal := intVal * 16 + (Ord(ch) - Ord('0'))
+     Else If (ch >= 'a') And (ch <= 'f') Then
+      intVal := intVal * 16 + (Ord(ch) - Ord('a') + 10)
+     Else
+      intVal := intVal * 16 + (Ord(ch) - Ord('A') + 10);
+    End
+    Else
+     Break;
+   Until False;
+   CurTok   := TK_INTEGER;
+   CurStr   := s;
+   CurInt   := intVal;
+   CurFloat := 0.0;
+   { Suffixe L optionnel }
+   ch := SrcPeek;
+   If (ch = 'L') Or (ch = 'l') Then SrcGetChar;
+   Exit;
+  End;
+ End;
+
+ { Accumuler les chiffres decimaux }
+ Repeat
+  ch := SrcPeek;
+  If (ch >= '0') And (ch <= '9') Then
+  Begin
+   SrcGetChar;
+   s := s + ch;
+   intVal := intVal * 10 + (Ord(ch) - Ord('0'));
+  End
+  Else
+   Break;
+ Until False;
+
+ { Partie decimale : point suivi de chiffres }
+ ch := SrcPeek;
+ If ch = '.' Then
+ Begin
+  SrcGetChar;
+  s := s + '.';
+  isFloat := True;
+  Repeat
+   ch := SrcPeek;
+   If (ch >= '0') And (ch <= '9') Then
+   Begin
+    SrcGetChar;
+    s := s + ch;
+   End
+   Else
+    Break;
+  Until False;
+ End;
+
+ { Exposant E ou e }
+ ch := SrcPeek;
+ If (ch = 'E') Or (ch = 'e') Then
+ Begin
+  SrcGetChar;
+  s := s + ch;
+  isFloat := True;
+  ch := SrcPeek;
+  If (ch = '+') Or (ch = '-') Then
+  Begin
+   SrcGetChar;
+   s := s + ch;
+  End;
+  Repeat
+   ch := SrcPeek;
+   If (ch >= '0') And (ch <= '9') Then
+   Begin
+    SrcGetChar;
+    s := s + ch;
+   End
+   Else
+    Break;
+  Until False;
+ End;
+
+ { Suffixes L, F, D }
+ ch := SrcPeek;
+ If (ch = 'L') Or (ch = 'l') Then
+ Begin SrcGetChar; { long } End
+ Else If (ch = 'F') Or (ch = 'f') Then
+ Begin SrcGetChar; isFloat := True; End
+ Else If (ch = 'D') Or (ch = 'd') Then
+ Begin SrcGetChar; isFloat := True; End;
+
+ If isFloat Then
+ Begin
+  CurTok := TK_FLOAT;
+  CurStr := s;
+  Val(s, fltVal, code);
+  If code <> 0 Then fltVal := 0.0;
+  CurFloat := fltVal;
+  CurInt   := Round(fltVal);
+ End
+ Else
+ Begin
+  CurTok   := TK_INTEGER;
+  CurStr   := s;
+  CurInt   := intVal;
+  CurFloat := 0.0;
+ End;
+End;
+
+{ ---------- LexString : "..." avec echappement ---------- }
+
+Procedure LexString;
+Var s: String; ch: Char;
+Begin
+ s := '';
+ Repeat
+  ch := SrcGetChar;
+  If ch = '"' Then Break  { fin de la chaine }
+  Else If (ch = #10) Or (ch = #0) Then Break  { chaine non fermee }
+  Else If ch = '\' Then
+  Begin
+   { Sequence d'echappement }
+   ch := SrcGetChar;
+   Case ch of
+    'n' : s := s + #10;
+    't' : s := s + #9;
+    'r' : s := s + #13;
+    '\' : s := s + '\';
+    '"' : s := s + '"';
+    '0' : s := s + #0;
+   Else
+    s := s + '\' + ch;  { echappement inconnu : garder tel quel }
+   End;
+  End
+  Else
+   s := s + ch;
+ Until Length(s) >= 255;
+ CurTok := TK_STRING;
+ CurStr := s;
+End;
+
+{ ---------- LexDirective : mot commencant par '.' ---------- }
+
+Function LookupDirective(Const s: String): Integer;
+Var u: String;
+Begin
+ u := UpCaseStr(s);
+ LookupDirective := DIR_NONE;
+ If      u = '.CLASS'      Then LookupDirective := DIR_CLASS
+ Else If u = '.SUPER'      Then LookupDirective := DIR_SUPER
+ Else If u = '.IMPLEMENTS' Then LookupDirective := DIR_IMPLEMENTS
+ Else If u = '.SOURCE'     Then LookupDirective := DIR_SOURCE
+ Else If u = '.FIELD'      Then LookupDirective := DIR_FIELD
+ Else If u = '.METHOD'     Then LookupDirective := DIR_METHOD
+ Else If u = '.END'        Then LookupDirective := DIR_END
+ Else If u = '.LIMIT'      Then LookupDirective := DIR_LIMIT
+ Else If u = '.LINE'       Then LookupDirective := DIR_LINE
+ Else If u = '.VAR'        Then LookupDirective := DIR_VAR
+ Else If u = '.THROWS'     Then LookupDirective := DIR_THROWS
+ Else If u = '.CATCH'      Then LookupDirective := DIR_CATCH
+ Else If u = '.INTERFACE'  Then LookupDirective := DIR_INTERFACE
+ Else If u = '.BYTECODE'   Then LookupDirective := DIR_BYTECODE
+ Else If u = '.ENCLOSING'  Then LookupDirective := DIR_ENCLOSING
+ Else If u = '.SIGNATURE'  Then LookupDirective := DIR_SIGNATURE
+ Else If u = '.DEPRECATED' Then LookupDirective := DIR_DEPRECATED
+ Else If u = '.ANNOTATION' Then LookupDirective := DIR_ANNOTATION
+ Else If u = '.INNER'      Then LookupDirective := DIR_INNER
+ Else If u = '.STACK'      Then LookupDirective := DIR_STACK;
+End;
+
+Procedure LexDirective;
+Var s: String; ch: Char;
+Begin
+ s := '.';
+ Repeat
+  ch := SrcPeek;
+  If ((ch >= 'a') And (ch <= 'z')) Or
+     ((ch >= 'A') And (ch <= 'Z')) Or
+     ((ch >= '0') And (ch <= '9')) Or
+     (ch = '_') Then
+  Begin
+   SrcGetChar;
+   s := s + ch;
+  End
+  Else
+   Break;
+ Until Length(s) >= 255;
+ CurTok := TK_DIRECTIVE;
+ CurStr := s;
+ CurDir := LookupDirective(s);
+End;
+
+{ ---------- NextToken : dispatcher principal ---------- }
+
+Procedure NextToken;
+Var ch: Char;
+Begin
+ CurStr   := '';
+ CurInt   := 0;
+ CurFloat := 0.0;
+ CurDir   := DIR_NONE;
+
+ { Sauter les espaces et tabulations }
+ SkipWhitespace;
+
+ { Verifier fin de fichier }
+ If SrcEof Then
+ Begin
+  CurTok := TK_EOF;
+  CurStr := '';
+  Exit;
+ End;
+
+ ch := SrcGetChar;
+
+ { Fin de fichier }
+ If ch = #0 Then
+ Begin CurTok := TK_EOF; Exit; End;
+
+ { Fin de ligne }
+ If ch = #10 Then
+ Begin CurTok := TK_NEWLINE; CurStr := #10; Exit; End;
+ If ch = #13 Then
+ Begin
+  If SrcPeek = #10 Then SrcGetChar;
+  CurTok := TK_NEWLINE;
+  CurStr := #10;
+  Exit;
+ End;
+
+ { Commentaire Jasmin : ; jusqu'en fin de ligne }
+ If ch = ';' Then
+ Begin
+  SkipComment;
+  CurTok := TK_NEWLINE;
+  CurStr := #10;
+  Exit;
+ End;
+
+ { Directive : mot commencant par '.' }
+ If ch = '.' Then
+ Begin
+  { Verifier si c'est un chiffre apres (flottant comme .5) }
+  If (SrcPeek >= '0') And (SrcPeek <= '9') Then
+  Begin
+   SrcUnget;
+   LexNumber('0');  { traiter comme 0.xxx - approximation }
+   Exit;
+  End;
+  { Verifier si c'est une lettre (directive) }
+  If ((SrcPeek >= 'a') And (SrcPeek <= 'z')) Or
+     ((SrcPeek >= 'A') And (SrcPeek <= 'Z')) Then
+  Begin
+   LexDirective;
+   Exit;
+  End;
+  { Sinon c'est un point simple }
+  CurTok := TK_DOT;
+  CurStr := '.';
+  Exit;
+ End;
+
+ { Chaine : "..." }
+ If ch = '"' Then
+ Begin LexString; Exit; End;
+
+ { Nombre : commence par un chiffre ou signe negatif suivi de chiffre }
+ If (ch >= '0') And (ch <= '9') Then
+ Begin LexNumber(ch); Exit; End;
+
+ If (ch = '-') Then
+ Begin
+  If (SrcPeek >= '0') And (SrcPeek <= '9') Then
+  Begin
+   { Nombre negatif }
+   ch := SrcGetChar;
+   LexNumber(ch);
+   CurInt   := -CurInt;
+   CurFloat := -CurFloat;
+   CurStr   := '-' + CurStr;
+   Exit;
+  End;
+  CurTok := TK_MINUS;
+  CurStr := '-';
+  Exit;
+ End;
+
+ { Identifiant : commence par une lettre, _, $, <, (, [, ] }
+ { En Jasmin, les descripteurs JVM sont des tokens complets :
+   main([Ljava/lang/String;)V, (II)V, Ljava/io/PrintStream; }
+ If ((ch >= 'A') And (ch <= 'Z')) Or
+    ((ch >= 'a') And (ch <= 'z')) Or
+    (ch = '_') Or (ch = '$') Or (ch = '<') Or
+    (ch = '(') Or (ch = '[') Then
+ Begin
+  SrcUnget;
+  LexIdent;
+  Exit;
+ End;
+
+ { Symboles simples }
+ Case ch of
+  ':': Begin CurTok := TK_COLON;    CurStr := ':'; End;
+  '=': Begin CurTok := TK_EQUAL;    CurStr := '='; End;
+  '(': Begin CurTok := TK_LPAREN;   CurStr := '('; End;
+  ')': Begin CurTok := TK_RPAREN;   CurStr := ')'; End;
+  '/': Begin CurTok := TK_SLASH;    CurStr := '/'; End;
+  '[': Begin CurTok := TK_LBRACKET; CurStr := '['; End;
+  ']': Begin CurTok := TK_RBRACKET; CurStr := ']'; End;
+  '+': Begin CurTok := TK_PLUS;     CurStr := '+'; End;
+ Else
+  Begin
+   CurTok := TK_UNKNOWN;
+   CurStr := ch;
+  End;
+ End;
+End;
+
+{ ---------- Helpers de parsing ---------- }
+
+Procedure Consume;
+Begin
+ NextToken;
+End;
+
+Procedure Expect(tok: Integer; Const what: String);
+Begin
+ If CurTok <> tok Then
+ Begin
+  WriteLn('Erreur ligne ', SrcLineNum, ' : ', what, ' attendu');
+  Inc(ErrorCount);
+ End;
+ NextToken;
+End;
+
+Procedure ExpectStr(Const s: String);
+Begin
+ If CurStr <> s Then
+ Begin
+  WriteLn('Erreur ligne ', SrcLineNum, ' : "', s, '" attendu, lu "', CurStr, '"');
+  Inc(ErrorCount);
+ End;
+ NextToken;
+End;
+
+Procedure ExpectNewline;
+Begin
+ If (CurTok <> TK_NEWLINE) And (CurTok <> TK_EOF) Then
+ Begin
+  WriteLn('Erreur ligne ', SrcLineNum, ' : fin de ligne attendue');
+  Inc(ErrorCount);
+ End;
+ If CurTok = TK_NEWLINE Then NextToken;
+End;
+
+{ ============================================================================ }
 { Initialisation globale                                                       }
 { ============================================================================ }
 
@@ -449,16 +1009,64 @@ Begin
 End;
 
 { ============================================================================ }
-{ Procedure Assemble (stub - sera completee dans les TODOs suivants)           }
+{ Procedure Assemble                                                           }
 { ============================================================================ }
 
 Procedure Assemble;
+Var pi: Integer;
 Begin
  GlobalInit;
+ { Parser les options de la ligne de commande }
+ For pi := 2 to ParamCount do
+ Begin
+  If ParamStr(pi) = '-v' Then OptVerbose := True
+  Else If ParamStr(pi) = '-g' Then OptDebug := True;
+ End;
  WriteLn(VERSION);
  WriteLn('Fichier source : ', SrcFileName);
+
+ { Ouvrir le fichier source }
+ SrcOpen(SrcFileName);
+
+ { Lire le premier token }
+ NextToken;
+
+ { Boucle principale : lire et afficher les tokens (stub TODO 02) }
+ While CurTok <> TK_EOF do
+ Begin
+  If OptVerbose Then
+  Begin
+   Case CurTok of
+    TK_IDENT     : WriteLn('  IDENT     : ', CurStr);
+    TK_INTEGER   : WriteLn('  INTEGER   : ', CurInt);
+    TK_FLOAT     : WriteLn('  FLOAT     : ', CurStr);
+    TK_STRING    : WriteLn('  STRING    : "', CurStr, '"');
+    TK_DIRECTIVE : WriteLn('  DIRECTIVE : ', CurStr, ' (', CurDir, ')');
+    TK_LABEL     : WriteLn('  LABEL     : ', CurStr, ':');
+    TK_NEWLINE   : ;  { ne pas afficher les newlines }
+    TK_COLON     : WriteLn('  COLON');
+    TK_EQUAL     : WriteLn('  EQUAL');
+    TK_LPAREN    : WriteLn('  LPAREN');
+    TK_RPAREN    : WriteLn('  RPAREN');
+    TK_SLASH     : WriteLn('  SLASH');
+    TK_LBRACKET  : WriteLn('  LBRACKET');
+    TK_RBRACKET  : WriteLn('  RBRACKET');
+    TK_MINUS     : WriteLn('  MINUS');
+    TK_PLUS      : WriteLn('  PLUS');
+   Else
+    WriteLn('  UNKNOWN   : ', CurStr);
+   End;
+  End;
+  NextToken;
+ End;
+
  WriteLn;
- WriteLn('(Assemblage non encore implemente - voir TODOs 02 a 25)');
+ WriteLn('Lignes lues   : ', SrcLineNum);
+ WriteLn('Erreurs       : ', ErrorCount);
+ WriteLn;
+ WriteLn('(Assemblage non encore implemente - voir TODOs 03 a 25)');
+
+ SrcClose;
  GlobalCleanup;
 End;
 
