@@ -271,7 +271,7 @@ TODO 13 [IMPLEMENTE] - Opcodes de controle de flux
   - ParseTableSwitch / ParseLookupSwitch : parser les cas,
     gerer le padding a 4 octets, calculer les offsets relatifs
 
-TODO 14 - Opcodes d'invocation de methodes
+TODO 14 [IMPLEMENTE] - Opcodes d'invocation de methodes
   -------------------------------------------
   - invokevirtual <method_spec> : appel methode d'instance (dispatch
     dynamique via vtable)

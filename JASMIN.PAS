@@ -29,7 +29,7 @@
 {  TODO 11 [IMPLEMENTE] - Opcodes arithmetiques et logiques                    }
 {  TODO 12 [IMPLEMENTE] - Opcodes de conversion de types                      }
 {  TODO 13 [IMPLEMENTE] - Opcodes de controle de flux                         }
-{  TODO 14 - Opcodes d'invocation de methodes                                 }
+{  TODO 14 [IMPLEMENTE] - Opcodes d'invocation de methodes                    }
 {  TODO 15 - Opcodes de manipulation de la pile et chargement de constantes   }
 {  TODO 16 - Opcodes de creation d'objets et tableaux                         }
 {  TODO 17 - Opcodes d'acces aux champs                                       }
@@ -529,6 +529,9 @@ Function  ParseInstruction: Boolean; Forward;
 { --- Declarations forward TODO 13 : Opcodes de controle de flux --- }
 Procedure RecordFixup(Const lbl: String; patchOff, instrOff: LongInt; w: Integer); Forward;
 Procedure EmitBranchPlaceholder(w: Integer); Forward;
+
+{ --- Declarations forward TODO 14 : Opcodes d'invocation de methodes --- }
+Function ParseMethodSpec(Const spec: String; Var cls, mname, desc: String): Boolean; Forward;
 
 { ---------- Ouverture et fermeture du fichier source ---------- }
 
@@ -2641,6 +2644,64 @@ Begin
   EmitByte(0);
 End;
 
+{ ============================================================================ }
+{ Opcodes d'invocation de methodes (TODO 14)                                   }
+{ ============================================================================ }
+
+{ --- ParseMethodSpec : decomposer une specification de methode JVM --- }
+{ Recoit une specification de la forme classe/nom(descripteur)retour     }
+{ et la decompose en : cls (nom de classe), mname (nom de methode),     }
+{ desc (descripteur complet incluant parentheses et type retour).       }
+{ Retourne True si le parsing a reussi.                                 }
+{ Exemple: java/io/PrintStream/println(Ljava/lang/String;)V            }
+{          -> cls='java/io/PrintStream' mname='println'                 }
+{             desc='(Ljava/lang/String;)V'                              }
+Function ParseMethodSpec(Const spec: String; Var cls, mname, desc: String): Boolean;
+Var paren, lastSlash, i: Integer;
+Begin
+ ParseMethodSpec := False;
+ cls   := '';
+ mname := '';
+ desc  := '';
+ { Trouver la position de '(' }
+ paren := Pos('(', spec);
+ If paren = 0 Then
+ Begin
+  Error('specification de methode invalide : parenthese manquante dans ' + spec);
+  Exit;
+ End;
+ { Le descripteur est tout a partir de '(' }
+ desc := Copy(spec, paren, Length(spec) - paren + 1);
+ { Trouver le dernier '/' avant '(' pour separer classe et nom }
+ lastSlash := 0;
+ For i := paren - 1 downto 1 do
+ Begin
+  If spec[i] = '/' Then
+  Begin
+   lastSlash := i;
+   Break;
+  End;
+ End;
+ If lastSlash = 0 Then
+ Begin
+  { Pas de '/' : le nom de classe est vide, tout est le nom de methode }
+  { Cela peut arriver pour des methodes de la classe courante }
+  cls   := '';
+  mname := Copy(spec, 1, paren - 1);
+ End
+ Else
+ Begin
+  cls   := Copy(spec, 1, lastSlash - 1);
+  mname := Copy(spec, lastSlash + 1, paren - lastSlash - 1);
+ End;
+ If mname = '' Then
+ Begin
+  Error('specification de methode invalide : nom de methode vide dans ' + spec);
+  Exit;
+ End;
+ ParseMethodSpec := True;
+End;
+
 { --- ParseInstruction : reconnaitre et emettre un mnemonique JVM --- }
 { Lit CurStr (le mnemonique), emet le(s) octet(s) correspondant(s)    }
 { dans le code buffer de la methode courante via EmitByte.             }
@@ -2653,6 +2714,8 @@ End;
 { TODO 13 : opcodes de controle de flux (goto, ifeq..ifle,            }
 { if_icmpeq..if_icmple, if_acmpeq/ne, ifnull/nonnull, lcmp, fcmpl/g, }
 { dcmpl/g, tableswitch, lookupswitch, ret, jsr/jsr_w, goto_w).        }
+{ TODO 14 : opcodes d'invocation de methodes (invokevirtual,          }
+{ invokespecial, invokestatic, invokeinterface, invokedynamic).        }
 { Les TODOs suivantes ajouteront d'autres familles d'opcodes.          }
 Function ParseInstruction: Boolean;
 Var mnem: String;
@@ -2661,6 +2724,8 @@ Var mnem: String;
     brInstrOff: LongInt;
     swPadding, swLow, swHigh, swCount, swI: LongInt;
     swDefault: String;
+    invSpec, invCls, invName, invDesc: String;
+    invIdx, invCount: Integer;
 Begin
  ParseInstruction := False;
  mnem := CurStr;
@@ -3463,6 +3528,103 @@ Begin
    Warning('lookupswitch : clause default manquante');
   ParseInstruction := True; Exit;
  End;
+ { ---------------------------------------------------------------- }
+ { Opcodes d'invocation de methodes - TODO 14                       }
+ { ---------------------------------------------------------------- }
+ { invokevirtual <method_spec> : appel methode d'instance ($B6) }
+ If mnem = 'invokevirtual' Then
+ Begin
+  Consume;
+  If CurTok <> TK_IDENT Then
+  Begin Error('invokevirtual : specification de methode attendue'); Exit; End;
+  invSpec := CurStr;
+  Consume;
+  If Not ParseMethodSpec(invSpec, invCls, invName, invDesc) Then Exit;
+  invIdx := CPAddMethodRef(invCls, invName, invDesc);
+  EmitByte($B6); { invokevirtual }
+  EmitByte(Byte((invIdx shr 8) and $FF));
+  EmitByte(Byte(invIdx and $FF));
+  ParseInstruction := True; Exit;
+ End;
+ { invokespecial <method_spec> : appel constructeur/methode privee/super ($B7) }
+ If mnem = 'invokespecial' Then
+ Begin
+  Consume;
+  If CurTok <> TK_IDENT Then
+  Begin Error('invokespecial : specification de methode attendue'); Exit; End;
+  invSpec := CurStr;
+  Consume;
+  If Not ParseMethodSpec(invSpec, invCls, invName, invDesc) Then Exit;
+  invIdx := CPAddMethodRef(invCls, invName, invDesc);
+  EmitByte($B7); { invokespecial }
+  EmitByte(Byte((invIdx shr 8) and $FF));
+  EmitByte(Byte(invIdx and $FF));
+  ParseInstruction := True; Exit;
+ End;
+ { invokestatic <method_spec> : appel methode statique ($B8) }
+ If mnem = 'invokestatic' Then
+ Begin
+  Consume;
+  If CurTok <> TK_IDENT Then
+  Begin Error('invokestatic : specification de methode attendue'); Exit; End;
+  invSpec := CurStr;
+  Consume;
+  If Not ParseMethodSpec(invSpec, invCls, invName, invDesc) Then Exit;
+  invIdx := CPAddMethodRef(invCls, invName, invDesc);
+  EmitByte($B8); { invokestatic }
+  EmitByte(Byte((invIdx shr 8) and $FF));
+  EmitByte(Byte(invIdx and $FF));
+  ParseInstruction := True; Exit;
+ End;
+ { invokeinterface <method_spec> <count> : appel methode d'interface ($B9) }
+ If mnem = 'invokeinterface' Then
+ Begin
+  Consume;
+  If CurTok <> TK_IDENT Then
+  Begin Error('invokeinterface : specification de methode attendue'); Exit; End;
+  invSpec := CurStr;
+  Consume;
+  If Not ParseMethodSpec(invSpec, invCls, invName, invDesc) Then Exit;
+  invIdx := CPAddInterfaceMethodRef(invCls, invName, invDesc);
+  { Lire le count (nargs + 1) }
+  If CurTok = TK_INTEGER Then
+  Begin
+   invCount := Integer(CurInt);
+   Consume;
+  End
+  Else
+  Begin
+   { Calculer automatiquement le count a partir du descripteur }
+   invCount := DescriptorParamSlots(invDesc, False);
+  End;
+  EmitByte($B9); { invokeinterface }
+  EmitByte(Byte((invIdx shr 8) and $FF));
+  EmitByte(Byte(invIdx and $FF));
+  EmitByte(Byte(invCount));
+  EmitByte(0); { octet de padding }
+  ParseInstruction := True; Exit;
+ End;
+ { invokedynamic <callsite_spec> : appel dynamique ($BA) }
+ If mnem = 'invokedynamic' Then
+ Begin
+  Consume;
+  If CurTok <> TK_IDENT Then
+  Begin Error('invokedynamic : specification attendue'); Exit; End;
+  invSpec := CurStr;
+  Consume;
+  If Not ParseMethodSpec(invSpec, invCls, invName, invDesc) Then Exit;
+  { Creer une entree InvokeDynamic (bootstrap=0, NameAndType) }
+  { Note: les bootstrap methods necessitent l'attribut BootstrapMethods }
+  { qui n'est pas encore implemente. On emet le bytecode avec bootstrap=0. }
+  Warning('invokedynamic : bootstrap methods non encore supportes');
+  invIdx := CPAddInvokeDynamic(0, CPEnsureNameAndType(invName, invDesc));
+  EmitByte($BA); { invokedynamic }
+  EmitByte(Byte((invIdx shr 8) and $FF));
+  EmitByte(Byte(invIdx and $FF));
+  EmitByte(0); { padding }
+  EmitByte(0); { padding }
+  ParseInstruction := True; Exit;
+ End;
 End;
 
 { --- ParseDirectives : dispatcher principal des directives de classe --- }
@@ -3556,9 +3718,9 @@ Begin
      SkipToEOL;
     End;
    Else
-    { Directives non encore implementees (TODO 14+) : sauter la ligne }
+    { Directives non encore implementees (TODO 15+) : sauter la ligne }
     If OptVerbose Then
-     WriteLn('  [skip] directive ', CurStr, ' (TODO 14+)');
+     WriteLn('  [skip] directive ', CurStr, ' (TODO 15+)');
     SkipToEOL;
    End;  { Case }
   End
@@ -3569,7 +3731,7 @@ Begin
    Begin
     { Mnemonique non reconnu : sauter la ligne }
     If OptVerbose Then
-     WriteLn('  [skip] instruction ', CurStr, ' (TODO 14+)');
+     WriteLn('  [skip] instruction ', CurStr, ' (TODO 15+)');
     SkipToEOL;
    End
    Else
