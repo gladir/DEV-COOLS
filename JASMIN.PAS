@@ -26,7 +26,7 @@
 {  TODO 08 [IMPLEMENTE] - Directives de methodes (.method, .end method, .limit)}
 {  TODO 09 [IMPLEMENTE] - Descripteurs de types JVM : parsing et validation   }
 {  TODO 10 [IMPLEMENTE] - Opcodes de chargement et stockage                   }
-{  TODO 11 - Opcodes arithmetiques et logiques                                }
+{  TODO 11 [IMPLEMENTE] - Opcodes arithmetiques et logiques                    }
 {  TODO 12 - Opcodes de conversion de types                                   }
 {  TODO 13 - Opcodes de controle de flux                                      }
 {  TODO 14 - Opcodes d'invocation de methodes                                 }
@@ -2595,6 +2595,8 @@ End;
 { TODO 10 : opcodes de chargement/stockage (iload/istore/lload/       }
 { lstore/fload/fstore/dload/dstore/aload/astore + variantes _0-_3,   }
 { iaload..saload, iastore..sastore).                                   }
+{ TODO 11 : opcodes arithmetiques et logiques (iadd..dneg, ishl..lxor,}
+{ iinc).                                                               }
 { Les TODOs suivantes ajouteront d'autres familles d'opcodes.          }
 Function ParseInstruction: Boolean;
 Var mnem: String;
@@ -2810,6 +2812,91 @@ Begin
  If mnem = 'bastore' Then Begin Consume; EmitByte($54); ParseInstruction := True; Exit; End;
  If mnem = 'castore' Then Begin Consume; EmitByte($55); ParseInstruction := True; Exit; End;
  If mnem = 'sastore' Then Begin Consume; EmitByte($56); ParseInstruction := True; Exit; End;
+ { ---------------------------------------------------------------- }
+ { Arithmetique entiere (int) - TODO 11                              }
+ { ---------------------------------------------------------------- }
+ If mnem = 'iadd' Then Begin Consume; EmitByte($60); ParseInstruction := True; Exit; End;
+ If mnem = 'isub' Then Begin Consume; EmitByte($64); ParseInstruction := True; Exit; End;
+ If mnem = 'imul' Then Begin Consume; EmitByte($68); ParseInstruction := True; Exit; End;
+ If mnem = 'idiv' Then Begin Consume; EmitByte($6C); ParseInstruction := True; Exit; End;
+ If mnem = 'irem' Then Begin Consume; EmitByte($70); ParseInstruction := True; Exit; End;
+ If mnem = 'ineg' Then Begin Consume; EmitByte($74); ParseInstruction := True; Exit; End;
+ { ---------------------------------------------------------------- }
+ { Arithmetique longue (long) - TODO 11                              }
+ { ---------------------------------------------------------------- }
+ If mnem = 'ladd' Then Begin Consume; EmitByte($61); ParseInstruction := True; Exit; End;
+ If mnem = 'lsub' Then Begin Consume; EmitByte($65); ParseInstruction := True; Exit; End;
+ If mnem = 'lmul' Then Begin Consume; EmitByte($69); ParseInstruction := True; Exit; End;
+ If mnem = 'ldiv' Then Begin Consume; EmitByte($6D); ParseInstruction := True; Exit; End;
+ If mnem = 'lrem' Then Begin Consume; EmitByte($71); ParseInstruction := True; Exit; End;
+ If mnem = 'lneg' Then Begin Consume; EmitByte($75); ParseInstruction := True; Exit; End;
+ { ---------------------------------------------------------------- }
+ { Arithmetique flottante (float) - TODO 11                          }
+ { ---------------------------------------------------------------- }
+ If mnem = 'fadd' Then Begin Consume; EmitByte($62); ParseInstruction := True; Exit; End;
+ If mnem = 'fsub' Then Begin Consume; EmitByte($66); ParseInstruction := True; Exit; End;
+ If mnem = 'fmul' Then Begin Consume; EmitByte($6A); ParseInstruction := True; Exit; End;
+ If mnem = 'fdiv' Then Begin Consume; EmitByte($6E); ParseInstruction := True; Exit; End;
+ If mnem = 'frem' Then Begin Consume; EmitByte($72); ParseInstruction := True; Exit; End;
+ If mnem = 'fneg' Then Begin Consume; EmitByte($76); ParseInstruction := True; Exit; End;
+ { ---------------------------------------------------------------- }
+ { Arithmetique double (double) - TODO 11                            }
+ { ---------------------------------------------------------------- }
+ If mnem = 'dadd' Then Begin Consume; EmitByte($63); ParseInstruction := True; Exit; End;
+ If mnem = 'dsub' Then Begin Consume; EmitByte($67); ParseInstruction := True; Exit; End;
+ If mnem = 'dmul' Then Begin Consume; EmitByte($6B); ParseInstruction := True; Exit; End;
+ If mnem = 'ddiv' Then Begin Consume; EmitByte($6F); ParseInstruction := True; Exit; End;
+ If mnem = 'drem' Then Begin Consume; EmitByte($73); ParseInstruction := True; Exit; End;
+ If mnem = 'dneg' Then Begin Consume; EmitByte($77); ParseInstruction := True; Exit; End;
+ { ---------------------------------------------------------------- }
+ { Operations sur les bits (int) - TODO 11                           }
+ { ---------------------------------------------------------------- }
+ If mnem = 'ishl'  Then Begin Consume; EmitByte($78); ParseInstruction := True; Exit; End;
+ If mnem = 'ishr'  Then Begin Consume; EmitByte($7A); ParseInstruction := True; Exit; End;
+ If mnem = 'iushr' Then Begin Consume; EmitByte($7C); ParseInstruction := True; Exit; End;
+ If mnem = 'iand'  Then Begin Consume; EmitByte($7E); ParseInstruction := True; Exit; End;
+ If mnem = 'ior'   Then Begin Consume; EmitByte($80); ParseInstruction := True; Exit; End;
+ If mnem = 'ixor'  Then Begin Consume; EmitByte($82); ParseInstruction := True; Exit; End;
+ { ---------------------------------------------------------------- }
+ { Operations sur les bits (long) - TODO 11                          }
+ { ---------------------------------------------------------------- }
+ If mnem = 'lshl'  Then Begin Consume; EmitByte($79); ParseInstruction := True; Exit; End;
+ If mnem = 'lshr'  Then Begin Consume; EmitByte($7B); ParseInstruction := True; Exit; End;
+ If mnem = 'lushr' Then Begin Consume; EmitByte($7D); ParseInstruction := True; Exit; End;
+ If mnem = 'land'  Then Begin Consume; EmitByte($7F); ParseInstruction := True; Exit; End;
+ If mnem = 'lor'   Then Begin Consume; EmitByte($81); ParseInstruction := True; Exit; End;
+ If mnem = 'lxor'  Then Begin Consume; EmitByte($83); ParseInstruction := True; Exit; End;
+ { ---------------------------------------------------------------- }
+ { Increment local - TODO 11                                         }
+ { iinc <var> <const> : 3 octets ($84, var, const)                  }
+ { ---------------------------------------------------------------- }
+ If mnem = 'iinc' Then
+ Begin
+  Consume;
+  If CurTok <> TK_INTEGER Then
+  Begin Error('iinc : operande variable entiere attendue'); Exit; End;
+  opvar := CurInt;
+  Consume;
+  If opvar > 255 Then
+  Begin Error('iinc : index variable > 255 (utiliser wide)'); Exit; End;
+  { Lire la constante d'increment }
+  If (CurTok <> TK_INTEGER) And (CurTok <> TK_MINUS) Then
+  Begin Error('iinc : constante entiere attendue'); Exit; End;
+  If CurTok = TK_MINUS Then
+  Begin
+   Consume;
+   If CurTok <> TK_INTEGER Then
+   Begin Error('iinc : constante entiere attendue apres -'); Exit; End;
+   CurInt := -CurInt;
+  End;
+  If (CurInt < -128) or (CurInt > 127) Then
+  Begin Error('iinc : constante hors limites (-128..127)'); Exit; End;
+  EmitByte($84); { iinc }
+  EmitByte(Byte(opvar));
+  EmitByte(Byte(CurInt and $FF));
+  Consume;
+  ParseInstruction := True; Exit;
+ End;
 End;
 
 { --- ParseDirectives : dispatcher principal des directives de classe --- }
@@ -2903,9 +2990,9 @@ Begin
      SkipToEOL;
     End;
    Else
-    { Directives non encore implementees (TODO 11+) : sauter la ligne }
+    { Directives non encore implementees (TODO 12+) : sauter la ligne }
     If OptVerbose Then
-     WriteLn('  [skip] directive ', CurStr, ' (TODO 11+)');
+     WriteLn('  [skip] directive ', CurStr, ' (TODO 12+)');
     SkipToEOL;
    End;  { Case }
   End
@@ -2916,7 +3003,7 @@ Begin
    Begin
     { Mnemonique non reconnu : sauter la ligne }
     If OptVerbose Then
-     WriteLn('  [skip] instruction ', CurStr, ' (TODO 11+)');
+     WriteLn('  [skip] instruction ', CurStr, ' (TODO 12+)');
     SkipToEOL;
    End
    Else

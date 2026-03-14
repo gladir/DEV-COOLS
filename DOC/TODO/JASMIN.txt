@@ -211,7 +211,7 @@ TODO 10 [IMPLEMENTE] - Opcodes de chargement et stockage
   - ParseLoadStore : reconnaitre le mnemonique, emettre l'opcode
     et l'operande eventuel dans le code buffer
 
-TODO 11 - Opcodes arithmetiques et logiques
+TODO 11 [IMPLEMENTE] - Opcodes arithmetiques et logiques
   -------------------------------------------
   Arithmetique entiere (int) :
   - iadd, isub, imul, idiv, irem, ineg
