@@ -234,7 +234,7 @@
               depuis l exterieur (seulement vers un bloc englobant)
             Etiquettes en tant que parametres : passage de label a une procedure
 
-  TODO 16 - BLOCS (BEGIN/END) ET INSTRUCTIONS COMPOSEES
+  TODO 16 - BLOCS (BEGIN/END) ET INSTRUCTIONS COMPOSEES [IMPLEMENTE]
             ParseBlock : BEGIN declarations; instructions END
             Declarations au debut du bloc uniquement (avant les instructions)
             Ordre des declarations : types, puis variables, puis procedures
@@ -624,6 +624,9 @@ Var
   { Compteur GOTO (TODO 15) }
   GotoCount  : Integer;
 
+  { Compteur BLOCK (TODO 16) }
+  BlockCount : Integer;
+
   { Table des symboles (TODO 05) }
   SymTab       : Array[0..MAX_SYM - 1] Of TSymRec;
   SymCount     : Integer;
@@ -743,6 +746,8 @@ Procedure ParseIfStmt; Forward;
 Procedure ParseForStmt; Forward;
 { ---- Forward declarations (TODO 15) ----------------------- }
 Procedure ParseGotoStmt; Forward;
+{ ---- Forward declarations (TODO 16) ----------------------- }
+Procedure ParseBlock; Forward;
 { ---- Forward declarations (TODO 06) ----------------------- }
 Procedure TypeInit;      Forward;
 Function  TypeKindOf(TypeIdx : Integer) : TTypeKind; Forward;
@@ -1028,6 +1033,7 @@ Begin
   IfCount := 0;
   ForCount := 0;
   GotoCount := 0;
+  BlockCount := 0;
   { Table des symboles (TODO 05) }
   SymInit;
   { Systeme de types (TODO 06) }
@@ -3289,6 +3295,14 @@ Begin
     Exit;
   End;
 
+  { Bloc BEGIN/END (TODO 16) }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'BEGIN') Then
+  Begin
+    ParserAdvance;  { consommer BEGIN }
+    ParseBlock;
+    Exit;
+  End;
+
   { Etiquette : ident suivi de : (TODO 15) }
   If (CurToken.Kind = TK_IDENT) Then
   Begin
@@ -4168,26 +4182,7 @@ Begin
         ParserAdvance;  { consommer DO }
         { Parser le corps de la boucle }
         EmitComment('DO (body)');
-        If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'BEGIN') Then
-        Begin
-          ParserAdvance;  { consommer BEGIN }
-          SymEnterScope;
-          While Not ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'END'))
-                And (CurToken.Kind <> TK_EOF) Do
-          Begin
-            { Sauter les ; }
-            While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Do
-              ParserAdvance;
-            If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'END') Then
-              Break;
-            ParseStmt;
-          End;
-          If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'END') Then
-            ParserAdvance;  { consommer END }
-          SymLeaveScope;
-        End
-        Else
-          ParseStmt;
+        ParseStmt;  { gere BEGIN/END via ParseBlock (TODO 16) }
 
         { Incrementer : var := var + step }
         EmitComment('FOR increment');
@@ -4246,25 +4241,7 @@ Begin
       Begin
         ParserAdvance;
         EmitComment('DO (body)');
-        If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'BEGIN') Then
-        Begin
-          ParserAdvance;
-          SymEnterScope;
-          While Not ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'END'))
-                And (CurToken.Kind <> TK_EOF) Do
-          Begin
-            While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Do
-              ParserAdvance;
-            If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'END') Then
-              Break;
-            ParseStmt;
-          End;
-          If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'END') Then
-            ParserAdvance;
-          SymLeaveScope;
-        End
-        Else
-          ParseStmt;
+        ParseStmt;  { gere BEGIN/END via ParseBlock (TODO 16) }
       End
       Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
       Begin
@@ -4282,25 +4259,7 @@ Begin
       EmitComment('FOR simple (elem ' + NS + ')');
 
       { La variable a deja ete initialisee. Executer le body une fois. }
-      If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'BEGIN') Then
-      Begin
-        ParserAdvance;
-        SymEnterScope;
-        While Not ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'END'))
-              And (CurToken.Kind <> TK_EOF) Do
-        Begin
-          While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Do
-            ParserAdvance;
-          If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'END') Then
-            Break;
-          ParseStmt;
-        End;
-        If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'END') Then
-          ParserAdvance;
-        SymLeaveScope;
-      End
-      Else
-        ParseStmt;
+      ParseStmt;  { gere BEGIN/END via ParseBlock (TODO 16) }
       Break;
     End
     Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
@@ -4388,6 +4347,103 @@ Begin
     CompileError('identifiant de label attendu apres GOTO');
 End;
 
+{ ============================================================
+  TODO 16 - BLOCS (BEGIN/END) ET INSTRUCTIONS COMPOSEES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseBlock : bloc BEGIN declarations; instructions END --
+  Le mot-cle BEGIN a deja ete consomme par l appelant.
+  Fonctionnement :
+    1. SymEnterScope : nouvelle portee lexicale
+    2. Sauvegarder CurFrameSize
+    3. Parser les declarations et instructions du bloc
+       (LABEL, INTEGER, REAL, BOOLEAN, STRING, OWN, etc.)
+       Les declarations locales appellent DeclAllocSym qui
+       emet SUB SP,2 pour chaque variable
+    4. Liberer la pile : ADD SP, n (octets locaux)
+    5. Consommer END
+    6. Restaurer CurFrameSize
+    7. SymLeaveScope : quitter la portee                        }
+Procedure ParseBlock;
+Var
+  SavedFrameSize : Integer;
+  LocalBytes     : Integer;
+  N              : TString;
+Begin
+  Inc(BlockCount);
+  Str(BlockCount, N);
+  SymEnterScope;
+  SavedFrameSize := CurFrameSize;
+  EmitComment('BEGIN bloc ' + N + ' (scope ' + IntToStr_(CurScope) + ')');
+
+  { Parser declarations et instructions jusqu a END }
+  While (CurToken.Kind <> TK_EOF) Do
+  Begin
+    { Sauter les points-virgule }
+    While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Do
+      ParserAdvance;
+    { Fin de bloc }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'END') Then
+      Break;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
+      Break;
+
+    { Declaration LABEL : LABEL l1, l2, ... }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'LABEL') Then
+    Begin
+      ParserAdvance;  { consommer LABEL }
+      While (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_INTEGER) Do
+      Begin
+        If CurToken.Kind = TK_INTEGER Then
+        Begin
+          If SymFind(IntToStr_(CurToken.IntVal)) < 0 Then
+            SymAdd(IntToStr_(CurToken.IntVal), SK_LABEL, TY_IDX_LABEL, 0);
+        End
+        Else
+        Begin
+          If SymFind(CurToken.Val) < 0 Then
+            SymAdd(CurToken.Val, SK_LABEL, TY_IDX_LABEL, 0);
+        End;
+        ParserAdvance;  { consommer le nom du label }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+          ParserAdvance  { consommer , }
+        Else
+          Break;
+      End;
+      Continue;
+    End;
+
+    { Mots-cles non encore geres : PROCEDURE, SWITCH, ARRAY, OWN, etc. }
+    If (CurToken.Kind = TK_KEYWORD) And
+       ((CurToken.Val = 'OWN') Or (CurToken.Val = 'SWITCH') Or
+        (CurToken.Val = 'ARRAY') Or (CurToken.Val = 'PROCEDURE') Or
+        (CurToken.Val = 'VALUE') Or (CurToken.Val = 'COMMENT')) Then
+    Begin
+      ParserAdvance;  { consommer le mot-cle }
+      Continue;
+    End;
+
+    { Instructions et declarations de type }
+    ParseStmt;
+  End;
+
+  { ---- Nettoyage pile et fermeture du bloc ---- }
+  LocalBytes := CurFrameSize - SavedFrameSize;
+  If LocalBytes > 0 Then
+  Begin
+    EmitComment('libere ' + IntToStr_(LocalBytes) + ' octets locaux du bloc ' + N);
+    EmitInstr('ADD', 'SP, ' + IntToStr_(LocalBytes));
+  End;
+
+  { Consommer END }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'END') Then
+    ParserAdvance;
+
+  CurFrameSize := SavedFrameSize;
+  EmitComment('END bloc ' + N + ' (scope ' + IntToStr_(CurScope) + ')');
+  SymLeaveScope;
+End;
+
 Procedure Run;
 Begin
   GlobalInit;
@@ -4418,18 +4474,16 @@ Begin
       Continue;
     End;
 
-    { BEGIN / END : gestion de portee }
+    { BEGIN / END : gestion de portee via ParseBlock (TODO 16) }
     If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'BEGIN') Then
     Begin
-      SymEnterScope;
-      EmitComment('BEGIN (scope ' + IntToStr_(CurScope) + ')');
-      ParserAdvance;
+      ParserAdvance;  { consommer BEGIN }
+      ParseBlock;
       Continue;
     End;
     If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'END') Then
     Begin
       EmitComment('END (scope ' + IntToStr_(CurScope) + ')');
-      SymLeaveScope;
       ParserAdvance;
       Continue;
     End;
