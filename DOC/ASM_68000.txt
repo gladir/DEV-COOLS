@@ -5045,3 +5045,1024 @@
   FCMP/FTST              Comparaison et test
   FBcc/FDBcc/FScc        Branchement/boucle/set conditionnel
   FSAVE/FRESTORE         Sauvegarde/restauration du contexte
+
+==============================================================================
+8. TECHNIQUES DE PROGRAMMATION
+==============================================================================
+
+  Cette section presente les techniques de programmation courantes
+  en assembleur 68000, incluant les conventions d'appel, la gestion
+  de la pile, les structures de controle, et les optimisations.
+
+  8.1 Conventions d'appel de sous-programmes
+  --------------------------------------------
+
+  8.1.1 Appel et retour de base
+
+  L'instruction BSR (Branch to Subroutine) ou JSR (Jump to Subroutine)
+  empile automatiquement l'adresse de retour (PC courant) sur la pile
+  et transfere le controle au sous-programme. RTS (Return from
+  Subroutine) depile cette adresse et reprend l'execution.
+
+    BSR     ma_routine         ; Appel relatif (deplacement 16 bits)
+    BSR.S   ma_routine         ; Appel relatif court (deplacement 8 bits)
+    JSR     ma_routine         ; Appel absolu
+    JSR     (A0)               ; Appel indirect via registre
+    JSR     $1000(A0,D0.W)     ; Appel indirect indexe
+    ...
+  ma_routine:
+    ; Corps du sous-programme
+    RTS                        ; Retour (depile PC)
+
+  Etat de la pile lors de l'appel :
+
+    Avant BSR/JSR :    SP -> [ancien contenu]
+    Apres BSR/JSR :    SP -> [adresse retour (32 bits)]
+                              [ancien contenu]
+
+  8.1.2 Passage de parametres par registre
+
+  La methode la plus simple et rapide. Les parametres sont places
+  dans les registres de donnees (D0-D7) et d'adresses (A0-A6)
+  avant l'appel. Le resultat est retourne dans D0 (convention
+  standard).
+
+    ; Appel : resultat = addition(a, b)
+    MOVE.L   a, D0             ; Premier parametre dans D0
+    MOVE.L   b, D1             ; Deuxieme parametre dans D1
+    BSR      addition
+    ; D0 contient le resultat
+
+  addition:
+    ADD.L    D1, D0            ; D0 = D0 + D1
+    RTS
+
+  Conventions courantes pour les registres :
+
+    Registre   Usage typique
+    ---------  ---------------------------------
+    D0         Parametre 1 / Valeur de retour
+    D1         Parametre 2 / Valeur de retour secondaire
+    D2-D7      Parametres supplementaires
+    A0         Pointeur source / Adresse de retour (donnees)
+    A1         Pointeur destination
+    A2-A5      Pointeurs supplementaires
+    A6         Pointeur de cadre (Frame Pointer)
+    A7 (SP)    Pointeur de pile (ne pas utiliser comme parametre)
+
+  8.1.3 Passage de parametres par la pile
+
+  Methode utilisee quand le nombre de parametres depasse les
+  registres disponibles, ou pour la compatibilite avec le C.
+  Les parametres sont empiles avant l'appel.
+
+    ; Appel : resultat = ma_fonction(arg1, arg2, arg3)
+    MOVE.L   arg3, -(SP)      ; Empiler arg3 en dernier (convention C)
+    MOVE.L   arg2, -(SP)      ; Empiler arg2
+    MOVE.L   arg1, -(SP)      ; Empiler arg1
+    BSR      ma_fonction
+    LEA      12(SP), SP       ; Nettoyer la pile (3 * 4 octets)
+    ; D0 contient le resultat
+
+  Etat de la pile dans le sous-programme :
+
+    SP+12 -> [arg3]
+    SP+8  -> [arg2]
+    SP+4  -> [arg1]
+    SP    -> [adresse retour]
+
+  Acces aux parametres dans le sous-programme :
+
+  ma_fonction:
+    MOVE.L   4(SP), D0        ; D0 = arg1
+    ADD.L    8(SP), D0        ; D0 = arg1 + arg2
+    ADD.L    12(SP), D0       ; D0 = arg1 + arg2 + arg3
+    RTS
+
+  8.1.4 Sauvegarde et restauration des registres
+
+  Convention : les registres que le sous-programme modifie doivent
+  etre sauvegardes (sauf les registres "scratch" D0-D1/A0-A1).
+
+    ma_routine:
+      MOVEM.L  D2-D7/A2-A5, -(SP)  ; Sauvegarder registres
+      ; ... corps du sous-programme ...
+      MOVEM.L  (SP)+, D2-D7/A2-A5  ; Restaurer registres
+      RTS
+
+  Registres typiques a preserver :
+
+    Categorie       Registres     Responsabilite
+    --------------  ------------  ---------------------------
+    Scratch         D0-D1, A0-A1 L'appelant sauvegarde si besoin
+    Preserves       D2-D7, A2-A5 Le sous-programme sauvegarde
+    Frame Pointer   A6           Le sous-programme sauvegarde
+    Stack Pointer   A7 (SP)      Doit etre restaure par convention
+
+  8.2 Gestion de la pile et cadres de pile (stack frames)
+  ---------------------------------------------------------
+
+  8.2.1 Cadre de pile standard avec LINK/UNLK
+
+  Les instructions LINK et UNLK creent et detruisent un cadre de
+  pile (stack frame) permettant un acces facile aux parametres et
+  aux variables locales.
+
+    LINK A6, #-N   ; Creer cadre : PUSH A6, A6=SP, SP=SP-N
+    UNLK A6        ; Detruire cadre : SP=A6, POP A6
+
+  Etat de la pile apres LINK A6, #-8 (8 octets de variables locales) :
+
+    A6+12 -> [parametre 2]          ; Acces : 12(A6)
+    A6+8  -> [parametre 1]          ; Acces : 8(A6)
+    A6+4  -> [adresse retour]       ; (gere par BSR/JSR)
+    A6    -> [ancien A6]            ; (sauve par LINK)
+    A6-4  -> [variable locale 1]    ; Acces : -4(A6)
+    A6-8  -> [variable locale 2]    ; Acces : -8(A6)
+    SP -> [sommet de pile]
+
+  Exemple complet :
+
+    ; int ma_fonction(int a, int b) {
+    ;   int local1, local2;
+    ;   local1 = a + b;
+    ;   local2 = a * b;
+    ;   return local1 + local2;
+    ; }
+
+    ma_fonction:
+      LINK     A6, #-8          ; Cadre avec 2 variables locales (4+4)
+      MOVE.L   8(A6), D0        ; D0 = a (premier parametre)
+      MOVE.L   12(A6), D1       ; D1 = b (deuxieme parametre)
+      MOVE.L   D0, D2           ; D2 = a (copie)
+      ADD.L    D1, D0           ; D0 = a + b
+      MOVE.L   D0, -4(A6)       ; local1 = a + b
+      MULS     D1, D2           ; D2 = a * b (16 bits)
+      MOVE.L   D2, -8(A6)       ; local2 = a * b
+      ADD.L    D2, D0           ; D0 = local1 + local2
+      UNLK     A6               ; Detruire cadre
+      RTS
+
+  8.2.2 Cadre de pile sans LINK/UNLK
+
+  Pour les routines simples, on peut gerer la pile manuellement :
+
+    ma_routine:
+      SUB.L    #8, SP           ; Reserver 8 octets pour locales
+      MOVE.L   D0, (SP)         ; Variable locale 1
+      MOVE.L   D1, 4(SP)        ; Variable locale 2
+      ; ... travail ...
+      ADD.L    #8, SP           ; Liberer les variables locales
+      RTS
+
+  8.2.3 Recursivite
+
+  La pile permet naturellement la recursivite. Chaque appel
+  recursif cree son propre cadre de pile.
+
+    ; unsigned factorielle(unsigned n) {
+    ;   if (n <= 1) return 1;
+    ;   return n * factorielle(n - 1);
+    ; }
+
+    factorielle:
+      LINK     A6, #0           ; Cadre (pas de variables locales)
+      MOVE.L   8(A6), D0        ; D0 = n
+      CMP.L    #1, D0           ; n <= 1 ?
+      BLE.S    .fact_base        ; Oui : cas de base
+      MOVE.L   D0, -(SP)        ; Sauvegarder n
+      SUBQ.L   #1, D0           ; D0 = n - 1
+      MOVE.L   D0, -(SP)        ; Empiler parametre n-1
+      BSR      factorielle      ; Appel recursif
+      ADDQ.L   #4, SP           ; Nettoyer parametre
+      MOVE.L   (SP)+, D1        ; Restaurer n
+      MULU     D1, D0           ; D0 = n * factorielle(n-1)
+      BRA.S    .fact_end
+    .fact_base:
+      MOVEQ    #1, D0           ; Retourner 1
+    .fact_end:
+      UNLK     A6
+      RTS
+
+  8.3 Structures de controle
+  ----------------------------
+
+  8.3.1 Conditionnelle if/else
+
+    ; if (D0 == 0) { ... } else { ... }
+    TST.L    D0
+    BNE.S    .else_bloc
+    ; --- bloc then ---
+    ; ...
+    BRA.S    .endif
+  .else_bloc:
+    ; --- bloc else ---
+    ; ...
+  .endif:
+
+    ; if (D0 > D1) { ... }
+    CMP.L    D1, D0
+    BLE.S    .endif2
+    ; --- bloc then ---
+    ; ...
+  .endif2:
+
+    ; if (D0 >= 10 && D0 <= 20) { ... }
+    CMP.L    #10, D0
+    BLT.S    .endif3
+    CMP.L    #20, D0
+    BGT.S    .endif3
+    ; --- bloc : D0 est dans [10, 20] ---
+    ; ...
+  .endif3:
+
+  8.3.2 Boucle while
+
+    ; while (D0 > 0) { D1 += D0; D0--; }
+  .while_top:
+    TST.L    D0
+    BLE.S    .while_end
+    ADD.L    D0, D1
+    SUBQ.L   #1, D0
+    BRA.S    .while_top
+  .while_end:
+
+  8.3.3 Boucle do-while
+
+    ; do { D1 += D0; D0--; } while (D0 > 0);
+  .do_top:
+    ADD.L    D0, D1
+    SUBQ.L   #1, D0
+    BGT.S    .do_top
+
+  8.3.4 Boucle for avec DBcc
+
+  L'instruction DBcc (Decrement and Branch) est optimisee pour
+  les boucles comptees. Elle decremente le registre Dn et branche
+  si le resultat n'est pas -1 (elle compte donc de N-1 a 0 si on
+  initialise a N-1, ou de N a 1 si on initialise a N et teste -1).
+
+    ; for (i = 99; i >= 0; i--) { ... }
+    MOVEQ    #99, D7            ; Compteur (attention: mot bas de D7)
+  .for_loop:
+    ; --- corps de la boucle ---
+    ; D7 contient i (99, 98, ..., 0)
+    DBRA     D7, .for_loop      ; D7--, branche si D7 != -1
+
+  Note : DBRA (DBF) teste toujours faux, donc decremente et branche
+  systematiquement. Les autres variantes (DBEQ, DBNE, etc.) combinent
+  une condition et le compteur.
+
+    ; Chercher un zero dans un tableau de 100 octets
+    LEA      tableau, A0
+    MOVEQ    #99, D7
+  .search:
+    TST.B    (A0)+
+    DBEQ     D7, .search        ; Sortir si zero trouve OU D7 = -1
+    BEQ.S    .found              ; Zero trouve
+    ; Non trouve
+    BRA.S    .not_found
+  .found:
+    ; A0 pointe juste apres le zero
+  .not_found:
+
+  8.3.5 Boucle for croissante
+
+    ; for (i = 0; i < 100; i++) { array[i] = 0; }
+    LEA      array, A0
+    MOVEQ    #99, D7
+  .clear_loop:
+    CLR.L    (A0)+              ; array[i] = 0, avancer A0
+    DBRA     D7, .clear_loop
+
+  8.3.6 Selection multiple (switch/case)
+
+  Methode 1 : Cascade de comparaisons (pour peu de cas)
+
+    ; switch (D0) { case 1: ...; case 2: ...; case 5: ...; }
+    CMP.L    #1, D0
+    BEQ.S    .case_1
+    CMP.L    #2, D0
+    BEQ.S    .case_2
+    CMP.L    #5, D0
+    BEQ.S    .case_5
+    BRA.S    .default
+  .case_1:
+    ; ...
+    BRA.S    .end_switch
+  .case_2:
+    ; ...
+    BRA.S    .end_switch
+  .case_5:
+    ; ...
+    BRA.S    .end_switch
+  .default:
+    ; ...
+  .end_switch:
+
+  Methode 2 : Table de sauts (pour des cas contigus, voir 8.6)
+
+  8.4 Manipulation de chaines de caracteres
+  -------------------------------------------
+
+  Le 68000 n'a pas d'instructions de chaines dediees (contrairement
+  au 80386 avec REP MOVSB etc.), mais ses modes d'adressage avec
+  post-incrementation et pre-decrementation sont tres efficaces.
+
+  8.4.1 Copie de chaine (strcpy)
+
+    ; Copier chaine terminee par zero de (A0) vers (A1)
+    strcpy:
+      MOVE.B   (A0)+, (A1)+     ; Copier un octet
+      BNE.S    strcpy            ; Continuer si pas le zero final
+
+  8.4.2 Longueur de chaine (strlen)
+
+    ; Chaine en (A0), longueur retournee dans D0
+    strlen:
+      MOVEQ    #-1, D0
+    .strlen_loop:
+      ADDQ.L   #1, D0
+      TST.B    (A0)+
+      BNE.S    .strlen_loop
+      RTS
+
+  8.4.3 Comparaison de chaines (strcmp)
+
+    ; Comparer (A0) et (A1), resultat dans D0 (<0, 0, >0)
+    strcmp:
+      MOVE.B   (A0)+, D0
+      SUB.B    (A1)+, D0        ; D0 = *A0 - *A1
+      BNE.S    .strcmp_end       ; Caracteres differents
+      TST.B    -1(A0)           ; Fin de chaine ?
+      BNE.S    strcmp            ; Non, continuer
+    .strcmp_end:
+      EXT.W    D0               ; Etendre signe a mot
+      EXT.L    D0               ; Etendre signe a long
+      RTS
+
+  8.4.4 Recherche de caractere (strchr)
+
+    ; Chercher D1.B dans la chaine (A0)
+    ; Retourne adresse dans A0 (ou 0 si non trouve)
+    strchr:
+      MOVE.B   (A0), D0
+      CMP.B    D1, D0
+      BEQ.S    .strchr_found
+      TST.B    D0
+      BEQ.S    .strchr_not
+      ADDQ.L   #1, A0
+      BRA.S    strchr
+    .strchr_not:
+      SUB.L    A0, A0           ; A0 = 0 (NULL)
+    .strchr_found:
+      RTS
+
+  8.4.5 Copie de bloc memoire (memcpy)
+
+    ; Copier D0.L octets de (A0) vers (A1)
+    memcpy:
+      SUBQ.L   #1, D0
+      BMI.S    .memcpy_end
+    .memcpy_loop:
+      MOVE.B   (A0)+, (A1)+
+      DBRA     D0, .memcpy_loop
+    .memcpy_end:
+      RTS
+
+  Version optimisee par mots longs (si les adresses sont alignees) :
+
+    memcpy_fast:
+      MOVE.L   D0, D1
+      LSR.L    #2, D0           ; Nombre de longs mots
+      BEQ.S    .copy_bytes
+      SUBQ.L   #1, D0
+    .copy_longs:
+      MOVE.L   (A0)+, (A1)+
+      DBRA     D0, .copy_longs
+    .copy_bytes:
+      MOVEQ    #3, D0
+      AND.L    D1, D0           ; Octets restants
+      BEQ.S    .done
+      SUBQ.L   #1, D0
+    .copy_rest:
+      MOVE.B   (A0)+, (A1)+
+      DBRA     D0, .copy_rest
+    .done:
+      RTS
+
+  8.4.6 Remplissage de bloc (memset)
+
+    ; Remplir D0.L octets a l'adresse (A0) avec D1.B
+    memset:
+      SUBQ.L   #1, D0
+      BMI.S    .memset_end
+    .memset_loop:
+      MOVE.B   D1, (A0)+
+      DBRA     D0, .memset_loop
+    .memset_end:
+      RTS
+
+  8.5 Arithmetique multi-precision
+  ----------------------------------
+
+  Le 68000 travaille nativement avec des operandes de 8, 16 et
+  32 bits. Pour les calculs sur des entiers plus grands, on
+  utilise les instructions ADDX, SUBX et le drapeau X (eXtend).
+
+  8.5.1 Addition 64 bits
+
+    ; Additionner deux nombres 64 bits :
+    ;   (D0:D1) = (D0:D1) + (D2:D3)
+    ;   D0/D2 = poids fort, D1/D3 = poids faible
+    ADD.L    D3, D1             ; Addition poids faible
+    ADDX.L   D2, D0             ; Addition poids fort + retenue (X)
+
+  8.5.2 Soustraction 64 bits
+
+    ; (D0:D1) = (D0:D1) - (D2:D3)
+    SUB.L    D3, D1             ; Soustraction poids faible
+    SUBX.L   D2, D0             ; Soustraction poids fort + emprunt (X)
+
+  8.5.3 Negation 64 bits
+
+    ; (D0:D1) = -(D0:D1)
+    NEG.L    D1                 ; Negate poids faible
+    NEGX.L   D0                 ; Negate poids fort avec emprunt
+
+  8.5.4 Decalage 64 bits a gauche
+
+    ; (D0:D1) <<= 1  (decalage d'un bit)
+    LSL.L    #1, D1             ; Decaler poids faible (bit 31 -> X)
+    ROXL.L   #1, D0             ; Decaler poids fort avec X entrant
+
+  8.5.5 Decalage 64 bits a droite
+
+    ; (D0:D1) >>= 1  (decalage logique d'un bit)
+    LSR.L    #1, D0             ; Decaler poids fort (bit 0 -> X)
+    ROXR.L   #1, D1             ; Decaler poids faible avec X entrant
+
+  8.5.6 Comparaison 64 bits
+
+    ; Comparer (D0:D1) avec (D2:D3)
+    CMP.L    D2, D0             ; Comparer poids forts
+    BNE.S    .cmp_done           ; Si differents, flags suffisent
+    CMP.L    D3, D1             ; Comparer poids faibles
+  .cmp_done:
+    ; Utiliser BEQ, BNE, BHI, BLS pour non signe
+    ; Utiliser BGT, BLT, BGE, BLE pour signe (apres poids fort)
+
+  8.5.7 Multiplication 32x32 -> 64 bits
+
+  Le 68000 a MULU/MULS pour 16x16 -> 32 bits. Pour une
+  multiplication 32 bits complete, il faut decomposer :
+
+    ; (D0:D1) = D2 * D3  (non signe, 32x32 -> 64)
+    ; D2 = aH:aL, D3 = bH:bL (a et b en deux mots de 16 bits)
+    mul32x32:
+      MOVE.L   D2, D0
+      MOVE.L   D3, D1
+      SWAP     D0               ; D0 = aL:aH
+      SWAP     D1               ; D1 = bL:bH
+      MOVE.W   D2, D4           ; D4.W = aL
+      MOVE.W   D3, D5           ; D5.W = bL
+      MULU     D5, D4           ; D4 = aL * bL (poids faible)
+      MOVE.W   D0, D6           ; D6.W = aH
+      MULU     D5, D6           ; D6 = aH * bL
+      MOVE.W   D2, D5           ; D5.W = aL
+      MULU     D1, D5           ; D5 = aL * bH
+      ADD.L    D5, D6           ; D6 = aH*bL + aL*bH (termes croises)
+      MOVE.W   D0, D5           ; D5.W = aH
+      MULU     D1, D5           ; D5 = aH * bH (poids fort)
+      ; Assembler le resultat 64 bits
+      MOVE.L   D4, D1           ; D1 = poids faible (aL*bL)
+      CLR.L    D0
+      MOVE.W   D6, D0
+      SWAP     D0               ; D0 = termes croises poids fort << 16
+      ADD.L    D5, D0           ; D0 += aH*bH
+      SWAP     D6               ; D6 poids fort des croises
+      CLR.W    D6
+      ADD.L    D6, D0           ; Ajouter retenue des croises
+      ; Reporter la retenue du mot bas des croises
+      SWAP     D6
+      CLR.L    D5
+      MOVE.W   D6, D5
+      SWAP     D5               ; D5 = croises_bas << 16
+      ADD.L    D5, D1           ; Ajouter au poids faible
+      BCC.S    .no_carry
+      ADDQ.L   #1, D0           ; Reporter retenue
+    .no_carry:
+      RTS
+
+  8.6 Tables de sauts et dispatch
+  ---------------------------------
+
+  Les tables de sauts permettent un branchement en O(1) pour les
+  selections multiples (switch/case avec valeurs contigues).
+
+  8.6.1 Table de sauts par deplacement
+
+    ; switch(D0) { case 0: ...; case 1: ...; case 2: ...; case 3: }
+    ; D0 contient l'index (0-3)
+    CMP.L    #3, D0
+    BHI.S    .default            ; Hors limites -> defaut
+    ADD.W    D0, D0             ; D0 * 2 (taille d'un mot)
+    MOVE.W   .jmptable(PC,D0.W), D0 ; Lire le deplacement
+    JMP      .jmptable(PC,D0.W)     ; Sauter a l'adresse
+
+  .jmptable:
+    DC.W     .case_0-.jmptable
+    DC.W     .case_1-.jmptable
+    DC.W     .case_2-.jmptable
+    DC.W     .case_3-.jmptable
+
+  .case_0:
+    ; ... traitement cas 0 ...
+    BRA.S    .end_switch
+  .case_1:
+    ; ... traitement cas 1 ...
+    BRA.S    .end_switch
+  .case_2:
+    ; ... traitement cas 2 ...
+    BRA.S    .end_switch
+  .case_3:
+    ; ... traitement cas 3 ...
+    BRA.S    .end_switch
+  .default:
+    ; ... traitement par defaut ...
+  .end_switch:
+
+  8.6.2 Table de sauts par adresses absolues
+
+    ; Table d'adresses absolues (32 bits)
+    CMP.L    #3, D0
+    BHI.S    .default2
+    LSL.L    #2, D0             ; D0 * 4 (taille d'un long mot)
+    LEA      .addr_table, A0
+    MOVE.L   0(A0,D0.L), A0    ; Charger l'adresse du handler
+    JMP      (A0)               ; Sauter
+
+  .addr_table:
+    DC.L     handler_0
+    DC.L     handler_1
+    DC.L     handler_2
+    DC.L     handler_3
+
+  8.6.3 Table de fonctions (dispatch virtuel)
+
+  Utilise pour les tables de methodes virtuelles ou les callbacks :
+
+    ; A0 = pointeur vers un objet
+    ; L'objet a un pointeur vers sa table de methodes en offset 0
+    ; Appeler la methode numero D0
+    MOVE.L   (A0), A1           ; A1 = pointeur table de methodes
+    LSL.L    #2, D0             ; D0 * 4
+    MOVE.L   0(A1,D0.L), A1    ; A1 = adresse de la methode
+    JSR      (A1)               ; Appeler la methode
+
+  8.7 Programmation position-independante (PIC)
+  -----------------------------------------------
+
+  Le code position-independant (PIC) peut s'executer a n'importe
+  quelle adresse memoire sans modification. C'est essentiel pour
+  les bibliotheques partagees et le code relocatable.
+
+  8.7.1 Branchements relatifs
+
+  Les instructions Bcc et BSR utilisent un deplacement relatif
+  par rapport au PC. Elles sont naturellement position-independantes.
+
+    BRA.S    label              ; Branchement relatif court
+    BSR      routine            ; Appel relatif
+    ; Pas besoin de relocation
+
+  8.7.2 Acces aux donnees avec PC relatif
+
+  Le mode d'adressage d(PC) permet d'acceder aux donnees
+  relativement au PC, sans adresse absolue :
+
+    ; Acces non PIC (adresse absolue) :
+    MOVE.L   ma_variable, D0   ; Utilise une adresse absolue
+
+    ; Acces PIC (relatif au PC) :
+    MOVE.L   ma_variable(PC), D0 ; Utilise un deplacement relatif
+    LEA      ma_table(PC), A0    ; Charger adresse relative
+
+  8.7.3 Acces aux donnees avec base register
+
+  Pour les donnees eloignees du code, on utilise un registre
+  de base pointant vers la zone de donnees :
+
+    ; Initialiser le registre de base
+    LEA      data_base(PC), A5  ; A5 = base des donnees
+
+    ; Acceder aux variables via A5
+    MOVE.L   var1_offset(A5), D0  ; Charger variable 1
+    MOVE.L   D1, var2_offset(A5)  ; Stocker variable 2
+
+  8.7.4 Limitations du mode PC relatif sur le 68000
+
+    - Le deplacement est limite a 16 bits signes (-32768 a +32767)
+    - Le PC ne peut pas etre utilise comme destination
+    - LEA label(PC), An est la forme la plus courante
+    - Le 68020+ etend a 32 bits avec les mots d'extension
+
+  8.8 Optimisations courantes
+  -----------------------------
+
+  8.8.1 Utilisation de MOVEQ
+
+  MOVEQ charge une constante 8 bits signee (-128 a +127) dans un
+  registre de donnees en seulement 2 octets (1 mot) et 4 cycles :
+
+    MOVEQ    #0, D0             ; 2 octets, 4 cycles (mieux que CLR.L)
+    MOVEQ    #1, D0             ; 2 octets, 4 cycles
+    MOVEQ    #-1, D0            ; D0 = $FFFFFFFF (2 octets)
+
+  Comparaison :
+    MOVEQ    #0, D0             ; 2 octets,  4 cycles
+    CLR.L    D0                 ; 2 octets,  6 cycles (lecture-modif-ecrit)
+    MOVE.L   #0, D0             ; 6 octets, 12 cycles
+
+  8.8.2 Utilisation de ADDQ/SUBQ
+
+  ADDQ et SUBQ ajoutent/soustraient 1-8 en seulement 2 octets :
+
+    ADDQ.L   #1, D0             ; 2 octets, 4 cycles (registre)
+    ADDQ.L   #1, (A0)           ; 2 octets, 12 cycles (memoire)
+
+  Comparaison :
+    ADDQ.L   #1, D0             ;  2 octets,  4 cycles
+    ADD.L    #1, D0             ;  6 octets,  8 cycles (immediate long)
+    ADDI.L   #1, D0             ;  6 octets,  8 cycles
+
+  8.8.3 Effacement rapide avec MOVEQ
+
+    MOVEQ    #0, D0             ; Effacer un registre (4 cycles)
+    ; Puis utiliser comme source :
+    MOVE.L   D0, (A0)+          ; Effacer une case memoire
+    MOVE.L   D0, (A0)+          ; Et la suivante...
+
+  8.8.4 Decalages au lieu de multiplications
+
+    ; D0 *= 2
+    ADD.L    D0, D0             ; Plus rapide que LSL.L #1, D0
+    ; ou
+    LSL.L    #1, D0
+
+    ; D0 *= 4
+    LSL.L    #2, D0
+
+    ; D0 *= 8
+    LSL.L    #3, D0
+
+    ; D0 *= 10 (sans MULU)
+    MOVE.L   D0, D1
+    LSL.L    #3, D0             ; D0 *= 8
+    ADD.L    D1, D0             ; D0 += original
+    ADD.L    D1, D0             ; D0 += original -> D0 = 10 * original
+
+    ; D0 *= 320 (pour adressage ecran, 320 = 256 + 64)
+    MOVE.L   D0, D1
+    LSL.L    #8, D0             ; D0 *= 256
+    LSL.L    #6, D1             ; D1 *= 64
+    ADD.L    D1, D0             ; D0 = 320 * original
+
+  8.8.5 Test de bit sans BTST
+
+    ; Tester si D0 est pair/impair
+    BTST     #0, D0             ; Tester bit 0
+    BNE.S    .impair
+    ; Alternative :
+    AND.W    #1, D0             ; D0 = D0 & 1
+    BNE.S    .impair
+
+    ; Tester si D0 est negatif
+    TST.L    D0
+    BMI.S    .negatif
+
+  8.8.6 Echange sans variable temporaire
+
+    EXG      D0, D1             ; Echanger D0 et D1 (4 cycles, registres)
+
+    ; Pour la memoire (pas d'EXG memoire) :
+    MOVE.L   (A0), D0
+    MOVE.L   (A1), D1
+    MOVE.L   D0, (A1)
+    MOVE.L   D1, (A0)
+
+  8.8.7 Boucle de delai
+
+    ; Attendre environ N iterations
+    MOVE.L   #N, D0
+  .delay:
+    SUBQ.L   #1, D0
+    BNE.S    .delay
+
+    ; Ou avec DBRA (plus precis, mais compteur 16 bits) :
+    MOVE.W   #N-1, D0
+  .delay2:
+    DBRA     D0, .delay2
+
+  8.8.8 Alignement des donnees
+
+  Le 68000 requiert que les acces mot (16 bits) et long mot
+  (32 bits) soient alignes sur des adresses paires. Un acces
+  non aligne provoque une exception Address Error.
+
+    ; S'assurer que l'adresse dans A0 est paire
+    MOVE.L   A0, D0
+    BTST     #0, D0
+    BEQ.S    .aligned
+    ADDQ.L   #1, A0            ; Avancer d'un octet pour aligner
+  .aligned:
+
+    ; En assembleur, utiliser EVEN ou ALIGN :
+    EVEN                        ; Aligner sur mot
+    ; ou
+    ALIGN    4                  ; Aligner sur long mot (si supporte)
+
+  8.9 Interfacage avec le langage C
+  ------------------------------------
+
+  8.9.1 Convention d'appel C standard (cdecl)
+
+  La convention C sur 68000 suit generalement ces regles :
+    - Parametres empiles de droite a gauche
+    - L'appelant nettoie la pile apres l'appel
+    - Valeur de retour dans D0 (32 bits) ou D0:D1 (64 bits)
+    - Registres scratch : D0, D1, A0, A1 (non preserves)
+    - Registres preserves : D2-D7, A2-A5, A6 (Frame Pointer)
+
+  8.9.2 Appeler une fonction C depuis l'assembleur
+
+    ; extern int printf(const char *fmt, ...);
+    ; printf("Valeur = %d\n", 42);
+
+    PEA      #42               ; Empiler 42 (de droite a gauche)
+    PEA      .fmt_str(PC)      ; Empiler adresse du format
+    JSR      _printf            ; Appeler (noms C prefixes par _)
+    ADDQ.L   #8, SP            ; Nettoyer 2 parametres (4+4)
+
+  .fmt_str:
+    DC.B     'Valeur = %d', 10, 0
+    EVEN
+
+  8.9.3 Ecrire une fonction appelee depuis le C
+
+    ; int ma_somme(int a, int b);
+    ; Appelee comme : resultat = ma_somme(10, 20);
+
+    XDEF     _ma_somme         ; Exporter le symbole
+  _ma_somme:
+    LINK     A6, #0            ; Cadre de pile
+    MOVE.L   8(A6), D0         ; D0 = a (premier parametre)
+    ADD.L    12(A6), D0        ; D0 += b (deuxieme parametre)
+    UNLK     A6                ; Detruire cadre
+    RTS                        ; Retourner (D0 = resultat)
+
+  8.9.4 Structures et alignement
+
+  Le C sur 68000 aligne generalement les champs de structure
+  sur des limites de mot (2 octets) ou de long mot (4 octets)
+  selon le compilateur. En assembleur, respecter le meme alignement :
+
+    ; struct Point { int x; int y; };
+    ; sizeof(struct Point) = 8
+    POINT_X  EQU  0             ; Offset du champ x
+    POINT_Y  EQU  4             ; Offset du champ y
+
+    ; Acceder aux champs :
+    MOVE.L   POINT_X(A0), D0   ; D0 = point->x
+    MOVE.L   POINT_Y(A0), D1   ; D1 = point->y
+
+  8.9.5 Tableaux et indexation
+
+    ; int tab[100]; tab[i] = valeur;
+    ; A0 = adresse de tab, D0 = i, D1 = valeur
+    LSL.L    #2, D0             ; i *= 4 (taille d'un int)
+    MOVE.L   D1, 0(A0,D0.L)    ; tab[i] = valeur
+
+    ; char *str; c = str[i];
+    ; A0 = str, D0 = i
+    MOVE.B   0(A0,D0.L), D1    ; D1 = str[i]
+
+  8.10 Comparaison avec les techniques 80386
+  ---------------------------------------------
+
+  Technique               68000                80386
+  ----------------------  -------------------  -------------------
+  Cadre de pile           LINK A6, #-N         PUSH EBP / MOV EBP,ESP
+                          UNLK A6              MOV ESP,EBP / POP EBP
+  Appel/retour            BSR/JSR + RTS        CALL + RET
+  Passage params pile     MOVE.L arg, -(SP)    PUSH arg
+  Nettoyage pile          LEA n(SP), SP        ADD ESP, n
+  Sauvegarde registres    MOVEM.L regs, -(SP)  PUSH reg (un par un)
+  Restauration registres  MOVEM.L (SP)+, regs  POP reg (un par un)
+  Boucle comptee          DBRA Dn, label       LOOP label (ECX)
+  Copie de chaine         MOVE.B (A0)+,(A1)+   REP MOVSB
+  Copie par blocs         MOVE.L (A0)+,(A1)+   REP MOVSD
+  Remplissage             MOVE.B D0,(A0)+      REP STOSB
+  Recherche               DBEQ/TST (A0)+       REPNE SCASB
+  Table de sauts          JMP table(PC,D0.W)   JMP [table+EAX*4]
+  Test de bit             BTST #n, Dn          BT reg, n
+  Alignement              EVEN / adresses paires  Pas de contrainte
+  PC-relatif              d(PC), d(PC,Xn)      Pas de mode PC-relatif
+  Immediate rapide        MOVEQ #n, Dn         (pas d'equivalent)
+  Ajout rapide            ADDQ #n, ea          (pas d'equivalent)
+  Multi-precision         ADDX, SUBX           ADC, SBB
+  Multiplication          MULU/MULS (16x16)    MUL/IMUL (32x32)
+  Division                DIVU/DIVS (32/16)    DIV/IDIV (64/32)
+  Registres generaux      D0-D7 (donnees)      EAX,EBX,ECX,EDX
+                          A0-A6 (adresses)     ESI,EDI,EBP
+
+  Differences notables :
+
+  - Le 68000 separe donnees (D0-D7) et adresses (A0-A6) ; le 80386
+    utilise des registres generaux pour les deux usages
+  - MOVEM.L permet de sauvegarder/restaurer plusieurs registres en
+    une seule instruction (equivalent a PUSHA/POPA du 80386)
+  - Le 68000 a le mode PC-relatif natif, facilitant le PIC ;
+    le 80386 ne l'a pas (utilise des GOT/PLT a la place)
+  - DBRA combine decrementation et branchement en une instruction
+    efficace ; LOOP du 80386 est similaire mais utilise ECX uniquement
+  - Le 68000 n'a pas d'instructions de chaines comme REP MOVSx ;
+    la copie se fait avec des boucles MOVE.B (A0)+, (A1)+
+  - Le 80386 a des multiplications 32x32 en materiel ;
+    le 68000 est limite a 16x16 (32x32 sur 68020+)
+  - Le 68000 exige l'alignement pair pour les mots et longs mots ;
+    le 80386 tolere les acces non alignes (avec penalite)
+  - MOVEQ et ADDQ/SUBQ du 68000 n'ont pas d'equivalent direct sur
+    80386 (mais les instructions immediates courtes existent)
+
+  8.11 Exemples complets
+  -------------------------
+
+  8.11.1 Tri a bulles (Bubble Sort)
+
+    ; Trier un tableau de N longs mots en ordre croissant
+    ; A0 = adresse du tableau, D7 = N-1 (nombre d'elements - 1)
+    bubble_sort:
+      MOVE.L   D7, D6           ; D6 = compteur externe
+    .outer:
+      MOVEQ    #0, D5           ; D5 = flag "echange effectue"
+      MOVE.L   D6, D4           ; D4 = compteur interne
+      MOVE.L   A0, A1           ; A1 = debut du tableau
+      SUBQ.L   #1, D4
+    .inner:
+      MOVE.L   (A1), D0         ; D0 = element[i]
+      CMP.L    4(A1), D0        ; Comparer avec element[i+1]
+      BLE.S    .no_swap
+      MOVE.L   4(A1), (A1)      ; Echanger
+      MOVE.L   D0, 4(A1)
+      MOVEQ    #1, D5           ; Marquer echange
+    .no_swap:
+      ADDQ.L   #4, A1           ; Avancer au prochain element
+      DBRA     D4, .inner
+      TST.L    D5               ; Des echanges ont ete faits ?
+      BEQ.S    .sorted           ; Non : tableau trie
+      SUBQ.L   #1, D6           ; Reduire la plage
+      BNE.S    .outer
+    .sorted:
+      RTS
+
+  8.11.2 Conversion entier en chaine decimale (itoa)
+
+    ; Convertir D0.L (non signe) en chaine decimale dans (A0)
+    ; Retourne longueur dans D0
+    itoa:
+      LINK     A6, #-12         ; Buffer temporaire (12 chiffres max)
+      LEA      -1(A6), A1       ; A1 = fin du buffer temporaire
+      CLR.B    (A1)             ; Terminateur zero
+      MOVEQ    #0, D1           ; D1 = compteur de chiffres
+    .itoa_loop:
+      DIVU     #10, D0          ; D0.W = quotient, D0 haut = reste
+      SWAP     D0               ; D0.W = reste
+      ADD.B    #'0', D0         ; Convertir en ASCII
+      MOVE.B   D0, -(A1)        ; Stocker le chiffre (ordre inverse)
+      ADDQ.L   #1, D1           ; Compter
+      SWAP     D0               ; D0.W = quotient
+      AND.L    #$FFFF, D0       ; Masquer les bits hauts
+      BNE.S    .itoa_loop        ; Continuer si quotient != 0
+    .copy_result:
+      MOVE.B   (A1)+, (A0)+     ; Copier vers le buffer de sortie
+      BNE.S    .copy_result
+      MOVE.L   D1, D0           ; D0 = longueur
+      UNLK     A6
+      RTS
+
+  8.11.3 Conversion chaine decimale en entier (atoi)
+
+    ; Convertir la chaine en (A0) en entier dans D0
+    ; Supporte le signe negatif
+    atoi:
+      MOVEQ    #0, D0           ; Resultat = 0
+      MOVEQ    #0, D1           ; D1 = flag signe (0 = positif)
+      MOVE.B   (A0), D2
+      CMP.B    #'-', D2
+      BNE.S    .atoi_plus
+      MOVEQ    #1, D1           ; Negatif
+      ADDQ.L   #1, A0
+      BRA.S    .atoi_digit
+    .atoi_plus:
+      CMP.B    #'+', D2
+      BNE.S    .atoi_digit
+      ADDQ.L   #1, A0           ; Sauter le '+'
+    .atoi_digit:
+      MOVE.B   (A0)+, D2
+      SUB.B    #'0', D2
+      BMI.S    .atoi_end         ; < '0' : fin
+      CMP.B    #9, D2
+      BHI.S    .atoi_end         ; > '9' : fin
+      MULU     #10, D0          ; D0 *= 10
+      AND.L    #$FF, D2
+      ADD.L    D2, D0           ; D0 += chiffre
+      BRA.S    .atoi_digit
+    .atoi_end:
+      TST.L    D1               ; Signe negatif ?
+      BEQ.S    .atoi_done
+      NEG.L    D0               ; D0 = -D0
+    .atoi_done:
+      RTS
+
+  8.11.4 Recherche binaire (binary search)
+
+    ; Recherche D0 dans un tableau trie de longs mots
+    ; A0 = tableau, D1 = nombre d'elements
+    ; Retourne index dans D0 (-1 si non trouve)
+    binary_search:
+      MOVEM.L  D2-D5, -(SP)
+      MOVE.L   D0, D5           ; D5 = valeur cherchee
+      MOVEQ    #0, D2           ; D2 = low
+      MOVE.L   D1, D3
+      SUBQ.L   #1, D3           ; D3 = high = N-1
+    .bs_loop:
+      CMP.L    D3, D2
+      BGT.S    .bs_not_found     ; low > high : pas trouve
+      MOVE.L   D2, D4
+      ADD.L    D3, D4
+      LSR.L    #1, D4           ; D4 = mid = (low + high) / 2
+      MOVE.L   D4, D0
+      LSL.L    #2, D0           ; D0 = mid * 4
+      CMP.L    0(A0,D0.L), D5   ; Comparer valeur avec tab[mid]
+      BEQ.S    .bs_found
+      BGT.S    .bs_go_right
+      ; Valeur < tab[mid] : chercher a gauche
+      MOVE.L   D4, D3
+      SUBQ.L   #1, D3           ; high = mid - 1
+      BRA.S    .bs_loop
+    .bs_go_right:
+      ; Valeur > tab[mid] : chercher a droite
+      MOVE.L   D4, D2
+      ADDQ.L   #1, D2           ; low = mid + 1
+      BRA.S    .bs_loop
+    .bs_found:
+      MOVE.L   D4, D0           ; D0 = index trouve
+      BRA.S    .bs_end
+    .bs_not_found:
+      MOVEQ    #-1, D0          ; D0 = -1 (non trouve)
+    .bs_end:
+      MOVEM.L  (SP)+, D2-D5
+      RTS
+
+  8.12 Resume
+  -------------
+
+  Les techniques de programmation du 68000 exploitent les forces
+  de son architecture orthogonale, ses 16 registres et ses modes
+  d'adressage riches.
+
+  Points cles a retenir :
+
+  - LINK/UNLK creent des cadres de pile propres et permettent
+    un acces facile aux parametres et variables locales
+  - Les registres D2-D7/A2-A5 sont preserves par convention ;
+    D0-D1/A0-A1 sont des registres scratch
+  - MOVEM.L permet la sauvegarde/restauration groupee de registres
+  - DBRA est l'instruction de boucle optimale pour le comptage
+  - Les modes post-increment (An)+ et pre-decrement -(An) rendent
+    les operations de copie et pile tres compactes
+  - MOVEQ, ADDQ et SUBQ sont des formes compactes (2 octets) et
+    rapides pour les petites constantes
+  - Le mode PC-relatif d(PC) permet du code position-independant
+  - L'alignement pair est obligatoire pour les acces mot et long mot
+  - L'arithmetique multi-precision utilise ADDX/SUBX avec le flag X
+  - L'interfacage C suit la convention cdecl : parametres empiles
+    de droite a gauche, l'appelant nettoie la pile
+
+  Comparaison des techniques :
+
+  Technique               Instruction(s) cle(s)
+  ----------------------  -----------------------------------
+  Cadre de pile           LINK An, #-N / UNLK An
+  Sauvegarde registres    MOVEM.L regs, -(SP) / (SP)+, regs
+  Boucle comptee          DBRA Dn, label
+  Boucle conditionnelle   DBcc Dn, label
+  Copie de chaine         MOVE.B (A0)+, (A1)+ / BNE
+  Table de sauts          JMP table(PC, Dn.W)
+  Addition 64 bits        ADD.L + ADDX.L
+  Code PIC                LEA data(PC), An
+  Immediate rapide        MOVEQ #n, Dn (2 octets, 4 cycles)
+  Ajout rapide            ADDQ.L #n, ea (2 octets)
+  Multiplication rapide   LSL.L + ADD.L (decalages + additions)
+  Interface C             LINK/UNLK + acces 8(A6), 12(A6)...
