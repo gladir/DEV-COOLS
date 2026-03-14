@@ -1,4 +1,5 @@
 *.o
 *.obj
 *.ppu
-
+*.class
+/JASMIN

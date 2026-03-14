@@ -1,7 +1,8 @@
 ==============================================================================
   ASM_JASMIN.txt
   Langage assembleur Jasmin pour la machine virtuelle Java (JVM)
-  Reference au compilateur CCJASMIN.PAS du projet DEV-COOLS
+  Reference au compilateur CCJASMIN.PAS et a l assembleur JASMIN.PAS
+  du projet DEV-COOLS
 ==============================================================================
 
 Table des matieres
@@ -48,7 +49,9 @@ Table des matieres
   avec la JVM.
 
   Le projet DEV-COOLS contient le compilateur CCJASMIN.PAS (6334 lignes)
-  qui traduit du code C en assembleur Jasmin pour la JVM. Ce document
+  qui traduit du code C en assembleur Jasmin pour la JVM, ainsi que
+  l assembleur JASMIN.PAS qui assemble directement les fichiers .j
+  en fichiers .class (bytecode Java). Ce document
   decrit le fonctionnement du langage assembleur Jasmin, ses directives,
   ses opcodes et son utilisation.
 
@@ -1112,7 +1115,29 @@ Table des matieres
     4. Executer :
          java Main
 
-  16.3 Verification du bytecode
+  16.3 Avec JASMIN.PAS (assembleur Jasmin natif)
+  ------------------------------------------------
+
+  JASMIN.PAS est un assembleur Jasmin natif ecrit en Turbo Pascal /
+  Free Pascal. Il assemble directement les fichiers .j en fichiers
+  .class sans necessiter Java ou jasmin.jar.
+
+    1. Compiler JASMIN.PAS avec Free Pascal :
+         fpc -Mtp JASMIN.PAS -oJASMIN
+    2. Assembler un fichier Jasmin en .class :
+         ./JASMIN MonProgramme.j
+       Cela produit MonProgramme.class
+    3. Executer avec la JVM :
+         java MonProgramme
+
+  Options de la ligne de commande :
+    -o <fichier.class>  : specifier le nom du fichier de sortie
+    -d <repertoire>     : specifier le repertoire de sortie
+    -g                  : inclure les informations de debogage
+
+  Les fichiers exemples se trouvent dans SAMPLES/JASMIN/*.j.
+
+  16.4 Verification du bytecode
   -----------------------------
 
   La JVM effectue une verification du bytecode lors du chargement
@@ -1164,9 +1189,23 @@ Table des matieres
   Fichiers du projet DEV-COOLS lies a Jasmin et Java :
 
     CCJASMIN.PAS              Compilateur C vers Jasmin JVM (6334 lignes)
+    JASMIN.PAS                Assembleur Jasmin : fichiers .j -> .class
     JAVAC86.PAS               Compilateur Java vers assembleur 8086
     ASC2JAVA.PAS              Convertisseur de code vers Java
     WIN32/javac86.exe         Executable pre-compile du compilateur Java
+
+    SAMPLES/JASMIN/           Fichiers exemples Jasmin (.j) :
+      Hello.j                   Hello World minimal
+      test01_hello.j            Test affichage de chaines
+      test02_variables.j        Test variables locales int
+      test03_arith.j            Test operations arithmetiques
+      test04_cond.j             Test branchements conditionnels
+      test05_loop.j             Test boucles (goto, iinc)
+      test06_method.j           Test appel de methodes statiques
+      test07_field.j            Test champs d instance et statiques
+      test08_array.j            Test creation et manipulation de tableaux
+      test09_except.j           Test gestion d exceptions
+      test10_stack.j            Test manipulation de la pile
 
     SAMPLES/JAVA/             Fichiers exemples Java :
       Hello.java                Hello World simple

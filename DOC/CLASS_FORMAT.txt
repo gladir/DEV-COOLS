@@ -5,8 +5,8 @@
 
 Document de reference du format binaire .class tel que defini par
 Sun Microsystems (Java 1.0, 1995) et maintenu par Oracle. Ce format
-est la cible de l assembleur Jasmin et du compilateur CCJASMIN.PAS
-du projet DEV-COOLS.
+est la cible de l assembleur Jasmin, du compilateur CCJASMIN.PAS
+et de l assembleur natif JASMIN.PAS du projet DEV-COOLS.
 
 Date:       Mars 2026
 Norme:      The Java Virtual Machine Specification (JVMS)
@@ -97,6 +97,7 @@ classe ou interface Java compilee. Il est produit par :
   - javac (compilateur Java de Sun/Oracle)
   - Les assembleurs Jasmin, Krakatau, ASM
   - CCJASMIN.PAS du projet DEV-COOLS (via assemblage Jasmin)
+  - JASMIN.PAS du projet DEV-COOLS (assembleur Jasmin natif .j -> .class)
   - Tout compilateur ciblant la JVM (Kotlin, Scala, Groovy, Clojure)
 
 Chaque fichier .class contient exactement une classe ou interface.
@@ -1505,7 +1506,28 @@ sont de trois niveaux :
   .limit stack/locals, et le bytecode sont convertis par Jasmin en
   structures ClassFile, constant pool, method_info et Code_attribute.
 
-15.2 Correspondance Jasmin -> .class
+15.2 JASMIN.PAS (assembleur natif)
+-----------------------------------
+
+  JASMIN.PAS est un assembleur Jasmin natif ecrit en Turbo Pascal /
+  Free Pascal. Il assemble directement les fichiers .j en fichiers
+  .class sans necessiter Java ou jasmin.jar.
+
+  Chaine d assemblage :
+    Source .j -> JASMIN.PAS -> fichier .class -> java (JVM)
+
+  JASMIN.PAS genere directement le format binaire .class decrit dans
+  ce document : en-tete magic/version, constant pool, access_flags,
+  this_class, super_class, interfaces, fields, methods (avec attribut
+  Code contenant le bytecode assemble) et attributs de classe.
+
+  Par defaut, JASMIN.PAS produit des fichiers .class. Les options de
+  ligne de commande permettent de specifier le fichier et le
+  repertoire de sortie.
+
+  Les fichiers exemples se trouvent dans SAMPLES/JASMIN/*.j.
+
+15.3 Correspondance Jasmin -> .class
 --------------------------------------
 
   Directive Jasmin           Structure .class
@@ -1527,7 +1549,7 @@ sont de trois niveaux :
   de l attribut Code (voir ASM_JASMIN.txt section 19 pour la
   table complete des 256 opcodes).
 
-15.3 Documentation connexe dans DOC/
+15.4 Documentation connexe dans DOC/
 --------------------------------------
 
   ASM_JASMIN.txt              Langage assembleur Jasmin et opcodes JVM
