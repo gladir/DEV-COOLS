@@ -18,7 +18,7 @@
 { ---------------------------------------------------------------------------- }
 {  TODO 01 [IMPLEMENTE] - Architecture de base, constantes et types internes   }
 {  TODO 02 [IMPLEMENTE] - Lexeur : lecture source et tokenisation              }
-{  TODO 03 - Gestion des erreurs, des avertissements et du bilan              }
+{  TODO 03 [IMPLEMENTE] - Gestion des erreurs, des avertissements et du bilan }
 {  TODO 04 - Bassin de constantes (Constant Pool) : structures et gestion     }
 {  TODO 05 - Ecriture binaire du fichier .class (Big-endian)                  }
 {  TODO 06 - Directives de classe (.class, .super, .implements, .source)      }
@@ -389,6 +389,15 @@ Procedure Expect(tok: Integer; Const what: String); Forward;
 Procedure ExpectStr(Const s: String); Forward;
 Procedure ExpectNewline; Forward;
 
+{ --- Declarations forward TODO 03 : erreurs, avertissements, bilan --- }
+Procedure Error(Const msg: String); Forward;
+Procedure Warning(Const msg: String); Forward;
+Procedure FatalError(Const msg: String); Forward;
+Procedure ErrorAt(line: Integer; Const msg: String); Forward;
+Procedure SkipToEOL; Forward;
+Procedure SkipToDirective; Forward;
+Procedure BilanAssemblage; Forward;
+
 { ---------- Ouverture et fermeture du fichier source ---------- }
 
 Procedure SrcOpen(Const FileName: String);
@@ -396,10 +405,7 @@ Begin
  Assign(SrcFile, FileName);
  Reset(SrcFile);
  If IOResult <> 0 Then
- Begin
-  WriteLn('Erreur : impossible d''ouvrir ', FileName);
-  Halt(1);
- End;
+  FatalError('impossible d''ouvrir ' + FileName);
  SrcLine    := '';
  SrcLineNum := 0;
  SrcCol     := 1;
@@ -893,31 +899,94 @@ End;
 Procedure Expect(tok: Integer; Const what: String);
 Begin
  If CurTok <> tok Then
- Begin
-  WriteLn('Erreur ligne ', SrcLineNum, ' : ', what, ' attendu');
-  Inc(ErrorCount);
- End;
+  Error(what + ' attendu');
  NextToken;
 End;
 
 Procedure ExpectStr(Const s: String);
 Begin
  If CurStr <> s Then
- Begin
-  WriteLn('Erreur ligne ', SrcLineNum, ' : "', s, '" attendu, lu "', CurStr, '"');
-  Inc(ErrorCount);
- End;
+  Error('"' + s + '" attendu, lu "' + CurStr + '"');
  NextToken;
 End;
 
 Procedure ExpectNewline;
 Begin
  If (CurTok <> TK_NEWLINE) And (CurTok <> TK_EOF) Then
- Begin
-  WriteLn('Erreur ligne ', SrcLineNum, ' : fin de ligne attendue');
-  Inc(ErrorCount);
- End;
+  Error('fin de ligne attendue');
  If CurTok = TK_NEWLINE Then NextToken;
+End;
+
+{ ============================================================================ }
+{ Gestion des erreurs, des avertissements et du bilan                          }
+{ ============================================================================ }
+
+{ --- Error : erreur non fatale avec fichier:ligne --- }
+Procedure Error(Const msg: String);
+Begin
+ WriteLn(SrcFileName, ':', SrcLineNum, ': erreur: ', msg);
+ Inc(ErrorCount);
+End;
+
+{ --- Warning : avertissement non bloquant --- }
+Procedure Warning(Const msg: String);
+Begin
+ WriteLn(SrcFileName, ':', SrcLineNum, ': attention: ', msg);
+ Inc(WarnCount);
+End;
+
+{ --- FatalError : erreur irrecuperable, arret immediat --- }
+Procedure FatalError(Const msg: String);
+Begin
+ WriteLn(SrcFileName, ':', SrcLineNum, ': erreur fatale: ', msg);
+ Inc(ErrorCount);
+ Halt(1);
+End;
+
+{ --- ErrorAt : erreur avec numero de ligne specifique --- }
+Procedure ErrorAt(line: Integer; Const msg: String);
+Begin
+ WriteLn(SrcFileName, ':', line, ': erreur: ', msg);
+ Inc(ErrorCount);
+End;
+
+{ --- SkipToEOL : consommer jusqu'en fin de ligne pour resynchroniser --- }
+Procedure SkipToEOL;
+Begin
+ While (CurTok <> TK_NEWLINE) And (CurTok <> TK_EOF) do
+  NextToken;
+ If CurTok = TK_NEWLINE Then NextToken;
+End;
+
+{ --- SkipToDirective : consommer jusqu'a la prochaine directive --- }
+Procedure SkipToDirective;
+Begin
+ While (CurTok <> TK_DIRECTIVE) And (CurTok <> TK_EOF) do
+  NextToken;
+End;
+
+{ --- BilanAssemblage : afficher les statistiques de l'assemblage --- }
+Procedure BilanAssemblage;
+Var totalCode: LongInt; i: Integer;
+Begin
+ WriteLn;
+ WriteLn('--- Bilan de l''assemblage ---');
+ WriteLn('  Fichier source    : ', SrcFileName);
+ WriteLn('  Lignes lues       : ', SrcLineNum);
+ WriteLn('  Constant Pool     : ', CPCount - 1, ' entree(s)');
+ WriteLn('  Champs            : ', FieldCount);
+ WriteLn('  Methodes          : ', MethodCount);
+ totalCode := 0;
+ For i := 1 to MethodCount do
+  totalCode := totalCode + MethodTab^[i].CodeSize;
+ WriteLn('  Taille bytecode   : ', totalCode, ' octet(s)');
+ WriteLn('  Interfaces        : ', IfaceCount);
+ WriteLn('  Erreurs           : ', ErrorCount);
+ WriteLn('  Avertissements    : ', WarnCount);
+ If ErrorCount = 0 Then
+  WriteLn('  Resultat          : OK')
+ Else
+  WriteLn('  Resultat          : ECHEC');
 End;
 
 { ============================================================================ }
@@ -1056,8 +1125,12 @@ Begin
  WriteLn;
  WriteLn('Lignes lues   : ', SrcLineNum);
  WriteLn('Erreurs       : ', ErrorCount);
+
+ { Bilan de l'assemblage }
+ BilanAssemblage;
+
  WriteLn;
- WriteLn('(Assemblage non encore implemente - voir TODOs 03 a 25)');
+ WriteLn('(Assemblage non encore implemente - voir TODOs 04 a 25)');
 
  SrcClose;
  GlobalCleanup;
