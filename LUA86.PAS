@@ -194,7 +194,7 @@
               CALL _LUART_STRTONUM(SI=str) -> AX
             io.open, io.close : stubs + avertissement (gestion fichier avancee)
 
-  TODO 13 - IF / ELSEIF / ELSE
+  TODO 13 - IF / ELSEIF / ELSE [IMPLEMENTE]
             ParseIfStmt : if cond then stmts {elseif cond then stmts} [else stmts] end
               Verite Lua : nil et false sont faux, tout le reste est vrai
               Emission TEST AX,AX / JZ pour condition fausse
@@ -692,6 +692,7 @@ Var
   { Etat general }
   RuntimeEmitted : Boolean;
   CallArgCount   : Integer;   { compteur d arguments pour appels }
+  IfCount        : Integer;   { compteur pour labels if/elseif/else }
 
 { ============================================================
   FORWARD DECLARATIONS
@@ -797,6 +798,10 @@ Procedure EmitExprRuntime; Forward;
 { Entrees/Sorties (TODO 12) }
 Procedure EmitIOBuiltin(Const FuncName : TString; Var Res : TExprVal); Forward;
 Procedure EmitIORuntime; Forward;
+
+{ If / Elseif / Else (TODO 13) }
+Procedure ParseIfStmt; Forward;
+Procedure EmitIfRuntime; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1073,6 +1078,7 @@ Begin
   RuntimeEmitted := False;
   CurFrameSize   := 0;
   LabelGenSeq    := 0;
+  IfCount        := 0;
   GExprDummy.Kind    := EK_NONE;
   GExprDummy.ImmVal  := 0;
   GExprDummy.TypeIdx := TY_UNKNOWN;
@@ -1202,6 +1208,7 @@ Procedure EmitRuntime;
 Begin
   EmitExprRuntime;
   EmitIORuntime;
+  EmitIfRuntime;
 End;
 
 { EmitClose : terminer le fichier ASM (DOS exit, runtime, DATA, END) }
@@ -1952,8 +1959,15 @@ Begin
   { Mot-cle de controle : stub pour les TODOs futurs }
   If CurToken.Kind = TK_KEYWORD Then
   Begin
-    { if/while/repeat/for/return/function/goto/break/do : stubs }
-    If (CurToken.Val = 'if') Or (CurToken.Val = 'while') Or
+    { TODO 13 : if / elseif / else }
+    If CurToken.Val = 'if' Then
+    Begin
+      ParseIfStmt;
+      Exit;
+    End;
+
+    { while/repeat/for/return/function/goto/break/do : stubs }
+    If (CurToken.Val = 'while') Or
        (CurToken.Val = 'repeat') Or (CurToken.Val = 'for') Or
        (CurToken.Val = 'return') Or (CurToken.Val = 'function') Or
        (CurToken.Val = 'goto') Or (CurToken.Val = 'break') Or
@@ -1962,7 +1976,7 @@ Begin
       If Opts.Warnings Then
         WarnMsg(CurToken.Val + ' : stub, sera implemente dans un TODO futur');
       { Sauter le bloc jusqu a end/until pour ne pas bloquer le parser }
-      If (CurToken.Val = 'if') Or (CurToken.Val = 'while') Or
+      If (CurToken.Val = 'while') Or
          (CurToken.Val = 'for') Or (CurToken.Val = 'function') Or
          (CurToken.Val = 'do') Then
       Begin
@@ -4034,6 +4048,171 @@ Begin
   EmitInstr('RET');
   EmitBlankLine;
 End;
+
+{ ============================================================
+  TODO 13 - IF / ELSEIF / ELSE [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseIfStmt : parser un if / elseif / else / end ----------- }
+{ Syntaxe Lua :                                                      }
+{   if cond then stmts (elseif cond then stmts)* [else stmts] end   }
+{ Verite Lua : nil et false sont faux ; tout le reste est vrai       }
+{   (y compris 0 et la chaine vide !)                                }
+{ Strategie de labels :                                              }
+{   lbl_end  = label de sortie globale (apres tout le bloc if)       }
+{   lbl_next = label du prochain elseif/else                         }
+
+{ EmitTruthTest : generer le test de verite Lua pour AX               }
+{ En Lua, seuls nil et false sont faux. 0, '' et tables sont vrais.   }
+{ Si le type statique est number/string/table/function : toujours vrai }
+{ Si le type est boolean ou nil : CMP AX,0 / JE LblFalse              }
+{ Si le type est inconnu : CMP AX,0 / JE LblFalse (best effort)       }
+Procedure EmitTruthTest(TypeIdx : Integer; Const LblFalse : TString);
+Begin
+  If (TypeIdx = TY_IDX_NUMBER) Or (TypeIdx = TY_IDX_STRING) Or
+     (TypeIdx = TY_IDX_TABLE) Or (TypeIdx = TY_IDX_FUNCTION) Then
+  Begin
+    { Type toujours vrai en Lua (meme 0 et '' !) : pas de saut }
+    EmitComment('type connu toujours vrai en Lua, pas de test');
+  End
+  Else
+  Begin
+    { nil, boolean ou inconnu : CMP AX,0 / JE }
+    EmitInstrAB('CMP', 'AX', '0');
+    EmitInstrA('JE', LblFalse);
+  End;
+End;
+
+Procedure ParseIfStmt;
+Var
+  E        : TExprVal;
+  NS       : TString;
+  LblEnd   : TString;
+  LblNext  : TString;
+Begin
+  Inc(IfCount);
+  Str(IfCount, NS);
+  LblEnd := LUA_LBL_PFX + 'ENDIF_' + NS;
+
+  { Consommer 'if' }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'if') Then
+    ParserAdvance
+  Else
+  Begin
+    CompileError('"if" attendu');
+    Exit;
+  End;
+
+  EmitBlankLine;
+  EmitComment('--- if (n.' + NS + ') ---');
+
+  { Evaluer la condition }
+  ParseExpr(E);
+  ExprFlushToAX(E);
+
+  { Generer le test de verite Lua selon le type }
+  LblNext := LUA_LBL_PFX + 'ELIF_' + NS + '_1';
+  EmitTruthTest(E.TypeIdx, LblNext);
+
+  { Consommer 'then' }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'then') Then
+    ParserAdvance
+  Else
+    CompileError('"then" attendu apres la condition if');
+
+  { Parser le bloc then }
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_KEYWORD) And
+             ((CurToken.Val = 'elseif') Or
+              (CurToken.Val = 'else') Or
+              (CurToken.Val = 'end'))) Do
+    ParseStmt;
+
+  EmitInstrA('JMP', LblEnd);
+  EmitLabel(LblNext);
+
+  { --- Branches elseif --- }
+  While (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'elseif') Do
+  Begin
+    ParserAdvance; { consomme 'elseif' }
+    Inc(IfCount);
+    Str(IfCount, NS);
+    LblNext := LUA_LBL_PFX + 'ELIF_' + NS + '_1';
+
+    EmitComment('--- elseif ---');
+
+    { Evaluer la condition elseif }
+    ParseExpr(E);
+    ExprFlushToAX(E);
+    EmitTruthTest(E.TypeIdx, LblNext);
+
+    { Consommer 'then' }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'then') Then
+      ParserAdvance
+    Else
+      CompileError('"then" attendu apres la condition elseif');
+
+    { Parser le bloc elseif }
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_KEYWORD) And
+               ((CurToken.Val = 'elseif') Or
+                (CurToken.Val = 'else') Or
+                (CurToken.Val = 'end'))) Do
+      ParseStmt;
+
+    EmitInstrA('JMP', LblEnd);
+    EmitLabel(LblNext);
+  End;
+
+  { --- Branche else facultative --- }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'else') Then
+  Begin
+    ParserAdvance; { consomme 'else' }
+    EmitComment('--- else ---');
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_KEYWORD) And
+               (CurToken.Val = 'end')) Do
+      ParseStmt;
+  End;
+
+  { Consommer 'end' }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'end') Then
+    ParserAdvance
+  Else
+    CompileError('"end" attendu pour fermer le bloc if');
+
+  EmitLabel(LblEnd);
+  EmitComment('--- fin if ---');
+  EmitBlankLine;
+End;
+
+{ ---- EmitIfRuntime : routines runtime pour if (TODO 13) --------- }
+{ _LUART_TRUTHY : AX = valeur quelconque -> AX = 0 (faux) ou 1     }
+{   En Lua : nil (AX=0) et false (AX=0) -> faux, tout le reste vrai }
+{   Puisque nil et false sont representes par 0, un simple           }
+{   CMP AX,0 suffit dans le code genere. Cette routine est un       }
+{   placeholder pour des types complexes futurs.                     }
+Procedure EmitIfRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=== Routines runtime TODO 13 (if/elseif/else) ===');
+  EmitBlankLine;
+
+  { _LUART_TRUTHY : AX = valeur -> AX = 0|1 (booleen Lua) }
+  { En Lua : seuls nil et false sont faux. 0 est VRAI.      }
+  { nil et false sont representes par AX=0 en interne.       }
+  { Donc : si AX = 0 -> faux (AX=0), sinon -> vrai (AX=1). }
+  EmitLabel(LUA_RT_PFX + 'TRUTHY');
+  EmitInstrAB('CMP', 'AX', '0');
+  EmitInstrA('JE', LUA_RT_PFX + 'TRUTHY_F');
+  EmitInstrAB('MOV', 'AX', '1');
+  EmitInstr('RET');
+  EmitLabel(LUA_RT_PFX + 'TRUTHY_F');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstr('RET');
+  EmitBlankLine;
+End;
+
 { Emettre les sous-programmes en ASM 8086 : CONCAT, STRCMP,       }
 { POW, STRLEN, PRINTSTR, PRINTNL, NUMTOSTR, PRINTNUM, etc.       }
 Procedure EmitExprRuntime;
