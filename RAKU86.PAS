@@ -405,7 +405,7 @@
               Un seul fichier source a la fois, les modules importes
               sont declares comme externes
 
-  TODO 24 - RUNTIME MINIMAL
+  TODO 24 - RUNTIME MINIMAL [IMPLEMENTE]
             _RKRT_PRINT(BX=handle, SI=msg, CX=len) : INT 21h AH=40h
             _RKRT_PRINTLN : _RKRT_PRINT + CR+LF via _RK_CRLF DB 13,10,0
             _RKRT_STRLEN(SI=str) : compter octets jusqu a 0 -> AX
@@ -1076,6 +1076,9 @@ Procedure ParseUseStmt;                                        Forward;
 Procedure ParseNeedStmt;                                       Forward;
 Procedure EmitModuleDirectives;                                Forward;
 
+{ Forward declarations TODO 24 - Runtime minimal }
+Procedure EmitMinimalRuntime;                                  Forward;
+
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
   ============================================================ }
@@ -1429,6 +1432,7 @@ Begin
   EmitClassRuntime;
   EmitGrammarRuntime;
   EmitErrorRuntime;
+  EmitMinimalRuntime;
 End;
 
 Procedure EmitDataSeg;
@@ -1668,6 +1672,8 @@ Begin
   DataAdd('_RKK_WARNING',    DK_STR, 0, 'WARNING: ');
   { Modules et use (TODO 23) }
   DataAdd('_RKK_NOMODULE',   DK_STR, 0, 'Module not found: ');
+  { Runtime minimal (TODO 24) }
+  DataAdd('_RKK_PANIC',      DK_STR, 0, 'PANIC: ');
 End;
 
 { ============================================================
@@ -10215,6 +10221,100 @@ Begin
   { Emettre EXTRN pour les modules importes (commentaire informatif) }
   For I := 0 To ModuleCount - 1 Do
     EmitComment('EXTRN <' + ModuleTab[I] + '> (module importe)');
+End;
+
+{ ============================================================
+  TODO 24 - RUNTIME MINIMAL [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- EmitMinimalRuntime : routines complementaires ------------ }
+{ Emet les routines du runtime minimal non couvertes par les      }
+{ modules precedents :                                            }
+{   _RKRT_STRTONUM : conversion ASCII -> entier (atoi)            }
+{   _RKRT_PANIC    : afficher message d erreur fatale et terminer }
+Procedure EmitMinimalRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=== Runtime minimal (TODO 24) ===');
+  EmitBlankLine;
+
+  { _RKRT_STRTONUM : SI = ptr chaine ASCIIZ -> AX = entier
+    Supporte signe negatif, ignore les espaces en tete.
+    Exemple : "-42" -> AX = -42, "123" -> AX = 123 }
+  EmitRaw('_RKRT_STRTONUM PROC NEAR');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('PUSH', 'CX');
+  EmitInstr('PUSH', 'DX');
+  EmitInstr('XOR', 'AX, AX');
+  EmitInstr('XOR', 'CX, CX');       { CX = signe (0=positif, 1=negatif) }
+  EmitInstr('XOR', 'BX, BX');
+  { Sauter les espaces en tete }
+  EmitRaw('_RKRT_SN_SKIP:');
+  EmitInstr('MOV', 'BL, [SI]');
+  EmitInstr('CMP', 'BL, 32');
+  EmitInstr('JNE', '_RKRT_SN_SIGN');
+  EmitInstr('INC', 'SI');
+  EmitInstr('JMP', '_RKRT_SN_SKIP');
+  { Verifier le signe }
+  EmitRaw('_RKRT_SN_SIGN:');
+  EmitInstr('CMP', 'BL, 45');       { '-' }
+  EmitInstr('JNE', '_RKRT_SN_PLUS');
+  EmitInstr('MOV', 'CX, 1');
+  EmitInstr('INC', 'SI');
+  EmitInstr('JMP', '_RKRT_SN_LOOP');
+  EmitRaw('_RKRT_SN_PLUS:');
+  EmitInstr('CMP', 'BL, 43');       { '+' }
+  EmitInstr('JNE', '_RKRT_SN_LOOP');
+  EmitInstr('INC', 'SI');
+  { Boucle de conversion }
+  EmitRaw('_RKRT_SN_LOOP:');
+  EmitInstr('MOV', 'BL, [SI]');
+  EmitInstr('CMP', 'BL, 48');       { '0' }
+  EmitInstr('JB', '_RKRT_SN_DONE');
+  EmitInstr('CMP', 'BL, 57');       { '9' }
+  EmitInstr('JA', '_RKRT_SN_DONE');
+  EmitInstr('SUB', 'BL, 48');
+  { AX = AX * 10 + digit }
+  EmitInstr('MOV', 'DX, 10');
+  EmitInstr('IMUL', 'DX');
+  EmitInstr('XOR', 'BH, BH');
+  EmitInstr('ADD', 'AX, BX');
+  EmitInstr('INC', 'SI');
+  EmitInstr('JMP', '_RKRT_SN_LOOP');
+  { Appliquer le signe }
+  EmitRaw('_RKRT_SN_DONE:');
+  EmitInstr('TEST', 'CX, CX');
+  EmitInstr('JZ', '_RKRT_SN_END');
+  EmitInstr('NEG', 'AX');
+  EmitRaw('_RKRT_SN_END:');
+  EmitInstr('POP', 'DX');
+  EmitInstr('POP', 'CX');
+  EmitInstr('POP', 'BX');
+  EmitInstr('RET', '');
+  EmitRaw('_RKRT_STRTONUM ENDP');
+  EmitBlankLine;
+
+  { _RKRT_PANIC : SI = ptr message ASCIIZ
+    Affiche le message sur STDERR puis termine avec code 1.
+    Difference avec _RKRT_DIE : pas de handler d exception, arret immediat. }
+  EmitRaw('_RKRT_PANIC PROC NEAR');
+  EmitInstr('PUSH', 'SI');
+  EmitInstr('CALL', '_RKRT_STRLEN');
+  { CX contient la longueur apres STRLEN }
+  EmitInstr('POP', 'DX');            { DX = ptr message }
+  EmitInstr('MOV', 'AH, 40h');
+  EmitInstr('MOV', 'BX, 2');         { handle STDERR }
+  EmitInstr('INT', '21h');
+  { Newline }
+  EmitInstr('MOV', 'AH, 40h');
+  EmitInstr('MOV', 'BX, 2');
+  EmitInstr('MOV', 'DX, OFFSET _RK_CRLF');
+  EmitInstr('MOV', 'CX, 2');
+  EmitInstr('INT', '21h');
+  { Terminer avec code erreur 1 }
+  EmitInstr('MOV', 'AX, 4C01h');
+  EmitInstr('INT', '21h');
+  EmitRaw('_RKRT_PANIC ENDP');
 End;
 
 { ============================================================
