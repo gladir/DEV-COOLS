@@ -176,7 +176,7 @@
             Longueur # : CALL _LUART_LEN(AX=val) -> AX=longueur
             Negation unaire - : NEG AX
 
-  TODO 12 - ENTREES/SORTIES (print, io)
+  TODO 12 - ENTREES/SORTIES (print, io) [IMPLEMENTE]
             print(args) : affiche chaque argument converti en chaine + \t entre args
               Detection du type a la compilation -> _LUART_NUMTOSTR ou chaine directe
               Separateur tabulation entre arguments ; \n final
@@ -794,6 +794,10 @@ Procedure ParseCallArgs(SIdx : Integer; Var Res : TExprVal); Forward;
 Procedure EmitBuiltinCall(SIdx : Integer; Var Res : TExprVal); Forward;
 Procedure EmitExprRuntime; Forward;
 
+{ Entrees/Sorties (TODO 12) }
+Procedure EmitIOBuiltin(Const FuncName : TString; Var Res : TExprVal); Forward;
+Procedure EmitIORuntime; Forward;
+
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
   ============================================================ }
@@ -1197,6 +1201,7 @@ End;
 Procedure EmitRuntime;
 Begin
   EmitExprRuntime;
+  EmitIORuntime;
 End;
 
 { EmitClose : terminer le fichier ASM (DOS exit, runtime, DATA, END) }
@@ -1332,6 +1337,17 @@ Begin
   DataAdd(LUA_ERR_PFX + 'MSG', DK_STR, 0, 'LUA ERROR: ');
   { Espace pour separateur print }
   DataAdd('_LUA_SPACE', DK_STR, 0, ' ');
+  { TODO 12 : Buffer pour io.read (130 octets : 1 max + 1 len + 128 data) }
+  DataAddBuffer('_LUA_IOREADBUF', 130);
+  { TODO 12 : Chaines pour io.read modes }
+  DataAdd('_LUA_IO_STAR_L', DK_STR, 0, '*l');
+  DataAdd('_LUA_IO_STAR_N', DK_STR, 0, '*n');
+  DataAdd('_LUA_IO_STAR_A', DK_STR, 0, '*a');
+  { TODO 12 : Chaine de type pour type() retournant 'string' }
+  DataAdd(LUA_RT_PFX + 'TSTR', DK_STR, 0, 'string');
+  DataAdd(LUA_RT_PFX + 'TBOOL', DK_STR, 0, 'boolean');
+  DataAdd(LUA_RT_PFX + 'TTBL', DK_STR, 0, 'table');
+  DataAdd(LUA_RT_PFX + 'TFUN', DK_STR, 0, 'function');
 End;
 
 { ---- ExprMakeImm : construire une valeur immediate ---------- }
@@ -1401,15 +1417,13 @@ Begin
     TK_FLOAT   : LitEvalFloat(T, Res);
     TK_STRING  :
     Begin
-      Res.Kind    := EK_MEM;
+      Res.Kind    := EK_AX;
       Res.ImmVal  := 0;
       Res.TypeIdx := TY_IDX_STRING;
       Res.SymIdx  := -1;
       Res.Offset  := 0;
-      { Stocker la chaine dans le segment DATA. Le label est cree/     }
-      { reutilise par DataAddStr. Le code generation (TODO 10+) pourra }
-      { retrouver le label via une recherche dans DataTab par contenu. }
-      DataAddStr(T.Val);
+      { Stocker la chaine dans le segment DATA et emettre MOV AX, OFFSET lbl }
+      EmitInstrAB('MOV', 'AX', 'OFFSET ' + DataAddStr(T.Val));
     End;
     TK_KEYWORD :
     Begin
@@ -1862,6 +1876,23 @@ Begin
     Begin
       ParseAssignment(VName);
       { Consommer ';' optionnel }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+      Exit;
+    End
+    { TODO 12 : io.write / io.read / io.open / io.close }
+    Else If (VName = 'io') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
+    Begin
+      ParserAdvance; { consomme '.' }
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        VName := CurToken.Val; { write, read, open, close }
+        ParserAdvance; { consomme le nom de methode }
+        EmitIOBuiltin(VName, E);
+      End
+      Else
+        CompileError('nom de fonction attendu apres "io."');
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
         ParserAdvance;
       Exit;
@@ -3098,25 +3129,44 @@ Begin
     Begin
       { Resoudre la variable dans SymTab }
       VName := CurToken.Val;
-      SIdx := SymFind(VName);
-      If SIdx < 0 Then
-        { Variable non declaree : creer implicitement comme globale }
-        SIdx := EnsureGlobalVar(VName);
-      Res.Kind    := EK_MEM;
-      Res.ImmVal  := 0;
-      If SIdx >= 0 Then
+      ParserAdvance;
+      { TODO 12 : intercepter io.write / io.read dans les expressions }
+      If (VName = 'io') And
+         (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
       Begin
-        Res.TypeIdx := SymTab[SIdx].TypeIdx;
-        Res.Offset  := SymTab[SIdx].Offset;
-        Res.SymIdx  := SIdx;
+        ParserAdvance; { consomme '.' }
+        If CurToken.Kind = TK_IDENT Then
+        Begin
+          FldName := CurToken.Val;
+          ParserAdvance; { consomme write/read/open/close }
+          EmitIOBuiltin(FldName, Res);
+        End
+        Else
+        Begin
+          CompileError('nom de fonction attendu apres "io."');
+          ExprMakeNone(Res);
+        End;
       End
       Else
       Begin
-        Res.TypeIdx := TY_UNKNOWN;
-        Res.Offset  := 0;
-        Res.SymIdx  := -1;
+        SIdx := SymFind(VName);
+        If SIdx < 0 Then
+          SIdx := EnsureGlobalVar(VName);
+        Res.Kind    := EK_MEM;
+        Res.ImmVal  := 0;
+        If SIdx >= 0 Then
+        Begin
+          Res.TypeIdx := SymTab[SIdx].TypeIdx;
+          Res.Offset  := SymTab[SIdx].Offset;
+          Res.SymIdx  := SIdx;
+        End
+        Else
+        Begin
+          Res.TypeIdx := TY_UNKNOWN;
+          Res.Offset  := 0;
+          Res.SymIdx  := -1;
+        End;
       End;
-      ParserAdvance;
     End;
     TK_PUNCT :
     Begin
@@ -3810,7 +3860,180 @@ Begin
     ParserAdvance;
 End;
 
-{ ---- EmitExprRuntime : routines runtime pour expressions ------ }
+{ ============================================================
+  TODO 12 - ENTREES/SORTIES (print, io) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- EmitIOBuiltin : gerer io.write, io.read, io.open, io.close }
+{ Attend '(' comme prochain token.                                  }
+Procedure EmitIOBuiltin(Const FuncName : TString; Var Res : TExprVal);
+Var
+  Arg      : TExprVal;
+  ArgCount : Integer;
+  NS       : TString;
+Begin
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    ParserAdvance { consomme '(' }
+  Else
+  Begin
+    CompileError('"(" attendue pour appel de io.' + FuncName);
+    ExprMakeNone(Res);
+    Exit;
+  End;
+
+  If FuncName = 'write' Then
+  Begin
+    { io.write(a, b, ...) : ecrire chaque argument SANS separateur ni \n }
+    ArgCount := 0;
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+    Begin
+      ParseExpr(Arg);
+      ExprFlushToAX(Arg);
+      { Selon le type : chaine ou nombre, ecrire directement }
+      If Arg.TypeIdx = TY_IDX_STRING Then
+        EmitInstrA('CALL', LUA_RT_PFX + 'PRINTSTR')
+      Else If (Arg.TypeIdx = TY_IDX_NUMBER) Or
+              (Arg.TypeIdx = TY_IDX_BOOLEAN) Then
+        EmitInstrA('CALL', LUA_RT_PFX + 'PRINTNUM')
+      Else If Arg.TypeIdx = TY_IDX_NIL Then
+        EmitInstrA('CALL', LUA_RT_PFX + 'PRINTNIL')
+      Else
+        EmitInstrA('CALL', LUA_RT_PFX + 'PRINTNUM');
+      Inc(ArgCount);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance
+      Else
+        Break;
+    End;
+    { Pas de retour a la ligne : difference avec print() }
+    Res.Kind    := EK_NONE;
+    Res.TypeIdx := TY_IDX_NIL;
+    Res.SymIdx  := -1;
+  End
+  Else If FuncName = 'read' Then
+  Begin
+    { io.read("*l") -> lire une ligne, retourner ptr chaine           }
+    { io.read("*n") -> lire une ligne + convertir en nombre           }
+    { io.read("*a") -> stub (lecture fichier entier non supportee)    }
+    { io.read() sans arg -> equivalent a io.read("*l")                }
+    If (CurToken.Kind <> TK_EOF) And
+       Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
+    Begin
+      ParseExpr(Arg);
+      ExprFlushToAX(Arg);
+      { Comparer le mode : AX = ptr chaine }
+      { Verifier si c est "*n" }
+      EmitInstrA('PUSH', 'AX');
+      EmitInstrA('CALL', LUA_RT_PFX + 'READLINE');
+      EmitInstrA('POP', 'BX');
+      { Comparer BX avec ptr vers "*n" }
+      EmitInstrA('PUSH', 'AX');        { sauver le ptr resultat }
+      EmitInstrAB('MOV', 'SI', 'BX');  { SI = ptr mode }
+      EmitInstrAB('MOV', 'DI', 'OFFSET _LUA_IO_STAR_N');
+      EmitInstrA('CALL', LUA_RT_PFX + 'STRCMP');
+      EmitInstrA('POP', 'AX');         { restaurer le ptr resultat }
+      NS := LabelGen;
+      EmitInstrA('JNE', NS);           { si pas "*n", garder la chaine }
+      { Mode "*n" : convertir en nombre }
+      EmitInstrA('CALL', LUA_RT_PFX + 'STRTONUM');
+      EmitLabel(NS);
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_UNKNOWN;
+      Res.SymIdx  := -1;
+    End
+    Else
+    Begin
+      { io.read() sans argument : lire une ligne }
+      EmitInstrA('CALL', LUA_RT_PFX + 'READLINE');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_STRING;
+      Res.SymIdx  := -1;
+    End;
+  End
+  Else If (FuncName = 'open') Or (FuncName = 'close') Then
+  Begin
+    { Stubs : io.open et io.close non supportes en mode DOS simple }
+    If Opts.Warnings Then
+      WarnMsg('io.' + FuncName + ' non supporte (stub)');
+    { Parser et ignorer les arguments }
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+    Begin
+      ParseExpr(Arg);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance
+      Else
+        Break;
+    End;
+    ExprMakeNone(Res);
+    Res.TypeIdx := TY_IDX_NIL;
+  End
+  Else
+  Begin
+    { Fonction io.* inconnue }
+    If Opts.Warnings Then
+      WarnMsg('io.' + FuncName + ' non reconnu');
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+    Begin
+      ParseExpr(Arg);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance
+      Else
+        Break;
+    End;
+    ExprMakeNone(Res);
+    Res.TypeIdx := TY_IDX_NIL;
+  End;
+
+  { Consommer ')' }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance;
+End;
+
+{ ---- EmitIORuntime : routines runtime pour E/S (TODO 12) ------- }
+{ _LUART_READLINE : lire une ligne au clavier via DOS INT 21h      }
+{   AH=0Ah (buffered input). Resultat : AX = ptr chaine ASCIIZ.   }
+Procedure EmitIORuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=== Routines runtime TODO 12 (io) ===');
+  EmitBlankLine;
+
+  { _LUART_READLINE : lire une ligne clavier -> AX = ptr ASCIIZ }
+  { Utilise le buffer _LUA_IOREADBUF (130 octets : [0]=max, [1]=len, [2..]=data) }
+  EmitLabel(LUA_RT_PFX + 'READLINE');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  { Preparer le buffer : [0] = taille max = 126 }
+  EmitInstrAB('MOV', 'DX', 'OFFSET _LUA_IOREADBUF');
+  EmitInstrAB('MOV', 'BX', 'DX');
+  EmitInstrAB('MOV', 'BYTE PTR [BX]', '126');
+  { Appel DOS INT 21h AH=0Ah : lecture ligne bufferisee }
+  EmitInstrAB('MOV', 'AH', '0Ah');
+  EmitInstr('INT    21h');
+  { [BX+1] = nombre de caracteres lus (sans CR) }
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitInstrAB('MOV', 'CL', '[BX+1]');
+  { Mettre un zero a la fin de la chaine (apres les chars lus) }
+  EmitInstrAB('ADD', 'BX', '2');        { BX pointe vers debut data }
+  EmitInstrAB('ADD', 'BX', 'CX');       { BX pointe apres dernier char }
+  EmitInstrAB('MOV', 'BYTE PTR [BX]', '0');
+  { AX = ptr vers le debut de la chaine (offset +2 dans le buffer) }
+  EmitInstrAB('MOV', 'AX', 'OFFSET _LUA_IOREADBUF');
+  EmitInstrAB('ADD', 'AX', '2');
+  { Emettre un saut de ligne pour que l affichage soit propre }
+  EmitInstrA('PUSH', 'AX');
+  EmitInstrA('CALL', LUA_RT_PFX + 'PRINTNL');
+  EmitInstrA('POP', 'AX');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+End;
 { Emettre les sous-programmes en ASM 8086 : CONCAT, STRCMP,       }
 { POW, STRLEN, PRINTSTR, PRINTNL, NUMTOSTR, PRINTNUM, etc.       }
 Procedure EmitExprRuntime;
