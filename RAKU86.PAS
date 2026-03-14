@@ -237,7 +237,7 @@
               redo (recommencer iteration courante)
             LoopPush / LoopPop : pile de labels pour last/next
 
-  TODO 15 - TABLEAUX ET LISTES (Array, List)
+  TODO 15 - TABLEAUX ET LISTES (Array, List) [IMPLEMENTE]
             Declaration : my @arr = (1, 2, 3);
               Allocation sur pile ou DATA selon contexte
               Representation : bloc contigu de mots (DW) + compteur
@@ -722,6 +722,9 @@ Var
   RepeatCount : Integer;
   ForCount    : Integer;
 
+  { Compteurs tableaux (TODO 15) }
+  ArrayTempCount : Integer;
+
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
@@ -886,6 +889,13 @@ Procedure ParseUntilStmt;                                         Forward;
 Procedure ParseLoopStmt;                                          Forward;
 Procedure ParseRepeatStmt;                                        Forward;
 Procedure ParseForStmt;                                           Forward;
+
+{ Forward declarations TODO 15 - Tableaux et listes }
+Procedure ParseArrayLiteral(Var Res : TExprVal);                  Forward;
+Procedure ParseArrayMethodCall(SIdx : Integer;
+                               Const MethName : TString;
+                               Var Res : TExprVal);               Forward;
+Procedure EmitArrayRuntime;                                       Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1136,6 +1146,7 @@ Begin
   LoopCount    := 0;
   RepeatCount  := 0;
   ForCount     := 0;
+  ArrayTempCount := 0;
   GKwConsumed  := False;
   CurFnRetLbl  := '';
   CurFnName    := '';
@@ -1198,6 +1209,8 @@ Begin
   EmitRaw('_RKS_MAIN PROC NEAR');
   EmitInstr('MOV', 'AX, @DATA');
   EmitInstr('MOV', 'DS, AX');
+  EmitComment('Init heap pointer');
+  EmitInstr('MOV', 'WORD PTR [_RK_HEAPTOP], OFFSET _RK_HEAP');
   EmitBlankLine;
 End;
 
@@ -1220,6 +1233,7 @@ Begin
   EmitBlankLine;
   EmitBinExprRuntime;
   EmitIORuntime;
+  EmitArrayRuntime;
 End;
 
 Procedure EmitDataSeg;
@@ -1429,6 +1443,8 @@ Begin
   DataAdd('_RK_TMPBUF',  DK_BYTE, 0, '256 DUP(0)');
   DataAdd('_RK_NUMBUF',  DK_BYTE, 0, '12 DUP(0)');
   DataAdd('_RK_IOBUF',   DK_BYTE, 0, '130 DUP(0)');
+  DataAdd('_RK_HEAP',    DK_BYTE, 0, '4096 DUP(0)');
+  DataAdd('_RK_HEAPTOP', DK_WORD, 0, '');
 End;
 
 { ============================================================
@@ -4143,9 +4159,26 @@ Begin
      ((CurToken.Val = '=') Or (CurToken.Val = ':=')) Then
   Begin
     ParserAdvance;   { consommer = ou := }
-    ParseExpr(E);
+    { Pour les tableaux, detecter le litteral (e1, e2, ...) }
+    If (Sigil = '@') And (CurToken.Kind = TK_PUNCT) And
+       (CurToken.Val = '(') Then
+    Begin
+      ParserAdvance;   { consommer '(' }
+      ParseArrayLiteral(E);
+    End
+    Else
+    Begin
+      ParseExpr(E);
+    End;
     ExprFlushToAX(E);
-    If SIdx >= 0 Then ExprStore(SIdx);
+    If SIdx >= 0 Then
+    Begin
+      { Propager le type si scalaire sans annotation de type explicite }
+      If (Sigil = '$') And (TyIdx = TY_IDX_INT) And
+         (E.TypeIdx <> TY_UNKNOWN) And (E.TypeIdx <> TY_IDX_INT) Then
+        SymTab[SIdx].TypeIdx := E.TypeIdx;
+      ExprStore(SIdx);
+    End;
   End;
 
   { Consommer le ; optionnel }
@@ -4184,7 +4217,15 @@ Begin
     Begin
       Op := CurToken.Val;
       ParserAdvance;   { consommer l operateur }
-      ParseExpr(E);
+      { Pour les tableaux, detecter le litteral (e1, e2, ...) }
+      If (Sigil = '@') And (Op = '=') And
+         (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        ParserAdvance;   { consommer '(' }
+        ParseArrayLiteral(E);
+      End
+      Else
+        ParseExpr(E);
       ExprFlushToAX(E);
 
       If Op = '=' Then
@@ -4351,7 +4392,9 @@ End;
 
 { ---- ParseArrayIndex : acces @arr[$i] -> element -------------- }
 { SIdx = index du symbole @arr dans SymTab.                       }
-{ Charge la base du tableau, evalue l index, calcule offset.      }
+{ Le variable contient un pointeur vers le bloc heap :            }
+{   [count:DW] [e0:DW] [e1:DW] ...                               }
+{ Charge le pointeur, evalue l index, calcule offset = 2+idx*2.  }
 Procedure ParseArrayIndex(SIdx : Integer;
                           Var Res : TExprVal);
 Var
@@ -4368,25 +4411,26 @@ Begin
     ParserAdvance
   Else
     CompileError(''']'' attendue apres l''index du tableau');
-  { AX = index. Calculer offset = index * 2 }
+  { AX = index. Calculer offset = index * 2 + 2 (skip count) }
   EmitInstr('SHL', 'AX, 1');
-  { Charger la base du tableau dans BX }
+  EmitInstr('ADD', 'AX, 2');
+  { Charger le pointeur tableau dans BX }
   If (SIdx >= 0) And (SIdx < SymCount) Then
   Begin
     If (SymTab[SIdx].Cat = SC_MY) Or (SymTab[SIdx].Cat = SC_PARAM) Or
        (SymTab[SIdx].Cat = SC_HAS) Then
     Begin
       Str(SymTab[SIdx].Offset, S);
-      EmitInstr('LEA', 'BX, [BP-' + S + ']');
+      EmitInstr('MOV', 'BX, [BP-' + S + ']');
     End
     Else If (SymTab[SIdx].Cat = SC_OUR) Or (SymTab[SIdx].Cat = SC_CONST) Then
-      EmitInstr('LEA', 'BX, [' + SymTab[SIdx].MangledName + ']')
+      EmitInstr('MOV', 'BX, [' + SymTab[SIdx].MangledName + ']')
     Else
       EmitInstr('XOR', 'BX, BX');
   End
   Else
     EmitInstr('XOR', 'BX, BX');
-  { BX = base, AX = offset. Charger l element }
+  { BX = heap ptr, AX = offset. Charger l element }
   EmitInstr('ADD', 'BX, AX');
   EmitInstr('MOV', 'AX, [BX]');
   EmitComment('@' + SymTab[SIdx].Name + '[$idx] -> element');
@@ -4502,7 +4546,12 @@ Begin
       Begin
         MethName := CurToken.Val;
         ParserAdvance;   { consommer le nom }
-        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        { Dispatch vers ParseArrayMethodCall si type tableau }
+        If Res.TypeIdx = TY_IDX_ARRAY Then
+        Begin
+          ParseArrayMethodCall(-1, MethName, Res);
+        End
+        Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
         Begin
           { Appel de methode .method(args) }
           ParseMethodCall(MethName, Res);
@@ -4582,11 +4631,566 @@ Begin
 End;
 
 { ============================================================
-  TODO 11 - EXPRESSIONS BINAIRES [IMPLEMENTE]
-  EmitBinExprRuntime : routines runtime pour les expressions
-    binaires : _RKRT_CONCAT, _RKRT_STRREPEAT, _RKRT_STRCMP,
-    _RKRT_POWER
+  TODO 15 - TABLEAUX ET LISTES [IMPLEMENTE]
+  ParseArrayLiteral, ParseArrayMethodCall, EmitArrayRuntime
   ============================================================ }
+
+{ ---- ParseArrayLiteral : parser (e1, e2, ...) -> heap array --- }
+{ Alloue un bloc sur le heap _RK_HEAP avec layout :               }
+{   [count:DW] [elem0:DW] [elem1:DW] ... [elemN:DW]              }
+{ Retourne le pointeur vers le bloc dans AX.                      }
+Procedure ParseArrayLiteral(Var Res : TExprVal);
+Var
+  Elems : Array[0..63] Of LongInt;
+  ECount : Integer;
+  I      : Integer;
+  E      : TExprVal;
+  AllImm : Boolean;
+  Lbl    : TString;
+Begin
+  ECount := 0;
+  AllImm := True;
+  { '(' deja consomme par l appelant }
+  If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
+  Begin
+    Repeat
+      ParseExpr(E);
+      If (E.Kind = EK_IMM) And AllImm And (ECount < 64) Then
+        Elems[ECount] := E.ImmVal
+      Else
+      Begin
+        { Si on avait des immediats avant, les flusher sur la pile }
+        If AllImm And (ECount > 0) Then
+        Begin
+          For I := 0 To ECount - 1 Do
+          Begin
+            EmitInstr('MOV', 'AX, ' + IntToStr(Elems[I]));
+            EmitPush('AX');
+          End;
+        End;
+        AllImm := False;
+        ExprFlushToAX(E);
+        EmitPush('AX');
+      End;
+      Inc(ECount);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance
+      Else
+        Break;
+    Until CurToken.Kind = TK_EOF;
+  End;
+  { Consommer ')' }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance
+  Else
+    CompileError(''')'' attendue apres liste tableau');
+  { Allouer le bloc sur le heap }
+  Inc(ArrayTempCount);
+  Lbl := '_RKL_AT' + IntToStr(ArrayTempCount);
+  EmitComment('array literal (' + IntToStr(ECount) + ' elems)');
+  { BX = _RK_HEAPTOP (pointeur courant du heap) }
+  EmitInstr('MOV', 'BX, [_RK_HEAPTOP]');
+  { Stocker le nombre d elements comme premier mot }
+  EmitInstr('MOV', 'WORD PTR [BX], ' + IntToStr(ECount));
+  If AllImm Then
+  Begin
+    { Tous les elements sont des immediats : ecrire directement }
+    For I := 0 To ECount - 1 Do
+      EmitInstr('MOV', 'WORD PTR [BX+' + IntToStr((I + 1) * 2) + '], ' +
+                IntToStr(Elems[I]));
+  End
+  Else
+  Begin
+    { Les elements sont sur la pile (dans l ordre inverse) }
+    { Depiler dans l ordre inverse pour remplir le tableau }
+    For I := ECount - 1 DownTo 0 Do
+    Begin
+      EmitPop('AX');
+      EmitInstr('MOV', 'WORD PTR [BX+' + IntToStr((I + 1) * 2) + '], AX');
+    End;
+  End;
+  { Avancer le heap pointer }
+  EmitInstr('ADD', 'WORD PTR [_RK_HEAPTOP], ' +
+            IntToStr((ECount + 1) * 2));
+  { AX = pointeur vers le debut du bloc (count) }
+  EmitInstr('MOV', 'AX, BX');
+  Res.Kind    := EK_AX;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_IDX_ARRAY;
+  Res.Offset  := 0;
+End;
+
+{ ---- ParseArrayMethodCall : .method() sur un tableau ----------- }
+{ SIdx = index du symbole @arr, MethName = nom de la methode.      }
+{ AX contient deja le pointeur vers le bloc tableau.               }
+Procedure ParseArrayMethodCall(SIdx : Integer;
+                               Const MethName : TString;
+                               Var Res : TExprVal);
+Var
+  E   : TExprVal;
+Begin
+  Res.Kind    := EK_AX;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_IDX_INT;
+  Res.Offset  := 0;
+  { --- .elems : nombre d elements --- }
+  If MethName = 'elems' Then
+  Begin
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        ParserAdvance;
+    End;
+    EmitInstr('MOV', 'BX, AX');
+    EmitInstr('MOV', 'AX, [BX]');
+    EmitComment('.elems -> count');
+    Exit;
+  End;
+  { --- .end : dernier indice (count - 1) --- }
+  If MethName = 'end' Then
+  Begin
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        ParserAdvance;
+    End;
+    EmitInstr('MOV', 'BX, AX');
+    EmitInstr('MOV', 'AX, [BX]');
+    EmitInstr('DEC', 'AX');
+    EmitComment('.end -> count-1');
+    Exit;
+  End;
+  { --- .push($x) : ajout en fin --- }
+  If MethName = 'push' Then
+  Begin
+    EmitPush('AX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      ParserAdvance;
+      ParseExpr(E);
+      ExprFlushToAX(E);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        ParserAdvance;
+    End;
+    { AX = valeur, pile = arr ptr }
+    EmitInstr('MOV', 'CX, AX');
+    EmitPop('BX');
+    EmitInstr('CALL', '_RKRT_ARRPUSH');
+    EmitComment('.push(val)');
+    Exit;
+  End;
+  { --- .pop : retrait en fin --- }
+  If MethName = 'pop' Then
+  Begin
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        ParserAdvance;
+    End;
+    EmitInstr('MOV', 'BX, AX');
+    EmitInstr('CALL', '_RKRT_ARRPOP');
+    EmitComment('.pop -> AX');
+    Exit;
+  End;
+  { --- .shift : retrait en debut --- }
+  If MethName = 'shift' Then
+  Begin
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        ParserAdvance;
+    End;
+    EmitInstr('MOV', 'BX, AX');
+    EmitInstr('CALL', '_RKRT_ARRSHIFT');
+    EmitComment('.shift -> AX');
+    Exit;
+  End;
+  { --- .unshift($x) : ajout en debut --- }
+  If MethName = 'unshift' Then
+  Begin
+    EmitPush('AX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      ParserAdvance;
+      ParseExpr(E);
+      ExprFlushToAX(E);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        ParserAdvance;
+    End;
+    EmitInstr('MOV', 'CX, AX');
+    EmitPop('BX');
+    EmitInstr('CALL', '_RKRT_ARRUNSHIFT');
+    EmitComment('.unshift(val)');
+    Exit;
+  End;
+  { --- .reverse : inverser le tableau --- }
+  If MethName = 'reverse' Then
+  Begin
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        ParserAdvance;
+    End;
+    EmitInstr('MOV', 'BX, AX');
+    EmitInstr('CALL', '_RKRT_ARRREVERSE');
+    EmitComment('.reverse');
+    Exit;
+  End;
+  { --- .sort : trier le tableau (insertion sort) --- }
+  If MethName = 'sort' Then
+  Begin
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        ParserAdvance;
+    End;
+    EmitInstr('MOV', 'BX, AX');
+    EmitInstr('CALL', '_RKRT_ARRSORT');
+    EmitComment('.sort');
+    Exit;
+  End;
+  { --- .join(sep) : joindre en chaine --- }
+  If MethName = 'join' Then
+  Begin
+    EmitPush('AX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      ParserAdvance;
+      ParseExpr(E);
+      ExprFlushToAX(E);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        ParserAdvance;
+    End;
+    { AX = sep ptr, pile = arr ptr }
+    EmitInstr('MOV', 'SI, AX');
+    EmitPop('BX');
+    EmitInstr('CALL', '_RKRT_ARRJOIN');
+    EmitComment('.join(sep) -> AX=str');
+    Res.TypeIdx := TY_IDX_STR;
+    Exit;
+  End;
+  { --- .grep / .map : stubs --- }
+  If (MethName = 'grep') Or (MethName = 'map') Then
+  Begin
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      ParserAdvance;
+      { Consommer les arguments sans les traiter }
+      If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
+      Begin
+        ParseExpr(E);
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        ParserAdvance;
+    End;
+    EmitComment('.' + MethName + ' (stub)');
+    Res.TypeIdx := TY_IDX_ARRAY;
+    Exit;
+  End;
+  { Methode inconnue : delegation a ParseMethodCall generique }
+  EmitPush('AX');
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    ParseMethodCall(MethName, Res)
+  Else
+  Begin
+    EmitComment('.attr ' + MethName + ' (array stub)');
+  End;
+End;
+
+{ ---- EmitArrayRuntime : routines runtime pour les tableaux ----- }
+{ _RKRT_ARRPUSH  : BX=arr, CX=val -> ajouter en fin               }
+{ _RKRT_ARRPOP   : BX=arr -> AX=dernier element (retrait)         }
+{ _RKRT_ARRSHIFT : BX=arr -> AX=premier element (retrait)         }
+{ _RKRT_ARRUNSHIFT: BX=arr, CX=val -> inserer en debut            }
+{ _RKRT_ARRREVERSE: BX=arr -> inverser en place                   }
+{ _RKRT_ARRSORT  : BX=arr -> tri insertion en place                }
+{ _RKRT_ARRJOIN  : BX=arr, SI=sep -> AX=STRBUF ptr                }
+Procedure EmitArrayRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=== Runtime TABLEAUX (TODO 15) ===');
+  EmitBlankLine;
+
+  { _RKRT_ARRPUSH : BX=arr ptr, CX=value -> append }
+  EmitComment('--- _RKRT_ARRPUSH : BX=arr, CX=val -> push ---');
+  EmitRaw('_RKRT_ARRPUSH PROC NEAR');
+  EmitRaw('        PUSH  SI');
+  EmitRaw('        MOV   SI, [BX]');         { SI = count }
+  EmitRaw('        INC   WORD PTR [BX]');    { count++ }
+  EmitRaw('        SHL   SI, 1');            { SI = count*2 }
+  EmitRaw('        ADD   SI, 2');            { skip count word }
+  EmitRaw('        ADD   SI, BX');           { SI = addr of new slot }
+  EmitRaw('        MOV   [SI], CX');         { store value }
+  EmitRaw('        POP   SI');
+  EmitRaw('        RET');
+  EmitRaw('_RKRT_ARRPUSH ENDP');
+  EmitBlankLine;
+
+  { _RKRT_ARRPOP : BX=arr ptr -> AX=last element }
+  EmitComment('--- _RKRT_ARRPOP : BX=arr -> AX=last ---');
+  EmitRaw('_RKRT_ARRPOP PROC NEAR');
+  EmitRaw('        PUSH  SI');
+  EmitRaw('        MOV   SI, [BX]');         { SI = count }
+  EmitRaw('        TEST  SI, SI');
+  EmitRaw('        JZ    _RKRT_AP_Z');
+  EmitRaw('        DEC   WORD PTR [BX]');    { count-- }
+  EmitRaw('        SHL   SI, 1');            { SI = count*2 }
+  EmitRaw('        MOV   AX, [BX+SI]');      { AX = last elem }
+  EmitRaw('        POP   SI');
+  EmitRaw('        RET');
+  EmitRaw('_RKRT_AP_Z:');
+  EmitRaw('        XOR   AX, AX');
+  EmitRaw('        POP   SI');
+  EmitRaw('        RET');
+  EmitRaw('_RKRT_ARRPOP ENDP');
+  EmitBlankLine;
+
+  { _RKRT_ARRSHIFT : BX=arr ptr -> AX=first element (remove) }
+  EmitComment('--- _RKRT_ARRSHIFT : BX=arr -> AX=first ---');
+  EmitRaw('_RKRT_ARRSHIFT PROC NEAR');
+  EmitRaw('        PUSH  SI');
+  EmitRaw('        PUSH  DI');
+  EmitRaw('        PUSH  CX');
+  EmitRaw('        MOV   CX, [BX]');         { CX = count }
+  EmitRaw('        TEST  CX, CX');
+  EmitRaw('        JZ    _RKRT_AS_Z');
+  EmitRaw('        MOV   AX, [BX+2]');       { AX = first elem }
+  EmitRaw('        DEC   WORD PTR [BX]');    { count-- }
+  EmitRaw('        DEC   CX');
+  EmitRaw('        LEA   DI, [BX+2]');       { DI = slot 0 }
+  EmitRaw('        LEA   SI, [BX+4]');       { SI = slot 1 }
+  EmitRaw('        REP   MOVSW');            { shift left }
+  EmitRaw('        POP   CX');
+  EmitRaw('        POP   DI');
+  EmitRaw('        POP   SI');
+  EmitRaw('        RET');
+  EmitRaw('_RKRT_AS_Z:');
+  EmitRaw('        XOR   AX, AX');
+  EmitRaw('        POP   CX');
+  EmitRaw('        POP   DI');
+  EmitRaw('        POP   SI');
+  EmitRaw('        RET');
+  EmitRaw('_RKRT_ARRSHIFT ENDP');
+  EmitBlankLine;
+
+  { _RKRT_ARRUNSHIFT : BX=arr ptr, CX=value -> insert at front }
+  EmitComment('--- _RKRT_ARRUNSHIFT : BX=arr, CX=val -> unshift ---');
+  EmitRaw('_RKRT_ARRUNSHIFT PROC NEAR');
+  EmitRaw('        PUSH  SI');
+  EmitRaw('        PUSH  DI');
+  EmitRaw('        PUSH  CX');
+  EmitRaw('        MOV   AX, [BX]');         { AX = count }
+  EmitRaw('        INC   WORD PTR [BX]');    { count++ }
+  { Shift elements right: from end to start }
+  EmitRaw('        TEST  AX, AX');
+  EmitRaw('        JZ    _RKRT_AU_INS');
+  EmitRaw('        MOV   CX, AX');           { CX = old count }
+  EmitRaw('        MOV   SI, AX');
+  EmitRaw('        SHL   SI, 1');            { SI = count*2 }
+  EmitRaw('        LEA   SI, [BX+SI]');      { SI = ptr to last elem }
+  EmitRaw('        LEA   DI, [SI+2]');       { DI = ptr to new slot }
+  EmitRaw('        STD');
+  EmitRaw('        REP   MOVSW');
+  EmitRaw('        CLD');
+  EmitRaw('_RKRT_AU_INS:');
+  EmitRaw('        POP   CX');
+  EmitRaw('        MOV   [BX+2], CX');       { store new first elem }
+  EmitRaw('        POP   DI');
+  EmitRaw('        POP   SI');
+  EmitRaw('        RET');
+  EmitRaw('_RKRT_ARRUNSHIFT ENDP');
+  EmitBlankLine;
+
+  { _RKRT_ARRREVERSE : BX=arr ptr -> reverse in place }
+  EmitComment('--- _RKRT_ARRREVERSE : BX=arr -> reverse ---');
+  EmitRaw('_RKRT_ARRREVERSE PROC NEAR');
+  EmitRaw('        PUSH  SI');
+  EmitRaw('        PUSH  DI');
+  EmitRaw('        MOV   CX, [BX]');         { CX = count }
+  EmitRaw('        CMP   CX, 2');
+  EmitRaw('        JB    _RKRT_ARV_DN');
+  EmitRaw('        LEA   SI, [BX+2]');       { SI = first elem }
+  EmitRaw('        MOV   DI, CX');
+  EmitRaw('        SHL   DI, 1');
+  EmitRaw('        LEA   DI, [BX+DI]');      { DI = past-last }
+  EmitRaw('        SUB   DI, 2');            { DI = last elem }
+  EmitRaw('_RKRT_ARV_LP:');
+  EmitRaw('        CMP   SI, DI');
+  EmitRaw('        JAE   _RKRT_ARV_DN');
+  EmitRaw('        MOV   AX, [SI]');
+  EmitRaw('        MOV   CX, [DI]');
+  EmitRaw('        MOV   [SI], CX');
+  EmitRaw('        MOV   [DI], AX');
+  EmitRaw('        ADD   SI, 2');
+  EmitRaw('        SUB   DI, 2');
+  EmitRaw('        JMP   _RKRT_ARV_LP');
+  EmitRaw('_RKRT_ARV_DN:');
+  EmitRaw('        POP   DI');
+  EmitRaw('        POP   SI');
+  EmitRaw('        RET');
+  EmitRaw('_RKRT_ARRREVERSE ENDP');
+  EmitBlankLine;
+
+  { _RKRT_ARRSORT : BX=arr ptr -> insertion sort in place }
+  EmitComment('--- _RKRT_ARRSORT : BX=arr -> insertion sort ---');
+  EmitRaw('_RKRT_ARRSORT PROC NEAR');
+  EmitRaw('        PUSH  SI');
+  EmitRaw('        PUSH  DI');
+  EmitRaw('        PUSH  CX');
+  EmitRaw('        PUSH  DX');
+  EmitRaw('        MOV   CX, [BX]');         { CX = count }
+  EmitRaw('        CMP   CX, 2');
+  EmitRaw('        JB    _RKRT_AST_DN');
+  EmitRaw('        MOV   SI, 1');            { SI = i = 1 }
+  EmitRaw('_RKRT_AST_OT:');
+  EmitRaw('        CMP   SI, CX');
+  EmitRaw('        JAE   _RKRT_AST_DN');
+  { DX = arr[i] (key) }
+  EmitRaw('        MOV   DI, SI');
+  EmitRaw('        SHL   DI, 1');
+  EmitRaw('        MOV   DX, [BX+DI+2]');   { DX = key }
+  { j = i }
+  EmitRaw('        MOV   DI, SI');
+  EmitRaw('_RKRT_AST_IN:');
+  EmitRaw('        TEST  DI, DI');
+  EmitRaw('        JZ    _RKRT_AST_PL');
+  { compare arr[j-1] with key }
+  EmitRaw('        MOV   AX, DI');
+  EmitRaw('        DEC   AX');
+  EmitRaw('        SHL   AX, 1');
+  EmitRaw('        ADD   AX, 2');
+  EmitRaw('        PUSH  BX');
+  EmitRaw('        ADD   BX, AX');
+  EmitRaw('        MOV   AX, [BX]');         { AX = arr[j-1] }
+  EmitRaw('        POP   BX');
+  EmitRaw('        CMP   AX, DX');
+  EmitRaw('        JLE   _RKRT_AST_PL');
+  { arr[j] = arr[j-1] }
+  EmitRaw('        PUSH  DI');
+  EmitRaw('        SHL   DI, 1');
+  EmitRaw('        MOV   [BX+DI+2], AX');
+  EmitRaw('        POP   DI');
+  EmitRaw('        DEC   DI');
+  EmitRaw('        JMP   _RKRT_AST_IN');
+  EmitRaw('_RKRT_AST_PL:');
+  { arr[j] = key }
+  EmitRaw('        PUSH  DI');
+  EmitRaw('        SHL   DI, 1');
+  EmitRaw('        MOV   [BX+DI+2], DX');
+  EmitRaw('        POP   DI');
+  EmitRaw('        INC   SI');
+  EmitRaw('        JMP   _RKRT_AST_OT');
+  EmitRaw('_RKRT_AST_DN:');
+  EmitRaw('        POP   DX');
+  EmitRaw('        POP   CX');
+  EmitRaw('        POP   DI');
+  EmitRaw('        POP   SI');
+  EmitRaw('        RET');
+  EmitRaw('_RKRT_ARRSORT ENDP');
+  EmitBlankLine;
+
+  { _RKRT_ARRJOIN : BX=arr ptr, SI=sep ASCIIZ -> AX=STRBUF ptr }
+  EmitComment('--- _RKRT_ARRJOIN : BX=arr, SI=sep -> AX=str ---');
+  EmitRaw('_RKRT_ARRJOIN PROC NEAR');
+  EmitRaw('        PUSH  DI');
+  EmitRaw('        PUSH  CX');
+  EmitRaw('        PUSH  DX');
+  EmitRaw('        PUSH  BX');
+  EmitRaw('        MOV   DI, OFFSET _RK_STRBUF');
+  EmitRaw('        MOV   BYTE PTR [DI], 0');
+  EmitRaw('        MOV   CX, [BX]');         { CX = count }
+  EmitRaw('        TEST  CX, CX');
+  EmitRaw('        JZ    _RKRT_AJ_DN');
+  EmitRaw('        ADD   BX, 2');            { BX = first elem }
+  EmitRaw('        XOR   DX, DX');           { DX = index }
+  EmitRaw('_RKRT_AJ_LP:');
+  { Ajouter le separateur si pas le premier }
+  EmitRaw('        TEST  DX, DX');
+  EmitRaw('        JZ    _RKRT_AJ_NOS');
+  EmitRaw('        PUSH  SI');
+  EmitRaw('        PUSH  CX');
+  EmitRaw('        PUSH  BX');
+  EmitRaw('        CALL  _RKRT_CONCAT');
+  EmitRaw('        POP   BX');
+  EmitRaw('        POP   CX');
+  EmitRaw('        POP   SI');
+  EmitRaw('_RKRT_AJ_NOS:');
+  { Convertir l entier en chaine et concatener }
+  EmitRaw('        PUSH  SI');
+  EmitRaw('        PUSH  CX');
+  EmitRaw('        PUSH  BX');
+  EmitRaw('        PUSH  DX');
+  EmitRaw('        MOV   AX, [BX]');         { AX = elem value }
+  EmitRaw('        CALL  _RKRT_ITOA');
+  { SI = _RK_NUMBUF (resultat de ITOA) }
+  EmitRaw('        MOV   SI, AX');
+  EmitRaw('        CALL  _RKRT_CONCAT');
+  EmitRaw('        POP   DX');
+  EmitRaw('        POP   BX');
+  EmitRaw('        POP   CX');
+  EmitRaw('        POP   SI');
+  EmitRaw('        ADD   BX, 2');
+  EmitRaw('        INC   DX');
+  EmitRaw('        CMP   DX, CX');
+  EmitRaw('        JB    _RKRT_AJ_LP');
+  EmitRaw('_RKRT_AJ_DN:');
+  EmitRaw('        MOV   AX, OFFSET _RK_STRBUF');
+  EmitRaw('        POP   BX');
+  EmitRaw('        POP   DX');
+  EmitRaw('        POP   CX');
+  EmitRaw('        POP   DI');
+  EmitRaw('        RET');
+  EmitRaw('_RKRT_ARRJOIN ENDP');
+  EmitBlankLine;
+
+  { _RKRT_ITOA : AX=entier -> AX=ptr NUMBUF (ASCIIZ) }
+  EmitComment('--- _RKRT_ITOA : AX=int16 -> AX=NUMBUF ---');
+  EmitRaw('_RKRT_ITOA PROC NEAR');
+  EmitRaw('        PUSH  BX');
+  EmitRaw('        PUSH  CX');
+  EmitRaw('        PUSH  DX');
+  EmitRaw('        PUSH  DI');
+  EmitRaw('        LEA   DI, _RK_NUMBUF');
+  EmitRaw('        MOV   BX, AX');
+  EmitRaw('        TEST  AX, AX');
+  EmitRaw('        JNS   _RKRT_IA_POS');
+  EmitRaw('        MOV   BYTE PTR [DI], 2Dh');
+  EmitRaw('        INC   DI');
+  EmitRaw('        NEG   BX');
+  EmitRaw('_RKRT_IA_POS:');
+  EmitRaw('        MOV   AX, BX');
+  EmitRaw('        XOR   CX, CX');
+  EmitRaw('        MOV   BX, 10');
+  EmitRaw('_RKRT_IA_DV:');
+  EmitRaw('        XOR   DX, DX');
+  EmitRaw('        DIV   BX');
+  EmitRaw('        ADD   DL, 30h');
+  EmitRaw('        PUSH  DX');
+  EmitRaw('        INC   CX');
+  EmitRaw('        TEST  AX, AX');
+  EmitRaw('        JNZ   _RKRT_IA_DV');
+  EmitRaw('_RKRT_IA_PP:');
+  EmitRaw('        POP   DX');
+  EmitRaw('        MOV   [DI], DL');
+  EmitRaw('        INC   DI');
+  EmitRaw('        DEC   CX');
+  EmitRaw('        JNZ   _RKRT_IA_PP');
+  EmitRaw('        MOV   BYTE PTR [DI], 0');
+  EmitRaw('        MOV   AX, OFFSET _RK_NUMBUF');
+  EmitRaw('        POP   DI');
+  EmitRaw('        POP   DX');
+  EmitRaw('        POP   CX');
+  EmitRaw('        POP   BX');
+  EmitRaw('        RET');
+  EmitRaw('_RKRT_ITOA ENDP');
+  EmitBlankLine;
+End;
 
 { ---- EmitBinExprRuntime : emettre les routines runtime ---------- }
 { _RKRT_CONCAT  : SI=src ASCIIZ, DI=dst -> appends src au dst     }
@@ -5812,6 +6416,7 @@ Begin
   LoopCount      := 0;
   RepeatCount    := 0;
   ForCount       := 0;
+  ArrayTempCount := 0;
   GKwConsumed    := False;
   GCallArgCount  := 0;
   CurFnRetLbl    := '';
