@@ -3208,3 +3208,907 @@
   d8(PC,Xn)              1                 2
   #imm (.B ou .W)         1                 2
   #imm (.L)               2                 4
+
+==============================================================================
+6. GESTION DES EXCEPTIONS ET INTERRUPTIONS
+==============================================================================
+
+  6.1 Vue d'ensemble
+  -------------------
+
+  Les exceptions et interruptions sont des mecanismes qui
+  suspendent l'execution normale du processeur pour traiter
+  un evenement. Le 68000 supporte 256 vecteurs d'exception
+  (numerotes de 0 a 255), chacun associe a un handler via la
+  table des vecteurs d'exception situee en memoire.
+
+  Terminologie Motorola :
+
+  - Exception : terme generique couvrant toute interruption du
+    flux normal d'execution, qu'elle soit interne (erreur du
+    processeur), externe (peripherique) ou logicielle (TRAP).
+    Motorola n'utilise pas la distinction "interruption" vs
+    "exception" de la meme maniere qu'Intel.
+
+  - Interruption : sous-categorie des exceptions, declenchee
+    par un signal externe sur les lignes IPL0-IPL2.
+
+  - Trap : exception declenchee explicitement par les
+    instructions TRAP, TRAPV, CHK, DIVS ou DIVU.
+
+  Le traitement d'une exception provoque :
+    1. Sauvegarde du contexte (SR, PC) sur la pile superviseur
+    2. Passage en mode superviseur (S=1 dans le SR)
+    3. Desactivation du mode trace (T=0)
+    4. Chargement du PC depuis la table des vecteurs
+    5. Execution du handler
+    6. Retour par RTE
+
+  6.2 Les deux modes de fonctionnement
+  --------------------------------------
+
+  Le 68000 possede deux modes de fonctionnement controles par
+  le bit S (Supervisor) du registre d'etat (SR) :
+
+  6.2.1 Mode utilisateur (S=0)
+
+  - Acces limite aux instructions : certaines instructions
+    sont interdites (privilegiees)
+  - Utilise le pointeur de pile USP (A7 utilisateur)
+  - Ne peut pas modifier les bits systeme du SR
+  - Mode normal pour les programmes applicatifs
+
+  6.2.2 Mode superviseur (S=1)
+
+  - Acces complet a toutes les instructions
+  - Utilise le pointeur de pile SSP (A7 superviseur)
+  - Peut modifier le SR complet (bits systeme inclus)
+  - Mode utilise par le systeme d'exploitation et les handlers
+    d'exception
+
+  Le 68000 maintient deux piles separees :
+    - USP : User Stack Pointer (A7 en mode utilisateur)
+    - SSP : Supervisor Stack Pointer (A7 en mode superviseur)
+
+  Lors d'une exception, le processeur bascule automatiquement
+  en mode superviseur et utilise le SSP pour empiler le contexte.
+  Cela garantit que le code utilisateur ne peut pas corrompre
+  la pile du systeme.
+
+  Instructions privilegiees (mode superviseur uniquement) :
+    STOP     : Arreter le processeur
+    RESET    : Envoyer un signal de reinitialisation
+    RTE      : Retour d'exception
+    MOVE to SR     : Modifier le registre d'etat
+    MOVE USP, An   : Lire le USP
+    MOVE An, USP   : Ecrire le USP
+    ANDI to SR     : ET logique sur le SR
+    EORI to SR     : OU exclusif sur le SR
+    ORI to SR      : OU logique sur le SR
+
+  Si une instruction privilegiee est executee en mode utilisateur,
+  le processeur genere une exception "Privilege Violation"
+  (vecteur 8).
+
+  6.3 Le registre d'etat (SR) et les interruptions
+  --------------------------------------------------
+
+  Le registre d'etat (SR) du 68000 fait 16 bits :
+
+    15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+  | T| 0| S| 0| 0|  I2 I1 I0 | 0| 0| 0| X| N| Z| V| C|
+  +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+
+  Octet systeme (bits 15-8) :
+    T  (bit 15) : Mode trace (Trace)
+      T=1 : une exception trace est generee apres chaque instruction
+      T=0 : execution normale
+    S  (bit 13) : Mode superviseur (Supervisor)
+      S=1 : mode superviseur
+      S=0 : mode utilisateur
+    I2-I0 (bits 10-8) : Masque d'interruption (Interrupt Priority Mask)
+      Valeur de 0 a 7. Seules les interruptions de niveau
+      strictement superieur au masque sont acceptees.
+      Niveau 7 : toujours accepte (non masquable, equivalent au NMI)
+      Niveau 0 : toutes les interruptions sont acceptees
+
+  Octet condition (bits 7-0) :
+    X (bit 4) : Extend (retenue etendue)
+    N (bit 3) : Negative
+    Z (bit 2) : Zero
+    V (bit 1) : Overflow (debordement)
+    C (bit 0) : Carry (retenue)
+
+  Le masque d'interruption I2-I0 est crucial pour la gestion
+  des interruptions :
+    - Masque = 0 (000) : toutes les interruptions acceptees (niveaux 1-7)
+    - Masque = 3 (011) : seuls les niveaux 4, 5, 6, 7 acceptes
+    - Masque = 6 (110) : seul le niveau 7 accepte
+    - Masque = 7 (111) : seul le niveau 7 accepte (NMI)
+      Note : le niveau 7 est TOUJOURS accepte, meme avec masque = 7
+
+  6.4 Table des vecteurs d'exception
+  ------------------------------------
+
+  La table des vecteurs d'exception est situee en memoire a partir
+  de l'adresse $000000 (sur le 68000 de base). Elle contient
+  256 entrees de 4 octets (pointeurs 32 bits) pour un total de
+  1024 octets ($000 a $3FF).
+
+  Chaque entree contient l'adresse 32 bits du handler correspondant.
+  Le processeur charge cette adresse dans le PC lors du traitement
+  de l'exception.
+
+  Table complete des vecteurs (adresses et numeros) :
+
+  Vec  Adresse  Assignation
+  ---  -------  ---------------------------------------------------
+   0   $000     Reset : SSP initial (pointeur de pile superviseur)
+   1   $004     Reset : PC initial (adresse de demarrage)
+   2   $008     Bus Error (erreur de bus)
+   3   $00C     Address Error (erreur d'adresse)
+   4   $010     Illegal Instruction (instruction illegale)
+   5   $014     Zero Divide (division par zero)
+   6   $018     CHK Instruction (depassement CHK)
+   7   $01C     TRAPV Instruction (TRAPV avec V=1)
+   8   $020     Privilege Violation (instruction privilegiee
+                en mode utilisateur)
+   9   $024     Trace (mode trace, T=1 dans SR)
+  10   $028     Line 1010 Emulator (opcode $Axxx)
+  11   $02C     Line 1111 Emulator (opcode $Fxxx)
+  12   $030     (Reserve)
+  13   $034     (Reserve, Coprocessor Protocol Violation sur 68020+)
+  14   $038     Format Error (erreur de format sur 68010+)
+  15   $03C     Uninitialized Interrupt Vector
+  16-23 $040-$05C  (Reserves)
+  24   $060     Spurious Interrupt (interruption parasite)
+  25   $064     Level 1 Interrupt Autovector
+  26   $068     Level 2 Interrupt Autovector
+  27   $06C     Level 3 Interrupt Autovector
+  28   $070     Level 4 Interrupt Autovector
+  29   $074     Level 5 Interrupt Autovector
+  30   $078     Level 6 Interrupt Autovector
+  31   $07C     Level 7 Interrupt Autovector (NMI)
+  32   $080     TRAP #0
+  33   $084     TRAP #1
+  34   $088     TRAP #2
+  35   $08C     TRAP #3
+  36   $090     TRAP #4
+  37   $094     TRAP #5
+  38   $098     TRAP #6
+  39   $09C     TRAP #7
+  40   $0A0     TRAP #8
+  41   $0A4     TRAP #9
+  42   $0A8     TRAP #10
+  43   $0AC     TRAP #11
+  44   $0B0     TRAP #12
+  45   $0B4     TRAP #13
+  46   $0B8     TRAP #14
+  47   $0BC     TRAP #15
+  48-63 $0C0-$0FC  (Reserves, FPU sur 68881/68882)
+  64-255 $100-$3FC  Vecteurs d'interruption utilisateur
+
+  Notes :
+    - Les vecteurs 0 et 1 sont speciaux : ils ne contiennent pas
+      des adresses de handlers mais les valeurs initiales de SSP
+      et PC au reset
+    - Les vecteurs 64-255 sont disponibles pour les peripheriques
+      qui fournissent leur propre numero de vecteur (mode vectorise)
+    - Les vecteurs 12-15 et 16-23 sont reserves par Motorola
+    - Le vecteur 24 (Spurious Interrupt) est utilise quand un
+      peripherique ne repond pas au cycle d'acquittement
+
+  6.5 Classification des exceptions
+  ------------------------------------
+
+  Le 68000 classe les exceptions en plusieurs categories
+  selon leur priorite et leur comportement :
+
+  6.5.1 Groupe 0 : Priorite la plus haute
+
+  Ces exceptions interrompent l'instruction en cours et
+  le PC empile peut ne pas pointer exactement sur l'instruction
+  fautive.
+
+  - Reset : Reinitialise completement le processeur.
+    Charge SSP depuis le vecteur 0 ($000) et PC depuis
+    le vecteur 1 ($004). Active le mode superviseur (S=1),
+    desactive le trace (T=0), met le masque d'interruption
+    a 7 (toutes les interruptions masquees sauf niveau 7).
+
+  - Bus Error (vecteur 2) : Generee quand le bus externe
+    signale une erreur (signal BERR actif). Cela peut indiquer
+    un acces a une adresse memoire inexistante, un timeout du
+    bus, ou une erreur de parite. Le processeur empile des
+    informations supplementaires sur le cadre de pile (voir 6.6).
+
+  - Address Error (vecteur 3) : Generee quand le processeur
+    tente un acces mot (.W) ou long mot (.L) a une adresse
+    impaire. Le 68000 exige un alignement pair pour les
+    acces 16 ou 32 bits. Seuls les acces octet (.B) sont
+    autorises a des adresses impaires.
+    Exemples declenchant une Address Error :
+      MOVE.W  (A0), D0    ; si A0 est impair
+      MOVE.L  $10001, D0  ; adresse impaire
+      JMP     $10001      ; PC impair
+
+  6.5.2 Groupe 1 : Priorite moyenne-haute
+
+  Ces exceptions sont traitees entre deux instructions.
+  Le PC empile pointe sur l'instruction suivante (ou sur
+  l'instruction fautive selon le cas).
+
+  - Trace (vecteur 9) : Generee apres chaque instruction
+    quand le bit T=1 dans le SR. Utilisee par les debuggers
+    pour l'execution pas-a-pas. Le SR sauvegarde sur la pile
+    contient T=1, mais le SR actif est mis a T=0 pendant
+    le handler (pour eviter un trace recursif).
+
+  - Interruptions (vecteurs 25-31 et 64-255) : Declenchees
+    par les peripheriques via les lignes IPL0-IPL2 (voir 6.7).
+
+  - Illegal Instruction (vecteur 4) : Generee quand le
+    processeur rencontre un opcode non reconnu. Les opcodes
+    commencant par $Axxx et $Fxxx generent des exceptions
+    distinctes (Line 1010 et Line 1111).
+
+  - Privilege Violation (vecteur 8) : Generee quand une
+    instruction privilegiee est executee en mode utilisateur.
+
+  6.5.3 Groupe 2 : Priorite la plus basse
+
+  Ces exceptions sont generees par l'instruction elle-meme
+  dans le cadre de son execution normale.
+
+  - TRAP #n (vecteurs 32-47) : Declenchee par l'instruction
+    TRAP #n. Utilisee pour les appels systeme.
+
+  - TRAPV (vecteur 7) : Declenchee par l'instruction TRAPV
+    quand le drapeau V (Overflow) est a 1.
+
+  - CHK (vecteur 6) : Declenchee par l'instruction CHK quand
+    le registre de donnees est hors limites (negatif ou
+    superieur a la borne).
+
+  - Zero Divide (vecteur 5) : Declenchee par DIVU ou DIVS
+    quand le diviseur est zero.
+
+  - Line 1010 Emulator (vecteur 10) : Declenchee quand le
+    premier mot de l'instruction commence par les bits 1010
+    (opcodes $Axxx). Utilisee sur le Macintosh pour les
+    appels systeme de la Toolbox (A-Traps).
+
+  - Line 1111 Emulator (vecteur 11) : Declenchee quand le
+    premier mot de l'instruction commence par les bits 1111
+    (opcodes $Fxxx). Utilisee pour l'emulation du coprocesseur
+    mathematique (68881/68882) sur les systemes sans FPU.
+
+  6.5.4 Priorite des exceptions
+
+  Quand plusieurs exceptions sont en attente simultanement,
+  elles sont traitees dans l'ordre de priorite suivant :
+
+  Priorite  Groupe  Exception
+  --------  ------  ---------------------
+  1 (max)   0       Reset
+  2         0       Bus Error
+  3         0       Address Error
+  4         1       Trace
+  5         1       Interruption externe
+  6         1       Illegal Instruction / Privilege Violation
+  7         2       TRAP, TRAPV, CHK, Zero Divide
+
+  6.6 Format du cadre de pile (Stack Frame)
+  -------------------------------------------
+
+  Lors du traitement d'une exception, le processeur empile
+  automatiquement un cadre de pile (stack frame) sur la pile
+  superviseur (SSP). Le format depend du type d'exception.
+
+  6.6.1 Cadre de pile normal (4 mots = 8 octets)
+
+  Utilise pour la plupart des exceptions (Groupe 1 et 2) :
+  trace, interruptions, instructions TRAP, TRAPV, CHK, etc.
+
+    SSP+6 : SR (ancien, 16 bits, mot)
+    SSP+4 : PC poids fort (16 bits, mot)
+    SSP+2 : PC poids faible (16 bits, mot)
+    SSP   : (haut de pile apres empilement)
+
+  Soit en representation detaillee :
+
+    Adresse       Contenu
+    -----------   -----------------------------------
+    SSP (avant)   (ancien haut de pile)
+    SSP-2         Registre d'etat (SR) sauvegarde
+    SSP-6         Compteur programme (PC) sauvegarde
+                  (32 bits, sur 2 mots, poids fort d'abord)
+    SSP (apres)   (nouveau haut de pile = ancien SSP - 6)
+
+  Note : le PC sauvegarde pointe :
+    - Pour les traps et TRAPV : sur l'instruction SUIVANTE
+    - Pour le trace : sur l'instruction SUIVANTE
+    - Pour les interruptions : sur l'instruction SUIVANTE
+    - Pour Illegal/Privilege : sur l'instruction fautive
+    - Pour CHK et Zero Divide : sur l'instruction SUIVANTE
+
+  6.6.2 Cadre de pile etendu (7 mots = 14 octets)
+
+  Utilise pour les exceptions Bus Error et Address Error
+  (Groupe 0). Des informations supplementaires sont empilees
+  pour permettre le diagnostic de l'erreur :
+
+    SSP+12 : SR (ancien, 16 bits)
+    SSP+10 : PC poids fort (16 bits)
+    SSP+8  : PC poids faible (16 bits)
+    SSP+6  : Mot d'instruction (16 bits)
+    SSP+4  : Adresse fautive poids fort (16 bits)
+    SSP+2  : Adresse fautive poids faible (16 bits)
+    SSP    : Information d'acces (16 bits)
+
+  Le mot d'information d'acces (Access Information Word) :
+
+    15  14  13  12  11  10  9  8  7  6  5  4  3  2  1  0
+  +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+  |R/W| I/N|  Code fonction  |            (Reserve)                |
+  +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+
+  Bit 4 (R/W) : Direction de l'acces
+    0 = Ecriture (Write)
+    1 = Lecture (Read)
+
+  Bit 3 (I/N) : Type de cycle
+    0 = Acces instruction (Instruction fetch)
+    1 = Acces normal (lecture/ecriture de donnees)
+
+  Bits 2-0 (FC2-FC0) : Code de fonction (Function Code)
+    001 = Donnees utilisateur
+    010 = Programme utilisateur
+    101 = Donnees superviseur
+    110 = Programme superviseur
+    111 = Acquittement d'interruption (CPU space)
+
+  Note importante : sur le 68000, les exceptions Bus Error et
+  Address Error sont destructrices : l'instruction en cours est
+  abandonnee et ne peut pas etre relancee. C'est une limitation
+  majeure du 68000 par rapport au 68010+ qui supporte la reprise
+  d'instruction apres une Bus Error (necessaire pour la memoire
+  virtuelle).
+
+  6.7 Interruptions materielles
+  -------------------------------
+
+  6.7.1 Les lignes d'interruption IPL0-IPL2
+
+  Le 68000 possede trois lignes d'entree d'interruption :
+  IPL0, IPL1 et IPL2 (Interrupt Priority Level), qui encodent
+  un niveau de priorite de 0 a 7 :
+
+  IPL2 IPL1 IPL0   Niveau    Signification
+  ---- ---- ----   ------    --------------------------------
+   1    1    1     0         Pas d'interruption
+   1    1    0     1         Interruption de niveau 1 (basse)
+   1    0    1     2         Interruption de niveau 2
+   1    0    0     3         Interruption de niveau 3
+   0    1    1     4         Interruption de niveau 4
+   0    1    0     5         Interruption de niveau 5
+   0    0    1     6         Interruption de niveau 6
+   0    0    0     7         Interruption de niveau 7 (NMI)
+
+  Note : les lignes sont actives a l'etat bas (logique inversee).
+  Le niveau 0 signifie "pas d'interruption en attente".
+
+  Le processeur accepte une interruption si et seulement si :
+    Niveau interruption > Masque I2-I0 dans le SR
+  Exception : le niveau 7 est TOUJOURS accepte (non masquable),
+  meme si le masque est a 7. C'est l'equivalent du NMI Intel.
+
+  Le niveau 7 est aussi declenchee sur front (edge-triggered)
+  et non sur niveau (level-triggered) comme les niveaux 1-6.
+  Cela signifie qu'une interruption de niveau 7 n'est reconnue
+  qu'une seule fois, meme si la ligne reste active.
+
+  6.7.2 Mode autovecteur
+
+  Quand un peripherique declenche une interruption et ne fournit
+  pas de numero de vecteur, le 68000 utilise le mode autovecteur.
+  Le peripherique active le signal VPA (Valid Peripheral Address)
+  au lieu de DTACK pendant le cycle d'acquittement.
+
+  Le processeur utilise alors les vecteurs fixes 25 a 31 :
+
+  Niveau   Vecteur   Adresse
+  ------   -------   -------
+  1        25        $064
+  2        26        $068
+  3        27        $06C
+  4        28        $070
+  5        29        $074
+  6        30        $078
+  7        31        $07C
+
+  C'est le mode le plus simple et le plus courant sur les
+  systemes 68000 comme le Macintosh, l'Amiga et l'Atari ST.
+
+  6.7.3 Mode vectorise
+
+  En mode vectorise, le peripherique fournit un numero de vecteur
+  (8 bits) sur le bus de donnees pendant le cycle d'acquittement
+  d'interruption (signal DTACK actif au lieu de VPA). Le processeur
+  utilise ce numero pour indexer la table des vecteurs :
+
+    Adresse du handler = contenu de [vecteur * 4]
+
+  Les vecteurs 64 a 255 sont reserves a cet usage, ce qui donne
+  192 vecteurs possibles pour les peripheriques.
+
+  Si le peripherique fournit un vecteur invalide ou ne repond
+  pas, le processeur genere une Spurious Interrupt (vecteur 24).
+  Si le vecteur fourni pointe vers une entree non initialisee,
+  le processeur genere une Uninitialized Interrupt (vecteur 15).
+
+  6.7.4 Sequence de traitement d'une interruption
+
+  Quand le 68000 accepte une interruption, il effectue la
+  sequence suivante :
+
+  1. Le processeur termine l'instruction en cours
+
+  2. Effectue un cycle d'acquittement d'interruption :
+     - Place le niveau d'interruption sur les lignes FC0-FC2 = 111
+       (CPU space) et le niveau sur A1-A3
+     - Attend la reponse du peripherique (DTACK ou VPA)
+
+  3. Si VPA : mode autovecteur (vecteurs 25-31)
+     Si DTACK : lit le numero de vecteur sur D0-D7
+
+  4. Copie le SR interne dans un registre temporaire
+
+  5. Passe en mode superviseur (S=1)
+
+  6. Desactive le mode trace (T=0)
+
+  7. Met a jour le masque d'interruption dans le SR
+     au niveau de l'interruption acceptee (empeche les
+     interruptions de meme niveau ou inferieur)
+
+  8. Empile le SR (ancien) et le PC sur la pile superviseur
+
+  9. Charge le PC depuis la table des vecteurs
+
+  10. Execute le handler
+
+  6.8 Instructions TRAP (interruptions logicielles)
+  ---------------------------------------------------
+
+  6.8.1 TRAP #n (vecteurs 32 a 47)
+
+  L'instruction TRAP #n declenche l'exception de vecteur 32+n.
+  Elle est l'equivalent du INT n de l'Intel 80386 et constitue
+  le mecanisme standard pour les appels systeme sur le 68000.
+
+  Format :
+    TRAP  #n          ; n = 0 a 15
+
+  Encodage : $4E40 + n (opcode sur 1 mot)
+    TRAP #0  = $4E40
+    TRAP #15 = $4E4F
+
+  Comportement :
+    1. Sauvegarde du SR et du PC sur la pile superviseur
+    2. Passage en mode superviseur (S=1)
+    3. Desactivation du trace (T=0)
+    4. Chargement du PC depuis le vecteur (32+n)*4
+    5. Retour par RTE
+
+  Conventions courantes :
+
+  Systeme         TRAP #n    Usage
+  -------------   --------   ----------------------------------
+  Atari ST/TOS    TRAP #1    Appels GEMDOS (systeme de fichiers)
+  Atari ST/TOS    TRAP #2    Appels GEM/AES/VDI (graphique)
+  Atari ST/TOS    TRAP #13   Appels BIOS (bas niveau)
+  Atari ST/TOS    TRAP #14   Appels XBIOS (extensions BIOS)
+  Amiga/AmigaOS   TRAP #0    Appels systeme Exec
+  Macintosh       Ligne A    Toolbox traps ($Axxx)
+  Sun/UNIX        TRAP #0    Appels systeme UNIX
+  Linux/68k       TRAP #0    Appels systeme Linux
+
+  Exemple d'appel systeme (style Atari ST) :
+
+    ; Afficher un caractere (BIOS Bconout)
+    MOVE.W  #'A', -(SP)     ; Caractere a afficher
+    MOVE.W  #2, -(SP)       ; Device = ecran
+    MOVE.W  #3, -(SP)       ; Fonction Bconout
+    TRAP    #13              ; Appel BIOS
+    ADDQ.L  #6, SP           ; Nettoyer la pile
+
+  6.8.2 TRAPV (vecteur 7)
+
+  L'instruction TRAPV declenche l'exception vecteur 7 si le
+  drapeau V (Overflow) du CCR est a 1. Sinon, elle ne fait rien.
+
+  Format :
+    TRAPV             ; Si V=1 : exception, sinon NOP
+
+  Encodage : $4E76 (1 mot)
+
+  Utilisation typique apres une operation arithmetique signee :
+    ADD.W   D0, D1          ; Addition signee
+    TRAPV                   ; Exception si debordement
+
+  6.8.3 CHK (vecteur 6)
+
+  L'instruction CHK verifie qu'un registre de donnees est
+  dans les limites [0, borne_superieure]. Si la valeur est
+  negative ou superieure a la borne, l'exception vecteur 6
+  est declenchee.
+
+  Format :
+    CHK   <ea>, Dn    ; Si Dn < 0 ou Dn > <ea> : exception
+
+  Utilisation pour la verification des indices de tableaux :
+    CHK   #99, D0           ; Exception si D0 < 0 ou D0 > 99
+
+  6.8.4 Zero Divide (vecteur 5)
+
+  Declenchee automatiquement par DIVU ou DIVS quand le
+  diviseur (operande source) est zero.
+
+    MOVE.W  #0, D1
+    DIVU    D1, D0          ; Exception Zero Divide !
+
+  6.9 Instructions liees aux exceptions
+  ----------------------------------------
+
+  6.9.1 RTE - Return from Exception
+
+    RTE                     ; Retour d'exception
+
+  Encodage : $4E73 (1 mot)
+  Privilege : instruction privilegiee (mode superviseur requis)
+
+  Depile le SR et le PC depuis la pile superviseur et reprend
+  l'execution au point ou l'exception s'est produite.
+
+  Sequence :
+    1. Depile le SR (16 bits) -> restaure les drapeaux, le mode
+       (S=0 ou S=1) et le masque d'interruption
+    2. Depile le PC (32 bits) -> adresse de retour
+    3. Continue l'execution a la nouvelle adresse PC
+    4. Si le SR restaure a S=0 : bascule vers le USP
+
+  Attention : sur le 68010+, le processeur depile aussi un
+  mot de format avant le SR, qui identifie le type de cadre
+  de pile (4 mots, 6 mots, etc.). Sur le 68000, le handler
+  doit connaitre le type d'exception pour savoir combien de
+  mots depiler avant RTE.
+
+  6.9.2 STOP #imm - Stop
+
+    STOP  #$2700            ; S=1, masque=7, arret
+
+  Encodage : $4E72 suivi du mot immediat
+  Privilege : instruction privilegiee
+
+  Charge la valeur immediate dans le SR, puis arrete le
+  processeur. Le processeur reste en arret jusqu'a la reception
+  d'une interruption, d'une exception ou d'un reset.
+  L'instruction suivante n'est executee qu'apres le traitement
+  de l'interruption (via RTE du handler).
+
+  Le mot immediat doit avoir le bit S=1, sinon une exception
+  Privilege Violation est generee.
+
+  Utilisation typique dans les boucles d'attente :
+    STOP  #$2000            ; S=1, masque=0 : attend interruption
+    ; ... continue apres l'interruption ...
+
+  6.9.3 RESET - Reset External Devices
+
+    RESET                   ; Envoie un signal RESET aux peripheriques
+
+  Encodage : $4E70 (1 mot)
+  Privilege : instruction privilegiee
+
+  Active la ligne RESET pendant 124 periodes d'horloge, ce qui
+  reinitialise tous les peripheriques connectes au bus. Le
+  processeur lui-meme n'est PAS reinitialise (contrairement
+  au reset materiel). Utilise pour reinitialiser les
+  peripheriques sans redemarrer le systeme.
+
+  6.9.4 ILLEGAL - Illegal Instruction
+
+    ILLEGAL                 ; Force une exception Illegal Instruction
+
+  Encodage : $4AFC (1 mot)
+
+  Declenche deliberement l'exception "Illegal Instruction"
+  (vecteur 4). Utilisee par les debuggers et les points
+  d'arret logiciels (breakpoints). L'equivalent du INT 3
+  (opcode CC) de l'Intel 80386.
+
+  6.9.5 MOVE SR, <ea> - Lire le registre d'etat
+
+    MOVE.W  SR, D0          ; Copier le SR dans D0
+    MOVE.W  SR, (A0)        ; Copier le SR en memoire
+
+  Note : sur le 68000, cette instruction est accessible en mode
+  utilisateur. Sur le 68010+, elle est privilegiee (remplacee
+  par MOVE CCR, <ea> pour le mode utilisateur).
+
+  6.9.6 MOVE <ea>, SR - Ecrire le registre d'etat
+
+    MOVE.W  D0, SR          ; Charger SR depuis D0
+    MOVE.W  #$2700, SR      ; S=1, masque=7, tous drapeaux a 0
+
+  Privilege : instruction privilegiee (mode superviseur requis)
+  Permet de modifier le mode (S), le masque d'interruption (I)
+  et les drapeaux de condition en une seule instruction.
+
+  6.9.7 ANDI/ORI/EORI to SR
+
+    ANDI.W  #$F8FF, SR      ; Effacer le masque d'interruption
+    ORI.W   #$0700, SR      ; Mettre le masque a 7
+    EORI.W  #$8000, SR      ; Basculer le bit de trace T
+
+  Privilege : instructions privilegiees
+  Permettent de modifier selectivement des bits du SR.
+
+  6.9.8 MOVE USP - Transfert du User Stack Pointer
+
+    MOVE.L  USP, A0         ; Lire le USP dans A0
+    MOVE.L  A0, USP         ; Ecrire A0 dans le USP
+
+  Privilege : instruction privilegiee
+  Permet au superviseur d'acceder au pointeur de pile utilisateur,
+  par exemple pour creer ou modifier le contexte d'un processus.
+
+  6.10 Mecanisme de dispatch des exceptions
+  --------------------------------------------
+
+  6.10.1 Schema general
+
+    Exception declenchee
+           |
+           v
+    Copier SR dans registre temporaire
+           |
+           v
+    S = 1 (mode superviseur)
+    T = 0 (desactiver trace)
+           |
+           v
+    Mettre a jour le masque I (si interruption)
+           |
+           v
+    Calculer le numero de vecteur
+           |
+           +--- Interruption ? ----+
+           |          |            |
+           |   Cycle IACK     Non (trap, erreur, ...)
+           |   Lire vecteur   Vecteur determine
+           |   du peripherique par le type d'exception
+           |          |            |
+           +----------+------------+
+           |
+           v
+    Empiler sur la pile superviseur (SSP) :
+      - SR (ancien)
+      - PC (ancien)
+      - (Info supplementaire si Bus/Address Error)
+           |
+           v
+    PC = Contenu de [vecteur * 4]
+           |
+           v
+    Execution du handler
+           |
+           v
+    RTE -> Depile PC, SR
+           Reprend l'execution
+
+  6.10.2 Exceptions pendant le traitement d'une exception
+
+  Si une Bus Error ou Address Error se produit pendant le
+  traitement d'une autre exception (par exemple, pendant
+  l'empilement du cadre de pile ou la lecture de la table
+  des vecteurs), le processeur entre dans un etat de "double
+  bus fault". Dans ce cas, le processeur s'arrete completement
+  (HALT) et ne peut reprendre que par un reset externe.
+
+  C'est l'equivalent de la "triple fault" du 80386, mais le
+  68000 ne fait que deux niveaux : une exception pendant une
+  exception = arret complet.
+
+  Causes typiques du double bus fault :
+    - SSP pointe vers une zone memoire invalide
+    - La table des vecteurs est dans une zone inaccessible
+    - Le bus est defaillant
+
+  6.11 Exemples de handlers d'exception
+  ----------------------------------------
+
+  6.11.1 Handler d'interruption timer (autovecteur niveau 4)
+
+    ; Adresse du handler dans la table des vecteurs
+    ; Vecteur 28 ($070) = interruption niveau 4
+
+    tick_count:     DC.L  0
+
+    timer_handler:
+      MOVEM.L D0/A0, -(SP)     ; Sauvegarder les registres utilises
+
+      LEA     tick_count, A0
+      ADDQ.L  #1, (A0)         ; Incrementer le compteur de ticks
+
+      ; Acquitter l'interruption au niveau du peripherique
+      ; (depend du materiel, exemple generique)
+      ; MOVE.B  #0, $FFFFFA0F   ; (specifique MFP 68901)
+
+      MOVEM.L (SP)+, D0/A0     ; Restaurer les registres
+      RTE                       ; Retour d'exception
+
+    ; Installation du handler :
+      LEA     timer_handler, A0
+      MOVE.L  A0, $070          ; Vecteur 28 = niveau 4 autovecteur
+
+  6.11.2 Handler de TRAP #0 (appel systeme)
+
+    ; TRAP #0 = vecteur 32 ($080)
+    ; Convention : numero de fonction dans D0
+
+    syscall_handler:
+      CMPI.W  #0, D0
+      BEQ.S   .fn_exit
+      CMPI.W  #1, D0
+      BEQ.S   .fn_putchar
+      ; ... autres fonctions ...
+      RTE
+
+    .fn_exit:
+      ; Terminer le programme
+      STOP    #$2700            ; Arret du processeur
+      RTE
+
+    .fn_putchar:
+      ; Afficher le caractere dans D1.B
+      ; (code specifique au materiel)
+      RTE
+
+    ; Installation :
+      LEA     syscall_handler, A0
+      MOVE.L  A0, $080          ; Vecteur 32 = TRAP #0
+
+    ; Utilisation :
+      MOVE.W  #1, D0            ; Fonction putchar
+      MOVE.B  #'A', D1          ; Caractere 'A'
+      TRAP    #0                 ; Appel systeme
+
+  6.11.3 Handler d'exception Address Error
+
+    ; Vecteur 3 ($00C)
+    ; Cadre de pile etendu : info acces + adresse + IR + SR + PC
+
+    address_error_handler:
+      ; Le cadre de pile etendu contient :
+      ; (SP)   : Information d'acces (mot)
+      ; (SP+2) : Adresse fautive (long mot, 2 mots)
+      ; (SP+6) : Mot d'instruction (mot)
+      ; (SP+8) : SR ancien (mot)
+      ; (SP+10): PC ancien (long mot, 2 mots)
+
+      MOVE.W  (SP), D0          ; Information d'acces
+      MOVE.L  2(SP), D1         ; Adresse fautive
+
+      ; ... afficher un message d'erreur ...
+      ; ... terminer le programme ...
+
+      ; Note : sur le 68000, on ne peut PAS reprendre
+      ; l'instruction fautive apres une Address Error.
+      ; Il faut soit terminer, soit relancer le programme.
+      STOP    #$2700
+
+  6.11.4 Handler de trace (debugger simple)
+
+    ; Vecteur 9 ($024)
+
+    trace_handler:
+      MOVEM.L D0-D7/A0-A6, -(SP)  ; Sauvegarder tous les registres
+
+      ; Le PC de l'instruction suivante est sur la pile
+      ; a l'offset 60 (15 registres * 4) + 2 (SR) = 62
+      MOVE.L  62(SP), A0           ; Adresse de la prochaine instruction
+
+      ; ... afficher l'etat des registres ...
+      ; ... attendre une commande de l'utilisateur ...
+
+      MOVEM.L (SP)+, D0-D7/A0-A6  ; Restaurer les registres
+      RTE                           ; Continuer avec T=1 (depuis SR empile)
+
+    ; Activer le mode trace :
+      ORI.W   #$8000, SR           ; T=1 dans le SR
+
+  6.12 Comparaison avec les interruptions du 80386
+  ---------------------------------------------------
+
+  Aspect                  68000                  80386
+  ----------------------  ---------------------  ----------------------
+  Nombre de vecteurs      256                    256
+  Table des vecteurs      En memoire ($000-$3FF) IDT (registre IDTR)
+  Taille par entree       4 octets (adresse)     8 octets (descripteur)
+  Adresse de la table     Fixe a $000000         Configurable (IDTR)
+  Lignes d'interruption   3 (IPL0-2, niveaux)    2 (INTR, NMI)
+  Niveaux de priorite     7 niveaux materiels    Via PIC 8259A externe
+  Masquage                Masque 3 bits dans SR   Drapeau IF dans EFLAGS
+  Non masquable           Niveau 7 (front)       NMI (broche dediee)
+  Mode vectorise          Via bus donnees         Via PIC/APIC
+  Mode autovecteur        Oui (7 niveaux)        Non (toujours vectorise)
+  Traps logiciels         TRAP #0-15 (16 traps) INT 0-255 (256 possibles)
+  Cadre de pile normal    SR + PC (6 octets)     EFLAGS + CS + EIP (12 o)
+  Cadre etendu            Bus/Addr Error (14 o)  Avec code erreur (16 o)
+  Modes processeur        2 (user/supervisor)    4 rings (0-3)
+  Piles separees          USP et SSP             Via TSS (SS0:ESP0, etc.)
+  Instructions systeme    9 privilegiees         ~15 privilegiees
+  Double faute            Double bus fault->HALT Double Fault->vec 8
+  Triple faute            N/A (HALT directement) Triple Fault->RESET
+  Reprise instruction     Non (68000)            Oui (faults)
+  Coprocesseur            Line F ($Fxxx)         ESC + WAIT
+
+  Avantages du 68000 :
+    - 7 niveaux de priorite integres dans le processeur
+      (pas besoin de PIC externe pour la priorite)
+    - Mode autovecteur simple pour les systemes compacts
+    - Separation claire USP/SSP avec 2 piles physiques
+    - TRAP #0-15 avec convention d'appel simple
+
+  Avantages du 80386 :
+    - IDT relocalisable (pas fixee a l'adresse 0)
+    - 4 niveaux de privilege (rings) au lieu de 2
+    - Reprise d'instruction apres faute de page (memoire virtuelle)
+    - Changement de pile automatique via le TSS
+    - Descripteurs de portes avec verification DPL
+    - 256 vecteurs INT possibles (vs 16 TRAP)
+
+  6.13 Resume
+  -------------
+
+  Le systeme d'exceptions du 68000 fournit un mecanisme complet
+  pour gerer les interruptions materielles (via les 7 niveaux
+  de priorite IPL), les appels systeme (via TRAP #0-15), les
+  erreurs d'execution (Bus Error, Address Error, Zero Divide,
+  etc.) et le debogage (Trace, ILLEGAL).
+
+  Points cles a retenir :
+
+  - 256 vecteurs dans la table a l'adresse $000000
+  - 2 modes : utilisateur (S=0) et superviseur (S=1)
+  - 2 piles separees : USP et SSP
+  - 7 niveaux de priorite d'interruption dans le SR
+  - Le niveau 7 est non masquable (equivalent NMI)
+  - Les exceptions empilent SR + PC sur la pile superviseur
+  - Bus/Address Error empilent des informations supplementaires
+  - RTE restaure le SR et le PC pour reprendre l'execution
+  - 16 instructions TRAP pour les appels systeme
+  - 9 instructions privilegiees reservees au mode superviseur
+  - Le double bus fault provoque un HALT complet du processeur
+
+  Registres et instructions cles :
+
+  Registre/Instruction  Role
+  --------------------  ----------------------------------------
+  SR (bits 10-8)        Masque d'interruption (I2-I0)
+  SR (bit 13)           Mode superviseur (S)
+  SR (bit 15)           Mode trace (T)
+  SSP (A7 superviseur)  Pile pour les handlers d'exception
+  USP (A7 utilisateur)  Pile pour les programmes applicatifs
+  TRAP #n               Appel systeme (vecteurs 32-47)
+  TRAPV                 Exception si V=1
+  CHK                   Exception si hors limites
+  RTE                   Retour d'exception
+  STOP #imm             Arret jusqu'a interruption
+  RESET                 Reinitialise les peripheriques
+  ILLEGAL               Force une exception Illegal Instruction
+  MOVE to/from SR       Lire/ecrire le registre d'etat
+  MOVE USP              Transfert du pointeur de pile utilisateur
