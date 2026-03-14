@@ -165,7 +165,7 @@ TODO 08 [IMPLEMENTE] - Directives de methodes (.method, .end method, .limit)
   - Methodes speciales : <init> (constructeur), <clinit> (initialiseur
     statique), main([Ljava/lang/String;)V (point d'entree)
 
-TODO 09 - Descripteurs de types JVM : parsing et validation
+TODO 09 [IMPLEMENTE] - Descripteurs de types JVM : parsing et validation
   -----------------------------------------------------------
   - ParseTypeDescriptor : parser un descripteur de type JVM complet
     B (byte), C (char), D (double), F (float), I (int), J (long),

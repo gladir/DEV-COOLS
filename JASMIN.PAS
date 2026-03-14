@@ -24,7 +24,7 @@
 {  TODO 06 [IMPLEMENTE] - Directives de classe (.class, .super, .implements, .source) }
 {  TODO 07 [IMPLEMENTE] - Directives de champs (.field avec descripteurs et valeurs) }
 {  TODO 08 [IMPLEMENTE] - Directives de methodes (.method, .end method, .limit)}
-{  TODO 09 - Descripteurs de types JVM : parsing et validation                }
+{  TODO 09 [IMPLEMENTE] - Descripteurs de types JVM : parsing et validation   }
 {  TODO 10 - Opcodes de chargement et stockage                                }
 {  TODO 11 - Opcodes arithmetiques et logiques                                }
 {  TODO 12 - Opcodes de conversion de types                                   }
@@ -494,6 +494,17 @@ Procedure ParseEndMethod; Forward;
 Procedure ParseLimitDirective; Forward;
 Procedure ParseLineDirective; Forward;
 Procedure ParseThrowsDirective; Forward;
+
+{ --- Declarations forward TODO 09 : Descripteurs de types JVM --- }
+Function  ParseTypeDescriptor(Const desc: String; Var pos: Integer): Boolean; Forward;
+Function  DescriptorSlotSize(Const desc: String): Integer; Forward;
+Function  ParseMethodDescriptor(Const desc: String): Boolean; Forward;
+Function  DescriptorParamSlots(Const desc: String; isStatic: Boolean): Integer; Forward;
+Function  DescriptorReturnSlots(Const desc: String): Integer; Forward;
+Function  ValidateDescriptor(Const desc: String): Boolean; Forward;
+Function  ValidateMethodDescriptor(Const desc: String): Boolean; Forward;
+Procedure AutoLocals(mIdx: Integer); Forward;
+Procedure AutoStack(mIdx: Integer); Forward;
 
 { ---------- Ouverture et fermeture du fichier source ---------- }
 
@@ -2070,7 +2081,11 @@ End;
 { --- EnterMethod : initialiser l'etat pour une nouvelle methode --- }
 { Alloue les buffers, initialise les compteurs, met InMethod a True. }
 Procedure EnterMethod(flags: Integer; Const name, desc: String);
+Var mN, mD: String;
 Begin
+ { Sauvegarder les parametres avant le With (evite conflit TP case-insensitive) }
+ mN := name;
+ mD := desc;
  If InMethod Then
  Begin
   Error('.method : methode precedente non terminee (.end method manquant)');
@@ -2087,8 +2102,8 @@ Begin
  With MethodTab^[CurMethod] do
  Begin
   AccFlags   := flags;
-  NameIdx    := CPEnsureUtf8(name);
-  DescIdx    := CPEnsureUtf8(desc);
+  NameIdx    := CPEnsureUtf8(mN);
+  DescIdx    := CPEnsureUtf8(mD);
   MaxStack   := 0;
   MaxLocals  := 0;
   CodeSize   := 0;
@@ -2096,8 +2111,8 @@ Begin
   LineCount  := 0;
   LabelCount := 0;
   ThrowCount := 0;
-  Name       := name;
-  Desc       := desc;
+  Name       := mN;
+  Desc       := mD;
   HasCode    := ((flags and ACC_ABSTRACT) = 0) And ((flags and ACC_NATIVE) = 0);
   HasStack   := False;
   HasLocals  := False;
@@ -2116,7 +2131,7 @@ Begin
 End;
 
 { --- LeaveMethod : finaliser la methode courante --- }
-{ Verifie les labels non resolus, affiche un avertissement si .limit absent. }
+{ Verifie les labels non resolus, calcule auto-locals/auto-stack si absent. }
 Procedure LeaveMethod;
 Var i: Integer;
 Begin
@@ -2133,14 +2148,25 @@ Begin
    If Not Labels^[i].Resolved Then
     Warning('.end method : label ''' + Labels^[i].Name + ''' non resolu');
   End;
-  { Avertissement si .limit stack/locals absent pour methode avec code }
+  { Calculer auto-locals/auto-stack si .limit absent (TODO 09) }
   If HasCode Then
   Begin
-   If Not HasStack Then
-    Warning('.method ' + Name + ' : .limit stack non defini, defaut 0');
    If Not HasLocals Then
-    Warning('.method ' + Name + ' : .limit locals non defini, defaut 0');
+   Begin
+    AutoLocals(CurMethod);
+    If OptVerbose Then
+     WriteLn('    [auto] .limit locals ', MaxLocals, ' (calcule depuis descripteur)');
+   End;
+   If Not HasStack Then
+   Begin
+    AutoStack(CurMethod);
+    If OptVerbose Then
+     WriteLn('    [auto] .limit stack ', MaxStack, ' (estimation minimale)');
+   End;
   End;
+  { Valider le descripteur de methode (TODO 09) }
+  If Not ValidateMethodDescriptor(Desc) Then
+   Warning('.method ' + Name + ' : descripteur invalide ''' + Desc + '''');
  End;
  InMethod  := False;
  CurMethod := 0;
@@ -2346,6 +2372,189 @@ Begin
   WriteLn('    .throws ', cn);
 End;
 
+{ ============================================================================ }
+{ Descripteurs de types JVM : parsing et validation (TODO 09)                  }
+{ ============================================================================ }
+
+{ --- ParseTypeDescriptor : parser un descripteur de type JVM --- }
+{ Avance pos au-dela du type lu. Retourne True si un type valide est lu. }
+{ Types: B(byte), C(char), D(double), F(float), I(int), J(long),        }
+{ S(short), Z(boolean), V(void), Lclassname;, [type (tableau)           }
+Function ParseTypeDescriptor(Const desc: String; Var pos: Integer): Boolean;
+Var len: Integer;
+Begin
+ ParseTypeDescriptor := False;
+ len := Length(desc);
+ If pos > len Then Exit;
+ { Sauter les prefixes de tableau [ }
+ While (pos <= len) And (desc[pos] = '[') do
+  Inc(pos);
+ If pos > len Then Exit;  { [ tout seul }
+ Case desc[pos] of
+  'B', 'C', 'D', 'F', 'I', 'J', 'S', 'Z', 'V':
+  Begin
+   Inc(pos);
+   ParseTypeDescriptor := True;
+  End;
+  'L':
+  Begin
+   Inc(pos); { passer le L }
+   { Chercher le ; de fermeture }
+   While (pos <= len) And (desc[pos] <> ';') do
+    Inc(pos);
+   If pos > len Then Exit;  { pas de ; }
+   Inc(pos); { passer le ; }
+   ParseTypeDescriptor := True;
+  End;
+ End;
+End;
+
+{ --- DescriptorSlotSize : nombre de slots pour un type --- }
+{ Retourne 2 pour J(long) et D(double), 1 pour tous les autres. }
+{ 0 pour V(void). }
+Function DescriptorSlotSize(Const desc: String): Integer;
+Var p: Integer;
+Begin
+ DescriptorSlotSize := 0;
+ If Length(desc) = 0 Then Exit;
+ p := 1;
+ { Sauter les prefixes de tableau [ -> toujours 1 slot (reference) }
+ If desc[p] = '[' Then
+ Begin
+  DescriptorSlotSize := 1;
+  Exit;
+ End;
+ Case desc[p] of
+  'J', 'D': DescriptorSlotSize := 2;
+  'V':      DescriptorSlotSize := 0;
+ Else
+  DescriptorSlotSize := 1;
+ End;
+End;
+
+{ --- ParseMethodDescriptor : valider un descripteur de methode --- }
+{ Format: (param_types)return_type                                   }
+{ Retourne True si le descripteur est syntaxiquement correct.        }
+Function ParseMethodDescriptor(Const desc: String): Boolean;
+Var len, pos: Integer;
+Begin
+ ParseMethodDescriptor := False;
+ len := Length(desc);
+ If len < 3 Then Exit;  { au minimum ()V }
+ If desc[1] <> '(' Then Exit;
+ pos := 2;
+ { Parser les types des parametres }
+ While (pos <= len) And (desc[pos] <> ')') do
+ Begin
+  If desc[pos] = 'V' Then Exit;  { V interdit comme parametre }
+  If Not ParseTypeDescriptor(desc, pos) Then Exit;
+ End;
+ If pos > len Then Exit;  { pas de ) }
+ If desc[pos] <> ')' Then Exit;
+ Inc(pos); { passer le ) }
+ { Parser le type de retour }
+ If pos > len Then Exit;
+ If Not ParseTypeDescriptor(desc, pos) Then Exit;
+ { Doit etre a la fin }
+ ParseMethodDescriptor := (pos = len + 1);
+End;
+
+{ --- DescriptorParamSlots : nombre total de slots pour les parametres --- }
+{ Compte les slots des types parametres. Ajoute 1 pour this si non-static. }
+Function DescriptorParamSlots(Const desc: String; isStatic: Boolean): Integer;
+Var len, pos, slots, startP: Integer;
+    oneType: String;
+Begin
+ slots := 0;
+ If Not isStatic Then
+  slots := 1; { slot 0 = this }
+ len := Length(desc);
+ If (len < 3) Or (desc[1] <> '(') Then
+ Begin
+  DescriptorParamSlots := slots;
+  Exit;
+ End;
+ pos := 2;
+ While (pos <= len) And (desc[pos] <> ')') do
+ Begin
+  startP := pos;
+  If Not ParseTypeDescriptor(desc, pos) Then Break;
+  { Extraire le type pour calculer la taille }
+  oneType := Copy(desc, startP, pos - startP);
+  slots := slots + DescriptorSlotSize(oneType);
+ End;
+ DescriptorParamSlots := slots;
+End;
+
+{ --- DescriptorReturnSlots : nombre de slots du type de retour --- }
+{ 0 pour V, 1 ou 2 selon le type.                                   }
+Function DescriptorReturnSlots(Const desc: String): Integer;
+Var len, pos: Integer;
+    retType: String;
+Begin
+ DescriptorReturnSlots := 0;
+ len := Length(desc);
+ pos := 1;
+ { Trouver la ) }
+ While (pos <= len) And (desc[pos] <> ')') do
+  Inc(pos);
+ If pos >= len Then Exit;
+ Inc(pos); { passer ) }
+ retType := Copy(desc, pos, len - pos + 1);
+ DescriptorReturnSlots := DescriptorSlotSize(retType);
+End;
+
+{ --- ValidateDescriptor : verifier syntaxe correcte d'un descripteur --- }
+{ Valide un descripteur de type (pas de methode). Accepte V.              }
+Function ValidateDescriptor(Const desc: String): Boolean;
+Var pos: Integer;
+Begin
+ ValidateDescriptor := False;
+ If Length(desc) = 0 Then Exit;
+ pos := 1;
+ If Not ParseTypeDescriptor(desc, pos) Then Exit;
+ ValidateDescriptor := (pos = Length(desc) + 1);
+End;
+
+{ --- ValidateMethodDescriptor : verifier un descripteur de methode --- }
+{ Verifie les parentheses, les types des parametres (V interdit) et le  }
+{ type de retour.                                                        }
+Function ValidateMethodDescriptor(Const desc: String): Boolean;
+Begin
+ ValidateMethodDescriptor := ParseMethodDescriptor(desc);
+End;
+
+{ --- AutoLocals : calculer max_locals minimum a partir du descripteur --- }
+{ Si .limit locals n'est pas defini, calcule le minimum a partir des       }
+{ parametres (+ this si methode d'instance).                               }
+Procedure AutoLocals(mIdx: Integer);
+Var isStatic: Boolean;
+    minLocals: Integer;
+Begin
+ With MethodTab^[mIdx] do
+ Begin
+  If HasLocals Then Exit; { deja defini par .limit locals }
+  isStatic := (AccFlags and ACC_STATIC) <> 0;
+  minLocals := DescriptorParamSlots(Desc, isStatic);
+  If minLocals > MaxLocals Then
+   MaxLocals := minLocals;
+ End;
+End;
+
+{ --- AutoStack : calculer max_stack minimum --- }
+{ Estimation simple : si pas de .limit stack, on met au moins 1           }
+{ pour permettre les operations de base. Une analyse de flux precise      }
+{ sera implementee plus tard avec les opcodes (TODO 10+).                 }
+Procedure AutoStack(mIdx: Integer);
+Begin
+ With MethodTab^[mIdx] do
+ Begin
+  If HasStack Then Exit; { deja defini par .limit stack }
+  If (HasCode) And (MaxStack = 0) Then
+   MaxStack := 1;  { estimation minimale par defaut }
+ End;
+End;
+
 { --- ParseDirectives : dispatcher principal des directives de classe --- }
 { Parcourt les tokens et dispatche les directives connues.                }
 { Les directives non encore implementees sont signalees et sautees.       }
@@ -2437,9 +2646,9 @@ Begin
      SkipToEOL;
     End;
    Else
-    { Directives non encore implementees (TODO 09+) : sauter la ligne }
+    { Directives non encore implementees (TODO 10+) : sauter la ligne }
     If OptVerbose Then
-     WriteLn('  [skip] directive ', CurStr, ' (TODO 09+)');
+     WriteLn('  [skip] directive ', CurStr, ' (TODO 10+)');
     SkipToEOL;
    End;  { Case }
   End
