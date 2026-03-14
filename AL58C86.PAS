@@ -129,7 +129,7 @@
             Tableaux globaux : blocs DW dans DATA avec label _A58ARR_nom
             Tables de switch : DW label1, label2, ... dans DATA
 
-  TODO 09 - VARIABLES ET AFFECTATIONS
+  TODO 09 - VARIABLES ET AFFECTATIONS [IMPLEMENTE]
             Variables globales : segment DATA, acces par label _A58V_nom
             Variables locales : pile BP, acces [BP-offset]
             Parametres par valeur (value) : copie sur pile
@@ -535,7 +535,8 @@ Type
     EK_NONE,   { void / pas de valeur             }
     EK_IMM,    { immediate dans ImmVal             }
     EK_AX,     { valeur dans AX                    }
-    EK_MEM     { adresse [BP+Offset] ou [_A58V_x]  }
+    EK_MEM,    { adresse [BP+Offset] ou [_A58V_x]  }
+    EK_STACK   { valeur sauvee sur la pile (PUSH)  }
   );
 
   TExprVal = Record
@@ -679,6 +680,11 @@ Procedure EmitEpilog; Forward;
 Function  DataAddArray(Const ALbl : TString;
                        AElemCount : Integer) : Integer; Forward;
 Procedure DataInit; Forward;
+{ TODO 09 - Variables et affectations }
+Procedure ParseVarDecl; Forward;
+Procedure ParseOwnDecl; Forward;
+Procedure ParseAssign(VarIdx : Integer); Forward;
+Procedure ParseStmt; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1586,6 +1592,11 @@ Begin
       E.Kind := EK_AX;
     End;
     EK_AX : ;
+    EK_STACK :
+    Begin
+      EmitInstr('POP', 'AX');
+      E.Kind := EK_AX;
+    End;
     EK_NONE :
     Begin
       EmitInstr('XOR', 'AX, AX');
@@ -1638,10 +1649,11 @@ End;
 Procedure EmitBinOp(Const Op : TString;
                     Var L : TExprVal; Var R : TExprVal);
 Var
-  RS     : TString;
-  LblE   : TString;
-  Acc    : LongInt;
-  Exp    : LongInt;
+  RS          : TString;
+  LblE        : TString;
+  Acc         : LongInt;
+  Exp         : LongInt;
+  SavedRInBX  : Boolean;
 Begin
   { ---- Pliage de constantes -------------------------------- }
   If (L.Kind = EK_IMM) And (R.Kind = EK_IMM) Then
@@ -1763,6 +1775,13 @@ Begin
   End;
 
   { ---- Cas general : emission 8086 ------------------------- }
+  { Si R est dans AX et L va modifier AX, sauver R dans BX }
+  SavedRInBX := False;
+  If (R.Kind = EK_AX) And (L.Kind <> EK_AX) Then
+  Begin
+    EmitInstr('MOV', 'BX, AX');
+    SavedRInBX := True;
+  End;
   ExprFlushToAX(L);
   If R.Kind = EK_IMM Then
   Begin
@@ -1802,11 +1821,25 @@ Begin
   End
   Else
   Begin
-    { R non immediat : sauvegarder L dans la pile, charger R dans BX }
-    EmitInstr('PUSH', 'AX');
-    ExprFlushToAX(R);
-    EmitInstr('MOV', 'BX, AX');
-    EmitInstr('POP', 'AX');
+    { R non immediat : preparer AX = L et BX = R }
+    If SavedRInBX Then
+    Begin
+      { BX contient deja R (sauve avant ExprFlushToAX(L)) }
+    End
+    Else If (R.Kind = EK_AX) And (L.Kind <> EK_AX) Then
+    Begin
+      { R est dans AX mais L a modifie AX : sauver R dans BX }
+      EmitInstr('MOV', 'BX, AX');
+      ExprFlushToAX(L);
+    End
+    Else
+    Begin
+      { Cas normal : sauvegarder L dans la pile, charger R dans BX }
+      EmitInstr('PUSH', 'AX');
+      ExprFlushToAX(R);
+      EmitInstr('MOV', 'BX, AX');
+      EmitInstr('POP', 'AX');
+    End;
     If      Op = '+'   Then EmitInstr('ADD', 'AX, BX')
     Else If Op = '-'   Then EmitInstr('SUB', 'AX, BX')
     Else If Op = '*'   Then EmitInstr('IMUL', 'BX')
@@ -1892,9 +1925,10 @@ Begin
         Case SymTab[VarIdx].Kind Of
           SK_VAR :
           Begin
-            If SymTab[VarIdx].ScopeLevel = 0 Then
+            If (SymTab[VarIdx].ScopeLevel = 0) Or
+               SymTab[VarIdx].IsOwn Then
             Begin
-              { Globale : acces via label DATA }
+              { Globale ou own : acces via label DATA }
               Res.Kind    := EK_MEM;
               Res.ImmVal  := 0;
               Res.TypeIdx := SymTab[VarIdx].TypeIdx;
@@ -2037,6 +2071,14 @@ Begin
     { Niveau suivant : droit-assoc -> meme prec, sinon prec+1 }
     If BinOpIsRight(Op) Then NextPrec := Prec
     Else NextPrec := Prec + 1;
+
+    { Sauvegarder le registre AX si le cote gauche y est deja }
+    { pour eviter que le parsing du cote droit ne l ecrase.    }
+    If Res.Kind = EK_AX Then
+    Begin
+      EmitInstr('PUSH', 'AX');
+      Res.Kind := EK_STACK;
+    End;
 
     ParseExprPrec(NextPrec, Right);
     EmitBinOp(Op, Res, Right);
@@ -2404,12 +2446,306 @@ Begin
 End;
 
 { ============================================================
+  TODO 09 - VARIABLES ET AFFECTATIONS [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseVarDecl : declaration de variable ------------------- }
+{ Syntaxe : integer ident [, ident]* ;                            }
+{           real ident [, ident]* ;                                }
+{           Boolean ident [, ident]* ;                             }
+{ Les variables globales (CurScope=0) sont allouees dans DATA.    }
+{ Les variables locales sont allouees sur la pile [BP-offset].    }
+Procedure ParseVarDecl;
+Var
+  TyIdx   : Integer;
+  VName   : TString;
+  Idx     : Integer;
+Begin
+  { Determiner le type }
+  If CurToken.Val = 'integer' Then TyIdx := TY_IDX_INTEGER
+  Else If CurToken.Val = 'real' Then TyIdx := TY_IDX_REAL
+  Else If CurToken.Val = 'Boolean' Then TyIdx := TY_IDX_BOOLEAN
+  Else
+  Begin
+    CompileError('type attendu (integer, real, Boolean)');
+    Exit;
+  End;
+  ParserAdvance;  { consommer le mot-cle de type }
+
+  { Si le token suivant est 'array' ou 'procedure' on quitte }
+  If (CurToken.Kind = TK_KEYWORD) And
+     ((CurToken.Val = 'array') Or (CurToken.Val = 'procedure')) Then
+    Exit;
+
+  { Boucle : ident [, ident]* }
+  Repeat
+    If CurToken.Kind <> TK_IDENT Then
+    Begin
+      CompileError('identificateur attendu dans la declaration de variable');
+      Exit;
+    End;
+    VName := CurToken.Val;
+    ParserAdvance;  { consommer l ident }
+
+    If CurFnDepth = 0 Then
+    Begin
+      { Globale (programme principal) : allouer dans DATA }
+      Idx := SymAdd(VName, SK_VAR, TyIdx, 0);
+      If Idx >= 0 Then
+      Begin
+        SymTab[Idx].ScopeLevel := 0;  { forcer niveau global }
+        DataAddWord(SymTab[Idx].MangledName, 0);
+      End;
+    End
+    Else
+    Begin
+      { Locale (dans une procedure) : allouer sur la pile }
+      Inc(CurFrameSize);
+      Idx := SymAdd(VName, SK_VAR, TyIdx, CurFrameSize * 2);
+    End;
+
+    { Virgule -> autre variable du meme type }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance  { consommer , }
+    Else
+      Break;
+  Until False;
+
+  { Consommer le ; separateur s il est present }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
+End;
+
+{ ---- ParseOwnDecl : declaration de variable own --------------- }
+{ Syntaxe : own integer ident [, ident]* ;                        }
+{ Les variables own sont allouees dans DATA (persistantes).       }
+Procedure ParseOwnDecl;
+Var
+  TyIdx   : Integer;
+  VName   : TString;
+  Idx     : Integer;
+Begin
+  { Deja positionne sur 'own', consommer }
+  ParserAdvance;
+
+  { Type obligatoire }
+  If CurToken.Kind <> TK_KEYWORD Then
+  Begin
+    CompileError('type attendu apres own');
+    Exit;
+  End;
+  If CurToken.Val = 'integer' Then TyIdx := TY_IDX_INTEGER
+  Else If CurToken.Val = 'real' Then TyIdx := TY_IDX_REAL
+  Else If CurToken.Val = 'Boolean' Then TyIdx := TY_IDX_BOOLEAN
+  Else
+  Begin
+    CompileError('type attendu apres own (integer, real, Boolean)');
+    Exit;
+  End;
+  ParserAdvance;  { consommer le type }
+
+  { Boucle : ident [, ident]* }
+  Repeat
+    If CurToken.Kind <> TK_IDENT Then
+    Begin
+      CompileError('identificateur attendu dans own');
+      Exit;
+    End;
+    VName := CurToken.Val;
+    ParserAdvance;
+
+    { Own : toujours dans DATA }
+    Idx := SymAdd(VName, SK_VAR, TyIdx, 0);
+    If Idx >= 0 Then
+    Begin
+      SymTab[Idx].IsOwn := True;
+      { Utiliser le prefixe OWN pour le label }
+      SymTab[Idx].MangledName := A58_OWN_PFX + SymNameClean(VName);
+      DataAddWord(SymTab[Idx].MangledName, 0);
+    End;
+
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance
+    Else
+      Break;
+  Until False;
+
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
+End;
+
+{ ---- ParseAssign : affectation ident := expr ----------------- }
+{ VarIdx est l index du symbole cible dans SymTab.               }
+{ Genere le code pour calculer l expression a droite puis la     }
+{ stocker dans la destination (globale, locale, own ou param).   }
+Procedure ParseAssign(VarIdx : Integer);
+Var
+  E  : TExprVal;
+  NS : TString;
+Begin
+  { Consommer := }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
+    ParserAdvance
+  Else
+  Begin
+    CompileError(':= attendu dans l''affectation');
+    Exit;
+  End;
+
+  { Evaluer l expression a droite }
+  ParseExprPrec(1, E);
+  ExprFlushToAX(E);
+
+  { Stocker AX dans la destination }
+  Case SymTab[VarIdx].Kind Of
+    SK_VAR :
+    Begin
+      If (SymTab[VarIdx].ScopeLevel = 0) Or SymTab[VarIdx].IsOwn Then
+      Begin
+        { Globale ou own : acces DATA }
+        EmitInstr('MOV', '[' + SymTab[VarIdx].MangledName + '], AX');
+      End
+      Else
+      Begin
+        { Locale : acces pile [BP-n] }
+        Str(SymTab[VarIdx].Offset, NS);
+        EmitInstr('MOV', '[BP-' + NS + '], AX');
+      End;
+    End;
+    SK_PARAM_VALUE :
+    Begin
+      { Parametre par valeur : [BP+offset] }
+      Str(SymTab[VarIdx].Offset, NS);
+      EmitInstr('MOV', '[BP+' + NS + '], AX');
+    End;
+  Else
+    CompileError('destination d''affectation invalide: ' + SymTab[VarIdx].Name);
+  End;
+End;
+
+{ ---- ParseStmt : dispatcher d instruction --------------------- }
+{ Reconnait les declarations de variables et les affectations.    }
+Procedure ParseStmt;
+Var
+  VarName : TString;
+  VarIdx  : Integer;
+Begin
+  If CurToken.Kind = TK_EOF Then Exit;
+
+  { Declaration de variable: integer/real/Boolean ident }
+  If (CurToken.Kind = TK_KEYWORD) And
+     ((CurToken.Val = 'integer') Or (CurToken.Val = 'real') Or
+      (CurToken.Val = 'Boolean')) Then
+  Begin
+    ParseVarDecl;
+    Exit;
+  End;
+
+  { Declaration own: own integer/real/Boolean ident }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'own') Then
+  Begin
+    ParseOwnDecl;
+    Exit;
+  End;
+
+  { Commentaire : 'comment' ... ';' }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'comment') Then
+  Begin
+    While (CurToken.Kind <> TK_PUNCT) Or (CurToken.Val <> ';') Do
+    Begin
+      If CurToken.Kind = TK_EOF Then Exit;
+      ParserAdvance;
+    End;
+    ParserAdvance;  { consommer ; }
+    Exit;
+  End;
+
+  { Affectation ou expression : ident := expr }
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    VarName := CurToken.Val;
+    VarIdx  := SymFind(VarName);
+    ParserAdvance;  { consommer l ident }
+
+    { Affectation }
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
+    Begin
+      If VarIdx < 0 Then
+      Begin
+        { Variable implicite : declarer comme integer globale }
+        VarIdx := SymAdd(VarName, SK_VAR, TY_IDX_INTEGER, 0);
+        If VarIdx >= 0 Then
+          DataAddWord(SymTab[VarIdx].MangledName, 0);
+        WarnMsg('variable implicite: ' + VarName);
+      End;
+      ParseAssign(VarIdx);
+    End;
+    { Consommer ; s il suit }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      ParserAdvance;
+    Exit;
+  End;
+
+  { Mots-cles non reconnus : sauter }
+  If CurToken.Kind = TK_KEYWORD Then
+  Begin
+    { begin...end : bloc imbrique }
+    If CurToken.Val = 'begin' Then
+    Begin
+      ParseBlock;
+      Exit;
+    End;
+
+    { Autres mots-cles non encore implementes : on skip }
+    ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      ParserAdvance;
+    Exit;
+  End;
+
+  { Autre : avancer }
+  ParserAdvance;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
+End;
+
+{ ============================================================
   STUBS POUR LES TODOS SUIVANTS
   ============================================================ }
 
 Procedure ParseBlock;
+Var
+  SavedFrame : Integer;
 Begin
-  { Stub : ne fait rien pour le moment }
+  If CurToken.Kind = TK_EOF Then Exit;
+
+  { Bloc begin...end }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'begin') Then
+  Begin
+    ParserAdvance;  { consommer begin }
+    SymEnterScope;
+    SavedFrame := CurFrameSize;
+
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'end')) Do
+    Begin
+      ParseStmt;
+    End;
+
+    { Restaurer la taille du frame si des locales ont ete ajoutees }
+    CurFrameSize := SavedFrame;
+    SymLeaveScope;
+
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'end') Then
+      ParserAdvance  { consommer end }
+    Else
+      CompileError('end attendu');
+  End
+  Else
+  Begin
+    { Pas un bloc begin...end : traiter comme instruction simple }
+    ParseStmt;
+  End;
 End;
 
 Procedure EmitOpen;
