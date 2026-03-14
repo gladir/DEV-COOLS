@@ -22,7 +22,7 @@
 {  TODO 04 [IMPLEMENTE] - Bassin de constantes (Constant Pool) : structures et gestion }
 {  TODO 05 [IMPLEMENTE] - Ecriture binaire du fichier .class (Big-endian)     }
 {  TODO 06 [IMPLEMENTE] - Directives de classe (.class, .super, .implements, .source) }
-{  TODO 07 - Directives de champs (.field avec descripteurs et valeurs)       }
+{  TODO 07 [IMPLEMENTE] - Directives de champs (.field avec descripteurs et valeurs) }
 {  TODO 08 - Directives de methodes (.method, .end method, .limit)            }
 {  TODO 09 - Descripteurs de types JVM : parsing et validation                }
 {  TODO 10 - Opcodes de chargement et stockage                                }
@@ -464,6 +464,12 @@ Procedure ParseSourceDirective; Forward;
 Procedure ParseInterfaceDirective; Forward;
 Procedure ParseBytecodeDirective; Forward;
 Procedure ParseDirectives; Forward;
+
+{ --- Declarations forward TODO 07 : Directives de champs --- }
+Function  ValidFieldDescriptor(Const desc: String): Boolean; Forward;
+Function  AddField(flags: Integer; Const name, desc: String): Integer; Forward;
+Procedure ParseFieldInitValue(fIdx: Integer); Forward;
+Procedure ParseFieldDirective; Forward;
 
 { ---------- Ouverture et fermeture du fichier source ---------- }
 
@@ -1811,6 +1817,214 @@ Begin
   WriteLn('  .bytecode ', ClassMajor, '.', ClassMinor);
 End;
 
+{ ============================================================================ }
+{ Directives de champs (.field avec descripteurs et valeurs)                    }
+{ ============================================================================ }
+
+{ --- ValidFieldDescriptor : valider un descripteur de champ JVM --- }
+{ Accepte: B(byte), C(char), D(double), F(float), I(int), J(long),  }
+{ S(short), Z(boolean), Lclassname;, [type (tableaux)                }
+Function ValidFieldDescriptor(Const desc: String): Boolean;
+Var p, len: Integer;
+Begin
+ ValidFieldDescriptor := False;
+ len := Length(desc);
+ If len = 0 Then Exit;
+ p := 1;
+ { Sauter les prefixes de tableau [ }
+ While (p <= len) And (desc[p] = '[') do
+  Inc(p);
+ If p > len Then Exit;  { [ tout seul }
+ Case desc[p] of
+  'B', 'C', 'D', 'F', 'I', 'J', 'S', 'Z':
+   ValidFieldDescriptor := (p = len);
+  'L':
+  Begin
+   { Doit finir par ; et avoir au moins Lx; }
+   If desc[len] = ';' Then
+    ValidFieldDescriptor := (len - p) >= 2
+   Else
+    ValidFieldDescriptor := False;
+  End;
+ Else
+  ValidFieldDescriptor := False;
+ End;
+End;
+
+{ --- AddField : creer une entree dans la table des champs --- }
+{ Retourne l'index dans FieldTab, ou 0 en cas d'erreur.        }
+Function AddField(flags: Integer; Const name, desc: String): Integer;
+Begin
+ If FieldCount >= MAX_FIELDS Then
+ Begin
+  Error('.field : trop de champs (max ' + IntToStr_(MAX_FIELDS) + ')');
+  AddField := 0;
+  Exit;
+ End;
+ Inc(FieldCount);
+ FieldTab^[FieldCount].AccFlags  := flags;
+ FieldTab^[FieldCount].NameIdx   := CPEnsureUtf8(name);
+ FieldTab^[FieldCount].DescIdx   := CPEnsureUtf8(desc);
+ FieldTab^[FieldCount].AttrCount := 0;
+ FieldTab^[FieldCount].HasInit   := False;
+ FieldTab^[FieldCount].InitCPIdx := 0;
+ FieldTab^[FieldCount].Name      := name;
+ FieldTab^[FieldCount].Desc      := desc;
+ AddField := FieldCount;
+End;
+
+{ --- ParseFieldInitValue : parser = <value> apres le descripteur --- }
+{ Gere les types : entier, flottant, chaine, long (suffixe L).       }
+{ L'attribut ConstantValue est ajoute au champ.                       }
+Procedure ParseFieldInitValue(fIdx: Integer);
+Var cpIdx: Integer; desc: String;
+Begin
+ { Le token '=' a deja ete consomme par l'appelant }
+ desc := FieldTab^[fIdx].Desc;
+ cpIdx := 0;
+ If CurTok = TK_STRING Then
+ Begin
+  { Chaine : CONSTANT_String }
+  cpIdx := CPAddString(CurStr);
+  Consume;
+ End
+ Else If CurTok = TK_INTEGER Then
+ Begin
+  If (desc = 'J') Then
+  Begin
+   { Long : CONSTANT_Long (hi=0, lo=valeur) }
+   cpIdx := CPAddLong(0, CurInt);
+   Consume;
+   { Sauter le suffixe L si present }
+   If (CurTok = TK_IDENT) And ((CurStr = 'L') or (CurStr = 'l')) Then
+    Consume;
+  End
+  Else
+  Begin
+   { Entier : CONSTANT_Integer }
+   cpIdx := CPAddInteger(CurInt);
+   Consume;
+  End;
+ End
+ Else If CurTok = TK_FLOAT Then
+ Begin
+  If (desc = 'D') Then
+  Begin
+   { Double : CONSTANT_Double (approximation via hi=0, lo=float bits) }
+   cpIdx := CPAddDouble(0, Round(CurFloat));
+   Consume;
+  End
+  Else
+  Begin
+   { Float : CONSTANT_Float }
+   cpIdx := CPAddFloat(CurFloat);
+   Consume;
+  End;
+ End
+ Else If (CurTok = TK_MINUS) Then
+ Begin
+  { Nombre negatif }
+  Consume;
+  If CurTok = TK_INTEGER Then
+  Begin
+   If (desc = 'J') Then
+   Begin
+    cpIdx := CPAddLong(-1, -CurInt);
+    Consume;
+    If (CurTok = TK_IDENT) And ((CurStr = 'L') or (CurStr = 'l')) Then
+     Consume;
+   End
+   Else
+   Begin
+    cpIdx := CPAddInteger(-CurInt);
+    Consume;
+   End;
+  End
+  Else If CurTok = TK_FLOAT Then
+  Begin
+   If (desc = 'D') Then
+   Begin
+    cpIdx := CPAddDouble(0, Round(-CurFloat));
+    Consume;
+   End
+   Else
+   Begin
+    cpIdx := CPAddFloat(-CurFloat);
+    Consume;
+   End;
+  End
+  Else
+   Error('.field : valeur initiale attendue apres ''=''');
+ End
+ Else
+  Error('.field : valeur initiale attendue apres ''=''');
+ If cpIdx > 0 Then
+ Begin
+  FieldTab^[fIdx].HasInit   := True;
+  FieldTab^[fIdx].InitCPIdx := cpIdx;
+  FieldTab^[fIdx].AttrCount := FieldTab^[fIdx].AttrCount + 1;
+ End;
+End;
+
+{ --- ParseFieldDirective : .field <access> <name> <descriptor> [= <value>] --- }
+{ Parse une declaration de champ et l'ajoute a la table des champs.              }
+Procedure ParseFieldDirective;
+Var flags, fIdx: Integer;
+    fName, fDesc: String;
+Begin
+ { Decoder les drapeaux d'acces }
+ flags := ParseAccessFlags;
+ { Lire le nom du champ }
+ If CurTok = TK_IDENT Then
+ Begin
+  fName := CurStr;
+  Consume;
+ End
+ Else
+ Begin
+  Error('.field : nom de champ attendu');
+  Exit;
+ End;
+ { Lire le descripteur de type }
+ If CurTok = TK_IDENT Then
+ Begin
+  fDesc := CurStr;
+  Consume;
+ End
+ Else
+ Begin
+  Error('.field : descripteur de type attendu');
+  Exit;
+ End;
+ { Valider le descripteur }
+ If Not ValidFieldDescriptor(fDesc) Then
+  Warning('.field : descripteur suspect ''' + fDesc + '''');
+ { Creer l'entree dans FieldTab }
+ fIdx := AddField(flags, fName, fDesc);
+ If fIdx = 0 Then Exit;
+ { Valeur initiale optionnelle : = <value> }
+ If CurTok = TK_EQUAL Then
+ Begin
+  Consume;
+  ParseFieldInitValue(fIdx);
+ End;
+ If OptVerbose Then
+ Begin
+  Write('  .field ');
+  If (flags and ACC_PUBLIC) <> 0 Then Write('public ');
+  If (flags and ACC_PRIVATE) <> 0 Then Write('private ');
+  If (flags and ACC_PROTECTED) <> 0 Then Write('protected ');
+  If (flags and ACC_STATIC) <> 0 Then Write('static ');
+  If (flags and ACC_FINAL) <> 0 Then Write('final ');
+  If (flags and ACC_VOLATILE) <> 0 Then Write('volatile ');
+  If (flags and ACC_TRANSIENT) <> 0 Then Write('transient ');
+  Write(fName, ' ', fDesc);
+  If FieldTab^[fIdx].HasInit Then
+   Write(' = [CP#', FieldTab^[fIdx].InitCPIdx, ']');
+  WriteLn;
+ End;
+End;
+
 { --- ParseDirectives : dispatcher principal des directives de classe --- }
 { Parcourt les tokens et dispatche les directives connues.                }
 { Les directives non encore implementees sont signalees et sautees.       }
@@ -1865,10 +2079,16 @@ Begin
      ParseBytecodeDirective;
      SkipToEOL;
     End;
+    DIR_FIELD:
+    Begin
+     Consume;
+     ParseFieldDirective;
+     SkipToEOL;
+    End;
    Else
-    { Directives non encore implementees (TODO 07+) : sauter la ligne }
+    { Directives non encore implementees (TODO 08+) : sauter la ligne }
     If OptVerbose Then
-     WriteLn('  [skip] directive ', CurStr, ' (TODO 07+)');
+     WriteLn('  [skip] directive ', CurStr, ' (TODO 08+)');
     SkipToEOL;
    End;  { Case }
   End

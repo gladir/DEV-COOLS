@@ -125,7 +125,7 @@ TODO 06 [IMPLEMENTE] - Directives de classe (.class, .super, .implements, .sourc
   - ConvertClassName(name) : convertir '.' en '/' si necessaire
   - Valeurs par defaut : version 49.0 (Java 5), super java/lang/Object
 
-TODO 07 - Directives de champs (.field avec descripteurs et valeurs)
+TODO 07 [IMPLEMENTE] - Directives de champs (.field avec descripteurs et valeurs)
   -------------------------------------------------------------------
   - ParseFieldDirective : .field <access_flags> <name> <descriptor>
     [= <value>]
