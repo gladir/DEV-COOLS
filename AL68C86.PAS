@@ -2449,9 +2449,10 @@ Begin
   EmitRaw('        DB      ' + IntToStr(STRPOOL_SIZE) + ' DUP(0)');
   EmitLabel('_A68_STRPOOL_TOP');
   EmitRaw('        DW      0');
-  { Buffer temporaire pour slice de tableau (TODO 18) }
+  { Buffer temporaire pour slice de tableau (TODO 18)
+    Structure : DW lwb, upb, elem_size, data_ptr (4 mots = 8 octets) }
   EmitLabel('_A68_SLICEBUF');
-  EmitRaw('        DW      0,0,0,0');
+  EmitRaw('        DW      0,0,0,0  ; slice desc [lwb,upb,esiz,data]');
   { Entrees dynamiques de DataTab }
   For I := 0 To DataCount - 1 Do
   Begin
@@ -4864,7 +4865,7 @@ Begin
   I := ModeCount;
   ModeTab[I].Name     := RowName;
   ModeTab[I].Kind     := MK_ROW;
-  ModeTab[I].Size     := 2;  { pointeur vers descripteur }
+  ModeTab[I].Size     := 2;  { taille du pointeur vers le descripteur }
   ModeTab[I].ElemIdx  := ElemModeIdx;
   ModeTab[I].FieldCnt := 0;
   Inc(ModeCount);
