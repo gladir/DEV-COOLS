@@ -4161,22 +4161,23 @@ Begin
       EmitInstr('OR', 'BX, BX');
       EmitInstr('JS', LblNeg);
 
-      { Pas positif : CMP i, limite / JG fin }
+      { Pas positif : si i <= limite, aller au corps }
       ExprLoad(VarSIdx, E);
       ExprFlushToAX(E);
       EmitInstr('CMP', 'AX, WORD PTR [SP]');
-      EmitInstr('JG', LblBody);
+      EmitInstr('JLE', LblBody);
       EmitInstr('JMP', LblIncr);
 
-      { Pas negatif : CMP i, limite / JL fin }
+      { Pas negatif : si i >= limite, aller au corps }
       EmitLabel(LblNeg);
       ExprLoad(VarSIdx, E);
       ExprFlushToAX(E);
       EmitInstr('CMP', 'AX, WORD PTR [SP]');
-      EmitInstr('JL', LblBody);
+      EmitInstr('JGE', LblBody);
+      EmitInstr('JMP', LblIncr);
 
-      { Label increment : executer le corps puis incrementer }
-      EmitLabel(LblIncr);
+      { Label corps de boucle }
+      EmitLabel(LblBody);
 
       { Sauter les virgules et tester DO }
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
@@ -4223,8 +4224,8 @@ Begin
         { Retour au test }
         EmitInstr('JMP', LblTest);
 
-        { Label fin : nettoyer la pile (step + limit) }
-        EmitLabel(LblBody);
+        { Label sortie element : nettoyer la pile (step + limit) }
+        EmitLabel(LblIncr);
         EmitInstr('ADD', 'SP, 4');
       End;
     End
