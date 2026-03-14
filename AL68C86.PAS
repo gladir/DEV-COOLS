@@ -2489,6 +2489,8 @@ Begin
   EmitRaw('        DB      ''index out of bounds'',0');
   EmitLabel('_A68_PANIC_NIL');
   EmitRaw('        DB      ''nil reference'',0');
+  EmitLabel('_A68_PANIC_HEAP');
+  EmitRaw('        DB      ''heap overflow'',0');
   { Entrees dynamiques de DataTab }
   For I := 0 To DataCount - 1 Do
   Begin
@@ -5868,16 +5870,24 @@ Begin
 
   { --- _A68RT_ALLOC : allocation heap bump --- }
   { Entree : CX=nb octets   Sortie : AX=ptr     }
+  { Erreur fatale si debordement heap             }
   EmitBlankLine;
   EmitComment('--- runtime: alloc (heap bump) ---');
   EmitLabel(A68_RT_PFX + 'ALLOC');
   EmitInstr('PUSH   BX');
-  EmitInstr('MOV    BX, OFFSET _A68_HEAP');
-  EmitInstr('ADD    BX, [_A68_HEAPTOP]');
-  EmitInstr('MOV    AX, BX');
-  EmitInstr('ADD    [_A68_HEAPTOP], CX');
+  EmitInstr('MOV    BX, [_A68_HEAPTOP]');
+  EmitInstr('ADD    BX, CX');
+  EmitInstr('CMP    BX, 4096');
+  EmitInstr('JA     ' + A68_RT_PFX + 'AL_OV');
+  EmitInstr('MOV    AX, OFFSET _A68_HEAP');
+  EmitInstr('ADD    AX, [_A68_HEAPTOP]');
+  EmitInstr('MOV    [_A68_HEAPTOP], BX');
   EmitInstr('POP    BX');
   EmitInstr('RET');
+  EmitLabel(A68_RT_PFX + 'AL_OV');
+  EmitInstr('POP    BX');
+  EmitInstr('MOV    SI, OFFSET _A68_PANIC_HEAP');
+  EmitInstr('JMP    ' + A68_RT_PFX + 'PANIC');
 
   { --- _A68RT_CONCAT : concatenation deux chaines ASCIIZ --- }
   { Entree : AX=ptr str1, BX=ptr str2                         }
@@ -5956,6 +5966,7 @@ Begin
   { --- _A68RT_STRTRIM : tranche de chaine --- }
   { Pile a l appel : [SP+2]=up, [SP+4]=lo, [SP+6]=ptr_str }
   { Sortie : AX=ptr nouvelle chaine (heap)                  }
+  { Note : indices 1-based, bornes supposees pre-validees    }
   EmitBlankLine;
   EmitComment('--- runtime: strtrim (string slice) ---');
   EmitLabel(A68_RT_PFX + 'STRTRIM');
@@ -6001,6 +6012,7 @@ Begin
 
   { --- _A68RT_POWER : exponentiation entiere --- }
   { Entree : AX=base, BX=exposant  Sortie : AX    }
+  { Note : exposant negatif retourne 0 (entier)     }
   EmitBlankLine;
   EmitComment('--- runtime: power ---');
   EmitLabel(A68_RT_PFX + 'POWER');
@@ -6012,11 +6024,18 @@ Begin
   EmitInstr('MOV    AX, 1');        { AX = resultat = 1 }
   EmitInstr('CMP    CX, 0');
   EmitInstr('JE     ' + A68_RT_PFX + 'PW_DN');
+  EmitInstr('JL     ' + A68_RT_PFX + 'PW_NG');
   EmitLabel(A68_RT_PFX + 'PW_LP');
   EmitInstr('IMUL   BX');
   EmitInstr('DEC    CX');
   EmitInstr('JNZ    ' + A68_RT_PFX + 'PW_LP');
   EmitLabel(A68_RT_PFX + 'PW_DN');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitLabel(A68_RT_PFX + 'PW_NG');
+  EmitInstr('XOR    AX, AX');       { exposant negatif -> 0 }
   EmitInstr('POP    DX');
   EmitInstr('POP    CX');
   EmitInstr('POP    BX');
