@@ -1,0 +1,531 @@
+  ADACW32.PAS - Compilateur Ada 83/95 -> Assembleur 80386 pour Windows 32 bits
+  Turbo Pascal / Free Pascal (-Mtp)
+  Cible : MASM .386 / .MODEL FLAT, PE Win32
+
+  Par defaut produit un fichier .EXE (PE Windows 32 bits).
+  Avec le parametre -obj, produit uniquement un fichier .OBJ (COFF).
+  Avec le parametre -asm, produit egalement un fichier .ASM lisible.
+  Supporte toutes les instructions de ADA86.PAS et les exemples SAMPLES\ADA\*
+
+  FEUILLE DE ROUTE - 25 TODOS
+  ============================================================
+
+  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF
+            TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings,
+              EmitExe, EmitObj, EmitAsm)
+            ParseArgs : analyser argv (source.adb [-o sortie] [-v]
+              [-d] [-w] [-obj] [-asm] [-h])
+            Par defaut : produire un .EXE Windows 32 bits (PE)
+            -obj : produire uniquement un .OBJ (format COFF 32 bits)
+            -asm : produire egalement un listing assembleur .ASM lisible
+            -o nom : specifier le nom du fichier de sortie
+            FatalError, WarnMsg, EXIT_OK / EXIT_ERROR / EXIT_USAGE
+            Detecter l extension .adb ou .ads du fichier source
+            Version, Date, aide en ligne (option -h)
+            Constantes PE/COFF : PE_DOS_MAGIC ($5A4D), PE_PE_SIG,
+              PE_MACHINE_I386, PE_OPT_SIZE, PE_MAGIC_32,
+              PE_IMG_BASE ($00400000), PE_SEC_ALIGN (4096),
+              PE_FILE_ALIGN (512), PE_SUBSYS_CUI (console)
+            Constantes binaires : MAX_BIN_CODE (65536),
+              MAX_BIN_DATA (65536), MAX_BIN_LBL (4096),
+              MAX_BIN_FIX (8192)
+            Limites internes (32 bits) : MAX_SYM=2048, MAX_SUB=256,
+              MAX_TYPE=128, MAX_PKG=32, MAX_PARAM=32, MAX_DEPTH=16,
+              MAX_LABEL=2048, MAX_STR=255, MAX_FIELD=64,
+              MAX_ENUM=64
+            Prefixes de nommage ASM : _ADA_ (variable globale),
+              _ADAF_ (procedure/function), _ADAK_ (constante chaine),
+              _ADART_ (routine runtime), _ADAL_ (label interne),
+              _ADAA_ (tableau), _ADAR_ (record),
+              _ADAP_ (package), _ADAX_ (exception handler)
+            Utilitaires : ItoS, ItoSI, UpCaseStr, AsmIdent
+
+  TODO 02 - LEXEUR (TOKENS ADA)
+            Procedure LexInit : ouvrir le fichier source, initialiser
+              l etat du lexeur (ligne, colonne, caractere courant)
+            Procedure LexClose : fermer le fichier source
+            SrcGetChar : lecture caractere par caractere, gestion colonnes,
+              detection commentaires Ada (-- jusqu en fin de ligne)
+            SkipWhitespace : espaces, tabulations, fin de ligne
+            LexIdent : identifiant ou mot-cle (insensible a la casse
+              -> upper)
+            LexNumber : entier decimal, base#valeur# (2#1010#, 16#FF#),
+              flottant (1.5, 1.5E3, 1.5E-3)
+            LexChar : 'c' -> TOK_CHAR ('' => apostrophe)
+            LexString : "..." -> TOK_STRING ("" => guillemet)
+            LexSymbol : :=  /=  >=  <=  =>  ..  et symboles simples
+            NextToken : dispatcher principal -> CurTokType / CurTokStr /
+              CurTokNum / CurTokKw
+            Types de tokens (TOK_IDENT, TOK_INTEGER, TOK_FLOAT,
+              TOK_CHAR, TOK_STRING, TOK_OP, TOK_LPAREN, TOK_RPAREN,
+              TOK_COMMA, TOK_SEMI, TOK_COLON, TOK_COLONASSIGN,
+              TOK_DOT, TOK_DOTDOT, TOK_BAR, TOK_LT, TOK_GT,
+              TOK_LE, TOK_GE, TOK_EQ, TOK_NEQ, TOK_ARROW, TOK_EOF,
+              TOK_UNKNOWN)
+            Consume, TokIsKw, TokIsOp, Expect, ExpectKw : helpers
+
+  TODO 03 - MOTS-CLES ADA ET GESTION DES ERREURS
+            Function IsKeyword(Const s: String): Integer
+            Mots-cles Ada complets a reconnaitre (KW_xxx) :
+              PROCEDURE, FUNCTION, PACKAGE, BEGIN, END, IS, WITH,
+              USE, TYPE, SUBTYPE, CONSTANT, ARRAY, RECORD, OF,
+              RANGE, IF, THEN, ELSIF, ELSE, CASE, WHEN, OTHERS,
+              LOOP, EXIT, WHILE, FOR, IN, REVERSE, RETURN, NULL,
+              RAISE, EXCEPTION, PRAGMA, RENAMES, SEPARATE, ABSTRACT,
+              PRIVATE, BODY, AND, OR, NOT, XOR, MOD, REM, NEW,
+              ALL, ACCESS, OUT, DECLARE, DO, GOTO, ABS, DELTA,
+              DIGITS, AT, ACCEPT, TASK, PROTECTED, GENERIC, LIMITED,
+              TAGGED, SELECT, TERMINATE, DELAY, UNTIL, REQUEUE,
+              ENTRY, INTERFACE, OVERRIDING, SYNCHRONIZED, SOME,
+              TRUE, FALSE, AND THEN, OR ELSE, IN OUT
+            Constantes KW_PROCEDURE..KW_INOUT (76 mots-cles)
+            Error(msg) : incrementer error_count, afficher ligne + message
+            Warning(msg) : avertissement non bloquant
+            SkipToSemi : consommer jusqu a ';' pour resynchroniser
+            SkipToEnd : consommer jusqu a END correspondant
+            FatalError(msg) : afficher + Halt(1)
+            BilanCompilation : afficher stats (symboles, types, erreurs)
+
+  TODO 04 - TABLE DES SYMBOLES (32 BITS)
+            Type TSymEntry : Name (String[48]), AsmLabel (String[48]),
+              TypeIdx (Integer), StoreClass (Integer),
+              BpOffset (Integer), ArraySize (Integer),
+              CharLen (Integer), IsConst (Boolean),
+              ScopeLev (Integer), InitNum (LongInt),
+              InitStr (String[64]), HasInit (Boolean)
+            SymTab[0..MAX_SYM-1] / SymCount
+            Procedure InitSymTable / Function FindSym / Function AddSym
+            Function FindSymLocal : dans le scope courant uniquement
+            AddSym : calcul automatique BpOffset pour STORE_AUTO
+            Tailles 32 bits : Integer = DD (4 octets),
+              Float = DQ (8 octets stub), Boolean = DB (1 octet),
+              Character = DB (1 octet), String = DB n
+            Classes d entreposage : STORE_AUTO (pile EBP),
+              STORE_STATIC (segment .DATA), STORE_CONST (immediate),
+              STORE_PARAM (EBP+n)
+            Modes parametres : PARAM_IN, PARAM_OUT, PARAM_INOUT
+            GetSymSize(sym_idx) : retourne la taille en octets
+
+  TODO 05 - TABLES DES TYPES ET SOUS-PROGRAMMES (32 BITS)
+            Type TSubEntry : Name (String[48]), AsmLabel (String[48]),
+              RetType (Integer), ParamCount (Integer),
+              ParamNames[1..MAX_PARAM] of String[48],
+              ParamTypes[1..MAX_PARAM] of Integer,
+              ParamModes[1..MAX_PARAM] of Integer,
+              IsForward (Boolean), IsFunction (Boolean),
+              FrameSize (Integer)
+            Type TTypeEntry : Name (String[48]), Kind (Integer),
+              BaseType (Integer), LoBound (LongInt), HiBound (LongInt),
+              FieldCount (Integer),
+              FieldNames[1..MAX_FIELD] of String[48],
+              FieldTypes[1..MAX_FIELD] of Integer,
+              FieldOffs[1..MAX_FIELD] of Integer,
+              ElemType (Integer), ElemSize (Integer),
+              EnumCount (Integer),
+              EnumNames[1..MAX_ENUM] of String[48],
+              TotalSize (Integer)
+            Type TPkgEntry : Name (String[48]), IsStandard (Boolean),
+              UseActive (Boolean)
+            SubTab[0..MAX_SUB-1] / SubCount
+            TypeTab[0..MAX_TYPE-1] / TypeCount
+            PkgTab[0..MAX_PKG-1] / PkgCount
+            InitTypeTable, AddType, FindType
+            InitSubTable, AddSub, FindSub
+            InitPkgTable, AddPkg, FindPkg
+            Types predefinis : INTEGER (DD 4), FLOAT (DQ 8),
+              BOOLEAN (DB 1), CHARACTER (DB 1), STRING (DB n)
+            Categorie de types : TK_PREDEF, TK_ENUM, TK_RANGE,
+              TK_ARRAY, TK_RECORD, TK_ACCESS, TK_DERIVED
+            GetTypeSize(type_idx) : taille en octets selon le type
+
+  TODO 06 - GESTION DES SCOPES ET PILE DE SCOPES
+            Type TScopeEntry : Kind (Integer), SubIdx (Integer),
+              BpTop (Integer), SymStart (Integer),
+              LblExit (String[16]), LblCont (String[16]),
+              LblEnd (String[16]),
+              HasExcept (Boolean), LblExcept (String[16])
+            Pile de scopes : chaque scope maintient ses propres
+              variables locales, offset EBP courant, labels sortie
+            Scopes supportes : SK_GLOBAL, SK_PROC, SK_FUNC,
+              SK_BLOCK, SK_LOOP, SK_EXCEPT, SK_PACKAGE
+            PushScope(kind, sub_idx) : empiler + initialiser champs
+            PopScope : depiler, liberer les symboles locaux
+            CurrentScope, CurrentSub : accesseurs
+            AllocLocal(size) : incrementer bp_top, retourner bp_offset
+            EnterLoop(lbl_cont, lbl_end) : enregistrer labels de boucle
+            Offset EBP negatif pour locales [EBP-n]
+            Offset EBP positif pour parametres [EBP+8], [EBP+12]...
+            Convention STDCALL Win32 : parametres droite a gauche
+
+  TODO 07 - GENERATEUR DE CODE BAS NIVEAU 80386
+            Emit(s), EmitI(s), EmitLabel(lbl), EmitComment(s), EmitBlank
+            NewLabel : generer _ADAL_xxxx (compteur label_counter)
+            AsmStrLit(s) : ajouter litteral chaine dans str_table +
+              retourner label _ADAK_1, _ADAK_2 ...
+            GenLoadVar(sym_idx) : charger variable dans EAX
+              STORE_STATIC -> MOV EAX, DWORD PTR [_ADA_x]
+              STORE_AUTO   -> MOV EAX, DWORD PTR [EBP-n]
+              STORE_PARAM  -> MOV EAX, DWORD PTR [EBP+n]
+              TYPE Character/Boolean -> MOVZX EAX, BYTE PTR [...]
+            GenStoreVar(sym_idx) : stocker EAX dans variable
+              MOV DWORD PTR [...], EAX ou MOV BYTE PTR [...], AL
+            GenLoadConst(val) : MOV EAX, val
+            GenPrologue(frame_size) :
+              PUSH EBP / MOV EBP, ESP / SUB ESP, n
+            GenEpilogue(frame_size, param_bytes) :
+              MOV ESP, EBP / POP EBP / RET n (callee-cleanup STDCALL)
+            GenPushEAX, GenPopEAX, GenPushEBX, GenPopEBX
+            GenCall(label) : CALL label
+
+  TODO 08 - PARSEUR D'EXPRESSIONS : PRECEDENCES ADA (32 BITS)
+            Expression Ada (priorites croissantes) :
+              Niveau 1 : and then | or else      (court-circuit)
+              Niveau 2 : and | or | xor           (logique bit)
+              Niveau 3 : not                      (unaire logique)
+              Niveau 4 : = /= < <= > >=          (relationnels)
+              Niveau 5 : .. (plage)
+              Niveau 6 : + - &                    (additive + concat)
+              Niveau 7 : unaire + -
+              Niveau 8 : * / mod rem              (multiplicative)
+              Niveau 9 : ** abs                   (puissance/abs)
+              Niveau 10 : primaire (lit, ident, appel, (expr))
+            ParseExpr -> ParseOrElse -> ParseAndThen -> ParseOr
+              -> ParseAnd -> ParseNot -> ParseRelation -> ParseSimple
+              -> ParseTerm -> ParseFactor -> ParsePrimary
+            ParsePrimary : litteraux entiers/flottants/char/string,
+              identifiants, appels de fonction, (expr), TRUE/FALSE
+            Calculs en registres 32 bits (EAX, EBX, ECX, EDX) :
+              GenBinOp : ADD/SUB/IMUL EAX,EBX / CDQ+IDIV EBX
+              GenRelOp : CMP EAX,EBX + SETcc AL + MOVZX EAX,AL
+              GenModOp : CDQ + IDIV EBX -> MOV EAX, EDX (reste)
+
+  TODO 09 - PARSEUR : WITH ET USE
+            ParseWithUse : traiter WITH/USE en debut de programme
+            WITH pkg1, pkg2, ... ;  -> enregistrer dans PkgTab
+            USE pkg1, pkg2, ... ;   -> activer acces direct (UseActive)
+            Packages standard reconnus :
+              Ada.Text_IO, Ada.Integer_Text_IO, Ada.Float_Text_IO,
+              Ada.Numerics, System
+            Pour tout autre package : avertissement "package non
+              implemente"
+            Marquer les packages importes IsStandard := True
+
+  TODO 10 - PARSEUR : DECLARATIONS DE TYPES UTILISATEUR
+            ParseTypeDecl :
+              TYPE nom IS definition ;
+            ParseSubtypeDecl :
+              SUBTYPE nom IS base [RANGE lo .. hi] ;
+            Definitions supportees :
+              (enum1, enum2, ...)         -> type enumere
+              RANGE lo .. hi              -> sous-type entier
+              ARRAY (lo .. hi) OF type   -> tableau 1D borne fixe
+              ARRAY (type RANGE <>) OF type -> non-contraint (stub)
+              RECORD champ : type; ... END RECORD -> enregistrement
+              NEW type                    -> derivation simple (alias)
+              ACCESS type                 -> pointeur (32 bits)
+            GenTypeData : pour tableaux/records -> espace .DATA ou pile
+            Tailles 32 bits : tableaux = (hi-lo+1) * elem_size,
+              records = somme des champs (alignes sur 4 octets)
+
+  TODO 11 - PARSEUR : DECLARATIONS D'OBJETS (VARIABLES ET CONSTANTES)
+            ParseObjectDecl :
+              nom [, nom2 ...] : [CONSTANT] type [:= expr] ;
+            Detecter CONSTANT -> IsConst := True, STORE_CONST
+            Variables globales (scope_lev = 0) -> STORE_STATIC, .DATA
+              TYPE Integer : _ADA_nom DD 0
+              TYPE Float   : _ADA_nom DQ 0
+              TYPE Boolean : _ADA_nom DB 0
+              TYPE Character : _ADA_nom DB 0
+            Variables locales (scope_lev > 0) -> STORE_AUTO, pile EBP
+            Evaluer l expression d initialisation si presente
+            Pour tableaux : emettre DD/DB DUP(?) ou bloc d init
+            Pour records : emettre champ par champ
+
+  TODO 12 - PARSEUR : SIGNATURES PROCEDURE ET FUNCTION
+            ParseProcedureSpec :
+              PROCEDURE nom [(params)] ;
+            ParseFunctionSpec :
+              FUNCTION nom [(params)] RETURN type ;
+            Forme des parametres :
+              nom [, nom2] : [IN | IN OUT | OUT] type [:= default]
+            AddSub(nom, ...) avec IsForward := True
+            Enregistrer ParamNames, ParamTypes, ParamModes
+            IN : passage par valeur (PUSH 32 bits)
+            OUT / IN OUT : passage par adresse (LEA + PUSH)
+            Convention STDCALL : parametres droite a gauche
+
+  TODO 13 - PARSEUR : CORPS PROCEDURE ET FUNCTION (32 BITS)
+            ParseProcedureBody :
+              PROCEDURE nom [(params)] IS
+                declarative_part
+              BEGIN
+                statements
+              [EXCEPTION
+                exception_handlers]
+              END [nom] ;
+            ParseFunctionBody :
+              FUNCTION nom [(params)] RETURN type IS
+                declarative_part
+              BEGIN
+                statements
+              [EXCEPTION
+                exception_handlers]
+              END [nom] ;
+            PushScope(SK_PROC / SK_FUNC)
+            ParseDeclarativePart : types, constantes, variables,
+              sous-programmes imbriques
+            GenPrologue : PUSH EBP / MOV EBP, ESP / SUB ESP, frame
+            ParseSequenceOfStatements
+            GenEpilogue : MOV ESP, EBP / POP EBP / RET n
+            PopScope
+            Resultat FUNCTION dans EAX (ou EDX:EAX pour 64 bits)
+
+  TODO 14 - PARSEUR : PACKAGE SPEC ET BODY
+            ParsePackageSpec :
+              PACKAGE nom IS
+                [PRIVATE]
+                declarations publiques
+              END [nom] ;
+            ParsePackageBody :
+              PACKAGE BODY nom IS
+                declarations privees
+                [BEGIN init_statements END [nom] ;]
+              END [nom] ;
+            PackageSpec : enregistrer exports dans SubTab / TypeTab
+            PackageBody : generer les corps des sous-programmes
+            Init body : generer _ADAP_nom_INIT appelee au demarrage
+            Packages Ada.Text_IO : generer stubs Put/Put_Line/Get/
+              Get_Line en appelant les helpers runtime Win32
+
+  TODO 15 - PARSEUR : DISPATCHER PRINCIPAL DES INSTRUCTIONS
+            Procedure ParseStatement
+            Dispatcher selon le token courant :
+              Identifiant + ':=' -> ParseAssignment
+              Identifiant + '(' ou sans -> ParseProcedureCall
+              IF           -> ParseIf
+              CASE         -> ParseCase
+              LOOP         -> ParseLoop
+              WHILE        -> ParseWhile
+              FOR          -> ParseFor
+              RETURN       -> ParseReturn
+              RAISE        -> ParseRaise
+              NULL         -> ParseNull
+              EXIT         -> ParseExit
+              BEGIN        -> ParseBeginBlock
+              PRAGMA       -> ParsePragma
+              GOTO         -> ParseGoto
+              DECLARE      -> ParseDeclareBlock
+            ParseSequenceOfStatements : boucle Until IsEndBoundary
+            Resynchronisation sur erreur : SkipToSemi
+            Gestion du point-virgule terminateur
+
+  TODO 16 - PARSEUR : AFFECTATION ET APPELS DE PROCEDURE
+            ParseAssignment :
+              ident [.field | (index)] := expr ;
+              GenLoadAddr(lhs) pour obtenir adresse destination
+              ParseExpr pour RHS
+              GenStoreAddr -> MOV [...], EAX
+            ParseProcedureCall :
+              nom [(arg1, arg2, ...)] ;
+              FindSub -> verifier arguments vs parametres
+              Pousser arguments 32 bits (IN par valeur PUSH EAX,
+                OUT/IN OUT par adresse LEA EAX,[var] + PUSH EAX)
+              CALL _ADAF_nom
+              Convention STDCALL : callee-cleanup (RET n)
+            ParseNomQualified : ident.ident (pkg.proc, rec.field)
+
+  TODO 17 - PARSEUR : IF/ELSIF/ELSE ET CASE/WHEN/OTHERS (32 BITS)
+            ParseIf :
+              IF cond THEN stmts
+              [ELSIF cond THEN stmts] ...
+              [ELSE stmts]
+              END IF ;
+              Evaluer condition -> EAX
+              TEST EAX, EAX + JZ _ADAL_elsif ou _ADAL_else
+              Chaine ELSIF avec labels de saut
+              JMP _ADAL_endif apres chaque branche
+            ParseCase :
+              CASE expr IS
+                WHEN valeur [| valeur2] => stmts
+                [WHEN OTHERS => stmts]
+              END CASE ;
+              Charger expression -> EDX
+              CMP EDX, imm32 / JNE _ADAL_next pour chaque WHEN
+              WHEN val1 | val2 : serie CMP + JE _ADAL_match
+              WHEN OTHERS = clause par defaut
+
+  TODO 18 - PARSEUR : BOUCLES LOOP/WHILE/FOR ET EXIT (32 BITS)
+            ParseLoop :
+              LOOP stmts END LOOP ;    (boucle infinie)
+              _ADAL_top: corps + JMP _ADAL_top
+            ParseWhile :
+              WHILE cond LOOP stmts END LOOP ;
+              _ADAL_top: evaluer cond -> TEST EAX,EAX + JZ _ADAL_end
+            ParseFor :
+              FOR ident IN [REVERSE] lo .. hi LOOP stmts END LOOP ;
+              Variable de boucle implicite (STORE_AUTO, lecture seule)
+              REVERSE : decrementer de hi vers lo
+              Compteur en [EBP-n], CMP + JG/JL _ADAL_end
+            ParseExit :
+              EXIT [WHEN cond] ;
+              JMP _ADAL_end (ou conditionnel TEST+JZ)
+              Respecter les boucles imbriquees (scope_stack)
+            ParseReturn :
+              RETURN [expr] ;
+              FUNCTION : stocker resultat dans EAX
+              JMP _ADAL_exit
+
+  TODO 19 - PARSEUR : EXCEPTIONS RAISE ET HANDLERS
+            Declarations : nom : EXCEPTION ;
+            ParseRaise :
+              RAISE [nom] ;
+              JMP _ADAX_handler (ou sortie programme)
+            ParseExceptionHandler :
+              BEGIN ... EXCEPTION
+                WHEN nom => stmts
+                WHEN OTHERS => stmts
+              END ;
+              Generer _ADAL_try, _ADAX_handler
+              Mecanisme simple par table de sauts
+            Exceptions standard : CONSTRAINT_ERROR, PROGRAM_ERROR,
+              STORAGE_ERROR, TASKING_ERROR (stubs)
+
+  TODO 20 - PARSEUR : OPERATIONS SUR TABLEAUX (32 BITS)
+            Acces indexe : ident(index) (Ada utilise () pas [])
+            Calcul d adresse 32 bits :
+              base + (index - lo_bound) * elem_size
+              LEA EAX, [_ADAA_x] / MOV EBX, index
+              SUB EBX, lo / IMUL EBX, elem_size / acces [EAX+EBX]
+            GenLoadElement : charger element dans EAX
+            GenStoreElement : stocker EAX dans element
+            Attributs tableau :
+              T'FIRST  -> constante lo_bound
+              T'LAST   -> constante hi_bound
+              T'LENGTH -> hi_bound - lo_bound + 1
+            Slices : T(a..b) -> stub (avertissement)
+
+  TODO 21 - PARSEUR : OPERATIONS SUR RECORDS (32 BITS)
+            Acces champ : var.champ -> adresse base + offset_champ
+            Calcul offset par sommation des tailles anterieures
+              (alignement 4 octets)
+            GenLoadField(sym_idx, field_idx) :
+              LEA EAX, [base] / MOV EAX, [EAX+offset]
+            GenStoreField(sym_idx, field_idx) :
+              LEA EBX, [base] / MOV [EBX+offset], EAX
+            Affectation agregat : (champ => val, ...) -> sequence init
+            Records imbrique : var.champ.sous_champ (recursif)
+            Attribut record : T'SIZE -> somme des tailles
+
+  TODO 22 - STUBS ADA.TEXT_IO : SORTIE CONSOLE WIN32
+            Generer des stubs helpers Win32 pour les appels Text_IO :
+            Put(item) : afficher entier, flottant, char ou chaine
+              TYPE Integer -> CALL _ADART_PRINTINT
+              TYPE String  -> PUSH OFFSET str + CALL _ADART_PRINT
+              TYPE Character -> CALL _ADART_PRINTCHR
+            Put_Line(item) : Put + CALL _ADART_CRLF
+            Get(var) : lire entier ou char depuis stdin (ReadFile)
+            Get_Line(str, last) : lire chaine + retourner longueur
+            New_Line [(n)] : emettre n CR+LF (defaut 1)
+            Set_Col(n) : stub (avertissement "non implemente")
+            Initialiser _ADART_HSTDOUT via GetStdHandle(-11)
+            Initialiser _ADART_HSTDIN via GetStdHandle(-10)
+
+  TODO 23 - GENERATION : EN-TETE ASSEMBLEUR 80386 ET SEGMENT .DATA
+            Procedure EmitHeader :
+              '; Generated by ADACW32 V0.1'
+              '.386'
+              '.MODEL FLAT, STDCALL'
+              'OPTION CASEMAP:NONE'
+              Declarations EXTRN pour API Win32 :
+                ExitProcess, GetStdHandle, WriteFile, ReadFile,
+                GetProcessHeap, HeapAlloc, HeapFree
+              '.STACK 4096'
+              '_TEXT SEGMENT DWORD PUBLIC ''CODE'''
+              'ASSUME CS:_TEXT'
+            Procedure EmitDataSeg :
+              Variables globales Integer : _ADA_nom DD 0
+              Variables globales Float   : _ADA_nom DQ 0
+              Variables globales Boolean : _ADA_nom DB 0
+              Variables globales Char    : _ADA_nom DB 0
+              Tableaux : _ADAA_nom DD n DUP(0)
+              Records  : _ADAR_nom DB total_size DUP(0)
+              Chaines litterales : _ADAK_1, _ADAK_2... DB 'texte',0
+              Tampons runtime : _ADART_NUMBUF, _ADART_STRBUF,
+                _ADART_INPUTBUF, _ADART_CRLF_DATA, _ADART_HSTDOUT,
+                _ADART_HSTDIN
+            Mode -asm : ecrire fichier .ASM avec commentaires
+
+  TODO 24 - GENERATION : POINT D'ENTREE WIN32 ET HELPERS RUNTIME
+            Procedure EmitEntryPoint :
+              _ADAF_main:
+              PUSH EBP / MOV EBP, ESP
+              Initialiser stdout : PUSH -11 / CALL GetStdHandle
+                MOV [_ADART_HSTDOUT], EAX
+              Initialiser stdin : PUSH -10 / CALL GetStdHandle
+                MOV [_ADART_HSTDIN], EAX
+              Eventuels CALL _ADAP_xxx_INIT pour packages avec BEGIN
+              CALL _ADAF_nom_procedure (procedure principale Ada)
+              PUSH 0 / CALL ExitProcess
+            Procedure EmitRuntimeHelpers :
+              _ADART_CRLF     : ecrire CR+LF via WriteFile
+              _ADART_PRINT    : EAX=ptr ASCIIZ -> WriteFile(hStdOut)
+              _ADART_NUMTOSTR : EAX=entier -> ASCIIZ dans _ADART_NUMBUF
+              _ADART_PRINTINT : EAX=entier -> NUMTOSTR + PRINT
+              _ADART_PRINTCHR : AL=caractere -> WriteFile 1 octet
+              _ADART_READINT  : ReadFile + parsing ASCII -> EAX
+              _ADART_READSTR  : ReadFile -> copier dans buffer
+              _ADART_STRLEN   : EAX=ptr ASCIIZ -> EAX=longueur
+              _ADART_STRCOPY  : ESI=src, EDI=dst, ECX=max -> copie
+              _ADART_STRCONCAT: coller ESI apres EDI (ASCIIZ)
+              _ADART_CHKRANGE : verifier borne, sinon Constraint_Error
+              _ADART_ERROR    : afficher message + ExitProcess(1)
+            Procedure Compile :
+              1. Valider ParamStr(1) = source .ADB ou .ADS
+              2. Ouvrir source, creer fichier temporaire (.$$T)
+              3. InitAll (New() pour toutes les tables sur le tas)
+              4. Enregistrer types predefinis (TODO 05)
+              5. NextToken ; parseur principal :
+                   ParseWithUse* -> ParseDeclarativePart ->
+                   ParseProcedureBody (programme Ada = procedure
+                   de library unit avec Begin..End)
+              6. Close fichier temporaire
+              7. Ouvrir fichier sortie final
+              8. EmitHeader ; EmitDataSeg ; EmitEntryPoint
+              9. AppendFileToOutput(tmp) [corps des proc/func]
+             10. EmitRuntimeHelpers ; EmitClose
+             11. Close, Erase(tmp)
+             12. Dispose() toutes les tables, BilanCompilation
+
+  TODO 25 - GENERATION FINALE : LINKER PE, FICHIERS .OBJ ET EXEMPLES
+            Procedure EmitClose : finaliser l emission ASM
+              EmitRuntimeHelpers + '_TEXT ENDS' + EmitDataSeg +
+              'END _ADAF_main'
+            Procedure BinInit / BinEmit / BinEmitData / BinFixup
+            Si EmitExe (par defaut) :
+              Construire l image PE complete en memoire :
+              - DOS stub header (MZ + message + offset PE)
+              - PE signature + COFF header (Machine=i386)
+              - Optional header (ImageBase=$00400000, EntryPoint,
+                SectionAlignment=4096, FileAlignment=512,
+                Subsystem=CUI console)
+              - Section .text (code machine 80386)
+              - Section .data (variables et litteraux)
+              - Section .idata (Import Address Table pour
+                kernel32.dll : ExitProcess, GetStdHandle,
+                WriteFile, ReadFile, GetProcessHeap,
+                HeapAlloc, HeapFree)
+              Ecrire le fichier .EXE resultant
+            Si EmitObj (-obj) :
+              Construire un fichier COFF .OBJ 32 bits :
+              - COFF header + sections .text, .data
+              - Table de symboles et relocations
+              - Compatible avec les linkers Win32 (LINK.EXE)
+            Si EmitAsm (-asm) :
+              Ecrire le fichier .ASM lisible en parallele
+              (genere pendant la compilation, pas de passe
+              supplementaire)
+            Exemples de test : SAMPLES\ADA\*.ADB
+              HELLO.ADB, T01_HELLO.ADB, T02_LOOPS.ADB,
+              T03_VARS.ADB, T04_TYPES.ADB, T05_FUNC.ADB,
+              T06_COND.ADB, TEST.ADB
+            Rapport de compilation : 0 erreurs, N symboles, M types
