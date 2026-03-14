@@ -1,0 +1,36 @@
+COMMENT test_for.a60 - Test de la boucle FOR (TODO 14);
+BEGIN
+  INTEGER I;
+  INTEGER S;
+
+  COMMENT Test 1 : FOR STEP/UNTIL simple;
+  S := 0;
+  FOR I := 1 STEP 1 UNTIL 5 DO
+    S := S + I;
+  OUTINTEGER(1, S);
+  NEWLINE(1, 1);
+
+  COMMENT Test 2 : FOR STEP/UNTIL avec pas de 2;
+  S := 0;
+  FOR I := 1 STEP 2 UNTIL 9 DO
+    S := S + I;
+  OUTINTEGER(1, S);
+  NEWLINE(1, 1);
+
+  COMMENT Test 3 : FOR simple (one-shot);
+  S := 0;
+  FOR I := 42 DO
+    S := I;
+  OUTINTEGER(1, S);
+  NEWLINE(1, 1);
+
+  COMMENT Test 4 : FOR STEP/UNTIL avec bloc BEGIN/END;
+  S := 0;
+  FOR I := 1 STEP 1 UNTIL 3 DO
+  BEGIN
+    S := S + I;
+    S := S + 10
+  END;
+  OUTINTEGER(1, S);
+  NEWLINE(1, 1)
+END

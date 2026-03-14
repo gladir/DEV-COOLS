@@ -202,7 +202,7 @@
             Expression conditionnelle : IF b THEN e1 ELSE e2
               Meme logique de saut, resultat dans AX
 
-  TODO 14 - BOUCLE FOR (STEP/UNTIL/WHILE)
+  TODO 14 - BOUCLE FOR (STEP/UNTIL/WHILE) [IMPLEMENTE]
             ParseForStmt : FOR var := elements DO stmt
             Forme STEP/UNTIL : FOR i := lo STEP s UNTIL hi DO ...
               Initialiser i := lo
@@ -613,6 +613,7 @@ Var
   { Label sequentiel }
   LabelSeq   : Integer;
   IfCount    : Integer;    { TODO 13 : compteur pour IF/THEN/ELSE }
+  ForCount   : Integer;    { TODO 14 : compteur pour FOR loops }
 
   { Table des symboles (TODO 05) }
   SymTab       : Array[0..MAX_SYM - 1] Of TSymRec;
@@ -715,6 +716,8 @@ Procedure ParseExprStmt; Forward;
 Procedure ParseStmt; Forward;
 { ---- Forward declarations (TODO 13) ----------------------- }
 Procedure ParseIfStmt; Forward;
+{ ---- Forward declarations (TODO 14) ----------------------- }
+Procedure ParseForStmt; Forward;
 { ---- Forward declarations (TODO 10) ----------------------- }
 Procedure ParseProcCall(Const ProcName : TString;
                         ProcSIdx : Integer;
@@ -1011,6 +1014,7 @@ Begin
   RuntimeEmitted := False;
   IOEmitted := False;  { TODO 12 }
   IfCount := 0;        { TODO 13 }
+  ForCount := 0;       { TODO 14 }
   { Table des symboles (TODO 05) }
   SymInit;
   { Systeme de types (TODO 06) }
@@ -3225,6 +3229,13 @@ Begin
     Exit;
   End;
 
+  { FOR loop statement (TODO 14) }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'FOR') Then
+  Begin
+    ParseForStmt;
+    Exit;
+  End;
+
   { Expression ou affectation }
   ParseExprStmt;
 End;
@@ -3850,6 +3861,13 @@ Begin
       Continue;
     End;
 
+    { FOR loop statement (TODO 14) }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'FOR') Then
+    Begin
+      ParseForStmt;
+      Continue;
+    End;
+
     { Affectation ident := expr (TODO 09) }
     If (CurToken.Kind = TK_IDENT) Then
     Begin
@@ -3873,9 +3891,7 @@ Begin
         (CurToken.Val = 'LABEL') Or
         (CurToken.Val = 'PROCEDURE') Or (CurToken.Val = 'OWN') Or
         (CurToken.Val = 'VALUE') Or (CurToken.Val = 'SWITCH') Or
-        (CurToken.Val = 'COMMENT') Or (CurToken.Val = 'FOR') Or
-        (CurToken.Val = 'WHILE') Or (CurToken.Val = 'STEP') Or
-        (CurToken.Val = 'UNTIL') Or (CurToken.Val = 'DO') Or
+        (CurToken.Val = 'COMMENT') Or
         (CurToken.Val = 'GO') Or (CurToken.Val = 'GOTO') Or
         (CurToken.Val = 'TO')) Then
     Begin
@@ -4027,6 +4043,296 @@ Begin
     { Pas de ELSE : le label else et endif sont le meme point }
     EmitLabel(LblElse);
   End;
+End;
+
+{ ============================================================
+  TODO 14 - BOUCLE FOR (STEP/UNTIL/WHILE) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseForStmt : FOR var := elements DO stmt -----------
+  Implemente la boucle FOR d'Algol 60 avec trois formes :
+  1) STEP/UNTIL : FOR i := lo STEP s UNTIL hi DO stmt
+     Initialise i := lo, teste la condition de fin selon le
+     signe du pas (JG si positif, JL si negatif), incremente.
+  2) WHILE : FOR i := expr WHILE cond DO stmt
+     Affecte i := expr, teste la condition booleenne.
+  3) Simple : FOR i := expr DO stmt (une seule iteration)
+  Les elements peuvent etre combines avec des virgules :
+    FOR i := e1, e2 STEP s UNTIL hi, e3 WHILE cond DO stmt
+  Chaque element est traite sequentiellement.
+  Labels : _A60L_FTEST_N_M, _A60L_FINCR_N_M, _A60L_FEND_N,
+           _A60L_FNEG_N_M, _A60L_FBODY_N_M, _A60L_FWTEST_N_M }
+Procedure ParseForStmt;
+Var
+  MyForNum   : Integer;
+  ElemNum    : Integer;
+  LblEnd     : TString;
+  LblTest    : TString;
+  LblIncr    : TString;
+  LblNeg     : TString;
+  LblBody    : TString;
+  LblWTest   : TString;
+  VarName    : TString;
+  VarSIdx    : Integer;
+  E          : TExprVal;
+  HasComma   : Boolean;
+Begin
+  Inc(ForCount);
+  MyForNum := ForCount;
+  ElemNum  := 0;
+  EmitComment('FOR statement #' + IntToStr_(MyForNum));
+
+  LblEnd := '_A60L_FEND_' + IntToStr_(MyForNum);
+
+  { Consommer FOR }
+  ParserAdvance;
+
+  { Variable de boucle }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('variable attendue apres FOR');
+    Exit;
+  End;
+  VarName := CurToken.Val;
+  VarSIdx := SymFind(VarName);
+  If VarSIdx < 0 Then
+  Begin
+    CompileError('variable non declaree : ' + VarName);
+    Exit;
+  End;
+  ParserAdvance;  { consommer le nom de variable }
+
+  { Consommer := }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
+    ParserAdvance
+  Else
+  Begin
+    CompileError(':= attendu apres variable FOR');
+    Exit;
+  End;
+
+  { Boucle sur les elements de la liste FOR }
+  Repeat
+    Inc(ElemNum);
+    HasComma := False;
+
+    { Evaluer la premiere expression (valeur initiale) }
+    ParseExpr(E);
+    ExprFlushToAX(E);
+    ExprStore(VarSIdx);
+    EmitComment(VarName + ' := element #' + IntToStr_(ElemNum));
+
+    { Determiner la forme : STEP/UNTIL, WHILE, ou simple (DO) }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'STEP') Then
+    Begin
+      { ---- Forme STEP/UNTIL ---- }
+      LblTest := '_A60L_FTEST_' + IntToStr_(MyForNum) + '_' + IntToStr_(ElemNum);
+      LblIncr := '_A60L_FINCR_' + IntToStr_(MyForNum) + '_' + IntToStr_(ElemNum);
+      LblNeg  := '_A60L_FNEG_'  + IntToStr_(MyForNum) + '_' + IntToStr_(ElemNum);
+      LblBody := '_A60L_FBODY_' + IntToStr_(MyForNum) + '_' + IntToStr_(ElemNum);
+      EmitComment('FOR STEP/UNTIL element #' + IntToStr_(ElemNum));
+
+      ParserAdvance;  { consommer STEP }
+
+      { Evaluer le pas (step) -> empiler }
+      ParseExpr(E);
+      ExprFlushToAX(E);
+      EmitInstr('PUSH', 'AX');  { sauvegarder le pas sur la pile }
+
+      { Consommer UNTIL }
+      If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'UNTIL') Then
+        ParserAdvance
+      Else
+      Begin
+        CompileError('UNTIL attendu apres STEP');
+        Exit;
+      End;
+
+      { Evaluer la limite -> empiler }
+      ParseExpr(E);
+      ExprFlushToAX(E);
+      EmitInstr('PUSH', 'AX');  { sauvegarder la limite sur la pile }
+
+      { Label de test }
+      EmitLabel(LblTest);
+      { Charger le pas depuis la pile [SP+2] }
+      EmitInstr('MOV', 'BX, WORD PTR [SP+2]');
+      { Tester le signe du pas }
+      EmitInstr('OR', 'BX, BX');
+      EmitInstr('JS', LblNeg);
+
+      { Pas positif : CMP i, limite / JG fin }
+      ExprLoad(VarSIdx, E);
+      ExprFlushToAX(E);
+      EmitInstr('CMP', 'AX, WORD PTR [SP]');
+      EmitInstr('JG', LblBody);
+      EmitInstr('JMP', LblIncr);
+
+      { Pas negatif : CMP i, limite / JL fin }
+      EmitLabel(LblNeg);
+      ExprLoad(VarSIdx, E);
+      ExprFlushToAX(E);
+      EmitInstr('CMP', 'AX, WORD PTR [SP]');
+      EmitInstr('JL', LblBody);
+
+      { Label increment : executer le corps puis incrementer }
+      EmitLabel(LblIncr);
+
+      { Sauter les virgules et tester DO }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      Begin
+        HasComma := True;
+        ParserAdvance;
+      End
+      Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'DO') Then
+      Begin
+        ParserAdvance;  { consommer DO }
+
+        { Parser le corps de la boucle }
+        If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'BEGIN') Then
+        Begin
+          SymEnterScope;
+          EmitComment('BEGIN (FOR body scope ' + IntToStr_(CurScope) + ')');
+          ParserAdvance;  { consommer BEGIN }
+          While (CurToken.Kind <> TK_EOF) And
+                Not ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'END')) Do
+          Begin
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+            Begin
+              ParserAdvance;
+              Continue;
+            End;
+            ParseStmt;
+          End;
+          If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'END') Then
+          Begin
+            EmitComment('END (FOR body scope ' + IntToStr_(CurScope) + ')');
+            SymLeaveScope;
+            ParserAdvance;  { consommer END }
+          End;
+        End
+        Else
+          ParseStmt;
+
+        { Incrementer : i := i + step }
+        ExprLoad(VarSIdx, E);
+        ExprFlushToAX(E);
+        EmitInstr('ADD', 'AX, WORD PTR [SP+2]');
+        ExprStore(VarSIdx);
+
+        { Retour au test }
+        EmitInstr('JMP', LblTest);
+
+        { Label fin : nettoyer la pile (step + limit) }
+        EmitLabel(LblBody);
+        EmitInstr('ADD', 'SP, 4');
+      End;
+    End
+    Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'WHILE') Then
+    Begin
+      { ---- Forme WHILE ---- }
+      LblWTest := '_A60L_FWTEST_' + IntToStr_(MyForNum) + '_' + IntToStr_(ElemNum);
+      EmitComment('FOR WHILE element #' + IntToStr_(ElemNum));
+
+      EmitLabel(LblWTest);
+
+      ParserAdvance;  { consommer WHILE }
+
+      { Evaluer la condition }
+      ParseExpr(E);
+      ExprFlushToAX(E);
+      EmitInstr('OR', 'AX, AX');
+      EmitInstr('JZ', LblEnd);
+
+      { Sauter les virgules et tester DO }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      Begin
+        HasComma := True;
+        ParserAdvance;
+      End
+      Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'DO') Then
+      Begin
+        ParserAdvance;  { consommer DO }
+
+        { Parser le corps }
+        If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'BEGIN') Then
+        Begin
+          SymEnterScope;
+          EmitComment('BEGIN (FOR WHILE body scope ' + IntToStr_(CurScope) + ')');
+          ParserAdvance;  { consommer BEGIN }
+          While (CurToken.Kind <> TK_EOF) And
+                Not ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'END')) Do
+          Begin
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+            Begin
+              ParserAdvance;
+              Continue;
+            End;
+            ParseStmt;
+          End;
+          If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'END') Then
+          Begin
+            EmitComment('END (FOR WHILE body scope ' + IntToStr_(CurScope) + ')');
+            SymLeaveScope;
+            ParserAdvance;  { consommer END }
+          End;
+        End
+        Else
+          ParseStmt;
+
+        { Re-affecter la variable et reboucler }
+        { Note: en WHILE, on re-evalue l expression initiale }
+        EmitInstr('JMP', LblWTest);
+      End;
+    End
+    Else
+    Begin
+      { ---- Forme simple (one-shot DO) ---- }
+      EmitComment('FOR simple element #' + IntToStr_(ElemNum));
+
+      { Tester si un autre element suit (virgule) avant DO }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      Begin
+        HasComma := True;
+        ParserAdvance;
+      End
+      Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'DO') Then
+      Begin
+        ParserAdvance;  { consommer DO }
+
+        { Parser le corps (one-shot) }
+        If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'BEGIN') Then
+        Begin
+          SymEnterScope;
+          EmitComment('BEGIN (FOR simple body scope ' + IntToStr_(CurScope) + ')');
+          ParserAdvance;  { consommer BEGIN }
+          While (CurToken.Kind <> TK_EOF) And
+                Not ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'END')) Do
+          Begin
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+            Begin
+              ParserAdvance;
+              Continue;
+            End;
+            ParseStmt;
+          End;
+          If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'END') Then
+          Begin
+            EmitComment('END (FOR simple body scope ' + IntToStr_(CurScope) + ')');
+            SymLeaveScope;
+            ParserAdvance;  { consommer END }
+          End;
+        End
+        Else
+          ParseStmt;
+      End;
+    End;
+
+  Until Not HasComma;
+
+  { Label de fin de boucle FOR }
+  EmitLabel(LblEnd);
+  EmitComment('END FOR #' + IntToStr_(MyForNum));
 End;
 
 { ============================================================
