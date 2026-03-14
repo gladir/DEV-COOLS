@@ -27,7 +27,7 @@
 {  TODO 09 [IMPLEMENTE] - Descripteurs de types JVM : parsing et validation   }
 {  TODO 10 [IMPLEMENTE] - Opcodes de chargement et stockage                   }
 {  TODO 11 [IMPLEMENTE] - Opcodes arithmetiques et logiques                    }
-{  TODO 12 - Opcodes de conversion de types                                   }
+{  TODO 12 [IMPLEMENTE] - Opcodes de conversion de types                      }
 {  TODO 13 - Opcodes de controle de flux                                      }
 {  TODO 14 - Opcodes d'invocation de methodes                                 }
 {  TODO 15 - Opcodes de manipulation de la pile et chargement de constantes   }
@@ -2897,6 +2897,36 @@ Begin
   Consume;
   ParseInstruction := True; Exit;
  End;
+ { ---------------------------------------------------------------- }
+ { Conversions numeriques int -> long/float/double - TODO 12         }
+ { ---------------------------------------------------------------- }
+ If mnem = 'i2l' Then Begin Consume; EmitByte($85); ParseInstruction := True; Exit; End;
+ If mnem = 'i2f' Then Begin Consume; EmitByte($86); ParseInstruction := True; Exit; End;
+ If mnem = 'i2d' Then Begin Consume; EmitByte($87); ParseInstruction := True; Exit; End;
+ { ---------------------------------------------------------------- }
+ { Conversions numeriques long -> int/float/double - TODO 12         }
+ { ---------------------------------------------------------------- }
+ If mnem = 'l2i' Then Begin Consume; EmitByte($88); ParseInstruction := True; Exit; End;
+ If mnem = 'l2f' Then Begin Consume; EmitByte($89); ParseInstruction := True; Exit; End;
+ If mnem = 'l2d' Then Begin Consume; EmitByte($8A); ParseInstruction := True; Exit; End;
+ { ---------------------------------------------------------------- }
+ { Conversions numeriques float -> int/long/double - TODO 12         }
+ { ---------------------------------------------------------------- }
+ If mnem = 'f2i' Then Begin Consume; EmitByte($8B); ParseInstruction := True; Exit; End;
+ If mnem = 'f2l' Then Begin Consume; EmitByte($8C); ParseInstruction := True; Exit; End;
+ If mnem = 'f2d' Then Begin Consume; EmitByte($8D); ParseInstruction := True; Exit; End;
+ { ---------------------------------------------------------------- }
+ { Conversions numeriques double -> int/long/float - TODO 12         }
+ { ---------------------------------------------------------------- }
+ If mnem = 'd2i' Then Begin Consume; EmitByte($8E); ParseInstruction := True; Exit; End;
+ If mnem = 'd2l' Then Begin Consume; EmitByte($8F); ParseInstruction := True; Exit; End;
+ If mnem = 'd2f' Then Begin Consume; EmitByte($90); ParseInstruction := True; Exit; End;
+ { ---------------------------------------------------------------- }
+ { Conversions de troncature int -> byte/char/short - TODO 12        }
+ { ---------------------------------------------------------------- }
+ If mnem = 'i2b' Then Begin Consume; EmitByte($91); ParseInstruction := True; Exit; End;
+ If mnem = 'i2c' Then Begin Consume; EmitByte($92); ParseInstruction := True; Exit; End;
+ If mnem = 'i2s' Then Begin Consume; EmitByte($93); ParseInstruction := True; Exit; End;
 End;
 
 { --- ParseDirectives : dispatcher principal des directives de classe --- }
@@ -2990,9 +3020,9 @@ Begin
      SkipToEOL;
     End;
    Else
-    { Directives non encore implementees (TODO 12+) : sauter la ligne }
+    { Directives non encore implementees (TODO 13+) : sauter la ligne }
     If OptVerbose Then
-     WriteLn('  [skip] directive ', CurStr, ' (TODO 12+)');
+     WriteLn('  [skip] directive ', CurStr, ' (TODO 13+)');
     SkipToEOL;
    End;  { Case }
   End
@@ -3003,7 +3033,7 @@ Begin
    Begin
     { Mnemonique non reconnu : sauter la ligne }
     If OptVerbose Then
-     WriteLn('  [skip] instruction ', CurStr, ' (TODO 12+)');
+     WriteLn('  [skip] instruction ', CurStr, ' (TODO 13+)');
     SkipToEOL;
    End
    Else

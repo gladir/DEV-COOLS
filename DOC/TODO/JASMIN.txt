@@ -230,7 +230,7 @@ TODO 11 [IMPLEMENTE] - Opcodes arithmetiques et logiques
   - ParseArithLogic : reconnaitre le mnemonique, emettre l'opcode
     (1 octet sans operande, sauf iinc = 3 octets)
 
-TODO 12 - Opcodes de conversion de types
+TODO 12 [IMPLEMENTE] - Opcodes de conversion de types
   -----------------------------------------
   Conversions numeriques :
   - i2l, i2f, i2d (int vers long/float/double)
