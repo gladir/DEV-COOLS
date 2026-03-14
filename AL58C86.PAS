@@ -167,7 +167,7 @@
             Implication imp : NOT AX / OR AX,BX (equivalent a not a or b)
             Equivalence eqv : XOR AX,BX / XOR AX,1 (not xor)
 
-  TODO 12 - ENTREES/SORTIES (READ / WRITE)
+  TODO 12 - ENTREES/SORTIES (READ / WRITE) [IMPLEMENTE]
             Algol 58 ne standardise pas les E/S ; implementation pratique :
             Instruction write (extension) :
               write(expr)       -> conversion + INT 21h AH=40h BX=1 (STDOUT)
@@ -690,6 +690,9 @@ Procedure ParseArrayAccess(VarIdx : Integer; Var Res : TExprVal); Forward;
 Procedure ParseFuncCall(VarIdx : Integer; Var Res : TExprVal); Forward;
 { TODO 11 - Expressions binaires }
 Procedure ParseExpr(Var Res : TExprVal); Forward;
+{ TODO 12 - Entrees/Sorties }
+Procedure ParseWriteStmt(IsLn : Boolean); Forward;
+Procedure ParseReadStmt(IsLn : Boolean); Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -2190,6 +2193,216 @@ Begin
 End;
 
 { ============================================================
+  TODO 12 - ENTREES/SORTIES (READ / WRITE) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseWriteStmt : instruction write / writeln -------------- }
+{ Syntaxe : write(arg1, arg2, ...)  ou  writeln(arg1, ...)        }
+{   Chaque argument est soit :                                     }
+{     - une chaine litterale "abc" -> MOV SI, OFFSET label         }
+{       + CALL _A58RT_STRLEN + MOV BX,1 + INT 21h AH=40h         }
+{     - une expression entiere -> ExprFlushToAX                    }
+{       + CALL _A58RT_NUMTOSTR + affichage du buffer              }
+{     - un booleen -> ecriture "true" ou "false"                   }
+{   Si IsLn, un CR+LF est emis apres les arguments.              }
+Procedure ParseWriteStmt(IsLn : Boolean);
+Var
+  E   : TExprVal;
+  Lbl : TString;
+  LblT, LblE : TString;
+Begin
+  If IsLn Then
+    EmitComment('--- writeln ---')
+  Else
+    EmitComment('--- write ---');
+
+  { Consommer ( si present }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+  Begin
+    ParserAdvance;  { consommer ( }
+
+    { Verifier si la liste d arguments est vide : writeln() }
+    If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
+    Repeat
+      { Argument chaine litterale }
+      If CurToken.Kind = TK_STRING Then
+      Begin
+        Lbl := DataAddStr(CurToken.Val);
+        ParserAdvance;  { consommer la chaine }
+        { MOV SI, OFFSET label }
+        EmitInstr('MOV', 'SI, OFFSET ' + Lbl);
+        { CALL _A58RT_STRLEN -> CX = longueur }
+        EmitInstr('CALL', A58_RT_PFX + 'STRLEN');
+        { MOV AH, 40h (write file) }
+        EmitInstr('MOV', 'AH, 40h');
+        { MOV BX, 1 (STDOUT) }
+        EmitInstr('MOV', 'BX, 1');
+        { MOV DX, SI (adresse donnees) }
+        EmitInstr('MOV', 'DX, SI');
+        { INT 21h }
+        EmitInstr('INT', '21h');
+      End
+      Else
+      Begin
+        { Expression : evaluer dans AX }
+        ParseExpr(E);
+
+        { Verifier si l expression est booleenne }
+        If E.TypeIdx = TY_IDX_BOOLEAN Then
+        Begin
+          { Booleen : ecrire "true" ou "false" }
+          ExprFlushToAX(E);
+          LblT := NewLabel;
+          LblE := NewLabel;
+          EmitInstr('TEST', 'AX, AX');
+          EmitInstr('JZ', LblT);
+          { Branche true }
+          EmitInstr('MOV', 'SI, OFFSET _A58K_TRUE');
+          EmitInstr('JMP', LblE);
+          { Branche false }
+          EmitLabel(LblT);
+          EmitInstr('MOV', 'SI, OFFSET _A58K_FALSE');
+          EmitLabel(LblE);
+          { Afficher la chaine booleenne }
+          EmitInstr('CALL', A58_RT_PFX + 'STRLEN');
+          EmitInstr('MOV', 'AH, 40h');
+          EmitInstr('MOV', 'BX, 1');
+          EmitInstr('MOV', 'DX, SI');
+          EmitInstr('INT', '21h');
+        End
+        Else
+        Begin
+          { Entier/reel : convertir en chaine + afficher }
+          ExprFlushToAX(E);
+          { CALL _A58RT_NUMTOSTR : AX=valeur -> SI=buffer, CX=longueur }
+          EmitInstr('CALL', A58_RT_PFX + 'NUMTOSTR');
+          { Afficher le buffer }
+          EmitInstr('MOV', 'AH, 40h');
+          EmitInstr('MOV', 'BX, 1');
+          EmitInstr('MOV', 'DX, SI');
+          EmitInstr('INT', '21h');
+        End;
+      End;
+
+      { Virgule : argument suivant }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance
+      Else
+        Break;
+    Until False;
+
+    { Consommer ) }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else
+      CompileError(') attendue apres write/writeln');
+  End;
+
+  { Si writeln : emettre CR+LF }
+  If IsLn Then
+  Begin
+    EmitInstr('MOV', 'SI, OFFSET _A58_CRLF');
+    EmitInstr('MOV', 'CX, 2');
+    EmitInstr('MOV', 'AH, 40h');
+    EmitInstr('MOV', 'BX, 1');
+    EmitInstr('MOV', 'DX, SI');
+    EmitInstr('INT', '21h');
+  End;
+End;
+
+{ ---- ParseReadStmt : instruction read / readln ----------------- }
+{ Syntaxe : read(var) ou readln(var)                               }
+{   Lit une ligne depuis STDIN via INT 21h AH=0Ah dans _A58_RDBUF }
+{   puis convertit la chaine en entier via _A58RT_STRTONUM -> AX  }
+{   et stocke dans la variable cible.                              }
+{   Si IsLn, le CR+LF final est deja consomme par INT 21h.       }
+Procedure ParseReadStmt(IsLn : Boolean);
+Var
+  VarName : TString;
+  VarIdx  : Integer;
+  NS      : TString;
+Begin
+  If IsLn Then
+    EmitComment('--- readln ---')
+  Else
+    EmitComment('--- read ---');
+
+  { Consommer ( }
+  If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+  Begin
+    CompileError('( attendue apres read/readln');
+    Exit;
+  End;
+  ParserAdvance;  { consommer ( }
+
+  { Nom de variable cible }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('identificateur attendu dans read/readln');
+    Exit;
+  End;
+  VarName := CurToken.Val;
+  VarIdx  := SymFind(VarName);
+  ParserAdvance;  { consommer l ident }
+
+  { Variable implicite si necessaire }
+  If VarIdx < 0 Then
+  Begin
+    VarIdx := SymAdd(VarName, SK_VAR, TY_IDX_INTEGER, 0);
+    If VarIdx >= 0 Then
+      DataAddWord(SymTab[VarIdx].MangledName, 0);
+    WarnMsg('variable implicite dans read: ' + VarName);
+  End;
+
+  { Consommer ) }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance
+  Else
+    CompileError(') attendue apres read/readln');
+
+  { Emettre le code de lecture DOS INT 21h AH=0Ah }
+  { Initialiser le buffer : taille max = 128 octets }
+  EmitInstr('MOV', 'BYTE PTR [_A58_RDBUF], 128');
+  EmitInstr('MOV', 'BYTE PTR [_A58_RDBUF+1], 0');
+  { Appel DOS : lire une ligne depuis STDIN }
+  EmitInstr('MOV', 'AH, 0Ah');
+  EmitInstr('MOV', 'DX, OFFSET _A58_RDBUF');
+  EmitInstr('INT', '21h');
+
+  { Convertir la chaine en entier }
+  { SI = adresse des donnees lues (RDBUF+2) }
+  EmitInstr('MOV', 'SI, OFFSET _A58_RDBUF');
+  EmitInstr('ADD', 'SI, 2');
+  { Terminer la chaine par 0 : longueur dans RDBUF+1 }
+  EmitInstr('XOR', 'BX, BX');
+  EmitInstr('MOV', 'BL, BYTE PTR [_A58_RDBUF+1]');
+  EmitInstr('MOV', 'BYTE PTR [SI+BX], 0');
+  { CALL _A58RT_STRTONUM : SI=str -> AX=valeur }
+  EmitInstr('CALL', A58_RT_PFX + 'STRTONUM');
+
+  { Stocker AX dans la variable cible }
+  Case SymTab[VarIdx].Kind Of
+    SK_VAR :
+    Begin
+      If (SymTab[VarIdx].ScopeLevel = 0) Or SymTab[VarIdx].IsOwn Then
+        EmitInstr('MOV', '[' + SymTab[VarIdx].MangledName + '], AX')
+      Else
+      Begin
+        Str(SymTab[VarIdx].Offset, NS);
+        EmitInstr('MOV', '[BP-' + NS + '], AX');
+      End;
+    End;
+    SK_PARAM_VALUE :
+    Begin
+      Str(SymTab[VarIdx].Offset, NS);
+      EmitInstr('MOV', '[BP+' + NS + '], AX');
+    End;
+  Else
+    CompileError('cible de read invalide: ' + VarName);
+  End;
+End;
+
+{ ============================================================
   TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
   ============================================================ }
 
@@ -2547,6 +2760,14 @@ Begin
   DataAddArray('_A58_HEAP', 1024);
   { Pointeur sommet du tas }
   DataAddWord('_A58_HEAPTOP', 0);
+  { CR+LF pour writeln (TODO 12) }
+  DataAdd('_A58_CRLF', DK_STR, 0, #13#10);
+  { Chaines booleennes pour write(Boolean) (TODO 12) }
+  DataAdd('_A58K_TRUE', DK_STR, 0, 'true');
+  DataAdd('_A58K_FALSE', DK_STR, 0, 'false');
+  { Buffer de lecture pour read (DOS INT 21h AH=0Ah) (TODO 12) }
+  { Format DOS : octet 0 = taille max, octet 1 = nb lus, octets 2+ = donnees }
+  DataAddArray('_A58_RDBUF', 66);
 End;
 
 { ============================================================
@@ -2904,6 +3125,46 @@ Begin
     If CurToken.Val = 'begin' Then
     Begin
       ParseBlock;
+      Exit;
+    End;
+
+    { write(args) : ecriture sur STDOUT (TODO 12) }
+    If CurToken.Val = 'write' Then
+    Begin
+      ParserAdvance;  { consommer write }
+      ParseWriteStmt(False);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+      Exit;
+    End;
+
+    { writeln(args) : ecriture + CR+LF (TODO 12) }
+    If CurToken.Val = 'writeln' Then
+    Begin
+      ParserAdvance;  { consommer writeln }
+      ParseWriteStmt(True);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+      Exit;
+    End;
+
+    { read(var) : lecture depuis STDIN (TODO 12) }
+    If CurToken.Val = 'read' Then
+    Begin
+      ParserAdvance;  { consommer read }
+      ParseReadStmt(False);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+      Exit;
+    End;
+
+    { readln(var) : lecture + consommer CR+LF (TODO 12) }
+    If CurToken.Val = 'readln' Then
+    Begin
+      ParserAdvance;  { consommer readln }
+      ParseReadStmt(True);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
       Exit;
     End;
 
