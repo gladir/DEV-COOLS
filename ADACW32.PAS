@@ -75,7 +75,7 @@
               TOK_UNKNOWN)
             Consume, TokIsKw, TokIsOp, Expect, ExpectKw : helpers
 
-  TODO 03 - MOTS-CLES ADA ET GESTION DES ERREURS
+  TODO 03 - MOTS-CLES ADA ET GESTION DES ERREURS [IMPLEMENTE]
             Function IsKeyword(Const s: String): Integer
             Mots-cles Ada complets a reconnaitre (KW_xxx) :
               PROCEDURE, FUNCTION, PACKAGE, BEGIN, END, IS, WITH,
@@ -1584,6 +1584,73 @@ Begin
   If CurTokType = TOK_SEMI Then Consume;
 End;
 
+{ ============================================================ }
+{ MOTS-CLES ADA ET GESTION DES ERREURS (TODO 03)               }
+{ ============================================================ }
+
+{ ---- Error : erreur non fatale, incrementer ErrorCount ------- }
+{ Affiche ligne + message, continue la compilation.              }
+Procedure Error(Const Msg : TString);
+Begin
+  WriteLn('ADACW32: ERREUR ligne ', LexLineNo, ': ', Msg);
+  Inc(ErrorCount);
+  If ErrorCount >= MAX_ERRORS Then
+    FatalError('trop d''erreurs, abandon');
+End;
+
+{ ---- Warning : avertissement non bloquant -------------------- }
+{ Affiche ligne + message, continue la compilation.              }
+Procedure Warning(Const Msg : TString);
+Begin
+  WriteLn('ADACW32: ATTENTION ligne ', LexLineNo, ': ', Msg);
+  Inc(WarnCount);
+End;
+
+{ ---- SkipToEnd : consommer jusqu a END correspondant --------- }
+{ Gere les blocs imbriques en comptant BEGIN/DECLARE/LOOP/       }
+{ RECORD vs END. Consomme le ';' final apres END si present.     }
+Procedure SkipToEnd;
+Var
+  Depth : Integer;
+Begin
+  Depth := 1;
+  While (CurTokType <> TOK_EOF) And (Depth > 0) Do
+  Begin
+    If TokIsKw(KW_BEGIN) Or TokIsKw(KW_DECLARE) Or
+       TokIsKw(KW_LOOP) Or TokIsKw(KW_RECORD) Then
+      Inc(Depth)
+    Else If TokIsKw(KW_END) Then
+      Dec(Depth);
+    Consume;
+  End;
+  { Consommer l identificateur optionnel apres END (ex: END Hello;) }
+  If CurTokType = TOK_IDENT Then Consume;
+  { Consommer le ';' apres END si present }
+  If CurTokType = TOK_SEMI Then Consume;
+End;
+
+{ ---- SkipToKw : sauter jusqu a un mot-cle specifique --------- }
+{ Utilise pour resynchroniser apres une condition malformee.      }
+Procedure SkipToKw(Kw : Integer);
+Begin
+  While (CurTokType <> TOK_EOF) And (Not TokIsKw(Kw)) Do
+    Consume;
+End;
+
+{ ---- BilanCompilation : afficher les statistiques ------------ }
+Procedure BilanCompilation;
+Begin
+  WriteLn;
+  WriteLn('ADACW32 - Compilation terminee');
+  WriteLn('  Source     : ', Opts.SrcFile);
+  WriteLn('  Sortie     : ', Opts.OutFile);
+  WriteLn('  Lignes     : ', TotalLines);
+  WriteLn('  Erreurs    : ', ErrorCount);
+  WriteLn('  Attention  : ', WarnCount);
+  If ErrorCount > 0 Then
+    WriteLn('  *** COMPILATION AVEC ERREURS ***');
+End;
+
 { ---- LexInit : ouvrir le fichier source et lire le 1er token }
 Procedure LexInit;
 Begin
@@ -1807,9 +1874,10 @@ Begin
   Else
   Begin
     WriteLn('ADACW32: compilation de ', Opts.SrcFile, ' ...');
-    WriteLn('ADACW32: TODO 03+ non encore implemente - lexeur OK');
+    WriteLn('ADACW32: TODO 04+ non encore implemente - lexeur + erreurs OK');
   End;
   LexClose;
+  BilanCompilation;
 End;
 
 { ============================================================ }

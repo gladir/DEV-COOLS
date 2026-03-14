@@ -64,7 +64,7 @@
               TOK_UNKNOWN)
             Consume, TokIsKw, TokIsOp, Expect, ExpectKw : helpers
 
-  TODO 03 - MOTS-CLES ADA ET GESTION DES ERREURS
+  TODO 03 - MOTS-CLES ADA ET GESTION DES ERREURS [IMPLEMENTE]
             Function IsKeyword(Const s: String): Integer
             Mots-cles Ada complets a reconnaitre (KW_xxx) :
               PROCEDURE, FUNCTION, PACKAGE, BEGIN, END, IS, WITH,
