@@ -299,7 +299,7 @@
             Procedures comme parametres : passage de l adresse du code
               PROCEDURE p(f); PROCEDURE f; -> f passe comme pointeur
 
-  TODO 20 - APPEL PAR NOM (THUNKS / CALL BY NAME)
+  TODO 20 - APPEL PAR NOM (THUNKS / CALL BY NAME) [IMPLEMENTE]
             Concept : chaque acces au parametre formel reevalue l argument
               dans l environnement de l appelant
             Generation de thunks : pour chaque argument par nom,
@@ -561,6 +561,8 @@ Type
     ArrayHi     : Array[1..MAX_ARRAY_DIM] Of Integer; { borne sup     }
     { Champs procedure (TODO 19) }
     ProcParamCount : Integer;  { nombre de parametres formels (SK_PROC) }
+    { Champs procedure (TODO 20) }
+    ProcParamIsVal : Array[0..MAX_PARAM - 1] Of Boolean; { True=VALUE }
   End;
 
   { ---- Systeme de types (TODO 06) -------------------------- }
@@ -643,6 +645,9 @@ Var
   CurFnName   : TString;    { nom de la procedure courante ('' si hors proc) }
   CurFnRetLbl : TString;    { label de retour de la procedure courante       }
   CurFnDepth  : Integer;    { profondeur d imbrication des procedures        }
+
+  { Compteur THUNK (TODO 20) }
+  ThunkCount : Integer;
 
   { Table des symboles (TODO 05) }
   SymTab       : Array[0..MAX_SYM - 1] Of TSymRec;
@@ -1060,6 +1065,7 @@ Begin
   CurFnName := '';
   CurFnRetLbl := '';
   CurFnDepth := 0;
+  ThunkCount := 0;
   { Table des symboles (TODO 05) }
   SymInit;
   { Systeme de types (TODO 06) }
@@ -1919,6 +1925,8 @@ Begin
   DataAdd('_A60_FALSE_S', DK_STR,  0, 'FALSE');
   DataAddArray('_A60_NUMBUF', 6);
   DataAddArray('_A60_TMPBUF', 128);
+  { Sauvegarde du BP de l appelant pour les thunks (TODO 20) }
+  DataAddWord('_A60V_SAVEBP', 0);
 End;
 
 { ---- EmitDataSeg : emettre le segment _DATA (TODO 08) -------- }
@@ -2079,7 +2087,15 @@ Begin
         Else If SymTab[E.SymIdx].Kind = SK_PARAM Then
         Begin
           Str(SymTab[E.SymIdx].Offset, S);
-          EmitInstr('MOV', 'AX, [BP+' + S + ']');
+          If SymTab[E.SymIdx].IsName Then
+          Begin
+            { Parametre par nom : invoquer le thunk (TODO 20) }
+            EmitComment('thunk R-value pour ' + SymTab[E.SymIdx].Name);
+            EmitInstr('MOV', 'BX, [BP+' + S + ']');
+            EmitInstr('CALL', 'BX');
+          End
+          Else
+            EmitInstr('MOV', 'AX, [BP+' + S + ']');
         End
         Else
         Begin
@@ -3116,13 +3132,31 @@ Begin
 End;
 
 { ---- ExprStore : MOV [addr], AX pour ecrire dans une variable }
-{ Emet MOV destination, AX selon l adresse du symbole.          }
+{ Emet MOV destination, AX selon l adresse du symbole.
+  Pour SK_PARAM IsName (TODO 20), invoque le thunk L-value :
+    le thunk retourne l adresse dans BX.                         }
 Procedure ExprStore(SIdx : Integer);
 Var
-  Addr : TString;
+  Addr, S : TString;
 Begin
-  Addr := ExprAddrOf(SIdx);
-  EmitInstr('MOV', Addr + ', AX');
+  If (SIdx >= 0) And (SIdx < SymCount) And
+     (SymTab[SIdx].Kind = SK_PARAM) And SymTab[SIdx].IsName Then
+  Begin
+    { Parametre par nom : invoquer le thunk L-value (TODO 20) }
+    EmitInstr('PUSH', 'AX');  { sauvegarder la valeur a ecrire }
+    EmitComment('thunk L-value pour ' + SymTab[SIdx].Name);
+    Str(SymTab[SIdx].Offset, S);
+    EmitInstr('MOV', 'BX, [BP+' + S + ']');
+    EmitInstr('CALL', 'BX');
+    { AX = valeur, BX = adresse de la variable }
+    EmitInstr('POP', 'AX');
+    EmitInstr('MOV', '[BX], AX');
+  End
+  Else
+  Begin
+    Addr := ExprAddrOf(SIdx);
+    EmitInstr('MOV', Addr + ', AX');
+  End;
 End;
 
 { ---- ExprLoad : MOV AX, [addr] et remplir TExprVal ---------- }
@@ -3511,19 +3545,27 @@ End;
   Syntaxe : nom(arg1, arg2, ..., argN)
   Les arguments sont evalues de gauche a droite puis empiles
   en ordre inverse (convention C). Apres CALL, on nettoie la
-  pile avec ADD SP, N*2. Le resultat est dans AX.               }
+  pile avec ADD SP, N*2. Le resultat est dans AX.
+  TODO 20 : pour les parametres par nom, generer un thunk
+  et pousser son adresse au lieu de la valeur.                   }
 Procedure ParseProcCall(Const ProcName : TString;
                         ProcSIdx : Integer;
                         Var Res : TExprVal);
 Var
-  ArgCount : Integer;
-  ArgVals  : Array[0..MAX_PARAM - 1] Of TExprVal;
-  I        : Integer;
-  S        : TString;
-  ProcLbl  : TString;
+  ArgCount   : Integer;
+  ArgVals    : Array[0..MAX_PARAM - 1] Of TExprVal;
+  ArgThkLbl  : Array[0..MAX_PARAM - 1] Of TString;
+  I          : Integer;
+  S          : TString;
+  ProcLbl    : TString;
+  IsNameArg  : Boolean;
+  ThkLbl, SkpLbl : TString;
+  N          : TString;
 Begin
   { Le ( a deja ete consomme par l appelant }
   ArgCount := 0;
+  For I := 0 To MAX_PARAM - 1 Do
+    ArgThkLbl[I] := '';
 
   { Parser les arguments separes par des virgules }
   If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
@@ -3560,12 +3602,96 @@ Begin
   Else
     CompileError(') attendu apres les arguments de ' + ProcName);
 
+  { Sauvegarder le BP de l appelant pour les thunks (TODO 20) }
+  EmitInstr('MOV', '[_A60V_SAVEBP], BP');
+
+  { Generer les thunks pour les parametres par nom (TODO 20) }
+  For I := 0 To ArgCount - 1 Do
+  Begin
+    IsNameArg := False;
+    If (ProcSIdx >= 0) And (ProcSIdx < SymCount) And
+       (SymTab[ProcSIdx].Kind = SK_PROC) And
+       (I < SymTab[ProcSIdx].ProcParamCount) Then
+      IsNameArg := Not SymTab[ProcSIdx].ProcParamIsVal[I];
+
+    If IsNameArg Then
+    Begin
+      Inc(ThunkCount);
+      Str(ThunkCount, N);
+      ThkLbl := A60_THK_PFX + N;
+      SkpLbl := '_A60L_TSKIP_' + N;
+      ArgThkLbl[I] := ThkLbl;
+
+      EmitInstr('JMP', SkpLbl);
+      EmitLabel(ThkLbl);
+      EmitRaw(ThkLbl + ' PROC NEAR');
+      EmitInstr('PUSH', 'BP');
+      EmitInstr('MOV', 'BP, [_A60V_SAVEBP]');
+
+      If ArgVals[I].Kind = EK_IMM Then
+      Begin
+        Str(ArgVals[I].ImmVal, S);
+        EmitInstr('MOV', 'AX, ' + S);
+        EmitInstr('XOR', 'BX, BX');
+      End
+      Else If (ArgVals[I].Kind = EK_MEM) And
+              (ArgVals[I].SymIdx >= 0) And
+              (ArgVals[I].SymIdx < SymCount) Then
+      Begin
+        If SymTab[ArgVals[I].SymIdx].ScopeLevel = 0 Then
+        Begin
+          EmitInstr('MOV', 'AX, WORD PTR [' +
+                    SymTab[ArgVals[I].SymIdx].MangledName + ']');
+          EmitInstr('LEA', 'BX, WORD PTR [' +
+                    SymTab[ArgVals[I].SymIdx].MangledName + ']');
+        End
+        Else If SymTab[ArgVals[I].SymIdx].Kind = SK_PARAM Then
+        Begin
+          Str(SymTab[ArgVals[I].SymIdx].Offset, S);
+          If SymTab[ArgVals[I].SymIdx].IsName Then
+          Begin
+            EmitInstr('MOV', 'BX, [BP+' + S + ']');
+            EmitInstr('CALL', 'BX');
+          End
+          Else
+          Begin
+            EmitInstr('MOV', 'AX, [BP+' + S + ']');
+            EmitInstr('LEA', 'BX, [BP+' + S + ']');
+          End;
+        End
+        Else
+        Begin
+          Str(SymTab[ArgVals[I].SymIdx].Offset, S);
+          EmitInstr('MOV', 'AX, [BP-' + S + ']');
+          EmitInstr('LEA', 'BX, [BP-' + S + ']');
+        End;
+      End
+      Else
+      Begin
+        EmitInstr('XOR', 'BX, BX');
+      End;
+
+      EmitInstr('POP', 'BP');
+      EmitRaw('        RET');
+      EmitRaw(ThkLbl + ' ENDP');
+      EmitLabel(SkpLbl);
+    End;
+  End;
+
   { Empiler les arguments en ordre inverse (convention C) }
   EmitComment('appel ' + ProcName + '(' + IntToStr_(ArgCount) + ' args)');
   For I := ArgCount - 1 DownTo 0 Do
   Begin
-    ExprFlushToAX(ArgVals[I]);
-    EmitPush('AX');
+    If Length(ArgThkLbl[I]) > 0 Then
+    Begin
+      EmitInstr('MOV', 'AX, OFFSET ' + ArgThkLbl[I]);
+      EmitPush('AX');
+    End
+    Else
+    Begin
+      ExprFlushToAX(ArgVals[I]);
+      EmitPush('AX');
+    End;
   End;
 
   { Generer CALL (TODO 19: indirect si SK_PARAM) }
@@ -3573,7 +3699,6 @@ Begin
   Begin
     If SymTab[ProcSIdx].Kind = SK_PARAM Then
     Begin
-      { Appel indirect : parametre contient l adresse de la procedure }
       Str(SymTab[ProcSIdx].Offset, S);
       EmitInstr('MOV', 'BX, [BP+' + S + ']');
       EmitInstr('CALL', 'BX');
@@ -4954,6 +5079,13 @@ Begin
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
       ParserAdvance;
   End;
+
+  { Stocker ParamIsVal dans le symbole procedure (TODO 20) }
+  { Permettra a ParseProcCall de savoir quels params sont par nom }
+  SIdx := SymFind(ProcName);
+  If SIdx >= 0 Then
+    For I := 0 To ParamCount - 1 Do
+      SymTab[SIdx].ProcParamIsVal[I] := ParamIsVal[I];
 
   { ---- Generation de code : saut par-dessus le corps ---- }
   EmitInstr('JMP', SkipLbl);
