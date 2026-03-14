@@ -1646,7 +1646,7 @@ Begin
   WriteLn('  Sortie     : ', Opts.OutFile);
   WriteLn('  Lignes     : ', TotalLines);
   WriteLn('  Erreurs    : ', ErrorCount);
-  WriteLn('  Attention  : ', WarnCount);
+  WriteLn('  Avertiss.  : ', WarnCount);
   If ErrorCount > 0 Then
     WriteLn('  *** COMPILATION AVEC ERREURS ***');
 End;
