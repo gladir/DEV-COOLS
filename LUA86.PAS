@@ -1337,7 +1337,7 @@ Begin
   DataAdd(LUA_ERR_PFX + 'MSG', DK_STR, 0, 'LUA ERROR: ');
   { Espace pour separateur print }
   DataAdd('_LUA_SPACE', DK_STR, 0, ' ');
-  { TODO 12 : Buffer pour io.read (130 octets : 1 max + 1 len + 128 data) }
+  { TODO 12 : Buffer pour io.read (130 octets : 1 max + 1 len + 126 data + 2 marge) }
   DataAddBuffer('_LUA_IOREADBUF', 130);
   { TODO 12 : Chaines pour io.read modes }
   DataAdd('_LUA_IO_STAR_L', DK_STR, 0, '*l');
@@ -4007,10 +4007,10 @@ Begin
   EmitInstrA('PUSH', 'BX');
   EmitInstrA('PUSH', 'CX');
   EmitInstrA('PUSH', 'DX');
-  { Preparer le buffer : [0] = taille max = 126 }
+  { Preparer le buffer : [0] = taille max = 126 (DOS INT 21h AH=0Ah max) }
   EmitInstrAB('MOV', 'DX', 'OFFSET _LUA_IOREADBUF');
   EmitInstrAB('MOV', 'BX', 'DX');
-  EmitInstrAB('MOV', 'BYTE PTR [BX]', '126');
+  EmitInstrAB('MOV', 'BYTE PTR [BX]', '126');  { max chars pour buffered input }
   { Appel DOS INT 21h AH=0Ah : lecture ligne bufferisee }
   EmitInstrAB('MOV', 'AH', '0Ah');
   EmitInstr('INT    21h');
@@ -4024,7 +4024,7 @@ Begin
   { AX = ptr vers le debut de la chaine (offset +2 dans le buffer) }
   EmitInstrAB('MOV', 'AX', 'OFFSET _LUA_IOREADBUF');
   EmitInstrAB('ADD', 'AX', '2');
-  { Emettre un saut de ligne pour que l affichage soit propre }
+  { Saut de ligne apres lecture pour affichage propre }
   EmitInstrA('PUSH', 'AX');
   EmitInstrA('CALL', LUA_RT_PFX + 'PRINTNL');
   EmitInstrA('POP', 'AX');
