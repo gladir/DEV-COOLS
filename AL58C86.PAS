@@ -54,7 +54,7 @@
             LitEvalInt, LitEvalReal, LitEval : evaluer des tokens litteraux
             DataAdd, DataAddStr, DataAddWord : gestion segment DATA
 
-  TODO 04 - OPERATEURS ET PRECEDENCE
+  TODO 04 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
             Arithmetiques   : + - * / (division reelle -> IDIV)
               Division entiere : div ou (barre horizontale) -> IDIV, resultat DX ignore
               Puissance       : ^ ou ** -> CALL _A58RT_POW(AX=base, BX=exp)
@@ -75,6 +75,13 @@
               7. or
               8. imp
               9. eqv
+            EmitInstr, EmitLabel, EmitComment, EmitBlankLine, EmitRaw
+            NewLabel : generateur de labels uniques _A58L_NNNNN
+            ExprFlushToAX, ExprMakeAX : chargement expression dans AX
+            BinOpPrec : table de precedence Algol 58 (9 niveaux)
+            BinOpIsRight : ^ est droit-associatif
+            EmitBinOp : pliage de constantes + code 8086
+            ParsePrimary, ParseUnary, ParseExprPrec : parseur Pratt
 
   TODO 05 - TABLE DES SYMBOLES
             TSymKind : SK_VAR, SK_ARRAY, SK_PROC, SK_LABEL, SK_SWITCH,
@@ -631,6 +638,23 @@ Procedure ExprMakeBool(AVal : Integer; Var Res : TExprVal); Forward;
 Procedure LitEvalInt(Const T : TToken; Var Res : TExprVal); Forward;
 Procedure LitEvalReal(Const T : TToken; Var Res : TExprVal); Forward;
 Procedure LitEval(Const T : TToken; Var Res : TExprVal); Forward;
+{ TODO 04 - Operateurs et precedence }
+Procedure EmitRaw(Const S : TString); Forward;
+Procedure EmitInstr(Const Mnem, Ops : TString); Forward;
+Procedure EmitLabel(Const Lbl : TString); Forward;
+Procedure EmitComment(Const Msg : TString); Forward;
+Procedure EmitBlankLine; Forward;
+Function  NewLabel : TString; Forward;
+Procedure ExprFlushToAX(Var E : TExprVal); Forward;
+Procedure ExprMakeAX(ATypeIdx : Integer; Var Res : TExprVal); Forward;
+Function  BinOpPrec(Const Op : TString) : Integer; Forward;
+Function  BinOpIsRight(Const Op : TString) : Boolean; Forward;
+Procedure EmitBinOp(Const Op : TString;
+                    Var L : TExprVal; Var R : TExprVal); Forward;
+Procedure ParsePrimary(Var Res : TExprVal); Forward;
+Procedure ParseUnary(Var Res : TExprVal); Forward;
+Procedure ParseExprPrec(MinPrec : Integer;
+                        Var Res : TExprVal); Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1443,6 +1467,496 @@ Begin
   Else
     ExprMakeNone(Res);
   End;
+End;
+
+{ ============================================================
+  TODO 04 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- EmitRaw : ligne brute sans indentation ------------------ }
+Procedure EmitRaw(Const S : TString);
+Begin
+  If OutFOpen Then WriteLn(OutF, S);
+End;
+
+{ ---- EmitInstr : instruction indentee (8 espaces + mnem + ops) }
+Procedure EmitInstr(Const Mnem, Ops : TString);
+Begin
+  If Not OutFOpen Then Exit;
+  If Ops <> '' Then WriteLn(OutF, '        ', Mnem, '    ', Ops)
+  Else WriteLn(OutF, '        ', Mnem);
+End;
+
+{ ---- EmitLabel : etiquette suivie de ':' --------------------- }
+Procedure EmitLabel(Const Lbl : TString);
+Begin
+  If OutFOpen Then WriteLn(OutF, Lbl, ':');
+End;
+
+{ ---- EmitComment : commentaire ASM (prefixe '; ') ------------ }
+Procedure EmitComment(Const Msg : TString);
+Begin
+  If OutFOpen Then WriteLn(OutF, '; ', Msg);
+End;
+
+{ ---- EmitBlankLine : ligne vide ------------------------------ }
+Procedure EmitBlankLine;
+Begin
+  If OutFOpen Then WriteLn(OutF);
+End;
+
+{ ---- NewLabel : generer un label unique _A58L_NNNNN ---------- }
+Function NewLabel : TString;
+Var NS : TString;
+Begin
+  Inc(LabelSeq);
+  Str(LabelSeq, NS);
+  NewLabel := A58_LBL_PFX + NS;
+End;
+
+{ ---- ExprMakeAX : construire une valeur deja dans AX --------- }
+Procedure ExprMakeAX(ATypeIdx : Integer; Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_AX;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := ATypeIdx;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+{ ---- ExprFlushToAX : materialiser la valeur dans AX ---------- }
+{ Si EK_IMM : MOV AX, val. Si EK_MEM : MOV AX, [adr].          }
+{ Si EK_AX : rien a faire. Si EK_NONE : XOR AX,AX.             }
+Procedure ExprFlushToAX(Var E : TExprVal);
+Var S : TString;
+Begin
+  Case E.Kind Of
+    EK_IMM :
+    Begin
+      Str(E.ImmVal, S);
+      EmitInstr('MOV', 'AX, ' + S);
+      E.Kind := EK_AX;
+    End;
+    EK_MEM :
+    Begin
+      { Chaine litterale : Offset = index DataTab -> OFFSET label }
+      If E.TypeIdx = TY_IDX_STRING Then
+      Begin
+        If (E.Offset >= 0) And (E.Offset < DataCount) Then
+          EmitInstr('MOV', 'AX, OFFSET ' + DataTab[E.Offset].LblName)
+        Else
+          EmitInstr('XOR', 'AX, AX');
+      End
+      { Variable locale : [BP-n] }
+      Else If E.Offset < 0 Then
+      Begin
+        Str(-E.Offset, S);
+        EmitInstr('MOV', 'AX, [BP-' + S + ']');
+      End
+      { Variable parametre/frame : [BP+n] }
+      Else
+      Begin
+        Str(E.Offset, S);
+        EmitInstr('MOV', 'AX, [BP+' + S + ']');
+      End;
+      E.Kind := EK_AX;
+    End;
+    EK_AX : ;
+    EK_NONE :
+    Begin
+      EmitInstr('XOR', 'AX, AX');
+      E.Kind := EK_AX;
+    End;
+  End;
+End;
+
+{ ---- BinOpPrec : table de precedence Algol 58 ----------------
+  Retourne 0 si l operateur n est pas un operateur binaire.
+  Niveaux (echelle inversee : plus le nombre est haut, plus la
+  precedence est forte) :
+    eqv         -> 1
+    imp         -> 2
+    or          -> 3
+    and         -> 4
+    = # != < <= > >=  -> 5  (relationnels)
+    + - (binaire)     -> 6
+    * / div mod       -> 7
+    ^ **              -> 8  (puissance)                           }
+Function BinOpPrec(Const Op : TString) : Integer;
+Begin
+  If      Op = 'eqv'                                     Then BinOpPrec := 1
+  Else If Op = 'imp'                                     Then BinOpPrec := 2
+  Else If Op = 'or'                                      Then BinOpPrec := 3
+  Else If Op = 'and'                                     Then BinOpPrec := 4
+  Else If (Op = '=') Or (Op = '#') Or (Op = '!=')
+       Or (Op = '<') Or (Op = '<=')
+       Or (Op = '>') Or (Op = '>=')                     Then BinOpPrec := 5
+  Else If (Op = '+') Or (Op = '-')                       Then BinOpPrec := 6
+  Else If (Op = '*') Or (Op = '/') Or (Op = 'div')
+       Or (Op = 'mod')                                   Then BinOpPrec := 7
+  Else If (Op = '^') Or (Op = '**')                      Then BinOpPrec := 8
+  Else                                                        BinOpPrec := 0;
+End;
+
+{ ---- BinOpIsRight : ^ et ** sont droit-associatifs ----------- }
+Function BinOpIsRight(Const Op : TString) : Boolean;
+Begin
+  BinOpIsRight := (Op = '^') Or (Op = '**');
+End;
+
+{ ---- EmitBinOp : generer le code 8086 d un operateur binaire --
+  Pliage de constantes si L et R sont EK_IMM.
+  Operateurs Algol 58 couverts :
+    + - * / div mod ^ **  (arithmetiques)
+    = # != < <= > >=      (relationnels)
+    and or                (logiques avec court-circuit)
+    imp eqv               (logiques derives)                     }
+Procedure EmitBinOp(Const Op : TString;
+                    Var L : TExprVal; Var R : TExprVal);
+Var
+  RS     : TString;
+  LblE   : TString;
+  Acc    : LongInt;
+  Exp    : LongInt;
+Begin
+  { ---- Pliage de constantes -------------------------------- }
+  If (L.Kind = EK_IMM) And (R.Kind = EK_IMM) Then
+  Begin
+    If      Op = '+'   Then L.ImmVal := L.ImmVal + R.ImmVal
+    Else If Op = '-'   Then L.ImmVal := L.ImmVal - R.ImmVal
+    Else If Op = '*'   Then L.ImmVal := L.ImmVal * R.ImmVal
+    Else If (Op = '/') Or (Op = 'div') Then
+    Begin
+      If R.ImmVal = 0 Then Begin CompileError('division par zero'); End
+      Else L.ImmVal := L.ImmVal Div R.ImmVal;
+    End
+    Else If Op = 'mod' Then
+    Begin
+      If R.ImmVal = 0 Then Begin CompileError('modulo par zero'); End
+      Else L.ImmVal := L.ImmVal Mod R.ImmVal;
+    End
+    Else If (Op = '^') Or (Op = '**') Then
+    Begin
+      Acc := 1; Exp := R.ImmVal;
+      If Exp < 0 Then L.ImmVal := 0
+      Else Begin
+        While Exp > 0 Do Begin Acc := Acc * L.ImmVal; Dec(Exp); End;
+        L.ImmVal := Acc;
+      End;
+    End
+    Else If Op = '='   Then Begin If L.ImmVal =  R.ImmVal Then L.ImmVal := 1 Else L.ImmVal := 0; End
+    Else If (Op = '#') Or (Op = '!=') Then
+      Begin If L.ImmVal <> R.ImmVal Then L.ImmVal := 1 Else L.ImmVal := 0; End
+    Else If Op = '<'   Then Begin If L.ImmVal <  R.ImmVal Then L.ImmVal := 1 Else L.ImmVal := 0; End
+    Else If Op = '<='  Then Begin If L.ImmVal <= R.ImmVal Then L.ImmVal := 1 Else L.ImmVal := 0; End
+    Else If Op = '>'   Then Begin If L.ImmVal >  R.ImmVal Then L.ImmVal := 1 Else L.ImmVal := 0; End
+    Else If Op = '>='  Then Begin If L.ImmVal >= R.ImmVal Then L.ImmVal := 1 Else L.ImmVal := 0; End
+    Else If Op = 'and' Then
+      Begin If (L.ImmVal<>0) And (R.ImmVal<>0) Then L.ImmVal:=1 Else L.ImmVal:=0; End
+    Else If Op = 'or'  Then
+      Begin If (L.ImmVal<>0) Or  (R.ImmVal<>0) Then L.ImmVal:=1 Else L.ImmVal:=0; End
+    Else If Op = 'imp' Then
+      Begin If (L.ImmVal<>0) And (R.ImmVal=0) Then L.ImmVal:=0 Else L.ImmVal:=1; End
+    Else If Op = 'eqv' Then
+      Begin If ((L.ImmVal<>0) = (R.ImmVal<>0)) Then L.ImmVal:=1 Else L.ImmVal:=0; End;
+    L.TypeIdx := TY_IDX_INTEGER;
+    Exit;
+  End;
+
+  { ---- Court-circuit and ----------------------------------- }
+  If Op = 'and' Then
+  Begin
+    LblE := NewLabel;
+    ExprFlushToAX(L);
+    EmitInstr('TEST', 'AX, AX');
+    EmitInstr('JZ', LblE);
+    ExprFlushToAX(R);
+    EmitInstr('TEST', 'AX, AX');
+    EmitInstr('MOV', 'AX, 0');
+    EmitInstr('JZ', LblE);
+    EmitInstr('MOV', 'AX, 1');
+    EmitLabel(LblE);
+    L.Kind := EK_AX; L.TypeIdx := TY_IDX_BOOLEAN;
+    Exit;
+  End;
+
+  { ---- Court-circuit or ------------------------------------ }
+  If Op = 'or' Then
+  Begin
+    LblE := NewLabel;
+    ExprFlushToAX(L);
+    EmitInstr('TEST', 'AX, AX');
+    EmitInstr('MOV', 'AX, 1');
+    EmitInstr('JNZ', LblE);
+    ExprFlushToAX(R);
+    EmitInstr('TEST', 'AX, AX');
+    EmitInstr('MOV', 'AX, 0');
+    EmitInstr('JZ', LblE);
+    EmitInstr('MOV', 'AX, 1');
+    EmitLabel(LblE);
+    L.Kind := EK_AX; L.TypeIdx := TY_IDX_BOOLEAN;
+    Exit;
+  End;
+
+  { ---- imp : NOT a OR b ------------------------------------ }
+  If Op = 'imp' Then
+  Begin
+    LblE := NewLabel;
+    ExprFlushToAX(L);
+    EmitInstr('TEST', 'AX, AX');
+    EmitInstr('MOV', 'AX, 1');
+    EmitInstr('JZ', LblE);       { L=0 -> imp est vrai }
+    ExprFlushToAX(R);
+    EmitInstr('TEST', 'AX, AX');
+    EmitInstr('MOV', 'AX, 0');
+    EmitInstr('JZ', LblE);       { L<>0 et R=0 -> imp est faux }
+    EmitInstr('MOV', 'AX, 1');
+    EmitLabel(LblE);
+    L.Kind := EK_AX; L.TypeIdx := TY_IDX_BOOLEAN;
+    Exit;
+  End;
+
+  { ---- eqv : (a AND b) OR (NOT a AND NOT b) ---------------- }
+  If Op = 'eqv' Then
+  Begin
+    ExprFlushToAX(L);
+    EmitInstr('PUSH', 'AX');
+    ExprFlushToAX(R);
+    EmitInstr('MOV', 'BX, AX');
+    EmitInstr('POP', 'AX');
+    { AX=L, BX=R : on veut (AX<>0)=(BX<>0) }
+    EmitInstr('TEST', 'AX, AX');
+    EmitInstr('MOV', 'AX, 0');
+    EmitInstr('SETNE', 'AL');     { AL = (L<>0) }
+    EmitInstr('TEST', 'BX, BX');
+    EmitInstr('MOV', 'BX, 0');
+    EmitInstr('SETNE', 'BL');     { BL = (R<>0) }
+    EmitInstr('CMP', 'AX, BX');
+    EmitInstr('MOV', 'AX, 0');
+    EmitInstr('SETE', 'AL');      { AX = (L<>0)=(R<>0) }
+    L.Kind := EK_AX; L.TypeIdx := TY_IDX_BOOLEAN;
+    Exit;
+  End;
+
+  { ---- Cas general : emission 8086 ------------------------- }
+  ExprFlushToAX(L);
+  If R.Kind = EK_IMM Then
+  Begin
+    Str(R.ImmVal, RS);
+    If      Op = '+'   Then EmitInstr('ADD', 'AX, ' + RS)
+    Else If Op = '-'   Then EmitInstr('SUB', 'AX, ' + RS)
+    Else If Op = '*'   Then
+    Begin
+      EmitInstr('MOV', 'BX, ' + RS);
+      EmitInstr('IMUL', 'BX');
+    End
+    Else If (Op = '/') Or (Op = 'div') Then
+    Begin
+      EmitInstr('MOV', 'BX, ' + RS);
+      EmitInstr('CWD', '');
+      EmitInstr('IDIV', 'BX');
+    End
+    Else If Op = 'mod' Then
+    Begin
+      EmitInstr('MOV', 'BX, ' + RS);
+      EmitInstr('CWD', '');
+      EmitInstr('IDIV', 'BX');
+      EmitInstr('MOV', 'AX, DX');
+    End
+    Else If (Op = '^') Or (Op = '**') Then
+    Begin
+      EmitInstr('MOV', 'BX, ' + RS);
+      EmitInstr('CALL', A58_RT_PFX + 'POW');
+    End
+    Else If Op = '='   Then Begin EmitInstr('CMP','AX, '+RS); EmitInstr('MOV','AX, 0'); EmitInstr('SETE','AL'); End
+    Else If (Op = '#') Or (Op = '!=') Then
+      Begin EmitInstr('CMP','AX, '+RS); EmitInstr('MOV','AX, 0'); EmitInstr('SETNE','AL'); End
+    Else If Op = '<'   Then Begin EmitInstr('CMP','AX, '+RS); EmitInstr('MOV','AX, 0'); EmitInstr('SETL','AL'); End
+    Else If Op = '<='  Then Begin EmitInstr('CMP','AX, '+RS); EmitInstr('MOV','AX, 0'); EmitInstr('SETLE','AL'); End
+    Else If Op = '>'   Then Begin EmitInstr('CMP','AX, '+RS); EmitInstr('MOV','AX, 0'); EmitInstr('SETG','AL'); End
+    Else If Op = '>='  Then Begin EmitInstr('CMP','AX, '+RS); EmitInstr('MOV','AX, 0'); EmitInstr('SETGE','AL'); End;
+  End
+  Else
+  Begin
+    { R non immediat : sauvegarder L dans la pile, charger R dans BX }
+    EmitInstr('PUSH', 'AX');
+    ExprFlushToAX(R);
+    EmitInstr('MOV', 'BX, AX');
+    EmitInstr('POP', 'AX');
+    If      Op = '+'   Then EmitInstr('ADD', 'AX, BX')
+    Else If Op = '-'   Then EmitInstr('SUB', 'AX, BX')
+    Else If Op = '*'   Then EmitInstr('IMUL', 'BX')
+    Else If (Op = '/') Or (Op = 'div') Then
+      Begin EmitInstr('CWD',''); EmitInstr('IDIV','BX'); End
+    Else If Op = 'mod' Then
+      Begin EmitInstr('CWD',''); EmitInstr('IDIV','BX'); EmitInstr('MOV','AX, DX'); End
+    Else If (Op = '^') Or (Op = '**') Then
+      EmitInstr('CALL', A58_RT_PFX + 'POW')
+    Else
+    Begin
+      { Relationnels : CMP AX, BX + SETcc }
+      EmitInstr('CMP', 'AX, BX');
+      EmitInstr('MOV', 'AX, 0');
+      If      Op = '='                Then EmitInstr('SETE', 'AL')
+      Else If (Op = '#') Or (Op = '!=') Then EmitInstr('SETNE', 'AL')
+      Else If Op = '<'                Then EmitInstr('SETL', 'AL')
+      Else If Op = '<='               Then EmitInstr('SETLE', 'AL')
+      Else If Op = '>'                Then EmitInstr('SETG', 'AL')
+      Else If Op = '>='               Then EmitInstr('SETGE', 'AL');
+    End;
+  End;
+  L.Kind := EK_AX;
+End;
+
+{ ---- ParsePrimary : atome du parseur Pratt ------------------- }
+{ Gere : literaux entiers/reels, true/false, chaines, ( expr ).  }
+{ Les identificateurs et appels de fonction seront ajoutes dans  }
+{ les TODOs suivants.                                            }
+Procedure ParsePrimary(Var Res : TExprVal);
+Begin
+  ExprMakeNone(Res);
+  Case CurToken.Kind Of
+    TK_INTEGER, TK_REAL, TK_STRING :
+    Begin
+      LitEval(CurToken, Res);
+      ParserAdvance;
+    End;
+    TK_KEYWORD :
+    Begin
+      If (CurToken.Val = 'true') Or (CurToken.Val = 'false') Then
+      Begin
+        LitEval(CurToken, Res);
+        ParserAdvance;
+      End
+      Else
+      Begin
+        CompileError('expression primaire inattendue: ' + CurToken.Val);
+        ParserAdvance;
+      End;
+    End;
+    TK_PUNCT :
+    Begin
+      If CurToken.Val = '(' Then
+      Begin
+        ParserAdvance;  { consommer ( }
+        ParseExprPrec(1, Res);
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance  { consommer ) }
+        Else
+          CompileError(') attendue');
+      End
+      Else
+      Begin
+        CompileError('expression primaire inattendue: ' + CurToken.Val);
+        ParserAdvance;
+      End;
+    End;
+    TK_IDENT :
+    Begin
+      { Stub : sera complete dans TODO 05 (table des symboles) }
+      WarnMsg('identificateur en expression ignore pour l instant: ' + CurToken.Val);
+      ExprMakeImm(0, TY_IDX_INTEGER, Res);
+      ParserAdvance;
+    End;
+  Else
+    CompileError('expression attendue, token inattendu');
+  End;
+End;
+
+{ ---- ParseUnary : gestion des operateurs unaires ------------- }
+{ Unaires : not (negation logique), + (identite), - (negation). }
+Procedure ParseUnary(Var Res : TExprVal);
+Begin
+  { not expr }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'not') Then
+  Begin
+    ParserAdvance;
+    ParseUnary(Res);
+    If Res.Kind = EK_IMM Then
+    Begin
+      If Res.ImmVal <> 0 Then Res.ImmVal := 0 Else Res.ImmVal := 1;
+    End
+    Else
+    Begin
+      ExprFlushToAX(Res);
+      EmitInstr('TEST', 'AX, AX');
+      EmitInstr('MOV', 'AX, 0');
+      EmitInstr('SETE', 'AL');
+      Res.Kind := EK_AX;
+    End;
+    Res.TypeIdx := TY_IDX_BOOLEAN;
+  End
+  { + expr (identite) }
+  Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '+') Then
+  Begin
+    ParserAdvance;
+    ParseUnary(Res);
+  End
+  { - expr (negation) }
+  Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '-') Then
+  Begin
+    ParserAdvance;
+    ParseUnary(Res);
+    If Res.Kind = EK_IMM Then
+      Res.ImmVal := -Res.ImmVal
+    Else
+    Begin
+      ExprFlushToAX(Res);
+      EmitInstr('NEG', 'AX');
+      Res.Kind := EK_AX;
+    End;
+  End
+  { Pas d unaire : primaire }
+  Else
+    ParsePrimary(Res);
+End;
+
+{ ---- ParseExprPrec : boucle de montee de precedence (Pratt) -- }
+{ Operateurs binaires detectes comme TK_OP ou TK_KEYWORD        }
+{ (and, or, not, imp, eqv, div, mod).                           }
+Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal);
+Var
+  Op       : TString;
+  Prec     : Integer;
+  NextPrec : Integer;
+  Right    : TExprVal;
+Begin
+  ParseUnary(Res);
+
+  Repeat
+    Op   := '';
+    Prec := 0;
+
+    { Detecter operateur binaire (TK_OP) }
+    If CurToken.Kind = TK_OP Then
+    Begin
+      Op   := CurToken.Val;
+      Prec := BinOpPrec(Op);
+    End
+    { Mots-cles operateurs : and, or, imp, eqv, div, mod }
+    Else If CurToken.Kind = TK_KEYWORD Then
+    Begin
+      If (CurToken.Val = 'and') Or (CurToken.Val = 'or')
+      Or (CurToken.Val = 'imp') Or (CurToken.Val = 'eqv')
+      Or (CurToken.Val = 'div') Or (CurToken.Val = 'mod') Then
+      Begin
+        Op   := CurToken.Val;
+        Prec := BinOpPrec(Op);
+      End;
+    End;
+
+    { Pas d operateur binaire ou precedence trop basse }
+    If (Op = '') Or (Prec < MinPrec) Then Break;
+
+    ParserAdvance;  { consommer l operateur }
+
+    { Niveau suivant : droit-assoc -> meme prec, sinon prec+1 }
+    If BinOpIsRight(Op) Then NextPrec := Prec
+    Else NextPrec := Prec + 1;
+
+    ParseExprPrec(NextPrec, Right);
+    EmitBinOp(Op, Res, Right);
+  Until False;
 End;
 
 { ============================================================
