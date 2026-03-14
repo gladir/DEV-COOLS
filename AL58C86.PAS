@@ -222,7 +222,7 @@
             Tableaux globaux : alloues dans DATA avec label _A58ARR_nom
             Passage de tableau en parametre : adresse + descripteur de bornes
 
-  TODO 16 - BLOCS BEGIN...END ET PORTEES
+  TODO 16 - BLOCS BEGIN...END ET PORTEES [IMPLEMENTE]
             ParseBlock : begin declarations ; instructions end
               Bloc comme unite d execution et de portee
               Declarations locales au bloc (variables, tableaux)
@@ -588,6 +588,7 @@ Var
   CurFnDepth   : Integer;    { 0 = global, >0 = dans une procedure }
   CurFnRetLbl  : TString;    { label epilogue de la procedure       }
   CurFnName    : TString;    { nom de la procedure courante         }
+  CurBlockDepth : Integer;   { profondeur de bloc begin..end (TODO 16) }
   LoopTop      : Integer;
 
   { Segment de donnees (TODO 08) }
@@ -922,6 +923,7 @@ Begin
   CurFnDepth     := 0;
   CurFnRetLbl    := '';
   CurFnName      := '';
+  CurBlockDepth  := 0;
   LoopTop        := 0;
   RuntimeEmitted := False;
   CurFrameSize   := 0;
@@ -2885,7 +2887,7 @@ Begin
     { Stocker les bornes dans Offset pour lo1 (utilise par EmitArrayAccess) }
     SymTab[Idx].ScopeLevel := CurScope;
 
-    If CurFnDepth = 0 Then
+    If (CurFnDepth = 0) And (CurBlockDepth <= 1) Then
     Begin
       { Tableau global : allouer dans DATA }
       DataAddArray(SymTab[Idx].MangledName, ElemCount);
@@ -3464,11 +3466,14 @@ End;
 {           Boolean ident [, ident]* ;                             }
 { Les variables globales (CurScope=0) sont allouees dans DATA.    }
 { Les variables locales sont allouees sur la pile [BP-offset].    }
+{ Les variables dans un bloc imbrique (CurBlockDepth>1) sont      }
+{ allouees sur la pile avec SUB SP,2 (TODO 16).                   }
 Procedure ParseVarDecl;
 Var
   TyIdx   : Integer;
   VName   : TString;
   Idx     : Integer;
+  NS      : TString;
 Begin
   { Determiner le type }
   If CurToken.Val = 'integer' Then TyIdx := TY_IDX_INTEGER
@@ -3502,9 +3507,9 @@ Begin
     VName := CurToken.Val;
     ParserAdvance;  { consommer l ident }
 
-    If CurFnDepth = 0 Then
+    If (CurFnDepth = 0) And (CurBlockDepth <= 1) Then
     Begin
-      { Globale (programme principal) : allouer dans DATA }
+      { Globale (programme principal, bloc de niveau 0 ou 1) : allouer dans DATA }
       Idx := SymAdd(VName, SK_VAR, TyIdx, 0);
       If Idx >= 0 Then
       Begin
@@ -3514,9 +3519,16 @@ Begin
     End
     Else
     Begin
-      { Locale (dans une procedure) : allouer sur la pile }
+      { Locale (dans un bloc imbrique ou une procedure) : allouer sur la pile }
       Inc(CurFrameSize);
       Idx := SymAdd(VName, SK_VAR, TyIdx, CurFrameSize * 2);
+      If (CurBlockDepth > 1) And (CurFnDepth = 0) Then
+      Begin
+        { Bloc imbrique hors procedure : emettre SUB SP inline (TODO 16) }
+        Str(CurFrameSize * 2, NS);
+        EmitComment('local var ' + VName + ' at [BP-' + NS + ']');
+        EmitInstr('SUB', 'SP, 2');
+      End;
     End;
 
     { Virgule -> autre variable du meme type }
@@ -3798,9 +3810,22 @@ End;
   STUBS POUR LES TODOS SUIVANTS
   ============================================================ }
 
+{ ============================================================
+  TODO 16 - BLOCS BEGIN...END ET PORTEES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseBlock : bloc begin...end avec portee lexicale -------- }
+{ Syntaxe : begin declarations ; instructions end                  }
+{   Declarations locales au bloc (variables, tableaux)             }
+{   Portee lexicale : variables visibles dans le bloc et sous-blocs }
+{   Blocs imbriques : begin ... begin ... end ... end              }
+{   Allocation locale : SUB SP, taille a l entree du bloc          }
+{     ADD SP, taille a la sortie du bloc                           }
 Procedure ParseBlock;
 Var
   SavedFrame : Integer;
+  FrameDelta : Integer;
+  NS         : TString;
 Begin
   If CurToken.Kind = TK_EOF Then Exit;
 
@@ -3809,7 +3834,11 @@ Begin
   Begin
     ParserAdvance;  { consommer begin }
     SymEnterScope;
+    Inc(CurBlockDepth);
     SavedFrame := CurFrameSize;
+
+    If Opts.DebugMode Then
+      EmitComment('begin block depth=' + IntToStr_(CurBlockDepth));
 
     While (CurToken.Kind <> TK_EOF) And
           Not ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'end')) Do
@@ -3817,9 +3846,22 @@ Begin
       ParseStmt;
     End;
 
-    { Restaurer la taille du frame si des locales ont ete ajoutees }
+    { Liberer l espace pile des variables locales du bloc }
+    FrameDelta := CurFrameSize - SavedFrame;
+    If (FrameDelta > 0) And
+       ((CurBlockDepth > 1) Or (CurFnDepth > 0)) Then
+    Begin
+      Str(FrameDelta * 2, NS);
+      EmitComment('end block: liberer ' + NS + ' octets de locales');
+      EmitInstr('ADD', 'SP, ' + NS);
+    End;
+
     CurFrameSize := SavedFrame;
+    Dec(CurBlockDepth);
     SymLeaveScope;
+
+    If Opts.DebugMode Then
+      EmitComment('end block depth=' + IntToStr_(CurBlockDepth));
 
     If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'end') Then
       ParserAdvance  { consommer end }
@@ -3847,6 +3889,8 @@ Begin
   If OutFOpen Then
   Begin
     EmitComment('--- sortie DOS ---');
+    EmitInstr('MOV', 'SP, BP');
+    EmitInstr('POP', 'BP');
     EmitInstr('MOV', 'AX, 4C00h');
     EmitInstr('INT', '21h');
     WriteLn(OutF, '_A58P_Main ENDP');
@@ -3876,6 +3920,8 @@ Begin
   WriteLn(OutF, '_A58P_Main PROC');
   WriteLn(OutF, '        MOV     AX, _DATA');
   WriteLn(OutF, '        MOV     DS, AX');
+  WriteLn(OutF, '        PUSH    BP');
+  WriteLn(OutF, '        MOV     BP, SP');
   WriteLn(OutF);
 End;
 
