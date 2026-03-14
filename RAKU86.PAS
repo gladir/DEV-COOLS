@@ -306,7 +306,7 @@
             Verification de type au runtime :
               Comparer TypeIdx de chaque argument avec la signature
 
-  TODO 19 - CLASSES ET OBJETS (class, has, method, new)
+  TODO 19 - CLASSES ET OBJETS (class, has, method, new) [IMPLEMENTE]
             ParseClassDecl : class Nom [is Parent] [does Role] { ... }
             Attributs : has $.attr (public), has $!attr (prive)
               Stockes comme champs dans l instance (offsets fixes)
@@ -476,6 +476,9 @@ Const
   MAX_MULTI     = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
   MAX_MULTI_VAR   = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
   MAX_MULTI_GROUP = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
+  MAX_CLASS       = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
+  MAX_CLASS_ATTR  = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
+  MAX_CLASS_METH  = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
   MAX_HASH_PAIRS  = 16;
   MAX_HASH_KEYS   = {$IFDEF FPC}512{$ELSE}100{$ENDIF};
   STACK_SIZE      = 1024;
@@ -580,6 +583,7 @@ Type
     Offset      : Integer;   { [BP-n] pour locaux, DATA sinon  }
     IsExported  : Boolean;   { marque is export                }
     DeclLine    : Integer;
+    ClassIdx    : Integer;   { index ClassTab, -1 si non-objet }
   End;
 
   { ---- Types internes ------------------------------------- }
@@ -658,6 +662,32 @@ Type
     Vars     : Array[0..MAX_MULTI_VAR - 1] Of TMultiVarRec;
     DefIdx   : Integer;     { indice du candidat par defaut (-1)}
     HasProto : Boolean;     { proto sub declare ?               }
+  End;
+
+  { ---- Classes et objets (TODO 19) ------------------------ }
+  TClassAttrRec = Record
+    Name     : TString;   { nom de l attribut sans sigil      }
+    IsPublic : Boolean;    { $.x = True, $!x = False           }
+    IsRW     : Boolean;    { has $.x is rw                     }
+    Offset   : Integer;    { offset dans l instance (2, 4, ..) }
+    TypeIdx  : Integer;    { type de la valeur (maj a .new)    }
+  End;
+
+  TClassMethodRec = Record
+    Name    : TString;     { nom de la methode                 }
+    LblName : TString;     { label ASM (_RKS_Cls_meth)         }
+    VtIdx   : Integer;     { indice dans la vtable (0, 1, ...) }
+  End;
+
+  TClassRec = Record
+    Name      : TString;
+    ParentIdx : Integer;
+    AttrCount : Integer;
+    Attrs     : Array[0..MAX_CLASS_ATTR - 1] Of TClassAttrRec;
+    MethCount : Integer;
+    Meths     : Array[0..MAX_CLASS_METH - 1] Of TClassMethodRec;
+    InstSize  : Integer;
+    VtLbl     : TString;
   End;
 
 { ============================================================
@@ -752,6 +782,11 @@ Var
   MultiGroupTab   : Array[0..MAX_MULTI_GROUP - 1] Of TMultiGroup;
   MultiGroupCount : Integer;
   MultiCount      : Integer;
+
+  { Classes et objets (TODO 19) }
+  ClassTab    : Array[0..MAX_CLASS - 1] Of TClassRec;
+  ClassCount  : Integer;
+  CurClassIdx : Integer;
 
 { ============================================================
   FORWARD DECLARATIONS
@@ -943,6 +978,14 @@ Function  MultiGroupAdd(Const Name : TString) : Integer;          Forward;
 Procedure ParseMultiDecl;                                          Forward;
 Procedure ParseProtoDecl;                                          Forward;
 Procedure EmitMultiDispatchers;                                    Forward;
+
+{ Forward declarations TODO 19 - Classes et objets }
+Function  ClassFind(Const AName : TString) : Integer;              Forward;
+Function  ClassAdd(Const AName : TString;
+                   ParIdx : Integer) : Integer;                    Forward;
+Procedure ParseClassDecl;                                          Forward;
+Procedure EmitClassVtables;                                        Forward;
+Procedure EmitClassRuntime;                                        Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1198,6 +1241,8 @@ Begin
   SubCount       := 0;
   MultiGroupCount := 0;
   MultiCount      := 0;
+  ClassCount      := 0;
+  CurClassIdx     := -1;
   GKwConsumed  := False;
   CurFnRetLbl  := '';
   CurFnName    := '';
@@ -1212,6 +1257,7 @@ Begin
     SymTab[I].Offset      := 0;
     SymTab[I].IsExported  := False;
     SymTab[I].DeclLine    := 0;
+    SymTab[I].ClassIdx    := -1;
   End;
 End;
 
@@ -1286,6 +1332,7 @@ Begin
   EmitIORuntime;
   EmitArrayRuntime;
   EmitHashRuntime;
+  EmitClassRuntime;
 End;
 
 Procedure EmitDataSeg;
@@ -1359,6 +1406,7 @@ Begin
   EmitRaw('_RKS_MAIN ENDP');
   EmitBlankLine;
   EmitMultiDispatchers;
+  EmitClassVtables;
   EmitRuntime;
   EmitRaw('_TEXT   ENDS');
   EmitBlankLine;
@@ -1502,6 +1550,9 @@ Begin
   DataAdd('_RK_MULTISIG',  DK_WORD, 0, '');
   DataAdd('_RKK_NOMDISP',  DK_STR, 0,
           'No matching multi candidate');
+  { Classes et objets (TODO 19) }
+  DataAdd('_RK_INSTPTR',   DK_WORD, 0, '');
+  DataAdd('_RKK_NOMETHOD', DK_STR, 0, 'Method not found');
 End;
 
 { ============================================================
@@ -2999,6 +3050,7 @@ Var
   Sub  : TExprVal;
   SIdx : Integer;
   Name : TString;
+  CIdx : Integer;
 Begin
   ExprMakeNone(Res);
   { --- Litteraux entiers --- }
@@ -3032,6 +3084,13 @@ Begin
     If SIdx >= 0 Then
     Begin
       ExprLoad(SIdx, Res);
+      { Propager le type classe si applicable }
+      If (SymTab[SIdx].TypeIdx = TY_IDX_CLASS) And
+         (SymTab[SIdx].ClassIdx >= 0) Then
+      Begin
+        Res.TypeIdx := TY_IDX_CLASS;
+        Res.Offset  := SymTab[SIdx].ClassIdx;
+      End;
     End
     Else
     Begin
@@ -3224,12 +3283,26 @@ Begin
     { --- Instanciation : Classe.new(args) --- }
     If (CurToken.Kind = TK_OP) And (CurToken.Val = '.') Then
     Begin
-      EmitComment('type/classe ' + Name);
-      EmitInstr('XOR', 'AX, AX');
-      Res.Kind    := EK_AX;
-      Res.ImmVal  := 0;
-      Res.TypeIdx := TY_IDX_INT;
-      Res.Offset  := 0;
+      { Chercher la classe }
+      CIdx := ClassFind(Name);
+      If CIdx >= 0 Then
+      Begin
+        EmitComment('classe ' + Name);
+        EmitInstr('XOR', 'AX, AX');
+        Res.Kind    := EK_AX;
+        Res.ImmVal  := 0;
+        Res.TypeIdx := TY_IDX_CLASS;
+        Res.Offset  := CIdx;
+      End
+      Else
+      Begin
+        EmitComment('type/classe ' + Name);
+        EmitInstr('XOR', 'AX, AX');
+        Res.Kind    := EK_AX;
+        Res.ImmVal  := 0;
+        Res.TypeIdx := TY_IDX_INT;
+        Res.Offset  := 0;
+      End;
       ParsePostfix(Res);
       Exit;
     End;
@@ -4250,6 +4323,9 @@ Begin
       If (Sigil = '$') And (TyIdx = TY_IDX_INT) And
          (E.TypeIdx <> TY_UNKNOWN) And (E.TypeIdx <> TY_IDX_INT) Then
         SymTab[SIdx].TypeIdx := E.TypeIdx;
+      { Propager l index de classe pour les objets (TODO 19) }
+      If E.TypeIdx = TY_IDX_CLASS Then
+        SymTab[SIdx].ClassIdx := E.Offset;
       ExprStore(SIdx);
     End;
   End;
@@ -4641,7 +4717,18 @@ End;
 (* enchaines : $obj.method(args), $obj.attr, @arr[$i], %h{$k}.      *)
 Procedure ParsePostfix(Var Res : TExprVal);
 Var
-  MethName : TString;
+  MethName  : TString;
+  CIdx      : Integer;
+  MIdx      : Integer;
+  AIdx      : Integer;
+  MI        : Integer;
+  ArgCount  : Integer;
+  E         : TExprVal;
+  OfsStr    : TString;
+  PName     : TString;
+  Lbl       : TString;
+  TS        : TString;
+  SaveCIdx  : Integer;
 Begin
   { Boucle pour supporter les chaines : $obj.meth1.meth2 }
   While True Do
@@ -4665,6 +4752,107 @@ Begin
         Begin
           ParseHashMethodCall(-1, MethName, Res);
         End
+        { Dispatch vers methode/attribut de classe (TODO 19) }
+        Else If Res.TypeIdx = TY_IDX_CLASS Then
+        Begin
+          CIdx := Res.Offset;
+          SaveCIdx := CIdx;
+          If (CIdx >= 0) And (CIdx < ClassCount) Then
+          Begin
+            { Chercher une methode }
+            MIdx := -1;
+            For MI := 0 To ClassTab[CIdx].MethCount - 1 Do
+              If ClassTab[CIdx].Meths[MI].Name = MethName Then
+              Begin MIdx := MI; Break; End;
+            { Chercher un attribut }
+            AIdx := -1;
+            For MI := 0 To ClassTab[CIdx].AttrCount - 1 Do
+              If ClassTab[CIdx].Attrs[MI].Name = MethName Then
+              Begin AIdx := MI; Break; End;
+            If (MIdx >= 0) And (CurToken.Kind = TK_PUNCT) And
+               (CurToken.Val = '(') Then
+            Begin
+              { Appel de methode de classe }
+              Lbl := ClassTab[CIdx].Meths[MIdx].LblName;
+              ArgCount := 0;
+              EmitPush('AX');   { push self }
+              Inc(ArgCount);
+              ParserAdvance;   { consommer '(' }
+              If Not ((CurToken.Kind = TK_PUNCT) And
+                      (CurToken.Val = ')')) Then
+              Begin
+                Repeat
+                  ParseExpr(E);
+                  ExprFlushToAX(E);
+                  EmitPush('AX');
+                  Inc(ArgCount);
+                  If (CurToken.Kind = TK_PUNCT) And
+                     (CurToken.Val = ',') Then
+                    ParserAdvance
+                  Else
+                    Break;
+                Until CurToken.Kind = TK_EOF;
+              End;
+              If (CurToken.Kind = TK_PUNCT) And
+                 (CurToken.Val = ')') Then
+                ParserAdvance;
+              EmitInstr('CALL', Lbl);
+              If ArgCount > 0 Then
+                EmitInstr('ADD', 'SP, ' + IntToStr(ArgCount * 2));
+              Res.Kind    := EK_AX;
+              Res.ImmVal  := 0;
+              Res.TypeIdx := TY_IDX_CLASS;
+              Res.Offset  := SaveCIdx;
+            End
+            Else If AIdx >= 0 Then
+            Begin
+              { Acces attribut de classe via accesseur }
+              Lbl := '_RKS_' + SymNameClean(ClassTab[CIdx].Name) +
+                     '_' + SymNameClean(MethName);
+              EmitPush('AX');
+              EmitInstr('CALL', Lbl);
+              EmitInstr('ADD', 'SP, 2');
+              EmitComment('.attr ' + MethName);
+              Res.Kind    := EK_AX;
+              Res.ImmVal  := 0;
+              Res.TypeIdx := ClassTab[CIdx].Attrs[AIdx].TypeIdx;
+              Res.Offset  := 0;
+            End
+            Else
+            Begin
+              { Methode inconnue -> essai generique }
+              If (CurToken.Kind = TK_PUNCT) And
+                 (CurToken.Val = '(') Then
+                ParseMethodCall(MethName, Res)
+              Else
+              Begin
+                EmitPush('AX');
+                EmitInstr('CALL', '_RKS_' + SymNameClean(MethName));
+                EmitInstr('ADD', 'SP, 2');
+                Res.Kind    := EK_AX;
+                Res.ImmVal  := 0;
+                Res.TypeIdx := TY_IDX_INT;
+                Res.Offset  := 0;
+              End;
+            End;
+          End
+          Else
+          Begin
+            If (CurToken.Kind = TK_PUNCT) And
+               (CurToken.Val = '(') Then
+              ParseMethodCall(MethName, Res)
+            Else
+            Begin
+              EmitPush('AX');
+              EmitInstr('CALL', '_RKS_' + SymNameClean(MethName));
+              EmitInstr('ADD', 'SP, 2');
+              Res.Kind    := EK_AX;
+              Res.ImmVal  := 0;
+              Res.TypeIdx := TY_IDX_INT;
+              Res.Offset  := 0;
+            End;
+          End;
+        End
         Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
         Begin
           { Appel de methode .method(args) }
@@ -4687,7 +4875,85 @@ Begin
       Begin
         { Instanciation : Classe.new(args) }
         ParserAdvance;   { consommer new }
-        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        If Res.TypeIdx = TY_IDX_CLASS Then
+        Begin
+          { Instanciation d une classe connue (TODO 19) }
+          CIdx := Res.Offset;
+          Str(ClassTab[CIdx].InstSize, TS);
+          EmitComment('new ' + ClassTab[CIdx].Name);
+          EmitInstr('MOV', 'CX, ' + TS);
+          EmitInstr('CALL', '_RKRT_NEW');
+          EmitInstr('MOV', 'BX, AX');
+          EmitInstr('MOV', 'WORD PTR [BX], OFFSET ' +
+                    ClassTab[CIdx].VtLbl);
+          EmitInstr('MOV', 'WORD PTR [_RK_INSTPTR], AX');
+          { Parametres nommes : (attr => val, ...) }
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+          Begin
+            ParserAdvance;   { consommer '(' }
+            While Not ((CurToken.Kind = TK_PUNCT) And
+                       (CurToken.Val = ')')) And
+                  (CurToken.Kind <> TK_EOF) Do
+            Begin
+              If CurToken.Kind = TK_IDENT Then
+              Begin
+                PName := CurToken.Val;
+                ParserAdvance;
+                If (CurToken.Kind = TK_OP) And
+                   (CurToken.Val = '=>') Then
+                Begin
+                  ParserAdvance;   { consommer '=>' }
+                  ParseExpr(E);
+                  ExprFlushToAX(E);
+                  { Trouver l offset de l attribut }
+                  AIdx := -1;
+                  For MI := 0 To ClassTab[CIdx].AttrCount - 1 Do
+                    If ClassTab[CIdx].Attrs[MI].Name = PName Then
+                    Begin AIdx := MI; Break; End;
+                  If AIdx >= 0 Then
+                  Begin
+                    Str(ClassTab[CIdx].Attrs[AIdx].Offset, OfsStr);
+                    EmitInstr('MOV',
+                      'BX, WORD PTR [_RK_INSTPTR]');
+                    EmitInstr('MOV',
+                      'WORD PTR [BX+' + OfsStr + '], AX');
+                    { Mettre a jour le type de l attribut }
+                    If E.TypeIdx <> TY_UNKNOWN Then
+                      ClassTab[CIdx].Attrs[AIdx].TypeIdx :=
+                        E.TypeIdx;
+                  End
+                  Else
+                    WarnMsg('attribut inconnu : ' + PName);
+                End
+                Else
+                Begin
+                  ParseExpr(E);
+                  ExprFlushToAX(E);
+                End;
+              End
+              Else
+              Begin
+                ParseExpr(E);
+                ExprFlushToAX(E);
+              End;
+              If (CurToken.Kind = TK_PUNCT) And
+                 (CurToken.Val = ',') Then
+                ParserAdvance
+              Else
+                Break;
+            End;
+            If (CurToken.Kind = TK_PUNCT) And
+               (CurToken.Val = ')') Then
+              ParserAdvance;
+          End;
+          EmitInstr('MOV', 'AX, WORD PTR [_RK_INSTPTR]');
+          Res.Kind    := EK_AX;
+          Res.ImmVal  := 0;
+          Res.TypeIdx := TY_IDX_CLASS;
+          Res.Offset  := CIdx;
+        End
+        Else If (CurToken.Kind = TK_PUNCT) And
+                (CurToken.Val = '(') Then
         Begin
           ParseMethodCall('new', Res);
         End
@@ -7572,6 +7838,432 @@ Begin
   EmitBlankLine;
 End;
 
+{ ============================================================
+  TODO 19 - CLASSES ET OBJETS (class, has, method, new) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ClassFind : chercher une classe par nom -------------------- }
+Function ClassFind(Const AName : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  ClassFind := -1;
+  For I := 0 To ClassCount - 1 Do
+    If ClassTab[I].Name = AName Then
+    Begin
+      ClassFind := I;
+      Exit;
+    End;
+End;
+
+{ ---- ClassAdd : ajouter une classe dans ClassTab ---------------- }
+Function ClassAdd(Const AName : TString;
+                  ParIdx : Integer) : Integer;
+Var
+  Idx : Integer;
+Begin
+  If ClassCount >= MAX_CLASS Then
+  Begin
+    CompileError('table des classes pleine (max=' +
+                 IntToStr(MAX_CLASS) + ')');
+    ClassAdd := -1;
+    Exit;
+  End;
+  Idx := ClassCount;
+  ClassTab[Idx].Name      := AName;
+  ClassTab[Idx].ParentIdx := ParIdx;
+  ClassTab[Idx].AttrCount := 0;
+  ClassTab[Idx].MethCount := 0;
+  ClassTab[Idx].InstSize  := 2;   { 2 octets pour pointeur vtable }
+  ClassTab[Idx].VtLbl     := '_RKC_' + SymNameClean(AName) + '_VT';
+  Inc(ClassCount);
+  ClassAdd := Idx;
+End;
+
+{ ---- ParseClassDecl : declaration de classe --------------------- }
+(* Syntaxe : class Nom [is Parent] { has ...; method ...; }        *)
+Procedure ParseClassDecl;
+Var
+  ClassName    : TString;
+  ParIdx       : Integer;
+  CIdx         : Integer;
+  AttrRaw      : TString;
+  AttrName     : TString;
+  IsPublic     : Boolean;
+  IsRW         : Boolean;
+  MethName     : TString;
+  ParamNames   : Array[0..MAX_PARAM - 1] Of TString;
+  ParamCount   : Integer;
+  LblSkip      : TString;
+  LblRet       : TString;
+  LblProc      : TString;
+  LblClsEnd    : TString;
+  AccLbl       : TString;
+  SaveFrame    : Integer;
+  SaveFnDepth  : Integer;
+  SaveRetLbl   : TString;
+  SaveFnName   : TString;
+  SaveClassIdx : Integer;
+  I            : Integer;
+  Ofs          : Integer;
+  OfsStr       : TString;
+  SelfOfs      : Integer;
+  SelfOfsStr   : TString;
+  AccOfs       : Integer;
+  AccOfsStr    : TString;
+Begin
+  { Attendre le nom de la classe }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('nom de classe attendu apres ''class''');
+    Exit;
+  End;
+  ClassName := CurToken.Val;
+  ParserAdvance;
+
+  { Heritage optionnel : is Parent }
+  ParIdx := -1;
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'is') Then
+  Begin
+    ParserAdvance;   { consommer 'is' }
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      ParIdx := ClassFind(CurToken.Val);
+      If ParIdx < 0 Then
+        WarnMsg('classe parente inconnue : ' + CurToken.Val);
+      ParserAdvance;
+    End;
+  End;
+
+  { Creer l entree classe }
+  CIdx := ClassAdd(ClassName, ParIdx);
+  If CIdx < 0 Then Exit;
+  SaveClassIdx := CurClassIdx;
+  CurClassIdx := CIdx;
+
+  { Copier attributs et methodes du parent si heritage }
+  If ParIdx >= 0 Then
+  Begin
+    For I := 0 To ClassTab[ParIdx].AttrCount - 1 Do
+      If ClassTab[CIdx].AttrCount < MAX_CLASS_ATTR Then
+      Begin
+        ClassTab[CIdx].Attrs[ClassTab[CIdx].AttrCount] :=
+          ClassTab[ParIdx].Attrs[I];
+        Inc(ClassTab[CIdx].AttrCount);
+      End;
+    For I := 0 To ClassTab[ParIdx].MethCount - 1 Do
+      If ClassTab[CIdx].MethCount < MAX_CLASS_METH Then
+      Begin
+        ClassTab[CIdx].Meths[ClassTab[CIdx].MethCount] :=
+          ClassTab[ParIdx].Meths[I];
+        Inc(ClassTab[CIdx].MethCount);
+      End;
+    ClassTab[CIdx].InstSize := ClassTab[ParIdx].InstSize;
+  End;
+
+  { Attendre '{' }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+    ParserAdvance
+  Else
+    CompileError('''{'' attendue pour le corps de class ' + ClassName);
+
+  { JMP par-dessus tout le code genere pour la classe }
+  LblClsEnd := LabelGen;
+  EmitInstr('JMP', LblClsEnd);
+  EmitBlankLine;
+  EmitComment('class ' + ClassName);
+
+  { Parser le corps de la classe }
+  While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    { --- has $.attr [is rw]; --- }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'has') Then
+    Begin
+      ParserAdvance;   { consommer 'has' }
+      IsPublic := True;
+      IsRW     := False;
+      AttrName := '';
+
+      If CurToken.Kind = TK_SCALAR Then
+      Begin
+        AttrRaw := CurToken.Val;
+        ParserAdvance;
+        { Determiner public/prive et extraire le nom }
+        If (Length(AttrRaw) > 0) And (AttrRaw[1] = '.') Then
+        Begin
+          IsPublic := True;
+          AttrName := Copy(AttrRaw, 2, Length(AttrRaw) - 1);
+        End
+        Else If (Length(AttrRaw) > 0) And (AttrRaw[1] = '!') Then
+        Begin
+          IsPublic := False;
+          AttrName := Copy(AttrRaw, 2, Length(AttrRaw) - 1);
+        End
+        Else
+          AttrName := AttrRaw;
+      End
+      Else
+      Begin
+        CompileError('attribut $.nom ou $!nom attendu apres ''has''');
+        ParserAdvance;
+      End;
+
+      { Verifier 'is rw' optionnel }
+      If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'is') Then
+      Begin
+        ParserAdvance;   { consommer 'is' }
+        If (CurToken.Kind = TK_IDENT) And (CurToken.Val = 'rw') Then
+        Begin
+          IsRW := True;
+          ParserAdvance;   { consommer 'rw' }
+        End;
+      End;
+
+      { Ajouter l attribut }
+      If (AttrName <> '') And
+         (ClassTab[CIdx].AttrCount < MAX_CLASS_ATTR) Then
+      Begin
+        AccOfs := ClassTab[CIdx].InstSize;
+        ClassTab[CIdx].Attrs[ClassTab[CIdx].AttrCount].Name :=
+          AttrName;
+        ClassTab[CIdx].Attrs[ClassTab[CIdx].AttrCount].IsPublic :=
+          IsPublic;
+        ClassTab[CIdx].Attrs[ClassTab[CIdx].AttrCount].IsRW :=
+          IsRW;
+        ClassTab[CIdx].Attrs[ClassTab[CIdx].AttrCount].Offset :=
+          AccOfs;
+        ClassTab[CIdx].Attrs[ClassTab[CIdx].AttrCount].TypeIdx :=
+          TY_IDX_INT;
+        Inc(ClassTab[CIdx].AttrCount);
+        ClassTab[CIdx].InstSize := ClassTab[CIdx].InstSize + 2;
+
+        { Generer un accesseur pour les attributs publics }
+        If IsPublic Then
+        Begin
+          AccLbl := '_RKS_' + SymNameClean(ClassName) + '_' +
+                    SymNameClean(AttrName);
+          Str(AccOfs, AccOfsStr);
+          EmitBlankLine;
+          EmitComment('accesseur ' + ClassName + '.' + AttrName);
+          EmitRaw(AccLbl + ' PROC NEAR');
+          EmitProlog;
+          EmitInstr('MOV', 'BX, WORD PTR [BP+4]');
+          EmitInstr('MOV', 'AX, WORD PTR [BX+' + AccOfsStr + ']');
+          EmitEpilog;
+          EmitRaw(AccLbl + ' ENDP');
+        End;
+      End;
+
+      { Consommer ';' optionnel }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+    End
+    (* --- method nom(params) { corps } --- *)
+    Else If (CurToken.Kind = TK_KEYWORD) And
+            (CurToken.Val = 'method') Then
+    Begin
+      ParserAdvance;   { consommer 'method' }
+
+      If CurToken.Kind <> TK_IDENT Then
+      Begin
+        CompileError('nom de methode attendu apres ''method''');
+        ParserAdvance;
+      End
+      Else
+      Begin
+        MethName := CurToken.Val;
+        ParserAdvance;
+
+        { Parser la liste de parametres : (params) }
+        ParamCount := 0;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;   { consommer '(' }
+          While Not ((CurToken.Kind = TK_PUNCT) And
+                     (CurToken.Val = ')')) And
+                (CurToken.Kind <> TK_EOF) Do
+          Begin
+            If CurToken.Kind = TK_SCALAR Then
+            Begin
+              If ParamCount < MAX_PARAM Then
+              Begin
+                ParamNames[ParamCount] := CurToken.Val;
+                Inc(ParamCount);
+              End;
+              ParserAdvance;
+            End
+            Else If (CurToken.Kind = TK_PUNCT) And
+                    (CurToken.Val = ',') Then
+              ParserAdvance
+            Else
+              ParserAdvance;
+          End;
+          If (CurToken.Kind = TK_PUNCT) And
+             (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+
+        { Generer les labels }
+        Inc(SubCount);
+        LblProc := '_RKS_' + SymNameClean(ClassName) + '_' +
+                    SymNameClean(MethName);
+        Str(SubCount, OfsStr);
+        LblRet  := '_RKL_SRET_' + OfsStr;
+
+        { Enregistrer la methode dans ClassTab }
+        If ClassTab[CIdx].MethCount < MAX_CLASS_METH Then
+        Begin
+          ClassTab[CIdx].Meths[ClassTab[CIdx].MethCount].Name :=
+            MethName;
+          ClassTab[CIdx].Meths[ClassTab[CIdx].MethCount].LblName :=
+            LblProc;
+          ClassTab[CIdx].Meths[ClassTab[CIdx].MethCount].VtIdx :=
+            ClassTab[CIdx].MethCount;
+          Inc(ClassTab[CIdx].MethCount);
+        End;
+
+        { Sauvegarder le contexte }
+        SaveFrame   := CurFrameSize;
+        SaveFnDepth := CurFnDepth;
+        SaveRetLbl  := CurFnRetLbl;
+        SaveFnName  := CurFnName;
+        CurFrameSize := 0;
+        Inc(CurFnDepth);
+        CurFnRetLbl  := LblRet;
+        CurFnName    := ClassName + '.' + MethName;
+
+        { Emettre le prologue de la methode }
+        EmitBlankLine;
+        EmitComment('method ' + ClassName + '.' + MethName +
+                    '(' + IntToStr(ParamCount) + ' params)');
+        EmitRaw(LblProc + ' PROC NEAR');
+        EmitProlog;
+
+        { Entrer dans une nouvelle portee }
+        SymEnterScope;
+
+        { self est a [BP + 4 + ParamCount * 2] }
+        SelfOfs := 4 + ParamCount * 2;
+        Str(SelfOfs, SelfOfsStr);
+        SymAdd('self', '$', SC_PARAM, TY_IDX_CLASS, SelfOfs);
+        EmitComment('self [BP+' + SelfOfsStr + ']');
+
+        { Enregistrer les parametres explicites }
+        For I := 0 To ParamCount - 1 Do
+        Begin
+          Ofs := 4 + (ParamCount - 1 - I) * 2;
+          SymAdd(ParamNames[I], '$', SC_PARAM, TY_IDX_INT, Ofs);
+          Str(Ofs, OfsStr);
+          EmitComment('param $' + ParamNames[I] +
+                      ' [BP+' + OfsStr + ']');
+        End;
+
+        (* Parser le corps *)
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+          ParserAdvance
+        Else
+          CompileError('''{'' attendue pour le corps de method ' +
+                       MethName);
+
+        While Not ((CurToken.Kind = TK_PUNCT) And
+                   (CurToken.Val = '}')) And
+              (CurToken.Kind <> TK_EOF) Do
+          ParseStmt;
+
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+          ParserAdvance
+        Else
+          CompileError('''}'' attendue a la fin de method ' +
+                       MethName);
+
+        { Label de retour }
+        EmitLabel(LblRet);
+        EmitEpilog;
+        EmitRaw(LblProc + ' ENDP');
+
+        { Quitter la portee et restaurer le contexte }
+        SymLeaveScope;
+        CurFrameSize := SaveFrame;
+        CurFnDepth   := SaveFnDepth;
+        CurFnRetLbl  := SaveRetLbl;
+        CurFnName    := SaveFnName;
+      End;
+    End
+    Else
+    Begin
+      { Instruction inconnue dans le corps de la classe }
+      ParserAdvance;
+    End;
+  End;
+
+  (* Consommer accolade fermante *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+    ParserAdvance;
+
+  { Label de fin de classe }
+  EmitLabel(LblClsEnd);
+
+  { Restaurer le contexte }
+  CurClassIdx := SaveClassIdx;
+
+  EmitComment('end class ' + ClassName);
+End;
+
+{ ---- EmitClassVtables : emettre les vtables dans le code -------- }
+Procedure EmitClassVtables;
+Var
+  C, M : Integer;
+  S    : TString;
+Begin
+  If ClassCount = 0 Then Exit;
+  EmitBlankLine;
+  EmitComment('=== Vtables des classes (TODO 19) ===');
+  For C := 0 To ClassCount - 1 Do
+  Begin
+    EmitBlankLine;
+    EmitComment('vtable ' + ClassTab[C].Name);
+    EmitRaw(ClassTab[C].VtLbl + ':');
+    For M := 0 To ClassTab[C].MethCount - 1 Do
+    Begin
+      S := '        DW      OFFSET ' +
+           ClassTab[C].Meths[M].LblName;
+      EmitRaw(S);
+    End;
+    If ClassTab[C].MethCount = 0 Then
+      EmitRaw('        DW      0');
+  End;
+  EmitBlankLine;
+End;
+
+{ ---- EmitClassRuntime : runtime pour les objets ----------------- }
+Procedure EmitClassRuntime;
+Begin
+  If ClassCount = 0 Then Exit;
+  EmitBlankLine;
+  EmitComment('=== Runtime classes (TODO 19) ===');
+  EmitBlankLine;
+
+  { _RKRT_NEW : allouer CX octets sur le tas, retour AX = ptr }
+  EmitComment('_RKRT_NEW : CX=taille -> AX=ptr (zero-filled)');
+  EmitRaw('_RKRT_NEW PROC NEAR');
+  EmitInstr('MOV', 'BX, WORD PTR [_RK_HEAPTOP]');
+  EmitInstr('MOV', 'AX, BX');
+  EmitInstr('ADD', 'AX, OFFSET _RK_HEAP');
+  EmitInstr('ADD', 'BX, CX');
+  EmitInstr('MOV', 'WORD PTR [_RK_HEAPTOP], BX');
+  EmitPush('AX');
+  EmitPush('CX');
+  EmitInstr('MOV', 'DI, AX');
+  EmitInstr('XOR', 'AL, AL');
+  EmitRaw('        REP STOSB');
+  EmitPop('CX');
+  EmitPop('AX');
+  EmitRaw('        RET');
+  EmitRaw('_RKRT_NEW ENDP');
+  EmitBlankLine;
+End;
+
 Procedure ParseStmt;
 Var
   Kw : TString;
@@ -7674,6 +8366,14 @@ Begin
     Begin
       ParserAdvance;   { consommer 'proto' }
       ParseProtoDecl;
+      Exit;
+    End;
+
+    { Classes et objets (TODO 19) }
+    If Kw = 'class' Then
+    Begin
+      ParserAdvance;   { consommer 'class' }
+      ParseClassDecl;
       Exit;
     End;
 
@@ -7780,6 +8480,8 @@ Begin
   SubCount       := 0;
   MultiGroupCount := 0;
   MultiCount      := 0;
+  ClassCount      := 0;
+  CurClassIdx     := -1;
   GKwConsumed    := False;
   GCallArgCount  := 0;
   CurFnRetLbl    := '';
