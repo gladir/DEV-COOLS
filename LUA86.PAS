@@ -252,7 +252,7 @@
             table.sort(t [,comp]) -> CALL _LUART_TSORT (tri a bulles)
             table.unpack(t)       -> pousse les elements sur la pile (retour multiple)
 
-  TODO 16 - METATABLES ET METAMETHODES
+  TODO 16 - METATABLES ET METAMETHODES [IMPLEMENTE]
             setmetatable(t, mt) : associe une metatable mt a la table t
               Representation : chaque table porte un champ [meta:word] (ptr ou 0)
               CALL _LUART_SETMETA(BX=tbl, AX=mt)
@@ -513,6 +513,7 @@ Const
   LUA_TBL_PFX  = '_LUAT_';   { table donnees                       }
   LUA_UP_PFX   = '_LUAU_';   { upvalue                             }
   LUA_ERR_PFX  = '_LUAX_';   { handler d erreur                    }
+  LUA_META_OFS = 508;         { offset du pointeur metatable dans table }
   LUA_NIL_LBL  = '_LUA_NIL_S';   { etiquette DATA chaine 'nil'     }
   LUA_TRUE_LBL = '_LUA_TRUE_S';  { etiquette DATA chaine 'true'    }
   LUA_FALSE_LBL= '_LUA_FALSE_S'; { etiquette DATA chaine 'false'   }
@@ -824,6 +825,9 @@ Procedure ParseTableConstructor(Var Res : TExprVal); Forward;
 Procedure EmitTableBuiltin(Const FuncName : TString;
                            Var Res : TExprVal); Forward;
 Procedure EmitTableRuntime; Forward;
+
+{ Metatables (TODO 16) }
+Procedure EmitMetaRuntime; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1238,6 +1242,7 @@ Begin
   EmitIfRuntime;
   EmitLoopRuntime;
   EmitTableRuntime;
+  EmitMetaRuntime;
 End;
 
 { EmitClose : terminer le fichier ASM (DOS exit, runtime, DATA, END) }
@@ -1389,6 +1394,24 @@ Begin
   DataAddWord('_LUA_HEAPTOP', 0);
   { TODO 15 : Separateur virgule pour table.concat }
   DataAdd('_LUA_COMMA', DK_STR, 0, ',');
+  { TODO 16 : Cles de metamethodes et garde de recursion }
+  DataAdd('_LUA_META_ADD', DK_STR, 0, '__add');
+  DataAdd('_LUA_META_SUB', DK_STR, 0, '__sub');
+  DataAdd('_LUA_META_MUL', DK_STR, 0, '__mul');
+  DataAdd('_LUA_META_DIV', DK_STR, 0, '__div');
+  DataAdd('_LUA_META_MOD', DK_STR, 0, '__mod');
+  DataAdd('_LUA_META_POW', DK_STR, 0, '__pow');
+  DataAdd('_LUA_META_UNM', DK_STR, 0, '__unm');
+  DataAdd('_LUA_META_EQ', DK_STR, 0, '__eq');
+  DataAdd('_LUA_META_LT', DK_STR, 0, '__lt');
+  DataAdd('_LUA_META_LE', DK_STR, 0, '__le');
+  DataAdd('_LUA_META_CONCAT', DK_STR, 0, '__concat');
+  DataAdd('_LUA_META_LEN', DK_STR, 0, '__len');
+  DataAdd('_LUA_META_INDEX', DK_STR, 0, '__index');
+  DataAdd('_LUA_META_NEWINDEX', DK_STR, 0, '__newindex');
+  DataAdd('_LUA_META_CALL', DK_STR, 0, '__call');
+  DataAdd('_LUA_META_TOSTRING', DK_STR, 0, '__tostring');
+  DataAddWord('_LUA_META_GUARD', 0);
 End;
 
 { ---- ExprMakeImm : construire une valeur immediate ---------- }
@@ -4181,6 +4204,76 @@ Begin
     Res.TypeIdx := TY_IDX_NIL;
     Res.SymIdx  := -1;
   End
+  { TODO 16 : setmetatable(t, mt) -> renvoie t }
+  Else If FuncName = 'setmetatable' Then
+  Begin
+    EmitComment('--- setmetatable ---');
+    ParseExpr(Arg);
+    ExprFlushToAX(Arg);
+    EmitInstrA('PUSH', 'AX');  { table }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+    ParseExpr(Arg);
+    ExprFlushToAX(Arg);
+    EmitInstrA('POP', 'BX');  { BX = table }
+    EmitInstrA('CALL', LUA_RT_PFX + 'SETMETA');
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_TABLE;
+    Res.SymIdx  := -1;
+  End
+  { TODO 16 : getmetatable(t) -> metatable ou nil }
+  Else If FuncName = 'getmetatable' Then
+  Begin
+    EmitComment('--- getmetatable ---');
+    ParseExpr(Arg);
+    ExprFlushToAX(Arg);
+    EmitInstrAB('MOV', 'BX', 'AX');
+    EmitInstrA('CALL', LUA_RT_PFX + 'GETMETA');
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_TABLE;
+    Res.SymIdx  := -1;
+  End
+  { TODO 16 : rawget(t, k) -> acces brut sans __index }
+  Else If FuncName = 'rawget' Then
+  Begin
+    EmitComment('--- rawget ---');
+    ParseExpr(Arg);
+    ExprFlushToAX(Arg);
+    EmitInstrA('PUSH', 'AX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+    ParseExpr(Arg);
+    ExprFlushToAX(Arg);
+    EmitInstrAB('MOV', 'DI', 'AX');
+    EmitInstrA('POP', 'BX');
+    EmitInstrA('CALL', LUA_RT_PFX + 'TGET');
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_UNKNOWN;
+    Res.SymIdx  := -1;
+  End
+  { TODO 16 : rawset(t, k, v) -> acces brut sans __newindex }
+  Else If FuncName = 'rawset' Then
+  Begin
+    EmitComment('--- rawset ---');
+    ParseExpr(Arg);
+    ExprFlushToAX(Arg);
+    EmitInstrA('PUSH', 'AX');  { table }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+    ParseExpr(Arg);
+    ExprFlushToAX(Arg);
+    EmitInstrA('PUSH', 'AX');  { key }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+    ParseExpr(Arg);
+    ExprFlushToAX(Arg);  { val in AX }
+    EmitInstrA('POP', 'DI');   { key }
+    EmitInstrA('POP', 'BX');   { table }
+    EmitInstrA('CALL', LUA_RT_PFX + 'TSET');
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_TABLE;
+    Res.SymIdx  := -1;
+  End
   Else
   Begin
     { Fonction standard non geree : appel generique }
@@ -4825,6 +4918,7 @@ Begin
   EmitInstrAB('MOV', 'BX', 'AX');
   EmitInstrAB('MOV', 'WORD PTR [BX]', '0');
   EmitInstrAB('MOV', 'WORD PTR [BX+252]', '0');
+  EmitInstrAB('MOV', 'WORD PTR [BX+508]', '0');  { metatable = nil (TODO 16) }
 
   ListIdx := 0;  { compteur d elements de liste (base 1 Lua) }
 
@@ -5190,6 +5284,30 @@ Begin
   EmitLabel(LUA_RT_PFX + 'TG_NF');
   EmitInstrA('POP', 'CX');
   EmitLabel(LUA_RT_PFX + 'TG_NIL');
+  { TODO 16 : __index - verifier metatable avant de retourner nil }
+  EmitInstrAB('CMP', 'WORD PTR [_LUA_META_GUARD]', '0');
+  EmitInstrA('JNE', LUA_RT_PFX + 'TG_RNIL');
+  EmitInstrAB('CMP', 'WORD PTR [BX+508]', '0');
+  EmitInstrA('JE', LUA_RT_PFX + 'TG_RNIL');
+  { Metatable existe et pas en recursion -> chercher __index }
+  EmitInstrAB('MOV', 'WORD PTR [_LUA_META_GUARD]', '1');
+  EmitInstrA('PUSH', 'BX');   { sauvegarder table originale }
+  EmitInstrA('PUSH', 'DI');   { sauvegarder cle originale }
+  EmitInstrAB('MOV', 'BX', 'WORD PTR [BX+508]');  { BX = metatable }
+  EmitInstrAB('MOV', 'DI', 'OFFSET _LUA_META_INDEX');
+  EmitInstrA('CALL', LUA_RT_PFX + 'TGET');  { AX = __index val }
+  EmitInstrA('POP', 'DI');    { restaurer cle originale }
+  EmitInstrA('POP', 'BX');    { restaurer table originale }
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JZ', LUA_RT_PFX + 'TG_MEND');
+  { __index est defini : si c est une table, faire TGET dessus }
+  EmitInstrAB('MOV', 'BX', 'AX');  { BX = __index (table) }
+  EmitInstrA('CALL', LUA_RT_PFX + 'TGET');
+  EmitLabel(LUA_RT_PFX + 'TG_MEND');
+  EmitInstrAB('MOV', 'WORD PTR [_LUA_META_GUARD]', '0');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitLabel(LUA_RT_PFX + 'TG_RNIL');
   EmitInstrAB('XOR', 'AX', 'AX');
   EmitInstrA('POP', 'SI');
   EmitInstr('RET');
@@ -5393,6 +5511,54 @@ Begin
   EmitLabel(LUA_RT_PFX + 'TI_END');
   EmitInstrAB('XOR', 'AX', 'AX');
   EmitInstrAB('XOR', 'CX', 'CX');
+  EmitInstr('RET');
+  EmitBlankLine;
+End;
+
+{ ---- EmitMetaRuntime : routines runtime pour metatables (TODO 16) -- }
+{ _LUART_SETMETA  : associer metatable (BX=tbl, AX=mt) -> AX=tbl     }
+{ _LUART_GETMETA  : lire metatable (BX=tbl) -> AX=mt ou AX=0 (nil)   }
+{ _LUART_METAMETHOD : chercher metamethode (BX=obj, DI=key) -> AX=fn  }
+Procedure EmitMetaRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=== Routines runtime TODO 16 (metatables) ===');
+  EmitBlankLine;
+
+  { _LUART_SETMETA : BX = table, AX = metatable -> AX = table }
+  EmitLabel(LUA_RT_PFX + 'SETMETA');
+  EmitInstrAB('MOV', 'WORD PTR [BX+508]', 'AX');
+  EmitInstrAB('MOV', 'AX', 'BX');  { retourner la table }
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _LUART_GETMETA : BX = table -> AX = metatable ou 0 }
+  EmitLabel(LUA_RT_PFX + 'GETMETA');
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [BX+508]');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _LUART_METAMETHOD : BX = objet, DI = cle metamethode -> AX = ptr fn }
+  { Cherche la cle dans la metatable de l objet.                          }
+  { Si pas de metatable ou cle absente -> AX = 0.                         }
+  EmitLabel(LUA_RT_PFX + 'METAMETHOD');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'DI');
+  { Verifier si l objet a une metatable }
+  EmitInstrAB('CMP', 'WORD PTR [BX+508]', '0');
+  EmitInstrA('JE', LUA_RT_PFX + 'MM_NIL');
+  { Charger la metatable et y chercher la cle }
+  EmitInstrAB('MOV', 'WORD PTR [_LUA_META_GUARD]', '1');
+  EmitInstrAB('MOV', 'BX', 'WORD PTR [BX+508]');
+  EmitInstrA('CALL', LUA_RT_PFX + 'TGET');
+  EmitInstrAB('MOV', 'WORD PTR [_LUA_META_GUARD]', '0');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitLabel(LUA_RT_PFX + 'MM_NIL');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'BX');
   EmitInstr('RET');
   EmitBlankLine;
 End;
