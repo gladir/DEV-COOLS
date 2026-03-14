@@ -1056,7 +1056,8 @@ Begin
     CP_INTEGER:
      If CPTab^[i].IntVal = StrToInt_(val) Then Begin CPFind := i; Exit; End;
     CP_FLOAT:
-     { Pas de deduplication float par chaine, ignorer }
+     { Pas de deduplication float par chaine car les conversions }
+     { float<->string peuvent perdre en precision                }
      ;
     CP_CLASS, CP_STRING:
      If CPTab^[i].StrVal = val Then Begin CPFind := i; Exit; End;
