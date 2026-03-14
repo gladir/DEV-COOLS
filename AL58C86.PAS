@@ -118,7 +118,7 @@
             EmitProlog / EmitEpilog : PUSH BP / MOV BP,SP et MOV SP,BP / POP BP
             EmitDataSeg : ecrire _DATA SEGMENT ... _DATA ENDS
 
-  TODO 08 - SEGMENT DE DONNEES ET STATIQUES
+  TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
             TDataRec : LblName, Kind (DK_WORD/DK_BYTE/DK_STR/DK_ARRAY),
               IntVal, StrVal, ElemCount
             DataTab[0..MAX_DATA-1], DataCount
@@ -520,7 +520,7 @@ Type
   End;
 
   { ---- Segment de donnees (TODO 08) ---------------------- }
-  TDataKind = (DK_WORD, DK_BYTE, DK_STR, DK_ARRAY_BLK);
+  TDataKind = (DK_WORD, DK_BYTE, DK_STR, DK_ARRAY_BLK, DK_SWITCH_TAB);
 
   TDataRec = Record
     LblName   : TString;
@@ -675,6 +675,10 @@ Function  TypeCheckAssign(DstIdx, SrcIdx : Integer) : Boolean; Forward;
 { TODO 07 - Emetteur de code ASM }
 Procedure EmitProlog; Forward;
 Procedure EmitEpilog; Forward;
+{ TODO 08 - Segment de donnees et statiques }
+Function  DataAddArray(Const ALbl : TString;
+                       AElemCount : Integer) : Integer; Forward;
+Procedure DataInit; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -2355,6 +2359,51 @@ Begin
 End;
 
 { ============================================================
+  TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- DataAddArray : ajouter un bloc de tableau dans DataTab --- }
+{ Cree une entree DK_ARRAY_BLK avec AElemCount elements DW.      }
+{ Retourne l index dans DataTab ou -1 si plein.                   }
+Function DataAddArray(Const ALbl : TString;
+                      AElemCount : Integer) : Integer;
+Var
+  Idx : Integer;
+Begin
+  If DataCount >= MAX_DATA Then
+  Begin
+    FatalError('Table de donnees statiques pleine (MAX_DATA)');
+    DataAddArray := -1;
+    Exit;
+  End;
+  Idx := DataCount;
+  DataTab[Idx].LblName   := ALbl;
+  DataTab[Idx].Kind      := DK_ARRAY_BLK;
+  DataTab[Idx].IntVal    := 0;
+  DataTab[Idx].StrVal    := '';
+  DataTab[Idx].ElemCount := AElemCount;
+  Inc(DataCount);
+  DataAddArray := Idx;
+End;
+
+{ ---- DataInit : pre-initialiser le segment DATA -------------- }
+{ Ajoute les entrees statiques necessaires au runtime minimal :   }
+{   _A58_STRBUF : buffer de conversion chaines (64 octets)       }
+{   _A58_HEAP   : tas statique (1024 mots DW)                    }
+{   _A58_HEAPTOP : pointeur courant du tas                       }
+Procedure DataInit;
+Begin
+  DataCount := 0;
+  StrSeq    := 0;
+  { Buffer de conversion chaine pour numtostr / print }
+  DataAddArray('_A58_STRBUF', 32);
+  { Tas statique (heap bump allocator) }
+  DataAddArray('_A58_HEAP', 1024);
+  { Pointeur sommet du tas }
+  DataAddWord('_A58_HEAPTOP', 0);
+End;
+
+{ ============================================================
   STUBS POUR LES TODOS SUIVANTS
   ============================================================ }
 
@@ -2449,6 +2498,15 @@ Begin
         Str(DataTab[I].ElemCount, NS);
         WriteLn(OutF, DataTab[I].LblName, '        DW      ', NS, ' DUP(0)');
       End;
+      DK_SWITCH_TAB :
+      Begin
+        { StrVal contient les labels separes par ',' -> DW OFFSET l1, OFFSET l2 }
+        Write(OutF, DataTab[I].LblName, '        DW      ');
+        If DataTab[I].StrVal <> '' Then
+          WriteLn(OutF, DataTab[I].StrVal)
+        Else
+          WriteLn(OutF, '0');
+      End;
     End;
   End;
   WriteLn(OutF, '_DATA   ENDS');
@@ -2471,6 +2529,7 @@ Begin
 
   TypeInit;
   SymInit;
+  DataInit;
   EmitOpen;
   EmitHeader;
   LexInit;
