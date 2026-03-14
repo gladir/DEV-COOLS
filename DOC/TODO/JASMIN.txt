@@ -245,7 +245,7 @@ TODO 12 [IMPLEMENTE] - Opcodes de conversion de types
     (1 octet sans operande)
   - 15 opcodes au total (0x85 a 0x93)
 
-TODO 13 - Opcodes de controle de flux
+TODO 13 [IMPLEMENTE] - Opcodes de controle de flux
   --------------------------------------
   Branchements inconditionnels :
   - goto <label>, goto_w <label> (saut 16 bits / 32 bits)

@@ -28,7 +28,7 @@
 {  TODO 10 [IMPLEMENTE] - Opcodes de chargement et stockage                   }
 {  TODO 11 [IMPLEMENTE] - Opcodes arithmetiques et logiques                    }
 {  TODO 12 [IMPLEMENTE] - Opcodes de conversion de types                      }
-{  TODO 13 - Opcodes de controle de flux                                      }
+{  TODO 13 [IMPLEMENTE] - Opcodes de controle de flux                         }
 {  TODO 14 - Opcodes d'invocation de methodes                                 }
 {  TODO 15 - Opcodes de manipulation de la pile et chargement de constantes   }
 {  TODO 16 - Opcodes de creation d'objets et tableaux                         }
@@ -156,6 +156,7 @@ Const
   MAX_LABELS   = {$IFDEF FPC}1024{$ELSE}256{$ENDIF};   { Labels max par methode             }
   MAX_EXC      = {$IFDEF FPC}128{$ELSE}32{$ENDIF};     { Exception handlers max par methode }
   MAX_LINES    = {$IFDEF FPC}1024{$ELSE}256{$ENDIF};   { Entrees LineNumberTable max         }
+  MAX_FIXUPS   = {$IFDEF FPC}2048{$ELSE}512{$ENDIF};   { Fixups de branches max par methode }
   MAX_IFACES   = 64;     { Interfaces implementees max                  }
   MAX_THROWS   = 32;     { Exceptions declarees (.throws) max           }
   MAX_LOCALS   = 256;    { Variables locales max (.var)                  }
@@ -211,6 +212,15 @@ Type
     Offset : Integer;   { offset PC dans le bytecode                     }
   End;
 
+  { --- Fixup de branchement (TODO 13) --- }
+  { Enregistre une reference a un label dans le bytecode a patcher.      }
+  TFixupRec = Record
+    LabelName   : String[64]; { nom du label cible                       }
+    PatchOffset : LongInt;    { offset dans le bytecode ou patcher        }
+    InstrOffset : LongInt;    { offset de l'instruction (pour calcul rel) }
+    Width       : Integer;    { largeur du patch : 2 ou 4 octets          }
+  End;
+
   { --- Buffer de code pour une methode --- }
   TCodeBuf = Array[0..MAX_CODE-1] of Byte;
 
@@ -223,11 +233,15 @@ Type
   { --- Table des numeros de ligne pour une methode --- }
   TLineTab = Array[1..MAX_LINES] of TLineNumRec;
 
+  { --- Table des fixups de branchement pour une methode (TODO 13) --- }
+  TFixupTab = Array[1..MAX_FIXUPS] of TFixupRec;
+
   { --- Pointeurs vers les buffers de methode --- }
   PCodeBuf  = ^TCodeBuf;
   PLabelTab = ^TLabelTab;
   PExcTab   = ^TExcTab;
   PLineTab  = ^TLineTab;
+  PFixupTab = ^TFixupTab;
 
   { --- Entree d'un champ de classe --- }
   TFieldRec = Record
@@ -256,6 +270,8 @@ Type
     LineTab    : PLineTab;   { table des numeros de ligne                }
     LabelCount : Integer;    { nombre de labels definis                  }
     Labels     : PLabelTab;  { table des labels                          }
+    FixupCount : Integer;    { nombre de fixups de branches (TODO 13)    }
+    Fixups     : PFixupTab;  { table des fixups de branches              }
     ThrowCount : Integer;    { nombre de .throws                         }
     ThrowIdx   : Array[1..MAX_THROWS] of Integer; { indices CP des classes }
     Name       : String;     { nom de la methode (pour messages)         }
@@ -509,6 +525,10 @@ Procedure AutoStack(mIdx: Integer); Forward;
 { --- Declarations forward TODO 10 : Opcodes de chargement et stockage --- }
 Procedure EmitByte(b: Byte); Forward;
 Function  ParseInstruction: Boolean; Forward;
+
+{ --- Declarations forward TODO 13 : Opcodes de controle de flux --- }
+Procedure RecordFixup(Const lbl: String; patchOff, instrOff: LongInt; w: Integer); Forward;
+Procedure EmitBranchPlaceholder(w: Integer); Forward;
 
 { ---------- Ouverture et fermeture du fichier source ---------- }
 
@@ -2114,6 +2134,7 @@ Begin
   ExcCount   := 0;
   LineCount  := 0;
   LabelCount := 0;
+  FixupCount := 0;
   ThrowCount := 0;
   Name       := mN;
   Desc       := mD;
@@ -2131,6 +2152,7 @@ Begin
   New(ExcTab);
   New(LineTab);
   New(Labels);
+  New(Fixups);
  End;
 End;
 
@@ -2588,6 +2610,37 @@ Begin
  End;
 End;
 
+{ --- RecordFixup : enregistrer un fixup de branchement (TODO 13) --- }
+{ Enregistre dans la table des fixups de la methode courante qu'a la   }
+{ position patchOff dans le bytecode, il faut patcher w octets (2 ou 4)}
+{ avec l'offset relatif vers le label lbl (relatif a instrOff).        }
+Procedure RecordFixup(Const lbl: String; patchOff, instrOff: LongInt; w: Integer);
+Begin
+ If Not InMethod Then Exit;
+ With MethodTab^[CurMethod] do
+ Begin
+  If FixupCount >= MAX_FIXUPS Then
+  Begin
+   Error('trop de fixups de branches (max ' + IntToStr_(MAX_FIXUPS) + ')');
+   Exit;
+  End;
+  Inc(FixupCount);
+  Fixups^[FixupCount].LabelName   := lbl;
+  Fixups^[FixupCount].PatchOffset := patchOff;
+  Fixups^[FixupCount].InstrOffset := instrOff;
+  Fixups^[FixupCount].Width       := w;
+ End;
+End;
+
+{ --- EmitBranchPlaceholder : emettre des octets placeholder (TODO 13) --- }
+{ Emet w octets a zero comme placeholder pour un offset de branchement.    }
+Procedure EmitBranchPlaceholder(w: Integer);
+Var i: Integer;
+Begin
+ For i := 1 to w do
+  EmitByte(0);
+End;
+
 { --- ParseInstruction : reconnaitre et emettre un mnemonique JVM --- }
 { Lit CurStr (le mnemonique), emet le(s) octet(s) correspondant(s)    }
 { dans le code buffer de la methode courante via EmitByte.             }
@@ -2597,10 +2650,17 @@ End;
 { iaload..saload, iastore..sastore).                                   }
 { TODO 11 : opcodes arithmetiques et logiques (iadd..dneg, ishl..lxor,}
 { iinc).                                                               }
+{ TODO 13 : opcodes de controle de flux (goto, ifeq..ifle,            }
+{ if_icmpeq..if_icmple, if_acmpeq/ne, ifnull/nonnull, lcmp, fcmpl/g, }
+{ dcmpl/g, tableswitch, lookupswitch, ret, jsr/jsr_w, goto_w).        }
 { Les TODOs suivantes ajouteront d'autres familles d'opcodes.          }
 Function ParseInstruction: Boolean;
 Var mnem: String;
     opvar: Integer;
+    brLabel: String;
+    brInstrOff: LongInt;
+    swPadding, swLow, swHigh, swCount, swI: LongInt;
+    swDefault: String;
 Begin
  ParseInstruction := False;
  mnem := CurStr;
@@ -2927,6 +2987,482 @@ Begin
  If mnem = 'i2b' Then Begin Consume; EmitByte($91); ParseInstruction := True; Exit; End;
  If mnem = 'i2c' Then Begin Consume; EmitByte($92); ParseInstruction := True; Exit; End;
  If mnem = 'i2s' Then Begin Consume; EmitByte($93); ParseInstruction := True; Exit; End;
+ { ---------------------------------------------------------------- }
+ { Branchements inconditionnels - TODO 13                           }
+ { ---------------------------------------------------------------- }
+ { goto <label> : saut inconditionnel 16 bits ($A7) }
+ If mnem = 'goto' Then
+ Begin
+  Consume;
+  If CurTok <> TK_IDENT Then
+  Begin Error('goto : label attendu'); Exit; End;
+  brLabel := CurStr;
+  Consume;
+  brInstrOff := MethodTab^[CurMethod].CodeSize;
+  EmitByte($A7); { goto }
+  RecordFixup(brLabel, MethodTab^[CurMethod].CodeSize, brInstrOff, 2);
+  EmitBranchPlaceholder(2);
+  ParseInstruction := True; Exit;
+ End;
+ { goto_w <label> : saut inconditionnel 32 bits ($C8) }
+ If mnem = 'goto_w' Then
+ Begin
+  Consume;
+  If CurTok <> TK_IDENT Then
+  Begin Error('goto_w : label attendu'); Exit; End;
+  brLabel := CurStr;
+  Consume;
+  brInstrOff := MethodTab^[CurMethod].CodeSize;
+  EmitByte($C8); { goto_w }
+  RecordFixup(brLabel, MethodTab^[CurMethod].CodeSize, brInstrOff, 4);
+  EmitBranchPlaceholder(4);
+  ParseInstruction := True; Exit;
+ End;
+ { jsr <label> : jump subroutine 16 bits ($A8, deprecie) }
+ If mnem = 'jsr' Then
+ Begin
+  Consume;
+  If CurTok <> TK_IDENT Then
+  Begin Error('jsr : label attendu'); Exit; End;
+  brLabel := CurStr;
+  Consume;
+  brInstrOff := MethodTab^[CurMethod].CodeSize;
+  EmitByte($A8); { jsr }
+  RecordFixup(brLabel, MethodTab^[CurMethod].CodeSize, brInstrOff, 2);
+  EmitBranchPlaceholder(2);
+  ParseInstruction := True; Exit;
+ End;
+ { jsr_w <label> : jump subroutine 32 bits ($C9, deprecie) }
+ If mnem = 'jsr_w' Then
+ Begin
+  Consume;
+  If CurTok <> TK_IDENT Then
+  Begin Error('jsr_w : label attendu'); Exit; End;
+  brLabel := CurStr;
+  Consume;
+  brInstrOff := MethodTab^[CurMethod].CodeSize;
+  EmitByte($C9); { jsr_w }
+  RecordFixup(brLabel, MethodTab^[CurMethod].CodeSize, brInstrOff, 4);
+  EmitBranchPlaceholder(4);
+  ParseInstruction := True; Exit;
+ End;
+ { ret <var> : retour de subroutine ($A9, deprecie) }
+ If mnem = 'ret' Then
+ Begin
+  Consume;
+  If CurTok <> TK_INTEGER Then
+  Begin Error('ret : operande entiere attendue'); Exit; End;
+  opvar := CurInt;
+  Consume;
+  If opvar > 255 Then
+  Begin Error('ret : index > 255'); Exit; End;
+  EmitByte($A9); { ret }
+  EmitByte(Byte(opvar));
+  ParseInstruction := True; Exit;
+ End;
+ { ---------------------------------------------------------------- }
+ { Branchements conditionnels sur un int - TODO 13                  }
+ { ---------------------------------------------------------------- }
+ If mnem = 'ifeq' Then
+ Begin
+  Consume;
+  If CurTok <> TK_IDENT Then
+  Begin Error('ifeq : label attendu'); Exit; End;
+  brLabel := CurStr; Consume;
+  brInstrOff := MethodTab^[CurMethod].CodeSize;
+  EmitByte($99);
+  RecordFixup(brLabel, MethodTab^[CurMethod].CodeSize, brInstrOff, 2);
+  EmitBranchPlaceholder(2);
+  ParseInstruction := True; Exit;
+ End;
+ If mnem = 'ifne' Then
+ Begin
+  Consume;
+  If CurTok <> TK_IDENT Then
+  Begin Error('ifne : label attendu'); Exit; End;
+  brLabel := CurStr; Consume;
+  brInstrOff := MethodTab^[CurMethod].CodeSize;
+  EmitByte($9A);
+  RecordFixup(brLabel, MethodTab^[CurMethod].CodeSize, brInstrOff, 2);
+  EmitBranchPlaceholder(2);
+  ParseInstruction := True; Exit;
+ End;
+ If mnem = 'iflt' Then
+ Begin
+  Consume;
+  If CurTok <> TK_IDENT Then
+  Begin Error('iflt : label attendu'); Exit; End;
+  brLabel := CurStr; Consume;
+  brInstrOff := MethodTab^[CurMethod].CodeSize;
+  EmitByte($9B);
+  RecordFixup(brLabel, MethodTab^[CurMethod].CodeSize, brInstrOff, 2);
+  EmitBranchPlaceholder(2);
+  ParseInstruction := True; Exit;
+ End;
+ If mnem = 'ifge' Then
+ Begin
+  Consume;
+  If CurTok <> TK_IDENT Then
+  Begin Error('ifge : label attendu'); Exit; End;
+  brLabel := CurStr; Consume;
+  brInstrOff := MethodTab^[CurMethod].CodeSize;
+  EmitByte($9C);
+  RecordFixup(brLabel, MethodTab^[CurMethod].CodeSize, brInstrOff, 2);
+  EmitBranchPlaceholder(2);
+  ParseInstruction := True; Exit;
+ End;
+ If mnem = 'ifgt' Then
+ Begin
+  Consume;
+  If CurTok <> TK_IDENT Then
+  Begin Error('ifgt : label attendu'); Exit; End;
+  brLabel := CurStr; Consume;
+  brInstrOff := MethodTab^[CurMethod].CodeSize;
+  EmitByte($9D);
+  RecordFixup(brLabel, MethodTab^[CurMethod].CodeSize, brInstrOff, 2);
+  EmitBranchPlaceholder(2);
+  ParseInstruction := True; Exit;
+ End;
+ If mnem = 'ifle' Then
+ Begin
+  Consume;
+  If CurTok <> TK_IDENT Then
+  Begin Error('ifle : label attendu'); Exit; End;
+  brLabel := CurStr; Consume;
+  brInstrOff := MethodTab^[CurMethod].CodeSize;
+  EmitByte($9E);
+  RecordFixup(brLabel, MethodTab^[CurMethod].CodeSize, brInstrOff, 2);
+  EmitBranchPlaceholder(2);
+  ParseInstruction := True; Exit;
+ End;
+ { ---------------------------------------------------------------- }
+ { Branchements de comparaison entre deux int - TODO 13             }
+ { ---------------------------------------------------------------- }
+ If mnem = 'if_icmpeq' Then
+ Begin
+  Consume;
+  If CurTok <> TK_IDENT Then
+  Begin Error('if_icmpeq : label attendu'); Exit; End;
+  brLabel := CurStr; Consume;
+  brInstrOff := MethodTab^[CurMethod].CodeSize;
+  EmitByte($9F);
+  RecordFixup(brLabel, MethodTab^[CurMethod].CodeSize, brInstrOff, 2);
+  EmitBranchPlaceholder(2);
+  ParseInstruction := True; Exit;
+ End;
+ If mnem = 'if_icmpne' Then
+ Begin
+  Consume;
+  If CurTok <> TK_IDENT Then
+  Begin Error('if_icmpne : label attendu'); Exit; End;
+  brLabel := CurStr; Consume;
+  brInstrOff := MethodTab^[CurMethod].CodeSize;
+  EmitByte($A0);
+  RecordFixup(brLabel, MethodTab^[CurMethod].CodeSize, brInstrOff, 2);
+  EmitBranchPlaceholder(2);
+  ParseInstruction := True; Exit;
+ End;
+ If mnem = 'if_icmplt' Then
+ Begin
+  Consume;
+  If CurTok <> TK_IDENT Then
+  Begin Error('if_icmplt : label attendu'); Exit; End;
+  brLabel := CurStr; Consume;
+  brInstrOff := MethodTab^[CurMethod].CodeSize;
+  EmitByte($A1);
+  RecordFixup(brLabel, MethodTab^[CurMethod].CodeSize, brInstrOff, 2);
+  EmitBranchPlaceholder(2);
+  ParseInstruction := True; Exit;
+ End;
+ If mnem = 'if_icmpge' Then
+ Begin
+  Consume;
+  If CurTok <> TK_IDENT Then
+  Begin Error('if_icmpge : label attendu'); Exit; End;
+  brLabel := CurStr; Consume;
+  brInstrOff := MethodTab^[CurMethod].CodeSize;
+  EmitByte($A2);
+  RecordFixup(brLabel, MethodTab^[CurMethod].CodeSize, brInstrOff, 2);
+  EmitBranchPlaceholder(2);
+  ParseInstruction := True; Exit;
+ End;
+ If mnem = 'if_icmpgt' Then
+ Begin
+  Consume;
+  If CurTok <> TK_IDENT Then
+  Begin Error('if_icmpgt : label attendu'); Exit; End;
+  brLabel := CurStr; Consume;
+  brInstrOff := MethodTab^[CurMethod].CodeSize;
+  EmitByte($A3);
+  RecordFixup(brLabel, MethodTab^[CurMethod].CodeSize, brInstrOff, 2);
+  EmitBranchPlaceholder(2);
+  ParseInstruction := True; Exit;
+ End;
+ If mnem = 'if_icmple' Then
+ Begin
+  Consume;
+  If CurTok <> TK_IDENT Then
+  Begin Error('if_icmple : label attendu'); Exit; End;
+  brLabel := CurStr; Consume;
+  brInstrOff := MethodTab^[CurMethod].CodeSize;
+  EmitByte($A4);
+  RecordFixup(brLabel, MethodTab^[CurMethod].CodeSize, brInstrOff, 2);
+  EmitBranchPlaceholder(2);
+  ParseInstruction := True; Exit;
+ End;
+ { ---------------------------------------------------------------- }
+ { Branchements de comparaison de references - TODO 13              }
+ { ---------------------------------------------------------------- }
+ If mnem = 'if_acmpeq' Then
+ Begin
+  Consume;
+  If CurTok <> TK_IDENT Then
+  Begin Error('if_acmpeq : label attendu'); Exit; End;
+  brLabel := CurStr; Consume;
+  brInstrOff := MethodTab^[CurMethod].CodeSize;
+  EmitByte($A5);
+  RecordFixup(brLabel, MethodTab^[CurMethod].CodeSize, brInstrOff, 2);
+  EmitBranchPlaceholder(2);
+  ParseInstruction := True; Exit;
+ End;
+ If mnem = 'if_acmpne' Then
+ Begin
+  Consume;
+  If CurTok <> TK_IDENT Then
+  Begin Error('if_acmpne : label attendu'); Exit; End;
+  brLabel := CurStr; Consume;
+  brInstrOff := MethodTab^[CurMethod].CodeSize;
+  EmitByte($A6);
+  RecordFixup(brLabel, MethodTab^[CurMethod].CodeSize, brInstrOff, 2);
+  EmitBranchPlaceholder(2);
+  ParseInstruction := True; Exit;
+ End;
+ If mnem = 'ifnull' Then
+ Begin
+  Consume;
+  If CurTok <> TK_IDENT Then
+  Begin Error('ifnull : label attendu'); Exit; End;
+  brLabel := CurStr; Consume;
+  brInstrOff := MethodTab^[CurMethod].CodeSize;
+  EmitByte($C6);
+  RecordFixup(brLabel, MethodTab^[CurMethod].CodeSize, brInstrOff, 2);
+  EmitBranchPlaceholder(2);
+  ParseInstruction := True; Exit;
+ End;
+ If mnem = 'ifnonnull' Then
+ Begin
+  Consume;
+  If CurTok <> TK_IDENT Then
+  Begin Error('ifnonnull : label attendu'); Exit; End;
+  brLabel := CurStr; Consume;
+  brInstrOff := MethodTab^[CurMethod].CodeSize;
+  EmitByte($C7);
+  RecordFixup(brLabel, MethodTab^[CurMethod].CodeSize, brInstrOff, 2);
+  EmitBranchPlaceholder(2);
+  ParseInstruction := True; Exit;
+ End;
+ { ---------------------------------------------------------------- }
+ { Comparaisons numeriques - TODO 13                                }
+ { ---------------------------------------------------------------- }
+ If mnem = 'lcmp' Then Begin Consume; EmitByte($94); ParseInstruction := True; Exit; End;
+ If mnem = 'fcmpl' Then Begin Consume; EmitByte($95); ParseInstruction := True; Exit; End;
+ If mnem = 'fcmpg' Then Begin Consume; EmitByte($96); ParseInstruction := True; Exit; End;
+ If mnem = 'dcmpl' Then Begin Consume; EmitByte($97); ParseInstruction := True; Exit; End;
+ If mnem = 'dcmpg' Then Begin Consume; EmitByte($98); ParseInstruction := True; Exit; End;
+ { ---------------------------------------------------------------- }
+ { tableswitch - TODO 13                                            }
+ { Format: tableswitch <low> <high>                                 }
+ {           <label1>                                               }
+ {           ...                                                    }
+ {           <labelN>                                               }
+ {           default : <label>                                      }
+ { ---------------------------------------------------------------- }
+ If mnem = 'tableswitch' Then
+ Begin
+  Consume;
+  brInstrOff := MethodTab^[CurMethod].CodeSize;
+  EmitByte($AA); { tableswitch }
+  { Padding a alignement 4 octets depuis le debut de la methode }
+  swPadding := (4 - ((brInstrOff + 1) mod 4)) mod 4;
+  For swI := 1 to swPadding do
+   EmitByte(0);
+  { Lire low }
+  If CurTok <> TK_INTEGER Then
+  Begin Error('tableswitch : <low> entier attendu'); Exit; End;
+  swLow := CurInt;
+  Consume;
+  { Lire high }
+  If CurTok <> TK_INTEGER Then
+  Begin Error('tableswitch : <high> entier attendu'); Exit; End;
+  swHigh := CurInt;
+  Consume;
+  If swHigh < swLow Then
+  Begin Error('tableswitch : high < low'); Exit; End;
+  swCount := swHigh - swLow + 1;
+  { Sauter les newlines }
+  While CurTok = TK_NEWLINE do Consume;
+  { Placeholder pour default offset (4 octets, patche apres) }
+  { On reservera le default offset ici, patch plus tard        }
+  { Pour le moment on emet 4 octets zero                       }
+  RecordFixup('', MethodTab^[CurMethod].CodeSize, brInstrOff, 4);
+  EmitBranchPlaceholder(4); { default - sera resolu plus tard }
+  { Emettre low et high en big-endian (4 octets chacun) }
+  EmitByte(Byte((swLow shr 24) and $FF));
+  EmitByte(Byte((swLow shr 16) and $FF));
+  EmitByte(Byte((swLow shr 8) and $FF));
+  EmitByte(Byte(swLow and $FF));
+  EmitByte(Byte((swHigh shr 24) and $FF));
+  EmitByte(Byte((swHigh shr 16) and $FF));
+  EmitByte(Byte((swHigh shr 8) and $FF));
+  EmitByte(Byte(swHigh and $FF));
+  { Lire swCount labels (offsets vers les cas) }
+  For swI := 1 to swCount do
+  Begin
+   While CurTok = TK_NEWLINE do Consume;
+   If CurTok <> TK_IDENT Then
+   Begin Error('tableswitch : label attendu pour cas ' + IntToStr_(swI)); Exit; End;
+   brLabel := CurStr;
+   Consume;
+   RecordFixup(brLabel, MethodTab^[CurMethod].CodeSize, brInstrOff, 4);
+   EmitBranchPlaceholder(4);
+  End;
+  { Lire default : <label> }
+  While CurTok = TK_NEWLINE do Consume;
+  If CurStr = 'default' Then
+  Begin
+   Consume;
+   { Sauter le ':' s'il est present }
+   If CurTok = TK_COLON Then Consume;
+   If CurTok <> TK_IDENT Then
+   Begin Error('tableswitch : label attendu apres default'); Exit; End;
+   swDefault := CurStr;
+   Consume;
+   { Patcher le fixup du default (le premier enregistre) }
+   { On met a jour le label du fixup de default }
+   With MethodTab^[CurMethod] do
+   Begin
+    { Le fixup du default est celui avec LabelName vide }
+    For swI := 1 to FixupCount do
+    Begin
+     If (Fixups^[swI].LabelName = '') And
+        (Fixups^[swI].InstrOffset = brInstrOff) Then
+     Begin
+      Fixups^[swI].LabelName := swDefault;
+      Break;
+     End;
+    End;
+   End;
+  End
+  Else
+   Warning('tableswitch : clause default manquante');
+  ParseInstruction := True; Exit;
+ End;
+ { ---------------------------------------------------------------- }
+ { lookupswitch - TODO 13                                           }
+ { Format: lookupswitch                                             }
+ {           <key1> : <label1>                                      }
+ {           ...                                                    }
+ {           <keyN> : <labelN>                                      }
+ {           default : <label>                                      }
+ { ---------------------------------------------------------------- }
+ If mnem = 'lookupswitch' Then
+ Begin
+  Consume;
+  brInstrOff := MethodTab^[CurMethod].CodeSize;
+  EmitByte($AB); { lookupswitch }
+  { Padding a alignement 4 octets }
+  swPadding := (4 - ((brInstrOff + 1) mod 4)) mod 4;
+  For swI := 1 to swPadding do
+   EmitByte(0);
+  { Placeholder pour default offset (4 octets) }
+  RecordFixup('', MethodTab^[CurMethod].CodeSize, brInstrOff, 4);
+  EmitBranchPlaceholder(4); { default }
+  { Placeholder pour npairs (4 octets) - on le remplira apres }
+  { Sauvegarder la position pour patcher npairs               }
+  swCount := 0;
+  { Position du npairs dans le code }
+  { On emet 4 octets zero pour npairs }
+  { On ne peut pas facilement patcher in-place dans notre structure, }
+  { donc on comptera d'abord les paires puis emettra. Mais cela     }
+  { necessite de lire en avance. Pour simplifier, on emet npairs=0  }
+  { et on le patchera.                                               }
+  { Position dans le code ou npairs est ecrit }
+  swLow := MethodTab^[CurMethod].CodeSize; { position pour patcher npairs }
+  EmitBranchPlaceholder(4); { npairs placeholder }
+  { Lire les paires key:label et default }
+  While CurTok = TK_NEWLINE do Consume;
+  swCount := 0;
+  While (CurTok <> TK_EOF) do
+  Begin
+   While CurTok = TK_NEWLINE do Consume;
+   { Verifier si c'est 'default' }
+   If (CurTok = TK_IDENT) And (CurStr = 'default') Then Break;
+   { Lire key (entier, possiblement negatif) }
+   If (CurTok = TK_MINUS) Then
+   Begin
+    Consume;
+    If CurTok <> TK_INTEGER Then
+    Begin Error('lookupswitch : cle entiere attendue'); Exit; End;
+    swHigh := -CurInt;
+    Consume;
+   End
+   Else If CurTok = TK_INTEGER Then
+   Begin
+    swHigh := CurInt;
+    Consume;
+   End
+   Else Break;
+   { Sauter le ':' s'il est present }
+   If CurTok = TK_COLON Then Consume;
+   { Lire label }
+   If CurTok <> TK_IDENT Then
+   Begin Error('lookupswitch : label attendu pour paire'); Exit; End;
+   brLabel := CurStr;
+   Consume;
+   { Emettre key en big-endian (4 octets) }
+   EmitByte(Byte((swHigh shr 24) and $FF));
+   EmitByte(Byte((swHigh shr 16) and $FF));
+   EmitByte(Byte((swHigh shr 8) and $FF));
+   EmitByte(Byte(swHigh and $FF));
+   { Emettre placeholder pour offset }
+   RecordFixup(brLabel, MethodTab^[CurMethod].CodeSize, brInstrOff, 4);
+   EmitBranchPlaceholder(4);
+   Inc(swCount);
+  End;
+  { Patcher npairs dans le code }
+  With MethodTab^[CurMethod] do
+  Begin
+   Code^[swLow]     := Byte((swCount shr 24) and $FF);
+   Code^[swLow + 1] := Byte((swCount shr 16) and $FF);
+   Code^[swLow + 2] := Byte((swCount shr 8) and $FF);
+   Code^[swLow + 3] := Byte(swCount and $FF);
+  End;
+  { Lire default : <label> }
+  If (CurTok = TK_IDENT) And (CurStr = 'default') Then
+  Begin
+   Consume;
+   If CurTok = TK_COLON Then Consume;
+   If CurTok <> TK_IDENT Then
+   Begin Error('lookupswitch : label attendu apres default'); Exit; End;
+   swDefault := CurStr;
+   Consume;
+   With MethodTab^[CurMethod] do
+   Begin
+    For swI := 1 to FixupCount do
+    Begin
+     If (Fixups^[swI].LabelName = '') And
+        (Fixups^[swI].InstrOffset = brInstrOff) Then
+     Begin
+      Fixups^[swI].LabelName := swDefault;
+      Break;
+     End;
+    End;
+   End;
+  End
+  Else
+   Warning('lookupswitch : clause default manquante');
+  ParseInstruction := True; Exit;
+ End;
 End;
 
 { --- ParseDirectives : dispatcher principal des directives de classe --- }
@@ -3020,9 +3556,9 @@ Begin
      SkipToEOL;
     End;
    Else
-    { Directives non encore implementees (TODO 13+) : sauter la ligne }
+    { Directives non encore implementees (TODO 14+) : sauter la ligne }
     If OptVerbose Then
-     WriteLn('  [skip] directive ', CurStr, ' (TODO 13+)');
+     WriteLn('  [skip] directive ', CurStr, ' (TODO 14+)');
     SkipToEOL;
    End;  { Case }
   End
@@ -3033,7 +3569,7 @@ Begin
    Begin
     { Mnemonique non reconnu : sauter la ligne }
     If OptVerbose Then
-     WriteLn('  [skip] instruction ', CurStr, ' (TODO 13+)');
+     WriteLn('  [skip] instruction ', CurStr, ' (TODO 14+)');
     SkipToEOL;
    End
    Else
@@ -3118,6 +3654,7 @@ Begin
   If MethodTab^[i].ExcTab <> Nil Then Dispose(MethodTab^[i].ExcTab);
   If MethodTab^[i].LineTab <> Nil Then Dispose(MethodTab^[i].LineTab);
   If MethodTab^[i].Labels <> Nil Then Dispose(MethodTab^[i].Labels);
+  If MethodTab^[i].Fixups <> Nil Then Dispose(MethodTab^[i].Fixups);
  End;
  Dispose(MethodTab);
  Dispose(FieldTab);
