@@ -52,7 +52,7 @@
             Constantes nommees : pas de CONST en Algol 60, simuler avec
               des variables initialisees ou des macros internes
 
-  TODO 04 - OPERATEURS ET PRECEDENCE
+  TODO 04 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
             Arithmetiques : + - * / (reels et entiers)
                             div (division entiere, reste tronque)
             Puissance     : ^ ou ** (exponentiation)
@@ -587,6 +587,20 @@ Procedure EmitHeader;    Forward;
 Procedure EmitDataSeg;   Forward;
 Procedure EmitRaw(Const S : TString); Forward;
 Procedure EmitComment(Const S : TString); Forward;
+{ ---- Forward declarations (TODO 04) ----------------------- }
+Procedure EmitInstr(Const Mnem, Args : TString); Forward;
+Procedure EmitLabel(Const Lbl : TString); Forward;
+Procedure EmitBlankLine; Forward;
+Function  BinOpPrec(Const Op : TString) : Integer; Forward;
+Function  BinOpIsRight(Const Op : TString) : Boolean; Forward;
+Procedure ExprFlushToAX(Var E : TExprVal); Forward;
+Procedure ExprEmitBinOp(Const Op : TString;
+                        Var L : TExprVal; Var R : TExprVal); Forward;
+Procedure ParsePrimary(Var Res : TExprVal); Forward;
+Procedure ParseUnary(Var Res : TExprVal); Forward;
+Function  CurTokIsInfixOp : Boolean; Forward;
+Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal); Forward;
+Procedure ParseExpr(Var Res : TExprVal); Forward;
 
 { ---- Erreur fatale ----------------------------------------- }
 Procedure FatalError(Const Msg : TString);
@@ -1658,6 +1672,591 @@ Begin
   End;
 End;
 
+{ ============================================================
+  TODO 04 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- EmitInstr : ecrire une instruction ASM (8 espaces) ----- }
+Procedure EmitInstr(Const Mnem, Args : TString);
+Begin
+  If Args = '' Then
+    EmitRaw('        ' + Mnem)
+  Else
+    EmitRaw('        ' + Mnem + ' ' + Args);
+End;
+
+{ ---- EmitLabel : ecrire un label ASM suivi de : ------------- }
+Procedure EmitLabel(Const Lbl : TString);
+Begin
+  EmitRaw(Lbl + ':');
+End;
+
+{ ---- EmitBlankLine : ecrire une ligne vide ------------------- }
+Procedure EmitBlankLine;
+Begin
+  EmitRaw('');
+End;
+
+{ ---- BinOpPrec : table de precedences Algol 60 (Pratt) ------
+  Retourne 0 si l operateur n est pas binaire.
+  Niveaux (ordre croissant = priorite croissante) :
+    EQUIV              -> 1  (equivalence logique)
+    IMPL               -> 2  (implication logique)
+    OR, \/             -> 3  (disjonction)
+    AND, /\            -> 4  (conjonction)
+    < <= = >= > !=     -> 5  (comparaison)
+    + - (binaire)      -> 6  (additif)
+    * / div            -> 7  (multiplicatif)
+    ^ ** (puissance)   -> 8  (droit-associatif)
+    NOT ~ unaire +/-   -> traites par ParseUnary                }
+Function BinOpPrec(Const Op : TString) : Integer;
+Begin
+  If Op = 'EQUIV' Then
+    BinOpPrec := 1
+  Else If Op = 'IMPL' Then
+    BinOpPrec := 2
+  Else If (Op = 'OR') Or (Op = '\/') Then
+    BinOpPrec := 3
+  Else If (Op = 'AND') Or (Op = '/\') Then
+    BinOpPrec := 4
+  Else If (Op = '<')  Or (Op = '<=') Or (Op = '=') Or
+          (Op = '>=') Or (Op = '>')  Or (Op = '!=') Then
+    BinOpPrec := 5
+  Else If (Op = '+') Or (Op = '-') Then
+    BinOpPrec := 6
+  Else If (Op = '*') Or (Op = '/') Or (Op = 'DIV') Then
+    BinOpPrec := 7
+  Else If (Op = '^') Then
+    BinOpPrec := 8
+  Else
+    BinOpPrec := 0;
+End;
+
+{ ---- BinOpIsRight : vrai si operateur droit-associatif ------ }
+{ En Algol 60, seule la puissance ^ est droit-associative.      }
+Function BinOpIsRight(Const Op : TString) : Boolean;
+Begin
+  BinOpIsRight := (Op = '^');
+End;
+
+{ ---- ExprFlushToAX : charger TExprVal dans AX --------------- }
+{ EK_IMM -> MOV AX, imm ; EK_MEM -> MOV AX, [addr] ;          }
+{ EK_AX  -> rien a faire ; EK_NONE -> XOR AX,AX                }
+Procedure ExprFlushToAX(Var E : TExprVal);
+Var
+  S : TString;
+Begin
+  Case E.Kind Of
+    EK_IMM :
+    Begin
+      Str(E.ImmVal, S);
+      EmitInstr('MOV', 'AX, ' + S);
+      E.Kind := EK_AX;
+    End;
+    EK_MEM :
+    Begin
+      { Chaine litterale : OFFSET label }
+      If E.TypeIdx = TY_IDX_STRING Then
+      Begin
+        If (E.Offset >= 0) And (E.Offset < DataCount) Then
+          EmitInstr('MOV', 'AX, OFFSET ' + DataTab[E.Offset].LblName)
+        Else
+          EmitInstr('XOR', 'AX, AX');
+      End
+      { Variable locale : [BP-n] }
+      Else If E.Offset < 0 Then
+      Begin
+        Str(-E.Offset, S);
+        EmitInstr('MOV', 'AX, [BP-' + S + ']');
+      End
+      { Variable globale DATA ou parametre [BP+n] }
+      Else
+      Begin
+        Str(E.Offset, S);
+        EmitInstr('MOV', 'AX, [BP+' + S + ']');
+      End;
+      E.Kind := EK_AX;
+    End;
+    EK_AX :
+      ;  { deja dans AX }
+    EK_NONE :
+    Begin
+      EmitInstr('XOR', 'AX, AX');
+      E.Kind := EK_AX;
+    End;
+  End;
+End;
+
+{ ---- ExprEmitBinOp : generer le code 8086 d un op binaire ---
+  Pliage de constantes si L et R sont EK_IMM.
+  Operateurs Algol 60 couverts :
+    + - * / div          (arithmetique)
+    ^ (puissance)        (droit-associatif, appel POWER runtime)
+    < <= = >= > !=       (comparaison)
+    AND /\ OR \/         (logique, court-circuit)
+    IMPL                 (implication : NOT a OR b)
+    EQUIV                (equivalence : CMP + SETE)            }
+Procedure ExprEmitBinOp(Const Op : TString;
+                        Var L : TExprVal; Var R : TExprVal);
+Var
+  RS       : TString;
+  LblSkip  : TString;
+  LblEnd   : TString;
+  Acc, Exp : LongInt;
+Begin
+  { ---- Pliage de constantes -------------------------------- }
+  If (L.Kind = EK_IMM) And (R.Kind = EK_IMM) Then
+  Begin
+    If      Op = '+'   Then L.ImmVal := L.ImmVal + R.ImmVal
+    Else If Op = '-'   Then L.ImmVal := L.ImmVal - R.ImmVal
+    Else If Op = '*'   Then L.ImmVal := L.ImmVal * R.ImmVal
+    Else If (Op = '/') Or (Op = 'DIV') Then
+    Begin
+      If R.ImmVal = 0 Then
+      Begin CompileError('division par zero'); L.ImmVal := 0; End
+      Else
+        L.ImmVal := L.ImmVal Div R.ImmVal;
+    End
+    Else If Op = '^'   Then
+    Begin
+      Acc := 1; Exp := R.ImmVal;
+      If Exp < 0 Then L.ImmVal := 0
+      Else Begin
+        While Exp > 0 Do Begin Acc := Acc * L.ImmVal; Dec(Exp); End;
+        L.ImmVal := Acc;
+      End;
+    End
+    Else If Op = '='   Then Begin If L.ImmVal =  R.ImmVal Then L.ImmVal := 1 Else L.ImmVal := 0; End
+    Else If Op = '!='  Then Begin If L.ImmVal <> R.ImmVal Then L.ImmVal := 1 Else L.ImmVal := 0; End
+    Else If Op = '<'   Then Begin If L.ImmVal <  R.ImmVal Then L.ImmVal := 1 Else L.ImmVal := 0; End
+    Else If Op = '<='  Then Begin If L.ImmVal <= R.ImmVal Then L.ImmVal := 1 Else L.ImmVal := 0; End
+    Else If Op = '>'   Then Begin If L.ImmVal >  R.ImmVal Then L.ImmVal := 1 Else L.ImmVal := 0; End
+    Else If Op = '>='  Then Begin If L.ImmVal >= R.ImmVal Then L.ImmVal := 1 Else L.ImmVal := 0; End
+    Else If (Op = 'AND') Or (Op = '/\') Then
+    Begin If (L.ImmVal<>0) And (R.ImmVal<>0) Then L.ImmVal:=1 Else L.ImmVal:=0; End
+    Else If (Op = 'OR') Or (Op = '\/') Then
+    Begin If (L.ImmVal<>0) Or (R.ImmVal<>0) Then L.ImmVal:=1 Else L.ImmVal:=0; End
+    Else If Op = 'IMPL' Then
+    Begin
+      { a IMPL b = NOT a OR b }
+      If (L.ImmVal = 0) Or (R.ImmVal <> 0) Then L.ImmVal := 1 Else L.ImmVal := 0;
+    End
+    Else If Op = 'EQUIV' Then
+    Begin
+      { a EQUIV b = (a AND b) OR (NOT a AND NOT b) }
+      If ((L.ImmVal<>0) And (R.ImmVal<>0)) Or ((L.ImmVal=0) And (R.ImmVal=0)) Then
+        L.ImmVal := 1 Else L.ImmVal := 0;
+    End;
+    Exit;
+  End;
+
+  { ---- Court-circuit AND /\ -------------------------------- }
+  If (Op = 'AND') Or (Op = '/\') Then
+  Begin
+    LblEnd := LabelGen;
+    ExprFlushToAX(L);
+    EmitInstr('OR', 'AX, AX');
+    EmitInstr('JZ', LblEnd);  { si faux, resultat = 0, sauter R }
+    ExprFlushToAX(R);
+    EmitInstr('OR', 'AX, AX');
+    EmitInstr('MOV', 'AX, 0');
+    EmitInstr('JZ', LblEnd);
+    EmitInstr('MOV', 'AX, 1');
+    EmitLabel(LblEnd);
+    L.Kind := EK_AX; L.TypeIdx := TY_IDX_BOOLEAN;
+    Exit;
+  End;
+
+  { ---- Court-circuit OR \/ --------------------------------- }
+  If (Op = 'OR') Or (Op = '\/') Then
+  Begin
+    LblEnd := LabelGen;
+    ExprFlushToAX(L);
+    EmitInstr('OR', 'AX, AX');
+    EmitInstr('MOV', 'AX, 1');
+    EmitInstr('JNZ', LblEnd);  { si vrai, resultat = 1, sauter R }
+    ExprFlushToAX(R);
+    EmitInstr('OR', 'AX, AX');
+    EmitInstr('MOV', 'AX, 0');
+    EmitInstr('JZ', LblEnd);
+    EmitInstr('MOV', 'AX, 1');
+    EmitLabel(LblEnd);
+    L.Kind := EK_AX; L.TypeIdx := TY_IDX_BOOLEAN;
+    Exit;
+  End;
+
+  { ---- IMPL (implication) : NOT a OR b --------------------- }
+  If Op = 'IMPL' Then
+  Begin
+    LblEnd := LabelGen;
+    ExprFlushToAX(L);
+    EmitInstr('OR', 'AX, AX');
+    EmitInstr('MOV', 'AX, 1');
+    EmitInstr('JZ', LblEnd);  { si a=faux, implication=vrai }
+    ExprFlushToAX(R);
+    EmitInstr('OR', 'AX, AX');
+    EmitInstr('MOV', 'AX, 0');
+    EmitInstr('JZ', LblEnd);
+    EmitInstr('MOV', 'AX, 1');
+    EmitLabel(LblEnd);
+    L.Kind := EK_AX; L.TypeIdx := TY_IDX_BOOLEAN;
+    Exit;
+  End;
+
+  { ---- EQUIV (equivalence) --------------------------------- }
+  If Op = 'EQUIV' Then
+  Begin
+    ExprFlushToAX(L);
+    EmitInstr('PUSH', 'AX');
+    ExprFlushToAX(R);
+    EmitInstr('MOV', 'BX, AX');
+    EmitInstr('POP', 'AX');
+    { Normaliser les deux en 0/1 }
+    EmitInstr('OR', 'AX, AX');
+    EmitInstr('MOV', 'AX, 0');
+    LblSkip := LabelGen;
+    EmitInstr('JZ', LblSkip);
+    EmitInstr('MOV', 'AX, 1');
+    EmitLabel(LblSkip);
+    EmitInstr('OR', 'BX, BX');
+    EmitInstr('MOV', 'BX, 0');
+    LblEnd := LabelGen;
+    EmitInstr('JZ', LblEnd);
+    EmitInstr('MOV', 'BX, 1');
+    EmitLabel(LblEnd);
+    { EQUIV = (a XOR b) == 0 -> NOT XOR }
+    EmitInstr('XOR', 'AX, BX');
+    EmitInstr('XOR', 'AX, 1');
+    L.Kind := EK_AX; L.TypeIdx := TY_IDX_BOOLEAN;
+    Exit;
+  End;
+
+  { ---- Cas general : emission 8086 ------------------------- }
+  ExprFlushToAX(L);
+  If R.Kind = EK_IMM Then
+  Begin
+    Str(R.ImmVal, RS);
+    If      Op = '+'   Then EmitInstr('ADD', 'AX, ' + RS)
+    Else If Op = '-'   Then EmitInstr('SUB', 'AX, ' + RS)
+    Else If Op = '*'   Then
+    Begin
+      EmitInstr('MOV', 'BX, ' + RS);
+      EmitInstr('IMUL', 'BX');
+    End
+    Else If (Op = '/') Or (Op = 'DIV') Then
+    Begin
+      EmitInstr('MOV', 'BX, ' + RS);
+      EmitInstr('CWD', '');
+      EmitInstr('IDIV', 'BX');
+    End
+    Else If Op = '^'   Then
+    Begin
+      EmitInstr('MOV', 'CX, ' + RS);
+      EmitInstr('CALL', A60_RT_PFX + 'POWER');
+    End
+    Else
+    Begin
+      { Comparaisons : on passe par BX }
+      EmitInstr('MOV', 'BX, ' + RS);
+      EmitInstr('CMP', 'AX, BX');
+      LblEnd := LabelGen;
+      EmitInstr('MOV', 'AX, 1');
+      If      Op = '='  Then EmitInstr('JE',  LblEnd)
+      Else If Op = '!=' Then EmitInstr('JNE', LblEnd)
+      Else If Op = '<'  Then EmitInstr('JL',  LblEnd)
+      Else If Op = '<=' Then EmitInstr('JLE', LblEnd)
+      Else If Op = '>'  Then EmitInstr('JG',  LblEnd)
+      Else If Op = '>=' Then EmitInstr('JGE', LblEnd);
+      EmitInstr('MOV', 'AX, 0');
+      EmitLabel(LblEnd);
+    End;
+  End
+  Else
+  Begin
+    { R non immediat : sauvegarder L dans la pile, charger R dans BX }
+    EmitInstr('PUSH', 'AX');
+    ExprFlushToAX(R);
+    EmitInstr('MOV', 'BX, AX');
+    EmitInstr('POP', 'AX');
+    If      Op = '+'   Then EmitInstr('ADD', 'AX, BX')
+    Else If Op = '-'   Then EmitInstr('SUB', 'AX, BX')
+    Else If Op = '*'   Then EmitInstr('IMUL', 'BX')
+    Else If (Op = '/') Or (Op = 'DIV') Then
+    Begin
+      EmitInstr('CWD', '');
+      EmitInstr('IDIV', 'BX');
+    End
+    Else If Op = '^'   Then
+    Begin
+      { AX = base, BX = exposant -> AX = base^exp via POWER }
+      EmitInstr('MOV', 'CX, BX');
+      EmitInstr('CALL', A60_RT_PFX + 'POWER');
+    End
+    Else
+    Begin
+      { Comparaisons }
+      EmitInstr('CMP', 'AX, BX');
+      LblSkip := LabelGen;
+      LblEnd  := LabelGen;
+      EmitInstr('MOV', 'AX, 1');
+      If      Op = '='  Then EmitInstr('JE',  LblEnd)
+      Else If Op = '!=' Then EmitInstr('JNE', LblEnd)
+      Else If Op = '<'  Then EmitInstr('JL',  LblEnd)
+      Else If Op = '<=' Then EmitInstr('JLE', LblEnd)
+      Else If Op = '>'  Then EmitInstr('JG',  LblEnd)
+      Else If Op = '>=' Then EmitInstr('JGE', LblEnd);
+      EmitInstr('MOV', 'AX, 0');
+      EmitLabel(LblEnd);
+    End;
+  End;
+  L.Kind := EK_AX;
+End;
+
+{ ---- ParsePrimary : atome du parseur Pratt ------------------ }
+{ Literaux : entier, reel, chaine, booleen (TRUE/FALSE)         }
+{ Parentheses : ( expr )                                        }
+{ Expression conditionnelle : IF expr THEN expr ELSE expr       }
+{ Identificateur : variable / appel de fonction (TODO 05+)      }
+Procedure ParsePrimary(Var Res : TExprVal);
+Var
+  LblElse, LblEnd : TString;
+Begin
+  ExprMakeNone(Res);
+
+  { Literal entier }
+  If CurToken.Kind = TK_INTEGER Then
+  Begin
+    LitEvalInt(CurToken, Res);
+    ParserAdvance;
+    Exit;
+  End;
+
+  { Literal reel }
+  If CurToken.Kind = TK_REAL Then
+  Begin
+    LitEvalReal(CurToken, Res);
+    ParserAdvance;
+    Exit;
+  End;
+
+  { Literal booleen }
+  If CurToken.Kind = TK_BOOLEAN Then
+  Begin
+    ExprMakeBool(CurToken.IntVal, Res);
+    ParserAdvance;
+    Exit;
+  End;
+
+  { Literal chaine }
+  If CurToken.Kind = TK_STRING Then
+  Begin
+    LitEvalStr(CurToken, Res);
+    ParserAdvance;
+    Exit;
+  End;
+
+  { Parentheses ( expr ) }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+  Begin
+    ParserAdvance;  { consommer ( }
+    ParseExpr(Res);
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance  { consommer ) }
+    Else
+      CompileError(') attendu');
+    Exit;
+  End;
+
+  { Expression conditionnelle IF expr THEN expr ELSE expr }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'IF') Then
+  Begin
+    ParserAdvance;  { consommer IF }
+    ParseExpr(Res);
+    ExprFlushToAX(Res);
+    LblElse := LabelGen;
+    LblEnd  := LabelGen;
+    EmitInstr('OR', 'AX, AX');
+    EmitInstr('JZ', LblElse);  { si faux -> else }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'THEN') Then
+      ParserAdvance  { consommer THEN }
+    Else
+      CompileError('THEN attendu');
+    ParseExpr(Res);
+    ExprFlushToAX(Res);
+    EmitInstr('JMP', LblEnd);
+    EmitLabel(LblElse);
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'ELSE') Then
+      ParserAdvance  { consommer ELSE }
+    Else
+      CompileError('ELSE attendu dans expression conditionnelle');
+    ParseExpr(Res);
+    ExprFlushToAX(Res);
+    EmitLabel(LblEnd);
+    ExprMakeAX(Res.TypeIdx, Res);
+    Exit;
+  End;
+
+  { Identificateur (stub : sera complete dans TODO 05+ avec SymFind) }
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    { Pour l instant on signale que le symbole est inconnu ;
+      les TODOs suivants ajouteront la table des symboles }
+    WarnMsg('identificateur non resolu: ' + CurToken.Val);
+    ExprMakeImm(0, TY_IDX_INTEGER, Res);
+    ParserAdvance;
+    Exit;
+  End;
+
+  { Token inattendu }
+  CompileError('expression attendue, token: ' + CurToken.Val);
+  ParserAdvance;
+End;
+
+{ ---- ParseUnary : operateurs unaires Algol 60 --------------- }
+{ NOT / ~ : negation logique -> XOR AX, 1                      }
+{ - : negation arithmetique -> NEG AX                           }
+{ + : unaire positif (noop)                                     }
+Procedure ParseUnary(Var Res : TExprVal);
+Begin
+  { NOT (mot-cle) }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'NOT') Then
+  Begin
+    ParserAdvance;  { consommer NOT }
+    ParseUnary(Res);
+    If Res.Kind = EK_IMM Then
+    Begin
+      If Res.ImmVal <> 0 Then Res.ImmVal := 0 Else Res.ImmVal := 1;
+    End
+    Else
+    Begin
+      ExprFlushToAX(Res);
+      EmitInstr('XOR', 'AX, 1');
+      ExprMakeAX(TY_IDX_BOOLEAN, Res);
+    End;
+    Exit;
+  End;
+
+  { ~ (symbole NOT alternatif) }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '~') Then
+  Begin
+    ParserAdvance;  { consommer ~ }
+    ParseUnary(Res);
+    If Res.Kind = EK_IMM Then
+    Begin
+      If Res.ImmVal <> 0 Then Res.ImmVal := 0 Else Res.ImmVal := 1;
+    End
+    Else
+    Begin
+      ExprFlushToAX(Res);
+      EmitInstr('XOR', 'AX, 1');
+      ExprMakeAX(TY_IDX_BOOLEAN, Res);
+    End;
+    Exit;
+  End;
+
+  { Unaire - (negation) }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '-') Then
+  Begin
+    ParserAdvance;  { consommer - }
+    ParseUnary(Res);
+    If Res.Kind = EK_IMM Then
+      Res.ImmVal := -Res.ImmVal
+    Else
+    Begin
+      ExprFlushToAX(Res);
+      EmitInstr('NEG', 'AX');
+      ExprMakeAX(Res.TypeIdx, Res);
+    End;
+    Exit;
+  End;
+
+  { Unaire + (noop) }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '+') Then
+  Begin
+    ParserAdvance;  { consommer + }
+    ParseUnary(Res);
+    Exit;
+  End;
+
+  { Pas d operateur unaire : descendre vers ParsePrimary }
+  ParsePrimary(Res);
+End;
+
+{ ---- CurTokIsInfixOp : le token courant est-il un op binaire }
+{ Detecte TK_OP (+, -, *, /, ^, <, <=, =, >=, >, !=, /\, \/)  }
+{ et TK_KEYWORD (AND, OR, NOT, IMPL, EQUIV, DIV)               }
+Function CurTokIsInfixOp : Boolean;
+Var
+  V : TString;
+Begin
+  CurTokIsInfixOp := False;
+  If CurToken.Kind = TK_OP Then
+  Begin
+    V := CurToken.Val;
+    If (V = '+') Or (V = '-') Or (V = '*') Or (V = '/') Or
+       (V = '^') Or (V = '<') Or (V = '<=') Or (V = '=') Or
+       (V = '>=') Or (V = '>') Or (V = '!=') Or
+       (V = '/\') Or (V = '\/') Then
+      CurTokIsInfixOp := True;
+  End
+  Else If CurToken.Kind = TK_KEYWORD Then
+  Begin
+    V := CurToken.Val;
+    If (V = 'AND') Or (V = 'OR') Or (V = 'IMPL') Or
+       (V = 'EQUIV') Or (V = 'DIV') Then
+      CurTokIsInfixOp := True;
+  End;
+End;
+
+{ ---- ParseExprPrec : boucle Pratt (montee de precedence) ---- }
+{ Court-circuit AND/OR/IMPL via labels.                         }
+{ Pliage de constantes si les deux operandes sont EK_IMM.       }
+Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal);
+Var
+  Op       : TString;
+  Prec     : Integer;
+  NextPrec : Integer;
+  Right    : TExprVal;
+Begin
+  ParseUnary(Res);
+
+  While CurTokIsInfixOp Do
+  Begin
+    Op := CurToken.Val;
+    Prec := BinOpPrec(Op);
+    If Prec < MinPrec Then Break;
+
+    ParserAdvance;  { consommer l operateur }
+
+    { Precedence suivante : droite si droit-associatif }
+    If BinOpIsRight(Op) Then
+      NextPrec := Prec
+    Else
+      NextPrec := Prec + 1;
+
+    { Court-circuit AND /\ : si L=faux, pas besoin de R }
+    If (Op = 'AND') Or (Op = '/\') Or
+       (Op = 'OR')  Or (Op = '\/') Or
+       (Op = 'IMPL') Or (Op = 'EQUIV') Then
+    Begin
+      ParseExprPrec(NextPrec, Right);
+      ExprEmitBinOp(Op, Res, Right);
+    End
+    Else
+    Begin
+      { Autres operateurs : evaluer normalement }
+      ParseExprPrec(NextPrec, Right);
+      ExprEmitBinOp(Op, Res, Right);
+    End;
+  End;
+End;
+
+{ ---- ParseExpr : wrapper pour ParseExprPrec(1) -------------- }
+Procedure ParseExpr(Var Res : TExprVal);
+Begin
+  ParseExprPrec(1, Res);
+End;
+
 { ---- Compilation ------------------------------------------- }
 Procedure Run;
 Begin
@@ -1671,11 +2270,55 @@ Begin
   { Premier token }
   ParserAdvance;
 
-  { Boucle de lexing + evaluation litteraux (TODO 03 demo) }
+  { Boucle principale : parser les expressions (TODO 04+) }
   While CurToken.Kind <> TK_EOF Do
   Begin
-    { TODO 04+ : ParseProgram }
-    ParserAdvance;
+    { Fin de programme }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
+      Break;
+
+    { Separateurs : ; , : [ ] ( ) }
+    If (CurToken.Kind = TK_PUNCT) And
+       ((CurToken.Val = ';') Or (CurToken.Val = ',') Or
+        (CurToken.Val = ':') Or (CurToken.Val = '[') Or
+        (CurToken.Val = ']') Or (CurToken.Val = '(') Or
+        (CurToken.Val = ')')) Then
+    Begin
+      ParserAdvance;
+      Continue;
+    End;
+
+    { Mots-cles non-expression : on les saute pour l instant }
+    If (CurToken.Kind = TK_KEYWORD) And
+       ((CurToken.Val = 'BEGIN') Or (CurToken.Val = 'END') Or
+        (CurToken.Val = 'INTEGER') Or (CurToken.Val = 'REAL') Or
+        (CurToken.Val = 'BOOLEAN') Or (CurToken.Val = 'ARRAY') Or
+        (CurToken.Val = 'STRING') Or (CurToken.Val = 'LABEL') Or
+        (CurToken.Val = 'PROCEDURE') Or (CurToken.Val = 'OWN') Or
+        (CurToken.Val = 'VALUE') Or (CurToken.Val = 'SWITCH') Or
+        (CurToken.Val = 'COMMENT') Or (CurToken.Val = 'FOR') Or
+        (CurToken.Val = 'WHILE') Or (CurToken.Val = 'STEP') Or
+        (CurToken.Val = 'UNTIL') Or (CurToken.Val = 'DO') Or
+        (CurToken.Val = 'GO') Or (CurToken.Val = 'GOTO') Or
+        (CurToken.Val = 'IF') Or (CurToken.Val = 'THEN') Or
+        (CurToken.Val = 'ELSE') Or (CurToken.Val = 'TO')) Then
+    Begin
+      ParserAdvance;
+      Continue;
+    End;
+
+    { Affectation := : consommer et parser l expression droite }
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
+    Begin
+      ParserAdvance;  { consommer := }
+      If (CurToken.Kind <> TK_EOF) And
+         Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Then
+        ParseExpr(GExprDummy);
+      Continue;
+    End;
+
+    { Autre token : parser une expression }
+    ParseExpr(GExprDummy);
   End;
 
   LexClose;
