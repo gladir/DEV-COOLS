@@ -453,7 +453,7 @@
             Heap statique : _LUA_HEAP DB 4096 DUP(0) + _LUA_HEAPTOP DW 0
               _LUART_ALLOC(CX=nb_bytes) -> AX=ptr dans le heap statique
 
-  TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES
+  TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES [IMPLEMENTE]
             EmitClose : END _LUAF_main dans _TEXT ENDS / DATA ENDS
             Run : pipeline complet LexInit -> ParseBlock boucle ->
               EmitRuntime -> _TEXT ENDS / EmitDataSeg / END _LUAF_main
