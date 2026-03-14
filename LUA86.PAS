@@ -315,7 +315,7 @@
             Sauvegarde registres : SI, DI preserves dans chaque fonction
             _ENV : environnement global (stub, toutes les globales sont dans DATA)
 
-  TODO 19 - CHAINES ET BIBLIOTHEQUE string
+  TODO 19 - CHAINES ET BIBLIOTHEQUE string [IMPLEMENTE]
             Chaines immutables : chaque operation retourne une nouvelle chaine
             string.len(s) ou #s : CALL _LUART_STRLEN(SI=AX) -> AX
             string.sub(s, i [,j]) : CALL _LUART_STRSUB(SI, BX, CX) -> AX=ptr
@@ -852,6 +852,10 @@ Function  DetectUpvalue(SIdx : Integer) : Boolean; Forward;
 Procedure PromoteToUpvalue(SIdx : Integer); Forward;
 Procedure EmitScopeRuntime; Forward;
 
+{ Chaines et bibliotheque string (TODO 19) }
+Procedure EmitStringBuiltin(Const FuncName : TString; Var Res : TExprVal); Forward;
+Procedure EmitStringRuntime; Forward;
+
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
   ============================================================ }
@@ -1272,6 +1276,7 @@ Begin
   EmitMetaRuntime;
   EmitFuncRuntime;
   EmitScopeRuntime;
+  EmitStringRuntime;
 End;
 
 { EmitClose : terminer le fichier ASM (DOS exit, runtime, DATA, END) }
@@ -1441,6 +1446,8 @@ Begin
   DataAdd('_LUA_META_CALL', DK_STR, 0, '__call');
   DataAdd('_LUA_META_TOSTRING', DK_STR, 0, '__tostring');
   DataAddWord('_LUA_META_GUARD', 0);
+  { TODO 19 : Second buffer chaines pour operations string }
+  DataAddBuffer('_LUA_STRBUF2', 512);
 End;
 
 { ---- ExprMakeImm : construire une valeur immediate ---------- }
@@ -2014,6 +2021,23 @@ Begin
       End
       Else
         CompileError('nom de fonction attendu apres "table."');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+      Exit;
+    End
+    { TODO 19 : string.len / string.sub / string.upper / string.lower etc. }
+    Else If (VName = 'string') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
+    Begin
+      ParserAdvance; { consomme '.' }
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        VName := CurToken.Val;
+        ParserAdvance;
+        EmitStringBuiltin(VName, E);
+      End
+      Else
+        CompileError('nom de fonction attendu apres "string."');
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
         ParserAdvance;
       Exit;
@@ -3586,6 +3610,23 @@ Begin
         Else
         Begin
           CompileError('nom de fonction attendu apres "io."');
+          ExprMakeNone(Res);
+        End;
+      End
+      Else If (VName = 'string') And
+              (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
+      Begin
+        { TODO 19 : string.len / string.sub / etc. dans les expressions }
+        ParserAdvance; { consomme '.' }
+        If CurToken.Kind = TK_IDENT Then
+        Begin
+          FldName := CurToken.Val;
+          ParserAdvance;
+          EmitStringBuiltin(FldName, Res);
+        End
+        Else
+        Begin
+          CompileError('nom de fonction attendu apres "string."');
           ExprMakeNone(Res);
         End;
       End
@@ -6858,6 +6899,739 @@ Begin
   If CurFnDepth > 2 Then
     WarnMsg('closure profonde (niveau ' + IntToStr(CurFnDepth) +
             ') pour ''' + SymTab[SIdx].Name + '''');
+End;
+
+{ ---- EmitStringBuiltin : emettre le code pour string.len etc. }
+{ Dispatche les appels string.len(s), string.sub(s,i,j), etc.   }
+Procedure EmitStringBuiltin(Const FuncName : TString;
+                            Var Res : TExprVal);
+Var
+  E1, E2, E3 : TExprVal;
+  ArgCount   : Integer;
+Begin
+  { Attendre et consommer '(' }
+  If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+  Begin
+    CompileError('"(" attendue apres string.' + FuncName);
+    ExprMakeNone(Res);
+    Exit;
+  End;
+  ParserAdvance; { consomme '(' }
+
+  If FuncName = 'len' Then
+  Begin
+    { string.len(s) -> AX = longueur }
+    EmitComment('--- string.len ---');
+    ParseExpr(E1);
+    ExprFlushToAX(E1);
+    EmitInstrAB('MOV', 'SI', 'AX');
+    EmitInstrA('CALL', LUA_RT_PFX + 'STRLEN');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else
+      CompileError('")" attendue');
+    Res.Kind    := EK_AX;
+    Res.ImmVal  := 0;
+    Res.TypeIdx := TY_IDX_NUMBER;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+  Else If FuncName = 'sub' Then
+  Begin
+    { string.sub(s, i [, j]) -> AX = ptr sous-chaine }
+    EmitComment('--- string.sub ---');
+    ParseExpr(E1);
+    ExprFlushToAX(E1);
+    EmitInstrA('PUSH', 'AX');  { chaine }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+    ParseExpr(E2);
+    ExprFlushToAX(E2);
+    EmitInstrA('PUSH', 'AX');  { i (start) }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+    Begin
+      ParserAdvance;
+      ParseExpr(E3);
+      ExprFlushToAX(E3);
+      EmitInstrAB('MOV', 'CX', 'AX');  { j (end) }
+    End
+    Else
+      EmitInstrAB('MOV', 'CX', '-1');  { j = -1 -> fin de chaine }
+    ;
+    EmitInstrA('POP', 'BX');   { i }
+    EmitInstrA('POP', 'SI');   { chaine }
+    EmitInstrA('CALL', LUA_RT_PFX + 'STRSUB');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else
+      CompileError('")" attendue');
+    Res.Kind    := EK_AX;
+    Res.ImmVal  := 0;
+    Res.TypeIdx := TY_IDX_STRING;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+  Else If FuncName = 'byte' Then
+  Begin
+    { string.byte(s [, i]) -> AX = code octet }
+    EmitComment('--- string.byte ---');
+    ParseExpr(E1);
+    ExprFlushToAX(E1);
+    EmitInstrA('PUSH', 'AX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+    Begin
+      ParserAdvance;
+      ParseExpr(E2);
+      ExprFlushToAX(E2);
+      EmitInstrAB('MOV', 'BX', 'AX');
+    End
+    Else
+      EmitInstrAB('MOV', 'BX', '1');  { position par defaut = 1 }
+    ;
+    EmitInstrA('POP', 'SI');
+    { Ajuster index 1-based -> 0-based }
+    EmitInstrA('DEC', 'BX');
+    EmitInstrAB('ADD', 'SI', 'BX');
+    EmitInstrAB('XOR', 'AX', 'AX');
+    EmitInstrAB('MOV', 'AL', '[SI]');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else
+      CompileError('")" attendue');
+    Res.Kind    := EK_AX;
+    Res.ImmVal  := 0;
+    Res.TypeIdx := TY_IDX_NUMBER;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+  Else If FuncName = 'char' Then
+  Begin
+    { string.char(n1, ...) -> AX = ptr chaine 1 car }
+    EmitComment('--- string.char ---');
+    ParseExpr(E1);
+    ExprFlushToAX(E1);
+    EmitInstrA('CALL', LUA_RT_PFX + 'CHR');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else
+      CompileError('")" attendue');
+    Res.Kind    := EK_AX;
+    Res.ImmVal  := 0;
+    Res.TypeIdx := TY_IDX_STRING;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+  Else If FuncName = 'rep' Then
+  Begin
+    { string.rep(s, n) -> AX = ptr chaine repetee }
+    EmitComment('--- string.rep ---');
+    ParseExpr(E1);
+    ExprFlushToAX(E1);
+    EmitInstrA('PUSH', 'AX');  { chaine }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+    ParseExpr(E2);
+    ExprFlushToAX(E2);
+    EmitInstrAB('MOV', 'CX', 'AX');  { nombre de repetitions }
+    EmitInstrA('POP', 'SI');
+    EmitInstrA('CALL', LUA_RT_PFX + 'STRREPEAT');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else
+      CompileError('")" attendue');
+    Res.Kind    := EK_AX;
+    Res.ImmVal  := 0;
+    Res.TypeIdx := TY_IDX_STRING;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+  Else If FuncName = 'reverse' Then
+  Begin
+    { string.reverse(s) -> AX = ptr chaine inversee }
+    EmitComment('--- string.reverse ---');
+    ParseExpr(E1);
+    ExprFlushToAX(E1);
+    EmitInstrAB('MOV', 'SI', 'AX');
+    EmitInstrA('CALL', LUA_RT_PFX + 'STRREV');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else
+      CompileError('")" attendue');
+    Res.Kind    := EK_AX;
+    Res.ImmVal  := 0;
+    Res.TypeIdx := TY_IDX_STRING;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+  Else If FuncName = 'upper' Then
+  Begin
+    { string.upper(s) -> AX = ptr chaine en majuscules }
+    EmitComment('--- string.upper ---');
+    ParseExpr(E1);
+    ExprFlushToAX(E1);
+    EmitInstrAB('MOV', 'SI', 'AX');
+    EmitInstrA('CALL', LUA_RT_PFX + 'STRTOUPPER');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else
+      CompileError('")" attendue');
+    Res.Kind    := EK_AX;
+    Res.ImmVal  := 0;
+    Res.TypeIdx := TY_IDX_STRING;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+  Else If FuncName = 'lower' Then
+  Begin
+    { string.lower(s) -> AX = ptr chaine en minuscules }
+    EmitComment('--- string.lower ---');
+    ParseExpr(E1);
+    ExprFlushToAX(E1);
+    EmitInstrAB('MOV', 'SI', 'AX');
+    EmitInstrA('CALL', LUA_RT_PFX + 'STRTOLOWER');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else
+      CompileError('")" attendue');
+    Res.Kind    := EK_AX;
+    Res.ImmVal  := 0;
+    Res.TypeIdx := TY_IDX_STRING;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+  Else If FuncName = 'find' Then
+  Begin
+    { string.find(s, pattern) -> AX = position 1-based ou 0 }
+    EmitComment('--- string.find ---');
+    ParseExpr(E1);
+    ExprFlushToAX(E1);
+    EmitInstrA('PUSH', 'AX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+    ParseExpr(E2);
+    ExprFlushToAX(E2);
+    EmitInstrAB('MOV', 'DI', 'AX');
+    EmitInstrA('POP', 'SI');
+    EmitInstrA('CALL', LUA_RT_PFX + 'STRFIND');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else
+      CompileError('")" attendue');
+    Res.Kind    := EK_AX;
+    Res.ImmVal  := 0;
+    Res.TypeIdx := TY_IDX_NUMBER;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+  Else If FuncName = 'gsub' Then
+  Begin
+    { string.gsub(s, pattern, repl) -> AX = ptr nouvelle chaine }
+    EmitComment('--- string.gsub ---');
+    ParseExpr(E1);
+    ExprFlushToAX(E1);
+    EmitInstrA('PUSH', 'AX');  { s }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+    ParseExpr(E2);
+    ExprFlushToAX(E2);
+    EmitInstrA('PUSH', 'AX');  { pattern }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+    ParseExpr(E3);
+    ExprFlushToAX(E3);
+    EmitInstrAB('MOV', 'BX', 'AX');  { repl }
+    EmitInstrA('POP', 'DI');  { pattern }
+    EmitInstrA('POP', 'SI');  { s }
+    EmitInstrA('CALL', LUA_RT_PFX + 'STRGSUB');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else
+      CompileError('")" attendue');
+    Res.Kind    := EK_AX;
+    Res.ImmVal  := 0;
+    Res.TypeIdx := TY_IDX_STRING;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+  Else If FuncName = 'format' Then
+  Begin
+    { string.format(fmt, ...) -> AX = ptr chaine formatee }
+    EmitComment('--- string.format ---');
+    ParseExpr(E1);
+    ExprFlushToAX(E1);
+    EmitInstrA('PUSH', 'AX');  { format string }
+    ArgCount := 0;
+    While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
+    Begin
+      ParserAdvance;
+      ParseExpr(E2);
+      ExprFlushToAX(E2);
+      EmitInstrA('PUSH', 'AX');
+      Inc(ArgCount);
+    End;
+    { Appeler _LUART_STRFMT avec SP pointant vers les args }
+    EmitInstrAB('MOV', 'CX', IntToStr(ArgCount));
+    { SI = format string est en [SP + ArgCount*2] }
+    EmitInstrAB('MOV', 'SI', 'SP');
+    EmitInstrAB('ADD', 'SI', IntToStr(ArgCount * 2));
+    EmitInstrAB('MOV', 'SI', '[SI]');  { SI = format string ptr }
+    EmitInstrA('CALL', LUA_RT_PFX + 'STRFMT');
+    { Nettoyer la pile : (ArgCount + 1) * 2 }
+    EmitInstrAB('ADD', 'SP', IntToStr((ArgCount + 1) * 2));
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else
+      CompileError('")" attendue');
+    Res.Kind    := EK_AX;
+    Res.ImmVal  := 0;
+    Res.TypeIdx := TY_IDX_STRING;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+  Else If FuncName = 'gmatch' Then
+  Begin
+    { string.gmatch : stub + avertissement }
+    If Opts.Warnings Then
+      WarnMsg('string.gmatch : iterateur complexe, stub');
+    { Sauter les arguments }
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+      ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance;
+    ExprMakeNone(Res);
+  End
+  Else
+  Begin
+    { string.xxx inconnu : stub }
+    If Opts.Warnings Then
+      WarnMsg('string.' + FuncName + ' : stub non implemente');
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+      ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance;
+    ExprMakeNone(Res);
+  End;
+End;
+
+{ ---- EmitStringRuntime : routines runtime chaines (TODO 19) --- }
+Procedure EmitStringRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=== Routines runtime TODO 19 (chaines) ===');
+  EmitBlankLine;
+
+  { _LUART_STRSUB : SI = chaine, BX = start (1-based), CX = end (1-based ou -1) }
+  { Resultat dans AX = ptr vers _LUA_STRBUF2                                      }
+  EmitLabel(LUA_RT_PFX + 'STRSUB');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'DX');
+  { Si BX < 0 : ajuster depuis la fin }
+  EmitInstrAB('TEST', 'BX', 'BX');
+  EmitInstrA('JNS', LUA_RT_PFX + 'SS_POK');
+  { BX negatif : calculer longueur et ajouter }
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('CALL', LUA_RT_PFX + 'STRLEN');
+  EmitInstrA('POP', 'BX');
+  EmitInstrA('POP', 'SI');
+  EmitInstrAB('ADD', 'BX', 'AX');
+  EmitInstrA('INC', 'BX');
+  EmitInstrAB('CMP', 'BX', '1');
+  EmitInstrA('JGE', LUA_RT_PFX + 'SS_POK');
+  EmitInstrAB('MOV', 'BX', '1');
+  EmitLabel(LUA_RT_PFX + 'SS_POK');
+  { Si CX < 0 : ajuster depuis la fin }
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JG', LUA_RT_PFX + 'SS_EOK');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('CALL', LUA_RT_PFX + 'STRLEN');
+  EmitInstrA('POP', 'BX');
+  EmitInstrA('POP', 'SI');
+  EmitInstrAB('ADD', 'CX', 'AX');
+  EmitInstrA('INC', 'CX');
+  EmitLabel(LUA_RT_PFX + 'SS_EOK');
+  { Avancer SI de (BX-1) positions }
+  EmitInstrA('DEC', 'BX');
+  EmitInstrAB('ADD', 'SI', 'BX');
+  { Copier CX - BX caracteres }
+  EmitInstrAB('SUB', 'CX', 'BX');  { CX = nb caracteres a copier }
+  EmitInstrAB('MOV', 'DI', 'OFFSET _LUA_STRBUF2');
+  EmitLabel(LUA_RT_PFX + 'SS_LP');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JLE', LUA_RT_PFX + 'SS_DN');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', LUA_RT_PFX + 'SS_DN');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', LUA_RT_PFX + 'SS_LP');
+  EmitLabel(LUA_RT_PFX + 'SS_DN');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _LUA_STRBUF2');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'DI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _LUART_CHR : AX = code caractere -> AX = ptr chaine 1 car dans _LUA_STRBUF2 }
+  EmitLabel(LUA_RT_PFX + 'CHR');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrAB('MOV', 'BX', 'OFFSET _LUA_STRBUF2');
+  EmitInstrAB('MOV', '[BX]', 'AL');
+  EmitInstrAB('MOV', 'BYTE PTR [BX+1]', '0');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _LUART_STRREPEAT : SI = chaine, CX = n -> AX = ptr vers _LUA_STRBUF2 }
+  EmitLabel(LUA_RT_PFX + 'STRREPEAT');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _LUA_STRBUF2');
+  EmitLabel(LUA_RT_PFX + 'SR_OLP');
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JZ', LUA_RT_PFX + 'SR_DN');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'CX');
+  EmitLabel(LUA_RT_PFX + 'SR_ILP');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', LUA_RT_PFX + 'SR_INX');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', LUA_RT_PFX + 'SR_ILP');
+  EmitLabel(LUA_RT_PFX + 'SR_INX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', LUA_RT_PFX + 'SR_OLP');
+  EmitLabel(LUA_RT_PFX + 'SR_DN');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _LUA_STRBUF2');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'BX');
+  EmitInstrA('POP', 'DI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _LUART_STRREV : SI = chaine -> AX = ptr chaine inversee dans _LUA_STRBUF2 }
+  EmitLabel(LUA_RT_PFX + 'STRREV');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  { D abord calculer la longueur }
+  EmitInstrA('CALL', LUA_RT_PFX + 'STRLEN');
+  EmitInstrAB('MOV', 'CX', 'AX');  { CX = longueur }
+  { Positionner SI a la fin de la chaine }
+  EmitInstrAB('ADD', 'SI', 'CX');
+  EmitInstrA('DEC', 'SI');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _LUA_STRBUF2');
+  EmitLabel(LUA_RT_PFX + 'SV_LP');
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JZ', LUA_RT_PFX + 'SV_DN');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('DEC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', LUA_RT_PFX + 'SV_LP');
+  EmitLabel(LUA_RT_PFX + 'SV_DN');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _LUA_STRBUF2');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstrA('POP', 'DI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _LUART_STRTOUPPER : SI = chaine -> AX = ptr chaine en majuscules dans _LUA_STRBUF2 }
+  EmitLabel(LUA_RT_PFX + 'STRTOUPPER');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _LUA_STRBUF2');
+  EmitLabel(LUA_RT_PFX + 'SU_LP');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', LUA_RT_PFX + 'SU_DN');
+  EmitInstrAB('CMP', 'AL', '97');
+  EmitInstrA('JB', LUA_RT_PFX + 'SU_NX');
+  EmitInstrAB('CMP', 'AL', '122');
+  EmitInstrA('JA', LUA_RT_PFX + 'SU_NX');
+  EmitInstrAB('SUB', 'AL', '32');
+  EmitLabel(LUA_RT_PFX + 'SU_NX');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', LUA_RT_PFX + 'SU_LP');
+  EmitLabel(LUA_RT_PFX + 'SU_DN');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _LUA_STRBUF2');
+  EmitInstrA('POP', 'DI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _LUART_STRTOLOWER : SI = chaine -> AX = ptr chaine en minuscules dans _LUA_STRBUF2 }
+  EmitLabel(LUA_RT_PFX + 'STRTOLOWER');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _LUA_STRBUF2');
+  EmitLabel(LUA_RT_PFX + 'SL2_LP');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', LUA_RT_PFX + 'SL2_DN');
+  EmitInstrAB('CMP', 'AL', '65');
+  EmitInstrA('JB', LUA_RT_PFX + 'SL2_NX');
+  EmitInstrAB('CMP', 'AL', '90');
+  EmitInstrA('JA', LUA_RT_PFX + 'SL2_NX');
+  EmitInstrAB('ADD', 'AL', '32');
+  EmitLabel(LUA_RT_PFX + 'SL2_NX');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', LUA_RT_PFX + 'SL2_LP');
+  EmitLabel(LUA_RT_PFX + 'SL2_DN');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _LUA_STRBUF2');
+  EmitInstrA('POP', 'DI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _LUART_STRFIND : SI = chaine, DI = pattern -> AX = pos 1-based ou 0 }
+  EmitLabel(LUA_RT_PFX + 'STRFIND');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrAB('XOR', 'BX', 'BX');  { BX = position courante }
+  EmitLabel(LUA_RT_PFX + 'SF_OLP');
+  EmitInstrAB('CMP', 'BYTE PTR [SI+BX]', '0');
+  EmitInstrA('JE', LUA_RT_PFX + 'SF_NF');
+  { Comparer a partir de SI+BX avec DI }
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitLabel(LUA_RT_PFX + 'SF_ILP');
+  EmitInstrAB('MOV', 'AL', '[DI+CX]');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', LUA_RT_PFX + 'SF_FND');  { fin du pattern = match }
+  EmitInstrAB('MOV', 'DX', 'BX');
+  EmitInstrAB('ADD', 'DX', 'CX');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('ADD', 'SI', 'DX');
+  EmitInstrAB('CMP', 'AL', '[SI]');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('JNE', LUA_RT_PFX + 'SF_NXT');
+  EmitInstrA('INC', 'CX');
+  EmitInstrA('JMP', LUA_RT_PFX + 'SF_ILP');
+  EmitLabel(LUA_RT_PFX + 'SF_NXT');
+  EmitInstrA('INC', 'BX');
+  EmitInstrA('JMP', LUA_RT_PFX + 'SF_OLP');
+  EmitLabel(LUA_RT_PFX + 'SF_FND');
+  { Trouve a position BX (0-based) -> retourner BX+1 }
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstrA('INC', 'AX');
+  EmitInstrA('JMP', LUA_RT_PFX + 'SF_RET');
+  EmitLabel(LUA_RT_PFX + 'SF_NF');
+  EmitInstrAB('XOR', 'AX', 'AX');  { pas trouve -> 0 }
+  EmitLabel(LUA_RT_PFX + 'SF_RET');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _LUART_STRGSUB : SI = chaine, DI = pattern, BX = repl -> AX = ptr }
+  { Remplace la premiere occurrence de DI dans SI par BX               }
+  EmitLabel(LUA_RT_PFX + 'STRGSUB');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrA('PUSH', 'BX');  { sauvegarder repl }
+  EmitInstrA('PUSH', 'DI');  { sauvegarder pattern }
+  EmitInstrA('PUSH', 'SI');  { sauvegarder str }
+  { Trouver la position du pattern }
+  EmitInstrA('CALL', LUA_RT_PFX + 'STRFIND');
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JZ', LUA_RT_PFX + 'SG_CPY');  { pas trouve -> copier tel quel }
+  { AX = position 1-based, convertir en 0-based }
+  EmitInstrA('DEC', 'AX');
+  EmitInstrAB('MOV', 'CX', 'AX');  { CX = offset du match }
+  EmitInstrA('POP', 'SI');  { restaurer str }
+  { Copier le debut (avant le match) dans _LUA_STRBUF2 }
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _LUA_STRBUF2');
+  EmitLabel(LUA_RT_PFX + 'SG_L1');
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JZ', LUA_RT_PFX + 'SG_REP');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', LUA_RT_PFX + 'SG_L1');
+  EmitLabel(LUA_RT_PFX + 'SG_REP');
+  { Copier la chaine de remplacement }
+  EmitInstrA('POP', 'DX');  { DX = str original (ancien SI sauvegarde) }
+  EmitInstrA('POP', 'CX');  { CX = pattern ptr (ancien DI sauvegarde) }
+  EmitInstrA('POP', 'BX');  { BX = repl ptr }
+  EmitInstrA('PUSH', 'SI');  { SI = position courante dans la chaine source }
+  EmitInstrAB('MOV', 'SI', 'BX');  { copier repl }
+  EmitLabel(LUA_RT_PFX + 'SG_L2');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', LUA_RT_PFX + 'SG_SKP');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', LUA_RT_PFX + 'SG_L2');
+  EmitLabel(LUA_RT_PFX + 'SG_SKP');
+  { Sauter le pattern dans la chaine source }
+  EmitInstrAB('MOV', 'SI', 'CX');  { SI = pattern }
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitLabel(LUA_RT_PFX + 'SG_LN');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstrA('JE', LUA_RT_PFX + 'SG_L3S');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'CX');
+  EmitInstrA('JMP', LUA_RT_PFX + 'SG_LN');
+  EmitLabel(LUA_RT_PFX + 'SG_L3S');
+  EmitInstrA('POP', 'SI');  { restaurer pos dans chaine source }
+  EmitInstrAB('ADD', 'SI', 'CX');  { sauter le pattern }
+  { Copier le reste }
+  EmitLabel(LUA_RT_PFX + 'SG_L3');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', LUA_RT_PFX + 'SG_END');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', LUA_RT_PFX + 'SG_L3');
+  EmitLabel(LUA_RT_PFX + 'SG_END');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _LUA_STRBUF2');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _LUART_STRGSUB : branche non trouve -> copier tel quel }
+  EmitLabel(LUA_RT_PFX + 'SG_CPY');
+  EmitInstrA('POP', 'SI');  { str }
+  EmitInstrA('POP', 'DI');  { pattern (inutilise) }
+  EmitInstrA('POP', 'BX');  { repl (inutilise) }
+  EmitInstrAB('MOV', 'DI', 'OFFSET _LUA_STRBUF2');
+  EmitLabel(LUA_RT_PFX + 'SG_C1');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', LUA_RT_PFX + 'SG_C2');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', LUA_RT_PFX + 'SG_C1');
+  EmitLabel(LUA_RT_PFX + 'SG_C2');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _LUA_STRBUF2');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _LUART_STRFMT : formate simplifie %d %s %%                        }
+  { SI = format string, args empiles (premiers arg en haut de pile)    }
+  { CX = nombre d args, resultat dans AX = ptr vers _LUA_STRBUF2     }
+  EmitLabel(LUA_RT_PFX + 'STRFMT');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _LUA_STRBUF2');
+  { BX = pointeur vers les args sur la pile }
+  { Les args sont empiles dans l ordre, le premier en haut }
+  { SP+6 pointe vers premier arg (apres nos 3 PUSHs + ret addr) }
+  EmitInstrAB('MOV', 'BX', 'SP');
+  EmitInstrAB('ADD', 'BX', '8');  { skip DI, BX, DX pushes + ret addr }
+  EmitLabel(LUA_RT_PFX + 'FM_LP');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', LUA_RT_PFX + 'FM_DN');
+  EmitInstrAB('CMP', 'AL', '37');  { '%' }
+  EmitInstrA('JE', LUA_RT_PFX + 'FM_PCT');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', LUA_RT_PFX + 'FM_LP');
+  EmitLabel(LUA_RT_PFX + 'FM_PCT');
+  EmitInstrA('INC', 'SI');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('CMP', 'AL', '100');  { 'd' }
+  EmitInstrA('JE', LUA_RT_PFX + 'FM_D');
+  EmitInstrAB('CMP', 'AL', '115');  { 's' }
+  EmitInstrA('JE', LUA_RT_PFX + 'FM_S');
+  EmitInstrAB('CMP', 'AL', '37');  { '%' }
+  EmitInstrA('JE', LUA_RT_PFX + 'FM_LIT');
+  { Autre : copier tel quel }
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '37');
+  EmitInstrA('INC', 'DI');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', LUA_RT_PFX + 'FM_LP');
+  { %d : convertir nombre en chaine }
+  EmitLabel(LUA_RT_PFX + 'FM_D');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'AX', '[BX]');
+  EmitInstrAB('ADD', 'BX', '2');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('CALL', LUA_RT_PFX + 'NUMTOSTR');
+  { AX = ptr vers la chaine du nombre, copier dans DI }
+  EmitInstrA('POP', 'DI');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitLabel(LUA_RT_PFX + 'FM_DC');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', LUA_RT_PFX + 'FM_DD');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', LUA_RT_PFX + 'FM_DC');
+  EmitLabel(LUA_RT_PFX + 'FM_DD');
+  EmitInstrA('POP', 'BX');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('JMP', LUA_RT_PFX + 'FM_LP');
+  { %s : copier chaine }
+  EmitLabel(LUA_RT_PFX + 'FM_S');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', '[BX]');
+  EmitInstrAB('ADD', 'BX', '2');
+  EmitInstrA('PUSH', 'BX');
+  EmitLabel(LUA_RT_PFX + 'FM_SC');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', LUA_RT_PFX + 'FM_SD');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', LUA_RT_PFX + 'FM_SC');
+  EmitLabel(LUA_RT_PFX + 'FM_SD');
+  EmitInstrA('POP', 'BX');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('JMP', LUA_RT_PFX + 'FM_LP');
+  { %% : litterale '%' }
+  EmitLabel(LUA_RT_PFX + 'FM_LIT');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '37');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', LUA_RT_PFX + 'FM_LP');
+  EmitLabel(LUA_RT_PFX + 'FM_DN');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _LUA_STRBUF2');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'BX');
+  EmitInstrA('POP', 'DI');
+  EmitInstr('RET');
+  EmitBlankLine;
 End;
 
 { ---- EmitScopeRuntime : routines runtime portee/pile (TODO 18) -- }
