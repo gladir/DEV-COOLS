@@ -1,0 +1,47 @@
+CO procs.a68 : PROC, recursion, procedures comme valeurs (TODO 25) CO
+BEGIN
+  CO Procedure simple CO
+  PROC double = (INT x) INT : x + x;
+  INT r1 := double(21);
+  print(("double(21) = ", r1, newline));
+
+  CO Procedure a deux parametres CO
+  PROC add = (INT a, INT b) INT : a + b;
+  INT r2 := add(10, 32);
+  print(("add(10,32) = ", r2, newline));
+
+  CO Procedure a trois parametres CO
+  PROC sub3 = (INT a, INT b, INT c) INT : a - b - c;
+  INT r3 := sub3(100, 30, 20);
+  print(("sub3(100,30,20) = ", r3, newline));
+
+  CO Recursion : factorielle CO
+  PROC factorial = (INT n) INT :
+    IF n = 0 THEN 1 ELSE n * factorial(n - 1) FI;
+  INT r4 := factorial(5);
+  print(("5! = ", r4, newline));
+
+  CO Procedure VOID CO
+  PROC greet = () VOID : SKIP;
+  greet();
+
+  CO Procedure identite CO
+  PROC identity = (INT x) INT : x;
+  INT r5 := identity(42);
+  print(("identity(42) = ", r5, newline));
+
+  CO Procedure comme valeur : passage indirect CO
+  PROC carre = (INT x) INT : x * x;
+  INT r6 := carre(7);
+  print(("carre(7) = ", r6, newline));
+
+  CO Recursion : fibonacci CO
+  PROC fib = (INT n) INT :
+    IF n <= 1 THEN n ELSE fib(n - 1) + fib(n - 2) FI;
+  INT r7 := fib(10);
+  print(("fib(10) = ", r7, newline));
+
+  CO Composition de procedures CO
+  INT r8 := double(add(3, 4));
+  print(("double(add(3,4)) = ", r8, newline))
+END

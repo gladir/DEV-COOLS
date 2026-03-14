@@ -1,0 +1,9 @@
+BEGIN
+  INT x = 42;
+  INT y := 10;
+  BOOL flag = TRUE;
+  CHAR c = "A";
+  STRING msg = "Hello";
+  INT a = 1, b = 2, c2 = 3;
+  SKIP
+END

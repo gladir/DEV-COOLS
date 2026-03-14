@@ -1,0 +1,6 @@
+BEGIN
+  INT x = 42;
+  BOOL flag = TRUE;
+  STRING msg = "Hello Algol 68";
+  SKIP
+END

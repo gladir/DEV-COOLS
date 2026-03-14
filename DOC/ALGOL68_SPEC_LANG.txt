@@ -1,0 +1,1066 @@
+
+SPECIFICATIONS DU LANGAGE DE PROGRAMMATION ALGOL 68
+====================================================
+
+  Nom du langage : Algol 68 (Algorithmic Language 1968)
+  Origine        : IFIP Working Group 2.1
+  Annee          : 1968 (rapport original), 1973 (rapport revise)
+  Paradigme      : Imperatif, structure par blocs, typage fort,
+                   expressions orthogonales
+  Utilisation    : Calcul scientifique, systemes, enseignement
+  Compilateur    : AL68C86.PAS (cible assembleur 8086, DOS 16 bits)
+
+
+TABLE DES MATIERES
+------------------
+
+  1.  Structure d'un programme Algol 68
+  2.  Commentaires et pragmats
+  3.  Conventions lexicales
+  4.  Denotations (litteraux)
+  5.  Modes (types de donnees)
+  6.  Systeme de modes et coercitions
+  7.  Operateurs et priorites
+  8.  Declarations d identite et de variable
+  9.  Expressions et formules
+  10. Clauses fermees et clauses serie
+  11. Clauses conditionnelles (IF et CASE)
+  12. Clauses repetitives (boucles)
+  13. Structures (STRUCT)
+  14. References et affectations (REF)
+  15. Tableaux et tranches (ROW)
+  16. Procedures (PROC)
+  17. Definitions d operateurs (OP et PRIO)
+  18. Modes unis (UNION) et clauses de conformite
+  19. Clauses collaterales et paralleles
+  20. Transput (entrees/sorties)
+  21. Symboles et portees
+  22. Runtime minimal
+  23. Mots reserves (bold words)
+  24. Grammaire BNF
+
+
+=========================================================================
+1. STRUCTURE D'UN PROGRAMME ALGOL 68
+=========================================================================
+
+Un programme Algol 68 est constitue d une clause serie englobante,
+delimitee par BEGIN ... END ou ( ... ).
+
+  Exemple minimal :
+
+    BEGIN
+      print(("Hello, World!", newline))
+    END
+
+Le point d entree est la premiere clause serie. Il n y a pas de
+procedure principale explicite comme en C ou Pascal.
+
+Les unites (instructions et expressions) sont separees par des
+points-virgules (;), appeles « go-on symbols ».
+
+
+=========================================================================
+2. COMMENTAIRES ET PRAGMATS
+=========================================================================
+
+Algol 68 supporte trois formes de commentaires :
+
+  - CO ... CO        commentaire entre mots gras CO
+  - COMMENT ... COMMENT   forme longue
+  - # ... #          commentaire entre dieses
+
+  Exemple :
+
+    CO Ceci est un commentaire CO
+    COMMENT Un autre commentaire COMMENT
+    # Commentaire court #
+
+Les pragmats (directives au compilateur) :
+
+  - PR ... PR        pragmat entre mots gras PR
+  - PRAGMAT ... PRAGMAT   forme longue
+
+Les commentaires et pragmats peuvent apparaitre entre deux tokens
+quelconques et ne modifient pas la semantique du programme.
+
+
+=========================================================================
+3. CONVENTIONS LEXICALES
+=========================================================================
+
+  3.1 Identificateurs
+      Commencent par une lettre, suivis de lettres, chiffres ou
+      underscores. Sensibles a la casse.
+
+      Exemples : x, somme, mon_tableau, i2
+
+  3.2 Mots gras (bold words)
+      Ecrits en majuscules : BEGIN, END, IF, THEN, ELSE, etc.
+      Ils ne sont pas des identificateurs et ne peuvent pas etre
+      redefinis par le programmeur.
+
+  3.3 Symboles speciaux
+
+      Symbole   Signification
+      --------  -------------------------------------------
+      :=        Affectation (becomes)
+      =:        Affectation inversee (assignation inversee)
+      ;         Separateur d unites (go-on symbol)
+      ,         Separateur de liste
+      (         Parenthese ouvrante
+      )         Parenthese fermante
+      [         Crochet ouvrant (sous-indice)
+      ]         Crochet fermant
+      :         Separateur de bornes ou label
+      +*        Operateur imaginaire (I pour COMPL)
+      +:=       Plus et assignation (plusab)
+      -:=       Moins et assignation (minusab)
+      *:=       Fois et assignation (timesab)
+      /:=       Divise et assignation (divab)
+
+  3.4 Denotations numeriques
+      Entiers : 0, 42, 65535
+      Entiers en base : 2r1010, 8r77, 16rFF (radix r digits)
+      Reels : 3.14, 1.5e-3, .5e2
+
+
+=========================================================================
+4. DENOTATIONS (LITTERAUX)
+=========================================================================
+
+Les denotations sont les valeurs litterales du langage.
+
+  4.1 Denotation entiere (INT denotation)
+      Suite de chiffres decimaux : 0 .. 65535
+      Notation en base : <base>r<digits>
+        Exemples : 2r1010 (= 10), 8r77 (= 63), 16rFF (= 255)
+
+  4.2 Denotation reelle (REAL denotation)
+      Nombre a virgule flottante : 3.14, 1.5e-3, .5e2
+      Note : dans cette implementation, les reels sont tronques
+      en entiers (stub).
+
+  4.3 Denotation booleenne (BOOL denotation)
+      TRUE  : valeur vraie (1)
+      FALSE : valeur fausse (0)
+
+  4.4 Denotation de caractere (CHAR denotation)
+      Un caractere entre guillemets doubles : "a", "Z", "5"
+      Guillemet echappe par doublement : """"
+
+  4.5 Denotation de chaine (STRING denotation)
+      Suite de caracteres entre guillemets doubles : "abc", "Hello"
+      Guillemets echappes par doublement : "il dit ""bonjour"""
+      Concatenation implicite de chaines adjacentes.
+
+  4.6 Denotation vide (VOID)
+      SKIP : valeur indefinie du mode VOID
+      EMPTY : union vide
+
+  4.7 Reference nulle
+      NIL : reference nulle, compatible avec tout mode REF M
+
+
+=========================================================================
+5. MODES (TYPES DE DONNEES)
+=========================================================================
+
+Algol 68 appelle « modes » ce que la plupart des langages appellent
+« types ». Chaque valeur possede un mode.
+
+  5.1 Modes primitifs
+
+  Mode     Description                  Taille     Valeur initiale
+  -------  ---------------------------  ---------  ----------------
+  INT      Entier 16 bits signe         2 octets   0
+  REAL     Nombre reel (stub entier)    2 octets   0
+  BOOL     Booleen (TRUE/FALSE)         1 octet    FALSE
+  CHAR     Caractere ASCII              1 octet    espace
+  BITS     Motif binaire 16 bits        2 octets   0
+  BYTES    Tableau d octets             2 octets   (ptr)
+  COMPL    Nombre complexe (re, im)     4 octets   (0, 0)
+  STRING   Chaine dynamique             2 octets   (ptr)
+  VOID     Absence de valeur            0 octets   -
+
+  5.2 Modes composes
+
+  Mode           Description
+  -------------  -------------------------------------------
+  STRUCT(...)    Structure : agrégat de champs nommes
+  UNION(...)     Mode uni : une valeur parmi plusieurs modes
+  REF MODE       Reference (pointeur) vers un mode
+  PROC(...)MODE  Procedure avec parametres et resultat
+  [lo:hi] MODE   Tableau (rangee) d elements
+  ROW MODE       Rangee d elements
+
+  5.3 Declaration de mode
+      MODE POINT = STRUCT(INT x, INT y);
+      MODE NOMBRE = UNION(INT, REAL);
+      MODE myint = INT;
+
+
+=========================================================================
+6. SYSTEME DE MODES ET COERCITIONS
+=========================================================================
+
+Algol 68 applique automatiquement des coercitions pour convertir
+les valeurs d un mode a un autre dans certains contextes.
+
+  6.1 Dereferencement (dereferencing)
+      REF M -> M
+      Suivre automatiquement un pointeur pour obtenir sa valeur.
+
+  6.2 Deproceduration (deproceduring)
+      PROC M -> M
+      Appeler automatiquement une procedure sans parametres.
+
+  6.3 Elargissement (widening)
+      INT -> REAL       (promotion numerique)
+      CHAR -> INT       (code ASCII)
+      BOOL -> INT       (TRUE=1, FALSE=0)
+      INT -> COMPL      (partie reelle, im=0)
+      INT <-> BITS      (reinterpretation binaire)
+
+  6.4 Mise en rangee (rowing)
+      M -> ROW M
+      Creer un tableau d un seul element a partir d une valeur.
+      CHAR -> STRING    (chaine d un caractere)
+
+  6.5 Unification (uniting)
+      M -> UNION(M, ...)
+      Stocker une valeur dans un mode uni avec son discriminant.
+
+  6.6 Vidage (voiding)
+      M -> VOID
+      Ignorer le resultat d une expression.
+
+  Ordre canonique des coercitions :
+    deref -> deproc -> widen -> row -> unite -> void
+
+
+=========================================================================
+7. OPERATEURS ET PRIORITES
+=========================================================================
+
+Les operateurs Algol 68 ont des niveaux de priorite de 1 (plus faible)
+a 9 (plus fort).
+
+  7.1 Operateurs dyadiques (binaires)
+
+  Prio  Operateurs              Description
+  ----  ----------------------  ----------------------------------
+  1     OR                      Ou logique (court-circuit)
+  2     AND                     Et logique (court-circuit)
+  3     = /= < <= > >=          Comparaison
+  4     + -                     Addition, soustraction
+  5     * / OVER MOD            Multiplication, division, modulo
+  6     **                      Exponentiation
+  8     SHL SHR ELEM UP DOWN    Decalage, test de bit
+  9     +* I                    Construction COMPL (imaginaire)
+
+  7.2 Operateurs monadiques (unaires)
+
+  Prio  Operateurs                      Description
+  ----  ------------------------------  --------------------------
+  7     NOT ABS ARG BIN CONJ IM LENG    Operateurs unaires
+        LEVEL ODD RE REPR ROUND
+        SHORTEN SIGN
+
+  Operateur  Description                  Exemple
+  ---------  ---------------------------  ---------------------
+  ABS        Valeur absolue               ABS -42 = 42
+  ODD        Test de parite               ODD 7 = TRUE
+  SIGN       Extraction du signe          SIGN -5 = -1
+  NOT        Negation logique             NOT TRUE = FALSE
+  BIN        Conversion INT -> BITS       BIN 255
+  -          Negation arithmetique        -42
+
+  7.3 Operateurs d affectation composes
+
+  Operateur  Equivalent          Description
+  ---------  ------------------  -------------------------
+  +:=        x := x + y         Plus et assigne
+  -:=        x := x - y         Moins et assigne
+  *:=        x := x * y         Fois et assigne
+  /:=        x := x / y         Divise et assigne
+
+
+=========================================================================
+8. DECLARATIONS D IDENTITE ET DE VARIABLE
+=========================================================================
+
+  8.1 Declaration d identite (constante)
+      MODE nom = valeur;
+
+      Exemples :
+        INT answer = 42;
+        STRING greeting = "Hello";
+        BOOL flag = TRUE;
+
+  8.2 Declaration de variable
+      MODE nom := valeur;
+
+      La forme abregee « INT x := 42 » cree implicitement un
+      REF INT local initialise a 42.
+
+      Forme longue : REF INT x = LOC INT := 42;
+
+  8.3 Allocation locale (LOC)
+      LOC MODE : allocation sur la pile dans le cadre courant.
+      Adresse relative a BP : [BP - offset]
+
+  8.4 Allocation dynamique (HEAP)
+      HEAP MODE : allocation sur le tas.
+      Appel a la routine runtime _A68RT_ALLOC.
+
+  8.5 Declarations multiples
+      INT a = 1, b = 2, c = 3;
+
+  8.6 Declaration REF explicite
+      REF INT p = x;
+      p est un alias (meme adresse) vers la variable x.
+
+
+=========================================================================
+9. EXPRESSIONS ET FORMULES
+=========================================================================
+
+  9.1 Expressions primaires
+      - Denotation (litteral)
+      - Identificateur (recherche dans la table des symboles)
+      - Clause fermee : (expr) ou BEGIN expr END
+      - Appel de procedure : nom(args)
+      - Selection de champ : champ OF structure
+      - Indexation de tableau : tableau[indice]
+      - Tranche de tableau : tableau[lo:up]
+      - SKIP (valeur indefinie) et NIL (reference nulle)
+
+  9.2 Formules
+      Les formules sont des expressions composees d operateurs et
+      d operandes, analysees par descente de Pratt avec priorites 1 a 9.
+
+      Exemples :
+        a + b * c          CO priorite : * avant + CO
+        ABS x + SIGN y     CO unaires avant binaires CO
+        x = 5 AND y > 0    CO comparaison puis logique CO
+
+  9.3 Affectation
+      destination := source
+      La destination doit etre de mode REF M.
+
+      Affectation inversee : source =: destination
+
+  9.4 Test d identite
+      expr1 IS expr2      (meme reference)
+      expr1 ISNT expr2    (references differentes)
+      expr IS NIL          (test de reference nulle)
+
+
+=========================================================================
+10. CLAUSES FERMEES ET CLAUSES SERIE
+=========================================================================
+
+  10.1 Clause fermee (closed clause)
+       BEGIN suite_d_unites END
+       ( suite_d_unites )
+
+       Ouvre une nouvelle portee lexicale. La valeur de la clause
+       est la valeur de la derniere unite.
+
+       Exemple :
+         INT r := BEGIN INT x := 5; x + 1 END   CO r = 6 CO
+
+  10.2 Clause serie (serial clause)
+       Suite d unites separees par des points-virgules.
+       La valeur est celle de la derniere unite.
+
+       Exemple :
+         INT a := 1; INT b := 2; a + b   CO valeur = 3 CO
+
+  10.3 Labels (etiquettes)
+       etiquette: unite
+       GO TO etiquette  ou  GOTO etiquette
+
+       Exemple :
+         boucle: x +:= 1;
+         IF x < 10 THEN GOTO boucle FI
+
+
+=========================================================================
+11. CLAUSES CONDITIONNELLES (IF ET CASE)
+=========================================================================
+
+  11.1 Clause IF
+
+       IF condition THEN
+         unites_vrai
+       ELIF condition THEN
+         unites_elif
+       ELSE
+         unites_faux
+       FI
+
+       Forme abregee : (condition | val_vrai | val_faux)
+
+       Exemple :
+         IF note >= 90 THEN
+           print(("Excellent", newline))
+         ELIF note >= 70 THEN
+           print(("Bien", newline))
+         ELSE
+           print(("Echec", newline))
+         FI
+
+       La clause IF peut etre utilisee comme expression :
+         INT x = IF cond THEN 1 ELSE 2 FI
+
+  11.2 Clause CASE
+
+       CASE expression IN
+         unite1,
+         unite2,
+         unite3
+       OUT
+         unite_defaut
+       ESAC
+
+       Forme abregee : (expr | val1, val2, ... | defaut)
+
+       L expression doit etre de mode INT.
+       La selection est 1-basee : 1 -> unite1, 2 -> unite2, etc.
+       La clause OUT est executee si aucune valeur ne correspond.
+
+       Exemple :
+         CASE jour IN
+           print(("Lundi", newline)),
+           print(("Mardi", newline)),
+           print(("Mercredi", newline))
+         OUT
+           print(("Autre jour", newline))
+         ESAC
+
+
+=========================================================================
+12. CLAUSES REPETITIVES (BOUCLES)
+=========================================================================
+
+Forme generale :
+
+  FOR ident FROM debut TO fin BY pas WHILE condition DO
+    unites
+  OD
+
+Tous les mots-cles sauf DO et OD sont optionnels.
+
+  12.1 FOR ident
+       Variable de boucle locale, de mode INT, non modifiable dans
+       le corps. Si absent, pas de variable de boucle.
+
+  12.2 FROM debut
+       Valeur initiale (defaut 1).
+
+  12.3 TO fin
+       Borne superieure. Si absent, la boucle est potentiellement
+       infinie (sauf WHILE).
+
+  12.4 BY pas
+       Increment a chaque iteration (defaut 1). Peut etre negatif.
+
+  12.5 WHILE condition
+       Condition testee avant chaque iteration. Permet des boucles
+       WHILE pures : WHILE cond DO ... OD
+
+  Exemples :
+
+    CO Boucle FOR classique CO
+    FOR i FROM 1 TO 10 DO
+      print((i, newline))
+    OD
+
+    CO Boucle avec pas CO
+    FOR k FROM 1 TO 10 BY 2 DO
+      print((k, " "))
+    OD
+
+    CO Boucle WHILE pure CO
+    INT n := 100;
+    WHILE n > 1 DO
+      n := n OVER 2
+    OD
+
+    CO Boucle FOR avec WHILE CO
+    INT total := 0;
+    FOR n FROM 1 TO 100 WHILE total < 50 DO
+      total +:= n
+    OD
+
+    CO Boucle infinie CO
+    DO ... OD
+
+
+=========================================================================
+13. STRUCTURES (STRUCT)
+=========================================================================
+
+  13.1 Declaration de mode structure
+       MODE POINT = STRUCT(INT x, INT y);
+       MODE VEC3 = STRUCT(INT a, INT b, INT c);
+
+       La taille d une structure est la somme des tailles de ses champs.
+
+  13.2 Constructeur de structure
+       POINT p := POINT(3, 7);
+       VEC3 v := VEC3(10, 20, 30);
+
+  13.3 Selection de champ (OF)
+       INT px := x OF p;
+       INT vc := c OF v;
+
+       L operateur OF accede a un champ par un offset fixe depuis
+       le debut de la structure.
+
+  13.4 Structures imbriquees
+       MODE RECT = STRUCT(POINT tl, POINT br);
+       Acces chaine : x OF tl OF rect
+
+  13.5 Affectation de structure
+       Copie champ par champ ou par bloc (REP MOVSW).
+
+
+=========================================================================
+14. REFERENCES ET AFFECTATIONS (REF)
+=========================================================================
+
+  14.1 REF MODE
+       Reference (pointeur) vers un objet de mode MODE.
+       Toute variable est implicitement un REF.
+
+  14.2 Affectation
+       x := 42          CO affectation standard CO
+       99 =: z          CO affectation inversee CO
+
+  14.3 LOC (allocation locale)
+       LOC INT : allocation sur la pile dans le cadre courant.
+
+  14.4 HEAP (allocation dynamique)
+       HEAP INT : allocation sur le tas via _A68RT_ALLOC.
+
+  14.5 REF REF MODE
+       Double indirection (reference vers reference).
+
+  14.6 NIL
+       Reference nulle, compatible avec tout REF M.
+
+  14.7 Test d identite
+       a IS b       CO meme reference (meme adresse) CO
+       a ISNT b     CO references differentes CO
+       p IS NIL     CO test de reference nulle CO
+       p ISNT NIL
+
+
+=========================================================================
+15. TABLEAUX ET TRANCHES (ROW)
+=========================================================================
+
+  15.1 Declaration de tableau
+       [1:10] INT a          CO tableau de 10 entiers CO
+       [1:5] INT b := (10, 20, 30, 40, 50)
+
+       Les bornes sont flexibles (pas seulement 0 ou 1).
+
+  15.2 Descripteur de tableau
+       Chaque tableau possede un descripteur :
+       (lwb, upb, taille_elem, ptr_data)
+
+  15.3 Acces par index
+       a[3]      CO troisieme element CO
+
+       Verification de bornes a l execution : erreur si hors limites.
+
+  15.4 Tranche (trimming)
+       a[2:4]    CO sous-tableau a[2], a[3], a[4] CO
+
+       Memes donnees, bornes modifiees.
+
+  15.5 Bornes LWB et UPB
+       LWB a     CO borne inferieure CO
+       UPB a     CO borne superieure CO
+
+  15.6 STRING comme tableau
+       STRING est equivalent a un tableau flexible de CHAR : [1:n] CHAR
+
+       STRING msg = "Algol 68";
+       STRING sub = msg[1:5];        CO tranche CO
+       STRING s3 = s1 + s2;          CO concatenation CO
+
+  15.7 Constructeur de rangee
+       (1, 2, 3) en contexte de rowing.
+
+
+=========================================================================
+16. PROCEDURES (PROC)
+=========================================================================
+
+  16.1 Declaration de procedure
+       PROC nom = (params) MODE : corps;
+
+       Exemples :
+         PROC double = (INT x) INT : x + x;
+         PROC add = (INT a, INT b) INT : a + b;
+         PROC greet = () VOID : print(("Bonjour", newline));
+
+  16.2 Procedure VOID
+       Procedure sans valeur de retour :
+       PROC noop = () VOID : SKIP;
+
+  16.3 Parametres
+       Par valeur : copie sur la pile.
+       Par reference (REF) : passage d adresse.
+
+  16.4 Valeur de retour
+       Le resultat d une procedure est la valeur de la derniere
+       expression de son corps (dans AX).
+
+  16.5 Recursion
+       Supportee naturellement via la pile.
+
+       PROC factorial = (INT n) INT :
+         IF n = 0 THEN 1 ELSE n * factorial(n - 1) FI;
+
+       PROC fib = (INT n) INT :
+         IF n <= 1 THEN n ELSE fib(n - 1) + fib(n - 2) FI;
+
+  16.6 Procedures comme valeurs de premier ordre
+       PROC(INT)INT f = ma_proc;
+       Variables de type PROC : pointeur de code.
+       Appel indirect possible.
+
+  16.7 Convention d appel
+       cdecl 16 bits : arguments empiles de gauche a droite.
+       Prologue : PUSH BP / MOV BP,SP / SUB SP, taille_locales
+       Epilogue : MOV SP,BP / POP BP / RET
+
+
+=========================================================================
+17. DEFINITIONS D OPERATEURS (OP ET PRIO)
+=========================================================================
+
+  17.1 Operateur dyadique
+       OP ADDX = (INT a, INT b) INT : a + b + 1;
+       INT r := 10 ADDX 20;   CO r = 31 CO
+
+  17.2 Operateur monadique
+       OP DBL = (INT x) INT : x + x;
+       INT r := DBL 7;        CO r = 14 CO
+
+  17.3 Declaration de priorite
+       PRIO MYMUL = 5;
+       OP MYMUL = (INT a, INT b) INT : a * b;
+
+       Les priorites vont de 1 (faible) a 9 (fort).
+
+  17.4 Surcharge d operateurs
+       Un meme symbole peut etre defini pour differents modes
+       d operandes. La resolution se fait par le mode des operandes.
+
+  17.5 Operateurs d affectation
+       OP +:= = (REF INT a, INT b) REF INT : ...
+
+
+=========================================================================
+18. MODES UNIS (UNION) ET CLAUSES DE CONFORMITE
+=========================================================================
+
+  18.1 Declaration de mode UNION
+       MODE NOMBRE = UNION(INT, REAL);
+
+       Un mode uni peut contenir une valeur de l un des modes
+       alternatifs.
+
+  18.2 Representation interne
+       Discriminant (mot de 16 bits) + donnees (taille = max des
+       alternatives).
+
+  18.3 Unification (coercition)
+       INT -> UNION(INT, REAL) : stocker la valeur avec son
+       discriminant.
+
+  18.4 Clause de conformite
+       CASE expr IN
+         (INT i) : utiliser i,
+         (REAL r) : utiliser r
+       OUT
+         traitement par defaut
+       ESAC
+
+       Chaque alternative lie un identificateur local au contenu
+       extrait de l union.
+
+  18.5 EMPTY
+       Union vide (aucune alternative selectionnee).
+
+
+=========================================================================
+19. CLAUSES COLLATERALES ET PARALLELES
+=========================================================================
+
+  19.1 Clause collaterale
+       (unite1, unite2, unite3)
+
+       Les unites sont evaluees dans un ordre indefini.
+       En pratique, evaluation de gauche a droite.
+       Utilisee pour les constructeurs de rangees et structures.
+
+  19.2 Clause parallele
+       PAR(unite1, unite2, unite3)
+       PAR BEGIN tache1, tache2 END
+
+       Non supportee sur DOS 8086 mono-tache.
+       Avertissement emis : evaluation sequentielle.
+
+
+=========================================================================
+20. TRANSPUT (ENTREES/SORTIES)
+=========================================================================
+
+  20.1 print
+       print((args))
+       Ecriture sur stdout. Accepte une liste heterogene.
+
+       Exemples :
+         print(("Hello, World!", newline));
+         print(("x = ", x, newline));
+         print((msg, ": ", val, " ", flag, newline));
+
+       Types supportes dans print :
+         INT    -> conversion decimale
+         CHAR   -> caractere unique
+         STRING -> chaine de caracteres
+         BOOL   -> "TRUE" ou "FALSE"
+
+  20.2 read
+       read((args))
+       Lecture depuis stdin.
+
+       Exemples :
+         read((x));
+         read((x, y));
+
+  20.3 Procedures standard de transput
+
+       Procedure    Description
+       -----------  -----------------------------------------
+       print        Ecriture formatee sur stdout
+       read         Lecture depuis stdin
+       newline      Ecrire un saut de ligne (CR+LF)
+       newpage      Ecrire un saut de page (FF)
+       space        Ecrire un espace
+       whole        Formater un entier avec largeur
+       fixed        Formater un reel avec decimales
+
+  20.4 Fichiers
+       open, close, get, put (interface simplifiee).
+
+  20.5 Fichiers standard
+       stand in    : entree standard (stdin)
+       stand out   : sortie standard (stdout)
+       stand error : sortie d erreur (stderr)
+       stand back  : fichier arriere
+
+
+=========================================================================
+21. SYMBOLES ET PORTEES
+=========================================================================
+
+  21.1 Portees lexicales (scopes)
+       Chaque clause fermee (BEGIN...END ou (...)) ouvre une
+       nouvelle portee. Les declarations dans une portee ne sont
+       pas visibles a l exterieur.
+
+       BEGIN
+         INT x := 5;      CO x visible ici CO
+         BEGIN
+           INT y := x + 1; CO x et y visibles ici CO
+         END;
+         CO y n est plus visible ici CO
+       END
+
+  21.2 Table des symboles
+       Chaque symbole possede : nom, nom decore (mangled), genre,
+       mode, offset, niveau de portee, attributs (param, heap, loc).
+
+       Genres de symboles :
+         SK_IDENT   Identite (constante)
+         SK_VAR     Variable (REF)
+         SK_PROC    Procedure
+         SK_OP      Operateur
+         SK_MODE    Type (mode)
+         SK_LABEL   Etiquette
+         SK_PRIO    Priorite d operateur
+
+  21.3 Symboles predefinis (61 symboles standard)
+
+       Categorie          Symboles
+       -----------------  ------------------------------------------
+       E/S                print, read, newline, newpage, space,
+                          backspace
+       Transput           put, get, open, close, associate, create,
+                          establish
+       Operateurs         abs, odd, sign, entier, round, repr,
+                          leng, shorten, bin, elem, level, re,
+                          im, conj, arg
+       Math               sqrt, exp, ln, sin, cos, tan, arcsin,
+                          arccos, arctan
+       Chaines            whole, fixed, float, char in string,
+                          string in string
+       Constantes         max int, max real, small real, pi,
+                          blank, flip, flop
+       Fichiers           stand in, stand out, stand error,
+                          stand back
+       Divers             random, next random, stop
+
+
+=========================================================================
+22. RUNTIME MINIMAL
+=========================================================================
+
+Le compilateur AL68C86 genere des appels a un ensemble de routines
+runtime assembleur 8086, emises dans le segment de code.
+
+  Routine               Description
+  --------------------  ------------------------------------------
+  _A68RT_PRINT          Ecriture bloc sur handle (INT 21h AH=40h)
+  _A68RT_PRINTLN        Ecriture chaine + CR+LF sur stdout
+  _A68RT_STRLEN         Longueur d une chaine ASCIIZ -> AX
+  _A68RT_PRINTINT       Entier signe -> ASCII + ecriture stdout
+  _A68RT_PRINTBOOL      Ecrire TRUE ou FALSE
+  _A68RT_READINT        Lecture chaine + conversion -> AX
+  _A68RT_READCHAR       Lecture d un caractere (INT 21h AH=01h)
+  _A68RT_READLINE       Lecture d une ligne stdin
+  _A68RT_NUMTOSTR       Entier -> chaine ASCII (itoa)
+  _A68RT_STRTONUM       Chaine ASCII -> entier (atoi)
+  _A68RT_CONCAT         Concatenation de deux STRING -> AX=ptr
+  _A68RT_STRCMP          Comparaison de chaines -> drapeaux ZF/CF
+  _A68RT_STRTRIM        Tranche de chaine -> AX=ptr
+  _A68RT_ALLOC          Allocation sur le tas -> AX=ptr
+  _A68RT_POWER          Exponentiation entiere -> AX
+  _A68RT_ABS            Valeur absolue -> AX
+  _A68RT_ODD            Test de parite -> AX=0|1
+  _A68RT_SIGN           Signe -> AX=-1|0|1
+  _A68RT_CHKIDX         Verification de bornes de tableau
+  _A68RT_CHKNIL         Verification de reference nulle
+  _A68RT_PANIC          Message d erreur + terminaison (exit 1)
+
+  Donnees runtime :
+    _A68_HEAP      : tas statique de 4096 octets
+    _A68_HEAPTOP   : pointeur sommet du tas
+    _A68_CRLF      : constante CR+LF (13, 10, 0)
+    _A68_STRBUF    : tampon de travail pour les chaines
+    _A68_STRPOOL   : pool de chaines dynamiques
+
+
+=========================================================================
+23. MOTS RESERVES (BOLD WORDS)
+=========================================================================
+
+Le langage Algol 68 tel qu implemente reconnait les mots gras
+suivants (ecrits en majuscules) :
+
+  Groupe                    Mots-cles
+  ------------------------  -------------------------------------------
+  Delimiteurs de blocs      BEGIN, END
+
+  Conditionnelles           IF, THEN, ELIF, ELSE, FI
+
+  Cas                       CASE, IN, OUT, ESAC
+
+  Boucles                   FOR, FROM, TO, DOWNTO, BY,
+                            WHILE, DO, OD
+
+  Procedures                PROC
+
+  Operateurs                OP, PRIO
+
+  Modes (types)             MODE, STRUCT, UNION, REF,
+                            LOC, HEAP
+
+  Modes primitifs           INT, REAL, BOOL, CHAR, BITS,
+                            BYTES, COMPL, STRING, VOID
+
+  Constantes speciales      TRUE, FALSE, NIL, SKIP, EMPTY
+
+  Operateurs standard       AND, OR, NOT, OF, AT, IS, ISNT,
+                            ABS, ARG, BIN, CONJ, IM, LENG,
+                            LEVEL, ODD, RE, REPR, ROUND,
+                            SHORTEN, SIGN, OVER, MOD,
+                            SHL, SHR, ELEM, UP, DOWN,
+                            LWB, UPB
+
+  Saut                      GO TO, GOTO
+
+  Parallele                 PAR
+
+  Commentaires              CO, COMMENT
+
+  Pragmats                  PR, PRAGMAT
+
+
+=========================================================================
+24. GRAMMAIRE BNF
+=========================================================================
+
+  <programme>    ::= <clause-fermee>
+
+  <clause-fermee>
+                 ::= BEGIN <clause-serie> END
+                   | '(' <clause-serie> ')'
+
+  <clause-serie> ::= { <declaration> ';' } <unite>
+                      { ';' <unite> }
+
+  <declaration>  ::= <decl-identite>
+                   | <decl-variable>
+                   | <decl-mode>
+                   | <decl-proc>
+                   | <decl-op>
+                   | <decl-prio>
+                   | <label>
+
+  <decl-identite>
+                 ::= <mode> <ident> '=' <unite>
+                      { ',' <ident> '=' <unite> }
+
+  <decl-variable>
+                 ::= <mode> <ident> ':=' <unite>
+                      { ',' <ident> ':=' <unite> }
+                   | REF <mode> <ident> '=' LOC <mode> ':=' <unite>
+                   | HEAP <mode> <ident>
+
+  <decl-mode>    ::= MODE <ident> '=' <mode-ind>
+
+  <decl-proc>    ::= PROC <ident> '=' '(' <params> ')' <mode> ':'
+                        <unite>
+
+  <decl-op>      ::= OP <op-symbole> '=' '(' <params> ')' <mode> ':'
+                        <unite>
+
+  <decl-prio>    ::= PRIO <op-symbole> '=' <entier>
+
+  <label>        ::= <ident> ':'
+
+  <mode-ind>     ::= INT | REAL | BOOL | CHAR | BITS | BYTES
+                   | COMPL | STRING | VOID
+                   | STRUCT '(' <champs> ')'
+                   | UNION '(' <modes-liste> ')'
+                   | REF <mode-ind>
+                   | PROC '(' <modes-liste> ')' <mode-ind>
+                   | '[' <unite> ':' <unite> ']' <mode-ind>
+                   | <ident>
+
+  <champs>       ::= <mode-ind> <ident>
+                      { ',' <mode-ind> <ident> }
+
+  <modes-liste>  ::= <mode-ind> { ',' <mode-ind> }
+
+  <params>       ::= <mode-ind> <ident>
+                      { ',' <mode-ind> <ident> }
+                   |  CO vide CO
+
+  <unite>        ::= <formule>
+                   | <affectation>
+                   | <clause-fermee>
+                   | <clause-cond>
+                   | <clause-cas>
+                   | <clause-boucle>
+                   | <clause-collat>
+                   | SKIP | NIL | EMPTY
+                   | GO TO <ident> | GOTO <ident>
+
+  <affectation>  ::= <destination> ':=' <unite>
+                   | <unite> '=:' <destination>
+
+  <destination>  ::= <ident>
+                   | <selection>
+                   | <indexation>
+
+  <formule>      ::= <monadique> <operande>
+                   | <operande> <dyadique> <operande>
+                   | <operande>
+
+  <operande>     ::= <primaire> { <dyadique> <primaire> }
+
+  <primaire>     ::= <denotation>
+                   | <ident>
+                   | <ident> '(' <args> ')'
+                   | <champ> OF <primaire>
+                   | <primaire> '[' <indice> ']'
+                   | <primaire> '[' <unite> ':' <unite> ']'
+                   | '(' <unite> ')'
+
+  <args>         ::= <unite> { ',' <unite> }
+
+  <indice>       ::= <unite>
+
+  <selection>    ::= <ident> OF <primaire>
+
+  <indexation>   ::= <primaire> '[' <indice> ']'
+
+  <clause-cond>  ::= IF <unite> THEN <clause-serie>
+                      { ELIF <unite> THEN <clause-serie> }
+                      [ ELSE <clause-serie> ] FI
+                   | '(' <unite> '|' <unite> '|' <unite> ')'
+
+  <clause-cas>   ::= CASE <unite> IN <unite> { ',' <unite> }
+                      [ OUT <clause-serie> ] ESAC
+                   | '(' <unite> '|' <unite> { ',' <unite> }
+                      [ '|' <unite> ] ')'
+
+  <clause-conform>
+                 ::= CASE <unite> IN
+                      '(' <mode-ind> <ident> ')' ':' <unite>
+                      { ',' '(' <mode-ind> <ident> ')' ':' <unite> }
+                      [ OUT <clause-serie> ] ESAC
+
+  <clause-boucle>
+                 ::= [ FOR <ident> ]
+                     [ FROM <unite> ]
+                     [ TO <unite> | DOWNTO <unite> ]
+                     [ BY <unite> ]
+                     [ WHILE <unite> ]
+                     DO <clause-serie> OD
+
+  <clause-collat>
+                 ::= '(' <unite> ',' <unite> { ',' <unite> } ')'
+                   | PAR '(' <unite> { ',' <unite> } ')'
+
+  <monadique>    ::= NOT | ABS | ARG | BIN | CONJ | IM | LENG
+                   | LEVEL | ODD | RE | REPR | ROUND | SHORTEN
+                   | SIGN | '-' | <op-symbole>
+
+  <dyadique>     ::= '+' | '-' | '*' | '/' | OVER | MOD | '**'
+                   | '=' | '/=' | '<' | '<=' | '>' | '>='
+                   | AND | OR | SHL | SHR | ELEM | UP | DOWN
+                   | '+*' | I | <op-symbole>
+
+  <denotation>   ::= <entier> | <reel> | <chaine> | <caractere>
+                   | TRUE | FALSE
+
+  <entier>       ::= chiffre { chiffre }
+                   | <base> 'r' <chiffres-base>
+
+  <reel>         ::= chiffre { chiffre } '.' chiffre { chiffre }
+                      [ ('e' | 'E') ['+' | '-'] chiffre { chiffre } ]
+
+  <chaine>       ::= '"' { caractere | '""' } '"'
+
+  <caractere>    ::= '"' un_caractere '"'
+
+  <ident>        ::= lettre { lettre | chiffre | '_' }
+
+  <op-symbole>   ::= lettre_majuscule { lettre_majuscule }
+
+
+=========================================================================
+FIN DU DOCUMENT
+=========================================================================

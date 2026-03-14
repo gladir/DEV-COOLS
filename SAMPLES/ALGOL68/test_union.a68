@@ -1,0 +1,56 @@
+BEGIN
+  CO Test des modes unis et clause de conformite (TODO 21) CO
+
+  CO Declaration d un mode UNION CO
+  MODE NOMBRE = UNION(INT, REAL);
+
+  CO Variable UNION avec valeur INT CO
+  NOMBRE x := 42;
+
+  CO Variable UNION avec valeur INT (reel stub = entier tronque) CO
+  NOMBRE y := 314;
+
+  CO Variable UNION sans initialiseur (EMPTY) CO
+  NOMBRE z := EMPTY;
+
+  CO Clause de conformite CASE IN CO
+  INT result1 := 0;
+  CASE x IN
+    (INT i) : result1 := i + 1,
+    (REAL r) : result1 := 0
+  OUT
+    result1 := -1
+  ESAC;
+
+  CO UNION avec un seul mode alternatif CO
+  MODE WRAPPED = UNION(INT);
+  WRAPPED w := 99;
+
+  CO Clause de conformite sur WRAPPED CO
+  INT res4 := 0;
+  CASE w IN
+    (INT n) : res4 := n
+  ESAC;
+
+  CO Mode UNION avec 3 alternatives CO
+  MODE POLYVAL = UNION(INT, BOOL, CHAR);
+  POLYVAL p := TRUE;
+  INT res5 := 0;
+  CASE p IN
+    (INT i) : res5 := i,
+    (BOOL b) : res5 := 1,
+    (CHAR c) : res5 := 2
+  OUT
+    res5 := -1
+  ESAC;
+
+  CO Clause de conformite avec corps compose CO
+  CASE x IN
+    (INT i) : BEGIN INT local := i + 10; result1 := local END,
+    (REAL r) : SKIP
+  OUT
+    SKIP
+  ESAC;
+
+  SKIP
+END

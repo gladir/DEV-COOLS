@@ -1,0 +1,54 @@
+CO math.a68 : operateurs, INT, REAL, ABS, SIGN, ODD (TODO 25) CO
+BEGIN
+  CO Operateurs arithmetiques de base CO
+  INT a := 15;
+  INT b := 4;
+  INT somme := a + b;
+  INT diff := a - b;
+  INT prod := a * b;
+  INT quot := a OVER b;
+  INT reste := a MOD b;
+  INT puiss := 2 ** 10;
+
+  CO Affichage resultats CO
+  print(("15 + 4 = ", somme, newline));
+  print(("15 - 4 = ", diff, newline));
+  print(("15 * 4 = ", prod, newline));
+  print(("15 OVER 4 = ", quot, newline));
+  print(("15 MOD 4 = ", reste, newline));
+  print(("2 ** 10 = ", puiss, newline));
+
+  CO ABS : valeur absolue CO
+  INT neg := -42;
+  INT pos := ABS neg;
+  print(("ABS -42 = ", pos, newline));
+
+  INT zero := ABS 0;
+  print(("ABS 0 = ", zero, newline));
+
+  CO SIGN : extraction du signe CO
+  INT s1 := SIGN 42;
+  INT s2 := SIGN 0;
+  INT s3 := SIGN -7;
+  print(("SIGN 42 = ", s1, newline));
+  print(("SIGN 0 = ", s2, newline));
+  print(("SIGN -7 = ", s3, newline));
+
+  CO ODD : test de parite CO
+  BOOL o1 := ODD 7;
+  BOOL o2 := ODD 8;
+  print(("ODD 7 = ", o1, newline));
+  print(("ODD 8 = ", o2, newline));
+
+  CO Comparaisons CO
+  print(("15 > 4 : ", a > b, newline));
+  print(("15 < 4 : ", a < b, newline));
+  print(("15 = 15 : ", a = 15, newline));
+
+  CO Affectation composee CO
+  INT c := 10;
+  c +:= 5;
+  print(("10 +:= 5 = ", c, newline));
+  c *:= 2;
+  print(("15 *:= 2 = ", c, newline))
+END

@@ -1,0 +1,22 @@
+CO Test TODO 16 - STRUCTURES (STRUCT) CO
+
+CO Declaration de mode struct CO
+MODE POINT = STRUCT(INT x, INT y);
+
+CO Variable struct avec constructeur CO
+POINT p := POINT(3, 7);
+
+CO Acces aux champs : champ OF variable CO
+INT px := x OF p;
+INT py := y OF p;
+
+CO Structure avec trois champs CO
+MODE VEC3 = STRUCT(INT a, INT b, INT c);
+VEC3 v := VEC3(10, 20, 30);
+INT va := a OF v;
+INT vb := b OF v;
+INT vc := c OF v;
+
+CO Mode alias CO
+MODE myint = INT;
+myint z := 99
