@@ -380,7 +380,7 @@
               ... comme arguments d appel : passage de tous les args restants
             Limitation : max MAX_RETVALS valeurs de retour (defaut 8)
 
-  TODO 22 - GESTION D ERREURS (pcall, error, xpcall)
+  TODO 22 - GESTION D ERREURS (pcall, error, xpcall) [IMPLEMENTE]
             error(msg [,level]) : lever une erreur
               AX = ptr message d erreur (chaine)
               Mecanisme : saut vers le handler pcall courant
@@ -717,6 +717,9 @@ Var
   CurFnIsVararg   : Boolean;   { True si la fonction courante a ... }
   CurFnParamCount : Integer;   { nombre de params de la fn courante  }
 
+  { Gestion d erreurs (TODO 22) }
+  PcallCount      : Integer;   { compteur pour labels pcall uniques   }
+
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
@@ -868,6 +871,9 @@ Procedure EmitOSRuntime; Forward;
 
 { Retours multiples et varargs (TODO 21) }
 Procedure EmitMultRetRuntime; Forward;
+
+{ Gestion d erreurs (TODO 22) }
+Procedure EmitErrorRuntime; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1156,6 +1162,7 @@ Begin
   UpvalCount      := 0;
   CurFnIsVararg   := False;
   CurFnParamCount := 0;
+  PcallCount      := 0;
   GExprDummy.Kind    := EK_NONE;
   GExprDummy.ImmVal  := 0;
   GExprDummy.TypeIdx := TY_UNKNOWN;
@@ -1295,6 +1302,7 @@ Begin
   EmitMathRuntime;
   EmitOSRuntime;
   EmitMultRetRuntime;
+  EmitErrorRuntime;
 End;
 
 { EmitClose : terminer le fichier ASM (DOS exit, runtime, DATA, END) }
@@ -1473,6 +1481,13 @@ Begin
   { TODO 21 : varargs data }
   DataAddWord('_LUA_VARGC', 0);                 { nombre d arguments variadiques   }
   DataAddBuffer('_LUA_VARGV', MAX_RETVALS * 2); { tableau de valeurs variadiques   }
+  { TODO 22 : error handling data }
+  DataAddWord(LUA_ERR_PFX + 'HANDLER', 0);      { ptr handler pcall courant (0=aucun) }
+  DataAddWord(LUA_ERR_PFX + 'SAVESP', 0);       { SP sauvegarde avant pcall            }
+  DataAddWord(LUA_ERR_PFX + 'SAVEBP', 0);       { BP sauvegarde avant pcall            }
+  DataAdd(LUA_ERR_PFX + 'ASSERTMSG', DK_STR, 0, 'assertion failed!'); { msg assert defaut }
+  DataAddWord(LUA_ERR_PFX + 'FNPTR', 0);        { ptr fonction pour pcall/xpcall       }
+  DataAddWord(LUA_ERR_PFX + 'MSGH', 0);         { ptr message handler pour xpcall      }
 End;
 
 { ---- ExprMakeImm : construire une valeur immediate ---------- }
@@ -4462,24 +4477,182 @@ Begin
   End
   Else If FuncName = 'assert' Then
   Begin
+    EmitComment('--- assert (TODO 22) ---');
     ParseExpr(Arg);
     ExprFlushToAX(Arg);
     LblOk := LabelGen;
     EmitInstrAB('TEST', 'AX', 'AX');
     EmitInstrA('JNZ', LblOk);
+    { Assertion echouee : verifier s il y a un message optionnel }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+    Begin
+      ParserAdvance;
+      ParseExpr(Arg);
+      ExprFlushToAX(Arg);  { AX = ptr message }
+    End
+    Else
+      EmitInstrAB('MOV', 'AX', 'OFFSET ' + LUA_ERR_PFX + 'ASSERTMSG');
     EmitInstrA('CALL', LUA_RT_PFX + 'PANIC');
     EmitLabel(LblOk);
+    { Consommer le message optionnel s il n a pas ete consomme (success path) }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+    Begin
+      ParserAdvance;
+      ParseExpr(Arg); { consommer et ignorer le message }
+    End;
     Res.Kind    := EK_AX;
     Res.TypeIdx := TY_UNKNOWN;
     Res.SymIdx  := -1;
   End
   Else If FuncName = 'error' Then
   Begin
+    EmitComment('--- error (TODO 22) ---');
     ParseExpr(Arg);
     ExprFlushToAX(Arg);
+    { Consommer le level optionnel (ignore en 16-bit) }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+    Begin
+      ParserAdvance;
+      ParseExpr(Arg);  { level ignore }
+    End;
+    { Appel PANIC : verifie _LUAX_HANDLER en interne }
     EmitInstrA('CALL', LUA_RT_PFX + 'PANIC');
     Res.Kind    := EK_NONE;
     Res.TypeIdx := TY_IDX_NIL;
+    Res.SymIdx  := -1;
+  End
+  { TODO 22 : pcall(f, arg1, ...) -> appel protege }
+  Else If FuncName = 'pcall' Then
+  Begin
+    EmitComment('--- pcall (TODO 22) ---');
+    Inc(PcallCount);
+    NS := '';
+    Str(PcallCount, NS);
+    { Parser la fonction a appeler }
+    ParseExpr(Arg);
+    ExprFlushToAX(Arg);
+    EmitInstrAB('MOV', 'WORD PTR [' + LUA_ERR_PFX + 'FNPTR]', 'AX');
+    { Sauvegarder le handler precedent sur la pile }
+    EmitInstrA('PUSH', 'WORD PTR [' + LUA_ERR_PFX + 'HANDLER]');
+    { Sauvegarder SP et BP pour la restauration en cas d erreur }
+    EmitInstrAB('MOV', 'WORD PTR [' + LUA_ERR_PFX + 'SAVESP]', 'SP');
+    EmitInstrAB('MOV', 'WORD PTR [' + LUA_ERR_PFX + 'SAVEBP]', 'BP');
+    { Installer le handler de capture }
+    EmitInstrAB('MOV', 'WORD PTR [' + LUA_ERR_PFX + 'HANDLER]',
+                'OFFSET ' + LUA_LBL_PFX + 'PCATCH_' + NS);
+    { Parser et empiler les arguments de f }
+    ArgCount := 0;
+    While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
+    Begin
+      ParserAdvance;
+      ParseExpr(Arg);
+      ExprFlushToAX(Arg);
+      EmitInstrA('PUSH', 'AX');
+      Inc(ArgCount);
+    End;
+    { Appeler f via le pointeur sauvegarde }
+    EmitInstrAB('MOV', 'BX', 'WORD PTR [' + LUA_ERR_PFX + 'FNPTR]');
+    EmitInstrA('CALL', 'BX');
+    { Nettoyer les arguments }
+    If ArgCount > 0 Then
+    Begin
+      Str(ArgCount * 2, LblOk);
+      EmitInstrAB('ADD', 'SP', LblOk);
+    End;
+    { Chemin succes : AX = valeur de retour de f }
+    EmitInstrAB('MOV', 'DI', 'AX');
+    { Restaurer le handler precedent }
+    EmitInstrA('POP', 'AX');
+    EmitInstrAB('MOV', 'WORD PTR [' + LUA_ERR_PFX + 'HANDLER]', 'AX');
+    { Resultat : true (1), valeur de retour dans _LUA_VARGV[0] }
+    EmitInstrAB('MOV', 'WORD PTR [_LUA_VARGV]', 'DI');
+    EmitInstrAB('MOV', 'WORD PTR [_LUA_VARGC]', '1');
+    EmitInstrAB('MOV', 'AX', '1');
+    EmitInstrA('JMP', LUA_LBL_PFX + 'PDONE_' + NS);
+    { Handler de capture : arrive ici si error() est appelee }
+    { DI = message d erreur (sauve par PANIC), SP/BP restaures }
+    EmitLabel(LUA_LBL_PFX + 'PCATCH_' + NS);
+    { Restaurer le handler precedent }
+    EmitInstrA('POP', 'AX');
+    EmitInstrAB('MOV', 'WORD PTR [' + LUA_ERR_PFX + 'HANDLER]', 'AX');
+    { Resultat : false (0), message d erreur dans _LUA_VARGV[0] }
+    EmitInstrAB('MOV', 'WORD PTR [_LUA_VARGV]', 'DI');
+    EmitInstrAB('MOV', 'WORD PTR [_LUA_VARGC]', '1');
+    EmitInstrAB('MOV', 'AX', '0');
+    EmitLabel(LUA_LBL_PFX + 'PDONE_' + NS);
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_BOOLEAN;
+    Res.SymIdx  := -1;
+  End
+  { TODO 22 : xpcall(f, msgh, arg1, ...) -> appel protege avec handler }
+  Else If FuncName = 'xpcall' Then
+  Begin
+    EmitComment('--- xpcall (TODO 22) ---');
+    Inc(PcallCount);
+    NS := '';
+    Str(PcallCount, NS);
+    { Parser la fonction a appeler }
+    ParseExpr(Arg);
+    ExprFlushToAX(Arg);
+    EmitInstrAB('MOV', 'WORD PTR [' + LUA_ERR_PFX + 'FNPTR]', 'AX');
+    { Parser le message handler }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+    ParseExpr(Arg);
+    ExprFlushToAX(Arg);
+    EmitInstrAB('MOV', 'WORD PTR [' + LUA_ERR_PFX + 'MSGH]', 'AX');
+    { Sauvegarder le handler precedent }
+    EmitInstrA('PUSH', 'WORD PTR [' + LUA_ERR_PFX + 'HANDLER]');
+    { Sauvegarder SP et BP }
+    EmitInstrAB('MOV', 'WORD PTR [' + LUA_ERR_PFX + 'SAVESP]', 'SP');
+    EmitInstrAB('MOV', 'WORD PTR [' + LUA_ERR_PFX + 'SAVEBP]', 'BP');
+    { Installer le handler de capture }
+    EmitInstrAB('MOV', 'WORD PTR [' + LUA_ERR_PFX + 'HANDLER]',
+                'OFFSET ' + LUA_LBL_PFX + 'XPCATCH_' + NS);
+    { Parser et empiler les arguments de f }
+    ArgCount := 0;
+    While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
+    Begin
+      ParserAdvance;
+      ParseExpr(Arg);
+      ExprFlushToAX(Arg);
+      EmitInstrA('PUSH', 'AX');
+      Inc(ArgCount);
+    End;
+    { Appeler f }
+    EmitInstrAB('MOV', 'BX', 'WORD PTR [' + LUA_ERR_PFX + 'FNPTR]');
+    EmitInstrA('CALL', 'BX');
+    { Nettoyer les arguments }
+    If ArgCount > 0 Then
+    Begin
+      Str(ArgCount * 2, LblOk);
+      EmitInstrAB('ADD', 'SP', LblOk);
+    End;
+    { Chemin succes }
+    EmitInstrAB('MOV', 'DI', 'AX');
+    EmitInstrA('POP', 'AX');
+    EmitInstrAB('MOV', 'WORD PTR [' + LUA_ERR_PFX + 'HANDLER]', 'AX');
+    EmitInstrAB('MOV', 'WORD PTR [_LUA_VARGV]', 'DI');
+    EmitInstrAB('MOV', 'WORD PTR [_LUA_VARGC]', '1');
+    EmitInstrAB('MOV', 'AX', '1');
+    EmitInstrA('JMP', LUA_LBL_PFX + 'XPDONE_' + NS);
+    { Handler de capture avec message handler }
+    EmitLabel(LUA_LBL_PFX + 'XPCATCH_' + NS);
+    { DI = message d erreur, SP/BP restaures }
+    EmitInstrA('POP', 'AX');
+    EmitInstrAB('MOV', 'WORD PTR [' + LUA_ERR_PFX + 'HANDLER]', 'AX');
+    { Appeler le message handler : msgh(errmsg) }
+    EmitInstrA('PUSH', 'DI');   { argument : message d erreur }
+    EmitInstrAB('MOV', 'BX', 'WORD PTR [' + LUA_ERR_PFX + 'MSGH]');
+    EmitInstrA('CALL', 'BX');
+    EmitInstrAB('ADD', 'SP', '2');
+    { AX = message transforme par msgh }
+    EmitInstrAB('MOV', 'WORD PTR [_LUA_VARGV]', 'AX');
+    EmitInstrAB('MOV', 'WORD PTR [_LUA_VARGC]', '1');
+    EmitInstrAB('MOV', 'AX', '0');
+    EmitLabel(LUA_LBL_PFX + 'XPDONE_' + NS);
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_BOOLEAN;
     Res.SymIdx  := -1;
   End
   { TODO 16 : setmetatable(t, mt) -> renvoie t }
@@ -6162,8 +6335,24 @@ Begin
   EmitInstr('RET');
   EmitBlankLine;
 
-  { _LUART_PANIC : afficher erreur et terminer DOS }
+  { _LUART_PANIC : gere l erreur -> handler pcall ou sortie DOS }
+  { Entree : AX = ptr message d erreur (ou 0)                   }
+  { Si _LUAX_HANDLER <> 0 : saute vers le handler pcall         }
+  {   DI = message d erreur, SP/BP restaures                     }
+  { Sinon : affiche message + INT 21h AH=4Ch AL=1               }
   EmitLabel(LUA_RT_PFX + 'PANIC');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrAB('MOV', 'BX', 'WORD PTR [' + LUA_ERR_PFX + 'HANDLER]');
+  EmitInstrAB('TEST', 'BX', 'BX');
+  EmitInstrA('JZ', LUA_RT_PFX + 'PK_FATAL');
+  { Handler pcall installe : sauver msg dans DI, restaurer SP/BP, sauter }
+  EmitInstrAB('MOV', 'DI', 'AX');
+  EmitInstrAB('MOV', 'SP', 'WORD PTR [' + LUA_ERR_PFX + 'SAVESP]');
+  EmitInstrAB('MOV', 'BP', 'WORD PTR [' + LUA_ERR_PFX + 'SAVEBP]');
+  EmitInstrA('JMP', 'BX');
+  { Pas de handler : panique fatale }
+  EmitLabel(LUA_RT_PFX + 'PK_FATAL');
+  EmitInstrA('POP', 'BX');
   EmitInstrA('PUSH', 'AX');
   EmitInstrAB('MOV', 'AX', 'OFFSET ' + LUA_ERR_PFX + 'MSG');
   EmitInstrA('CALL', LUA_RT_PFX + 'PRINTSTR');
@@ -8422,6 +8611,26 @@ Begin
   EmitInstrA('POP', 'BX');
   EmitInstr('RET');
   EmitBlankLine;
+End;
+
+{ ============================================================
+  TODO 22 - GESTION D ERREURS (pcall, error, xpcall) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- EmitErrorRuntime : routines runtime gestion d erreurs ------ }
+{ Note : _LUART_PANIC est emis dans EmitExprRuntime (TODO 04)       }
+{ et a ete modifie pour supporter le handler pcall.                  }
+{ Cette procedure emet les routines supplementaires.                 }
+Procedure EmitErrorRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=== Routines runtime TODO 22 (error handling) ===');
+  EmitBlankLine;
+  { Note : _LUART_PANIC supporte deja les handlers pcall            }
+  { depuis sa modification dans EmitExprRuntime.                     }
+  { Les mecanismes pcall/xpcall/error/assert sont generes inline     }
+  { dans EmitBuiltinCall. Pas de routines runtime supplementaires    }
+  { necessaires pour cette implementation.                            }
 End;
 
 { ---- Run : pipeline de compilation ----------------------------- }
