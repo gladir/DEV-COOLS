@@ -255,7 +255,7 @@
             Tranches : @arr[1..3] -> sous-tableau
             Aplatissement : |@arr (slip) dans une liste
 
-  TODO 16 - TABLES DE HACHAGE (Hash)
+  TODO 16 - TABLES DE HACHAGE (Hash)                   [IMPLEMENTE]
             Declaration : my %h = (clef => "valeur", clef2 => 42);
               Structure de hachage simplifiee : tableau de paires
               cle (Str ptr) + valeur (Int ou Str ptr)
@@ -725,6 +725,9 @@ Var
   { Compteurs tableaux (TODO 15) }
   ArrayTempCount : Integer;
 
+  { Compteurs hash (TODO 16) }
+  HashTempCount  : Integer;
+
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
@@ -896,6 +899,14 @@ Procedure ParseArrayMethodCall(SIdx : Integer;
                                Const MethName : TString;
                                Var Res : TExprVal);               Forward;
 Procedure EmitArrayRuntime;                                       Forward;
+
+{ Forward declarations TODO 16 - Tables de hachage }
+Procedure ParseHashLiteral(Var Res : TExprVal);                    Forward;
+Procedure ParseHashMethodCall(SIdx : Integer;
+                              Const MethName : TString;
+                              Var Res : TExprVal);                 Forward;
+Procedure ParseHashStore(SIdx : Integer);                          Forward;
+Procedure EmitHashRuntime;                                         Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1147,6 +1158,7 @@ Begin
   RepeatCount  := 0;
   ForCount     := 0;
   ArrayTempCount := 0;
+  HashTempCount  := 0;
   GKwConsumed  := False;
   CurFnRetLbl  := '';
   CurFnName    := '';
@@ -1234,6 +1246,7 @@ Begin
   EmitBinExprRuntime;
   EmitIORuntime;
   EmitArrayRuntime;
+  EmitHashRuntime;
 End;
 
 Procedure EmitDataSeg;
@@ -4166,6 +4179,13 @@ Begin
       ParserAdvance;   { consommer '(' }
       ParseArrayLiteral(E);
     End
+    { Pour les hash, detecter le litteral (k1 => v1, k2 => v2, ...) }
+    Else If (Sigil = '%') And (CurToken.Kind = TK_PUNCT) And
+            (CurToken.Val = '(') Then
+    Begin
+      ParserAdvance;   { consommer '(' }
+      ParseHashLiteral(E);
+    End
     Else
     Begin
       ParseExpr(E);
@@ -4213,7 +4233,14 @@ Begin
 
     ParserAdvance;   { consommer la variable }
 
-    If (CurToken.Kind = TK_OP) And (IsAssignOp(CurToken.Val)) Then
+    { Detection d affectation d element hash : pct-h(key) = val }
+    If (Sigil = '%') And
+       (((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{')) Or
+        ((CurToken.Kind = TK_OP) And (CurToken.Val = '<'))) Then
+    Begin
+      ParseHashStore(SIdx);
+    End
+    Else If (CurToken.Kind = TK_OP) And (IsAssignOp(CurToken.Val)) Then
     Begin
       Op := CurToken.Val;
       ParserAdvance;   { consommer l operateur }
@@ -4223,6 +4250,13 @@ Begin
       Begin
         ParserAdvance;   { consommer '(' }
         ParseArrayLiteral(E);
+      End
+      { Pour les hash, detecter le litteral (k1 => v1, ...) }
+      Else If (Sigil = '%') And (Op = '=') And
+              (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        ParserAdvance;   { consommer '(' }
+        ParseHashLiteral(E);
       End
       Else
         ParseExpr(E);
@@ -4551,6 +4585,11 @@ Begin
         If Res.TypeIdx = TY_IDX_ARRAY Then
         Begin
           ParseArrayMethodCall(-1, MethName, Res);
+        End
+        { Dispatch vers ParseHashMethodCall si type hash }
+        Else If Res.TypeIdx = TY_IDX_HASH Then
+        Begin
+          ParseHashMethodCall(-1, MethName, Res);
         End
         Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
         Begin
@@ -5193,7 +5232,657 @@ Begin
   EmitBlankLine;
 End;
 
-{ ---- EmitBinExprRuntime : emettre les routines runtime ---------- }
+{ ============================================================
+  TODO 16 - TABLES DE HACHAGE (Hash) - Implementation
+  ============================================================ }
+
+{ ---- ParseHashLiteral : parser (k1 => v1, k2 => v2, ...) ------- }
+{ Alloue un bloc sur le heap _RK_HEAP avec layout :                 }
+{   [paircount:DW] [key0ptr:DW][val0:DW] [key1ptr:DW][val1:DW] ... }
+{ Retourne le pointeur vers le bloc dans AX.                        }
+Procedure ParseHashLiteral(Var Res : TExprVal);
+Var
+  Keys  : Array[0..15] Of TString;
+  Vals  : Array[0..15] Of LongInt;
+  VIsImm: Array[0..15] Of Boolean;
+  PCount: Integer;
+  I     : Integer;
+  E     : TExprVal;
+  KName : TString;
+  KLbl  : TString;
+  AllImm: Boolean;
+Begin
+  PCount := 0;
+  AllImm := True;
+  { '(' deja consomme par l appelant }
+  If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
+  Begin
+    Repeat
+      { Clef : identifiant ou chaine }
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        KName := CurToken.Val;
+        ParserAdvance;
+      End
+      Else If CurToken.Kind = TK_STRING Then
+      Begin
+        KName := CurToken.Val;
+        ParserAdvance;
+      End
+      Else
+      Begin
+        CompileError('clef attendue dans le litteral hash');
+        KName := '';
+        ParserAdvance;
+      End;
+      { Consommer => }
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '=>') Then
+        ParserAdvance
+      Else
+        CompileError('''=> '' attendu apres la clef du hash');
+      { Valeur }
+      ParseExpr(E);
+      If PCount < 16 Then
+      Begin
+        Keys[PCount] := KName;
+        If (E.Kind = EK_IMM) And AllImm Then
+        Begin
+          Vals[PCount] := E.ImmVal;
+          VIsImm[PCount] := True;
+        End
+        Else
+        Begin
+          If AllImm And (PCount > 0) Then
+          Begin
+            { Flusher les valeurs immediates precedentes sur la pile }
+            For I := 0 To PCount - 1 Do
+            Begin
+              KLbl := DataAddStr(Keys[I]);
+              EmitInstr('MOV', 'AX, OFFSET ' + KLbl);
+              EmitPush('AX');
+              EmitInstr('MOV', 'AX, ' + IntToStr(Vals[I]));
+              EmitPush('AX');
+            End;
+          End;
+          AllImm := False;
+          VIsImm[PCount] := False;
+          { Emettre clef + valeur sur la pile }
+          ExprFlushToAX(E);
+          EmitPush('AX');   { valeur }
+          KLbl := DataAddStr(KName);
+          EmitInstr('MOV', 'AX, OFFSET ' + KLbl);
+          EmitPush('AX');   { clef }
+        End;
+      End;
+      Inc(PCount);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance
+      Else
+        Break;
+    Until CurToken.Kind = TK_EOF;
+  End;
+  { Consommer ')' }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance
+  Else
+    CompileError(''')'' attendue apres litteral hash');
+  { Allouer le bloc sur le heap }
+  Inc(HashTempCount);
+  EmitComment('hash literal (' + IntToStr(PCount) + ' paires)');
+  { BX = _RK_HEAPTOP (pointeur courant du heap) }
+  EmitInstr('MOV', 'BX, [_RK_HEAPTOP]');
+  { Stocker le nombre de paires comme premier mot }
+  EmitInstr('MOV', 'WORD PTR [BX], ' + IntToStr(PCount));
+  If AllImm Then
+  Begin
+    { Toutes les paires sont statiques : ecrire directement }
+    For I := 0 To PCount - 1 Do
+    Begin
+      KLbl := DataAddStr(Keys[I]);
+      EmitInstr('MOV', 'WORD PTR [BX+' + IntToStr(I * 4 + 2) + '], OFFSET ' + KLbl);
+      EmitInstr('MOV', 'WORD PTR [BX+' + IntToStr(I * 4 + 4) + '], ' +
+                IntToStr(Vals[I]));
+    End;
+  End
+  Else
+  Begin
+    { Les paires sont sur la pile (clef, val empilees par paire) }
+    { Pile (du sommet) : keyN, valN, ... key0, val0 }
+    For I := PCount - 1 DownTo 0 Do
+    Begin
+      EmitPop('AX');   { clef ptr }
+      EmitInstr('MOV', 'WORD PTR [BX+' + IntToStr(I * 4 + 2) + '], AX');
+      EmitPop('AX');   { valeur }
+      EmitInstr('MOV', 'WORD PTR [BX+' + IntToStr(I * 4 + 4) + '], AX');
+    End;
+  End;
+  { Avancer le heap pointer : count(2) + paires(PCount*4) }
+  EmitInstr('ADD', 'WORD PTR [_RK_HEAPTOP], ' +
+            IntToStr(PCount * 4 + 2));
+  { AX = pointeur vers le debut du bloc }
+  EmitInstr('MOV', 'AX, BX');
+  Res.Kind    := EK_AX;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_IDX_HASH;
+  Res.Offset  := 0;
+End;
+
+{ ---- ParseHashMethodCall : appel de methode sur un hash --------- }
+{ AX contient deja le pointeur hash. MethName = nom de la methode.  }
+Procedure ParseHashMethodCall(SIdx : Integer;
+                              Const MethName : TString;
+                              Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_AX;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_IDX_INT;
+  Res.Offset  := 0;
+  { --- .elems : nombre de paires --- }
+  If MethName = 'elems' Then
+  Begin
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        ParserAdvance;
+    End;
+    EmitInstr('MOV', 'BX, AX');
+    EmitInstr('MOV', 'AX, [BX]');
+    EmitComment('.elems -> pair count');
+    Exit;
+  End;
+  { --- .keys : tableau des clefs --- }
+  If MethName = 'keys' Then
+  Begin
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        ParserAdvance;
+    End;
+    EmitInstr('MOV', 'BX, AX');
+    EmitInstr('CALL', '_RKRT_HKEYS');
+    EmitComment('.keys -> AX=array');
+    Res.TypeIdx := TY_IDX_ARRAY;
+    Exit;
+  End;
+  { --- .values : tableau des valeurs --- }
+  If MethName = 'values' Then
+  Begin
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        ParserAdvance;
+    End;
+    EmitInstr('MOV', 'BX, AX');
+    EmitInstr('CALL', '_RKRT_HVALUES');
+    EmitComment('.values -> AX=array');
+    Res.TypeIdx := TY_IDX_ARRAY;
+    Exit;
+  End;
+  { --- .pairs : stub --- }
+  If MethName = 'pairs' Then
+  Begin
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        ParserAdvance;
+    End;
+    EmitComment('.pairs (stub)');
+    Res.TypeIdx := TY_IDX_ARRAY;
+    Exit;
+  End;
+  { --- .kv : stub --- }
+  If MethName = 'kv' Then
+  Begin
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        ParserAdvance;
+    End;
+    EmitComment('.kv (stub)');
+    Res.TypeIdx := TY_IDX_ARRAY;
+    Exit;
+  End;
+  { --- .exists(key) : test d existence --- }
+  If MethName = 'exists' Then
+  Begin
+    EmitPush('AX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      ParserAdvance;
+      ParseExpr(Res);
+      ExprFlushToAX(Res);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        ParserAdvance;
+    End;
+    EmitInstr('MOV', 'SI, AX');
+    EmitPop('BX');
+    EmitInstr('CALL', '_RKRT_HEXISTS');
+    EmitComment('.exists(key) -> AX=0|1');
+    Res.Kind    := EK_AX;
+    Res.ImmVal  := 0;
+    Res.TypeIdx := TY_IDX_BOOL;
+    Res.Offset  := 0;
+    Exit;
+  End;
+  { --- .delete(key) : suppression --- }
+  If MethName = 'delete' Then
+  Begin
+    EmitPush('AX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      ParserAdvance;
+      ParseExpr(Res);
+      ExprFlushToAX(Res);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        ParserAdvance;
+    End;
+    EmitInstr('MOV', 'SI, AX');
+    EmitPop('BX');
+    EmitInstr('CALL', '_RKRT_HDELETE');
+    EmitComment('.delete(key)');
+    Res.Kind    := EK_AX;
+    Res.ImmVal  := 0;
+    Res.TypeIdx := TY_IDX_INT;
+    Res.Offset  := 0;
+    Exit;
+  End;
+  { Methode inconnue : delegation a ParseMethodCall generique }
+  EmitPush('AX');
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    ParseMethodCall(MethName, Res)
+  Else
+  Begin
+    EmitComment('.attr ' + MethName + ' (hash stub)');
+  End;
+End;
+
+{ ---- ParseHashStore : pct-h(key) = val ou pct-h<key> = val ------ }
+{ SIdx = index du symbole pct-h. Le token courant est curly ou <.  }
+Procedure ParseHashStore(SIdx : Integer);
+Var
+  E    : TExprVal;
+  Lbl  : TString;
+  S    : TString;
+Begin
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+  Begin
+    (* pct-h curly-expr = val *)
+    ParserAdvance;   (* consommer curly-open *)
+    ParseExpr(E);
+    ExprFlushToAX(E);
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+      ParserAdvance
+    Else
+      CompileError('''}'' attendue apres la clef');
+    EmitPush('AX');   (* sauver clef *)
+  End
+  Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '<') Then
+  Begin
+    { %h<literal> = val }
+    ParserAdvance;
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      Lbl := DataAddStr(CurToken.Val);
+      ParserAdvance;
+    End
+    Else
+    Begin
+      CompileError('clef attendue apres ''<''');
+      Lbl := DataAddStr('');
+    End;
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '>') Then
+      ParserAdvance
+    Else
+      CompileError('''>'' attendue apres la clef');
+    EmitInstr('MOV', 'AX, OFFSET ' + Lbl);
+    EmitPush('AX');   (* sauver clef *)
+  End
+  Else
+  Begin
+    CompileError('acces hash attendu');
+    Exit;
+  End;
+  (* Consommer = *)
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+    ParserAdvance
+  Else
+  Begin
+    CompileError('''='' attendu apres l acces hash');
+    EmitPop('AX');
+    Exit;
+  End;
+  (* Parser la valeur *)
+  ParseExpr(E);
+  ExprFlushToAX(E);
+  (* AX = valeur, pile = clef ptr *)
+  (* Charger hash ptr dans BX *)
+  EmitPush('AX');   (* sauver valeur *)
+  If (SIdx >= 0) And (SIdx < SymCount) Then
+  Begin
+    If (SymTab[SIdx].Cat = SC_MY) Or (SymTab[SIdx].Cat = SC_PARAM) Then
+    Begin
+      Str(SymTab[SIdx].Offset, S);
+      EmitInstr('MOV', 'BX, [BP-' + S + ']');
+    End
+    Else
+      EmitInstr('MOV', 'BX, [' + SymTab[SIdx].MangledName + ']');
+  End
+  Else
+    EmitInstr('XOR', 'BX, BX');
+  EmitPop('AX');    (* valeur *)
+  EmitPop('SI');    (* clef ptr *)
+  EmitInstr('CALL', '_RKRT_HSTORE');
+  EmitComment('% hash store');
+End;
+
+{ ---- EmitHashRuntime : routines runtime pour les hash ----------- }
+{ _RKRT_HLOOKUP : pile=[hash_ptr][key_ptr] -> AX=valeur            }
+{ _RKRT_HSTORE  : BX=hash, SI=key, AX=val -> stocke/ajoute         }
+{ _RKRT_HEXISTS : BX=hash, SI=key -> AX=0|1                        }
+{ _RKRT_HDELETE : BX=hash, SI=key -> supprime la paire             }
+{ _RKRT_HKEYS   : BX=hash -> AX=new array of keys on heap          }
+{ _RKRT_HVALUES : BX=hash -> AX=new array of values on heap        }
+Procedure EmitHashRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=== Runtime HASH (TODO 16) ===');
+  EmitBlankLine;
+
+  { _RKRT_HLOOKUP : stack-based lookup }
+  { [SP+2]=hash_ptr, [SP+4]=key_ptr -> AX=value }
+  EmitComment('--- _RKRT_HLOOKUP : [SP+2]=hash, [SP+4]=key -> AX ---');
+  EmitRaw('_RKRT_HLOOKUP PROC NEAR');
+  EmitRaw('        PUSH  BP');
+  EmitRaw('        MOV   BP, SP');
+  EmitRaw('        PUSH  SI');
+  EmitRaw('        PUSH  DI');
+  EmitRaw('        PUSH  CX');
+  EmitRaw('        MOV   BX, [BP+4]');       { BX = hash ptr }
+  EmitRaw('        MOV   DI, [BP+6]');       { DI = key ptr }
+  EmitRaw('        MOV   CX, [BX]');         { CX = pair count }
+  EmitRaw('        ADD   BX, 2');            { skip count word }
+  EmitRaw('        TEST  CX, CX');
+  EmitRaw('        JZ    _RKRT_HL_NF');
+  EmitRaw('_RKRT_HL_LOOP:');
+  EmitRaw('        PUSH  CX');
+  EmitRaw('        PUSH  BX');
+  EmitRaw('        MOV   SI, [BX]');         { SI = stored key ptr }
+  { compare SI vs DI byte by byte }
+  EmitRaw('_RKRT_HL_CMP:');
+  EmitRaw('        MOV   AL, [SI]');
+  EmitRaw('        MOV   AH, [DI]');
+  EmitRaw('        CMP   AL, AH');
+  EmitRaw('        JNE   _RKRT_HL_NEXT');
+  EmitRaw('        TEST  AL, AL');
+  EmitRaw('        JZ    _RKRT_HL_FOUND');
+  EmitRaw('        INC   SI');
+  EmitRaw('        INC   DI');
+  EmitRaw('        JMP   _RKRT_HL_CMP');
+  EmitRaw('_RKRT_HL_NEXT:');
+  { restore DI to original key ptr }
+  EmitRaw('        MOV   DI, [BP+6]');
+  EmitRaw('        POP   BX');
+  EmitRaw('        POP   CX');
+  EmitRaw('        ADD   BX, 4');            { next pair }
+  EmitRaw('        DEC   CX');
+  EmitRaw('        JNZ   _RKRT_HL_LOOP');
+  EmitRaw('_RKRT_HL_NF:');
+  EmitRaw('        XOR   AX, AX');           { not found -> 0 }
+  EmitRaw('        JMP   _RKRT_HL_END');
+  EmitRaw('_RKRT_HL_FOUND:');
+  EmitRaw('        POP   BX');
+  EmitRaw('        POP   CX');
+  EmitRaw('        MOV   AX, [BX+2]');       { AX = value }
+  EmitRaw('_RKRT_HL_END:');
+  EmitRaw('        POP   CX');
+  EmitRaw('        POP   DI');
+  EmitRaw('        POP   SI');
+  EmitRaw('        POP   BP');
+  EmitRaw('        RET');
+  EmitRaw('_RKRT_HLOOKUP ENDP');
+  EmitBlankLine;
+
+  { _RKRT_HSTORE : BX=hash, SI=key, AX=value -> store/append }
+  EmitComment('--- _RKRT_HSTORE : BX=hash, SI=key, AX=val ---');
+  EmitRaw('_RKRT_HSTORE PROC NEAR');
+  EmitRaw('        PUSH  DI');
+  EmitRaw('        PUSH  CX');
+  EmitRaw('        PUSH  DX');
+  EmitRaw('        MOV   DX, AX');           { DX = value }
+  EmitRaw('        MOV   DI, BX');           { DI = hash base }
+  EmitRaw('        MOV   CX, [BX]');         { CX = pair count }
+  EmitRaw('        ADD   BX, 2');            { skip count }
+  EmitRaw('        TEST  CX, CX');
+  EmitRaw('        JZ    _RKRT_HS_ADD');
+  EmitRaw('        PUSH  CX');
+  EmitRaw('_RKRT_HS_LOOP:');
+  EmitRaw('        PUSH  BX');
+  EmitRaw('        PUSH  SI');
+  EmitRaw('        PUSH  DI');
+  EmitRaw('        MOV   DI, [BX]');         { DI = stored key }
+  { compare SI vs DI }
+  EmitRaw('_RKRT_HS_CMP:');
+  EmitRaw('        MOV   AL, [SI]');
+  EmitRaw('        MOV   AH, [DI]');
+  EmitRaw('        CMP   AL, AH');
+  EmitRaw('        JNE   _RKRT_HS_NXT');
+  EmitRaw('        TEST  AL, AL');
+  EmitRaw('        JZ    _RKRT_HS_UPD');
+  EmitRaw('        INC   SI');
+  EmitRaw('        INC   DI');
+  EmitRaw('        JMP   _RKRT_HS_CMP');
+  EmitRaw('_RKRT_HS_NXT:');
+  EmitRaw('        POP   DI');
+  EmitRaw('        POP   SI');
+  EmitRaw('        POP   BX');
+  EmitRaw('        ADD   BX, 4');
+  EmitRaw('        DEC   CX');
+  EmitRaw('        JNZ   _RKRT_HS_LOOP');
+  EmitRaw('        POP   CX');              { restore original count }
+  EmitRaw('        JMP   _RKRT_HS_ADD');
+  EmitRaw('_RKRT_HS_UPD:');
+  { Found : update value in place }
+  EmitRaw('        POP   DI');
+  EmitRaw('        POP   SI');
+  EmitRaw('        POP   BX');
+  EmitRaw('        MOV   [BX+2], DX');       { update value }
+  EmitRaw('        POP   CX');              { discard saved count }
+  EmitRaw('        JMP   _RKRT_HS_DONE');
+  EmitRaw('_RKRT_HS_ADD:');
+  { BX points past last pair. DI = hash base. }
+  EmitRaw('        MOV   [BX], SI');         { store key ptr }
+  EmitRaw('        MOV   [BX+2], DX');       { store value }
+  EmitRaw('        INC   WORD PTR [DI]');    { paircount++ }
+  EmitRaw('        ADD   WORD PTR [_RK_HEAPTOP], 4');
+  EmitRaw('_RKRT_HS_DONE:');
+  EmitRaw('        POP   DX');
+  EmitRaw('        POP   CX');
+  EmitRaw('        POP   DI');
+  EmitRaw('        RET');
+  EmitRaw('_RKRT_HSTORE ENDP');
+  EmitBlankLine;
+
+  { _RKRT_HEXISTS : BX=hash, SI=key -> AX=0|1 }
+  EmitComment('--- _RKRT_HEXISTS : BX=hash, SI=key -> AX=0|1 ---');
+  EmitRaw('_RKRT_HEXISTS PROC NEAR');
+  EmitRaw('        PUSH  DI');
+  EmitRaw('        PUSH  CX');
+  EmitRaw('        MOV   CX, [BX]');
+  EmitRaw('        ADD   BX, 2');
+  EmitRaw('        TEST  CX, CX');
+  EmitRaw('        JZ    _RKRT_HE_NF');
+  EmitRaw('_RKRT_HE_LOOP:');
+  EmitRaw('        PUSH  CX');
+  EmitRaw('        PUSH  BX');
+  EmitRaw('        PUSH  SI');
+  EmitRaw('        MOV   DI, [BX]');
+  EmitRaw('_RKRT_HE_CMP:');
+  EmitRaw('        MOV   AL, [SI]');
+  EmitRaw('        MOV   AH, [DI]');
+  EmitRaw('        CMP   AL, AH');
+  EmitRaw('        JNE   _RKRT_HE_NXT');
+  EmitRaw('        TEST  AL, AL');
+  EmitRaw('        JZ    _RKRT_HE_YES');
+  EmitRaw('        INC   SI');
+  EmitRaw('        INC   DI');
+  EmitRaw('        JMP   _RKRT_HE_CMP');
+  EmitRaw('_RKRT_HE_NXT:');
+  EmitRaw('        POP   SI');
+  EmitRaw('        POP   BX');
+  EmitRaw('        POP   CX');
+  EmitRaw('        ADD   BX, 4');
+  EmitRaw('        DEC   CX');
+  EmitRaw('        JNZ   _RKRT_HE_LOOP');
+  EmitRaw('_RKRT_HE_NF:');
+  EmitRaw('        XOR   AX, AX');
+  EmitRaw('        JMP   _RKRT_HE_END');
+  EmitRaw('_RKRT_HE_YES:');
+  EmitRaw('        POP   SI');
+  EmitRaw('        POP   BX');
+  EmitRaw('        POP   CX');
+  EmitRaw('        MOV   AX, 1');
+  EmitRaw('_RKRT_HE_END:');
+  EmitRaw('        POP   CX');
+  EmitRaw('        POP   DI');
+  EmitRaw('        RET');
+  EmitRaw('_RKRT_HEXISTS ENDP');
+  EmitBlankLine;
+
+  { _RKRT_HDELETE : BX=hash, SI=key -> remove pair }
+  EmitComment('--- _RKRT_HDELETE : BX=hash, SI=key ---');
+  EmitRaw('_RKRT_HDELETE PROC NEAR');
+  EmitRaw('        PUSH  DI');
+  EmitRaw('        PUSH  CX');
+  EmitRaw('        PUSH  DX');
+  EmitRaw('        MOV   DX, BX');           { DX = hash base }
+  EmitRaw('        MOV   CX, [BX]');
+  EmitRaw('        ADD   BX, 2');
+  EmitRaw('        TEST  CX, CX');
+  EmitRaw('        JZ    _RKRT_HD_END');
+  EmitRaw('_RKRT_HD_LOOP:');
+  EmitRaw('        PUSH  CX');
+  EmitRaw('        PUSH  BX');
+  EmitRaw('        PUSH  SI');
+  EmitRaw('        MOV   DI, [BX]');
+  EmitRaw('_RKRT_HD_CMP:');
+  EmitRaw('        MOV   AL, [SI]');
+  EmitRaw('        MOV   AH, [DI]');
+  EmitRaw('        CMP   AL, AH');
+  EmitRaw('        JNE   _RKRT_HD_NXT');
+  EmitRaw('        TEST  AL, AL');
+  EmitRaw('        JZ    _RKRT_HD_FND');
+  EmitRaw('        INC   SI');
+  EmitRaw('        INC   DI');
+  EmitRaw('        JMP   _RKRT_HD_CMP');
+  EmitRaw('_RKRT_HD_NXT:');
+  EmitRaw('        POP   SI');
+  EmitRaw('        POP   BX');
+  EmitRaw('        POP   CX');
+  EmitRaw('        ADD   BX, 4');
+  EmitRaw('        DEC   CX');
+  EmitRaw('        JNZ   _RKRT_HD_LOOP');
+  EmitRaw('        JMP   _RKRT_HD_END');
+  EmitRaw('_RKRT_HD_FND:');
+  EmitRaw('        POP   SI');
+  EmitRaw('        POP   BX');
+  EmitRaw('        POP   CX');
+  { Shift remaining pairs left by 4 bytes }
+  EmitRaw('        DEC   CX');
+  EmitRaw('        TEST  CX, CX');
+  EmitRaw('        JZ    _RKRT_HD_DEC');
+  EmitRaw('        PUSH  SI');
+  EmitRaw('        MOV   SI, BX');
+  EmitRaw('        ADD   SI, 4');
+  EmitRaw('_RKRT_HD_SH:');
+  EmitRaw('        MOV   AX, [SI]');
+  EmitRaw('        MOV   [BX], AX');
+  EmitRaw('        MOV   AX, [SI+2]');
+  EmitRaw('        MOV   [BX+2], AX');
+  EmitRaw('        ADD   BX, 4');
+  EmitRaw('        ADD   SI, 4');
+  EmitRaw('        DEC   CX');
+  EmitRaw('        JNZ   _RKRT_HD_SH');
+  EmitRaw('        POP   SI');
+  EmitRaw('_RKRT_HD_DEC:');
+  EmitRaw('        MOV   BX, DX');           { BX = hash base }
+  EmitRaw('        DEC   WORD PTR [BX]');    { paircount-- }
+  EmitRaw('        SUB   WORD PTR [_RK_HEAPTOP], 4');
+  EmitRaw('_RKRT_HD_END:');
+  EmitRaw('        POP   DX');
+  EmitRaw('        POP   CX');
+  EmitRaw('        POP   DI');
+  EmitRaw('        RET');
+  EmitRaw('_RKRT_HDELETE ENDP');
+  EmitBlankLine;
+
+  { _RKRT_HKEYS : BX=hash -> AX=new array of keys on heap }
+  EmitComment('--- _RKRT_HKEYS : BX=hash -> AX=array of keys ---');
+  EmitRaw('_RKRT_HKEYS PROC NEAR');
+  EmitRaw('        PUSH  SI');
+  EmitRaw('        PUSH  CX');
+  EmitRaw('        PUSH  DI');
+  EmitRaw('        MOV   CX, [BX]');         { CX = pair count }
+  EmitRaw('        MOV   DI, [_RK_HEAPTOP]');{ DI = new array base }
+  EmitRaw('        MOV   [DI], CX');         { store count }
+  EmitRaw('        ADD   BX, 2');            { skip hash count }
+  EmitRaw('        MOV   SI, DI');
+  EmitRaw('        ADD   SI, 2');            { SI = first elem slot }
+  EmitRaw('        TEST  CX, CX');
+  EmitRaw('        JZ    _RKRT_HK_DN');
+  EmitRaw('_RKRT_HK_LP:');
+  EmitRaw('        MOV   AX, [BX]');         { key ptr }
+  EmitRaw('        MOV   [SI], AX');
+  EmitRaw('        ADD   SI, 2');
+  EmitRaw('        ADD   BX, 4');            { next pair }
+  EmitRaw('        DEC   CX');
+  EmitRaw('        JNZ   _RKRT_HK_LP');
+  EmitRaw('_RKRT_HK_DN:');
+  { Update heap top }
+  EmitRaw('        MOV   [_RK_HEAPTOP], SI');
+  EmitRaw('        MOV   AX, DI');           { AX = array ptr }
+  EmitRaw('        POP   DI');
+  EmitRaw('        POP   CX');
+  EmitRaw('        POP   SI');
+  EmitRaw('        RET');
+  EmitRaw('_RKRT_HKEYS ENDP');
+  EmitBlankLine;
+
+  { _RKRT_HVALUES : BX=hash -> AX=new array of values on heap }
+  EmitComment('--- _RKRT_HVALUES : BX=hash -> AX=array of values ---');
+  EmitRaw('_RKRT_HVALUES PROC NEAR');
+  EmitRaw('        PUSH  SI');
+  EmitRaw('        PUSH  CX');
+  EmitRaw('        PUSH  DI');
+  EmitRaw('        MOV   CX, [BX]');
+  EmitRaw('        MOV   DI, [_RK_HEAPTOP]');
+  EmitRaw('        MOV   [DI], CX');
+  EmitRaw('        ADD   BX, 2');
+  EmitRaw('        MOV   SI, DI');
+  EmitRaw('        ADD   SI, 2');
+  EmitRaw('        TEST  CX, CX');
+  EmitRaw('        JZ    _RKRT_HV_DN');
+  EmitRaw('_RKRT_HV_LP:');
+  EmitRaw('        MOV   AX, [BX+2]');       { value }
+  EmitRaw('        MOV   [SI], AX');
+  EmitRaw('        ADD   SI, 2');
+  EmitRaw('        ADD   BX, 4');
+  EmitRaw('        DEC   CX');
+  EmitRaw('        JNZ   _RKRT_HV_LP');
+  EmitRaw('_RKRT_HV_DN:');
+  EmitRaw('        MOV   [_RK_HEAPTOP], SI');
+  EmitRaw('        MOV   AX, DI');
+  EmitRaw('        POP   DI');
+  EmitRaw('        POP   CX');
+  EmitRaw('        POP   SI');
+  EmitRaw('        RET');
+  EmitRaw('_RKRT_HVALUES ENDP');
+  EmitBlankLine;
+End;
 { _RKRT_CONCAT  : SI=src ASCIIZ, DI=dst -> appends src au dst     }
 {                 (DI avance au null-terminator de dst d abord)     }
 { _RKRT_STRREPEAT : SI=src ASCIIZ, CX=count -> AX=OFFSET TMPBUF   }
@@ -6418,6 +7107,7 @@ Begin
   RepeatCount    := 0;
   ForCount       := 0;
   ArrayTempCount := 0;
+  HashTempCount  := 0;
   GKwConsumed    := False;
   GCallArgCount  := 0;
   CurFnRetLbl    := '';
