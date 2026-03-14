@@ -230,7 +230,7 @@
             break : sortie de la boucle englobante -> JMP _LUAL_END_N
             LoopPush / LoopPop : pile de labels break
 
-  TODO 15 - TABLES (construction et acces)
+  TODO 15 - TABLES (construction et acces) [IMPLEMENTE]
             Constructeur de table :
               Liste : {10, 20, 30} -> indices 1, 2, 3 (base 1 Lua)
               Record : {x=1, y=2} -> cles chaines
@@ -697,6 +697,7 @@ Var
   RepeatCount    : Integer;   { compteur pour labels repeat        }
   ForCount       : Integer;   { compteur pour labels for           }
   GotoLblCount   : Integer;   { compteur pour labels goto          }
+  TableCount     : Integer;   { compteur pour labels table         }
 
 { ============================================================
   FORWARD DECLARATIONS
@@ -817,6 +818,12 @@ Procedure EmitLoopRuntime; Forward;
 Procedure LoopPush(Const BrkLbl, ContLbl : TString); Forward;
 Procedure LoopPop; Forward;
 Function  LoopBreakLabel : TString; Forward;
+
+{ Tables (TODO 15) }
+Procedure ParseTableConstructor(Var Res : TExprVal); Forward;
+Procedure EmitTableBuiltin(Const FuncName : TString;
+                           Var Res : TExprVal); Forward;
+Procedure EmitTableRuntime; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1098,6 +1105,7 @@ Begin
   RepeatCount    := 0;
   ForCount       := 0;
   GotoLblCount   := 0;
+  TableCount     := 0;
   GExprDummy.Kind    := EK_NONE;
   GExprDummy.ImmVal  := 0;
   GExprDummy.TypeIdx := TY_UNKNOWN;
@@ -1229,6 +1237,7 @@ Begin
   EmitIORuntime;
   EmitIfRuntime;
   EmitLoopRuntime;
+  EmitTableRuntime;
 End;
 
 { EmitClose : terminer le fichier ASM (DOS exit, runtime, DATA, END) }
@@ -1375,6 +1384,11 @@ Begin
   DataAdd(LUA_RT_PFX + 'TBOOL', DK_STR, 0, 'boolean');
   DataAdd(LUA_RT_PFX + 'TTBL', DK_STR, 0, 'table');
   DataAdd(LUA_RT_PFX + 'TFUN', DK_STR, 0, 'function');
+  { TODO 15 : Heap statique pour allocation de tables }
+  DataAddBuffer('_LUA_HEAP', 4096);
+  DataAddWord('_LUA_HEAPTOP', 0);
+  { TODO 15 : Separateur virgule pour table.concat }
+  DataAdd('_LUA_COMMA', DK_STR, 0, ',');
 End;
 
 { ---- ExprMakeImm : construire une valeur immediate ---------- }
@@ -1934,6 +1948,23 @@ Begin
         ParserAdvance;
       Exit;
     End
+    { TODO 15 : table.insert / table.remove / table.concat / table.sort }
+    Else If (VName = 'table') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
+    Begin
+      ParserAdvance; { consomme '.' }
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        VName := CurToken.Val;
+        ParserAdvance;
+        EmitTableBuiltin(VName, E);
+      End
+      Else
+        CompileError('nom de fonction attendu apres "table."');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+      Exit;
+    End
     Else
     Begin
       { Pas une affectation : c est une expression commencant par ident }
@@ -1962,12 +1993,70 @@ Begin
           ParseCallArgs(-1, E);
         End;
       End
-      { Acces table par point : ident.champ }
+      { Acces table par point : ident.champ -> lecture ou affectation }
       Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
       Begin
         ExprFlushToAX(E);
-        { La boucle postfixe dans ParseExprPrec gerera le reste }
-        { Ici on flush juste dans AX }
+        EmitInstrA('PUSH', 'AX');  { sauvegarder ptr table }
+        ParserAdvance; { consomme '.' }
+        If CurToken.Kind = TK_IDENT Then
+        Begin
+          VName := CurToken.Val;
+          ParserAdvance;
+          If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+          Begin
+            { Affectation : t.champ = expr }
+            ParserAdvance; { consomme '=' }
+            ParseExpr(E);
+            ExprFlushToAX(E);
+            EmitInstrA('POP', 'BX');
+            EmitInstrAB('MOV', 'DI', 'OFFSET ' + DataAddStr(VName));
+            EmitInstrA('CALL', LUA_RT_PFX + 'TSET');
+          End
+          Else
+          Begin
+            { Lecture : t.champ (expression) }
+            EmitInstrA('POP', 'BX');
+            EmitInstrAB('MOV', 'DI', 'OFFSET ' + DataAddStr(VName));
+            EmitInstrA('CALL', LUA_RT_PFX + 'TGET');
+          End;
+        End
+        Else
+        Begin
+          EmitInstrAB('ADD', 'SP', '2');
+          CompileError('identifiant attendu apres "."');
+        End;
+      End
+      { Acces table par crochet : ident[expr] -> lecture ou affectation }
+      Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
+      Begin
+        ExprFlushToAX(E);
+        EmitInstrA('PUSH', 'AX');  { sauvegarder ptr table }
+        ParserAdvance; { consomme '[' }
+        ParseExpr(E);
+        ExprFlushToAX(E);
+        EmitInstrA('PUSH', 'AX');  { sauvegarder cle }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+          ParserAdvance
+        Else
+          CompileError('"]" attendue');
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+        Begin
+          { Affectation : t[k] = expr }
+          ParserAdvance; { consomme '=' }
+          ParseExpr(E);
+          ExprFlushToAX(E);
+          EmitInstrA('POP', 'DI');  { cle }
+          EmitInstrA('POP', 'BX');  { table }
+          EmitInstrA('CALL', LUA_RT_PFX + 'TSET');
+        End
+        Else
+        Begin
+          { Lecture : t[k] (expression) }
+          EmitInstrA('POP', 'DI');
+          EmitInstrA('POP', 'BX');
+          EmitInstrA('CALL', LUA_RT_PFX + 'TGET');
+        End;
       End
       { Appel de methode : ident:methode(args) }
       Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
@@ -3448,18 +3537,8 @@ Begin
       End
       Else If CurToken.Val = Chr(123) Then
       Begin
-        { Constructeur de table : stub, sera TODO 15 }
-        If Opts.Warnings Then
-          WarnMsg('constructeur de table : stub, sera TODO 15');
-        ParserAdvance;   { consomme Chr(123) = open brace }
-        While (CurToken.Kind <> TK_EOF) And
-              Not ((CurToken.Kind = TK_PUNCT) And
-                   (CurToken.Val = Chr(125))) Do
-          ParserAdvance;
-        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = Chr(125)) Then
-          ParserAdvance;   { consomme Chr(125) = close brace }
-        ExprMakeNone(Res);
-        Res.TypeIdx := TY_IDX_TABLE;
+        { Constructeur de table (TODO 15) }
+        ParseTableConstructor(Res);
       End
       Else
       Begin
@@ -3585,14 +3664,11 @@ Begin
     ParseUnary(Res);
     If Res.Kind = EK_IMM Then
     Begin
-      { Longueur d un litteral de chaine : constante pliable }
-      { Mais #nil ou #42 est une erreur Lua, on accepte stub }
+      { Longueur d un litteral : stub -> AX }
       If Res.TypeIdx = TY_IDX_STRING Then
-        { Pas fiable ici, stub -> AX }
         Res.Kind := EK_AX
       Else
       Begin
-        { Pour un nombre, # n a pas de sens : warning }
         If Opts.Warnings Then
           WarnMsg('# applique a un non-string/table');
         Res.Kind := EK_AX;
@@ -3601,8 +3677,18 @@ Begin
     Else
     Begin
       ExprFlushToAX(Res);
-      EmitInstrAB('MOV', 'SI', 'AX');
-      EmitInstrA('CALL', LUA_RT_PFX + 'STRLEN');
+      If Res.TypeIdx = TY_IDX_TABLE Then
+      Begin
+        { Table : le premier word est le count de la partie tableau }
+        EmitInstrAB('MOV', 'BX', 'AX');
+        EmitInstrAB('MOV', 'AX', '[BX]');
+      End
+      Else
+      Begin
+        { String par defaut : STRLEN }
+        EmitInstrAB('MOV', 'SI', 'AX');
+        EmitInstrA('CALL', LUA_RT_PFX + 'STRLEN');
+      End;
       Res.Kind := EK_AX;
     End;
     Res.TypeIdx := TY_IDX_NUMBER;
@@ -4702,6 +4788,615 @@ Begin
   EmitBlankLine;
 End;
 
+{ ============================================================
+  TODO 15 - TABLES (construction et acces) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseTableConstructor ----------------------------------- }
+{ Parse un constructeur de table : (10, 20, 30), (x=1, y=2),    }
+{ ou mixte (10, x=1, [expr]=val).                                }
+{ Alloue la table dans le heap via _LUART_ALLOC et remplit les   }
+{ elements via _LUART_TSET.                                      }
+Procedure ParseTableConstructor(Var Res : TExprVal);
+Var
+  NS      : TString;
+  TblLbl  : TString;
+  ListIdx : Integer;
+  E       : TExprVal;
+  FldName : TString;
+  FldLbl  : TString;
+  KE      : TExprVal;
+Begin
+  Inc(TableCount);
+  Str(TableCount, NS);
+  TblLbl := LUA_LBL_PFX + 'TBLC_' + NS;
+
+  EmitBlankLine;
+  EmitComment('--- constructeur table (n.' + NS + ') ---');
+
+  ParserAdvance; { consomme Chr(123) = '{' }
+
+  { Allouer un bloc table dans le heap : }
+  { _LUART_ALLOC(CX=512) -> AX = ptr, ensuite on y stocke count=0 }
+  EmitInstrAB('MOV', 'CX', '512');
+  EmitInstrA('CALL', LUA_RT_PFX + 'ALLOC');
+  EmitInstrA('PUSH', 'AX');  { sauvegarder ptr table sur pile }
+  { Initialiser count = 0 et hash_count = 0 }
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstrAB('MOV', 'WORD PTR [BX]', '0');
+  EmitInstrAB('MOV', 'WORD PTR [BX+252]', '0');
+
+  ListIdx := 0;  { compteur d elements de liste (base 1 Lua) }
+
+  { Parser les elements }
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_PUNCT) And
+             (CurToken.Val = Chr(125))) Do
+  Begin
+    { Detecter le type d element : }
+    {  ident = expr -> record field }
+    {  [expr] = expr -> bracket field }
+    {  expr -> list element }
+
+    If (CurToken.Kind = TK_IDENT) Then
+    Begin
+      { Regarder si suivi de '=' (record field) }
+      FldName := CurToken.Val;
+      ParserAdvance;
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+      Begin
+        { Record : name = expr }
+        ParserAdvance; { consomme '=' }
+        ParseExpr(E);
+        ExprFlushToAX(E);
+        { BX = table (sur pile), DI = ptr cle string, AX = valeur }
+        EmitInstrAB('MOV', 'BX', '[SP]');  { relire ptr table sans depiler }
+        FldLbl := DataAddStr(FldName);
+        EmitInstrAB('MOV', 'DI', 'OFFSET ' + FldLbl);
+        EmitInstrA('CALL', LUA_RT_PFX + 'TSET');
+      End
+      Else
+      Begin
+        { C est un element de liste commencant par un ident }
+        { On doit evaluer l expression qui commence par FldName }
+        { Construire l expr pour l ident deja lu }
+        E.Kind    := EK_MEM;
+        E.ImmVal  := 0;
+        E.TypeIdx := TY_UNKNOWN;
+        E.Offset  := 0;
+        E.SymIdx  := SymFind(FldName);
+        If E.SymIdx < 0 Then
+          E.SymIdx := EnsureGlobalVar(FldName);
+        If E.SymIdx >= 0 Then
+        Begin
+          E.TypeIdx := SymTab[E.SymIdx].TypeIdx;
+          E.Offset  := SymTab[E.SymIdx].Offset;
+        End;
+        ExprFlushToAX(E);
+        { L expression peut se poursuivre (appel, champ, etc.) }
+        { On flush directement dans AX pour l instant }
+
+        Inc(ListIdx);
+        { Stocker : t[listIdx] = AX }
+        EmitInstrAB('MOV', 'BX', '[SP]');
+        { Cle = listIdx en tant que nombre -> DI }
+        Str(ListIdx, NS);
+        EmitInstrAB('MOV', 'DI', NS);
+        EmitInstrA('CALL', LUA_RT_PFX + 'TSET');
+        { Mettre a jour le count }
+        EmitInstrAB('MOV', 'BX', '[SP]');
+        Str(ListIdx, NS);
+        EmitInstrAB('MOV', 'WORD PTR [BX]', NS);
+      End;
+    End
+    Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
+    Begin
+      { Bracket field : [expr] = expr }
+      ParserAdvance; { consomme '[' }
+      ParseExpr(KE);
+      ExprFlushToAX(KE);
+      EmitInstrA('PUSH', 'AX'); { sauvegarder cle }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+        ParserAdvance
+      Else
+        CompileError('"]" attendue dans constructeur de table');
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+        ParserAdvance
+      Else
+        CompileError('"=" attendu apres [expr] dans constructeur de table');
+      ParseExpr(E);
+      ExprFlushToAX(E);
+      EmitInstrA('POP', 'DI');  { cle }
+      EmitInstrAB('MOV', 'BX', 'WORD PTR [SP+2]'); { table (sous la cle) }
+      EmitInstrA('CALL', LUA_RT_PFX + 'TSET');
+    End
+    Else
+    Begin
+      { Element de liste : expr }
+      ParseExpr(E);
+      ExprFlushToAX(E);
+      Inc(ListIdx);
+      EmitInstrAB('MOV', 'BX', '[SP]');
+      Str(ListIdx, NS);
+      EmitInstrAB('MOV', 'DI', NS);
+      EmitInstrA('CALL', LUA_RT_PFX + 'TSET');
+      { Mettre a jour le count }
+      EmitInstrAB('MOV', 'BX', '[SP]');
+      Str(ListIdx, NS);
+      EmitInstrAB('MOV', 'WORD PTR [BX]', NS);
+    End;
+
+    { Separateur : ',' ou ';' optionnel }
+    If (CurToken.Kind = TK_PUNCT) And
+       ((CurToken.Val = ',') Or (CurToken.Val = ';')) Then
+      ParserAdvance;
+  End;
+
+  { Consommer Chr(125) = close brace }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = Chr(125)) Then
+    ParserAdvance
+  Else
+    CompileError('"}" attendue pour fermer le constructeur de table');
+
+  { Recuperer le ptr table dans AX }
+  EmitInstrA('POP', 'AX');
+
+  Res.Kind    := EK_AX;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_IDX_TABLE;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+
+  EmitComment('--- fin constructeur table ---');
+End;
+
+{ ---- EmitTableBuiltin : emettre le code pour table.insert etc. }
+{ Dispatche les appels table.insert(t,v), table.remove(t,pos),   }
+{ table.concat(t,sep), table.sort(t).                            }
+Procedure EmitTableBuiltin(Const FuncName : TString;
+                           Var Res : TExprVal);
+Var
+  E1, E2 : TExprVal;
+  FldLbl : TString;
+Begin
+  { Attendre et consommer '(' }
+  If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+  Begin
+    CompileError('"(" attendue apres table.' + FuncName);
+    ExprMakeNone(Res);
+    Exit;
+  End;
+  ParserAdvance; { consomme '(' }
+
+  If FuncName = 'insert' Then
+  Begin
+    { table.insert(t, v) ou table.insert(t, pos, v) }
+    EmitComment('--- table.insert ---');
+    ParseExpr(E1);
+    ExprFlushToAX(E1);
+    EmitInstrA('PUSH', 'AX');  { table ptr }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+    ParseExpr(E2);
+    ExprFlushToAX(E2);
+    { AX = valeur a inserer, BX = table }
+    EmitInstrA('POP', 'BX');
+    EmitInstrA('CALL', LUA_RT_PFX + 'TINSERT');
+    { Consommer ')' }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else
+      CompileError('")" attendue');
+    ExprMakeNone(Res);
+  End
+  Else If FuncName = 'remove' Then
+  Begin
+    { table.remove(t [, pos]) -> AX = valeur retiree }
+    EmitComment('--- table.remove ---');
+    ParseExpr(E1);
+    ExprFlushToAX(E1);
+    EmitInstrA('PUSH', 'AX');  { table ptr }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+    Begin
+      ParserAdvance;
+      ParseExpr(E2);
+      ExprFlushToAX(E2);
+      EmitInstrAB('MOV', 'DI', 'AX');  { position }
+    End
+    Else
+      EmitInstrAB('XOR', 'DI', 'DI');  { pos = 0 -> dernier }
+    ;
+    EmitInstrA('POP', 'BX');
+    EmitInstrA('CALL', LUA_RT_PFX + 'TREMOVE');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else
+      CompileError('")" attendue');
+    Res.Kind    := EK_AX;
+    Res.ImmVal  := 0;
+    Res.TypeIdx := TY_UNKNOWN;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+  Else If FuncName = 'concat' Then
+  Begin
+    { table.concat(t [, sep]) -> AX = ptr chaine }
+    EmitComment('--- table.concat ---');
+    ParseExpr(E1);
+    ExprFlushToAX(E1);
+    EmitInstrA('PUSH', 'AX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+    Begin
+      ParserAdvance;
+      ParseExpr(E2);
+      ExprFlushToAX(E2);
+      EmitInstrAB('MOV', 'DI', 'AX');  { separateur }
+    End
+    Else
+      EmitInstrAB('MOV', 'DI', 'OFFSET _LUA_NULL_STR');
+    ;
+    EmitInstrA('POP', 'BX');
+    EmitInstrA('CALL', LUA_RT_PFX + 'TCONCAT');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else
+      CompileError('")" attendue');
+    Res.Kind    := EK_AX;
+    Res.ImmVal  := 0;
+    Res.TypeIdx := TY_IDX_STRING;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+  Else If FuncName = 'sort' Then
+  Begin
+    { table.sort(t) }
+    EmitComment('--- table.sort ---');
+    ParseExpr(E1);
+    ExprFlushToAX(E1);
+    EmitInstrAB('MOV', 'BX', 'AX');
+    EmitInstrA('CALL', LUA_RT_PFX + 'TSORT');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else
+      CompileError('")" attendue');
+    ExprMakeNone(Res);
+  End
+  Else
+  Begin
+    { table.xxx inconnu : stub }
+    If Opts.Warnings Then
+      WarnMsg('table.' + FuncName + ' : stub non implemente');
+    { Sauter les arguments }
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+      ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance;
+    ExprMakeNone(Res);
+  End;
+End;
+
+{ ---- EmitTableRuntime : routines runtime pour les tables ------ }
+{ _LUART_ALLOC  : allouer CX octets dans le heap -> AX = ptr     }
+{ _LUART_TGET   : lire table[key] -> AX = valeur                 }
+{ _LUART_TSET   : ecrire table[key] = val                        }
+{ _LUART_TINSERT: inserer un element en fin de table              }
+{ _LUART_TREMOVE: retirer un element de la table                  }
+{ _LUART_TCONCAT: concatener les elements -> AX = ptr chaine      }
+{ _LUART_TSORT  : trier la partie tableau (tri a bulles)          }
+{ _LUART_TNEXT  : prochain cle/valeur pour pairs()               }
+{ _LUART_TINEXT : prochain index/valeur pour ipairs()             }
+Procedure EmitTableRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=== Routines runtime TODO 15 (tables) ===');
+  EmitBlankLine;
+
+  { _LUART_ALLOC : CX = taille en octets -> AX = ptr dans heap }
+  EmitLabel(LUA_RT_PFX + 'ALLOC');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrAB('MOV', 'BX', 'WORD PTR [_LUA_HEAPTOP]');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _LUA_HEAP');
+  EmitInstrAB('ADD', 'AX', 'BX');
+  EmitInstrAB('ADD', 'BX', 'CX');
+  EmitInstrAB('MOV', 'WORD PTR [_LUA_HEAPTOP]', 'BX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _LUART_TSET : BX = ptr table, DI = cle, AX = val             }
+  { Layout: [count:w] [e1..eN] | at +252: [hcount:w] [kptr:w val:w]... }
+  { Si DI <= 255 -> index entier, stocker dans la partie tableau }
+  { Si DI > 255 -> pointeur chaine, stocker dans la partie hash  }
+  EmitLabel(LUA_RT_PFX + 'TSET');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrAB('CMP', 'DI', '255');
+  EmitInstrA('JA', LUA_RT_PFX + 'TS_HSH');
+  { --- Partie tableau (DI = index entier 1..N) --- }
+  EmitInstrAB('MOV', 'SI', 'DI');
+  EmitInstrA('DEC', 'SI');
+  EmitInstrAB('SHL', 'SI', '1');
+  EmitInstrAB('ADD', 'SI', '2');
+  EmitInstrAB('MOV', 'WORD PTR [BX+SI]', 'AX');
+  { Si DI > count, mettre a jour count }
+  EmitInstrAB('CMP', 'DI', 'WORD PTR [BX]');
+  EmitInstrA('JLE', LUA_RT_PFX + 'TS_DN');
+  EmitInstrAB('MOV', 'WORD PTR [BX]', 'DI');
+  EmitInstrA('JMP', LUA_RT_PFX + 'TS_DN');
+  { --- Partie hash (DI = ptr chaine cle) --- }
+  EmitLabel(LUA_RT_PFX + 'TS_HSH');
+  { Chercher si la cle existe deja }
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrAB('MOV', 'CX', 'WORD PTR [BX+252]');
+  EmitInstrAB('MOV', 'SI', '254');
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JZ', LUA_RT_PFX + 'TS_ADD');
+  EmitLabel(LUA_RT_PFX + 'TS_SCN');
+  EmitInstrAB('CMP', 'DI', 'WORD PTR [BX+SI]');
+  EmitInstrA('JE', LUA_RT_PFX + 'TS_FND');
+  EmitInstrAB('ADD', 'SI', '4');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JNZ', LUA_RT_PFX + 'TS_SCN');
+  { Cle non trouvee : ajouter }
+  EmitLabel(LUA_RT_PFX + 'TS_ADD');
+  EmitInstrAB('MOV', 'WORD PTR [BX+SI]', 'DI');
+  EmitInstrAB('MOV', 'WORD PTR [BX+SI+2]', 'AX');
+  EmitInstrA('INC', 'WORD PTR [BX+252]');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('JMP', LUA_RT_PFX + 'TS_DN');
+  { Cle trouvee : mettre a jour la valeur }
+  EmitLabel(LUA_RT_PFX + 'TS_FND');
+  EmitInstrAB('MOV', 'WORD PTR [BX+SI+2]', 'AX');
+  EmitInstrA('POP', 'CX');
+  EmitLabel(LUA_RT_PFX + 'TS_DN');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _LUART_TGET : BX = ptr table, DI = cle -> AX = valeur       }
+  { Si DI <= 255 -> index entier (partie tableau)                 }
+  { Si DI > 255 -> ptr chaine (partie hash)                       }
+  EmitLabel(LUA_RT_PFX + 'TGET');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('CMP', 'DI', '255');
+  EmitInstrA('JA', LUA_RT_PFX + 'TG_HSH');
+  { --- Partie tableau --- }
+  EmitInstrAB('TEST', 'DI', 'DI');
+  EmitInstrA('JLE', LUA_RT_PFX + 'TG_NIL');
+  EmitInstrAB('CMP', 'DI', 'WORD PTR [BX]');
+  EmitInstrA('JG', LUA_RT_PFX + 'TG_NIL');
+  EmitInstrAB('MOV', 'SI', 'DI');
+  EmitInstrA('DEC', 'SI');
+  EmitInstrAB('SHL', 'SI', '1');
+  EmitInstrAB('ADD', 'SI', '2');
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [BX+SI]');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  { --- Partie hash --- }
+  EmitLabel(LUA_RT_PFX + 'TG_HSH');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrAB('MOV', 'CX', 'WORD PTR [BX+252]');
+  EmitInstrAB('MOV', 'SI', '254');
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JZ', LUA_RT_PFX + 'TG_NF');
+  EmitLabel(LUA_RT_PFX + 'TG_SRC');
+  EmitInstrAB('CMP', 'DI', 'WORD PTR [BX+SI]');
+  EmitInstrA('JE', LUA_RT_PFX + 'TG_GOT');
+  EmitInstrAB('ADD', 'SI', '4');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JNZ', LUA_RT_PFX + 'TG_SRC');
+  EmitLabel(LUA_RT_PFX + 'TG_NF');
+  EmitInstrA('POP', 'CX');
+  EmitLabel(LUA_RT_PFX + 'TG_NIL');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitLabel(LUA_RT_PFX + 'TG_GOT');
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [BX+SI+2]');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _LUART_TINSERT : BX = ptr table, AX = valeur a inserer en fin }
+  { Incremente count, stocke AX a l offset count*2                  }
+  EmitLabel(LUA_RT_PFX + 'TINSERT');
+  EmitInstrA('PUSH', 'SI');
+  { count++ }
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [BX]');
+  EmitInstrA('INC', 'SI');
+  EmitInstrAB('MOV', 'WORD PTR [BX]', 'SI');
+  { Stocker a offset = (count-1)*2 + 2 = (SI-1)*2+2 }
+  EmitInstrA('DEC', 'SI');
+  EmitInstrAB('SHL', 'SI', '1');
+  EmitInstrAB('ADD', 'SI', '2');
+  EmitInstrAB('MOV', 'WORD PTR [BX+SI]', 'AX');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _LUART_TREMOVE : BX = ptr table, DI = pos (0=dernier) -> AX }
+  { Retire l element a la position DI, decale les suivants       }
+  EmitLabel(LUA_RT_PFX + 'TREMOVE');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'CX');
+  { Si DI = 0, prendre le dernier }
+  EmitInstrAB('TEST', 'DI', 'DI');
+  EmitInstrA('JNZ', LUA_RT_PFX + 'TR_GO');
+  EmitInstrAB('MOV', 'DI', 'WORD PTR [BX]');
+  EmitLabel(LUA_RT_PFX + 'TR_GO');
+  { Lire la valeur a retirer }
+  EmitInstrAB('MOV', 'SI', 'DI');
+  EmitInstrA('DEC', 'SI');
+  EmitInstrAB('SHL', 'SI', '1');
+  EmitInstrAB('ADD', 'SI', '2');
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [BX+SI]');
+  EmitInstrA('PUSH', 'AX');  { sauvegarder retour }
+  { Decaler les elements suivants }
+  EmitInstrAB('MOV', 'CX', 'WORD PTR [BX]');
+  EmitInstrAB('SUB', 'CX', 'DI');
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JLE', LUA_RT_PFX + 'TR_DN');
+  EmitLabel(LUA_RT_PFX + 'TR_SH');
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [BX+SI+2]');
+  EmitInstrAB('MOV', 'WORD PTR [BX+SI]', 'AX');
+  EmitInstrAB('ADD', 'SI', '2');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JNZ', LUA_RT_PFX + 'TR_SH');
+  EmitLabel(LUA_RT_PFX + 'TR_DN');
+  { Decrementer count }
+  EmitInstrA('DEC', 'WORD PTR [BX]');
+  EmitInstrA('POP', 'AX');  { retour = valeur retiree }
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _LUART_TCONCAT : BX = ptr table, DI = ptr sep -> AX = ptr chaine }
+  { Concatene les elements (comme nombres -> chaines) dans _LUA_STRBUF }
+  EmitLabel(LUA_RT_PFX + 'TCONCAT');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('MOV', 'DX', 'OFFSET _LUA_STRBUF');
+  EmitInstrAB('MOV', 'CX', 'WORD PTR [BX]');
+  EmitInstrAB('MOV', 'SI', '2');
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JZ', LUA_RT_PFX + 'TC_DN');
+  EmitLabel(LUA_RT_PFX + 'TC_LP');
+  { Lire l element }
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [BX+SI]');
+  { Convertir en chaine via NUMTOSTR -> AX=ptr }
+  EmitInstrA('CALL', LUA_RT_PFX + 'NUMTOSTR');
+  { Copier dans le buffer de destination }
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitLabel(LUA_RT_PFX + 'TC_C1');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', LUA_RT_PFX + 'TC_C2');
+  EmitInstrAB('MOV', 'BX', 'DX');
+  EmitInstrAB('MOV', '[BX]', 'AL');
+  EmitInstrA('INC', 'DX');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', LUA_RT_PFX + 'TC_C1');
+  EmitLabel(LUA_RT_PFX + 'TC_C2');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'CX');
+  EmitInstrAB('ADD', 'SI', '2');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JZ', LUA_RT_PFX + 'TC_DN');
+  { Copier le separateur }
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [SP+4]'); { DI sur pile }
+  EmitLabel(LUA_RT_PFX + 'TC_S1');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', LUA_RT_PFX + 'TC_S2');
+  EmitInstrAB('MOV', 'BX', 'DX');
+  EmitInstrAB('MOV', '[BX]', 'AL');
+  EmitInstrA('INC', 'DX');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', LUA_RT_PFX + 'TC_S1');
+  EmitLabel(LUA_RT_PFX + 'TC_S2');
+  EmitInstrA('POP', 'SI');
+  EmitInstrAB('MOV', 'BX', 'WORD PTR [SP+2]'); { table ptr }
+  EmitInstrA('JMP', LUA_RT_PFX + 'TC_LP');
+  EmitLabel(LUA_RT_PFX + 'TC_DN');
+  { Terminer la chaine par 0 }
+  EmitInstrAB('MOV', 'BX', 'DX');
+  EmitInstrAB('MOV', 'BYTE PTR [BX]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _LUA_STRBUF');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'BX');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _LUART_TSORT : BX = ptr table (tri a bulles in-place) }
+  EmitLabel(LUA_RT_PFX + 'TSORT');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrA('PUSH', 'AX');
+  EmitInstrAB('MOV', 'CX', 'WORD PTR [BX]');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JLE', LUA_RT_PFX + 'SO_DN');
+  EmitLabel(LUA_RT_PFX + 'SO_OUT');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrAB('MOV', 'SI', '2');
+  EmitLabel(LUA_RT_PFX + 'SO_IN');
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [BX+SI]');
+  EmitInstrAB('CMP', 'AX', 'WORD PTR [BX+SI+2]');
+  EmitInstrA('JLE', LUA_RT_PFX + 'SO_NX');
+  { Echanger }
+  EmitInstrAB('MOV', 'DX', 'WORD PTR [BX+SI+2]');
+  EmitInstrAB('MOV', 'WORD PTR [BX+SI+2]', 'AX');
+  EmitInstrAB('MOV', 'WORD PTR [BX+SI]', 'DX');
+  EmitLabel(LUA_RT_PFX + 'SO_NX');
+  EmitInstrAB('ADD', 'SI', '2');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JNZ', LUA_RT_PFX + 'SO_IN');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JNZ', LUA_RT_PFX + 'SO_OUT');
+  EmitLabel(LUA_RT_PFX + 'SO_DN');
+  EmitInstrA('POP', 'AX');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _LUART_TNEXT : BX = ptr table, DI = key_idx -> AX = valeur, DI = next_key }
+  { Si DI = 0 -> premier element. Si DI > count -> AX = 0 (fin). }
+  EmitLabel(LUA_RT_PFX + 'TNEXT');
+  EmitInstrA('INC', 'DI');
+  EmitInstrAB('CMP', 'DI', 'WORD PTR [BX]');
+  EmitInstrA('JG', LUA_RT_PFX + 'TN_END');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', 'DI');
+  EmitInstrA('DEC', 'SI');
+  EmitInstrAB('SHL', 'SI', '1');
+  EmitInstrAB('ADD', 'SI', '2');
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [BX+SI]');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitLabel(LUA_RT_PFX + 'TN_END');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstrAB('XOR', 'DI', 'DI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _LUART_TINEXT : BX = ptr table, CX = index -> AX = valeur, CX = next_idx }
+  { Si CX >= count -> AX = 0, CX = 0 (fin). }
+  EmitLabel(LUA_RT_PFX + 'TINEXT');
+  EmitInstrA('INC', 'CX');
+  EmitInstrAB('CMP', 'CX', 'WORD PTR [BX]');
+  EmitInstrA('JG', LUA_RT_PFX + 'TI_END');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', 'CX');
+  EmitInstrA('DEC', 'SI');
+  EmitInstrAB('SHL', 'SI', '1');
+  EmitInstrAB('ADD', 'SI', '2');
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [BX+SI]');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitLabel(LUA_RT_PFX + 'TI_END');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitInstr('RET');
+  EmitBlankLine;
+End;
+
 { Emettre les sous-programmes en ASM 8086 : CONCAT, STRCMP,       }
 { POW, STRLEN, PRINTSTR, PRINTNL, NUMTOSTR, PRINTNUM, etc.       }
 Procedure EmitExprRuntime;
@@ -4968,13 +5663,6 @@ Begin
   EmitInstrA('CALL', LUA_RT_PFX + 'PRINTNL');
   EmitInstrAB('MOV', 'AX', '4C01h');
   EmitInstr('INT    21h');
-  EmitInstr('RET');
-  EmitBlankLine;
-
-  { _LUART_TGET : BX = ptr_table, DI = ptr_cle -> AX = valeur }
-  { Stub : retourne 0 (sera implemente completement dans TODO 15) }
-  EmitLabel(LUA_RT_PFX + 'TGET');
-  EmitInstrAB('XOR', 'AX', 'AX');
   EmitInstr('RET');
   EmitBlankLine;
 
