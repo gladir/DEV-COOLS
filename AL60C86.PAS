@@ -221,7 +221,7 @@
             Combinaison d elements : FOR i := 1, 3 STEP 2 UNTIL 9, 20 DO ...
               Traiter chaque element de la liste dans l ordre
 
-  TODO 15 - GOTO ET ETIQUETTES
+  TODO 15 - GOTO ET ETIQUETTES [IMPLEMENTE]
             Declarations d etiquettes : nom: au debut d une instruction
             Table des etiquettes : LabelTab, LabelAdd, LabelFind
             GOTO label : JMP _A60L_label
@@ -621,6 +621,9 @@ Var
   { Compteur FOR (TODO 14) }
   ForCount   : Integer;
 
+  { Compteur GOTO (TODO 15) }
+  GotoCount  : Integer;
+
   { Table des symboles (TODO 05) }
   SymTab       : Array[0..MAX_SYM - 1] Of TSymRec;
   SymCount     : Integer;
@@ -738,6 +741,8 @@ Procedure EmitIORuntime; Forward;
 Procedure ParseIfStmt; Forward;
 { ---- Forward declarations (TODO 14) ----------------------- }
 Procedure ParseForStmt; Forward;
+{ ---- Forward declarations (TODO 15) ----------------------- }
+Procedure ParseGotoStmt; Forward;
 { ---- Forward declarations (TODO 06) ----------------------- }
 Procedure TypeInit;      Forward;
 Function  TypeKindOf(TypeIdx : Integer) : TTypeKind; Forward;
@@ -1022,6 +1027,7 @@ Begin
   IOEmitted := False;
   IfCount := 0;
   ForCount := 0;
+  GotoCount := 0;
   { Table des symboles (TODO 05) }
   SymInit;
   { Systeme de types (TODO 06) }
@@ -3175,6 +3181,17 @@ Begin
     SIdx := SymFind(VarName);
     If SIdx >= 0 Then
     Begin
+      { Etiquette : ident: (TODO 15) }
+      If SymTab[SIdx].Kind = SK_LABEL Then
+      Begin
+        ParserAdvance;  { consommer l identifiant }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+          ParserAdvance;  { consommer : }
+        EmitLabel(SymTab[SIdx].MangledName);
+        EmitComment('label ' + VarName);
+        Exit;
+      End;
+
       { Sauvegarder la position, avancer pour voir si := suit }
       ParserAdvance;  { consommer l identifiant }
       If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
@@ -3207,6 +3224,13 @@ Begin
         End;
         Exit;
       End;
+    End
+    Else
+    Begin
+      { Identifiant non dans la table des symboles.
+        Avant d avancer, on doit laisser ParseExpr gerer le cas
+        (appels de fonctions externes, intrinsics I/O, etc.) }
+      { On ne fait rien ici - on tombe dans ParseExpr ci-dessous }
     End;
   End;
 
@@ -3217,9 +3241,12 @@ End;
 { ---- ParseStmt : dispatcher d instructions ------------------- }
 { Dispatche vers ParseDeclStmt pour les mots-cles de type
   (INTEGER, REAL, BOOLEAN, STRING), vers ParseIfStmt pour IF,
-  vers ParseForStmt pour FOR,
+  vers ParseForStmt pour FOR, vers ParseGotoStmt pour GOTO/GO TO,
   et vers ParseExprStmt pour les identifiants et expressions.   }
 Procedure ParseStmt;
+Var
+  LblName : TString;
+  SIdx : Integer;
 Begin
   { Declaration : mot-cle de type }
   If (CurToken.Kind = TK_KEYWORD) And
@@ -3244,6 +3271,41 @@ Begin
     ParserAdvance;  { consommer FOR }
     ParseForStmt;
     Exit;
+  End;
+
+  { GOTO / GO TO (TODO 15) }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'GOTO') Then
+  Begin
+    ParserAdvance;  { consommer GOTO }
+    ParseGotoStmt;
+    Exit;
+  End;
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'GO') Then
+  Begin
+    ParserAdvance;  { consommer GO }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'TO') Then
+      ParserAdvance;  { consommer TO }
+    ParseGotoStmt;
+    Exit;
+  End;
+
+  { Etiquette : ident suivi de : (TODO 15) }
+  If (CurToken.Kind = TK_IDENT) Then
+  Begin
+    LblName := CurToken.Val;
+    { Regarder si le prochain token est : (sans consommer) }
+    { On utilise le fait que ParseExprStmt va gerez le cas normal }
+    SIdx := SymFind(LblName);
+    If (SIdx >= 0) And (SymTab[SIdx].Kind = SK_LABEL) Then
+    Begin
+      { C est un label connu : emettre le label et continuer }
+      ParserAdvance;  { consommer l identifiant }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+        ParserAdvance;  { consommer : }
+      EmitLabel(SymTab[SIdx].MangledName);
+      EmitComment('label ' + LblName);
+      Exit;
+    End;
   End;
 
   { Expression ou affectation }
@@ -4258,6 +4320,74 @@ Begin
   EmitComment('END FOR (n ' + N + ')');
 End;
 
+{ ============================================================
+  TODO 15 - GOTO ET ETIQUETTES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseGotoStmt : instruction GOTO / GO TO ---------------
+  Syntaxe : GOTO label
+            GO TO label
+  Le mot-cle GOTO ou GO TO a deja ete consomme par l appelant.
+  On attend un identifiant qui est le nom du label cible.
+  On emet un JMP vers le label mangled _A60L_name.
+  Si le label n est pas encore declare, on l ajoute quand meme
+  (forward reference) et on emettra le label plus tard.          }
+Procedure ParseGotoStmt;
+Var
+  LblName, MangledLbl : TString;
+  SIdx : Integer;
+Begin
+  Inc(GotoCount);
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    LblName := CurToken.Val;
+    ParserAdvance;  { consommer le nom du label }
+
+    { Chercher le label dans la table des symboles }
+    SIdx := SymFind(LblName);
+    If SIdx >= 0 Then
+    Begin
+      { Label deja declare }
+      MangledLbl := SymTab[SIdx].MangledName;
+    End
+    Else
+    Begin
+      { Forward reference : ajouter le label en avance }
+      SIdx := SymAdd(LblName, SK_LABEL, TY_IDX_LABEL, 0);
+      If SIdx >= 0 Then
+        MangledLbl := SymTab[SIdx].MangledName
+      Else
+        MangledLbl := A60_LBL_PFX + SymNameClean(LblName);
+    End;
+
+    EmitComment('GOTO ' + LblName);
+    EmitInstr('JMP', MangledLbl);
+  End
+  Else If (CurToken.Kind = TK_INTEGER) Then
+  Begin
+    { GOTO avec numero de label (Algol 60 supporte les labels numeriques) }
+    LblName := IntToStr_(CurToken.IntVal);
+    ParserAdvance;
+
+    SIdx := SymFind(LblName);
+    If SIdx >= 0 Then
+      MangledLbl := SymTab[SIdx].MangledName
+    Else
+    Begin
+      SIdx := SymAdd(LblName, SK_LABEL, TY_IDX_LABEL, 0);
+      If SIdx >= 0 Then
+        MangledLbl := SymTab[SIdx].MangledName
+      Else
+        MangledLbl := A60_LBL_PFX + LblName;
+    End;
+
+    EmitComment('GOTO ' + LblName);
+    EmitInstr('JMP', MangledLbl);
+  End
+  Else
+    CompileError('identifiant de label attendu apres GOTO');
+End;
+
 Procedure Run;
 Begin
   GlobalInit;
@@ -4329,10 +4459,58 @@ Begin
       Continue;
     End;
 
-    { Affectation ident := expr (TODO 09) }
+    { GOTO / GO TO (TODO 15) }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'GOTO') Then
+    Begin
+      ParserAdvance;  { consommer GOTO }
+      ParseGotoStmt;
+      Continue;
+    End;
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'GO') Then
+    Begin
+      ParserAdvance;  { consommer GO }
+      If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'TO') Then
+        ParserAdvance;  { consommer TO }
+      ParseGotoStmt;
+      Continue;
+    End;
+
+    { Declaration LABEL (TODO 15) : LABEL l1, l2, l3 }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'LABEL') Then
+    Begin
+      ParserAdvance;  { consommer LABEL }
+      While (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_INTEGER) Do
+      Begin
+        If CurToken.Kind = TK_INTEGER Then
+        Begin
+          If SymFind(IntToStr_(CurToken.IntVal)) < 0 Then
+            SymAdd(IntToStr_(CurToken.IntVal), SK_LABEL, TY_IDX_LABEL, 0);
+        End
+        Else
+        Begin
+          If SymFind(CurToken.Val) < 0 Then
+            SymAdd(CurToken.Val, SK_LABEL, TY_IDX_LABEL, 0);
+        End;
+        ParserAdvance;  { consommer le nom du label }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+          ParserAdvance  { consommer , }
+        Else
+          Break;
+      End;
+      Continue;
+    End;
+
+    { Affectation ident := expr OU label: (TODO 09 + TODO 15) }
     If (CurToken.Kind = TK_IDENT) Then
     Begin
       ParseExprStmt;
+      Continue;
+    End;
+
+    { Label numerique : numero suivi de : (TODO 15) }
+    If (CurToken.Kind = TK_INTEGER) Then
+    Begin
+      ParseExpr(GExprDummy);
       Continue;
     End;
 
@@ -4349,11 +4527,9 @@ Begin
     { Mots-cles non-geres : on les saute pour l instant }
     If (CurToken.Kind = TK_KEYWORD) And
        ((CurToken.Val = 'ARRAY') Or
-        (CurToken.Val = 'LABEL') Or
         (CurToken.Val = 'PROCEDURE') Or (CurToken.Val = 'OWN') Or
         (CurToken.Val = 'VALUE') Or (CurToken.Val = 'SWITCH') Or
         (CurToken.Val = 'COMMENT') Or
-        (CurToken.Val = 'GO') Or (CurToken.Val = 'GOTO') Or
         (CurToken.Val = 'THEN') Or
         (CurToken.Val = 'ELSE') Or (CurToken.Val = 'TO')) Then
     Begin

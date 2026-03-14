@@ -1,0 +1,30 @@
+comment Test GOTO et etiquettes (TODO 15) ;
+BEGIN
+  INTEGER x;
+  LABEL skip, done, loop;
+
+  comment GOTO simple (saut en avant) ;
+  x := 0;
+  GOTO skip;
+  x := 999;
+  skip: x := x + 1;
+  outinteger(1, x);
+  newline(1);
+
+  comment GO TO (deux mots) ;
+  x := 10;
+  GO TO done;
+  x := 0;
+  done: outinteger(1, x);
+  newline(1);
+
+  comment GOTO avec boucle manuelle ;
+  x := 0;
+  loop: x := x + 1;
+  IF x < 5 THEN GOTO loop;
+  outinteger(1, x);
+  newline(1);
+
+  outstring(1, `Fin test GOTO.`);
+  newline(1)
+END.
