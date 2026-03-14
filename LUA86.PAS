@@ -335,7 +335,7 @@
               %x, %o, %c : stubs simplifies
             string.gmatch : stub + avertissement (iterateur complexe)
 
-  TODO 20 - BIBLIOTHEQUE STANDARD (math, table, os)
+  TODO 20 - BIBLIOTHEQUE STANDARD (math, table, os) [IMPLEMENTE]
             Bibliotheque math :
               math.abs(n)    -> CALL _LUART_ABS -> AX
               math.max(a,b)  -> CMP + branchement -> AX
@@ -856,6 +856,12 @@ Procedure EmitScopeRuntime; Forward;
 Procedure EmitStringBuiltin(Const FuncName : TString; Var Res : TExprVal); Forward;
 Procedure EmitStringRuntime; Forward;
 
+{ Bibliotheque standard math/os (TODO 20) }
+Procedure EmitMathBuiltin(Const FuncName : TString; Var Res : TExprVal); Forward;
+Procedure EmitOSBuiltin(Const FuncName : TString; Var Res : TExprVal); Forward;
+Procedure EmitMathRuntime; Forward;
+Procedure EmitOSRuntime; Forward;
+
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
   ============================================================ }
@@ -1277,6 +1283,8 @@ Begin
   EmitFuncRuntime;
   EmitScopeRuntime;
   EmitStringRuntime;
+  EmitMathRuntime;
+  EmitOSRuntime;
 End;
 
 { EmitClose : terminer le fichier ASM (DOS exit, runtime, DATA, END) }
@@ -1448,6 +1456,10 @@ Begin
   DataAddWord('_LUA_META_GUARD', 0);
   { TODO 19 : Second buffer chaines pour operations string }
   DataAddBuffer('_LUA_STRBUF2', 512);
+  { TODO 20 : math/os data }
+  DataAddWord('_LUART_SEED', 12345);
+  DataAdd('_LUA_MATH_INT_S', DK_STR, 0, 'integer');
+  DataAdd('_LUA_OS_DATE_S', DK_STR, 0, '00/00/0000');
 End;
 
 { ---- ExprMakeImm : construire une valeur immediate ---------- }
@@ -2038,6 +2050,40 @@ Begin
       End
       Else
         CompileError('nom de fonction attendu apres "string."');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+      Exit;
+    End
+    { TODO 20 : math.abs / math.max / math.sqrt / etc. }
+    Else If (VName = 'math') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
+    Begin
+      ParserAdvance; { consomme '.' }
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        VName := CurToken.Val;
+        ParserAdvance;
+        EmitMathBuiltin(VName, E);
+      End
+      Else
+        CompileError('nom de fonction attendu apres "math."');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+      Exit;
+    End
+    { TODO 20 : os.clock / os.exit / etc. }
+    Else If (VName = 'os') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
+    Begin
+      ParserAdvance; { consomme '.' }
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        VName := CurToken.Val;
+        ParserAdvance;
+        EmitOSBuiltin(VName, E);
+      End
+      Else
+        CompileError('nom de fonction attendu apres "os."');
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
         ParserAdvance;
       Exit;
@@ -3627,6 +3673,40 @@ Begin
         Else
         Begin
           CompileError('nom de fonction attendu apres "string."');
+          ExprMakeNone(Res);
+        End;
+      End
+      Else If (VName = 'math') And
+              (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
+      Begin
+        { TODO 20 : math.abs / math.sqrt / etc. dans les expressions }
+        ParserAdvance; { consomme '.' }
+        If CurToken.Kind = TK_IDENT Then
+        Begin
+          FldName := CurToken.Val;
+          ParserAdvance;
+          EmitMathBuiltin(FldName, Res);
+        End
+        Else
+        Begin
+          CompileError('nom de fonction attendu apres "math."');
+          ExprMakeNone(Res);
+        End;
+      End
+      Else If (VName = 'os') And
+              (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
+      Begin
+        { TODO 20 : os.clock / os.exit / etc. dans les expressions }
+        ParserAdvance; { consomme '.' }
+        If CurToken.Kind = TK_IDENT Then
+        Begin
+          FldName := CurToken.Val;
+          ParserAdvance;
+          EmitOSBuiltin(FldName, Res);
+        End
+        Else
+        Begin
+          CompileError('nom de fonction attendu apres "os."');
           ExprMakeNone(Res);
         End;
       End
@@ -5264,6 +5344,32 @@ Begin
       ParserAdvance
     Else
       CompileError('")" attendue');
+    ExprMakeNone(Res);
+  End
+  Else If FuncName = 'move' Then
+  Begin
+    { table.move(a, f, e, t [, a2]) : stub + avertissement }
+    EmitComment('--- table.move (stub) ---');
+    If Opts.Warnings Then
+      WarnMsg('table.move : stub non implemente');
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+      ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance;
+    ExprMakeNone(Res);
+  End
+  Else If FuncName = 'pack' Then
+  Begin
+    { table.pack(...) : stub + avertissement }
+    EmitComment('--- table.pack (stub) ---');
+    If Opts.Warnings Then
+      WarnMsg('table.pack : stub non implemente');
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+      ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance;
     ExprMakeNone(Res);
   End
   Else
@@ -7642,6 +7748,488 @@ Begin
   EmitBlankLine;
   EmitComment('--- Scope runtime (TODO 18) ---');
   EmitComment('_ENV : stub, globales dans DATA');
+End;
+
+{ ============================================================
+  TODO 20 - BIBLIOTHEQUE STANDARD (math, table, os) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- EmitMathBuiltin : emettre le code pour math.abs etc. ---- }
+{ Dispatche les appels math.abs(n), math.max(a,b), etc.          }
+Procedure EmitMathBuiltin(Const FuncName : TString;
+                          Var Res : TExprVal);
+Var
+  E1, E2  : TExprVal;
+  LblSkip : TString;
+Begin
+  { Constantes : pas de parentheses }
+  If FuncName = 'pi' Then
+  Begin
+    EmitComment('--- math.pi ---');
+    EmitInstrAB('MOV', 'AX', '3');
+    Res.Kind    := EK_AX;
+    Res.ImmVal  := 3;
+    Res.TypeIdx := TY_IDX_NUMBER;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+    Exit;
+  End
+  Else If FuncName = 'huge' Then
+  Begin
+    EmitComment('--- math.huge ---');
+    EmitInstrAB('MOV', 'AX', '32767');
+    Res.Kind    := EK_AX;
+    Res.ImmVal  := 32767;
+    Res.TypeIdx := TY_IDX_NUMBER;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+    Exit;
+  End
+  Else If FuncName = 'maxinteger' Then
+  Begin
+    EmitComment('--- math.maxinteger ---');
+    EmitInstrAB('MOV', 'AX', '32767');
+    Res.Kind    := EK_AX;
+    Res.ImmVal  := 32767;
+    Res.TypeIdx := TY_IDX_NUMBER;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+    Exit;
+  End
+  Else If FuncName = 'mininteger' Then
+  Begin
+    EmitComment('--- math.mininteger ---');
+    EmitInstrAB('MOV', 'AX', '-32768');
+    Res.Kind    := EK_AX;
+    Res.ImmVal  := -32768;
+    Res.TypeIdx := TY_IDX_NUMBER;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+    Exit;
+  End;
+
+  { Les fonctions avec parentheses }
+  If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+  Begin
+    CompileError('"(" attendue apres math.' + FuncName);
+    ExprMakeNone(Res);
+    Exit;
+  End;
+  ParserAdvance; { consomme '(' }
+
+  If FuncName = 'abs' Then
+  Begin
+    { math.abs(n) -> AX = |n| }
+    EmitComment('--- math.abs ---');
+    ParseExpr(E1);
+    ExprFlushToAX(E1);
+    EmitInstrA('CALL', LUA_RT_PFX + 'ABS');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else
+      CompileError('")" attendue');
+    Res.Kind    := EK_AX;
+    Res.ImmVal  := 0;
+    Res.TypeIdx := TY_IDX_NUMBER;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+  Else If FuncName = 'max' Then
+  Begin
+    { math.max(a, b) -> AX = max(a, b) }
+    EmitComment('--- math.max ---');
+    ParseExpr(E1);
+    ExprFlushToAX(E1);
+    EmitInstrA('PUSH', 'AX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+    ParseExpr(E2);
+    ExprFlushToAX(E2);
+    EmitInstrA('POP', 'BX');
+    { BX=a, AX=b -> garder le plus grand dans AX }
+    LblSkip := LabelGen;
+    EmitInstrAB('CMP', 'BX', 'AX');
+    EmitInstrA('JLE', LblSkip);
+    EmitInstrAB('MOV', 'AX', 'BX');
+    EmitLabel(LblSkip);
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else
+      CompileError('")" attendue');
+    Res.Kind    := EK_AX;
+    Res.ImmVal  := 0;
+    Res.TypeIdx := TY_IDX_NUMBER;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+  Else If FuncName = 'min' Then
+  Begin
+    { math.min(a, b) -> AX = min(a, b) }
+    EmitComment('--- math.min ---');
+    ParseExpr(E1);
+    ExprFlushToAX(E1);
+    EmitInstrA('PUSH', 'AX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+    ParseExpr(E2);
+    ExprFlushToAX(E2);
+    EmitInstrA('POP', 'BX');
+    { BX=a, AX=b -> garder le plus petit dans AX }
+    LblSkip := LabelGen;
+    EmitInstrAB('CMP', 'BX', 'AX');
+    EmitInstrA('JGE', LblSkip);
+    EmitInstrAB('MOV', 'AX', 'BX');
+    EmitLabel(LblSkip);
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else
+      CompileError('")" attendue');
+    Res.Kind    := EK_AX;
+    Res.ImmVal  := 0;
+    Res.TypeIdx := TY_IDX_NUMBER;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+  Else If (FuncName = 'floor') Or (FuncName = 'ceil') Or
+          (FuncName = 'tointeger') Then
+  Begin
+    { math.floor(n) / math.ceil(n) / math.tointeger(n) -> pass-through }
+    EmitComment('--- math.' + FuncName + ' (pass-through) ---');
+    ParseExpr(E1);
+    ExprFlushToAX(E1);
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else
+      CompileError('")" attendue');
+    Res.Kind    := EK_AX;
+    Res.ImmVal  := 0;
+    Res.TypeIdx := TY_IDX_NUMBER;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+  Else If FuncName = 'sqrt' Then
+  Begin
+    { math.sqrt(n) -> CALL _LUART_SQRT -> AX }
+    EmitComment('--- math.sqrt ---');
+    ParseExpr(E1);
+    ExprFlushToAX(E1);
+    EmitInstrA('CALL', LUA_RT_PFX + 'SQRT');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else
+      CompileError('")" attendue');
+    Res.Kind    := EK_AX;
+    Res.ImmVal  := 0;
+    Res.TypeIdx := TY_IDX_NUMBER;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+  Else If FuncName = 'random' Then
+  Begin
+    { math.random([m [,n]]) -> CALL _LUART_RAND -> AX }
+    EmitComment('--- math.random ---');
+    { Verifier s il y a des arguments }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    Begin
+      { math.random() : resultat brut 0..32767 }
+      EmitInstrA('CALL', LUA_RT_PFX + 'RAND');
+      ParserAdvance; { consomme ')' }
+    End
+    Else
+    Begin
+      ParseExpr(E1);
+      ExprFlushToAX(E1);
+      EmitInstrA('PUSH', 'AX'); { m }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      Begin
+        ParserAdvance;
+        ParseExpr(E2);
+        ExprFlushToAX(E2);
+        EmitInstrAB('MOV', 'CX', 'AX'); { n = max }
+        EmitInstrA('POP', 'BX');         { m = min }
+      End
+      Else
+      Begin
+        { math.random(m) : resultat 1..m }
+        EmitInstrA('POP', 'CX');         { CX = m }
+        EmitInstrAB('MOV', 'BX', '1');   { BX = 1 }
+      End;
+      { BX=min, CX=max -> CALL _LUART_RANDRANGE }
+      EmitInstrA('CALL', LUA_RT_PFX + 'RANDRANGE');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        ParserAdvance
+      Else
+        CompileError('")" attendue');
+    End;
+    Res.Kind    := EK_AX;
+    Res.ImmVal  := 0;
+    Res.TypeIdx := TY_IDX_NUMBER;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+  Else If FuncName = 'randomseed' Then
+  Begin
+    { math.randomseed(n) -> MOV [_LUART_SEED], AX }
+    EmitComment('--- math.randomseed ---');
+    ParseExpr(E1);
+    ExprFlushToAX(E1);
+    EmitInstrAB('MOV', 'WORD PTR [_LUART_SEED]', 'AX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else
+      CompileError('")" attendue');
+    ExprMakeNone(Res);
+  End
+  Else If FuncName = 'type' Then
+  Begin
+    { math.type(n) -> retourne "integer" (toujours) }
+    EmitComment('--- math.type ---');
+    ParseExpr(E1);
+    ExprFlushToAX(E1);
+    EmitInstrAB('MOV', 'AX', 'OFFSET _LUA_MATH_INT_S');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else
+      CompileError('")" attendue');
+    Res.Kind    := EK_AX;
+    Res.ImmVal  := 0;
+    Res.TypeIdx := TY_IDX_STRING;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+  Else
+  Begin
+    { math.xxx inconnu : stub }
+    If Opts.Warnings Then
+      WarnMsg('math.' + FuncName + ' : stub non implemente');
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+      ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance;
+    ExprMakeNone(Res);
+  End;
+End;
+
+{ ---- EmitOSBuiltin : emettre le code pour os.clock etc. ------ }
+{ Dispatche les appels os.clock(), os.exit(), os.time(), etc.     }
+Procedure EmitOSBuiltin(Const FuncName : TString;
+                        Var Res : TExprVal);
+Var
+  E1 : TExprVal;
+Begin
+  { Attendre et consommer '(' }
+  If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+  Begin
+    CompileError('"(" attendue apres os.' + FuncName);
+    ExprMakeNone(Res);
+    Exit;
+  End;
+  ParserAdvance; { consomme '(' }
+
+  If FuncName = 'clock' Then
+  Begin
+    { os.clock() -> INT 21h AH=2Ch -> approximation secondes }
+    EmitComment('--- os.clock ---');
+    EmitInstrA('CALL', LUA_RT_PFX + 'OSCLOCK');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else
+      CompileError('")" attendue');
+    Res.Kind    := EK_AX;
+    Res.ImmVal  := 0;
+    Res.TypeIdx := TY_IDX_NUMBER;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+  Else If FuncName = 'time' Then
+  Begin
+    { os.time() -> stub AX=0 + avertissement }
+    EmitComment('--- os.time (stub) ---');
+    If Opts.Warnings Then
+      WarnMsg('os.time : stub, retourne 0');
+    EmitInstrAB('XOR', 'AX', 'AX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else
+      CompileError('")" attendue');
+    Res.Kind    := EK_AX;
+    Res.ImmVal  := 0;
+    Res.TypeIdx := TY_IDX_NUMBER;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+  Else If FuncName = 'date' Then
+  Begin
+    { os.date() -> stub AX=ptr "00/00/0000" }
+    EmitComment('--- os.date (stub) ---');
+    If Opts.Warnings Then
+      WarnMsg('os.date : stub, retourne "00/00/0000"');
+    EmitInstrAB('MOV', 'AX', 'OFFSET _LUA_OS_DATE_S');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else
+      CompileError('")" attendue');
+    Res.Kind    := EK_AX;
+    Res.ImmVal  := 0;
+    Res.TypeIdx := TY_IDX_STRING;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+  Else If FuncName = 'exit' Then
+  Begin
+    { os.exit([code]) -> MOV AX,4C00h + code + INT 21h }
+    EmitComment('--- os.exit ---');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    Begin
+      { os.exit() sans argument -> code 0 }
+      EmitInstrAB('MOV', 'AX', '4C00h');
+      EmitInstr('INT    21h');
+      ParserAdvance; { consomme ')' }
+    End
+    Else
+    Begin
+      ParseExpr(E1);
+      ExprFlushToAX(E1);
+      EmitInstrAB('MOV', 'AH', '4Ch');  { AL contient deja le code }
+      EmitInstr('INT    21h');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        ParserAdvance
+      Else
+        CompileError('")" attendue');
+    End;
+    ExprMakeNone(Res);
+  End
+  Else If FuncName = 'execute' Then
+  Begin
+    { os.execute(cmd) -> stub + avertissement }
+    EmitComment('--- os.execute (stub) ---');
+    If Opts.Warnings Then
+      WarnMsg('os.execute : stub non implemente');
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+      ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance;
+    ExprMakeNone(Res);
+  End
+  Else
+  Begin
+    { os.xxx inconnu : stub }
+    If Opts.Warnings Then
+      WarnMsg('os.' + FuncName + ' : stub non implemente');
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+      ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance;
+    ExprMakeNone(Res);
+  End;
+End;
+
+{ ---- EmitMathRuntime : routines runtime math (TODO 20) -------- }
+Procedure EmitMathRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=== Routines runtime TODO 20 (math) ===');
+  EmitBlankLine;
+
+  { _LUART_ABS : AX = |AX| (valeur absolue) }
+  EmitLabel(LUA_RT_PFX + 'ABS');
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JNS', LUA_RT_PFX + 'ABS_OK');
+  EmitInstrA('NEG', 'AX');
+  EmitLabel(LUA_RT_PFX + 'ABS_OK');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _LUART_SQRT : AX = floor(sqrt(AX)) via Newton-Raphson entier }
+  EmitLabel(LUA_RT_PFX + 'SQRT');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JZ', LUA_RT_PFX + 'SQRT_RET');
+  EmitInstrAB('MOV', 'CX', 'AX');    { CX = n }
+  EmitInstrAB('MOV', 'BX', 'AX');    { BX = guess = n }
+  EmitInstrAB('SHR', 'BX', '1');     { initial guess = n/2 }
+  EmitInstrAB('OR', 'BX', '1');      { au moins 1 }
+  { boucle Newton : guess = (guess + n/guess) / 2 }
+  EmitLabel(LUA_RT_PFX + 'SQRT_LP');
+  EmitInstrAB('MOV', 'AX', 'CX');    { AX = n }
+  EmitInstrAB('XOR', 'DX', 'DX');
+  EmitInstrA('DIV', 'BX');            { AX = n / guess }
+  EmitInstrAB('ADD', 'AX', 'BX');    { AX = guess + n/guess }
+  EmitInstrAB('SHR', 'AX', '1');     { AX = (guess + n/guess) / 2 }
+  EmitInstrAB('CMP', 'AX', 'BX');
+  EmitInstrA('JGE', LUA_RT_PFX + 'SQRT_DN');
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstrA('JMP', LUA_RT_PFX + 'SQRT_LP');
+  EmitLabel(LUA_RT_PFX + 'SQRT_DN');
+  EmitInstrAB('MOV', 'AX', 'BX');    { resultat dans AX }
+  EmitLabel(LUA_RT_PFX + 'SQRT_RET');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _LUART_RAND : LCG 16-bit -> AX = 0..32767 }
+  { seed = seed * 25173 + 13849 }
+  EmitLabel(LUA_RT_PFX + 'RAND');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [_LUART_SEED]');
+  EmitInstrAB('MOV', 'DX', '25173');
+  EmitInstrA('MUL', 'DX');
+  EmitInstrAB('ADD', 'AX', '13849');
+  EmitInstrAB('MOV', 'WORD PTR [_LUART_SEED]', 'AX');
+  EmitInstrAB('AND', 'AX', '7FFFh');  { 0..32767 }
+  EmitInstrA('POP', 'DX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _LUART_RANDRANGE : BX=min, CX=max -> AX = min..max }
+  EmitLabel(LUA_RT_PFX + 'RANDRANGE');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrA('CALL', LUA_RT_PFX + 'RAND');
+  { AX = 0..32767, on veut min..max }
+  { range = max - min + 1 }
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrAB('SUB', 'CX', 'BX');
+  EmitInstrA('INC', 'CX');
+  { AX mod range }
+  EmitInstrAB('XOR', 'DX', 'DX');
+  EmitInstrA('DIV', 'CX');
+  { DX = remainder = 0..range-1 }
+  EmitInstrA('POP', 'BX');
+  EmitInstrAB('ADD', 'DX', 'BX');   { DX = min + remainder }
+  EmitInstrAB('MOV', 'AX', 'DX');
+  EmitInstrA('POP', 'DX');
+  EmitInstr('RET');
+  EmitBlankLine;
+End;
+
+{ ---- EmitOSRuntime : routines runtime os (TODO 20) ----------- }
+Procedure EmitOSRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=== Routines runtime TODO 20 (os) ===');
+  EmitBlankLine;
+
+  { _LUART_OSCLOCK : retourne approximation secondes via INT 21h AH=2Ch }
+  { Retourne : AX = secondes (0..59) + minutes*60 comme approximation   }
+  EmitLabel(LUA_RT_PFX + 'OSCLOCK');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrAB('MOV', 'AH', '2Ch');
+  EmitInstr('INT    21h');
+  { CH=heures, CL=minutes, DH=secondes, DL=centiemes }
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstrAB('MOV', 'AL', 'DH');    { AX = secondes }
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstr('RET');
+  EmitBlankLine;
 End;
 
 { ---- Run : pipeline de compilation ----------------------------- }
