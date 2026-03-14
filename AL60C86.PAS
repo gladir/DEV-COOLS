@@ -353,7 +353,7 @@
             Distinction avec variables locales : locales sur pile,
               OWN dans DATA
 
-  TODO 23 - EXPRESSIONS CONDITIONNELLES ET DESIGNATIONNELLES
+  TODO 23 - EXPRESSIONS CONDITIONNELLES ET DESIGNATIONNELLES [IMPLEMENTE]
             Expression conditionnelle : IF b THEN e1 ELSE e2
               Retourne une valeur : e1 si b est vrai, e2 sinon
               Type : le type commun de e1 et e2 (INTEGER, REAL, BOOLEAN)
@@ -2098,7 +2098,10 @@ Begin
       { Variable via SymIdx : globale ou locale ou parametre }
       Else If (E.SymIdx >= 0) And (E.SymIdx < SymCount) Then
       Begin
-        If SymTab[E.SymIdx].ScopeLevel = 0 Then
+        { Label -> OFFSET (adresse de code, TODO 23) }
+        If SymTab[E.SymIdx].Kind = SK_LABEL Then
+          EmitInstr('MOV', 'AX, OFFSET ' + SymTab[E.SymIdx].MangledName)
+        Else If SymTab[E.SymIdx].ScopeLevel = 0 Then
           EmitInstr('MOV', 'AX, WORD PTR [' + SymTab[E.SymIdx].MangledName + ']')
         Else If SymTab[E.SymIdx].Kind = SK_OWN Then
           EmitInstr('MOV', 'AX, WORD PTR [' + SymTab[E.SymIdx].MangledName + ']')
@@ -4774,6 +4777,31 @@ Begin
     EmitComment('GOTO ' + LblName);
     EmitInstr('JMP', MangledLbl);
   End
+  { Expression designationnelle conditionnelle (TODO 23) }
+  { GOTO IF b THEN L1 ELSE L2 }
+  Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'IF') Then
+  Begin
+    ParseExpr(E);
+    ExprFlushToAX(E);
+    EmitComment('GOTO designationnel conditionnel (TODO 23)');
+    EmitInstr('MOV', 'BX, AX');
+    EmitInstr('JMP', 'BX');
+  End
+  { Expression designationnelle parenthesee (TODO 23) }
+  { GOTO (expression) }
+  Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+  Begin
+    ParserAdvance;  { consommer ( }
+    ParseExpr(E);
+    ExprFlushToAX(E);
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance  { consommer ) }
+    Else
+      CompileError(') attendu apres expression designationnelle');
+    EmitComment('GOTO designationnel (TODO 23)');
+    EmitInstr('MOV', 'BX, AX');
+    EmitInstr('JMP', 'BX');
+  End
   Else
     CompileError('identifiant de label attendu apres GOTO');
 End;
@@ -5436,6 +5464,16 @@ Begin
       Break;
   End;
 End;
+
+{ ============================================================
+  TODO 23 - EXPRESSIONS CONDITIONNELLES ET DESIGNATIONNELLES [IMPLEMENTE]
+  ============================================================ }
+{ Changements effectues pour cette TODO :
+  - ExprFlushToAX : SK_LABEL -> MOV AX, OFFSET label (adresse de code)
+  - ParsePrimary  : IF expr THEN expr ELSE expr (deja en place)
+  - ParseGotoStmt : GOTO IF b THEN L1 ELSE L2 (desig conditionnel)
+                    GOTO (expr) (desig parenthesee)
+  - ParseSwitchAccess : sw[expr] -> TY_IDX_LABEL (deja en place)       }
 
 { ============================================================
   TODO 21 - DECLARATIONS SWITCH (AIGUILLAGES) [IMPLEMENTE]
