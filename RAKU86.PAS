@@ -199,7 +199,7 @@
               -> CALL _RKRT_NUMTOSTR(AX=n, DI=buf)
             Formatage chaine interpolee : concatener les segments
 
-  TODO 13 - CONDITIONNELLES (if/elsif/else, unless, given/when)
+  TODO 13 - CONDITIONNELLES (if/elsif/else, unless, given/when) [IMPLEMENTE]
             ParseIfStmt : if cond { stmts } elsif cond { stmts }
               else { stmts }
               Emission TEST AX,AX / JZ pour condition fausse
@@ -711,6 +711,10 @@ Var
   GKwConsumed   : Boolean;
   GCallArgCount : Integer;
 
+  { Compteurs conditionnelles (TODO 13) }
+  IfCount    : Integer;
+  GivenCount : Integer;
+
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
@@ -861,6 +865,11 @@ Procedure ParseNoteExpr(Var Res : TExprVal);                      Forward;
 Procedure ParseGetExpr(Var Res : TExprVal);                       Forward;
 Procedure ParsePromptExpr(Var Res : TExprVal);                    Forward;
 Procedure EmitIORuntime;                                          Forward;
+
+{ Forward declarations TODO 13 - Conditionnelles }
+Procedure ParseIfStmt;                                            Forward;
+Procedure ParseUnlessStmt;                                        Forward;
+Procedure ParseGivenWhenStmt;                                     Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1104,6 +1113,8 @@ Begin
   CurFrameSize := 0;
   CurFnDepth   := 0;
   LoopTop      := 0;
+  IfCount      := 0;
+  GivenCount   := 0;
   GKwConsumed  := False;
   CurFnRetLbl  := '';
   CurFnName    := '';
@@ -4995,7 +5006,263 @@ Begin
   EmitBlankLine;
 End;
 
-{ ---- ParseStmt : dispatch principal ----------------------------- }
+{ ============================================================
+  TODO 13 - CONDITIONNELLES (if/elsif/else, unless, given/when)
+  ============================================================ }
+
+{ ---- ParseBlock : parse accolades stmts accolades -------------- }
+(* Consomme accolade ouvrante, execute les stmts, consomme fermante *)
+Procedure ParseBlock;
+Begin
+  (* Consommer accolade ouvrante *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+    ParserAdvance
+  Else
+    CompileError('accolade ouvrante attendue');
+
+  (* Parser les instructions du bloc *)
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+    ParseStmt;
+
+  (* Consommer accolade fermante *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+    ParserAdvance
+  Else
+    CompileError('accolade fermante attendue');
+End;
+
+(* ---- ParseIfStmt : if/elsif/else ----------------------------- *)
+(* Syntaxe Raku :                                                   *)
+(*   if cond LBRACE stmts RBRACE                                    *)
+(*   if cond LBRACE stmts RBRACE else LBRACE stmts RBRACE           *)
+(*   if cond LBRACE stmts RBRACE elsif cond LBRACE ... RBRACE       *)
+Procedure ParseIfStmt;
+Var
+  Cond        : TExprVal;
+  LblElsif    : TString;
+  LblEnd      : TString;
+  ElsifIdx    : Integer;
+  NS          : TString;
+Begin
+  Inc(IfCount);
+  Str(IfCount, NS);
+
+  LblEnd := '_RKL_ENDIF_' + NS;
+  ElsifIdx := 0;
+
+  EmitComment('if (TODO 13)');
+
+  { Evaluer la condition }
+  ParseExpr(Cond);
+  ExprFlushToAX(Cond);
+
+  { Generer le label pour la branche fausse }
+  Inc(ElsifIdx);
+  Str(ElsifIdx, NS);
+  Str(IfCount, LblElsif);
+  LblElsif := '_RKL_ELSIF_' + LblElsif + '_' + NS;
+
+  { TEST AX,AX / JZ -> branche fausse }
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JZ', LblElsif);
+
+  { Bloc THEN }
+  ParseBlock;
+
+  { Saut vers la fin }
+  EmitInstrA('JMP', LblEnd);
+
+  { Gerer les elsif / else }
+  While (CurToken.Kind = TK_KEYWORD) And
+        ((CurToken.Val = 'elsif') Or (CurToken.Val = 'else')) Do
+  Begin
+    If CurToken.Val = 'elsif' Then
+    Begin
+      EmitLabel(LblElsif);
+      ParserAdvance;   { consommer 'elsif' }
+
+      EmitComment('elsif');
+
+      { Evaluer la condition elsif }
+      ParseExpr(Cond);
+      ExprFlushToAX(Cond);
+
+      { Generer le prochain label fausse }
+      Inc(ElsifIdx);
+      Str(ElsifIdx, NS);
+      Str(IfCount, LblElsif);
+      LblElsif := '_RKL_ELSIF_' + LblElsif + '_' + NS;
+
+      EmitInstrAB('TEST', 'AX', 'AX');
+      EmitInstrA('JZ', LblElsif);
+
+      { Bloc elsif }
+      ParseBlock;
+
+      { Saut vers la fin }
+      EmitInstrA('JMP', LblEnd);
+    End
+    Else { else }
+    Begin
+      EmitLabel(LblElsif);
+      ParserAdvance;   { consommer 'else' }
+
+      EmitComment('else');
+
+      { Bloc else }
+      ParseBlock;
+
+      { Marquer le label elsif courant comme consomme }
+      LblElsif := '';
+    End;
+  End;
+
+  { Si pas de else, on emet le label fausse restant }
+  If LblElsif <> '' Then
+    EmitLabel(LblElsif);
+
+  { Label de fin }
+  EmitLabel(LblEnd);
+End;
+
+(* ---- ParseUnlessStmt : unless cond LBRACE stmts RBRACE ------ *)
+(* Equivalent a if !cond LBRACE stmts RBRACE                       *)
+(* Supporte else, mais pas elsif                                    *)
+Procedure ParseUnlessStmt;
+Var
+  Cond     : TExprVal;
+  LblElse  : TString;
+  LblEnd   : TString;
+  NS       : TString;
+Begin
+  Inc(IfCount);
+  Str(IfCount, NS);
+
+  LblElse := '_RKL_UNLESS_ELSE_' + NS;
+  LblEnd  := '_RKL_UNLESS_END_' + NS;
+
+  EmitComment('unless (TODO 13)');
+
+  { Evaluer la condition }
+  ParseExpr(Cond);
+  ExprFlushToAX(Cond);
+
+  { unless = executer si faux : JNZ saute par-dessus le bloc }
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JNZ', LblElse);
+
+  { Bloc unless (execute si condition fausse) }
+  ParseBlock;
+  EmitInstrA('JMP', LblEnd);
+
+  { Label else }
+  EmitLabel(LblElse);
+
+  { Gerer le else optionnel }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'else') Then
+  Begin
+    ParserAdvance;   { consommer 'else' }
+    EmitComment('unless/else');
+    ParseBlock;
+  End;
+
+  { Label de fin }
+  EmitLabel(LblEnd);
+End;
+
+(* ---- ParseGivenWhenStmt : given/when/default ----------------- *)
+(* Syntaxe Raku :                                                    *)
+(*   given $x LBRACE                                                 *)
+(*     when val1 LBRACE stmts RBRACE                                 *)
+(*     when val2 LBRACE stmts RBRACE                                 *)
+(*     default   LBRACE stmts RBRACE                                 *)
+(*   RBRACE                                                          *)
+Procedure ParseGivenWhenStmt;
+Var
+  GivenExpr   : TExprVal;
+  WhenExpr    : TExprVal;
+  LblNext     : TString;
+  LblEnd      : TString;
+  NS          : TString;
+  WhenIdx     : Integer;
+Begin
+  Inc(GivenCount);
+  Str(GivenCount, NS);
+  LblEnd := '_RKL_ENDGIVEN_' + NS;
+  WhenIdx := 0;
+
+  EmitComment('given (TODO 13)');
+
+  { Evaluer l expression given }
+  ParseExpr(GivenExpr);
+  ExprFlushToAX(GivenExpr);
+
+  { Sauvegarder la valeur dans CX pour les comparaisons when }
+  EmitInstrAB('MOV', 'CX', 'AX');
+
+  (* Consommer accolade ouvrante *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+    ParserAdvance
+  Else
+    CompileError('accolade ouvrante attendue apres given');
+
+  (* Parser les when/default *)
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+  Begin
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'when') Then
+    Begin
+      ParserAdvance;   { consommer 'when' }
+      Inc(WhenIdx);
+      Str(WhenIdx, NS);
+      Str(GivenCount, LblNext);
+      LblNext := '_RKL_WHEN_' + LblNext + '_' + NS;
+
+      EmitComment('when');
+
+      { Evaluer la valeur when }
+      ParseExpr(WhenExpr);
+      ExprFlushToAX(WhenExpr);
+
+      { Comparer : CX contient la valeur given }
+      EmitInstrAB('CMP', 'CX', 'AX');
+      EmitInstrA('JNE', LblNext);
+
+      { Bloc when (match) }
+      ParseBlock;
+
+      { Sortir du given apres un match }
+      EmitInstrA('JMP', LblEnd);
+
+      { Label pour le prochain when }
+      EmitLabel(LblNext);
+    End
+    Else If (CurToken.Kind = TK_KEYWORD) And
+            (CurToken.Val = 'default') Then
+    Begin
+      ParserAdvance;   { consommer 'default' }
+      EmitComment('default');
+
+      { Bloc default (toujours execute si atteint) }
+      ParseBlock;
+    End
+    Else
+    Begin
+      { Instruction hors when/default dans le given }
+      ParseStmt;
+    End;
+  End;
+
+  (* Consommer accolade fermante *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+    ParserAdvance
+  Else
+    CompileError('accolade fermante attendue apres given');
+
+  { Label de fin }
+  EmitLabel(LblEnd);
+End;
 Procedure ParseStmt;
 Var
   Kw : TString;
@@ -5018,6 +5285,26 @@ Begin
     Begin
       ParserAdvance;   { consommer le mot-cle }
       ParseDeclStmt(Kw);
+      Exit;
+    End;
+
+    { Conditionnelles (TODO 13) }
+    If Kw = 'if' Then
+    Begin
+      ParserAdvance;   { consommer 'if' }
+      ParseIfStmt;
+      Exit;
+    End;
+    If Kw = 'unless' Then
+    Begin
+      ParserAdvance;   { consommer 'unless' }
+      ParseUnlessStmt;
+      Exit;
+    End;
+    If Kw = 'given' Then
+    Begin
+      ParserAdvance;   { consommer 'given' }
+      ParseGivenWhenStmt;
       Exit;
     End;
   End;
@@ -5077,6 +5364,8 @@ Begin
   CurFrameSize   := 0;
   CurFnDepth     := 0;
   LoopTop        := 0;
+  IfCount        := 0;
+  GivenCount     := 0;
   GKwConsumed    := False;
   GCallArgCount  := 0;
   CurFnRetLbl    := '';
