@@ -11061,3 +11061,984 @@
       pas de multiplication 32 bits (sauf 68020+). Les deux
       architectures necessitent des routines logicielles pour
       les operations qui depassent leurs capacites materielles.
+
+==============================================================================
+14. CONVERSION DE CODE Z8000 EN 68000
+==============================================================================
+
+  Cette section traite de la conversion de programmes ecrits en
+  assembleur Zilog Z8000 vers l'assembleur Motorola 68000. Le Z8000
+  et le 68000 sont des processeurs 16/32 bits contemporains (tous
+  deux lances en 1979), concus comme successeurs de processeurs 8 bits
+  (Z80 et 6800/6809 respectivement). Bien qu'ils partagent une
+  philosophie CISC similaire, leurs jeux d'instructions, modes
+  d'adressage et organisations de registres different sensiblement.
+  Le Z8000 existe en deux variantes : le Z8001 (segmente, 8 Mo) et
+  le Z8002 (non segmente, 64 Ko). Cette section couvre principalement
+  le Z8002 non segmente, plus simple a convertir.
+
+  14.1 Differences fondamentales entre Z8000 et 68000
+  ------------------------------------------------------
+
+  Critere                  Zilog Z8000           Motorola 68000
+  -----------------------  --------------------  --------------------
+  Type d'architecture      CISC                  CISC
+  Taille des instructions  16-48 bits (variable) 16-80 bits (variable)
+  Registres generaux       16 (R0-R15)           8 donnees + 8 adresses
+  Registres d'adresse      (inclus dans gen.)    A0-A7 (separes)
+  Taille des registres     16 bits               32 bits
+  Paires de registres      RR0-RR14 (32 bits)    D0.L-D7.L natifs 32 bits
+  Quadruples de registres  RQ0-RQ12 (64 bits)    Pas d'equivalent direct
+  Espace d'adressage       64 Ko (Z8002)         16 Mo (24 bits)
+                           8 Mo (Z8001 segmente)
+  Ordre des octets         Big-endian            Big-endian
+  Alignement memoire       Mots sur adr. paires  Mots sur adresses paires
+  Pile                     Decroissante          Decroissante (A7)
+  Pointeur de pile         R15 (convention)      A7 (dedie)
+  Modes de privilege       Normal / Systeme      Utilisateur / Superviseur
+  Coprocesseur flottant    Non (Z8070 optionnel) 68881/68882 (separe)
+  Instructions sur blocs   Oui (LDIR, CPIR...)   Non (boucles manuelles)
+  Entrees/Sorties          IN/OUT (espace E/S)   Memory-mapped I/O
+  Flags (drapeaux)         C,Z,S,P/V,D,H        X,N,Z,V,C
+
+  Differences cles pour la conversion :
+
+  a) Organisation des registres :
+     Le Z8000 possede 16 registres generaux de 16 bits (R0-R15)
+     utilisables indifferemment pour les donnees ou les adresses.
+     Les registres peuvent etre combines en paires de 32 bits
+     (RR0=R0:R1, RR2=R2:R3, ..., RR14=R14:R15) ou en quadruples
+     de 64 bits (RQ0, RQ4, RQ8, RQ12). Le 68000 separe les
+     registres en 8 registres de donnees 32 bits (D0-D7) et
+     8 registres d'adresse 32 bits (A0-A7). Lors de la conversion,
+     il faut decider si chaque registre Z8000 correspond a un
+     registre de donnees ou d'adresse du 68000 selon son usage.
+
+  b) Taille native des registres :
+     Les registres Z8000 sont natifs 16 bits. Les operations 32 bits
+     necessitent des paires de registres (RRn). Le 68000 a des
+     registres 32 bits natifs. Les paires RRn du Z8000 se
+     convertissent en un seul registre .L du 68000.
+
+  c) Espace d'adressage :
+     Le Z8002 (non segmente) n'adresse que 64 Ko. Le Z8001
+     (segmente) adresse 8 Mo via 128 segments de 64 Ko chacun.
+     Le 68000 adresse 16 Mo lineaires (24 bits). La conversion
+     depuis le Z8002 est simple (les adresses 16 bits sont valides
+     sur le 68000). Depuis le Z8001, les adresses segmentees
+     doivent etre converties en adresses lineaires.
+
+  d) Instructions sur blocs :
+     Le Z8000 dispose d'instructions de blocs heritees du Z80
+     (LDIR, LDDR, CPIR, CPDR, INIR, OTIR) qui operent sur des
+     blocs de memoire avec auto-increment/decrement et repetition
+     automatique. Le 68000 n'a pas d'equivalents directs ; ces
+     operations doivent etre implementees avec des boucles
+     utilisant DBRA ou des sequences MOVE/CMP avec (An)+ ou -(An).
+
+  e) Entrees/Sorties :
+     Le Z8000 possede un espace d'E/S separe avec des instructions
+     IN et OUT dediees. Le 68000 utilise exclusivement des E/S
+     mappees en memoire (memory-mapped I/O). Les instructions IN/OUT
+     du Z8000 doivent etre converties en acces memoire MOVE sur
+     les adresses de peripheriques correspondantes.
+
+  f) Endianness identique :
+     Les deux processeurs sont big-endian. C'est un avantage
+     majeur pour la conversion : les structures de donnees en
+     memoire ont le meme agencement d'octets, donc aucune
+     conversion d'endianness n'est necessaire.
+
+  14.2 Correspondance des registres
+  ------------------------------------
+
+  Registre Z8000     Equivalent 68000     Notes
+  ----------------   -------------------  --------------------------------
+  R0                 D0                   Registre de travail
+  R1                 D1                   Registre de travail
+  R2                 D2                   Registre de travail
+  R3                 D3                   Registre de travail
+  R4                 D4                   Registre de travail
+  R5                 D5                   Registre de travail
+  R6                 D6                   Registre de travail
+  R7                 D7                   Registre de travail
+  R8                 A0                   Pointeur / adresse
+  R9                 A1                   Pointeur / adresse
+  R10                A2                   Pointeur / adresse
+  R11                A3                   Pointeur / adresse
+  R12                A4                   Pointeur / adresse
+  R13                A5                   Pointeur / adresse
+  R14                A6 (FP)              Frame pointer (convention)
+  R15                A7 (SP)              Pointeur de pile
+  FCW                SR                   Registre d'etat / controle
+  FLAGS              CCR                  Drapeaux de condition
+  PC                 PC                   Compteur ordinal
+
+  Paires de registres (32 bits) :
+
+  Z8000              68000
+  -----------------  -------------------------------------------
+  RR0 (R0:R1)       D0.L (registre 32 bits complet)
+  RR2 (R2:R3)       D1.L
+  RR4 (R4:R5)       D2.L
+  RR6 (R6:R7)       D3.L
+  RR8 (R8:R9)       A0 (deja 32 bits)
+  RR10 (R10:R11)    A1
+  RR12 (R12:R13)    A2
+  RR14 (R14:R15)    A6/A7 (selon contexte)
+
+  Notes sur la correspondance :
+
+  - R0-R7 -> D0-D7 : mappage naturel des registres de donnees.
+    Les operations arithmetiques et logiques Z8000 sur R0-R7
+    se convertissent directement en operations sur D0-D7.
+
+  - R8-R15 -> A0-A7 : les registres utilises comme pointeurs
+    se mappent sur les registres d'adresse du 68000. Si un
+    registre R8-R13 est utilise exclusivement pour des donnees
+    (pas d'adressage indirect), il peut etre mappe sur un
+    registre de donnees libre.
+
+  - RR0-RR6 -> D0.L-D3.L : une paire Z8000 de 32 bits correspond
+    directement a un registre 32 bits du 68000. C'est un gain
+    majeur car le Z8000 consomme 2 registres pour une valeur
+    32 bits.
+
+  - Les quadruples (RQ0, etc.) de 64 bits n'ont pas d'equivalent
+    direct. Il faut utiliser deux registres 32 bits du 68000
+    (ex. RQ0 -> D0.L et D1.L).
+
+  Correspondance des drapeaux :
+
+  Z8000              68000             Notes
+  ----------------   ----------------  --------------------------------
+  C (Carry)          C (Carry)         Equivalents directs
+  Z (Zero)           Z (Zero)          Equivalents directs
+  S (Sign)           N (Negative)      Meme signification
+  P/V (Parity/Ovf)   V (Overflow)      En mode overflow seulement
+  D (Decimal adj.)   (pas d'equiv.)    Utiliser ABCD/SBCD
+  H (Half-carry)     X (Extend)        Usage different ; X est un
+                                        carry etendu pour le BCD
+
+  14.3 Conversion des instructions de transfert
+  ------------------------------------------------
+
+  Le Z8000 dispose d'instructions de transfert avec des tailles
+  d'operandes variees : octet (B), mot (W = 16 bits) et long (L =
+  32 bits via paires RRn). Le 68000 supporte les memes tailles
+  via les suffixes .B, .W et .L sur l'instruction MOVE.
+
+  Z8000                          68000
+  -----------------------------  ----------------------------------
+  LD   Rd,Rs                     MOVE.W Rs,Dd
+  LD   Rd,#imm                   MOVE.W #imm,Dd
+  LD   Rd,@Rs                    MOVE.W (As),Dd
+  LD   Rd,addr                   MOVE.W addr,Dd
+  LD   Rd,addr(Rs)               MOVE.W addr(As),Dd
+  LD   @Rd,Rs                    MOVE.W Ds,(Ad)
+  LD   addr,Rs                   MOVE.W Ds,addr
+  LD   addr(Rd),Rs               MOVE.W Ds,addr(Ad)
+  LDB  Rd,Rs                     MOVE.B Rs,Dd
+  LDB  Rd,#imm                   MOVE.B #imm,Dd
+  LDB  Rd,@Rs                    MOVE.B (As),Dd
+  LDL  RRd,RRs                   MOVE.L Ds,Dd
+  LDL  RRd,#imm32               MOVE.L #imm32,Dd
+  LDL  RRd,@Rs                   MOVE.L (As),Dd
+  LDL  RRd,addr                  MOVE.L addr,Dd
+  LDA  Rd,addr                   LEA addr,Ad
+  LDA  Rd,addr(Rs)               LEA addr(As),Ad
+  LDK  Rd,#k                     MOVEQ #k,Dd          (si k dans 0-15)
+  CLR  Rd                        CLR.W Dd
+  CLRB Rd                        CLR.B Dd
+  EX   Rd,Rs                     EXG Dd,Ds
+  EX   Rd,@Rs                    MOVE.W (As),Dt
+                                  MOVE.W Dd,(As)
+                                  MOVE.W Dt,Dd
+
+  Exemples de conversion detailles :
+
+  ; Z8000 : Charger une valeur 16 bits en memoire
+  LD   R2,@R10                   ; Charger mot pointe par R10
+
+  ; 68000 :
+  MOVE.W  (A2),D2                ; A2 = R10, D2 = R2
+
+  ; Z8000 : Charger 32 bits via paire de registres
+  LDL  RR4,@R8                   ; Charger long depuis @R8
+
+  ; 68000 :
+  MOVE.L  (A0),D2                ; A0 = R8, D2 = RR4 (R4:R5)
+
+  ; Z8000 : Charger adresse effective
+  LDA  R9,table(R8)              ; R9 = adresse de table + R8
+
+  ; 68000 :
+  LEA  table(A0),A1              ; A1 = R9, A0 = R8
+
+  14.4 Conversion des instructions arithmetiques
+  -------------------------------------------------
+
+  Le Z8000 supporte les operations arithmetiques sur 8, 16 et
+  32 bits. Le 68000 supporte egalement ces trois tailles. La
+  principale difference est que le Z8000 utilise des paires de
+  registres pour le 32 bits, tandis que le 68000 opere
+  directement en 32 bits.
+
+  Z8000                          68000
+  -----------------------------  ----------------------------------
+  ADD  Rd,Rs                     ADD.W Ds,Dd
+  ADD  Rd,#imm                   ADD.W #imm,Dd   ou ADDI.W #imm,Dd
+  ADDB Rd,Rs                     ADD.B Ds,Dd
+  ADDL RRd,RRs                   ADD.L Ds,Dd
+  ADC  Rd,Rs                     ADDX.W Ds,Dd
+  SUB  Rd,Rs                     SUB.W Ds,Dd
+  SUB  Rd,#imm                   SUB.W #imm,Dd   ou SUBI.W #imm,Dd
+  SUBB Rd,Rs                     SUB.B Ds,Dd
+  SUBL RRd,RRs                   SUB.L Ds,Dd
+  SBC  Rd,Rs                     SUBX.W Ds,Dd
+  CP   Rd,Rs                     CMP.W Ds,Dd
+  CP   Rd,#imm                   CMP.W #imm,Dd   ou CMPI.W #imm,Dd
+  CPB  Rd,Rs                     CMP.B Ds,Dd
+  CPL  RRd,RRs                   CMP.L Ds,Dd
+  INC  Rd,#n                     ADDQ.W #n,Dd    (n = 1..8)
+  INCB Rd,#n                     ADDQ.B #n,Dd
+  DEC  Rd,#n                     SUBQ.W #n,Dd    (n = 1..8)
+  DECB Rd,#n                     SUBQ.B #n,Dd
+  NEG  Rd                        NEG.W Dd
+  NEGB Rd                        NEG.B Dd
+  DAB  Rd                        (pas d'equiv. direct)
+                                  Utiliser ABCD/NBCD apres l'operation
+
+  Multiplication et division :
+
+  Z8000                          68000
+  -----------------------------  ----------------------------------
+  MULT RRd,Rs                    MULU.W Ds,Dd   (16x16->32)
+                                  (resultat dans Dd.L)
+  MULTL RQd,RRs                  (pas d'equiv. direct, routine 32x32)
+  DIV  RRd,Rs                    DIVU.W Ds,Dd   (32/16->16q:16r)
+  DIVL RQd,RRs                   (pas d'equiv. direct, routine 32/32)
+
+  Note sur MULT : Le Z8000 MULT multiplie deux mots 16 bits et
+  place le resultat 32 bits dans une paire RRd. Le 68000 MULU
+  fait de meme (Ds.W * Dd.W -> Dd.L). La correspondance est
+  directe.
+
+  Note sur DIV : Le Z8000 DIV divise un long 32 bits (RRd) par
+  un mot 16 bits (Rs) et place le quotient et le reste dans la
+  paire. Le 68000 DIVU divise Dd.L par Ds.W et place le quotient
+  dans le mot bas et le reste dans le mot haut de Dd. Le format
+  du resultat differe, mais la fonctionnalite est equivalente.
+
+  Exemples :
+
+  ; Z8000 : Addition 32 bits
+  ADDL RR2,RR4                   ; RR2 = RR2 + RR4
+
+  ; 68000 :
+  ADD.L  D2,D1                   ; D1 = D1 + D2
+
+  ; Z8000 : Multiplication 16x16->32
+  MULT RR4,R2                    ; RR4 = R4 * R2
+
+  ; 68000 :
+  MULU.W D2,D2                   ; D2.L = D2.W * D2.W
+
+  ; Z8000 : Increment rapide
+  INC  R3,#1                     ; R3 = R3 + 1
+
+  ; 68000 :
+  ADDQ.W #1,D3                   ; D3 = D3 + 1
+
+  14.5 Conversion des instructions logiques et de decalage
+  -----------------------------------------------------------
+
+  Les instructions logiques du Z8000 et du 68000 sont tres
+  similaires. Les deux processeurs supportent AND, OR, XOR sur
+  8 et 16 bits. Le Z8000 ajoute des operations 32 bits via les
+  paires de registres.
+
+  Instructions logiques :
+
+  Z8000                          68000
+  -----------------------------  ----------------------------------
+  AND  Rd,Rs                     AND.W Ds,Dd
+  AND  Rd,#imm                   AND.W #imm,Dd   ou ANDI.W #imm,Dd
+  ANDB Rd,Rs                     AND.B Ds,Dd
+  OR   Rd,Rs                     OR.W Ds,Dd
+  OR   Rd,#imm                   OR.W #imm,Dd    ou ORI.W #imm,Dd
+  ORB  Rd,Rs                     OR.B Ds,Dd
+  XOR  Rd,Rs                     EOR.W Ds,Dd
+  XOR  Rd,#imm                   EOR.W #imm,Dd   ou EORI.W #imm,Dd
+  XORB Rd,Rs                     EOR.B Ds,Dd
+  COM  Rd                        NOT.W Dd
+  COMB Rd                        NOT.B Dd
+  TEST Rd                        TST.W Dd
+  TESTB Rd                       TST.B Dd
+  TESTL RRd                      TST.L Dd
+  BIT  Rd,#b                     BTST #b,Dd
+  SET  Rd,#b                     BSET #b,Dd
+  RES  Rd,#b                     BCLR #b,Dd
+  TCC  cc,Rd                     Scc Dd           (Set conditionnel)
+
+  Instructions de decalage et rotation :
+
+  Z8000                          68000
+  -----------------------------  ----------------------------------
+  SLA  Rd,#n                     ASL.W #n,Dd     (decalage arith. gauche)
+  SLAB Rd,#n                     ASL.B #n,Dd
+  SLAL RRd,#n                    ASL.L #n,Dd
+  SRA  Rd,#n                     ASR.W #n,Dd     (decalage arith. droite)
+  SRAB Rd,#n                     ASR.B #n,Dd
+  SRAL RRd,#n                    ASR.L #n,Dd
+  SLL  Rd,#n                     LSL.W #n,Dd     (decalage logique gauche)
+  SLLB Rd,#n                     LSL.B #n,Dd
+  SLLL RRd,#n                    LSL.L #n,Dd
+  SRL  Rd,#n                     LSR.W #n,Dd     (decalage logique droite)
+  SRLB Rd,#n                     LSR.B #n,Dd
+  SRLL RRd,#n                    LSR.L #n,Dd
+  RL   Rd,#n                     ROL.W #n,Dd     (rotation gauche)
+  RLB  Rd,#n                     ROL.B #n,Dd
+  RR   Rd,#n                     ROR.W #n,Dd     (rotation droite)
+  RRB  Rd,#n                     ROR.B #n,Dd
+  RLC  Rd,#n                     ROXL.W #n,Dd    (rotation avec carry)
+  RLCB Rd,#n                     ROXL.B #n,Dd
+  RRC  Rd,#n                     ROXR.W #n,Dd    (rotation avec carry)
+  RRCB Rd,#n                     ROXR.B #n,Dd
+  SDA  Rd,Rs                     ASL.W Ds,Dd / ASR.W Ds,Dd
+                                  (selon signe de Rs)
+  SDL  Rd,Rs                     LSL.W Ds,Dd / LSR.W Ds,Dd
+                                  (selon signe de Rs)
+
+  Note sur SDA/SDL : Le Z8000 utilise le signe du registre source
+  pour determiner la direction du decalage (positif = gauche,
+  negatif = droite). Le 68000 a des instructions separees pour
+  chaque direction. Il faut donc tester le signe et brancher.
+
+  ; Z8000 : Decalage dynamique
+  SDA  R3,R2                     ; Si R2>0 decalage gauche, sinon droit
+
+  ; 68000 :
+  TST.W   D2
+  BMI     .droite
+  ASL.W   D2,D3
+  BRA     .fin
+  .droite:
+  NEG.W   D2
+  ASR.W   D2,D3
+  NEG.W   D2                     ; Restaurer D2
+  .fin:
+
+  14.6 Conversion des instructions de branchement
+  --------------------------------------------------
+
+  Le Z8000 et le 68000 possedent tous deux des branchements
+  conditionnels bases sur les drapeaux de condition. Les codes
+  de condition sont largement equivalents.
+
+  Z8000                          68000             Condition
+  -----------------------------  ----------------  -----------------
+  JR   cc,label                  Bcc label         Branchement court
+  JP   cc,addr                   Bcc addr          Branchement long
+  JR   T,label                   BRA label         Toujours (True)
+  JR   F,label                   (pas de saut)     Jamais (False)
+  JP   T,addr                    JMP addr          Saut absolu
+  DJNZ Rd,label                  DBRA Dd,label     Decrement + saut
+  DBJNZ Rd,label                 (equiv. DBRA)     Version octet
+
+  Codes de condition :
+
+  Z8000    68000    Signification
+  -------  -------  ----------------------------
+  Z        EQ       Egal (Zero)
+  NZ       NE       Non egal (Non Zero)
+  C        CS       Retenue (Carry Set)
+  NC       CC       Pas de retenue (Carry Clear)
+  MI       MI       Negatif (Minus)
+  PL       PL       Positif (Plus)
+  OV       VS       Overflow Set
+  NOV      VC       Overflow Clear
+  EQ       EQ       Egal (= Z)
+  NE       NE       Non egal (= NZ)
+  ULT      CS       Inferieur non signe
+  UGE      CC       Superieur ou egal non signe
+  ULE      LS       Inferieur ou egal non signe
+  UGT      HI       Superieur non signe
+  SLT      LT       Inferieur signe
+  SGE      GE       Superieur ou egal signe
+  SLE      LE       Inferieur ou egal signe
+  SGT      GT       Superieur signe
+
+  Instructions d'appel et retour :
+
+  Z8000                          68000
+  -----------------------------  ----------------------------------
+  CALL addr                      JSR addr         Appel sous-routine
+  CALL @Rd                       JSR (Ad)         Appel indirect
+  RET  cc                        Bcc .skip / RTS  Retour conditionnel
+                                  ou simplement RTS si cc = T
+  SC   #trap                     TRAP #n          Appel systeme
+
+  Note sur RET cc : Le Z8000 permet un retour conditionnel
+  (RET NZ, RET Z, etc.). Le 68000 n'a pas de RTS conditionnel.
+  Il faut convertir en branchement conditionnel + RTS :
+
+  ; Z8000 :
+  RET  NZ                        ; Retour si non zero
+
+  ; 68000 :
+  BEQ  .skip                     ; Si zero, ne pas retourner
+  RTS
+  .skip:
+
+  Note sur DJNZ : L'instruction DJNZ du Z8000 decremente un
+  registre et saute si non zero, exactement comme DBRA du 68000.
+  La difference est que DJNZ est 16 bits tandis que DBRA ne
+  decremente que le mot bas (16 bits) du registre de donnees.
+  La correspondance est donc directe.
+
+  ; Z8000 :
+  LD   R5,#10
+  .boucle:
+  (...)
+  DJNZ R5,.boucle                ; R5--, saut si R5 != 0
+
+  ; 68000 :
+  MOVEQ  #10-1,D5                ; DBRA teste apres decrement
+  .boucle:
+  (...)
+  DBRA   D5,.boucle              ; D5--, saut si D5 != -1
+
+  Note : DBRA decremente et saute si le resultat n'est pas -1,
+  donc le compteur initial doit etre decremente de 1 par rapport
+  a DJNZ.
+
+  14.7 Conversion des modes d'adressage
+  ----------------------------------------
+
+  Le Z8000 et le 68000 ont des modes d'adressage assez similaires,
+  ce qui facilite grandement la conversion.
+
+  Z8000                          68000
+  -----------------------------  ----------------------------------
+  Rd                             Dd               Registre direct
+  #imm                           #imm             Immediat
+  @Rd                            (Ad)             Indirect registre
+  addr                           addr             Adresse directe
+  addr(Rd)                       addr(Ad)         Base + deplacement
+  Rd(#disp)                      disp(Ad)         Indirect + deplacement
+  @Rd+                           (Ad)+            Post-increment
+  -@Rd (ou @-Rd)                 -(Ad)            Pre-decrement
+
+  Mode indexe : Le Z8000 supporte l'adressage indexe via la
+  syntaxe addr(Rd). Le 68000 offre un mode similaire via
+  d(An) et d(An,Dn.W) ou d(An,Dn.L). L'adressage indexe Z8000
+  est limite a un deplacement 16 bits, tandis que le 68000
+  supporte un deplacement 8 bits avec index ou 16 bits sans index.
+
+  ; Z8000 : Adressage indirect
+  LD   R0,@R8                    ; R0 = memoire[R8]
+
+  ; 68000 :
+  MOVE.W  (A0),D0                ; D0 = memoire[A0]
+
+  ; Z8000 : Adressage base + deplacement
+  LD   R1,table(R9)              ; R1 = memoire[R9 + table]
+
+  ; 68000 :
+  MOVE.W  table(A1),D1           ; D1 = memoire[A1 + table]
+
+  ; Z8000 : Post-increment
+  LD   R0,@R8+                   ; R0 = memoire[R8], R8 += 2
+
+  ; 68000 :
+  MOVE.W  (A0)+,D0               ; D0 = memoire[A0], A0 += 2
+
+  ; Z8000 : Pre-decrement (pour la pile)
+  LD   @-R15,R0                  ; R15 -= 2, memoire[R15] = R0
+
+  ; 68000 :
+  MOVE.W  D0,-(A7)               ; A7 -= 2, memoire[A7] = D0
+
+  Mode relatif au PC : Le Z8000 et le 68000 supportent tous les
+  deux l'adressage relatif au PC. Le Z8000 utilise les sauts
+  relatifs (JR) et l'adressage relatif dans certaines instructions
+  de chargement. Le 68000 supporte le mode d(PC) explicitement.
+
+  14.8 Conversion des instructions de pile et d'appels
+  -------------------------------------------------------
+
+  Le Z8000 et le 68000 utilisent tous deux une pile decroissante.
+  Le Z8000 utilise par convention R15 comme pointeur de pile,
+  tandis que A7 est le pointeur de pile dedie du 68000.
+
+  Z8000                          68000
+  -----------------------------  ----------------------------------
+  PUSH @R15,Rs                   MOVE.W Ds,-(A7)    Empiler mot
+  PUSH @R15,#imm                 MOVE.W #imm,-(A7)  Empiler immediat
+  PUSHL @R15,RRs                 MOVE.L Ds,-(A7)    Empiler long
+  POP  Rd,@R15                   MOVE.W (A7)+,Dd    Depiler mot
+  POPL RRd,@R15                  MOVE.L (A7)+,Dd    Depiler long
+  CALL addr                      JSR addr           Appel
+  RET                            RTS                Retour
+
+  Convention d'appel (prologue/epilogue) :
+
+  ; Z8000 :
+  func:
+    PUSH @R15,R14                ; Sauvegarder frame pointer
+    LD   R14,R15                 ; Nouveau frame pointer
+    SUB  R15,#locales            ; Reserver espace local
+    (...)
+    LD   R15,R14                 ; Restaurer pile
+    POP  R14,@R15                ; Restaurer frame pointer
+    RET                          ; Retour
+
+  ; 68000 :
+  func:
+    LINK   A6,#-locales          ; Sauver A6, A6=SP, SP-=locales
+    (...)
+    UNLK   A6                    ; SP=A6, restaurer A6
+    RTS                          ; Retour
+
+  Le 68000 simplifie considerablement le prologue/epilogue grace
+  aux instructions LINK et UNLK. Trois instructions Z8000
+  (PUSH + LD + SUB) sont remplacees par un seul LINK. De meme,
+  deux instructions (LD + POP) sont remplacees par UNLK.
+
+  Sauvegarde de registres multiples :
+
+  Le Z8000 n'a pas d'instruction de sauvegarde multiple de
+  registres. Il faut empiler les registres un par un. Le 68000
+  dispose de MOVEM qui sauvegarde/restaure plusieurs registres
+  en une seule instruction.
+
+  ; Z8000 : Sauvegarde de registres
+  PUSH @R15,R0
+  PUSH @R15,R1
+  PUSH @R15,R2
+  PUSH @R15,R8
+
+  ; 68000 :
+  MOVEM.L D0-D2/A0,-(A7)        ; Sauvegarder D0,D1,D2,A0
+
+  ; Z8000 : Restauration de registres
+  POP  R8,@R15
+  POP  R2,@R15
+  POP  R1,@R15
+  POP  R0,@R15
+
+  ; 68000 :
+  MOVEM.L (A7)+,D0-D2/A0        ; Restaurer D0,D1,D2,A0
+
+  14.9 Conversion des instructions specifiques au Z8000
+  --------------------------------------------------------
+
+  Le Z8000 possede certaines instructions sans equivalent direct
+  sur le 68000.
+
+  a) Instructions d'E/S :
+
+  Z8000                          68000
+  -----------------------------  ----------------------------------
+  IN   Rd,#port                  MOVE.W port_addr,Dd
+                                  (port mappe en memoire)
+  INB  Rd,#port                  MOVE.B port_addr,Dd
+  OUT  #port,Rs                  MOVE.W Ds,port_addr
+  OUTB #port,Rs                  MOVE.B Ds,port_addr
+  SINB Rd,Rs                     MOVE.B (As),Dd
+                                  (Rs contient l'adresse du port)
+  SOUTB Rs,Rd                    MOVE.B Dd,(As)
+
+  Les adresses de ports doivent etre converties en adresses
+  memoire correspondantes dans l'espace d'adressage du 68000.
+  La correspondance exacte depend du materiel cible.
+
+  b) Instructions multi-registres :
+
+  Z8000                          68000
+  -----------------------------  ----------------------------------
+  LDPS @Rs                       Pas d'equiv. direct
+                                  (charge FCW + PC depuis memoire)
+                                  MOVE.W (As),SR    ; charger SR
+                                  MOVE.L 2(As),A3   ; charger nouvelle PC
+                                  JMP (A3)
+  LDCTL Rd,FCW                   MOVE.W SR,Dd      (mode superviseur)
+  LDCTL FCW,Rs                   MOVE.W Ds,SR      (mode superviseur)
+  LDCTLB RH,FLAGS                MOVE.W CCR,Dd
+  LDCTLB FLAGS,RH                MOVE.W Ds,CCR
+  MREQ Rd                        (specifique Z8000, pas d'equiv.)
+  MBIT                           (specifique Z8000, pas d'equiv.)
+  MSET                           (specifique Z8000, pas d'equiv.)
+  MRES                           (specifique Z8000, pas d'equiv.)
+
+  c) Instructions de gestion systeme :
+
+  Z8000                          68000
+  -----------------------------  ----------------------------------
+  DI   vi,nvi                    ORI.W #$0700,SR    Desactiver interrupts
+  EI   vi,nvi                    ANDI.W #$F8FF,SR   Activer interrupts
+  HALT                           STOP #$2000        Arreter le processeur
+  IRET                           RTE                Retour d'interruption
+  SC   #n                        TRAP #n            Appel superviseur
+  NOP                            NOP                Pas d'operation
+
+  d) Ajustement decimal :
+
+  Z8000                          68000
+  -----------------------------  ----------------------------------
+  DAB  Rd                        (pas d'equiv. direct)
+
+  L'instruction DAB (Decimal Adjust Byte) du Z8000 ajuste le
+  resultat d'une addition BCD. Le 68000 utilise ABCD pour
+  l'addition BCD et SBCD pour la soustraction BCD, qui effectuent
+  l'ajustement automatiquement pendant l'operation. Il faut donc
+  reorganiser le code pour utiliser ABCD/SBCD au lieu de ADD+DAB.
+
+  ; Z8000 : Addition BCD
+  ADDB R0,R1
+  DAB  R0                        ; Ajuster resultat BCD
+
+  ; 68000 :
+  ABCD D1,D0                     ; Addition BCD avec ajustement
+
+  14.10 Conversion des operations sur blocs et chaines
+  -------------------------------------------------------
+
+  Le Z8000 herite du Z80 des instructions puissantes de
+  manipulation de blocs memoire. Le 68000 n'a pas d'equivalents
+  directs et necessite des boucles explicites.
+
+  a) Transfert de blocs :
+
+  Z8000                          68000
+  -----------------------------  ----------------------------------
+  LDIR @Rd,@Rs,Rn               ; Copier Rn octets de @Rs vers @Rd
+                                  ; avec auto-increment
+
+  ; 68000 (equivalent) :
+  ; As = source, Ad = destination, Dn = compteur (en mots)
+    SUBQ.W  #1,Dn               ; Ajuster pour DBRA
+  .copie:
+    MOVE.W  (As)+,(Ad)+
+    DBRA    Dn,.copie
+
+  LDDR @Rd,@Rs,Rn               ; Copier Rn octets avec auto-decrement
+
+  ; 68000 (equivalent) :
+    SUBQ.W  #1,Dn
+  .copie:
+    MOVE.W  -(As),-(Ad)
+    DBRA    Dn,.copie
+
+  b) Comparaison de blocs :
+
+  Z8000                          68000
+  -----------------------------  ----------------------------------
+  CPIR Rd,@Rs,Rn,cc             ; Chercher Rd dans @Rs (increment)
+                                  ; sur Rn elements, condition cc
+
+  ; 68000 (equivalent pour recherche d'un mot) :
+    SUBQ.W  #1,Dn               ; Ajuster pour DBRA
+  .cherche:
+    CMP.W   (As)+,Dd
+    DBEQ    Dn,.cherche          ; Continuer si non trouve
+
+  CPDR Rd,@Rs,Rn,cc             ; Chercher avec decrement
+
+  ; 68000 (equivalent) :
+    SUBQ.W  #1,Dn
+  .cherche:
+    CMP.W   -(As),Dd
+    DBEQ    Dn,.cherche
+
+  c) Transferts de blocs d'E/S :
+
+  Z8000                          68000
+  -----------------------------  ----------------------------------
+  INIR @Rd,@Rs,Rn               ; Lire Rn octets depuis port @Rs
+  OTIR @Rs,@Rd,Rn               ; Ecrire Rn octets vers port @Rd
+
+  ; 68000 (equivalent pour INIR) :
+  ; As = adresse du port mappe en memoire
+  ; Ad = destination, Dn = compteur
+    SUBQ.W  #1,Dn
+  .lecture:
+    MOVE.B  (As),(Ad)+           ; Lire depuis le port
+    DBRA    Dn,.lecture
+
+  d) Translation (table de correspondance) :
+
+  Z8000                          68000
+  -----------------------------  ----------------------------------
+  TRDB @Rd,@Rs,Rn               ; Traduire bloc via table
+
+  ; 68000 (equivalent) :
+  ; A0 = source, A1 = table de traduction, A2 = destination
+  ; D0 = compteur
+    SUBQ.W  #1,D0
+  .traduit:
+    CLR.W   D1
+    MOVE.B  (A0)+,D1             ; Lire caractere source
+    MOVE.B  0(A1,D1.W),(A2)+     ; Traduire via table
+    DBRA    D0,.traduit
+
+  14.11 Exemples complets de conversion Z8000 vers 68000
+  ----------------------------------------------------------
+
+  Exemple 1 : Calcul de la longueur d'une chaine (strlen)
+
+  ; Z8000 :
+  strlen:
+    LD   R2,R8                   ; R2 = pointeur debut chaine
+    CLR  R0                      ; R0 = compteur = 0
+  .boucle:
+    LDB  RH0,@R2                 ; Charger octet
+    INC  R2,#1                   ; Avancer pointeur
+    TESTB RH0                    ; Test si zero
+    JR   NZ,.boucle              ; Continuer si non zero
+    RET                          ; R0 = longueur
+
+  ; 68000 :
+  strlen:
+    MOVEA.L A0,A2                ; A2 = copie pointeur debut
+    CLR.L   D0                   ; D0 = compteur = 0
+  .boucle:
+    TST.B   (A0)+                ; Tester octet et avancer
+    BEQ     .fin                 ; Si zero, termine
+    ADDQ.L  #1,D0               ; Incrementer compteur
+    BRA     .boucle
+  .fin:
+    RTS                          ; D0 = longueur
+
+  Exemple 2 : Copie de memoire (memcpy)
+
+  ; Z8000 :
+  memcpy:
+    ; R8 = destination, R9 = source, R2 = nombre d'octets
+    LDIR @R8,@R9,R2              ; Copie automatique
+
+    RET
+
+  ; 68000 :
+  memcpy:
+    ; A0 = destination, A1 = source, D0 = nombre de mots
+    SUBQ.W  #1,D0               ; Ajuster pour DBRA
+  .copie:
+    MOVE.W  (A1)+,(A0)+          ; Copier mot par mot
+    DBRA    D0,.copie
+    RTS
+
+  Exemple 3 : Recherche d'un caractere dans une chaine
+
+  ; Z8000 :
+  chercher:
+    ; R0.B = caractere a chercher, R8 = debut chaine, R2 = taille
+    CPIRB R0,@R8,R2,Z           ; Chercher R0 dans @R8
+
+    JR   Z,.trouve               ; Trouve si Z est positionne
+    CLR  R8                      ; Non trouve, retourner 0
+    RET
+  .trouve:
+    DEC  R8,#1                   ; R8 pointe apres le caractere
+    RET                          ; R8 = adresse du caractere
+
+  ; 68000 :
+  chercher:
+    ; D0.B = caractere, A0 = debut chaine, D1 = taille
+    SUBQ.W  #1,D1               ; Ajuster pour DBRA
+  .boucle:
+    CMP.B   (A0)+,D0
+    DBEQ    D1,.boucle
+    BNE     .non_trouve          ; Si sorti par compteur
+    SUBQ.L  #1,A0               ; Ajuster : A0 pointe apres
+    RTS
+  .non_trouve:
+    SUBA.L  A0,A0                ; A0 = 0 (non trouve)
+    RTS
+
+  Exemple 4 : Tri a bulles (bubble sort)
+
+  ; Z8000 :
+  tri_bulles:
+    ; R8 = adresse du tableau, R2 = nombre d'elements
+  .passe:
+    CLR  R0                      ; R0 = indicateur d'echange
+    LD   R3,R2
+    DEC  R3,#1                   ; R3 = nombre de comparaisons
+    LD   R9,R8                   ; R9 = pointeur courant
+  .compare:
+    LD   R4,@R9                  ; R4 = element courant
+    LD   R5,2(R9)                ; R5 = element suivant
+    CP   R4,R5
+    JR   SLE,.pas_echange
+    LD   @R9,R5                  ; Echanger
+    LD   2(R9),R4
+    INC  R0,#1                   ; Signaler echange
+  .pas_echange:
+    INC  R9,#2                   ; Avancer pointeur
+    DJNZ R3,.compare
+    TEST R0
+    JR   NZ,.passe               ; Recommencer si echanges
+    RET
+
+  ; 68000 :
+  tri_bulles:
+    ; A0 = adresse du tableau, D2 = nombre d'elements
+  .passe:
+    CLR.W   D0                   ; D0 = indicateur d'echange
+    MOVE.W  D2,D3
+    SUBQ.W  #2,D3               ; D3 = nb comparaisons - 1 (DBRA)
+    MOVEA.L A0,A1                ; A1 = pointeur courant
+  .compare:
+    MOVE.W  (A1),D4              ; D4 = element courant
+    CMP.W   2(A1),D4
+    BLE     .pas_echange
+    MOVE.W  2(A1),(A1)           ; Echanger
+    MOVE.W  D4,2(A1)
+    ADDQ.W  #1,D0               ; Signaler echange
+  .pas_echange:
+    ADDQ.L  #2,A1               ; Avancer pointeur
+    DBRA    D3,.compare
+    TST.W   D0
+    BNE     .passe               ; Recommencer si echanges
+    RTS
+
+  Exemple 5 : Routine d'interruption
+
+  ; Z8000 :
+  isr_timer:
+    PUSH @R15,R0
+    PUSH @R15,R1
+    INB  R0,#TIMER_PORT          ; Lire registre timer
+    LD   R1,compteur
+    INC  R1,#1
+    LD   compteur,R1
+    OUTB #TIMER_PORT,R0          ; Acquitter interruption
+    POP  R1,@R15
+    POP  R0,@R15
+    IRET                         ; Retour d'interruption
+
+  ; 68000 :
+  isr_timer:
+    MOVEM.L D0-D1,-(A7)         ; Sauvegarder registres
+    MOVE.B  TIMER_ADDR,D0        ; Lire registre timer (mem-mapped)
+    MOVE.L  compteur,D1
+    ADDQ.L  #1,D1
+    MOVE.L  D1,compteur
+    MOVE.B  D0,TIMER_ADDR        ; Acquitter interruption
+    MOVEM.L (A7)+,D0-D1          ; Restaurer registres
+    RTE                          ; Retour d'interruption
+
+  14.12 Tableau recapitulatif Z8000 vers 68000
+  -----------------------------------------------
+
+  Z8000              68000              Categorie
+  -----------------  -----------------  ----------------
+  LD  Rd,Rs          MOVE.W Rs,Dd       Transfert 16b
+  LDB Rd,Rs          MOVE.B Rs,Dd       Transfert 8b
+  LDL RRd,RRs        MOVE.L Rs,Dd       Transfert 32b
+  LDA Rd,addr        LEA addr,Ad        Charger adresse
+  LDK Rd,#k          MOVEQ #k,Dd        Chargement rapide
+  CLR Rd             CLR.W Dd            Effacer
+  EX  Rd,Rs          EXG Dd,Ds           Echanger
+  PUSH @R15,Rs       MOVE.W Ds,-(A7)    Empiler
+  POP Rd,@R15        MOVE.W (A7)+,Dd    Depiler
+  ADD Rd,Rs          ADD.W Ds,Dd         Addition 16b
+  ADDL RRd,RRs       ADD.L Ds,Dd         Addition 32b
+  ADC Rd,Rs          ADDX.W Ds,Dd        Addition + carry
+  SUB Rd,Rs          SUB.W Ds,Dd         Soustraction 16b
+  SUBL RRd,RRs       SUB.L Ds,Dd         Soustraction 32b
+  SBC Rd,Rs          SUBX.W Ds,Dd        Soustract. + carry
+  CP  Rd,Rs          CMP.W Ds,Dd         Comparaison
+  INC Rd,#n          ADDQ.W #n,Dd        Increment rapide
+  DEC Rd,#n          SUBQ.W #n,Dd        Decrement rapide
+  NEG Rd             NEG.W Dd            Complement a 2
+  MULT RRd,Rs        MULU.W Ds,Dd        Multiplication
+  DIV RRd,Rs         DIVU.W Ds,Dd        Division
+  AND Rd,Rs          AND.W Ds,Dd         ET logique
+  OR  Rd,Rs          OR.W Ds,Dd          OU logique
+  XOR Rd,Rs          EOR.W Ds,Dd         OU exclusif
+  COM Rd             NOT.W Dd            Complement a 1
+  TEST Rd            TST.W Dd            Test zero
+  BIT Rd,#b          BTST #b,Dd          Test bit
+  SET Rd,#b          BSET #b,Dd          Positionner bit
+  RES Rd,#b          BCLR #b,Dd          Effacer bit
+  SLA Rd,#n          ASL.W #n,Dd         Decal. arith. G
+  SRA Rd,#n          ASR.W #n,Dd         Decal. arith. D
+  SLL Rd,#n          LSL.W #n,Dd         Decal. logique G
+  SRL Rd,#n          LSR.W #n,Dd         Decal. logique D
+  RL  Rd,#n          ROL.W #n,Dd         Rotation gauche
+  RR  Rd,#n          ROR.W #n,Dd         Rotation droite
+  RLC Rd,#n          ROXL.W #n,Dd        Rot. gauche + C
+  RRC Rd,#n          ROXR.W #n,Dd        Rot. droite + C
+  JR  cc,label       Bcc label           Saut conditionnel
+  JP  T,addr         JMP addr            Saut absolu
+  DJNZ Rd,label      DBRA Dd,label       Boucle comptee
+  CALL addr          JSR addr            Appel sous-routine
+  RET                RTS                 Retour
+  IRET               RTE                 Retour interruption
+  SC  #n             TRAP #n             Appel systeme
+  DI                 ORI #$0700,SR       Desact. interrupts
+  EI                 ANDI #$F8FF,SR      Activer interrupts
+  HALT               STOP #$2000         Arreter processeur
+  NOP                NOP                 Pas d'operation
+  IN  Rd,#port       MOVE.W port,Dd      Lecture port
+  OUT #port,Rs       MOVE.W Ds,port      Ecriture port
+  LDIR               boucle MOVE+DBRA    Copie bloc
+  CPIR               boucle CMP+DBEQ     Recherche bloc
+  DAB                ABCD                BCD (reorganiser)
+
+  14.13 Resume
+  ---------------
+
+  La conversion de code Z8000 vers 68000 est facilitee par
+  plusieurs facteurs :
+
+  1. Meme endianness : Les deux processeurs sont big-endian, donc
+     les structures de donnees en memoire sont compatibles sans
+     modification.
+
+  2. Meme organisation de pile : Les deux utilisent une pile
+     decroissante avec des mecanismes similaires pour les appels
+     et retours de sous-routines.
+
+  3. Modes d'adressage similaires : La plupart des modes du Z8000
+     ont des equivalents directs sur le 68000 (indirect, indexe,
+     post-increment, pre-decrement).
+
+  4. Registres 32 bits natifs : Le 68000 possede des registres
+     32 bits natifs, ce qui simplifie la conversion des operations
+     sur paires de registres (RRn) du Z8000. Une paire Z8000
+     (2 registres 16 bits) se convertit en un seul registre .L
+     du 68000.
+
+  5. Instructions de manipulation de bits : Le Z8000 (BIT, SET, RES)
+     et le 68000 (BTST, BSET, BCLR) ont des instructions de
+     manipulation de bits tres similaires.
+
+  6. LINK/UNLK simplifient les cadres d'appel : Le prologue et
+     l'epilogue de fonctions du Z8000 (3 instructions chacun)
+     se reduisent a une seule instruction LINK ou UNLK.
+
+  7. MOVEM remplace les empilements multiples : Les sequences de
+     PUSH/POP individuels du Z8000 se remplacent par un seul
+     MOVEM, rendant le code plus compact et rapide.
+
+  Les principaux points d'attention sont :
+
+  8. Instructions de blocs : LDIR, CPIR et les autres instructions
+     de blocs du Z8000 doivent etre converties en boucles
+     explicites avec DBRA sur le 68000. Le code est plus long
+     mais reste equivalent fonctionnellement.
+
+  9. E/S : Le passage d'un espace d'E/S separe (IN/OUT) a des
+     E/S mappees en memoire necessite une reorganisation complete
+     du code d'acces aux peripheriques avec les adresses memoire
+     appropriees pour la plateforme cible.
+
+  10. Espace d'adressage : Le passage de 64 Ko (Z8002) a 16 Mo
+      (68000) necessite potentiellement une revision des tailles
+      de pointeurs et des conventions d'allocation memoire, mais
+      n'est generalement pas problematique car le 68000 est plus
+      permissif.
