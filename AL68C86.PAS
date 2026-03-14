@@ -158,7 +158,7 @@
               et entrees DataTab (DK_WORD/DK_BYTE/DK_STR avec gestion
               caracteres de controle par valeurs numeriques et doublement
               apostrophes, DK_ARRAY_BLK/DK_STRUCT_BLK)
-            EmitRuntime : stub pour TODO 24
+            EmitRuntime : routines runtime (TODO 24)
             EmitClose : DOS exit MOV AX,4C00h/INT 21h + runtime +
               _TEXT ENDS + data + END _A68P_main
 
@@ -410,7 +410,7 @@
               PAR(INT a := 1, INT b := 2) : declarations simultanees
               Meme traitement que collaterale simple
 
-  TODO 24 - RUNTIME MINIMAL
+  TODO 24 - RUNTIME MINIMAL [IMPLEMENTE]
             _A68RT_PRINT(BX=handle, SI=msg, CX=len) : INT 21h AH=40h
             _A68RT_PRINTLN : _A68RT_PRINT + CR+LF via _A68_CRLF DB 13,10,0
             _A68RT_STRLEN(SI=str) : compter octets jusqu a 0 -> AX
@@ -907,6 +907,7 @@ Procedure ParseCollateral(Var Res : TExprVal); Forward;
 
 { TODO 24 - Runtime }
 { (EmitRuntime deja declare plus haut) }
+Procedure EmitRuntimeExtra; Forward;
 
 { TODO 25 - Generation finale }
 Procedure Run; Forward;
@@ -2478,6 +2479,16 @@ Begin
   EmitRaw('        DB      12 DUP(0)');
   EmitLabel('_A68_IOREADBUF');
   EmitRaw('        DB      130,0,128 DUP(0)');
+  { Heap statique pour allocations dynamiques (TODO 24) }
+  EmitLabel('_A68_HEAP');
+  EmitRaw('        DB      4096 DUP(0)');
+  EmitLabel('_A68_HEAPTOP');
+  EmitRaw('        DW      0');
+  { Messages d erreur runtime (TODO 24) }
+  EmitLabel('_A68_PANIC_IDX');
+  EmitRaw('        DB      ''index out of bounds'',0');
+  EmitLabel('_A68_PANIC_NIL');
+  EmitRaw('        DB      ''nil reference'',0');
   { Entrees dynamiques de DataTab }
   For I := 0 To DataCount - 1 Do
   Begin
@@ -5520,6 +5531,9 @@ Begin
 
   { Runtime: transput (TODO 22) }
   EmitTransputRuntime;
+
+  { Runtime: routines supplementaires (TODO 24) }
+  EmitRuntimeExtra;
 End;
 
 { ---- EmitTransputRuntime : routines d entree/sortie --------------- }
@@ -5707,6 +5721,369 @@ Begin
   EmitInstr('POP    CX');
   EmitInstr('POP    BX');
   EmitInstr('RET');
+End;
+
+{ ============================================================
+  TODO 24 - RUNTIME MINIMAL [IMPLEMENTE]
+  ============================================================ }
+{ EmitRuntimeExtra : routines runtime supplementaires              }
+{ _A68RT_PANIC     : affiche SI + exit(1)                          }
+{ _A68RT_PRINT     : ecriture DOS handle BX, SI=msg, CX=len       }
+{ _A68RT_PRINTLN   : print + CR+LF                                }
+{ _A68RT_STRLEN    : longueur ASCIIZ SI -> AX                      }
+{ _A68RT_READCHAR  : lire un caractere -> AL                       }
+{ _A68RT_NUMTOSTR  : entier AX -> ASCIIZ (reutilise WHOLE)         }
+{ _A68RT_STRTONUM  : ASCIIZ SI -> entier AX (atoi)                 }
+{ _A68RT_CONCAT    : AX=str1 BX=str2 -> AX=ptr heap                }
+{ _A68RT_STRCMP     : AX=str1 BX=str2 -> flags ZF/CF               }
+{ _A68RT_STRTRIM   : pile [SP+6]=str [SP+4]=lo [SP+2]=up -> AX     }
+{ _A68RT_ALLOC     : CX octets -> AX=ptr heap                      }
+{ _A68RT_POWER     : AX=base BX=exp -> AX                          }
+{ _A68RT_ABS       : |AX| -> AX                                    }
+{ _A68RT_ODD       : AX AND 1 -> AX                                }
+{ _A68RT_SIGN      : sign(AX) -> AX (-1/0/1)                       }
+{ _A68RT_CHKIDX    : AX in [BX..CX] ou erreur                      }
+{ _A68RT_CHKNIL    : AX<>0 ou erreur                                }
+
+Procedure EmitRuntimeExtra;
+Begin
+  EmitBlankLine;
+  EmitComment('=== Runtime extra (TODO 24) ===');
+
+  { --- _A68RT_PANIC : affiche message ASCIIZ (SI) puis exit(1) --- }
+  EmitBlankLine;
+  EmitComment('--- runtime: panic ---');
+  EmitLabel(A68_RT_PFX + 'PANIC');
+  EmitInstr('CALL   ' + A68_RT_PFX + 'PRINTSTR');
+  EmitInstr('MOV    SI, OFFSET _A68_CRLF');
+  EmitInstr('CALL   ' + A68_RT_PFX + 'PRINTSTR');
+  EmitInstr('MOV    AX, 4C01h');
+  EmitInstr('INT    21h');
+
+  { --- _A68RT_PRINT : ecriture handle DOS --- }
+  { Entree : BX=handle, SI=msg ASCIIZ, CX=len  }
+  EmitBlankLine;
+  EmitComment('--- runtime: print (handle) ---');
+  EmitLabel(A68_RT_PFX + 'PRINT');
+  EmitInstr('PUSH   AX');
+  EmitInstr('PUSH   DX');
+  EmitInstr('MOV    DX, SI');
+  EmitInstr('MOV    AH, 40h');
+  EmitInstr('INT    21h');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    AX');
+  EmitInstr('RET');
+
+  { --- _A68RT_PRINTLN : print + CR+LF --- }
+  EmitBlankLine;
+  EmitComment('--- runtime: println ---');
+  EmitLabel(A68_RT_PFX + 'PRINTLN');
+  EmitInstr('CALL   ' + A68_RT_PFX + 'PRINT');
+  EmitInstr('PUSH   SI');
+  EmitInstr('PUSH   CX');
+  EmitInstr('MOV    SI, OFFSET _A68_CRLF');
+  EmitInstr('MOV    CX, 2');
+  EmitInstr('CALL   ' + A68_RT_PFX + 'PRINT');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    SI');
+  EmitInstr('RET');
+
+  { --- _A68RT_STRLEN : longueur chaine ASCIIZ --- }
+  { Entree : SI=ptr   Sortie : AX=longueur         }
+  EmitBlankLine;
+  EmitComment('--- runtime: strlen ---');
+  EmitLabel(A68_RT_PFX + 'STRLEN');
+  EmitInstr('PUSH   SI');
+  EmitInstr('XOR    AX, AX');
+  EmitLabel(A68_RT_PFX + 'SL_LP');
+  EmitInstr('CMP    BYTE PTR [SI], 0');
+  EmitInstr('JE     ' + A68_RT_PFX + 'SL_DN');
+  EmitInstr('INC    SI');
+  EmitInstr('INC    AX');
+  EmitInstr('JMP    ' + A68_RT_PFX + 'SL_LP');
+  EmitLabel(A68_RT_PFX + 'SL_DN');
+  EmitInstr('POP    SI');
+  EmitInstr('RET');
+
+  { --- _A68RT_READCHAR : lire un caractere --- }
+  { Sortie : AL=caractere                        }
+  EmitBlankLine;
+  EmitComment('--- runtime: readchar ---');
+  EmitLabel(A68_RT_PFX + 'READCHAR');
+  EmitInstr('MOV    AH, 01h');
+  EmitInstr('INT    21h');
+  EmitInstr('XOR    AH, AH');
+  EmitInstr('RET');
+
+  { --- _A68RT_NUMTOSTR : entier AX -> chaine (reutilise WHOLE) --- }
+  EmitBlankLine;
+  EmitComment('--- runtime: numtostr (itoa) ---');
+  EmitLabel(A68_RT_PFX + 'NUMTOSTR');
+  EmitInstr('JMP    ' + A68_RT_PFX + 'WHOLE');
+
+  { --- _A68RT_STRTONUM : ASCIIZ SI -> entier AX (atoi) --- }
+  EmitBlankLine;
+  EmitComment('--- runtime: strtonum (atoi) ---');
+  EmitLabel(A68_RT_PFX + 'STRTONUM');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  EmitInstr('PUSH   SI');
+  EmitInstr('XOR    BX, BX');       { BX = accumulateur }
+  EmitInstr('XOR    CX, CX');       { CX = signe }
+  EmitInstr('CMP    BYTE PTR [SI], ''-''');
+  EmitInstr('JNE    ' + A68_RT_PFX + 'SN_LP');
+  EmitInstr('MOV    CX, 1');
+  EmitInstr('INC    SI');
+  EmitLabel(A68_RT_PFX + 'SN_LP');
+  EmitInstr('MOV    AL, [SI]');
+  EmitInstr('OR     AL, AL');
+  EmitInstr('JZ     ' + A68_RT_PFX + 'SN_DN');
+  EmitInstr('CMP    AL, ''0''');
+  EmitInstr('JB     ' + A68_RT_PFX + 'SN_DN');
+  EmitInstr('CMP    AL, ''9''');
+  EmitInstr('JA     ' + A68_RT_PFX + 'SN_DN');
+  EmitInstr('SUB    AL, ''0''');
+  EmitInstr('XOR    AH, AH');
+  EmitInstr('PUSH   AX');
+  EmitInstr('MOV    AX, BX');
+  EmitInstr('MOV    DX, 10');
+  EmitInstr('MUL    DX');
+  EmitInstr('MOV    BX, AX');
+  EmitInstr('POP    AX');
+  EmitInstr('ADD    BX, AX');
+  EmitInstr('INC    SI');
+  EmitInstr('JMP    ' + A68_RT_PFX + 'SN_LP');
+  EmitLabel(A68_RT_PFX + 'SN_DN');
+  EmitInstr('MOV    AX, BX');
+  EmitInstr('CMP    CX, 0');
+  EmitInstr('JE     ' + A68_RT_PFX + 'SN_OK');
+  EmitInstr('NEG    AX');
+  EmitLabel(A68_RT_PFX + 'SN_OK');
+  EmitInstr('POP    SI');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+
+  { --- _A68RT_ALLOC : allocation heap bump --- }
+  { Entree : CX=nb octets   Sortie : AX=ptr     }
+  EmitBlankLine;
+  EmitComment('--- runtime: alloc (heap bump) ---');
+  EmitLabel(A68_RT_PFX + 'ALLOC');
+  EmitInstr('PUSH   BX');
+  EmitInstr('MOV    BX, OFFSET _A68_HEAP');
+  EmitInstr('ADD    BX, [_A68_HEAPTOP]');
+  EmitInstr('MOV    AX, BX');
+  EmitInstr('ADD    [_A68_HEAPTOP], CX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+
+  { --- _A68RT_CONCAT : concatenation deux chaines ASCIIZ --- }
+  { Entree : AX=ptr str1, BX=ptr str2                         }
+  { Sortie : AX=ptr nouvelle chaine (heap)                     }
+  EmitBlankLine;
+  EmitComment('--- runtime: concat ---');
+  EmitLabel(A68_RT_PFX + 'CONCAT');
+  EmitInstr('PUSH   SI');
+  EmitInstr('PUSH   DI');
+  EmitInstr('PUSH   BX');           { sauvegarde str2 }
+  EmitInstr('PUSH   AX');           { sauvegarde str1 }
+  { Calculer len1 }
+  EmitInstr('MOV    SI, AX');
+  EmitInstr('CALL   ' + A68_RT_PFX + 'STRLEN');
+  EmitInstr('PUSH   AX');           { pile: len1, str1, str2, DI, SI }
+  { Calculer len2 }
+  EmitInstr('MOV    SI, [SP+4]');   { SI = str2 }
+  EmitInstr('CALL   ' + A68_RT_PFX + 'STRLEN');
+  EmitInstr('POP    CX');           { CX = len1 }
+  EmitInstr('ADD    CX, AX');       { CX = len1 + len2 }
+  EmitInstr('INC    CX');           { CX = len1 + len2 + 1 }
+  { Allouer dans le heap }
+  EmitInstr('CALL   ' + A68_RT_PFX + 'ALLOC');
+  EmitInstr('MOV    DI, AX');       { DI = dest }
+  EmitInstr('PUSH   AX');           { sauver ptr resultat }
+  { pile: dest, str1, str2, DI_orig, SI_orig }
+  { Copier str1 }
+  EmitInstr('MOV    SI, [SP+2]');   { SI = str1 }
+  EmitLabel(A68_RT_PFX + 'CC_C1');
+  EmitInstr('LODSB');
+  EmitInstr('STOSB');
+  EmitInstr('OR     AL, AL');
+  EmitInstr('JNZ    ' + A68_RT_PFX + 'CC_C1');
+  EmitInstr('DEC    DI');           { reculer sur le 0 terminal }
+  { Copier str2 }
+  EmitInstr('MOV    SI, [SP+4]');   { SI = str2 }
+  EmitLabel(A68_RT_PFX + 'CC_C2');
+  EmitInstr('LODSB');
+  EmitInstr('STOSB');
+  EmitInstr('OR     AL, AL');
+  EmitInstr('JNZ    ' + A68_RT_PFX + 'CC_C2');
+  { Retourner le pointeur }
+  EmitInstr('POP    AX');           { AX = dest }
+  EmitInstr('ADD    SP, 4');        { nettoyer str1 et str2 }
+  EmitInstr('POP    DI');
+  EmitInstr('POP    SI');
+  EmitInstr('RET');
+
+  { --- _A68RT_STRCMP : comparaison lexicographique --- }
+  { Entree : AX=ptr str1, BX=ptr str2                   }
+  { Sortie : flags (ZF/SF/CF pour JE/JNE/JL/JLE/JG/JGE) }
+  EmitBlankLine;
+  EmitComment('--- runtime: strcmp ---');
+  EmitLabel(A68_RT_PFX + 'STRCMP');
+  EmitInstr('PUSH   SI');
+  EmitInstr('PUSH   DI');
+  EmitInstr('MOV    SI, AX');
+  EmitInstr('MOV    DI, BX');
+  EmitLabel(A68_RT_PFX + 'SC_LP');
+  EmitInstr('MOV    AL, [SI]');
+  EmitInstr('CMP    AL, [DI]');
+  EmitInstr('JNE    ' + A68_RT_PFX + 'SC_DN');
+  EmitInstr('OR     AL, AL');
+  EmitInstr('JZ     ' + A68_RT_PFX + 'SC_EQ');
+  EmitInstr('INC    SI');
+  EmitInstr('INC    DI');
+  EmitInstr('JMP    ' + A68_RT_PFX + 'SC_LP');
+  EmitLabel(A68_RT_PFX + 'SC_EQ');
+  { Les deux chaines sont egales : CMP 0,[DI] -> ZF=1 }
+  EmitInstr('CMP    AL, [DI]');
+  EmitLabel(A68_RT_PFX + 'SC_DN');
+  EmitInstr('POP    DI');
+  EmitInstr('POP    SI');
+  EmitInstr('RET');
+
+  { --- _A68RT_STRTRIM : tranche de chaine --- }
+  { Pile a l appel : [SP+2]=up, [SP+4]=lo, [SP+6]=ptr_str }
+  { Sortie : AX=ptr nouvelle chaine (heap)                  }
+  EmitBlankLine;
+  EmitComment('--- runtime: strtrim (string slice) ---');
+  EmitLabel(A68_RT_PFX + 'STRTRIM');
+  EmitInstr('PUSH   BP');
+  EmitInstr('MOV    BP, SP');
+  EmitInstr('PUSH   SI');
+  EmitInstr('PUSH   DI');
+  EmitInstr('PUSH   CX');
+  { Calculer la longueur = up - lo + 1 }
+  EmitInstr('MOV    AX, [BP+4]');   { AX = up }
+  EmitInstr('SUB    AX, [BP+6]');   { AX = up - lo }
+  EmitInstr('INC    AX');           { AX = longueur }
+  EmitInstr('MOV    CX, AX');       { CX = longueur }
+  EmitInstr('PUSH   AX');           { sauver longueur }
+  EmitInstr('INC    CX');           { CX = longueur + 1 (nul) }
+  EmitInstr('CALL   ' + A68_RT_PFX + 'ALLOC');
+  EmitInstr('MOV    DI, AX');       { DI = dest }
+  EmitInstr('PUSH   AX');           { sauver dest }
+  { Source = str + lo - 1 (indices 1-based) }
+  EmitInstr('MOV    SI, [BP+8]');   { SI = str_ptr }
+  EmitInstr('MOV    AX, [BP+6]');   { AX = lo }
+  EmitInstr('DEC    AX');           { AX = lo - 1 (0-based) }
+  EmitInstr('ADD    SI, AX');       { SI = str + lo - 1 }
+  EmitInstr('POP    AX');           { AX = dest }
+  EmitInstr('POP    CX');           { CX = longueur }
+  EmitInstr('PUSH   AX');           { re-sauver dest }
+  { Copier CX octets }
+  EmitLabel(A68_RT_PFX + 'ST_CP');
+  EmitInstr('CMP    CX, 0');
+  EmitInstr('JE     ' + A68_RT_PFX + 'ST_DN');
+  EmitInstr('LODSB');
+  EmitInstr('STOSB');
+  EmitInstr('DEC    CX');
+  EmitInstr('JMP    ' + A68_RT_PFX + 'ST_CP');
+  EmitLabel(A68_RT_PFX + 'ST_DN');
+  EmitInstr('MOV    BYTE PTR [DI], 0');
+  EmitInstr('POP    AX');           { AX = dest }
+  EmitInstr('POP    CX');
+  EmitInstr('POP    DI');
+  EmitInstr('POP    SI');
+  EmitInstr('POP    BP');
+  EmitInstr('RET');
+
+  { --- _A68RT_POWER : exponentiation entiere --- }
+  { Entree : AX=base, BX=exposant  Sortie : AX    }
+  EmitBlankLine;
+  EmitComment('--- runtime: power ---');
+  EmitLabel(A68_RT_PFX + 'POWER');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  EmitInstr('MOV    CX, BX');       { CX = exposant }
+  EmitInstr('MOV    BX, AX');       { BX = base }
+  EmitInstr('MOV    AX, 1');        { AX = resultat = 1 }
+  EmitInstr('CMP    CX, 0');
+  EmitInstr('JE     ' + A68_RT_PFX + 'PW_DN');
+  EmitLabel(A68_RT_PFX + 'PW_LP');
+  EmitInstr('IMUL   BX');
+  EmitInstr('DEC    CX');
+  EmitInstr('JNZ    ' + A68_RT_PFX + 'PW_LP');
+  EmitLabel(A68_RT_PFX + 'PW_DN');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+
+  { --- _A68RT_ABS : valeur absolue --- }
+  { Entree : AX   Sortie : AX = |AX|    }
+  EmitBlankLine;
+  EmitComment('--- runtime: abs ---');
+  EmitLabel(A68_RT_PFX + 'ABS');
+  EmitInstr('CMP    AX, 0');
+  EmitInstr('JGE    ' + A68_RT_PFX + 'AB_DN');
+  EmitInstr('NEG    AX');
+  EmitLabel(A68_RT_PFX + 'AB_DN');
+  EmitInstr('RET');
+
+  { --- _A68RT_ODD : test parite --- }
+  { Entree : AX   Sortie : AX=1 si impair, 0 si pair }
+  EmitBlankLine;
+  EmitComment('--- runtime: odd ---');
+  EmitLabel(A68_RT_PFX + 'ODD');
+  EmitInstr('AND    AX, 1');
+  EmitInstr('RET');
+
+  { --- _A68RT_SIGN : signe --- }
+  { Entree : AX   Sortie : AX=-1, 0, ou 1 }
+  EmitBlankLine;
+  EmitComment('--- runtime: sign ---');
+  EmitLabel(A68_RT_PFX + 'SIGN');
+  EmitInstr('CMP    AX, 0');
+  EmitInstr('JE     ' + A68_RT_PFX + 'SG_Z');
+  EmitInstr('JG     ' + A68_RT_PFX + 'SG_P');
+  EmitInstr('MOV    AX, -1');
+  EmitInstr('RET');
+  EmitLabel(A68_RT_PFX + 'SG_P');
+  EmitInstr('MOV    AX, 1');
+  EmitInstr('RET');
+  EmitLabel(A68_RT_PFX + 'SG_Z');
+  EmitInstr('XOR    AX, AX');
+  EmitInstr('RET');
+
+  { --- _A68RT_CHKIDX : verification bornes --- }
+  { Entree : AX=index, BX=lwb, CX=upb            }
+  { Sortie : AX inchange si OK, sinon erreur      }
+  EmitBlankLine;
+  EmitComment('--- runtime: chkidx ---');
+  EmitLabel(A68_RT_PFX + 'CHKIDX');
+  EmitInstr('CMP    AX, BX');
+  EmitInstr('JL     ' + A68_RT_PFX + 'CI_FL');
+  EmitInstr('CMP    AX, CX');
+  EmitInstr('JG     ' + A68_RT_PFX + 'CI_FL');
+  EmitInstr('RET');
+  EmitLabel(A68_RT_PFX + 'CI_FL');
+  EmitInstr('MOV    SI, OFFSET _A68_PANIC_IDX');
+  EmitInstr('JMP    ' + A68_RT_PFX + 'PANIC');
+
+  { --- _A68RT_CHKNIL : verification reference nulle --- }
+  { Entree : AX=ptr   Sortie : AX inchange si non-nil     }
+  EmitBlankLine;
+  EmitComment('--- runtime: chknil ---');
+  EmitLabel(A68_RT_PFX + 'CHKNIL');
+  EmitInstr('CMP    AX, 0');
+  EmitInstr('JE     ' + A68_RT_PFX + 'CN_FL');
+  EmitInstr('RET');
+  EmitLabel(A68_RT_PFX + 'CN_FL');
+  EmitInstr('MOV    SI, OFFSET _A68_PANIC_NIL');
+  EmitInstr('JMP    ' + A68_RT_PFX + 'PANIC');
 End;
 
 { EmitClose : terminaison du programme DOS et fermeture du fichier ASM }

@@ -1,0 +1,42 @@
+BEGIN
+  CO test_runtime.a68 : test des routines runtime (TODO 24) CO
+
+  CO Test concatenation de chaines CO
+  STRING s1 = "Hello";
+  STRING s2 = " World";
+  STRING s3 = s1 + s2;
+  print(("concat: ", s3, newline));
+
+  CO Test exponentiation CO
+  INT p := 2 ** 10;
+  print(("2**10 = ", p, newline));
+
+  INT p2 := 3 ** 3;
+  print(("3**3 = ", p2, newline));
+
+  CO Test comparaison de chaines CO
+  STRING a = "abc";
+  STRING b = "abd";
+  IF a < b THEN
+    print(("abc < abd: TRUE", newline))
+  ELSE
+    print(("abc < abd: FALSE", newline))
+  FI;
+
+  IF a = a THEN
+    print(("abc = abc: TRUE", newline))
+  ELSE
+    print(("abc = abc: FALSE", newline))
+  FI;
+
+  CO Test tranche de chaine CO
+  STRING msg = "Hello World";
+  STRING sub = msg[1:5];
+  print(("slice [1:5]: ", sub, newline));
+
+  CO Test entiers et print CO
+  INT x := 42;
+  print(("x = ", x, newline));
+  INT y := -7;
+  print(("y = ", y, newline))
+END
