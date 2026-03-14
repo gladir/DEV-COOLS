@@ -386,7 +386,7 @@
             warn "message" : avertissement sur STDERR, pas de levee
               -> CALL _RKRT_WARN (ecriture sur handle 2)
 
-  TODO 23 - MODULES ET USE (module, use, need, is export)
+  TODO 23 - MODULES ET USE (module, use, need, is export) [IMPLEMENTE]
             ParseModuleDecl : module Nom { ... }
               Declarations dans une portee nommee
             use NomModule : importer un module
@@ -1068,6 +1068,14 @@ Procedure EmitGrammarRuntime;                                  Forward;
 Procedure ParseTryCatchStmt;                                   Forward;
 Procedure EmitErrorRuntime;                                    Forward;
 
+{ Forward declarations TODO 23 - Modules et use }
+Function  ModuleFind(Const AName : TString) : Integer;         Forward;
+Function  ModuleAdd(Const AName : TString) : Integer;          Forward;
+Procedure ParseModuleDecl;                                     Forward;
+Procedure ParseUseStmt;                                        Forward;
+Procedure ParseNeedStmt;                                       Forward;
+Procedure EmitModuleDirectives;                                Forward;
+
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
   ============================================================ }
@@ -1328,6 +1336,7 @@ Begin
   GrammarCount    := 0;
   TryCount        := 0;
   TryDepth        := 0;
+  ModuleCount     := 0;
   GKwConsumed  := False;
   CurFnRetLbl  := '';
   CurFnName    := '';
@@ -1494,6 +1503,7 @@ Begin
   EmitBlankLine;
   EmitMultiDispatchers;
   EmitClassVtables;
+  EmitModuleDirectives;
   EmitRuntime;
   EmitRaw('_TEXT   ENDS');
   EmitBlankLine;
@@ -1656,6 +1666,8 @@ Begin
   DataAdd('_RK_SAVEDBP',     DK_WORD, 0, '');
   DataAdd('_RKK_UNHANDLED',  DK_STR, 0, 'Unhandled exception: ');
   DataAdd('_RKK_WARNING',    DK_STR, 0, 'WARNING: ');
+  { Modules et use (TODO 23) }
+  DataAdd('_RKK_NOMODULE',   DK_STR, 0, 'Module not found: ');
 End;
 
 { ============================================================
@@ -2286,7 +2298,8 @@ Begin
     '?': If P = '?' Then Begin S := '??'; LexAdvance; End;
     '%': If P = '%' Then Begin S := '%%'; LexAdvance; End
          Else If P = '=' Then Begin S := '%='; LexAdvance; End;
-    ':': If P = '=' Then Begin S := ':='; LexAdvance; End;
+    ':': If P = '=' Then Begin S := ':='; LexAdvance; End
+         Else If P = ':' Then Begin S := '::'; LexAdvance; End;
     '.': If P = '.' Then
          Begin
            S := '..'; LexAdvance;
@@ -3371,6 +3384,36 @@ Begin
       Exit;
     End;
     ParserAdvance;
+    { --- TODO 23 : Nom qualifie Module::Ident --- }
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '::') Then
+    Begin
+      ParserAdvance;   { consommer '::' }
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        { Resolution : Module::sub -> chercher sub directement }
+        EmitComment(Name + '::' + CurToken.Val + ' (nom qualifie)');
+        Name := CurToken.Val;
+        ParserAdvance;
+      End;
+      { Appel qualifie : Module::sub(args) }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        ParseSubCall(Name, Res);
+        ParsePostfix(Res);
+        Exit;
+      End;
+      { Sinon : valeur, ex. Module::CONST }
+      SIdx := SymFind(Name);
+      If SIdx >= 0 Then
+        ExprLoad(SIdx, Res)
+      Else
+      Begin
+        EmitComment(Name + ' (non resolu)');
+        ExprMakeImm(0, TY_IDX_INT, Res);
+      End;
+      ParsePostfix(Res);
+      Exit;
+    End;
     { --- Paire : ident => valeur --- }
     If (CurToken.Kind = TK_OP) And (CurToken.Val = '=>') Then
     Begin
@@ -7556,6 +7599,26 @@ Begin
       CompileError(''')'' attendue apres les parametres de sub ' + SubName);
   End;
 
+  { TODO 23 : detecter 'is export' apres la signature }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'is') Then
+  Begin
+    ParserAdvance;   { consommer 'is' }
+    If (CurToken.Kind = TK_IDENT) And (CurToken.Val = 'export') Then
+    Begin
+      ParserAdvance;   { consommer 'export' }
+      { Marquer le symbole comme exporte }
+      If SymCount > 0 Then
+        SymTab[SymCount - 1].IsExported := True;
+      EmitComment('is export: ' + SubName);
+    End
+    Else
+    Begin
+      { 'is' sans 'export' : peut etre un trait (ignore pour l instant) }
+      If CurToken.Kind = TK_IDENT Then
+        ParserAdvance;
+    End;
+  End;
+
   { Generer les labels }
   Str(SubCount, OfsStr);
   LblSkip := '_RKL_SSKIP_' + OfsStr;
@@ -9110,6 +9173,26 @@ Begin
       Exit;
     End;
 
+    { Modules et use (TODO 23) }
+    If Kw = 'module' Then
+    Begin
+      ParserAdvance;   { consommer 'module' }
+      ParseModuleDecl;
+      Exit;
+    End;
+    If Kw = 'use' Then
+    Begin
+      ParserAdvance;   { consommer 'use' }
+      ParseUseStmt;
+      Exit;
+    End;
+    If Kw = 'need' Then
+    Begin
+      ParserAdvance;   { consommer 'need' }
+      ParseNeedStmt;
+      Exit;
+    End;
+
     { Controle de boucle : last, next, redo }
     If Kw = 'last' Then
     Begin
@@ -9887,6 +9970,251 @@ Begin
   EmitInstr('POP', 'SI');
   EmitInstr('RET', '');
   EmitRaw('_RKRT_STRLEN ENDP');
+End;
+
+{ ============================================================
+  TODO 23 - MODULES ET USE [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ModuleFind : cherche un module par nom -------------------- }
+Function ModuleFind(Const AName : TString) : Integer;
+Var I : Integer;
+Begin
+  ModuleFind := -1;
+  For I := 0 To ModuleCount - 1 Do
+    If ModuleTab[I] = AName Then
+    Begin ModuleFind := I; Exit; End;
+End;
+
+{ ---- ModuleAdd : enregistre un module et retourne son index ---- }
+Function ModuleAdd(Const AName : TString) : Integer;
+Var Idx : Integer;
+Begin
+  Idx := ModuleFind(AName);
+  If Idx >= 0 Then
+  Begin ModuleAdd := Idx; Exit; End;
+  If ModuleCount >= MAX_MODULE Then
+  Begin
+    CompileError('Trop de modules (max ' + IntToStr(MAX_MODULE) + ')');
+    ModuleAdd := -1;
+    Exit;
+  End;
+  Idx := ModuleCount;
+  ModuleTab[Idx] := AName;
+  Inc(ModuleCount);
+  ModuleAdd := Idx;
+End;
+
+{ ---- ParseModuleDecl : module Nom (declarations) -------------- }
+{ Cree une portee nommee pour les declarations du module.         }
+{ Les subs marquees 'is export' seront emises avec PUBLIC.        }
+Procedure ParseModuleDecl;
+Var
+  ModName : TString;
+  MIdx    : Integer;
+  I       : Integer;
+Begin
+  { Attendre le nom du module }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('nom de module attendu apres ''module''');
+    Exit;
+  End;
+  ModName := CurToken.Val;
+  ParserAdvance;
+
+  { Enregistrer le module dans la table }
+  MIdx := ModuleAdd(ModName);
+
+  { Enregistrer le symbole module dans SymTab }
+  SymAdd(ModName, '', SC_MODULE, TY_UNKNOWN, 0);
+
+  EmitComment('module ' + ModName);
+
+  { Attendre '{' }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+  Begin
+    ParserAdvance;   { consommer '{' }
+    SymEnterScope;
+
+    { Parser les declarations du module }
+    While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) And
+          (CurToken.Kind <> TK_EOF) Do
+      ParseStmt;
+
+    { Promouvoir les symboles exportes dans la portee externe }
+    { avant que SymLeaveScope ne reduise SymCount             }
+    For I := ScopeStack[ScopeTop - 1] To SymCount - 1 Do
+    Begin
+      If SymTab[I].IsExported And (SymTab[I].Cat = SC_SUB) Then
+      Begin
+        { Copier le symbole exporte en dehors de la portee du module }
+        If SymCount < MAX_SYM Then
+        Begin
+          SymTab[ScopeStack[ScopeTop - 1]].Name        := SymTab[I].Name;
+          SymTab[ScopeStack[ScopeTop - 1]].SigilName   := SymTab[I].SigilName;
+          SymTab[ScopeStack[ScopeTop - 1]].MangledName := SymTab[I].MangledName;
+          SymTab[ScopeStack[ScopeTop - 1]].Cat         := SymTab[I].Cat;
+          SymTab[ScopeStack[ScopeTop - 1]].TypeIdx     := SymTab[I].TypeIdx;
+          SymTab[ScopeStack[ScopeTop - 1]].ScopeLevel  := CurScope - 1;
+          SymTab[ScopeStack[ScopeTop - 1]].Offset      := SymTab[I].Offset;
+          SymTab[ScopeStack[ScopeTop - 1]].IsExported  := True;
+          SymTab[ScopeStack[ScopeTop - 1]].DeclLine    := SymTab[I].DeclLine;
+          SymTab[ScopeStack[ScopeTop - 1]].ClassIdx    := SymTab[I].ClassIdx;
+          ScopeStack[ScopeTop - 1] := ScopeStack[ScopeTop - 1] + 1;
+        End;
+      End;
+    End;
+
+    SymLeaveScope;
+
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+      ParserAdvance   (* consommer accolade fermante *)
+    Else
+      CompileError('accolade fermante attendue pour module ' + ModName);
+  End
+  Else
+  Begin
+    { Forme sans accolades : module Nom; declarations jusqu a EOF }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      ParserAdvance;
+    EmitComment('module ' + ModName + ' (portee fichier)');
+  End;
+End;
+
+{ ---- ParseUseStmt : use v6; / use Module; / use Mod :only<..> - }
+{ Importe un module. Les modules standards non implementes         }
+{ generent un avertissement. 'use v6;' est un pragma ignore.       }
+Procedure ParseUseStmt;
+Var
+  ModName : TString;
+  MIdx    : Integer;
+Begin
+  { Attendre le nom du module ou pragma de version }
+  If CurToken.Kind = TK_EOF Then Exit;
+
+  ModName := CurToken.Val;
+
+  { use v6; -> pragma de version, ignorer }
+  If (CurToken.Kind = TK_IDENT) And (ModName = 'v6') Then
+  Begin
+    ParserAdvance;   { consommer 'v6' }
+    EmitComment('use v6 (pragma ignore)');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      ParserAdvance;
+    Exit;
+  End;
+
+  { use MONKEY-SEE-NO-EVAL; -> pragma special, ignorer }
+  If (CurToken.Kind = TK_IDENT) And (ModName = 'MONKEY') Then
+  Begin
+    While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) And
+          (CurToken.Kind <> TK_EOF) Do
+      ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      ParserAdvance;
+    EmitComment('use MONKEY-... (pragma ignore)');
+    Exit;
+  End;
+
+  { Nom du module }
+  If (CurToken.Kind <> TK_IDENT) And (CurToken.Kind <> TK_KEYWORD) Then
+  Begin
+    CompileError('nom de module attendu apres ''use''');
+    Exit;
+  End;
+  ModName := CurToken.Val;
+  ParserAdvance;
+
+  { Noms qualifies : IO::Socket -> IO_Socket }
+  While (CurToken.Kind = TK_OP) And (CurToken.Val = '::') Do
+  Begin
+    ParserAdvance;   { consommer '::' }
+    If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+    Begin
+      ModName := ModName + '_' + CurToken.Val;
+      ParserAdvance;
+    End;
+  End;
+
+  { Importation selective : use Mod :only<sym1 sym2> (simplifie : skip) }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = ':') Then
+  Begin
+    { Consommer :only<...> ou :ALL etc. }
+    While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) And
+          (CurToken.Kind <> TK_EOF) Do
+      ParserAdvance;
+  End;
+
+  { Enregistrer dans la table des modules }
+  MIdx := ModuleAdd(ModName);
+
+  { Avertissement pour modules non implementes }
+  WarnMsg('module ''' + ModName + ''' non implemente, declare comme externe');
+
+  { Emettre un commentaire EXTRN pour marquage }
+  EmitComment('use ' + ModName + ' (module externe)');
+
+  { Consommer le ; final }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
+End;
+
+{ ---- ParseNeedStmt : need Module; ----------------------------- }
+{ Charge un module sans importer dans la portee courante.         }
+{ Simplifie : equivalent a use avec avertissement.                }
+Procedure ParseNeedStmt;
+Var
+  ModName : TString;
+  MIdx    : Integer;
+Begin
+  If CurToken.Kind = TK_EOF Then Exit;
+  If (CurToken.Kind <> TK_IDENT) And (CurToken.Kind <> TK_KEYWORD) Then
+  Begin
+    CompileError('nom de module attendu apres ''need''');
+    Exit;
+  End;
+  ModName := CurToken.Val;
+  ParserAdvance;
+
+  { Noms qualifies : File::Path -> File_Path }
+  While (CurToken.Kind = TK_OP) And (CurToken.Val = '::') Do
+  Begin
+    ParserAdvance;   { consommer '::' }
+    If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+    Begin
+      ModName := ModName + '_' + CurToken.Val;
+      ParserAdvance;
+    End;
+  End;
+
+  MIdx := ModuleAdd(ModName);
+  WarnMsg('module ''' + ModName + ''' (need) non implemente');
+  EmitComment('need ' + ModName + ' (charge sans import)');
+
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
+End;
+
+{ ---- EmitModuleDirectives : PUBLIC et EXTRN dans le code ------- }
+{ Parcourt la table des symboles et emet les directives ASM.      }
+{   - PUBLIC pour les symboles marques IsExported                  }
+{   - EXTRN pour les modules importes (stubs)                     }
+Procedure EmitModuleDirectives;
+Var
+  I : Integer;
+Begin
+  { Emettre PUBLIC pour les subs exportees (scan complet car
+    SymLeaveScope reduit SymCount sans effacer les entrees) }
+  For I := 0 To MAX_SYM - 1 Do
+  Begin
+    If (SymTab[I].Name <> '') And SymTab[I].IsExported And
+       (SymTab[I].Cat = SC_SUB) Then
+      EmitRaw('        PUBLIC  ' + SymTab[I].MangledName);
+  End;
+  { Emettre EXTRN pour les modules importes (commentaire informatif) }
+  For I := 0 To ModuleCount - 1 Do
+    EmitComment('EXTRN <' + ModuleTab[I] + '> (module importe)');
 End;
 
 { ============================================================
