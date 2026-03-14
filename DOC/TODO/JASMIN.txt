@@ -390,7 +390,7 @@ TODO 19 [IMPLEMENTE] - Labels, resolution des sauts et calcul des offsets
   - ForwardRef : support des references avant (label defini apres
     son utilisation) grace a la resolution differee
 
-TODO 20 - Attribut Code : generation binaire
+TODO 20 [IMPLEMENTE] - Attribut Code : generation binaire
   ----------------------------------------------
   Structure de l'attribut Code (section du .class) :
   - attribute_name_index (U2, pointe vers "Code" dans le CP)

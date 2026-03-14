@@ -35,7 +35,7 @@
 {  TODO 17 [IMPLEMENTE] - Opcodes d'acces aux champs                           }
 {  TODO 18 [IMPLEMENTE] - Opcodes de comparaison, retour et divers            }
 {  TODO 19 [IMPLEMENTE] - Labels, resolution des sauts et calcul des offsets  }
-{  TODO 20 - Attribut Code : generation binaire                               }
+{  TODO 20 [IMPLEMENTE] - Attribut Code : generation binaire                  }
 {  TODO 21 - Directives de gestion des exceptions (.catch, .throws)           }
 {  TODO 22 - Attributs supplementaires (SourceFile, LineNumberTable, etc.)    }
 {  TODO 23 - Programme principal : ligne de commande et generation .class     }
@@ -540,6 +540,9 @@ Function ParseFieldSpec(Const spec: String; Var cls, fname: String): Boolean; Fo
 Function  LabelFind(Const name: String): Integer; Forward;
 Procedure LabelAdd(Const name: String); Forward;
 Procedure LabelResolve; Forward;
+
+{ --- Declarations forward TODO 20 : Attribut Code : generation binaire --- }
+Procedure EmitCodeAttribute(mIdx: Integer); Forward;
 
 { ---------- Ouverture et fermeture du fichier source ---------- }
 
@@ -2794,6 +2797,159 @@ Begin
 End;
 
 { ============================================================================ }
+{ Attribut Code : generation binaire (TODO 20)                                 }
+{ ============================================================================ }
+
+{ --- EmitCodeAttribute : ecrire l'attribut Code d'une methode --- }
+{ Ecrit dans le fichier binaire l'attribut Code complet pour la methode       }
+{ specifiee par son index mIdx. Structure JVM du Code_attribute :             }
+{   attribute_name_index (U2, pointe vers "Code" dans le CP)                  }
+{   attribute_length (U4, taille excluant les 6 premiers octets)             }
+{   max_stack (U2), max_locals (U2)                                           }
+{   code_length (U4), code[] (octets du bytecode)                            }
+{   exception_table_length (U2)                                               }
+{   exception_table[] (start_pc, end_pc, handler_pc, catch_type)             }
+{   attributes_count (U2)                                                     }
+{   attributes[] (LineNumberTable si .line utilise)                           }
+{ L'attribute_length est backpatche apres ecriture complete.                  }
+
+Procedure EmitCodeAttribute(mIdx: Integer);
+Var attrLenPos : LongInt;    { position du champ attribute_length           }
+    attrStart  : LongInt;    { debut du contenu (apres attribute_length)    }
+    codeIdx    : Integer;    { index CP de "Code"                          }
+    lineIdx    : Integer;    { index CP de "LineNumberTable"               }
+    subAttrCnt : Integer;    { nombre de sous-attributs                    }
+    ci         : LongInt;    { index pour parcourir le bytecode            }
+    i, j       : Integer;    { indices de boucle                           }
+    lblIdx     : Integer;    { index dans la table des labels              }
+Begin
+ With MethodTab^[mIdx] do
+ Begin
+  If Not HasCode Then Exit;
+
+  { --- "Code" dans le Constant Pool --- }
+  codeIdx := CPEnsureUtf8('Code');
+
+  { --- attribute_name_index (U2) --- }
+  BinWriteU2(codeIdx);
+
+  { --- attribute_length (U4) - placeholder, sera backpatche --- }
+  attrLenPos := BinGetPos;
+  BinWriteU4(0);
+  attrStart := BinGetPos;
+
+  { --- max_stack (U2) + max_locals (U2) --- }
+  BinWriteU2(MaxStack);
+  BinWriteU2(MaxLocals);
+
+  { --- code_length (U4) --- }
+  BinWriteU4(CodeSize);
+
+  { --- code[] : octets du bytecode --- }
+  If (CodeSize > 0) And (Code <> Nil) Then
+  Begin
+   For ci := 0 to CodeSize - 1 do
+    BinWriteU1(Code^[ci]);
+  End;
+
+  { --- exception_table_length (U2) --- }
+  BinWriteU2(ExcCount);
+
+  { --- exception_table[] --- }
+  { Pour chaque handler : resoudre les labels en offsets PC, puis ecrire  }
+  { start_pc (U2), end_pc (U2), handler_pc (U2), catch_type (U2).        }
+  For i := 1 to ExcCount do
+  Begin
+   { Resoudre StartLbl -> StartPC }
+   If ExcTab^[i].StartLbl <> '' Then
+   Begin
+    lblIdx := 0;
+    For j := 1 to LabelCount do
+     If Labels^[j].Name = ExcTab^[i].StartLbl Then
+     Begin lblIdx := j; Break; End;
+    If (lblIdx > 0) And Labels^[lblIdx].Resolved Then
+     ExcTab^[i].StartPC := Labels^[lblIdx].Offset
+    Else
+     Error('exception handler: label start ''' +
+           ExcTab^[i].StartLbl + ''' non defini');
+   End;
+   { Resoudre EndLbl -> EndPC }
+   If ExcTab^[i].EndLbl <> '' Then
+   Begin
+    lblIdx := 0;
+    For j := 1 to LabelCount do
+     If Labels^[j].Name = ExcTab^[i].EndLbl Then
+     Begin lblIdx := j; Break; End;
+    If (lblIdx > 0) And Labels^[lblIdx].Resolved Then
+     ExcTab^[i].EndPC := Labels^[lblIdx].Offset
+    Else
+     Error('exception handler: label end ''' +
+           ExcTab^[i].EndLbl + ''' non defini');
+   End;
+   { Resoudre HandlerLbl -> HandlerPC }
+   If ExcTab^[i].HandlerLbl <> '' Then
+   Begin
+    lblIdx := 0;
+    For j := 1 to LabelCount do
+     If Labels^[j].Name = ExcTab^[i].HandlerLbl Then
+     Begin lblIdx := j; Break; End;
+    If (lblIdx > 0) And Labels^[lblIdx].Resolved Then
+     ExcTab^[i].HandlerPC := Labels^[lblIdx].Offset
+    Else
+     Error('exception handler: label handler ''' +
+           ExcTab^[i].HandlerLbl + ''' non defini');
+   End;
+   { CatchIdx : 0 si 'all', sinon index CP de la classe }
+   If (ExcTab^[i].CatchType = '') Or (ExcTab^[i].CatchType = 'all') Then
+    ExcTab^[i].CatchIdx := 0
+   Else
+    ExcTab^[i].CatchIdx := CPEnsureClass(ExcTab^[i].CatchType);
+
+   BinWriteU2(ExcTab^[i].StartPC);
+   BinWriteU2(ExcTab^[i].EndPC);
+   BinWriteU2(ExcTab^[i].HandlerPC);
+   BinWriteU2(ExcTab^[i].CatchIdx);
+  End;
+
+  { --- Sous-attributs du Code_attribute --- }
+  { Compter les sous-attributs presents }
+  subAttrCnt := 0;
+  If LineCount > 0 Then Inc(subAttrCnt);  { LineNumberTable }
+
+  { attributes_count (U2) }
+  BinWriteU2(subAttrCnt);
+
+  { --- LineNumberTable_attribute (si .line utilise) --- }
+  { Structure :                                                             }
+  {   attribute_name_index (U2, "LineNumberTable")                         }
+  {   attribute_length (U4, = 2 + 4 * line_number_table_length)            }
+  {   line_number_table_length (U2)                                        }
+  {   line_number_table[] : start_pc (U2), line_number (U2)               }
+  If LineCount > 0 Then
+  Begin
+   lineIdx := CPEnsureUtf8('LineNumberTable');
+   BinWriteU2(lineIdx);
+   BinWriteU4(2 + 4 * LongInt(LineCount));
+   BinWriteU2(LineCount);
+   For i := 1 to LineCount do
+   Begin
+    BinWriteU2(LineTab^[i].Offset);
+    BinWriteU2(LineTab^[i].Line);
+   End;
+  End;
+
+  { --- Backpatcher attribute_length --- }
+  BinPatchU4(attrLenPos, BinGetPos - attrStart);
+
+  If OptVerbose Then
+   WriteLn('    [code] methode ', Name, Desc,
+           ' : ', CodeSize, ' octets, stack=', MaxStack,
+           ', locals=', MaxLocals, ', exc=', ExcCount,
+           ', lines=', LineCount);
+ End;
+End;
+
+{ ============================================================================ }
 { Opcodes d'invocation de methodes (TODO 14)                                   }
 { ============================================================================ }
 
@@ -4378,9 +4534,9 @@ Begin
      SkipToEOL;
     End;
    Else
-    { Directives non encore implementees (TODO 20+) : sauter la ligne }
+    { Directives non encore implementees (TODO 21+) : sauter la ligne }
     If OptVerbose Then
-     WriteLn('  [skip] directive ', CurStr, ' (TODO 20+)');
+     WriteLn('  [skip] directive ', CurStr, ' (TODO 21+)');
     SkipToEOL;
    End;  { Case }
   End
@@ -4391,7 +4547,7 @@ Begin
    Begin
     { Mnemonique non reconnu : sauter la ligne }
     If OptVerbose Then
-     WriteLn('  [skip] instruction ', CurStr, ' (TODO 20+)');
+     WriteLn('  [skip] instruction ', CurStr, ' (TODO 21+)');
     SkipToEOL;
    End
    Else
