@@ -1,4 +1,4 @@
-# Build artifacts
+# Artefacts de compilation
 *.o
 *.ppu
 *.exe
