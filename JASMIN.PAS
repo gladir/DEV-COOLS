@@ -38,7 +38,7 @@
 {  TODO 20 [IMPLEMENTE] - Attribut Code : generation binaire                  }
 {  TODO 21 [IMPLEMENTE] - Directives de gestion des exceptions (.catch, .throws) }
 {  TODO 22 [IMPLEMENTE] - Attributs supplementaires (SourceFile, LineNumberTable, etc.)    }
-{  TODO 23 - Programme principal : ligne de commande et generation .class     }
+{  TODO 23 [IMPLEMENTE] - Programme principal : ligne de commande et generation .class     }
 {  TODO 24 - Validation et verification du bytecode genere                    }
 {  TODO 25 - Exemples SAMPLES/JASMIN/*.j et corrections de bugs              }
 { ---------------------------------------------------------------------------- }
@@ -580,6 +580,12 @@ Procedure EmitDeprecatedAttr; Forward;
 Procedure EmitSignatureAttr(Const sig: String); Forward;
 Procedure EmitInnerClassesAttr; Forward;
 Procedure EmitEnclosingMethodAttr; Forward;
+
+{ --- Declarations forward TODO 23 : Programme principal et generation .class --- }
+Procedure ParseCommandLine; Forward;
+Procedure CPEmitAll; Forward;
+Procedure EmitFieldInfo(fIdx: Integer); Forward;
+Procedure EmitMethodInfo(mIdx: Integer); Forward;
 
 { ---------- Ouverture et fermeture du fichier source ---------- }
 
@@ -5020,9 +5026,9 @@ Begin
      SkipToEOL;
     End;
    Else
-    { Directives non encore implementees (TODO 23+) : sauter la ligne }
+    { Directives non encore implementees (TODO 24+) : sauter la ligne }
     If OptVerbose Then
-     WriteLn('  [skip] directive ', CurStr, ' (TODO 23+)');
+     WriteLn('  [skip] directive ', CurStr, ' (TODO 24+)');
     SkipToEOL;
    End;  { Case }
   End
@@ -5033,7 +5039,7 @@ Begin
    Begin
     { Mnemonique non reconnu : sauter la ligne }
     If OptVerbose Then
-     WriteLn('  [skip] instruction ', CurStr, ' (TODO 23+)');
+     WriteLn('  [skip] instruction ', CurStr, ' (TODO 24+)');
     SkipToEOL;
    End
    Else
@@ -5059,6 +5065,281 @@ Begin
   LeaveMethod;
  End;
 End;
+
+{ ============================================================================ }
+{ TODO 23 : Programme principal : ligne de commande et generation .class      }
+{ ============================================================================ }
+
+{ --- ParseCommandLine : analyser les options de la ligne de commande --- }
+{ Reconnait : fichier.j (obligatoire, premier argument),                      }
+{   -o <fichier.class>, -d <repertoire>, -g, -v, -version, -help             }
+Procedure ParseCommandLine;
+Var i: Integer; arg: String;
+Begin
+ SrcFileName := '';
+ OutFileName := '';
+ OutDir      := '';
+ OptDebug    := False;
+ OptVerbose  := False;
+ i := 1;
+ While i <= ParamCount do
+ Begin
+  arg := ParamStr(i);
+  If (arg = '-o') And (i < ParamCount) Then
+  Begin
+   Inc(i);
+   OutFileName := ParamStr(i);
+  End
+  Else If (arg = '-d') And (i < ParamCount) Then
+  Begin
+   Inc(i);
+   OutDir := ParamStr(i);
+  End
+  Else If arg = '-g' Then
+   OptDebug := True
+  Else If arg = '-v' Then
+   OptVerbose := True
+  Else If (arg = '-version') Or (arg = '--version') Then
+  Begin
+   WriteLn(VERSION);
+   Halt;
+  End
+  Else If (arg = '-help') Or (arg = '--help') Or (arg = '-h') Or
+          (arg = '/?') Or (arg = '/h') Or (arg = '/H') Then
+  Begin
+   WriteLn('JASMIN - ', VERSION);
+   WriteLn;
+   WriteLn('Syntaxe : JASMIN fichier.j [options]');
+   WriteLn;
+   WriteLn('  Assemble un fichier source Jasmin (.j) en fichier .class');
+   WriteLn('  (bytecode Java) compatible avec la JVM.');
+   WriteLn;
+   WriteLn('Options :');
+   WriteLn('  -o <fichier.class>  Specifier le nom du fichier de sortie');
+   WriteLn('  -d <repertoire>     Specifier le repertoire de sortie');
+   WriteLn('  -g                  Inclure les informations de debogage');
+   WriteLn('  -v                  Mode verbeux');
+   WriteLn('  -version            Afficher la version et quitter');
+   WriteLn('  -help               Afficher cette aide');
+   Halt;
+  End
+  Else If (arg[1] = '-') Then
+   WriteLn('Attention : option inconnue "', arg, '"')
+  Else If SrcFileName = '' Then
+   SrcFileName := arg;
+  Inc(i);
+ End;
+ If SrcFileName = '' Then
+ Begin
+  WriteLn('Erreur : aucun fichier source specifie.');
+  WriteLn('Tapez JASMIN -help pour l''aide.');
+  Halt(1);
+ End;
+End;
+
+{ --- CPEmitAll : ecrire le Constant Pool en binaire --- }
+{ Ecrit constant_pool_count (U2) puis chaque entree du CP.                    }
+{ Les entrees CP_LONG et CP_DOUBLE occupent 2 emplacements ; l'entree         }
+{ suivante (index+1) est inutilisee (tag=CP_NONE) par convention JVM.         }
+Procedure CPEmitAll;
+Var i: Integer; len: Integer; j: Integer; b: Byte;
+Begin
+ { constant_pool_count = CPCount (nombre d'entrees, 1-base, 0 inutilisee) }
+ BinWriteU2(CPCount);
+
+ For i := 1 to CPCount - 1 do
+ Begin
+  Case CPTab^[i].Tag of
+   CP_UTF8:
+   Begin
+    BinWriteU1(1);            { tag = CONSTANT_Utf8 }
+    len := Length(CPTab^[i].StrVal);
+    BinWriteU2(len);          { length }
+    For j := 1 to len do
+    Begin
+     b := Byte(Ord(CPTab^[i].StrVal[j]));
+     BinWriteU1(b);
+    End;
+   End;
+   CP_INTEGER:
+   Begin
+    BinWriteU1(3);            { tag = CONSTANT_Integer }
+    BinWriteU4(CPTab^[i].IntVal);
+   End;
+   CP_FLOAT:
+   Begin
+    BinWriteU1(4);            { tag = CONSTANT_Float }
+    BinWriteFloat(CPTab^[i].FloatVal);
+   End;
+   CP_LONG:
+   Begin
+    BinWriteU1(5);            { tag = CONSTANT_Long }
+    BinWriteU4(CPTab^[i].HiBytes);
+    BinWriteU4(CPTab^[i].LoBytes);
+   End;
+   CP_DOUBLE:
+   Begin
+    BinWriteU1(6);            { tag = CONSTANT_Double }
+    BinWriteU4(CPTab^[i].HiBytes);
+    BinWriteU4(CPTab^[i].LoBytes);
+   End;
+   CP_CLASS:
+   Begin
+    BinWriteU1(7);            { tag = CONSTANT_Class }
+    BinWriteU2(CPTab^[i].Ref1);  { name_index }
+   End;
+   CP_STRING:
+   Begin
+    BinWriteU1(8);            { tag = CONSTANT_String }
+    BinWriteU2(CPTab^[i].Ref1);  { string_index }
+   End;
+   CP_FIELDREF:
+   Begin
+    BinWriteU1(9);            { tag = CONSTANT_Fieldref }
+    BinWriteU2(CPTab^[i].Ref1);  { class_index }
+    BinWriteU2(CPTab^[i].Ref2);  { name_and_type_index }
+   End;
+   CP_METHODREF:
+   Begin
+    BinWriteU1(10);           { tag = CONSTANT_Methodref }
+    BinWriteU2(CPTab^[i].Ref1);  { class_index }
+    BinWriteU2(CPTab^[i].Ref2);  { name_and_type_index }
+   End;
+   CP_INTERFACEMETHODREF:
+   Begin
+    BinWriteU1(11);           { tag = CONSTANT_InterfaceMethodref }
+    BinWriteU2(CPTab^[i].Ref1);  { class_index }
+    BinWriteU2(CPTab^[i].Ref2);  { name_and_type_index }
+   End;
+   CP_NAMEANDTYPE:
+   Begin
+    BinWriteU1(12);           { tag = CONSTANT_NameAndType }
+    BinWriteU2(CPTab^[i].Ref1);  { name_index }
+    BinWriteU2(CPTab^[i].Ref2);  { descriptor_index }
+   End;
+   CP_METHODHANDLE:
+   Begin
+    BinWriteU1(15);           { tag = CONSTANT_MethodHandle }
+    BinWriteU1(Byte(CPTab^[i].Ref1)); { reference_kind }
+    BinWriteU2(CPTab^[i].Ref2);       { reference_index }
+   End;
+   CP_METHODTYPE:
+   Begin
+    BinWriteU1(16);           { tag = CONSTANT_MethodType }
+    BinWriteU2(CPTab^[i].Ref1);  { descriptor_index }
+   End;
+   CP_INVOKEDYNAMIC:
+   Begin
+    BinWriteU1(18);           { tag = CONSTANT_InvokeDynamic }
+    BinWriteU2(CPTab^[i].Ref1);  { bootstrap_method_attr_index }
+    BinWriteU2(CPTab^[i].Ref2);  { name_and_type_index }
+   End;
+   CP_NONE:
+   Begin
+    { Slot vide (seconde moitie d'un LONG ou DOUBLE) - rien a ecrire }
+   End;
+  Else
+   { Tag inconnu, ecrire UTF8 vide par securite }
+   BinWriteU1(1);
+   BinWriteU2(0);
+  End;
+ End;
+ If OptVerbose Then
+  WriteLn('  [bin] Constant Pool : ', CPCount - 1, ' entree(s) ecrite(s)');
+End;
+
+{ --- EmitFieldInfo : ecrire une entree field_info --- }
+{ Structure JVM :                                                              }
+{   access_flags (U2), name_index (U2), descriptor_index (U2),                }
+{   attributes_count (U2), attributes[]                                       }
+{ Attributs possibles : ConstantValue, Deprecated, Signature                  }
+Procedure EmitFieldInfo(fIdx: Integer);
+Var attrCnt: Integer;
+    cvIdx: Integer;
+Begin
+ With FieldTab^[fIdx] do
+ Begin
+  { Compter les attributs }
+  attrCnt := 0;
+  If HasInit Then Inc(attrCnt);       { ConstantValue }
+  If IsDeprecated Then Inc(attrCnt);  { Deprecated }
+  If Signature <> '' Then Inc(attrCnt); { Signature }
+
+  { Ecrire field_info }
+  BinWriteU2(AccFlags);     { access_flags }
+  BinWriteU2(NameIdx);      { name_index }
+  BinWriteU2(DescIdx);      { descriptor_index }
+  BinWriteU2(attrCnt);      { attributes_count }
+
+  { Attribut ConstantValue }
+  If HasInit Then
+  Begin
+   cvIdx := CPEnsureUtf8('ConstantValue');
+   BinWriteU2(cvIdx);       { attribute_name_index }
+   BinWriteU4(2);           { attribute_length = 2 }
+   BinWriteU2(InitCPIdx);   { constantvalue_index }
+  End;
+
+  { Attribut Deprecated }
+  If IsDeprecated Then
+   EmitDeprecatedAttr;
+
+  { Attribut Signature }
+  If Signature <> '' Then
+   EmitSignatureAttr(Signature);
+
+  If OptVerbose Then
+   WriteLn('  [bin] champ ', Name, ' ', Desc, ' (', attrCnt, ' attr)');
+ End;
+End;
+
+{ --- EmitMethodInfo : ecrire une entree method_info --- }
+{ Structure JVM :                                                              }
+{   access_flags (U2), name_index (U2), descriptor_index (U2),                }
+{   attributes_count (U2), attributes[]                                       }
+{ Attributs possibles : Code, Exceptions, Deprecated, Signature               }
+Procedure EmitMethodInfo(mIdx: Integer);
+Var attrCnt: Integer;
+Begin
+ With MethodTab^[mIdx] do
+ Begin
+  { Compter les attributs }
+  attrCnt := 0;
+  If HasCode Then Inc(attrCnt);         { Code }
+  If ThrowCount > 0 Then Inc(attrCnt);  { Exceptions }
+  If IsDeprecated Then Inc(attrCnt);    { Deprecated }
+  If Signature <> '' Then Inc(attrCnt); { Signature }
+
+  { Ecrire method_info }
+  BinWriteU2(AccFlags);     { access_flags }
+  BinWriteU2(NameIdx);      { name_index }
+  BinWriteU2(DescIdx);      { descriptor_index }
+  BinWriteU2(attrCnt);      { attributes_count }
+
+  { Attribut Code }
+  If HasCode Then
+   EmitCodeAttribute(mIdx);
+
+  { Attribut Exceptions }
+  If ThrowCount > 0 Then
+   EmitExceptionsAttribute(mIdx);
+
+  { Attribut Deprecated }
+  If IsDeprecated Then
+   EmitDeprecatedAttr;
+
+  { Attribut Signature }
+  If Signature <> '' Then
+   EmitSignatureAttr(Signature);
+
+  If OptVerbose Then
+   WriteLn('  [bin] methode ', Name, Desc, ' (', attrCnt, ' attr)');
+ End;
+End;
+
+{ ============================================================================ }
+{ Initialisation globale                                                       }
+{ ============================================================================ }
 
 Procedure GlobalInit;
 Begin
@@ -5140,15 +5421,14 @@ End;
 { ============================================================================ }
 
 Procedure Assemble;
-Var pi: Integer;
+Var classOut     : String;     { nom du fichier .class de sortie            }
+    i            : Integer;
+    classAttrCnt : Integer;    { nombre d'attributs de classe               }
+    slashPos     : Integer;    { position du dernier '/' pour chemin        }
+    baseName     : String;     { nom de base (sans extension/chemin)        }
 Begin
  GlobalInit;
- { Parser les options de la ligne de commande }
- For pi := 2 to ParamCount do
- Begin
-  If ParamStr(pi) = '-v' Then OptVerbose := True
-  Else If ParamStr(pi) = '-g' Then OptDebug := True;
- End;
+ ParseCommandLine;
  WriteLn(VERSION);
  WriteLn('Fichier source : ', SrcFileName);
 
@@ -5158,7 +5438,7 @@ Begin
  { Lire le premier token }
  NextToken;
 
- { Parser les directives de classe et le contenu (TODO 06) }
+ { Parser les directives de classe et le contenu }
  ParseDirectives;
 
  WriteLn;
@@ -5178,11 +5458,195 @@ Begin
   WriteLn('Version       : ', ClassMajor, '.', ClassMinor);
  End;
 
- { Bilan de l'assemblage }
+ { Bilan de l'assemblage (parsing) }
  BilanAssemblage;
 
+ { Si des erreurs ont ete detectees, ne pas generer le .class }
+ If ErrorCount > 0 Then
+ Begin
+  WriteLn;
+  WriteLn('Assemblage abandonne a cause des erreurs.');
+  SrcClose;
+  GlobalCleanup;
+  Exit;
+ End;
+
+ { Verifier que la classe est definie }
+ If ClassName = '' Then
+ Begin
+  Error('aucune directive .class trouvee');
+  SrcClose;
+  GlobalCleanup;
+  Exit;
+ End;
+
+ { Resoudre les indices CP de la classe et de la superclasse }
+ ClassNameIdx := CPAddClass(ClassName);
+ SuperNameIdx := CPAddClass(SuperName);
+
+ { --- Determiner le nom du fichier de sortie .class --- }
+ If OutFileName <> '' Then
+  classOut := OutFileName
+ Else
+ Begin
+  { Extraire le nom simple de la classe (apres le dernier /) }
+  baseName := ClassName;
+  slashPos := 0;
+  For i := 1 to Length(baseName) do
+   If baseName[i] = '/' Then slashPos := i;
+  If slashPos > 0 Then
+   baseName := Copy(baseName, slashPos + 1, Length(baseName) - slashPos);
+  classOut := baseName + '.class';
+ End;
+ { Ajouter le repertoire de sortie si specifie }
+ If OutDir <> '' Then
+ Begin
+  If (OutDir[Length(OutDir)] <> '/') And
+     (OutDir[Length(OutDir)] <> '\') Then
+   OutDir := OutDir + '/';
+  classOut := OutDir + classOut;
+ End;
+
  WriteLn;
- WriteLn('(Assemblage non encore implemente - voir TODOs 07 a 25)');
+ WriteLn('Generation de : ', classOut);
+
+ { --- Pre-enregistrer les noms d'attributs dans le CP --- }
+ { Ces chaines sont necessaires pour l'emission binaire des attributs.        }
+ { Elles doivent etre dans le CP AVANT qu'il ne soit ecrit dans le fichier.  }
+ For i := 1 to MethodCount do
+ Begin
+  If MethodTab^[i].HasCode Then
+  Begin
+   CPEnsureUtf8('Code');
+   If MethodTab^[i].LineCount > 0 Then
+    CPEnsureUtf8('LineNumberTable');
+   { Pre-enregistrer les classes des exception handlers }
+   For slashPos := 1 to MethodTab^[i].ExcCount do
+   Begin
+    If (MethodTab^[i].ExcTab^[slashPos].CatchType <> '') And
+       (MethodTab^[i].ExcTab^[slashPos].CatchType <> 'all') Then
+     CPEnsureClass(MethodTab^[i].ExcTab^[slashPos].CatchType);
+   End;
+  End;
+  If MethodTab^[i].ThrowCount > 0 Then
+   CPEnsureUtf8('Exceptions');
+  If MethodTab^[i].IsDeprecated Then
+   CPEnsureUtf8('Deprecated');
+  If MethodTab^[i].Signature <> '' Then
+  Begin
+   CPEnsureUtf8('Signature');
+   CPEnsureUtf8(MethodTab^[i].Signature);
+  End;
+ End;
+ For i := 1 to FieldCount do
+ Begin
+  If FieldTab^[i].HasInit Then
+   CPEnsureUtf8('ConstantValue');
+  If FieldTab^[i].IsDeprecated Then
+   CPEnsureUtf8('Deprecated');
+  If FieldTab^[i].Signature <> '' Then
+  Begin
+   CPEnsureUtf8('Signature');
+   CPEnsureUtf8(FieldTab^[i].Signature);
+  End;
+ End;
+ If SourceName <> '' Then
+ Begin
+  CPEnsureUtf8('SourceFile');
+  CPEnsureUtf8(SourceName);
+ End;
+ If ClassDeprecated Then
+  CPEnsureUtf8('Deprecated');
+ If ClassSignature <> '' Then
+ Begin
+  CPEnsureUtf8('Signature');
+  CPEnsureUtf8(ClassSignature);
+ End;
+ If InnerCount > 0 Then
+ Begin
+  CPEnsureUtf8('InnerClasses');
+  For i := 1 to InnerCount do
+  Begin
+   If InnerTab[i].InnerClass <> '' Then
+    CPEnsureClass(InnerTab[i].InnerClass);
+   If InnerTab[i].OuterClass <> '' Then
+    CPEnsureClass(InnerTab[i].OuterClass);
+   If InnerTab[i].InnerName <> '' Then
+    CPEnsureUtf8(InnerTab[i].InnerName);
+  End;
+ End;
+ If EnclosingClass <> '' Then
+ Begin
+  CPEnsureUtf8('EnclosingMethod');
+  CPEnsureClass(EnclosingClass);
+  If EnclosingMethod <> '' Then
+   CPAddNameAndType(EnclosingMethod, EnclosingDesc);
+ End;
+
+ { --- Ouvrir le fichier binaire .class --- }
+ BinOpen(classOut);
+
+ { --- 1. Ecrire le magic number (0xCAFEBABE) --- }
+ BinWriteU4(LongInt($CAFEBABE));
+
+ { --- 2. Ecrire la version du fichier .class --- }
+ BinWriteU2(ClassMinor);      { minor_version }
+ BinWriteU2(ClassMajor);      { major_version }
+
+ { --- 3. Ecrire le Constant Pool --- }
+ CPEmitAll;
+
+ { --- 4. Ecrire access_flags, this_class, super_class --- }
+ BinWriteU2(ClassAccFlags);   { access_flags }
+ BinWriteU2(ClassNameIdx);    { this_class }
+ BinWriteU2(SuperNameIdx);    { super_class }
+
+ { --- 5. Ecrire la table des interfaces --- }
+ BinWriteU2(IfaceCount);      { interfaces_count }
+ For i := 1 to IfaceCount do
+  BinWriteU2(IfaceTab[i]);    { interfaces[] }
+
+ { --- 6. Ecrire la table des champs --- }
+ BinWriteU2(FieldCount);      { fields_count }
+ For i := 1 to FieldCount do
+  EmitFieldInfo(i);
+
+ { --- 7. Ecrire la table des methodes --- }
+ BinWriteU2(MethodCount);     { methods_count }
+ For i := 1 to MethodCount do
+  EmitMethodInfo(i);
+
+ { --- 8. Ecrire les attributs de classe --- }
+ { Compter les attributs de classe }
+ classAttrCnt := 0;
+ If SourceName <> '' Then Inc(classAttrCnt);        { SourceFile }
+ If ClassDeprecated Then Inc(classAttrCnt);          { Deprecated }
+ If ClassSignature <> '' Then Inc(classAttrCnt);     { Signature }
+ If InnerCount > 0 Then Inc(classAttrCnt);           { InnerClasses }
+ If EnclosingClass <> '' Then Inc(classAttrCnt);     { EnclosingMethod }
+
+ BinWriteU2(classAttrCnt);    { attributes_count }
+
+ { SourceFile }
+ If SourceName <> '' Then
+  EmitSourceFileAttr;
+ { Deprecated }
+ If ClassDeprecated Then
+  EmitDeprecatedAttr;
+ { Signature }
+ If ClassSignature <> '' Then
+  EmitSignatureAttr(ClassSignature);
+ { InnerClasses }
+ If InnerCount > 0 Then
+  EmitInnerClassesAttr;
+ { EnclosingMethod }
+ If EnclosingClass <> '' Then
+  EmitEnclosingMethodAttr;
+
+ { --- 9. Fermer le fichier binaire --- }
+ BinClose;
+
+ WriteLn('Fichier genere : ', classOut, ' (', BinPos, ' octets)');
 
  SrcClose;
  GlobalCleanup;
@@ -5193,9 +5657,7 @@ End;
 { ============================================================================ }
 
 BEGIN
- If (ParamCount = 0) or (ParamStr(1) = '/?') or (ParamStr(1) = '--help')
-    or (ParamStr(1) = '-h') or (ParamStr(1) = '/h') or
-    (ParamStr(1) = '/H') Then
+ If ParamCount = 0 Then
  Begin
   WriteLn('JASMIN - ', VERSION);
   WriteLn;
@@ -5213,11 +5675,5 @@ BEGIN
   WriteLn('  -help               Afficher cette aide');
   Halt;
  End;
- If (ParamStr(1) = '-version') or (ParamStr(1) = '--version') Then
- Begin
-  WriteLn(VERSION);
-  Halt;
- End;
- SrcFileName := ParamStr(1);
  Assemble;
 END.

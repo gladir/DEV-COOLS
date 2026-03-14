@@ -429,8 +429,7 @@ TODO 21 [IMPLEMENTE] - Directives de gestion des exceptions (.catch, .throws)
   - Validation : verifier que les labels from/to/using existent
   - Validation : verifier que start_pc < end_pc
 
-TODO 22 [IMPLEMENTE] - Attributs supplementaires (SourceFile, LineNumberTable, etc.)
-  ----------------------------------------------------------------------
+TODO 22 [IMPLEMENTE] - Attributs supplementaires (SourceFile, LineNumberTable, etc.)  ----------------------------------------------------------------------
   - EmitSourceFileAttr : ecrire attribut SourceFile si .source defini
     (attribute_name_index -> "SourceFile", U2 source_file_index)
   - EmitLineNumberTableAttr : ecrire sous-attribut LineNumberTable
@@ -447,7 +446,7 @@ TODO 22 [IMPLEMENTE] - Attributs supplementaires (SourceFile, LineNumberTable, e
   - Calcul prealable de attributes_count pour chaque structure
     (classe, champ, methode, attribut Code)
 
-TODO 23 - Programme principal : ligne de commande et generation .class
+TODO 23 [IMPLEMENTE] - Programme principal : ligne de commande et generation .class
   ---------------------------------------------------------------------
   Architecture du programme principal :
   - ParseCommandLine : analyser ParamStr(1..ParamCount)
