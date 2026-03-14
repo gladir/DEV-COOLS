@@ -72,17 +72,18 @@
               8. IMPL
               9. EQUIV
 
-  TODO 05 - TABLE DES SYMBOLES
+  TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
             TSymKind : SK_VAR, SK_PARAM, SK_PROC, SK_LABEL,
               SK_SWITCH, SK_ARRAY, SK_OWN
             TSymRec : Name, MangledName, Kind, TypeIdx, Offset,
-              Scope, IsOwn, IsValue, IsName
-            SymAdd, SymFind, SymFindInScope, SymMangle
+              ScopeLevel, IsOwn, IsValue, IsName, DeclLine
+            SymNameClean, SymMangle, SymAdd, SymFind, SymFindInScope
             CurScope : compteur de portee imbriquee (max MAX_SCOPE)
             SymEnterScope / SymLeaveScope : gestion des blocs imbriques
               Algol 60 permet des declarations locales dans chaque bloc
             Algol 60 est a portee lexicale statique (static scoping)
             Recherche en remontant les portees englobantes
+            SymNextOffset : allocation locale CurFrameSize += 2
 
   TODO 06 - SYSTEME DE TYPES
             TTypeKind : TYK_INTEGER (16 bits signe), TYK_REAL (stub entier),
@@ -507,6 +508,30 @@ Type
     ElemCount : Integer;
   End;
 
+  { ---- Categories de symboles (TODO 05) -------------------- }
+  TSymKind = (
+    SK_VAR,      { variable scalaire (INTEGER, REAL, BOOLEAN)  }
+    SK_PARAM,    { parametre formel de procedure               }
+    SK_PROC,     { procedure / fonction                        }
+    SK_LABEL,    { etiquette de saut (label)                   }
+    SK_SWITCH,   { aiguillage (switch)                         }
+    SK_ARRAY,    { tableau (ARRAY)                             }
+    SK_OWN       { variable OWN (statique, persistante)        }
+  );
+
+  TSymRec = Record
+    Name        : TString;   { identifiant Algol 60                }
+    MangledName : TString;   { etiquette ASM (_A60V_nom, etc.)     }
+    Kind        : TSymKind;
+    TypeIdx     : Integer;   { indice dans TypeTab (TY_IDX_*)      }
+    ScopeLevel  : Integer;   { portee de declaration               }
+    Offset      : Integer;   { [BP-n] pour locaux, [BP+n] params   }
+    IsOwn       : Boolean;   { OWN : variable statique (DATA seg)  }
+    IsValue     : Boolean;   { VALUE : parametre passe par valeur  }
+    IsName      : Boolean;   { parametre passe par nom (thunk)     }
+    DeclLine    : Integer;   { ligne de declaration (debug)        }
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -546,6 +571,14 @@ Var
 
   { Label sequentiel }
   LabelSeq   : Integer;
+
+  { Table des symboles (TODO 05) }
+  SymTab       : Array[0..MAX_SYM - 1] Of TSymRec;
+  SymCount     : Integer;
+  ScopeStack   : Array[0..MAX_SCOPE - 1] Of Integer;
+  ScopeTop     : Integer;
+  CurScope     : Integer;
+  CurFrameSize : Integer;    { taille cadre local courant (en octets) }
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -601,6 +634,18 @@ Procedure ParseUnary(Var Res : TExprVal); Forward;
 Function  CurTokIsInfixOp : Boolean; Forward;
 Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal); Forward;
 Procedure ParseExpr(Var Res : TExprVal); Forward;
+{ ---- Forward declarations (TODO 05) ----------------------- }
+Function  SymNameClean(Const Name : TString) : TString; Forward;
+Function  SymMangle(Const Name : TString; Kind : TSymKind) : TString; Forward;
+Function  SymFind(Const Name : TString) : Integer; Forward;
+Function  SymFindInScope(Const Name : TString;
+                         Level : Integer) : Integer; Forward;
+Function  SymAdd(Const Name : TString; Kind : TSymKind;
+                 TypeIdx, Offset : Integer) : Integer; Forward;
+Procedure SymEnterScope; Forward;
+Procedure SymLeaveScope; Forward;
+Function  SymNextOffset : Integer; Forward;
+Procedure SymInit;       Forward;
 
 { ---- Erreur fatale ----------------------------------------- }
 Procedure FatalError(Const Msg : TString);
@@ -667,6 +712,7 @@ Begin
   WriteLn;
   WriteLn('Compilation terminee : ', Opts.SrcFile, ' -> ', Opts.OutFile);
   WriteLn('  Lignes         : ', TotalLines);
+  WriteLn('  Symboles       : ', TotalSyms);
   WriteLn('  Erreurs        : ', ErrorCount);
   WriteLn('  Avertissements : ', WarnCount);
 End;
@@ -870,6 +916,8 @@ Begin
   GExprDummy.Offset  := 0;
   GExprDummy.SymIdx  := -1;
   RuntimeEmitted := False;
+  { Table des symboles (TODO 05) }
+  SymInit;
 End;
 
 { ============================================================
@@ -2255,6 +2303,179 @@ End;
 Procedure ParseExpr(Var Res : TExprVal);
 Begin
   ParseExprPrec(1, Res);
+End;
+
+{ ============================================================
+  TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- SymInit : initialisation de la table des symboles ------ }
+Procedure SymInit;
+Begin
+  SymCount     := 0;
+  ScopeTop     := 0;
+  CurScope     := 0;
+  CurFrameSize := 0;
+  ScopeStack[0] := 0;
+End;
+
+{ ---- SymNameClean : nettoyer un identifiant pour MASM -------
+  Remplace les caracteres non alphanumeriques par '_'.
+  MASM n accepte que [A-Za-z0-9_@?$] dans les labels.         }
+Function SymNameClean(Const Name : TString) : TString;
+Var
+  S : TString;
+  I : Integer;
+Begin
+  S := Name;
+  For I := 1 To Length(S) Do
+    If Not (((S[I] >= 'A') And (S[I] <= 'Z')) Or
+            ((S[I] >= 'a') And (S[I] <= 'z')) Or
+            ((S[I] >= '0') And (S[I] <= '9')) Or
+            (S[I] = '_')) Then
+      S[I] := '_';
+  SymNameClean := S;
+End;
+
+{ ---- SymMangle : construire l etiquette ASM d un symbole ----
+  SK_VAR    -> _A60V_ + name   (variable locale/globale)
+  SK_PARAM  -> ''              (acces via [BP+n], pas de label)
+  SK_PROC   -> _A60P_ + name   (procedure / fonction)
+  SK_LABEL  -> _A60L_ + name   (etiquette utilisateur)
+  SK_SWITCH -> _A60S_ + name   (table switch)
+  SK_ARRAY  -> _A60V_ + name   (tableau, meme prefixe que var)
+  SK_OWN    -> _A60O_ + name   (variable OWN, segment DATA)   }
+Function SymMangle(Const Name : TString; Kind : TSymKind) : TString;
+Var
+  Clean : TString;
+Begin
+  Clean := SymNameClean(Name);
+  Case Kind Of
+    SK_VAR    : SymMangle := A60_VAR_PFX + Clean;
+    SK_PARAM  : SymMangle := '';
+    SK_PROC   : SymMangle := A60_FN_PFX  + Clean;
+    SK_LABEL  : SymMangle := A60_LBL_PFX + Clean;
+    SK_SWITCH : SymMangle := A60_SW_PFX  + Clean;
+    SK_ARRAY  : SymMangle := A60_VAR_PFX + Clean;
+    SK_OWN    : SymMangle := A60_OWN_PFX + Clean;
+  Else
+    SymMangle := A60_VAR_PFX + Clean;
+  End;
+End;
+
+{ ---- SymFind : recherche dans toutes les portees ------------ }
+{ Parcourt du plus recent au plus ancien (static scoping).
+  Retourne l indice (0-base) ou -1 si non trouve.              }
+Function SymFind(Const Name : TString) : Integer;
+Var
+  I : Integer;
+  U : TString;
+Begin
+  U := StrUpperCase(Name);
+  For I := SymCount - 1 DownTo 0 Do
+    If StrUpperCase(SymTab[I].Name) = U Then
+    Begin
+      SymFind := I;
+      Exit;
+    End;
+  SymFind := -1;
+End;
+
+{ ---- SymFindInScope : recherche dans une portee specifique -- }
+{ Retourne l indice ou -1. Utile pour detecter redeclarations. }
+Function SymFindInScope(Const Name : TString;
+                        Level : Integer) : Integer;
+Var
+  I : Integer;
+  U : TString;
+Begin
+  U := StrUpperCase(Name);
+  For I := SymCount - 1 DownTo 0 Do
+    If (StrUpperCase(SymTab[I].Name) = U) And
+       (SymTab[I].ScopeLevel = Level) Then
+    Begin
+      SymFindInScope := I;
+      Exit;
+    End;
+  SymFindInScope := -1;
+End;
+
+{ ---- SymAdd : ajouter un symbole dans la table -------------- }
+{ Retourne l indice du nouveau symbole (0-base) ou -1 si plein.
+  Avec trace de debug si -d est actif.                          }
+Function SymAdd(Const Name : TString; Kind : TSymKind;
+                TypeIdx, Offset : Integer) : Integer;
+Var
+  Idx : Integer;
+Begin
+  If SymCount >= MAX_SYM Then
+  Begin
+    CompileError('table des symboles pleine (max=' +
+                 IntToStr_(MAX_SYM) + ')');
+    SymAdd := -1;
+    Exit;
+  End;
+  Idx := SymCount;
+  SymTab[Idx].Name        := Name;
+  SymTab[Idx].MangledName := SymMangle(Name, Kind);
+  SymTab[Idx].Kind        := Kind;
+  SymTab[Idx].TypeIdx     := TypeIdx;
+  SymTab[Idx].ScopeLevel  := CurScope;
+  SymTab[Idx].Offset      := Offset;
+  SymTab[Idx].IsOwn       := (Kind = SK_OWN);
+  SymTab[Idx].IsValue     := False;
+  SymTab[Idx].IsName      := False;
+  SymTab[Idx].DeclLine    := CurToken.Line;
+  Inc(SymCount);
+  Inc(TotalSyms);
+  { Trace debug si -d }
+  If Opts.DebugMode Then
+    WriteLn('  [sym] ', Name, ' kind=', Ord(Kind),
+            ' scope=', CurScope, ' offset=', Offset,
+            ' -> ', SymTab[Idx].MangledName);
+  SymAdd := Idx;
+End;
+
+{ ---- SymEnterScope : entrer dans une nouvelle portee -------- }
+{ Algol 60 : chaque bloc BEGIN..END cree une nouvelle portee.
+  Les symboles declares dans le bloc sont locaux a ce bloc.     }
+Procedure SymEnterScope;
+Begin
+  If ScopeTop >= MAX_SCOPE - 1 Then
+  Begin
+    CompileError('profondeur de portee maximale atteinte (max=' +
+                 IntToStr_(MAX_SCOPE) + ')');
+    Exit;
+  End;
+  Inc(CurScope);
+  Inc(ScopeTop);
+  ScopeStack[ScopeTop] := SymCount;
+End;
+
+{ ---- SymLeaveScope : quitter la portee courante ------------- }
+{ Les symboles locaux (SK_VAR, SK_PARAM, SK_ARRAY) sont
+  retires de la table. Les OWN persistent (segment DATA).      }
+Procedure SymLeaveScope;
+Begin
+  If ScopeTop <= 0 Then
+  Begin
+    CompileError('desequilibre de portees : LeaveScope sans EnterScope');
+    Exit;
+  End;
+  SymCount := ScopeStack[ScopeTop];
+  Dec(ScopeTop);
+  Dec(CurScope);
+End;
+
+{ ---- SymNextOffset : allouer un emplacement local ----------- }
+{ Incremente CurFrameSize de 2 octets (un mot 16 bits).
+  Retourne l offset negatif par rapport a BP.
+  Exemple : premier appel -> CurFrameSize=2, retourne 2
+            => acces via [BP-2]                                 }
+Function SymNextOffset : Integer;
+Begin
+  Inc(CurFrameSize, 2);
+  SymNextOffset := CurFrameSize;
 End;
 
 { ---- Compilation ------------------------------------------- }

@@ -1,0 +1,42 @@
+comment Test de la table des symboles (TODO 05) ;
+BEGIN
+  comment Declarations simples de types ;
+  INTEGER x, y, z;
+  REAL pi;
+  BOOLEAN flag;
+
+  comment Affectations ;
+  x := 42;
+  y := 10;
+  z := x + y;
+  pi := 3.14;
+  flag := TRUE;
+
+  comment Bloc imbrique avec portee locale ;
+  BEGIN
+    INTEGER a, b;
+    a := 1;
+    b := 2;
+    x := a + b
+  END;
+
+  comment Variable OWN (statique) ;
+  OWN INTEGER counter;
+  counter := 0;
+
+  comment Etiquette ;
+  LABEL done;
+  GO TO done;
+done:
+
+  comment Declarations multiples ;
+  BEGIN
+    INTEGER i, j, k;
+    BOOLEAN p, q;
+    i := 1;
+    j := 2;
+    k := i + j;
+    p := TRUE;
+    q := FALSE
+  END
+END.
