@@ -106,7 +106,7 @@
             Verification de type dans les affectations et les parametres
             Type des parametres par nom : evaluation retardee (thunk)
 
-  TODO 07 - EMETTEUR DE CODE ASM
+  TODO 07 - EMETTEUR DE CODE ASM [IMPLEMENTE]
             TEmitter : OutF (Text), OutFOpen, EmitOpen, EmitClose
             EmitRaw, EmitLabel, EmitInstr (formatage 8 espaces)
             EmitComment, EmitBlankLine
@@ -672,6 +672,9 @@ Function  TypeSizeof(TIdx : Integer) : Integer; Forward;
 Function  TypeKindOf(TIdx : Integer) : TTypeKind; Forward;
 Function  TypeIsNumeric(TIdx : Integer) : Boolean; Forward;
 Function  TypeCheckAssign(DstIdx, SrcIdx : Integer) : Boolean; Forward;
+{ TODO 07 - Emetteur de code ASM }
+Procedure EmitProlog; Forward;
+Procedure EmitEpilog; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -2325,6 +2328,33 @@ Begin
 End;
 
 { ============================================================
+  TODO 07 - EMETTEUR DE CODE ASM [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- EmitProlog : prologue de procedure ---------------------- }
+{ PUSH BP / MOV BP,SP / SUB SP,CurFrameSize*2 (si > 0)         }
+Procedure EmitProlog;
+Var NS : TString;
+Begin
+  EmitInstr('PUSH', 'BP');
+  EmitInstr('MOV', 'BP, SP');
+  If CurFrameSize > 0 Then
+  Begin
+    Str(CurFrameSize * 2, NS);
+    EmitInstr('SUB', 'SP, ' + NS);
+  End;
+End;
+
+{ ---- EmitEpilog : epilogue de procedure ---------------------- }
+{ MOV SP,BP / POP BP / RET                                      }
+Procedure EmitEpilog;
+Begin
+  EmitInstr('MOV', 'SP, BP');
+  EmitInstr('POP', 'BP');
+  EmitInstr('RET', '');
+End;
+
+{ ============================================================
   STUBS POUR LES TODOS SUIVANTS
   ============================================================ }
 
@@ -2346,6 +2376,13 @@ Procedure EmitClose;
 Begin
   If OutFOpen Then
   Begin
+    EmitComment('--- sortie DOS ---');
+    EmitInstr('MOV', 'AX, 4C00h');
+    EmitInstr('INT', '21h');
+    WriteLn(OutF, '_A58P_Main ENDP');
+    WriteLn(OutF);
+    WriteLn(OutF, '_TEXT   ENDS');
+    WriteLn(OutF);
     WriteLn(OutF, '        END     _A58P_Main');
     Close(OutF);
     OutFOpen := False;
@@ -2362,6 +2399,13 @@ Begin
   WriteLn(OutF, '        .8086');
   WriteLn(OutF, '        .MODEL SMALL');
   WriteLn(OutF, '        .STACK ', STACK_SIZE);
+  WriteLn(OutF);
+  WriteLn(OutF, '_TEXT   SEGMENT WORD PUBLIC ''CODE''');
+  WriteLn(OutF, '        ASSUME CS:_TEXT, DS:_DATA, SS:STACK');
+  WriteLn(OutF);
+  WriteLn(OutF, '_A58P_Main PROC');
+  WriteLn(OutF, '        MOV     AX, _DATA');
+  WriteLn(OutF, '        MOV     DS, AX');
   WriteLn(OutF);
 End;
 
