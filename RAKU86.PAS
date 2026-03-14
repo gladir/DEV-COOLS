@@ -126,11 +126,14 @@
               MOV SP,BP / POP BP / RET
             EmitDataSeg : ecrire _DATA SEGMENT ... _DATA ENDS
 
-  TODO 08 - SEGMENT DE DONNEES ET STATIQUES
+  TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
             TDataRec : LblName, Kind (DK_WORD/DK_BYTE/DK_STR/
-              DK_ARRAY/DK_HASH), IntVal, StrVal, ElemCount
+              DK_ARRAY_BLK/DK_HASH_BLK), IntVal, StrVal, ElemCount
             DataTab[0..MAX_DATA-1], DataCount
             DataAdd, DataAddStr, DataAddArray, DataAddHash
+            DataInit : pre-peupler le segment DATA avec les
+              constantes internes (CRLF, NL, SPACE, True/False,
+              Nil, buffers STRBUF/TMPBUF)
             Variables our (package) : entrees DW dans DATA
             Constantes : entrees DW ou DB (immuables)
             Chaines litterales : DB 'abc',0 dans DATA avec label _RKK_N
@@ -622,7 +625,7 @@ Type
   End;
 
   { ---- Segment de donnees --------------------------------- }
-  TDataKind = (DK_WORD, DK_BYTE, DK_STR, DK_ARRAY_BLK);
+  TDataKind = (DK_WORD, DK_BYTE, DK_STR, DK_ARRAY_BLK, DK_HASH_BLK);
 
   TDataRec = Record
     LblName   : TString;
@@ -815,6 +818,13 @@ Procedure EmitPop(Const Reg : TString);                           Forward;
 Procedure EmitMov(Const Dst, Src : TString);                      Forward;
 Procedure EmitProlog;                                             Forward;
 Procedure EmitEpilog;                                             Forward;
+
+{ Forward declarations TODO 08 - Segment de donnees et statiques }
+Function  DataAddArray(Const Lbl : TString;
+                       AElemCount : Integer) : Integer;           Forward;
+Function  DataAddHash(Const Lbl : TString;
+                      APairCount : Integer) : Integer;            Forward;
+Procedure DataInit;                                               Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1145,11 +1155,11 @@ End;
 Procedure EmitDataSeg;
 Var
   I   : Integer;
+  J   : Integer;
   Tmp : TString;
+  S   : TString;
 Begin
   EmitRaw('_DATA   SEGMENT WORD PUBLIC ''DATA''');
-  { Buffer de travail pour concatenation de chaines }
-  EmitRaw('_RK_STRBUF  DB  256 DUP(0)');
   If DataCount = 0 Then
     EmitRaw('; (aucune donnee utilisateur)')
   Else
@@ -1157,22 +1167,46 @@ Begin
     Begin
       Case DataTab[I].Kind Of
         DK_WORD :
-        Begin
-          Str(DataTab[I].IntVal, Tmp);
-          EmitRaw(DataTab[I].LblName + '  DW  ' + Tmp);
-        End;
+          EmitRaw(DataTab[I].LblName + '  DW  ' +
+                  IntToStr(DataTab[I].IntVal));
         DK_BYTE :
         Begin
-          Str(DataTab[I].IntVal, Tmp);
-          EmitRaw(DataTab[I].LblName + '  DB  ' + Tmp);
+          { Si StrVal non vide, utiliser la spec brute (ex: '256 DUP(0)') }
+          If DataTab[I].StrVal <> '' Then
+            EmitRaw(DataTab[I].LblName + '  DB  ' + DataTab[I].StrVal)
+          Else
+            EmitRaw(DataTab[I].LblName + '  DB  ' +
+                    IntToStr(DataTab[I].IntVal));
         End;
         DK_STR :
-          EmitRaw(DataTab[I].LblName + '  DB  ''' +
-                  DataTab[I].StrVal + ''', 0');
-        DK_ARRAY_BLK :
         Begin
-          Str(DataTab[I].ElemCount, Tmp);
-          EmitRaw(DataTab[I].LblName + '  DW  ' + Tmp + ' DUP(0)');
+          S := DataTab[I].StrVal;
+          If Length(S) = 0 Then
+            EmitRaw(DataTab[I].LblName + '  DB  0')
+          Else
+          Begin
+            { Emettre comme octets pour gerer les caracteres de controle }
+            Tmp := DataTab[I].LblName + '  DB  ';
+            For J := 1 To Length(S) Do
+            Begin
+              If J > 1 Then
+                Tmp := Tmp + ',';
+              Tmp := Tmp + IntToStr(Ord(S[J]));
+            End;
+            Tmp := Tmp + ',0';
+            EmitRaw(Tmp);
+          End;
+        End;
+        DK_ARRAY_BLK :
+          EmitRaw(DataTab[I].LblName + '  DW  ' +
+                  IntToStr(DataTab[I].ElemCount) + ' DUP(0)');
+        DK_HASH_BLK :
+        Begin
+          { Hash = nombre de paires (DW) + ElemCount paires cle/valeur    }
+          { Chaque paire = 2 words : pointeur cle ASCIIZ + valeur = 4 oct}
+          EmitRaw(DataTab[I].LblName + '  DW  0');
+          EmitRaw(DataTab[I].LblName + '_D  DW  ' +
+                  IntToStr(DataTab[I].ElemCount * 2) + ' DUP(0)');
         End;
       End;
     End;
@@ -1252,6 +1286,78 @@ Begin
   EmitMov('SP', 'BP');
   EmitPop('BP');
   EmitRaw('        RET');
+End;
+
+{ ============================================================
+  TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- DataAddArray : ajouter un bloc tableau dans DataTab ----- }
+{ Cree une entree DK_ARRAY_BLK de AElemCount mots (DW).         }
+{ Retourne l index dans DataTab ou -1 si plein.                 }
+Function DataAddArray(Const Lbl : TString;
+                      AElemCount : Integer) : Integer;
+Var
+  Idx : Integer;
+Begin
+  If DataCount >= MAX_DATA Then
+  Begin
+    CompileError('segment DATA plein (max=' + IntToStr(MAX_DATA) + ')');
+    DataAddArray := -1;
+    Exit;
+  End;
+  Idx := DataAdd(Lbl, DK_ARRAY_BLK, 0, '');
+  If Idx >= 0 Then
+    DataTab[Idx].ElemCount := AElemCount;
+  DataAddArray := Idx;
+End;
+
+{ ---- DataAddHash : ajouter un bloc hash dans DataTab --------- }
+{ Cree une entree DK_HASH_BLK de APairCount paires cle/valeur.  }
+{ En memoire : 1 DW compteur + APairCount * 2 DW (cle+val).     }
+{ Retourne l index dans DataTab ou -1 si plein.                 }
+Function DataAddHash(Const Lbl : TString;
+                     APairCount : Integer) : Integer;
+Var
+  Idx : Integer;
+Begin
+  If DataCount >= MAX_DATA Then
+  Begin
+    CompileError('segment DATA plein (max=' + IntToStr(MAX_DATA) + ')');
+    DataAddHash := -1;
+    Exit;
+  End;
+  Idx := DataAdd(Lbl, DK_HASH_BLK, 0, '');
+  If Idx >= 0 Then
+    DataTab[Idx].ElemCount := APairCount;
+  DataAddHash := Idx;
+End;
+
+{ ---- DataInit : pre-peupler le segment DATA ------------------- }
+{ Enregistre les constantes internes utilisees par le runtime     }
+{ Raku86 avant que la compilation ne commence :                   }
+{   _RK_CRLF      : retour chariot (13,10,0)                     }
+{   _RK_NL        : saut de ligne (10,0)                         }
+{   _RK_SPACE     : espace (32,0)                                }
+{   _RK_EMPTY     : chaine vide (0)                              }
+{   _RK_TRUE_S    : chaine 'True'                                }
+{   _RK_FALSE_S   : chaine 'False'                               }
+{   _RK_NIL_S     : chaine 'Nil'                                 }
+{   _RK_STRBUF    : buffer de concatenation (256 octets)         }
+{   _RK_TMPBUF    : buffer temporaire (256 octets)               }
+{   _RK_NUMBUF    : buffer conversion entier (12 octets)         }
+Procedure DataInit;
+Begin
+  DataAdd('_RK_CRLF',    DK_STR, 0, #13#10);
+  DataAdd('_RK_NL',      DK_STR, 0, #10);
+  DataAdd('_RK_SPACE',   DK_STR, 0, ' ');
+  DataAdd('_RK_EMPTY',   DK_STR, 0, '');
+  DataAdd('_RK_TRUE_S',  DK_STR, 0, 'True');
+  DataAdd('_RK_FALSE_S', DK_STR, 0, 'False');
+  DataAdd('_RK_NIL_S',   DK_STR, 0, 'Nil');
+  DataAdd('_RK_STRBUF',  DK_BYTE, 0, '256 DUP(0)');
+  DataAdd('_RK_TMPBUF',  DK_BYTE, 0, '256 DUP(0)');
+  DataAdd('_RK_NUMBUF',  DK_BYTE, 0, '12 DUP(0)');
 End;
 
 { ============================================================
@@ -3539,6 +3645,7 @@ Procedure Run;
 Begin
   TypeInit;
   SymInit;
+  DataInit;
   EmitOpen;
   If ErrorCount > 0 Then Exit;
   LexInit;
