@@ -839,7 +839,7 @@ Const
   TY_IDX_CHAR    =  4;  { Char     (8 bits)                          }
   TY_IDX_BOOLEAN =  5;  { Boolean  (8 bits, 0 ou 1)                  }
   TY_IDX_STRING  =  6;  { String   (ShortString: 1+255 octets)       }
-  TY_IDX_REAL    =  7;  { Real     (stub entier 32 bits)             }
+  TY_IDX_REAL    =  7;  { Real     (6 octets, format Turbo Pascal)   }
   TY_IDX_SINGLE  =  8;  { Single   (flottant 32 bits)                }
   TY_IDX_DOUBLE  =  9;  { Double   (flottant 64 bits)                }
   TY_IDX_EXTENDED= 10;  { Extended (flottant 80 bits)                }
@@ -2952,7 +2952,7 @@ Begin
   RegType('SHORTINT');   RegType('CHAR');
   RegType('BOOLEAN');    RegType('STRING');
   RegType('REAL');       RegType('POINTER');
-  RegType('TEXT');       RegType('PCHAR');
+  RegType('TEXT');
 
   { Types TP 5+ }
   If TPVersionAtLeast(TP_VER_5) Then
@@ -2964,6 +2964,7 @@ Begin
   { Types TP 7+ }
   If TPVersionAtLeast(TP_VER_7) Then
   Begin
+    RegType('PCHAR');
     RegType('LONGWORD');
   End;
 
@@ -3337,8 +3338,8 @@ Begin
   { idx 6 : String (ShortString, 256 octets: 1 longueur + 255 data) }
   TypeAdd(TYK_STRING, 'STRING', 256, 1, False, TY_UNKNOWN);
 
-  { idx 7 : Real (stub entier 32 bits en Win32) }
-  TypeAdd(TYK_REAL, 'REAL', 4, 4, False, TY_UNKNOWN);
+  { idx 7 : Real (6 octets, format specifique Turbo Pascal) }
+  TypeAdd(TYK_REAL, 'REAL', 6, 2, False, TY_UNKNOWN);
 
   { idx 8 : Single (flottant IEEE 32 bits) }
   TypeAdd(TYK_SINGLE, 'SINGLE', 4, 4, False, TY_UNKNOWN);
