@@ -1,0 +1,434 @@
+=========================================================================
+  TURBO PASCAL 7.0 - Unité TURBO3 - Documentation de référence
+=========================================================================
+
+  L'unité Turbo3 assure la compatibilité ascendante avec les
+  programmes écrits pour Turbo Pascal 3.0. Elle fournit des
+  routines et variables qui existaient dans Turbo Pascal 3.0
+  mais dont l'interface a changé dans les versions ultérieures
+  (4.0 à 7.0). En ajoutant « Uses Turbo3 », un ancien programme
+  TP3 peut être recompilé avec un minimum de modifications.
+
+  Uses Turbo3;   { dépend de l'unité Crt }
+
+  Directives de compilation : {$D-,I-,S-}
+    $D- : Pas d'information de débogage
+    $I- : Pas de vérification d'E/S
+    $S- : Pas de vérification de pile
+
+=========================================================================
+  1. DÉPENDANCE
+=========================================================================
+
+  L'unité Turbo3 utilise l'unité Crt dans sa clause Uses :
+
+    Uses Crt;
+
+  Cela signifie que l'inclusion de Turbo3 entraîne automatiquement
+  l'inclusion de Crt. Les routines CRT (ClrScr, GotoXY, ReadKey,
+  etc.) sont donc disponibles sans ajouter Crt explicitement.
+
+=========================================================================
+  2. VARIABLES
+=========================================================================
+
+  Kbd : Text;
+  ---------------------------------------------------------------
+  Variable fichier texte pré-assignée au clavier, similaire à la
+  variable Kbd de Turbo Pascal 3.0.
+
+  En Turbo Pascal 3.0, la lecture depuis Kbd permettait de lire
+  les caractères du clavier sans écho à l'écran. Cette variable
+  reproduit ce comportement.
+
+  Utilisation typique (compatibilité TP3) :
+    Read(Kbd, Ch);   { lire un caractère sans écho }
+
+  Dans le code moderne, préférer ReadKey de l'unité Crt.
+
+  ---------------------------------------------------------------
+  CBreak : Boolean absolute CheckBreak;
+  ---------------------------------------------------------------
+  Alias de la variable CheckBreak de l'unité Crt. En Turbo Pascal
+  3.0, la variable s'appelait CBreak. Cette déclaration « absolute »
+  fait que CBreak et CheckBreak partagent exactement le même
+  emplacement mémoire.
+
+  CBreak = True  → le programme peut être interrompu par Ctrl-Break
+  CBreak = False → Ctrl-Break est ignoré
+
+  Équivalent moderne : CheckBreak (unité Crt).
+
+=========================================================================
+  3. CLAVIER (AssignKbd)
+=========================================================================
+
+  procedure AssignKbd(var F : Text);
+  ---------------------------------------------------------------
+  Assigne un fichier texte au pilote de clavier sans écho.
+
+  Paramètres :
+    F  Variable fichier texte à assigner
+
+  Après AssignKbd, le fichier peut être ouvert avec Reset puis
+  utilisé avec Read/ReadLn pour lire des caractères du clavier
+  sans qu'ils soient affichés à l'écran.
+
+  C'est la procédure utilisée en interne pour initialiser la
+  variable Kbd.
+
+  Exemple :
+    var
+      F  : Text;
+      Ch : Char;
+    begin
+      AssignKbd(F);
+      Reset(F);
+      Write('Entrez un caractère (pas d''écho) : ');
+      Read(F, Ch);
+      WriteLn;
+      WriteLn('Vous avez tapé : ', Ch);
+      Close(F);
+    end;
+
+  Dans le code moderne, préférer ReadKey :
+    Ch := ReadKey;  { équivalent, plus simple }
+
+=========================================================================
+  4. MÉMOIRE (MemAvail, MaxAvail)
+=========================================================================
+
+  function MemAvail : Integer;
+  ---------------------------------------------------------------
+  Retourne la mémoire libre totale sur le tas (heap), en type
+  Integer (signé 16 bits, -32768..32767).
+
+  En Turbo Pascal 3.0, MemAvail retournait un Integer représentant
+  le nombre de paragraphes (blocs de 16 octets) libres.
+
+  Dans les versions 4.0+, la fonction standard MemAvail retourne
+  un LongInt (octets). Cette version Turbo3 redéfinit MemAvail
+  pour retourner un Integer, reproduisant le comportement TP3.
+
+  ATTENTION : la valeur est en paragraphes (unités de 16 octets)
+  dans l'interprétation TP3. La mémoire réelle libre est donc
+  MemAvail * 16 octets (si interprété comme en TP3).
+
+  Note : pour le code moderne, utiliser la fonction standard
+  MemAvail (retourne un LongInt en octets) sans l'unité Turbo3.
+
+  ---------------------------------------------------------------
+  function MaxAvail : Integer;
+  ---------------------------------------------------------------
+  Retourne la taille du plus grand bloc contigu libre sur le tas,
+  en type Integer (signé 16 bits).
+
+  Même remarque que MemAvail : cette version redéfinit MaxAvail
+  pour la compatibilité TP3 (Integer au lieu de LongInt).
+
+  Note : pour le code moderne, utiliser la fonction standard
+  MaxAvail (retourne un LongInt en octets) sans l'unité Turbo3.
+
+=========================================================================
+  5. OPÉRATIONS SUR FICHIERS VOLUMINEUX
+=========================================================================
+
+  En Turbo Pascal 3.0, les fonctions FileSize, FilePos et Seek
+  utilisaient le type Integer, limitant l'accès aux 32 767 premiers
+  enregistrements. Les fonctions LongFileSize, LongFilePos et
+  LongSeek de l'unité Turbo3 utilisent le type Real pour permettre
+  l'accès à des fichiers de plus de 32 767 enregistrements.
+
+  Note : dans le code moderne (TP 4.0+), FileSize et FilePos
+  retournent un LongInt et Seek accepte un LongInt, rendant ces
+  fonctions Long* obsolètes.
+
+  ---------------------------------------------------------------
+  function LongFileSize(var F) : Real;
+  ---------------------------------------------------------------
+  Retourne le nombre d'enregistrements dans un fichier, sous
+  forme de valeur Real.
+
+  Paramètres :
+    F  Variable fichier (typé ou non typé), ouverte
+
+  Retour :
+    Nombre total d'enregistrements (Real)
+
+  Équivalent moderne : FileSize(F) retourne un LongInt.
+
+  Pour un fichier non typé avec BlockRead/BlockWrite :
+    taille_octets := LongFileSize(F) * RecSize;
+
+  ---------------------------------------------------------------
+  function LongFilePos(var F) : Real;
+  ---------------------------------------------------------------
+  Retourne la position courante dans un fichier, sous forme de
+  valeur Real (numéro d'enregistrement, base 0).
+
+  Paramètres :
+    F  Variable fichier (typé ou non typé), ouverte
+
+  Retour :
+    Position courante (Real), 0 = début du fichier
+
+  Équivalent moderne : FilePos(F) retourne un LongInt.
+
+  ---------------------------------------------------------------
+  procedure LongSeek(var F; Pos : Real);
+  ---------------------------------------------------------------
+  Positionne le pointeur de fichier à l'enregistrement spécifié.
+
+  Paramètres :
+    F    Variable fichier (typé ou non typé), ouverte
+    Pos  Position cible (Real), base 0
+
+  Équivalent moderne : Seek(F, Position) avec un LongInt.
+
+  Exemple :
+    var
+      F   : file of Byte;
+      Pos : Real;
+    begin
+      Assign(F, 'BIGFILE.DAT');
+      Reset(F);
+      Pos := LongFileSize(F) - 1;  { dernier enregistrement }
+      LongSeek(F, Pos);
+      { ... lire le dernier octet ... }
+      Close(F);
+    end;
+
+=========================================================================
+  6. ATTRIBUTS VIDÉO
+=========================================================================
+
+  Les trois procédures vidéo ci-dessous reproduisent le
+  comportement de Turbo Pascal 3.0 pour les attributs d'écran.
+  Elles sont des enveloppes (wrappers) autour des procédures
+  homonymes de l'unité Crt.
+
+  ---------------------------------------------------------------
+  procedure NormVideo;
+  ---------------------------------------------------------------
+  Restaure les attributs vidéo normaux (couleur par défaut
+  détectée au démarrage du programme). Réinitialise TextAttr
+  à sa valeur de démarrage.
+
+  En TP3, NormVideo activait le texte normal (pas gras, pas
+  clignotant). Le comportement est maintenu.
+
+  ---------------------------------------------------------------
+  procedure HighVideo;
+  ---------------------------------------------------------------
+  Active le mode vidéo haute intensité (texte brillant/gras).
+  Met le bit d'intensité haute dans TextAttr.
+
+  En TP3, HighVideo rendait le texte plus lumineux sur les
+  moniteurs monochromes et couleur.
+
+  ---------------------------------------------------------------
+  procedure LowVideo;
+  ---------------------------------------------------------------
+  Active le mode vidéo basse intensité (texte atténué).
+  Retire le bit d'intensité haute dans TextAttr.
+
+  Note : ces trois procédures sont identiques à celles de l'unité
+  Crt. L'unité Turbo3 les ré-exporte simplement pour assurer que
+  le code TP3 compile sans modification.
+
+=========================================================================
+  7. RÉSULTAT D'E/S (IOresult)
+=========================================================================
+
+  function IOresult : Integer;
+  ---------------------------------------------------------------
+  Retourne le code d'erreur de la dernière opération d'E/S,
+  sous forme d'Integer (compatibilité TP3).
+
+  En Turbo Pascal 3.0, IOresult retournait un Integer avec des
+  codes d'erreur différents de ceux des versions ultérieures.
+  Cette fonction de l'unité Turbo3 mappe les codes d'erreur
+  modernes vers les codes TP3 pour la compatibilité.
+
+  Retour :
+    0  Pas d'erreur
+    Autre  Code d'erreur (conventions TP3)
+
+  Après lecture, la valeur est réinitialisée à 0 (même
+  comportement que la fonction standard IOResult).
+
+  Dans le code moderne, utiliser directement la fonction
+  standard IOResult (qui retourne un Integer avec les codes
+  d'erreur TP 4.0+).
+
+  Exemple (style TP3) :
+    {$I-}
+    Assign(F, 'FICHIER.DAT');
+    Reset(F);
+    if IOresult <> 0 then
+      WriteLn('Erreur d''ouverture du fichier');
+    {$I+}
+
+=========================================================================
+  8. MIGRATION DE TURBO PASCAL 3.0 VERS 7.0
+=========================================================================
+
+  L'unité Turbo3 facilite la migration mais n'est qu'une aide
+  transitoire. Voici les équivalences pour le code moderne :
+
+  Code TP3 (avec Turbo3)        Code TP7 moderne
+  ----------------------------  ----------------------------
+  Read(Kbd, Ch);                Ch := ReadKey;
+  CBreak := False;              CheckBreak := False;
+  MemAvail  (Integer, parag.)   MemAvail  (LongInt, octets)
+  MaxAvail  (Integer, parag.)   MaxAvail  (LongInt, octets)
+  LongFileSize(F)               FileSize(F)  : LongInt
+  LongFilePos(F)                FilePos(F)   : LongInt
+  LongSeek(F, Pos)              Seek(F, Pos) : LongInt
+  NormVideo                     NormVideo (unité Crt)
+  HighVideo                     HighVideo (unité Crt)
+  LowVideo                      LowVideo  (unité Crt)
+  IOresult                      IOResult (codes TP4+)
+
+  Recommandation : après avoir compilé avec succès un programme
+  TP3 en ajoutant « Uses Turbo3 », remplacer progressivement les
+  appels Turbo3 par leurs équivalents modernes, puis retirer
+  l'unité Turbo3 de la clause Uses.
+
+=========================================================================
+  9. EXEMPLES
+=========================================================================
+
+  --- Exemple 1 : Programme typique TP3 migré ---
+
+  program OldProgram;
+  uses Turbo3;
+  var
+    Ch   : Char;
+    F    : file of Integer;
+    Size : Real;
+  begin
+    CBreak := False;
+
+    Write('Appuyez sur une touche : ');
+    Read(Kbd, Ch);
+    WriteLn;
+    WriteLn('Touche : ', Ch);
+
+    WriteLn('Mémoire libre : ', MemAvail, ' (unités TP3)');
+    WriteLn('Plus grand bloc : ', MaxAvail, ' (unités TP3)');
+
+    Assign(F, 'DATA.DAT');
+    {$I-}
+    Reset(F);
+    if IOresult = 0 then
+    begin
+      Size := LongFileSize(F);
+      WriteLn('Taille fichier : ', Size:0:0, ' enregistrements');
+      Close(F);
+    end
+    else
+      WriteLn('Fichier non trouvé');
+    {$I+}
+  end.
+
+  --- Exemple 2 : Utilisation des attributs vidéo ---
+
+  program VideoDemo;
+  uses Turbo3;
+  begin
+    NormVideo;
+    WriteLn('Texte normal');
+
+    HighVideo;
+    WriteLn('Texte haute intensité');
+
+    LowVideo;
+    WriteLn('Texte basse intensité');
+
+    NormVideo;
+  end.
+
+  --- Exemple 3 : Navigation dans un gros fichier ---
+
+  program BigFileNav;
+  uses Turbo3;
+  var
+    F   : file of Byte;
+    B   : Byte;
+    Pos : Real;
+  begin
+    Assign(F, 'BIGFILE.BIN');
+    {$I-}
+    Reset(F);
+    {$I+}
+    if IOresult <> 0 then
+    begin
+      WriteLn('Erreur ouverture');
+      Halt(1);
+    end;
+
+    WriteLn('Taille : ', LongFileSize(F):0:0, ' octets');
+
+    { Aller au milieu du fichier }
+    Pos := LongFileSize(F) / 2;
+    LongSeek(F, Pos);
+    WriteLn('Position : ', LongFilePos(F):0:0);
+
+    Read(F, B);
+    WriteLn('Octet lu : ', B);
+
+    Close(F);
+  end.
+
+=========================================================================
+  10. RÉCAPITULATIF DE L'INTERFACE
+=========================================================================
+
+  --- Variables ---
+  Kbd    : Text                         Fichier clavier sans écho
+  CBreak : Boolean absolute CheckBreak  Alias de CheckBreak
+
+  --- Clavier ---
+  Procedure AssignKbd(var F : Text);
+
+  --- Mémoire ---
+  Function  MemAvail : Integer;
+  Function  MaxAvail : Integer;
+
+  --- Fichiers volumineux ---
+  Function  LongFileSize(var F) : Real;
+  Function  LongFilePos(var F) : Real;
+  Procedure LongSeek(var F; Pos : Real);
+
+  --- Vidéo ---
+  Procedure NormVideo;
+  Procedure HighVideo;
+  Procedure LowVideo;
+
+  --- E/S ---
+  Function  IOresult : Integer;
+
+=========================================================================
+  11. RÉSUMÉ PAR CATÉGORIE
+=========================================================================
+
+  Catégorie                   Nombre   Éléments
+  -------------------------   ------   ----------------------------------
+  Clavier                        1     AssignKbd
+  Mémoire                        2     MemAvail, MaxAvail
+  Fichiers volumineux             3     LongFileSize, LongFilePos,
+                                       LongSeek
+  Attributs vidéo                 3     NormVideo, HighVideo, LowVideo
+  Résultat E/S                    1     IOresult
+  -------------------------   ------   ----------------------------------
+  TOTAL procédures/fonctions     10
+
+  Variables exportées : 2    (Kbd, CBreak)
+  Types exportés : 0
+  Constantes exportées : 0
+  Dépendance : Crt
+
+=========================================================================
+  Fin du document - Unité TURBO3 - Turbo Pascal 7.0
+=========================================================================

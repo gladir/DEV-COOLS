@@ -1,0 +1,17 @@
+<html>
+<body>
+<%
+const
+  MAX = 100;
+  PI_APPROX : Integer = 3;
+  GREETING : String = 'Bonjour';
+  NEG_VAL = -42;
+  HEX_VAL = $FF;
+  TRUTH : Boolean = True;
+
+begin
+  WriteLn('Constantes initialisees');
+end.
+%>
+</body>
+</html>

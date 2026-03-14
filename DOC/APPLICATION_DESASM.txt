@@ -1,0 +1,1403 @@
+==============================================================================
+  APPLICATION_DESASM.txt
+  Comment ecrire un desassembleur
+  Inspire des desassembleurs du projet DEV-COOLS
+  (DIS8086.PAS, DIS6502.PAS, DIS8080.PAS, DISZ80.PAS, DIS6809.PAS,
+   DISOBJ.PAS)
+==============================================================================
+
+Table des matieres
+------------------
+
+  1.  Introduction
+  2.  Architecture generale d un desassembleur
+  3.  Assembleur vs desassembleur
+  4.  Phase 1 : La lecture du fichier binaire
+  5.  Phase 2 : La table des opcodes
+  6.  Phase 3 : Le decodage des instructions
+  7.  Phase 4 : L extraction des operandes
+  8.  Phase 5 : Le formatage de la sortie
+  9.  Phase 6 : La gestion des modes d adressage
+  10. Phase 7 : Les prefixes et opcodes multi-octets
+  11. Phase 8 : Le decodage de l octet ModR/M (8086)
+  12. Phase 9 : Les modes d adressage indexes (6809)
+  13. Phase 10 : La generation d etiquettes
+  14. Phase 11 : Le desassemblage de fichiers objets (OMF)
+  15. Le programme principal
+  16. Exemples concrets tires du projet
+  17. Comparaison des desassembleurs du projet
+  18. Conseils pratiques
+
+==============================================================================
+  1. Introduction
+==============================================================================
+
+  Un desassembleur est un programme qui effectue l operation inverse
+  de l assembleur : il lit un fichier binaire contenant du code
+  machine et le traduit en langage assembleur lisible par un humain.
+  C est un outil essentiel pour :
+
+    - Le debogage de programmes compiles
+    - L analyse de code sans code source (retro-ingenierie)
+    - La verification du code genere par un compilateur
+    - L etude du fonctionnement interne de logiciels
+    - La recherche de vulnerabilites de securite
+
+  Le projet DEV-COOLS contient six desassembleurs ecrits en Pascal
+  (Free Pascal / Turbo Pascal) ciblant differentes architectures :
+
+    - DIS8086.PAS  : Desassembleur Intel 8086/8088
+                     (1259 lignes, decodage ModR/M complet)
+    - DIS6809.PAS  : Desassembleur Motorola 6809
+                     (1379 lignes, 4 pages d opcodes)
+    - DISOBJ.PAS   : Analyseur de fichiers objets OMF
+                     (676 lignes, decodage des enregistrements)
+    - DIS8080.PAS  : Desassembleur Intel 8080
+                     (478 lignes, generation d etiquettes)
+    - DISZ80.PAS   : Desassembleur Zilog Z80
+                     (477 lignes, prefixes CB/DD/ED/FD)
+    - DIS6502.PAS  : Desassembleur MOS 6502
+                     (328 lignes, 13 modes d adressage)
+
+  Le plus complexe est DIS8086.PAS en raison de la richesse du jeu
+  d instructions Intel 8086, avec l octet ModR/M, les prefixes de
+  segment et les instructions a longueur variable. Le plus simple
+  est DIS6502.PAS qui illustre parfaitement les principes de base
+  d un desassembleur.
+
+  Ce document explique, etape par etape, comment ecrire un
+  desassembleur en s inspirant des six programmes du projet.
+
+==============================================================================
+  2. Architecture generale d un desassembleur
+==============================================================================
+
+  Un desassembleur suit un pipeline relativement simple compare
+  a un compilateur ou un assembleur :
+
+    Fichier binaire (.BIN, .COM, .OBJ)
+            |
+            v
+    +-------------------+
+    |  Lecture du        |  Charger le fichier en memoire
+    |  fichier binaire   |  (tampon d octets)
+    +-------------------+
+            |
+            v
+    +-------------------+
+    |  Decodage des      |  Identifier l opcode, la taille
+    |  instructions      |  et les operandes
+    +-------------------+
+            |
+            v
+    +-------------------+
+    |  Formatage de      |  Convertir en texte assembleur
+    |  la sortie         |  lisible (mnemoniques + operandes)
+    +-------------------+
+            |
+            v
+    +-------------------+
+    |  Affichage         |  Ecrire le listing avec adresses,
+    |                    |  octets et mnemoniques
+    +-------------------+
+
+  2.1 Deux approches de decodage
+  --------------------------------
+
+  Il existe deux approches principales pour decoder le code machine :
+
+  a) Decodage lineaire (linear sweep) :
+     Parcourir le fichier octet par octet, du debut a la fin.
+     Chaque instruction est decodee a la suite de la precedente.
+     C est l approche utilisee par tous les desassembleurs du
+     projet.
+
+     Avantage  : simple a implementer
+     Inconvenient : peut decoder des donnees comme du code
+
+  b) Decodage recursif (recursive descent) :
+     Suivre le flux d execution : commencer au point d entree,
+     decoder les instructions et suivre les branchements (JMP,
+     CALL, Jcc). Les zones non atteintes sont marquees comme
+     donnees.
+
+     Avantage  : plus precis (distingue code et donnees)
+     Inconvenient : plus complexe a implementer
+
+  2.2 Structures de donnees essentielles
+  ----------------------------------------
+
+  Tout desassembleur a besoin de :
+
+    - Un tampon de lecture (buffer d octets du fichier binaire)
+    - Un pointeur de position courante (index dans le tampon)
+    - Une table d opcodes (opcode -> mnemonique + type d operande)
+    - Des fonctions de formatage (nombres hexadecimaux, registres)
+    - Un compteur d adresse (pour l affichage des adresses)
+
+==============================================================================
+  3. Assembleur vs desassembleur
+==============================================================================
+
+  L assembleur et le desassembleur sont des programmes symetriques :
+
+    Assembleur     : texte source  -->  code machine binaire
+    Desassembleur  : code machine  -->  texte assembleur
+
+  3.1 Differences fondamentales
+  ------------------------------
+
+  Malgre cette symetrie, il y a des differences importantes :
+
+    - L assembleur connait les etiquettes (noms symboliques).
+      Le desassembleur ne les connait pas et doit les generer
+      ou afficher des adresses numeriques.
+
+    - L assembleur connait les commentaires et la structure du
+      programme. Le desassembleur ne voit que des octets.
+
+    - L assembleur distingue code et donnees grace aux directives
+      (DB, DW, CODE, DATA). Le desassembleur ne peut pas toujours
+      faire cette distinction.
+
+    - L assembleur effectue deux passes pour resoudre les
+      references avant. Le desassembleur n a generalement
+      besoin que d une seule passe (lineaire).
+
+  3.2 Perte d information
+  -------------------------
+
+  Le desassemblage est une operation avec perte d information :
+
+    - Les noms de variables sont perdus (remplaces par des adresses)
+    - Les commentaires sont perdus
+    - La structure logique (boucles, fonctions) n est pas explicite
+    - Les constantes symboliques (EQU) sont perdues
+    - Les macros sont deja expandues dans le binaire
+    - Les informations de type sont perdues
+
+  Un bon desassembleur tente de compenser ces pertes en generant
+  des etiquettes aux cibles de branchement et en formatant la
+  sortie de maniere lisible.
+
+==============================================================================
+  4. Phase 1 : La lecture du fichier binaire
+==============================================================================
+
+  La premiere etape est de lire le fichier binaire en memoire.
+  Tous les desassembleurs du projet utilisent la meme approche :
+  lecture par blocs dans un tampon.
+
+  4.1 Structure de lecture
+  -------------------------
+
+  Dans DIS6502.PAS :
+
+    Var
+      FileBIN   : File;
+      BinBuffer : Array[0..1024] of Byte;
+      P         : Word;        { position dans le tampon }
+      ByteReaded : Word;       { octets lus }
+      FPos      : LongInt;     { position dans le fichier }
+
+    BEGIN
+      Assign(FileBIN, ParamStr(1));
+      Reset(FileBIN, 1);       { ouvrir en mode binaire, 1 octet }
+      While FPos < FileSize(FileBIN) do Begin
+        BlockRead(FileBIN, BinBuffer, SizeOf(BinBuffer), ByteReaded);
+        P := 0;
+        While P < ByteReaded - 15 do Begin
+          DisStr := Decode(BinBuffer, P);
+          WriteLn(DisStr);
+        End;
+        Inc(FPos, P);
+      End;
+      Close(FileBIN);
+    END.
+
+  4.2 Lecture octet par octet
+  ----------------------------
+
+  DIS8080.PAS utilise une approche differente avec une fonction
+  GetNext qui lit un octet a la fois :
+
+    Function GetNext(AdvancePC : Integer) : Byte;
+    Var B : Byte;
+    Begin
+      Read(SourceBin, B);
+      Inc(PC, AdvancePC);
+      GetNext := B;
+    End;
+
+  Cette approche est plus simple mais moins performante pour
+  les gros fichiers.
+
+  4.3 Marge de securite
+  ----------------------
+
+  Notez la condition P < ByteReaded - 15 dans la boucle de
+  DIS6502.PAS et DIS8086.PAS. Cette marge de 15 octets evite
+  de deborder du tampon lors du decodage d une instruction
+  multi-octets (une instruction peut lire jusqu a 15 octets
+  devant la position courante pour ses operandes).
+
+==============================================================================
+  5. Phase 2 : La table des opcodes
+==============================================================================
+
+  Le coeur d un desassembleur est sa table d opcodes qui associe
+  chaque code machine a un mnemonique et un type d operande.
+
+  5.1 Approche par tableau indexe (DIS6502.PAS)
+  ------------------------------------------------
+
+  L approche la plus simple et la plus rapide : un tableau de
+  256 entrees, indexe directement par la valeur de l opcode.
+
+    Type
+      TParm = (p0, pImpl, pAbso, pZPge, pImm, pAbsX, pAbsY,
+               pIndX, pIndY, pZPgX, pZPgY, pRela, pInd);
+
+      TOpCode = Record
+        Name : String[3];     { mnemonique (LDA, STA, JMP, ...) }
+        Parm : TParm;         { type d operande }
+      End;
+
+    Const
+      OpCode : Array[0..255] of TOpCode = (
+        (Name:'BRK'; Parm:pImpl),   { $00 }
+        (Name:'ORA'; Parm:pIndX),   { $01 }
+        (Name:'JAM'; Parm:pImpl),   { $02 }
+        ...
+        (Name:'SBC'; Parm:pAbsX),   { $FD }
+        (Name:'INC'; Parm:pAbsX),   { $FE }
+        (Name:'ISB'; Parm:pAbsX)    { $FF }
+      );
+
+  Acces en O(1) : OpCode[octet_lu].Name donne le mnemonique,
+  OpCode[octet_lu].Parm donne le type d operande a decoder.
+
+  Les opcodes invalides ont Name vide ('') et Parm = p0.
+
+  5.2 Approche par recherche lineaire (DIS8080.PAS / DISZ80.PAS)
+  -----------------------------------------------------------------
+
+  Pour les processeurs ou toutes les combinaisons ne sont pas
+  utilisees, on peut utiliser une table non indexee avec
+  recherche lineaire :
+
+    Type
+      OperandType = (OPERAND_NONE, OPERAND_BYTE, OPERAND_WORD);
+
+      InstInfoRec = Record
+        Opcode   : Integer;     { valeur de l opcode }
+        Mnemonic : PChar;       { texte du mnemonique }
+        Size     : Integer;     { taille totale en octets }
+        Operand  : OperandType; { type d operande }
+      End;
+
+    Const InstInfo : Array[0..244] of InstInfoRec = (
+      (Opcode:$78; Mnemonic:'MOV A,B'; Size:1; Operand:OPERAND_NONE),
+      (Opcode:$79; Mnemonic:'MOV A,C'; Size:1; Operand:OPERAND_NONE),
+      ...
+    );
+
+  La recherche se fait par boucle :
+
+    Inst := @InstInfo[0];
+    While Inst^.Size <> 0 do Begin
+      If Inst^.Opcode = C Then Break;
+      Inc(Inst);
+    End;
+
+  Cette approche est plus lente (O(n)) mais plus flexible : le
+  mnemonique complet avec ses registres est stocke directement
+  dans la table (ex: 'MOV A,B' au lieu de juste 'MOV').
+
+  5.3 Approche par pages (DIS6809.PAS)
+  ---------------------------------------
+
+  Le Motorola 6809 utilise des prefixes ($10, $11) pour etendre
+  le jeu d instructions. DIS6809.PAS utilise 4 pages d opcodes :
+
+    Type
+      InstType = (iImplied, iDirect, iImmediate, iLImmediate,
+                  iRelative, iLRelative, iIndexed, iExtended,
+                  iTfrExg, iPshPul);
+
+      InstrRec = Record
+        AsmName : OpcdStr;  { mnemonique }
+        c       : Boolean;  { drapeau condition }
+        r       : Boolean;  { drapeau reference }
+        t       : InstType; { type d operande }
+      End;
+
+    Const opTable : Array[1..4, 0..255] of InstrRec = (
+      ( { Page 1 : opcodes standards }
+        (AsmName:'NEG';  c:False; r:False; t:iDirect),    { $00 }
+        ...
+      ),
+      ( { Page 2 : prefixe $10 }
+        ...
+      ),
+      ( { Page 3 : prefixe $11 }
+        ...
+      ),
+      ( { Page 4 : opcodes supplementaires }
+        ...
+      )
+    );
+
+  5.4 Approche monolithique (DIS8086.PAS)
+  ------------------------------------------
+
+  Pour le 8086, le jeu d instructions est trop complexe pour une
+  table simple. DIS8086.PAS utilise une grande structure Case/Of
+  dans la fonction Decode, avec des constantes nommees :
+
+    Const
+      ciAAA     = $37;    { AAA }
+      ciCBW     = $98;    { CBW }
+      ciCLC     = $F8;    { CLC }
+      ciJZ      = $74;    { JZ }
+      ciInt     = $CD;    { INT }
+      ...
+
+    Const Instr80x86 : Array[0..255] of Instr80x86Rec = (
+      ...
+    );
+
+  Chaque opcode est traite individuellement dans un grand
+  Case...Of avec des sous-procedures pour les cas complexes
+  (ModR/M, prefixes, instructions etendues).
+
+==============================================================================
+  6. Phase 3 : Le decodage des instructions
+==============================================================================
+
+  Le decodage est le processus central du desassembleur : lire
+  les octets et determiner l instruction correspondante.
+
+  6.1 Algorithme de base
+  ------------------------
+
+  L algorithme general est :
+
+    1. Lire l opcode (1 ou 2 octets selon l architecture)
+    2. Chercher le mnemonique dans la table des opcodes
+    3. Determiner le type d operande
+    4. Lire les octets supplementaires selon le type
+    5. Formater l instruction en texte
+    6. Avancer la position du nombre d octets consommes
+
+  6.2 Fonction Decode dans DIS6502.PAS
+  ---------------------------------------
+
+  L implementation la plus claire est celle de DIS6502.PAS :
+
+    Function Decode(Var Buf; Var I : Word) : String;
+    Var
+      T     : Array[0..65520] of Byte Absolute Buf;
+      Pip2  : Word;
+      Pip1  : Byte Absolute Pip2;
+      Instr : String;
+    Begin
+      Pip2 := T[I+1] + T[I+2] * 256;   { pre-lire 2 octets }
+      Instr := OpCode[T[I]].Name + ' '; { mnemonique }
+      Case OpCode[T[I]].Parm of
+        pImpl : Inc(I);                  { implicite : 1 octet }
+        pAbso : Begin                    { absolu : 3 octets }
+          Instr := Instr + '$' + HexWord2Str(Pip2);
+          Inc(I, 3);
+        End;
+        pImm : Begin                     { immediat : 2 octets }
+          Instr := Instr + '#$' + ByteHex2Str(Pip1);
+          Inc(I, 2);
+        End;
+        ...
+        Else Begin                       { opcode inconnu }
+          Instr := 'DB $' + ByteHex2Str(T[I]);
+          Inc(I);
+        End;
+      End;
+      Decode := Instr;
+    End;
+
+  Points importants :
+
+    - L overlay Absolute permet d acceder au tampon comme un tableau
+    - Pip2 pre-lit les 2 octets suivants pour les operandes
+    - Les opcodes inconnus sont emis comme directive DB
+    - La position I est avancee du nombre d octets consommes
+
+  6.3 Decodage avec recherche (DIS8080.PAS)
+  --------------------------------------------
+
+  DIS8080.PAS utilise une boucle de recherche puis un Case sur
+  le type d operande :
+
+    Inst := @InstInfo[0];
+    While Inst^.Size <> 0 do Begin
+      If Inst^.Opcode = C Then Begin
+        State[PC].Size := Inst^.Size;
+        Break;
+      End;
+      Inc(Inst);
+    End;
+
+    If (Inst <> NIL) and (Inst^.Size <> 0) Then Begin
+      DisLine := StrCat(DisLine, Inst^.Mnemonic);
+      Case Inst^.Operand of
+        OPERAND_BYTE : Begin
+          Value[0] := GetNext(1);
+          { formater en hexadecimal }
+        End;
+        OPERAND_WORD : Begin
+          Value[0] := GetNext(1);
+          Value[1] := GetNext(1);
+          { formater en hexadecimal, marquer etiquette }
+        End;
+      End;
+    End
+    Else Begin
+      { opcode inconnu : emettre DB }
+      DisLine := StrPCopy(DisLine, 'db' + #9 + ByteHex2Str(C));
+    End;
+
+==============================================================================
+  7. Phase 4 : L extraction des operandes
+==============================================================================
+
+  Selon le type d operande defini dans la table des opcodes,
+  le desassembleur lit un nombre variable d octets supplementaires.
+
+  7.1 Types d operandes courants
+  --------------------------------
+
+  Les types d operandes les plus courants sont :
+
+    Aucun operande  : NOP, RET, HLT         (1 octet total)
+    Octet immediat  : MVI A,42h  LDI #$FF   (2 octets total)
+    Mot immediat    : LXI H,1234h            (3 octets total)
+    Adresse absolue : JMP 1234h  CALL 5678h  (3 octets total)
+    Deplacement 8b  : JR +5     BNE -10      (2 octets total)
+    Deplacement 16b : JMP NEAR label         (3 octets total)
+
+  7.2 Extraction pour le 6502
+  ------------------------------
+
+  Le 6502 a 13 modes d adressage, chacun avec un format
+  specifique :
+
+    pImpl  : pas d operande                  LDA  (1 octet)
+    pImm   : #$xx                            LDA #$42
+    pZPge  : $xx                             LDA $80
+    pAbso  : $xxxx                           LDA $1234
+    pAbsX  : $xxxx,X                         LDA $1234,X
+    pAbsY  : $xxxx,Y                         LDA $1234,Y
+    pIndX  : ($xx,X)                         LDA ($80,X)
+    pIndY  : ($xx),Y                         LDA ($80),Y
+    pZPgX  : $xx,X                           LDA $80,X
+    pZPgY  : $xx,Y                           LDX $80,Y
+    pRela  : deplacement relatif signe       BEQ $1234
+    pInd   : ($xxxx)                         JMP ($1234)
+
+  7.3 Extraction pour le 8080 / Z80
+  ------------------------------------
+
+  Ces processeurs n ont que 3 types :
+
+    OPERAND_NONE : pas d operande (le mnemonique est complet)
+    OPERAND_BYTE : 1 octet supplementaire
+    OPERAND_WORD : 2 octets supplementaires (little-endian)
+
+  7.4 Ordre des octets (endianness)
+  -----------------------------------
+
+  La plupart des processeurs 8/16 bits utilisent le format
+  little-endian : l octet de poids faible est en premier.
+
+    En memoire :  34h  12h
+    Valeur :      1234h
+
+  Le code de lecture est donc :
+
+    Valeur := T[I+1] + T[I+2] * 256;
+
+  ou dans DIS8080.PAS :
+
+    Value[0] := GetNext(1);   { octet faible }
+    Value[1] := GetNext(1);   { octet fort }
+    Adresse  := Value[1] shl 8 or Value[0];
+
+  Exception : le Motorola 6809 utilise le format big-endian
+  (octet de poids fort en premier).
+
+==============================================================================
+  8. Phase 5 : Le formatage de la sortie
+==============================================================================
+
+  Le formatage transforme les valeurs binaires en texte
+  assembleur lisible.
+
+  8.1 Fonctions de conversion hexadecimale
+  -------------------------------------------
+
+  Tous les desassembleurs du projet utilisent les memes fonctions :
+
+    Function ByteHex2Str(value : Byte) : String;
+    Const
+      matrix : Array[0..15] of Char =
+        ('0','1','2','3','4','5','6','7',
+         '8','9','A','B','C','D','E','F');
+    Begin
+      ByteHex2Str := matrix[(value shr 4) and $0F]
+                   + matrix[value and $0F];
+    End;
+
+    Function HexWord2Str(value : Word) : String;
+    Begin
+      HexWord2Str := ByteHex2Str(Hi(value))
+                   + ByteHex2Str(Lo(value));
+    End;
+
+    Function LongHex2Str(value : LongInt) : String;
+    Begin
+      LongHex2Str := ByteHex2Str((value shr 24) and $FF)
+                   + ByteHex2Str((value shr 16) and $FF)
+                   + ByteHex2Str((value shr 8) and $FF)
+                   + ByteHex2Str(value and $FF);
+    End;
+
+  8.2 Format d affichage
+  ------------------------
+
+  Le format typique d une ligne de listing est :
+
+    Adresse  Mnemonique  Operandes
+
+  Exemples :
+
+    0000h BRK
+    0001h ORA ($80,X)
+    0003h LDA #$42
+    0005h STA $1234
+    0008h JMP $0100
+
+  DIS8086.PAS utilise un format plus detaille :
+
+    00000000h MOV AX, [BX+SI+04h]
+    00000004h PUSH CS
+    00000005h CALL FAR 1234h:5678h
+
+  8.3 Fonction de cadrage
+  -------------------------
+
+    Function PadRight(S : String; Space : Byte) : String;
+    Var I : Byte;
+    Begin
+      If Length(S) < Space Then
+        For I := Length(S) + 1 to Space do S := S + ' ';
+      PadRight := S;
+    End;
+
+  Cette fonction est utilisee pour aligner les colonnes du
+  listing.
+
+==============================================================================
+  9. Phase 6 : La gestion des modes d adressage
+==============================================================================
+
+  Les modes d adressage definissent comment l operande d une
+  instruction est interprete. C est l aspect le plus variable
+  d un processeur a l autre.
+
+  9.1 Modes du 6502 (DIS6502.PAS)
+  ----------------------------------
+
+  Le MOS 6502 possede 13 modes d adressage distincts.
+  Chaque opcode dans la table de 256 entrees est associe a
+  un mode via l enumeration TParm :
+
+    Mode       Code  Format         Octets  Exemple
+    ---------  ----  -----------    ------  ---------------
+    Implicite  pImpl (aucun)        1       CLC, RTS
+    Immediat   pImm  #$xx          2       LDA #$42
+    Page zero  pZPge $xx           2       LDA $80
+    Absolu     pAbso $xxxx         3       LDA $1234
+    Absolu,X   pAbsX $xxxx,X      3       LDA $1234,X
+    Absolu,Y   pAbsY $xxxx,Y      3       LDA $1234,Y
+    Indirect,X pIndX ($xx,X)      2       LDA ($80,X)
+    Indirect,Y pIndY ($xx),Y      2       LDA ($80),Y
+    Page zr,X  pZPgX $xx,X        2       LDA $80,X
+    Page zr,Y  pZPgY $xx,Y        2       LDX $80,Y
+    Relatif    pRela $xxxx         2       BEQ $1234
+    Indirect   pInd  ($xxxx)      3       JMP ($1234)
+
+  Le decodage est un simple Case/Of sur le type TParm.
+
+  9.2 Modes du 8080 (DIS8080.PAS)
+  ----------------------------------
+
+  L Intel 8080 n a que 3 modes dans la table :
+
+    OPERAND_NONE : instruction complete sans operande
+    OPERAND_BYTE : 1 octet supplementaire (port, immediat)
+    OPERAND_WORD : 2 octets supplementaires (adresse)
+
+  La simplicite vient du fait que le mnemonique complet est
+  stocke dans la table : 'MOV A,B' inclut deja les registres.
+
+  9.3 Modes du Z80 (DISZ80.PAS)
+  ---------------------------------
+
+  Le Z80 etend le 8080 avec les memes 3 types de base, plus
+  des instructions prefixees (CB, DD, ED, FD) traitees
+  separement (voir section 10).
+
+  9.4 Modes du 6809 (DIS6809.PAS)
+  ----------------------------------
+
+  Le Motorola 6809 a le systeme de modes le plus riche :
+
+    iImplied    : pas d operande
+    iDirect     : adresse page directe (1 octet)
+    iImmediate  : valeur immediate 8 bits
+    iLImmediate : valeur immediate 16 bits
+    iRelative   : deplacement relatif court (1 octet)
+    iLRelative  : deplacement relatif long (2 octets)
+    iIndexed    : mode indexe avec post-octet (voir section 12)
+    iExtended   : adresse absolue 16 bits
+    iTfrExg     : transfert/echange de registres
+    iPshPul     : empilement/depilement de registres
+
+==============================================================================
+  10. Phase 7 : Les prefixes et opcodes multi-octets
+==============================================================================
+
+  Certains processeurs utilisent des octets prefixes pour
+  etendre le jeu d instructions de base.
+
+  10.1 Prefixes du 8086 (DIS8086.PAS)
+  --------------------------------------
+
+  Le 8086 utilise plusieurs types de prefixes :
+
+  a) Prefixes de segment :
+     $26 = ES:   $2E = CS:   $36 = SS:   $3E = DS:
+     $64 = FS:   $65 = GS:   (386+)
+
+  b) Prefixes de repetition :
+     $F0 = LOCK   $F2 = REPNZ   $F3 = REP/REPZ
+
+  c) Prefixe de taille d operande :
+     $66 = basculer entre 16 et 32 bits
+
+  d) Prefixe d extension :
+     $0F = instructions etendues (286+/386+)
+
+  Le decodage gere les prefixes par une boucle :
+
+    Restart:
+    CurrCode := T[I];
+    Case CurrCode of
+      $26, $2E, $36, $3E, $64, $65 : Begin
+        XSeg := CurrCode;
+        Inc(I);
+        Goto Restart;   { relire l opcode suivant }
+      End;
+      $F0, $F2, $F3 : Begin
+        Prefix := CurrCode;
+        Inc(I);
+        Goto Restart;
+      End;
+      ...
+    End;
+
+  Les prefixes sont accumules puis combines avec l instruction
+  lors du formatage final :
+
+    Case Prefix of
+      $F0 : S := 'LOCK ' + S;
+      $F2 : S := 'REPNZ ' + S;
+      $F3 : S := 'REP ' + S;
+    End;
+
+  10.2 Prefixes du Z80 (DISZ80.PAS)
+  -------------------------------------
+
+  Le Z80 utilise 4 octets prefixes pour etendre le jeu de base :
+
+    $CB : instructions de rotation et de bits
+    $DD : instructions avec registre IX
+    $ED : instructions systeme etendues
+    $FD : instructions avec registre IY
+
+  Apres un prefixe, le deuxieme octet est interprete dans
+  une table d opcodes differente. Par exemple :
+
+    $CB $47  ->  BIT 0,A
+    $DD $21  ->  LD IX, nnnn
+    $ED $B0  ->  LDIR
+    $FD $E5  ->  PUSH IY
+
+  10.3 Pages du 6809 (DIS6809.PAS)
+  -----------------------------------
+
+  Le 6809 utilise 2 octets prefixes ($10 et $11) pour acceder
+  a des pages d opcodes supplementaires :
+
+    Page 1 : opcodes directs (pas de prefixe)
+    Page 2 : prefixe $10 (instructions longues)
+    Page 3 : prefixe $11 (instructions supplementaires)
+
+  Le decodage selectionne la page :
+
+    page := 1;
+    If octet = $10 Then Begin page := 2; lire octet suivant End;
+    If octet = $11 Then Begin page := 3; lire octet suivant End;
+    instr := opTable[page, octet];
+
+==============================================================================
+  11. Phase 8 : Le decodage de l octet ModR/M (8086)
+==============================================================================
+
+  L octet ModR/M est la particularite la plus complexe de
+  l architecture Intel 8086. Il encode les operandes de la
+  plupart des instructions a deux operandes.
+
+  11.1 Structure de l octet ModR/M
+  -----------------------------------
+
+    Bits 7-6 : mod  (mode d adressage)
+    Bits 5-3 : reg  (registre ou extension d opcode)
+    Bits 2-0 : r/m  (registre ou mode memoire)
+
+  11.2 Table des modes memoire
+  ------------------------------
+
+    r/m  mod=00           mod=01            mod=10
+    ---  --------         --------          --------
+     0   [BX+SI]          [BX+SI+d8]        [BX+SI+d16]
+     1   [BX+DI]          [BX+DI+d8]        [BX+DI+d16]
+     2   [BP+SI]          [BP+SI+d8]        [BP+SI+d16]
+     3   [BP+DI]          [BP+DI+d8]        [BP+DI+d16]
+     4   [SI]             [SI+d8]            [SI+d16]
+     5   [DI]             [DI+d8]            [DI+d16]
+     6   [disp16]         [BP+d8]            [BP+d16]
+     7   [BX]             [BX+d8]            [BX+d16]
+
+    mod=11 : registre a registre (pas d acces memoire)
+
+  11.3 Decodage dans DIS8086.PAS
+  ---------------------------------
+
+  DIS8086.PAS utilise les constantes suivantes :
+
+    Const
+      ciBXnSI = $00;   { [BX+SI] }
+      ciBXnDI = $01;   { [BX+DI] }
+      ciBPnSI = $02;   { [BP+SI] }
+      ciBPnDI = $03;   { [BP+DI] }
+      ciSI    = $04;   { [SI] }
+      ciDI    = $05;   { [DI] }
+      ciBP    = $06;   { [BP] }
+      ciBX    = $07;   { [BX] }
+
+  La fonction XtrkAddr extrait le mode d adressage complet
+  a partir de l octet ModR/M :
+
+    - Si mod = 11 : retourner le nom du registre
+    - Si mod = 00 et r/m = 6 : lire adresse directe 16 bits
+    - Si mod = 01 : lire deplacement 8 bits signe
+    - Si mod = 10 : lire deplacement 16 bits
+
+  La fonction Register retourne le nom du registre encode
+  dans le champ reg ou r/m selon que l instruction travaille
+  sur des octets (AL, CL, ...) ou des mots (AX, CX, ...).
+
+  11.4 Complexite du 8086
+  -------------------------
+
+  Le decodage 8086 est le plus complexe du projet car :
+
+    - Les instructions ont de 1 a 6 octets
+    - L octet ModR/M peut etre suivi de 0, 1 ou 2 octets
+      de deplacement
+    - Les prefixes ajoutent 0 a 3 octets supplementaires
+    - Certains opcodes reutilisent le champ reg de ModR/M
+      comme extension d opcode (groupes $80-$83, $F6-$F7, ...)
+    - Les instructions 0F (286+) ont leur propre table
+
+==============================================================================
+  12. Phase 9 : Les modes d adressage indexes (6809)
+==============================================================================
+
+  Le Motorola 6809 possede le systeme d adressage indexe le
+  plus sophistique des processeurs du projet. Un post-octet
+  (post-byte) suit l opcode pour decrire le mode.
+
+  12.1 Structure du post-octet
+  ------------------------------
+
+    Bit 7 = 0 : offset 5 bits signe sur le registre
+    Bit 7 = 1 : mode encode sur les bits restants
+
+  12.2 Modes indexes
+  --------------------
+
+  Quand bit 7 = 1 :
+
+    Bits 6-5 : registre de base (00=X, 01=Y, 10=U, 11=S)
+    Bits 4-0 : code du mode
+
+    $00 : ,R+        auto-increment de 1
+    $01 : ,R++       auto-increment de 2
+    $02 : ,-R        auto-decrement de 1
+    $03 : ,--R       auto-decrement de 2
+    $04 : ,R         offset zero
+    $05 : B,R        offset dans B
+    $06 : A,R        offset dans A
+    $08 : n,R        offset 8 bits signe
+    $09 : n,R        offset 16 bits signe
+    $0B : D,R        offset dans D
+    $0C : n,PCR      offset 8 bits relatif au PC
+    $0D : n,PCR      offset 16 bits relatif au PC
+    $0F : [n]        indirect etendu 16 bits
+
+  12.3 Decodage des modes transfert/echange
+  --------------------------------------------
+
+  Les instructions TFR et EXG du 6809 encodent deux registres
+  dans un post-octet :
+
+    Bits 7-4 : registre source
+    Bits 3-0 : registre destination
+
+  Table des registres :
+    0=D  1=X  2=Y  3=U  4=S  5=PC  8=A  9=B  10=CC  11=DP
+
+  12.4 Decodage des modes push/pull
+  ------------------------------------
+
+  Les instructions PSHS/PULS/PSHU/PULU utilisent un post-octet
+  ou chaque bit represente un registre a empiler ou depiler :
+
+    Bit 0 : CC    Bit 4 : S (ou U)
+    Bit 1 : A     Bit 5 : PC
+    Bit 2 : B     Bit 6 : (non utilise)
+    Bit 3 : DP    Bit 7 : (non utilise)
+
+==============================================================================
+  13. Phase 10 : La generation d etiquettes
+==============================================================================
+
+  Un desassembleur avance genere des etiquettes symboliques
+  aux cibles de branchement pour ameliorer la lisibilite.
+
+  13.1 Approche simple : adresses numeriques
+  -------------------------------------------
+
+  L approche la plus simple (DIS6502.PAS, DIS8086.PAS) est
+  d afficher les adresses en hexadecimal sans etiquettes :
+
+    0000h BRK
+    0001h LDA #$42
+    0003h BEQ $000Ah
+    0005h STA $1234
+    0008h JMP $0001
+    000Ah RTS
+
+  13.2 Approche avancee : etiquettes generees
+  ---------------------------------------------
+
+  DIS8080.PAS utilise une approche en deux passes :
+
+  Passe 1 : identifier les cibles de branchement
+    - Pour chaque instruction de type OPERAND_WORD, si la
+      valeur est une adresse valide, marquer cette adresse
+      comme necessitant une etiquette :
+
+        State[Value[1] shl 8 or Value[0]].NeedLabel := 1;
+
+  Passe 2 : afficher avec les etiquettes
+    - Pour chaque adresse marquee NeedLabel, emettre une
+      etiquette avant l instruction :
+
+        If State[I].NeedLabel <> 0 Then Begin
+          State[I].GotLabel := 1;
+          WriteLn(HexWord2Str(I));    { etiquette }
+        End;
+        WriteLn(#9, StrPas(State[I].DisLine));
+
+  Cela produit un listing plus lisible :
+
+    0100h
+            LD BC, 0100h
+            LD A, (BC)
+    0105h
+            JP 0100h
+
+  13.3 Symboles non resolus
+  ----------------------------
+
+  En fin de listing, DIS8080.PAS affiche les references
+  exterieures (adresses marquees NeedLabel mais sans GotLabel) :
+
+    I := 0;
+    While I < MAX_MEMORY do Begin
+      If (State[I].NeedLabel <> 0)
+        and (State[I].GotLabel = 0) Then
+        WriteLn(HexWord2Str(I), ' = $', HexWord2Str(I));
+      Inc(I);
+    End;
+
+==============================================================================
+  14. Phase 11 : Le desassemblage de fichiers objets (OMF)
+==============================================================================
+
+  DISOBJ.PAS est un cas particulier : au lieu de desassembler
+  du code machine brut, il analyse la structure d un fichier
+  objet au format OMF (Object Module Format).
+
+  14.1 Structure d un fichier OMF
+  ---------------------------------
+
+  Un fichier .OBJ est une sequence d enregistrements de
+  differents types :
+
+    $80 THEADR   : nom du module
+    $88 COMENT   : commentaire
+    $8A MODEND   : fin du module
+    $8C EXTDEF   : symboles externes
+    $90 PUBDEF   : symboles publics
+    $96 LNAMES   : liste de noms
+    $98 SEGDEF   : definition de segments
+    $A0 LEDATA   : donnees d un segment
+    $9C FIXUPP   : corrections d adresses
+
+  14.2 Lecture des enregistrements
+  ----------------------------------
+
+  Chaque enregistrement OMF a le format :
+
+    Type (1 octet) | Longueur (2 octets) | Donnees | Checksum
+
+  Le code de lecture dans DISOBJ.PAS :
+
+    While Not EOF(FileInput) do Begin
+      Read(FileInput, rect);     { type d enregistrement }
+      chk := rect;
+      rlen := ReadWord;          { longueur }
+      rleft := rlen - 1;        { octets restants (- checksum) }
+      Case rect of
+        $80 : Begin { THEADR } ... End;
+        $88 : Begin { COMENT } ... End;
+        $8A : Begin { MODEND } ... End;
+        $8C : Begin { EXTDEF } ... End;
+        $90 : Begin { PUBDEF } ... End;
+        $96 : Begin { LNAMES } ... End;
+        $98 : Begin { SEGDEF } ... End;
+        $A0 : Begin { LEDATA } ... End;
+        $9C : Begin { FIXUPP } ... End;
+        ...
+      End;
+      Read(FileInput, d);        { checksum }
+    End;
+
+  14.3 Decodage des noms OMF
+  ----------------------------
+
+  Les noms dans le format OMF sont precedes de leur longueur
+  (format Pascal) :
+
+    Read(FileInput, d);          { longueur du nom }
+    s := '';
+    For i := 1 to d do Begin
+      Read(FileInput, d2);
+      s := s + Chr(d2);
+    End;
+
+  14.4 Affichage des donnees LEDATA
+  ------------------------------------
+
+  Les enregistrements LEDATA contiennent les donnees binaires
+  d un segment. DISOBJ.PAS les affiche en dump hexadecimal :
+
+    While rleft > 0 do Begin
+      d := ReadByte;
+      Write(ByteHex2Str(d), ' ');
+    End;
+
+==============================================================================
+  15. Le programme principal
+==============================================================================
+
+  Le programme principal de chaque desassembleur suit le meme
+  schema simple.
+
+  15.1 Structure de DIS6502.PAS / DIS8086.PAS
+  ----------------------------------------------
+
+    BEGIN
+      { Traiter l aide en ligne (/? --help -h) }
+      If ParamStr(1) = '/?' Then Begin
+        WriteLn('DIS6502 : desassembleur 6502');
+        WriteLn('Syntaxe : DIS6502 nomdufichier');
+      End
+      Else
+      If ParamCount > 0 Then Begin
+        { Ouvrir le fichier binaire }
+        Assign(FileBIN, ParamStr(1));
+        Reset(FileBIN, 1);
+
+        { Boucle de lecture par blocs }
+        FPos := 0;
+        While FPos < FileSize(FileBIN) do Begin
+          BlockRead(FileBIN, BinBuffer, SizeOf(BinBuffer), ByteReaded);
+          P := 0;
+          While P < ByteReaded - 15 do Begin
+            Write(LongHex2Str(FPos + P), 'h ');
+            DisStr := Decode(BinBuffer, P);
+            WriteLn(DisStr);
+          End;
+          Inc(FPos, P);
+        End;
+
+        Close(FileBIN);
+      End;
+    END.
+
+  15.2 Structure de DIS8080.PAS (avec etiquettes)
+  --------------------------------------------------
+
+    BEGIN
+      { Traiter les options de ligne de commande }
+      { -d ADDR COUNT : forcer zone comme donnees }
+      ParseArgs;
+
+      { Ouvrir le fichier et decoder }
+      Assign(SourceBin, FileName);
+      Reset(SourceBin, 1);
+
+      { Passe 1 : decoder et marquer les etiquettes }
+      While Not EOF(SourceBin) do Begin
+        C := GetNext(0);
+        { ... decoder instruction ... }
+        { Marquer NeedLabel pour les operandes WORD }
+      End;
+      Close(SourceBin);
+
+      { Passe 2 : afficher avec etiquettes }
+      I := 0;
+      While I < PC do Begin
+        If State[I].NeedLabel <> 0 Then
+          WriteLn(HexWord2Str(I));
+        WriteLn(#9, StrPas(State[I].DisLine));
+        Inc(I, State[I].Size);
+      End;
+
+      { Afficher les symboles non resolus }
+      WriteLn;
+      WriteLn('end');
+    END.
+
+  15.3 Structure de DISOBJ.PAS
+  ------------------------------
+
+    BEGIN
+      { Traiter la ligne de commande }
+      Assign(FileInput, FileNameOBJ);
+      Reset(FileInput);
+      Assign(FileOutput, FileNameOutput);
+      Rewrite(FileOutput);
+
+      { Boucle principale : lire les enregistrements OMF }
+      While Not EOF(FileInput) do Begin
+        Read(FileInput, rect);   { type }
+        rlen := ReadWord;        { longueur }
+        Case rect of
+          $80 : { THEADR } ...;
+          $8C : { EXTDEF } ...;
+          ...
+        End;
+      End;
+
+      Close(FileInput);
+      Close(FileOutput);
+    END.
+
+  15.4 Options de ligne de commande
+  -----------------------------------
+
+  Tous les desassembleurs supportent l aide en ligne :
+
+    /? --help -h /h /H
+
+  DIS8080.PAS ajoute l option :
+
+    -d ADDR COUNT : forcer une zone comme donnees (pas de decode)
+
+  Cette option est utile pour eviter de decoder des tables de
+  donnees comme du code.
+
+==============================================================================
+  16. Exemples concrets tires du projet
+==============================================================================
+
+  16.1 Desassembler un fichier binaire 6502
+  --------------------------------------------
+
+  Commande :
+
+    DIS6502 programme.bin
+
+  Sortie :
+
+    0000h BRK
+    0001h LDA #$42
+    0003h STA $0200
+    0006h LDA #$00
+    0008h STA $0201
+    000Bh JMP $0001
+    000Eh RTS
+
+  16.2 Desassembler un fichier binaire 8086
+  --------------------------------------------
+
+  Commande :
+
+    DIS8086 programme.com
+
+  Sortie :
+
+    00000000h MOV AX, 0040h
+    00000003h MOV DS, AX
+    00000005h MOV AH, 09h
+    00000007h LEA DX, [0100h]
+    0000000Bh INT 21h
+    0000000Dh INT 20h
+
+  16.3 Analyser un fichier objet OMF
+  ------------------------------------
+
+  Commande :
+
+    DISOBJ programme.obj
+
+  Sortie :
+
+    THEADR : PROGRAMME
+    LNAMES : (1) CODE (2) DATA
+    SEGDEF : seg 1 = CODE, size 001Ah, align PARA, class CODE
+    PUBDEF : _main seg 1 offset 0000h
+    EXTDEF : _printf
+    LEDATA : seg 1 offset 0000h
+      B8 40 00 8E D8 B4 09 8D 16 00 01 CD 21 CD 20
+    FIXUPP : offset 0001h seg-rel seg 2
+    MODEND
+
+  16.4 Desassembler du code 8080 avec etiquettes
+  -------------------------------------------------
+
+  Commande :
+
+    DIS8080 programme.bin
+
+  Sortie :
+
+    0000
+            NOP
+    0001
+            LXI H, $0100
+    0004
+            MOV A, M
+    0005
+            INR A
+    0006
+            JNZ 0004
+    0009
+            HLT
+
+    0100 = $0100
+
+    end
+
+==============================================================================
+  17. Comparaison des desassembleurs du projet
+==============================================================================
+
+  17.1 Tableau comparatif
+  -------------------------
+
+    Desassembleur   Cible    Lignes  Etiquettes  Prefixes   Entree
+    -------------   -----    ------  ----------  ---------  ------
+    DIS8086.PAS     8086     1259    Non         Oui        .BIN
+    DIS6809.PAS     6809     1379    Non         4 pages    .BIN
+    DISOBJ.PAS      OMF      676     N/A         N/A        .OBJ
+    DIS8080.PAS     8080     478     Oui         Non        .BIN
+    DISZ80.PAS      Z80      477     Oui         CB/DD/ED   .BIN
+    DIS6502.PAS     6502     328     Non         Non        .BIN
+
+  17.2 Approches de decodage
+  ----------------------------
+
+    DIS6502.PAS  : tableau 256 entrees indexe direct  (O(1))
+    DIS8080.PAS  : tableau 245 entrees, recherche     (O(n))
+    DISZ80.PAS   : tableau 256 entrees, recherche     (O(n))
+    DIS8086.PAS  : Case/Of monolithique               (O(1))
+    DIS6809.PAS  : 4 pages x 256, indexe direct       (O(1))
+    DISOBJ.PAS   : Case/Of sur type d enregistrement  (O(1))
+
+  17.3 Points communs
+  ---------------------
+
+    - Tous sont ecrits en Pascal (Turbo Pascal / Free Pascal)
+    - Tous lisent un fichier binaire passe en argument
+    - Tous ecrivent le listing sur la sortie standard
+    - Tous gerent l aide en ligne (/? --help)
+    - Tous emettent DB pour les opcodes inconnus
+    - Tous utilisent les memes fonctions hexadecimales
+
+  17.4 Differences principales
+  ------------------------------
+
+    DIS8086.PAS est le plus complexe :
+    - Decodage ModR/M complet avec deplacement
+    - Gestion des prefixes (segment, REP, LOCK)
+    - Instructions a longueur variable (1-6 octets)
+    - Table de 256 entrees + Case/Of monolithique
+
+    DIS6809.PAS est le plus riche en modes d adressage :
+    - 4 pages d opcodes
+    - Mode indexe avec post-octet
+    - Transfert/echange de registres
+    - Push/pull selectif par masque de bits
+
+    DIS8080.PAS et DISZ80.PAS sont les plus avances :
+    - Generation d etiquettes en deux passes
+    - Option -d pour forcer des zones en donnees
+
+    DIS6502.PAS est le plus simple :
+    - Table indexee directe de 256 entrees
+    - 13 modes d adressage bien definis
+    - Ideal pour comprendre les principes de base
+
+    DISOBJ.PAS est unique :
+    - Ne desassemble pas du code machine
+    - Analyse la structure d un fichier objet OMF
+    - Affiche les enregistrements, segments, symboles
+
+  17.5 Complexite relative
+  --------------------------
+
+    DIS6809.PAS  : ████████████████████  (1379 lignes, 4 pages)
+    DIS8086.PAS  : ████████████████      (1259 lignes, ModR/M)
+    DISOBJ.PAS   : ████████              (676 lignes, OMF)
+    DIS8080.PAS  : ██████               (478 lignes, etiquettes)
+    DISZ80.PAS   : ██████               (477 lignes, prefixes)
+    DIS6502.PAS  : ████                 (328 lignes, simple)
+
+==============================================================================
+  18. Conseils pratiques
+==============================================================================
+
+  18.1 Par ou commencer
+  -----------------------
+
+  Pour ecrire un desassembleur, commencez par :
+
+    1. Choisir un processeur simple (6502 ou 8080)
+    2. Creer la table des opcodes (opcode -> mnemonique + type)
+    3. Ecrire la boucle de lecture du fichier binaire
+    4. Implementer la fonction Decode avec un Case/Of
+    5. Ajouter les fonctions de formatage hexadecimal
+    6. Tester avec des fichiers binaires connus
+
+  Ensuite, on peut ajouter progressivement :
+
+    7. La generation d etiquettes (deux passes)
+    8. L option de forcer des zones en donnees (-d)
+    9. Les prefixes et opcodes multi-octets
+    10. Le decodage ModR/M (pour le x86)
+    11. L analyse de fichiers objets (OMF, COFF, ELF)
+
+  L exemple DIS6502.PAS (328 lignes) est un excellent point
+  de depart pour comprendre les mecanismes de base.
+
+  18.2 Tester a chaque etape
+  ----------------------------
+
+  Creez des fichiers binaires de test avec un assembleur :
+
+    1. Assembler un fichier source connu
+    2. Desassembler le binaire produit
+    3. Comparer la sortie avec le source original
+    4. Verifier que les adresses sont correctes
+
+  Utilisez les assembleurs du projet (ASM8086.PAS, ASM6502.PAS,
+  ASM8080.PAS, ASMZ80.PAS) pour generer les fichiers de test.
+
+  18.3 Avantages d utiliser Pascal
+  ----------------------------------
+
+    - Compilation rapide du desassembleur lui-meme
+    - Types forts (records, enumerations) pour les tables
+    - Manipulation facile des chaines de caracteres
+    - Acces direct aux fichiers binaires (File of Byte)
+    - Overlay Absolute pour mapper les tampons
+    - Compatible Turbo Pascal 7 et Free Pascal 3.2
+
+  18.4 Pieges courants
+  ---------------------
+
+    - Oublier la marge de securite en fin de tampon
+      (une instruction peut lire plusieurs octets devant)
+    - Confondre l ordre des octets (little-endian vs big-endian)
+    - Ne pas gerer les opcodes inconnus (emettre DB au lieu
+      de planter)
+    - Oublier les prefixes qui changent la taille d operande
+    - Ne pas avancer le pointeur correctement (boucle infinie)
+    - Decoder des donnees comme du code (sans option -d)
+    - Oublier que ModR/M peut ajouter 0, 1 ou 2 octets
+      de deplacement en plus de l opcode
+
+  18.5 Ameliorations possibles
+  ------------------------------
+
+  A partir des desassembleurs de base, on peut ajouter :
+
+    - Un mode interactif (comme DEBUG.COM)
+    - L analyse des en-tetes MZ/PE pour les executables
+    - La detection automatique code/donnees (analyse de flux)
+    - La generation de fichiers .ASM reassemblables
+    - Le support des symboles de debogage
+    - Un mode graphique avec navigation dans le code
+    - L annotation automatique des appels systeme (INT 21h, ...)
+    - L integration avec un debugger pas-a-pas
+
+  18.6 Ressources dans le projet
+  --------------------------------
+
+  Pour approfondir, consultez les fichiers suivants du projet :
+
+    DIS8086.PAS   : desassembleur Intel 8086 (1259 lignes)
+    DIS6809.PAS   : desassembleur Motorola 6809 (1379 lignes)
+    DIS8080.PAS   : desassembleur Intel 8080 (478 lignes)
+    DISZ80.PAS    : desassembleur Zilog Z80 (477 lignes)
+    DIS6502.PAS   : desassembleur MOS 6502 (328 lignes)
+    DISOBJ.PAS    : analyseur de fichiers OMF (676 lignes)
+
+    DOC/OBJ_FORMAT.txt            : documentation du format OMF
+    DOC/APPLICATION_ASSEMBLER.txt : comment ecrire un assembleur
+    DOC/APPLICATION_COMPILER.txt  : comment ecrire un compilateur
+    DOC/APPLICATION_LINKER.txt    : comment ecrire un editeur de liens
+
+    ASM86.PAS     : assembleur 8086 (pour generer des tests)
+    ASM8080.PAS   : assembleur 8080 (pour generer des tests)
+    ASM6502.PAS   : assembleur 6502 (pour generer des tests)
+    ASMZ80.PAS    : assembleur Z80 (pour generer des tests)
+
+==============================================================================
+  Fin du document
+==============================================================================

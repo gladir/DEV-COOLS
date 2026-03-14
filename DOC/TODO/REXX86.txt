@@ -1,0 +1,471 @@
+FEUILLE DE ROUTE - 25 TODOS
+============================================================
+
+TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
+          TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings)
+          ParseArgs : analyser argv (source.rex [sortie.asm] [-v] [-d] [-w])
+          FatalError, WarnMsg, EXIT_OK / EXIT_ERROR / EXIT_USAGE
+          Detecter l extension .rex, .rexx ou .cmd (OS/2 batch)
+          Programme principal : validation des arguments et appel Run
+          Version, Date, aide en ligne (option -h)
+          Ignorer le commentaire en premiere ligne si /* ... */
+
+TODO 02 - LEXEUR (TOKENS REXX) [IMPLEMENTE]
+          TTokenKind : TK_EOF, TK_NUMBER, TK_STRING, TK_IDENT,
+            TK_KEYWORD, TK_OP, TK_PUNCT, TK_LABEL, TK_COMMA, TK_EOL
+          LexInit, LexClose, LexNextToken, LexScanIdent, LexScanNumber
+          LexScanString : chaines entre apostrophes 'abc' ou guillemets "abc"
+            Doublement pour echapper : 'l''eau' -> l'eau
+            Chaines hexadecimales : '41 42 43'x -> ABC
+            Chaines binaires : '01000001'b -> A
+          Commentaires : /* ... */ imbriques (nesting autorise en REXX)
+          Continuation de ligne : virgule en fin de ligne
+          Labels : identificateur suivi de deux-points (monLabel:)
+          Mots-cles : ADDRESS ARG BY CALL DO DROP ELSE END EXIT
+            EXPOSE FOR FOREVER FUNCTION IF INTERPRET ITERATE
+            LEAVE LOOP NOP NUMERIC OTHERWISE PARSE PROCEDURE
+            PULL PUSH QUEUE RETURN SAY SELECT SIGNAL THEN
+            TO TRACE UNTIL UPPER VALUE WHEN WHILE WITH
+          Sensibilite a la casse : mots-cles insensibles,
+            variables converties en majuscules par defaut
+          Mode debug -d : affichage de chaque token avec PrintToken
+
+TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
+          Nombres entiers : 0..65535 pour entiers 16 bits
+            Pas de suffixe de type (REXX est non type)
+          Nombres decimaux : reconnus par le lexeur, tronques en entier
+            (pas de virgule flottante sur 8086 en mode simplifie)
+          Chaines : 'texte' ou "texte" -> pointeur vers donnees DATA
+            Chaine vide : '' -> pointeur vers octet nul
+            Longueur stockee en prefixe (type counted string)
+          Chaines hexadecimales : '48 65 6C 6C 6F'x -> Hello
+            Espaces ignores entre paires de chiffres hex
+          Chaines binaires : '01001000'b -> H
+            Groupes de 8 bits, espaces ignores entre groupes
+          Constantes symboliques predefinies :
+            RC (code retour), RESULT (valeur de retour),
+            SIGL (numero de ligne du dernier SIGNAL ou CALL)
+
+TODO 04 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
+          Arithmetiques  : + - * / % (division entiere) // (reste)
+                           ** (puissance, limitee a des petits exposants)
+          Concatenation  : || (explicite), espace (implicite), abuttal
+            Abuttal : 'abc'variable -> concatenation sans separateur
+          Comparaison    : = \= > < >= <= (normales, espaces ignores)
+                           == \== >> << >>= <<= (strictes, espaces significatifs)
+          Logiques       : & (AND) | (OR) && (XOR) \ (NOT, prefixe)
+          Affectation    : = (assignation par instruction, pas par operateur)
+          Unaire         : + - (signe) \ (negation logique)
+          Precedence (du plus fort au plus faible) :
+            1. \ (NOT), unaire +/-, prefixe
+            2. ** (puissance)
+            3. * / % //
+            4. + - (binaire)
+            5. || (concatenation explicite), espace, abuttal
+            6. = \= > < >= <= == \== >> << >>= <<=
+            7. & (AND)
+            8. | (OR) && (XOR)
+
+TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
+          TSymKind : SK_VAR, SK_LABEL, SK_PROC, SK_STEM,
+            SK_EXPOSED, SK_BUILTIN
+          TSymRec : Name, MangledName, Kind, Offset,
+            Scope, IsExposed, IsStem, DefaultVal
+          SymNameClean, SymMangle, SymAdd, SymFind, SymFindInScope
+          CurScope : compteur de portee (0 = global, >0 = PROCEDURE)
+          SymEnterScope / SymLeaveScope : gestion des portees
+          PROCEDURE EXPOSE : marquer les variables exposees
+            depuis la portee englobante
+          Variables non initialisees : valeur = nom en majuscules
+            (convention REXX : variable non affectee = son propre nom)
+          DROP var : retablir la variable a sa valeur par defaut (son nom)
+          Conversion automatique nom -> majuscules dans la table
+          SymInit : enregistrement des 71 builtins REXX (ABBREV..XRANGE)
+
+TODO 06 - SYSTEME DE TYPES INTERNE [IMPLEMENTE]
+          TTypeKind : TYK_STRING (chaine, type principal),
+            TYK_INTEGER (entier 16 bits, optimisation interne),
+            TYK_STEM (variable composee / tableau associatif),
+            TYK_BOOLEAN (resultat logique 0/1)
+          En REXX tout est chaine de caracteres :
+            Les nombres sont des chaines avec representation numerique
+            La conversion chaine <-> nombre est implicite et automatique
+          TypeKindOf, TypeSizeof, TypeMangle, TypeIsNumeric, TypeIsPtr,
+            TypeCanCoerce, TypeCoerceResult, TypeInfer, TypeLookupName
+          TypeTab, TypeInit : types internes pour optimisation
+          TypeInfer : determiner si une valeur est utilisable comme nombre
+            -> si oui, operations arithmetiques directes sur registres
+            -> sinon, operations via routines chaines du runtime
+          Taille interne : STRING=ptr(2) + len(2), INTEGER=2 octets
+
+TODO 07 - EMETTEUR DE CODE ASM [IMPLEMENTE]
+          TEmitter : OutF (Text), OutFOpen, EmitOpen, EmitClose
+          EmitRaw, EmitLabel, EmitInstr (formatage 8 espaces)
+          EmitComment, EmitBlankLine
+          LabelGen global (compteur unique _RXL_NNNNN)
+          Prefixes : _RXV_ (variable), _RXP_ (procedure), _RXK_ (chaine const),
+            _RXRT_ (runtime), _RXL_ (label), _RXS_ (stem),
+            _RXD_ (donnees data), _RXB_ (builtin)
+          EmitHeader : .MODEL SMALL / .STACK 1024 / _TEXT SEGMENT
+          EmitProlog / EmitEpilog : PUSH BP / MOV BP,SP et MOV SP,BP / POP BP
+          EmitDataSeg : ecrire _DATA SEGMENT ... _DATA ENDS
+
+TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
+          TDataRec : LblName, Kind (DK_WORD/DK_BYTE/DK_STR/DK_BUFFER),
+            IntVal, StrVal, BufSize
+          DataTab[0..MAX_DATA-1], DataCount
+          DataAdd, DataAddStr, DataAddBuffer : variantes d ajout
+          Variables globales : chaines dans DATA avec label _RXV_nom
+            Format : DB longueur, 'contenu', 0
+          Chaines litterales : DB 'texte',0 dans DATA avec label _RXK_N
+          Tampons de travail pour concatenation et conversion :
+            _RX_TMPBUF DB 256 DUP(0) (tampon temporaire)
+            _RX_NUMBUF DB 12 DUP(0) (tampon conversion numerique)
+          Pile de donnees (data stack) : zone reservee dans DATA
+
+TODO 09 - VARIABLES ET AFFECTATIONS [IMPLEMENTE]
+          Variables simples : chaines allouees dans DATA ou sur le heap
+            Acces par label _RXV_NOM (majuscules)
+          Variables locales (dans PROCEDURE) : pile BP, acces [BP-offset]
+          Variable non initialisee : valeur = nom en majuscules
+            ex: X non affecte -> X contient la chaine "X"
+          Affectation : var = expr
+            Evaluer expr -> AX=ptr chaine resultat
+            Copier chaine vers emplacement de var
+          DROP var : reinitialiser a la valeur par defaut (le nom)
+          UPPER var : convertir le contenu en majuscules
+          Affectation multiple via PARSE : voir TODO 16
+          VarAlloc : alloue variable globale (DB dans DATA) ou locale (pile)
+          VarAddrOf : retourne chaine d adressage ASM ([_RXV_X] ou [BP-n])
+          VarLoad : emet MOV AX / LEA AX pour charger ptr vers contenu
+          VarStore : emet CALL _RXRT_STRCPY pour copier chaine dans var
+          ParseAssign : parse var = expr, evalue et stocke
+          ParseDrop : parse DROP var1 var2 ... reinitialise au nom
+          ParseUpper : parse UPPER var1 var2 ... convertit en majuscules
+
+TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
+          ParsePrimary : literal nombre, literal chaine, ident, appel fonction
+          Nombre : convertir en chaine (ou garder en registre si optimise)
+          Chaine : charger adresse du literal dans SI
+          Variable : charger adresse de la valeur dans SI
+          Appel de fonction : nom(args) -> CALL + resultat dans AX
+          Parentheses : (expr) -> evaluation recursive
+          Prefixe unaire : + (NOP), - (NEG si numerique), \ (NOT logique)
+          Fonctions integrees : SUBSTR, LENGTH, etc. -> CALL _RXB_nom
+          Variable composee (stem) : nom.queue -> calcul dynamique de cle
+
+TODO 11 - EXPRESSIONS BINAIRES ET CONCATENATION [IMPLEMENTE]
+          ParseExprPrec(MinPrec) : boucle de precedence (Pratt)
+          Arithmetique entiere : ADD/SUB/IMUL/IDIV pour +, -, *, /
+          Division entiere % : IDIV -> quotient dans AX
+          Reste // : IDIV -> reste dans DX
+          Puissance ** : boucle de multiplication (exposants petits)
+          Concatenation explicite || : CALL _RXRT_CONCAT(SI=g, DI=d) -> AX
+          Concatenation implicite (espace) : meme traitement que ||
+          Abuttal (juxtaposition) : detecter au lexeur, traiter comme ||
+          Comparaison normale : CALL _RXRT_STRCMP -> drapeaux (espaces normalises)
+          Comparaison stricte : CALL _RXRT_STRCMPS -> drapeaux (espaces preserves)
+          Logique AND & : court-circuit JZ vers false-branch
+          Logique OR | : court-circuit JNZ vers true-branch
+          Logique XOR && : XOR AX, BX apres evaluation des deux cotes
+          Logique NOT \ : XOR AX,1
+
+TODO 12 - ENTREES/SORTIES (SAY / PULL / LINEIN / LINEOUT / CHAROUT) [IMPLEMENTE]
+          SAY expr : evaluer expr -> afficher sur STDOUT + CR+LF
+            SAY sans argument : afficher une ligne vide
+            -> CALL _RXRT_PRINT(SI=msg) + CALL _RXRT_PRINTLN
+          PULL var [var2 ...] : lire une ligne depuis STDIN
+            -> INT 21h AH=0Ah (lecture ligne) + UPPER + PARSE
+            PULL est equivalent a PARSE UPPER PULL
+          PARSE PULL var : comme PULL mais sans conversion majuscules
+          ARG : equivalent a PARSE UPPER ARG (arguments du programme)
+          LINEIN([nom]) : lire une ligne depuis un fichier ou STDIN
+            -> INT 21h AH=3Fh (fichier) ou AH=0Ah (STDIN)
+          LINEOUT([nom], texte) : ecrire une ligne vers fichier ou STDOUT
+            -> INT 21h AH=40h (fichier) ou BX=1 (STDOUT)
+          CHAROUT([nom], texte) : ecrire sans retour de ligne
+          CHARIN([nom]) : lire un seul caractere -> AL
+          CHARS([nom]) : nombre de caracteres disponibles -> AX
+          LINES([nom]) : nombre de lignes restantes -> AX (0 ou 1)
+          STREAM(nom, option) : gestion de flux (open/close/status)
+
+TODO 13 - IF / THEN / ELSE / SELECT / WHEN / OTHERWISE [IMPLEMENTE]
+          ParseIfStmt : IF cond THEN instr [; ELSE instr]
+            Emission TEST AX,AX / JZ pour condition fausse
+            Labels : _RXL_ELSE_N, _RXL_ENDIF_N
+          IF avec bloc : IF cond THEN DO; stmts; END [; ELSE DO; stmts; END]
+            Le bloc DO/END remplace les accolades
+          NOP : instruction vide (utilise dans THEN NOP ou OTHERWISE NOP)
+          ParseSelectStmt : SELECT [; WHEN cond THEN instr]+ [; OTHERWISE instr] END
+            Evaluation sequentielle des WHEN
+            Premier WHEN vrai -> executer son bloc, sauter au END
+            OTHERWISE : bloc par defaut (optionnel)
+            Erreur si aucun WHEN vrai et pas de OTHERWISE
+            Labels : _RXL_WHEN_N, _RXL_SNEXT_N, _RXL_SEND_N
+            Emission : pour chaque WHEN -> eval cond + JZ vers suivant
+
+TODO 14 - BOUCLES DO / END [IMPLEMENTE]
+          ParseDoBlock : DO [; stmts ;] END (bloc simple)
+          ParseDoWhile : DO WHILE cond [; stmts ;] END
+            Labels : _RXL_DTEST_N, _RXL_DEND_N
+          ParseDoUntil : DO UNTIL cond [; stmts ;] END
+            Condition testee apres le corps (au moins une execution)
+            Labels : _RXL_DBEG_N, _RXL_DTEST_N
+          ParseDoCount : DO var = debut TO fin [BY pas] [; stmts ;] END
+            Variable de boucle (compteur), pas = 1 par defaut
+            BY pas : increment positif ou negatif
+            Labels : _RXL_DINIT_N, _RXL_DTEST_N, _RXL_DINCR_N, _RXL_DEND_N
+          ParseDoForever : DO FOREVER [; stmts ;] END
+            Boucle infinie, sortie par LEAVE
+            Labels : _RXL_DBEG_N, _RXL_DEND_N
+          DO expr : repeter le bloc expr fois (DO 5; ...; END)
+          LEAVE [nom] : sortir de la boucle courante ou nommee
+            -> JMP _RXL_DEND_N
+          ITERATE [nom] : passer a l iteration suivante
+            -> JMP _RXL_DTEST_N (ou _RXL_DINCR_N pour boucle compteur)
+          LoopPush / LoopPop : pile de labels pour LEAVE et ITERATE
+
+TODO 15 - CHAINES DE CARACTERES ET FONCTIONS INTEGREES (partie 1) [IMPLEMENTE]
+          LENGTH(str) : longueur de la chaine -> AX
+            -> CALL _RXB_LENGTH
+          SUBSTR(str, pos [,len [,pad]]) : sous-chaine
+            -> CALL _RXB_SUBSTR -> AX=ptr resultat
+          LEFT(str, len [,pad]) : len caracteres a gauche
+          RIGHT(str, len [,pad]) : len caracteres a droite
+          CENTER(str, len [,pad]) / CENTRE : centrer dans largeur len
+          COPIES(str, n) : repeter str n fois -> AX=ptr
+          REVERSE(str) : inverser la chaine -> AX=ptr
+          STRIP(str [,option [,char]]) : supprimer espaces
+            option = L (gauche), T (droite), B (les deux, defaut)
+          SPACE(str [,n [,pad]]) : normaliser espaces entre mots
+          OVERLAY(new, target, pos [,len [,pad]]) : superposer
+          INSERT(new, target [,pos [,len [,pad]]]) : inserer
+          DELSTR(str, pos [,len]) : supprimer une portion
+          POS(needle, haystack [,start]) : position de sous-chaine -> AX
+          LASTPOS(needle, haystack [,start]) : derniere position -> AX
+
+TODO 16 - INSTRUCTION PARSE [IMPLEMENTE]
+          PARSE [UPPER] source template
+          Sources :
+            PARSE ARG : arguments de la procedure ou du programme
+            PARSE PULL : ligne lue depuis la pile de donnees ou STDIN
+            PARSE VAR nom : contenu d une variable
+            PARSE VALUE expr WITH : resultat d une expression
+            PARSE SOURCE : informations sur le programme en cours
+            PARSE VERSION : version de l interpreteur/compilateur
+            PARSE LINEIN : ligne lue depuis STDIN
+          Templates (modeles de decoupage) :
+            Mots : var1 var2 var3 -> decouper par espaces
+            Litteral : var1 'delim' var2 -> decouper au delimiteur
+            Position absolue : var1 5 var2 -> colonne 5
+            Position relative : var1 +3 var2 -> avancer de 3 positions
+            Point : . pour ignorer un segment (variable jetable)
+          UPPER : convertir en majuscules avant decoupage
+          Emission ASM : appels successifs a _RXRT_PARSEWORD,
+            _RXRT_PARSEDELIM, _RXRT_PARSEPOS selon le template
+          Affectation des resultats dans les variables cibles
+
+TODO 17 - PROCEDURES ET FONCTIONS INTERNES [IMPLEMENTE]
+          ParseCallStmt : CALL nom [arg1, arg2, ...]
+            Arguments passes par valeur (chaines)
+            Convention d appel : empiler args droite a gauche + CALL
+          Labels internes : nom: (deux-points apres identificateur)
+            CALL nom -> saut vers le label, retour par RETURN
+            SIGNAL nom -> saut sans retour (goto)
+          PROCEDURE : mot-cle apres un label pour definir une portee locale
+            Toutes les variables sont locales sauf celles exposees
+          PROCEDURE EXPOSE var1 var2 ... : exposer des variables
+            de la portee appelante (acces direct au cadre parent)
+          RETURN [expr] : retourner une valeur au CALL appelant
+            MOV AX, ptr_resultat + JMP vers epilogue
+          RESULT : variable speciale contenant la valeur de RETURN
+          Fonctions : nom(arg1, arg2) dans une expression
+            -> CALL + resultat dans AX (pointeur chaine)
+          Prologue : PUSH BP / MOV BP,SP / SUB SP, locals_size
+          Epilogue : MOV SP,BP / POP BP / RET
+          Recursion : supportee (chaque appel a son propre cadre)
+
+TODO 18 - FONCTIONS INTEGREES (partie 2 : mots, conversion, divers) [IMPLEMENTE]
+          Fonctions sur les mots :
+            WORD(str, n) : n-ieme mot de la chaine
+            WORDS(str) : nombre de mots -> AX
+            SUBWORD(str, n [,len]) : sous-ensemble de mots
+            WORDINDEX(str, n) : position du n-ieme mot -> AX
+            WORDLENGTH(str, n) : longueur du n-ieme mot -> AX
+            WORDPOS(phrase, str [,start]) : position d une phrase -> AX
+            DELWORD(str, n [,len]) : supprimer des mots
+          Fonctions de conversion :
+            C2D(str) : caractere vers decimal -> AX
+            C2X(str) : caractere vers hexadecimal -> ptr chaine
+            D2C(n) : decimal vers caractere -> ptr chaine
+            D2X(n) : decimal vers hexadecimal -> ptr chaine
+            X2C(hex) : hexadecimal vers caractere -> ptr chaine
+            X2D(hex) : hexadecimal vers decimal -> AX
+            B2X(bin) : binaire vers hexadecimal -> ptr chaine
+            X2B(hex) : hexadecimal vers binaire -> ptr chaine
+          Fonctions diverses :
+            ABS(n) : valeur absolue -> AX
+            MAX(n1, n2, ...) : maximum -> AX
+            MIN(n1, n2, ...) : minimum -> AX
+            SIGN(n) : signe (-1, 0, 1) -> AX
+            TRUNC(n [,d]) : tronquer a d decimales -> AX (entier)
+            RANDOM([min] [,max] [,seed]) : nombre aleatoire -> AX
+            TIME([option]) : heure courante -> ptr chaine
+            DATE([option]) : date courante -> ptr chaine
+            DATATYPE(str [,type]) : verifier le type de donnees -> 0|1
+            SYMBOL(nom) : etat du symbole (VAR, LIT, BAD) -> ptr chaine
+            VALUE(nom) : valeur d une variable par nom -> ptr chaine
+            ERRORTEXT(n) : message d erreur REXX -> ptr chaine
+
+TODO 19 - VARIABLES COMPOSEES (TIGES / STEMS) [IMPLEMENTE]
+          Variable composee : nom.queue (stem.tail)
+            Exemple : tab.1 tab.2 tab.compteur
+            La queue est evaluee dynamiquement (concatenation des parties)
+          Stem seul : tab. -> valeur par defaut pour tous les elements
+            tab. = 0 -> tous les elements non affectes valent "0"
+          Resolution dynamique de la cle :
+            i = 3 ; SAY tab.i -> chercher tab.3
+            Emission : evaluer chaque partie de la queue,
+            concatener avec des points, chercher dans la table
+          Table des stems : TSymStem[0..MAX_STEM-1]
+            Chaque entree : StemName, Key (chaine), Value (chaine)
+            Recherche : _RXRT_STEMGET(SI=stem, DI=key) -> AX=ptr valeur
+            Ecriture : _RXRT_STEMSET(SI=stem, DI=key, BX=value)
+          DROP nom. : reinitialiser toute la tige
+          Queues multiples : tab.i.j -> cle = valeur(i).valeur(j)
+          Limitation memoire : table de hachage simple dans le heap
+
+TODO 20 - ARITHMETIQUE ET NUMERIC DIGITS [IMPLEMENTE]
+          NUMERIC DIGITS [n] : nombre de chiffres significatifs
+            Defaut = 9, sur 8086 limite a la precision entiere 16 bits
+            Si DIGITS <= 4 : operations directes sur registres 16 bits
+            Si DIGITS > 4 : avertissement, troncature a 16 bits
+          NUMERIC FORM SCIENTIFIC | ENGINEERING :
+            Controle de la notation (stub : toujours notation simple)
+          NUMERIC FUZZ [n] : chiffres ignores dans les comparaisons
+            Defaut = 0 (comparaison exacte)
+          Operations arithmetiques optimisees (entier 16 bits) :
+            Addition : ADD AX, BX
+            Soustraction : SUB AX, BX
+            Multiplication : IMUL BX (resultat dans DX:AX, tronque a AX)
+            Division : CWD + IDIV BX -> quotient AX, reste DX
+            Puissance : boucle de multiplication
+          Conversion chaine -> nombre : CALL _RXRT_STRTONUM
+          Conversion nombre -> chaine : CALL _RXRT_NUMTOSTR
+          Verification DATATYPE('num', 'N') avant operation arithmetique
+
+TODO 21 - SIGNAL ET TRAITEMENT DE CONDITIONS [IMPLEMENTE]
+          SIGNAL [VALUE] label : saut inconditionnel (goto)
+            Termine toutes les boucles et blocs en cours
+            -> JMP _RXP_label
+          SIGNAL ON condition [NAME handler] : activer un piege
+            Conditions : ERROR, FAILURE, HALT, NOVALUE,
+              NOTREADY, SYNTAX, LOSTDIGITS
+            Quand la condition survient -> saut vers handler
+          SIGNAL OFF condition : desactiver un piege
+          Mecanisme d implementation :
+            Table de handlers : _RX_TRAPS DW 7 DUP(0) dans DATA
+              (une entree par type de condition)
+            Activation : MOV [_RX_TRAPS+offset], OFFSET _RXP_handler
+            Desactivation : MOV [_RX_TRAPS+offset], 0
+            Declenchement : CMP [_RX_TRAPS+offset],0 / JZ _RXL_DEFAULT_N
+              JMP [_RX_TRAPS+offset]
+          NOVALUE : declenche si variable non initialisee est lue
+            (necessite verification a chaque lecture de variable)
+          SIGL : variable speciale = numero de ligne du SIGNAL/CALL
+          RC : variable speciale = code retour de la derniere commande
+          Condition par defaut (pas de handler) : afficher erreur + EXIT
+
+TODO 22 - PILE DE DONNEES (QUEUE / PUSH / PULL) [IMPLEMENTE]
+          Pile de donnees REXX (data stack / external queue) :
+            Structure FIFO (QUEUE) et LIFO (PUSH) combinee
+          QUEUE expr : ajouter en fin de pile (FIFO)
+            -> CALL _RXRT_QUEUE(SI=chaine)
+          PUSH expr : ajouter en debut de pile (LIFO)
+            -> CALL _RXRT_PUSH(SI=chaine)
+          PULL var : retirer du debut de la pile
+            Si pile vide : lire depuis STDIN a la place
+            -> CALL _RXRT_PULL -> AX=ptr chaine (ou lecture clavier)
+          QUEUED() : nombre d elements dans la pile -> AX
+            -> CALL _RXRT_QUEUED -> AX
+          Implementation :
+            _RX_STACK DB 2048 DUP(0) : zone memoire de la pile
+            _RX_STKTOP DW 0 : pointeur sommet
+            _RX_STKBOT DW 0 : pointeur base
+            _RX_STKCOUNT DW 0 : nombre d elements
+            Chaque element : 2 octets longueur + contenu chaine
+          Pile circulaire pour optimiser l espace memoire
+
+TODO 23 - INSTRUCTION INTERPRET ET ADDRESS [IMPLEMENTE]
+          INTERPRET expr : evaluer dynamiquement du code REXX
+            Limitation sur 8086 : non supporte en compilation native
+            -> Emettre un avertissement a la compilation
+            -> Alternative : ignorer ou generer une erreur a l execution
+               CALL _RXRT_PANIC('INTERPRET non supporte')
+          ADDRESS [environnement] [commande] :
+            Envoyer une commande a l environnement hote
+            ADDRESS CMD commande -> INT 21h AH=4Bh (EXEC) ou
+              equivalence via ecriture dans un fichier .BAT
+            ADDRESS SYSTEM commande -> meme traitement
+            Sans argument : afficher l environnement courant
+          Commandes hotes (instruction sans mot-cle) :
+            En REXX, une chaine seule est envoyee a l environnement
+            ex: 'DIR' -> execute DIR dans le shell DOS
+            -> CALL _RXRT_HOSTCMD(SI=commande) -> RC
+          TRACE [option] : controle du tracage (debug)
+            TRACE A (all), TRACE R (results), TRACE I (intermediates)
+            TRACE O (off), TRACE N (normal)
+            Implementation : variable globale _RX_TRACE DB 0
+            Si trace active : afficher chaque instruction avant execution
+          EXIT [expr] : terminer le programme avec code retour
+            -> MOV AL, code / MOV AH,4Ch / INT 21h
+
+TODO 24 - RUNTIME MINIMAL [IMPLEMENTE]
+          _RXRT_PRINT(SI=msg, CX=len) : INT 21h AH=40h BX=1 (STDOUT)
+          _RXRT_PRINTLN : _RXRT_PRINT + CR+LF via _RX_CRLF DB 13,10,0
+          _RXRT_READLN(DI=buf, CX=maxlen) : INT 21h AH=0Ah -> chaine
+          _RXRT_STRLEN(SI=str) : compter octets jusqu a 0 -> AX
+          _RXRT_NUMTOSTR(AX=n, DI=buf) : entier signe -> ASCII (itoa)
+          _RXRT_STRTONUM(SI=str) : ASCII -> entier -> AX (atoi)
+          _RXRT_CONCAT(SI=src1, DI=src2) : concatenation -> AX=ptr buf
+          _RXRT_STRCMP(SI=str1, DI=str2) : comparaison normale -> drapeaux
+            (espaces de debut/fin normalises avant comparaison)
+          _RXRT_STRCMPS(SI=str1, DI=str2) : comparaison stricte -> drapeaux
+            (espaces significatifs, comparaison exacte)
+          _RXRT_UPPER(SI=str) : convertir en majuscules sur place
+          _RXRT_COPY(SI=src, DI=dst, CX=len) : copie memoire
+          _RXRT_PARSEWORD(SI=str, BX=index) : extraire mot N -> AX=ptr
+          _RXRT_PARSEDELIM(SI=str, DI=delim) : decouper au delimiteur
+          _RXRT_PARSEPOS(SI=str, BX=pos) : decouper a la position
+          _RXRT_STEMGET(SI=stem, DI=key) : lire variable composee -> AX
+          _RXRT_STEMSET(SI=stem, DI=key, BX=val) : ecrire variable composee
+          _RXRT_QUEUE(SI=str) : empiler en fin (FIFO)
+          _RXRT_PUSH(SI=str) : empiler en debut (LIFO)
+          _RXRT_PULL : depiler -> AX=ptr (ou lire STDIN si pile vide)
+          _RXRT_QUEUED : nombre d elements dans la pile -> AX
+          _RXRT_HOSTCMD(SI=cmd) : executer commande hote -> RC
+          _RXRT_ABS(AX=n) : valeur absolue -> AX
+          _RXRT_MAX(AX=a, BX=b) : maximum -> AX
+          _RXRT_MIN(AX=a, BX=b) : minimum -> AX
+          _RXRT_RANDOM(AX=min, BX=max) : nombre aleatoire -> AX
+          _RXRT_PANIC(SI=msg) : affiche message + MOV AX,4C01h + INT 21h
+          RuntimeEmitted : flag pour n emettre le runtime qu une seule fois
+          Heap statique : _RX_HEAP DB 4096 DUP(0) + _RX_HEAPTOP DW 0
+
+TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES [IMPLEMENTE]
+          EmitClose : END _RXP_Main dans _TEXT ENDS / DATA ENDS
+          Run : pipeline complet LexInit -> ParseProgram ->
+            EmitRuntime -> _TEXT ENDS / EmitDataSeg / END _RXP_Main
+          Fichiers SAMPLES\REXX\ a creer :
+            hello.rex    (SAY, variables, concatenation, chaines)
+            math.rex     (operations arithmetiques, NUMERIC DIGITS)
+            control.rex  (IF/THEN/ELSE, SELECT/WHEN, DO WHILE/UNTIL)
+            loops.rex    (DO compteur, DO FOREVER, LEAVE, ITERATE)
+            strings.rex  (SUBSTR, LENGTH, POS, COPIES, REVERSE, etc.)
+            parse.rex    (PARSE VAR, PARSE ARG, templates, delimiteurs)
+            funcs.rex    (CALL, RETURN, PROCEDURE EXPOSE, recursion)
+            stems.rex    (variables composees tab.i, DROP, valeur defaut)
+            stack.rex    (PUSH, QUEUE, PULL, QUEUED)
+            signal.rex   (SIGNAL ON NOVALUE, SIGNAL label, conditions)
+          Smoke tests : REXX86.EXE -v SAMPLES\REXX\*.rex
+

@@ -1,0 +1,1472 @@
+==============================================================================
+  APPLICATION_COMPILER.txt
+  Comment ecrire un compilateur
+  Inspire des compilateurs du projet DEV-COOLS
+  (CCW32.PAS, CC8086.PAS, JAVAC86.PAS, KOTLIN86.PAS, CLIPPER86.PAS, ...)
+==============================================================================
+
+Table des matieres
+------------------
+
+  1.  Introduction
+  2.  Architecture generale d un compilateur
+  3.  Phase 1 : L analyseur lexical (Lexer)
+  4.  Phase 2 : Le preprocesseur
+  5.  Phase 3 : Le pool de jetons (Token Pool)
+  6.  Phase 4 : La table des symboles
+  7.  Phase 5 : Le systeme de types
+  8.  Phase 6 : L analyseur syntaxique (Parser)
+  9.  Phase 7 : L analyse des expressions
+  10. Phase 8 : L analyse des instructions
+  11. Phase 9 : La generation de code assembleur
+  12. Phase 10 : Le segment de donnees
+  13. Phase 11 : Les routines d execution (Runtime)
+  14. Phase 12 : La generation binaire (PE/COFF)
+  15. Le programme principal (Run)
+  16. Conventions de nommage et prefixes
+  17. Gestion des erreurs
+  18. Exemples concrets tires de CCW32.PAS
+  19. Comparaison des compilateurs du projet
+  20. Conseils pratiques
+
+==============================================================================
+  1. Introduction
+==============================================================================
+
+  Un compilateur est un programme qui traduit du code source ecrit dans un
+  langage de programmation (C, Pascal, Java, Kotlin, ...) en code machine
+  ou en code assembleur executable par un processeur.
+
+  Le projet DEV-COOLS contient plus de 120 compilateurs ecrits en Pascal
+  (Free Pascal / Turbo Pascal) ciblant differentes architectures :
+
+    - Intel 8086 (16 bits) : CC8086.PAS, JAVAC86.PAS, F77C86.PAS, ...
+    - Intel 80386 (32 bits, Windows PE) : CCW32.PAS, TPCW32.PAS, ...
+    - MOS 6502 : CC6502.PAS
+    - Motorola 6809 : CC09.PAS
+
+  Ce document explique, etape par etape, comment ecrire un compilateur
+  en s inspirant principalement de CCW32.PAS (compilateur C pour
+  Windows 32 bits) et des autres compilateurs du projet.
+
+==============================================================================
+  2. Architecture generale d un compilateur
+==============================================================================
+
+  Un compilateur suit generalement un pipeline en plusieurs phases :
+
+    Fichier source (.c, .java, .kt, ...)
+            |
+            v
+    +-------------------+
+    |  Analyseur lexical |  (Lexer / Scanner)
+    |  Decoupe le texte  |  en jetons (tokens)
+    +-------------------+
+            |
+            v
+    +-------------------+
+    |  Preprocesseur     |  (optionnel, pour C : #define, #include, ...)
+    +-------------------+
+            |
+            v
+    +-------------------+
+    |  Pool de jetons    |  Stockage des jetons pour analyse multi-passe
+    +-------------------+
+            |
+            v
+    +-------------------+
+    |  Analyseur         |  (Parser)
+    |  syntaxique        |  Verifie la grammaire, construit la logique
+    +-------------------+
+            |
+            v
+    +-------------------+
+    |  Table des         |  Enregistre les variables, fonctions, types
+    |  symboles          |
+    +-------------------+
+            |
+            v
+    +-------------------+
+    |  Generateur de     |  Produit du code assembleur (.ASM)
+    |  code              |
+    +-------------------+
+            |
+            v
+    +-------------------+
+    |  Assembleur /      |  Produit le fichier binaire (.EXE, .OBJ)
+    |  Editeur de liens  |
+    +-------------------+
+            |
+            v
+    Fichier executable (.EXE, .OBJ, .DLL)
+
+  Dans CCW32.PAS, toutes ces phases sont integrees dans un seul fichier
+  de 12186 lignes. Le flux principal est orchestre par la procedure Run.
+
+==============================================================================
+  3. Phase 1 : L analyseur lexical (Lexer)
+==============================================================================
+
+  3.1 Role du lexeur
+  ------------------
+
+  Le lexeur lit le fichier source caractere par caractere et le decoupe
+  en jetons (tokens). Chaque jeton represente une unite significative
+  du langage : un mot-cle, un identificateur, un nombre, une chaine,
+  un operateur ou un signe de ponctuation.
+
+  3.2 Types de jetons
+  -------------------
+
+  Dans CCW32.PAS, les types de jetons sont definis par une enumeration :
+
+    TTokenKind = (
+      TK_EOF,       { Fin de fichier }
+      TK_INTEGER,   { Entier : 42, 0xFF, 0o77 }
+      TK_FLOAT,     { Flottant : 3.14 }
+      TK_STRING,    { Chaine : "bonjour" }
+      TK_CHAR,      { Caractere : 'A' }
+      TK_IDENT,     { Identificateur : maVariable }
+      TK_KEYWORD,   { Mot-cle : if, while, return, ... }
+      TK_OP,        { Operateur : +, -, +=, ==, &&, ... }
+      TK_PUNCT      { Ponctuation : ;, {, }, (, ), ... }
+    );
+
+  Chaque jeton est stocke dans un enregistrement :
+
+    TToken = Record
+      Kind    : TTokenKind;   { Type du jeton }
+      Val     : TString;      { Texte du jeton }
+      IntVal  : LongInt;      { Valeur entiere (pour TK_INTEGER/TK_CHAR) }
+      Line    : Integer;      { Numero de ligne source }
+      Col     : Integer;      { Numero de colonne source }
+    End;
+
+  3.3 Fonctions auxiliaires du lexeur
+  -----------------------------------
+
+  Le lexeur utilise des fonctions auxiliaires pour classifier les
+  caracteres :
+
+    - IsIdentStart(Ch)  : le caractere peut debuter un identificateur
+                          (lettre ou underscore)
+    - IsIdentCont(Ch)   : le caractere peut continuer un identificateur
+                          (lettre, chiffre ou underscore)
+    - IsDigit(Ch)       : le caractere est un chiffre decimal (0-9)
+    - IsHexDigit(Ch)    : le caractere est un chiffre hexadecimal
+    - IsOctDigit(Ch)    : le caractere est un chiffre octal
+
+  3.4 Sous-procedures de balayage
+  -------------------------------
+
+  Le lexeur principal (LexNextToken) delegue a des sous-procedures
+  specialisees :
+
+    - LexScanNumber   : lit un nombre (decimal, hexadecimal 0x, octal 0o)
+    - LexScanString   : lit une chaine entre guillemets avec sequences
+                        d echappement (\n, \t, \x00, \\, \", ...)
+    - LexScanCharLit  : lit un caractere entre apostrophes ('A', '\n')
+    - LexScanIdent    : lit un identificateur ou un mot-cle
+    - LexScanEscape   : interprete une sequence d echappement
+
+  3.5 Boucle principale du lexeur
+  -------------------------------
+
+  La procedure LexNextToken fonctionne en boucle :
+
+    1. Avancer a la prochaine ligne si la fin de la ligne courante
+       est atteinte (LexNextLine)
+    2. Si fin de fichier -> retourner TK_EOF
+    3. Ignorer les espaces et tabulations
+    4. Si '//' -> ignorer le commentaire de ligne
+    5. Si '/*' -> ignorer le commentaire de bloc
+    6. Si '"' -> appeler LexScanString
+    7. Si ''' -> appeler LexScanCharLit
+    8. Si chiffre -> appeler LexScanNumber
+    9. Si lettre ou '_' -> appeler LexScanIdent
+    10. Sinon -> traiter comme operateur ou ponctuation
+
+  3.6 Etat du lexeur
+  ------------------
+
+  Le lexeur maintient un etat global :
+
+    LexSrcF   : fichier source ouvert
+    LexLine   : ligne courante lue du fichier
+    LexLineNo : numero de la ligne courante
+    LexColNo  : position du curseur dans la ligne
+    LexEOF    : indicateur de fin de fichier
+    CurToken  : dernier jeton lu
+
+  Dans KOTLIN86.PAS, le lexeur est similaire mais reconnait des mots-cles
+  differents (fun, val, var, when, ...) et des operateurs specifiques
+  a Kotlin (?., ?:, !!).
+
+==============================================================================
+  4. Phase 2 : Le preprocesseur
+==============================================================================
+
+  4.1 Role du preprocesseur
+  -------------------------
+
+  Le preprocesseur est specifique aux langages comme C. Il traite les
+  directives commencant par # avant l analyse syntaxique :
+
+    #define NOM valeur       -> definition de macro
+    #undef NOM              -> suppression de macro
+    #ifdef NOM ... #endif   -> compilation conditionnelle
+    #ifndef NOM ... #endif  -> compilation conditionnelle inversee
+    #if expr ... #endif     -> compilation conditionnelle sur expression
+    #include <fichier>      -> inclusion de fichier
+    #include "fichier"      -> inclusion de fichier local
+
+  4.2 Implementation dans CCW32.PAS
+  ---------------------------------
+
+  Le preprocesseur de CCW32.PAS comprend les elements suivants :
+
+    Table des macros :
+      MacroTab     : tableau de macros definies
+      MacroCount   : nombre de macros
+      MacroFind()  : rechercher une macro par nom
+      MacroDefine(): definir une nouvelle macro
+      MacroUndef() : supprimer une macro
+      MacroIsDefined() : tester si une macro est definie
+
+    Pile de conditions :
+      CondStack    : pile des etats #if/#ifdef imbriques
+      CondTop      : sommet de la pile
+      PPIsActive() : indique si le code courant doit etre compile
+
+    Evaluation d expressions constantes :
+      PPEvalExpr() : evaluer une expression constante entiere
+      PPEvalAtom() : evaluer un atome (nombre, defined(...), ...)
+
+    Expansion des macros :
+      PPExpandMacros() : remplacer les macros dans une ligne
+
+    Inclusion de fichiers :
+      PPPushInclude()    : empiler un fichier inclus
+      PPIncludeBuiltin() : fournir un en-tete integre (stdio.h, ...)
+
+  La procedure LexNextTokenPP() encapsule LexNextToken() en ajoutant
+  le traitement des directives preprocesseur. Elle filtre les jetons
+  inactifs (dans un bloc #ifdef non satisfait).
+
+  Note : les compilateurs pour des langages sans preprocesseur (comme
+  KOTLIN86.PAS ou JAVAC86.PAS) n ont pas cette phase.
+
+==============================================================================
+  5. Phase 3 : Le pool de jetons (Token Pool)
+==============================================================================
+
+  5.1 Pourquoi un pool de jetons ?
+  --------------------------------
+
+  Dans un compilateur a une seule passe, les jetons sont consommes au
+  fur et a mesure. Mais pour un compilateur multi-passe (comme CCW32.PAS),
+  il est utile de stocker tous les jetons en memoire pour pouvoir les
+  parcourir plusieurs fois.
+
+  5.2 Implementation
+  ------------------
+
+  Le pool de jetons est un simple tableau :
+
+    TokenPool  : Array[0..MAX_TOKENS - 1] Of TToken;
+    TokenCount : Integer;
+
+  Procedures principales :
+
+    TokenPoolInit()            : initialiser le pool
+    TokenPoolAdd(T)            : ajouter un jeton au pool
+    TokenPoolConcatStrings()   : fusionner les chaines adjacentes
+                                 ("abc" "def" -> "abcdef")
+    TokenPoolRegisterStrings() : enregistrer les chaines dans le pool
+                                 de donnees (pour le segment .DATA)
+
+  5.3 Curseur de lecture
+  ---------------------
+
+  Un curseur global EP (Expression Position) pointe vers le jeton
+  courant dans le pool. Les procedures d analyse avancent ce curseur :
+
+    EP     : Integer;    { position courante dans le pool }
+    EPAtEnd: Boolean;    { EP >= TokenCount }
+
+  Certains compilateurs du projet (JAVAC86.PAS, KOTLIN86.PAS) utilisent
+  une approche a une seule passe et n ont pas de pool de jetons : ils
+  consomment les jetons directement depuis le lexeur.
+
+==============================================================================
+  6. Phase 4 : La table des symboles
+==============================================================================
+
+  6.1 Role de la table des symboles
+  ---------------------------------
+
+  La table des symboles enregistre tous les identificateurs du programme :
+  variables, fonctions, parametres, types, constantes d enumeration,
+  etiquettes (labels), etc.
+
+  6.2 Structure d un symbole
+  --------------------------
+
+  Dans CCW32.PAS, chaque symbole est un enregistrement :
+
+    TSymRec = Record
+      Name        : TString;    { Nom original (sensible a la casse) }
+      MangledName : TString;    { Nom en assembleur (ex: _CCV_x) }
+      Cat         : TSymCat;    { Categorie du symbole }
+      TypeIdx     : Integer;    { Index dans la table des types }
+      Offset      : Integer;    { Decalage sur la pile (local) ou
+                                   dans le segment de donnees (global) }
+      ScopeLevel  : Integer;    { 0 = global, 1+ = local }
+      ScopeId     : Integer;    { Identifiant unique de la portee }
+      IsGlobal    : Boolean;    { Visible entre fonctions }
+      IsExternal  : Boolean;    { Declare extern }
+      IsStatic    : Boolean;    { Stockage statique }
+      ImmVal      : LongInt;    { Valeur immediate (constantes enum) }
+      ParamCount  : Integer;    { Nombre de parametres (fonctions) }
+    End;
+
+  6.3 Categories de symboles
+  --------------------------
+
+  Les symboles sont classes par categories :
+
+    TSymCat = (
+      SC_VAR,       { Variable locale ou globale }
+      SC_PARAM,     { Parametre de fonction }
+      SC_FUNC,      { Definition de fonction }
+      SC_TYPE,      { Definition de type (struct, enum, typedef) }
+      SC_FIELD,     { Champ de structure ou union }
+      SC_ENUM_VAL,  { Valeur d enumeration }
+      SC_LABEL,     { Etiquette goto }
+      SC_STATIC,    { Variable locale statique }
+      SC_EXTERNAL,  { Declaration extern (sans corps) }
+      SC_TYPEDEF,   { Alias de type }
+      SC_GLOBAL     { Variable globale exportee }
+    );
+
+  6.4 Operations sur la table des symboles
+  -----------------------------------------
+
+    SymInit()           : initialiser la table (vide)
+    SymFind(Nom)        : chercher un symbole dans la chaine de portees
+    SymFindInScope(Nom) : chercher dans une portee specifique
+    SymAdd(Rec)         : ajouter un symbole
+    SymMangle(Nom,Cat)  : generer le nom assemble (decoration)
+    SymEnterScope()     : entrer dans une nouvelle portee (bloc, fonction)
+    SymLeaveScope()     : quitter la portee courante
+    SymRegisterBuiltins() : enregistrer les fonctions de la bibliotheque
+                            standard (printf, malloc, strlen, ...)
+
+  6.5 Gestion des portees
+  -----------------------
+
+  Les portees sont gerees par un compteur de niveau :
+
+    CurScopeLevel : Integer;   { 0 = global, 1 = premiere fonction, ... }
+    CurScopeId    : Integer;   { identifiant unique de la portee }
+    ScopeIdSeq    : Integer;   { generateur de sequence }
+
+  A chaque entree dans un bloc { ... }, on appelle SymEnterScope() qui
+  incremente CurScopeLevel et attribue un nouveau ScopeId. A la sortie,
+  SymLeaveScope() decremente le niveau et masque les symboles locaux.
+
+  Exemple dans KOTLIN86.PAS : ScopeBlockEnter/ScopeBlockLeave gerent
+  les portees de bloc (if, when, while, for) avec une pile de trames
+  (ScopeFrameStack).
+
+==============================================================================
+  7. Phase 5 : Le systeme de types
+==============================================================================
+
+  7.1 Role du systeme de types
+  ----------------------------
+
+  Le systeme de types enregistre tous les types du langage et verifie
+  la compatibilite des operandes dans les expressions.
+
+  7.2 Types primitifs
+  -------------------
+
+  Dans CCW32.PAS, les types sont classes par une enumeration :
+
+    TTypeKind = (
+      TKP_VOID,     { void }
+      TKP_CHAR,     { char (8 bits signe) }
+      TKP_UCHAR,    { unsigned char }
+      TKP_SHORT,    { short (16 bits signe) }
+      TKP_USHORT,   { unsigned short }
+      TKP_INT,      { int (32 bits signe) }
+      TKP_UINT,     { unsigned int (32 bits) }
+      TKP_LONG,     { long (32 bits sur Win32) }
+      TKP_ULONG,    { unsigned long }
+      TKP_FLOAT,    { float (32 bits) }
+      TKP_DOUBLE,   { double (64 bits) }
+      TKP_POINTER,  { Pointeur (32 bits) }
+      TKP_ARRAY,    { Tableau (type de base + nombre d elements) }
+      TKP_STRUCT,   { Structure }
+      TKP_UNION,    { Union }
+      TKP_ENUM,     { Enumeration }
+      TKP_FUNC      { Pointeur de fonction }
+    );
+
+  7.3 Operations sur les types
+  ----------------------------
+
+    TypeInit()         : initialiser les types primitifs
+    TypeAdd()          : ajouter un type a la table
+    TypeFindByName()   : chercher un type par nom
+    TypeSizeofIdx()    : obtenir la taille d un type (en octets)
+    TypeResolve()      : resoudre un alias de type
+    TypeIsInteger()    : tester si le type est un entier
+    TypeIsArithmetic() : tester si le type est arithmetique
+    TypeIsPointer()    : tester si le type est un pointeur
+    TypeCoerce()       : convertir implicitement entre types
+    TypeCompatible()   : verifier la compatibilite de deux types
+
+  7.4 Taille des types (modele 32 bits)
+  --------------------------------------
+
+    Type           Taille (octets)
+    -------------- ---------------
+    void           0
+    char           1
+    short          2
+    int            4
+    long           4
+    float          4
+    double         8
+    pointeur       4
+
+  Dans les compilateurs 16 bits (CC8086.PAS), int fait 2 octets et
+  les pointeurs font 2 octets (modele SMALL) ou 4 octets (modele FAR).
+
+==============================================================================
+  8. Phase 6 : L analyseur syntaxique (Parser)
+==============================================================================
+
+  8.1 Approche descendante recursive
+  ----------------------------------
+
+  Tous les compilateurs du projet utilisent l analyse descendante
+  recursive (recursive descent parsing). Chaque regle de grammaire
+  est implementee par une procedure qui appelle les regles de niveau
+  inferieur.
+
+  8.2 Analyse des declarations
+  ----------------------------
+
+  L analyse des declarations se fait en deux passes dans CCW32.PAS :
+
+    Passe 1 - ParseDataDecls :
+      Parcourt le pool de jetons pour enregistrer les declarations
+      globales (variables, structures, enumerations, typedef).
+
+    Passe 2 - ParseFuncDecls :
+      Parcourt le pool de jetons pour enregistrer les declarations
+      et les corps de fonctions.
+
+  8.3 Procedures de detection
+  ---------------------------
+
+  Des fonctions auxiliaires determinent la nature du jeton courant :
+
+    IsTypeSpecifier(Val) : le jeton est un type (int, char, struct, ...)
+    IsStorageClass(Val)  : le jeton est une classe de stockage
+                           (static, extern, register, ...)
+    IsQualifier(Val)     : le jeton est un qualificateur (const, volatile)
+    IsKeyword(Val)       : le jeton est un mot-cle du langage
+
+  8.4 Analyse des structures et enumerations
+  -------------------------------------------
+
+    ParseStructDef : analyse une definition struct ou union
+      struct Nom { type champ1; type champ2; ... };
+
+    ParseEnumDef : analyse une definition enum
+      enum Nom { VAL1, VAL2 = 5, VAL3, ... };
+
+  8.5 Analyse des fonctions
+  -------------------------
+
+  Pour chaque fonction, le compilateur :
+
+    1. Analyse la signature : type_retour nom(parametres)
+    2. Enregistre la fonction dans la table des symboles
+    3. Entre dans une nouvelle portee (SymEnterScope)
+    4. Enregistre les parametres comme symboles locaux (SC_PARAM)
+    5. Genere le prologue assembleur (EmitProlog)
+    6. Analyse le corps de la fonction (ParseBody)
+    7. Genere l epilogue assembleur (EmitEpilog)
+    8. Quitte la portee (SymLeaveScope)
+
+  Dans KOTLIN86.PAS, l analyse des fonctions est similaire avec
+  ParseFunDecl pour la syntaxe Kotlin :
+    fun nom(param: Type): ReturnType { corps }
+    fun nom(param: Type) = expression
+
+==============================================================================
+  9. Phase 7 : L analyse des expressions
+==============================================================================
+
+  9.1 Analyseur a montee de priorite (Precedence Climbing)
+  ---------------------------------------------------------
+
+  CCW32.PAS utilise un analyseur a montee de priorite pour les
+  expressions. Cette technique combine la recursion avec la priorite
+  des operateurs pour eviter une profondeur d appels excessive.
+
+  La procedure principale est :
+
+    ParseExprPrec(MinPrec : Integer);
+
+  Elle fonctionne ainsi :
+
+    1. Analyser l operande gauche (ParseUnary)
+    2. Tant que l operateur courant a une priorite >= MinPrec :
+       a. Consommer l operateur
+       b. Analyser l operande droit avec ParseExprPrec(priorite + 1)
+       c. Generer le code pour l operation binaire
+
+  9.2 Niveaux de priorite des operateurs (langage C)
+  ---------------------------------------------------
+
+    Priorite  Operateurs             Associativite
+    --------  ---------------------  ---------------
+    14        ++ -- [] . -> ()       gauche (postfixe)
+    13        ++ -- ! ~ - + * & sizeof  droite (prefixe)
+    12        * / %                  gauche
+    11        + -                    gauche
+    10        << >>                  gauche
+     9        < <= > >=             gauche
+     8        == !=                  gauche
+     7        &                      gauche (ET bit a bit)
+     6        ^                      gauche (OU exclusif)
+     5        |                      gauche (OU bit a bit)
+     4        &&                     gauche (ET logique)
+     3        ||                     gauche (OU logique)
+     2        ? :                    droite (ternaire)
+     1        = += -= *= /= ...     droite (affectation)
+
+  9.3 Analyse des operandes primaires (ParsePrimary)
+  --------------------------------------------------
+
+  ParsePrimary traite les cas suivants :
+
+    - Litteral entier   : MOV EAX, valeur
+    - Litteral chaine   : MOV EAX, OFFSET _CCK_N
+    - Litteral caractere: MOV EAX, valeur_ASCII
+    - Identificateur    : charger la variable depuis la pile ou la memoire
+    - Appel de fonction : empiler les arguments, CALL _CCF_nom
+    - Expression entre parentheses : ( expression )
+    - sizeof(type)      : valeur constante de la taille du type
+
+  9.4 Analyse des operateurs unaires (ParseUnary)
+  ------------------------------------------------
+
+  ParseUnary traite les operateurs prefixes :
+
+    - Negation arithmetique : -x  -> NEG EAX
+    - Negation logique      : !x  -> TEST EAX,EAX / SETZ AL
+    - Complement bit a bit  : ~x  -> NOT EAX
+    - Dereferencement       : *p  -> MOV EAX, [EAX]
+    - Adresse de            : &x  -> LEA EAX, [variable]
+    - Pre-incrementation    : ++x -> INC variable
+    - Pre-decrementation    : --x -> DEC variable
+
+  9.5 Analyse des operateurs postfixes (ParsePostfix)
+  ---------------------------------------------------
+
+  ParsePostfix traite :
+
+    - Acces tableau      : a[i]  -> calcul d adresse + MOV EAX,[...]
+    - Appel de fonction  : f(x)  -> PUSH x / CALL f
+    - Acces champ        : s.x   -> calcul d offset + MOV EAX,[...]
+    - Acces via pointeur : p->x  -> MOV EAX,[EAX+offset]
+    - Post-incrementation: x++   -> sauver valeur, INC variable
+    - Post-decrementation: x--   -> sauver valeur, DEC variable
+
+==============================================================================
+  10. Phase 8 : L analyse des instructions
+==============================================================================
+
+  10.1 Procedure ParseStmt
+  ------------------------
+
+  La procedure ParseStmt determine le type d instruction et delegue
+  a la procedure appropriee :
+
+    Jeton courant       Procedure appelee
+    ------------------  -------------------
+    {                   ParseCompoundStmt
+    if                  ParseIfStmt
+    while               ParseWhileStmt
+    do                  ParseDoWhileStmt
+    for                 ParseForStmt
+    switch              ParseSwitchStmt
+    return              ParseReturnStmt
+    break               gerer le break (saut vers etiquette de boucle)
+    continue            gerer le continue (saut vers etiquette de boucle)
+    goto                gerer le goto (saut vers etiquette nommee)
+    ;                   instruction vide
+    autre               ParseSimpleExprStmt (expression-instruction)
+
+  10.2 Bloc compose (ParseCompoundStmt)
+  -------------------------------------
+
+  Un bloc compose { ... } :
+
+    1. Consommer le jeton {
+    2. Entrer dans une nouvelle portee (SymEnterScope)
+    3. Tant que le jeton courant n est pas } :
+       a. Si c est une declaration de type -> analyser la declaration
+       b. Sinon -> analyser une instruction (ParseStmt)
+    4. Consommer le jeton }
+    5. Quitter la portee (SymLeaveScope)
+
+  10.3 Instruction if/else
+  ------------------------
+
+  Implementation (ParseIfStmt) :
+
+    1. Analyser la condition entre parentheses
+    2. Generer : TEST EAX,EAX / JZ _CCL_else
+    3. Analyser le corps du if (ParseStmt)
+    4. Si le mot-cle "else" suit :
+       a. Generer : JMP _CCL_fin
+       b. Emettre l etiquette _CCL_else
+       c. Analyser le corps du else (ParseStmt)
+    5. Emettre l etiquette _CCL_fin
+
+  10.4 Boucle while
+  -----------------
+
+  Implementation (ParseWhileStmt) :
+
+    1. Emettre l etiquette _CCL_debut
+    2. Analyser la condition
+    3. Generer : TEST EAX,EAX / JZ _CCL_fin
+    4. Analyser le corps de la boucle (ParseStmt)
+    5. Generer : JMP _CCL_debut
+    6. Emettre l etiquette _CCL_fin
+
+  10.5 Boucle for
+  ----------------
+
+  Implementation (ParseForStmt) :
+
+    1. Analyser l initialisation (avant le premier ;)
+    2. Emettre l etiquette _CCL_debut
+    3. Analyser la condition (entre les deux ;)
+    4. Generer : TEST EAX,EAX / JZ _CCL_fin
+    5. Sauvegarder la position de l incrementation
+    6. Analyser le corps de la boucle (ParseStmt)
+    7. Emettre l etiquette _CCL_cont (pour continue)
+    8. Analyser l incrementation (apres le second ;)
+    9. Generer : JMP _CCL_debut
+    10. Emettre l etiquette _CCL_fin
+
+  10.6 Instruction switch/case
+  ----------------------------
+
+  Implementation (ParseSwitchStmt) :
+
+    1. Analyser l expression du switch
+    2. Sauvegarder la valeur dans EBX
+    3. Pour chaque case N :
+       a. Generer : CMP EBX, N / JNE _CCL_case_suivant
+       b. Analyser les instructions du case
+    4. Le case default : etiquette par defaut
+    5. break -> JMP _CCL_fin_switch
+
+  10.7 Gestion de break et continue
+  ---------------------------------
+
+  Les etiquettes de break et continue sont gerees par des piles :
+
+    LoopBreakLbl[0..31]   { pile des etiquettes break pour boucles }
+    LoopContLbl[0..31]    { pile des etiquettes continue }
+    SwitchBreakLbl[0..31] { pile des etiquettes break pour switch }
+
+  A chaque entree dans une boucle, on empile les etiquettes de
+  sortie et de continuation. break et continue generent un JMP vers
+  l etiquette correspondante.
+
+==============================================================================
+  11. Phase 9 : La generation de code assembleur
+==============================================================================
+
+  11.1 Ouverture et fermeture du fichier ASM
+  -------------------------------------------
+
+    EmitOpen(NomFichier)  : ouvrir le fichier .ASM en ecriture
+    EmitClose             : fermer le fichier .ASM
+
+  11.2 Primitives d emission
+  --------------------------
+
+    EmitRaw(Ligne)        : ecrire une ligne brute dans le fichier
+    EmitLabel(Nom)        : emettre une etiquette (Nom:)
+    EmitInstr(Instr)      : emettre une instruction indentee (8 espaces)
+    EmitComment(Texte)    : emettre un commentaire (; Texte)
+    EmitBlankLine         : emettre une ligne vide
+
+  11.3 Generation d etiquettes uniques
+  ------------------------------------
+
+    LabelGen : genere une etiquette unique de la forme _CCL_N
+    (N est incremente a chaque appel)
+
+  11.4 En-tete du fichier assembleur
+  ----------------------------------
+
+  La procedure EmitHeader genere les directives d en-tete :
+
+    .386                            ; jeu d instructions
+    .MODEL FLAT, STDCALL            ; modele memoire plat
+    OPTION CASEMAP:NONE             ; sensibilite a la casse
+
+    EXTRN ExitProcess@4  : PROC    ; fonctions Win32 importees
+    EXTRN GetStdHandle@4 : PROC
+    EXTRN WriteFile@20   : PROC
+    EXTRN ReadFile@20    : PROC
+    EXTRN HeapCreate@12  : PROC
+    EXTRN HeapAlloc@12   : PROC
+    EXTRN HeapFree@12    : PROC
+
+    .STACK 4096                     ; taille de la pile
+
+  11.5 Prologue et epilogue de fonction
+  -------------------------------------
+
+  Chaque fonction est encadree par un prologue et un epilogue :
+
+  Prologue (EmitProlog) :
+    PUSH EBP                { sauvegarder le pointeur de cadre }
+    MOV EBP, ESP            { etablir le nouveau cadre }
+    SUB ESP, LocalSize      { reserver de l espace pour les variables locales }
+
+  Epilogue (EmitEpilog) :
+    MOV ESP, EBP            { restaurer la pile }
+    POP EBP                 { restaurer l ancien cadre }
+    RET                     { retourner a l appelant }
+
+  Dans les compilateurs 16 bits (CC8086.PAS, JAVAC86.PAS), le schema
+  est identique mais avec les registres BP et SP au lieu de EBP et ESP.
+
+  11.6 Acces aux variables
+  ------------------------
+
+  La generation de code pour les variables depend de leur categorie :
+
+    Variable globale : MOV EAX, DWORD PTR [_CCV_nom]
+    Variable locale  : MOV EAX, DWORD PTR [EBP-offset]
+    Parametre        : MOV EAX, DWORD PTR [EBP+offset]
+    Variable statique: MOV EAX, DWORD PTR [_CCST_nom]
+
+  Les procedures correspondantes sont :
+
+    GenVarRef(Sym)   : generer la reference MASM d une variable
+    GenVarAddr(Sym)  : generer l adresse d une variable (LEA)
+    GenLoadVar(Sym)  : charger une variable dans EAX
+    GenStoreVar(Sym) : stocker EAX dans une variable
+
+  11.7 Operations binaires
+  ------------------------
+
+  La procedure EmitBinOp genere le code pour les operations binaires :
+
+    Operateur    Code genere
+    ----------   -----------------------------------
+    +            ADD EAX, EBX
+    -            SUB EAX, EBX  (ou XCHG + SUB selon l ordre)
+    *            IMUL EAX, EBX
+    /            CDQ / IDIV EBX
+    %            CDQ / IDIV EBX / MOV EAX, EDX
+    &            AND EAX, EBX
+    |            OR EAX, EBX
+    ^            XOR EAX, EBX
+    <<           MOV CL, BL / SHL EAX, CL
+    >>           MOV CL, BL / SAR EAX, CL
+    ==           CMP EAX, EBX / SETE AL / MOVZX EAX, AL
+    !=           CMP EAX, EBX / SETNE AL / MOVZX EAX, AL
+    <            CMP EAX, EBX / SETL AL / MOVZX EAX, AL
+    >            CMP EAX, EBX / SETG AL / MOVZX EAX, AL
+    &&           TEST EAX,EAX / JZ ... / TEST EBX,EBX / JZ ...
+    ||           TEST EAX,EAX / JNZ ... / TEST EBX,EBX / JNZ ...
+
+==============================================================================
+  12. Phase 10 : Le segment de donnees
+==============================================================================
+
+  12.1 Pool de donnees (Data Pool)
+  --------------------------------
+
+  Le pool de donnees centralise toutes les donnees statiques du programme :
+  chaines de caracteres, variables globales, tableaux, structures, etc.
+
+  Types d entrees dans le pool :
+
+    TDataKind = (
+      DK_STR,      { Chaine ASCIIZ : "bonjour", 0 }
+      DK_DWORD,    { Valeur 32 bits }
+      DK_BYTE,     { Valeur 8 bits }
+      DK_ARRAY,    { Tableau (nombre d elements x taille) }
+      DK_RES,      { Espace reserve }
+      DK_STRUCT,   { Structure (taille en octets) }
+      DK_ZERO      { Espace initialise a zero }
+    );
+
+  Procedures du pool de donnees :
+
+    DataInit()       : initialiser le pool
+    DataAddStr(S)    : ajouter une chaine (retourne l etiquette)
+    DataAddDWord(V)  : ajouter un DWORD
+    DataAddByte(V)   : ajouter un octet
+    DataAddArray(N,S): ajouter un tableau
+    DataAddStruct(S) : ajouter une structure
+    DataAddZero(S)   : ajouter de l espace initialise a zero
+    DataFindStr(S)   : chercher si la chaine existe deja
+    DataGetOrAddStr(): obtenir ou creer une chaine (deduplication)
+
+  12.2 Emission du segment .DATA
+  ------------------------------
+
+  La procedure EmitDataSeg parcourt le pool et emet le segment de
+  donnees assembleur :
+
+    _DATA SEGMENT
+      _CCK_1  DB "Bonjour", 0       ; chaines de caracteres
+      _CCK_2  DB "Resultat: %d", 10, 0
+      _CCV_x  DD 0                  ; variables globales (int)
+      _CCV_s  DB 256 DUP(0)         ; variables globales (char[])
+      _CCA_t  DD 10 DUP(0)          ; tableaux
+      ...
+      HSTDOUT DD 0                  ; handle de sortie standard
+      HSTDIN  DD 0                  ; handle d entree standard
+      NUMBUF  DB 16 DUP(0)         ; tampon de conversion numerique
+      CRLF_DATA DB 13, 10, 0       ; retour a la ligne
+    _DATA ENDS
+
+  Dans ABAPCW32.PAS, le segment de donnees contient egalement les
+  variables systeme SY-SUBRC, SY-DBCNT, etc.
+
+==============================================================================
+  13. Phase 11 : Les routines d execution (Runtime)
+==============================================================================
+
+  13.1 Pourquoi un runtime ?
+  --------------------------
+
+  Un compilateur doit fournir des routines de base que le programme
+  compile peut appeler : affichage, lecture, gestion de memoire,
+  manipulation de chaines, etc.
+
+  13.2 Routines runtime de CCW32.PAS
+  ----------------------------------
+
+  Le compilateur CCW32.PAS fournit les routines suivantes (prefixe _CCRT_) :
+
+  Entrees/sorties :
+    _CCRT_printf    : affichage formate
+    _CCRT_scanf     : lecture formatee
+    _CCRT_puts      : affichage d une chaine suivie de retour a la ligne
+    _CCRT_putchar   : affichage d un caractere
+    _CCRT_getchar   : lecture d un caractere
+
+  Gestion de memoire :
+    _CCRT_malloc    : allocation de memoire (via HeapAlloc)
+    _CCRT_free      : liberation de memoire (via HeapFree)
+    _CCRT_calloc    : allocation avec mise a zero
+    _CCRT_realloc   : reallocation
+
+  Chaines de caracteres :
+    _CCRT_strlen    : longueur d une chaine
+    _CCRT_strcmp    : comparaison de chaines
+    _CCRT_strcpy    : copie de chaine
+    _CCRT_strcat    : concatenation de chaines
+    _CCRT_memcpy    : copie de memoire
+    _CCRT_memset    : remplissage de memoire
+
+  Utilitaires :
+    _CCRT_abs       : valeur absolue
+    _CCRT_atoi      : conversion ASCII vers entier
+    _CCRT_exit      : terminaison du programme
+    _CCRT_gethpc    : obtenir un handle de tas (heap)
+    _CCRT_heapalloc : allocation depuis le tas Win32
+
+  13.3 Point d entree
+  -------------------
+
+  Le point d entree du programme genere (pour Win32) est :
+
+    _CCF_main:
+      PUSH EBP
+      MOV EBP, ESP
+      ; Obtenir les handles de la console
+      PUSH -11                    ; STD_OUTPUT_HANDLE
+      CALL GetStdHandle@4
+      MOV DWORD PTR [HSTDOUT], EAX
+      PUSH -10                    ; STD_INPUT_HANDLE
+      CALL GetStdHandle@4
+      MOV DWORD PTR [HSTDIN], EAX
+      ; ... corps du main ...
+      PUSH 0
+      CALL ExitProcess@4
+
+  Dans ABAPCW32.PAS, le point d entree est _ABF_main avec les memes
+  appels a GetStdHandle, suivi des evenements START-OF-SELECTION et
+  END-OF-SELECTION si definis.
+
+  13.4 Routines runtime dans d autres compilateurs
+  -------------------------------------------------
+
+  Chaque compilateur du projet a ses propres routines runtime avec
+  un prefixe specifique :
+
+    Compilateur    Prefixe runtime    Exemple
+    -------------- ------------------ --------------------
+    CCW32.PAS      _CCRT_             _CCRT_printf
+    ABAPCW32.PAS   _ABRT_             _ABRT_PRINTCHR
+    KOTLIN86.PAS   _KTRT_             _KTRT_STRLENAX
+    CLIPPER86.PAS  _CLRT_             _CLRT_PRINT
+    JAVAC86.PAS    _JCRT_             _JCRT_PRINTLN
+
+==============================================================================
+  14. Phase 12 : La generation binaire (PE/COFF)
+==============================================================================
+
+  14.1 Pourquoi un generateur binaire integre ?
+  ----------------------------------------------
+
+  Certains compilateurs du projet (CCW32.PAS, ABAPCW32.PAS, TPCW32.PAS)
+  integrent un assembleur et un editeur de liens (linker) capables de
+  produire directement des fichiers executables (.EXE) ou des fichiers
+  objet (.OBJ) sans outil externe.
+
+  14.2 Tampon de code binaire
+  ---------------------------
+
+  Le code machine est accumule dans un tampon en memoire :
+
+    BinCode : Array[0..MAX_BIN_CODE - 1] Of Byte;  { 64 Ko }
+    BinData : Array[0..MAX_BIN_DATA - 1] Of Byte;  { 64 Ko }
+    BinCodeLen, BinDataLen : LongInt;
+
+  Procedures d emission binaire :
+
+    BinInit()          : initialiser les tampons
+    BinCodeByte(B)     : emettre un octet dans le segment de code
+    BinCodeWord(W)     : emettre un mot 16 bits
+    BinCodeDWord(D)    : emettre un double mot 32 bits
+    BinDataByte(B)     : emettre un octet dans le segment de donnees
+    BinDataDWord(D)    : emettre un DWORD dans le segment de donnees
+
+  14.3 Etiquettes et fixups
+  -------------------------
+
+  Les etiquettes et les references non resolues sont enregistrees :
+
+    BinLabel : tableau d etiquettes (nom + offset + segment)
+    BinFixup : tableau de fixups (offset + type + cible)
+
+    BinAddLabel(Nom, Offset, InCode) : enregistrer une etiquette
+    BinFindLabel(Nom)                : chercher une etiquette
+    BinAddFixup(Offset, Kind, Target): enregistrer un fixup
+
+  Types de fixups :
+
+    BFK_ABS32 : reference absolue 32 bits
+    BFK_REL32 : reference relative 32 bits (pour JMP, CALL)
+    BFK_IAT32 : reference a la table d importation (API Windows)
+
+  14.4 Assembleur integre
+  -----------------------
+
+  La procedure BinAssembleLine analyse chaque ligne d assembleur
+  generee et produit le code machine correspondant. Elle reconnait
+  les instructions principales de l architecture x86 :
+
+    MOV, ADD, SUB, IMUL, IDIV, AND, OR, XOR, NOT, NEG,
+    PUSH, POP, CALL, RET, JMP, JZ, JNZ, JE, JNE, JL, JG, ...
+    CMP, TEST, LEA, MOVZX, MOVSX, CDQ, SHL, SHR, SAR, ...
+
+  14.5 Resolution des references
+  ------------------------------
+
+  La procedure BinResolveAll parcourt tous les fixups et remplace
+  les adresses provisoires par les adresses definitives :
+
+    Pour chaque fixup :
+      1. Trouver l etiquette cible (BinFindLabel)
+      2. Calculer l adresse definitive selon le type :
+         - ABS32 : adresse absolue = RVA section + offset
+         - REL32 : deplacement relatif = cible - (source + 4)
+         - IAT32 : adresse dans la table d importation
+
+  14.6 Format PE (Portable Executable)
+  -------------------------------------
+
+  WritePEFile genere un fichier .EXE Windows 32 bits avec la structure
+  suivante :
+
+    1. En-tete DOS (MZ stub) : 128 octets
+       - Signature MZ (0x5A4D)
+       - Pointeur vers l en-tete PE (offset 0x3C)
+
+    2. Signature PE : "PE\0\0" (4 octets)
+
+    3. En-tete COFF : 20 octets
+       - Machine : 0x014C (i386)
+       - Nombre de sections : 3 (.text, .data, .idata)
+       - Timestamp de creation
+
+    4. En-tete optionnel PE32 : 224 octets
+       - Point d entree (RVA de _CCF_main)
+       - Adresse de base de l image (0x00400000)
+       - Alignement des sections (0x1000)
+       - Taille de l image, taille des en-tetes
+       - Sous-systeme : CONSOLE (3) ou GUI (2)
+       - Table d importation (RVA et taille)
+
+    5. Table des sections :
+       - .text  : code executable (lecture + execution)
+       - .data  : donnees (lecture + ecriture)
+       - .idata : table d importation (lecture)
+
+    6. Section .text : le code machine
+
+    7. Section .data : les donnees statiques
+
+    8. Section .idata : la table d importation
+       - Import Directory Table (IDT)
+       - Import Lookup Table (ILT)
+       - Import Address Table (IAT)
+       - Hint/Name Table
+       - Nom de la DLL (KERNEL32.DLL)
+
+  14.7 Format COFF (.OBJ)
+  -----------------------
+
+  WriteCOFFFile genere un fichier objet COFF avec :
+
+    1. En-tete COFF (20 octets)
+    2. Sections .text et .data
+    3. Table des symboles
+    4. Table des chaines
+
+  Ce format peut etre lie avec un editeur de liens externe (LINK.EXE).
+
+  14.8 APIs Windows importees
+  ---------------------------
+
+  Les compilateurs Win32 importent ces fonctions de KERNEL32.DLL :
+
+    ExitProcess     : terminer le processus
+    GetStdHandle    : obtenir un handle de console
+    WriteFile       : ecrire dans un fichier/console
+    ReadFile        : lire depuis un fichier/console
+    HeapCreate      : creer un tas
+    HeapAlloc       : allouer de la memoire sur le tas
+    HeapFree        : liberer de la memoire du tas
+
+==============================================================================
+  15. Le programme principal (Run)
+==============================================================================
+
+  La procedure Run orchestre toute la compilation. Voici son flux
+  dans CCW32.PAS :
+
+    Procedure Run;
+    Begin
+      1.  Ouvrir le fichier source
+      2.  Initialiser les sous-systemes :
+            DataInit;             { pool de donnees }
+            TokenPoolInit;        { pool de jetons }
+            SymInit;              { table des symboles }
+            TypeInit;             { systeme de types }
+            PPInit;               { preprocesseur }
+            LexInit;              { analyseur lexical }
+
+      3.  Scanner tous les jetons :
+            Repeat
+              LexNextTokenPP;
+              TokenPoolAdd(CurToken);
+            Until CurToken.Kind = TK_EOF;
+
+      4.  Post-traitement des jetons :
+            TokenPoolConcatStrings;     { "abc" "def" -> "abcdef" }
+            TokenPoolRegisterStrings;   { enregistrer dans DataPool }
+
+      5.  Analyse des declarations globales :
+            ParseDataDecls;
+
+      6.  Analyse des fonctions :
+            ParseFuncDecls;
+
+      7.  Generation du fichier assembleur :
+            EmitOpen(fichier.asm);
+            EmitHeader;                 { directives .386, .MODEL, ... }
+            EmitExternFuncs;            { declarations EXTRN }
+            EmitDataSeg;                { segment _DATA }
+            EmitCodeSeg;                { segment _TEXT }
+            EmitRuntime;                { routines _CCRT_* }
+            EmitFunctions;              { corps des fonctions }
+            EmitLateData;               { donnees ajoutees en cours de route }
+            EmitClose;
+
+      8.  Generation binaire (optionnelle) :
+            Si mode .OBJ -> AssembleAndWriteBinary(..., ObjOnly)
+            Si mode .EXE -> AssembleAndWriteBinary(..., ExeMode)
+            Si mode .DLL -> AssembleAndWriteBinary(..., DLLMode)
+    End;
+
+  Ce flux est similaire dans les autres compilateurs du projet, avec
+  des variations selon le langage source et l architecture cible.
+
+==============================================================================
+  16. Conventions de nommage et prefixes
+==============================================================================
+
+  Chaque compilateur du projet utilise un systeme de prefixes pour
+  eviter les collisions de noms entre le code genere et les noms
+  internes. Voici les prefixes utilises dans CCW32.PAS :
+
+    Prefixe     Usage                     Exemple
+    ----------  ------------------------  -------------------
+    _CCK_       Constantes chaines        _CCK_1, _CCK_2
+    _CCV_       Variables globales        _CCV_compteur
+    _CCF_       Fonctions                 _CCF_main, _CCF_add
+    _CCL_       Etiquettes internes       _CCL_1, _CCL_42
+    _CCRT_      Routines runtime          _CCRT_printf
+    _CCA_       Tableaux                  _CCA_tableau
+    _CCS_       Structures                _CCS_point
+    _CCU_       Unions                    _CCU_valeur
+    _CCE_       Enumerations              _CCE_couleur
+    _CCST_      Variables statiques       _CCST_compteur
+
+  Autres compilateurs du projet :
+
+    Compilateur    Prefixes
+    -------------- -----------------------------------------------
+    ABAPCW32.PAS   _ABA_ (vars), _ABF_ (forms), _ABE_ (events),
+                   _ABRT_ (runtime), _ABX_ (exceptions)
+    KOTLIN86.PAS   _KTV_ (vars), _KTF_ (fonctions),
+                   _KTC_ (classes), _KTO_ (objets),
+                   _KTRT_ (runtime), _KT_ (donnees)
+    CLIPPER86.PAS  _CLV_ (vars), _CLF_ (fonctions),
+                   _CLRT_ (runtime), _CLP_ (programme)
+    JAVAC86.PAS    _JCV_ (vars), _JCF_ (fonctions/methodes),
+                   _JCRT_ (runtime)
+
+  Ce systeme de prefixes garantit qu il n y a pas de conflit entre :
+    - les noms du programme utilisateur
+    - les noms internes du compilateur
+    - les noms des routines runtime
+    - les noms des fonctions du systeme d exploitation
+
+==============================================================================
+  17. Gestion des erreurs
+==============================================================================
+
+  17.1 Types d erreurs
+  --------------------
+
+  Un compilateur doit detecter et signaler plusieurs types d erreurs :
+
+    Erreurs lexicales : caractere invalide, chaine non fermee,
+      commentaire non termine, nombre mal forme
+
+    Erreurs syntaxiques : jeton inattendu, parenthese manquante,
+      point-virgule manquant, accolade manquante
+
+    Erreurs semantiques : variable non declaree, type incompatible,
+      nombre d arguments incorrect, redefinition de symbole
+
+    Avertissements : variable non utilisee, conversion implicite,
+      code inatteignable
+
+  17.2 Signalement des erreurs
+  ----------------------------
+
+  Dans CCW32.PAS, les erreurs sont signalees par des procedures :
+
+    ErrorMsg(Msg)  : afficher une erreur avec numero de ligne
+                     et incrementer ErrorCount
+    WarnMsg(Msg)   : afficher un avertissement avec numero de ligne
+                     et incrementer WarnCount
+    FatalError(Msg): afficher une erreur fatale et arreter la compilation
+
+  Le format de sortie est :
+
+    CCW32: ERREUR ligne N: description du probleme
+    CCW32: AVERTISSEMENT ligne N: description
+
+  17.3 Compteurs d erreurs
+  ------------------------
+
+    ErrorCount : nombre total d erreurs rencontrees
+    WarnCount  : nombre total d avertissements
+
+  A la fin de la compilation, si ErrorCount > 0, le compilateur
+  retourne un code d erreur (Halt(EXIT_ERROR)).
+
+==============================================================================
+  18. Exemples concrets tires de CCW32.PAS
+==============================================================================
+
+  18.1 Compilation d un Hello World
+  ---------------------------------
+
+  Programme source (hello.c) :
+
+    #include <stdio.h>
+
+    int main() {
+        printf("Bonjour le monde!\n");
+        return 0;
+    }
+
+  Code assembleur genere (hello.asm) :
+
+    .386
+    .MODEL FLAT, STDCALL
+    OPTION CASEMAP:NONE
+
+    EXTRN ExitProcess@4  : PROC
+    EXTRN GetStdHandle@4 : PROC
+    EXTRN WriteFile@20   : PROC
+    ...
+
+    _DATA SEGMENT
+      _CCK_1    DB "Bonjour le monde!", 10, 0
+      HSTDOUT   DD 0
+      WRITTEN   DD 0
+      NUMBUF    DB 16 DUP(0)
+    _DATA ENDS
+
+    _TEXT SEGMENT
+
+    _CCRT_puts:
+      ; ... routine runtime pour puts ...
+
+    _CCF_main:
+      PUSH EBP
+      MOV EBP, ESP
+      ; printf("Bonjour le monde!\n")
+      PUSH OFFSET _CCK_1
+      CALL _CCRT_puts
+      ADD ESP, 4
+      ; return 0
+      XOR EAX, EAX
+      MOV ESP, EBP
+      POP EBP
+      RET
+
+    _TEXT ENDS
+    END _CCF_main
+
+  18.2 Compilation d une boucle
+  -----------------------------
+
+  Programme source :
+
+    int i;
+    for (i = 0; i < 10; i++) {
+        printf("%d\n", i);
+    }
+
+  Code assembleur genere :
+
+    ; i = 0
+    XOR EAX, EAX
+    MOV DWORD PTR [EBP-4], EAX
+    _CCL_1:                           ; debut de boucle
+    ; i < 10
+    MOV EAX, DWORD PTR [EBP-4]
+    CMP EAX, 10
+    SETL AL
+    MOVZX EAX, AL
+    TEST EAX, EAX
+    JZ _CCL_2                         ; sortie si i >= 10
+    ; printf("%d\n", i)
+    MOV EAX, DWORD PTR [EBP-4]
+    PUSH EAX
+    PUSH OFFSET _CCK_fmt
+    CALL _CCRT_printf
+    ADD ESP, 8
+    ; i++
+    MOV EAX, DWORD PTR [EBP-4]
+    INC EAX
+    MOV DWORD PTR [EBP-4], EAX
+    JMP _CCL_1                        ; retour au debut
+    _CCL_2:                           ; fin de boucle
+
+  18.3 Compilation d un appel de fonction
+  ----------------------------------------
+
+  Programme source :
+
+    int addition(int a, int b) {
+        return a + b;
+    }
+
+  Code assembleur genere :
+
+    _CCF_addition:
+      PUSH EBP
+      MOV EBP, ESP
+      ; a est a [EBP+8], b est a [EBP+12]
+      MOV EAX, DWORD PTR [EBP+8]     ; charger a
+      MOV EBX, DWORD PTR [EBP+12]    ; charger b
+      ADD EAX, EBX                    ; a + b
+      ; return (resultat deja dans EAX)
+      MOV ESP, EBP
+      POP EBP
+      RET
+
+  L appel se fait avec :
+
+    PUSH valeur_b                     ; empiler le second argument
+    PUSH valeur_a                     ; empiler le premier argument
+    CALL _CCF_addition
+    ADD ESP, 8                        ; nettoyer la pile (2 x 4 octets)
+    ; le resultat est dans EAX
+
+==============================================================================
+  19. Comparaison des compilateurs du projet
+==============================================================================
+
+  Le projet DEV-COOLS contient des compilateurs pour de nombreux
+  langages. Voici une comparaison de leurs architectures :
+
+  19.1 Compilateurs 32 bits (Windows PE)
+  --------------------------------------
+
+    Compilateur    Langage source    Lignes   Sortie
+    -------------- ----------------- ------   ----------
+    CCW32.PAS      C (C89-C18)       12186    .EXE/.OBJ/.ASM
+    TPCW32.PAS     Turbo Pascal      20866    .EXE/.OBJ/.ASM
+    ABAPCW32.PAS   ABAP              8192     .EXE/.OBJ/.ASM
+    PSPCW32.PAS    PSP               ~7000    .EXE/.OBJ/.ASM
+    VAXPCW32.PAS   VAX Pascal        ~8000    .EXE/.OBJ/.ASM
+
+  19.2 Compilateurs 16 bits (8086)
+  --------------------------------
+
+    Compilateur    Langage source    Lignes   Sortie
+    -------------- ----------------- ------   ----------
+    CC8086.PAS     C                 ~6000    .ASM (MASM)
+    JAVAC86.PAS    Java (sous-ens.)  ~5000    .ASM (MASM)
+    F77C86.PAS     Fortran 77        ~5000    .ASM (MASM)
+    KOTLIN86.PAS   Kotlin (sous-ens.)~8000    .ASM (MASM)
+    CLIPPER86.PAS  Clipper            13140    .ASM (MASM)
+    CSC86.PAS      C#                ~5000    .ASM (MASM)
+    PYTHON86.PAS   Python            ~5000    .ASM (MASM)
+    COBOL86.PAS    COBOL             ~5000    .ASM (MASM)
+    RUST86.PAS     Rust              ~5000    .ASM (MASM)
+
+  19.3 Points communs entre tous les compilateurs
+  ------------------------------------------------
+
+    - Ecrits en Pascal (Free Pascal / Turbo Pascal)
+    - Architecture : analyse descendante recursive
+    - Compilation en une seule passe (sauf CCW32 et TPCW32 : multi-passe)
+    - Table des symboles a portees imbriquees
+    - Generation directe de code assembleur (pas d arbre syntaxique
+      abstrait ni de representation intermediaire)
+    - Routines runtime embarquees dans le code genere
+    - Conventions de prefixes pour les noms generes
+
+  19.4 Differences principales
+  ----------------------------
+
+    Aspect              Compil. 16 bits          Compil. 32 bits
+    ------------------- ----------------------   ----------------------
+    Registres           AX, BX, CX, DX, BP, SP  EAX, EBX, ECX, EDX,
+                                                 EBP, ESP
+    Taille int          2 octets                 4 octets
+    Taille pointeur     2 octets (SMALL)         4 octets (FLAT)
+    Modele memoire      SMALL (64 Ko max)        FLAT (4 Go)
+    Format de sortie    .ASM seulement           .EXE, .OBJ, .ASM
+    Appels systeme      INT 21h (DOS)            CALL API Win32
+    Pile d appel        PUSH 16 bits             PUSH 32 bits
+
+==============================================================================
+  20. Conseils pratiques
+==============================================================================
+
+  20.1 Par ou commencer ?
+  -----------------------
+
+  Pour ecrire votre propre compilateur :
+
+    1. Choisir un langage source simple (sous-ensemble de C, par exemple)
+    2. Choisir une architecture cible (x86 est bien documentee)
+    3. Commencer par le lexeur (le plus simple a ecrire et a tester)
+    4. Ajouter un analyseur syntaxique pour les expressions simples
+    5. Ajouter la generation de code pour les expressions
+    6. Ajouter les variables et la table des symboles
+    7. Ajouter les instructions (if, while, for)
+    8. Ajouter les fonctions
+    9. Ajouter les types composes (tableaux, structures)
+    10. Ajouter le support binaire (optionnel, on peut utiliser
+        un assembleur externe comme MASM ou NASM)
+
+  20.2 Tester a chaque etape
+  --------------------------
+
+  Il est essentiel de tester chaque phase independamment :
+
+    - Tester le lexeur avec des fichiers simples et verifier les jetons
+    - Tester le parseur avec des expressions simples
+    - Tester la generation de code avec un assembleur externe
+    - Creer des fichiers d exemple pour chaque fonctionnalite
+
+  Le projet DEV-COOLS contient de nombreux fichiers d exemples dans
+  le repertoire SAMPLES/ pour chaque compilateur.
+
+  20.3 Utiliser un langage de haut niveau pour le compilateur
+  -----------------------------------------------------------
+
+  Le projet utilise Pascal, mais vous pouvez ecrire votre compilateur
+  dans n importe quel langage. Pascal est un bon choix car :
+
+    - Syntaxe claire et lisible
+    - Gestion des fichiers simple
+    - Compilation rapide (Free Pascal)
+    - Support des enumerations et des enregistrements
+    - Pas de gestion manuelle de memoire complexe
+
+  20.4 Conventions a respecter
+  ----------------------------
+
+    - Utiliser des prefixes uniques pour les noms generes
+    - Documenter chaque procedure avec un commentaire d en-tete
+    - Separer clairement les phases du compilateur
+    - Gerer proprement les erreurs avec numero de ligne et colonne
+    - Generer du code lisible (avec commentaires dans le .ASM)
+
+  20.5 Ressources dans le projet
+  ------------------------------
+
+  Pour approfondir, consultez les fichiers suivants du projet :
+
+    CCW32.PAS       : compilateur C complet pour Windows 32 bits
+    CC8086.PAS      : compilateur C pour 8086 (plus simple)
+    JAVAC86.PAS     : compilateur Java pour 8086 (bon exemple)
+    KOTLIN86.PAS    : compilateur Kotlin avec classes et null safety
+    CLIPPER86.PAS   : compilateur Clipper avec base de donnees
+    TPCW32.PAS      : compilateur Turbo Pascal complet
+
+    DOC/TODO/CCW32.txt    : feuille de route du compilateur CCW32
+    DOC/OBJ_FORMAT.txt    : documentation du format COFF .OBJ
+    DOC/LIB_FORMAT.txt    : documentation du format .LIB
+
+==============================================================================
+  Fin du document
+==============================================================================

@@ -1,6 +1,5 @@
-AL68C86
-AL60C86
+
 *.o
+*.obj
 *.ppu
-SAMPLES/ALGOL68/*.asm
-SAMPLES/ALGOL60/*.asm
+

@@ -1,0 +1,21 @@
+<%
+var
+  i: Integer;
+  s: string;
+  x: Word;
+begin
+  i := 42;
+  x := $FF;
+  s := 'Hello World';
+  for i := 1 to 10 do
+    WriteLn(i);
+  if i <> 0 then
+    Write('ok');
+  case i of
+    1: WriteLn('Un');
+    2: WriteLn('Deux');
+  else
+    WriteLn('Autre');
+  end;
+end.
+%>

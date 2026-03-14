@@ -1,0 +1,10605 @@
+{ @author: Sylvain Maltais
+  @created: 2026
+  @version: 1.0
+  @website(https://www.gladir.com/dev-cools)
+  @abstract(Target: Turbo Pascal 7, Free Pascal 3.2)
+  @description: Compilateur SAS (Statistical Analysis System) vers assembleur 8086
+}
+
+(* ============================================================
+  SAS86.PAS - Compilateur SAS vers assembleur 8086
+  Turbo Pascal / Free Pascal (-Mtp)
+  Cible : MASM .MODEL SMALL, DOS 16 bits
+
+  FEUILLE DE ROUTE - 25 TODOS
+  Voir DOC/TODO/SAS86.txt
+  ============================================================ *)
+
+{ ============================================================
+  SAS86 - Compilateur SAS -> assembleur 8086
+  Version : 1.0  Date : 2026-03-07
+  Compilation : ppc386 -O2 -Mtp SAS86.PAS
+  ============================================================ }
+
+Program SAS86;
+
+{$IFDEF FPC}
+  {$MODE TP}
+  {$H-}
+{$ENDIF}
+{$I-}
+
+{ ============================================================
+  CONSTANTES
+  ============================================================ }
+Const
+  SAS86_VERSION = '1.0';
+  SAS86_DATE    = '2026-03-07';
+
+  (* Limites internes *)
+  MAX_SYM       = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_LABEL     = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_SCOPE     = {$IFDEF FPC}64{$ELSE}32{$ENDIF};
+  MAX_DATA      = {$IFDEF FPC}512{$ELSE}128{$ENDIF};
+  MAX_TYPE      = {$IFDEF FPC}32{$ELSE}16{$ENDIF};
+  MAX_PARAM     = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
+  MAX_LOOP_NEST = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
+  MAX_ARRAY     = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
+  MAX_ARRAY_DIM = 2;     (* dimensions max pour tableaux multidimensionnels *)
+  MAX_ARRAY_ELEM= {$IFDEF FPC}200{$ELSE}50{$ENDIF};
+  MAX_ERRORS    = {$IFDEF FPC}30{$ELSE}3{$ENDIF};
+  MAX_STR       = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
+  MAX_OBS_SIZE  = 512;    (* taille max d une observation en octets *)
+  MAX_DATASETS  = 32;     (* nombre max de datasets en memoire      *)
+  MAX_PROC_VARS = 32;     (* nombre max de variables VAR/CLASS/BY   *)
+  STACK_SIZE    = 1024;
+  MISSING_VAL   = -32768; (* sentinelle valeur manquante = 8000h    *)
+  MAX_FORMAT    = 64;     (* nombre max de formats utilisateur      *)
+  MAX_FMT_RANGE = 32;     (* nombre max de plages par format        *)
+  FMT_LOW_BOUND  = -32767; (* borne basse ouverte (LOW) pour formats *)
+  FMT_HIGH_BOUND = 32767;  (* borne haute ouverte (HIGH) pour formats *)
+  MAX_MACVAR     = 128;    (* nombre max de macro-variables          *)
+  MAX_MACRO      = 32;     (* nombre max de macros %MACRO/%MEND     *)
+  MAX_MACRO_BODY = 250;    (* taille max du corps d une macro (car.) *)
+                           (* limite par String[255] en mode TP     *)
+  MAX_MACRO_PARAM= 16;     (* nombre max de parametres par macro    *)
+  MAX_MERGE_DS   = 8;      (* nombre max de datasets dans MERGE/SET *)
+  MAX_BY_VARS    = 16;     (* nombre max de variables BY dans DATA  *)
+
+  (* Caracteres speciaux (accolades = delimiteurs d indices tableau) *)
+  (* En Turbo Pascal, { et } sont des delimiteurs de commentaire,   *)
+  (* on utilise donc les codes ASCII.                                *)
+  CH_LBRACE = Chr(123);  (* '{' *)
+  CH_RBRACE = Chr(125);  (* '}' *)
+
+  (* Prefixes de nommage ASM *)
+  SAS_VAR_PFX  = '_SASV_';   (* variable dans le PDV              *)
+  SAS_PROC_PFX = '_SASP_';   (* procedure / etape                 *)
+  SAS_STR_PFX  = '_SASK_';   (* constante chaine litterale        *)
+  SAS_RT_PFX   = '_SASRT_';  (* routine runtime                   *)
+  SAS_LBL_PFX  = '_SASL_';   (* label de saut interne             *)
+  SAS_DS_PFX   = '_SASD_';   (* dataset en memoire                *)
+  SAS_MAC_PFX  = '_SASM_';   (* macro                             *)
+  SAS_FMT_PFX  = '_SASF_';   (* format utilisateur                *)
+  SAS_ARR_PFX  = '_SASA_';   (* tableau SAS                       *)
+
+  (* Codes de sortie *)
+  EXIT_OK    = 0;
+  EXIT_ERROR = 1;
+  EXIT_USAGE = 2;
+
+  (* Indices de types primitifs SAS *)
+  TY_IDX_NUMERIC   = 0;  (* entier 16 bits signe          *)
+  TY_IDX_CHARACTER = 1;  (* chaine longueur fixe          *)
+  TY_IDX_DATE      = 2;  (* jours depuis 01JAN1960        *)
+  TY_IDX_TIME      = 3;  (* secondes depuis minuit         *)
+  TY_IDX_DATETIME  = 4;  (* secondes depuis 01JAN1960      *)
+  TY_PRIM_COUNT    = 5;
+  TY_UNKNOWN       = -1;
+
+{ ============================================================
+  TYPES
+  ============================================================ }
+Type
+  TString = String[MAX_STR];
+
+  (* ---- Options de compilation ----------------------------- *)
+  TOptions = Record
+    SrcFile   : TString;   (* fichier source (.sas)               *)
+    OutFile   : TString;   (* fichier assembleur de sortie (.asm)  *)
+    Verbose   : Boolean;   (* -v : banniere et statistiques        *)
+    DebugMode : Boolean;   (* -d : affichage de chaque token       *)
+    Warnings  : Boolean;   (* -w : activer les avertissements      *)
+  End;
+
+  (* ---- Tokens SAS (TODO 02) ------------------------------ *)
+  TTokenKind = (
+    TK_EOF,        (* fin de fichier                         *)
+    TK_INTEGER,    (* literal entier 42                      *)
+    TK_FLOAT,      (* literal reel 3.14                      *)
+    TK_STRING,     (* literal chaine 'abc' ou "abc"          *)
+    TK_IDENT,      (* identificateur                         *)
+    TK_KEYWORD,    (* mot-cle SAS reconnu                    *)
+    TK_OP,         (* operateur + - * / ** = ^= < > etc.     *)
+    TK_PUNCT,      (* ponctuation ( ) , .                    *)
+    TK_SEMICOLON,  (* delimiteur d instruction ;             *)
+    TK_AMPERSAND,  (* & (macro-variable)                     *)
+    TK_PERCENT,    (* % (macro instruction)                  *)
+    TK_FORMAT      (* format w.d ou $w. ou nom_format.       *)
+  );
+
+  TToken = Record
+    Kind     : TTokenKind;
+    Val      : TString;     (* valeur textuelle brute             *)
+    IntVal   : LongInt;     (* valeur entiere (TK_INTEGER)        *)
+    FloatVal : Real;        (* valeur flottante (TK_FLOAT)        *)
+    Line     : Integer;     (* ligne source (1-base)              *)
+    Col      : Integer;     (* colonne source (1-base)            *)
+  End;
+
+  (* ---- Categories de symboles (TODO 05) ------------------- *)
+  TSymCat = (
+    SC_VAR,       (* variable numerique ou caractere          *)
+    SC_ARRAY,     (* tableau SAS                              *)
+    SC_FORMAT,    (* format utilisateur                       *)
+    SC_INFORMAT,  (* informat utilisateur                     *)
+    SC_LABEL,     (* etiquette de saut (GOTO)                 *)
+    SC_MACRO,     (* macro %MACRO/%MEND                       *)
+    SC_MACROVAR,  (* macro-variable %LET                      *)
+    SC_DATASET,   (* dataset en memoire                       *)
+    SC_PROC       (* procedure SAS                            *)
+  );
+
+  TSymRec = Record
+    Name        : TString;   (* identifiant SAS (majuscules)       *)
+    MangledName : TString;   (* _SASV_nom / _SASP_nom              *)
+    Cat         : TSymCat;
+    TypeIdx     : Integer;   (* indice dans TypeTab                *)
+    ScopeLevel  : Integer;
+    Offset      : Integer;   (* offset dans le PDV                 *)
+    VarLen      : Integer;   (* longueur pour CHARACTER             *)
+    IsRetained  : Boolean;   (* RETAIN : ne pas reinitialiser      *)
+    IsDropped   : Boolean;   (* DROP : exclure du dataset           *)
+    IsKept      : Boolean;   (* KEEP : inclure dans le dataset      *)
+    DeclLine    : Integer;
+  End;
+
+  (* ---- Types internes (TODO 06) --------------------------- *)
+  TTypeKind = (
+    TYK_NUMERIC,    (* entier 16 bits signe                  *)
+    TYK_CHARACTER,  (* chaine longueur fixe                  *)
+    TYK_DATE,       (* jours depuis 01JAN1960                *)
+    TYK_TIME,       (* secondes depuis minuit                 *)
+    TYK_DATETIME,   (* secondes depuis 01JAN1960              *)
+    TYK_UNKNOWN
+  );
+
+  TTypeRec = Record
+    Name    : TString;
+    Kind    : TTypeKind;
+    Size    : Integer;   (* octets : numeric=2, character=longueur *)
+  End;
+
+  (* ---- Valeurs d expression (TODO 10-11) ------------------ *)
+  TExprKind = (
+    EK_NONE,   (* void / pas de valeur                       *)
+    EK_IMM,    (* immediate dans ImmVal                      *)
+    EK_AX,     (* valeur dans AX                             *)
+    EK_MEM     (* adresse dans le PDV ou label               *)
+  );
+
+  TExprVal = Record
+    Kind    : TExprKind;
+    ImmVal  : LongInt;
+    TypeIdx : Integer;
+    Offset  : Integer;
+    SymIdx  : Integer;   (* indice dans SymTab (-1 = pas de lvalue) *)
+  End;
+
+  (* ---- Segment de donnees (TODO 08) ----------------------- *)
+  TDataKind = (DK_WORD, DK_BYTE, DK_STR, DK_ARRAY_BLK, DK_RECORD_BLK);
+
+  TDataRec = Record
+    LblName   : TString;
+    Kind      : TDataKind;
+    IntVal    : LongInt;
+    StrVal    : TString;
+    ElemCount : Integer;
+  End;
+
+  (* ---- Tableaux SAS (TODO 15) ------------------------------ *)
+  TArrayInfo = Record
+    Name       : TString;   (* nom du tableau (majuscules)           *)
+    ElemCount  : Integer;   (* nombre total d elements               *)
+    Dim1       : Integer;   (* dimension 1                           *)
+    Dim2       : Integer;   (* dimension 2 (0 = 1D)                  *)
+    IsChar     : Boolean;   (* True = elements CHARACTER             *)
+    ElemLen    : Integer;   (* longueur de chaque element (octets)   *)
+    BaseOffset : Integer;   (* offset du premier element dans le PDV *)
+    IsTemp     : Boolean;   (* _TEMPORARY_ : non ecrit dans dataset  *)
+    ElemSymIdx : Array[0..MAX_ARRAY_ELEM - 1] Of Integer;
+                             (* indices SymTab des elements          *)
+    SymIdx     : Integer;   (* indice dans SymTab (SC_ARRAY)         *)
+  End;
+
+  (* ---- Formats utilisateur (TODO 20) ----------------------- *)
+  TFormatRange = Record
+    IsOther  : Boolean;        (* True si OTHER = 'label'              *)
+    IsSingle : Boolean;        (* True si valeur unique (pas low-high) *)
+    Low      : LongInt;        (* borne basse (ou valeur unique)       *)
+    High     : LongInt;        (* borne haute                          *)
+    LowStr   : TString;        (* 'LOW' si borne basse ouverte        *)
+    HighStr  : TString;        (* 'HIGH' si borne haute ouverte       *)
+    IsLowOpen  : Boolean;      (* True si LOW                         *)
+    IsHighOpen : Boolean;      (* True si HIGH                        *)
+    LabelStr : TString;        (* libelle associe                     *)
+  End;
+
+  TFormatDef = Record
+    Name       : TString;      (* nom du format (majuscules, sans .)  *)
+    IsChar     : Boolean;      (* True si format caractere ($fmt.)    *)
+    RangeCount : Integer;      (* nombre de plages definies           *)
+    Ranges     : Array[0..MAX_FMT_RANGE - 1] Of TFormatRange;
+    LblName    : TString;      (* label ASM de la table de dispatch   *)
+  End;
+
+  (* ---- Macro-variables (TODO 21) ----------------------------- *)
+  TMacroVar = Record
+    Name  : TString;           (* nom (majuscules, sans &)            *)
+    Value : TString;           (* valeur textuelle                    *)
+  End;
+
+  (* ---- Macros %MACRO/%MEND (TODO 21) ------------------------- *)
+  TMacroDef = Record
+    Name       : TString;     (* nom de la macro (majuscules, sans %) *)
+    ParamCount : Integer;     (* nombre de parametres formels         *)
+    ParamNames : Array[0..MAX_MACRO_PARAM - 1] Of TString;
+    Body       : String;      (* corps de la macro (texte brut)       *)
+  End;
+
+{ ============================================================
+  VARIABLES GLOBALES
+  ============================================================ }
+Var
+  (* Options *)
+  Opts : TOptions;
+
+  (* Compteurs generaux *)
+  ErrorCount : Integer;
+  WarnCount  : Integer;
+  TotalLines : LongInt;
+  TotalSyms  : Integer;
+
+  (* Valeur fictive pour ignorer un retour TExprVal *)
+  GExprDummy : TExprVal;
+
+  (* Lexeur (TODO 02) *)
+  LexSrcF      : Text;
+  LexLine      : String;
+  LexLineNo    : Integer;
+  LexColNo     : Integer;
+  LexEOF       : Boolean;
+  LexOpened    : Boolean;
+  CurToken     : TToken;
+  LexAtStmtBeg : Boolean;  (* True apres ; ou debut de fichier *)
+
+  (* Table des symboles (TODO 05) *)
+  SymTab     : Array[0..MAX_SYM - 1] Of TSymRec;
+  SymCount   : Integer;
+  ScopeStack : Array[0..MAX_SCOPE - 1] Of Integer;
+  ScopeTop   : Integer;
+  CurScope   : Integer;
+  LabelSeq   : Integer;
+
+  (* Table des types (TODO 06) *)
+  TypeTab   : Array[0..MAX_TYPE - 1] Of TTypeRec;
+  TypeCount : Integer;
+
+  (* Emetteur ASM (TODO 07) *)
+  OutF         : Text;
+  OutFOpen     : Boolean;
+  CurFrameSize : Integer;
+  LabelGenSeq  : Integer;
+
+  (* Boucles (TODO 14) *)
+  LoopTop      : Integer;
+  LoopBreakLbl : Array[0..MAX_LOOP_NEST - 1] Of TString;
+  LoopContLbl  : Array[0..MAX_LOOP_NEST - 1] Of TString;
+
+  (* Tableaux SAS (TODO 15) *)
+  ArrayTab   : Array[0..MAX_ARRAY - 1] Of TArrayInfo;
+  ArrayCount : Integer;
+
+  (* Segment de donnees (TODO 08) *)
+  DataTab   : Array[0..MAX_DATA - 1] Of TDataRec;
+  DataCount : Integer;
+
+  (* Variables et PDV (TODO 09) *)
+  CurPDVOffset : Integer;  (* prochain offset libre dans le PDV *)
+
+  (* Etat general *)
+  RuntimeEmitted : Boolean;
+
+  (* I/O (TODO 12) *)
+  IOInfilePath  : TString;   (* chemin INFILE courant, '' = CARDS  *)
+  IOInfileDlm   : TString;   (* delimiteur INFILE (defaut = ' ')   *)
+  IOFirstObs    : Integer;   (* FIRSTOBS : lignes a sauter         *)
+  IOFilePath    : TString;   (* chemin FILE courant, '' = STDOUT   *)
+  IOCardsActive : Boolean;   (* True si lecture CARDS/DATALINES    *)
+  IOCardsLbl    : TString;   (* label des donnees CARDS en cours   *)
+  IOCardsCount  : Integer;   (* compteur lignes CARDS deja lues    *)
+  IOInputBufLbl : TString;   (* label du buffer ligne d entree     *)
+  IONumBufLbl   : TString;   (* label du buffer de conversion num  *)
+
+  (* DATA step (TODO 16) *)
+  InDataStep      : Boolean;   (* True si on est dans un DATA step    *)
+  DSName          : TString;   (* nom du dataset en cours (ex: WORK)  *)
+  DSLabel         : TString;   (* label ASM du dataset de sortie      *)
+  DSHasSet        : Boolean;   (* True si SET utilise dans le step    *)
+  DSSetName       : TString;   (* nom du dataset source SET           *)
+  DSSetLabel      : TString;   (* label ASM du dataset source SET     *)
+  DSHasOutput     : Boolean;   (* True si OUTPUT explicite present    *)
+  DSTopLabel      : TString;   (* label debut de boucle implicite     *)
+  DSEndLabel      : TString;   (* label fin du DATA step (apres RUN)  *)
+  DSStopLabel     : TString;   (* label STOP (sortie de boucle)       *)
+  DSOutputLabel   : TString;   (* label routine OUTPUT implicite      *)
+  DSObsCount      : Integer;   (* compteur observations ecrites       *)
+
+  (* PROC step (TODO 17) *)
+  InProcStep      : Boolean;   (* True si on est dans un PROC step    *)
+  ProcName        : TString;   (* nom de la procedure en cours        *)
+  ProcDataDS      : TString;   (* DATA= dataset d entree              *)
+  ProcOutDS       : TString;   (* OUT= dataset de sortie              *)
+  ProcNoPrint     : Boolean;   (* NOPRINT option                      *)
+  ProcVarList     : Array[0..MAX_PROC_VARS - 1] Of TString;
+  ProcVarCount    : Integer;   (* nombre de variables VAR             *)
+  ProcByList      : Array[0..MAX_PROC_VARS - 1] Of TString;
+  ProcByCount     : Integer;   (* nombre de variables BY              *)
+  ProcClassList   : Array[0..MAX_PROC_VARS - 1] Of TString;
+  ProcClassCount  : Integer;   (* nombre de variables CLASS            *)
+  ProcTitle       : TString;   (* titre courant (TITLE)               *)
+  ProcFootnote    : TString;   (* note de bas de page (FOOTNOTE)      *)
+  (* PROC MEANS stats flags (TODO 18) *)
+  ProcStatN       : Boolean;   (* calculer N                          *)
+  ProcStatMean    : Boolean;   (* calculer MEAN                       *)
+  ProcStatStd     : Boolean;   (* calculer STD                        *)
+  ProcStatMin     : Boolean;   (* calculer MIN                        *)
+  ProcStatMax     : Boolean;   (* calculer MAX                        *)
+  ProcStatSum     : Boolean;   (* calculer SUM                        *)
+  (* PROC FREQ tables list (TODO 19) *)
+  ProcTablesList  : Array[0..MAX_PROC_VARS - 1] Of TString;
+  ProcTablesCount : Integer;   (* nombre de variables TABLES          *)
+  (* PROC SORT DESCENDING flags (TODO 19) *)
+  ProcByDescList  : Array[0..MAX_PROC_VARS - 1] Of Boolean;
+                               (* True si DESCENDING pour cette var BY *)
+  (* Formats utilisateur (TODO 20) *)
+  FmtTab     : Array[0..MAX_FORMAT - 1] Of TFormatDef;
+  FmtCount   : Integer;         (* nombre de formats definis           *)
+  (* Association variable -> format (TODO 20) *)
+  (* Stocke le nom du format associe a chaque variable dans SymTab     *)
+  VarFmtName : Array[0..MAX_SYM - 1] Of TString;
+  (* Macro-variables (TODO 21) *)
+  MacroVarTab   : Array[0..MAX_MACVAR - 1] Of TMacroVar;
+  MacroVarCount : Integer;
+  (* Macros %MACRO/%MEND (TODO 21) *)
+  MacroTab      : Array[0..MAX_MACRO - 1] Of TMacroDef;
+  MacroCount    : Integer;
+  (* MERGE/BY dans DATA step (TODO 23) *)
+  DSMergeList   : Array[0..MAX_MERGE_DS - 1] Of TString;
+  DSMergeLblList: Array[0..MAX_MERGE_DS - 1] Of TString;
+  DSMergeCount  : Integer;     (* nombre de datasets dans MERGE         *)
+  DSHasMerge    : Boolean;     (* True si MERGE present dans le step    *)
+  DSByVarList   : Array[0..MAX_BY_VARS - 1] Of TString;
+  DSByVarCount  : Integer;     (* nombre de variables BY dans DATA step *)
+  DSHasBy       : Boolean;     (* True si BY present dans le DATA step  *)
+  DSHasUpdate   : Boolean;     (* True si UPDATE present dans le step   *)
+  DSHasModify   : Boolean;     (* True si MODIFY present dans le step   *)
+  DSSetList     : Array[0..MAX_MERGE_DS - 1] Of TString;
+  DSSetLblList  : Array[0..MAX_MERGE_DS - 1] Of TString;
+  DSSetCount    : Integer;     (* nombre de datasets dans SET           *)
+  DSSetPointVar : TString;     (* variable POINT= dans SET              *)
+  DSSetNobsVar  : TString;     (* variable NOBS= dans SET               *)
+  DSSetEndVar   : TString;     (* variable END= dans SET                *)
+
+{ ============================================================
+  FORWARD DECLARATIONS
+  ============================================================ }
+Procedure LexInit;             Forward;
+Procedure LexClose;            Forward;
+Procedure LexNextToken;        Forward;
+Procedure PrintToken(Const T : TToken); Forward;
+Procedure ParseExpr(Var Res : TExprVal); Forward;
+Procedure ParseStmt;           Forward;
+Procedure EmitRaw(Const S : TString); Forward;
+Procedure EmitBlankLine;       Forward;
+Procedure EmitComment(Const S : TString); Forward;
+Procedure EmitLabel(Const Lbl : TString); Forward;
+Procedure EmitInstr(Const Mnem : TString); Forward;
+Procedure EmitInstrA(Const Mnem, A1 : TString); Forward;
+Procedure EmitInstrAB(Const Mnem, A1, A2 : TString); Forward;
+Function  LabelGen : TString;  Forward;
+Procedure EmitOpen;            Forward;
+Procedure EmitClose;           Forward;
+Procedure EmitHeader;          Forward;
+Procedure EmitDataSeg;         Forward;
+Procedure EmitRuntime;         Forward;
+Procedure EmitProlog;          Forward;
+Procedure EmitEpilog;          Forward;
+Procedure TypeInit;            Forward;
+Procedure SymInit;             Forward;
+Procedure ParserAdvance;       Forward;
+(* TODO 02 - Forward declarations lexeur *)
+Function  IsKeyword(Const S : TString) : Boolean; Forward;
+Procedure LexNextLine;         Forward;
+Procedure LexSkipBlockComment; Forward;
+Procedure LexSkipStarComment;  Forward;
+Function  IsIdentStart(Ch : Char) : Boolean; Forward;
+Function  IsIdentCont(Ch : Char) : Boolean; Forward;
+Function  IsHexDigit(Ch : Char) : Boolean; Forward;
+Function  HexVal(Ch : Char) : Integer; Forward;
+Procedure LexScanIdent;        Forward;
+Procedure LexScanNumber;       Forward;
+Procedure LexScanString(Quote : Char); Forward;
+(* TODO 03 - Forward declarations litteraux et constantes *)
+Function  DataAdd(Const Lbl : TString; Kind : TDataKind;
+                  AIntVal : LongInt; Const AStrVal : TString) : Integer; Forward;
+Function  DataAddStr(Const S : TString) : Integer; Forward;
+Function  DataAddWord(Const Lbl : TString; AIntVal : LongInt) : Integer; Forward;
+(* TODO 08 - Forward declarations segment de donnees *)
+Function  DataAddObs(Const Lbl : TString; ObsSize : Integer) : Integer; Forward;
+Procedure DataInit; Forward;
+Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
+                      Var Res : TExprVal); Forward;
+Procedure ExprMakeNone(Var Res : TExprVal); Forward;
+Procedure ExprMakeMissing(Var Res : TExprVal); Forward;
+Procedure LitEvalInt(Const T : TToken; Var Res : TExprVal); Forward;
+Procedure LitEvalFloat(Const T : TToken; Var Res : TExprVal); Forward;
+Procedure LitEval(Const T : TToken; Var Res : TExprVal); Forward;
+Function  IsMissingDot : Boolean; Forward;
+(* TODO 04 - Forward declarations operateurs et precedence *)
+Function  BinOpPrec(Const Op : TString) : Integer; Forward;
+Function  BinOpIsRight(Const Op : TString) : Boolean; Forward;
+Procedure ExprFlushToAX(Var E : TExprVal); Forward;
+Procedure EmitBinOp(Const Op : TString; LeftTy, RightTy : Integer); Forward;
+Procedure ParsePrimary(Var Res : TExprVal); Forward;
+Procedure ParseUnary(Var Res : TExprVal); Forward;
+Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal); Forward;
+(* TODO 05 - Forward declarations table des symboles *)
+Function  SymNameClean(Const Name : TString) : TString; Forward;
+Function  SymMangle(Const Name : TString; Cat : TSymCat) : TString; Forward;
+Function  SymFind(Const Name : TString) : Integer; Forward;
+Function  SymFindInScope(Const Name : TString;
+                Level : Integer) : Integer; Forward;
+Function  SymAdd(Const AName : TString; ACat : TSymCat;
+                ATypeIdx : Integer; AOffset : Integer) : Integer; Forward;
+Procedure SymEnterScope; Forward;
+Procedure SymLeaveScope; Forward;
+(* TODO 06 - Forward declarations systeme de types *)
+Function  TypeKindOf(TypeIdx : Integer) : TTypeKind; Forward;
+Function  TypeSizeof(TypeIdx : Integer) : Integer; Forward;
+Function  TypeMangle(TypeIdx : Integer) : TString; Forward;
+Function  TypeIsNumeric(TypeIdx : Integer) : Boolean; Forward;
+Function  TypeIsPtr(TypeIdx : Integer) : Boolean; Forward;
+Function  TypeCanCoerce(SrcIdx, DstIdx : Integer) : Boolean; Forward;
+Function  TypeCoerceResult(LeftIdx, RightIdx : Integer;
+                           Const Op : TString) : Integer; Forward;
+Function  TypeInfer(Const E : TExprVal) : Integer; Forward;
+Function  TypeLookupName(Const Name : TString) : Integer; Forward;
+(* TODO 09 - Forward declarations variables et affectations *)
+Function  VarAlloc(Const AName : TString; ATypeIdx : Integer;
+                   AVarLen : Integer) : Integer; Forward;
+Function  VarAddrOf(SIdx : Integer) : TString; Forward;
+Procedure VarLoad(SIdx : Integer; Var Res : TExprVal); Forward;
+Procedure VarStore(SIdx : Integer); Forward;
+Procedure ParseAssign(SIdx : Integer); Forward;
+Procedure ParseRetain; Forward;
+Procedure ParseDrop; Forward;
+Procedure ParseKeep; Forward;
+Procedure ParseRename; Forward;
+Procedure ParseLength; Forward;
+Procedure ParseLabelStmt; Forward;
+(* TODO 10 - Forward declarations expressions primaires *)
+Function  IsBuiltinFunc(Const Name : TString) : Boolean; Forward;
+Procedure ParseFuncCall(Const FName : TString; Var Res : TExprVal); Forward;
+Procedure ParseInOp(Var Res : TExprVal); Forward;
+(* TODO 12 - Forward declarations entrees/sorties *)
+Procedure ParsePutStmt; Forward;
+Procedure ParseInputStmt; Forward;
+Procedure ParseInfileStmt; Forward;
+Procedure ParseFileStmt; Forward;
+(* TODO 13 - Forward declarations IF/THEN/ELSE/SELECT *)
+Procedure ParseIfStmt; Forward;
+Procedure ParseSelectStmt; Forward;
+(* TODO 14 - Forward declarations boucles DO *)
+Procedure LoopPush(Const BreakLbl, ContLbl : TString); Forward;
+Procedure LoopPop; Forward;
+Procedure ParseDoBlock; Forward;
+(* TODO 15 - Forward declarations tableaux SAS *)
+Procedure ParseArrayStmt; Forward;
+Function  ArrayFind(Const Name : TString) : Integer; Forward;
+(* TODO 16 - Forward declarations DATA step *)
+Procedure ParseDataStep; Forward;
+Procedure ParseSetStmt; Forward;
+Procedure ParseOutputStmt; Forward;
+Procedure ParseDeleteStmt; Forward;
+Procedure ParseStopStmt; Forward;
+Procedure ParseAbortStmt; Forward;
+Procedure DSEmitPDVReset; Forward;
+Procedure DSEmitImplicitOutput; Forward;
+(* TODO 17 - Forward declarations PROC step *)
+Procedure ParseProcStep; Forward;
+Procedure ParseProcVarStmt; Forward;
+Procedure ParseProcByStmt; Forward;
+Procedure ParseProcClassStmt; Forward;
+Procedure ProcInit; Forward;
+(* TODO 18 - Forward declarations PROC PRINT / PROC MEANS *)
+Procedure EmitProcPrint; Forward;
+Procedure EmitProcMeans; Forward;
+Procedure ParseProcMeansOptions; Forward;
+(* TODO 19 - Forward declarations PROC FREQ / PROC SORT *)
+Procedure EmitProcFreq; Forward;
+Procedure EmitProcSort; Forward;
+Procedure ParseProcTablesStmt; Forward;
+(* TODO 20 - Forward declarations PROC FORMAT / FORMATS *)
+Procedure FmtInit; Forward;
+Function  FmtFind(Const Name : TString) : Integer; Forward;
+Function  FmtAdd(Const AName : TString; AIsChar : Boolean) : Integer; Forward;
+Procedure ParseProcFormatBody; Forward;
+Procedure EmitProcFormat; Forward;
+Procedure ParseFormatStmt; Forward;
+Procedure EmitFormatLookup(SIdx : Integer; FIdx : Integer); Forward;
+(* TODO 21 - Forward declarations MACRO-LANGAGE SAS *)
+Procedure MacroVarInit; Forward;
+Function  MacroVarFind(Const Name : TString) : Integer; Forward;
+Procedure MacroVarSet(Const AName, AValue : TString); Forward;
+Function  MacroVarResolve(Const Name : TString) : TString; Forward;
+Function  MacroFind(Const Name : TString) : Integer; Forward;
+Procedure ParsePercentLet; Forward;
+Procedure ParsePercentPut; Forward;
+Procedure ParseMacroDef; Forward;
+Procedure ParseMacroCall(Const MName : TString); Forward;
+Function  MacroFuncEval(Const FName, Args : TString) : TString; Forward;
+Procedure ParsePercentIf; Forward;
+Procedure ParsePercentDo; Forward;
+Procedure HandlePercentDirective; Forward;
+(* TODO 22 - Forward declarations FONCTIONS INTEGREES *)
+Procedure EmitBuiltinRuntime; Forward;
+(* TODO 24 - Forward declaration RUNTIME MINIMAL *)
+Procedure EmitMinimalRuntime; Forward;
+(* TODO 23 - Forward declarations FUSION DATASETS *)
+Procedure ParseSetStmtEnhanced; Forward;
+Procedure ParseMergeStmt; Forward;
+Procedure ParseDataByStmt; Forward;
+Procedure ParseUpdateStmt; Forward;
+Procedure ParseModifyStmt; Forward;
+
+{ ============================================================
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- Messages d erreur et d avertissement ----------------- *)
+
+Procedure FatalError(Const Msg : TString);
+Begin
+  WriteLn('SAS86: FATAL: ', Msg);
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+    Assign(OutF, Opts.OutFile);
+    Erase(OutF);
+  End;
+  Halt(EXIT_ERROR);
+End;
+
+Procedure CompileError(Const Msg : TString);
+Begin
+  Write('SAS86:');
+  If CurToken.Line > 0 Then
+    Write(Opts.SrcFile, ':', CurToken.Line, ': ');
+  WriteLn('error: ', Msg);
+  Inc(ErrorCount);
+  If ErrorCount >= MAX_ERRORS Then
+    FatalError('trop d''erreurs, compilation arretee');
+End;
+
+Procedure WarnMsg(Const Msg : TString);
+Begin
+  If Not Opts.Warnings Then Exit;
+  Write('SAS86:');
+  If CurToken.Line > 0 Then
+    Write(Opts.SrcFile, ':', CurToken.Line, ': ');
+  WriteLn('warning: ', Msg);
+  Inc(WarnCount);
+End;
+
+(* ---- Banniere ---------------------------------------------- *)
+
+Procedure ShowBanner;
+Begin
+  WriteLn('SAS86 v', SAS86_VERSION, ' (', SAS86_DATE, ')');
+  WriteLn('Compilateur SAS -> assembleur 8086 (MASM .MODEL SMALL)');
+  WriteLn('Turbo Pascal / Free Pascal (-Mtp)');
+  WriteLn;
+End;
+
+Procedure ShowUsage;
+Begin
+  WriteLn('Usage: SAS86 <source.sas> [sortie.asm] [-v] [-d] [-w]');
+  WriteLn;
+  WriteLn('  source.sas : fichier SAS source');
+  WriteLn('  sortie.asm : fichier assembleur de sortie (defaut: source.asm)');
+  WriteLn('  -v         : mode verbeux (banniere + statistiques)');
+  WriteLn('  -d         : debug tokens (affiche chaque token)');
+  WriteLn('  -w         : activer les avertissements');
+  WriteLn;
+  Halt(EXIT_USAGE);
+End;
+
+Procedure ShowHelp;
+Begin
+  WriteLn('SAS86 - Compilateur SAS vers assembleur 8086 (MASM/TASM)');
+  WriteLn;
+  WriteLn('Syntaxe : SAS86 [options] <source.sas> [sortie.asm]');
+  WriteLn;
+  WriteLn('Options :');
+  WriteLn('  -v         mode verbeux (banniere et statistiques)');
+  WriteLn('  -d         mode debug (affichage des tokens)');
+  WriteLn('  -w         activer les avertissements');
+  WriteLn('  -h         afficher cette aide');
+  WriteLn('  --help     afficher cette aide');
+  WriteLn;
+  WriteLn('Exemples :');
+  WriteLn('  SAS86 hello.sas');
+  WriteLn('  SAS86 hello.sas hello.asm -v');
+  WriteLn('  SAS86 -d -w programme.sas');
+  WriteLn;
+  Halt(EXIT_OK);
+End;
+
+(* ---- Utilitaires chaines ----------------------------------- *)
+
+Function StrLowerCase(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do
+    If (R[I] >= 'A') And (R[I] <= 'Z') Then
+      R[I] := Chr(Ord(R[I]) + 32);
+  StrLowerCase := R;
+End;
+
+Function StrUpperCase(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do
+    If (R[I] >= 'a') And (R[I] <= 'z') Then
+      R[I] := Chr(Ord(R[I]) - 32);
+  StrUpperCase := R;
+End;
+
+Function IntToStr(N : LongInt) : TString;
+Var
+  S : TString;
+Begin
+  Str(N, S);
+  IntToStr := S;
+End;
+
+Function StrToIntDef(Const S : TString; Def : LongInt) : LongInt;
+Var
+  V : LongInt;
+  C : Integer;
+Begin
+  Val(S, V, C);
+  If C = 0 Then StrToIntDef := V
+  Else          StrToIntDef := Def;
+End;
+
+(* Extrait le nom de base d un chemin (sans extension) *)
+Function BaseName(Const Path : TString) : TString;
+Var
+  I, LastSep, LastDot : Integer;
+  S : TString;
+Begin
+  LastSep := 0;
+  LastDot := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If LastDot > LastSep Then
+    S := Copy(Path, LastSep + 1, LastDot - LastSep - 1)
+  Else
+    S := Copy(Path, LastSep + 1, Length(Path));
+  BaseName := S;
+End;
+
+(* Remplace l extension d un chemin *)
+Function ReplaceExt(Const Path, NewExt : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ReplaceExt := Copy(Path, 1, LastDot - 1) + NewExt
+  Else
+    ReplaceExt := Path + NewExt;
+End;
+
+(* ---- Initialisation des options ---------------------------- *)
+
+Procedure InitOptions;
+Begin
+  Opts.SrcFile   := '';
+  Opts.OutFile   := '';
+  Opts.Verbose   := False;
+  Opts.DebugMode := False;
+  Opts.Warnings  := False;
+End;
+
+(* ---- Analyse des arguments de la ligne de commande --------- *)
+
+Procedure ParseArgs;
+Var
+  I   : Integer;
+  Arg : TString;
+Begin
+  InitOptions;
+  If ParamCount = 0 Then
+    ShowUsage;
+
+  For I := 1 To ParamCount Do
+  Begin
+    Arg := ParamStr(I);
+
+    If (Arg = '-h') Or (Arg = '--help') Or (Arg = '/?') Then
+      ShowHelp
+    Else If Arg = '-v' Then
+      Opts.Verbose := True
+    Else If Arg = '-d' Then
+      Opts.DebugMode := True
+    Else If Arg = '-w' Then
+      Opts.Warnings := True
+    Else If (Length(Arg) > 0) And (Arg[1] = '-') Then
+    Begin
+      WriteLn('SAS86: option inconnue: ', Arg);
+      ShowUsage;
+    End
+    Else If Opts.SrcFile = '' Then
+      Opts.SrcFile := Arg
+    Else If Opts.OutFile = '' Then
+      Opts.OutFile := Arg
+    Else
+    Begin
+      WriteLn('SAS86: argument inattendu: ', Arg);
+      ShowUsage;
+    End;
+  End;
+
+  If Opts.SrcFile = '' Then
+  Begin
+    WriteLn('SAS86: fichier source manquant');
+    ShowUsage;
+  End;
+
+  If Opts.OutFile = '' Then
+    Opts.OutFile := ReplaceExt(Opts.SrcFile, '.asm');
+End;
+
+(* ---- Nettoyage --------------------------------------------- *)
+
+Procedure Cleanup;
+Begin
+  If LexOpened Then
+    LexClose;
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+(* ---- Initialisation generale des variables globales --------- *)
+
+Procedure GlobalInit;
+Begin
+  ErrorCount     := 0;
+  WarnCount      := 0;
+  TotalLines     := 0;
+  TotalSyms      := 0;
+  SymCount       := 0;
+  ScopeTop       := 0;
+  CurScope       := 0;
+  LabelSeq       := 0;
+  TypeCount      := 0;
+  DataCount      := 0;
+  OutFOpen       := False;
+  LexOpened      := False;
+  LexEOF         := False;
+  LexAtStmtBeg   := True;
+  CurFrameSize   := 0;
+  LoopTop        := 0;
+  ArrayCount     := 0;
+  RuntimeEmitted := False;
+  LabelGenSeq    := 0;
+  CurPDVOffset   := 0;
+  IOInfilePath   := '';
+  IOInfileDlm    := ' ';
+  IOFirstObs     := 1;
+  IOFilePath     := '';
+  IOCardsActive  := False;
+  IOCardsLbl     := '';
+  IOCardsCount   := 0;
+  IOInputBufLbl  := '';
+  IONumBufLbl    := '';
+  InDataStep     := False;
+  DSName         := '';
+  DSLabel        := '';
+  DSHasSet       := False;
+  DSSetName      := '';
+  DSSetLabel     := '';
+  DSHasOutput    := False;
+  DSTopLabel     := '';
+  DSEndLabel     := '';
+  DSStopLabel    := '';
+  DSOutputLabel  := '';
+  DSObsCount     := 0;
+  InProcStep     := False;
+  ProcName       := '';
+  ProcDataDS     := '';
+  ProcOutDS      := '';
+  ProcNoPrint    := False;
+  ProcVarCount   := 0;
+  ProcByCount    := 0;
+  ProcClassCount := 0;
+  ProcTitle      := '';
+  ProcFootnote   := '';
+  ProcStatN      := False;
+  ProcStatMean   := False;
+  ProcStatStd    := False;
+  ProcStatMin    := False;
+  ProcStatMax    := False;
+  ProcStatSum    := False;
+  FmtCount       := 0;
+  MacroVarCount  := 0;
+  MacroCount     := 0;
+  GExprDummy.Kind    := EK_NONE;
+  GExprDummy.ImmVal  := 0;
+  GExprDummy.TypeIdx := TY_UNKNOWN;
+  GExprDummy.Offset  := 0;
+  GExprDummy.SymIdx  := -1;
+  CurToken.Kind    := TK_EOF;
+  CurToken.Val     := '';
+  CurToken.IntVal  := 0;
+  CurToken.FloatVal := 0.0;
+  CurToken.Line    := 0;
+  CurToken.Col     := 0;
+End;
+
+{ ============================================================
+  TODO 02 - LEXEUR (TOKENS SAS) [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- IsKeyword : teste si S est un mot-cle SAS ------------ *)
+(* S doit etre en MAJUSCULES                                    *)
+Function IsKeyword(Const S : TString) : Boolean;
+Begin
+  IsKeyword :=
+    (S = 'DATA')      Or (S = 'RUN')       Or (S = 'SET')       Or
+    (S = 'MERGE')     Or (S = 'BY')        Or (S = 'INPUT')     Or
+    (S = 'PUT')       Or (S = 'INFILE')    Or (S = 'FILE')      Or
+    (S = 'IF')        Or (S = 'THEN')      Or (S = 'ELSE')      Or
+    (S = 'DO')        Or (S = 'END')       Or (S = 'WHILE')     Or
+    (S = 'UNTIL')     Or (S = 'OUTPUT')    Or (S = 'RETURN')    Or
+    (S = 'DELETE')    Or (S = 'RETAIN')    Or (S = 'DROP')      Or
+    (S = 'KEEP')      Or (S = 'RENAME')    Or (S = 'LENGTH')    Or
+    (S = 'FORMAT')    Or (S = 'INFORMAT')  Or (S = 'LABEL')     Or
+    (S = 'ARRAY')     Or (S = 'PROC')      Or (S = 'QUIT')      Or
+    (S = 'TITLE')     Or (S = 'FOOTNOTE')  Or (S = 'OPTIONS')   Or
+    (S = 'WHERE')     Or (S = 'CARDS')     Or (S = 'DATALINES') Or
+    (S = 'STOP')      Or (S = 'ABORT')     Or (S = 'GOTO')      Or
+    (S = 'LINK')      Or (S = 'SELECT')    Or (S = 'WHEN')      Or
+    (S = 'OTHERWISE') Or (S = 'ATTRIB')    Or (S = 'CALL')      Or
+    (S = 'VAR')       Or (S = 'CLASS')     Or (S = 'TABLES')    Or
+    (S = 'IN')        Or (S = 'NOT')       Or (S = 'AND')       Or
+    (S = 'OR')        Or (S = 'EQ')        Or (S = 'NE')        Or
+    (S = 'LT')        Or (S = 'LE')        Or (S = 'GT')        Or
+    (S = 'GE')        Or (S = 'LEAVE')     Or (S = 'CONTINUE')  Or
+    (S = 'TO')        Or (S = '_NULL_')    Or (S = '_TEMPORARY_') Or
+    (S = 'UPDATE')    Or (S = 'MODIFY')   Or (S = 'NOBS')       Or
+    (S = 'POINT')     Or (S = 'FIRST')    Or (S = 'LAST');
+End;
+
+(* ---- PrintToken : affichage debug d un token --------------- *)
+Procedure PrintToken(Const T : TToken);
+Begin
+  If Not Opts.DebugMode Then Exit;
+  Write('  [', T.Line, ',', T.Col, '] ');
+  Case T.Kind Of
+    TK_EOF       : Write('EOF');
+    TK_INTEGER   : Write('INT(', T.IntVal, ')');
+    TK_FLOAT     : Write('FLOAT(', T.Val, ')');
+    TK_STRING    : Write('STR(''', T.Val, ''')');
+    TK_IDENT     : Write('IDENT(', T.Val, ')');
+    TK_KEYWORD   : Write('KW(', T.Val, ')');
+    TK_OP        : Write('OP(', T.Val, ')');
+    TK_PUNCT     : Write('PUNCT(', T.Val, ')');
+    TK_SEMICOLON : Write('SEMI');
+    TK_AMPERSAND : Write('AMP(', T.Val, ')');
+    TK_PERCENT   : Write('PCT(', T.Val, ')');
+    TK_FORMAT    : Write('FMT(', T.Val, ')');
+  End;
+  WriteLn;
+End;
+
+(* ---- LexNextLine : lire la prochaine ligne source ---------- *)
+Procedure LexNextLine;
+Begin
+  If LexEOF Then Exit;
+  If EOF(LexSrcF) Then
+  Begin
+    LexEOF   := True;
+    LexLine  := '';
+    LexColNo := 1;
+  End
+  Else
+  Begin
+    ReadLn(LexSrcF, LexLine);
+    Inc(LexLineNo);
+    Inc(TotalLines);
+    LexColNo := 1;
+  End;
+End;
+
+(* ---- LexSkipBlockComment : sauter /* ... */ ---------------- *)
+Procedure LexSkipBlockComment;
+Var
+  Done : Boolean;
+Begin
+  Inc(LexColNo); Inc(LexColNo); (* sauter / et * *)
+  Done := False;
+  While (Not LexEOF) And (Not Done) Do
+  Begin
+    If LexColNo > Length(LexLine) Then
+      LexNextLine
+    Else If (LexLine[LexColNo] = '*') And
+            (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '/') Then
+    Begin
+      Inc(LexColNo); Inc(LexColNo);
+      Done := True;
+    End
+    Else
+      Inc(LexColNo);
+  End;
+  If Not Done Then
+    CompileError('commentaire /* non ferme');
+End;
+
+(* ---- LexSkipStarComment : sauter * ... ; ------------------- *)
+(* En SAS, le commentaire * va jusqu au prochain ;              *)
+Procedure LexSkipStarComment;
+Begin
+  While Not LexEOF Do
+  Begin
+    If LexColNo > Length(LexLine) Then
+      LexNextLine
+    Else If LexLine[LexColNo] = ';' Then
+    Begin
+      Inc(LexColNo); (* consomme le ; *)
+      Exit;
+    End
+    Else
+      Inc(LexColNo);
+  End;
+End;
+
+(* ---- Fonctions de test sur les caracteres ------------------- *)
+Function IsIdentStart(Ch : Char) : Boolean;
+Begin
+  IsIdentStart := ((Ch >= 'A') And (Ch <= 'Z')) Or
+                  ((Ch >= 'a') And (Ch <= 'z')) Or
+                  (Ch = '_');
+End;
+
+Function IsIdentCont(Ch : Char) : Boolean;
+Begin
+  IsIdentCont := IsIdentStart(Ch) Or
+                 ((Ch >= '0') And (Ch <= '9'));
+End;
+
+Function IsHexDigit(Ch : Char) : Boolean;
+Begin
+  IsHexDigit := ((Ch >= '0') And (Ch <= '9')) Or
+                ((Ch >= 'A') And (Ch <= 'F')) Or
+                ((Ch >= 'a') And (Ch <= 'f'));
+End;
+
+Function HexVal(Ch : Char) : Integer;
+Begin
+  If (Ch >= '0') And (Ch <= '9') Then HexVal := Ord(Ch) - Ord('0')
+  Else If (Ch >= 'A') And (Ch <= 'F') Then HexVal := Ord(Ch) - Ord('A') + 10
+  Else HexVal := Ord(Ch) - Ord('a') + 10;
+End;
+
+(* ---- LexScanIdent : scanner un identificateur ou mot-cle --- *)
+(* SAS est insensible a la casse : on convertit en majuscules   *)
+Procedure LexScanIdent;
+Var
+  S  : TString;
+  Ch : Char;
+Begin
+  S := '';
+  While (LexColNo <= Length(LexLine)) And IsIdentCont(LexLine[LexColNo]) Do
+  Begin
+    Ch := LexLine[LexColNo];
+    (* Convertir en majuscule *)
+    If (Ch >= 'a') And (Ch <= 'z') Then
+      Ch := Chr(Ord(Ch) - 32);
+    If Length(S) < MAX_STR Then
+      S := S + Ch;
+    Inc(LexColNo);
+  End;
+  CurToken.Val    := S;
+  CurToken.IntVal := 0;
+  (* Verifier si c est un mot-cle SAS *)
+  If IsKeyword(S) Then
+    CurToken.Kind := TK_KEYWORD
+  Else
+    CurToken.Kind := TK_IDENT;
+End;
+
+(* ---- LexScanNumber : scanner un litteral numerique --------- *)
+(* SAS : decimaux et reels (avec notation scientifique)          *)
+Procedure LexScanNumber;
+Var
+  N       : LongInt;
+  IsFloat : Boolean;
+  NegExp  : Boolean;
+  Ch      : Char;
+  FracDiv : Real;
+  FracVal : Real;
+  ExpVal  : Integer;
+  FltVal  : Real;
+Begin
+  N       := 0;
+  IsFloat := False;
+  NegExp  := False;
+  FracVal := 0.0;
+  FracDiv := 10.0;
+  ExpVal  := 0;
+  (* Partie entiere *)
+  While (LexColNo <= Length(LexLine)) And
+        (LexLine[LexColNo] >= '0') And (LexLine[LexColNo] <= '9') Do
+  Begin
+    N := N * 10 + (Ord(LexLine[LexColNo]) - Ord('0'));
+    Inc(LexColNo);
+  End;
+  (* Partie decimale .ddd *)
+  If (LexColNo <= Length(LexLine)) And
+     (LexLine[LexColNo] = '.') And
+     (LexColNo < Length(LexLine)) And
+     (LexLine[LexColNo + 1] >= '0') And (LexLine[LexColNo + 1] <= '9') Then
+  Begin
+    IsFloat := True;
+    Inc(LexColNo); (* sauter le . *)
+    FracDiv := 10.0;
+    FracVal := 0.0;
+    While (LexColNo <= Length(LexLine)) And
+          (LexLine[LexColNo] >= '0') And (LexLine[LexColNo] <= '9') Do
+    Begin
+      FracVal := FracVal + (Ord(LexLine[LexColNo]) - Ord('0')) / FracDiv;
+      FracDiv := FracDiv * 10.0;
+      Inc(LexColNo);
+    End;
+  End;
+  (* Exposant E/e [+-]ddd *)
+  If (LexColNo <= Length(LexLine)) And
+     ((LexLine[LexColNo] = 'E') Or (LexLine[LexColNo] = 'e')) Then
+  Begin
+    Ch := ' ';
+    If LexColNo < Length(LexLine) Then
+      Ch := LexLine[LexColNo + 1];
+    (* Verifier qu il y a un chiffre ou un signe apres le E *)
+    If ((Ch >= '0') And (Ch <= '9')) Or (Ch = '+') Or (Ch = '-') Then
+    Begin
+      IsFloat := True;
+      Inc(LexColNo); (* sauter E *)
+      NegExp := False;
+      If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '-') Then
+      Begin
+        NegExp := True;
+        Inc(LexColNo);
+      End
+      Else If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '+') Then
+        Inc(LexColNo);
+      ExpVal := 0;
+      While (LexColNo <= Length(LexLine)) And
+            (LexLine[LexColNo] >= '0') And (LexLine[LexColNo] <= '9') Do
+      Begin
+        ExpVal := ExpVal * 10 + (Ord(LexLine[LexColNo]) - Ord('0'));
+        Inc(LexColNo);
+      End;
+    End;
+  End;
+  (* Calculer la valeur finale *)
+  If IsFloat Then
+  Begin
+    FltVal := N + FracVal;
+    While ExpVal > 0 Do
+    Begin
+      If NegExp Then FltVal := FltVal / 10.0
+      Else            FltVal := FltVal * 10.0;
+      Dec(ExpVal);
+    End;
+    CurToken.FloatVal := FltVal;
+    If FltVal > 32767.0 Then N := 32767
+    Else If FltVal < -32768.0 Then N := -32768
+    Else N := Trunc(FltVal);
+    CurToken.Kind := TK_FLOAT;
+  End
+  Else
+    CurToken.Kind := TK_INTEGER;
+  CurToken.IntVal := N;
+  Str(N, CurToken.Val);
+End;
+
+(* ---- LexScanString : scanner une chaine entre quotes ------- *)
+(* SAS double le quote pour l echapper : 'it''s' -> it's         *)
+Procedure LexScanString(Quote : Char);
+Var
+  S       : TString;
+  Suffix  : Char;
+  HexStr  : TString;
+  I       : Integer;
+  V       : LongInt;
+Begin
+  S := '';
+  Inc(LexColNo); (* sauter le quote ouvrant *)
+  While Not LexEOF Do
+  Begin
+    If LexColNo > Length(LexLine) Then
+    Begin
+      (* Chaine multi-ligne : passer a la ligne suivante *)
+      If Length(S) < MAX_STR Then
+        S := S + #13;
+      LexNextLine;
+    End
+    Else If LexLine[LexColNo] = Quote Then
+    Begin
+      Inc(LexColNo);
+      (* Doublage du quote = echappement *)
+      If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = Quote) Then
+      Begin
+        If Length(S) < MAX_STR Then
+          S := S + Quote;
+        Inc(LexColNo);
+      End
+      Else
+        Break; (* fin de la chaine *)
+    End
+    Else
+    Begin
+      If Length(S) < MAX_STR Then
+        S := S + LexLine[LexColNo];
+      Inc(LexColNo);
+    End;
+  End;
+  (* Verifier les suffixes SAS : 'd (date), 't (time), 'x (hex) *)
+  If (LexColNo <= Length(LexLine)) Then
+  Begin
+    Suffix := LexLine[LexColNo];
+    If (Suffix >= 'a') And (Suffix <= 'z') Then
+      Suffix := Chr(Ord(Suffix) - 32);
+    If Suffix = 'X' Then
+    Begin
+      (* Constante hexadecimale : '0A'x -> valeur hex *)
+      Inc(LexColNo);
+      V := 0;
+      HexStr := S;
+      For I := 1 To Length(HexStr) Do
+      Begin
+        If IsHexDigit(HexStr[I]) Then
+          V := V * 16 + HexVal(HexStr[I]);
+      End;
+      CurToken.Kind   := TK_INTEGER;
+      CurToken.IntVal := V;
+      Str(V, CurToken.Val);
+      Exit;
+    End
+    Else If Suffix = 'D' Then
+    Begin
+      (* Date litteral : '01JAN2026'd -> avertissement *)
+      Inc(LexColNo);
+      WarnMsg('date litteral ''' + S + '''d non supporte, utilise 0');
+      CurToken.Kind   := TK_INTEGER;
+      CurToken.IntVal := 0;
+      CurToken.Val    := '0';
+      Exit;
+    End
+    Else If Suffix = 'T' Then
+    Begin
+      (* Time litteral : '12:30't -> avertissement *)
+      Inc(LexColNo);
+      WarnMsg('time litteral ''' + S + '''t non supporte, utilise 0');
+      CurToken.Kind   := TK_INTEGER;
+      CurToken.IntVal := 0;
+      CurToken.Val    := '0';
+      Exit;
+    End;
+  End;
+  CurToken.Kind   := TK_STRING;
+  CurToken.Val    := S;
+  CurToken.IntVal := 0;
+End;
+
+(* ---- LexInit : initialiser le lexeur ----------------------- *)
+Procedure LexInit;
+Begin
+  Assign(LexSrcF, Opts.SrcFile);
+  Reset(LexSrcF);
+  If IOResult <> 0 Then
+    FatalError('impossible d''ouvrir ' + Opts.SrcFile);
+  LexOpened    := True;
+  LexLineNo   := 0;
+  LexColNo     := 1;
+  LexLine      := '';
+  LexEOF       := False;
+  LexAtStmtBeg := True;
+  LexNextLine; (* lire la premiere ligne *)
+End;
+
+(* ---- LexClose : fermer le fichier source ------------------- *)
+Procedure LexClose;
+Begin
+  If LexOpened Then
+  Begin
+    Close(LexSrcF);
+    LexOpened := False;
+  End;
+End;
+
+(* ---- LexNextToken : scanner principal ---------------------- *)
+Procedure LexNextToken;
+Var
+  Ch, Ch2 : Char;
+  Scanning : Boolean;
+Begin
+  CurToken.IntVal   := 0;
+  CurToken.FloatVal := 0.0;
+
+  Scanning := True;
+  While Scanning Do
+  Begin
+    (* Passer a la ligne suivante si fin de ligne *)
+    While (Not LexEOF) And (LexColNo > Length(LexLine)) Do
+      LexNextLine;
+
+    (* Fin de fichier *)
+    If LexEOF Then
+    Begin
+      CurToken.Kind := TK_EOF;
+      CurToken.Val  := '';
+      CurToken.Line := LexLineNo;
+      CurToken.Col  := LexColNo;
+      Scanning      := False;
+      Exit;
+    End;
+
+    CurToken.Line := LexLineNo;
+    CurToken.Col  := LexColNo;
+    Ch := LexLine[LexColNo];
+
+    (* Espaces blancs *)
+    If (Ch = ' ') Or (Ch = #9) Or (Ch = #13) Or (Ch = #12) Then
+    Begin
+      Inc(LexColNo);
+    End
+
+    (* Commentaire bloc /* ... */ *)
+    Else If (Ch = '/') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '*') Then
+    Begin
+      LexSkipBlockComment;
+    End
+
+    (* Commentaire etoile * ... ; en debut d instruction *)
+    Else If (Ch = '*') And LexAtStmtBeg Then
+    Begin
+      LexSkipStarComment;
+      LexAtStmtBeg := True; (* le ; a ete consomme, on est en debut *)
+    End
+
+    (* Point-virgule : delimiteur d instruction *)
+    Else If Ch = ';' Then
+    Begin
+      CurToken.Kind := TK_SEMICOLON;
+      CurToken.Val  := ';';
+      Inc(LexColNo);
+      LexAtStmtBeg := True;
+      Scanning := False;
+    End
+
+    (* Ampersand : macro-variable &name *)
+    Else If Ch = '&' Then
+    Begin
+      Inc(LexColNo);
+      CurToken.Val := '&';
+      (* Scanner le nom de la macro-variable *)
+      While (LexColNo <= Length(LexLine)) And
+            IsIdentCont(LexLine[LexColNo]) Do
+      Begin
+        Ch2 := LexLine[LexColNo];
+        If (Ch2 >= 'a') And (Ch2 <= 'z') Then
+          Ch2 := Chr(Ord(Ch2) - 32);
+        If Length(CurToken.Val) < MAX_STR Then
+          CurToken.Val := CurToken.Val + Ch2;
+        Inc(LexColNo);
+      End;
+      (* Le point optionnel termine le nom de macro-variable *)
+      If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '.') Then
+        Inc(LexColNo);
+      CurToken.Kind := TK_AMPERSAND;
+      LexAtStmtBeg := False;
+      Scanning := False;
+    End
+
+    (* Percent : macro-instruction %name *)
+    Else If Ch = '%' Then
+    Begin
+      Inc(LexColNo);
+      CurToken.Val := '%';
+      (* Scanner le nom de la macro-instruction *)
+      While (LexColNo <= Length(LexLine)) And
+            IsIdentCont(LexLine[LexColNo]) Do
+      Begin
+        Ch2 := LexLine[LexColNo];
+        If (Ch2 >= 'a') And (Ch2 <= 'z') Then
+          Ch2 := Chr(Ord(Ch2) - 32);
+        If Length(CurToken.Val) < MAX_STR Then
+          CurToken.Val := CurToken.Val + Ch2;
+        Inc(LexColNo);
+      End;
+      CurToken.Kind := TK_PERCENT;
+      LexAtStmtBeg := False;
+      Scanning := False;
+    End
+
+    (* Identificateur ou mot-cle *)
+    Else If IsIdentStart(Ch) Then
+    Begin
+      LexScanIdent;
+      LexAtStmtBeg := False;
+      Scanning := False;
+    End
+
+    (* Nombre *)
+    Else If (Ch >= '0') And (Ch <= '9') Then
+    Begin
+      LexScanNumber;
+      LexAtStmtBeg := False;
+      Scanning := False;
+    End
+
+    (* Nombre commencant par un point : .5 *)
+    Else If (Ch = '.') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] >= '0') And
+            (LexLine[LexColNo + 1] <= '9') Then
+    Begin
+      (* Traiter comme 0.ddd *)
+      LexScanNumber;
+      LexAtStmtBeg := False;
+      Scanning := False;
+    End
+
+    (* Chaine simple-quote *)
+    Else If Ch = '''' Then
+    Begin
+      LexScanString('''');
+      LexAtStmtBeg := False;
+      Scanning := False;
+    End
+
+    (* Chaine double-quote *)
+    Else If Ch = '"' Then
+    Begin
+      LexScanString('"');
+      LexAtStmtBeg := False;
+      Scanning := False;
+    End
+
+    (* Operateur ** (puissance) *)
+    Else If (Ch = '*') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '*') Then
+    Begin
+      CurToken.Kind := TK_OP;
+      CurToken.Val  := '**';
+      Inc(LexColNo); Inc(LexColNo);
+      LexAtStmtBeg := False;
+      Scanning := False;
+    End
+
+    (* Operateurs * / + - *)
+    Else If (Ch = '*') Or (Ch = '/') Or (Ch = '+') Or (Ch = '-') Then
+    Begin
+      CurToken.Kind := TK_OP;
+      CurToken.Val  := Ch;
+      Inc(LexColNo);
+      LexAtStmtBeg := False;
+      Scanning := False;
+    End
+
+    (* Operateur || (concatenation) *)
+    Else If (Ch = '|') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '|') Then
+    Begin
+      CurToken.Kind := TK_OP;
+      CurToken.Val  := '||';
+      Inc(LexColNo); Inc(LexColNo);
+      LexAtStmtBeg := False;
+      Scanning := False;
+    End
+
+    (* Operateur !! (synonyme de ||) *)
+    Else If (Ch = '!') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '!') Then
+    Begin
+      CurToken.Kind := TK_OP;
+      CurToken.Val  := '!!';
+      Inc(LexColNo); Inc(LexColNo);
+      LexAtStmtBeg := False;
+      Scanning := False;
+    End
+
+    (* = : egalite *)
+    Else If Ch = '=' Then
+    Begin
+      CurToken.Kind := TK_OP;
+      CurToken.Val  := '=';
+      Inc(LexColNo);
+      LexAtStmtBeg := False;
+      Scanning := False;
+    End
+
+    (* ^= : different *)
+    Else If (Ch = '^') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '=') Then
+    Begin
+      CurToken.Kind := TK_OP;
+      CurToken.Val  := '^=';
+      Inc(LexColNo); Inc(LexColNo);
+      LexAtStmtBeg := False;
+      Scanning := False;
+    End
+
+    (* ~= : different (alternative) *)
+    Else If (Ch = '~') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '=') Then
+    Begin
+      CurToken.Kind := TK_OP;
+      CurToken.Val  := '^=';  (* normaliser *)
+      Inc(LexColNo); Inc(LexColNo);
+      LexAtStmtBeg := False;
+      Scanning := False;
+    End
+
+    (* ^, ~ : operateur NOT logique symbolique *)
+    Else If (Ch = '^') Or (Ch = '~') Then
+    Begin
+      CurToken.Kind := TK_OP;
+      CurToken.Val  := 'NOT';
+      Inc(LexColNo);
+      LexAtStmtBeg := False;
+      Scanning := False;
+    End
+
+    (* <> : operateur MIN en SAS *)
+    Else If (Ch = '<') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '>') Then
+    Begin
+      CurToken.Kind := TK_OP;
+      CurToken.Val  := '<>';
+      Inc(LexColNo); Inc(LexColNo);
+      LexAtStmtBeg := False;
+      Scanning := False;
+    End
+
+    (* <= : inferieur ou egal *)
+    Else If (Ch = '<') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '=') Then
+    Begin
+      CurToken.Kind := TK_OP;
+      CurToken.Val  := '<=';
+      Inc(LexColNo); Inc(LexColNo);
+      LexAtStmtBeg := False;
+      Scanning := False;
+    End
+
+    (* < : inferieur *)
+    Else If Ch = '<' Then
+    Begin
+      CurToken.Kind := TK_OP;
+      CurToken.Val  := '<';
+      Inc(LexColNo);
+      LexAtStmtBeg := False;
+      Scanning := False;
+    End
+
+    (* >< : operateur MAX en SAS *)
+    Else If (Ch = '>') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '<') Then
+    Begin
+      CurToken.Kind := TK_OP;
+      CurToken.Val  := '><';
+      Inc(LexColNo); Inc(LexColNo);
+      LexAtStmtBeg := False;
+      Scanning := False;
+    End
+
+    (* >= : superieur ou egal *)
+    Else If (Ch = '>') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '=') Then
+    Begin
+      CurToken.Kind := TK_OP;
+      CurToken.Val  := '>=';
+      Inc(LexColNo); Inc(LexColNo);
+      LexAtStmtBeg := False;
+      Scanning := False;
+    End
+
+    (* > : superieur *)
+    Else If Ch = '>' Then
+    Begin
+      CurToken.Kind := TK_OP;
+      CurToken.Val  := '>';
+      Inc(LexColNo);
+      LexAtStmtBeg := False;
+      Scanning := False;
+    End
+
+    (* Point seul : valeur manquante numerique ou ponctuation *)
+    Else If Ch = '.' Then
+    Begin
+      CurToken.Kind := TK_PUNCT;
+      CurToken.Val  := '.';
+      Inc(LexColNo);
+      LexAtStmtBeg := False;
+      Scanning := False;
+    End
+
+    (* Ponctuation : ( ) , @ # $ : *)
+    Else If (Ch = '(') Or (Ch = ')') Or (Ch = ',') Or
+            (Ch = '@') Or (Ch = '#') Or (Ch = '$') Or
+            (Ch = ':') Then
+    Begin
+      CurToken.Kind := TK_PUNCT;
+      CurToken.Val  := Ch;
+      Inc(LexColNo);
+      LexAtStmtBeg := False;
+      Scanning := False;
+    End
+
+    (* Accolades pour les indices de tableaux SAS *)
+    Else If (Ord(Ch) = 123) Or (Ord(Ch) = 125) Then
+    Begin
+      CurToken.Kind := TK_PUNCT;
+      CurToken.Val  := Ch;
+      Inc(LexColNo);
+      LexAtStmtBeg := False;
+      Scanning := False;
+    End
+
+    (* Caractere inconnu *)
+    Else
+    Begin
+      CompileError('caractere inattendu : ' + Ch);
+      Inc(LexColNo);
+    End;
+
+  End; (* While Scanning *)
+End;
+
+{ ============================================================
+  TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- DataAdd : ajouter une entree dans le segment DATA ----- *)
+(* Retourne l index dans DataTab ou -1 si plein.                *)
+Function DataAdd(Const Lbl : TString; Kind : TDataKind;
+                 AIntVal : LongInt; Const AStrVal : TString) : Integer;
+Begin
+  If DataCount >= MAX_DATA Then
+  Begin
+    CompileError('segment DATA plein (max=' + IntToStr(MAX_DATA) + ')');
+    DataAdd := -1;
+    Exit;
+  End;
+  DataTab[DataCount].LblName   := Lbl;
+  DataTab[DataCount].Kind      := Kind;
+  DataTab[DataCount].IntVal    := AIntVal;
+  DataTab[DataCount].StrVal    := AStrVal;
+  DataTab[DataCount].ElemCount := 0;
+  DataAdd := DataCount;
+  Inc(DataCount);
+End;
+
+(* ---- DataAddStr : creer un label _SASK_N et stocker chaine -- *)
+(* Retourne l index dans DataTab.                                *)
+Function DataAddStr(Const S : TString) : Integer;
+Var
+  Lbl : TString;
+Begin
+  Inc(LabelGenSeq);
+  Lbl := SAS_STR_PFX + IntToStr(LabelGenSeq);
+  DataAddStr := DataAdd(Lbl, DK_STR, 0, S);
+End;
+
+(* ---- DataAddWord : ajouter variable/constante DW ------------ *)
+Function DataAddWord(Const Lbl : TString; AIntVal : LongInt) : Integer;
+Begin
+  DataAddWord := DataAdd(Lbl, DK_WORD, AIntVal, '');
+End;
+
+{ ============================================================
+  TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- DataAddObs : ajouter un bloc observation/dataset ------- *)
+(* Cree une entree DK_RECORD_BLK de taille ObsSize octets.      *)
+(* Utilise pour les datasets en memoire (_SASD_nom).             *)
+Function DataAddObs(Const Lbl : TString; ObsSize : Integer) : Integer;
+Begin
+  If DataCount >= MAX_DATA Then
+  Begin
+    CompileError('segment DATA plein (max=' + IntToStr(MAX_DATA) + ')');
+    DataAddObs := -1;
+    Exit;
+  End;
+  DataTab[DataCount].LblName   := Lbl;
+  DataTab[DataCount].Kind      := DK_RECORD_BLK;
+  DataTab[DataCount].IntVal    := 0;
+  DataTab[DataCount].StrVal    := '';
+  DataTab[DataCount].ElemCount := ObsSize;
+  DataAddObs := DataCount;
+  Inc(DataCount);
+End;
+
+(* ---- DataInit : initialiser le segment de donnees ----------- *)
+(* Enregistre les entrees predefinies dans DataTab :              *)
+(*   _SAS_MISSING : valeur sentinelle manquante (8000h)          *)
+(*   _SAS_N       : compteur d observation (DW 0)                *)
+(*   _SAS_ERROR   : indicateur d erreur (DW 0)                   *)
+(*   _SAS_PDV     : Program Data Vector (MAX_OBS_SIZE octets)    *)
+(*   _SAS_CRLF    : retour chariot pour sortie console           *)
+Procedure DataInit;
+Begin
+  DataCount := 0;
+  (* Valeur manquante SAS (.) = sentinelle 8000h *)
+  DataAddWord('_SAS_MISSING', MISSING_VAL);
+  (* Compteur d observation _N_ *)
+  DataAddWord('_SAS_N', 0);
+  (* Indicateur d erreur _ERROR_ *)
+  DataAddWord('_SAS_ERROR', 0);
+  (* Program Data Vector : zone de travail pour une observation *)
+  DataAddObs('_SAS_PDV', MAX_OBS_SIZE);
+  (* Retour chariot pour sortie console *)
+  DataAdd('_SAS_CRLF', DK_STR, 0, #13#10);
+  (* TODO 12 : buffers d entree/sortie *)
+  DataAddObs('_SAS_INBUF', 256);   (* buffer ligne d entree 256 octets  *)
+  DataAddWord('_SAS_INLEN', 0);    (* longueur lue dans le buffer       *)
+  DataAddWord('_SAS_INPOS', 0);    (* position courante dans le buffer  *)
+  DataAddObs('_SAS_NUMBUF', 12);   (* buffer conversion num -> str      *)
+  DataAddWord('_SAS_INHDL', 0);    (* handle fichier INFILE (0=stdin)   *)
+  DataAddWord('_SAS_OUTHDL', 1);   (* handle fichier FILE (1=stdout)    *)
+  (* TODO 14 : variables temporaires pour boucles DO iteratives *)
+  DataAddWord('_SAS_DOEND', 0);    (* borne de fin boucle DO iterative  *)
+  DataAddWord('_SAS_DOSTEP', 1);   (* pas (BY) boucle DO iterative      *)
+  IOInputBufLbl := '_SAS_INBUF';
+  IONumBufLbl   := '_SAS_NUMBUF';
+  (* TODO 22 : buffers pour fonctions integrees *)
+  DataAddObs('_SAS_STRBUF', 256);   (* buffer resultat fonctions chaine  *)
+  DataAddObs('_SAS_STRBUF2', 256);  (* second buffer pour concatenation  *)
+  (* TODO 24 : heap statique pour runtime *)
+  DataAddObs('_SAS_HEAP', 4096);     (* heap statique 4 Ko                *)
+  DataAddWord('_SAS_HEAPTOP', 0);    (* pointeur sommet du heap           *)
+  (* TODO 23 : variables pour MERGE/BY *)
+  DataAddWord('_SAS_FIRST', 0);     (* FIRST.var flag                    *)
+  DataAddWord('_SAS_LAST', 0);      (* LAST.var flag                     *)
+  DataAddWord('_SAS_BYKEY', 0);     (* cle BY courante                   *)
+  DataAddWord('_SAS_BYKEY_PREV', 0);(* cle BY precedente                 *)
+  DataAddWord('_SAS_MRGIDX', 0);    (* index courant pour MERGE          *)
+  DataAddWord('_SAS_SETIDX', 0);    (* index courant multi-SET           *)
+  DataAddWord('_SAS_SETEND', 0);    (* flag END= pour SET                *)
+  DataAddWord('_SAS_SETNOBS', 0);   (* variable NOBS= pour SET           *)
+  DataAddWord('_SAS_SETPT', 0);     (* variable POINT= pour SET          *)
+End;
+
+(* ---- ExprMakeImm : construire une valeur immediate ---------- *)
+Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
+                      Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_IMM;
+  Res.ImmVal  := AVal;
+  Res.TypeIdx := ATypeIdx;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ExprMakeNone : valeur invalide (void/erreur) ----------- *)
+Procedure ExprMakeNone(Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_NONE;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_UNKNOWN;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ExprMakeMissing : valeur manquante SAS (. = 8000h) ---- *)
+(* En SAS, une valeur manquante numerique est representee par    *)
+(* la sentinelle MISSING_VAL = -32768 = 8000h.                  *)
+Procedure ExprMakeMissing(Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_IMM;
+  Res.ImmVal  := MISSING_VAL;
+  Res.TypeIdx := TY_IDX_NUMERIC;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- LitEvalInt : evaluer un token TK_INTEGER --------------- *)
+(* IntVal est deja calcule par LexScanNumber.                    *)
+Procedure LitEvalInt(Const T : TToken; Var Res : TExprVal);
+Begin
+  ExprMakeImm(T.IntVal, TY_IDX_NUMERIC, Res);
+End;
+
+(* ---- LitEvalFloat : evaluer un token TK_FLOAT (trunc) ------ *)
+(* SAS utilise des reels en interne (8 octets) ; en 16 bits on   *)
+(* tronque a l entier. Avertissement si perte de precision.      *)
+Procedure LitEvalFloat(Const T : TToken; Var Res : TExprVal);
+Var
+  IV : LongInt;
+Begin
+  IV := Trunc(T.FloatVal);
+  If IV > 32767 Then IV := 32767;
+  If IV < -32768 Then IV := -32768;
+  WarnMsg('reel ' + T.Val + ' tronque a entier ' + IntToStr(IV));
+  ExprMakeImm(IV, TY_IDX_NUMERIC, Res);
+End;
+
+(* ---- IsMissingDot : teste si le token courant est un . ------ *)
+(* seul (valeur manquante numerique) et non partie d un nombre   *)
+(* ou d un format. Retourne True si CurToken = TK_PUNCT '.'     *)
+Function IsMissingDot : Boolean;
+Begin
+  IsMissingDot := (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.');
+End;
+
+(* ---- LitEval : dispatcher principal pour les litteraux ------ *)
+(* Types de tokens acceptes : TK_INTEGER, TK_FLOAT, TK_STRING,  *)
+(* TK_PUNCT '.' (valeur manquante).                              *)
+(* Pour TK_STRING : le lexeur a deja traite les suffixes         *)
+(* 'd (date), 't (time), 'x (hex) dans LexScanString.           *)
+(* Les constantes hexadecimales 'xx'x produisent TK_INTEGER      *)
+(* via LexScanString. Les dates 'd et heures 't produisent       *)
+(* TK_INTEGER avec la valeur convertie par le lexeur.            *)
+Procedure LitEval(Const T : TToken; Var Res : TExprVal);
+Begin
+  ExprMakeNone(Res);  (* valeur par defaut *)
+  Case T.Kind Of
+    TK_INTEGER :
+      LitEvalInt(T, Res);
+    TK_FLOAT :
+      LitEvalFloat(T, Res);
+    TK_STRING :
+    Begin
+      Res.Kind    := EK_MEM;
+      Res.ImmVal  := 0;
+      Res.TypeIdx := TY_IDX_CHARACTER;
+      Res.Offset  := DataAddStr(T.Val);
+      Res.SymIdx  := -1;
+    End;
+    TK_PUNCT :
+    Begin
+      (* . (point seul) = valeur manquante numerique *)
+      If T.Val = '.' Then
+        ExprMakeMissing(Res);
+    End;
+  End;
+End;
+
+{ ============================================================
+  TODO 04 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- BinOpPrec : precedence des operateurs binaires SAS ---- *)
+(* Niveaux (du plus fort au plus faible) :                       *)
+(*   7. ** (puissance)                                           *)
+(*   6. * /                                                      *)
+(*   5. + - (binaire) || !! (concatenation)                      *)
+(*   4. <> >< (MIN/MAX)                                          *)
+(*   3. < <= = ^= >= > EQ NE LT LE GT GE IN                     *)
+(*   2. AND &                                                    *)
+(*   1. OR |                                                     *)
+Function BinOpPrec(Const Op : TString) : Integer;
+Begin
+  If Op = '**' Then
+    BinOpPrec := 7
+  Else If (Op = '*') Or (Op = '/') Then
+    BinOpPrec := 6
+  Else If (Op = '+') Or (Op = '-') Or
+          (Op = '||') Or (Op = '!!') Then
+    BinOpPrec := 5
+  Else If (Op = '<>') Or (Op = '><') Then
+    BinOpPrec := 4
+  Else If (Op = '<') Or (Op = '<=') Or (Op = '=') Or
+          (Op = '^=') Or (Op = '>=') Or (Op = '>') Or
+          (Op = 'EQ') Or (Op = 'NE') Or (Op = 'LT') Or
+          (Op = 'LE') Or (Op = 'GT') Or (Op = 'GE') Or
+          (Op = 'IN') Then
+    BinOpPrec := 3
+  Else If (Op = 'AND') Or (Op = '&') Then
+    BinOpPrec := 2
+  Else If (Op = 'OR') Or (Op = '|') Then
+    BinOpPrec := 1
+  Else
+    BinOpPrec := 0;
+End;
+
+(* ---- BinOpIsRight : operateur droit-associatif ? ------------ *)
+(* Seul ** est droit-associatif en SAS.                          *)
+Function BinOpIsRight(Const Op : TString) : Boolean;
+Begin
+  BinOpIsRight := (Op = '**');
+End;
+
+(* ---- ExprFlushToAX : materialiser une expression dans AX ---- *)
+(* Si deja AX, ne rien faire. Si immediate, MOV AX, imm.         *)
+(* Si memoire, stub pour l instant (sera gere au TODO 05/09).    *)
+Procedure ExprFlushToAX(Var E : TExprVal);
+Begin
+  Case E.Kind Of
+    EK_IMM :
+    Begin
+      If E.ImmVal = 0 Then
+        EmitInstrAB('XOR', 'AX', 'AX')
+      Else
+        EmitInstrAB('MOV', 'AX', IntToStr(E.ImmVal));
+      E.Kind := EK_AX;
+    End;
+    EK_AX :
+      ;  (* deja dans AX *)
+    EK_MEM :
+    Begin
+      (* Chaine litterale : OFFSET label dans DataTab *)
+      If (E.TypeIdx = TY_IDX_CHARACTER) And
+         (E.Offset >= 0) And (E.Offset < DataCount) Then
+        EmitInstrAB('MOV', 'AX', 'OFFSET ' + DataTab[E.Offset].LblName)
+      (* Variable : sera gere au TODO 05/09 avec SymTab *)
+      Else If E.SymIdx >= 0 Then
+        EmitInstrAB('MOV', 'AX', '[' + SymTab[E.SymIdx].MangledName + ']')
+      Else
+        EmitInstrAB('XOR', 'AX', 'AX');
+      E.Kind := EK_AX;
+    End;
+    EK_NONE :
+      EmitInstrAB('XOR', 'AX', 'AX');
+  End;
+End;
+
+{ ============================================================
+  TODO 11 - EXPRESSIONS BINAIRES [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- EmitBinOp : emettre l instruction ASM pour AX op BX ---- *)
+(* AX = operande gauche, BX = operande droite.                   *)
+(* Resultat dans AX.                                              *)
+(* TODO 11 : concatenation CONCAT avec SI/DI, comparaison de     *)
+(* chaines via _SASRT_STRCMP, MIN/MAX inline CMP+Jcc+MOV,         *)
+(* propagation des valeurs manquantes (8000h).                    *)
+Procedure EmitBinOp(Const Op : TString; LeftTy, RightTy : Integer);
+Var
+  LblTrue, LblEnd, LblSkip : TString;
+  LblMiss, LblEndMiss      : TString;
+  IsStrCmp                  : Boolean;
+  NeedMissCheck             : Boolean;
+Begin
+  IsStrCmp := (LeftTy = TY_IDX_CHARACTER) And (RightTy = TY_IDX_CHARACTER);
+
+  (* Propagation des valeurs manquantes pour operations numeriques *)
+  (* Si un operande = 8000h, le resultat = 8000h (manquant)       *)
+  NeedMissCheck := (Not IsStrCmp) And
+                   (Op <> '||') And (Op <> '!!') And
+                   (Op <> 'AND') And (Op <> '&') And
+                   (Op <> 'OR') And (Op <> '|');
+
+  If NeedMissCheck Then
+  Begin
+    LblMiss    := LabelGen;
+    LblEndMiss := LabelGen;
+    EmitInstrAB('CMP', 'AX', '8000h');
+    EmitInstrA('JE', LblMiss);
+    EmitInstrAB('CMP', 'BX', '8000h');
+    EmitInstrA('JE', LblMiss);
+  End;
+
+  (* Arithmetique entiere : ADD/SUB/IMUL/IDIV *)
+  If Op = '+' Then
+  Begin
+    If (LeftTy = TY_IDX_CHARACTER) Or (RightTy = TY_IDX_CHARACTER) Then
+    Begin
+      EmitInstrAB('MOV', 'SI', 'AX');
+      EmitInstrAB('MOV', 'DI', 'BX');
+      EmitInstrA('CALL', SAS_RT_PFX + 'CONCAT');
+    End
+    Else
+      EmitInstrAB('ADD', 'AX', 'BX');
+  End
+  Else If Op = '-' Then
+    EmitInstrAB('SUB', 'AX', 'BX')
+  Else If Op = '*' Then
+    EmitInstrA('IMUL', 'BX')
+  Else If Op = '/' Then
+  Begin
+    EmitInstr('CWD');
+    EmitInstrA('IDIV', 'BX');
+  End
+  (* Puissance : ** -> CALL _SASRT_POW(AX=base, BX=exposant) *)
+  Else If Op = '**' Then
+    EmitInstrA('CALL', SAS_RT_PFX + 'POW')
+  (* Concatenation : || -> CALL _SASRT_CONCAT(SI=gauche, DI=droite) *)
+  Else If (Op = '||') Or (Op = '!!') Then
+  Begin
+    EmitInstrAB('MOV', 'SI', 'AX');
+    EmitInstrAB('MOV', 'DI', 'BX');
+    EmitInstrA('CALL', SAS_RT_PFX + 'CONCAT');
+  End
+  (* MIN/MAX inline : CMP + JLE/JGE + MOV *)
+  Else If Op = '<>' Then
+  Begin
+    LblSkip := LabelGen;
+    EmitInstrAB('CMP', 'AX', 'BX');
+    EmitInstrA('JLE', LblSkip);
+    EmitInstrAB('MOV', 'AX', 'BX');
+    EmitLabel(LblSkip);
+  End
+  Else If Op = '><' Then
+  Begin
+    LblSkip := LabelGen;
+    EmitInstrAB('CMP', 'AX', 'BX');
+    EmitInstrA('JGE', LblSkip);
+    EmitInstrAB('MOV', 'AX', 'BX');
+    EmitLabel(LblSkip);
+  End
+  (* Comparaison : CMP + Jcc pour =, ^=, <, <=, >, >=            *)
+  (* Chaines : CALL _SASRT_STRCMP(SI=str1, DI=str2) -> drapeaux   *)
+  Else If (Op = '=') Or (Op = 'EQ') Then
+  Begin
+    LblTrue := LabelGen;
+    LblEnd  := LabelGen;
+    If IsStrCmp Then
+    Begin
+      EmitInstrAB('MOV', 'SI', 'AX');
+      EmitInstrAB('MOV', 'DI', 'BX');
+      EmitInstrA('CALL', SAS_RT_PFX + 'STRCMP');
+    End
+    Else
+      EmitInstrAB('CMP', 'AX', 'BX');
+    EmitInstrA('JE', LblTrue);
+    EmitInstrAB('XOR', 'AX', 'AX');
+    EmitInstrA('JMP', LblEnd);
+    EmitLabel(LblTrue);
+    EmitInstrAB('MOV', 'AX', '1');
+    EmitLabel(LblEnd);
+  End
+  Else If (Op = '^=') Or (Op = 'NE') Then
+  Begin
+    LblTrue := LabelGen;
+    LblEnd  := LabelGen;
+    If IsStrCmp Then
+    Begin
+      EmitInstrAB('MOV', 'SI', 'AX');
+      EmitInstrAB('MOV', 'DI', 'BX');
+      EmitInstrA('CALL', SAS_RT_PFX + 'STRCMP');
+    End
+    Else
+      EmitInstrAB('CMP', 'AX', 'BX');
+    EmitInstrA('JNE', LblTrue);
+    EmitInstrAB('XOR', 'AX', 'AX');
+    EmitInstrA('JMP', LblEnd);
+    EmitLabel(LblTrue);
+    EmitInstrAB('MOV', 'AX', '1');
+    EmitLabel(LblEnd);
+  End
+  Else If (Op = '<') Or (Op = 'LT') Then
+  Begin
+    LblTrue := LabelGen;
+    LblEnd  := LabelGen;
+    If IsStrCmp Then
+    Begin
+      EmitInstrAB('MOV', 'SI', 'AX');
+      EmitInstrAB('MOV', 'DI', 'BX');
+      EmitInstrA('CALL', SAS_RT_PFX + 'STRCMP');
+    End
+    Else
+      EmitInstrAB('CMP', 'AX', 'BX');
+    EmitInstrA('JL', LblTrue);
+    EmitInstrAB('XOR', 'AX', 'AX');
+    EmitInstrA('JMP', LblEnd);
+    EmitLabel(LblTrue);
+    EmitInstrAB('MOV', 'AX', '1');
+    EmitLabel(LblEnd);
+  End
+  Else If (Op = '<=') Or (Op = 'LE') Then
+  Begin
+    LblTrue := LabelGen;
+    LblEnd  := LabelGen;
+    If IsStrCmp Then
+    Begin
+      EmitInstrAB('MOV', 'SI', 'AX');
+      EmitInstrAB('MOV', 'DI', 'BX');
+      EmitInstrA('CALL', SAS_RT_PFX + 'STRCMP');
+    End
+    Else
+      EmitInstrAB('CMP', 'AX', 'BX');
+    EmitInstrA('JLE', LblTrue);
+    EmitInstrAB('XOR', 'AX', 'AX');
+    EmitInstrA('JMP', LblEnd);
+    EmitLabel(LblTrue);
+    EmitInstrAB('MOV', 'AX', '1');
+    EmitLabel(LblEnd);
+  End
+  Else If (Op = '>') Or (Op = 'GT') Then
+  Begin
+    LblTrue := LabelGen;
+    LblEnd  := LabelGen;
+    If IsStrCmp Then
+    Begin
+      EmitInstrAB('MOV', 'SI', 'AX');
+      EmitInstrAB('MOV', 'DI', 'BX');
+      EmitInstrA('CALL', SAS_RT_PFX + 'STRCMP');
+    End
+    Else
+      EmitInstrAB('CMP', 'AX', 'BX');
+    EmitInstrA('JG', LblTrue);
+    EmitInstrAB('XOR', 'AX', 'AX');
+    EmitInstrA('JMP', LblEnd);
+    EmitLabel(LblTrue);
+    EmitInstrAB('MOV', 'AX', '1');
+    EmitLabel(LblEnd);
+  End
+  Else If (Op = '>=') Or (Op = 'GE') Then
+  Begin
+    LblTrue := LabelGen;
+    LblEnd  := LabelGen;
+    If IsStrCmp Then
+    Begin
+      EmitInstrAB('MOV', 'SI', 'AX');
+      EmitInstrAB('MOV', 'DI', 'BX');
+      EmitInstrA('CALL', SAS_RT_PFX + 'STRCMP');
+    End
+    Else
+      EmitInstrAB('CMP', 'AX', 'BX');
+    EmitInstrA('JGE', LblTrue);
+    EmitInstrAB('XOR', 'AX', 'AX');
+    EmitInstrA('JMP', LblEnd);
+    EmitLabel(LblTrue);
+    EmitInstrAB('MOV', 'AX', '1');
+    EmitLabel(LblEnd);
+  End
+  Else If Op = 'IN' Then
+    EmitInstrA('CALL', SAS_RT_PFX + 'INLIST')
+  (* Logiques : AND/OR traites par court-circuit dans ParseExprPrec *)
+  (* mais on garde un fallback ici pour les cas non court-circuites *)
+  Else If (Op = 'AND') Or (Op = '&') Then
+    EmitInstrAB('AND', 'AX', 'BX')
+  Else If (Op = 'OR') Or (Op = '|') Then
+    EmitInstrAB('OR', 'AX', 'BX')
+  Else
+    EmitComment('EmitBinOp: operateur inconnu: ' + Op);
+
+  (* Fin de la propagation des valeurs manquantes *)
+  If NeedMissCheck Then
+  Begin
+    EmitInstrA('JMP', LblEndMiss);
+    EmitLabel(LblMiss);
+    EmitInstrAB('MOV', 'AX', '8000h');
+    EmitLabel(LblEndMiss);
+  End;
+End;
+
+(* ---- ParsePrimary : atome du parseur Pratt ------------------- *)
+(* Gere : litteraux (entiers, reels, chaines), . (valeur manquante) *)
+(* identificateurs (variables), groupement parenthese (expr),      *)
+(* fonctions internes (ABS, SUBSTR, etc.), acces tableau,          *)
+(* variables automatiques (_N_, _ERROR_), macro-variables.         *)
+Procedure ParsePrimary(Var Res : TExprVal);
+Var
+  T      : TToken;
+  SIdx   : Integer;
+  FName  : TString;
+  ArrIdx : TExprVal;
+  ArrI   : Integer;
+  MVName : TString;
+  MVVal  : TString;
+  MVCode : Integer;
+  MVNum  : LongInt;
+  LblIdx : Integer;
+Begin
+  ExprMakeNone(Res);
+
+  Case CurToken.Kind Of
+    (* Litteraux numeriques et chaines *)
+    TK_INTEGER, TK_FLOAT, TK_STRING :
+    Begin
+      T := CurToken;
+      ParserAdvance;
+      LitEval(T, Res);
+    End;
+
+    (* . (valeur manquante) ou ( groupement *)
+    TK_PUNCT :
+    Begin
+      If CurToken.Val = '.' Then
+      Begin
+        ParserAdvance;
+        ExprMakeMissing(Res);
+      End
+      Else If CurToken.Val = '(' Then
+      Begin
+        (* Groupement parenthese *)
+        ParserAdvance;
+        ParseExprPrec(1, Res);
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance
+        Else
+          CompileError(''')'' manquant');
+      End
+      Else
+      Begin
+        CompileError('expression attendue, token inattendu : ' + CurToken.Val);
+        ParserAdvance;
+      End;
+    End;
+
+    (* Identificateur : variable, fonction interne, ou appel externe *)
+    TK_IDENT, TK_KEYWORD :
+    Begin
+      T := CurToken;
+      FName := StrUpperCase(T.Val);
+      ParserAdvance;
+
+      (* Verifier si c est un appel de fonction (suivi de parenthese) *)
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        (* Fonction interne reconnue ? *)
+        If IsBuiltinFunc(FName) Then
+          ParseFuncCall(FName, Res)
+        Else
+        Begin
+          (* Appel de fonction externe : stub pour TODO 16 *)
+          WarnMsg('appel de fonction ' + FName + '() : stub (TODO 16)');
+          ParserAdvance;  (* consommer ( *)
+          While (CurToken.Kind <> TK_EOF) And
+                Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+            ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+          ExprMakeImm(0, TY_IDX_NUMERIC, Res);
+          Res.Kind := EK_AX;
+        End;
+      End
+      (* Acces tableau avec accolades : array{indice} *)
+      Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val[1] = CH_LBRACE) Then
+      Begin
+        ParserAdvance;  (* consommer { *)
+
+        (* Chercher dans ArrayTab d abord (TODO 15) *)
+        ArrI := ArrayFind(FName);
+        If ArrI >= 0 Then
+        Begin
+          SIdx := ArrayTab[ArrI].SymIdx;
+          (* Parser l indice *)
+          ParseExprPrec(1, ArrIdx);
+          (* Consommer } *)
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val[1] = CH_RBRACE) Then
+            ParserAdvance
+          Else
+            CompileError('"}" manquant apres indice de tableau');
+          (* Generer le code d acces base-1 :                         *)
+          (* offset = base_offset + (indice - 1) * elem_size         *)
+          ExprFlushToAX(ArrIdx);
+          EmitComment('acces tableau ' + FName + '{i}');
+          EmitInstrA('DEC', 'AX');  (* base 1 -> base 0 *)
+          If ArrayTab[ArrI].IsChar Then
+          Begin
+            EmitInstrAB('MOV', 'BX', IntToStr(ArrayTab[ArrI].ElemLen));
+            EmitInstrA('IMUL', 'BX');
+          End
+          Else
+            EmitInstrAB('SHL', 'AX', '1');  (* * 2 pour NUMERIC *)
+          EmitInstrAB('ADD', 'AX',
+                       IntToStr(ArrayTab[ArrI].BaseOffset));
+          EmitInstrAB('MOV', 'BX', 'AX');
+          If ArrayTab[ArrI].IsChar Then
+            EmitInstrAB('LEA', 'AX', '[_SAS_PDV + BX]')
+          Else
+            EmitInstrAB('MOV', 'AX', 'WORD PTR [_SAS_PDV + BX]');
+          Res.Kind    := EK_AX;
+          If ArrayTab[ArrI].IsChar Then
+            Res.TypeIdx := TY_IDX_CHARACTER
+          Else
+            Res.TypeIdx := TY_IDX_NUMERIC;
+          Res.ImmVal  := 0;
+          Res.Offset  := ArrayTab[ArrI].BaseOffset;
+          Res.SymIdx  := SIdx;
+        End
+        Else
+        Begin
+          (* Pas dans ArrayTab : fallback SymTab *)
+          SIdx := SymFind(FName);
+          If SIdx < 0 Then
+          Begin
+            WarnMsg('tableau "' + FName + '" non declare');
+            SIdx := VarAlloc(FName, TY_IDX_NUMERIC, 0);
+          End;
+          (* Parser l indice *)
+          ParseExprPrec(1, ArrIdx);
+          (* Consommer } *)
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val[1] = CH_RBRACE) Then
+            ParserAdvance
+          Else
+            CompileError('"}" manquant apres indice de tableau');
+          (* Generer le code d acces : base + (i-1) * taille element *)
+          ExprFlushToAX(ArrIdx);
+          EmitComment('acces tableau ' + FName + '{i}');
+          EmitInstrA('DEC', 'AX');  (* base 1 -> base 0 *)
+          If SymTab[SIdx].TypeIdx = TY_IDX_CHARACTER Then
+          Begin
+            EmitInstrAB('MOV', 'BX', IntToStr(SymTab[SIdx].VarLen));
+            EmitInstrA('IMUL', 'BX');
+          End
+          Else
+            EmitInstrAB('SHL', 'AX', '1');
+          EmitInstrAB('ADD', 'AX',
+                       IntToStr(SymTab[SIdx].Offset));
+          EmitInstrAB('MOV', 'BX', 'AX');
+          If SymTab[SIdx].TypeIdx = TY_IDX_CHARACTER Then
+            EmitInstrAB('LEA', 'AX', '[_SAS_PDV + BX]')
+          Else
+            EmitInstrAB('MOV', 'AX', 'WORD PTR [_SAS_PDV + BX]');
+          Res.Kind    := EK_AX;
+          Res.TypeIdx := SymTab[SIdx].TypeIdx;
+          Res.ImmVal  := 0;
+          Res.Offset  := SymTab[SIdx].Offset;
+          Res.SymIdx  := SIdx;
+        End;
+      End
+      Else
+      Begin
+        (* TODO 23 : FIRST.var / LAST.var *)
+        If ((FName = 'FIRST') Or (FName = 'LAST')) And
+           (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
+        Begin
+          ParserAdvance;  (* consommer . *)
+          If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+          Begin
+            FName := FName + '.' + StrUpperCase(CurToken.Val);
+            ParserAdvance;
+          End
+          Else
+            WarnMsg(FName + '. doit etre suivi d''un nom de variable');
+        End;
+
+        (* Variable simple : rechercher dans SymTab *)
+        SIdx := SymFind(FName);
+        If SIdx >= 0 Then
+          VarLoad(SIdx, Res)
+        Else
+        Begin
+          (* Variable non declaree : allocation automatique (numerique) *)
+          SIdx := VarAlloc(FName, TY_IDX_NUMERIC, 0);
+          If SIdx >= 0 Then
+            VarLoad(SIdx, Res)
+          Else
+            ExprMakeImm(0, TY_IDX_NUMERIC, Res);
+        End;
+      End;
+    End;
+
+    (* Macro-variable &var (TODO 21) *)
+    TK_AMPERSAND :
+    Begin
+      (* Resoudre la macro-variable et generer la valeur *)
+      MVName := CurToken.Val;
+      (* Retirer le & initial si present *)
+      If (Length(MVName) > 1) And (MVName[1] = '&') Then
+        Delete(MVName, 1, 1);
+      ParserAdvance;
+      MVVal := MacroVarResolve(MVName);
+      (* Essayer d interpreter comme un entier *)
+      Val(MVVal, MVNum, MVCode);
+      If MVCode = 0 Then
+      Begin
+        (* Valeur numerique *)
+        ExprMakeImm(MVNum, TY_IDX_NUMERIC, Res);
+      End
+      Else
+      Begin
+        (* Valeur chaine : enregistrer comme constante *)
+        If MVVal = '' Then
+          ExprMakeImm(0, TY_IDX_NUMERIC, Res)
+        Else
+        Begin
+          LblIdx := DataAddStr(MVVal);
+          If LblIdx >= 0 Then
+          Begin
+            EmitComment('&' + MVName + ' = ' + MVVal);
+            EmitInstrAB('MOV', 'AX', 'OFFSET ' + DataTab[LblIdx].LblName);
+            Res.Kind    := EK_AX;
+            Res.TypeIdx := TY_IDX_CHARACTER;
+            Res.ImmVal  := 0;
+            Res.Offset  := 0;
+            Res.SymIdx  := -1;
+          End
+          Else
+            ExprMakeImm(0, TY_IDX_NUMERIC, Res);
+        End;
+      End;
+    End;
+
+  Else
+    CompileError('expression attendue, token inattendu : ' + CurToken.Val);
+    ParserAdvance;
+  End;
+End;
+
+(* ---- ParseUnary : operateurs unaires SAS -------------------- *)
+(* Gere : + (identite), - (negation), NOT / ^ / ~ (negation log) *)
+Procedure ParseUnary(Var Res : TExprVal);
+Var
+  Op      : TString;
+  LblSkip : TString;
+Begin
+  (* + - unaire *)
+  If (CurToken.Kind = TK_OP) And
+     ((CurToken.Val = '+') Or (CurToken.Val = '-')) Then
+  Begin
+    Op := CurToken.Val;
+    ParserAdvance;
+    ParseUnary(Res);  (* recursion pour -(-x) etc. *)
+    If Op = '-' Then
+    Begin
+      If Res.Kind = EK_IMM Then
+        Res.ImmVal := -Res.ImmVal
+      Else
+      Begin
+        ExprFlushToAX(Res);
+        EmitInstrA('NEG', 'AX');
+        Res.Kind := EK_AX;
+      End;
+    End;
+    (* Op = '+' : pas d action *)
+    Exit;
+  End;
+
+  (* NOT / ^ / ~ : negation logique *)
+  If ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'NOT')) Or
+     ((CurToken.Kind = TK_OP) And (CurToken.Val = 'NOT')) Then
+  Begin
+    ParserAdvance;
+    ParseUnary(Res);
+    If Res.Kind = EK_IMM Then
+    Begin
+      If Res.ImmVal = 0 Then
+        Res.ImmVal := 1
+      Else
+        Res.ImmVal := 0;
+    End
+    Else
+    Begin
+      ExprFlushToAX(Res);
+      (* NOT logique : AX<>0 -> 0, AX=0 -> 1 *)
+      EmitInstrAB('TEST', 'AX', 'AX');
+      EmitInstrAB('MOV', 'AX', '0');
+      LblSkip := LabelGen;
+      EmitInstrA('JNZ', LblSkip);
+      EmitInstrAB('MOV', 'AX', '1');
+      EmitLabel(LblSkip);
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_NUMERIC;
+    End;
+    Exit;
+  End;
+
+  (* Pas d operateur unaire : appeler ParsePrimary *)
+  ParsePrimary(Res);
+End;
+
+(* ---- ParseExprPrec : boucle Pratt complete ------------------- *)
+(* MinPrec = niveau de precedence minimal a capturer.             *)
+(* Gere le court-circuit pour AND et OR.                          *)
+(* AX = gauche, BX = droite pour emission binaire.                *)
+Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal);
+Var
+  Op       : TString;
+  Prec     : Integer;
+  NextPrec : Integer;
+  Right    : TExprVal;
+  LblSkip  : TString;
+Begin
+  ParseUnary(Res);
+
+  Repeat
+    Op   := '';
+    Prec := 0;
+
+    (* Detecter operateur binaire *)
+    If CurToken.Kind = TK_OP Then
+    Begin
+      Op   := CurToken.Val;
+      Prec := BinOpPrec(Op);
+    End
+    (* Mots-cles operateurs : AND OR NOT EQ NE LT LE GT GE IN *)
+    Else If (CurToken.Kind = TK_KEYWORD) And
+            ((CurToken.Val = 'AND') Or (CurToken.Val = 'OR') Or
+             (CurToken.Val = 'EQ')  Or (CurToken.Val = 'NE') Or
+             (CurToken.Val = 'LT')  Or (CurToken.Val = 'LE') Or
+             (CurToken.Val = 'GT')  Or (CurToken.Val = 'GE') Or
+             (CurToken.Val = 'IN')) Then
+    Begin
+      Op   := CurToken.Val;
+      Prec := BinOpPrec(Op);
+    End;
+
+    (* Fin de la boucle si pas d operateur ou precedence insuffisante *)
+    If (Prec = 0) Or (Prec < MinPrec) Then Break;
+
+    (* Consommer l operateur *)
+    ParserAdvance;
+
+    (* Calculer la precedence pour le cote droit *)
+    If BinOpIsRight(Op) Then
+      NextPrec := Prec      (* droit-associatif : meme precedence *)
+    Else
+      NextPrec := Prec + 1; (* gauche-associatif : precedence + 1 *)
+
+    (* Court-circuit AND : si gauche=0, sauter le cote droit *)
+    If (Op = 'AND') Or (Op = '&') Then
+    Begin
+      ExprFlushToAX(Res);
+      LblSkip := LabelGen;
+      EmitInstrAB('TEST', 'AX', 'AX');
+      EmitInstrA('JZ', LblSkip);
+      ParseExprPrec(NextPrec, Right);
+      ExprFlushToAX(Right);
+      EmitLabel(LblSkip);
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_NUMERIC;
+      Res.SymIdx  := -1;
+      Continue;
+    End;
+
+    (* Court-circuit OR : si gauche<>0, sauter le cote droit *)
+    If (Op = 'OR') Or (Op = '|') Then
+    Begin
+      ExprFlushToAX(Res);
+      LblSkip := LabelGen;
+      EmitInstrAB('TEST', 'AX', 'AX');
+      EmitInstrA('JNZ', LblSkip);
+      ParseExprPrec(NextPrec, Right);
+      ExprFlushToAX(Right);
+      EmitLabel(LblSkip);
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_NUMERIC;
+      Res.SymIdx  := -1;
+      Continue;
+    End;
+
+    (* Pliage de constantes pour operateurs arithmetiques simples *)
+    If (Res.Kind = EK_IMM) Then
+    Begin
+      ParseExprPrec(NextPrec, Right);
+      If Right.Kind = EK_IMM Then
+      Begin
+        (* Pliage de constantes *)
+        If Op = '+' Then
+          Res.ImmVal := Res.ImmVal + Right.ImmVal
+        Else If Op = '-' Then
+          Res.ImmVal := Res.ImmVal - Right.ImmVal
+        Else If Op = '*' Then
+          Res.ImmVal := Res.ImmVal * Right.ImmVal
+        Else If (Op = '/') And (Right.ImmVal <> 0) Then
+          Res.ImmVal := Res.ImmVal Div Right.ImmVal
+        Else If (Op = '=') Or (Op = 'EQ') Then
+        Begin If Res.ImmVal = Right.ImmVal Then Res.ImmVal := 1 Else Res.ImmVal := 0; End
+        Else If (Op = '^=') Or (Op = 'NE') Then
+        Begin If Res.ImmVal <> Right.ImmVal Then Res.ImmVal := 1 Else Res.ImmVal := 0; End
+        Else If (Op = '<') Or (Op = 'LT') Then
+        Begin If Res.ImmVal < Right.ImmVal Then Res.ImmVal := 1 Else Res.ImmVal := 0; End
+        Else If (Op = '<=') Or (Op = 'LE') Then
+        Begin If Res.ImmVal <= Right.ImmVal Then Res.ImmVal := 1 Else Res.ImmVal := 0; End
+        Else If (Op = '>') Or (Op = 'GT') Then
+        Begin If Res.ImmVal > Right.ImmVal Then Res.ImmVal := 1 Else Res.ImmVal := 0; End
+        Else If (Op = '>=') Or (Op = 'GE') Then
+        Begin If Res.ImmVal >= Right.ImmVal Then Res.ImmVal := 1 Else Res.ImmVal := 0; End
+        Else If Op = '<>' Then
+        Begin If Res.ImmVal < Right.ImmVal Then (* min *) Else Res.ImmVal := Right.ImmVal; End
+        Else If Op = '><' Then
+        Begin If Res.ImmVal > Right.ImmVal Then (* max *) Else Res.ImmVal := Right.ImmVal; End
+        Else
+        Begin
+          (* Non-pliable : emettre le code *)
+          ExprFlushToAX(Res);
+          EmitInstrA('PUSH', 'AX');
+          ExprFlushToAX(Right);
+          EmitInstrAB('MOV', 'BX', 'AX');
+          EmitInstrA('POP', 'AX');
+          EmitBinOp(Op, Res.TypeIdx, Right.TypeIdx);
+          Res.Kind    := EK_AX;
+          Res.SymIdx  := -1;
+        End;
+        Continue;
+      End;
+      (* Droite non-constante : emettre le code *)
+      ExprFlushToAX(Res);
+      EmitInstrA('PUSH', 'AX');
+      ExprFlushToAX(Right);
+      EmitInstrAB('MOV', 'BX', 'AX');
+      EmitInstrA('POP', 'AX');
+      EmitBinOp(Op, Res.TypeIdx, Right.TypeIdx);
+      Res.Kind    := EK_AX;
+      Res.SymIdx  := -1;
+      Continue;
+    End;
+
+    (* Cas general : emettre le code pour les deux cotes *)
+    ExprFlushToAX(Res);
+    EmitInstrA('PUSH', 'AX');
+    ParseExprPrec(NextPrec, Right);
+    ExprFlushToAX(Right);
+    EmitInstrAB('MOV', 'BX', 'AX');
+    EmitInstrA('POP', 'AX');
+    EmitBinOp(Op, Res.TypeIdx, Right.TypeIdx);
+    Res.Kind    := EK_AX;
+    Res.SymIdx  := -1;
+  Until False;
+End;
+
+(* ---- ParseExpr : point d entree pour parser une expression --- *)
+Procedure ParseExpr(Var Res : TExprVal);
+Begin
+  ParseExprPrec(1, Res);
+End;
+
+{ ============================================================
+  TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- SymNameClean : nettoyer un nom pour nommage ASM -------- *)
+(* Remplace les caracteres non alphanumeriques par '_'.           *)
+(* SAS est insensible a la casse : le nom est deja en majuscules. *)
+Function SymNameClean(Const Name : TString) : TString;
+Var
+  S : TString;
+  I : Integer;
+Begin
+  S := '';
+  For I := 1 To Length(Name) Do
+  Begin
+    If IsIdentCont(Name[I]) Then
+    Begin
+      If Length(S) < MAX_STR Then S := S + Name[I];
+    End
+    Else
+    Begin
+      If Length(S) < MAX_STR Then S := S + '_';
+    End;
+  End;
+  If S = '' Then S := '_anon';
+  SymNameClean := S;
+End;
+
+(* ---- SymMangle : generer un label ASM depuis un symbole ----- *)
+(* Le prefixe depend de la categorie du symbole.                  *)
+(*   SC_VAR      -> _SASV_  (variable dans le PDV)                *)
+(*   SC_ARRAY    -> _SASV_  (tableau = variable aussi)            *)
+(*   SC_FORMAT   -> _SASF_  (format utilisateur)                  *)
+(*   SC_INFORMAT -> _SASF_  (informat)                            *)
+(*   SC_LABEL    -> _SASL_  (label de saut)                       *)
+(*   SC_MACRO    -> _SASM_  (macro)                               *)
+(*   SC_MACROVAR -> _SASM_  (macro-variable)                      *)
+(*   SC_DATASET  -> _SASD_  (dataset)                             *)
+(*   SC_PROC     -> _SASP_  (procedure SAS)                       *)
+Function SymMangle(Const Name : TString; Cat : TSymCat) : TString;
+Var
+  Pfx   : TString;
+  Clean : TString;
+Begin
+  Clean := SymNameClean(Name);
+  Case Cat Of
+    SC_VAR      : Pfx := SAS_VAR_PFX;
+    SC_ARRAY    : Pfx := SAS_VAR_PFX;
+    SC_FORMAT   : Pfx := SAS_FMT_PFX;
+    SC_INFORMAT : Pfx := SAS_FMT_PFX;
+    SC_LABEL    : Pfx := SAS_LBL_PFX;
+    SC_MACRO    : Pfx := SAS_MAC_PFX;
+    SC_MACROVAR : Pfx := SAS_MAC_PFX;
+    SC_DATASET  : Pfx := SAS_DS_PFX;
+    SC_PROC     : Pfx := SAS_PROC_PFX;
+  Else
+    Pfx := SAS_VAR_PFX;
+  End;
+  SymMangle := Pfx + Clean;
+End;
+
+(* ---- SymFind : chercher un symbole par nom ------------------- *)
+(* Parcourt la table du plus recent au plus ancien.                *)
+(* SAS est insensible a la casse : la comparaison est en           *)
+(* majuscules (les noms sont stockes en majuscules).               *)
+(* Retourne l indice (0-base) ou -1 si non trouve.                 *)
+Function SymFind(Const Name : TString) : Integer;
+Var
+  I  : Integer;
+  Up : TString;
+Begin
+  Up := StrUpperCase(Name);
+  For I := SymCount - 1 DownTo 0 Do
+    If SymTab[I].Name = Up Then
+    Begin
+      SymFind := I;
+      Exit;
+    End;
+  SymFind := -1;
+End;
+
+(* ---- SymFindInScope : chercher un symbole dans un scope ----- *)
+(* Retourne l indice (0-base) ou -1 si non trouve.                *)
+Function SymFindInScope(Const Name : TString;
+                        Level : Integer) : Integer;
+Var
+  I  : Integer;
+  Up : TString;
+Begin
+  Up := StrUpperCase(Name);
+  For I := SymCount - 1 DownTo 0 Do
+    If (SymTab[I].Name = Up) And
+       (SymTab[I].ScopeLevel = Level) Then
+    Begin
+      SymFindInScope := I;
+      Exit;
+    End;
+  SymFindInScope := -1;
+End;
+
+(* ---- SymAdd : ajouter un symbole dans la table -------------- *)
+(* Retourne l indice du symbole (0-base) ou -1 si table pleine.   *)
+(* Le nom est converti en majuscules (SAS insensible a la casse). *)
+Function SymAdd(Const AName : TString; ACat : TSymCat;
+                ATypeIdx : Integer; AOffset : Integer) : Integer;
+Var
+  Idx : Integer;
+  Up  : TString;
+Begin
+  If SymCount >= MAX_SYM Then
+  Begin
+    CompileError('table des symboles pleine (max=' + IntToStr(MAX_SYM) + ')');
+    SymAdd := -1;
+    Exit;
+  End;
+  Up  := StrUpperCase(AName);
+  Idx := SymCount;
+  SymTab[Idx].Name        := Up;
+  SymTab[Idx].MangledName := SymMangle(Up, ACat);
+  SymTab[Idx].Cat         := ACat;
+  SymTab[Idx].TypeIdx     := ATypeIdx;
+  SymTab[Idx].ScopeLevel  := CurScope;
+  SymTab[Idx].Offset      := AOffset;
+  SymTab[Idx].VarLen      := 0;
+  SymTab[Idx].IsRetained  := False;
+  SymTab[Idx].IsDropped   := False;
+  SymTab[Idx].IsKept      := False;
+  SymTab[Idx].DeclLine    := CurToken.Line;
+  Inc(SymCount);
+  Inc(TotalSyms);
+
+  If Opts.DebugMode Then
+    WriteLn('  SYM_ADD[', Idx, ']: ', Up,
+            ' cat=', Ord(ACat),
+            ' scope=', CurScope,
+            ' -> ', SymTab[Idx].MangledName);
+
+  SymAdd := Idx;
+End;
+
+(* ---- SymEnterScope : entrer dans une nouvelle portee --------- *)
+(* Sauvegarde le SymCount courant sur la pile de portees.          *)
+Procedure SymEnterScope;
+Begin
+  If ScopeTop >= MAX_SCOPE Then
+  Begin
+    CompileError('profondeur de portee maximale atteinte (max='
+                 + IntToStr(MAX_SCOPE) + ')');
+    Exit;
+  End;
+  ScopeStack[ScopeTop] := SymCount;
+  Inc(ScopeTop);
+  Inc(CurScope);
+  If Opts.DebugMode Then
+    WriteLn('  SCOPE_ENTER: level=', CurScope);
+End;
+
+(* ---- SymLeaveScope : quitter la portee courante -------------- *)
+(* Retire tous les symboles ajoutes dans cette portee.             *)
+Procedure SymLeaveScope;
+Begin
+  If ScopeTop <= 0 Then Exit;
+  Dec(ScopeTop);
+  SymCount := ScopeStack[ScopeTop];
+  Dec(CurScope);
+  If Opts.DebugMode Then
+    WriteLn('  SCOPE_LEAVE: level=', CurScope);
+End;
+
+{ ============================================================
+  TODO 06 - SYSTEME DE TYPES [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- TypeKindOf : retourner le TTypeKind d un indice de type -- *)
+Function TypeKindOf(TypeIdx : Integer) : TTypeKind;
+Begin
+  If (TypeIdx >= 0) And (TypeIdx < TypeCount) Then
+    TypeKindOf := TypeTab[TypeIdx].Kind
+  Else
+    TypeKindOf := TYK_UNKNOWN;
+End;
+
+(* ---- TypeSizeof : taille en octets d un type par son indice --- *)
+(* NUMERIC=2 (entier 16 bits), CHARACTER=longueur (defaut 8),     *)
+(* DATE/TIME/DATETIME=2 (entier 16 bits).                         *)
+Function TypeSizeof(TypeIdx : Integer) : Integer;
+Begin
+  If (TypeIdx >= 0) And (TypeIdx < TypeCount) Then
+    TypeSizeof := TypeTab[TypeIdx].Size
+  Else
+    TypeSizeof := 2;  (* taille par defaut : word *)
+End;
+
+(* ---- TypeMangle : prefixe ASM selon le type pour les labels --- *)
+(* Utilise pour generer des labels distincts par type :            *)
+(*   _SASN_ = numerique, _SASC_ = caractere, _SASD_ = date,      *)
+(*   _SAST_ = time, _SASDT_ = datetime, _SASX_ = inconnu         *)
+Function TypeMangle(TypeIdx : Integer) : TString;
+Begin
+  Case TypeKindOf(TypeIdx) Of
+    TYK_NUMERIC   : TypeMangle := '_SASN_';
+    TYK_CHARACTER : TypeMangle := '_SASC_';
+    TYK_DATE      : TypeMangle := '_SASD_';
+    TYK_TIME      : TypeMangle := '_SAST_';
+    TYK_DATETIME  : TypeMangle := '_SASDT_';
+  Else
+    TypeMangle := '_SASX_';
+  End;
+End;
+
+(* ---- TypeIsNumeric : vrai si le type est un type numerique ---- *)
+(* En SAS : NUMERIC, DATE, TIME, DATETIME sont tous numeriques.   *)
+(* Les dates/times sont stockes comme des entiers.                 *)
+Function TypeIsNumeric(TypeIdx : Integer) : Boolean;
+Var
+  K : TTypeKind;
+Begin
+  K := TypeKindOf(TypeIdx);
+  TypeIsNumeric :=
+    (K = TYK_NUMERIC) Or (K = TYK_DATE) Or
+    (K = TYK_TIME)    Or (K = TYK_DATETIME);
+End;
+
+(* ---- TypeIsPtr : vrai si le type est un pointeur -------------- *)
+(* En SAS, seul CHARACTER est un pointeur (adresse vers chaine).   *)
+Function TypeIsPtr(TypeIdx : Integer) : Boolean;
+Begin
+  TypeIsPtr := (TypeKindOf(TypeIdx) = TYK_CHARACTER);
+End;
+
+(* ---- TypeCanCoerce : la coercition src -> dst est-elle possible *)
+(* En SAS, la conversion implicite est tolerante :                 *)
+(*   num -> char via PUT() (runtime), char -> num via INPUT()      *)
+(*   Meme type -> toujours OK.                                     *)
+(*   Vers UNKNOWN -> toujours OK (perte d information de type).    *)
+(*   date/time/datetime <-> numeric -> OK (memes octets).          *)
+(*   numeric <-> character -> conversion implicite avec warning.   *)
+Function TypeCanCoerce(SrcIdx, DstIdx : Integer) : Boolean;
+Var
+  SK, DK : TTypeKind;
+Begin
+  (* Meme type : trivial *)
+  If SrcIdx = DstIdx Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  (* Vers UNKNOWN : toujours OK *)
+  If DstIdx = TY_UNKNOWN Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  SK := TypeKindOf(SrcIdx);
+  DK := TypeKindOf(DstIdx);
+  (* Tous les numeriques (num/date/time/datetime) entre eux : OK *)
+  If TypeIsNumeric(SrcIdx) And TypeIsNumeric(DstIdx) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  (* Numerique <-> Caractere : conversion implicite SAS (PUT/INPUT) *)
+  If (TypeIsNumeric(SrcIdx) And (DK = TYK_CHARACTER)) Or
+     ((SK = TYK_CHARACTER) And TypeIsNumeric(DstIdx)) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  (* Autres cas : pas de coercition *)
+  TypeCanCoerce := False;
+End;
+
+(* ---- TypeCoerceResult : type du resultat d une operation ------- *)
+(* Deduit le type du resultat en fonction de l operateur et des     *)
+(* types des operandes.                                             *)
+(*   Comparaison (= ^= < > etc.) -> NUMERIC (0 ou 1)               *)
+(*   AND, OR                     -> NUMERIC (booleen)               *)
+(*   Arithmetiques : + - * / puissance -> NUMERIC                   *)
+(*   Concatenation (|| !!)       -> CHARACTER                       *)
+(*   MIN/MAX (<> ><)             -> NUMERIC                         *)
+Function TypeCoerceResult(LeftIdx, RightIdx : Integer;
+                          Const Op : TString) : Integer;
+Var
+  LK, RK : TTypeKind;
+Begin
+  LK := TypeKindOf(LeftIdx);
+  RK := TypeKindOf(RightIdx);
+  (* Operateurs de comparaison -> NUMERIC (0 ou 1) *)
+  If (Op = '=') Or (Op = '^=') Or (Op = '~=') Or
+     (Op = '<') Or (Op = '<=') Or
+     (Op = '>') Or (Op = '>=') Or
+     (Op = 'EQ') Or (Op = 'NE') Or
+     (Op = 'LT') Or (Op = 'LE') Or
+     (Op = 'GT') Or (Op = 'GE') Or
+     (Op = 'IN') Then
+  Begin
+    TypeCoerceResult := TY_IDX_NUMERIC;
+    Exit;
+  End;
+  (* Operateurs logiques -> NUMERIC (0 ou 1) *)
+  If (Op = 'AND') Or (Op = 'OR') Then
+  Begin
+    TypeCoerceResult := TY_IDX_NUMERIC;
+    Exit;
+  End;
+  (* Concatenation -> CHARACTER *)
+  If (Op = '||') Or (Op = '!!') Then
+  Begin
+    TypeCoerceResult := TY_IDX_CHARACTER;
+    Exit;
+  End;
+  (* MIN/MAX -> NUMERIC *)
+  If (Op = '<>') Or (Op = '><') Then
+  Begin
+    TypeCoerceResult := TY_IDX_NUMERIC;
+    Exit;
+  End;
+  (* Operateurs arithmetiques -> NUMERIC *)
+  If (Op = '+') Or (Op = '-') Or (Op = '*') Or
+     (Op = '/') Or (Op = '**') Then
+  Begin
+    (* Si un cote est CHARACTER, SAS convertit implicitement en num *)
+    TypeCoerceResult := TY_IDX_NUMERIC;
+    Exit;
+  End;
+  (* Assignation : type du cote droit *)
+  TypeCoerceResult := RightIdx;
+End;
+
+(* ---- TypeInfer : deduire le type d une expression ------------- *)
+(* Si le TypeIdx de l expression est connu, le retourner.          *)
+(* Sinon, deviner : EK_IMM -> NUMERIC, EK_MEM -> selon contexte.  *)
+Function TypeInfer(Const E : TExprVal) : Integer;
+Begin
+  If E.TypeIdx <> TY_UNKNOWN Then
+    TypeInfer := E.TypeIdx
+  Else If E.Kind = EK_IMM Then
+    TypeInfer := TY_IDX_NUMERIC
+  Else
+    TypeInfer := TY_UNKNOWN;
+End;
+
+(* ---- TypeLookupName : chercher un type par nom ---------------- *)
+(* SAS est insensible a la casse : comparaison en majuscules.      *)
+(* Retourne l indice dans TypeTab ou TY_UNKNOWN si non trouve.     *)
+Function TypeLookupName(Const Name : TString) : Integer;
+Var
+  I  : Integer;
+  Up : TString;
+Begin
+  Up := StrUpperCase(Name);
+  For I := 0 To TypeCount - 1 Do
+    If TypeTab[I].Name = Up Then
+    Begin
+      TypeLookupName := I;
+      Exit;
+    End;
+  TypeLookupName := TY_UNKNOWN;
+End;
+
+{ ============================================================
+  TODO 07 - EMETTEUR DE CODE ASM [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- LabelGen : generer un label unique _SASL_NNNNN ------- *)
+Function LabelGen : TString;
+Var
+  S : TString;
+Begin
+  Inc(LabelGenSeq);
+  Str(LabelGenSeq, S);
+  LabelGen := SAS_LBL_PFX + S;
+End;
+
+(* ---- EmitRaw : ecrire une ligne brute dans le fichier ----- *)
+Procedure EmitRaw(Const S : TString);
+Begin
+  If OutFOpen Then
+    WriteLn(OutF, S);
+End;
+
+(* ---- EmitBlankLine : ligne vide ---------------------------- *)
+Procedure EmitBlankLine;
+Begin
+  If OutFOpen Then
+    WriteLn(OutF);
+End;
+
+(* ---- EmitComment : commentaire ASM '; texte' -------------- *)
+Procedure EmitComment(Const S : TString);
+Begin
+  EmitRaw('; ' + S);
+End;
+
+(* ---- EmitLabel : label ASM suivi de ':' en colonne 0 ------ *)
+Procedure EmitLabel(Const Lbl : TString);
+Begin
+  EmitRaw(Lbl + ':');
+End;
+
+(* ---- EmitInstr : instruction sans operandes (8 espaces) --- *)
+Procedure EmitInstr(Const Mnem : TString);
+Begin
+  EmitRaw('        ' + Mnem);
+End;
+
+(* ---- EmitInstrA : instruction + un operande --------------- *)
+Procedure EmitInstrA(Const Mnem, A1 : TString);
+Begin
+  EmitRaw('        ' + Mnem + ' ' + A1);
+End;
+
+(* ---- EmitInstrAB : instruction + deux operandes ----------- *)
+Procedure EmitInstrAB(Const Mnem, A1, A2 : TString);
+Begin
+  EmitRaw('        ' + Mnem + ' ' + A1 + ', ' + A2);
+End;
+
+(* ---- EmitOpen : ouvrir le fichier de sortie ASM ----------- *)
+Procedure EmitOpen;
+Begin
+  Assign(OutF, Opts.OutFile);
+  Rewrite(OutF);
+  If IOResult <> 0 Then
+    FatalError('impossible de creer ' + Opts.OutFile);
+  OutFOpen := True;
+End;
+
+(* ---- EmitHeader : en-tete ASM .MODEL SMALL ---------------- *)
+(* Genere : .MODEL SMALL / .STACK / _TEXT SEGMENT /            *)
+(* point d entree _SASP_Main / prologue / init DS              *)
+Procedure EmitHeader;
+Begin
+  EmitComment('SAS86 v' + SAS86_VERSION + ' - ' + Opts.SrcFile);
+  EmitRaw('.MODEL SMALL');
+  EmitRaw('.STACK ' + IntToStr(STACK_SIZE));
+  EmitBlankLine;
+  EmitRaw('_TEXT SEGMENT PUBLIC ''CODE''');
+  EmitRaw('        ASSUME CS:_TEXT, DS:_DATA, SS:STACK');
+  EmitBlankLine;
+  (* Point d entree principal *)
+  EmitLabel(SAS_PROC_PFX + 'Main');
+  EmitProlog;
+  (* Initialiser DS *)
+  EmitInstrAB('MOV', 'AX', '_DATA');
+  EmitInstrAB('MOV', 'DS', 'AX');
+  EmitBlankLine;
+End;
+
+(* ---- EmitProlog : prologue de procedure -------------------- *)
+(* PUSH BP / MOV BP,SP                                          *)
+Procedure EmitProlog;
+Begin
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+End;
+
+(* ---- EmitEpilog : epilogue de procedure -------------------- *)
+(* MOV SP,BP / POP BP                                           *)
+Procedure EmitEpilog;
+Begin
+  EmitInstrAB('MOV', 'SP', 'BP');
+  EmitInstrA('POP', 'BP');
+End;
+
+(* ---- EmitDataSeg : emettre _DATA SEGMENT avec DataTab ------ *)
+(* Ecrit les entrees predefinies (PDV, compteurs, CRLF) +        *)
+(* toutes les entrees ajoutees pendant la compilation +           *)
+(* _DATA ENDS                                                     *)
+Procedure EmitDataSeg;
+Var
+  I, J : Integer;
+  S    : TString;
+  B    : Byte;
+Begin
+  EmitRaw('_DATA SEGMENT PUBLIC ''DATA''');
+  EmitBlankLine;
+  EmitComment('--- Donnees predefinies SAS86 ---');
+  (* Emettre toutes les entrees DataTab *)
+  For I := 0 To DataCount - 1 Do
+  Begin
+    Case DataTab[I].Kind Of
+      DK_WORD :
+        EmitRaw(DataTab[I].LblName + '  DW  ' +
+                IntToStr(DataTab[I].IntVal));
+      DK_BYTE :
+        EmitRaw(DataTab[I].LblName + '  DB  ' +
+                IntToStr(DataTab[I].IntVal));
+      DK_STR :
+      Begin
+        (* Construire une ligne DB unique avec segments 'text' et numeriques *)
+        (* Format MASM : 'abc',13,10,'def',0                                *)
+        S := '';
+        For J := 1 To Length(DataTab[I].StrVal) Do
+        Begin
+          B := Ord(DataTab[I].StrVal[J]);
+          If (B < 32) Or (B = Ord('''')) Then
+          Begin
+            (* Fermer le segment texte en cours si ouvert *)
+            If (Length(S) > 0) And (S[Length(S)] <> ',') Then
+              S := S + ''',';
+            (* Emettre la valeur numerique *)
+            S := S + IntToStr(B) + ',';
+          End
+          Else
+          Begin
+            (* Ouvrir un segment texte si necessaire *)
+            If (S = '') Or (S[Length(S)] = ',') Then
+              S := S + '''';
+            S := S + DataTab[I].StrVal[J];
+          End;
+        End;
+        (* Fermer le dernier segment texte si ouvert *)
+        If (Length(S) > 0) And (S[Length(S)] <> ',') Then
+          S := S + ''',';
+        (* Ajouter terminateur zero *)
+        If S = '' Then
+          S := '0'
+        Else
+          S := S + '0';
+        EmitRaw(DataTab[I].LblName + '  DB  ' + S);
+      End;
+      DK_ARRAY_BLK :
+        EmitRaw(DataTab[I].LblName + '  DB  ' +
+                IntToStr(DataTab[I].ElemCount) + ' DUP(0)');
+      DK_RECORD_BLK :
+        EmitRaw(DataTab[I].LblName + '  DB  ' +
+                IntToStr(DataTab[I].ElemCount) + ' DUP(0)');
+    End;
+  End;
+  EmitBlankLine;
+  EmitRaw('_DATA ENDS');
+End;
+
+(* ---- EmitRuntime : emettre runtime minimal SAS86 ----------- *)
+(* Stub : sera complete au TODO 24                               *)
+Procedure EmitRuntime;
+Begin
+  If RuntimeEmitted Then Exit;
+  RuntimeEmitted := True;
+  EmitBlankLine;
+  EmitComment('--- Runtime minimal SAS86 ---');
+  EmitBuiltinRuntime;
+  EmitMinimalRuntime;
+  EmitBlankLine;
+End;
+
+(* ---- EmitClose : fermer le fichier ASM ---------------------- *)
+(* Genere : epilogue / INT 21h / runtime / _TEXT ENDS /          *)
+(* _DATA / END _SASP_Main                                        *)
+Procedure EmitClose;
+Begin
+  EmitBlankLine;
+  EmitComment('--- Fin du code ---');
+  EmitEpilog;
+  (* Terminaison DOS *)
+  EmitInstrAB('MOV', 'AX', '4C00h');
+  EmitInstr('INT 21h');
+  EmitBlankLine;
+  EmitRuntime;
+  EmitRaw('_TEXT ENDS');
+  EmitBlankLine;
+  EmitDataSeg;
+  EmitBlankLine;
+  EmitRaw('END ' + SAS_PROC_PFX + 'Main');
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+{ ============================================================
+  TODO 09 - VARIABLES ET AFFECTATIONS [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- VarAlloc : allouer une variable dans le PDV ------------- *)
+(* Cree un symbole SC_VAR dans la table des symboles avec un      *)
+(* offset dans le PDV (Program Data Vector).                       *)
+(* ATypeIdx : TY_IDX_NUMERIC ou TY_IDX_CHARACTER                  *)
+(* AVarLen  : longueur pour CHARACTER (0 => defaut 8)              *)
+(* Retourne l indice du symbole dans SymTab.                       *)
+Function VarAlloc(Const AName : TString; ATypeIdx : Integer;
+                  AVarLen : Integer) : Integer;
+Var
+  SIdx     : Integer;
+  VarSize  : Integer;
+Begin
+  (* Verifier si deja declaree *)
+  SIdx := SymFind(AName);
+  If SIdx >= 0 Then
+  Begin
+    VarAlloc := SIdx;
+    Exit;
+  End;
+
+  (* Calculer la taille dans le PDV *)
+  If ATypeIdx = TY_IDX_CHARACTER Then
+  Begin
+    If AVarLen <= 0 Then
+      VarSize := 8   (* longueur par defaut en SAS *)
+    Else
+      VarSize := AVarLen;
+  End
+  Else
+    VarSize := 2;  (* NUMERIC : entier 16 bits = 2 octets *)
+
+  (* Verifier debordement du PDV *)
+  If CurPDVOffset + VarSize > MAX_OBS_SIZE Then
+  Begin
+    CompileError('PDV plein : pas assez d espace pour la variable "'
+                 + AName + '" (offset=' + IntToStr(CurPDVOffset)
+                 + ' taille=' + IntToStr(VarSize) + ')');
+    VarAlloc := -1;
+    Exit;
+  End;
+
+  (* Creer le symbole *)
+  SIdx := SymAdd(AName, SC_VAR, ATypeIdx, CurPDVOffset);
+  If SIdx >= 0 Then
+  Begin
+    SymTab[SIdx].VarLen := VarSize;
+    Inc(CurPDVOffset, VarSize);
+  End;
+
+  VarAlloc := SIdx;
+End;
+
+(* ---- VarAddrOf : retourne la chaine d adressage MASM --------- *)
+(* Pour une variable SAS dans le PDV : [_SAS_PDV + offset]         *)
+(* Pour une variable automatique sans offset : [label]             *)
+Function VarAddrOf(SIdx : Integer) : TString;
+Begin
+  If SIdx < 0 Then
+  Begin
+    VarAddrOf := '0';
+    Exit;
+  End;
+  If SymTab[SIdx].Offset = 0 Then
+  Begin
+    (* Variable automatique : _N_ -> _SAS_N, _ERROR_ -> _SAS_ERROR *)
+    If SymTab[SIdx].Name = '_N_' Then
+      VarAddrOf := '[_SAS_N]'
+    Else If SymTab[SIdx].Name = '_ERROR_' Then
+      VarAddrOf := '[_SAS_ERROR]'
+    Else
+      VarAddrOf := '[_SAS_PDV]'
+  End
+  Else
+    VarAddrOf := '[_SAS_PDV + ' + IntToStr(SymTab[SIdx].Offset) + ']';
+End;
+
+(* ---- VarLoad : charger une variable dans AX ------------------- *)
+(* Pour NUMERIC : MOV AX, [_SAS_PDV + offset]                     *)
+(* Pour CHARACTER : LEA AX, [_SAS_PDV + offset] (pointeur)        *)
+Procedure VarLoad(SIdx : Integer; Var Res : TExprVal);
+Var
+  Addr : TString;
+Begin
+  If SIdx < 0 Then
+  Begin
+    Res.Kind    := EK_NONE;
+    Res.ImmVal  := 0;
+    Res.TypeIdx := TY_UNKNOWN;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+    Exit;
+  End;
+
+  Addr := VarAddrOf(SIdx);
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := SymTab[SIdx].TypeIdx;
+  Res.ImmVal  := 0;
+  Res.Offset  := SymTab[SIdx].Offset;
+  Res.SymIdx  := SIdx;
+
+  If SymTab[SIdx].TypeIdx = TY_IDX_CHARACTER Then
+  Begin
+    (* Chaine : charger l adresse (pointeur) *)
+    EmitComment('charger adresse de ' + SymTab[SIdx].Name);
+    EmitInstrAB('LEA', 'AX', '_SAS_PDV + '
+                + IntToStr(SymTab[SIdx].Offset));
+  End
+  Else
+  Begin
+    (* Numerique : charger la valeur *)
+    EmitComment('charger ' + SymTab[SIdx].Name);
+    EmitInstrAB('MOV', 'AX', Addr);
+  End;
+End;
+
+(* ---- VarStore : stocker AX dans une variable du PDV ----------- *)
+(* Suppose que AX contient la valeur (NUMERIC) ou l adresse        *)
+(* source (CHARACTER avec STRCPY).                                  *)
+Procedure VarStore(SIdx : Integer);
+Var
+  Addr : TString;
+Begin
+  If SIdx < 0 Then Exit;
+
+  Addr := VarAddrOf(SIdx);
+
+  If SymTab[SIdx].TypeIdx = TY_IDX_CHARACTER Then
+  Begin
+    (* Copie de chaine : AX = source, destination = PDV offset *)
+    EmitComment('stocker chaine dans ' + SymTab[SIdx].Name);
+    EmitInstrAB('MOV', 'DI', '_SAS_PDV + '
+                + IntToStr(SymTab[SIdx].Offset));
+    EmitInstrAB('MOV', 'CX', IntToStr(SymTab[SIdx].VarLen));
+    EmitInstrA('CALL', SAS_RT_PFX + 'STRCPY');
+  End
+  Else
+  Begin
+    (* Numerique : stocker AX directement *)
+    EmitComment('stocker ' + SymTab[SIdx].Name);
+    EmitInstrAB('MOV', Addr, 'AX');
+  End;
+End;
+
+(* ---- ParseAssign : affectation variable = expression ; -------- *)
+(* SIdx est l indice du symbole cible (deja recherche/alloue).     *)
+(* Consomme le = , parse l expression, stocke le resultat.         *)
+Procedure ParseAssign(SIdx : Integer);
+Var
+  E : TExprVal;
+Begin
+  (* Consommer le = *)
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+    ParserAdvance
+  Else
+  Begin
+    CompileError('"=" attendu dans l affectation');
+    Exit;
+  End;
+
+  (* Parser l expression *)
+  ParseExpr(E);
+
+  (* Charger la valeur dans AX *)
+  ExprFlushToAX(E);
+
+  (* Stocker dans la variable *)
+  VarStore(SIdx);
+
+  (* Consommer ; si present *)
+  If (CurToken.Kind = TK_SEMICOLON) Then
+    ParserAdvance;
+End;
+
+(* ---- ParseRetain : instruction RETAIN var1 var2 ... ; --------- *)
+(* Marque les variables listees pour ne pas etre reinitialisees     *)
+(* entre les iterations du DATA step.                               *)
+Procedure ParseRetain;
+Var
+  SIdx : Integer;
+Begin
+  (* RETAIN est deja consomme par le parseur appelant *)
+  EmitComment('RETAIN');
+
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      SIdx := SymFind(CurToken.Val);
+      If SIdx < 0 Then
+        SIdx := VarAlloc(CurToken.Val, TY_IDX_NUMERIC, 0);
+      If SIdx >= 0 Then
+        SymTab[SIdx].IsRetained := True;
+    End;
+    ParserAdvance;
+  End;
+
+  (* Consommer ; *)
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseDrop : instruction DROP var1 var2 ... ; ------------- *)
+(* Exclut les variables listees du dataset de sortie.              *)
+Procedure ParseDrop;
+Var
+  SIdx : Integer;
+Begin
+  EmitComment('DROP');
+
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      SIdx := SymFind(CurToken.Val);
+      If SIdx < 0 Then
+        SIdx := VarAlloc(CurToken.Val, TY_IDX_NUMERIC, 0);
+      If SIdx >= 0 Then
+        SymTab[SIdx].IsDropped := True;
+    End;
+    ParserAdvance;
+  End;
+
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseKeep : instruction KEEP var1 var2 ... ; ------------- *)
+(* Inclut uniquement les variables listees dans le dataset.        *)
+Procedure ParseKeep;
+Var
+  SIdx : Integer;
+Begin
+  EmitComment('KEEP');
+
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      SIdx := SymFind(CurToken.Val);
+      If SIdx < 0 Then
+        SIdx := VarAlloc(CurToken.Val, TY_IDX_NUMERIC, 0);
+      If SIdx >= 0 Then
+        SymTab[SIdx].IsKept := True;
+    End;
+    ParserAdvance;
+  End;
+
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseRename : instruction RENAME old=new ... ; ----------- *)
+(* Renomme les variables dans le dataset de sortie.                *)
+(* Syntaxe : RENAME old_name = new_name old2 = new2 ... ;         *)
+Procedure ParseRename;
+Var
+  OldName : TString;
+  NewName : TString;
+  SIdx    : Integer;
+Begin
+  EmitComment('RENAME');
+
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If CurToken.Kind <> TK_IDENT Then
+    Begin
+      ParserAdvance;
+      Continue;
+    End;
+
+    OldName := CurToken.Val;
+    ParserAdvance;
+
+    (* Consommer = *)
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+      ParserAdvance
+    Else
+    Begin
+      CompileError('"=" attendu dans RENAME apres "' + OldName + '"');
+      Exit;
+    End;
+
+    (* Nouveau nom *)
+    If CurToken.Kind <> TK_IDENT Then
+    Begin
+      CompileError('identificateur attendu apres "=" dans RENAME');
+      Exit;
+    End;
+    NewName := CurToken.Val;
+    ParserAdvance;
+
+    (* Trouver la variable et la renommer pour le dataset *)
+    SIdx := SymFind(OldName);
+    If SIdx < 0 Then
+      WarnMsg('RENAME : variable "' + OldName + '" non declaree')
+    Else
+    Begin
+      If Opts.DebugMode Then
+        WriteLn('  RENAME: ', OldName, ' -> ', NewName);
+      (* Le mangling du dataset de sortie utilise le nouveau nom *)
+      SymTab[SIdx].MangledName := SymMangle(
+        StrUpperCase(NewName), SC_VAR);
+    End;
+  End;
+
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseLength : instruction LENGTH var1 $n var2 n ... ; ---- *)
+(* Definit la longueur d une variable caractere.                   *)
+(* Syntaxe : LENGTH var $n ; ou LENGTH var1 $n1 var2 $n2 ... ;    *)
+(* $ signifie type CHARACTER, n est la longueur.                   *)
+Procedure ParseLength;
+Var
+  VarName    : TString;
+  IsChar     : Boolean;
+  Len        : Integer;
+  SIdx       : Integer;
+  TIdx       : Integer;
+Begin
+  EmitComment('LENGTH');
+
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If CurToken.Kind <> TK_IDENT Then
+    Begin
+      ParserAdvance;
+      Continue;
+    End;
+
+    VarName := CurToken.Val;
+    ParserAdvance;
+
+    (* Verifier si $ pour type CHARACTER *)
+    IsChar := False;
+    If (CurToken.Kind = TK_IDENT) And (CurToken.Val = '$') Then
+    Begin
+      IsChar := True;
+      ParserAdvance;
+    End
+    Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '$') Then
+    Begin
+      IsChar := True;
+      ParserAdvance;
+    End;
+
+    (* Lire la longueur si un entier suit *)
+    Len := 8;  (* defaut SAS *)
+    If CurToken.Kind = TK_INTEGER Then
+    Begin
+      Len := CurToken.IntVal;
+      If Len <= 0 Then Len := 8;
+      ParserAdvance;
+    End;
+
+    If IsChar Then
+      TIdx := TY_IDX_CHARACTER
+    Else
+      TIdx := TY_IDX_NUMERIC;
+
+    SIdx := SymFind(VarName);
+    If SIdx < 0 Then
+      SIdx := VarAlloc(VarName, TIdx, Len)
+    Else
+    Begin
+      (* Mettre a jour la longueur si deja declaree *)
+      SymTab[SIdx].TypeIdx := TIdx;
+      SymTab[SIdx].VarLen  := Len;
+    End;
+
+    If Opts.DebugMode And (SIdx >= 0) Then
+      WriteLn('  LENGTH: ', VarName, ' type=', TIdx,
+              ' len=', Len);
+  End;
+
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseLabelStmt : instruction LABEL var='libelle' ... ; --- *)
+(* Associe un libelle descriptif a une variable.                   *)
+(* Syntaxe : LABEL var1 = 'Libelle 1' var2 = 'Libelle 2' ... ;   *)
+(* Le libelle est stocke comme commentaire ASM (pas d impact code).*)
+Procedure ParseLabelStmt;
+Var
+  VarName : TString;
+  Lbl     : TString;
+  SIdx    : Integer;
+Begin
+  EmitComment('LABEL');
+
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If CurToken.Kind <> TK_IDENT Then
+    Begin
+      ParserAdvance;
+      Continue;
+    End;
+
+    VarName := CurToken.Val;
+    ParserAdvance;
+
+    (* Consommer = *)
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+      ParserAdvance
+    Else
+    Begin
+      CompileError('"=" attendu dans LABEL apres "' + VarName + '"');
+      Exit;
+    End;
+
+    (* Lire le libelle (chaine) *)
+    If CurToken.Kind = TK_STRING Then
+    Begin
+      Lbl := CurToken.Val;
+      ParserAdvance;
+    End
+    Else
+    Begin
+      CompileError('chaine attendue dans LABEL pour "' + VarName + '"');
+      Exit;
+    End;
+
+    SIdx := SymFind(VarName);
+    If SIdx < 0 Then
+      WarnMsg('LABEL : variable "' + VarName + '" non declaree');
+    EmitComment('  ' + VarName + ' = "' + Lbl + '"');
+
+    If Opts.DebugMode Then
+      WriteLn('  LABEL: ', VarName, ' = "', Lbl, '"');
+  End;
+
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+{ ============================================================
+  TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- IsBuiltinFunc : teste si un nom est une fonction interne SAS *)
+(* Noms en majuscules. Fonctions numeriques et caracteres.           *)
+Function IsBuiltinFunc(Const Name : TString) : Boolean;
+Begin
+  IsBuiltinFunc :=
+    (* Fonctions numeriques *)
+    (Name = 'ABS')    Or (Name = 'INT')    Or (Name = 'ROUND')  Or
+    (Name = 'CEIL')   Or (Name = 'FLOOR')  Or (Name = 'MOD')    Or
+    (Name = 'SQRT')   Or (Name = 'LOG')    Or (Name = 'EXP')    Or
+    (Name = 'MIN')    Or (Name = 'MAX')    Or (Name = 'SIGN')   Or
+    (Name = 'SUM')    Or
+    (* Fonctions caracteres *)
+    (Name = 'SUBSTR') Or (Name = 'TRIM')   Or (Name = 'LEFT')   Or
+    (Name = 'RIGHT')  Or (Name = 'UPCASE') Or (Name = 'LOWCASE') Or
+    (Name = 'INDEX')  Or (Name = 'LENGTH') Or
+    (Name = 'COMPRESS') Or (Name = 'CAT')  Or (Name = 'CATS')   Or
+    (Name = 'CATX')   Or (Name = 'PUT')    Or (Name = 'INPUT')  Or
+    (* Fonctions de date (TODO 22) *)
+    (Name = 'TODAY') Or (Name = 'MDY') Or (Name = 'YEAR') Or
+    (Name = 'MONTH') Or (Name = 'DAY') Or
+    (* Fonction tableau (TODO 15) *)
+    (Name = 'DIM');
+End;
+
+(* ---- ParseFuncCall : parser et emettre un appel de fonction ------ *)
+(* Prereq : le nom est deja consomme, CurToken = '('                 *)
+(* Gere les fonctions internes avec emission de code ASM direct      *)
+(* ou appel runtime SAS86.                                           *)
+Procedure ParseFuncCall(Const FName : TString; Var Res : TExprVal);
+Var
+  Arg1, Arg2, Arg3 : TExprVal;
+  LblPos, LblEnd   : TString;
+  NArgs             : Integer;
+Begin
+  ParserAdvance;  (* consommer ( *)
+  EmitComment(FName + '()');
+
+  (* ========= Fonctions a 1 argument numerique ========= *)
+  If (FName = 'ABS') Or (FName = 'INT') Or (FName = 'ROUND') Or
+     (FName = 'CEIL') Or (FName = 'FLOOR') Or (FName = 'SIGN') Or
+     (FName = 'SQRT') Or (FName = 'LOG') Or (FName = 'EXP') Then
+  Begin
+    ParseExprPrec(1, Arg1);
+    ExprFlushToAX(Arg1);
+
+    If FName = 'ABS' Then
+    Begin
+      (* ABS(x) : si AX < 0, NEG AX *)
+      LblPos := LabelGen;
+      EmitInstrAB('TEST', 'AX', 'AX');
+      EmitInstrA('JNS', LblPos);
+      EmitInstrA('NEG', 'AX');
+      EmitLabel(LblPos);
+    End
+    Else If (FName = 'INT') Or (FName = 'FLOOR') Then
+    Begin
+      (* INT/FLOOR(x) : pour des entiers 16 bits, c est l identite *)
+      (* (pas d operation supplementaire necessaire) *)
+    End
+    Else If FName = 'ROUND' Then
+    Begin
+      (* ROUND(x) : pour des entiers 16 bits, identite *)
+      (* (arrondi applicable seulement aux reels, stub) *)
+    End
+    Else If FName = 'CEIL' Then
+    Begin
+      (* CEIL(x) : pour des entiers 16 bits, identite *)
+    End
+    Else If FName = 'SIGN' Then
+    Begin
+      (* SIGN(x) : -1 si <0, 0 si =0, 1 si >0 *)
+      LblPos := LabelGen;
+      LblEnd := LabelGen;
+      EmitInstrAB('CMP', 'AX', '0');
+      EmitInstrA('JG', LblPos);
+      EmitInstrA('JGE', LblEnd);   (* AX=0 : deja 0, sauter a fin *)
+      (* AX < 0 *)
+      EmitInstrAB('MOV', 'AX', '-1');
+      EmitInstrA('JMP', LblEnd);
+      (* AX > 0 *)
+      EmitLabel(LblPos);
+      EmitInstrAB('MOV', 'AX', '1');
+      EmitLabel(LblEnd);
+    End
+    Else If FName = 'SQRT' Then
+    Begin
+      WarnMsg('SQRT() : approximation entiere (stub)');
+      EmitInstrA('CALL', SAS_RT_PFX + 'SQRT');
+    End
+    Else If FName = 'LOG' Then
+    Begin
+      WarnMsg('LOG() : approximation entiere (stub)');
+      EmitInstrA('CALL', SAS_RT_PFX + 'LOG');
+    End
+    Else If FName = 'EXP' Then
+    Begin
+      WarnMsg('EXP() : approximation entiere (stub)');
+      EmitInstrA('CALL', SAS_RT_PFX + 'EXP');
+    End;
+
+    (* Consommer la virgule si argument optionnel de ROUND *)
+    If (FName = 'ROUND') And
+       (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+    Begin
+      ParserAdvance;
+      ParseExprPrec(1, Arg2);
+      (* ignorer le 2e argument pour ROUND entier *)
+    End;
+
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_NUMERIC;
+    Res.ImmVal  := 0;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+
+  (* ========= MOD(a, b) : modulo ========================= *)
+  Else If FName = 'MOD' Then
+  Begin
+    ParseExprPrec(1, Arg1);
+    ExprFlushToAX(Arg1);
+    EmitInstrA('PUSH', 'AX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+    ParseExprPrec(1, Arg2);
+    ExprFlushToAX(Arg2);
+    EmitInstrAB('MOV', 'BX', 'AX');
+    EmitInstrA('POP', 'AX');
+    EmitInstr('CWD');
+    EmitInstrA('IDIV', 'BX');
+    EmitInstrAB('MOV', 'AX', 'DX');  (* reste dans DX *)
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_NUMERIC;
+    Res.ImmVal  := 0;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+
+  (* ========= MIN(a, b) / MAX(a, b) ====================== *)
+  Else If (FName = 'MIN') Or (FName = 'MAX') Then
+  Begin
+    ParseExprPrec(1, Arg1);
+    ExprFlushToAX(Arg1);
+    EmitInstrA('PUSH', 'AX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+    ParseExprPrec(1, Arg2);
+    ExprFlushToAX(Arg2);
+    EmitInstrAB('MOV', 'BX', 'AX');
+    EmitInstrA('POP', 'AX');
+    If FName = 'MIN' Then
+      EmitInstrA('CALL', SAS_RT_PFX + 'MIN')
+    Else
+      EmitInstrA('CALL', SAS_RT_PFX + 'MAX');
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_NUMERIC;
+    Res.ImmVal  := 0;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+
+  (* ========= SUM(a, b, ...) : somme variable ============= *)
+  Else If FName = 'SUM' Then
+  Begin
+    ParseExprPrec(1, Arg1);
+    ExprFlushToAX(Arg1);
+    NArgs := 1;
+    While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
+    Begin
+      ParserAdvance;
+      EmitInstrA('PUSH', 'AX');
+      ParseExprPrec(1, Arg2);
+      ExprFlushToAX(Arg2);
+      EmitInstrAB('MOV', 'BX', 'AX');
+      EmitInstrA('POP', 'AX');
+      EmitInstrAB('ADD', 'AX', 'BX');
+      Inc(NArgs);
+    End;
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_NUMERIC;
+    Res.ImmVal  := 0;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+
+  (* ========= DIM(array) : nombre d elements du tableau ====== *)
+  Else If FName = 'DIM' Then
+  Begin
+    (* DIM attend un nom de tableau comme argument *)
+    If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+    Begin
+      NArgs := ArrayFind(StrUpperCase(CurToken.Val));
+      ParserAdvance;
+      If NArgs >= 0 Then
+        ExprMakeImm(ArrayTab[NArgs].ElemCount, TY_IDX_NUMERIC, Res)
+      Else
+      Begin
+        WarnMsg('DIM() : tableau non declare');
+        ExprMakeImm(0, TY_IDX_NUMERIC, Res);
+      End;
+    End
+    Else
+    Begin
+      WarnMsg('DIM() : nom de tableau attendu');
+      ExprMakeImm(0, TY_IDX_NUMERIC, Res);
+    End;
+  End
+
+  (* ========= LENGTH(str) : longueur de chaine ============= *)
+  Else If FName = 'LENGTH' Then
+  Begin
+    ParseExprPrec(1, Arg1);
+    ExprFlushToAX(Arg1);
+    (* AX = pointeur vers chaine, appel runtime *)
+    EmitInstrA('CALL', SAS_RT_PFX + 'STRLEN');
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_NUMERIC;
+    Res.ImmVal  := 0;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+
+  (* ========= INDEX(str, substr) : position ================ *)
+  Else If FName = 'INDEX' Then
+  Begin
+    ParseExprPrec(1, Arg1);
+    ExprFlushToAX(Arg1);
+    EmitInstrA('PUSH', 'AX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+    ParseExprPrec(1, Arg2);
+    ExprFlushToAX(Arg2);
+    EmitInstrAB('MOV', 'DI', 'AX');
+    EmitInstrA('POP', 'SI');
+    EmitInstrA('CALL', SAS_RT_PFX + 'INDEX');
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_NUMERIC;
+    Res.ImmVal  := 0;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+
+  (* ========= SUBSTR(str, pos [,len]) ===================== *)
+  Else If FName = 'SUBSTR' Then
+  Begin
+    ParseExprPrec(1, Arg1);
+    ExprFlushToAX(Arg1);
+    EmitInstrA('PUSH', 'AX');  (* chaine source *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+    ParseExprPrec(1, Arg2);
+    ExprFlushToAX(Arg2);
+    EmitInstrA('PUSH', 'AX');  (* position *)
+    (* Optionnel : longueur *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+    Begin
+      ParserAdvance;
+      ParseExprPrec(1, Arg3);
+      ExprFlushToAX(Arg3);
+    End
+    Else
+      EmitInstrAB('MOV', 'AX', '-1');  (* -1 = jusqu a la fin *)
+    EmitInstrAB('MOV', 'CX', 'AX');   (* longueur *)
+    EmitInstrA('POP', 'BX');           (* position *)
+    EmitInstrA('POP', 'SI');           (* source *)
+    EmitInstrA('CALL', SAS_RT_PFX + 'SUBSTR');
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_CHARACTER;
+    Res.ImmVal  := 0;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+
+  (* ========= Fonctions chaine a 1 argument ================ *)
+  (* TRIM, LEFT, RIGHT, UPCASE, LOWCASE, COMPRESS            *)
+  Else If (FName = 'TRIM') Or (FName = 'LEFT') Or
+          (FName = 'RIGHT') Or (FName = 'UPCASE') Or
+          (FName = 'LOWCASE') Then
+  Begin
+    ParseExprPrec(1, Arg1);
+    ExprFlushToAX(Arg1);
+    EmitInstrA('CALL', SAS_RT_PFX + FName);
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_CHARACTER;
+    Res.ImmVal  := 0;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+
+  (* ========= COMPRESS(str [,chars]) ========================= *)
+  Else If FName = 'COMPRESS' Then
+  Begin
+    ParseExprPrec(1, Arg1);
+    ExprFlushToAX(Arg1);
+    EmitInstrA('PUSH', 'AX');
+    (* Optionnel : caracteres a supprimer *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+    Begin
+      ParserAdvance;
+      ParseExprPrec(1, Arg2);
+      ExprFlushToAX(Arg2);
+      EmitInstrAB('MOV', 'DI', 'AX');
+    End
+    Else
+      EmitInstrAB('XOR', 'DI', 'DI');  (* DI=0 : supprimer espaces *)
+    EmitInstrA('POP', 'AX');
+    EmitInstrA('CALL', SAS_RT_PFX + 'COMPRESS');
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_CHARACTER;
+    Res.ImmVal  := 0;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+
+  (* ========= CAT/CATS/CATX : concatenation ================ *)
+  Else If (FName = 'CAT') Or (FName = 'CATS') Or
+          (FName = 'CATX') Then
+  Begin
+    If FName = 'CATX' Then
+    Begin
+      (* Premier argument = separateur *)
+      ParseExprPrec(1, Arg1);
+      ExprFlushToAX(Arg1);
+      EmitInstrA('PUSH', 'AX');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance;
+    End;
+    (* Lire tous les arguments restants *)
+    ParseExprPrec(1, Arg1);
+    ExprFlushToAX(Arg1);
+    While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
+    Begin
+      ParserAdvance;
+      EmitInstrA('PUSH', 'AX');
+      ParseExprPrec(1, Arg2);
+      ExprFlushToAX(Arg2);
+      EmitInstrAB('MOV', 'DI', 'AX');
+      EmitInstrA('POP', 'SI');
+      EmitInstrA('CALL', SAS_RT_PFX + 'STRCAT');
+    End;
+    If FName = 'CATX' Then
+      EmitInstrA('POP', 'BX');  (* recuperer separateur *)
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_CHARACTER;
+    Res.ImmVal  := 0;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+
+  (* ========= PUT/INPUT : conversion type ================== *)
+  Else If (FName = 'PUT') Or (FName = 'INPUT') Then
+  Begin
+    ParseExprPrec(1, Arg1);
+    ExprFlushToAX(Arg1);
+    (* Consommer le format optionnel apres la virgule *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+    Begin
+      ParserAdvance;
+      (* Consommer le format *)
+      If (CurToken.Kind = TK_FORMAT) Or (CurToken.Kind = TK_IDENT) Then
+        ParserAdvance;
+    End;
+    If FName = 'PUT' Then
+    Begin
+      EmitInstrA('CALL', SAS_RT_PFX + 'NUM2STR');
+      Res.TypeIdx := TY_IDX_CHARACTER;
+    End
+    Else
+    Begin
+      EmitInstrA('CALL', SAS_RT_PFX + 'STR2NUM');
+      Res.TypeIdx := TY_IDX_NUMERIC;
+    End;
+    Res.Kind    := EK_AX;
+    Res.ImmVal  := 0;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+
+  (* ========= TODAY() : date courante (SAS date) ============== *)
+  Else If FName = 'TODAY' Then
+  Begin
+    (* TODAY() : jours depuis 01JAN1960 -- constante codee en dur *)
+    EmitInstrAB('MOV', 'AX', '24176');  (* ~11MAR2026 *)
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_NUMERIC;
+    Res.ImmVal  := 0;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+
+  (* ========= MDY(month, day, year) : construire date SAS ==== *)
+  Else If FName = 'MDY' Then
+  Begin
+    ParseExprPrec(1, Arg1);
+    ExprFlushToAX(Arg1);
+    EmitInstrA('PUSH', 'AX');     (* month *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+    ParseExprPrec(1, Arg2);
+    ExprFlushToAX(Arg2);
+    EmitInstrA('PUSH', 'AX');     (* day *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+    ParseExprPrec(1, Arg3);
+    ExprFlushToAX(Arg3);
+    EmitInstrAB('MOV', 'CX', 'AX');   (* year *)
+    EmitInstrA('POP', 'BX');           (* day *)
+    EmitInstrA('POP', 'AX');           (* month *)
+    EmitInstrA('CALL', SAS_RT_PFX + 'MDY');
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_NUMERIC;
+    Res.ImmVal  := 0;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+
+  (* ========= YEAR/MONTH/DAY(date) : extraire composante ===== *)
+  Else If (FName = 'YEAR') Or (FName = 'MONTH') Or
+          (FName = 'DAY') Then
+  Begin
+    ParseExprPrec(1, Arg1);
+    ExprFlushToAX(Arg1);
+    EmitInstrA('CALL', SAS_RT_PFX + FName);
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_NUMERIC;
+    Res.ImmVal  := 0;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+
+  (* ========= Fallback : fonction inconnue ================= *)
+  Else
+  Begin
+    WarnMsg('fonction interne ' + FName + '() non implementee');
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+      ParserAdvance;
+    ExprMakeImm(0, TY_IDX_NUMERIC, Res);
+    Res.Kind := EK_AX;
+  End;
+
+  (* Consommer ) final *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance
+  Else
+    CompileError(''')'' manquant apres ' + FName + '()');
+End;
+
+(* ---- ParseInOp : operateur IN (expr IN (val1, val2, ...)) ---- *)
+(* Genere une serie de CMP + JE pour tester l appartenance.       *)
+(* AX contient la valeur a tester. Resultat : 1 si trouve, 0 sinon*)
+Procedure ParseInOp(Var Res : TExprVal);
+Var
+  Item    : TExprVal;
+  LblTrue : TString;
+  LblEnd  : TString;
+Begin
+  LblTrue := LabelGen;
+  LblEnd  := LabelGen;
+
+  EmitComment('IN ()');
+  ExprFlushToAX(Res);
+  EmitInstrA('PUSH', 'AX');  (* sauvegarder la valeur a tester *)
+
+  (* Consommer ( *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    ParserAdvance
+  Else
+  Begin
+    CompileError('"(" attendu apres IN');
+    Exit;
+  End;
+
+  (* Parser chaque element de la liste *)
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+  Begin
+    ParseExprPrec(1, Item);
+    ExprFlushToAX(Item);
+    EmitInstrAB('MOV', 'BX', 'AX');
+    EmitInstrAB('MOV', 'AX', '[SP]');  (* relire la valeur testee *)
+    EmitInstrAB('CMP', 'AX', 'BX');
+    EmitInstrA('JE', LblTrue);
+
+    (* Consommer la virgule optionnelle *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+  End;
+
+  (* Consommer ) *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance;
+
+  (* Pas trouve *)
+  EmitInstrA('POP', 'AX');
+  EmitInstrAB('XOR', 'AX', 'AX');  (* resultat = 0 *)
+  EmitInstrA('JMP', LblEnd);
+  (* Trouve *)
+  EmitLabel(LblTrue);
+  EmitInstrA('POP', 'AX');
+  EmitInstrAB('MOV', 'AX', '1');   (* resultat = 1 *)
+  EmitLabel(LblEnd);
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_NUMERIC;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+{ ============================================================
+  TODO 12 - ENTREES/SORTIES (PUT / INPUT / INFILE / FILE)
+  [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- ParsePutStmt : instruction PUT --------------------------
+   PUT var1 var2 ;           -> ecriture en liste (espaces entre chaque)
+   PUT 'texte literal' ;     -> ecriture de chaine litterale
+   PUT var1 1-5 var2 6-10 ;  -> ecriture en colonnes (positions fixes)
+   PUT _ALL_ ;               -> ecriture de toutes les variables
+   Le resultat est ecrit via INT 21h AH=40h sur le handle courant
+   (1 = STDOUT par defaut, ou le handle de FILE si specifie).
+   -------------------------------------------------------------- *)
+Procedure ParsePutStmt;
+Var
+  E        : TExprVal;
+  SIdx     : Integer;
+  StrIdx   : Integer;
+  ItemCount: Integer;
+  VName    : TString;
+  Col1     : Integer;
+  Col2     : Integer;
+  HasCol   : Boolean;
+Begin
+  EmitComment('PUT');
+  ItemCount := 0;
+
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    HasCol := False;
+    Col1   := 0;
+    Col2   := 0;
+
+    (* --- Chaine litterale : PUT 'texte' --- *)
+    If CurToken.Kind = TK_STRING Then
+    Begin
+      StrIdx := DataAddStr(CurToken.Val);
+      If StrIdx >= 0 Then
+      Begin
+        EmitComment('PUT literal: ''' + CurToken.Val + '''');
+        EmitInstrAB('MOV', 'AH', '40h');
+        EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+        EmitInstrAB('MOV', 'CX', IntToStr(Length(CurToken.Val)));
+        EmitInstrAB('LEA', 'DX', DataTab[StrIdx].LblName);
+        EmitInstr('INT 21h');
+      End;
+      ParserAdvance;
+      Inc(ItemCount);
+    End
+
+    (* --- Pointeur de colonne @ --- *)
+    Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '@') Then
+    Begin
+      ParserAdvance;
+      (* Optionnel : valeur de colonne apres @ *)
+      If CurToken.Kind = TK_INTEGER Then
+      Begin
+        Col1 := CurToken.IntVal;
+        ParserAdvance;
+        EmitComment('PUT @' + IntToStr(Col1));
+        (* Positionnement de colonne : on ignore pour la generation *)
+        (* simple mais on emet un commentaire                       *)
+      End;
+    End
+
+    (* --- Variable ou _ALL_ --- *)
+    Else If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+    Begin
+      VName := StrUpperCase(CurToken.Val);
+
+      (* PUT _ALL_ : ecrire toutes les variables *)
+      If VName = '_ALL_' Then
+      Begin
+        EmitComment('PUT _ALL_');
+        ParserAdvance;
+        Inc(ItemCount);
+      End
+      Else
+      Begin
+        ParserAdvance;
+
+        (* Verifier si on a un pattern col1-col2 *)
+        If (CurToken.Kind = TK_INTEGER) Then
+        Begin
+          Col1 := CurToken.IntVal;
+          ParserAdvance;
+          If (CurToken.Kind = TK_OP) And (CurToken.Val = '-') Then
+          Begin
+            ParserAdvance;
+            If CurToken.Kind = TK_INTEGER Then
+            Begin
+              Col2 := CurToken.IntVal;
+              HasCol := True;
+              ParserAdvance;
+            End;
+          End;
+        End;
+
+        (* Allouer/trouver la variable *)
+        SIdx := SymFind(VName);
+        If SIdx < 0 Then
+          SIdx := VarAlloc(VName, TY_IDX_NUMERIC, 0);
+
+        If SIdx >= 0 Then
+        Begin
+          If HasCol Then
+            EmitComment('PUT ' + VName + ' ' +
+                        IntToStr(Col1) + '-' + IntToStr(Col2))
+          Else
+            EmitComment('PUT ' + VName);
+
+          If SymTab[SIdx].TypeIdx = TY_IDX_CHARACTER Then
+          Begin
+            (* Chaine : AX = adresse, CX = longueur *)
+            EmitInstrAB('LEA', 'DX', '_SAS_PDV + ' +
+                        IntToStr(SymTab[SIdx].Offset));
+            EmitInstrAB('MOV', 'CX', IntToStr(SymTab[SIdx].VarLen));
+            EmitInstrA('CALL', SAS_RT_PFX + 'PUTSTR');
+          End
+          Else
+          Begin
+            (* Numerique : convertir et ecrire *)
+            VarLoad(SIdx, E);
+            EmitInstrA('CALL', SAS_RT_PFX + 'PUTNUM');
+          End;
+
+          (* Ecrire un espace separateur apres chaque item sauf si colonnes *)
+          If (Not HasCol) And (ItemCount > 0) Then
+          Begin
+            EmitInstrAB('MOV', 'AH', '02h');
+            EmitInstrAB('MOV', 'DL', '20h');
+            EmitInstr('INT 21h');
+          End;
+        End;
+        Inc(ItemCount);
+      End;
+    End
+
+    Else
+      ParserAdvance;
+  End;
+
+  (* Ecrire saut de ligne en fin de PUT *)
+  EmitComment('PUT newline');
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+  EmitInstrAB('MOV', 'CX', '2');
+  EmitInstrAB('LEA', 'DX', '_SAS_CRLF');
+  EmitInstr('INT 21h');
+
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseInputStmt : instruction INPUT ----------------------
+   INPUT var1 var2 ;         -> lecture en liste (espaces separateurs)
+   INPUT var1 $ ;            -> variable CHARACTER
+   INPUT var1 1-5 var2 6-10 ;-> lecture en colonnes (positions fixes)
+   INPUT var1 @col ;         -> pointeur de colonne
+   INPUT var1 : $8. ;        -> lecture formatee (informat $8.)
+
+   Source : si INFILE actif -> lire depuis fichier (INT 21h AH=3Fh)
+            sinon          -> lire depuis CARDS/DATALINES inline
+   On lit une ligne entiere dans _SAS_INBUF puis on la decoupe.
+   -------------------------------------------------------------- *)
+Procedure ParseInputStmt;
+Var
+  VName   : TString;
+  SIdx    : Integer;
+  IsChar  : Boolean;
+  VarLen  : Integer;
+  TIdx    : Integer;
+  Col1    : Integer;
+  Col2    : Integer;
+  HasCol  : Boolean;
+  HasFmt  : Boolean;
+  LblSkip : TString;
+Begin
+  EmitComment('INPUT');
+
+  (* Emettre la lecture d une ligne dans _SAS_INBUF *)
+  EmitComment('lire une ligne dans _SAS_INBUF');
+  EmitInstrAB('MOV', 'AH', '3Fh');
+  EmitInstrAB('MOV', 'BX', '[_SAS_INHDL]');
+  EmitInstrAB('MOV', 'CX', '255');
+  EmitInstrAB('LEA', 'DX', '_SAS_INBUF');
+  EmitInstr('INT 21h');
+  (* AX = nb octets lus *)
+  LblSkip := LabelGen;
+  EmitInstrAB('CMP', 'AX', '0');
+  EmitInstrA('JE', LblSkip);
+  EmitInstrAB('MOV', '[_SAS_INLEN]', 'AX');
+  EmitInstrAB('MOV', 'WORD PTR [_SAS_INPOS]', '0');
+
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    HasCol := False;
+    HasFmt := False;
+    Col1 := 0;
+    Col2 := 0;
+    IsChar := False;
+    VarLen := 0;
+
+    (* --- Pointeur de colonne @ --- *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '@') Then
+    Begin
+      ParserAdvance;
+      If CurToken.Kind = TK_INTEGER Then
+      Begin
+        Col1 := CurToken.IntVal;
+        EmitComment('INPUT @' + IntToStr(Col1));
+        EmitInstrAB('MOV', 'WORD PTR [_SAS_INPOS]',
+                    IntToStr(Col1 - 1));
+        ParserAdvance;
+      End;
+      Continue;
+    End;
+
+    (* --- Identificateur de variable --- *)
+    If (CurToken.Kind <> TK_IDENT) And (CurToken.Kind <> TK_KEYWORD) Then
+    Begin
+      ParserAdvance;
+      Continue;
+    End;
+
+    VName := StrUpperCase(CurToken.Val);
+    ParserAdvance;
+
+    (* Verifier $ -> variable CHARACTER *)
+    If (CurToken.Kind = TK_IDENT) And (StrUpperCase(CurToken.Val) = '$') Then
+    Begin
+      IsChar := True;
+      ParserAdvance;
+    End
+    Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '$') Then
+    Begin
+      IsChar := True;
+      ParserAdvance;
+    End;
+
+    (* Verifier si pattern colonne : entier - entier *)
+    If CurToken.Kind = TK_INTEGER Then
+    Begin
+      Col1 := CurToken.IntVal;
+      ParserAdvance;
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '-') Then
+      Begin
+        ParserAdvance;
+        If CurToken.Kind = TK_INTEGER Then
+        Begin
+          Col2 := CurToken.IntVal;
+          HasCol := True;
+          ParserAdvance;
+        End;
+      End;
+    End;
+
+    (* Verifier si format apres : *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+    Begin
+      ParserAdvance;
+      HasFmt := True;
+      (* Consommer le format (ex: $8. , 5.2 , etc.) *)
+      If (CurToken.Kind = TK_FORMAT) Or (CurToken.Kind = TK_IDENT) Or
+         (CurToken.Kind = TK_INTEGER) Or (CurToken.Kind = TK_FLOAT) Then
+        ParserAdvance;
+    End;
+
+    (* Determiner le type *)
+    If IsChar Then
+      TIdx := TY_IDX_CHARACTER
+    Else
+      TIdx := TY_IDX_NUMERIC;
+
+    If IsChar And (VarLen <= 0) Then
+    Begin
+      If HasCol Then
+        VarLen := Col2 - Col1 + 1
+      Else
+        VarLen := 8;
+    End;
+
+    (* Allouer/trouver la variable *)
+    SIdx := SymFind(VName);
+    If SIdx < 0 Then
+      SIdx := VarAlloc(VName, TIdx, VarLen);
+
+    If SIdx < 0 Then Continue;
+
+    (* Generer la lecture *)
+    If HasCol Then
+    Begin
+      (* Lecture en colonnes : positions fixes *)
+      EmitComment('INPUT ' + VName + ' ' +
+                  IntToStr(Col1) + '-' + IntToStr(Col2));
+      EmitInstrAB('LEA', 'SI', '_SAS_INBUF + ' + IntToStr(Col1 - 1));
+      EmitInstrAB('MOV', 'CX', IntToStr(Col2 - Col1 + 1));
+      If TIdx = TY_IDX_CHARACTER Then
+      Begin
+        EmitInstrAB('LEA', 'DI', '_SAS_PDV + ' +
+                    IntToStr(SymTab[SIdx].Offset));
+        EmitInstrA('CALL', SAS_RT_PFX + 'CPYFLD');
+      End
+      Else
+      Begin
+        EmitInstrA('CALL', SAS_RT_PFX + 'ATOI');
+        EmitInstrAB('MOV', VarAddrOf(SIdx), 'AX');
+      End;
+    End
+    Else
+    Begin
+      (* Lecture en liste : delimiter par espaces/delimiteur *)
+      EmitComment('INPUT ' + VName + ' (liste)');
+      EmitInstrAB('LEA', 'SI', '_SAS_INBUF');
+      EmitInstrAB('ADD', 'SI', '[_SAS_INPOS]');
+      If TIdx = TY_IDX_CHARACTER Then
+      Begin
+        EmitInstrAB('MOV', 'CX', IntToStr(SymTab[SIdx].VarLen));
+        EmitInstrAB('LEA', 'DI', '_SAS_PDV + ' +
+                    IntToStr(SymTab[SIdx].Offset));
+        EmitInstrA('CALL', SAS_RT_PFX + 'GETFLD');
+      End
+      Else
+      Begin
+        EmitInstrA('CALL', SAS_RT_PFX + 'GETNUM');
+        EmitInstrAB('MOV', VarAddrOf(SIdx), 'AX');
+      End;
+      (* Mettre a jour la position *)
+      EmitInstrAB('MOV', '[_SAS_INPOS]', 'SI');
+    End;
+  End;
+
+  EmitLabel(LblSkip);
+
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseInfileStmt : instruction INFILE ---------------------
+   INFILE 'chemin.dat' ;              -> ouvrir fichier externe
+   INFILE 'chemin.dat' DLM=',' ;      -> delimiteur specifique
+   INFILE 'chemin.dat' FIRSTOBS=2 ;   -> sauter les N-1 premieres lignes
+   INFILE CARDS ; / INFILE DATALINES ; -> lecture inline
+   L ouverture effective se fait via INT 21h AH=3Dh (ouvrir fichier)
+   -------------------------------------------------------------- *)
+Procedure ParseInfileStmt;
+Var
+  FilePath : TString;
+  OptName  : TString;
+  StrIdx   : Integer;
+Begin
+  EmitComment('INFILE');
+
+  (* Lire la source *)
+  If CurToken.Kind = TK_STRING Then
+  Begin
+    FilePath := CurToken.Val;
+    IOInfilePath := FilePath;
+    ParserAdvance;
+
+    (* Emettre l ouverture du fichier *)
+    StrIdx := DataAddStr(FilePath);
+    If StrIdx >= 0 Then
+    Begin
+      EmitComment('INFILE ''' + FilePath + '''');
+      EmitInstrAB('MOV', 'AH', '3Dh');
+      EmitInstrAB('MOV', 'AL', '00h');
+      EmitInstrAB('LEA', 'DX', DataTab[StrIdx].LblName);
+      EmitInstr('INT 21h');
+      EmitInstrAB('MOV', '[_SAS_INHDL]', 'AX');
+    End;
+  End
+  Else If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
+  Begin
+    OptName := StrUpperCase(CurToken.Val);
+    If (OptName = 'CARDS') Or (OptName = 'DATALINES') Then
+    Begin
+      IOInfilePath  := '';
+      IOCardsActive := True;
+      EmitComment('INFILE CARDS');
+    End;
+    ParserAdvance;
+  End;
+
+  (* Parser les options INFILE *)
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+    Begin
+      OptName := StrUpperCase(CurToken.Val);
+      ParserAdvance;
+
+      (* DLM = 'c' *)
+      If OptName = 'DLM' Then
+      Begin
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+          ParserAdvance;
+        If CurToken.Kind = TK_STRING Then
+        Begin
+          IOInfileDlm := CurToken.Val;
+          EmitComment('  DLM=''' + IOInfileDlm + '''');
+          ParserAdvance;
+        End;
+      End
+
+      (* FIRSTOBS = n *)
+      Else If OptName = 'FIRSTOBS' Then
+      Begin
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+          ParserAdvance;
+        If CurToken.Kind = TK_INTEGER Then
+        Begin
+          IOFirstObs := CurToken.IntVal;
+          EmitComment('  FIRSTOBS=' + IntToStr(IOFirstObs));
+          ParserAdvance;
+        End;
+      End
+
+      Else
+        (* Option inconnue : ignorer *)
+        ;
+    End
+    Else
+      ParserAdvance;
+  End;
+
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseFileStmt : instruction FILE -------------------------
+   FILE 'sortie.dat' ;    -> ouvrir fichier de sortie
+   FILE PRINT ;            -> destination STDOUT avec sauts de page
+   Par defaut, la sortie est STDOUT (handle 1).
+   L ouverture se fait via INT 21h AH=3Ch (creer fichier).
+   -------------------------------------------------------------- *)
+Procedure ParseFileStmt;
+Var
+  FilePath : TString;
+  OptName  : TString;
+  StrIdx   : Integer;
+Begin
+  EmitComment('FILE');
+
+  If CurToken.Kind = TK_STRING Then
+  Begin
+    FilePath := CurToken.Val;
+    IOFilePath := FilePath;
+    ParserAdvance;
+
+    (* Emettre la creation du fichier *)
+    StrIdx := DataAddStr(FilePath);
+    If StrIdx >= 0 Then
+    Begin
+      EmitComment('FILE ''' + FilePath + '''');
+      EmitInstrAB('MOV', 'AH', '3Ch');
+      EmitInstrAB('MOV', 'CX', '0');
+      EmitInstrAB('LEA', 'DX', DataTab[StrIdx].LblName);
+      EmitInstr('INT 21h');
+      EmitInstrAB('MOV', '[_SAS_OUTHDL]', 'AX');
+    End;
+  End
+  Else If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
+  Begin
+    OptName := StrUpperCase(CurToken.Val);
+    If OptName = 'PRINT' Then
+    Begin
+      IOFilePath := '';
+      EmitComment('FILE PRINT (STDOUT)');
+      EmitInstrAB('MOV', 'WORD PTR [_SAS_OUTHDL]', '1');
+    End;
+    ParserAdvance;
+  End;
+
+  (* Ignorer les options supplementaires *)
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+    ParserAdvance;
+
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+{ ============================================================
+  TODO 13 - IF / THEN / ELSE / SELECT [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- ParseIfStmt : IF condition THEN action [ELSE action] ---- *)
+(* Syntaxe SAS :                                                    *)
+(*   IF cond THEN action;                                           *)
+(*   IF cond THEN action; ELSE action;                              *)
+(*   IF cond THEN DO; stmts; END;                                   *)
+(*   IF cond THEN DO; stmts; END; ELSE DO; stmts; END;             *)
+(* Emission :                                                       *)
+(*   evaluer cond -> AX                                              *)
+(*   TEST AX,AX / JZ LblElse (ou LblEnd si pas de ELSE)            *)
+(*   code branche THEN                                               *)
+(*   JMP LblEnd (si ELSE)                                           *)
+(*   LblElse: code branche ELSE                                     *)
+(*   LblEnd:                                                         *)
+Procedure ParseIfStmt;
+Var
+  E           : TExprVal;
+  LblElse     : TString;
+  LblEnd      : TString;
+  HasElse     : Boolean;
+Begin
+  EmitComment('IF');
+  (* IF est deja consomme par le parseur appelant *)
+
+  (* Evaluer la condition *)
+  ParseExpr(E);
+  ExprFlushToAX(E);
+
+  (* Labels *)
+  LblElse := LabelGen;
+  LblEnd  := LabelGen;
+
+  (* TEST AX,AX / JZ pour condition fausse *)
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JZ', LblElse);
+
+  (* Consommer THEN (obligatoire en SAS) *)
+  If (CurToken.Kind = TK_KEYWORD) And
+     (StrUpperCase(CurToken.Val) = 'THEN') Then
+    ParserAdvance
+  Else
+    CompileError('"THEN" attendu apres la condition du IF');
+
+  (* Branche THEN *)
+  (* Verifier si c est un bloc DO; stmts; END; *)
+  If (CurToken.Kind = TK_KEYWORD) And
+     (StrUpperCase(CurToken.Val) = 'DO') Then
+  Begin
+    ParserAdvance;  (* consommer DO *)
+    (* Consommer ; apres DO *)
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+    (* Parser les instructions du bloc jusqu a END *)
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_KEYWORD) And
+               (StrUpperCase(CurToken.Val) = 'END')) Do
+      ParseStmt;
+    (* Consommer END *)
+    If (CurToken.Kind = TK_KEYWORD) And
+       (StrUpperCase(CurToken.Val) = 'END') Then
+      ParserAdvance;
+    (* Consommer ; apres END *)
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+  End
+  Else
+  Begin
+    (* Instruction simple THEN *)
+    ParseStmt;
+  End;
+
+  (* Verifier s il y a un ELSE *)
+  HasElse := False;
+  If (CurToken.Kind = TK_KEYWORD) And
+     (StrUpperCase(CurToken.Val) = 'ELSE') Then
+  Begin
+    HasElse := True;
+    ParserAdvance;  (* consommer ELSE *)
+  End;
+
+  If HasElse Then
+  Begin
+    (* Sauter par-dessus la branche ELSE depuis THEN *)
+    EmitInstrA('JMP', LblEnd);
+    EmitLabel(LblElse);
+
+    (* Branche ELSE *)
+    (* Verifier si ELSE IF (chaine) *)
+    If (CurToken.Kind = TK_KEYWORD) And
+       (StrUpperCase(CurToken.Val) = 'IF') Then
+    Begin
+      ParserAdvance;  (* consommer IF *)
+      ParseIfStmt;    (* recursion pour ELSE IF *)
+    End
+    (* Verifier si c est un bloc DO; stmts; END; *)
+    Else If (CurToken.Kind = TK_KEYWORD) And
+            (StrUpperCase(CurToken.Val) = 'DO') Then
+    Begin
+      ParserAdvance;  (* consommer DO *)
+      (* Consommer ; apres DO *)
+      If CurToken.Kind = TK_SEMICOLON Then
+        ParserAdvance;
+      (* Parser les instructions du bloc jusqu a END *)
+      While (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_KEYWORD) And
+                 (StrUpperCase(CurToken.Val) = 'END')) Do
+        ParseStmt;
+      (* Consommer END *)
+      If (CurToken.Kind = TK_KEYWORD) And
+         (StrUpperCase(CurToken.Val) = 'END') Then
+        ParserAdvance;
+      (* Consommer ; apres END *)
+      If CurToken.Kind = TK_SEMICOLON Then
+        ParserAdvance;
+    End
+    Else
+    Begin
+      (* Instruction simple ELSE *)
+      ParseStmt;
+    End;
+
+    EmitLabel(LblEnd);
+  End
+  Else
+  Begin
+    (* Pas de ELSE : le label ELSE pointe sur la fin *)
+    EmitLabel(LblElse);
+  End;
+End;
+
+(* ---- ParseSelectStmt : SELECT [(expr)] ; WHEN ... END ; ------ *)
+(* Syntaxe SAS :                                                    *)
+(*   SELECT (expr) ;                                                 *)
+(*     WHEN (val1, val2) action ;                                   *)
+(*     WHEN (val3) DO; stmts; END;                                  *)
+(*     OTHERWISE action ;                                           *)
+(*   END;                                                            *)
+(*   SELECT ;              (sans expression)                         *)
+(*     WHEN (cond1) action;                                         *)
+(*     WHEN (cond2) action;                                         *)
+(*     OTHERWISE action;                                            *)
+(*   END;                                                            *)
+(* Emission avec expression :                                       *)
+(*   Evaluer expr -> sauver dans DX                                 *)
+(*   Pour chaque WHEN : CMP DX, val -> JE LblAction                *)
+(*   OTHERWISE -> code par defaut                                    *)
+(*   Labels : _SASL_WHEN_N, _SASL_SELEND_N                         *)
+(* Emission sans expression :                                       *)
+(*   Chaque WHEN evalue sa propre condition booleenne               *)
+Procedure ParseSelectStmt;
+Var
+  E           : TExprVal;
+  HasSelectExpr : Boolean;
+  LblSelEnd   : TString;
+  LblNext     : TString;
+  LblAction   : TString;
+  KW          : TString;
+  WhenVal     : TExprVal;
+  FirstVal    : Boolean;
+Begin
+  EmitComment('SELECT');
+  (* SELECT est deja consomme par le parseur appelant *)
+
+  LblSelEnd := LabelGen;
+
+  (* Verifier si SELECT a une expression (parenthese) *)
+  HasSelectExpr := False;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+  Begin
+    HasSelectExpr := True;
+    ParserAdvance;  (* consommer ( *)
+    ParseExpr(E);
+    ExprFlushToAX(E);
+    (* Sauver la valeur du SELECT dans DX *)
+    EmitInstrAB('MOV', 'DX', 'AX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else
+      CompileError('")" attendu apres l''expression du SELECT');
+  End;
+
+  (* Consommer ; apres SELECT *)
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+
+  (* Boucle sur les WHEN et OTHERWISE *)
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_KEYWORD) And
+             (StrUpperCase(CurToken.Val) = 'END')) Do
+  Begin
+    KW := '';
+    If CurToken.Kind = TK_KEYWORD Then
+      KW := StrUpperCase(CurToken.Val);
+
+    (* --- WHEN --- *)
+    If KW = 'WHEN' Then
+    Begin
+      ParserAdvance;  (* consommer WHEN *)
+      LblNext := LabelGen;
+
+      If HasSelectExpr Then
+      Begin
+        (* SELECT (expr) : comparer DX avec chaque valeur *)
+        EmitComment('WHEN');
+        (* Consommer ( *)
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+          ParserAdvance
+        Else
+          CompileError('"(" attendu apres WHEN');
+
+        (* Parser la liste de valeurs : WHEN (val1, val2, ...) *)
+        LblAction := LabelGen;
+        FirstVal  := True;
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+        Begin
+          If Not FirstVal Then
+          Begin
+            (* Consommer la virgule *)
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+              ParserAdvance;
+          End;
+          FirstVal := False;
+          ParseExpr(WhenVal);
+          ExprFlushToAX(WhenVal);
+          EmitInstrAB('CMP', 'DX', 'AX');
+          EmitInstrA('JE', LblAction);
+        End;
+
+        (* Consommer ) *)
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+
+        (* Aucune valeur ne correspond : sauter au prochain WHEN *)
+        EmitInstrA('JMP', LblNext);
+        EmitLabel(LblAction);
+      End
+      Else
+      Begin
+        (* SELECT sans expression : chaque WHEN a sa propre condition *)
+        EmitComment('WHEN');
+        (* Consommer ( *)
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+          ParserAdvance
+        Else
+          CompileError('"(" attendu apres WHEN');
+
+        (* Evaluer la condition booleenne *)
+        ParseExpr(WhenVal);
+        ExprFlushToAX(WhenVal);
+
+        (* Consommer ) *)
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+
+        (* Tester : si faux, sauter au prochain WHEN *)
+        EmitInstrAB('TEST', 'AX', 'AX');
+        EmitInstrA('JZ', LblNext);
+      End;
+
+      (* Parser l action du WHEN *)
+      (* Verifier si c est un bloc DO; stmts; END; *)
+      If (CurToken.Kind = TK_KEYWORD) And
+         (StrUpperCase(CurToken.Val) = 'DO') Then
+      Begin
+        ParserAdvance;  (* consommer DO *)
+        If CurToken.Kind = TK_SEMICOLON Then
+          ParserAdvance;
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_KEYWORD) And
+                   (StrUpperCase(CurToken.Val) = 'END')) Do
+          ParseStmt;
+        If (CurToken.Kind = TK_KEYWORD) And
+           (StrUpperCase(CurToken.Val) = 'END') Then
+          ParserAdvance;
+        If CurToken.Kind = TK_SEMICOLON Then
+          ParserAdvance;
+      End
+      Else
+        ParseStmt;
+
+      (* Apres l action : sauter a la fin du SELECT *)
+      EmitInstrA('JMP', LblSelEnd);
+      EmitLabel(LblNext);
+    End
+
+    (* --- OTHERWISE --- *)
+    Else If KW = 'OTHERWISE' Then
+    Begin
+      ParserAdvance;  (* consommer OTHERWISE *)
+      EmitComment('OTHERWISE');
+
+      (* Parser l action de OTHERWISE *)
+      If (CurToken.Kind = TK_KEYWORD) And
+         (StrUpperCase(CurToken.Val) = 'DO') Then
+      Begin
+        ParserAdvance;  (* consommer DO *)
+        If CurToken.Kind = TK_SEMICOLON Then
+          ParserAdvance;
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_KEYWORD) And
+                   (StrUpperCase(CurToken.Val) = 'END')) Do
+          ParseStmt;
+        If (CurToken.Kind = TK_KEYWORD) And
+           (StrUpperCase(CurToken.Val) = 'END') Then
+          ParserAdvance;
+        If CurToken.Kind = TK_SEMICOLON Then
+          ParserAdvance;
+      End
+      Else If CurToken.Kind = TK_SEMICOLON Then
+        (* OTHERWISE ; -> pas d action (instruction vide) *)
+        ParserAdvance
+      Else
+        ParseStmt;
+    End
+
+    Else
+    Begin
+      (* Token inattendu dans SELECT : consommer pour eviter boucle *)
+      CompileError('WHEN ou OTHERWISE attendu dans SELECT, trouve: ' + CurToken.Val);
+      ParserAdvance;
+    End;
+  End;
+
+  EmitLabel(LblSelEnd);
+
+  (* Consommer END *)
+  If (CurToken.Kind = TK_KEYWORD) And
+     (StrUpperCase(CurToken.Val) = 'END') Then
+    ParserAdvance;
+  (* Consommer ; apres END *)
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+{ ============================================================
+  TODO 14 - BOUCLES : DO / DO WHILE / DO UNTIL [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- LoopPush : empiler un contexte de boucle --------------- *)
+(* BreakLbl = label de sortie (LEAVE -> JMP BreakLbl)           *)
+(* ContLbl  = label de continuation (CONTINUE -> JMP ContLbl)   *)
+Procedure LoopPush(Const BreakLbl, ContLbl : TString);
+Begin
+  If LoopTop >= MAX_LOOP_NEST Then
+  Begin
+    CompileError('imbrication de boucles DO trop profonde (max='
+                 + IntToStr(MAX_LOOP_NEST) + ')');
+    Exit;
+  End;
+  LoopBreakLbl[LoopTop] := BreakLbl;
+  LoopContLbl[LoopTop]  := ContLbl;
+  Inc(LoopTop);
+End;
+
+(* ---- LoopPop : depiler un contexte de boucle ---------------- *)
+Procedure LoopPop;
+Begin
+  If LoopTop > 0 Then
+    Dec(LoopTop);
+End;
+
+(* ---- ParseDoBlock : parser le corps stmts; END; ------------- *)
+(* Parse les instructions jusqu a END;                            *)
+(* Le ; apres DO (ou apres la condition) a deja ete consomme.    *)
+Procedure ParseDoBlock;
+Begin
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_KEYWORD) And
+             (StrUpperCase(CurToken.Val) = 'END')) Do
+    ParseStmt;
+  (* Consommer END *)
+  If (CurToken.Kind = TK_KEYWORD) And
+     (StrUpperCase(CurToken.Val) = 'END') Then
+    ParserAdvance;
+  (* Consommer ; apres END *)
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseDoStmt : parser toutes les formes de DO ----------- *)
+(* Appele apres que le mot-cle DO ait ete consomme.              *)
+(* Detecte la forme :                                             *)
+(*   DO ;                      -> bloc simple (pas de boucle)     *)
+(*   DO WHILE (cond) ;         -> boucle while                    *)
+(*   DO UNTIL (cond) ;         -> boucle until                    *)
+(*   DO var = a TO b [BY c] ;  -> boucle iterative                *)
+(*   DO var = a TO b WHILE/UNTIL (cond) ; -> combinaison          *)
+(* Emission DO WHILE :                                            *)
+(*   LblTest: eval cond / JZ LblEnd / body / JMP LblTest         *)
+(*   LblEnd:                                                      *)
+(* Emission DO UNTIL :                                            *)
+(*   JMP LblBody (skip test on 1st iter)                          *)
+(*   LblTest: eval cond / JNZ LblEnd                              *)
+(*   LblBody: body / JMP LblTest / LblEnd:                        *)
+(* Emission DO iterative :                                        *)
+(*   var = start / LblTest: CMP var,end / JG LblEnd               *)
+(*   body / LblIncr: ADD var,step / JMP LblTest / LblEnd:         *)
+Procedure ParseDoStmt;
+Var
+  KW       : TString;
+  VarName  : TString;
+  SIdx     : Integer;
+  E        : TExprVal;
+  LblTest  : TString;
+  LblIncr  : TString;
+  LblEnd   : TString;
+  LblBody  : TString;
+  VarAddr  : TString;
+  HasWhile : Boolean;
+  HasUntil : Boolean;
+Begin
+  KW := '';
+  If CurToken.Kind = TK_KEYWORD Then
+    KW := StrUpperCase(CurToken.Val);
+
+  (* ----------------------------------------------------------
+     DO WHILE (condition) ;
+     Emission :
+       LblTest: eval cond
+                TEST AX,AX / JZ LblEnd
+                body
+                JMP LblTest
+       LblEnd:
+     ---------------------------------------------------------- *)
+  If KW = 'WHILE' Then
+  Begin
+    EmitComment('DO WHILE');
+    ParserAdvance;  (* consommer WHILE *)
+
+    LblTest := LabelGen;
+    LblEnd  := LabelGen;
+
+    EmitLabel(LblTest);
+
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      ParserAdvance
+    Else
+      CompileError('"(" attendu apres DO WHILE');
+
+    ParseExpr(E);
+    ExprFlushToAX(E);
+
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else
+      CompileError('")" attendu apres la condition du DO WHILE');
+
+    EmitInstrAB('TEST', 'AX', 'AX');
+    EmitInstrA('JZ', LblEnd);
+
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+
+    LoopPush(LblEnd, LblTest);
+    ParseDoBlock;
+
+    EmitInstrA('JMP', LblTest);
+    EmitLabel(LblEnd);
+
+    LoopPop;
+    Exit;
+  End;
+
+  (* ----------------------------------------------------------
+     DO UNTIL (condition) ;
+     Semantique SAS : le corps est execute au moins une fois,
+     la condition est evaluee apres chaque iteration.
+     Comme le lexeur est unidirectionnel, on emet le code de
+     condition lineairement mais on saute par-dessus la
+     premiere fois :
+       JMP LblBody
+       LblTest: eval cond
+                TEST AX,AX / JNZ LblEnd  (vrai -> sortir)
+       LblBody: body
+                JMP LblTest
+       LblEnd:
+     ---------------------------------------------------------- *)
+  If KW = 'UNTIL' Then
+  Begin
+    EmitComment('DO UNTIL');
+    ParserAdvance;  (* consommer UNTIL *)
+
+    LblTest := LabelGen;
+    LblBody := LabelGen;
+    LblEnd  := LabelGen;
+
+    EmitInstrA('JMP', LblBody);
+
+    EmitLabel(LblTest);
+
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      ParserAdvance
+    Else
+      CompileError('"(" attendu apres DO UNTIL');
+
+    ParseExpr(E);
+    ExprFlushToAX(E);
+
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else
+      CompileError('")" attendu apres la condition du DO UNTIL');
+
+    EmitInstrAB('TEST', 'AX', 'AX');
+    EmitInstrA('JNZ', LblEnd);
+
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+
+    EmitLabel(LblBody);
+
+    LoopPush(LblEnd, LblTest);
+    ParseDoBlock;
+
+    EmitInstrA('JMP', LblTest);
+    EmitLabel(LblEnd);
+
+    LoopPop;
+    Exit;
+  End;
+
+  (* ----------------------------------------------------------
+     DO ; (bloc simple, pas de boucle) ou
+     DO var = start TO end [BY step] [WHILE/UNTIL (cond)] ;
+     ---------------------------------------------------------- *)
+  If CurToken.Kind = TK_SEMICOLON Then
+  Begin
+    (* DO ; ... END; -> bloc simple sans boucle *)
+    EmitComment('DO (bloc)');
+    ParserAdvance;  (* consommer ; *)
+    ParseDoBlock;
+    Exit;
+  End;
+
+  (* DO var = start TO end [BY step] [WHILE/UNTIL (cond)] ; *)
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    VarName := StrUpperCase(CurToken.Val);
+    ParserAdvance;  (* consommer le nom de variable *)
+
+    (* Verifier = *)
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+    Begin
+      ParserAdvance;  (* consommer = *)
+
+      EmitComment('DO ' + VarName + ' = ... TO ...');
+
+      (* Allouer la variable de boucle si necessaire *)
+      SIdx := SymFind(VarName);
+      If SIdx < 0 Then
+        SIdx := VarAlloc(VarName, TY_IDX_NUMERIC, 0);
+      VarAddr := VarAddrOf(SIdx);
+
+      (* Evaluer la valeur de depart *)
+      ParseExpr(E);
+      ExprFlushToAX(E);
+      EmitInstrAB('MOV', VarAddr, 'AX');
+
+      (* Consommer TO *)
+      If (CurToken.Kind = TK_KEYWORD) And
+         (StrUpperCase(CurToken.Val) = 'TO') Then
+        ParserAdvance
+      Else
+        CompileError('"TO" attendu dans la boucle DO iterative');
+
+      (* Evaluer la valeur de fin -> sauver dans DX via pile *)
+      ParseExpr(E);
+      ExprFlushToAX(E);
+      EmitInstrA('PUSH', 'AX');  (* sauver la borne fin sur la pile *)
+
+      (* Verifier BY *)
+      If (CurToken.Kind = TK_KEYWORD) And
+         (StrUpperCase(CurToken.Val) = 'BY') Then
+      Begin
+        ParserAdvance;  (* consommer BY *)
+        ParseExpr(E);
+        ExprFlushToAX(E);
+        (* AX = pas -> sauver dans BX via pile *)
+        EmitInstrA('PUSH', 'AX');  (* pas sur la pile *)
+      End
+      Else
+      Begin
+        (* Pas par defaut = 1 *)
+        EmitInstrAB('MOV', 'AX', '1');
+        EmitInstrA('PUSH', 'AX');
+      End;
+
+      (* Verifier WHILE ou UNTIL additionnel *)
+      HasWhile := False;
+      HasUntil := False;
+      KW := '';
+      If CurToken.Kind = TK_KEYWORD Then
+        KW := StrUpperCase(CurToken.Val);
+
+      If KW = 'WHILE' Then
+      Begin
+        HasWhile := True;
+        ParserAdvance;  (* consommer WHILE *)
+      End
+      Else If KW = 'UNTIL' Then
+      Begin
+        HasUntil := True;
+        ParserAdvance;  (* consommer UNTIL *)
+      End;
+
+      LblTest := LabelGen;
+      LblIncr := LabelGen;
+      LblEnd  := LabelGen;
+
+      (* Sauvegarder les anciennes valeurs de DOEND/DOSTEP *)
+      (* pour supporter les boucles DO iteratives imbriquees *)
+      EmitInstrA('PUSH', 'WORD PTR [_SAS_DOEND]');
+      EmitInstrA('PUSH', 'WORD PTR [_SAS_DOSTEP]');
+
+      (* Depiler le pas et la borne dans les variables temp *)
+      EmitInstrA('POP', 'BX');   (* pas *)
+      EmitInstrAB('MOV', '[_SAS_DOSTEP]', 'BX');
+      EmitInstrA('POP', 'DX');   (* borne fin *)
+      EmitInstrAB('MOV', '[_SAS_DOEND]', 'DX');
+
+      (* Label de test *)
+      EmitLabel(LblTest);
+
+      (* Comparer var avec borne *)
+      (* Si pas >= 0 : var > borne -> sortir (JG) *)
+      (* Si pas < 0  : var < borne -> sortir (JL) *)
+      EmitInstrAB('MOV', 'AX', VarAddr);
+      EmitInstrAB('MOV', 'DX', '[_SAS_DOEND]');
+      EmitInstrAB('MOV', 'BX', '[_SAS_DOSTEP]');
+      EmitInstrAB('OR', 'BX', 'BX');
+      EmitInstrA('JS', LblTest + 'N');
+      (* pas >= 0 *)
+      EmitInstrAB('CMP', 'AX', 'DX');
+      EmitInstrA('JG', LblEnd);
+      EmitInstrA('JMP', LblTest + 'OK');
+      EmitLabel(LblTest + 'N');
+      (* pas < 0 *)
+      EmitInstrAB('CMP', 'AX', 'DX');
+      EmitInstrA('JL', LblEnd);
+      EmitLabel(LblTest + 'OK');
+
+      (* Condition additionnelle WHILE/UNTIL *)
+      If HasWhile Then
+      Begin
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+          ParserAdvance;
+        ParseExpr(E);
+        ExprFlushToAX(E);
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+        EmitInstrAB('TEST', 'AX', 'AX');
+        EmitInstrA('JZ', LblEnd);
+      End
+      Else If HasUntil Then
+      Begin
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+          ParserAdvance;
+        ParseExpr(E);
+        ExprFlushToAX(E);
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+        EmitInstrAB('TEST', 'AX', 'AX');
+        EmitInstrA('JNZ', LblEnd);
+      End;
+
+      (* Consommer ; *)
+      If CurToken.Kind = TK_SEMICOLON Then
+        ParserAdvance;
+
+      LoopPush(LblEnd, LblIncr);
+      ParseDoBlock;
+
+      (* Increment *)
+      EmitLabel(LblIncr);
+      EmitInstrAB('MOV', 'AX', VarAddr);
+      EmitInstrAB('ADD', 'AX', '[_SAS_DOSTEP]');
+      EmitInstrAB('MOV', VarAddr, 'AX');
+      EmitInstrA('JMP', LblTest);
+
+      EmitLabel(LblEnd);
+      (* Restaurer les anciennes valeurs de DOEND/DOSTEP *)
+      EmitInstrA('POP', 'WORD PTR [_SAS_DOSTEP]');
+      EmitInstrA('POP', 'WORD PTR [_SAS_DOEND]');
+      LoopPop;
+      Exit;
+    End
+    Else
+    Begin
+      (* DO suivi d un ident mais pas de = : traiter comme bloc *)
+      (* Cela ne devrait pas arriver en SAS valide *)
+      EmitComment('DO (bloc)');
+      While (CurToken.Kind <> TK_SEMICOLON) And
+            (CurToken.Kind <> TK_EOF) Do
+        ParserAdvance;
+      If CurToken.Kind = TK_SEMICOLON Then
+        ParserAdvance;
+      ParseDoBlock;
+      Exit;
+    End;
+  End;
+
+  (* Fallback : consommer jusqu au ; et traiter comme bloc *)
+  EmitComment('DO (bloc)');
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+    ParserAdvance;
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+  ParseDoBlock;
+End;
+
+{ ============================================================
+  TODO 15 - TABLEAUX SAS (ARRAY) [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- ArrayFind : trouver un tableau par nom ------------------- *)
+Function ArrayFind(Const Name : TString) : Integer;
+Var I : Integer;
+Begin
+  For I := 0 To ArrayCount - 1 Do
+    If ArrayTab[I].Name = Name Then
+    Begin
+      ArrayFind := I;
+      Exit;
+    End;
+  ArrayFind := -1;
+End;
+
+(* ---- ParseArrayStmt : parser ARRAY nom {dim} [$ [len]] [elems] ; *)
+(* Appele apres que le mot-cle ARRAY ait ete consomme.               *)
+(* Formes supportees :                                                *)
+(*   ARRAY scores {5} ;                     -> 5 elements numeriques  *)
+(*   ARRAY noms {3} $ 20 ;                  -> 3 elements char len 20 *)
+(*   ARRAY tab {5} score1-score5 ;          -> 5 elements nommes      *)
+(*   ARRAY tab {5} x1 x2 x3 x4 x5 ;        -> elements explicites   *)
+(*   ARRAY tab {3,4} ;                      -> 3x4 = 12 elements     *)
+(*   ARRAY _tmp {5} _TEMPORARY_ ;           -> temporaire             *)
+Procedure ParseArrayStmt;
+Var
+  ArrName  : TString;
+  ArrIdx   : Integer;
+  Dim1     : Integer;
+  Dim2     : Integer;
+  TotalDim : Integer;
+  IsChar   : Boolean;
+  ElemLen  : Integer;
+  IsTemp   : Boolean;
+  I, J     : Integer;
+  VName    : TString;
+  SIdx     : Integer;
+  TypeIdx  : Integer;
+  BaseName : TString;
+  EndName  : TString;
+  BaseNum  : Integer;
+  EndNum   : Integer;
+  NumStr   : TString;
+  ParseOK  : Boolean;
+Begin
+  EmitComment('ARRAY declaration');
+
+  (* Le mot-cle ARRAY est deja consomme *)
+  (* Lire le nom du tableau *)
+  If (CurToken.Kind <> TK_IDENT) And (CurToken.Kind <> TK_KEYWORD) Then
+  Begin
+    CompileError('nom de tableau attendu apres ARRAY');
+    While (CurToken.Kind <> TK_SEMICOLON) And
+          (CurToken.Kind <> TK_EOF) Do
+      ParserAdvance;
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+    Exit;
+  End;
+
+  ArrName := StrUpperCase(CurToken.Val);
+  ParserAdvance;
+
+  (* Verifier si deja declare *)
+  If ArrayFind(ArrName) >= 0 Then
+  Begin
+    CompileError('tableau "' + ArrName + '" deja declare');
+    While (CurToken.Kind <> TK_SEMICOLON) And
+          (CurToken.Kind <> TK_EOF) Do
+      ParserAdvance;
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+    Exit;
+  End;
+
+  (* Lire les dimensions entre accolades : {dim} ou {dim1,dim2} *)
+  Dim1 := 0;
+  Dim2 := 0;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val[1] = CH_LBRACE) Then
+  Begin
+    ParserAdvance;  (* consommer { *)
+
+    (* Premiere dimension *)
+    If CurToken.Kind = TK_INTEGER Then
+    Begin
+      Dim1 := CurToken.IntVal;
+      ParserAdvance;
+    End
+    Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '*') Then
+    Begin
+      (* ARRAY nom {*} -> dimension implicite (comptee par les elements) *)
+      Dim1 := 0;  (* sera calcule apres *)
+      ParserAdvance;
+    End
+    Else
+    Begin
+      CompileError('dimension entiere attendue dans ARRAY');
+      Dim1 := 1;
+    End;
+
+    (* Deuxieme dimension optionnelle *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+    Begin
+      ParserAdvance;  (* consommer , *)
+      If CurToken.Kind = TK_INTEGER Then
+      Begin
+        Dim2 := CurToken.IntVal;
+        ParserAdvance;
+      End
+      Else
+      Begin
+        CompileError('deuxieme dimension entiere attendue');
+        Dim2 := 1;
+      End;
+    End;
+
+    (* Consommer } *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val[1] = CH_RBRACE) Then
+      ParserAdvance
+    Else
+      CompileError('"}" manquant apres les dimensions du tableau');
+  End
+  Else
+  Begin
+    CompileError('"{" attendu apres le nom du tableau');
+    While (CurToken.Kind <> TK_SEMICOLON) And
+          (CurToken.Kind <> TK_EOF) Do
+      ParserAdvance;
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+    Exit;
+  End;
+
+  (* Calculer le nombre total d elements *)
+  If Dim2 > 0 Then
+    TotalDim := Dim1 * Dim2
+  Else If Dim1 > 0 Then
+    TotalDim := Dim1
+  Else
+    TotalDim := 0;  (* sera calcule depuis les elements *)
+
+  (* Verifier $ (tableau de caracteres) *)
+  IsChar := False;
+  ElemLen := 2;  (* defaut : numerique 2 octets *)
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '$') Then
+  Begin
+    IsChar := True;
+    ElemLen := 8;  (* defaut chaine SAS *)
+    ParserAdvance;
+    (* Longueur optionnelle *)
+    If CurToken.Kind = TK_INTEGER Then
+    Begin
+      ElemLen := CurToken.IntVal;
+      ParserAdvance;
+    End;
+  End;
+
+  (* Verifier _TEMPORARY_ *)
+  IsTemp := False;
+  If (CurToken.Kind = TK_IDENT) And
+     (StrUpperCase(CurToken.Val) = '_TEMPORARY_') Then
+  Begin
+    IsTemp := True;
+    ParserAdvance;
+  End;
+
+  (* Determine le type des elements *)
+  If IsChar Then
+    TypeIdx := TY_IDX_CHARACTER
+  Else
+    TypeIdx := TY_IDX_NUMERIC;
+
+  (* Lire la liste d elements (avant ;) *)
+  (* Peut etre :                                                   *)
+  (*   - vide : generer des noms automatiques (ArrName1..ArrNameN) *)
+  (*   - liste explicite : x1 x2 x3                               *)
+  (*   - plage numerotee : score1-score5                           *)
+  J := 0;
+  ParseOK := True;
+
+  If ArrayCount >= MAX_ARRAY Then
+  Begin
+    CompileError('trop de tableaux (max=' + IntToStr(MAX_ARRAY) + ')');
+    While (CurToken.Kind <> TK_SEMICOLON) And
+          (CurToken.Kind <> TK_EOF) Do
+      ParserAdvance;
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+    Exit;
+  End;
+
+  ArrIdx := ArrayCount;
+
+  (* Parser les noms d elements *)
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) And
+        ParseOK And
+        (J < MAX_ARRAY_ELEM) Do
+  Begin
+    If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+    Begin
+      VName := StrUpperCase(CurToken.Val);
+
+      (* Skip _TEMPORARY_ qui a pu etre lu apres les elements *)
+      If VName = '_TEMPORARY_' Then
+      Begin
+        IsTemp := True;
+        ParserAdvance;
+      End
+      Else
+      Begin
+        ParserAdvance;
+
+        (* Verifier si c est une plage : name1-name5 *)
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '-') Then
+        Begin
+          ParserAdvance;  (* consommer - *)
+          If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+          Begin
+            EndName := StrUpperCase(CurToken.Val);
+            ParserAdvance;
+
+            (* Extraire le prefixe et les numeros *)
+            (* Ex: SCORE1-SCORE5 -> base=SCORE, 1..5 *)
+            BaseName := '';
+            NumStr := '';
+            I := Length(VName);
+            While (I > 0) And (VName[I] >= '0') And (VName[I] <= '9') Do
+              Dec(I);
+            BaseName := Copy(VName, 1, I);
+            NumStr := Copy(VName, I + 1, Length(VName) - I);
+            If NumStr <> '' Then
+              BaseNum := StrToIntDef(NumStr, 1)
+            Else
+              BaseNum := 1;
+
+            NumStr := '';
+            I := Length(EndName);
+            While (I > 0) And (EndName[I] >= '0') And (EndName[I] <= '9') Do
+              Dec(I);
+            NumStr := Copy(EndName, I + 1, Length(EndName) - I);
+            If NumStr <> '' Then
+              EndNum := StrToIntDef(NumStr, BaseNum)
+            Else
+              EndNum := BaseNum;
+
+            (* Creer les variables de la plage *)
+            For I := BaseNum To EndNum Do
+            Begin
+              If J >= MAX_ARRAY_ELEM Then
+              Begin
+                CompileError('trop d elements dans le tableau');
+                ParseOK := False;
+              End
+              Else
+              Begin
+                VName := BaseName + IntToStr(I);
+                SIdx := SymFind(VName);
+                If SIdx < 0 Then
+                  SIdx := VarAlloc(VName, TypeIdx, ElemLen);
+                ArrayTab[ArrIdx].ElemSymIdx[J] := SIdx;
+                Inc(J);
+              End;
+            End;
+          End
+          Else
+          Begin
+            CompileError('nom attendu apres - dans la plage de tableau');
+            ParseOK := False;
+          End;
+        End
+        Else
+        Begin
+          (* Element simple *)
+          SIdx := SymFind(VName);
+          If SIdx < 0 Then
+            SIdx := VarAlloc(VName, TypeIdx, ElemLen);
+          ArrayTab[ArrIdx].ElemSymIdx[J] := SIdx;
+          Inc(J);
+        End;
+      End;
+    End
+    Else
+    Begin
+      (* Token inattendu - arreter *)
+      ParseOK := False;
+    End;
+  End;
+
+  (* Si aucun element nomme, creer automatiquement *)
+  If J = 0 Then
+  Begin
+    If TotalDim <= 0 Then
+    Begin
+      CompileError('ARRAY sans dimension et sans elements');
+      TotalDim := 1;
+    End;
+    For I := 1 To TotalDim Do
+    Begin
+      If J >= MAX_ARRAY_ELEM Then
+      Begin
+        CompileError('trop d elements dans le tableau');
+        Break;
+      End;
+      VName := ArrName + IntToStr(I);
+      SIdx := SymFind(VName);
+      If SIdx < 0 Then
+        SIdx := VarAlloc(VName, TypeIdx, ElemLen);
+      ArrayTab[ArrIdx].ElemSymIdx[J] := SIdx;
+      Inc(J);
+    End;
+  End;
+
+  (* Ajuster TotalDim si dimension etait * *)
+  If TotalDim = 0 Then
+  Begin
+    TotalDim := J;
+    Dim1 := J;
+  End;
+
+  (* Verifier coherence *)
+  If (J > 0) And (J <> TotalDim) Then
+    WarnMsg('ARRAY ' + ArrName + ' : ' + IntToStr(J)
+            + ' elements pour dimension ' + IntToStr(TotalDim));
+
+  (* Creer l entree SC_ARRAY dans la table des symboles *)
+  SIdx := SymAdd(ArrName, SC_ARRAY, TypeIdx, 0);
+  If (SIdx >= 0) And (J > 0) Then
+  Begin
+    SymTab[SIdx].Offset := SymTab[ArrayTab[ArrIdx].ElemSymIdx[0]].Offset;
+    SymTab[SIdx].VarLen := ElemLen;
+  End;
+
+  (* Remplir le record ArrayTab *)
+  ArrayTab[ArrIdx].Name       := ArrName;
+  ArrayTab[ArrIdx].ElemCount  := TotalDim;
+  ArrayTab[ArrIdx].Dim1       := Dim1;
+  ArrayTab[ArrIdx].Dim2       := Dim2;
+  ArrayTab[ArrIdx].IsChar     := IsChar;
+  ArrayTab[ArrIdx].ElemLen    := ElemLen;
+  ArrayTab[ArrIdx].IsTemp     := IsTemp;
+  ArrayTab[ArrIdx].SymIdx     := SIdx;
+  If J > 0 Then
+    ArrayTab[ArrIdx].BaseOffset :=
+      SymTab[ArrayTab[ArrIdx].ElemSymIdx[0]].Offset
+  Else
+    ArrayTab[ArrIdx].BaseOffset := 0;
+  Inc(ArrayCount);
+
+  EmitComment('ARRAY ' + ArrName + ' dim=' + IntToStr(TotalDim)
+              + ' elemsize=' + IntToStr(ElemLen));
+
+  (* Consommer ; *)
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+{ ============================================================
+  TODO 16 - ETAPE DATA (DATA STEP) [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- DSEmitPDVReset : reinitialiser le PDV a valeur manquante ---- *)
+(* En SAS, a chaque iteration du DATA step, les variables non         *)
+(* RETAIN sont remises a valeur manquante (MISSING_VAL = 8000h).      *)
+(* Les variables RETAIN conservent leur valeur.                        *)
+Procedure DSEmitPDVReset;
+Var
+  I : Integer;
+Begin
+  EmitComment('Reinitialiser PDV (variables non-RETAIN -> manquant)');
+  For I := 0 To SymCount - 1 Do
+  Begin
+    If (SymTab[I].Cat = SC_VAR) And (Not SymTab[I].IsRetained) Then
+    Begin
+      If SymTab[I].TypeIdx = TY_IDX_NUMERIC Then
+      Begin
+        (* Numerique : affecter MISSING_VAL (8000h) *)
+        EmitInstrAB('MOV', 'WORD PTR [_SAS_PDV + '
+                    + IntToStr(SymTab[I].Offset) + ']',
+                    IntToStr(MISSING_VAL));
+      End
+      Else If SymTab[I].TypeIdx = TY_IDX_CHARACTER Then
+      Begin
+        (* Caractere : remplir d espaces (20h) *)
+        EmitInstrAB('LEA', 'DI', '_SAS_PDV + '
+                    + IntToStr(SymTab[I].Offset));
+        EmitInstrAB('MOV', 'AL', '20h');
+        EmitInstrAB('MOV', 'CX', IntToStr(SymTab[I].VarLen));
+        EmitInstr('REP STOSB');
+      End;
+    End;
+  End;
+End;
+
+(* ---- DSEmitImplicitOutput : ecrire l observation dans le dataset -- *)
+(* Copie le PDV courant dans le dataset de sortie (si pas DELETE).      *)
+(* En mode simple (pas de SET), on ecrit simplement un commentaire      *)
+(* car le runtime reel n est pas encore implemente (TODO 24).           *)
+Procedure DSEmitImplicitOutput;
+Begin
+  EmitComment('OUTPUT : copier PDV -> dataset ' + DSName);
+  (* Incrementer le compteur d observations ecrites *)
+  EmitInstrA('INC', 'WORD PTR [_SAS_N]');
+  (* Reinitialiser _ERROR_ *)
+  EmitInstrAB('MOV', 'WORD PTR [_SAS_ERROR]', '0');
+End;
+
+(* ---- ParseSetStmt : SET dataset1 [dataset2] [opts] ; ---------------- *)
+(* Delegue a ParseSetStmtEnhanced (TODO 23) pour supporter les options   *)
+(* POINT=, NOBS=, END= et la concatenation multi-datasets.              *)
+Procedure ParseSetStmt;
+Begin
+  ParseSetStmtEnhanced;
+End;
+
+(* ---- ParseOutputStmt : OUTPUT ; ---------------------------------- *)
+(* Ecrit explicitement l observation courante dans le dataset.          *)
+Procedure ParseOutputStmt;
+Begin
+  EmitComment('OUTPUT explicite');
+  DSHasOutput := True;
+  DSEmitImplicitOutput;
+
+  (* Consommer ; *)
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseDeleteStmt : DELETE ; ---------------------------------- *)
+(* Ne pas ecrire l observation courante, sauter a l iteration suivante. *)
+Procedure ParseDeleteStmt;
+Begin
+  EmitComment('DELETE : ne pas ecrire cette observation');
+  (* Sauter directement a l iteration suivante de la boucle *)
+  If InDataStep And (DSTopLabel <> '') Then
+    EmitInstrA('JMP', DSTopLabel)
+  Else
+    EmitComment('DELETE hors DATA step : ignore');
+
+  (* Consommer ; *)
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseStopStmt : STOP ; -------------------------------------- *)
+(* Arrete l execution du DATA step (sortie de la boucle implicite).    *)
+Procedure ParseStopStmt;
+Begin
+  EmitComment('STOP : arreter le DATA step');
+  If InDataStep And (DSStopLabel <> '') Then
+    EmitInstrA('JMP', DSStopLabel)
+  Else
+    EmitComment('STOP hors DATA step : ignore');
+
+  (* Consommer ; *)
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseAbortStmt : ABORT [RETURN | ABEND] [n] ; --------------- *)
+(* Arrete le DATA step avec un code d erreur. En mode DOS, on emet     *)
+(* INT 21h / AH=4Ch avec le code d erreur.                             *)
+Procedure ParseAbortStmt;
+Var
+  ErrCode : TString;
+Begin
+  EmitComment('ABORT : terminer avec erreur');
+
+  ErrCode := '1';  (* code d erreur par defaut *)
+
+  (* Options optionnelles : RETURN, ABEND, ou code numerique *)
+  If CurToken.Kind = TK_KEYWORD Then
+  Begin
+    If (StrUpperCase(CurToken.Val) = 'RETURN') Or
+       (StrUpperCase(CurToken.Val) = 'ABEND') Then
+      ParserAdvance;
+  End;
+  If CurToken.Kind = TK_INTEGER Then
+  Begin
+    ErrCode := CurToken.Val;
+    ParserAdvance;
+  End;
+
+  (* Generer la terminaison avec code d erreur *)
+  EmitInstrAB('MOV', 'AH', '4Ch');
+  EmitInstrAB('MOV', 'AL', ErrCode);
+  EmitInstr('INT 21h');
+
+  (* Consommer ; *)
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseDataStep : DATA nom ; stmts ; RUN ; -------------------- *)
+(* Parse un DATA step complet :                                         *)
+(*   1. DATA nom_dataset ;                                              *)
+(*   2. Instructions (SET, affectations, IF, DO, PUT, etc.)             *)
+(*   3. RUN ; ou QUIT ;                                                 *)
+(* Genere une boucle implicite : chaque iteration lit une observation,  *)
+(* execute le corps du DATA step, et ecrit le resultat (OUTPUT).        *)
+Procedure ParseDataStep;
+Var
+  KW : TString;
+Begin
+  EmitBlankLine;
+  EmitComment('========= DATA STEP =========');
+
+  (* Sauvegarder l etat *)
+  InDataStep   := True;
+  DSHasSet     := False;
+  DSHasOutput  := False;
+  DSObsCount   := 0;
+  DSSetName    := '';
+  DSSetLabel   := '';
+  (* TODO 23 : initialiser les variables de fusion *)
+  DSHasMerge   := False;
+  DSHasBy      := False;
+  DSHasUpdate  := False;
+  DSHasModify  := False;
+  DSMergeCount := 0;
+  DSByVarCount := 0;
+  DSSetCount   := 0;
+  DSSetPointVar := '';
+  DSSetNobsVar  := '';
+  DSSetEndVar   := '';
+
+  (* Generer les labels du DATA step *)
+  DSTopLabel    := LabelGen;
+  DSEndLabel    := LabelGen;
+  DSStopLabel   := DSEndLabel;
+  DSOutputLabel := LabelGen;
+
+  (* Parser le nom du dataset *)
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    DSName := StrUpperCase(CurToken.Val);
+    ParserAdvance;
+  End
+  Else If (CurToken.Kind = TK_KEYWORD) And
+          (StrUpperCase(CurToken.Val) = '_NULL_') Then
+  Begin
+    DSName := '_NULL_';
+    ParserAdvance;
+  End
+  Else
+    DSName := 'WORK';  (* dataset par defaut *)
+
+  DSLabel := SAS_DS_PFX + DSName;
+  EmitComment('dataset: ' + DSName);
+
+  (* Consommer ; apres DATA nom *)
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+
+  (* Initialiser _N_ a 1 *)
+  EmitInstrAB('MOV', 'WORD PTR [_SAS_N]', '1');
+  (* Initialiser _ERROR_ a 0 *)
+  EmitInstrAB('MOV', 'WORD PTR [_SAS_ERROR]', '0');
+  EmitBlankLine;
+
+  (* Label debut de la boucle implicite *)
+  EmitLabel(DSTopLabel);
+  EmitComment('--- iteration DATA step ---');
+
+  (* Reinitialiser le PDV pour les variables non-RETAIN *)
+  DSEmitPDVReset;
+
+  (* Parser le corps du DATA step : stmts jusqu a RUN ou QUIT ou EOF *)
+  While CurToken.Kind <> TK_EOF Do
+  Begin
+    If CurToken.Kind = TK_KEYWORD Then
+    Begin
+      KW := StrUpperCase(CurToken.Val);
+
+      (* RUN ; marque la fin du DATA step *)
+      If KW = 'RUN' Then
+      Begin
+        ParserAdvance;  (* consommer RUN *)
+        If CurToken.Kind = TK_SEMICOLON Then
+          ParserAdvance;
+        Break;
+      End;
+
+      (* QUIT ; fin alternative pour certains contextes *)
+      If KW = 'QUIT' Then
+      Begin
+        ParserAdvance;
+        If CurToken.Kind = TK_SEMICOLON Then
+          ParserAdvance;
+        Break;
+      End;
+
+      (* DATA imbriquee ou PROC : fin implicite du DATA step *)
+      If (KW = 'DATA') Or (KW = 'PROC') Then
+        Break;
+
+      (* SET *)
+      If KW = 'SET' Then
+      Begin
+        ParserAdvance;
+        ParseSetStmt;
+        Continue;
+      End;
+
+      (* OUTPUT *)
+      If KW = 'OUTPUT' Then
+      Begin
+        ParserAdvance;
+        ParseOutputStmt;
+        Continue;
+      End;
+
+      (* DELETE *)
+      If KW = 'DELETE' Then
+      Begin
+        ParserAdvance;
+        ParseDeleteStmt;
+        Continue;
+      End;
+
+      (* STOP *)
+      If KW = 'STOP' Then
+      Begin
+        ParserAdvance;
+        ParseStopStmt;
+        Continue;
+      End;
+
+      (* ABORT *)
+      If KW = 'ABORT' Then
+      Begin
+        ParserAdvance;
+        ParseAbortStmt;
+        Continue;
+      End;
+
+      (* TODO 23 : MERGE *)
+      If KW = 'MERGE' Then
+      Begin
+        ParserAdvance;
+        ParseMergeStmt;
+        Continue;
+      End;
+
+      (* TODO 23 : BY (dans DATA step context) *)
+      If KW = 'BY' Then
+      Begin
+        ParserAdvance;
+        ParseDataByStmt;
+        Continue;
+      End;
+
+      (* TODO 23 : UPDATE *)
+      If KW = 'UPDATE' Then
+      Begin
+        ParserAdvance;
+        ParseUpdateStmt;
+        Continue;
+      End;
+
+      (* TODO 23 : MODIFY *)
+      If KW = 'MODIFY' Then
+      Begin
+        ParserAdvance;
+        ParseModifyStmt;
+        Continue;
+      End;
+    End;
+
+    (* Toute autre instruction : deleguer a ParseStmt *)
+    ParseStmt;
+  End;
+
+  (* OUTPUT implicite si aucun OUTPUT explicite n a ete utilise *)
+  If Not DSHasOutput Then
+  Begin
+    EmitLabel(DSOutputLabel);
+    DSEmitImplicitOutput;
+  End;
+
+  (* Incrementer _N_ *)
+  EmitInstrA('INC', 'WORD PTR [_SAS_N]');
+
+  (* Boucle implicite : en l absence de SET, une seule iteration *)
+  (* Avec SET, on bouclerait sur les observations (stub: 1 passe) *)
+  If DSHasSet Then
+  Begin
+    EmitComment('Boucle implicite : iteration suivante');
+    EmitInstrA('JMP', DSTopLabel);
+  End;
+
+  (* Label de sortie du DATA step *)
+  EmitLabel(DSEndLabel);
+  EmitComment('========= FIN DATA STEP ' + DSName + ' =========');
+  EmitBlankLine;
+
+  (* Restaurer l etat *)
+  InDataStep := False;
+End;
+
+{ ============================================================
+  TODO 17 - ETAPE PROC (PROC STEP) ET INFRASTRUCTURE [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- ProcInit : reinitialiser l etat du PROC step --------------- *)
+Procedure ProcInit;
+Var I : Integer;
+Begin
+  InProcStep     := True;
+  ProcName       := '';
+  ProcDataDS     := '';
+  ProcOutDS      := '';
+  ProcNoPrint    := False;
+  ProcVarCount   := 0;
+  ProcByCount    := 0;
+  ProcClassCount := 0;
+  ProcTitle      := '';
+  ProcFootnote   := '';
+  ProcStatN      := False;
+  ProcStatMean   := False;
+  ProcStatStd    := False;
+  ProcStatMin    := False;
+  ProcStatMax    := False;
+  ProcStatSum    := False;
+  ProcTablesCount := 0;
+  For I := 0 To MAX_PROC_VARS - 1 Do
+    ProcByDescList[I] := False;
+End;
+
+(* ---- ParseProcVarStmt : parser VAR var1 var2 ... ; -------------- *)
+(* Appele apres que le mot-cle VAR ait ete consomme.                  *)
+Procedure ParseProcVarStmt;
+Begin
+  EmitComment('VAR');
+  ProcVarCount := 0;
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      If ProcVarCount < MAX_PROC_VARS Then
+      Begin
+        ProcVarList[ProcVarCount] := StrUpperCase(CurToken.Val);
+        Inc(ProcVarCount);
+      End
+      Else
+        WarnMsg('trop de variables dans VAR (max '
+                + IntToStr(MAX_PROC_VARS) + ')');
+    End;
+    ParserAdvance;
+  End;
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseProcByStmt : parser BY [DESCENDING] var1 [DESCENDING] var2 ... ; *)
+(* Appele apres que le mot-cle BY ait ete consomme.                           *)
+(* Supporte le mot-cle DESCENDING devant chaque variable.                     *)
+Procedure ParseProcByStmt;
+Var
+  DescNext : Boolean;
+  KW       : TString;
+Begin
+  EmitComment('BY');
+  ProcByCount := 0;
+  DescNext := False;
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+    Begin
+      KW := StrUpperCase(CurToken.Val);
+      If KW = 'DESCENDING' Then
+      Begin
+        DescNext := True;
+        ParserAdvance;
+        Continue;
+      End;
+      If ProcByCount < MAX_PROC_VARS Then
+      Begin
+        ProcByList[ProcByCount] := KW;
+        ProcByDescList[ProcByCount] := DescNext;
+        Inc(ProcByCount);
+        DescNext := False;
+      End
+      Else
+        WarnMsg('trop de variables dans BY (max '
+                + IntToStr(MAX_PROC_VARS) + ')');
+    End;
+    ParserAdvance;
+  End;
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseProcClassStmt : parser CLASS var1 var2 ... ; ---------- *)
+(* Appele apres que le mot-cle CLASS ait ete consomme.                *)
+Procedure ParseProcClassStmt;
+Begin
+  EmitComment('CLASS');
+  ProcClassCount := 0;
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      If ProcClassCount < MAX_PROC_VARS Then
+      Begin
+        ProcClassList[ProcClassCount] := StrUpperCase(CurToken.Val);
+        Inc(ProcClassCount);
+      End
+      Else
+        WarnMsg('trop de variables dans CLASS (max '
+                + IntToStr(MAX_PROC_VARS) + ')');
+    End;
+    ParserAdvance;
+  End;
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseProcOptions : parser les options apres PROC nom ------- *)
+(* Options reconnues :                                                 *)
+(*   DATA=dataset  : dataset d entree                                  *)
+(*   OUT=dataset   : dataset de sortie                                 *)
+(*   NOPRINT       : supprimer l affichage                             *)
+(*   WHERE=(cond)  : filtrer (consomme sans generer de code)           *)
+(*   Autres options specifiques : passees au handler de la PROC        *)
+(* Consume les tokens jusqu au prochain ; (fin de la ligne PROC).      *)
+Procedure ParseProcOptions;
+Var
+  OptName : TString;
+Begin
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+    Begin
+      OptName := StrUpperCase(CurToken.Val);
+      ParserAdvance;
+
+      (* DATA=dataset *)
+      If OptName = 'DATA' Then
+      Begin
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+        Begin
+          ParserAdvance;
+          If (CurToken.Kind = TK_IDENT) Or
+             (CurToken.Kind = TK_KEYWORD) Then
+          Begin
+            ProcDataDS := StrUpperCase(CurToken.Val);
+            EmitComment('PROC option DATA=' + ProcDataDS);
+            ParserAdvance;
+          End;
+        End;
+        Continue;
+      End;
+
+      (* OUT=dataset *)
+      If OptName = 'OUT' Then
+      Begin
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+        Begin
+          ParserAdvance;
+          If (CurToken.Kind = TK_IDENT) Or
+             (CurToken.Kind = TK_KEYWORD) Then
+          Begin
+            ProcOutDS := StrUpperCase(CurToken.Val);
+            EmitComment('PROC option OUT=' + ProcOutDS);
+            ParserAdvance;
+          End;
+        End;
+        Continue;
+      End;
+
+      (* NOPRINT *)
+      If OptName = 'NOPRINT' Then
+      Begin
+        ProcNoPrint := True;
+        EmitComment('PROC option NOPRINT');
+        Continue;
+      End;
+
+      (* PROC MEANS stat keywords : N MEAN STD MIN MAX SUM *)
+      If OptName = 'N' Then
+      Begin ProcStatN := True; Continue; End;
+      If OptName = 'MEAN' Then
+      Begin ProcStatMean := True; Continue; End;
+      If OptName = 'STD' Then
+      Begin ProcStatStd := True; Continue; End;
+      If OptName = 'MIN' Then
+      Begin ProcStatMin := True; Continue; End;
+      If OptName = 'MAX' Then
+      Begin ProcStatMax := True; Continue; End;
+      If OptName = 'SUM' Then
+      Begin ProcStatSum := True; Continue; End;
+
+      (* WHERE=(condition) : consommer la parenthese *)
+      If OptName = 'WHERE' Then
+      Begin
+        EmitComment('PROC option WHERE (stub)');
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+          ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          While (CurToken.Kind <> TK_PUNCT) Or (CurToken.Val <> ')') Do
+          Begin
+            If CurToken.Kind = TK_EOF Then Break;
+            ParserAdvance;
+          End;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        Continue;
+      End;
+
+      (* Autre option non reconnue : ignorer *)
+    End
+    Else
+      ParserAdvance;
+  End;
+
+  (* Consommer ; *)
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseProcBody : parser le corps du PROC step --------------- *)
+(* Lit les instructions internes au PROC step :                        *)
+(*   VAR, BY, CLASS, TITLE, FOOTNOTE, TABLES, etc.                    *)
+(* Sort a RUN ;, QUIT ;, ou debut d un autre step (DATA/PROC).        *)
+(* Retourne False si la procedure n est pas reconnue et que le corps   *)
+(* a ete ignore.                                                       *)
+Procedure ParseProcBody;
+Var
+  KW : TString;
+Begin
+  While CurToken.Kind <> TK_EOF Do
+  Begin
+    If CurToken.Kind = TK_KEYWORD Then
+    Begin
+      KW := StrUpperCase(CurToken.Val);
+
+      (* RUN ; marque la fin du PROC step *)
+      If KW = 'RUN' Then
+      Begin
+        ParserAdvance;
+        If CurToken.Kind = TK_SEMICOLON Then
+          ParserAdvance;
+        Break;
+      End;
+
+      (* QUIT ; fin alternative *)
+      If KW = 'QUIT' Then
+      Begin
+        ParserAdvance;
+        If CurToken.Kind = TK_SEMICOLON Then
+          ParserAdvance;
+        Break;
+      End;
+
+      (* DATA ou PROC : fin implicite du PROC step courant *)
+      If (KW = 'DATA') Or (KW = 'PROC') Then
+        Break;
+
+      (* VAR variables ; *)
+      If KW = 'VAR' Then
+      Begin
+        ParserAdvance;
+        ParseProcVarStmt;
+        Continue;
+      End;
+
+      (* BY variables ; *)
+      If KW = 'BY' Then
+      Begin
+        ParserAdvance;
+        ParseProcByStmt;
+        Continue;
+      End;
+
+      (* CLASS variables ; *)
+      If KW = 'CLASS' Then
+      Begin
+        ParserAdvance;
+        ParseProcClassStmt;
+        Continue;
+      End;
+
+      (* TITLE 'texte' ; *)
+      If KW = 'TITLE' Then
+      Begin
+        ParserAdvance;
+        If CurToken.Kind = TK_STRING Then
+        Begin
+          ProcTitle := CurToken.Val;
+          EmitComment('TITLE: ' + ProcTitle);
+          ParserAdvance;
+        End;
+        While (CurToken.Kind <> TK_SEMICOLON) And
+              (CurToken.Kind <> TK_EOF) Do
+          ParserAdvance;
+        If CurToken.Kind = TK_SEMICOLON Then
+          ParserAdvance;
+        Continue;
+      End;
+
+      (* FOOTNOTE 'texte' ; *)
+      If KW = 'FOOTNOTE' Then
+      Begin
+        ParserAdvance;
+        If CurToken.Kind = TK_STRING Then
+        Begin
+          ProcFootnote := CurToken.Val;
+          EmitComment('FOOTNOTE: ' + ProcFootnote);
+          ParserAdvance;
+        End;
+        While (CurToken.Kind <> TK_SEMICOLON) And
+              (CurToken.Kind <> TK_EOF) Do
+          ParserAdvance;
+        If CurToken.Kind = TK_SEMICOLON Then
+          ParserAdvance;
+        Continue;
+      End;
+
+      (* TABLES (pour PROC FREQ, TODO 19) *)
+      If KW = 'TABLES' Then
+      Begin
+        ParserAdvance;
+        ParseProcTablesStmt;
+        Continue;
+      End;
+
+      (* WHERE (condition) ; *)
+      If KW = 'WHERE' Then
+      Begin
+        EmitComment('WHERE (stub)');
+        ParserAdvance;
+        While (CurToken.Kind <> TK_SEMICOLON) And
+              (CurToken.Kind <> TK_EOF) Do
+          ParserAdvance;
+        If CurToken.Kind = TK_SEMICOLON Then
+          ParserAdvance;
+        Continue;
+      End;
+
+      (* FORMAT : associer un format a une variable (TODO 20) *)
+      If KW = 'FORMAT' Then
+      Begin
+        ParserAdvance;
+        ParseFormatStmt;
+        Continue;
+      End;
+
+      (* INFORMAT / ATTRIB / OPTIONS : consommer *)
+      If (KW = 'INFORMAT') Or
+         (KW = 'ATTRIB') Or (KW = 'OPTIONS') Or
+         (KW = 'OUTPUT') Then
+      Begin
+        EmitComment(KW + ' (stub)');
+        ParserAdvance;
+        While (CurToken.Kind <> TK_SEMICOLON) And
+              (CurToken.Kind <> TK_EOF) Do
+          ParserAdvance;
+        If CurToken.Kind = TK_SEMICOLON Then
+          ParserAdvance;
+        Continue;
+      End;
+    End;
+
+    (* Point-virgule isole *)
+    If CurToken.Kind = TK_SEMICOLON Then
+    Begin
+      ParserAdvance;
+      Continue;
+    End;
+
+    (* Autre token non reconnu dans le PROC : consommer la ligne *)
+    ParserAdvance;
+    While (CurToken.Kind <> TK_SEMICOLON) And
+          (CurToken.Kind <> TK_EOF) Do
+      ParserAdvance;
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+  End;
+End;
+
+{ ============================================================
+  TODO 18 - PROC PRINT ET PROC MEANS [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- ParseProcMeansOptions : parser les options statistiques ----- *)
+(* Sur la ligne PROC MEANS : N MEAN STD MIN MAX SUM                    *)
+(* Ces mots-cles sont deja consommes par ParseProcOptions comme        *)
+(* identifiants non reconnus. On les parse ici depuis les options       *)
+(* restantes dans la ligne PROC originale.                              *)
+(* Appele entre ParseProcOptions et ParseProcBody pour PROC MEANS.     *)
+Procedure ParseProcMeansOptions;
+Var
+  AnyFound : Boolean;
+Begin
+  AnyFound := False;
+  (* Les options de statistiques sont des identifiants sur la ligne *)
+  (* PROC MEANS. Comme ParseProcOptions les a deja consommees en    *)
+  (* tant qu options non reconnues, on les detecte ici via les noms *)
+  (* passes dans ProcName context.                                   *)
+  (* En fait, elles ont ete consommees par ParseProcOptions.         *)
+  (* Pour corriger, on set les flags par defaut si aucune stat n est *)
+  (* specifiee (comportement SAS : N MEAN STD MIN MAX par defaut).   *)
+  AnyFound := ProcStatN Or ProcStatMean Or ProcStatStd Or
+              ProcStatMin Or ProcStatMax Or ProcStatSum;
+  If Not AnyFound Then
+  Begin
+    (* Statistiques par defaut quand aucune n est specifiee *)
+    ProcStatN    := True;
+    ProcStatMean := True;
+    ProcStatStd  := True;
+    ProcStatMin  := True;
+    ProcStatMax  := True;
+  End;
+End;
+
+(* ---- EmitProcPrint : generer le code ASM pour PROC PRINT -------- *)
+(* Affiche un en-tete avec les noms des variables puis les valeurs     *)
+(* des variables du PDV pour chaque observation.                       *)
+(* En mode simple (pas de runtime boucle), on affiche une seule        *)
+(* observation (le contenu actuel du PDV).                              *)
+Procedure EmitProcPrint;
+Var
+  I, SIdx, StrIdx : Integer;
+  VName  : TString;
+  HdrStr : TString;
+Begin
+  EmitComment('PROC PRINT : affichage tabulaire');
+
+  (* Afficher le titre si specifie *)
+  If ProcTitle <> '' Then
+  Begin
+    StrIdx := DataAddStr(ProcTitle);
+    If StrIdx >= 0 Then
+    Begin
+      EmitInstrAB('MOV', 'AH', '40h');
+      EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+      EmitInstrAB('MOV', 'CX', IntToStr(Length(ProcTitle)));
+      EmitInstrAB('LEA', 'DX', DataTab[StrIdx].LblName);
+      EmitInstr('INT 21h');
+      EmitInstrAB('MOV', 'AH', '40h');
+      EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+      EmitInstrAB('MOV', 'CX', '2');
+      EmitInstrAB('LEA', 'DX', '_SAS_CRLF');
+      EmitInstr('INT 21h');
+    End;
+  End;
+
+  (* Determiner les variables a afficher *)
+  If ProcVarCount > 0 Then
+  Begin
+    (* En-tete : noms des variables VAR *)
+    HdrStr := '';
+    For I := 0 To ProcVarCount - 1 Do
+    Begin
+      If I > 0 Then
+        HdrStr := HdrStr + ' ';
+      HdrStr := HdrStr + ProcVarList[I];
+    End;
+    StrIdx := DataAddStr(HdrStr);
+    If StrIdx >= 0 Then
+    Begin
+      EmitComment('En-tete : ' + HdrStr);
+      EmitInstrAB('MOV', 'AH', '40h');
+      EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+      EmitInstrAB('MOV', 'CX', IntToStr(Length(HdrStr)));
+      EmitInstrAB('LEA', 'DX', DataTab[StrIdx].LblName);
+      EmitInstr('INT 21h');
+      EmitInstrAB('MOV', 'AH', '40h');
+      EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+      EmitInstrAB('MOV', 'CX', '2');
+      EmitInstrAB('LEA', 'DX', '_SAS_CRLF');
+      EmitInstr('INT 21h');
+    End;
+
+    (* Valeurs des variables *)
+    For I := 0 To ProcVarCount - 1 Do
+    Begin
+      VName := ProcVarList[I];
+      SIdx := SymFind(VName);
+      If SIdx >= 0 Then
+      Begin
+        If SymTab[SIdx].TypeIdx = TY_IDX_CHARACTER Then
+        Begin
+          EmitComment('PRINT ' + VName + ' (char)');
+          EmitInstrAB('LEA', 'DX', '_SAS_PDV + ' +
+                      IntToStr(SymTab[SIdx].Offset));
+          EmitInstrAB('MOV', 'CX', IntToStr(SymTab[SIdx].VarLen));
+          EmitInstrA('CALL', SAS_RT_PFX + 'PUTSTR');
+        End
+        Else
+        Begin
+          EmitComment('PRINT ' + VName + ' (num)');
+          EmitInstrAB('MOV', 'AX', 'WORD PTR [_SAS_PDV + ' +
+                      IntToStr(SymTab[SIdx].Offset) + ']');
+          EmitInstrA('CALL', SAS_RT_PFX + 'PUTNUM');
+        End;
+        (* Espace separateur *)
+        EmitInstrAB('MOV', 'AH', '02h');
+        EmitInstrAB('MOV', 'DL', '20h');
+        EmitInstr('INT 21h');
+      End
+      Else
+        EmitComment('PRINT ' + VName + ' : variable non trouvee');
+    End;
+  End
+  Else
+  Begin
+    (* Pas de VAR : afficher toutes les variables non systeme *)
+    EmitComment('PRINT toutes les variables du PDV');
+    For I := 0 To SymCount - 1 Do
+    Begin
+      If (SymTab[I].Cat = SC_VAR) And
+         (SymTab[I].Name <> '_N_') And
+         (SymTab[I].Name <> '_ERROR_') And
+         (SymTab[I].Name <> '_INFILE_') And
+         (SymTab[I].Name <> '_LAST_') Then
+      Begin
+        If SymTab[I].TypeIdx = TY_IDX_CHARACTER Then
+        Begin
+          EmitComment('PRINT ' + SymTab[I].Name + ' (char)');
+          EmitInstrAB('LEA', 'DX', '_SAS_PDV + ' +
+                      IntToStr(SymTab[I].Offset));
+          EmitInstrAB('MOV', 'CX', IntToStr(SymTab[I].VarLen));
+          EmitInstrA('CALL', SAS_RT_PFX + 'PUTSTR');
+        End
+        Else
+        Begin
+          EmitComment('PRINT ' + SymTab[I].Name + ' (num)');
+          EmitInstrAB('MOV', 'AX', 'WORD PTR [_SAS_PDV + ' +
+                      IntToStr(SymTab[I].Offset) + ']');
+          EmitInstrA('CALL', SAS_RT_PFX + 'PUTNUM');
+        End;
+        EmitInstrAB('MOV', 'AH', '02h');
+        EmitInstrAB('MOV', 'DL', '20h');
+        EmitInstr('INT 21h');
+      End;
+    End;
+  End;
+
+  (* Saut de ligne final *)
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+  EmitInstrAB('MOV', 'CX', '2');
+  EmitInstrAB('LEA', 'DX', '_SAS_CRLF');
+  EmitInstr('INT 21h');
+
+  (* Afficher la note de bas de page si specifiee *)
+  If ProcFootnote <> '' Then
+  Begin
+    StrIdx := DataAddStr(ProcFootnote);
+    If StrIdx >= 0 Then
+    Begin
+      EmitInstrAB('MOV', 'AH', '40h');
+      EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+      EmitInstrAB('MOV', 'CX', IntToStr(Length(ProcFootnote)));
+      EmitInstrAB('LEA', 'DX', DataTab[StrIdx].LblName);
+      EmitInstr('INT 21h');
+      EmitInstrAB('MOV', 'AH', '40h');
+      EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+      EmitInstrAB('MOV', 'CX', '2');
+      EmitInstrAB('LEA', 'DX', '_SAS_CRLF');
+      EmitInstr('INT 21h');
+    End;
+  End;
+End;
+
+(* ---- EmitProcMeans : generer le code ASM pour PROC MEANS -------- *)
+(* Calcule les statistiques descriptives (N, SUM, MEAN, MIN, MAX)      *)
+(* pour chaque variable listee dans VAR.                                *)
+(* En mode simple (une seule observation), les stats sont triviales :   *)
+(*   N=1, SUM=valeur, MEAN=valeur, MIN=valeur, MAX=valeur              *)
+(* Le code genere :                                                     *)
+(*   1. Pour chaque variable, lit la valeur du PDV                      *)
+(*   2. Calcule les statistiques demandees                              *)
+(*   3. Affiche le resultat (nom + valeurs)                             *)
+Procedure EmitProcMeans;
+Var
+  I, SIdx, StrIdx : Integer;
+  VName   : TString;
+  HdrStr  : TString;
+  LblSkip : TString;
+Begin
+  EmitComment('PROC MEANS : statistiques descriptives');
+
+  (* Afficher le titre si specifie *)
+  If ProcTitle <> '' Then
+  Begin
+    StrIdx := DataAddStr(ProcTitle);
+    If StrIdx >= 0 Then
+    Begin
+      EmitInstrAB('MOV', 'AH', '40h');
+      EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+      EmitInstrAB('MOV', 'CX', IntToStr(Length(ProcTitle)));
+      EmitInstrAB('LEA', 'DX', DataTab[StrIdx].LblName);
+      EmitInstr('INT 21h');
+      EmitInstrAB('MOV', 'AH', '40h');
+      EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+      EmitInstrAB('MOV', 'CX', '2');
+      EmitInstrAB('LEA', 'DX', '_SAS_CRLF');
+      EmitInstr('INT 21h');
+    End;
+  End;
+
+  (* Afficher l en-tete des statistiques *)
+  HdrStr := 'Variable';
+  If ProcStatN    Then HdrStr := HdrStr + ' N';
+  If ProcStatMean Then HdrStr := HdrStr + ' Mean';
+  If ProcStatStd  Then HdrStr := HdrStr + ' Std';
+  If ProcStatMin  Then HdrStr := HdrStr + ' Min';
+  If ProcStatMax  Then HdrStr := HdrStr + ' Max';
+  If ProcStatSum  Then HdrStr := HdrStr + ' Sum';
+  StrIdx := DataAddStr(HdrStr);
+  If StrIdx >= 0 Then
+  Begin
+    EmitComment('En-tete stats: ' + HdrStr);
+    EmitInstrAB('MOV', 'AH', '40h');
+    EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+    EmitInstrAB('MOV', 'CX', IntToStr(Length(HdrStr)));
+    EmitInstrAB('LEA', 'DX', DataTab[StrIdx].LblName);
+    EmitInstr('INT 21h');
+    EmitInstrAB('MOV', 'AH', '40h');
+    EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+    EmitInstrAB('MOV', 'CX', '2');
+    EmitInstrAB('LEA', 'DX', '_SAS_CRLF');
+    EmitInstr('INT 21h');
+  End;
+
+  (* Pour chaque variable de la liste VAR, calculer les stats *)
+  For I := 0 To ProcVarCount - 1 Do
+  Begin
+    VName := ProcVarList[I];
+    SIdx := SymFind(VName);
+
+    (* Afficher le nom de la variable *)
+    StrIdx := DataAddStr(VName);
+    If StrIdx >= 0 Then
+    Begin
+      EmitComment('MEANS: ' + VName);
+      EmitInstrAB('MOV', 'AH', '40h');
+      EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+      EmitInstrAB('MOV', 'CX', IntToStr(Length(VName)));
+      EmitInstrAB('LEA', 'DX', DataTab[StrIdx].LblName);
+      EmitInstr('INT 21h');
+    End;
+
+    If SIdx >= 0 Then
+    Begin
+      (* Charger la valeur de la variable *)
+      EmitInstrAB('MOV', 'AX', 'WORD PTR [_SAS_PDV + ' +
+                  IntToStr(SymTab[SIdx].Offset) + ']');
+
+      (* Tester si valeur manquante *)
+      LblSkip := LabelGen;
+      EmitInstrAB('CMP', 'AX', IntToStr(MISSING_VAL));
+      EmitInstrA('JE', LblSkip);
+
+      (* N : ecrire 1 (une seule observation) *)
+      If ProcStatN Then
+      Begin
+        EmitInstrA('PUSH', 'AX');
+        EmitComment('N = 1');
+        EmitInstrAB('MOV', 'AH', '02h');
+        EmitInstrAB('MOV', 'DL', '20h');
+        EmitInstr('INT 21h');
+        EmitInstrAB('MOV', 'AX', '1');
+        EmitInstrA('CALL', SAS_RT_PFX + 'PUTNUM');
+        EmitInstrA('POP', 'AX');
+      End;
+
+      (* MEAN : moyenne = valeur (1 observation) *)
+      If ProcStatMean Then
+      Begin
+        EmitInstrA('PUSH', 'AX');
+        EmitComment('Mean = valeur');
+        EmitInstrAB('MOV', 'AH', '02h');
+        EmitInstrAB('MOV', 'DL', '20h');
+        EmitInstr('INT 21h');
+        EmitInstrA('CALL', SAS_RT_PFX + 'PUTNUM');
+        EmitInstrA('POP', 'AX');
+      End;
+
+      (* STD : ecart-type = 0 (1 observation -> deviation = 0) *)
+      If ProcStatStd Then
+      Begin
+        EmitInstrA('PUSH', 'AX');
+        EmitComment('Std = 0 (1 observation)');
+        EmitInstrAB('MOV', 'AH', '02h');
+        EmitInstrAB('MOV', 'DL', '20h');
+        EmitInstr('INT 21h');
+        EmitInstrAB('MOV', 'AX', '0');
+        EmitInstrA('CALL', SAS_RT_PFX + 'PUTNUM');
+        EmitInstrA('POP', 'AX');
+      End;
+
+      (* MIN : minimum = valeur (1 observation) *)
+      If ProcStatMin Then
+      Begin
+        EmitInstrA('PUSH', 'AX');
+        EmitComment('Min = valeur');
+        EmitInstrAB('MOV', 'AH', '02h');
+        EmitInstrAB('MOV', 'DL', '20h');
+        EmitInstr('INT 21h');
+        EmitInstrA('CALL', SAS_RT_PFX + 'PUTNUM');
+        EmitInstrA('POP', 'AX');
+      End;
+
+      (* MAX : maximum = valeur (1 observation) *)
+      If ProcStatMax Then
+      Begin
+        EmitInstrA('PUSH', 'AX');
+        EmitComment('Max = valeur');
+        EmitInstrAB('MOV', 'AH', '02h');
+        EmitInstrAB('MOV', 'DL', '20h');
+        EmitInstr('INT 21h');
+        EmitInstrA('CALL', SAS_RT_PFX + 'PUTNUM');
+        EmitInstrA('POP', 'AX');
+      End;
+
+      (* SUM : somme = valeur (1 observation) *)
+      If ProcStatSum Then
+      Begin
+        EmitComment('Sum = valeur');
+        EmitInstrAB('MOV', 'AH', '02h');
+        EmitInstrAB('MOV', 'DL', '20h');
+        EmitInstr('INT 21h');
+        EmitInstrA('CALL', SAS_RT_PFX + 'PUTNUM');
+      End;
+
+      EmitLabel(LblSkip);
+    End
+    Else
+      EmitComment('MEANS ' + VName + ' : variable non trouvee');
+
+    (* Saut de ligne *)
+    EmitInstrAB('MOV', 'AH', '40h');
+    EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+    EmitInstrAB('MOV', 'CX', '2');
+    EmitInstrAB('LEA', 'DX', '_SAS_CRLF');
+    EmitInstr('INT 21h');
+  End;
+
+  (* Note de bas de page *)
+  If ProcFootnote <> '' Then
+  Begin
+    StrIdx := DataAddStr(ProcFootnote);
+    If StrIdx >= 0 Then
+    Begin
+      EmitInstrAB('MOV', 'AH', '40h');
+      EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+      EmitInstrAB('MOV', 'CX', IntToStr(Length(ProcFootnote)));
+      EmitInstrAB('LEA', 'DX', DataTab[StrIdx].LblName);
+      EmitInstr('INT 21h');
+      EmitInstrAB('MOV', 'AH', '40h');
+      EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+      EmitInstrAB('MOV', 'CX', '2');
+      EmitInstrAB('LEA', 'DX', '_SAS_CRLF');
+      EmitInstr('INT 21h');
+    End;
+  End;
+End;
+
+{ ============================================================
+  TODO 19 - PROC FREQ ET PROC SORT [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- ParseProcTablesStmt : parser TABLES var1 var2 ... ; ------ *)
+(* Appele apres que le mot-cle TABLES ait ete consomme.             *)
+(* Reconnait les noms de variables simples ; si un '*' est detecte  *)
+(* (tableau croise), emet un avertissement et l ignore.             *)
+Procedure ParseProcTablesStmt;
+Var
+  HasCross : Boolean;
+Begin
+  EmitComment('TABLES');
+  ProcTablesCount := 0;
+  HasCross := False;
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    (* Detecter tableau croise var1 * var2 *)
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '*') Then
+    Begin
+      HasCross := True;
+      ParserAdvance;
+      Continue;
+    End;
+    If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+    Begin
+      If Not HasCross Then
+      Begin
+        If ProcTablesCount < MAX_PROC_VARS Then
+        Begin
+          ProcTablesList[ProcTablesCount] := StrUpperCase(CurToken.Val);
+          Inc(ProcTablesCount);
+        End
+        Else
+          WarnMsg('trop de variables dans TABLES (max '
+                  + IntToStr(MAX_PROC_VARS) + ')');
+      End
+      Else
+      Begin
+        WarnMsg('tableaux croises (var1 * var2) non supportes, ignore');
+        HasCross := False;
+      End;
+    End;
+    ParserAdvance;
+  End;
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- EmitProcFreq : generer le code ASM pour PROC FREQ ---------- *)
+(* Pour chaque variable listee dans TABLES, parcourt les valeurs du   *)
+(* PDV et affiche les frequences.                                      *)
+(* En mode simple (une seule observation dans le PDV), la frequence   *)
+(* est triviale : chaque valeur a un compteur de 1 (100%).             *)
+(* Pour les variables numeriques : affiche valeur, frequence, pourcent *)
+(* Pour les variables caracteres : affiche la chaine, frequence, %     *)
+Procedure EmitProcFreq;
+Var
+  I, SIdx, StrIdx : Integer;
+  VName   : TString;
+  HdrStr  : TString;
+Begin
+  EmitComment('PROC FREQ : tableaux de frequences');
+
+  (* Afficher le titre si specifie *)
+  If ProcTitle <> '' Then
+  Begin
+    StrIdx := DataAddStr(ProcTitle);
+    If StrIdx >= 0 Then
+    Begin
+      EmitInstrAB('MOV', 'AH', '40h');
+      EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+      EmitInstrAB('MOV', 'CX', IntToStr(Length(ProcTitle)));
+      EmitInstrAB('LEA', 'DX', DataTab[StrIdx].LblName);
+      EmitInstr('INT 21h');
+      EmitInstrAB('MOV', 'AH', '40h');
+      EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+      EmitInstrAB('MOV', 'CX', '2');
+      EmitInstrAB('LEA', 'DX', '_SAS_CRLF');
+      EmitInstr('INT 21h');
+    End;
+  End;
+
+  (* Pour chaque variable dans TABLES *)
+  For I := 0 To ProcTablesCount - 1 Do
+  Begin
+    VName := ProcTablesList[I];
+    SIdx := SymFind(VName);
+
+    (* En-tete du tableau de frequences *)
+    HdrStr := VName + ' Frequency Percent';
+    StrIdx := DataAddStr(HdrStr);
+    If StrIdx >= 0 Then
+    Begin
+      EmitComment('FREQ table: ' + VName);
+      EmitInstrAB('MOV', 'AH', '40h');
+      EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+      EmitInstrAB('MOV', 'CX', IntToStr(Length(HdrStr)));
+      EmitInstrAB('LEA', 'DX', DataTab[StrIdx].LblName);
+      EmitInstr('INT 21h');
+      EmitInstrAB('MOV', 'AH', '40h');
+      EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+      EmitInstrAB('MOV', 'CX', '2');
+      EmitInstrAB('LEA', 'DX', '_SAS_CRLF');
+      EmitInstr('INT 21h');
+    End;
+
+    If SIdx >= 0 Then
+    Begin
+      (* Afficher la valeur courante du PDV *)
+      If SymTab[SIdx].TypeIdx = TY_IDX_CHARACTER Then
+      Begin
+        EmitComment('FREQ ' + VName + ' (char)');
+        EmitInstrAB('LEA', 'DX', '_SAS_PDV + ' +
+                    IntToStr(SymTab[SIdx].Offset));
+        EmitInstrAB('MOV', 'CX', IntToStr(SymTab[SIdx].VarLen));
+        EmitInstrA('CALL', SAS_RT_PFX + 'PUTSTR');
+      End
+      Else
+      Begin
+        EmitComment('FREQ ' + VName + ' (num)');
+        EmitInstrAB('MOV', 'AX', 'WORD PTR [_SAS_PDV + ' +
+                    IntToStr(SymTab[SIdx].Offset) + ']');
+        EmitInstrA('CALL', SAS_RT_PFX + 'PUTNUM');
+      End;
+
+      (* Espace separateur *)
+      EmitInstrAB('MOV', 'AH', '02h');
+      EmitInstrAB('MOV', 'DL', '20h');
+      EmitInstr('INT 21h');
+
+      (* Frequence = 1 (une seule observation dans le PDV) *)
+      EmitComment('Frequency = 1');
+      EmitInstrAB('MOV', 'AX', '1');
+      EmitInstrA('CALL', SAS_RT_PFX + 'PUTNUM');
+
+      (* Espace separateur *)
+      EmitInstrAB('MOV', 'AH', '02h');
+      EmitInstrAB('MOV', 'DL', '20h');
+      EmitInstr('INT 21h');
+
+      (* Pourcentage = 100 (une seule observation -> 100%) *)
+      EmitComment('Percent = 100');
+      EmitInstrAB('MOV', 'AX', '100');
+      EmitInstrA('CALL', SAS_RT_PFX + 'PUTNUM');
+    End
+    Else
+      EmitComment('FREQ ' + VName + ' : variable non trouvee');
+
+    (* Saut de ligne *)
+    EmitInstrAB('MOV', 'AH', '40h');
+    EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+    EmitInstrAB('MOV', 'CX', '2');
+    EmitInstrAB('LEA', 'DX', '_SAS_CRLF');
+    EmitInstr('INT 21h');
+  End;
+
+  (* Si aucune variable TABLES n est specifiee, avertir *)
+  If ProcTablesCount = 0 Then
+    EmitComment('PROC FREQ : aucune variable TABLES specifiee');
+
+  (* Note de bas de page *)
+  If ProcFootnote <> '' Then
+  Begin
+    StrIdx := DataAddStr(ProcFootnote);
+    If StrIdx >= 0 Then
+    Begin
+      EmitInstrAB('MOV', 'AH', '40h');
+      EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+      EmitInstrAB('MOV', 'CX', IntToStr(Length(ProcFootnote)));
+      EmitInstrAB('LEA', 'DX', DataTab[StrIdx].LblName);
+      EmitInstr('INT 21h');
+      EmitInstrAB('MOV', 'AH', '40h');
+      EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+      EmitInstrAB('MOV', 'CX', '2');
+      EmitInstrAB('LEA', 'DX', '_SAS_CRLF');
+      EmitInstr('INT 21h');
+    End;
+  End;
+End;
+
+(* ---- EmitProcSort : generer le code ASM pour PROC SORT ---------- *)
+(* Tri a bulles sur les observations d un dataset en memoire.          *)
+(* En mode simple (une seule observation dans le PDV), le tri est      *)
+(* trivial : rien a faire (un seul element est deja trie).             *)
+(* Le code genere :                                                    *)
+(*   1. Affiche un commentaire indiquant les cles de tri               *)
+(*   2. Pour chaque variable BY, indique la direction (ASC/DESC)       *)
+(*   3. En multi-observations : boucle de tri a bulles avec CMP        *)
+(*      et echange via REP MOVSW (stub pour multi-obs futur)           *)
+Procedure EmitProcSort;
+Var
+  I, SIdx : Integer;
+  VName   : TString;
+  DirStr  : TString;
+  LblOuter, LblInner, LblNoSwap, LblDone : TString;
+Begin
+  EmitComment('PROC SORT : tri du dataset');
+
+  If ProcDataDS <> '' Then
+    EmitComment('DATA=' + ProcDataDS);
+  If ProcOutDS <> '' Then
+    EmitComment('OUT=' + ProcOutDS);
+
+  (* Afficher les cles de tri *)
+  For I := 0 To ProcByCount - 1 Do
+  Begin
+    VName := ProcByList[I];
+    If ProcByDescList[I] Then
+      DirStr := 'DESCENDING'
+    Else
+      DirStr := 'ASCENDING';
+    EmitComment('BY ' + VName + ' (' + DirStr + ')');
+  End;
+
+  (* Si aucune variable BY, avertissement *)
+  If ProcByCount = 0 Then
+  Begin
+    EmitComment('PROC SORT : aucune variable BY specifiee');
+    Exit;
+  End;
+
+  (* Generation du tri a bulles sur le PDV *)
+  (* En mode simple (observation unique), pas de boucle necessaire *)
+  (* On genere quand meme le squelette pour multi-observations     *)
+  LblOuter  := LabelGen;
+  LblInner  := LabelGen;
+  LblNoSwap := LabelGen;
+  LblDone   := LabelGen;
+
+  EmitComment('Tri a bulles (squelette multi-observations)');
+
+  (* CX = nombre d observations - 1 (pour la passe externe) *)
+  EmitInstrAB('MOV', 'CX', 'WORD PTR [_SAS_N]');
+  EmitInstrAB('CMP', 'CX', '2');
+  EmitInstrA('JL', LblDone);
+  EmitInstrA('DEC', 'CX');
+
+  (* Boucle externe : passes du tri a bulles *)
+  EmitLabel(LblOuter);
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrAB('XOR', 'SI', 'SI');  (* SI = indice courant = 0 *)
+
+  (* Boucle interne : comparer elements adjacents *)
+  EmitLabel(LblInner);
+
+  (* Comparer la premiere cle BY *)
+  VName := ProcByList[0];
+  SIdx := SymFind(VName);
+  If SIdx >= 0 Then
+  Begin
+    EmitComment('Comparer ' + VName);
+    EmitInstrAB('MOV', 'AX', 'WORD PTR [_SAS_PDV + ' +
+                IntToStr(SymTab[SIdx].Offset) + ']');
+    EmitInstrAB('MOV', 'BX', 'WORD PTR [_SAS_PDV + ' +
+                IntToStr(SymTab[SIdx].Offset) + ']');
+    EmitInstrAB('CMP', 'AX', 'BX');
+    If ProcByDescList[0] Then
+      EmitInstrA('JGE', LblNoSwap)  (* DESCENDING : pas d echange si >= *)
+    Else
+      EmitInstrA('JLE', LblNoSwap); (* ASCENDING  : pas d echange si <= *)
+  End;
+
+  (* Echange d observations : REP MOVSW (stub symbolique) *)
+  EmitComment('Echange observations (REP MOVSW)');
+  EmitInstrAB('MOV', 'CX', IntToStr(MAX_OBS_SIZE Div 2));
+  EmitInstr('NOP');  (* placeholder pour echange reel *)
+
+  EmitLabel(LblNoSwap);
+  EmitInstr('LOOP ' + LblInner);
+
+  EmitInstrA('POP', 'CX');
+  EmitInstr('LOOP ' + LblOuter);
+
+  EmitLabel(LblDone);
+  EmitComment('PROC SORT : fin du tri');
+End;
+
+{ ============================================================
+  TODO 20 - PROC FORMAT ET FORMATS [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- FmtInit : initialiser la table des formats ------------- *)
+Procedure FmtInit;
+Var I : Integer;
+Begin
+  FmtCount := 0;
+  For I := 0 To MAX_FORMAT - 1 Do
+  Begin
+    FmtTab[I].Name       := '';
+    FmtTab[I].IsChar     := False;
+    FmtTab[I].RangeCount := 0;
+    FmtTab[I].LblName    := '';
+  End;
+  For I := 0 To MAX_SYM - 1 Do
+    VarFmtName[I] := '';
+End;
+
+(* ---- FmtFind : chercher un format par son nom --------------- *)
+Function FmtFind(Const Name : TString) : Integer;
+Var
+  I    : Integer;
+  UName : TString;
+Begin
+  UName := StrUpperCase(Name);
+  For I := 0 To FmtCount - 1 Do
+    If FmtTab[I].Name = UName Then
+    Begin
+      FmtFind := I;
+      Exit;
+    End;
+  FmtFind := -1;
+End;
+
+(* ---- FmtAdd : ajouter un nouveau format --------------------- *)
+Function FmtAdd(Const AName : TString; AIsChar : Boolean) : Integer;
+Var
+  I  : Integer;
+  Lbl : TString;
+Begin
+  If FmtCount >= MAX_FORMAT Then
+  Begin
+    WarnMsg('trop de formats definis (max ' + IntToStr(MAX_FORMAT) + ')');
+    FmtAdd := -1;
+    Exit;
+  End;
+  (* Verifier si le format existe deja *)
+  I := FmtFind(AName);
+  If I >= 0 Then
+  Begin
+    (* Remplacer la definition existante *)
+    FmtTab[I].RangeCount := 0;
+    FmtTab[I].IsChar     := AIsChar;
+    FmtAdd := I;
+    Exit;
+  End;
+  I := FmtCount;
+  FmtTab[I].Name       := StrUpperCase(AName);
+  FmtTab[I].IsChar     := AIsChar;
+  FmtTab[I].RangeCount := 0;
+  Lbl := SAS_FMT_PFX + StrUpperCase(AName);
+  FmtTab[I].LblName    := Lbl;
+  Inc(FmtCount);
+  FmtAdd := I;
+End;
+
+(* ---- ParseProcFormatBody : parser le corps de PROC FORMAT ---- *)
+(* Syntaxe :                                                        *)
+(*   PROC FORMAT ;                                                  *)
+(*     VALUE nom_fmt                                                *)
+(*       valeur = 'libelle'                                         *)
+(*       low - high = 'libelle'                                     *)
+(*       LOW - 50 = 'Bas'                                           *)
+(*       51 - HIGH = 'Haut'                                         *)
+(*       OTHER = 'Inconnu'                                          *)
+(*     ;                                                            *)
+(*   RUN;                                                           *)
+(* Supporte aussi : VALUE $nom_fmt pour les formats caractere.      *)
+Procedure ParseProcFormatBody;
+Var
+  KW      : TString;
+  FmtName : TString;
+  FIdx    : Integer;
+  IsChar  : Boolean;
+  Low, High : LongInt;
+  LowOpen, HighOpen : Boolean;
+  IsOther, IsSingle : Boolean;
+  LabelStr : TString;
+  RIdx     : Integer;
+Begin
+  While CurToken.Kind <> TK_EOF Do
+  Begin
+    (* Verifier les mots-cles de controle (IDENT ou KEYWORD) *)
+    If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
+    Begin
+      KW := StrUpperCase(CurToken.Val);
+      (* RUN ou QUIT : fin du PROC FORMAT *)
+      If (KW = 'RUN') Or (KW = 'QUIT') Then
+      Begin
+        ParserAdvance;
+        If CurToken.Kind = TK_SEMICOLON Then
+          ParserAdvance;
+        Break;
+      End;
+      (* DATA ou PROC : fin implicite *)
+      If (KW = 'DATA') Or (KW = 'PROC') Then
+        Break;
+      (* VALUE : debut de definition d un format *)
+      If KW = 'VALUE' Then
+      Begin
+        ParserAdvance;
+        IsChar := False;
+        (* Verifier si format caractere : $nom *)
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '$') Then
+        Begin
+          IsChar := True;
+          ParserAdvance;
+        End;
+        (* Lire le nom du format *)
+        If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+        Begin
+          FmtName := StrUpperCase(CurToken.Val);
+          ParserAdvance;
+          (* Ignorer le '.' final si present *)
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
+            ParserAdvance;
+        End
+        Else
+        Begin
+          CompileError('nom de format attendu apres VALUE');
+          FmtName := 'UNKNOWN';
+        End;
+        FIdx := FmtAdd(FmtName, IsChar);
+        EmitComment('PROC FORMAT : VALUE ' + FmtName);
+        (* Parser les plages : valeur = 'libelle' ou low - high = 'libelle' *)
+        While (CurToken.Kind <> TK_SEMICOLON) And
+              (CurToken.Kind <> TK_EOF) Do
+        Begin
+          Low := 0;
+          High := 0;
+          LowOpen := False;
+          HighOpen := False;
+          IsOther := False;
+          IsSingle := False;
+          LabelStr := '';
+          (* OTHER = 'label' *)
+          If ((CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT)) And
+             (StrUpperCase(CurToken.Val) = 'OTHER') Then
+          Begin
+            IsOther := True;
+            ParserAdvance;
+          End
+          (* LOW = borne basse ouverte *)
+          Else If ((CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT)) And
+                  (StrUpperCase(CurToken.Val) = 'LOW') Then
+          Begin
+            LowOpen := True;
+            Low := FMT_LOW_BOUND;
+            ParserAdvance;
+            (* Attendre '-' pour un intervalle *)
+            If (CurToken.Kind = TK_OP) And (CurToken.Val = '-') Then
+            Begin
+              ParserAdvance;
+              (* Lire borne haute *)
+              If CurToken.Kind = TK_INTEGER Then
+              Begin
+                High := CurToken.IntVal;
+                ParserAdvance;
+              End
+              Else If ((CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT)) And
+                      (StrUpperCase(CurToken.Val) = 'HIGH') Then
+              Begin
+                HighOpen := True;
+                High := FMT_HIGH_BOUND;
+                ParserAdvance;
+              End;
+            End
+            Else
+            Begin
+              IsSingle := True;
+              High := Low;
+            End;
+          End
+          (* Valeur numerique ou intervalle *)
+          Else If CurToken.Kind = TK_INTEGER Then
+          Begin
+            Low := CurToken.IntVal;
+            High := Low;
+            IsSingle := True;
+            ParserAdvance;
+            (* Verifier si intervalle : valeur - valeur *)
+            If (CurToken.Kind = TK_OP) And (CurToken.Val = '-') Then
+            Begin
+              IsSingle := False;
+              ParserAdvance;
+              If CurToken.Kind = TK_INTEGER Then
+              Begin
+                High := CurToken.IntVal;
+                ParserAdvance;
+              End
+              Else If ((CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT)) And
+                      (StrUpperCase(CurToken.Val) = 'HIGH') Then
+              Begin
+                HighOpen := True;
+                High := FMT_HIGH_BOUND;
+                ParserAdvance;
+              End;
+            End;
+          End
+          (* Chaine comme cle (pour $format) *)
+          Else If CurToken.Kind = TK_STRING Then
+          Begin
+            (* Pour les formats caractere, on stocke le hash de la chaine *)
+            Low := Length(CurToken.Val);
+            High := Low;
+            IsSingle := True;
+            ParserAdvance;
+          End
+          Else
+          Begin
+            (* Token inattendu : avancer *)
+            ParserAdvance;
+            Continue;
+          End;
+          (* Attendre '=' *)
+          If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+          Begin
+            ParserAdvance;
+            (* Lire le libelle *)
+            If CurToken.Kind = TK_STRING Then
+            Begin
+              LabelStr := CurToken.Val;
+              ParserAdvance;
+            End
+            Else
+            Begin
+              CompileError('libelle chaine attendu apres = dans VALUE');
+              LabelStr := '???';
+            End;
+            (* Ajouter la plage au format *)
+            If (FIdx >= 0) And (FmtTab[FIdx].RangeCount < MAX_FMT_RANGE) Then
+            Begin
+              RIdx := FmtTab[FIdx].RangeCount;
+              FmtTab[FIdx].Ranges[RIdx].IsOther   := IsOther;
+              FmtTab[FIdx].Ranges[RIdx].IsSingle  := IsSingle;
+              FmtTab[FIdx].Ranges[RIdx].Low        := Low;
+              FmtTab[FIdx].Ranges[RIdx].High       := High;
+              FmtTab[FIdx].Ranges[RIdx].IsLowOpen  := LowOpen;
+              FmtTab[FIdx].Ranges[RIdx].IsHighOpen := HighOpen;
+              FmtTab[FIdx].Ranges[RIdx].LabelStr   := LabelStr;
+              Inc(FmtTab[FIdx].RangeCount);
+            End;
+          End
+          Else
+          Begin
+            (* Pas de '=' : ignorer *)
+            Continue;
+          End;
+        End;
+        (* Consommer le ; final *)
+        If CurToken.Kind = TK_SEMICOLON Then
+          ParserAdvance;
+        Continue;
+      End;
+    End;
+    (* Point-virgule isole *)
+    If CurToken.Kind = TK_SEMICOLON Then
+    Begin
+      ParserAdvance;
+      Continue;
+    End;
+    (* Autre token : avancer *)
+    ParserAdvance;
+  End;
+End;
+
+(* ---- EmitProcFormat : emettre les tables de dispatch des formats - *)
+(* Pour chaque format defini, emet une table de donnees dans le       *)
+(* segment de donnees avec les plages et les libelles.                 *)
+(* La routine runtime _SASRT_FMTLOOKUP consultera cette table.        *)
+Procedure EmitProcFormat;
+Var
+  I, J    : Integer;
+  StrIdx  : Integer;
+  HdrStr  : TString;
+Begin
+  EmitComment('PROC FORMAT : emission des tables de formats');
+  For I := 0 To FmtCount - 1 Do
+  Begin
+    EmitComment('Format ' + FmtTab[I].Name + ' : '
+                + IntToStr(FmtTab[I].RangeCount) + ' plages');
+    For J := 0 To FmtTab[I].RangeCount - 1 Do
+    Begin
+      HdrStr := FmtTab[I].Ranges[J].LabelStr;
+      StrIdx := DataAddStr(HdrStr);
+      If StrIdx >= 0 Then
+        EmitComment('  plage ' + IntToStr(J) + ' -> '
+                    + FmtTab[I].Ranges[J].LabelStr
+                    + ' (' + DataTab[StrIdx].LblName + ')');
+    End;
+  End;
+End;
+
+(* ---- EmitFormatLookup : emettre le code pour appliquer un format -- *)
+(* Genere le code ASM qui, a partir de la valeur dans AX et de la      *)
+(* definition du format, selectionne le libelle correspondant et        *)
+(* l affiche.                                                            *)
+(* SIdx : indice dans SymTab de la variable                             *)
+(* FIdx : indice dans FmtTab du format                                  *)
+Procedure EmitFormatLookup(SIdx : Integer; FIdx : Integer);
+Var
+  I        : Integer;
+  LblNext  : TString;
+  LblDone  : TString;
+  StrIdx   : Integer;
+Begin
+  If FIdx < 0 Then Exit;
+  If FmtTab[FIdx].RangeCount = 0 Then Exit;
+
+  EmitComment('Format lookup : ' + FmtTab[FIdx].Name);
+  LblDone := LabelGen;
+
+  (* AX contient la valeur a formatter *)
+  For I := 0 To FmtTab[FIdx].RangeCount - 1 Do
+  Begin
+    LblNext := LabelGen;
+
+    If FmtTab[FIdx].Ranges[I].IsOther Then
+    Begin
+      (* OTHER : toujours vrai, sauter a l affichage *)
+      StrIdx := DataAddStr(FmtTab[FIdx].Ranges[I].LabelStr);
+      If StrIdx >= 0 Then
+      Begin
+        EmitComment('OTHER -> ' + FmtTab[FIdx].Ranges[I].LabelStr);
+        EmitInstrAB('MOV', 'AH', '40h');
+        EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+        EmitInstrAB('MOV', 'CX',
+                    IntToStr(Length(FmtTab[FIdx].Ranges[I].LabelStr)));
+        EmitInstrAB('LEA', 'DX', DataTab[StrIdx].LblName);
+        EmitInstr('INT 21h');
+      End;
+      EmitInstrA('JMP', LblDone);
+    End
+    Else If FmtTab[FIdx].Ranges[I].IsSingle Then
+    Begin
+      (* Valeur unique : CMP AX, val ; JNE next *)
+      EmitInstrAB('CMP', 'AX',
+                  IntToStr(FmtTab[FIdx].Ranges[I].Low));
+      EmitInstrA('JNE', LblNext);
+      StrIdx := DataAddStr(FmtTab[FIdx].Ranges[I].LabelStr);
+      If StrIdx >= 0 Then
+      Begin
+        EmitInstrAB('MOV', 'AH', '40h');
+        EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+        EmitInstrAB('MOV', 'CX',
+                    IntToStr(Length(FmtTab[FIdx].Ranges[I].LabelStr)));
+        EmitInstrAB('LEA', 'DX', DataTab[StrIdx].LblName);
+        EmitInstr('INT 21h');
+      End;
+      EmitInstrA('JMP', LblDone);
+    End
+    Else
+    Begin
+      (* Intervalle : CMP AX, low ; JL next ; CMP AX, high ; JG next *)
+      EmitInstrAB('CMP', 'AX',
+                  IntToStr(FmtTab[FIdx].Ranges[I].Low));
+      EmitInstrA('JL', LblNext);
+      EmitInstrAB('CMP', 'AX',
+                  IntToStr(FmtTab[FIdx].Ranges[I].High));
+      EmitInstrA('JG', LblNext);
+      StrIdx := DataAddStr(FmtTab[FIdx].Ranges[I].LabelStr);
+      If StrIdx >= 0 Then
+      Begin
+        EmitInstrAB('MOV', 'AH', '40h');
+        EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+        EmitInstrAB('MOV', 'CX',
+                    IntToStr(Length(FmtTab[FIdx].Ranges[I].LabelStr)));
+        EmitInstrAB('LEA', 'DX', DataTab[StrIdx].LblName);
+        EmitInstr('INT 21h');
+      End;
+      EmitInstrA('JMP', LblDone);
+    End;
+
+    EmitLabel(LblNext);
+  End;
+
+  (* Si aucune plage ne correspond, afficher la valeur brute *)
+  EmitComment('Aucune plage : afficher la valeur brute');
+  EmitInstr('CALL _SASRT_NUMTOSTR');
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+  EmitInstrAB('MOV', 'CX', '6');
+  EmitInstrAB('MOV', 'DX', 'AX');
+  EmitInstr('INT 21h');
+
+  EmitLabel(LblDone);
+End;
+
+(* ---- ParseFormatStmt : parser FORMAT var1 fmt1. [var2 fmt2.] ; --- *)
+(* Appele apres que le mot-cle FORMAT ait ete consomme.                *)
+(* Associe un format a une ou plusieurs variables.                     *)
+(* Syntaxe : FORMAT var1 nom_format. [var2 nom_format2.] ;            *)
+(* Les formats predefinis (BEST. COMMA. DOLLAR. DATE9.) sont reconnus. *)
+Procedure ParseFormatStmt;
+Var
+  VarName  : TString;
+  FmtName  : TString;
+  SIdx     : Integer;
+Begin
+  EmitComment('FORMAT');
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    (* Lire le nom de la variable *)
+    If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+    Begin
+      VarName := StrUpperCase(CurToken.Val);
+      ParserAdvance;
+      (* Lire le nom du format *)
+      FmtName := '';
+      If CurToken.Kind = TK_FORMAT Then
+      Begin
+        FmtName := StrUpperCase(CurToken.Val);
+        ParserAdvance;
+      End
+      Else If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+      Begin
+        FmtName := StrUpperCase(CurToken.Val);
+        ParserAdvance;
+        (* Consommer le '.' du format si present *)
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
+          ParserAdvance;
+      End;
+      If FmtName <> '' Then
+      Begin
+        (* Enlever le '.' final si inclus dans le nom *)
+        If (Length(FmtName) > 0) And (FmtName[Length(FmtName)] = '.') Then
+          FmtName := Copy(FmtName, 1, Length(FmtName) - 1);
+        SIdx := SymFind(VarName);
+        If SIdx >= 0 Then
+        Begin
+          VarFmtName[SIdx] := FmtName;
+          EmitComment('FORMAT ' + VarName + ' = ' + FmtName);
+        End
+        Else
+          WarnMsg('variable non trouvee pour FORMAT : ' + VarName);
+      End;
+    End
+    Else
+      ParserAdvance;
+  End;
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseProcStep : PROC nom [options] ; stmts ; RUN ; -------- *)
+(* Point d entree du PROC step.                                        *)
+(* Appele apres que le mot-cle PROC ait ete consomme.                  *)
+(* 1. Lire le nom de la procedure                                      *)
+(* 2. Parser les options (DATA=, OUT=, NOPRINT, WHERE=)                *)
+(* 3. Parser le corps (VAR, BY, CLASS, TITLE, FOOTNOTE, etc.)          *)
+(* 4. Dispatcher vers le handler de la procedure connue                 *)
+(* 5. Generer le code ASM pour la procedure                            *)
+Procedure ParseProcStep;
+Begin
+  ProcInit;
+  EmitBlankLine;
+
+  (* Lire le nom de la procedure *)
+  If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+  Begin
+    ProcName := StrUpperCase(CurToken.Val);
+    ParserAdvance;
+  End
+  Else
+  Begin
+    CompileError('nom de procedure attendu apres PROC');
+    ProcName := 'UNKNOWN';
+  End;
+
+  EmitComment('========= PROC ' + ProcName + ' =========');
+
+  (* Parser les options sur la meme ligne que PROC nom *)
+  ParseProcOptions;
+
+  (* Dispatcher selon la procedure connue *)
+  If (ProcName = 'PRINT') Or (ProcName = 'MEANS') Or
+     (ProcName = 'SUMMARY') Or (ProcName = 'FREQ') Or
+     (ProcName = 'SORT') Or
+     (ProcName = 'TABULATE') Or (ProcName = 'REPORT') Or
+     (ProcName = 'REG') Or (ProcName = 'CONTENTS') Or
+     (ProcName = 'DATASETS') Or (ProcName = 'SQL') Or
+     (ProcName = 'TRANSPOSE') Or (ProcName = 'UNIVARIATE') Or
+     (ProcName = 'CORR') Or (ProcName = 'APPEND') Then
+  Begin
+    (* Procedure connue : parser le corps puis emettre le code *)
+    ParseProcBody;
+
+    (* Generer le stub ASM selon la procedure *)
+    EmitComment('PROC ' + ProcName + ' : execution');
+
+    If ProcName = 'PRINT' Then
+    Begin
+      (* PROC PRINT : generer le code d affichage *)
+      If ProcNoPrint Then
+        EmitComment('PROC PRINT : NOPRINT -> pas d affichage')
+      Else
+        EmitProcPrint;
+    End
+    Else If (ProcName = 'MEANS') Or (ProcName = 'SUMMARY') Then
+    Begin
+      (* PROC MEANS : generer le code de statistiques *)
+      ParseProcMeansOptions;
+      If ProcNoPrint Then
+        EmitComment('PROC MEANS : NOPRINT -> pas d affichage')
+      Else
+        EmitProcMeans;
+    End
+    Else If ProcName = 'FREQ' Then
+    Begin
+      (* PROC FREQ : generer le code de frequences (TODO 19) *)
+      If ProcNoPrint Then
+        EmitComment('PROC FREQ : NOPRINT -> pas d affichage')
+      Else
+        EmitProcFreq;
+    End
+    Else If ProcName = 'SORT' Then
+    Begin
+      (* PROC SORT : generer le code de tri (TODO 19) *)
+      EmitProcSort;
+    End
+    Else
+    Begin
+      (* Autre procedure connue : stub generique *)
+      EmitComment('PROC ' + ProcName + ' : stub (a implementer)');
+    End;
+  End
+  Else If ProcName = 'FORMAT' Then
+  Begin
+    (* PROC FORMAT : parser le corps avec VALUE (TODO 20) *)
+    ParseProcFormatBody;
+    EmitComment('PROC FORMAT : execution');
+    EmitProcFormat;
+  End
+  Else
+  Begin
+    (* Procedure non reconnue : avertissement et ignorer *)
+    WarnMsg('procedure non reconnue : PROC ' + ProcName
+            + ' (ignoree jusqu a RUN/QUIT)');
+    EmitComment('PROC ' + ProcName + ' : non reconnu, ignore');
+    ParseProcBody;
+  End;
+
+  EmitComment('========= FIN PROC ' + ProcName + ' =========');
+  EmitBlankLine;
+
+  (* Restaurer l etat *)
+  InProcStep := False;
+End;
+
+{ ============================================================
+  TODO 21 - MACRO-LANGAGE SAS [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- MacroVarInit : initialiser la table des macro-variables ----- *)
+(* Enregistre les variables macro automatiques SAS :                   *)
+(*   &SYSDATE  -> date courante (DDmmmYY)                             *)
+(*   &SYSTIME  -> heure courante (HH:MM)                              *)
+(*   &SYSVER   -> version du compilateur                              *)
+(*   &SYSENV   -> environnement d execution                           *)
+(*   &SYSJOBID -> identifiant du job                                  *)
+Procedure MacroVarInit;
+Begin
+  MacroVarCount := 0;
+  MacroCount := 0;
+  (* Variables macro automatiques *)
+  MacroVarSet('SYSDATE',  '11MAR26');
+  MacroVarSet('SYSDATE9', '11MAR2026');
+  MacroVarSet('SYSTIME',  '12:00');
+  MacroVarSet('SYSVER',   SAS86_VERSION);
+  MacroVarSet('SYSENV',   'SAS86');
+  MacroVarSet('SYSJOBID', '0001');
+  MacroVarSet('SYSPROCESSID', '0001');
+  MacroVarSet('SYSPROCESSNAME', 'SAS86');
+End;
+
+(* ---- MacroVarFind : chercher une macro-variable par son nom ------- *)
+Function MacroVarFind(Const Name : TString) : Integer;
+Var
+  I     : Integer;
+  UName : TString;
+Begin
+  UName := StrUpperCase(Name);
+  For I := 0 To MacroVarCount - 1 Do
+    If MacroVarTab[I].Name = UName Then
+    Begin
+      MacroVarFind := I;
+      Exit;
+    End;
+  MacroVarFind := -1;
+End;
+
+(* ---- MacroVarSet : definir ou modifier une macro-variable --------- *)
+Procedure MacroVarSet(Const AName, AValue : TString);
+Var
+  I : Integer;
+  UName : TString;
+Begin
+  UName := StrUpperCase(AName);
+  I := MacroVarFind(UName);
+  If I >= 0 Then
+  Begin
+    (* Mettre a jour la valeur *)
+    MacroVarTab[I].Value := AValue;
+    Exit;
+  End;
+  (* Ajouter une nouvelle macro-variable *)
+  If MacroVarCount >= MAX_MACVAR Then
+  Begin
+    WarnMsg('trop de macro-variables (max ' + IntToStr(MAX_MACVAR) + ')');
+    Exit;
+  End;
+  MacroVarTab[MacroVarCount].Name  := UName;
+  MacroVarTab[MacroVarCount].Value := AValue;
+  Inc(MacroVarCount);
+End;
+
+(* ---- MacroVarResolve : resoudre &nom -> valeur ------------------- *)
+(* Retourne la valeur textuelle de la macro-variable, ou '' si absente *)
+Function MacroVarResolve(Const Name : TString) : TString;
+Var I : Integer;
+Begin
+  I := MacroVarFind(Name);
+  If I >= 0 Then
+    MacroVarResolve := MacroVarTab[I].Value
+  Else
+  Begin
+    WarnMsg('macro-variable non definie : &' + Name);
+    MacroVarResolve := '';
+  End;
+End;
+
+(* ---- MacroFind : chercher une macro par son nom ------------------- *)
+Function MacroFind(Const Name : TString) : Integer;
+Var
+  I     : Integer;
+  UName : TString;
+Begin
+  UName := StrUpperCase(Name);
+  For I := 0 To MacroCount - 1 Do
+    If MacroTab[I].Name = UName Then
+    Begin
+      MacroFind := I;
+      Exit;
+    End;
+  MacroFind := -1;
+End;
+
+(* ---- ParsePercentLet : parser %LET nom = valeur ; ---------------- *)
+(* Le token %LET a deja ete consomme.                                  *)
+Procedure ParsePercentLet;
+Var
+  VName : TString;
+  VVal  : TString;
+Begin
+  EmitComment('%LET');
+  (* Lire le nom de la macro-variable *)
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    VName := StrUpperCase(CurToken.Val);
+    ParserAdvance;
+  End
+  Else If CurToken.Kind = TK_KEYWORD Then
+  Begin
+    VName := StrUpperCase(CurToken.Val);
+    ParserAdvance;
+  End
+  Else
+  Begin
+    CompileError('nom de macro-variable attendu apres %LET');
+    While (CurToken.Kind <> TK_SEMICOLON) And
+          (CurToken.Kind <> TK_EOF) Do
+      ParserAdvance;
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+    Exit;
+  End;
+  (* Consommer = *)
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+    ParserAdvance
+  Else
+  Begin
+    CompileError('"=" attendu dans %LET');
+    While (CurToken.Kind <> TK_SEMICOLON) And
+          (CurToken.Kind <> TK_EOF) Do
+      ParserAdvance;
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+    Exit;
+  End;
+  (* Accumuler la valeur jusqu au ; *)
+  VVal := '';
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If VVal <> '' Then VVal := VVal + ' ';
+    VVal := VVal + CurToken.Val;
+    ParserAdvance;
+  End;
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+  (* Enregistrer la macro-variable *)
+  MacroVarSet(VName, VVal);
+  EmitComment('%LET ' + VName + ' = ' + VVal);
+End;
+
+(* ---- ParsePercentPut : parser %PUT texte ; ----------------------- *)
+(* Emet un commentaire ASM avec le texte (resolution des &macvar).     *)
+Procedure ParsePercentPut;
+Var
+  Msg  : TString;
+  Frag : TString;
+Begin
+  EmitComment('%PUT');
+  Msg := '';
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If CurToken.Kind = TK_AMPERSAND Then
+    Begin
+      (* Resoudre la macro-variable *)
+      Frag := CurToken.Val;
+      If (Length(Frag) > 1) And (Frag[1] = '&') Then
+        Delete(Frag, 1, 1);
+      Frag := MacroVarResolve(Frag);
+      If Msg <> '' Then Msg := Msg + ' ';
+      Msg := Msg + Frag;
+    End
+    Else
+    Begin
+      If Msg <> '' Then Msg := Msg + ' ';
+      Msg := Msg + CurToken.Val;
+    End;
+    ParserAdvance;
+  End;
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+  EmitComment('%PUT: ' + Msg);
+  (* Aussi, emettre un PUT vers la console pour le log *)
+  EmitComment('NOTE: ' + Msg);
+End;
+
+(* ---- ParseMacroDef : parser %MACRO nom(params); body; %MEND; ----- *)
+(* Le token %MACRO a deja ete consomme.                                *)
+Procedure ParseMacroDef;
+Var
+  MName    : TString;
+  MIdx     : Integer;
+  PCount   : Integer;
+  MBody    : String;
+  Depth    : Integer;
+  PName    : TString;
+Begin
+  EmitComment('%MACRO definition');
+  (* Lire le nom de la macro *)
+  If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+  Begin
+    MName := StrUpperCase(CurToken.Val);
+    ParserAdvance;
+  End
+  Else
+  Begin
+    CompileError('nom de macro attendu apres %MACRO');
+    While (CurToken.Kind <> TK_SEMICOLON) And
+          (CurToken.Kind <> TK_EOF) Do
+      ParserAdvance;
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+    Exit;
+  End;
+
+  (* Verifier si la table des macros est pleine *)
+  If MacroCount >= MAX_MACRO Then
+  Begin
+    WarnMsg('trop de macros definies (max ' + IntToStr(MAX_MACRO) + ')');
+    (* Consommer jusqu a %MEND *)
+    Depth := 1;
+    While (CurToken.Kind <> TK_EOF) And (Depth > 0) Do
+    Begin
+      If (CurToken.Kind = TK_PERCENT) Then
+      Begin
+        PName := StrUpperCase(CurToken.Val);
+        If PName = '%MACRO' Then Inc(Depth);
+        If PName = '%MEND'  Then Dec(Depth);
+      End;
+      ParserAdvance;
+    End;
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+    Exit;
+  End;
+
+  MIdx := MacroCount;
+  MacroTab[MIdx].Name := MName;
+  PCount := 0;
+
+  (* Parser les parametres optionnels entre parentheses *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+  Begin
+    ParserAdvance;  (* consommer ( *)
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+    Begin
+      If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+      Begin
+        If PCount < MAX_MACRO_PARAM Then
+        Begin
+          MacroTab[MIdx].ParamNames[PCount] := StrUpperCase(CurToken.Val);
+          Inc(PCount);
+        End;
+      End;
+      ParserAdvance;
+      (* Consommer la virgule entre les parametres *)
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance;
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance;
+  End;
+  MacroTab[MIdx].ParamCount := PCount;
+
+  (* Consommer le ; apres %MACRO nom(params) *)
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+
+  (* Accumuler le corps de la macro jusqu a %MEND *)
+  MBody := '';
+  Depth := 1;
+  While (CurToken.Kind <> TK_EOF) And (Depth > 0) Do
+  Begin
+    If CurToken.Kind = TK_PERCENT Then
+    Begin
+      PName := StrUpperCase(CurToken.Val);
+      If PName = '%MACRO' Then Inc(Depth);
+      If PName = '%MEND' Then
+      Begin
+        Dec(Depth);
+        If Depth = 0 Then
+        Begin
+          ParserAdvance;  (* consommer %MEND *)
+          (* Consommer le nom optionnel apres %MEND *)
+          If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+            ParserAdvance;
+          If CurToken.Kind = TK_SEMICOLON Then
+            ParserAdvance;
+          Break;
+        End;
+      End;
+    End;
+    If Length(MBody) < MAX_MACRO_BODY Then
+    Begin
+      If MBody <> '' Then MBody := MBody + ' ';
+      MBody := MBody + CurToken.Val;
+      If CurToken.Kind = TK_SEMICOLON Then
+        MBody := MBody + ' ';
+    End;
+    ParserAdvance;
+  End;
+
+  MacroTab[MIdx].Body := MBody;
+  Inc(MacroCount);
+
+  EmitComment('%MACRO ' + MName + ' definie (' +
+              IntToStr(PCount) + ' param)');
+End;
+
+(* ---- ParseMacroCall : expand %nom(args) et recompiler ------------- *)
+(* Le nom de la macro a deja ete extrait du token %nom.                *)
+Procedure ParseMacroCall(Const MName : TString);
+Var
+  MIdx     : Integer;
+  I        : Integer;
+  ArgVals  : Array[0..MAX_MACRO_PARAM - 1] Of TString;
+  ArgCount : Integer;
+  Depth    : Integer;
+  ArgBuf   : TString;
+Begin
+  MIdx := MacroFind(MName);
+  If MIdx < 0 Then
+  Begin
+    WarnMsg('macro non definie : %' + MName);
+    (* Consommer les arguments eventuels *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      Depth := 1;
+      ParserAdvance;
+      While (CurToken.Kind <> TK_EOF) And (Depth > 0) Do
+      Begin
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then Inc(Depth);
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then Dec(Depth);
+        ParserAdvance;
+      End;
+    End;
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+    Exit;
+  End;
+
+  ArgCount := 0;
+  For I := 0 To MAX_MACRO_PARAM - 1 Do
+    ArgVals[I] := '';
+
+  (* Parser les arguments entre parentheses *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+  Begin
+    ParserAdvance;  (* consommer ( *)
+    ArgBuf := '';
+    Depth := 0;
+    While (CurToken.Kind <> TK_EOF) Do
+    Begin
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Inc(Depth);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      Begin
+        If Depth = 0 Then
+        Begin
+          (* Fin des arguments *)
+          If (ArgBuf <> '') Or (ArgCount > 0) Then
+          Begin
+            If ArgCount < MAX_MACRO_PARAM Then
+            Begin
+              ArgVals[ArgCount] := ArgBuf;
+              Inc(ArgCount);
+            End;
+          End;
+          ParserAdvance;  (* consommer ) *)
+          Break;
+        End
+        Else
+          Dec(Depth);
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') And
+         (Depth = 0) Then
+      Begin
+        If ArgCount < MAX_MACRO_PARAM Then
+        Begin
+          ArgVals[ArgCount] := ArgBuf;
+          Inc(ArgCount);
+        End;
+        ArgBuf := '';
+        ParserAdvance;
+        Continue;
+      End;
+      If ArgBuf <> '' Then ArgBuf := ArgBuf + ' ';
+      ArgBuf := ArgBuf + CurToken.Val;
+      ParserAdvance;
+    End;
+  End;
+
+  (* Effectuer la substitution des parametres dans le corps *)
+  For I := 0 To MacroTab[MIdx].ParamCount - 1 Do
+  Begin
+    If I < ArgCount Then
+      MacroVarSet(MacroTab[MIdx].ParamNames[I], ArgVals[I])
+    Else
+      MacroVarSet(MacroTab[MIdx].ParamNames[I], '');
+  End;
+
+  (* Emettre un commentaire d expansion *)
+  EmitComment('%' + MName + ' expansion (' + IntToStr(ArgCount) + ' args)');
+
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+
+  (* Note : Dans cette implementation simplifiee, les macro-variables     *)
+  (* sont accessibles via &nom dans le code SAS compile apres l appel.    *)
+  (* Une implementation complete necessiterait un second passage de        *)
+  (* pre-compilation, mais ce serait trop complexe pour cette version.    *)
+  (* Les parametres sont enregistres comme macro-variables pour etre      *)
+  (* resolus lors de la compilation du code SAS suivant.                  *)
+End;
+
+(* ---- MacroFuncEval : evaluer une fonction macro ------------------- *)
+(* Fonctions supportees : %EVAL, %SYSEVALF, %SUBSTR, %UPCASE,         *)
+(* %LENGTH, %SCAN, %SYSFUNC, %STR, %NRSTR, %TRIM, %LEFT              *)
+Function MacroFuncEval(Const FName, Args : TString) : TString;
+Var
+  UF     : TString;
+  P1, P2, P3 : TString;
+  Comma1, Comma2 : Integer;
+  I, N, Pos, Len : Integer;
+  V      : LongInt;
+  Code   : Integer;
+  Ch     : Char;
+Begin
+  UF := StrUpperCase(FName);
+  MacroFuncEval := Args;  (* par defaut : retourner l argument *)
+
+  (* %EVAL(expr) : evaluation arithmetique entiere *)
+  If UF = 'EVAL' Then
+  Begin
+    Val(Args, V, Code);
+    If Code = 0 Then
+    Begin
+      Str(V, P1);
+      MacroFuncEval := P1;
+    End
+    Else
+    Begin
+      (* Essayer d evaluer une expression simple a+b, a-b, a*b, a/b *)
+      P1 := '';
+      For I := 1 To Length(Args) Do
+      Begin
+        Ch := Args[I];
+        If (Ch = '+') Or (Ch = '-') Or (Ch = '*') Or (Ch = '/') Then
+        Begin
+          P2 := Copy(Args, I + 1, Length(Args) - I);
+          Val(P1, V, Code);
+          If Code = 0 Then
+          Begin
+            Val(P2, N, Code);
+            If Code = 0 Then
+            Begin
+              Case Ch Of
+                '+' : V := V + N;
+                '-' : V := V - N;
+                '*' : V := V * N;
+                '/' : If N <> 0 Then V := V Div N;
+              End;
+              Str(V, P3);
+              MacroFuncEval := P3;
+              Exit;
+            End;
+          End;
+          Break;
+        End;
+        P1 := P1 + Ch;
+      End;
+      MacroFuncEval := Args;
+    End;
+    Exit;
+  End;
+
+  (* %SYSEVALF(expr) : identique a %EVAL dans cette implementation *)
+  If UF = 'SYSEVALF' Then
+  Begin
+    Val(Args, V, Code);
+    If Code = 0 Then
+    Begin
+      Str(V, P1);
+      MacroFuncEval := P1;
+    End
+    Else
+      MacroFuncEval := Args;
+    Exit;
+  End;
+
+  (* %UPCASE(chaine) : convertir en majuscules *)
+  If UF = 'UPCASE' Then
+  Begin
+    MacroFuncEval := StrUpperCase(Args);
+    Exit;
+  End;
+
+  (* %LENGTH(chaine) : longueur de la chaine *)
+  If UF = 'LENGTH' Then
+  Begin
+    Str(Length(Args), P1);
+    MacroFuncEval := P1;
+    Exit;
+  End;
+
+  (* %SUBSTR(chaine, pos, len) : sous-chaine *)
+  If UF = 'SUBSTR' Then
+  Begin
+    (* Extraire les 3 arguments separes par des virgules *)
+    Comma1 := 0;
+    Comma2 := 0;
+    For I := 1 To Length(Args) Do
+    Begin
+      If Args[I] = ',' Then
+      Begin
+        If Comma1 = 0 Then
+          Comma1 := I
+        Else If Comma2 = 0 Then
+          Comma2 := I;
+      End;
+    End;
+    If Comma1 > 0 Then
+    Begin
+      P1 := Copy(Args, 1, Comma1 - 1);
+      (* Trim les espaces *)
+      While (Length(P1) > 0) And (P1[Length(P1)] = ' ') Do
+        Delete(P1, Length(P1), 1);
+      While (Length(P1) > 0) And (P1[1] = ' ') Do
+        Delete(P1, 1, 1);
+      If Comma2 > 0 Then
+      Begin
+        P2 := Copy(Args, Comma1 + 1, Comma2 - Comma1 - 1);
+        P3 := Copy(Args, Comma2 + 1, Length(Args) - Comma2);
+      End
+      Else
+      Begin
+        P2 := Copy(Args, Comma1 + 1, Length(Args) - Comma1);
+        P3 := '';
+      End;
+      While (Length(P2) > 0) And (P2[1] = ' ') Do Delete(P2, 1, 1);
+      While (Length(P2) > 0) And (P2[Length(P2)] = ' ') Do Delete(P2, Length(P2), 1);
+      While (Length(P3) > 0) And (P3[1] = ' ') Do Delete(P3, 1, 1);
+      While (Length(P3) > 0) And (P3[Length(P3)] = ' ') Do Delete(P3, Length(P3), 1);
+      Val(P2, Pos, Code);
+      If Code <> 0 Then Pos := 1;
+      If P3 <> '' Then
+      Begin
+        Val(P3, Len, Code);
+        If Code <> 0 Then Len := Length(P1) - Pos + 1;
+      End
+      Else
+        Len := Length(P1) - Pos + 1;
+      If Pos < 1 Then Pos := 1;
+      If Pos > Length(P1) Then
+        MacroFuncEval := ''
+      Else
+        MacroFuncEval := Copy(P1, Pos, Len);
+    End;
+    Exit;
+  End;
+
+  (* %SCAN(chaine, n, delim) : extraire le n-ieme mot *)
+  If UF = 'SCAN' Then
+  Begin
+    Comma1 := 0;
+    Comma2 := 0;
+    For I := 1 To Length(Args) Do
+    Begin
+      If Args[I] = ',' Then
+      Begin
+        If Comma1 = 0 Then
+          Comma1 := I
+        Else If Comma2 = 0 Then
+          Comma2 := I;
+      End;
+    End;
+    If Comma1 > 0 Then
+    Begin
+      P1 := Copy(Args, 1, Comma1 - 1);
+      While (Length(P1) > 0) And (P1[Length(P1)] = ' ') Do Delete(P1, Length(P1), 1);
+      While (Length(P1) > 0) And (P1[1] = ' ') Do Delete(P1, 1, 1);
+      If Comma2 > 0 Then
+        P2 := Copy(Args, Comma1 + 1, Comma2 - Comma1 - 1)
+      Else
+        P2 := Copy(Args, Comma1 + 1, Length(Args) - Comma1);
+      While (Length(P2) > 0) And (P2[1] = ' ') Do Delete(P2, 1, 1);
+      While (Length(P2) > 0) And (P2[Length(P2)] = ' ') Do Delete(P2, Length(P2), 1);
+      Val(P2, N, Code);
+      If Code <> 0 Then N := 1;
+      (* Scanner les mots separes par des espaces *)
+      Pos := 1;
+      For I := 1 To N Do
+      Begin
+        While (Pos <= Length(P1)) And (P1[Pos] = ' ') Do Inc(Pos);
+        If I < N Then
+          While (Pos <= Length(P1)) And (P1[Pos] <> ' ') Do Inc(Pos);
+      End;
+      P3 := '';
+      While (Pos <= Length(P1)) And (P1[Pos] <> ' ') Do
+      Begin
+        P3 := P3 + P1[Pos];
+        Inc(Pos);
+      End;
+      MacroFuncEval := P3;
+    End;
+    Exit;
+  End;
+
+  (* %SYSFUNC(func(args)) : stub - retourne l argument tel quel *)
+  If UF = 'SYSFUNC' Then
+  Begin
+    WarnMsg('%SYSFUNC : stub, retourne argument tel quel');
+    MacroFuncEval := Args;
+    Exit;
+  End;
+
+  (* %STR(texte) : masquage - retourne le texte tel quel *)
+  If (UF = 'STR') Or (UF = 'NRSTR') Then
+  Begin
+    MacroFuncEval := Args;
+    Exit;
+  End;
+
+  (* %TRIM(chaine) : supprimer les espaces de fin *)
+  If UF = 'TRIM' Then
+  Begin
+    P1 := Args;
+    While (Length(P1) > 0) And (P1[Length(P1)] = ' ') Do
+      Delete(P1, Length(P1), 1);
+    MacroFuncEval := P1;
+    Exit;
+  End;
+
+  (* %LEFT(chaine) : supprimer les espaces de debut *)
+  If UF = 'LEFT' Then
+  Begin
+    P1 := Args;
+    While (Length(P1) > 0) And (P1[1] = ' ') Do
+      Delete(P1, 1, 1);
+    MacroFuncEval := P1;
+    Exit;
+  End;
+
+  (* Fonction inconnue *)
+  WarnMsg('fonction macro inconnue : %' + FName);
+End;
+
+(* ---- ParsePercentIf : parser %IF cond %THEN action %ELSE action -- *)
+(* Le token %IF a deja ete consomme.                                   *)
+(* Evaluation simplifiee : compare des valeurs entieres ou chaines.    *)
+Procedure ParsePercentIf;
+Var
+  CondTrue    : Boolean;
+  LeftVal     : TString;
+  RightVal    : TString;
+  OpStr       : TString;
+  LeftN, RightN : LongInt;
+  Code1, Code2  : Integer;
+  Depth       : Integer;
+Begin
+  EmitComment('%IF');
+  (* Accumuler le cote gauche de la condition *)
+  LeftVal := '';
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_OP) And
+             ((CurToken.Val = '=') Or (CurToken.Val = '>') Or
+              (CurToken.Val = '<') Or (CurToken.Val = '<>') Or
+              (CurToken.Val = '>=') Or (CurToken.Val = '<=') Or
+              (CurToken.Val = '^=') Or (CurToken.Val = '~='))) And
+        Not ((CurToken.Kind = TK_KEYWORD) And
+             ((StrUpperCase(CurToken.Val) = 'EQ') Or
+              (StrUpperCase(CurToken.Val) = 'NE') Or
+              (StrUpperCase(CurToken.Val) = 'GT') Or
+              (StrUpperCase(CurToken.Val) = 'LT') Or
+              (StrUpperCase(CurToken.Val) = 'GE') Or
+              (StrUpperCase(CurToken.Val) = 'LE'))) And
+        Not ((CurToken.Kind = TK_PERCENT) And
+             (StrUpperCase(CurToken.Val) = '%THEN')) Do
+  Begin
+    If CurToken.Kind = TK_AMPERSAND Then
+    Begin
+      OpStr := CurToken.Val;
+      If (Length(OpStr) > 1) And (OpStr[1] = '&') Then
+        Delete(OpStr, 1, 1);
+      LeftVal := LeftVal + MacroVarResolve(OpStr);
+    End
+    Else
+      LeftVal := LeftVal + CurToken.Val;
+    ParserAdvance;
+  End;
+
+  (* Lire l operateur *)
+  OpStr := '';
+  CondTrue := False;
+  If (CurToken.Kind = TK_PERCENT) And
+     (StrUpperCase(CurToken.Val) = '%THEN') Then
+  Begin
+    (* Pas d operateur : evaluer LeftVal comme booleen *)
+    Val(LeftVal, LeftN, Code1);
+    If Code1 = 0 Then
+      CondTrue := (LeftN <> 0)
+    Else
+      CondTrue := (LeftVal <> '');
+  End
+  Else
+  Begin
+    If CurToken.Kind = TK_OP Then
+      OpStr := CurToken.Val
+    Else If CurToken.Kind = TK_KEYWORD Then
+    Begin
+      OpStr := StrUpperCase(CurToken.Val);
+      If OpStr = 'EQ' Then OpStr := '='
+      Else If OpStr = 'NE' Then OpStr := '<>'
+      Else If OpStr = 'GT' Then OpStr := '>'
+      Else If OpStr = 'LT' Then OpStr := '<'
+      Else If OpStr = 'GE' Then OpStr := '>='
+      Else If OpStr = 'LE' Then OpStr := '<=';
+    End;
+    ParserAdvance;
+
+    (* Accumuler le cote droit *)
+    RightVal := '';
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PERCENT) And
+               (StrUpperCase(CurToken.Val) = '%THEN')) Do
+    Begin
+      If CurToken.Kind = TK_AMPERSAND Then
+      Begin
+        RightVal := RightVal + MacroVarResolve(
+          Copy(CurToken.Val, 2, Length(CurToken.Val) - 1));
+      End
+      Else
+        RightVal := RightVal + CurToken.Val;
+      ParserAdvance;
+    End;
+
+    (* Evaluer la condition *)
+    Val(LeftVal, LeftN, Code1);
+    Val(RightVal, RightN, Code2);
+    If (Code1 = 0) And (Code2 = 0) Then
+    Begin
+      (* Comparaison numerique *)
+      If OpStr = '=' Then CondTrue := (LeftN = RightN)
+      Else If OpStr = '<>' Then CondTrue := (LeftN <> RightN)
+      Else If OpStr = '>' Then CondTrue := (LeftN > RightN)
+      Else If OpStr = '<' Then CondTrue := (LeftN < RightN)
+      Else If OpStr = '>=' Then CondTrue := (LeftN >= RightN)
+      Else If OpStr = '<=' Then CondTrue := (LeftN <= RightN);
+    End
+    Else
+    Begin
+      (* Comparaison de chaines *)
+      If OpStr = '=' Then CondTrue := (LeftVal = RightVal)
+      Else If OpStr = '<>' Then CondTrue := (LeftVal <> RightVal)
+      Else If OpStr = '>' Then CondTrue := (LeftVal > RightVal)
+      Else If OpStr = '<' Then CondTrue := (LeftVal < RightVal)
+      Else If OpStr = '>=' Then CondTrue := (LeftVal >= RightVal)
+      Else If OpStr = '<=' Then CondTrue := (LeftVal <= RightVal);
+    End;
+  End;
+
+  (* Consommer %THEN *)
+  If (CurToken.Kind = TK_PERCENT) And
+     (StrUpperCase(CurToken.Val) = '%THEN') Then
+    ParserAdvance;
+
+  (* Branche THEN *)
+  If CondTrue Then
+  Begin
+    (* Executer la branche THEN : un seul statement *)
+    If (CurToken.Kind = TK_PERCENT) And
+       (StrUpperCase(CurToken.Val) = '%DO') Then
+    Begin
+      ParserAdvance;
+      If CurToken.Kind = TK_SEMICOLON Then ParserAdvance;
+      Depth := 1;
+      While (CurToken.Kind <> TK_EOF) And (Depth > 0) Do
+      Begin
+        If (CurToken.Kind = TK_PERCENT) And
+           (StrUpperCase(CurToken.Val) = '%DO') Then Inc(Depth);
+        If (CurToken.Kind = TK_PERCENT) And
+           (StrUpperCase(CurToken.Val) = '%END') Then
+        Begin
+          Dec(Depth);
+          If Depth = 0 Then
+          Begin
+            ParserAdvance;
+            If CurToken.Kind = TK_SEMICOLON Then ParserAdvance;
+            Break;
+          End;
+        End;
+        ParseStmt;
+      End;
+    End
+    Else
+      ParseStmt;
+    (* Skip la branche %ELSE si presente *)
+    If (CurToken.Kind = TK_PERCENT) And
+       (StrUpperCase(CurToken.Val) = '%ELSE') Then
+    Begin
+      ParserAdvance;
+      If (CurToken.Kind = TK_PERCENT) And
+         (StrUpperCase(CurToken.Val) = '%DO') Then
+      Begin
+        ParserAdvance;
+        If CurToken.Kind = TK_SEMICOLON Then ParserAdvance;
+        Depth := 1;
+        While (CurToken.Kind <> TK_EOF) And (Depth > 0) Do
+        Begin
+          If (CurToken.Kind = TK_PERCENT) And
+             (StrUpperCase(CurToken.Val) = '%DO') Then Inc(Depth);
+          If (CurToken.Kind = TK_PERCENT) And
+             (StrUpperCase(CurToken.Val) = '%END') Then
+          Begin
+            Dec(Depth);
+            If Depth = 0 Then
+            Begin
+              ParserAdvance;
+              If CurToken.Kind = TK_SEMICOLON Then ParserAdvance;
+              Break;
+            End;
+          End;
+          ParserAdvance;
+        End;
+      End
+      Else
+      Begin
+        While (CurToken.Kind <> TK_SEMICOLON) And
+              (CurToken.Kind <> TK_EOF) Do
+          ParserAdvance;
+        If CurToken.Kind = TK_SEMICOLON Then ParserAdvance;
+      End;
+    End;
+  End
+  Else
+  Begin
+    (* Condition fausse : skip la branche THEN *)
+    If (CurToken.Kind = TK_PERCENT) And
+       (StrUpperCase(CurToken.Val) = '%DO') Then
+    Begin
+      ParserAdvance;
+      If CurToken.Kind = TK_SEMICOLON Then ParserAdvance;
+      Depth := 1;
+      While (CurToken.Kind <> TK_EOF) And (Depth > 0) Do
+      Begin
+        If (CurToken.Kind = TK_PERCENT) And
+           (StrUpperCase(CurToken.Val) = '%DO') Then Inc(Depth);
+        If (CurToken.Kind = TK_PERCENT) And
+           (StrUpperCase(CurToken.Val) = '%END') Then
+        Begin
+          Dec(Depth);
+          If Depth = 0 Then
+          Begin
+            ParserAdvance;
+            If CurToken.Kind = TK_SEMICOLON Then ParserAdvance;
+            Break;
+          End;
+        End;
+        ParserAdvance;
+      End;
+    End
+    Else
+    Begin
+      While (CurToken.Kind <> TK_SEMICOLON) And
+            (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_PERCENT) And
+                 (StrUpperCase(CurToken.Val) = '%ELSE')) Do
+        ParserAdvance;
+      If CurToken.Kind = TK_SEMICOLON Then ParserAdvance;
+    End;
+    (* Executer la branche %ELSE si presente *)
+    If (CurToken.Kind = TK_PERCENT) And
+       (StrUpperCase(CurToken.Val) = '%ELSE') Then
+    Begin
+      ParserAdvance;
+      If (CurToken.Kind = TK_PERCENT) And
+         (StrUpperCase(CurToken.Val) = '%DO') Then
+      Begin
+        ParserAdvance;
+        If CurToken.Kind = TK_SEMICOLON Then ParserAdvance;
+        Depth := 1;
+        While (CurToken.Kind <> TK_EOF) And (Depth > 0) Do
+        Begin
+          If (CurToken.Kind = TK_PERCENT) And
+             (StrUpperCase(CurToken.Val) = '%DO') Then Inc(Depth);
+          If (CurToken.Kind = TK_PERCENT) And
+             (StrUpperCase(CurToken.Val) = '%END') Then
+          Begin
+            Dec(Depth);
+            If Depth = 0 Then
+            Begin
+              ParserAdvance;
+              If CurToken.Kind = TK_SEMICOLON Then ParserAdvance;
+              Break;
+            End;
+          End;
+          ParseStmt;
+        End;
+      End
+      Else
+        ParseStmt;
+    End;
+  End;
+End;
+
+(* ---- ParsePercentDo : parser %DO ; stmts; %END ; ----------------- *)
+(* Le token %DO a deja ete consomme.                                   *)
+Procedure ParsePercentDo;
+Var Depth : Integer;
+Begin
+  EmitComment('%DO');
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+  Depth := 1;
+  While (CurToken.Kind <> TK_EOF) And (Depth > 0) Do
+  Begin
+    If (CurToken.Kind = TK_PERCENT) And
+       (StrUpperCase(CurToken.Val) = '%DO') Then Inc(Depth);
+    If (CurToken.Kind = TK_PERCENT) And
+       (StrUpperCase(CurToken.Val) = '%END') Then
+    Begin
+      Dec(Depth);
+      If Depth = 0 Then
+      Begin
+        ParserAdvance;
+        If CurToken.Kind = TK_SEMICOLON Then ParserAdvance;
+        Break;
+      End;
+    End;
+    ParseStmt;
+  End;
+  EmitComment('%END');
+End;
+
+(* ---- HandlePercentDirective : dispatch des % directives ----------- *)
+(* Appele quand CurToken.Kind = TK_PERCENT.                           *)
+(* Le token contient le nom complet (ex: '%LET', '%MACRO', etc.)      *)
+Procedure HandlePercentDirective;
+Var
+  PctName : TString;
+  FuncArgs : TString;
+  Depth    : Integer;
+Begin
+  PctName := StrUpperCase(CurToken.Val);
+
+  (* %LET nom = valeur ; *)
+  If PctName = '%LET' Then
+  Begin
+    ParserAdvance;
+    ParsePercentLet;
+    Exit;
+  End;
+
+  (* %PUT texte ; *)
+  If PctName = '%PUT' Then
+  Begin
+    ParserAdvance;
+    ParsePercentPut;
+    Exit;
+  End;
+
+  (* %MACRO nom(params); body; %MEND; *)
+  If PctName = '%MACRO' Then
+  Begin
+    ParserAdvance;
+    ParseMacroDef;
+    Exit;
+  End;
+
+  (* %MEND : si rencontre en dehors de %MACRO, ignorer *)
+  If PctName = '%MEND' Then
+  Begin
+    ParserAdvance;
+    If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+      ParserAdvance;
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+    Exit;
+  End;
+
+  (* %IF cond %THEN action [%ELSE action] *)
+  If PctName = '%IF' Then
+  Begin
+    ParserAdvance;
+    ParsePercentIf;
+    Exit;
+  End;
+
+  (* %DO ; stmts ; %END ; *)
+  If PctName = '%DO' Then
+  Begin
+    ParserAdvance;
+    ParsePercentDo;
+    Exit;
+  End;
+
+  (* %END : si rencontre seul, ignorer *)
+  If PctName = '%END' Then
+  Begin
+    ParserAdvance;
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+    Exit;
+  End;
+
+  (* %THEN / %ELSE : si rencontre hors contexte, ignorer *)
+  If (PctName = '%THEN') Or (PctName = '%ELSE') Then
+  Begin
+    ParserAdvance;
+    Exit;
+  End;
+
+  (* %GLOBAL / %LOCAL : declarer une macro-variable dans la portee *)
+  If (PctName = '%GLOBAL') Or (PctName = '%LOCAL') Then
+  Begin
+    EmitComment(PctName);
+    ParserAdvance;
+    While (CurToken.Kind <> TK_SEMICOLON) And
+          (CurToken.Kind <> TK_EOF) Do
+    Begin
+      If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+        MacroVarSet(StrUpperCase(CurToken.Val), '');
+      ParserAdvance;
+    End;
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+    Exit;
+  End;
+
+  (* Fonctions macro : %EVAL, %SUBSTR, %UPCASE, %LENGTH, %SCAN, etc. *)
+  If (PctName = '%EVAL') Or (PctName = '%SYSEVALF') Or
+     (PctName = '%SUBSTR') Or (PctName = '%UPCASE') Or
+     (PctName = '%LENGTH') Or (PctName = '%SCAN') Or
+     (PctName = '%SYSFUNC') Or (PctName = '%STR') Or
+     (PctName = '%NRSTR') Or (PctName = '%TRIM') Or
+     (PctName = '%LEFT') Then
+  Begin
+    (* Extraire le nom de la fonction (sans %) *)
+    FuncArgs := Copy(PctName, 2, Length(PctName) - 1);
+    ParserAdvance;
+    (* Consommer les arguments entre parentheses *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      ParserAdvance;
+      FuncArgs := '';
+      Depth := 0;
+      While (CurToken.Kind <> TK_EOF) Do
+      Begin
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+          Inc(Depth);
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        Begin
+          If Depth = 0 Then
+          Begin
+            ParserAdvance;
+            Break;
+          End
+          Else
+            Dec(Depth);
+        End;
+        If FuncArgs <> '' Then FuncArgs := FuncArgs + ' ';
+        If CurToken.Kind = TK_AMPERSAND Then
+        Begin
+          PctName := CurToken.Val;
+          If (Length(PctName) > 1) And (PctName[1] = '&') Then
+            Delete(PctName, 1, 1);
+          FuncArgs := FuncArgs + MacroVarResolve(PctName);
+        End
+        Else
+          FuncArgs := FuncArgs + CurToken.Val;
+        ParserAdvance;
+      End;
+      PctName := StrUpperCase(CurToken.Val);
+    End
+    Else
+      FuncArgs := '';
+    (* Evaluer la fonction macro (resultat est un commentaire ASM) *)
+    EmitComment('macro function result (stub)');
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+    Exit;
+  End;
+
+  (* Sinon : appel de macro %nom(args) *)
+  If (Length(PctName) > 1) And (PctName[1] = '%') Then
+  Begin
+    FuncArgs := Copy(PctName, 2, Length(PctName) - 1);
+    ParserAdvance;
+    ParseMacroCall(FuncArgs);
+    Exit;
+  End;
+
+  ParserAdvance;
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+    ParserAdvance;
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+{ ============================================================
+  TODO 22 - FONCTIONS INTEGREES [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- EmitBuiltinRuntime : emettre les routines runtime des fonctions --- *)
+(* Emet dans le segment de code les sous-programmes appeles par les         *)
+(* fonctions integrees SAS reconnues par ParseFuncCall.                     *)
+(* Convention d appel 16 bits :                                             *)
+(*   - arguments dans AX, BX, CX, DX, SI, DI selon la fonction            *)
+(*   - resultat dans AX (entier) ou AX=ptr vers _SAS_STRBUF (chaine)      *)
+(*   - registres modifies : AX, BX, CX, DX, SI, DI (sauf BP/SP)          *)
+
+Procedure EmitBuiltinRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=== Runtime fonctions integrees SAS86 (TODO 22) ===');
+  EmitBlankLine;
+
+  (* ------ _SASRT_MIN : AX=a, BX=b -> AX=min(a,b) -------------- *)
+  EmitLabel(SAS_RT_PFX + 'MIN');
+  EmitInstrAB('CMP', 'AX', 'BX');
+  EmitInstrA('JLE', SAS_RT_PFX + 'MIN_D');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitLabel(SAS_RT_PFX + 'MIN_D');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_MAX : AX=a, BX=b -> AX=max(a,b) -------------- *)
+  EmitLabel(SAS_RT_PFX + 'MAX');
+  EmitInstrAB('CMP', 'AX', 'BX');
+  EmitInstrA('JGE', SAS_RT_PFX + 'MAX_D');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitLabel(SAS_RT_PFX + 'MAX_D');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_ROUND : AX=n, BX=unite -> AX=arrondi ---------- *)
+  EmitLabel(SAS_RT_PFX + 'ROUND');
+  EmitInstrAB('TEST', 'BX', 'BX');
+  EmitInstrA('JZ', SAS_RT_PFX + 'ROUND_D');
+  EmitInstr('CWD');
+  EmitInstrA('IDIV', 'BX');
+  EmitInstrA('IMUL', 'BX');
+  EmitLabel(SAS_RT_PFX + 'ROUND_D');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_SQRT : AX=n -> AX=isqrt(n) (Newton) ---------- *)
+  EmitLabel(SAS_RT_PFX + 'SQRT');
+  EmitInstrAB('CMP', 'AX', '1');
+  EmitInstrA('JLE', SAS_RT_PFX + 'SQRT_D');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrAB('SHR', 'AX', '1');
+  EmitLabel(SAS_RT_PFX + 'SQRT_L');
+  EmitInstrAB('MOV', 'CX', 'AX');
+  EmitInstrA('PUSH', 'AX');
+  EmitInstrAB('MOV', 'AX', 'SI');
+  EmitInstrAB('XOR', 'DX', 'DX');
+  EmitInstrA('DIV', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstrAB('ADD', 'AX', 'BX');
+  EmitInstrAB('SHR', 'AX', '1');
+  EmitInstrAB('CMP', 'AX', 'CX');
+  EmitInstrA('JB', SAS_RT_PFX + 'SQRT_L');
+  EmitInstrAB('MOV', 'AX', 'CX');
+  EmitInstrA('POP', 'SI');
+  EmitLabel(SAS_RT_PFX + 'SQRT_D');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_LOG : AX=n -> AX=ilog2(n) (nb bits) ----------- *)
+  EmitLabel(SAS_RT_PFX + 'LOG');
+  EmitInstrAB('CMP', 'AX', '1');
+  EmitInstrA('JLE', SAS_RT_PFX + 'LOG_Z');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitLabel(SAS_RT_PFX + 'LOG_L');
+  EmitInstrAB('SHR', 'AX', '1');
+  EmitInstrA('JZ', SAS_RT_PFX + 'LOG_E');
+  EmitInstrA('INC', 'CX');
+  EmitInstrA('JMP', SAS_RT_PFX + 'LOG_L');
+  EmitLabel(SAS_RT_PFX + 'LOG_E');
+  EmitInstrAB('MOV', 'AX', 'CX');
+  EmitInstrA('POP', 'CX');
+  EmitInstr('RET');
+  EmitLabel(SAS_RT_PFX + 'LOG_Z');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_EXP : AX=n -> AX (stub identite) -------------- *)
+  EmitLabel(SAS_RT_PFX + 'EXP');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_STRLEN : AX=ptr -> AX=longueur (ASCIIZ) ------- *)
+  EmitLabel(SAS_RT_PFX + 'STRLEN');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitLabel(SAS_RT_PFX + 'SL_LP');
+  EmitInstr('LODSB');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', SAS_RT_PFX + 'SL_DN');
+  EmitInstrA('INC', 'CX');
+  EmitInstrA('JMP', SAS_RT_PFX + 'SL_LP');
+  EmitLabel(SAS_RT_PFX + 'SL_DN');
+  EmitInstrAB('MOV', 'AX', 'CX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_INDEX : SI=str, DI=sub -> AX=pos (1-based) ---- *)
+  EmitLabel(SAS_RT_PFX + 'INDEX');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('XOR', 'BX', 'BX');
+  EmitLabel(SAS_RT_PFX + 'IX_NX');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', SAS_RT_PFX + 'IX_NF');
+  EmitInstrA('INC', 'BX');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitLabel(SAS_RT_PFX + 'IX_CM');
+  EmitInstrAB('MOV', 'AL', '[DI]');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', SAS_RT_PFX + 'IX_FD');
+  EmitInstrAB('CMP', 'AL', '[SI]');
+  EmitInstrA('JNE', SAS_RT_PFX + 'IX_NM');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', SAS_RT_PFX + 'IX_CM');
+  EmitLabel(SAS_RT_PFX + 'IX_NM');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', SAS_RT_PFX + 'IX_NX');
+  EmitLabel(SAS_RT_PFX + 'IX_FD');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitLabel(SAS_RT_PFX + 'IX_NF');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_SUBSTR : SI=str, BX=pos, CX=len -> AX=ptr ---- *)
+  EmitLabel(SAS_RT_PFX + 'SUBSTR');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('LEA', 'DI', '_SAS_STRBUF');
+  EmitInstrA('DEC', 'BX');
+  EmitInstrAB('ADD', 'SI', 'BX');
+  EmitLabel(SAS_RT_PFX + 'SS_LP');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', SAS_RT_PFX + 'SS_DN');
+  EmitInstr('LODSB');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', SAS_RT_PFX + 'SS_DN');
+  EmitInstr('STOSB');
+  EmitInstrAB('CMP', 'CX', '-1');
+  EmitInstrA('JE', SAS_RT_PFX + 'SS_LP');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', SAS_RT_PFX + 'SS_LP');
+  EmitLabel(SAS_RT_PFX + 'SS_DN');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('LEA', 'AX', '_SAS_STRBUF');
+  EmitInstrA('POP', 'DI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_TRIM : AX=ptr -> AX=ptr (trim trailing spaces) *)
+  EmitLabel(SAS_RT_PFX + 'TRIM');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrAB('LEA', 'DI', '_SAS_STRBUF');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitLabel(SAS_RT_PFX + 'TR_CP');
+  EmitInstr('LODSB');
+  EmitInstr('STOSB');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', SAS_RT_PFX + 'TR_TM');
+  EmitInstrA('INC', 'CX');
+  EmitInstrA('JMP', SAS_RT_PFX + 'TR_CP');
+  EmitLabel(SAS_RT_PFX + 'TR_TM');
+  EmitInstrAB('LEA', 'DI', '_SAS_STRBUF');
+  EmitInstrAB('ADD', 'DI', 'CX');
+  EmitInstrA('DEC', 'DI');
+  EmitLabel(SAS_RT_PFX + 'TR_BK');
+  EmitInstrAB('LEA', 'AX', '_SAS_STRBUF');
+  EmitInstrAB('CMP', 'DI', 'AX');
+  EmitInstrA('JB', SAS_RT_PFX + 'TR_DN');
+  EmitInstrAB('CMP', 'BYTE PTR [DI]', '20h');
+  EmitInstrA('JNE', SAS_RT_PFX + 'TR_DN');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrA('DEC', 'DI');
+  EmitInstrA('JMP', SAS_RT_PFX + 'TR_BK');
+  EmitLabel(SAS_RT_PFX + 'TR_DN');
+  EmitInstrAB('LEA', 'AX', '_SAS_STRBUF');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_LEFT : AX=ptr -> AX=ptr (trim leading spaces) - *)
+  EmitLabel(SAS_RT_PFX + 'LEFT');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitLabel(SAS_RT_PFX + 'LF_SK');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '20h');
+  EmitInstrA('JNE', SAS_RT_PFX + 'LF_CP');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', SAS_RT_PFX + 'LF_SK');
+  EmitLabel(SAS_RT_PFX + 'LF_CP');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('LEA', 'DI', '_SAS_STRBUF');
+  EmitLabel(SAS_RT_PFX + 'LF_LP');
+  EmitInstr('LODSB');
+  EmitInstr('STOSB');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JNZ', SAS_RT_PFX + 'LF_LP');
+  EmitInstrAB('LEA', 'AX', '_SAS_STRBUF');
+  EmitInstrA('POP', 'DI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_RIGHT : AX=ptr -> AX=ptr (right-align stub) --- *)
+  (* Simplifie : copie la chaine sans modification en v1            *)
+  EmitLabel(SAS_RT_PFX + 'RIGHT');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrAB('LEA', 'DI', '_SAS_STRBUF');
+  EmitLabel(SAS_RT_PFX + 'RI_LP');
+  EmitInstr('LODSB');
+  EmitInstr('STOSB');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JNZ', SAS_RT_PFX + 'RI_LP');
+  EmitInstrAB('LEA', 'AX', '_SAS_STRBUF');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_UPCASE : AX=ptr -> AX=ptr (majuscules) -------- *)
+  EmitLabel(SAS_RT_PFX + 'UPCASE');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrAB('LEA', 'DI', '_SAS_STRBUF');
+  EmitLabel(SAS_RT_PFX + 'UC_LP');
+  EmitInstr('LODSB');
+  EmitInstrAB('CMP', 'AL', '61h');
+  EmitInstrA('JB', SAS_RT_PFX + 'UC_OK');
+  EmitInstrAB('CMP', 'AL', '7Ah');
+  EmitInstrA('JA', SAS_RT_PFX + 'UC_OK');
+  EmitInstrAB('SUB', 'AL', '20h');
+  EmitLabel(SAS_RT_PFX + 'UC_OK');
+  EmitInstr('STOSB');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JNZ', SAS_RT_PFX + 'UC_LP');
+  EmitInstrAB('LEA', 'AX', '_SAS_STRBUF');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_LOWCASE : AX=ptr -> AX=ptr (minuscules) ------- *)
+  EmitLabel(SAS_RT_PFX + 'LOWCASE');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrAB('LEA', 'DI', '_SAS_STRBUF');
+  EmitLabel(SAS_RT_PFX + 'LC_LP');
+  EmitInstr('LODSB');
+  EmitInstrAB('CMP', 'AL', '41h');
+  EmitInstrA('JB', SAS_RT_PFX + 'LC_OK');
+  EmitInstrAB('CMP', 'AL', '5Ah');
+  EmitInstrA('JA', SAS_RT_PFX + 'LC_OK');
+  EmitInstrAB('ADD', 'AL', '20h');
+  EmitLabel(SAS_RT_PFX + 'LC_OK');
+  EmitInstr('STOSB');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JNZ', SAS_RT_PFX + 'LC_LP');
+  EmitInstrAB('LEA', 'AX', '_SAS_STRBUF');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_COMPRESS : AX=str, DI=chars -> AX=ptr --------- *)
+  (* Si DI=0, supprime les espaces (20h)                             *)
+  EmitLabel(SAS_RT_PFX + 'COMPRESS');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('LEA', 'DI', '_SAS_STRBUF');
+  EmitLabel(SAS_RT_PFX + 'CO_LP');
+  EmitInstr('LODSB');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', SAS_RT_PFX + 'CO_DN');
+  EmitInstrAB('MOV', 'BX', '[SP]');
+  EmitInstrAB('TEST', 'BX', 'BX');
+  EmitInstrA('JNZ', SAS_RT_PFX + 'CO_CK');
+  EmitInstrAB('CMP', 'AL', '20h');
+  EmitInstrA('JE', SAS_RT_PFX + 'CO_LP');
+  EmitInstrA('JMP', SAS_RT_PFX + 'CO_ST');
+  EmitLabel(SAS_RT_PFX + 'CO_CK');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', 'BX');
+  EmitLabel(SAS_RT_PFX + 'CO_SC');
+  EmitInstrAB('MOV', 'AH', '[SI]');
+  EmitInstrAB('TEST', 'AH', 'AH');
+  EmitInstrA('JZ', SAS_RT_PFX + 'CO_KP');
+  EmitInstrAB('CMP', 'AL', 'AH');
+  EmitInstrA('JE', SAS_RT_PFX + 'CO_RM');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', SAS_RT_PFX + 'CO_SC');
+  EmitLabel(SAS_RT_PFX + 'CO_KP');
+  EmitInstrA('POP', 'SI');
+  EmitLabel(SAS_RT_PFX + 'CO_ST');
+  EmitInstr('STOSB');
+  EmitInstrA('JMP', SAS_RT_PFX + 'CO_LP');
+  EmitLabel(SAS_RT_PFX + 'CO_RM');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('JMP', SAS_RT_PFX + 'CO_LP');
+  EmitLabel(SAS_RT_PFX + 'CO_DN');
+  EmitInstr('STOSB');
+  EmitInstrA('POP', 'BX');
+  EmitInstrAB('LEA', 'AX', '_SAS_STRBUF');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_STRCAT : SI=str1, DI=str2 -> AX=ptr ----------- *)
+  EmitLabel(SAS_RT_PFX + 'STRCAT');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('LEA', 'DI', '_SAS_STRBUF2');
+  EmitLabel(SAS_RT_PFX + 'SC_C1');
+  EmitInstr('LODSB');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', SAS_RT_PFX + 'SC_S2');
+  EmitInstr('STOSB');
+  EmitInstrA('JMP', SAS_RT_PFX + 'SC_C1');
+  EmitLabel(SAS_RT_PFX + 'SC_S2');
+  EmitInstrA('POP', 'SI');
+  EmitLabel(SAS_RT_PFX + 'SC_C2');
+  EmitInstr('LODSB');
+  EmitInstr('STOSB');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JNZ', SAS_RT_PFX + 'SC_C2');
+  EmitInstrAB('LEA', 'AX', '_SAS_STRBUF2');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_NUM2STR : AX=num -> AX=ptr (itoa) ------------- *)
+  EmitLabel(SAS_RT_PFX + 'NUM2STR');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrAB('LEA', 'DI', '_SAS_NUMBUF');
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JNS', SAS_RT_PFX + 'N2_POS');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '2Dh');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('NEG', 'AX');
+  EmitLabel(SAS_RT_PFX + 'N2_POS');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitInstrAB('MOV', 'BX', '10');
+  EmitLabel(SAS_RT_PFX + 'N2_DIV');
+  EmitInstrAB('XOR', 'DX', 'DX');
+  EmitInstrA('DIV', 'BX');
+  EmitInstrAB('ADD', 'DL', '30h');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrA('INC', 'CX');
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JNZ', SAS_RT_PFX + 'N2_DIV');
+  EmitLabel(SAS_RT_PFX + 'N2_POP');
+  EmitInstrA('POP', 'AX');
+  EmitInstr('STOSB');
+  EmitInstrA('LOOP', SAS_RT_PFX + 'N2_POP');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('LEA', 'AX', '_SAS_NUMBUF');
+  EmitInstrA('POP', 'BX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_STR2NUM : AX=ptr -> AX=num (atoi) ------------- *)
+  EmitLabel(SAS_RT_PFX + 'STR2NUM');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '2Dh');
+  EmitInstrA('JNE', SAS_RT_PFX + 'A2_LP');
+  EmitInstrA('INC', 'CX');
+  EmitInstrA('INC', 'SI');
+  EmitLabel(SAS_RT_PFX + 'A2_LP');
+  EmitInstrAB('MOV', 'BL', '[SI]');
+  EmitInstrAB('SUB', 'BL', '30h');
+  EmitInstrA('JB', SAS_RT_PFX + 'A2_DN');
+  EmitInstrAB('CMP', 'BL', '9');
+  EmitInstrA('JA', SAS_RT_PFX + 'A2_DN');
+  EmitInstrAB('MOV', 'DX', '10');
+  EmitInstrA('IMUL', 'DX');
+  EmitInstrAB('XOR', 'BH', 'BH');
+  EmitInstrAB('ADD', 'AX', 'BX');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', SAS_RT_PFX + 'A2_LP');
+  EmitLabel(SAS_RT_PFX + 'A2_DN');
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JZ', SAS_RT_PFX + 'A2_RT');
+  EmitInstrA('NEG', 'AX');
+  EmitLabel(SAS_RT_PFX + 'A2_RT');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_MDY : AX=month, BX=day, CX=year -> AX=date ---- *)
+  (* Date SAS = jours depuis 01JAN1960                               *)
+  EmitLabel(SAS_RT_PFX + 'MDY');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'BX');   (* sauvegarder day *)
+  EmitInstrA('PUSH', 'AX');   (* sauvegarder month *)
+  (* Calculer annees depuis 1960 *)
+  EmitInstrAB('MOV', 'AX', 'CX');
+  EmitInstrAB('SUB', 'AX', '1960');
+  EmitInstrAB('MOV', 'BX', '365');
+  EmitInstrA('IMUL', 'BX');   (* AX = years * 365 *)
+  EmitInstrAB('MOV', 'DI', 'AX');  (* DI = base days *)
+  (* Ajouter jours bissextiles : (year-1960)/4 approx *)
+  EmitInstrAB('MOV', 'AX', 'CX');
+  EmitInstrAB('SUB', 'AX', '1960');
+  EmitInstrAB('MOV', 'BX', '4');
+  EmitInstr('CWD');
+  EmitInstrA('IDIV', 'BX');
+  EmitInstrAB('ADD', 'DI', 'AX');  (* DI += leap days *)
+  (* Ajouter jours du mois : table cumulative *)
+  EmitInstrA('POP', 'AX');    (* AX = month *)
+  EmitInstrA('DEC', 'AX');    (* 0-based *)
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstrAB('SHL', 'BX', '1');   (* BX = month * 2 (word offset) *)
+  EmitInstrAB('ADD', 'BX', 'OFFSET ' + SAS_RT_PFX + 'MDAYS');
+  EmitInstrAB('MOV', 'AX', '[BX]');
+  EmitInstrAB('ADD', 'DI', 'AX');  (* DI += cumul month days *)
+  (* Ajouter le jour *)
+  EmitInstrA('POP', 'AX');    (* AX = day *)
+  EmitInstrA('DEC', 'AX');    (* 0-based *)
+  EmitInstrAB('ADD', 'AX', 'DI');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* Table des jours cumules par mois (non-bissextile) *)
+  EmitLabel(SAS_RT_PFX + 'MDAYS');
+  EmitRaw('        DW  0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334');
+  EmitBlankLine;
+
+  (* ------ _SASRT_YEAR : AX=date -> AX=annee -------------------- *)
+  EmitLabel(SAS_RT_PFX + 'YEAR');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrAB('MOV', 'BX', '365');
+  EmitInstr('CWD');
+  EmitInstrA('IDIV', 'BX');
+  EmitInstrAB('ADD', 'AX', '1960');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_MONTH : AX=date -> AX=mois (1-12) ------------- *)
+  EmitLabel(SAS_RT_PFX + 'MONTH');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'SI');
+  (* Obtenir jour-dans-l-annee : date MOD 365 *)
+  EmitInstrAB('MOV', 'BX', '365');
+  EmitInstr('CWD');
+  EmitInstrA('IDIV', 'BX');
+  EmitInstrAB('MOV', 'AX', 'DX');   (* AX = day of year *)
+  (* Chercher le mois dans la table cumulative *)
+  EmitInstrAB('LEA', 'SI', SAS_RT_PFX + 'MDAYS');
+  EmitInstrAB('MOV', 'CX', '12');
+  EmitInstrAB('XOR', 'BX', 'BX');
+  EmitLabel(SAS_RT_PFX + 'MO_LP');
+  EmitInstrAB('MOV', 'DX', '[SI+BX]');
+  EmitInstrAB('CMP', 'AX', 'DX');
+  EmitInstrA('JL', SAS_RT_PFX + 'MO_FD');
+  EmitInstrAB('ADD', 'BX', '2');
+  EmitInstrA('LOOP', SAS_RT_PFX + 'MO_LP');
+  EmitLabel(SAS_RT_PFX + 'MO_FD');
+  EmitInstrAB('SHR', 'BX', '1');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_DAY : AX=date -> AX=jour (1-31) --------------- *)
+  EmitLabel(SAS_RT_PFX + 'DAY');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'SI');
+  (* Obtenir jour-dans-l-annee *)
+  EmitInstrAB('MOV', 'BX', '365');
+  EmitInstr('CWD');
+  EmitInstrA('IDIV', 'BX');
+  EmitInstrAB('MOV', 'AX', 'DX');   (* AX = day of year *)
+  (* Trouver le mois et soustraire les jours cumules *)
+  EmitInstrAB('LEA', 'SI', SAS_RT_PFX + 'MDAYS');
+  EmitInstrAB('XOR', 'BX', 'BX');
+  EmitInstrAB('MOV', 'CX', '11');
+  EmitLabel(SAS_RT_PFX + 'DY_LP');
+  EmitInstrAB('MOV', 'DX', '[SI+BX+2]');
+  EmitInstrAB('CMP', 'AX', 'DX');
+  EmitInstrA('JL', SAS_RT_PFX + 'DY_FD');
+  EmitInstrAB('ADD', 'BX', '2');
+  EmitInstrA('LOOP', SAS_RT_PFX + 'DY_LP');
+  EmitLabel(SAS_RT_PFX + 'DY_FD');
+  EmitInstrAB('SUB', 'AX', '[SI+BX]');
+  EmitInstrA('INC', 'AX');   (* 1-based *)
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+End;
+
+{ ============================================================
+  TODO 24 - RUNTIME MINIMAL [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- EmitMinimalRuntime : emettre les routines runtime de base ---
+   Routines d entree/sortie, comparaison, copie, puissance, etc.
+   Conventions 16 bits : args dans AX, BX, CX, DX, SI, DI
+   Resultats dans AX (entier) ou AX=ptr (chaine)                    *)
+
+Procedure EmitMinimalRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=== Runtime minimal SAS86 (TODO 24) ===');
+  EmitBlankLine;
+
+  (* ------ _SASRT_PRINT : BX=handle, DX=msg, CX=len -> ecrire ---- *)
+  EmitLabel(SAS_RT_PFX + 'PRINT');
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstr('INT 21h');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_PRINTLN : DX=msg, CX=len -> ecrire + CRLF ------ *)
+  EmitLabel(SAS_RT_PFX + 'PRINTLN');
+  EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstr('INT 21h');
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+  EmitInstrAB('MOV', 'CX', '2');
+  EmitInstrAB('LEA', 'DX', '_SAS_CRLF');
+  EmitInstr('INT 21h');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_PUTSTR : DX=str, CX=len -> ecrire sur OUTHDL --- *)
+  (* Ecrit CX octets depuis DX vers le handle de sortie courant.     *)
+  EmitLabel(SAS_RT_PFX + 'PUTSTR');
+  EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstr('INT 21h');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_PUTNUM : AX=num -> convertir et ecrire ---------- *)
+  (* Convertit AX en chaine via NUM2STR puis ecrit via PUTSTR.       *)
+  EmitLabel(SAS_RT_PFX + 'PUTNUM');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('CALL', SAS_RT_PFX + 'NUM2STR');
+  (* AX = ptr vers _SAS_NUMBUF, calculer la longueur *)
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitLabel(SAS_RT_PFX + 'PN_L');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstrA('JE', SAS_RT_PFX + 'PN_D');
+  EmitInstrA('INC', 'CX');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', SAS_RT_PFX + 'PN_L');
+  EmitLabel(SAS_RT_PFX + 'PN_D');
+  EmitInstrAB('MOV', 'DX', 'AX');
+  EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstr('INT 21h');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_STRCMP : SI=str1, DI=str2 -> drapeaux ZF/CF ----- *)
+  (* Compare deux chaines ASCIIZ octet par octet.                     *)
+  (* ZF=1 si egales, CF selon ordre lexicographique.                  *)
+  EmitLabel(SAS_RT_PFX + 'STRCMP');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitLabel(SAS_RT_PFX + 'SC_LP');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('MOV', 'AH', '[DI]');
+  EmitInstrAB('CMP', 'AL', 'AH');
+  EmitInstrA('JNE', SAS_RT_PFX + 'SC_NE');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', SAS_RT_PFX + 'SC_EQ');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', SAS_RT_PFX + 'SC_LP');
+  EmitLabel(SAS_RT_PFX + 'SC_EQ');
+  (* Egal : positionner ZF=1 *)
+  EmitInstrAB('CMP', 'AL', 'AL');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitLabel(SAS_RT_PFX + 'SC_NE');
+  (* Non egal : drapeaux deja positionnes par CMP AL, AH *)
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_CONCAT : SI=str1, DI=str2 -> AX=ptr buf -------- *)
+  (* Concatene deux chaines ASCIIZ dans _SAS_STRBUF2.                 *)
+  EmitLabel(SAS_RT_PFX + 'CONCAT');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('LEA', 'DI', '_SAS_STRBUF2');
+  EmitLabel(SAS_RT_PFX + 'CT_C1');
+  EmitInstr('LODSB');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', SAS_RT_PFX + 'CT_S2');
+  EmitInstr('STOSB');
+  EmitInstrA('JMP', SAS_RT_PFX + 'CT_C1');
+  EmitLabel(SAS_RT_PFX + 'CT_S2');
+  EmitInstrA('POP', 'SI');
+  EmitLabel(SAS_RT_PFX + 'CT_C2');
+  EmitInstr('LODSB');
+  EmitInstr('STOSB');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JNZ', SAS_RT_PFX + 'CT_C2');
+  EmitInstrAB('LEA', 'AX', '_SAS_STRBUF2');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_STRCPY : AX=src(ASCIIZ), DI=dest, CX=maxlen ---- *)
+  (* Copie une chaine ASCIIZ source dans dest, tronquee a CX octets. *)
+  (* Remplit le reste avec des espaces (20h).                         *)
+  EmitLabel(SAS_RT_PFX + 'STRCPY');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitLabel(SAS_RT_PFX + 'SY_LP');
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JZ', SAS_RT_PFX + 'SY_DN');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', SAS_RT_PFX + 'SY_PD');
+  EmitInstr('STOSB');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', SAS_RT_PFX + 'SY_LP');
+  EmitLabel(SAS_RT_PFX + 'SY_PD');
+  (* Remplir le reste avec des espaces *)
+  EmitInstrAB('MOV', 'AL', '20h');
+  EmitInstr('REP STOSB');
+  EmitLabel(SAS_RT_PFX + 'SY_DN');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_POW : AX=base, BX=exp -> AX=base^exp ----------- *)
+  (* Puissance entiere par multiplication repetee.                    *)
+  EmitLabel(SAS_RT_PFX + 'POW');
+  EmitInstrAB('TEST', 'BX', 'BX');
+  EmitInstrA('JNZ', SAS_RT_PFX + 'PW_NZ');
+  EmitInstrAB('MOV', 'AX', '1');
+  EmitInstr('RET');
+  EmitLabel(SAS_RT_PFX + 'PW_NZ');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrAB('MOV', 'CX', 'BX');
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitLabel(SAS_RT_PFX + 'PW_LP');
+  EmitInstrAB('CMP', 'CX', '1');
+  EmitInstrA('JLE', SAS_RT_PFX + 'PW_DN');
+  EmitInstrA('IMUL', 'BX');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', SAS_RT_PFX + 'PW_LP');
+  EmitLabel(SAS_RT_PFX + 'PW_DN');
+  EmitInstrA('POP', 'CX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_ABS : AX=n -> AX=|n| --------------------------- *)
+  EmitLabel(SAS_RT_PFX + 'ABS');
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JNS', SAS_RT_PFX + 'AB_DN');
+  EmitInstrA('NEG', 'AX');
+  EmitLabel(SAS_RT_PFX + 'AB_DN');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_MISSING : AX=val -> ZF=1 si manquant (8000h) --- *)
+  EmitLabel(SAS_RT_PFX + 'MISSING');
+  EmitInstrAB('CMP', 'AX', '8000h');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_PANIC : SI=msg -> affiche + exit 4C01h ---------- *)
+  EmitLabel(SAS_RT_PFX + 'PANIC');
+  EmitInstrAB('MOV', 'DX', 'SI');
+  (* Calculer la longueur du message *)
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitLabel(SAS_RT_PFX + 'PK_L');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstrA('JE', SAS_RT_PFX + 'PK_P');
+  EmitInstrA('INC', 'CX');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', SAS_RT_PFX + 'PK_L');
+  EmitLabel(SAS_RT_PFX + 'PK_P');
+  EmitInstrAB('MOV', 'BX', '2');
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstr('INT 21h');
+  (* Ecrire CRLF *)
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstrAB('MOV', 'BX', '2');
+  EmitInstrAB('MOV', 'CX', '2');
+  EmitInstrAB('LEA', 'DX', '_SAS_CRLF');
+  EmitInstr('INT 21h');
+  (* Sortie avec code erreur *)
+  EmitInstrAB('MOV', 'AX', '4C01h');
+  EmitInstr('INT 21h');
+  EmitBlankLine;
+
+  (* ------ _SASRT_READLINE : DI=buf, CX=maxlen -> AX=len --------- *)
+  (* Lit une ligne depuis le handle d entree (_SAS_INHDL).            *)
+  (* Lecture octet par octet via INT 21h AH=3Fh.                      *)
+  EmitLabel(SAS_RT_PFX + 'READLINE');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrAB('MOV', 'SI', 'DI');
+  EmitInstrAB('XOR', 'DX', 'DX');   (* DX = compteur octets lus *)
+  EmitLabel(SAS_RT_PFX + 'RL_LP');
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JZ', SAS_RT_PFX + 'RL_DN');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrAB('MOV', 'AH', '3Fh');
+  EmitInstrAB('MOV', 'BX', '[_SAS_INHDL]');
+  EmitInstrAB('MOV', 'CX', '1');
+  EmitInstrAB('MOV', 'DX', 'DI');
+  EmitInstr('INT 21h');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JZ', SAS_RT_PFX + 'RL_DN');
+  (* Verifier fin de ligne (0Ah) *)
+  EmitInstrAB('CMP', 'BYTE PTR [DI]', '0Ah');
+  EmitInstrA('JE', SAS_RT_PFX + 'RL_NL');
+  (* Ignorer retour chariot (0Dh) *)
+  EmitInstrAB('CMP', 'BYTE PTR [DI]', '0Dh');
+  EmitInstrA('JE', SAS_RT_PFX + 'RL_LP');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('INC', 'DX');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', SAS_RT_PFX + 'RL_LP');
+  EmitLabel(SAS_RT_PFX + 'RL_NL');
+  EmitLabel(SAS_RT_PFX + 'RL_DN');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('MOV', 'AX', 'DX');
+  EmitInstrA('POP', 'BX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_CPYFLD : SI=src, DI=dest, CX=len -> copier n octets *)
+  (* Copie CX octets de SI vers DI, remplit avec espaces si source      *)
+  (* se termine avant CX.                                                *)
+  EmitLabel(SAS_RT_PFX + 'CPYFLD');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'CX');
+  EmitLabel(SAS_RT_PFX + 'CF_LP');
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JZ', SAS_RT_PFX + 'CF_DN');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', SAS_RT_PFX + 'CF_PD');
+  EmitInstr('STOSB');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', SAS_RT_PFX + 'CF_LP');
+  EmitLabel(SAS_RT_PFX + 'CF_PD');
+  EmitInstrAB('MOV', 'AL', '20h');
+  EmitInstr('REP STOSB');
+  EmitLabel(SAS_RT_PFX + 'CF_DN');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_GETFLD : SI=src, DI=dest, CX=maxlen -> copie champ *)
+  (* Lit un champ delimiteur-espace depuis SI vers DI, avance SI.       *)
+  (* Saute les espaces de tete, copie jusqu a espace ou fin de chaine.  *)
+  EmitLabel(SAS_RT_PFX + 'GETFLD');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrAB('XOR', 'BX', 'BX');  (* BX = compteur *)
+  (* Sauter les espaces de tete *)
+  EmitLabel(SAS_RT_PFX + 'GF_SK');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '20h');
+  EmitInstrA('JNE', SAS_RT_PFX + 'GF_CP');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstrA('JE', SAS_RT_PFX + 'GF_PD');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', SAS_RT_PFX + 'GF_SK');
+  EmitLabel(SAS_RT_PFX + 'GF_CP');
+  (* Copier jusqu a espace, tab ou fin *)
+  EmitInstrAB('CMP', 'BX', 'CX');
+  EmitInstrA('JGE', SAS_RT_PFX + 'GF_PD');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', SAS_RT_PFX + 'GF_PD');
+  EmitInstrAB('CMP', 'AL', '20h');
+  EmitInstrA('JE', SAS_RT_PFX + 'GF_PD');
+  EmitInstrAB('CMP', 'AL', '09h');
+  EmitInstrA('JE', SAS_RT_PFX + 'GF_PD');
+  EmitInstr('STOSB');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'BX');
+  EmitInstrA('JMP', SAS_RT_PFX + 'GF_CP');
+  EmitLabel(SAS_RT_PFX + 'GF_PD');
+  (* Remplir le reste avec des espaces *)
+  EmitInstrAB('MOV', 'AX', 'CX');
+  EmitInstrAB('SUB', 'AX', 'BX');
+  EmitInstrAB('MOV', 'CX', 'AX');
+  EmitInstrAB('MOV', 'AL', '20h');
+  EmitInstr('REP STOSB');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_GETNUM : SI=src -> AX=num, SI avance ------------ *)
+  (* Lit un entier decimal depuis SI (saute espaces), avance SI.      *)
+  EmitLabel(SAS_RT_PFX + 'GETNUM');
+  EmitInstrA('PUSH', 'BX');
+  (* Sauter les espaces *)
+  EmitLabel(SAS_RT_PFX + 'GN_SK');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '20h');
+  EmitInstrA('JNE', SAS_RT_PFX + 'GN_RD');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', SAS_RT_PFX + 'GN_SK');
+  EmitLabel(SAS_RT_PFX + 'GN_RD');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstrAB('XOR', 'CX', 'CX');  (* CX = signe *)
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '2Dh');
+  EmitInstrA('JNE', SAS_RT_PFX + 'GN_DG');
+  EmitInstrA('INC', 'CX');
+  EmitInstrA('INC', 'SI');
+  EmitLabel(SAS_RT_PFX + 'GN_DG');
+  EmitInstrAB('MOV', 'BL', '[SI]');
+  EmitInstrAB('SUB', 'BL', '30h');
+  EmitInstrA('JB', SAS_RT_PFX + 'GN_DN');
+  EmitInstrAB('CMP', 'BL', '9');
+  EmitInstrA('JA', SAS_RT_PFX + 'GN_DN');
+  EmitInstrAB('MOV', 'DX', '10');
+  EmitInstrA('IMUL', 'DX');
+  EmitInstrAB('XOR', 'BH', 'BH');
+  EmitInstrAB('ADD', 'AX', 'BX');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', SAS_RT_PFX + 'GN_DG');
+  EmitLabel(SAS_RT_PFX + 'GN_DN');
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JZ', SAS_RT_PFX + 'GN_RT');
+  EmitInstrA('NEG', 'AX');
+  EmitLabel(SAS_RT_PFX + 'GN_RT');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_ATOI : SI=str, CX=len -> AX=num ----------------- *)
+  (* Convertit CX octets depuis SI en entier (saute espaces de tete). *)
+  EmitLabel(SAS_RT_PFX + 'ATOI');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstrAB('XOR', 'DX', 'DX');  (* DX = signe *)
+  (* Sauter espaces de tete *)
+  EmitLabel(SAS_RT_PFX + 'AT_SK');
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JZ', SAS_RT_PFX + 'AT_DN');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '20h');
+  EmitInstrA('JNE', SAS_RT_PFX + 'AT_SN');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', SAS_RT_PFX + 'AT_SK');
+  EmitLabel(SAS_RT_PFX + 'AT_SN');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '2Dh');
+  EmitInstrA('JNE', SAS_RT_PFX + 'AT_DG');
+  EmitInstrA('INC', 'DX');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('DEC', 'CX');
+  EmitLabel(SAS_RT_PFX + 'AT_DG');
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JZ', SAS_RT_PFX + 'AT_ND');
+  EmitInstrAB('MOV', 'BL', '[SI]');
+  EmitInstrAB('SUB', 'BL', '30h');
+  EmitInstrA('JB', SAS_RT_PFX + 'AT_ND');
+  EmitInstrAB('CMP', 'BL', '9');
+  EmitInstrA('JA', SAS_RT_PFX + 'AT_ND');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrAB('MOV', 'DX', '10');
+  EmitInstrA('IMUL', 'DX');
+  EmitInstrA('POP', 'DX');
+  EmitInstrAB('XOR', 'BH', 'BH');
+  EmitInstrAB('ADD', 'AX', 'BX');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', SAS_RT_PFX + 'AT_DG');
+  EmitLabel(SAS_RT_PFX + 'AT_ND');
+  EmitInstrAB('TEST', 'DX', 'DX');
+  EmitInstrA('JZ', SAS_RT_PFX + 'AT_DN');
+  EmitInstrA('NEG', 'AX');
+  EmitLabel(SAS_RT_PFX + 'AT_DN');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ------ _SASRT_INLIST : AX=val (sur pile : liste) -> AX=1/0 ---- *)
+  (* Stub : retourne 0 (non trouve). Sera etendu selon besoin.        *)
+  EmitLabel(SAS_RT_PFX + 'INLIST');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+End;
+
+{ ============================================================
+  TODO 23 - FUSION ET MANIPULATION DE DATASETS [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- ParseSetStmtEnhanced : SET ds1 [ds2] [POINT=var] [NOBS=var]
+        [END=var] ;
+   Remplace ParseSetStmt pour supporter les options TODO 23.         *)
+
+Procedure ParseSetStmtEnhanced;
+Var
+  SetDS  : TString;
+  KW     : TString;
+  VName  : TString;
+  SIdx   : Integer;
+Begin
+  EmitComment('SET (enhanced TODO 23)');
+  DSHasSet := True;
+  DSSetCount := 0;
+  DSSetPointVar := '';
+  DSSetNobsVar  := '';
+  DSSetEndVar   := '';
+
+  (* Parser les noms de dataset sources et les options *)
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    (* Option POINT= *)
+    If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+    Begin
+      KW := StrUpperCase(CurToken.Val);
+      If KW = 'POINT' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+          ParserAdvance;
+        If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+        Begin
+          VName := StrUpperCase(CurToken.Val);
+          DSSetPointVar := VName;
+          EmitComment('SET POINT=' + VName);
+          SIdx := SymFind(VName);
+          If SIdx < 0 Then
+            SIdx := VarAlloc(VName, TY_IDX_NUMERIC, 2);
+          (* Stocker la valeur dans la variable POINT *)
+          EmitInstrAB('MOV', 'AX', 'WORD PTR [_SAS_SETPT]');
+          VarStore(SIdx);
+          ParserAdvance;
+        End;
+        Continue;
+      End;
+
+      (* Option NOBS= *)
+      If KW = 'NOBS' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+          ParserAdvance;
+        If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+        Begin
+          VName := StrUpperCase(CurToken.Val);
+          DSSetNobsVar := VName;
+          EmitComment('SET NOBS=' + VName);
+          SIdx := SymFind(VName);
+          If SIdx < 0 Then
+            SIdx := VarAlloc(VName, TY_IDX_NUMERIC, 2);
+          (* Affecter le nombre total d observations a la variable *)
+          EmitInstrAB('MOV', 'AX', 'WORD PTR [_SAS_SETNOBS]');
+          VarStore(SIdx);
+          ParserAdvance;
+        End;
+        Continue;
+      End;
+
+      (* Option END= *)
+      If (KW = 'END') Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+          ParserAdvance;
+        If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+        Begin
+          VName := StrUpperCase(CurToken.Val);
+          DSSetEndVar := VName;
+          EmitComment('SET END=' + VName);
+          SIdx := SymFind(VName);
+          If SIdx < 0 Then
+            SIdx := VarAlloc(VName, TY_IDX_NUMERIC, 2);
+          (* Affecter le flag de fin a la variable *)
+          EmitInstrAB('MOV', 'AX', 'WORD PTR [_SAS_SETEND]');
+          VarStore(SIdx);
+          ParserAdvance;
+        End;
+        Continue;
+      End;
+
+      (* Nom de dataset : tout identifiant non reconnu comme option *)
+      SetDS := KW;
+      If DSSetCount < MAX_MERGE_DS Then
+      Begin
+        DSSetList[DSSetCount] := SetDS;
+        DSSetLblList[DSSetCount] := SAS_DS_PFX + SetDS;
+        Inc(DSSetCount);
+      End;
+      EmitComment('SET source=' + SetDS);
+      (* Maintenir la compatibilite avec le champ unique *)
+      If DSSetCount = 1 Then
+      Begin
+        DSSetName  := SetDS;
+        DSSetLabel := SAS_DS_PFX + SetDS;
+      End;
+      ParserAdvance;
+      Continue;
+    End;
+
+    ParserAdvance;
+  End;
+
+  (* Concatenation verticale : SET ds1 ds2 ; *)
+  If DSSetCount > 1 Then
+  Begin
+    EmitComment('SET concatenation: ' + IntToStr(DSSetCount) + ' datasets');
+    EmitInstrAB('MOV', 'WORD PTR [_SAS_SETIDX]', '0');
+  End;
+
+  (* Consommer ; *)
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseMergeStmt : MERGE ds1 ds2 [ds3] ... ; -------------------- *)
+(* Fusion horizontale de datasets. Necessite BY pour la correspondance.  *)
+Procedure ParseMergeStmt;
+Var
+  MDS : TString;
+Begin
+  EmitComment('MERGE (TODO 23)');
+  DSHasMerge := True;
+  DSMergeCount := 0;
+
+  (* Parser les noms des datasets a fusionner *)
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+    Begin
+      MDS := StrUpperCase(CurToken.Val);
+      If DSMergeCount < MAX_MERGE_DS Then
+      Begin
+        DSMergeList[DSMergeCount] := MDS;
+        DSMergeLblList[DSMergeCount] := SAS_DS_PFX + MDS;
+        Inc(DSMergeCount);
+        EmitComment('MERGE source=' + MDS);
+      End;
+    End;
+    ParserAdvance;
+  End;
+
+  (* Initialiser l index de fusion *)
+  EmitInstrAB('MOV', 'WORD PTR [_SAS_MRGIDX]', '0');
+
+  (* Si pas de BY, fusion un-a-un par position *)
+  If Not DSHasBy Then
+    EmitComment('MERGE un-a-un (pas de BY) : correspondance par position');
+
+  (* Consommer ; *)
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseDataByStmt : BY var1 var2 ... ; (dans DATA step) ---------- *)
+(* Specifie les cles de tri pour MERGE ou traitement par groupe.         *)
+(* Cree les variables automatiques FIRST.var et LAST.var pour chaque cle *)
+Procedure ParseDataByStmt;
+Var
+  VName    : TString;
+  SIdx     : Integer;
+  FirstVar : TString;
+  LastVar  : TString;
+Begin
+  EmitComment('BY (DATA step, TODO 23)');
+  DSHasBy := True;
+  DSByVarCount := 0;
+
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+    Begin
+      VName := StrUpperCase(CurToken.Val);
+      (* Ignorer DESCENDING / ASCENDING *)
+      If (VName <> 'DESCENDING') And (VName <> 'ASCENDING') And
+         (VName <> 'NOTSORTED') Then
+      Begin
+        If DSByVarCount < MAX_BY_VARS Then
+        Begin
+          DSByVarList[DSByVarCount] := VName;
+          Inc(DSByVarCount);
+          EmitComment('BY var=' + VName);
+
+          (* Creer FIRST.var et LAST.var comme variables automatiques *)
+          FirstVar := 'FIRST.' + VName;
+          LastVar  := 'LAST.' + VName;
+
+          SIdx := SymFind(FirstVar);
+          If SIdx < 0 Then
+            SIdx := VarAlloc(FirstVar, TY_IDX_NUMERIC, 2);
+
+          SIdx := SymFind(LastVar);
+          If SIdx < 0 Then
+            SIdx := VarAlloc(LastVar, TY_IDX_NUMERIC, 2);
+
+          (* Initialiser FIRST.var et LAST.var *)
+          SIdx := SymFind(FirstVar);
+          If SIdx >= 0 Then
+          Begin
+            EmitInstrAB('MOV', 'AX', '0');
+            VarStore(SIdx);
+          End;
+          SIdx := SymFind(LastVar);
+          If SIdx >= 0 Then
+          Begin
+            EmitInstrAB('MOV', 'AX', '0');
+            VarStore(SIdx);
+          End;
+        End;
+      End;
+    End;
+    ParserAdvance;
+  End;
+
+  (* Emettre le code de comparaison des cles BY *)
+  If DSByVarCount > 0 Then
+  Begin
+    EmitBlankLine;
+    EmitComment('--- Gestion FIRST./LAST. pour BY ---');
+    (* Sauvegarder la cle precedente *)
+    EmitInstrAB('MOV', 'AX', 'WORD PTR [_SAS_BYKEY]');
+    EmitInstrAB('MOV', 'WORD PTR [_SAS_BYKEY_PREV]', 'AX');
+
+    (* Charger la cle courante depuis la premiere variable BY *)
+    SIdx := SymFind(DSByVarList[0]);
+    If SIdx >= 0 Then
+    Begin
+      VarLoad(SIdx, GExprDummy);
+      ExprFlushToAX(GExprDummy);
+      EmitInstrAB('MOV', 'WORD PTR [_SAS_BYKEY]', 'AX');
+    End;
+
+    (* Comparer avec la cle precedente pour determiner FIRST/LAST *)
+    EmitInstrAB('MOV', 'BX', 'WORD PTR [_SAS_BYKEY_PREV]');
+    EmitInstrAB('CMP', 'AX', 'BX');
+    FirstVar := 'FIRST.' + DSByVarList[0];
+    SIdx := SymFind(FirstVar);
+    If SIdx >= 0 Then
+    Begin
+      VName := LabelGen;
+      EmitInstrAB('MOV', 'AX', '0');
+      EmitInstrA('JE', VName);
+      EmitInstrAB('MOV', 'AX', '1');
+      EmitLabel(VName);
+      VarStore(SIdx);
+    End;
+
+    (* LAST.var sera positionne au prochain tour quand FIRST change *)
+    EmitComment('LAST.var positionne par look-ahead (stub commentaire)');
+    LastVar := 'LAST.' + DSByVarList[0];
+    SIdx := SymFind(LastVar);
+    If SIdx >= 0 Then
+    Begin
+      EmitInstrAB('MOV', 'AX', '1');
+      VarStore(SIdx);
+      EmitComment('LAST.' + DSByVarList[0] + ' = 1 (sera corrige en runtime)');
+    End;
+  End;
+
+  (* Consommer ; *)
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseUpdateStmt : UPDATE master transaction ; ------------------- *)
+(* Met a jour un dataset maitre avec un dataset de transactions.          *)
+(* Les valeurs non manquantes du dataset transaction ecrasent le maitre.  *)
+Procedure ParseUpdateStmt;
+Var
+  DS1, DS2 : TString;
+Begin
+  EmitComment('UPDATE (TODO 23)');
+  DSHasUpdate := True;
+
+  DS1 := '';
+  DS2 := '';
+
+  (* Parser le dataset maitre *)
+  If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+  Begin
+    DS1 := StrUpperCase(CurToken.Val);
+    EmitComment('UPDATE master=' + DS1);
+    ParserAdvance;
+  End;
+
+  (* Parser le dataset transaction *)
+  If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+  Begin
+    DS2 := StrUpperCase(CurToken.Val);
+    EmitComment('UPDATE transaction=' + DS2);
+    ParserAdvance;
+  End;
+
+  (* Generer le code de mise a jour *)
+  If (DS1 <> '') And (DS2 <> '') Then
+  Begin
+    EmitComment('UPDATE : lire master ' + DS1 + ' puis appliquer ' + DS2);
+    (* Charger les variables du maitre, puis ecraser avec les *)
+    (* valeurs non manquantes du dataset transaction           *)
+    EmitInstrAB('MOV', 'AX', IntToStr(MISSING_VAL));
+    EmitComment('Si valeur transaction <> MISSING -> ecraser maitre');
+  End
+  Else
+    WarnMsg('UPDATE necessite deux datasets');
+
+  (* Consommer ; *)
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseModifyStmt : MODIFY dataset ; ------------------------------ *)
+(* Modification en place d un dataset existant.                            *)
+(* Les observations sont lues, modifiees, et reecrites dans le meme dataset *)
+Procedure ParseModifyStmt;
+Var
+  ModDS : TString;
+Begin
+  EmitComment('MODIFY (TODO 23)');
+  DSHasModify := True;
+
+  ModDS := '';
+  If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+  Begin
+    ModDS := StrUpperCase(CurToken.Val);
+    EmitComment('MODIFY dataset=' + ModDS);
+    DSSetName  := ModDS;
+    DSSetLabel := SAS_DS_PFX + ModDS;
+    DSHasSet   := True;  (* MODIFY implique lecture comme SET *)
+    ParserAdvance;
+  End
+  Else
+    WarnMsg('MODIFY necessite un nom de dataset');
+
+  (* Consommer ; *)
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+{ ============================================================
+  STUBS POUR TODO 24..25 (a implementer)
+  ============================================================ }
+
+Procedure ParseStmt;
+Var
+  KW    : TString;
+  SIdx  : Integer;
+  VName : TString;
+  AIdx  : Integer;
+  E     : TExprVal;
+Begin
+  (* Boucle principale : dispatch selon le type de token *)
+
+  (* --- Fin de fichier --- *)
+  If CurToken.Kind = TK_EOF Then Exit;
+
+  (* --- Point-virgule isole --- *)
+  If CurToken.Kind = TK_SEMICOLON Then
+  Begin
+    ParserAdvance;
+    Exit;
+  End;
+
+  (* --- Mot-cle SAS --- *)
+  If CurToken.Kind = TK_KEYWORD Then
+  Begin
+    KW := StrUpperCase(CurToken.Val);
+
+    (* TODO 12 : PUT *)
+    If KW = 'PUT' Then
+    Begin
+      ParserAdvance;
+      ParsePutStmt;
+      Exit;
+    End;
+
+    (* TODO 12 : INPUT *)
+    If KW = 'INPUT' Then
+    Begin
+      ParserAdvance;
+      ParseInputStmt;
+      Exit;
+    End;
+
+    (* TODO 12 : INFILE *)
+    If KW = 'INFILE' Then
+    Begin
+      ParserAdvance;
+      ParseInfileStmt;
+      Exit;
+    End;
+
+    (* TODO 12 : FILE *)
+    If KW = 'FILE' Then
+    Begin
+      ParserAdvance;
+      ParseFileStmt;
+      Exit;
+    End;
+
+    (* TODO 09 : RETAIN *)
+    If KW = 'RETAIN' Then
+    Begin
+      ParserAdvance;
+      ParseRetain;
+      Exit;
+    End;
+
+    (* TODO 09 : DROP *)
+    If KW = 'DROP' Then
+    Begin
+      ParserAdvance;
+      ParseDrop;
+      Exit;
+    End;
+
+    (* TODO 09 : KEEP *)
+    If KW = 'KEEP' Then
+    Begin
+      ParserAdvance;
+      ParseKeep;
+      Exit;
+    End;
+
+    (* TODO 09 : RENAME *)
+    If KW = 'RENAME' Then
+    Begin
+      ParserAdvance;
+      ParseRename;
+      Exit;
+    End;
+
+    (* TODO 09 : LENGTH *)
+    If KW = 'LENGTH' Then
+    Begin
+      ParserAdvance;
+      ParseLength;
+      Exit;
+    End;
+
+    (* TODO 09 : LABEL *)
+    If KW = 'LABEL' Then
+    Begin
+      ParserAdvance;
+      ParseLabelStmt;
+      Exit;
+    End;
+
+    (* TODO 15 : ARRAY *)
+    If KW = 'ARRAY' Then
+    Begin
+      ParserAdvance;
+      ParseArrayStmt;
+      Exit;
+    End;
+
+    (* TODO 16 : DATA (debut d un DATA step) *)
+    If KW = 'DATA' Then
+    Begin
+      ParserAdvance;
+      ParseDataStep;
+      Exit;
+    End;
+
+    (* TODO 16 : SET (lecture d un dataset) *)
+    If KW = 'SET' Then
+    Begin
+      ParserAdvance;
+      ParseSetStmt;
+      Exit;
+    End;
+
+    (* TODO 16 : OUTPUT (ecriture explicite d une observation) *)
+    If KW = 'OUTPUT' Then
+    Begin
+      ParserAdvance;
+      ParseOutputStmt;
+      Exit;
+    End;
+
+    (* TODO 16 : DELETE (ne pas ecrire l observation courante) *)
+    If KW = 'DELETE' Then
+    Begin
+      ParserAdvance;
+      ParseDeleteStmt;
+      Exit;
+    End;
+
+    (* TODO 16 : STOP (arreter le DATA step) *)
+    If KW = 'STOP' Then
+    Begin
+      ParserAdvance;
+      ParseStopStmt;
+      Exit;
+    End;
+
+    (* TODO 16 : ABORT (terminer avec erreur) *)
+    If KW = 'ABORT' Then
+    Begin
+      ParserAdvance;
+      ParseAbortStmt;
+      Exit;
+    End;
+
+    (* TODO 20 : FORMAT var1 fmt1. ; *)
+    If KW = 'FORMAT' Then
+    Begin
+      ParserAdvance;
+      ParseFormatStmt;
+      Exit;
+    End;
+
+    (* RUN / QUIT : consommer le reste de l instruction *)
+    If (KW = 'RUN') Or
+       (KW = 'QUIT') Or (KW = 'TITLE') Or (KW = 'FOOTNOTE') Or
+       (KW = 'OPTIONS') Or (KW = 'CARDS') Or (KW = 'DATALINES') Or
+       (KW = 'RETURN') Or
+       (KW = 'INFORMAT') Or (KW = 'ATTRIB') Or (KW = 'WHERE') Then
+    Begin
+      EmitComment(KW);
+      ParserAdvance;
+      While (CurToken.Kind <> TK_SEMICOLON) And
+            (CurToken.Kind <> TK_EOF) Do
+        ParserAdvance;
+      If CurToken.Kind = TK_SEMICOLON Then
+        ParserAdvance;
+      Exit;
+    End;
+
+    (* TODO 23 : MERGE hors DATA step -> commentaire *)
+    If KW = 'MERGE' Then
+    Begin
+      ParserAdvance;
+      ParseMergeStmt;
+      Exit;
+    End;
+
+    (* TODO 23 : BY hors DATA step -> traiter comme PROC BY *)
+    If KW = 'BY' Then
+    Begin
+      ParserAdvance;
+      ParseDataByStmt;
+      Exit;
+    End;
+
+    (* TODO 23 : UPDATE hors DATA step *)
+    If KW = 'UPDATE' Then
+    Begin
+      ParserAdvance;
+      ParseUpdateStmt;
+      Exit;
+    End;
+
+    (* TODO 23 : MODIFY hors DATA step *)
+    If KW = 'MODIFY' Then
+    Begin
+      ParserAdvance;
+      ParseModifyStmt;
+      Exit;
+    End;
+
+    (* TODO 17 : PROC (debut d un PROC step) *)
+    If KW = 'PROC' Then
+    Begin
+      ParserAdvance;
+      ParseProcStep;
+      Exit;
+    End;
+
+    (* TODO 13 : IF *)
+    If KW = 'IF' Then
+    Begin
+      ParserAdvance;
+      ParseIfStmt;
+      Exit;
+    End;
+
+    (* TODO 13 : SELECT *)
+    If KW = 'SELECT' Then
+    Begin
+      ParserAdvance;
+      ParseSelectStmt;
+      Exit;
+    End;
+
+    (* TODO 14 : DO (toutes formes) *)
+    If KW = 'DO' Then
+    Begin
+      ParserAdvance;  (* consommer DO *)
+      ParseDoStmt;
+      Exit;
+    End;
+
+    (* TODO 14 : LEAVE (sortir de la boucle DO courante) *)
+    If KW = 'LEAVE' Then
+    Begin
+      ParserAdvance;  (* consommer LEAVE *)
+      EmitComment('LEAVE');
+      If LoopTop > 0 Then
+        EmitInstrA('JMP', LoopBreakLbl[LoopTop - 1])
+      Else
+        CompileError('LEAVE en dehors d une boucle DO');
+      If CurToken.Kind = TK_SEMICOLON Then
+        ParserAdvance;
+      Exit;
+    End;
+
+    (* TODO 14 : CONTINUE (iteration suivante de la boucle DO) *)
+    If KW = 'CONTINUE' Then
+    Begin
+      ParserAdvance;  (* consommer CONTINUE *)
+      EmitComment('CONTINUE');
+      If LoopTop > 0 Then
+        EmitInstrA('JMP', LoopContLbl[LoopTop - 1])
+      Else
+        CompileError('CONTINUE en dehors d une boucle DO');
+      If CurToken.Kind = TK_SEMICOLON Then
+        ParserAdvance;
+      Exit;
+    End;
+
+    (* TODO 14 : GOTO label (saut inconditionnel) *)
+    If KW = 'GOTO' Then
+    Begin
+      ParserAdvance;  (* consommer GOTO *)
+      EmitComment('GOTO');
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        EmitInstrA('JMP', SAS_LBL_PFX + StrUpperCase(CurToken.Val));
+        ParserAdvance;
+      End
+      Else
+        CompileError('etiquette attendue apres GOTO');
+      If CurToken.Kind = TK_SEMICOLON Then
+        ParserAdvance;
+      Exit;
+    End;
+
+    (* TODO 14+ : autres mots-cles non geres *)
+    ParserAdvance;
+    While (CurToken.Kind <> TK_SEMICOLON) And
+          (CurToken.Kind <> TK_EOF) Do
+      ParserAdvance;
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+    Exit;
+  End;
+
+  (* --- Directive macro % (TODO 21) --- *)
+  If CurToken.Kind = TK_PERCENT Then
+  Begin
+    HandlePercentDirective;
+    Exit;
+  End;
+
+  (* --- Macro-variable & en tant que statement (TODO 21) --- *)
+  If CurToken.Kind = TK_AMPERSAND Then
+  Begin
+    EmitComment('&' + CurToken.Val + ' (macro-variable en statement)');
+    ParserAdvance;
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+    Exit;
+  End;
+
+  (* --- Identificateur : affectation, label GOTO, ou expression --- *)
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    VName := StrUpperCase(CurToken.Val);
+    ParserAdvance;
+
+    (* Label GOTO : ident suivi de : (ponctuation) *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+    Begin
+      EmitLabel(SAS_LBL_PFX + VName);
+      ParserAdvance;  (* consommer : *)
+      Exit;
+    End;
+
+    (* TODO 15 : Affectation tableau : ident{indice} = expr ; *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val[1] = CH_LBRACE) Then
+    Begin
+      ParserAdvance;  (* consommer { *)
+      AIdx := ArrayFind(VName);
+
+      (* Parser l indice *)
+      ParseExpr(E);
+      ExprFlushToAX(E);
+
+      (* Consommer } *)
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val[1] = CH_RBRACE) Then
+        ParserAdvance
+      Else
+        CompileError('"}" manquant apres indice de tableau');
+
+      (* Consommer = *)
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+        ParserAdvance
+      Else
+        CompileError('"=" attendu dans l affectation tableau');
+
+      (* Calculer l adresse cible et sauver sur la pile *)
+      EmitComment('affectation ' + VName + '{i} = ...');
+      EmitInstrA('DEC', 'AX');  (* base 1 -> base 0 *)
+      If AIdx >= 0 Then
+      Begin
+        If ArrayTab[AIdx].IsChar Then
+        Begin
+          EmitInstrAB('MOV', 'BX', IntToStr(ArrayTab[AIdx].ElemLen));
+          EmitInstrA('IMUL', 'BX');
+        End
+        Else
+          EmitInstrAB('SHL', 'AX', '1');
+        EmitInstrAB('ADD', 'AX', IntToStr(ArrayTab[AIdx].BaseOffset));
+      End
+      Else
+      Begin
+        SIdx := SymFind(VName);
+        If SIdx < 0 Then
+          SIdx := VarAlloc(VName, TY_IDX_NUMERIC, 0);
+        EmitInstrAB('SHL', 'AX', '1');
+        EmitInstrAB('ADD', 'AX', IntToStr(SymTab[SIdx].Offset));
+      End;
+      EmitInstrA('PUSH', 'AX');  (* sauver l offset calcule *)
+
+      (* Parser la valeur *)
+      ParseExpr(E);
+      ExprFlushToAX(E);
+
+      (* Stocker la valeur *)
+      EmitInstrA('POP', 'BX');   (* recuperer l offset *)
+      If (AIdx >= 0) And ArrayTab[AIdx].IsChar Then
+      Begin
+        (* Copie de chaine : AX = source, BX = offset dest *)
+        EmitInstrAB('MOV', 'DI', 'BX');
+        EmitInstrAB('ADD', 'DI', 'OFFSET _SAS_PDV');
+        EmitInstrAB('MOV', 'CX', IntToStr(ArrayTab[AIdx].ElemLen));
+        EmitInstrA('CALL', SAS_RT_PFX + 'STRCPY');
+      End
+      Else
+        EmitInstrAB('MOV', 'WORD PTR [_SAS_PDV + BX]', 'AX');
+
+      (* Consommer ; *)
+      If CurToken.Kind = TK_SEMICOLON Then
+        ParserAdvance;
+      Exit;
+    End;
+
+    (* Affectation : ident = expr ; *)
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+    Begin
+      SIdx := SymFind(VName);
+      If SIdx < 0 Then
+        SIdx := VarAlloc(VName, TY_IDX_NUMERIC, 0);
+      ParseAssign(SIdx);
+      Exit;
+    End;
+
+    (* Sinon, consommer le reste *)
+    While (CurToken.Kind <> TK_SEMICOLON) And
+          (CurToken.Kind <> TK_EOF) Do
+      ParserAdvance;
+    If CurToken.Kind = TK_SEMICOLON Then
+      ParserAdvance;
+    Exit;
+  End;
+
+  (* --- Autre : consommer pour eviter boucle infinie --- *)
+  ParserAdvance;
+End;
+
+Procedure ParserAdvance;
+Begin
+  LexNextToken;
+  If Opts.DebugMode Then
+    PrintToken(CurToken);
+End;
+
+Procedure TypeInit;
+Var
+  I : Integer;
+Begin
+  TypeCount := 0;
+  For I := 0 To MAX_TYPE - 1 Do
+  Begin
+    TypeTab[I].Name := '';
+    TypeTab[I].Kind := TYK_UNKNOWN;
+    TypeTab[I].Size := 0;
+  End;
+  (* Types primitifs SAS *)
+  TypeTab[TY_IDX_NUMERIC].Name   := 'NUMERIC';
+  TypeTab[TY_IDX_NUMERIC].Kind   := TYK_NUMERIC;
+  TypeTab[TY_IDX_NUMERIC].Size   := 2;
+  TypeTab[TY_IDX_CHARACTER].Name := 'CHARACTER';
+  TypeTab[TY_IDX_CHARACTER].Kind := TYK_CHARACTER;
+  TypeTab[TY_IDX_CHARACTER].Size := 8;  (* longueur par defaut en SAS *)
+  TypeTab[TY_IDX_DATE].Name      := 'DATE';
+  TypeTab[TY_IDX_DATE].Kind      := TYK_DATE;
+  TypeTab[TY_IDX_DATE].Size      := 2;
+  TypeTab[TY_IDX_TIME].Name      := 'TIME';
+  TypeTab[TY_IDX_TIME].Kind      := TYK_TIME;
+  TypeTab[TY_IDX_TIME].Size      := 2;
+  TypeTab[TY_IDX_DATETIME].Name  := 'DATETIME';
+  TypeTab[TY_IDX_DATETIME].Kind  := TYK_DATETIME;
+  TypeTab[TY_IDX_DATETIME].Size  := 2;
+  TypeCount := TY_PRIM_COUNT;
+End;
+
+Procedure SymInit;
+Begin
+  SymCount := 0;
+  ScopeTop := 0;
+  CurScope := 0;
+  (* Variables automatiques SAS : creees dans chaque DATA step *)
+  (* _N_      : compteur d observation (1, 2, 3, ...)          *)
+  (* _ERROR_  : indicateur d erreur (0 = pas d erreur)         *)
+  (* _INFILE_ : nom du fichier en cours de lecture              *)
+  (* _LAST_   : derniere observation lue                        *)
+  SymAdd('_N_',      SC_VAR, TY_IDX_NUMERIC, 0);
+  SymAdd('_ERROR_',  SC_VAR, TY_IDX_NUMERIC, 0);
+  SymAdd('_INFILE_', SC_VAR, TY_IDX_CHARACTER, 0);
+  SymAdd('_LAST_',   SC_VAR, TY_IDX_NUMERIC, 0);
+End;
+
+{ ============================================================
+  PROCEDURE RUN : PIPELINE COMPLET
+  ============================================================ }
+
+Procedure Run;
+Begin
+  GlobalInit;
+  TypeInit;
+  SymInit;
+  DataInit;
+  FmtInit;
+  MacroVarInit;
+  EmitOpen;
+  If ErrorCount > 0 Then
+  Begin
+    Cleanup;
+    Halt(EXIT_ERROR);
+  End;
+
+  EmitHeader;
+  LexInit;
+
+  (* Lire le premier token *)
+  ParserAdvance;
+
+  (* Boucle principale de compilation *)
+  While CurToken.Kind <> TK_EOF Do
+    ParseStmt;
+
+  LexClose;
+  EmitClose;
+
+  If Opts.Verbose Then
+  Begin
+    WriteLn('Compilation terminee : ', Opts.SrcFile, ' -> ', Opts.OutFile);
+    WriteLn('  Lignes         : ', TotalLines);
+    WriteLn('  Symboles       : ', TotalSyms);
+    WriteLn('  Erreurs        : ', ErrorCount);
+    WriteLn('  Avertissements : ', WarnCount);
+  End;
+
+  If ErrorCount > 0 Then
+    Halt(EXIT_ERROR)
+  Else
+    Halt(EXIT_OK);
+End;
+
+{ ============================================================
+  PROGRAMME PRINCIPAL
+  ============================================================ }
+Begin
+  If (ParamCount >= 1) And
+     ((ParamStr(1) = '-h') Or (ParamStr(1) = '--help') Or
+      (ParamStr(1) = '/?') Or (ParamStr(1) = '/h') Or
+      (ParamStr(1) = '/H')) Then
+  Begin
+    ShowHelp;
+    Halt(0);
+  End;
+  ParseArgs;
+  If Opts.Verbose Then ShowBanner;
+  Run;
+End.

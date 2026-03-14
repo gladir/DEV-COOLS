@@ -1,0 +1,741 @@
+==============================================================================
+    FORMAT DE FICHIER PPU - Free Pascal Unit (Free Pascal Compiler)
+==============================================================================
+
+Document d'analyse du format des fichiers d'unite precompilee Free Pascal
+(*.PPU) generees par le compilateur Free Pascal (FPC).
+
+Les informations sont issues du code source ouvert de Free Pascal, notamment
+les fichiers ppu.pas et fppu.pas du compilateur FPC, ainsi que de la
+documentation officielle Free Pascal.
+
+Date:       Mars 2026
+
+==============================================================================
+1. VUE D'ENSEMBLE DE LA STRUCTURE DU FICHIER
+==============================================================================
+
+Un fichier PPU est compose d'un en-tete fixe suivi d'un flux d'entrees
+taguees organisees en sections. Contrairement aux formats TPU et QPU qui
+utilisent des structures de taille fixe, le format PPU est base sur un
+systeme de blocs et d'entrees dont chaque element est identifie par un
+tag (une valeur ordinale).
+
+Structure generale :
+
+  +---------------------------+  Offset 0
+  |   EN-TETE (PPU Header)   |  Taille: variable (environ 40-64 octets selon version)
+  +---------------------------+
+  |   BLOC D'INTERFACE        |
+  |   ibstartinterface        |  Tag de debut de l'interface
+  |   - unites importees      |  ibloadunit (une entree par unite)
+  |   - definitions de types  |  iborddef, ibpointerdef, ibarraydef...
+  |   - symboles exportes     |  ibstartdefs, ibenddefs, ibstartsyms, ibendsyms
+  |   ibendinterface          |  Tag de fin de l'interface
+  +---------------------------+
+  |   BLOC D'IMPLEMENTATION   |
+  |   ibstartimplementation   |  Tag de debut d'implementation
+  |   - symboles prives       |  (definitions et symboles non exportes)
+  |   - code (procedures)     |  ibprocdef et sections de code
+  |   ibendimplementation     |  Tag de fin d'implementation
+  +---------------------------+
+  |   BLOC DE CODE            |  (optionnel, selon la version et les options)
+  |   ibexportedprocsyms      |  Symboles de procedures exportees
+  |   ibcodesegment           |  Code machine relogeable
+  +---------------------------+
+  |   BLOC FINAL              |
+  |   ibendfpu / ibend        |  Marqueur de fin du fichier PPU
+  +---------------------------+  Fin du fichier
+
+Note : l'ordre exact des blocs et leur presence depend de la version du
+compilateur FPC et des options de compilation (smartlinking, etc.).
+
+==============================================================================
+2. SIGNATURE ET VERSIONS
+==============================================================================
+
+2.1 SIGNATURE (4 PREMIERS OCTETS)
+-----------------------------------
+
+Offset  Taille  Champ       Valeur
+------  ------  ----------  ------------------------------------------------
+0x00    1       Magic[0]    0x50 = 'P'
+0x01    1       Magic[1]    0x50 = 'P'
+0x02    1       Magic[2]    0x55 = 'U'
+0x03    3       Version     Numero de version sur 3 octets (chaine ASCII)
+
+Les trois premiers octets "PPU" (0x50 0x50 0x55) sont communs a toutes les
+versions. Les octets suivants contiennent le numero de version sous forme
+de chaine ASCII decimale sur 3 caracteres (ex: "069", "200", "220").
+
+2.2 TABLE DES VERSIONS PPU PAR VERSION FPC
+-------------------------------------------
+
+Le numero de version PPU est encode en 3 caracteres ASCII representant un
+entier decimal. Chaque version majeure de FPC utilise un nouveau numero
+de version PPU, rendant les fichiers incompatibles entre versions.
+
+  Version PPU  Chaine  Version Free Pascal   Remarque
+  -----------  ------  --------------------  ----------------------------------
+  ~30-50       "030"   FPC 1.0.x             Premieres versions, format instable
+  ~70-80       "070"   FPC 2.0.x             Stabilisation du format
+  ~90-100      "090"   FPC 2.2.x             Support ameliore des generiques
+  ~120-130     "120"   FPC 2.4.x             Nouveaux types de definitions
+  ~150-160     "150"   FPC 2.6.x             Support LLVM partiel
+  ~180-195     "180"   FPC 3.0.x             Support ARM 64 bits
+  ~200-210     "200"   FPC 3.2.x             Version stable courante
+  ~220+        "220"   FPC 3.3.1 (trunk)     Version de developpement
+
+Note : Les fichiers PPU NE sont PAS compatibles entre versions de FPC. Un
+fichier PPU compile avec FPC 3.0 ne peut pas etre utilise par FPC 3.2 ou
+FPC 3.3. Le compilateur refuse explicitement de charger des PPU d'une
+version differente et recompile les unites necessaires.
+
+Contrairement au TPU (1 octet de version) et au QPU (2 octets de version
+implicites dans le champ 0x04), le PPU encode la version en 3 caracteres
+ASCII directement lisibles.
+
+2.3 EXEMPLE DE DEBUT DE FICHIER PPU
+-------------------------------------
+
+Pour une unite compilee avec FPC 3.2.x (version PPU "200") :
+
+  Offset  Hex         ASCII    Description
+  ------  ----------  -------  ----------------------------------------
+  0x00    50 50 55    PPU      Signature magique
+  0x03    32 30 30    200      Numero de version PPU (ASCII "200")
+  0x06    ...         ...      En-tete suite (CPU, OS, flags, CRC...)
+
+==============================================================================
+3. EN-TETE DU FICHIER (HEADER)
+==============================================================================
+
+Apres les 3 octets de signature et les 3 octets de version, l'en-tete PPU
+contient les informations de configuration de compilation. La structure
+exacte varie selon la version PPU, mais les champs principaux sont :
+
+3.1 STRUCTURE DE L'EN-TETE (VERSIONS RECENTES, PPU >= 200)
+------------------------------------------------------------
+
+Offset  Taille  Champ             Description
+------  ------  ----------------  -----------------------------------------------
+0x00    3       Signature         "PPU" (0x50 0x50 0x55)
+0x03    3       Version           Numero de version PPU (ASCII, ex: "200")
+0x06    2       Compiler          Version du compilateur FPC (Word, little-endian)
+                                  Encode majeur*100 + mineur (ex: 302 = 3.0.2)
+0x08    2       CPU               Identifiant du CPU cible (Word, little-endian)
+                                  (voir section 9)
+0x0A    2       TargetOS          Identifiant du systeme d'exploitation cible
+                                  (Word, little-endian) (voir section 9)
+0x0C    4       Flags             Drapeaux de l'unite (LongWord, little-endian)
+                                  (voir section 8)
+0x10    4       FileSize          Taille totale du fichier PPU en octets
+                                  (LongWord, little-endian)
+0x14    4       InterfaceCRC      CRC32 de la section d'interface
+                                  (LongWord, little-endian)
+                                  Utilise pour verifier la compatibilite des unites
+0x18    4       IndirectCRC       CRC32 indirect (CRC des CRC des unites importees)
+                                  (LongWord, little-endian)
+0x1C    2       NLibs             Nombre de fichiers de librairies references
+                                  (Word, little-endian)
+0x1E    2       NRes              Nombre de fichiers de ressources
+                                  (Word, little-endian)
+...     ...     ...               (champs additionnels selon la version)
+
+3.2 DIAGRAMME DE L'EN-TETE
+----------------------------
+
+  Octet 0         Octet 5         Octet 11        Octet 15
+  +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+  | P | P | U |  Version PPU  |Compiler|  CPU  |   OS  |   Flags   |
+  +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+  Octet 16                        Octet 23
+  +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+  |    FileSize   |  Interface CRC    |  Indirect CRC  |NLib|NRes  |
+  +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+
+3.3 CHECKSUMS CRC32
+--------------------
+
+Le format PPU utilise deux valeurs CRC32 dans l'en-tete :
+
+  InterfaceCRC :
+    CRC32 calcule sur toutes les definitions et symboles de la section
+    d'interface. Quand une unite A importe une unite B, le compilateur
+    verifie que l'InterfaceCRC de B correspond a celui memorise dans A.
+    Si les CRC different, l'unite A doit etre recompilee.
+
+  IndirectCRC :
+    CRC32 calcule a partir des InterfaceCRC de toutes les unites importees
+    directement. Permet de detecter des changements en cascade dans la
+    hierarchie des dependances.
+
+Ces CRC32 remplacent le simple hash 16 bits utilise par TPU et QPU, offrant
+une detection de corruption bien plus fiable.
+
+==============================================================================
+4. SYSTEME DE BLOCS ET D'ENTREES
+==============================================================================
+
+Le format PPU est fondamentalement different du TPU et du QPU. Au lieu de
+sections a offset fixe, il utilise un flux d'entrees (entries) identifiees
+par des tags octets. Chaque entree est precedee de son tag et de sa taille.
+
+4.1 FORMAT D'UNE ENTREE
+------------------------
+
+Chaque entree dans le flux PPU a la structure suivante :
+
+  +-------------+
+  | Tag (1 o)   |  Identifiant du type d'entree (byte)
+  +-------------+
+  | Taille (4 o)|  Taille des donnees suivantes en octets (LongWord LE)
+  +-------------+
+  | Donnees     |  Contenu specifique au type d'entree
+  | (Taille o)  |
+  +-------------+
+
+Certains tags sont des marqueurs de blocs sans donnees (taille = 0),
+utilises pour delimiter les sections (debut/fin d'interface, etc.).
+
+4.2 TAGS DE CONTROLE DE STRUCTURE
+-----------------------------------
+
+Les tags suivants controlent la structure generale du fichier PPU :
+
+  Tag   Nom                    Description
+  ----  ---------------------  -----------------------------------------------
+  0x00  ibend                  Fin du fichier PPU (dernier tag)
+  0x01  ibstartinterface       Debut de la section d'interface
+  0x02  ibendinterface         Fin de la section d'interface
+  0x03  ibstartimplementation  Debut de la section d'implementation
+  0x04  ibendimplementation    Fin de la section d'implementation
+  0x05  ibstartdefs            Debut d'un bloc de definitions de types
+  0x06  ibenddefs              Fin d'un bloc de definitions de types
+  0x07  ibstartsyms            Debut d'un bloc de symboles
+  0x08  ibendsyms              Fin d'un bloc de symboles
+  0x09  ibendmodule            Fin du module (similaire ibend)
+  0x0A  ibexportedprocsyms     Debut des symboles de procedures exportees
+  0x0B  ibloadunit             Information sur une unite importee (uses)
+  0x0C  ibinitroutineinfo      Information sur la routine d'initialisation
+  0x0D  ibfinalizationroutine  Information sur la routine de finalisation
+
+4.3 TAGS DE DEFINITIONS DE TYPES
+----------------------------------
+
+Ces tags identifient les differents types de definitions dans la section
+de definitions :
+
+  Tag   Nom               Description
+  ----  ----------------  -----------------------------------------------
+  0x10  iborddef          Definition d'un type ordinal (Integer, Byte, etc.)
+  0x11  ibpointerdef      Definition d'un type pointeur (^T)
+  0x12  ibprocdef         Definition d'une procedure ou fonction
+  0x13  ibshortstringdef  Definition d'un type ShortString
+  0x14  ibarraydef        Definition d'un tableau
+  0x15  ibrecorddef       Definition d'un record (enregistrement)
+  0x16  ibfiledef         Definition d'un type fichier (File of T)
+  0x17  ibformaldef       Definition d'un type formel (Pointer non type)
+  0x18  ibobjectdef       Definition d'un objet ou d'une classe
+  0x19  ibenumdef         Definition d'un type enumere
+  0x1A  ibsetdef          Definition d'un ensemble (set)
+  0x1B  ibprocvardef      Definition d'une variable procedure
+  0x1C  ibfloatdef        Definition d'un type flottant (Real, Double, etc.)
+  0x1D  ibclassrefdef     Definition d'une reference de classe (class of T)
+  0x1E  ibstringdef       Definition d'un type chaine (AnsiString, etc.)
+  0x1F  ibvariantdef      Definition d'un type variant
+  0x20  ibundefineddef    Definition non resolue (reference externe)
+  0x21  ibwidechardef     Definition d'un caractere large (WideChar)
+  0x22  ibwidestringdef   Definition d'une chaine large (WideString)
+  0x23  ibinterfacedef    Definition d'une interface COM/CORBA
+  0x24  ibdynarraydef     Definition d'un tableau dynamique
+  0x25  ibancestordef     Reference a un ancetre (heritage)
+
+4.4 TAGS DE SYMBOLES
+---------------------
+
+Ces tags identifient les differents types de symboles :
+
+  Tag   Nom                 Description
+  ----  ------------------  -----------------------------------------------
+  0x40  ibtypesym           Symbole de type (declaration type)
+  0x41  ibvarsym            Symbole de variable (declaration var)
+  0x42  ibconstsym          Symbole de constante (declaration const)
+  0x43  ibenumsym           Symbole d'une valeur enumeree
+  0x44  ibtypedconstsym     Symbole de constante typee
+  0x45  ibabssym            Symbole de variable absolue (AT adresse)
+  0x46  ibprocsym           Symbole de procedure ou fonction
+  0x47  ibsyssym            Symbole systeme (interne au compilateur)
+  0x48  iblabelsym          Symbole d'etiquette (label)
+  0x49  ibunitsym           Symbole d'unite (reference a une unite)
+  0x4A  ibprogramsym        Symbole de programme principal
+  0x4B  ibthreadvarinit     Symbole de variable de thread (threadvar)
+
+==============================================================================
+5. SECTION INTERFACE
+==============================================================================
+
+La section d'interface contient toutes les declarations publiques de l'unite,
+c'est-a-dire celles qui sont visibles pour les unites qui importent l'unite.
+
+5.1 STRUCTURE DE LA SECTION D'INTERFACE
+-----------------------------------------
+
+La section commence par le tag ibstartinterface (0x01) et se termine par
+ibendinterface (0x02). Entre ces deux tags :
+
+  ibstartinterface
+    ibloadunit          (une entree par unite dans la clause uses)
+    ibloadunit
+    ...
+    ibstartdefs         (debut du bloc de definitions)
+      iborddef          (definitions de types ordinaux)
+      ibpointerdef      (definitions de pointeurs)
+      ibarraydef        (definitions de tableaux)
+      ibrecorddef       (definitions de records)
+      ibobjectdef       (definitions d'objets/classes)
+      ibprocdef         (definitions de procedures/fonctions)
+      ...
+    ibenddefs           (fin du bloc de definitions)
+    ibstartsyms         (debut du bloc de symboles)
+      ibtypesym         (declarations de types exportees)
+      ibvarsym          (declarations de variables exportees)
+      ibconstsym        (declarations de constantes exportees)
+      ibprocsym         (declarations de procedures/fonctions exportees)
+      ...
+    ibendsyms           (fin du bloc de symboles)
+  ibendinterface
+
+5.2 ENTREE ibloadunit (UNITE IMPORTEE)
+----------------------------------------
+
+Chaque entree ibloadunit decrit une unite referencee dans la clause uses :
+
+  Champ             Taille  Description
+  ----------------  ------  -----------------------------------------------
+  NomUnite          Varie   Chaine Pascal avec longueur prefixee (ShortString)
+  InterfaceCRC      4       CRC32 de l'interface de l'unite importee
+  IndirectCRC       4       CRC32 indirect de l'unite importee
+
+Lors du chargement d'une unite, le compilateur verifie que les CRC stockes
+dans le PPU correspondent aux CRC actuels des PPU importes. Si un CRC
+differe, la recompilation est necessaire.
+
+5.3 DEFINITIONS DE TYPES
+--------------------------
+
+Chaque definition de type est stockee avec son tag specifique. Voici quelques
+exemples de structures internes :
+
+  Definition ordinale (iborddef) :
+    - Type de base (Integer, Boolean, Char, etc.) : 1 octet
+    - Valeur minimale : 8 octets (Int64)
+    - Valeur maximale : 8 octets (Int64)
+
+  Definition de tableau (ibarraydef) :
+    - Reference a l'index def : reference de definition
+    - Reference au type element : reference de definition
+    - Drapeaux (dynamique, packed, etc.) : 1-4 octets
+
+  Definition de record (ibrecorddef) :
+    - Taille du record : LongWord
+    - Alignement : 1 octet
+    - Nombre de champs : Word
+    - Liste des champs (nom + type)
+
+5.4 TABLE DES SYMBOLES D'INTERFACE
+-------------------------------------
+
+La table des symboles exporte les identifiants visibles de l'unite :
+
+  Pour chaque symbole (ibprocsym, ibvarsym, etc.) :
+    - Nom du symbole (ShortString)
+    - Reference a la definition du type
+    - Drapeaux de visibilite (public, published, protected, private)
+    - Informations supplementaires selon le type
+
+==============================================================================
+6. SECTION IMPLEMENTATION
+==============================================================================
+
+La section d'implementation contient les declarations privees et le code
+de l'unite. Elle commence par ibstartimplementation (0x03) et se termine
+par ibendimplementation (0x04).
+
+6.1 SYMBOLES PRIVES
+--------------------
+
+Les symboles declares dans la section implementation mais non exportes
+sont stockes de la meme facon que les symboles d'interface, mais ils ne
+sont pas visibles aux unites qui importent l'unite.
+
+6.2 CODE DE PROCEDURES
+-----------------------
+
+Le code des procedures et fonctions est reference via des entrees ibprocdef
+avec des informations de code :
+
+  - Offset du code dans la section de code
+  - Taille du code
+  - Table de relocation locale
+
+6.3 INFORMATIONS D'INITIALISATION ET DE FINALISATION
+------------------------------------------------------
+
+Si l'unite contient une section initialization ou finalization (drapeaux
+uf_init et uf_finalize dans l'en-tete), les entrees correspondantes
+indiquent les adresses des routines :
+
+  ibinitroutineinfo  : adresse de la routine d'initialisation
+  ibfinalizationroutine : adresse de la routine de finalisation
+
+==============================================================================
+7. DIFFERENCES MAJEURES AVEC TPU ET QPU
+==============================================================================
+
+Le format PPU se distingue fondamentalement des formats TPU (Turbo Pascal)
+et QPU (Quick Pascal) sur plusieurs points critiques :
+
+7.1 PORTEE MULTI-PLATEFORME
+-----------------------------
+
+  TPU/QPU : Uniquement pour 8086/8088 en mode reel 16 bits (DOS uniquement).
+            Architecture ciblee fixe (x86 16 bits).
+
+  PPU     : Supporte de nombreuses architectures CPU :
+            - i386, x86_64 (32 et 64 bits)
+            - ARM (32 bits), AArch64 (64 bits)
+            - PowerPC, PowerPC64
+            - MIPS, MIPS64
+            - SPARC, SPARC64
+            - RISC-V (32 et 64 bits)
+            - AVR (microcontroleurs)
+            Et de nombreux systemes d'exploitation (voir section 9).
+
+7.2 SYSTEME D'ENTREES TAGUEES VS STRUCTURES FIXES
+---------------------------------------------------
+
+  TPU/QPU : Sections a offsets fixes dans l'en-tete, records de taille
+            connue a l'avance. Extension du format difficile.
+
+  PPU     : Flux d'entrees taguees avec longueur explicite. Permet
+            d'ajouter facilement de nouveaux types d'entrees sans
+            casser la compatibilite avec les outils existants qui
+            peuvent simplement sauter les entrees inconnues.
+
+7.3 TYPES DE DONNEES AVANCES
+------------------------------
+
+  TPU/QPU : Types de base Pascal (Integer, Real, Char, String, Set, Array,
+            Record, File, Pointer, Object).
+
+  PPU     : Tous les types ci-dessus plus :
+            - Classes (ibobjectdef avec flag de classe)
+            - Interfaces COM et CORBA (ibinterfacedef)
+            - Tableaux dynamiques (ibarraydef avec flag dynamique)
+            - AnsiString, WideString, UnicodeString (ibstringdef)
+            - Variants (ibvariantdef)
+            - Generiques (templates)
+            - Helper types (class helpers)
+            - Enumerations avec valeurs explicites (ibenumdef)
+
+7.4 CHECKSUMS DE VERIFICATION
+-------------------------------
+
+  TPU/QPU : Hash 16 bits simple dans l'en-tete QPU. TPU n'a pas
+            de checksum d'interface explicitement expose.
+
+  PPU     : Double CRC32 (InterfaceCRC + IndirectCRC) pour une
+            detection fiable des changements dans les dependances.
+            Recompilation automatique si un CRC differe.
+
+7.5 ORDRE DES OCTETS
+---------------------
+
+  TPU/QPU : Uniquement little-endian (Intel x86 DOS).
+
+  PPU     : Peut etre little-endian OU big-endian selon la cible
+            (flag uf_big_endian dans les drapeaux de l'en-tete).
+            Les PowerPC, SPARC, et certains ARM utilisent le big-endian.
+
+7.6 TABLEAU COMPARATIF
+-----------------------
+
+  Aspect                TPU (Borland)     QPU (Microsoft)  PPU (Free Pascal)
+  --------------------  ----------------  ---------------  ------------------
+  Signature             "TPU" + 1 octet   "MSQP" (4 o)    "PPU" + 3 ch. ver.
+  Version               1 octet ASCII     Implicite        3 chiffres ASCII
+  Taille header         64-96 octets      Variable         ~40 octets+
+  Architecture cible    x86 16 bits       x86 16 bits      Multiple (16+)
+  Bitness               16 bits           16 bits          16/32/64 bits
+  Endian                Little-endian     Little-endian    LE ou BE
+  Sections              Offsets fixes     Offsets fixes    Entrees taguees
+  Checksum              Aucun (explicite) Hash 16 bits     CRC32 x2
+  Types supports        Pascal classique  Pascal classique Classes/Interfaces
+  Generiques            Non              Non              Oui (FPC 2.4+)
+  Plateforme            DOS seulement     DOS seulement    Multi-OS
+
+==============================================================================
+8. CONSTANTES DE FLAGS (DRAPEAUX)
+==============================================================================
+
+Le champ Flags de l'en-tete PPU (4 octets a l'offset 0x0C) contient des
+drapeaux de bits decrivant les caracteristiques de l'unite :
+
+8.1 FLAGS PRINCIPAUX
+---------------------
+
+  Constante               Valeur hex  Description
+  ----------------------  ----------  -----------------------------------------------
+  uf_init                 $00000001   L'unite possede une section initialization
+  uf_finalize             $00000002   L'unite possede une section finalization
+  uf_big_endian           $00000004   Fichier en format big-endian
+  uf_has_resourcestrings  $00000008   L'unite contient des chaines de ressources
+                                      (resourcestring)
+  uf_little_endian        $00000010   Fichier en format little-endian (explicite)
+  uf_release              $00000020   Unite compilee en mode release (optimisee)
+  uf_smart_linked         $00000040   Unite compilee pour le smartlinking
+  uf_static_linked        $00000080   Liaison statique uniquement
+  uf_shared_linked        $00000100   Liaison dynamique (shared library)
+  uf_local_browser        $00000200   Informations de navigation locale incluses
+  uf_no_link              $00000400   Pas de liaison (interface only)
+  uf_has_debuginfo        $00000800   Contient des informations de debogage
+  uf_threadvars           $00001000   Contient des variables de thread (threadvar)
+  uf_fpu_emulation        $00002000   Emulation FPU requise
+  uf_has_import_lib       $00004000   A une bibliotheque d'importation
+  uf_wide_interface       $00008000   Interface utilise WideChar/WideString
+  uf_local_symtable       $00010000   Table de symboles locale incluse
+  uf_uses_variants        $00020000   Utilise des variants
+  uf_has_resourcestrings2 $00040000   (etendu, selon version PPU)
+  uf_has_exports          $00080000   L'unite exporte des symboles (DLL)
+
+8.2 EXEMPLES DE VALEURS DE FLAGS
+----------------------------------
+
+  Flags = $00000001 : Unite avec initialization seulement
+  Flags = $00000003 : Unite avec initialization ET finalization
+  Flags = $00000044 : Unite compilee pour smartlinking, en little-endian
+  Flags = $00000806 : Unite avec big-endian, finalization, et debug info
+
+==============================================================================
+9. CONSTANTES DE TARGETS CPU ET OS
+==============================================================================
+
+9.1 IDENTIFIANTS DE CPU (champ CPU, offset 0x08)
+-------------------------------------------------
+
+  Valeur  Constante      Architecture
+  ------  -------------  -----------------------------------------------
+  1       cpu_i386       Intel 80386 et compatible (32 bits)
+  2       cpu_m68k       Motorola 68000 (32 bits)
+  3       cpu_alpha      DEC Alpha (64 bits)
+  4       cpu_powerpc    PowerPC 32 bits
+  5       cpu_sparc      Sun SPARC (32 bits)
+  6       cpu_vm         Machine virtuelle (JAVA-like)
+  7       cpu_iA64       Intel Itanium 64 bits
+  8       cpu_x86_64     AMD/Intel x86-64 (64 bits)
+  9       cpu_arm        ARM 32 bits (EABI)
+  10      cpu_powerpc64  PowerPC 64 bits
+  11      cpu_avr        Atmel AVR (microcontroleur)
+  12      cpu_mipsel     MIPS little-endian (32 bits)
+  13      cpu_mips       MIPS big-endian (32 bits)
+  14      cpu_jvm        Java Virtual Machine
+  15      cpu_i8086      Intel 8086 (16 bits, DOS)
+  16      cpu_aarch64    ARM 64 bits (AArch64)
+  17      cpu_wasm32     WebAssembly 32 bits
+  18      cpu_sparc64    Sun SPARC 64 bits
+  19      cpu_riscv32    RISC-V 32 bits
+  20      cpu_riscv64    RISC-V 64 bits
+  21      cpu_xtensa     Tensilica Xtensa (microcontroleur)
+  22      cpu_mips64     MIPS 64 bits
+  23      cpu_mips64el   MIPS 64 bits little-endian
+  24      cpu_loongarch64 LoongArch 64 bits
+
+9.2 IDENTIFIANTS D'OS (champ TargetOS, offset 0x0A)
+-----------------------------------------------------
+
+  Valeur  Constante        Systeme d'exploitation
+  ------  ---------------  -----------------------------------------------
+  1       os_linux         GNU/Linux
+  2       os_go32v2        DOS avec DJGPP (GO32 v2)
+  3       os_win32         Microsoft Windows 32 bits
+  4       os_os2           IBM OS/2
+  5       os_freebsd       FreeBSD
+  6       os_beos          BeOS / Haiku
+  7       os_netbsd        NetBSD
+  8       os_amiga         Commodore Amiga (AmigaOS)
+  9       os_atari         Atari TOS
+  10      os_macos         Apple Mac OS classique
+  11      os_solaris       Oracle/Sun Solaris
+  12      os_qnx           QNX
+  13      os_netware       Novell Netware
+  14      os_openbsd       OpenBSD
+  15      os_wdosx         DOS etendu (WDOSX extender)
+  16      os_palmos        Palm OS
+  17      os_macosx        Apple macOS (Mac OS X)
+  18      os_emx           OS/2 avec EMX
+  19      os_watcom        DOS avec Watcom extender
+  20      os_morphos       AmigaOS PowerPC (MorphOS)
+  21      os_netwlibc      Netware avec libc
+  22      os_win64         Microsoft Windows 64 bits
+  23      os_wince         Microsoft Windows CE
+  24      os_gba           Game Boy Advance
+  25      os_nds           Nintendo DS
+  26      os_embedded      Systeme embarque generique
+  27      os_symbian       Nokia Symbian OS
+  28      os_haiku         Haiku (BeOS successeur)
+  29      os_iphonesim     iPhone Simulator
+  30      os_aix           IBM AIX
+  31      os_java          JVM / Java
+  32      os_android       Android (Linux ARM)
+  33      os_nativent      NativeNT (React OS)
+  34      os_msdos         MS-DOS 16 bits
+  35      os_wii           Nintendo Wii
+  36      os_aros          AROS (Amiga Research OS)
+  37      os_dragonfly     DragonFly BSD
+  38      os_ios           Apple iOS
+  39      os_android2      Android 64 bits (variante)
+  40      os_tvos          Apple tvOS
+  41      os_bridgeos      Apple bridgeOS
+  42      os_watchos       Apple watchOS
+
+==============================================================================
+10. RESUME DES OFFSETS POUR LECTURE RAPIDE
+==============================================================================
+
+Guide etape par etape pour lire un fichier PPU :
+
+  1. Lire les 3 premiers octets
+  2. Verifier la signature : octets 0-2 = 0x50, 0x50, 0x55 ("PPU")
+  3. Lire la version PPU : octets 3-5 (chaine ASCII de 3 chiffres)
+     Ex: '2','0','0' = version 200 (FPC 3.2.x)
+  4. Lire le numero de version du compilateur : offset 0x06 (Word LE)
+  5. Lire l'identifiant CPU : offset 0x08 (Word LE)
+  6. Lire l'identifiant OS : offset 0x0A (Word LE)
+  7. Lire les drapeaux : offset 0x0C (LongWord LE)
+     - Bit 0 (uf_init)       : unite avec initialization
+     - Bit 1 (uf_finalize)   : unite avec finalization
+     - Bit 2 (uf_big_endian) : fichier en big-endian
+  8. Lire la taille du fichier : offset 0x10 (LongWord LE)
+  9. Lire l'InterfaceCRC : offset 0x14 (LongWord LE)
+  10. Lire l'IndirectCRC : offset 0x18 (LongWord LE)
+  11. Parcourir les entrees taguees :
+      a. Lire 1 octet de tag
+      b. Lire 4 octets de taille (LongWord LE)
+      c. Traiter les donnees selon le tag (ou les sauter si tag inconnu)
+      d. Repeter jusqu'au tag ibend (0x00)
+
+Pseudo-code (en Pascal) :
+
+  BlockRead(F, Hdr, 64);
+  If (Hdr[0] <> $50) Or (Hdr[1] <> $50) Or (Hdr[2] <> $55) Then Error;
+  Version := (Hdr[3]-48)*100 + (Hdr[4]-48)*10 + (Hdr[5]-48);
+  CompVer := Hdr[$06] + Hdr[$07] * 256;
+  CpuId   := Hdr[$08] + Hdr[$09] * 256;
+  OsId    := Hdr[$0A] + Hdr[$0B] * 256;
+  Flags   := Hdr[$0C] + Hdr[$0D]*256 + Hdr[$0E]*65536 + Hdr[$0F]*16777216;
+  FSize   := Hdr[$10] + Hdr[$11]*256 + Hdr[$12]*65536 + Hdr[$13]*16777216;
+  IfCRC   := Hdr[$14] + Hdr[$15]*256 + Hdr[$16]*65536 + Hdr[$17]*16777216;
+  IndCRC  := Hdr[$18] + Hdr[$19]*256 + Hdr[$1A]*65536 + Hdr[$1B]*16777216;
+  { Parcours des entrees }
+  Repeat
+    BlockRead(F, Tag, 1);
+    If Tag = ibend Then Break;
+    BlockRead(F, EntrySize, 4);
+    If Tag = ibloadunit Then
+      { lire unite importee }
+    Else If Tag = iborddef Then
+      { lire definition ordinale }
+    Else
+      Seek(F, FilePos(F) + EntrySize);  { sauter entree inconnue }
+  Until False;
+
+==============================================================================
+11. COMPARAISON AVEC TPU ET QPU (TABLE RECAPITULATIVE)
+==============================================================================
+
+  Critere              TPU (Turbo Pascal)   QPU (Quick Pascal)   PPU (Free Pascal)
+  -------------------  -------------------  -------------------  ------------------
+  Editeur              Borland              Microsoft            Free Software Found.
+  Annee                1983-1992            1989                 1993-present
+  Signature            "TPU" (3 o) + ver    "MSQP" (4 o)        "PPU" (3 o) + ver
+  Version              1 octet (0x30-0x51)  (implicite)          3 chiffres ASCII
+  Header               64-96 octets fixe    Variable             Variable (etendu)
+  CPU supporte         8086 (16 bits)       8086 (16 bits)       20+ architectures
+  OS supporte          DOS                  DOS                  40+ systemes
+  Endian               Little-endian        Little-endian        LE ou BE
+  Format sections      Offsets en header    Offsets en header    Entrees taguees
+  Types supportes      Pascal classique     Pascal classique     Complet + moderne
+  OOP                  Objets (TP5.5+)      Objets               Classes, Interfaces
+  Generiques           Non                  Non                  Oui (FPC 2.4+)
+  Checksum             Aucun (explicite)    Hash 16 bits         CRC32 x2
+  ResourceStrings      Non                  Non                  Oui
+  Unicode              Non                  Non                  Oui (WideString)
+  Code libre           Non (proprietaire)   Non (proprietaire)   Oui (GPL/LGPL)
+  Toujours utilise     Non (abandonne)      Non (abandonne)      Oui (actif)
+
+==============================================================================
+12. NOTE SUR FREE PASCAL
+==============================================================================
+
+Free Pascal (FPC) est un compilateur Pascal libre et multi-plateforme,
+developpe depuis 1993 par Florian Klaempfl et une communaute de
+contributeurs. Il est publie sous licence GPL (compilateur) et LGPL
+(bibliotheque d'execution RTL).
+
+Le format PPU a ete concu des le debut pour supporter plusieurs
+architectures et systemes d'exploitation, ce qui explique sa structure
+plus flexible que les formats proprietaires TPU et QPU.
+
+Contrairement a Turbo Pascal (abandonne par Borland en 1995) et Quick
+Pascal (abandonne par Microsoft rapidement apres sa sortie), Free Pascal
+est activement maintenu et continue d'evoluer. La version 3.2.x est la
+version stable courante, et la version 3.3.x (trunk) est en developpement.
+
+FPC est compatible avec la syntaxe Turbo Pascal et Delphi, ce qui lui
+permet de lire (et recompiler) la plupart des programmes Pascal existants.
+Il peut aussi generer des fichiers PPU qui implementent les memes unites
+que SYSTEM, CRT, DOS de Turbo Pascal.
+
+Les outils principaux de Free Pascal :
+  fpc       : compilateur en ligne de commande
+  fpcmake   : generateur de Makefile pour FPC
+  fpcres    : compilateur de ressources FPC
+  ppudump   : outil d'analyse des fichiers PPU (inclus dans le paquet FPC)
+  ppdump    : outil alternatif d'analyse PPU
+
+==============================================================================
+13. REFERENCES
+==============================================================================
+
+Sources d'information :
+
+  Code source du compilateur FPC (open source) :
+    - compiler/ppu.pas       : Lecture/ecriture des fichiers PPU
+    - compiler/fppu.pas      : Gestion des PPU dans le compilateur
+    - compiler/symbase.pas   : Types de base des symboles
+    - compiler/defbase.pas   : Types de base des definitions
+    - utils/ppudump.pas      : Outil ppudump d'analyse des fichiers PPU
+
+  Documentation officielle :
+    - Free Pascal Reference Guide (docs.freepascal.org)
+    - Free Pascal Programmer's Guide
+    - Free Pascal User's Guide
+
+  Outils d'analyse des fichiers PPU :
+    - ppudump : Inclus dans la distribution FPC, affiche le contenu
+                detaille d'un fichier PPU en format texte lisible.
+      Utilisation: ppudump <nomfichier.ppu>
+
+  Documents connexes dans DEV-COOLS :
+    - DOC/TPU_FORMAT.txt : Documentation du format TPU (Turbo Pascal)
+    - DOC/QPU_FORMAT.txt : Documentation du format QPU (Quick Pascal)
+
+  Liens utiles :
+    - Site officiel FPC : https://www.freepascal.org
+    - Code source FPC (GitLab) : https://gitlab.com/freepascal.org/fpc/source
+    - Forum Free Pascal : https://forum.lazarus.freepascal.org
+
+==============================================================================
+FIN DU DOCUMENT
+==============================================================================
