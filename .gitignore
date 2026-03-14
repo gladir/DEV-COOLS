@@ -1,4 +1,5 @@
 *.o
 *.obj
 *.ppu
+*.asm
 AL58C86

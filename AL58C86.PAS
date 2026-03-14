@@ -182,7 +182,7 @@
             Gestion de STDOUT (handle 1) et STDERR (handle 2)
             Formatage : ecriture d entiers signes, chaines, booleens
 
-  TODO 13 - IF / THEN / ELSE (CONDITIONNELLES)
+  TODO 13 - IF / THEN / ELSE (CONDITIONNELLES) [IMPLEMENTE]
             ParseIfStmt : if cond then stmt [else stmt]
               Emission TEST AX,AX / JZ pour condition fausse
               Labels : _A58L_ELSE_N, _A58L_ENDIF_N
@@ -693,6 +693,8 @@ Procedure ParseExpr(Var Res : TExprVal); Forward;
 { TODO 12 - Entrees/Sorties }
 Procedure ParseWriteStmt(IsLn : Boolean); Forward;
 Procedure ParseReadStmt(IsLn : Boolean); Forward;
+{ TODO 13 - If/Then/Else }
+Procedure ParseIfStmt; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -2403,6 +2405,56 @@ Begin
 End;
 
 { ============================================================
+  TODO 13 - IF / THEN / ELSE (CONDITIONNELLES) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseIfStmt : if cond then stmt [else stmt] ------------- }
+{ Le mot-cle 'if' est deja consomme par ParseStmt.              }
+{ Gere les conditions imbriquees : else lie au if le plus proche }
+Procedure ParseIfStmt;
+Var
+  LblElse : TString;
+  LblEnd  : TString;
+  Cond    : TExprVal;
+  HasElse : Boolean;
+Begin
+  { Evaluer la condition }
+  ParseExpr(Cond);
+  ExprFlushToAX(Cond);
+  EmitInstr('TEST', 'AX, AX');
+  LblElse := NewLabel;
+  EmitInstr('JZ', LblElse);
+
+  { Consommer then }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'then') Then
+    ParserAdvance
+  Else
+    CompileError('then attendu apres if');
+
+  { Branche vraie : une instruction ou un bloc }
+  ParseStmt;
+
+  { Verifier s il y a un else }
+  HasElse := (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'else');
+
+  If HasElse Then
+  Begin
+    LblEnd := NewLabel;
+    EmitInstr('JMP', LblEnd);
+    EmitLabel(LblElse);
+    ParserAdvance;  { consommer else }
+    { Branche fausse : une instruction ou un bloc }
+    ParseStmt;
+    EmitLabel(LblEnd);
+  End
+  Else
+  Begin
+    { Pas de else : label directement apres la branche vraie }
+    EmitLabel(LblElse);
+  End;
+End;
+
+{ ============================================================
   TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
   ============================================================ }
 
@@ -3163,6 +3215,16 @@ Begin
     Begin
       ParserAdvance;  { consommer readln }
       ParseReadStmt(True);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+      Exit;
+    End;
+
+    { if cond then stmt [else stmt] (TODO 13) }
+    If CurToken.Val = 'if' Then
+    Begin
+      ParserAdvance;  { consommer if }
+      ParseIfStmt;
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
         ParserAdvance;
       Exit;
