@@ -157,7 +157,7 @@
             Varargs : ... dans le corps d une fonction variadique
             ExprMakeImm, ExprMakeNil : constructeurs TExprVal
 
-  TODO 11 - EXPRESSIONS BINAIRES (PRATT)
+  TODO 11 - EXPRESSIONS BINAIRES (PRATT) [IMPLEMENTE]
             ParseExprPrec(MinPrec) : boucle Pratt avec precedences Lua
             Arithmetique entiere : ADD/SUB pour +, -, IMUL pour *
             Division : / -> IDIV (quotient dans AX)
@@ -3421,9 +3421,20 @@ Begin
       Else
       Begin
         { Non constant : generer code avec court-circuit }
+        { and retourne la 1ere valeur fausse, sinon la 2eme }
+        LblSkip := LabelGen;
+        LblEnd  := LabelGen;
         ExprFlushToAX(Res);
-        { TODO 07 : OR AX,AX / JZ LblSkip / ... / LblSkip: }
+        EmitInstrA('PUSH', 'AX');
+        EmitInstrAB('OR', 'AX', 'AX');
+        EmitInstrA('JZ', LblSkip);
+        EmitInstrAB('ADD', 'SP', '2');
         ParseExprPrec(Prec + 1, Right);
+        ExprFlushToAX(Right);
+        EmitInstrA('JMP', LblEnd);
+        EmitLabel(LblSkip);
+        EmitInstrA('POP', 'AX');
+        EmitLabel(LblEnd);
         Res.Kind    := EK_AX;
         Res.TypeIdx := TY_UNKNOWN;
       End;
@@ -3452,9 +3463,20 @@ Begin
       Else
       Begin
         { Non constant : generer code avec court-circuit }
+        { or retourne la 1ere valeur vraie, sinon la 2eme }
+        LblSkip := LabelGen;
+        LblEnd  := LabelGen;
         ExprFlushToAX(Res);
-        { TODO 07 : OR AX,AX / JNZ LblSkip / ... / LblSkip: }
+        EmitInstrA('PUSH', 'AX');
+        EmitInstrAB('OR', 'AX', 'AX');
+        EmitInstrA('JNZ', LblSkip);
+        EmitInstrAB('ADD', 'SP', '2');
         ParseExprPrec(Prec + 1, Right);
+        ExprFlushToAX(Right);
+        EmitInstrA('JMP', LblEnd);
+        EmitLabel(LblSkip);
+        EmitInstrA('POP', 'AX');
+        EmitLabel(LblEnd);
         Res.Kind    := EK_AX;
         Res.TypeIdx := TY_UNKNOWN;
       End;
@@ -3466,19 +3488,10 @@ Begin
     Begin
       { Associatif a droite : recurser avec meme precedence }
       ParseExprPrec(Prec, Right);
-      If (Res.Kind = EK_IMM) And (Right.Kind = EK_IMM) And
-         (Res.TypeIdx = TY_IDX_STRING) And (Right.TypeIdx = TY_IDX_STRING) Then
-      Begin
-        { Pliage impossible car on n a que les indices DATA, pas les chaines }
-        Res.Kind    := EK_AX;
-        Res.TypeIdx := TY_IDX_STRING;
-      End
-      Else
-      Begin
-        { TODO 07 : CALL _LUART_CONCAT }
-        Res.Kind    := EK_AX;
-        Res.TypeIdx := TY_IDX_STRING;
-      End;
+      { Emettre code pour concatenation via EmitBinOp }
+      EmitBinOp(Op, Res, Right);
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_STRING;
       Continue;
     End;
 
@@ -3497,14 +3510,16 @@ Begin
           ExprMakeImm(Res.ImmVal * Res.ImmVal, TY_IDX_NUMBER, Res)
         Else
         Begin
-          { TODO 07 : CALL _LUART_POW }
+          { Runtime : CALL _LUART_POW }
+          EmitBinOp(Op, Res, Right);
           Res.Kind    := EK_AX;
           Res.TypeIdx := TY_IDX_NUMBER;
         End;
       End
       Else
       Begin
-        { TODO 07 : CALL _LUART_POW }
+        { Runtime : CALL _LUART_POW }
+        EmitBinOp(Op, Res, Right);
         Res.Kind    := EK_AX;
         Res.TypeIdx := TY_IDX_NUMBER;
       End;
