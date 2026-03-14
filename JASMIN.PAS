@@ -30,7 +30,7 @@
 {  TODO 12 [IMPLEMENTE] - Opcodes de conversion de types                      }
 {  TODO 13 [IMPLEMENTE] - Opcodes de controle de flux                         }
 {  TODO 14 [IMPLEMENTE] - Opcodes d'invocation de methodes                    }
-{  TODO 15 - Opcodes de manipulation de la pile et chargement de constantes   }
+{  TODO 15 [IMPLEMENTE] - Opcodes de manipulation de la pile et chargement de constantes   }
 {  TODO 16 - Opcodes de creation d'objets et tableaux                         }
 {  TODO 17 - Opcodes d'acces aux champs                                       }
 {  TODO 18 - Opcodes de comparaison, retour et divers                         }
@@ -2715,6 +2715,10 @@ End;
 { dcmpl/g, tableswitch, lookupswitch, ret, jsr/jsr_w, goto_w).        }
 { TODO 14 : opcodes d'invocation de methodes (invokevirtual,          }
 { invokespecial, invokestatic, invokeinterface, invokedynamic).        }
+{ TODO 15 : opcodes de manipulation de la pile (nop, pop, pop2, dup,  }
+{ dup_x1, dup_x2, dup2, dup2_x1, dup2_x2, swap) et chargement de    }
+{ constantes (aconst_null, iconst_m1..5, lconst_0/1, fconst_0/1/2,   }
+{ dconst_0/1, bipush, sipush, ldc, ldc_w, ldc2_w).                    }
 { Les TODOs suivantes ajouteront d'autres familles d'opcodes.          }
 Function ParseInstruction: Boolean;
 Var mnem: String;
@@ -2725,6 +2729,8 @@ Var mnem: String;
     swDefault: String;
     invSpec, invCls, invName, invDesc: String;
     invIdx, invCount: Integer;
+    ldcIdx: Integer;
+    ldcStr: String;
 Begin
  ParseInstruction := False;
  mnem := CurStr;
@@ -3624,6 +3630,209 @@ Begin
   EmitByte(0); { padding }
   ParseInstruction := True; Exit;
  End;
+ { ---------------------------------------------------------------- }
+ { Opcodes de manipulation de la pile et constantes - TODO 15       }
+ { ---------------------------------------------------------------- }
+ { nop ($00) : aucune operation }
+ If mnem = 'nop' Then
+ Begin Consume; EmitByte($00); ParseInstruction := True; Exit; End;
+ { pop ($57) : depiler 1 mot }
+ If mnem = 'pop' Then
+ Begin Consume; EmitByte($57); ParseInstruction := True; Exit; End;
+ { pop2 ($58) : depiler 2 mots }
+ If mnem = 'pop2' Then
+ Begin Consume; EmitByte($58); ParseInstruction := True; Exit; End;
+ { dup ($59) : dupliquer le sommet }
+ If mnem = 'dup' Then
+ Begin Consume; EmitByte($59); ParseInstruction := True; Exit; End;
+ { dup_x1 ($5A) : dupliquer le sommet sous le 2e mot }
+ If mnem = 'dup_x1' Then
+ Begin Consume; EmitByte($5A); ParseInstruction := True; Exit; End;
+ { dup_x2 ($5B) : dupliquer le sommet sous le 3e mot }
+ If mnem = 'dup_x2' Then
+ Begin Consume; EmitByte($5B); ParseInstruction := True; Exit; End;
+ { dup2 ($5C) : dupliquer les 2 mots du sommet }
+ If mnem = 'dup2' Then
+ Begin Consume; EmitByte($5C); ParseInstruction := True; Exit; End;
+ { dup2_x1 ($5D) : dupliquer 2 mots sous le 3e }
+ If mnem = 'dup2_x1' Then
+ Begin Consume; EmitByte($5D); ParseInstruction := True; Exit; End;
+ { dup2_x2 ($5E) : dupliquer 2 mots sous le 4e }
+ If mnem = 'dup2_x2' Then
+ Begin Consume; EmitByte($5E); ParseInstruction := True; Exit; End;
+ { swap ($5F) : echanger les 2 mots du sommet }
+ If mnem = 'swap' Then
+ Begin Consume; EmitByte($5F); ParseInstruction := True; Exit; End;
+ { aconst_null ($01) : pousser null }
+ If mnem = 'aconst_null' Then
+ Begin Consume; EmitByte($01); ParseInstruction := True; Exit; End;
+ { iconst_m1 ($02) : pousser -1 }
+ If mnem = 'iconst_m1' Then
+ Begin Consume; EmitByte($02); ParseInstruction := True; Exit; End;
+ { iconst_0 ($03) : pousser 0 }
+ If mnem = 'iconst_0' Then
+ Begin Consume; EmitByte($03); ParseInstruction := True; Exit; End;
+ { iconst_1 ($04) : pousser 1 }
+ If mnem = 'iconst_1' Then
+ Begin Consume; EmitByte($04); ParseInstruction := True; Exit; End;
+ { iconst_2 ($05) : pousser 2 }
+ If mnem = 'iconst_2' Then
+ Begin Consume; EmitByte($05); ParseInstruction := True; Exit; End;
+ { iconst_3 ($06) : pousser 3 }
+ If mnem = 'iconst_3' Then
+ Begin Consume; EmitByte($06); ParseInstruction := True; Exit; End;
+ { iconst_4 ($07) : pousser 4 }
+ If mnem = 'iconst_4' Then
+ Begin Consume; EmitByte($07); ParseInstruction := True; Exit; End;
+ { iconst_5 ($08) : pousser 5 }
+ If mnem = 'iconst_5' Then
+ Begin Consume; EmitByte($08); ParseInstruction := True; Exit; End;
+ { lconst_0 ($09) : pousser long 0 }
+ If mnem = 'lconst_0' Then
+ Begin Consume; EmitByte($09); ParseInstruction := True; Exit; End;
+ { lconst_1 ($0A) : pousser long 1 }
+ If mnem = 'lconst_1' Then
+ Begin Consume; EmitByte($0A); ParseInstruction := True; Exit; End;
+ { fconst_0 ($0B) : pousser float 0.0 }
+ If mnem = 'fconst_0' Then
+ Begin Consume; EmitByte($0B); ParseInstruction := True; Exit; End;
+ { fconst_1 ($0C) : pousser float 1.0 }
+ If mnem = 'fconst_1' Then
+ Begin Consume; EmitByte($0C); ParseInstruction := True; Exit; End;
+ { fconst_2 ($0D) : pousser float 2.0 }
+ If mnem = 'fconst_2' Then
+ Begin Consume; EmitByte($0D); ParseInstruction := True; Exit; End;
+ { dconst_0 ($0E) : pousser double 0.0 }
+ If mnem = 'dconst_0' Then
+ Begin Consume; EmitByte($0E); ParseInstruction := True; Exit; End;
+ { dconst_1 ($0F) : pousser double 1.0 }
+ If mnem = 'dconst_1' Then
+ Begin Consume; EmitByte($0F); ParseInstruction := True; Exit; End;
+ { bipush <byte> ($10) : pousser byte signe -128..127 }
+ If mnem = 'bipush' Then
+ Begin
+  Consume;
+  If CurTok <> TK_INTEGER Then
+  Begin Error('bipush : operande entiere attendue'); Exit; End;
+  opvar := Integer(CurInt);
+  Consume;
+  If (opvar < -128) or (opvar > 127) Then
+  Begin Error('bipush : valeur hors limites -128..127'); Exit; End;
+  EmitByte($10); { bipush }
+  EmitByte(Byte(opvar and $FF));
+  ParseInstruction := True; Exit;
+ End;
+ { sipush <short> ($11) : pousser short signe -32768..32767 }
+ If mnem = 'sipush' Then
+ Begin
+  Consume;
+  If CurTok <> TK_INTEGER Then
+  Begin Error('sipush : operande entiere attendue'); Exit; End;
+  If (CurInt < -32768) or (CurInt > 32767) Then
+  Begin Error('sipush : valeur hors limites -32768..32767'); Consume; Exit; End;
+  opvar := Integer(CurInt);
+  Consume;
+  EmitByte($11); { sipush }
+  EmitByte(Byte((opvar shr 8) and $FF));
+  EmitByte(Byte(opvar and $FF));
+  ParseInstruction := True; Exit;
+ End;
+ { ldc <constant> ($12) : pousser int/float/string depuis Constant Pool }
+ If mnem = 'ldc' Then
+ Begin
+  Consume;
+  If CurTok = TK_INTEGER Then
+  Begin
+   ldcIdx := CPAddInteger(CurInt);
+   Consume;
+  End
+  Else If CurTok = TK_FLOAT Then
+  Begin
+   ldcIdx := CPAddFloat(CurFloat);
+   Consume;
+  End
+  Else If CurTok = TK_STRING Then
+  Begin
+   ldcIdx := CPAddString(CurStr);
+   Consume;
+  End
+  Else If CurTok = TK_IDENT Then
+  Begin
+   { Reference de classe }
+   ldcIdx := CPEnsureClass(CurStr);
+   Consume;
+  End
+  Else
+  Begin Error('ldc : constante attendue (entier, flottant, chaine ou classe)'); Exit; End;
+  If (ldcIdx < 1) or (ldcIdx > 255) Then
+  Begin
+   Warning('ldc : index CP > 255, utiliser ldc_w a la place');
+   { Emettre quand meme avec ldc_w }
+   EmitByte($13); { ldc_w }
+   EmitByte(Byte((ldcIdx shr 8) and $FF));
+   EmitByte(Byte(ldcIdx and $FF));
+  End
+  Else
+  Begin
+   EmitByte($12); { ldc }
+   EmitByte(Byte(ldcIdx));
+  End;
+  ParseInstruction := True; Exit;
+ End;
+ { ldc_w <constant> ($13) : pousser int/float/string, index large 16 bits }
+ If mnem = 'ldc_w' Then
+ Begin
+  Consume;
+  If CurTok = TK_INTEGER Then
+  Begin
+   ldcIdx := CPAddInteger(CurInt);
+   Consume;
+  End
+  Else If CurTok = TK_FLOAT Then
+  Begin
+   ldcIdx := CPAddFloat(CurFloat);
+   Consume;
+  End
+  Else If CurTok = TK_STRING Then
+  Begin
+   ldcIdx := CPAddString(CurStr);
+   Consume;
+  End
+  Else If CurTok = TK_IDENT Then
+  Begin
+   ldcIdx := CPEnsureClass(CurStr);
+   Consume;
+  End
+  Else
+  Begin Error('ldc_w : constante attendue'); Exit; End;
+  EmitByte($13); { ldc_w }
+  EmitByte(Byte((ldcIdx shr 8) and $FF));
+  EmitByte(Byte(ldcIdx and $FF));
+  ParseInstruction := True; Exit;
+ End;
+ { ldc2_w <constant> ($14) : pousser long/double depuis Constant Pool }
+ If mnem = 'ldc2_w' Then
+ Begin
+  Consume;
+  If CurTok = TK_INTEGER Then
+  Begin
+   { Long : on utilise CPAddLong avec hi=0 pour valeurs 32 bits }
+   ldcIdx := CPAddLong(0, CurInt);
+   Consume;
+  End
+  Else If CurTok = TK_FLOAT Then
+  Begin
+   { Double : on utilise CPAddDouble avec representation simplifiee }
+   ldcIdx := CPAddDouble(0, Trunc(CurFloat));
+   Consume;
+  End
+  Else
+  Begin Error('ldc2_w : constante long ou double attendue'); Exit; End;
+  EmitByte($14); { ldc2_w }
+  EmitByte(Byte((ldcIdx shr 8) and $FF));
+  EmitByte(Byte(ldcIdx and $FF));
+  ParseInstruction := True; Exit;
+ End;
 End;
 
 { --- ParseDirectives : dispatcher principal des directives de classe --- }
@@ -3717,9 +3926,9 @@ Begin
      SkipToEOL;
     End;
    Else
-    { Directives non encore implementees (TODO 15+) : sauter la ligne }
+    { Directives non encore implementees (TODO 16+) : sauter la ligne }
     If OptVerbose Then
-     WriteLn('  [skip] directive ', CurStr, ' (TODO 15+)');
+     WriteLn('  [skip] directive ', CurStr, ' (TODO 16+)');
     SkipToEOL;
    End;  { Case }
   End
@@ -3730,7 +3939,7 @@ Begin
    Begin
     { Mnemonique non reconnu : sauter la ligne }
     If OptVerbose Then
-     WriteLn('  [skip] instruction ', CurStr, ' (TODO 15+)');
+     WriteLn('  [skip] instruction ', CurStr, ' (TODO 16+)');
     SkipToEOL;
    End
    Else

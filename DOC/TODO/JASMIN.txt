@@ -289,7 +289,7 @@ TODO 14 [IMPLEMENTE] - Opcodes d'invocation de methodes
     entrees Constant Pool (Methodref/InterfaceMethodref + Class +
     NameAndType + Utf8), emettre l'opcode + index U2
 
-TODO 15 - Opcodes de manipulation de la pile et chargement de constantes
+TODO 15 [IMPLEMENTE] - Opcodes de manipulation de la pile et chargement de constantes
   -----------------------------------------------------------------------
   Manipulation de la pile :
   - pop, pop2 (depiler 1 ou 2 mots)
