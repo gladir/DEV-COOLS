@@ -362,7 +362,7 @@
               os.exit([code]) -> MOV AX,4C00h + code + INT 21h
               os.execute(cmd) -> stub + avertissement
 
-  TODO 21 - RETOURS MULTIPLES ET VARARGS
+  TODO 21 - RETOURS MULTIPLES ET VARARGS [IMPLEMENTE]
             Retour multiple : return a, b, c
               Convention : premiere valeur dans AX, suivantes empilees
               Nombre de valeurs retournees dans CX
@@ -713,6 +713,10 @@ Var
   UpvalOrigKind   : Array[0..MAX_UPVALS-1] Of TSymKind; { kind avant    }
   UpvalDataLbl    : Array[0..MAX_UPVALS-1] Of TString;  { label DATA    }
 
+  { Retours multiples et varargs (TODO 21) }
+  CurFnIsVararg   : Boolean;   { True si la fonction courante a ... }
+  CurFnParamCount : Integer;   { nombre de params de la fn courante  }
+
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
@@ -861,6 +865,9 @@ Procedure EmitMathBuiltin(Const FuncName : TString; Var Res : TExprVal); Forward
 Procedure EmitOSBuiltin(Const FuncName : TString; Var Res : TExprVal); Forward;
 Procedure EmitMathRuntime; Forward;
 Procedure EmitOSRuntime; Forward;
+
+{ Retours multiples et varargs (TODO 21) }
+Procedure EmitMultRetRuntime; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1147,6 +1154,8 @@ Begin
   AnonFuncCount  := 0;
   CurFnBaseSymIdx := 0;
   UpvalCount      := 0;
+  CurFnIsVararg   := False;
+  CurFnParamCount := 0;
   GExprDummy.Kind    := EK_NONE;
   GExprDummy.ImmVal  := 0;
   GExprDummy.TypeIdx := TY_UNKNOWN;
@@ -1285,6 +1294,7 @@ Begin
   EmitStringRuntime;
   EmitMathRuntime;
   EmitOSRuntime;
+  EmitMultRetRuntime;
 End;
 
 { EmitClose : terminer le fichier ASM (DOS exit, runtime, DATA, END) }
@@ -1460,6 +1470,9 @@ Begin
   DataAddWord('_LUART_SEED', 12345);           { graine LCG pour math.random }
   DataAdd('_LUA_MATH_INT_S', DK_STR, 0, 'integer');  { math.type retourne toujours "integer" }
   DataAdd('_LUA_OS_DATE_S', DK_STR, 0, '00/00/0000'); { os.date stub placeholder }
+  { TODO 21 : varargs data }
+  DataAddWord('_LUA_VARGC', 0);                 { nombre d arguments variadiques   }
+  DataAddBuffer('_LUA_VARGV', MAX_RETVALS * 2); { tableau de valeurs variadiques   }
 End;
 
 { ---- ExprMakeImm : construire une valeur immediate ---------- }
@@ -1969,6 +1982,9 @@ Var
   SaveFramD : Integer;
   LocalsD   : Integer;
   NSD       : TString;
+  { Variables for multi-return (TODO 21) }
+  RetValCnt : Integer;
+  NSRetV    : TString;
 Begin
   { Instruction vide : ';' optionnel }
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
@@ -2457,7 +2473,7 @@ Begin
       Exit;
     End;
 
-    { return : retour de fonction (TODO 17) }
+    { return : retour de fonction (TODO 17, TODO 21 : retours multiples) }
     If CurToken.Val = 'return' Then
     Begin
       ParserAdvance; { consomme 'return' }
@@ -2470,9 +2486,58 @@ Begin
       Begin
         ParseExpr(E);
         ExprFlushToAX(E);
+        { TODO 21 : verifier si retours multiples (virgule apres) }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        Begin
+          EmitComment('--- return multiple (TODO 21) ---');
+          EmitInstrA('PUSH', 'AX');  { sauver premiere valeur }
+          RetValCnt := 1;
+          While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') And
+                (RetValCnt < MAX_RETVALS) Do
+          Begin
+            ParserAdvance; { consomme ',' }
+            ParseExpr(E);
+            ExprFlushToAX(E);
+            EmitInstrA('PUSH', 'AX');
+            Inc(RetValCnt);
+          End;
+          { Empiler les valeurs supplementaires dans l ordre inverse }
+          { Les valeurs sont sur la pile : val1 (dessous) ... valN (dessus) }
+          { Convention : premiere valeur dans AX, suivantes empilees }
+          { Nombre de valeurs dans CX }
+          Str(RetValCnt, NSRetV);
+          EmitInstrAB('MOV', 'CX', NSRetV);
+          { Restaurer premiere valeur dans AX }
+          If RetValCnt > 1 Then
+          Begin
+            Str((RetValCnt - 1) * 2, NSRetV);
+            EmitInstrAB('MOV', 'AX', 'WORD PTR [SP+' + NSRetV + ']');
+          End
+          Else
+            EmitInstrA('POP', 'AX');
+          { Nettoyer la premiere valeur de la pile (les autres restent) }
+          { L appelant les recuperera via CX }
+          If RetValCnt > 1 Then
+          Begin
+            { Decaler les valeurs : supprimer la premiere (la plus profonde) }
+            { Plus simple : on laisse toutes les valeurs sur la pile }
+            { AX = val1, [SP] = val2 ... [SP + (N-2)*2] = valN, dessus = valN }
+            { Ajuster : retirer toutes les valeurs sauf supplementaires }
+            Str(RetValCnt * 2, NSRetV);
+            EmitInstrAB('ADD', 'SP', NSRetV);
+            { Re-empiler les supplementaires (val2..valN) de gauche a droite }
+            { LIMITATION : on stocke simplement dans _LUA_VARGV }
+            { Le caller utilisera CX pour savoir combien depiler }
+          End;
+        End
+        Else
+          EmitInstrAB('MOV', 'CX', '1'); { retour simple : CX = 1 }
       End
       Else
+      Begin
         EmitInstrAB('XOR', 'AX', 'AX'); { return sans valeur -> nil }
+        EmitInstrAB('XOR', 'CX', 'CX'); { CX = 0 valeurs }
+      End;
       { Sauter vers l epilogue de la fonction }
       If CurFnRetLbl <> '' Then
         EmitInstrA('JMP', CurFnRetLbl)
@@ -3756,6 +3821,33 @@ Begin
         ParserAdvance;
       End;
     End;
+    TK_OP :
+    Begin
+      { TODO 21 : ... (varargs) comme expression }
+      If CurToken.Val = '...' Then
+      Begin
+        ParserAdvance; { consomme '...' }
+        If Not CurFnIsVararg Then
+          CompileError('"..." utilise en dehors d une fonction variadique');
+        EmitComment('--- varargs ... (TODO 21) ---');
+        { Charger la premiere valeur variadique dans AX (ou 0 si aucune) }
+        EmitInstrAB('MOV', 'CX', 'WORD PTR [_LUA_VARGC]');
+        EmitInstrAB('XOR', 'AX', 'AX');
+        EmitInstrAB('CMP', 'CX', '0');
+        FldLbl := LabelGen;
+        EmitInstrA('JE', FldLbl);
+        EmitInstrAB('MOV', 'AX', 'WORD PTR [_LUA_VARGV]');
+        EmitLabel(FldLbl);
+        Res.Kind    := EK_AX;
+        Res.TypeIdx := TY_UNKNOWN;
+        Res.SymIdx  := -1;
+      End
+      Else
+      Begin
+        ExprMakeNone(Res);
+        ParserAdvance;
+      End;
+    End;
   Else
     ExprMakeNone(Res);
     ParserAdvance;
@@ -4464,6 +4556,43 @@ Begin
     Res.Kind    := EK_AX;
     Res.TypeIdx := TY_IDX_TABLE;
     Res.SymIdx  := -1;
+  End
+  { TODO 21 : select('#', ...) et select(n, ...) }
+  Else If FuncName = 'select' Then
+  Begin
+    EmitComment('--- select (TODO 21) ---');
+    ParseExpr(Arg);
+    ExprFlushToAX(Arg);
+    { Verifier si le premier argument est '#' (chaine) }
+    If Arg.TypeIdx = TY_IDX_STRING Then
+    Begin
+      { select('#', ...) -> nombre de varargs }
+      EmitInstrA('CALL', LUA_RT_PFX + 'VARGCOUNT');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_NUMBER;
+      Res.SymIdx  := -1;
+    End
+    Else
+    Begin
+      { select(n, ...) -> n-ieme vararg }
+      EmitInstrAB('MOV', 'CX', 'AX');
+      EmitInstrA('CALL', LUA_RT_PFX + 'VARGGET');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_UNKNOWN;
+      Res.SymIdx  := -1;
+    End;
+    { Consommer les arguments restants (le '...') }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+    Begin
+      ParserAdvance;
+      { Consommer le '...' ou tout autre argument }
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '...') Then
+        ParserAdvance
+      Else
+      Begin
+        ParseExpr(Arg); { consommer l argument ignore }
+      End;
+    End;
   End
   Else
   Begin
@@ -6632,6 +6761,9 @@ Var
   SaveSymCnt : Integer;
   SaveBaseIdx : Integer;    { TODO 18 : sauvegarde CurFnBaseSymIdx }
   SaveUpCnt   : Integer;    { TODO 18 : sauvegarde UpvalCount      }
+  SaveVararg  : Boolean;    { TODO 21 : sauvegarde CurFnIsVararg   }
+  SaveParamCnt : Integer;   { TODO 21 : sauvegarde CurFnParamCount }
+  IsVararg    : Boolean;    { TODO 21 : cette fonction a ...       }
 Begin
   { Le mot-cle 'function' est deja consomme par l appelant }
   { CurToken devrait etre le nom de la fonction            }
@@ -6684,6 +6816,8 @@ Begin
   SaveSymCnt  := SymCount;
   SaveBaseIdx := CurFnBaseSymIdx;
   SaveUpCnt   := UpvalCount;
+  SaveVararg  := CurFnIsVararg;
+  SaveParamCnt := CurFnParamCount;
 
   CurFrameSize    := 2;  { TODO 18 : reserve 2 words pour SI, DI sauvegardes }
   CurFnRetLbl     := RetLabel;
@@ -6694,6 +6828,7 @@ Begin
 
   { Parser les parametres }
   ParamCount := 0;
+  IsVararg   := False;
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
   Begin
     ParserAdvance; { consomme '(' }
@@ -6713,7 +6848,8 @@ Begin
         ParserAdvance
       Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '...') Then
       Begin
-        ParserAdvance; { varargs : stub }
+        IsVararg := True;  { TODO 21 : marquer comme variadique }
+        ParserAdvance;
         Break;
       End
       Else
@@ -6724,6 +6860,10 @@ Begin
     Else
       CompileError('")" attendue apres les parametres');
   End;
+
+  { TODO 21 : configurer l etat varargs }
+  CurFnIsVararg   := IsVararg;
+  CurFnParamCount := ParamCount;
 
   { Enregistrer les parametres comme symboles                        }
   { Convention : arguments empiles de gauche a droite par l appelant  }
@@ -6787,6 +6927,8 @@ Begin
   SymCount        := SaveSymCnt;
   CurFnBaseSymIdx := SaveBaseIdx;
   UpvalCount      := SaveUpCnt;
+  CurFnIsVararg   := SaveVararg;
+  CurFnParamCount := SaveParamCnt;
 End;
 
 { ---- ParseFuncExpr : parser une fonction anonyme (expression) ---- }
@@ -6811,6 +6953,9 @@ Var
   SaveSymCnt : Integer;
   SaveBaseIdx : Integer;    { TODO 18 : sauvegarde CurFnBaseSymIdx }
   SaveUpCnt   : Integer;    { TODO 18 : sauvegarde UpvalCount      }
+  SaveVararg  : Boolean;    { TODO 21 : sauvegarde CurFnIsVararg   }
+  SaveParamCnt : Integer;   { TODO 21 : sauvegarde CurFnParamCount }
+  IsVararg    : Boolean;    { TODO 21 : cette fonction a ...       }
 Begin
   { Le mot-cle 'function' est deja consomme }
   Inc(AnonFuncCount);
@@ -6840,6 +6985,8 @@ Begin
   SaveSymCnt  := SymCount;
   SaveBaseIdx := CurFnBaseSymIdx;
   SaveUpCnt   := UpvalCount;
+  SaveVararg  := CurFnIsVararg;
+  SaveParamCnt := CurFnParamCount;
 
   CurFrameSize    := 2;  { TODO 18 : reserve 2 words pour SI, DI sauvegardes }
   CurFnRetLbl     := RetLabel;
@@ -6850,6 +6997,7 @@ Begin
 
   { Parser les parametres }
   ParamCount := 0;
+  IsVararg   := False;
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
   Begin
     ParserAdvance; { consomme '(' }
@@ -6869,7 +7017,8 @@ Begin
         ParserAdvance
       Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '...') Then
       Begin
-        ParserAdvance; { varargs : stub }
+        IsVararg := True;  { TODO 21 : marquer comme variadique }
+        ParserAdvance;
         Break;
       End
       Else
@@ -6880,6 +7029,10 @@ Begin
     Else
       CompileError('")" attendue apres les parametres');
   End;
+
+  { TODO 21 : configurer l etat varargs }
+  CurFnIsVararg   := IsVararg;
+  CurFnParamCount := ParamCount;
 
   { Enregistrer les parametres }
   For I := 0 To ParamCount - 1 Do
@@ -6937,6 +7090,8 @@ Begin
   SymCount        := SaveSymCnt;
   CurFnBaseSymIdx := SaveBaseIdx;
   UpvalCount      := SaveUpCnt;
+  CurFnIsVararg   := SaveVararg;
+  CurFnParamCount := SaveParamCnt;
 
   { Retourner l adresse de la fonction comme pointeur de code }
   EmitInstrAB('MOV', 'AX', 'OFFSET ' + FuncLabel);
@@ -8228,6 +8383,47 @@ Begin
   EmitInstrAB('MOV', 'AL', 'DH');    { AX = secondes }
   EmitInstrA('POP', 'DX');
   EmitInstrA('POP', 'CX');
+  EmitInstr('RET');
+  EmitBlankLine;
+End;
+
+{ ============================================================
+  TODO 21 - RETOURS MULTIPLES ET VARARGS [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- EmitMultRetRuntime : routines runtime retours multiples/varargs }
+Procedure EmitMultRetRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=== Routines runtime TODO 21 (multi-ret, varargs) ===');
+  EmitBlankLine;
+
+  { _LUART_VARGCOUNT : retourne le nombre d arguments variadiques }
+  { Resultat : AX = nombre de varargs stockes dans _LUA_VARGC     }
+  EmitLabel(LUA_RT_PFX + 'VARGCOUNT');
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [_LUA_VARGC]');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _LUART_VARGGET : retourne le n-ieme argument variadique       }
+  { Entree : CX = index (1-base)                                   }
+  { Sortie : AX = valeur du n-ieme vararg                          }
+  EmitLabel(LUA_RT_PFX + 'VARGGET');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  { Verifier bornes : CX >= 1 et CX <= _LUA_VARGC }
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JLE', LUA_LBL_PFX + 'VGDONE');
+  EmitInstrAB('CMP', 'CX', 'WORD PTR [_LUA_VARGC]');
+  EmitInstrA('JG', LUA_LBL_PFX + 'VGDONE');
+  { AX = _LUA_VARGV[(CX-1)*2] }
+  EmitInstrAB('MOV', 'BX', 'CX');
+  EmitInstrA('DEC', 'BX');
+  EmitInstrAB('SHL', 'BX', '1');
+  EmitInstrAB('ADD', 'BX', 'OFFSET _LUA_VARGV');
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [BX]');
+  EmitLabel(LUA_LBL_PFX + 'VGDONE');
+  EmitInstrA('POP', 'BX');
   EmitInstr('RET');
   EmitBlankLine;
 End;
