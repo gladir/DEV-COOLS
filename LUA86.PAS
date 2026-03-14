@@ -4907,7 +4907,7 @@ Begin
       ParseExpr(E);
       ExprFlushToAX(E);
       EmitInstrA('POP', 'DI');  { cle }
-      EmitInstrAB('MOV', 'BX', 'WORD PTR [SP+2]'); { table (sous la cle) }
+      EmitInstrAB('MOV', 'BX', '[SP]'); { table ptr (sous la cle POP-ee) }
       EmitInstrA('CALL', LUA_RT_PFX + 'TSET');
     End
     Else
