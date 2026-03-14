@@ -19,7 +19,7 @@
 {  TODO 01 [IMPLEMENTE] - Architecture de base, constantes et types internes   }
 {  TODO 02 [IMPLEMENTE] - Lexeur : lecture source et tokenisation              }
 {  TODO 03 [IMPLEMENTE] - Gestion des erreurs, des avertissements et du bilan }
-{  TODO 04 - Bassin de constantes (Constant Pool) : structures et gestion     }
+{  TODO 04 [IMPLEMENTE] - Bassin de constantes (Constant Pool) : structures et gestion }
 {  TODO 05 - Ecriture binaire du fichier .class (Big-endian)                  }
 {  TODO 06 - Directives de classe (.class, .super, .implements, .source)      }
 {  TODO 07 - Directives de champs (.field avec descripteurs et valeurs)       }
@@ -397,6 +397,27 @@ Procedure ErrorAt(line: Integer; Const msg: String); Forward;
 Procedure SkipToEOL; Forward;
 Procedure SkipToDirective; Forward;
 Procedure BilanAssemblage; Forward;
+
+{ --- Declarations forward TODO 04 : Bassin de constantes (Constant Pool) --- }
+Procedure CPInit; Forward;
+Function  CPAddUtf8(Const s: String): Integer; Forward;
+Function  CPAddInteger(n: LongInt): Integer; Forward;
+Function  CPAddFloat(f: Real): Integer; Forward;
+Function  CPAddLong(hi, lo: LongInt): Integer; Forward;
+Function  CPAddDouble(hi, lo: LongInt): Integer; Forward;
+Function  CPAddClass(Const name: String): Integer; Forward;
+Function  CPAddString(Const s: String): Integer; Forward;
+Function  CPAddNameAndType(Const name, desc: String): Integer; Forward;
+Function  CPAddFieldRef(Const cls, name, desc: String): Integer; Forward;
+Function  CPAddMethodRef(Const cls, name, desc: String): Integer; Forward;
+Function  CPAddInterfaceMethodRef(Const cls, name, desc: String): Integer; Forward;
+Function  CPAddMethodHandle(kind, ref: Integer): Integer; Forward;
+Function  CPAddMethodType(Const desc: String): Integer; Forward;
+Function  CPAddInvokeDynamic(bootstrap, nat: Integer): Integer; Forward;
+Function  CPFind(tag: Integer; Const val: String): Integer; Forward;
+Function  CPEnsureUtf8(Const s: String): Integer; Forward;
+Function  CPEnsureClass(Const name: String): Integer; Forward;
+Function  CPEnsureNameAndType(Const name, desc: String): Integer; Forward;
 
 { ---------- Ouverture et fermeture du fichier source ---------- }
 
@@ -990,11 +1011,362 @@ Begin
 End;
 
 { ============================================================================ }
-{ Initialisation globale                                                       }
+{ Bassin de constantes (Constant Pool) : structures et gestion                 }
 { ============================================================================ }
 
-Procedure GlobalInit;
+{ --- CPInit : initialiser le bassin (entree 0 = inutilisee) --- }
+Procedure CPInit;
 Var i: Integer;
+Begin
+ CPCount := 1;  { entree 0 inutilisee dans la spec JVM }
+ For i := 0 to MAX_CP - 1 do
+ Begin
+  CPTab^[i].Tag      := CP_NONE;
+  CPTab^[i].StrVal   := '';
+  CPTab^[i].IntVal   := 0;
+  CPTab^[i].FloatVal := 0.0;
+  CPTab^[i].Ref1     := 0;
+  CPTab^[i].Ref2     := 0;
+  CPTab^[i].HiBytes  := 0;
+  CPTab^[i].LoBytes  := 0;
+ End;
+End;
+
+{ --- CPFind : rechercher une entree existante (deduplication) --- }
+{ Retourne l'index si trouvee, 0 sinon.                           }
+{ Pour CP_UTF8 : compare Tag et StrVal.                           }
+{ Pour CP_INTEGER : compare Tag et IntVal.                        }
+{ Pour CP_FLOAT : compare Tag et FloatVal.                        }
+{ Pour CP_CLASS/CP_STRING : compare Tag et Ref1.                  }
+{ Pour CP_NAMEANDTYPE : compare Tag, Ref1 et Ref2.               }
+{ Pour CP_FIELDREF/CP_METHODREF/CP_INTERFACEMETHODREF :           }
+{   compare Tag, Ref1 et Ref2.                                    }
+{ Pour CP_LONG/CP_DOUBLE : compare Tag, HiBytes et LoBytes.      }
+Function CPFind(tag: Integer; Const val: String): Integer;
+Var i: Integer;
+Begin
+ CPFind := 0;
+ For i := 1 to CPCount - 1 do
+ Begin
+  If CPTab^[i].Tag = tag Then
+  Begin
+   Case tag of
+    CP_UTF8:
+     If CPTab^[i].StrVal = val Then Begin CPFind := i; Exit; End;
+    CP_INTEGER:
+     If CPTab^[i].IntVal = StrToInt_(val) Then Begin CPFind := i; Exit; End;
+    CP_FLOAT:
+     { Pas de deduplication float par chaine, ignorer }
+     ;
+    CP_CLASS, CP_STRING:
+     If CPTab^[i].StrVal = val Then Begin CPFind := i; Exit; End;
+   End;
+  End;
+ End;
+End;
+
+{ --- CPAddUtf8 : ajouter CONSTANT_Utf8, retourner index --- }
+Function CPAddUtf8(Const s: String): Integer;
+Begin
+ If CPCount >= MAX_CP Then
+ Begin
+  Error('Constant Pool plein (max ' + IntToStr_(MAX_CP) + ')');
+  CPAddUtf8 := 0;
+  Exit;
+ End;
+ CPTab^[CPCount].Tag    := CP_UTF8;
+ CPTab^[CPCount].StrVal := s;
+ CPAddUtf8 := CPCount;
+ Inc(CPCount);
+End;
+
+{ --- CPAddInteger : ajouter CONSTANT_Integer --- }
+Function CPAddInteger(n: LongInt): Integer;
+Begin
+ If CPCount >= MAX_CP Then
+ Begin
+  Error('Constant Pool plein');
+  CPAddInteger := 0;
+  Exit;
+ End;
+ CPTab^[CPCount].Tag    := CP_INTEGER;
+ CPTab^[CPCount].IntVal := n;
+ CPAddInteger := CPCount;
+ Inc(CPCount);
+End;
+
+{ --- CPAddFloat : ajouter CONSTANT_Float --- }
+Function CPAddFloat(f: Real): Integer;
+Begin
+ If CPCount >= MAX_CP Then
+ Begin
+  Error('Constant Pool plein');
+  CPAddFloat := 0;
+  Exit;
+ End;
+ CPTab^[CPCount].Tag      := CP_FLOAT;
+ CPTab^[CPCount].FloatVal := f;
+ CPAddFloat := CPCount;
+ Inc(CPCount);
+End;
+
+{ --- CPAddLong : ajouter CONSTANT_Long (occupe 2 entrees) --- }
+Function CPAddLong(hi, lo: LongInt): Integer;
+Begin
+ If CPCount + 1 >= MAX_CP Then
+ Begin
+  Error('Constant Pool plein');
+  CPAddLong := 0;
+  Exit;
+ End;
+ CPTab^[CPCount].Tag     := CP_LONG;
+ CPTab^[CPCount].HiBytes := hi;
+ CPTab^[CPCount].LoBytes := lo;
+ CPAddLong := CPCount;
+ Inc(CPCount);
+ { Seconde entree inutilisable (spec JVM 4.4.5) }
+ CPTab^[CPCount].Tag := CP_NONE;
+ Inc(CPCount);
+End;
+
+{ --- CPAddDouble : ajouter CONSTANT_Double (occupe 2 entrees) --- }
+Function CPAddDouble(hi, lo: LongInt): Integer;
+Begin
+ If CPCount + 1 >= MAX_CP Then
+ Begin
+  Error('Constant Pool plein');
+  CPAddDouble := 0;
+  Exit;
+ End;
+ CPTab^[CPCount].Tag     := CP_DOUBLE;
+ CPTab^[CPCount].HiBytes := hi;
+ CPTab^[CPCount].LoBytes := lo;
+ CPAddDouble := CPCount;
+ Inc(CPCount);
+ { Seconde entree inutilisable (spec JVM 4.4.5) }
+ CPTab^[CPCount].Tag := CP_NONE;
+ Inc(CPCount);
+End;
+
+{ --- CPAddClass : ajouter CONSTANT_Class (ref vers Utf8) --- }
+Function CPAddClass(Const name: String): Integer;
+Var nameIdx: Integer;
+Begin
+ nameIdx := CPEnsureUtf8(name);
+ If CPCount >= MAX_CP Then
+ Begin
+  Error('Constant Pool plein');
+  CPAddClass := 0;
+  Exit;
+ End;
+ CPTab^[CPCount].Tag    := CP_CLASS;
+ CPTab^[CPCount].Ref1   := nameIdx;
+ CPTab^[CPCount].StrVal := name;  { garder le nom pour deduplication }
+ CPAddClass := CPCount;
+ Inc(CPCount);
+End;
+
+{ --- CPAddString : ajouter CONSTANT_String (ref vers Utf8) --- }
+Function CPAddString(Const s: String): Integer;
+Var utf8Idx: Integer;
+Begin
+ utf8Idx := CPEnsureUtf8(s);
+ If CPCount >= MAX_CP Then
+ Begin
+  Error('Constant Pool plein');
+  CPAddString := 0;
+  Exit;
+ End;
+ CPTab^[CPCount].Tag    := CP_STRING;
+ CPTab^[CPCount].Ref1   := utf8Idx;
+ CPTab^[CPCount].StrVal := s;  { garder la valeur pour deduplication }
+ CPAddString := CPCount;
+ Inc(CPCount);
+End;
+
+{ --- CPAddNameAndType : ajouter CONSTANT_NameAndType --- }
+Function CPAddNameAndType(Const name, desc: String): Integer;
+Var nameIdx, descIdx: Integer;
+Begin
+ nameIdx := CPEnsureUtf8(name);
+ descIdx := CPEnsureUtf8(desc);
+ If CPCount >= MAX_CP Then
+ Begin
+  Error('Constant Pool plein');
+  CPAddNameAndType := 0;
+  Exit;
+ End;
+ CPTab^[CPCount].Tag  := CP_NAMEANDTYPE;
+ CPTab^[CPCount].Ref1 := nameIdx;
+ CPTab^[CPCount].Ref2 := descIdx;
+ CPAddNameAndType := CPCount;
+ Inc(CPCount);
+End;
+
+{ --- CPAddFieldRef : ajouter CONSTANT_Fieldref --- }
+Function CPAddFieldRef(Const cls, name, desc: String): Integer;
+Var classIdx, natIdx: Integer;
+Begin
+ classIdx := CPEnsureClass(cls);
+ natIdx   := CPEnsureNameAndType(name, desc);
+ If CPCount >= MAX_CP Then
+ Begin
+  Error('Constant Pool plein');
+  CPAddFieldRef := 0;
+  Exit;
+ End;
+ CPTab^[CPCount].Tag  := CP_FIELDREF;
+ CPTab^[CPCount].Ref1 := classIdx;
+ CPTab^[CPCount].Ref2 := natIdx;
+ CPAddFieldRef := CPCount;
+ Inc(CPCount);
+End;
+
+{ --- CPAddMethodRef : ajouter CONSTANT_Methodref --- }
+Function CPAddMethodRef(Const cls, name, desc: String): Integer;
+Var classIdx, natIdx: Integer;
+Begin
+ classIdx := CPEnsureClass(cls);
+ natIdx   := CPEnsureNameAndType(name, desc);
+ If CPCount >= MAX_CP Then
+ Begin
+  Error('Constant Pool plein');
+  CPAddMethodRef := 0;
+  Exit;
+ End;
+ CPTab^[CPCount].Tag  := CP_METHODREF;
+ CPTab^[CPCount].Ref1 := classIdx;
+ CPTab^[CPCount].Ref2 := natIdx;
+ CPAddMethodRef := CPCount;
+ Inc(CPCount);
+End;
+
+{ --- CPAddInterfaceMethodRef : ajouter CONSTANT_InterfaceMethodref --- }
+Function CPAddInterfaceMethodRef(Const cls, name, desc: String): Integer;
+Var classIdx, natIdx: Integer;
+Begin
+ classIdx := CPEnsureClass(cls);
+ natIdx   := CPEnsureNameAndType(name, desc);
+ If CPCount >= MAX_CP Then
+ Begin
+  Error('Constant Pool plein');
+  CPAddInterfaceMethodRef := 0;
+  Exit;
+ End;
+ CPTab^[CPCount].Tag  := CP_INTERFACEMETHODREF;
+ CPTab^[CPCount].Ref1 := classIdx;
+ CPTab^[CPCount].Ref2 := natIdx;
+ CPAddInterfaceMethodRef := CPCount;
+ Inc(CPCount);
+End;
+
+{ --- CPAddMethodHandle : ajouter CONSTANT_MethodHandle --- }
+Function CPAddMethodHandle(kind, ref: Integer): Integer;
+Begin
+ If CPCount >= MAX_CP Then
+ Begin
+  Error('Constant Pool plein');
+  CPAddMethodHandle := 0;
+  Exit;
+ End;
+ CPTab^[CPCount].Tag  := CP_METHODHANDLE;
+ CPTab^[CPCount].Ref1 := kind;
+ CPTab^[CPCount].Ref2 := ref;
+ CPAddMethodHandle := CPCount;
+ Inc(CPCount);
+End;
+
+{ --- CPAddMethodType : ajouter CONSTANT_MethodType --- }
+Function CPAddMethodType(Const desc: String): Integer;
+Var descIdx: Integer;
+Begin
+ descIdx := CPEnsureUtf8(desc);
+ If CPCount >= MAX_CP Then
+ Begin
+  Error('Constant Pool plein');
+  CPAddMethodType := 0;
+  Exit;
+ End;
+ CPTab^[CPCount].Tag  := CP_METHODTYPE;
+ CPTab^[CPCount].Ref1 := descIdx;
+ CPAddMethodType := CPCount;
+ Inc(CPCount);
+End;
+
+{ --- CPAddInvokeDynamic : ajouter CONSTANT_InvokeDynamic --- }
+Function CPAddInvokeDynamic(bootstrap, nat: Integer): Integer;
+Begin
+ If CPCount >= MAX_CP Then
+ Begin
+  Error('Constant Pool plein');
+  CPAddInvokeDynamic := 0;
+  Exit;
+ End;
+ CPTab^[CPCount].Tag  := CP_INVOKEDYNAMIC;
+ CPTab^[CPCount].Ref1 := bootstrap;
+ CPTab^[CPCount].Ref2 := nat;
+ CPAddInvokeDynamic := CPCount;
+ Inc(CPCount);
+End;
+
+{ --- CPEnsureUtf8 : ajouter si absent, retourner index --- }
+Function CPEnsureUtf8(Const s: String): Integer;
+Var idx: Integer;
+Begin
+ idx := CPFind(CP_UTF8, s);
+ If idx <> 0 Then
+  CPEnsureUtf8 := idx
+ Else
+  CPEnsureUtf8 := CPAddUtf8(s);
+End;
+
+{ --- CPEnsureClass : ajouter si absent, retourner index --- }
+Function CPEnsureClass(Const name: String): Integer;
+Var i: Integer;
+Begin
+ { Chercher une entree CP_CLASS existante avec ce nom }
+ For i := 1 to CPCount - 1 do
+ Begin
+  If (CPTab^[i].Tag = CP_CLASS) And (CPTab^[i].StrVal = name) Then
+  Begin
+   CPEnsureClass := i;
+   Exit;
+  End;
+ End;
+ CPEnsureClass := CPAddClass(name);
+End;
+
+{ --- CPEnsureNameAndType : ajouter si absent, retourner index --- }
+Function CPEnsureNameAndType(Const name, desc: String): Integer;
+Var i: Integer; nameIdx, descIdx: Integer;
+Begin
+ nameIdx := CPEnsureUtf8(name);
+ descIdx := CPEnsureUtf8(desc);
+ { Chercher une entree CP_NAMEANDTYPE existante avec memes refs }
+ For i := 1 to CPCount - 1 do
+ Begin
+  If (CPTab^[i].Tag = CP_NAMEANDTYPE) And
+     (CPTab^[i].Ref1 = nameIdx) And (CPTab^[i].Ref2 = descIdx) Then
+  Begin
+   CPEnsureNameAndType := i;
+   Exit;
+  End;
+ End;
+ { Pas trouvee, ajouter directement (les Utf8 existent deja) }
+ If CPCount >= MAX_CP Then
+ Begin
+  Error('Constant Pool plein');
+  CPEnsureNameAndType := 0;
+  Exit;
+ End;
+ CPTab^[CPCount].Tag  := CP_NAMEANDTYPE;
+ CPTab^[CPCount].Ref1 := nameIdx;
+ CPTab^[CPCount].Ref2 := descIdx;
+ CPEnsureNameAndType := CPCount;
+ Inc(CPCount);
+End;
+
+Procedure GlobalInit;
 Begin
  OutFileName   := '';
  OutDir        := '';
@@ -1027,19 +1399,8 @@ Begin
  New(FieldTab);
  New(MethodTab);
 
- { Initialiser le Constant Pool (entree 0 inutilisee) }
- CPCount := 1;
- For i := 0 to MAX_CP - 1 do
- Begin
-  CPTab^[i].Tag     := CP_NONE;
-  CPTab^[i].StrVal  := '';
-  CPTab^[i].IntVal  := 0;
-  CPTab^[i].FloatVal:= 0.0;
-  CPTab^[i].Ref1    := 0;
-  CPTab^[i].Ref2    := 0;
-  CPTab^[i].HiBytes := 0;
-  CPTab^[i].LoBytes := 0;
- End;
+ { Initialiser le Constant Pool via CPInit (TODO 04) }
+ CPInit;
 
  FieldCount  := 0;
  MethodCount := 0;
@@ -1130,7 +1491,7 @@ Begin
  BilanAssemblage;
 
  WriteLn;
- WriteLn('(Assemblage non encore implemente - voir TODOs 04 a 25)');
+ WriteLn('(Assemblage non encore implemente - voir TODOs 05 a 25)');
 
  SrcClose;
  GlobalCleanup;
