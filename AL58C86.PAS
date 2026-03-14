@@ -207,7 +207,7 @@
               Chaque clause peut etre un element, step-until ou while
             Boucle vide : si init > limit avec step positif, ne pas executer
 
-  TODO 15 - TABLEAUX (ARRAY)
+  TODO 15 - TABLEAUX (ARRAY) [IMPLEMENTE]
             Declaration : array A[lo:hi] ou array A[lo1:hi1, lo2:hi2]
               Bornes entieres connues a la compilation
               Taille = (hi - lo + 1) * sizeof(element) par dimension
@@ -697,6 +697,8 @@ Procedure ParseReadStmt(IsLn : Boolean); Forward;
 Procedure ParseIfStmt; Forward;
 { TODO 14 - Boucles For }
 Procedure ParseForStmt; Forward;
+{ TODO 15 - Tableaux (Array) }
+Procedure ParseArrayDecl(TyIdx : Integer); Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -2733,8 +2735,253 @@ Begin
 End;
 
 { ============================================================
-  TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
+  TODO 15 - TABLEAUX (ARRAY) [IMPLEMENTE]
   ============================================================ }
+
+{ ---- ParseArrayDecl : declaration de tableau ------------------- }
+{ Syntaxe attendue : le mot-cle 'array' est le token courant.      }
+{   integer array A[lo:hi] ;                                       }
+{   integer array B[lo1:hi1, lo2:hi2] ;                            }
+{   real array C[0:9] ;                                            }
+{ Bornes lo et hi sont des constantes entieres.                    }
+{ Le tableau est alloue dans DATA (global) avec label _A58ARR_nom }
+{ ou sur la pile (local) via SUB SP, taille.                       }
+Procedure ParseArrayDecl(TyIdx : Integer);
+Var
+  AName     : TString;
+  Idx       : Integer;
+  Lo1, Hi1  : Integer;
+  Lo2, Hi2  : Integer;
+  NDims     : Integer;
+  ElemCount : Integer;
+  NS        : TString;
+Begin
+  { 'array' est le token courant }
+  ParserAdvance;  { consommer 'array' }
+
+  { Attendre un identificateur }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('identificateur attendu apres ''array''');
+    Exit;
+  End;
+  AName := CurToken.Val;
+  ParserAdvance;  { consommer le nom }
+
+  Lo1 := 0; Hi1 := 0;
+  Lo2 := 0; Hi2 := 0;
+  NDims := 1;
+
+  { Attendre [ bornes ] }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
+  Begin
+    ParserAdvance;  { consommer [ }
+
+    { Premiere dimension : lo:hi }
+    If CurToken.Kind = TK_INTEGER Then
+    Begin
+      Lo1 := CurToken.IntVal;
+      ParserAdvance;  { consommer lo }
+    End
+    Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '-') Then
+    Begin
+      ParserAdvance;  { consommer - }
+      If CurToken.Kind = TK_INTEGER Then
+      Begin
+        Lo1 := -CurToken.IntVal;
+        ParserAdvance;
+      End;
+    End
+    Else
+      CompileError('borne inferieure entiere attendue');
+
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+      ParserAdvance  { consommer : }
+    Else
+      CompileError(': attendu entre les bornes du tableau');
+
+    If CurToken.Kind = TK_INTEGER Then
+    Begin
+      Hi1 := CurToken.IntVal;
+      ParserAdvance;  { consommer hi }
+    End
+    Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '-') Then
+    Begin
+      ParserAdvance;  { consommer - }
+      If CurToken.Kind = TK_INTEGER Then
+      Begin
+        Hi1 := -CurToken.IntVal;
+        ParserAdvance;
+      End;
+    End
+    Else
+      CompileError('borne superieure entiere attendue');
+
+    { Virgule -> seconde dimension }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+    Begin
+      ParserAdvance;  { consommer , }
+      NDims := 2;
+
+      If CurToken.Kind = TK_INTEGER Then
+      Begin
+        Lo2 := CurToken.IntVal;
+        ParserAdvance;
+      End
+      Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '-') Then
+      Begin
+        ParserAdvance;
+        If CurToken.Kind = TK_INTEGER Then
+        Begin
+          Lo2 := -CurToken.IntVal;
+          ParserAdvance;
+        End;
+      End
+      Else
+        CompileError('borne inferieure entiere attendue (dim 2)');
+
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+        ParserAdvance
+      Else
+        CompileError(': attendu entre les bornes (dim 2)');
+
+      If CurToken.Kind = TK_INTEGER Then
+      Begin
+        Hi2 := CurToken.IntVal;
+        ParserAdvance;
+      End
+      Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '-') Then
+      Begin
+        ParserAdvance;
+        If CurToken.Kind = TK_INTEGER Then
+        Begin
+          Hi2 := -CurToken.IntVal;
+          ParserAdvance;
+        End;
+      End
+      Else
+        CompileError('borne superieure entiere attendue (dim 2)');
+    End;
+
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+      ParserAdvance  { consommer ] }
+    Else
+      CompileError('] attendu apres les bornes du tableau');
+  End
+  Else
+    CompileError('[ attendu apres le nom du tableau');
+
+  { Calculer le nombre total d elements }
+  If NDims = 1 Then
+    ElemCount := Hi1 - Lo1 + 1
+  Else
+    ElemCount := (Hi1 - Lo1 + 1) * (Hi2 - Lo2 + 1);
+  If ElemCount < 1 Then ElemCount := 1;
+
+  { Ajouter le symbole dans la table }
+  Idx := SymAdd(AName, SK_ARRAY, TyIdx, Lo1);
+  If Idx >= 0 Then
+  Begin
+    { Stocker les bornes dans Offset pour lo1 (utilise par EmitArrayAccess) }
+    SymTab[Idx].ScopeLevel := CurScope;
+
+    If CurFnDepth = 0 Then
+    Begin
+      { Tableau global : allouer dans DATA }
+      DataAddArray(SymTab[Idx].MangledName, ElemCount);
+    End
+    Else
+    Begin
+      { Tableau local : allouer sur la pile }
+      Str(ElemCount * 2, NS);
+      EmitInstr('SUB', 'SP, ' + NS);
+      Inc(CurFrameSize, ElemCount);
+    End;
+  End;
+
+  { Consommer le ; separateur s il est present }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
+End;
+
+{ ---- ParseArrayAssign : affectation d element de tableau ------- }
+{ Syntaxe : ident (deja consomme) [ expr ] := expr ;              }
+{ Genere :                                                         }
+{   eval index -> SI = index * 2                                   }
+{   MOV BX, OFFSET _A58ARR_nom                                    }
+{   PUSH BX / PUSH SI                                             }
+{   eval rhs -> AX                                                }
+{   POP SI / POP BX                                               }
+{   MOV [BX+SI], AX                                               }
+Procedure ParseArrayAssign(VarIdx : Integer);
+Var
+  IdxE  : TExprVal;
+  RhsE  : TExprVal;
+Begin
+  { Consommer [ }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
+    ParserAdvance
+  Else
+  Begin
+    CompileError('[ attendu pour l''acces tableau');
+    Exit;
+  End;
+
+  { Evaluer l expression d index }
+  ParseExpr(IdxE);
+  ExprFlushToAX(IdxE);
+
+  { Convertir en offset octets : index * 2 (mots 16 bits) }
+  EmitInstr('SHL', 'AX, 1');
+  EmitInstr('MOV', 'SI, AX');
+
+  { Seconde dimension (virgule -> deuxieme index) }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+  Begin
+    ParserAdvance;  { consommer , }
+    EmitInstr('PUSH', 'SI');  { sauvegarder premier index }
+    ParseExpr(IdxE);
+    ExprFlushToAX(IdxE);
+    EmitInstr('SHL', 'AX, 1');
+    EmitInstr('POP', 'SI');
+    EmitInstr('ADD', 'SI, AX');  { combiner les deux indices }
+  End;
+
+  { Consommer ] }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+    ParserAdvance
+  Else
+    CompileError('] attendu apres l''index du tableau');
+
+  { Charger l adresse de base du tableau }
+  EmitInstr('MOV', 'BX, OFFSET ' + SymTab[VarIdx].MangledName);
+
+  { Sauvegarder BX et SI avant d evaluer le rhs }
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('PUSH', 'SI');
+
+  { Consommer := }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
+    ParserAdvance
+  Else
+  Begin
+    CompileError(':= attendu dans l''affectation de tableau');
+    EmitInstr('POP', 'SI');
+    EmitInstr('POP', 'BX');
+    Exit;
+  End;
+
+  { Evaluer l expression a droite }
+  ParseExpr(RhsE);
+  ExprFlushToAX(RhsE);
+
+  { Restaurer SI et BX }
+  EmitInstr('POP', 'SI');
+  EmitInstr('POP', 'BX');
+
+  { Stocker AX dans le tableau : [BX+SI] = AX }
+  EmitInstr('MOV', '[BX+SI], AX');
+End;
 
 { ---- SymNameClean : assainir un identificateur pour ASM ------ }
 { Remplace les caracteres non alphanumeriques par '_'.           }
@@ -3234,9 +3481,15 @@ Begin
   End;
   ParserAdvance;  { consommer le mot-cle de type }
 
-  { Si le token suivant est 'array' ou 'procedure' on quitte }
-  If (CurToken.Kind = TK_KEYWORD) And
-     ((CurToken.Val = 'array') Or (CurToken.Val = 'procedure')) Then
+  { Si le token suivant est 'array' -> declaration de tableau (TODO 15) }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'array') Then
+  Begin
+    ParseArrayDecl(TyIdx);
+    Exit;
+  End;
+
+  { Si le token suivant est 'procedure' on quitte }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'procedure') Then
     Exit;
 
   { Boucle : ident [, ident]* }
@@ -3422,14 +3675,24 @@ Begin
     Exit;
   End;
 
-  { Affectation ou expression : ident := expr }
+  { Affectation ou expression : ident := expr / ident[i] := expr }
   If CurToken.Kind = TK_IDENT Then
   Begin
     VarName := CurToken.Val;
     VarIdx  := SymFind(VarName);
     ParserAdvance;  { consommer l ident }
 
-    { Affectation }
+    { Affectation de tableau : ident [ expr ] := expr (TODO 15) }
+    If (VarIdx >= 0) And (SymTab[VarIdx].Kind = SK_ARRAY) And
+       (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
+    Begin
+      ParseArrayAssign(VarIdx);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+      Exit;
+    End;
+
+    { Affectation scalaire }
     If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
     Begin
       If VarIdx < 0 Then
