@@ -1,0 +1,546 @@
+==============================================================================
+    RESULTATS DES TESTS TPCW32 AVEC LE PROJET CORAIL
+==============================================================================
+
+Test de compilation des 480 fichiers .PAS du depot gladir/corail
+(https://github.com/gladir/corail) avec TPCW32.
+
+Date:       Mars 2026
+Compilateur: TPCW32.PAS compile avec fpc -Mtp (18075 lignes)
+Timeout:    5 secondes par fichier
+Script:     TESTS/test_corail.sh
+
+==============================================================================
+RESUME
+==============================================================================
+
+  Total:       480 fichiers
+  Succes:      377 (78%)
+  Echecs:       1  (0%)
+  Timeouts:   102  (21%)
+
+==============================================================================
+FICHIERS EN ECHEC (1)
+==============================================================================
+
+  123.PAS - Erreur d'execution 205 (depassement de flottant)
+            Ce fichier de 36 Ko emule un tableur de type Lotus 1-2-3
+            et utilise des constructions complexes.
+
+==============================================================================
+FICHIERS EN TIMEOUT (102)
+==============================================================================
+
+  Ces fichiers causent un blocage du parseur (boucle infinie probable)
+  lorsque TPCW32 tente de les compiler. Les causes communes incluent :
+
+  - Types enumeres en ligne dans les declarations de variables
+  - Fonctions High()/Low() sur des tableaux
+  - Type Real et operations flottantes complexes
+  - Type LongInt avec operations avancees
+  - Fichiers volumineux avec de nombreux Case/Record imbriques
+  - Declarations de types complexes (Record avec variants, etc.)
+
+  [TIMEOUT] ASCII.PAS
+  [TIMEOUT] ASM8080.PAS
+  [TIMEOUT] ASM86.PAS
+  [TIMEOUT] ASMZ80.PAS
+  [TIMEOUT] ASSIGN.PAS
+  [TIMEOUT] BERR.PAS
+  [TIMEOUT] BIN2BGI.PAS
+  [TIMEOUT] BMP2PAS.PAS
+  [TIMEOUT] BMP2PSP.PAS
+  [TIMEOUT] BMP2XBM.PAS
+  [TIMEOUT] C.PAS
+  [TIMEOUT] CDCMD.PAS
+  [TIMEOUT] CHKDSK.PAS
+  [TIMEOUT] CHMOD.PAS
+  [TIMEOUT] CKCMOS.PAS
+  [TIMEOUT] CLOCK.PAS
+  [TIMEOUT] COMBASE.PAS
+  [TIMEOUT] CPP.PAS
+  [TIMEOUT] CV.PAS
+  [TIMEOUT] D3ERR.PAS
+  [TIMEOUT] DEBUG.PAS
+  [TIMEOUT] DEBUG32.PAS
+  [TIMEOUT] DELQ.PAS
+  [TIMEOUT] DIRST.PAS
+  [TIMEOUT] DIS6502.PAS
+  [TIMEOUT] DIS8080.PAS
+  [TIMEOUT] DIS8086.PAS
+  [TIMEOUT] DISKCOMP.PAS
+  [TIMEOUT] DISKCOPY.PAS
+  [TIMEOUT] DISKEDIT.PAS
+  [TIMEOUT] DISKINFO.PAS
+  [TIMEOUT] DISZ80.PAS
+  [TIMEOUT] DOSDIR.PAS
+  [TIMEOUT] DOSERR.PAS
+  [TIMEOUT] DOSKEY.PAS
+  [TIMEOUT] DOSSHELL.PAS
+  [TIMEOUT] E.PAS
+  [TIMEOUT] ED.PAS
+  [TIMEOUT] EDIT.PAS
+  [TIMEOUT] EDLIN.PAS
+  [TIMEOUT] EM.PAS
+  [TIMEOUT] ERROR.PAS
+  [TIMEOUT] EVAL.PAS
+  [TIMEOUT] EXE2BIN.PAS
+  [TIMEOUT] EXEPACK.PAS
+  [TIMEOUT] FDISK.PAS
+  [TIMEOUT] FILE.PAS
+  [TIMEOUT] FREE.PAS
+  [TIMEOUT] FROMEXE.PAS
+  [TIMEOUT] GEODELTA.PAS
+  [TIMEOUT] GREP.PAS
+  [TIMEOUT] HEAD.PAS
+  [TIMEOUT] HEX2DEC.PAS
+  [TIMEOUT] HEXIT.PAS
+  [TIMEOUT] ISBN.PAS
+  [TIMEOUT] LASTLOG.PAS
+  [TIMEOUT] MD5.PAS
+  [TIMEOUT] MD5BRUTE.PAS
+  [TIMEOUT] MIRROR.PAS
+  [TIMEOUT] NCEDIT.PAS
+  [TIMEOUT] NUMBER.PAS
+  [TIMEOUT] OCT2DEC.PAS
+  [TIMEOUT] PERL.PAS
+  [TIMEOUT] PPM2C.PAS
+  [TIMEOUT] PPM2CSP.PAS
+  [TIMEOUT] PPM2PAS.PAS
+  [TIMEOUT] PPM2PSP.PAS
+  [TIMEOUT] PPM2PY.PAS
+  [TIMEOUT] PPM2RUBY.PAS
+  [TIMEOUT] PPM2XBM.PAS
+  [TIMEOUT] PYTHON.PAS
+  [TIMEOUT] QB2BBC.PAS
+  [TIMEOUT] QBERR.PAS
+  [TIMEOUT] QP.PAS
+  [TIMEOUT] QPERR.PAS
+  [TIMEOUT] REPLACE.PAS
+  [TIMEOUT] REXX.PAS
+  [TIMEOUT] SVG2LSP.PAS
+  [TIMEOUT] SYMDEB.PAS
+  [TIMEOUT] T-CHAR.PAS
+  [TIMEOUT] TAIL.PAS
+  [TIMEOUT] TD.PAS
+  [TIMEOUT] VI.PAS
+  [TIMEOUT] VIEWBMP.PAS
+  [TIMEOUT] VIEWHEX.PAS
+  [TIMEOUT] VIEWLSP.PAS
+  [TIMEOUT] VIEWPPM.PAS
+  [TIMEOUT] VIEWSVG.PAS
+  [TIMEOUT] VIEWXBM.PAS
+  [TIMEOUT] VT100.PAS
+  [TIMEOUT] WIPECMOS.PAS
+  [TIMEOUT] XBM2ASM.PAS
+  [TIMEOUT] XBM2BAS.PAS
+  [TIMEOUT] XBM2BGX.PAS
+  [TIMEOUT] XBM2C.PAS
+  [TIMEOUT] XBM2CSP.PAS
+  [TIMEOUT] XBM2PAS.PAS
+  [TIMEOUT] XBM2PPM.PAS
+  [TIMEOUT] XBM2PSP.PAS
+  [TIMEOUT] XBM2PY.PAS
+  [TIMEOUT] XBM2RUBY.PAS
+  [TIMEOUT] YMODEM.PAS
+
+==============================================================================
+FICHIERS QUI PASSENT (377)
+==============================================================================
+
+  [OK]      4DOS.PAS
+  [OK]      AC.PAS
+  [OK]      ACALC.PAS
+  [OK]      ACCESS.PAS
+  [OK]      ADAM.PAS
+  [OK]      AMIGADOS.PAS
+  [OK]      APPEND.PAS
+  [OK]      APPLEDOS.PAS
+  [OK]      APPLY.PAS
+  [OK]      ARJ.PAS
+  [OK]      ASC2ABAP.PAS
+  [OK]      ASC2ADA.PAS
+  [OK]      ASC2AS.PAS
+  [OK]      ASC2ASP.PAS
+  [OK]      ASC2AWK.PAS
+  [OK]      ASC2BAS.PAS
+  [OK]      ASC2BASH.PAS
+  [OK]      ASC2BCPL.PAS
+  [OK]      ASC2C.PAS
+  [OK]      ASC2CFM.PAS
+  [OK]      ASC2CPP.PAS
+  [OK]      ASC2CS.PAS
+  [OK]      ASC2CSP.PAS
+  [OK]      ASC2JAVA.PAS
+  [OK]      ASC2JS.PAS
+  [OK]      ASC2JSP.PAS
+  [OK]      ASC2LOGO.PAS
+  [OK]      ASC2LSS.PAS
+  [OK]      ASC2PAS.PAS
+  [OK]      ASC2PERL.PAS
+  [OK]      ASC2PHP.PAS
+  [OK]      ASC2PSP.PAS
+  [OK]      ASC2PY.PAS
+  [OK]      ASC2QB.PAS
+  [OK]      ASC2REXX.PAS
+  [OK]      ASC2RUBY.PAS
+  [OK]      ASC2SAS.PAS
+  [OK]      ASM6502.PAS
+  [OK]      ATTRIB.PAS
+  [OK]      AWK.PAS
+  [OK]      BANNER.PAS
+  [OK]      BAR.PAS
+  [OK]      BASE64.PAS
+  [OK]      BASENAME.PAS
+  [OK]      BASH.PAS
+  [OK]      BASIC.PAS
+  [OK]      BASICA.PAS
+  [OK]      BE.PAS
+  [OK]      BEAUTIFY.PAS
+  [OK]      BGX2XBM.PAS
+  [OK]      BIN2ASM.PAS
+  [OK]      BIN2BAS.PAS
+  [OK]      BIN2C.PAS
+  [OK]      BIN2CPP.PAS
+  [OK]      BIN2CSP.PAS
+  [OK]      BIN2PAS.PAS
+  [OK]      BIN2PSP.PAS
+  [OK]      BUILD.PAS
+  [OK]      C128.PAS
+  [OK]      C40.PAS
+  [OK]      C64.PAS
+  [OK]      C80.PAS
+  [OK]      CAL.PAS
+  [OK]      CAT.PAS
+  [OK]      CATALOG.PAS
+  [OK]      CATCSV.PAS
+  [OK]      CB.PAS
+  [OK]      CC.PAS
+  [OK]      CHCP.PAS
+  [OK]      CHD.PAS
+  [OK]      CHECKIT.PAS
+  [OK]      CHOICE.PAS
+  [OK]      CHSH.PAS
+  [OK]      CKLAN.PAS
+  [OK]      CKSUM.PAS
+  [OK]      CLEAR.PAS
+  [OK]      CLICK.PAS
+  [OK]      CMD.PAS
+  [OK]      CMDSAVE.PAS
+  [OK]      COBOL.PAS
+  [OK]      COCO3.PAS
+  [OK]      COLUMN.PAS
+  [OK]      COMM.PAS
+  [OK]      COMMAND.PAS
+  [OK]      COMP.PAS
+  [OK]      CP.PAS
+  [OK]      CP2GAT.PAS
+  [OK]      CPM86.PAS
+  [OK]      CPUCHECK.PAS
+  [OK]      CPUTEST.PAS
+  [OK]      CREATE.PAS
+  [OK]      CSH.PAS
+  [OK]      CSPLIT.PAS
+  [OK]      CSV2ASM.PAS
+  [OK]      CSV2BAS.PAS
+  [OK]      CSV2C.PAS
+  [OK]      CSV2CPP.PAS
+  [OK]      CSV2CS.PAS
+  [OK]      CSV2CSP.PAS
+  [OK]      CSV2HTML.PAS
+  [OK]      CSV2JS.PAS
+  [OK]      CSV2JSON.PAS
+  [OK]      CSV2MD.PAS
+  [OK]      CSV2PAS.PAS
+  [OK]      CSV2PSP.PAS
+  [OK]      CSV2QB.PAS
+  [OK]      CSV2SQL.PAS
+  [OK]      CSV2TSV.PAS
+  [OK]      CSV2WK1.PAS
+  [OK]      CSV2XML.PAS
+  [OK]      CSV2YAML.PAS
+  [OK]      CSVFAKER.PAS
+  [OK]      CSVQUOTE.PAS
+  [OK]      CURL.PAS
+  [OK]      CUT.PAS
+  [OK]      CYGSTART.PAS
+  [OK]      CYRIXCPU.PAS
+  [OK]      D2U.PAS
+  [OK]      DBASE.PAS
+  [OK]      DBF2C.PAS
+  [OK]      DBF2CPP.PAS
+  [OK]      DBF2CS.PAS
+  [OK]      DBF2CSP.PAS
+  [OK]      DBF2CSV.PAS
+  [OK]      DBF2HTML.PAS
+  [OK]      DBF2JS.PAS
+  [OK]      DBF2JSON.PAS
+  [OK]      DBF2PAS.PAS
+  [OK]      DBF2PHP.PAS
+  [OK]      DBF2PSP.PAS
+  [OK]      DBF2SQL.PAS
+  [OK]      DBF2XML.PAS
+  [OK]      DD.PAS
+  [OK]      DELDIR.PAS
+  [OK]      DELETE.PAS
+  [OK]      DELTREE.PAS
+  [OK]      DESTROY.PAS
+  [OK]      DF.PAS
+  [OK]      DI.PAS
+  [OK]      DIR.PAS
+  [OK]      DIR64.PAS
+  [OK]      DIRNAME.PAS
+  [OK]      DIS6809.PAS
+  [OK]      DIS68K.PAS
+  [OK]      DISCIL.PAS
+  [OK]      DISKPART.PAS
+  [OK]      DISPLAY.PAS
+  [OK]      DIVT.PAS
+  [OK]      DOS2UNIX.PAS
+  [OK]      DRDOS.PAS
+  [OK]      DU.PAS
+  [OK]      DUMP.PAS
+  [OK]      ECHO.PAS
+  [OK]      EMSTEST.PAS
+  [OK]      ENV.PAS
+  [OK]      EQUIP.PAS
+  [OK]      EXEHEAD.PAS
+  [OK]      EXPAND.PAS
+  [OK]      FA.PAS
+  [OK]      FACTOR.PAS
+  [OK]      FALSE.PAS
+  [OK]      FC.PAS
+  [OK]      FILEATTR.PAS
+  [OK]      FIND.PAS
+  [OK]      FINGER.PAS
+  [OK]      FLEX.PAS
+  [OK]      FLIPFLOP.PAS
+  [OK]      FLOAD.PAS
+  [OK]      FMT.PAS
+  [OK]      FOLD.PAS
+  [OK]      FORMAT.PAS
+  [OK]      FROMELF.PAS
+  [OK]      FS.PAS
+  [OK]      GAT2TXT.PAS
+  [OK]      GETCLIP.PAS
+  [OK]      GETENT.PAS
+  [OK]      GETGUID.PAS
+  [OK]      GETMAC.PAS
+  [OK]      GETTEXT.PAS
+  [OK]      GRAFTABL.PAS
+  [OK]      GREP2MSG.PAS
+  [OK]      GROUPDEL.PAS
+  [OK]      GROUPS.PAS
+  [OK]      GUID.PAS
+  [OK]      GWBASIC.PAS
+  [OK]      HALT.PAS
+  [OK]      HD.PAS
+  [OK]      HDPARK.PAS
+  [OK]      HEXDUMP.PAS
+  [OK]      HOSTNAME.PAS
+  [OK]      HTML.PAS
+  [OK]      HTML2TXT.PAS
+  [OK]      HYPHEN.PAS
+  [OK]      ICO2ASM.PAS
+  [OK]      ICO2BAS.PAS
+  [OK]      ICO2C.PAS
+  [OK]      ICO2CSP.PAS
+  [OK]      ICO2PAS.PAS
+  [OK]      ICO2PPM.PAS
+  [OK]      ICO2PSP.PAS
+  [OK]      ICO2PY.PAS
+  [OK]      ICO2RUBY.PAS
+  [OK]      ICO2XBM.PAS
+  [OK]      ICONV.PAS
+  [OK]      ID.PAS
+  [OK]      IMG2HTML.PAS
+  [OK]      INFO.PAS
+  [OK]      IPCONFIG.PAS
+  [OK]      ISEMAIL.PAS
+  [OK]      JO.PAS
+  [OK]      JOIN.PAS
+  [OK]      JOT.PAS
+  [OK]      JSON2XML.PAS
+  [OK]      JSON2YML.PAS
+  [OK]      JSONFAKE.PAS
+  [OK]      KSH.PAS
+  [OK]      L43.PAS
+  [OK]      LABEL.PAS
+  [OK]      LESS.PAS
+  [OK]      LINE.PAS
+  [OK]      LOGNAME.PAS
+  [OK]      LOGO.PAS
+  [OK]      LOOK.PAS
+  [OK]      LP.PAS
+  [OK]      LS.PAS
+  [OK]      MAKDIR.PAS
+  [OK]      MAKEDIR.PAS
+  [OK]      MD5BATCH.PAS
+  [OK]      MD5MATCH.PAS
+  [OK]      MDT.PAS
+  [OK]      MEM.PAS
+  [OK]      MKEYRATE.PAS
+  [OK]      MKTEMP.PAS
+  [OK]      MODE.PAS
+  [OK]      MORE.PAS
+  [OK]      MORSE.PAS
+  [OK]      MOVE.PAS
+  [OK]      MPA2PAL.PAS
+  [OK]      MS.PAS
+  [OK]      MSD.PAS
+  [OK]      MSXBASIC.PAS
+  [OK]      MSXDOS.PAS
+  [OK]      MV.PAS
+  [OK]      NC.PAS
+  [OK]      NDOS.PAS
+  [OK]      NET.PAS
+  [OK]      NEWER.PAS
+  [OK]      NL.PAS
+  [OK]      NORTON.PAS
+  [OK]      OD.PAS
+  [OK]      OS2CMD.PAS
+  [OK]      OS9.PAS
+  [OK]      PCIINFO.PAS
+  [OK]      PCTOOLS.PAS
+  [OK]      PG.PAS
+  [OK]      PHOTORAM.PAS
+  [OK]      PIFINFO.PAS
+  [OK]      POWER.PAS
+  [OK]      PP.PAS
+  [OK]      PR.PAS
+  [OK]      PRINT.PAS
+  [OK]      PRINTENV.PAS
+  [OK]      PRINTF.PAS
+  [OK]      PROTECT.PAS
+  [OK]      PS.PAS
+  [OK]      PW.PAS
+  [OK]      PWD.PAS
+  [OK]      PXD.PAS
+  [OK]      RANDOM.PAS
+  [OK]      RAW2WAV.PAS
+  [OK]      REALPATH.PAS
+  [OK]      REBOOT.PAS
+  [OK]      RENDIR.PAS
+  [OK]      RM.PAS
+  [OK]      RMUSER.PAS
+  [OK]      ROMDATE.PAS
+  [OK]      ROT13.PAS
+  [OK]      ROT13C5D.PAS
+  [OK]      RTF2TXT.PAS
+  [OK]      RTMRES.PAS
+  [OK]      RUN6502.PAS
+  [OK]      RUNZ80.PAS
+  [OK]      SAS.PAS
+  [OK]      SASS.PAS
+  [OK]      SCREEN.PAS
+  [OK]      SD.PAS
+  [OK]      SDIFF.PAS
+  [OK]      SEARCH.PAS
+  [OK]      SEQ.PAS
+  [OK]      SETIME.PAS
+  [OK]      SH.PAS
+  [OK]      SHIPTRAK.PAS
+  [OK]      SHOWVECT.PAS
+  [OK]      SLEEP.PAS
+  [OK]      SORT.PAS
+  [OK]      SPEED.PAS
+  [OK]      SPLIT.PAS
+  [OK]      SQL2CSV.PAS
+  [OK]      SQL2DBF.PAS
+  [OK]      SQL2HTML.PAS
+  [OK]      SQL2JSON.PAS
+  [OK]      SQL2XML.PAS
+  [OK]      STAT.PAS
+  [OK]      STRINGS.PAS
+  [OK]      SUBMIT.PAS
+  [OK]      SUBST.PAS
+  [OK]      SUM.PAS
+  [OK]      SYSINFO.PAS
+  [OK]      TAB.PAS
+  [OK]      TABSPACE.PAS
+  [OK]      TAC.PAS
+  [OK]      TASKKILL.PAS
+  [OK]      TASKLIST.PAS
+  [OK]      TB.PAS
+  [OK]      TCC2MSG.PAS
+  [OK]      TEE.PAS
+  [OK]      TIME.PAS
+  [OK]      TIMEOUT.PAS
+  [OK]      TM.PAS
+  [OK]      TOD.PAS
+  [OK]      TOKEN2BAS.PAS
+  [OK]      TOUCH.PAS
+  [OK]      TR.PAS
+  [OK]      TREE.PAS
+  [OK]      TRSDOS.PAS
+  [OK]      TRUE.PAS
+  [OK]      TRUENAME.PAS
+  [OK]      TRUNCATE.PAS
+  [OK]      TS.PAS
+  [OK]      TSV2ASM.PAS
+  [OK]      TSV2BAS.PAS
+  [OK]      TSV2C.PAS
+  [OK]      TSV2CPP.PAS
+  [OK]      TSV2CS.PAS
+  [OK]      TSV2CSP.PAS
+  [OK]      TSV2CSV.PAS
+  [OK]      TSV2HTML.PAS
+  [OK]      TSV2JS.PAS
+  [OK]      TSV2JSON.PAS
+  [OK]      TSV2MD.PAS
+  [OK]      TSV2PAS.PAS
+  [OK]      TSV2QB.PAS
+  [OK]      TSVFAKER.PAS
+  [OK]      TV.PAS
+  [OK]      TXT2RTF.PAS
+  [OK]      TYPE.PAS
+  [OK]      U2D.PAS
+  [OK]      UMASK.PAS
+  [OK]      UNAME.PAS
+  [OK]      UNBINSCII.PAS
+  [OK]      UNEXPAND.PAS
+  [OK]      UNIQ.PAS
+  [OK]      UNIX2DOS.PAS
+  [OK]      UNLINK.PAS
+  [OK]      UNTAB.PAS
+  [OK]      USERDEL.PAS
+  [OK]      UUDECODE.PAS
+  [OK]      UUENCODE.PAS
+  [OK]      VDIAG.PAS
+  [OK]      VER.PAS
+  [OK]      VERIFY.PAS
+  [OK]      VIEWASC.PAS
+  [OK]      VIEWBAS.PAS
+  [OK]      VIEWBGX.PAS
+  [OK]      VIEWCSV.PAS
+  [OK]      VIEWICO.PAS
+  [OK]      VOL.PAS
+  [OK]      WC.PAS
+  [OK]      WEBGRAPH.PAS
+  [OK]      WHICH.PAS
+  [OK]      WHOAMI.PAS
+  [OK]      WHOIS.PAS
+  [OK]      WIPEINFO.PAS
+  [OK]      XCOPY.PAS
+  [OK]      XMLFAKER.PAS
+  [OK]      YES.PAS
+  [OK]      ZFORCE.PAS
+
+==============================================================================
+COMMENT REPRODUIRE CE TEST
+==============================================================================
+
+  1. Compiler TPCW32 :
+     fpc -Mtp TPCW32.PAS -o/tmp/TPCW32
+
+  2. Telecharger corail :
+     curl -sL -o /tmp/corail.zip \
+       "https://github.com/gladir/corail/archive/refs/heads/master.zip"
+     cd /tmp && unzip -q corail.zip
+
+  3. Lancer le test :
+     ./TESTS/test_corail.sh /tmp/TPCW32 /tmp/corail-master
+
+  Ou simplement :
+     ./TESTS/test_corail.sh
+

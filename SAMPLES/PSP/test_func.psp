@@ -1,0 +1,93 @@
+<%
+{ test_func.psp - Tests des fonctions et procedures (TODO 16) }
+
+{ --- Procedure simple sans parametres --- }
+procedure SayHello;
+begin
+  write('Hello from proc');
+  writeln;
+end;
+
+{ --- Fonction avec un parametre par valeur --- }
+function Double(n: Integer): Integer;
+begin
+  Double := n + n;
+end;
+
+{ --- Fonction avec Result --- }
+function Triple(n: Integer): Integer;
+begin
+  Result := n * 3;
+end;
+
+{ --- Procedure avec parametre --- }
+procedure PrintNum(x: Integer);
+begin
+  write(x);
+  writeln;
+end;
+
+{ --- Fonction avec plusieurs parametres --- }
+function Add(a, b: Integer): Integer;
+begin
+  Add := a + b;
+end;
+
+{ --- Fonction avec variable locale --- }
+function Square(n: Integer): Integer;
+var tmp: Integer;
+begin
+  tmp := n * n;
+  Square := tmp;
+end;
+
+{ --- Fonction avec Exit premature --- }
+function AbsVal(n: Integer): Integer;
+begin
+  if n < 0 then
+  begin
+    AbsVal := 0 - n;
+    exit;
+  end;
+  AbsVal := n;
+end;
+
+{ --- Forward declaration --- }
+function Fwd(x: Integer): Integer; forward;
+
+function Fwd(x: Integer): Integer;
+begin
+  Fwd := x + 100;
+end;
+
+{ --- Appels --- }
+SayHello;
+
+var r: Integer;
+r := Double(21);
+write(r);
+writeln;
+
+r := Triple(5);
+write(r);
+writeln;
+
+PrintNum(99);
+
+r := Add(10, 20);
+write(r);
+writeln;
+
+r := Square(7);
+write(r);
+writeln;
+
+r := AbsVal(0 - 42);
+write(r);
+writeln;
+
+r := Fwd(200);
+write(r);
+writeln;
+
+%>

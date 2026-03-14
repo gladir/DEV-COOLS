@@ -1,0 +1,1081 @@
+=========================================================================
+  TURBO PASCAL 7.0 / BORLAND PASCAL 7.0
+  Unité WINDOS - Documentation de référence
+=========================================================================
+
+  L'unité WinDos est la version compatible Windows de l'unité Dos.
+  Elle fournit les mêmes fonctionnalités que l'unité Dos standard
+  (accès aux fonctions DOS, gestion de fichiers, date/heure,
+  interruptions, répertoires, environnement), mais utilise des
+  chaînes terminées par zéro (PChar) au lieu de chaînes Pascal
+  (String). Cela la rend compatible avec la programmation Windows
+  et le mode protégé (DPMI).
+
+  Uses WinDos;
+
+  Directives de compilation : {$O+,S-,W-}
+    $O+ : Overlayable (compatible avec les overlays)
+    $S- : Pas de vérification de pile
+    $W- : Pas de prologue/épilogue de fenêtre Windows
+
+=========================================================================
+  1. MASQUES DE BITS DES FLAGS (registre de drapeaux CPU)
+=========================================================================
+
+  Constantes utilisées pour tester les bits du champ Flags du
+  record TRegisters après un appel à Intr ou MsDos.
+
+  Constante     Valeur    Bit   Signification
+  ----------    ------    ---   -----------------------------------
+  fCarry        $0001      0    Flag de retenue (Carry)
+  fParity       $0004      2    Flag de parité
+  fAuxiliary    $0010      4    Flag de retenue auxiliaire
+  fZero         $0040      6    Flag de zéro
+  fSign         $0080      7    Flag de signe
+  fOverflow     $0800     11    Flag de débordement (Overflow)
+
+  Exemple :
+    MsDos(Regs);
+    if (Regs.Flags and fCarry) <> 0 then
+      WriteLn('Erreur DOS détectée');
+
+=========================================================================
+  2. MODES DE FICHIER (constantes magiques)
+=========================================================================
+
+  Constantes identifiant l'état interne d'une variable fichier.
+  Stockées dans le champ Mode de TFileRec et TTextRec.
+
+  Constante     Valeur    Signification
+  ----------    ------    --------------------------------
+  fmClosed      $D7B0     Fichier fermé
+  fmInput       $D7B1     Fichier ouvert en lecture
+  fmOutput      $D7B2     Fichier ouvert en écriture
+  fmInOut       $D7B3     Fichier ouvert en lecture/écriture
+
+  Ces valeurs sont les mêmes que dans l'unité Dos. Elles permettent
+  de tester l'état d'un fichier sans appel système :
+    if TTextRec(F).Mode = fmInput then
+      WriteLn('Le fichier est ouvert en lecture');
+
+=========================================================================
+  3. ATTRIBUTS DE FICHIER
+=========================================================================
+
+  Constantes utilisées avec GetFAttr, SetFAttr, FindFirst et
+  FindNext pour manipuler les attributs de fichier DOS.
+
+  Constante     Valeur   Bit   Signification
+  -----------   ------   ---   --------------------------------
+  faReadOnly     $01      0    Lecture seule
+  faHidden       $02      1    Fichier caché
+  faSysFile      $04      2    Fichier système
+  faVolumeID     $08      3    Identificateur de volume
+  faDirectory    $10      4    Répertoire
+  faArchive      $20      5    Archive (modifié depuis sauvegarde)
+  faAnyFile      $3F    0-5    Tous les attributs combinés
+
+  Les attributs se combinent par OR :
+    SetFAttr(F, faReadOnly or faHidden);
+
+  Pour tester un attribut, utiliser AND :
+    GetFAttr(F, Attr);
+    if (Attr and faDirectory) <> 0 then
+      WriteLn('C''est un répertoire');
+
+=========================================================================
+  4. LONGUEURS MAXIMALES DES COMPOSANTS DE NOM DE FICHIER
+=========================================================================
+
+  Constantes définissant la taille maximale des tampons PChar pour
+  les fonctions FileSearch, FileExpand, FileSplit et GetCurDir.
+
+  Constante      Valeur   Utilisation
+  -----------    ------   ------------------------------------------
+  fsPathName       79     Chemin complet (lecteur + rép + nom + ext)
+  fsDirectory      67     Chemin de répertoire seul
+  fsFileName        8     Nom de fichier (sans extension, format 8.3)
+  fsExtension       4     Extension avec le point (.EXT)
+
+  Ces constantes correspondent aux limites DOS du format 8.3.
+
+  Exemple de déclaration de tampons :
+    var
+      Dir  : array[0..fsDirectory] of Char;
+      Name : array[0..fsFileName] of Char;
+      Ext  : array[0..fsExtension] of Char;
+      Path : array[0..fsPathName] of Char;
+
+=========================================================================
+  5. FLAGS DE RETOUR DE FileSplit
+=========================================================================
+
+  Constantes retournées par FileSplit, combinables par OR,
+  indiquant quels composants étaient présents dans le chemin.
+
+  Constante      Valeur   Signification
+  -----------    ------   --------------------------------
+  fcExtension    $0001    Une extension était présente
+  fcFileName     $0002    Un nom de fichier était présent
+  fcDirectory    $0004    Un répertoire était présent
+  fcWildcards    $0008    Des jokers (* ou ?) détectés
+
+  Exemple :
+    Flags := FileSplit(@Path, @Dir, @Name, @Ext);
+    if (Flags and fcWildcards) <> 0 then
+      WriteLn('Le chemin contient des jokers');
+
+=========================================================================
+  6. TYPES
+=========================================================================
+
+  --- TRegisters ---
+    TRegisters = record
+      case Integer of
+        0: (AX, BX, CX, DX, BP, SI, DI, DS, ES, Flags: Word);
+        1: (AL, AH, BL, BH, CL, CH, DL, DH: Byte);
+    end;
+
+  Record variant permettant d'accéder aux registres CPU soit par
+  mots de 16 bits (AX, BX...) soit par octets (AL, AH, BL, BH...).
+  Utilisé par les procédures Intr et MsDos.
+
+  IMPORTANT en mode protégé : toujours initialiser les champs DS
+  et ES avec des valeurs de sélecteur valides, ou les mettre à
+  zéro, pour éviter les fautes de protection générale (GPF).
+
+  --- TFileRec ---
+    TFileRec = record
+      Handle   : Word;                   { handle DOS du fichier }
+      Mode     : Word;                   { fmClosed..fmInOut }
+      RecSize  : Word;                   { taille d'enregistrement }
+      Private  : array[1..26] of Byte;   { usage interne }
+      UserData : array[1..16] of Byte;   { données utilisateur }
+      Name     : array[0..79] of Char;   { nom ASCIIZ du fichier }
+    end;
+
+  Structure interne d'une variable fichier typé ou non typé.
+  Accessible par transtypage : TFileRec(F).Handle, etc.
+
+  --- PTextBuf / TTextBuf ---
+    PTextBuf = ^TTextBuf;
+    TTextBuf = array[0..127] of Char;
+
+  Tampon de 128 octets pour les fichiers texte. PTextBuf est un
+  pointeur vers un tel tampon.
+
+  --- TTextRec ---
+    TTextRec = record
+      Handle    : Word;       { handle DOS du fichier }
+      Mode      : Word;       { fmClosed..fmInOut }
+      BufSize   : Word;       { taille du tampon }
+      Private   : Word;       { usage interne }
+      BufPos    : Word;       { position courante dans le tampon }
+      BufEnd    : Word;       { fin des données dans le tampon }
+      BufPtr    : PTextBuf;   { pointeur vers le tampon }
+      OpenFunc  : Pointer;    { fonction d'ouverture }
+      InOutFunc : Pointer;    { fonction d'entrée/sortie }
+      FlushFunc : Pointer;    { fonction de vidage }
+      CloseFunc : Pointer;    { fonction de fermeture }
+      UserData  : array[1..16] of Byte;  { données utilisateur }
+      Name      : array[0..79] of Char;  { nom ASCIIZ }
+      Buffer    : TTextBuf;   { tampon intégré par défaut }
+    end;
+
+  Structure interne d'une variable fichier texte (Text).
+  Les quatre pointeurs de fonctions (OpenFunc, InOutFunc,
+  FlushFunc, CloseFunc) permettent de créer des pilotes de
+  fichiers texte personnalisés (drivers de périphériques).
+
+  --- TSearchRec ---
+    TSearchRec = record
+      Fill : array[1..21] of Byte;   { réservé au DOS }
+      Attr : Byte;                   { attribut du fichier trouvé }
+      Time : Longint;                { date/heure empaquetée }
+      Size : Longint;                { taille en octets }
+      Name : array[0..12] of Char;   { nom ASCIIZ (format 8.3) }
+    end;
+
+  Enregistrement de recherche utilisé par FindFirst et FindNext.
+  Le champ Fill contient des données internes au DOS nécessaires
+  à la continuation de la recherche (ne pas modifier).
+
+  --- TDateTime ---
+    TDateTime = record
+      Year, Month, Day, Hour, Min, Sec : Word;
+    end;
+
+  Enregistrement date/heure décomposé. Utilisé par UnpackTime et
+  PackTime pour convertir depuis/vers le format empqueté DOS.
+
+=========================================================================
+  7. VARIABLE
+=========================================================================
+
+  DosError : Integer
+  ---------------------------------------------------------------
+  Variable globale contenant le code d'erreur de la dernière
+  opération DOS. Initialisée à 0 (pas d'erreur).
+
+  Codes d'erreur courants :
+    0   Pas d'erreur
+    2   Fichier non trouvé
+    3   Chemin non trouvé
+    5   Accès refusé
+    6   Handle invalide
+    8   Mémoire insuffisante
+    15  Lecteur invalide
+    18  Plus de fichiers (FindNext)
+
+  DosError est mise à jour par : GetFAttr, SetFAttr, GetFTime,
+  SetFTime, FindFirst, FindNext, GetCurDir, SetCurDir,
+  CreateDir, RemoveDir.
+
+=========================================================================
+  8. VERSION DOS
+=========================================================================
+
+  function DosVersion : Word;
+  ---------------------------------------------------------------
+  Retourne le numéro de version du système d'exploitation.
+
+  Retour :
+    Octet bas (Lo)  = numéro de version majeur
+    Octet haut (Hi) = numéro de version mineur
+
+  Exemple :
+    var V : Word;
+    begin
+      V := DosVersion;
+      WriteLn('DOS ', Lo(V), '.', Hi(V));
+    end;
+    { DOS 6.22 retourne Lo=6, Hi=22 }
+
+=========================================================================
+  9. INTERRUPTIONS ET APPELS DOS
+=========================================================================
+
+  procedure Intr(IntNo : Byte; var Regs : TRegisters);
+  ---------------------------------------------------------------
+  Exécute une interruption logicielle avec le jeu de registres
+  spécifié. Les registres sont chargés avant l'interruption et
+  mis à jour après.
+
+  Paramètres :
+    IntNo  Numéro d'interruption (0..255)
+    Regs   [entrée/sortie] Registres CPU
+
+  ATTENTION en mode protégé (Windows, DPMI) : initialiser DS et
+  ES à des valeurs de sélecteur valides ou à zéro pour éviter
+  les GPF.
+
+  Exemple (lire la position du curseur via INT 10h) :
+    Regs.AH := $03;    { fonction 03h : lire position curseur }
+    Regs.BH := 0;      { page vidéo 0 }
+    Intr($10, Regs);
+    Row := Regs.DH;
+    Col := Regs.DL;
+
+  ---------------------------------------------------------------
+  procedure MsDos(var Regs : TRegisters);
+  ---------------------------------------------------------------
+  Invoque le gestionnaire de fonctions DOS (INT 21h) avec le
+  jeu de registres spécifié. Équivalent à Intr($21, Regs).
+
+  Exemple (obtenir le lecteur courant) :
+    Regs.AH := $19;    { fonction 19h : get current drive }
+    MsDos(Regs);
+    Drive := Regs.AL;  { 0=A, 1=B, 2=C, ... }
+
+=========================================================================
+  10. DATE ET HEURE SYSTÈME
+=========================================================================
+
+  procedure GetDate(var Year, Month, Day, DayOfWeek : Word);
+  ---------------------------------------------------------------
+  Retourne la date courante du système d'exploitation.
+
+  Paramètres (sortie) :
+    Year       Année (1980..2099)
+    Month      Mois (1..12)
+    Day        Jour du mois (1..31)
+    DayOfWeek  Jour de la semaine (0=Dimanche, 1=Lundi, ..., 6=Samedi)
+
+  ---------------------------------------------------------------
+  procedure SetDate(Year, Month, Day : Word);
+  ---------------------------------------------------------------
+  Modifie la date du système d'exploitation.
+
+  Paramètres (entrée) :
+    Year   Année (1980..2099)
+    Month  Mois (1..12)
+    Day    Jour (1..31)
+
+  Si la date est invalide, l'appel est ignoré.
+
+  ---------------------------------------------------------------
+  procedure GetTime(var Hour, Minute, Second, Sec100 : Word);
+  ---------------------------------------------------------------
+  Retourne l'heure courante du système d'exploitation.
+
+  Paramètres (sortie) :
+    Hour    Heure (0..23)
+    Minute  Minute (0..59)
+    Second  Seconde (0..59)
+    Sec100  Centièmes de seconde (0..99)
+
+  ---------------------------------------------------------------
+  procedure SetTime(Hour, Minute, Second, Sec100 : Word);
+  ---------------------------------------------------------------
+  Modifie l'heure du système d'exploitation.
+
+  Paramètres (entrée) :
+    Hour    Heure (0..23)
+    Minute  Minute (0..59)
+    Second  Seconde (0..59)
+    Sec100  Centièmes de seconde (0..99)
+
+  Si l'heure est invalide, l'appel est ignoré.
+
+=========================================================================
+  11. CONTRÔLE SYSTÈME (Ctrl-Break et Verify)
+=========================================================================
+
+  procedure GetCBreak(var Break : Boolean);
+  ---------------------------------------------------------------
+  Retourne l'état de la vérification Ctrl-Break dans le DOS.
+
+  Paramètres :
+    Break  [sortie]  False = vérification uniquement lors des E/S
+                             console, imprimante ou communication.
+                     True  = vérification à chaque appel système.
+
+  ---------------------------------------------------------------
+  procedure SetCBreak(Break : Boolean);
+  ---------------------------------------------------------------
+  Active ou désactive la vérification Ctrl-Break étendue.
+
+  Paramètres :
+    Break  False = vérification limitée aux E/S
+           True  = vérification à chaque appel système
+
+  ---------------------------------------------------------------
+  procedure GetVerify(var Verify : Boolean);
+  ---------------------------------------------------------------
+  Retourne l'état du drapeau de vérification d'écriture disque.
+
+  Paramètres :
+    Verify  [sortie]  False = pas de vérification après écriture
+                      True  = vérification de chaque écriture
+
+  ---------------------------------------------------------------
+  procedure SetVerify(Verify : Boolean);
+  ---------------------------------------------------------------
+  Active ou désactive la vérification après écriture disque.
+
+  Paramètres :
+    Verify  False = désactiver la vérification
+            True  = activer la vérification
+
+=========================================================================
+  12. ESPACE DISQUE
+=========================================================================
+
+  function DiskFree(Drive : Byte) : Longint;
+  ---------------------------------------------------------------
+  Retourne le nombre d'octets libres sur le lecteur spécifié.
+
+  Paramètres :
+    Drive  Numéro de lecteur : 0=courant, 1=A, 2=B, 3=C, ...
+  Retour :
+    Nombre d'octets libres, ou -1 si le lecteur est invalide.
+
+  Exemple :
+    WriteLn('Espace libre sur C: ', DiskFree(3), ' octets');
+
+  ---------------------------------------------------------------
+  function DiskSize(Drive : Byte) : Longint;
+  ---------------------------------------------------------------
+  Retourne la taille totale en octets du lecteur spécifié.
+
+  Paramètres :
+    Drive  Numéro de lecteur : 0=courant, 1=A, 2=B, 3=C, ...
+  Retour :
+    Taille en octets, ou -1 si le lecteur est invalide.
+
+=========================================================================
+  13. ATTRIBUTS DE FICHIER
+=========================================================================
+
+  procedure GetFAttr(var F; var Attr : Word);
+  ---------------------------------------------------------------
+  Retourne les attributs d'un fichier.
+
+  Paramètres :
+    F     Variable fichier (typé, non typé ou texte) à laquelle
+          un nom a été assigné (Assign).
+    Attr  [sortie] Attributs du fichier (combinaison de faXxx)
+
+  Le fichier n'a pas besoin d'être ouvert. Les erreurs sont
+  signalées dans DosError.
+
+  Exemple :
+    var
+      F    : file;
+      Attr : Word;
+      Path : array[0..fsPathName] of Char;
+    begin
+      StrPCopy(Path, 'C:\CONFIG.SYS');
+      Assign(F, Path);
+      GetFAttr(F, Attr);
+      if DosError = 0 then
+      begin
+        if (Attr and faReadOnly) <> 0 then WriteLn('Lecture seule');
+        if (Attr and faHidden) <> 0   then WriteLn('Caché');
+        if (Attr and faSysFile) <> 0  then WriteLn('Système');
+        if (Attr and faDirectory) <> 0 then WriteLn('Répertoire');
+        if (Attr and faArchive) <> 0  then WriteLn('Archive');
+      end;
+    end;
+
+  ---------------------------------------------------------------
+  procedure SetFAttr(var F; Attr : Word);
+  ---------------------------------------------------------------
+  Modifie les attributs d'un fichier.
+
+  Paramètres :
+    F     Variable fichier assignée (non ouverte).
+    Attr  Nouveaux attributs (combinaison OR de faXxx)
+
+  Les erreurs sont signalées dans DosError.
+
+=========================================================================
+  14. DATE/HEURE DE FICHIER
+=========================================================================
+
+  procedure GetFTime(var F; var Time : Longint);
+  ---------------------------------------------------------------
+  Retourne la date et l'heure de dernière modification d'un fichier.
+
+  Paramètres :
+    F     Variable fichier assignée ET ouverte.
+    Time  [sortie] Date/heure empaquetée (format DOS 32 bits)
+
+  Le paramètre Time peut être décomposé via UnpackTime.
+  Les erreurs sont signalées dans DosError.
+
+  ---------------------------------------------------------------
+  procedure SetFTime(var F; Time : Longint);
+  ---------------------------------------------------------------
+  Modifie la date et l'heure de dernière modification d'un fichier.
+
+  Paramètres :
+    F     Variable fichier assignée ET ouverte.
+    Time  Date/heure empaquetée (créée via PackTime)
+
+  Les erreurs sont signalées dans DosError.
+
+=========================================================================
+  15. FORMAT EMPAQUETAGE DATE/HEURE
+=========================================================================
+
+  Le format date/heure empqueté DOS (Longint, 32 bits) se décompose
+  comme suit :
+
+    Bits 0..4   : Secondes div 2     (0..29 → 0..58 secondes)
+    Bits 5..10  : Minutes             (0..59)
+    Bits 11..15 : Heures              (0..23)
+    Bits 16..20 : Jour                (1..31)
+    Bits 21..24 : Mois                (1..12)
+    Bits 25..31 : Année - 1980        (0..119 → 1980..2099)
+
+  ---------------------------------------------------------------
+  procedure UnpackTime(P : Longint; var T : TDateTime);
+  ---------------------------------------------------------------
+  Convertit une date/heure empaquetée en enregistrement TDateTime.
+
+  Paramètres :
+    P  Valeur empaquetée (de GetFTime, FindFirst ou FindNext)
+    T  [sortie] Enregistrement décomposé
+
+  Formules de décompression :
+    T.Sec   := (P and $1F) * 2;
+    T.Min   := (P shr 5) and $3F;
+    T.Hour  := (P shr 11) and $1F;
+    T.Day   := (P shr 16) and $1F;
+    T.Month := (P shr 21) and $0F;
+    T.Year  := (P shr 25) and $7F + 1980;
+
+  ---------------------------------------------------------------
+  procedure PackTime(var T : TDateTime; var P : Longint);
+  ---------------------------------------------------------------
+  Convertit un enregistrement TDateTime en date/heure empaquetée.
+
+  Paramètres :
+    T  Enregistrement source
+    P  [sortie] Valeur empaquetée (pour SetFTime)
+
+  Formule de compression :
+    P := (T.Sec div 2)
+      or (T.Min shl 5)
+      or (T.Hour shl 11)
+      or (T.Day shl 16)
+      or (T.Month shl 21)
+      or ((T.Year - 1980) shl 25);
+
+  Exemple :
+    var
+      DT : TDateTime;
+      T  : Longint;
+    begin
+      DT.Year := 1995; DT.Month := 6; DT.Day := 15;
+      DT.Hour := 14; DT.Min := 30; DT.Sec := 0;
+      PackTime(DT, T);
+      SetFTime(F, T);
+    end;
+
+=========================================================================
+  16. RECHERCHE DE FICHIERS
+=========================================================================
+
+  procedure FindFirst(Path : PChar; Attr : Word;
+                      var F : TSearchRec);
+  ---------------------------------------------------------------
+  Recherche la première entrée correspondant au chemin et aux
+  attributs spécifiés.
+
+  Paramètres :
+    Path  Chemin de recherche ASCIIZ (peut contenir des jokers)
+          Exemple : 'C:\WINDOWS\*.EXE'
+    Attr  Attributs de recherche (combinaison OR de faXxx)
+          faAnyFile ($3F) pour trouver tous les fichiers.
+    F     [sortie] Enregistrement de recherche
+
+  Si aucun fichier n'est trouvé, DosError est non nul (18).
+  Le champ Fill de TSearchRec est utilisé par le DOS pour la
+  continuation — ne pas le modifier.
+
+  Exemple :
+    var
+      SR   : TSearchRec;
+      Path : array[0..fsPathName] of Char;
+    begin
+      StrPCopy(Path, '*.PAS');
+      FindFirst(Path, faAnyFile, SR);
+      while DosError = 0 do
+      begin
+        WriteLn(StrPas(SR.Name), '  ', SR.Size, ' octets');
+        FindNext(SR);
+      end;
+    end;
+
+  ---------------------------------------------------------------
+  procedure FindNext(var F : TSearchRec);
+  ---------------------------------------------------------------
+  Retourne l'entrée suivante correspondant aux critères d'un
+  appel FindFirst précédent.
+
+  Paramètres :
+    F  [entrée/sortie] Même enregistrement que celui passé à
+       FindFirst.
+
+  Quand il n'y a plus de fichiers, DosError = 18.
+
+=========================================================================
+  17. VECTEURS D'INTERRUPTION
+=========================================================================
+
+  procedure GetIntVec(IntNo : Byte; var Vector : Pointer);
+  ---------------------------------------------------------------
+  Retourne l'adresse stockée dans le vecteur d'interruption
+  spécifié.
+
+  Paramètres :
+    IntNo   Numéro d'interruption (0..255)
+    Vector  [sortie] Adresse du gestionnaire d'interruption
+
+  ---------------------------------------------------------------
+  procedure SetIntVec(IntNo : Byte; Vector : Pointer);
+  ---------------------------------------------------------------
+  Modifie l'adresse dans la table des vecteurs d'interruption
+  pour l'interruption spécifiée.
+
+  Paramètres :
+    IntNo   Numéro d'interruption (0..255)
+    Vector  Nouvelle adresse du gestionnaire
+
+  ATTENTION : en mode protégé, ces fonctions manipulent les
+  descripteurs d'interruption protégés. Sauvegarder et restaurer
+  les vecteurs modifiés avant la fin du programme.
+
+=========================================================================
+  18. RECHERCHE ET MANIPULATION DE CHEMINS
+=========================================================================
+
+  function FileSearch(Dest, Name, List : PChar) : PChar;
+  ---------------------------------------------------------------
+  Recherche un fichier dans une liste de répertoires.
+
+  Paramètres :
+    Dest  [sortie] Tampon recevant le chemin complet trouvé
+          (taille minimale : fsPathName + 1 octets)
+    Name  Nom du fichier à rechercher (ASCIIZ)
+    List  Liste de répertoires séparés par des points-virgules
+  Retour :
+    Dest (le même pointeur)
+
+  La recherche commence toujours par le répertoire courant.
+  Si le fichier n'est pas trouvé, Dest contient une chaîne vide.
+
+  Exemple :
+    var
+      Dest : array[0..fsPathName] of Char;
+    begin
+      FileSearch(Dest, 'TURBO.EXE', GetEnvVar('PATH'));
+      if Dest[0] <> #0 then
+        WriteLn('Trouvé : ', StrPas(Dest))
+      else
+        WriteLn('Non trouvé');
+    end;
+
+  ---------------------------------------------------------------
+  function FileExpand(Dest, Name : PChar) : PChar;
+  ---------------------------------------------------------------
+  Développe un nom de fichier en chemin absolu complet.
+
+  Paramètres :
+    Dest  [sortie] Tampon recevant le chemin développé
+          (taille minimale : fsPathName + 1 octets)
+    Name  Nom de fichier à développer (ASCIIZ)
+  Retour :
+    Dest (le même pointeur)
+
+  Le résultat est en MAJUSCULES et contient :
+    - Lettre de lecteur + ':'
+    - Chemin absolu depuis la racine
+    - Nom de fichier + extension
+
+  Les références '.' et '..' sont résolues.
+  Les composants nom et extension sont tronqués à 8 et 3 caractères.
+
+  Exemple :
+    var Dest : array[0..fsPathName] of Char;
+    begin
+      FileExpand(Dest, '..\TEST.PAS');
+      WriteLn(StrPas(Dest));  { → C:\SOURCE\TEST.PAS }
+    end;
+
+  ---------------------------------------------------------------
+  function FileSplit(Path, Dir, Name, Ext : PChar) : Word;
+  ---------------------------------------------------------------
+  Décompose un chemin de fichier en ses trois composants.
+
+  Paramètres :
+    Path  Chemin complet à décomposer (ASCIIZ)
+    Dir   [sortie] Répertoire (avec barres obliques), ou nil
+          (taille max : fsDirectory + 1)
+    Name  [sortie] Nom de fichier (sans extension), ou nil
+          (taille max : fsFileName + 1)
+    Ext   [sortie] Extension (avec le point), ou nil
+          (taille max : fsExtension + 1)
+  Retour :
+    Combinaison de flags fcXxx indiquant les composants présents.
+
+  Si un paramètre est nil, le composant correspondant n'est pas
+  stocké. Si le chemin ne contient pas un composant donné, la
+  chaîne retournée est vide.
+
+  Exemple :
+    var
+      Dir  : array[0..fsDirectory] of Char;
+      Name : array[0..fsFileName] of Char;
+      Ext  : array[0..fsExtension] of Char;
+      Flags : Word;
+    begin
+      Flags := FileSplit('C:\TP\BIN\TURBO.EXE', Dir, Name, Ext);
+      { Dir  = 'C:\TP\BIN\' }
+      { Name = 'TURBO'      }
+      { Ext  = '.EXE'       }
+      { Flags = fcDirectory or fcFileName or fcExtension }
+
+      if (Flags and fcWildcards) <> 0 then
+        WriteLn('Contient des jokers');
+    end;
+
+=========================================================================
+  19. GESTION DES RÉPERTOIRES
+=========================================================================
+
+  function GetCurDir(Dir : PChar; Drive : Byte) : PChar;
+  ---------------------------------------------------------------
+  Retourne le répertoire courant d'un lecteur spécifié.
+
+  Paramètres :
+    Dir    [sortie] Tampon recevant le chemin (ASCIIZ)
+           (taille max : fsDirectory + 1)
+    Drive  Numéro de lecteur : 0=courant, 1=A, 2=B, 3=C, ...
+  Retour :
+    Dir (le même pointeur)
+
+  Le chemin retourné commence toujours par une lettre de lecteur,
+  un deux-points et une barre oblique inverse (ex: 'C:\WORK').
+  Les erreurs sont signalées dans DosError.
+
+  ---------------------------------------------------------------
+  procedure SetCurDir(Dir : PChar);
+  ---------------------------------------------------------------
+  Change le répertoire courant.
+
+  Paramètres :
+    Dir  Chemin du nouveau répertoire (ASCIIZ)
+
+  Si Dir spécifie une lettre de lecteur, le lecteur courant est
+  également changé. Les erreurs sont signalées dans DosError.
+
+  ---------------------------------------------------------------
+  procedure CreateDir(Dir : PChar);
+  ---------------------------------------------------------------
+  Crée un nouveau sous-répertoire.
+
+  Paramètres :
+    Dir  Chemin du répertoire à créer (ASCIIZ)
+
+  Les erreurs sont signalées dans DosError.
+
+  ---------------------------------------------------------------
+  procedure RemoveDir(Dir : PChar);
+  ---------------------------------------------------------------
+  Supprime un sous-répertoire (doit être vide).
+
+  Paramètres :
+    Dir  Chemin du répertoire à supprimer (ASCIIZ)
+
+  Les erreurs sont signalées dans DosError.
+
+=========================================================================
+  20. LIGNE DE COMMANDE
+=========================================================================
+
+  function GetArgCount : Integer;
+  ---------------------------------------------------------------
+  Retourne le nombre de paramètres passés au programme sur la
+  ligne de commande. Équivalent de ParamCount mais pour WinDos.
+
+  Retour :
+    Nombre de paramètres (0 si aucun).
+
+  ---------------------------------------------------------------
+  function GetArgStr(Dest : PChar; Index : Integer;
+                     MaxLen : Word) : PChar;
+  ---------------------------------------------------------------
+  Retourne le paramètre numéro Index de la ligne de commande.
+
+  Paramètres :
+    Dest    [sortie] Tampon recevant le paramètre (ASCIIZ)
+    Index   Numéro du paramètre :
+              0 = nom du fichier exécutable (module courant)
+              1..GetArgCount = paramètres
+    MaxLen  Longueur maximale de la chaîne résultante
+  Retour :
+    Dest (le même pointeur)
+
+  Si Index < 0 ou Index > GetArgCount, Dest contient une chaîne
+  vide.
+
+  Exemple :
+    var
+      Buf : array[0..127] of Char;
+      I   : Integer;
+    begin
+      WriteLn('Programme : ', StrPas(GetArgStr(Buf, 0, 127)));
+      for I := 1 to GetArgCount do
+        WriteLn('Param ', I, ' : ', StrPas(GetArgStr(Buf, I, 127)));
+    end;
+
+=========================================================================
+  21. ENVIRONNEMENT
+=========================================================================
+
+  function GetEnvVar(VarName : PChar) : PChar;
+  ---------------------------------------------------------------
+  Retourne un pointeur vers la valeur d'une variable
+  d'environnement.
+
+  Paramètres :
+    VarName  Nom de la variable (ASCIIZ, insensible à la casse)
+  Retour :
+    Pointeur vers le premier caractère après le signe '=' dans
+    l'entrée d'environnement, ou nil si la variable n'existe pas.
+
+  Le pointeur retourné pointe directement dans le bloc
+  d'environnement du processus — ne pas modifier la chaîne.
+
+  Exemple :
+    var P : PChar;
+    begin
+      P := GetEnvVar('PATH');
+      if P <> nil then
+        WriteLn('PATH = ', StrPas(P))
+      else
+        WriteLn('PATH non défini');
+    end;
+
+=========================================================================
+  22. DIFFÉRENCES ENTRE WINDOS ET DOS
+=========================================================================
+
+  L'unité WinDos est fonctionnellement équivalente à l'unité Dos
+  mais utilise des chaînes PChar (ASCIIZ) au lieu de chaînes Pascal
+  (String). Voici les principales différences :
+
+  Unité Dos                        Unité WinDos
+  -------------------------------- --------------------------------
+  Uses Dos;                        Uses WinDos;
+
+  Types :
+    Registers                      TRegisters
+    FileRec                        TFileRec
+    TextRec                        TTextRec
+    TextBuf                        TTextBuf (+ PTextBuf)
+    SearchRec                      TSearchRec
+    DateTime                       TDateTime
+
+  Paramètres String → PChar :
+    FindFirst(Path: String;...)    FindFirst(Path: PChar;...)
+    FSearch(Name: String): String  FileSearch(Dest,Name,List: PChar)
+    FExpand(Path: String): String  FileExpand(Dest,Name: PChar)
+    FSplit(Path; var Dir,Name,Ext) FileSplit(Path,Dir,Name,Ext:PChar)
+
+  Fonctions absentes dans WinDos (présentes dans Dos) :
+    Exec, DosExitCode, Keep        → absentes
+    EnvCount, EnvStr, GetEnv       → remplacées par GetEnvVar
+    SwapVectors                    → absente
+
+  Fonctions nouvelles dans WinDos (absentes dans Dos) :
+    GetCurDir, SetCurDir           → gestion de répertoire courant
+    CreateDir, RemoveDir           → création/suppression répertoire
+    GetArgCount, GetArgStr         → accès ligne de commande
+    GetEnvVar                      → accès environnement (PChar)
+
+  Constantes nouvelles dans WinDos :
+    fsPathName, fsDirectory,       → tailles max des composants
+    fsFileName, fsExtension
+    fcExtension, fcFileName,       → flags retour de FileSplit
+    fcDirectory, fcWildcards
+
+=========================================================================
+  23. EXEMPLES COMPLETS
+=========================================================================
+
+  --- Exemple 1 : Lister les fichiers d'un répertoire ---
+
+  program ListFiles;
+  uses WinDos, Strings;
+  var
+    SR   : TSearchRec;
+    DT   : TDateTime;
+    Path : array[0..fsPathName] of Char;
+  begin
+    StrPCopy(Path, '*.*');
+    FindFirst(Path, faAnyFile, SR);
+    while DosError = 0 do
+    begin
+      UnpackTime(SR.Time, DT);
+      Write(StrPas(SR.Name):13);
+      Write(SR.Size:10);
+      Write('  ', DT.Year, '-');
+      if DT.Month < 10 then Write('0');
+      Write(DT.Month, '-');
+      if DT.Day < 10 then Write('0');
+      WriteLn(DT.Day);
+      FindNext(SR);
+    end;
+  end.
+
+  --- Exemple 2 : Décomposer un chemin de fichier ---
+
+  program SplitPath;
+  uses WinDos, Strings;
+  var
+    Dir   : array[0..fsDirectory] of Char;
+    Name  : array[0..fsFileName] of Char;
+    Ext   : array[0..fsExtension] of Char;
+    Path  : array[0..fsPathName] of Char;
+    Flags : Word;
+  begin
+    StrPCopy(Path, 'C:\TP\BIN\TURBO.EXE');
+    Flags := FileSplit(Path, Dir, Name, Ext);
+    WriteLn('Répertoire : ', StrPas(Dir));
+    WriteLn('Nom        : ', StrPas(Name));
+    WriteLn('Extension  : ', StrPas(Ext));
+    WriteLn('Flags      : $', HexStr(Flags, 4));
+  end.
+
+  --- Exemple 3 : Rechercher un fichier dans le PATH ---
+
+  program SearchFile;
+  uses WinDos, Strings;
+  var
+    Dest : array[0..fsPathName] of Char;
+    P    : PChar;
+  begin
+    P := GetEnvVar('PATH');
+    if P <> nil then
+    begin
+      FileSearch(Dest, 'TURBO.EXE', P);
+      if Dest[0] <> #0 then
+        WriteLn('Trouvé : ', StrPas(Dest))
+      else
+        WriteLn('TURBO.EXE non trouvé dans le PATH');
+    end
+    else
+      WriteLn('Variable PATH non définie');
+  end.
+
+  --- Exemple 4 : Afficher les arguments de la ligne de commande ---
+
+  program ShowArgs;
+  uses WinDos, Strings;
+  var
+    Buf : array[0..127] of Char;
+    I   : Integer;
+  begin
+    WriteLn('Nombre d''arguments : ', GetArgCount);
+    WriteLn('Programme : ', StrPas(GetArgStr(Buf, 0, 127)));
+    for I := 1 to GetArgCount do
+      WriteLn('  Arg[', I, '] = ', StrPas(GetArgStr(Buf, I, 127)));
+  end.
+
+  --- Exemple 5 : Modifier les attributs d'un fichier ---
+
+  program ChangeAttr;
+  uses WinDos, Strings;
+  var
+    F    : file;
+    Attr : Word;
+    Path : array[0..fsPathName] of Char;
+  begin
+    StrPCopy(Path, 'TEST.DAT');
+    Assign(F, Path);
+    GetFAttr(F, Attr);
+    if DosError = 0 then
+    begin
+      WriteLn('Attributs actuels : $', HexStr(Attr, 4));
+      { Ajouter lecture seule }
+      SetFAttr(F, Attr or faReadOnly);
+      if DosError = 0 then
+        WriteLn('Lecture seule activée')
+      else
+        WriteLn('Erreur SetFAttr : ', DosError);
+    end
+    else
+      WriteLn('Erreur GetFAttr : ', DosError);
+  end.
+
+=========================================================================
+  24. RÉCAPITULATIF DE L'INTERFACE
+=========================================================================
+
+  --- Fonctions système ---
+  Function  DosVersion : Word;
+  Procedure Intr(IntNo : Byte; var Regs : TRegisters);
+  Procedure MsDos(var Regs : TRegisters);
+
+  --- Date et Heure ---
+  Procedure GetDate(var Year, Month, Day, DayOfWeek : Word);
+  Procedure SetDate(Year, Month, Day : Word);
+  Procedure GetTime(var Hour, Minute, Second, Sec100 : Word);
+  Procedure SetTime(Hour, Minute, Second, Sec100 : Word);
+
+  --- Contrôle système ---
+  Procedure GetCBreak(var Break : Boolean);
+  Procedure SetCBreak(Break : Boolean);
+  Procedure GetVerify(var Verify : Boolean);
+  Procedure SetVerify(Verify : Boolean);
+
+  --- Espace disque ---
+  Function  DiskFree(Drive : Byte) : Longint;
+  Function  DiskSize(Drive : Byte) : Longint;
+
+  --- Attributs de fichier ---
+  Procedure GetFAttr(var F; var Attr : Word);
+  Procedure SetFAttr(var F; Attr : Word);
+
+  --- Date/heure de fichier ---
+  Procedure GetFTime(var F; var Time : Longint);
+  Procedure SetFTime(var F; Time : Longint);
+
+  --- Recherche de fichiers ---
+  Procedure FindFirst(Path : PChar; Attr : Word;
+                      var F : TSearchRec);
+  Procedure FindNext(var F : TSearchRec);
+
+  --- Empaquetage date/heure ---
+  Procedure UnpackTime(P : Longint; var T : TDateTime);
+  Procedure PackTime(var T : TDateTime; var P : Longint);
+
+  --- Vecteurs d'interruption ---
+  Procedure GetIntVec(IntNo : Byte; var Vector : Pointer);
+  Procedure SetIntVec(IntNo : Byte; Vector : Pointer);
+
+  --- Chemins de fichiers ---
+  Function  FileSearch(Dest, Name, List : PChar) : PChar;
+  Function  FileExpand(Dest, Name : PChar) : PChar;
+  Function  FileSplit(Path, Dir, Name, Ext : PChar) : Word;
+
+  --- Répertoires ---
+  Function  GetCurDir(Dir : PChar; Drive : Byte) : PChar;
+  Procedure SetCurDir(Dir : PChar);
+  Procedure CreateDir(Dir : PChar);
+  Procedure RemoveDir(Dir : PChar);
+
+  --- Ligne de commande ---
+  Function  GetArgCount : Integer;
+  Function  GetArgStr(Dest : PChar; Index : Integer;
+                      MaxLen : Word) : PChar;
+
+  --- Environnement ---
+  Function  GetEnvVar(VarName : PChar) : PChar;
+
+=========================================================================
+  25. RÉSUMÉ PAR CATÉGORIE
+=========================================================================
+
+  Catégorie                   Nombre   Routines
+  -------------------------   ------   ----------------------------------
+  Système / Interruptions        3     DosVersion, Intr, MsDos
+  Date / Heure                   4     GetDate, SetDate, GetTime,
+                                       SetTime
+  Contrôle système               4     GetCBreak, SetCBreak,
+                                       GetVerify, SetVerify
+  Espace disque                  2     DiskFree, DiskSize
+  Attributs de fichier           2     GetFAttr, SetFAttr
+  Date/heure de fichier          2     GetFTime, SetFTime
+  Recherche de fichiers          2     FindFirst, FindNext
+  Empaquetage date/heure         2     UnpackTime, PackTime
+  Vecteurs d'interruption        2     GetIntVec, SetIntVec
+  Chemins de fichiers            3     FileSearch, FileExpand,
+                                       FileSplit
+  Répertoires                    4     GetCurDir, SetCurDir,
+                                       CreateDir, RemoveDir
+  Ligne de commande              2     GetArgCount, GetArgStr
+  Environnement                  1     GetEnvVar
+  -------------------------   ------   ----------------------------------
+  TOTAL                         33     procédures et fonctions
+
+  Types exportés : 7  (TRegisters, TFileRec, PTextBuf, TTextBuf,
+                       TTextRec, TSearchRec, TDateTime)
+
+  Variables exportées : 1  (DosError)
+
+  Constantes exportées : 27
+    Flags CPU : 6        (fCarry..fOverflow)
+    Modes fichier : 4    (fmClosed..fmInOut)
+    Attributs : 7        (faReadOnly..faAnyFile)
+    Longueurs : 4        (fsPathName..fsExtension)
+    FileSplit : 4         (fcExtension..fcWildcards)
+    Types préfixe T : 2  (types nommés avec convention T)
+
+=========================================================================
+  Fin du document - Unité WINDOS - Turbo Pascal 7.0 / Borland Pascal 7.0
+=========================================================================

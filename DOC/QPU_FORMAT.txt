@@ -1,0 +1,538 @@
+==============================================================================
+    FORMAT DE FICHIER QPU - Quick Pascal Unit (Microsoft Quick Pascal 1.0)
+==============================================================================
+
+Document d'analyse par ingenierie inverse des fichiers d'unite compilee
+Quick Pascal (*.QPU) de Microsoft, a partir des fichiers originaux situes
+dans C:\LANGAGE\QP\UNITS\*.QPU.
+
+Date:       Juin 2025
+Fichiers:   PRINTER.QPU (304 o), CRT.QPU (5152 o), DOS.QPU (9104 o),
+            MSGRUTIL.QPU (3504 o), GRAPH.QPU (37664 o), SYSTEM.QPU (44960 o),
+            MSGRAPH.QPU (72368 o)
+
+Note: Le format est similaire au format TPU de Turbo Pascal, mais avec des
+differences significatives dans la structure de l'en-tete et des records
+de symboles.
+
+==============================================================================
+1. VUE D'ENSEMBLE DE LA STRUCTURE DU FICHIER
+==============================================================================
+
+Un fichier QPU est compose de quatre sections principales disposees
+sequentiellement :
+
+  +---------------------------+  Offset 0
+  |   EN-TETE (Header)       |  Taille: champ [0x0C] octets
+  +---------------------------+  Offset = headerSize
+  |   SECTION SYMBOLES        |  Taille: variable (calculee)
+  |   (Info d'interface +     |
+  |    info d'implementation) |
+  +---------------------------+  Offset = fileSize - codeSize - fixupSize
+  |   SECTION CODE            |  Taille: champ [0x12] octets
+  +---------------------------+  Offset = fileSize - fixupSize
+  |   SECTION FIXUP           |  Taille: champ [0x14] octets
+  |   (Relocalisations)      |
+  +---------------------------+  Fin du fichier
+
+Formule de taille totale du fichier :
+  fileSize = headerSize + symSection + codeSize + fixupSize
+
+La taille de la section symboles n'est pas stockee directement dans
+l'en-tete; elle est calculee par: symSection = fileSize - [0x0C] - [0x12] - [0x14]
+
+Verifie sur: PRINTER, CRT, DOS, MSGRUTIL, MSGRAPH.
+(SYSTEM et GRAPH sont des cas speciaux, voir section 7.)
+
+==============================================================================
+2. EN-TETE DU FICHIER (HEADER)
+==============================================================================
+
+L'en-tete est compose d'une partie fixe de 32 octets (0x00-0x1F) suivie
+d'une table de dependances d'unites de taille variable.
+
+2.1 PARTIE FIXE (0x00 - 0x1F)
+------------------------------
+
+Offset  Taille  Champ           Description
+------  ------  --------------- -----------------------------------------------
+0x00    4       Magic           Signature "MSQP" (4D 53 51 50)
+0x04    2       Version?        Varie selon les unites (ex: 0x0001 a 0x01F9).
+                                Pourrait etre un numero de version/revision.
+0x06    2       Flags?          Drapeaux ou hash d'interface.
+                                Exemples: 0x0100 (PRINTER), 0x0022 (CRT),
+                                0x0000 (MSGRUTIL, MSGRAPH)
+0x08    2       Extra?          Generalement 0x0000. Non-zero pour GRAPH
+                                (0x3136) et SYSTEM (0x0044). Fonction inconnue.
+0x0A    2       DepCount        Nombre d'unites requises (dependances).
+                                Ex: 0=SYSTEM, 1=CRT/DOS/PRINTER, 3=GRAPH
+0x0C    2       HeaderSize      Taille totale de l'en-tete en octets.
+                                Inclut la partie fixe + table des dependances.
+                                Ex: 0x30 (SYSTEM), 0x40 (CRT/DOS/PRINTER),
+                                0x50 (GRAPH/MSGRAPH)
+0x0E    2       SymRawSize      Taille brute de la table de symboles
+                                (sous-section interface).
+0x10    2       SymAlignedSize  SymRawSize arrondi au multiple de 16 superieur.
+0x12    2       CodeSize        Taille de la section code (code machine x86).
+0x14    2       FixupSize       Taille de la section fixup (relocalisations).
+0x16    2       (reserve)       Toujours 0x0000.
+0x18    2       EntryCount?     Nombre d'entrees ou compteur.
+                                Ex: 12 (PRINTER), 16 (CRT), 308 (DOS),
+                                390 (SYSTEM). Role exact incertain.
+0x1A    2       SubType?        0x0000 ou 0x0008. Possiblement des drapeaux
+                                supplementaires.
+0x1C    2       (reserve)       Toujours 0x0000.
+0x1E    2       (reserve)       Toujours 0x0000.
+
+2.2 TABLE DES DEPENDANCES D'UNITES (0x20 a HeaderSize-1)
+---------------------------------------------------------
+
+La table commence a l'offset 0x20 et contient (DepCount + 1) entrees.
+La premiere entree est toujours l'unite elle-meme. Les entrees suivantes
+sont les unites requises.
+
+Format de chaque entree :
+
+  Offset  Taille    Champ
+  ------  ------    -----
+  +0      2         Hash du nom (checksum 16 bits)
+  +2      1         Drapeaux :
+                      0x00 = entree de l'unite elle-meme
+                      0x01 = SYSTEM (toujours la premiere dependance)
+                      0x02 = deuxieme dependance
+                      0x03 = troisieme dependance, etc.
+  +3      1         Longueur du nom (N)
+  +4      N         Nom de l'unite (ASCII, majuscules)
+
+Les entries sont concatenees sans alignement. L'espace restant jusqu'a
+HeaderSize est rempli de zeros.
+
+Exemples :
+  PRINTER : [4244 00 07 "PRINTER"] [F90B 01 06 "SYSTEM"]
+  CRT     : [C109 00 03 "CRT"]     [F90B 01 06 "SYSTEM"]
+  GRAPH   : [63C2 00 05 "GRAPH"]   [F90B 01 06 "SYSTEM"]
+            [3F30 02 07 "MSGRAPH"] [C26A 03 08 "MSGRUTIL"]
+  SYSTEM  : [???? 00 06 "SYSTEM"]  (pas de dependances)
+
+Le hash 0xF90B est toujours associe au nom "SYSTEM".
+
+==============================================================================
+3. SECTION SYMBOLES / INFORMATIONS
+==============================================================================
+
+Cette section commence immediatement apres l'en-tete (offset = HeaderSize)
+et s'etend jusqu'au debut de la section code. Elle contient plusieurs
+sous-structures :
+
+3.1 NOMS DE FICHIERS
+---------------------
+Au debut de la section, des chaines terminées par null (\0) contiennent :
+  - Le nom du fichier source (.PAS)
+  - Le(s) nom(s) des fichiers objets (.OBJ) lies dans l'unite
+
+Exemples :
+  PRINTER : "PRINTER.PAS\0" "OBJ\0"
+  CRT     : "CRT.PAS\0"     "CRT.OBJ\0"
+  DOS     : "DOS.PAS\0"     "DOS0.OBJ\0" "DOS1.OBJ\0" ... "DOS5.OBJ\0"
+  SYSTEM  : "SYSTEM.PAS\0"  "RT_MSG2.OBJ\0" "RT_LNG1.OBJ\0"
+            "RT_STR2.OBJ\0" "RT_CSR1.OBJ\0" "RT_SET3.OBJ\0"
+            "RT_MEM1.OBJ\0" "RT_OBJ1.OBJ\0" "RT_FIL1.OBJ\0"
+            "RT_TXT0.OBJ\0" "RT_TXT1.OBJ\0" ...
+  MSGRAPH : "MSGRAPH.PAS\0" "MSGRAPH.DOC\0" "GREXTDEF.PAS\0"
+            "GROBJS.PAS\0"  "QCINIT.OBJ\0"  "QCPEN.OBJ\0"
+            "QCTEXT.OBJ\0"  "QCCORE.OBJ\0"  "QCGR.OBJ\0" ...
+
+3.2 META-DONNEES DE SECTION
+----------------------------
+Apres les noms de fichiers, un bloc de 14 octets contient des
+descripteurs de section (pour les unites simples avec 16 octets de noms) :
+
+  Offset(rel)  Taille  Description
+  ------------ ------  -----------
+  +0           2       0x0000 (separateur/padding)
+  +2           2       Copie de SymRawSize (champ 0x0E de l'en-tete)
+  +4           2       Valeur variable (possiblement taille d'une
+                       sous-table ou hash de verification)
+  +6           8       Zeros (reserve)
+
+3.3 RECORDS DE SYMBOLES
+------------------------
+Les records de symboles suivent les meta-donnees. Chaque record a cette
+structure commune :
+
+  +------------------+
+  | Hash       (2 o) |  Hash du nom du symbole (Word LE)
+  +------------------+
+  | UnitTag    (2 o) |  Marqueur de l'unite proprietaire (Word LE)
+  +------------------+
+  | Kind       (2 o) |  Type de record (Word LE)
+  +------------------+
+  | NameOff    (2 o) |  Offset du nom dans la section symboles
+  +------------------+
+  | ...payload...     |  Donnees specifiques au type de record
+  +------------------+
+
+Le champ UnitTag est une valeur constante propre a chaque fichier QPU.
+C'est probablement un CRC d'interface ou un identifiant de version. Il
+est identique dans tous les records d'un meme fichier.
+
+  UnitTag observes :
+    0xAD22 : PRINTER, CRT, DOS
+    0x9522 : MSGRUTIL, MSGRAPH  
+    0x82AE : GRAPH
+
+Le champ NameOff est un offset relatif a un point de base dans la section
+symboles (apres les noms de fichiers), pointant vers l'octet de longueur
+du nom du symbole.
+
+3.4 TYPES DE RECORDS (champ Kind)
+----------------------------------
+
+  Kind     Bit 15    Description              Octets payload
+  ------   ------    -----------              ---------------
+  0x800E   public    UNITE - declaration       nameLen(1) + name(N) + trail(2)
+                     de l'unite elle-meme      Total: 3+N octets apres NameOff
+
+  0x8005   public    CONSTANTE TYPEE          typeRef(2) + flags(2) +
+                     (const exportee)          scopeLink(2) + nameLen(1) +
+                                               name(N) + value(4) + trail(2)
+                                               Total: 13+N octets apres NameOff
+
+  0x8008   public    VARIABLE                 5 mots(10) + nameLen(1) +
+                     (var exportee)            name(N) + trail(2)
+                                               Total: 13+N octets apres NameOff
+
+  0x8007   public    FONCTION                 Payload complexe (~24+N octets)
+                     (function exportee)       Contient info retour, parametres
+
+  0x8109   public    PROCEDURE                Payload complexe (~16+N octets)
+                     (procedure exportee)      Contient info parametres
+
+  0x8006   public?   IMPLEMENTATION /         Payload variable. Contient le nom
+                     FIN DE PORTEE            de la procedure/fonction +
+                                               descripteur du code implemente.
+
+  0x8003   public    TYPE                     Definition de type (vu dans DOS)
+  0x8004   public    TYPE (variante)          (vu dans DOS, 1 occurrence)
+
+  0x0006   prive     Portee privee            Meme format que 0x8006
+  0x000C   prive     Record prive             (vu dans DOS)
+
+Le bit 15 (0x80xx) indique un symbole exporte (public/interface).
+Les records sans ce bit sont prives (implementation seulement).
+Le bit 8 (0x01xx dans 0x8109) pourrait indiquer la presence de code
+d'implementation associe.
+
+3.5 DETAIL DU RECORD CONSTANTE (0x8005) - EXEMPLE
+----------------------------------------------------
+Exemple avec les constantes du CRT : BW40, CO40, etc.
+
+  Octets    Champ         Valeur
+  --------  --------      ------
+  24 06     Hash           0x0624 (hash de BW40)
+  22 AD     UnitTag        0xAD22 (CRC de CRT)
+  05 80     Kind           0x8005 (constante typee publique)
+  2A 00     NameOff        0x002A
+  18 00     TypeRef        0x0018 (reference type = Integer/Word)
+  01 00     Flags          0x0001 (exporte)
+  2F 00     ScopeLink      0x002F (lien de portee)
+  04        NameLen        4
+  42 57     Name           "BW40"
+  34 30
+  00 00     Value          0x00000000 = 0
+  00 00
+  1A 00     Trail          0x001A (offset precedent dans la portee)
+
+  Longueur totale du record : 2+2+2+2+2+2+2+1+4+4+2 = 25 octets (pour N=4)
+
+Valeurs des constantes CRT confirmees :
+  BW40        =   0    CO40       =   1    BW80       =   2
+  CO80        =   3    MONO       =   7    FONT8X8    = 256
+  C40         =   1    C80        =   3
+  BLACK       =   0    BLUE       =   1    GREEN      =   2
+  CYAN        =   3    RED        =   4    MAGENTA    =   5
+  BROWN       =   6    LIGHTGRAY  =   7    DARKGRAY   =   8
+  LIGHTBLUE   =   9    LIGHTGREEN =  10    LIGHTRED   =  12
+  LIGHTMAGENTA=  13    YELLOW     =  14    WHITE      =  15
+
+Toutes ces valeurs correspondent exactement aux constantes du unit CRT
+de Turbo Pascal, confirmant que Quick Pascal etait compatible TP.
+
+3.6 DETAIL DU RECORD VARIABLE (0x8008) - EXEMPLE
+---------------------------------------------------
+Exemple avec la variable LST du unit PRINTER :
+
+  Octets    Champ         Valeur
+  --------  --------      ------
+  2D 0D     Hash           0x0D2D
+  22 AD     UnitTag        0xAD22
+  08 80     Kind           0x8008 (variable publique)
+  32 00     NameOff        0x0032
+  80 00     Champ1         0x0080 (128 = taille du type Text?)
+  40 00     Champ2         0x0040 (64)
+  01 00     Champ3         0x0001
+  00 00     Champ4         0x0000
+  00 00     Champ5         0x0000
+  03        NameLen        3
+  4C 53 54  Name           "LST"
+  1E 00     Trail          0x001E
+
+Variables du CRT confirmees :   
+  CHECKEOF, CHECKBREAK, CHECKSNOW, DIRECTVIDEO (constantes booleennes typees)
+  LASTMODE, TEXTATTR, WINDMIN, WINDMAX
+
+3.7 DETAIL DU RECORD UNITE (0x800E) - EXEMPLE
+-------------------------------------------------
+Exemple avec l'unite CRT :
+
+  Octets    Champ         Valeur
+  --------  --------      ------
+  56 04     Hash           0x0456 (hash de "CRT")
+  22 AD     UnitTag        0xAD22
+  0E 80     Kind           0x800E (declaration d'unite)
+  16 00     NameOff        0x0016
+  03        NameLen        3
+  43 52 54  Name           "CRT"
+  0C 00     Trail          0x000C
+
+3.8 TABLES D'IMPLEMENTATION (apres les records de symboles)
+-------------------------------------------------------------
+Apres les records de symboles (identifiables par UnitTag), la section
+contient des tables d'information d'implementation. Pour les unites simples
+(comme PRINTER), cela inclut des descripteurs de procedures :
+
+  Offset relatif  Contenu
+  --------------  -------
+  +0              Zeros (separateur)
+  +4              0x38 00 = taille du code de la procedure (56 octets)
+  +10             0x1C 00 = valeur liee (offset de donnees? info debug?)
+  (repete pour chaque procedure)
+
+La taille de cette zone d'implementation est :
+  implSize = fileSize - headerSize - symAlignedSize - codeSize - fixupSize
+
+==============================================================================
+4. SECTION CODE
+==============================================================================
+
+Contient le code machine x86 16 bits (mode reel, modele de memoire far).
+La section debute a l'offset : fileSize - codeSize - fixupSize
+
+4.1 FORMAT DU CODE
+-------------------
+Les procedures utilisent la convention d'appel standard du Pascal :
+  - Prologue : PUSH BP; MOV BP,SP  (55 89 E5)
+  - Epilogue : MOV SP,BP; POP BP; RETF  (89 EC 5D CB)
+
+L'instruction RETF (0xCB) confirme un modele de memoire FAR.
+
+Les appels inter-segments utilisent CALL FAR (9A xx xx xx xx) dont les
+adresses sont remplies par la section fixup lors du chargement.
+
+La section code peut contenir a la fois du code machine et des donnees
+initialisees (chaines de caracteres). Par exemple, dans PRINTER.QPU :
+  - Code de 0xD0 a 0x107 : PUSH BP ... RETF (56 octets d'instructions)
+  - Donnees de 0x108 a 0x10F : "\x04LPT1\x00\x00\x09"
+    (chaine Pascal prefixee par longueur "LPT1")
+
+4.2 APPELS SYSTEME
+--------------------
+Le code utilise des interruptions DOS standard :
+  INT 21h avec AH=44h : IOCTL - obtenir info peripherique
+  INT 21h avec AH=01  : IOCTL - modifier info peripherique
+
+L'unite SYSTEM contient les routines d'execution (runtime) dont le code
+ne suit pas toujours la convention PUSH BP (ex: fonctions d'arithmetique
+longue, gestion memoire, etc.).
+
+==============================================================================
+5. SECTION FIXUP (RELOCALISATIONS)
+==============================================================================
+
+La section fixup se trouve a la fin du fichier, aux (fixupSize) derniers
+octets. Elle contient des entrees de 4 octets chacune.
+
+5.1 FORMAT D'UNE ENTREE DE FIXUP
+----------------------------------
+
+  Offset  Taille  Champ
+  ------  ------  -----
+  +0      2       TargetRef  - Reference cible (index de segment/symbole)
+  +2      1       CodeOff    - Offset dans la section code ou appliquer
+  +3      1       FixType    - Type de relocalisation
+
+5.2 TYPES DE FIXUP (FixType)
+------------------------------
+
+  Valeur   Description
+  ------   -----------
+  0x40     Reference de segment (patch l'adresse du selecteur de segment)
+  0xC0     Reference FAR (patch offset + segment d'un CALL FAR ou pointeur)
+  0x00     Fin de table / padding (rempli de zeros)
+
+5.3 REFERENCES CIBLES (TargetRef)
+-----------------------------------
+
+  Valeur     Description probable
+  ------     --------------------
+  0x01FF     Auto-reference (segment de l'unite elle-meme)
+  0x0001     Reference au segment SYSTEM
+  0x02xx     Reference a une procedure/fonction specifique de SYSTEM
+             (xx = numero de routine dans la table SYSTEM)
+
+5.4 EXEMPLE - PRINTER.QPU
+---------------------------
+
+  Entree   TargetRef  CodeOff  FixType  Signification
+  ------   ---------  -------  -------  --------------------------------
+  1        0x01FF     0x04     0x40     Segment self a code+4 (MOV DI)
+  2        0x0001     0x09     0x40     Segment SYSTEM a code+9
+  3        0x0247     0x0E     0xC0     CALL FAR proc #0x47 de SYSTEM
+  4        0x01FF     0x13     0x40     Segment self a code+0x13
+  5        0x0249     0x18     0xC0     CALL FAR proc #0x49 de SYSTEM
+  6        0x023C     0x1D     0xC0     CALL FAR proc #0x3C de SYSTEM
+  7        0x01FF     0x23     0x40     Segment self a code+0x23
+  8        0x0000     0x00     0x00     Fin de table
+
+==============================================================================
+6. ALGORITHME DE HASH DES NOMS
+==============================================================================
+
+Chaque nom d'unite et de symbole a un hash de 16 bits utilise pour
+l'indexation. Hash observes :
+
+  Nom         Hash (hex)
+  ----------  ----------
+  SYSTEM      0xF90B
+  PRINTER     0x4442
+  CRT         0xC109
+  DOS         0x46CE
+  GRAPH       0x63C2
+  MSGRAPH     0x3F30
+  MSGRUTIL    0xC26A
+  BW40        0x0624
+  CO40        0x1B19
+  MONO        0x0870
+  LST         0x0D2D
+
+L'algorithme exact de hash n'a pas ete determine, mais il produit des
+valeurs 16 bits a partir du nom en majuscules.
+
+==============================================================================
+7. CAS SPECIAUX
+==============================================================================
+
+7.1 SYSTEM.QPU
+---------------
+- Pas de dependances (DepCount = 0, headerSize = 0x30 = 48 octets)
+- Tres nombreux fichiers OBJ (runtime : RT_MSG2, RT_LNG1, RT_STR2,
+  RT_CSR1, RT_SET3, RT_MEM1, RT_OBJ1, RT_FIL1, RT_TXT0, RT_TXT1, ...)
+- Le code commence par des routines arithmetiques (XOR BP,BP) au lieu
+  du PUSH BP standard
+- Pas de record de type 0x800E (unite) trouve dans les premiers octets
+  de la section symboles (la declaration "SYSTEM" est peut-etre implicite)
+
+7.2 GRAPH.QPU
+--------------
+- 3 dependances : SYSTEM, MSGRAPH, MSGRUTIL
+- Contient beaucoup de donnees initialisees (patterns de remplissage
+  graphique, chaines de mode video comme "320x200 Palette 2")
+- Le UnitTag 0x82AE est unique parmi les fichiers analyses
+- La section code peut commencer par une zone de zeros (donnees BSS)
+  avant le code machine executable
+
+7.3 MSGRAPH.QPU
+----------------
+- Utilise les memes fichiers OBJ que le Quick C Graphics Library
+  (QCINIT, QCPEN, QCTEXT, QCCORE, QCGR, QCCIR, QCPAINT, QCIMAG)
+- Montre que Quick Pascal partageait le code graphique avec Quick C
+
+==============================================================================
+8. COMPARAISON AVEC LE FORMAT TPU (TURBO PASCAL)
+==============================================================================
+
+Similarites :
+  - Structure en sections : header | symboles | code | fixup
+  - Records de symboles avec hash et chaines prefixees par longueur
+  - Constantes, variables, types, procedures/fonctions comme types de records
+  - Conventions d'appel Pascal (RETF, parametres empiles)
+  - Modele de memoire FAR
+
+Differences :
+  - Signature "MSQP" au lieu de "TPU0"/"TPU9"  
+  - Le champ en-tete n'utilise pas le meme layout que TPU
+    (TPU a un hash table de 16 entrees dans l'en-tete)
+  - Un "UnitTag" de 2 octets dans chaque record de symbole
+    (absent dans TPU)
+  - Les tailles des champs + leur position dans l'en-tete different
+  - La convention de nommage des fichiers OBJ est propre a QP
+    (RT_xxx pour les modules runtime SYSTEM)
+  - Format de fixup different (4 octets/entree vs format TPU variable)
+
+==============================================================================
+9. RESUME DES OFFSETS POUR LECTURE RAPIDE
+==============================================================================
+
+Pour lire un fichier QPU :
+
+  1. Verifier la signature "MSQP" aux offsets 0x00-0x03
+  2. Lire headerSize  a offset 0x0C (Word LE)
+  3. Lire codeSize    a offset 0x12 (Word LE)
+  4. Lire fixupSize   a offset 0x14 (Word LE)
+  5. Section symboles : de headerSize a (fileSize - codeSize - fixupSize)
+  6. Section code     : de (fileSize - codeSize - fixupSize) a 
+                        (fileSize - fixupSize)
+  7. Section fixup    : les fixupSize derniers octets du fichier
+  8. Dep table        : de 0x20 a (headerSize - 1)
+
+==============================================================================
+10. TABLE RECAPITULATIVE DES FICHIERS ANALYSES
+==============================================================================
+
+Fichier      Taille   Header  SymAlgn  Code     Fixup    Tag     Deps
+-----------  ------   ------  -------  ------   ------   ------  ----
+PRINTER.QPU     304   0x0040  0x0040   0x0040   0x0020   0xAD22  SYSTEM
+CRT.QPU        5152   0x0040  0x0770   0x0700   0x0280   0xAD22  SYSTEM
+DOS.QPU        9104   0x0040  0x12A0   0x06E0   0x0070   0xAD22  SYSTEM
+MSGRUTIL.QPU   3504   0x0040  0x0380   0x0400   0x0160   0x9522  SYSTEM
+GRAPH.QPU     37664   0x0050  0x2D90   0x2120   0x0790   0x82AE  SYSTEM,
+                                                                  MSGRAPH,
+                                                                  MSGRUTIL
+SYSTEM.QPU    44960   0x0030  0x2E10   0x4730   0x1670   (N/A)   (aucune)
+MSGRAPH.QPU   72368   0x0050  0x2F20   0x7870   0x3100   0x9522  SYSTEM,
+                                                                  MSGRUTIL
+
+Note: La colonne "SymAlgn" est le champ [0x10] (SymAlignedSize), qui
+represente une SOUS-PARTIE de la section symboles totale. La section
+symboles reelle est generalement plus grande car elle inclut aussi les
+tables d'implementation des procedures.
+
+La section symboles reelle (symSection) pour chaque fichier :
+  PRINTER  : 0x0090 (144 o)   dont SymAligned=0x0040, ImplInfo=0x0050
+  CRT      : 0x0A60 (2656 o)  dont SymAligned=0x0770, ImplInfo=0x02F0
+  DOS      : 0x1C00 (7168 o)  dont SymAligned=0x12A0, ImplInfo=0x0960
+  MSGRUTIL : 0x0810 (2064 o)  dont SymAligned=0x0380, ImplInfo=0x0490
+  GRAPH    : 0x6A20 (27168 o) dont SymAligned=0x2D90, ImplInfo=0x3C90
+  SYSTEM   : 0x51D0 (20944 o) dont SymAligned=0x2E10, ImplInfo=0x23C0
+  MSGRAPH  : 0x70F0 (28912 o) dont SymAligned=0x2F20, ImplInfo=0x41D0
+
+==============================================================================
+11. NOTE SUR QUICK PASCAL
+==============================================================================
+
+Microsoft Quick Pascal 1.0 (1989) etait un compilateur Pascal pour DOS
+compatible avec Turbo Pascal de Borland (niveaux 4.0/5.0). Il n'a eu
+qu'une seule version avant que Microsoft arrete le developpement.
+
+Quick Pascal partageait du code avec l'ecosysteme Quick C de Microsoft,
+comme en temoignent les fichiers OBJ dans MSGRAPH.QPU (QCINIT, QCPEN,
+QCCORE, etc.) qui sont les memes modules que la bibliotheque graphique
+de Quick C.
+
+Le format QPU, bien que similaire au TPU de Turbo Pascal, utilise un
+en-tete et un format de records propres a Microsoft, rendant les fichiers
+QPU incompatibles avec les outils Turbo Pascal.
+
+==============================================================================
+FIN DU DOCUMENT
+==============================================================================

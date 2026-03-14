@@ -1,3 +1,4 @@
 *.o
-*.asm
-KOTLIN86
+*.obj
+*.ppu
+
