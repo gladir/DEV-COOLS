@@ -34,7 +34,7 @@
 {  TODO 16 [IMPLEMENTE] - Opcodes de creation d'objets et tableaux            }
 {  TODO 17 [IMPLEMENTE] - Opcodes d'acces aux champs                           }
 {  TODO 18 [IMPLEMENTE] - Opcodes de comparaison, retour et divers            }
-{  TODO 19 - Labels, resolution des sauts et calcul des offsets               }
+{  TODO 19 [IMPLEMENTE] - Labels, resolution des sauts et calcul des offsets  }
 {  TODO 20 - Attribut Code : generation binaire                               }
 {  TODO 21 - Directives de gestion des exceptions (.catch, .throws)           }
 {  TODO 22 - Attributs supplementaires (SourceFile, LineNumberTable, etc.)    }
@@ -535,6 +535,11 @@ Function ParseMethodSpec(Const spec: String; Var cls, mname, desc: String): Bool
 
 { --- Declarations forward TODO 17 : Opcodes d'acces aux champs --- }
 Function ParseFieldSpec(Const spec: String; Var cls, fname: String): Boolean; Forward;
+
+{ --- Declarations forward TODO 19 : Labels, resolution des sauts --- }
+Function  LabelFind(Const name: String): Integer; Forward;
+Procedure LabelAdd(Const name: String); Forward;
+Procedure LabelResolve; Forward;
 
 { ---------- Ouverture et fermeture du fichier source ---------- }
 
@@ -2174,6 +2179,8 @@ Begin
  End;
  With MethodTab^[CurMethod] do
  Begin
+  { Resoudre les fixups de branchement (TODO 19) }
+  LabelResolve;
   { Verifier les labels non resolus }
   For i := 1 to LabelCount do
   Begin
@@ -2645,6 +2652,145 @@ Var i: Integer;
 Begin
  For i := 1 to w do
   EmitByte(0);
+End;
+
+{ ============================================================================ }
+{ Labels, resolution des sauts et calcul des offsets (TODO 19)                 }
+{ ============================================================================ }
+
+{ --- LabelFind : rechercher un label par nom dans la methode courante --- }
+{ Retourne l'index dans Labels (1..LabelCount) ou 0 si non trouve.         }
+Function LabelFind(Const name: String): Integer;
+Var i: Integer;
+    lbl: String;
+Begin
+ LabelFind := 0;
+ If Not InMethod Then Exit;
+ lbl := name; { sauvegarder avant With (conflit TP case-insensitive Name) }
+ With MethodTab^[CurMethod] do
+ Begin
+  For i := 1 to LabelCount do
+  Begin
+   If Labels^[i].Name = lbl Then
+   Begin
+    LabelFind := i;
+    Exit;
+   End;
+  End;
+ End;
+End;
+
+{ --- LabelAdd : enregistrer un label a la position PC courante --- }
+{ Ajoute le label dans la table. Si le label existe deja comme         }
+{ reference non resolue (forward ref), on le resout. Si il est deja    }
+{ defini (Resolved=True), c'est un doublon => erreur.                  }
+Procedure LabelAdd(Const name: String);
+Var idx: Integer;
+    lbl: String;
+Begin
+ lbl := name; { sauvegarder avant With (conflit TP case-insensitive Name) }
+ If Not InMethod Then
+ Begin
+  Warning('label ''' + lbl + ':'' hors methode, ignore');
+  Exit;
+ End;
+ With MethodTab^[CurMethod] do
+ Begin
+  { Chercher si le label existe deja }
+  idx := LabelFind(lbl);
+  If idx > 0 Then
+  Begin
+   If Labels^[idx].Resolved Then
+   Begin
+    Error('label ''' + lbl + ''' deja defini (doublon)');
+    Exit;
+   End;
+   { Le label existait comme reference forward, on le resout }
+   Labels^[idx].Offset   := CodeSize;
+   Labels^[idx].Resolved := True;
+   If OptVerbose Then
+    WriteLn('    [label] ', lbl, ': -> PC=', CodeSize, ' (forward resolved)');
+   Exit;
+  End;
+  { Nouveau label }
+  If LabelCount >= MAX_LABELS Then
+  Begin
+   Error('trop de labels (max ' + IntToStr_(MAX_LABELS) + ')');
+   Exit;
+  End;
+  Inc(LabelCount);
+  Labels^[LabelCount].Name     := lbl;
+  Labels^[LabelCount].Offset   := CodeSize;
+  Labels^[LabelCount].Resolved := True;
+  If OptVerbose Then
+   WriteLn('    [label] ', lbl, ': -> PC=', CodeSize);
+ End;
+End;
+
+{ --- LabelResolve : resoudre tous les fixups de branchement --- }
+{ Parcourt la table des fixups de la methode courante. Pour chaque   }
+{ fixup, recherche le label cible, calcule l'offset relatif           }
+{ (label_pc - instr_pc), et patche les octets dans le code buffer.   }
+{ Erreur si un label reference n'est pas defini.                      }
+Procedure LabelResolve;
+Var i, idx, j: Integer;
+    relOff: LongInt;
+    pOff: LongInt;
+Begin
+ If Not InMethod Then Exit;
+ With MethodTab^[CurMethod] do
+ Begin
+  For i := 1 to FixupCount do
+  Begin
+   { Chercher le label cible }
+   idx := 0;
+   For j := 1 to LabelCount do
+   Begin
+    If Labels^[j].Name = Fixups^[i].LabelName Then
+    Begin
+     idx := j;
+     Break;
+    End;
+   End;
+   If idx = 0 Then
+   Begin
+    Error('label ''' + Fixups^[i].LabelName + ''' non defini (reference non resolue)');
+    Continue;
+   End;
+   If Not Labels^[idx].Resolved Then
+   Begin
+    Error('label ''' + Fixups^[i].LabelName + ''' non resolu');
+    Continue;
+   End;
+   { Calculer l'offset relatif : label_pc - instr_pc }
+   relOff := Labels^[idx].Offset - Fixups^[i].InstrOffset;
+   pOff   := Fixups^[i].PatchOffset;
+   { Patcher le code buffer }
+   If Fixups^[i].Width = 2 Then
+   Begin
+    { Verifier que l'offset tient dans un signe 16 bits }
+    If (relOff < -32768) Or (relOff > 32767) Then
+     Warning('offset de branchement hors limites 16 bits (' +
+             IntToStr_(relOff) + ') pour label ''' +
+             Fixups^[i].LabelName + '''');
+    If (pOff >= 0) And (pOff + 1 < MAX_CODE) Then
+    Begin
+     Code^[pOff]     := Byte((relOff shr 8) and $FF);
+     Code^[pOff + 1] := Byte(relOff and $FF);
+    End;
+   End
+   Else If Fixups^[i].Width = 4 Then
+   Begin
+    If (pOff >= 0) And (pOff + 3 < MAX_CODE) Then
+    Begin
+     Code^[pOff]     := Byte((relOff shr 24) and $FF);
+     Code^[pOff + 1] := Byte((relOff shr 16) and $FF);
+     Code^[pOff + 2] := Byte((relOff shr 8) and $FF);
+     Code^[pOff + 3] := Byte(relOff and $FF);
+    End;
+   End;
+  End;
+ End;
 End;
 
 { ============================================================================ }
@@ -4232,9 +4378,9 @@ Begin
      SkipToEOL;
     End;
    Else
-    { Directives non encore implementees (TODO 19+) : sauter la ligne }
+    { Directives non encore implementees (TODO 20+) : sauter la ligne }
     If OptVerbose Then
-     WriteLn('  [skip] directive ', CurStr, ' (TODO 19+)');
+     WriteLn('  [skip] directive ', CurStr, ' (TODO 20+)');
     SkipToEOL;
    End;  { Case }
   End
@@ -4245,7 +4391,7 @@ Begin
    Begin
     { Mnemonique non reconnu : sauter la ligne }
     If OptVerbose Then
-     WriteLn('  [skip] instruction ', CurStr, ' (TODO 19+)');
+     WriteLn('  [skip] instruction ', CurStr, ' (TODO 20+)');
     SkipToEOL;
    End
    Else
@@ -4253,7 +4399,9 @@ Begin
   End
   Else If InMethod And (CurTok = TK_LABEL) Then
   Begin
-   { Label dans une methode : sauter pour le moment (TODO 19) }
+   { Label dans une methode : enregistrer a la position PC courante (TODO 19) }
+   LabelAdd(CurStr);
+   Consume;
    SkipToEOL;
   End
   Else

@@ -371,7 +371,7 @@ TODO 18 [IMPLEMENTE] - Opcodes de comparaison, retour et divers
   - wide iinc <index_u2> <const_s2> : iinc etendu
   - ParseReturnCmpMisc : reconnaitre et emettre ces opcodes
 
-TODO 19 - Labels, resolution des sauts et calcul des offsets
+TODO 19 [IMPLEMENTE] - Labels, resolution des sauts et calcul des offsets
   -----------------------------------------------------------
   - LabelInit : initialiser la table des labels pour la methode
   - LabelAdd(name) : enregistrer un label a la position PC courante
