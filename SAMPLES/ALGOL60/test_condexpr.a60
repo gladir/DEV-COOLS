@@ -1,0 +1,58 @@
+comment Test expressions conditionnelles et designationnelles (TODO 23) ;
+BEGIN
+  INTEGER x, y;
+  LABEL L1, L2, done1, done2, done3;
+
+  comment Expression conditionnelle simple (valeur) ;
+  x := IF TRUE THEN 10 ELSE 20;
+  outinteger(1, x);
+  newline(1);
+
+  comment Expression conditionnelle avec condition fausse ;
+  x := IF FALSE THEN 10 ELSE 20;
+  outinteger(1, x);
+  newline(1);
+
+  comment Expression conditionnelle avec variable ;
+  y := 5;
+  x := IF y > 3 THEN 100 ELSE 200;
+  outinteger(1, x);
+  newline(1);
+
+  comment Expression conditionnelle imbriquee ;
+  x := IF TRUE THEN (IF FALSE THEN 1 ELSE 2) ELSE 3;
+  outinteger(1, x);
+  newline(1);
+
+  comment Expression conditionnelle booleenne ;
+  x := IF 1 = 1 THEN 42 ELSE 0;
+  outinteger(1, x);
+  newline(1);
+
+  comment Expression designationnelle conditionnelle : GOTO IF ;
+  x := 1;
+  GOTO IF x = 1 THEN L1 ELSE L2;
+
+  L2: outstring(1, `L2`);
+  newline(1);
+  GOTO done1;
+
+  L1: outstring(1, `L1`);
+  newline(1);
+  GOTO done1;
+
+  done1:
+
+  comment Expression designationnelle conditionnelle (faux) ;
+  x := 0;
+  GOTO IF x = 1 THEN done2 ELSE done3;
+
+  done2: outstring(1, `done2`);
+  newline(1);
+  GOTO done3;
+
+  done3:
+
+  outstring(1, `Fin test condexpr.`);
+  newline(1)
+END.

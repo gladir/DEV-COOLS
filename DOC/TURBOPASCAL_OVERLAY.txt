@@ -1,0 +1,609 @@
+=========================================================================
+  TURBO PASCAL 7.0 - Unité OVERLAY - Documentation de référence
+=========================================================================
+
+  L'unité Overlay fournit le gestionnaire d'overlays de Turbo Pascal.
+  Les overlays permettent de dépasser la limite de 640 Ko de mémoire
+  conventionnelle DOS en ne chargeant en mémoire que les unités
+  nécessaires à un instant donné. Les unités marquées avec la
+  directive {$O+} peuvent être placées en overlay : elles sont
+  chargées depuis le fichier .OVR à la demande et déchargées quand
+  l'espace est nécessaire pour d'autres overlays.
+
+  Uses Overlay;
+
+  Directives de compilation : {$D-,I-,S-}
+    $D- : Pas d'information de débogage
+    $I- : Pas de vérification d'E/S
+    $S- : Pas de vérification de pile
+
+=========================================================================
+  1. CODES D'ERREUR (OvrResult)
+=========================================================================
+
+  Après chaque appel à une procédure de l'unité Overlay, la variable
+  OvrResult contient un code indiquant le résultat de l'opération.
+
+  Constante         Valeur   Signification
+  ----------------  ------   ------------------------------------------
+  ovrOk                 0    Opération réussie
+  ovrError             -1    Erreur générale du gestionnaire d'overlays
+  ovrNotFound          -2    Fichier overlay (.OVR) non trouvé
+  ovrNoMemory          -3    Mémoire insuffisante pour le tampon overlay
+  ovrIOError           -4    Erreur d'entrée/sortie sur le fichier .OVR
+  ovrNoEMSDriver      -5    Pilote EMS (EMM386, QEMM...) non installé
+  ovrNoEMSMemory      -6    Mémoire EMS insuffisante
+
+  Exemple :
+    OvrInit('MONPROG.OVR');
+    if OvrResult <> ovrOk then
+    begin
+      WriteLn('Erreur overlay : ', OvrResult);
+      Halt(1);
+    end;
+
+=========================================================================
+  2. VARIABLES TYPÉES (CONSTANTES INITIALISÉES)
+=========================================================================
+
+  OvrResult : Integer = 0;
+  ---------------------------------------------------------------
+  Code de retour de la dernière opération overlay. Initialisé à
+  ovrOk (0). Mis à jour après chaque appel à OvrInit, OvrInitEMS,
+  OvrSetBuf, OvrSetRetry et OvrClearBuf.
+
+  Toujours vérifier OvrResult après les appels critiques,
+  notamment OvrInit et OvrInitEMS.
+
+  ---------------------------------------------------------------
+  OvrEmsPages : Word = 0;
+  ---------------------------------------------------------------
+  Nombre de pages EMS allouées pour les overlays après un appel
+  réussi à OvrInitEMS. Chaque page EMS fait 16 Ko.
+
+  Si OvrInitEMS n'a pas été appelé ou a échoué, OvrEmsPages = 0.
+
+  Exemple :
+    OvrInitEMS;
+    if OvrResult = ovrOk then
+      WriteLn(OvrEmsPages, ' pages EMS allouées (',
+              OvrEmsPages * 16, ' Ko)')
+    else
+      WriteLn('EMS non disponible, utilisation du disque');
+
+  ---------------------------------------------------------------
+  OvrTrapCount : Word = 0;
+  ---------------------------------------------------------------
+  Compteur du nombre total d'appels interceptés (traps) vers des
+  unités overlay. Chaque fois qu'une procédure ou fonction d'une
+  unité overlay est appelée et que l'unité n'est pas en mémoire,
+  un trap est déclenché pour charger l'unité.
+
+  Ce compteur est utile pour mesurer la performance et optimiser
+  la taille du tampon overlay. Un OvrTrapCount élevé indique des
+  rechargements fréquents (thrashing).
+
+  ---------------------------------------------------------------
+  OvrLoadCount : Word = 0;
+  ---------------------------------------------------------------
+  Compteur du nombre total de chargements effectifs d'unités
+  overlay depuis le fichier .OVR ou la mémoire EMS. Un chargement
+  se produit quand l'unité appelée n'est pas présente dans le
+  tampon.
+
+  La différence entre OvrTrapCount et OvrLoadCount indique le
+  nombre de fois où une unité était déjà en mémoire lors du trap
+  (aucun chargement nécessaire).
+
+  Optimisation : si OvrLoadCount est proche de OvrTrapCount,
+  le tampon est trop petit et les unités sont constamment
+  rechargées. Augmenter la taille du tampon avec OvrSetBuf.
+
+  ---------------------------------------------------------------
+  OvrFileMode : Byte = 0;
+  ---------------------------------------------------------------
+  Mode d'ouverture du fichier overlay. Par défaut 0 (lecture
+  seule). Correspond au mode passé à l'ouverture DOS du fichier
+  .OVR.
+
+  Valeurs courantes :
+    0 = Lecture seule (par défaut)
+    $40 = Deny-none (partage réseau, permet l'accès concurrent)
+
+  Sur un réseau, si plusieurs instances du programme doivent
+  accéder au même fichier .OVR, définir OvrFileMode := $40
+  avant d'appeler OvrInit.
+
+=========================================================================
+  3. TYPE
+=========================================================================
+
+  OvrReadFunc = Function(OvrSeg : Word) : Integer;
+  ---------------------------------------------------------------
+  Type de fonction de lecture personnalisée pour le chargement des
+  overlays.
+
+  Paramètres :
+    OvrSeg  Segment mémoire où charger l'unité overlay
+  Retour :
+    ovrOk (0) si le chargement a réussi,
+    ou un code d'erreur négatif en cas d'échec.
+
+  Ce type est utilisé par la variable OvrReadBuf pour permettre à
+  l'utilisateur de remplacer la routine de lecture standard du
+  gestionnaire d'overlays (par exemple pour lire les overlays
+  depuis un fichier compressé, crypté, ou un support non standard).
+
+=========================================================================
+  4. VARIABLE
+=========================================================================
+
+  OvrReadBuf : OvrReadFunc;
+  ---------------------------------------------------------------
+  Pointeur vers la fonction de lecture des overlays. Par défaut,
+  pointe vers la routine interne qui lit depuis le fichier .OVR.
+
+  En assignant une fonction personnalisée à OvrReadBuf, il est
+  possible de modifier entièrement le mécanisme de chargement
+  des overlays.
+
+  Exemple (concept) :
+    function MyOvrRead(OvrSeg : Word) : Integer; far;
+    begin
+      { Charger l'overlay depuis une source personnalisée }
+      { vers le segment OvrSeg }
+      MyOvrRead := ovrOk;
+    end;
+
+    begin
+      OvrInit('MONPROG.OVR');
+      if OvrResult = ovrOk then
+        OvrReadBuf := MyOvrRead;
+    end;
+
+=========================================================================
+  5. INITIALISATION (OvrInit)
+=========================================================================
+
+  procedure OvrInit(FileName : String);
+  ---------------------------------------------------------------
+  Initialise le gestionnaire d'overlays et ouvre le fichier
+  overlay spécifié.
+
+  Paramètres :
+    FileName  Nom du fichier overlay (.OVR)
+
+  Cette procédure DOIT être appelée avant tout appel à une unité
+  overlay. Elle est typiquement la première instruction du
+  programme principal.
+
+  Fonctionnement :
+    1. Ouvre le fichier .OVR avec le mode OvrFileMode.
+    2. Vérifie la validité du fichier overlay.
+    3. Initialise le tampon overlay en mémoire conventionnelle.
+    4. Prépare les tables de trap pour chaque unité overlay.
+
+  Résultat dans OvrResult :
+    ovrOk        Initialisation réussie
+    ovrNotFound  Fichier .OVR non trouvé
+    ovrError     Fichier invalide ou incompatible
+    ovrIOError   Erreur de lecture du fichier
+
+  IMPORTANT :
+  - Le fichier .OVR est généré automatiquement par le compilateur
+    lors de la compilation du programme utilisant des unités {$O+}.
+  - Le fichier .OVR reste ouvert pendant toute l'exécution du
+    programme (sauf si OvrInitEMS est utilisé avec succès).
+  - Si le fichier .OVR se trouve dans le même répertoire que
+    l'exécutable, on peut utiliser ParamStr(0) pour construire
+    le chemin.
+
+  Exemple :
+    program MonProg;
+    uses Overlay, Unite1, Unite2;
+    {$O Unite1}
+    {$O Unite2}
+    begin
+      OvrInit('MONPROG.OVR');
+      if OvrResult <> ovrOk then
+      begin
+        WriteLn('Erreur d''initialisation overlay : ', OvrResult);
+        Halt(1);
+      end;
+      { Le programme peut maintenant appeler Unite1 et Unite2 }
+    end.
+
+=========================================================================
+  6. INITIALISATION EMS (OvrInitEMS)
+=========================================================================
+
+  procedure OvrInitEMS;
+  ---------------------------------------------------------------
+  Copie le contenu du fichier overlay dans la mémoire EMS
+  (Expanded Memory Specification).
+
+  Cette procédure doit être appelée APRÈS OvrInit. Si elle
+  réussit, les overlays sont chargés depuis l'EMS au lieu du
+  fichier disque, ce qui est considérablement plus rapide
+  (accès mémoire au lieu d'accès disque).
+
+  Fonctionnement :
+    1. Vérifie la présence d'un pilote EMS (EMM386, QEMM...).
+    2. Calcule le nombre de pages EMS nécessaires.
+    3. Alloue les pages EMS.
+    4. Copie le contenu du fichier .OVR dans l'EMS.
+    5. Ferme le fichier .OVR (plus nécessaire).
+
+  Résultat dans OvrResult :
+    ovrOk            Copie en EMS réussie
+    ovrNoEMSDriver   Aucun pilote EMS installé
+    ovrNoEMSMemory   Mémoire EMS insuffisante
+    ovrError         Gestionnaire overlay non initialisé
+
+  Après un appel réussi :
+    - OvrEmsPages contient le nombre de pages allouées.
+    - Le fichier .OVR est fermé.
+    - Les chargements sont quasi-instantanés.
+
+  Si OvrInitEMS échoue, le programme continue de fonctionner
+  normalement en chargeant les overlays depuis le disque. Il
+  est donc courant d'ignorer l'échec :
+
+  Exemple :
+    OvrInit('MONPROG.OVR');
+    if OvrResult <> ovrOk then Halt(1);
+
+    OvrInitEMS;
+    { Ignorer le résultat : le disque sera utilisé si pas d'EMS }
+
+=========================================================================
+  7. GESTION DU TAMPON OVERLAY
+=========================================================================
+
+  Le tampon overlay est une zone de mémoire conventionnelle où
+  les unités overlay sont chargées pour exécution. Sa taille
+  détermine directement la performance du programme :
+    - Tampon trop petit → rechargements fréquents (thrashing)
+    - Tampon trop grand → moins de mémoire pour le tas (heap)
+
+  La taille minimale du tampon est celle de la plus grande unité
+  overlay du programme. La taille par défaut est cette taille
+  minimale.
+
+  ---------------------------------------------------------------
+  procedure OvrSetBuf(Size : LongInt);
+  ---------------------------------------------------------------
+  Définit la taille du tampon overlay.
+
+  Paramètres :
+    Size  Nouvelle taille en octets
+
+  La taille est arrondie au paragraphe supérieur (multiple de 16).
+  Si Size est inférieure à la taille minimale requise (la plus
+  grande unité overlay), l'appel est ignoré et OvrResult = ovrError.
+
+  La mémoire du tampon est prise sur le tas (heap). Augmenter le
+  tampon réduit la mémoire disponible pour New, GetMem, etc.
+
+  Résultat dans OvrResult :
+    ovrOk        Taille modifiée avec succès
+    ovrNoMemory  Mémoire insuffisante pour la taille demandée
+    ovrError     Taille trop petite ou gestionnaire non initialisé
+
+  Exemple :
+    OvrInit('MONPROG.OVR');
+    if OvrResult <> ovrOk then Halt(1);
+
+    OvrSetBuf(128 * 1024);  { 128 Ko pour le tampon overlay }
+    if OvrResult <> ovrOk then
+      WriteLn('Tampon réduit, continuation avec taille par défaut');
+
+  ---------------------------------------------------------------
+  function OvrGetBuf : LongInt;
+  ---------------------------------------------------------------
+  Retourne la taille actuelle du tampon overlay en octets.
+
+  Retour :
+    Taille du tampon en octets (0 si le gestionnaire n'est pas
+    initialisé).
+
+  Exemple :
+    WriteLn('Tampon overlay : ', OvrGetBuf, ' octets');
+
+=========================================================================
+  8. ZONE DE RÉESSAI (Retry Area)
+=========================================================================
+
+  La zone de réessai (retry area) est une extension du tampon
+  overlay. Les unités qui sont retirées du tampon principal pour
+  faire place à d'autres ne sont pas immédiatement supprimées :
+  elles sont déplacées vers la zone de réessai. Si elles sont
+  rappelées avant d'être écrasées, elles peuvent être rechargées
+  instantanément depuis cette zone, sans accès disque ni EMS.
+
+  Ce mécanisme est un cache LRU (Least Recently Used) qui réduit
+  considérablement le nombre de chargements effectifs, surtout
+  quand plusieurs unités overlay s'appellent mutuellement.
+
+  ---------------------------------------------------------------
+  procedure OvrSetRetry(Size : LongInt);
+  ---------------------------------------------------------------
+  Définit la taille de la zone de réessai.
+
+  Paramètres :
+    Size  Taille en octets de la zone de réessai
+
+  Par défaut, la zone de réessai a une taille de 0 (désactivée).
+  La mémoire est prise sur le tas.
+
+  Résultat dans OvrResult :
+    ovrOk        Taille modifiée avec succès
+    ovrNoMemory  Mémoire insuffisante
+    ovrError     Gestionnaire non initialisé
+
+  Exemple :
+    OvrSetBuf(64 * 1024);     { 64 Ko tampon principal }
+    OvrSetRetry(64 * 1024);   { 64 Ko zone de réessai }
+
+  ---------------------------------------------------------------
+  function OvrGetRetry : LongInt;
+  ---------------------------------------------------------------
+  Retourne la taille actuelle de la zone de réessai en octets.
+
+  Retour :
+    Taille de la zone en octets (0 si désactivée ou gestionnaire
+    non initialisé).
+
+=========================================================================
+  9. EFFACEMENT DU TAMPON (OvrClearBuf)
+=========================================================================
+
+  procedure OvrClearBuf;
+  ---------------------------------------------------------------
+  Efface le contenu du tampon overlay et de la zone de réessai.
+  Toutes les unités overlay chargées sont marquées comme non
+  présentes. Le prochain appel à une unité overlay déclenchera
+  un rechargement depuis le disque ou l'EMS.
+
+  Cette procédure remet également OvrTrapCount et OvrLoadCount
+  à zéro.
+
+  Utilisation typique :
+    - Après un changement de phase du programme, pour libérer
+      le tampon des unités de la phase précédente.
+    - Pour remettre à zéro les compteurs de performance.
+
+=========================================================================
+  10. ARCHITECTURE DES OVERLAYS
+=========================================================================
+
+  --- Principe de fonctionnement ---
+
+  1. Le compilateur génère un fichier .OVR contenant le code des
+     unités marquées {$O+}. Le fichier .EXE ne contient que des
+     « stubs » (traps) pour chaque procédure/fonction overlay.
+
+  2. Quand le programme appelle une procédure overlay, le trap
+     intercepte l'appel et invoque le gestionnaire d'overlays.
+
+  3. Le gestionnaire vérifie si l'unité est déjà en mémoire :
+     - Si oui : l'exécution continue directement.
+     - Si non : l'unité est chargée dans le tampon depuis le
+       fichier .OVR ou l'EMS, en évinçant si nécessaire une
+       autre unité.
+
+  4. L'unité évincée est :
+     - Placée dans la zone de réessai (si configurée et si
+       l'espace le permet).
+     - Ou simplement abandonnée (sera rechargée au prochain appel).
+
+  --- Directives de compilation ---
+
+  {$O+}  Active le mode overlay pour l'unité courante.
+         Placé dans l'unité elle-même.
+
+  {$O NomUnite}  Déclare que NomUnite est une unité overlay.
+                  Placé dans le programme principal, après Uses.
+
+  --- Contraintes ---
+
+  - Seules les unités peuvent être des overlays (pas le programme
+    principal).
+  - Les unités overlay ne peuvent pas avoir de sections
+    d'initialisation qui accèdent à des ressources persistantes
+    (les sections init sont exécutées au chargement).
+  - Les procédures/fonctions inline ({$F-}) sont automatiquement
+    converties en far ({$F+}) dans les unités overlay.
+  - Les unités System, Overlay, Crt, et Dos ne peuvent pas être
+    des overlays.
+
+=========================================================================
+  11. OPTIMISATION DES PERFORMANCES
+=========================================================================
+
+  --- Dimensionner le tampon ---
+
+  Taille minimale = taille de la plus grande unité overlay.
+  Taille recommandée = somme des 2-3 plus grandes unités appelées
+  simultanément.
+
+  Utiliser OvrTrapCount et OvrLoadCount pour mesurer :
+    - OvrLoadCount / OvrTrapCount ≈ 1.0 → thrashing sévère,
+      augmenter le tampon.
+    - OvrLoadCount / OvrTrapCount < 0.5 → bon comportement.
+    - OvrLoadCount / OvrTrapCount → 0   → tampon suffisamment
+      grand pour contenir toutes les unités actives.
+
+  --- Utiliser l'EMS ---
+
+  OvrInitEMS élimine les accès disque. C'est l'optimisation la
+  plus efficace, car le chargement depuis l'EMS est quasi-
+  instantané comparé au disque.
+
+  --- Utiliser la zone de réessai ---
+
+  La zone de réessai est un cache LRU très efficace pour les
+  programmes qui alternent fréquemment entre un petit nombre
+  d'unités overlay.
+
+  --- Organisation des unités ---
+
+  Regrouper dans une même unité les procédures qui sont
+  toujours appelées ensemble. Séparer les fonctionnalités
+  rarement utilisées dans des unités distinctes.
+
+=========================================================================
+  12. EXEMPLES COMPLETS
+=========================================================================
+
+  --- Exemple 1 : Initialisation basique ---
+
+  program OverlayDemo;
+  uses Overlay, MonUnite1, MonUnite2;
+  {$O MonUnite1}
+  {$O MonUnite2}
+  begin
+    OvrInit('OVERLAYDEMO.OVR');
+    if OvrResult <> ovrOk then
+    begin
+      case OvrResult of
+        ovrNotFound : WriteLn('Fichier .OVR non trouvé');
+        ovrNoMemory : WriteLn('Mémoire insuffisante');
+        ovrIOError  : WriteLn('Erreur E/S');
+      else
+        WriteLn('Erreur overlay : ', OvrResult);
+      end;
+      Halt(1);
+    end;
+
+    { Appels normaux aux unités overlay }
+    Procedure1DeMonUnite1;
+    Procedure1DeMonUnite2;
+  end.
+
+  --- Exemple 2 : Avec EMS et tampon élargi ---
+
+  program OverlayEMS;
+  uses Overlay, Phase1, Phase2, Phase3;
+  {$O Phase1}
+  {$O Phase2}
+  {$O Phase3}
+  begin
+    OvrInit('OVERLAYEMS.OVR');
+    if OvrResult <> ovrOk then Halt(1);
+
+    { Tenter d'utiliser l'EMS }
+    OvrInitEMS;
+    if OvrResult = ovrOk then
+      WriteLn('Overlays en EMS : ', OvrEmsPages, ' pages')
+    else
+    begin
+      WriteLn('EMS non disponible, augmentation du tampon...');
+      OvrSetBuf(96 * 1024);  { 96 Ko }
+      OvrSetRetry(32 * 1024); { 32 Ko zone de réessai }
+    end;
+
+    { Exécution du programme }
+    ExecuterPhase1;
+    ExecuterPhase2;
+    ExecuterPhase3;
+
+    { Statistiques }
+    WriteLn('Traps : ', OvrTrapCount);
+    WriteLn('Chargements : ', OvrLoadCount);
+    WriteLn('Tampon : ', OvrGetBuf, ' octets');
+    WriteLn('Zone réessai : ', OvrGetRetry, ' octets');
+  end.
+
+  --- Exemple 3 : Mesure de performance ---
+
+  program OverlayPerf;
+  uses Overlay, UnitA, UnitB;
+  {$O UnitA}
+  {$O UnitB}
+  var
+    Ratio : Real;
+  begin
+    OvrInit('OVERLAYPERF.OVR');
+    if OvrResult <> ovrOk then Halt(1);
+
+    OvrSetBuf(48 * 1024);
+
+    { Phase de travail }
+    AppelerDiversesFonctions;
+
+    { Analyser les performances }
+    if OvrTrapCount > 0 then
+    begin
+      Ratio := OvrLoadCount / OvrTrapCount;
+      WriteLn('Traps : ', OvrTrapCount);
+      WriteLn('Chargements : ', OvrLoadCount);
+      WriteLn('Ratio charge/trap : ', Ratio:5:2);
+      if Ratio > 0.5 then
+        WriteLn('ATTENTION : thrashing détecté, augmenter le tampon')
+      else
+        WriteLn('Performance correcte');
+    end;
+  end.
+
+=========================================================================
+  13. RÉCAPITULATIF DE L'INTERFACE
+=========================================================================
+
+  --- Constantes de codes d'erreur ---
+  ovrOk           =  0    Pas d'erreur
+  ovrError        = -1    Erreur générale
+  ovrNotFound     = -2    Fichier .OVR non trouvé
+  ovrNoMemory     = -3    Mémoire insuffisante
+  ovrIOError      = -4    Erreur d'entrée/sortie
+  ovrNoEMSDriver  = -5    Pilote EMS absent
+  ovrNoEMSMemory  = -6    Mémoire EMS insuffisante
+
+  --- Variables typées ---
+  OvrResult    : Integer = 0    Code retour dernière opération
+  OvrEmsPages  : Word = 0       Pages EMS allouées
+  OvrTrapCount : Word = 0       Compteur de traps
+  OvrLoadCount : Word = 0       Compteur de chargements
+  OvrFileMode  : Byte = 0       Mode d'ouverture fichier .OVR
+
+  --- Type ---
+  OvrReadFunc = Function(OvrSeg : Word) : Integer;
+
+  --- Variable ---
+  OvrReadBuf : OvrReadFunc      Fonction de lecture personnalisée
+
+  --- Procédures et fonctions ---
+  Procedure OvrInit(FileName : String);
+  Procedure OvrInitEMS;
+  Procedure OvrSetBuf(Size : LongInt);
+  Function  OvrGetBuf : LongInt;
+  Procedure OvrSetRetry(Size : LongInt);
+  Function  OvrGetRetry : LongInt;
+  Procedure OvrClearBuf;
+
+=========================================================================
+  14. RÉSUMÉ PAR CATÉGORIE
+=========================================================================
+
+  Catégorie                   Nombre   Éléments
+  -------------------------   ------   ----------------------------------
+  Initialisation                 2     OvrInit, OvrInitEMS
+  Tampon overlay                 2     OvrSetBuf, OvrGetBuf
+  Zone de réessai                2     OvrSetRetry, OvrGetRetry
+  Effacement                     1     OvrClearBuf
+  -------------------------   ------   ----------------------------------
+  TOTAL procédures/fonctions     7
+
+  Constantes d'erreur : 7   (ovrOk..ovrNoEMSMemory)
+
+  Variables typées : 5       (OvrResult, OvrEmsPages,
+                              OvrTrapCount, OvrLoadCount,
+                              OvrFileMode)
+
+  Types exportés : 1         (OvrReadFunc)
+
+  Variables exportées : 1    (OvrReadBuf)
+
+=========================================================================
+  Fin du document - Unité OVERLAY - Turbo Pascal 7.0
+=========================================================================

@@ -1,0 +1,43 @@
+comment Test boucle FOR STEP/UNTIL/WHILE (TODO 14) ;
+BEGIN
+  INTEGER i, s;
+
+  comment FOR STEP UNTIL positif ;
+  s := 0;
+  FOR i := 1 STEP 1 UNTIL 5 DO
+    s := s + i;
+  outinteger(1, s);
+  newline(1);
+
+  comment FOR STEP UNTIL avec pas de 2 ;
+  s := 0;
+  FOR i := 0 STEP 2 UNTIL 6 DO
+    s := s + 1;
+  outinteger(1, s);
+  newline(1);
+
+  comment FOR STEP UNTIL negatif ;
+  s := 0;
+  FOR i := 5 STEP -1 UNTIL 1 DO
+    s := s + i;
+  outinteger(1, s);
+  newline(1);
+
+  comment FOR avec bloc BEGIN END ;
+  s := 0;
+  FOR i := 1 STEP 1 UNTIL 3 DO
+  BEGIN
+    s := s + i;
+    s := s + 10
+  END;
+  outinteger(1, s);
+  newline(1);
+
+  comment FOR valeur simple ;
+  FOR i := 42 DO
+    outinteger(1, i);
+  newline(1);
+
+  outstring(1, `Fin test FOR.`);
+  newline(1)
+END.

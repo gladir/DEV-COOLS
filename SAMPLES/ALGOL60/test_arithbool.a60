@@ -1,0 +1,63 @@
+comment Test expressions arithmetiques et booleennes (TODO 11) ;
+BEGIN
+  INTEGER a, b, c;
+  BOOLEAN p, q, r;
+
+  comment Arithmetique simple avec constantes ;
+  a := 10 + 5;
+  b := 20 - 3;
+  c := 4 * 7;
+
+  comment Division entiere ;
+  a := 100 / 5;
+  b := 17 DIV 3;
+
+  comment Puissance avec constantes (constant folding) ;
+  c := 2 ^ 3;
+  a := 3 ^ 0;
+  b := 5 ^ 1;
+
+  comment Puissance avec variables (CALL _A60RT_POWER) ;
+  a := 2;
+  b := a ^ 3;
+  c := a ^ b;
+
+  comment Comparaisons ;
+  p := 10 < 20;
+  q := 5 <= 5;
+  r := 3 = 3;
+  p := 7 > 2;
+  q := 8 >= 8;
+  r := 4 != 5;
+
+  comment Operateurs logiques (court-circuit) ;
+  p := TRUE AND FALSE;
+  q := TRUE OR FALSE;
+  r := NOT TRUE;
+  p := TRUE /\ FALSE;
+  q := TRUE \/ FALSE;
+  r := ~ TRUE;
+
+  comment IMPL et EQUIV ;
+  p := FALSE IMPL TRUE;
+  q := TRUE EQUIV TRUE;
+  r := TRUE EQUIV FALSE;
+
+  comment Precedence : * avant + ;
+  a := 2 + 3 * 4;
+
+  comment Precedence : ^ avant * ;
+  b := 2 * 3 ^ 2;
+
+  comment Parentheses ;
+  c := (2 + 3) * 4;
+
+  comment Unaire ;
+  a := -5;
+  b := +3;
+  c := -(-10);
+
+  comment Expressions mixtes ;
+  p := (a < b) AND (c > 0);
+  q := NOT (a = b) OR (c >= 10)
+END.

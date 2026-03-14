@@ -1,0 +1,33 @@
+comment Algol 60 test - runtime minimal (TODO 24) ;
+comment Teste les fonctions utilitaires du runtime :
+  abs, sign, entier, power, arithmetic ;
+BEGIN
+  INTEGER a, b, c;
+
+  comment Test abs - valeur absolue ;
+  a := -7;
+  b := 5;
+  outstring(1, `abs(-7)=`);
+  outinteger(1, abs(a));
+  outstring(1, ` abs(5)=`);
+  outinteger(1, abs(b));
+  outstring(1, ` abs(0)=`);
+  outinteger(1, abs(0));
+
+  comment Test sign - signe ;
+  outstring(1, ` sign(-3)=`);
+  outinteger(1, sign(-3));
+  outstring(1, ` sign(0)=`);
+  outinteger(1, sign(0));
+  outstring(1, ` sign(42)=`);
+  outinteger(1, sign(42));
+
+  comment Test entier - partie entiere ;
+  outstring(1, ` entier(9)=`);
+  outinteger(1, entier(9));
+
+  comment Test power - exponentiation ;
+  c := 2 ** 8;
+  outstring(1, ` 2**8=`);
+  outinteger(1, c)
+END.

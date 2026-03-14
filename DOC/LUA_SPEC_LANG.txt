@@ -1,0 +1,486 @@
+============================================================
+SPECIFICATION DU LANGAGE LUA
+Sous-ensemble supporte par LUA86.PAS
+Compilateur Lua -> assembleur 8086
+============================================================
+
+1. INTRODUCTION
+   Lua est un langage de programmation leger, extensible, a typage
+   dynamique, concu pour l integration et le scripting. LUA86 implemente
+   un sous-ensemble substantiel de Lua 5.3 ciblant le jeu d instructions
+   8086 en mode reel DOS 16 bits.
+
+   Reference : Roberto Ierusalimschy, Luiz Henrique de Figueiredo,
+               Waldemar Celes - « Lua 5.3 Reference Manual »
+
+2. CONVENTIONS LEXICALES
+
+   2.1 Commentaires
+       -- commentaire court jusqu a fin de ligne
+       --[[ commentaire long multi-ligne ]]
+       --[=[ commentaire long avec niveau d egalite ]=]
+
+   2.2 Identificateurs
+       Commencent par une lettre ou underscore (_), suivis de lettres,
+       chiffres ou underscores. Sensibles a la casse.
+       Exemples : x  _total  myVar  i2  _ENV
+
+   2.3 Mots-cles reserves (21)
+       and       break     do        else      elseif
+       end       false     for       function  goto
+       if        in        local     nil       not
+       or        repeat    return    then      true
+       until     while
+
+   2.4 Chaines de caracteres
+       Delimiteurs : guillemets simples 'abc' ou doubles "abc"
+       Sequences d echappement :
+         \n (saut de ligne)    \t (tabulation)    \r (retour chariot)
+         \\ (backslash)        \" (guillemet)     \' (apostrophe)
+         \a (alerte)           \b (retour arriere)
+         \f (saut de page)     \v (tab verticale)
+         \0 (octet nul)        \xNN (hexadecimal)
+       Chaines longues : [[texte]] ou [=[texte]=] (multi-ligne, pas
+       d echappement)
+
+   2.5 Litteraux numeriques
+       Entiers decimaux : 0, 42, 65535
+       Entiers hexadecimaux : 0xFF, 0XFF
+       Flottants : 3.14, 1.5e3 (tronques en entier 16 bits)
+       Limitation : les nombres sont des entiers signes 16 bits
+         (-32768 a 32767), les flottants sont arrondis (trunc).
+
+3. TYPES ET VALEURS
+
+   Lua est un langage a typage dynamique. Les variables n ont pas de
+   type ; seules les valeurs en ont un.
+
+   3.1 nil
+       Type ayant une seule valeur : nil. Represente l absence de valeur.
+       Representation interne : 0 (mot de 16 bits).
+
+   3.2 boolean
+       Deux valeurs : true et false.
+       Representation : true = 1, false = 0.
+       Regle de verite Lua : nil et false sont faux, toute autre valeur
+       est vraie (y compris 0 et la chaine vide "").
+
+   3.3 number
+       Entier signe 16 bits (-32768 a 32767).
+       Limitation LUA86 : pas de nombres flottants natifs. Les litteraux
+       flottants sont tronques en entiers. math.pi vaut 3.
+
+   3.4 string
+       Sequence d octets immutable terminee par un octet nul.
+       Representation : pointeur vers les donnees dans le segment DATA.
+       Longueur : operateur # ou string.len().
+
+   3.5 table
+       Structure associative universelle de Lua. Sert de tableau, de
+       dictionnaire, d objet, de module, etc.
+       Representation memoire LUA86 (bloc de 512 octets) :
+         [0]      : count (partie tableau, word)
+         [2..251] : elements tableau (125 words max)
+         [252]    : n_pairs (partie hash, word)
+         [254..507] : paires cle/valeur hash (63 paires max)
+         [508]    : pointeur metatable (word, 0 si aucune)
+       Indices tableau base 1 (comme en Lua standard).
+
+   3.6 function
+       Valeur de premiere classe. Representee par un pointeur de code.
+       Fonctions nommees, anonymes, closures et methodes supportees.
+
+   3.7 userdata
+       Type stub. Represente par un pointeur (word). Utilisation limitee.
+
+4. VARIABLES ET PORTEE
+
+   4.1 Variables locales
+       Declarees avec le mot-cle « local ».
+       Portee : du point de declaration a la fin du bloc englobant.
+       Stockage : pile (acces [BP-offset]).
+         local x = 10
+         local a, b, c = 1, 2, 3
+         local y          -- vaut nil
+
+   4.2 Variables globales
+       Toute variable non declaree locale est globale.
+       Stockage : segment DATA (label _LUAV_nom).
+       Implicitement creee a la premiere utilisation.
+
+   4.3 Upvalues (closures)
+       Variable d une portee englobante capturee par une fonction interne.
+       Representees par des cellules DATA (_LUAU_nom).
+       Limitation : un seul niveau de capture recommande.
+
+5. OPERATEURS
+
+   5.1 Operateurs arithmetiques
+       +   addition
+       -   soustraction (binaire) ou negation (unaire)
+       *   multiplication
+       /   division entiere (quotient)
+       //  division entiere (quotient, arrondi vers -infini)
+       %   modulo (reste de la division)
+       ^   puissance (associatif a droite)
+
+   5.2 Operateurs de comparaison
+       ==  egalite
+       ~=  difference
+       <   inferieur strict
+       >   superieur strict
+       <=  inferieur ou egal
+       >=  superieur ou egal
+       Comparaison de chaines : lexicographique via STRCMP.
+
+   5.3 Operateurs logiques
+       and   ET logique (court-circuit, retourne une valeur)
+       or    OU logique (court-circuit, retourne une valeur)
+       not   negation logique (retourne true ou false)
+       Court-circuit : « and » retourne le premier operande si faux,
+       sinon le second. « or » retourne le premier si vrai, sinon le
+       second.
+
+   5.4 Operateur de concatenation
+       ..  concatenation de chaines (cree une nouvelle chaine)
+
+   5.5 Operateur de longueur
+       #   longueur d une chaine (nombre d octets) ou d une table
+           (nombre d elements dans la partie tableau)
+
+   5.6 Precedence des operateurs (du plus faible au plus fort)
+         1. or
+         2. and
+         3. < > <= >= ~= ==
+         4. | (bitwise or, stub)
+         5. ~ (bitwise xor, stub)
+         6. & (bitwise and, stub)
+         7. << >> (decalages, stub)
+         8. .. (concatenation, associatif a droite)
+         9. + -
+        10. * / // %
+        11. not  #  - (unaires)
+        12. ^ (puissance, associatif a droite)
+
+6. INSTRUCTIONS
+
+   6.1 Affectation
+       var = expr
+       var1, var2 = expr1, expr2   (affectation multiple)
+       t[k] = v                    (affectation de table)
+       Les valeurs excedentaires sont ignorees ; les manquantes
+       valent nil.
+
+   6.2 Bloc
+       do stmts end
+       Un bloc cree une nouvelle portee pour les variables locales.
+
+   6.3 Instruction if
+       if cond then
+         stmts
+       elseif cond then
+         stmts
+       else
+         stmts
+       end
+       Regle de verite : nil et false sont faux, tout le reste est vrai.
+
+   6.4 Boucle while
+       while cond do
+         stmts
+       end
+
+   6.5 Boucle repeat
+       repeat
+         stmts
+       until cond
+       Les variables locales du bloc sont visibles dans la condition.
+
+   6.6 Boucle for numerique
+       for var = debut, fin [, pas] do
+         stmts
+       end
+       La variable de boucle est locale et non modifiable. Le pas
+       par defaut est 1.
+
+   6.7 Boucle for generique
+       for k, v in pairs(t) do stmts end     -- toutes les cles
+       for i, v in ipairs(t) do stmts end    -- indices entiers 1..#t
+       next(t, k) : fonction d iteration de base.
+
+   6.8 break
+       Sort de la boucle englobante (while, repeat, for).
+
+   6.9 goto et labels
+       ::label::          -- declaration de label
+       goto label         -- saut vers le label
+       Restriction : ne peut sauter dans un bloc interne.
+
+   6.10 return
+        return [expr1 [, expr2 ...]]
+        Retour multiple : premiere valeur dans AX, les suivantes sur
+        la pile. Nombre de retours dans CX.
+
+7. FONCTIONS
+
+   7.1 Declaration
+       function nom(params)       -- fonction globale
+         stmts
+       end
+
+       local function nom(params) -- fonction locale
+         stmts
+       end
+
+   7.2 Fonction anonyme
+       function(params) stmts end
+       Expression evaluant a une valeur de type function.
+
+   7.3 Parametres
+       Parametres nommes : function f(a, b, c)
+       Parametres excedentaires ignores ; manquants valent nil.
+       Varargs : function f(a, ...) -- ... collecte les args restants
+         select('#', ...) : nombre de varargs
+         select(n, ...) : n-ieme vararg
+
+   7.4 Valeur de retour
+       return expr1, expr2, ...
+       Retour multiple (max 8 valeurs par defaut).
+       return sans valeur retourne nil.
+
+   7.5 Appel de fonction
+       nom(args)          -- appel direct
+       expr(args)         -- appel indirect (pointeur de fonction)
+       obj:methode(args)  -- sucre pour obj.methode(obj, args)
+
+   7.6 Appel terminal (tail call)
+       return f(args) : optimise en JMP (pas de nouveau cadre de pile).
+
+   7.7 Convention d appel
+       cdecl 16 bits : arguments empiles de droite a gauche.
+       Prologue : PUSH BP / MOV BP,SP / SUB SP, taille_locales
+       Epilogue : MOV SP,BP / POP BP / RET
+       L appelant nettoie la pile apres le retour.
+
+8. TABLES
+
+   8.1 Constructeurs
+       {}                     -- table vide
+       {10, 20, 30}           -- partie tableau (indices 1, 2, 3)
+       {x = 1, y = 2}        -- partie hash (cles chaines)
+       {10, x = 1, [e] = v}  -- mixte
+
+   8.2 Acces
+       t[i]       -- acces par indice (base 1)
+       t.champ    -- sucre pour t["champ"]
+
+   8.3 Affectation
+       t[k] = v   -- affecte la valeur v a la cle k
+       t.champ = v
+
+   8.4 Longueur
+       #t : nombre d elements dans la partie tableau.
+
+   8.5 Fonctions table
+       table.insert(t, v)       -- insere v a la fin
+       table.remove(t, pos)     -- supprime l element a la position
+       table.concat(t, sep)     -- joint les elements en chaine
+       table.sort(t [, comp])   -- tri a bulles in-place
+       table.unpack(t)          -- retour multiple des elements
+
+9. METATABLES
+
+   9.1 setmetatable(t, mt) / getmetatable(t)
+       Chaque table peut avoir une metatable associee.
+
+   9.2 Metamethodes arithmetiques
+       __add __sub __mul __div __mod __pow __unm
+
+   9.3 Metamethodes de comparaison
+       __eq __lt __le
+
+   9.4 Metamethodes speciales
+       __concat : surcharge de l operateur ..
+       __len    : surcharge de l operateur #
+       __index  : acces a une cle absente (table ou fonction)
+       __newindex : affectation a une cle absente
+       __call   : appel d une table comme fonction
+       __tostring : conversion en chaine (pour tostring et print)
+
+   9.5 rawget(t, k) / rawset(t, k, v)
+       Acces direct sans passer par les metamethodes.
+
+   9.6 Limitation
+       Un seul niveau de delegation (pas de chaine de metatables).
+
+10. BIBLIOTHEQUES STANDARD
+
+    10.1 Fonctions globales
+         print(...)          : affiche les arguments separes par \t, \n final
+         type(x)             : retourne la chaine du type ("nil", "number", ...)
+         tostring(x)         : convertit en chaine
+         tonumber(s)         : convertit en nombre
+         assert(v [, msg])   : erreur si v est nil ou false
+         error(msg [, level]): leve une erreur
+         pcall(f, ...)       : appel protege -> true+retours ou false+msg
+         xpcall(f, msgh, ...): appel protege avec handler de message
+         select(n, ...)      : n-ieme vararg ou nombre de varargs
+         pairs(t)            : iterateur sur toutes les cles d une table
+         ipairs(t)           : iterateur sur les indices entiers 1..#t
+         next(t, k)          : cle/valeur suivantes dans la table
+         rawget(t, k)        : acces table sans metamethode
+         rawset(t, k, v)     : affectation table sans metamethode
+         setmetatable(t, mt) : associe une metatable
+         getmetatable(t)     : retourne la metatable
+
+    10.2 Bibliotheque string
+         string.len(s)            : longueur en octets
+         string.sub(s, i [, j])   : sous-chaine
+         string.byte(s [, i])     : code octet du caractere
+         string.char(n1, ...)     : chaine a partir de codes
+         string.rep(s, n)         : repetition n fois
+         string.reverse(s)        : inversion
+         string.upper(s)          : majuscules
+         string.lower(s)          : minuscules
+         string.find(s, pattern)  : recherche (litterale basique)
+         string.gsub(s, pat, rep) : remplacement premiere occurrence
+         string.format(fmt, ...)  : formatage (%d %s %%)
+         Limitation : les patterns Lua (%d, %a, etc.) ne sont pas
+         implementes ; la recherche est purement litterale.
+
+    10.3 Bibliotheque math
+         math.abs(n)             : valeur absolue
+         math.max(a, b)          : maximum
+         math.min(a, b)          : minimum
+         math.floor(n)           : pass-through (deja entier)
+         math.ceil(n)            : pass-through
+         math.sqrt(n)            : racine carree entiere (Newton-Raphson)
+         math.random([m [, n]])  : nombre pseudo-aleatoire (LCG 16 bits)
+         math.randomseed(n)      : initialise la graine
+         math.pi                 : 3 (troncature entiere)
+         math.huge               : 32767
+         math.maxinteger         : 32767
+         math.mininteger         : -32768
+         math.tointeger(n)       : pass-through
+         math.type(n)            : "integer"
+
+    10.4 Bibliotheque table
+         table.insert(t, v)       : insere a la fin
+         table.remove(t [, pos])  : supprime et retourne l element
+         table.concat(t [, sep])  : joint les elements
+         table.sort(t [, comp])   : tri a bulles
+         table.unpack(t)          : retour multiple des elements
+         table.move : stub + avertissement
+         table.pack : stub + avertissement
+
+    10.5 Bibliotheque os
+         os.clock()               : approximation en secondes
+         os.exit([code])          : termine le programme
+         os.time()                : stub (retourne 0)
+         os.date()                : stub
+         os.execute(cmd)          : stub
+
+    10.6 Bibliotheque io
+         io.write(...)            : ecriture sans \n ni separateurs
+         io.read("*l")            : lecture d une ligne
+         io.read("*n")            : lecture d un nombre
+         io.read("*a")            : stub + avertissement
+         io.open, io.close        : stubs + avertissement
+
+    10.7 Bibliotheque coroutine
+         coroutine.create(f)      : cree une coroutine
+         coroutine.resume(co, ...) : reprend l execution
+         coroutine.yield(...)     : suspend l execution
+         coroutine.status(co)     : "running"/"suspended"/"dead"/"normal"
+         coroutine.wrap(f)        : cree un iterateur
+         coroutine.isyieldable()  : test si yield possible
+         Limitation : pile fixe de 512 octets par coroutine,
+         maximum 4 coroutines simultanees.
+
+11. GESTION DES ERREURS
+
+    11.1 error(msg [, level])
+         Leve une erreur avec le message donne. Si un handler pcall
+         est actif, le controle est transfere a celui-ci. Sinon,
+         le programme affiche le message et se termine avec code 1.
+
+    11.2 pcall(f, arg1, ...)
+         Appelle f en mode protege.
+         Retourne true + valeurs de retour de f en cas de succes.
+         Retourne false + message d erreur en cas d erreur.
+
+    11.3 xpcall(f, msgh, arg1, ...)
+         Comme pcall, mais appelle msgh(msg) sur le message d erreur
+         avant de le retourner.
+
+    11.4 assert(v [, msg])
+         Si v est nil ou false, appelle error(msg).
+         Sinon retourne v et tous les arguments supplementaires.
+
+12. LIMITES D IMPLEMENTATION LUA86
+
+    12.1 Nombres
+         Entiers signes 16 bits uniquement (-32768 a 32767).
+         Pas de nombres flottants IEEE 754. Les litteraux flottants
+         sont tronques. Les operations a virgule flottante ne sont
+         pas disponibles.
+
+    12.2 Memoire
+         Pile : 1024 octets par defaut (configurable STACK_SIZE).
+         Heap statique : 4096 octets pour l allocation dynamique.
+         Segment DATA : variables globales, constantes chaines.
+
+    12.3 Symboles
+         Maximum 2048 symboles (Free Pascal) ou 100 (Turbo Pascal).
+         Maximum 64 portees imbriquees.
+         Maximum 32 parametres par fonction.
+         Maximum 32 upvalues par closure.
+
+    12.4 Tables
+         Maximum 125 elements en partie tableau.
+         Maximum 63 paires en partie hash.
+         Bloc fixe de 512 octets par table.
+
+    12.5 Retours multiples
+         Maximum 8 valeurs de retour.
+
+    12.6 Coroutines
+         Maximum 4 coroutines simultanees.
+         Pile fixe de 512 octets par coroutine.
+
+    12.7 Fonctionnalites non supportees
+         - Nombres flottants IEEE 754
+         - Patterns Lua complets (string.gmatch, patterns %d %a etc.)
+         - Operateurs bitwise natifs (|, &, ~, <<, >>)
+         - Chaines de metatables (un seul niveau)
+         - Gestion avancee de fichiers (io.open complet)
+         - Module require/module
+         - Environnements (_ENV avance)
+         - Finalisation __gc
+         - Weak tables
+         - Debug library
+
+13. CIBLE DE COMPILATION
+
+    13.1 Architecture
+         Processeur Intel 8086 en mode reel 16 bits.
+         Modele memoire : SMALL (.MODEL SMALL).
+         Systeme d exploitation : MS-DOS.
+         Appels systeme : INT 21h.
+
+    13.2 Format de sortie
+         Assembleur compatible MASM (.ASM).
+         Segments : _TEXT (code) et _DATA (donnees).
+         Point d entree : _LUAF_main.
+         Pile : .STACK directive.
+
+    13.3 Conventions de nommage ASM
+         _LUAV_   : variable globale
+         _LUAF_   : fonction
+         _LUAK_   : constante chaine litterale
+         _LUART_  : routine runtime
+         _LUAL_   : label de saut interne
+         _LUAT_   : table donnees
+         _LUAU_   : upvalue
+         _LUAX_   : handler d erreur
+         _LUAC_   : coroutines

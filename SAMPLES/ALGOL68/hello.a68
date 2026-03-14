@@ -1,0 +1,33 @@
+CO hello.a68 : print, STRING, newline, denotations (TODO 25) CO
+BEGIN
+  CO Denotation entiere CO
+  INT answer = 42;
+
+  CO Denotation chaine CO
+  STRING greeting = "Hello, Algol 68!";
+
+  CO Denotation booleenne CO
+  BOOL flag = TRUE;
+
+  CO Denotation caractere CO
+  CHAR star = "*";
+
+  CO Affichage de base CO
+  print(("Hello, World!", newline));
+
+  CO Affichage de chaine et entier CO
+  print((greeting, newline));
+  print(("La reponse est: ", answer, newline));
+
+  CO Affichage booleen CO
+  print(("Drapeau: ", flag, newline));
+
+  CO Denotations multiples CO
+  STRING s1 = "Bonjour";
+  STRING s2 = " tout le monde";
+  STRING s3 = s1 + s2;
+  print((s3, newline));
+
+  CO Affichage de plusieurs valeurs CO
+  print(("fin", newline))
+END

@@ -1,0 +1,426 @@
+============================================================
+  PROLOG86.PAS - Compilateur Prolog vers assembleur 8086
+  Turbo Pascal / Free Pascal (-Mtp)
+  Cible : MASM .MODEL SMALL, DOS 16 bits
+
+  FEUILLE DE ROUTE - 25 TODOS
+  ============================================================
+
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
+            TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings)
+            ParseArgs : analyser argv (source.pl [sortie.asm] [-v] [-d] [-w])
+            FatalError, WarnMsg, EXIT_OK / EXIT_ERROR / EXIT_USAGE
+            Detecter l extension .pl ou .pro (programme Prolog)
+            Programme principal : validation des arguments et appel Run
+            Version, Date, aide en ligne (option -h)
+
+  TODO 02 - LEXEUR (TOKENS PROLOG) [IMPLEMENTE]
+            TTokenKind : TK_EOF, TK_INTEGER, TK_FLOAT, TK_ATOM,
+              TK_VARIABLE, TK_STRING, TK_OP, TK_PUNCT,
+              TK_LPAREN, TK_RPAREN, TK_LBRACKET, TK_RBRACKET,
+              TK_DOT, TK_PIPE, TK_UNDERSCORE, TK_CUT
+            LexInit, LexClose, LexNextToken, LexScanAtom, LexScanNumber
+            LexScanString : chaine entre apostrophes 'abc' ou guillemets "abc"
+              Sequences d echappement : \n \t \r \\ \' \"
+            LexScanVariable : commence par majuscule ou underscore _
+              Variable anonyme : _ (underscore seul)
+            Commentaires : % jusqu a fin de ligne, /* ... */ multi-lignes
+            Atomes quotees : 'hello world' -> atome avec espaces
+            Operateurs : :- ?- , ; | . ! + - * / // mod
+              =  \= == \== is < > =< >= =:= =\= @< @> @=< @>=
+            Mode debug -d : affichage de chaque token avec PrintToken
+
+  TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
+            Entiers decimaux : 0..65535 ou -32768..32767
+            Entiers hexadecimaux : 0xFF -> conversion en entier
+            Entiers octaux : 0o77, caractere : 0'A (code ASCII de A)
+            Flottants : reconnus par le lexeur, traites comme entiers (trunc)
+            Atomes : identificateurs minuscules (hello, foo_bar)
+              Atomes quotees : 'Hello World', '+', 'don''t'
+            Chaines : "abc" -> liste de codes ASCII [97,98,99]
+              ou atome selon le drapeau double_quotes (atom/codes/chars)
+            Variables : commencent par majuscule ou _ (X, Var, _Temp)
+            Variable anonyme : _ (chaque occurrence est independante)
+            Termes speciaux : [] (liste vide), ! (cut)
+            true : atome predefini -> succes immediat
+            fail : atome predefini -> echec immediat
+
+  TODO 04 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
+            Notation prefixe, infixe, postfixe : fx, fy, xfx, xfy, yfx, xf, yf
+            Priorites standard (du plus faible au plus fort) :
+              1200 : :- (directive), ?- (requete), --> (DCG)
+              1100 : ; (disjonction)
+              1050 : -> (if-then)
+              1000 : , (conjonction)
+              900  : \+ (negation par echec)
+              700  : is, =, \=, ==, \==, <, >, =<, >=, =:=, =\=
+                     @<, @>, @=<, @>=, =.., copy_term
+              500  : +, -, /\, \/ (binaires)
+              400  : *, /, //, rem, mod, <<, >>
+              200  : ** (puissance), ^ (existentiel)
+              200  : - (unaire, fy)
+            ParseExprPrec(MaxPrec) : boucle de precedence (Pratt/operateur)
+            op(Priorite, Type, Nom) : declaration d operateurs utilisateur
+
+  TODO 05 - TABLE DES SYMBOLES (PREDICATS ET FONCTEURS) [IMPLEMENTE]
+            TSymKind : SK_ATOM, SK_FUNCTOR, SK_PREDICATE, SK_BUILTIN,
+              SK_OPERATOR, SK_MODULE
+            TSymRec : Name, MangledName, Kind, Arity, ClauseHead,
+              ClauseCount, IsBuiltin, IsDynamic, IsExported
+            SymAdd, SymFind, SymFindPredicate(Name, Arity)
+            Table des atomes : chaque atome unique a un index (intern)
+            Table des foncteurs : couple (atome, arite) -> index unique
+            Table des predicats : liste chainee de clauses par predicat
+            Foncteurs systeme : '.'/2 (cons), []/0 (nil), ','/2 (conjonction)
+
+  TODO 06 - REPRESENTATION DES TERMES (TAGS) [IMPLEMENTE]
+            Representation WAM simplifiee sur 16 bits :
+              Tag 3 bits + Valeur 13 bits dans un Word
+              TAG_REF  = 0 : variable non liee (valeur = adresse)
+              TAG_ATOM = 1 : atome (valeur = index table des atomes)
+              TAG_INT  = 2 : entier 13 bits signe (-4096..4095)
+              TAG_STR  = 3 : structure/foncteur (valeur = adresse heap)
+              TAG_LIST = 4 : paire de liste (valeur = adresse heap)
+            MakeRef, MakeAtom, MakeInt, MakeStr, MakeList : constructeurs
+            GetTag, GetVal : extraction du tag et de la valeur
+            Deref(addr) : suivre les chaines de references -> terme final
+            Heap : _PL_HEAP DW 2048 DUP(0), _PL_HTOP DW 0
+            Stack (environnements) : _PL_STACK DW 1024 DUP(0), _PL_STOP DW 0
+            Trail (historique des liaisons) : _PL_TRAIL DW 512 DUP(0), _PL_TTOP DW 0
+
+  TODO 07 - EMETTEUR DE CODE ASM [IMPLEMENTE]
+            TEmitter : OutF (Text), OutFOpen, EmitOpen, EmitClose
+            EmitRaw, EmitLabel, EmitInstr (formatage 8 espaces)
+            EmitComment, EmitBlankLine
+            LabelGen global (compteur unique _PL_L_NNNNN)
+            Prefixes : _PLV_ (variable globale), _PLP_ (predicat),
+              _PLK_ (chaine/atome const), _PLRT_ (runtime),
+              _PL_L_ (label), _PLA_ (table des atomes),
+              _PLF_ (table des foncteurs)
+            EmitHeader : .MODEL SMALL / .STACK 2048 / _TEXT SEGMENT
+            EmitProlog / EmitEpilog : PUSH BP / MOV BP,SP et MOV SP,BP / POP BP
+            EmitDataSeg : ecrire _DATA SEGMENT ... _DATA ENDS
+
+  TODO 08 - SEGMENT DE DONNEES ET TABLES STATIQUES [IMPLEMENTE]
+            TDataRec : LblName, Kind (DK_WORD/DK_BYTE/DK_STR/DK_TABLE),
+              IntVal, StrVal, ElemCount
+            DataTab[0..MAX_DATA-1], DataCount
+            DataAdd, DataAddStr, DataAddAtomTable
+            Table des atomes : _PLA_TABLE DW offset de chaque chaine atome
+              Chaque atome : _PLA_N DB 'nom_atome',0
+            Table des foncteurs : _PLF_TABLE, paires (atome_index, arite)
+            Chaines litterales : DB 'abc',0 dans DATA avec label _PLK_N
+            Heap statique : _PL_HEAP DW 2048 DUP(0) + _PL_HTOP DW 0
+            Stack WAM : _PL_STACK DW 1024 DUP(0) + _PL_STOP DW 0
+            Trail : _PL_TRAIL DW 512 DUP(0) + _PL_TTOP DW 0
+
+  TODO 09 - UNIFICATION [IMPLEMENTE]
+            Unify(addr1, addr2) : algorithme d unification recursif
+              Deref les deux termes
+              Si les deux sont REF : lier la plus recente a l autre
+              Si un seul est REF : lier la variable au terme
+              Si deux atomes : comparer les index -> succes ou echec
+              Si deux entiers : comparer les valeurs -> succes ou echec
+              Si deux structures : comparer foncteur/arite, unifier chaque argument
+              Si deux listes : unifier tete puis queue recursivement
+            Bind(ref_addr, term) : lier une variable et empiler sur le trail
+            Trail(addr) : enregistrer la liaison pour le retour arriere
+            Emission ASM :
+              CALL _PLRT_UNIFY (AX=terme1, BX=terme2) -> CF=echec
+              CALL _PLRT_DEREF (AX=addr) -> AX=terme dereferance
+              CALL _PLRT_BIND  (AX=ref, BX=terme) -> empile sur trail
+
+  TODO 10 - COMPILATION DES FAITS [IMPLEMENTE]
+            ParseFact : atome. ou foncteur(arg1, arg2, ...).
+            Fait sans arguments : predicat/0
+              Emission : label _PLP_nom_0, succes immediat (RET)
+            Fait avec arguments : predicat/N
+              Allouer les arguments sur le heap
+              Pour chaque argument : put_value ou put_atom ou put_int
+              Emission : label _PLP_nom_N_clauseK
+              Unifier chaque argument avec le registre Ai correspondant
+              Succes : RET (continuer)
+            Indexation premier argument : table de saut selon le type/valeur
+              du premier argument pour selection rapide de la clause
+
+  TODO 11 - COMPILATION DES REGLES [IMPLEMENTE]
+            ParseRule : tete :- corps.
+            Tete : comme un fait, unification des arguments
+            Corps : sequence de buts separes par , (conjonction)
+            Pour chaque but du corps :
+              Charger les arguments dans les registres A1..AN
+              CALL _PLP_predicat_N (appel du predicat)
+              JC label_echec (si echec -> retour arriere)
+            Allocation d environnement :
+              allocate(N) : reserver N variables locales sur la pile
+              deallocate : liberer l environnement avant le dernier appel
+            Dernier appel (last call) : optimisation d appel terminal
+              deallocate + JMP au lieu de CALL + RET
+
+  TODO 12 - RETOUR ARRIERE (BACKTRACKING) [IMPLEMENTE]
+            Points de choix (choice points) sur la pile :
+              Sauvegarder : BP, HTOP, TTOP, adresse clause suivante
+              try_me_else(Label) : creer point de choix
+              retry_me_else(Label) : restaurer et essayer clause suivante
+              trust_me : dernier choix, supprimer le point de choix
+            Restauration :
+              Defaire les liaisons du trail (untrail) jusqu au TTOP sauvegarde
+              Restaurer HTOP (liberer le heap alloue depuis le choix)
+              Sauter a la clause suivante ou echouer au point precedent
+            Emission ASM :
+              CALL _PLRT_TRY(BX=label_next) : creer choice point
+              CALL _PLRT_RETRY(BX=label_next) : restaurer + nouveau choix
+              CALL _PLRT_TRUST : restaurer + supprimer choice point
+              JC _PL_L_FAIL : echec si plus de choix
+
+  TODO 13 - LISTES [IMPLEMENTE]
+            Notation : [H|T] -> foncteur '.'/2 (H=tete, T=queue)
+            Liste vide : [] -> atome special (index 0)
+            Notation sucre : [a,b,c] -> '.'(a,'.'(b,'.'(c,[])))
+            Construction sur le heap :
+              push_list : allouer 2 cellules (Head, Tail)
+              put_list(AX=head, BX=tail) -> AX=ptr liste
+            Decomposition :
+              get_list(AX=liste) -> BX=head, CX=tail
+              Echec si AX n est pas un terme LIST
+            Predicats de liste (runtime) :
+              _PLRT_LENGTH(AX=liste) -> AX=longueur
+              _PLRT_APPEND(AX=l1, BX=l2, CX=result)
+              _PLRT_MEMBER(AX=elem, BX=liste) -> CF=echec
+              _PLRT_NTH(AX=index, BX=liste) -> AX=element
+              _PLRT_LAST(AX=liste) -> AX=dernier element
+
+  TODO 14 - ARITHMETIQUE (IS ET EVALUATION) [IMPLEMENTE]
+            ParseIsExpr : Var is Expression
+            Evaluation d expression arithmetique (cote droit de is) :
+              Entiers : valeur directe -> AX
+              Variables : Deref + extraction valeur entiere
+              Operateurs : + - * / // mod rem
+              Fonctions : abs(X), max(X,Y), min(X,Y), sign(X)
+                succ(X), plus(X,Y), msb(X)
+            Emission ASM pour chaque operateur :
+              + -> ADD AX,BX
+              - -> SUB AX,BX
+              * -> IMUL BX
+              / et // -> IDIV BX (quotient dans AX)
+              mod -> IDIV BX (reste dans DX)
+            Resultat : lier la variable gauche a l entier resultat
+            Erreur si le cote droit contient une variable non liee
+            Comparaisons arithmetiques : =:= =\= < > =< >=
+              Evaluer les deux cotes + CMP + Jcc
+
+  TODO 15 - COMPARAISON ET TESTS DE TYPE [IMPLEMENTE]
+            Unification : =(X,Y) -> CALL _PLRT_UNIFY
+            Non-unification : \=(X,Y) -> CALL _PLRT_UNIFY + NOT CF
+            Egalite structurelle : ==(X,Y) -> comparaison sans liaison
+            Inegalite structurelle : \==(X,Y) -> NOT ==
+            Ordre standard des termes : @< @> @=< @>=
+              Var < Nombre < Atome < Chaine < Structure
+              CALL _PLRT_COMPARE(AX,BX) -> drapeaux ZF/CF
+            Tests de type :
+              var(X) -> tester TAG_REF apres Deref
+              nonvar(X) -> NOT var(X)
+              atom(X) -> tester TAG_ATOM
+              number(X) -> tester TAG_INT
+              integer(X) -> tester TAG_INT
+              compound(X) -> tester TAG_STR ou TAG_LIST
+              is_list(X) -> tester TAG_LIST ou atome []
+              callable(X) -> atom(X) ou compound(X)
+            Decomposition : =..(Term, [Functor|Args]) (univ)
+              functor(Term, Name, Arity) : extraire foncteur et arite
+              arg(N, Term, Arg) : extraire le Nieme argument
+              copy_term(Original, Copie) : copie avec nouvelles variables
+
+  TODO 16 - CONTROLE : CUT, IF-THEN-ELSE, NEGATION [IMPLEMENTE]
+            Cut (!) : supprimer tous les points de choix jusqu au parent
+              Emission : MOV [_PL_CUT_BARRIER], saved_choice_point
+              Couper : restaurer la pile de choix au niveau sauvegarde
+            If-Then-Else : ( Cond -> Action ; Alternative )
+              Emission : essayer Cond, si succes -> Action, sinon Alternative
+              Labels : _PL_L_THEN_N, _PL_L_ELSE_N, _PL_L_ENDIF_N
+            If-Then (sans Else) : ( Cond -> Action )
+              Si Cond echoue -> echec du but entier
+            Disjonction : ( A ; B )
+              Creer point de choix pour A, si echec essayer B
+            Negation par echec : \+(Goal)
+              Essayer Goal; si succes -> echec; si echec -> succes
+              Emission : try Goal, si succes JMP fail_neg, sinon JMP succ_neg
+            true : succes immediat (RET)
+            fail : echec immediat (STC + RET, carry flag = echec)
+            halt : MOV AX,4C00h / INT 21h
+            halt(Code) : MOV AL,Code / MOV AH,4Ch / INT 21h
+
+  TODO 17 - ENTREES/SORTIES [IMPLEMENTE]
+            Flux standard : user_input (STDIN), user_output (STDOUT)
+            write(X) : ecrire un terme Prolog
+              Atome -> INT 21h AH=40h BX=1 (STDOUT)
+              Entier -> CALL _PLRT_NUMTOSTR + ecriture
+              Liste -> ecrire [elem1,elem2,...|Queue]
+              Structure -> ecrire foncteur(arg1,arg2,...)
+              Variable -> ecrire _G<adresse>
+            writeln(X) : write(X) + nl
+            nl : ecrire CR+LF -> INT 21h AH=02h DL=13 + DL=10
+            print(X) : comme write mais utilise portray si defini
+            write_canonical(X) : forme standard relisible par read
+            tab(N) : ecrire N espaces
+            put_char(C) : ecrire un caractere -> INT 21h AH=02h DL=C
+            read(X) : lire un terme depuis STDIN
+              INT 21h AH=0Ah (lecture ligne) -> buffer
+              Appeler le lexeur + parseur sur le buffer
+              Unifier X avec le terme lu
+            get_char(C) : lire un caractere -> INT 21h AH=01h -> AL
+            char_code(Char, Code) : conversion caractere/code ASCII
+            atom_chars(Atom, Chars) : conversion atome/liste de caracteres
+            atom_codes(Atom, Codes) : conversion atome/liste de codes
+            number_chars(Num, Chars) : conversion nombre/liste de caracteres
+            number_codes(Num, Codes) : conversion nombre/liste de codes
+            atom_length(Atom, Len) : longueur d un atome
+            atom_concat(A, B, C) : concatenation d atomes
+            sub_atom(Atom, Before, Length, After, Sub) : sous-atome
+
+  TODO 18 - PREDICATS PREDEFINIS (BUILT-IN) [IMPLEMENTE]
+            Controle : true, fail, halt, halt/1, !/0 (cut)
+            Logique : ','/2 (conjonction), ';'/2 (disjonction), '->'/2 (if-then)
+            Unification : =/2, \=/2, unify_with_occurs_check/2
+            Comparaison : ==/2, \==/2, @</2, @>/2, @=</2, @>=/2
+            Arithmetique : is/2, =:=/2, =\=/2, </2, >/2, =</2, >=/2
+            Type : var/1, nonvar/1, atom/1, number/1, integer/1,
+              compound/1, is_list/1, callable/1, ground/1
+            Termes : functor/3, arg/3, =../2, copy_term/2
+            Listes : append/3, member/2, length/2, nth0/3, nth1/3,
+              last/2, reverse/2, msort/2, sort/2
+            Atomes : atom_chars/2, atom_codes/2, atom_length/2,
+              atom_concat/3, sub_atom/5, char_code/2,
+              number_chars/2, number_codes/2
+            Entrees/sorties : read/1, write/1, writeln/1, nl/0,
+              print/1, write_canonical/1, put_char/1, get_char/1, tab/1
+            Meta : call/1, call/N (appel de but dynamique)
+              CALL _PLRT_CALL(AX=terme_but) : resoudre et executer
+            Tous les predicats : enregistrement dans la table des symboles
+              avec flag IsBuiltin = True et un code (BIF_xxx)
+
+  TODO 19 - ASSERT ET RETRACT (BASE DE DONNEES DYNAMIQUE) [IMPLEMENTE]
+            asserta(Clause) : ajouter une clause en tete du predicat
+              Marquer le predicat comme IsDynamic
+              Copier la clause dans le heap permanent
+              Inserer en tete de la liste chainee de clauses
+            assertz(Clause) : ajouter une clause en queue du predicat
+              Comme asserta mais insertion en fin de liste
+            retract(Clause) : retirer la premiere clause unifiable
+              Parcourir les clauses du predicat
+              Unifier chaque clause avec Clause
+              Si succes : retirer de la liste chainee
+              Si echec : retour arriere vers la clause suivante
+            abolish(Pred/Arity) : supprimer toutes les clauses d un predicat
+            Limitation : nombre fixe de clauses dynamiques (MAX_DYN_CLAUSES)
+            Emission : les clauses dynamiques sont stockees dans le heap
+              et interpretees au lieu d etre compilees en code natif
+
+  TODO 20 - FINDALL, BAGOF, SETOF (COLLECTE DE SOLUTIONS) [IMPLEMENTE]
+            findall(Template, Goal, Bag) :
+              Collecter toutes les instances de Template satisfaisant Goal
+              Creer un point de choix pour Goal
+              A chaque succes : copier Template dans un buffer temporaire
+              Forcer le retour arriere pour trouver la solution suivante
+              Quand Goal echoue : construire la liste Bag depuis le buffer
+              Bag = [] si aucune solution
+            bagof(Template, Goal, Bag) :
+              Comme findall mais echoue si aucune solution
+              Respect des variables libres dans Goal (quantification ^)
+              X^Goal : X est quantifie existentiellement
+            setof(Template, Goal, Set) :
+              Comme bagof mais le resultat est trie et sans doublons
+              CALL _PLRT_SORT + suppression des duplicats
+            Emission ASM :
+              Buffer temporaire : _PL_COLLECT DW 256 DUP(0)
+              _PLRT_FINDALL : boucle try/fail sur Goal + collecte
+              _PLRT_MAKELIST : construire la liste depuis le buffer
+
+  TODO 21 - OPERATEURS UTILISATEUR (OP/3) [IMPLEMENTE]
+            op(Priorite, Type, Nom) : definir un operateur
+              Priorite : 1..1200
+              Type : xf, yf, xfx, xfy, yfx, fy, fx
+            current_op(Priorite, Type, Nom) : interroger les operateurs
+            OpTab[0..MAX_OP-1] : table des operateurs
+            OpAdd(Prio, Spec, Name) : ajouter ou modifier un operateur
+            OpFind(Name) : chercher un operateur par nom
+            Operateurs predefinis : toute la table standard ISO
+              :- (fx 1200), ?- (fx 1200), ; (xfy 1100),
+              -> (xfy 1050), , (xfy 1000), \+ (fy 900),
+              is (xfx 700), = \= == \== (xfx 700), < > =< >= (xfx 700),
+              + - (yfx 500), * / // mod (yfx 400), ** (xfx 200)
+            Integration avec le parseur : ParseExprPrec consulte OpTab
+              pour determiner la priorite et l associativite
+
+  TODO 22 - DIRECTIVES ET CHARGEMENT [IMPLEMENTE]
+            :- directive. : directive executee au chargement
+            :- module(Nom, ListeExports). : declaration de module
+            :- use_module(Module). : importation d un module
+            :- dynamic(Pred/Arity). : declarer un predicat dynamique
+            :- discontiguous(Pred/Arity). : clauses non contigues permises
+            :- ensure_loaded(Fichier). : charger un fichier si pas deja charge
+            :- op(Prio, Type, Nom). : definir un operateur
+            :- initialization(Goal). : but execute apres le chargement
+            Traitement : le parseur detecte :- en debut de clause
+              et execute la directive au lieu de compiler une clause
+
+  TODO 23 - CHAINES ET CARACTERES [IMPLEMENTE]
+            Chaines double-quotees : "abc" -> liste de codes ou atome
+              Drapeau double_quotes : atom (defaut), codes, chars
+            Chaines simple-quotees : 'abc' -> atome
+            char_type(Char, Type) : classification de caractere
+              alpha, alnum, digit, space, upper, lower, punct, ascii
+            upcase_atom(Atom, Upper) : conversion en majuscules
+            downcase_atom(Atom, Lower) : conversion en minuscules
+            atom_string(Atom, String) : conversion atome/chaine
+            number_string(Number, String) : conversion nombre/chaine
+            string_concat(A, B, C) : concatenation de chaines
+            string_length(String, Len) : longueur de chaine
+            Emission : les chaines sont stockees dans le segment DATA
+              comme des suites d octets DB 'abc',0 avec label _PLK_N
+            Conversion runtime : CALL _PLRT_ATOMCHARS, _PLRT_ATOMCODES
+
+  TODO 24 - RUNTIME MINIMAL (MACHINE WAM SIMPLIFIEE) [IMPLEMENTE]
+            _PLRT_DEREF(AX=addr) : suivre les chaines de references -> AX
+            _PLRT_UNIFY(AX=t1, BX=t2) : unification -> CF=echec
+            _PLRT_BIND(AX=ref, BX=terme) : lier variable + trail
+            _PLRT_UNTRAIL(AX=saved_ttop) : defaire les liaisons
+            _PLRT_TRY(BX=label_next) : creer un point de choix
+            _PLRT_RETRY(BX=label_next) : restaurer + nouveau choix
+            _PLRT_TRUST : restaurer + supprimer le point de choix
+            _PLRT_CALL(AX=terme_but) : resoudre et executer un but
+            _PLRT_PRINT(BX=handle, SI=msg, CX=len) : INT 21h AH=40h
+            _PLRT_PRINTLN : _PLRT_PRINT + CR+LF via _PL_CRLF DB 13,10,0
+            _PLRT_WRITETERM(AX=terme) : ecrire un terme Prolog complet
+            _PLRT_NUMTOSTR(AX=n, DI=buf) : entier signe -> ASCII (itoa)
+            _PLRT_STRTONUM(SI=str) : ASCII -> entier -> AX (atoi)
+            _PLRT_STRLEN(SI=str) : compte octets jusqu a 0 -> AX
+            _PLRT_COMPARE(AX=t1, BX=t2) : ordre standard -> drapeaux ZF/CF
+            _PLRT_HEAPALLOC(CX=nb_mots) : allouer sur le heap -> AX=ptr
+            _PLRT_FINDALL : boucle de collecte de solutions
+            _PLRT_MAKELIST(SI=buffer, CX=count) : construire liste -> AX
+            _PLRT_SORT(AX=liste) : trier une liste -> AX=liste triee
+            _PLRT_PANIC(SI=msg) : affiche message + MOV AX,4C01h + INT 21h
+            RuntimeEmitted : flag pour n emettre le runtime qu une seule fois
+            Heap : _PL_HEAP DW 2048 DUP(0) + _PL_HTOP DW 0
+            Stack : _PL_STACK DW 1024 DUP(0) + _PL_STOP DW 0
+            Trail : _PL_TRAIL DW 512 DUP(0) + _PL_TTOP DW 0
+
+  TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES [IMPLEMENTE]
+            EmitClose : END _PLP_Main dans _TEXT ENDS / DATA ENDS
+            Run : pipeline complet LexInit -> ParseProgram ->
+              EmitRuntime -> _TEXT ENDS / EmitDataSeg / END _PLP_Main
+            Point d entree : _PLP_Main correspond a la requete ?- main.
+              ou au premier goal du fichier si pas de main/0
+            Fichiers SAMPLES\PROLOG\ a creer :
+              hello.pl    (write, nl, atomes, variables)
+              math.pl     (arithmetique, is, predicats recursifs)
+              lists.pl    (listes, append, member, reverse, tri)
+              family.pl   (faits, regles, requetes, retour arriere)
+              hanoi.pl    (tours de Hanoi, recursion, cut)
+              queens.pl   (N-reines, generate-and-test, findall)
+              peano.pl    (arithmetique de Peano, unification)
+              meta.pl     (assert, retract, call, findall, bagof)
+            Smoke tests : PROLOG86.EXE -v SAMPLES\PROLOG\*.pl
+
+  ============================================================

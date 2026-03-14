@@ -1,0 +1,10 @@
+var x = 42;
+var y = 10;
+var z;
+z = x;
+z = y;
+x += 5;
+y -= 3;
+const PI = 3;
+let count = 0;
+count = count;

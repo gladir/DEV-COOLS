@@ -1,0 +1,39 @@
+comment Algol 60 example - expressions arithmetiques ;
+comment Teste operations, puissance, division entiere ;
+BEGIN
+  INTEGER a, b, c;
+
+  a := 10;
+  b := 3;
+  c := a + b;
+  outstring(1, `10+3=`);
+  outinteger(1, c);
+
+  c := a - b;
+  outstring(1, ` 10-3=`);
+  outinteger(1, c);
+
+  c := a * b;
+  outstring(1, ` 10*3=`);
+  outinteger(1, c);
+
+  c := a / b;
+  outstring(1, ` 10/3=`);
+  outinteger(1, c);
+
+  c := 2 ** 10;
+  outstring(1, ` 2**10=`);
+  outinteger(1, c);
+
+  c := 17 - 5 * 2;
+  outstring(1, ` 17-5*2=`);
+  outinteger(1, c);
+
+  c := abs(-42);
+  outstring(1, ` abs(-42)=`);
+  outinteger(1, c);
+
+  c := sign(-7);
+  outstring(1, ` sign(-7)=`);
+  outinteger(1, c)
+END.

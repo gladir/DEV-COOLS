@@ -1,0 +1,81 @@
+comment Test des appels de procedures et parametres (TODO 19) ;
+BEGIN
+
+  comment ----- Appel sans parentheses ----- ;
+  PROCEDURE greet;
+  BEGIN
+    outstring(1, `Bonjour`);
+    newline(1)
+  END;
+
+  greet;
+
+  comment ----- Appel avec arguments et verification nombre ----- ;
+  INTEGER PROCEDURE triple(x);
+  VALUE x;
+  INTEGER x;
+  BEGIN
+    triple := x + x + x
+  END;
+
+  INTEGER r;
+  r := triple(10);
+  outstring(1, `triple(10)=`);
+  outinteger(1, r);
+  newline(1);
+
+  comment ----- Procedure avec procedure en parametre ----- ;
+  INTEGER PROCEDURE apply(f, x);
+  VALUE x;
+  INTEGER x;
+  PROCEDURE f;
+  BEGIN
+    apply := f(x)
+  END;
+
+  r := apply(triple, 7);
+  outstring(1, `apply(triple,7)=`);
+  outinteger(1, r);
+  newline(1);
+
+  comment ----- Appel recursif avec verification ----- ;
+  INTEGER PROCEDURE fib(n);
+  VALUE n;
+  INTEGER n;
+  BEGIN
+    IF n <= 1 THEN
+      fib := n
+    ELSE
+    BEGIN
+      INTEGER a, b;
+      a := fib(n - 1);
+      b := fib(n - 2);
+      fib := a + b
+    END
+  END;
+
+  r := fib(7);
+  outstring(1, `fib(7)=`);
+  outinteger(1, r);
+  newline(1);
+
+  comment ----- Procedure void avec plusieurs parametres ----- ;
+  PROCEDURE display(a, b, c);
+  VALUE a, b, c;
+  INTEGER a, b, c;
+  BEGIN
+    outstring(1, `(`);
+    outinteger(1, a);
+    outstring(1, `,`);
+    outinteger(1, b);
+    outstring(1, `,`);
+    outinteger(1, c);
+    outstring(1, `)`);
+    newline(1)
+  END;
+
+  display(1, 2, 3);
+
+  outstring(1, `Fin test appels procedures`);
+  newline(1)
+END.

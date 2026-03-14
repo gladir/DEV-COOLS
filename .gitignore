@@ -1,4 +1,4 @@
-RAKU86
 *.o
+*.obj
 *.ppu
-SAMPLES/RAKU/*.asm
+

@@ -1,0 +1,19 @@
+<html>
+  <head>
+    <title>C'est une  Pascal Server Pages</title>
+  </head>
+  <body>
+    <% begin
+         Write('Bonjour');
+       end.
+    %>
+    <p>Je vais utiliser Pascal Script pour écrire quelques nombres...</p>
+    <% var
+         i: Integer;
+       begin
+         for i:=1 to 10 do
+           Writeln(i); 
+       end.
+    %>
+  </body>
+</html>

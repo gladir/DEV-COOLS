@@ -1,0 +1,84 @@
+comment Test de l appel par nom et thunks (TODO 20) ;
+BEGIN
+
+  comment ----- Parametre par nom : variable simple ----- ;
+  comment Le parametre par nom re-evalue dans le contexte appelant ;
+  INTEGER PROCEDURE double(x);
+  INTEGER x;
+  BEGIN
+    double := x + x
+  END;
+
+  INTEGER a;
+  a := 7;
+  outstring(1, `double(a)=`);
+  outinteger(1, double(a));
+  newline(1);
+
+  comment ----- Parametre par nom avec modification (L-value) ----- ;
+  PROCEDURE setval(x, v);
+  VALUE v;
+  INTEGER x, v;
+  BEGIN
+    x := v
+  END;
+
+  INTEGER b;
+  b := 0;
+  setval(b, 42);
+  outstring(1, `b apres setval=`);
+  outinteger(1, b);
+  newline(1);
+
+  comment ----- Parametre par valeur vs par nom ----- ;
+  INTEGER PROCEDURE addone(x);
+  VALUE x;
+  INTEGER x;
+  BEGIN
+    addone := x + 1
+  END;
+
+  outstring(1, `addone(10)=`);
+  outinteger(1, addone(10));
+  newline(1);
+
+  comment ----- Constante passee par nom (optimisation) ----- ;
+  outstring(1, `double(5)=`);
+  outinteger(1, double(5));
+  newline(1);
+
+  comment ----- Procedure avec params mixtes (VALUE et par nom) ----- ;
+  INTEGER PROCEDURE add(x, y);
+  VALUE x;
+  INTEGER x, y;
+  BEGIN
+    add := x + y
+  END;
+
+  INTEGER c;
+  c := 3;
+  outstring(1, `add(10,c)=`);
+  outinteger(1, add(10, c));
+  newline(1);
+
+  comment ----- Somme via appel par nom (Jensen s device simplifie) ----- ;
+  INTEGER PROCEDURE sumval(v, n);
+  VALUE n;
+  INTEGER v, n;
+  BEGIN
+    INTEGER s, i;
+    s := 0;
+    FOR i := 1 STEP 1 UNTIL n DO
+      s := s + v;
+    sumval := s
+  END;
+
+  INTEGER val;
+  val := 4;
+  outstring(1, `sumval(val,5)=`);
+  outinteger(1, sumval(val, 5));
+  newline(1);
+
+  outstring(1, `Fin test call-by-name`);
+  newline(1)
+END.
