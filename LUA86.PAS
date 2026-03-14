@@ -273,7 +273,7 @@
             __tostring : conversion en chaine (utilise par tostring et print)
             Limitation : un seul niveau de delegation (pas de chaine de metatables)
 
-  TODO 17 - FONCTIONS ET CLOSURES
+  TODO 17 - FONCTIONS ET CLOSURES [IMPLEMENTE]
             ParseFuncDecl : function nom(params) stmts end
               Globale par defaut : function f() -> _LUAF_f PROC NEAR
               Locale : local function f() -> portee du bloc
@@ -702,6 +702,8 @@ Var
   ForCount       : Integer;   { compteur pour labels for           }
   GotoLblCount   : Integer;   { compteur pour labels goto          }
   TableCount     : Integer;   { compteur pour labels table         }
+  FuncCount      : Integer;   { compteur pour labels function       }
+  AnonFuncCount  : Integer;   { compteur pour fonctions anonymes    }
 
 { ============================================================
   FORWARD DECLARATIONS
@@ -831,6 +833,11 @@ Procedure EmitTableRuntime; Forward;
 
 { Metatables (TODO 16) }
 Procedure EmitMetaRuntime; Forward;
+
+{ Functions & Closures (TODO 17) }
+Procedure ParseFuncDecl(IsLocal : Boolean); Forward;
+Procedure ParseFuncExpr(Var Res : TExprVal); Forward;
+Procedure EmitFuncRuntime; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1113,6 +1120,8 @@ Begin
   ForCount       := 0;
   GotoLblCount   := 0;
   TableCount     := 0;
+  FuncCount      := 0;
+  AnonFuncCount  := 0;
   GExprDummy.Kind    := EK_NONE;
   GExprDummy.ImmVal  := 0;
   GExprDummy.TypeIdx := TY_UNKNOWN;
@@ -1246,6 +1255,7 @@ Begin
   EmitLoopRuntime;
   EmitTableRuntime;
   EmitMetaRuntime;
+  EmitFuncRuntime;
 End;
 
 { EmitClose : terminer le fichier ASM (DOS exit, runtime, DATA, END) }
@@ -1675,7 +1685,7 @@ End;
 {   local x                  (init nil)                               }
 {   local x = expr                                                    }
 {   local x, y, z = a, b, c (affectation multiple)                   }
-{   local function f() ... end (stub -> TODO 17)                      }
+{   local function f() ... end (TODO 17)                               }
 Procedure ParseLocalDecl;
 Const
   MAX_MULTI = 16;
@@ -1693,20 +1703,11 @@ Begin
   NCount := 0;
   VCount := 0;
 
-  { local function f() ... end : stub pour TODO 17 }
+  { local function f() ... end : TODO 17 }
   If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'function') Then
   Begin
-    If Opts.Warnings Then
-      WarnMsg('local function : stub, sera TODO 17');
     ParserAdvance; { consomme 'function' }
-    If CurToken.Kind = TK_IDENT Then
-      ParserAdvance; { consomme le nom }
-    { Sauter jusqu a end }
-    While (CurToken.Kind <> TK_EOF) And
-          Not ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'end')) Do
-      ParserAdvance;
-    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'end') Then
-      ParserAdvance;
+    ParseFuncDecl(True);
     Exit;
   End;
 
@@ -2360,35 +2361,57 @@ Begin
       Exit;
     End;
 
-    { return/function/do : stubs pour TODOs futurs }
-    If (CurToken.Val = 'return') Or (CurToken.Val = 'function') Or
-       (CurToken.Val = 'do') Then
+    { return : retour de fonction (TODO 17) }
+    If CurToken.Val = 'return' Then
     Begin
-      If Opts.Warnings Then
-        WarnMsg(CurToken.Val + ' : stub, sera implemente dans un TODO futur');
-      { Sauter le bloc jusqu a end pour ne pas bloquer le parser }
-      If (CurToken.Val = 'function') Or (CurToken.Val = 'do') Then
+      ParserAdvance; { consomme 'return' }
+      { Verifier si une expression de retour est presente }
+      If (CurToken.Kind <> TK_EOF) And
+         Not ((CurToken.Kind = TK_KEYWORD) And
+              ((CurToken.Val = 'end') Or (CurToken.Val = 'else') Or
+               (CurToken.Val = 'elseif') Or (CurToken.Val = 'until'))) And
+         Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Then
       Begin
-        ParserAdvance;
-        While (CurToken.Kind <> TK_EOF) And
-              Not ((CurToken.Kind = TK_KEYWORD) And
-                   (CurToken.Val = 'end')) Do
-          ParserAdvance;
-        If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'end') Then
-          ParserAdvance;
-      End
-      Else If CurToken.Val = 'return' Then
-      Begin
-        ParserAdvance;
-        { Parser les expressions de retour (stub) }
-        If (CurToken.Kind <> TK_EOF) And
-           Not ((CurToken.Kind = TK_KEYWORD) And
-                ((CurToken.Val = 'end') Or (CurToken.Val = 'else') Or
-                 (CurToken.Val = 'elseif') Or (CurToken.Val = 'until'))) And
-           Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Then
-          ParseExpr(E);
+        ParseExpr(E);
+        ExprFlushToAX(E);
       End
       Else
+        EmitInstrAB('XOR', 'AX', 'AX'); { return sans valeur -> nil }
+      { Sauter vers l epilogue de la fonction }
+      If CurFnRetLbl <> '' Then
+        EmitInstrA('JMP', CurFnRetLbl)
+      Else
+      Begin
+        { return au niveau global -> exit programme }
+        EmitInstrAB('MOV', 'AH', '4Ch');
+        EmitInstrA('INT', '21h');
+      End;
+      { Consommer ';' optionnel }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+      Exit;
+    End;
+
+    { function : declaration de fonction globale (TODO 17) }
+    If CurToken.Val = 'function' Then
+    Begin
+      ParserAdvance; { consomme 'function' }
+      ParseFuncDecl(False);
+      { Consommer ';' optionnel }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+      Exit;
+    End;
+
+    { do ... end : bloc de portee (TODO 17) }
+    If CurToken.Val = 'do' Then
+    Begin
+      ParserAdvance; { consomme 'do' }
+      While (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_KEYWORD) And
+                 (CurToken.Val = 'end')) Do
+        ParseStmt;
+      If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'end') Then
         ParserAdvance;
       { Consommer ';' optionnel }
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
@@ -3491,15 +3514,9 @@ Begin
       End
       Else If CurToken.Val = 'function' Then
       Begin
-        { Fonction anonyme : stub, sera TODO 13 }
-        ExprMakeNone(Res);
-        ParserAdvance;
-        { Sauter les tokens jusqu a end }
-        While (CurToken.Kind <> TK_EOF) And
-              Not ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'end')) Do
-          ParserAdvance;
-        If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'end') Then
-          ParserAdvance;
+        { Fonction anonyme (TODO 17) }
+        ParserAdvance; { consomme 'function' }
+        ParseFuncExpr(Res);
       End
       Else
       Begin
@@ -4057,7 +4074,8 @@ End;
   ============================================================ }
 
 { ---- ParseCallArgs : parser les arguments d un appel --------- }
-{ Attend '(' deja visible. Parse (e1, e2, ...) en empilant.      }
+{ Attend '(' deja visible. AX contient le pointeur de fonction.  }
+{ Sauvegarde AX sur la pile avant de parser les arguments.       }
 { Apres : Res.Kind = EK_AX avec le resultat de l appel.          }
 Procedure ParseCallArgs(SIdx : Integer; Var Res : TExprVal);
 Var
@@ -4073,6 +4091,8 @@ Begin
     CompileError('"(" attendue pour appel de fonction');
     Exit;
   End;
+  { Sauvegarder le pointeur de fonction sur la pile }
+  EmitInstrA('PUSH', 'AX');
   { Parser les arguments, empiler de gauche a droite }
   While (CurToken.Kind <> TK_EOF) And
         Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
@@ -4091,14 +4111,15 @@ Begin
     ParserAdvance   { consomme ')' }
   Else
     CompileError('")" attendue');
+  { Recuperer le pointeur de fonction depuis la pile }
+  { Il se trouve a [SP + ArgCount * 2] }
+  Str(ArgCount * 2, NS);
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [SP+' + NS + ']');
   { Appel de fonction via AX (pointeur de fonction) }
   EmitInstrA('CALL', 'AX');
-  { Nettoyer la pile si arguments empiles }
-  If ArgCount > 0 Then
-  Begin
-    Str(ArgCount * 2, NS);
-    EmitInstrAB('ADD', 'SP', NS);
-  End;
+  { Nettoyer la pile : arguments + pointeur de fonction sauvegarde }
+  Str((ArgCount + 1) * 2, NS);
+  EmitInstrAB('ADD', 'SP', NS);
   Res.Kind    := EK_AX;
   Res.TypeIdx := TY_UNKNOWN;
   Res.SymIdx  := -1;
@@ -6386,6 +6407,301 @@ Begin
   TypeTab[TY_IDX_USERDATA].Size := 2;
 
   TypeCount := TY_PRIM_COUNT;
+End;
+
+{ ============================================================
+  TODO 17 - FONCTIONS ET CLOSURES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseFuncDecl : parser une declaration de fonction ---------- }
+{ function name(p1, p2, ...) stmts end                               }
+{ local function name(p1, p2, ...) stmts end                         }
+{ Emit : JMP skip / label / PUSH BP / MOV BP,SP / body / epilogue   }
+Procedure ParseFuncDecl(IsLocal : Boolean);
+Const
+  MAX_PARAMS = 16;
+Var
+  FuncName   : TString;
+  FuncLabel  : TString;
+  SkipLabel  : TString;
+  RetLabel   : TString;
+  ParamNames : Array[0..MAX_PARAMS - 1] Of TString;
+  ParamCount : Integer;
+  SIdx       : Integer;
+  I          : Integer;
+  Off        : Integer;
+  NS         : TString;
+  SaveFrame  : Integer;
+  SaveRetLbl : TString;
+  SaveFnName : TString;
+  SaveDepth  : Integer;
+  SaveScope  : Integer;
+  SaveSymCnt : Integer;
+Begin
+  { Le mot-cle 'function' est deja consomme par l appelant }
+  { CurToken devrait etre le nom de la fonction            }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('nom de fonction attendu apres "function"');
+    Exit;
+  End;
+  FuncName := CurToken.Val;
+  ParserAdvance; { consomme le nom }
+
+  { Generer les labels }
+  Inc(FuncCount);
+  Str(FuncCount, NS);
+  FuncLabel := LUA_FN_PFX + SymNameClean(FuncName);
+  SkipLabel := LUA_LBL_PFX + 'FSKIP_' + NS;
+  RetLabel  := LUA_LBL_PFX + 'FRET_' + NS;
+
+  { Enregistrer la fonction dans la table des symboles }
+  SIdx := SymFind(FuncName);
+  If SIdx >= 0 Then
+  Begin
+    SymTab[SIdx].Kind        := SK_FUNCTION;
+    SymTab[SIdx].MangledName := FuncLabel;
+    SymTab[SIdx].TypeIdx     := TY_IDX_FUNCTION;
+  End
+  Else
+    SIdx := SymAdd(FuncName, SK_FUNCTION, TY_IDX_FUNCTION, 0);
+
+  { Emettre JMP pour sauter par-dessus le corps }
+  EmitBlankLine;
+  EmitComment('function ' + FuncName);
+  EmitInstrA('JMP', SkipLabel);
+
+  { Emettre le label de la fonction }
+  EmitLabel(FuncLabel);
+
+  { Prologue }
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+
+  { Sauvegarder le contexte }
+  SaveFrame  := CurFrameSize;
+  SaveRetLbl := CurFnRetLbl;
+  SaveFnName := CurFnName;
+  SaveDepth  := CurFnDepth;
+  SaveScope  := CurScope;
+  SaveSymCnt := SymCount;
+
+  CurFrameSize := 0;
+  CurFnRetLbl  := RetLabel;
+  CurFnName    := FuncName;
+  Inc(CurFnDepth);
+  Inc(CurScope);
+
+  { Parser les parametres }
+  ParamCount := 0;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+  Begin
+    ParserAdvance; { consomme '(' }
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+    Begin
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        If ParamCount < MAX_PARAMS Then
+        Begin
+          ParamNames[ParamCount] := CurToken.Val;
+          Inc(ParamCount);
+        End;
+        ParserAdvance;
+      End
+      Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance
+      Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '...') Then
+      Begin
+        ParserAdvance; { varargs : stub }
+        Break;
+      End
+      Else
+        Break;
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else
+      CompileError('")" attendue apres les parametres');
+  End;
+
+  { Enregistrer les parametres comme symboles                        }
+  { Convention : arguments empiles de gauche a droite par l appelant  }
+  { Apres CALL + PUSH BP / MOV BP,SP :                               }
+  {   [BP+0]=old BP, [BP+2]=ret addr                                 }
+  {   [BP+4]=dernier arg, [BP+6]=avant-dernier, ...                  }
+  { Donc param[i] = [BP + 4 + (ParamCount - 1 - i) * 2]             }
+  For I := 0 To ParamCount - 1 Do
+  Begin
+    Off := 4 + (ParamCount - 1 - I) * 2;
+    SymAdd(ParamNames[I], SK_PARAM, TY_UNKNOWN, Off);
+  End;
+
+  { Parser le corps de la fonction }
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'end')) Do
+    ParseStmt;
+
+  { Consommer 'end' }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'end') Then
+    ParserAdvance
+  Else
+    CompileError('"end" attendu pour fermer la fonction ' + FuncName);
+
+  { Epilogue }
+  EmitLabel(RetLabel);
+  EmitInstrAB('MOV', 'SP', 'BP');
+  EmitInstrA('POP', 'BP');
+  EmitInstr('RET');
+
+  { Label de saut }
+  EmitLabel(SkipLabel);
+
+  { Restaurer le contexte }
+  CurFrameSize := SaveFrame;
+  CurFnRetLbl  := SaveRetLbl;
+  CurFnName    := SaveFnName;
+  CurFnDepth   := SaveDepth;
+  CurScope     := SaveScope;
+  SymCount     := SaveSymCnt;
+End;
+
+{ ---- ParseFuncExpr : parser une fonction anonyme (expression) ---- }
+{ function(params) stmts end -> retourne OFFSET du label en AX       }
+Procedure ParseFuncExpr(Var Res : TExprVal);
+Const
+  MAX_PARAMS = 16;
+Var
+  FuncLabel  : TString;
+  SkipLabel  : TString;
+  RetLabel   : TString;
+  ParamNames : Array[0..MAX_PARAMS - 1] Of TString;
+  ParamCount : Integer;
+  I          : Integer;
+  Off        : Integer;
+  NS         : TString;
+  SaveFrame  : Integer;
+  SaveRetLbl : TString;
+  SaveFnName : TString;
+  SaveDepth  : Integer;
+  SaveScope  : Integer;
+  SaveSymCnt : Integer;
+Begin
+  { Le mot-cle 'function' est deja consomme }
+  Inc(AnonFuncCount);
+  Str(AnonFuncCount, NS);
+  FuncLabel := LUA_FN_PFX + 'ANON_' + NS;
+  SkipLabel := LUA_LBL_PFX + 'ASKIP_' + NS;
+  RetLabel  := LUA_LBL_PFX + 'ARET_' + NS;
+
+  { Emettre JMP pour sauter par-dessus le corps }
+  EmitInstrA('JMP', SkipLabel);
+
+  { Emettre le label de la fonction anonyme }
+  EmitLabel(FuncLabel);
+
+  { Prologue }
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+
+  { Sauvegarder le contexte }
+  SaveFrame  := CurFrameSize;
+  SaveRetLbl := CurFnRetLbl;
+  SaveFnName := CurFnName;
+  SaveDepth  := CurFnDepth;
+  SaveScope  := CurScope;
+  SaveSymCnt := SymCount;
+
+  CurFrameSize := 0;
+  CurFnRetLbl  := RetLabel;
+  CurFnName    := '_anon_' + NS;
+  Inc(CurFnDepth);
+  Inc(CurScope);
+
+  { Parser les parametres }
+  ParamCount := 0;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+  Begin
+    ParserAdvance; { consomme '(' }
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+    Begin
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        If ParamCount < MAX_PARAMS Then
+        Begin
+          ParamNames[ParamCount] := CurToken.Val;
+          Inc(ParamCount);
+        End;
+        ParserAdvance;
+      End
+      Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance
+      Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '...') Then
+      Begin
+        ParserAdvance; { varargs : stub }
+        Break;
+      End
+      Else
+        Break;
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else
+      CompileError('")" attendue apres les parametres');
+  End;
+
+  { Enregistrer les parametres }
+  For I := 0 To ParamCount - 1 Do
+  Begin
+    Off := 4 + (ParamCount - 1 - I) * 2;
+    SymAdd(ParamNames[I], SK_PARAM, TY_UNKNOWN, Off);
+  End;
+
+  { Parser le corps }
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'end')) Do
+    ParseStmt;
+
+  { Consommer 'end' }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'end') Then
+    ParserAdvance
+  Else
+    CompileError('"end" attendu pour fermer la fonction anonyme');
+
+  { Epilogue }
+  EmitLabel(RetLabel);
+  EmitInstrAB('MOV', 'SP', 'BP');
+  EmitInstrA('POP', 'BP');
+  EmitInstr('RET');
+
+  { Label de saut }
+  EmitLabel(SkipLabel);
+
+  { Restaurer le contexte }
+  CurFrameSize := SaveFrame;
+  CurFnRetLbl  := SaveRetLbl;
+  CurFnName    := SaveFnName;
+  CurFnDepth   := SaveDepth;
+  CurScope     := SaveScope;
+  SymCount     := SaveSymCnt;
+
+  { Retourner l adresse de la fonction comme pointeur de code }
+  EmitInstrAB('MOV', 'AX', 'OFFSET ' + FuncLabel);
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_FUNCTION;
+  Res.SymIdx  := -1;
+End;
+
+{ ---- EmitFuncRuntime : routines runtime pour fonctions ----------- }
+{ Pas de runtime specifique necessaire pour le moment :              }
+{   - prologue/epilogue emis inline dans ParseFuncDecl/ParseFuncExpr }
+{   - appels via PUSH args + CALL label + ADD SP,n*2 deja en place   }
+Procedure EmitFuncRuntime;
+Begin
+  { Placeholder : pas de runtime supplementaire requis }
+  EmitBlankLine;
+  EmitComment('--- Function runtime (TODO 17) ---');
 End;
 
 { ---- Run : pipeline de compilation ----------------------------- }
