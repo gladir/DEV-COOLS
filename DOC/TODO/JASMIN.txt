@@ -187,7 +187,7 @@ TODO 09 [IMPLEMENTE] - Descripteurs de types JVM : parsing et validation
   - AutoStack(method) : calculer max_stack minimum a partir
     du flot d'instructions (si .limit stack absent)
 
-TODO 10 - Opcodes de chargement et stockage
+TODO 10 [IMPLEMENTE] - Opcodes de chargement et stockage
   -------------------------------------------
   Instructions de chargement depuis les variables locales :
   - iload <var>, iload_0, iload_1, iload_2, iload_3

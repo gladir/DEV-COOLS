@@ -2589,8 +2589,13 @@ Begin
 End;
 
 { --- ParseInstruction : reconnaitre et emettre un mnemonique JVM --- }
+{ Lit CurStr (le mnemonique), emet le(s) octet(s) correspondant(s)    }
+{ dans le code buffer de la methode courante via EmitByte.             }
 { Retourne True si le mnemonique a ete reconnu et emis.                }
-{ Pour TODO 10 : opcodes de chargement/stockage.                       }
+{ TODO 10 : opcodes de chargement/stockage (iload/istore/lload/       }
+{ lstore/fload/fstore/dload/dstore/aload/astore + variantes _0-_3,   }
+{ iaload..saload, iastore..sastore).                                   }
+{ Les TODOs suivantes ajouteront d'autres familles d'opcodes.          }
 Function ParseInstruction: Boolean;
 Var mnem: String;
     opvar: Integer;
