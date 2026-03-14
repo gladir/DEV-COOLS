@@ -513,7 +513,10 @@ Const
   LUA_TBL_PFX  = '_LUAT_';   { table donnees                       }
   LUA_UP_PFX   = '_LUAU_';   { upvalue                             }
   LUA_ERR_PFX  = '_LUAX_';   { handler d erreur                    }
-  LUA_META_OFS = 508;         { offset du pointeur metatable dans table }
+  LUA_META_OFS = 508;         { offset du pointeur metatable dans table
+                                 Table layout: [0]=count, [2..251]=elements,
+                                 [252]=hash_count, [254..507]=hash pairs,
+                                 [508]=metatable ptr (last word of 512-byte block) }
   LUA_NIL_LBL  = '_LUA_NIL_S';   { etiquette DATA chaine 'nil'     }
   LUA_TRUE_LBL = '_LUA_TRUE_S';  { etiquette DATA chaine 'true'    }
   LUA_FALSE_LBL= '_LUA_FALSE_S'; { etiquette DATA chaine 'false'   }
@@ -4230,7 +4233,7 @@ Begin
     EmitInstrAB('MOV', 'BX', 'AX');
     EmitInstrA('CALL', LUA_RT_PFX + 'GETMETA');
     Res.Kind    := EK_AX;
-    Res.TypeIdx := TY_IDX_TABLE;
+    Res.TypeIdx := TY_UNKNOWN;  { peut etre nil si pas de metatable }
     Res.SymIdx  := -1;
   End
   { TODO 16 : rawget(t, k) -> acces brut sans __index }
@@ -5284,7 +5287,11 @@ Begin
   EmitLabel(LUA_RT_PFX + 'TG_NF');
   EmitInstrA('POP', 'CX');
   EmitLabel(LUA_RT_PFX + 'TG_NIL');
-  { TODO 16 : __index - verifier metatable avant de retourner nil }
+  { TODO 16 : __index - verifier metatable avant de retourner nil     }
+  { _LUA_META_GUARD empeche la recursion infinie : si on est deja     }
+  { en train de chercher __index, on retourne nil directement.        }
+  { Limitation : __index doit etre une table (pas une fonction).      }
+  { Un seul niveau de delegation est supporte.                         }
   EmitInstrAB('CMP', 'WORD PTR [_LUA_META_GUARD]', '0');
   EmitInstrA('JNE', LUA_RT_PFX + 'TG_RNIL');
   EmitInstrAB('CMP', 'WORD PTR [BX+508]', '0');
