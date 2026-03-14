@@ -420,7 +420,7 @@
             Limitation : pile de coroutine fixe (COROUTINE_STACK_SIZE = 512 octets)
             Avertissement si coroutines imbriquees ou recursion profonde
 
-  TODO 24 - RUNTIME MINIMAL
+  TODO 24 - RUNTIME MINIMAL [IMPLEMENTE]
             _LUART_PRINT(BX=handle, SI=msg, CX=len) : INT 21h AH=40h
             _LUART_PRINTLN : _LUART_PRINT + CR+LF via _LUA_CRLF DB 13,10,0
             _LUART_STRLEN(SI=str) : compte octets jusqu a 0 -> AX et CX
@@ -885,6 +885,9 @@ Procedure EmitErrorRuntime; Forward;
 Procedure EmitCoroutineBuiltin(Const FuncName : TString; Var Res : TExprVal); Forward;
 Procedure EmitCoroutineRuntime; Forward;
 
+{ Runtime minimal (TODO 24) }
+Procedure EmitRuntimeExtra; Forward;
+
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
   ============================================================ }
@@ -1315,6 +1318,7 @@ Begin
   EmitMultRetRuntime;
   EmitErrorRuntime;
   EmitCoroutineRuntime;
+  EmitRuntimeExtra;
 End;
 
 { EmitClose : terminer le fichier ASM (DOS exit, runtime, DATA, END) }
@@ -8979,7 +8983,52 @@ Begin
   EmitBlankLine;
 End;
 
-{ ---- EmitErrorRuntime : routines runtime gestion d erreurs ------ }
+{ ---- EmitRuntimeExtra : routines runtime supplementaires (TODO 24) -- }
+{ Ajoute les routines bas niveau manquantes du runtime minimal :         }
+{   _LUART_PRINT  : ecriture par handle DOS (INT 21h AH=40h)            }
+{   _LUART_PRINTLN : ecriture chaine ASCIIZ + CR+LF via handle          }
+Procedure EmitRuntimeExtra;
+Begin
+  EmitBlankLine;
+  EmitComment('=== Routines runtime TODO 24 (runtime minimal) ===');
+  EmitBlankLine;
+
+  { _LUART_PRINT : ecriture brute via handle DOS                     }
+  {   BX = handle (1=stdout, 2=stderr)                                }
+  {   DX = ptr message                                                }
+  {   CX = longueur en octets                                        }
+  {   Retourne : AX = nombre d octets ecrits                         }
+  EmitLabel(LUA_RT_PFX + 'PRINT');
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstr('INT    21h');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _LUART_PRINTLN : afficher chaine ASCIIZ vers stdout + CR+LF      }
+  {   AX = ptr chaine ASCIIZ                                         }
+  {   Utilise _LUART_STRLEN pour calculer la longueur                 }
+  {   puis _LUART_PRINT(BX=1, DX=ptr, CX=len)                       }
+  {   puis _LUART_PRINT(BX=1, DX=_LUA_CRLF, CX=2)                   }
+  EmitLabel(LUA_RT_PFX + 'PRINTLN');
+  EmitInstrA('PUSH', 'AX');
+  { Calculer la longueur de la chaine }
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrA('CALL', LUA_RT_PFX + 'STRLEN');
+  EmitInstrAB('MOV', 'CX', 'AX');
+  EmitInstrA('POP', 'DX');
+  { Afficher la chaine }
+  EmitInstrAB('MOV', 'BX', '1');        { stdout }
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstr('INT    21h');
+  { Afficher CR+LF }
+  EmitInstrAB('MOV', 'DX', 'OFFSET _LUA_CRLF');
+  EmitInstrAB('MOV', 'CX', '2');
+  EmitInstrAB('MOV', 'BX', '1');        { stdout }
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstr('INT    21h');
+  EmitInstr('RET');
+  EmitBlankLine;
+End;
 { Note : _LUART_PANIC est emis dans EmitExprRuntime (TODO 04)       }
 { et a ete modifie pour supporter le handler pcall.                  }
 { Cette procedure emet les routines supplementaires.                 }
