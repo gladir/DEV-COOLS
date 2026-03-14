@@ -1,5 +1,3 @@
 *.o
-KOTLIN86
-
-SAMPLES/KOTLIN/*.asm
 *.asm
+KOTLIN86
