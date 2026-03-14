@@ -1457,9 +1457,9 @@ Begin
   { TODO 19 : Second buffer chaines pour operations string }
   DataAddBuffer('_LUA_STRBUF2', 512);
   { TODO 20 : math/os data }
-  DataAddWord('_LUART_SEED', 12345);
-  DataAdd('_LUA_MATH_INT_S', DK_STR, 0, 'integer');
-  DataAdd('_LUA_OS_DATE_S', DK_STR, 0, '00/00/0000');
+  DataAddWord('_LUART_SEED', 12345);           { graine LCG pour math.random }
+  DataAdd('_LUA_MATH_INT_S', DK_STR, 0, 'integer');  { math.type retourne toujours "integer" }
+  DataAdd('_LUA_OS_DATE_S', DK_STR, 0, '00/00/0000'); { os.date stub placeholder }
 End;
 
 { ---- ExprMakeImm : construire une valeur immediate ---------- }
@@ -8175,7 +8175,7 @@ Begin
   EmitBlankLine;
 
   { _LUART_RAND : LCG 16-bit -> AX = 0..32767 }
-  { seed = seed * 25173 + 13849 }
+  { seed = seed * 25173 + 13849 (constantes LCG classiques pour 16 bits) }
   EmitLabel(LUA_RT_PFX + 'RAND');
   EmitInstrA('PUSH', 'DX');
   EmitInstrAB('MOV', 'AX', 'WORD PTR [_LUART_SEED]');
@@ -8216,8 +8216,8 @@ Begin
   EmitComment('=== Routines runtime TODO 20 (os) ===');
   EmitBlankLine;
 
-  { _LUART_OSCLOCK : retourne approximation secondes via INT 21h AH=2Ch }
-  { Retourne : AX = secondes (0..59) + minutes*60 comme approximation   }
+  { _LUART_OSCLOCK : retourne secondes (0..59) via INT 21h AH=2Ch }
+  { Note : retourne uniquement DH (secondes), pas minutes*60     }
   EmitLabel(LUA_RT_PFX + 'OSCLOCK');
   EmitInstrA('PUSH', 'CX');
   EmitInstrA('PUSH', 'DX');
