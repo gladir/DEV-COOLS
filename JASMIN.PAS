@@ -36,7 +36,7 @@
 {  TODO 18 [IMPLEMENTE] - Opcodes de comparaison, retour et divers            }
 {  TODO 19 [IMPLEMENTE] - Labels, resolution des sauts et calcul des offsets  }
 {  TODO 20 [IMPLEMENTE] - Attribut Code : generation binaire                  }
-{  TODO 21 - Directives de gestion des exceptions (.catch, .throws)           }
+{  TODO 21 [IMPLEMENTE] - Directives de gestion des exceptions (.catch, .throws) }
 {  TODO 22 - Attributs supplementaires (SourceFile, LineNumberTable, etc.)    }
 {  TODO 23 - Programme principal : ligne de commande et generation .class     }
 {  TODO 24 - Validation et verification du bytecode genere                    }
@@ -543,6 +543,10 @@ Procedure LabelResolve; Forward;
 
 { --- Declarations forward TODO 20 : Attribut Code : generation binaire --- }
 Procedure EmitCodeAttribute(mIdx: Integer); Forward;
+
+{ --- Declarations forward TODO 21 : Directives exceptions (.catch, .throws) --- }
+Procedure ParseCatchDirective; Forward;
+Procedure EmitExceptionsAttribute(mIdx: Integer); Forward;
 
 { ---------- Ouverture et fermeture du fichier source ---------- }
 
@@ -2209,6 +2213,25 @@ Begin
   { Valider le descripteur de methode (TODO 09) }
   If Not ValidateMethodDescriptor(Desc) Then
    Warning('.method ' + Name + ' : descripteur invalide ''' + Desc + '''');
+   { Valider les labels des exception handlers (TODO 21) }
+   For i := 1 to ExcCount do
+   Begin
+    If ExcTab^[i].StartLbl <> '' Then
+    Begin
+     If LabelFind(ExcTab^[i].StartLbl) = 0 Then
+      Warning('.catch : label start ''' + ExcTab^[i].StartLbl + ''' non defini');
+    End;
+    If ExcTab^[i].EndLbl <> '' Then
+    Begin
+     If LabelFind(ExcTab^[i].EndLbl) = 0 Then
+      Warning('.catch : label end ''' + ExcTab^[i].EndLbl + ''' non defini');
+    End;
+    If ExcTab^[i].HandlerLbl <> '' Then
+    Begin
+     If LabelFind(ExcTab^[i].HandlerLbl) = 0 Then
+      Warning('.catch : label handler ''' + ExcTab^[i].HandlerLbl + ''' non defini');
+    End;
+   End;
  End;
  InMethod  := False;
  CurMethod := 0;
@@ -2412,6 +2435,132 @@ Begin
  End;
  If OptVerbose Then
   WriteLn('    .throws ', cn);
+End;
+
+{ --- ParseCatchDirective : .catch <classname> from <l1> to <l2> using <h> --- }
+{ Enregistre un exception handler dans la methode courante.                     }
+{ Syntaxe : .catch <classname> from <startlbl> to <endlbl> using <handlerlbl>  }
+{ Si classname = "all", catch_type = 0 (intercepte toutes les exceptions).     }
+Procedure ParseCatchDirective;
+Var cn: String;
+    startL, endL, handlerL: String;
+Begin
+ If Not InMethod Then
+ Begin
+  Error('.catch : directive valide uniquement dans une methode');
+  Exit;
+ End;
+ { Lire le nom de classe ou 'all' }
+ If CurTok = TK_IDENT Then
+ Begin
+  cn := CurStr;
+  If UpCaseStr(cn) = 'ALL' Then
+   cn := 'all'
+  Else
+   cn := ConvertClassName(cn);
+  Consume;
+ End
+ Else
+ Begin
+  Error('.catch : nom de classe ou ''all'' attendu');
+  Exit;
+ End;
+ { Lire 'from' <start_label> }
+ If (CurTok <> TK_IDENT) Or (UpCaseStr(CurStr) <> 'FROM') Then
+ Begin
+  Error('.catch : ''from'' attendu apres le nom de classe');
+  Exit;
+ End;
+ Consume;
+ If CurTok <> TK_IDENT Then
+ Begin
+  Error('.catch : label debut attendu apres ''from''');
+  Exit;
+ End;
+ startL := CurStr;
+ Consume;
+ { Lire 'to' <end_label> }
+ If (CurTok <> TK_IDENT) Or (UpCaseStr(CurStr) <> 'TO') Then
+ Begin
+  Error('.catch : ''to'' attendu apres le label debut');
+  Exit;
+ End;
+ Consume;
+ If CurTok <> TK_IDENT Then
+ Begin
+  Error('.catch : label fin attendu apres ''to''');
+  Exit;
+ End;
+ endL := CurStr;
+ Consume;
+ { Lire 'using' <handler_label> }
+ If (CurTok <> TK_IDENT) Or (UpCaseStr(CurStr) <> 'USING') Then
+ Begin
+  Error('.catch : ''using'' attendu apres le label fin');
+  Exit;
+ End;
+ Consume;
+ If CurTok <> TK_IDENT Then
+ Begin
+  Error('.catch : label handler attendu apres ''using''');
+  Exit;
+ End;
+ handlerL := CurStr;
+ Consume;
+ { Enregistrer dans ExcTab }
+ With MethodTab^[CurMethod] do
+ Begin
+  If ExcCount >= MAX_EXC Then
+  Begin
+   Error('.catch : trop d''exception handlers (max ' + IntToStr_(MAX_EXC) + ')');
+   Exit;
+  End;
+  Inc(ExcCount);
+  With ExcTab^[ExcCount] do
+  Begin
+   StartLbl   := startL;
+   EndLbl     := endL;
+   HandlerLbl := handlerL;
+   CatchType  := cn;
+   StartPC    := 0;
+   EndPC      := 0;
+   HandlerPC  := 0;
+   CatchIdx   := 0;
+  End;
+ End;
+ If OptVerbose Then
+  WriteLn('    .catch ', cn, ' from ', startL, ' to ', endL, ' using ', handlerL);
+End;
+
+{ --- EmitExceptionsAttribute : ecrire l'attribut Exceptions pour .throws --- }
+{ Ecrit l'attribut Exceptions (distinct du Code_attribute) listant les        }
+{ classes d'exceptions declarees via .throws.                                  }
+Procedure EmitExceptionsAttribute(mIdx: Integer);
+Var excAttrIdx: Integer;
+    attrLenPos, attrStart: LongInt;
+    i: Integer;
+Begin
+ With MethodTab^[mIdx] do
+ Begin
+  If ThrowCount = 0 Then Exit;
+  excAttrIdx := CPEnsureUtf8('Exceptions');
+  { attribute_name_index (U2) }
+  BinWriteU2(excAttrIdx);
+  { attribute_length (U4) - placeholder }
+  attrLenPos := BinGetPos;
+  BinWriteU4(0);
+  attrStart := BinGetPos;
+  { number_of_exceptions (U2) }
+  BinWriteU2(ThrowCount);
+  { exception_index_table[] (U2 chaque) }
+  For i := 1 to ThrowCount do
+   BinWriteU2(ThrowIdx[i]);
+  { Backpatcher attribute_length }
+  BinPatchU4(attrLenPos, BinGetPos - attrStart);
+  If OptVerbose Then
+   WriteLn('    [exceptions] methode ', Name, Desc,
+           ' : ', ThrowCount, ' exception(s) declaree(s)');
+ End;
 End;
 
 { ============================================================================ }
@@ -4533,10 +4682,16 @@ Begin
      ParseThrowsDirective;
      SkipToEOL;
     End;
+    DIR_CATCH:
+    Begin
+     Consume;
+     ParseCatchDirective;
+     SkipToEOL;
+    End;
    Else
-    { Directives non encore implementees (TODO 21+) : sauter la ligne }
+    { Directives non encore implementees (TODO 22+) : sauter la ligne }
     If OptVerbose Then
-     WriteLn('  [skip] directive ', CurStr, ' (TODO 21+)');
+     WriteLn('  [skip] directive ', CurStr, ' (TODO 22+)');
     SkipToEOL;
    End;  { Case }
   End
@@ -4547,7 +4702,7 @@ Begin
    Begin
     { Mnemonique non reconnu : sauter la ligne }
     If OptVerbose Then
-     WriteLn('  [skip] instruction ', CurStr, ' (TODO 21+)');
+     WriteLn('  [skip] instruction ', CurStr, ' (TODO 22+)');
     SkipToEOL;
    End
    Else

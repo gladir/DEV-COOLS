@@ -410,7 +410,7 @@ TODO 20 [IMPLEMENTE] - Attribut Code : generation binaire
   - Generer le sous-attribut LocalVariableTable si .var utilise
   - Backpatcher attribute_length apres ecriture complete
 
-TODO 21 - Directives de gestion des exceptions (.catch, .throws)
+TODO 21 [IMPLEMENTE] - Directives de gestion des exceptions (.catch, .throws)
   ----------------------------------------------------------------
   - ParseCatchDirective : .catch <classname> from <l1> to <l2>
     using <handler>
