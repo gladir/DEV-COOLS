@@ -304,7 +304,7 @@
             Identite IS / ISNT : comparer deux references (adresses)
               IS -> CMP + JE, ISNT -> CMP + JNE
 
-  TODO 18 - TABLEAUX ET TRANCHES (ROWS)
+  TODO 18 - TABLEAUX ET TRANCHES (ROWS) [IMPLEMENTE]
             Declaration : [1:10] INT a -> tableau de 10 entiers
               Bornes flexibles : lwb et upb arbitraires (pas seulement 0 ou 1)
             Descripteur de tableau : (lwb, upb, taille_elem, ptr_data)
@@ -721,6 +721,7 @@ Var
   StructFieldTab   : Array[0..MAX_STRUCT_FIELDS - 1] Of TStructField;
   StructFieldCount : Integer;
   StructCount      : Integer;   { nombre de modes STRUCT declares }
+  RowCount         : Integer;   { nombre de modes ROW declares }
 
   { Etat general }
   RuntimeEmitted : Boolean;
@@ -796,6 +797,7 @@ Function  ModeCoerceResult(LeftIdx, RightIdx : Integer;
                            Const Op : TString) : Integer; Forward;
 Function  ModeInfer(Const E : TExprVal) : Integer; Forward;
 Function  ModeLookupName(Const Name : TString) : Integer; Forward;
+Function  ModeAddRow(ElemModeIdx : Integer) : Integer; Forward;
 
 { TODO 07 - Coercitions }
 Procedure CoerceDeref(SrcMode : Integer); Forward;
@@ -1176,6 +1178,7 @@ Begin
   LoopCount      := 0;
   StructFieldCount := 0;
   StructCount    := 0;
+  RowCount       := 0;
   GExprDummy.Kind    := EK_NONE;
   GExprDummy.ImmVal  := 0;
   GExprDummy.ModeIdx := -1;
@@ -2446,6 +2449,9 @@ Begin
   EmitRaw('        DB      ' + IntToStr(STRPOOL_SIZE) + ' DUP(0)');
   EmitLabel('_A68_STRPOOL_TOP');
   EmitRaw('        DW      0');
+  { Buffer temporaire pour slice de tableau (TODO 18) }
+  EmitLabel('_A68_SLICEBUF');
+  EmitRaw('        DW      0,0,0,0');
   { Entrees dynamiques de DataTab }
   For I := 0 To DataCount - 1 Do
   Begin
@@ -2698,6 +2704,8 @@ Begin
             EmitInstr('XOR    AX, AX');
             EmitInstr('MOV    AL, [' + SymTab[E.SymIdx].MangledName + ']');
           End
+          Else If ModeKindOf(E.ModeIdx) = MK_ROW Then
+            EmitInstr('MOV    AX, OFFSET ' + SymTab[E.SymIdx].MangledName)
           Else
             EmitInstr('MOV    AX, [' + SymTab[E.SymIdx].MangledName + ']');
         End
@@ -2705,10 +2713,21 @@ Begin
         Begin
           { Variable locale : [BP+Offset] }
           Str(E.Offset, S);
-          If E.Offset >= 0 Then
-            EmitInstr('MOV    AX, [BP+' + S + ']')
+          If ModeKindOf(E.ModeIdx) = MK_ROW Then
+          Begin
+            { ROW local : LEA pour obtenir l adresse du descripteur }
+            If E.Offset >= 0 Then
+              EmitInstr('LEA    AX, [BP+' + S + ']')
+            Else
+              EmitInstr('LEA    AX, [BP' + S + ']');
+          End
           Else
-            EmitInstr('MOV    AX, [BP' + S + ']');
+          Begin
+            If E.Offset >= 0 Then
+              EmitInstr('MOV    AX, [BP+' + S + ']')
+            Else
+              EmitInstr('MOV    AX, [BP' + S + ']');
+          End;
         End;
       End
       Else
@@ -3151,18 +3170,55 @@ Begin
             ParseExpr(UpRes);
             ExprFlushToAX(UpRes);
             EmitInstr('PUSH   AX'); { up }
-            EmitInstr('CALL   _A68RT_STRTRIM');
-            EmitInstr('ADD    SP, 6');
+            { Appel runtime slice ou STRTRIM selon contexte }
+            If (Res.ModeIdx >= 0) And (Res.ModeIdx < ModeCount) And
+               (ModeTab[Res.ModeIdx].Kind = MK_ROW) Then
+            Begin
+              EmitInstr('CALL   ' + A68_RT_PFX + 'SLICE');
+              EmitInstr('ADD    SP, 6');
+            End
+            Else
+            Begin
+              EmitInstr('CALL   _A68RT_STRTRIM');
+              EmitInstr('ADD    SP, 6');
+            End;
           End
           Else
           Begin
             { Simple indexation }
             ExprFlushToAX(IdxRes);
             EmitComment('array index');
-            EmitInstr('SHL    AX, 1');
-            EmitInstr('POP    BX');
-            EmitInstr('ADD    BX, AX');
-            EmitInstr('MOV    AX, [BX]');
+            { Verifier si c est un mode ROW -> descriptor-based }
+            If (Res.ModeIdx >= 0) And (Res.ModeIdx < ModeCount) And
+               (ModeTab[Res.ModeIdx].Kind = MK_ROW) Then
+            Begin
+              { AX = index, stack top = descriptor ptr }
+              EmitInstr('POP    BX');        { BX = descriptor ptr }
+              EmitInstr('PUSH   BX');        { garder pour bounds check }
+              EmitInstr('CALL   ' + A68_RT_PFX + 'ROWCHK');
+              EmitInstr('POP    BX');        { BX = descriptor ptr }
+              EmitInstr('SUB    AX, [BX]');  { AX = index - lwb }
+              EmitInstr('MOV    CX, [BX+4]'); { CX = elem_size }
+              EmitInstr('MUL    CX');        { AX = offset }
+              EmitInstr('ADD    AX, [BX+6]'); { AX = data_ptr + offset }
+              EmitInstr('MOV    BX, AX');
+              If (ModeTab[Res.ModeIdx].ElemIdx >= 0) And
+                 (ModeTab[Res.ModeIdx].ElemIdx < ModeCount) And
+                 (ModeTab[ModeTab[Res.ModeIdx].ElemIdx].Size = 1) Then
+                EmitInstr('MOV    AL, [BX]')
+              Else
+                EmitInstr('MOV    AX, [BX]');
+              { Mettre a jour le mode resultat au mode element }
+              Res.ModeIdx := ModeTab[Res.ModeIdx].ElemIdx;
+            End
+            Else
+            Begin
+              { Indexation simple (STRING etc.) }
+              EmitInstr('SHL    AX, 1');
+              EmitInstr('POP    BX');
+              EmitInstr('ADD    BX, AX');
+              EmitInstr('MOV    AX, [BX]');
+            End;
           End;
           If CurToken.Kind = TK_BUS2 Then
             ParserAdvance; { consomme ] }
@@ -3515,6 +3571,32 @@ Begin
       ParseUnary(Res);
       { LEVEL : scope level -> stub : 0 }
       ExprMakeImm(0, TY_IDX_INT, Res);
+      Exit;
+    End;
+
+    If Op = 'LWB' Then
+    Begin
+      ParserAdvance;
+      ParseUnary(Res);
+      ExprFlushToAX(Res);
+      EmitComment('LWB (prefix)');
+      EmitInstr('MOV    BX, AX');
+      EmitInstr('MOV    AX, [BX]');
+      Res.Kind    := EK_AX;
+      Res.ModeIdx := TY_IDX_INT;
+      Exit;
+    End;
+
+    If Op = 'UPB' Then
+    Begin
+      ParserAdvance;
+      ParseUnary(Res);
+      ExprFlushToAX(Res);
+      EmitComment('UPB (prefix)');
+      EmitInstr('MOV    BX, AX');
+      EmitInstr('MOV    AX, [BX+2]');
+      Res.Kind    := EK_AX;
+      Res.ModeIdx := TY_IDX_INT;
       Exit;
     End;
   End;
@@ -3877,11 +3959,26 @@ Begin
       EmitInstr('AND    AX, 1');
       Res.ModeIdx := TY_IDX_BOOL;
     End
-    { UP DOWN LWB UPB : stubs pour tableaux }
-    Else If (Op = 'UP') Or (Op = 'DOWN') Or
-            (Op = 'LWB') Or (Op = 'UPB') Then
+    { UP DOWN : stubs }
+    Else If (Op = 'UP') Or (Op = 'DOWN') Then
     Begin
       WarnMsg(Op + ' : stub, traite comme NOP');
+    End
+    { LWB : borne inferieure du descripteur de tableau }
+    Else If Op = 'LWB' Then
+    Begin
+      EmitComment('LWB');
+      EmitInstr('MOV    BX, AX');
+      EmitInstr('MOV    AX, [BX]');
+      Res.ModeIdx := TY_IDX_INT;
+    End
+    { UPB : borne superieure du descripteur de tableau }
+    Else If Op = 'UPB' Then
+    Begin
+      EmitComment('UPB');
+      EmitInstr('MOV    BX, AX');
+      EmitInstr('MOV    AX, [BX+2]');
+      Res.ModeIdx := TY_IDX_INT;
     End;
 
     Res.Kind := EK_AX;
@@ -4740,6 +4837,41 @@ Begin
   ModeLookupName := -1;
 End;
 
+{ ---- ModeAddRow : creer ou retrouver un mode ROW pour ElemModeIdx -- }
+Function ModeAddRow(ElemModeIdx : Integer) : Integer;
+Var
+  I : Integer;
+  RowName : TString;
+Begin
+  { Verifier si un mode ROW pour cet element existe deja }
+  For I := 0 To ModeCount - 1 Do
+    If (ModeTab[I].Kind = MK_ROW) And (ModeTab[I].ElemIdx = ElemModeIdx) Then
+    Begin
+      ModeAddRow := I;
+      Exit;
+    End;
+  { Creer un nouveau mode ROW }
+  If ModeCount >= MAX_MODE Then
+  Begin
+    CompileError('table des modes pleine');
+    ModeAddRow := -1;
+    Exit;
+  End;
+  If (ElemModeIdx >= 0) And (ElemModeIdx < ModeCount) Then
+    RowName := '[]' + ModeTab[ElemModeIdx].Name
+  Else
+    RowName := '[]?';
+  I := ModeCount;
+  ModeTab[I].Name     := RowName;
+  ModeTab[I].Kind     := MK_ROW;
+  ModeTab[I].Size     := 2;  { pointeur vers descripteur }
+  ModeTab[I].ElemIdx  := ElemModeIdx;
+  ModeTab[I].FieldCnt := 0;
+  Inc(ModeCount);
+  Inc(RowCount);
+  ModeAddRow := I;
+End;
+
 { ============================================================
   TODO 07 - COERCITIONS (COERCIONS) [IMPLEMENTE]
   Les 6 coercitions Algol 68 appliquees automatiquement.
@@ -5070,7 +5202,43 @@ End;
 
 Procedure EmitRuntime;
 Begin
-  { TODO 24 - stub : sera implemente plus tard }
+  If RuntimeEmitted Then Exit;
+  RuntimeEmitted := True;
+  { Runtime: bounds check pour tableaux (TODO 18) }
+  EmitBlankLine;
+  EmitComment('--- runtime: row bounds check ---');
+  EmitLabel(A68_RT_PFX + 'ROWCHK');
+  { Entree: AX=index, BX=ptr descripteur }
+  { Sortie: AX=index si OK, sinon arret }
+  EmitInstr('CMP    AX, [BX]');
+  EmitInstr('JL     ' + A68_RT_PFX + 'ROWFAIL');
+  EmitInstr('CMP    AX, [BX+2]');
+  EmitInstr('JG     ' + A68_RT_PFX + 'ROWFAIL');
+  EmitInstr('RET');
+  EmitLabel(A68_RT_PFX + 'ROWFAIL');
+  EmitInstr('MOV    AX, 4C01h');
+  EmitInstr('INT    21h');
+
+  { Runtime: slice (tranche) pour tableaux }
+  EmitBlankLine;
+  EmitComment('--- runtime: row slice ---');
+  EmitLabel(A68_RT_PFX + 'SLICE');
+  { Entree: pile [SP+2]=desc_ptr, [SP+4]=lo, [SP+6]=up }
+  EmitInstr('PUSH   BP');
+  EmitInstr('MOV    BP, SP');
+  EmitInstr('MOV    BX, [BP+4]');
+  EmitInstr('MOV    AX, [BP+6]');
+  EmitInstr('MOV    DI, OFFSET _A68_SLICEBUF');
+  EmitInstr('MOV    [DI], AX');
+  EmitInstr('MOV    AX, [BP+8]');
+  EmitInstr('MOV    [DI+2], AX');
+  EmitInstr('MOV    AX, [BX+4]');
+  EmitInstr('MOV    [DI+4], AX');
+  EmitInstr('MOV    AX, [BX+6]');
+  EmitInstr('MOV    [DI+6], AX');
+  EmitInstr('MOV    AX, DI');
+  EmitInstr('POP    BP');
+  EmitInstr('RET');
 End;
 
 { EmitClose : terminaison du programme DOS et fermeture du fichier ASM }
@@ -5128,7 +5296,54 @@ Var
   InnerMode : Integer;   { mode apres LOC/HEAP               }
   IsStructMode : Boolean; { vrai si le mode est MK_STRUCT     }
   HasInit   : Boolean;   { vrai si un initialiseur est present }
+  { TODO 18 - tableaux }
+  IsRow     : Boolean;   { vrai si declaration de tableau     }
+  RowLwb    : Integer;   { borne inferieure                  }
+  RowUpb    : Integer;   { borne superieure                  }
+  RowElemSz : Integer;   { taille element                    }
+  RowMIdx   : Integer;   { mode ROW cree                     }
+  DescLbl   : TString;   { label du descripteur              }
+  DataLbl   : TString;   { label du bloc de donnees          }
+  RowLwbRes : TExprVal;  { expression borne inferieure       }
+  RowUpbRes : TExprVal;  { expression borne superieure       }
+  RowNElem  : Integer;   { nombre d elements                 }
+  RowI      : Integer;   { compteur init tableau             }
+  ArgRes    : TExprVal;  { expression element init           }
 Begin
+  { --- 0. Detecter les bornes de tableau [lwb:upb] ---- }
+  IsRow  := False;
+  RowLwb := 1;
+  RowUpb := 0;
+
+  If CurToken.Kind = TK_SUB Then
+  Begin
+    { Syntaxe : [lwb:upb] MODE name }
+    IsRow := True;
+    ParserAdvance; { consomme [ }
+    { Lire lwb }
+    ParseExpr(RowLwbRes);
+    If RowLwbRes.Kind = EK_IMM Then
+      RowLwb := RowLwbRes.ImmVal
+    Else
+    Begin
+      ExprFlushToAX(RowLwbRes);
+      RowLwb := 1;
+    End;
+    If CurToken.Kind = TK_COLON Then
+      ParserAdvance;  { consomme : }
+    { Lire upb }
+    ParseExpr(RowUpbRes);
+    If RowUpbRes.Kind = EK_IMM Then
+      RowUpb := RowUpbRes.ImmVal
+    Else
+    Begin
+      ExprFlushToAX(RowUpbRes);
+      RowUpb := RowLwb;
+    End;
+    If CurToken.Kind = TK_BUS2 Then
+      ParserAdvance;  { consomme ] }
+  End;
+
   { --- 1. Detecter REF / LOC / HEAP en tete ---- }
   IsRef  := False;
   IsLoc  := False;
@@ -5183,6 +5398,21 @@ Begin
     Exit;
   End;
 
+  { Si c est un tableau, creer un mode ROW pour le mode element }
+  If IsRow And (MIdx >= 0) Then
+  Begin
+    RowElemSz := ModeSizeof(MIdx);
+    RowMIdx := ModeAddRow(MIdx);
+    RowNElem := RowUpb - RowLwb + 1;
+    If RowNElem < 0 Then RowNElem := 0;
+  End
+  Else
+  Begin
+    RowElemSz := 2;
+    RowMIdx := -1;
+    RowNElem := 0;
+  End;
+
   { Si REF explicite, le mode effectif est une reference a MIdx.
     Note : le mode de base est perdu ici (simplification TODO 10).
     Une implementation complete creerait un mode REF(base) dans ModeTab. }
@@ -5216,10 +5446,10 @@ Begin
     End
     Else
     Begin
-      { Pas d initialiseur explicite pour HEAP decl }
-      If IsHeap Or IsLoc Then
+      { Pas d initialiseur explicite pour HEAP/ROW decl }
+      If IsHeap Or IsLoc Or IsRow Then
       Begin
-        { HEAP INT x; ou LOC INT x; sans initialiseur }
+        { HEAP INT x; ou LOC INT x; ou [1:n] INT x; sans initialiseur }
         IsVar := True;
       End
       Else
@@ -5272,7 +5502,124 @@ Begin
     { --- 3d. Generer le code ---- }
     EmitComment('decl ' + Name + ' : mode=' + IntToStr(MIdx));
 
-    If IsHeap Then
+    { === Gestion des tableaux (TODO 18) === }
+    If IsRow And (RowMIdx >= 0) Then
+    Begin
+      EmitComment('row decl [' + IntToStr(RowLwb) + ':' +
+                  IntToStr(RowUpb) + '] ' + Name);
+      If CurScope >= 1 Then
+      Begin
+        { Tableau local : descripteur + donnees sur la pile }
+        { Allouer l espace pour les donnees (RowNElem * RowElemSz) }
+        If RowNElem > 0 Then
+        Begin
+          Str(RowNElem * RowElemSz, S);
+          EmitInstr('SUB    SP, ' + S);
+          Inc(CurFrameSize, RowNElem * RowElemSz);
+        End;
+        { Allouer 8 octets pour le descripteur }
+        EmitInstr('SUB    SP, 8');
+        Inc(CurFrameSize, 8);
+        OfsVal := SymNextOffset;
+        { Remplir le descripteur sur la pile }
+        If OfsVal >= 0 Then S := '+' + IntToStr(OfsVal)
+        Else S := IntToStr(OfsVal);
+        EmitInstr('MOV    WORD PTR [BP' + S + '], ' +
+                  IntToStr(RowLwb));
+        If OfsVal + 2 >= 0 Then S := '+' + IntToStr(OfsVal + 2)
+        Else S := IntToStr(OfsVal + 2);
+        EmitInstr('MOV    WORD PTR [BP' + S + '], ' +
+                  IntToStr(RowUpb));
+        If OfsVal + 4 >= 0 Then S := '+' + IntToStr(OfsVal + 4)
+        Else S := IntToStr(OfsVal + 4);
+        EmitInstr('MOV    WORD PTR [BP' + S + '], ' +
+                  IntToStr(RowElemSz));
+        { Pointeur vers les donnees = BP + OfsVal + 8 }
+        If OfsVal + 8 >= 0 Then S := '+' + IntToStr(OfsVal + 8)
+        Else S := IntToStr(OfsVal + 8);
+        EmitInstr('LEA    AX, [BP' + S + ']');
+        If OfsVal + 6 >= 0 Then S := '+' + IntToStr(OfsVal + 6)
+        Else S := IntToStr(OfsVal + 6);
+        EmitInstr('MOV    [BP' + S + '], AX');
+        { Enregistrer le symbole avec le mode ROW }
+        SIdx := SymAdd(Name, SC_VAR, RowMIdx, OfsVal);
+        { AX = adresse du descripteur pour l initialiseur }
+        If OfsVal >= 0 Then S := '+' + IntToStr(OfsVal)
+        Else S := IntToStr(OfsVal);
+        EmitInstr('LEA    AX, [BP' + S + ']');
+      End
+      Else
+      Begin
+        { Tableau global : descripteur + donnees dans DATA }
+        DataLbl := A68_ARR_PFX + SymNameClean(Name) + '_D';
+        DescLbl := A68_ARR_PFX + SymNameClean(Name);
+        { Ajouter le bloc de donnees (RowNElem mots) }
+        DIdx := DataAddStruct(DataLbl, RowNElem);
+        { Ajouter le descripteur }
+        DIdx := DataAddArrayDesc(DescLbl, RowLwb, RowUpb,
+                                 RowElemSz, DataLbl);
+        SIdx := SymAdd(Name, SC_VAR, RowMIdx, 0);
+        { Forcer le MangledName vers le descripteur de tableau }
+        If SIdx >= 0 Then
+          SymTab[SIdx].MangledName := DescLbl;
+        { AX = OFFSET descripteur }
+        EmitInstr('MOV    AX, OFFSET ' + DescLbl);
+      End;
+
+      { Lire l initialiseur si present : (v1, v2, ...) }
+      HasInit := False;
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
+      Begin
+        HasInit := True;
+        ParserAdvance;  { consomme := }
+      End
+      Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+      Begin
+        HasInit := True;
+        ParserAdvance;  { consomme = }
+      End;
+
+      If (CurToken.Kind = TK_OPEN) Then
+      Begin
+        { Constructeur de rangee (v1, v2, ...) }
+        EmitInstr('PUSH   AX');  { sauver adresse descripteur }
+        ParserAdvance; { consomme ( }
+        RowI := 0;
+        While (CurToken.Kind <> TK_CLOSE) And
+              (CurToken.Kind <> TK_EOF) Do
+        Begin
+          ParseExpr(ArgRes);
+          ExprFlushToAX(ArgRes);
+          { Stocker dans le bloc de donnees }
+          If CurScope >= 1 Then
+          Begin
+            EmitInstr('POP    BX');
+            EmitInstr('PUSH   BX');
+            EmitInstr('MOV    BX, [BX+6]'); { data_ptr }
+            Str(RowI * RowElemSz, S);
+            If RowElemSz = 1 Then
+              EmitInstr('MOV    BYTE PTR [BX+' + S + '], AL')
+            Else
+              EmitInstr('MOV    [BX+' + S + '], AX');
+          End
+          Else
+          Begin
+            Str(RowI * RowElemSz, S);
+            If RowElemSz = 1 Then
+              EmitInstr('MOV    BYTE PTR [' + DataLbl + '+' + S + '], AL')
+            Else
+              EmitInstr('MOV    [' + DataLbl + '+' + S + '], AX');
+          End;
+          Inc(RowI);
+          If CurToken.Kind = TK_COMMA Then
+            ParserAdvance;
+        End;
+        If CurToken.Kind = TK_CLOSE Then
+          ParserAdvance;
+        EmitInstr('POP    AX'); { restaurer adresse descripteur }
+      End;
+    End
+    Else If IsHeap Then
     Begin
       { HEAP : allocation dynamique }
       { Charger la taille du mode dans CX puis appeler alloc }
@@ -6206,8 +6553,39 @@ Begin
 End;
 
 Procedure ParseRowDecl;
+{ Appele pour MODE name = [] TYPE dans ParseModeDecl.
+  Cree un mode ROW pour le type element indique. }
+Var
+  ElemMode : Integer;
+  RowMode  : Integer;
 Begin
-  { TODO 18 }
+  { Attend [ deja consomme dans ParseModeDecl ou appel direct }
+  { Consommer ] si present }
+  If CurToken.Kind = TK_SUB Then
+    ParserAdvance;  { consomme [ }
+  If CurToken.Kind = TK_BUS2 Then
+    ParserAdvance;  { consomme ] }
+  { Lire le mode element }
+  If CurToken.Kind = TK_BOLD Then
+  Begin
+    ElemMode := ModeLookupName(CurToken.Val);
+    If ElemMode >= 0 Then
+      ParserAdvance
+    Else
+    Begin
+      CompileError('mode element attendu dans ROW');
+      Exit;
+    End;
+  End
+  Else
+  Begin
+    CompileError('mode element attendu dans ROW');
+    Exit;
+  End;
+  RowMode := ModeAddRow(ElemMode);
+  { Le mode ROW est maintenant enregistre dans ModeTab }
+  If RowMode < 0 Then
+    CompileError('impossible de creer le mode ROW');
 End;
 
 Procedure ParseProcDecl;
@@ -6276,6 +6654,11 @@ Begin
     { Verifier si c est un mode utilisateur (struct) }
     If ModeLookupName(CurToken.Val) >= 0 Then
       IsDeclKw := True;
+  End
+  Else If CurToken.Kind = TK_SUB Then
+  Begin
+    { [lwb:upb] MODE name -> declaration de tableau (TODO 18) }
+    IsDeclKw := True;
   End;
 
   If IsDeclKw Then
