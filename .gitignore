@@ -4,5 +4,3 @@
 *.exe
 AL60C86
 SAMPLES/ALGOL60/*.asm
-AL60C86
-*.o
