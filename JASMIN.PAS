@@ -814,13 +814,6 @@ Begin
  { Directive : mot commencant par '.' }
  If ch = '.' Then
  Begin
-  { Verifier si c'est un chiffre apres (flottant comme .5) }
-  If (SrcPeek >= '0') And (SrcPeek <= '9') Then
-  Begin
-   SrcUnget;
-   LexNumber('0');  { traiter comme 0.xxx - approximation }
-   Exit;
-  End;
   { Verifier si c'est une lettre (directive) }
   If ((SrcPeek >= 'a') And (SrcPeek <= 'z')) Or
      ((SrcPeek >= 'A') And (SrcPeek <= 'Z')) Then
