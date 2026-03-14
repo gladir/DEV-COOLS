@@ -8113,3 +8113,1047 @@
     traitement (convention C)
   - Aligner les donnees avec EVEN apres les chaines de longueur
     impaire pour eviter les erreurs d'acces sur le bus
+
+==============================================================================
+11. CONVERSION DE CODE 8086 EN 68000
+==============================================================================
+
+  Cette section presente les techniques de conversion de programmes
+  ecrits en assembleur Intel 8086/80x86 vers l'assembleur Motorola
+  68000. Elle couvre les correspondances de registres, la conversion
+  des instructions courantes, et les pieges a eviter lors du portage.
+
+  11.1 Differences fondamentales entre les deux architectures
+  --------------------------------------------------------------
+
+  Avant de convertir du code, il est essentiel de comprendre les
+  differences architecturales majeures entre les deux processeurs.
+
+  Critere                  Intel 8086            Motorola 68000
+  -----------------------  --------------------  --------------------
+  Ordre des octets         Little-endian         Big-endian
+  Taille des registres     16 bits               32 bits
+  Registres generaux       4 (AX,BX,CX,DX)      8 (D0-D7)
+  Registres d'adresse      4 (SI,DI,BP,SP)       8 (A0-A7/SP)
+  Registres de segment     4 (CS,DS,ES,SS)       Aucun (espace plat)
+  Espace d'adressage       1 Mo (segmente)       16 Mo (lineaire)
+  Taille des instructions  1-6 octets            2-10 octets (paires)
+  Alignement memoire       Non requis            Mots sur adresses paires
+  Pile                     Croissante vers bas   Croissante vers bas
+  Flags                    FLAGS (16 bits)       SR/CCR (16/8 bits)
+
+  Differences cles a retenir :
+
+  a) Ordre des octets (endianness) :
+     Le 8086 est little-endian : le mot $1234 est stocke comme
+     $34, $12 en memoire.
+     Le 68000 est big-endian : le mot $1234 est stocke comme
+     $12, $34 en memoire.
+     Consequence : tout fichier binaire ou protocole reseau
+     manipulant des mots multi-octets devra etre adapte.
+
+  b) Segmentation vs espace plat :
+     Sur le 8086, les adresses sont segment:offset (CS:IP, DS:SI,
+     etc.). Sur le 68000, l'adressage est lineaire sur 24 bits
+     (68000) ou 32 bits (68020+). Les registres de segment (CS, DS,
+     ES, SS) n'ont pas d'equivalent sur le 68000.
+     Consequence : supprimer toutes les references aux segments,
+     les instructions PUSH/POP de segments, et les prefixes de
+     segment (ES:, CS:, etc.).
+
+  c) Alignement :
+     Le 68000 exige que les acces mot (.W) et long mot (.L) soient
+     sur des adresses paires. Le 8086 accepte les acces non alignes
+     (avec penalite de performance). Utiliser EVEN ou ALIGN 2
+     dans les donnees.
+
+  d) Registres plus larges :
+     Les registres du 68000 sont 32 bits par defaut. Lors de la
+     conversion, verifier si le code 8086 s'attend a des debordements
+     16 bits (wrapping). Utiliser les suffixes .W pour forcer les
+     operations 16 bits si necessaire.
+
+  11.2 Correspondance des registres
+  ------------------------------------
+
+  Il n'existe pas de correspondance unique entre les registres des
+  deux architectures, mais voici une correspondance couramment
+  utilisee pour le portage :
+
+  Registre 8086     Equivalent 68000     Notes
+  ----------------  -------------------  --------------------------------
+  AX (AH:AL)        D0                   Registre de travail principal
+  BX (BH:BL)        D1 ou A0             Selon usage (donnee ou adresse)
+  CX (CH:CL)        D2                   Compteur de boucle
+  DX (DH:DL)        D3                   Extension pour MUL/DIV
+  SI                 A1 ou A2             Index source
+  DI                 A3 ou A4             Index destination
+  BP                 A5 ou A6             Pointeur de cadre (frame)
+  SP                 A7 (SP)              Pointeur de pile
+  CS                 (aucun)              Pas de segmentation
+  DS                 (aucun)              Pas de segmentation
+  ES                 (aucun)              Pas de segmentation
+  SS                 (aucun)              Pas de segmentation
+  IP                 PC                   Compteur ordinal
+  FLAGS              SR/CCR               Registre d'etat
+
+  Correspondance des parties haute/basse des registres :
+
+  8086           68000
+  ----------     -------------------------------------------
+  AL             D0 (octet bas accessible directement)
+  AH             Pas d'acces direct au 2e octet
+                 -> rotation : ROL.W #8,D0 pour acceder
+  AX             D0.W (mot bas)
+  EAX (80386)    D0.L (long mot complet)
+
+  Note : Le 68000 ne permet pas d'acceder separement a l'octet
+  haut d'un mot comme le fait le 8086 avec AH, BH, CH, DH. Pour
+  simuler l'acces a AH :
+
+  ; Equivalent de MOV AL,AH sur 8086
+    MOVE.W    D0, D4           ; Sauvegarder AX dans D4
+    LSR.W     #8, D0           ; Decaler: D0.B = ancien AH
+
+  ; Equivalent de MOV AH,valeur
+    AND.W     #$00FF, D0       ; Effacer AH (garder AL)
+    OR.W      #valeur<<8, D0   ; Mettre la valeur dans AH
+    ; Ou bien :
+    ROR.W     #8, D0           ; AH dans position basse
+    MOVE.B    #valeur, D0      ; Ecrire la valeur
+    ROL.W     #8, D0           ; Remettre en position haute
+
+  11.3 Conversion des instructions de transfert de donnees
+  -----------------------------------------------------------
+
+  8086                          68000
+  ----------------------------  -----------------------------------
+  MOV AX, BX                    MOVE.W  D1, D0
+  MOV AX, 1234h                 MOVE.W  #$1234, D0
+  MOV AX, [BX]                  MOVE.W  (A0), D0
+  MOV AX, [BX+10]               MOVE.W  10(A0), D0
+  MOV AX, [BX+SI]               MOVE.W  0(A0,A1.W), D0
+  MOV AX, [1234h]               MOVE.W  $1234, D0
+  MOV [DI], AX                  MOVE.W  D0, (A3)
+  MOV BYTE PTR [BX], 0          MOVE.B  #0, (A0)
+  MOV WORD PTR [BX], 0          MOVE.W  #0, (A0)
+  XCHG AX, BX                   EXG     D0, D1
+  XCHG AX, CX                   EXG     D0, D2
+  LEA BX, [BP+10]               LEA     10(A5), A0
+  LDS SI, [BX]                  MOVE.L  (A0), A1  ; (pas de segment)
+  LES DI, [BX]                  MOVE.L  (A0), A3  ; (pas de segment)
+  PUSH AX                       MOVE.W  D0, -(SP)
+  POP AX                        MOVE.W  (SP)+, D0
+  PUSH 1234h                    MOVE.W  #$1234, -(SP)
+  PUSHF                         MOVE.W  SR, -(SP) ; mode superviseur
+  POPF                          MOVE.W  (SP)+, SR ; mode superviseur
+  PUSHA                         MOVEM.L D0-D7/A0-A6, -(SP)
+  POPA                          MOVEM.L (SP)+, D0-D7/A0-A6
+  CBW                           EXT.W   D0        ; Etendre .B -> .W
+  CWD                           EXT.L   D0        ; Etendre .W -> .L
+  XLAT                          ; Pas d'equivalent direct
+                                 MOVE.B  0(A0,D0.W), D0
+
+  Notes importantes :
+  - Le 68000 utilise MOVE au lieu de MOV (avec un E final)
+  - Le 68000 specifie la taille avec un suffixe (.B, .W, .L)
+  - Le 68000 utilise la syntaxe source,destination (comme le 8086)
+  - PUSH/POP se traduisent par MOVE avec pre-decrementation ou
+    post-incrementation de SP (A7)
+  - LDS/LES n'ont pas d'equivalent car il n'y a pas de segments ;
+    on charge simplement l'adresse 32 bits dans un registre d'adresse
+
+  11.4 Conversion des instructions arithmetiques
+  --------------------------------------------------
+
+  8086                          68000
+  ----------------------------  -----------------------------------
+  ADD AX, BX                    ADD.W   D1, D0
+  ADD AX, 10                    ADD.W   #10, D0
+                                 ; ou ADDQ.W #10, D0 (si 1-8)
+  ADD AX, [BX]                  ADD.W   (A0), D0
+  ADC AX, BX                    ADDX.W  D1, D0
+  SUB AX, BX                    SUB.W   D1, D0
+  SUB AX, 10                    SUB.W   #10, D0
+                                 ; ou SUBQ.W #10, D0 (si 1-8)
+  SBB AX, BX                    SUBX.W  D1, D0
+  INC AX                        ADDQ.W  #1, D0
+                                 ; Note : INC n'existe pas sur 68000
+  DEC AX                        SUBQ.W  #1, D0
+  NEG AX                        NEG.W   D0
+  MUL BX                        MULU.W  D1, D0   ; Non signe
+  IMUL BX                       MULS.W  D1, D0   ; Signe
+  DIV BX                        DIVU.W  D1, D0   ; Non signe
+  IDIV BX                       DIVS.W  D1, D0   ; Signe
+  CMP AX, BX                    CMP.W   D1, D0
+  CMP AX, 0                     TST.W   D0       ; Plus efficace
+  CMP AX, 10                    CMP.W   #10, D0
+                                 ; ou CMPI.W #10, D0
+
+  Differences pour MUL/DIV :
+
+  Sur le 8086, MUL BX fait AX * BX -> DX:AX (resultat 32 bits
+  dans deux registres). Sur le 68000, MULU.W D1,D0 fait
+  D0.W * D1.W -> D0.L (resultat 32 bits dans un seul registre).
+
+  8086: MUL BX        ; DX:AX = AX * BX (16x16 -> 32)
+  68000: MULU.W D1,D0 ; D0.L = D0.W * D1.W (16x16 -> 32)
+
+  Sur le 8086, DIV BX fait DX:AX / BX -> AX (quotient), DX (reste).
+  Sur le 68000, DIVU.W D1,D0 fait D0.L / D1.W -> D0
+  (D0[31:16] = reste, D0[15:0] = quotient).
+
+  8086: DIV BX        ; AX = DX:AX / BX, DX = DX:AX MOD BX
+  68000: DIVU.W D1,D0 ; D0[15:0] = D0.L / D1.W
+                       ; D0[31:16] = D0.L MOD D1.W
+
+  Pour extraire le reste apres DIVU/DIVS :
+    DIVU.W    D1, D0        ; Division
+    SWAP      D0            ; Mettre le reste dans D0.W
+    ; D0.W contient maintenant le reste
+
+  Attention a INC/DEC :
+  Sur le 8086, INC ne modifie pas le flag Carry (CF). Sur le 68000,
+  ADDQ #1 modifie TOUS les flags y compris Carry. Si le code 8086
+  depend de la preservation de CF par INC/DEC, il faudra adapter
+  la logique.
+
+  11.5 Conversion des instructions logiques et de decalage
+  -----------------------------------------------------------
+
+  8086                          68000
+  ----------------------------  -----------------------------------
+  AND AX, BX                    AND.W   D1, D0
+  AND AX, 0FFh                  AND.W   #$FF, D0
+                                 ; ou ANDI.W #$FF, D0
+  OR AX, BX                     OR.W    D1, D0
+  OR AX, 8000h                  OR.W    #$8000, D0
+                                 ; ou ORI.W #$8000, D0
+  XOR AX, BX                    EOR.W   D1, D0
+  XOR AX, AX                    CLR.W   D0       ; Plus efficace
+  NOT AX                         NOT.W   D0
+  TEST AX, BX                   ; Pas d'equivalent direct :
+                                 MOVE.W  D0, D7    ; Copie temporaire
+                                 AND.W   D1, D7    ; AND sans modifier D0
+                                 ; Ou utiliser BTST pour un seul bit
+  TEST AX, 1                    BTST    #0, D0    ; Tester bit 0
+  SHL AX, 1                     LSL.W   #1, D0
+  SHL AX, CL                    LSL.W   D2, D0   ; CL -> D2
+  SHR AX, 1                     LSR.W   #1, D0
+  SHR AX, CL                    LSR.W   D2, D0
+  SAR AX, 1                     ASR.W   #1, D0
+  SAR AX, CL                    ASR.W   D2, D0
+  ROL AX, 1                     ROL.W   #1, D0
+  ROL AX, CL                    ROL.W   D2, D0
+  ROR AX, 1                     ROR.W   #1, D0
+  RCL AX, 1                     ROXL.W  #1, D0   ; Rotation via X
+  RCR AX, 1                     ROXR.W  #1, D0
+
+  Notes :
+  - L'instruction TEST du 8086 (AND sans stocker le resultat) n'a
+    pas d'equivalent direct. Utiliser un registre temporaire ou
+    BTST pour tester un seul bit.
+  - XOR reg,reg est l'idiome classique pour mettre a zero sur 8086.
+    Sur 68000, utiliser CLR.W qui est plus explicite et plus rapide.
+  - Sur le 8086, SHL/SHR avec un compteur immediat > 1 necessite CL
+    (sauf sur 80186+). Sur le 68000, le compteur immediat va de 1 a 8.
+    Au-dela, utiliser un registre de donnees comme compteur.
+
+  11.6 Conversion des instructions de branchement
+  ---------------------------------------------------
+
+  8086                          68000
+  ----------------------------  -----------------------------------
+  JMP label                     BRA     label    ; ou JMP label
+  JMP SHORT label               BRA.S   label    ; Deplacement 8 bits
+  JMP FAR label                 JMP     label    ; Pas de "far" (plat)
+  CALL proc                     BSR     proc     ; ou JSR proc
+  CALL FAR proc                 JSR     proc     ; Pas de "far"
+  RET                           RTS
+  RETF                          RTS              ; Pas de "far return"
+  RET 4                         ; Voir note ci-dessous
+
+  JE / JZ                       BEQ
+  JNE / JNZ                     BNE
+  JA / JNBE                     BHI              ; Non signe
+  JAE / JNB / JNC               BCC / BHS        ; Non signe
+  JB / JNAE / JC                BCS / BLO        ; Non signe
+  JBE / JNA                     BLS              ; Non signe
+  JG / JNLE                     BGT              ; Signe
+  JGE / JNL                     BGE              ; Signe
+  JL / JNGE                     BLT              ; Signe
+  JLE / JNG                     BLE              ; Signe
+  JS                            BMI              ; Signe negatif (N=1)
+  JNS                           BPL              ; Signe positif (N=0)
+  JO                            BVS              ; Overflow Set
+  JNO                           BVC              ; Overflow Clear
+  JP / JPE                      ; Pas d'equivalent direct (parite)
+  JNP / JPO                     ; Pas d'equivalent direct
+
+  JCXZ                          ; Pas d'equivalent direct :
+                                 TST.W   D2       ; Si CX -> D2
+                                 BEQ     label
+
+  LOOP label                    ; Pas d'equivalent direct :
+                                 SUBQ.W  #1, D2   ; D2 = compteur (CX)
+                                 BNE     label
+                                 ; Ou utiliser DBcc :
+                                 DBRA    D2, label ; Decrementer et boucler
+
+  LOOPE label                   DBEQ    D2, label ; Boucler si Z=1 et D2>0
+  LOOPNE label                  DBNE    D2, label ; Boucler si Z=0 et D2>0
+
+  Conversion de RET n (retour avec nettoyage de pile) :
+  Sur le 8086, RET 4 depile l'adresse de retour puis ajoute 4 a SP
+  (pour nettoyer 2 arguments de 2 octets empiles par l'appelant).
+  Sur le 68000, RTS ne peut pas nettoyer la pile. Deux approches :
+
+  ; Approche 1 : l'appele nettoie (convention Pascal)
+    MOVE.L  (SP)+, A0      ; Sauvegarder adresse de retour
+    ADDQ.L  #4, SP         ; Nettoyer les arguments
+    JMP     (A0)           ; Retourner
+
+  ; Approche 2 : l'appelant nettoie (convention C, recommandee)
+    BSR     proc           ; Appel
+    ADDQ.L  #4, SP         ; Nettoyer apres retour
+
+  Notes sur les branchements :
+  - Le 68000 n'a pas d'equivalent aux tests de parite (JP/JNP).
+    Il faut calculer la parite explicitement si necessaire.
+  - JCXZ doit etre remplace par un test explicite du registre
+    utilise comme compteur suivi d'un BEQ.
+  - Les branches conditionnelles du 68000 ont un deplacement de
+    -128 a +127 (BCC.S) ou -32768 a +32767 (BCC.W). Il n'y a
+    pas de limite de deplacement pour BRA et BSR.
+
+  11.7 Conversion des boucles
+  ------------------------------
+
+  Le 8086 utilise LOOP/LOOPE/LOOPNE avec CX comme compteur implicite.
+  Le 68000 utilise DBcc avec un registre de donnees explicite.
+
+  ; 8086 : Boucle simple avec LOOP
+    MOV   CX, 10
+  boucle:
+    ; ... corps de la boucle ...
+    LOOP  boucle
+
+  ; 68000 : Equivalent avec DBRA
+    MOVEQ   #10-1, D2       ; D2 = 9 (DBcc teste APRES decrementation)
+  boucle:
+    ; ... corps de la boucle ...
+    DBRA    D2, boucle
+
+  Attention : DBRA (DBF) decremente puis teste si D2 = -1 (pas 0).
+  Donc pour N iterations, initialiser le compteur a N-1.
+
+  ; 8086 : Boucle tant que non egal
+    MOV   CX, 100
+  cherche:
+    CMP   BYTE PTR [SI], 0
+    LOOPNE cherche          ; Boucler si CX>0 et ZF=0
+
+  ; 68000 : Equivalent
+    MOVEQ   #100-1, D2
+  cherche:
+    CMP.B   #0, (A1)
+    DBEQ    D2, cherche     ; Boucler si D2>=0 et Z=0
+    ; DBEQ : sort si Z=1 OU D2 passe a -1
+
+  ; 8086 : Boucle FOR ascendante
+    MOV   CX, 1            ; i = 1
+  .boucle:
+    ; ... utiliser CX comme indice ...
+    INC   CX
+    CMP   CX, 10
+    JLE   .boucle
+
+  ; 68000 : Equivalent
+    MOVEQ   #1, D2          ; i = 1
+  .boucle:
+    ; ... utiliser D2 comme indice ...
+    ADDQ.W  #1, D2
+    CMP.W   #10, D2
+    BLE     .boucle
+
+  11.8 Conversion des appels de sous-routines et conventions d'appel
+  --------------------------------------------------------------------
+
+  Convention C sur 8086 (parametres sur la pile, droite a gauche) :
+
+  ; 8086 : appel C de func(a, b, c)
+    PUSH  c                ; 3e argument en premier
+    PUSH  b
+    PUSH  a
+    CALL  func
+    ADD   SP, 6            ; Nettoyer 3 mots de la pile
+
+  ; 68000 : equivalent
+    MOVE.W  c, -(SP)       ; 3e argument en premier
+    MOVE.W  b, -(SP)
+    MOVE.W  a, -(SP)
+    JSR     func
+    ADDQ.L  #6, SP         ; Nettoyer la pile
+
+  Cadre de pile (stack frame) :
+
+  ; 8086 : prologue de fonction
+    PUSH  BP               ; Sauvegarder BP
+    MOV   BP, SP           ; Etablir le cadre
+    SUB   SP, 4            ; 4 octets pour variables locales
+
+  ; 68000 : equivalent avec LINK
+    LINK    A6, #-4        ; Sauvegarder A6, A6=SP, SP-=4
+
+  ; 8086 : epilogue de fonction
+    MOV   SP, BP           ; Restaurer SP
+    POP   BP               ; Restaurer BP
+    RET
+
+  ; 68000 : equivalent avec UNLK
+    UNLK    A6             ; SP=A6, A6=(SP)+
+    RTS
+
+  Acces aux arguments (convention C, mots de 16 bits) :
+
+  ; 8086 : acces aux arguments
+    MOV   AX, [BP+4]      ; 1er argument
+    MOV   BX, [BP+6]      ; 2e argument
+    MOV   CX, [BP+8]      ; 3e argument
+
+  ; 68000 : acces aux arguments (LINK A6,#0)
+    MOVE.W  8(A6), D0      ; 1er argument (A6+4=retour, A6+8=arg1)
+    MOVE.W  10(A6), D1     ; 2e argument
+    MOVE.W  12(A6), D2     ; 3e argument
+
+  Note : Sur le 68000, l'adresse de retour est un long mot (4 octets)
+  au lieu de 2 octets sur le 8086, donc les offsets des arguments
+  sont decales.
+
+  Sauvegarde de registres :
+
+  ; 8086 : sauvegarde individuelle
+    PUSH  BX
+    PUSH  CX
+    PUSH  DX
+    PUSH  SI
+    PUSH  DI
+    ; ... code ...
+    POP   DI
+    POP   SI
+    POP   DX
+    POP   CX
+    POP   BX
+
+  ; 68000 : sauvegarde groupee (beaucoup plus efficace)
+    MOVEM.L D1-D3/A1-A3, -(SP)
+    ; ... code ...
+    MOVEM.L (SP)+, D1-D3/A1-A3
+
+  11.9 Conversion des acces memoire et modes d'adressage
+  ---------------------------------------------------------
+
+  La segmentation du 8086 doit etre eliminee. Tous les acces
+  segment:offset deviennent des acces lineaires.
+
+  8086                          68000
+  ----------------------------  -----------------------------------
+  MOV AX, [1234h]               MOVE.W  $1234, D0       ; Absolu
+  MOV AX, ES:[1234h]            MOVE.W  $1234, D0       ; (pas de seg)
+  MOV AX, [BX]                  MOVE.W  (A0), D0        ; Indirect
+  MOV AX, [BX+10]               MOVE.W  10(A0), D0      ; Indexe
+  MOV AX, [BX+SI]               MOVE.W  0(A0,A1.W), D0  ; Base+index
+  MOV AX, [BX+SI+5]             MOVE.W  5(A0,A1.W), D0  ; Base+index+dep
+  MOV AX, [BP-2]                MOVE.W  -2(A6), D0      ; Variable locale
+
+  Tableaux :
+
+  ; 8086 : acces a un tableau de mots
+    MOV   BX, OFFSET tableau
+    MOV   SI, indice
+    SHL   SI, 1            ; * 2 (taille d'un mot)
+    MOV   AX, [BX+SI]
+
+  ; 68000 : equivalent
+    LEA     tableau, A0
+    MOVE.W  indice, D0
+    LSL.W   #1, D0         ; * 2
+    MOVE.W  0(A0,D0.W), D1
+
+  ; 68000 : alternative plus compacte
+    LEA     tableau, A0
+    MOVE.W  indice, D0
+    ADD.W   D0, D0         ; * 2 (plus rapide que LSL #1)
+    MOVE.W  0(A0,D0.W), D1
+
+  Structures :
+
+  ; 8086 : acces a un champ de structure
+    ; struct: champ1 DW, champ2 DW, champ3 DB
+    MOV   BX, OFFSET ma_struct
+    MOV   AX, [BX+0]      ; champ1
+    MOV   CX, [BX+2]      ; champ2
+    MOV   DL, [BX+4]      ; champ3
+
+  ; 68000 : equivalent
+    LEA     ma_struct, A0
+    MOVE.W  (A0), D0       ; champ1 (offset 0)
+    MOVE.W  2(A0), D2      ; champ2 (offset 2)
+    MOVE.B  4(A0), D3      ; champ3 (offset 4)
+
+  11.10 Conversion des instructions de chaines
+  ------------------------------------------------
+
+  Le 8086 possede des instructions de chaines puissantes
+  (MOVSB, CMPSB, STOSB, LODSB, SCASB) avec les prefixes REP/REPE/
+  REPNE. Le 68000 n'a pas d'equivalents directs ; il faut utiliser
+  des boucles explicites.
+
+  ; 8086 : REP MOVSB (copier CX octets de DS:SI vers ES:DI)
+    MOV   SI, source
+    MOV   DI, dest
+    MOV   CX, longueur
+    CLD                    ; Direction croissante
+    REP   MOVSB
+
+  ; 68000 : equivalent
+    LEA     source, A1     ; Source
+    LEA     dest, A0       ; Destination
+    MOVE.W  longueur, D0
+    SUBQ.W  #1, D0         ; Ajuster pour DBRA
+  .copie:
+    MOVE.B  (A1)+, (A0)+   ; Copier un octet
+    DBRA    D0, .copie
+
+  ; 68000 : version optimisee (copie par long mots)
+    LEA     source, A1
+    LEA     dest, A0
+    MOVE.W  longueur, D0
+    LSR.W   #2, D0         ; Diviser par 4
+    SUBQ.W  #1, D0
+  .copie4:
+    MOVE.L  (A1)+, (A0)+   ; Copier 4 octets
+    DBRA    D0, .copie4
+
+  ; 8086 : REP STOSB (remplir CX octets a ES:DI avec AL)
+    MOV   DI, dest
+    MOV   CX, longueur
+    MOV   AL, valeur
+    CLD
+    REP   STOSB
+
+  ; 68000 : equivalent
+    LEA     dest, A0
+    MOVE.W  longueur, D1
+    MOVE.B  valeur, D0
+    SUBQ.W  #1, D1
+  .remplit:
+    MOVE.B  D0, (A0)+
+    DBRA    D1, .remplit
+
+  ; 8086 : REPNE SCASB (chercher AL dans ES:DI, max CX octets)
+    MOV   DI, chaine
+    MOV   CX, longueur
+    MOV   AL, caractere
+    CLD
+    REPNE SCASB
+    JNE   non_trouve
+
+  ; 68000 : equivalent
+    LEA     chaine, A0
+    MOVE.W  longueur, D1
+    MOVE.B  caractere, D0
+    SUBQ.W  #1, D1
+  .cherche:
+    CMP.B   (A0)+, D0
+    DBEQ    D1, .cherche
+    BNE     non_trouve
+
+  ; 8086 : REPE CMPSB (comparer CX octets DS:SI avec ES:DI)
+    MOV   SI, chaine1
+    MOV   DI, chaine2
+    MOV   CX, longueur
+    CLD
+    REPE  CMPSB
+    JNE   different
+
+  ; 68000 : equivalent
+    LEA     chaine1, A0
+    LEA     chaine2, A1
+    MOVE.W  longueur, D0
+    SUBQ.W  #1, D0
+  .compare:
+    CMPM.B  (A0)+, (A1)+   ; Comparer et post-incrementer
+    DBNE    D0, .compare
+    BNE     different
+
+  ; 8086 : LODSB (charger DS:SI dans AL, incrementer SI)
+    LODSB                  ; AL = [SI], SI++
+
+  ; 68000 : equivalent
+    MOVE.B  (A1)+, D0      ; D0.B = (A1), A1++
+
+  ; 8086 : STOSW (stocker AX dans ES:DI, incrementer DI de 2)
+    STOSW                  ; [DI] = AX, DI += 2
+
+  ; 68000 : equivalent
+    MOVE.W  D0, (A0)+      ; (A0) = D0.W, A0 += 2
+
+  Note sur CLD/STD :
+  Le 8086 utilise le flag de direction (DF) pour controler si les
+  instructions de chaines incrementent ou decrementent SI/DI.
+  Le 68000 n'a pas de flag de direction. Pour une copie decroissante,
+  utiliser la pre-decrementation :
+    MOVE.B  -(A1), -(A0)   ; Copie decroissante
+
+  11.11 Conversion des interruptions et appels systeme
+  -------------------------------------------------------
+
+  Les appels systeme du 8086 (DOS INT 21h, BIOS INT 10h, etc.)
+  n'ont pas d'equivalent direct sur le 68000. La conversion depend
+  du systeme d'exploitation cible.
+
+  8086/DOS                      68000/Atari ST (GEMDOS)
+  ----------------------------  -----------------------------------
+  INT 21h / AH=01h              ; Lire un caractere (Cconin)
+    MOV AH, 01h                   MOVE.W  #1, -(SP)
+    INT 21h                       TRAP    #1
+    ; AL = caractere              ADDQ.L  #2, SP
+                                  ; D0.W = caractere
+
+  INT 21h / AH=02h              ; Ecrire un caractere (Cconout)
+    MOV AH, 02h                   MOVE.W  D0, -(SP)  ; caractere
+    MOV DL, caractere             MOVE.W  #2, -(SP)
+    INT 21h                       TRAP    #1
+                                  ADDQ.L  #4, SP
+
+  INT 21h / AH=09h              ; Afficher une chaine (Cconws)
+    LEA DX, message               PEA     message
+    MOV AH, 09h                   MOVE.W  #9, -(SP)
+    INT 21h                       TRAP    #1
+                                  ADDQ.L  #6, SP
+
+  INT 21h / AH=3Ch              ; Creer un fichier (Fcreate)
+    LEA DX, fichier               CLR.W   -(SP)       ; attributs
+    XOR CX, CX                    PEA     fichier
+    MOV AH, 3Ch                   MOVE.W  #$3C, -(SP)
+    INT 21h                       TRAP    #1
+    ; AX = handle                 ADDQ.L  #8, SP
+                                  ; D0.W = handle
+
+  INT 21h / AH=3Dh              ; Ouvrir un fichier (Fopen)
+    LEA DX, fichier               MOVE.W  #0, -(SP)   ; mode lecture
+    MOV AL, 0                     PEA     fichier
+    MOV AH, 3Dh                   MOVE.W  #$3D, -(SP)
+    INT 21h                       TRAP    #1
+                                  ADDQ.L  #8, SP
+
+  INT 21h / AH=3Fh              ; Lire un fichier (Fread)
+    MOV BX, handle                PEA     buffer
+    MOV CX, taille                MOVE.L  #taille, -(SP)
+    LEA DX, buffer                MOVE.W  handle, -(SP)
+    MOV AH, 3Fh                   MOVE.W  #$3F, -(SP)
+    INT 21h                       TRAP    #1
+                                  LEA     12(SP), SP
+
+  INT 21h / AH=40h              ; Ecrire dans un fichier (Fwrite)
+    MOV BX, handle                PEA     buffer
+    MOV CX, taille                MOVE.L  #taille, -(SP)
+    LEA DX, buffer                MOVE.W  handle, -(SP)
+    MOV AH, 40h                   MOVE.W  #$40, -(SP)
+    INT 21h                       TRAP    #1
+                                  LEA     12(SP), SP
+
+  INT 21h / AH=3Eh              ; Fermer un fichier (Fclose)
+    MOV BX, handle                MOVE.W  handle, -(SP)
+    MOV AH, 3Eh                   MOVE.W  #$3E, -(SP)
+    INT 21h                       TRAP    #1
+                                  ADDQ.L  #4, SP
+
+  INT 21h / AH=4Ch              ; Terminer le programme (Pterm)
+    MOV AL, code_retour           MOVE.W  code_retour, -(SP)
+    MOV AH, 4Ch                   MOVE.W  #$4C, -(SP)
+    INT 21h                       TRAP    #1
+
+  INT 10h (BIOS video)          ; Pas d'equivalent direct
+                                 ; Utiliser les appels VDI/AES
+                                 ; ou acceder directement a la
+                                 ; memoire video
+
+  8086/DOS                      68000/AmigaOS
+  ----------------------------  -----------------------------------
+  INT 21h / AH=09h              ; Afficher via dos.library
+    LEA DX, message               MOVE.L  _DOSBase, A6
+    MOV AH, 09h                   JSR     _LVOOutput(A6)
+    INT 21h                       MOVE.L  D0, D1
+                                  LEA     message, A0
+                                  MOVE.L  A0, D2
+                                  MOVEQ   #longueur, D3
+                                  JSR     _LVOWrite(A6)
+
+  Note importante : La conversion des appels systeme est la partie
+  la plus dependante du systeme cible. Les exemples ci-dessus
+  montrent la conversion vers GEMDOS (Atari ST) qui est le plus
+  proche de DOS dans son interface. Pour d'autres systemes (AmigaOS,
+  MacOS classique, Unix), les conventions sont tres differentes.
+
+  11.12 Exemples complets de conversion
+  ----------------------------------------
+
+  Exemple 1 : Hello World
+
+  ; --- 8086/DOS ---
+    .MODEL  SMALL
+    .STACK  256
+    .DATA
+  msg     DB  'Hello, World!', 13, 10, '$'
+    .CODE
+  start:
+    MOV   AX, @DATA
+    MOV   DS, AX
+    LEA   DX, msg
+    MOV   AH, 09h
+    INT   21h
+    MOV   AH, 4Ch
+    INT   21h
+    END   start
+
+  ; --- 68000/Atari ST ---
+    ORG     $1000
+
+  start:
+    PEA     msg               ; Adresse du message
+    MOVE.W  #9, -(SP)         ; Fonction Cconws
+    TRAP    #1                ; Appel GEMDOS
+    ADDQ.L  #6, SP
+
+    CLR.W   -(SP)             ; Code retour 0
+    TRAP    #1                ; Pterm0
+
+  msg:
+    DC.B    'Hello, World!', 13, 10, 0
+    EVEN
+
+    END     start
+
+  Exemple 2 : Longueur de chaine (strlen)
+
+  ; --- 8086 ---
+  strlen:
+    PUSH  DI
+    MOV   DI, SI             ; DI = adresse chaine
+    XOR   AX, AX             ; Chercher le zero
+    MOV   CX, 0FFFFh         ; Max longueur
+    CLD
+    REPNE SCASB              ; Chercher AL=0
+    NOT   CX                 ; Inverser le compteur
+    DEC   CX                 ; Exclure le zero terminal
+    MOV   AX, CX             ; AX = longueur
+    POP   DI
+    RET
+
+  ; --- 68000 ---
+  strlen:
+    MOVE.L  A0, -(SP)        ; Sauvegarder A0
+    CLR.L   D0               ; Compteur = 0
+  .boucle:
+    TST.B   (A0)+            ; Caractere nul ?
+    BEQ.S   .fin
+    ADDQ.L  #1, D0
+    BRA.S   .boucle
+  .fin:
+    MOVE.L  (SP)+, A0        ; Restaurer A0
+    RTS                      ; D0.L = longueur
+
+  Exemple 3 : Copie de chaine (strcpy)
+
+  ; --- 8086 ---
+  strcpy:
+    PUSH  SI
+    PUSH  DI
+  .copie:
+    LODSB                    ; AL = [SI], SI++
+    STOSB                    ; [DI] = AL, DI++
+    TEST  AL, AL             ; Zero ?
+    JNZ   .copie
+    POP   DI
+    POP   SI
+    RET
+
+  ; --- 68000 ---
+  strcpy:
+    ; A0 = destination, A1 = source
+    MOVEM.L A0-A1, -(SP)
+  .copie:
+    MOVE.B  (A1)+, (A0)+     ; Copier un octet
+    BNE.S   .copie           ; Continuer si pas zero
+    MOVEM.L (SP)+, A0-A1
+    RTS
+
+  Exemple 4 : Tri a bulles
+
+  ; --- 8086 ---
+  tri_bulles:
+    ; SI = adresse tableau, CX = nombre d'elements
+    DEC   CX                 ; n-1 comparaisons
+  .passe:
+    XOR   DX, DX             ; Flag echange = 0
+    MOV   BX, 0              ; Index
+  .compare:
+    MOV   AX, [SI+BX]
+    CMP   AX, [SI+BX+2]
+    JLE   .ok
+    XCHG  AX, [SI+BX+2]     ; Echanger
+    MOV   [SI+BX], AX
+    MOV   DX, 1              ; Marquer echange
+  .ok:
+    ADD   BX, 2
+    CMP   BX, CX
+    JB    .compare
+    TEST  DX, DX
+    JNZ   .passe
+    RET
+
+  ; --- 68000 ---
+  tri_bulles:
+    ; A0 = adresse tableau, D7 = nombre d'elements - 1
+    MOVEM.L D0-D3/D6-D7/A1, -(SP)
+  .passe:
+    CLR.B   D6               ; Flag echange = 0
+    MOVE.L  A0, A1           ; A1 = debut du tableau
+    MOVE.W  D7, D3           ; Compteur
+  .compare:
+    MOVE.W  (A1), D0         ; Element courant
+    MOVE.W  2(A1), D1        ; Element suivant
+    CMP.W   D1, D0
+    BLE.S   .ok
+    MOVE.W  D1, (A1)         ; Echanger
+    MOVE.W  D0, 2(A1)
+    MOVE.B  #1, D6           ; Marquer echange
+  .ok:
+    ADDQ.L  #2, A1
+    SUBQ.W  #1, D3
+    BNE.S   .compare
+    TST.B   D6
+    BNE.S   .passe
+    MOVEM.L (SP)+, D0-D3/D6-D7/A1
+    RTS
+
+  Exemple 5 : Fonction factorielle recursive
+
+  ; --- 8086 ---
+  factorielle:
+    ; Entree : AX = n, Sortie : AX = n!
+    CMP   AX, 1
+    JLE   .base
+    PUSH  AX
+    DEC   AX
+    CALL  factorielle
+    POP   BX
+    MUL   BX                 ; AX = AX * BX
+    RET
+  .base:
+    MOV   AX, 1
+    RET
+
+  ; --- 68000 ---
+  factorielle:
+    ; Entree : D0.L = n, Sortie : D0.L = n!
+    CMP.L   #1, D0
+    BLE.S   .base
+    MOVE.L  D0, -(SP)        ; Sauvegarder n
+    SUBQ.L  #1, D0
+    BSR     factorielle       ; D0 = (n-1)!
+    MOVE.L  (SP)+, D1        ; Restaurer n
+    MULU.W  D1, D0           ; D0 = n * (n-1)!
+    RTS
+  .base:
+    MOVEQ   #1, D0
+    RTS
+
+  11.13 Pieges et differences subtiles
+  ----------------------------------------
+
+  a) Ordre des operandes dans CMP :
+     Le 8086 et le 68000 utilisent le meme ordre pour CMP :
+       8086:  CMP AX, BX      ; Calcule AX - BX, positionne flags
+       68000: CMP.W D1, D0    ; Calcule D0 - D1, positionne flags
+     Les flags sont positionnes de la meme maniere dans les deux cas.
+
+  b) Flags apres INC/DEC :
+     8086: INC/DEC ne modifient pas CF (Carry Flag)
+     68000: ADDQ/SUBQ modifient TOUS les flags (y compris C et X)
+     Si le code depend de CF apres un INC :
+       ; 8086
+         STC              ; Positionner CF
+         INC   AX         ; CF n'est PAS modifie
+         ADC   BX, 0      ; Utilise l'ancien CF
+       ; 68000 : il faut sauvegarder le flag
+         ORI   #$01, CCR  ; Positionner C et X
+         MOVE  SR, D4     ; Sauvegarder les flags
+         ADDQ.W #1, D0    ; Modifie C !
+         MOVE  D4, CCR    ; Restaurer les flags
+         ADDX.W D5, D1    ; Utilise X (qui a ete restaure)
+
+  c) Debordement 16 bits :
+     Sur le 8086, les operations 16 bits debordent naturellement
+     car les registres sont 16 bits. Sur le 68000, les registres
+     sont 32 bits meme avec des operations .W.
+       ; 8086
+         MOV   AX, 0FFFFh
+         INC   AX         ; AX = 0000h (debordement 16 bits)
+       ; 68000
+         MOVE.W #$FFFF, D0
+         ADDQ.W #1, D0    ; D0.W = $0000, mais D0[31:16] inchange
+     Le debordement .W affecte uniquement le mot bas sur le 68000.
+     C'est generalement le comportement attendu, mais verifier.
+
+  d) Multiplication et division :
+     8086 MUL : utilise toujours DX:AX comme destination
+     68000 MULU : resultat 32 bits dans un seul registre
+     Si le code 8086 utilise DX apres MUL, adapter en consequence :
+       ; 8086 : resultat 32 bits dans DX:AX
+         MUL   BX         ; DX:AX = AX * BX
+         MOV   [result_hi], DX
+         MOV   [result_lo], AX
+       ; 68000
+         MULU.W D1, D0    ; D0.L = D0.W * D1.W
+         MOVE.W D0, result_lo
+         SWAP   D0
+         MOVE.W D0, result_hi
+
+  e) Direction des chaines :
+     Le 8086 a un flag de direction (DF) controlant MOVSB etc.
+     Le 68000 n'a pas de flag de direction. Utiliser explicitement
+     la post-incrementation (A0)+ ou la pre-decrementation -(A0).
+
+  f) Alignement memoire :
+     Le 68000 genere une exception (Address Error) lors d'un acces
+     mot ou long mot sur une adresse impaire. Toujours verifier
+     que les donnees sont alignees :
+       DC.B  'Hello', 0
+       EVEN                ; Aligner sur adresse paire
+       DC.W  1234          ; OK, adresse paire
+
+  g) Instructions sans equivalent direct :
+
+     8086           Equivalent 68000
+     -------------- -----------------------------------------------
+     AAA, AAS       Pas d'equivalent (ajustement BCD ASCII)
+     AAD, AAM       ABCD, SBCD (ajustement BCD binaire)
+     DAA, DAS       ABCD, NBCD (ajustement BCD)
+     XLAT           MOVE.B 0(A0,D0.W), D0
+     LAHF, SAHF     MOVE CCR, D0 / MOVE D0, CCR (partiel)
+     INTO           TRAPV (68000: exception si V=1)
+     BOUND          CHK (verifie les bornes, exception si hors)
+     IN, OUT        MOVE.B (Ax), Dn / MOVE.B Dn, (Ax)
+                    (E/S mappees en memoire sur 68000)
+     HLT            STOP #$2000 (mode superviseur)
+     WAIT           ; Pas d'equivalent (synchronisation FPU 8087)
+     ESC            ; Pas d'equivalent (instructions coprocesseur)
+     LOCK           TAS (test-and-set atomique, partiel)
+     REP            Boucle DBRA explicite
+     SEGMENT:       Pas de segments (espace plat)
+
+  h) Entrees/sorties :
+     Le 8086 a un espace d'E/S separe (IN/OUT). Le 68000 utilise
+     des E/S mappees en memoire : les peripheriques sont accedes
+     par des MOVE a des adresses specifiques.
+       ; 8086
+         IN    AL, 60h    ; Lire le port clavier
+       ; 68000 (Atari ST)
+         MOVE.B $FFFC02, D0  ; Lire le registre ACIA clavier
+
+  11.14 Tableau recapitulatif de conversion
+  --------------------------------------------
+
+  Categorie              8086              68000
+  ---------------------  ----------------  -----------------------
+  Transfert              MOV               MOVE.B/W/L
+  Echange                XCHG              EXG
+  Empiler                PUSH              MOVE.x  ea, -(SP)
+  Depiler                POP               MOVE.x  (SP)+, ea
+  Sauv. multiples        PUSHA/POPA        MOVEM.L regs, -(SP)
+  Addition               ADD               ADD.x
+  Add. avec retenue      ADC               ADDX.x
+  Soustraction           SUB               SUB.x
+  Sous. avec retenue     SBB               SUBX.x
+  Increment              INC               ADDQ.x  #1, ea
+  Decrement              DEC               SUBQ.x  #1, ea
+  Negation               NEG               NEG.x
+  Multiplication         MUL/IMUL          MULU/MULS
+  Division               DIV/IDIV          DIVU/DIVS
+  Comparaison            CMP               CMP.x
+  Test zero              CMP ax,0          TST.x
+  ET logique             AND               AND.x
+  OU logique             OR                OR.x
+  OU exclusif            XOR               EOR.x
+  Complement             NOT               NOT.x
+  Test bits              TEST              BTST / AND temp
+  Dec. logique gauche    SHL               LSL.x
+  Dec. logique droite    SHR               LSR.x
+  Dec. arith. droite     SAR               ASR.x
+  Rotation gauche        ROL               ROL.x
+  Rotation droite        ROR               ROR.x
+  Rot. avec retenue      RCL/RCR           ROXL/ROXR
+  Saut incondit.         JMP               BRA / JMP
+  Saut court             JMP SHORT         BRA.S
+  Appel                  CALL              BSR / JSR
+  Retour                 RET               RTS
+  Branchement cond.      Jcc               Bcc
+  Boucle                 LOOP              DBRA
+  Chaine copie           REP MOVSB         Boucle MOVE.B (Ax)+
+  Chaine remplir         REP STOSB         Boucle MOVE.B Dn,(Ax)+
+  Chaine chercher        REPNE SCASB       Boucle CMP.B + DBEQ
+  Chaine comparer        REPE CMPSB        Boucle CMPM.B + DBNE
+  Charger adresse        LEA               LEA
+  Extension signe        CBW/CWD           EXT.W / EXT.L
+  Cadre de pile          PUSH BP/MOV BP    LINK
+  Fin cadre              MOV SP/POP BP     UNLK
+  Interruption           INT n             TRAP #n
+  Retour interr.         IRET              RTE
+  Halt                   HLT               STOP
+  No-op                  NOP               NOP
+
+  11.15 Resume
+  ---------------
+
+  La conversion de code 8086 en 68000 suit ces etapes generales :
+
+  1. Eliminer la segmentation : supprimer les registres de segment,
+     les prefixes de segment et les instructions FAR. Remplacer par
+     un adressage lineaire 32 bits.
+
+  2. Remapper les registres : utiliser D0-D7 pour les donnees et
+     A0-A6 pour les adresses. A7 est reserve pour SP.
+
+  3. Ajouter les suffixes de taille : chaque instruction 68000
+     doit specifier .B, .W ou .L selon la taille des operandes.
+
+  4. Convertir les instructions : utiliser le tableau de
+     correspondance de la section 11.14 pour la traduction
+     directe des instructions courantes.
+
+  5. Adapter les boucles : remplacer LOOP par DBRA ou une paire
+     SUBQ/BNE. Attention au compteur : DBRA teste -1, pas 0.
+
+  6. Remplacer les instructions de chaines : convertir les REP
+     MOVSB/STOSB/SCASB/CMPSB en boucles explicites avec
+     post-incrementation.
+
+  7. Adapter les appels systeme : remplacer INT 21h par les appels
+     TRAP correspondants du systeme cible (GEMDOS, AmigaOS, etc.).
+
+  8. Gerer l'endianness : si le programme manipule des donnees
+     binaires (fichiers, reseau), inverser l'ordre des octets
+     dans les mots et long mots.
+
+  9. Verifier l'alignement : s'assurer que toutes les donnees
+     mot et long mot sont alignees sur des adresses paires.
+     Inserer des directives EVEN apres les chaines de longueur
+     impaire.
+
+  10. Tester les cas limites : verifier le comportement des
+      debordements, des flags apres INC/DEC, et des divisions
+      par zero (le 68000 genere une exception au lieu de
+      continuer silencieusement).
