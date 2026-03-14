@@ -322,7 +322,7 @@
             Affectation de tableau : copie element par element ou REP MOVSW
             Constructeur de rangee : (1, 2, 3) en contexte de rowing
 
-  TODO 19 - PROCEDURES (PROC)
+  TODO 19 - PROCEDURES (PROC) [IMPLEMENTE]
             Declaration : PROC nom = (params) MODE : corps;
               Forme abregee : PROC nom = (INT x) INT : x + 1;
             PROC VOID : procedure sans valeur de retour
@@ -722,6 +722,7 @@ Var
   StructFieldCount : Integer;
   StructCount      : Integer;   { nombre de modes STRUCT declares }
   RowCount         : Integer;   { nombre de modes ROW declares }
+  ProcCount        : Integer;   { nombre de PROC declarees (TODO 19) }
 
   { Etat general }
   RuntimeEmitted : Boolean;
@@ -1179,6 +1180,7 @@ Begin
   StructFieldCount := 0;
   StructCount    := 0;
   RowCount       := 0;
+  ProcCount      := 0;
   GExprDummy.Kind    := EK_NONE;
   GExprDummy.ImmVal  := 0;
   GExprDummy.ModeIdx := -1;
@@ -3057,7 +3059,7 @@ Begin
           EmitInstr('ADD    SP, ' + ArgSStr);
         End;
         Res.Kind    := EK_AX;
-        Res.ModeIdx := TY_IDX_INT;
+        Res.ModeIdx := SymTab[Idx].ModeIdx;
         Res.SymIdx  := -1;
       End
       { Simple identifier (not a call) - check postfix OF, [, etc. }
@@ -5882,6 +5884,17 @@ Begin
       ParseDeclStmt;
       WasDecl := True;
     End
+    Else If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'PROC') Then
+    Begin
+      ParserAdvance; { consomme PROC }
+      ParseProcDecl;
+      WasDecl := True;
+    End
+    Else If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'MODE') Then
+    Begin
+      ParseModeDecl;
+      WasDecl := True;
+    End
     Else
       ParseExpr(Res);
 
@@ -6590,8 +6603,211 @@ Begin
 End;
 
 Procedure ParseProcDecl;
+{ Syntaxe Algol 68 :
+    PROC nom = (MODE p1, MODE p2, ...) RETMODE : corps ;
+    PROC nom = () VOID : corps ;
+  Le mot PROC est deja consomme par l appelant.
+  Convention d appel : arguments pousses gauche-a-droite.
+    arg1 -> [BP+4+2*(nparams-1)]
+    arg2 -> [BP+4+2*(nparams-2)]
+    ...
+    argN -> [BP+4]
+  Valeur de retour dans AX. }
+Var
+  ProcNameStr     : TString;
+  RetModeIdx      : Integer;
+  ParamCnt        : Integer;
+  ParamNames      : Array[0..MAX_PARAM - 1] Of TString;
+  ParamModes      : Array[0..MAX_PARAM - 1] Of Integer;
+  ParamIsRef      : Array[0..MAX_PARAM - 1] Of Boolean;
+  SavedFrameSize  : Integer;
+  SavedProcRetLbl : TString;
+  SavedProcName   : TString;
+  SavedProcDepth  : Integer;
+  SkipLbl         : TString;
+  RetLbl          : TString;
+  BodyRes         : TExprVal;
+  I, SIdx, PIdx   : Integer;
+  S               : TString;
+  ProcMName       : TString;
+  PModeIdx        : Integer;
+  MyProc          : Integer;
 Begin
-  { TODO 19 }
+  { --- 1. Lire le nom de la procedure --- }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('identificateur attendu apres PROC');
+    Exit;
+  End;
+  ProcNameStr := CurToken.Val;
+  ParserAdvance; { consomme le nom }
+
+  { --- 2. Attend = --- }
+  If (CurToken.Kind <> TK_OP) Or (CurToken.Val <> '=') Then
+  Begin
+    CompileError('"=" attendu dans declaration PROC');
+    Exit;
+  End;
+  ParserAdvance; { consomme = }
+
+  { --- 3. Parser la liste de parametres (MODE nom, ...) --- }
+  ParamCnt := 0;
+  If CurToken.Kind = TK_OPEN Then
+  Begin
+    ParserAdvance; { consomme ( }
+    While (CurToken.Kind <> TK_CLOSE) And
+          (CurToken.Kind <> TK_EOF) Do
+    Begin
+      If ParamCnt >= MAX_PARAM Then
+      Begin
+        CompileError('trop de parametres (max=' +
+                     IntToStr(MAX_PARAM) + ')');
+        Break;
+      End;
+      { Mode optionnel REF }
+      ParamIsRef[ParamCnt] := False;
+      If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'REF') Then
+      Begin
+        ParamIsRef[ParamCnt] := True;
+        ParserAdvance;
+      End;
+      { Lire le mode du parametre }
+      PModeIdx := -1;
+      If CurToken.Kind = TK_BOLD Then
+      Begin
+        PModeIdx := ModeLookupName(CurToken.Val);
+        If PModeIdx < 0 Then
+        Begin
+          CompileError('mode inconnu: ' + CurToken.Val);
+          PModeIdx := TY_IDX_INT;
+        End;
+        ParserAdvance;
+      End
+      Else If CurToken.Kind = TK_IDENT Then
+      Begin
+        PModeIdx := ModeLookupName(CurToken.Val);
+        If PModeIdx < 0 Then
+          PModeIdx := TY_IDX_INT;
+        ParserAdvance;
+      End
+      Else
+      Begin
+        CompileError('mode attendu dans parametres de PROC');
+        Break;
+      End;
+      ParamModes[ParamCnt] := PModeIdx;
+      { Lire le nom du parametre }
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        ParamNames[ParamCnt] := CurToken.Val;
+        ParserAdvance;
+      End
+      Else
+      Begin
+        CompileError('identificateur attendu pour parametre');
+        Break;
+      End;
+      Inc(ParamCnt);
+      { Virgule -> parametre suivant }
+      If CurToken.Kind = TK_COMMA Then
+        ParserAdvance;
+    End;
+    If CurToken.Kind = TK_CLOSE Then
+      ParserAdvance; { consomme ) }
+  End;
+
+  { --- 4. Lire le mode de retour --- }
+  RetModeIdx := TY_IDX_VOID;
+  If CurToken.Kind = TK_BOLD Then
+  Begin
+    RetModeIdx := ModeLookupName(CurToken.Val);
+    If RetModeIdx < 0 Then
+      RetModeIdx := TY_IDX_VOID;
+    ParserAdvance;
+  End
+  Else If CurToken.Kind = TK_IDENT Then
+  Begin
+    RetModeIdx := ModeLookupName(CurToken.Val);
+    If RetModeIdx < 0 Then
+      RetModeIdx := TY_IDX_INT;
+    ParserAdvance;
+  End;
+
+  { --- 5. Attend : avant le corps --- }
+  If CurToken.Kind = TK_COLON Then
+    ParserAdvance
+  Else
+    CompileError('":" attendu avant le corps de PROC');
+
+  { --- 6. Enregistrer le symbole PROC (avant le corps pour recursion) --- }
+  Inc(ProcCount);
+  MyProc := ProcCount;
+  SIdx := SymAdd(ProcNameStr, SC_PROC, RetModeIdx, 0);
+  If SIdx < 0 Then Exit;
+  ProcMName := SymTab[SIdx].MangledName;
+
+  { --- 7. Emettre le saut par-dessus le corps --- }
+  SkipLbl := A68_LBL_PFX + 'PSKIP_' + IntToStr(MyProc);
+  EmitInstr('JMP    ' + SkipLbl);
+
+  { --- 8. Emettre le label et le prologue --- }
+  EmitBlankLine;
+  EmitComment('PROC ' + ProcNameStr);
+  EmitLabel(ProcMName);
+
+  { Sauvegarder l etat du contexte englobant }
+  SavedFrameSize  := CurFrameSize;
+  SavedProcRetLbl := CurProcRetLbl;
+  SavedProcName   := CurProcName;
+  SavedProcDepth  := CurProcDepth;
+
+  CurFrameSize := 0;
+  CurProcName  := ProcNameStr;
+  Inc(CurProcDepth);
+  RetLbl := A68_LBL_PFX + 'PRET_' + IntToStr(MyProc);
+  CurProcRetLbl := RetLbl;
+
+  { Prologue }
+  EmitInstr('PUSH   BP');
+  EmitInstr('MOV    BP, SP');
+
+  { --- 9. Entrer dans la portee et enregistrer les parametres --- }
+  SymEnterScope;
+  { Parametres : pousses gauche-a-droite par l appelant.
+    Premier param (idx 0) se retrouve a [BP + 4 + 2*(n-1)],
+    dernier param (idx n-1) a [BP + 4]. }
+  For I := 0 To ParamCnt - 1 Do
+  Begin
+    PIdx := SymAdd(ParamNames[I], SC_PARAM, ParamModes[I],
+                   4 + 2 * (ParamCnt - 1 - I));
+  End;
+
+  { --- 10. Parser le corps --- }
+  { Le corps peut etre une expression simple ou un bloc BEGIN...END }
+  ParseExpr(BodyRes);
+  ExprFlushToAX(BodyRes);
+
+  { --- 11. Epilogue --- }
+  EmitLabel(RetLbl);
+  EmitInstr('MOV    SP, BP');
+  EmitInstr('POP    BP');
+  EmitInstr('RET');
+
+  { --- 12. Quitter la portee --- }
+  SymLeaveScope;
+
+  { Restaurer l etat du contexte englobant }
+  CurFrameSize  := SavedFrameSize;
+  CurProcRetLbl := SavedProcRetLbl;
+  CurProcName   := SavedProcName;
+  CurProcDepth  := SavedProcDepth;
+
+  { --- 13. Label de saut (apres le corps) --- }
+  EmitLabel(SkipLbl);
+
+  { Consommer le point-virgule optionnel }
+  If CurToken.Kind = TK_SEMI Then
+    ParserAdvance;
 End;
 
 Procedure ParseOpDecl;
@@ -6666,6 +6882,11 @@ Begin
     ParseDeclStmt
   Else If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'MODE') Then
     ParseModeDecl
+  Else If (CurToken.Kind = TK_BOLD) And (CurToken.Val = 'PROC') Then
+  Begin
+    ParserAdvance; { consomme PROC }
+    ParseProcDecl;
+  End
   Else If CurToken.Kind = TK_SEMI Then
     ParserAdvance   { point-virgule seul = go-on vide }
   Else If CurToken.Kind <> TK_EOF Then
