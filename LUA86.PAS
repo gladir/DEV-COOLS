@@ -399,7 +399,7 @@
             assert(v [,msg]) : si v est nil ou false -> error(msg)
               Sinon retourne v et tous les arguments supplementaires
 
-  TODO 23 - COROUTINES (basiques)
+  TODO 23 - COROUTINES (basiques) [IMPLEMENTE]
             coroutine.create(f) : cree une coroutine a partir de f
               Representation : structure { status:word, pc:word, sp:word, bp:word }
               Alloue une pile separee dans le heap pour la coroutine
@@ -503,6 +503,8 @@ Const
   MAX_STR       = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
   MAX_RETVALS   = 8;    { nombre max de valeurs de retour multiples }
   MAX_UPVALS    = 32;   { nombre max d upvalues capturees         }
+  MAX_COROUTINES = 4;   { nombre max de coroutines simultanees    }
+  COROUTINE_STACK_SZ = 512; { taille pile par coroutine (octets)  }
   STACK_SIZE    = 1024;
 
   { Prefixes de nommage ASM }
@@ -514,6 +516,7 @@ Const
   LUA_TBL_PFX  = '_LUAT_';   { table donnees                       }
   LUA_UP_PFX   = '_LUAU_';   { upvalue                             }
   LUA_ERR_PFX  = '_LUAX_';   { handler d erreur                    }
+  LUA_CO_PFX   = '_LUAC_';   { coroutines                          }
   LUA_META_OFS = 508;         { offset du pointeur metatable dans table
                                  Table layout: [0]=count, [2..251]=elements,
                                  [252]=hash_count, [254..507]=hash pairs,
@@ -720,6 +723,9 @@ Var
   { Gestion d erreurs (TODO 22) }
   PcallCount      : Integer;   { compteur pour labels pcall uniques   }
 
+  { Coroutines (TODO 23) }
+  CoroutineCount  : Integer;   { compteur pour labels coroutine uniques }
+
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
@@ -874,6 +880,10 @@ Procedure EmitMultRetRuntime; Forward;
 
 { Gestion d erreurs (TODO 22) }
 Procedure EmitErrorRuntime; Forward;
+
+{ Coroutines (TODO 23) }
+Procedure EmitCoroutineBuiltin(Const FuncName : TString; Var Res : TExprVal); Forward;
+Procedure EmitCoroutineRuntime; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1163,6 +1173,7 @@ Begin
   CurFnIsVararg   := False;
   CurFnParamCount := 0;
   PcallCount      := 0;
+  CoroutineCount  := 0;
   GExprDummy.Kind    := EK_NONE;
   GExprDummy.ImmVal  := 0;
   GExprDummy.TypeIdx := TY_UNKNOWN;
@@ -1303,6 +1314,7 @@ Begin
   EmitOSRuntime;
   EmitMultRetRuntime;
   EmitErrorRuntime;
+  EmitCoroutineRuntime;
 End;
 
 { EmitClose : terminer le fichier ASM (DOS exit, runtime, DATA, END) }
@@ -1488,6 +1500,23 @@ Begin
   DataAdd(LUA_ERR_PFX + 'ASSERTMSG', DK_STR, 0, 'assertion failed!'); { msg assert defaut }
   DataAddWord(LUA_ERR_PFX + 'FNPTR', 0);        { ptr fonction pour pcall/xpcall       }
   DataAddWord(LUA_ERR_PFX + 'MSGH', 0);         { ptr message handler pour xpcall      }
+  { TODO 23 : coroutine data }
+  DataAddWord(LUA_CO_PFX + 'COUNT', 0);           { nombre de coroutines creees          }
+  DataAddWord(LUA_CO_PFX + 'ACTIVE', 0);          { coroutine active (0=main, 1..N)      }
+  DataAddWord(LUA_CO_PFX + 'MAINSP', 0);          { SP main sauvegarde lors de resume    }
+  DataAddWord(LUA_CO_PFX + 'MAINBP', 0);          { BP main sauvegarde lors de resume    }
+  DataAddWord(LUA_CO_PFX + 'MAINRA', 0);          { adresse retour main (pour yield)     }
+  DataAddWord(LUA_CO_PFX + 'YLDVAL', 0);          { valeur transferee yield<->resume     }
+  DataAddBuffer(LUA_CO_PFX + 'STATUS', MAX_COROUTINES * 2);  { status par slot (word)    }
+  DataAddBuffer(LUA_CO_PFX + 'FNPTR', MAX_COROUTINES * 2);   { pointeurs de fonction     }
+  DataAddBuffer(LUA_CO_PFX + 'CSP', MAX_COROUTINES * 2);     { SP sauvegarde coroutine   }
+  DataAddBuffer(LUA_CO_PFX + 'CBP', MAX_COROUTINES * 2);     { BP sauvegarde coroutine   }
+  DataAddBuffer(LUA_CO_PFX + 'CRA', MAX_COROUTINES * 2);     { adresse retour coroutine  }
+  DataAdd(LUA_CO_PFX + 'SRUN', DK_STR, 0, 'running');        { chaine status running     }
+  DataAdd(LUA_CO_PFX + 'SSUSP', DK_STR, 0, 'suspended');     { chaine status suspended   }
+  DataAdd(LUA_CO_PFX + 'SDEAD', DK_STR, 0, 'dead');          { chaine status dead        }
+  DataAdd(LUA_CO_PFX + 'SNORM', DK_STR, 0, 'normal');        { chaine status normal      }
+  DataAddBuffer(LUA_CO_PFX + 'STACKS', MAX_COROUTINES * COROUTINE_STACK_SZ); { piles     }
 End;
 
 { ---- ExprMakeImm : construire une valeur immediate ---------- }
@@ -2116,6 +2145,23 @@ Begin
       End
       Else
         CompileError('nom de fonction attendu apres "os."');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+      Exit;
+    End
+    { TODO 23 : coroutine.create / coroutine.resume / coroutine.yield / etc. }
+    Else If (VName = 'coroutine') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
+    Begin
+      ParserAdvance; { consomme '.' }
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        VName := CurToken.Val;
+        ParserAdvance;
+        EmitCoroutineBuiltin(VName, E);
+      End
+      Else
+        CompileError('nom de fonction attendu apres "coroutine."');
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
         ParserAdvance;
       Exit;
@@ -3780,6 +3826,23 @@ Begin
         Else
         Begin
           CompileError('nom de fonction attendu apres "os."');
+          ExprMakeNone(Res);
+        End;
+      End
+      Else If (VName = 'coroutine') And
+              (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
+      Begin
+        { TODO 23 : coroutine.create / coroutine.status / etc. dans les expressions }
+        ParserAdvance; { consomme '.' }
+        If CurToken.Kind = TK_IDENT Then
+        Begin
+          FldName := CurToken.Val;
+          ParserAdvance;
+          EmitCoroutineBuiltin(FldName, Res);
+        End
+        Else
+        Begin
+          CompileError('nom de fonction attendu apres "coroutine."');
           ExprMakeNone(Res);
         End;
       End
@@ -8612,6 +8675,309 @@ End;
 { ============================================================
   TODO 22 - GESTION D ERREURS (pcall, error, xpcall) [IMPLEMENTE]
   ============================================================ }
+
+{ ============================================================
+  TODO 23 - COROUTINES (basiques) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- EmitCoroutineBuiltin : gerer coroutine.create/resume/yield/status/wrap }
+{ Attend '(' comme prochain token.                                             }
+Procedure EmitCoroutineBuiltin(Const FuncName : TString; Var Res : TExprVal);
+Var
+  Arg      : TExprVal;
+  NS       : TString;
+Begin
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    ParserAdvance { consomme '(' }
+  Else
+  Begin
+    CompileError('"(" attendue pour appel de coroutine.' + FuncName);
+    Exit;
+  End;
+
+  If FuncName = 'create' Then
+  Begin
+    EmitComment('--- coroutine.create (TODO 23) ---');
+    { Parse function argument -> AX = function address }
+    ParseExpr(Arg);
+    ExprFlushToAX(Arg);
+    { Appeler le runtime de creation }
+    EmitInstrA('CALL', LUA_RT_PFX + 'COCREATE');
+    { AX = coroutine handle (1-based), ou 0 si erreur }
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_NUMBER;
+    Res.SymIdx  := -1;
+  End
+  Else If FuncName = 'resume' Then
+  Begin
+    EmitComment('--- coroutine.resume (TODO 23) ---');
+    Inc(CoroutineCount);
+    NS := '';
+    Str(CoroutineCount, NS);
+    { Parser le handle de la coroutine -> AX }
+    ParseExpr(Arg);
+    ExprFlushToAX(Arg);
+    EmitInstrA('PUSH', 'AX');  { sauver handle }
+    { Parser la valeur optionnelle a passer }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+    Begin
+      ParserAdvance;
+      ParseExpr(Arg);
+      ExprFlushToAX(Arg);
+    End
+    Else
+      EmitInstrAB('XOR', 'AX', 'AX'); { 0 par defaut }
+    { Stocker la valeur de transfert }
+    EmitInstrAB('MOV', 'WORD PTR [' + LUA_CO_PFX + 'YLDVAL]', 'AX');
+    { Recuperer le handle et calculer l offset }
+    EmitInstrA('POP', 'AX');       { AX = handle (1-based) }
+    EmitInstrA('DEC', 'AX');       { AX = slot (0-based)   }
+    EmitInstrAB('SHL', 'AX', '1'); { AX = word offset      }
+    EmitInstrAB('MOV', 'BX', 'AX'); { BX = word offset pour adressage }
+    { Verifier status == 1 (suspended) }
+    EmitInstrAB('CMP', 'WORD PTR [' + LUA_CO_PFX + 'STATUS + BX]', '1');
+    EmitInstrA('JNE', LUA_LBL_PFX + 'CRDEAD_' + NS);
+    { Sauvegarder le contexte main }
+    EmitInstrAB('MOV', 'WORD PTR [' + LUA_CO_PFX + 'MAINSP]', 'SP');
+    EmitInstrAB('MOV', 'WORD PTR [' + LUA_CO_PFX + 'MAINBP]', 'BP');
+    { Sauvegarder l adresse de retour }
+    EmitInstrAB('MOV', 'WORD PTR [' + LUA_CO_PFX + 'MAINRA]',
+                'OFFSET ' + LUA_LBL_PFX + 'CRRET_' + NS);
+    { Mettre le status a running (2) }
+    EmitInstrAB('MOV', 'WORD PTR [' + LUA_CO_PFX + 'STATUS + BX]', '2');
+    { Sauver l id actif }
+    EmitInstrAB('SHR', 'BX', '1');  { BX = slot }
+    EmitInstrA('INC', 'BX');        { BX = handle }
+    EmitInstrAB('MOV', 'WORD PTR [' + LUA_CO_PFX + 'ACTIVE]', 'BX');
+    EmitInstrA('DEC', 'BX');
+    EmitInstrAB('SHL', 'BX', '1'); { BX = word offset }
+    { Verifier si premier resume (CRA == 0) }
+    EmitInstrAB('CMP', 'WORD PTR [' + LUA_CO_PFX + 'CRA + BX]', '0');
+    EmitInstrA('JNE', LUA_LBL_PFX + 'CRRESM_' + NS);
+    { === Premier resume : basculer vers la pile coroutine et appeler f === }
+    EmitInstrAB('MOV', 'SP', 'WORD PTR [' + LUA_CO_PFX + 'CSP + BX]');
+    EmitInstrAB('MOV', 'BP', 'WORD PTR [' + LUA_CO_PFX + 'CBP + BX]');
+    EmitInstrAB('MOV', 'AX', 'WORD PTR [' + LUA_CO_PFX + 'FNPTR + BX]');
+    { Passer la valeur en argument }
+    EmitInstrA('PUSH', 'WORD PTR [' + LUA_CO_PFX + 'YLDVAL]');
+    EmitInstrA('CALL', 'AX');
+    EmitInstrAB('ADD', 'SP', '2');
+    { La fonction a retourne normalement -> coroutine est dead }
+    EmitInstrAB('MOV', 'WORD PTR [' + LUA_CO_PFX + 'YLDVAL]', 'AX');
+    { Trouver le slot et marquer comme dead }
+    EmitInstrAB('MOV', 'BX', 'WORD PTR [' + LUA_CO_PFX + 'ACTIVE]');
+    EmitInstrA('DEC', 'BX');
+    EmitInstrAB('SHL', 'BX', '1');
+    EmitInstrAB('MOV', 'WORD PTR [' + LUA_CO_PFX + 'STATUS + BX]', '0');
+    { Restaurer le contexte main }
+    EmitInstrAB('MOV', 'SP', 'WORD PTR [' + LUA_CO_PFX + 'MAINSP]');
+    EmitInstrAB('MOV', 'BP', 'WORD PTR [' + LUA_CO_PFX + 'MAINBP]');
+    EmitInstrAB('MOV', 'WORD PTR [' + LUA_CO_PFX + 'ACTIVE]', '0');
+    EmitInstrAB('MOV', 'AX', '1'); { true }
+    EmitInstrA('JMP', 'WORD PTR [' + LUA_CO_PFX + 'MAINRA]');
+    { === Resume subsequent : basculer vers la coroutine yield === }
+    EmitLabel(LUA_LBL_PFX + 'CRRESM_' + NS);
+    EmitInstrAB('MOV', 'SP', 'WORD PTR [' + LUA_CO_PFX + 'CSP + BX]');
+    EmitInstrAB('MOV', 'BP', 'WORD PTR [' + LUA_CO_PFX + 'CBP + BX]');
+    EmitInstrAB('MOV', 'AX', 'WORD PTR [' + LUA_CO_PFX + 'CRA + BX]');
+    EmitInstrA('JMP', 'AX');
+    { === Erreur : coroutine dead ou non-suspendable === }
+    EmitLabel(LUA_LBL_PFX + 'CRDEAD_' + NS);
+    EmitInstrAB('MOV', 'AX', '0'); { false }
+    EmitInstrA('JMP', LUA_LBL_PFX + 'CRDONE_' + NS);
+    { === Point de retour (yield ou fin de fonction) === }
+    EmitLabel(LUA_LBL_PFX + 'CRRET_' + NS);
+    { AX = 1 (true) vient de yield ou de fin de fonction }
+    EmitLabel(LUA_LBL_PFX + 'CRDONE_' + NS);
+    { AX = status (1=true, 0=false) }
+    { Stocker yield value dans VARGV pour acces multiple-return }
+    EmitInstrA('PUSH', 'AX');
+    EmitInstrAB('MOV', 'DI', 'WORD PTR [' + LUA_CO_PFX + 'YLDVAL]');
+    EmitInstrAB('MOV', 'WORD PTR [_LUA_VARGV]', 'DI');
+    EmitInstrAB('MOV', 'WORD PTR [_LUA_VARGC]', '1');
+    EmitInstrA('POP', 'AX');
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_BOOLEAN;
+    Res.SymIdx  := -1;
+  End
+  Else If FuncName = 'yield' Then
+  Begin
+    EmitComment('--- coroutine.yield (TODO 23) ---');
+    Inc(CoroutineCount);
+    NS := '';
+    Str(CoroutineCount, NS);
+    { Parser la valeur a retourner (ou 0 si aucune) }
+    If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
+    Begin
+      ParseExpr(Arg);
+      ExprFlushToAX(Arg);
+    End
+    Else
+      EmitInstrAB('XOR', 'AX', 'AX');
+    { Stocker la valeur de yield }
+    EmitInstrAB('MOV', 'WORD PTR [' + LUA_CO_PFX + 'YLDVAL]', 'AX');
+    { Obtenir la coroutine active }
+    EmitInstrAB('MOV', 'BX', 'WORD PTR [' + LUA_CO_PFX + 'ACTIVE]');
+    EmitInstrA('DEC', 'BX');
+    EmitInstrAB('SHL', 'BX', '1');
+    { Sauvegarder le contexte coroutine }
+    EmitInstrAB('MOV', 'WORD PTR [' + LUA_CO_PFX + 'CSP + BX]', 'SP');
+    EmitInstrAB('MOV', 'WORD PTR [' + LUA_CO_PFX + 'CBP + BX]', 'BP');
+    EmitInstrAB('MOV', 'WORD PTR [' + LUA_CO_PFX + 'CRA + BX]',
+                'OFFSET ' + LUA_LBL_PFX + 'CYRET_' + NS);
+    { Mettre status a suspended (1) }
+    EmitInstrAB('MOV', 'WORD PTR [' + LUA_CO_PFX + 'STATUS + BX]', '1');
+    EmitInstrAB('MOV', 'WORD PTR [' + LUA_CO_PFX + 'ACTIVE]', '0');
+    { Restaurer le contexte main }
+    EmitInstrAB('MOV', 'SP', 'WORD PTR [' + LUA_CO_PFX + 'MAINSP]');
+    EmitInstrAB('MOV', 'BP', 'WORD PTR [' + LUA_CO_PFX + 'MAINBP]');
+    EmitInstrAB('MOV', 'AX', '1'); { true pour le resume appelant }
+    EmitInstrA('JMP', 'WORD PTR [' + LUA_CO_PFX + 'MAINRA]');
+    { Point de retour apres prochain resume }
+    EmitLabel(LUA_LBL_PFX + 'CYRET_' + NS);
+    { La valeur passee a resume est dans YLDVAL }
+    EmitInstrAB('MOV', 'AX', 'WORD PTR [' + LUA_CO_PFX + 'YLDVAL]');
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_UNKNOWN;
+    Res.SymIdx  := -1;
+  End
+  Else If FuncName = 'status' Then
+  Begin
+    EmitComment('--- coroutine.status (TODO 23) ---');
+    { Parser le handle -> AX }
+    ParseExpr(Arg);
+    ExprFlushToAX(Arg);
+    { Appeler le runtime de status }
+    EmitInstrA('CALL', LUA_RT_PFX + 'COSTATUS');
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_STRING;
+    Res.SymIdx  := -1;
+  End
+  Else If FuncName = 'wrap' Then
+  Begin
+    EmitComment('--- coroutine.wrap (TODO 23) ---');
+    WarnMsg('coroutine.wrap retourne le handle brut (pas un iterateur)');
+    { Wrap simplifie : cree la coroutine et retourne le handle }
+    ParseExpr(Arg);
+    ExprFlushToAX(Arg);
+    EmitInstrA('CALL', LUA_RT_PFX + 'COCREATE');
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_NUMBER;
+    Res.SymIdx  := -1;
+  End
+  Else If FuncName = 'isyieldable' Then
+  Begin
+    EmitComment('--- coroutine.isyieldable (TODO 23) ---');
+    Inc(CoroutineCount);
+    NS := '';
+    Str(CoroutineCount, NS);
+    { Retourne 1 si dans une coroutine, 0 sinon }
+    EmitInstrAB('MOV', 'AX', 'WORD PTR [' + LUA_CO_PFX + 'ACTIVE]');
+    EmitInstrAB('TEST', 'AX', 'AX');
+    EmitInstrA('JZ', LUA_LBL_PFX + 'CIYNOT_' + NS);
+    EmitInstrAB('MOV', 'AX', '1');
+    EmitLabel(LUA_LBL_PFX + 'CIYNOT_' + NS);
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_BOOLEAN;
+    Res.SymIdx  := -1;
+  End
+  Else
+  Begin
+    WarnMsg('coroutine.' + FuncName + ' non supporte');
+    Res.Kind    := EK_NONE;
+    Res.TypeIdx := TY_IDX_NIL;
+    Res.SymIdx  := -1;
+  End;
+
+  { Consommer ')' }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance;
+End;
+
+{ ---- EmitCoroutineRuntime : routines runtime pour coroutines ----- }
+
+Procedure EmitCoroutineRuntime;
+Var
+  NS : TString;
+Begin
+  EmitBlankLine;
+  EmitComment('=== Routines runtime TODO 23 (coroutines) ===');
+  EmitBlankLine;
+
+  { _LUART_COCREATE : AX = ptr fonction -> AX = handle coroutine (1-based) }
+  { Utilise : BX, CX, SI. Alloue un slot dans les tableaux coroutine.       }
+  EmitLabel(LUA_RT_PFX + 'COCREATE');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', 'AX');  { SI = fn ptr }
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [' + LUA_CO_PFX + 'COUNT]');
+  Str(MAX_COROUTINES, NS);
+  EmitInstrAB('CMP', 'AX', NS);
+  EmitInstrA('JAE', LUA_RT_PFX + 'CCRFULL');
+  { Calculer l offset mot }
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstrAB('SHL', 'BX', '1');  { BX = slot * 2 }
+  { Stocker le pointeur de fonction }
+  EmitInstrAB('MOV', 'WORD PTR [' + LUA_CO_PFX + 'FNPTR + BX]', 'SI');
+  { Status = 1 (suspended) }
+  EmitInstrAB('MOV', 'WORD PTR [' + LUA_CO_PFX + 'STATUS + BX]', '1');
+  { CRA = 0 (premier resume appellera la fonction) }
+  EmitInstrAB('MOV', 'WORD PTR [' + LUA_CO_PFX + 'CRA + BX]', '0');
+  { Calculer le sommet de pile : OFFSET _LUAC_STACKS + slot * 512 + 508 }
+  { AX contient encore le slot }
+  Str(COROUTINE_STACK_SZ, NS);
+  EmitInstrAB('MOV', 'CX', NS);
+  EmitInstr('MUL    CX');  { DX:AX = slot * 512 }
+  EmitInstrAB('ADD', 'AX', 'OFFSET ' + LUA_CO_PFX + 'STACKS');
+  Str(COROUTINE_STACK_SZ - 4, NS);
+  EmitInstrAB('ADD', 'AX', NS);
+  EmitInstrAB('MOV', 'WORD PTR [' + LUA_CO_PFX + 'CSP + BX]', 'AX');
+  EmitInstrAB('MOV', 'WORD PTR [' + LUA_CO_PFX + 'CBP + BX]', 'AX');
+  { Incrementer le compteur }
+  EmitInstr('INC    WORD PTR [' + LUA_CO_PFX + 'COUNT]');
+  { Retourner handle = slot + 1 }
+  EmitInstrAB('SHR', 'BX', '1'); { BX = slot }
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstrA('INC', 'AX');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  { Erreur : trop de coroutines }
+  EmitLabel(LUA_RT_PFX + 'CCRFULL');
+  EmitInstrAB('XOR', 'AX', 'AX'); { retourner 0 (nil/erreur) }
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _LUART_COSTATUS : AX = handle (1-based) -> AX = ptr chaine status }
+  EmitLabel(LUA_RT_PFX + 'COSTATUS');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('DEC', 'AX');       { slot 0-based }
+  EmitInstrAB('SHL', 'AX', '1');
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [' + LUA_CO_PFX + 'STATUS + BX]');
+  EmitInstrAB('CMP', 'AX', '1');
+  EmitInstrA('JE', LUA_RT_PFX + 'CST_SUSP');
+  EmitInstrAB('CMP', 'AX', '2');
+  EmitInstrA('JE', LUA_RT_PFX + 'CST_RUN');
+  { Status 0 = dead }
+  EmitInstrAB('MOV', 'AX', 'OFFSET ' + LUA_CO_PFX + 'SDEAD');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitLabel(LUA_RT_PFX + 'CST_SUSP');
+  EmitInstrAB('MOV', 'AX', 'OFFSET ' + LUA_CO_PFX + 'SSUSP');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitLabel(LUA_RT_PFX + 'CST_RUN');
+  EmitInstrAB('MOV', 'AX', 'OFFSET ' + LUA_CO_PFX + 'SRUN');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+End;
 
 { ---- EmitErrorRuntime : routines runtime gestion d erreurs ------ }
 { Note : _LUART_PANIC est emis dans EmitExprRuntime (TODO 04)       }
