@@ -497,7 +497,7 @@
               9 classes, 3 methodes, namespaces simples,
               qualifies, imbriques, vides, multiples classes).
 
-  TODO 19 - TABLEAUX
+  TODO 19 - TABLEAUX [IMPLEMENTE]
             Declaration : type[] nom = new type[taille];
               int[] arr = new int[5];
               Taille en octets = nombre_elements * sizeof(type).

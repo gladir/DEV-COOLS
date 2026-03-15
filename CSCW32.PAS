@@ -330,7 +330,7 @@
             Mangling : _CSCN_Namespace_Classe_Methode.
             Fichier test : test25_namespaces.cs.
 
-  TODO 19 - TABLEAUX
+  TODO 19 - TABLEAUX [IMPLEMENTE]
             Declaration : type[] nom = new type[taille];
               int[] arr = new int[5];
               Taille = nombre_elements * sizeof(type).
@@ -2557,6 +2557,8 @@ Type
     IsGlobal    : Boolean;      { True si symbole global             }
     IsStatic    : Boolean;      { True si static                     }
     IsConst     : Boolean;      { True si constante                  }
+    IsArray     : Boolean;      { True si variable tableau (TODO 19) }
+    ArraySize   : Integer;      { nombre d elements (0 si inconnu)   }
   End;
 
 Var
@@ -2565,6 +2567,11 @@ Var
   CurScopeLevel : Integer;      { niveau courant de portee (0-based) }
   CurScopeId    : Integer;      { identifiant courant du scope       }
   ScopeIdSeq    : Integer;      { compteur pour generer des scope id }
+
+  { Variables pour le suivi des tableaux (TODO 19) }
+  ArrayCount      : Integer;      { nombre de declarations de tableaux  }
+  PendingIsArray  : Boolean;      { True si [] consomme avant decl      }
+  LastNewArraySize: Integer;      { taille du dernier new T[N]          }
 
 { ------------------------------------------------------------ }
 { SymMangle : generer le nom ASM mangled                        }
@@ -2664,6 +2671,8 @@ Begin
   SymTab[Idx].IsGlobal    := (CurScopeLevel = 0);
   SymTab[Idx].IsStatic    := False;
   SymTab[Idx].IsConst     := (Cat = SC_CONST);
+  SymTab[Idx].IsArray     := False;
+  SymTab[Idx].ArraySize   := 0;
 
   If Opts.DebugMode Then
     WriteLn('  SYM_ADD[', Idx, ']: ', Lw,
@@ -4022,6 +4031,12 @@ Begin
       Begin
         SymTab[SymIdx].IsStatic := True;
         SymTab[SymIdx].IsGlobal := True;
+        { Marquer comme tableau si declaration type[] (TODO 19) }
+        If PendingIsArray Then
+        Begin
+          SymTab[SymIdx].IsArray := True;
+          PendingIsArray := False;
+        End;
         Off := DataAddStaticVar(ClassName, VarName, TIdx);
         { Si init avec valeur, mettre la valeur dans DataTab }
         If HasInit And (Off >= 0) Then
@@ -4048,6 +4063,12 @@ Begin
       If SymIdx >= 0 Then
       Begin
         SymTab[SymIdx].Offset := Off;
+        { Marquer comme tableau si declaration type[] (TODO 19) }
+        If PendingIsArray Then
+        Begin
+          SymTab[SymIdx].IsArray := True;
+          PendingIsArray := False;
+        End;
         { Emettre l initialisation si requise }
         If HasInit Then
         Begin
@@ -4056,6 +4077,9 @@ Begin
             { Expression generale : ParseExpr + GenStoreVar }
             ParseExpr;
             GenStoreVar(SymIdx);
+            { Capturer la taille du tableau (TODO 19) }
+            If SymTab[SymIdx].IsArray And (LastNewArraySize > 0) Then
+              SymTab[SymIdx].ArraySize := LastNewArraySize;
           End
           Else If InitIsStr Then
           Begin
@@ -4376,6 +4400,11 @@ Var
   Idx       : Integer;
   Lbl       : TString;
   ArgCount  : Integer;
+  ArrLenHandled : Boolean;
+  ArrDotPos : Integer;
+  ArrI      : Integer;
+  ArrBase   : TString;
+  ArrProp   : TString;
 Begin
   { --- Literal entier --- }
   If CurToken.Kind = TK_INTEGER Then
@@ -4487,9 +4516,13 @@ Begin
     If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
       Consume;
     { Lire [taille] }
+    LastNewArraySize := 0;
     If TokIsPunct('[') Then
     Begin
       Consume;
+      { Capturer la taille si c est un litteral entier (TODO 19) }
+      If CurToken.Kind = TK_INTEGER Then
+        LastNewArraySize := CurToken.IntVal;
       ParseExpr;  { taille dans EAX }
       If TokIsPunct(']') Then Consume;
       { Multiplier par sizeof(element) = 4 (DWORD par defaut) }
@@ -4590,24 +4623,51 @@ Begin
     { Variable simple ou constante }
     Else
     Begin
-      Idx := SymFind(QualName);
-      If Idx >= 0 Then
-        GenLoadVar(Idx)
-      Else
-      Begin
-        { Peut etre une constante nommee }
-        Idx := FindConst(StrLowerCase(QualName));
-        If Idx > 0 Then
+      { Propriete .Length sur tableau (TODO 19) }
+      ArrLenHandled := False;
+      ArrDotPos := 0;
+      For ArrI := Length(QualName) DownTo 1 Do
+        If QualName[ArrI] = '.' Then
         Begin
-          If ConstTab[Idx].IsStr Then
-            GenLoadStr(AddStrLit(ConstTab[Idx].StrVal))
-          Else
-            GenLoadConst(ConstTab[Idx].Value);
-        End
+          ArrDotPos := ArrI;
+          Break;
+        End;
+      If ArrDotPos > 0 Then
+      Begin
+        ArrBase := StrLowerCase(Copy(QualName, 1, ArrDotPos - 1));
+        ArrProp := StrLowerCase(Copy(QualName, ArrDotPos + 1,
+                                     Length(QualName) - ArrDotPos));
+        If ArrProp = 'length' Then
+        Begin
+          Idx := SymFind(ArrBase);
+          If (Idx >= 0) And SymTab[Idx].IsArray Then
+          Begin
+            GenLoadConst(SymTab[Idx].ArraySize);
+            ArrLenHandled := True;
+          End;
+        End;
+      End;
+      If Not ArrLenHandled Then
+      Begin
+        Idx := SymFind(QualName);
+        If Idx >= 0 Then
+          GenLoadVar(Idx)
         Else
         Begin
-          EmitComment('symbole inconnu: ' + QualName);
-          EmitInstr('XOR', 'EAX,EAX');
+          { Peut etre une constante nommee }
+          Idx := FindConst(StrLowerCase(QualName));
+          If Idx > 0 Then
+          Begin
+            If ConstTab[Idx].IsStr Then
+              GenLoadStr(AddStrLit(ConstTab[Idx].StrVal))
+            Else
+              GenLoadConst(ConstTab[Idx].Value);
+          End
+          Else
+          Begin
+            EmitComment('symbole inconnu: ' + QualName);
+            EmitInstr('XOR', 'EAX,EAX');
+          End;
         End;
       End;
     End;
@@ -5262,10 +5322,13 @@ Begin
   Begin
     VarType := CurToken.Val;
     Consume;
+    PendingIsArray := False;
     If TokIsPunct('[') Then
     Begin
       Consume;
       If TokIsPunct(']') Then Consume;
+      PendingIsArray := True;
+      Inc(ArrayCount);
     End;
     If CurToken.Kind = TK_IDENT Then
       ParseVarDecl(VarType, False, '');
@@ -6316,11 +6379,14 @@ Begin
       Begin
         VarType := CurToken.Val;
         Consume;
-        { Si c est un tableau (int[] etc.) on saute les [] }
+        { Si c est un tableau (int[] etc.) on saute les [] (TODO 19) }
+        PendingIsArray := False;
         If TokIsPunct('[') Then
         Begin
           Consume;
           If TokIsPunct(']') Then Consume;
+          PendingIsArray := True;
+          Inc(ArrayCount);
         End;
         { Nom du membre }
         If CurToken.Kind = TK_IDENT Then
@@ -6471,11 +6537,14 @@ Begin
     Begin
       VarType := CurToken.Val;
       Consume;
-      { Sauter [] si tableau }
+      { Sauter [] si tableau (TODO 19) }
+      PendingIsArray := False;
       If TokIsPunct('[') Then
       Begin
         Consume;
         If TokIsPunct(']') Then Consume;
+        PendingIsArray := True;
+        Inc(ArrayCount);
       End;
       If CurToken.Kind = TK_IDENT Then
         ParseVarDecl(VarType, True, CurClassName);
@@ -6735,6 +6804,7 @@ Begin
   WriteLn('Methodes         : ', MethodCount);
   WriteLn('Classes          : ', ClassCount);
   WriteLn('Namespaces       : ', NsCount);
+  WriteLn('Tableaux         : ', ArrayCount);
   WriteLn('Donnees .DATA    : ', DataCount);
   WriteLn('Taille pile loc  : ', LocalOffset);
   WriteLn('Labels generes   : ', LabelSeq);
@@ -6815,6 +6885,11 @@ Begin
   NsCount   := 0;
   CurNsName := '';
   NsDepth   := 0;
+
+  { Initialiser les tableaux (TODO 19) }
+  ArrayCount       := 0;
+  PendingIsArray   := False;
+  LastNewArraySize := 0;
 
   { Initialiser le segment de donnees (TODO 08) }
   DataInit;
@@ -7136,7 +7211,7 @@ Begin
   EmitClose;
 
   WriteLn('CSCW32: ASM genere -> ', AsmFileName);
-  WriteLn('CSCW32: Les TODOs 19..25 ne sont pas encore implementes.');
+  WriteLn('CSCW32: Les TODOs 20..25 ne sont pas encore implementes.');
 End;
 
 { ------------------------------------------------------------ }
