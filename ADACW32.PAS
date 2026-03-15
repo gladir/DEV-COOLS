@@ -487,7 +487,7 @@
             Run mis a jour : EmitOpen + EmitHeader avant parsing,
               EmitDataSeg + EmitClose apres parsing
 
-  TODO 24 - GENERATION : POINT D'ENTREE WIN32 ET HELPERS RUNTIME
+  TODO 24 - GENERATION : POINT D'ENTREE WIN32 ET HELPERS RUNTIME [IMPLEMENTE]
             Procedure EmitEntryPoint :
               _ADAF_main:
               PUSH EBP / MOV EBP, ESP
@@ -965,6 +965,9 @@ Var
   BinFixCount : Integer;
   BinInCode   : Boolean;
 {$ENDIF}
+
+  { TODO 24 : nom de la procedure principale Ada }
+  MainProcName : TString;    { nom de la procedure de library unit   }
 
 Const
 {$IFDEF FPC}
@@ -2687,7 +2690,503 @@ Begin
   EmitI(ADA_RT_PFX + 'CUREXC    DD 0');
   EmitBlank;
 
+  { --- Messages d erreur runtime (TODO 24) --- }
+  EmitComment('--- messages d''erreur runtime ---');
+  EmitI(ADA_RT_PFX + 'ERR_RANGE DB ''Constraint_Error: valeur hors bornes'', 0');
+  EmitI(ADA_RT_PFX + 'ERR_PROG  DB ''Program_Error: erreur programme'', 0');
+  EmitBlank;
+
   Emit('_DATA ENDS');
+  EmitBlank;
+End;
+
+{ ============================================================ }
+{ TODO 24 - GENERATION : POINT D'ENTREE WIN32 ET HELPERS RUNTIME }
+{ ============================================================ }
+
+{ ---- EmitEntryPoint : emettre le point d entree Win32 -------- }
+{ Genere _ADAF_main :                                              }
+{   PUSH EBP / MOV EBP, ESP                                       }
+{   Initialiser stdout : PUSH -11 / CALL GetStdHandle              }
+{   Initialiser stdin  : PUSH -10 / CALL GetStdHandle              }
+{   CALL _ADAF_nom_procedure (procedure principale Ada)            }
+{   PUSH 0 / CALL ExitProcess                                     }
+Procedure EmitEntryPoint;
+Var
+  MainLabel : TString;
+Begin
+  EmitBlank;
+  EmitComment('========================================');
+  EmitComment('Point d''entree Win32');
+  EmitComment('========================================');
+  EmitBlank;
+  EmitLabel(ADA_FN_PFX + 'main');
+  EmitI('PUSH EBP');
+  EmitI('MOV  EBP, ESP');
+  EmitBlank;
+  { Initialiser stdout : GetStdHandle(STD_OUTPUT_HANDLE = -11) }
+  EmitComment('Initialiser stdout');
+  EmitI('PUSH -11');
+  EmitI('CALL _GetStdHandle@4');
+  EmitI('MOV  DWORD PTR [' + ADA_RT_PFX + 'HSTDOUT], EAX');
+  EmitBlank;
+  { Initialiser stdin : GetStdHandle(STD_INPUT_HANDLE = -10) }
+  EmitComment('Initialiser stdin');
+  EmitI('PUSH -10');
+  EmitI('CALL _GetStdHandle@4');
+  EmitI('MOV  DWORD PTR [' + ADA_RT_PFX + 'HSTDIN], EAX');
+  EmitBlank;
+  { Appeler la procedure principale Ada }
+  If MainProcName <> '' Then
+  Begin
+    MainLabel := ADA_FN_PFX + AsmIdent(StrUpperCase(MainProcName));
+    EmitComment('Appel de la procedure principale : ' + MainProcName);
+    EmitI('CALL ' + MainLabel);
+  End
+  Else
+    EmitComment('(aucune procedure principale detectee)');
+  EmitBlank;
+  { ExitProcess(0) }
+  EmitComment('Terminer le processus');
+  EmitI('PUSH 0');
+  EmitI('CALL _ExitProcess@4');
+  EmitBlank;
+End;
+
+{ ---- EmitRuntimeHelpers : emettre les helpers runtime --------- }
+{ Genere les sous-programmes runtime :                              }
+{   _ADART_CRLF      : ecrire CR+LF via WriteFile                 }
+{   _ADART_PRINT     : EAX=ptr ASCIIZ -> WriteFile(hStdOut)        }
+{   _ADART_NUMTOSTR  : EAX=entier -> ASCIIZ dans _ADART_NUMBUF    }
+{   _ADART_PRINTINT  : EAX=entier -> NUMTOSTR + PRINT             }
+{   _ADART_PRINTCHR  : AL=caractere -> WriteFile 1 octet           }
+{   _ADART_READINT   : ReadFile + parsing ASCII -> EAX             }
+{   _ADART_READSTR   : ReadFile -> copier dans buffer              }
+{   _ADART_STRLEN    : EAX=ptr ASCIIZ -> EAX=longueur             }
+{   _ADART_STRCOPY   : ESI=src, EDI=dst, ECX=max -> copie         }
+{   _ADART_STRCONCAT : coller ESI apres EDI (ASCIIZ)              }
+{   _ADART_CHKRANGE  : verifier borne, sinon Constraint_Error     }
+{   _ADART_ERROR     : afficher message + ExitProcess(1)           }
+Procedure EmitRuntimeHelpers;
+Var
+  LblDone, LblLoop, LblNeg, LblConv, LblDig  : TString;
+  LblNotZero, LblReverse, LblRevDone          : TString;
+  LblReadLoop, LblReadDone, LblReadSkip       : TString;
+  LblCopyLoop, LblCatFnd, LblCatLoop          : TString;
+  LblOk, LblErr                               : TString;
+Begin
+  EmitBlank;
+  EmitComment('========================================');
+  EmitComment('Helpers runtime ADACW32');
+  EmitComment('========================================');
+
+  { ---- _ADART_CRLF : ecrire CR+LF ---- }
+  EmitBlank;
+  EmitComment('--- _ADART_CRLF : ecrire CR+LF ---');
+  EmitLabel(ADA_RT_PFX + 'CRLF');
+  EmitI('PUSH EBP');
+  EmitI('MOV  EBP, ESP');
+  EmitI('SUB  ESP, 4');
+  { WriteFile(hStdOut, @CRLF_DATA, 2, @written, 0) }
+  EmitI('PUSH 0');
+  EmitI('LEA  EAX, DWORD PTR [' + ADA_RT_PFX + 'WRITTEN]');
+  EmitI('PUSH EAX');
+  EmitI('PUSH 2');
+  EmitI('LEA  EAX, DWORD PTR [' + ADA_RT_PFX + 'CRLF_DATA]');
+  EmitI('PUSH EAX');
+  EmitI('PUSH DWORD PTR [' + ADA_RT_PFX + 'HSTDOUT]');
+  EmitI('CALL _WriteFile@20');
+  EmitI('MOV  ESP, EBP');
+  EmitI('POP  EBP');
+  EmitI('RET');
+
+  { ---- _ADART_PRINT : EAX=ptr ASCIIZ -> WriteFile ---- }
+  EmitBlank;
+  EmitComment('--- _ADART_PRINT : afficher chaine ASCIIZ ---');
+  EmitComment('Entree : [ESP+4] = pointeur vers chaine ASCIIZ');
+  EmitLabel(ADA_RT_PFX + 'PRINT');
+  EmitI('PUSH EBP');
+  EmitI('MOV  EBP, ESP');
+  EmitI('PUSH ESI');
+  EmitI('PUSH EDI');
+  { Calculer la longueur de la chaine (strlen) }
+  EmitI('MOV  ESI, DWORD PTR [EBP+8]');
+  EmitI('XOR  ECX, ECX');
+  LblLoop := NewLabel;
+  LblDone := NewLabel;
+  EmitLabel(LblLoop);
+  EmitI('CMP  BYTE PTR [ESI+ECX], 0');
+  EmitI('JE   ' + LblDone);
+  EmitI('INC  ECX');
+  EmitI('JMP  ' + LblLoop);
+  EmitLabel(LblDone);
+  { ECX = longueur. WriteFile(hStdOut, ESI, ECX, @written, 0) }
+  EmitI('PUSH 0');
+  EmitI('LEA  EAX, DWORD PTR [' + ADA_RT_PFX + 'WRITTEN]');
+  EmitI('PUSH EAX');
+  EmitI('PUSH ECX');
+  EmitI('PUSH ESI');
+  EmitI('PUSH DWORD PTR [' + ADA_RT_PFX + 'HSTDOUT]');
+  EmitI('CALL _WriteFile@20');
+  EmitI('POP  EDI');
+  EmitI('POP  ESI');
+  EmitI('POP  EBP');
+  EmitI('RET  4');
+
+  { ---- _ADART_NUMTOSTR : EAX=entier -> ASCIIZ dans NUMBUF ---- }
+  EmitBlank;
+  EmitComment('--- _ADART_NUMTOSTR : entier -> ASCIIZ ---');
+  EmitComment('Entree : EAX = entier signe 32 bits');
+  EmitComment('Sortie : EAX = pointeur vers _ADART_NUMBUF (ASCIIZ)');
+  EmitLabel(ADA_RT_PFX + 'NUMTOSTR');
+  EmitI('PUSH EBP');
+  EmitI('MOV  EBP, ESP');
+  EmitI('PUSH EBX');
+  EmitI('PUSH ESI');
+  EmitI('PUSH EDI');
+  EmitI('MOV  ESI, EAX');           { ESI = valeur originale }
+  EmitI('LEA  EDI, DWORD PTR [' + ADA_RT_PFX + 'NUMBUF]');
+  { Gerer le signe negatif }
+  LblNeg := NewLabel;
+  LblConv := NewLabel;
+  EmitI('TEST EAX, EAX');
+  EmitI('JNS  ' + LblConv);
+  { Negatif : stocker '-' et negation }
+  EmitI('MOV  BYTE PTR [EDI], 45');  { '-' = 45 }
+  EmitI('INC  EDI');
+  EmitI('NEG  EAX');
+  EmitLabel(LblConv);
+  { Convertir EAX en digits decimaux (ordre inverse) }
+  EmitI('XOR  ECX, ECX');           { compteur de digits }
+  EmitI('MOV  EBX, 10');
+  LblDig := NewLabel;
+  LblNotZero := NewLabel;
+  EmitI('TEST EAX, EAX');
+  EmitI('JNZ  ' + LblDig);
+  { Cas special : valeur = 0 }
+  EmitI('MOV  BYTE PTR [EDI], 48');  { '0' = 48 }
+  EmitI('MOV  BYTE PTR [EDI+1], 0');
+  EmitI('JMP  ' + LblNotZero);
+  EmitLabel(LblDig);
+  { Boucle de division : EAX / 10, push le reste }
+  EmitI('XOR  EDX, EDX');
+  EmitI('DIV  EBX');                 { EAX = quotient, EDX = reste }
+  EmitI('ADD  DL, 48');              { reste + '0' }
+  EmitI('PUSH EDX');                 { empiler le digit }
+  EmitI('INC  ECX');
+  EmitI('TEST EAX, EAX');
+  EmitI('JNZ  ' + LblDig);
+  { Depiler les digits dans l ordre correct }
+  LblReverse := NewLabel;
+  LblRevDone := NewLabel;
+  EmitLabel(LblReverse);
+  EmitI('TEST ECX, ECX');
+  EmitI('JZ   ' + LblRevDone);
+  EmitI('POP  EAX');
+  EmitI('MOV  BYTE PTR [EDI], AL');
+  EmitI('INC  EDI');
+  EmitI('DEC  ECX');
+  EmitI('JMP  ' + LblReverse);
+  EmitLabel(LblRevDone);
+  { Terminer la chaine }
+  EmitI('MOV  BYTE PTR [EDI], 0');
+  EmitLabel(LblNotZero);
+  { Retourner le pointeur vers NUMBUF }
+  EmitI('LEA  EAX, DWORD PTR [' + ADA_RT_PFX + 'NUMBUF]');
+  EmitI('POP  EDI');
+  EmitI('POP  ESI');
+  EmitI('POP  EBX');
+  EmitI('POP  EBP');
+  EmitI('RET');
+
+  { ---- _ADART_PRINTINT : EAX=entier -> NUMTOSTR + PRINT ---- }
+  EmitBlank;
+  EmitComment('--- _ADART_PRINTINT : afficher entier ---');
+  EmitComment('Entree : [ESP+4] = entier signe 32 bits');
+  EmitLabel(ADA_RT_PFX + 'PRINTINT');
+  EmitI('PUSH EBP');
+  EmitI('MOV  EBP, ESP');
+  EmitI('MOV  EAX, DWORD PTR [EBP+8]');
+  EmitI('CALL ' + ADA_RT_PFX + 'NUMTOSTR');
+  EmitI('PUSH EAX');
+  EmitI('CALL ' + ADA_RT_PFX + 'PRINT');
+  EmitI('POP  EBP');
+  EmitI('RET  4');
+
+  { ---- _ADART_PRINTCHR : AL=caractere -> WriteFile 1 octet ---- }
+  EmitBlank;
+  EmitComment('--- _ADART_PRINTCHR : afficher un caractere ---');
+  EmitComment('Entree : [ESP+4] = caractere (octet bas)');
+  EmitLabel(ADA_RT_PFX + 'PRINTCHR');
+  EmitI('PUSH EBP');
+  EmitI('MOV  EBP, ESP');
+  EmitI('SUB  ESP, 4');
+  EmitI('MOV  EAX, DWORD PTR [EBP+8]');
+  EmitI('MOV  BYTE PTR [EBP-4], AL');
+  { WriteFile(hStdOut, @[EBP-4], 1, @written, 0) }
+  EmitI('PUSH 0');
+  EmitI('LEA  EAX, DWORD PTR [' + ADA_RT_PFX + 'WRITTEN]');
+  EmitI('PUSH EAX');
+  EmitI('PUSH 1');
+  EmitI('LEA  EAX, DWORD PTR [EBP-4]');
+  EmitI('PUSH EAX');
+  EmitI('PUSH DWORD PTR [' + ADA_RT_PFX + 'HSTDOUT]');
+  EmitI('CALL _WriteFile@20');
+  EmitI('MOV  ESP, EBP');
+  EmitI('POP  EBP');
+  EmitI('RET  4');
+
+  { ---- _ADART_READINT : lire un entier depuis stdin ---- }
+  EmitBlank;
+  EmitComment('--- _ADART_READINT : lire entier depuis stdin ---');
+  EmitComment('Sortie : EAX = entier lu');
+  EmitLabel(ADA_RT_PFX + 'READINT');
+  EmitI('PUSH EBP');
+  EmitI('MOV  EBP, ESP');
+  EmitI('PUSH EBX');
+  EmitI('PUSH ESI');
+  { ReadFile(hStdIn, @INPUTBUF, 255, @READCNT, 0) }
+  EmitI('PUSH 0');
+  EmitI('LEA  EAX, DWORD PTR [' + ADA_RT_PFX + 'READCNT]');
+  EmitI('PUSH EAX');
+  EmitI('PUSH 255');
+  EmitI('LEA  EAX, DWORD PTR [' + ADA_RT_PFX + 'INPUTBUF]');
+  EmitI('PUSH EAX');
+  EmitI('PUSH DWORD PTR [' + ADA_RT_PFX + 'HSTDIN]');
+  EmitI('CALL _ReadFile@20');
+  { Parser l ASCII : sauter espaces, lire digits, gerer signe }
+  EmitI('LEA  ESI, DWORD PTR [' + ADA_RT_PFX + 'INPUTBUF]');
+  EmitI('XOR  EAX, EAX');           { resultat }
+  EmitI('XOR  EBX, EBX');           { flag negatif }
+  { Sauter les espaces/CR/LF de tete }
+  LblReadSkip := NewLabel;
+  LblReadLoop := NewLabel;
+  LblReadDone := NewLabel;
+  EmitLabel(LblReadSkip);
+  EmitI('MOVZX ECX, BYTE PTR [ESI]');
+  EmitI('CMP  ECX, 32');             { espace }
+  EmitI('JE   ' + LblReadSkip + '_NEXT');
+  EmitI('CMP  ECX, 9');              { tab }
+  EmitI('JE   ' + LblReadSkip + '_NEXT');
+  EmitI('CMP  ECX, 13');             { CR }
+  EmitI('JE   ' + LblReadSkip + '_NEXT');
+  EmitI('CMP  ECX, 10');             { LF }
+  EmitI('JNE  ' + LblReadLoop);
+  EmitLabel(LblReadSkip + '_NEXT');
+  EmitI('INC  ESI');
+  EmitI('JMP  ' + LblReadSkip);
+  { Verifier le signe }
+  EmitLabel(LblReadLoop);
+  EmitI('CMP  BYTE PTR [ESI], 45'); { '-' }
+  LblNeg := NewLabel;
+  EmitI('JNE  ' + LblNeg);
+  EmitI('MOV  EBX, 1');
+  EmitI('INC  ESI');
+  EmitLabel(LblNeg);
+  { Boucle de lecture des digits }
+  LblDig := NewLabel;
+  EmitLabel(LblDig);
+  EmitI('MOVZX ECX, BYTE PTR [ESI]');
+  EmitI('CMP  ECX, 48');            { '0' }
+  EmitI('JB   ' + LblReadDone);
+  EmitI('CMP  ECX, 57');            { '9' }
+  EmitI('JA   ' + LblReadDone);
+  EmitI('SUB  ECX, 48');
+  EmitI('IMUL EAX, EAX, 10');
+  EmitI('ADD  EAX, ECX');
+  EmitI('INC  ESI');
+  EmitI('JMP  ' + LblDig);
+  EmitLabel(LblReadDone);
+  { Appliquer le signe }
+  EmitI('TEST EBX, EBX');
+  LblOk := NewLabel;
+  EmitI('JZ   ' + LblOk);
+  EmitI('NEG  EAX');
+  EmitLabel(LblOk);
+  EmitI('POP  ESI');
+  EmitI('POP  EBX');
+  EmitI('POP  EBP');
+  EmitI('RET');
+
+  { ---- _ADART_READSTR : lire chaine depuis stdin ---- }
+  EmitBlank;
+  EmitComment('--- _ADART_READSTR : lire chaine depuis stdin ---');
+  EmitComment('Entree : EAX = pointeur vers buffer destination');
+  EmitComment('Sortie : chaine ASCIIZ dans le buffer');
+  EmitLabel(ADA_RT_PFX + 'READSTR');
+  EmitI('PUSH EBP');
+  EmitI('MOV  EBP, ESP');
+  EmitI('PUSH ESI');
+  EmitI('PUSH EDI');
+  EmitI('MOV  EDI, EAX');           { EDI = buffer destination }
+  { ReadFile(hStdIn, @INPUTBUF, 255, @READCNT, 0) }
+  EmitI('PUSH 0');
+  EmitI('LEA  EAX, DWORD PTR [' + ADA_RT_PFX + 'READCNT]');
+  EmitI('PUSH EAX');
+  EmitI('PUSH 255');
+  EmitI('LEA  EAX, DWORD PTR [' + ADA_RT_PFX + 'INPUTBUF]');
+  EmitI('PUSH EAX');
+  EmitI('PUSH DWORD PTR [' + ADA_RT_PFX + 'HSTDIN]');
+  EmitI('CALL _ReadFile@20');
+  { Copier INPUTBUF vers EDI, retirer CR/LF }
+  EmitI('LEA  ESI, DWORD PTR [' + ADA_RT_PFX + 'INPUTBUF]');
+  EmitI('MOV  ECX, DWORD PTR [' + ADA_RT_PFX + 'READCNT]');
+  LblCopyLoop := NewLabel;
+  LblDone := NewLabel;
+  EmitLabel(LblCopyLoop);
+  EmitI('TEST ECX, ECX');
+  EmitI('JZ   ' + LblDone);
+  EmitI('LODSB');                    { AL = [ESI], ESI++ }
+  EmitI('CMP  AL, 13');             { CR ? }
+  EmitI('JE   ' + LblDone);
+  EmitI('CMP  AL, 10');             { LF ? }
+  EmitI('JE   ' + LblDone);
+  EmitI('STOSB');                    { [EDI] = AL, EDI++ }
+  EmitI('DEC  ECX');
+  EmitI('JMP  ' + LblCopyLoop);
+  EmitLabel(LblDone);
+  EmitI('MOV  BYTE PTR [EDI], 0');  { terminateur NUL }
+  EmitI('POP  EDI');
+  EmitI('POP  ESI');
+  EmitI('POP  EBP');
+  EmitI('RET');
+
+  { ---- _ADART_STRLEN : longueur d une chaine ASCIIZ ---- }
+  EmitBlank;
+  EmitComment('--- _ADART_STRLEN : longueur chaine ASCIIZ ---');
+  EmitComment('Entree : EAX = pointeur vers chaine ASCIIZ');
+  EmitComment('Sortie : EAX = longueur');
+  EmitLabel(ADA_RT_PFX + 'STRLEN');
+  EmitI('PUSH ESI');
+  EmitI('MOV  ESI, EAX');
+  EmitI('XOR  EAX, EAX');
+  LblLoop := NewLabel;
+  LblDone := NewLabel;
+  EmitLabel(LblLoop);
+  EmitI('CMP  BYTE PTR [ESI], 0');
+  EmitI('JE   ' + LblDone);
+  EmitI('INC  ESI');
+  EmitI('INC  EAX');
+  EmitI('JMP  ' + LblLoop);
+  EmitLabel(LblDone);
+  EmitI('POP  ESI');
+  EmitI('RET');
+
+  { ---- _ADART_STRCOPY : copier chaine ASCIIZ ---- }
+  EmitBlank;
+  EmitComment('--- _ADART_STRCOPY : copier chaine ---');
+  EmitComment('Entree : ESI=src, EDI=dst, ECX=max octets');
+  EmitLabel(ADA_RT_PFX + 'STRCOPY');
+  EmitI('PUSH EBX');
+  LblLoop := NewLabel;
+  LblDone := NewLabel;
+  EmitLabel(LblLoop);
+  EmitI('TEST ECX, ECX');
+  EmitI('JZ   ' + LblDone);
+  EmitI('LODSB');
+  EmitI('STOSB');
+  EmitI('TEST AL, AL');
+  EmitI('JZ   ' + LblDone);
+  EmitI('DEC  ECX');
+  EmitI('JMP  ' + LblLoop);
+  EmitLabel(LblDone);
+  EmitI('POP  EBX');
+  EmitI('RET');
+
+  { ---- _ADART_STRCONCAT : concatener chaine ASCIIZ ---- }
+  EmitBlank;
+  EmitComment('--- _ADART_STRCONCAT : concatener ESI apres EDI ---');
+  EmitComment('Entree : ESI=src, EDI=dst (ASCIIZ)');
+  EmitLabel(ADA_RT_PFX + 'STRCONCAT');
+  { Trouver la fin de EDI (destination) }
+  LblCatFnd := NewLabel;
+  LblCatLoop := NewLabel;
+  LblDone := NewLabel;
+  EmitLabel(LblCatFnd);
+  EmitI('CMP  BYTE PTR [EDI], 0');
+  EmitI('JE   ' + LblCatLoop);
+  EmitI('INC  EDI');
+  EmitI('JMP  ' + LblCatFnd);
+  { Copier ESI vers EDI }
+  EmitLabel(LblCatLoop);
+  EmitI('LODSB');
+  EmitI('STOSB');
+  EmitI('TEST AL, AL');
+  EmitI('JNZ  ' + LblCatLoop);
+  EmitI('RET');
+
+  { ---- _ADART_CHKRANGE : verifier bornes ---- }
+  EmitBlank;
+  EmitComment('--- _ADART_CHKRANGE : verifier borne ---');
+  EmitComment('Entree : EAX=valeur, EBX=borne_min, ECX=borne_max');
+  EmitComment('Si hors bornes : Constraint_Error');
+  EmitLabel(ADA_RT_PFX + 'CHKRANGE');
+  LblOk := NewLabel;
+  LblErr := NewLabel;
+  EmitI('CMP  EAX, EBX');
+  EmitI('JL   ' + LblErr);
+  EmitI('CMP  EAX, ECX');
+  EmitI('JG   ' + LblErr);
+  EmitI('RET');
+  EmitLabel(LblErr);
+  { Emettre un message d erreur et terminer }
+  EmitI('PUSH OFFSET ' + ADA_RT_PFX + 'ERR_RANGE');
+  EmitI('CALL ' + ADA_RT_PFX + 'ERROR');
+
+  { ---- _ADART_ERROR : afficher message + ExitProcess(1) ---- }
+  EmitBlank;
+  EmitComment('--- _ADART_ERROR : erreur fatale + exit ---');
+  EmitComment('Entree : [ESP+4] = pointeur vers message ASCIIZ');
+  EmitLabel(ADA_RT_PFX + 'ERROR');
+  EmitI('PUSH EBP');
+  EmitI('MOV  EBP, ESP');
+  EmitI('MOV  EAX, DWORD PTR [EBP+8]');
+  EmitI('PUSH EAX');
+  EmitI('CALL ' + ADA_RT_PFX + 'PRINT');
+  EmitI('CALL ' + ADA_RT_PFX + 'CRLF');
+  EmitI('PUSH 1');
+  EmitI('CALL _ExitProcess@4');
+
+  { ---- _ADART_GET : lire un caractere depuis stdin ---- }
+  EmitBlank;
+  EmitComment('--- _ADART_GET : lire un caractere ---');
+  EmitComment('Entree : [ESP+4] = pointeur vers variable Character');
+  EmitLabel(ADA_RT_PFX + 'GET');
+  EmitI('PUSH EBP');
+  EmitI('MOV  EBP, ESP');
+  EmitI('PUSH EBX');
+  EmitI('MOV  EBX, DWORD PTR [EBP+8]'); { EBX = ptr destination }
+  { ReadFile(hStdIn, @INPUTBUF, 1, @READCNT, 0) }
+  EmitI('PUSH 0');
+  EmitI('LEA  EAX, DWORD PTR [' + ADA_RT_PFX + 'READCNT]');
+  EmitI('PUSH EAX');
+  EmitI('PUSH 1');
+  EmitI('LEA  EAX, DWORD PTR [' + ADA_RT_PFX + 'INPUTBUF]');
+  EmitI('PUSH EAX');
+  EmitI('PUSH DWORD PTR [' + ADA_RT_PFX + 'HSTDIN]');
+  EmitI('CALL _ReadFile@20');
+  EmitI('MOVZX EAX, BYTE PTR [' + ADA_RT_PFX + 'INPUTBUF]');
+  EmitI('MOV  BYTE PTR [EBX], AL');
+  EmitI('POP  EBX');
+  EmitI('POP  EBP');
+  EmitI('RET  4');
+
+  { ---- _ADART_GET_LINE : lire une ligne depuis stdin ---- }
+  EmitBlank;
+  EmitComment('--- _ADART_GET_LINE : lire une ligne ---');
+  EmitComment('Entree : [ESP+4]=ptr buffer, [ESP+8]=ptr Last');
+  EmitLabel(ADA_RT_PFX + 'GET_LINE');
+  EmitI('PUSH EBP');
+  EmitI('MOV  EBP, ESP');
+  EmitI('MOV  EAX, DWORD PTR [EBP+8]'); { buffer destination }
+  EmitI('CALL ' + ADA_RT_PFX + 'READSTR');
+  { Stocker la longueur dans Last }
+  EmitI('CALL ' + ADA_RT_PFX + 'STRLEN');
+  EmitI('MOV  EBX, DWORD PTR [EBP+12]');
+  EmitI('MOV  DWORD PTR [EBX], EAX');
+  EmitI('POP  EBP');
+  EmitI('RET  8');
+
   EmitBlank;
 End;
 
@@ -7025,6 +7524,7 @@ Begin
   InitPkgTable;
   InitScopeStack;
   InitStrTable;
+  MainProcName := '';
   LexInit;
   If Opts.DebugMode Then
   Begin
@@ -7062,6 +7562,15 @@ Begin
     Begin
       ParseObjectDecl;
     End;
+
+    { TODO 24 : Capturer le nom de la procedure principale Ada }
+    { Dans un programme Ada, la library unit est la premiere PROCEDURE }
+    If (CurTokType = TOK_IDENT) And (CurTokKw = KW_PROCEDURE) Then
+    Begin
+      { Lire le nom sans consommer le token PROCEDURE }
+      { On le retrouvera via SubTab apres le parsing }
+    End;
+
     { TODO 12 : boucle PROCEDURE / FUNCTION }
     While (CurTokType = TOK_IDENT) And
           ((CurTokKw = KW_PROCEDURE) Or (CurTokKw = KW_FUNCTION)) Do
@@ -7069,6 +7578,12 @@ Begin
       If CurTokKw = KW_PROCEDURE Then ParseProcedureDecl
       Else ParseFunctionDecl;
     End;
+
+    { TODO 24 : determiner le nom de la procedure principale }
+    { La premiere procedure enregistree avec un body est la library unit }
+    If SubCount > 0 Then
+      MainProcName := SubTab[1].Name;
+
     { TODO 14 : boucle PACKAGE SPEC / PACKAGE BODY }
     While (CurTokType = TOK_IDENT) And (CurTokKw = KW_PACKAGE) Do
     Begin
@@ -7096,9 +7611,14 @@ Begin
       End;
     End;
 
+    { TODO 24 : emettre point d entree Win32 et helpers runtime }
+    EmitEntryPoint;
+    GenTextIOStubs;
+    EmitRuntimeHelpers;
+
     { TODO 23 : emettre segment .DATA et fermer le fichier }
     EmitDataSeg;
-    Emit('END');
+    Emit('END ' + ADA_FN_PFX + 'main');
     EmitClose;
   End;
   LexClose;

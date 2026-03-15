@@ -2,6 +2,7 @@
 *.obj
 *.ppu
 *.class
+*.exe
 SAMPLES/ADA/*.asm
 SAMPLES/CSHARP/*.asm
 /JASMIN

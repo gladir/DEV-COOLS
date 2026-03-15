@@ -471,7 +471,7 @@
                 _ADART_HSTDIN
             Mode -asm : ecrire fichier .ASM avec commentaires
 
-  TODO 24 - GENERATION : POINT D'ENTREE WIN32 ET HELPERS RUNTIME
+  TODO 24 - GENERATION : POINT D'ENTREE WIN32 ET HELPERS RUNTIME [IMPLEMENTE]
             Procedure EmitEntryPoint :
               _ADAF_main:
               PUSH EBP / MOV EBP, ESP
