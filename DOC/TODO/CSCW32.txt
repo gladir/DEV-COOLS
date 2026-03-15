@@ -55,7 +55,7 @@
             Ponctuation : ( ) [ ] { } ; , . : ? ~ ! #.
             Mode debug -d : affichage de chaque token avec PrintToken.
 
-  TODO 03 - DIRECTIVES USING ET IMPORTS
+  TODO 03 - DIRECTIVES USING ET IMPORTS [IMPLEMENTE]
             using namespace; : declaration d importation.
             using System; : acces aux classes du namespace System.
             Espaces de noms standard integres en built-in dans le

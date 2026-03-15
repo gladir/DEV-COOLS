@@ -70,7 +70,7 @@
             Ponctuation : ( ) [ ] { } ; , . : ? ~ ! #.
             Mode debug -d : affichage de chaque token.
 
-  TODO 03 - DIRECTIVES USING ET IMPORTS
+  TODO 03 - DIRECTIVES USING ET IMPORTS [IMPLEMENTE]
             using namespace; : declaration d importation.
             using System; : acces aux classes du namespace System.
             Espaces de noms standard integres en built-in
@@ -794,15 +794,7 @@ Begin
   WriteLn;
 End;
 
-Procedure ShowStats;
-Begin
-  If Not Opts.Verbose Then Exit;
-  WriteLn;
-  WriteLn('--- Statistiques ---');
-  WriteLn('Lignes analysees : ', TotalLines);
-  WriteLn('Erreurs          : ', ErrorCount);
-  WriteLn('Avertissements   : ', WarnCount);
-End;
+Procedure ShowStats; Forward;
 
 { ============================================================ }
 { TODO 02 - LEXEUR (TOKENS C#)                                 }
@@ -1718,11 +1710,230 @@ Begin
   End;
 End;
 
+{ ============================================================ }
+{ TODO 03 - DIRECTIVES USING ET IMPORTS                         }
+{           [IMPLEMENTE]                                        }
+{ ============================================================ }
+
+Const
+  MAX_USING = 32;
+
+Type
+  TUsingEntry = Record
+    Name     : TString;     { nom complet du namespace, ex. 'System' }
+    IsStd    : Boolean;     { true si namespace standard reconnu     }
+    Used     : Boolean;     { true si le namespace a ete utilise     }
+    Line     : Integer;     { ligne source de la directive using     }
+  End;
+
+Var
+  UsingTab   : Array[1..MAX_USING] Of TUsingEntry;
+  UsingCount : Integer;
+
+{ ------------------------------------------------------------ }
+{ IsStandardNamespace : reconnu en built-in par le compilateur  }
+{ ------------------------------------------------------------ }
+
+Function IsStandardNamespace(Const S : TString) : Boolean;
+Begin
+  IsStandardNamespace :=
+    (S = 'System')              Or
+    (S = 'System.Collections')  Or
+    (S = 'System.IO');
+End;
+
+{ ------------------------------------------------------------ }
+{ InitUsingTable                                                }
+{ ------------------------------------------------------------ }
+
+Procedure InitUsingTable;
+Begin
+  UsingCount := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ AddUsing : ajouter un namespace a la table des using          }
+{ Retourne l index (1-based) ou 0 si la table est pleine       }
+{ Pas de doublons : si deja present, retourne l index existant  }
+{ ------------------------------------------------------------ }
+
+Function AddUsing(Const Name : TString; Ln : Integer) : Integer;
+Var I : Integer;
+Begin
+  { Verifier les doublons }
+  For I := 1 To UsingCount Do
+    If UsingTab[I].Name = Name Then
+    Begin
+      WarnMsg('using duplique : ' + Name +
+              ' (ligne ' + IntToStr_(Ln) + ')');
+      AddUsing := I;
+      Exit;
+    End;
+
+  { Ajouter }
+  If UsingCount >= MAX_USING Then
+  Begin
+    WriteLn('CSCW32: erreur ligne ', Ln,
+            ': trop de directives using (max ', MAX_USING, ')');
+    Inc(ErrorCount);
+    AddUsing := 0;
+    Exit;
+  End;
+
+  Inc(UsingCount);
+  UsingTab[UsingCount].Name  := Name;
+  UsingTab[UsingCount].IsStd := IsStandardNamespace(Name);
+  UsingTab[UsingCount].Used  := False;
+  UsingTab[UsingCount].Line  := Ln;
+  AddUsing := UsingCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ FindUsing : chercher un namespace dans la table des using     }
+{ Retourne l index (1-based) ou 0 si non trouve                 }
+{ ------------------------------------------------------------ }
+
+Function FindUsing(Const Name : TString) : Integer;
+Var I : Integer;
+Begin
+  For I := 1 To UsingCount Do
+    If UsingTab[I].Name = Name Then
+    Begin
+      FindUsing := I;
+      Exit;
+    End;
+  FindUsing := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ MarkUsingUsed : marquer un namespace comme utilise             }
+{ ------------------------------------------------------------ }
+
+Procedure MarkUsingUsed(Const Name : TString);
+Var I : Integer;
+Begin
+  I := FindUsing(Name);
+  If I > 0 Then
+    UsingTab[I].Used := True;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseUsingDirective : lire une directive using namespace;      }
+{   using System;                                               }
+{   using System.Collections;                                   }
+{   using System.IO;                                            }
+{ Le token 'using' a deja ete lu par le dispatcher.             }
+{ ------------------------------------------------------------ }
+
+Procedure ParseUsingDirective;
+Var
+  NsName : TString;
+  ULine  : Integer;
+  Idx    : Integer;
+Begin
+  ULine := CurToken.Line;
+
+  { Lire le nom du namespace (potentiellement pointe A.B.C) }
+  Consume;  { premier identifiant apres 'using' }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    WriteLn('CSCW32: erreur ligne ', CurToken.Line, ' col ',
+            CurToken.Col,
+            ': identifiant attendu apres ''using''');
+    Inc(ErrorCount);
+    { Resynchroniser jusqu au ; }
+    While (CurToken.Kind <> TK_EOF) And
+          (Not TokIsPunct(';')) Do
+      Consume;
+    If TokIsPunct(';') Then Consume;
+    Exit;
+  End;
+
+  NsName := CurToken.Val;
+  Consume;
+
+  { Lire les segments supplementaires : .Ident }
+  While TokIsPunct('.') Do
+  Begin
+    NsName := NsName + '.';
+    Consume;  { consomme le '.' }
+    If CurToken.Kind <> TK_IDENT Then
+    Begin
+      WriteLn('CSCW32: erreur ligne ', CurToken.Line, ' col ',
+              CurToken.Col,
+              ': identifiant attendu apres ''.'' dans namespace');
+      Inc(ErrorCount);
+      Break;
+    End;
+    NsName := NsName + CurToken.Val;
+    Consume;
+  End;
+
+  { Enregistrer le namespace }
+  Idx := AddUsing(NsName, ULine);
+
+  { Avertissement pour namespaces non standards }
+  If (Idx > 0) And (Not UsingTab[Idx].IsStd) Then
+    WarnMsg('namespace non reconnu (ignore) : ' + NsName +
+            ' (ligne ' + IntToStr_(ULine) + ')');
+
+  { Attendre le ';' }
+  If TokIsPunct(';') Then
+    Consume
+  Else
+  Begin
+    WriteLn('CSCW32: erreur ligne ', CurToken.Line, ' col ',
+            CurToken.Col,
+            ': '';'' attendu apres directive using');
+    Inc(ErrorCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseUsingSection : lire toutes les directives using en tete  }
+{ ------------------------------------------------------------ }
+
+Procedure ParseUsingSection;
+Begin
+  While (CurToken.Kind <> TK_EOF) And TokIsKw('using') Do
+    ParseUsingDirective;
+End;
+
+{ ------------------------------------------------------------ }
+{ CheckUnusedUsings : avertissement pour using non utilises      }
+{ ------------------------------------------------------------ }
+
+Procedure CheckUnusedUsings;
+Var I : Integer;
+Begin
+  For I := 1 To UsingCount Do
+    If (Not UsingTab[I].Used) And UsingTab[I].IsStd Then
+      WarnMsg('using non utilise : ' + UsingTab[I].Name +
+              ' (ligne ' + IntToStr_(UsingTab[I].Line) + ')');
+End;
+
+{ ------------------------------------------------------------ }
+{ ShowStats (corps)                                             }
+{ ------------------------------------------------------------ }
+
+Procedure ShowStats;
+Begin
+  If Not Opts.Verbose Then Exit;
+  WriteLn;
+  WriteLn('--- Statistiques ---');
+  WriteLn('Lignes analysees : ', TotalLines);
+  WriteLn('Tokens           : ', TokenCount);
+  WriteLn('Usings           : ', UsingCount);
+  WriteLn('Erreurs          : ', ErrorCount);
+  WriteLn('Avertissements   : ', WarnCount);
+End;
+
 { ------------------------------------------------------------ }
 { Run                                                          }
 { ------------------------------------------------------------ }
 
 Procedure Run;
+Var I : Integer;
 Begin
   WriteLn('CSCW32: Compilation de ', Opts.SrcFile, ' ...');
 
@@ -1742,18 +1953,49 @@ Begin
   { Initialiser le lexeur }
   LexInit;
 
-  { Boucle de tokenisation }
-  Repeat
-    LexNextToken;
-    PrintToken(CurToken);
-  Until CurToken.Kind = TK_EOF;
+  { Initialiser la table des using }
+  InitUsingTable;
+
+  { Lire le premier token }
+  Consume;
+
+  { Analyser les directives using en tete }
+  ParseUsingSection;
+
+  { Afficher les namespaces importes }
+  If Opts.Verbose Then
+  Begin
+    If UsingCount > 0 Then
+    Begin
+      WriteLn('Namespaces importes :');
+      For I := 1 To UsingCount Do
+      Begin
+        Write('  using ', UsingTab[I].Name);
+        If UsingTab[I].IsStd Then
+          Write(' [standard]')
+        Else
+          Write(' [inconnu]');
+        WriteLn;
+      End;
+    End;
+  End;
+
+  { Continuer a lire les tokens restants (pour les TODOs suivants) }
+  While CurToken.Kind <> TK_EOF Do
+    Consume;
+
+  { Marquer System comme utilise (toujours implicitement utilise) }
+  MarkUsingUsed('System');
+
+  { Verifier les using non utilises }
+  CheckUnusedUsings;
 
   { Fermer le fichier source }
   LexClose;
 
   WriteLn('CSCW32: Lexer OK (', TotalLines, ' lignes, ',
-          TokenCount, ' tokens)');
-  WriteLn('CSCW32: Les TODOs 03..25 ne sont pas encore implementes.');
+          TokenCount, ' tokens, ', UsingCount, ' using)');
+  WriteLn('CSCW32: Les TODOs 04..25 ne sont pas encore implementes.');
 End;
 
 { ------------------------------------------------------------ }

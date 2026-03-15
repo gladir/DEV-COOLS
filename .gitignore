@@ -3,3 +3,5 @@
 *.ppu
 *.class
 /JASMIN
+CSCW32
+*.o
