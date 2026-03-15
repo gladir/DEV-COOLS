@@ -353,7 +353,7 @@
               Convention STDCALL : callee-cleanup (RET n)
             ParseNomQualified : ident.ident (pkg.proc, rec.field)
 
-  TODO 17 - PARSEUR : IF/ELSIF/ELSE ET CASE/WHEN/OTHERS (32 BITS)
+  TODO 17 - PARSEUR : IF/ELSIF/ELSE ET CASE/WHEN/OTHERS (32 BITS) [IMPLEMENTE]
             ParseIf :
               IF cond THEN stmts
               [ELSIF cond THEN stmts] ...
@@ -3928,6 +3928,7 @@ Procedure ParseFunctionDecl; Forward;
 Procedure ParseProcedureBody(SubIdx : Integer); Forward;
 Procedure ParseFunctionBody(SubIdx : Integer); Forward;
 Procedure ParsePackageDecl; Forward;
+Procedure ParseSequenceOfStatements; Forward;
 
 { ---- ParseParamList : analyser la liste de parametres -------- }
 { Syntaxe Ada :                                                    }
@@ -4273,131 +4274,166 @@ Begin
   If CurTokType = TOK_SEMI Then Consume;
 End;
 
-{ ---- ParseIfStub : instruction IF (stub -> TODO 17) ---------- }
-{ Parcourt le bloc IF/ELSIF/ELSE/END IF correctement.            }
-Procedure ParseIfStub;
-Var Depth : Integer;
+{ ============================================================ }
+{ TODO 17 - PARSEUR : IF/ELSIF/ELSE ET CASE/WHEN/OTHERS       }
+{ ============================================================ }
+
+{ ---- ParseIf : instruction IF / ELSIF / ELSE / END IF ------ }
+{ Syntaxe Ada :                                                  }
+{   IF condition THEN                                            }
+{     sequence_of_statements                                     }
+{   [ELSIF condition THEN                                        }
+{     sequence_of_statements] ...                                }
+{   [ELSE                                                        }
+{     sequence_of_statements]                                    }
+{   END IF ;                                                     }
+{ Generation 32 bits :                                           }
+{   ParseExpr -> EAX (condition)                                 }
+{   TEST EAX, EAX + JZ label_next                                }
+{   stmts + JMP label_endif                                      }
+{   Chaine ELSIF/ELSE via labels successifs                      }
+Procedure ParseIf;
+Var
+  LblNext   : TString;
+  LblEndIf  : TString;
 Begin
-  EmitComment('IF ... (stub)');
-  { On consomme IF }
+  EmitComment('IF ... THEN ... END IF');
   Consume; { IF }
-  Depth := 1;
-  While (CurTokType <> TOK_EOF) And (Depth > 0) Do
+  { Evaluer la condition -> EAX }
+  ParseExpr;
+  LblEndIf := NewLabel;
+  LblNext  := NewLabel;
+  EmitI('TEST EAX, EAX');
+  EmitI('JZ   ' + LblNext);
+  { Consommer THEN }
+  ExpectKw(KW_THEN, 'THEN');
+  { Parser le bloc THEN }
+  ParseSequenceOfStatements;
+  EmitI('JMP  ' + LblEndIf);
+  EmitLabel(LblNext);
+  { Chaine ELSIF }
+  While TokIsKw(KW_ELSIF) Do
   Begin
-    If TokIsKw(KW_IF) Then
-    Begin
-      { Verifier si c est un END IF }
-      { Non, IF simple imbrique -> on ne l incrementera qu apres THEN }
-    End;
-    If TokIsKw(KW_IF) And (Depth > 0) Then
-    Begin
-      Consume; { IF imbrique }
-      Inc(Depth);
-      Continue;
-    End;
-    If TokIsKw(KW_END) Then
-    Begin
-      Consume; { END }
-      If TokIsKw(KW_IF) Then
-      Begin
-        Consume; { IF }
-        Dec(Depth);
-        If Depth <= 0 Then
-        Begin
-          { Consommer le ';' final }
-          If CurTokType = TOK_SEMI Then Consume;
-          Exit;
-        End;
-        { ';' intermediaire }
-        If CurTokType = TOK_SEMI Then Consume;
-        Continue;
-      End
-      Else If TokIsKw(KW_LOOP) Then
-      Begin
-        Consume; { LOOP }
-        Dec(Depth);
-        If CurTokType = TOK_SEMI Then Consume;
-        Continue;
-      End
-      Else If TokIsKw(KW_CASE) Then
-      Begin
-        Consume; { CASE }
-        Dec(Depth);
-        If CurTokType = TOK_SEMI Then Consume;
-        Continue;
-      End
-      Else
-      Begin
-        { END simple (procedure/function/package) }
-        Dec(Depth);
-        If Depth <= 0 Then Exit;
-        While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) Do
-          Consume;
-        If CurTokType = TOK_SEMI Then Consume;
-        Continue;
-      End;
-    End;
-    If TokIsKw(KW_LOOP) Or TokIsKw(KW_CASE) Or
-       TokIsKw(KW_DECLARE) Or TokIsKw(KW_SELECT) Or
-       TokIsKw(KW_BEGIN) Then
-      Inc(Depth);
-    Consume;
+    Consume; { ELSIF }
+    EmitComment('ELSIF ...');
+    ParseExpr;
+    LblNext := NewLabel;
+    EmitI('TEST EAX, EAX');
+    EmitI('JZ   ' + LblNext);
+    ExpectKw(KW_THEN, 'THEN');
+    ParseSequenceOfStatements;
+    EmitI('JMP  ' + LblEndIf);
+    EmitLabel(LblNext);
   End;
+  { Clause ELSE optionnelle }
+  If TokIsKw(KW_ELSE) Then
+  Begin
+    Consume; { ELSE }
+    EmitComment('ELSE');
+    ParseSequenceOfStatements;
+  End;
+  EmitLabel(LblEndIf);
+  { END IF ; }
+  ExpectKw(KW_END, 'END');
+  ExpectKw(KW_IF, 'IF');
+  If CurTokType = TOK_SEMI Then Consume;
 End;
 
-{ ---- ParseCaseStub : instruction CASE (stub -> TODO 17) ------ }
-{ Parcourt le bloc CASE/WHEN/END CASE correctement.              }
-Procedure ParseCaseStub;
-Var Depth : Integer;
+{ ---- ParseCase : instruction CASE / WHEN / END CASE -------- }
+{ Syntaxe Ada :                                                  }
+{   CASE expression IS                                           }
+{     WHEN valeur [| valeur2] => stmts                           }
+{     [WHEN OTHERS => stmts]                                     }
+{   END CASE ;                                                   }
+{ Generation 32 bits :                                           }
+{   ParseExpr -> EAX (expression selecteur)                      }
+{   MOV EDX, EAX  (sauvegarder selecteur)                        }
+{   Pour chaque WHEN : CMP EDX, imm / JE label_match             }
+{   WHEN val1 | val2 : serie CMP + JE                            }
+{   WHEN OTHERS = clause par defaut                              }
+Procedure ParseCase;
+Var
+  LblNext   : TString;
+  LblMatch  : TString;
+  LblEndCase: TString;
+  WVal      : LongInt;
+  GotConst  : Boolean;
+  HasOthers : Boolean;
 Begin
-  EmitComment('CASE ... (stub)');
+  EmitComment('CASE ... IS ... END CASE');
   Consume; { CASE }
-  Depth := 1;
-  While (CurTokType <> TOK_EOF) And (Depth > 0) Do
+  { Evaluer l expression selecteur -> EAX }
+  ParseExpr;
+  EmitI('MOV  EDX, EAX');
+  { Consommer IS }
+  ExpectKw(KW_IS, 'IS');
+  LblEndCase := NewLabel;
+  HasOthers  := False;
+  { Boucle WHEN }
+  While TokIsKw(KW_WHEN) Do
   Begin
-    If TokIsKw(KW_END) Then
+    Consume; { WHEN }
+    { WHEN OTHERS => ... }
+    If TokIsKw(KW_OTHERS) Then
     Begin
-      Consume; { END }
-      If TokIsKw(KW_CASE) Then
+      Consume; { OTHERS }
+      EmitComment('WHEN OTHERS =>');
+      { Consommer => }
+      If CurTokType = TOK_ARROW Then Consume;
+      HasOthers := True;
+      ParseSequenceOfStatements;
+      EmitI('JMP  ' + LblEndCase);
+    End
+    Else
+    Begin
+      { WHEN valeur [| valeur2] => stmts }
+      LblMatch := NewLabel;
+      LblNext  := NewLabel;
+      EmitComment('WHEN ...');
+      { Premiere valeur }
+      GotConst := ParseConstExpr32(WVal);
+      If GotConst Then
       Begin
-        Consume; { CASE }
-        Dec(Depth);
-        If Depth <= 0 Then
-        Begin
-          If CurTokType = TOK_SEMI Then Consume;
-          Exit;
-        End;
-        If CurTokType = TOK_SEMI Then Consume;
-        Continue;
-      End
-      Else If TokIsKw(KW_IF) Then
-      Begin
-        Consume; Dec(Depth);
-        If CurTokType = TOK_SEMI Then Consume;
-        Continue;
-      End
-      Else If TokIsKw(KW_LOOP) Then
-      Begin
-        Consume; Dec(Depth);
-        If CurTokType = TOK_SEMI Then Consume;
-        Continue;
+        EmitI('CMP  EDX, ' + IntToStr_(WVal));
+        EmitI('JE   ' + LblMatch);
       End
       Else
       Begin
-        Dec(Depth);
-        If Depth <= 0 Then Exit;
-        While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) Do
-          Consume;
-        If CurTokType = TOK_SEMI Then Consume;
-        Continue;
+        { Valeur dynamique dans EAX }
+        EmitI('CMP  EDX, EAX');
+        EmitI('JE   ' + LblMatch);
       End;
+      { Valeurs alternatives separees par | }
+      While CurTokType = TOK_BAR Do
+      Begin
+        Consume; { | }
+        GotConst := ParseConstExpr32(WVal);
+        If GotConst Then
+        Begin
+          EmitI('CMP  EDX, ' + IntToStr_(WVal));
+          EmitI('JE   ' + LblMatch);
+        End
+        Else
+        Begin
+          EmitI('CMP  EDX, EAX');
+          EmitI('JE   ' + LblMatch);
+        End;
+      End;
+      { Si aucune valeur ne correspond, sauter au prochain WHEN }
+      EmitI('JMP  ' + LblNext);
+      EmitLabel(LblMatch);
+      { Consommer => }
+      If CurTokType = TOK_ARROW Then Consume;
+      ParseSequenceOfStatements;
+      EmitI('JMP  ' + LblEndCase);
+      EmitLabel(LblNext);
     End;
-    If TokIsKw(KW_IF) Or TokIsKw(KW_LOOP) Or TokIsKw(KW_CASE) Or
-       TokIsKw(KW_DECLARE) Or TokIsKw(KW_SELECT) Or
-       TokIsKw(KW_BEGIN) Then
-      Inc(Depth);
-    Consume;
   End;
+  EmitLabel(LblEndCase);
+  { END CASE ; }
+  ExpectKw(KW_END, 'END');
+  ExpectKw(KW_CASE, 'CASE');
+  If CurTokType = TOK_SEMI Then Consume;
 End;
 
 { ---- ParseLoopStub : instruction LOOP (stub -> TODO 18) ------ }
@@ -4770,9 +4806,9 @@ Begin
   Else If TokIsKw(KW_PRAGMA) Then
     ParsePragma
   Else If TokIsKw(KW_IF) Then
-    ParseIfStub
+    ParseIf
   Else If TokIsKw(KW_CASE) Then
-    ParseCaseStub
+    ParseCase
   Else If TokIsKw(KW_LOOP) Then
   Begin
     EmitComment('LOOP ... (stub)');

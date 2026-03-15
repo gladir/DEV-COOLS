@@ -344,7 +344,7 @@
               Convention STDCALL : callee-cleanup (RET n)
             ParseNomQualified : ident.ident (pkg.proc, rec.field)
 
-  TODO 17 - PARSEUR : IF/ELSIF/ELSE ET CASE/WHEN/OTHERS (32 BITS)
+  TODO 17 - PARSEUR : IF/ELSIF/ELSE ET CASE/WHEN/OTHERS (32 BITS) [IMPLEMENTE]
             ParseIf :
               IF cond THEN stmts
               [ELSIF cond THEN stmts] ...
