@@ -314,7 +314,7 @@
               13. ?? (null-coalescing)
               14. = += -= *= /= %= &= |= ^= <<= >>= (affectation)
 
-  TODO 12 - AFFECTATIONS ET OPERATEURS COMPOSES
+  TODO 12 - AFFECTATIONS ET OPERATEURS COMPOSES [IMPLEMENTE]
             Affectation simple : var = expr -> MOV [var], EAX.
             Affectation composee += : var += expr ->
               MOV EBX,[var] / ADD EBX,EAX / MOV [var],EBX.

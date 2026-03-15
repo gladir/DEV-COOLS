@@ -224,7 +224,7 @@
               13. ?? (null-coalescing)
               14. = += -= *= /= %= &= |= ^= <<= >>= (affectation)
 
-  TODO 12 - AFFECTATIONS ET OPERATEURS COMPOSES
+  TODO 12 - AFFECTATIONS ET OPERATEURS COMPOSES [IMPLEMENTE]
             Affectation simple : var = expr -> MOV [var], EAX.
             Affectation composee += : var += expr -> ADD.
             Affectation composee -= : var -= expr -> SUB.
@@ -832,6 +832,7 @@ Procedure DataInit; Forward;
 
 { Forward declarations for TODO 09 }
 Function  AllocLocal(Size : Integer) : Integer; Forward;
+Procedure GenStoreVar(Idx : Integer); Forward;
 Procedure ParseVarDecl(Const VarType : TString; IsStatic : Boolean;
                        Const ClassName : TString); Forward;
 
@@ -841,6 +842,12 @@ Procedure ParsePrimary; Forward;
 
 { Forward declarations for TODO 11 }
 Procedure ParseExprPrec(MinPrec : Integer); Forward;
+
+{ Forward declarations for TODO 12 }
+Function  IsAssignOp : Boolean; Forward;
+Procedure ParseAssignment(Const TargetName : TString); Forward;
+Procedure ParseStatement; Forward;
+Procedure ParseMethodBody; Forward;
 
 { ============================================================ }
 { TODO 02 - LEXEUR (TOKENS C#)                                 }
@@ -3731,6 +3738,7 @@ Var
   InitVal  : LongInt;
   InitStr  : TString;
   InitIsStr: Boolean;
+  InitIsExpr : Boolean;        { True si init = expression generale }
   StrLbl   : TString;          { label ASM de la chaine (_CSCK_N)    }
   First    : Boolean;
 Begin
@@ -3757,6 +3765,7 @@ Begin
     InitVal   := 0;
     InitStr   := '';
     InitIsStr := False;
+    InitIsExpr := False;
     StrLbl    := '';
 
     { Verifier s il y a une initialisation = expr }
@@ -3765,8 +3774,11 @@ Begin
       Consume;
       HasInit := True;
 
-      { Evaluer l expression d initialisation simple }
-      If CurToken.Kind = TK_INTEGER Then
+      { En mode codegen et variable locale : utiliser ParseExpr }
+      If OutFOpen And (Not IsStatic) Then
+        InitIsExpr := True
+      { Evaluer l expression d initialisation simple (hors codegen) }
+      Else If CurToken.Kind = TK_INTEGER Then
       Begin
         InitVal := CurToken.IntVal;
         Consume;
@@ -3815,27 +3827,53 @@ Begin
           End
           Else
             InitVal := ConstTab[SymIdx].Value;
-        End;
-        Consume;
+          Consume;
+        End
+        Else If OutFOpen Then
+          InitIsExpr := True
+        Else
+          Consume;
       End
       Else If TokIsOp('-') Then
       Begin
         { Negation : -expr }
-        Consume;
-        If CurToken.Kind = TK_INTEGER Then
-        Begin
-          InitVal := -CurToken.IntVal;
-          Consume;
-        End
+        If OutFOpen Then
+          InitIsExpr := True
         Else
-          Consume; { skip unknown }
+        Begin
+          Consume;
+          If CurToken.Kind = TK_INTEGER Then
+          Begin
+            InitVal := -CurToken.IntVal;
+            Consume;
+          End
+          Else
+            Consume;
+        End;
+      End
+      Else If TokIsOp('(') Or TokIsOp('!') Or TokIsOp('~') Or
+              TokIsOp('++') Or TokIsOp('--') Or TokIsKw('new') Then
+      Begin
+        If OutFOpen Then
+          InitIsExpr := True
+        Else
+        Begin
+          While (CurToken.Kind <> TK_EOF) And
+                (Not TokIsPunct(';')) And (Not TokIsPunct(',')) Do
+            Consume;
+        End;
       End
       Else
       Begin
-        { Expression inconnue - sauter jusqu au ; ou , }
-        While (CurToken.Kind <> TK_EOF) And
-              (Not TokIsPunct(';')) And (Not TokIsPunct(',')) Do
-          Consume;
+        If OutFOpen Then
+          InitIsExpr := True
+        Else
+        Begin
+          { Expression inconnue - sauter jusqu au ; ou , }
+          While (CurToken.Kind <> TK_EOF) And
+                (Not TokIsPunct(';')) And (Not TokIsPunct(',')) Do
+            Consume;
+        End;
       End;
     End;
 
@@ -3877,7 +3915,13 @@ Begin
         { Emettre l initialisation si requise }
         If HasInit Then
         Begin
-          If InitIsStr Then
+          If InitIsExpr Then
+          Begin
+            { Expression generale : ParseExpr + GenStoreVar }
+            ParseExpr;
+            GenStoreVar(SymIdx);
+          End
+          Else If InitIsStr Then
           Begin
             If Length(StrLbl) > 0 Then
               GenInitLocalStr(Off, StrLbl)
@@ -4710,6 +4754,392 @@ Begin
   ParseExprPrec(0);
 End;
 
+{ ============================================================ }
+{ TODO 12 - AFFECTATIONS ET OPERATEURS COMPOSES                 }
+{           [IMPLEMENTE]                                        }
+{ ============================================================ }
+{                                                               }
+{  Affectation simple : var = expr -> ParseExpr, GenStoreVar.   }
+{  Affectations composees : += -= *= /= %= &= |= ^= <<= >>=   }
+{  Pre/post increment/decrement : ++var, var++, --var, var--    }
+{  (deja geres dans ParsePrimary pour les expressions).         }
+{  Affectation de tableau : arr[i] = expr.                      }
+{                                                               }
+{  ParseAssignment : analyse une affectation ou expression      }
+{    en tant qu instruction (appel, affectation, inc/dec).       }
+{  ParseStatement  : dispatcher pour une instruction C#.         }
+{  ParseMethodBody : analyse le corps d une methode.             }
+{                                                               }
+{ ============================================================ }
+
+Const
+  METHOD_STACK_SIZE = 1024;  { taille generique du cadre de pile }
+
+{ ------------------------------------------------------------ }
+{ GenVarRef : retourne l operand memoire d une variable         }
+{   Ex: DWORD PTR [EBP-4] ou DWORD PTR [_CSCST_X]             }
+{ ------------------------------------------------------------ }
+
+Function GenVarRef(Idx : Integer) : TString;
+Var
+  S   : TString;
+  Off : Integer;
+Begin
+  If Idx < 0 Then
+  Begin
+    GenVarRef := 'DWORD PTR [0]';
+    Exit;
+  End;
+
+  Off := SymTab[Idx].Offset;
+
+  If (SymTab[Idx].Cat = SC_VAR) And (Not SymTab[Idx].IsGlobal) Then
+  Begin
+    Str(Off, S);
+    If Off < 0 Then
+      GenVarRef := 'DWORD PTR [EBP' + S + ']'
+    Else
+      GenVarRef := 'DWORD PTR [EBP+' + S + ']';
+  End
+  Else If SymTab[Idx].Cat = SC_PARAM Then
+  Begin
+    Str(Off, S);
+    GenVarRef := 'DWORD PTR [EBP+' + S + ']';
+  End
+  Else
+    GenVarRef := 'DWORD PTR [' + SymTab[Idx].MangledName + ']';
+End;
+
+{ ------------------------------------------------------------ }
+{ IsAssignOp : True si le token courant est un operateur        }
+{   d affectation (= += -= *= /= %= &= |= ^= <<= >>=)         }
+{ ------------------------------------------------------------ }
+
+Function IsAssignOp : Boolean;
+Begin
+  IsAssignOp := TokIsOp('=') Or TokIsOp('+=') Or TokIsOp('-=') Or
+                TokIsOp('*=') Or TokIsOp('/=') Or TokIsOp('%=') Or
+                TokIsOp('&=') Or TokIsOp('|=') Or TokIsOp('^=') Or
+                TokIsOp('<<=') Or TokIsOp('>>=');
+End;
+
+{ ------------------------------------------------------------ }
+{ GenCompoundAssign : generer le code pour une affectation       }
+{   composee. EAX contient la valeur RHS, Idx est la variable   }
+{   cible. Op est l operateur (+=, -=, etc.).                   }
+{   Resultat : la variable est mise a jour, EAX = nouveau val.  }
+{ ------------------------------------------------------------ }
+
+Procedure GenCompoundAssign(Const Op : TString; Idx : Integer);
+Var
+  Ref : TString;
+Begin
+  If Idx < 0 Then Exit;
+  Ref := GenVarRef(Idx);
+
+  If Op = '+=' Then
+  Begin
+    EmitInstr('MOV', 'EBX,EAX');
+    EmitInstr('MOV', 'EAX,' + Ref);
+    EmitInstr('ADD', 'EAX,EBX');
+    EmitInstr('MOV', Ref + ',EAX');
+  End
+  Else If Op = '-=' Then
+  Begin
+    EmitInstr('MOV', 'EBX,EAX');
+    EmitInstr('MOV', 'EAX,' + Ref);
+    EmitInstr('SUB', 'EAX,EBX');
+    EmitInstr('MOV', Ref + ',EAX');
+  End
+  Else If Op = '*=' Then
+  Begin
+    EmitInstr('MOV', 'EBX,EAX');
+    EmitInstr('MOV', 'EAX,' + Ref);
+    EmitInstr('IMUL', 'EAX,EBX');
+    EmitInstr('MOV', Ref + ',EAX');
+  End
+  Else If Op = '/=' Then
+  Begin
+    EmitInstr('MOV', 'ECX,EAX');
+    EmitInstr('MOV', 'EAX,' + Ref);
+    EmitInstr('CDQ', '');
+    EmitInstr('IDIV', 'ECX');
+    EmitInstr('MOV', Ref + ',EAX');
+  End
+  Else If Op = '%=' Then
+  Begin
+    EmitInstr('MOV', 'ECX,EAX');
+    EmitInstr('MOV', 'EAX,' + Ref);
+    EmitInstr('CDQ', '');
+    EmitInstr('IDIV', 'ECX');
+    EmitInstr('MOV', Ref + ',EDX');
+    EmitInstr('MOV', 'EAX,EDX');
+  End
+  Else If Op = '&=' Then
+  Begin
+    EmitInstr('AND', Ref + ',EAX');
+    EmitInstr('MOV', 'EAX,' + Ref);
+  End
+  Else If Op = '|=' Then
+  Begin
+    EmitInstr('OR', Ref + ',EAX');
+    EmitInstr('MOV', 'EAX,' + Ref);
+  End
+  Else If Op = '^=' Then
+  Begin
+    EmitInstr('XOR', Ref + ',EAX');
+    EmitInstr('MOV', 'EAX,' + Ref);
+  End
+  Else If Op = '<<=' Then
+  Begin
+    EmitInstr('MOV', 'ECX,EAX');
+    EmitInstr('SHL', Ref + ',CL');
+    EmitInstr('MOV', 'EAX,' + Ref);
+  End
+  Else If Op = '>>=' Then
+  Begin
+    EmitInstr('MOV', 'ECX,EAX');
+    EmitInstr('SHR', Ref + ',CL');
+    EmitInstr('MOV', 'EAX,' + Ref);
+  End
+  Else
+    EmitComment('affectation composee inconnue: ' + Op);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseAssignment : analyser une affectation ou expression      }
+{   TargetName est le nom de l identifiant deja consomme.       }
+{   Gere : var = expr, var op= expr, appel(), arr[i] = expr,   }
+{          var++, var--.                                        }
+{ ------------------------------------------------------------ }
+
+Procedure ParseAssignment(Const TargetName : TString);
+Var
+  QualName  : TString;
+  Idx       : Integer;
+  Op        : TString;
+  ArgCount  : Integer;
+Begin
+  QualName := TargetName;
+  While TokIsPunct('.') Do
+  Begin
+    Consume;
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      QualName := QualName + '.' + CurToken.Val;
+      Consume;
+    End;
+  End;
+
+  { --- Appel de methode : ident(...) --- }
+  If TokIsPunct('(') Then
+  Begin
+    Idx := SymFind(QualName);
+    Consume;
+    ArgCount := 0;
+    While (CurToken.Kind <> TK_EOF) And (Not TokIsPunct(')')) Do
+    Begin
+      ParseExpr;
+      GenPushEAX;
+      Inc(ArgCount);
+      If TokIsPunct(',') Then Consume;
+    End;
+    If TokIsPunct(')') Then Consume;
+    If Idx >= 0 Then
+      EmitInstr('CALL', SymTab[Idx].MangledName)
+    Else
+      EmitInstr('CALL', CSC_FN_PFX + StrUpperCase(QualName));
+    If TokIsPunct(';') Then Consume;
+  End
+  { --- Indexation tableau : ident[i] ... --- }
+  Else If TokIsPunct('[') Then
+  Begin
+    Idx := SymFind(QualName);
+    GenLoadVar(Idx);
+    GenPushEAX;
+    Consume;  { [ }
+    ParseExpr;
+    If TokIsPunct(']') Then Consume;
+    EmitInstr('SHL', 'EAX,2');
+    GenPopEBX;
+    EmitInstr('ADD', 'EBX,EAX');
+    { Affectation : arr[i] = expr }
+    If TokIsOp('=') Then
+    Begin
+      GenPushEAX;   { sauver adresse = EBX (recalcul via push) }
+      EmitInstr('PUSH', 'EBX');
+      Consume;
+      ParseExpr;
+      EmitInstr('POP', 'EBX');
+      EmitInstr('MOV', 'DWORD PTR [EBX],EAX');
+    End
+    Else
+    Begin
+      EmitInstr('MOV', 'EAX,DWORD PTR [EBX]');
+    End;
+    If TokIsPunct(';') Then Consume;
+  End
+  { --- Affectation simple : var = expr --- }
+  Else If TokIsOp('=') Then
+  Begin
+    Idx := SymFind(QualName);
+    Consume;
+    ParseExpr;
+    GenStoreVar(Idx);
+    If TokIsPunct(';') Then Consume;
+  End
+  { --- Affectation composee : var op= expr --- }
+  Else If TokIsOp('+=') Or TokIsOp('-=') Or TokIsOp('*=') Or
+          TokIsOp('/=') Or TokIsOp('%=') Or TokIsOp('&=') Or
+          TokIsOp('|=') Or TokIsOp('^=') Or TokIsOp('<<=') Or
+          TokIsOp('>>=') Then
+  Begin
+    Idx := SymFind(QualName);
+    Op := CurToken.Val;
+    Consume;
+    ParseExpr;
+    GenCompoundAssign(Op, Idx);
+    If TokIsPunct(';') Then Consume;
+  End
+  { --- Post-increment : var++ --- }
+  Else If TokIsOp('++') Then
+  Begin
+    Idx := SymFind(QualName);
+    GenLoadVar(Idx);
+    GenIncVar(Idx);
+    Consume;
+    If TokIsPunct(';') Then Consume;
+  End
+  { --- Post-decrement : var-- --- }
+  Else If TokIsOp('--') Then
+  Begin
+    Idx := SymFind(QualName);
+    GenLoadVar(Idx);
+    GenDecVar(Idx);
+    Consume;
+    If TokIsPunct(';') Then Consume;
+  End
+  { --- Expression comme instruction : effet de bord --- }
+  Else
+  Begin
+    While (CurToken.Kind <> TK_EOF) And (Not TokIsPunct(';')) And
+          (Not TokIsPunct('}')) Do
+      Consume;
+    If TokIsPunct(';') Then Consume;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseStatement : analyser une instruction C#                   }
+{   Dispatcher : declaration, affectation, appel, return, bloc. }
+{ ------------------------------------------------------------ }
+
+Procedure ParseStatement;
+Var
+  VarType   : TString;
+  SavedName : TString;
+  Idx       : Integer;
+Begin
+  { Instruction vide }
+  If TokIsPunct(';') Then
+  Begin
+    Consume;
+    Exit;
+  End;
+
+  { return [expr]; }
+  If TokIsKw('return') Then
+  Begin
+    Consume;
+    If Not TokIsPunct(';') Then
+      ParseExpr;
+    If TokIsPunct(';') Then Consume;
+    Exit;
+  End;
+
+  { Declaration de variable locale : type ident [= expr]; }
+  If IsTypeKeyword Then
+  Begin
+    VarType := CurToken.Val;
+    Consume;
+    If TokIsPunct('[') Then
+    Begin
+      Consume;
+      If TokIsPunct(']') Then Consume;
+    End;
+    If CurToken.Kind = TK_IDENT Then
+      ParseVarDecl(VarType, False, '');
+    If TokIsPunct(';') Then Consume;
+    Exit;
+  End;
+
+  { Pre-increment : ++ident; }
+  If TokIsOp('++') Then
+  Begin
+    Consume;
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      Idx := SymFind(CurToken.Val);
+      Consume;
+      GenIncVar(Idx);
+      GenLoadVar(Idx);
+    End;
+    If TokIsPunct(';') Then Consume;
+    Exit;
+  End;
+
+  { Pre-decrement : --ident; }
+  If TokIsOp('--') Then
+  Begin
+    Consume;
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      Idx := SymFind(CurToken.Val);
+      Consume;
+      GenDecVar(Idx);
+      GenLoadVar(Idx);
+    End;
+    If TokIsPunct(';') Then Consume;
+    Exit;
+  End;
+
+  { Bloc d instructions imbriquees }
+  If TokIsPunct('{') Then
+  Begin
+    Consume;
+    SymEnterScope;
+    While (CurToken.Kind <> TK_EOF) And (Not TokIsPunct('}')) Do
+      ParseStatement;
+    If TokIsPunct('}') Then Consume;
+    SymLeaveScope;
+    Exit;
+  End;
+
+  { Identifiant : affectation, appel, ou expression }
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    SavedName := CurToken.Val;
+    Consume;
+    ParseAssignment(SavedName);
+    Exit;
+  End;
+
+  { Token inconnu : sauter }
+  Consume;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseMethodBody : analyser le corps d une methode             }
+{   L accolade ouvrante est deja consommee.                     }
+{   Analyse les instructions jusqu au accolade fermante.        }
+{ ------------------------------------------------------------ }
+
+Procedure ParseMethodBody;
+Begin
+  While (CurToken.Kind <> TK_EOF) And (Not TokIsPunct('}')) Do
+    ParseStatement;
+End;
+
 { ------------------------------------------------------------ }
 { ShowStats (corps)                                             }
 { ------------------------------------------------------------ }
@@ -4752,6 +5182,7 @@ Var
   BraceDepth : Integer;       { profondeur des accolades           }
   ClassDepth : Integer;       { profondeur a l entree de la classe }
   MethDepth  : Integer;       { profondeur a l entree de la methode }
+  MethExitLbl: TString;       { label de sortie de la methode (TODO 12) }
 Begin
   WriteLn('CSCW32: Compilation de ', Opts.SrcFile, ' ...');
 
@@ -4819,14 +5250,21 @@ Begin
 
   { Scanner les tokens restants : reconnaitre les declarations    }
   { namespace, class, methodes, variables, const, litteraux       }
-  NsName     := '';
-  ClsName    := '';
-  MethName   := '';
-  InClass    := False;
-  InMethod   := False;
-  BraceDepth := 0;
-  ClassDepth := 0;
-  MethDepth  := 0;
+  NsName      := '';
+  ClsName     := '';
+  MethName    := '';
+  MethExitLbl := '';
+  InClass     := False;
+  InMethod    := False;
+  BraceDepth  := 0;
+  ClassDepth  := 0;
+  MethDepth   := 0;
+
+  { Ouvrir le fichier ASM et emettre l en-tete + segment .CODE    }
+  { AVANT la boucle principale : le code est emis pendant le scan }
+  EmitOpen;
+  EmitHeader;
+  EmitCodeSeg;
 
   While CurToken.Kind <> TK_EOF Do
   Begin
@@ -4886,6 +5324,32 @@ Begin
       Inc(BraceDepth);
       SymEnterScope;
       Consume;
+      { Si c est l accolade ouvrante d une methode -> TODO 12 }
+      If InMethod And (BraceDepth = MethDepth + 1) Then
+      Begin
+        EmitBlankLine;
+        EmitComment('--- method ' + MethName + ' ---');
+        EmitLabel(SymMangle(MethName, SC_METHOD));
+        EmitProlog(METHOD_STACK_SIZE);
+        MethExitLbl := GenLabel;
+        ParseMethodBody;
+        EmitLabel(MethExitLbl);
+        If StrLowerCase(MethName) = 'main' Then
+        Begin
+          EmitInstr('PUSH', '0');
+          EmitInstr('CALL', '_ExitProcess@4');
+        End;
+        EmitEpilog;
+        MethExitLbl := '';
+        { Consommer accolade fermante et ajuster l etat }
+        If TokIsPunct('}') Then
+        Begin
+          Dec(BraceDepth);
+          SymLeaveScope;
+          InMethod := False;
+          Consume;
+        End;
+      End;
     End
     Else If TokIsPunct('}') Then
     Begin
@@ -5110,27 +5574,15 @@ Begin
           SymCount, ' symboles, ', TypeCount, ' types, ',
           DataCount, ' data)');
 
-  { Emettre le fichier .asm (TODO 07) }
-  EmitOpen;
-  EmitHeader;
+  { Emettre le segment .DATA apres le code (TODO 12)             }
+  { Le .DATA est emis apres le .CODE car toutes les chaines et   }
+  { variables statiques doivent etre connues avant l emission.   }
   EmitDataSeg;
-  EmitCodeSeg;
-
-  { Stub : point d entree minimal }
-  EmitComment('Point d entree');
-  EmitLabel('_CSCF_MAIN');
-  EmitProlog(LocalOffset);
-  EmitComment('--- initialisations locales (TODO 09) ---');
-  EmitComment('--- code a generer (TODO 11+) ---');
-  EmitInstr('PUSH', '0');
-  EmitInstr('CALL', '_ExitProcess@4');
-  EmitEpilog;
-
   EmitFooter;
   EmitClose;
 
   WriteLn('CSCW32: ASM genere -> ', AsmFileName);
-  WriteLn('CSCW32: Les TODOs 12..25 ne sont pas encore implementes.');
+  WriteLn('CSCW32: Les TODOs 13..25 ne sont pas encore implementes.');
 End;
 
 { ------------------------------------------------------------ }
