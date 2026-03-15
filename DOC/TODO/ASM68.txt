@@ -447,7 +447,7 @@ TODO 20 - Generation du fichier objet (format S-Record Motorola) [IMPLEMENTE]
   - Calcul du checksum pour chaque enregistrement
   - Option -n pour supprimer la generation du fichier objet
 
-TODO 21 - Gestion des fichiers INCLUDE et pile de sources
+TODO 21 - Gestion des fichiers INCLUDE et pile de sources [IMPLEMENTE]
   ----------------------------------------------------------
   - Record TSourceFile : Filename, FileHandle, LineNum,
     SavedLine, IsOpen

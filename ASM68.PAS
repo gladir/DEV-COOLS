@@ -38,7 +38,7 @@
 { TODO 18 - Architecture deux passes de l'assembleur [IMPLEMENTE] }
 { TODO 19 - Parseur de ligne assembleur [IMPLEMENTE] }
 { TODO 20 - Generation du fichier objet (format S-Record Motorola) [IMPLEMENTE] }
-{ TODO 21 - Gestion des fichiers INCLUDE et pile de sources }
+{ TODO 21 - Gestion des fichiers INCLUDE et pile de sources [IMPLEMENTE] }
 { TODO 22 - Gestion des macros (MACRO/ENDM) }
 { TODO 23 - Directives de listing et mise en page }
 { TODO 24 - Programme principal et orchestration complete }
@@ -296,6 +296,15 @@ Type
     IsDirective: Boolean;        { True si c'est une directive            }
   End;
 
+  { --- Pile d'inclusion (TODO 21) --- }
+  TSourceEntry = Record
+    FileName   : String;         { Nom du fichier empile                  }
+    LineNum    : Integer;        { Numero de ligne sauvegarde             }
+    Line       : String;         { Ligne courante sauvegardee             }
+    Col        : Integer;        { Colonne sauvegardee                    }
+    WasEof     : Boolean;        { Etat EOF sauvegarde                    }
+  End;
+
 { ============================================================================ }
 { Variables globales                                                           }
 { ============================================================================ }
@@ -389,6 +398,11 @@ Var
   obj_file       : Text;         { Fichier objet S-Record                 }
   obj_opened     : Boolean;      { True si fichier objet ouvert           }
   obj_record_count : Integer;    { Nombre d'enregistrements S1 emis       }
+
+  { --- Pile d'inclusion et noms de fichiers (TODO 21) --- }
+  IncludeStack   : Array[1..MAX_INCLUDE_DEPTH] of TSourceEntry;
+  IncludeCount   : Integer;      { Nombre d'inclusions effectuees         }
+  src_filename   : String;       { Nom du fichier source courant          }
 
 { ============================================================================ }
 { Fonctions utilitaires                                                        }
@@ -1234,7 +1248,10 @@ End;
 Procedure Error(Line, Col: Integer; Const Msg: String);
 { Erreur non fatale : affiche, incremente ErrorCount, arrete a MAX_ERRORS }
 Begin
- WriteLn('*** Erreur ligne ', Line, ', col ', Col, ': ', Msg);
+ If (include_depth > 0) and (src_filename <> '') Then
+  WriteLn(src_filename, '(', Line, '): Erreur col ', Col, ': ', Msg)
+ Else
+  WriteLn('*** Erreur ligne ', Line, ', col ', Col, ': ', Msg);
  Inc(ErrorCount);
  If ErrorCount >= MAX_ERRORS Then
  Begin
@@ -1247,7 +1264,12 @@ Procedure Warning(Line, Col: Integer; Const Msg: String);
 { Avertissement non bloquant, incremente WarningCount }
 Begin
  If Opts.ShowWarnings Then
-  WriteLn('Avertissement ligne ', Line, ', col ', Col, ': ', Msg);
+ Begin
+  If (include_depth > 0) and (src_filename <> '') Then
+   WriteLn(src_filename, '(', Line, '): Avertissement col ', Col, ': ', Msg)
+  Else
+   WriteLn('Avertissement ligne ', Line, ', col ', Col, ': ', Msg);
+ End;
  Inc(WarningCount);
 End;
 
@@ -1460,6 +1482,7 @@ Begin
           ' octets (org=$', IntToHex(Sections[I].Origin, 6), ')');
  WriteLn('Fixups         : ', FixupCount);
  WriteLn('Macros         : ', MacroCount);
+ WriteLn('Inclusions     : ', IncludeCount);
  WriteLn('Instructions   : ', InstrCount);
  WriteLn('Taille code    : ', CodeSize, ' octets');
  If start_address_set Then
@@ -1978,6 +2001,11 @@ Function ParseRegisterList: Word; Forward;
 
 { Forward declarations pour la generation S-Record (TODO 20) }
 Procedure WriteObjectFile; Forward;
+
+{ Forward declarations pour la pile d'inclusion (TODO 21) }
+Procedure PushInclude(Const FileName: String); Forward;
+Procedure PopInclude; Forward;
+Procedure DirINCBIN; Forward;
 
 Procedure InitOperand(Var Op: TOperand);
 { Initialise un operande a un etat neutre }
@@ -3384,7 +3412,8 @@ End;
 
 Procedure DirINCLUDE;
 { INCLUDE "filename" - inclure un fichier source.
-  Lit toutes les lignes dans un buffer puis les traite inline. }
+  Lit toutes les lignes dans un buffer puis les traite inline.
+  Utilise PushInclude/PopInclude pour gerer la pile de sources (TODO 21). }
 Var
   FileName: String;
   FullPath: String;
@@ -3393,10 +3422,7 @@ Var
   Found: Boolean;
   IncBuf: PIncLineBuf;
   IncCount: Integer;
-  SaveLine: String;
-  SaveCol: Integer;
-  SaveLineNum: Integer;
-  SaveEof: Boolean;
+  SrcDir: String;
 Begin
  { Recuperer le nom de fichier (apostrophes, guillemets ou identifiant) }
  If cur_tok = TOK_STRING Then
@@ -3435,20 +3461,41 @@ Begin
   Exit;
  End;
 
- { Chercher le fichier }
+ { Chercher le fichier (TODO 21 : repertoire source courant en premier) }
  Found := False;
  FullPath := FileName;
 
- { Essayer le nom tel quel }
- Assign(IncFile, FileName);
- {$I-} Reset(IncFile); {$I+}
- If IOResult = 0 Then
+ { 1. Essayer le repertoire du fichier source courant }
+ SrcDir := '';
+ For I := Length(src_filename) DownTo 1 do
+  If (src_filename[I] = '/') or (src_filename[I] = '\') Then
+  Begin
+   SrcDir := Copy(src_filename, 1, I);
+   Break;
+  End;
+ If SrcDir <> '' Then
  Begin
-  Found := True;
-  FullPath := FileName;
+  FullPath := SrcDir + FileName;
+  Assign(IncFile, FullPath);
+  {$I-} Reset(IncFile); {$I+}
+  If IOResult = 0 Then
+   Found := True;
  End;
 
- { Essayer les repertoires -i }
+ { 2. Essayer le nom tel quel }
+ If Not Found Then
+ Begin
+  FullPath := FileName;
+  Assign(IncFile, FileName);
+  {$I-} Reset(IncFile); {$I+}
+  If IOResult = 0 Then
+  Begin
+   Found := True;
+   FullPath := FileName;
+  End;
+ End;
+
+ { 3. Essayer les repertoires -i }
  If Not Found Then
  Begin
   For I := 1 to Opts.IncPathCount do
@@ -3491,14 +3538,8 @@ Begin
  End;
  Close(IncFile);
 
- { Sauvegarder l'etat du lexeur }
- SaveLine := src_line;
- SaveCol := src_col;
- SaveLineNum := src_line_num;
- SaveEof := src_eof;
-
- { Traiter les lignes incluses }
- Inc(include_depth);
+ { Empiler le contexte courant (TODO 21) }
+ PushInclude(FullPath);
  src_eof := True; { Empecher SrcGetLine de lire le fichier principal }
 
  For I := 1 to IncCount do
@@ -3516,13 +3557,8 @@ Begin
   End;
  End;
 
- Dec(include_depth);
-
- { Restaurer l'etat du lexeur }
- src_line := SaveLine;
- src_col := SaveCol;
- src_line_num := SaveLineNum;
- src_eof := SaveEof;
+ { Depiler et restaurer le contexte (TODO 21) }
+ PopInclude;
 
  Dispose(IncBuf);
 End;
@@ -7572,6 +7608,8 @@ Begin
     DirSECTION
    Else If DirName = 'INCLUDE' Then
     DirINCLUDE
+   Else If DirName = 'INCBIN' Then
+    DirINCBIN
    Else If (DirName = 'XDEF') or (DirName = 'ENTRY') or
            (DirName = 'PUBLIC') Then
     DirXDEF
@@ -7834,6 +7872,9 @@ Begin
  macro_expanding := False;
  macro_narg      := 0;
  include_depth   := 0;
+
+ { Reinitialiser le nom de fichier source courant (TODO 21) }
+ src_filename := Opts.SrcFile;
 End;
 
 Procedure Assemble;
@@ -8295,6 +8336,166 @@ Begin
 End;
 
 { ============================================================================ }
+{ TODO 21 - Gestion des fichiers INCLUDE et pile de sources                    }
+{ ============================================================================ }
+
+{ PushInclude empile le contexte source courant (nom de fichier, numero de
+  ligne, ligne, colonne, etat EOF) dans IncludeStack et prepare l'inclusion
+  du nouveau fichier. Appelee par DirINCLUDE avant de traiter les lignes
+  du fichier inclus. }
+
+Procedure PushInclude(Const FileName: String);
+Begin
+ If include_depth >= MAX_INCLUDE_DEPTH Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'INCLUDE: profondeur max depassee (' +
+        IntToStr(MAX_INCLUDE_DEPTH) + ')');
+  Exit;
+ End;
+ Inc(include_depth);
+ IncludeStack[include_depth].FileName := src_filename;
+ IncludeStack[include_depth].LineNum  := src_line_num;
+ IncludeStack[include_depth].Line     := src_line;
+ IncludeStack[include_depth].Col      := src_col;
+ IncludeStack[include_depth].WasEof   := src_eof;
+ src_filename := FileName;
+ If pass_num = 2 Then
+  Inc(IncludeCount);
+End;
+
+{ PopInclude restaure le contexte source depuis la pile apres la fin du
+  traitement du fichier inclus. }
+
+Procedure PopInclude;
+Begin
+ If include_depth <= 0 Then Exit;
+ src_filename := IncludeStack[include_depth].FileName;
+ src_line_num := IncludeStack[include_depth].LineNum;
+ src_line     := IncludeStack[include_depth].Line;
+ src_col      := IncludeStack[include_depth].Col;
+ src_eof      := IncludeStack[include_depth].WasEof;
+ Dec(include_depth);
+End;
+
+{ DirINCBIN : inclusion binaire.
+  INCBIN "fichier" - emettre le contenu brut du fichier dans la section
+  courante. Le fichier est lu octet par octet et emis via Emit8. }
+
+Procedure DirINCBIN;
+Var
+  FileName: String;
+  FullPath: String;
+  SrcDir: String;
+  I: Integer;
+  BinFile: File of Byte;
+  B: Byte;
+  Found: Boolean;
+  ByteCount: LongInt;
+Begin
+ { Recuperer le nom de fichier }
+ If cur_tok = TOK_STRING Then
+ Begin
+  FileName := cur_tok_str;
+  NextToken;
+ End
+ Else If (cur_tok = TOK_UNKNOWN) and (cur_tok_str = '"') Then
+ Begin
+  FileName := '';
+  While (src_col <= Length(src_line)) and (src_line[src_col] <> '"') do
+  Begin
+   FileName := FileName + src_line[src_col];
+   Inc(src_col);
+  End;
+  If (src_col <= Length(src_line)) and (src_line[src_col] = '"') Then
+   Inc(src_col);
+  NextToken;
+ End
+ Else If cur_tok = TOK_IDENT Then
+ Begin
+  FileName := cur_tok_str;
+  NextToken;
+ End
+ Else
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'INCBIN: nom de fichier attendu');
+  Exit;
+ End;
+
+ { Chercher le fichier : repertoire source courant, tel quel, -i }
+ Found := False;
+ FullPath := FileName;
+
+ { 1. Repertoire du fichier source courant }
+ SrcDir := '';
+ For I := Length(src_filename) DownTo 1 do
+  If (src_filename[I] = '/') or (src_filename[I] = '\') Then
+  Begin
+   SrcDir := Copy(src_filename, 1, I);
+   Break;
+  End;
+ If SrcDir <> '' Then
+ Begin
+  FullPath := SrcDir + FileName;
+  Assign(BinFile, FullPath);
+  {$I-} Reset(BinFile); {$I+}
+  If IOResult = 0 Then
+   Found := True;
+ End;
+
+ { 2. Nom tel quel }
+ If Not Found Then
+ Begin
+  FullPath := FileName;
+  Assign(BinFile, FileName);
+  {$I-} Reset(BinFile); {$I+}
+  If IOResult = 0 Then
+   Found := True;
+ End;
+
+ { 3. Repertoires -i }
+ If Not Found Then
+ Begin
+  For I := 1 to Opts.IncPathCount do
+  Begin
+   FullPath := Opts.IncludePaths[I];
+   If (Length(FullPath) > 0) and (FullPath[Length(FullPath)] <> '/') and
+      (FullPath[Length(FullPath)] <> '\') Then
+    FullPath := FullPath + '/';
+   FullPath := FullPath + FileName;
+   Assign(BinFile, FullPath);
+   {$I-} Reset(BinFile); {$I+}
+   If IOResult = 0 Then
+   Begin
+    Found := True;
+    Break;
+   End;
+  End;
+ End;
+
+ If Not Found Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'INCBIN: fichier introuvable: ' + FileName);
+  Exit;
+ End;
+
+ { Lire et emettre chaque octet dans la section courante }
+ ByteCount := 0;
+ While Not Eof(BinFile) do
+ Begin
+  Read(BinFile, B);
+  Emit8(B);
+  Inc(ByteCount);
+ End;
+ Close(BinFile);
+
+ If Opts.ShowWarnings and (ByteCount = 0) Then
+  Warning(cur_tok_line, cur_tok_col,
+          'INCBIN: fichier vide: ' + FullPath);
+End;
+
+{ ============================================================================ }
 { Procedure Run : programme principal d'assemblage                             }
 { ============================================================================ }
 
@@ -8344,6 +8545,10 @@ Begin
  { Initialiser la generation S-Record (TODO 20) }
  obj_opened := False;
  obj_record_count := 0;
+
+ { Initialiser la pile d'inclusion (TODO 21) }
+ IncludeCount := 0;
+ src_filename := Opts.SrcFile;
 
  { Initialiser la table des symboles }
  InitSymTable;
