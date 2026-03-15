@@ -176,7 +176,7 @@ TODO 07 - Generateur de code : emission et sections [IMPLEMENTE]
   - ResolveFixups : resoudre toutes les references en passe 2
   - Ordre des octets : big-endian (Motorola byte order)
 
-TODO 08 - Directives assembleur de base (ORG, DC, DS, EQU, END)
+TODO 08 - Directives assembleur de base (ORG, DC, DS, EQU, END) [IMPLEMENTE]
   ----------------------------------------------------------------
   - ORG expr : fixer l'adresse d'origine de la section courante
   - DC.B val[,val,...] : Define Constant (octets, mots, long mots)

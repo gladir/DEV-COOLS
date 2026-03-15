@@ -1,6 +1,6 @@
+*.class
 *.o
 *.obj
 *.ppu
-*.class
 /JASMIN
-ASM68
+/ASM68

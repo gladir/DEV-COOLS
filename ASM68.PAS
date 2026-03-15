@@ -25,7 +25,7 @@
 { TODO 05 - Analyseur d'expressions arithmetiques [IMPLEMENTE] }
 { TODO 06 - Modes d'adressage : analyse et encodage [IMPLEMENTE] }
 { TODO 07 - Generateur de code : emission et sections [IMPLEMENTE] }
-{ TODO 08 - Directives assembleur de base (ORG, DC, DS, EQU, END) }
+{ TODO 08 - Directives assembleur de base (ORG, DC, DS, EQU, END) [IMPLEMENTE] }
 { TODO 09 - Directives assembleur avancees (SECTION, INCLUDE, macros) }
 { TODO 10 - Assemblage conditionnel (IF, IFDEF, IFEQ, etc.) }
 { TODO 11 - Instructions de transfert de donnees }
@@ -323,6 +323,13 @@ Var
   CurSection    : Integer;      { Index de la section courante (1-base)  }
   Fixups        : Array[1..MAX_FIXUP] of TFixup; { Table des fixups      }
   FixupCount    : Integer;      { Nombre de fixups enregistres           }
+
+  { --- Etat de l'assemblage (TODO 08) --- }
+  pass_num         : Integer;      { Passe courante (1 ou 2)              }
+  end_source       : Boolean;      { True si directive END rencontree     }
+  start_address    : LongInt;      { Adresse de demarrage (END expr)      }
+  start_address_set: Boolean;      { True si adresse de demarrage definie }
+  cur_label        : String;       { Etiquette de la ligne courante       }
 
 { ============================================================================ }
 { Fonctions utilitaires                                                        }
@@ -647,7 +654,7 @@ Begin
  If (U = 'XDEF') or (U = 'XREF') or (U = 'PUBLIC') or
     (U = 'EXTERN') Then Begin IsDirective := True; Exit; End;
  If (U = 'OPT') or (U = 'LIST') or (U = 'NOLIST') or
-    (U = 'PAGE') or (U = 'TTL') Then Begin IsDirective := True; Exit; End;
+    (U = 'PAGE') or (U = 'TTL') or (U = 'SPC') Then Begin IsDirective := True; Exit; End;
  If (U = 'CNOP') or (U = 'EVEN') or (U = 'ALIGN') or
     (U = 'FAIL') Then Begin IsDirective := True; Exit; End;
  If (U = 'REPT') or (U = 'ENDR') or (U = 'DCB') Then Begin IsDirective := True; Exit; End;
@@ -1388,6 +1395,8 @@ Begin
           ' octets (org=$', IntToHex(Sections[I].Origin, 6), ')');
  WriteLn('Fixups         : ', FixupCount);
  WriteLn('Taille code    : ', CodeSize, ' octets');
+ If start_address_set Then
+  WriteLn('Adresse debut  : $', IntToHex(start_address, 6));
  WriteLn('Erreurs        : ', ErrorCount);
  WriteLn('Avertissements : ', WarningCount);
 End;
@@ -1436,6 +1445,9 @@ Var
   UName: String;
 Begin
  UName := UpCaseStr(Name);
+ { Prefixer les etiquettes locales (.xxx) avec la derniere etiquette globale }
+ If (Length(UName) > 0) and ((UName[1] = '.') or (UName[1] = '@')) Then
+  UName := last_global_sym + UName;
  { Recherche en ordre inverse pour trouver la def la plus recente (SET) }
  For I := SymCount DownTo 1 do
  Begin
@@ -1460,7 +1472,10 @@ Var
   UName: String;
 Begin
  UName := UpCaseStr(Name);
- Idx := FindSym(UName);
+ { Prefixer les etiquettes locales (.xxx) avec la derniere etiquette globale }
+ If (Length(UName) > 0) and ((UName[1] = '.') or (UName[1] = '@')) Then
+  UName := last_global_sym + UName;
+ Idx := FindSym(Name);
 
  { Si symbole existe deja }
  If Idx <> 0 Then
@@ -2865,6 +2880,422 @@ Begin
 End;
 
 { ============================================================================ }
+{ TODO 08 - Directives assembleur de base (ORG, DC, DS, EQU, END)             }
+{ ============================================================================ }
+
+{ ---------- ORG : fixer l'adresse d'origine ---------- }
+
+Procedure DirORG;
+{ ORG expr - fixe l'adresse d'origine de la section courante.
+  Met a jour l'Origin et le CurAddr (relatif) de la section. }
+Var V: LongInt;
+Begin
+ V := EvalExpr;
+ If V < 0 Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'ORG: adresse negative');
+  Exit;
+ End;
+ Sections[CurSection].Origin  := V;
+ Sections[CurSection].CurAddr := 0;
+ expr_pc := V;
+End;
+
+{ ---------- EQU / SET : constantes et variables d'assemblage ---------- }
+
+Procedure DirEQU(Const LblName: String);
+{ label EQU expr - definit une constante d'assemblage (non redefinissable) }
+Var V: LongInt;
+Begin
+ If LblName = '' Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'EQU necessite une etiquette');
+  Exit;
+ End;
+ V := EvalExpr;
+ AddSym(LblName, V, CurSection, SYM_EQU, cur_tok_line);
+End;
+
+Procedure DirSET(Const LblName: String);
+{ label SET expr - definit une variable d'assemblage (redefinissable) }
+Var V: LongInt;
+Begin
+ If LblName = '' Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'SET necessite une etiquette');
+  Exit;
+ End;
+ V := EvalExpr;
+ AddSym(LblName, V, CurSection, SYM_SET, cur_tok_line);
+End;
+
+{ ---------- DC : Define Constant ---------- }
+
+Procedure DirDC(Size: Integer);
+{ DC.B val[,val,...] - Define Constant (octets, mots, long mots).
+  DC.W val[,val,...]   Pour DC.B, les chaines ('...') sont supportees.
+  DC.L val[,val,...] }
+Var
+  V: LongInt;
+  S: String;
+  I: Integer;
+  First: Boolean;
+Begin
+ If Size = 0 Then Size := SIZE_WORD; { defaut = .W }
+ First := True;
+ Repeat
+  If Not First Then
+   NextToken; { consommer la virgule }
+  First := False;
+
+  { Chaine de caracteres pour DC.B }
+  If (Size = SIZE_BYTE) and (cur_tok = TOK_STRING) Then
+  Begin
+   S := cur_tok_str;
+   For I := 1 to Length(S) do
+    Emit8(Byte(Ord(S[I])));
+   NextToken;
+  End
+  Else
+  Begin
+   V := EvalExpr;
+   Case Size of
+    SIZE_BYTE: Emit8(Byte(V and $FF));
+    SIZE_WORD:
+    Begin
+     AlignPC(2);
+     Emit16(Word(V and $FFFF));
+    End;
+    SIZE_LONG:
+    Begin
+     AlignPC(2);
+     Emit32(V);
+    End;
+   End;
+  End;
+ Until cur_tok <> TOK_COMMA;
+End;
+
+{ ---------- DCB : Define Constant Block ---------- }
+
+Procedure DirDCB(Size: Integer);
+{ DCB.s count,value - repetition d'une valeur.
+  Ex: DCB.W 100,$FFFF = 100 mots valant $FFFF }
+Var
+  Count: LongInt;
+  Value: LongInt;
+  I: LongInt;
+Begin
+ If Size = 0 Then Size := SIZE_WORD;
+ Count := EvalExpr;
+ If Count < 0 Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'DCB: compteur negatif');
+  Exit;
+ End;
+ Value := 0;
+ If cur_tok = TOK_COMMA Then
+ Begin
+  NextToken;
+  Value := EvalExpr;
+ End;
+ For I := 1 to Count do
+ Begin
+  Case Size of
+   SIZE_BYTE: Emit8(Byte(Value and $FF));
+   SIZE_WORD:
+   Begin
+    If I = 1 Then AlignPC(2);
+    Emit16(Word(Value and $FFFF));
+   End;
+   SIZE_LONG:
+   Begin
+    If I = 1 Then AlignPC(2);
+    Emit32(Value);
+   End;
+  End;
+ End;
+End;
+
+{ ---------- DS : Define Storage ---------- }
+
+Procedure DirDS(Size: Integer);
+{ DS.B count - reserver count octets (non initialises / remplis de zero).
+  DS.W count   DS.W 0 = alignement sur mot.
+  DS.L count }
+Var
+  Count: LongInt;
+  Total: LongInt;
+  I: LongInt;
+Begin
+ If Size = 0 Then Size := SIZE_WORD;
+ Count := EvalExpr;
+ If Count < 0 Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'DS: compteur negatif');
+  Exit;
+ End;
+ { DS.W 0 = alignement sur mot (convention Motorola) }
+ If (Count = 0) and (Size = SIZE_WORD) Then
+ Begin
+  AlignPC(2);
+  Exit;
+ End;
+ { DS.L 0 = alignement sur long mot }
+ If (Count = 0) and (Size = SIZE_LONG) Then
+ Begin
+  AlignPC(4);
+  Exit;
+ End;
+ { Aligner avant si taille > byte }
+ If Size > SIZE_BYTE Then AlignPC(2);
+ Total := Count * Size;
+ For I := 1 to Total do
+  Emit8(0);
+End;
+
+{ ---------- EVEN : aligner sur adresse paire ---------- }
+
+Procedure DirEVEN;
+{ EVEN - equivalent a DS.W 0 (aligner sur adresse paire) }
+Begin
+ AlignPC(2);
+End;
+
+{ ---------- CNOP : aligner avec offset ---------- }
+
+Procedure DirCNOP;
+{ CNOP offset,alignment - aligne sur une frontiere de 'alignment' octets,
+  puis ajoute 'offset' octets de padding.
+  Ex: CNOP 0,4 = aligner sur long mot }
+Var
+  Offset_: LongInt;
+  Align_: LongInt;
+Begin
+ Offset_ := EvalExpr;
+ If cur_tok <> TOK_COMMA Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'CNOP: virgule attendue');
+  Exit;
+ End;
+ NextToken;
+ Align_ := EvalExpr;
+ If Align_ <= 0 Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'CNOP: alignement invalide');
+  Exit;
+ End;
+ AlignPC(Integer(Align_));
+ While Offset_ > 0 do
+ Begin
+  Emit8(0);
+  Dec(Offset_);
+ End;
+End;
+
+{ ---------- END : fin du source ---------- }
+
+Procedure DirEND;
+{ END [expr] - fin du source. expr est l'adresse de demarrage optionnelle. }
+Var V: LongInt;
+Begin
+ end_source := True;
+ If (cur_tok <> TOK_EOL) and (cur_tok <> TOK_EOF) Then
+ Begin
+  V := EvalExpr;
+  start_address := V;
+  start_address_set := True;
+ End;
+End;
+
+{ ---------- ProcessLabel : gestion des etiquettes ---------- }
+
+Procedure ProcessLabel(Const LblName: String);
+{ Ajoute une etiquette a la table des symboles avec la valeur du PC courant. }
+Begin
+ If LblName = '' Then Exit;
+ AddSym(LblName, GetPC, CurSection, SYM_LABEL, cur_tok_line);
+End;
+
+{ ---------- SkipToEOL : sauter jusqu'a la fin de ligne ---------- }
+
+Procedure SkipToEOL;
+{ Avance jusqu'au prochain EOL ou EOF. }
+Begin
+ While (cur_tok <> TOK_EOL) and (cur_tok <> TOK_EOF) do
+  NextToken;
+End;
+
+{ ---------- ParseLine : traiter une ligne source ---------- }
+
+Procedure ParseLine;
+{ Traite une ligne source : etiquette optionnelle + directive/opcode.
+  Appele en boucle par Run pour chaque ligne du source. }
+Var
+  LblName: String;
+  DirName: String;
+  DirSize: Integer;
+Begin
+ cur_label := '';
+ LblName := '';
+
+ { Verifier si fin de source }
+ If end_source Then Exit;
+
+ { Sauter les lignes vides }
+ If cur_tok = TOK_EOL Then
+ Begin
+  NextToken;
+  Exit;
+ End;
+ If cur_tok = TOK_EOF Then Exit;
+
+ { --- Etiquette en debut de ligne --- }
+ If cur_tok = TOK_LABEL Then
+ Begin
+  LblName := cur_tok_str;
+  { Retirer le ':' final si present }
+  If (Length(LblName) > 0) and (LblName[Length(LblName)] = ':') Then
+   LblName := Copy(LblName, 1, Length(LblName) - 1);
+  cur_label := LblName;
+  NextToken;
+  { Si c'est suivi d'un EOL, c'est juste une etiquette }
+  If (cur_tok = TOK_EOL) or (cur_tok = TOK_EOF) Then
+  Begin
+   ProcessLabel(LblName);
+   If cur_tok = TOK_EOL Then NextToken;
+   Exit;
+  End;
+ End
+ Else If cur_tok = TOK_IDENT Then
+ Begin
+  { Un identifiant en debut de ligne peut etre une etiquette
+    si suivi de EQU, SET, ou ':' }
+  LblName := cur_tok_str;
+  { Regarder le token suivant pour determiner si c'est une etiquette }
+  { On verifie d'abord si le suivant est EQU ou SET }
+  NextToken;
+  If cur_tok = TOK_COLON Then
+  Begin
+   { C'est une etiquette avec ':' }
+   cur_label := LblName;
+   NextToken; { consommer le ':' }
+   If (cur_tok = TOK_EOL) or (cur_tok = TOK_EOF) Then
+   Begin
+    ProcessLabel(LblName);
+    If cur_tok = TOK_EOL Then NextToken;
+    Exit;
+   End;
+  End
+  Else If (cur_tok = TOK_DIRECTIVE) and
+          ((UpCaseStr(cur_tok_str) = 'EQU') or (UpCaseStr(cur_tok_str) = 'SET')) Then
+  Begin
+   { C'est label EQU/SET expr }
+   cur_label := LblName;
+   { On continue normalement, la directive va utiliser LblName }
+  End
+  Else
+  Begin
+   { Ce n'est pas une etiquette, c'est un identifiant inconnu.
+     On a deja consomme le token suivant, on ne peut pas revenir.
+     Signaler une erreur. }
+   Error(cur_tok_line, cur_tok_col,
+         'instruction ou directive inconnue: ' + LblName);
+   SkipToEOL;
+   If cur_tok = TOK_EOL Then NextToken;
+   Exit;
+  End;
+ End;
+
+ { --- Directive ou opcode --- }
+ If cur_tok = TOK_DIRECTIVE Then
+ Begin
+  DirName := UpCaseStr(cur_tok_str);
+  DirSize := cur_tok_size;
+  NextToken; { consommer la directive }
+
+  { Definir l'etiquette si presente (sauf pour EQU/SET qui la gerent) }
+  If (DirName <> 'EQU') and (DirName <> 'SET') Then
+   ProcessLabel(LblName);
+
+  If DirName = 'ORG' Then
+   DirORG
+  Else If DirName = 'EQU' Then
+   DirEQU(LblName)
+  Else If DirName = 'SET' Then
+   DirSET(LblName)
+  Else If DirName = 'DC' Then
+   DirDC(DirSize)
+  Else If DirName = 'DCB' Then
+   DirDCB(DirSize)
+  Else If DirName = 'DS' Then
+   DirDS(DirSize)
+  Else If DirName = 'EVEN' Then
+   DirEVEN
+  Else If DirName = 'CNOP' Then
+   DirCNOP
+  Else If DirName = 'END' Then
+   DirEND
+  Else If (DirName = 'LIST') Then
+  Begin
+   list_enabled := True;
+   SkipToEOL;
+  End
+  Else If (DirName = 'NOLIST') Then
+  Begin
+   list_enabled := False;
+   SkipToEOL;
+  End
+  Else If (DirName = 'TTL') Then
+  Begin
+   If cur_tok = TOK_STRING Then
+   Begin
+    list_title := cur_tok_str;
+    NextToken;
+   End;
+   SkipToEOL;
+  End
+  Else If (DirName = 'SPC') or (DirName = 'PAGE') or
+          (DirName = 'OPT') or (DirName = 'FAIL') or
+          (DirName = 'ALIGN') Then
+  Begin
+   { Directives de listing/controle - ignorer les arguments }
+   SkipToEOL;
+  End
+  Else
+  Begin
+   { Directive non encore implementee (SECTION, INCLUDE, etc.) }
+   Warning(cur_tok_line, cur_tok_col,
+           'directive non encore implementee: ' + DirName);
+   SkipToEOL;
+  End;
+ End
+ Else If cur_tok = TOK_OPCODE Then
+ Begin
+  { Opcode (instruction 68000) - non encore implemente, placeholder }
+  ProcessLabel(LblName);
+  Warning(cur_tok_line, cur_tok_col,
+          'encodage instructions pas encore implemente: ' + cur_tok_str);
+  SkipToEOL;
+ End
+ Else If (cur_tok <> TOK_EOL) and (cur_tok <> TOK_EOF) Then
+ Begin
+  { Token inattendu }
+  ProcessLabel(LblName);
+  Error(cur_tok_line, cur_tok_col,
+        'instruction ou directive attendue, trouve: ' + cur_tok_str);
+  SkipToEOL;
+ End;
+
+ { Mettre a jour expr_pc pour les expressions }
+ expr_pc := GetPC;
+
+ { Consommer le EOL }
+ If cur_tok = TOK_EOL Then
+  NextToken;
+End;
+
+{ ============================================================================ }
 { Analyse des options de ligne de commande                                     }
 { ============================================================================ }
 
@@ -2987,11 +3418,11 @@ Begin
 End;
 
 { ============================================================================ }
-{ Procedure Run : stub pour le programme principal                             }
+{ Procedure Run : programme principal d'assemblage                             }
 { ============================================================================ }
 
 Procedure Run;
-Var TokName: String;
+Var I: Integer;
 Begin
  ParseArgs;
 
@@ -3012,6 +3443,11 @@ Begin
  CodeSize     := 0;
  expr_pc      := 0;
  expr_depth   := 0;
+ pass_num     := 1;
+ end_source   := False;
+ start_address := 0;
+ start_address_set := False;
+ cur_label    := '';
 
  { Initialiser la table des symboles }
  InitSymTable;
@@ -3027,52 +3463,16 @@ Begin
  SrcGetLine;
  NextToken;
 
- While cur_tok <> TOK_EOF do
+ { Boucle principale : traiter chaque ligne (TODO 08) }
+ While (cur_tok <> TOK_EOF) and (Not end_source) do
  Begin
-  Case cur_tok of
-   TOK_IDENT:     TokName := 'IDENT';
-   TOK_INTEGER:   TokName := 'INTEGER';
-   TOK_STRING:    TokName := 'STRING';
-   TOK_CHAR:      TokName := 'CHAR';
-   TOK_REGISTER:  TokName := 'REGISTER';
-   TOK_OPCODE:    TokName := 'OPCODE';
-   TOK_DIRECTIVE: TokName := 'DIRECTIVE';
-   TOK_LABEL:     TokName := 'LABEL';
-   TOK_COMMA:     TokName := 'COMMA';
-   TOK_LPAREN:    TokName := 'LPAREN';
-   TOK_RPAREN:    TokName := 'RPAREN';
-   TOK_PLUS:      TokName := 'PLUS';
-   TOK_MINUS:     TokName := 'MINUS';
-   TOK_STAR:      TokName := 'STAR';
-   TOK_SLASH:     TokName := 'SLASH';
-   TOK_HASH:      TokName := 'HASH';
-   TOK_DOT:       TokName := 'DOT';
-   TOK_COLON:     TokName := 'COLON';
-   TOK_EQUAL:     TokName := 'EQUAL';
-   TOK_AMPERSAND: TokName := 'AMPERSAND';
-   TOK_PIPE:      TokName := 'PIPE';
-   TOK_CARET:     TokName := 'CARET';
-   TOK_PERCENT:   TokName := 'PERCENT';
-   TOK_TILDE:     TokName := 'TILDE';
-   TOK_LSHIFT:    TokName := 'LSHIFT';
-   TOK_RSHIFT:    TokName := 'RSHIFT';
-   TOK_EOL:       TokName := 'EOL';
-  Else
-   TokName := 'UNKNOWN';
-  End;
-  If cur_tok = TOK_EOL Then
-   WriteLn(PadRight(IntToStr(cur_tok_line), 5), ' ', PadRight(TokName, 12))
-  Else If cur_tok = TOK_INTEGER Then
-   WriteLn(PadRight(IntToStr(cur_tok_line), 5), ' ', PadRight(TokName, 12),
-           ' ', cur_tok_str, ' = ', cur_tok_val)
-  Else If cur_tok_size <> 0 Then
-   WriteLn(PadRight(IntToStr(cur_tok_line), 5), ' ', PadRight(TokName, 12),
-           ' ', cur_tok_str, ' (size=', cur_tok_size, ')')
-  Else
-   WriteLn(PadRight(IntToStr(cur_tok_line), 5), ' ', PadRight(TokName, 12),
-           ' ', cur_tok_str);
-  NextToken;
+  ParseLine;
  End;
+
+ { Calculer la taille totale du code genere }
+ CodeSize := 0;
+ For I := 1 to SectionCount do
+  CodeSize := CodeSize + Sections[I].Size;
 
  SrcClose;
 
