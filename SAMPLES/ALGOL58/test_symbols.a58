@@ -1,0 +1,12 @@
+comment Test de la table des symboles (TODO 05);
+comment Les identificateurs non declares produisent un avertissement;
+comment Les scopes ne sont pas encore utilises activement dans ParseBlock;
+comment Ce test verifie que le parseur gere les idents sans crash;
+
+begin
+  comment Expression avec des literaux seulement pour le moment;
+  42;
+  true and false;
+  3 + 4 * 2;
+  (10 - 3) * (2 + 1)
+end

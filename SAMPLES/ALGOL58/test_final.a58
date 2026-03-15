@@ -1,0 +1,50 @@
+comment Test TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES ;
+comment Ce fichier teste le pipeline complet de compilation ;
+
+begin
+  comment Cas 1 : programme minimal avec write ;
+  writeln("Test 1 : OK") ;
+
+  comment Cas 2 : variable et affectation ;
+  integer x ;
+  x := 42 ;
+  writeln(x) ;
+
+  comment Cas 3 : expression arithmetique ;
+  integer y ;
+  y := 2 * 3 + 4 ;
+  writeln(y) ;
+
+  comment Cas 4 : condition if/then/else ;
+  if x > 10 then writeln("grand") else writeln("petit") ;
+
+  comment Cas 5 : boucle for step until ;
+  integer s, i ;
+  s := 0 ;
+  for i := 1 step 1 until 5 do
+    s := s + i ;
+  writeln(s) ;
+
+  comment Cas 6 : tableau ;
+  integer array T[1:3] ;
+  T[1] := 10 ;
+  T[2] := 20 ;
+  T[3] := 30 ;
+  writeln(T[2]) ;
+
+  comment Cas 7 : procedure avec parametres ;
+  integer procedure double(n) ; value n ; integer n ;
+    double := n * 2 ;
+
+  writeln(double(21)) ;
+
+  comment Cas 8 : booleen et operateurs logiques ;
+  if true and not false then writeln("logique OK") ;
+
+  comment Cas 9 : fonctions intrinseques ;
+  writeln(abs(-99)) ;
+  writeln(max(5, 8)) ;
+
+  comment Cas 10 : pipeline complet - programme fonctionnel ;
+  writeln("Compilation terminee avec succes")
+end

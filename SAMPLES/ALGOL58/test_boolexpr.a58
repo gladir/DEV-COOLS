@@ -1,0 +1,82 @@
+comment Test TODO 20 - EXPRESSIONS BOOLEENNES AVANCEES ;
+comment Ce fichier teste les operateurs booleens avances ;
+
+begin
+  comment Cas 1 : and avec deux vrais ;
+  integer a ;
+  a := 0 ;
+  if true and true then a := 1 ;
+  write(a) ;
+
+  comment Cas 2 : and avec court-circuit (false and x) ;
+  integer b ;
+  b := 0 ;
+  if false and true then b := 99
+  else b := 2 ;
+  write(b) ;
+
+  comment Cas 3 : or avec court-circuit (true or x) ;
+  integer c ;
+  c := 0 ;
+  if true or false then c := 3 ;
+  write(c) ;
+
+  comment Cas 4 : or avec deux faux ;
+  integer d ;
+  d := 0 ;
+  if false or false then d := 99
+  else d := 4 ;
+  write(d) ;
+
+  comment Cas 5 : not true et not false ;
+  integer e ;
+  e := 0 ;
+  if not false then e := e + 1 ;
+  if not true then e := e + 99 ;
+  if e = 1 then e := 5 ;
+  write(e) ;
+
+  comment Cas 6 : imp (implication) - false imp x est toujours vrai ;
+  integer f ;
+  f := 0 ;
+  if false imp false then f := f + 1 ;
+  if false imp true then f := f + 1 ;
+  if true imp true then f := f + 1 ;
+  if true imp false then f := f + 10 ;
+  if f = 3 then f := 6 ;
+  write(f) ;
+
+  comment Cas 7 : eqv (equivalence) - meme valeur logique ;
+  integer g ;
+  g := 0 ;
+  if true eqv true then g := g + 1 ;
+  if false eqv false then g := g + 1 ;
+  if true eqv false then g := g + 10 ;
+  if false eqv true then g := g + 10 ;
+  if g = 2 then g := 7 ;
+  write(g) ;
+
+  comment Cas 8 : combinaison and/or avec precedence ;
+  integer h ;
+  h := 0 ;
+  if true or false and false then h := 8 ;
+  write(h) ;
+
+  comment Cas 9 : not combine avec and ;
+  integer i ;
+  i := 0 ;
+  if not false and not false then i := 9 ;
+  write(i) ;
+
+  comment Cas 10 : expression booleenne dans for while ;
+  integer j ;
+  integer k ;
+  j := 0 ;
+  k := 1 ;
+  for j := 1 step 1 until 10 do
+  begin
+    k := k + 1
+  end ;
+  if k > 5 and k < 20 then k := 10 ;
+  write(k)
+end

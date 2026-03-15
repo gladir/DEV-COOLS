@@ -1,0 +1,42 @@
+comment Test TODO 12 - ENTREES/SORTIES (READ / WRITE);
+comment Teste write, writeln, read, readln avec divers types d arguments;
+begin
+  integer x;
+  integer y;
+  Boolean b;
+
+  comment Test 1 : write d une chaine;
+  write("Hello");
+
+  comment Test 2 : writeln d une chaine;
+  writeln("World");
+
+  comment Test 3 : write d un entier;
+  x := 42;
+  write(x);
+
+  comment Test 4 : writeln d un entier;
+  y := 100;
+  writeln(y);
+
+  comment Test 5 : writeln d un booleen vrai;
+  b := true;
+  writeln(b);
+
+  comment Test 6 : writeln d un booleen faux;
+  b := false;
+  writeln(b);
+
+  comment Test 7 : write de plusieurs arguments;
+  write("x=", x, " y=", y);
+  writeln("");
+
+  comment Test 8 : writeln avec expression;
+  writeln(x + y);
+
+  comment Test 9 : writeln sans arguments (juste CR LF);
+  writeln();
+
+  comment Test 10 : write d une constante immediate;
+  writeln(123)
+end

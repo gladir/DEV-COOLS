@@ -1,0 +1,116 @@
+comment Test TODO 16 : blocs begin...end et portees ;
+
+comment Test 1 : bloc simple begin...end avec variable globale ;
+begin
+  integer x;
+  x := 10;
+  writeln(x)
+end;
+
+comment Test 2 : bloc imbrique avec variable locale ;
+begin
+  integer a;
+  a := 100;
+  begin
+    integer b;
+    b := 200;
+    writeln(b)
+  end;
+  writeln(a)
+end;
+
+comment Test 3 : deux blocs imbriques sequentiels ;
+begin
+  integer g;
+  g := 1;
+  begin
+    integer h;
+    h := 2;
+    writeln(h)
+  end;
+  begin
+    integer k;
+    k := 3;
+    writeln(k)
+  end;
+  writeln(g)
+end;
+
+comment Test 4 : blocs imbriques profonds (3 niveaux) ;
+begin
+  integer p;
+  p := 10;
+  begin
+    integer q;
+    q := 20;
+    begin
+      integer r;
+      r := 30;
+      writeln(r)
+    end;
+    writeln(q)
+  end;
+  writeln(p)
+end;
+
+comment Test 5 : bloc avec variable globale visible dans sous-bloc ;
+begin
+  integer v;
+  v := 42;
+  begin
+    writeln(v)
+  end
+end;
+
+comment Test 6 : bloc avec affectation et arithmetique ;
+begin
+  integer m;
+  m := 5;
+  begin
+    integer n;
+    n := m + 10;
+    writeln(n)
+  end
+end;
+
+comment Test 7 : bloc avec instruction composee (plusieurs instructions) ;
+begin
+  integer x;
+  integer y;
+  x := 3;
+  y := 7;
+  begin
+    integer z;
+    z := x + y;
+    writeln(x);
+    writeln(y);
+    writeln(z)
+  end
+end;
+
+comment Test 8 : bloc vide ;
+begin
+  begin
+  end
+end;
+
+comment Test 9 : bloc avec if dans un sous-bloc ;
+begin
+  integer c;
+  c := 1;
+  begin
+    if c = 1 then writeln(c)
+  end
+end;
+
+comment Test 10 : bloc avec for dans un sous-bloc ;
+begin
+  integer s;
+  s := 0;
+  begin
+    integer i;
+    for i := 1 step 1 until 5 do
+      s := s + i;
+    writeln(s)
+  end
+end

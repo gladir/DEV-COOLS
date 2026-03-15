@@ -1,0 +1,20 @@
+comment Test des litteraux et constantes Algol 58;
+begin
+  comment Entiers decimaux;
+  integer x;
+  x := 42;
+  x := 0;
+  x := 32767;
+  comment Booleens;
+  Boolean b;
+  b := true;
+  b := false;
+  comment Chaines de caracteres;
+  writeln("Hello, Algol 58!");
+  writeln("Test des litteraux");
+  comment Reel tronque;
+  real z;
+  z := 3.14;
+  comment Doublon de chaine;
+  writeln("Hello, Algol 58!")
+end
