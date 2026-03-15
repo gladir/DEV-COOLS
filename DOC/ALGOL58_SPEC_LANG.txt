@@ -2,7 +2,6 @@ ALGOL 58 - Specifications du langage
 ============================================================
 Compilateur : AL58C86.PAS (Algol 58 vers assembleur 8086)
 Cible       : MASM .MODEL SMALL, DOS 16 bits
-Auteur      : Sylvain Maltais (support@gladir.com)
 Version     : 1.0 - 2026
 
 ============================================================
