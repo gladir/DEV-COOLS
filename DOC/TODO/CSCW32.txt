@@ -503,7 +503,7 @@
             test25_namespaces.cs : 15 cas de test (1 namespace,
               4 classes, 7 methodes, noms pleinement qualifies).
 
-  TODO 19 - TABLEAUX
+  TODO 19 - TABLEAUX [IMPLEMENTE]
             Declaration : type[] nom = new type[taille];
               int[] arr = new int[5];
               Taille en octets = nombre_elements * sizeof(type).
@@ -526,6 +526,13 @@
             Types supportes : int[], bool[], char[].
             Verification de bornes : optionnelle (stub),
               non implementee dans le sous-ensemble minimal.
+            TSymRec : IsArray (Boolean) et ArraySize (Integer).
+            CurDeclIsArray : flag module pour reconnaitre type[].
+            LastNewArraySize : taille du new type[N] constant.
+            ParseVarDecl : marque IsArray et ArraySize.
+            ParsePrimary : .Length -> MOV EAX, ArraySize.
+            ArrayCount : compteur de tableaux declares.
+            test26_arrays.cs : 15 cas de test.
 
   TODO 20 - CHAINES ET OPERATIONS SUR LES CHAINES
             Chaines C# : type string, reference vers donnees

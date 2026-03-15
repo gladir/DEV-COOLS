@@ -327,7 +327,7 @@
             NsDepth : profondeur d imbrication des namespaces.
             test25_namespaces.cs : 15 cas de test.
 
-  TODO 19 - TABLEAUX
+  TODO 19 - TABLEAUX [IMPLEMENTE]
             Declaration : type[] nom = new type[taille];
               int[] arr = new int[5];
               Taille = nombre_elements * sizeof(type).
@@ -339,6 +339,12 @@
               arr[0] = 10; arr[1] = 20; ...
             Passage de tableau a methode : par reference (pointeur).
             Types supportes : int[], bool[], char[].
+            ParseVarDecl : reconnait type[] et cree un symbole
+              avec IsArray = True et ArraySize selon new type[N].
+            Propriete .Length dans ParsePrimary : renvoie la taille
+              connue a la compilation (MOV EAX, ArraySize).
+            ArrayCount : compteur de tableaux declares.
+            test26_arrays.cs : 15 cas de test.
 
   TODO 20 - CHAINES ET OPERATIONS SUR LES CHAINES
             Chaines C# : type string, reference vers donnees.
@@ -643,6 +649,11 @@ Var
   NsCount     : Integer;         { nombre de namespaces declares           }
   NsDepth     : Integer;         { profondeur courante d imbrication ns    }
   CurNsName   : TString;        { nom du namespace en cours de parsing    }
+
+  { Compteur de tableaux declares (TODO 19) }
+  ArrayCount     : Integer;         { nombre de tableaux declares             }
+  CurDeclIsArray : Boolean;        { True si declaration courante est type[] }
+  LastNewArraySize : Integer;      { taille du dernier new type[N] rencontre }
 
   { Variables binaires }
   BinCode     : Array[0..MAX_BIN_CODE - 1] of Byte;
@@ -2559,6 +2570,8 @@ Type
     IsGlobal    : Boolean;      { True si symbole global             }
     IsStatic    : Boolean;      { True si static                     }
     IsConst     : Boolean;      { True si constante                  }
+    IsArray     : Boolean;      { True si tableau (TODO 19)          }
+    ArraySize   : Integer;      { nombre d elements du tableau       }
   End;
 
 Var
@@ -2666,6 +2679,8 @@ Begin
   SymTab[Idx].IsGlobal    := (CurScopeLevel = 0);
   SymTab[Idx].IsStatic    := False;
   SymTab[Idx].IsConst     := (Cat = SC_CONST);
+  SymTab[Idx].IsArray     := False;
+  SymTab[Idx].ArraySize   := 0;
 
   If Opts.DebugMode Then
     WriteLn('  SYM_ADD[', Idx, ']: ', Lw,
@@ -4025,6 +4040,12 @@ Begin
       Begin
         SymTab[SymIdx].IsStatic := True;
         SymTab[SymIdx].IsGlobal := True;
+        { Marquer comme tableau si applicable (TODO 19) }
+        If CurDeclIsArray Then
+        Begin
+          SymTab[SymIdx].IsArray := True;
+          Inc(ArrayCount);
+        End;
         Off := DataAddStaticVar(ClassName, VarName, TIdx);
         { Si init avec valeur, mettre la valeur dans DataTab }
         If HasInit And (Off >= 0) Then
@@ -4051,14 +4072,24 @@ Begin
       If SymIdx >= 0 Then
       Begin
         SymTab[SymIdx].Offset := Off;
+        { Marquer comme tableau si applicable (TODO 19) }
+        If CurDeclIsArray Then
+        Begin
+          SymTab[SymIdx].IsArray := True;
+          Inc(ArrayCount);
+        End;
         { Emettre l initialisation si requise }
         If HasInit Then
         Begin
           If InitIsExpr Then
           Begin
             { Expression generale : ParseExpr + GenStoreVar }
+            LastNewArraySize := 0;
             ParseExpr;
             GenStoreVar(SymIdx);
+            { Capturer la taille du tableau (TODO 19) }
+            If CurDeclIsArray And (LastNewArraySize > 0) Then
+              SymTab[SymIdx].ArraySize := LastNewArraySize;
           End
           Else If InitIsStr Then
           Begin
@@ -4376,6 +4407,8 @@ Procedure ParsePrimary;
 Var
   SavedName : TString;
   QualName  : TString;
+  BaseName  : TString;
+  SuffName  : TString;
   Idx       : Integer;
   Lbl       : TString;
   ArgCount  : Integer;
@@ -4493,6 +4526,11 @@ Begin
     If TokIsPunct('[') Then
     Begin
       Consume;
+      { Capturer la taille si c est un entier constant (TODO 19) }
+      If CurToken.Kind = TK_INTEGER Then
+        LastNewArraySize := CurToken.IntVal
+      Else
+        LastNewArraySize := 0;
       ParseExpr;  { taille dans EAX }
       If TokIsPunct(']') Then Consume;
       { Multiplier par sizeof(element) = 4 (DWORD par defaut) }
@@ -4528,6 +4566,25 @@ Begin
       Begin
         QualName := QualName + '.' + CurToken.Val;
         Consume;
+      End;
+    End;
+
+    { Propriete .Length sur un tableau (TODO 19) :                   }
+    { Si QualName = ident.length et ident est un tableau connu,      }
+    { emettre MOV EAX,ArraySize directement.                         }
+    If Pos('.', QualName) > 0 Then
+    Begin
+      BaseName := Copy(QualName, 1, Pos('.', QualName) - 1);
+      SuffName := Copy(QualName, Pos('.', QualName) + 1,
+                       Length(QualName));
+      If StrLowerCase(SuffName) = 'length' Then
+      Begin
+        Idx := SymFind(BaseName);
+        If (Idx >= 0) And SymTab[Idx].IsArray Then
+        Begin
+          GenLoadConst(SymTab[Idx].ArraySize);
+          Exit;
+        End;
       End;
     End;
 
@@ -5297,13 +5354,16 @@ Begin
   Begin
     VarType := CurToken.Val;
     Consume;
+    CurDeclIsArray := False;
     If TokIsPunct('[') Then
     Begin
       Consume;
       If TokIsPunct(']') Then Consume;
+      CurDeclIsArray := True;
     End;
     If CurToken.Kind = TK_IDENT Then
       ParseVarDecl(VarType, False, '');
+    CurDeclIsArray := False;
     If TokIsPunct(';') Then Consume;
     Exit;
   End;
@@ -6347,6 +6407,7 @@ Begin
   WriteLn('Methodes         : ', MethCount);
   WriteLn('Classes          : ', ClassCount);
   WriteLn('Namespaces       : ', NsCount);
+  WriteLn('Tableaux         : ', ArrayCount);
 End;
 
 { ------------------------------------------------------------ }
@@ -6474,10 +6535,12 @@ Begin
         VarType := CurToken.Val;
         Consume;
         { Sauter [] si tableau }
+        CurDeclIsArray := False;
         If TokIsPunct('[') Then
         Begin
           Consume;
           If TokIsPunct(']') Then Consume;
+          CurDeclIsArray := True;
         End;
         If CurToken.Kind = TK_IDENT Then
         Begin
@@ -6485,6 +6548,7 @@ Begin
           Consume;
           If TokIsPunct('(') Then
           Begin
+            CurDeclIsArray := False;
             { ---- Methode statique ---- }
             MethTIdx := TypeFromKeyword(VarType);
             MethIsVd := (StrLowerCase(VarType) = 'void');
@@ -6606,6 +6670,12 @@ Begin
             Begin
               SymTab[SymIdx].IsStatic := True;
               SymTab[SymIdx].IsGlobal := True;
+              { Marquer comme tableau si applicable (TODO 19) }
+              If CurDeclIsArray Then
+              Begin
+                SymTab[SymIdx].IsArray := True;
+                Inc(ArrayCount);
+              End;
               Off := DataAddStaticVar(ClsName, VarName,
                                       TypeFromKeyword(VarType));
               { Initialisation optionnelle = valeur }
@@ -6679,6 +6749,7 @@ Begin
               If ClsIdx >= 0 Then
                 Inc(ClassTab[ClsIdx].FieldCount);
             End;
+            CurDeclIsArray := False;
             If Opts.DebugMode Then
               WriteLn('  VAR_STATIC: ', VarName, ' type=', VarType);
           End;
@@ -6697,13 +6768,16 @@ Begin
     Begin
       VarType := CurToken.Val;
       Consume;
+      CurDeclIsArray := False;
       If TokIsPunct('[') Then
       Begin
         Consume;
         If TokIsPunct(']') Then Consume;
+        CurDeclIsArray := True;
       End;
       If CurToken.Kind = TK_IDENT Then
         ParseVarDecl(VarType, True, ClsName);
+      CurDeclIsArray := False;
     End
     Else
       Consume;
@@ -7009,6 +7083,11 @@ Begin
   NsDepth       := 0;
   CurNsName     := '';
 
+  { Initialiser les compteurs de tableaux (TODO 19) }
+  ArrayCount      := 0;
+  CurDeclIsArray  := False;
+  LastNewArraySize := 0;
+
   { Initialiser le segment de donnees (TODO 08) }
   DataInit;
 
@@ -7120,10 +7199,12 @@ Begin
         { Heuristique : on consomme le type pour voir ce qui suit }
         Consume;
         { Sauter [] si tableau }
+        CurDeclIsArray := False;
         If TokIsPunct('[') Then
         Begin
           Consume;
           If TokIsPunct(']') Then Consume;
+          CurDeclIsArray := True;
         End;
         { Si le suivant est un ident suivi de ( -> methode }
         If CurToken.Kind = TK_IDENT Then
@@ -7334,10 +7415,12 @@ Begin
       VarType := CurToken.Val;
       Consume;
       { Sauter [] si tableau }
+      CurDeclIsArray := False;
       If TokIsPunct('[') Then
       Begin
         Consume;
         If TokIsPunct(']') Then Consume;
+        CurDeclIsArray := True;
       End;
       { Si le suivant est un identifiant, c est une declaration }
       If CurToken.Kind = TK_IDENT Then
@@ -7345,6 +7428,7 @@ Begin
         VarName := CurToken.Val;
         ParseVarDecl(VarType, False, ClsName);
       End;
+      CurDeclIsArray := False;
     End
     { Variables statiques hors methode avec type en tete (TODO 09) }
     Else If InClass And (CurMethName = '') And IsTypeKeyword Then
@@ -7352,13 +7436,16 @@ Begin
       VarType := CurToken.Val;
       Consume;
       { Sauter [] si tableau }
+      CurDeclIsArray := False;
       If TokIsPunct('[') Then
       Begin
         Consume;
         If TokIsPunct(']') Then Consume;
+        CurDeclIsArray := True;
       End;
       If CurToken.Kind = TK_IDENT Then
         ParseVarDecl(VarType, True, ClsName);
+      CurDeclIsArray := False;
     End
     Else
       Consume;
@@ -7388,7 +7475,7 @@ Begin
   EmitClose;
 
   WriteLn('CSCW32: ASM genere -> ', AsmFileName);
-  WriteLn('CSCW32: Les TODOs 19..25 ne sont pas encore implementes.');
+  WriteLn('CSCW32: Les TODOs 20..25 ne sont pas encore implementes.');
 End;
 
 { ------------------------------------------------------------ }
