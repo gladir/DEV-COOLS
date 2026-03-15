@@ -355,6 +355,7 @@
             test_rules.awk (15 cas, regles pattern-action)
 
   TODO 15 - PARSEUR : CHAMPS $0..$NF ET SEPARATEURS FS, RS, OFS, ORS
+            [IMPLEMENTE]
             Procedure ParseFieldRef
               $0 -> ligne complete (pointeur vers _AWRT_LINE)
               $1..$NF -> champ n (CALL _AWRT_GETFIELD)
@@ -374,6 +375,8 @@
               _AWRT_LINE (4096 octets) : ligne courante
               _AWRT_FIELDS[0..MAX_FIELDS] : tableau de pointeurs
               _AWRT_NF (DD) : nombre de champs courant
+            Var FieldRefCount pour les statistiques
+            test_fields.awk (15 cas, champs et separateurs)
 
   TODO 16 - PARSEUR : TABLEAUX ASSOCIATIFS ET OPERATEUR IN / DELETE
             Representation memoire :
@@ -1053,6 +1056,11 @@ Var
   RuleCount      : Integer;    { nombre de regles enregistrees      }
   RuleDefCount   : Integer;    { nombre de regles parsees           }
 
+  { Champs et separateurs (TODO 15) }
+  FieldRefCount  : Integer;    { nombre de references de champs     }
+  LastFieldIdx   : Integer;    { dernier index de champ ($0..$n)    }
+  LastFieldIsExpr: Boolean;    { dernier champ est $(expr) ?        }
+
 Const
 {$IFDEF FPC}
   BinAPIDecorated : Array[0..PE_NUM_API - 1] Of String[32] = (
@@ -1409,6 +1417,7 @@ Begin
   WriteLn('For-In           : ', ForInCount);
   WriteLn('Func definitions : ', FuncDefCount);
   WriteLn('Rules            : ', RuleDefCount);
+  WriteLn('Field refs       : ', FieldRefCount);
   WriteLn('Code gen ops     : ', GenCount);
   WriteLn('Litteraux chaine : ', StringLitCount);
   WriteLn('Scope depth      : ', ScopeDepth);
@@ -2540,6 +2549,10 @@ Procedure ParseFunctionDef; Forward;
 Procedure ParseAction; Forward;
 Procedure ParseProgram; Forward;
 
+{ Forward declarations TODO 15 - Champs et separateurs }
+Function  ParseFieldRef: Integer; Forward;
+Procedure GenFieldSplit; Forward;
+
 { ---- Helpers de tokens --------------------------------------- }
 Function IsOp(Const S : String) : Boolean;
 Begin
@@ -2615,10 +2628,8 @@ Begin
     End;
     TK_FIELD:
     Begin
-      { Reference de champ $n : CALL _AWRT_GETFIELD }
-      GenFieldRef;
-      ParsePrimaryExpr := TYK_STRING;
-      ParserAdvance;
+      { Reference de champ $n : via ParseFieldRef (TODO 15) }
+      ParsePrimaryExpr := ParseFieldRef;
     End;
     TK_BVAR:
     Begin
@@ -2875,8 +2886,15 @@ Begin
     End;
     If CurToken.Val = '$' Then
     Begin
+      { Operateur $ dynamique : $(expr) -> champ variable (TODO 15) }
       ParserAdvance;
       D := ParsePrimaryExpr;
+      { EAX contient l index de champ, CALL _AWRT_GETFIELD }
+      Inc(FieldRefCount);
+      LastFieldIdx := -1;
+      LastFieldIsExpr := True;
+      EmitComment('  $(expr) dynamic field ref');
+      GenFieldRef;
       ParseUnaryExpr := TYK_STRING;
       Exit;
     End;
@@ -3146,10 +3164,13 @@ End;
 
 { ---- ParseAssignExpr ----------------------------------------- }
 { = += -= *= /= %= ^= (droite a gauche) }
+{ TODO 15 : supporte aussi $n = expr via GenFieldStore }
 Function ParseAssignExpr : Integer;
 Var
-  TK     : Integer;
-  SaveSym: Integer;
+  TK        : Integer;
+  SaveSym   : Integer;
+  SaveField : Integer;
+  SaveFExpr : Boolean;
 Begin
   TK := ParseTernaryExpr;
   If (CurToken.Kind = TK_OP) And
@@ -3158,11 +3179,26 @@ Begin
       (CurToken.Val = '/=') Or (CurToken.Val = '%=') Or
       (CurToken.Val = '^=')) Then
   Begin
-    SaveSym := LastSymIdx;
+    SaveSym   := LastSymIdx;
+    SaveField := LastFieldIdx;
+    SaveFExpr := LastFieldIsExpr;
     ParserAdvance;
     SkipNewlines;
     TK := ParseAssignExpr;  { droite a gauche : recursion }
-    If SaveSym >= 0 Then GenStoreVar(SaveSym);
+    { TODO 15 : si le LHS est un champ ($n), utiliser GenFieldStore }
+    If (SaveField >= 0) Or SaveFExpr Then
+    Begin
+      EmitComment('  $field = expr (store)');
+      If (SaveField >= 0) And (Not SaveFExpr) Then
+      Begin
+        { Champ statique $n : charger l index dans EBX puis SETFIELD }
+        Emit('        MOV     EBX, ' + IntToStr_(SaveField));
+      End;
+      { EAX contient la valeur, EBX/pile contient l index }
+      GenFieldStore;
+    End
+    Else If SaveSym >= 0 Then
+      GenStoreVar(SaveSym);
   End;
   ParseAssignExpr := TK;
 End;
@@ -3172,6 +3208,8 @@ End;
 Function ParseExpr : Integer;
 Begin
   Inc(ExprCount);
+  LastFieldIdx := -1;
+  LastFieldIsExpr := False;
   ParseExpr := ParseAssignExpr;
 End;
 
@@ -3558,6 +3596,99 @@ Procedure GenFieldStore;
 Begin
   Emit('        PUSH    EAX');
   Emit('        CALL    ' + AW_RT_PFX + 'SETFIELD');
+End;
+
+{ ============================================================ }
+{ TODO 15 - PARSEUR : CHAMPS $0..$NF ET SEPARATEURS FS, RS,   }
+{           OFS, ORS  [IMPLEMENTE]                              }
+{ ============================================================ }
+
+{ ---- GenFieldSplit ------------------------------------------- }
+{ Decouper la ligne courante $0 en champs $1..$NF selon FS.    }
+{ CALL _AWRT_SPLITLINE -> met a jour _AWRT_NF et _AWRT_FIELDS  }
+Procedure GenFieldSplit;
+Begin
+  EmitComment('  split $0 into fields by FS');
+  Emit('        CALL    ' + AW_RT_PFX + 'SPLITLINE');
+End;
+
+{ ---- ParseFieldRef ------------------------------------------- }
+{ Parse une reference de champ a partir du token TK_FIELD.      }
+{ Le token TK_FIELD contient la valeur textuelle du champ :     }
+{   "0"  -> $0 (ligne complete : MOV EAX, OFFSET _AWRT_LINE)   }
+{   "1".."9..." -> $n (champ n : MOV EAX, n + GETFIELD)        }
+{   "NF" -> $NF (dernier champ : MOV EAX, [_AWV_NF] + GETFIELD)}
+{   autre -> $(expr) deja gere dans ParseUnaryExpr              }
+{ Retourne le type de la valeur (TYK_STRING).                   }
+Function ParseFieldRef : Integer;
+Var
+  FVal : TString;
+  FNum : Integer;
+  NfIdx: Integer;
+  Code : Integer;
+Begin
+  FVal := CurToken.Val;
+  Inc(FieldRefCount);
+  LastFieldIsExpr := False;
+
+  { $0 -> ligne complete }
+  If FVal = '0' Then
+  Begin
+    LastFieldIdx := 0;
+    EmitComment('  $0 = whole line');
+    Emit('        MOV     EAX, OFFSET ' + AW_RT_PFX + 'LINE');
+    ParseFieldRef := TYK_STRING;
+    ParserAdvance;
+    Exit;
+  End;
+
+  { $NF -> dernier champ (index = valeur de NF) }
+  If FVal = 'NF' Then
+  Begin
+    LastFieldIdx := -1;
+    LastFieldIsExpr := True;
+    NfIdx := FindSym('NF');
+    EmitComment('  $NF = last field');
+    If NfIdx >= 0 Then
+      GenLoadVar(NfIdx)
+    Else
+      Emit('        MOV     EAX, DWORD PTR [' + AW_RT_PFX + 'NF]');
+    GenFieldRef;
+    ParseFieldRef := TYK_STRING;
+    ParserAdvance;
+    Exit;
+  End;
+
+  { $1..$n -> champ n (constante numerique) }
+  Val(FVal, FNum, Code);
+  If Code = 0 Then
+  Begin
+    LastFieldIdx := FNum;
+    EmitComment('  $' + FVal + ' = field ' + FVal);
+    Emit('        MOV     EAX, ' + IntToStr_(FNum));
+    GenFieldRef;
+    ParseFieldRef := TYK_STRING;
+    ParserAdvance;
+    Exit;
+  End;
+
+  { $ident -> champ d apres la valeur de la variable ident }
+  { Traite comme $(ident) }
+  LastFieldIdx := -1;
+  LastFieldIsExpr := True;
+  NfIdx := FindSym(FVal);
+  EmitComment('  $' + FVal + ' = field by variable');
+  If NfIdx >= 0 Then
+    GenLoadVar(NfIdx)
+  Else
+  Begin
+    { Variable inconnue, creer comme globale }
+    NfIdx := AddSym(FVal, TYK_NUMBER, STORE_GLOBAL, True);
+    GenLoadVar(NfIdx);
+  End;
+  GenFieldRef;
+  ParseFieldRef := TYK_STRING;
+  ParserAdvance;
 End;
 
 { ============================================================ }
@@ -4830,6 +4961,9 @@ Begin
   FuncDefCount := 0;
   RuleCount := 0;
   RuleDefCount := 0;
+  FieldRefCount := 0;
+  LastFieldIdx := -1;
+  LastFieldIsExpr := False;
   HasPushedBack := False;
   LexInit;
   { Mode debug : afficher tous les tokens }
@@ -4845,7 +4979,7 @@ Begin
   End
   Else
   Begin
-    { Parser le programme AWK (TODO 06+10+11+12+13+14) }
+    { Parser le programme AWK (TODO 06+10+11+12+13+14+15) }
     ParserAdvance;  { charger le premier token }
     ParseProgram;
     WriteLn('AWKCW32: tokenisation terminee, ', TotalLines, ' lignes');
@@ -4853,6 +4987,7 @@ Begin
             FuncDefCount, ' definition(s)');
     WriteLn('AWKCW32: ', RuleDefCount, ' regle(s) pattern-action (',
             RuleCount, ' enregistree(s))');
+    WriteLn('AWKCW32: ', FieldRefCount, ' reference(s) de champs');
     WriteLn('AWKCW32: ', ExprCount, ' expression(s) parsees');
     WriteLn('AWKCW32: ', CoercionCount, ' coercition(s), ',
             ConcatCount, ' concatenation(s) implicite(s)');
@@ -4865,7 +5000,7 @@ Begin
     WriteLn('AWKCW32: ', GenCount, ' operation(s) code gen, ',
             StringLitCount, ' litteral(aux) chaine');
     WriteLn('AWKCW32: scope depth=', ScopeDepth, ', loop depth=', LoopDepth);
-    WriteLn('AWKCW32: TODO 15..25 non encore implementes.');
+    WriteLn('AWKCW32: TODO 16..25 non encore implementes.');
     WriteLn('AWKCW32: sortie prevue: ', Opts.OutFile);
   End;
   LexClose;

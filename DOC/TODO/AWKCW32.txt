@@ -357,6 +357,7 @@
             test_rules.awk (15 cas, 16 regles, 213 ops gen)
 
   TODO 15 - PARSEUR : CHAMPS $0..$NF ET SEPARATEURS FS, RS, OFS, ORS
+            [IMPLEMENTE]
             Procedure ParseFieldRef
               $0 -> ligne complete (pointeur vers _AWRT_LINE)
               $1..$NF -> champ n (CALL _AWRT_GETFIELD)
@@ -376,6 +377,8 @@
               _AWRT_LINE (4096 octets) : ligne courante
               _AWRT_FIELDS[0..MAX_FIELDS] : tableau de pointeurs
               _AWRT_NF (DD) : nombre de champs courant
+            Var FieldRefCount pour les statistiques
+            test_fields.awk (15 cas, champs et separateurs)
 
   TODO 16 - PARSEUR : TABLEAUX ASSOCIATIFS ET OPERATEUR IN / DELETE
             Representation memoire :
