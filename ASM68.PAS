@@ -41,7 +41,7 @@
 { TODO 21 - Gestion des fichiers INCLUDE et pile de sources [IMPLEMENTE] }
 { TODO 22 - Gestion des macros (MACRO/ENDM) [IMPLEMENTE] }
 { TODO 23 - Directives de listing et mise en page [IMPLEMENTE] }
-{ TODO 24 - Programme principal et orchestration complete }
+{ TODO 24 - Programme principal et orchestration complete [IMPLEMENTE] }
 { TODO 25 - Programmes de test et validation (SAMPLES\ASM68\) }
 
 Program ASM68;
@@ -1287,10 +1287,10 @@ Begin
 End;
 
 Procedure FatalError(Const Msg: String);
-{ Erreur fatale : affiche et arrete immediatement }
+{ Erreur fatale : affiche et arrete immediatement (code retour 2) }
 Begin
  WriteLn('*** Erreur fatale: ', Msg);
- Halt(1);
+ Halt(2);
 End;
 
 { ---------- Fichier listing ---------- }
@@ -1693,6 +1693,26 @@ Begin
  { Ajouter les symboles predefinis de la ligne de commande (-d) }
  For I := 1 to Opts.DefSymCount do
   AddSym(Opts.DefSymbols[I], 1, SEC_CODE, SYM_EQU, 0);
+End;
+
+Procedure CheckUndefinedSymbols;
+{ Verifie les symboles non definis apres la passe 1
+  (les XREF sont acceptes car ils seront resolus au link) }
+Var
+  I: Integer;
+  UndCount: Integer;
+Begin
+ UndCount := 0;
+ For I := 1 to SymCount do
+  If (Not SymTable[I].Defined) and
+     (SymTable[I].SymType <> SYM_EXTERNAL) Then
+  Begin
+   Inc(UndCount);
+   WriteLn('Avertissement: symbole non defini ''',
+           SymTable[I].Name, ''' (ligne ', SymTable[I].LineNum, ')');
+  End;
+ If UndCount > 0 Then
+  WriteLn(UndCount, ' symbole(s) non defini(s) apres la passe 1');
 End;
 
 { ============================================================================ }
@@ -8103,6 +8123,9 @@ Begin
  Pass1Lines := LineCount;
  SrcClose;
 
+ { Verifier les symboles non definis apres la passe 1 (TODO 24) }
+ CheckUndefinedSymbols;
+
  { === PASSE 2 : generation du code === }
  ResetForPass2;
  LineCount    := 0;
@@ -8726,25 +8749,43 @@ End;
   - Compteur : ListingDirCount }
 
 { ============================================================================ }
-{ Procedure Run : programme principal d'assemblage                             }
+{ TODO 24 - Programme principal et orchestration complete                       }
 { ============================================================================ }
+
+{ Orchestration complete de l'assembleur :
+  1. ParseArgs : valider les arguments, remplir TOptions
+  2. Si aucun fichier source -> ShowHelp + Halt(1)
+  3. Ouvrir le fichier source (valider son existence)
+  4. InitSymTable (inclut les symboles predefinis -d), InitSections
+  5. Assembler en deux passes (Assemble) :
+     - Passe 1 : parcourir le source, definir symboles, calculer tailles
+     - CheckUndefinedSymbols : verifier les symboles non definis
+     - Passe 2 : generer le code binaire, resoudre les fixups, listing
+     - WriteObjectFile (si -n pas active)
+  6. BilanCompilation : afficher le resume
+  7. Liberer les ressources (macros, sections)
+  8. Code de retour : 0=succes, 1=erreurs, 2=erreur fatale }
 
 Procedure Run;
 Var I: Integer;
 Begin
+ { 1. ParseArgs : valider arguments, remplir TOptions (TODO 01) }
  ParseArgs;
 
+ { 2. Si aucun fichier source -> ShowHelp + Halt }
  If Opts.SrcFile = '' Then
  Begin
   ShowHelp;
   Halt(1);
  End;
 
+ { 3. Verifier que le fichier source existe }
  If Not FileExists(Opts.SrcFile) Then
  Begin
   FatalError('fichier source introuvable: ' + Opts.SrcFile);
  End;
 
+ { 4. Initialiser toutes les tables et compteurs }
  ErrorCount   := 0;
  WarningCount := 0;
  LineCount    := 0;
@@ -8791,23 +8832,29 @@ Begin
  list_start_off  := 0;
  list_src_text   := '';
 
- { Initialiser la table des symboles }
+ { InitSymTable : ajoute aussi les symboles predefinis (-d) (TODO 04) }
  InitSymTable;
 
- { Initialiser les sections (TODO 07) }
+ { InitSections (TODO 07) }
  InitSections;
 
- { Assembler en deux passes (TODO 18) }
+ { 5. Assembler en deux passes (TODO 18)
+      Passe 1 : resolution symboles + CheckUndefinedSymbols
+      Passe 2 : generation code, listing, objet S-Record }
  Assemble;
 
- { Afficher le bilan de compilation }
+ { 6. Afficher le bilan de compilation (TODO 03) }
  BilanCompilation;
 
- { Liberer les macros (TODO 09) }
+ { 7. Liberer les ressources }
  FreeMacros;
-
- { Liberer les buffers des sections (TODO 07) }
  FreeSections;
+
+ { 8. Code de retour : 0=succes, 1=erreurs }
+ If ErrorCount > 0 Then
+  Halt(1)
+ Else
+  Halt(0);
 End;
 
 { ============================================================================ }

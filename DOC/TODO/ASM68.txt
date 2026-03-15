@@ -506,7 +506,7 @@ TODO 23 - Directives de listing et mise en page [IMPLEMENTE]
   - Table des symboles en fin de listing (triee alphabetiquement)
     avec colonnes : Nom, Valeur (hex), Section, Type
 
-TODO 24 - Programme principal et orchestration complete
+TODO 24 - Programme principal et orchestration complete [IMPLEMENTE]
   -------------------------------------------------------
   - Procedure principale Run :
     1. ParseArgs : valider arguments, remplir TOptions
