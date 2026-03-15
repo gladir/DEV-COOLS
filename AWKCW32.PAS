@@ -79,30 +79,15 @@
             Stocker dans CurTok (Kind, Val, IntVal, FloatVal,
               Line, Col)
 
-  TODO 03 - RECONNAISSANCE DES MOTS-CLES ET FONCTIONS BUILTIN AWK
+  TODO 03 - RECONNAISSANCE DES MOTS-CLES ET FONCTIONS BUILTIN AWK [IMPLEMENTE]
             Function IsKeyword(Const s: String): Integer
-            Mots-cles AWK a reconnaitre (21) :
-              BEGIN, END, BEGINFILE,
-              if, else, while, for, do, in,
-              break, continue, next, nextfile, exit,
-              function, return, delete,
-              print, printf, sprintf, getline
-            Constantes KW_BEGIN..KW_GETLINE
+            Constantes KW_BEGIN..KW_GETLINE (21 mots-cles)
             Function IsBuiltinFunc(Const s: String): Integer
-            Fonctions builtin AWK a reconnaitre (24) :
-              length, substr, index, split,
-              sub, gsub, match, sprintf,
-              tolower, toupper,
-              sin, cos, atan2, exp, log, sqrt, int,
-              rand, srand,
-              system, close, fflush,
-              mktime, strftime
-            Constantes BF_LENGTH..BF_STRFTIME
+            Constantes BF_LENGTH..BF_STRFTIME (24 fonctions builtin)
             Function IsBuiltinVar(Const s: String): Integer
-            Variables builtin AWK :
-              FS, RS, OFS, ORS, NR, NF, FNR,
-              FILENAME, ARGC, ARGV, ENVIRON,
-              RSTART, RLENGTH, SUBSEP, OFMT, CONVFMT
+            Constantes BV_FS..BV_CONVFMT (16 variables builtin)
+            TK_BVAR ajoute a TTokenKind, LexScanIdent mis a jour,
+            PrintToken mis a jour, Run mis a jour
 
   TODO 04 - TABLE DES SYMBOLES (32 BITS)
             Type TSymEntry : Name (String[64]), AsmLabel (String[64]),
@@ -720,6 +705,37 @@ Const
 {$ENDIF}
 
 { ============================================================ }
+{ TODO 03 - CONSTANTES MOTS-CLES, BUILTIN FUNC, BUILTIN VAR   }
+{ ============================================================ }
+
+  { Constantes mots-cles AWK (1..21) - 0 = pas un mot-cle }
+  KW_BEGIN     = 1;   KW_END       = 2;   KW_IF        = 3;
+  KW_ELSE      = 4;   KW_WHILE     = 5;   KW_FOR       = 6;
+  KW_DO        = 7;   KW_IN        = 8;   KW_BREAK     = 9;
+  KW_CONTINUE  = 10;  KW_FUNCTION  = 11;  KW_RETURN    = 12;
+  KW_DELETE    = 13;   KW_EXIT      = 14;  KW_GETLINE   = 15;
+  KW_NEXT      = 16;  KW_NEXTFILE  = 17;  KW_PRINT     = 18;
+  KW_PRINTF    = 19;  KW_SPRINTF   = 20;  KW_BEGINFILE = 21;
+
+  { Constantes fonctions builtin AWK (1..24) - 0 = pas builtin }
+  BF_LENGTH    = 1;   BF_SUBSTR    = 2;   BF_INDEX     = 3;
+  BF_SPLIT     = 4;   BF_SUB       = 5;   BF_GSUB      = 6;
+  BF_MATCH     = 7;   BF_SPRINTF   = 8;   BF_TOLOWER   = 9;
+  BF_TOUPPER   = 10;  BF_SIN       = 11;  BF_COS       = 12;
+  BF_ATAN2     = 13;  BF_EXP       = 14;  BF_LOG       = 15;
+  BF_SQRT      = 16;  BF_INT       = 17;  BF_RAND      = 18;
+  BF_SRAND     = 19;  BF_SYSTEM    = 20;  BF_CLOSE     = 21;
+  BF_FFLUSH    = 22;  BF_MKTIME    = 23;  BF_STRFTIME  = 24;
+
+  { Constantes variables builtin AWK (1..16) - 0 = pas builtin }
+  BV_FS        = 1;   BV_RS        = 2;   BV_OFS       = 3;
+  BV_ORS       = 4;   BV_NR        = 5;   BV_NF        = 6;
+  BV_FNR       = 7;   BV_FILENAME  = 8;   BV_ARGC      = 9;
+  BV_ARGV      = 10;  BV_ENVIRON   = 11;  BV_RSTART    = 12;
+  BV_RLENGTH   = 13;  BV_SUBSEP    = 14;  BV_OFMT      = 15;
+  BV_CONVFMT   = 16;
+
+{ ============================================================ }
 { TYPES                                                        }
 { ============================================================ }
 
@@ -777,6 +793,7 @@ Type
     TK_IDENT,      { identificateur utilisateur                }
     TK_KEYWORD,    { mot-cle AWK (if while for ...)            }
     TK_BUILTIN,    { fonction builtin AWK (length substr ...)  }
+    TK_BVAR,       { variable builtin AWK (FS NR NF ...)      }
     TK_FIELD,      { reference de champ $0 $1 $NF              }
     TK_OP,         { operateur + - * / = == != ~ !~ ...        }
     TK_PUNCT,      { ponctuation ; , ( ) [ ] accolades        }
@@ -1304,7 +1321,7 @@ End;
 { ---- Table des mots-cles AWK (21) ------------------------- }
 Const
   AWK_KW_COUNT = 21;
-  AWK_KW : Array[0..AWK_KW_COUNT - 1] Of String[10] = (
+  AWK_KW : Array[1..AWK_KW_COUNT] Of String[10] = (
     'BEGIN',     'END',       'if',        'else',
     'while',     'for',       'do',        'in',
     'break',     'continue',  'function',  'return',
@@ -1313,20 +1330,20 @@ Const
     'BEGINFILE'
   );
 
-Function IsAwkKeyword(Const S : TString) : Boolean;
+Function IsKeyword(Const S : TString) : Integer;
 Var
   I : Integer;
 Begin
-  IsAwkKeyword := False;
-  For I := 0 To AWK_KW_COUNT - 1 Do
+  IsKeyword := 0;
+  For I := 1 To AWK_KW_COUNT Do
     If S = AWK_KW[I] Then
-    Begin IsAwkKeyword := True; Exit; End;
+    Begin IsKeyword := I; Exit; End;
 End;
 
 { ---- Table des fonctions builtin AWK (24) ------------------ }
 Const
   AWK_BI_COUNT = 24;
-  AWK_BI : Array[0..AWK_BI_COUNT - 1] Of String[10] = (
+  AWK_BI : Array[1..AWK_BI_COUNT] Of String[10] = (
     'length',    'substr',    'index',     'split',
     'sub',       'gsub',      'match',     'sprintf',
     'tolower',   'toupper',   'sin',       'cos',
@@ -1335,20 +1352,41 @@ Const
     'close',     'fflush',    'mktime',    'strftime'
   );
 
-Function IsAwkBuiltin(Const S : TString) : Boolean;
+Function IsBuiltinFunc(Const S : TString) : Integer;
 Var
   I : Integer;
 Begin
-  IsAwkBuiltin := False;
-  For I := 0 To AWK_BI_COUNT - 1 Do
+  IsBuiltinFunc := 0;
+  For I := 1 To AWK_BI_COUNT Do
     If S = AWK_BI[I] Then
-    Begin IsAwkBuiltin := True; Exit; End;
+    Begin IsBuiltinFunc := I; Exit; End;
 End;
 
-{ ---- LexScanIdent : identificateur, mot-cle ou builtin ---- }
+{ ---- Table des variables builtin AWK (16) ------------------ }
+Const
+  AWK_BV_COUNT = 16;
+  AWK_BV : Array[1..AWK_BV_COUNT] Of String[10] = (
+    'FS',        'RS',        'OFS',       'ORS',
+    'NR',        'NF',        'FNR',       'FILENAME',
+    'ARGC',      'ARGV',      'ENVIRON',   'RSTART',
+    'RLENGTH',   'SUBSEP',    'OFMT',      'CONVFMT'
+  );
+
+Function IsBuiltinVar(Const S : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  IsBuiltinVar := 0;
+  For I := 1 To AWK_BV_COUNT Do
+    If S = AWK_BV[I] Then
+    Begin IsBuiltinVar := I; Exit; End;
+End;
+
+{ ---- LexScanIdent : identificateur, mot-cle, builtin ou bvar }
 Procedure LexScanIdent(Var T : TToken; SL, SC : Integer);
 Var
-  S : TString;
+  S  : TString;
+  KI : Integer;
 Begin
   S := '';
   While (Not LexEOF) And (LexColNo <= Length(LexLine)) And
@@ -1357,12 +1395,30 @@ Begin
     If Length(S) < MAX_STR Then S := S + LexCurChar;
     LexAdvance;
   End;
-  If IsAwkKeyword(S) Then
-    MakeToken(T, TK_KEYWORD, S, SL, SC)
-  Else If IsAwkBuiltin(S) Then
-    MakeToken(T, TK_BUILTIN, S, SL, SC)
-  Else
-    MakeToken(T, TK_IDENT, S, SL, SC);
+  KI := IsKeyword(S);
+  If KI > 0 Then
+  Begin
+    MakeToken(T, TK_KEYWORD, S, SL, SC);
+    T.IntVal := KI;
+  End
+  Else Begin
+    KI := IsBuiltinFunc(S);
+    If KI > 0 Then
+    Begin
+      MakeToken(T, TK_BUILTIN, S, SL, SC);
+      T.IntVal := KI;
+    End
+    Else Begin
+      KI := IsBuiltinVar(S);
+      If KI > 0 Then
+      Begin
+        MakeToken(T, TK_BVAR, S, SL, SC);
+        T.IntVal := KI;
+      End
+      Else
+        MakeToken(T, TK_IDENT, S, SL, SC);
+    End;
+  End;
 End;
 
 { ---- LexScanNumber : entier (dec/oct/hex) ou flottant ----- }
@@ -1642,7 +1698,7 @@ Function LexExpectRegex : Boolean;
 Begin
   Case LexLastKind Of
     TK_INTEGER, TK_FLOAT, TK_STRING, TK_IDENT,
-    TK_BUILTIN, TK_FIELD :
+    TK_BUILTIN, TK_BVAR, TK_FIELD :
       LexExpectRegex := False;
   Else
     { Apres ) et ] c est une division }
@@ -1897,6 +1953,7 @@ Begin
     TK_IDENT   : KS := 'IDENT  ';
     TK_KEYWORD : KS := 'KEYWORD';
     TK_BUILTIN : KS := 'BUILTIN';
+    TK_BVAR    : KS := 'BVAR   ';
     TK_FIELD   : KS := 'FIELD  ';
     TK_OP      : KS := 'OP     ';
     TK_PUNCT   : KS := 'PUNCT  ';
@@ -1911,6 +1968,11 @@ Begin
   Begin
     Str(T.FloatVal : 0 : 6, NS);
     Write(' =', NS);
+  End Else If (T.Kind = TK_KEYWORD) Or (T.Kind = TK_BUILTIN) Or
+              (T.Kind = TK_BVAR) Then
+  Begin
+    Str(T.IntVal, NS);
+    Write(' #', NS);
   End;
   WriteLn;
 End;
@@ -1953,7 +2015,7 @@ Begin
     While CurToken.Kind <> TK_EOF Do
       LexNextToken(CurToken);
     WriteLn('AWKCW32: tokenisation terminee, ', TotalLines, ' lignes');
-    WriteLn('AWKCW32: TODO 03..25 non encore implementes.');
+    WriteLn('AWKCW32: TODO 04..25 non encore implementes.');
     WriteLn('AWKCW32: sortie prevue: ', Opts.OutFile);
   End;
   LexClose;

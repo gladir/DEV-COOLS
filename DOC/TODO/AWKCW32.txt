@@ -60,7 +60,7 @@
             Stocker dans CurTok (Kind, Val, IntVal, FloatVal,
               Line, Col)
 
-  TODO 03 - RECONNAISSANCE DES MOTS-CLES ET FONCTIONS BUILTIN AWK
+  TODO 03 - RECONNAISSANCE DES MOTS-CLES ET FONCTIONS BUILTIN AWK [IMPLEMENTE]
             Function IsKeyword(Const s: String): Integer
             Mots-cles AWK a reconnaitre (21) :
               BEGIN, END, BEGINFILE,
