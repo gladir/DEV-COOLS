@@ -405,6 +405,7 @@
             test_arrays16.awk (15 cas, tableaux associatifs)
 
   TODO 17 - PARSEUR : EXPRESSIONS REGULIERES ET MATCHING ~ / !~
+            [IMPLEMENTE]
             Compilation de regex en pattern data :
               /pattern/ -> stocker pattern dans segment .DATA
               Support des metacaracteres : . * + ? [ ] ^ $ | ( )
@@ -416,14 +417,14 @@
               expr !~ /pattern/ -> CALL _AWRT_MATCH_RE + NOT
             Pattern dans les regles :
               /pattern/ { action } -> tester $0 ~ /pattern/
-            Fonctions utilisant des regex :
-              sub(regex, repl, target)
-              gsub(regex, repl, target)
-              match(string, regex) -> met a jour RSTART, RLENGTH
-              split(string, array, regex)
-            Routines runtime regex :
-              _AWRT_MATCH_RE : matcher une chaine contre un pattern
-              _AWRT_REGEX_COMPILE : compiler un pattern (optionnel)
+            Procedure AddRegexPat(pattern) : enregistrer un pattern
+              dans RegexPatTab et retourner son label _AWP_n
+            Procedure GenRegexMatch : PUSH EAX (pattern) +
+              PUSH EBX (string) + CALL _AWRT_MATCH_RE -> EAX 0/1
+            ParsePrimaryExpr TK_REGEXP : AddRegexPat + GenLoadStr
+            ParseMatchExpr : ~ -> GenRegexMatch, !~ -> GenRegexMatch + NOT
+            Var RegexOpCount, RegexPatCount pour les statistiques
+            test_regex17.awk (15 cas, expressions regulieres)
 
   TODO 18 - PARSEUR : FONCTIONS BUILTIN CHAINES
             Procedure ParseBuiltinString
@@ -818,6 +819,9 @@ Const
   { Taille maximale de la table des litteraux chaine (TODO 08) }
   MAX_STRLIT = 512;
 
+  { Taille maximale de la table des patterns regex (TODO 17) }
+  MAX_REGEX_PAT = 256;
+
 { ============================================================ }
 { TODO 05 - CONSTANTES DE SCOPES                                }
 { ============================================================ }
@@ -968,6 +972,12 @@ Type
     Val : TString;          { valeur de la chaine               }
   End;
 
+  { Entree de la table des patterns regex (TODO 17) }
+  TRegexPatEntry = Record
+    Lbl : String[64];       { label ASM du pattern (_AWP_n)     }
+    Pat : TString;          { pattern regex                     }
+  End;
+
 { ============================================================ }
 { VARIABLES GLOBALES                                           }
 { ============================================================ }
@@ -1071,6 +1081,11 @@ Var
   ArrayOpCount   : Integer;    { nombre d operations sur tableaux   }
   LastArraySym   : Integer;    { index sym du tableau LHS           }
   LastArrayHasKey: Boolean;    { le LHS est array[key] ?            }
+
+  { Expressions regulieres (TODO 17) }
+  RegexPatTab    : Array[0..MAX_REGEX_PAT - 1] Of TRegexPatEntry;
+  RegexPatCount  : Integer;    { nombre de patterns regex stockes   }
+  RegexOpCount   : Integer;    { nombre d operations regex (~ !~)   }
 
 Const
 {$IFDEF FPC}
@@ -1430,6 +1445,8 @@ Begin
   WriteLn('Rules            : ', RuleDefCount);
   WriteLn('Field refs       : ', FieldRefCount);
   WriteLn('Array ops        : ', ArrayOpCount);
+  WriteLn('Regex patterns   : ', RegexPatCount);
+  WriteLn('Regex ops (~!~)  : ', RegexOpCount);
   WriteLn('Code gen ops     : ', GenCount);
   WriteLn('Litteraux chaine : ', StringLitCount);
   WriteLn('Scope depth      : ', ScopeDepth);
@@ -2572,6 +2589,10 @@ Procedure GenArrayExists(SymIdx: Integer); Forward;
 Procedure GenArrayDel(SymIdx: Integer); Forward;
 Procedure GenArrayClear(SymIdx: Integer); Forward;
 
+{ Forward declarations TODO 17 - Expressions regulieres }
+Function  AddRegexPat(Const Pat: TString): TString; Forward;
+Procedure GenRegexMatch; Forward;
+
 { ---- Helpers de tokens --------------------------------------- }
 Function IsOp(Const S : String) : Boolean;
 Begin
@@ -2641,7 +2662,9 @@ Begin
     End;
     TK_REGEXP:
     Begin
-      { Expression reguliere /pat/ : LEA EAX, [_AWP_n] }
+      { Expression reguliere /pat/ : stocker dans .DATA, LEA EAX, _AWP_n }
+      SLbl := AddRegexPat(CurToken.Val);
+      GenLoadStr(SLbl);
       ParsePrimaryExpr := TYK_REGEXP;
       ParserAdvance;
     End;
@@ -3099,18 +3122,30 @@ Begin
 End;
 
 { ---- ParseMatchExpr ------------------------------------------ }
-{ ~ !~ }
+{ ~ !~ (TODO 17 : code gen MATCH_RE) }
 Function ParseMatchExpr : Integer;
 Var
-  TK : Integer;
-  D  : Integer;
+  TK    : Integer;
+  D     : Integer;
+  IsNot : Boolean;
 Begin
   TK := ParseCompareExpr;
   While (CurToken.Kind = TK_OP) And
         ((CurToken.Val = '~') Or (CurToken.Val = '!~')) Do
   Begin
+    IsNot := (CurToken.Val = '!~');
+    { Le cote gauche (EAX) est la chaine a tester }
+    TK := GenCoerceToString(TK);
+    GenPushEAX;
     ParserAdvance;
     D := ParseCompareExpr;
+    { Le cote droit (EAX) est le pattern (TYK_REGEXP ou chaine) }
+    D := GenCoerceToString(D);
+    { EAX = pattern, pile = string a tester }
+    GenPopEBX;  { EBX = string }
+    GenRegexMatch;  { PUSH EAX + PUSH EBX + CALL MATCH_RE -> EAX 0/1 }
+    If IsNot Then
+      GenUnaryNot;  { inverser le resultat pour !~ }
     TK := TYK_NUMBER;
   End;
   ParseMatchExpr := TK;
@@ -3816,6 +3851,47 @@ Begin
   EmitComment('  array CLEAR: delete ' + SymTab[SymIdx].Name);
   Emit('        PUSH    OFFSET ' + SymTab[SymIdx].ArrayAsmLabel);
   Emit('        CALL    ' + AW_RT_PFX + 'HASH_CLEAR');
+End;
+
+{ ============================================================ }
+{ TODO 17 - PARSEUR : EXPRESSIONS REGULIERES ET MATCHING       }
+{           ~ / !~  [IMPLEMENTE]                                }
+{ ============================================================ }
+
+{ ---- AddRegexPat --------------------------------------------- }
+{ Ajoute un pattern regex dans la table et retourne son label    }
+{ ASM (_AWP_n). Le pattern sera emis dans le segment .DATA       }
+{ comme une chaine ASCIIZ.                                       }
+Function AddRegexPat(Const Pat: TString): TString;
+Var
+  Lbl : TString;
+Begin
+  If RegexPatCount >= MAX_REGEX_PAT Then
+  Begin
+    FatalError('table des patterns regex pleine (max=' +
+               IntToStr_(MAX_REGEX_PAT) + ')');
+    AddRegexPat := '';
+    Exit;
+  End;
+  Lbl := GenScopeLabel(AW_PAT_PFX);
+  RegexPatTab[RegexPatCount].Lbl := Lbl;
+  RegexPatTab[RegexPatCount].Pat := Pat;
+  Inc(RegexPatCount);
+  AddRegexPat := Lbl;
+End;
+
+{ ---- GenRegexMatch ------------------------------------------- }
+{ EBX contient la chaine a tester (pointeur ASCIIZ).             }
+{ EAX contient le pattern regex (pointeur ASCIIZ).               }
+{ PUSH EAX (pattern) + PUSH EBX (string) + CALL MATCH_RE        }
+{ Resultat dans EAX : 1 si match, 0 sinon.                      }
+Procedure GenRegexMatch;
+Begin
+  Inc(RegexOpCount);
+  EmitComment('  regex match: string ~ /pattern/');
+  Emit('        PUSH    EAX');
+  Emit('        PUSH    EBX');
+  Emit('        CALL    ' + AW_RT_PFX + 'MATCH_RE');
 End;
 
 { ============================================================ }
@@ -5114,6 +5190,8 @@ Begin
   ArrayOpCount := 0;
   LastArraySym := -1;
   LastArrayHasKey := False;
+  RegexPatCount := 0;
+  RegexOpCount := 0;
   HasPushedBack := False;
   LexInit;
   { Mode debug : afficher tous les tokens }
@@ -5139,6 +5217,8 @@ Begin
             RuleCount, ' enregistree(s))');
     WriteLn('AWKCW32: ', FieldRefCount, ' reference(s) de champs');
     WriteLn('AWKCW32: ', ArrayOpCount, ' operation(s) tableau(x) associatif(s)');
+    WriteLn('AWKCW32: ', RegexPatCount, ' pattern(s) regex, ',
+            RegexOpCount, ' operation(s) regex (~ !~)');
     WriteLn('AWKCW32: ', ExprCount, ' expression(s) parsees');
     WriteLn('AWKCW32: ', CoercionCount, ' coercition(s), ',
             ConcatCount, ' concatenation(s) implicite(s)');
@@ -5151,7 +5231,7 @@ Begin
     WriteLn('AWKCW32: ', GenCount, ' operation(s) code gen, ',
             StringLitCount, ' litteral(aux) chaine');
     WriteLn('AWKCW32: scope depth=', ScopeDepth, ', loop depth=', LoopDepth);
-    WriteLn('AWKCW32: TODO 17..25 non encore implementes.');
+    WriteLn('AWKCW32: TODO 18..25 non encore implementes.');
     WriteLn('AWKCW32: sortie prevue: ', Opts.OutFile);
   End;
   LexClose;

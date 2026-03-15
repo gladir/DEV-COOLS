@@ -407,6 +407,7 @@
             test_arrays16.awk (15 cas, tableaux associatifs)
 
   TODO 17 - PARSEUR : EXPRESSIONS REGULIERES ET MATCHING ~ / !~
+            [IMPLEMENTE]
             Compilation de regex en pattern data :
               /pattern/ -> stocker pattern dans segment .DATA
               Support des metacaracteres : . * + ? [ ] ^ $ | ( )
@@ -418,14 +419,14 @@
               expr !~ /pattern/ -> CALL _AWRT_MATCH_RE + NOT
             Pattern dans les regles :
               /pattern/ { action } -> tester $0 ~ /pattern/
-            Fonctions utilisant des regex :
-              sub(regex, repl, target)
-              gsub(regex, repl, target)
-              match(string, regex) -> met a jour RSTART, RLENGTH
-              split(string, array, regex)
-            Routines runtime regex :
-              _AWRT_MATCH_RE : matcher une chaine contre un pattern
-              _AWRT_REGEX_COMPILE : compiler un pattern (optionnel)
+            Procedure AddRegexPat(pattern) : enregistrer un pattern
+              dans RegexPatTab et retourner son label _AWP_n
+            Procedure GenRegexMatch : PUSH EAX (pattern) +
+              PUSH EBX (string) + CALL _AWRT_MATCH_RE -> EAX 0/1
+            ParsePrimaryExpr TK_REGEXP : AddRegexPat + GenLoadStr
+            ParseMatchExpr : ~ -> GenRegexMatch, !~ -> GenRegexMatch + NOT
+            Var RegexOpCount, RegexPatCount pour les statistiques
+            test_regex17.awk (15 cas, expressions regulieres)
 
   TODO 18 - PARSEUR : FONCTIONS BUILTIN CHAINES
             Procedure ParseBuiltinString
