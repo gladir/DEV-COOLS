@@ -156,20 +156,18 @@
             EmitEpilog : MOV ESP,EBP / POP EBP / RET.
             EmitDataSeg : ecrire .DATA avec toutes les entrees.
 
-  TODO 08 - SEGMENT DE DONNEES ET STATIQUES
-            TDataRec : LblName, Kind (DK_DWORD/DK_BYTE/DK_STR/
-              DK_ARRAY/DK_ZERO), IntVal, StrVal.
+  TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
+            TDataKind (DK_DWORD/DK_BYTE/DK_STR/DK_ARRAY/DK_ZERO).
+            TDataRec (LblName/Kind/IntVal/StrVal/ElemCount).
             DataTab[0..MAX_DATA-1], DataCount.
-            DataAdd, DataAddStr, DataAddDWord, DataAddByte,
-              DataAddArray, DataAddZero : variantes d ajout.
+            DataAdd (generique), DataAddStr (DB "abc",0),
+              DataAddDWord (DD val), DataAddByte (DB val),
+              DataAddArray (DB n DUP(0)), DataAddZero (DB n DUP(0)).
             DataAddGlobalVar(nom, typeIdx) : cree _CSCV_nom.
             DataAddStaticVar(classe, var, typeIdx) : cree _CSCST_N.
-            Variables globales (champs statiques de classe) :
-              DD/DB dans .DATA avec label _CSCV_nom.
-            Constantes chaines : DB "abc",0 dans .DATA
-              avec label _CSCK_N.
-            Tampons I/O : INBUF (256 octets), NUMBUF (16 octets).
-            Variables de handles : HSTDOUT, HSTDIN, HHEAP (DWORD).
+            DataInit : tampons I/O, handles, CRLF.
+            EmitDataSeg reecrit pour emettre tout DataTab.
+            Run : DataInit, DataTab peuple pour variables statiques.
 
   TODO 09 - VARIABLES ET DECLARATIONS
             Champs statiques de classe : segment .DATA,
@@ -514,6 +512,27 @@ Var
   AsmFileName : TString;       { nom du fichier .asm                 }
   LabelSeq    : LongInt;       { compteur global pour labels uniques }
 
+  { Segment de donnees (TODO 08) }
+
+Const
+  MAX_DATA = 512;               { max entrees dans DataTab            }
+
+Type
+  TDataKind = (DK_DWORD, DK_BYTE, DK_STR, DK_ARRAY, DK_ZERO);
+
+  TDataRec = Record
+    LblName   : TString;        { label ASM dans .DATA                }
+    Kind      : TDataKind;      { type de donnee                      }
+    IntVal    : LongInt;        { valeur entiere (pour DK_DWORD/BYTE) }
+    StrVal    : TString;        { contenu chaine (pour DK_STR)        }
+    ElemCount : Integer;        { taille en octets (DK_ARRAY/DK_ZERO) }
+  End;
+
+Var
+  DataTab     : Array[0..MAX_DATA - 1] Of TDataRec;
+  DataCount   : Integer;        { nombre d entrees dans DataTab       }
+  StaticSeq   : Integer;        { compteur de sequence pour _CSCST_N  }
+
   { Variables binaires }
   BinCode     : Array[0..MAX_BIN_CODE - 1] of Byte;
   BinCodeLen  : LongInt;
@@ -801,6 +820,11 @@ Begin
 End;
 
 Procedure ShowStats; Forward;
+
+{ Forward declarations for TODO 08 }
+Function  DataAdd(Const Lbl : TString; Kind : TDataKind;
+                  AIntVal : LongInt; Const AStrVal : TString) : Integer; Forward;
+Procedure DataInit; Forward;
 
 { ============================================================ }
 { TODO 02 - LEXEUR (TOKENS C#)                                 }
@@ -3233,28 +3257,78 @@ End;
 
 { ------------------------------------------------------------ }
 { EmitDataSeg                                                   }
-{   Ecrire le segment .DATA (stub - sera complete dans TODO 08) }
+{   Ecrire le segment .DATA depuis DataTab et StrLitTab         }
 { ------------------------------------------------------------ }
 
 Procedure EmitDataSeg;
-Var I : Integer;
+Var
+  I, J  : Integer;
+  S     : TString;
+  Ch    : Char;
+  InStr : Boolean;
 Begin
   EmitRaw('.DATA');
   EmitBlankLine;
+
+  { Emettre les constantes chaines du StrLitTab }
   EmitComment('Constantes chaines');
   For I := 1 To StrLitCount Do
   Begin
     EmitRaw(StrLitTab[I].AsmLbl + ' DB "' + StrLitTab[I].Text + '",0');
   End;
   EmitBlankLine;
-  EmitComment('Tampons I/O');
-  EmitRaw('_CSC_INBUF   DB 256 DUP(0)');
-  EmitRaw('_CSC_NUMBUF  DB 16 DUP(0)');
-  EmitRaw('_CSC_HSTDOUT DD 0');
-  EmitRaw('_CSC_HSTDIN  DD 0');
-  EmitRaw('_CSC_HHEAP   DD 0');
-  EmitRaw('_CSC_WRITTEN DD 0');
-  EmitRaw('_CSC_READCNT DD 0');
+
+  { Emettre les entrees du DataTab }
+  EmitComment('Donnees statiques (DataTab)');
+  For I := 0 To DataCount - 1 Do
+  Begin
+    Case DataTab[I].Kind Of
+      DK_DWORD :
+        EmitRaw(DataTab[I].LblName + ' DD ' +
+                IntToStr_(DataTab[I].IntVal));
+      DK_BYTE :
+        EmitRaw(DataTab[I].LblName + ' DB ' +
+                IntToStr_(DataTab[I].IntVal));
+      DK_STR :
+      Begin
+        { Gerer les caracteres de controle en numerique }
+        S := '';
+        InStr := False;
+        For J := 1 To Length(DataTab[I].StrVal) Do
+        Begin
+          Ch := DataTab[I].StrVal[J];
+          If (Ord(Ch) < 32) Or (Ord(Ch) > 126) Then
+          Begin
+            If InStr Then
+            Begin
+              S := S + '",';
+              InStr := False;
+            End;
+            S := S + IntToStr_(Ord(Ch)) + ',';
+          End
+          Else
+          Begin
+            If Not InStr Then
+            Begin
+              S := S + '"';
+              InStr := True;
+            End;
+            S := S + Ch;
+          End;
+        End;
+        If InStr Then
+          S := S + '",';
+        S := S + '0';
+        EmitRaw(DataTab[I].LblName + ' DB ' + S);
+      End;
+      DK_ARRAY :
+        EmitRaw(DataTab[I].LblName + ' DB ' +
+                IntToStr_(DataTab[I].ElemCount) + ' DUP(0)');
+      DK_ZERO :
+        EmitRaw(DataTab[I].LblName + ' DB ' +
+                IntToStr_(DataTab[I].ElemCount) + ' DUP(0)');
+    End;
+  End;
   EmitBlankLine;
 End;
 
@@ -3309,6 +3383,195 @@ Begin
   EmitRaw('END _CSCF_MAIN');
 End;
 
+{ ============================================================ }
+{ TODO 08 - SEGMENT DE DONNEES ET STATIQUES                     }
+{ ============================================================ }
+{                                                               }
+{  Gestion du segment de donnees (.DATA) avec une table         }
+{  generique DataTab. Chaque entree decrit un label dans le     }
+{  segment .DATA avec son type (DWORD, BYTE, chaine, tableau,   }
+{  bloc zero). DataInit pre-peuple la table avec les tampons    }
+{  I/O, handles et CRLF. DataAddGlobalVar et DataAddStaticVar   }
+{  permettent de declarer des variables globales et statiques.   }
+{                                                               }
+{ ============================================================ }
+
+{ ------------------------------------------------------------ }
+{ DataAdd                                                       }
+{   Ajouter une entree generique dans DataTab                   }
+{   Retourne l index dans DataTab ou -1 si plein                }
+{ ------------------------------------------------------------ }
+
+Function DataAdd(Const Lbl : TString; Kind : TDataKind;
+                 AIntVal : LongInt; Const AStrVal : TString) : Integer;
+Begin
+  If DataCount >= MAX_DATA Then
+  Begin
+    FatalError('segment DATA plein (max=' + IntToStr_(MAX_DATA) + ')');
+    DataAdd := -1;
+    Exit;
+  End;
+  DataTab[DataCount].LblName   := Lbl;
+  DataTab[DataCount].Kind      := Kind;
+  DataTab[DataCount].IntVal    := AIntVal;
+  DataTab[DataCount].StrVal    := AStrVal;
+  DataTab[DataCount].ElemCount := 0;
+  DataAdd := DataCount;
+  Inc(DataCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ DataAddStr                                                    }
+{   Ajouter une constante chaine DB "abc",0 dans DataTab        }
+{   Deduplique : si la chaine existe deja, retourne son index   }
+{   Retourne l index dans DataTab                               }
+{ ------------------------------------------------------------ }
+
+Function DataAddStr(Const S : TString) : Integer;
+Var
+  I   : Integer;
+  Lbl : TString;
+Begin
+  { Rechercher un doublon existant }
+  For I := 0 To DataCount - 1 Do
+    If (DataTab[I].Kind = DK_STR) And (DataTab[I].StrVal = S) Then
+    Begin
+      DataAddStr := I;
+      Exit;
+    End;
+  { Nouvelle entree }
+  Inc(StrLitSeq);
+  Lbl := CSC_STR_PFX + IntToStr_(StrLitSeq);
+  DataAddStr := DataAdd(Lbl, DK_STR, 0, S);
+End;
+
+{ ------------------------------------------------------------ }
+{ DataAddDWord                                                  }
+{   Ajouter un DWORD (DD valeur) dans DataTab                   }
+{ ------------------------------------------------------------ }
+
+Function DataAddDWord(Const Lbl : TString; Val : LongInt) : Integer;
+Begin
+  DataAddDWord := DataAdd(Lbl, DK_DWORD, Val, '');
+End;
+
+{ ------------------------------------------------------------ }
+{ DataAddByte                                                   }
+{   Ajouter un BYTE (DB valeur) dans DataTab                    }
+{ ------------------------------------------------------------ }
+
+Function DataAddByte(Const Lbl : TString; Val : Integer) : Integer;
+Begin
+  DataAddByte := DataAdd(Lbl, DK_BYTE, Val, '');
+End;
+
+{ ------------------------------------------------------------ }
+{ DataAddArray                                                  }
+{   Ajouter un tableau (DB count DUP(0)) dans DataTab           }
+{   count = nombre d octets a reserver                          }
+{ ------------------------------------------------------------ }
+
+Function DataAddArray(Const Lbl : TString; Count : Integer) : Integer;
+Var Idx : Integer;
+Begin
+  Idx := DataAdd(Lbl, DK_ARRAY, 0, '');
+  If Idx >= 0 Then
+    DataTab[Idx].ElemCount := Count;
+  DataAddArray := Idx;
+End;
+
+{ ------------------------------------------------------------ }
+{ DataAddZero                                                   }
+{   Ajouter un bloc initialise a zero (DB size DUP(0))          }
+{ ------------------------------------------------------------ }
+
+Function DataAddZero(Const Lbl : TString; Size : Integer) : Integer;
+Var Idx : Integer;
+Begin
+  Idx := DataAdd(Lbl, DK_ZERO, 0, '');
+  If Idx >= 0 Then
+    DataTab[Idx].ElemCount := Size;
+  DataAddZero := Idx;
+End;
+
+{ ------------------------------------------------------------ }
+{ DataAddGlobalVar                                              }
+{   Creer une variable globale _CSCV_nom dans .DATA             }
+{   selon le type : DD pour 4 octets, DB pour 1 octet, etc.    }
+{ ------------------------------------------------------------ }
+
+Function DataAddGlobalVar(Const VarName : TString; TypeIdx : Integer) : Integer;
+Var
+  Lbl  : TString;
+  Size : Integer;
+Begin
+  Lbl := '_CSCV_' + VarName;
+  Size := TypeSizeof(TypeIdx);
+  If Size >= 4 Then
+    DataAddGlobalVar := DataAddDWord(Lbl, 0)
+  Else If Size = 1 Then
+    DataAddGlobalVar := DataAddByte(Lbl, 0)
+  Else
+    DataAddGlobalVar := DataAddZero(Lbl, Size);
+End;
+
+{ ------------------------------------------------------------ }
+{ DataAddStaticVar                                              }
+{   Creer une variable statique _CSCST_N dans .DATA             }
+{ ------------------------------------------------------------ }
+
+Function DataAddStaticVar(Const ClassName, VarName : TString;
+                          TypeIdx : Integer) : Integer;
+Var
+  Lbl  : TString;
+  Size : Integer;
+  S    : TString;
+Begin
+  Inc(StaticSeq);
+  Str(StaticSeq, S);
+  Lbl := '_CSCST_' + S;
+  Size := TypeSizeof(TypeIdx);
+  If Size >= 4 Then
+    DataAddStaticVar := DataAddDWord(Lbl, 0)
+  Else If Size = 1 Then
+    DataAddStaticVar := DataAddByte(Lbl, 0)
+  Else
+    DataAddStaticVar := DataAddZero(Lbl, Size);
+End;
+
+{ ------------------------------------------------------------ }
+{ DataInit                                                      }
+{   Pre-peupler le segment DATA avec les donnees de base :      }
+{   CRLF, tampons I/O, handles, etc.                            }
+{ ------------------------------------------------------------ }
+
+Procedure DataInit;
+Begin
+  DataCount := 0;
+  StaticSeq := 0;
+
+  { Retour chariot CRLF }
+  DataAdd('_CSC_CRLF', DK_STR, 0, #13#10);
+
+  { Chaine vide }
+  DataAdd('_CSC_EMPTY', DK_STR, 0, '');
+
+  { Tampons I/O }
+  DataAddArray('_CSC_INBUF',  256);    { tampon lecture 256 octets       }
+  DataAddArray('_CSC_NUMBUF', 16);     { tampon conversion nombre        }
+
+  { Handles et variables systeme }
+  DataAddDWord('_CSC_HSTDOUT', 0);     { handle stdout                   }
+  DataAddDWord('_CSC_HSTDIN',  0);     { handle stdin                    }
+  DataAddDWord('_CSC_HHEAP',   0);     { handle heap                     }
+  DataAddDWord('_CSC_WRITTEN', 0);     { octets ecrits (WriteFile)       }
+  DataAddDWord('_CSC_READCNT', 0);     { octets lus (ReadFile)           }
+
+  { Ajouter les constantes chaines du StrLitTab existant }
+  { (Elles seront peuplees pendant l analyse, puis emises }
+  {  par EmitDataSeg)                                      }
+End;
+
 { ------------------------------------------------------------ }
 { ShowStats (corps)                                             }
 { ------------------------------------------------------------ }
@@ -3325,6 +3588,7 @@ Begin
   WriteLn('Constantes       : ', ConstCount);
   WriteLn('Symboles         : ', SymCount);
   WriteLn('Types            : ', TypeCount);
+  WriteLn('Donnees .DATA    : ', DataCount);
   WriteLn('Labels generes   : ', LabelSeq);
   WriteLn('Erreurs          : ', ErrorCount);
   WriteLn('Avertissements   : ', WarnCount);
@@ -3382,6 +3646,9 @@ Begin
 
   { Initialiser l emetteur (TODO 07) }
   LabelSeq := 0;
+
+  { Initialiser le segment de donnees (TODO 08) }
+  DataInit;
 
   { Lire le premier token }
   Consume;
@@ -3556,7 +3823,12 @@ Begin
             SymIdx := SymAdd(MethName, SC_STATIC,
                              TypeFromKeyword(VarType));
             If SymIdx >= 0 Then
+            Begin
               SymTab[SymIdx].IsStatic := True;
+              { Allouer dans le segment .DATA (TODO 08) }
+              DataAddStaticVar(ClsName, MethName,
+                               TypeFromKeyword(VarType));
+            End;
           End;
         End;
       End;
@@ -3621,7 +3893,8 @@ Begin
   WriteLn('CSCW32: Lexer OK (', TotalLines, ' lignes, ',
           TokenCount, ' tokens, ', UsingCount, ' using, ',
           StrLitCount, ' chaines, ', ConstCount, ' constantes, ',
-          SymCount, ' symboles, ', TypeCount, ' types)');
+          SymCount, ' symboles, ', TypeCount, ' types, ',
+          DataCount, ' data)');
 
   { Emettre le fichier .asm (TODO 07) }
   EmitOpen;
@@ -3630,10 +3903,10 @@ Begin
   EmitCodeSeg;
 
   { Stub : point d entree minimal }
-  EmitComment('Point d entree (stub - les TODOs 08..25 ajouteront le code)');
+  EmitComment('Point d entree (stub - les TODOs 09..25 ajouteront le code)');
   EmitLabel('_CSCF_MAIN');
   EmitProlog(0);
-  EmitComment('--- code a generer (TODO 08+) ---');
+  EmitComment('--- code a generer (TODO 09+) ---');
   EmitInstr('PUSH', '0');
   EmitInstr('CALL', '_ExitProcess@4');
   EmitEpilog;
@@ -3642,7 +3915,7 @@ Begin
   EmitClose;
 
   WriteLn('CSCW32: ASM genere -> ', AsmFileName);
-  WriteLn('CSCW32: Les TODOs 08..25 ne sont pas encore implementes.');
+  WriteLn('CSCW32: Les TODOs 09..25 ne sont pas encore implementes.');
 End;
 
 { ------------------------------------------------------------ }

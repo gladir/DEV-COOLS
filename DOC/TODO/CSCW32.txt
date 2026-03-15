@@ -195,7 +195,7 @@
               stub point d entree _CSCF_MAIN avec ExitProcess(0)
               EmitFooter/EmitClose.
 
-  TODO 08 - SEGMENT DE DONNEES ET STATIQUES
+  TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
             TDataRec : LblName, Kind (DK_DWORD/DK_BYTE/DK_STR/
               DK_ARRAY/DK_ZERO), IntVal, StrVal.
             DataTab[0..MAX_DATA-1], DataCount.
