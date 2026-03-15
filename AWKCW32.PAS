@@ -193,7 +193,7 @@
             Var CoercionCount pour les statistiques
             test_concat.awk (concatenation + coercition)
 
-  TODO 08 - GENERATION DE CODE : OPERATIONS ARITHMETIQUES 80386
+  TODO 08 - GENERATION DE CODE : OPERATIONS ARITHMETIQUES 80386 [IMPLEMENTE]
             Procedure GenLoadVar(sym_idx: Integer)
               Variable scalaire : MOV EAX, DWORD PTR [_AWV_x] ou [EBP-n]
               Variable chaine   : MOV EAX, DWORD PTR [_AWV_x] (pointeur)
@@ -773,6 +773,25 @@ Const
   { Taille tampon de concatenation (TODO 07) }
   AWK_CATBUF_SIZE = 512;     { taille du tampon _AWRT_CATBUF     }
 
+  { Codes d operations binaires (TODO 08) }
+  OP_ADD  = 0;               { + addition                        }
+  OP_SUB  = 1;               { - soustraction                    }
+  OP_MUL  = 2;               { * multiplication                  }
+  OP_DIV  = 3;               { / division entiere                }
+  OP_MOD  = 4;               { % modulo                          }
+  OP_POW  = 5;               { ^ puissance                       }
+
+  { Codes de comparaison (TODO 08) }
+  CMP_LT  = 0;              { <                                  }
+  CMP_LE  = 1;              { <=                                 }
+  CMP_GT  = 2;              { >                                  }
+  CMP_GE  = 3;              { >=                                 }
+  CMP_EQ  = 4;              { ==                                 }
+  CMP_NE  = 5;              { !=                                 }
+
+  { Taille maximale de la table des litteraux chaine (TODO 08) }
+  MAX_STRLIT = 512;
+
 { ============================================================ }
 { TODO 05 - CONSTANTES DE SCOPES                                }
 { ============================================================ }
@@ -897,6 +916,12 @@ Type
     Col      : Integer;     { numero de colonne source          }
   End;
 
+  { Entree de la table des litteraux chaine (TODO 08) }
+  TStringLitEntry = Record
+    Lbl : String[64];       { label ASM du litteral             }
+    Val : TString;          { valeur de la chaine               }
+  End;
+
 { ============================================================ }
 { VARIABLES GLOBALES                                           }
 { ============================================================ }
@@ -957,6 +982,13 @@ Var
   { Coercition et concatenation (TODO 07) }
   CoercionCount : Integer;    { nombre de coercitions effectuees  }
   ConcatCount   : Integer;    { nombre de concatenations implicites }
+
+  { Generation de code (TODO 08) }
+  GenCount       : Integer;    { nombre d operations code gen      }
+  GenEnabled     : Boolean;    { generation de code active         }
+  StringLitTab   : Array[0..MAX_STRLIT-1] Of TStringLitEntry;
+  StringLitCount : Integer;    { nombre de litteraux chaine        }
+  LastSymIdx     : Integer;    { dernier symbole charge/affecte    }
 
 Const
 {$IFDEF FPC}
@@ -1306,6 +1338,8 @@ Begin
   WriteLn('Expressions      : ', ExprCount);
   WriteLn('Coercitions      : ', CoercionCount);
   WriteLn('Concatenations   : ', ConcatCount);
+  WriteLn('Code gen ops     : ', GenCount);
+  WriteLn('Litteraux chaine : ', StringLitCount);
   WriteLn('Scope depth      : ', ScopeDepth);
   WriteLn('Labels generes   : ', LabelSeq);
   WriteLn('Erreurs          : ', ErrorCount);
@@ -2370,6 +2404,28 @@ Procedure CoerceForArith(Var TKLeft, TKRight: Integer); Forward;
 Procedure CoerceForConcat(Var TKLeft, TKRight: Integer); Forward;
 Procedure CoerceForCompare(Var TKLeft, TKRight: Integer); Forward;
 
+{ Forward declarations TODO 08 - Generation de code arithmetique }
+Procedure Emit(Const S: TString); Forward;
+Procedure EmitLabel(Const Lbl: TString); Forward;
+Procedure EmitComment(Const S: TString); Forward;
+Procedure EmitBlank; Forward;
+Function  NewLabel: TString; Forward;
+Function  AddStringLit(Const Val: TString): TString; Forward;
+Procedure GenLoadConst(Val: LongInt); Forward;
+Procedure GenLoadStr(Const Lbl: TString); Forward;
+Procedure GenLoadVar(SymIdx: Integer); Forward;
+Procedure GenStoreVar(SymIdx: Integer); Forward;
+Procedure GenPushEAX; Forward;
+Procedure GenPopEBX; Forward;
+Procedure GenBinOp(Op: Integer); Forward;
+Procedure GenCompare(Op: Integer); Forward;
+Procedure GenUnaryNeg; Forward;
+Procedure GenUnaryNot; Forward;
+Procedure GenIncVar(SymIdx: Integer); Forward;
+Procedure GenDecVar(SymIdx: Integer); Forward;
+Procedure GenFieldRef; Forward;
+Procedure GenFieldStore; Forward;
+
 { ---- Helpers de tokens --------------------------------------- }
 Function IsOp(Const S : String) : Boolean;
 Begin
@@ -2409,25 +2465,31 @@ Var
   ArgC  : Integer;
   IdName: String;
   D     : Integer;
+  SLbl  : TString;
 Begin
   ParsePrimaryExpr := TYK_UNKNOWN;
+  LastSymIdx := -1;
   SkipNewlines;
   Case CurToken.Kind Of
     TK_INTEGER:
     Begin
-      { Constante entiere : MOV EAX, imm32 (futur TODO 08) }
+      { Constante entiere : MOV EAX, imm32 }
+      GenLoadConst(CurToken.IntVal);
       ParsePrimaryExpr := TYK_NUMBER;
       ParserAdvance;
     End;
     TK_FLOAT:
     Begin
       { Constante flottante : traitee comme nombre entier tronque }
+      GenLoadConst(Trunc(CurToken.FloatVal));
       ParsePrimaryExpr := TYK_NUMBER;
       ParserAdvance;
     End;
     TK_STRING:
     Begin
-      { Constante chaine : LEA EAX, [_AWK_n] (futur TODO 08) }
+      { Constante chaine : MOV EAX, OFFSET _AWK_n }
+      SLbl := AddStringLit(CurToken.Val);
+      GenLoadStr(SLbl);
       ParsePrimaryExpr := TYK_STRING;
       ParserAdvance;
     End;
@@ -2440,6 +2502,7 @@ Begin
     TK_FIELD:
     Begin
       { Reference de champ $n : CALL _AWRT_GETFIELD }
+      GenFieldRef;
       ParsePrimaryExpr := TYK_STRING;
       ParserAdvance;
     End;
@@ -2448,7 +2511,11 @@ Begin
       { Variable builtin AWK (FS, NR, NF, ...) }
       TK := FindSym(CurToken.Val);
       If TK >= 0 Then
-        ParsePrimaryExpr := SymTab[TK].TypeKind
+      Begin
+        GenLoadVar(TK);
+        LastSymIdx := TK;
+        ParsePrimaryExpr := SymTab[TK].TypeKind;
+      End
       Else
         ParsePrimaryExpr := TYK_UNKNOWN;
       ParserAdvance;
@@ -2510,7 +2577,11 @@ Begin
         If TK < 0 Then
           TK := AddSym(IdName, TYK_UNINITIALIZED, STORE_GLOBAL, True);
         If TK >= 0 Then
-          ParsePrimaryExpr := SymTab[TK].TypeKind
+        Begin
+          GenLoadVar(TK);
+          LastSymIdx := TK;
+          ParsePrimaryExpr := SymTab[TK].TypeKind;
+        End
         Else
           ParsePrimaryExpr := TYK_UNKNOWN;
       End;
@@ -2620,13 +2691,23 @@ End;
 { var++ var-- (suffixe) }
 Function ParsePostfixExpr : Integer;
 Var
-  TK : Integer;
+  TK   : Integer;
+  OpStr: TString;
 Begin
   TK := ParsePrimaryExpr;
   While (CurToken.Kind = TK_OP) And
         ((CurToken.Val = '++') Or (CurToken.Val = '--')) Do
   Begin
+    OpStr := CurToken.Val;
     ParserAdvance;
+    If OpStr = '++' Then
+    Begin
+      If LastSymIdx >= 0 Then GenIncVar(LastSymIdx);
+    End
+    Else
+    Begin
+      If LastSymIdx >= 0 Then GenDecVar(LastSymIdx);
+    End;
     TK := TYK_NUMBER;
   End;
   ParsePostfixExpr := TK;
@@ -2647,6 +2728,7 @@ Begin
       D := ParseUnaryExpr;
       { Coercition booleenne : resultat en nombre 0/1 }
       D := GenCoerceToBoolean(D);
+      GenUnaryNot;
       ParseUnaryExpr := TYK_NUMBER;
       Exit;
     End;
@@ -2656,6 +2738,7 @@ Begin
       D := ParseUnaryExpr;
       { Coercition arithmetique : forcer en nombre }
       D := GenCoerceToNumber(D);
+      GenUnaryNeg;
       ParseUnaryExpr := TYK_NUMBER;
       Exit;
     End;
@@ -2672,6 +2755,7 @@ Begin
     Begin
       ParserAdvance;
       D := ParsePostfixExpr;
+      If LastSymIdx >= 0 Then GenIncVar(LastSymIdx);
       ParseUnaryExpr := TYK_NUMBER;
       Exit;
     End;
@@ -2679,6 +2763,7 @@ Begin
     Begin
       ParserAdvance;
       D := ParsePostfixExpr;
+      If LastSymIdx >= 0 Then GenDecVar(LastSymIdx);
       ParseUnaryExpr := TYK_NUMBER;
       Exit;
     End;
@@ -2703,10 +2788,13 @@ Begin
   TK := ParseUnaryExpr;
   If IsOp('^') Then
   Begin
+    GenPushEAX;
     ParserAdvance;
     D := ParsePowExpr;  { droite a gauche : recursion }
     { Coercition arithmetique : forcer les deux en nombre }
     CoerceForArith(TK, D);
+    GenPopEBX;
+    GenBinOp(OP_POW);
     TK := TYK_NUMBER;
   End;
   ParsePowExpr := TK;
@@ -2716,18 +2804,27 @@ End;
 { * / % }
 Function ParseMulExpr : Integer;
 Var
-  TK : Integer;
-  D  : Integer;
+  TK    : Integer;
+  D     : Integer;
+  OpStr : TString;
+  OpCode: Integer;
 Begin
   TK := ParsePowExpr;
   While (CurToken.Kind = TK_OP) And
         ((CurToken.Val = '*') Or (CurToken.Val = '/') Or
          (CurToken.Val = '%')) Do
   Begin
+    OpStr := CurToken.Val;
+    GenPushEAX;
     ParserAdvance;
     D := ParsePowExpr;
     { Coercition arithmetique : forcer les deux en nombre }
     CoerceForArith(TK, D);
+    GenPopEBX;
+    If OpStr = '*' Then OpCode := OP_MUL
+    Else If OpStr = '/' Then OpCode := OP_DIV
+    Else OpCode := OP_MOD;
+    GenBinOp(OpCode);
     TK := TYK_NUMBER;
   End;
   ParseMulExpr := TK;
@@ -2737,17 +2834,25 @@ End;
 { + - }
 Function ParseAddExpr : Integer;
 Var
-  TK : Integer;
-  D  : Integer;
+  TK    : Integer;
+  D     : Integer;
+  OpStr : TString;
+  OpCode: Integer;
 Begin
   TK := ParseMulExpr;
   While (CurToken.Kind = TK_OP) And
         ((CurToken.Val = '+') Or (CurToken.Val = '-')) Do
   Begin
+    OpStr := CurToken.Val;
+    GenPushEAX;
     ParserAdvance;
     D := ParseMulExpr;
     { Coercition arithmetique : forcer les deux en nombre }
     CoerceForArith(TK, D);
+    GenPopEBX;
+    If OpStr = '+' Then OpCode := OP_ADD
+    Else OpCode := OP_SUB;
+    GenBinOp(OpCode);
     TK := TYK_NUMBER;
   End;
   ParseAddExpr := TK;
@@ -2797,8 +2902,10 @@ End;
 { < <= > >= == != }
 Function ParseCompareExpr : Integer;
 Var
-  TK : Integer;
-  D  : Integer;
+  TK     : Integer;
+  D      : Integer;
+  OpStr  : TString;
+  CmpCode: Integer;
 Begin
   TK := ParseConcatExpr;
   While (CurToken.Kind = TK_OP) And
@@ -2806,10 +2913,20 @@ Begin
          (CurToken.Val = '>') Or (CurToken.Val = '>=') Or
          (CurToken.Val = '==') Or (CurToken.Val = '!=')) Do
   Begin
+    OpStr := CurToken.Val;
+    GenPushEAX;
     ParserAdvance;
     D := ParseConcatExpr;
     { Coercition contextuelle : nombre vs chaine selon les types }
     CoerceForCompare(TK, D);
+    GenPopEBX;
+    If OpStr = '<' Then CmpCode := CMP_LT
+    Else If OpStr = '<=' Then CmpCode := CMP_LE
+    Else If OpStr = '>' Then CmpCode := CMP_GT
+    Else If OpStr = '>=' Then CmpCode := CMP_GE
+    Else If OpStr = '==' Then CmpCode := CMP_EQ
+    Else CmpCode := CMP_NE;
+    GenCompare(CmpCode);
     TK := TYK_NUMBER;
   End;
   ParseCompareExpr := TK;
@@ -2925,7 +3042,8 @@ End;
 { = += -= *= /= %= ^= (droite a gauche) }
 Function ParseAssignExpr : Integer;
 Var
-  TK : Integer;
+  TK     : Integer;
+  SaveSym: Integer;
 Begin
   TK := ParseTernaryExpr;
   If (CurToken.Kind = TK_OP) And
@@ -2934,9 +3052,11 @@ Begin
       (CurToken.Val = '/=') Or (CurToken.Val = '%=') Or
       (CurToken.Val = '^=')) Then
   Begin
+    SaveSym := LastSymIdx;
     ParserAdvance;
     SkipNewlines;
     TK := ParseAssignExpr;  { droite a gauche : recursion }
+    If SaveSym >= 0 Then GenStoreVar(SaveSym);
   End;
   ParseAssignExpr := TK;
 End;
@@ -3090,6 +3210,251 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 08 - GENERATION DE CODE : OPERATIONS ARITHMETIQUES 80386 }
+{ ============================================================ }
+
+{ ---- Emit ---------------------------------------------------- }
+{ Ecrit une ligne d assembleur dans le fichier de sortie         }
+Procedure Emit(Const S: TString);
+Begin
+  Inc(GenCount);
+  If GenEnabled And OutFOpen Then
+    WriteLn(OutF, S);
+End;
+
+{ ---- EmitLabel ----------------------------------------------- }
+Procedure EmitLabel(Const Lbl: TString);
+Begin
+  Inc(GenCount);
+  If GenEnabled And OutFOpen Then
+    WriteLn(OutF, Lbl, ':');
+End;
+
+{ ---- EmitComment --------------------------------------------- }
+Procedure EmitComment(Const S: TString);
+Begin
+  If GenEnabled And OutFOpen Then
+    WriteLn(OutF, '; ', S);
+End;
+
+{ ---- EmitBlank ----------------------------------------------- }
+Procedure EmitBlank;
+Begin
+  If GenEnabled And OutFOpen Then
+    WriteLn(OutF);
+End;
+
+{ ---- NewLabel ------------------------------------------------ }
+Function NewLabel: TString;
+Begin
+  NewLabel := GenScopeLabel(AW_LBL_PFX);
+End;
+
+{ ---- AddStringLit -------------------------------------------- }
+{ Ajoute un litteral chaine et retourne son label ASM            }
+Function AddStringLit(Const Val: TString): TString;
+Var
+  Lbl : TString;
+Begin
+  If StringLitCount >= MAX_STRLIT Then
+  Begin
+    FatalError('table des litteraux chaine pleine (max=' +
+               IntToStr_(MAX_STRLIT) + ')');
+    AddStringLit := '';
+    Exit;
+  End;
+  Lbl := GenScopeLabel(AW_STR_PFX);
+  StringLitTab[StringLitCount].Lbl := Lbl;
+  StringLitTab[StringLitCount].Val := Val;
+  Inc(StringLitCount);
+  AddStringLit := Lbl;
+End;
+
+{ ---- GenLoadConst -------------------------------------------- }
+{ MOV EAX, imm32                                                 }
+Procedure GenLoadConst(Val: LongInt);
+Begin
+  Emit('        MOV     EAX, ' + IntToStr_(Val));
+End;
+
+{ ---- GenLoadStr ---------------------------------------------- }
+{ MOV EAX, OFFSET label  (pointeur vers litteral ASCIIZ)         }
+Procedure GenLoadStr(Const Lbl: TString);
+Begin
+  Emit('        MOV     EAX, OFFSET ' + Lbl);
+End;
+
+{ ---- GenLoadVar ---------------------------------------------- }
+{ Charge la valeur d une variable dans EAX                       }
+Procedure GenLoadVar(SymIdx: Integer);
+Begin
+  If (SymIdx < 0) Or (SymIdx >= SymCount) Then Exit;
+  Case SymTab[SymIdx].StoreClass Of
+    STORE_GLOBAL:
+      Emit('        MOV     EAX, DWORD PTR [' +
+           SymTab[SymIdx].AsmLabel + ']');
+    STORE_LOCAL:
+      Emit('        MOV     EAX, DWORD PTR [EBP-' +
+           IntToStr_(Abs(SymTab[SymIdx].BpOffset)) + ']');
+    STORE_PARAM:
+      Emit('        MOV     EAX, DWORD PTR [EBP+' +
+           IntToStr_(SymTab[SymIdx].BpOffset) + ']');
+  End;
+End;
+
+{ ---- GenStoreVar --------------------------------------------- }
+{ Stocke EAX dans une variable                                   }
+Procedure GenStoreVar(SymIdx: Integer);
+Begin
+  If (SymIdx < 0) Or (SymIdx >= SymCount) Then Exit;
+  Case SymTab[SymIdx].StoreClass Of
+    STORE_GLOBAL:
+      Emit('        MOV     DWORD PTR [' +
+           SymTab[SymIdx].AsmLabel + '], EAX');
+    STORE_LOCAL:
+      Emit('        MOV     DWORD PTR [EBP-' +
+           IntToStr_(Abs(SymTab[SymIdx].BpOffset)) + '], EAX');
+    STORE_PARAM:
+      Emit('        MOV     DWORD PTR [EBP+' +
+           IntToStr_(SymTab[SymIdx].BpOffset) + '], EAX');
+  End;
+End;
+
+{ ---- GenPushEAX ---------------------------------------------- }
+Procedure GenPushEAX;
+Begin
+  Emit('        PUSH    EAX');
+End;
+
+{ ---- GenPopEBX ----------------------------------------------- }
+{ Sauvegarde EAX (droite) dans EBX puis restaure EAX (gauche)    }
+Procedure GenPopEBX;
+Begin
+  Emit('        MOV     EBX, EAX');
+  Emit('        POP     EAX');
+End;
+
+{ ---- GenBinOp ------------------------------------------------ }
+{ Operation binaire : EAX = EAX op EBX                           }
+Procedure GenBinOp(Op: Integer);
+Begin
+  Case Op Of
+    OP_ADD:
+      Emit('        ADD     EAX, EBX');
+    OP_SUB:
+      Emit('        SUB     EAX, EBX');
+    OP_MUL:
+      Emit('        IMUL    EAX, EBX');
+    OP_DIV:
+    Begin
+      Emit('        CDQ');
+      Emit('        IDIV    EBX');
+    End;
+    OP_MOD:
+    Begin
+      Emit('        CDQ');
+      Emit('        IDIV    EBX');
+      Emit('        MOV     EAX, EDX');
+    End;
+    OP_POW:
+    Begin
+      Emit('        PUSH    EBX');
+      Emit('        PUSH    EAX');
+      Emit('        CALL    ' + AW_RT_PFX + 'POW');
+    End;
+  End;
+End;
+
+{ ---- GenCompare ---------------------------------------------- }
+{ CMP EAX, EBX + SETcc AL + MOVZX EAX, AL                      }
+Procedure GenCompare(Op: Integer);
+Var
+  CC : TString;
+Begin
+  Case Op Of
+    CMP_LT: CC := 'SETL';
+    CMP_LE: CC := 'SETLE';
+    CMP_GT: CC := 'SETG';
+    CMP_GE: CC := 'SETGE';
+    CMP_EQ: CC := 'SETE';
+    CMP_NE: CC := 'SETNE';
+  Else
+    CC := 'SETE';
+  End;
+  Emit('        CMP     EAX, EBX');
+  Emit('        ' + CC + '    AL');
+  Emit('        MOVZX   EAX, AL');
+End;
+
+{ ---- GenUnaryNeg --------------------------------------------- }
+{ NEG EAX                                                        }
+Procedure GenUnaryNeg;
+Begin
+  Emit('        NEG     EAX');
+End;
+
+{ ---- GenUnaryNot --------------------------------------------- }
+{ TEST EAX,EAX / SETZ AL / MOVZX EAX,AL                        }
+Procedure GenUnaryNot;
+Begin
+  Emit('        TEST    EAX, EAX');
+  Emit('        SETZ    AL');
+  Emit('        MOVZX   EAX, AL');
+End;
+
+{ ---- GenIncVar ----------------------------------------------- }
+{ INC DWORD PTR [var]                                            }
+Procedure GenIncVar(SymIdx: Integer);
+Begin
+  If (SymIdx < 0) Or (SymIdx >= SymCount) Then Exit;
+  Case SymTab[SymIdx].StoreClass Of
+    STORE_GLOBAL:
+      Emit('        INC     DWORD PTR [' +
+           SymTab[SymIdx].AsmLabel + ']');
+    STORE_LOCAL:
+      Emit('        INC     DWORD PTR [EBP-' +
+           IntToStr_(Abs(SymTab[SymIdx].BpOffset)) + ']');
+    STORE_PARAM:
+      Emit('        INC     DWORD PTR [EBP+' +
+           IntToStr_(SymTab[SymIdx].BpOffset) + ']');
+  End;
+End;
+
+{ ---- GenDecVar ----------------------------------------------- }
+{ DEC DWORD PTR [var]                                            }
+Procedure GenDecVar(SymIdx: Integer);
+Begin
+  If (SymIdx < 0) Or (SymIdx >= SymCount) Then Exit;
+  Case SymTab[SymIdx].StoreClass Of
+    STORE_GLOBAL:
+      Emit('        DEC     DWORD PTR [' +
+           SymTab[SymIdx].AsmLabel + ']');
+    STORE_LOCAL:
+      Emit('        DEC     DWORD PTR [EBP-' +
+           IntToStr_(Abs(SymTab[SymIdx].BpOffset)) + ']');
+    STORE_PARAM:
+      Emit('        DEC     DWORD PTR [EBP+' +
+           IntToStr_(SymTab[SymIdx].BpOffset) + ']');
+  End;
+End;
+
+{ ---- GenFieldRef --------------------------------------------- }
+{ PUSH EAX + CALL _AWRT_GETFIELD -> resultat dans EAX           }
+Procedure GenFieldRef;
+Begin
+  Emit('        PUSH    EAX');
+  Emit('        CALL    ' + AW_RT_PFX + 'GETFIELD');
+End;
+
+{ ---- GenFieldStore ------------------------------------------- }
+{ PUSH EAX (valeur) + PUSH idx + CALL _AWRT_SETFIELD            }
+Procedure GenFieldStore;
+Begin
+  Emit('        PUSH    EAX');
+  Emit('        CALL    ' + AW_RT_PFX + 'SETFIELD');
+End;
+
+{ ============================================================ }
 { PROCEDURE RUN (STUB - sera complete par les TODOs suivants)  }
 { ============================================================ }
 
@@ -3109,6 +3474,10 @@ Begin
   ExprCount := 0;
   CoercionCount := 0;
   ConcatCount := 0;
+  GenCount := 0;
+  GenEnabled := True;
+  StringLitCount := 0;
+  LastSymIdx := -1;
   LexInit;
   { Mode debug : afficher tous les tokens }
   If Opts.DebugMode Then
@@ -3279,8 +3648,10 @@ Begin
             StmtCount, ' instruction(s)');
     WriteLn('AWKCW32: ', CoercionCount, ' coercition(s), ',
             ConcatCount, ' concatenation(s) implicite(s)');
+    WriteLn('AWKCW32: ', GenCount, ' operation(s) code gen, ',
+            StringLitCount, ' litteral(aux) chaine');
     WriteLn('AWKCW32: scope depth=', ScopeDepth, ', loop depth=', LoopDepth);
-    WriteLn('AWKCW32: TODO 08..25 non encore implementes.');
+    WriteLn('AWKCW32: TODO 09..25 non encore implementes.');
     WriteLn('AWKCW32: sortie prevue: ', Opts.OutFile);
   End;
   LexClose;

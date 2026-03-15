@@ -193,7 +193,7 @@
             Var CoercionCount pour les statistiques
             test_concat.awk (concatenation + coercition)
 
-  TODO 08 - GENERATION DE CODE : OPERATIONS ARITHMETIQUES 80386
+  TODO 08 - GENERATION DE CODE : OPERATIONS ARITHMETIQUES 80386 [IMPLEMENTE]
             Procedure GenLoadVar(sym_idx: Integer)
               Variable scalaire : MOV EAX, DWORD PTR [_AWV_x] ou [EBP-n]
               Variable chaine   : MOV EAX, DWORD PTR [_AWV_x] (pointeur)
