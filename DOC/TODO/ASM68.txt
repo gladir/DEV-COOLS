@@ -295,7 +295,7 @@ TODO 13 - Instructions logiques et de manipulation de bits [IMPLEMENTE]
   - BCHG   #imm/Dn, ea     : tester et inverser un bit
   - Exemples : SAMPLES\ASM68\logic.asm
 
-TODO 14 - Instructions de decalage et rotation
+TODO 14 - Instructions de decalage et rotation [IMPLEMENTE]
   ------------------------------------------------
   - ASL.s  #imm/Dn, Dn     : decalage arithmetique gauche
     ASL.W  ea               : decalage memoire (1 bit)

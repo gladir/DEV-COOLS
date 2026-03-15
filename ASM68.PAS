@@ -31,7 +31,7 @@
 { TODO 11 - Instructions de transfert de donnees [IMPLEMENTE] }
 { TODO 12 - Instructions arithmetiques entieres [IMPLEMENTE] }
 { TODO 13 - Instructions logiques et de manipulation de bits [IMPLEMENTE] }
-{ TODO 14 - Instructions de decalage et rotation }
+{ TODO 14 - Instructions de decalage et rotation [IMPLEMENTE] }
 { TODO 15 - Instructions de branchement et controle de flux }
 { TODO 16 - Instructions BCD et operations speciales }
 { TODO 17 - Encodage binaire des instructions (passe 2) }
@@ -6348,6 +6348,133 @@ Begin
  InstrBitOp($0140, $0840, 'BCHG', False);
 End;
 
+{ ====================================================================== }
+{ TODO 14 - Instructions de decalage et rotation                         }
+{ ====================================================================== }
+
+Procedure InstrShiftRot(OpSize: Integer; TypeBits: Integer;
+                        DirBit: Integer; MemBase: Word;
+                        Const Name: String);
+{ Generique pour ASL/ASR/LSL/LSR/ROL/ROR/ROXL/ROXR.
+  TypeBits = 0 (AS), 1 (LS), 2 (ROX), 3 (RO)
+  DirBit   = 0 (right), 1 (left)
+  MemBase  = opcode de base pour la forme memoire
+
+  Forme registre :
+    1110 cnt/reg dr size i/r type reg
+    - #count, Dn : i/r=0, cnt = count (1-7, 0 = 8)
+    - Dm, Dn     : i/r=1, cnt = Dm
+
+  Forme memoire (1 operande, mot seulement, 1 bit) :
+    1110 0 type dr 11 ea(6) }
+Var
+ Src, Dst: TOperand;
+ EA: Integer;
+ InstrW: Word;
+ ActualSize, SzBits: Integer;
+ Count: Integer;
+Begin
+ ParseOperand(Src);
+
+ If cur_tok = TOK_COMMA Then
+ Begin
+  { Forme a deux operandes : #imm,Dn ou Dm,Dn }
+  NextToken;
+  ParseOperand(Dst);
+
+  If Dst.Mode <> AM_DATA_REG Then
+  Begin
+   Error(cur_tok_line, cur_tok_col,
+         Name + ' registre : destination doit etre Dn');
+   SkipToEOL; Exit;
+  End;
+
+  ActualSize := OpSize;
+  If ActualSize = 0 Then ActualSize := SIZE_WORD;
+  SzBits := EncodeSizeBits(ActualSize);
+
+  If Src.Mode = AM_IMMEDIATE Then
+  Begin
+   { #count, Dn }
+   Count := Src.Imm32;
+   If (Count < 1) or (Count > 8) Then
+   Begin
+    Error(cur_tok_line, cur_tok_col,
+          Name + ' : compteur immediat doit etre entre 1 et 8');
+    SkipToEOL; Exit;
+   End;
+   If Count = 8 Then Count := 0;
+   InstrW := $E000 or Word(Count shl 9) or Word(DirBit shl 8)
+             or Word(SzBits shl 6) or Word(TypeBits shl 3)
+             or Word(Dst.Reg);
+   Emit16(InstrW);
+  End
+  Else If Src.Mode = AM_DATA_REG Then
+  Begin
+   { Dm, Dn }
+   InstrW := $E000 or Word(Src.Reg shl 9) or Word(DirBit shl 8)
+             or Word(SzBits shl 6) or Word(1 shl 5)
+             or Word(TypeBits shl 3) or Word(Dst.Reg);
+   Emit16(InstrW);
+  End
+  Else
+  Begin
+   Error(cur_tok_line, cur_tok_col,
+         Name + ' requiert #imm ou Dn en source');
+   SkipToEOL;
+  End;
+ End
+ Else
+ Begin
+  { Forme a un operande : decalage memoire (mot, 1 bit) }
+  If (OpSize <> 0) and (OpSize <> SIZE_WORD) Then
+   Warning(cur_tok_line, cur_tok_col,
+           Name + ' memoire : seule la taille .W est autorisee');
+
+  If Not CheckEAMask(Src, EA_MEM_ALT) Then
+  Begin
+   Error(cur_tok_line, cur_tok_col,
+         'mode d''adressage invalide pour ' + Name + ' memoire');
+   SkipToEOL; Exit;
+  End;
+
+  EA := EncodeEA(Src);
+  If EA < 0 Then
+  Begin
+   Error(cur_tok_line, cur_tok_col, 'encodage EA impossible');
+   SkipToEOL; Exit;
+  End;
+
+  InstrW := MemBase or Word(EA);
+  Emit16(InstrW);
+  EmitExtWords(Src, SIZE_WORD);
+ End;
+End;
+
+Procedure InstrASL(OpSize: Integer);
+Begin InstrShiftRot(OpSize, 0, 1, $E1C0, 'ASL'); End;
+
+Procedure InstrASR(OpSize: Integer);
+Begin InstrShiftRot(OpSize, 0, 0, $E0C0, 'ASR'); End;
+
+Procedure InstrLSL(OpSize: Integer);
+Begin InstrShiftRot(OpSize, 1, 1, $E3C0, 'LSL'); End;
+
+Procedure InstrLSR(OpSize: Integer);
+Begin InstrShiftRot(OpSize, 1, 0, $E2C0, 'LSR'); End;
+
+Procedure InstrROL(OpSize: Integer);
+Begin InstrShiftRot(OpSize, 3, 1, $E7C0, 'ROL'); End;
+
+Procedure InstrROR(OpSize: Integer);
+Begin InstrShiftRot(OpSize, 3, 0, $E6C0, 'ROR'); End;
+
+Procedure InstrROXL(OpSize: Integer);
+Begin InstrShiftRot(OpSize, 2, 1, $E5C0, 'ROXL'); End;
+
+Procedure InstrROXR(OpSize: Integer);
+Begin InstrShiftRot(OpSize, 2, 0, $E4C0, 'ROXR'); End;
+
 Procedure AssembleInstruction(Const OpName: String; OpSize: Integer);
 { Dispatch : appelle le bon encodeur selon le mnemonique }
 Begin
@@ -6400,6 +6527,15 @@ Begin
  Else If OpName = 'BSET' Then InstrBSET
  Else If OpName = 'BCLR' Then InstrBCLR
  Else If OpName = 'BCHG' Then InstrBCHG
+ { --- Instructions de decalage et rotation (TODO 14) --- }
+ Else If OpName = 'ASL' Then InstrASL(OpSize)
+ Else If OpName = 'ASR' Then InstrASR(OpSize)
+ Else If OpName = 'LSL' Then InstrLSL(OpSize)
+ Else If OpName = 'LSR' Then InstrLSR(OpSize)
+ Else If OpName = 'ROL' Then InstrROL(OpSize)
+ Else If OpName = 'ROR' Then InstrROR(OpSize)
+ Else If OpName = 'ROXL' Then InstrROXL(OpSize)
+ Else If OpName = 'ROXR' Then InstrROXR(OpSize)
  Else
  Begin
   Warning(cur_tok_line, cur_tok_col,
