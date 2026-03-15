@@ -317,7 +317,7 @@ TODO 14 - Instructions de decalage et rotation [IMPLEMENTE]
     registre, direction, compteur/registre)
   - Exemples : SAMPLES\ASM68\shift.asm
 
-TODO 15 - Instructions de branchement et controle de flux
+TODO 15 - Instructions de branchement et controle de flux [IMPLEMENTE]
   ----------------------------------------------------------
   - BRA.s  label           : branchement inconditionnel
   - BSR.s  label           : branchement vers sous-routine

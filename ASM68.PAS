@@ -32,7 +32,7 @@
 { TODO 12 - Instructions arithmetiques entieres [IMPLEMENTE] }
 { TODO 13 - Instructions logiques et de manipulation de bits [IMPLEMENTE] }
 { TODO 14 - Instructions de decalage et rotation [IMPLEMENTE] }
-{ TODO 15 - Instructions de branchement et controle de flux }
+{ TODO 15 - Instructions de branchement et controle de flux [IMPLEMENTE] }
 { TODO 16 - Instructions BCD et operations speciales }
 { TODO 17 - Encodage binaire des instructions (passe 2) }
 { TODO 18 - Architecture deux passes de l'assembleur }
@@ -645,7 +645,8 @@ Begin
     (U = 'BCC') or (U = 'BCS') or (U = 'BEQ') or (U = 'BNE') or
     (U = 'BGE') or (U = 'BGT') or (U = 'BLE') or (U = 'BLT') or
     (U = 'BHI') or (U = 'BLS') or (U = 'BMI') or (U = 'BPL') or
-    (U = 'BVC') or (U = 'BVS') Then Begin IsOpcode := True; Exit; End;
+    (U = 'BVC') or (U = 'BVS') or
+    (U = 'BHS') or (U = 'BLO') Then Begin IsOpcode := True; Exit; End;
  { Instructions DBcc }
  If (U = 'DBCC') or (U = 'DBCS') or (U = 'DBEQ') or (U = 'DBNE') or
     (U = 'DBGE') or (U = 'DBGT') or (U = 'DBLE') or (U = 'DBLT') or
@@ -6475,6 +6476,325 @@ Begin InstrShiftRot(OpSize, 2, 1, $E5C0, 'ROXL'); End;
 Procedure InstrROXR(OpSize: Integer);
 Begin InstrShiftRot(OpSize, 2, 0, $E4C0, 'ROXR'); End;
 
+{ ====================================================================== }
+{ TODO 15 - Instructions de branchement et controle de flux              }
+{ ====================================================================== }
+
+Function EncodeCondCode(Const CC: String): Integer;
+{ Retourne le code condition 4 bits (0-15) pour un suffixe Bcc/DBcc/Scc.
+  Retourne -1 si le code condition n'est pas reconnu. }
+Begin
+ EncodeCondCode := -1;
+ If CC = 'T'  Then EncodeCondCode :=  0   { True (toujours)    }
+ Else If CC = 'F'  Then EncodeCondCode :=  1   { False (jamais)     }
+ Else If CC = 'HI' Then EncodeCondCode :=  2   { HIgh (!C & !Z)     }
+ Else If CC = 'LS' Then EncodeCondCode :=  3   { Low or Same (C|Z)  }
+ Else If CC = 'CC' Then EncodeCondCode :=  4   { Carry Clear (C=0)  }
+ Else If CC = 'HS' Then EncodeCondCode :=  4   { alias CC           }
+ Else If CC = 'CS' Then EncodeCondCode :=  5   { Carry Set (C=1)    }
+ Else If CC = 'LO' Then EncodeCondCode :=  5   { alias CS           }
+ Else If CC = 'NE' Then EncodeCondCode :=  6   { Not Equal (Z=0)    }
+ Else If CC = 'EQ' Then EncodeCondCode :=  7   { Equal (Z=1)        }
+ Else If CC = 'VC' Then EncodeCondCode :=  8   { oVerflow Clear     }
+ Else If CC = 'VS' Then EncodeCondCode :=  9   { oVerflow Set       }
+ Else If CC = 'PL' Then EncodeCondCode := 10   { PLus (N=0)         }
+ Else If CC = 'MI' Then EncodeCondCode := 11   { MInus (N=1)        }
+ Else If CC = 'GE' Then EncodeCondCode := 12   { Greater or Equal   }
+ Else If CC = 'LT' Then EncodeCondCode := 13   { Less Than          }
+ Else If CC = 'GT' Then EncodeCondCode := 14   { Greater Than       }
+ Else If CC = 'LE' Then EncodeCondCode := 15;  { Less or Equal      }
+End;
+
+Procedure InstrBcc(Const OpName: String; OpSize: Integer);
+{ BRA, BSR, Bcc (BEQ, BNE, BCC, BCS, BMI, BPL, BVS, BVC, BHI, BLS,
+  BGE, BLT, BGT, BLE).
+  Encodage : 0110 cond disp8
+  Si disp8 = $00 -> mot d'extension 16 bits (deplacement .W)
+  Si disp8 = disp (>= -128 et <= 127 et != 0) -> .S (8 bits)
+
+  BRA = condition 0 (T=always), BSR = condition 1 (F=never, spe'cial) }
+Var
+ CC    : Integer;
+ CCStr : String;
+ TargetVal : LongInt;
+ InstrPC   : LongInt;
+ Disp      : LongInt;
+ InstrW    : Word;
+ IsShort   : Boolean;
+Begin
+ { Determiner le code condition }
+ If OpName = 'BRA' Then
+  CC := 0 { T = always }
+ Else If OpName = 'BSR' Then
+  CC := 1 { special }
+ Else
+ Begin
+  { Extraire le suffixe condition apres 'B' }
+  CCStr := Copy(OpName, 2, Length(OpName) - 1);
+  CC := EncodeCondCode(CCStr);
+  If CC < 0 Then
+  Begin
+   Error(cur_tok_line, cur_tok_col,
+         'code condition inconnu: ' + OpName);
+   SkipToEOL; Exit;
+  End;
+ End;
+
+ { Evaluer l'adresse cible }
+ TargetVal := EvalExpr;
+ InstrPC := GetPC;
+
+ { Calculer le deplacement PC-relatif (a partir de PC+2) }
+ Disp := TargetVal - (InstrPC + 2);
+
+ { Determiner si deplacement court (.S/.B) ou mot (.W) }
+ IsShort := False;
+ If OpSize = SIZE_BYTE Then
+  IsShort := True    { Forcement .S par le programmeur }
+ Else If OpSize = SIZE_WORD Then
+  IsShort := False   { Forcement .W par le programmeur }
+ Else
+ Begin
+  { Automatique : .S si le deplacement tient en 8 bits signes
+    et n'est pas 0 et pas -1 ($FF est reserve pour le 68020) }
+  If (Disp >= -128) and (Disp <= 127) and (Disp <> 0) Then
+   IsShort := True
+  Else
+   IsShort := False;
+ End;
+
+ If IsShort Then
+ Begin
+  { Deplacement 8 bits }
+  If (pass_num = 2) and ((Disp < -128) or (Disp > 127)) Then
+  Begin
+   Error(cur_tok_line, cur_tok_col,
+         OpName + '.S : deplacement hors limites 8 bits (' +
+         IntToStr(Disp) + ')');
+   SkipToEOL; Exit;
+  End;
+  InstrW := Word($6000 or (CC shl 8) or (Disp and $FF));
+  Emit16(InstrW);
+ End
+ Else
+ Begin
+  { Deplacement 16 bits : disp8 = $00, suivi du mot d'extension }
+  If (pass_num = 2) and ((Disp < -32768) or (Disp > 32767)) Then
+  Begin
+   Error(cur_tok_line, cur_tok_col,
+         OpName + '.W : deplacement hors limites 16 bits (' +
+         IntToStr(Disp) + ')');
+   SkipToEOL; Exit;
+  End;
+  InstrW := Word($6000 or (CC shl 8) or $00);
+  Emit16(InstrW);
+  Emit16(Word(Disp and $FFFF));
+ End;
+End;
+
+Procedure InstrDBcc(Const OpName: String);
+{ DBcc Dn, label
+  Encodage : 0101 cond 11001 reg(3) + mot deplacement 16 bits.
+  DBRA/DBF = condition 1 (F = toujours decrementer et brancher).
+  Le deplacement est PC-relatif (a partir de l'adresse du mot d'extension). }
+Var
+ CC       : Integer;
+ CCStr    : String;
+ Reg      : TOperand;
+ TargetVal: LongInt;
+ InstrPC  : LongInt;
+ Disp     : LongInt;
+ InstrW   : Word;
+Begin
+ { Determiner le code condition }
+ If (OpName = 'DBRA') or (OpName = 'DBF') Then
+  CC := 1 { F = false = toujours boucler }
+ Else If OpName = 'DBT' Then
+  CC := 0 { T = true = jamais boucler }
+ Else
+ Begin
+  { Extraire le suffixe condition apres 'DB' }
+  CCStr := Copy(OpName, 3, Length(OpName) - 2);
+  CC := EncodeCondCode(CCStr);
+  If CC < 0 Then
+  Begin
+   Error(cur_tok_line, cur_tok_col,
+         'code condition inconnu: ' + OpName);
+   SkipToEOL; Exit;
+  End;
+ End;
+
+ { Premier operande : Dn }
+ ParseOperand(Reg);
+ If Reg.Mode <> AM_DATA_REG Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        OpName + ' requiert un registre Dn en premier operande');
+  SkipToEOL; Exit;
+ End;
+
+ { Virgule }
+ If cur_tok <> TOK_COMMA Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        OpName + ' : virgule attendue apres Dn');
+  SkipToEOL; Exit;
+ End;
+ NextToken;
+
+ { Deuxieme operande : label (expression) }
+ InstrPC := GetPC;
+ TargetVal := EvalExpr;
+
+ { Le deplacement est relatif a PC+2 (adresse du mot de deplacement) }
+ Disp := TargetVal - (InstrPC + 2);
+
+ If (pass_num = 2) and ((Disp < -32768) or (Disp > 32767)) Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        OpName + ' : deplacement hors limites 16 bits (' +
+        IntToStr(Disp) + ')');
+  SkipToEOL; Exit;
+ End;
+
+ InstrW := Word($50C8 or (CC shl 8) or Reg.Reg);
+ Emit16(InstrW);
+ Emit16(Word(Disp and $FFFF));
+End;
+
+Procedure InstrScc(Const OpName: String);
+{ Scc ea
+  Encodage : 0101 cond 11 ea(6)
+  Positionne l'octet a $FF si condition vraie, $00 sinon.
+  ST = condition 0 (T), SF = condition 1 (F) }
+Var
+ CC    : Integer;
+ CCStr : String;
+ Dst   : TOperand;
+ EA    : Integer;
+ InstrW: Word;
+Begin
+ { Determiner le code condition }
+ If OpName = 'ST' Then
+  CC := 0 { T = toujours vrai }
+ Else If OpName = 'SF' Then
+  CC := 1 { F = toujours faux }
+ Else
+ Begin
+  { Extraire le suffixe condition apres 'S' }
+  CCStr := Copy(OpName, 2, Length(OpName) - 1);
+  CC := EncodeCondCode(CCStr);
+  If CC < 0 Then
+  Begin
+   Error(cur_tok_line, cur_tok_col,
+         'code condition inconnu: ' + OpName);
+   SkipToEOL; Exit;
+  End;
+ End;
+
+ { Operande : ea (data alterable) }
+ ParseOperand(Dst);
+ If Not CheckEAMask(Dst, EA_DATA_ALT) Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'mode d''adressage invalide pour ' + OpName);
+  SkipToEOL; Exit;
+ End;
+
+ EA := EncodeEA(Dst);
+ If EA < 0 Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'encodage EA impossible');
+  SkipToEOL; Exit;
+ End;
+
+ InstrW := Word($50C0 or (CC shl 8) or EA);
+ Emit16(InstrW);
+ EmitExtWords(Dst, SIZE_BYTE);
+End;
+
+Procedure InstrJMP;
+{ JMP ea
+  Encodage : 0100 1110 11 ea(6)  -> $4EC0 | EA
+  Modes autorises : controle (pas Dn, An, (An)+, -(An), #imm) }
+Var
+ Dst   : TOperand;
+ EA    : Integer;
+ InstrW: Word;
+Begin
+ ParseOperand(Dst);
+ If Not CheckEAMask(Dst, EA_CONTROL) Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'mode d''adressage invalide pour JMP');
+  SkipToEOL; Exit;
+ End;
+
+ EA := EncodeEA(Dst);
+ If EA < 0 Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'encodage EA impossible');
+  SkipToEOL; Exit;
+ End;
+
+ InstrW := $4EC0 or Word(EA);
+ Emit16(InstrW);
+ EmitExtWords(Dst, SIZE_WORD);
+End;
+
+Procedure InstrJSR;
+{ JSR ea
+  Encodage : 0100 1110 10 ea(6)  -> $4E80 | EA
+  Modes autorises : controle }
+Var
+ Dst   : TOperand;
+ EA    : Integer;
+ InstrW: Word;
+Begin
+ ParseOperand(Dst);
+ If Not CheckEAMask(Dst, EA_CONTROL) Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'mode d''adressage invalide pour JSR');
+  SkipToEOL; Exit;
+ End;
+
+ EA := EncodeEA(Dst);
+ If EA < 0 Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'encodage EA impossible');
+  SkipToEOL; Exit;
+ End;
+
+ InstrW := $4E80 or Word(EA);
+ Emit16(InstrW);
+ EmitExtWords(Dst, SIZE_WORD);
+End;
+
+Procedure InstrRTS;
+{ RTS - Return from Subroutine : $4E75 }
+Begin
+ Emit16($4E75);
+End;
+
+Procedure InstrRTE;
+{ RTE - Return from Exception : $4E73 }
+Begin
+ Emit16($4E73);
+End;
+
+Procedure InstrRTR;
+{ RTR - Return and Restore CCR : $4E77 }
+Begin
+ Emit16($4E77);
+End;
+
+Procedure InstrNOP;
+{ NOP - No Operation : $4E71 }
+Begin
+ Emit16($4E71);
+End;
+
 Procedure AssembleInstruction(Const OpName: String; OpSize: Integer);
 { Dispatch : appelle le bon encodeur selon le mnemonique }
 Begin
@@ -6536,6 +6856,64 @@ Begin
  Else If OpName = 'ROR' Then InstrROR(OpSize)
  Else If OpName = 'ROXL' Then InstrROXL(OpSize)
  Else If OpName = 'ROXR' Then InstrROXR(OpSize)
+ { --- Instructions de branchement et controle de flux (TODO 15) --- }
+ Else If OpName = 'BRA' Then InstrBcc('BRA', OpSize)
+ Else If OpName = 'BSR' Then InstrBcc('BSR', OpSize)
+ Else If OpName = 'BEQ' Then InstrBcc('BEQ', OpSize)
+ Else If OpName = 'BNE' Then InstrBcc('BNE', OpSize)
+ Else If OpName = 'BCC' Then InstrBcc('BCC', OpSize)
+ Else If OpName = 'BCS' Then InstrBcc('BCS', OpSize)
+ Else If OpName = 'BHS' Then InstrBcc('BHS', OpSize)
+ Else If OpName = 'BLO' Then InstrBcc('BLO', OpSize)
+ Else If OpName = 'BMI' Then InstrBcc('BMI', OpSize)
+ Else If OpName = 'BPL' Then InstrBcc('BPL', OpSize)
+ Else If OpName = 'BVS' Then InstrBcc('BVS', OpSize)
+ Else If OpName = 'BVC' Then InstrBcc('BVC', OpSize)
+ Else If OpName = 'BHI' Then InstrBcc('BHI', OpSize)
+ Else If OpName = 'BLS' Then InstrBcc('BLS', OpSize)
+ Else If OpName = 'BGE' Then InstrBcc('BGE', OpSize)
+ Else If OpName = 'BLT' Then InstrBcc('BLT', OpSize)
+ Else If OpName = 'BGT' Then InstrBcc('BGT', OpSize)
+ Else If OpName = 'BLE' Then InstrBcc('BLE', OpSize)
+ Else If OpName = 'DBRA' Then InstrDBcc('DBRA')
+ Else If OpName = 'DBF'  Then InstrDBcc('DBF')
+ Else If OpName = 'DBT'  Then InstrDBcc('DBT')
+ Else If OpName = 'DBCC' Then InstrDBcc('DBCC')
+ Else If OpName = 'DBCS' Then InstrDBcc('DBCS')
+ Else If OpName = 'DBEQ' Then InstrDBcc('DBEQ')
+ Else If OpName = 'DBNE' Then InstrDBcc('DBNE')
+ Else If OpName = 'DBMI' Then InstrDBcc('DBMI')
+ Else If OpName = 'DBPL' Then InstrDBcc('DBPL')
+ Else If OpName = 'DBVS' Then InstrDBcc('DBVS')
+ Else If OpName = 'DBVC' Then InstrDBcc('DBVC')
+ Else If OpName = 'DBHI' Then InstrDBcc('DBHI')
+ Else If OpName = 'DBLS' Then InstrDBcc('DBLS')
+ Else If OpName = 'DBGE' Then InstrDBcc('DBGE')
+ Else If OpName = 'DBLT' Then InstrDBcc('DBLT')
+ Else If OpName = 'DBGT' Then InstrDBcc('DBGT')
+ Else If OpName = 'DBLE' Then InstrDBcc('DBLE')
+ Else If OpName = 'ST'  Then InstrScc('ST')
+ Else If OpName = 'SF'  Then InstrScc('SF')
+ Else If OpName = 'SEQ' Then InstrScc('SEQ')
+ Else If OpName = 'SNE' Then InstrScc('SNE')
+ Else If OpName = 'SCC' Then InstrScc('SCC')
+ Else If OpName = 'SCS' Then InstrScc('SCS')
+ Else If OpName = 'SHI' Then InstrScc('SHI')
+ Else If OpName = 'SLS' Then InstrScc('SLS')
+ Else If OpName = 'SMI' Then InstrScc('SMI')
+ Else If OpName = 'SPL' Then InstrScc('SPL')
+ Else If OpName = 'SVS' Then InstrScc('SVS')
+ Else If OpName = 'SVC' Then InstrScc('SVC')
+ Else If OpName = 'SGE' Then InstrScc('SGE')
+ Else If OpName = 'SLT' Then InstrScc('SLT')
+ Else If OpName = 'SGT' Then InstrScc('SGT')
+ Else If OpName = 'SLE' Then InstrScc('SLE')
+ Else If OpName = 'JMP' Then InstrJMP
+ Else If OpName = 'JSR' Then InstrJSR
+ Else If OpName = 'RTS' Then InstrRTS
+ Else If OpName = 'RTE' Then InstrRTE
+ Else If OpName = 'RTR' Then InstrRTR
+ Else If OpName = 'NOP' Then InstrNOP
  Else
  Begin
   Warning(cur_tok_line, cur_tok_col,
