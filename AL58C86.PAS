@@ -313,7 +313,7 @@
             Les fonctions transcendantes (sin, cos, ln, exp, arctan) sont
               des stubs car le 8086 n a pas de FPU ; avertissement emis
 
-  TODO 22 - PARAMETRES PAR NOM ET THUNKS
+  TODO 22 - PARAMETRES PAR NOM ET THUNKS [IMPLEMENTE]
             Semantique du passage par nom en Algol 58 :
               Le parametre est remplace textuellement par l argument
               A chaque acces, l expression argument est reevaluee
@@ -425,6 +425,7 @@ Const
   A58_SW_PFX   = '_A58SW_';   { table switch                       }
   A58_OWN_PFX  = '_A58OWN_';  { variable own                       }
   A58_ARR_PFX  = '_A58ARR_';  { tableau                            }
+  A58_THUNK_PFX = '_A58TH_';  { thunk pour parametre par nom (TODO 22) }
 
   { Codes de sortie }
   EXIT_OK    = 0;
@@ -499,6 +500,9 @@ Type
     Offset      : Integer;   { [BP-n] pour locaux              }
     IsOwn       : Boolean;   { variable own (persistante)      }
     DeclLine    : Integer;
+    ParamCount  : Integer;   { nb params (SK_PROC, TODO 22)    }
+    ParamByName : Array[0..MAX_PARAM - 1] Of Boolean;
+                             { True = par nom (thunk) (TODO 22) }
   End;
 
   { ---- Types internes (TODO 06) -------------------------- }
@@ -595,6 +599,7 @@ Var
   DataTab   : Array[0..MAX_DATA - 1] Of TDataRec;
   DataCount : Integer;
   StrSeq    : Integer;  { compteur pour les labels de chaines _A58K_NNN }
+  ThunkSeq  : Integer;  { compteur pour les labels de thunks (TODO 22) }
 
   { Valeur fictive pour ignorer un retour TExprVal }
   GExprDummy : TExprVal;
@@ -923,6 +928,7 @@ Begin
   TypeCount      := 0;
   DataCount      := 0;
   StrSeq         := 0;
+  ThunkSeq       := 0;
   OutFOpen       := False;
   LexOpened      := False;
   LexEOF         := False;
@@ -2672,6 +2678,12 @@ Begin
       Str(SymTab[VarIdx].Offset, NS);
       EmitInstr('MOV', 'AX, [BP+' + NS + ']');
     End;
+    SK_PARAM_NAME :
+    Begin
+      { Parametre par nom : appeler le thunk (TODO 22) }
+      Str(SymTab[VarIdx].Offset, NS);
+      EmitInstr('CALL', 'WORD PTR [BP+' + NS + ']');
+    End;
   Else
     EmitInstr('XOR', 'AX, AX');
   End;
@@ -3238,6 +3250,7 @@ Begin
   SymTab[Idx].Offset      := Offset;
   SymTab[Idx].IsOwn       := False;
   SymTab[Idx].DeclLine    := CurToken.Line;
+  SymTab[Idx].ParamCount  := 0;
   MN := SymMangle(Name, Kind);
   SymTab[Idx].MangledName := MN;
   If Opts.DebugMode Then
@@ -3505,6 +3518,8 @@ Begin
   { Buffer de lecture pour read (DOS INT 21h AH=0Ah) (TODO 12) }
   { Format DOS : octet 0 = taille max, octet 1 = nb lus, octets 2+ = donnees }
   DataAddArray('_A58_RDBUF', 66);
+  { BP sauvegarde de l appelant pour thunks par nom (TODO 22) }
+  DataAddWord('_A58_CALLER_BP', 0);
 End;
 
 { ============================================================
@@ -3567,13 +3582,39 @@ End;
 { Syntaxe : ident deja consomme, on attend (args).               }
 { Genere : PUSH arg_n ... PUSH arg_1 + CALL _A58P_nom            }
 {          resultat dans AX.                                      }
+{ TODO 22 : si le parametre est par nom (thunk), generer un      }
+{   sous-programme thunk qui evalue l expression et pousser       }
+{   son OFFSET sur la pile au lieu de la valeur.                  }
 Procedure ParseFuncCall(VarIdx : Integer; Var Res : TExprVal);
 Var
-  ArgE     : TExprVal;
-  ArgCount : Integer;
-  NS       : TString;
+  ArgE       : TExprVal;
+  ArgCount   : Integer;
+  NS         : TString;
+  IsByName   : Boolean;
+  ThunkLbl   : TString;
+  SkipLbl    : TString;
+  HasByName  : Boolean;
 Begin
   ArgCount := 0;
+  HasByName := False;
+
+  { Detecter s il y a des parametres par nom (TODO 22) }
+  If (SymTab[VarIdx].Kind = SK_PROC) And
+     (SymTab[VarIdx].ParamCount > 0) Then
+  Begin
+    { Verifier si au moins un param est par nom }
+    For ArgCount := 0 To SymTab[VarIdx].ParamCount - 1 Do
+      If SymTab[VarIdx].ParamByName[ArgCount] Then
+        HasByName := True;
+  End;
+  ArgCount := 0;
+
+  { Sauvegarder BP de l appelant si thunks necessaires (TODO 22) }
+  If HasByName Then
+  Begin
+    EmitComment('save caller BP for thunks');
+    EmitInstr('MOV', '[_A58_CALLER_BP], BP');
+  End;
 
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
   Begin
@@ -3583,9 +3624,52 @@ Begin
     If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
     Begin
       Repeat
-        ParseExpr(ArgE);
-        ExprFlushToAX(ArgE);
-        EmitInstr('PUSH', 'AX');
+        { Determiner si ce parametre est par nom (TODO 22) }
+        IsByName := False;
+        If (SymTab[VarIdx].Kind = SK_PROC) And
+           (ArgCount < SymTab[VarIdx].ParamCount) Then
+          IsByName := SymTab[VarIdx].ParamByName[ArgCount];
+
+        If IsByName Then
+        Begin
+          { ---- Generer un thunk pour ce parametre par nom ---- }
+          Inc(ThunkSeq);
+          Str(ThunkSeq, NS);
+          ThunkLbl := A58_THUNK_PFX + NS;
+          SkipLbl  := NewLabel;
+
+          EmitComment('thunk for by-name param #' +
+                      IntToStr_(ArgCount + 1));
+          EmitInstr('JMP', SkipLbl);
+
+          { Corps du thunk : PROC / PUSH BP / MOV BP,[saved] /
+            evaluer expression / POP BP / RET / ENDP }
+          WriteLn(OutF, ThunkLbl, ' PROC NEAR');
+          EmitInstr('PUSH', 'BP');
+          EmitInstr('MOV', 'BP, [_A58_CALLER_BP]');
+
+          { Evaluer l expression argument -> AX }
+          ParseExpr(ArgE);
+          ExprFlushToAX(ArgE);
+
+          EmitInstr('POP', 'BP');
+          EmitInstr('RET', '');
+          WriteLn(OutF, ThunkLbl, ' ENDP');
+
+          { Label de saut : on reprend ici }
+          EmitLabel(SkipLbl);
+
+          { Pousser l adresse du thunk sur la pile }
+          EmitInstr('PUSH', 'OFFSET ' + ThunkLbl);
+        End
+        Else
+        Begin
+          { Parametre par valeur : evaluer et pousser la valeur }
+          ParseExpr(ArgE);
+          ExprFlushToAX(ArgE);
+          EmitInstr('PUSH', 'AX');
+        End;
+
         Inc(ArgCount);
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
           ParserAdvance  { consommer , }
@@ -3803,6 +3887,15 @@ Begin
     SK_PARAM_VALUE :
     Begin
       { Parametre par valeur : [BP+offset] }
+      Str(SymTab[VarIdx].Offset, NS);
+      EmitInstr('MOV', '[BP+' + NS + '], AX');
+    End;
+    SK_PARAM_NAME :
+    Begin
+      { Parametre par nom : ecriture non supportee par thunk (TODO 22) }
+      { On ecrit dans le slot de la pile comme valeur locale }
+      WarnMsg('affectation a un parametre par nom: ' +
+              SymTab[VarIdx].Name + ' (ecrit dans le slot local)');
       Str(SymTab[VarIdx].Offset, NS);
       EmitInstr('MOV', '[BP+' + NS + '], AX');
     End;
@@ -4341,6 +4434,27 @@ End;
   - entier(x) est une identite en mode entier 16 bits           }
 
 { ============================================================
+  TODO 22 - PARAMETRES PAR NOM ET THUNKS [IMPLEMENTE]
+  ============================================================ }
+
+{ Passage de parametres par nom via thunks :
+  - TSymRec augmente de ParamCount et ParamByName[] (pour SK_PROC)
+  - ParseProcDecl enregistre les modes de parametres dans le symbole
+  - ParseFuncCall genere des thunks pour les parametres par nom :
+    * Sauvegarde BP de l appelant dans _A58_CALLER_BP (DATA)
+    * Pour chaque arg par nom : JMP skip / thunk PROC NEAR /
+      PUSH BP / MOV BP,[_A58_CALLER_BP] / evaluer expr /
+      POP BP / RET / ENDP / skip: / PUSH OFFSET thunk
+    * Pour chaque arg par valeur : evaluer + PUSH AX (inchange)
+  - ParsePrimary : SK_PARAM_NAME -> CALL WORD PTR [BP+offset]
+    (reevalue le thunk a chaque acces)
+  - EmitLoadVar : SK_PARAM_NAME -> CALL WORD PTR [BP+offset]
+  - ParseAssign : SK_PARAM_NAME -> avertissement + ecrit dans slot
+  - _A58_CALLER_BP DW 0 reserve dans DataInit
+  - ThunkSeq : compteur de labels thunks (_A58TH_NNN)
+  - Prefixe A58_THUNK_PFX = '_A58TH_'                             }
+
+{ ============================================================
   TODO 17 - PROCEDURES [IMPLEMENTE]
   ============================================================ }
 
@@ -4528,6 +4642,14 @@ Begin
     Until False;
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
       ParserAdvance;
+  End;
+
+  { ---- Enregistrer les infos de parametres dans le symbole (TODO 22) ---- }
+  If ProcIdx >= 0 Then
+  Begin
+    SymTab[ProcIdx].ParamCount := ParamCount;
+    For I := 0 To ParamCount - 1 Do
+      SymTab[ProcIdx].ParamByName[I] := Not IsValue[I];
   End;
 
   { ---- Generer le code de la procedure ---- }
