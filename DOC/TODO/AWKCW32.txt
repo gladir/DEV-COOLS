@@ -314,11 +314,11 @@
             Procedure ParseFunctionDef
             Syntaxe :
               function nom(param1, param2, ...) { instructions }
-            Convention d appel Win32 STDCALL :
-              PUSH args gauche a droite + CALL _AWF_nom
+            Convention d appel avec args gauche a droite :
+              PUSH arg1 + PUSH arg2 + ... + CALL _AWF_nom
               Prologue : PUSH EBP / MOV EBP, ESP / SUB ESP, 64
               Epilogue : MOV ESP, EBP / POP EBP / RET n
-              Parametres a [EBP+8]...[EBP+4+n*4] (selon position)
+              Param I a [EBP + 4 + (N-I+1)*4] (offsets ajustes)
               Variables locales a [EBP-4], [EBP-8]...
             ParseReturn dans ParseStatement :
               return [expr] -> MOV EAX, val + JMP _AWL_exit
