@@ -2602,6 +2602,8 @@ End;
 { ---- ParseUnaryExpr ------------------------------------------ }
 { ! - + ++ -- $ (prefixe) }
 Function ParseUnaryExpr : Integer;
+Var
+  D : Integer;
 Begin
   SkipNewlines;
   If CurToken.Kind = TK_OP Then
@@ -2609,42 +2611,42 @@ Begin
     If CurToken.Val = '!' Then
     Begin
       ParserAdvance;
-      ParseUnaryExpr := ParseUnaryExpr;
+      D := ParseUnaryExpr;
       ParseUnaryExpr := TYK_NUMBER;
       Exit;
     End;
     If CurToken.Val = '-' Then
     Begin
       ParserAdvance;
-      ParseUnaryExpr := ParseUnaryExpr;
+      D := ParseUnaryExpr;
       ParseUnaryExpr := TYK_NUMBER;
       Exit;
     End;
     If CurToken.Val = '+' Then
     Begin
       ParserAdvance;
-      ParseUnaryExpr := ParseUnaryExpr;
+      D := ParseUnaryExpr;
       ParseUnaryExpr := TYK_NUMBER;
       Exit;
     End;
     If CurToken.Val = '++' Then
     Begin
       ParserAdvance;
-      ParseUnaryExpr := ParsePostfixExpr;
+      D := ParsePostfixExpr;
       ParseUnaryExpr := TYK_NUMBER;
       Exit;
     End;
     If CurToken.Val = '--' Then
     Begin
       ParserAdvance;
-      ParseUnaryExpr := ParsePostfixExpr;
+      D := ParsePostfixExpr;
       ParseUnaryExpr := TYK_NUMBER;
       Exit;
     End;
     If CurToken.Val = '$' Then
     Begin
       ParserAdvance;
-      ParseUnaryExpr := ParsePrimaryExpr;
+      D := ParsePrimaryExpr;
       ParseUnaryExpr := TYK_STRING;
       Exit;
     End;
