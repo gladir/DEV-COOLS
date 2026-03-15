@@ -210,7 +210,7 @@
               GenRelOp : CMP EAX,EBX + SETcc AL + MOVZX EAX,AL
               GenModOp : CDQ + IDIV EBX -> MOV EAX, EDX (reste)
 
-  TODO 09 - PARSEUR : WITH ET USE
+  TODO 09 - PARSEUR : WITH ET USE [IMPLEMENTE]
             ParseWithUse : traiter WITH/USE en debut de programme
             WITH pkg1, pkg2, ... ;  -> enregistrer dans PkgTab
             USE pkg1, pkg2, ... ;   -> activer acces direct (UseActive)
@@ -3121,6 +3121,112 @@ Begin
   ParseOrElse;
 End;
 
+{ ============================================================ }
+{ PARSEUR : WITH ET USE (TODO 09)                               }
+{ ============================================================ }
+
+{ ---- IsStandardPackage : vrai si package reconnu standard ---- }
+Function IsStandardPackage(Const U : TString) : Boolean;
+Begin
+  IsStandardPackage :=
+    (U = 'ADA.TEXT_IO')                       Or
+    (U = 'ADA.INTEGER_TEXT_IO')               Or
+    (U = 'ADA.FLOAT_TEXT_IO')                 Or
+    (U = 'ADA.NUMERICS')                      Or
+    (U = 'ADA.NUMERICS.ELEMENTARY_FUNCTIONS') Or
+    (U = 'SYSTEM')                            Or
+    (U = 'TEXT_IO');
+End;
+
+{ ---- ParsePackageName : lire un nom qualifie A.B.C ---------- }
+Function ParsePackageName : TString;
+Var Res : TString;
+Begin
+  If CurTokType <> TOK_IDENT Then
+  Begin
+    Error('Nom de package attendu, trouve: ''' + CurTokStr + '''');
+    ParsePackageName := '';
+    Exit;
+  End;
+  Res := StrUpperCase(CurTokStr);
+  Consume;
+  While CurTokType = TOK_DOT Do
+  Begin
+    Consume;
+    If CurTokType <> TOK_IDENT Then
+    Begin
+      Error('Identifiant attendu apres `.` dans nom de package');
+      Break;
+    End;
+    Res := Res + '.' + StrUpperCase(CurTokStr);
+    Consume;
+  End;
+  ParsePackageName := Res;
+End;
+
+{ ---- ParseWith : WITH pkg1, pkg2, ... ; ---------------------- }
+Procedure ParseWith;
+Var
+  Nm  : TString;
+  Idx : Integer;
+Begin
+  Consume; { consomme WITH }
+  Repeat
+    Nm := ParsePackageName;
+    If Nm = '' Then Break;
+    If IsStandardPackage(Nm) Then
+      Idx := AddPkg(Nm, True)
+    Else
+    Begin
+      Warning('Package non supporte, importe mais ignore : ' + Nm);
+      Idx := AddPkg(Nm, False);
+    End;
+    If CurTokType = TOK_COMMA Then Consume
+    Else Break;
+  Until False;
+  Expect(TOK_SEMI, '`;` attendu en fin de clause WITH');
+End;
+
+{ ---- ParseUse : USE pkg1, pkg2, ... ; ------------------------ }
+Procedure ParseUse;
+Var
+  Nm  : TString;
+  Idx : Integer;
+Begin
+  Consume; { consomme USE }
+  Repeat
+    Nm := ParsePackageName;
+    If Nm = '' Then Break;
+    Idx := FindPkg(Nm);
+    If Idx = 0 Then
+    Begin
+      If IsStandardPackage(Nm) Then
+        Idx := AddPkg(Nm, True)
+      Else
+      Begin
+        Warning('USE sur package non importe via WITH : ' + Nm);
+        Idx := AddPkg(Nm, False);
+      End;
+    End;
+    If Idx > 0 Then
+      PkgTab[Idx].UseActive := True;
+    If CurTokType = TOK_COMMA Then Consume
+    Else Break;
+  Until False;
+  Expect(TOK_SEMI, '`;` attendu en fin de clause USE');
+End;
+
+{ ---- ParseWithUseSection : boucle WITH/USE en debut ---------- }
+Procedure ParseWithUseSection;
+Begin
+  While (CurTokType = TOK_IDENT) And
+        ((CurTokKw = KW_WITH) Or (CurTokKw = KW_USE)) Do
+  Begin
+    If CurTokKw = KW_WITH Then ParseWith
+    Else ParseUse;
+  End;
+End;
+
 { ---- LexInit : ouvrir le fichier source et lire le 1er token }
 Procedure LexInit;
 Begin
@@ -3358,8 +3464,9 @@ Begin
   Else
   Begin
     WriteLn('ADACW32: compilation de ', Opts.SrcFile, ' ...');
-    WriteLn('ADACW32: TODO 09+ non encore implemente - ',
-            'parseur d''expressions OK');
+    ParseWithUseSection;
+    WriteLn('ADACW32: TODO 10+ non encore implemente - ',
+            'WITH/USE OK');
   End;
   LexClose;
   BilanCompilation;

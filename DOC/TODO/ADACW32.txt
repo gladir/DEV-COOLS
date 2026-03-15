@@ -199,7 +199,7 @@
               GenRelOp : CMP EAX,EBX + SETcc AL + MOVZX EAX,AL
               GenModOp : CDQ + IDIV EBX -> MOV EAX, EDX (reste)
 
-  TODO 09 - PARSEUR : WITH ET USE
+  TODO 09 - PARSEUR : WITH ET USE [IMPLEMENTE]
             ParseWithUse : traiter WITH/USE en debut de programme
             WITH pkg1, pkg2, ... ;  -> enregistrer dans PkgTab
             USE pkg1, pkg2, ... ;   -> activer acces direct (UseActive)
