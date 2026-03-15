@@ -545,7 +545,7 @@
             Mode -asm : ecrire fichier .ASM avec commentaires
 
   TODO 23 - GENERATION : POINT D ENTREE WIN32, BOUCLE PRINCIPALE
-            ET HELPERS RUNTIME
+            ET HELPERS RUNTIME [IMPLEMENTE]
             Procedure EmitEntryPoint
               _AWF_main:
               PUSH EBP / MOV EBP, ESP

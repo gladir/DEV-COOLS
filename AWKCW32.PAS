@@ -537,7 +537,7 @@
             Mode -asm : ecrire fichier .ASM avec commentaires
 
   TODO 23 - GENERATION : POINT D ENTREE WIN32, BOUCLE PRINCIPALE
-            ET HELPERS RUNTIME
+            ET HELPERS RUNTIME [IMPLEMENTE]
             Procedure EmitEntryPoint
               _AWF_main:
               PUSH EBP / MOV EBP, ESP
@@ -1106,6 +1106,9 @@ Var
   { Generation en-tete et segment .DATA (TODO 22) }
   EmitHeaderDone : Boolean;    { en-tete ASM emise ?                     }
 
+  { Point d entree et helpers runtime (TODO 23) }
+  RuntimeHelpCount : Integer;  { nombre de helpers runtime emis          }
+
 Const
 {$IFDEF FPC}
   BinAPIDecorated : Array[0..PE_NUM_API - 1] Of String[32] = (
@@ -1470,6 +1473,7 @@ Begin
   WriteLn('Builtin math ops : ', BuiltinMathCount);
   WriteLn('Getline ops      : ', GetlineCount);
   WriteLn('Builtin var init : ', BuiltinVarCount);
+  WriteLn('Runtime helpers  : ', RuntimeHelpCount);
   WriteLn('Code gen ops     : ', GenCount);
   WriteLn('Litteraux chaine : ', StringLitCount);
   WriteLn('Scope depth      : ', ScopeDepth);
@@ -2640,6 +2644,10 @@ Procedure ApplyDashV; Forward;
 Procedure EmitHeader; Forward;
 Procedure EmitDataSeg; Forward;
 Procedure EmitFooter; Forward;
+
+{ Forward declarations TODO 23 - Point d entree et helpers runtime }
+Procedure EmitEntryPoint; Forward;
+Procedure EmitRuntimeHelpers; Forward;
 
 { ---- Helpers de tokens --------------------------------------- }
 Function IsOp(Const S : String) : Boolean;
@@ -6205,6 +6213,7 @@ Begin
   Emit(AW_RT_PFX + 'HHEAP     DD 0');
   Emit(AW_RT_PFX + 'BYTESWR   DD 0');
   Emit(AW_RT_PFX + 'BYTESRD   DD 0');
+  Emit(AW_RT_PFX + 'SEED      DD 12345');
   EmitBlank;
 End;
 
@@ -6215,7 +6224,815 @@ Begin
   Emit('END ' + AW_FN_PFX + 'main');
 End;
 
-{ ---- ParseProgram ----------------------------------------------- }
+{ ============================================================ }
+{ TODO 23 - GENERATION : POINT D ENTREE WIN32, BOUCLE          }
+{           PRINCIPALE ET HELPERS RUNTIME                       }
+{ ============================================================ }
+
+{ ---- EmitEntryPoint ------------------------------------------ }
+{ Emet le point d entree _AWF_main :                             }
+{   - Initialisation des handles Win32 (stdout, stdin, heap)     }
+{   - Initialisation des variables builtin AWK                   }
+{   - Application de -F et -v                                    }
+{   - Appel des regles BEGIN                                     }
+{   - Boucle principale (readline, splitline, NR++, regles)      }
+{   - Appel des regles END                                       }
+{   - ExitProcess(0)                                             }
+Procedure EmitEntryPoint;
+Var
+  I       : Integer;
+  LblSkip : TString;
+  NRIdx   : Integer;
+  FNRIdx  : Integer;
+Begin
+  Inc(RuntimeHelpCount);
+  EmitBlank;
+  EmitComment('=========================================================');
+  EmitComment('  POINT D ENTREE PRINCIPAL - _AWF_main');
+  EmitComment('=========================================================');
+  EmitLabel(AW_FN_PFX + 'main');
+  Emit('        PUSH    EBP');
+  Emit('        MOV     EBP, ESP');
+  EmitBlank;
+
+  { Initialiser les handles Win32 }
+  EmitComment('--- Initialiser les handles Win32 ---');
+  Emit('        PUSH    -11');
+  Emit('        CALL    _GetStdHandle@4');
+  Emit('        MOV     DWORD PTR [' + AW_RT_PFX + 'HSTDOUT], EAX');
+  Emit('        PUSH    -10');
+  Emit('        CALL    _GetStdHandle@4');
+  Emit('        MOV     DWORD PTR [' + AW_RT_PFX + 'HSTDIN], EAX');
+  Emit('        CALL    _GetProcessHeap@0');
+  Emit('        MOV     DWORD PTR [' + AW_RT_PFX + 'HHEAP], EAX');
+  EmitBlank;
+
+  { Initialiser les variables builtin AWK }
+  EmitComment('--- Initialiser les variables builtin ---');
+  InitBuiltinVarDefaults;
+  ApplyDashF;
+  ApplyDashV;
+  EmitBlank;
+
+  { Executer les regles BEGIN }
+  EmitComment('--- Executer les regles BEGIN ---');
+  For I := 0 To RuleCount - 1 Do
+  Begin
+    If RuleTab[I].Kind = RK_BEGIN Then
+      Emit('        CALL    ' + RuleTab[I].AsmLabel);
+  End;
+  EmitBlank;
+
+  { Boucle principale }
+  EmitComment('--- Boucle principale ---');
+  EmitLabel(AW_LBL_PFX + 'loop');
+  Emit('        CALL    ' + AW_RT_PFX + 'READLINE');
+  Emit('        TEST    EAX, EAX');
+  Emit('        JZ      ' + AW_LBL_PFX + 'eof');
+  Emit('        CALL    ' + AW_RT_PFX + 'SPLITLINE');
+  { INC NR et FNR }
+  NRIdx := FindSym('NR');
+  FNRIdx := FindSym('FNR');
+  If NRIdx >= 0 Then
+    Emit('        INC     DWORD PTR [' + SymTab[NRIdx].AsmLabel + ']');
+  If FNRIdx >= 0 Then
+    Emit('        INC     DWORD PTR [' + SymTab[FNRIdx].AsmLabel + ']');
+  EmitBlank;
+
+  { Executer chaque regle pattern-action }
+  EmitComment('--- Tester et executer les regles ---');
+  For I := 0 To RuleCount - 1 Do
+  Begin
+    If (RuleTab[I].Kind <> RK_BEGIN) And
+       (RuleTab[I].Kind <> RK_END) Then
+    Begin
+      Emit('        CALL    ' + RuleTab[I].AsmLabel);
+    End;
+  End;
+  EmitBlank;
+
+  { Retour en debut de boucle }
+  EmitLabel(AW_LBL_PFX + 'next_line');
+  Emit('        JMP     ' + AW_LBL_PFX + 'loop');
+  EmitBlank;
+
+  { EOF : executer les regles END }
+  EmitLabel(AW_LBL_PFX + 'eof');
+  EmitComment('--- Executer les regles END ---');
+  For I := 0 To RuleCount - 1 Do
+  Begin
+    If RuleTab[I].Kind = RK_END Then
+      Emit('        CALL    ' + RuleTab[I].AsmLabel);
+  End;
+  EmitBlank;
+
+  { Terminer le processus }
+  Emit('        PUSH    0');
+  Emit('        CALL    _ExitProcess@4');
+  EmitBlank;
+End;
+
+{ ---- EmitRuntimeHelpers -------------------------------------- }
+{ Emet les procedures runtime _AWRT_* en assembleur 80386.       }
+{ Ces helpers sont appeles par le code genere pour les operations }
+{ AWK (affichage, lecture, conversions, chaines, tableaux, etc.) }
+Procedure EmitRuntimeHelpers;
+Begin
+  EmitBlank;
+  EmitComment('=========================================================');
+  EmitComment('  HELPERS RUNTIME AWK (_AWRT_*)');
+  EmitComment('=========================================================');
+  EmitBlank;
+
+  { ---- _AWRT_STRLEN : longueur d une chaine ASCIIZ ---- }
+  { Entree : EAX = ptr chaine  Sortie : EAX = longueur    }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'STRLEN');
+  Emit('        PUSH    ECX');
+  Emit('        PUSH    EDI');
+  Emit('        MOV     EDI, EAX');
+  Emit('        XOR     ECX, ECX');
+  Emit('        TEST    EAX, EAX');
+  Emit('        JZ      ' + AW_RT_PFX + 'STRLEN_DONE');
+  EmitLabel(AW_RT_PFX + 'STRLEN_LP');
+  Emit('        CMP     BYTE PTR [EDI+ECX], 0');
+  Emit('        JZ      ' + AW_RT_PFX + 'STRLEN_DONE');
+  Emit('        INC     ECX');
+  Emit('        JMP     ' + AW_RT_PFX + 'STRLEN_LP');
+  EmitLabel(AW_RT_PFX + 'STRLEN_DONE');
+  Emit('        MOV     EAX, ECX');
+  Emit('        POP     EDI');
+  Emit('        POP     ECX');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_PRINT : afficher une chaine ASCIIZ ---- }
+  { Entree : EAX = ptr chaine ASCIIZ                    }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'PRINT');
+  Emit('        PUSH    EBP');
+  Emit('        MOV     EBP, ESP');
+  Emit('        PUSH    EAX');
+  Emit('        CALL    ' + AW_RT_PFX + 'STRLEN');
+  Emit('        MOV     ECX, EAX');
+  Emit('        POP     EAX');
+  Emit('        TEST    ECX, ECX');
+  Emit('        JZ      ' + AW_RT_PFX + 'PRINT_DONE');
+  Emit('        PUSH    0');
+  Emit('        PUSH    OFFSET ' + AW_RT_PFX + 'BYTESWR');
+  Emit('        PUSH    ECX');
+  Emit('        PUSH    EAX');
+  Emit('        PUSH    DWORD PTR [' + AW_RT_PFX + 'HSTDOUT]');
+  Emit('        CALL    _WriteFile@20');
+  EmitLabel(AW_RT_PFX + 'PRINT_DONE');
+  Emit('        MOV     ESP, EBP');
+  Emit('        POP     EBP');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_CRLF : ecrire CR+LF ---- }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'CRLF');
+  Emit('        PUSH    0');
+  Emit('        PUSH    OFFSET ' + AW_RT_PFX + 'BYTESWR');
+  Emit('        PUSH    2');
+  Emit('        PUSH    OFFSET ' + AW_RT_PFX + 'CRLF_DATA');
+  Emit('        PUSH    DWORD PTR [' + AW_RT_PFX + 'HSTDOUT]');
+  Emit('        CALL    _WriteFile@20');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_NUMTOSTR : entier -> chaine ASCIIZ ---- }
+  { Entree : EAX = entier  Sortie : EAX = ptr _AWRT_NUMBUF }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'NUMTOSTR');
+  Emit('        PUSH    EBX');
+  Emit('        PUSH    ECX');
+  Emit('        PUSH    EDX');
+  Emit('        PUSH    EDI');
+  Emit('        MOV     EDI, OFFSET ' + AW_RT_PFX + 'NUMBUF');
+  Emit('        ADD     EDI, 30');
+  Emit('        MOV     BYTE PTR [EDI], 0');
+  Emit('        MOV     ECX, EAX');
+  Emit('        TEST    EAX, EAX');
+  Emit('        JNZ     ' + AW_RT_PFX + 'N2S_NOTZERO');
+  Emit('        DEC     EDI');
+  Emit('        MOV     BYTE PTR [EDI], 48');
+  Emit('        JMP     ' + AW_RT_PFX + 'N2S_END');
+  EmitLabel(AW_RT_PFX + 'N2S_NOTZERO');
+  Emit('        MOV     EBX, 0');
+  Emit('        TEST    EAX, EAX');
+  Emit('        JGE     ' + AW_RT_PFX + 'N2S_POS');
+  Emit('        NEG     EAX');
+  Emit('        MOV     EBX, 1');
+  EmitLabel(AW_RT_PFX + 'N2S_POS');
+  EmitLabel(AW_RT_PFX + 'N2S_LOOP');
+  Emit('        XOR     EDX, EDX');
+  Emit('        MOV     ECX, 10');
+  Emit('        DIV     ECX');
+  Emit('        ADD     DL, 48');
+  Emit('        DEC     EDI');
+  Emit('        MOV     BYTE PTR [EDI], DL');
+  Emit('        TEST    EAX, EAX');
+  Emit('        JNZ     ' + AW_RT_PFX + 'N2S_LOOP');
+  Emit('        TEST    EBX, EBX');
+  Emit('        JZ      ' + AW_RT_PFX + 'N2S_END');
+  Emit('        DEC     EDI');
+  Emit('        MOV     BYTE PTR [EDI], 45');
+  EmitLabel(AW_RT_PFX + 'N2S_END');
+  Emit('        MOV     EAX, EDI');
+  Emit('        POP     EDI');
+  Emit('        POP     EDX');
+  Emit('        POP     ECX');
+  Emit('        POP     EBX');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_STRTONUM : chaine ASCIIZ -> entier ---- }
+  { Entree : EAX = ptr chaine  Sortie : EAX = entier    }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'STRTONUM');
+  Emit('        PUSH    EBX');
+  Emit('        PUSH    ECX');
+  Emit('        PUSH    ESI');
+  Emit('        MOV     ESI, EAX');
+  Emit('        XOR     EAX, EAX');
+  Emit('        XOR     ECX, ECX');
+  Emit('        TEST    ESI, ESI');
+  Emit('        JZ      ' + AW_RT_PFX + 'S2N_END');
+  { Ignorer espaces de tete }
+  EmitLabel(AW_RT_PFX + 'S2N_SKIP');
+  Emit('        MOV     CL, BYTE PTR [ESI]');
+  Emit('        CMP     CL, 32');
+  Emit('        JNZ     ' + AW_RT_PFX + 'S2N_CHKSIGN');
+  Emit('        INC     ESI');
+  Emit('        JMP     ' + AW_RT_PFX + 'S2N_SKIP');
+  { Verifier le signe }
+  EmitLabel(AW_RT_PFX + 'S2N_CHKSIGN');
+  Emit('        XOR     EBX, EBX');
+  Emit('        CMP     CL, 45');
+  Emit('        JNZ     ' + AW_RT_PFX + 'S2N_LOOP');
+  Emit('        MOV     EBX, 1');
+  Emit('        INC     ESI');
+  EmitLabel(AW_RT_PFX + 'S2N_LOOP');
+  Emit('        MOVZX   ECX, BYTE PTR [ESI]');
+  Emit('        SUB     ECX, 48');
+  Emit('        CMP     ECX, 9');
+  Emit('        JA      ' + AW_RT_PFX + 'S2N_DONE');
+  Emit('        IMUL    EAX, 10');
+  Emit('        ADD     EAX, ECX');
+  Emit('        INC     ESI');
+  Emit('        JMP     ' + AW_RT_PFX + 'S2N_LOOP');
+  EmitLabel(AW_RT_PFX + 'S2N_DONE');
+  Emit('        TEST    EBX, EBX');
+  Emit('        JZ      ' + AW_RT_PFX + 'S2N_END');
+  Emit('        NEG     EAX');
+  EmitLabel(AW_RT_PFX + 'S2N_END');
+  Emit('        POP     ESI');
+  Emit('        POP     ECX');
+  Emit('        POP     EBX');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_STRTOBOOL : chaine -> booleen ---- }
+  { "" et "0" -> 0, sinon -> 1                     }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'STRTOBOOL');
+  Emit('        TEST    EAX, EAX');
+  Emit('        JZ      ' + AW_RT_PFX + 'S2B_FALSE');
+  Emit('        CMP     BYTE PTR [EAX], 0');
+  Emit('        JZ      ' + AW_RT_PFX + 'S2B_FALSE');
+  Emit('        CMP     BYTE PTR [EAX], 48');
+  Emit('        JNZ     ' + AW_RT_PFX + 'S2B_TRUE');
+  Emit('        CMP     BYTE PTR [EAX+1], 0');
+  Emit('        JNZ     ' + AW_RT_PFX + 'S2B_TRUE');
+  EmitLabel(AW_RT_PFX + 'S2B_FALSE');
+  Emit('        XOR     EAX, EAX');
+  Emit('        RET');
+  EmitLabel(AW_RT_PFX + 'S2B_TRUE');
+  Emit('        MOV     EAX, 1');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_PRINTINT : afficher entier ---- }
+  { EAX = entier -> NUMTOSTR + PRINT            }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'PRINTINT');
+  Emit('        CALL    ' + AW_RT_PFX + 'NUMTOSTR');
+  Emit('        CALL    ' + AW_RT_PFX + 'PRINT');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_PRINTLN : afficher chaine + CR/LF ---- }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'PRINTLN');
+  Emit('        CALL    ' + AW_RT_PFX + 'PRINT');
+  Emit('        CALL    ' + AW_RT_PFX + 'CRLF');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_READLINE : lire une ligne depuis stdin ---- }
+  { Sortie : EAX = ptr _AWRT_LINE si succes, 0 si EOF     }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'READLINE');
+  Emit('        PUSH    EBP');
+  Emit('        MOV     EBP, ESP');
+  Emit('        PUSH    0');
+  Emit('        PUSH    OFFSET ' + AW_RT_PFX + 'BYTESRD');
+  Emit('        PUSH    4094');
+  Emit('        PUSH    OFFSET ' + AW_RT_PFX + 'LINE');
+  Emit('        PUSH    DWORD PTR [' + AW_RT_PFX + 'HSTDIN]');
+  Emit('        CALL    _ReadFile@20');
+  Emit('        TEST    EAX, EAX');
+  Emit('        JZ      ' + AW_RT_PFX + 'RL_EOF');
+  Emit('        MOV     ECX, DWORD PTR [' + AW_RT_PFX + 'BYTESRD]');
+  Emit('        TEST    ECX, ECX');
+  Emit('        JZ      ' + AW_RT_PFX + 'RL_EOF');
+  { Supprimer CR/LF en fin de ligne }
+  Emit('        MOV     EDI, OFFSET ' + AW_RT_PFX + 'LINE');
+  EmitLabel(AW_RT_PFX + 'RL_TRIM');
+  Emit('        TEST    ECX, ECX');
+  Emit('        JZ      ' + AW_RT_PFX + 'RL_OK');
+  Emit('        DEC     ECX');
+  Emit('        CMP     BYTE PTR [EDI+ECX], 10');
+  Emit('        JZ      ' + AW_RT_PFX + 'RL_TRIM');
+  Emit('        CMP     BYTE PTR [EDI+ECX], 13');
+  Emit('        JZ      ' + AW_RT_PFX + 'RL_TRIM');
+  Emit('        INC     ECX');
+  EmitLabel(AW_RT_PFX + 'RL_OK');
+  Emit('        MOV     BYTE PTR [EDI+ECX], 0');
+  Emit('        MOV     EAX, OFFSET ' + AW_RT_PFX + 'LINE');
+  Emit('        MOV     ESP, EBP');
+  Emit('        POP     EBP');
+  Emit('        RET');
+  EmitLabel(AW_RT_PFX + 'RL_EOF');
+  Emit('        MOV     BYTE PTR [' + AW_RT_PFX + 'LINE], 0');
+  Emit('        XOR     EAX, EAX');
+  Emit('        MOV     ESP, EBP');
+  Emit('        POP     EBP');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_STRCOPY : copier une chaine ASCIIZ ---- }
+  { ESI = source, EDI = destination                      }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'STRCOPY');
+  Emit('        PUSH    ESI');
+  Emit('        PUSH    EDI');
+  EmitLabel(AW_RT_PFX + 'STRCOPY_LP');
+  Emit('        LODSB');
+  Emit('        STOSB');
+  Emit('        TEST    AL, AL');
+  Emit('        JNZ     ' + AW_RT_PFX + 'STRCOPY_LP');
+  Emit('        POP     EDI');
+  Emit('        POP     ESI');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_STRCMP : comparer deux chaines ASCIIZ ---- }
+  { EAX = str1, EBX = str2  Sortie : EAX = -1/0/+1      }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'STRCMP');
+  Emit('        PUSH    ESI');
+  Emit('        PUSH    EDI');
+  Emit('        MOV     ESI, EAX');
+  Emit('        MOV     EDI, EBX');
+  EmitLabel(AW_RT_PFX + 'STRCMP_LP');
+  Emit('        LODSB');
+  Emit('        MOV     AH, BYTE PTR [EDI]');
+  Emit('        INC     EDI');
+  Emit('        CMP     AL, AH');
+  Emit('        JB      ' + AW_RT_PFX + 'STRCMP_LT');
+  Emit('        JA      ' + AW_RT_PFX + 'STRCMP_GT');
+  Emit('        TEST    AL, AL');
+  Emit('        JNZ     ' + AW_RT_PFX + 'STRCMP_LP');
+  Emit('        XOR     EAX, EAX');
+  Emit('        JMP     ' + AW_RT_PFX + 'STRCMP_END');
+  EmitLabel(AW_RT_PFX + 'STRCMP_LT');
+  Emit('        MOV     EAX, -1');
+  Emit('        JMP     ' + AW_RT_PFX + 'STRCMP_END');
+  EmitLabel(AW_RT_PFX + 'STRCMP_GT');
+  Emit('        MOV     EAX, 1');
+  EmitLabel(AW_RT_PFX + 'STRCMP_END');
+  Emit('        POP     EDI');
+  Emit('        POP     ESI');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_STRCAT : concatener deux chaines ---- }
+  { EBX = gauche, EAX = droite -> EAX = ptr CATBUF   }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'STRCAT');
+  Emit('        PUSH    ESI');
+  Emit('        PUSH    EDI');
+  Emit('        MOV     EDI, OFFSET ' + AW_RT_PFX + 'CATBUF');
+  { Copier chaine gauche }
+  Emit('        MOV     ESI, EBX');
+  Emit('        TEST    ESI, ESI');
+  Emit('        JZ      ' + AW_RT_PFX + 'SCAT_R');
+  EmitLabel(AW_RT_PFX + 'SCAT_L');
+  Emit('        LODSB');
+  Emit('        TEST    AL, AL');
+  Emit('        JZ      ' + AW_RT_PFX + 'SCAT_R');
+  Emit('        STOSB');
+  Emit('        JMP     ' + AW_RT_PFX + 'SCAT_L');
+  EmitLabel(AW_RT_PFX + 'SCAT_R');
+  { Copier chaine droite }
+  Emit('        POP     EDI');
+  Emit('        PUSH    EDI');
+  Emit('        MOV     ESI, EAX');          { EAX d origine = droite }
+  { Recalculer pos fin }
+  Emit('        MOV     EDI, OFFSET ' + AW_RT_PFX + 'CATBUF');
+  EmitLabel(AW_RT_PFX + 'SCAT_FIND');
+  Emit('        CMP     BYTE PTR [EDI], 0');
+  Emit('        JZ      ' + AW_RT_PFX + 'SCAT_R2');
+  Emit('        INC     EDI');
+  Emit('        JMP     ' + AW_RT_PFX + 'SCAT_FIND');
+  EmitLabel(AW_RT_PFX + 'SCAT_R2');
+  Emit('        TEST    ESI, ESI');
+  Emit('        JZ      ' + AW_RT_PFX + 'SCAT_END');
+  EmitLabel(AW_RT_PFX + 'SCAT_R2LP');
+  Emit('        LODSB');
+  Emit('        STOSB');
+  Emit('        TEST    AL, AL');
+  Emit('        JNZ     ' + AW_RT_PFX + 'SCAT_R2LP');
+  EmitLabel(AW_RT_PFX + 'SCAT_END');
+  Emit('        MOV     BYTE PTR [EDI], 0');
+  Emit('        MOV     EAX, OFFSET ' + AW_RT_PFX + 'CATBUF');
+  Emit('        POP     EDI');
+  Emit('        POP     ESI');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_STRDUP : dupliquer chaine dans le tas ---- }
+  { EAX = ptr chaine -> EAX = ptr copie (HeapAlloc)       }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'STRDUP');
+  Emit('        PUSH    EBP');
+  Emit('        MOV     EBP, ESP');
+  Emit('        PUSH    EAX');
+  Emit('        CALL    ' + AW_RT_PFX + 'STRLEN');
+  Emit('        INC     EAX');
+  Emit('        PUSH    EAX');
+  Emit('        PUSH    8');
+  Emit('        PUSH    DWORD PTR [' + AW_RT_PFX + 'HHEAP]');
+  Emit('        CALL    _HeapAlloc@12');
+  Emit('        POP     ECX');
+  Emit('        TEST    EAX, EAX');
+  Emit('        JZ      ' + AW_RT_PFX + 'SDUP_FAIL');
+  Emit('        MOV     EDI, EAX');
+  Emit('        MOV     ESI, DWORD PTR [EBP-4]');
+  EmitLabel(AW_RT_PFX + 'SDUP_CP');
+  Emit('        LODSB');
+  Emit('        STOSB');
+  Emit('        TEST    AL, AL');
+  Emit('        JNZ     ' + AW_RT_PFX + 'SDUP_CP');
+  Emit('        MOV     EAX, EDI');
+  Emit('        SUB     EAX, ECX');
+  EmitLabel(AW_RT_PFX + 'SDUP_FAIL');
+  Emit('        MOV     ESP, EBP');
+  Emit('        POP     EBP');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_SPLITLINE : decouper $0 en champs ---- }
+  { Stub simplifie : NF = 0 (pas de champs)           }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'SPLITLINE');
+  Emit('        XOR     EAX, EAX');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_GETFIELD : obtenir un champ $n ---- }
+  { EAX = index -> EAX = ptr champ (ou ptr LINE)   }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'GETFIELD');
+  Emit('        MOV     EAX, OFFSET ' + AW_RT_PFX + 'LINE');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_SETFIELD : modifier un champ $n ---- }
+  { Stub                                             }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'SETFIELD');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_REBUILDLINE : reconstruire $0 ---- }
+  { Stub                                           }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'REBUILDLINE');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_GETLINE_FILE : lire ligne depuis fichier ---- }
+  { Stub : retourne 0 (EOF)                                   }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'GETLINE_FILE');
+  Emit('        XOR     EAX, EAX');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_REDIR_WRITE : redirection > fichier ---- }
+  { Stub                                                  }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'REDIR_WRITE');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_REDIR_APPEND : redirection >> fichier ---- }
+  { Stub                                                    }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'REDIR_APPEND');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_PRINTF : affichage formate ---- }
+  { Stub simplifie                              }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'PRINTF');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_SPRINTF : formater chaine ---- }
+  { Stub : retourne chaine vide                }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'SPRINTF');
+  Emit('        MOV     EAX, OFFSET ' + AW_RT_PFX + 'STRBUF');
+  Emit('        MOV     BYTE PTR [EAX], 0');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_TOLOWER : convertir en minuscules ---- }
+  { EAX = ptr chaine -> EAX = ptr STRBUF (minuscules) }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'TOLOWER');
+  Emit('        PUSH    ESI');
+  Emit('        PUSH    EDI');
+  Emit('        MOV     ESI, EAX');
+  Emit('        MOV     EDI, OFFSET ' + AW_RT_PFX + 'STRBUF');
+  EmitLabel(AW_RT_PFX + 'TLWR_LP');
+  Emit('        LODSB');
+  Emit('        CMP     AL, 65');
+  Emit('        JB      ' + AW_RT_PFX + 'TLWR_OK');
+  Emit('        CMP     AL, 90');
+  Emit('        JA      ' + AW_RT_PFX + 'TLWR_OK');
+  Emit('        ADD     AL, 32');
+  EmitLabel(AW_RT_PFX + 'TLWR_OK');
+  Emit('        STOSB');
+  Emit('        TEST    AL, AL');
+  Emit('        JNZ     ' + AW_RT_PFX + 'TLWR_LP');
+  Emit('        MOV     EAX, OFFSET ' + AW_RT_PFX + 'STRBUF');
+  Emit('        POP     EDI');
+  Emit('        POP     ESI');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_TOUPPER : convertir en majuscules ---- }
+  { EAX = ptr chaine -> EAX = ptr STRBUF (majuscules) }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'TOUPPER');
+  Emit('        PUSH    ESI');
+  Emit('        PUSH    EDI');
+  Emit('        MOV     ESI, EAX');
+  Emit('        MOV     EDI, OFFSET ' + AW_RT_PFX + 'STRBUF');
+  EmitLabel(AW_RT_PFX + 'TUPR_LP');
+  Emit('        LODSB');
+  Emit('        CMP     AL, 97');
+  Emit('        JB      ' + AW_RT_PFX + 'TUPR_OK');
+  Emit('        CMP     AL, 122');
+  Emit('        JA      ' + AW_RT_PFX + 'TUPR_OK');
+  Emit('        SUB     AL, 32');
+  EmitLabel(AW_RT_PFX + 'TUPR_OK');
+  Emit('        STOSB');
+  Emit('        TEST    AL, AL');
+  Emit('        JNZ     ' + AW_RT_PFX + 'TUPR_LP');
+  Emit('        MOV     EAX, OFFSET ' + AW_RT_PFX + 'STRBUF');
+  Emit('        POP     EDI');
+  Emit('        POP     ESI');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_SUBSTR : extraire sous-chaine ---- }
+  { Stub : retourne ptr chaine d entree           }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'SUBSTR');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_INDEX : trouver position sous-chaine ---- }
+  { Stub : retourne 0                                     }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'INDEX');
+  Emit('        XOR     EAX, EAX');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_SPLIT : decouper chaine en tableau ---- }
+  { Stub : retourne 0                                   }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'SPLIT');
+  Emit('        XOR     EAX, EAX');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_SUB : remplacer premiere occurrence ---- }
+  { Stub : retourne 0                                    }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'SUB');
+  Emit('        XOR     EAX, EAX');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_GSUB : remplacer toutes les occurrences ---- }
+  { Stub : retourne 0                                        }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'GSUB');
+  Emit('        XOR     EAX, EAX');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_MATCH : matcher et retourner position ---- }
+  { Stub : retourne 0                                      }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'MATCH');
+  Emit('        XOR     EAX, EAX');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_MATCH_RE : matcher regex ---- }
+  { Stub : retourne 1 (toujours match)       }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'MATCH_RE');
+  Emit('        MOV     EAX, 1');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_MATCH_LINE : matcher pattern sur $0 ---- }
+  { Stub : retourne 1                                     }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'MATCH_LINE');
+  Emit('        MOV     EAX, 1');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_HASH_GET : lire tableau associatif ---- }
+  { Stub : retourne 0                                   }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'HASH_GET');
+  Emit('        XOR     EAX, EAX');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_HASH_SET : ecrire dans tableau associatif ---- }
+  { Stub                                                        }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'HASH_SET');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_HASH_EXISTS : tester cle dans tableau ---- }
+  { Stub : retourne 0                                      }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'HASH_EXISTS');
+  Emit('        XOR     EAX, EAX');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_HASH_DEL : supprimer entree tableau ---- }
+  { Stub                                                  }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'HASH_DEL');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_HASH_CLEAR : vider tableau ---- }
+  { Stub                                        }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'HASH_CLEAR');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_HASH_INIT : init iterateur for-in ---- }
+  { Stub                                                }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'HASH_INIT');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_HASH_NEXT : prochain element for-in ---- }
+  { Stub : retourne 0 (fin)                              }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'HASH_NEXT');
+  Emit('        XOR     EAX, EAX');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_HASH_COUNT : nombre d elements ---- }
+  { Stub : retourne 0                               }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'HASH_COUNT');
+  Emit('        XOR     EAX, EAX');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_POW : puissance a^b ---- }
+  { Stub simplifie : retourne 1          }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'POW');
+  Emit('        MOV     EAX, 1');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_SQRT : racine carree ---- }
+  { Stub : retourne 0                    }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'SQRT');
+  Emit('        XOR     EAX, EAX');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_SIN : sinus ---- }
+  { Stub : retourne 0           }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'SIN');
+  Emit('        XOR     EAX, EAX');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_COS : cosinus ---- }
+  { Stub : retourne 1              }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'COS');
+  Emit('        MOV     EAX, 1');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_ATAN2 : arctangente ---- }
+  { Stub : retourne 0                    }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'ATAN2');
+  Emit('        XOR     EAX, EAX');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_EXP : exponentielle ---- }
+  { Stub : retourne 1                    }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'EXP');
+  Emit('        MOV     EAX, 1');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_LOG : logarithme ---- }
+  { Stub : retourne 0                }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'LOG');
+  Emit('        XOR     EAX, EAX');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_RAND : nombre pseudo-aleatoire ---- }
+  { LCG simple : seed = seed * 1103515245 + 12345   }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'RAND');
+  Emit('        MOV     EAX, DWORD PTR [' + AW_RT_PFX + 'SEED]');
+  Emit('        IMUL    EAX, 1103515245');
+  Emit('        ADD     EAX, 12345');
+  Emit('        MOV     DWORD PTR [' + AW_RT_PFX + 'SEED], EAX');
+  Emit('        SHR     EAX, 16');
+  Emit('        AND     EAX, 32767');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_SRAND : initialiser graine ---- }
+  { EAX = nouvelle graine                       }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'SRAND');
+  Emit('        MOV     DWORD PTR [' + AW_RT_PFX + 'SEED], EAX');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_SRAND_TIME : srand avec le temps ---- }
+  { Stub : utilise une valeur fixe                     }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'SRAND_TIME');
+  Emit('        MOV     EAX, 12345678');
+  Emit('        MOV     DWORD PTR [' + AW_RT_PFX + 'SEED], EAX');
+  Emit('        RET');
+  EmitBlank;
+
+  { ---- _AWRT_ERROR : afficher erreur et quitter ---- }
+  { EAX = ptr message d erreur                          }
+  Inc(RuntimeHelpCount);
+  EmitLabel(AW_RT_PFX + 'ERROR');
+  Emit('        CALL    ' + AW_RT_PFX + 'PRINT');
+  Emit('        CALL    ' + AW_RT_PFX + 'CRLF');
+  Emit('        PUSH    1');
+  Emit('        CALL    _ExitProcess@4');
+  Emit('        RET');
+  EmitBlank;
+End;
 (* Parse un programme AWK complet au niveau superieur.              *)
 (* Structure AWK : suite de regles pattern-action :                 *)
 (*   BEGIN { action }           -> bloc d initialisation            *)
@@ -6267,9 +7084,14 @@ Begin
         RuleTab[RIdx].HasAction := True;
       EmitComment('--- BEGIN rule ---');
       EmitLabel(RuleTab[RIdx].AsmLabel);
+      Emit('        PUSH    EBP');
+      Emit('        MOV     EBP, ESP');
       EnterScope(SK_RULE);
       ParseAction;
       LeaveScope;
+      Emit('        MOV     ESP, EBP');
+      Emit('        POP     EBP');
+      Emit('        RET');
       EmitComment('--- end BEGIN rule ---');
       EmitBlank;
       Continue;
@@ -6285,9 +7107,14 @@ Begin
         RuleTab[RIdx].HasAction := True;
       EmitComment('--- END rule ---');
       EmitLabel(RuleTab[RIdx].AsmLabel);
+      Emit('        PUSH    EBP');
+      Emit('        MOV     EBP, ESP');
       EnterScope(SK_RULE);
       ParseAction;
       LeaveScope;
+      Emit('        MOV     ESP, EBP');
+      Emit('        POP     EBP');
+      Emit('        RET');
       EmitComment('--- end END rule ---');
       EmitBlank;
       Continue;
@@ -6316,9 +7143,14 @@ Begin
             RuleTab[RIdx].HasAction := True;
           EmitComment('--- range pattern /' + PatVal + '/,/' + PatVal2 + '/ ---');
           EmitLabel(RuleTab[RIdx].AsmLabel);
+          Emit('        PUSH    EBP');
+          Emit('        MOV     EBP, ESP');
           EnterScope(SK_RULE);
           ParseAction;
           LeaveScope;
+          Emit('        MOV     ESP, EBP');
+          Emit('        POP     EBP');
+          Emit('        RET');
           EmitComment('--- end range pattern ---');
           EmitBlank;
           Continue;
@@ -6332,6 +7164,8 @@ Begin
         RuleTab[RIdx].HasAction := True;
       EmitComment('--- pattern /' + PatVal + '/ ---');
       EmitLabel(RuleTab[RIdx].AsmLabel);
+      Emit('        PUSH    EBP');
+      Emit('        MOV     EBP, ESP');
       LblSkip := NewLabel;
       { Generer le test : CALL _AWRT_MATCH_LINE + TEST EAX, EAX + JZ skip }
       EmitComment('  test: match $0 ~ /' + PatVal + '/');
@@ -6339,6 +7173,9 @@ Begin
       ParseAction;
       LeaveScope;
       EmitLabel(LblSkip);
+      Emit('        MOV     ESP, EBP');
+      Emit('        POP     EBP');
+      Emit('        RET');
       EmitComment('--- end pattern ---');
       EmitBlank;
       Continue;
@@ -6353,9 +7190,14 @@ Begin
         RuleTab[RIdx].HasAction := True;
       EmitComment('--- rule (all lines) ---');
       EmitLabel(RuleTab[RIdx].AsmLabel);
+      Emit('        PUSH    EBP');
+      Emit('        MOV     EBP, ESP');
       EnterScope(SK_RULE);
       ParseAction;
       LeaveScope;
+      Emit('        MOV     ESP, EBP');
+      Emit('        POP     EBP');
+      Emit('        RET');
       EmitComment('--- end rule (all lines) ---');
       EmitBlank;
       Continue;
@@ -6378,6 +7220,8 @@ Begin
           RuleTab[RIdx].HasAction := True;
         EmitComment('--- expr rule ---');
         EmitLabel(RuleTab[RIdx].AsmLabel);
+        Emit('        PUSH    EBP');
+        Emit('        MOV     EBP, ESP');
         LblSkip := NewLabel;
         { Le resultat de l expression est dans EAX }
         GenCoerceToBoolean(D);
@@ -6387,6 +7231,9 @@ Begin
         ParseAction;
         LeaveScope;
         EmitLabel(LblSkip);
+        Emit('        MOV     ESP, EBP');
+        Emit('        POP     EBP');
+        Emit('        RET');
         EmitComment('--- end expr rule ---');
         EmitBlank;
       End;
@@ -6438,6 +7285,7 @@ Begin
   GetlineCount := 0;
   BuiltinVarCount := 0;
   EmitHeaderDone := False;
+  RuntimeHelpCount := 0;
   HasPushedBack := False;
   LexInit;
   { Mode debug : afficher tous les tokens }
@@ -6462,10 +7310,9 @@ Begin
     { Emettre l en-tete ASM 80386 (TODO 22) }
     EmitHeader;
     ParseProgram;
-    { Initialiser les variables builtin (TODO 21) }
-    InitBuiltinVarDefaults;
-    ApplyDashF;
-    ApplyDashV;
+    { Emettre le point d entree et les helpers runtime (TODO 23) }
+    EmitEntryPoint;
+    EmitRuntimeHelpers;
     { Emettre le segment .DATA et le footer (TODO 22) }
     EmitDataSeg;
     EmitFooter;
@@ -6497,7 +7344,8 @@ Begin
     WriteLn('AWKCW32: ', GenCount, ' operation(s) code gen, ',
             StringLitCount, ' litteral(aux) chaine');
     WriteLn('AWKCW32: scope depth=', ScopeDepth, ', loop depth=', LoopDepth);
-    WriteLn('AWKCW32: TODO 23..25 non encore implementes.');
+    WriteLn('AWKCW32: ', RuntimeHelpCount, ' helper(s) runtime emis');
+    WriteLn('AWKCW32: TODO 24..25 non encore implementes.');
     WriteLn('AWKCW32: sortie prevue: ', Opts.OutFile);
   End;
   LexClose;
