@@ -444,7 +444,7 @@
             Records imbrique : var.champ.sous_champ (recursif)
             Attribut record : T'SIZE -> somme des tailles
 
-  TODO 22 - STUBS ADA.TEXT_IO : SORTIE CONSOLE WIN32
+  TODO 22 - STUBS ADA.TEXT_IO : SORTIE CONSOLE WIN32 [IMPLEMENTE]
             Generer des stubs helpers Win32 pour les appels Text_IO :
             Put(item) : afficher entier, flottant, char ou chaine
               TYPE Integer -> CALL _ADART_PRINTINT
@@ -5367,18 +5367,203 @@ Begin
   If CurTokType = TOK_SEMI Then Consume;
 End;
 
+{ ============================================================ }
+{ TODO 22 - STUBS ADA.TEXT_IO : SORTIE CONSOLE WIN32           }
+{ ============================================================ }
+
+{ ---- DetectArgTypeForPut : detecter le type d argument ------- }
+{ Examine le token courant pour determiner le type de l argument }
+{ AVANT d appeler ParseExpr. Retourne TYPE_INT, TYPE_STR,        }
+{ TYPE_CHAR ou TYPE_BOOL.                                        }
+Function DetectArgTypeForPut : Integer;
+Var
+  Sym : Integer;
+Begin
+  Case CurTokType Of
+    TOK_INTEGER : DetectArgTypeForPut := TYPE_INT;
+    TOK_STRING  : DetectArgTypeForPut := TYPE_STR;
+    TOK_CHAR    : DetectArgTypeForPut := TYPE_CHAR;
+    TOK_IDENT   :
+      Begin
+        If (CurTokKw = KW_TRUE) Or (CurTokKw = KW_FALSE) Then
+          DetectArgTypeForPut := TYPE_BOOL
+        Else
+        Begin
+          Sym := FindSym(CurTokStr);
+          If Sym > 0 Then
+            DetectArgTypeForPut := SymTab[Sym].TypeIdx
+          Else
+            DetectArgTypeForPut := TYPE_INT;
+        End;
+      End;
+  Else
+    DetectArgTypeForPut := TYPE_INT;
+  End;
+End;
+
+{ ---- GenTextIOPutInline : Put/Put_Line type-dispatched ------- }
+{ Genere un appel inline a _ADART_PRINTINT, _ADART_PRINT ou     }
+{ _ADART_PRINTCHR selon le type de l argument.                   }
+{ Si IsLine est vrai, ajoute un CALL _ADART_CRLF apres.         }
+Procedure GenTextIOPutInline(IsLine : Boolean);
+Var
+  ArgTy : Integer;
+Begin
+  If IsLine Then
+    EmitComment('Ada.Text_IO.Put_Line (type-dispatched)')
+  Else
+    EmitComment('Ada.Text_IO.Put (type-dispatched)');
+
+  If CurTokType = TOK_LPAREN Then
+  Begin
+    Consume; { ( }
+    ArgTy := DetectArgTypeForPut;
+    ParseExpr;
+    Expect(TOK_RPAREN, '`)` attendu apres argument Put');
+    { Dispatcher selon le type }
+    Case ArgTy Of
+      TYPE_STR :
+        Begin
+          EmitI('PUSH EAX');
+          EmitI('CALL ' + ADA_RT_PFX + 'PRINT');
+        End;
+      TYPE_CHAR :
+        Begin
+          EmitI('PUSH EAX');
+          EmitI('CALL ' + ADA_RT_PFX + 'PRINTCHR');
+        End;
+    Else
+      Begin
+        { Integer, Boolean, enum, etc. -> PRINTINT }
+        EmitI('PUSH EAX');
+        EmitI('CALL ' + ADA_RT_PFX + 'PRINTINT');
+      End;
+    End;
+  End
+  Else
+  Begin
+    { Put / Put_Line sans arguments -> New_Line equivalent }
+    If IsLine Then
+    Begin
+      EmitI('CALL ' + ADA_RT_PFX + 'CRLF');
+      If CurTokType = TOK_SEMI Then Consume;
+      Exit;
+    End;
+  End;
+
+  { Put_Line : ajouter retour a la ligne }
+  If IsLine Then
+    EmitI('CALL ' + ADA_RT_PFX + 'CRLF');
+
+  If CurTokType = TOK_SEMI Then Consume;
+End;
+
+{ ---- GenTextIONewLineInline : New_Line [(n)] ----------------- }
+{ Emettre n CR+LF via CALL _ADART_CRLF. Defaut n = 1.          }
+Procedure GenTextIONewLineInline;
+Var
+  LblTop, LblEnd : TString;
+Begin
+  EmitComment('Ada.Text_IO.New_Line');
+  If CurTokType = TOK_LPAREN Then
+  Begin
+    Consume; { ( }
+    ParseExpr;  { EAX = nombre de lignes }
+    Expect(TOK_RPAREN, '`)` attendu apres argument New_Line');
+    { Boucle : repeter EAX fois CALL _ADART_CRLF }
+    EmitI('MOV  ECX, EAX');
+    LblTop := NewLabel;
+    LblEnd := NewLabel;
+    EmitLabel(LblTop);
+    EmitI('TEST ECX, ECX');
+    EmitI('JZ   ' + LblEnd);
+    EmitI('PUSH ECX');
+    EmitI('CALL ' + ADA_RT_PFX + 'CRLF');
+    EmitI('POP  ECX');
+    EmitI('DEC  ECX');
+    EmitI('JMP  ' + LblTop);
+    EmitLabel(LblEnd);
+  End
+  Else
+    { Par defaut : 1 New_Line }
+    EmitI('CALL ' + ADA_RT_PFX + 'CRLF');
+
+  If CurTokType = TOK_SEMI Then Consume;
+End;
+
+{ ---- GenTextIOSetColInline : Set_Col (stub warning) ---------- }
+{ Genere un avertissement : Set_Col non implemente.              }
+Procedure GenTextIOSetColInline;
+Begin
+  EmitComment('Ada.Text_IO.Set_Col (stub)');
+  Warning('Ada.Text_IO.Set_Col non implemente, appel ignore');
+  If CurTokType = TOK_LPAREN Then
+  Begin
+    Consume; { ( }
+    ParseExpr;  { skip l argument }
+    Expect(TOK_RPAREN, '`)` attendu apres argument Set_Col');
+  End;
+  If CurTokType = TOK_SEMI Then Consume;
+End;
+
+{ ---- IsTextIOProc : detecter un appel Ada.Text_IO ------------ }
+{ Retourne le nom court de la procedure Text_IO (PUT, PUT_LINE,  }
+{ NEW_LINE, SET_COL, GET, GET_LINE) ou '' si ce n est pas un     }
+{ appel Text_IO reconnu.                                         }
+Function IsTextIOProc(Const ProcName : TString) : TString;
+Var
+  U : TString;
+Begin
+  U := StrUpperCase(ProcName);
+  IsTextIOProc := '';
+  { Formes : Ada.Text_IO.Put_Line, Text_IO.Put_Line, Put_Line }
+  If Length(U) > 14 Then
+    If Copy(U, 1, 14) = 'ADA.TEXT_IO.' Then
+    Begin
+      IsTextIOProc := Copy(U, 15, Length(U) - 14);
+      Exit;
+    End;
+  If Length(U) > 8 Then
+    If Copy(U, 1, 8) = 'TEXT_IO.' Then
+    Begin
+      IsTextIOProc := Copy(U, 9, Length(U) - 8);
+      Exit;
+    End;
+  { Nom court direct (si enregistre dans SubTab via GenTextIOStubs) }
+  If (U = 'PUT') Or (U = 'PUT_LINE') Or (U = 'NEW_LINE') Or
+     (U = 'SET_COL') Then
+    IsTextIOProc := U;
+End;
+
 { ---- ParseProcedureCall : appel de procedure (TODO 16) ------- }
 { Syntaxe : nom [(arg1, arg2, ...)] ;                              }
 { Le nom de la procedure est deja lu et passe dans SavedName.     }
 { ParseExpr pour chaque argument. PUSH EAX pour IN,                }
 { LEA + PUSH pour OUT/INOUT. CALL label. STDCALL callee-cleanup.   }
+{ TODO 22 : gestion type-dispatched pour Put/Put_Line/New_Line.    }
 Procedure ParseProcedureCall(Const ProcName : TString);
 Var
   Sub, I   : Integer;
   ArgCount : Integer;
   ArgSym   : Integer;
   ArgName  : TString;
+  TIOProc  : TString;
 Begin
+  { TODO 22 : intercepter les appels Ada.Text_IO }
+  TIOProc := IsTextIOProc(ProcName);
+  If TIOProc <> '' Then
+  Begin
+    If TIOProc = 'PUT' Then
+    Begin GenTextIOPutInline(False); Exit; End;
+    If TIOProc = 'PUT_LINE' Then
+    Begin GenTextIOPutInline(True); Exit; End;
+    If TIOProc = 'NEW_LINE' Then
+    Begin GenTextIONewLineInline; Exit; End;
+    If TIOProc = 'SET_COL' Then
+    Begin GenTextIOSetColInline; Exit; End;
+    { GET / GET_LINE : passer au traitement normal (stubs existants) }
+  End;
+
   Sub := FindSub(ProcName);
   If Sub > 0 Then
   Begin
@@ -6101,15 +6286,20 @@ End;
 { ============================================================ }
 
 { ---- GenTextIOStubs : generer les stubs Ada.Text_IO ---------- }
-{ Enregistre Put, Put_Line, Get, Get_Line dans SubTab en tant    }
-{ que procedures/fonctions standards avec IsForward := False.     }
+{ Enregistre Put, Put_Line, Get, Get_Line, New_Line, Set_Col     }
+{ dans SubTab en tant que procedures standards.                   }
 { Genere du code ASM appelant les helpers runtime Win32           }
 { (_ADART_PUT, _ADART_PUT_LINE, _ADART_GET, _ADART_GET_LINE).   }
+{ TODO 22 : Put/Put_Line type-dispatched inline (ParseProcCall).  }
+{           New_Line et Set_Col ajoutes.                          }
 Procedure GenTextIOStubs;
 Var
   Idx : Integer;
 Begin
   { --- Put (S : String) --- }
+  { Note: Put et Put_Line sont maintenant geres inline par        }
+  { GenTextIOPutInline via ParseProcedureCall (TODO 22).          }
+  { Les stubs sont conserves pour compatibilite.                  }
   Idx := FindSub('PUT');
   If Idx = 0 Then
     Idx := AddSub('PUT', False, TYPE_VOID);
@@ -6127,7 +6317,7 @@ Begin
     EmitI('MOV  EBP, ESP');
     EmitI('MOV  EAX, DWORD PTR [EBP+8]');
     EmitI('PUSH EAX');
-    EmitI('CALL ' + ADA_RT_PFX + 'PUT');
+    EmitI('CALL ' + ADA_RT_PFX + 'PRINT');
     EmitI('POP  EBP');
     EmitI('RET  4');
   End;
@@ -6150,7 +6340,8 @@ Begin
     EmitI('MOV  EBP, ESP');
     EmitI('MOV  EAX, DWORD PTR [EBP+8]');
     EmitI('PUSH EAX');
-    EmitI('CALL ' + ADA_RT_PFX + 'PUT_LINE');
+    EmitI('CALL ' + ADA_RT_PFX + 'PRINT');
+    EmitI('CALL ' + ADA_RT_PFX + 'CRLF');
     EmitI('POP  EBP');
     EmitI('RET  4');
   End;
@@ -6204,6 +6395,44 @@ Begin
     EmitI('CALL ' + ADA_RT_PFX + 'GET_LINE');
     EmitI('POP  EBP');
     EmitI('RET  8');
+  End;
+
+  { --- New_Line [(Count : Natural)] --- (TODO 22) }
+  Idx := FindSub('NEW_LINE');
+  If Idx = 0 Then
+    Idx := AddSub('NEW_LINE', False, TYPE_VOID);
+  If Idx > 0 Then
+  Begin
+    SubTab[Idx].IsForward  := False;
+    SubTab[Idx].ParamCount := 0;
+    EmitBlank;
+    EmitComment('--- Ada.Text_IO.New_Line (stub) ---');
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('CALL ' + ADA_RT_PFX + 'CRLF');
+    EmitI('POP  EBP');
+    EmitI('RET');
+  End;
+
+  { --- Set_Col (To : Positive_Count) --- (TODO 22 stub) }
+  Idx := FindSub('SET_COL');
+  If Idx = 0 Then
+    Idx := AddSub('SET_COL', False, TYPE_VOID);
+  If Idx > 0 Then
+  Begin
+    SubTab[Idx].IsForward  := False;
+    SubTab[Idx].ParamCount := 1;
+    SubTab[Idx].ParamNames[1] := 'TO';
+    SubTab[Idx].ParamTypes[1] := TYPE_INT;
+    SubTab[Idx].ParamModes[1] := PARAM_IN;
+    EmitBlank;
+    EmitComment('--- Ada.Text_IO.Set_Col (stub - non implemente) ---');
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('POP  EBP');
+    EmitI('RET  4');
   End;
 End;
 

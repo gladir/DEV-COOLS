@@ -432,7 +432,7 @@
             Records imbrique : var.champ.sous_champ (recursif)
             Attribut record : T'SIZE -> somme des tailles
 
-  TODO 22 - STUBS ADA.TEXT_IO : SORTIE CONSOLE WIN32
+  TODO 22 - STUBS ADA.TEXT_IO : SORTIE CONSOLE WIN32 [IMPLEMENTE]
             Generer des stubs helpers Win32 pour les appels Text_IO :
             Put(item) : afficher entier, flottant, char ou chaine
               TYPE Integer -> CALL _ADART_PRINTINT
