@@ -248,7 +248,7 @@
             Var PrintCount pour les statistiques
             test_print.awk (20 cas, 23 print/printf, 210 ops gen)
 
-  TODO 10 - PARSEUR : IF / ELSE
+  TODO 10 - PARSEUR : IF / ELSE [IMPLEMENTE]
             Procedure ParseIf
             Syntaxe :
               if (condition) instruction
@@ -263,6 +263,11 @@
               _AWL_endif:
             Support des blocs entre accolades { }
             Support des instructions simples sans accolades
+            Procedure ParseStatement : parser une instruction unique
+              (expression, print, printf, if, for, while, etc.)
+            Procedure ParseBlock : parser { instructions } ou instruction
+            Var IfCount pour les statistiques
+            test_ifelse.awk (15 cas, 20 if/else, 352 ops gen)
 
   TODO 11 - PARSEUR : WHILE, FOR, DO-WHILE, BREAK, CONTINUE
             Procedure ParseWhile

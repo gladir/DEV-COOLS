@@ -248,7 +248,7 @@
             Var PrintCount pour les statistiques
             test_print.awk (print, printf, sprintf, redirection)
 
-  TODO 10 - PARSEUR : IF / ELSE
+  TODO 10 - PARSEUR : IF / ELSE [IMPLEMENTE]
             Procedure ParseIf
             Syntaxe :
               if (condition) instruction
@@ -263,6 +263,11 @@
               _AWL_endif:
             Support des blocs entre accolades { }
             Support des instructions simples sans accolades
+            Procedure ParseStatement : parser une instruction unique
+              (expression, print, printf, if, for, while, etc.)
+            Procedure ParseBlock : parser { instructions } ou instruction
+            Var IfCount pour les statistiques
+            test_ifelse.awk (15 cas if/else imbriques)
 
   TODO 11 - PARSEUR : WHILE, FOR, DO-WHILE, BREAK, CONTINUE
             Procedure ParseWhile
@@ -999,6 +1004,9 @@ Var
   { Print/Printf/Sprintf (TODO 09) }
   PrintCount     : Integer;    { nombre d instructions print/printf }
 
+  { If/Else (TODO 10) }
+  IfCount        : Integer;    { nombre d instructions if/else      }
+
 Const
 {$IFDEF FPC}
   BinAPIDecorated : Array[0..PE_NUM_API - 1] Of String[32] = (
@@ -1348,6 +1356,7 @@ Begin
   WriteLn('Coercitions      : ', CoercionCount);
   WriteLn('Concatenations   : ', ConcatCount);
   WriteLn('Print/Printf     : ', PrintCount);
+  WriteLn('If/Else          : ', IfCount);
   WriteLn('Code gen ops     : ', GenCount);
   WriteLn('Litteraux chaine : ', StringLitCount);
   WriteLn('Scope depth      : ', ScopeDepth);
@@ -2443,6 +2452,11 @@ Procedure GenPrintORS; Forward;
 Procedure ParsePrint; Forward;
 Procedure ParsePrintf; Forward;
 Function  ParseSprintf: Integer; Forward;
+
+{ Forward declarations TODO 10 - If/Else }
+Procedure ParseIf; Forward;
+Procedure ParseStatement; Forward;
+Procedure ParseBlock; Forward;
 
 { ---- Helpers de tokens --------------------------------------- }
 Function IsOp(Const S : String) : Boolean;
@@ -3680,13 +3694,286 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 10 - PARSEUR : IF / ELSE                                }
+{ ============================================================ }
+
+{ ---- ParseStatement ------------------------------------------ }
+{ Parse une instruction unique :                                  }
+{   - expression (terminee par ; ou newline)                      }
+{   - print / printf (TODO 09)                                    }
+{   - if / else (TODO 10)                                         }
+{   - for / while / do (stubs)                                    }
+{   - return / exit / delete / break / continue / next             }
+{   - function (declaration)                                      }
+{   - bloc entre accolades                                       }
+Procedure ParseStatement;
+Var
+  TK : Integer;
+  D  : Integer;
+Begin
+  SkipNewlines;
+  If (CurToken.Kind = TK_EOF) Or IsPunct('}') Then
+    Exit;
+  { Point-virgule vide }
+  If IsPunct(';') Then
+  Begin
+    ParserAdvance;
+    Exit;
+  End;
+  { Bloc entre accolades }
+  If IsPunct('{') Then
+  Begin
+    ParseBlock;
+    Exit;
+  End;
+  { Keywords de structure }
+  If CurToken.Kind = TK_KEYWORD Then
+  Begin
+    TK := CurToken.IntVal;
+    { print (TODO 09) }
+    If TK = KW_PRINT Then
+    Begin
+      ParserAdvance;
+      ParsePrint;
+      Exit;
+    End;
+    { printf (TODO 09) }
+    If TK = KW_PRINTF Then
+    Begin
+      ParserAdvance;
+      ParsePrintf;
+      Exit;
+    End;
+    { if (TODO 10) }
+    If TK = KW_IF Then
+    Begin
+      ParserAdvance;
+      ParseIf;
+      Exit;
+    End;
+    { for : parser la condition entre parentheses (stub) }
+    If TK = KW_FOR Then
+    Begin
+      ParserAdvance;
+      If IsPunct('(') Then
+      Begin
+        ParserAdvance;
+        If Not IsPunct(';') And Not IsPunct(')') Then
+          D := ParseExpr;
+        If IsPunct(';') Then
+        Begin
+          ParserAdvance;
+          If Not IsPunct(';') Then
+            D := ParseExpr;
+          If IsPunct(';') Then
+          Begin
+            ParserAdvance;
+            If Not IsPunct(')') Then
+              D := ParseExpr;
+          End;
+        End;
+        If IsPunct(')') Then
+          ParserAdvance;
+      End;
+      { Parser le corps de la boucle }
+      ParseBlock;
+      Exit;
+    End;
+    { while : parser la condition (stub) }
+    If TK = KW_WHILE Then
+    Begin
+      ParserAdvance;
+      If IsPunct('(') Then
+      Begin
+        ParserAdvance;
+        D := ParseExpr;
+        If IsPunct(')') Then
+          ParserAdvance;
+      End;
+      ParseBlock;
+      Exit;
+    End;
+    { do : parser le corps (stub) }
+    If TK = KW_DO Then
+    Begin
+      ParserAdvance;
+      If IsPunct('(') Then
+      Begin
+        ParserAdvance;
+        D := ParseExpr;
+        If IsPunct(')') Then
+          ParserAdvance;
+      End;
+      ParseBlock;
+      Exit;
+    End;
+    { return / exit : parser une expression optionnelle }
+    If (TK = KW_RETURN) Or (TK = KW_EXIT) Then
+    Begin
+      ParserAdvance;
+      If (CurToken.Kind <> TK_NEWLINE) And
+         (CurToken.Kind <> TK_EOF) And
+         Not IsPunct(';') And Not IsPunct('}') Then
+        D := ParseExpr;
+      Exit;
+    End;
+    { delete : parser ident[expr] }
+    If TK = KW_DELETE Then
+    Begin
+      ParserAdvance;
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        D := FindSym(CurToken.Val);
+        If D < 0 Then
+          D := AddSym(CurToken.Val, TYK_ARRAY, STORE_GLOBAL, True);
+        ParserAdvance;
+        If IsPunct('[') Then
+        Begin
+          ParserAdvance;
+          D := ParseExpr;
+          If IsPunct(']') Then
+            ParserAdvance;
+        End;
+      End;
+      Exit;
+    End;
+    { function : parser la declaration }
+    If TK = KW_FUNCTION Then
+    Begin
+      ParserAdvance;
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        D := AddFunc(CurToken.Val);
+        ParserAdvance;
+      End;
+      If IsPunct('(') Then
+      Begin
+        ParserAdvance;
+        While (CurToken.Kind = TK_IDENT) Do
+        Begin
+          ParserAdvance;
+          If IsPunct(',') Then
+            ParserAdvance;
+        End;
+        If IsPunct(')') Then
+          ParserAdvance;
+      End;
+      { Parser le corps de la fonction }
+      ParseBlock;
+      Exit;
+    End;
+    { Autres keywords : skip (break, continue, next, etc.) }
+    ParserAdvance;
+    Exit;
+  End;
+  { Expression }
+  D := ParseExpr;
+End;
+
+{ ---- ParseBlock ---------------------------------------------- }
+(* Parse un bloc entre accolades ou une instruction simple.       *)
+{ instruction simple.                                             }
+Procedure ParseBlock;
+Begin
+  SkipNewlines;
+  If IsPunct('{') Then
+  Begin
+    ParserAdvance; { consommer { }
+    While (CurToken.Kind <> TK_EOF) And Not IsPunct('}') Do
+    Begin
+      SkipNewlines;
+      If IsPunct('}') Or (CurToken.Kind = TK_EOF) Then Break;
+      ParseStatement;
+    End;
+    If IsPunct('}') Then
+      ParserAdvance; (* consommer l'accolade fermante *)
+  End
+  Else
+    ParseStatement;
+End;
+
+{ ---- ParseIf ------------------------------------------------- }
+(* Parse une instruction if / else AWK :                           *)
+(*   if (condition) instruction                                    *)
+(*   if (condition) instruction else instruction                   *)
+(*   if (condition) { instructions } else { instructions }         *)
+(* Generation de code 80386 :                                      *)
+(*   Evaluer condition -> EAX                                      *)
+(*   TEST EAX, EAX                                                 *)
+(*   JZ _AWL_else                                                  *)
+(*   ... bloc vrai ...                                             *)
+(*   JMP _AWL_endif     (si else present)                          *)
+(* _AWL_else:                                                      *)
+(*   ... bloc faux ...  (si else present)                          *)
+(* _AWL_endif:                                                     *)
+Procedure ParseIf;
+Var
+  LblElse  : TString;
+  LblEnd   : TString;
+  ExprType : Integer;
+  HasElse  : Boolean;
+Begin
+  Inc(IfCount);
+  EmitComment('--- if statement ---');
+
+  { Parser la condition entre parentheses }
+  If IsPunct('(') Then
+    ParserAdvance
+  Else
+    WarnMsg('if: ( attendu');
+
+  ExprType := ParseExpr;
+  ExprType := GenCoerceToBoolean(ExprType);
+
+  If IsPunct(')') Then
+    ParserAdvance
+  Else
+    WarnMsg('if: ) attendu');
+
+  { Generer les labels }
+  LblElse := NewLabel;
+  LblEnd  := NewLabel;
+
+  { TEST EAX, EAX + JZ _AWL_else }
+  Emit('        TEST    EAX, EAX');
+  Emit('        JZ      ' + LblElse);
+  EmitBlank;
+
+  { Parser le bloc vrai }
+  ParseBlock;
+
+  { Verifier si else suit }
+  SkipNewlines;
+  HasElse := IsKW(KW_ELSE);
+
+  If HasElse Then
+  Begin
+    { JMP _AWL_endif pour sauter le bloc faux }
+    Emit('        JMP     ' + LblEnd);
+    EmitLabel(LblElse);
+    EmitComment('--- else block ---');
+    ParserAdvance; { consommer else }
+    SkipNewlines;
+    { Parser le bloc faux }
+    ParseBlock;
+    EmitLabel(LblEnd);
+  End
+  Else
+  Begin
+    { Pas de else : le label else EST le endif }
+    EmitLabel(LblElse);
+  End;
+
+  EmitComment('--- end if ---');
+  EmitBlank;
+End;
+
+{ ============================================================ }
 { PROCEDURE RUN (STUB - sera complete par les TODOs suivants)  }
 { ============================================================ }
 
 Procedure Run;
 Var
-  TK : Integer;
-  D  : Integer;
   StmtCount : Integer;
 Begin
   WriteLn('AWKCW32: compilation de ', Opts.SrcFile, ' ...');
@@ -3704,6 +3991,7 @@ Begin
   StringLitCount := 0;
   LastSymIdx := -1;
   PrintCount := 0;
+  IfCount := 0;
   LexInit;
   { Mode debug : afficher tous les tokens }
   If Opts.DebugMode Then
@@ -3718,144 +4006,20 @@ Begin
   End
   Else
   Begin
-    { Parser les expressions (TODO 06) }
+    { Parser les expressions (TODO 06+10) }
     ParserAdvance;  { charger le premier token }
     StmtCount := 0;
     While CurToken.Kind <> TK_EOF Do
     Begin
       SkipNewlines;
       If CurToken.Kind = TK_EOF Then Break;
-      { Passer les accolades et points-virgules de structure }
+      { Passer les accolades et points-virgules de structure top-level }
       If IsPunct('{') Or IsPunct('}') Or IsPunct(';') Then
       Begin
         ParserAdvance;
         Continue;
       End;
-      { Keywords de structure : parser selon le type }
-      If CurToken.Kind = TK_KEYWORD Then
-      Begin
-        TK := CurToken.IntVal;
-        { print : parser avec generation de code (TODO 09) }
-        If TK = KW_PRINT Then
-        Begin
-          ParserAdvance; { consommer print }
-          Inc(StmtCount);
-          ParsePrint;
-          Continue;
-        End;
-        { printf : parser avec generation de code (TODO 09) }
-        If TK = KW_PRINTF Then
-        Begin
-          ParserAdvance; { consommer printf }
-          Inc(StmtCount);
-          ParsePrintf;
-          Continue;
-        End;
-        { for : parser la condition entre parentheses }
-        If TK = KW_FOR Then
-        Begin
-          ParserAdvance; { consommer for }
-          Inc(StmtCount);
-          If IsPunct('(') Then
-          Begin
-            ParserAdvance;
-            { for (expr in array) ou for (init; cond; step) }
-            If Not IsPunct(';') And Not IsPunct(')') Then
-              D := ParseExpr;
-            If IsPunct(';') Then
-            Begin
-              ParserAdvance; { ; }
-              If Not IsPunct(';') Then
-                D := ParseExpr;
-              If IsPunct(';') Then
-              Begin
-                ParserAdvance; { ; }
-                If Not IsPunct(')') Then
-                  D := ParseExpr;
-              End;
-            End;
-            If IsPunct(')') Then
-              ParserAdvance;
-          End;
-          Continue;
-        End;
-        { if / while / do : parser la condition entre parentheses }
-        If (TK = KW_IF) Or (TK = KW_WHILE) Or (TK = KW_DO) Then
-        Begin
-          ParserAdvance; { consommer if/while/do }
-          Inc(StmtCount);
-          If IsPunct('(') Then
-          Begin
-            ParserAdvance;
-            D := ParseExpr;
-            If IsPunct(')') Then
-              ParserAdvance;
-          End;
-          Continue;
-        End;
-        { return / exit : parser une expression optionnelle }
-        If (TK = KW_RETURN) Or (TK = KW_EXIT) Then
-        Begin
-          ParserAdvance;
-          Inc(StmtCount);
-          If (CurToken.Kind <> TK_NEWLINE) And
-             (CurToken.Kind <> TK_EOF) And
-             Not IsPunct(';') And Not IsPunct('}') Then
-            D := ParseExpr;
-          Continue;
-        End;
-        { delete : parser ident[expr] }
-        If TK = KW_DELETE Then
-        Begin
-          ParserAdvance;
-          Inc(StmtCount);
-          If CurToken.Kind = TK_IDENT Then
-          Begin
-            D := FindSym(CurToken.Val);
-            If D < 0 Then
-              D := AddSym(CurToken.Val, TYK_ARRAY, STORE_GLOBAL, True);
-            ParserAdvance;
-            If IsPunct('[') Then
-            Begin
-              ParserAdvance;
-              D := ParseExpr;
-              If IsPunct(']') Then
-                ParserAdvance;
-            End;
-          End;
-          Continue;
-        End;
-        { function : parser la declaration }
-        If TK = KW_FUNCTION Then
-        Begin
-          ParserAdvance; { consommer function }
-          Inc(StmtCount);
-          If CurToken.Kind = TK_IDENT Then
-          Begin
-            D := AddFunc(CurToken.Val);
-            ParserAdvance;
-          End;
-          If IsPunct('(') Then
-          Begin
-            ParserAdvance;
-            While (CurToken.Kind = TK_IDENT) Do
-            Begin
-              ParserAdvance;
-              If IsPunct(',') Then
-                ParserAdvance;
-            End;
-            If IsPunct(')') Then
-              ParserAdvance;
-          End;
-          Continue;
-        End;
-        { Autres keywords : skip (break, continue, next, etc.) }
-        ParserAdvance;
-        Inc(StmtCount);
-        Continue;
-      End;
-      { Parser une expression }
-      TK := ParseExpr;
+      ParseStatement;
       Inc(StmtCount);
     End;
     WriteLn('AWKCW32: tokenisation terminee, ', TotalLines, ' lignes');
@@ -3864,11 +4028,12 @@ Begin
             StmtCount, ' instruction(s)');
     WriteLn('AWKCW32: ', CoercionCount, ' coercition(s), ',
             ConcatCount, ' concatenation(s) implicite(s)');
-    WriteLn('AWKCW32: ', PrintCount, ' print/printf instruction(s)');
+    WriteLn('AWKCW32: ', PrintCount, ' print/printf, ',
+            IfCount, ' if/else instruction(s)');
     WriteLn('AWKCW32: ', GenCount, ' operation(s) code gen, ',
             StringLitCount, ' litteral(aux) chaine');
     WriteLn('AWKCW32: scope depth=', ScopeDepth, ', loop depth=', LoopDepth);
-    WriteLn('AWKCW32: TODO 10..25 non encore implementes.');
+    WriteLn('AWKCW32: TODO 11..25 non encore implementes.');
     WriteLn('AWKCW32: sortie prevue: ', Opts.OutFile);
   End;
   LexClose;
