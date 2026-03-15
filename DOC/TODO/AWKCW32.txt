@@ -130,7 +130,8 @@
             Convention STDCALL Win32 : parametres droite a gauche
             Pile de boucles pour break / continue imbriques
 
-  TODO 06 - PARSEUR : EXPRESSIONS ARITHMETIQUES ET LOGIQUES (32 BITS)
+  TODO 06 - PARSEUR : EXPRESSIONS ARITHMETIQUES ET LOGIQUES
+            (32 BITS) [IMPLEMENTE]
             Function ParseExpr: Integer (priorite la plus basse)
             Function ParseAssignExpr: Integer
               (= += -= *= /= %= ^= : affectation droite a gauche)
@@ -158,6 +159,14 @@
               Fonction builtin    -> CALL _AWRT_xxx
               Expression reguliere /pat/ -> LEA EAX, [_AWP_n]
               Parentheses         -> ( ParseExpr )
+            Helpers: IsOp, IsPunct, IsKW, Expect, SkipNewlines,
+              IsConcatFollow
+            Var ExprCount, Run mis a jour avec parseur d expressions
+            Run gere keywords: print/printf (liste args + redirection),
+              for (init;cond;step ou expr in array),
+              if/while/do (condition), return/exit (expr optionnelle),
+              delete (ident[expr]), function (declaration params)
+            sprintf traite comme fonction dans ParsePrimaryExpr
             Tous les calculs en registres 32 bits (EAX, EBX, ECX, EDX)
 
   TODO 07 - PARSEUR : CONCATENATION DE CHAINES ET COERCITION

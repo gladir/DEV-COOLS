@@ -134,7 +134,8 @@
             Convention STDCALL Win32 : parametres droite a gauche
             Pile de boucles pour break / continue imbriques
 
-  TODO 06 - PARSEUR : EXPRESSIONS ARITHMETIQUES ET LOGIQUES (32 BITS)
+  TODO 06 - PARSEUR : EXPRESSIONS ARITHMETIQUES ET LOGIQUES
+            (32 BITS) [IMPLEMENTE]
             Function ParseExpr: Integer (priorite la plus basse)
             Function ParseAssignExpr: Integer
               (= += -= *= /= %= ^= : affectation droite a gauche)
@@ -162,6 +163,9 @@
               Fonction builtin    -> CALL _AWRT_xxx
               Expression reguliere /pat/ -> LEA EAX, [_AWP_n]
               Parentheses         -> ( ParseExpr )
+            Helpers: IsOp, IsPunct, IsKW, Expect, SkipNewlines,
+              IsConcatFollow
+            Var ExprCount, Run mis a jour avec parseur d expressions
             Tous les calculs en registres 32 bits (EAX, EBX, ECX, EDX)
 
   TODO 07 - PARSEUR : CONCATENATION DE CHAINES ET COERCITION
@@ -930,6 +934,9 @@ Var
   LoopDepth   : Integer;      { profondeur des boucles imbriquees }
   LabelSeq    : Integer;      { sequence pour labels uniques      }
 
+  { Parseur d expressions (TODO 06) }
+  ExprCount   : Integer;      { nombre d expressions parsees      }
+
 Const
 {$IFDEF FPC}
   BinAPIDecorated : Array[0..PE_NUM_API - 1] Of String[32] = (
@@ -1275,6 +1282,7 @@ Begin
   WriteLn('Lignes analysees : ', TotalLines);
   WriteLn('Symboles         : ', SymCount);
   WriteLn('Fonctions        : ', FuncCount);
+  WriteLn('Expressions      : ', ExprCount);
   WriteLn('Scope depth      : ', ScopeDepth);
   WriteLn('Labels generes   : ', LabelSeq);
   WriteLn('Erreurs          : ', ErrorCount);
@@ -2308,10 +2316,589 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 06 - PARSEUR : EXPRESSIONS ARITHMETIQUES ET LOGIQUES    }
+{           (32 BITS) [IMPLEMENTE]                              }
+{ ============================================================ }
+
+{ Forward declarations }
+Function ParseExpr : Integer; Forward;
+Function ParseAssignExpr : Integer; Forward;
+Function ParseTernaryExpr : Integer; Forward;
+Function ParseOrExpr : Integer; Forward;
+Function ParseAndExpr : Integer; Forward;
+Function ParseInExpr : Integer; Forward;
+Function ParseMatchExpr : Integer; Forward;
+Function ParseCompareExpr : Integer; Forward;
+Function ParseConcatExpr : Integer; Forward;
+Function ParseAddExpr : Integer; Forward;
+Function ParseMulExpr : Integer; Forward;
+Function ParsePowExpr : Integer; Forward;
+Function ParseUnaryExpr : Integer; Forward;
+Function ParsePostfixExpr : Integer; Forward;
+Function ParsePrimaryExpr : Integer; Forward;
+
+{ ---- Helpers de tokens --------------------------------------- }
+Function IsOp(Const S : String) : Boolean;
+Begin
+  IsOp := (CurToken.Kind = TK_OP) And (CurToken.Val = S);
+End;
+
+Function IsPunct(Const S : String) : Boolean;
+Begin
+  IsPunct := (CurToken.Kind = TK_PUNCT) And (CurToken.Val = S);
+End;
+
+Function IsKW(Code : Integer) : Boolean;
+Begin
+  IsKW := (CurToken.Kind = TK_KEYWORD) And (CurToken.IntVal = Code);
+End;
+
+Procedure Expect(K : TTokenKind; Const V : String);
+Begin
+  If (CurToken.Kind <> K) Or (CurToken.Val <> V) Then
+    FatalError('attendu "' + V + '" a la ligne ' +
+               IntToStr_(CurToken.Line));
+  ParserAdvance;
+End;
+
+Procedure SkipNewlines;
+Begin
+  While CurToken.Kind = TK_NEWLINE Do
+    ParserAdvance;
+End;
+
+{ ---- ParsePrimaryExpr ---------------------------------------- }
+{ Constantes, variables, champs, appels de fonctions, parenth.  }
+Function ParsePrimaryExpr : Integer;
+Var
+  TK    : Integer;
+  FnIdx : Integer;
+  ArgC  : Integer;
+  IdName: String;
+  D     : Integer;
+Begin
+  ParsePrimaryExpr := TYK_UNKNOWN;
+  SkipNewlines;
+  Case CurToken.Kind Of
+    TK_INTEGER:
+    Begin
+      { Constante entiere : MOV EAX, imm32 (futur TODO 08) }
+      ParsePrimaryExpr := TYK_NUMBER;
+      ParserAdvance;
+    End;
+    TK_FLOAT:
+    Begin
+      { Constante flottante : traitee comme nombre entier tronque }
+      ParsePrimaryExpr := TYK_NUMBER;
+      ParserAdvance;
+    End;
+    TK_STRING:
+    Begin
+      { Constante chaine : LEA EAX, [_AWK_n] (futur TODO 08) }
+      ParsePrimaryExpr := TYK_STRING;
+      ParserAdvance;
+    End;
+    TK_REGEXP:
+    Begin
+      { Expression reguliere /pat/ : LEA EAX, [_AWP_n] }
+      ParsePrimaryExpr := TYK_REGEXP;
+      ParserAdvance;
+    End;
+    TK_FIELD:
+    Begin
+      { Reference de champ $n : CALL _AWRT_GETFIELD }
+      ParsePrimaryExpr := TYK_STRING;
+      ParserAdvance;
+    End;
+    TK_BVAR:
+    Begin
+      { Variable builtin AWK (FS, NR, NF, ...) }
+      TK := FindSym(CurToken.Val);
+      If TK >= 0 Then
+        ParsePrimaryExpr := SymTab[TK].TypeKind
+      Else
+        ParsePrimaryExpr := TYK_UNKNOWN;
+      ParserAdvance;
+    End;
+    TK_IDENT:
+    Begin
+      IdName := CurToken.Val;
+      ParserAdvance;
+      { Appel de fonction utilisateur : ident ( args ) }
+      If IsPunct('(') Then
+      Begin
+        ParserAdvance;  { consommer ( }
+        ArgC := 0;
+        If Not IsPunct(')') Then
+        Begin
+          D := ParseExpr;
+          Inc(ArgC);
+          While IsPunct(',') Do
+          Begin
+            ParserAdvance;  { consommer , }
+            SkipNewlines;
+            D := ParseExpr;
+            Inc(ArgC);
+          End;
+        End;
+        Expect(TK_PUNCT, ')');
+        { Rechercher ou enregistrer la fonction }
+        FnIdx := FindFunc(IdName);
+        If FnIdx < 0 Then
+        Begin
+          FnIdx := AddFunc(IdName);
+          If FnIdx >= 0 Then
+            FuncTab[FnIdx].ParamCount := ArgC;
+        End;
+        ParsePrimaryExpr := TYK_UNKNOWN;
+      End
+      { Acces tableau : ident [ expr ] }
+      Else If IsPunct('[') Then
+      Begin
+        ParserAdvance;  { consommer [ }
+        D := ParseExpr;
+        { SUBSEP : indices multiples a[i,j] }
+        While IsPunct(',') Do
+        Begin
+          ParserAdvance;
+          D := ParseExpr;
+        End;
+        Expect(TK_PUNCT, ']');
+        { Enregistrer comme tableau si inconnu }
+        TK := FindSym(IdName);
+        If TK < 0 Then
+          TK := AddSym(IdName, TYK_ARRAY, STORE_GLOBAL, True);
+        ParsePrimaryExpr := TYK_UNKNOWN;
+      End
+      Else
+      Begin
+        { Variable scalaire }
+        TK := FindSym(IdName);
+        If TK < 0 Then
+          TK := AddSym(IdName, TYK_UNINITIALIZED, STORE_GLOBAL, True);
+        If TK >= 0 Then
+          ParsePrimaryExpr := SymTab[TK].TypeKind
+        Else
+          ParsePrimaryExpr := TYK_UNKNOWN;
+      End;
+    End;
+    TK_BUILTIN:
+    Begin
+      { Fonction builtin AWK : builtin ( args ) }
+      IdName := CurToken.Val;
+      ParserAdvance;
+      If IsPunct('(') Then
+      Begin
+        ParserAdvance;  { consommer ( }
+        ArgC := 0;
+        If Not IsPunct(')') Then
+        Begin
+          D := ParseExpr;
+          Inc(ArgC);
+          While IsPunct(',') Do
+          Begin
+            ParserAdvance;
+            SkipNewlines;
+            D := ParseExpr;
+            Inc(ArgC);
+          End;
+        End;
+        Expect(TK_PUNCT, ')');
+      End;
+      { Builtins sans parentheses : length, etc. }
+      ParsePrimaryExpr := TYK_UNKNOWN;
+    End;
+    TK_KEYWORD:
+    Begin
+      { getline est un keyword qui peut apparaitre en expression }
+      If IsKW(KW_GETLINE) Then
+      Begin
+        ParserAdvance;
+        { getline var < file : skip optionnel }
+        If CurToken.Kind = TK_IDENT Then
+          ParserAdvance;
+        ParsePrimaryExpr := TYK_NUMBER;
+      End
+      { sprintf est un keyword mais fonctionne comme une fonction }
+      Else If IsKW(KW_SPRINTF) Then
+      Begin
+        ParserAdvance;
+        If IsPunct('(') Then
+        Begin
+          ParserAdvance;
+          ArgC := 0;
+          If Not IsPunct(')') Then
+          Begin
+            D := ParseExpr;
+            Inc(ArgC);
+            While IsPunct(',') Do
+            Begin
+              ParserAdvance;
+              SkipNewlines;
+              D := ParseExpr;
+              Inc(ArgC);
+            End;
+          End;
+          Expect(TK_PUNCT, ')');
+        End;
+        ParsePrimaryExpr := TYK_STRING;
+      End
+      Else
+        FatalError('mot-cle inattendu "' + CurToken.Val +
+                   '" dans une expression (ligne ' +
+                   IntToStr_(CurToken.Line) + ')');
+    End;
+    TK_PUNCT:
+    Begin
+      { Parentheses ( expr ) }
+      If CurToken.Val = '(' Then
+      Begin
+        ParserAdvance;  { consommer ( }
+        SkipNewlines;
+        ParsePrimaryExpr := ParseExpr;
+        SkipNewlines;
+        Expect(TK_PUNCT, ')');
+      End
+      Else
+        FatalError('expression attendue, trouve "' + CurToken.Val +
+                   '" (ligne ' + IntToStr_(CurToken.Line) + ')');
+    End;
+    TK_OP:
+    Begin
+      { Operateur $ en tant que reference de champ dynamique }
+      If CurToken.Val = '$' Then
+      Begin
+        ParserAdvance;
+        D := ParsePrimaryExpr;
+        ParsePrimaryExpr := TYK_STRING;
+      End
+      Else
+        FatalError('expression attendue, trouve operateur "' +
+                   CurToken.Val + '" (ligne ' +
+                   IntToStr_(CurToken.Line) + ')');
+    End;
+  Else
+    FatalError('expression attendue (ligne ' +
+               IntToStr_(CurToken.Line) + ')');
+  End;
+End;
+
+{ ---- ParsePostfixExpr ---------------------------------------- }
+{ var++ var-- (suffixe) }
+Function ParsePostfixExpr : Integer;
+Var
+  TK : Integer;
+Begin
+  TK := ParsePrimaryExpr;
+  While (CurToken.Kind = TK_OP) And
+        ((CurToken.Val = '++') Or (CurToken.Val = '--')) Do
+  Begin
+    ParserAdvance;
+    TK := TYK_NUMBER;
+  End;
+  ParsePostfixExpr := TK;
+End;
+
+{ ---- ParseUnaryExpr ------------------------------------------ }
+{ ! - + ++ -- $ (prefixe) }
+Function ParseUnaryExpr : Integer;
+Begin
+  SkipNewlines;
+  If CurToken.Kind = TK_OP Then
+  Begin
+    If CurToken.Val = '!' Then
+    Begin
+      ParserAdvance;
+      ParseUnaryExpr := ParseUnaryExpr;
+      ParseUnaryExpr := TYK_NUMBER;
+      Exit;
+    End;
+    If CurToken.Val = '-' Then
+    Begin
+      ParserAdvance;
+      ParseUnaryExpr := ParseUnaryExpr;
+      ParseUnaryExpr := TYK_NUMBER;
+      Exit;
+    End;
+    If CurToken.Val = '+' Then
+    Begin
+      ParserAdvance;
+      ParseUnaryExpr := ParseUnaryExpr;
+      ParseUnaryExpr := TYK_NUMBER;
+      Exit;
+    End;
+    If CurToken.Val = '++' Then
+    Begin
+      ParserAdvance;
+      ParseUnaryExpr := ParsePostfixExpr;
+      ParseUnaryExpr := TYK_NUMBER;
+      Exit;
+    End;
+    If CurToken.Val = '--' Then
+    Begin
+      ParserAdvance;
+      ParseUnaryExpr := ParsePostfixExpr;
+      ParseUnaryExpr := TYK_NUMBER;
+      Exit;
+    End;
+    If CurToken.Val = '$' Then
+    Begin
+      ParserAdvance;
+      ParseUnaryExpr := ParsePrimaryExpr;
+      ParseUnaryExpr := TYK_STRING;
+      Exit;
+    End;
+  End;
+  ParseUnaryExpr := ParsePostfixExpr;
+End;
+
+{ ---- ParsePowExpr -------------------------------------------- }
+{ ^ (droite a gauche) }
+Function ParsePowExpr : Integer;
+Var
+  TK : Integer;
+  D  : Integer;
+Begin
+  TK := ParseUnaryExpr;
+  If IsOp('^') Then
+  Begin
+    ParserAdvance;
+    D := ParsePowExpr;  { droite a gauche : recursion }
+    TK := TYK_NUMBER;
+  End;
+  ParsePowExpr := TK;
+End;
+
+{ ---- ParseMulExpr -------------------------------------------- }
+{ * / % }
+Function ParseMulExpr : Integer;
+Var
+  TK : Integer;
+  D  : Integer;
+Begin
+  TK := ParsePowExpr;
+  While (CurToken.Kind = TK_OP) And
+        ((CurToken.Val = '*') Or (CurToken.Val = '/') Or
+         (CurToken.Val = '%')) Do
+  Begin
+    ParserAdvance;
+    D := ParsePowExpr;
+    TK := TYK_NUMBER;
+  End;
+  ParseMulExpr := TK;
+End;
+
+{ ---- ParseAddExpr -------------------------------------------- }
+{ + - }
+Function ParseAddExpr : Integer;
+Var
+  TK : Integer;
+  D  : Integer;
+Begin
+  TK := ParseMulExpr;
+  While (CurToken.Kind = TK_OP) And
+        ((CurToken.Val = '+') Or (CurToken.Val = '-')) Do
+  Begin
+    ParserAdvance;
+    D := ParseMulExpr;
+    TK := TYK_NUMBER;
+  End;
+  ParseAddExpr := TK;
+End;
+
+{ ---- ParseConcatExpr ----------------------------------------- }
+{ Concatenation implicite AWK : deux expressions adjacentes      }
+{ sans operateur binaire forment une concatenation de chaines    }
+Function IsConcatFollow : Boolean;
+Begin
+  IsConcatFollow := False;
+  If CurToken.Kind In [TK_INTEGER, TK_FLOAT, TK_STRING,
+                        TK_REGEXP, TK_IDENT, TK_BVAR,
+                        TK_FIELD, TK_BUILTIN] Then
+    IsConcatFollow := True
+  Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    IsConcatFollow := True
+  Else If (CurToken.Kind = TK_OP) And
+          ((CurToken.Val = '!') Or (CurToken.Val = '-') Or
+           (CurToken.Val = '+') Or (CurToken.Val = '++') Or
+           (CurToken.Val = '--') Or (CurToken.Val = '$')) Then
+    IsConcatFollow := True
+  Else If (CurToken.Kind = TK_KEYWORD) And
+          (CurToken.IntVal = KW_GETLINE) Then
+    IsConcatFollow := True;
+End;
+
+Function ParseConcatExpr : Integer;
+Var
+  TK : Integer;
+  D  : Integer;
+Begin
+  TK := ParseAddExpr;
+  While IsConcatFollow Do
+  Begin
+    D := ParseAddExpr;
+    TK := TYK_STRING;
+  End;
+  ParseConcatExpr := TK;
+End;
+
+{ ---- ParseCompareExpr ---------------------------------------- }
+{ < <= > >= == != }
+Function ParseCompareExpr : Integer;
+Var
+  TK : Integer;
+  D  : Integer;
+Begin
+  TK := ParseConcatExpr;
+  While (CurToken.Kind = TK_OP) And
+        ((CurToken.Val = '<') Or (CurToken.Val = '<=') Or
+         (CurToken.Val = '>') Or (CurToken.Val = '>=') Or
+         (CurToken.Val = '==') Or (CurToken.Val = '!=')) Do
+  Begin
+    ParserAdvance;
+    D := ParseConcatExpr;
+    TK := TYK_NUMBER;
+  End;
+  ParseCompareExpr := TK;
+End;
+
+{ ---- ParseMatchExpr ------------------------------------------ }
+{ ~ !~ }
+Function ParseMatchExpr : Integer;
+Var
+  TK : Integer;
+  D  : Integer;
+Begin
+  TK := ParseCompareExpr;
+  While (CurToken.Kind = TK_OP) And
+        ((CurToken.Val = '~') Or (CurToken.Val = '!~')) Do
+  Begin
+    ParserAdvance;
+    D := ParseCompareExpr;
+    TK := TYK_NUMBER;
+  End;
+  ParseMatchExpr := TK;
+End;
+
+{ ---- ParseInExpr --------------------------------------------- }
+{ expr in array }
+Function ParseInExpr : Integer;
+Var
+  TK : Integer;
+  Idx: Integer;
+Begin
+  TK := ParseMatchExpr;
+  If IsKW(KW_IN) Then
+  Begin
+    ParserAdvance;  { consommer 'in' }
+    { Le token suivant doit etre un nom de tableau }
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      Idx := FindSym(CurToken.Val);
+      If Idx < 0 Then
+        Idx := AddSym(CurToken.Val, TYK_ARRAY, STORE_GLOBAL, True);
+      ParserAdvance;
+    End Else
+      FatalError('nom de tableau attendu apres "in" (ligne ' +
+                 IntToStr_(CurToken.Line) + ')');
+    TK := TYK_NUMBER;
+  End;
+  ParseInExpr := TK;
+End;
+
+{ ---- ParseAndExpr -------------------------------------------- }
+{ && }
+Function ParseAndExpr : Integer;
+Var
+  TK : Integer;
+  D  : Integer;
+Begin
+  TK := ParseInExpr;
+  While IsOp('&&') Do
+  Begin
+    ParserAdvance;
+    SkipNewlines;
+    D := ParseInExpr;
+    TK := TYK_NUMBER;
+  End;
+  ParseAndExpr := TK;
+End;
+
+{ ---- ParseOrExpr --------------------------------------------- }
+{ || }
+Function ParseOrExpr : Integer;
+Var
+  TK : Integer;
+  D  : Integer;
+Begin
+  TK := ParseAndExpr;
+  While IsOp('||') Do
+  Begin
+    ParserAdvance;
+    SkipNewlines;
+    D := ParseAndExpr;
+    TK := TYK_NUMBER;
+  End;
+  ParseOrExpr := TK;
+End;
+
+{ ---- ParseTernaryExpr ---------------------------------------- }
+{ cond ? expr_vrai : expr_faux }
+Function ParseTernaryExpr : Integer;
+Var
+  TK : Integer;
+  D  : Integer;
+Begin
+  TK := ParseOrExpr;
+  If IsOp('?') Then
+  Begin
+    ParserAdvance;
+    SkipNewlines;
+    D := ParseExpr;
+    Expect(TK_OP, ':');
+    SkipNewlines;
+    TK := ParseAssignExpr;
+  End;
+  ParseTernaryExpr := TK;
+End;
+
+{ ---- ParseAssignExpr ----------------------------------------- }
+{ = += -= *= /= %= ^= (droite a gauche) }
+Function ParseAssignExpr : Integer;
+Var
+  TK : Integer;
+Begin
+  TK := ParseTernaryExpr;
+  If (CurToken.Kind = TK_OP) And
+     ((CurToken.Val = '=') Or (CurToken.Val = '+=') Or
+      (CurToken.Val = '-=') Or (CurToken.Val = '*=') Or
+      (CurToken.Val = '/=') Or (CurToken.Val = '%=') Or
+      (CurToken.Val = '^=')) Then
+  Begin
+    ParserAdvance;
+    SkipNewlines;
+    TK := ParseAssignExpr;  { droite a gauche : recursion }
+  End;
+  ParseAssignExpr := TK;
+End;
+
+{ ---- ParseExpr ----------------------------------------------- }
+{ Priorite la plus basse = affectation }
+Function ParseExpr : Integer;
+Begin
+  Inc(ExprCount);
+  ParseExpr := ParseAssignExpr;
+End;
+
+{ ============================================================ }
 { PROCEDURE RUN (STUB - sera complete par les TODOs suivants)  }
 { ============================================================ }
 
 Procedure Run;
+Var
+  TK : Integer;
+  D  : Integer;
+  StmtCount : Integer;
 Begin
   WriteLn('AWKCW32: compilation de ', Opts.SrcFile, ' ...');
   If Opts.FieldSep <> ' ' Then
@@ -2320,6 +2907,7 @@ Begin
     WriteLn('AWKCW32: ', Opts.InitCount, ' variable(s) pre-initialisee(s)');
   InitSymTable;
   InitScopes;
+  ExprCount := 0;
   LexInit;
   { Mode debug : afficher tous les tokens }
   If Opts.DebugMode Then
@@ -2334,14 +2922,162 @@ Begin
   End
   Else
   Begin
-    { Parcourir les tokens pour compter (stub) }
-    LexNextToken(CurToken);
+    { Parser les expressions (TODO 06) }
+    ParserAdvance;  { charger le premier token }
+    StmtCount := 0;
     While CurToken.Kind <> TK_EOF Do
-      LexNextToken(CurToken);
+    Begin
+      SkipNewlines;
+      If CurToken.Kind = TK_EOF Then Break;
+      { Passer les accolades et points-virgules de structure }
+      If IsPunct('{') Or IsPunct('}') Or IsPunct(';') Then
+      Begin
+        ParserAdvance;
+        Continue;
+      End;
+      { Keywords de structure : parser selon le type }
+      If CurToken.Kind = TK_KEYWORD Then
+      Begin
+        TK := CurToken.IntVal;
+        { print / printf : parser la liste d expressions }
+        If (TK = KW_PRINT) Or (TK = KW_PRINTF) Then
+        Begin
+          ParserAdvance; { consommer print/printf }
+          Inc(StmtCount);
+          { Pas d arguments si ; ou newline ou accolade suit }
+          If (CurToken.Kind <> TK_NEWLINE) And
+             (CurToken.Kind <> TK_EOF) And
+             Not IsPunct(';') And Not IsPunct('}') Then
+          Begin
+            D := ParseExpr;
+            While IsPunct(',') Do
+            Begin
+              ParserAdvance;
+              SkipNewlines;
+              D := ParseExpr;
+            End;
+            { Redirection > >> | optionnelle }
+            If IsOp('>') Or IsOp('>>') Then
+            Begin
+              ParserAdvance;
+              D := ParseExpr;
+            End;
+          End;
+          Continue;
+        End;
+        { for : parser la condition entre parentheses }
+        If TK = KW_FOR Then
+        Begin
+          ParserAdvance; { consommer for }
+          Inc(StmtCount);
+          If IsPunct('(') Then
+          Begin
+            ParserAdvance;
+            { for (expr in array) ou for (init; cond; step) }
+            If Not IsPunct(';') And Not IsPunct(')') Then
+              D := ParseExpr;
+            If IsPunct(';') Then
+            Begin
+              ParserAdvance; { ; }
+              If Not IsPunct(';') Then
+                D := ParseExpr;
+              If IsPunct(';') Then
+              Begin
+                ParserAdvance; { ; }
+                If Not IsPunct(')') Then
+                  D := ParseExpr;
+              End;
+            End;
+            If IsPunct(')') Then
+              ParserAdvance;
+          End;
+          Continue;
+        End;
+        { if / while / do : parser la condition entre parentheses }
+        If (TK = KW_IF) Or (TK = KW_WHILE) Or (TK = KW_DO) Then
+        Begin
+          ParserAdvance; { consommer if/while/do }
+          Inc(StmtCount);
+          If IsPunct('(') Then
+          Begin
+            ParserAdvance;
+            D := ParseExpr;
+            If IsPunct(')') Then
+              ParserAdvance;
+          End;
+          Continue;
+        End;
+        { return / exit : parser une expression optionnelle }
+        If (TK = KW_RETURN) Or (TK = KW_EXIT) Then
+        Begin
+          ParserAdvance;
+          Inc(StmtCount);
+          If (CurToken.Kind <> TK_NEWLINE) And
+             (CurToken.Kind <> TK_EOF) And
+             Not IsPunct(';') And Not IsPunct('}') Then
+            D := ParseExpr;
+          Continue;
+        End;
+        { delete : parser ident[expr] }
+        If TK = KW_DELETE Then
+        Begin
+          ParserAdvance;
+          Inc(StmtCount);
+          If CurToken.Kind = TK_IDENT Then
+          Begin
+            D := FindSym(CurToken.Val);
+            If D < 0 Then
+              D := AddSym(CurToken.Val, TYK_ARRAY, STORE_GLOBAL, True);
+            ParserAdvance;
+            If IsPunct('[') Then
+            Begin
+              ParserAdvance;
+              D := ParseExpr;
+              If IsPunct(']') Then
+                ParserAdvance;
+            End;
+          End;
+          Continue;
+        End;
+        { function : parser la declaration }
+        If TK = KW_FUNCTION Then
+        Begin
+          ParserAdvance; { consommer function }
+          Inc(StmtCount);
+          If CurToken.Kind = TK_IDENT Then
+          Begin
+            D := AddFunc(CurToken.Val);
+            ParserAdvance;
+          End;
+          If IsPunct('(') Then
+          Begin
+            ParserAdvance;
+            While (CurToken.Kind = TK_IDENT) Do
+            Begin
+              ParserAdvance;
+              If IsPunct(',') Then
+                ParserAdvance;
+            End;
+            If IsPunct(')') Then
+              ParserAdvance;
+          End;
+          Continue;
+        End;
+        { Autres keywords : skip (break, continue, next, etc.) }
+        ParserAdvance;
+        Inc(StmtCount);
+        Continue;
+      End;
+      { Parser une expression }
+      TK := ParseExpr;
+      Inc(StmtCount);
+    End;
     WriteLn('AWKCW32: tokenisation terminee, ', TotalLines, ' lignes');
     WriteLn('AWKCW32: ', SymCount, ' symbole(s), ', FuncCount, ' fonction(s)');
+    WriteLn('AWKCW32: ', ExprCount, ' expression(s) parsees, ',
+            StmtCount, ' instruction(s)');
     WriteLn('AWKCW32: scope depth=', ScopeDepth, ', loop depth=', LoopDepth);
-    WriteLn('AWKCW32: TODO 06..25 non encore implementes.');
+    WriteLn('AWKCW32: TODO 07..25 non encore implementes.');
     WriteLn('AWKCW32: sortie prevue: ', Opts.OutFile);
   End;
   LexClose;
