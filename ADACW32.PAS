@@ -168,7 +168,7 @@
             Offset EBP positif pour parametres [EBP+8], [EBP+12]...
             Convention STDCALL Win32 : parametres droite a gauche
 
-  TODO 07 - GENERATEUR DE CODE BAS NIVEAU 80386
+  TODO 07 - GENERATEUR DE CODE BAS NIVEAU 80386 [IMPLEMENTE]
             Emit(s), EmitI(s), EmitLabel(lbl), EmitComment(s), EmitBlank
             NewLabel : generer _ADAL_xxxx (compteur label_counter)
             AsmStrLit(s) : ajouter litteral chaine dans str_table +
@@ -922,6 +922,15 @@ Var
   { Pile de scopes (TODO 06) }
   ScopeStack : Array[0..MAX_DEPTH] of TScopeEntry;
   { ScopeTop deja declare plus haut avec SymTab }
+
+  { Generateur de code bas niveau (TODO 07) }
+  GenEnabled   : Boolean;     { True si generation de code active    }
+  LabelCounter : Integer;     { compteur pour NewLabel               }
+  AsmF         : Text;        { fichier .ASM en ecriture             }
+  AsmOpened    : Boolean;     { fichier ASM ouvert ?                 }
+  StrTab       : Array[1..MAX_DATA] of TString;  { litteraux chaines }
+  StrLblTab    : Array[1..MAX_DATA] of TString;  { labels associes   }
+  StrCount     : Integer;     { nombre de litteraux enregistres      }
 
 {$IFDEF FPC}
   { Variables binaires }
@@ -1739,6 +1748,8 @@ Begin
   WriteLn('  Sous-prog. : ', SubCount);
   WriteLn('  Packages   : ', PkgCount);
   WriteLn('  Scope      : ', ScopeTop);
+  WriteLn('  Chaines    : ', StrCount);
+  WriteLn('  Labels     : ', LabelCounter);
   WriteLn('  Erreurs    : ', ErrorCount);
   WriteLn('  Avertiss.  : ', WarnCount);
   If ErrorCount > 0 Then
@@ -2374,6 +2385,270 @@ Begin
   FindExceptLabel := '';
 End;
 
+{ ============================================================ }
+{ GENERATEUR DE CODE BAS NIVEAU 80386 (TODO 07)                 }
+{ ============================================================ }
+
+{ ---- InitStrTable : initialiser la table des chaines --------- }
+Procedure InitStrTable;
+Begin
+  StrCount     := 0;
+  LabelCounter := 0;
+  GenEnabled   := True;
+  AsmOpened    := False;
+End;
+
+{ ---- Primitives d emission ASM ------------------------------- }
+
+{ Emet une ligne brute dans le fichier de sortie }
+Procedure Emit(Const S : TString);
+Begin
+  If Not GenEnabled Then Exit;
+  WriteLn(OutF, S);
+End;
+
+{ Emet une instruction indentee (tabulation) }
+Procedure EmitI(Const S : TString);
+Begin
+  If Not GenEnabled Then Exit;
+  WriteLn(OutF, #9 + S);
+End;
+
+{ Emet un label suivi de ':' }
+Procedure EmitLabel(Const Lbl : TString);
+Begin
+  If Not GenEnabled Then Exit;
+  WriteLn(OutF, Lbl + ':');
+End;
+
+{ Emet un commentaire ASM }
+Procedure EmitComment(Const S : TString);
+Begin
+  If Not GenEnabled Then Exit;
+  WriteLn(OutF, '; ' + S);
+End;
+
+{ Emet une ligne vide }
+Procedure EmitBlank;
+Begin
+  If Not GenEnabled Then Exit;
+  WriteLn(OutF, '');
+End;
+
+{ ---- NewLabel : generer un label interne unique -------------- }
+{ Retourne un label de la forme _ADAL_0001 (prefixe _ADAL_)      }
+Function NewLabel : TString;
+Var N : TString;
+Begin
+  Inc(LabelCounter);
+  N := IntToStr_(LabelCounter);
+  While Length(N) < 4 Do
+    N := '0' + N;
+  NewLabel := ADA_LBL_PFX + N;
+End;
+
+{ ---- AsmStrLit : ajouter un litteral chaine ------------------- }
+{ Deduplication : si la chaine existe deja, retourne son label.    }
+{ Sinon, l ajoute et retourne un nouveau label _ADAK_n.            }
+Function AsmStrLit(Const S : TString) : TString;
+Var
+  I  : Integer;
+  Lb : TString;
+Begin
+  { Deduplication }
+  For I := 1 To StrCount Do
+    If StrTab[I] = S Then
+    Begin AsmStrLit := StrLblTab[I]; Exit; End;
+  { Ajout nouveau }
+  If StrCount >= MAX_DATA Then
+  Begin
+    Error('Table des chaines pleine (MAX_DATA=' +
+          IntToStr_(MAX_DATA) + ')');
+    AsmStrLit := ADA_STR_PFX + '0';
+    Exit;
+  End;
+  Inc(StrCount);
+  Lb := ADA_STR_PFX + IntToStr_(StrCount);
+  StrTab[StrCount]    := S;
+  StrLblTab[StrCount] := Lb;
+  AsmStrLit := Lb;
+End;
+
+{ ---- EmitStringLiterals : emettre les litteraux dans .DATA --- }
+{ Genere les DB pour chaque litteral chaine accumule.              }
+Procedure EmitStringLiterals;
+Var
+  I, J : Integer;
+  S    : TString;
+Begin
+  If StrCount = 0 Then Exit;
+  EmitComment('--- litteraux chaines ---');
+  For I := 1 To StrCount Do
+  Begin
+    S := StrTab[I];
+    Emit(StrLblTab[I] + ' DB ' + IntToStr_(Length(S)));
+    If Length(S) > 0 Then
+      For J := 1 To Length(S) Do
+        EmitI('DB ' + IntToStr_(Ord(S[J])));
+    EmitI('DB 0');  { terminateur null }
+  End;
+End;
+
+{ ---- BpOff32 : formater un offset EBP en chaine -------------- }
+{ Produit : -4 -> '-4'   +8 -> '+8'   0 -> ''                     }
+Function BpOff32(Off : Integer) : TString;
+Begin
+  If Off < 0 Then BpOff32 := IntToStr_(Off)
+  Else If Off > 0 Then BpOff32 := '+' + IntToStr_(Off)
+  Else BpOff32 := '';
+End;
+
+{ ---- GenLoadVar : charger un symbole dans EAX ---------------- }
+{ STORE_STATIC -> MOV EAX, DWORD PTR [_ADA_x]                     }
+{ STORE_AUTO   -> MOV EAX, DWORD PTR [EBP-n]                      }
+{ STORE_PARAM  -> MOV EAX, DWORD PTR [EBP+n]                      }
+{ TYPE_CHAR / TYPE_BOOL -> MOVZX EAX, BYTE PTR [...]              }
+Procedure GenLoadVar(SymIdx : Integer);
+Var
+  SC, Off, TI : Integer;
+  Lbl         : TString;
+  IsByte      : Boolean;
+Begin
+  SC  := SymTab[SymIdx].StoreClass;
+  Off := SymTab[SymIdx].BpOffset;
+  Lbl := SymTab[SymIdx].AsmLabel;
+  TI  := SymTab[SymIdx].TypeIdx;
+  IsByte := (TI = TYPE_CHAR) Or (TI = TYPE_BOOL);
+
+  If SymTab[SymIdx].IsConst Then
+  Begin
+    { Constante : valeur immediate }
+    EmitI('MOV EAX, ' + IntToStr_(SymTab[SymIdx].InitNum));
+    Exit;
+  End;
+
+  Case SC Of
+    STORE_STATIC :
+    Begin
+      If IsByte Then
+        EmitI('MOVZX EAX, BYTE PTR [' + Lbl + ']')
+      Else
+        EmitI('MOV EAX, DWORD PTR [' + Lbl + ']');
+    End;
+    STORE_AUTO :
+    Begin
+      If IsByte Then
+        EmitI('MOVZX EAX, BYTE PTR [EBP' + BpOff32(Off) + ']')
+      Else
+        EmitI('MOV EAX, DWORD PTR [EBP' + BpOff32(Off) + ']');
+    End;
+    STORE_PARAM :
+    Begin
+      If IsByte Then
+        EmitI('MOVZX EAX, BYTE PTR [EBP' + BpOff32(Off) + ']')
+      Else
+        EmitI('MOV EAX, DWORD PTR [EBP' + BpOff32(Off) + ']');
+    End;
+    STORE_CONST :
+      EmitI('MOV EAX, ' + IntToStr_(SymTab[SymIdx].InitNum));
+  End;
+End;
+
+{ ---- GenStoreVar : stocker EAX dans un symbole --------------- }
+{ MOV DWORD PTR [...], EAX  ou  MOV BYTE PTR [...], AL            }
+Procedure GenStoreVar(SymIdx : Integer);
+Var
+  SC, Off, TI : Integer;
+  Lbl         : TString;
+  IsByte      : Boolean;
+Begin
+  If SymTab[SymIdx].IsConst Then
+  Begin
+    Error('Tentative d''assignation a une constante : ' +
+          SymTab[SymIdx].Name);
+    Exit;
+  End;
+
+  SC  := SymTab[SymIdx].StoreClass;
+  Off := SymTab[SymIdx].BpOffset;
+  Lbl := SymTab[SymIdx].AsmLabel;
+  TI  := SymTab[SymIdx].TypeIdx;
+  IsByte := (TI = TYPE_CHAR) Or (TI = TYPE_BOOL);
+
+  Case SC Of
+    STORE_STATIC :
+    Begin
+      If IsByte Then
+        EmitI('MOV BYTE PTR [' + Lbl + '], AL')
+      Else
+        EmitI('MOV DWORD PTR [' + Lbl + '], EAX');
+    End;
+    STORE_AUTO :
+    Begin
+      If IsByte Then
+        EmitI('MOV BYTE PTR [EBP' + BpOff32(Off) + '], AL')
+      Else
+        EmitI('MOV DWORD PTR [EBP' + BpOff32(Off) + '], EAX');
+    End;
+    STORE_PARAM :
+    Begin
+      If IsByte Then
+        EmitI('MOV BYTE PTR [EBP' + BpOff32(Off) + '], AL')
+      Else
+        EmitI('MOV DWORD PTR [EBP' + BpOff32(Off) + '], EAX');
+    End;
+  End;
+End;
+
+{ ---- GenLoadConst : charger une constante dans EAX ----------- }
+Procedure GenLoadConst(Val : LongInt);
+Begin
+  EmitI('MOV EAX, ' + IntToStr_(Val));
+End;
+
+{ ---- GenPrologue : prologue de sous-programme 32 bits --------- }
+{ PUSH EBP / MOV EBP, ESP / SUB ESP, frame_size                   }
+Procedure GenPrologue(FrameSize : Integer);
+Begin
+  EmitI('PUSH EBP');
+  EmitI('MOV  EBP, ESP');
+  If FrameSize > 0 Then
+    EmitI('SUB  ESP, ' + IntToStr_(FrameSize));
+End;
+
+{ ---- GenEpilogue : epilogue de sous-programme 32 bits --------- }
+{ MOV ESP, EBP / POP EBP / RET param_bytes (STDCALL callee-cleanup)}
+Procedure GenEpilogue(FrameSize : Integer; ParamBytes : Integer);
+Begin
+  If FrameSize > 0 Then
+    EmitI('MOV  ESP, EBP');
+  EmitI('POP  EBP');
+  If ParamBytes > 0 Then
+    EmitI('RET  ' + IntToStr_(ParamBytes))
+  Else
+    EmitI('RET');
+End;
+
+{ ---- Helpers PUSH / POP 32 bits ------------------------------ }
+
+Procedure GenPushEAX;
+Begin EmitI('PUSH EAX'); End;
+
+Procedure GenPopEAX;
+Begin EmitI('POP  EAX'); End;
+
+Procedure GenPushEBX;
+Begin EmitI('PUSH EBX'); End;
+
+Procedure GenPopEBX;
+Begin EmitI('POP  EBX'); End;
+
+{ ---- GenCall : appel de sous-programme ----------------------- }
+Procedure GenCall(Const Lbl : TString);
+Begin
+  EmitI('CALL ' + Lbl);
+End;
+
 { ---- LexInit : ouvrir le fichier source et lire le 1er token }
 Procedure LexInit;
 Begin
@@ -2565,6 +2840,8 @@ Begin
   WriteLn('Sous-programmes  : ', SubCount);
   WriteLn('Packages         : ', PkgCount);
   WriteLn('Scope courant    : ', ScopeTop);
+  WriteLn('Chaines          : ', StrCount);
+  WriteLn('Labels generes   : ', LabelCounter);
   WriteLn('Erreurs          : ', ErrorCount);
   WriteLn('Avertissements   : ', WarnCount);
 End;
@@ -2594,6 +2871,7 @@ Begin
   InitSubTable;
   InitPkgTable;
   InitScopeStack;
+  InitStrTable;
   LexInit;
   If Opts.DebugMode Then
   Begin
@@ -2608,8 +2886,8 @@ Begin
   Else
   Begin
     WriteLn('ADACW32: compilation de ', Opts.SrcFile, ' ...');
-    WriteLn('ADACW32: TODO 07+ non encore implemente - ',
-            'scopes OK');
+    WriteLn('ADACW32: TODO 08+ non encore implemente - ',
+            'generateur de code OK');
   End;
   LexClose;
   BilanCompilation;

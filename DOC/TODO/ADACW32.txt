@@ -157,7 +157,7 @@
             Offset EBP positif pour parametres [EBP+8], [EBP+12]...
             Convention STDCALL Win32 : parametres droite a gauche
 
-  TODO 07 - GENERATEUR DE CODE BAS NIVEAU 80386
+  TODO 07 - GENERATEUR DE CODE BAS NIVEAU 80386 [IMPLEMENTE]
             Emit(s), EmitI(s), EmitLabel(lbl), EmitComment(s), EmitBlank
             NewLabel : generer _ADAL_xxxx (compteur label_counter)
             AsmStrLit(s) : ajouter litteral chaine dans str_table +
