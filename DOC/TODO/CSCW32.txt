@@ -547,7 +547,7 @@
               la concatenation avec +).
             Fichier test : test27_strings.cs (15 cas).
 
-  TODO 21 - ENTREES/SORTIES (Console)
+  TODO 21 - ENTREES/SORTIES (Console) [IMPLEMENTE]
             Console.WriteLine(expr) : sortie avec saut de ligne.
               Detection automatique du type de l argument :
                 int    -> CALL _CSCRT_PRINTINT + CALL _CSCRT_PRINTCRLF.
@@ -569,6 +569,8 @@
               le compilateur reconnait Console.Write, Console.WriteLine
               et Console.ReadLine comme des appels intrinseques
               et genere directement les appels runtime correspondants.
+            Compteur ConsoleOpCount pour les statistiques.
+            Fichier test : test28_console.cs (15 cas).
 
   TODO 22 - GOTO, BREAK, CONTINUE, RETURN
             goto label; : saut inconditionnel vers label.

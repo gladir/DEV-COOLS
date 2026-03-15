@@ -358,11 +358,11 @@
             Compteur StringOpCount pour les statistiques.
             Fichier test : test27_strings.cs.
 
-  TODO 21 - ENTREES/SORTIES (Console)
+  TODO 21 - ENTREES/SORTIES (Console) [IMPLEMENTE]
             Console.WriteLine(expr) : sortie avec saut de ligne.
               Surcharges : int -> _CSCRT_PRINTINT + _CSCRT_PRINTCRLF.
                 string -> _CSCRT_PRINTSTR + _CSCRT_PRINTCRLF.
-                bool -> "True"/"False" + _CSCRT_PRINTCRLF.
+                bool -> _CSCRT_PRINTBOOL + _CSCRT_PRINTCRLF.
                 char -> _CSCRT_PRINTCHAR + _CSCRT_PRINTCRLF.
                 sans argument -> _CSCRT_PRINTCRLF.
             Console.Write(expr) : sortie sans saut de ligne.
@@ -371,6 +371,8 @@
               -> _CSCRT_READSTR -> EAX (pointeur string).
             Detection automatique du type de l argument pour
               choisir la routine runtime appropriee.
+            Compteur ConsoleOpCount pour les statistiques.
+            Fichier test : test28_console.cs.
 
   TODO 22 - GOTO, BREAK, CONTINUE, RETURN
             goto label; : saut inconditionnel vers label.
@@ -2581,6 +2583,9 @@ Var
   CurExprType     : Integer;      { type de l expression courante       }
   StringOpCount   : Integer;      { nombre d operations sur chaines     }
 
+  { Variables pour les entrees/sorties Console (TODO 21) }
+  ConsoleOpCount  : Integer;      { nombre d operations Console         }
+
 { ------------------------------------------------------------ }
 { SymMangle : generer le nom ASM mangled                        }
 {   Le prefixe depend de la categorie du symbole                }
@@ -4413,6 +4418,9 @@ Var
   ArrI      : Integer;
   ArrBase   : TString;
   ArrProp   : TString;
+  IsConsoleWrite   : Boolean;  { True si Console.Write (TODO 21)     }
+  IsConsoleWriteLn : Boolean;  { True si Console.WriteLine (TODO 21) }
+  ArgExprType      : Integer;  { type de l argument (TODO 21)        }
 Begin
   { --- Literal entier --- }
   If CurToken.Kind = TK_INTEGER Then
@@ -4588,32 +4596,82 @@ Begin
       Idx := SymFind(QualName);
       Consume;  { consommer ( }
       ArgCount := 0;
-      { Evaluer et empiler les arguments }
-      While (CurToken.Kind <> TK_EOF) And
-            (Not TokIsPunct(')')) Do
+
+      { Detection des methodes Console (TODO 21) }
+      IsConsoleWrite   := (StrLowerCase(QualName) = 'console.write');
+      IsConsoleWriteLn := (StrLowerCase(QualName) = 'console.writeline');
+
+      If IsConsoleWrite Or IsConsoleWriteLn Then
       Begin
-        ParseExpr;
-        GenPushEAX;
-        Inc(ArgCount);
-        If TokIsPunct(',') Then Consume;
-      End;
-      If TokIsPunct(')') Then Consume;
-      { Appeler la methode }
-      If Idx >= 0 Then
-        EmitInstr('CALL', SymTab[Idx].MangledName)
+        { Console.Write / Console.WriteLine avec type automatique }
+        If TokIsPunct(')') Then
+        Begin
+          { Sans argument : Console.WriteLine() -> CRLF seul }
+          If IsConsoleWriteLn Then
+          Begin
+            EmitInstr('CALL', CSC_RT_PFX + 'PRINTCRLF');
+            Inc(ConsoleOpCount);
+          End;
+        End
+        Else
+        Begin
+          { Avec argument : evaluer et emettre selon le type }
+          ParseExpr;
+          ArgExprType := CurExprType;
+          Inc(ArgCount);
+          { Emettre l appel type selon CurExprType }
+          If ArgExprType = TY_IDX_STRING Then
+            EmitInstr('CALL', CSC_RT_PFX + 'PRINTSTR')
+          Else If ArgExprType = TY_IDX_BOOL Then
+            EmitInstr('CALL', CSC_RT_PFX + 'PRINTBOOL')
+          Else If ArgExprType = TY_IDX_CHAR Then
+            EmitInstr('CALL', CSC_RT_PFX + 'PRINTCHAR')
+          Else
+            EmitInstr('CALL', CSC_RT_PFX + 'PRINTINT');
+          If IsConsoleWriteLn Then
+            EmitInstr('CALL', CSC_RT_PFX + 'PRINTCRLF');
+          Inc(ConsoleOpCount);
+          { Consommer les arguments supplementaires s il y en a }
+          While TokIsPunct(',') Do
+          Begin
+            Consume;
+            ParseExpr;
+            Inc(ArgCount);
+          End;
+        End;
+        If TokIsPunct(')') Then Consume;
+        CurExprType := TY_IDX_VOID;  { void }
+      End
       Else
       Begin
-        EmitComment('appel methode inconnue: ' + QualName);
-        EmitInstr('CALL', CSC_FN_PFX + StrUpperCase(QualName));
+        { Appel de methode generique }
+        { Evaluer et empiler les arguments }
+        While (CurToken.Kind <> TK_EOF) And
+              (Not TokIsPunct(')')) Do
+        Begin
+          ParseExpr;
+          GenPushEAX;
+          Inc(ArgCount);
+          If TokIsPunct(',') Then Consume;
+        End;
+        If TokIsPunct(')') Then Consume;
+        { Appeler la methode }
+        If Idx >= 0 Then
+          EmitInstr('CALL', SymTab[Idx].MangledName)
+        Else
+        Begin
+          EmitComment('appel methode inconnue: ' + QualName);
+          EmitInstr('CALL', CSC_FN_PFX + StrUpperCase(QualName));
+        End;
+        { Nettoyer la pile (convention CDECL : appelant nettoie) }
+        If ArgCount > 0 Then
+          EmitInstr('ADD', 'ESP,' + IntToStr_(ArgCount * 4));
+        { Determiner le type de retour (TODO 20) }
+        If Idx >= 0 Then
+          CurExprType := SymTab[Idx].TypeIdx
+        Else
+          CurExprType := TY_IDX_INT;
       End;
-      { Nettoyer la pile (convention CDECL : appelant nettoie) }
-      If ArgCount > 0 Then
-        EmitInstr('ADD', 'ESP,' + IntToStr_(ArgCount * 4));
-      { Determiner le type de retour (TODO 20) }
-      If Idx >= 0 Then
-        CurExprType := SymTab[Idx].TypeIdx
-      Else
-        CurExprType := TY_IDX_INT;
     End
     { Indexation tableau : ident[index] }
     Else If TokIsPunct('[') Then
@@ -5236,6 +5294,9 @@ Var
   Idx       : Integer;
   Op        : TString;
   ArgCount  : Integer;
+  IsConsoleWrite   : Boolean;  { TODO 21 }
+  IsConsoleWriteLn : Boolean;  { TODO 21 }
+  ArgExprType      : Integer;  { TODO 21 }
 Begin
   QualName := TargetName;
   While TokIsPunct('.') Do
@@ -5254,21 +5315,65 @@ Begin
     Idx := SymFind(QualName);
     Consume;
     ArgCount := 0;
-    While (CurToken.Kind <> TK_EOF) And (Not TokIsPunct(')')) Do
+
+    { Detection des methodes Console (TODO 21) }
+    IsConsoleWrite   := (StrLowerCase(QualName) = 'console.write');
+    IsConsoleWriteLn := (StrLowerCase(QualName) = 'console.writeline');
+
+    If IsConsoleWrite Or IsConsoleWriteLn Then
     Begin
-      ParseExpr;
-      GenPushEAX;
-      Inc(ArgCount);
-      If TokIsPunct(',') Then Consume;
-    End;
-    If TokIsPunct(')') Then Consume;
-    If Idx >= 0 Then
-      EmitInstr('CALL', SymTab[Idx].MangledName)
+      If TokIsPunct(')') Then
+      Begin
+        { Sans argument : Console.WriteLine() -> CRLF seul }
+        If IsConsoleWriteLn Then
+        Begin
+          EmitInstr('CALL', CSC_RT_PFX + 'PRINTCRLF');
+          Inc(ConsoleOpCount);
+        End;
+      End
+      Else
+      Begin
+        ParseExpr;
+        ArgExprType := CurExprType;
+        Inc(ArgCount);
+        If ArgExprType = TY_IDX_STRING Then
+          EmitInstr('CALL', CSC_RT_PFX + 'PRINTSTR')
+        Else If ArgExprType = TY_IDX_BOOL Then
+          EmitInstr('CALL', CSC_RT_PFX + 'PRINTBOOL')
+        Else If ArgExprType = TY_IDX_CHAR Then
+          EmitInstr('CALL', CSC_RT_PFX + 'PRINTCHAR')
+        Else
+          EmitInstr('CALL', CSC_RT_PFX + 'PRINTINT');
+        If IsConsoleWriteLn Then
+          EmitInstr('CALL', CSC_RT_PFX + 'PRINTCRLF');
+        Inc(ConsoleOpCount);
+        While TokIsPunct(',') Do
+        Begin
+          Consume;
+          ParseExpr;
+          Inc(ArgCount);
+        End;
+      End;
+      If TokIsPunct(')') Then Consume;
+    End
     Else
-      EmitInstr('CALL', CSC_FN_PFX + StrUpperCase(QualName));
-    { Nettoyer la pile (convention CDECL : appelant nettoie) }
-    If ArgCount > 0 Then
-      EmitInstr('ADD', 'ESP,' + IntToStr_(ArgCount * 4));
+    Begin
+      While (CurToken.Kind <> TK_EOF) And (Not TokIsPunct(')')) Do
+      Begin
+        ParseExpr;
+        GenPushEAX;
+        Inc(ArgCount);
+        If TokIsPunct(',') Then Consume;
+      End;
+      If TokIsPunct(')') Then Consume;
+      If Idx >= 0 Then
+        EmitInstr('CALL', SymTab[Idx].MangledName)
+      Else
+        EmitInstr('CALL', CSC_FN_PFX + StrUpperCase(QualName));
+      { Nettoyer la pile (convention CDECL : appelant nettoie) }
+      If ArgCount > 0 Then
+        EmitInstr('ADD', 'ESP,' + IntToStr_(ArgCount * 4));
+    End;
     If TokIsPunct(';') Then Consume;
   End
   { --- Indexation tableau : ident[i] ... --- }
@@ -6927,6 +7032,7 @@ Begin
   WriteLn('Namespaces       : ', NsCount);
   WriteLn('Tableaux         : ', ArrayCount);
   WriteLn('Ops chaines      : ', StringOpCount);
+  WriteLn('Ops Console      : ', ConsoleOpCount);
   WriteLn('Donnees .DATA    : ', DataCount);
   WriteLn('Taille pile loc  : ', LocalOffset);
   WriteLn('Labels generes   : ', LabelSeq);
@@ -7016,6 +7122,9 @@ Begin
   { Initialiser les operations sur les chaines (TODO 20) }
   CurExprType      := TY_IDX_INT;
   StringOpCount    := 0;
+
+  { Initialiser les entrees/sorties Console (TODO 21) }
+  ConsoleOpCount   := 0;
 
   { Initialiser le segment de donnees (TODO 08) }
   DataInit;
@@ -7337,7 +7446,7 @@ Begin
   EmitClose;
 
   WriteLn('CSCW32: ASM genere -> ', AsmFileName);
-  WriteLn('CSCW32: Les TODOs 21..25 ne sont pas encore implementes.');
+  WriteLn('CSCW32: Les TODOs 22..25 ne sont pas encore implementes.');
 End;
 
 { ------------------------------------------------------------ }
