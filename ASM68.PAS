@@ -39,7 +39,7 @@
 { TODO 19 - Parseur de ligne assembleur [IMPLEMENTE] }
 { TODO 20 - Generation du fichier objet (format S-Record Motorola) [IMPLEMENTE] }
 { TODO 21 - Gestion des fichiers INCLUDE et pile de sources [IMPLEMENTE] }
-{ TODO 22 - Gestion des macros (MACRO/ENDM) }
+{ TODO 22 - Gestion des macros (MACRO/ENDM) [IMPLEMENTE] }
 { TODO 23 - Directives de listing et mise en page }
 { TODO 24 - Programme principal et orchestration complete }
 { TODO 25 - Programmes de test et validation (SAMPLES\ASM68\) }
@@ -66,6 +66,7 @@ Const
   MAX_INC_LINES     = 2048;   { Lignes max d'un fichier INCLUDE        }
   MAX_LINE          = 1024;   { Longueur max d'une ligne source        }
   MAX_INCLUDE_DEPTH = 8;      { Profondeur max d'imbrication INCLUDE   }
+  MAX_MACRO_DEPTH   = 32;     { Profondeur max d'expansion de macros   }
   MAX_SECTIONS      = 16;     { Sections max                           }
   MAX_FIXUP         = 4096;   { Fixups max (references a resoudre)     }
   MAX_EXPR_DEPTH    = 32;     { Profondeur max d'expression            }
@@ -403,6 +404,11 @@ Var
   IncludeStack   : Array[1..MAX_INCLUDE_DEPTH] of TSourceEntry;
   IncludeCount   : Integer;      { Nombre d'inclusions effectuees         }
   src_filename   : String;       { Nom du fichier source courant          }
+
+  { --- Macros : expansion et profondeur (TODO 22) --- }
+  macro_depth    : Integer;      { Profondeur courante d'expansion macros }
+  MacroExpandCount : Integer;    { Nombre d'expansions de macros          }
+  ReptExpandCount  : Integer;    { Nombre d'expansions de REPT            }
 
 { ============================================================================ }
 { Fonctions utilitaires                                                        }
@@ -1482,6 +1488,8 @@ Begin
           ' octets (org=$', IntToHex(Sections[I].Origin, 6), ')');
  WriteLn('Fixups         : ', FixupCount);
  WriteLn('Macros         : ', MacroCount);
+ WriteLn('Expansions     : ', MacroExpandCount);
+ WriteLn('REPT           : ', ReptExpandCount);
  WriteLn('Inclusions     : ', IncludeCount);
  WriteLn('Instructions   : ', InstrCount);
  WriteLn('Taille code    : ', CodeSize, ' octets');
@@ -1730,6 +1738,14 @@ Begin
   Begin
    { Symbole : rechercher dans la table }
    SymName := cur_tok_str;
+   { NARG : nombre d'arguments de la macro courante (TODO 22) }
+   If (UpCaseStr(SymName) = 'NARG') and macro_expanding Then
+   Begin
+    EvalPrimary := macro_narg;
+    NextToken;
+   End
+   Else
+   Begin
    Idx := FindSym(SymName);
    If Idx <> 0 Then
    Begin
@@ -1756,6 +1772,7 @@ Begin
     EvalPrimary := 0;
    End;
    NextToken;
+   End;
   End;
 
   TOK_LPAREN:
@@ -3661,10 +3678,12 @@ Begin
   If cur_tok = TOK_COMMA Then NextToken;
  End;
 
- { Lire les lignes du corps jusqu'a ENDM }
+ { Lire les lignes du corps jusqu'a ENDM.
+   Note (TODO 22) : src_line contient deja la premiere ligne du corps
+   (chargee par NextToken qui a consomme MACRO et lu la ligne suivante).
+   On traite d'abord cette ligne, puis on lit les suivantes. }
  While Not src_eof do
  Begin
-  If Not SrcGetLine Then Break;
   Line_ := src_line;
 
   { Verifier si c'est ENDM }
@@ -3694,6 +3713,9 @@ Begin
   End
   Else
    Warning(src_line_num, 1, 'MACRO: corps trop long, ligne ignoree');
+
+  { Lire la ligne suivante }
+  If Not SrcGetLine Then Break;
  End;
 
  Error(src_line_num, 1, 'MACRO: ENDM manquant pour ' + M^.Name);
@@ -3719,8 +3741,25 @@ Var
   SaveLine: String;
   SaveCol: Integer;
   SaveEof: Boolean;
+  SaveNarg: Integer;
+  SaveDepth: Boolean;
 Begin
  M := MacroTable[MacIdx];
+
+ { Verifier la profondeur d'expansion (TODO 22) }
+ If macro_depth >= MAX_MACRO_DEPTH Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'MACRO: profondeur d''expansion max depassee (' +
+        IntToStr(MAX_MACRO_DEPTH) + ') pour ' + M^.Name);
+  SkipToEOL;
+  Exit;
+ End;
+ Inc(macro_depth);
+
+ { Compteur d'expansions (TODO 22, passe 2 uniquement) }
+ If pass_num = 2 Then
+  Inc(MacroExpandCount);
 
  { Lire les arguments de la macro }
  ArgCount := 0;
@@ -3824,6 +3863,8 @@ Begin
  SaveLine := src_line;
  SaveCol := src_col;
  SaveEof := src_eof;
+ SaveNarg := macro_narg;
+ SaveDepth := macro_expanding;
 
  macro_expanding := True;
  macro_narg := ArgCount;
@@ -3833,6 +3874,11 @@ Begin
  Begin
   src_line := ExpLines[I];
   src_col := 1;
+
+  { Listing des lignes expandees si -x active (TODO 22) }
+  If list_expand and list_opened and list_enabled Then
+   ListLine(Sections[CurSection].Origin + Sections[CurSection].CurAddr,
+            '', 0, '+' + ExpLines[I]);
 
   NextToken;
 
@@ -3844,13 +3890,18 @@ Begin
    ParseLine;
  End;
 
- macro_expanding := False;
- macro_narg := 0;
+ macro_expanding := SaveDepth;
+ macro_narg := SaveNarg;
 
  { Restaurer l'etat }
  src_line := SaveLine;
  src_col := SaveCol;
  src_eof := SaveEof;
+ Dec(macro_depth);
+
+ { Re-tokeniser depuis la position restauree pour que la boucle
+   principale puisse continuer (TODO 22) }
+ NextToken;
 End;
 
 { ---------- DirREPT : repetition de bloc ---------- }
@@ -3873,6 +3924,10 @@ Begin
   Error(cur_tok_line, cur_tok_col, 'REPT: compteur negatif');
   Count := 0;
  End;
+
+ { Compteur d'expansions REPT (TODO 22, passe 2 uniquement) }
+ If pass_num = 2 Then
+  Inc(ReptExpandCount);
 
  { Lire le corps jusqu'a ENDR }
  LineCount_ := 0;
@@ -7871,6 +7926,7 @@ Begin
  { Reinitialiser l'etat de l'expansion de macros }
  macro_expanding := False;
  macro_narg      := 0;
+ macro_depth     := 0;
  include_depth   := 0;
 
  { Reinitialiser le nom de fichier source courant (TODO 21) }
@@ -8496,6 +8552,22 @@ Begin
 End;
 
 { ============================================================================ }
+{ TODO 22 - Gestion des macros (MACRO/ENDM)                                    }
+{ ============================================================================ }
+
+{ La gestion des macros (MACRO/ENDM) est implementee comme suit :
+  - TMacroEntry : nom, parametres, corps (TODO 09 - base)
+  - MacroTable[1..MAX_MACRO] / MacroCount : table des macros
+  - DirMACRO : lecture de la definition (nom MACRO [params] ... ENDM)
+  - ExpandMacro : substitution \1..\9, \paramName, \@ (suffixe unique)
+  - NARG : nombre d'arguments accessibles dans les expressions (TODO 22)
+  - MEXIT : sortie anticipee d'une expansion
+  - DirREPT / ENDR : repetition de bloc (macro anonyme)
+  - Macros imbriquees avec limite de profondeur MAX_MACRO_DEPTH
+  - Listing des lignes expandees si -x active
+  - Compteurs : MacroExpandCount, ReptExpandCount }
+
+{ ============================================================================ }
 { Procedure Run : programme principal d'assemblage                             }
 { ============================================================================ }
 
@@ -8549,6 +8621,11 @@ Begin
  { Initialiser la pile d'inclusion (TODO 21) }
  IncludeCount := 0;
  src_filename := Opts.SrcFile;
+
+ { Initialiser les compteurs macros (TODO 22) }
+ macro_depth := 0;
+ MacroExpandCount := 0;
+ ReptExpandCount := 0;
 
  { Initialiser la table des symboles }
  InitSymTable;

@@ -467,7 +467,7 @@ TODO 21 - Gestion des fichiers INCLUDE et pile de sources [IMPLEMENTE]
   - INCBIN "fichier" : inclusion binaire (emettre le contenu
     brut du fichier dans la section courante)
 
-TODO 22 - Gestion des macros (MACRO/ENDM)
+TODO 22 - Gestion des macros (MACRO/ENDM) [IMPLEMENTE]
   ------------------------------------------
   - Record TMacro : Name, ParamCount, ParamNames[],
     Body (tableau de lignes), LineCount
