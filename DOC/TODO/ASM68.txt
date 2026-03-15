@@ -227,7 +227,7 @@ TODO 10 - Assemblage conditionnel (IF, IFDEF, IFEQ, etc.) [IMPLEMENTE]
   - Saut des lignes non assemblees (ne pas generer de code,
     ne pas definir de symboles)
 
-TODO 11 - Instructions de transfert de donnees
+TODO 11 - Instructions de transfert de donnees [IMPLEMENTE]
   -----------------------------------------------
   - MOVE.s  ea, ea    : transfert general (source -> destination)
   - MOVEA.s ea, An    : transfert vers registre d'adresse

@@ -2249,11 +2249,65 @@ Begin
   End;
   { Pas '(' apres '-' : on retombe dans expression normale }
   { Le '-' a deja ete consomme, on evalue l'expression et on la negate }
-  V := EvalExpr;
+  V := -EvalExpr;
+  { Verifier si suivi de (An) ou (An,Xn) ou (PC) comme pour expr(An) }
+  If cur_tok = TOK_LPAREN Then
+  Begin
+   NextToken; { consommer '(' }
+   If cur_tok = TOK_REGISTER Then
+   Begin
+    BaseReg := ParseRegNum(cur_tok_str);
+    NextToken;
+    If BaseReg = REG_PC Then
+    Begin
+     If cur_tok = TOK_COMMA Then
+     Begin
+      NextToken;
+      If cur_tok = TOK_REGISTER Then
+      Begin
+       IdxR := ParseRegNum(cur_tok_str);
+       IdxS := SIZE_WORD;
+       If cur_tok_size = SIZE_LONG Then IdxS := SIZE_LONG;
+       NextToken;
+       Op.Mode := AM_PC_IDX; Op.Reg := REG_PC;
+       Op.Disp := V; Op.IdxReg := IdxR; Op.IdxSize := IdxS;
+      End;
+     End
+     Else
+     Begin
+      Op.Mode := AM_PC_DISP; Op.Reg := REG_PC; Op.Disp := V;
+     End;
+    End
+    Else If (BaseReg >= REG_A0) and (BaseReg <= REG_A7) Then
+    Begin
+     If cur_tok = TOK_COMMA Then
+     Begin
+      NextToken;
+      If cur_tok = TOK_REGISTER Then
+      Begin
+       IdxR := ParseRegNum(cur_tok_str);
+       IdxS := SIZE_WORD;
+       If cur_tok_size = SIZE_LONG Then IdxS := SIZE_LONG;
+       NextToken;
+       Op.Mode := AM_ADDR_IND_IDX; Op.Reg := BaseReg;
+       Op.Disp := V; Op.IdxReg := IdxR; Op.IdxSize := IdxS;
+      End;
+     End
+     Else
+     Begin
+      Op.Mode := AM_ADDR_IND_DISP; Op.Reg := BaseReg; Op.Disp := V;
+     End;
+    End
+    Else
+     Error(cur_tok_line, cur_tok_col,
+           'registre d''adresse ou PC attendu');
+    If cur_tok = TOK_RPAREN Then NextToken;
+    Exit;
+   End;
+  End;
   Op.Mode := AM_ABS_LONG;
-  Op.Disp := -V;
-  { Choisir short ou long selon la valeur }
-  If (Op.Disp >= -32768) and (Op.Disp <= 32767) Then
+  Op.Disp := V;
+  If (V >= -32768) and (V <= 32767) Then
    Op.Mode := AM_ABS_SHORT;
   Exit;
  End;
@@ -4087,7 +4141,12 @@ Procedure InstrMOVE(OpSize: Integer);
 { MOVE.s <ea>,<ea> - transfert general
   Encodage : 00 | sz(2) | dstReg(3) | dstMode(3) | srcEA(6)
   sz : 01=byte, 11=word, 10=long
-  Champs destination : reg et mode INVERSES par rapport a l'EA normal }
+  Champs destination : reg et mode INVERSES par rapport a l'EA normal.
+  Formes speciales :
+    MOVE.W SR, <ea>   -> $40C0 | dstEA  (lire SR)
+    MOVE.W CCR, <ea>  -> $42C0 | dstEA  (lire CCR, 68010+)
+    MOVE.W <ea>, CCR  -> $44C0 | srcEA  (ecrire CCR)
+    MOVE.W <ea>, SR   -> $46C0 | srcEA  (ecrire SR, privilegie) }
 Var
  Src, Dst: TOperand;
  SrcEA, DstEA: Integer;
@@ -4107,6 +4166,42 @@ Begin
  End;
  NextToken;
  ParseOperand(Dst);
+
+ { --- Forme speciale : MOVE SR/CCR, <ea> --- }
+ If Src.Mode = AM_SR_CCR Then
+ Begin
+  DstEA := EncodeEA(Dst);
+  If DstEA < 0 Then
+  Begin
+   Error(cur_tok_line, cur_tok_col, 'mode destination invalide pour MOVE SR/CCR');
+   SkipToEOL; Exit;
+  End;
+  If Src.Reg = REG_SR Then
+   InstrW := $40C0 or Word(DstEA)
+  Else { CCR }
+   InstrW := $42C0 or Word(DstEA);
+  Emit16(InstrW);
+  EmitExtWords(Dst, SIZE_WORD);
+  Exit;
+ End;
+
+ { --- Forme speciale : MOVE <ea>, CCR/SR --- }
+ If Dst.Mode = AM_SR_CCR Then
+ Begin
+  SrcEA := EncodeEA(Src);
+  If SrcEA < 0 Then
+  Begin
+   Error(cur_tok_line, cur_tok_col, 'mode source invalide pour MOVE to CCR/SR');
+   SkipToEOL; Exit;
+  End;
+  If Dst.Reg = REG_CCR Then
+   InstrW := $44C0 or Word(SrcEA)
+  Else { SR }
+   InstrW := $46C0 or Word(SrcEA);
+  Emit16(InstrW);
+  EmitExtWords(Src, SIZE_WORD);
+  Exit;
+ End;
 
  { Verifier si c'est en fait un MOVEA (destination = An) }
  If Dst.Mode = AM_ADDR_REG Then
