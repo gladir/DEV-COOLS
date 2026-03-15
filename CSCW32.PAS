@@ -8780,6 +8780,39 @@ Begin
         BinEmitByte(Byte(Imm And $FF));
         Exit;
       End;
+
+      { ALU BYTE PTR [mem],imm8 : opcode 80 /n ib }
+      If AsmStartsWith(Op1, 'BYTE PTR [') Then
+      Begin
+        Bracket := AsmExtractBracket(Op1);
+        Imm := AsmParseImm(Op2);
+        If Mnem = 'TEST' Then
+        Begin
+          BinEmitByte($F6);
+          R2 := 0;
+        End
+        Else
+        Begin
+          BinEmitByte($80);
+          If Mnem = 'CMP' Then R2 := 7
+          Else If Mnem = 'ADD' Then R2 := 0
+          Else If Mnem = 'SUB' Then R2 := 5
+          Else If Mnem = 'AND' Then R2 := 4
+          Else If Mnem = 'OR'  Then R2 := 1
+          Else If Mnem = 'XOR' Then R2 := 6
+          Else R2 := 7;
+        End;
+        If AsmIsRegBased(Bracket) Then
+          AsmEncodeMemory(Bracket, R2)
+        Else
+        Begin
+          BinEmitByte(Byte($05 Or (R2 Shl 3)));
+          BinAddFixup(BinCodeLen, BFK_ABS32, Bracket, True);
+          BinEmitDWord(0);
+        End;
+        BinEmitByte(Byte(Imm And $FF));
+        Exit;
+      End;
       Exit;
     End;
 
