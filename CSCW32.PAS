@@ -169,7 +169,7 @@
             EmitDataSeg reecrit pour emettre tout DataTab.
             Run : DataInit, DataTab peuple pour variables statiques.
 
-  TODO 09 - VARIABLES ET DECLARATIONS
+  TODO 09 - VARIABLES ET DECLARATIONS [IMPLEMENTE]
             Champs statiques de classe : segment .DATA,
               acces par [_CSCV_nom].
             Variables locales : pile EBP, acces [EBP-offset].
@@ -533,6 +533,10 @@ Var
   DataCount   : Integer;        { nombre d entrees dans DataTab       }
   StaticSeq   : Integer;        { compteur de sequence pour _CSCST_N  }
 
+  { Variables locales et parametres (TODO 09) }
+  LocalOffset : Integer;        { offset negatif courant [EBP-n]      }
+  ParamOffset : Integer;        { offset positif courant [EBP+n]      }
+
   { Variables binaires }
   BinCode     : Array[0..MAX_BIN_CODE - 1] of Byte;
   BinCodeLen  : LongInt;
@@ -825,6 +829,11 @@ Procedure ShowStats; Forward;
 Function  DataAdd(Const Lbl : TString; Kind : TDataKind;
                   AIntVal : LongInt; Const AStrVal : TString) : Integer; Forward;
 Procedure DataInit; Forward;
+
+{ Forward declarations for TODO 09 }
+Function  AllocLocal(Size : Integer) : Integer; Forward;
+Procedure ParseVarDecl(Const VarType : TString; IsStatic : Boolean;
+                       Const ClassName : TString); Forward;
 
 { ============================================================ }
 { TODO 02 - LEXEUR (TOKENS C#)                                 }
@@ -3572,6 +3581,318 @@ Begin
   {  par EmitDataSeg)                                      }
 End;
 
+{ ============================================================ }
+{ TODO 09 - VARIABLES ET DECLARATIONS                           }
+{           [IMPLEMENTE]                                        }
+{ ============================================================ }
+{                                                               }
+{  Gestion des declarations de variables C# :                   }
+{  - Champs statiques de classe : segment .DATA via DataTab     }
+{  - Variables locales : pile [EBP-offset] avec LocalOffset     }
+{  - Parametres de methode : [EBP+8], [EBP+12], ...             }
+{  - Declarations simples, avec init et multiples               }
+{  - Qualificateurs const, static, readonly                     }
+{  - Portee de bloc (variables locales au bloc)                  }
+{                                                               }
+{ ============================================================ }
+
+{ ------------------------------------------------------------ }
+{ AlignDWord : aligner une taille sur 4 octets (32 bits)        }
+{   Retourne la taille alignee vers le haut                     }
+{ ------------------------------------------------------------ }
+
+Function AlignDWord(Size : Integer) : Integer;
+Begin
+  If Size <= 0 Then
+    AlignDWord := 4
+  Else If (Size Mod 4) = 0 Then
+    AlignDWord := Size
+  Else
+    AlignDWord := Size + (4 - (Size Mod 4));
+End;
+
+{ ------------------------------------------------------------ }
+{ AllocLocal : allouer une variable locale sur la pile          }
+{   Decremente LocalOffset de Size octets (aligne a 4)         }
+{   Retourne le nouvel offset negatif [EBP-n]                   }
+{ ------------------------------------------------------------ }
+
+Function AllocLocal(Size : Integer) : Integer;
+Var Aligned : Integer;
+Begin
+  Aligned := AlignDWord(Size);
+  LocalOffset := LocalOffset + Aligned;
+  AllocLocal := -LocalOffset;
+End;
+
+{ ------------------------------------------------------------ }
+{ RegisterParam : enregistrer un parametre de methode           }
+{   Assigne [EBP+offset] (8, 12, 16, ...) au parametre         }
+{   Retourne l offset positif attribue                          }
+{ ------------------------------------------------------------ }
+
+Function RegisterParam : Integer;
+Var Off : Integer;
+Begin
+  Off := ParamOffset;
+  Inc(ParamOffset, 4);  { chaque parametre occupe 4 octets sur x86-32 }
+  RegisterParam := Off;
+End;
+
+{ ------------------------------------------------------------ }
+{ ResetLocals : reinitialiser les compteurs de pile             }
+{   Appele au debut de chaque methode                           }
+{ ------------------------------------------------------------ }
+
+Procedure ResetLocals;
+Begin
+  LocalOffset := 0;
+  ParamOffset := 8;  { EBP+0 = old EBP, EBP+4 = ret addr, EBP+8 = 1st param }
+End;
+
+{ ------------------------------------------------------------ }
+{ IsTypeKeyword : verifier si un token est un mot-cle de type   }
+{   Retourne True si le token courant est un type C# primitif   }
+{ ------------------------------------------------------------ }
+
+Function IsTypeKeyword : Boolean;
+Begin
+  IsTypeKeyword :=
+    (TokIsKw('int'))     Or (TokIsKw('string'))  Or
+    (TokIsKw('bool'))    Or (TokIsKw('char'))    Or
+    (TokIsKw('double'))  Or (TokIsKw('float'))   Or
+    (TokIsKw('long'))    Or (TokIsKw('short'))   Or
+    (TokIsKw('byte'))    Or (TokIsKw('sbyte'))   Or
+    (TokIsKw('uint'))    Or (TokIsKw('ulong'))   Or
+    (TokIsKw('ushort'))  Or (TokIsKw('decimal')) Or
+    (TokIsKw('object'))  Or (TokIsKw('void'));
+End;
+
+{ ------------------------------------------------------------ }
+{ GenInitLocal : emettre le code d initialisation d une         }
+{   variable locale [EBP+off] = valeur                          }
+{   Valeur est un entier immediat                               }
+{ ------------------------------------------------------------ }
+
+Procedure GenInitLocal(Off : Integer; Val : LongInt);
+Var
+  SzOff : TString;
+  SzVal : TString;
+Begin
+  If Not OutFOpen Then Exit;  { pas encore en phase d emission }
+  Str(Off, SzOff);
+  Str(Val, SzVal);
+  If Off < 0 Then
+    EmitInstr('MOV', 'DWORD PTR [EBP' + SzOff + '],' + SzVal)
+  Else
+    EmitInstr('MOV', 'DWORD PTR [EBP+' + SzOff + '],' + SzVal);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenInitLocalStr : emettre le code d initialisation d une      }
+{   variable locale [EBP+off] = OFFSET label_chaine             }
+{ ------------------------------------------------------------ }
+
+Procedure GenInitLocalStr(Off : Integer; Const Lbl : TString);
+Var
+  SzOff : TString;
+Begin
+  If Not OutFOpen Then Exit;  { pas encore en phase d emission }
+  Str(Off, SzOff);
+  If Off < 0 Then
+    EmitInstr('MOV', 'DWORD PTR [EBP' + SzOff + '],OFFSET ' + Lbl)
+  Else
+    EmitInstr('MOV', 'DWORD PTR [EBP+' + SzOff + '],OFFSET ' + Lbl);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseVarDecl : analyser une declaration de variable           }
+{   Appelee quand VarType est deja connu (mot-cle de type lu)   }
+{   Gere les declarations simples, avec init et multiples       }
+{   IsStatic = True pour les champs statiques de classe         }
+{   ClassName = nom de la classe (pour les statiques)           }
+{ ------------------------------------------------------------ }
+
+Procedure ParseVarDecl(Const VarType : TString; IsStatic : Boolean;
+                       Const ClassName : TString);
+Var
+  VarName  : TString;
+  TIdx     : Integer;
+  SymIdx   : Integer;
+  Off      : Integer;
+  HasInit  : Boolean;
+  InitVal  : LongInt;
+  InitStr  : TString;
+  InitIsStr: Boolean;
+  StrLbl   : TString;          { label ASM de la chaine (_CSCK_N)    }
+  First    : Boolean;
+Begin
+  TIdx := TypeFromKeyword(VarType);
+
+  First := True;
+  Repeat
+    If Not First Then
+    Begin
+      { Sauter la virgule pour les declarations multiples }
+      If TokIsPunct(',') Then
+        Consume
+      Else
+        Exit;
+    End;
+    First := False;
+
+    { Lire le nom de la variable }
+    If CurToken.Kind <> TK_IDENT Then Exit;
+    VarName := CurToken.Val;
+    Consume;
+
+    HasInit   := False;
+    InitVal   := 0;
+    InitStr   := '';
+    InitIsStr := False;
+    StrLbl    := '';
+
+    { Verifier s il y a une initialisation = expr }
+    If TokIsOp('=') Then
+    Begin
+      Consume;
+      HasInit := True;
+
+      { Evaluer l expression d initialisation simple }
+      If CurToken.Kind = TK_INTEGER Then
+      Begin
+        InitVal := CurToken.IntVal;
+        Consume;
+      End
+      Else If CurToken.Kind = TK_CHAR Then
+      Begin
+        If Length(CurToken.Val) > 0 Then
+          InitVal := Ord(CurToken.Val[1])
+        Else
+          InitVal := 0;
+        Consume;
+      End
+      Else If CurToken.Kind = TK_STRING Then
+      Begin
+        InitIsStr := True;
+        InitStr   := CurToken.Val;
+        StrLbl    := AddStrLit(InitStr);
+        Consume;
+      End
+      Else If TokIsKw('true') Then
+      Begin
+        InitVal := 1;
+        Consume;
+      End
+      Else If TokIsKw('false') Then
+      Begin
+        InitVal := 0;
+        Consume;
+      End
+      Else If TokIsKw('null') Then
+      Begin
+        InitVal := 0;
+        Consume;
+      End
+      Else If CurToken.Kind = TK_IDENT Then
+      Begin
+        { Verifier si c est une constante connue }
+        SymIdx := FindConst(CurToken.Val);
+        If SymIdx >= 0 Then
+        Begin
+          If ConstTab[SymIdx].IsStr Then
+          Begin
+            InitIsStr := True;
+            InitStr   := ConstTab[SymIdx].StrVal;
+            StrLbl    := AddStrLit(InitStr);
+          End
+          Else
+            InitVal := ConstTab[SymIdx].Value;
+        End;
+        Consume;
+      End
+      Else If TokIsOp('-') Then
+      Begin
+        { Negation : -expr }
+        Consume;
+        If CurToken.Kind = TK_INTEGER Then
+        Begin
+          InitVal := -CurToken.IntVal;
+          Consume;
+        End
+        Else
+          Consume; { skip unknown }
+      End
+      Else
+      Begin
+        { Expression inconnue - sauter jusqu au ; ou , }
+        While (CurToken.Kind <> TK_EOF) And
+              (Not TokIsPunct(';')) And (Not TokIsPunct(',')) Do
+          Consume;
+      End;
+    End;
+
+    { Ajouter le symbole et allouer le stockage }
+    If IsStatic Then
+    Begin
+      { Variable statique -> segment .DATA }
+      SymIdx := SymAdd(VarName, SC_STATIC, TIdx);
+      If SymIdx >= 0 Then
+      Begin
+        SymTab[SymIdx].IsStatic := True;
+        SymTab[SymIdx].IsGlobal := True;
+        Off := DataAddStaticVar(ClassName, VarName, TIdx);
+        { Si init avec valeur, mettre la valeur dans DataTab }
+        If HasInit And (Off >= 0) Then
+        Begin
+          If InitIsStr Then
+          Begin
+            { Pour une chaine statique, stocker un DWORD pointeur }
+            DataTab[Off].Kind   := DK_DWORD;
+            DataTab[Off].IntVal := 0;  { sera resolu par le linker }
+          End
+          Else
+            DataTab[Off].IntVal := InitVal;
+        End;
+        If Opts.DebugMode Then
+          WriteLn('  VAR_STATIC: ', VarName, ' type=', VarType,
+                  ' data=', Off);
+      End;
+    End
+    Else
+    Begin
+      { Variable locale -> pile [EBP-offset] }
+      Off := AllocLocal(TypeSizeof(TIdx));
+      SymIdx := SymAdd(VarName, SC_VAR, TIdx);
+      If SymIdx >= 0 Then
+      Begin
+        SymTab[SymIdx].Offset := Off;
+        { Emettre l initialisation si requise }
+        If HasInit Then
+        Begin
+          If InitIsStr Then
+          Begin
+            If Length(StrLbl) > 0 Then
+              GenInitLocalStr(Off, StrLbl)
+            Else
+              GenInitLocal(Off, 0);
+          End
+          Else
+            GenInitLocal(Off, InitVal);
+        End
+        Else
+        Begin
+          { Initialisation par defaut a zero }
+          GenInitLocal(Off, 0);
+        End;
+      End;
+      If Opts.DebugMode Then
+        WriteLn('  VAR_LOCAL: ', VarName, ' type=', VarType,
+                ' offset=[EBP', Off, ']');
+    End;
+  Until TokIsPunct(';') Or (CurToken.Kind = TK_EOF);
+End;
+
 { ------------------------------------------------------------ }
 { ShowStats (corps)                                             }
 { ------------------------------------------------------------ }
@@ -3589,6 +3910,7 @@ Begin
   WriteLn('Symboles         : ', SymCount);
   WriteLn('Types            : ', TypeCount);
   WriteLn('Donnees .DATA    : ', DataCount);
+  WriteLn('Taille pile loc  : ', LocalOffset);
   WriteLn('Labels generes   : ', LabelSeq);
   WriteLn('Erreurs          : ', ErrorCount);
   WriteLn('Avertissements   : ', WarnCount);
@@ -3602,6 +3924,7 @@ Procedure Run;
 Var
   I          : Integer;
   SymIdx     : Integer;
+  Off        : Integer;        { offset data pour variables statiques }
   NsName     : TString;       { nom du namespace courant           }
   ClsName    : TString;       { nom de la classe courante          }
   MethName   : TString;       { nom de la methode courante         }
@@ -3649,6 +3972,9 @@ Begin
 
   { Initialiser le segment de donnees (TODO 08) }
   DataInit;
+
+  { Initialiser les variables locales (TODO 09) }
+  ResetLocals;
 
   { Lire le premier token }
   Consume;
@@ -3783,6 +4109,7 @@ Begin
               SymTab[SymIdx].IsStatic := True;
             InMethod := True;
             MethDepth := BraceDepth;
+            ResetLocals;  { Reinitialiser le compteur de pile (TODO 09) }
             If Opts.Verbose Then
               WriteLn('  static method ', VarType, ' ', MethName);
             { Lire les parametres }
@@ -3807,6 +4134,9 @@ Begin
                 Begin
                   SymIdx := SymAdd(CurToken.Val, SC_PARAM,
                                    TypeFromKeyword(VarType));
+                  { Assigner l offset EBP+n au parametre (TODO 09) }
+                  If SymIdx >= 0 Then
+                    SymTab[SymIdx].Offset := RegisterParam;
                   Consume;
                 End;
               End
@@ -3819,31 +4149,97 @@ Begin
           End
           Else
           Begin
-            { C est une variable statique : static int x; }
+            { C est une variable statique : static type name [= val]; }
+            { Le nom (MethName) est deja lu. Ajouter le symbole. }
             SymIdx := SymAdd(MethName, SC_STATIC,
                              TypeFromKeyword(VarType));
             If SymIdx >= 0 Then
             Begin
               SymTab[SymIdx].IsStatic := True;
-              { Allouer dans le segment .DATA (TODO 08) }
-              DataAddStaticVar(ClsName, MethName,
-                               TypeFromKeyword(VarType));
+              SymTab[SymIdx].IsGlobal := True;
+              Off := DataAddStaticVar(ClsName, MethName,
+                                      TypeFromKeyword(VarType));
+              { Gerer l initialisation = valeur (TODO 09) }
+              If TokIsOp('=') Then
+              Begin
+                Consume;
+                If CurToken.Kind = TK_INTEGER Then
+                Begin
+                  If Off >= 0 Then
+                    DataTab[Off].IntVal := CurToken.IntVal;
+                  Consume;
+                End
+                Else If CurToken.Kind = TK_CHAR Then
+                Begin
+                  If (Off >= 0) And (Length(CurToken.Val) > 0) Then
+                    DataTab[Off].IntVal := Ord(CurToken.Val[1]);
+                  Consume;
+                End
+                Else If CurToken.Kind = TK_STRING Then
+                Begin
+                  AddStrLit(CurToken.Val);
+                  Consume;
+                End
+                Else If TokIsKw('true') Then
+                Begin
+                  If Off >= 0 Then DataTab[Off].IntVal := 1;
+                  Consume;
+                End
+                Else If TokIsKw('false') Then
+                Begin
+                  If Off >= 0 Then DataTab[Off].IntVal := 0;
+                  Consume;
+                End
+                Else If TokIsKw('null') Then
+                Begin
+                  Consume;
+                End
+                Else If TokIsOp('-') Then
+                Begin
+                  Consume;
+                  If CurToken.Kind = TK_INTEGER Then
+                  Begin
+                    If Off >= 0 Then
+                      DataTab[Off].IntVal := -CurToken.IntVal;
+                    Consume;
+                  End;
+                End
+                Else
+                  Consume;
+              End;
+              { Declarations multiples : static int a, b; }
+              While TokIsPunct(',') Do
+              Begin
+                Consume;
+                If CurToken.Kind = TK_IDENT Then
+                Begin
+                  SymIdx := SymAdd(CurToken.Val, SC_STATIC,
+                                   TypeFromKeyword(VarType));
+                  If SymIdx >= 0 Then
+                  Begin
+                    SymTab[SymIdx].IsStatic := True;
+                    SymTab[SymIdx].IsGlobal := True;
+                    DataAddStaticVar(ClsName, CurToken.Val,
+                                     TypeFromKeyword(VarType));
+                  End;
+                  Consume;
+                End;
+              End;
             End;
+            If Opts.DebugMode Then
+              WriteLn('  VAR_STATIC: ', MethName, ' type=', VarType);
           End;
         End;
       End;
     End
-    { Reconnaitre les declarations de variables locales           }
-    { Mots-cles de type : int, string, bool, char, double, etc.  }
-    Else If InMethod And
-            ((TokIsKw('int')) Or (TokIsKw('string')) Or
-             (TokIsKw('bool')) Or (TokIsKw('char')) Or
-             (TokIsKw('double')) Or (TokIsKw('float')) Or
-             (TokIsKw('long')) Or (TokIsKw('short')) Or
-             (TokIsKw('byte')) Or (TokIsKw('sbyte')) Or
-             (TokIsKw('uint')) Or (TokIsKw('ulong')) Or
-             (TokIsKw('ushort')) Or (TokIsKw('decimal')) Or
-             (TokIsKw('object')) Or (TokIsKw('void'))) Then
+    { Reconnaitre readonly comme qualificateur (TODO 09) }
+    Else If TokIsKw('readonly') Then
+    Begin
+      Consume; { ignorer readonly, traite comme const implicite }
+    End
+    { Reconnaitre les declarations de variables locales (TODO 09)  }
+    { Mots-cles de type : int, string, bool, char, double, etc.   }
+    Else If InMethod And IsTypeKeyword Then
     Begin
       VarType := CurToken.Val;
       Consume;
@@ -3857,24 +4253,25 @@ Begin
       If CurToken.Kind = TK_IDENT Then
       Begin
         VarName := CurToken.Val;
-        Consume;
-        { Verifier que c est bien une declaration (suivi de ; , =) }
-        If TokIsPunct(';') Or TokIsPunct(',') Or TokIsOp('=') Then
-        Begin
-          SymIdx := SymAdd(VarName, SC_VAR, TypeFromKeyword(VarType));
-          { Declarations multiples : int a, b, c; }
-          While TokIsPunct(',') Do
-          Begin
-            Consume;
-            If CurToken.Kind = TK_IDENT Then
-            Begin
-              SymIdx := SymAdd(CurToken.Val, SC_VAR,
-                               TypeFromKeyword(VarType));
-              Consume;
-            End;
-          End;
-        End;
+        { Regarder apres le nom si c est une declaration }
+        { (suivi de ; , = ) ou un appel/acces (suivi de ( . [ etc.) }
+        { On utilise ParseVarDecl qui gere tout (TODO 09) }
+        ParseVarDecl(VarType, False, ClsName);
       End;
+    End
+    { Variables statiques hors methode avec type en tete (TODO 09) }
+    Else If InClass And (Not InMethod) And IsTypeKeyword Then
+    Begin
+      VarType := CurToken.Val;
+      Consume;
+      { Sauter [] si tableau }
+      If TokIsPunct('[') Then
+      Begin
+        Consume;
+        If TokIsPunct(']') Then Consume;
+      End;
+      If CurToken.Kind = TK_IDENT Then
+        ParseVarDecl(VarType, True, ClsName);
     End
     Else
       Consume;
@@ -3903,10 +4300,11 @@ Begin
   EmitCodeSeg;
 
   { Stub : point d entree minimal }
-  EmitComment('Point d entree (stub - les TODOs 09..25 ajouteront le code)');
+  EmitComment('Point d entree');
   EmitLabel('_CSCF_MAIN');
-  EmitProlog(0);
-  EmitComment('--- code a generer (TODO 09+) ---');
+  EmitProlog(LocalOffset);
+  EmitComment('--- initialisations locales (TODO 09) ---');
+  EmitComment('--- code a generer (TODO 10+) ---');
   EmitInstr('PUSH', '0');
   EmitInstr('CALL', '_ExitProcess@4');
   EmitEpilog;
@@ -3915,7 +4313,7 @@ Begin
   EmitClose;
 
   WriteLn('CSCW32: ASM genere -> ', AsmFileName);
-  WriteLn('CSCW32: Les TODOs 09..25 ne sont pas encore implementes.');
+  WriteLn('CSCW32: Les TODOs 10..25 ne sont pas encore implementes.');
 End;
 
 { ------------------------------------------------------------ }

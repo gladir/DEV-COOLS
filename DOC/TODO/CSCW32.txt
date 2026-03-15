@@ -218,7 +218,7 @@
             Tampons I/O : INBUF (256 octets), NUMBUF (16 octets).
             Variables de handles : HSTDOUT, HSTDIN, HHEAP (DWORD).
 
-  TODO 09 - VARIABLES ET DECLARATIONS
+  TODO 09 - VARIABLES ET DECLARATIONS [IMPLEMENTE]
             Champs statiques de classe : segment .DATA,
               acces par [_CSCV_nom].
             Variables locales : pile EBP, acces [EBP-offset].
@@ -234,10 +234,20 @@
             Qualificateurs : const (valeur immuable, evaluee
               a la compilation), static (champ de classe),
               readonly (stub, traite comme const).
-            Portee de bloc : { int x = 0; ... }
-              Variable locale au bloc, liberee a la sortie.
+            Portee de bloc : accolades ouvertes = portee locale,
+              variable locale au bloc, liberee a la sortie.
             Initialisation locale : MOV [EBP-offset], valeur.
             Initialisation globale : donnees dans .DATA.
+            AlignDWord : aligner les tailles sur 4 octets.
+            AllocLocal : allouer une variable locale sur la pile.
+            RegisterParam : assigner un offset EBP+n a un parametre.
+            ResetLocals : reinitialiser les compteurs de pile.
+            IsTypeKeyword : verifier si un token est un type C#.
+            GenInitLocal : emettre MOV [EBP-n], valeur.
+            GenInitLocalStr : emettre MOV [EBP-n], OFFSET label.
+            ParseVarDecl : analyser une declaration de variable
+              avec initialisation optionnelle et multiples noms.
+            LocalOffset, ParamOffset : compteurs de pile.
 
   TODO 10 - EXPRESSIONS PRIMAIRES
             ParsePrimary : literal entier, literal chaine,
