@@ -294,15 +294,20 @@
             test_loops.awk (20 cas, 9 while, 16 for, 3 do-while, 1101 ops gen)
 
   TODO 12 - PARSEUR : FOR-IN (ITERATION SUR TABLEAUX ASSOCIATIFS)
+            [IMPLEMENTE]
             Procedure ParseForIn
             Syntaxe : for (var in array) instruction | { instructions }
             Generation 32 bits :
-              Initialiser iterateur sur le tableau associatif
-              _AWL_top: CALL _AWRT_HASH_NEXT -> EAX (cle suivante)
+              PUSH OFFSET _AWA_array + CALL _AWRT_HASH_INIT
+              _AWL_top: PUSH OFFSET _AWA_array
+              CALL _AWRT_HASH_NEXT -> EAX (cle suivante)
               TEST EAX, EAX + JZ _AWL_end (plus de cles)
-              Stocker cle dans var
+              MOV [_AWV_var], EAX (stocker cle dans var)
               Corps + JMP _AWL_top + _AWL_end:
             Support break / continue dans for-in
+            Lookahead via ParserPushBack pour distinguer for-in de for
+            Var ForInCount pour les statistiques
+            test_forin.awk (15 cas, 17 for-in, 671 ops gen)
 
   TODO 13 - PARSEUR : FONCTIONS UTILISATEUR (FUNCTION / RETURN)
             Procedure ParseFunctionDef

@@ -293,15 +293,19 @@
             Pile de boucles pour break / continue imbriques
 
   TODO 12 - PARSEUR : FOR-IN (ITERATION SUR TABLEAUX ASSOCIATIFS)
+            [IMPLEMENTE]
             Procedure ParseForIn
             Syntaxe : for (var in array) instruction | { instructions }
             Generation 32 bits :
-              Initialiser iterateur sur le tableau associatif
-              _AWL_top: CALL _AWRT_HASH_NEXT -> EAX (cle suivante)
+              PUSH OFFSET _AWA_array + CALL _AWRT_HASH_INIT
+              _AWL_top: PUSH OFFSET _AWA_array
+              CALL _AWRT_HASH_NEXT -> EAX (cle suivante)
               TEST EAX, EAX + JZ _AWL_end (plus de cles)
-              Stocker cle dans var
+              MOV [_AWV_var], EAX (stocker cle dans var)
               Corps + JMP _AWL_top + _AWL_end:
             Support break / continue dans for-in
+            Var ForInCount pour les statistiques
+            test_forin.awk (15 cas, 10 for-in)
 
   TODO 13 - PARSEUR : FONCTIONS UTILISATEUR (FUNCTION / RETURN)
             Procedure ParseFunctionDef
@@ -973,6 +977,10 @@ Var
   CurToken    : TToken;       { token courant                     }
   LexLastKind : TTokenKind;   { dernier token emis (pour regexp)  }
 
+  { Push-back d un token (TODO 12 - lookahead for-in) }
+  HasPushedBack : Boolean;     { un token a ete remis ?            }
+  PushedBack    : TToken;      { token remis                       }
+
   { Table des symboles (TODO 04) }
   SymTab      : Array[0..MAX_SYM - 1] Of TSymEntry;
   SymCount    : Integer;      { nombre de symboles enregistres    }
@@ -1011,6 +1019,9 @@ Var
   WhileCount     : Integer;    { nombre d instructions while        }
   ForCount       : Integer;    { nombre d instructions for          }
   DoWhileCount   : Integer;    { nombre d instructions do-while     }
+
+  { For-In (TODO 12) }
+  ForInCount     : Integer;    { nombre d instructions for-in       }
 
 Const
 {$IFDEF FPC}
@@ -1365,6 +1376,7 @@ Begin
   WriteLn('While            : ', WhileCount);
   WriteLn('For              : ', ForCount);
   WriteLn('Do-While         : ', DoWhileCount);
+  WriteLn('For-In           : ', ForInCount);
   WriteLn('Code gen ops     : ', GenCount);
   WriteLn('Litteraux chaine : ', StringLitCount);
   WriteLn('Scope depth      : ', ScopeDepth);
@@ -2157,9 +2169,24 @@ End;
 { ---- ParserAdvance : avancer au token suivant --------------- }
 Procedure ParserAdvance;
 Begin
-  LexNextToken(CurToken);
+  If HasPushedBack Then
+  Begin
+    CurToken := PushedBack;
+    HasPushedBack := False;
+  End
+  Else
+    LexNextToken(CurToken);
   If Opts.DebugMode Then
     PrintToken(CurToken);
+End;
+
+{ ---- ParserPushBack : remettre le token courant ------------- }
+{ Sauvegarde CurToken et charge NewCur a sa place              }
+Procedure ParserPushBack(Var NewCur : TToken);
+Begin
+  PushedBack := CurToken;
+  HasPushedBack := True;
+  CurToken := NewCur;
 End;
 
 { ============================================================ }
@@ -2470,6 +2497,9 @@ Procedure ParseBlock; Forward;
 Procedure ParseWhile; Forward;
 Procedure ParseFor; Forward;
 Procedure ParseDoWhile; Forward;
+
+{ Forward declarations TODO 12 - For-In }
+Procedure ParseForIn; Forward;
 
 { ---- Helpers de tokens --------------------------------------- }
 Function IsOp(Const S : String) : Boolean;
@@ -4064,7 +4094,33 @@ Var
   LblBody  : TString;
   LblEnd   : TString;
   ExprType : Integer;
+  SavedTok : TToken;
 Begin
+  { Parser '(' }
+  If IsPunct('(') Then
+    ParserAdvance
+  Else
+    WarnMsg('for: ( attendu');
+
+  { Detecter for-in : for (ident in array) }
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    SavedTok := CurToken;
+    ParserAdvance;
+    If IsKW(KW_IN) Then
+    Begin
+      { C est un for-in : remettre l identifiant comme token courant }
+      ParserPushBack(SavedTok);
+      ParseForIn;
+      Exit;
+    End
+    Else
+    Begin
+      { C est un for classique : remettre le token consomme }
+      ParserPushBack(SavedTok);
+    End;
+  End;
+
   Inc(ForCount);
   EmitComment('--- for statement ---');
 
@@ -4073,12 +4129,6 @@ Begin
   LblIncr := NewLabel;
   LblBody := NewLabel;
   LblEnd  := NewLabel;
-
-  { Parser '(' }
-  If IsPunct('(') Then
-    ParserAdvance
-  Else
-    WarnMsg('for: ( attendu');
 
   { Parser l init (optionnelle) }
   If Not IsPunct(';') And Not IsPunct(')') Then
@@ -4219,6 +4269,127 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 12 - PARSEUR : FOR-IN (ITERATION SUR TABLEAUX          }
+{           ASSOCIATIFS)                                       }
+{ ============================================================ }
+
+{ ---- ParseForIn ---------------------------------------------- }
+(* Parse une instruction for-in AWK :                              *)
+(*   for (var in array) instruction                                *)
+(*   for (var in array) { instructions }                           *)
+(* Generation de code 80386 :                                      *)
+(*   PUSH OFFSET _AWA_array                                        *)
+(*   CALL _AWRT_HASH_INIT     (initialiser iterateur)              *)
+(* _AWL_top:                                                       *)
+(*   PUSH OFFSET _AWA_array                                        *)
+(*   CALL _AWRT_HASH_NEXT     -> EAX (cle suivante ou 0)          *)
+(*   TEST EAX, EAX                                                 *)
+(*   JZ _AWL_end              (plus de cles)                       *)
+(*   MOV [_AWV_var], EAX      (stocker cle dans variable)          *)
+(*   ... corps de la boucle ...                                    *)
+(*   JMP _AWL_top                                                  *)
+(* _AWL_end:                                                       *)
+(* break -> JMP _AWL_end, continue -> JMP _AWL_top                 *)
+Procedure ParseForIn;
+Var
+  LblTop    : TString;
+  LblEnd    : TString;
+  VarName   : TString;
+  ArrName   : TString;
+  VarIdx    : Integer;
+  ArrIdx    : Integer;
+Begin
+  Inc(ForInCount);
+  EmitComment('--- for-in statement ---');
+
+  { Le token courant doit etre l identifiant de la variable }
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    VarName := CurToken.Val;
+    ParserAdvance;  { consommer la variable }
+  End Else
+  Begin
+    WarnMsg('for-in: nom de variable attendu');
+    VarName := '_dummy';
+  End;
+
+  { On s attend a 'in' }
+  If IsKW(KW_IN) Then
+    ParserAdvance   { consommer 'in' }
+  Else
+    WarnMsg('for-in: "in" attendu');
+
+  { On s attend au nom du tableau }
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    ArrName := CurToken.Val;
+    ParserAdvance;  { consommer le nom du tableau }
+  End Else
+  Begin
+    WarnMsg('for-in: nom de tableau attendu');
+    ArrName := '_dummy';
+  End;
+
+  { Fermer la parenthese }
+  If IsPunct(')') Then
+    ParserAdvance
+  Else
+    WarnMsg('for-in: ) attendu');
+
+  { Enregistrer la variable dans la table des symboles si necessaire }
+  VarIdx := FindSym(VarName);
+  If VarIdx < 0 Then
+    VarIdx := AddSym(VarName, TYK_STRING, STORE_GLOBAL, True);
+
+  { Enregistrer le tableau dans la table des symboles si necessaire }
+  ArrIdx := FindSym(ArrName);
+  If ArrIdx < 0 Then
+    ArrIdx := AddSym(ArrName, TYK_ARRAY, STORE_GLOBAL, True);
+
+  { Generer les labels }
+  LblTop := NewLabel;
+  LblEnd := NewLabel;
+
+  { Empiler la boucle (break -> LblEnd, continue -> LblTop) }
+  EnterLoop(LblEnd, LblTop);
+
+  { Initialiser l iterateur : PUSH OFFSET array + CALL HASH_INIT }
+  Emit('        PUSH    OFFSET ' + SymTab[ArrIdx].ArrayAsmLabel);
+  Emit('        CALL    ' + AW_RT_PFX + 'HASH_INIT');
+  EmitBlank;
+
+  { Label du debut de boucle }
+  EmitLabel(LblTop);
+
+  { Obtenir la cle suivante : PUSH OFFSET array + CALL HASH_NEXT }
+  Emit('        PUSH    OFFSET ' + SymTab[ArrIdx].ArrayAsmLabel);
+  Emit('        CALL    ' + AW_RT_PFX + 'HASH_NEXT');
+
+  { Tester si plus de cles }
+  Emit('        TEST    EAX, EAX');
+  Emit('        JZ      ' + LblEnd);
+
+  { Stocker la cle dans la variable }
+  GenStoreVar(VarIdx);
+  EmitBlank;
+
+  { Parser le corps de la boucle }
+  ParseBlock;
+
+  { JMP _AWL_top }
+  Emit('        JMP     ' + LblTop);
+
+  { Label de fin }
+  EmitLabel(LblEnd);
+
+  { Depiler la boucle }
+  LeaveLoop;
+
+  EmitComment('--- end for-in ---');
+  EmitBlank;
+End;
+
+{ ============================================================ }
 { PROCEDURE RUN (STUB - sera complete par les TODOs suivants)  }
 { ============================================================ }
 
@@ -4245,6 +4416,8 @@ Begin
   WhileCount := 0;
   ForCount := 0;
   DoWhileCount := 0;
+  ForInCount := 0;
+  HasPushedBack := False;
   LexInit;
   { Mode debug : afficher tous les tokens }
   If Opts.DebugMode Then
@@ -4259,7 +4432,7 @@ Begin
   End
   Else
   Begin
-    { Parser les expressions (TODO 06+10+11) }
+    { Parser les expressions (TODO 06+10+11+12) }
     ParserAdvance;  { charger le premier token }
     StmtCount := 0;
     While CurToken.Kind <> TK_EOF Do
@@ -4285,11 +4458,12 @@ Begin
             IfCount, ' if/else instruction(s)');
     WriteLn('AWKCW32: ', WhileCount, ' while, ',
             ForCount, ' for, ',
-            DoWhileCount, ' do-while');
+            DoWhileCount, ' do-while, ',
+            ForInCount, ' for-in');
     WriteLn('AWKCW32: ', GenCount, ' operation(s) code gen, ',
             StringLitCount, ' litteral(aux) chaine');
     WriteLn('AWKCW32: scope depth=', ScopeDepth, ', loop depth=', LoopDepth);
-    WriteLn('AWKCW32: TODO 12..25 non encore implementes.');
+    WriteLn('AWKCW32: TODO 13..25 non encore implementes.');
     WriteLn('AWKCW32: sortie prevue: ', Opts.OutFile);
   End;
   LexClose;
