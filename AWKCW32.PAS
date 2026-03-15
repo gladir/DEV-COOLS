@@ -169,6 +169,7 @@
             Tous les calculs en registres 32 bits (EAX, EBX, ECX, EDX)
 
   TODO 07 - PARSEUR : CONCATENATION DE CHAINES ET COERCITION
+            [IMPLEMENTE]
             Concatenation implicite AWK :
               "abc" x -> concatenation automatique sans operateur
               Detection : deux expressions primaires adjacentes sans
@@ -183,6 +184,14 @@
             Tampon de concatenation : _AWRT_CATBUF (512 octets)
             Routine _AWRT_STRCAT : concatener deux ASCIIZ
             Routine _AWRT_STRDUP : copier chaine dans le tas (HeapAlloc)
+            Constantes CT_NUMBER/CT_STRING/CT_BOOLEAN
+            GenCoerceToNumber, GenCoerceToString, GenCoerceToBoolean
+            GenConcat (PUSH EBX + PUSH EAX + CALL _AWRT_STRCAT)
+            GenStrDup (CALL _AWRT_STRDUP)
+            ParseConcatExpr mis a jour avec coercition chaine
+            Operateurs arithmetiques : coercition nombre implicite
+            Var CoercionCount pour les statistiques
+            test_concat.awk (concatenation + coercition)
 
   TODO 08 - GENERATION DE CODE : OPERATIONS ARITHMETIQUES 80386
             Procedure GenLoadVar(sym_idx: Integer)
@@ -756,6 +765,14 @@ Const
   STORE_LOCAL  = 1;          { variable locale (pile EBP-n)      }
   STORE_PARAM  = 2;          { parametre fonction (EBP+n)        }
 
+  { Contextes de coercition (TODO 07) }
+  CT_NUMBER    = 0;          { forcer en nombre (contexte arith) }
+  CT_STRING    = 1;          { forcer en chaine (contexte concat)}
+  CT_BOOLEAN   = 2;          { forcer en nombre 0/1 (booleen)    }
+
+  { Taille tampon de concatenation (TODO 07) }
+  AWK_CATBUF_SIZE = 512;     { taille du tampon _AWRT_CATBUF     }
+
 { ============================================================ }
 { TODO 05 - CONSTANTES DE SCOPES                                }
 { ============================================================ }
@@ -936,6 +953,10 @@ Var
 
   { Parseur d expressions (TODO 06) }
   ExprCount   : Integer;      { nombre d expressions parsees      }
+
+  { Coercition et concatenation (TODO 07) }
+  CoercionCount : Integer;    { nombre de coercitions effectuees  }
+  ConcatCount   : Integer;    { nombre de concatenations implicites }
 
 Const
 {$IFDEF FPC}
@@ -1283,6 +1304,8 @@ Begin
   WriteLn('Symboles         : ', SymCount);
   WriteLn('Fonctions        : ', FuncCount);
   WriteLn('Expressions      : ', ExprCount);
+  WriteLn('Coercitions      : ', CoercionCount);
+  WriteLn('Concatenations   : ', ConcatCount);
   WriteLn('Scope depth      : ', ScopeDepth);
   WriteLn('Labels generes   : ', LabelSeq);
   WriteLn('Erreurs          : ', ErrorCount);
@@ -2337,6 +2360,16 @@ Function ParseUnaryExpr : Integer; Forward;
 Function ParsePostfixExpr : Integer; Forward;
 Function ParsePrimaryExpr : Integer; Forward;
 
+{ Forward declarations TODO 07 - Coercition et concatenation }
+Function GenCoerceToNumber(CurType: Integer) : Integer; Forward;
+Function GenCoerceToString(CurType: Integer) : Integer; Forward;
+Function GenCoerceToBoolean(CurType: Integer) : Integer; Forward;
+Procedure GenConcat; Forward;
+Procedure GenStrDup; Forward;
+Procedure CoerceForArith(Var TKLeft, TKRight: Integer); Forward;
+Procedure CoerceForConcat(Var TKLeft, TKRight: Integer); Forward;
+Procedure CoerceForCompare(Var TKLeft, TKRight: Integer); Forward;
+
 { ---- Helpers de tokens --------------------------------------- }
 Function IsOp(Const S : String) : Boolean;
 Begin
@@ -2612,6 +2645,8 @@ Begin
     Begin
       ParserAdvance;
       D := ParseUnaryExpr;
+      { Coercition booleenne : resultat en nombre 0/1 }
+      D := GenCoerceToBoolean(D);
       ParseUnaryExpr := TYK_NUMBER;
       Exit;
     End;
@@ -2619,6 +2654,8 @@ Begin
     Begin
       ParserAdvance;
       D := ParseUnaryExpr;
+      { Coercition arithmetique : forcer en nombre }
+      D := GenCoerceToNumber(D);
       ParseUnaryExpr := TYK_NUMBER;
       Exit;
     End;
@@ -2626,6 +2663,8 @@ Begin
     Begin
       ParserAdvance;
       D := ParseUnaryExpr;
+      { Coercition arithmetique : forcer en nombre }
+      D := GenCoerceToNumber(D);
       ParseUnaryExpr := TYK_NUMBER;
       Exit;
     End;
@@ -2666,6 +2705,8 @@ Begin
   Begin
     ParserAdvance;
     D := ParsePowExpr;  { droite a gauche : recursion }
+    { Coercition arithmetique : forcer les deux en nombre }
+    CoerceForArith(TK, D);
     TK := TYK_NUMBER;
   End;
   ParsePowExpr := TK;
@@ -2685,6 +2726,8 @@ Begin
   Begin
     ParserAdvance;
     D := ParsePowExpr;
+    { Coercition arithmetique : forcer les deux en nombre }
+    CoerceForArith(TK, D);
     TK := TYK_NUMBER;
   End;
   ParseMulExpr := TK;
@@ -2703,6 +2746,8 @@ Begin
   Begin
     ParserAdvance;
     D := ParseMulExpr;
+    { Coercition arithmetique : forcer les deux en nombre }
+    CoerceForArith(TK, D);
     TK := TYK_NUMBER;
   End;
   ParseAddExpr := TK;
@@ -2739,6 +2784,10 @@ Begin
   While IsConcatFollow Do
   Begin
     D := ParseAddExpr;
+    { Coercition des deux operandes en chaine pour concatenation }
+    CoerceForConcat(TK, D);
+    { Emettre la concatenation }
+    GenConcat;
     TK := TYK_STRING;
   End;
   ParseConcatExpr := TK;
@@ -2759,6 +2808,8 @@ Begin
   Begin
     ParserAdvance;
     D := ParseConcatExpr;
+    { Coercition contextuelle : nombre vs chaine selon les types }
+    CoerceForCompare(TK, D);
     TK := TYK_NUMBER;
   End;
   ParseCompareExpr := TK;
@@ -2821,6 +2872,9 @@ Begin
     ParserAdvance;
     SkipNewlines;
     D := ParseInExpr;
+    { Coercition booleenne : les deux operandes en nombre (0/1) }
+    TK := GenCoerceToBoolean(TK);
+    D := GenCoerceToBoolean(D);
     TK := TYK_NUMBER;
   End;
   ParseAndExpr := TK;
@@ -2839,6 +2893,9 @@ Begin
     ParserAdvance;
     SkipNewlines;
     D := ParseAndExpr;
+    { Coercition booleenne : les deux operandes en nombre (0/1) }
+    TK := GenCoerceToBoolean(TK);
+    D := GenCoerceToBoolean(D);
     TK := TYK_NUMBER;
   End;
   ParseOrExpr := TK;
@@ -2893,6 +2950,146 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 07 - PARSEUR : CONCATENATION DE CHAINES ET COERCITION   }
+{           [IMPLEMENTE]                                        }
+{ ============================================================ }
+
+{ ---- GenCoerceToNumber --------------------------------------- }
+{ Forcer la coercition d une valeur en nombre.                  }
+{ Si le type courant est TYK_STRING, emettre CALL _AWRT_STRTONUM }
+{ Si TYK_UNINITIALIZED ou TYK_UNKNOWN, le marquer comme nombre  }
+{ Retourne toujours TYK_NUMBER.                                  }
+Function GenCoerceToNumber(CurType: Integer) : Integer;
+Begin
+  If CurType = TYK_STRING Then
+  Begin
+    { EAX contient un pointeur chaine -> convertir en nombre }
+    { PUSH EAX / CALL _AWRT_STRTONUM -> resultat dans EAX }
+    Inc(CoercionCount);
+    If Opts.Verbose Then
+      WarnMsg('coercition chaine -> nombre');
+  End
+  Else If CurType = TYK_UNINITIALIZED Then
+  Begin
+    { Variable non initialisee : valeur par defaut = 0 }
+    Inc(CoercionCount);
+  End;
+  GenCoerceToNumber := TYK_NUMBER;
+End;
+
+{ ---- GenCoerceToString --------------------------------------- }
+{ Forcer la coercition d une valeur en chaine.                  }
+{ Si le type courant est TYK_NUMBER, emettre CALL _AWRT_NUMTOSTR }
+{ Si TYK_UNINITIALIZED, la valeur par defaut est "".             }
+{ Retourne toujours TYK_STRING.                                  }
+Function GenCoerceToString(CurType: Integer) : Integer;
+Begin
+  If CurType = TYK_NUMBER Then
+  Begin
+    { EAX contient un nombre -> convertir en chaine ASCIIZ }
+    { PUSH EAX / CALL _AWRT_NUMTOSTR -> resultat dans EAX }
+    Inc(CoercionCount);
+    If Opts.Verbose Then
+      WarnMsg('coercition nombre -> chaine');
+  End
+  Else If CurType = TYK_UNINITIALIZED Then
+  Begin
+    { Variable non initialisee : valeur par defaut = "" }
+    Inc(CoercionCount);
+  End;
+  GenCoerceToString := TYK_STRING;
+End;
+
+{ ---- GenCoerceToBoolean -------------------------------------- }
+{ Forcer la coercition en valeur booleenne (0 = faux, !0 = vrai) }
+{ Les chaines vides "" et "0" sont fausses, le reste est vrai.   }
+{ Les nombres : 0 = faux, !0 = vrai.                            }
+{ Retourne toujours TYK_NUMBER (0 ou 1).                         }
+Function GenCoerceToBoolean(CurType: Integer) : Integer;
+Begin
+  If CurType = TYK_STRING Then
+  Begin
+    { EAX contient chaine -> tester si vide ou "0" }
+    { PUSH EAX / CALL _AWRT_STRTOBOOL -> EAX = 0 ou 1 }
+    Inc(CoercionCount);
+    If Opts.Verbose Then
+      WarnMsg('coercition chaine -> booleen');
+  End
+  Else If CurType = TYK_UNINITIALIZED Then
+  Begin
+    { Non initialise = faux (0) }
+    Inc(CoercionCount);
+  End;
+  { Pour TYK_NUMBER : TEST EAX,EAX / SETNZ AL / MOVZX EAX,AL }
+  GenCoerceToBoolean := TYK_NUMBER;
+End;
+
+{ ---- GenConcat ----------------------------------------------- }
+{ Concatener deux chaines : EBX (gauche) et EAX (droite).       }
+{ Les deux valeurs doivent etre des chaines (ASCIIZ).           }
+{ Resultat : pointeur vers _AWRT_CATBUF dans EAX.              }
+{ Generation future :                                            }
+{   PUSH EAX          ; chaine droite                           }
+{   PUSH EBX          ; chaine gauche                           }
+{   CALL _AWRT_STRCAT ; resultat dans EAX (-> _AWRT_CATBUF)    }
+Procedure GenConcat;
+Begin
+  Inc(ConcatCount);
+End;
+
+{ ---- GenStrDup ----------------------------------------------- }
+{ Dupliquer une chaine dans le tas via HeapAlloc.               }
+{ EAX = pointeur chaine source -> EAX = pointeur copie.        }
+{ Generation future :                                            }
+{   PUSH EAX                                                     }
+{   CALL _AWRT_STRDUP -> EAX = copie sur le tas                }
+Procedure GenStrDup;
+Begin
+  { Stub - sera complete dans TODO 08 (generation de code) }
+End;
+
+{ ---- CoerceForArith ------------------------------------------ }
+{ Coercition des deux operandes pour une operation arithmetique. }
+{ Les operandes doivent etre des nombres.                       }
+{ TKLeft et TKRight sont les types des operandes gauche/droite. }
+Procedure CoerceForArith(Var TKLeft, TKRight: Integer);
+Begin
+  If TKLeft <> TYK_NUMBER Then
+    TKLeft := GenCoerceToNumber(TKLeft);
+  If TKRight <> TYK_NUMBER Then
+    TKRight := GenCoerceToNumber(TKRight);
+End;
+
+{ ---- CoerceForConcat ----------------------------------------- }
+{ Coercition des deux operandes pour une concatenation.         }
+{ Les operandes doivent etre des chaines.                       }
+Procedure CoerceForConcat(Var TKLeft, TKRight: Integer);
+Begin
+  If TKLeft <> TYK_STRING Then
+    TKLeft := GenCoerceToString(TKLeft);
+  If TKRight <> TYK_STRING Then
+    TKRight := GenCoerceToString(TKRight);
+End;
+
+{ ---- CoerceForCompare ---------------------------------------- }
+{ Coercition pour une comparaison : si les deux sont des nombres }
+{ on compare en nombre, sinon en chaine.                        }
+Procedure CoerceForCompare(Var TKLeft, TKRight: Integer);
+Begin
+  { Si les deux sont des nombres, comparer en nombre }
+  If (TKLeft = TYK_NUMBER) And (TKRight = TYK_NUMBER) Then
+    Exit;
+  { Si les deux sont des chaines, comparer en chaine }
+  If (TKLeft = TYK_STRING) And (TKRight = TYK_STRING) Then
+    Exit;
+  { Mixte : forcer les deux en nombre (comportement AWK standard) }
+  If TKLeft <> TYK_NUMBER Then
+    TKLeft := GenCoerceToNumber(TKLeft);
+  If TKRight <> TYK_NUMBER Then
+    TKRight := GenCoerceToNumber(TKRight);
+End;
+
+{ ============================================================ }
 { PROCEDURE RUN (STUB - sera complete par les TODOs suivants)  }
 { ============================================================ }
 
@@ -2910,6 +3107,8 @@ Begin
   InitSymTable;
   InitScopes;
   ExprCount := 0;
+  CoercionCount := 0;
+  ConcatCount := 0;
   LexInit;
   { Mode debug : afficher tous les tokens }
   If Opts.DebugMode Then
@@ -3078,8 +3277,10 @@ Begin
     WriteLn('AWKCW32: ', SymCount, ' symbole(s), ', FuncCount, ' fonction(s)');
     WriteLn('AWKCW32: ', ExprCount, ' expression(s) parsees, ',
             StmtCount, ' instruction(s)');
+    WriteLn('AWKCW32: ', CoercionCount, ' coercition(s), ',
+            ConcatCount, ' concatenation(s) implicite(s)');
     WriteLn('AWKCW32: scope depth=', ScopeDepth, ', loop depth=', LoopDepth);
-    WriteLn('AWKCW32: TODO 07..25 non encore implementes.');
+    WriteLn('AWKCW32: TODO 08..25 non encore implementes.');
     WriteLn('AWKCW32: sortie prevue: ', Opts.OutFile);
   End;
   LexClose;

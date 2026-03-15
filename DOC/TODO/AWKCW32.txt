@@ -169,7 +169,7 @@
             sprintf traite comme fonction dans ParsePrimaryExpr
             Tous les calculs en registres 32 bits (EAX, EBX, ECX, EDX)
 
-  TODO 07 - PARSEUR : CONCATENATION DE CHAINES ET COERCITION
+  TODO 07 - PARSEUR : CONCATENATION DE CHAINES ET COERCITION [IMPLEMENTE]
             Concatenation implicite AWK :
               "abc" x -> concatenation automatique sans operateur
               Detection : deux expressions primaires adjacentes sans
@@ -184,6 +184,14 @@
             Tampon de concatenation : _AWRT_CATBUF (512 octets)
             Routine _AWRT_STRCAT : concatener deux ASCIIZ
             Routine _AWRT_STRDUP : copier chaine dans le tas (HeapAlloc)
+            Constantes CT_NUMBER/CT_STRING/CT_BOOLEAN
+            GenCoerceToNumber, GenCoerceToString, GenCoerceToBoolean
+            GenConcat (PUSH EBX + PUSH EAX + CALL _AWRT_STRCAT)
+            GenStrDup (CALL _AWRT_STRDUP)
+            ParseConcatExpr mis a jour avec coercition chaine
+            Operateurs arithmetiques : coercition nombre implicite
+            Var CoercionCount pour les statistiques
+            test_concat.awk (concatenation + coercition)
 
   TODO 08 - GENERATION DE CODE : OPERATIONS ARITHMETIQUES 80386
             Procedure GenLoadVar(sym_idx: Integer)
