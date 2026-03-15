@@ -8044,7 +8044,19 @@ Begin
   AsmSplitOps(Ops, Op1, Op2);
 
   { ---- Simple single-byte instructions ---- }
-  If Mnem = 'RET' Then Begin BinEmitByte($C3); Exit; End;
+  If Mnem = 'RET' Then
+  Begin
+    If Length(Op1) > 0 Then
+    Begin { RET imm16 : C2 lo hi }
+      Imm := AsmParseImm(Op1);
+      BinEmitByte($C2);
+      BinEmitByte(Byte(Imm And $FF));
+      BinEmitByte(Byte((Imm Shr 8) And $FF));
+    End
+    Else
+      BinEmitByte($C3);  { RET }
+    Exit;
+  End;
   If Mnem = 'LODSB' Then Begin BinEmitByte($AC); Exit; End;
   If Mnem = 'STOSB' Then Begin BinEmitByte($AA); Exit; End;
   If Mnem = 'MOVSB' Then Begin BinEmitByte($A4); Exit; End;
@@ -8073,6 +8085,15 @@ Begin
     R1 := AsmRegIdx32(Op1);
     If R1 >= 0 Then
     Begin BinEmitByte($50 + R1); Exit; End;
+    { PUSH OFFSET label -> fixup ABS32 }
+    If AsmStartsWith(Op1, 'OFFSET ') Then
+    Begin
+      BinEmitByte($68);
+      BinAddFixup(BinCodeLen, BFK_ABS32,
+        Copy(Op1, 8, Length(Op1) - 7), True);
+      BinEmitDWord(0);
+      Exit;
+    End;
     Imm := AsmParseImm(Op1);
     If (Imm >= -128) And (Imm <= 127) Then
     Begin
@@ -8206,6 +8227,15 @@ Begin
     Begin
       BinEmitByte($89);
       BinEmitByte((3 Shl 6) Or (R2 Shl 3) Or R1);
+      Exit;
+    End;
+    { MOV reg32, OFFSET label -> fixup ABS32 }
+    If (R1 >= 0) And AsmStartsWith(Op2, 'OFFSET ') Then
+    Begin
+      BinEmitByte($B8 + R1);
+      BinAddFixup(BinCodeLen, BFK_ABS32,
+        Copy(Op2, 8, Length(Op2) - 7), True);
+      BinEmitDWord(0);
       Exit;
     End;
     { MOV reg32, imm32 }
@@ -8674,27 +8704,43 @@ Var
   I, J, DupPos : Integer;
   LabelName, Rest, Directive, Tok : String;
   DupCount, DupVal : LongInt;
+  HasLabel : Boolean;
 Begin
-  { Extract label (first token) }
+  { Extract first token }
   I := 1;
   While (I <= Length(Line)) And (Line[I] <> ' ') Do Inc(I);
   LabelName := Copy(Line, 1, I - 1);
   If (LabelName = 'ASSUME') Or (LabelName = '') Then Exit;
 
-  { Register data label }
-  BinAddLabel(LabelName, BinDataLen);
-  BinLabels[BinLblCount - 1].InCode := False;
+  { Check if first token is a directive (continuation line, no label) }
+  HasLabel := Not ((LabelName = 'DB') Or (LabelName = 'DW') Or
+                   (LabelName = 'DD'));
 
-  { Skip spaces }
-  While (I <= Length(Line)) And (Line[I] = ' ') Do Inc(I);
-  { Extract directive }
-  J := I;
-  While (J <= Length(Line)) And (Line[J] <> ' ') Do Inc(J);
-  Directive := Copy(Line, I, J - I);
-  { Skip spaces }
-  I := J;
-  While (I <= Length(Line)) And (Line[I] = ' ') Do Inc(I);
-  Rest := Copy(Line, I, Length(Line) - I + 1);
+  If HasLabel Then
+  Begin
+    { Register data label }
+    BinAddLabel(LabelName, BinDataLen);
+    BinLabels[BinLblCount - 1].InCode := False;
+
+    { Skip spaces }
+    While (I <= Length(Line)) And (Line[I] = ' ') Do Inc(I);
+    { Extract directive }
+    J := I;
+    While (J <= Length(Line)) And (Line[J] <> ' ') Do Inc(J);
+    Directive := Copy(Line, I, J - I);
+    { Skip spaces }
+    I := J;
+    While (I <= Length(Line)) And (Line[I] = ' ') Do Inc(I);
+    Rest := Copy(Line, I, Length(Line) - I + 1);
+  End
+  Else
+  Begin
+    { No label: first token is the directive }
+    Directive := LabelName;
+    { Skip spaces after directive }
+    While (I <= Length(Line)) And (Line[I] = ' ') Do Inc(I);
+    Rest := Copy(Line, I, Length(Line) - I + 1);
+  End;
 
   If Directive = 'DD' Then
   Begin
@@ -9376,7 +9422,10 @@ Begin
   IdataRVA     := DataRVA + AlignUp(BinDataLen, LongInt(PE_SEC_ALIGN));
   IdataFileOfs := DataFileOfs + DataSize;
   ImageSize    := IdataRVA + AlignUp(IdataBufLen, LongInt(PE_SEC_ALIGN));
-  EntryRVA     := TextRVA;  { point d entree = debut de .text }
+  { Le point d entree est _ADAF_main, pas le debut de .text }
+  EntryRVA := TextRVA + BinFindLabel('_ADAF_main');
+  If BinFindLabel('_ADAF_main') < 0 Then
+    EntryRVA := TextRVA;  { fallback: debut de .text }
 
   { Resoudre les fixups avec les adresses PE calculees }
   BinResolveFixups(TextRVA, DataRVA, IdataRVA, IatOfs);
@@ -9479,8 +9528,16 @@ Begin
   WriteBinDWord(F, 0); WriteBinDWord(F, 0);
   { Entry 1 : Import Table = idata RVA, taille }
   WriteBinDWord(F, IdataRVA); WriteBinDWord(F, IdataBufLen);
-  { Entries 2-15 : toutes a zero }
-  For I := 2 To 15 Do
+  { Entries 2-11 : toutes a zero }
+  For I := 2 To 11 Do
+  Begin
+    WriteBinDWord(F, 0); WriteBinDWord(F, 0);
+  End;
+  { Entry 12 : Import Address Table (IAT) }
+  WriteBinDWord(F, IdataRVA + IatOfs);
+  WriteBinDWord(F, (PE_NUM_API + 1) * 4);
+  { Entries 13-15 : toutes a zero }
+  For I := 13 To 15 Do
   Begin
     WriteBinDWord(F, 0); WriteBinDWord(F, 0);
   End;
@@ -9523,7 +9580,7 @@ Begin
   WriteBinDWord(F, 0);
   WriteBinWord(F, 0);
   WriteBinWord(F, 0);
-  WriteBinDWord(F, PE_SCN_RDATA);       { READ|INIT_DATA }
+  WriteBinDWord(F, PE_SCN_BSS);         { READ|WRITE|INIT_DATA }
 
   { ---- Padding to file alignment ---- }
   CurPos := 128 + 4 + 20 + PE_OPT_SIZE + NumSections * 40;
