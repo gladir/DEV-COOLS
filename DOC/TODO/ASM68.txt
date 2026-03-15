@@ -360,7 +360,7 @@ TODO 16 - Instructions BCD et operations speciales [IMPLEMENTE]
   - ILLEGAL                      : instruction illegale (exception)
   - Exemples : SAMPLES\ASM68\special.asm
 
-TODO 17 - Encodage binaire des instructions (passe 2)
+TODO 17 - Encodage binaire des instructions (passe 2) [IMPLEMENTE]
   -----------------------------------------------------
   - Format de base de l'instruction 68000 : mot de 16 bits
     bits 15-12 : code operation principal (4 bits)

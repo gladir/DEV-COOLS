@@ -34,7 +34,7 @@
 { TODO 14 - Instructions de decalage et rotation [IMPLEMENTE] }
 { TODO 15 - Instructions de branchement et controle de flux [IMPLEMENTE] }
 { TODO 16 - Instructions BCD et operations speciales [IMPLEMENTE] }
-{ TODO 17 - Encodage binaire des instructions (passe 2) }
+{ TODO 17 - Encodage binaire des instructions (passe 2) [IMPLEMENTE] }
 { TODO 18 - Architecture deux passes de l'assembleur }
 { TODO 19 - Parseur de ligne assembleur }
 { TODO 20 - Generation du fichier objet (format S-Record Motorola) }
@@ -7026,6 +7026,161 @@ Procedure InstrILLEGAL;
 { ILLEGAL - Illegal instruction exception : $4AFC }
 Begin
  Emit16($4AFC);
+End;
+
+{ ============================================================================ }
+{ TODO 17 - Encodage binaire des instructions (passe 2)                        }
+{ ============================================================================ }
+
+Function EncodeMoveSizeBits(S: Integer): Integer;
+{ Encodage taille MOVE : 01=byte, 11=word, 10=long (different du standard!) }
+Begin
+ Case S of
+  SIZE_BYTE: EncodeMoveSizeBits := 1; { 01 }
+  SIZE_WORD: EncodeMoveSizeBits := 3; { 11 }
+  SIZE_LONG: EncodeMoveSizeBits := 2; { 10 }
+ Else
+  EncodeMoveSizeBits := 3; { defaut = word }
+ End;
+End;
+
+Function EncodeMOVE(SzBits, SrcEA, DstEA: Integer): Word;
+{ MOVE : 00ss_ddd_mmm_MMM_rrr - destination mode/reg inverses }
+Var
+ DstMd, DstRg: Integer;
+Begin
+ DstMd := (DstEA shr 3) and 7;
+ DstRg := DstEA and 7;
+ EncodeMOVE := Word(SzBits shl 12) or Word(DstRg shl 9)
+               or Word(DstMd shl 6) or Word(SrcEA and $3F);
+End;
+
+Function EncodeArith(BaseOp: Word; Dn, OpMode, EA: Integer): Word;
+{ Arith : BaseOp | rrr_ooo_MMMRRR (ADD $D000, SUB $9000, CMP $B000, etc.) }
+Begin
+ EncodeArith := BaseOp or Word(Dn shl 9) or Word(OpMode shl 6)
+                or Word(EA and $3F);
+End;
+
+Function EncodeImmediate(BaseOp: Word; SzBits, EA: Integer): Word;
+{ Immediate : BaseOp | ss_MMMRRR (ADDI $0600, SUBI $0400, CMPI $0C00, etc.) }
+Begin
+ EncodeImmediate := BaseOp or Word(SzBits shl 6) or Word(EA and $3F);
+End;
+
+Function EncodeShift(Count, Dir, SzBits, IR, TypeBits, Reg: Integer): Word;
+{ Shift registre : $E000 | cnt_d_ss_ir_tt_rrr }
+Begin
+ EncodeShift := Word($E000) or Word((Count and 7) shl 9) or Word(Dir shl 8)
+                or Word(SzBits shl 6) or Word(IR shl 5)
+                or Word(TypeBits shl 3) or Word(Reg and 7);
+End;
+
+Function EncodeShiftMem(MemBase: Word; EA: Integer): Word;
+{ Shift memoire : MemBase | MMMRRR }
+Begin
+ EncodeShiftMem := MemBase or Word(EA and $3F);
+End;
+
+Function EncodeBranch(CC, Disp8: Integer): Word;
+{ Branch : $6000 | cccc_dddddddd }
+Begin
+ EncodeBranch := Word($6000) or Word(CC shl 8) or Word(Disp8 and $FF);
+End;
+
+Function EncodeBitDyn(DynBase: Word; Dn, EA: Integer): Word;
+{ Bit dynamique : DynBase | rrr_MMMRRR }
+Begin
+ EncodeBitDyn := DynBase or Word(Dn shl 9) or Word(EA and $3F);
+End;
+
+Function EncodeBitStat(StatBase: Word; EA: Integer): Word;
+{ Bit statique : StatBase | MMMRRR }
+Begin
+ EncodeBitStat := StatBase or Word(EA and $3F);
+End;
+
+Function EncodeOneEA(BaseOp: Word; SzBits, EA: Integer): Word;
+{ Unaire : BaseOp | ss_MMMRRR (NEG, NEGX, CLR, NOT, TST) }
+Begin
+ EncodeOneEA := BaseOp or Word(SzBits shl 6) or Word(EA and $3F);
+End;
+
+Function CalcInstrSize(Const OpName: String; OpSize: Integer;
+                       Const Src, Dst: TOperand): Integer;
+{ Calcule la taille totale d'une instruction en octets (passe 1) }
+Var
+ Total: Integer;
+ UpName: String;
+Begin
+ Total := 2; { mot d'instruction de base }
+ UpName := OpName;
+
+ { Branchements courts : 2 octets ; longs : 4 octets }
+ If (UpName = 'BRA') or (UpName = 'BSR') or (UpName = 'BHI')
+    or (UpName = 'BLS') or (UpName = 'BCC') or (UpName = 'BCS')
+    or (UpName = 'BNE') or (UpName = 'BEQ') or (UpName = 'BVC')
+    or (UpName = 'BVS') or (UpName = 'BPL') or (UpName = 'BMI')
+    or (UpName = 'BGE') or (UpName = 'BLT') or (UpName = 'BGT')
+    or (UpName = 'BLE') Then
+ Begin
+  If OpSize = SIZE_WORD Then
+   Total := 4  { mot d'instruction + deplacement 16 bits }
+  Else
+   Total := 2; { deplacement 8 bits dans le mot d'instruction }
+  CalcInstrSize := Total;
+  Exit;
+ End;
+
+ { DBcc : mot d'instruction + deplacement 16 bits }
+ If (UpName = 'DBRA') or (UpName = 'DBT') or (UpName = 'DBF')
+    or (UpName = 'DBHI') or (UpName = 'DBLS') or (UpName = 'DBCC')
+    or (UpName = 'DBCS') or (UpName = 'DBNE') or (UpName = 'DBEQ')
+    or (UpName = 'DBVC') or (UpName = 'DBVS') or (UpName = 'DBPL')
+    or (UpName = 'DBMI') or (UpName = 'DBGE') or (UpName = 'DBLT')
+    or (UpName = 'DBGT') or (UpName = 'DBLE') Then
+ Begin
+  CalcInstrSize := 4;
+  Exit;
+ End;
+
+ { MOVEM : mot d'instruction + masque registres + extension EA dst }
+ If UpName = 'MOVEM' Then
+ Begin
+  Total := 4; { instruction + masque 16 bits }
+  If Src.Mode = AM_REG_LIST Then
+   Total := Total + 2 * CalcExtWords(Dst, OpSize)
+  Else
+   Total := Total + 2 * CalcExtWords(Src, OpSize);
+  CalcInstrSize := Total;
+  Exit;
+ End;
+
+ { MOVEP : mot d'instruction + deplacement 16 bits }
+ If UpName = 'MOVEP' Then
+ Begin
+  CalcInstrSize := 4;
+  Exit;
+ End;
+
+ { LINK : mot d'instruction + deplacement 16 bits }
+ If UpName = 'LINK' Then
+ Begin
+  CalcInstrSize := 4;
+  Exit;
+ End;
+
+ { STOP : mot d'instruction + donnee immediate 16 bits }
+ If UpName = 'STOP' Then
+ Begin
+  CalcInstrSize := 4;
+  Exit;
+ End;
+
+ { Cas general : base + extensions source + extensions destination }
+ Total := Total + 2 * CalcExtWords(Src, OpSize);
+ Total := Total + 2 * CalcExtWords(Dst, OpSize);
+ CalcInstrSize := Total;
 End;
 
 Procedure AssembleInstruction(Const OpName: String; OpSize: Integer);
