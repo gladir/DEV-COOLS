@@ -242,18 +242,23 @@
             Pour tableaux : emettre DD/DB DUP(?) ou bloc d init
             Pour records : emettre champ par champ
 
-  TODO 12 - PARSEUR : SIGNATURES PROCEDURE ET FUNCTION
-            ParseProcedureSpec :
-              PROCEDURE nom [(params)] ;
-            ParseFunctionSpec :
-              FUNCTION nom [(params)] RETURN type ;
-            Forme des parametres :
-              nom [, nom2] : [IN | IN OUT | OUT] type [:= default]
-            AddSub(nom, ...) avec IsForward := True
+  TODO 12 - PARSEUR : SIGNATURES PROCEDURE ET FUNCTION [IMPLEMENTE]
+            ParseParamList(SubIdx) :
+              ( nom [, nom2] : [IN | IN OUT | OUT] type [:= default] ;
+                nom3 : type ; ... )
+            ParseProcedureDecl :
+              PROCEDURE nom [(params)] ;      => spec forward
+              PROCEDURE nom [(params)] IS ... => body (skip pour TODO 13)
+            ParseFunctionDecl :
+              FUNCTION nom [(params)] RETURN type ;      => spec forward
+              FUNCTION nom [(params)] RETURN type IS ... => body (skip)
+            SkipProcBody : sauter un corps jusqu au END [nom] ;
+            AddSub(nom, ...) avec IsForward := True pour les specs
             Enregistrer ParamNames, ParamTypes, ParamModes
             IN : passage par valeur (PUSH 32 bits)
             OUT / IN OUT : passage par adresse (LEA + PUSH)
             Convention STDCALL : parametres droite a gauche
+            Boucle PROCEDURE/FUNCTION dans Run
 
   TODO 13 - PARSEUR : CORPS PROCEDURE ET FUNCTION (32 BITS)
             ParseProcedureBody :

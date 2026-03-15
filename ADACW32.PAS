@@ -253,18 +253,23 @@
             Pour tableaux : emettre DD/DB DUP(?) ou bloc d init
             Pour records : emettre champ par champ
 
-  TODO 12 - PARSEUR : SIGNATURES PROCEDURE ET FUNCTION
-            ParseProcedureSpec :
-              PROCEDURE nom [(params)] ;
-            ParseFunctionSpec :
-              FUNCTION nom [(params)] RETURN type ;
-            Forme des parametres :
-              nom [, nom2] : [IN | IN OUT | OUT] type [:= default]
-            AddSub(nom, ...) avec IsForward := True
+  TODO 12 - PARSEUR : SIGNATURES PROCEDURE ET FUNCTION [IMPLEMENTE]
+            ParseParamList(SubIdx) :
+              ( nom [, nom2] : [IN | IN OUT | OUT] type [:= default] ;
+                nom3 : type ; ... )
+            ParseProcedureDecl :
+              PROCEDURE nom [(params)] ;      => spec forward
+              PROCEDURE nom [(params)] IS ... => body (skip pour TODO 13)
+            ParseFunctionDecl :
+              FUNCTION nom [(params)] RETURN type ;      => spec forward
+              FUNCTION nom [(params)] RETURN type IS ... => body (skip)
+            SkipProcBody : sauter un corps jusqu au END [nom] ;
+            AddSub(nom, ...) avec IsForward := True pour les specs
             Enregistrer ParamNames, ParamTypes, ParamModes
             IN : passage par valeur (PUSH 32 bits)
             OUT / IN OUT : passage par adresse (LEA + PUSH)
             Convention STDCALL : parametres droite a gauche
+            Boucle PROCEDURE/FUNCTION dans Run
 
   TODO 13 - PARSEUR : CORPS PROCEDURE ET FUNCTION (32 BITS)
             ParseProcedureBody :
@@ -3911,6 +3916,253 @@ Begin
   Expect(TOK_SEMI, '`;` attendu en fin de declaration d''objet');
 End;
 
+{ ============================================================ }
+{ TODO 12 - PARSEUR : SIGNATURES PROCEDURE ET FUNCTION          }
+{ ============================================================ }
+
+{ ---- ParseParamList : analyser la liste de parametres -------- }
+{ Syntaxe Ada :                                                    }
+{   ( nom [, nom2] : [IN | IN OUT | OUT] type [:= default] ;      }
+{     nom3 : IN OUT type ; ... )                                   }
+{ Remplit SubTab[SubIdx].ParamNames/ParamTypes/ParamModes.         }
+Procedure ParseParamList(SubIdx : Integer);
+Var
+  Names     : Array[1..MAX_PARAM] of TString;
+  NameCount : Integer;
+  Mode      : Integer;
+  TI        : Integer;
+  I, Base   : Integer;
+Begin
+  If CurTokType <> TOK_LPAREN Then Exit;
+  Consume; { skip '(' }
+
+  While (CurTokType <> TOK_RPAREN) And (CurTokType <> TOK_EOF) Do
+  Begin
+    { Lire les noms de parametres separes par des virgules }
+    NameCount := 0;
+    While True Do
+    Begin
+      If CurTokType <> TOK_IDENT Then
+      Begin Error('Nom de parametre attendu'); Exit; End;
+      Inc(NameCount);
+      If NameCount <= MAX_PARAM Then
+        Names[NameCount] := CurTokStr;
+      Consume;
+      If CurTokType = TOK_COMMA Then Consume
+      Else Break;
+    End;
+
+    { Attendre ':' }
+    Expect(TOK_COLON, '`:`');
+
+    { Mode optionnel : IN OUT / OUT / IN (defaut IN) }
+    Mode := PARAM_IN;
+    If TokIsKw(KW_INOUT) Then
+    Begin Mode := PARAM_INOUT; Consume; End
+    Else If TokIsKw(KW_OUT) Then
+    Begin Mode := PARAM_OUT; Consume; End
+    Else If TokIsKw(KW_IN) Then
+    Begin
+      Consume;
+      { Verifier IN OUT (si le lexeur ne l a pas compose) }
+      If TokIsKw(KW_OUT) Then
+      Begin Mode := PARAM_INOUT; Consume; End;
+    End;
+
+    { Type du parametre }
+    TI := ParseTypeRef;
+
+    { Valeur par defaut optionnelle : := expr }
+    If CurTokType = TOK_COLONASSIGN Then
+    Begin
+      Consume;
+      Warning('Valeur par defaut de parametre ignoree (stub)');
+      { Sauter l expression : avancer jusqu a ; ou ) }
+      While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_RPAREN) And
+            (CurTokType <> TOK_EOF) Do
+        Consume;
+    End;
+
+    { Enregistrer chaque parametre dans SubTab }
+    Base := SubTab[SubIdx].ParamCount;
+    For I := 1 To NameCount Do
+    Begin
+      If Base + I <= MAX_PARAM Then
+      Begin
+        SubTab[SubIdx].ParamNames[Base + I] :=
+          StrUpperCase(Names[I]);
+        SubTab[SubIdx].ParamTypes[Base + I] := TI;
+        SubTab[SubIdx].ParamModes[Base + I] := Mode;
+      End;
+    End;
+    SubTab[SubIdx].ParamCount := Base + NameCount;
+
+    { Separateur ';' entre groupes ou ')' pour finir }
+    If CurTokType = TOK_SEMI Then Consume
+    Else If CurTokType <> TOK_RPAREN Then
+    Begin
+      Error(''';'' ou '')'' attendu dans la liste de parametres');
+      Exit;
+    End;
+  End;
+
+  Expect(TOK_RPAREN, '`)`');
+End;
+
+{ ---- SkipProcBody : sauter un corps de sous-programme -------- }
+{ Appele juste apres avoir consomme IS.                            }
+{ Saute jusqu au END [nom] ; correspondant en gerant l imbrication }
+{ des constructions Ada (IF, LOOP, CASE, DECLARE, nested subs).   }
+Procedure SkipProcBody;
+Var
+  Depth  : Integer;
+  PFWait : Boolean;
+Begin
+  Depth := 1;
+  PFWait := False;
+  While (CurTokType <> TOK_EOF) And (Depth > 0) Do
+  Begin
+    If TokIsKw(KW_PROCEDURE) Or TokIsKw(KW_FUNCTION) Or
+       TokIsKw(KW_PACKAGE) Then
+      PFWait := True
+    Else If TokIsKw(KW_IS) And PFWait Then
+    Begin
+      Inc(Depth);
+      PFWait := False;
+    End
+    Else If TokIsKw(KW_IF) Or TokIsKw(KW_LOOP) Or TokIsKw(KW_CASE) Or
+            TokIsKw(KW_DECLARE) Or TokIsKw(KW_SELECT) Or
+            TokIsKw(KW_RECORD) Then
+    Begin
+      Inc(Depth);
+      PFWait := False;
+    End
+    Else If TokIsKw(KW_END) Then
+    Begin
+      Dec(Depth);
+      PFWait := False;
+      If Depth <= 0 Then
+      Begin
+        Consume; { END }
+        { Sauter ce qui suit END : nom, IF, LOOP, CASE, etc. }
+        While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) Do
+          Consume;
+        If CurTokType = TOK_SEMI Then Consume;
+        Exit;
+      End;
+    End
+    Else If CurTokType = TOK_SEMI Then
+      PFWait := False;
+    Consume;
+  End;
+End;
+
+{ ---- ParseProcedureDecl : declaration ou corps de PROCEDURE --- }
+{ PROCEDURE nom [(params)] ;        => spec (forward declaration)  }
+{ PROCEDURE nom [(params)] IS ...   => body (skip pour TODO 13)    }
+Procedure ParseProcedureDecl;
+Var
+  Name : TString;
+  Idx  : Integer;
+Begin
+  ExpectKw(KW_PROCEDURE, 'PROCEDURE');
+
+  If CurTokType <> TOK_IDENT Then
+  Begin Error('Nom de procedure attendu'); Exit; End;
+  Name := CurTokStr;
+  Consume;
+
+  { Chercher si deja declaree (forward), sinon creer }
+  Idx := FindSub(Name);
+  If Idx = 0 Then
+    Idx := AddSub(Name, False, TYPE_VOID);
+  If Idx = 0 Then Exit; { table pleine }
+
+  { Liste de parametres optionnelle }
+  If CurTokType = TOK_LPAREN Then
+    ParseParamList(Idx);
+
+  { Spec ou body ? }
+  If CurTokType = TOK_SEMI Then
+  Begin
+    { Forward declaration }
+    SubTab[Idx].IsForward := True;
+    Consume; { ; }
+    If Opts.Verbose Then
+      WriteLn('  Procedure spec: ', Name, ' (',
+              SubTab[Idx].ParamCount, ' params)');
+  End
+  Else If TokIsKw(KW_IS) Then
+  Begin
+    { Corps de procedure }
+    SubTab[Idx].IsForward := False;
+    Consume; { IS }
+    If Opts.Verbose Then
+      WriteLn('  Procedure body: ', Name, ' (',
+              SubTab[Idx].ParamCount, ' params) [skip]');
+    SkipProcBody;
+  End
+  Else
+    Error(''';'' ou ''IS'' attendu apres signature PROCEDURE');
+End;
+
+{ ---- ParseFunctionDecl : declaration ou corps de FUNCTION ----- }
+{ FUNCTION nom [(params)] RETURN type ;        => spec (forward)   }
+{ FUNCTION nom [(params)] RETURN type IS ...   => body (skip)      }
+Procedure ParseFunctionDecl;
+Var
+  Name : TString;
+  Idx  : Integer;
+  RetT : Integer;
+Begin
+  ExpectKw(KW_FUNCTION, 'FUNCTION');
+
+  If CurTokType <> TOK_IDENT Then
+  Begin Error('Nom de function attendu'); Exit; End;
+  Name := CurTokStr;
+  Consume;
+
+  { Creer ou trouver dans la table des sous-programmes }
+  Idx := FindSub(Name);
+  If Idx = 0 Then
+    Idx := AddSub(Name, True, TYPE_VOID);
+  If Idx = 0 Then Exit; { table pleine }
+
+  { Liste de parametres optionnelle }
+  If CurTokType = TOK_LPAREN Then
+    ParseParamList(Idx);
+
+  { RETURN type }
+  ExpectKw(KW_RETURN, 'RETURN');
+  RetT := ParseTypeRef;
+  SubTab[Idx].RetType := RetT;
+
+  { Spec ou body ? }
+  If CurTokType = TOK_SEMI Then
+  Begin
+    { Forward declaration }
+    SubTab[Idx].IsForward := True;
+    Consume; { ; }
+    If Opts.Verbose Then
+      WriteLn('  Function spec: ', Name, ' (',
+              SubTab[Idx].ParamCount, ' params) -> type #',
+              RetT);
+  End
+  Else If TokIsKw(KW_IS) Then
+  Begin
+    { Corps de function }
+    SubTab[Idx].IsForward := False;
+    Consume; { IS }
+    If Opts.Verbose Then
+      WriteLn('  Function body: ', Name, ' (',
+              SubTab[Idx].ParamCount, ' params) -> type #',
+              RetT, ' [skip]');
+    SkipProcBody;
+  End
+  Else
+    Error(''';'' ou ''IS'' attendu apres signature FUNCTION');
+End;
+
 { ---- LexInit : ouvrir le fichier source et lire le 1er token }
 Procedure LexInit;
 Begin
@@ -4165,8 +4417,15 @@ Begin
     Begin
       ParseObjectDecl;
     End;
-    WriteLn('ADACW32: TODO 12+ non encore implemente - ',
-            'WITH/USE + TYPE/SUBTYPE + objets OK');
+    { TODO 12 : boucle PROCEDURE / FUNCTION }
+    While (CurTokType = TOK_IDENT) And
+          ((CurTokKw = KW_PROCEDURE) Or (CurTokKw = KW_FUNCTION)) Do
+    Begin
+      If CurTokKw = KW_PROCEDURE Then ParseProcedureDecl
+      Else ParseFunctionDecl;
+    End;
+    WriteLn('ADACW32: TODO 13+ non encore implemente - ',
+            'WITH/USE + TYPE/SUBTYPE + objets + sous-programmes OK');
   End;
   LexClose;
   BilanCompilation;
