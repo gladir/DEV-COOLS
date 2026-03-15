@@ -274,7 +274,7 @@ TODO 12 - Instructions arithmetiques entieres [IMPLEMENTE]
   - TAS.B  ea                : tester et positionner bit 7
   - Exemples : SAMPLES\ASM68\arith.asm, test_arith.asm
 
-TODO 13 - Instructions logiques et de manipulation de bits
+TODO 13 - Instructions logiques et de manipulation de bits [IMPLEMENTE]
   -----------------------------------------------------------
   - AND.s  ea, Dn / Dn, ea  : ET logique
   - ANDI.s #imm, ea         : ET immediat

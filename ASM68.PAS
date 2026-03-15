@@ -30,7 +30,7 @@
 { TODO 10 - Assemblage conditionnel (IF, IFDEF, IFEQ, etc.) [IMPLEMENTE] }
 { TODO 11 - Instructions de transfert de donnees [IMPLEMENTE] }
 { TODO 12 - Instructions arithmetiques entieres [IMPLEMENTE] }
-{ TODO 13 - Instructions logiques et de manipulation de bits }
+{ TODO 13 - Instructions logiques et de manipulation de bits [IMPLEMENTE] }
 { TODO 14 - Instructions de decalage et rotation }
 { TODO 15 - Instructions de branchement et controle de flux }
 { TODO 16 - Instructions BCD et operations speciales }
@@ -5813,6 +5813,541 @@ Begin
  EmitExtWords(Op, SIZE_BYTE);
 End;
 
+{ ====================================================================== }
+{ TODO 13 - Instructions logiques et de manipulation de bits             }
+{ ====================================================================== }
+
+Procedure InstrAND(OpSize: Integer);
+{ AND.s <ea>,Dn  -> $C000 | Dn<<9 | opmode(3) | srcEA(6)
+  AND.s Dn,<ea>  -> $C000 | Dn<<9 | opmode(3) | dstEA(6)
+  opmode ea,Dn : 000=byte, 001=word, 010=long
+  opmode Dn,ea : 100=byte, 101=word, 110=long }
+Var
+ Src, Dst: TOperand;
+ EA: Integer;
+ InstrW: Word;
+ ActualSize, SzBits, OpMode: Integer;
+ Dn: Integer;
+Begin
+ ActualSize := OpSize;
+ If ActualSize = 0 Then ActualSize := SIZE_WORD;
+ SzBits := EncodeSizeBits(ActualSize);
+
+ ParseOperand(Src);
+ If cur_tok <> TOK_COMMA Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'virgule attendue');
+  SkipToEOL; Exit;
+ End;
+ NextToken;
+ ParseOperand(Dst);
+
+ If Dst.Mode = AM_DATA_REG Then
+ Begin
+  { AND <ea>, Dn }
+  Dn := Dst.Reg;
+  OpMode := SzBits; { 000/001/010 }
+  If Not CheckEAMask(Src, EA_DATA) Then
+  Begin
+   Error(cur_tok_line, cur_tok_col,
+         'mode source invalide pour AND');
+   SkipToEOL; Exit;
+  End;
+  EA := EncodeEA(Src);
+  If EA < 0 Then
+  Begin
+   Error(cur_tok_line, cur_tok_col, 'encodage EA source impossible');
+   SkipToEOL; Exit;
+  End;
+  InstrW := $C000 or Word(Dn shl 9) or Word(OpMode shl 6) or Word(EA);
+  Emit16(InstrW);
+  EmitExtWords(Src, ActualSize);
+ End
+ Else If Src.Mode = AM_DATA_REG Then
+ Begin
+  { AND Dn, <ea> }
+  Dn := Src.Reg;
+  OpMode := SzBits + 4; { 100/101/110 }
+  If Not CheckEAMask(Dst, EA_MEM_ALT) Then
+  Begin
+   Error(cur_tok_line, cur_tok_col,
+         'mode destination invalide pour AND Dn,<ea>');
+   SkipToEOL; Exit;
+  End;
+  EA := EncodeEA(Dst);
+  If EA < 0 Then
+  Begin
+   Error(cur_tok_line, cur_tok_col, 'encodage EA destination impossible');
+   SkipToEOL; Exit;
+  End;
+  InstrW := $C000 or Word(Dn shl 9) or Word(OpMode shl 6) or Word(EA);
+  Emit16(InstrW);
+  EmitExtWords(Dst, ActualSize);
+ End
+ Else
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'AND requiert un registre de donnees en source ou destination');
+  SkipToEOL;
+ End;
+End;
+
+Procedure InstrANDI(OpSize: Integer);
+{ ANDI.s #imm,<ea> -> $0200 | sz<<6 | dstEA(6) + ext words
+  ANDI #imm,CCR    -> $023C + imm word
+  ANDI #imm,SR     -> $027C + imm word }
+Var
+ Src, Dst: TOperand;
+ EA: Integer;
+ InstrW: Word;
+ ActualSize, SzBits: Integer;
+Begin
+ ActualSize := OpSize;
+ If ActualSize = 0 Then ActualSize := SIZE_WORD;
+ SzBits := EncodeSizeBits(ActualSize);
+
+ ParseOperand(Src);
+ If cur_tok <> TOK_COMMA Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'virgule attendue');
+  SkipToEOL; Exit;
+ End;
+ NextToken;
+ ParseOperand(Dst);
+
+ If Src.Mode <> AM_IMMEDIATE Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'ANDI requiert un immediat en source');
+  SkipToEOL; Exit;
+ End;
+
+ { Cas special : ANDI #imm, CCR / SR }
+ If Dst.Mode = AM_SR_CCR Then
+ Begin
+  If Dst.Reg = REG_CCR Then
+  Begin
+   Emit16($023C);
+   Emit16(Word(Src.Imm32 and $FF));
+  End
+  Else If Dst.Reg = REG_SR Then
+  Begin
+   Emit16($027C);
+   Emit16(Word(Src.Imm32 and $FFFF));
+  End
+  Else
+  Begin
+   Error(cur_tok_line, cur_tok_col, 'destination invalide pour ANDI');
+   SkipToEOL;
+  End;
+  Exit;
+ End;
+
+ If Not CheckEAMask(Dst, EA_DATA_ALT) Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'mode destination invalide pour ANDI');
+  SkipToEOL; Exit;
+ End;
+
+ EA := EncodeEA(Dst);
+ If EA < 0 Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'encodage EA destination impossible');
+  SkipToEOL; Exit;
+ End;
+
+ InstrW := $0200 or Word(SzBits shl 6) or Word(EA);
+ Emit16(InstrW);
+ EmitExtWords(Src, ActualSize);
+ EmitExtWords(Dst, ActualSize);
+End;
+
+Procedure InstrOR(OpSize: Integer);
+{ OR.s <ea>,Dn  -> $8000 | Dn<<9 | opmode(3) | srcEA(6)
+  OR.s Dn,<ea>  -> $8000 | Dn<<9 | opmode(3) | dstEA(6)
+  opmode ea,Dn : 000=byte, 001=word, 010=long
+  opmode Dn,ea : 100=byte, 101=word, 110=long }
+Var
+ Src, Dst: TOperand;
+ EA: Integer;
+ InstrW: Word;
+ ActualSize, SzBits, OpMode: Integer;
+ Dn: Integer;
+Begin
+ ActualSize := OpSize;
+ If ActualSize = 0 Then ActualSize := SIZE_WORD;
+ SzBits := EncodeSizeBits(ActualSize);
+
+ ParseOperand(Src);
+ If cur_tok <> TOK_COMMA Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'virgule attendue');
+  SkipToEOL; Exit;
+ End;
+ NextToken;
+ ParseOperand(Dst);
+
+ If Dst.Mode = AM_DATA_REG Then
+ Begin
+  { OR <ea>, Dn }
+  Dn := Dst.Reg;
+  OpMode := SzBits; { 000/001/010 }
+  If Not CheckEAMask(Src, EA_DATA) Then
+  Begin
+   Error(cur_tok_line, cur_tok_col,
+         'mode source invalide pour OR');
+   SkipToEOL; Exit;
+  End;
+  EA := EncodeEA(Src);
+  If EA < 0 Then
+  Begin
+   Error(cur_tok_line, cur_tok_col, 'encodage EA source impossible');
+   SkipToEOL; Exit;
+  End;
+  InstrW := $8000 or Word(Dn shl 9) or Word(OpMode shl 6) or Word(EA);
+  Emit16(InstrW);
+  EmitExtWords(Src, ActualSize);
+ End
+ Else If Src.Mode = AM_DATA_REG Then
+ Begin
+  { OR Dn, <ea> }
+  Dn := Src.Reg;
+  OpMode := SzBits + 4; { 100/101/110 }
+  If Not CheckEAMask(Dst, EA_MEM_ALT) Then
+  Begin
+   Error(cur_tok_line, cur_tok_col,
+         'mode destination invalide pour OR Dn,<ea>');
+   SkipToEOL; Exit;
+  End;
+  EA := EncodeEA(Dst);
+  If EA < 0 Then
+  Begin
+   Error(cur_tok_line, cur_tok_col, 'encodage EA destination impossible');
+   SkipToEOL; Exit;
+  End;
+  InstrW := $8000 or Word(Dn shl 9) or Word(OpMode shl 6) or Word(EA);
+  Emit16(InstrW);
+  EmitExtWords(Dst, ActualSize);
+ End
+ Else
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'OR requiert un registre de donnees en source ou destination');
+  SkipToEOL;
+ End;
+End;
+
+Procedure InstrORI(OpSize: Integer);
+{ ORI.s #imm,<ea> -> $0000 | sz<<6 | dstEA(6) + ext words
+  ORI #imm,CCR    -> $003C + imm word
+  ORI #imm,SR     -> $007C + imm word }
+Var
+ Src, Dst: TOperand;
+ EA: Integer;
+ InstrW: Word;
+ ActualSize, SzBits: Integer;
+Begin
+ ActualSize := OpSize;
+ If ActualSize = 0 Then ActualSize := SIZE_WORD;
+ SzBits := EncodeSizeBits(ActualSize);
+
+ ParseOperand(Src);
+ If cur_tok <> TOK_COMMA Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'virgule attendue');
+  SkipToEOL; Exit;
+ End;
+ NextToken;
+ ParseOperand(Dst);
+
+ If Src.Mode <> AM_IMMEDIATE Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'ORI requiert un immediat en source');
+  SkipToEOL; Exit;
+ End;
+
+ { Cas special : ORI #imm, CCR / SR }
+ If Dst.Mode = AM_SR_CCR Then
+ Begin
+  If Dst.Reg = REG_CCR Then
+  Begin
+   Emit16($003C);
+   Emit16(Word(Src.Imm32 and $FF));
+  End
+  Else If Dst.Reg = REG_SR Then
+  Begin
+   Emit16($007C);
+   Emit16(Word(Src.Imm32 and $FFFF));
+  End
+  Else
+  Begin
+   Error(cur_tok_line, cur_tok_col, 'destination invalide pour ORI');
+   SkipToEOL;
+  End;
+  Exit;
+ End;
+
+ If Not CheckEAMask(Dst, EA_DATA_ALT) Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'mode destination invalide pour ORI');
+  SkipToEOL; Exit;
+ End;
+
+ EA := EncodeEA(Dst);
+ If EA < 0 Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'encodage EA destination impossible');
+  SkipToEOL; Exit;
+ End;
+
+ InstrW := $0000 or Word(SzBits shl 6) or Word(EA);
+ Emit16(InstrW);
+ EmitExtWords(Src, ActualSize);
+ EmitExtWords(Dst, ActualSize);
+End;
+
+Procedure InstrEOR(OpSize: Integer);
+{ EOR.s Dn,<ea> -> $B000 | Dn<<9 | opmode(3) | dstEA(6)
+  opmode : 100=byte, 101=word, 110=long (uniquement forme Dn,ea) }
+Var
+ Src, Dst: TOperand;
+ EA: Integer;
+ InstrW: Word;
+ ActualSize, SzBits, OpMode: Integer;
+ Dn: Integer;
+Begin
+ ActualSize := OpSize;
+ If ActualSize = 0 Then ActualSize := SIZE_WORD;
+ SzBits := EncodeSizeBits(ActualSize);
+
+ ParseOperand(Src);
+ If cur_tok <> TOK_COMMA Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'virgule attendue');
+  SkipToEOL; Exit;
+ End;
+ NextToken;
+ ParseOperand(Dst);
+
+ If Src.Mode <> AM_DATA_REG Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'EOR requiert un registre de donnees en source');
+  SkipToEOL; Exit;
+ End;
+
+ Dn := Src.Reg;
+ OpMode := SzBits + 4; { 100/101/110 }
+
+ If Not CheckEAMask(Dst, EA_DATA_ALT) Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'mode destination invalide pour EOR');
+  SkipToEOL; Exit;
+ End;
+
+ EA := EncodeEA(Dst);
+ If EA < 0 Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'encodage EA destination impossible');
+  SkipToEOL; Exit;
+ End;
+
+ InstrW := $B000 or Word(Dn shl 9) or Word(OpMode shl 6) or Word(EA);
+ Emit16(InstrW);
+ EmitExtWords(Dst, ActualSize);
+End;
+
+Procedure InstrEORI(OpSize: Integer);
+{ EORI.s #imm,<ea> -> $0A00 | sz<<6 | dstEA(6) + ext words
+  EORI #imm,CCR    -> $0A3C + imm word
+  EORI #imm,SR     -> $0A7C + imm word }
+Var
+ Src, Dst: TOperand;
+ EA: Integer;
+ InstrW: Word;
+ ActualSize, SzBits: Integer;
+Begin
+ ActualSize := OpSize;
+ If ActualSize = 0 Then ActualSize := SIZE_WORD;
+ SzBits := EncodeSizeBits(ActualSize);
+
+ ParseOperand(Src);
+ If cur_tok <> TOK_COMMA Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'virgule attendue');
+  SkipToEOL; Exit;
+ End;
+ NextToken;
+ ParseOperand(Dst);
+
+ If Src.Mode <> AM_IMMEDIATE Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'EORI requiert un immediat en source');
+  SkipToEOL; Exit;
+ End;
+
+ { Cas special : EORI #imm, CCR / SR }
+ If Dst.Mode = AM_SR_CCR Then
+ Begin
+  If Dst.Reg = REG_CCR Then
+  Begin
+   Emit16($0A3C);
+   Emit16(Word(Src.Imm32 and $FF));
+  End
+  Else If Dst.Reg = REG_SR Then
+  Begin
+   Emit16($0A7C);
+   Emit16(Word(Src.Imm32 and $FFFF));
+  End
+  Else
+  Begin
+   Error(cur_tok_line, cur_tok_col, 'destination invalide pour EORI');
+   SkipToEOL;
+  End;
+  Exit;
+ End;
+
+ If Not CheckEAMask(Dst, EA_DATA_ALT) Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'mode destination invalide pour EORI');
+  SkipToEOL; Exit;
+ End;
+
+ EA := EncodeEA(Dst);
+ If EA < 0 Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'encodage EA destination impossible');
+  SkipToEOL; Exit;
+ End;
+
+ InstrW := $0A00 or Word(SzBits shl 6) or Word(EA);
+ Emit16(InstrW);
+ EmitExtWords(Src, ActualSize);
+ EmitExtWords(Dst, ActualSize);
+End;
+
+Procedure InstrNOT(OpSize: Integer);
+{ NOT.s <ea> -> $4600 | sz<<6 | dstEA(6) }
+Var
+ Op: TOperand;
+ EA: Integer;
+ InstrW: Word;
+ ActualSize, SzBits: Integer;
+Begin
+ ActualSize := OpSize;
+ If ActualSize = 0 Then ActualSize := SIZE_WORD;
+ SzBits := EncodeSizeBits(ActualSize);
+
+ ParseOperand(Op);
+ If Not CheckEAMask(Op, EA_DATA_ALT) Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'mode d''adressage invalide pour NOT');
+  SkipToEOL; Exit;
+ End;
+
+ EA := EncodeEA(Op);
+ If EA < 0 Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'encodage EA impossible');
+  SkipToEOL; Exit;
+ End;
+
+ InstrW := $4600 or Word(SzBits shl 6) or Word(EA);
+ Emit16(InstrW);
+ EmitExtWords(Op, ActualSize);
+End;
+
+{ --- Instructions de manipulation de bits (BTST, BSET, BCLR, BCHG) --- }
+
+Procedure InstrBitOp(DynBase, StatBase: Word; Const Name: String;
+                     AllowReadOnly: Boolean);
+{ Generique pour BTST/BSET/BCLR/BCHG
+  DynBase  = opcode de base pour forme Dn,<ea>
+  StatBase = opcode de base pour forme #imm,<ea>
+  AllowReadOnly = True pour BTST (EA_DATA), False sinon (EA_DATA_ALT) }
+Var
+ Src, Dst: TOperand;
+ EA: Integer;
+ InstrW: Word;
+ Dn: Integer;
+ EAMask: Integer;
+Begin
+ ParseOperand(Src);
+ If cur_tok <> TOK_COMMA Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'virgule attendue');
+  SkipToEOL; Exit;
+ End;
+ NextToken;
+ ParseOperand(Dst);
+
+ If AllowReadOnly Then
+  EAMask := EA_DATA
+ Else
+  EAMask := EA_DATA_ALT;
+
+ If Not CheckEAMask(Dst, EAMask) Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'mode destination invalide pour ' + Name);
+  SkipToEOL; Exit;
+ End;
+
+ EA := EncodeEA(Dst);
+ If EA < 0 Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'encodage EA destination impossible');
+  SkipToEOL; Exit;
+ End;
+
+ If Src.Mode = AM_DATA_REG Then
+ Begin
+  { Forme dynamique : Dn, <ea> }
+  Dn := Src.Reg;
+  InstrW := DynBase or Word(Dn shl 9) or Word(EA);
+  Emit16(InstrW);
+  EmitExtWords(Dst, SIZE_BYTE);
+ End
+ Else If Src.Mode = AM_IMMEDIATE Then
+ Begin
+  { Forme statique : #imm, <ea> }
+  InstrW := StatBase or Word(EA);
+  Emit16(InstrW);
+  Emit16(Word(Src.Imm32 and $FF));
+  EmitExtWords(Dst, SIZE_BYTE);
+ End
+ Else
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        Name + ' requiert Dn ou #imm en source');
+  SkipToEOL;
+ End;
+End;
+
+Procedure InstrBTST;
+Begin
+ InstrBitOp($0100, $0800, 'BTST', True);
+End;
+
+Procedure InstrBSET;
+Begin
+ InstrBitOp($01C0, $08C0, 'BSET', False);
+End;
+
+Procedure InstrBCLR;
+Begin
+ InstrBitOp($0180, $0880, 'BCLR', False);
+End;
+
+Procedure InstrBCHG;
+Begin
+ InstrBitOp($0140, $0840, 'BCHG', False);
+End;
+
 Procedure AssembleInstruction(Const OpName: String; OpSize: Integer);
 { Dispatch : appelle le bon encodeur selon le mnemonique }
 Begin
@@ -5853,6 +6388,18 @@ Begin
  Else If OpName = 'CMPM' Then InstrCMPM(OpSize)
  Else If OpName = 'TST' Then InstrTST(OpSize)
  Else If OpName = 'TAS' Then InstrTAS
+ { --- Instructions logiques et bit (TODO 13) --- }
+ Else If OpName = 'AND' Then InstrAND(OpSize)
+ Else If OpName = 'ANDI' Then InstrANDI(OpSize)
+ Else If OpName = 'OR' Then InstrOR(OpSize)
+ Else If OpName = 'ORI' Then InstrORI(OpSize)
+ Else If OpName = 'EOR' Then InstrEOR(OpSize)
+ Else If OpName = 'EORI' Then InstrEORI(OpSize)
+ Else If OpName = 'NOT' Then InstrNOT(OpSize)
+ Else If OpName = 'BTST' Then InstrBTST
+ Else If OpName = 'BSET' Then InstrBSET
+ Else If OpName = 'BCLR' Then InstrBCLR
+ Else If OpName = 'BCHG' Then InstrBCHG
  Else
  Begin
   Warning(cur_tok_line, cur_tok_col,
