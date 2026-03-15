@@ -329,7 +329,7 @@
             Gestion du point-virgule terminateur
             Noms qualifies (pkg.proc) dans identifiant dispatcher
 
-  TODO 16 - PARSEUR : AFFECTATION ET APPELS DE PROCEDURE
+  TODO 16 - PARSEUR : AFFECTATION ET APPELS DE PROCEDURE [IMPLEMENTE]
             ParseAssignment :
               ident [.field | (index)] := expr ;
               GenLoadAddr(lhs) pour obtenir adresse destination

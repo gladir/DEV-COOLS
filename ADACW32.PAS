@@ -338,7 +338,7 @@
             Resynchronisation sur erreur : SkipToSemi
             Gestion du point-virgule terminateur
 
-  TODO 16 - PARSEUR : AFFECTATION ET APPELS DE PROCEDURE
+  TODO 16 - PARSEUR : AFFECTATION ET APPELS DE PROCEDURE [IMPLEMENTE]
             ParseAssignment :
               ident [.field | (index)] := expr ;
               GenLoadAddr(lhs) pour obtenir adresse destination
@@ -4553,27 +4553,145 @@ Begin
   End;
 End;
 
-{ ---- ParseAssignmentStub : affectation (stub -> TODO 16) ----- }
-{ Syntaxe : target := expr ;                                      }
-{ Pour l instant, on skip le tout jusqu au ';'.                   }
-Procedure ParseAssignmentStub;
+{ ============================================================ }
+{ TODO 16 - PARSEUR : AFFECTATION ET APPELS DE PROCEDURE        }
+{ ============================================================ }
+
+{ ---- GenLoadAddr : charger l adresse d un symbole dans EAX --- }
+{ LEA EAX, [variable] pour passage par adresse (OUT/INOUT).      }
+Procedure GenLoadAddr(SymIdx : Integer);
+Var
+  SC, Off : Integer;
+  Lbl     : TString;
 Begin
-  EmitComment('assignment := ... (stub)');
-  While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) And
-        (Not TokIsKw(KW_END)) And (Not TokIsKw(KW_EXCEPTION)) Do
-    Consume;
+  SC  := SymTab[SymIdx].StoreClass;
+  Off := SymTab[SymIdx].BpOffset;
+  Lbl := SymTab[SymIdx].AsmLabel;
+  Case SC Of
+    STORE_STATIC :
+      EmitI('LEA  EAX, [' + Lbl + ']');
+    STORE_AUTO :
+      EmitI('LEA  EAX, [EBP' + BpOff32(Off) + ']');
+    STORE_PARAM :
+      EmitI('LEA  EAX, [EBP' + BpOff32(Off) + ']');
+  Else
+    Error('Impossible d''obtenir l''adresse de : ' +
+          SymTab[SymIdx].Name);
+    EmitI('XOR  EAX, EAX');
+  End;
+End;
+
+{ ---- ParseAssignment : affectation (TODO 16) ----------------- }
+{ Syntaxe : target := expr ;                                      }
+{ Le nom de la cible est deja lu et passe dans SavedName.         }
+{ Le token ':=' a deja ete consomme.                              }
+{ On parse l expression RHS puis on stocke dans la variable.      }
+Procedure ParseAssignment(Const TargetName : TString);
+Var
+  Sym : Integer;
+Begin
+  EmitComment('assign ' + TargetName + ' := ...');
+  { Evaluer l expression RHS }
+  ParseExpr;
+  { Trouver le symbole cible }
+  Sym := FindSym(TargetName);
+  If Sym > 0 Then
+    GenStoreVar(Sym)
+  Else
+    Error('Variable inconnue pour assignation : ' + TargetName);
+  { Consommer le point-virgule }
   If CurTokType = TOK_SEMI Then Consume;
 End;
 
-{ ---- ParseProcCallStub : appel de procedure (stub -> TODO 16) - }
-{ Syntaxe : nom [(args)] ;                                         }
-{ Pour l instant, on skip le tout jusqu au ';'.                    }
-Procedure ParseProcCallStub;
+{ ---- ParseProcedureCall : appel de procedure (TODO 16) ------- }
+{ Syntaxe : nom [(arg1, arg2, ...)] ;                              }
+{ Le nom de la procedure est deja lu et passe dans SavedName.     }
+{ ParseExpr pour chaque argument. PUSH EAX pour IN,                }
+{ LEA + PUSH pour OUT/INOUT. CALL label. STDCALL callee-cleanup.   }
+Procedure ParseProcedureCall(Const ProcName : TString);
+Var
+  Sub, I   : Integer;
+  ArgCount : Integer;
+  ArgSym   : Integer;
+  ArgName  : TString;
 Begin
-  EmitComment('proc call ... (stub)');
-  While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) And
-        (Not TokIsKw(KW_END)) And (Not TokIsKw(KW_EXCEPTION)) Do
-    Consume;
+  Sub := FindSub(ProcName);
+  If Sub > 0 Then
+  Begin
+    EmitComment('call ' + ProcName);
+    ArgCount := 0;
+    { Parser les arguments si ( est present }
+    If CurTokType = TOK_LPAREN Then
+    Begin
+      Consume; { ( }
+      While (CurTokType <> TOK_RPAREN) And (CurTokType <> TOK_EOF) Do
+      Begin
+        Inc(ArgCount);
+        { Verifier le mode du parametre }
+        If (ArgCount <= SubTab[Sub].ParamCount) And
+           ((SubTab[Sub].ParamModes[ArgCount] = PARAM_OUT) Or
+            (SubTab[Sub].ParamModes[ArgCount] = PARAM_INOUT)) Then
+        Begin
+          { Passage par adresse : LEA EAX, [var] + PUSH EAX }
+          If CurTokType = TOK_IDENT Then
+          Begin
+            ArgName := CurTokStr;
+            Consume;
+            ArgSym := FindSym(ArgName);
+            If ArgSym > 0 Then
+              GenLoadAddr(ArgSym)
+            Else
+            Begin
+              Error('Variable inconnue pour parametre OUT/INOUT : ' +
+                    ArgName);
+              EmitI('XOR  EAX, EAX');
+            End;
+          End
+          Else
+          Begin
+            { Expression complexe pour OUT/INOUT : erreur }
+            Error('Parametre OUT/INOUT doit etre une variable');
+            ParseExpr;
+          End;
+          GenPushEAX;
+        End
+        Else
+        Begin
+          { Passage par valeur (IN) : evaluer et PUSH }
+          ParseExpr;
+          GenPushEAX;
+        End;
+        If CurTokType = TOK_COMMA Then Consume;
+      End;
+      Expect(TOK_RPAREN, '`)` attendu apres arguments');
+    End;
+    { Emettre l appel }
+    EmitI('CALL ' + SubTab[Sub].AsmLabel);
+    { STDCALL : callee-cleanup, pas de ADD ESP ici }
+  End
+  Else
+  Begin
+    { Procedure inconnue : avertir et skip les args }
+    WarnMsg('Procedure non declaree : ' + ProcName +
+            ' (appel genere sans verification)');
+    EmitComment('call ' + ProcName + ' (undeclared)');
+    ArgCount := 0;
+    If CurTokType = TOK_LPAREN Then
+    Begin
+      Consume; { ( }
+      While (CurTokType <> TOK_RPAREN) And (CurTokType <> TOK_EOF) Do
+      Begin
+        ParseExpr;
+        GenPushEAX;
+        Inc(ArgCount);
+        If CurTokType = TOK_COMMA Then Consume;
+      End;
+      Expect(TOK_RPAREN, '`)` attendu apres arguments');
+    End;
+    { Generer un CALL avec le nom mangled par defaut }
+    EmitI('CALL ' + ADA_FN_PFX + AsmIdent(StrUpperCase(ProcName)));
+  End;
+  { Consommer le point-virgule }
   If CurTokType = TOK_SEMI Then Consume;
 End;
 
@@ -4679,30 +4797,34 @@ Begin
     Begin
       { Assignation : ident := expr ; }
       Consume; { := }
-      ParseAssignmentStub;
+      ParseAssignment(SavedName);
     End
     Else If CurTokType = TOK_DOT Then
     Begin
       { Nom qualifie : pkg.proc ou rec.field := ... }
-      { Consommer la qualification }
+      { Consommer la qualification et construire le nom complet }
       While CurTokType = TOK_DOT Do
       Begin
         Consume; { . }
-        If CurTokType = TOK_IDENT Then Consume;
+        If CurTokType = TOK_IDENT Then
+        Begin
+          SavedName := SavedName + '.' + CurTokStr;
+          Consume;
+        End;
       End;
       { Verifier si c est une assignation }
       If CurTokType = TOK_COLONASSIGN Then
       Begin
         Consume; { := }
-        ParseAssignmentStub;
+        ParseAssignment(SavedName);
       End
       Else
-        ParseProcCallStub;
+        ParseProcedureCall(SavedName);
     End
     Else
     Begin
       { Appel de procedure : nom [(args)] ; }
-      ParseProcCallStub;
+      ParseProcedureCall(SavedName);
     End;
   End
   Else If CurTokType = TOK_SEMI Then
