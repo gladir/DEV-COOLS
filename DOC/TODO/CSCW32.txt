@@ -102,7 +102,7 @@
               (contrairement a C, les chaines adjacentes ne
               fusionnent pas ; utiliser l operateur +).
 
-  TODO 05 - TABLE DES SYMBOLES
+  TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
             TSymCat : SC_VAR, SC_PARAM, SC_METHOD, SC_CLASS,
               SC_FIELD, SC_ENUM_VAL, SC_LABEL, SC_STATIC,
               SC_NAMESPACE, SC_CONST.

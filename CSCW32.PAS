@@ -98,7 +98,7 @@
             null : pointeur nul (0).
             Expressions constantes : const int X = 10;.
 
-  TODO 05 - TABLE DES SYMBOLES
+  TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
             TSymCat : SC_VAR, SC_PARAM, SC_METHOD, SC_CLASS,
               SC_FIELD, SC_ENUM_VAL, SC_LABEL, SC_STATIC,
               SC_NAMESPACE, SC_CONST.
@@ -2303,6 +2303,354 @@ Begin
   End;
 End;
 
+{ ============================================================ }
+{ TODO 05 - TABLE DES SYMBOLES                                  }
+{           [IMPLEMENTE]                                        }
+{ ============================================================ }
+
+Const
+  MAX_SYM      = 2048;          { max symboles dans la table         }
+  MAX_SCOPE    = 64;            { profondeur max de portees          }
+
+  { Prefixes de mangling ASM 32 bits }
+  CSC_VAR_PFX  = '_CSCV_';    { variables globales / champs         }
+  CSC_FN_PFX   = '_CSCF_';    { methodes                            }
+  { CSC_STR_PFX deja defini = '_CSCK_' pour chaines constantes     }
+  CSC_RT_PFX   = '_CSCRT_';   { runtime                             }
+  CSC_LBL_PFX  = '_CSCL_';    { labels internes                     }
+  CSC_ARR_PFX  = '_CSCA_';    { tableaux                            }
+  CSC_CLS_PFX  = '_CSCC_';    { classes                             }
+  CSC_NS_PFX   = '_CSCN_';    { namespaces                          }
+  CSC_ENUM_PFX = '_CSCE_';    { enumerations                        }
+  CSC_ST_PFX   = '_CSCST_';   { variables statiques locales         }
+
+Type
+  TSymCat = (
+    SC_VAR,          { variable locale ou globale                    }
+    SC_PARAM,        { parametre de methode                          }
+    SC_METHOD,       { methode (static ou instance)                  }
+    SC_CLASS,        { declaration de classe                         }
+    SC_FIELD,        { champ d instance                              }
+    SC_ENUM_VAL,     { valeur d enumeration                          }
+    SC_LABEL,        { label interne (goto etc.)                     }
+    SC_STATIC,       { variable/champ statique                       }
+    SC_NAMESPACE,    { espace de noms                                }
+    SC_CONST         { constante nommee                              }
+  );
+
+  TSymRec = Record
+    Name        : TString;      { nom C# original (minuscules)      }
+    MangledName : TString;      { nom ASM mangled                    }
+    Cat         : TSymCat;      { categorie (var/param/method etc.)  }
+    TypeIdx     : Integer;      { indice dans la table des types     }
+    Offset      : Integer;      { offset EBP si local, 0 si global  }
+    ScopeLevel  : Integer;      { niveau de portee (0 = global)      }
+    ScopeId     : Integer;      { identifiant unique du scope        }
+    IsGlobal    : Boolean;      { True si symbole global             }
+    IsStatic    : Boolean;      { True si static                     }
+    IsConst     : Boolean;      { True si constante                  }
+  End;
+
+Var
+  SymTab        : Array[0..MAX_SYM - 1] Of TSymRec;
+  SymCount      : Integer;      { nombre de symboles enregistres     }
+  CurScopeLevel : Integer;      { niveau courant de portee (0-based) }
+  CurScopeId    : Integer;      { identifiant courant du scope       }
+  ScopeIdSeq    : Integer;      { compteur pour generer des scope id }
+
+{ ------------------------------------------------------------ }
+{ SymMangle : generer le nom ASM mangled                        }
+{   Le prefixe depend de la categorie du symbole                }
+{ ------------------------------------------------------------ }
+
+Function SymMangle(Const Name : TString; Cat : TSymCat) : TString;
+Var
+  Pfx : TString;
+Begin
+  Case Cat Of
+    SC_VAR       : Pfx := CSC_VAR_PFX;
+    SC_PARAM     : Pfx := CSC_VAR_PFX;
+    SC_METHOD    : Pfx := CSC_FN_PFX;
+    SC_CLASS     : Pfx := CSC_CLS_PFX;
+    SC_FIELD     : Pfx := CSC_VAR_PFX;
+    SC_ENUM_VAL  : Pfx := CSC_ENUM_PFX;
+    SC_LABEL     : Pfx := CSC_LBL_PFX;
+    SC_STATIC    : Pfx := CSC_ST_PFX;
+    SC_NAMESPACE : Pfx := CSC_NS_PFX;
+    SC_CONST     : Pfx := CSC_VAR_PFX;
+  Else
+    Pfx := CSC_VAR_PFX;
+  End;
+  SymMangle := Pfx + StrUpperCase(Name);
+End;
+
+{ ------------------------------------------------------------ }
+{ SymFindInScope : chercher un symbole dans un scope precis     }
+{   Retourne l indice (0-based) ou -1 si non trouve             }
+{ ------------------------------------------------------------ }
+
+Function SymFindInScope(Const Name : TString;
+                        Level : Integer) : Integer;
+Var
+  I  : Integer;
+  Lw : TString;
+Begin
+  Lw := StrLowerCase(Name);
+  For I := SymCount - 1 DownTo 0 Do
+  Begin
+    If (SymTab[I].Name = Lw) And
+       (SymTab[I].ScopeLevel = Level) Then
+    Begin
+      SymFindInScope := I;
+      Exit;
+    End;
+  End;
+  SymFindInScope := -1;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymAdd : ajouter un symbole dans la table                     }
+{   Retourne l indice (0-based) ou -1 si table pleine           }
+{   Verifie les doublons dans le scope courant                  }
+{ ------------------------------------------------------------ }
+
+Function SymAdd(Const Name : TString; Cat : TSymCat;
+                TIdx : Integer) : Integer;
+Var
+  Lw  : TString;
+  Idx : Integer;
+  Dup : Integer;
+Begin
+  If SymCount >= MAX_SYM Then
+  Begin
+    WriteLn('CSCW32: erreur: table des symboles pleine (max ',
+            MAX_SYM, ')');
+    Inc(ErrorCount);
+    SymAdd := -1;
+    Exit;
+  End;
+
+  Lw := StrLowerCase(Name);
+
+  { Verifier doublon dans le scope courant }
+  Dup := SymFindInScope(Lw, CurScopeLevel);
+  If Dup >= 0 Then
+  Begin
+    { Doublon : avertissement et retour de l existant }
+    If Opts.Warnings Then
+      WarnMsg('symbole deja declare dans ce scope: ' + Name);
+    SymAdd := Dup;
+    Exit;
+  End;
+
+  Idx := SymCount;
+  Inc(SymCount);
+
+  SymTab[Idx].Name        := Lw;
+  SymTab[Idx].MangledName := SymMangle(Lw, Cat);
+  SymTab[Idx].Cat         := Cat;
+  SymTab[Idx].TypeIdx     := TIdx;
+  SymTab[Idx].Offset      := 0;
+  SymTab[Idx].ScopeLevel  := CurScopeLevel;
+  SymTab[Idx].ScopeId     := CurScopeId;
+  SymTab[Idx].IsGlobal    := (CurScopeLevel = 0);
+  SymTab[Idx].IsStatic    := False;
+  SymTab[Idx].IsConst     := (Cat = SC_CONST);
+
+  If Opts.DebugMode Then
+    WriteLn('  SYM_ADD[', Idx, ']: ', Lw,
+            ' cat=', Ord(Cat),
+            ' scope=', CurScopeLevel,
+            ' -> ', SymTab[Idx].MangledName);
+
+  SymAdd := Idx;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymFind : chercher un symbole (du plus recent au plus ancien) }
+{   Retourne l indice (0-based) ou -1 si non trouve             }
+{   Parcourt du scope le plus interne vers le global            }
+{ ------------------------------------------------------------ }
+
+Function SymFind(Const Name : TString) : Integer;
+Var
+  I  : Integer;
+  Lw : TString;
+Begin
+  Lw := StrLowerCase(Name);
+  For I := SymCount - 1 DownTo 0 Do
+  Begin
+    If (SymTab[I].Name = Lw) And
+       (SymTab[I].ScopeLevel <= CurScopeLevel) Then
+    Begin
+      SymFind := I;
+      Exit;
+    End;
+  End;
+  SymFind := -1;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymEnterScope : entrer dans un nouveau scope                  }
+{ ------------------------------------------------------------ }
+
+Procedure SymEnterScope;
+Begin
+  If CurScopeLevel >= MAX_SCOPE Then
+  Begin
+    WriteLn('CSCW32: erreur: profondeur de scope maximale atteinte');
+    Inc(ErrorCount);
+    Exit;
+  End;
+  Inc(CurScopeLevel);
+  Inc(ScopeIdSeq);
+  CurScopeId := ScopeIdSeq;
+  If Opts.DebugMode Then
+    WriteLn('  SCOPE_ENTER: level=', CurScopeLevel,
+            ' id=', CurScopeId);
+End;
+
+{ ------------------------------------------------------------ }
+{ SymLeaveScope : quitter le scope courant                      }
+{   Les symboles restent dans la table mais ne seront plus      }
+{   trouves par SymFind car ScopeLevel > CurScopeLevel          }
+{ ------------------------------------------------------------ }
+
+Procedure SymLeaveScope;
+Begin
+  If CurScopeLevel <= 0 Then
+  Begin
+    If Opts.Warnings Then
+      WarnMsg('tentative de quitter le scope global');
+    Exit;
+  End;
+  If Opts.DebugMode Then
+    WriteLn('  SCOPE_LEAVE: level=', CurScopeLevel);
+  Dec(CurScopeLevel);
+  If CurScopeLevel = 0 Then
+    CurScopeId := 0
+  Else
+    CurScopeId := CurScopeLevel;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymInit : initialiser la table et pre-enregistrer les         }
+{   methodes standard C# built-in                              }
+{ ------------------------------------------------------------ }
+
+Procedure SymInit;
+Var
+  Idx : Integer;
+Begin
+  SymCount      := 0;
+  CurScopeLevel := 0;
+  CurScopeId    := 0;
+  ScopeIdSeq    := 0;
+
+  { Methodes standard C# pre-enregistrees (built-in) }
+  { Console.Write (int/string/bool/char) }
+  Idx := SymAdd('Console.Write', SC_METHOD, 0);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'PRINT';
+    SymTab[Idx].IsStatic := True;
+  End;
+
+  { Console.WriteLine (int/string/bool/char) }
+  Idx := SymAdd('Console.WriteLine', SC_METHOD, 0);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'PRINTLN';
+    SymTab[Idx].IsStatic := True;
+  End;
+
+  { Console.ReadLine }
+  Idx := SymAdd('Console.ReadLine', SC_METHOD, 0);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'READSTR';
+    SymTab[Idx].IsStatic := True;
+  End;
+
+  { int.Parse }
+  Idx := SymAdd('int.Parse', SC_METHOD, 0);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'STRTONUM';
+    SymTab[Idx].IsStatic := True;
+  End;
+
+  { int.ToString }
+  Idx := SymAdd('int.ToString', SC_METHOD, 0);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'NUMTOSTR';
+    SymTab[Idx].IsStatic := True;
+  End;
+
+  { Math.Abs }
+  Idx := SymAdd('Math.Abs', SC_METHOD, 0);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'ABS';
+    SymTab[Idx].IsStatic := True;
+  End;
+
+  { Math.Max }
+  Idx := SymAdd('Math.Max', SC_METHOD, 0);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'MAX';
+    SymTab[Idx].IsStatic := True;
+  End;
+
+  { Math.Min }
+  Idx := SymAdd('Math.Min', SC_METHOD, 0);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'MIN';
+    SymTab[Idx].IsStatic := True;
+  End;
+
+  { Convert.ToInt32 }
+  Idx := SymAdd('Convert.ToInt32', SC_METHOD, 0);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'STRTONUM';
+    SymTab[Idx].IsStatic := True;
+  End;
+
+  { Convert.ToString }
+  Idx := SymAdd('Convert.ToString', SC_METHOD, 0);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'NUMTOSTR';
+    SymTab[Idx].IsStatic := True;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymCatName : nom textuel d une categorie de symbole           }
+{ ------------------------------------------------------------ }
+
+Function SymCatName(Cat : TSymCat) : TString;
+Begin
+  Case Cat Of
+    SC_VAR       : SymCatName := 'VAR';
+    SC_PARAM     : SymCatName := 'PARAM';
+    SC_METHOD    : SymCatName := 'METHOD';
+    SC_CLASS     : SymCatName := 'CLASS';
+    SC_FIELD     : SymCatName := 'FIELD';
+    SC_ENUM_VAL  : SymCatName := 'ENUM_VAL';
+    SC_LABEL     : SymCatName := 'LABEL';
+    SC_STATIC    : SymCatName := 'STATIC';
+    SC_NAMESPACE : SymCatName := 'NAMESPACE';
+    SC_CONST     : SymCatName := 'CONST';
+  Else
+    SymCatName := '?';
+  End;
+End;
+
 { ------------------------------------------------------------ }
 { ShowStats (corps)                                             }
 { ------------------------------------------------------------ }
@@ -2317,6 +2665,7 @@ Begin
   WriteLn('Usings           : ', UsingCount);
   WriteLn('Litteraux chaine : ', StrLitCount);
   WriteLn('Constantes       : ', ConstCount);
+  WriteLn('Symboles         : ', SymCount);
   WriteLn('Erreurs          : ', ErrorCount);
   WriteLn('Avertissements   : ', WarnCount);
 End;
@@ -2326,7 +2675,19 @@ End;
 { ------------------------------------------------------------ }
 
 Procedure Run;
-Var I : Integer;
+Var
+  I          : Integer;
+  SymIdx     : Integer;
+  NsName     : TString;       { nom du namespace courant           }
+  ClsName    : TString;       { nom de la classe courante          }
+  MethName   : TString;       { nom de la methode courante         }
+  VarType    : TString;       { type d une variable                }
+  VarName    : TString;       { nom d une variable                 }
+  InClass    : Boolean;       { True si on est dans une classe     }
+  InMethod   : Boolean;       { True si on est dans une methode    }
+  BraceDepth : Integer;       { profondeur des accolades           }
+  ClassDepth : Integer;       { profondeur a l entree de la classe }
+  MethDepth  : Integer;       { profondeur a l entree de la methode }
 Begin
   WriteLn('CSCW32: Compilation de ', Opts.SrcFile, ' ...');
 
@@ -2353,6 +2714,9 @@ Begin
   InitStrLitTable;
   InitConstTable;
 
+  { Initialiser la table des symboles (TODO 05) }
+  SymInit;
+
   { Lire le premier token }
   Consume;
 
@@ -2377,8 +2741,17 @@ Begin
     End;
   End;
 
-  { Scanner les tokens restants : reconnaitre les litteraux       }
-  { et les declarations const pour les TODOs suivants.            }
+  { Scanner les tokens restants : reconnaitre les declarations    }
+  { namespace, class, methodes, variables, const, litteraux       }
+  NsName     := '';
+  ClsName    := '';
+  MethName   := '';
+  InClass    := False;
+  InMethod   := False;
+  BraceDepth := 0;
+  ClassDepth := 0;
+  MethDepth  := 0;
+
   While CurToken.Kind <> TK_EOF Do
   Begin
     { Reconnaitre les litteraux chaines pour la table .DATA }
@@ -2392,6 +2765,174 @@ Begin
     Begin
       Consume;
       ParseConstDecl;
+    End
+    { Reconnaitre les declarations namespace }
+    Else If TokIsKw('namespace') Then
+    Begin
+      Consume;
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        NsName := CurToken.Val;
+        SymIdx := SymAdd(NsName, SC_NAMESPACE, 0);
+        If Opts.Verbose Then
+          WriteLn('  namespace ', NsName);
+        Consume;
+        { Gerer les noms qualifies A.B.C }
+        While TokIsPunct('.') Do
+        Begin
+          Consume;
+          If CurToken.Kind = TK_IDENT Then
+          Begin
+            NsName := NsName + '.' + CurToken.Val;
+            Consume;
+          End;
+        End;
+      End;
+    End
+    { Reconnaitre les declarations class }
+    Else If TokIsKw('class') Then
+    Begin
+      Consume;
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        ClsName := CurToken.Val;
+        SymIdx := SymAdd(ClsName, SC_CLASS, 0);
+        InClass := True;
+        ClassDepth := BraceDepth;
+        If Opts.Verbose Then
+          WriteLn('  class ', ClsName);
+        Consume;
+      End;
+    End
+    { Reconnaitre les accolades pour la gestion des scopes }
+    Else If TokIsPunct('{') Then
+    Begin
+      Inc(BraceDepth);
+      SymEnterScope;
+      Consume;
+    End
+    Else If TokIsPunct('}') Then
+    Begin
+      Dec(BraceDepth);
+      SymLeaveScope;
+      If InMethod And (BraceDepth <= MethDepth) Then
+        InMethod := False;
+      If InClass And (BraceDepth <= ClassDepth) Then
+        InClass := False;
+      Consume;
+    End
+    { Reconnaitre static void/int/... Main/nom -> methode }
+    Else If TokIsKw('static') Then
+    Begin
+      Consume;
+      { Lire le type de retour }
+      If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
+      Begin
+        VarType := CurToken.Val;
+        Consume;
+        { Si c est un tableau (int[] etc.) on saute les [] }
+        If TokIsPunct('[') Then
+        Begin
+          Consume;
+          If TokIsPunct(']') Then Consume;
+        End;
+        { Nom de la methode }
+        If CurToken.Kind = TK_IDENT Then
+        Begin
+          MethName := CurToken.Val;
+          Consume;
+          { Si suivi de ( -> c est une methode }
+          If TokIsPunct('(') Then
+          Begin
+            SymIdx := SymAdd(MethName, SC_METHOD, 0);
+            If SymIdx >= 0 Then
+              SymTab[SymIdx].IsStatic := True;
+            InMethod := True;
+            MethDepth := BraceDepth;
+            If Opts.Verbose Then
+              WriteLn('  static method ', VarType, ' ', MethName);
+            { Lire les parametres }
+            Consume;  { consommer ( }
+            While (CurToken.Kind <> TK_EOF) And
+                  (Not TokIsPunct(')')) Do
+            Begin
+              { Lire type param }
+              If (CurToken.Kind = TK_KEYWORD) Or
+                 (CurToken.Kind = TK_IDENT) Then
+              Begin
+                VarType := CurToken.Val;
+                Consume;
+                { Sauter [] si tableau }
+                If TokIsPunct('[') Then
+                Begin
+                  Consume;
+                  If TokIsPunct(']') Then Consume;
+                End;
+                { Nom du parametre }
+                If CurToken.Kind = TK_IDENT Then
+                Begin
+                  SymIdx := SymAdd(CurToken.Val, SC_PARAM, 0);
+                  Consume;
+                End;
+              End
+              Else
+                Consume;
+              { Sauter la virgule }
+              If TokIsPunct(',') Then Consume;
+            End;
+            If TokIsPunct(')') Then Consume;
+          End
+          Else
+          Begin
+            { C est une variable statique : static int x; }
+            SymIdx := SymAdd(MethName, SC_STATIC, 0);
+            If SymIdx >= 0 Then
+              SymTab[SymIdx].IsStatic := True;
+          End;
+        End;
+      End;
+    End
+    { Reconnaitre les declarations de variables locales           }
+    { Mots-cles de type : int, string, bool, char, double, etc.  }
+    Else If InMethod And
+            ((TokIsKw('int')) Or (TokIsKw('string')) Or
+             (TokIsKw('bool')) Or (TokIsKw('char')) Or
+             (TokIsKw('double')) Or (TokIsKw('float')) Or
+             (TokIsKw('long')) Or (TokIsKw('short')) Or
+             (TokIsKw('byte')) Or (TokIsKw('sbyte')) Or
+             (TokIsKw('uint')) Or (TokIsKw('ulong')) Or
+             (TokIsKw('ushort')) Or (TokIsKw('decimal')) Or
+             (TokIsKw('object')) Or (TokIsKw('void'))) Then
+    Begin
+      VarType := CurToken.Val;
+      Consume;
+      { Sauter [] si tableau }
+      If TokIsPunct('[') Then
+      Begin
+        Consume;
+        If TokIsPunct(']') Then Consume;
+      End;
+      { Si le suivant est un identifiant, c est une declaration }
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        VarName := CurToken.Val;
+        Consume;
+        { Verifier que c est bien une declaration (suivi de ; , =) }
+        If TokIsPunct(';') Or TokIsPunct(',') Or TokIsOp('=') Then
+        Begin
+          SymIdx := SymAdd(VarName, SC_VAR, 0);
+          { Declarations multiples : int a, b, c; }
+          While TokIsPunct(',') Do
+          Begin
+            Consume;
+            If CurToken.Kind = TK_IDENT Then
+            Begin
+              SymIdx := SymAdd(CurToken.Val, SC_VAR, 0);
+              Consume;
+            End;
+          End;
+        End;
+      End;
     End
     Else
       Consume;
@@ -2409,8 +2950,9 @@ Begin
   { Afficher bilan }
   WriteLn('CSCW32: Lexer OK (', TotalLines, ' lignes, ',
           TokenCount, ' tokens, ', UsingCount, ' using, ',
-          StrLitCount, ' chaines, ', ConstCount, ' constantes)');
-  WriteLn('CSCW32: Les TODOs 05..25 ne sont pas encore implementes.');
+          StrLitCount, ' chaines, ', ConstCount, ' constantes, ',
+          SymCount, ' symboles)');
+  WriteLn('CSCW32: Les TODOs 06..25 ne sont pas encore implementes.');
 End;
 
 { ------------------------------------------------------------ }
