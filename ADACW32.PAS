@@ -149,7 +149,7 @@
               TK_ARRAY, TK_RECORD, TK_ACCESS, TK_DERIVED
             GetTypeSize(type_idx) : taille en octets selon le type
 
-  TODO 06 - GESTION DES SCOPES ET PILE DE SCOPES
+  TODO 06 - GESTION DES SCOPES ET PILE DE SCOPES [IMPLEMENTE]
             Type TScopeEntry : Kind (Integer), SubIdx (Integer),
               BpTop (Integer), SymStart (Integer),
               LblExit (String[16]), LblCont (String[16]),
@@ -860,6 +860,19 @@ Type
     UseActive   : Boolean;       { True si USE active (acces direct) }
   End;
 
+  { ---- Entree de la pile de scopes (TODO 06) ---------------- }
+  TScopeEntry = Record
+    Kind        : Integer;       { SK_xxx                            }
+    SubIdx      : Integer;       { index SubTab (0 si global)        }
+    BpTop       : Integer;       { prochain offset EBP libre (<=0)   }
+    SymStart    : Integer;       { 1er index SymTab dans ce scope    }
+    LblExit     : String[16];    { label sortie (RETURN / EXIT)      }
+    LblCont     : String[16];    { label continuation (boucle)       }
+    LblEnd      : String[16];    { label fin de bloc                 }
+    HasExcept   : Boolean;       { True si EXCEPTION present         }
+    LblExcept   : String[16];    { label handler EXCEPTION           }
+  End;
+
 { ============================================================ }
 { VARIABLES GLOBALES                                           }
 { ============================================================ }
@@ -905,6 +918,10 @@ Var
   { Table des packages (TODO 05) }
   PkgTab     : Array[1..MAX_PKG] of TPkgEntry;
   PkgCount   : Integer;    { nombre de packages enregistres         }
+
+  { Pile de scopes (TODO 06) }
+  ScopeStack : Array[0..MAX_DEPTH] of TScopeEntry;
+  { ScopeTop deja declare plus haut avec SymTab }
 
 {$IFDEF FPC}
   { Variables binaires }
@@ -1721,6 +1738,7 @@ Begin
   WriteLn('  Types      : ', TypeCount);
   WriteLn('  Sous-prog. : ', SubCount);
   WriteLn('  Packages   : ', PkgCount);
+  WriteLn('  Scope      : ', ScopeTop);
   WriteLn('  Erreurs    : ', ErrorCount);
   WriteLn('  Avertiss.  : ', WarnCount);
   If ErrorCount > 0 Then
@@ -2156,6 +2174,206 @@ Begin
   FindPkg := 0;
 End;
 
+{ ============================================================ }
+{ GESTION DES SCOPES ET PILE DE SCOPES (TODO 06)                }
+{ ============================================================ }
+
+{ ---- InitScopeStack : initialiser la pile de scopes ---------- }
+{ Le scope global (niveau 0) est toujours present.                }
+Procedure InitScopeStack;
+Var I : Integer;
+Begin
+  ScopeTop := 0;
+  For I := 0 To MAX_DEPTH Do
+  Begin
+    ScopeStack[I].Kind      := SK_GLOBAL;
+    ScopeStack[I].SubIdx    := 0;
+    ScopeStack[I].BpTop     := 0;
+    ScopeStack[I].SymStart  := 1;
+    ScopeStack[I].LblExit   := '';
+    ScopeStack[I].LblCont   := '';
+    ScopeStack[I].LblEnd    := '';
+    ScopeStack[I].HasExcept := False;
+    ScopeStack[I].LblExcept := '';
+  End;
+  { Scope global }
+  ScopeStack[0].Kind     := SK_GLOBAL;
+  ScopeStack[0].SubIdx   := 0;
+  ScopeStack[0].BpTop    := 0;
+  ScopeStack[0].SymStart := 1;
+End;
+
+{ ---- PushScope : empiler un nouveau scope -------------------- }
+{ Kind = SK_xxx, SubIdx = index dans SubTab (0 si global/bloc).   }
+Procedure PushScope(Kind, SubIdx : Integer);
+Begin
+  If ScopeTop >= MAX_DEPTH Then
+  Begin
+    Error('Profondeur de scopes depassee (MAX_DEPTH=' +
+          IntToStr_(MAX_DEPTH) + ')');
+    Exit;
+  End;
+  Inc(ScopeTop);
+  ScopeStack[ScopeTop].Kind      := Kind;
+  ScopeStack[ScopeTop].SubIdx    := SubIdx;
+  ScopeStack[ScopeTop].BpTop     := 0;  { compte en negatif pour AUTO }
+  ScopeStack[ScopeTop].SymStart  := SymCount + 1;
+  ScopeStack[ScopeTop].LblExit   := '';
+  ScopeStack[ScopeTop].LblCont   := '';
+  ScopeStack[ScopeTop].LblEnd    := '';
+  ScopeStack[ScopeTop].HasExcept := False;
+  ScopeStack[ScopeTop].LblExcept := '';
+End;
+
+{ ---- PopScope : depiler le scope courant --------------------- }
+{ Libere les symboles locaux du scope.                             }
+{ Retourne la taille de frame allouee (valeur absolue).            }
+Function PopScope : Integer;
+Var Frame, St : Integer;
+Begin
+  If ScopeTop <= 0 Then
+  Begin
+    Error('PopScope : pile de scopes deja vide');
+    PopScope := 0;
+    Exit;
+  End;
+  Frame := -ScopeStack[ScopeTop].BpTop;  { taille frame locale }
+  St    := ScopeStack[ScopeTop].SymStart;
+  { Retirer les symboles locaux de ce scope }
+  If St >= 1 Then
+    SymCount := St - 1;
+  Dec(ScopeTop);
+  PopScope := Frame;
+End;
+
+{ ---- Accesseurs du scope courant ----------------------------- }
+
+{ Retourne le type de scope courant (SK_xxx) }
+Function CurrentScope : Integer;
+Begin
+  CurrentScope := ScopeStack[ScopeTop].Kind;
+End;
+
+{ Retourne l index SubTab du scope courant (0 si global) }
+Function CurrentSub : Integer;
+Begin
+  CurrentSub := ScopeStack[ScopeTop].SubIdx;
+End;
+
+{ Remonte la pile pour trouver le sous-programme englobant       }
+{ (ignore SK_BLOCK/SK_LOOP/SK_EXCEPT qui n ont pas de frame).    }
+Function EnclosingSubIdx : Integer;
+Var Lev : Integer;
+Begin
+  Lev := ScopeTop;
+  While Lev > 0 Do
+  Begin
+    If ScopeStack[Lev].Kind In [SK_PROC, SK_FUNC, SK_PACKAGE] Then
+    Begin EnclosingSubIdx := ScopeStack[Lev].SubIdx; Exit; End;
+    Dec(Lev);
+  End;
+  EnclosingSubIdx := 0;
+End;
+
+{ Taille totale de la frame locale du sous-programme courant     }
+{ (en valeur absolue). Remonte la pile pour trouver SK_PROC/FUNC.}
+Function CurrentFrameSize : Integer;
+Var Lev : Integer;
+Begin
+  Lev := ScopeTop;
+  While Lev > 0 Do
+  Begin
+    If ScopeStack[Lev].Kind In [SK_PROC, SK_FUNC] Then
+    Begin CurrentFrameSize := -ScopeStack[Lev].BpTop; Exit; End;
+    Dec(Lev);
+  End;
+  CurrentFrameSize := 0;
+End;
+
+{ Niveau de scope courant (pour SymTab.ScopeLev) }
+Function CurrentLevel : Integer;
+Begin
+  CurrentLevel := ScopeTop;
+End;
+
+{ ---- AllocLocal : allouer une variable locale sur la pile ---- }
+{ Aligne sur 4 octets (pile 32 bits).                              }
+{ Retourne l offset EBP negatif ou 0 si scope global.              }
+Function AllocLocal(Size : Integer) : Integer;
+Var Aligned : Integer;
+Begin
+  If ScopeTop <= 0 Then
+  Begin AllocLocal := 0; Exit; End;
+  Aligned := AlignDWord(Size);
+  ScopeStack[ScopeTop].BpTop :=
+    ScopeStack[ScopeTop].BpTop - Aligned;
+  AllocLocal := ScopeStack[ScopeTop].BpTop;
+End;
+
+{ ---- Gestion des labels de boucle et de sortie --------------- }
+
+{ Enregistre les labels de boucle dans le scope courant }
+Procedure EnterLoop(Const LblCont_, LblEnd_ : TString);
+Begin
+  ScopeStack[ScopeTop].LblCont := LblCont_;
+  ScopeStack[ScopeTop].LblEnd  := LblEnd_;
+End;
+
+{ Retourne le label de continuation de la boucle englobante      }
+Function FindLoopCont : TString;
+Var Lev : Integer;
+Begin
+  For Lev := ScopeTop DownTo 1 Do
+    If ScopeStack[Lev].LblCont <> '' Then
+    Begin FindLoopCont := ScopeStack[Lev].LblCont; Exit; End;
+  FindLoopCont := '';
+End;
+
+{ Retourne le label de fin de la boucle englobante (pour EXIT)   }
+Function FindLoopEnd : TString;
+Var Lev : Integer;
+Begin
+  For Lev := ScopeTop DownTo 1 Do
+    If ScopeStack[Lev].LblEnd <> '' Then
+    Begin FindLoopEnd := ScopeStack[Lev].LblEnd; Exit; End;
+  FindLoopEnd := '';
+End;
+
+{ Positionne le label de sortie (RETURN / procedure exit) }
+Procedure SetExitLabel(Const Lbl : TString);
+Begin
+  ScopeStack[ScopeTop].LblExit := Lbl;
+End;
+
+{ Retourne le label de sortie du sous-programme courant          }
+Function FindExitLabel : TString;
+Var Lev : Integer;
+Begin
+  For Lev := ScopeTop DownTo 1 Do
+    If ScopeStack[Lev].LblExit <> '' Then
+    Begin FindExitLabel := ScopeStack[Lev].LblExit; Exit; End;
+  FindExitLabel := '';
+End;
+
+{ ---- Gestion des exceptions --------------------------------- }
+
+{ Positionne le label du handler EXCEPTION dans le scope courant }
+Procedure SetExceptLabel(Const Lbl : TString);
+Begin
+  ScopeStack[ScopeTop].HasExcept := True;
+  ScopeStack[ScopeTop].LblExcept := Lbl;
+End;
+
+{ Retourne le label du handler EXCEPTION le plus proche          }
+Function FindExceptLabel : TString;
+Var Lev : Integer;
+Begin
+  For Lev := ScopeTop DownTo 1 Do
+    If ScopeStack[Lev].HasExcept Then
+    Begin FindExceptLabel := ScopeStack[Lev].LblExcept; Exit; End;
+  FindExceptLabel := '';
+End;
+
 { ---- LexInit : ouvrir le fichier source et lire le 1er token }
 Procedure LexInit;
 Begin
@@ -2346,6 +2564,7 @@ Begin
   WriteLn('Types            : ', TypeCount);
   WriteLn('Sous-programmes  : ', SubCount);
   WriteLn('Packages         : ', PkgCount);
+  WriteLn('Scope courant    : ', ScopeTop);
   WriteLn('Erreurs          : ', ErrorCount);
   WriteLn('Avertissements   : ', WarnCount);
 End;
@@ -2374,6 +2593,7 @@ Begin
   RegisterPredefinedTypes;
   InitSubTable;
   InitPkgTable;
+  InitScopeStack;
   LexInit;
   If Opts.DebugMode Then
   Begin
@@ -2388,8 +2608,8 @@ Begin
   Else
   Begin
     WriteLn('ADACW32: compilation de ', Opts.SrcFile, ' ...');
-    WriteLn('ADACW32: TODO 06+ non encore implemente - ',
-            'types/sous-prog/packages OK');
+    WriteLn('ADACW32: TODO 07+ non encore implemente - ',
+            'scopes OK');
   End;
   LexClose;
   BilanCompilation;

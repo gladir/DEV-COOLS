@@ -138,7 +138,7 @@
               TK_ARRAY, TK_RECORD, TK_ACCESS, TK_DERIVED
             GetTypeSize(type_idx) : taille en octets selon le type
 
-  TODO 06 - GESTION DES SCOPES ET PILE DE SCOPES
+  TODO 06 - GESTION DES SCOPES ET PILE DE SCOPES [IMPLEMENTE]
             Type TScopeEntry : Kind (Integer), SubIdx (Integer),
               BpTop (Integer), SymStart (Integer),
               LblExit (String[16]), LblCont (String[16]),
