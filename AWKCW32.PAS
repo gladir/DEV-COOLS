@@ -427,6 +427,7 @@
             test_regex17.awk (15 cas, expressions regulieres)
 
   TODO 18 - PARSEUR : FONCTIONS BUILTIN CHAINES
+            [IMPLEMENTE]
             Procedure ParseBuiltinString
             Fonctions a supporter :
               length(s)           -> CALL _AWRT_STRLEN -> EAX
@@ -442,6 +443,8 @@
               tolower(s)          -> CALL _AWRT_TOLOWER -> EAX (ptr)
               toupper(s)          -> CALL _AWRT_TOUPPER -> EAX (ptr)
             Tampons : _AWRT_STRBUF (512 octets), _AWRT_SUBBUF (512)
+            Var BuiltinStrCount pour les statistiques
+            test_builtins18.awk (15 cas, fonctions builtin chaines)
 
   TODO 19 - PARSEUR : FONCTIONS BUILTIN MATHEMATIQUES
             Procedure ParseBuiltinMath
@@ -1087,6 +1090,9 @@ Var
   RegexPatCount  : Integer;    { nombre de patterns regex stockes   }
   RegexOpCount   : Integer;    { nombre d operations regex (~ !~)   }
 
+  { Fonctions builtin chaines (TODO 18) }
+  BuiltinStrCount: Integer;    { nombre d appels fonctions builtin  }
+
 Const
 {$IFDEF FPC}
   BinAPIDecorated : Array[0..PE_NUM_API - 1] Of String[32] = (
@@ -1447,6 +1453,7 @@ Begin
   WriteLn('Array ops        : ', ArrayOpCount);
   WriteLn('Regex patterns   : ', RegexPatCount);
   WriteLn('Regex ops (~!~)  : ', RegexOpCount);
+  WriteLn('Builtin str ops  : ', BuiltinStrCount);
   WriteLn('Code gen ops     : ', GenCount);
   WriteLn('Litteraux chaine : ', StringLitCount);
   WriteLn('Scope depth      : ', ScopeDepth);
@@ -2593,6 +2600,9 @@ Procedure GenArrayClear(SymIdx: Integer); Forward;
 Function  AddRegexPat(Const Pat: TString): TString; Forward;
 Procedure GenRegexMatch; Forward;
 
+{ Forward declarations TODO 18 - Fonctions builtin chaines }
+Function  ParseBuiltinString(BFIdx: Integer): Integer; Forward;
+
 { ---- Helpers de tokens --------------------------------------- }
 Function IsOp(Const S : String) : Boolean;
 Begin
@@ -2788,29 +2798,10 @@ Begin
     End;
     TK_BUILTIN:
     Begin
-      { Fonction builtin AWK : builtin ( args ) }
-      IdName := CurToken.Val;
-      ParserAdvance;
-      If IsPunct('(') Then
-      Begin
-        ParserAdvance;  { consommer ( }
-        ArgC := 0;
-        If Not IsPunct(')') Then
-        Begin
-          D := ParseExpr;
-          Inc(ArgC);
-          While IsPunct(',') Do
-          Begin
-            ParserAdvance;
-            SkipNewlines;
-            D := ParseExpr;
-            Inc(ArgC);
-          End;
-        End;
-        Expect(TK_PUNCT, ')');
-      End;
-      { Builtins sans parentheses : length, etc. }
-      ParsePrimaryExpr := TYK_UNKNOWN;
+      { Fonction builtin AWK : dispatcher via ParseBuiltinString (TODO 18) }
+      FnIdx := CurToken.IntVal;
+      ParserAdvance;  { consommer le nom de la fonction }
+      ParsePrimaryExpr := ParseBuiltinString(FnIdx);
     End;
     TK_KEYWORD:
     Begin
@@ -3892,6 +3883,402 @@ Begin
   Emit('        PUSH    EAX');
   Emit('        PUSH    EBX');
   Emit('        CALL    ' + AW_RT_PFX + 'MATCH_RE');
+End;
+
+{ ============================================================ }
+{ TODO 18 - PARSEUR : FONCTIONS BUILTIN CHAINES                }
+{           [IMPLEMENTE]                                        }
+{ ============================================================ }
+
+{ ---- ParseBuiltinString -------------------------------------- }
+{ Parse un appel a une fonction builtin de chaines AWK.          }
+{ BFIdx = index de la fonction (BF_LENGTH..BF_TOUPPER).          }
+{ Le token courant est deja sur '(' (ou fin de ligne pour        }
+{ length sans parentheses).                                      }
+{ Retourne le type du resultat (TYK_STRING ou TYK_NUMBER).       }
+Function ParseBuiltinString(BFIdx: Integer): Integer;
+Var
+  ExprType : Integer;
+  ArgCount : Integer;
+  NS       : TString;
+  ArrIdx   : Integer;
+  ArrName  : TString;
+Begin
+  Inc(BuiltinStrCount);
+  ParseBuiltinString := TYK_NUMBER;  { par defaut }
+
+  Case BFIdx Of
+    { ---- length(s) ou length(array) ou length sans args ---- }
+    BF_LENGTH:
+    Begin
+      EmitComment('--- builtin length ---');
+      If IsPunct('(') Then
+      Begin
+        ParserAdvance;  { consommer ( }
+        { Detecter si l argument est un tableau }
+        If (CurToken.Kind = TK_IDENT) Then
+        Begin
+          ArrName := CurToken.Val;
+          ArrIdx := FindSym(ArrName);
+          If (ArrIdx >= 0) And (SymTab[ArrIdx].IsArray) Then
+          Begin
+            { length(array) : nombre d elements }
+            EmitComment('  length(array) -> HASH_COUNT');
+            Emit('        PUSH    OFFSET ' + SymTab[ArrIdx].ArrayAsmLabel);
+            Emit('        CALL    ' + AW_RT_PFX + 'HASH_COUNT');
+            ParserAdvance;  { consommer le nom du tableau }
+            Expect(TK_PUNCT, ')');
+            ParseBuiltinString := TYK_NUMBER;
+            Exit;
+          End;
+        End;
+        { length(string) : longueur de la chaine }
+        ExprType := ParseExpr;
+        ExprType := GenCoerceToString(ExprType);
+        Expect(TK_PUNCT, ')');
+        Emit('        PUSH    EAX');
+        Emit('        CALL    ' + AW_RT_PFX + 'STRLEN');
+      End
+      Else
+      Begin
+        { length sans parentheses : length de $0 }
+        Emit('        MOV     EAX, OFFSET ' + AW_RT_PFX + 'LINE');
+        Emit('        PUSH    EAX');
+        Emit('        CALL    ' + AW_RT_PFX + 'STRLEN');
+      End;
+      ParseBuiltinString := TYK_NUMBER;
+    End;
+
+    { ---- substr(s, start [, len]) ---- }
+    BF_SUBSTR:
+    Begin
+      EmitComment('--- builtin substr ---');
+      If IsPunct('(') Then
+        ParserAdvance
+      Else
+        WarnMsg('substr: ( attendu');
+      { arg 1 : chaine }
+      ExprType := ParseExpr;
+      ExprType := GenCoerceToString(ExprType);
+      GenPushEAX;
+      ArgCount := 1;
+      If IsPunct(',') Then
+      Begin
+        ParserAdvance; SkipNewlines;
+        { arg 2 : position de debut }
+        ExprType := ParseExpr;
+        GenPushEAX;
+        Inc(ArgCount);
+      End;
+      If IsPunct(',') Then
+      Begin
+        ParserAdvance; SkipNewlines;
+        { arg 3 : longueur (optionnel) }
+        ExprType := ParseExpr;
+        GenPushEAX;
+        Inc(ArgCount);
+      End;
+      If IsPunct(')') Then
+        ParserAdvance
+      Else
+        WarnMsg('substr: ) attendu');
+      Str(ArgCount, NS);
+      Emit('        MOV     ECX, ' + NS);
+      Emit('        CALL    ' + AW_RT_PFX + 'SUBSTR');
+      If ArgCount > 0 Then
+      Begin
+        Str(ArgCount * 4, NS);
+        Emit('        ADD     ESP, ' + NS);
+      End;
+      ParseBuiltinString := TYK_STRING;
+    End;
+
+    { ---- index(s, target) ---- }
+    BF_INDEX:
+    Begin
+      EmitComment('--- builtin index ---');
+      If IsPunct('(') Then
+        ParserAdvance
+      Else
+        WarnMsg('index: ( attendu');
+      { arg 1 : chaine source }
+      ExprType := ParseExpr;
+      ExprType := GenCoerceToString(ExprType);
+      GenPushEAX;
+      If IsPunct(',') Then
+      Begin
+        ParserAdvance; SkipNewlines;
+      End;
+      { arg 2 : sous-chaine a chercher }
+      ExprType := ParseExpr;
+      ExprType := GenCoerceToString(ExprType);
+      GenPushEAX;
+      If IsPunct(')') Then
+        ParserAdvance
+      Else
+        WarnMsg('index: ) attendu');
+      Emit('        CALL    ' + AW_RT_PFX + 'INDEX');
+      Emit('        ADD     ESP, 8');
+      ParseBuiltinString := TYK_NUMBER;
+    End;
+
+    { ---- split(s, array [, sep]) ---- }
+    BF_SPLIT:
+    Begin
+      EmitComment('--- builtin split ---');
+      If IsPunct('(') Then
+        ParserAdvance
+      Else
+        WarnMsg('split: ( attendu');
+      { arg 1 : chaine a decouper }
+      ExprType := ParseExpr;
+      ExprType := GenCoerceToString(ExprType);
+      GenPushEAX;
+      ArgCount := 1;
+      If IsPunct(',') Then
+      Begin
+        ParserAdvance; SkipNewlines;
+      End;
+      { arg 2 : nom du tableau cible }
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        ArrName := CurToken.Val;
+        ArrIdx := FindSym(ArrName);
+        If ArrIdx < 0 Then
+          ArrIdx := AddSym(ArrName, TYK_ARRAY, STORE_GLOBAL, True);
+        Emit('        PUSH    OFFSET ' + SymTab[ArrIdx].ArrayAsmLabel);
+        Inc(ArgCount);
+        ParserAdvance;
+      End
+      Else
+      Begin
+        WarnMsg('split: nom de tableau attendu');
+        Emit('        PUSH    0');
+        Inc(ArgCount);
+      End;
+      { arg 3 optionnel : separateur }
+      If IsPunct(',') Then
+      Begin
+        ParserAdvance; SkipNewlines;
+        ExprType := ParseExpr;
+        ExprType := GenCoerceToString(ExprType);
+        GenPushEAX;
+        Inc(ArgCount);
+      End;
+      If IsPunct(')') Then
+        ParserAdvance
+      Else
+        WarnMsg('split: ) attendu');
+      Str(ArgCount, NS);
+      Emit('        MOV     ECX, ' + NS);
+      Emit('        CALL    ' + AW_RT_PFX + 'SPLIT');
+      Str(ArgCount * 4, NS);
+      Emit('        ADD     ESP, ' + NS);
+      ParseBuiltinString := TYK_NUMBER;
+    End;
+
+    { ---- sub(regex, repl [, target]) ---- }
+    BF_SUB:
+    Begin
+      EmitComment('--- builtin sub ---');
+      If IsPunct('(') Then
+        ParserAdvance
+      Else
+        WarnMsg('sub: ( attendu');
+      { arg 1 : pattern regex }
+      ExprType := ParseExpr;
+      ExprType := GenCoerceToString(ExprType);
+      GenPushEAX;
+      ArgCount := 1;
+      If IsPunct(',') Then
+      Begin
+        ParserAdvance; SkipNewlines;
+      End;
+      { arg 2 : chaine de remplacement }
+      ExprType := ParseExpr;
+      ExprType := GenCoerceToString(ExprType);
+      GenPushEAX;
+      Inc(ArgCount);
+      { arg 3 optionnel : variable cible (par defaut $0) }
+      If IsPunct(',') Then
+      Begin
+        ParserAdvance; SkipNewlines;
+        ExprType := ParseExpr;
+        ExprType := GenCoerceToString(ExprType);
+        GenPushEAX;
+        Inc(ArgCount);
+      End
+      Else
+      Begin
+        { Par defaut : $0 }
+        Emit('        MOV     EAX, OFFSET ' + AW_RT_PFX + 'LINE');
+        GenPushEAX;
+        Inc(ArgCount);
+      End;
+      If IsPunct(')') Then
+        ParserAdvance
+      Else
+        WarnMsg('sub: ) attendu');
+      Str(ArgCount, NS);
+      Emit('        MOV     ECX, ' + NS);
+      Emit('        CALL    ' + AW_RT_PFX + 'SUB');
+      Str(ArgCount * 4, NS);
+      Emit('        ADD     ESP, ' + NS);
+      ParseBuiltinString := TYK_NUMBER;
+    End;
+
+    { ---- gsub(regex, repl [, target]) ---- }
+    BF_GSUB:
+    Begin
+      EmitComment('--- builtin gsub ---');
+      If IsPunct('(') Then
+        ParserAdvance
+      Else
+        WarnMsg('gsub: ( attendu');
+      { arg 1 : pattern regex }
+      ExprType := ParseExpr;
+      ExprType := GenCoerceToString(ExprType);
+      GenPushEAX;
+      ArgCount := 1;
+      If IsPunct(',') Then
+      Begin
+        ParserAdvance; SkipNewlines;
+      End;
+      { arg 2 : chaine de remplacement }
+      ExprType := ParseExpr;
+      ExprType := GenCoerceToString(ExprType);
+      GenPushEAX;
+      Inc(ArgCount);
+      { arg 3 optionnel : variable cible (par defaut $0) }
+      If IsPunct(',') Then
+      Begin
+        ParserAdvance; SkipNewlines;
+        ExprType := ParseExpr;
+        ExprType := GenCoerceToString(ExprType);
+        GenPushEAX;
+        Inc(ArgCount);
+      End
+      Else
+      Begin
+        { Par defaut : $0 }
+        Emit('        MOV     EAX, OFFSET ' + AW_RT_PFX + 'LINE');
+        GenPushEAX;
+        Inc(ArgCount);
+      End;
+      If IsPunct(')') Then
+        ParserAdvance
+      Else
+        WarnMsg('gsub: ) attendu');
+      Str(ArgCount, NS);
+      Emit('        MOV     ECX, ' + NS);
+      Emit('        CALL    ' + AW_RT_PFX + 'GSUB');
+      Str(ArgCount * 4, NS);
+      Emit('        ADD     ESP, ' + NS);
+      ParseBuiltinString := TYK_NUMBER;
+    End;
+
+    { ---- match(s, regex) ---- }
+    BF_MATCH:
+    Begin
+      EmitComment('--- builtin match ---');
+      If IsPunct('(') Then
+        ParserAdvance
+      Else
+        WarnMsg('match: ( attendu');
+      { arg 1 : chaine }
+      ExprType := ParseExpr;
+      ExprType := GenCoerceToString(ExprType);
+      GenPushEAX;
+      If IsPunct(',') Then
+      Begin
+        ParserAdvance; SkipNewlines;
+      End;
+      { arg 2 : pattern regex }
+      ExprType := ParseExpr;
+      ExprType := GenCoerceToString(ExprType);
+      GenPushEAX;
+      If IsPunct(')') Then
+        ParserAdvance
+      Else
+        WarnMsg('match: ) attendu');
+      Emit('        CALL    ' + AW_RT_PFX + 'MATCH');
+      Emit('        ADD     ESP, 8');
+      { match() met a jour RSTART et RLENGTH }
+      ParseBuiltinString := TYK_NUMBER;
+    End;
+
+    { ---- sprintf(fmt, ...) ---- }
+    { sprintf est deja gere par ParseSprintf via KW_SPRINTF }
+    { mais il peut aussi etre appele comme builtin           }
+    BF_SPRINTF:
+    Begin
+      ParseBuiltinString := ParseSprintf;
+    End;
+
+    { ---- tolower(s) ---- }
+    BF_TOLOWER:
+    Begin
+      EmitComment('--- builtin tolower ---');
+      If IsPunct('(') Then
+        ParserAdvance
+      Else
+        WarnMsg('tolower: ( attendu');
+      ExprType := ParseExpr;
+      ExprType := GenCoerceToString(ExprType);
+      If IsPunct(')') Then
+        ParserAdvance
+      Else
+        WarnMsg('tolower: ) attendu');
+      Emit('        PUSH    EAX');
+      Emit('        CALL    ' + AW_RT_PFX + 'TOLOWER');
+      Emit('        ADD     ESP, 4');
+      ParseBuiltinString := TYK_STRING;
+    End;
+
+    { ---- toupper(s) ---- }
+    BF_TOUPPER:
+    Begin
+      EmitComment('--- builtin toupper ---');
+      If IsPunct('(') Then
+        ParserAdvance
+      Else
+        WarnMsg('toupper: ( attendu');
+      ExprType := ParseExpr;
+      ExprType := GenCoerceToString(ExprType);
+      If IsPunct(')') Then
+        ParserAdvance
+      Else
+        WarnMsg('toupper: ) attendu');
+      Emit('        PUSH    EAX');
+      Emit('        CALL    ' + AW_RT_PFX + 'TOUPPER');
+      Emit('        ADD     ESP, 4');
+      ParseBuiltinString := TYK_STRING;
+    End;
+  Else
+    { Fonction builtin non-chaine : stub (TODO 19) }
+    EmitComment('--- builtin stub (non-chaine) ---');
+    If IsPunct('(') Then
+    Begin
+      ParserAdvance;  { consommer ( }
+      ArgCount := 0;
+      If Not IsPunct(')') Then
+      Begin
+        ExprType := ParseExpr;
+        Inc(ArgCount);
+        While IsPunct(',') Do
+        Begin
+          ParserAdvance; SkipNewlines;
+          ExprType := ParseExpr;
+          Inc(ArgCount);
+        End;
+      End;
+      If IsPunct(')') Then
+        ParserAdvance
+      Else
+        WarnMsg(') attendu apres builtin');
+    End;
+    ParseBuiltinString := TYK_UNKNOWN;
+  End;  { case }
 End;
 
 { ============================================================ }
@@ -5192,6 +5579,7 @@ Begin
   LastArrayHasKey := False;
   RegexPatCount := 0;
   RegexOpCount := 0;
+  BuiltinStrCount := 0;
   HasPushedBack := False;
   LexInit;
   { Mode debug : afficher tous les tokens }
@@ -5219,6 +5607,7 @@ Begin
     WriteLn('AWKCW32: ', ArrayOpCount, ' operation(s) tableau(x) associatif(s)');
     WriteLn('AWKCW32: ', RegexPatCount, ' pattern(s) regex, ',
             RegexOpCount, ' operation(s) regex (~ !~)');
+    WriteLn('AWKCW32: ', BuiltinStrCount, ' appel(s) builtin chaines');
     WriteLn('AWKCW32: ', ExprCount, ' expression(s) parsees');
     WriteLn('AWKCW32: ', CoercionCount, ' coercition(s), ',
             ConcatCount, ' concatenation(s) implicite(s)');
@@ -5231,7 +5620,7 @@ Begin
     WriteLn('AWKCW32: ', GenCount, ' operation(s) code gen, ',
             StringLitCount, ' litteral(aux) chaine');
     WriteLn('AWKCW32: scope depth=', ScopeDepth, ', loop depth=', LoopDepth);
-    WriteLn('AWKCW32: TODO 18..25 non encore implementes.');
+    WriteLn('AWKCW32: TODO 19..25 non encore implementes.');
     WriteLn('AWKCW32: sortie prevue: ', Opts.OutFile);
   End;
   LexClose;

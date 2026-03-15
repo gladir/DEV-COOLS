@@ -429,21 +429,27 @@
             test_regex17.awk (15 cas, expressions regulieres)
 
   TODO 18 - PARSEUR : FONCTIONS BUILTIN CHAINES
-            Procedure ParseBuiltinString
-            Fonctions a supporter :
-              length(s)           -> CALL _AWRT_STRLEN -> EAX
-              length(array)       -> nombre d elements du tableau
-              substr(s, start [, len]) -> CALL _AWRT_SUBSTR -> EAX (ptr)
+            [IMPLEMENTE]
+            Procedure ParseBuiltinString(BFIdx) :
+              Dispatch sur BFIdx (BF_LENGTH..BF_TOUPPER)
+            Fonctions supportees :
+              length(s)           -> PUSH EAX + CALL _AWRT_STRLEN -> EAX
+              length(array)       -> PUSH OFFSET _AWA_ + CALL HASH_COUNT
+              length (sans args)  -> STRLEN de _AWRT_LINE ($0)
+              substr(s, start [, len]) -> MOV ECX,n + CALL _AWRT_SUBSTR
               index(s, target)    -> CALL _AWRT_INDEX -> EAX (position)
-              split(s, array [, sep]) -> CALL _AWRT_SPLIT -> EAX (nb)
-              sub(regex, repl [, target])  -> CALL _AWRT_SUB -> EAX (nb)
-              gsub(regex, repl [, target]) -> CALL _AWRT_GSUB -> EAX (nb)
+              split(s, array [, sep]) -> MOV ECX,n + CALL _AWRT_SPLIT
+              sub(regex, repl [, target])  -> MOV ECX,n + CALL _AWRT_SUB
+              gsub(regex, repl [, target]) -> MOV ECX,n + CALL _AWRT_GSUB
               match(s, regex)     -> CALL _AWRT_MATCH -> EAX (position)
                 Met a jour RSTART et RLENGTH
-              sprintf(fmt, ...)   -> CALL _AWRT_SPRINTF -> EAX (ptr)
-              tolower(s)          -> CALL _AWRT_TOLOWER -> EAX (ptr)
-              toupper(s)          -> CALL _AWRT_TOUPPER -> EAX (ptr)
-            Tampons : _AWRT_STRBUF (512 octets), _AWRT_SUBBUF (512)
+              sprintf(fmt, ...)   -> delegue a ParseSprintf existant
+              tolower(s)          -> PUSH EAX + CALL _AWRT_TOLOWER
+              toupper(s)          -> PUSH EAX + CALL _AWRT_TOUPPER
+            ParsePrimaryExpr TK_BUILTIN : dispatch via ParseBuiltinString
+            Fonctions non-chaines (BF_SIN..BF_STRFTIME) : stub generique
+            Var BuiltinStrCount pour les statistiques
+            test_builtins18.awk (15 cas, 14 builtin str ops)
 
   TODO 19 - PARSEUR : FONCTIONS BUILTIN MATHEMATIQUES
             Procedure ParseBuiltinMath
