@@ -4,7 +4,5 @@
 *.class
 AWKCW32
 link.res
-AWKCW32
 *.exe
-*.o
 SAMPLES/AWK/*.asm
