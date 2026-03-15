@@ -495,7 +495,7 @@
             Var GetlineCount pour les statistiques
             test_getline20.awk (15 cas, getline et redirections E/S)
 
-  TODO 21 - PARSEUR : VARIABLES BUILTIN AWK
+  TODO 21 - PARSEUR : VARIABLES BUILTIN AWK [IMPLEMENTE]
             Initialisation des variables builtin dans le segment .DATA :
               NR       DD 0     (numero d enregistrement global)
               NF       DD 0     (nombre de champs dans $0)

@@ -487,7 +487,7 @@
             Var GetlineCount pour les statistiques
             test_getline20.awk (15 cas, getline et redirections E/S)
 
-  TODO 21 - PARSEUR : VARIABLES BUILTIN AWK
+  TODO 21 - PARSEUR : VARIABLES BUILTIN AWK [IMPLEMENTE]
             Initialisation des variables builtin dans le segment .DATA :
               NR       DD 0     (numero d enregistrement global)
               NF       DD 0     (nombre de champs dans $0)
@@ -1099,6 +1099,9 @@ Var
   { Getline et redirections E/S (TODO 20) }
   GetlineCount   : Integer;    { nombre d instructions getline           }
 
+  { Variables builtin AWK (TODO 21) }
+  BuiltinVarCount: Integer;    { nombre d initialisations var builtin    }
+
 Const
 {$IFDEF FPC}
   BinAPIDecorated : Array[0..PE_NUM_API - 1] Of String[32] = (
@@ -1462,6 +1465,7 @@ Begin
   WriteLn('Builtin str ops  : ', BuiltinStrCount);
   WriteLn('Builtin math ops : ', BuiltinMathCount);
   WriteLn('Getline ops      : ', GetlineCount);
+  WriteLn('Builtin var init : ', BuiltinVarCount);
   WriteLn('Code gen ops     : ', GenCount);
   WriteLn('Litteraux chaine : ', StringLitCount);
   WriteLn('Scope depth      : ', ScopeDepth);
@@ -2348,19 +2352,23 @@ Procedure InitSymTable;
 Begin
   SymCount  := 0;
   FuncCount := 0;
-  { Declarer les 12 variables builtin AWK globales }
-  AddSym('FS', TYK_STRING, STORE_GLOBAL, True);
-  AddSym('RS', TYK_STRING, STORE_GLOBAL, True);
-  AddSym('OFS', TYK_STRING, STORE_GLOBAL, True);
-  AddSym('ORS', TYK_STRING, STORE_GLOBAL, True);
-  AddSym('NR', TYK_NUMBER, STORE_GLOBAL, True);
-  AddSym('NF', TYK_NUMBER, STORE_GLOBAL, True);
-  AddSym('FNR', TYK_NUMBER, STORE_GLOBAL, True);
-  AddSym('FILENAME', TYK_STRING, STORE_GLOBAL, True);
-  AddSym('ARGC', TYK_NUMBER, STORE_GLOBAL, True);
-  AddSym('RSTART', TYK_NUMBER, STORE_GLOBAL, True);
-  AddSym('RLENGTH', TYK_NUMBER, STORE_GLOBAL, True);
-  AddSym('SUBSEP', TYK_STRING, STORE_GLOBAL, True);
+  { Declarer les 16 variables builtin AWK globales (TODO 21) }
+  AddSym('FS', TYK_STRING, STORE_GLOBAL, True);        { BV 1  }
+  AddSym('RS', TYK_STRING, STORE_GLOBAL, True);        { BV 2  }
+  AddSym('OFS', TYK_STRING, STORE_GLOBAL, True);       { BV 3  }
+  AddSym('ORS', TYK_STRING, STORE_GLOBAL, True);       { BV 4  }
+  AddSym('NR', TYK_NUMBER, STORE_GLOBAL, True);        { BV 5  }
+  AddSym('NF', TYK_NUMBER, STORE_GLOBAL, True);        { BV 6  }
+  AddSym('FNR', TYK_NUMBER, STORE_GLOBAL, True);       { BV 7  }
+  AddSym('FILENAME', TYK_STRING, STORE_GLOBAL, True);  { BV 8  }
+  AddSym('ARGC', TYK_NUMBER, STORE_GLOBAL, True);      { BV 9  }
+  AddSym('ARGV', TYK_ARRAY, STORE_GLOBAL, True);       { BV 10 }
+  AddSym('ENVIRON', TYK_ARRAY, STORE_GLOBAL, True);    { BV 11 }
+  AddSym('RSTART', TYK_NUMBER, STORE_GLOBAL, True);    { BV 12 }
+  AddSym('RLENGTH', TYK_NUMBER, STORE_GLOBAL, True);   { BV 13 }
+  AddSym('SUBSEP', TYK_STRING, STORE_GLOBAL, True);    { BV 14 }
+  AddSym('OFMT', TYK_STRING, STORE_GLOBAL, True);      { BV 15 }
+  AddSym('CONVFMT', TYK_STRING, STORE_GLOBAL, True);   { BV 16 }
 End;
 
 { ============================================================ }
@@ -2616,6 +2624,11 @@ Function  ParseBuiltinMath(BFIdx: Integer): Integer; Forward;
 
 { Forward declarations TODO 20 - Getline et redirections E/S }
 Function  ParseGetline: Integer; Forward;
+
+{ Forward declarations TODO 21 - Variables builtin AWK }
+Procedure InitBuiltinVarDefaults; Forward;
+Procedure ApplyDashF; Forward;
+Procedure ApplyDashV; Forward;
 
 { ---- Helpers de tokens --------------------------------------- }
 Function IsOp(Const S : String) : Boolean;
@@ -5833,6 +5846,185 @@ Begin
     ParseStatement;
 End;
 
+{ ============================================================ }
+{ TODO 21 - PARSEUR : VARIABLES BUILTIN AWK                    }
+{ ============================================================ }
+
+{ ---- InitBuiltinVarDefaults ---------------------------------- }
+{ Genere le code ASM pour initialiser les valeurs par defaut     }
+{ des variables builtin AWK (FS, RS, OFS, ORS, SUBSEP, etc.)    }
+{ Appele apres le parsing mais avant l execution.                }
+{ Les variables numeriques sont deja a 0 (DD 0).                 }
+{ Les variables chaine recoivent un pointeur vers leur defaut.   }
+Procedure InitBuiltinVarDefaults;
+Var
+  SI : Integer;
+Begin
+  EmitComment('=== TODO 21 : init builtin var defaults ===');
+  { FS = " " (defaut) }
+  SI := FindSym('FS');
+  If SI >= 0 Then
+  Begin
+    Emit('        MOV     EAX, OFFSET ' + AW_STR_PFX + 'FS_DEF');
+    GenStoreVar(SI);
+    Inc(BuiltinVarCount);
+  End;
+  { RS = "\n" (defaut) }
+  SI := FindSym('RS');
+  If SI >= 0 Then
+  Begin
+    Emit('        MOV     EAX, OFFSET ' + AW_STR_PFX + 'RS_DEF');
+    GenStoreVar(SI);
+    Inc(BuiltinVarCount);
+  End;
+  { OFS = " " (defaut) }
+  SI := FindSym('OFS');
+  If SI >= 0 Then
+  Begin
+    Emit('        MOV     EAX, OFFSET ' + AW_STR_PFX + 'OFS_DEF');
+    GenStoreVar(SI);
+    Inc(BuiltinVarCount);
+  End;
+  { ORS = "\n" (defaut) }
+  SI := FindSym('ORS');
+  If SI >= 0 Then
+  Begin
+    Emit('        MOV     EAX, OFFSET ' + AW_STR_PFX + 'ORS_DEF');
+    GenStoreVar(SI);
+    Inc(BuiltinVarCount);
+  End;
+  { SUBSEP = "\034" (defaut ASCII FS=28) }
+  SI := FindSym('SUBSEP');
+  If SI >= 0 Then
+  Begin
+    Emit('        MOV     EAX, OFFSET ' + AW_STR_PFX + 'SUBSEP_DEF');
+    GenStoreVar(SI);
+    Inc(BuiltinVarCount);
+  End;
+  { OFMT = "%.6g" (defaut) }
+  SI := FindSym('OFMT');
+  If SI >= 0 Then
+  Begin
+    Emit('        MOV     EAX, OFFSET ' + AW_STR_PFX + 'OFMT_DEF');
+    GenStoreVar(SI);
+    Inc(BuiltinVarCount);
+  End;
+  { CONVFMT = "%.6g" (defaut) }
+  SI := FindSym('CONVFMT');
+  If SI >= 0 Then
+  Begin
+    Emit('        MOV     EAX, OFFSET ' + AW_STR_PFX + 'CONVFMT_DEF');
+    GenStoreVar(SI);
+    Inc(BuiltinVarCount);
+  End;
+  { FILENAME = "" (ptr null) }
+  SI := FindSym('FILENAME');
+  If SI >= 0 Then
+  Begin
+    Emit('        XOR     EAX, EAX');
+    GenStoreVar(SI);
+    Inc(BuiltinVarCount);
+  End;
+  { NR = 0 }
+  SI := FindSym('NR');
+  If SI >= 0 Then
+  Begin
+    Emit('        XOR     EAX, EAX');
+    GenStoreVar(SI);
+    Inc(BuiltinVarCount);
+  End;
+  { NF = 0 }
+  SI := FindSym('NF');
+  If SI >= 0 Then
+  Begin
+    Emit('        XOR     EAX, EAX');
+    GenStoreVar(SI);
+    Inc(BuiltinVarCount);
+  End;
+  { FNR = 0 }
+  SI := FindSym('FNR');
+  If SI >= 0 Then
+  Begin
+    Emit('        XOR     EAX, EAX');
+    GenStoreVar(SI);
+    Inc(BuiltinVarCount);
+  End;
+  { ARGC = 0 }
+  SI := FindSym('ARGC');
+  If SI >= 0 Then
+  Begin
+    Emit('        XOR     EAX, EAX');
+    GenStoreVar(SI);
+    Inc(BuiltinVarCount);
+  End;
+  { RSTART = 0 }
+  SI := FindSym('RSTART');
+  If SI >= 0 Then
+  Begin
+    Emit('        XOR     EAX, EAX');
+    GenStoreVar(SI);
+    Inc(BuiltinVarCount);
+  End;
+  { RLENGTH = 0 }
+  SI := FindSym('RLENGTH');
+  If SI >= 0 Then
+  Begin
+    Emit('        XOR     EAX, EAX');
+    GenStoreVar(SI);
+    Inc(BuiltinVarCount);
+  End;
+  EmitComment('=== fin init builtin vars (14 vars) ===');
+End;
+
+{ ---- ApplyDashF ---------------------------------------------- }
+{ Genere le code ASM pour appliquer l option -F sep              }
+{ Modifie FS avec le separateur fourni en ligne de commande      }
+Procedure ApplyDashF;
+Var
+  SI   : Integer;
+  SLbl : TString;
+Begin
+  If Opts.FieldSep = ' ' Then Exit;  { defaut, rien a faire }
+  EmitComment('--- -F : FS = "' + Opts.FieldSep + '" ---');
+  SI := FindSym('FS');
+  If SI >= 0 Then
+  Begin
+    SLbl := AddStringLit(Opts.FieldSep);
+    Emit('        MOV     EAX, OFFSET ' + SLbl);
+    GenStoreVar(SI);
+    Inc(BuiltinVarCount);
+  End;
+End;
+
+{ ---- ApplyDashV ---------------------------------------------- }
+{ Genere le code ASM pour appliquer les options -v var=val       }
+{ Initialise les variables specifiees avant le bloc BEGIN        }
+Procedure ApplyDashV;
+Var
+  I    : Integer;
+  SI   : Integer;
+  SLbl : TString;
+  VN   : TString;
+  VV   : TString;
+Begin
+  If Opts.InitCount = 0 Then Exit;
+  EmitComment('--- -v : init user vars ---');
+  For I := 0 To Opts.InitCount - 1 Do
+  Begin
+    VN := Opts.InitVars[I].VarName;
+    VV := Opts.InitVars[I].VarValue;
+    { Chercher ou creer la variable }
+    SI := FindSym(VN);
+    If SI < 0 Then
+      SI := AddSym(VN, TYK_STRING, STORE_GLOBAL, True);
+    EmitComment('-v ' + VN + '=' + VV);
+    SLbl := AddStringLit(VV);
+    Emit('        MOV     EAX, OFFSET ' + SLbl);
+    GenStoreVar(SI);
+    Inc(BuiltinVarCount);
+  End;
+End;
+
 { ---- ParseProgram ----------------------------------------------- }
 (* Parse un programme AWK complet au niveau superieur.              *)
 (* Structure AWK : suite de regles pattern-action :                 *)
@@ -6054,6 +6246,7 @@ Begin
   BuiltinStrCount := 0;
   BuiltinMathCount := 0;
   GetlineCount := 0;
+  BuiltinVarCount := 0;
   HasPushedBack := False;
   LexInit;
   { Mode debug : afficher tous les tokens }
@@ -6072,6 +6265,10 @@ Begin
     { Parser le programme AWK (TODO 06+10+11+12+13+14+15) }
     ParserAdvance;  { charger le premier token }
     ParseProgram;
+    { Initialiser les variables builtin (TODO 21) }
+    InitBuiltinVarDefaults;
+    ApplyDashF;
+    ApplyDashV;
     WriteLn('AWKCW32: tokenisation terminee, ', TotalLines, ' lignes');
     WriteLn('AWKCW32: ', SymCount, ' symbole(s), ', FuncCount, ' fonction(s), ',
             FuncDefCount, ' definition(s)');
@@ -6084,6 +6281,7 @@ Begin
     WriteLn('AWKCW32: ', BuiltinStrCount, ' appel(s) builtin chaines');
     WriteLn('AWKCW32: ', BuiltinMathCount, ' appel(s) builtin math/systeme');
     WriteLn('AWKCW32: ', GetlineCount, ' getline/redirection(s) E/S');
+    WriteLn('AWKCW32: ', BuiltinVarCount, ' initialisation(s) var builtin');
     WriteLn('AWKCW32: ', ExprCount, ' expression(s) parsees');
     WriteLn('AWKCW32: ', CoercionCount, ' coercition(s), ',
             ConcatCount, ' concatenation(s) implicite(s)');
@@ -6096,7 +6294,7 @@ Begin
     WriteLn('AWKCW32: ', GenCount, ' operation(s) code gen, ',
             StringLitCount, ' litteral(aux) chaine');
     WriteLn('AWKCW32: scope depth=', ScopeDepth, ', loop depth=', LoopDepth);
-    WriteLn('AWKCW32: TODO 21..25 non encore implementes.');
+    WriteLn('AWKCW32: TODO 22..25 non encore implementes.');
     WriteLn('AWKCW32: sortie prevue: ', Opts.OutFile);
   End;
   LexClose;
