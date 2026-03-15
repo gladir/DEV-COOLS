@@ -270,7 +270,7 @@
             Etiquettes en avant (forward) : reference avant declaration
               Resolution en deux passes ou table de fixup
 
-  TODO 19 - DECLARATIONS SWITCH
+  TODO 19 - DECLARATIONS SWITCH [IMPLEMENTE]
             ParseSwitchDecl : switch s := label1, label2, label3
               Declare un aiguillage (tableau de labels) dans la table des symboles
             Utilisation : go to s[i] -> saut a la i-eme etiquette
@@ -704,6 +704,8 @@ Procedure ParseArrayDecl(TyIdx : Integer); Forward;
 Procedure ParseProcDecl; Forward;
 { TODO 18 - Go to et etiquettes }
 Procedure ParseGotoStmt; Forward;
+{ TODO 19 - Declarations switch }
+Procedure ParseSwitchDecl; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -3892,6 +3894,14 @@ Begin
       Exit;
     End;
 
+    { switch s := label1, label2, label3 (TODO 19) }
+    If CurToken.Val = 'switch' Then
+    Begin
+      ParserAdvance;  { consommer switch }
+      ParseSwitchDecl;
+      Exit;
+    End;
+
     { Autres mots-cles non encore implementes : on skip }
     ParserAdvance;
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
@@ -3913,6 +3923,7 @@ End;
   Syntaxe Algol 58 :
     go to label
     goto label
+    go to sw[expr]     (saut indirect via switch, TODO 19)
   ou label est un identifiant ou un nombre (label numerique).
   Le lexeur a deja fusionne 'go to' en 'goto' (TK_KEYWORD).
   Emission : JMP _A58L_nom_du_label
@@ -3920,16 +3931,58 @@ End;
   l ajoute dans la table des symboles avec SK_LABEL (reference en
   avant) et on emet le JMP vers son nom mangled. Il sera defini
   plus tard quand le label sera rencontre comme instruction.
+  Si la cible est un switch avec index [expr], on emet le saut
+  indirect via la table de labels (TODO 19).
   ---------------------------------------------------------------- }
 Procedure ParseGotoStmt;
 Var
-  LblName   : TString;
+  LblName    : TString;
   MangledLbl : TString;
-  SIdx      : Integer;
+  SIdx       : Integer;
+  Res        : TExprVal;
+  LblSkip    : TString;
+  NS         : TString;
 Begin
   If CurToken.Kind = TK_IDENT Then
   Begin
     LblName := CurToken.Val;
+    SIdx := SymFind(LblName);
+    { Switch avec index : goto sw[expr] (TODO 19) }
+    If (SIdx >= 0) And (SymTab[SIdx].Kind = SK_SWITCH) Then
+    Begin
+      ParserAdvance;  { consommer le nom du switch }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
+      Begin
+        ParserAdvance;  { consommer [ }
+        ParseExpr(Res);
+        ExprFlushToAX(Res);
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+          ParserAdvance  { consommer ] }
+        Else
+          CompileError('] attendue apres index de switch');
+        EmitComment('goto ' + LblName + '[expr]');
+        { Verification de bornes : 1 <= AX <= ElemCount }
+        Str(DataTab[SymTab[SIdx].Offset].ElemCount, NS);
+        LblSkip := NewLabel;
+        EmitInstr('CMP', 'AX, 1');
+        EmitInstr('JL', LblSkip);
+        EmitInstr('CMP', 'AX, ' + NS);
+        EmitInstr('JG', LblSkip);
+        { AX = index (1-base) -> offset mot (0-base) }
+        EmitInstr('DEC', 'AX');
+        EmitInstr('SHL', 'AX, 1');
+        EmitInstr('MOV', 'BX, OFFSET ' + SymTab[SIdx].MangledName);
+        EmitInstr('ADD', 'BX, AX');
+        EmitInstr('JMP', 'WORD PTR [BX]');
+        EmitLabel(LblSkip);
+      End
+      Else
+      Begin
+        { Switch sans index : erreur }
+        CompileError('index [expr] attendu apres switch ' + LblName);
+      End;
+      Exit;
+    End;
     ParserAdvance;  { consommer le nom du label }
   End
   Else If CurToken.Kind = TK_INTEGER Then
@@ -3963,6 +4016,151 @@ Begin
 
   EmitComment('goto ' + LblName);
   EmitInstr('JMP', MangledLbl);
+End;
+
+{ ============================================================
+  TODO 19 - DECLARATIONS SWITCH [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseSwitchDecl : declaration d aiguillage -------------------
+  Syntaxe Algol 58 :
+    switch s := label1, label2, label3 ;
+    switch s := if b then l1 else l2, l3 ;
+  Declare un aiguillage (tableau de labels) dans la table des
+  symboles avec SK_SWITCH. La table des adresses de labels est
+  emise dans le segment DATA sous forme DK_SWITCH_TAB.
+  Le champ Offset du symbole stocke l index dans DataTab de
+  la table switch pour acceder a ElemCount (verification de bornes).
+  ---------------------------------------------------------------- }
+Procedure ParseSwitchDecl;
+Var
+  SName    : TString;
+  SIdx     : Integer;
+  DIdx     : Integer;
+  LblList  : TString;
+  LblName  : TString;
+  LblSIdx  : Integer;
+  NLabels  : Integer;
+Begin
+  { Le mot-cle 'switch' a deja ete consomme par ParseStmt }
+  { Attendre l identifiant du switch }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('identificateur attendu apres switch');
+    Exit;
+  End;
+  SName := CurToken.Val;
+  ParserAdvance;  { consommer l ident }
+
+  { Attendre := }
+  If Not ((CurToken.Kind = TK_OP) And (CurToken.Val = ':=')) Then
+  Begin
+    CompileError(':= attendu apres switch ' + SName);
+    Exit;
+  End;
+  ParserAdvance;  { consommer := }
+
+  { Parser la liste de designateurs (labels) : l1, l2, l3 ... }
+  LblList  := '';
+  NLabels  := 0;
+
+  Repeat
+    { Gerer les expressions conditionnelles : if b then l1 else l2 }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'if') Then
+    Begin
+      { Pour simplifier : on ne supporte pas les expressions conditionnelles }
+      { dans les switch ici, mais on les parse pour consommer les tokens }
+      { TODO : expressions conditionnelles dans switch (avance) }
+      ParserAdvance;  { consommer if }
+      { Sauter la condition jusqu a 'then' }
+      While (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'then')) Do
+        ParserAdvance;
+      If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'then') Then
+        ParserAdvance;  { consommer then }
+      { Lire le label 'then' }
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        LblName := CurToken.Val;
+        ParserAdvance;
+      End
+      Else If CurToken.Kind = TK_INTEGER Then
+      Begin
+        LblName := IntToStr_(CurToken.IntVal);
+        ParserAdvance;
+      End
+      Else
+        LblName := '';
+      { Sauter 'else' et le label 'else' : on prend le label 'then' }
+      If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'else') Then
+      Begin
+        ParserAdvance;  { consommer else }
+        { Lire et ignorer le label else }
+        If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_INTEGER) Then
+          ParserAdvance;
+      End;
+    End
+    Else If CurToken.Kind = TK_IDENT Then
+    Begin
+      LblName := CurToken.Val;
+      ParserAdvance;  { consommer le label }
+    End
+    Else If CurToken.Kind = TK_INTEGER Then
+    Begin
+      LblName := IntToStr_(CurToken.IntVal);
+      ParserAdvance;  { consommer le label numerique }
+    End
+    Else
+    Begin
+      CompileError('label attendu dans la liste switch');
+      Exit;
+    End;
+
+    { Enregistrer le label comme forward reference si non connu }
+    LblSIdx := SymFind(LblName);
+    If LblSIdx < 0 Then
+    Begin
+      LblSIdx := SymAdd(LblName, SK_LABEL, TY_IDX_INTEGER, 0);
+    End;
+
+    { Ajouter au DW list : OFFSET _A58L_labelname }
+    If LblSIdx >= 0 Then
+    Begin
+      If LblList <> '' Then
+        LblList := LblList + ', ';
+      LblList := LblList + 'OFFSET ' + SymTab[LblSIdx].MangledName;
+    End;
+    Inc(NLabels);
+
+    { Virgule -> prochain label }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance  { consommer , }
+    Else
+      Break;
+  Until False;
+
+  { Creer l entree dans DataTab pour la table switch }
+  If DataCount >= MAX_DATA Then
+  Begin
+    CompileError('table DATA pleine pour switch ' + SName);
+    Exit;
+  End;
+  DIdx := DataCount;
+  DataTab[DIdx].LblName   := A58_SW_PFX + SymNameClean(SName);
+  DataTab[DIdx].Kind      := DK_SWITCH_TAB;
+  DataTab[DIdx].IntVal    := 0;
+  DataTab[DIdx].StrVal    := LblList;
+  DataTab[DIdx].ElemCount := NLabels;
+  Inc(DataCount);
+
+  { Ajouter le symbole switch dans la table }
+  SIdx := SymAdd(SName, SK_SWITCH, TY_IDX_SWITCH, DIdx);
+  If SIdx >= 0 Then
+    EmitComment('switch ' + SName + ' := ' + IntToStr_(NLabels) + ' labels');
+
+  { Consommer le ; separateur s il est present }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
 End;
 
 { ============================================================
