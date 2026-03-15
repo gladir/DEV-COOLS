@@ -347,7 +347,7 @@
             Compteur d erreurs : arret si ErrCount >= MAX_ERRORS
             Statistiques finales : nombre d erreurs et avertissements
 
-  TODO 24 - RUNTIME MINIMAL
+  TODO 24 - RUNTIME MINIMAL [IMPLEMENTE]
             _A58RT_PRINT(BX=handle, SI=msg, CX=len) : INT 21h AH=40h
             _A58RT_PRINTLN : _A58RT_PRINT + CR+LF via _A58_CRLF DB 13,10,0
             _A58RT_STRLEN(SI=str) : compte octets jusqu a 0 -> AX
@@ -3581,8 +3581,8 @@ Procedure DataInit;
 Begin
   DataCount := 0;
   StrSeq    := 0;
-  { Buffer de conversion chaine pour numtostr / print }
-  DataAddArray('_A58_STRBUF', 32);
+  { Buffer de conversion chaine pour numtostr / print (TODO 24 : 128 DW = 256 octets) }
+  DataAddArray('_A58_STRBUF', 128);
   { Tas statique (heap bump allocator) }
   DataAddArray('_A58_HEAP', 1024);
   { Pointeur sommet du tas }
@@ -3597,6 +3597,9 @@ Begin
   DataAddArray('_A58_RDBUF', 66);
   { BP sauvegarde de l appelant pour thunks par nom (TODO 22) }
   DataAddWord('_A58_CALLER_BP', 0);
+  { Chaines pour _A58RT_PANIC (TODO 24) }
+  DataAdd('_A58K_PANIC_PFX', DK_STR, 0, 'Runtime error: ');
+  DataAdd('_A58K_PANIC_IDX', DK_STR, 0, 'index out of bounds');
 End;
 
 { ============================================================
@@ -5012,9 +5015,386 @@ Begin
   WriteLn(OutF);
 End;
 
+{ ============================================================
+  TODO 24 - RUNTIME MINIMAL [IMPLEMENTE]
+  ============================================================ }
+
+{ Runtime minimal 8086 pour Algol 58 :
+  - _A58RT_STRLEN(SI=str) -> CX=len, AX=len (preserve SI)
+  - _A58RT_NUMTOSTR(AX=n) -> SI=buf, CX=len (itoa signe)
+  - _A58RT_STRTONUM(SI=str) -> AX=valeur (atoi signe)
+  - _A58RT_PRINT(BX=handle, SI=msg, CX=len) -> INT 21h AH=40h
+  - _A58RT_PRINTLN -> _A58RT_PRINT + CR+LF
+  - _A58RT_ABS(AX=n) -> AX = |n|
+  - _A58RT_SIGN(AX=n) -> AX = -1, 0 ou 1
+  - _A58RT_POW(AX=base, BX=exp) -> AX = base^exp
+  - _A58RT_SQRT(AX=n) -> AX = racine carree entiere
+  - _A58RT_MAX(AX=a, BX=b) -> AX = max(a,b)
+  - _A58RT_MIN(AX=a, BX=b) -> AX = min(a,b)
+  - _A58RT_PANIC(SI=msg) -> affiche msg + exit(1)
+  - _A58RT_CHKIDX(AX=idx, BX=lo, CX=hi) -> PANIC si hors bornes
+  - Stubs transcendantaux : SIN, COS, ARCTAN, LN, EXP
+  - RuntimeEmitted : flag pour n emettre qu une seule fois        }
+
 Procedure EmitRuntime;
 Begin
-  { Stub : sera implemente dans TODO 24 }
+  If RuntimeEmitted Then Exit;
+  RuntimeEmitted := True;
+  If Not OutFOpen Then Exit;
+
+  EmitBlankLine;
+  EmitComment('=========================================================');
+  EmitComment(' RUNTIME LIBRARY (TODO 24)');
+  EmitComment('=========================================================');
+  EmitInstr('JMP', '_A58RT_SKIP');
+  EmitBlankLine;
+
+  { ---- _A58RT_STRLEN : longueur chaine ASCIIZ ---- }
+  { Entree : SI = pointeur chaine ASCIIZ             }
+  { Sortie : CX = longueur, AX = longueur            }
+  { Preserve : SI                                     }
+  EmitComment('--- _A58RT_STRLEN ---');
+  EmitRaw('_A58RT_STRLEN PROC NEAR');
+  EmitInstr('PUSH', 'SI');
+  EmitInstr('XOR', 'CX, CX');
+  EmitLabel('_A58RI_SL1');
+  EmitInstr('CMP', 'BYTE PTR [SI], 0');
+  EmitInstr('JE', '_A58RI_SL2');
+  EmitInstr('INC', 'SI');
+  EmitInstr('INC', 'CX');
+  EmitInstr('JMP', '_A58RI_SL1');
+  EmitLabel('_A58RI_SL2');
+  EmitInstr('POP', 'SI');
+  EmitInstr('MOV', 'AX, CX');
+  EmitInstr('RET', '');
+  EmitRaw('_A58RT_STRLEN ENDP');
+  EmitBlankLine;
+
+  { ---- _A58RT_NUMTOSTR : entier signe -> ASCII (itoa) ---- }
+  { Entree : AX = entier signe 16 bits                       }
+  { Sortie : SI = pointeur _A58_STRBUF, CX = longueur        }
+  EmitComment('--- _A58RT_NUMTOSTR ---');
+  EmitRaw('_A58RT_NUMTOSTR PROC NEAR');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('PUSH', 'DX');
+  EmitInstr('PUSH', 'DI');
+  EmitInstr('MOV', 'DI, OFFSET _A58_STRBUF');
+  EmitInstr('MOV', 'SI, DI');
+  { Gerer le signe negatif }
+  EmitInstr('TEST', 'AX, AX');
+  EmitInstr('JGE', '_A58RI_NP');
+  EmitInstr('NEG', 'AX');
+  EmitInstr('MOV', 'BYTE PTR [DI], 45');  { 45 = '-' }
+  EmitInstr('INC', 'DI');
+  EmitLabel('_A58RI_NP');
+  { Empiler les chiffres en ordre inverse }
+  EmitInstr('XOR', 'CX, CX');
+  EmitInstr('MOV', 'BX, 10');
+  EmitLabel('_A58RI_ND');
+  EmitInstr('XOR', 'DX, DX');
+  EmitInstr('DIV', 'BX');
+  EmitInstr('ADD', 'DL, 48');  { 48 = '0' }
+  EmitInstr('PUSH', 'DX');
+  EmitInstr('INC', 'CX');
+  EmitInstr('TEST', 'AX, AX');
+  EmitInstr('JNZ', '_A58RI_ND');
+  { Depiler les chiffres dans le buffer }
+  EmitInstr('MOV', 'BX, CX');
+  EmitLabel('_A58RI_NW');
+  EmitInstr('POP', 'DX');
+  EmitInstr('MOV', '[DI], DL');
+  EmitInstr('INC', 'DI');
+  EmitInstr('DEC', 'BX');
+  EmitInstr('JNZ', '_A58RI_NW');
+  { Terminer par 0 }
+  EmitInstr('MOV', 'BYTE PTR [DI], 0');
+  { CX = longueur totale, SI = debut du buffer }
+  EmitInstr('MOV', 'CX, DI');
+  EmitInstr('SUB', 'CX, SI');
+  EmitInstr('MOV', 'SI, OFFSET _A58_STRBUF');
+  EmitInstr('POP', 'DI');
+  EmitInstr('POP', 'DX');
+  EmitInstr('POP', 'BX');
+  EmitInstr('RET', '');
+  EmitRaw('_A58RT_NUMTOSTR ENDP');
+  EmitBlankLine;
+
+  { ---- _A58RT_STRTONUM : ASCII -> entier (atoi) ---- }
+  { Entree : SI = pointeur chaine ASCIIZ               }
+  { Sortie : AX = valeur entiere signee                 }
+  EmitComment('--- _A58RT_STRTONUM ---');
+  EmitRaw('_A58RT_STRTONUM PROC NEAR');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('PUSH', 'CX');
+  EmitInstr('PUSH', 'DX');
+  EmitInstr('XOR', 'AX, AX');
+  EmitInstr('XOR', 'CX, CX');
+  { Sauter les espaces }
+  EmitLabel('_A58RI_AW');
+  EmitInstr('CMP', 'BYTE PTR [SI], 32');  { 32 = ' ' }
+  EmitInstr('JNE', '_A58RI_AC');
+  EmitInstr('INC', 'SI');
+  EmitInstr('JMP', '_A58RI_AW');
+  EmitLabel('_A58RI_AC');
+  { Verifier le signe }
+  EmitInstr('CMP', 'BYTE PTR [SI], 45');  { 45 = '-' }
+  EmitInstr('JNE', '_A58RI_AP');
+  EmitInstr('MOV', 'CX, 1');
+  EmitInstr('INC', 'SI');
+  EmitInstr('JMP', '_A58RI_AD');
+  EmitLabel('_A58RI_AP');
+  EmitInstr('CMP', 'BYTE PTR [SI], 43');  { 43 = '+' }
+  EmitInstr('JNE', '_A58RI_AD');
+  EmitInstr('INC', 'SI');
+  EmitLabel('_A58RI_AD');
+  { Lire les chiffres }
+  EmitInstr('CMP', 'BYTE PTR [SI], 48');  { 48 = '0' }
+  EmitInstr('JB', '_A58RI_AF');
+  EmitInstr('CMP', 'BYTE PTR [SI], 57');  { 57 = '9' }
+  EmitInstr('JA', '_A58RI_AF');
+  EmitInstr('MOV', 'BX, 10');
+  EmitInstr('MUL', 'BX');
+  EmitInstr('XOR', 'BX, BX');
+  EmitInstr('MOV', 'BL, [SI]');
+  EmitInstr('SUB', 'BL, 48');
+  EmitInstr('ADD', 'AX, BX');
+  EmitInstr('INC', 'SI');
+  EmitInstr('JMP', '_A58RI_AD');
+  EmitLabel('_A58RI_AF');
+  { Appliquer le signe }
+  EmitInstr('TEST', 'CX, CX');
+  EmitInstr('JZ', '_A58RI_AR');
+  EmitInstr('NEG', 'AX');
+  EmitLabel('_A58RI_AR');
+  EmitInstr('POP', 'DX');
+  EmitInstr('POP', 'CX');
+  EmitInstr('POP', 'BX');
+  EmitInstr('RET', '');
+  EmitRaw('_A58RT_STRTONUM ENDP');
+  EmitBlankLine;
+
+  { ---- _A58RT_PRINT : ecriture fichier DOS ---- }
+  { Entree : BX = handle (1=STDOUT, 2=STDERR)     }
+  {          SI = adresse donnees, CX = longueur   }
+  EmitComment('--- _A58RT_PRINT ---');
+  EmitRaw('_A58RT_PRINT PROC NEAR');
+  EmitInstr('MOV', 'AH, 40h');
+  EmitInstr('MOV', 'DX, SI');
+  EmitInstr('INT', '21h');
+  EmitInstr('RET', '');
+  EmitRaw('_A58RT_PRINT ENDP');
+  EmitBlankLine;
+
+  { ---- _A58RT_PRINTLN : print + CR+LF ---- }
+  { Entree : BX = handle, SI = msg, CX = len  }
+  EmitComment('--- _A58RT_PRINTLN ---');
+  EmitRaw('_A58RT_PRINTLN PROC NEAR');
+  EmitInstr('CALL', '_A58RT_PRINT');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('MOV', 'SI, OFFSET _A58_CRLF');
+  EmitInstr('MOV', 'CX, 2');
+  EmitInstr('MOV', 'AH, 40h');
+  EmitInstr('MOV', 'DX, SI');
+  EmitInstr('INT', '21h');
+  EmitInstr('POP', 'BX');
+  EmitInstr('RET', '');
+  EmitRaw('_A58RT_PRINTLN ENDP');
+  EmitBlankLine;
+
+  { ---- _A58RT_ABS : valeur absolue ---- }
+  { Entree : AX = n   Sortie : AX = |n|  }
+  EmitComment('--- _A58RT_ABS ---');
+  EmitRaw('_A58RT_ABS PROC NEAR');
+  EmitInstr('TEST', 'AX, AX');
+  EmitInstr('JGE', '_A58RI_AB1');
+  EmitInstr('NEG', 'AX');
+  EmitLabel('_A58RI_AB1');
+  EmitInstr('RET', '');
+  EmitRaw('_A58RT_ABS ENDP');
+  EmitBlankLine;
+
+  { ---- _A58RT_SIGN : signe ---- }
+  { Entree : AX = n   Sortie : AX = -1, 0 ou 1 }
+  EmitComment('--- _A58RT_SIGN ---');
+  EmitRaw('_A58RT_SIGN PROC NEAR');
+  EmitInstr('TEST', 'AX, AX');
+  EmitInstr('JZ', '_A58RI_SG2');
+  EmitInstr('JG', '_A58RI_SG1');
+  EmitInstr('MOV', 'AX, 0FFFFh');  { -1 }
+  EmitInstr('RET', '');
+  EmitLabel('_A58RI_SG1');
+  EmitInstr('MOV', 'AX, 1');
+  EmitLabel('_A58RI_SG2');
+  EmitInstr('RET', '');
+  EmitRaw('_A58RT_SIGN ENDP');
+  EmitBlankLine;
+
+  { ---- _A58RT_POW : puissance entiere ---- }
+  { Entree : AX = base, BX = exposant        }
+  { Sortie : AX = base ^ exposant            }
+  EmitComment('--- _A58RT_POW ---');
+  EmitRaw('_A58RT_POW PROC NEAR');
+  EmitInstr('PUSH', 'CX');
+  EmitInstr('PUSH', 'DX');
+  EmitInstr('MOV', 'CX, BX');
+  EmitInstr('MOV', 'BX, AX');
+  EmitInstr('MOV', 'AX, 1');
+  EmitInstr('TEST', 'CX, CX');
+  EmitInstr('JZ', '_A58RI_PW2');
+  EmitLabel('_A58RI_PW1');
+  EmitInstr('IMUL', 'BX');
+  EmitInstr('DEC', 'CX');
+  EmitInstr('JNZ', '_A58RI_PW1');
+  EmitLabel('_A58RI_PW2');
+  EmitInstr('POP', 'DX');
+  EmitInstr('POP', 'CX');
+  EmitInstr('RET', '');
+  EmitRaw('_A58RT_POW ENDP');
+  EmitBlankLine;
+
+  { ---- _A58RT_SQRT : racine carree entiere (Newton-Raphson) ---- }
+  { Entree : AX = n (>= 0)   Sortie : AX = floor(sqrt(n))        }
+  EmitComment('--- _A58RT_SQRT ---');
+  EmitRaw('_A58RT_SQRT PROC NEAR');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('PUSH', 'CX');
+  EmitInstr('PUSH', 'DX');
+  EmitInstr('TEST', 'AX, AX');
+  EmitInstr('JLE', '_A58RI_SQ3');
+  EmitInstr('CMP', 'AX, 1');
+  EmitInstr('JE', '_A58RI_SQ4');
+  EmitInstr('MOV', 'BX, AX');
+  EmitInstr('SHR', 'AX, 1');
+  EmitLabel('_A58RI_SQ1');
+  EmitInstr('MOV', 'CX, AX');
+  EmitInstr('MOV', 'AX, BX');
+  EmitInstr('XOR', 'DX, DX');
+  EmitInstr('DIV', 'CX');
+  EmitInstr('ADD', 'AX, CX');
+  EmitInstr('SHR', 'AX, 1');
+  EmitInstr('CMP', 'AX, CX');
+  EmitInstr('JB', '_A58RI_SQ1');
+  EmitInstr('MOV', 'AX, CX');
+  EmitInstr('JMP', '_A58RI_SQ4');
+  EmitLabel('_A58RI_SQ3');
+  EmitInstr('XOR', 'AX, AX');
+  EmitLabel('_A58RI_SQ4');
+  EmitInstr('POP', 'DX');
+  EmitInstr('POP', 'CX');
+  EmitInstr('POP', 'BX');
+  EmitInstr('RET', '');
+  EmitRaw('_A58RT_SQRT ENDP');
+  EmitBlankLine;
+
+  { ---- _A58RT_MAX : maximum de deux entiers ---- }
+  { Entree : AX = a, BX = b   Sortie : AX = max   }
+  EmitComment('--- _A58RT_MAX ---');
+  EmitRaw('_A58RT_MAX PROC NEAR');
+  EmitInstr('CMP', 'AX, BX');
+  EmitInstr('JGE', '_A58RI_MX1');
+  EmitInstr('MOV', 'AX, BX');
+  EmitLabel('_A58RI_MX1');
+  EmitInstr('RET', '');
+  EmitRaw('_A58RT_MAX ENDP');
+  EmitBlankLine;
+
+  { ---- _A58RT_MIN : minimum de deux entiers ---- }
+  { Entree : AX = a, BX = b   Sortie : AX = min   }
+  EmitComment('--- _A58RT_MIN ---');
+  EmitRaw('_A58RT_MIN PROC NEAR');
+  EmitInstr('CMP', 'AX, BX');
+  EmitInstr('JLE', '_A58RI_MN1');
+  EmitInstr('MOV', 'AX, BX');
+  EmitLabel('_A58RI_MN1');
+  EmitInstr('RET', '');
+  EmitRaw('_A58RT_MIN ENDP');
+  EmitBlankLine;
+
+  { ---- _A58RT_PANIC : erreur fatale runtime ---- }
+  { Entree : SI = message ASCIIZ                   }
+  { Affiche "Runtime error: <msg>" sur STDERR + exit(1) }
+  EmitComment('--- _A58RT_PANIC ---');
+  EmitRaw('_A58RT_PANIC PROC NEAR');
+  EmitInstr('PUSH', 'SI');
+  { Afficher le prefixe "Runtime error: " }
+  EmitInstr('MOV', 'SI, OFFSET _A58K_PANIC_PFX');
+  EmitInstr('CALL', '_A58RT_STRLEN');
+  EmitInstr('MOV', 'AH, 40h');
+  EmitInstr('MOV', 'BX, 2');
+  EmitInstr('MOV', 'DX, SI');
+  EmitInstr('INT', '21h');
+  { Afficher le message }
+  EmitInstr('POP', 'SI');
+  EmitInstr('CALL', '_A58RT_STRLEN');
+  EmitInstr('MOV', 'AH, 40h');
+  EmitInstr('MOV', 'BX, 2');
+  EmitInstr('MOV', 'DX, SI');
+  EmitInstr('INT', '21h');
+  { Afficher CR+LF }
+  EmitInstr('MOV', 'SI, OFFSET _A58_CRLF');
+  EmitInstr('MOV', 'CX, 2');
+  EmitInstr('MOV', 'AH, 40h');
+  EmitInstr('MOV', 'BX, 2');
+  EmitInstr('MOV', 'DX, SI');
+  EmitInstr('INT', '21h');
+  { Terminer avec code erreur }
+  EmitInstr('MOV', 'AX, 4C01h');
+  EmitInstr('INT', '21h');
+  EmitRaw('_A58RT_PANIC ENDP');
+  EmitBlankLine;
+
+  { ---- _A58RT_CHKIDX : verification bornes tableau ---- }
+  { Entree : AX = index, BX = borne inf, CX = borne sup  }
+  { Si AX < BX ou AX > CX, appel _A58RT_PANIC            }
+  EmitComment('--- _A58RT_CHKIDX ---');
+  EmitRaw('_A58RT_CHKIDX PROC NEAR');
+  EmitInstr('CMP', 'AX, BX');
+  EmitInstr('JL', '_A58RI_CK1');
+  EmitInstr('CMP', 'AX, CX');
+  EmitInstr('JG', '_A58RI_CK1');
+  EmitInstr('RET', '');
+  EmitLabel('_A58RI_CK1');
+  EmitInstr('MOV', 'SI, OFFSET _A58K_PANIC_IDX');
+  EmitInstr('CALL', '_A58RT_PANIC');
+  EmitInstr('RET', '');
+  EmitRaw('_A58RT_CHKIDX ENDP');
+  EmitBlankLine;
+
+  { ---- Stubs transcendantaux (pas de FPU 8087) ---- }
+  EmitComment('--- Stubs transcendantaux ---');
+
+  EmitRaw('_A58RT_SIN PROC NEAR');
+  EmitInstr('XOR', 'AX, AX');
+  EmitInstr('RET', '');
+  EmitRaw('_A58RT_SIN ENDP');
+  EmitBlankLine;
+
+  EmitRaw('_A58RT_COS PROC NEAR');
+  EmitInstr('MOV', 'AX, 1');
+  EmitInstr('RET', '');
+  EmitRaw('_A58RT_COS ENDP');
+  EmitBlankLine;
+
+  EmitRaw('_A58RT_ARCTAN PROC NEAR');
+  EmitInstr('XOR', 'AX, AX');
+  EmitInstr('RET', '');
+  EmitRaw('_A58RT_ARCTAN ENDP');
+  EmitBlankLine;
+
+  EmitRaw('_A58RT_LN PROC NEAR');
+  EmitInstr('XOR', 'AX, AX');
+  EmitInstr('RET', '');
+  EmitRaw('_A58RT_LN ENDP');
+  EmitBlankLine;
+
+  EmitRaw('_A58RT_EXP PROC NEAR');
+  EmitInstr('MOV', 'AX, 1');
+  EmitInstr('RET', '');
+  EmitRaw('_A58RT_EXP ENDP');
+  EmitBlankLine;
+
+  { Label de fin du runtime }
+  EmitLabel('_A58RT_SKIP');
 End;
 
 { ============================================================
