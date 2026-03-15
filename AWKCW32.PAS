@@ -21,7 +21,7 @@
 
   Voir DOC/TODO/AWKCW32.txt pour la feuille de route complete.
 
-  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF
+  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF [IMPLEMENTE]
             TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings,
               EmitExe, EmitObj, EmitAsm, FieldSep, InitVars, InitCount)
             ParseArgs : analyser argv (source.awk [-o sortie] [-v]
@@ -652,7 +652,548 @@ Program AWKCW32;
 {$ENDIF}
 {$I-}
 
+{ ============================================================ }
+{ TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF      }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+{ ============================================================ }
+{ CONSTANTES                                                   }
+{ ============================================================ }
+
+Const
+  AWKCW32_VERSION = '0.1';
+  AWKCW32_DATE    = '2026';
+
+  { Limites internes }
+  MAX_SYM        = {$IFDEF FPC}2048{$ELSE}256{$ENDIF};
+  MAX_LABEL      = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_SCOPE      = {$IFDEF FPC}64{$ELSE}32{$ENDIF};
+  MAX_DATA       = {$IFDEF FPC}512{$ELSE}64{$ENDIF};
+  MAX_PARAM      = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
+  MAX_LOOP_NEST  = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
+  MAX_ERRORS     = {$IFDEF FPC}30{$ELSE}3{$ENDIF};
+  MAX_STR        = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
+  MAX_RULES      = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
+  MAX_FIELDS     = 64;       { nombre max de champs $1..$NF     }
+  MAX_HASH_PAIRS = 64;       { paires max par tableau associatif }
+  MAX_INIT_VARS  = 16;       { nombre max de -v var=val          }
+  MAX_FUNC       = {$IFDEF FPC}256{$ELSE}32{$ENDIF};
+  STACK_SIZE     = 4096;     { taille pile Win32                 }
+
+  { Prefixes de nommage ASM }
+  AW_VAR_PFX   = '_AWV_';    { variable utilisateur              }
+  AW_FN_PFX    = '_AWF_';    { fonction utilisateur              }
+  AW_STR_PFX   = '_AWK_';    { constante chaine                  }
+  AW_RT_PFX    = '_AWRT_';   { routine runtime                   }
+  AW_LBL_PFX   = '_AWL_';    { label de saut interne             }
+  AW_ARR_PFX   = '_AWA_';    { tableau associatif                }
+  AW_PAT_PFX   = '_AWP_';    { pattern data                      }
+  AW_RULE_PFX  = '_AWR_';    { regle pattern-action              }
+
+  { Codes de sortie }
+  EXIT_OK    = 0;
+  EXIT_ERROR = 1;
+  EXIT_USAGE = 2;
+
+  { PE/COFF format constants }
+{$IFDEF FPC}
+  PE_DOS_MAGIC    = $5A4D;       { 'MZ'                              }
+  PE_PE_SIG       = $00004550;   { 'PE\0\0'                          }
+  PE_MACHINE_I386 = $014C;       { i386                               }
+  PE_OPT_SIZE     = 224;         { sizeof IMAGE_OPTIONAL_HEADER32     }
+  PE_MAGIC_32     = $010B;       { PE32                               }
+  PE_IMG_BASE     = $00400000;   { default image base                 }
+  PE_SEC_ALIGN    = $1000;       { section alignment (4KB)            }
+  PE_FILE_ALIGN   = $0200;       { file alignment (512)               }
+  PE_SUBSYS_CUI   = 3;           { console subsystem                  }
+  PE_SCN_TEXT     = $60000020;   { CODE | EXECUTE | READ              }
+  PE_SCN_RDATA    = $40000040;   { INIT_DATA | READ                   }
+  PE_SCN_BSS      = LongInt($C0000040);  { INIT_DATA | READ | WRITE   }
+  MAX_BIN_CODE    = 65536;       { 64 KB max code section             }
+  MAX_BIN_DATA    = 65536;       { 64 KB max data section             }
+  MAX_BIN_LBL     = 4096;        { max labels                         }
+  MAX_BIN_FIX     = 8192;        { max fixups                         }
+  PE_NUM_API      = 10;          { number of imported Win32 APIs      }
+  COFF_RELOC_DIR32  = 6;         { IMAGE_REL_I386_DIR32               }
+  COFF_RELOC_REL32  = 20;        { IMAGE_REL_I386_REL32               }
+{$ENDIF}
+
+{ ============================================================ }
+{ TYPES                                                        }
+{ ============================================================ }
+
+Type
+  TString = String[MAX_STR];
+
+  { ---- Options de compilation ----------------------------- }
+  TInitVar = Record
+    VarName  : TString;     { nom de la variable                }
+    VarValue : TString;     { valeur (chaine)                   }
+  End;
+
+  TOptions = Record
+    SrcFile   : TString;   { fichier source (.awk)              }
+    OutFile   : TString;   { fichier de sortie (.exe/.obj/.asm) }
+    Verbose   : Boolean;   { -v (verbose) : banniere + stats    }
+    DebugMode : Boolean;   { -d : affichage de chaque token     }
+    Warnings  : Boolean;   { -w : activer les avertissements    }
+    EmitExe   : Boolean;   { produire un .EXE PE (defaut)       }
+    EmitObj   : Boolean;   { -obj : produire uniquement un .OBJ }
+    EmitAsm   : Boolean;   { -asm : produire un listing .ASM    }
+    FieldSep  : TString;   { -F sep : separateur de champs      }
+    InitVars  : Array[0..MAX_INIT_VARS - 1] Of TInitVar;
+    InitCount : Integer;   { nombre de -v var=val               }
+  End;
+
+{$IFDEF FPC}
+  { ---- Types binaires ------------------------------------- }
+  TBinFixKind = (BFK_ABS32, BFK_REL32, BFK_IAT32);
+  TBinFixup = Record
+    Offset : LongInt;
+    Kind   : TBinFixKind;
+    Target : TString;
+    InCode : Boolean;
+  End;
+  TBinLabel = Record
+    Name   : TString;
+    Offset : LongInt;
+    InCode : Boolean;
+  End;
+{$ENDIF}
+
+{ ============================================================ }
+{ VARIABLES GLOBALES                                           }
+{ ============================================================ }
+
+Var
+  { Options }
+  Opts : TOptions;
+
+  { Compteurs generaux }
+  ErrorCount : Integer;
+  WarnCount  : Integer;
+  TotalLines : LongInt;
+
+  { Fichier de sortie ASM }
+  OutF       : Text;
+  OutFOpen   : Boolean;
+
+{$IFDEF FPC}
+  { Variables binaires }
+  BinCode     : Array[0..MAX_BIN_CODE - 1] of Byte;
+  BinCodeLen  : LongInt;
+  BinData     : Array[0..MAX_BIN_DATA - 1] of Byte;
+  BinDataLen  : LongInt;
+  BinLabels   : Array[0..MAX_BIN_LBL - 1] of TBinLabel;
+  BinLblCount : Integer;
+  BinFixups   : Array[0..MAX_BIN_FIX - 1] of TBinFixup;
+  BinFixCount : Integer;
+  BinInCode   : Boolean;
+{$ENDIF}
+
+Const
+{$IFDEF FPC}
+  BinAPIDecorated : Array[0..PE_NUM_API - 1] Of String[32] = (
+    '_ExitProcess@4', '_GetStdHandle@4', '_WriteFile@20',
+    '_ReadFile@20', '_GetProcessHeap@0', '_HeapAlloc@12',
+    '_HeapFree@12', '_CreateFileA@28', '_CloseHandle@4',
+    '_GetCommandLineA@0'
+  );
+  BinAPIName : Array[0..PE_NUM_API - 1] Of String[20] = (
+    'ExitProcess', 'GetStdHandle', 'WriteFile', 'ReadFile',
+    'GetProcessHeap', 'HeapAlloc', 'HeapFree',
+    'CreateFileA', 'CloseHandle', 'GetCommandLineA'
+  );
+{$ENDIF}
+
+{ ============================================================ }
+{ FONCTIONS UTILITAIRES                                        }
+{ ============================================================ }
+
+Function IntToStr_(V : LongInt) : TString;
+Var S : TString;
 Begin
-  WriteLn('AWKCW32 - AWK Compiler for Win32 - Not yet implemented');
-  WriteLn('See DOC/TODO/AWKCW32.txt for the 25-step roadmap.');
-End.
+  Str(V, S);
+  IntToStr_ := S;
+End;
+
+Function StrUpperCase(Const S : TString) : TString;
+Var
+  I   : Integer;
+  Tmp : TString;
+Begin
+  Tmp := S;
+  For I := 1 To Length(Tmp) Do
+    If (Tmp[I] >= 'a') And (Tmp[I] <= 'z') Then
+      Tmp[I] := Chr(Ord(Tmp[I]) - 32);
+  StrUpperCase := Tmp;
+End;
+
+Function StrLowerCase(Const S : TString) : TString;
+Var
+  I   : Integer;
+  Tmp : TString;
+Begin
+  Tmp := S;
+  For I := 1 To Length(Tmp) Do
+    If (Tmp[I] >= 'A') And (Tmp[I] <= 'Z') Then
+      Tmp[I] := Chr(Ord(Tmp[I]) + 32);
+  StrLowerCase := Tmp;
+End;
+
+Function ExtractExt(Const Path : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ExtractExt := StrLowerCase(Copy(Path, LastDot,
+                     Length(Path) - LastDot + 1))
+  Else
+    ExtractExt := '';
+End;
+
+Function ReplaceExt(Const Path, NewExt : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ReplaceExt := Copy(Path, 1, LastDot - 1) + NewExt
+  Else
+    ReplaceExt := Path + NewExt;
+End;
+
+Function ExtractDir(Const Path : TString) : TString;
+Var
+  I, LastSep : Integer;
+Begin
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+  If LastSep > 0 Then
+    ExtractDir := Copy(Path, 1, LastSep)
+  Else
+    ExtractDir := '';
+End;
+
+{ Convertir un identificateur en label ASM valide }
+Function AsmIdent(Const S : TString) : TString;
+Var
+  I   : Integer;
+  Tmp : TString;
+Begin
+  Tmp := StrUpperCase(S);
+  For I := 1 To Length(Tmp) Do
+    If Not (((Tmp[I] >= 'A') And (Tmp[I] <= 'Z')) Or
+            ((Tmp[I] >= '0') And (Tmp[I] <= '9')) Or
+            (Tmp[I] = '_')) Then
+      Tmp[I] := '_';
+  AsmIdent := Tmp;
+End;
+
+{ ============================================================ }
+{ GESTION DES ERREURS                                          }
+{ ============================================================ }
+
+Procedure FatalError(Const Msg : TString);
+Begin
+  WriteLn('AWKCW32: FATAL: ', Msg);
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+  Halt(EXIT_ERROR);
+End;
+
+Procedure WarnMsg(Const Msg : TString);
+Begin
+  If Not Opts.Warnings Then Exit;
+  WriteLn('AWKCW32: warning: ', Msg);
+  Inc(WarnCount);
+End;
+
+{ ============================================================ }
+{ INITIALISATION DES OPTIONS                                   }
+{ ============================================================ }
+
+Procedure InitOptions;
+Begin
+  Opts.SrcFile   := '';
+  Opts.OutFile   := '';
+  Opts.Verbose   := False;
+  Opts.DebugMode := False;
+  Opts.Warnings  := False;
+  Opts.EmitExe   := True;
+  Opts.EmitObj   := False;
+  Opts.EmitAsm   := False;
+  Opts.FieldSep  := ' ';
+  Opts.InitCount := 0;
+End;
+
+{ ============================================================ }
+{ AIDE EN LIGNE                                                }
+{ ============================================================ }
+
+Procedure ShowHelp;
+Begin
+  WriteLn('AWKCW32 v', AWKCW32_VERSION, ' (', AWKCW32_DATE,
+          ') - Compilateur AWK vers 80386 (Windows PE 32 bits)');
+  WriteLn('AWKCW32 - Cette commande permet de lancer le compilateur ',
+          'AWK pour l''assembleur du microprocesseur 80386 (en ',
+          'executable Windows 32 bits).');
+  WriteLn;
+  WriteLn('Syntaxe : AWKCW32 <source.awk> [options]');
+  WriteLn;
+  WriteLn('Sortie :');
+  WriteLn('  Par defaut un .EXE (PE Windows 32 bits)');
+  WriteLn('  -obj           Produire seulement un fichier .OBJ (COFF)');
+  WriteLn('  -asm           Produire egalement un fichier .ASM lisible');
+  WriteLn('  -o <fichier>   Specifier le nom du fichier de sortie');
+  WriteLn;
+  WriteLn('AWK :');
+  WriteLn('  -F <sep>       Separateur de champs (defaut espace)');
+  WriteLn('  -v var=val     Initialiser une variable avant BEGIN');
+  WriteLn;
+  WriteLn('General :');
+  WriteLn('  --verbose      Mode verbeux (banniere + statistiques)');
+  WriteLn('  -d             Debug tokens (affiche chaque token)');
+  WriteLn('  -w             Afficher les avertissements');
+  WriteLn('  -h, --help, /? Afficher cette aide');
+  WriteLn;
+  WriteLn('Exemples :');
+  WriteLn('  AWKCW32 hello.awk');
+  WriteLn('  AWKCW32 hello.awk --verbose');
+  WriteLn('  AWKCW32 hello.awk -asm');
+  WriteLn('  AWKCW32 hello.awk -obj');
+  WriteLn('  AWKCW32 hello.awk -o MONPROG.EXE');
+  WriteLn('  AWKCW32 -F: script.awk');
+  WriteLn('  AWKCW32 -v N=10 script.awk');
+  Halt(EXIT_OK);
+End;
+
+{ ============================================================ }
+{ ANALYSE DES ARGUMENTS                                        }
+{ ============================================================ }
+
+Procedure ParseArgs;
+Var
+  I      : Integer;
+  Arg    : TString;
+  Ext    : TString;
+  EqPos  : Integer;
+  J      : Integer;
+Begin
+  InitOptions;
+  If ParamCount = 0 Then
+    ShowHelp;
+
+  I := 1;
+  While I <= ParamCount Do
+  Begin
+    Arg := ParamStr(I);
+
+    If (Arg = '-h') Or (Arg = '--help') Or (Arg = '/?') Or
+       (Arg = '/h') Or (Arg = '/H') Then
+      ShowHelp
+    Else If Arg = '--verbose' Then
+      Opts.Verbose := True
+    Else If Arg = '-d' Then
+      Opts.DebugMode := True
+    Else If Arg = '-w' Then
+      Opts.Warnings := True
+    Else If Arg = '-asm' Then
+      Opts.EmitAsm := True
+    Else If Arg = '-obj' Then
+    Begin
+      Opts.EmitObj := True;
+      Opts.EmitExe := False;
+    End
+    Else If Arg = '-o' Then
+    Begin
+      Inc(I);
+      If I > ParamCount Then
+        FatalError('-o necessite un nom de fichier');
+      Opts.OutFile := ParamStr(I);
+    End
+    Else If Arg = '-F' Then
+    Begin
+      Inc(I);
+      If I > ParamCount Then
+        FatalError('option -F requiert un argument');
+      Opts.FieldSep := ParamStr(I);
+    End
+    Else If (Length(Arg) > 2) And (Arg[1] = '-') And (Arg[2] = 'F') Then
+    Begin
+      { -Fsep : separateur colle a l option }
+      Opts.FieldSep := Copy(Arg, 3, Length(Arg) - 2);
+    End
+    Else If Arg = '-v' Then
+    Begin
+      Inc(I);
+      If I > ParamCount Then
+        FatalError('option -v requiert un argument var=val');
+      Arg := ParamStr(I);
+      { Chercher le signe = }
+      EqPos := 0;
+      For J := 1 To Length(Arg) Do
+        If (Arg[J] = '=') And (EqPos = 0) Then
+          EqPos := J;
+      If (EqPos < 2) Or (EqPos > Length(Arg)) Then
+        FatalError('-v : format attendu var=val');
+      If Opts.InitCount >= MAX_INIT_VARS Then
+        FatalError('trop de variables -v (max ' +
+                   IntToStr_(MAX_INIT_VARS) + ')');
+      Opts.InitVars[Opts.InitCount].VarName :=
+        Copy(Arg, 1, EqPos - 1);
+      Opts.InitVars[Opts.InitCount].VarValue :=
+        Copy(Arg, EqPos + 1, Length(Arg) - EqPos);
+      Inc(Opts.InitCount);
+    End
+    Else If (Length(Arg) > 0) And (Arg[1] = '-') Then
+      FatalError('Option inconnue: ' + Arg)
+    Else
+    Begin
+      { Argument positionnel : fichier source }
+      If Opts.SrcFile = '' Then
+        Opts.SrcFile := Arg
+      Else
+        FatalError('Argument inattendu: ' + Arg);
+    End;
+
+    Inc(I);
+  End;
+
+  { Validation : fichier source requis }
+  If Opts.SrcFile = '' Then
+  Begin
+    WriteLn('AWKCW32: fichier source manquant');
+    ShowHelp;
+  End;
+
+  { Verifier l extension .awk }
+  Ext := ExtractExt(Opts.SrcFile);
+  If (Ext <> '.awk') Then
+    WarnMsg('extension attendue .awk, trouvee: ' + Ext);
+
+  { Fichier de sortie par defaut }
+  If Opts.OutFile = '' Then
+  Begin
+    If Opts.EmitObj Then
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.obj')
+    Else
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.exe');
+  End;
+End;
+
+{ ============================================================ }
+{ BANNIERE ET STATISTIQUES                                     }
+{ ============================================================ }
+
+Procedure ShowBanner;
+Begin
+  If Not Opts.Verbose Then Exit;
+  WriteLn('AWKCW32 v', AWKCW32_VERSION, ' (', AWKCW32_DATE,
+          ') - Compilateur AWK -> 80386 PE Win32');
+  WriteLn('Source   : ', Opts.SrcFile);
+  WriteLn('Sortie   : ', Opts.OutFile);
+  If Opts.EmitAsm Then
+    WriteLn('ASM      : ', ReplaceExt(Opts.OutFile, '.asm'));
+  If Opts.EmitObj Then
+    WriteLn('Format   : OBJ (COFF)')
+  Else
+    WriteLn('Format   : EXE (PE Win32)');
+  If Opts.FieldSep <> ' ' Then
+    WriteLn('FS       : ', Opts.FieldSep);
+  If Opts.InitCount > 0 Then
+    WriteLn('InitVars : ', Opts.InitCount);
+  WriteLn;
+End;
+
+Procedure ShowStats;
+Begin
+  If Not Opts.Verbose Then Exit;
+  WriteLn;
+  WriteLn('--- Statistiques ---');
+  WriteLn('Lignes analysees : ', TotalLines);
+  WriteLn('Erreurs          : ', ErrorCount);
+  WriteLn('Avertissements   : ', WarnCount);
+End;
+
+{ ============================================================ }
+{ NETTOYAGE                                                    }
+{ ============================================================ }
+
+Procedure Cleanup;
+Begin
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+{ ============================================================ }
+{ PROCEDURE RUN (STUB - sera complete par les TODOs suivants)  }
+{ ============================================================ }
+
+Procedure Run;
+Begin
+  WriteLn('AWKCW32: compilation de ', Opts.SrcFile, ' ...');
+  WriteLn('AWKCW32: TODO 02..25 non encore implementes.');
+  WriteLn('AWKCW32: sortie prevue: ', Opts.OutFile);
+  If Opts.FieldSep <> ' ' Then
+    WriteLn('AWKCW32: FS = ', Opts.FieldSep);
+  If Opts.InitCount > 0 Then
+    WriteLn('AWKCW32: ', Opts.InitCount, ' variable(s) pre-initialisee(s)');
+End;
+
+{ ============================================================ }
+{ PROGRAMME PRINCIPAL                                          }
+{ ============================================================ }
+
+BEGIN
+  If (ParamCount > 0) And
+     ((ParamStr(1) = '/?') Or (ParamStr(1) = '--help') Or
+      (ParamStr(1) = '-h') Or (ParamStr(1) = '/h') Or
+      (ParamStr(1) = '/H')) Then
+  Begin
+    ShowHelp;
+    Halt(EXIT_OK);
+  End;
+
+  ErrorCount := 0;
+  WarnCount  := 0;
+  TotalLines := 0;
+  OutFOpen   := False;
+
+  ParseArgs;
+  ShowBanner;
+  Run;
+  Cleanup;
+  If Opts.Verbose Then ShowStats;
+
+  If ErrorCount > 0 Then
+    Halt(EXIT_ERROR)
+  Else
+    Halt(EXIT_OK);
+END.
