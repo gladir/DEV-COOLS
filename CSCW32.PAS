@@ -8523,6 +8523,12 @@ Begin
     BinAddFixup(BinCodeLen, BFK_REL32, Ops, True);
     BinEmitDWord(0); Exit;
   End;
+  If Mnem = 'JNS' Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($89);
+    BinAddFixup(BinCodeLen, BFK_REL32, Ops, True);
+    BinEmitDWord(0); Exit;
+  End;
 
   { -- MOV ----------------------------------------------------- }
   If Mnem = 'MOV' Then
@@ -8564,21 +8570,56 @@ Begin
       Exit;
     End;
 
-    { MOV BYTE PTR [mem],imm8 }
+    { MOV BYTE PTR [mem],reg8 or imm8 }
     If AsmStartsWith(Op1, 'BYTE PTR [') Then
     Begin
       Bracket := AsmExtractBracket(Op1);
-      Imm := AsmParseImm(Op2);
-      BinEmitByte($C6);
-      If AsmIsRegBased(Bracket) Then
-        AsmEncodeMemory(Bracket, 0)
+      R2 := AsmRegIdx8(Op2);
+      If R2 >= 0 Then
+      Begin
+        { MOV r/m8,r8 : opcode 88 /r }
+        BinEmitByte($88);
+        If AsmIsRegBased(Bracket) Then
+          AsmEncodeMemory(Bracket, R2)
+        Else
+        Begin
+          BinEmitByte(Byte($05 Or (R2 Shl 3)));
+          BinAddFixup(BinCodeLen, BFK_ABS32, Bracket, True);
+          BinEmitDWord(0);
+        End;
+      End
       Else
       Begin
-        BinEmitByte($05);
+        { MOV r/m8,imm8 : opcode C6 /0 }
+        Imm := AsmParseImm(Op2);
+        BinEmitByte($C6);
+        If AsmIsRegBased(Bracket) Then
+          AsmEncodeMemory(Bracket, 0)
+        Else
+        Begin
+          BinEmitByte($05);
+          BinAddFixup(BinCodeLen, BFK_ABS32, Bracket, True);
+          BinEmitDWord(0);
+        End;
+        BinEmitByte(Byte(Imm And $FF));
+      End;
+      Exit;
+    End;
+
+    { MOV reg8,BYTE PTR [mem] }
+    R1 := AsmRegIdx8(Op1);
+    If (R1 >= 0) And (AsmStartsWith(Op2, 'BYTE PTR [')) Then
+    Begin
+      Bracket := AsmExtractBracket(Op2);
+      BinEmitByte($8A);
+      If AsmIsRegBased(Bracket) Then
+        AsmEncodeMemory(Bracket, R1)
+      Else
+      Begin
+        BinEmitByte(Byte($05 Or (R1 Shl 3)));
         BinAddFixup(BinCodeLen, BFK_ABS32, Bracket, True);
         BinEmitDWord(0);
       End;
-      BinEmitByte(Byte(Imm And $FF));
       Exit;
     End;
 
@@ -8671,6 +8712,26 @@ Begin
   Begin
     AsmSplitOps(Ops, Op1, Op2);
     R1 := AsmRegIdx32(Op1);
+
+    { ALU reg8,imm8 : opcode 80 /n ib }
+    If R1 < 0 Then
+    Begin
+      R1 := AsmRegIdx8(Op1);
+      If R1 >= 0 Then
+      Begin
+        Imm := AsmParseImm(Op2);
+        BinEmitByte($80);
+        If Mnem = 'ADD' Then BinEmitByte(Byte($C0 Or R1))
+        Else If Mnem = 'SUB' Then BinEmitByte(Byte($E8 Or R1))
+        Else If Mnem = 'AND' Then BinEmitByte(Byte($E0 Or R1))
+        Else If Mnem = 'OR'  Then BinEmitByte(Byte($C8 Or R1))
+        Else If Mnem = 'XOR' Then BinEmitByte(Byte($F0 Or R1))
+        Else If Mnem = 'CMP' Then BinEmitByte(Byte($F8 Or R1));
+        BinEmitByte(Byte(Imm And $FF));
+        Exit;
+      End;
+      Exit;
+    End;
 
     If R1 >= 0 Then
     Begin
@@ -8781,13 +8842,43 @@ Begin
   If Mnem = 'INC' Then
   Begin
     R1 := AsmRegIdx32(Ops);
-    If R1 >= 0 Then BinEmitByte(Byte($40 + R1));
+    If R1 >= 0 Then
+      BinEmitByte(Byte($40 + R1))
+    Else If AsmStartsWith(Ops, 'DWORD PTR [') Or
+            ((Length(Ops) > 0) And (Ops[1] = '[')) Then
+    Begin
+      Bracket := AsmExtractBracket(Ops);
+      BinEmitByte($FF);
+      If AsmIsRegBased(Bracket) Then
+        AsmEncodeMemory(Bracket, 0)
+      Else
+      Begin
+        BinEmitByte($05);
+        BinAddFixup(BinCodeLen, BFK_ABS32, Bracket, True);
+        BinEmitDWord(0);
+      End;
+    End;
     Exit;
   End;
   If Mnem = 'DEC' Then
   Begin
     R1 := AsmRegIdx32(Ops);
-    If R1 >= 0 Then BinEmitByte(Byte($48 + R1));
+    If R1 >= 0 Then
+      BinEmitByte(Byte($48 + R1))
+    Else If AsmStartsWith(Ops, 'DWORD PTR [') Or
+            ((Length(Ops) > 0) And (Ops[1] = '[')) Then
+    Begin
+      Bracket := AsmExtractBracket(Ops);
+      BinEmitByte($FF);
+      If AsmIsRegBased(Bracket) Then
+        AsmEncodeMemory(Bracket, 1)
+      Else
+      Begin
+        BinEmitByte(Byte($05 Or (1 Shl 3)));
+        BinAddFixup(BinCodeLen, BFK_ABS32, Bracket, True);
+        BinEmitDWord(0);
+      End;
+    End;
     Exit;
   End;
   If Mnem = 'NEG' Then
