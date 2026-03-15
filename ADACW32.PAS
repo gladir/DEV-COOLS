@@ -2395,7 +2395,7 @@ Procedure InitStrTable;
 Begin
   StrCount     := 0;
   LabelCounter := 0;
-  GenEnabled   := True;
+  GenEnabled   := False;
   AsmOpened    := False;
 End;
 
@@ -3634,7 +3634,7 @@ Var
 Begin
   { Entier negatif }
   Neg := False;
-  If (CurTokType = TOK_MINUS) Then
+  If CurTokType = TOK_MINUS Then
   Begin
     Neg := True;
     Consume;
@@ -4134,7 +4134,6 @@ Begin
   InitPkgTable;
   InitScopeStack;
   InitStrTable;
-  GenEnabled := False; { pas de fichier de sortie ouvert encore }
   LexInit;
   If Opts.DebugMode Then
   Begin
