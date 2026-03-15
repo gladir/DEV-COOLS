@@ -312,13 +312,20 @@
             Resolution noms qualifies : ClassName.Member -> Member.
             test24_classes.cs : 15 cas de test.
 
-  TODO 18 - ESPACES DE NOMS (namespace)
+  TODO 18 - ESPACES DE NOMS (namespace) [IMPLEMENTE]
             ParseNamespaceDecl : namespace Nom { classes }.
             Namespace englobant le programme entier.
             Resolution de noms qualifies : Namespace.Classe.Methode.
             Espaces de noms imbriques : namespace A.B { ... }.
-            Table des namespaces actifs (via using).
+            Table des namespaces declares : NsTab.
+            Table des namespaces actifs (via using) : UsingTab.
             Mangling : _CSCN_Namespace_Classe_Methode.
+            FindNamespace / AddNamespace : recherche et ajout.
+            Resolution qualifiee Namespace.Classe.Membre :
+              le prefixe namespace est ignore pour le mangling
+              (seul le nom de methode est utilise).
+            NsDepth : profondeur d imbrication des namespaces.
+            test25_namespaces.cs : 15 cas de test.
 
   TODO 19 - TABLEAUX
             Declaration : type[] nom = new type[taille];
@@ -617,6 +624,25 @@ Var
   ClassTab    : Array[0..MAX_CLASS - 1] Of TClassEntry;
   ClassCount  : Integer;         { nombre de classes declarees             }
   CurClassName : TString;        { nom de la classe en cours de parsing    }
+
+{ Table des namespaces declares (TODO 18) }
+
+Const
+  MAX_NS = 16;                  { nombre maximal de namespaces declares    }
+
+Type
+  TNamespaceEntry = Record
+    Name       : TString;       { nom complet du namespace, ex. 'A.B'     }
+    AsmPrefix  : TString;       { prefixe ASM mangled (_CSCN_A_B)         }
+    Depth      : Integer;       { profondeur d imbrication (0 = top-level)}
+    ClassCount : Integer;       { nombre de classes dans ce namespace      }
+  End;
+
+Var
+  NsTab       : Array[0..MAX_NS - 1] Of TNamespaceEntry;
+  NsCount     : Integer;         { nombre de namespaces declares           }
+  NsDepth     : Integer;         { profondeur courante d imbrication ns    }
+  CurNsName   : TString;        { nom du namespace en cours de parsing    }
 
   { Variables binaires }
   BinCode     : Array[0..MAX_BIN_CODE - 1] of Byte;
@@ -953,6 +979,13 @@ Function  IsBuiltinMeth(SymIdx : Integer) : Boolean; Forward;
 Function  FindClass(Const Name : TString) : Integer; Forward;
 Function  AddClass(Const Name : TString) : Integer; Forward;
 Procedure ParseClassDecl; Forward;
+
+{ Forward declarations for TODO 18 }
+Function  FindNamespace(Const Name : TString) : Integer; Forward;
+Function  AddNamespace(Const Name : TString; Depth : Integer) : Integer; Forward;
+Function  IsKnownNamespace(Const Name : TString) : Boolean; Forward;
+Function  StripNamespacePrefix(Const QualName : TString) : TString; Forward;
+Procedure ParseNamespaceDecl; Forward;
 
 { ============================================================ }
 { TODO 02 - LEXEUR (TOKENS C#)                                 }
@@ -4498,14 +4531,19 @@ Begin
       End;
     End;
 
-    { Resolution de nom qualifie par classe (TODO 17) :             }
-    { Si QualName = Classe.Membre et Classe est connue, utiliser    }
-    { juste Membre pour la recherche dans la table des symboles.    }
+    { Resolution de nom qualifie par namespace/classe (TODO 17/18) : }
+    { D abord retirer le prefixe namespace si present.               }
+    { Puis si QualName = Classe.Membre et Classe est connue,         }
+    { utiliser juste Membre pour la table des symboles.              }
     If Pos('.', QualName) > 0 Then
     Begin
-      If FindClass(Copy(QualName, 1, Pos('.', QualName) - 1)) >= 0 Then
-        QualName := Copy(QualName, Pos('.', QualName) + 1,
-                         Length(QualName));
+      QualName := StripNamespacePrefix(QualName);
+      If Pos('.', QualName) > 0 Then
+      Begin
+        If FindClass(Copy(QualName, 1, Pos('.', QualName) - 1)) >= 0 Then
+          QualName := Copy(QualName, Pos('.', QualName) + 1,
+                           Length(QualName));
+      End;
     End;
 
     { Appel de methode : ident(...) }
@@ -5049,12 +5087,16 @@ Begin
     End;
   End;
 
-  { Resolution de nom qualifie par classe (TODO 17) }
+  { Resolution de nom qualifie par namespace/classe (TODO 17/18) }
   If Pos('.', QualName) > 0 Then
   Begin
-    If FindClass(Copy(QualName, 1, Pos('.', QualName) - 1)) >= 0 Then
-      QualName := Copy(QualName, Pos('.', QualName) + 1,
-                       Length(QualName));
+    QualName := StripNamespacePrefix(QualName);
+    If Pos('.', QualName) > 0 Then
+    Begin
+      If FindClass(Copy(QualName, 1, Pos('.', QualName) - 1)) >= 0 Then
+        QualName := Copy(QualName, Pos('.', QualName) + 1,
+                         Length(QualName));
+    End;
   End;
 
   { --- Appel de methode : ident(...) --- }
@@ -6304,6 +6346,7 @@ Begin
   WriteLn('Avertissements   : ', WarnCount);
   WriteLn('Methodes         : ', MethCount);
   WriteLn('Classes          : ', ClassCount);
+  WriteLn('Namespaces       : ', NsCount);
 End;
 
 { ------------------------------------------------------------ }
@@ -6674,16 +6717,230 @@ Begin
   CurClassName := '';
 End;
 
+{ ============================================================ }
+{ TODO 18 - ESPACES DE NOMS (namespace)                         }
+{           [IMPLEMENTE]                                        }
+{ ============================================================ }
+
 { ------------------------------------------------------------ }
-{ Run                                                          }
+{ FindNamespace : chercher un namespace dans la table            }
+{ Retourne l indice (0-based) ou -1 si non trouve                }
 { ------------------------------------------------------------ }
+
+Function FindNamespace(Const Name : TString) : Integer;
+Var
+  I  : Integer;
+  Lw : TString;
+Begin
+  Lw := StrLowerCase(Name);
+  FindNamespace := -1;
+  For I := 0 To NsCount - 1 Do
+    If StrLowerCase(NsTab[I].Name) = Lw Then
+    Begin
+      FindNamespace := I;
+      Exit;
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AddNamespace : ajouter un namespace a la table                 }
+{ Retourne l indice (0-based) ou -1 si la table est pleine       }
+{ ------------------------------------------------------------ }
+
+Function AddNamespace(Const Name : TString; Depth : Integer) : Integer;
+Var
+  I     : Integer;
+  UName : TString;
+Begin
+  { Verifier les doublons }
+  I := FindNamespace(Name);
+  If I >= 0 Then
+  Begin
+    AddNamespace := I;
+    Exit;
+  End;
+
+  { Verifier la capacite }
+  If NsCount >= MAX_NS Then
+  Begin
+    WriteLn('CSCW32: erreur ligne ', CurToken.Line,
+            ': trop de namespaces declares (max ', MAX_NS, ')');
+    Inc(ErrorCount);
+    AddNamespace := -1;
+    Exit;
+  End;
+
+  { Construire le prefixe ASM : _CSCN_ + nom avec . remplaces par _ }
+  UName := StrUpperCase(Name);
+  For I := 1 To Length(UName) Do
+    If UName[I] = '.' Then
+      UName[I] := '_';
+
+  NsTab[NsCount].Name       := Name;
+  NsTab[NsCount].AsmPrefix  := CSC_NS_PFX + UName;
+  NsTab[NsCount].Depth      := Depth;
+  NsTab[NsCount].ClassCount := 0;
+  AddNamespace := NsCount;
+  Inc(NsCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsKnownNamespace : verifier si un nom est un namespace connu   }
+{ Cherche dans NsTab et aussi dans UsingTab                      }
+{ ------------------------------------------------------------ }
+
+Function IsKnownNamespace(Const Name : TString) : Boolean;
+Begin
+  IsKnownNamespace := (FindNamespace(Name) >= 0) Or
+                      (FindUsing(Name) > 0);
+End;
+
+{ ------------------------------------------------------------ }
+{ StripNamespacePrefix : retirer le prefixe namespace d un nom   }
+{ qualifie. Ex : MyNs.MyClass.Method -> MyClass.Method           }
+{ Si le premier segment est un namespace connu, on le retire.    }
+{ ------------------------------------------------------------ }
+
+Function StripNamespacePrefix(Const QualName : TString) : TString;
+Var
+  DotPos  : Integer;
+  Prefix  : TString;
+Begin
+  StripNamespacePrefix := QualName;
+  DotPos := Pos('.', QualName);
+  If DotPos <= 0 Then Exit;
+
+  Prefix := Copy(QualName, 1, DotPos - 1);
+  If IsKnownNamespace(Prefix) Then
+    StripNamespacePrefix := Copy(QualName, DotPos + 1,
+                                 Length(QualName) - DotPos);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseNamespaceDecl : analyser une declaration namespace        }
+{ Le token 'namespace' a deja ete consomme par le dispatcher.    }
+{   namespace Nom (accolade ouvrante) classes (accolade ferme)   }
+{   namespace A.B (accolade ouvrante) classes (accolade ferme)   }
+{ ------------------------------------------------------------ }
+
+Procedure ParseNamespaceDecl;
+Var
+  NsName : TString;
+  NsIdx  : Integer;
+  SymIdx : Integer;
+Begin
+  { Lire le nom du namespace }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    WriteLn('CSCW32: erreur ligne ', CurToken.Line, ' col ',
+            CurToken.Col,
+            ': identifiant attendu apres ''namespace''');
+    Inc(ErrorCount);
+    Exit;
+  End;
+
+  NsName := CurToken.Val;
+  Consume;
+
+  { Gerer les noms qualifies A.B.C }
+  While TokIsPunct('.') Do
+  Begin
+    Consume;
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      NsName := NsName + '.' + CurToken.Val;
+      Consume;
+    End
+    Else
+    Begin
+      WriteLn('CSCW32: erreur ligne ', CurToken.Line, ' col ',
+              CurToken.Col,
+              ': identifiant attendu apres ''.'' dans namespace');
+      Inc(ErrorCount);
+      Break;
+    End;
+  End;
+
+  { Enregistrer le namespace }
+  NsIdx := AddNamespace(NsName, NsDepth);
+  SymIdx := SymAdd(NsName, SC_NAMESPACE, 0);
+
+  If Opts.Verbose Then
+    WriteLn('  namespace ', NsName, ' (profondeur ', NsDepth, ')');
+
+  { Sauvegarder le nom du namespace courant }
+  CurNsName := NsName;
+  Inc(NsDepth);
+
+  { Attendre l accolade ouvrante }
+  If TokIsPunct('{') Then
+  Begin
+    Consume;
+    SymEnterScope;
+
+    { Analyser le contenu du namespace : using, classes, etc. }
+    While (CurToken.Kind <> TK_EOF) And (Not TokIsPunct('}')) Do
+    Begin
+      { Directives using a l interieur du namespace }
+      If TokIsKw('using') Then
+        ParseUsingDirective
+      { Modificateurs de visibilite }
+      Else If TokIsKw('public') Or TokIsKw('private') Or
+              TokIsKw('protected') Or TokIsKw('internal') Then
+        Consume
+      { Declarations de classes }
+      Else If TokIsKw('class') Then
+      Begin
+        Consume;
+        ParseClassDecl;
+        If NsIdx >= 0 Then
+          Inc(NsTab[NsIdx].ClassCount);
+      End
+      { Namespace imbrique }
+      Else If TokIsKw('namespace') Then
+      Begin
+        Consume;
+        ParseNamespaceDecl;
+      End
+      { Declarations const }
+      Else If TokIsKw('const') Then
+      Begin
+        Consume;
+        ParseConstDecl;
+      End
+      { Litteral chaine pour la table .DATA }
+      Else If CurToken.Kind = TK_STRING Then
+      Begin
+        AddStrLit(CurToken.Val);
+        Consume;
+      End
+      { Mots-cles static (methode hors classe) }
+      Else If TokIsKw('static') Then
+      Begin
+        Consume;
+        ParseMethodDecl;
+      End
+      { Autre token : consommer pour eviter boucle infinie }
+      Else
+        Consume;
+    End;
+
+    { Consommer l accolade fermante }
+    If TokIsPunct('}') Then
+      Consume;
+    SymLeaveScope;
+  End;
+
+  Dec(NsDepth);
+  If NsDepth = 0 Then
+    CurNsName := '';
+End;
 
 Procedure Run;
 Var
   I          : Integer;
   SymIdx     : Integer;
   Off        : Integer;        { offset data pour variables statiques }
-  NsName     : TString;       { nom du namespace courant           }
   ClsName    : TString;       { nom de la classe courante          }
   VarType    : TString;       { type d une variable                }
   VarName    : TString;       { nom d une variable                 }
@@ -6747,6 +7004,11 @@ Begin
   ClassCount    := 0;
   CurClassName  := '';
 
+  { Initialiser la table des namespaces (TODO 18) }
+  NsCount       := 0;
+  NsDepth       := 0;
+  CurNsName     := '';
+
   { Initialiser le segment de donnees (TODO 08) }
   DataInit;
 
@@ -6779,7 +7041,6 @@ Begin
 
   { Scanner les tokens restants : reconnaitre les declarations    }
   { namespace, class, methodes, variables, const, litteraux       }
-  NsName      := '';
   ClsName     := '';
   InClass     := False;
   BraceDepth  := 0;
@@ -6805,28 +7066,11 @@ Begin
       Consume;
       ParseConstDecl;
     End
-    { Reconnaitre les declarations namespace }
+    { Reconnaitre les declarations namespace (TODO 18) }
     Else If TokIsKw('namespace') Then
     Begin
       Consume;
-      If CurToken.Kind = TK_IDENT Then
-      Begin
-        NsName := CurToken.Val;
-        SymIdx := SymAdd(NsName, SC_NAMESPACE, 0);
-        If Opts.Verbose Then
-          WriteLn('  namespace ', NsName);
-        Consume;
-        { Gerer les noms qualifies A.B.C }
-        While TokIsPunct('.') Do
-        Begin
-          Consume;
-          If CurToken.Kind = TK_IDENT Then
-          Begin
-            NsName := NsName + '.' + CurToken.Val;
-            Consume;
-          End;
-        End;
-      End;
+      ParseNamespaceDecl;
     End
     { Reconnaitre les modificateurs de visibilite (TODO 17) }
     { Consommes mais non verifies dans le sous-ensemble minimal.  }
@@ -7144,7 +7388,7 @@ Begin
   EmitClose;
 
   WriteLn('CSCW32: ASM genere -> ', AsmFileName);
-  WriteLn('CSCW32: Les TODOs 18..25 ne sont pas encore implementes.');
+  WriteLn('CSCW32: Les TODOs 19..25 ne sont pas encore implementes.');
 End;
 
 { ------------------------------------------------------------ }

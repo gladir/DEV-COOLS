@@ -475,7 +475,7 @@
               methodes, visibilite, champs statiques, acces
               qualifie inter-classes).
 
-  TODO 18 - ESPACES DE NOMS (namespace)
+  TODO 18 - ESPACES DE NOMS (namespace) [IMPLEMENTE]
             ParseNamespaceDecl : namespace Nom { classes }.
               Le namespace englobe toutes les classes du fichier.
             Namespace comme enveloppe syntaxique :
@@ -489,10 +489,19 @@
               est utilise).
             Espaces de noms imbriques : namespace A.B { ... }
               reconnus, traites comme un seul namespace A.B.
-            Table des namespaces declares : NsTab.
-            Table des namespaces importes (via using) : UsTab.
+            Table des namespaces declares : NsTab[0..MAX_NS-1].
+              TNamespaceEntry (Name, AsmPrefix, Depth, ClassCount).
+              FindNamespace / AddNamespace.
+            Table des namespaces importes (via using) : UsingTab.
+            StripNamespacePrefix : retirer prefixe namespace d un
+              nom qualifie pour la resolution.
+            IsKnownNamespace : verifier NsTab + UsingTab.
+            NsDepth : profondeur d imbrication des namespaces.
+            ShowStats : affiche NsCount.
             Mangling etendu (optionnel, pour compatibilite future) :
               _CSCN_Namespace_Classe_Methode.
+            test25_namespaces.cs : 15 cas de test (1 namespace,
+              4 classes, 7 methodes, noms pleinement qualifies).
 
   TODO 19 - TABLEAUX
             Declaration : type[] nom = new type[taille];
