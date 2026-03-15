@@ -210,7 +210,7 @@
               implemente"
             Marquer les packages importes IsStandard := True
 
-  TODO 10 - PARSEUR : DECLARATIONS DE TYPES UTILISATEUR
+  TODO 10 - PARSEUR : DECLARATIONS DE TYPES UTILISATEUR [IMPLEMENTE]
             ParseTypeDecl :
               TYPE nom IS definition ;
             ParseSubtypeDecl :

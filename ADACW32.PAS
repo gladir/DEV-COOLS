@@ -221,7 +221,7 @@
               implemente"
             Marquer les packages importes IsStandard := True
 
-  TODO 10 - PARSEUR : DECLARATIONS DE TYPES UTILISATEUR
+  TODO 10 - PARSEUR : DECLARATIONS DE TYPES UTILISATEUR [IMPLEMENTE]
             ParseTypeDecl :
               TYPE nom IS definition ;
             ParseSubtypeDecl :
@@ -3227,6 +3227,389 @@ Begin
   End;
 End;
 
+{ ============================================================ }
+{ TODO 10 - PARSEUR : DECLARATIONS DE TYPES UTILISATEUR        }
+{ ============================================================ }
+
+{ ---- ParseTypeRef : resoudre un nom de type -> index --------- }
+{ Gere les types predefinis (INTEGER, FLOAT, BOOLEAN, CHARACTER, }
+{ STRING, NATURAL, POSITIVE) et les types utilisateur.           }
+Function ParseTypeRef : Integer;
+Var
+  Nm : TString;
+  Ti : Integer;
+Begin
+  If CurTokType <> TOK_IDENT Then
+  Begin
+    Error('Nom de type attendu');
+    ParseTypeRef := TYPE_UNKNOWN; Exit;
+  End;
+  Nm := StrUpperCase(CurTokStr);
+  Consume;
+  If Nm = 'INTEGER'   Then Begin ParseTypeRef := TYPE_INT;   Exit; End;
+  If Nm = 'FLOAT'     Then Begin ParseTypeRef := TYPE_FLOAT; Exit; End;
+  If Nm = 'BOOLEAN'   Then Begin ParseTypeRef := TYPE_BOOL;  Exit; End;
+  If Nm = 'CHARACTER' Then Begin ParseTypeRef := TYPE_CHAR;  Exit; End;
+  If Nm = 'STRING'    Then Begin ParseTypeRef := TYPE_STR;   Exit; End;
+  If Nm = 'NATURAL'   Then Begin ParseTypeRef := TYPE_INT;   Exit; End;
+  If Nm = 'POSITIVE'  Then Begin ParseTypeRef := TYPE_INT;   Exit; End;
+  Ti := FindType(Nm);
+  If Ti > 0 Then Begin ParseTypeRef := Ti; Exit; End;
+  Error('Type inconnu : ' + Nm);
+  ParseTypeRef := TYPE_UNKNOWN;
+End;
+
+{ ---- ParseRangeBoundsEx : lire lo .. hi ---------------------- }
+{ Supporte entiers, TRUE/FALSE, et litteraux d enumeration.      }
+Procedure ParseRangeBoundsEx(Var Lo, Hi : LongInt; EnumTi : Integer);
+Var
+  LitNm : TString;
+  I     : Integer;
+Begin
+  { --- Borne inferieure --- }
+  If CurTokType = TOK_INTEGER Then
+  Begin Lo := CurTokNum; Consume; End
+  Else If CurTokType = TOK_MINUS Then
+  Begin Consume;
+    If CurTokType = TOK_INTEGER Then
+    Begin Lo := -CurTokNum; Consume; End
+    Else Begin Error('Entier attendu apres -'); Lo := 0; End;
+  End
+  Else If (CurTokType = TOK_IDENT) And (CurTokKw = KW_TRUE) Then
+  Begin Lo := 1; Consume; End
+  Else If (CurTokType = TOK_IDENT) And (CurTokKw = KW_FALSE) Then
+  Begin Lo := 0; Consume; End
+  Else If (CurTokType = TOK_IDENT) And (EnumTi > 0) And
+          (TypeTab[EnumTi].Kind = TK_ENUM) Then
+  Begin
+    LitNm := StrUpperCase(CurTokStr);
+    Lo := -1;
+    For I := 1 To TypeTab[EnumTi].EnumCount Do
+      If TypeTab[EnumTi].EnumNames[I] = LitNm Then
+      Begin Lo := I - 1; Break; End;
+    If Lo < 0 Then
+    Begin Error('Litteral enumere inconnu : ' + LitNm); Lo := 0; End;
+    Consume;
+  End
+  Else
+  Begin Error('Borne inferieure entiere attendue'); Lo := 0;
+    If CurTokType <> TOK_DOTDOT Then Consume;
+  End;
+
+  Expect(TOK_DOTDOT, '`..` attendu dans contrainte RANGE');
+
+  { --- Borne superieure --- }
+  If CurTokType = TOK_INTEGER Then
+  Begin Hi := CurTokNum; Consume; End
+  Else If CurTokType = TOK_MINUS Then
+  Begin Consume;
+    If CurTokType = TOK_INTEGER Then
+    Begin Hi := -CurTokNum; Consume; End
+    Else Begin Error('Entier attendu apres -'); Hi := Lo; End;
+  End
+  Else If (CurTokType = TOK_IDENT) And (CurTokKw = KW_TRUE) Then
+  Begin Hi := 1; Consume; End
+  Else If (CurTokType = TOK_IDENT) And (CurTokKw = KW_FALSE) Then
+  Begin Hi := 0; Consume; End
+  Else If (CurTokType = TOK_IDENT) And (EnumTi > 0) And
+          (TypeTab[EnumTi].Kind = TK_ENUM) Then
+  Begin
+    LitNm := StrUpperCase(CurTokStr);
+    Hi := -1;
+    For I := 1 To TypeTab[EnumTi].EnumCount Do
+      If TypeTab[EnumTi].EnumNames[I] = LitNm Then
+      Begin Hi := I - 1; Break; End;
+    If Hi < 0 Then
+    Begin Error('Litteral enumere inconnu : ' + LitNm); Hi := Lo; End;
+    Consume;
+  End
+  Else
+  Begin Error('Borne superieure entiere attendue'); Hi := Lo;
+    Consume;
+  End;
+End;
+
+{ ---- ParseRangeBounds : lire lo .. hi (sans contexte enum) --- }
+Procedure ParseRangeBounds(Var Lo, Hi : LongInt);
+Begin
+  ParseRangeBoundsEx(Lo, Hi, 0);
+End;
+
+{ ---- ParseEnumType : ( lit1, lit2, ... ) -> TK_ENUM ---------- }
+Function ParseEnumType(Const TName : TString) : Integer;
+Var
+  Idx : Integer;
+  Cnt : Integer;
+Begin
+  Idx := AddType(TName, TK_ENUM);
+  TypeTab[Idx].EnumCount := 0;
+  Consume; { ( }
+  Cnt := 0;
+  Repeat
+    If CurTokType <> TOK_IDENT Then
+    Begin Error('Litteral d''enumeration attendu'); Break; End;
+    Inc(Cnt);
+    If Cnt > MAX_ENUM Then
+    Begin Error('Trop de litteraux dans enumeration'); Break; End;
+    TypeTab[Idx].EnumNames[Cnt] := StrUpperCase(CurTokStr);
+    Consume;
+    If CurTokType = TOK_COMMA Then Consume Else Break;
+  Until False;
+  Expect(TOK_RPAREN, '`)` attendu en fin d''enumeration');
+  TypeTab[Idx].EnumCount := Cnt;
+  TypeTab[Idx].LoBound   := 0;
+  TypeTab[Idx].HiBound   := Cnt - 1;
+  TypeTab[Idx].TotalSize  := 4; { DWord - indice 32 bits }
+  ParseEnumType := Idx;
+End;
+
+{ ---- ParseRangeType : RANGE lo .. hi -> TK_RANGE ------------- }
+Function ParseRangeType(Const TName : TString;
+                        BaseTi : Integer) : Integer;
+Var
+  Idx    : Integer;
+  Lo, Hi : LongInt;
+Begin
+  ParseRangeBounds(Lo, Hi);
+  Idx := AddType(TName, TK_RANGE);
+  TypeTab[Idx].BaseType  := BaseTi;
+  TypeTab[Idx].LoBound   := Lo;
+  TypeTab[Idx].HiBound   := Hi;
+  TypeTab[Idx].TotalSize := 4; { DWord 32 bits }
+  ParseRangeType := Idx;
+End;
+
+{ ---- ParseArrayType : ARRAY ( lo..hi ) OF type -> TK_ARRAY -- }
+Function ParseArrayType(Const TName : TString) : Integer;
+Var
+  Idx           : Integer;
+  Lo, Hi        : LongInt;
+  ElemTi        : Integer;
+  Esz           : Integer;
+  Unconstrained : Boolean;
+  PeekName      : TString;
+Begin
+  Expect(TOK_LPAREN, '`(` attendu apres ARRAY');
+  Unconstrained := False;
+  If CurTokType = TOK_IDENT Then
+  Begin
+    PeekName := StrUpperCase(CurTokStr);
+    Consume;
+    If TokIsKw(KW_RANGE) Then
+    Begin
+      Consume; { RANGE }
+      If CurTokType = TOK_LT Then
+      Begin
+        Consume;
+        If CurTokType = TOK_GT Then Consume
+        Else Error('`>` attendu dans ARRAY non contraint');
+      End
+      Else Error('`<>` attendu dans ARRAY non contraint');
+      Unconstrained := True;
+      Lo := 1; Hi := 0;
+    End
+    Else
+    Begin
+      { Fallback : c etait un entier ou debut lo..hi }
+      Lo := 0; Hi := 0;
+      ParseRangeBounds(Lo, Hi);
+    End;
+  End
+  Else
+  Begin
+    Lo := 0; Hi := 0;
+    ParseRangeBounds(Lo, Hi);
+  End;
+  Expect(TOK_RPAREN, '`)` attendu apres indices ARRAY');
+  ExpectKw(KW_OF, 'OF');
+  ElemTi := ParseTypeRef;
+  Esz    := GetTypeSize(ElemTi);
+  If Esz <= 0 Then Esz := 4;
+  Idx := AddType(TName, TK_ARRAY);
+  TypeTab[Idx].LoBound  := Lo;
+  TypeTab[Idx].HiBound  := Hi;
+  TypeTab[Idx].ElemType := ElemTi;
+  TypeTab[Idx].ElemSize := Esz;
+  If Unconstrained Then
+    TypeTab[Idx].TotalSize := 0
+  Else
+    TypeTab[Idx].TotalSize := (Hi - Lo + 1) * Esz;
+  ParseArrayType := Idx;
+End;
+
+{ ---- ParseRecordType : champ:type; ... END RECORD -> TK_REC - }
+Function ParseRecordType(Const TName : TString) : Integer;
+Var
+  Idx   : Integer;
+  Fi    : Integer;
+  Fti   : Integer;
+  Off   : Integer;
+  Fsz   : Integer;
+  FName : TString;
+Begin
+  Idx := AddType(TName, TK_RECORD);
+  Fi  := 0;
+  Off := 0;
+  While Not TokIsKw(KW_END) And (CurTokType <> TOK_EOF) Do
+  Begin
+    { NULL record : NULL ; }
+    If TokIsKw(KW_NULL) Then
+    Begin Consume; Expect(TOK_SEMI, '`;` attendu apres NULL');
+      Continue; End;
+    { Champ(s) }
+    Repeat
+      If CurTokType <> TOK_IDENT Then
+      Begin Error('Nom de champ attendu'); Break; End;
+      FName := StrUpperCase(CurTokStr);
+      Consume;
+      If CurTokType = TOK_COMMA Then
+      Begin
+        { Plusieurs noms : n1, n2 : type; -> on prend le premier }
+        Inc(Fi);
+        If Fi > MAX_FIELD Then
+        Begin Error('Trop de champs dans RECORD'); Fi := MAX_FIELD; End;
+        TypeTab[Idx].FieldNames[Fi] := FName;
+        TypeTab[Idx].FieldTypes[Fi] := TYPE_UNKNOWN;
+        TypeTab[Idx].FieldOffs[Fi]  := Off;
+        Consume; { , }
+        Continue;
+      End;
+      Expect(TOK_COLON, '`:` attendu apres nom de champ');
+      Fti := ParseTypeRef;
+      Fsz := GetTypeSize(Fti);
+      If Fsz <= 0 Then Fsz := 4;
+      Fsz := AlignDWord(Fsz);
+      Inc(Fi);
+      If Fi > MAX_FIELD Then
+      Begin Error('Trop de champs dans RECORD'); Fi := MAX_FIELD; End;
+      TypeTab[Idx].FieldNames[Fi] := FName;
+      TypeTab[Idx].FieldTypes[Fi] := Fti;
+      TypeTab[Idx].FieldOffs[Fi]  := Off;
+      Inc(Off, Fsz);
+      { Corriger les champs precedents sans type (multi-noms) }
+      { n1, n2 : Integer; -> n1 et n2 sont tous les deux Integer }
+      While (Fi > 1) And (TypeTab[Idx].FieldTypes[Fi-1] = TYPE_UNKNOWN) Do
+      Begin
+        TypeTab[Idx].FieldTypes[Fi-1] := Fti;
+        TypeTab[Idx].FieldOffs[Fi-1]  := Off;
+        Inc(Off, Fsz);
+      End;
+      Break;
+    Until False;
+    Expect(TOK_SEMI, '`;` attendu apres declaration de champ');
+  End;
+  TypeTab[Idx].FieldCount := Fi;
+  TypeTab[Idx].TotalSize  := AlignDWord(Off);
+  ExpectKw(KW_END, 'END');
+  ExpectKw(KW_RECORD, 'RECORD');
+  ParseRecordType := Idx;
+End;
+
+{ ---- ParseTypeDecl : TYPE nom IS definition ; --------------- }
+Procedure ParseTypeDecl;
+Var
+  TName : TString;
+  Idx   : Integer;
+  Base  : Integer;
+Begin
+  Consume; { TYPE }
+  If CurTokType <> TOK_IDENT Then
+  Begin Error('Nom de type attendu apres TYPE'); Exit; End;
+  TName := StrUpperCase(CurTokStr);
+  Consume;
+  ExpectKw(KW_IS, 'IS');
+
+  { Enumeration : ( lit1, lit2, ... ) }
+  If CurTokType = TOK_LPAREN Then
+    Idx := ParseEnumType(TName)
+
+  { RANGE lo .. hi }
+  Else If TokIsKw(KW_RANGE) Then
+  Begin
+    Consume; { RANGE }
+    Idx := ParseRangeType(TName, TYPE_INT);
+  End
+
+  { ARRAY ( ... ) OF type }
+  Else If TokIsKw(KW_ARRAY) Then
+  Begin
+    Consume; { ARRAY }
+    Idx := ParseArrayType(TName);
+  End
+
+  { RECORD ... END RECORD }
+  Else If TokIsKw(KW_RECORD) Then
+  Begin
+    Consume; { RECORD }
+    Idx := ParseRecordType(TName);
+  End
+
+  { NEW basetype }
+  Else If TokIsKw(KW_NEW) Then
+  Begin
+    Consume; { NEW }
+    Base := ParseTypeRef;
+    Idx  := AddType(TName, TK_DERIVED);
+    TypeTab[Idx].BaseType  := Base;
+    TypeTab[Idx].TotalSize := GetTypeSize(Base);
+  End
+
+  { ACCESS basetype }
+  Else If TokIsKw(KW_ACCESS) Then
+  Begin
+    Consume; { ACCESS }
+    Base := ParseTypeRef;
+    Idx  := AddType(TName, TK_ACCESS);
+    TypeTab[Idx].BaseType  := Base;
+    TypeTab[Idx].TotalSize := 4; { pointeur 32 bits }
+  End
+
+  Else
+  Begin
+    Error('Definition de type inconnue apres IS');
+    Idx := 0;
+  End;
+
+  Expect(TOK_SEMI, '`;` attendu en fin de declaration de type');
+End;
+
+{ ---- ParseSubtypeDecl : SUBTYPE nom IS base [RANGE] ; ------- }
+Procedure ParseSubtypeDecl;
+Var
+  SName : TString;
+  Base  : Integer;
+  Idx   : Integer;
+  Lo, Hi: LongInt;
+Begin
+  Consume; { SUBTYPE }
+  If CurTokType <> TOK_IDENT Then
+  Begin Error('Nom de sous-type attendu apres SUBTYPE'); Exit; End;
+  SName := StrUpperCase(CurTokStr);
+  Consume;
+  ExpectKw(KW_IS, 'IS');
+  Base := ParseTypeRef;
+
+  { Contrainte RANGE optionnelle }
+  If TokIsKw(KW_RANGE) Then
+  Begin
+    Consume; { RANGE }
+    ParseRangeBoundsEx(Lo, Hi, Base);
+    Idx := AddType(SName, TK_RANGE);
+    TypeTab[Idx].BaseType  := Base;
+    TypeTab[Idx].LoBound   := Lo;
+    TypeTab[Idx].HiBound   := Hi;
+    TypeTab[Idx].TotalSize := 4; { DWord 32 bits }
+  End
+  Else
+  Begin
+    Idx := AddType(SName, TK_DERIVED);
+    TypeTab[Idx].BaseType  := Base;
+    TypeTab[Idx].TotalSize := GetTypeSize(Base);
+  End;
+
+  Expect(TOK_SEMI, '`;` attendu en fin de declaration de sous-type');
+End;
+
 { ---- LexInit : ouvrir le fichier source et lire le 1er token }
 Procedure LexInit;
 Begin
@@ -3465,8 +3848,15 @@ Begin
   Begin
     WriteLn('ADACW32: compilation de ', Opts.SrcFile, ' ...');
     ParseWithUseSection;
-    WriteLn('ADACW32: TODO 10+ non encore implemente - ',
-            'WITH/USE OK');
+    { TODO 10 : boucle TYPE/SUBTYPE }
+    While (CurTokType = TOK_IDENT) And
+          ((CurTokKw = KW_TYPE) Or (CurTokKw = KW_SUBTYPE)) Do
+    Begin
+      If CurTokKw = KW_TYPE Then ParseTypeDecl
+      Else ParseSubtypeDecl;
+    End;
+    WriteLn('ADACW32: TODO 11+ non encore implemente - ',
+            'WITH/USE + TYPE/SUBTYPE OK');
   End;
   LexClose;
   BilanCompilation;
