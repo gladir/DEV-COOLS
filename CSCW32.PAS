@@ -134,11 +134,12 @@
             TypeCoerce : conversions implicites
               (byte->int, short->int, char->int).
 
-  TODO 07 - EMETTEUR DE CODE ASM 80386
+  TODO 07 - EMETTEUR DE CODE ASM 80386 [IMPLEMENTE]
             TEmitter : OutF (Text), OutFOpen, EmitOpen, EmitClose.
             EmitRaw, EmitLabel, EmitInstr (formatage 8 espaces).
             EmitComment, EmitBlankLine.
-            LabelGen global (compteur unique _CSCL_NNNNN).
+            LabelSeq global (compteur unique _CSCL_NNNNN).
+            GenLabel : generer un label unique _CSCL_NNNNN.
             Prefixes 32 bits : _CSCV_ (variable), _CSCF_ (methode),
               _CSCK_ (chaine const), _CSCRT_ (runtime),
               _CSCL_ (label).
@@ -508,6 +509,10 @@ Var
   { Fichier de sortie interne (pour future emission) }
   OutF       : Text;
   OutFOpen   : Boolean;
+
+  { Emetteur ASM (TODO 07) }
+  AsmFileName : TString;       { nom du fichier .asm                 }
+  LabelSeq    : LongInt;       { compteur global pour labels uniques }
 
   { Variables binaires }
   BinCode     : Array[0..MAX_BIN_CODE - 1] of Byte;
@@ -3079,6 +3084,231 @@ Begin
     TypeCoerce := FromType;
 End;
 
+{ ============================================================ }
+{ TODO 07 - EMETTEUR DE CODE ASM 80386                         }
+{ ============================================================ }
+{                                                               }
+{  Emetteur de code assembleur Intel 80386, format MASM/TASM.   }
+{  Gere l ouverture/fermeture du fichier .asm, l ecriture       }
+{  de lignes brutes, labels, instructions, commentaires.        }
+{  Genere l en-tete (.386, .MODEL FLAT, EXTRN) et les           }
+{  prologues/epilogues de sous-programmes (PUSH EBP, etc.).     }
+{                                                               }
+{ ============================================================ }
+
+{ ------------------------------------------------------------ }
+{ GenLabel                                                      }
+{   Generer un label unique _CSCL_NNNNN                         }
+{ ------------------------------------------------------------ }
+
+Function GenLabel : TString;
+Var S : TString;
+Begin
+  Str(LabelSeq, S);
+  While Length(S) < 5 Do
+    S := '0' + S;
+  GenLabel := '_CSCL_' + S;
+  Inc(LabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitOpen                                                      }
+{   Ouvrir le fichier .asm pour l emission                      }
+{ ------------------------------------------------------------ }
+
+Procedure EmitOpen;
+Begin
+  AsmFileName := ReplaceExt(Opts.SrcFile, '.asm');
+  Assign(OutF, AsmFileName);
+  {$I-}
+  Rewrite(OutF);
+  {$I+}
+  If IOResult <> 0 Then
+    FatalError('impossible de creer le fichier ASM: ' + AsmFileName);
+  OutFOpen := True;
+  If Opts.DebugMode Then
+    WriteLn('  EMIT_OPEN: ', AsmFileName);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitClose                                                     }
+{   Fermer le fichier .asm                                      }
+{ ------------------------------------------------------------ }
+
+Procedure EmitClose;
+Begin
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+    If Opts.DebugMode Then
+      WriteLn('  EMIT_CLOSE: ', AsmFileName);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRaw(s)                                                    }
+{   Ecrire une ligne brute dans le fichier .asm                 }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRaw(S : TString);
+Begin
+  If OutFOpen Then
+    WriteLn(OutF, S);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitLabel(lbl)                                                }
+{   Ecrire un label suivi de ':' dans le fichier .asm           }
+{ ------------------------------------------------------------ }
+
+Procedure EmitLabel(Lbl : TString);
+Begin
+  If OutFOpen Then
+    WriteLn(OutF, Lbl, ':');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitInstr(op, args)                                           }
+{   Ecrire une instruction avec indentation de 8 espaces        }
+{ ------------------------------------------------------------ }
+
+Procedure EmitInstr(Op : TString; Args : TString);
+Begin
+  If OutFOpen Then
+  Begin
+    If Args = '' Then
+      WriteLn(OutF, '        ', Op)
+    Else
+      WriteLn(OutF, '        ', Op, ' ', Args);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitComment(msg)                                              }
+{   Ecrire un commentaire ; msg                                 }
+{ ------------------------------------------------------------ }
+
+Procedure EmitComment(Msg : TString);
+Begin
+  If OutFOpen Then
+    WriteLn(OutF, '; ', Msg);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitBlankLine                                                 }
+{   Ecrire une ligne vide                                       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitBlankLine;
+Begin
+  If OutFOpen Then
+    WriteLn(OutF);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitHeader                                                    }
+{   Ecrire l en-tete du fichier assembleur :                    }
+{   .386 / .MODEL FLAT, STDCALL / EXTRN APIs                   }
+{ ------------------------------------------------------------ }
+
+Procedure EmitHeader;
+Begin
+  EmitComment('Genere par CSCW32 - Compilateur C# vers 80386 Win32');
+  EmitComment('Source : ' + Opts.SrcFile);
+  EmitBlankLine;
+  EmitRaw('.386');
+  EmitRaw('.MODEL FLAT, STDCALL');
+  EmitBlankLine;
+  EmitComment('Imports Win32 API (kernel32.dll)');
+  EmitRaw('EXTRN _ExitProcess@4:NEAR');
+  EmitRaw('EXTRN _GetStdHandle@4:NEAR');
+  EmitRaw('EXTRN _WriteFile@20:NEAR');
+  EmitRaw('EXTRN _ReadFile@20:NEAR');
+  EmitRaw('EXTRN _GetProcessHeap@0:NEAR');
+  EmitRaw('EXTRN _HeapAlloc@12:NEAR');
+  EmitRaw('EXTRN _HeapFree@12:NEAR');
+  EmitBlankLine;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitDataSeg                                                   }
+{   Ecrire le segment .DATA (stub - sera complete dans TODO 08) }
+{ ------------------------------------------------------------ }
+
+Procedure EmitDataSeg;
+Var I : Integer;
+Begin
+  EmitRaw('.DATA');
+  EmitBlankLine;
+  EmitComment('Constantes chaines');
+  For I := 1 To StrLitCount Do
+  Begin
+    EmitRaw(StrLitTab[I].AsmLbl + ' DB "' + StrLitTab[I].Text + '",0');
+  End;
+  EmitBlankLine;
+  EmitComment('Tampons I/O');
+  EmitRaw('_CSC_INBUF   DB 256 DUP(0)');
+  EmitRaw('_CSC_NUMBUF  DB 16 DUP(0)');
+  EmitRaw('_CSC_HSTDOUT DD 0');
+  EmitRaw('_CSC_HSTDIN  DD 0');
+  EmitRaw('_CSC_HHEAP   DD 0');
+  EmitRaw('_CSC_WRITTEN DD 0');
+  EmitRaw('_CSC_READCNT DD 0');
+  EmitBlankLine;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitCodeSeg                                                   }
+{   Ouvrir le segment .CODE                                     }
+{ ------------------------------------------------------------ }
+
+Procedure EmitCodeSeg;
+Begin
+  EmitRaw('.CODE');
+  EmitBlankLine;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitProlog(locals)                                            }
+{   PUSH EBP / MOV EBP,ESP / SUB ESP,locals                    }
+{ ------------------------------------------------------------ }
+
+Procedure EmitProlog(Locals : Integer);
+Var S : TString;
+Begin
+  EmitInstr('PUSH', 'EBP');
+  EmitInstr('MOV', 'EBP,ESP');
+  If Locals > 0 Then
+  Begin
+    Str(Locals, S);
+    EmitInstr('SUB', 'ESP,' + S);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitEpilog                                                    }
+{   MOV ESP,EBP / POP EBP / RET                                }
+{ ------------------------------------------------------------ }
+
+Procedure EmitEpilog;
+Begin
+  EmitInstr('MOV', 'ESP,EBP');
+  EmitInstr('POP', 'EBP');
+  EmitInstr('RET', '');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitFooter                                                    }
+{   Ecrire la fin du fichier assembleur (END directive)         }
+{ ------------------------------------------------------------ }
+
+Procedure EmitFooter;
+Begin
+  EmitBlankLine;
+  EmitRaw('END _CSCF_MAIN');
+End;
+
 { ------------------------------------------------------------ }
 { ShowStats (corps)                                             }
 { ------------------------------------------------------------ }
@@ -3095,6 +3325,7 @@ Begin
   WriteLn('Constantes       : ', ConstCount);
   WriteLn('Symboles         : ', SymCount);
   WriteLn('Types            : ', TypeCount);
+  WriteLn('Labels generes   : ', LabelSeq);
   WriteLn('Erreurs          : ', ErrorCount);
   WriteLn('Avertissements   : ', WarnCount);
 End;
@@ -3148,6 +3379,9 @@ Begin
 
   { Initialiser la table des symboles (TODO 05) }
   SymInit;
+
+  { Initialiser l emetteur (TODO 07) }
+  LabelSeq := 0;
 
   { Lire le premier token }
   Consume;
@@ -3383,12 +3617,32 @@ Begin
   { Fermer le fichier source }
   LexClose;
 
-  { Afficher bilan }
+  { Afficher bilan analyse }
   WriteLn('CSCW32: Lexer OK (', TotalLines, ' lignes, ',
           TokenCount, ' tokens, ', UsingCount, ' using, ',
           StrLitCount, ' chaines, ', ConstCount, ' constantes, ',
           SymCount, ' symboles, ', TypeCount, ' types)');
-  WriteLn('CSCW32: Les TODOs 07..25 ne sont pas encore implementes.');
+
+  { Emettre le fichier .asm (TODO 07) }
+  EmitOpen;
+  EmitHeader;
+  EmitDataSeg;
+  EmitCodeSeg;
+
+  { Stub : point d entree minimal }
+  EmitComment('Point d entree (stub - les TODOs 08..25 ajouteront le code)');
+  EmitLabel('_CSCF_MAIN');
+  EmitProlog(0);
+  EmitComment('--- code a generer (TODO 08+) ---');
+  EmitInstr('PUSH', '0');
+  EmitInstr('CALL', '_ExitProcess@4');
+  EmitEpilog;
+
+  EmitFooter;
+  EmitClose;
+
+  WriteLn('CSCW32: ASM genere -> ', AsmFileName);
+  WriteLn('CSCW32: Les TODOs 08..25 ne sont pas encore implementes.');
 End;
 
 { ------------------------------------------------------------ }

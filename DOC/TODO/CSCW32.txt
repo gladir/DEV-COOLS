@@ -160,7 +160,7 @@
               System.Boolean, string = System.String, char =
               System.Char, object = System.Object.
 
-  TODO 07 - EMETTEUR DE CODE ASM 80386
+  TODO 07 - EMETTEUR DE CODE ASM 80386 [IMPLEMENTE]
             TEmitter : OutF (Text), OutFOpen, EmitOpen, EmitClose.
             EmitRaw(s) : ecrire une ligne brute dans le fichier.
             EmitLabel(lbl) : ecrire un label suivi de ':'.
@@ -168,8 +168,9 @@
               indentation de 8 espaces.
             EmitComment(msg) : ecrire un commentaire ; msg.
             EmitBlankLine : ecrire une ligne vide.
-            LabelGen : compteur global unique pour generer
+            LabelSeq : compteur global unique pour generer
               des labels internes _CSCL_NNNNN.
+            GenLabel : generer un label unique _CSCL_NNNNN.
             Prefixes 32 bits : _CSCV_ (variable), _CSCF_ (methode),
               _CSCK_ (chaine const), _CSCRT_ (runtime),
               _CSCL_ (label interne).
@@ -187,7 +188,12 @@
               SUB ESP,locals.
             EmitEpilog : MOV ESP,EBP / POP EBP / RET.
             EmitDataSeg : ecrire le segment .DATA avec toutes
-              les entrees du DataTab.
+              les entrees du DataTab (chaines, tampons I/O).
+            EmitCodeSeg : ouvrir le segment .CODE.
+            EmitFooter : ecrire END _CSCF_MAIN.
+            Run : EmitOpen/EmitHeader/EmitDataSeg/EmitCodeSeg
+              stub point d entree _CSCF_MAIN avec ExitProcess(0)
+              EmitFooter/EmitClose.
 
   TODO 08 - SEGMENT DE DONNEES ET STATIQUES
             TDataRec : LblName, Kind (DK_DWORD/DK_BYTE/DK_STR/
