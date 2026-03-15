@@ -413,7 +413,7 @@
               standard comme STORE_CONST dans InitSymTable
             NewExLabel : generer un label _ADAX_NNNN
 
-  TODO 20 - PARSEUR : OPERATIONS SUR TABLEAUX (32 BITS)
+  TODO 20 - PARSEUR : OPERATIONS SUR TABLEAUX (32 BITS) [IMPLEMENTE]
             Acces indexe : ident(index) (Ada utilise () pas [])
             Calcul d adresse 32 bits :
               base + (index - lo_bound) * elem_size
@@ -2644,6 +2644,106 @@ Begin
   End;
 End;
 
+{ ============================================================ }
+{ TODO 20 - PARSEUR : OPERATIONS SUR TABLEAUX (32 BITS)         }
+{ ============================================================ }
+
+{ ---- GenLoadElement : charger un element de tableau dans EAX - }
+{ Index deja dans EAX. Calcule base + (index-lo)*elemsize.       }
+{ Resultat : valeur de l element dans EAX.                        }
+Procedure GenLoadElement(SymIdx : Integer);
+Var
+  SC, Off, TI : Integer;
+  Lbl         : TString;
+  Lo, ESz     : LongInt;
+  IsByte      : Boolean;
+Begin
+  SC  := SymTab[SymIdx].StoreClass;
+  Off := SymTab[SymIdx].BpOffset;
+  Lbl := SymTab[SymIdx].AsmLabel;
+  TI  := SymTab[SymIdx].TypeIdx;
+  Lo  := 0;
+  ESz := 4;
+  IsByte := False;
+  If (TI > TYPE_STR) And (TI <= TypeCount) Then
+  Begin
+    Lo  := TypeTab[TI].LoBound;
+    ESz := TypeTab[TI].ElemSize;
+    If ESz <= 0 Then ESz := 4;
+    IsByte := (TypeTab[TI].ElemType = TYPE_CHAR) Or
+              (TypeTab[TI].ElemType = TYPE_BOOL);
+  End;
+  { EAX = index ; calculer offset dans EBX }
+  EmitI('MOV  EBX, EAX');              { EBX = index              }
+  If Lo <> 0 Then
+    EmitI('SUB  EBX, ' + IntToStr_(Lo)); { EBX = index - lo_bound }
+  If ESz <> 1 Then
+    EmitI('IMUL EBX, ' + IntToStr_(ESz)); { EBX = (index-lo)*esz }
+  { Charger adresse de base dans EAX }
+  Case SC Of
+    STORE_STATIC :
+      EmitI('LEA  EAX, [' + Lbl + ']');
+    STORE_AUTO :
+      EmitI('LEA  EAX, [EBP' + BpOff32(Off) + ']');
+    STORE_PARAM :
+      EmitI('LEA  EAX, [EBP' + BpOff32(Off) + ']');
+  End;
+  { EAX = base + offset -> charger element }
+  If IsByte Then
+    EmitI('MOVZX EAX, BYTE PTR [EAX+EBX]')
+  Else
+    EmitI('MOV  EAX, DWORD PTR [EAX+EBX]');
+End;
+
+{ ---- GenStoreElement : stocker EAX dans un element de tableau - }
+{ L index est sur la pile (PUSH avant appel). EAX = valeur.       }
+{ Genere : POP EBX (index), calcule adresse, ecrit valeur.        }
+Procedure GenStoreElement(SymIdx : Integer);
+Var
+  SC, Off, TI : Integer;
+  Lbl         : TString;
+  Lo, ESz     : LongInt;
+  IsByte      : Boolean;
+Begin
+  SC  := SymTab[SymIdx].StoreClass;
+  Off := SymTab[SymIdx].BpOffset;
+  Lbl := SymTab[SymIdx].AsmLabel;
+  TI  := SymTab[SymIdx].TypeIdx;
+  Lo  := 0;
+  ESz := 4;
+  IsByte := False;
+  If (TI > TYPE_STR) And (TI <= TypeCount) Then
+  Begin
+    Lo  := TypeTab[TI].LoBound;
+    ESz := TypeTab[TI].ElemSize;
+    If ESz <= 0 Then ESz := 4;
+    IsByte := (TypeTab[TI].ElemType = TYPE_CHAR) Or
+              (TypeTab[TI].ElemType = TYPE_BOOL);
+  End;
+  { EAX = valeur a stocker ; sauvegarder dans ECX }
+  EmitI('MOV  ECX, EAX');              { ECX = valeur             }
+  { Recuperer l index depuis la pile }
+  EmitI('POP  EBX');                   { EBX = index              }
+  If Lo <> 0 Then
+    EmitI('SUB  EBX, ' + IntToStr_(Lo)); { EBX = index - lo_bound }
+  If ESz <> 1 Then
+    EmitI('IMUL EBX, ' + IntToStr_(ESz)); { EBX = (index-lo)*esz }
+  { Charger adresse de base dans EAX }
+  Case SC Of
+    STORE_STATIC :
+      EmitI('LEA  EAX, [' + Lbl + ']');
+    STORE_AUTO :
+      EmitI('LEA  EAX, [EBP' + BpOff32(Off) + ']');
+    STORE_PARAM :
+      EmitI('LEA  EAX, [EBP' + BpOff32(Off) + ']');
+  End;
+  { Ecrire la valeur a l adresse base + offset }
+  If IsByte Then
+    EmitI('MOV  BYTE PTR [EAX+EBX], CL')
+  Else
+    EmitI('MOV  DWORD PTR [EAX+EBX], ECX');
+End;
+
 { ---- GenLoadConst : charger une constante dans EAX ----------- }
 Procedure GenLoadConst(Val : LongInt);
 Begin
@@ -2927,7 +3027,7 @@ Begin
       End
       Else
       Begin
-        { Acces tableau : Nom(index) - stub simple }
+        { Acces tableau : Nom(index) -> GenLoadElement (TODO 20) }
         Sym := FindSym(Nm);
         If Sym <= 0 Then
         Begin
@@ -2940,9 +3040,19 @@ Begin
         End;
         Consume; { ( }
         ParseExpr;         { EAX = index }
+        { Detecter les slices : ident(a..b) }
+        If CurTokType = TOK_DOTDOT Then
+        Begin
+          Warning('Slices non supportes ; valeur ignoree');
+          Consume; { .. }
+          ParseExpr;       { skip borne haute }
+          Expect(TOK_RPAREN, '`)` attendu apres slice');
+          EmitI('XOR  EAX, EAX');
+          Exit;
+        End;
         Expect(TOK_RPAREN, '`)` attendu apres index');
-        { Stub : charge juste la variable pour l instant }
-        GenLoadVar(Sym);
+        EmitComment('array load ' + Nm + '(index)');
+        GenLoadElement(Sym);
         Exit;
       End;
     End; { TOK_LPAREN apres ident }
@@ -3770,7 +3880,7 @@ Begin
   Else
   Begin
     { Verifier si c est un type utilisateur }
-    If (TI > TYPE_VOID) And (TI <= TypeCount) Then
+    If (TI > TYPE_STR) And (TI <= TypeCount) Then
     Begin
       K := TypeTab[TI].Kind;
       If K = TK_ARRAY Then
@@ -3911,14 +4021,14 @@ Begin
 
     { ===== Etape 8 : ajuster taille pour tableaux/records/strings }
     Sz := 4;
-    If (TI > TYPE_VOID) And (TI <= TypeCount) Then
+    If (TI > TYPE_STR) And (TI <= TypeCount) Then
       Sz := GetTypeSize(TI)
     Else
       Sz := PrimTypeSize32(TI);
 
     { Mise a jour ArraySize / CharLen pour types composites }
     BaseTI := TI;
-    If (TI > TYPE_VOID) And (TI <= TypeCount) Then
+    If (TI > TYPE_STR) And (TI <= TypeCount) Then
     Begin
       If TypeTab[TI].Kind = TK_ARRAY Then
       Begin
@@ -5075,6 +5185,7 @@ End;
 Procedure ParseStatement;
 Var
   SavedName : TString;
+  Sym       : Integer;
 Begin
   If TokIsKw(KW_NULL) Then
     ParseNull
@@ -5117,6 +5228,44 @@ Begin
       { Assignation : ident := expr ; }
       Consume; { := }
       ParseAssignment(SavedName);
+    End
+    Else If CurTokType = TOK_LPAREN Then
+    Begin
+      { Parenthese : appel de procedure/fonction OU acces tableau }
+      { Verifier si c est un tableau (TODO 20) }
+      Sym := FindSym(SavedName);
+      If (Sym > 0) And
+         ((SymTab[Sym].ArraySize > 0) Or
+          ((SymTab[Sym].TypeIdx > TYPE_STR) And
+           (SymTab[Sym].TypeIdx <= TypeCount) And
+           (TypeTab[SymTab[Sym].TypeIdx].Kind = TK_ARRAY))) Then
+      Begin
+        { Assignation a un element de tableau : arr(index) := expr }
+        Consume; { ( }
+        ParseExpr;       { EAX = index }
+        GenPushEAX;      { sauver index sur la pile }
+        Expect(TOK_RPAREN, '`)` attendu apres index tableau');
+        If CurTokType = TOK_COLONASSIGN Then
+        Begin
+          Consume; { := }
+          EmitComment('array store ' + SavedName + '(index) := expr');
+          ParseExpr;     { EAX = valeur a stocker }
+          GenStoreElement(Sym);
+          If CurTokType = TOK_SEMI Then Consume;
+        End
+        Else
+        Begin
+          { Appel de procedure avec meme nom qu un tableau ? }
+          { Peu probable, mais resynchroniser }
+          EmitI('POP  EBX'); { depiler l index inutilise }
+          ParseProcedureCall(SavedName);
+        End;
+      End
+      Else
+      Begin
+        { Appel de procedure : nom(args) ; }
+        ParseProcedureCall(SavedName);
+      End;
     End
     Else If CurTokType = TOK_DOT Then
     Begin

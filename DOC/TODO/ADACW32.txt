@@ -404,7 +404,7 @@
               standard comme STORE_CONST dans InitSymTable
             NewExLabel : generer un label _ADAX_NNNN
 
-  TODO 20 - PARSEUR : OPERATIONS SUR TABLEAUX (32 BITS)
+  TODO 20 - PARSEUR : OPERATIONS SUR TABLEAUX (32 BITS) [IMPLEMENTE]
             Acces indexe : ident(index) (Ada utilise () pas [])
             Calcul d adresse 32 bits :
               base + (index - lo_bound) * elem_size
