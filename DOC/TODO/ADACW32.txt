@@ -385,20 +385,24 @@
               FUNCTION : stocker resultat dans EAX
               JMP _ADAL_exit
 
-  TODO 19 - PARSEUR : EXCEPTIONS RAISE ET HANDLERS
+  TODO 19 - PARSEUR : EXCEPTIONS RAISE ET HANDLERS [IMPLEMENTE]
             Declarations : nom : EXCEPTION ;
             ParseRaise :
               RAISE [nom] ;
+              MOV DWORD PTR [_ADART_CUREXC], id
               JMP _ADAX_handler (ou sortie programme)
             ParseExceptionHandler :
               BEGIN ... EXCEPTION
-                WHEN nom => stmts
+                WHEN nom [| nom2] => stmts
                 WHEN OTHERS => stmts
               END ;
               Generer _ADAL_try, _ADAX_handler
-              Mecanisme simple par table de sauts
+              Mecanisme simple par CMP/JE sur _ADART_CUREXC
             Exceptions standard : CONSTRAINT_ERROR, PROGRAM_ERROR,
-              STORAGE_ERROR, TASKING_ERROR (stubs)
+              STORAGE_ERROR, TASKING_ERROR (constantes predefinies)
+            RegisterStandardExceptions : ajoute les 4 exceptions
+              standard comme STORE_CONST dans InitSymTable
+            NewExLabel : generer un label _ADAX_NNNN
 
   TODO 20 - PARSEUR : OPERATIONS SUR TABLEAUX (32 BITS)
             Acces indexe : ident(index) (Ada utilise () pas [])

@@ -394,10 +394,11 @@
               FUNCTION : stocker resultat dans EAX
               JMP _ADAL_exit
 
-  TODO 19 - PARSEUR : EXCEPTIONS RAISE ET HANDLERS
+  TODO 19 - PARSEUR : EXCEPTIONS RAISE ET HANDLERS [IMPLEMENTE]
             Declarations : nom : EXCEPTION ;
             ParseRaise :
               RAISE [nom] ;
+              MOV DWORD PTR [_ADART_CUREXC], id
               JMP _ADAX_handler (ou sortie programme)
             ParseExceptionHandler :
               BEGIN ... EXCEPTION
@@ -405,9 +406,12 @@
                 WHEN OTHERS => stmts
               END ;
               Generer _ADAL_try, _ADAX_handler
-              Mecanisme simple par table de sauts
+              Mecanisme simple par table de sauts + CMP/JE
             Exceptions standard : CONSTRAINT_ERROR, PROGRAM_ERROR,
-              STORAGE_ERROR, TASKING_ERROR (stubs)
+              STORAGE_ERROR, TASKING_ERROR (constantes predefinies)
+            RegisterStandardExceptions : ajoute les 4 exceptions
+              standard comme STORE_CONST dans InitSymTable
+            NewExLabel : generer un label _ADAX_NNNN
 
   TODO 20 - PARSEUR : OPERATIONS SUR TABLEAUX (32 BITS)
             Acces indexe : ident(index) (Ada utilise () pas [])
@@ -1991,6 +1995,26 @@ Begin
   TypeCount := 5;
 End;
 
+{ ---- RegisterStandardExceptions : exceptions Ada standard ---- }
+{ Ajoute CONSTRAINT_ERROR, PROGRAM_ERROR, STORAGE_ERROR,         }
+{ TASKING_ERROR comme constantes predefinies (TODO 19).            }
+Procedure RegisterStandardExceptions;
+Var Idx : Integer;
+Begin
+  Idx := AddSym('CONSTRAINT_ERROR', TYPE_INT, STORE_CONST);
+  If Idx > 0 Then Begin SymTab[Idx].InitNum := 1;
+    SymTab[Idx].HasInit := True; SymTab[Idx].IsConst := True; End;
+  Idx := AddSym('PROGRAM_ERROR', TYPE_INT, STORE_CONST);
+  If Idx > 0 Then Begin SymTab[Idx].InitNum := 2;
+    SymTab[Idx].HasInit := True; SymTab[Idx].IsConst := True; End;
+  Idx := AddSym('STORAGE_ERROR', TYPE_INT, STORE_CONST);
+  If Idx > 0 Then Begin SymTab[Idx].InitNum := 3;
+    SymTab[Idx].HasInit := True; SymTab[Idx].IsConst := True; End;
+  Idx := AddSym('TASKING_ERROR', TYPE_INT, STORE_CONST);
+  If Idx > 0 Then Begin SymTab[Idx].InitNum := 4;
+    SymTab[Idx].HasInit := True; SymTab[Idx].IsConst := True; End;
+End;
+
 { ---- AddType : ajouter un type dans la table ----------------- }
 { Retourne l index (1-base, > 5) ou 0 si table pleine.           }
 Function AddType(Const Name : TString; Kind : Integer) : Integer;
@@ -2453,6 +2477,18 @@ Begin
   While Length(N) < 4 Do
     N := '0' + N;
   NewLabel := ADA_LBL_PFX + N;
+End;
+
+{ ---- NewExLabel : generer un label exception unique (TODO 19) -- }
+{ Retourne un label de la forme _ADAX_0001 (prefixe _ADAX_)        }
+Function NewExLabel : TString;
+Var N : TString;
+Begin
+  Inc(LabelCounter);
+  N := IntToStr_(LabelCounter);
+  While Length(N) < 4 Do
+    N := '0' + N;
+  NewExLabel := ADA_EX_PFX + N;
 End;
 
 { ---- AsmStrLit : ajouter un litteral chaine ------------------- }
@@ -4236,15 +4272,51 @@ Begin
 End;
 
 { ---- ParseRaise : instruction RAISE [exception_name] ; ------ }
-{ Stub : skip le nom d exception optionnel + message.            }
+{ Genere le code pour lever une exception (TODO 19).               }
+{   RAISE nom ;   -> MOV [_ADART_CUREXC], id + JMP _ADAX_handler  }
+{   RAISE ;       -> re-raise (JMP _ADAX_handler avec CUREXC actuel)}
 Procedure ParseRaise;
+Var
+  LblEx   : TString;
+  ExName  : TString;
+  SymIdx  : Integer;
 Begin
   Consume; { RAISE }
-  EmitComment('RAISE ...');
-  { Skip jusqu au ';' }
-  While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) And
-        (Not TokIsKw(KW_END)) And (Not TokIsKw(KW_EXCEPTION)) Do
-    Consume;
+  LblEx := FindExceptLabel;
+  If (CurTokType = TOK_IDENT) And (CurTokKw <> KW_END) And
+     (CurTokKw <> KW_EXCEPTION) Then
+  Begin
+    ExName := StrUpperCase(CurTokStr);
+    Consume; { nom de l exception }
+    SymIdx := FindSym(ExName);
+    If SymIdx > 0 Then
+    Begin
+      EmitComment('RAISE ' + ExName);
+      EmitI('MOV  DWORD PTR [_ADART_CUREXC], ' +
+            IntToStr_(SymTab[SymIdx].InitNum));
+    End
+    Else
+    Begin
+      WarnMsg('Exception inconnue : ' + ExName);
+      EmitComment('RAISE ' + ExName + ' (inconnu)');
+      EmitI('MOV  DWORD PTR [_ADART_CUREXC], 0');
+    End;
+  End
+  Else
+  Begin
+    { RAISE sans nom : re-raise, garder CUREXC tel quel }
+    EmitComment('RAISE (re-raise)');
+  End;
+  { Sauter vers le handler le plus proche }
+  If LblEx <> '' Then
+    EmitI('JMP  ' + LblEx)
+  Else
+  Begin
+    { Pas de handler : terminer le programme avec ExitProcess(1) }
+    EmitComment('(pas de handler - sortie programme)');
+    EmitI('PUSH 1');
+    EmitI('CALL ExitProcess');
+  End;
   If CurTokType = TOK_SEMI Then Consume;
 End;
 
@@ -4894,6 +4966,109 @@ Begin
   If CurTokType = TOK_SEMI Then Consume;
 End;
 
+{ ============================================================ }
+{ TODO 19 - PARSEUR : EXCEPTIONS RAISE ET HANDLERS             }
+{ ============================================================ }
+
+{ ---- ParseExceptionHandler : parser la clause EXCEPTION ---- }
+{ Syntaxe :                                                      }
+{   EXCEPTION                                                    }
+{     WHEN nom [| nom2] => sequence_of_statements                }
+{     WHEN OTHERS       => sequence_of_statements                }
+{ Genere un mecanisme de saut par comparaison de _ADART_CUREXC.  }
+{ Le token EXCEPTION est deja consomme par l appelant.            }
+Procedure ParseExceptionHandler;
+Var
+  LblNext    : TString;
+  LblSkip    : TString;
+  LblEndExc  : TString;
+  ExName     : TString;
+  SymIdx     : Integer;
+  ExVal      : Integer;
+  GotVal     : Boolean;
+Begin
+  EmitComment('--- EXCEPTION handler ---');
+  LblEndExc := NewLabel;
+
+  { Boucle sur les clauses WHEN }
+  While TokIsKw(KW_WHEN) Do
+  Begin
+    Consume; { WHEN }
+
+    If TokIsKw(KW_OTHERS) Then
+    Begin
+      { WHEN OTHERS => stmts }
+      Consume; { OTHERS }
+      EmitComment('WHEN OTHERS =>');
+      { Expect => (on utilise '=>' qui est TOK_ARROW) }
+      If CurTokType = TOK_ARROW Then
+        Consume
+      Else
+        Expect(TOK_ARROW, '`=>` attendu apres WHEN OTHERS');
+      ParseSequenceOfStatements;
+      EmitI('JMP  ' + LblEndExc);
+    End
+    Else
+    Begin
+      { WHEN nom [| nom2 ...] => stmts }
+      LblNext := NewLabel;
+      GotVal  := False;
+
+      Repeat
+        If CurTokType = TOK_IDENT Then
+        Begin
+          ExName := StrUpperCase(CurTokStr);
+          Consume;
+          SymIdx := FindSym(ExName);
+          If (SymIdx > 0) And SymTab[SymIdx].IsConst Then
+          Begin
+            ExVal := SymTab[SymIdx].InitNum;
+            EmitComment('WHEN ' + ExName + ' =>');
+            EmitI('CMP  DWORD PTR [_ADART_CUREXC], ' +
+                  IntToStr_(ExVal));
+            EmitI('JE   ' + LblNext);
+            GotVal := True;
+          End
+          Else
+          Begin
+            WarnMsg('Exception inconnue dans WHEN : ' + ExName);
+            GotVal := True;
+          End;
+        End
+        Else
+        Begin
+          WarnMsg('Nom d''exception attendu dans WHEN');
+          Consume;
+          GotVal := True;
+        End;
+        { Verifier s il y a un | pour alternative }
+        If CurTokType = TOK_BAR Then
+          Consume  { | }
+        Else
+          Break;
+      Until False;
+
+      { => : attend la fleche }
+      If CurTokType = TOK_ARROW Then
+        Consume
+      Else
+        Expect(TOK_ARROW, '`=>` attendu apres nom d''exception');
+
+      If GotVal Then
+      Begin
+        LblSkip := NewLabel;
+        EmitI('JMP  ' + LblSkip);
+        EmitLabel(LblNext);
+        ParseSequenceOfStatements;
+        EmitI('JMP  ' + LblEndExc);
+        EmitLabel(LblSkip);
+      End;
+    End;
+  End;
+
+  EmitLabel(LblEndExc);
+End;
+
 { ---- ParseStatement : dispatcher principal des instructions -- }
 { Reconnaît le type d instruction selon le token courant et       }
 { appelle le sous-parseur correspondant.                          }
@@ -5011,6 +5186,8 @@ Var
   FrameSz   : Integer;
   ParamSz   : Integer;
   LblExit_  : TString;
+  LblExcept : TString;
+  LblSkipEx : TString;
   SubName   : TString;
 Begin
   SubName := SubTab[SubIdx].Name;
@@ -5043,15 +5220,25 @@ Begin
   FrameSz := -ScopeStack[ScopeTop].BpTop;
   GenPrologue(FrameSz);
 
+  { Preparer le label d exception si EXCEPTION sera present }
+  LblExcept := NewExLabel;
+  SetExceptLabel(LblExcept);
+
   { 6. Sequence d instructions }
   ParseSequenceOfStatements;
 
-  { 7. EXCEPTION optionnel }
+  { 7. EXCEPTION optionnel (TODO 19) }
   If TokIsKw(KW_EXCEPTION) Then
   Begin
     Consume; { EXCEPTION }
-    { Skip le handler pour l instant (stub) }
-    SkipStatements;
+    { Sauter le handler si pas d exception levee }
+    LblSkipEx := NewLabel;
+    EmitI('JMP  ' + LblSkipEx);
+    { Label d entree du handler }
+    EmitLabel(LblExcept);
+    { Parser les clauses WHEN }
+    ParseExceptionHandler;
+    EmitLabel(LblSkipEx);
   End;
 
   { 8. END [nom] ; }
@@ -5084,6 +5271,8 @@ Var
   FrameSz   : Integer;
   ParamSz   : Integer;
   LblExit_  : TString;
+  LblExcept : TString;
+  LblSkipEx : TString;
   SubName   : TString;
 Begin
   SubName := SubTab[SubIdx].Name;
@@ -5115,14 +5304,25 @@ Begin
   { Valeur de retour par defaut : EAX = 0 }
   EmitI('XOR  EAX, EAX');
 
+  { Preparer le label d exception }
+  LblExcept := NewExLabel;
+  SetExceptLabel(LblExcept);
+
   { 6. Sequence d instructions }
   ParseSequenceOfStatements;
 
-  { 7. EXCEPTION optionnel }
+  { 7. EXCEPTION optionnel (TODO 19) }
   If TokIsKw(KW_EXCEPTION) Then
   Begin
     Consume; { EXCEPTION }
-    SkipStatements;
+    { Sauter le handler si pas d exception levee }
+    LblSkipEx := NewLabel;
+    EmitI('JMP  ' + LblSkipEx);
+    { Label d entree du handler }
+    EmitLabel(LblExcept);
+    { Parser les clauses WHEN }
+    ParseExceptionHandler;
+    EmitLabel(LblSkipEx);
   End;
 
   { 8. END [nom] ; }
@@ -5794,6 +5994,7 @@ Begin
   InitSymTable;
   InitTypeTable;
   RegisterPredefinedTypes;
+  RegisterStandardExceptions;
   InitSubTable;
   InitPkgTable;
   InitScopeStack;
