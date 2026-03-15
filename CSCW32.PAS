@@ -4791,7 +4791,10 @@ Begin
           Inc(ArgCount);
           { Emettre l appel type selon CurExprType }
           If ArgExprType = TY_IDX_STRING Then
-            EmitInstr('CALL', CSC_RT_PFX + 'PRINTSTR')
+          Begin
+            EmitInstr('MOV', 'ESI,EAX');
+            EmitInstr('CALL', CSC_RT_PFX + 'PRINTSTR');
+          End
           Else If ArgExprType = TY_IDX_BOOL Then
             EmitInstr('CALL', CSC_RT_PFX + 'PRINTBOOL')
           Else If ArgExprType = TY_IDX_CHAR Then
@@ -5507,7 +5510,10 @@ Begin
         ArgExprType := CurExprType;
         Inc(ArgCount);
         If ArgExprType = TY_IDX_STRING Then
-          EmitInstr('CALL', CSC_RT_PFX + 'PRINTSTR')
+        Begin
+          EmitInstr('MOV', 'ESI,EAX');
+          EmitInstr('CALL', CSC_RT_PFX + 'PRINTSTR');
+        End
         Else If ArgExprType = TY_IDX_BOOL Then
           EmitInstr('CALL', CSC_RT_PFX + 'PRINTBOOL')
         Else If ArgExprType = TY_IDX_CHAR Then
@@ -7337,7 +7343,7 @@ Begin
 
   { Appeler Main() }
   EmitComment('Appeler le point d entree utilisateur');
-  EmitInstr('CALL', '_CSCF_Main');
+  EmitInstr('CALL', '_CSCF_MAIN');
   EmitBlankLine;
 
   { ExitProcess(0) }
@@ -7887,9 +7893,11 @@ End;
 
 Function BinFindLabel(AName : TString) : LongInt;
 Var I : Integer;
+    UName : TString;
 Begin
+  UName := StrUpperCase(AName);
   For I := 0 To BinLblCount - 1 Do
-    If BinLabels[I].Name = AName Then
+    If StrUpperCase(BinLabels[I].Name) = UName Then
     Begin
       BinFindLabel := I;
       Exit;
@@ -8422,6 +8430,15 @@ Begin
       BinEmitByte($FF);
       BinEmitByte($15);
       BinAddFixup(BinCodeLen, BFK_IAT32, Bracket, True);
+      BinEmitDWord(0);
+      Exit;
+    End;
+    { CALL _api@n -> indirect call through IAT }
+    If AsmFindAPI(Ops) >= 0 Then
+    Begin
+      BinEmitByte($FF);
+      BinEmitByte($15);
+      BinAddFixup(BinCodeLen, BFK_IAT32, Ops, True);
       BinEmitDWord(0);
       Exit;
     End;
@@ -9765,7 +9782,7 @@ Begin
   WriteBinDWord(F, IdataFileOfs);
   WriteBinDWord(F, 0); WriteBinDWord(F, 0);
   WriteBinWord(F, 0); WriteBinWord(F, 0);
-  WriteBinDWord(F, LongInt(PE_SCN_RDATA));
+  WriteBinDWord(F, LongInt(PE_SCN_BSS));
 
   { Pad headers to SizeOfHeaders }
   Pad := SizeOfHeaders - (128 + 4 + 20 + PE_OPT_SIZE + 3 * 40);
