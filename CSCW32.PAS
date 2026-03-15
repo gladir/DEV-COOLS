@@ -403,7 +403,7 @@
               char->int.
             Fichier test : test30_cast.cs.
 
-  TODO 24 - RUNTIME MINIMAL WIN32
+  TODO 24 - RUNTIME MINIMAL WIN32 [IMPLEMENTE]
             _CSCRT_PRINTSTR(ESI=msg) : WriteFile sur hStdOut.
             _CSCRT_PRINTINT(EAX=n) : conversion + WriteFile.
             _CSCRT_PRINTCRLF : ecriture CR+LF.
@@ -426,6 +426,13 @@
             _CSCRT_PANIC(ESI=msg) : message + ExitProcess(1).
             Heap Win32 : GetProcessHeap + HeapAlloc / HeapFree.
             Handles : hStdOut, hStdIn via GetStdHandle.
+            EmitEntryPoint : point d entree _CSCF_MAIN, init
+              handles (GetStdHandle), init heap (GetProcessHeap),
+              CALL _CSCF_Main, PUSH 0/CALL ExitProcess.
+            EmitRuntimeHelpers : 20 routines runtime emises apres
+              le code utilisateur et avant le segment .DATA.
+            RuntimeHelpCount : compteur du nombre de routines
+              runtime emises.
 
   TODO 25 - GENERATION PE/COFF ET FICHIERS EXEMPLES
             Generation PE (.EXE Windows 32 bits) :
@@ -1013,6 +1020,10 @@ Procedure ParseNamespaceDecl; Forward;
 Function  FindGotoLabel(Const N : TString) : Integer; Forward;
 Function  AddGotoLabel(Const N : TString) : Integer; Forward;
 Procedure ResetGotoLabels; Forward;
+
+{ Forward declarations for TODO 24 }
+Procedure EmitEntryPoint; Forward;
+Procedure EmitRuntimeHelpers; Forward;
 
 { ============================================================ }
 { TODO 02 - LEXEUR (TOKENS C#)                                 }
@@ -2615,6 +2626,9 @@ Var
   { Variables pour cast, typeof, sizeof (TODO 23) }
   CastCount       : Integer;      { nombre de cast/typeof/sizeof        }
 
+  { Variables pour le runtime Win32 (TODO 24) }
+  RuntimeHelpCount : Integer;     { nombre de routines runtime emises   }
+
 { ------------------------------------------------------------ }
 { SymMangle : generer le nom ASM mangled                        }
 {   Le prefixe depend de la categorie du symbole                }
@@ -3590,7 +3604,7 @@ End;
 Procedure EmitFooter;
 Begin
   EmitBlankLine;
-  EmitRaw('END _CSCF_MAIN');
+  EmitRaw('END _CSC_ENTRY');
 End;
 
 { ============================================================ }
@@ -3776,6 +3790,13 @@ Begin
   DataAddDWord('_CSC_HHEAP',   0);     { handle heap                     }
   DataAddDWord('_CSC_WRITTEN', 0);     { octets ecrits (WriteFile)       }
   DataAddDWord('_CSC_READCNT', 0);     { octets lus (ReadFile)           }
+
+  { Chaines runtime pour PRINTBOOL (TODO 24) }
+  DataAdd('_CSC_TRUE',  DK_STR, 0, 'True');
+  DataAdd('_CSC_FALSE', DK_STR, 0, 'False');
+
+  { Message d erreur pour PANIC (TODO 24) }
+  DataAdd('_CSC_PANIC_MSG', DK_STR, 0, 'Runtime error: ');
 
   { Ajouter les constantes chaines du StrLitTab existant }
   { (Elles seront peuplees pendant l analyse, puis emises }
@@ -7245,6 +7266,526 @@ Begin
   Dec(NsDepth);
 End;
 
+{ ============================================================ }
+{ TODO 24 - RUNTIME MINIMAL WIN32                               }
+{           [IMPLEMENTE]                                        }
+{ ============================================================ }
+{                                                               }
+{  Routines runtime emises directement dans le segment .CODE    }
+{  du fichier assembleur genere. Ces routines fournissent les   }
+{  services de base : affichage, lecture, chaines, memoire.     }
+{  EmitEntryPoint genere le point d entree _CSCF_MAIN qui      }
+{  initialise les handles Win32 et appelle _CSCF_Main.          }
+{  EmitRuntimeHelpers genere les 20 routines _CSCRT_*.          }
+{                                                               }
+{ ============================================================ }
+
+{ ------------------------------------------------------------ }
+{ EmitEntryPoint                                                }
+{   Generer le point d entree _CSCF_MAIN :                     }
+{   - GetStdHandle(STD_OUTPUT_HANDLE) -> _CSC_HSTDOUT           }
+{   - GetStdHandle(STD_INPUT_HANDLE)  -> _CSC_HSTDIN            }
+{   - GetProcessHeap -> _CSC_HHEAP                              }
+{   - CALL _CSCF_Main                                           }
+{   - PUSH 0 / CALL ExitProcess                                 }
+{ ------------------------------------------------------------ }
+
+Procedure EmitEntryPoint;
+Begin
+  EmitBlankLine;
+  EmitComment('=== Point d entree Win32 (TODO 24) ===');
+  EmitLabel('_CSC_ENTRY');
+  EmitInstr('PUSH', 'EBP');
+  EmitInstr('MOV', 'EBP,ESP');
+  EmitBlankLine;
+
+  { GetStdHandle(STD_OUTPUT_HANDLE = -11) -> _CSC_HSTDOUT }
+  EmitComment('Initialiser handle stdout');
+  EmitInstr('PUSH', '-11');
+  EmitInstr('CALL', '_GetStdHandle@4');
+  EmitInstr('MOV', 'DWORD PTR [_CSC_HSTDOUT],EAX');
+  EmitBlankLine;
+
+  { GetStdHandle(STD_INPUT_HANDLE = -10) -> _CSC_HSTDIN }
+  EmitComment('Initialiser handle stdin');
+  EmitInstr('PUSH', '-10');
+  EmitInstr('CALL', '_GetStdHandle@4');
+  EmitInstr('MOV', 'DWORD PTR [_CSC_HSTDIN],EAX');
+  EmitBlankLine;
+
+  { GetProcessHeap -> _CSC_HHEAP }
+  EmitComment('Initialiser handle heap');
+  EmitInstr('CALL', '_GetProcessHeap@0');
+  EmitInstr('MOV', 'DWORD PTR [_CSC_HHEAP],EAX');
+  EmitBlankLine;
+
+  { Appeler Main() }
+  EmitComment('Appeler le point d entree utilisateur');
+  EmitInstr('CALL', '_CSCF_Main');
+  EmitBlankLine;
+
+  { ExitProcess(0) }
+  EmitComment('Terminer le processus');
+  EmitInstr('PUSH', '0');
+  EmitInstr('CALL', '_ExitProcess@4');
+
+  EmitInstr('MOV', 'ESP,EBP');
+  EmitInstr('POP', 'EBP');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRuntimeHelpers                                            }
+{   Generer les 20 routines runtime _CSCRT_* dans le .CODE      }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRuntimeHelpers;
+Var
+  Lbl1, Lbl2, Lbl3, Lbl4 : TString;
+Begin
+  RuntimeHelpCount := 0;
+
+  EmitBlankLine;
+  EmitComment('=== Routines runtime Win32 (TODO 24) ===');
+  EmitBlankLine;
+
+  { ---- _CSCRT_STRLEN ---- }
+  { ESI = chaine ASCIIZ, retour EAX = longueur }
+  EmitComment('_CSCRT_STRLEN : longueur chaine ASCIIZ');
+  EmitLabel('_CSCRT_STRLEN');
+  EmitInstr('PUSH', 'ECX');
+  EmitInstr('PUSH', 'EDI');
+  EmitInstr('MOV', 'EDI,ESI');
+  EmitInstr('XOR', 'ECX,ECX');
+  EmitInstr('DEC', 'ECX');            { ECX = -1 = 0FFFFFFFFh }
+  EmitInstr('XOR', 'EAX,EAX');       { AL = 0 (chercher le 0) }
+  EmitInstr('REPNE', 'SCASB');
+  EmitInstr('NOT', 'ECX');
+  EmitInstr('DEC', 'ECX');            { ECX = longueur sans le 0 final }
+  EmitInstr('MOV', 'EAX,ECX');
+  EmitInstr('POP', 'EDI');
+  EmitInstr('POP', 'ECX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+  Inc(RuntimeHelpCount);
+
+  { ---- _CSCRT_PRINTSTR ---- }
+  { ESI = chaine ASCIIZ -> WriteFile(hStdOut, ESI, len, &written, 0) }
+  EmitComment('_CSCRT_PRINTSTR : afficher chaine ASCIIZ');
+  EmitLabel('_CSCRT_PRINTSTR');
+  EmitInstr('PUSHAD', '');
+  EmitInstr('CALL', '_CSCRT_STRLEN');  { EAX = longueur }
+  EmitInstr('TEST', 'EAX,EAX');
+  Lbl1 := GenLabel;
+  EmitInstr('JZ', Lbl1);
+  EmitInstr('PUSH', '0');              { lpOverlapped = NULL }
+  EmitInstr('PUSH', 'OFFSET _CSC_WRITTEN');
+  EmitInstr('PUSH', 'EAX');           { nNumberOfBytesToWrite }
+  EmitInstr('PUSH', 'ESI');           { lpBuffer }
+  EmitInstr('PUSH', 'DWORD PTR [_CSC_HSTDOUT]');
+  EmitInstr('CALL', '_WriteFile@20');
+  EmitLabel(Lbl1);
+  EmitInstr('POPAD', '');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+  Inc(RuntimeHelpCount);
+
+  { ---- _CSCRT_PRINTCRLF ---- }
+  EmitComment('_CSCRT_PRINTCRLF : afficher CR+LF');
+  EmitLabel('_CSCRT_PRINTCRLF');
+  EmitInstr('PUSH', 'ESI');
+  EmitInstr('MOV', 'ESI,OFFSET _CSC_CRLF');
+  EmitInstr('CALL', '_CSCRT_PRINTSTR');
+  EmitInstr('POP', 'ESI');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+  Inc(RuntimeHelpCount);
+
+  { ---- _CSCRT_PRINTCHAR ---- }
+  { EAX = caractere a afficher }
+  EmitComment('_CSCRT_PRINTCHAR : afficher un caractere (EAX)');
+  EmitLabel('_CSCRT_PRINTCHAR');
+  EmitInstr('PUSHAD', '');
+  EmitInstr('PUSH', 'EAX');           { mettre le char sur la pile }
+  EmitInstr('MOV', 'ESI,ESP');        { ESI pointe sur le char }
+  EmitInstr('PUSH', '0');
+  EmitInstr('PUSH', 'OFFSET _CSC_WRITTEN');
+  EmitInstr('PUSH', '1');             { 1 octet }
+  EmitInstr('PUSH', 'ESI');           { pointeur sur le char }
+  EmitInstr('PUSH', 'DWORD PTR [_CSC_HSTDOUT]');
+  EmitInstr('CALL', '_WriteFile@20');
+  EmitInstr('ADD', 'ESP,4');          { enlever le char de la pile }
+  EmitInstr('POPAD', '');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+  Inc(RuntimeHelpCount);
+
+  { ---- _CSCRT_NUMTOSTR ---- }
+  { EAX = entier signe, EDI = tampon destination }
+  { Convertit l entier en chaine ASCII terminee par 0 }
+  EmitComment('_CSCRT_NUMTOSTR : entier signe -> ASCII (EAX->EDI)');
+  EmitLabel('_CSCRT_NUMTOSTR');
+  EmitInstr('PUSHAD', '');
+  EmitInstr('MOV', 'ESI,EDI');        { sauver debut du tampon }
+  EmitInstr('TEST', 'EAX,EAX');
+  Lbl1 := GenLabel;
+  EmitInstr('JNS', Lbl1);            { si positif, sauter }
+  EmitInstr('MOV', 'BYTE PTR [EDI],45'); { '-' }
+  EmitInstr('INC', 'EDI');
+  EmitInstr('NEG', 'EAX');
+  EmitLabel(Lbl1);
+  { Division successive par 10, empiler les chiffres }
+  EmitInstr('MOV', 'ECX,0');          { compteur de chiffres }
+  EmitInstr('MOV', 'EBX,10');
+  Lbl2 := GenLabel;
+  EmitLabel(Lbl2);
+  EmitInstr('XOR', 'EDX,EDX');
+  EmitInstr('DIV', 'EBX');           { EAX = quotient, EDX = reste }
+  EmitInstr('ADD', 'DL,48');         { reste + '0' }
+  EmitInstr('PUSH', 'EDX');          { empiler le chiffre }
+  EmitInstr('INC', 'ECX');
+  EmitInstr('TEST', 'EAX,EAX');
+  EmitInstr('JNZ', Lbl2);
+  { Depiler les chiffres dans l ordre }
+  Lbl3 := GenLabel;
+  EmitLabel(Lbl3);
+  EmitInstr('POP', 'EAX');
+  EmitInstr('MOV', 'BYTE PTR [EDI],AL');
+  EmitInstr('INC', 'EDI');
+  EmitInstr('DEC', 'ECX');
+  EmitInstr('JNZ', Lbl3);
+  EmitInstr('MOV', 'BYTE PTR [EDI],0'); { terminateur nul }
+  EmitInstr('POPAD', '');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+  Inc(RuntimeHelpCount);
+
+  { ---- _CSCRT_PRINTINT ---- }
+  { EAX = entier signe -> convertir et afficher }
+  EmitComment('_CSCRT_PRINTINT : afficher entier signe (EAX)');
+  EmitLabel('_CSCRT_PRINTINT');
+  EmitInstr('PUSHAD', '');
+  EmitInstr('MOV', 'EDI,OFFSET _CSC_NUMBUF');
+  EmitInstr('CALL', '_CSCRT_NUMTOSTR');
+  EmitInstr('MOV', 'ESI,OFFSET _CSC_NUMBUF');
+  EmitInstr('CALL', '_CSCRT_PRINTSTR');
+  EmitInstr('POPAD', '');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+  Inc(RuntimeHelpCount);
+
+  { ---- _CSCRT_PRINTBOOL ---- }
+  { EAX = 0 -> "False", sinon -> "True" }
+  EmitComment('_CSCRT_PRINTBOOL : afficher "True" ou "False" (EAX)');
+  EmitLabel('_CSCRT_PRINTBOOL');
+  EmitInstr('PUSH', 'ESI');
+  EmitInstr('TEST', 'EAX,EAX');
+  Lbl1 := GenLabel;
+  EmitInstr('JZ', Lbl1);
+  EmitInstr('MOV', 'ESI,OFFSET _CSC_TRUE');
+  Lbl2 := GenLabel;
+  EmitInstr('JMP', Lbl2);
+  EmitLabel(Lbl1);
+  EmitInstr('MOV', 'ESI,OFFSET _CSC_FALSE');
+  EmitLabel(Lbl2);
+  EmitInstr('CALL', '_CSCRT_PRINTSTR');
+  EmitInstr('POP', 'ESI');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+  Inc(RuntimeHelpCount);
+
+  { ---- _CSCRT_STRTONUM ---- }
+  { ESI = chaine ASCII -> EAX = entier signe }
+  EmitComment('_CSCRT_STRTONUM : ASCII -> entier signe (ESI->EAX)');
+  EmitLabel('_CSCRT_STRTONUM');
+  EmitInstr('PUSH', 'EBX');
+  EmitInstr('PUSH', 'ECX');
+  EmitInstr('PUSH', 'EDX');
+  EmitInstr('XOR', 'EAX,EAX');       { resultat = 0 }
+  EmitInstr('XOR', 'ECX,ECX');       { signe = 0 (positif) }
+  EmitInstr('MOV', 'BL,BYTE PTR [ESI]');
+  EmitInstr('CMP', 'BL,45');         { '-' ? }
+  Lbl1 := GenLabel;
+  EmitInstr('JNE', Lbl1);
+  EmitInstr('MOV', 'ECX,1');          { signe negatif }
+  EmitInstr('INC', 'ESI');
+  EmitLabel(Lbl1);
+  EmitInstr('CMP', 'BL,43');         { '+' ? }
+  Lbl2 := GenLabel;
+  EmitInstr('JNE', Lbl2);
+  EmitInstr('INC', 'ESI');
+  EmitLabel(Lbl2);
+  { Boucle de lecture des chiffres }
+  Lbl3 := GenLabel;
+  Lbl4 := GenLabel;
+  EmitLabel(Lbl3);
+  EmitInstr('MOVZX', 'EBX,BYTE PTR [ESI]');
+  EmitInstr('TEST', 'BL,BL');
+  EmitInstr('JZ', Lbl4);
+  EmitInstr('SUB', 'BL,48');         { BL = BL - '0' }
+  EmitInstr('CMP', 'BL,9');
+  EmitInstr('JA', Lbl4);             { pas un chiffre -> fin }
+  EmitInstr('IMUL', 'EAX,10');
+  EmitInstr('ADD', 'EAX,EBX');
+  EmitInstr('INC', 'ESI');
+  EmitInstr('JMP', Lbl3);
+  EmitLabel(Lbl4);
+  { Appliquer le signe }
+  EmitInstr('TEST', 'ECX,ECX');
+  Lbl1 := GenLabel;
+  EmitInstr('JZ', Lbl1);
+  EmitInstr('NEG', 'EAX');
+  EmitLabel(Lbl1);
+  EmitInstr('POP', 'EDX');
+  EmitInstr('POP', 'ECX');
+  EmitInstr('POP', 'EBX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+  Inc(RuntimeHelpCount);
+
+  { ---- _CSCRT_STRCMP ---- }
+  { ESI = s1, EDI = s2 -> drapeaux (ZF si egal) }
+  EmitComment('_CSCRT_STRCMP : comparer deux chaines (ESI,EDI->flags)');
+  EmitLabel('_CSCRT_STRCMP');
+  EmitInstr('PUSH', 'ESI');
+  EmitInstr('PUSH', 'EDI');
+  Lbl1 := GenLabel;
+  Lbl2 := GenLabel;
+  EmitLabel(Lbl1);
+  EmitInstr('MOV', 'AL,BYTE PTR [ESI]');
+  EmitInstr('MOV', 'AH,BYTE PTR [EDI]');
+  EmitInstr('CMP', 'AL,AH');
+  EmitInstr('JNE', Lbl2);
+  EmitInstr('TEST', 'AL,AL');
+  EmitInstr('JZ', Lbl2);
+  EmitInstr('INC', 'ESI');
+  EmitInstr('INC', 'EDI');
+  EmitInstr('JMP', Lbl1);
+  EmitLabel(Lbl2);
+  EmitInstr('POP', 'EDI');
+  EmitInstr('POP', 'ESI');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+  Inc(RuntimeHelpCount);
+
+  { ---- _CSCRT_STRCPY ---- }
+  { ESI = source, EDI = destination }
+  EmitComment('_CSCRT_STRCPY : copier chaine (ESI->EDI)');
+  EmitLabel('_CSCRT_STRCPY');
+  EmitInstr('PUSH', 'ESI');
+  EmitInstr('PUSH', 'EDI');
+  Lbl1 := GenLabel;
+  EmitLabel(Lbl1);
+  EmitInstr('MOV', 'AL,BYTE PTR [ESI]');
+  EmitInstr('MOV', 'BYTE PTR [EDI],AL');
+  EmitInstr('INC', 'ESI');
+  EmitInstr('INC', 'EDI');
+  EmitInstr('TEST', 'AL,AL');
+  EmitInstr('JNZ', Lbl1);
+  EmitInstr('POP', 'EDI');
+  EmitInstr('POP', 'ESI');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+  Inc(RuntimeHelpCount);
+
+  { ---- _CSCRT_STRCAT ---- }
+  { ESI = s1, EDI = s2 -> EAX = nouvelle chaine (HeapAlloc) }
+  EmitComment('_CSCRT_STRCAT : concatener chaines (ESI+EDI->EAX)');
+  EmitLabel('_CSCRT_STRCAT');
+  EmitInstr('PUSHAD', '');
+  { Calculer longueur s1 }
+  EmitInstr('CALL', '_CSCRT_STRLEN'); { EAX = len(s1) }
+  EmitInstr('MOV', 'EBX,EAX');       { EBX = len(s1) }
+  { Calculer longueur s2 }
+  EmitInstr('PUSH', 'ESI');
+  EmitInstr('MOV', 'ESI,EDI');
+  EmitInstr('CALL', '_CSCRT_STRLEN'); { EAX = len(s2) }
+  EmitInstr('POP', 'ESI');
+  EmitInstr('ADD', 'EBX,EAX');       { EBX = len(s1) + len(s2) }
+  EmitInstr('INC', 'EBX');            { +1 pour le 0 final }
+  { Allouer la memoire }
+  EmitInstr('PUSH', 'EBX');           { taille }
+  EmitInstr('PUSH', '0');              { flags = 0 }
+  EmitInstr('PUSH', 'DWORD PTR [_CSC_HHEAP]');
+  EmitInstr('CALL', '_HeapAlloc@12');
+  EmitInstr('MOV', 'DWORD PTR [ESP+28],EAX'); { sauver dans POPAD.EAX }
+  { Copier s1 }
+  EmitInstr('MOV', 'ECX,EAX');       { ECX = dest }
+  EmitInstr('PUSH', 'EDI');           { sauver s2 }
+  EmitInstr('MOV', 'EDI,ECX');
+  EmitInstr('CALL', '_CSCRT_STRCPY');
+  { Trouver la fin de la copie }
+  Lbl1 := GenLabel;
+  EmitLabel(Lbl1);
+  EmitInstr('CMP', 'BYTE PTR [EDI],0');
+  Lbl2 := GenLabel;
+  EmitInstr('JE', Lbl2);
+  EmitInstr('INC', 'EDI');
+  EmitInstr('JMP', Lbl1);
+  EmitLabel(Lbl2);
+  { Copier s2 a la fin }
+  EmitInstr('POP', 'ESI');            { ESI = s2 (sauve avant) }
+  EmitInstr('CALL', '_CSCRT_STRCPY');
+  EmitInstr('POPAD', '');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+  Inc(RuntimeHelpCount);
+
+  { ---- _CSCRT_READSTR ---- }
+  { EDI = tampon destination, lit une ligne depuis stdin }
+  EmitComment('_CSCRT_READSTR : lire ligne stdin (EDI=buf)');
+  EmitLabel('_CSCRT_READSTR');
+  EmitInstr('PUSHAD', '');
+  EmitInstr('PUSH', '0');              { lpOverlapped }
+  EmitInstr('PUSH', 'OFFSET _CSC_READCNT');
+  EmitInstr('PUSH', '254');            { nNumberOfBytesToRead }
+  EmitInstr('PUSH', 'EDI');            { lpBuffer }
+  EmitInstr('PUSH', 'DWORD PTR [_CSC_HSTDIN]');
+  EmitInstr('CALL', '_ReadFile@20');
+  { Retirer CR/LF en fin de ligne }
+  EmitInstr('MOV', 'ECX,DWORD PTR [_CSC_READCNT]');
+  Lbl1 := GenLabel;
+  Lbl2 := GenLabel;
+  EmitInstr('TEST', 'ECX,ECX');
+  EmitInstr('JZ', Lbl2);
+  EmitLabel(Lbl1);
+  EmitInstr('DEC', 'ECX');
+  EmitInstr('CMP', 'BYTE PTR [EDI+ECX],13');  { CR }
+  Lbl3 := GenLabel;
+  EmitInstr('JE', Lbl3);
+  EmitInstr('CMP', 'BYTE PTR [EDI+ECX],10');  { LF }
+  EmitInstr('JE', Lbl3);
+  EmitInstr('INC', 'ECX');            { pas CR/LF, garder }
+  EmitInstr('JMP', Lbl2);
+  EmitLabel(Lbl3);
+  EmitInstr('TEST', 'ECX,ECX');
+  EmitInstr('JNZ', Lbl1);
+  EmitLabel(Lbl2);
+  EmitInstr('MOV', 'BYTE PTR [EDI+ECX],0');  { terminateur nul }
+  EmitInstr('POPAD', '');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+  Inc(RuntimeHelpCount);
+
+  { ---- _CSCRT_READINT ---- }
+  { Lire une ligne depuis stdin, convertir en entier -> EAX }
+  EmitComment('_CSCRT_READINT : lire entier depuis stdin -> EAX');
+  EmitLabel('_CSCRT_READINT');
+  EmitInstr('PUSH', 'EDI');
+  EmitInstr('PUSH', 'ESI');
+  EmitInstr('MOV', 'EDI,OFFSET _CSC_INBUF');
+  EmitInstr('CALL', '_CSCRT_READSTR');
+  EmitInstr('MOV', 'ESI,OFFSET _CSC_INBUF');
+  EmitInstr('CALL', '_CSCRT_STRTONUM');
+  EmitInstr('POP', 'ESI');
+  EmitInstr('POP', 'EDI');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+  Inc(RuntimeHelpCount);
+
+  { ---- _CSCRT_READCHAR ---- }
+  { Lire un seul caractere depuis stdin -> EAX }
+  EmitComment('_CSCRT_READCHAR : lire un caractere stdin -> EAX');
+  EmitLabel('_CSCRT_READCHAR');
+  EmitInstr('PUSH', 'EBX');
+  EmitInstr('XOR', 'EAX,EAX');
+  EmitInstr('PUSH', 'EAX');           { buffer 1 byte sur la pile }
+  EmitInstr('MOV', 'EBX,ESP');        { EBX pointe sur le buffer }
+  EmitInstr('PUSH', '0');
+  EmitInstr('PUSH', 'OFFSET _CSC_READCNT');
+  EmitInstr('PUSH', '1');
+  EmitInstr('PUSH', 'EBX');
+  EmitInstr('PUSH', 'DWORD PTR [_CSC_HSTDIN]');
+  EmitInstr('CALL', '_ReadFile@20');
+  EmitInstr('POP', 'EAX');           { recuperer le caractere }
+  EmitInstr('AND', 'EAX,0FFh');
+  EmitInstr('POP', 'EBX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+  Inc(RuntimeHelpCount);
+
+  { ---- _CSCRT_READLN ---- }
+  { Consommer caracteres jusqu au prochain CR+LF }
+  EmitComment('_CSCRT_READLN : consommer jusqu au CR+LF');
+  EmitLabel('_CSCRT_READLN');
+  EmitInstr('PUSH', 'EDI');
+  EmitInstr('MOV', 'EDI,OFFSET _CSC_INBUF');
+  EmitInstr('CALL', '_CSCRT_READSTR');
+  EmitInstr('POP', 'EDI');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+  Inc(RuntimeHelpCount);
+
+  { ---- _CSCRT_MALLOC ---- }
+  { EAX = taille -> EAX = pointeur }
+  EmitComment('_CSCRT_MALLOC : allouer memoire (EAX=size->EAX=ptr)');
+  EmitLabel('_CSCRT_MALLOC');
+  EmitInstr('PUSH', 'EAX');           { taille }
+  EmitInstr('PUSH', '0');              { flags = 0 }
+  EmitInstr('PUSH', 'DWORD PTR [_CSC_HHEAP]');
+  EmitInstr('CALL', '_HeapAlloc@12');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+  Inc(RuntimeHelpCount);
+
+  { ---- _CSCRT_FREE ---- }
+  { EAX = pointeur a liberer }
+  EmitComment('_CSCRT_FREE : liberer memoire (EAX=ptr)');
+  EmitLabel('_CSCRT_FREE');
+  EmitInstr('PUSH', 'EAX');           { lpMem }
+  EmitInstr('PUSH', '0');              { dwFlags = 0 }
+  EmitInstr('PUSH', 'DWORD PTR [_CSC_HHEAP]');
+  EmitInstr('CALL', '_HeapFree@12');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+  Inc(RuntimeHelpCount);
+
+  { ---- _CSCRT_MEMCPY ---- }
+  { ESI = src, EDI = dst, ECX = len }
+  EmitComment('_CSCRT_MEMCPY : copie memoire (ESI->EDI, ECX octets)');
+  EmitLabel('_CSCRT_MEMCPY');
+  EmitInstr('PUSH', 'ESI');
+  EmitInstr('PUSH', 'EDI');
+  EmitInstr('PUSH', 'ECX');
+  EmitInstr('REP', 'MOVSB');
+  EmitInstr('POP', 'ECX');
+  EmitInstr('POP', 'EDI');
+  EmitInstr('POP', 'ESI');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+  Inc(RuntimeHelpCount);
+
+  { ---- _CSCRT_MEMSET ---- }
+  { EDI = dst, EAX = val (AL), ECX = len }
+  EmitComment('_CSCRT_MEMSET : remplissage memoire (EDI,AL,ECX)');
+  EmitLabel('_CSCRT_MEMSET');
+  EmitInstr('PUSH', 'EDI');
+  EmitInstr('PUSH', 'ECX');
+  EmitInstr('REP', 'STOSB');
+  EmitInstr('POP', 'ECX');
+  EmitInstr('POP', 'EDI');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+  Inc(RuntimeHelpCount);
+
+  { ---- _CSCRT_PANIC ---- }
+  { ESI = message d erreur -> afficher et ExitProcess(1) }
+  EmitComment('_CSCRT_PANIC : message d erreur + ExitProcess(1)');
+  EmitLabel('_CSCRT_PANIC');
+  EmitInstr('PUSH', 'ESI');
+  EmitInstr('MOV', 'ESI,OFFSET _CSC_PANIC_MSG');
+  EmitInstr('CALL', '_CSCRT_PRINTSTR');
+  EmitInstr('POP', 'ESI');
+  EmitInstr('CALL', '_CSCRT_PRINTSTR');
+  EmitInstr('CALL', '_CSCRT_PRINTCRLF');
+  EmitInstr('PUSH', '1');
+  EmitInstr('CALL', '_ExitProcess@4');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+  Inc(RuntimeHelpCount);
+End;
+
 { ------------------------------------------------------------ }
 { ShowStats (corps)                                             }
 { ------------------------------------------------------------ }
@@ -7269,6 +7810,7 @@ Begin
   WriteLn('Ops Console      : ', ConsoleOpCount);
   WriteLn('Goto             : ', GotoCount);
   WriteLn('Cast/typeof/sizeof: ', CastCount);
+  WriteLn('Runtime helpers   : ', RuntimeHelpCount);
   WriteLn('Donnees .DATA    : ', DataCount);
   WriteLn('Taille pile loc  : ', LocalOffset);
   WriteLn('Labels generes   : ', LabelSeq);
@@ -7368,6 +7910,9 @@ Begin
 
   { Initialiser cast/typeof/sizeof (TODO 23) }
   CastCount        := 0;
+
+  { Initialiser le runtime Win32 (TODO 24) }
+  RuntimeHelpCount := 0;
 
   { Initialiser le segment de donnees (TODO 08) }
   DataInit;
@@ -7682,6 +8227,10 @@ Begin
           MethodCount, ' methodes, ',
           DataCount, ' data)');
 
+  { Emettre le point d entree et les routines runtime (TODO 24)   }
+  EmitEntryPoint;
+  EmitRuntimeHelpers;
+
   { Emettre le segment .DATA apres le code (TODO 12)             }
   { Le .DATA est emis apres le .CODE car toutes les chaines et   }
   { variables statiques doivent etre connues avant l emission.   }
@@ -7690,7 +8239,8 @@ Begin
   EmitClose;
 
   WriteLn('CSCW32: ASM genere -> ', AsmFileName);
-  WriteLn('CSCW32: Les TODOs 24..25 ne sont pas encore implementes.');
+  WriteLn('CSCW32: Runtime: ', RuntimeHelpCount, ' routines emises.');
+  WriteLn('CSCW32: Le TODO 25 n''est pas encore implemente.');
 End;
 
 { ------------------------------------------------------------ }

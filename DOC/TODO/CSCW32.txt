@@ -617,7 +617,7 @@
             Compteur CastCount pour les statistiques.
             Fichier test : test30_cast.cs (15 cas).
 
-  TODO 24 - RUNTIME MINIMAL WIN32
+  TODO 24 - RUNTIME MINIMAL WIN32 [IMPLEMENTE]
             Routines runtime emises directement dans le segment
             .CODE du fichier assembleur genere :
             _CSCRT_PRINTSTR(ESI=msg) : WriteFile sur hStdOut.
@@ -663,6 +663,18 @@
             Handles : hStdOut via GetStdHandle(STD_OUTPUT_HANDLE),
               hStdIn via GetStdHandle(STD_INPUT_HANDLE),
               hHeap via GetProcessHeap.
+            EmitEntryPoint : point d entree _CSC_ENTRY, init
+              handles stdout/stdin et heap, CALL _CSCF_MAIN,
+              PUSH 0 / CALL ExitProcess.
+            EmitRuntimeHelpers : 20 routines runtime emises
+              apres le code utilisateur et avant le segment .DATA.
+            RuntimeHelpCount : compteur du nombre de routines
+              runtime emises.
+            Donnees runtime : _CSC_TRUE ("True"),
+              _CSC_FALSE ("False"), _CSC_PANIC_MSG
+              ("Runtime error: ") ajoutees dans DataInit.
+            Fichier test : test31_runtime.cs (15 cas,
+              16 methodes, 20 routines runtime).
 
   TODO 25 - GENERATION PE/COFF ET FICHIERS EXEMPLES
             Generation PE (.EXE Windows 32 bits) :
