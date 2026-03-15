@@ -256,7 +256,7 @@
               (pointeur vers BP du cadre parent passe comme parametre cache)
             Appel : PUSH args + CALL _A58P_nom / nettoyage pile apres retour
 
-  TODO 18 - GO TO ET ETIQUETTES
+  TODO 18 - GO TO ET ETIQUETTES [IMPLEMENTE]
             Etiquettes : labels numeriques (ex: 10:) ou symboliques (ex: boucle:)
               Declare implicitement a l apparition avec deux-points
               Stocke dans la table des symboles avec SK_LABEL
@@ -702,6 +702,8 @@ Procedure ParseForStmt; Forward;
 Procedure ParseArrayDecl(TyIdx : Integer); Forward;
 { TODO 17 - Procedures }
 Procedure ParseProcDecl; Forward;
+{ TODO 18 - Go to et etiquettes }
+Procedure ParseGotoStmt; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -3698,12 +3700,71 @@ Begin
     Exit;
   End;
 
+  { Label numerique : nombre ':' (TODO 18) }
+  If CurToken.Kind = TK_INTEGER Then
+  Begin
+    VarName := IntToStr_(CurToken.IntVal);
+    VarIdx  := SymFind(VarName);
+    ParserAdvance;  { consommer le nombre }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+    Begin
+      ParserAdvance;  { consommer : }
+      If VarIdx < 0 Then
+        VarIdx := SymAdd(VarName, SK_LABEL, TY_IDX_INTEGER, 0)
+      Else If SymTab[VarIdx].Kind <> SK_LABEL Then
+      Begin
+        CompileError('symbole deja declare comme non-label: ' + VarName);
+        Exit;
+      End;
+      If VarIdx >= 0 Then
+      Begin
+        EmitComment('label ' + VarName);
+        EmitLabel(SymTab[VarIdx].MangledName);
+      End;
+      { Le label prefixe une instruction : on la parse }
+      If (CurToken.Kind <> TK_EOF) And
+         Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) And
+         Not ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'end')) Then
+        ParseStmt;
+      Exit;
+    End;
+    { Pas un label : c est un token isole, skip }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      ParserAdvance;
+    Exit;
+  End;
+
   { Affectation ou expression : ident := expr / ident[i] := expr }
   If CurToken.Kind = TK_IDENT Then
   Begin
     VarName := CurToken.Val;
     VarIdx  := SymFind(VarName);
     ParserAdvance;  { consommer l ident }
+
+    { Label symbolique : ident ':' (TODO 18) }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+    Begin
+      ParserAdvance;  { consommer : }
+      { Enregistrer le label dans la table des symboles }
+      If VarIdx < 0 Then
+        VarIdx := SymAdd(VarName, SK_LABEL, TY_IDX_INTEGER, 0)
+      Else If SymTab[VarIdx].Kind <> SK_LABEL Then
+      Begin
+        CompileError('symbole deja declare comme non-label: ' + VarName);
+        Exit;
+      End;
+      If VarIdx >= 0 Then
+      Begin
+        EmitComment('label ' + VarName);
+        EmitLabel(SymTab[VarIdx].MangledName);
+      End;
+      { Le label prefixe une instruction : on la parse }
+      If (CurToken.Kind <> TK_EOF) And
+         Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) And
+         Not ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'end')) Then
+        ParseStmt;
+      Exit;
+    End;
 
     { Affectation de tableau : ident [ expr ] := expr (TODO 15) }
     If (VarIdx >= 0) And (SymTab[VarIdx].Kind = SK_ARRAY) And
@@ -3814,6 +3875,16 @@ Begin
       Exit;
     End;
 
+    { goto label (TODO 18) }
+    If CurToken.Val = 'goto' Then
+    Begin
+      ParserAdvance;  { consommer goto }
+      ParseGotoStmt;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+      Exit;
+    End;
+
     { procedure nom(...) ; corps (TODO 17) }
     If CurToken.Val = 'procedure' Then
     Begin
@@ -3832,6 +3903,66 @@ Begin
   ParserAdvance;
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
     ParserAdvance;
+End;
+
+{ ============================================================
+  TODO 18 - GO TO ET ETIQUETTES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseGotoStmt : instruction go to / goto -------------------
+  Syntaxe Algol 58 :
+    go to label
+    goto label
+  ou label est un identifiant ou un nombre (label numerique).
+  Le lexeur a deja fusionne 'go to' en 'goto' (TK_KEYWORD).
+  Emission : JMP _A58L_nom_du_label
+  Forward references : si le label n est pas encore declare, on
+  l ajoute dans la table des symboles avec SK_LABEL (reference en
+  avant) et on emet le JMP vers son nom mangled. Il sera defini
+  plus tard quand le label sera rencontre comme instruction.
+  ---------------------------------------------------------------- }
+Procedure ParseGotoStmt;
+Var
+  LblName   : TString;
+  MangledLbl : TString;
+  SIdx      : Integer;
+Begin
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    LblName := CurToken.Val;
+    ParserAdvance;  { consommer le nom du label }
+  End
+  Else If CurToken.Kind = TK_INTEGER Then
+  Begin
+    LblName := IntToStr_(CurToken.IntVal);
+    ParserAdvance;  { consommer le numero du label }
+  End
+  Else
+  Begin
+    CompileError('identificateur ou numero de label attendu apres goto');
+    Exit;
+  End;
+
+  { Chercher le label dans la table des symboles }
+  SIdx := SymFind(LblName);
+  If SIdx >= 0 Then
+  Begin
+    MangledLbl := SymTab[SIdx].MangledName;
+    If SymTab[SIdx].Kind <> SK_LABEL Then
+      WarnMsg('goto vers un symbole non-label: ' + LblName);
+  End
+  Else
+  Begin
+    { Forward reference : ajouter le label en avance }
+    SIdx := SymAdd(LblName, SK_LABEL, TY_IDX_INTEGER, 0);
+    If SIdx >= 0 Then
+      MangledLbl := SymTab[SIdx].MangledName
+    Else
+      MangledLbl := A58_LBL_PFX + SymNameClean(LblName);
+  End;
+
+  EmitComment('goto ' + LblName);
+  EmitInstr('JMP', MangledLbl);
 End;
 
 { ============================================================

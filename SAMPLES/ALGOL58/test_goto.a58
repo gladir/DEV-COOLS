@@ -1,0 +1,89 @@
+comment Test TODO 18 - GO TO ET ETIQUETTES ;
+comment Ce fichier teste les labels et l instruction goto ;
+
+begin
+  comment Cas 1 : label symbolique simple ;
+  integer x ;
+  x := 0 ;
+  goto skip1 ;
+  x := 999 ;
+  skip1: x := 1 ;
+  write(x) ;
+
+  comment Cas 2 : label numerique ;
+  integer y ;
+  y := 0 ;
+  goto 10 ;
+  y := 999 ;
+  10: y := 2 ;
+  write(y) ;
+
+  comment Cas 3 : go to (deux mots) ;
+  integer z ;
+  z := 0 ;
+  go to suite3 ;
+  z := 999 ;
+  suite3: z := 3 ;
+  write(z) ;
+
+  comment Cas 4 : forward reference (label utilise avant sa definition) ;
+  integer a ;
+  a := 0 ;
+  goto avant4 ;
+  a := 999 ;
+  avant4: a := 4 ;
+  write(a) ;
+
+  comment Cas 5 : label suivi d un bloc begin end ;
+  integer b ;
+  b := 0 ;
+  goto bloc5 ;
+  b := 999 ;
+  bloc5: begin
+    b := 5
+  end ;
+  write(b) ;
+
+  comment Cas 6 : plusieurs labels dans une sequence ;
+  integer c ;
+  c := 0 ;
+  goto etiq6b ;
+  etiq6a: c := 6 ;
+  goto fin6 ;
+  etiq6b: goto etiq6a ;
+  fin6: write(c) ;
+
+  comment Cas 7 : goto avec label numerique plus grand ;
+  integer d ;
+  d := 0 ;
+  goto 100 ;
+  d := 999 ;
+  100: d := 7 ;
+  write(d) ;
+
+  comment Cas 8 : label sur une ligne seule (suivi de ;) ;
+  integer e ;
+  e := 8 ;
+  goto monlabel8 ;
+  e := 999 ;
+  monlabel8:
+  write(e) ;
+
+  comment Cas 9 : label avant if then else ;
+  integer f ;
+  f := 0 ;
+  goto test9 ;
+  f := 999 ;
+  test9: if 1 = 1 then f := 9 ;
+  write(f) ;
+
+  comment Cas 10 : enchainement de goto ;
+  integer g ;
+  g := 0 ;
+  goto step10a ;
+  step10c: g := 10 ;
+  goto done10 ;
+  step10a: goto step10b ;
+  step10b: goto step10c ;
+  done10: write(g)
+end
