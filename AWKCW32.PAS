@@ -3872,7 +3872,6 @@ End;
 
 { ---- ParseBlock ---------------------------------------------- }
 (* Parse un bloc entre accolades ou une instruction simple.       *)
-{ instruction simple.                                             }
 Procedure ParseBlock;
 Begin
   SkipNewlines;
