@@ -33,7 +33,7 @@
 { TODO 13 - Instructions logiques et de manipulation de bits [IMPLEMENTE] }
 { TODO 14 - Instructions de decalage et rotation [IMPLEMENTE] }
 { TODO 15 - Instructions de branchement et controle de flux [IMPLEMENTE] }
-{ TODO 16 - Instructions BCD et operations speciales }
+{ TODO 16 - Instructions BCD et operations speciales [IMPLEMENTE] }
 { TODO 17 - Encodage binaire des instructions (passe 2) }
 { TODO 18 - Architecture deux passes de l'assembleur }
 { TODO 19 - Parseur de ligne assembleur }
@@ -664,7 +664,8 @@ Begin
  { Instructions speciales }
  If (U = 'NOP') or (U = 'RESET') or (U = 'STOP') or
     (U = 'RTE') or (U = 'RTS') or (U = 'RTR') or
-    (U = 'TRAP') or (U = 'TRAPV') or (U = 'CHK') Then Begin IsOpcode := True; Exit; End;
+    (U = 'TRAP') or (U = 'TRAPV') or (U = 'CHK') or
+    (U = 'ILLEGAL') Then Begin IsOpcode := True; Exit; End;
  { Instructions BCD }
  If (U = 'ABCD') or (U = 'SBCD') or (U = 'NBCD') Then Begin IsOpcode := True; Exit; End;
 End;
@@ -4168,6 +4169,34 @@ Begin
  NextToken;
  ParseOperand(Dst);
 
+ { --- Forme speciale : MOVE USP, An --- }
+ If (Src.Mode = AM_SR_CCR) and (Src.Reg = REG_USP) Then
+ Begin
+  If Dst.Mode <> AM_ADDR_REG Then
+  Begin
+   Error(cur_tok_line, cur_tok_col,
+         'MOVE USP: destination doit etre un registre An');
+   SkipToEOL; Exit;
+  End;
+  InstrW := $4E68 or Word(Dst.Reg - REG_A0);
+  Emit16(InstrW);
+  Exit;
+ End;
+
+ { --- Forme speciale : MOVE An, USP --- }
+ If (Dst.Mode = AM_SR_CCR) and (Dst.Reg = REG_USP) Then
+ Begin
+  If Src.Mode <> AM_ADDR_REG Then
+  Begin
+   Error(cur_tok_line, cur_tok_col,
+         'MOVE USP: source doit etre un registre An');
+   SkipToEOL; Exit;
+  End;
+  InstrW := $4E60 or Word(Src.Reg - REG_A0);
+  Emit16(InstrW);
+  Exit;
+ End;
+
  { --- Forme speciale : MOVE SR/CCR, <ea> --- }
  If Src.Mode = AM_SR_CCR Then
  Begin
@@ -6795,6 +6824,210 @@ Begin
  Emit16($4E71);
 End;
 
+{ ============================================================================ }
+{ TODO 16 - Instructions BCD et operations speciales                          }
+{ ============================================================================ }
+{ ABCD, SBCD, NBCD, CHK, TRAP, TRAPV, MOVE USP, STOP, RESET, ILLEGAL        }
+
+Procedure InstrABCD;
+{ ABCD Dn,Dn       -> $C100 | Dn_dst<<9 | Dn_src
+  ABCD -(An),-(An) -> $C108 | An_dst<<9 | An_src }
+Var
+ Src, Dst: TOperand;
+ InstrW: Word;
+Begin
+ ParseOperand(Src);
+ If cur_tok <> TOK_COMMA Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'virgule attendue');
+  SkipToEOL; Exit;
+ End;
+ NextToken;
+ ParseOperand(Dst);
+
+ If (Src.Mode = AM_DATA_REG) and (Dst.Mode = AM_DATA_REG) Then
+ Begin
+  InstrW := $C100 or Word(Dst.Reg shl 9) or Word(Src.Reg);
+  Emit16(InstrW);
+ End
+ Else If (Src.Mode = AM_ADDR_IND_PRE) and (Dst.Mode = AM_ADDR_IND_PRE) Then
+ Begin
+  InstrW := $C108 or Word((Dst.Reg - REG_A0) shl 9)
+            or Word(Src.Reg - REG_A0);
+  Emit16(InstrW);
+ End
+ Else
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'ABCD requiert Dn,Dn ou -(An),-(An)');
+  SkipToEOL;
+ End;
+End;
+
+Procedure InstrSBCD;
+{ SBCD Dn,Dn       -> $8100 | Dn_dst<<9 | Dn_src
+  SBCD -(An),-(An) -> $8108 | An_dst<<9 | An_src }
+Var
+ Src, Dst: TOperand;
+ InstrW: Word;
+Begin
+ ParseOperand(Src);
+ If cur_tok <> TOK_COMMA Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'virgule attendue');
+  SkipToEOL; Exit;
+ End;
+ NextToken;
+ ParseOperand(Dst);
+
+ If (Src.Mode = AM_DATA_REG) and (Dst.Mode = AM_DATA_REG) Then
+ Begin
+  InstrW := $8100 or Word(Dst.Reg shl 9) or Word(Src.Reg);
+  Emit16(InstrW);
+ End
+ Else If (Src.Mode = AM_ADDR_IND_PRE) and (Dst.Mode = AM_ADDR_IND_PRE) Then
+ Begin
+  InstrW := $8108 or Word((Dst.Reg - REG_A0) shl 9)
+            or Word(Src.Reg - REG_A0);
+  Emit16(InstrW);
+ End
+ Else
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'SBCD requiert Dn,Dn ou -(An),-(An)');
+  SkipToEOL;
+ End;
+End;
+
+Procedure InstrNBCD;
+{ NBCD <ea> -> $4800 | EA(6), data alterable }
+Var
+ Op: TOperand;
+ EA: Integer;
+ InstrW: Word;
+Begin
+ ParseOperand(Op);
+ If Not CheckEAMask(Op, EA_DATA_ALT) Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'mode d''adressage invalide pour NBCD');
+  SkipToEOL; Exit;
+ End;
+
+ EA := EncodeEA(Op);
+ If EA < 0 Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'encodage EA impossible');
+  SkipToEOL; Exit;
+ End;
+
+ InstrW := $4800 or Word(EA);
+ Emit16(InstrW);
+ EmitExtWords(Op, SIZE_BYTE);
+End;
+
+Procedure InstrCHK(OpSize: Integer);
+{ CHK.W <ea>,Dn -> $4180 | Dn<<9 | srcEA(6)
+  (68000 = word only) }
+Var
+ Src, Dst: TOperand;
+ SrcEA: Integer;
+ InstrW: Word;
+Begin
+ If (OpSize <> 0) and (OpSize <> SIZE_WORD) Then
+  Warning(cur_tok_line, cur_tok_col,
+          'CHK: seule la taille .W est supportee sur 68000');
+
+ ParseOperand(Src);
+ If cur_tok <> TOK_COMMA Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'virgule attendue');
+  SkipToEOL; Exit;
+ End;
+ NextToken;
+ ParseOperand(Dst);
+
+ If Dst.Mode <> AM_DATA_REG Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'CHK: destination doit etre un registre de donnees Dn');
+  SkipToEOL; Exit;
+ End;
+
+ If Not CheckEAMask(Src, EA_DATA) Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'mode d''adressage source invalide pour CHK');
+  SkipToEOL; Exit;
+ End;
+
+ SrcEA := EncodeEA(Src);
+ If SrcEA < 0 Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'encodage EA impossible');
+  SkipToEOL; Exit;
+ End;
+
+ InstrW := $4180 or Word(Dst.Reg shl 9) or Word(SrcEA);
+ Emit16(InstrW);
+ EmitExtWords(Src, SIZE_WORD);
+End;
+
+Procedure InstrTRAP;
+{ TRAP #vector -> $4E40 | vector(4 bits, 0-15) }
+Var
+ Vec: LongInt;
+Begin
+ If cur_tok <> TOK_HASH Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'TRAP: # attendu avant le vecteur');
+  SkipToEOL; Exit;
+ End;
+ NextToken;
+ Vec := EvalExpr;
+ If (Vec < 0) or (Vec > 15) Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'TRAP: vecteur doit etre entre 0 et 15');
+  SkipToEOL; Exit;
+ End;
+ Emit16(Word($4E40 or (Vec and $0F)));
+End;
+
+Procedure InstrTRAPV;
+{ TRAPV - Trap on overflow : $4E76 }
+Begin
+ Emit16($4E76);
+End;
+
+Procedure InstrSTOP;
+{ STOP #imm -> $4E72 + mot immediat 16 bits }
+Var
+ Imm: LongInt;
+Begin
+ If cur_tok <> TOK_HASH Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'STOP: # attendu avant la valeur');
+  SkipToEOL; Exit;
+ End;
+ NextToken;
+ Imm := EvalExpr;
+ Emit16($4E72);
+ Emit16(Word(Imm and $FFFF));
+End;
+
+Procedure InstrRESET;
+{ RESET - Reset external devices : $4E70 }
+Begin
+ Emit16($4E70);
+End;
+
+Procedure InstrILLEGAL;
+{ ILLEGAL - Illegal instruction exception : $4AFC }
+Begin
+ Emit16($4AFC);
+End;
+
 Procedure AssembleInstruction(Const OpName: String; OpSize: Integer);
 { Dispatch : appelle le bon encodeur selon le mnemonique }
 Begin
@@ -6914,6 +7147,16 @@ Begin
  Else If OpName = 'RTE' Then InstrRTE
  Else If OpName = 'RTR' Then InstrRTR
  Else If OpName = 'NOP' Then InstrNOP
+ { --- Instructions BCD et operations speciales (TODO 16) --- }
+ Else If OpName = 'ABCD' Then InstrABCD
+ Else If OpName = 'SBCD' Then InstrSBCD
+ Else If OpName = 'NBCD' Then InstrNBCD
+ Else If OpName = 'CHK' Then InstrCHK(OpSize)
+ Else If OpName = 'TRAP' Then InstrTRAP
+ Else If OpName = 'TRAPV' Then InstrTRAPV
+ Else If OpName = 'STOP' Then InstrSTOP
+ Else If OpName = 'RESET' Then InstrRESET
+ Else If OpName = 'ILLEGAL' Then InstrILLEGAL
  Else
  Begin
   Warning(cur_tok_line, cur_tok_col,

@@ -340,7 +340,7 @@ TODO 15 - Instructions de branchement et controle de flux [IMPLEMENTE]
   - Gestion des deplacements : .S (8 bits), .W (16 bits), automatique
   - Exemples : SAMPLES\ASM68\branch.asm
 
-TODO 16 - Instructions BCD et operations speciales
+TODO 16 - Instructions BCD et operations speciales [IMPLEMENTE]
   ---------------------------------------------------
   - ABCD   Dn, Dn / -(An), -(An) : addition BCD avec X
   - SBCD   Dn, Dn / -(An), -(An) : soustraction BCD avec X
