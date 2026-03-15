@@ -3446,6 +3446,7 @@ Var
   Off   : Integer;
   Fsz   : Integer;
   FName : TString;
+  J     : Integer;
 Begin
   Idx := AddType(TName, TK_RECORD);
   Fi  := 0;
@@ -3464,13 +3465,13 @@ Begin
       Consume;
       If CurTokType = TOK_COMMA Then
       Begin
-        { Plusieurs noms : n1, n2 : type; -> on prend le premier }
+        { Plusieurs noms : n1, n2 : type; -> stocker sans type }
         Inc(Fi);
         If Fi > MAX_FIELD Then
         Begin Error('Trop de champs dans RECORD'); Fi := MAX_FIELD; End;
         TypeTab[Idx].FieldNames[Fi] := FName;
         TypeTab[Idx].FieldTypes[Fi] := TYPE_UNKNOWN;
-        TypeTab[Idx].FieldOffs[Fi]  := Off;
+        TypeTab[Idx].FieldOffs[Fi]  := 0;
         Consume; { , }
         Continue;
       End;
@@ -3479,6 +3480,20 @@ Begin
       Fsz := GetTypeSize(Fti);
       If Fsz <= 0 Then Fsz := 4;
       Fsz := AlignDWord(Fsz);
+      { Corriger les champs precedents sans type (multi-noms) }
+      { n1, n2 : Integer; -> assigner type et offsets sequentiels }
+      J := Fi;
+      While (J >= 1) And
+            (TypeTab[Idx].FieldTypes[J] = TYPE_UNKNOWN) Do Dec(J);
+      Inc(J);
+      While J <= Fi Do
+      Begin
+        TypeTab[Idx].FieldTypes[J] := Fti;
+        TypeTab[Idx].FieldOffs[J]  := Off;
+        Inc(Off, Fsz);
+        Inc(J);
+      End;
+      { Ajouter le champ courant (dernier du groupe) }
       Inc(Fi);
       If Fi > MAX_FIELD Then
       Begin Error('Trop de champs dans RECORD'); Fi := MAX_FIELD; End;
@@ -3486,14 +3501,6 @@ Begin
       TypeTab[Idx].FieldTypes[Fi] := Fti;
       TypeTab[Idx].FieldOffs[Fi]  := Off;
       Inc(Off, Fsz);
-      { Corriger les champs precedents sans type (multi-noms) }
-      { n1, n2 : Integer; -> n1 et n2 sont tous les deux Integer }
-      While (Fi > 1) And (TypeTab[Idx].FieldTypes[Fi-1] = TYPE_UNKNOWN) Do
-      Begin
-        TypeTab[Idx].FieldTypes[Fi-1] := Fti;
-        TypeTab[Idx].FieldOffs[Fi-1]  := Off;
-        Inc(Off, Fsz);
-      End;
       Break;
     Until False;
     Expect(TOK_SEMI, '`;` attendu apres declaration de champ');

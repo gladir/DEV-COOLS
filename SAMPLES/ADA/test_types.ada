@@ -11,6 +11,10 @@ type Point is record
   X : Integer;
   Y : Integer;
 end record;
+type Rect is record
+  X1, Y1 : Integer;
+  X2, Y2 : Integer;
+end record;
 type Pixel is record
   Pos : Point;
   Col : Color;
