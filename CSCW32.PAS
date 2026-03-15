@@ -343,7 +343,7 @@
             Passage de tableau a methode : par reference (pointeur).
             Types supportes : int[], bool[], char[].
 
-  TODO 20 - CHAINES ET OPERATIONS SUR LES CHAINES
+  TODO 20 - CHAINES ET OPERATIONS SUR LES CHAINES [IMPLEMENTE]
             Chaines C# : type string, reference vers donnees.
             Stockage : DB "abc",0 dans .DATA (ASCIIZ en interne).
             Variable string : pointeur vers chaine (DWORD).
@@ -353,6 +353,10 @@
             Comparaison : == != via _CSCRT_STRCMP.
             Propriete Length : s.Length -> _CSCRT_STRLEN.
             Chaines litterales : "abc" -> label _CSCK_N dans .DATA.
+            Suivi du type de l expression courante (CurExprType)
+              pour determiner quand utiliser les operations chaines.
+            Compteur StringOpCount pour les statistiques.
+            Fichier test : test27_strings.cs.
 
   TODO 21 - ENTREES/SORTIES (Console)
             Console.WriteLine(expr) : sortie avec saut de ligne.
@@ -2573,6 +2577,10 @@ Var
   PendingIsArray  : Boolean;      { True si [] consomme avant decl      }
   LastNewArraySize: Integer;      { taille du dernier new T[N]          }
 
+  { Variables pour les operations sur les chaines (TODO 20) }
+  CurExprType     : Integer;      { type de l expression courante       }
+  StringOpCount   : Integer;      { nombre d operations sur chaines     }
+
 { ------------------------------------------------------------ }
 { SymMangle : generer le nom ASM mangled                        }
 {   Le prefixe depend de la categorie du symbole                }
@@ -4410,6 +4418,7 @@ Begin
   If CurToken.Kind = TK_INTEGER Then
   Begin
     GenLoadConst(CurToken.IntVal);
+    CurExprType := TY_IDX_INT;  { TODO 20 }
     Consume;
   End
   { --- Literal chaine --- }
@@ -4417,6 +4426,7 @@ Begin
   Begin
     Lbl := AddStrLit(CurToken.Val);
     GenLoadStr(Lbl);
+    CurExprType := TY_IDX_STRING;  { TODO 20 }
     Consume;
   End
   { --- Literal caractere --- }
@@ -4426,24 +4436,28 @@ Begin
       GenLoadConst(Ord(CurToken.Val[1]))
     Else
       GenLoadConst(0);
+    CurExprType := TY_IDX_CHAR;  { TODO 20 }
     Consume;
   End
   { --- true --- }
   Else If TokIsKw('true') Then
   Begin
     GenLoadConst(1);
+    CurExprType := TY_IDX_BOOL;  { TODO 20 }
     Consume;
   End
   { --- false --- }
   Else If TokIsKw('false') Then
   Begin
     GenLoadConst(0);
+    CurExprType := TY_IDX_BOOL;  { TODO 20 }
     Consume;
   End
   { --- null --- }
   Else If TokIsKw('null') Then
   Begin
     GenLoadConst(0);
+    CurExprType := TY_IDX_INT;  { TODO 20 }
     Consume;
   End
   { --- Expression entre parentheses --- }
@@ -4460,6 +4474,7 @@ Begin
     Consume;
     ParsePrimary;
     GenNeg;
+    CurExprType := TY_IDX_INT;  { TODO 20 }
   End
   { --- Negation logique !expr --- }
   Else If TokIsOp('!') Then
@@ -4467,6 +4482,7 @@ Begin
     Consume;
     ParsePrimary;
     GenLogNot;
+    CurExprType := TY_IDX_BOOL;  { TODO 20 }
   End
   { --- Complement bit a bit ~expr --- }
   Else If TokIsOp('~') Then
@@ -4474,6 +4490,7 @@ Begin
     Consume;
     ParsePrimary;
     GenBitNot;
+    CurExprType := TY_IDX_INT;  { TODO 20 }
   End
   { --- Pre-increment ++ident --- }
   Else If TokIsOp('++') Then
@@ -4485,6 +4502,7 @@ Begin
       Consume;
       GenIncVar(Idx);
       GenLoadVar(Idx);
+      CurExprType := TY_IDX_INT;  { TODO 20 }
     End
     Else
     Begin
@@ -4502,6 +4520,7 @@ Begin
       Consume;
       GenDecVar(Idx);
       GenLoadVar(Idx);
+      CurExprType := TY_IDX_INT;  { TODO 20 }
     End
     Else
     Begin
@@ -4535,12 +4554,14 @@ Begin
       EmitInstr('PUSH', 'EAX');                   { hHeap    }
       EmitInstr('CALL', '_HeapAlloc@12');
       { Resultat : EAX = pointeur vers le bloc alloue }
+      CurExprType := TY_IDX_INT;  { pointeur (TODO 20) }
     End
     Else
     Begin
       { new Type() - simple allocation objet (stub) }
       EmitComment('new objet (stub)');
       EmitInstr('XOR', 'EAX,EAX');
+      CurExprType := TY_IDX_INT;  { TODO 20 }
     End;
   End
   { --- Identificateur --- }
@@ -4588,6 +4609,11 @@ Begin
       { Nettoyer la pile (convention CDECL : appelant nettoie) }
       If ArgCount > 0 Then
         EmitInstr('ADD', 'ESP,' + IntToStr_(ArgCount * 4));
+      { Determiner le type de retour (TODO 20) }
+      If Idx >= 0 Then
+        CurExprType := SymTab[Idx].TypeIdx
+      Else
+        CurExprType := TY_IDX_INT;
     End
     { Indexation tableau : ident[index] }
     Else If TokIsPunct('[') Then
@@ -4603,6 +4629,7 @@ Begin
       GenPopEBX;                      { base dans EBX }
       EmitInstr('ADD', 'EAX,EBX');   { adresse element }
       EmitInstr('MOV', 'EAX,DWORD PTR [EAX]');  { charger valeur }
+      CurExprType := TY_IDX_INT;  { TODO 20 }
     End
     { Post-increment : ident++ }
     Else If TokIsOp('++') Then
@@ -4611,6 +4638,7 @@ Begin
       GenLoadVar(Idx);   { valeur avant dans EAX }
       GenIncVar(Idx);    { incrementer la variable }
       Consume;           { consommer ++ }
+      CurExprType := TY_IDX_INT;  { TODO 20 }
     End
     { Post-decrement : ident-- }
     Else If TokIsOp('--') Then
@@ -4619,11 +4647,12 @@ Begin
       GenLoadVar(Idx);   { valeur avant dans EAX }
       GenDecVar(Idx);    { decrementer la variable }
       Consume;           { consommer -- }
+      CurExprType := TY_IDX_INT;  { TODO 20 }
     End
     { Variable simple ou constante }
     Else
     Begin
-      { Propriete .Length sur tableau (TODO 19) }
+      { Propriete .Length sur tableau ou chaine (TODO 19/20) }
       ArrLenHandled := False;
       ArrDotPos := 0;
       For ArrI := Length(QualName) DownTo 1 Do
@@ -4643,7 +4672,19 @@ Begin
           If (Idx >= 0) And SymTab[Idx].IsArray Then
           Begin
             GenLoadConst(SymTab[Idx].ArraySize);
+            CurExprType := TY_IDX_INT;  { TODO 20 }
             ArrLenHandled := True;
+          End
+          Else If (Idx >= 0) And
+                  (SymTab[Idx].TypeIdx = TY_IDX_STRING) Then
+          Begin
+            { String.Length -> _CSCRT_STRLEN (TODO 20) }
+            GenLoadVar(Idx);
+            EmitInstr('MOV', 'ESI,EAX');
+            EmitInstr('CALL', CSC_RT_PFX + 'STRLEN');
+            CurExprType := TY_IDX_INT;
+            ArrLenHandled := True;
+            Inc(StringOpCount);
           End;
         End;
       End;
@@ -4651,7 +4692,10 @@ Begin
       Begin
         Idx := SymFind(QualName);
         If Idx >= 0 Then
-          GenLoadVar(Idx)
+        Begin
+          GenLoadVar(Idx);
+          CurExprType := SymTab[Idx].TypeIdx;  { TODO 20 }
+        End
         Else
         Begin
           { Peut etre une constante nommee }
@@ -4659,14 +4703,21 @@ Begin
           If Idx > 0 Then
           Begin
             If ConstTab[Idx].IsStr Then
-              GenLoadStr(AddStrLit(ConstTab[Idx].StrVal))
+            Begin
+              GenLoadStr(AddStrLit(ConstTab[Idx].StrVal));
+              CurExprType := TY_IDX_STRING;  { TODO 20 }
+            End
             Else
+            Begin
               GenLoadConst(ConstTab[Idx].Value);
+              CurExprType := TY_IDX_INT;  { TODO 20 }
+            End;
           End
           Else
           Begin
             EmitComment('symbole inconnu: ' + QualName);
             EmitInstr('XOR', 'EAX,EAX');
+            CurExprType := TY_IDX_INT;  { TODO 20 }
           End;
         End;
       End;
@@ -4676,6 +4727,7 @@ Begin
   Else If CurToken.Kind = TK_FLOAT Then
   Begin
     GenLoadConst(CurToken.IntVal);
+    CurExprType := TY_IDX_INT;  { TODO 20 }
     Consume;
   End
   { --- Token inconnu --- }
@@ -4683,6 +4735,7 @@ Begin
   Begin
     EmitComment('expression primaire inattendue: ' + CurToken.Val);
     EmitInstr('XOR', 'EAX,EAX');
+    CurExprType := TY_IDX_INT;  { TODO 20 }
     Consume;
   End;
 End;
@@ -4876,6 +4929,7 @@ Var
   Prec     : Integer;
   LblA     : TString;
   LblEnd   : TString;
+  LeftType : Integer;    { type du LHS pour operations chaines (TODO 20) }
 Begin
   ParsePrimary;
 
@@ -4903,6 +4957,7 @@ Begin
       EmitLabel(LblA);
       EmitInstr('XOR', 'EAX,EAX');
       EmitLabel(LblEnd);
+      CurExprType := TY_IDX_BOOL;  { TODO 20 }
     End
     { --- Court-circuit pour || (OU logique) --- }
     Else If Op = '||' Then
@@ -4919,6 +4974,7 @@ Begin
       EmitLabel(LblA);
       EmitInstr('MOV', 'EAX,1');
       EmitLabel(LblEnd);
+      CurExprType := TY_IDX_BOOL;  { TODO 20 }
     End
     { --- Null-coalescing ?? (associatif a droite) --- }
     Else If Op = '??' Then
@@ -4932,10 +4988,63 @@ Begin
     { --- Operateurs binaires standards --- }
     Else
     Begin
+      LeftType := CurExprType;  { sauver le type du LHS (TODO 20) }
       GenPushEAX;
       ParseExprPrec(Prec + 1);
-      GenPopEBX;
-      GenBinOp(Op);
+      { Concatenation de chaines avec + (TODO 20) }
+      If (Op = '+') And
+         ((LeftType = TY_IDX_STRING) Or
+          (CurExprType = TY_IDX_STRING)) Then
+      Begin
+        { Convertir l operande droit en chaine si necessaire }
+        If CurExprType <> TY_IDX_STRING Then
+          EmitInstr('CALL', CSC_RT_PFX + 'NUMTOSTR');
+        GenPopEBX;
+        { Convertir l operande gauche en chaine si necessaire }
+        If LeftType <> TY_IDX_STRING Then
+        Begin
+          EmitInstr('PUSH', 'EAX');
+          EmitInstr('MOV', 'EAX,EBX');
+          EmitInstr('CALL', CSC_RT_PFX + 'NUMTOSTR');
+          EmitInstr('MOV', 'EBX,EAX');
+          EmitInstr('POP', 'EAX');
+        End;
+        { ESI = chaine gauche, EDI = chaine droite }
+        EmitInstr('MOV', 'ESI,EBX');
+        EmitInstr('MOV', 'EDI,EAX');
+        EmitInstr('CALL', CSC_RT_PFX + 'STRCAT');
+        CurExprType := TY_IDX_STRING;
+        Inc(StringOpCount);
+      End
+      { Comparaison de chaines avec == ou != (TODO 20) }
+      Else If ((Op = '==') Or (Op = '!=')) And
+              ((LeftType = TY_IDX_STRING) Or
+               (CurExprType = TY_IDX_STRING)) Then
+      Begin
+        GenPopEBX;
+        EmitInstr('MOV', 'ESI,EBX');
+        EmitInstr('MOV', 'EDI,EAX');
+        EmitInstr('CALL', CSC_RT_PFX + 'STRCMP');
+        If Op = '==' Then
+        Begin
+          EmitInstr('TEST', 'EAX,EAX');
+          EmitInstr('SETE', 'AL');
+          EmitInstr('MOVZX', 'EAX,AL');
+        End
+        Else
+        Begin
+          EmitInstr('TEST', 'EAX,EAX');
+          EmitInstr('SETNE', 'AL');
+          EmitInstr('MOVZX', 'EAX,AL');
+        End;
+        CurExprType := TY_IDX_BOOL;
+        Inc(StringOpCount);
+      End
+      Else
+      Begin
+        GenPopEBX;
+        GenBinOp(Op);
+      End;
     End;
   End;
 End;
@@ -5035,10 +5144,22 @@ Begin
 
   If Op = '+=' Then
   Begin
-    EmitInstr('MOV', 'EBX,EAX');
-    EmitInstr('MOV', 'EAX,' + Ref);
-    EmitInstr('ADD', 'EAX,EBX');
-    EmitInstr('MOV', Ref + ',EAX');
+    { Concatenation de chaines avec += (TODO 20) }
+    If (Idx >= 0) And (SymTab[Idx].TypeIdx = TY_IDX_STRING) Then
+    Begin
+      EmitInstr('MOV', 'EDI,EAX');
+      EmitInstr('MOV', 'ESI,' + Ref);
+      EmitInstr('CALL', CSC_RT_PFX + 'STRCAT');
+      EmitInstr('MOV', Ref + ',EAX');
+      Inc(StringOpCount);
+    End
+    Else
+    Begin
+      EmitInstr('MOV', 'EBX,EAX');
+      EmitInstr('MOV', 'EAX,' + Ref);
+      EmitInstr('ADD', 'EAX,EBX');
+      EmitInstr('MOV', Ref + ',EAX');
+    End;
   End
   Else If Op = '-=' Then
   Begin
@@ -6805,6 +6926,7 @@ Begin
   WriteLn('Classes          : ', ClassCount);
   WriteLn('Namespaces       : ', NsCount);
   WriteLn('Tableaux         : ', ArrayCount);
+  WriteLn('Ops chaines      : ', StringOpCount);
   WriteLn('Donnees .DATA    : ', DataCount);
   WriteLn('Taille pile loc  : ', LocalOffset);
   WriteLn('Labels generes   : ', LabelSeq);
@@ -6890,6 +7012,10 @@ Begin
   ArrayCount       := 0;
   PendingIsArray   := False;
   LastNewArraySize := 0;
+
+  { Initialiser les operations sur les chaines (TODO 20) }
+  CurExprType      := TY_IDX_INT;
+  StringOpCount    := 0;
 
   { Initialiser le segment de donnees (TODO 08) }
   DataInit;
@@ -7211,7 +7337,7 @@ Begin
   EmitClose;
 
   WriteLn('CSCW32: ASM genere -> ', AsmFileName);
-  WriteLn('CSCW32: Les TODOs 20..25 ne sont pas encore implementes.');
+  WriteLn('CSCW32: Les TODOs 21..25 ne sont pas encore implementes.');
 End;
 
 { ------------------------------------------------------------ }

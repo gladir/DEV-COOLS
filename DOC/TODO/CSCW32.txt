@@ -521,7 +521,7 @@
             Verification de bornes : optionnelle (stub),
               non implementee dans le sous-ensemble minimal.
 
-  TODO 20 - CHAINES ET OPERATIONS SUR LES CHAINES
+  TODO 20 - CHAINES ET OPERATIONS SUR LES CHAINES [IMPLEMENTE]
             Chaines C# : type string, reference vers donnees
               en memoire.
             Stockage interne : ASCIIZ (termine par 0) dans .DATA.
@@ -536,11 +536,16 @@
             Comparaison : s1 == s2 via _CSCRT_STRCMP.
               s1 != s2 via _CSCRT_STRCMP + inversion.
             Propriete Length : s.Length -> _CSCRT_STRLEN(s).
+            Concatenation avec += : s += "x" -> _CSCRT_STRCAT.
+            Suivi du type de l expression courante (CurExprType)
+              pour determiner quand utiliser les operations chaines.
+            Compteur StringOpCount pour les statistiques.
             Chaines immuables : en C# les chaines sont immuables;
               la concatenation cree une nouvelle chaine.
             Interpolation de chaines : $"texte {expr}" non
               supportee dans le sous-ensemble minimal (utiliser
               la concatenation avec +).
+            Fichier test : test27_strings.cs (15 cas).
 
   TODO 21 - ENTREES/SORTIES (Console)
             Console.WriteLine(expr) : sortie avec saut de ligne.
