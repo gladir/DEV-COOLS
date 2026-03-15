@@ -389,7 +389,7 @@
             return; : retour de methode void.
             Fichier test : test29_goto.cs.
 
-  TODO 23 - CAST, TYPEOF ET SIZEOF
+  TODO 23 - CAST, TYPEOF ET SIZEOF [IMPLEMENTE]
             Cast explicite : (type)expr.
               (int)c : promotion char -> int (MOVZX).
               (char)i : troncature int -> char (AND 0xFF).
@@ -401,6 +401,7 @@
               sizeof(bool) -> 1, sizeof(byte) -> 1.
             Conversions implicites : byte->int, short->int,
               char->int.
+            Fichier test : test30_cast.cs.
 
   TODO 24 - RUNTIME MINIMAL WIN32
             _CSCRT_PRINTSTR(ESI=msg) : WriteFile sur hStdOut.
@@ -2611,6 +2612,9 @@ Var
   { Variables pour goto / labels utilisateur (TODO 22) }
   GotoCount       : Integer;      { nombre d instructions goto          }
 
+  { Variables pour cast, typeof, sizeof (TODO 23) }
+  CastCount       : Integer;      { nombre de cast/typeof/sizeof        }
+
 { ------------------------------------------------------------ }
 { SymMangle : generer le nom ASM mangled                        }
 {   Le prefixe depend de la categorie du symbole                }
@@ -4446,6 +4450,10 @@ Var
   IsConsoleWrite   : Boolean;  { True si Console.Write (TODO 21)     }
   IsConsoleWriteLn : Boolean;  { True si Console.WriteLine (TODO 21) }
   ArgExprType      : Integer;  { type de l argument (TODO 21)        }
+  CastTypeName     : TString;  { nom du type pour cast (TODO 23)     }
+  CastTypeIdx      : Integer;  { indice TY_IDX_* du cast (TODO 23)   }
+  SzTypeIdx        : Integer;  { indice TY_IDX_* pour sizeof (TODO 23)}
+  TofTypeName      : TString;  { nom du type pour typeof (TODO 23)   }
 Begin
   { --- Literal entier --- }
   If CurToken.Kind = TK_INTEGER Then
@@ -4493,13 +4501,113 @@ Begin
     CurExprType := TY_IDX_INT;  { TODO 20 }
     Consume;
   End
-  { --- Expression entre parentheses --- }
+  { --- Expression entre parentheses / Cast (type)expr (TODO 23) --- }
   Else If TokIsPunct('(') Then
   Begin
     Consume;  { consommer ( }
-    ParseExpr;
-    If TokIsPunct(')') Then
-      Consume;  { consommer ) }
+    { TODO 23 : detecter si c est un cast (type)expr }
+    If IsTypeKeyword Then
+    Begin
+      CastTypeName := CurToken.Val;
+      CastTypeIdx  := TypeFromKeyword(CastTypeName);
+      Consume;  { consommer le mot-cle type }
+      If TokIsPunct(')') Then
+        Consume;  { consommer ) }
+      ParsePrimary;  { parser l expression a caster }
+      { Generer le code de cast selon le type cible }
+      If (CastTypeIdx = TY_IDX_CHAR) Or (CastTypeIdx = TY_IDX_BYTE) Then
+      Begin
+        EmitInstr('AND', 'EAX,0FFh');
+        CurExprType := CastTypeIdx;
+      End
+      Else If CastTypeIdx = TY_IDX_SHORT Then
+      Begin
+        EmitInstr('AND', 'EAX,0FFFFh');
+        CurExprType := CastTypeIdx;
+      End
+      Else If CastTypeIdx = TY_IDX_BOOL Then
+      Begin
+        EmitInstr('TEST', 'EAX,EAX');
+        EmitInstr('SETNZ', 'AL');
+        EmitInstr('MOVZX', 'EAX,AL');
+        CurExprType := TY_IDX_BOOL;
+      End
+      Else If CastTypeIdx = TY_IDX_INT Then
+      Begin
+        { Promotion vers int : MOVZX si source byte/char }
+        EmitInstr('MOVZX', 'EAX,AL');
+        CurExprType := TY_IDX_INT;
+      End
+      Else
+      Begin
+        { uint, long, ulong, etc. : NOP (reinterpretation) }
+        CurExprType := CastTypeIdx;
+      End;
+      Inc(CastCount);
+    End
+    Else
+    Begin
+      { Expression entre parentheses classique }
+      ParseExpr;
+      If TokIsPunct(')') Then
+        Consume;  { consommer ) }
+    End;
+  End
+  { --- sizeof(type) (TODO 23) --- }
+  Else If TokIsKw('sizeof') Then
+  Begin
+    Consume;  { consommer sizeof }
+    If TokIsPunct('(') Then Consume;
+    SzTypeIdx := TY_IDX_INT;  { defaut }
+    If IsTypeKeyword Then
+    Begin
+      SzTypeIdx := TypeFromKeyword(CurToken.Val);
+      Consume;
+    End
+    Else If CurToken.Kind = TK_IDENT Then
+      Consume;
+    If TokIsPunct(')') Then Consume;
+    GenLoadConst(TypeSizeof(SzTypeIdx));
+    CurExprType := TY_IDX_INT;
+    Inc(CastCount);
+  End
+  { --- typeof(type) (TODO 23) --- }
+  Else If TokIsKw('typeof') Then
+  Begin
+    Consume;  { consommer typeof }
+    If TokIsPunct('(') Then Consume;
+    TofTypeName := 'Object';  { defaut }
+    If IsTypeKeyword Then
+    Begin
+      CastTypeIdx := TypeFromKeyword(CurToken.Val);
+      If      CastTypeIdx = TY_IDX_INT     Then TofTypeName := 'System.Int32'
+      Else If CastTypeIdx = TY_IDX_UINT    Then TofTypeName := 'System.UInt32'
+      Else If CastTypeIdx = TY_IDX_LONG    Then TofTypeName := 'System.Int64'
+      Else If CastTypeIdx = TY_IDX_ULONG   Then TofTypeName := 'System.UInt64'
+      Else If CastTypeIdx = TY_IDX_BOOL    Then TofTypeName := 'System.Boolean'
+      Else If CastTypeIdx = TY_IDX_CHAR    Then TofTypeName := 'System.Char'
+      Else If CastTypeIdx = TY_IDX_BYTE    Then TofTypeName := 'System.Byte'
+      Else If CastTypeIdx = TY_IDX_SBYTE   Then TofTypeName := 'System.SByte'
+      Else If CastTypeIdx = TY_IDX_SHORT   Then TofTypeName := 'System.Int16'
+      Else If CastTypeIdx = TY_IDX_USHORT  Then TofTypeName := 'System.UInt16'
+      Else If CastTypeIdx = TY_IDX_FLOAT   Then TofTypeName := 'System.Single'
+      Else If CastTypeIdx = TY_IDX_DOUBLE  Then TofTypeName := 'System.Double'
+      Else If CastTypeIdx = TY_IDX_DECIMAL Then TofTypeName := 'System.Decimal'
+      Else If CastTypeIdx = TY_IDX_STRING  Then TofTypeName := 'System.String'
+      Else If CastTypeIdx = TY_IDX_OBJECT  Then TofTypeName := 'System.Object'
+      Else                                       TofTypeName := 'System.Object';
+      Consume;
+    End
+    Else If CurToken.Kind = TK_IDENT Then
+    Begin
+      TofTypeName := CurToken.Val;
+      Consume;
+    End;
+    If TokIsPunct(')') Then Consume;
+    Lbl := AddStrLit(TofTypeName);
+    GenLoadStr(Lbl);
+    CurExprType := TY_IDX_STRING;
+    Inc(CastCount);
   End
   { --- Negation unaire -expr --- }
   Else If TokIsOp('-') Then
@@ -7160,6 +7268,7 @@ Begin
   WriteLn('Ops chaines      : ', StringOpCount);
   WriteLn('Ops Console      : ', ConsoleOpCount);
   WriteLn('Goto             : ', GotoCount);
+  WriteLn('Cast/typeof/sizeof: ', CastCount);
   WriteLn('Donnees .DATA    : ', DataCount);
   WriteLn('Taille pile loc  : ', LocalOffset);
   WriteLn('Labels generes   : ', LabelSeq);
@@ -7256,6 +7365,9 @@ Begin
   { Initialiser goto / labels utilisateur (TODO 22) }
   GotoCount        := 0;
   GotoLabelCount   := 0;
+
+  { Initialiser cast/typeof/sizeof (TODO 23) }
+  CastCount        := 0;
 
   { Initialiser le segment de donnees (TODO 08) }
   DataInit;
@@ -7578,7 +7690,7 @@ Begin
   EmitClose;
 
   WriteLn('CSCW32: ASM genere -> ', AsmFileName);
-  WriteLn('CSCW32: Les TODOs 23..25 ne sont pas encore implementes.');
+  WriteLn('CSCW32: Les TODOs 24..25 ne sont pas encore implementes.');
 End;
 
 { ------------------------------------------------------------ }

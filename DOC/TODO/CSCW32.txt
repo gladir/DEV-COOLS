@@ -595,7 +595,7 @@
               return sans valeur dans methode void.
             Fichier test : test29_goto.cs (15 cas).
 
-  TODO 23 - CAST, TYPEOF ET SIZEOF
+  TODO 23 - CAST, TYPEOF ET SIZEOF [IMPLEMENTE]
             Cast explicite : (type)expr.
               (int)c    : promotion char -> int (MOVZX EAX, AL).
               (char)i   : troncature int -> char (AND EAX, 0FFh).
@@ -606,17 +606,16 @@
               (uint)i   : reinterpretation signe -> non signe (NOP).
             typeof(type) : retourne le nom du type sous forme
               de chaine (stub : renvoie un pointeur vers un
-              litteral de chaine "Int32", "Boolean", etc.).
+              litteral de chaine "System.Int32", "System.Boolean",
+              etc.).
             sizeof(type) : taille en octets d un type.
               sizeof(int) -> 4, sizeof(char) -> 1,
               sizeof(bool) -> 1, sizeof(byte) -> 1,
               sizeof(short) -> 2, sizeof(long) -> 4,
               sizeof(float) -> 4, sizeof(double) -> 8.
               Evalue a la compilation (constante).
-            Conversions implicites : byte->int, sbyte->int,
-              short->int, ushort->int, char->int.
-              Le compilateur insere automatiquement MOVZX/MOVSX
-              lorsque necessaire.
+            Compteur CastCount pour les statistiques.
+            Fichier test : test30_cast.cs (15 cas).
 
   TODO 24 - RUNTIME MINIMAL WIN32
             Routines runtime emises directement dans le segment
