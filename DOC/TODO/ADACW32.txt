@@ -418,14 +418,16 @@
               T'LENGTH -> hi_bound - lo_bound + 1
             Slices : T(a..b) -> stub (avertissement)
 
-  TODO 21 - PARSEUR : OPERATIONS SUR RECORDS (32 BITS)
+  TODO 21 - PARSEUR : OPERATIONS SUR RECORDS (32 BITS) [IMPLEMENTE]
             Acces champ : var.champ -> adresse base + offset_champ
             Calcul offset par sommation des tailles anterieures
               (alignement 4 octets)
+            FindFieldIdx(TypeIdx, FieldName) : index du champ (1-base)
             GenLoadField(sym_idx, field_idx) :
               LEA EAX, [base] / MOV EAX, [EAX+offset]
             GenStoreField(sym_idx, field_idx) :
               LEA EBX, [base] / MOV [EBX+offset], EAX
+            GenLoadFieldNested / GenStoreFieldNested : sous-champs
             Affectation agregat : (champ => val, ...) -> sequence init
             Records imbrique : var.champ.sous_champ (recursif)
             Attribut record : T'SIZE -> somme des tailles

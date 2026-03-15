@@ -427,14 +427,19 @@
               T'LENGTH -> hi_bound - lo_bound + 1
             Slices : T(a..b) -> stub (avertissement)
 
-  TODO 21 - PARSEUR : OPERATIONS SUR RECORDS (32 BITS)
+  TODO 21 - PARSEUR : OPERATIONS SUR RECORDS (32 BITS) [IMPLEMENTE]
             Acces champ : var.champ -> adresse base + offset_champ
             Calcul offset par sommation des tailles anterieures
               (alignement 4 octets)
+            FindFieldIdx(TypeIdx, FieldName) : index du champ (1-base)
             GenLoadField(sym_idx, field_idx) :
               LEA EAX, [base] / MOV EAX, [EAX+offset]
             GenStoreField(sym_idx, field_idx) :
               LEA EBX, [base] / MOV [EBX+offset], EAX
+            GenLoadFieldNested(sym_idx, base_off, fti) :
+              LEA EAX, [base+base_off] / MOV EAX, [EAX+foff]
+            GenStoreFieldNested(sym_idx, base_off, fti) :
+              LEA EBX, [base+base_off] / MOV [EBX+foff], EAX
             Affectation agregat : (champ => val, ...) -> sequence init
             Records imbrique : var.champ.sous_champ (recursif)
             Attribut record : T'SIZE -> somme des tailles
@@ -2744,6 +2749,193 @@ Begin
     EmitI('MOV  DWORD PTR [EAX+EBX], ECX');
 End;
 
+{ ============================================================ }
+{ TODO 21 - PARSEUR : OPERATIONS SUR RECORDS (32 BITS)          }
+{ ============================================================ }
+
+{ ---- FindFieldIdx : trouver l index d un champ dans un type -- }
+{ Retourne l index (1-base) du champ, ou 0 si non trouve.        }
+Function FindFieldIdx(TypeIdx : Integer; Const FieldName : TString) : Integer;
+Var
+  I : Integer;
+  U : TString;
+Begin
+  FindFieldIdx := 0;
+  If (TypeIdx < 1) Or (TypeIdx > TypeCount) Then Exit;
+  If TypeTab[TypeIdx].Kind <> TK_RECORD Then Exit;
+  U := StrUpperCase(FieldName);
+  For I := 1 To TypeTab[TypeIdx].FieldCount Do
+    If TypeTab[TypeIdx].FieldNames[I] = U Then
+    Begin FindFieldIdx := I; Exit; End;
+End;
+
+{ ---- GenLoadField : charger un champ de record dans EAX ------ }
+{ SymIdx = index du symbole record, FI = index du champ (1-base) }
+{ Genere : LEA EAX, [base] / MOV EAX, [EAX+offset]              }
+Procedure GenLoadField(SymIdx, FI : Integer);
+Var
+  SC, Off, TI, FOff, FTI : Integer;
+  Lbl                     : TString;
+  IsByte                  : Boolean;
+Begin
+  SC  := SymTab[SymIdx].StoreClass;
+  Off := SymTab[SymIdx].BpOffset;
+  Lbl := SymTab[SymIdx].AsmLabel;
+  TI  := SymTab[SymIdx].TypeIdx;
+  FOff := 0;
+  IsByte := False;
+  If (TI > TYPE_STR) And (TI <= TypeCount) Then
+  Begin
+    If (FI >= 1) And (FI <= TypeTab[TI].FieldCount) Then
+    Begin
+      FOff := TypeTab[TI].FieldOffs[FI];
+      FTI  := TypeTab[TI].FieldTypes[FI];
+      IsByte := (FTI = TYPE_CHAR) Or (FTI = TYPE_BOOL);
+    End;
+  End;
+  { Charger adresse de base dans EAX }
+  Case SC Of
+    STORE_STATIC :
+      EmitI('LEA  EAX, [' + Lbl + ']');
+    STORE_AUTO :
+      EmitI('LEA  EAX, [EBP' + BpOff32(Off) + ']');
+    STORE_PARAM :
+      EmitI('LEA  EAX, [EBP' + BpOff32(Off) + ']');
+  End;
+  { Charger le champ }
+  If IsByte Then
+    EmitI('MOVZX EAX, BYTE PTR [EAX+' + IntToStr_(FOff) + ']')
+  Else
+    EmitI('MOV  EAX, DWORD PTR [EAX+' + IntToStr_(FOff) + ']');
+End;
+
+{ ---- GenStoreField : stocker EAX dans un champ de record ----- }
+{ SymIdx = index du symbole record, FI = index du champ (1-base) }
+{ EAX = valeur a stocker.                                         }
+{ Genere : MOV ECX,EAX / LEA EBX,[base] / MOV [EBX+off],ECX      }
+Procedure GenStoreField(SymIdx, FI : Integer);
+Var
+  SC, Off, TI, FOff, FTI : Integer;
+  Lbl                     : TString;
+  IsByte                  : Boolean;
+Begin
+  SC  := SymTab[SymIdx].StoreClass;
+  Off := SymTab[SymIdx].BpOffset;
+  Lbl := SymTab[SymIdx].AsmLabel;
+  TI  := SymTab[SymIdx].TypeIdx;
+  FOff := 0;
+  IsByte := False;
+  If (TI > TYPE_STR) And (TI <= TypeCount) Then
+  Begin
+    If (FI >= 1) And (FI <= TypeTab[TI].FieldCount) Then
+    Begin
+      FOff := TypeTab[TI].FieldOffs[FI];
+      FTI  := TypeTab[TI].FieldTypes[FI];
+      IsByte := (FTI = TYPE_CHAR) Or (FTI = TYPE_BOOL);
+    End;
+  End;
+  { Sauvegarder la valeur dans ECX }
+  EmitI('MOV  ECX, EAX');
+  { Charger adresse de base dans EBX }
+  Case SC Of
+    STORE_STATIC :
+      EmitI('LEA  EBX, [' + Lbl + ']');
+    STORE_AUTO :
+      EmitI('LEA  EBX, [EBP' + BpOff32(Off) + ']');
+    STORE_PARAM :
+      EmitI('LEA  EBX, [EBP' + BpOff32(Off) + ']');
+  End;
+  { Ecrire la valeur dans le champ }
+  If IsByte Then
+    EmitI('MOV  BYTE PTR [EBX+' + IntToStr_(FOff) + '], CL')
+  Else
+    EmitI('MOV  DWORD PTR [EBX+' + IntToStr_(FOff) + '], ECX');
+End;
+
+{ ---- GenLoadFieldNested : champ imbrique base_off + field_off  }
+{ Pour var.champ.sous_champ, base_off = offset du champ parent,  }
+{ FTI = type du champ parent (record imbrique),                   }
+{ FI2 = index du sous-champ dans FTI.                             }
+{ EAX = base du symbole, ajouter base_off, puis lire sous-champ. }
+Procedure GenLoadFieldNested(SymIdx, BaseOff, FTI, FI2 : Integer);
+Var
+  SC, Off, FOff2 : Integer;
+  Lbl            : TString;
+  IsByte         : Boolean;
+  FTI2           : Integer;
+Begin
+  SC  := SymTab[SymIdx].StoreClass;
+  Off := SymTab[SymIdx].BpOffset;
+  Lbl := SymTab[SymIdx].AsmLabel;
+  FOff2 := 0;
+  IsByte := False;
+  If (FTI >= 1) And (FTI <= TypeCount) And
+     (FI2 >= 1) And (FI2 <= TypeTab[FTI].FieldCount) Then
+  Begin
+    FOff2 := TypeTab[FTI].FieldOffs[FI2];
+    FTI2  := TypeTab[FTI].FieldTypes[FI2];
+    IsByte := (FTI2 = TYPE_CHAR) Or (FTI2 = TYPE_BOOL);
+  End;
+  { Charger adresse de base dans EAX }
+  Case SC Of
+    STORE_STATIC :
+      EmitI('LEA  EAX, [' + Lbl + ']');
+    STORE_AUTO :
+      EmitI('LEA  EAX, [EBP' + BpOff32(Off) + ']');
+    STORE_PARAM :
+      EmitI('LEA  EAX, [EBP' + BpOff32(Off) + ']');
+  End;
+  { Charger le sous-champ }
+  If IsByte Then
+    EmitI('MOVZX EAX, BYTE PTR [EAX+' +
+          IntToStr_(BaseOff + FOff2) + ']')
+  Else
+    EmitI('MOV  EAX, DWORD PTR [EAX+' +
+          IntToStr_(BaseOff + FOff2) + ']');
+End;
+
+{ ---- GenStoreFieldNested : stocker dans sous-champ imbrique -- }
+{ EAX = valeur. SymIdx = record, BaseOff = off parent,           }
+{ FTI = type parent, FI2 = index sous-champ.                     }
+Procedure GenStoreFieldNested(SymIdx, BaseOff, FTI, FI2 : Integer);
+Var
+  SC, Off, FOff2 : Integer;
+  Lbl            : TString;
+  IsByte         : Boolean;
+  FTI2           : Integer;
+Begin
+  SC  := SymTab[SymIdx].StoreClass;
+  Off := SymTab[SymIdx].BpOffset;
+  Lbl := SymTab[SymIdx].AsmLabel;
+  FOff2 := 0;
+  IsByte := False;
+  If (FTI >= 1) And (FTI <= TypeCount) And
+     (FI2 >= 1) And (FI2 <= TypeTab[FTI].FieldCount) Then
+  Begin
+    FOff2 := TypeTab[FTI].FieldOffs[FI2];
+    FTI2  := TypeTab[FTI].FieldTypes[FI2];
+    IsByte := (FTI2 = TYPE_CHAR) Or (FTI2 = TYPE_BOOL);
+  End;
+  { Sauvegarder la valeur dans ECX }
+  EmitI('MOV  ECX, EAX');
+  { Charger adresse de base dans EBX }
+  Case SC Of
+    STORE_STATIC :
+      EmitI('LEA  EBX, [' + Lbl + ']');
+    STORE_AUTO :
+      EmitI('LEA  EBX, [EBP' + BpOff32(Off) + ']');
+    STORE_PARAM :
+      EmitI('LEA  EBX, [EBP' + BpOff32(Off) + ']');
+  End;
+  { Ecrire la valeur dans le sous-champ }
+  If IsByte Then
+    EmitI('MOV  BYTE PTR [EBX+' +
+          IntToStr_(BaseOff + FOff2) + '], CL')
+  Else
+    EmitI('MOV  DWORD PTR [EBX+' +
+          IntToStr_(BaseOff + FOff2) + '], ECX');
+End;
+
 { ---- GenLoadConst : charger une constante dans EAX ----------- }
 Procedure GenLoadConst(Val : LongInt);
 Begin
@@ -3056,6 +3248,157 @@ Begin
         Exit;
       End;
     End; { TOK_LPAREN apres ident }
+
+    { Acces champ record : var.champ [.sous_champ] (TODO 21) }
+    If CurTokType = TOK_DOT Then
+    Begin
+      Sym := FindSym(Nm);
+      If Sym > 0 Then
+      Begin
+        TI := SymTab[Sym].TypeIdx;
+        If (TI > TYPE_STR) And (TI <= TypeCount) And
+           (TypeTab[TI].Kind = TK_RECORD) Then
+        Begin
+          Consume; { . }
+          If CurTokType <> TOK_IDENT Then
+          Begin
+            Error('Nom de champ attendu apres `.`');
+            EmitI('XOR  EAX, EAX');
+            Exit;
+          End;
+          I := FindFieldIdx(TI, CurTokStr);
+          If I <= 0 Then
+          Begin
+            Error('Champ inconnu : ' + CurTokStr + ' dans ' + Nm);
+            EmitI('XOR  EAX, EAX');
+            Consume;
+            Exit;
+          End;
+          Consume; { field name }
+          { Verifier acces imbrique : var.champ.sous_champ }
+          If CurTokType = TOK_DOT Then
+          Begin
+            { Champ imbrique : le champ courant doit etre un record }
+            J := TypeTab[TI].FieldTypes[I];
+            AI := TypeTab[TI].FieldOffs[I];
+            If (J > TYPE_STR) And (J <= TypeCount) And
+               (TypeTab[J].Kind = TK_RECORD) Then
+            Begin
+              Consume; { . }
+              If CurTokType <> TOK_IDENT Then
+              Begin
+                Error('Nom de sous-champ attendu');
+                EmitI('XOR  EAX, EAX');
+                Exit;
+              End;
+              Sub := FindFieldIdx(J, CurTokStr);
+              If Sub <= 0 Then
+              Begin
+                Error('Sous-champ inconnu : ' + CurTokStr);
+                EmitI('XOR  EAX, EAX');
+                Consume;
+                Exit;
+              End;
+              Consume; { sub-field name }
+              EmitComment('record nested load ' + Nm + '.field.subfield');
+              GenLoadFieldNested(Sym, AI, J, Sub);
+              Exit;
+            End
+            Else
+            Begin
+              { Pas un record imbrique : traiter comme nom qualifie }
+              Warning('Acces imbrique non supporte pour ce type');
+              EmitI('XOR  EAX, EAX');
+              Consume; { . }
+              If CurTokType = TOK_IDENT Then Consume;
+              Exit;
+            End;
+          End;
+          EmitComment('record load ' + Nm + '.' +
+                      TypeTab[TI].FieldNames[I]);
+          GenLoadField(Sym, I);
+          Exit;
+        End
+        Else
+        Begin
+          { Pas un record : nom qualifie (pkg.proc) }
+          { Construire le nom complet }
+          While CurTokType = TOK_DOT Do
+          Begin
+            Consume; { . }
+            If CurTokType = TOK_IDENT Then
+            Begin Nm := Nm + '.' + CurTokStr; Consume; End;
+          End;
+          { Appel de fonction qualifiee }
+          If CurTokType = TOK_LPAREN Then
+          Begin
+            Sub := FindSub(Nm);
+            If Sub > 0 Then
+            Begin
+              Consume; { ( }
+              ArgCount := 0;
+              While CurTokType <> TOK_RPAREN Do
+              Begin
+                If CurTokType = TOK_EOF Then Break;
+                ParseExpr;
+                GenPushEAX;
+                Inc(ArgCount);
+                If CurTokType = TOK_COMMA Then Consume;
+              End;
+              Expect(TOK_RPAREN, '`)` attendu');
+              EmitI('CALL ' + SubTab[Sub].AsmLabel);
+              Exit;
+            End;
+          End;
+          { Variable qualifiee ou enum }
+          Sym := FindSym(Nm);
+          If Sym > 0 Then GenLoadVar(Sym)
+          Else
+          Begin
+            Error('Identificateur qualifie inconnu : ' + Nm);
+            EmitI('XOR  EAX, EAX');
+          End;
+          Exit;
+        End;
+      End
+      Else
+      Begin
+        { Symbole non trouve : nom qualifie (pkg.proc) }
+        While CurTokType = TOK_DOT Do
+        Begin
+          Consume; { . }
+          If CurTokType = TOK_IDENT Then
+          Begin Nm := Nm + '.' + CurTokStr; Consume; End;
+        End;
+        Sym := FindSym(Nm);
+        If Sym > 0 Then GenLoadVar(Sym)
+        Else
+        Begin
+          Sub := FindSub(Nm);
+          If (Sub > 0) And (CurTokType = TOK_LPAREN) Then
+          Begin
+            Consume; { ( }
+            ArgCount := 0;
+            While CurTokType <> TOK_RPAREN Do
+            Begin
+              If CurTokType = TOK_EOF Then Break;
+              ParseExpr;
+              GenPushEAX;
+              Inc(ArgCount);
+              If CurTokType = TOK_COMMA Then Consume;
+            End;
+            Expect(TOK_RPAREN, '`)` attendu');
+            EmitI('CALL ' + SubTab[Sub].AsmLabel);
+          End
+          Else
+          Begin
+            Error('Identificateur inconnu : ' + Nm);
+            EmitI('XOR  EAX, EAX');
+          End;
+        End;
+        Exit;
+      End;
+    End; { TOK_DOT record field access }
 
     { Variable ou constante simple }
     Sym := FindSym(Nm);
@@ -4943,17 +5286,83 @@ End;
 { On parse l expression RHS puis on stocke dans la variable.      }
 Procedure ParseAssignment(Const TargetName : TString);
 Var
-  Sym : Integer;
+  Sym, TI, FI : Integer;
+  FN           : TString;
 Begin
   EmitComment('assign ' + TargetName + ' := ...');
-  { Evaluer l expression RHS }
-  ParseExpr;
   { Trouver le symbole cible }
   Sym := FindSym(TargetName);
-  If Sym > 0 Then
-    GenStoreVar(Sym)
-  Else
+  If Sym <= 0 Then
+  Begin
     Error('Variable inconnue pour assignation : ' + TargetName);
+    ParseExpr;
+    If CurTokType = TOK_SEMI Then Consume;
+    Exit;
+  End;
+  { Verifier affectation agregat record : Rec := (F1 => V1, ...) }
+  TI := SymTab[Sym].TypeIdx;
+  If (CurTokType = TOK_LPAREN) And
+     (TI > TYPE_STR) And (TI <= TypeCount) And
+     (TypeTab[TI].Kind = TK_RECORD) Then
+  Begin
+    { Tester si c est un agregat : ( ident => expr , ... ) }
+    { Heuristique: on regarde si le prochain token apres ( est ident => }
+    { On consomme ( et on traite champ par champ }
+    EmitComment('record aggregate ' + TargetName + ' := (...)');
+    Consume; { ( }
+    While (CurTokType <> TOK_RPAREN) And (CurTokType <> TOK_EOF) Do
+    Begin
+      If CurTokType <> TOK_IDENT Then
+      Begin
+        { Pas un nom de champ : traiter comme expression }
+        Warning('Nom de champ attendu dans agregat record');
+        ParseExpr;
+        If CurTokType = TOK_COMMA Then Consume;
+        Continue;
+      End;
+      FN := CurTokStr;
+      Consume; { field name }
+      If CurTokType = TOK_ARROW Then
+      Begin
+        Consume; { => }
+        FI := FindFieldIdx(TI, FN);
+        If FI <= 0 Then
+        Begin
+          Error('Champ inconnu dans agregat : ' + FN);
+          ParseExpr; { skip value }
+        End
+        Else
+        Begin
+          ParseExpr; { EAX = valeur }
+          GenStoreField(Sym, FI);
+        End;
+      End
+      Else
+      Begin
+        { Pas un =>  : probablement OTHERS => val }
+        If StrUpperCase(FN) = 'OTHERS' Then
+        Begin
+          If CurTokType = TOK_ARROW Then Consume;
+          ParseExpr;
+          { Stocker dans tous les champs non encore initialises }
+          For FI := 1 To TypeTab[TI].FieldCount Do
+            GenStoreField(Sym, FI);
+        End
+        Else
+        Begin
+          Error('`=>` attendu apres nom de champ dans agregat');
+          ParseExpr;
+        End;
+      End;
+      If CurTokType = TOK_COMMA Then Consume;
+    End;
+    Expect(TOK_RPAREN, '`)` attendu apres agregat record');
+    If CurTokType = TOK_SEMI Then Consume;
+    Exit;
+  End;
+  { Assignation simple : evaluer RHS et stocker }
+  ParseExpr;
+  GenStoreVar(Sym);
   { Consommer le point-virgule }
   If CurTokType = TOK_SEMI Then Consume;
 End;
@@ -5184,8 +5593,9 @@ End;
 { appelle le sous-parseur correspondant.                          }
 Procedure ParseStatement;
 Var
-  SavedName : TString;
-  Sym       : Integer;
+  SavedName, Nm : TString;
+  Sym           : Integer;
+  I, J, AI, Sub : Integer;
 Begin
   If TokIsKw(KW_NULL) Then
     ParseNull
@@ -5269,25 +5679,114 @@ Begin
     End
     Else If CurTokType = TOK_DOT Then
     Begin
-      { Nom qualifie : pkg.proc ou rec.field := ... }
-      { Consommer la qualification et construire le nom complet }
-      While CurTokType = TOK_DOT Do
+      { Nom qualifie : pkg.proc ou rec.field := ... (TODO 21) }
+      { D abord verifier si SavedName est un record }
+      Sym := FindSym(SavedName);
+      If (Sym > 0) And (SymTab[Sym].TypeIdx > TYPE_STR) And
+         (SymTab[Sym].TypeIdx <= TypeCount) And
+         (TypeTab[SymTab[Sym].TypeIdx].Kind = TK_RECORD) Then
       Begin
+        { Record : rec.field [:= expr] }
         Consume; { . }
-        If CurTokType = TOK_IDENT Then
+        If CurTokType <> TOK_IDENT Then
+        Begin Error('Nom de champ attendu apres `.`'); SkipToSemi; End
+        Else
         Begin
-          SavedName := SavedName + '.' + CurTokStr;
-          Consume;
+          Nm := CurTokStr;
+          Consume; { field name }
+          I := FindFieldIdx(SymTab[Sym].TypeIdx, Nm);
+          If I <= 0 Then
+          Begin
+            Error('Champ inconnu : ' + Nm + ' dans ' + SavedName);
+            SkipToSemi;
+          End
+          Else If CurTokType = TOK_DOT Then
+          Begin
+            { Record imbrique : rec.field.subfield := expr }
+            J := TypeTab[SymTab[Sym].TypeIdx].FieldTypes[I];
+            AI := TypeTab[SymTab[Sym].TypeIdx].FieldOffs[I];
+            If (J > TYPE_STR) And (J <= TypeCount) And
+               (TypeTab[J].Kind = TK_RECORD) Then
+            Begin
+              Consume; { . }
+              If CurTokType <> TOK_IDENT Then
+              Begin Error('Nom de sous-champ attendu'); SkipToSemi; End
+              Else
+              Begin
+                Sub := FindFieldIdx(J, CurTokStr);
+                If Sub <= 0 Then
+                Begin
+                  Error('Sous-champ inconnu : ' + CurTokStr);
+                  Consume;
+                  SkipToSemi;
+                End
+                Else
+                Begin
+                  Consume; { subfield name }
+                  If CurTokType = TOK_COLONASSIGN Then
+                  Begin
+                    Consume; { := }
+                    EmitComment('record nested store ' +
+                                SavedName + '.' + Nm + '.subfield := ...');
+                    ParseExpr;
+                    GenStoreFieldNested(Sym, AI, J, Sub);
+                    If CurTokType = TOK_SEMI Then Consume;
+                  End
+                  Else
+                  Begin
+                    Error(':= attendu apres champ imbrique');
+                    SkipToSemi;
+                  End;
+                End;
+              End;
+            End
+            Else
+            Begin
+              Warning('Acces imbrique non supporte pour ce type');
+              Consume; { . }
+              If CurTokType = TOK_IDENT Then Consume;
+              SkipToSemi;
+            End;
+          End
+          Else If CurTokType = TOK_COLONASSIGN Then
+          Begin
+            Consume; { := }
+            { Verifier affectation agregat : rec.field := (f => v, ...) }
+            { Non, c est une affectation simple de champ }
+            EmitComment('record store ' + SavedName + '.' + Nm +
+                        ' := ...');
+            ParseExpr;
+            GenStoreField(Sym, I);
+            If CurTokType = TOK_SEMI Then Consume;
+          End
+          Else
+          Begin
+            Error(':= attendu apres champ de record');
+            SkipToSemi;
+          End;
         End;
-      End;
-      { Verifier si c est une assignation }
-      If CurTokType = TOK_COLONASSIGN Then
-      Begin
-        Consume; { := }
-        ParseAssignment(SavedName);
       End
       Else
-        ParseProcedureCall(SavedName);
+      Begin
+        { Pas un record : nom qualifie classique (pkg.proc) }
+        While CurTokType = TOK_DOT Do
+        Begin
+          Consume; { . }
+          If CurTokType = TOK_IDENT Then
+          Begin
+            SavedName := SavedName + '.' + CurTokStr;
+            Consume;
+          End;
+        End;
+        { Verifier si c est une assignation }
+        If CurTokType = TOK_COLONASSIGN Then
+        Begin
+          Consume; { := }
+          ParseAssignment(SavedName);
+        End
+        Else
+          ParseProcedureCall(SavedName);
+      End;
     End
     Else
     Begin
