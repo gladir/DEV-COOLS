@@ -23,7 +23,7 @@
 { TODO 03 - Gestion des erreurs, avertissements et listing [IMPLEMENTE] }
 { TODO 04 - Table des symboles : etiquettes, EQU, SET [IMPLEMENTE] }
 { TODO 05 - Analyseur d'expressions arithmetiques [IMPLEMENTE] }
-{ TODO 06 - Modes d'adressage : analyse et encodage }
+{ TODO 06 - Modes d'adressage : analyse et encodage [IMPLEMENTE] }
 { TODO 07 - Generateur de code : emission et sections }
 { TODO 08 - Directives assembleur de base (ORG, DC, DS, EQU, END) }
 { TODO 09 - Directives assembleur avancees (SECTION, INCLUDE, macros) }
@@ -1831,6 +1831,680 @@ Begin
   { SIZE_LONG : pas de verification, LongInt suffit }
  End;
  EvalExprCheck := V;
+End;
+
+{ ============================================================================ }
+{ TODO 06 - Modes d'adressage : analyse et encodage                            }
+{ ============================================================================ }
+
+{ Analyse des 14 modes d'adressage du 68000 et encodage EA (mode:3, reg:3).
+  ParseOperand lit les tokens et remplit un TOperand.
+  EncodeEA produit les 6 bits mode/reg.
+  CalcExtWords compte les mots d'extension (0, 1 ou 2).
+  EmitExtWords est un stub pour le generateur de code (TODO 07).
+  CheckEAMask valide qu'un mode est permis par l'instruction.
+  ParseRegList analyse D0-D3/A0-A2 pour MOVEM. }
+
+Procedure InitOperand(Var Op: TOperand);
+{ Initialise un operande a un etat neutre }
+Begin
+ Op.Mode    := AM_NONE;
+ Op.Reg     := REG_NONE;
+ Op.Disp    := 0;
+ Op.IdxReg  := REG_NONE;
+ Op.IdxSize := SIZE_WORD;
+ Op.Imm32   := 0;
+ Op.SymRef  := '';
+ Op.ExprStr := '';
+End;
+
+{ ---------- Encodage et mots d'extension ---------- }
+
+Function EncodeEA(Const Op: TOperand): Integer;
+{ Encode un operande en 6 bits mode:3 reg:3 pour le champ EA.
+  Retourne (mode shl 3) or reg, ou -1 si mode non encodable. }
+Var Md, Rg: Integer;
+Begin
+ Md := -1; Rg := 0;
+ Case Op.Mode of
+  AM_DATA_REG:
+  Begin
+   Md := 0; Rg := Op.Reg;  { mode 000, reg = Dn }
+  End;
+  AM_ADDR_REG:
+  Begin
+   Md := 1; Rg := Op.Reg - REG_A0; { mode 001, reg = An }
+  End;
+  AM_ADDR_IND:
+  Begin
+   Md := 2; Rg := Op.Reg - REG_A0; { mode 010, reg = An }
+  End;
+  AM_ADDR_IND_POST:
+  Begin
+   Md := 3; Rg := Op.Reg - REG_A0; { mode 011, reg = An }
+  End;
+  AM_ADDR_IND_PRE:
+  Begin
+   Md := 4; Rg := Op.Reg - REG_A0; { mode 100, reg = An }
+  End;
+  AM_ADDR_IND_DISP:
+  Begin
+   Md := 5; Rg := Op.Reg - REG_A0; { mode 101, reg = An }
+  End;
+  AM_ADDR_IND_IDX:
+  Begin
+   Md := 6; Rg := Op.Reg - REG_A0; { mode 110, reg = An }
+  End;
+  AM_ABS_SHORT:
+  Begin
+   Md := 7; Rg := 0; { mode 111, reg = 000 }
+  End;
+  AM_ABS_LONG:
+  Begin
+   Md := 7; Rg := 1; { mode 111, reg = 001 }
+  End;
+  AM_PC_DISP:
+  Begin
+   Md := 7; Rg := 2; { mode 111, reg = 010 }
+  End;
+  AM_PC_IDX:
+  Begin
+   Md := 7; Rg := 3; { mode 111, reg = 011 }
+  End;
+  AM_IMMEDIATE:
+  Begin
+   Md := 7; Rg := 4; { mode 111, reg = 100 }
+  End;
+ Else
+  { AM_NONE, AM_REG_LIST, AM_SR_CCR : pas d'encodage EA standard }
+  EncodeEA := -1;
+  Exit;
+ End;
+ EncodeEA := (Md shl 3) or Rg;
+End;
+
+Function CalcExtWords(Const Op: TOperand; OpSize: Integer): Integer;
+{ Nombre de mots d'extension pour un operande :
+  0 : Dn, An, (An), (An)+, -(An)
+  1 : d16(An), d16(PC), d8(An,Xn), d8(PC,Xn), xxx.W
+  2 : xxx.L, #imm.L
+  Pour #imm : 1 mot pour .B/.W, 2 mots pour .L }
+Begin
+ Case Op.Mode of
+  AM_DATA_REG,
+  AM_ADDR_REG,
+  AM_ADDR_IND,
+  AM_ADDR_IND_POST,
+  AM_ADDR_IND_PRE:
+   CalcExtWords := 0;
+
+  AM_ADDR_IND_DISP,
+  AM_PC_DISP:
+   CalcExtWords := 1;
+
+  AM_ADDR_IND_IDX,
+  AM_PC_IDX:
+   CalcExtWords := 1; { brief extension word }
+
+  AM_ABS_SHORT:
+   CalcExtWords := 1;
+
+  AM_ABS_LONG:
+   CalcExtWords := 2;
+
+  AM_IMMEDIATE:
+  Begin
+   If OpSize = SIZE_LONG Then
+    CalcExtWords := 2
+   Else
+    CalcExtWords := 1;
+  End;
+ Else
+  CalcExtWords := 0;
+ End;
+End;
+
+Function EncodeExtWordIdx(Const Op: TOperand): Integer;
+{ Calcule le brief extension word pour les modes indexes :
+  bit 15    : D/A (0=Dn, 1=An)
+  bits 14-12: numero du registre index (0-7)
+  bit 11    : W/L (0=word, 1=long)
+  bits 10-8 : 000
+  bits 7-0  : deplacement signe 8 bits }
+Var W: Integer;
+    IdxN: Integer;
+Begin
+ W := 0;
+ { D/A et numero }
+ If Op.IdxReg >= REG_A0 Then
+ Begin
+  W := W or $8000; { A register }
+  IdxN := Op.IdxReg - REG_A0;
+ End
+ Else
+  IdxN := Op.IdxReg; { D register }
+ W := W or ((IdxN and 7) shl 12);
+ { W/L }
+ If Op.IdxSize = SIZE_LONG Then
+  W := W or $0800;
+ { Deplacement 8 bits signe }
+ W := W or (Op.Disp and $FF);
+ EncodeExtWordIdx := W;
+End;
+
+Procedure EmitExtWords(Const Op: TOperand; OpSize: Integer);
+{ Stub : emettre les mots d'extension dans le code.
+  Sera implemente dans TODO 07 (generateur de code). }
+Begin
+ { Pas d'emission pour le moment - stub pour TODO 07 }
+End;
+
+Function CheckEAMask(Const Op: TOperand; Mask: Integer): Boolean;
+{ Verifie que le mode d'adressage de Op est autorise par le masque.
+  Chaque bit du masque correspond a un mode AM_xxx :
+    bit 0  = AM_DATA_REG      bit 7  = AM_ABS_SHORT
+    bit 1  = AM_ADDR_REG      bit 8  = AM_ABS_LONG
+    bit 2  = AM_ADDR_IND      bit 9  = AM_PC_DISP
+    bit 3  = AM_ADDR_IND_POST bit 10 = AM_PC_IDX
+    bit 4  = AM_ADDR_IND_PRE  bit 11 = AM_IMMEDIATE
+    bit 5  = AM_ADDR_IND_DISP bit 12 = AM_REG_LIST
+    bit 6  = AM_ADDR_IND_IDX  bit 13 = AM_SR_CCR }
+Var BitPos: Integer;
+Begin
+ BitPos := Op.Mode - 1; { AM_DATA_REG=1 -> bit 0 etc }
+ If (BitPos >= 0) and (BitPos < 16) Then
+  CheckEAMask := (Mask and (1 shl BitPos)) <> 0
+ Else
+  CheckEAMask := False;
+End;
+
+{ Masques d'adressage predefinis couramment utilises }
+Const
+  { Tous les modes de donnees (pas An) }
+  EA_DATA     = $0FFD;  { Dn, (An), (An)+, -(An), d(An), d(An,Xn), }
+                         { xxx.W, xxx.L, d(PC), d(PC,Xn), #imm      }
+  { Tous les modes memoire (pas Dn ni An) }
+  EA_MEMORY   = $0FFC;  { (An), (An)+, -(An), d(An), d(An,Xn),      }
+                         { xxx.W, xxx.L, d(PC), d(PC,Xn), #imm      }
+  { Modes controlables (adressables sans effet de bord) }
+  EA_CONTROL  = $0BE4;  { (An), d(An), d(An,Xn),                    }
+                         { xxx.W, xxx.L, d(PC), d(PC,Xn)             }
+  { Modes alterables (pas PC-relative, pas immediat) }
+  EA_ALTER    = $01FF;  { Dn, An, (An), (An)+, -(An), d(An),        }
+                         { d(An,Xn), xxx.W, xxx.L                    }
+  { Donnees alterables }
+  EA_DATA_ALT = $01FD;  { Dn, (An), (An)+, -(An), d(An),            }
+                         { d(An,Xn), xxx.W, xxx.L                    }
+  { Memoire alterable }
+  EA_MEM_ALT  = $01FC;  { (An), (An)+, -(An), d(An),                }
+                         { d(An,Xn), xxx.W, xxx.L                    }
+  { Registres uniquement }
+  EA_DN_ONLY  = $0001;  { Dn seulement }
+  EA_AN_ONLY  = $0002;  { An seulement }
+  { Tous les modes }
+  EA_ALL      = $3FFF;  { Tous les 14 modes }
+
+{ ---------- Analyse des operandes ---------- }
+
+Function ParseRegNum(Const Name: String): Integer;
+{ Retourne le numero de registre (REG_xxx) ou REG_NONE }
+Var R: Integer;
+Begin
+ If IsRegister(Name, R) Then
+  ParseRegNum := R
+ Else
+  ParseRegNum := REG_NONE;
+End;
+
+Procedure ParseOperand(Var Op: TOperand);
+{ Analyse un operande a partir de la position courante du lexeur.
+  Remplit les champs Mode, Reg, Disp, IdxReg, IdxSize, Imm32, SymRef.
+
+  Syntaxes reconnues :
+    Dn              -> AM_DATA_REG
+    An              -> AM_ADDR_REG
+    SR, CCR         -> AM_SR_CCR
+    #expr           -> AM_IMMEDIATE
+    -(An)           -> AM_ADDR_IND_PRE
+    (An)            -> AM_ADDR_IND
+    (An)+           -> AM_ADDR_IND_POST
+    d16(An)         -> AM_ADDR_IND_DISP
+    d8(An,Xn.s)    -> AM_ADDR_IND_IDX
+    d16(PC)         -> AM_PC_DISP
+    d8(PC,Xn.s)    -> AM_PC_IDX
+    expr.W          -> AM_ABS_SHORT
+    expr.L          -> AM_ABS_LONG
+    expr            -> AM_ABS_LONG (defaut) ou AM_ABS_SHORT si < $FFFF
+}
+Var
+  RegN: Integer;
+  BaseReg: Integer;
+  IdxR: Integer;
+  IdxS: Integer;
+  V: LongInt;
+  SaveLine, SaveCol: Integer;
+Begin
+ InitOperand(Op);
+
+ { --- #imm : immediat --- }
+ If cur_tok = TOK_HASH Then
+ Begin
+  NextToken; { consommer '#' }
+  Op.Mode  := AM_IMMEDIATE;
+  Op.Imm32 := EvalExpr;
+  Exit;
+ End;
+
+ { --- -(An) : pre-decrement --- }
+ If cur_tok = TOK_MINUS Then
+ Begin
+  { Sauvegarder position au cas ou ce n'est pas -(An) }
+  SaveLine := cur_tok_line;
+  SaveCol  := cur_tok_col;
+  NextToken; { consommer '-' }
+  If cur_tok = TOK_LPAREN Then
+  Begin
+   NextToken; { consommer '(' }
+   If cur_tok = TOK_REGISTER Then
+   Begin
+    RegN := ParseRegNum(cur_tok_str);
+    If (RegN >= REG_A0) and (RegN <= REG_A7) Then
+    Begin
+     Op.Mode := AM_ADDR_IND_PRE;
+     Op.Reg  := RegN;
+     NextToken; { consommer registre }
+     If cur_tok = TOK_RPAREN Then
+      NextToken { consommer ')' }
+     Else
+      Error(cur_tok_line, cur_tok_col, ') attendue apres -(An)');
+     Exit;
+    End;
+   End;
+   { Pas un registre d'adresse valide : traiter comme expression unaire }
+   Error(SaveLine, SaveCol,
+         'registre d''adresse attendu apres -(');
+   Exit;
+  End;
+  { Pas '(' apres '-' : on retombe dans expression normale }
+  { Le '-' a deja ete consomme, on evalue l'expression et on la negate }
+  V := EvalExpr;
+  Op.Mode := AM_ABS_LONG;
+  Op.Disp := -V;
+  { Choisir short ou long selon la valeur }
+  If (Op.Disp >= -32768) and (Op.Disp <= 32767) Then
+   Op.Mode := AM_ABS_SHORT;
+  Exit;
+ End;
+
+ { --- (An), (An)+, d(An,Xn), d(PC), d(PC,Xn) : parenthese en tete --- }
+ If cur_tok = TOK_LPAREN Then
+ Begin
+  NextToken; { consommer '(' }
+  If cur_tok = TOK_REGISTER Then
+  Begin
+   RegN := ParseRegNum(cur_tok_str);
+   NextToken; { consommer registre }
+
+   If RegN = REG_PC Then
+   Begin
+    { d(PC) ou d(PC,Xn.s) }
+    If cur_tok = TOK_RPAREN Then
+    Begin
+     NextToken; { consommer ')' }
+     Op.Mode := AM_PC_DISP;
+     Op.Reg  := REG_PC;
+     Op.Disp := 0;
+     Exit;
+    End
+    Else If cur_tok = TOK_COMMA Then
+    Begin
+     { (PC,Xn.s) -> PC index avec disp=0 }
+     NextToken; { consommer ',' }
+     If cur_tok = TOK_REGISTER Then
+     Begin
+      IdxR := ParseRegNum(cur_tok_str);
+      IdxS := SIZE_WORD;
+      If cur_tok_size = SIZE_LONG Then
+       IdxS := SIZE_LONG
+      Else If cur_tok_size = SIZE_WORD Then
+       IdxS := SIZE_WORD;
+      NextToken; { consommer registre index }
+      Op.Mode    := AM_PC_IDX;
+      Op.Reg     := REG_PC;
+      Op.IdxReg  := IdxR;
+      Op.IdxSize := IdxS;
+      Op.Disp    := 0;
+      If cur_tok = TOK_RPAREN Then
+       NextToken { consommer ')' }
+      Else
+       Error(cur_tok_line, cur_tok_col, ') attendue apres (PC,Xn)');
+      Exit;
+     End;
+    End;
+   End
+   Else If (RegN >= REG_A0) and (RegN <= REG_A7) Then
+   Begin
+    { (An), (An)+, (An,Xn.s) }
+    If cur_tok = TOK_RPAREN Then
+    Begin
+     NextToken; { consommer ')' }
+     { Verifier si (An)+ }
+     If cur_tok = TOK_PLUS Then
+     Begin
+      Op.Mode := AM_ADDR_IND_POST;
+      Op.Reg  := RegN;
+      NextToken; { consommer '+' }
+      Exit;
+     End;
+     { Sinon (An) simple }
+     Op.Mode := AM_ADDR_IND;
+     Op.Reg  := RegN;
+     Exit;
+    End
+    Else If cur_tok = TOK_COMMA Then
+    Begin
+     { (An,Xn.s) -> index avec disp=0 }
+     NextToken; { consommer ',' }
+     If cur_tok = TOK_REGISTER Then
+     Begin
+      IdxR := ParseRegNum(cur_tok_str);
+      IdxS := SIZE_WORD;
+      If cur_tok_size = SIZE_LONG Then
+       IdxS := SIZE_LONG
+      Else If cur_tok_size = SIZE_WORD Then
+       IdxS := SIZE_WORD;
+      NextToken; { consommer registre index }
+      Op.Mode    := AM_ADDR_IND_IDX;
+      Op.Reg     := RegN;
+      Op.IdxReg  := IdxR;
+      Op.IdxSize := IdxS;
+      Op.Disp    := 0;
+      If cur_tok = TOK_RPAREN Then
+       NextToken { consommer ')' }
+      Else
+       Error(cur_tok_line, cur_tok_col, ') attendue apres (An,Xn)');
+      Exit;
+     End;
+    End;
+   End;
+   { Autre registre entre parentheses : erreur }
+   Error(cur_tok_line, cur_tok_col,
+         'registre d''adresse ou PC attendu entre parentheses');
+   Exit;
+  End;
+  { Pas un registre apres '(' : erreur de syntaxe }
+  Error(cur_tok_line, cur_tok_col,
+        'registre attendu apres (');
+  Exit;
+ End;
+
+ { --- Registre seul : Dn, An, SR, CCR --- }
+ If cur_tok = TOK_REGISTER Then
+ Begin
+  RegN := ParseRegNum(cur_tok_str);
+  If (RegN >= REG_D0) and (RegN <= REG_D7) Then
+  Begin
+   Op.Mode := AM_DATA_REG;
+   Op.Reg  := RegN;
+  End
+  Else If (RegN >= REG_A0) and (RegN <= REG_A7) Then
+  Begin
+   Op.Mode := AM_ADDR_REG;
+   Op.Reg  := RegN;
+  End
+  Else If (RegN = REG_SR) or (RegN = REG_CCR) Then
+  Begin
+   Op.Mode := AM_SR_CCR;
+   Op.Reg  := RegN;
+  End
+  Else
+  Begin
+   { USP, SSP -> AM_ADDR_REG (cas special) }
+   Op.Mode := AM_SR_CCR;
+   Op.Reg  := RegN;
+  End;
+  NextToken; { consommer registre }
+  Exit;
+ End;
+
+ { --- expr, expr(An), expr(An,Xn.s), expr(PC), expr(PC,Xn.s) --- }
+ { L'expression peut etre un symbole, nombre, ou expression complexe }
+ V := EvalExpr;
+
+ If cur_tok = TOK_LPAREN Then
+ Begin
+  { expr(An), expr(An,Xn), expr(PC), expr(PC,Xn) }
+  NextToken; { consommer '(' }
+  If cur_tok = TOK_REGISTER Then
+  Begin
+   BaseReg := ParseRegNum(cur_tok_str);
+   NextToken; { consommer registre }
+
+   If BaseReg = REG_PC Then
+   Begin
+    If cur_tok = TOK_COMMA Then
+    Begin
+     { expr(PC,Xn.s) }
+     NextToken; { consommer ',' }
+     If cur_tok = TOK_REGISTER Then
+     Begin
+      IdxR := ParseRegNum(cur_tok_str);
+      IdxS := SIZE_WORD;
+      If cur_tok_size = SIZE_LONG Then
+       IdxS := SIZE_LONG
+      Else If cur_tok_size = SIZE_WORD Then
+       IdxS := SIZE_WORD;
+      NextToken; { consommer registre index }
+      Op.Mode    := AM_PC_IDX;
+      Op.Reg     := REG_PC;
+      Op.Disp    := V;
+      Op.IdxReg  := IdxR;
+      Op.IdxSize := IdxS;
+      If (V < -128) or (V > 127) Then
+       Warning(cur_tok_line, cur_tok_col,
+               'deplacement index hors limites 8 bits: ' + IntToStr(V));
+     End
+     Else
+      Error(cur_tok_line, cur_tok_col,
+            'registre index attendu apres ,');
+    End
+    Else
+    Begin
+     { expr(PC) }
+     Op.Mode := AM_PC_DISP;
+     Op.Reg  := REG_PC;
+     Op.Disp := V;
+     If (V < -32768) or (V > 32767) Then
+      Warning(cur_tok_line, cur_tok_col,
+              'deplacement PC hors limites 16 bits: ' + IntToStr(V));
+    End;
+   End
+   Else If (BaseReg >= REG_A0) and (BaseReg <= REG_A7) Then
+   Begin
+    If cur_tok = TOK_COMMA Then
+    Begin
+     { expr(An,Xn.s) }
+     NextToken; { consommer ',' }
+     If cur_tok = TOK_REGISTER Then
+     Begin
+      IdxR := ParseRegNum(cur_tok_str);
+      IdxS := SIZE_WORD;
+      If cur_tok_size = SIZE_LONG Then
+       IdxS := SIZE_LONG
+      Else If cur_tok_size = SIZE_WORD Then
+       IdxS := SIZE_WORD;
+      NextToken; { consommer registre index }
+      Op.Mode    := AM_ADDR_IND_IDX;
+      Op.Reg     := BaseReg;
+      Op.Disp    := V;
+      Op.IdxReg  := IdxR;
+      Op.IdxSize := IdxS;
+      If (V < -128) or (V > 127) Then
+       Warning(cur_tok_line, cur_tok_col,
+               'deplacement index hors limites 8 bits: ' + IntToStr(V));
+     End
+     Else
+      Error(cur_tok_line, cur_tok_col,
+            'registre index attendu apres ,');
+    End
+    Else
+    Begin
+     { expr(An) }
+     Op.Mode := AM_ADDR_IND_DISP;
+     Op.Reg  := BaseReg;
+     Op.Disp := V;
+     If (V < -32768) or (V > 32767) Then
+      Warning(cur_tok_line, cur_tok_col,
+              'deplacement hors limites 16 bits: ' + IntToStr(V));
+    End;
+   End
+   Else
+    Error(cur_tok_line, cur_tok_col,
+          'registre d''adresse ou PC attendu dans le mode d''adressage');
+
+   If cur_tok = TOK_RPAREN Then
+    NextToken { consommer ')' }
+   Else
+    Error(cur_tok_line, cur_tok_col, ') attendue');
+   Exit;
+  End
+  Else
+  Begin
+   Error(cur_tok_line, cur_tok_col,
+         'registre attendu apres ( dans le mode d''adressage');
+   Exit;
+  End;
+ End;
+
+ { Pas de parenthese : adresse absolue }
+ { Choisir short ou long selon la valeur }
+ Op.Disp := V;
+ If (V >= 0) and (V <= $FFFF) Then
+  Op.Mode := AM_ABS_SHORT
+ Else
+  Op.Mode := AM_ABS_LONG;
+End;
+
+{ ---------- Analyse de liste de registres pour MOVEM ---------- }
+
+Function ParseRegList(Const S: String): Word;
+{ Analyse une chaine de type D0-D3/A0-A2 et retourne un masque 16 bits.
+  Bits 0-7  = D0-D7
+  Bits 8-15 = A0-A7
+  Formats : reg, reg-reg, reg/reg, reg-reg/reg-reg
+}
+Var
+  Mask: Word;
+  I, Len: Integer;
+  U: String;
+  RegA, RegB: Integer;
+  J: Integer;
+
+ Function ParseOneReg(Var Pos: Integer): Integer;
+ { Lit un nom de registre a partir de Pos dans U, retourne REG_xxx }
+ Var Name: String;
+     R: Integer;
+ Begin
+  ParseOneReg := REG_NONE;
+  Name := '';
+  While (Pos <= Len) and (U[Pos] in ['A'..'Z', '0'..'9']) do
+  Begin
+   Name := Name + U[Pos];
+   Inc(Pos);
+  End;
+  If IsRegister(Name, R) Then
+   ParseOneReg := R;
+ End;
+
+Begin
+ Mask := 0;
+ U := UpCaseStr(S);
+ Len := Length(U);
+ I := 1;
+
+ While I <= Len do
+ Begin
+  { Sauter espaces }
+  While (I <= Len) and (U[I] = ' ') do Inc(I);
+  If I > Len Then Break;
+
+  { Lire un registre }
+  RegA := ParseOneReg(I);
+  If RegA = REG_NONE Then
+  Begin
+   Warning(0, 0, 'registre invalide dans la liste: ' + S);
+   ParseRegList := Mask;
+   Exit;
+  End;
+
+  { Verifier si c'est une plage reg-reg }
+  If (I <= Len) and (U[I] = '-') Then
+  Begin
+   Inc(I); { consommer '-' }
+   RegB := ParseOneReg(I);
+   If RegB = REG_NONE Then
+   Begin
+    Warning(0, 0, 'registre invalide dans la plage: ' + S);
+    ParseRegList := Mask;
+    Exit;
+   End;
+   { Remplir la plage }
+   If RegA <= RegB Then
+    For J := RegA to RegB do
+    Begin
+     If J <= REG_D7 Then
+      Mask := Mask or Word(1 shl J)
+     Else If (J >= REG_A0) and (J <= REG_A7) Then
+      Mask := Mask or Word(1 shl (J - REG_A0 + 8));
+    End
+   Else
+    For J := RegB to RegA do
+    Begin
+     If J <= REG_D7 Then
+      Mask := Mask or Word(1 shl J)
+     Else If (J >= REG_A0) and (J <= REG_A7) Then
+      Mask := Mask or Word(1 shl (J - REG_A0 + 8));
+    End;
+  End
+  Else
+  Begin
+   { Registre seul }
+   If RegA <= REG_D7 Then
+    Mask := Mask or Word(1 shl RegA)
+   Else If (RegA >= REG_A0) and (RegA <= REG_A7) Then
+    Mask := Mask or Word(1 shl (RegA - REG_A0 + 8));
+  End;
+
+  { Sauter '/' ou ',' separateur }
+  If (I <= Len) and (U[I] in ['/', ',']) Then
+   Inc(I);
+ End;
+
+ ParseRegList := Mask;
+End;
+
+Function OperandModeName(Mode: Integer): String;
+{ Retourne un nom lisible pour un mode d'adressage }
+Begin
+ Case Mode of
+  AM_NONE:          OperandModeName := 'NONE';
+  AM_DATA_REG:      OperandModeName := 'Dn';
+  AM_ADDR_REG:      OperandModeName := 'An';
+  AM_ADDR_IND:      OperandModeName := '(An)';
+  AM_ADDR_IND_POST: OperandModeName := '(An)+';
+  AM_ADDR_IND_PRE:  OperandModeName := '-(An)';
+  AM_ADDR_IND_DISP: OperandModeName := 'd(An)';
+  AM_ADDR_IND_IDX:  OperandModeName := 'd(An,Xn)';
+  AM_ABS_SHORT:     OperandModeName := 'abs.W';
+  AM_ABS_LONG:      OperandModeName := 'abs.L';
+  AM_PC_DISP:       OperandModeName := 'd(PC)';
+  AM_PC_IDX:        OperandModeName := 'd(PC,Xn)';
+  AM_IMMEDIATE:     OperandModeName := '#imm';
+  AM_REG_LIST:      OperandModeName := 'reglist';
+  AM_SR_CCR:        OperandModeName := 'SR/CCR';
+ Else
+  OperandModeName := '???';
+ End;
 End;
 
 { ============================================================================ }

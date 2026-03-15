@@ -131,7 +131,7 @@ TODO 05 - Analyseur d'expressions arithmetiques [IMPLEMENTE]
   - Expressions differees (fixups) quand symbole pas encore defini
     en passe 1
 
-TODO 06 - Modes d'adressage : analyse et encodage
+TODO 06 - Modes d'adressage : analyse et encodage [IMPLEMENTE]
   --------------------------------------------------
   - Analyse des 14 modes d'adressage du 68000 :
     Dn                    Mode 000, Reg = n  (Data Register Direct)
