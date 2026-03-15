@@ -283,7 +283,7 @@
             Switch avec expressions : switch s := if b then l1 else l2, l3
               Expressions conditionnelles dans la liste de designateurs
 
-  TODO 20 - EXPRESSIONS BOOLEENNES AVANCEES
+  TODO 20 - EXPRESSIONS BOOLEENNES AVANCEES [IMPLEMENTE]
             Operateurs booleens complets d Algol 58 :
               and (conjonction)  : AND logique -> TEST + JZ court-circuit
               or  (disjonction)  : OR logique  -> TEST + JNZ court-circuit
@@ -297,7 +297,7 @@
             Resultat booleen : toujours 0 (false) ou 1 (true) dans AX
             Utilisation dans les conditions : if, for while, expression cond
 
-  TODO 21 - FONCTIONS MATHEMATIQUES INTRINSEQUES
+  TODO 21 - FONCTIONS MATHEMATIQUES INTRINSEQUES [IMPLEMENTE]
             abs(x)   -> CALL _A58RT_ABS(AX=n) : valeur absolue -> AX
             sign(x)  -> CALL _A58RT_SIGN(AX=n) : -1, 0 ou 1 -> AX
             entier(x)-> trunc (identite en 16 bits entier, avertissement)
@@ -1948,6 +1948,158 @@ Begin
           EmitInstr('XOR', 'AX, AX');
         End;
         EmitLabel(LblE);
+        ExprMakeAX(TY_IDX_INTEGER, Res);
+      End
+      { TODO 21 - Fonctions intrinseques a un argument }
+      Else If (CurToken.Val = 'abs') Or (CurToken.Val = 'sign') Or
+              (CurToken.Val = 'entier') Or (CurToken.Val = 'sqrt') Or
+              (CurToken.Val = 'sin') Or (CurToken.Val = 'cos') Or
+              (CurToken.Val = 'arctan') Or (CurToken.Val = 'ln') Or
+              (CurToken.Val = 'exp') Then
+      Begin
+        VarName := CurToken.Val;
+        ParserAdvance;  { consommer le nom de fonction }
+        { Attendre ( }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+          ParserAdvance
+        Else
+          CompileError('( attendue apres ' + VarName);
+        { Evaluer l argument }
+        ParseExpr(Res);
+        ExprFlushToAX(Res);
+        { Attendre ) }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance
+        Else
+          CompileError(') attendue apres argument de ' + VarName);
+        { Generer le code selon la fonction }
+        If VarName = 'abs' Then
+        Begin
+          EmitComment('abs(x)');
+          EmitInstr('CALL', A58_RT_PFX + 'ABS');
+        End
+        Else If VarName = 'sign' Then
+        Begin
+          EmitComment('sign(x)');
+          EmitInstr('CALL', A58_RT_PFX + 'SIGN');
+        End
+        Else If VarName = 'entier' Then
+        Begin
+          EmitComment('entier(x) - identite en 16 bits');
+          WarnMsg('entier() est une identite en mode entier 16 bits');
+        End
+        Else If VarName = 'sqrt' Then
+        Begin
+          EmitComment('sqrt(x)');
+          EmitInstr('CALL', A58_RT_PFX + 'SQRT');
+        End
+        Else If VarName = 'sin' Then
+        Begin
+          EmitComment('sin(x) - stub');
+          WarnMsg('sin() est un stub sans FPU, retourne 0');
+          EmitInstr('CALL', A58_RT_PFX + 'SIN');
+        End
+        Else If VarName = 'cos' Then
+        Begin
+          EmitComment('cos(x) - stub');
+          WarnMsg('cos() est un stub sans FPU, retourne 1');
+          EmitInstr('CALL', A58_RT_PFX + 'COS');
+        End
+        Else If VarName = 'arctan' Then
+        Begin
+          EmitComment('arctan(x) - stub');
+          WarnMsg('arctan() est un stub sans FPU, retourne 0');
+          EmitInstr('CALL', A58_RT_PFX + 'ARCTAN');
+        End
+        Else If VarName = 'ln' Then
+        Begin
+          EmitComment('ln(x) - stub');
+          WarnMsg('ln() est un stub sans FPU, retourne 0');
+          EmitInstr('CALL', A58_RT_PFX + 'LN');
+        End
+        Else If VarName = 'exp' Then
+        Begin
+          EmitComment('exp(x) - stub');
+          WarnMsg('exp() est un stub sans FPU, retourne 1');
+          EmitInstr('CALL', A58_RT_PFX + 'EXP');
+        End;
+        ExprMakeAX(TY_IDX_INTEGER, Res);
+      End
+      { TODO 21 - Fonctions intrinseques a deux arguments }
+      Else If (CurToken.Val = 'max') Or (CurToken.Val = 'min') Then
+      Begin
+        VarName := CurToken.Val;
+        ParserAdvance;  { consommer le nom de fonction }
+        { Attendre ( }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+          ParserAdvance
+        Else
+          CompileError('( attendue apres ' + VarName);
+        { Evaluer le premier argument }
+        ParseExpr(Res);
+        ExprFlushToAX(Res);
+        EmitInstr('PUSH', 'AX');
+        { Attendre , }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+          ParserAdvance
+        Else
+          CompileError(', attendue entre arguments de ' + VarName);
+        { Evaluer le second argument }
+        ParseExpr(Res);
+        ExprFlushToAX(Res);
+        EmitInstr('MOV', 'BX, AX');
+        EmitInstr('POP', 'AX');
+        { AX=a, BX=b }
+        If VarName = 'max' Then
+        Begin
+          EmitComment('max(a,b)');
+          EmitInstr('CALL', A58_RT_PFX + 'MAX');
+        End
+        Else
+        Begin
+          EmitComment('min(a,b)');
+          EmitInstr('CALL', A58_RT_PFX + 'MIN');
+        End;
+        { Attendre ) }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance
+        Else
+          CompileError(') attendue apres arguments de ' + VarName);
+        ExprMakeAX(TY_IDX_INTEGER, Res);
+      End
+      { TODO 21 - mod(a,b) : inline IDIV, reste dans DX -> AX }
+      Else If CurToken.Val = 'mod' Then
+      Begin
+        ParserAdvance;  { consommer mod }
+        { Attendre ( }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+          ParserAdvance
+        Else
+          CompileError('( attendue apres mod');
+        { Evaluer le premier argument (dividende) }
+        ParseExpr(Res);
+        ExprFlushToAX(Res);
+        EmitInstr('PUSH', 'AX');
+        { Attendre , }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+          ParserAdvance
+        Else
+          CompileError(', attendue entre arguments de mod');
+        { Evaluer le second argument (diviseur) }
+        ParseExpr(Res);
+        ExprFlushToAX(Res);
+        EmitInstr('MOV', 'BX, AX');
+        EmitInstr('POP', 'AX');
+        { AX=a, BX=b -> IDIV }
+        EmitComment('mod(a,b)');
+        EmitInstr('CWD', '');
+        EmitInstr('IDIV', 'BX');
+        EmitInstr('MOV', 'AX, DX');
+        { Attendre ) }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance
+        Else
+          CompileError(') attendue apres arguments de mod');
         ExprMakeAX(TY_IDX_INTEGER, Res);
       End
       Else
@@ -4162,6 +4314,31 @@ Begin
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
     ParserAdvance;
 End;
+
+{ ============================================================
+  TODO 20 - EXPRESSIONS BOOLEENNES AVANCEES [IMPLEMENTE]
+  ============================================================ }
+
+{ Operateurs booleens avances deja implementes dans :
+  - EmitBinOp : and (court-circuit JZ), or (court-circuit JNZ),
+    imp (a imp b = not a or b), eqv (XOR + normalisation)
+  - ParseUnary : not (TEST AX,AX / SETE AL)
+  - BinOpPrec : eqv=1, imp=2, or=3, and=4
+  - Pliage de constantes pour and, or, imp, eqv en mode EK_IMM
+  - Resultat booleen toujours 0 ou 1 dans AX                    }
+
+{ ============================================================
+  TODO 21 - FONCTIONS MATHEMATIQUES INTRINSEQUES [IMPLEMENTE]
+  ============================================================ }
+
+{ Fonctions intrinseques implementees dans ParsePrimary :
+  - Un argument : abs(x), sign(x), entier(x), sqrt(x),
+    sin(x), cos(x), arctan(x), ln(x), exp(x)
+  - Deux arguments : max(a,b), min(a,b)
+  - Inline : mod(a,b) -> CWD / IDIV BX / MOV AX,DX
+  - Les fonctions transcendantes (sin,cos,arctan,ln,exp) sont
+    des stubs CALL _A58RT_xxx avec avertissement
+  - entier(x) est une identite en mode entier 16 bits           }
 
 { ============================================================
   TODO 17 - PROCEDURES [IMPLEMENTE]
