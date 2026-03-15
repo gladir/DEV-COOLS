@@ -2686,7 +2686,8 @@ Begin
   For I := SymCount - 1 DownTo 0 Do
   Begin
     If (SymTab[I].Name = Lw) And
-       (SymTab[I].ScopeLevel = Level) Then
+       (SymTab[I].ScopeLevel = Level) And
+       (SymTab[I].ScopeId = CurScopeId) Then
     Begin
       SymFindInScope := I;
       Exit;
@@ -3765,11 +3766,8 @@ Function DataAddStaticVar(Const ClassName, VarName : TString;
 Var
   Lbl  : TString;
   Size : Integer;
-  S    : TString;
 Begin
-  Inc(StaticSeq);
-  Str(StaticSeq, S);
-  Lbl := '_CSCST_' + S;
+  Lbl := CSC_ST_PFX + StrUpperCase(VarName);
   Size := TypeSizeof(TypeIdx);
   If Size >= 4 Then
     DataAddStaticVar := DataAddDWord(Lbl, 0)
