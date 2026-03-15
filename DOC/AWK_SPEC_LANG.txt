@@ -5,7 +5,6 @@ Compilateur AWK -> assembleur 8086
 ============================================================
 Compilateur : AWK86.PAS (AWK vers assembleur 8086)
 Cible       : MASM .MODEL SMALL, DOS 16 bits
-Auteur      : Sylvain Maltais (support@gladir.com)
 Version     : 1.0 - 2026
 
 Reference   : Alfred V. Aho, Brian W. Kernighan, Peter J. Weinberger
