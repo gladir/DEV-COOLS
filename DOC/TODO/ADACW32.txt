@@ -286,7 +286,7 @@
             PopScope
             Resultat FUNCTION dans EAX (ou EDX:EAX pour 64 bits)
 
-  TODO 14 - PARSEUR : PACKAGE SPEC ET BODY
+  TODO 14 - PARSEUR : PACKAGE SPEC ET BODY [IMPLEMENTE]
             ParsePackageSpec :
               PACKAGE nom IS
                 [PRIVATE]
@@ -297,11 +297,13 @@
                 declarations privees
                 [BEGIN init_statements END [nom] ;]
               END [nom] ;
+            ParsePackageDecl : dispatcher spec vs body
             PackageSpec : enregistrer exports dans SubTab / TypeTab
             PackageBody : generer les corps des sous-programmes
             Init body : generer _ADAP_nom_INIT appelee au demarrage
             Packages Ada.Text_IO : generer stubs Put/Put_Line/Get/
               Get_Line en appelant les helpers runtime Win32
+            Boucle PACKAGE dans Run
 
   TODO 15 - PARSEUR : DISPATCHER PRINCIPAL DES INSTRUCTIONS
             Procedure ParseStatement

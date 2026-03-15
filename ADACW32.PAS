@@ -297,7 +297,7 @@
             PopScope
             Resultat FUNCTION dans EAX (ou EDX:EAX pour 64 bits)
 
-  TODO 14 - PARSEUR : PACKAGE SPEC ET BODY
+  TODO 14 - PARSEUR : PACKAGE SPEC ET BODY [IMPLEMENTE]
             ParsePackageSpec :
               PACKAGE nom IS
                 [PRIVATE]
@@ -308,11 +308,13 @@
                 declarations privees
                 [BEGIN init_statements END [nom] ;]
               END [nom] ;
+            ParsePackageDecl : dispatcher spec vs body
             PackageSpec : enregistrer exports dans SubTab / TypeTab
             PackageBody : generer les corps des sous-programmes
             Init body : generer _ADAP_nom_INIT appelee au demarrage
             Packages Ada.Text_IO : generer stubs Put/Put_Line/Get/
               Get_Line en appelant les helpers runtime Win32
+            Boucle PACKAGE dans Run
 
   TODO 15 - PARSEUR : DISPATCHER PRINCIPAL DES INSTRUCTIONS
             Procedure ParseStatement
@@ -3920,11 +3922,12 @@ End;
 { TODO 12 - PARSEUR : SIGNATURES PROCEDURE ET FUNCTION          }
 { ============================================================ }
 
-{ Forward declarations pour recursion mutuelle (TODO 12 / 13) }
+{ Forward declarations pour recursion mutuelle (TODO 12 / 13 / 14) }
 Procedure ParseProcedureDecl; Forward;
 Procedure ParseFunctionDecl; Forward;
 Procedure ParseProcedureBody(SubIdx : Integer); Forward;
 Procedure ParseFunctionBody(SubIdx : Integer); Forward;
+Procedure ParsePackageDecl; Forward;
 
 { ---- ParseParamList : analyser la liste de parametres -------- }
 { Syntaxe Ada :                                                    }
@@ -4098,7 +4101,8 @@ End;
 { ---- ParseDeclarativePart : partie declarative d un body ----- }
 { Parse entre IS (deja consomme) et BEGIN.                         }
 { Reconnaît : TYPE, SUBTYPE, declarations d objets (variables /    }
-{ constantes), et sous-programmes imbriques (PROCEDURE / FUNCTION).}
+{ constantes), sous-programmes imbriques (PROCEDURE / FUNCTION),   }
+{ et packages imbriques (PACKAGE).                                 }
 Procedure ParseDeclarativePart;
 Begin
   While (CurTokType <> TOK_EOF) And (Not TokIsKw(KW_BEGIN)) Do
@@ -4111,6 +4115,8 @@ Begin
       ParseProcedureDecl
     Else If CurTokKw = KW_FUNCTION Then
       ParseFunctionDecl
+    Else If CurTokKw = KW_PACKAGE Then
+      ParsePackageDecl
     Else If CurTokType = TOK_IDENT Then
       ParseObjectDecl
     Else
@@ -4446,6 +4452,333 @@ Begin
     Error(''';'' ou ''IS'' attendu apres signature FUNCTION');
 End;
 
+{ ============================================================ }
+{ TODO 14 - PARSEUR : PACKAGE SPEC ET BODY                      }
+{ ============================================================ }
+
+{ ---- GenTextIOStubs : generer les stubs Ada.Text_IO ---------- }
+{ Enregistre Put, Put_Line, Get, Get_Line dans SubTab en tant    }
+{ que procedures/fonctions standards avec IsForward := False.     }
+{ Genere du code ASM appelant les helpers runtime Win32           }
+{ (_ADART_PUT, _ADART_PUT_LINE, _ADART_GET, _ADART_GET_LINE).   }
+Procedure GenTextIOStubs;
+Var
+  Idx : Integer;
+Begin
+  { --- Put (S : String) --- }
+  Idx := FindSub('PUT');
+  If Idx = 0 Then
+    Idx := AddSub('PUT', False, TYPE_VOID);
+  If Idx > 0 Then
+  Begin
+    SubTab[Idx].IsForward  := False;
+    SubTab[Idx].ParamCount := 1;
+    SubTab[Idx].ParamNames[1] := 'ITEM';
+    SubTab[Idx].ParamTypes[1] := TYPE_STR;
+    SubTab[Idx].ParamModes[1] := PARAM_IN;
+    EmitBlank;
+    EmitComment('--- Ada.Text_IO.Put (stub) ---');
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('MOV  EAX, DWORD PTR [EBP+8]');
+    EmitI('PUSH EAX');
+    EmitI('CALL ' + ADA_RT_PFX + 'PUT');
+    EmitI('POP  EBP');
+    EmitI('RET  4');
+  End;
+
+  { --- Put_Line (S : String) --- }
+  Idx := FindSub('PUT_LINE');
+  If Idx = 0 Then
+    Idx := AddSub('PUT_LINE', False, TYPE_VOID);
+  If Idx > 0 Then
+  Begin
+    SubTab[Idx].IsForward  := False;
+    SubTab[Idx].ParamCount := 1;
+    SubTab[Idx].ParamNames[1] := 'ITEM';
+    SubTab[Idx].ParamTypes[1] := TYPE_STR;
+    SubTab[Idx].ParamModes[1] := PARAM_IN;
+    EmitBlank;
+    EmitComment('--- Ada.Text_IO.Put_Line (stub) ---');
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('MOV  EAX, DWORD PTR [EBP+8]');
+    EmitI('PUSH EAX');
+    EmitI('CALL ' + ADA_RT_PFX + 'PUT_LINE');
+    EmitI('POP  EBP');
+    EmitI('RET  4');
+  End;
+
+  { --- Get (Item : out Character) --- }
+  Idx := FindSub('GET');
+  If Idx = 0 Then
+    Idx := AddSub('GET', False, TYPE_VOID);
+  If Idx > 0 Then
+  Begin
+    SubTab[Idx].IsForward  := False;
+    SubTab[Idx].ParamCount := 1;
+    SubTab[Idx].ParamNames[1] := 'ITEM';
+    SubTab[Idx].ParamTypes[1] := TYPE_CHAR;
+    SubTab[Idx].ParamModes[1] := PARAM_OUT;
+    EmitBlank;
+    EmitComment('--- Ada.Text_IO.Get (stub) ---');
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('MOV  EAX, DWORD PTR [EBP+8]');
+    EmitI('PUSH EAX');
+    EmitI('CALL ' + ADA_RT_PFX + 'GET');
+    EmitI('POP  EBP');
+    EmitI('RET  4');
+  End;
+
+  { --- Get_Line (Item : out String; Last : out Natural) --- }
+  Idx := FindSub('GET_LINE');
+  If Idx = 0 Then
+    Idx := AddSub('GET_LINE', False, TYPE_VOID);
+  If Idx > 0 Then
+  Begin
+    SubTab[Idx].IsForward  := False;
+    SubTab[Idx].ParamCount := 2;
+    SubTab[Idx].ParamNames[1] := 'ITEM';
+    SubTab[Idx].ParamTypes[1] := TYPE_STR;
+    SubTab[Idx].ParamModes[1] := PARAM_OUT;
+    SubTab[Idx].ParamNames[2] := 'LAST';
+    SubTab[Idx].ParamTypes[2] := TYPE_INT;
+    SubTab[Idx].ParamModes[2] := PARAM_OUT;
+    EmitBlank;
+    EmitComment('--- Ada.Text_IO.Get_Line (stub) ---');
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('MOV  EAX, DWORD PTR [EBP+8]');
+    EmitI('PUSH EAX');
+    EmitI('MOV  EAX, DWORD PTR [EBP+12]');
+    EmitI('PUSH EAX');
+    EmitI('CALL ' + ADA_RT_PFX + 'GET_LINE');
+    EmitI('POP  EBP');
+    EmitI('RET  8');
+  End;
+End;
+
+{ ---- ParsePackageSpec : analyser une specification de package -- }
+{ Syntaxe :                                                        }
+{   PACKAGE nom IS                                                 }
+{     [declarations publiques]                                     }
+{     [PRIVATE                                                     }
+{       declarations privees]                                      }
+{   END [nom] ;                                                    }
+{ Enregistre les declarations exportees dans SubTab / TypeTab.     }
+Procedure ParsePackageSpec(Const PkgName : TString);
+Var
+  PIdx    : Integer;
+  IsStd   : Boolean;
+  UName   : TString;
+Begin
+  UName := StrUpperCase(PkgName);
+
+  { Enregistrer le package s il n est pas deja connu }
+  IsStd := IsStandardPackage(UName);
+  PIdx  := FindPkg(UName);
+  If PIdx = 0 Then
+    PIdx := AddPkg(UName, IsStd);
+
+  { Entrer dans le scope du package }
+  PushScope(SK_PACKAGE, 0);
+
+  If Opts.Verbose Then
+    WriteLn('  Package spec: ', UName);
+
+  { Parser les declarations publiques }
+  While (CurTokType <> TOK_EOF) And
+        (Not TokIsKw(KW_END)) And
+        (Not TokIsKw(KW_PRIVATE)) Do
+  Begin
+    If CurTokKw = KW_TYPE Then
+      ParseTypeDecl
+    Else If CurTokKw = KW_SUBTYPE Then
+      ParseSubtypeDecl
+    Else If CurTokKw = KW_PROCEDURE Then
+      ParseProcedureDecl
+    Else If CurTokKw = KW_FUNCTION Then
+      ParseFunctionDecl
+    Else If CurTokType = TOK_IDENT Then
+      ParseObjectDecl
+    Else
+    Begin
+      Error('Token inattendu dans package spec : ' + CurTokStr);
+      Consume;
+    End;
+  End;
+
+  { Section PRIVATE optionnelle }
+  If TokIsKw(KW_PRIVATE) Then
+  Begin
+    Consume; { PRIVATE }
+    If Opts.Verbose Then
+      WriteLn('    PRIVATE section');
+    { Parser les declarations privees }
+    While (CurTokType <> TOK_EOF) And (Not TokIsKw(KW_END)) Do
+    Begin
+      If CurTokKw = KW_TYPE Then
+        ParseTypeDecl
+      Else If CurTokKw = KW_SUBTYPE Then
+        ParseSubtypeDecl
+      Else If CurTokKw = KW_PROCEDURE Then
+        ParseProcedureDecl
+      Else If CurTokKw = KW_FUNCTION Then
+        ParseFunctionDecl
+      Else If CurTokType = TOK_IDENT Then
+        ParseObjectDecl
+      Else
+      Begin
+        Error('Token inattendu dans PRIVATE : ' + CurTokStr);
+        Consume;
+      End;
+    End;
+  End;
+
+  { END [nom] ; }
+  ExpectKw(KW_END, 'END');
+  If (CurTokType = TOK_IDENT) And
+     (StrUpperCase(CurTokStr) = UName) Then
+    Consume;
+  Expect(TOK_SEMI, '`;` attendu apres END du package spec');
+
+  PopScope;
+
+  { Pour Ada.Text_IO : generer stubs I/O }
+  If (UName = 'ADA.TEXT_IO') Or (UName = 'TEXT_IO') Then
+    GenTextIOStubs;
+End;
+
+{ ---- ParsePackageBody : analyser un corps de package ---------- }
+{ Syntaxe :                                                        }
+{   PACKAGE BODY nom IS                                            }
+{     declarations privees                                         }
+{     [BEGIN init_statements END [nom] ;]                          }
+{   END [nom] ;                                                    }
+{ Genere les corps des sous-programmes et l init optionnel.        }
+Procedure ParsePackageBody(Const PkgName : TString);
+Var
+  PIdx      : Integer;
+  IsStd     : Boolean;
+  UName     : TString;
+  InitLabel : TString;
+  FrameSz   : Integer;
+Begin
+  UName := StrUpperCase(PkgName);
+
+  { Enregistrer le package s il n est pas deja connu }
+  IsStd := IsStandardPackage(UName);
+  PIdx  := FindPkg(UName);
+  If PIdx = 0 Then
+    PIdx := AddPkg(UName, IsStd);
+
+  { Entrer dans le scope du package }
+  PushScope(SK_PACKAGE, 0);
+
+  If Opts.Verbose Then
+    WriteLn('  Package body: ', UName);
+
+  { Partie declarative : types, variables, sous-programmes }
+  While (CurTokType <> TOK_EOF) And
+        (Not TokIsKw(KW_BEGIN)) And (Not TokIsKw(KW_END)) Do
+  Begin
+    If CurTokKw = KW_TYPE Then
+      ParseTypeDecl
+    Else If CurTokKw = KW_SUBTYPE Then
+      ParseSubtypeDecl
+    Else If CurTokKw = KW_PROCEDURE Then
+      ParseProcedureDecl
+    Else If CurTokKw = KW_FUNCTION Then
+      ParseFunctionDecl
+    Else If CurTokType = TOK_IDENT Then
+      ParseObjectDecl
+    Else
+    Begin
+      Error('Token inattendu dans package body : ' + CurTokStr);
+      Consume;
+    End;
+  End;
+
+  { Bloc d initialisation optionnel : BEGIN ... END [nom] ; }
+  If TokIsKw(KW_BEGIN) Then
+  Begin
+    Consume; { BEGIN }
+    If Opts.Verbose Then
+      WriteLn('    Package init block: ', UName);
+    { Generer le label d initialisation _ADAP_nom_INIT }
+    InitLabel := ADA_PKG_PFX + AsmIdent(UName) + '_INIT';
+    EmitBlank;
+    EmitComment('--- Package ' + UName + ' initialization ---');
+    EmitLabel(InitLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+
+    { Parser les instructions d initialisation (stub : skip) }
+    SkipStatements;
+
+    { EXCEPTION optionnel }
+    If TokIsKw(KW_EXCEPTION) Then
+    Begin
+      Consume; { EXCEPTION }
+      SkipStatements;
+    End;
+
+    EmitI('POP  EBP');
+    EmitI('RET');
+
+    { END [nom] ; du bloc BEGIN }
+    { Note : le END principal du package body est gere apres }
+  End;
+
+  { END [nom] ; }
+  ExpectKw(KW_END, 'END');
+  If (CurTokType = TOK_IDENT) And
+     (StrUpperCase(CurTokStr) = UName) Then
+    Consume;
+  Expect(TOK_SEMI, '`;` attendu apres END du package body');
+
+  FrameSz := PopScope;
+End;
+
+{ ---- ParsePackageDecl : dispatcher spec ou body --------------- }
+{ Reconnaît :                                                      }
+{   PACKAGE nom IS ...              -> ParsePackageSpec             }
+{   PACKAGE BODY nom IS ...         -> ParsePackageBody             }
+Procedure ParsePackageDecl;
+Var
+  PkgName : TString;
+Begin
+  ExpectKw(KW_PACKAGE, 'PACKAGE');
+
+  { PACKAGE BODY nom IS ... }
+  If TokIsKw(KW_BODY) Then
+  Begin
+    Consume; { BODY }
+
+    If CurTokType <> TOK_IDENT Then
+    Begin Error('Nom de package attendu apres BODY'); Exit; End;
+    PkgName := ParsePackageName;
+
+    ExpectKw(KW_IS, 'IS');
+    ParsePackageBody(PkgName);
+  End
+  Else
+  Begin
+    { PACKAGE nom IS ... }
+    If CurTokType <> TOK_IDENT Then
+    Begin Error('Nom de package attendu'); Exit; End;
+    PkgName := ParsePackageName;
+
+    ExpectKw(KW_IS, 'IS');
+    ParsePackageSpec(PkgName);
+  End;
+End;
+
 { ---- LexInit : ouvrir le fichier source et lire le 1er token }
 Procedure LexInit;
 Begin
@@ -4706,6 +5039,11 @@ Begin
     Begin
       If CurTokKw = KW_PROCEDURE Then ParseProcedureDecl
       Else ParseFunctionDecl;
+    End;
+    { TODO 14 : boucle PACKAGE SPEC / PACKAGE BODY }
+    While (CurTokType = TOK_IDENT) And (CurTokKw = KW_PACKAGE) Do
+    Begin
+      ParsePackageDecl;
     End;
     { TODO 13 : le programme principal (BEGIN ... END) ou fin }
     If TokIsKw(KW_BEGIN) Then
