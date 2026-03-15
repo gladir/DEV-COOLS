@@ -269,7 +269,7 @@
             Var IfCount pour les statistiques
             test_ifelse.awk (15 cas if/else imbriques)
 
-  TODO 11 - PARSEUR : WHILE, FOR, DO-WHILE, BREAK, CONTINUE
+  TODO 11 - PARSEUR : WHILE, FOR, DO-WHILE, BREAK, CONTINUE [IMPLEMENTE]
             Procedure ParseWhile
             Syntaxe : while (condition) instruction | { instructions }
             Generation 32 bits :
@@ -1007,6 +1007,11 @@ Var
   { If/Else (TODO 10) }
   IfCount        : Integer;    { nombre d instructions if/else      }
 
+  { Boucles (TODO 11) }
+  WhileCount     : Integer;    { nombre d instructions while        }
+  ForCount       : Integer;    { nombre d instructions for          }
+  DoWhileCount   : Integer;    { nombre d instructions do-while     }
+
 Const
 {$IFDEF FPC}
   BinAPIDecorated : Array[0..PE_NUM_API - 1] Of String[32] = (
@@ -1357,6 +1362,9 @@ Begin
   WriteLn('Concatenations   : ', ConcatCount);
   WriteLn('Print/Printf     : ', PrintCount);
   WriteLn('If/Else          : ', IfCount);
+  WriteLn('While            : ', WhileCount);
+  WriteLn('For              : ', ForCount);
+  WriteLn('Do-While         : ', DoWhileCount);
   WriteLn('Code gen ops     : ', GenCount);
   WriteLn('Litteraux chaine : ', StringLitCount);
   WriteLn('Scope depth      : ', ScopeDepth);
@@ -2457,6 +2465,11 @@ Function  ParseSprintf: Integer; Forward;
 Procedure ParseIf; Forward;
 Procedure ParseStatement; Forward;
 Procedure ParseBlock; Forward;
+
+{ Forward declarations TODO 11 - Boucles }
+Procedure ParseWhile; Forward;
+Procedure ParseFor; Forward;
+Procedure ParseDoWhile; Forward;
 
 { ---- Helpers de tokens --------------------------------------- }
 Function IsOp(Const S : String) : Boolean;
@@ -3702,7 +3715,7 @@ End;
 {   - expression (terminee par ; ou newline)                      }
 {   - print / printf (TODO 09)                                    }
 {   - if / else (TODO 10)                                         }
-{   - for / while / do (stubs)                                    }
+{   - while / for / do-while / break / continue (TODO 11)         }
 {   - return / exit / delete / break / continue / next             }
 {   - function (declaration)                                      }
 {   - bloc entre accolades                                       }
@@ -3751,60 +3764,47 @@ Begin
       ParseIf;
       Exit;
     End;
-    { for : parser la condition entre parentheses (stub) }
+    { for (TODO 11) }
     If TK = KW_FOR Then
     Begin
       ParserAdvance;
-      If IsPunct('(') Then
-      Begin
-        ParserAdvance;
-        If Not IsPunct(';') And Not IsPunct(')') Then
-          D := ParseExpr;
-        If IsPunct(';') Then
-        Begin
-          ParserAdvance;
-          If Not IsPunct(';') Then
-            D := ParseExpr;
-          If IsPunct(';') Then
-          Begin
-            ParserAdvance;
-            If Not IsPunct(')') Then
-              D := ParseExpr;
-          End;
-        End;
-        If IsPunct(')') Then
-          ParserAdvance;
-      End;
-      { Parser le corps de la boucle }
-      ParseBlock;
+      ParseFor;
       Exit;
     End;
-    { while : parser la condition (stub) }
+    { while (TODO 11) }
     If TK = KW_WHILE Then
     Begin
       ParserAdvance;
-      If IsPunct('(') Then
-      Begin
-        ParserAdvance;
-        D := ParseExpr;
-        If IsPunct(')') Then
-          ParserAdvance;
-      End;
-      ParseBlock;
+      ParseWhile;
       Exit;
     End;
-    { do : parser le corps (stub) }
+    { do (TODO 11) }
     If TK = KW_DO Then
     Begin
       ParserAdvance;
-      If IsPunct('(') Then
-      Begin
-        ParserAdvance;
-        D := ParseExpr;
-        If IsPunct(')') Then
-          ParserAdvance;
-      End;
-      ParseBlock;
+      ParseDoWhile;
+      Exit;
+    End;
+    { break (TODO 11) }
+    If TK = KW_BREAK Then
+    Begin
+      ParserAdvance;
+      EmitComment('--- break ---');
+      If LoopDepth > 0 Then
+        Emit('        JMP     ' + FindLoopBreak)
+      Else
+        WarnMsg('break en dehors d''une boucle');
+      Exit;
+    End;
+    { continue (TODO 11) }
+    If TK = KW_CONTINUE Then
+    Begin
+      ParserAdvance;
+      EmitComment('--- continue ---');
+      If LoopDepth > 0 Then
+        Emit('        JMP     ' + FindLoopContinue)
+      Else
+        WarnMsg('continue en dehors d''une boucle');
       Exit;
     End;
     { return / exit : parser une expression optionnelle }
@@ -3862,7 +3862,7 @@ Begin
       ParseBlock;
       Exit;
     End;
-    { Autres keywords : skip (break, continue, next, etc.) }
+    { Autres keywords : skip (next, etc.) }
     ParserAdvance;
     Exit;
   End;
@@ -3968,6 +3968,257 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 11 - PARSEUR : WHILE, FOR, DO-WHILE, BREAK, CONTINUE   }
+{ ============================================================ }
+
+{ ---- ParseWhile ---------------------------------------------- }
+(* Parse une instruction while AWK :                               *)
+(*   while (condition) instruction                                 *)
+(*   while (condition) { instructions }                            *)
+(* Generation de code 80386 :                                      *)
+(* _AWL_top:                                                       *)
+(*   Evaluer condition -> EAX                                      *)
+(*   TEST EAX, EAX                                                 *)
+(*   JZ _AWL_end                                                   *)
+(*   ... corps de la boucle ...                                    *)
+(*   JMP _AWL_top                                                  *)
+(* _AWL_end:                                                       *)
+(* break -> JMP _AWL_end, continue -> JMP _AWL_top                 *)
+Procedure ParseWhile;
+Var
+  LblTop   : TString;
+  LblEnd   : TString;
+  ExprType : Integer;
+Begin
+  Inc(WhileCount);
+  EmitComment('--- while statement ---');
+
+  { Generer les labels }
+  LblTop := NewLabel;
+  LblEnd := NewLabel;
+
+  { Empiler la boucle (break -> LblEnd, continue -> LblTop) }
+  EnterLoop(LblEnd, LblTop);
+
+  { Label du debut de boucle }
+  EmitLabel(LblTop);
+
+  { Parser la condition entre parentheses }
+  If IsPunct('(') Then
+    ParserAdvance
+  Else
+    WarnMsg('while: ( attendu');
+
+  ExprType := ParseExpr;
+  ExprType := GenCoerceToBoolean(ExprType);
+
+  If IsPunct(')') Then
+    ParserAdvance
+  Else
+    WarnMsg('while: ) attendu');
+
+  { TEST EAX, EAX + JZ _AWL_end }
+  Emit('        TEST    EAX, EAX');
+  Emit('        JZ      ' + LblEnd);
+  EmitBlank;
+
+  { Parser le corps de la boucle }
+  ParseBlock;
+
+  { JMP _AWL_top }
+  Emit('        JMP     ' + LblTop);
+
+  { Label de fin }
+  EmitLabel(LblEnd);
+
+  { Depiler la boucle }
+  LeaveLoop;
+
+  EmitComment('--- end while ---');
+  EmitBlank;
+End;
+
+{ ---- ParseFor ------------------------------------------------ }
+(* Parse une instruction for AWK (C-style) :                       *)
+(*   for (init; condition; incr) instruction                       *)
+(*   for (init; condition; incr) { instructions }                  *)
+(* Generation de code 80386 :                                      *)
+(*   ... init ...                                                  *)
+(* _AWL_top:                                                       *)
+(*   Evaluer condition -> EAX                                      *)
+(*   TEST EAX, EAX                                                 *)
+(*   JZ _AWL_end                                                   *)
+(*   JMP _AWL_body                                                 *)
+(* _AWL_incr:                                                      *)
+(*   ... increment ...                                             *)
+(*   JMP _AWL_top                                                  *)
+(* _AWL_body:                                                      *)
+(*   ... corps ...                                                 *)
+(*   JMP _AWL_incr                                                 *)
+(* _AWL_end:                                                       *)
+(* break -> JMP _AWL_end, continue -> JMP _AWL_incr                *)
+Procedure ParseFor;
+Var
+  LblTop   : TString;
+  LblIncr  : TString;
+  LblBody  : TString;
+  LblEnd   : TString;
+  ExprType : Integer;
+Begin
+  Inc(ForCount);
+  EmitComment('--- for statement ---');
+
+  { Generer les labels }
+  LblTop  := NewLabel;
+  LblIncr := NewLabel;
+  LblBody := NewLabel;
+  LblEnd  := NewLabel;
+
+  { Parser '(' }
+  If IsPunct('(') Then
+    ParserAdvance
+  Else
+    WarnMsg('for: ( attendu');
+
+  { Parser l init (optionnelle) }
+  If Not IsPunct(';') And Not IsPunct(')') Then
+    ExprType := ParseExpr;
+  If IsPunct(';') Then
+    ParserAdvance;
+
+  { Empiler la boucle (break -> LblEnd, continue -> LblIncr) }
+  EnterLoop(LblEnd, LblIncr);
+
+  { Label du test de condition }
+  EmitLabel(LblTop);
+
+  { Parser la condition (optionnelle) }
+  If Not IsPunct(';') And Not IsPunct(')') Then
+  Begin
+    ExprType := ParseExpr;
+    ExprType := GenCoerceToBoolean(ExprType);
+    { TEST EAX, EAX + JZ _AWL_end }
+    Emit('        TEST    EAX, EAX');
+    Emit('        JZ      ' + LblEnd);
+  End;
+  If IsPunct(';') Then
+    ParserAdvance;
+
+  { Sauter par-dessus l increment vers le corps }
+  Emit('        JMP     ' + LblBody);
+  EmitBlank;
+
+  { Label d increment (continue saute ici) }
+  EmitLabel(LblIncr);
+
+  { Parser l increment (optionnel) }
+  If Not IsPunct(')') Then
+    ExprType := ParseExpr;
+
+  { JMP _AWL_top (retester la condition) }
+  Emit('        JMP     ' + LblTop);
+  EmitBlank;
+
+  If IsPunct(')') Then
+    ParserAdvance
+  Else
+    WarnMsg('for: ) attendu');
+
+  { Label du corps de la boucle }
+  EmitLabel(LblBody);
+
+  { Corps de la boucle }
+  ParseBlock;
+
+  { JMP _AWL_incr (executer l increment) }
+  Emit('        JMP     ' + LblIncr);
+
+  { Label de fin }
+  EmitLabel(LblEnd);
+
+  { Depiler la boucle }
+  LeaveLoop;
+
+  EmitComment('--- end for ---');
+  EmitBlank;
+End;
+
+{ ---- ParseDoWhile -------------------------------------------- }
+(* Parse une instruction do-while AWK :                            *)
+(*   do instruction while (condition)                              *)
+(*   do { instructions } while (condition)                         *)
+(* Generation de code 80386 :                                      *)
+(* _AWL_top:                                                       *)
+(*   ... corps de la boucle ...                                    *)
+(* _AWL_cont:                                                      *)
+(*   Evaluer condition -> EAX                                      *)
+(*   TEST EAX, EAX                                                 *)
+(*   JNZ _AWL_top                                                  *)
+(* _AWL_end:                                                       *)
+(* break -> JMP _AWL_end, continue -> JMP _AWL_cont                *)
+Procedure ParseDoWhile;
+Var
+  LblTop   : TString;
+  LblCont  : TString;
+  LblEnd   : TString;
+  ExprType : Integer;
+Begin
+  Inc(DoWhileCount);
+  EmitComment('--- do-while statement ---');
+
+  { Generer les labels }
+  LblTop  := NewLabel;
+  LblCont := NewLabel;
+  LblEnd  := NewLabel;
+
+  { Empiler la boucle (break -> LblEnd, continue -> LblCont) }
+  EnterLoop(LblEnd, LblCont);
+
+  { Label du debut de boucle }
+  EmitLabel(LblTop);
+
+  { Parser le corps de la boucle }
+  ParseBlock;
+
+  { S attendre a while (condition) }
+  SkipNewlines;
+  If IsKW(KW_WHILE) Then
+    ParserAdvance
+  Else
+    WarnMsg('do: while attendu apres le corps');
+
+  { Label continue (avant le test de condition) }
+  EmitLabel(LblCont);
+
+  { Parser la condition entre parentheses }
+  If IsPunct('(') Then
+    ParserAdvance
+  Else
+    WarnMsg('do-while: ( attendu');
+
+  ExprType := ParseExpr;
+  ExprType := GenCoerceToBoolean(ExprType);
+
+  If IsPunct(')') Then
+    ParserAdvance
+  Else
+    WarnMsg('do-while: ) attendu');
+
+  { TEST EAX, EAX + JNZ _AWL_top }
+  Emit('        TEST    EAX, EAX');
+  Emit('        JNZ     ' + LblTop);
+
+  { Label de fin }
+  EmitLabel(LblEnd);
+
+  { Depiler la boucle }
+  LeaveLoop;
+
+  EmitComment('--- end do-while ---');
+  EmitBlank;
+End;
+
+{ ============================================================ }
 { PROCEDURE RUN (STUB - sera complete par les TODOs suivants)  }
 { ============================================================ }
 
@@ -3991,6 +4242,9 @@ Begin
   LastSymIdx := -1;
   PrintCount := 0;
   IfCount := 0;
+  WhileCount := 0;
+  ForCount := 0;
+  DoWhileCount := 0;
   LexInit;
   { Mode debug : afficher tous les tokens }
   If Opts.DebugMode Then
@@ -4005,7 +4259,7 @@ Begin
   End
   Else
   Begin
-    { Parser les expressions (TODO 06+10) }
+    { Parser les expressions (TODO 06+10+11) }
     ParserAdvance;  { charger le premier token }
     StmtCount := 0;
     While CurToken.Kind <> TK_EOF Do
@@ -4029,10 +4283,13 @@ Begin
             ConcatCount, ' concatenation(s) implicite(s)');
     WriteLn('AWKCW32: ', PrintCount, ' print/printf, ',
             IfCount, ' if/else instruction(s)');
+    WriteLn('AWKCW32: ', WhileCount, ' while, ',
+            ForCount, ' for, ',
+            DoWhileCount, ' do-while');
     WriteLn('AWKCW32: ', GenCount, ' operation(s) code gen, ',
             StringLitCount, ' litteral(aux) chaine');
     WriteLn('AWKCW32: scope depth=', ScopeDepth, ', loop depth=', LoopDepth);
-    WriteLn('AWKCW32: TODO 11..25 non encore implementes.');
+    WriteLn('AWKCW32: TODO 12..25 non encore implementes.');
     WriteLn('AWKCW32: sortie prevue: ', Opts.OutFile);
   End;
   LexClose;

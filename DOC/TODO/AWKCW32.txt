@@ -269,7 +269,7 @@
             Var IfCount pour les statistiques
             test_ifelse.awk (15 cas, 20 if/else, 352 ops gen)
 
-  TODO 11 - PARSEUR : WHILE, FOR, DO-WHILE, BREAK, CONTINUE
+  TODO 11 - PARSEUR : WHILE, FOR, DO-WHILE, BREAK, CONTINUE [IMPLEMENTE]
             Procedure ParseWhile
             Syntaxe : while (condition) instruction | { instructions }
             Generation 32 bits :
@@ -280,17 +280,18 @@
             Syntaxe : for (init; condition; incr) instruction
             Generation 32 bits :
               init + _AWL_top: condition + JZ _AWL_end
-              Corps + incr + JMP _AWL_top + _AWL_end:
+              JMP _AWL_body + _AWL_incr: incr + JMP _AWL_top
+              _AWL_body: corps + JMP _AWL_incr + _AWL_end:
             Procedure ParseDoWhile
             Syntaxe : do instruction | { instructions } while (cond)
             Generation 32 bits :
-              _AWL_top: corps + evaluer condition
-              TEST EAX, EAX + JNZ _AWL_top
-            Procedure ParseBreak
-              break -> JMP _AWL_end (label fin de boucle courante)
-            Procedure ParseContinue
-              continue -> JMP _AWL_top (label debut de boucle courante)
-            Pile de boucles pour break / continue imbriques
+              _AWL_top: corps + _AWL_cont: evaluer condition
+              TEST EAX, EAX + JNZ _AWL_top + _AWL_end:
+            break -> JMP _AWL_end (label fin de boucle courante)
+            continue -> JMP label continue (top/incr/cont selon type)
+            Pile de boucles via EnterLoop/LeaveLoop pour break/continue
+            Var WhileCount, ForCount, DoWhileCount pour les statistiques
+            test_loops.awk (20 cas, 9 while, 16 for, 3 do-while, 1101 ops gen)
 
   TODO 12 - PARSEUR : FOR-IN (ITERATION SUR TABLEAUX ASSOCIATIFS)
             Procedure ParseForIn
