@@ -1,7 +1,7 @@
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
 
-  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF
+  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF [IMPLEMENTE]
             Constantes de base (version, limites des tables).
             Constantes PE/COFF (DOS stub, signature PE, en-tete
               COFF, en-tete optionnel, sections, imports) :

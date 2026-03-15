@@ -29,7 +29,7 @@
   PLAN DE DEVELOPPEMENT - 25 TODOS
   =================================
 
-  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF
+  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF [IMPLEMENTE]
             Constantes de base (version, limites des tables).
             Constantes PE/COFF (DOS stub, signature PE, en-tete
               COFF, en-tete optionnel, sections, imports).
@@ -434,7 +434,432 @@ Program CSCW32;
 {$ENDIF}
 {$I-}
 
+{ ============================================================ }
+{ TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF      }
+{           [IMPLEMENTE]                                        }
+{ ============================================================ }
+
+Const
+  CSCW32_VERSION = '0.1';
+  CSCW32_DATE    = '2026';
+
+  EXIT_OK    = 0;
+  EXIT_ERROR = 1;
+  EXIT_USAGE = 2;
+
+  { PE/COFF format constants }
+  PE_DOS_MAGIC    = $5A4D;       { 'MZ'                              }
+  PE_PE_SIG       = $00004550;   { 'PE\0\0'                          }
+  PE_MACHINE_I386 = $014C;       { i386                               }
+  PE_OPT_SIZE     = 224;         { sizeof IMAGE_OPTIONAL_HEADER32     }
+  PE_MAGIC_32     = $010B;       { PE32                               }
+  PE_IMG_BASE     = $00400000;   { default image base                 }
+  PE_SEC_ALIGN    = $1000;       { section alignment (4KB)            }
+  PE_FILE_ALIGN   = $0200;       { file alignment (512)               }
+  PE_SUBSYS_CUI   = 3;           { console subsystem                  }
+  PE_SCN_TEXT     = $60000020;   { CODE | EXECUTE | READ              }
+  PE_SCN_RDATA    = $40000040;   { INIT_DATA | READ                   }
+  PE_SCN_BSS      = LongInt($C0000040);   { INIT_DATA | READ | WRITE (data section) }
+  MAX_BIN_CODE    = 65536;       { 64 KB max code section             }
+  MAX_BIN_DATA    = 65536;       { 64 KB max data section             }
+  MAX_BIN_LBL     = 4096;        { max labels                         }
+  MAX_BIN_FIX     = 8192;        { max fixups                         }
+  PE_NUM_API      = 7;           { number of imported Win32 APIs      }
+  COFF_RELOC_DIR32  = 6;         { IMAGE_REL_I386_DIR32               }
+  COFF_RELOC_REL32  = 20;        { IMAGE_REL_I386_REL32               }
+
+Type
+  TString = String;
+
+  { Types binaires }
+  TBinFixKind = (BFK_ABS32, BFK_REL32, BFK_IAT32);
+  TBinFixup = Record
+    Offset : LongInt;
+    Kind   : TBinFixKind;
+    Target : TString;
+    InCode : Boolean;
+  End;
+  TBinLabel = Record
+    Name   : TString;
+    Offset : LongInt;
+    InCode : Boolean;
+  End;
+
+  TOptions = Record
+    SrcFile   : TString;   { fichier source (.cs)                 }
+    OutFile   : TString;   { fichier sortie (.exe, .obj)          }
+    Verbose   : Boolean;   { -v : banniere et statistiques        }
+    DebugMode : Boolean;   { -d : affichage de chaque token       }
+    Warnings  : Boolean;   { -w : afficher les avertissements     }
+    AsmOutput : Boolean;   { -asm : produire aussi un .ASM        }
+    ObjOnly   : Boolean;   { -obj : produire seulement un .OBJ    }
+  End;
+
+Var
+  { Options }
+  Opts : TOptions;
+
+  { Compteurs generaux }
+  ErrorCount : Integer;
+  WarnCount  : Integer;
+  TotalLines : LongInt;
+
+  { Fichier de sortie interne (pour future emission) }
+  OutF       : Text;
+  OutFOpen   : Boolean;
+
+  { Variables binaires }
+  BinCode     : Array[0..MAX_BIN_CODE - 1] of Byte;
+  BinCodeLen  : LongInt;
+  BinData     : Array[0..MAX_BIN_DATA - 1] of Byte;
+  BinDataLen  : LongInt;
+  BinLabels   : Array[0..MAX_BIN_LBL - 1] of TBinLabel;
+  BinLblCount : Integer;
+  BinFixups   : Array[0..MAX_BIN_FIX - 1] of TBinFixup;
+  BinFixCount : Integer;
+  BinInCode   : Boolean;
+
+Const
+  BinAPIDecorated : Array[0..PE_NUM_API - 1] Of String[32] = (
+    '_ExitProcess@4', '_GetStdHandle@4', '_WriteFile@20',
+    '_ReadFile@20', '_GetProcessHeap@0', '_HeapAlloc@12',
+    '_HeapFree@12'
+  );
+  BinAPIName : Array[0..PE_NUM_API - 1] Of String[20] = (
+    'ExitProcess', 'GetStdHandle', 'WriteFile', 'ReadFile',
+    'GetProcessHeap', 'HeapAlloc', 'HeapFree'
+  );
+
+{ ------------------------------------------------------------ }
+{ Fonctions utilitaires                                        }
+{ ------------------------------------------------------------ }
+
+Function IntToStr_(V : LongInt) : TString;
+Var S : TString;
 Begin
-  WriteLn('CSCW32 - Compilateur C# (C Sharp) vers assembleur 80386 pour Windows 32 bits');
-  WriteLn('Pas encore implemente. Voir les 25 TODOs dans le fichier source.');
-End.
+  Str(V, S);
+  IntToStr_ := S;
+End;
+
+Function StrUpperCase(Const S : TString) : TString;
+Var
+  I   : Integer;
+  Tmp : TString;
+Begin
+  Tmp := S;
+  For I := 1 To Length(Tmp) Do
+    If (Tmp[I] >= 'a') And (Tmp[I] <= 'z') Then
+      Tmp[I] := Chr(Ord(Tmp[I]) - 32);
+  StrUpperCase := Tmp;
+End;
+
+Function StrLowerCase(Const S : TString) : TString;
+Var
+  I   : Integer;
+  Tmp : TString;
+Begin
+  Tmp := S;
+  For I := 1 To Length(Tmp) Do
+    If (Tmp[I] >= 'A') And (Tmp[I] <= 'Z') Then
+      Tmp[I] := Chr(Ord(Tmp[I]) + 32);
+  StrLowerCase := Tmp;
+End;
+
+{ Retourne l extension d un chemin (avec le point, en minuscules) }
+Function ExtractExt(Const Path : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ExtractExt := StrLowerCase(Copy(Path, LastDot,
+                     Length(Path) - LastDot + 1))
+  Else
+    ExtractExt := '';
+End;
+
+{ Remplace l extension d un chemin }
+Function ReplaceExt(Const Path, NewExt : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ReplaceExt := Copy(Path, 1, LastDot - 1) + NewExt
+  Else
+    ReplaceExt := Path + NewExt;
+End;
+
+{ Retourne le repertoire d un chemin (avec le separateur final) }
+Function ExtractDir(Const Path : TString) : TString;
+Var
+  I, LastSep : Integer;
+Begin
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+  If LastSep > 0 Then
+    ExtractDir := Copy(Path, 1, LastSep)
+  Else
+    ExtractDir := '';
+End;
+
+{ Verifie si un fichier existe }
+Function FileExists(Const Path : TString) : Boolean;
+Var F : Text;
+Begin
+  Assign(F, Path);
+  {$I-}
+  Reset(F);
+  {$I+}
+  If IOResult = 0 Then
+  Begin
+    Close(F);
+    FileExists := True;
+  End
+  Else
+    FileExists := False;
+End;
+
+{ ------------------------------------------------------------ }
+{ FatalError / WarnMsg                                         }
+{ ------------------------------------------------------------ }
+
+Procedure FatalError(Const Msg : TString);
+Begin
+  WriteLn('CSCW32: FATAL: ', Msg);
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+  Halt(EXIT_ERROR);
+End;
+
+Procedure WarnMsg(Const Msg : TString);
+Begin
+  If Not Opts.Warnings Then Exit;
+  WriteLn('CSCW32: warning: ', Msg);
+  Inc(WarnCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ InitOptions                                                  }
+{ ------------------------------------------------------------ }
+
+Procedure InitOptions;
+Begin
+  Opts.SrcFile   := '';
+  Opts.OutFile   := '';
+  Opts.Verbose   := False;
+  Opts.DebugMode := False;
+  Opts.Warnings  := False;
+  Opts.AsmOutput := False;
+  Opts.ObjOnly   := False;
+End;
+
+{ ------------------------------------------------------------ }
+{ ShowHelp                                                     }
+{ ------------------------------------------------------------ }
+
+Procedure ShowHelp;
+Begin
+  WriteLn('CSCW32 v', CSCW32_VERSION, ' (', CSCW32_DATE,
+          ') - Compilateur C# (C Sharp) vers 80386 (Windows PE 32 bits)');
+  WriteLn('CSCW32 - Cette commande permet de lancer le compilateur C# ',
+          '(C Sharp) pour l''assembleur du microprocesseur 80386 (en ',
+          'executable Windows 32 bits).');
+  WriteLn;
+  WriteLn('Syntaxe : CSCW32 <source.cs> [sortie] [options]');
+  WriteLn;
+  WriteLn('Sortie :');
+  WriteLn('  Par defaut un .EXE (PE Windows 32 bits)');
+  WriteLn('  -obj           Produire seulement un fichier .OBJ (COFF)');
+  WriteLn('  -asm           Produire egalement un fichier .ASM lisible');
+  WriteLn;
+  WriteLn('General :');
+  WriteLn('  -v             Mode verbeux (banniere + statistiques)');
+  WriteLn('  -d             Debug tokens (affiche chaque token)');
+  WriteLn('  -w             Afficher les avertissements');
+  WriteLn('  -h, --help, /? Afficher cette aide');
+  WriteLn;
+  WriteLn('Exemples :');
+  WriteLn('  CSCW32 hello.cs');
+  WriteLn('  CSCW32 hello.cs hello.exe -v');
+  WriteLn('  CSCW32 prog.cs -asm');
+  WriteLn('  CSCW32 module.cs -obj');
+  Halt(EXIT_OK);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseArgs                                                    }
+{ ------------------------------------------------------------ }
+
+Procedure ParseArgs;
+Var
+  I   : Integer;
+  Arg : TString;
+  Ext : TString;
+Begin
+  InitOptions;
+  If ParamCount = 0 Then
+    ShowHelp;
+
+  I := 1;
+  While I <= ParamCount Do
+  Begin
+    Arg := ParamStr(I);
+
+    If (Arg = '-h') Or (Arg = '--help') Or (Arg = '/?') Or
+       (Arg = '/h') Or (Arg = '/H') Then
+      ShowHelp
+    Else If Arg = '-v' Then
+      Opts.Verbose := True
+    Else If Arg = '-d' Then
+      Opts.DebugMode := True
+    Else If Arg = '-w' Then
+      Opts.Warnings := True
+    Else If Arg = '-asm' Then
+      Opts.AsmOutput := True
+    Else If Arg = '-obj' Then
+      Opts.ObjOnly := True
+    Else If (Length(Arg) > 0) And (Arg[1] = '-') Then
+      FatalError('Option inconnue: ' + Arg)
+    Else
+    Begin
+      { Argument positionnel : fichier source ou sortie }
+      If Opts.SrcFile = '' Then
+        Opts.SrcFile := Arg
+      Else If Opts.OutFile = '' Then
+        Opts.OutFile := Arg
+      Else
+        FatalError('Argument inattendu: ' + Arg);
+    End;
+
+    Inc(I);
+  End;
+
+  { Validation : fichier source requis }
+  If Opts.SrcFile = '' Then
+  Begin
+    WriteLn('CSCW32: fichier source manquant');
+    ShowHelp;
+  End;
+
+  { Verifier l extension .cs }
+  Ext := ExtractExt(Opts.SrcFile);
+  If Ext <> '.cs' Then
+    WarnMsg('extension attendue .cs, trouvee: ' + Ext);
+
+  { Fichier de sortie par defaut }
+  If Opts.OutFile = '' Then
+  Begin
+    If Opts.ObjOnly Then
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.obj')
+    Else
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.exe');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ShowBanner / ShowStats                                       }
+{ ------------------------------------------------------------ }
+
+Procedure ShowBanner;
+Begin
+  If Not Opts.Verbose Then Exit;
+  WriteLn('CSCW32 v', CSCW32_VERSION, ' (', CSCW32_DATE,
+          ') - Compilateur C# (C Sharp) -> 80386 PE Win32');
+  WriteLn('Source   : ', Opts.SrcFile);
+  WriteLn('Sortie   : ', Opts.OutFile);
+  If Opts.AsmOutput Then
+    WriteLn('ASM      : ', ReplaceExt(Opts.OutFile, '.asm'));
+  WriteLn;
+End;
+
+Procedure ShowStats;
+Begin
+  If Not Opts.Verbose Then Exit;
+  WriteLn;
+  WriteLn('--- Statistiques ---');
+  WriteLn('Lignes analysees : ', TotalLines);
+  WriteLn('Erreurs          : ', ErrorCount);
+  WriteLn('Avertissements   : ', WarnCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ Run (stub pour les prochains TODOs)                          }
+{ ------------------------------------------------------------ }
+
+Procedure Run;
+Begin
+  WriteLn('CSCW32: Compilation de ', Opts.SrcFile, ' ...');
+
+  { Verifier que le fichier source existe }
+  If Not FileExists(Opts.SrcFile) Then
+    FatalError('impossible d''ouvrir le fichier source: ' + Opts.SrcFile);
+
+  WriteLn('CSCW32: Infrastructure OK (TODO 01 implemente)');
+  WriteLn('CSCW32: Les TODOs 02..25 ne sont pas encore implementes.');
+End;
+
+{ ------------------------------------------------------------ }
+{ Cleanup                                                      }
+{ ------------------------------------------------------------ }
+
+Procedure Cleanup;
+Begin
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+{ ============================================================ }
+{ Programme principal                                          }
+{ ============================================================ }
+
+BEGIN
+  If (ParamCount > 0) And
+     ((ParamStr(1) = '/?') Or (ParamStr(1) = '--help') Or
+      (ParamStr(1) = '-h') Or (ParamStr(1) = '/h') Or
+      (ParamStr(1) = '/H')) Then
+  Begin
+    ShowHelp;
+    Halt(EXIT_OK);
+  End;
+
+  ErrorCount := 0;
+  WarnCount  := 0;
+  TotalLines := 0;
+  OutFOpen   := False;
+
+  ParseArgs;
+  ShowBanner;
+  Run;
+  Cleanup;
+  If Opts.Verbose Then ShowStats;
+
+  If ErrorCount > 0 Then
+    Halt(EXIT_ERROR)
+  Else
+    Halt(EXIT_OK);
+END.
