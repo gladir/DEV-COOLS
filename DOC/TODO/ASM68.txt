@@ -8,7 +8,7 @@
 {            -e  -w  -s  -n  -x                                                }
 { ---------------------------------------------------------------------------- }
 
-TODO 01 - Infrastructure, options de ligne de commande et constantes
+TODO 01 - Infrastructure, options de ligne de commande et constantes [IMPLEMENTE]
   -------------------------------------------------------------------
   - Programme principal ASM68 en Turbo Pascal / Free Pascal
   - Analyse des options de ligne de commande :
