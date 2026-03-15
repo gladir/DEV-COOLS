@@ -1,0 +1,1577 @@
+==============================================================================
+  ASM_JASMIN.txt
+  Langage assembleur Jasmin pour la machine virtuelle Java (JVM)
+  Reference au compilateur CCJASMIN.PAS et a l assembleur JASMIN.PAS
+  du projet DEV-COOLS
+==============================================================================
+
+Table des matieres
+------------------
+
+  1.  Introduction
+  2.  La machine virtuelle Java (JVM)
+  3.  Structure d un fichier Jasmin
+  4.  Les directives Jasmin
+  5.  Les descripteurs de types JVM
+  6.  Les opcodes de chargement et stockage
+  7.  Les opcodes arithmetiques et logiques
+  8.  Les opcodes de conversion de types
+  9.  Les opcodes de controle de flux
+  10. Les opcodes d invocation de methodes
+  11. Les opcodes de manipulation de la pile
+  12. Les opcodes de creation d objets et tableaux
+  13. Les opcodes de comparaison
+  14. Exemples complets
+  15. Utilisation avec CCJASMIN.PAS
+  16. Assemblage et execution
+  17. Differences avec le bytecode Java brut
+  18. Ressources dans le projet
+  19. Tableau complet des instructions JVM
+
+==============================================================================
+==============================================================================
+
+  Jasmin est un langage assembleur pour la machine virtuelle Java (JVM).
+  Il fournit une representation textuelle lisible du bytecode Java, ce
+  qui permet d ecrire, d etudier et de comprendre les instructions de
+  bas niveau executees par la JVM. Le nom "Jasmin" vient de "Java
+  Assembler Interface".
+
+  Contrairement aux assembleurs traditionnels qui ciblent un processeur
+  physique (8086, 6502, Z80...), Jasmin cible une machine virtuelle a
+  pile (stack-based). La JVM ne possede pas de registres generaux comme
+  un processeur reel : toutes les operations se font par l intermediaire
+  d une pile d operandes et de variables locales numerotees.
+
+  L assembleur Jasmin a ete cree par Jonathan Meyer en 1996 et est
+  devenu un outil de reference pour l enseignement du bytecode Java,
+  la generation de code par des compilateurs, et l experimentation
+  avec la JVM.
+
+  Le projet DEV-COOLS contient le compilateur CCJASMIN.PAS (6334 lignes)
+  qui traduit du code C en assembleur Jasmin pour la JVM, ainsi que
+  l assembleur JASMIN.PAS qui assemble directement les fichiers .j
+  en fichiers .class (bytecode Java). Ce document
+  decrit le fonctionnement du langage assembleur Jasmin, ses directives,
+  ses opcodes et son utilisation.
+
+==============================================================================
+  2. La machine virtuelle Java (JVM)
+==============================================================================
+
+  2.1 Architecture generale
+  -------------------------
+
+  La JVM est une machine virtuelle a pile (stack machine). Cela signifie
+  que les operandes sont empiles sur une pile avant d etre consommes par
+  les instructions. Par exemple, pour additionner deux entiers :
+
+    bipush 3          ; empiler la valeur 3
+    bipush 5          ; empiler la valeur 5
+    iadd              ; depiler 3 et 5, empiler le resultat 8
+
+  Ce modele est fondamentalement different des processeurs a registres
+  comme le 8086 ou le 80386 ou les operandes sont dans des registres
+  nommes (AX, BX, CX...).
+
+  2.2 Zones memoire de la JVM
+  ---------------------------
+
+  La JVM organise la memoire en plusieurs zones :
+
+    - Pile d operandes (Operand Stack) : pile LIFO utilisee par les
+      instructions pour manipuler les valeurs. Chaque methode possede
+      sa propre pile d operandes.
+
+    - Variables locales (Local Variables) : tableau indexe de 0 a N
+      contenant les parametres de la methode et les variables locales.
+      Dans une methode d instance, la variable 0 contient la reference
+      "this". Dans une methode statique comme main, la variable 0
+      contient le premier parametre.
+
+    - Tas (Heap) : memoire partagee pour les objets et tableaux alloues
+      dynamiquement avec "new". Le ramasse-miettes (garbage collector)
+      gere automatiquement la liberation de cette memoire.
+
+    - Zone de methodes (Method Area) : contient le code des methodes,
+      les constantes, et les metadonnees des classes chargees.
+
+    - Bassin de constantes (Constant Pool) : table de constantes pour
+      chaque classe, contenant les chaines de caracteres, les noms de
+      classes, les signatures de methodes, et les valeurs numeriques.
+
+  2.3 Types de donnees de la JVM
+  ------------------------------
+
+  La JVM reconnait les types primitifs suivants :
+
+    Type JVM     Taille    Description
+    ---------    ------    ----------------------------------
+    byte         1 octet   Entier signe 8 bits (-128 a 127)
+    short        2 octets  Entier signe 16 bits
+    int          4 octets  Entier signe 32 bits
+    long         8 octets  Entier signe 64 bits
+    float        4 octets  Virgule flottante IEEE 754 simple
+    double       8 octets  Virgule flottante IEEE 754 double
+    char         2 octets  Caractere Unicode 16 bits
+    boolean      1 octet   Valeur booleenne (0 ou 1)
+
+  Et les types references :
+
+    - References d objets (instances de classes)
+    - References de tableaux (arrays)
+    - null (reference nulle)
+
+  Important : sur la pile d operandes, les types byte, short, char et
+  boolean sont tous traites comme des int (32 bits). Les types long et
+  double occupent deux emplacements sur la pile.
+
+==============================================================================
+  3. Structure d un fichier Jasmin
+==============================================================================
+
+  Un fichier Jasmin porte typiquement l extension .j et contient la
+  definition d une seule classe Java. La structure minimale est :
+
+    .class public NomDeLaClasse
+    .super java/lang/Object
+
+    ; Constructeur par defaut
+    .method public <init>()V
+        aload_0
+        invokespecial java/lang/Object/<init>()V
+        return
+    .end method
+
+    ; Methode principale
+    .method public static main([Ljava/lang/String;)V
+        .limit stack 10
+        .limit locals 10
+        ; instructions ici
+        return
+    .end method
+
+  Chaque fichier doit contenir :
+
+    1. La declaration de la classe (.class)
+    2. La declaration de la classe parente (.super)
+    3. Un ou plusieurs blocs de methodes (.method / .end method)
+
+  Les commentaires commencent par un point-virgule (;) et s etendent
+  jusqu a la fin de la ligne.
+
+  Les etiquettes (labels) sont des identifiants suivis de deux-points :
+
+    Label1:
+        bipush 42
+        goto Label1
+
+==============================================================================
+  4. Les directives Jasmin
+==============================================================================
+
+  4.1 Directives de classe
+  ------------------------
+
+  .class <acces> <nom>
+      Declare le nom de la classe et ses modificateurs d acces.
+      Exemples :
+        .class public Main
+        .class public final MaClasse
+        .class abstract MaClasseAbstraite
+
+      Modificateurs d acces :
+        public       - accessible depuis n importe ou
+        final        - ne peut pas etre etendue (heritee)
+        abstract     - ne peut pas etre instanciee directement
+        interface    - declare une interface
+
+  .super <nom>
+      Specifie la classe parente (superclasse).
+      Toute classe doit avoir une superclasse (sauf java/lang/Object).
+      Exemple :
+        .super java/lang/Object
+
+  .implements <interface>
+      Declare qu une classe implemente une interface.
+      Exemple :
+        .implements java/io/Serializable
+
+  .source <fichier>
+      Indique le fichier source d origine (optionnel, pour le debogage).
+      Exemple :
+        .source Main.java
+
+  4.2 Directives de champs (variables d instance / de classe)
+  -----------------------------------------------------------
+
+  .field <acces> <nom> <descripteur> [= <valeur>]
+      Declare un champ (variable membre) de la classe.
+      Exemples :
+        .field public compteur I
+        .field private static PI D = 3.14159
+        .field protected nom Ljava/lang/String;
+
+      Modificateurs d acces pour les champs :
+        public       - accessible depuis n importe ou
+        private      - accessible uniquement dans la classe
+        protected    - accessible dans la classe et ses sous-classes
+        static       - champ de classe (partage entre toutes les instances)
+        final        - valeur constante, ne peut pas etre modifiee
+        volatile     - acces atomique en environnement multi-thread
+
+  4.3 Directives de methodes
+  --------------------------
+
+  .method <acces> <nom><descripteur>
+      Debut de la definition d une methode.
+      Exemples :
+        .method public static main([Ljava/lang/String;)V
+        .method public getValeur()I
+        .method private calculer(II)I
+
+      Modificateurs d acces pour les methodes :
+        public       - accessible depuis n importe ou
+        private      - accessible uniquement dans la classe
+        protected    - accessible dans la classe et ses sous-classes
+        static       - methode de classe (pas besoin d instance)
+        final        - ne peut pas etre redefinie
+        abstract     - pas de corps, doit etre implementee
+        synchronized - acces synchronise en multi-thread
+        native       - implementee en code natif (JNI)
+
+  .end method
+      Fin de la definition d une methode.
+
+  .limit stack <N>
+      Declare la profondeur maximale de la pile d operandes pour cette
+      methode. La JVM verifie que cette limite n est jamais depassee.
+      Exemple :
+        .limit stack 100
+
+  .limit locals <N>
+      Declare le nombre maximal de variables locales utilisees par la
+      methode. Inclut les parametres et la reference "this" pour les
+      methodes d instance.
+      Exemple :
+        .limit locals 100
+
+  .line <N>
+      Associe un numero de ligne du source aux instructions suivantes.
+      Utilise par le debogueur pour localiser l instruction courante.
+      Exemple :
+        .line 42
+
+  .throws <classe>
+      Declare qu une methode peut lancer une exception.
+      Exemple :
+        .throws java/io/IOException
+
+  .catch <classe> from <debut> to <fin> using <gestionnaire>
+      Declare un bloc try-catch pour la gestion des exceptions.
+      Exemple :
+        .catch java/lang/Exception from Label1 to Label2 using Handler
+
+==============================================================================
+  5. Les descripteurs de types JVM
+==============================================================================
+
+  Les descripteurs de types sont des codes compacts utilises dans les
+  signatures de methodes et les declarations de champs. Chaque type
+  Java possede un descripteur :
+
+  5.1 Types primitifs
+  -------------------
+
+    Descripteur   Type Java     Description
+    -----------   ---------     --------------------------
+    B             byte          Entier signe 8 bits
+    C             char          Caractere Unicode 16 bits
+    D             double        Flottant 64 bits
+    F             float         Flottant 32 bits
+    I             int           Entier signe 32 bits
+    J             long          Entier signe 64 bits
+    S             short         Entier signe 16 bits
+    Z             boolean       Booleen (true/false)
+    V             void          Aucune valeur (retour)
+
+  5.2 Types references
+  --------------------
+
+    Les classes sont representees par L<nom>;
+
+      Ljava/lang/String;        -> java.lang.String
+      Ljava/lang/Object;        -> java.lang.Object
+      Ljava/io/PrintStream;     -> java.io.PrintStream
+      Ljava/util/ArrayList;     -> java.util.ArrayList
+
+    Les separateurs de paquets utilisent / au lieu de .
+
+  5.3 Types tableaux
+  ------------------
+
+    Les tableaux sont prefixes par [ pour chaque dimension :
+
+      [I                        -> int[]
+      [D                        -> double[]
+      [Ljava/lang/String;       -> String[]
+      [[I                       -> int[][]
+      [[[B                      -> byte[][][]
+
+  5.4 Signatures de methodes
+  --------------------------
+
+    Les signatures de methodes sont de la forme :
+      (types_parametres)type_retour
+
+    Exemples :
+      ()V                       -> void methode()
+      (I)V                      -> void methode(int)
+      (II)I                     -> int methode(int, int)
+      (Ljava/lang/String;)V     -> void methode(String)
+      ([Ljava/lang/String;)V    -> void methode(String[])
+      (ILjava/lang/String;)Z    -> boolean methode(int, String)
+      (DDF)D                    -> double methode(double, double, float)
+      ()Ljava/lang/String;      -> String methode()
+
+==============================================================================
+  6. Les opcodes de chargement et stockage
+==============================================================================
+
+  Ces instructions transferent des valeurs entre les variables locales
+  et la pile d operandes.
+
+  6.1 Chargement de constantes
+  ----------------------------
+
+    Opcode          Hex    Description
+    --------------- ----   ------------------------------------------
+    aconst_null     01     Empiler la reference null
+    iconst_m1       02     Empiler la constante int -1
+    iconst_0        03     Empiler la constante int 0
+    iconst_1        04     Empiler la constante int 1
+    iconst_2        05     Empiler la constante int 2
+    iconst_3        06     Empiler la constante int 3
+    iconst_4        07     Empiler la constante int 4
+    iconst_5        08     Empiler la constante int 5
+    lconst_0        09     Empiler la constante long 0
+    lconst_1        0A     Empiler la constante long 1
+    fconst_0        0B     Empiler la constante float 0.0
+    fconst_1        0C     Empiler la constante float 1.0
+    fconst_2        0D     Empiler la constante float 2.0
+    dconst_0        0E     Empiler la constante double 0.0
+    dconst_1        0F     Empiler la constante double 1.0
+    bipush <byte>   10     Empiler un byte signe (-128 a 127)
+    sipush <short>  11     Empiler un short signe (-32768 a 32767)
+    ldc <val>       12     Charger constante du pool (int, float, String)
+    ldc_w <val>     13     Charger constante (index large)
+    ldc2_w <val>    14     Charger constante large (long, double)
+
+  6.2 Chargement depuis les variables locales
+  --------------------------------------------
+
+    Opcode          Hex    Description
+    --------------- ----   ------------------------------------------
+    iload <var>     15     Charger int depuis variable locale <var>
+    lload <var>     16     Charger long depuis variable locale <var>
+    fload <var>     17     Charger float depuis variable locale <var>
+    dload <var>     18     Charger double depuis variable locale <var>
+    aload <var>     19     Charger reference depuis variable locale <var>
+
+    Formes abregees (sans operande, variable implicite) :
+
+    iload_0         1A     Charger int depuis variable locale 0
+    iload_1         1B     Charger int depuis variable locale 1
+    iload_2         1C     Charger int depuis variable locale 2
+    iload_3         1D     Charger int depuis variable locale 3
+    lload_0         1E     Charger long depuis variable locale 0
+    lload_1         1F     Charger long depuis variable locale 1
+    lload_2         20     Charger long depuis variable locale 2
+    lload_3         21     Charger long depuis variable locale 3
+    fload_0         22     Charger float depuis variable locale 0
+    fload_1         23     Charger float depuis variable locale 1
+    fload_2         24     Charger float depuis variable locale 2
+    fload_3         25     Charger float depuis variable locale 3
+    dload_0         26     Charger double depuis variable locale 0
+    dload_1         27     Charger double depuis variable locale 1
+    dload_2         28     Charger double depuis variable locale 2
+    dload_3         29     Charger double depuis variable locale 3
+    aload_0         2A     Charger reference depuis variable locale 0
+    aload_1         2B     Charger reference depuis variable locale 1
+    aload_2         2C     Charger reference depuis variable locale 2
+    aload_3         2D     Charger reference depuis variable locale 3
+
+  6.3 Stockage dans les variables locales
+  ----------------------------------------
+
+    Opcode          Hex    Description
+    --------------- ----   ------------------------------------------
+    istore <var>    36     Stocker int dans variable locale <var>
+    lstore <var>    37     Stocker long dans variable locale <var>
+    fstore <var>    38     Stocker float dans variable locale <var>
+    dstore <var>    39     Stocker double dans variable locale <var>
+    astore <var>    3A     Stocker reference dans variable locale <var>
+
+    Formes abregees :
+
+    istore_0        3B     Stocker int dans variable locale 0
+    istore_1        3C     Stocker int dans variable locale 1
+    istore_2        3D     Stocker int dans variable locale 2
+    istore_3        3E     Stocker int dans variable locale 3
+    lstore_0        3F     Stocker long dans variable locale 0
+    lstore_1        40     Stocker long dans variable locale 1
+    lstore_2        41     Stocker long dans variable locale 2
+    lstore_3        42     Stocker long dans variable locale 3
+    fstore_0        43     Stocker float dans variable locale 0
+    fstore_1        44     Stocker float dans variable locale 1
+    fstore_2        45     Stocker float dans variable locale 2
+    fstore_3        46     Stocker float dans variable locale 3
+    dstore_0        47     Stocker double dans variable locale 0
+    dstore_1        48     Stocker double dans variable locale 1
+    dstore_2        49     Stocker double dans variable locale 2
+    dstore_3        4A     Stocker double dans variable locale 3
+    astore_0        4B     Stocker reference dans variable locale 0
+    astore_1        4C     Stocker reference dans variable locale 1
+    astore_2        4D     Stocker reference dans variable locale 2
+    astore_3        4E     Stocker reference dans variable locale 3
+
+  6.4 Chargement depuis les tableaux
+  -----------------------------------
+
+    Opcode          Hex    Description
+    --------------- ----   ------------------------------------------
+    iaload          2E     Charger int depuis tableau
+    laload          2F     Charger long depuis tableau
+    faload          30     Charger float depuis tableau
+    daload          31     Charger double depuis tableau
+    aaload          32     Charger reference depuis tableau
+    baload          33     Charger byte/boolean depuis tableau
+    caload          34     Charger char depuis tableau
+    saload          35     Charger short depuis tableau
+
+    Pile avant : ..., ref_tableau, index ->
+    Pile apres : ..., valeur
+
+  6.5 Stockage dans les tableaux
+  ------------------------------
+
+    Opcode          Hex    Description
+    --------------- ----   ------------------------------------------
+    iastore         4F     Stocker int dans tableau
+    lastore         50     Stocker long dans tableau
+    fastore         51     Stocker float dans tableau
+    dastore         52     Stocker double dans tableau
+    aastore         53     Stocker reference dans tableau
+    bastore         54     Stocker byte/boolean dans tableau
+    castore         55     Stocker char dans tableau
+    sastore         56     Stocker short dans tableau
+
+    Pile avant : ..., ref_tableau, index, valeur ->
+    Pile apres : ...
+
+==============================================================================
+  7. Les opcodes arithmetiques et logiques
+==============================================================================
+
+  7.1 Arithmetique entiere (int)
+  ------------------------------
+
+    Opcode          Hex    Description
+    --------------- ----   ------------------------------------------
+    iadd            60     Addition : a + b
+    isub            64     Soustraction : a - b
+    imul            68     Multiplication : a * b
+    idiv            6C     Division entiere : a / b
+    irem            70     Reste (modulo) : a % b
+    ineg            74     Negation : -a
+    iinc <var> <n>  84     Incrementer variable locale de <n>
+
+    Exemple d utilisation de iinc :
+      iinc 1 1        ; variable_locale[1] += 1
+      iinc 2 -1       ; variable_locale[2] -= 1
+      iinc 0 5        ; variable_locale[0] += 5
+
+  7.2 Arithmetique entiere (long)
+  -------------------------------
+
+    Opcode          Hex    Description
+    --------------- ----   ------------------------------------------
+    ladd            61     Addition long
+    lsub            65     Soustraction long
+    lmul            69     Multiplication long
+    ldiv            6D     Division long
+    lrem            71     Reste long
+    lneg            75     Negation long
+
+  7.3 Arithmetique flottante (float)
+  ----------------------------------
+
+    Opcode          Hex    Description
+    --------------- ----   ------------------------------------------
+    fadd            62     Addition float
+    fsub            66     Soustraction float
+    fmul            6A     Multiplication float
+    fdiv            6E     Division float
+    frem            72     Reste float
+    fneg            76     Negation float
+
+  7.4 Arithmetique flottante (double)
+  -----------------------------------
+
+    Opcode          Hex    Description
+    --------------- ----   ------------------------------------------
+    dadd            63     Addition double
+    dsub            67     Soustraction double
+    dmul            6B     Multiplication double
+    ddiv            6F     Division double
+    drem            73     Reste double
+    dneg            77     Negation double
+
+  7.5 Operations logiques et de decalage
+  ---------------------------------------
+
+    Opcode          Hex    Description
+    --------------- ----   ------------------------------------------
+    ishl            78     Decalage a gauche int (a << b)
+    lshl            79     Decalage a gauche long
+    ishr            7A     Decalage a droite arithmetique int (a >> b)
+    lshr            7B     Decalage a droite arithmetique long
+    iushr           7C     Decalage a droite logique int (a >>> b)
+    lushr           7D     Decalage a droite logique long
+    iand            7E     ET logique int (a & b)
+    land            7F     ET logique long
+    ior             80     OU logique int (a | b)
+    lor             81     OU logique long
+    ixor            82     OU exclusif int (a ^ b)
+    lxor            83     OU exclusif long
+
+==============================================================================
+  8. Les opcodes de conversion de types
+==============================================================================
+
+  Ces instructions convertissent une valeur du sommet de la pile d un
+  type a un autre.
+
+    Opcode          Hex    Description
+    --------------- ----   ------------------------------------------
+    i2l             85     int vers long
+    i2f             86     int vers float
+    i2d             87     int vers double
+    l2i             88     long vers int
+    l2f             89     long vers float
+    l2d             8A     long vers double
+    f2i             8B     float vers int
+    f2l             8C     float vers long
+    f2d             8D     float vers double
+    d2i             8E     double vers int
+    d2l             8F     double vers long
+    d2f             90     double vers float
+    i2b             91     int vers byte (troncature signee)
+    i2c             92     int vers char (troncature non signee)
+    i2s             93     int vers short (troncature signee)
+
+  Note : les conversions d elargissement (widening) comme int->long
+  sont toujours sans perte. Les conversions de retrecissement
+  (narrowing) comme long->int peuvent perdre de l information.
+
+==============================================================================
+  9. Les opcodes de controle de flux
+==============================================================================
+
+  9.1 Branchements inconditionnels
+  --------------------------------
+
+    Opcode          Hex    Description
+    --------------- ----   ------------------------------------------
+    goto <label>    A7     Branchement inconditionnel vers <label>
+    goto_w <label>  C8     Branchement inconditionnel (offset large)
+    jsr <label>     A8     Saut vers sous-routine, empile adresse retour
+    jsr_w <label>   C9     Saut vers sous-routine (offset large)
+    ret <var>       A9     Retour de sous-routine (adresse dans <var>)
+
+  9.2 Branchements conditionnels sur un int
+  ------------------------------------------
+
+    Ces instructions depilent un int et branchent selon sa valeur :
+
+    Opcode          Hex    Description
+    --------------- ----   ------------------------------------------
+    ifeq <label>    99     Brancher si valeur == 0
+    ifne <label>    9A     Brancher si valeur != 0
+    iflt <label>    9B     Brancher si valeur < 0
+    ifge <label>    9C     Brancher si valeur >= 0
+    ifgt <label>    9D     Brancher si valeur > 0
+    ifle <label>    9E     Brancher si valeur <= 0
+
+  9.3 Branchements conditionnels sur deux int
+  --------------------------------------------
+
+    Ces instructions depilent deux int et comparent :
+
+    Opcode            Hex    Description
+    ----------------- ----   ------------------------------------------
+    if_icmpeq <label> 9F     Brancher si a == b
+    if_icmpne <label> A0     Brancher si a != b
+    if_icmplt <label> A1     Brancher si a < b
+    if_icmpge <label> A2     Brancher si a >= b
+    if_icmpgt <label> A3     Brancher si a > b
+    if_icmple <label> A4     Brancher si a <= b
+
+  9.4 Branchements conditionnels sur les references
+  --------------------------------------------------
+
+    Opcode            Hex    Description
+    ----------------- ----   ------------------------------------------
+    ifnull <label>    C6     Brancher si reference == null
+    ifnonnull <label> C7     Brancher si reference != null
+    if_acmpeq <label> A5     Brancher si ref_a == ref_b
+    if_acmpne <label> A6     Brancher si ref_a != ref_b
+
+  9.5 Instructions de choix multiple (switch)
+  --------------------------------------------
+
+    Opcode                  Hex    Description
+    ----------------------- ----   -----------------------------------
+    tableswitch             AA     Switch avec index contigus
+    lookupswitch            AB     Switch avec valeurs dispersees
+
+    Exemple de tableswitch :
+      tableswitch 0 2        ; valeurs de 0 a 2
+          Label0             ; case 0
+          Label1             ; case 1
+          Label2             ; case 2
+          Default            ; default
+
+    Exemple de lookupswitch :
+      lookupswitch
+          1 : Label1         ; case 1
+          5 : Label5         ; case 5
+          100 : Label100     ; case 100
+          default : Default  ; default
+
+  9.6 Retour de methode
+  ---------------------
+
+    Opcode          Hex    Description
+    --------------- ----   ------------------------------------------
+    ireturn         AC     Retourner un int
+    lreturn         AD     Retourner un long
+    freturn         AE     Retourner un float
+    dreturn         AF     Retourner un double
+    areturn         B0     Retourner une reference
+    return          B1     Retourner void (aucune valeur)
+
+==============================================================================
+  10. Les opcodes d invocation de methodes
+==============================================================================
+
+  10.1 Types d invocation
+  -----------------------
+
+    Opcode                     Hex    Description
+    -------------------------- ----   --------------------------------
+    invokevirtual <methode>    B6     Appeler methode d instance
+    invokespecial <methode>    B7     Appeler constructeur ou super
+    invokestatic <methode>     B8     Appeler methode statique
+    invokeinterface <meth> <n> B9     Appeler methode d interface
+    invokedynamic <meth>       BA     Appel dynamique (Java 7+)
+
+  10.2 Format des references de methodes
+  ---------------------------------------
+
+    Les methodes sont referencees par leur chemin complet :
+      classe/methode(descripteur)type_retour
+
+    Exemples :
+
+      ; Appeler System.out.println(String)
+      invokevirtual java/io/PrintStream/println(Ljava/lang/String;)V
+
+      ; Appeler le constructeur de Object
+      invokespecial java/lang/Object/<init>()V
+
+      ; Appeler Integer.parseInt(String)
+      invokestatic java/lang/Integer/parseInt(Ljava/lang/String;)I
+
+      ; Appeler Math.max(int, int)
+      invokestatic java/lang/Math/max(II)I
+
+  10.3 Acces aux champs
+  ---------------------
+
+    Opcode                  Hex    Description
+    ----------------------- ----   -----------------------------------
+    getstatic <champ>       B2     Lire champ statique
+    putstatic <champ>       B3     Ecrire champ statique
+    getfield <champ>        B4     Lire champ d instance
+    putfield <champ>        B5     Ecrire champ d instance
+
+    Exemples :
+
+      ; Charger System.out (un PrintStream)
+      getstatic java/lang/System/out Ljava/io/PrintStream;
+
+      ; Lire un champ d instance
+      getfield MaClasse/compteur I
+
+==============================================================================
+  11. Les opcodes de manipulation de la pile
+==============================================================================
+
+    Opcode          Hex    Description
+    --------------- ----   ------------------------------------------
+    pop             57     Retirer le sommet de la pile (1 mot)
+    pop2            58     Retirer 2 mots du sommet
+    dup             59     Dupliquer le sommet de la pile
+    dup_x1          5A     Dupliquer et inserer sous le 2e element
+    dup_x2          5B     Dupliquer et inserer sous le 3e element
+    dup2            5C     Dupliquer les 2 mots du sommet
+    dup2_x1         5D     Dupliquer 2 mots et inserer sous le 3e
+    dup2_x2         5E     Dupliquer 2 mots et inserer sous le 5e
+    swap            5F     Echanger les 2 elements du sommet
+    nop             00     Ne rien faire (aucune operation)
+
+  Exemple d utilisation de dup pour affecter et utiliser une valeur :
+
+    bipush 42             ; empiler 42
+    dup                   ; dupliquer : pile = 42, 42
+    istore 1              ; stocker dans var 1 : pile = 42
+    ; la valeur 42 est encore sur la pile pour une utilisation ulterieure
+
+==============================================================================
+  12. Les opcodes de creation d objets et tableaux
+==============================================================================
+
+  12.1 Creation d objets
+  ----------------------
+
+    Opcode                  Hex    Description
+    ----------------------- ----   -----------------------------------
+    new <classe>            BB     Creer un nouvel objet (non initialise)
+    instanceof <classe>     C1     Verifier le type d un objet
+    checkcast <classe>      C0     Conversion de type avec verification
+
+    Exemple de creation d objet :
+      new java/lang/StringBuilder       ; creer objet
+      dup                               ; dupliquer la reference
+      invokespecial java/lang/StringBuilder/<init>()V  ; constructeur
+
+  12.2 Creation de tableaux
+  -------------------------
+
+    Opcode                  Hex    Description
+    ----------------------- ----   -----------------------------------
+    newarray <type>         BC     Creer tableau de type primitif
+    anewarray <classe>      BD     Creer tableau de references
+    multianewarray <t> <d>  C5     Creer tableau multidimensionnel
+    arraylength             BE     Obtenir la longueur d un tableau
+
+    Codes de type pour newarray :
+      4  = boolean
+      5  = char
+      6  = float
+      7  = double
+      8  = byte
+      9  = short
+      10 = int
+      11 = long
+
+    Exemple :
+      bipush 10                ; taille = 10
+      newarray int             ; creer int[10]
+      astore 1                 ; stocker la reference dans var 1
+
+==============================================================================
+  13. Les opcodes de comparaison
+==============================================================================
+
+  Ces instructions comparent des valeurs long, float ou double et
+  empilent un int (-1, 0, ou 1) representant le resultat :
+
+    Opcode          Hex    Description
+    --------------- ----   ------------------------------------------
+    lcmp            94     Comparer deux long
+    fcmpl           95     Comparer deux float (NaN -> -1)
+    fcmpg           96     Comparer deux float (NaN -> 1)
+    dcmpl           97     Comparer deux double (NaN -> -1)
+    dcmpg           98     Comparer deux double (NaN -> 1)
+
+  Resultat empile :
+    -1 si a < b
+     0 si a == b
+     1 si a > b
+
+  Exemple : comparer deux long et brancher si egal :
+    lload 0               ; charger premier long
+    lload 2               ; charger second long
+    lcmp                  ; comparer -> -1, 0, ou 1
+    ifeq SontEgaux        ; brancher si resultat == 0
+
+==============================================================================
+  14. Exemples complets
+==============================================================================
+
+  14.1 Hello World
+  ----------------
+
+    ; HelloWorld.j - Affiche "Hello, World!" sur la console
+
+    .class public HelloWorld
+    .super java/lang/Object
+
+    .method public <init>()V
+        aload_0
+        invokespecial java/lang/Object/<init>()V
+        return
+    .end method
+
+    .method public static main([Ljava/lang/String;)V
+        .limit stack 2
+        .limit locals 1
+
+        getstatic java/lang/System/out Ljava/io/PrintStream;
+        ldc "Hello, World!"
+        invokevirtual java/io/PrintStream/println(Ljava/lang/String;)V
+
+        return
+    .end method
+
+  14.2 Calcul arithmetique
+  ------------------------
+
+    ; Calcule (3 + 5) * 2 et affiche le resultat
+
+    .class public Calcul
+    .super java/lang/Object
+
+    .method public <init>()V
+        aload_0
+        invokespecial java/lang/Object/<init>()V
+        return
+    .end method
+
+    .method public static main([Ljava/lang/String;)V
+        .limit stack 3
+        .limit locals 2
+
+        bipush 3              ; empiler 3
+        bipush 5              ; empiler 5
+        iadd                  ; 3 + 5 = 8
+        iconst_2              ; empiler 2
+        imul                  ; 8 * 2 = 16
+        istore 1              ; stocker dans variable locale 1
+
+        ; Afficher le resultat
+        getstatic java/lang/System/out Ljava/io/PrintStream;
+        iload 1
+        invokevirtual java/io/PrintStream/println(I)V
+
+        return
+    .end method
+
+  14.3 Boucle avec compteur
+  -------------------------
+
+    ; Affiche les nombres de 1 a 10
+
+    .class public Boucle
+    .super java/lang/Object
+
+    .method public <init>()V
+        aload_0
+        invokespecial java/lang/Object/<init>()V
+        return
+    .end method
+
+    .method public static main([Ljava/lang/String;)V
+        .limit stack 3
+        .limit locals 2
+
+        iconst_1              ; i = 1
+        istore 1
+
+    Debut:
+        iload 1               ; charger i
+        bipush 11             ; charger 11
+        if_icmpge Fin         ; si i >= 11, sortir
+
+        ; Afficher i
+        getstatic java/lang/System/out Ljava/io/PrintStream;
+        iload 1
+        invokevirtual java/io/PrintStream/println(I)V
+
+        iinc 1 1              ; i++
+        goto Debut
+
+    Fin:
+        return
+    .end method
+
+  14.4 Condition if/else
+  ----------------------
+
+    ; Verifie si un nombre est positif, negatif ou zero
+
+    .class public Condition
+    .super java/lang/Object
+
+    .method public <init>()V
+        aload_0
+        invokespecial java/lang/Object/<init>()V
+        return
+    .end method
+
+    .method public static main([Ljava/lang/String;)V
+        .limit stack 3
+        .limit locals 2
+
+        bipush 42             ; valeur a tester
+        istore 1
+
+        iload 1
+        ifgt Positif          ; si > 0, aller a Positif
+        iload 1
+        iflt Negatif          ; si < 0, aller a Negatif
+
+        ; Cas zero
+        getstatic java/lang/System/out Ljava/io/PrintStream;
+        ldc "Zero"
+        invokevirtual java/io/PrintStream/println(Ljava/lang/String;)V
+        goto Suite
+
+    Positif:
+        getstatic java/lang/System/out Ljava/io/PrintStream;
+        ldc "Positif"
+        invokevirtual java/io/PrintStream/println(Ljava/lang/String;)V
+        goto Suite
+
+    Negatif:
+        getstatic java/lang/System/out Ljava/io/PrintStream;
+        ldc "Negatif"
+        invokevirtual java/io/PrintStream/println(Ljava/lang/String;)V
+
+    Suite:
+        return
+    .end method
+
+  14.5 Appel de methode statique
+  ------------------------------
+
+    ; Definit une methode factorielle et l appelle
+
+    .class public Factorielle
+    .super java/lang/Object
+
+    .method public <init>()V
+        aload_0
+        invokespecial java/lang/Object/<init>()V
+        return
+    .end method
+
+    .method public static fact(I)I
+        .limit stack 4
+        .limit locals 2
+
+        iload 0               ; charger n
+        iconst_1
+        if_icmple CasBase     ; si n <= 1, retourner 1
+
+        iload 0               ; empiler n
+        iload 0               ; empiler n
+        iconst_1
+        isub                  ; n - 1
+        invokestatic Factorielle/fact(I)I  ; fact(n-1)
+        imul                  ; n * fact(n-1)
+        ireturn
+
+    CasBase:
+        iconst_1
+        ireturn
+    .end method
+
+    .method public static main([Ljava/lang/String;)V
+        .limit stack 3
+        .limit locals 1
+
+        getstatic java/lang/System/out Ljava/io/PrintStream;
+        bipush 10
+        invokestatic Factorielle/fact(I)I
+        invokevirtual java/io/PrintStream/println(I)V
+
+        return
+    .end method
+
+==============================================================================
+  15. Utilisation avec CCJASMIN.PAS
+==============================================================================
+
+  15.1 Presentation du compilateur
+  --------------------------------
+
+  CCJASMIN.PAS est un compilateur C vers Jasmin JVM ecrit en Pascal
+  (Free Pascal / Turbo Pascal). Il fait partie du projet DEV-COOLS
+  et compte environ 6334 lignes de code source.
+
+  Il traduit un sous-ensemble du langage C en instructions Jasmin
+  executables sur la machine virtuelle Java.
+
+  15.2 Fonctionnalites supportees
+  --------------------------------
+
+  Types C supportes et leur correspondance JVM :
+
+    Type C          Type JVM       Descripteur
+    -----------     ----------     -----------
+    char            byte/int       B / I
+    short           short/int      S / I
+    int             int            I
+    long            long           J
+    float           float          F
+    double          double         D
+    void            void           V
+
+  Constructions du langage C supportees :
+
+    - Declarations de variables (locales et globales)
+    - Affectations simples et composees (=, +=, -=, *=, /=, %=)
+    - Operations arithmetiques (+, -, *, /, %)
+    - Operations logiques (&&, ||, !)
+    - Operations bit a bit (&, |, ^, ~, <<, >>)
+    - Structures conditionnelles (if, else, switch/case)
+    - Boucles (while, for, do-while)
+    - Fonctions (declaration, definition, appels)
+    - Tableaux a une dimension
+    - Instructions break, continue, goto, return
+    - Preprocesseur (#include, #define, #if, #ifdef)
+
+  15.3 Generation du code
+  -----------------------
+
+  Le compilateur CCJASMIN.PAS genere un fichier .j contenant :
+
+    1. L en-tete de classe (.class public Main / .super java/lang/Object)
+    2. Le constructeur par defaut (<init>)
+    3. La methode main avec .limit stack 100 et .limit locals 100
+    4. Les instructions Jasmin correspondant au code C
+
+  Les variables locales C sont allouees dans les variables locales JVM
+  (numerotees a partir de 1 dans main, la variable 0 etant args).
+
+  Les expressions sont evaluees sur la pile d operandes en utilisant
+  les instructions de chargement (iload, bipush, ldc) et les
+  instructions arithmetiques (iadd, isub, imul, idiv, irem).
+
+  Les structures de controle utilisent des etiquettes numerotees
+  (L0, L1, L2...) et les instructions de branchement conditionnel
+  (ifeq, ifne, iflt, ifgt, if_icmpeq, goto...).
+
+  15.4 Niveaux d optimisation
+  ---------------------------
+
+  Le compilateur supporte plusieurs niveaux d optimisation :
+
+    Niveau 0 : Aucune optimisation
+    Niveau 1 : Optimisations de base
+    Niveau 2 : Optimisations avancees
+    Niveau 3 : Optimisations agressives
+
+  Les techniques d optimisation incluent :
+
+    - Analyse peephole (remplacement de motifs d instructions)
+    - Elimination du code mort
+    - Repliement de constantes (constant folding)
+    - Reduction de force (strength reduction)
+    - Allocation de registres (mapping vers variables locales)
+    - Optimisation des sauts (elimination de sauts redondants)
+
+==============================================================================
+  16. Assemblage et execution
+==============================================================================
+
+  16.1 Chaine de compilation
+  --------------------------
+
+  Pour compiler et executer un programme Jasmin :
+
+    1. Ecrire le fichier source (MonProgramme.j)
+    2. Assembler avec Jasmin :
+         java -jar jasmin.jar MonProgramme.j
+       Cela produit MonProgramme.class
+    3. Executer avec la JVM :
+         java MonProgramme
+
+  16.2 Avec CCJASMIN.PAS
+  -----------------------
+
+  Pour utiliser le compilateur CCJASMIN.PAS :
+
+    1. Compiler CCJASMIN.PAS avec Free Pascal :
+         fpc -Mtp CCJASMIN.PAS -oCCJASMIN
+    2. Compiler un fichier C en Jasmin :
+         ./CCJASMIN source.c
+       Cela produit un fichier .j
+    3. Assembler avec Jasmin :
+         java -jar jasmin.jar source.j
+    4. Executer :
+         java Main
+
+  16.3 Avec JASMIN.PAS (assembleur Jasmin natif)
+  ------------------------------------------------
+
+  JASMIN.PAS est un assembleur Jasmin natif ecrit en Turbo Pascal /
+  Free Pascal. Il assemble directement les fichiers .j en fichiers
+  .class sans necessiter Java ou jasmin.jar.
+
+    1. Compiler JASMIN.PAS avec Free Pascal :
+         fpc -Mtp JASMIN.PAS -oJASMIN
+    2. Assembler un fichier Jasmin en .class :
+         ./JASMIN MonProgramme.j
+       Cela produit MonProgramme.class
+    3. Executer avec la JVM :
+         java MonProgramme
+
+  Options de la ligne de commande :
+    -o <fichier.class>  : specifier le nom du fichier de sortie
+    -d <repertoire>     : specifier le repertoire de sortie
+    -g                  : inclure les informations de debogage
+
+  Les fichiers exemples se trouvent dans SAMPLES/JASMIN/*.j.
+
+  16.4 Verification du bytecode
+  -----------------------------
+
+  La JVM effectue une verification du bytecode lors du chargement
+  d une classe. Cette verification inclut :
+
+    - Verification de la structure du fichier .class
+    - Verification des types sur la pile d operandes
+    - Verification que la pile ne deborde pas (stack overflow)
+    - Verification que les variables locales sont initialisees
+    - Verification que les branchements menent a des instructions valides
+    - Verification des acces aux champs et methodes
+
+  Si la verification echoue, la JVM lance une VerifyError et refuse
+  d executer le programme. Les directives .limit stack et .limit locals
+  doivent etre correctement definies pour eviter ces erreurs.
+
+==============================================================================
+  17. Differences avec le bytecode Java brut
+==============================================================================
+
+  Jasmin est une representation textuelle du bytecode Java. Les
+  differences principales avec le format binaire .class sont :
+
+    Aspect                  Jasmin (.j)            Bytecode (.class)
+    ----------------------  ---------------------  ----------------------
+    Format                  Texte lisible          Binaire
+    Adresses de saut        Etiquettes nommees     Offsets numeriques
+    References              Noms complets          Index dans pool
+    Commentaires            Oui (;)                Non
+    Lisibilite              Elevee                 Tres faible
+    Taille                  Plus grande            Compacte
+    Modification            Editeur texte          Outil specialise
+
+  Jasmin gere automatiquement :
+
+    - Le calcul des offsets de saut a partir des etiquettes
+    - La construction du bassin de constantes (constant pool)
+    - L encodage des instructions en octets
+    - La generation de l en-tete du fichier .class
+    - Le padding des instructions tableswitch/lookupswitch
+
+  Cela rend Jasmin beaucoup plus pratique que la manipulation directe
+  du format binaire .class pour l experimentation et l enseignement.
+
+==============================================================================
+  18. Ressources dans le projet
+==============================================================================
+
+  Fichiers du projet DEV-COOLS lies a Jasmin et Java :
+
+    CCJASMIN.PAS              Compilateur C vers Jasmin JVM (6334 lignes)
+    JASMIN.PAS                Assembleur Jasmin : fichiers .j -> .class
+    JAVAC86.PAS               Compilateur Java vers assembleur 8086
+    ASC2JAVA.PAS              Convertisseur de code vers Java
+    WIN32/javac86.exe         Executable pre-compile du compilateur Java
+
+    SAMPLES/JASMIN/           Fichiers exemples Jasmin (.j) :
+      Hello.j                   Hello World minimal
+      test01_hello.j            Test affichage de chaines
+      test02_variables.j        Test variables locales int
+      test03_arith.j            Test operations arithmetiques
+      test04_cond.j             Test branchements conditionnels
+      test05_loop.j             Test boucles (goto, iinc)
+      test06_method.j           Test appel de methodes statiques
+      test07_field.j            Test champs d instance et statiques
+      test08_array.j            Test creation et manipulation de tableaux
+      test09_except.j           Test gestion d exceptions
+      test10_stack.j            Test manipulation de la pile
+
+    SAMPLES/JAVA/             Fichiers exemples Java :
+      Hello.java                Hello World simple
+      test01_hello.java         Test sortie de base
+      test02_vars.java          Test variables
+      test03_arith.java         Test arithmetique
+      test04_cond.java          Test conditions
+      test05_while.java         Test boucles while
+      test06_for.java           Test boucles for
+      test07_fonct.java         Test fonctions
+      test08_string.java        Test chaines
+      test09_array.java         Test tableaux
+      test10_recurs.java        Test recursion
+
+  Documentation connexe dans DOC/ :
+
+    APPLICATION_COMPILER.txt    Comment ecrire un compilateur
+    APPLICATION_ASSEMBLER.txt   Comment ecrire un assembleur
+    ASM_80386.txt               Reference assembleur Intel 80386
+
+==============================================================================
+  19. Tableau complet des instructions JVM
+==============================================================================
+
+  Ce tableau recense les 256 opcodes de la machine virtuelle Java.
+  Chaque instruction est identifiee par son code hexadecimal, son
+  mnemonique Jasmin, ses operandes eventuels et son effet sur la pile.
+
+  Notation de la pile :
+    -> val         : empile une valeur
+    val ->         : depile une valeur
+    a, b -> c      : depile a et b, empile c
+    [aucun]        : aucun effet sur la pile
+
+  Abreviations :
+    var   = index de variable locale
+    idx   = index dans le bassin de constantes (constant pool)
+    off   = offset de branchement (etiquette en Jasmin)
+
+  19.1 Instructions 00-0F : constantes et nop
+  --------------------------------------------
+
+    Hex  Mnemonique     Operandes  Pile                Description
+    ---  -------------- ---------  ------------------  ---------------------------
+    00   nop            [aucun]    [aucun]             Ne rien faire
+    01   aconst_null    [aucun]    -> null             Empiler null
+    02   iconst_m1      [aucun]    -> -1               Empiler int -1
+    03   iconst_0       [aucun]    -> 0                Empiler int 0
+    04   iconst_1       [aucun]    -> 1                Empiler int 1
+    05   iconst_2       [aucun]    -> 2                Empiler int 2
+    06   iconst_3       [aucun]    -> 3                Empiler int 3
+    07   iconst_4       [aucun]    -> 4                Empiler int 4
+    08   iconst_5       [aucun]    -> 5                Empiler int 5
+    09   lconst_0       [aucun]    -> 0L               Empiler long 0
+    0A   lconst_1       [aucun]    -> 1L               Empiler long 1
+    0B   fconst_0       [aucun]    -> 0.0f             Empiler float 0.0
+    0C   fconst_1       [aucun]    -> 1.0f             Empiler float 1.0
+    0D   fconst_2       [aucun]    -> 2.0f             Empiler float 2.0
+    0E   dconst_0       [aucun]    -> 0.0d             Empiler double 0.0
+    0F   dconst_1       [aucun]    -> 1.0d             Empiler double 1.0
+
+  19.2 Instructions 10-14 : chargement de constantes
+  ---------------------------------------------------
+
+    Hex  Mnemonique     Operandes  Pile                Description
+    ---  -------------- ---------  ------------------  ---------------------------
+    10   bipush         byte       -> val              Empiler byte signe
+    11   sipush         short      -> val              Empiler short signe
+    12   ldc            idx        -> val              Charger int/float/String
+    13   ldc_w          idx        -> val              Charger (index large)
+    14   ldc2_w         idx        -> val              Charger long/double
+
+  19.3 Instructions 15-2D : chargement depuis variables locales
+  -------------------------------------------------------------
+
+    Hex  Mnemonique     Operandes  Pile                Description
+    ---  -------------- ---------  ------------------  ---------------------------
+    15   iload          var        -> val              Charger int
+    16   lload          var        -> val              Charger long
+    17   fload          var        -> val              Charger float
+    18   dload          var        -> val              Charger double
+    19   aload          var        -> val              Charger reference
+    1A   iload_0        [aucun]    -> val              Charger int var 0
+    1B   iload_1        [aucun]    -> val              Charger int var 1
+    1C   iload_2        [aucun]    -> val              Charger int var 2
+    1D   iload_3        [aucun]    -> val              Charger int var 3
+    1E   lload_0        [aucun]    -> val              Charger long var 0
+    1F   lload_1        [aucun]    -> val              Charger long var 1
+    20   lload_2        [aucun]    -> val              Charger long var 2
+    21   lload_3        [aucun]    -> val              Charger long var 3
+    22   fload_0        [aucun]    -> val              Charger float var 0
+    23   fload_1        [aucun]    -> val              Charger float var 1
+    24   fload_2        [aucun]    -> val              Charger float var 2
+    25   fload_3        [aucun]    -> val              Charger float var 3
+    26   dload_0        [aucun]    -> val              Charger double var 0
+    27   dload_1        [aucun]    -> val              Charger double var 1
+    28   dload_2        [aucun]    -> val              Charger double var 2
+    29   dload_3        [aucun]    -> val              Charger double var 3
+    2A   aload_0        [aucun]    -> val              Charger reference var 0
+    2B   aload_1        [aucun]    -> val              Charger reference var 1
+    2C   aload_2        [aucun]    -> val              Charger reference var 2
+    2D   aload_3        [aucun]    -> val              Charger reference var 3
+
+  19.4 Instructions 2E-35 : chargement depuis tableaux
+  -----------------------------------------------------
+
+    Hex  Mnemonique     Operandes  Pile                Description
+    ---  -------------- ---------  ------------------  ---------------------------
+    2E   iaload         [aucun]    ref, idx -> val     Charger int du tableau
+    2F   laload         [aucun]    ref, idx -> val     Charger long du tableau
+    30   faload         [aucun]    ref, idx -> val     Charger float du tableau
+    31   daload         [aucun]    ref, idx -> val     Charger double du tableau
+    32   aaload         [aucun]    ref, idx -> val     Charger ref du tableau
+    33   baload         [aucun]    ref, idx -> val     Charger byte du tableau
+    34   caload         [aucun]    ref, idx -> val     Charger char du tableau
+    35   saload         [aucun]    ref, idx -> val     Charger short du tableau
+
+  19.5 Instructions 36-4E : stockage dans variables locales
+  ----------------------------------------------------------
+
+    Hex  Mnemonique     Operandes  Pile                Description
+    ---  -------------- ---------  ------------------  ---------------------------
+    36   istore         var        val ->              Stocker int
+    37   lstore         var        val ->              Stocker long
+    38   fstore         var        val ->              Stocker float
+    39   dstore         var        val ->              Stocker double
+    3A   astore         var        val ->              Stocker reference
+    3B   istore_0       [aucun]    val ->              Stocker int var 0
+    3C   istore_1       [aucun]    val ->              Stocker int var 1
+    3D   istore_2       [aucun]    val ->              Stocker int var 2
+    3E   istore_3       [aucun]    val ->              Stocker int var 3
+    3F   lstore_0       [aucun]    val ->              Stocker long var 0
+    40   lstore_1       [aucun]    val ->              Stocker long var 1
+    41   lstore_2       [aucun]    val ->              Stocker long var 2
+    42   lstore_3       [aucun]    val ->              Stocker long var 3
+    43   fstore_0       [aucun]    val ->              Stocker float var 0
+    44   fstore_1       [aucun]    val ->              Stocker float var 1
+    45   fstore_2       [aucun]    val ->              Stocker float var 2
+    46   fstore_3       [aucun]    val ->              Stocker float var 3
+    47   dstore_0       [aucun]    val ->              Stocker double var 0
+    48   dstore_1       [aucun]    val ->              Stocker double var 1
+    49   dstore_2       [aucun]    val ->              Stocker double var 2
+    4A   dstore_3       [aucun]    val ->              Stocker double var 3
+    4B   astore_0       [aucun]    val ->              Stocker reference var 0
+    4C   astore_1       [aucun]    val ->              Stocker reference var 1
+    4D   astore_2       [aucun]    val ->              Stocker reference var 2
+    4E   astore_3       [aucun]    val ->              Stocker reference var 3
+
+  19.6 Instructions 4F-56 : stockage dans tableaux
+  -------------------------------------------------
+
+    Hex  Mnemonique     Operandes  Pile                Description
+    ---  -------------- ---------  ------------------  ---------------------------
+    4F   iastore        [aucun]    ref, idx, val ->    Stocker int dans tableau
+    50   lastore        [aucun]    ref, idx, val ->    Stocker long dans tableau
+    51   fastore        [aucun]    ref, idx, val ->    Stocker float dans tableau
+    52   dastore        [aucun]    ref, idx, val ->    Stocker double dans tableau
+    53   aastore        [aucun]    ref, idx, val ->    Stocker ref dans tableau
+    54   bastore        [aucun]    ref, idx, val ->    Stocker byte dans tableau
+    55   castore        [aucun]    ref, idx, val ->    Stocker char dans tableau
+    56   sastore        [aucun]    ref, idx, val ->    Stocker short dans tableau
+
+  19.7 Instructions 57-5F : manipulation de la pile
+  --------------------------------------------------
+
+    Hex  Mnemonique     Operandes  Pile                Description
+    ---  -------------- ---------  ------------------  ---------------------------
+    57   pop            [aucun]    val ->              Retirer 1 mot
+    58   pop2           [aucun]    val, val ->         Retirer 2 mots
+    59   dup            [aucun]    val -> val, val     Dupliquer sommet
+    5A   dup_x1         [aucun]    b, a -> a, b, a    Dup sous 2e element
+    5B   dup_x2         [aucun]    c, b, a -> a,c,b,a Dup sous 3e element
+    5C   dup2           [aucun]    b, a -> b, a, b, a Dupliquer 2 mots
+    5D   dup2_x1        [aucun]    c,b,a -> b,a,c,b,a Dup2 sous 3e element
+    5E   dup2_x2        [aucun]    d,c,b,a->b,a,d,c.. Dup2 sous 4e element
+    5F   swap           [aucun]    b, a -> a, b       Echanger 2 mots
+
+  19.8 Instructions 60-84 : arithmetique et logique
+  --------------------------------------------------
+
+    Hex  Mnemonique     Operandes  Pile                Description
+    ---  -------------- ---------  ------------------  ---------------------------
+    60   iadd           [aucun]    a, b -> a+b         Addition int
+    61   ladd           [aucun]    a, b -> a+b         Addition long
+    62   fadd           [aucun]    a, b -> a+b         Addition float
+    63   dadd           [aucun]    a, b -> a+b         Addition double
+    64   isub           [aucun]    a, b -> a-b         Soustraction int
+    65   lsub           [aucun]    a, b -> a-b         Soustraction long
+    66   fsub           [aucun]    a, b -> a-b         Soustraction float
+    67   dsub           [aucun]    a, b -> a-b         Soustraction double
+    68   imul           [aucun]    a, b -> a*b         Multiplication int
+    69   lmul           [aucun]    a, b -> a*b         Multiplication long
+    6A   fmul           [aucun]    a, b -> a*b         Multiplication float
+    6B   dmul           [aucun]    a, b -> a*b         Multiplication double
+    6C   idiv           [aucun]    a, b -> a/b         Division int
+    6D   ldiv           [aucun]    a, b -> a/b         Division long
+    6E   fdiv           [aucun]    a, b -> a/b         Division float
+    6F   ddiv           [aucun]    a, b -> a/b         Division double
+    70   irem           [aucun]    a, b -> a%b         Reste int
+    71   lrem           [aucun]    a, b -> a%b         Reste long
+    72   frem           [aucun]    a, b -> a%b         Reste float
+    73   drem           [aucun]    a, b -> a%b         Reste double
+    74   ineg           [aucun]    a -> -a             Negation int
+    75   lneg           [aucun]    a -> -a             Negation long
+    76   fneg           [aucun]    a -> -a             Negation float
+    77   dneg           [aucun]    a -> -a             Negation double
+    78   ishl           [aucun]    a, n -> a<<n        Decalage gauche int
+    79   lshl           [aucun]    a, n -> a<<n        Decalage gauche long
+    7A   ishr           [aucun]    a, n -> a>>n        Decalage droite int (signe)
+    7B   lshr           [aucun]    a, n -> a>>n        Decalage droite long (signe)
+    7C   iushr          [aucun]    a, n -> a>>>n       Decalage droite int (logiq)
+    7D   lushr          [aucun]    a, n -> a>>>n       Decalage droite long (logiq)
+    7E   iand           [aucun]    a, b -> a&b         ET binaire int
+    7F   land           [aucun]    a, b -> a&b         ET binaire long
+    80   ior            [aucun]    a, b -> a|b         OU binaire int
+    81   lor            [aucun]    a, b -> a|b         OU binaire long
+    82   ixor           [aucun]    a, b -> a^b         OU exclusif int
+    83   lxor           [aucun]    a, b -> a^b         OU exclusif long
+    84   iinc           var, n     [aucun]             Incrementer var de n
+
+  19.9 Instructions 85-93 : conversion de types
+  -----------------------------------------------
+
+    Hex  Mnemonique     Operandes  Pile                Description
+    ---  -------------- ---------  ------------------  ---------------------------
+    85   i2l            [aucun]    int -> long         int vers long
+    86   i2f            [aucun]    int -> float        int vers float
+    87   i2d            [aucun]    int -> double       int vers double
+    88   l2i            [aucun]    long -> int         long vers int
+    89   l2f            [aucun]    long -> float       long vers float
+    8A   l2d            [aucun]    long -> double      long vers double
+    8B   f2i            [aucun]    float -> int        float vers int
+    8C   f2l            [aucun]    float -> long       float vers long
+    8D   f2d            [aucun]    float -> double     float vers double
+    8E   d2i            [aucun]    double -> int       double vers int
+    8F   d2l            [aucun]    double -> long      double vers long
+    90   d2f            [aucun]    double -> float     double vers float
+    91   i2b            [aucun]    int -> byte         int vers byte
+    92   i2c            [aucun]    int -> char         int vers char
+    93   i2s            [aucun]    int -> short        int vers short
+
+  19.10 Instructions 94-98 : comparaison
+  ---------------------------------------
+
+    Hex  Mnemonique     Operandes  Pile                Description
+    ---  -------------- ---------  ------------------  ---------------------------
+    94   lcmp           [aucun]    a, b -> res         Comparer deux long
+    95   fcmpl          [aucun]    a, b -> res         Comparer float (NaN=-1)
+    96   fcmpg          [aucun]    a, b -> res         Comparer float (NaN=1)
+    97   dcmpl          [aucun]    a, b -> res         Comparer double (NaN=-1)
+    98   dcmpg          [aucun]    a, b -> res         Comparer double (NaN=1)
+
+  19.11 Instructions 99-A6 : branchements conditionnels
+  ------------------------------------------------------
+
+    Hex  Mnemonique     Operandes  Pile                Description
+    ---  -------------- ---------  ------------------  ---------------------------
+    99   ifeq           off        val ->              Brancher si == 0
+    9A   ifne           off        val ->              Brancher si != 0
+    9B   iflt           off        val ->              Brancher si < 0
+    9C   ifge           off        val ->              Brancher si >= 0
+    9D   ifgt           off        val ->              Brancher si > 0
+    9E   ifle           off        val ->              Brancher si <= 0
+    9F   if_icmpeq      off        a, b ->             Brancher si a == b
+    A0   if_icmpne      off        a, b ->             Brancher si a != b
+    A1   if_icmplt      off        a, b ->             Brancher si a < b
+    A2   if_icmpge      off        a, b ->             Brancher si a >= b
+    A3   if_icmpgt      off        a, b ->             Brancher si a > b
+    A4   if_icmple      off        a, b ->             Brancher si a <= b
+    A5   if_acmpeq      off        a, b ->             Brancher si ref a == ref b
+    A6   if_acmpne      off        a, b ->             Brancher si ref a != ref b
+
+  19.12 Instructions A7-B1 : branchement et retour
+  -------------------------------------------------
+
+    Hex  Mnemonique     Operandes  Pile                Description
+    ---  -------------- ---------  ------------------  ---------------------------
+    A7   goto           off        [aucun]             Saut inconditionnel
+    A8   jsr            off        -> adr              Saut sous-routine
+    A9   ret            var        [aucun]             Retour sous-routine
+    AA   tableswitch    [spec]     idx ->              Switch table contigue
+    AB   lookupswitch   [spec]     cle ->              Switch table dispersee
+    AC   ireturn        [aucun]    val ->              Retourner int
+    AD   lreturn        [aucun]    val ->              Retourner long
+    AE   freturn        [aucun]    val ->              Retourner float
+    AF   dreturn        [aucun]    val ->              Retourner double
+    B0   areturn        [aucun]    val ->              Retourner reference
+    B1   return         [aucun]    [aucun]             Retourner void
+
+  19.13 Instructions B2-B9 : champs et invocations
+  -------------------------------------------------
+
+    Hex  Mnemonique     Operandes  Pile                Description
+    ---  -------------- ---------  ------------------  ---------------------------
+    B2   getstatic      idx        -> val              Lire champ statique
+    B3   putstatic      idx        val ->              Ecrire champ statique
+    B4   getfield       idx        ref -> val          Lire champ d instance
+    B5   putfield       idx        ref, val ->         Ecrire champ d instance
+    B6   invokevirtual  idx        ref, [args] -> [r]  Appel methode virtuelle
+    B7   invokespecial  idx        ref, [args] -> [r]  Appel constructeur/super
+    B8   invokestatic   idx        [args] -> [r]       Appel methode statique
+    B9   invokeinterface idx, n    ref, [args] -> [r]  Appel methode interface
+
+  19.14 Instructions BA-C0 : objets et divers
+  --------------------------------------------
+
+    Hex  Mnemonique     Operandes  Pile                Description
+    ---  -------------- ---------  ------------------  ---------------------------
+    BA   invokedynamic  idx        [args] -> [r]       Appel dynamique (Java 7+)
+    BB   new            idx        -> ref              Creer objet
+    BC   newarray       type       taille -> ref       Creer tableau primitif
+    BD   anewarray      idx        taille -> ref       Creer tableau references
+    BE   arraylength    [aucun]    ref -> longueur     Longueur du tableau
+    BF   athrow         [aucun]    ref ->              Lancer exception
+    C0   checkcast      idx        ref -> ref          Verifier/convertir type
+
+  19.15 Instructions C1-C9 : types, moniteurs et branchements larges
+  -------------------------------------------------------------------
+
+    Hex  Mnemonique     Operandes  Pile                Description
+    ---  -------------- ---------  ------------------  ---------------------------
+    C1   instanceof     idx        ref -> res          Tester type (0 ou 1)
+    C2   monitorenter   [aucun]    ref ->              Entrer moniteur (synchro)
+    C3   monitorexit    [aucun]    ref ->              Sortir moniteur (synchro)
+    C4   wide           [spec]     [aucun]             Prefixe index large
+    C5   multianewarray idx, dim   t1,..,tN -> ref     Creer tableau N dimensions
+    C6   ifnull         off        ref ->              Brancher si null
+    C7   ifnonnull      off        ref ->              Brancher si non null
+    C8   goto_w         off        [aucun]             Saut inconditionnel (large)
+    C9   jsr_w          off        -> adr              Saut sous-routine (large)
+
+  19.16 Instructions CA-FD : reservees
+  -------------------------------------
+
+    Les opcodes CA a FD sont reserves par la specification JVM pour
+    un usage futur ou interne. Ils ne doivent pas etre utilises dans
+    du code Jasmin standard.
+
+    Hex  Mnemonique     Operandes  Pile                Description
+    ---  -------------- ---------  ------------------  ---------------------------
+    CA   breakpoint     [aucun]    [aucun]             Point d arret (debogueur)
+    CB   (reserve)      -          -                   Reserve
+    ...  ...            -          -                   ...
+    FD   (reserve)      -          -                   Reserve
+    FE   impdep1        [aucun]    [aucun]             Specifique implementation
+    FF   impdep2        [aucun]    [aucun]             Specifique implementation
+
+  19.17 Resume par categorie
+  --------------------------
+
+    Categorie                   Opcodes         Nombre
+    --------------------------  --------------  ------
+    Constantes et nop           00-14           21
+    Chargement variables        15-2D           25
+    Chargement tableaux         2E-35           8
+    Stockage variables          36-4E           25
+    Stockage tableaux           4F-56           8
+    Manipulation pile           57-5F           9
+    Arithmetique                60-84           37
+    Conversion types            85-93           15
+    Comparaison                 94-98           5
+    Branchement conditionnel    99-A6           14
+    Branchement et retour       A7-B1           11
+    Champs et invocations       B2-B9           8
+    Objets et divers            BA-C0           7
+    Types et moniteurs          C1-C9           9
+    Reserves                    CA-FF           54
+    --------------------------  --------------  ------
+    Total                       00-FF           256

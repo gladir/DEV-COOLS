@@ -1,0 +1,44 @@
+CO arrays.a68 : tableaux, tranches, LWB, UPB, STRING (TODO 25) CO
+
+CO Declaration de tableau avec bornes CO
+[1:5] INT a := (10, 20, 30, 40, 50);
+
+CO Acces aux elements CO
+INT premier := a[1];
+INT troisieme := a[3];
+INT dernier := a[5];
+print(("a[1] = ", premier, newline));
+print(("a[3] = ", troisieme, newline));
+print(("a[5] = ", dernier, newline));
+
+CO Bornes: LWB et UPB CO
+INT lo := LWB a;
+INT hi := UPB a;
+print(("LWB a = ", lo, newline));
+print(("UPB a = ", hi, newline));
+
+CO Tableau sans initialiseur CO
+[1:3] INT b;
+
+CO Parcours de tableau CO
+[1:5] INT tab := (2, 4, 6, 8, 10);
+INT somme := 0;
+FOR i FROM 1 TO 5 DO
+  somme +:= tab[i]
+OD;
+print(("somme tableau = ", somme, newline));
+
+CO Chaines: STRING est un tableau de CHAR CO
+STRING msg = "Algol 68";
+print(("message: ", msg, newline));
+
+CO Tranche de chaine CO
+STRING hello = "Hello World";
+STRING sub = hello[1:5];
+print(("hello[1:5] = ", sub, newline));
+
+CO Concatenation de chaines CO
+STRING s1 = "Bonjour";
+STRING s2 = " monde";
+STRING s3 = s1 + s2;
+print(("concat = ", s3, newline))

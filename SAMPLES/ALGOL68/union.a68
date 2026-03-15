@@ -1,0 +1,66 @@
+CO union.a68 : UNION, clause de conformite, CASE IN (TODO 25) CO
+BEGIN
+  CO Declaration de mode UNION CO
+  MODE NOMBRE = UNION(INT, REAL);
+
+  CO Variable UNION avec valeur INT CO
+  NOMBRE x := 42;
+
+  CO Clause de conformite : CASE IN CO
+  INT result := 0;
+  CASE x IN
+    (INT i) : result := i + 1,
+    (REAL r) : result := 0
+  OUT
+    result := -1
+  ESAC;
+  print(("conformite INT: result = ", result, newline));
+
+  CO UNION a une seule alternative CO
+  MODE WRAPPED = UNION(INT);
+  WRAPPED w := 99;
+  INT res2 := 0;
+  CASE w IN
+    (INT n) : res2 := n
+  ESAC;
+  print(("wrapped: ", res2, newline));
+
+  CO UNION a trois alternatives CO
+  MODE POLYVAL = UNION(INT, BOOL, CHAR);
+
+  CO Avec valeur INT CO
+  POLYVAL p1 := 55;
+  INT res3 := 0;
+  CASE p1 IN
+    (INT i) : res3 := i,
+    (BOOL b) : res3 := 1,
+    (CHAR c) : res3 := 2
+  OUT
+    res3 := -1
+  ESAC;
+  print(("polyval INT: ", res3, newline));
+
+  CO Avec valeur BOOL CO
+  POLYVAL p2 := TRUE;
+  INT res4 := 0;
+  CASE p2 IN
+    (INT i) : res4 := i,
+    (BOOL b) : res4 := 1,
+    (CHAR c) : res4 := 2
+  OUT
+    res4 := -1
+  ESAC;
+  print(("polyval BOOL: ", res4, newline));
+
+  CO UNION vide CO
+  NOMBRE z := EMPTY;
+
+  CO Conformite avec corps compose CO
+  CASE x IN
+    (INT i) : BEGIN INT local := i + 10; result := local END,
+    (REAL r) : SKIP
+  OUT
+    SKIP
+  ESAC;
+  print(("compose: result = ", result, newline))
+END

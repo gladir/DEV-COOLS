@@ -1,0 +1,681 @@
+============================================================
+  SPECIFICATIONS DU LANGAGE ALGOL 60
+  (Algorithmic Language 1960)
+  Reference : Revised Report on the Algorithmic Language
+              ALGOL 60 (1963), Peter Naur (editeur)
+============================================================
+
+1. INTRODUCTION
+============================================================
+
+  Algol 60 (ALGOrithmic Language 1960) est un langage de
+  programmation concu par un comite international en 1960.
+  Il a ete publie dans le "Report on the Algorithmic Language
+  ALGOL 60" puis revise en 1963 dans le "Revised Report".
+
+  Algol 60 est un langage imperatif, structure par blocs,
+  a typage statique. Il a introduit de nombreux concepts
+  fondamentaux en informatique :
+
+    - Structure de blocs (BEGIN / END) avec portee lexicale
+    - Appel par nom (call by name) et appel par valeur
+    - Recursivite des procedures
+    - Expressions conditionnelles (IF/THEN/ELSE comme expression)
+    - Boucle FOR generalisee (STEP/UNTIL, WHILE, listes)
+    - Grammaire formelle en notation BNF (Backus-Naur Form)
+
+  Algol 60 a directement influence Pascal, C, Simula, ALGOL 68,
+  et la plupart des langages structures modernes.
+
+
+2. STRUCTURE LEXICALE
+============================================================
+
+2.1 Jeu de caracteres
+
+  Le langage utilise les lettres (a-z, A-Z), les chiffres (0-9)
+  et des symboles speciaux. Les mots-cles sont reserves.
+
+2.2 Identificateurs
+
+  Un identificateur commence par une lettre et peut contenir
+  des lettres et des chiffres. La casse n'est pas significative
+  dans le langage d'origine.
+
+  Exemples : x, compteur, MatriceA, i1
+
+2.3 Mots-cles reserves
+
+  Les mots-cles du langage sont :
+
+    BEGIN      END        IF         THEN       ELSE
+    FOR        DO         STEP       UNTIL      WHILE
+    GO         TO         GOTO       SWITCH     VALUE
+    OWN        BOOLEAN    INTEGER    REAL       ARRAY
+    PROCEDURE  STRING     LABEL      COMMENT    TRUE
+    FALSE
+
+  Notes :
+    - GOTO peut s'ecrire GO TO (en deux mots)
+    - COMMENT introduit un commentaire jusqu'au prochain ;
+
+2.4 Commentaires
+
+  Deux formes de commentaires :
+
+    comment texte libre ;
+      Le mot-cle COMMENT suivi de texte jusqu'au point-virgule.
+
+    BEGIN texte libre ;
+      Le texte entre BEGIN et le premier point-virgule est
+      traite comme un commentaire implicite (convention
+      du Revised Report).
+
+2.5 Constantes litterales
+
+  Entiers :     0, 42, 1024, 32767
+  Reels :       3.14, 0.5, 6.022|10|23
+                (la notation |10| represente la puissance de 10)
+  Booleens :    TRUE, FALSE
+  Chaines :     `Hello` (entre guillemets inverses ou backticks)
+                Note : les chaines ne sont pas un type de base
+                dans le Revised Report ; elles sont une extension
+                pour les entrees/sorties.
+
+
+3. TYPES DE DONNEES
+============================================================
+
+3.1 Types primitifs
+
+  INTEGER   Entier signe (16 bits dans cette implementation,
+            intervalle -32768 a 32767)
+  REAL      Nombre reel a virgule flottante
+            (dans cette implementation : tronque vers entier 16 bits)
+  BOOLEAN   Valeur logique TRUE (1) ou FALSE (0)
+
+3.2 Types speciaux
+
+  LABEL     Adresse de code (etiquette de saut)
+  STRING    Chaine de caracteres (type de parametre uniquement)
+  SWITCH    Tableau d'etiquettes (expression designationnelle)
+  PROCEDURE Type de sous-programme
+
+3.3 Pas de types utilisateur
+
+  Algol 60 ne possede pas de mecanisme pour definir des types
+  structures (pas de RECORD, pas d'ENUM, pas de TYPE).
+  Les seuls types disponibles sont les types primitifs ci-dessus.
+
+3.4 Conversions de type
+
+  La conversion implicite INTEGER vers REAL est autorisee.
+  La conversion REAL vers INTEGER se fait par troncature.
+  Pas de conversion implicite entre BOOLEAN et les types
+  numeriques.
+
+
+4. DECLARATIONS
+============================================================
+
+4.1 Declaration de variables
+
+  Syntaxe :
+    <type> <identificateur> [, <identificateur>]* ;
+
+  Exemples :
+    INTEGER x;
+    INTEGER a, b, c;
+    REAL pi;
+    BOOLEAN flag;
+
+4.2 Declaration de tableaux
+
+  Syntaxe :
+    [<type>] ARRAY <id>[<borne_inf>:<borne_sup>] ;
+
+  Les bornes sont des expressions entieres evaluees a l'entree
+  du bloc contenant. Plusieurs dimensions sont possibles.
+
+  Exemples :
+    INTEGER ARRAY a[1:10];
+    REAL ARRAY matrice[1:n, 1:m];
+    ARRAY v[0:99];
+
+  Notes :
+    - Les bornes peuvent etre des expressions quelconques
+    - L'indice est base sur les bornes declarees (pas force a 0)
+    - Acces : a[i] ou matrice[i, j]
+
+4.3 Declaration de procedures
+
+  Syntaxe :
+    [<type>] PROCEDURE <nom>(<params>); [VALUE <params>;]
+      [<specifications>;]
+      <corps> ;
+
+  Exemples :
+    PROCEDURE afficher(x); INTEGER x;
+    BEGIN
+      outinteger(1, x)
+    END;
+
+    INTEGER PROCEDURE carre(n); INTEGER n;
+      carre := n * n;
+
+    INTEGER PROCEDURE facto(n); INTEGER n;
+      facto := IF n <= 1 THEN 1 ELSE n * facto(n - 1);
+
+  Notes :
+    - Les procedures sans type sont comme void en C
+    - Les procedures typees (INTEGER PROCEDURE, REAL PROCEDURE,
+      BOOLEAN PROCEDURE) retournent une valeur
+    - La valeur de retour est assignee au nom de la procedure :
+      facto := expression
+    - La recursivite est supportee nativement
+
+4.4 Declaration SWITCH (aiguillage)
+
+  Syntaxe :
+    SWITCH <nom> := <label1>, <label2>, ... ;
+
+  Exemples :
+    SWITCH choix := L1, L2, L3;
+
+  Le switch definit une liste ordonnee d'etiquettes.
+  L'acces se fait par indice (base 1) : choix[2] designe L2.
+
+4.5 Variables OWN (statiques)
+
+  Syntaxe :
+    OWN <type> <identificateur> ;
+
+  Exemples :
+    OWN INTEGER compteur;
+    OWN REAL accumulateur;
+    OWN INTEGER ARRAY historique[1:100];
+
+  Les variables OWN conservent leur valeur entre les appels
+  successifs de la procedure qui les contient. Elles sont
+  equivalentes aux variables static en C.
+
+4.6 Declaration d'etiquettes
+
+  Syntaxe :
+    <nom> : <instruction>
+
+  Exemples :
+    debut: x := 0;
+    fin: outstring(1, `termine`);
+
+  Les etiquettes sont locales au bloc qui les contient.
+
+4.7 Portee des declarations
+
+  Les declarations sont locales au bloc (BEGIN/END) dans
+  lequel elles apparaissent. Algol 60 utilise la portee
+  lexicale statique (static scoping) : les references aux
+  identificateurs sont resolues en remontant les blocs
+  englobants au moment de la compilation.
+
+
+5. EXPRESSIONS
+============================================================
+
+5.1 Expressions arithmetiques
+
+  Operateurs arithmetiques :
+    +     Addition
+    -     Soustraction (binaire) ou negation (unaire)
+    *     Multiplication
+    /     Division (reelle)
+    div   Division entiere (quotient tronque)
+    ^     Puissance (ou ** comme notation alternative)
+
+  Precedence (du plus fort au plus faible) :
+    1. Unaire +, -
+    2. ^ (puissance, associativite a droite)
+    3. *, /, div
+    4. +, - (binaire)
+
+  Exemples :
+    a + b * c         ->  a + (b * c)
+    2 ^ 3 ^ 2         ->  2 ^ (3 ^ 2) = 512  (associativite droite)
+    17 - 5 * 2         ->  17 - (5 * 2) = 7
+    10 div 3           ->  3
+
+5.2 Expressions relationnelles
+
+  Operateurs de comparaison :
+    <     Inferieur
+    <=    Inferieur ou egal
+    =     Egal
+    >=    Superieur ou egal
+    >     Superieur
+    !=    Different (ou <> dans certaines notations)
+
+  Le resultat est de type BOOLEAN (TRUE ou FALSE).
+
+5.3 Expressions booleennes
+
+  Operateurs logiques :
+    NOT    Negation logique (ou ~)
+    AND    Conjonction logique (ou /\)
+    OR     Disjonction logique (ou \/)
+    IMPL   Implication logique (a IMPL b = NOT a OR b)
+    EQUIV  Equivalence logique (a EQUIV b = (a AND b) OR (NOT a AND NOT b))
+
+  Precedence (du plus fort au plus faible) :
+    1. NOT
+    2. AND
+    3. OR
+    4. IMPL
+    5. EQUIV
+
+  Evaluation en court-circuit :
+    - AND : si le premier operande est FALSE, le second
+      n'est pas evalue
+    - OR : si le premier operande est TRUE, le second
+      n'est pas evalue
+
+5.4 Expression conditionnelle
+
+  Syntaxe :
+    IF <condition> THEN <expression1> ELSE <expression2>
+
+  Retourne expression1 si la condition est vraie,
+  expression2 sinon. Peut etre de type INTEGER, REAL ou BOOLEAN.
+
+  Exemples :
+    m := IF x > y THEN x ELSE y;
+    signe := IF n > 0 THEN 1 ELSE IF n < 0 THEN -1 ELSE 0;
+
+  Note : contrairement a l'instruction IF, l'expression
+  conditionnelle DOIT avoir une clause ELSE.
+
+5.5 Expressions designationnelles
+
+  Une expression designationnelle est une expression dont la
+  valeur est une etiquette (LABEL). Elle peut etre :
+
+    - Un nom d'etiquette : L1
+    - Un element de switch : choix[i]
+    - Une expression conditionnelle d'etiquettes :
+      IF b THEN L1 ELSE L2
+
+  Utilisee avec GOTO pour les sauts conditionels :
+    GOTO IF b THEN L1 ELSE L2;
+    GOTO choix[n];
+
+
+6. INSTRUCTIONS
+============================================================
+
+6.1 Affectation
+
+  Syntaxe :
+    <variable> := <expression>
+
+  Exemples :
+    x := 42;
+    a[i] := b[j] + 1;
+
+  Affectation multiple :
+    a := b := c := 0;
+    (evalue l'expression une fois, affecte de droite a gauche)
+
+6.2 Instruction conditionnelle (IF/THEN/ELSE)
+
+  Syntaxe :
+    IF <condition> THEN <instruction>
+    IF <condition> THEN <instruction> ELSE <instruction>
+
+  Exemples :
+    IF x < 0 THEN x := -x;
+    IF x > y THEN
+      outstring(1, `plus grand`)
+    ELSE
+      outstring(1, `plus petit`);
+
+  Ambiguite du "dangling else" : la clause ELSE se lie au
+  IF le plus proche non encore ferme.
+
+6.3 Boucle FOR
+
+  La boucle FOR en Algol 60 est tres generalisee. Le corps
+  de la boucle est execute pour chaque element de la liste.
+
+  Forme STEP/UNTIL :
+    FOR <var> := <debut> STEP <pas> UNTIL <fin> DO <instruction>
+
+  Forme WHILE :
+    FOR <var> := <expression> WHILE <condition> DO <instruction>
+
+  Forme par liste :
+    FOR <var> := <elem1>, <elem2>, ... DO <instruction>
+
+  Forme mixte :
+    FOR <var> := <elem1>, <debut> STEP <pas> UNTIL <fin>,
+                 <expr> WHILE <cond> DO <instruction>
+
+  Exemples :
+    FOR i := 1 STEP 1 UNTIL 10 DO outinteger(1, i);
+    FOR i := 10 STEP -1 UNTIL 1 DO outinteger(1, i);
+    FOR i := 2, 4, 6, 8 DO outinteger(1, i);
+    FOR i := i WHILE i <= 100 DO i := i * 2;
+
+6.4 GOTO et etiquettes
+
+  Syntaxe :
+    GOTO <etiquette>
+    GO TO <etiquette>    (synonyme en deux mots)
+    GOTO <expression designationnelle>
+
+  Exemples :
+    GOTO fin;
+    GO TO debut;
+    GOTO choix[n];
+    GOTO IF b THEN L1 ELSE L2;
+
+  Restrictions : un GOTO ne peut pas sauter a l'interieur
+  d'un bloc depuis l'exterieur. On ne peut sauter que vers
+  un bloc englobant ou au meme niveau.
+
+6.5 Instruction composee et bloc
+
+  Instruction composee :
+    BEGIN <instruction>; <instruction>; ... END
+
+  Bloc :
+    BEGIN <declarations>; <instructions> END
+
+  Les declarations doivent preceder les instructions dans
+  un bloc. Le point-virgule separe les instructions (il
+  n'est pas un terminateur mais un separateur).
+
+6.6 Instruction vide
+
+  Le point-virgule seul constitue une instruction vide,
+  utile comme cible d'etiquette :
+    fin: ;
+
+6.7 Appel de procedure
+
+  Syntaxe :
+    <nom>(<argument1>, <argument2>, ...)
+    <nom>                    (sans arguments)
+
+  Exemples :
+    afficher(42);
+    compteur;
+    outinteger(1, x + y);
+
+
+7. PROCEDURES
+============================================================
+
+7.1 Passage des parametres
+
+  Algol 60 definit deux modes de passage :
+
+  a) Par valeur (VALUE) :
+     L'argument est evalue une fois et copie dans le parametre
+     formel. Le parametre se comporte comme une variable locale.
+
+     INTEGER PROCEDURE f(x); VALUE x; INTEGER x;
+       f := x * x;
+
+  b) Par nom (defaut, call by name) :
+     L'argument n'est pas evalue immediatement. A chaque acces
+     au parametre formel, l'expression de l'argument est
+     reevaluee dans l'environnement de l'appelant.
+
+     Ceci permet le "Jensen's device" :
+       INTEGER PROCEDURE somme(k, lo, hi, expr);
+         VALUE lo, hi;
+         INTEGER k, lo, hi, expr;
+       BEGIN
+         INTEGER s;
+         s := 0;
+         FOR k := lo STEP 1 UNTIL hi DO
+           s := s + expr;
+         somme := s
+       END;
+
+       s := somme(i, 1, n, a[i]);
+
+     Ici, a[i] est reevalue a chaque iteration car i change,
+     et l'expression utilise la valeur courante de i car k
+     et i sont le meme (parametres par nom).
+
+  c) Implementation des thunks :
+     Le passage par nom est implemente par des thunks :
+     des sous-routines anonymes generees par le compilateur
+     qui evaluent l'expression de l'argument dans le
+     contexte de l'appelant.
+
+7.2 Valeur de retour
+
+  Les procedures typees (INTEGER PROCEDURE, REAL PROCEDURE,
+  BOOLEAN PROCEDURE) retournent une valeur. La valeur de
+  retour est assignee au nom de la procedure dans le corps :
+
+    INTEGER PROCEDURE max(a, b); VALUE a, b; INTEGER a, b;
+      max := IF a > b THEN a ELSE b;
+
+7.3 Procedures recursives
+
+  Algol 60 supporte nativement la recursivite. La pile
+  d'execution gere automatiquement les cadres d'activation
+  successifs.
+
+    INTEGER PROCEDURE facto(n); VALUE n; INTEGER n;
+      facto := IF n <= 1 THEN 1 ELSE n * facto(n - 1);
+
+7.4 Procedures comme parametres
+
+  Une procedure peut etre passee en parametre a une autre :
+
+    PROCEDURE appliquer(f, x); PROCEDURE f; INTEGER x;
+      f(x);
+
+
+8. TABLEAUX
+============================================================
+
+8.1 Declaration
+
+  Les tableaux sont declares avec le mot-cle ARRAY et des
+  bornes (borne_inf : borne_sup) pour chaque dimension :
+
+    INTEGER ARRAY a[1:100];
+    REAL ARRAY mat[1:n, 1:m];
+
+  Les bornes sont des expressions entieres evaluees au
+  moment de l'entree dans le bloc contenant.
+
+8.2 Acces par indice
+
+  Acces unidimensionnel : a[i]
+  Acces multidimensionnel : mat[i, j]
+
+  L'indice commence a la borne inferieure declaree (pas
+  necessairement 0 ou 1).
+
+8.3 Tableaux a bornes dynamiques
+
+  Les bornes des tableaux peuvent etre des parametres ou des
+  variables, permettant des tableaux de taille variable :
+
+    PROCEDURE traiter(n); VALUE n; INTEGER n;
+    BEGIN
+      INTEGER ARRAY temp[1:n];
+      ...
+    END;
+
+8.4 Tableaux en parametres
+
+  Un tableau peut etre passe en parametre a une procedure.
+  Le passage se fait par reference (adresse du tableau).
+
+
+9. BLOCS ET PORTEE
+============================================================
+
+9.1 Structure de bloc
+
+  Un programme Algol 60 est un bloc. Chaque bloc est delimite
+  par BEGIN et END et peut contenir des declarations suivies
+  d'instructions.
+
+    BEGIN
+      INTEGER x;    comment declaration ;
+      x := 10;      comment instruction ;
+      BEGIN
+        INTEGER y;   comment declaration locale ;
+        y := x + 1
+      END
+    END
+
+9.2 Portee lexicale
+
+  Les declarations sont locales au bloc englobant. La
+  recherche d'un identificateur remonte les blocs englobants
+  (portee lexicale statique, static scoping).
+
+  Un identificateur local masque un identificateur de meme
+  nom dans un bloc englobant (shadowing).
+
+9.3 Duree de vie
+
+  Variables locales : creees a l'entree du bloc, detruites
+  a la sortie. Allouees sur la pile.
+
+  Variables OWN : duree de vie du programme entier. Allouees
+  dans le segment de donnees statiques.
+
+
+10. ENTREES / SORTIES
+============================================================
+
+  Le Revised Report d'Algol 60 ne definit pas de mecanisme
+  standard d'entrees/sorties. Chaque implementation fournit
+  ses propres intrinsics.
+
+  Les intrinsics fournis par cette implementation sont :
+
+    outinteger(canal, n)     Ecrire l'entier n sur le canal
+    outreal(canal, x)        Ecrire le reel x sur le canal
+    outstring(canal, s)      Ecrire la chaine s sur le canal
+    outboolean(canal, b)     Ecrire TRUE ou FALSE sur le canal
+    ininteger(canal)         Lire un entier depuis le canal
+    inreal(canal)            Lire un reel depuis le canal
+    inchar(canal)            Lire un caractere depuis le canal
+    print(args)              Raccourci pour outstring sur canal 1
+
+  Canaux :
+    1 = sortie standard (STDOUT)
+    2 = sortie d'erreur (STDERR)
+
+  Fonctions mathematiques intrinseques :
+    abs(n)      Valeur absolue
+    sign(n)     Signe (-1, 0, ou 1)
+    entier(x)   Partie entiere (floor)
+
+
+11. STRUCTURE D'UN PROGRAMME
+============================================================
+
+  Un programme Algol 60 est un bloc principal termine par
+  un point :
+
+    comment Mon programme Algol 60 ;
+    BEGIN
+      <declarations> ;
+      <instructions>
+    END.
+
+  Notes :
+    - Le point final (.) marque la fin du programme
+    - Le point-virgule (;) est un separateur d'instructions,
+      pas un terminateur
+    - Les declarations precedent les instructions dans
+      chaque bloc
+    - Un commentaire d'en-tete peut preceder le BEGIN
+
+  Exemple complet :
+
+    comment Programme de demonstration Algol 60 ;
+    BEGIN
+      INTEGER x, y;
+      INTEGER PROCEDURE carre(n); INTEGER n;
+        carre := n * n;
+
+      x := 5;
+      y := carre(x);
+      outstring(1, `carre de 5 = `);
+      outinteger(1, y)
+    END.
+
+
+12. DIFFERENCES AVEC ALGOL 58
+============================================================
+
+  Algol 60 a apporte des ameliorations significatives par
+  rapport a Algol 58 (IAL) :
+
+    - Structure de blocs (BEGIN/END) avec portee lexicale
+    - Types de donnees explicites (INTEGER, REAL, BOOLEAN)
+    - Appel par nom comme mecanisme par defaut
+    - Mot-cle VALUE pour specifier le passage par valeur
+    - Variables OWN (persistance entre appels)
+    - Boucle FOR generalisee (STEP/UNTIL, WHILE, listes)
+    - Expressions conditionnelles (IF/THEN/ELSE comme valeur)
+    - Recursivite pleinement supportee
+    - Grammaire formelle en BNF
+
+
+13. LIMITATIONS CONNUES
+============================================================
+
+  Le langage Algol 60 standard presente les limitations
+  suivantes :
+
+    - Pas de types utilisateur (pas de structures/records)
+    - Pas de systeme de modules ou d'importation
+    - Pas d'entrees/sorties standardisees
+    - Pas de gestion d'erreurs ou d'exceptions
+    - Pas de pointeurs ou d'allocation dynamique explicite
+    - Pas de types enumeres
+    - Pas de gestion de fichiers
+    - Les chaines ne sont pas un type de premiere classe
+    - L'appel par nom peut etre couteux en performance
+
+  Limitations specifiques a cette implementation :
+    - Les reels sont tronques vers des entiers 16 bits
+    - Les entiers sont limites a 16 bits signes
+    - Pas de virgule flottante materielle (8086 sans 8087)
+    - Les tableaux multidimensionnels sont linearises
+      en row-major order
+
+
+14. REFERENCES
+============================================================
+
+  [1] J.W. Backus et al., "Report on the Algorithmic Language
+      ALGOL 60", Communications of the ACM, vol. 3, no. 5,
+      mai 1960.
+
+  [2] P. Naur (editeur), "Revised Report on the Algorithmic
+      Language ALGOL 60", Communications of the ACM, vol. 6,
+      no. 1, janvier 1963.
+
+  [3] D.E. Knuth, "The Remaining Trouble Spots in ALGOL 60",
+      Communications of the ACM, vol. 10, no. 10, 1967.
+
+  [4] E.W. Dijkstra, "Algol 60 Translation", Supplement to
+      the ALGOL Bulletin, 1961.
+
+============================================================
+  Fin du document - Specifications du langage Algol 60
+============================================================

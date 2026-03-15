@@ -1,0 +1,19 @@
+comment Algol 60 example - SWITCH (aiguillages) ;
+BEGIN
+  INTEGER n;
+  SWITCH choix := L1, L2, L3;
+
+  n := 2;
+  outstring(1, `goto choix[2]: `);
+  GOTO choix[n];
+
+L1: outstring(1, `premier`);
+    GOTO fin;
+L2: outstring(1, `deuxieme`);
+    GOTO fin;
+L3: outstring(1, `troisieme`);
+    GOTO fin;
+
+fin:
+  outstring(1, ` ok`)
+END.

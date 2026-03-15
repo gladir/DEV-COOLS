@@ -1,0 +1,1665 @@
+=========================================================================
+  QUICKPASCAL 1.0 - Unité MSGRAPH - Documentation de référence
+=========================================================================
+
+  L'unité MSGraph est l'unité graphique de Microsoft QuickPascal.
+  Elle fournit un ensemble complet de routines graphiques basées
+  sur l'API graphique Microsoft C (compatible avec la bibliothèque
+  graphique de Microsoft C 5.1/6.0). Elle prend en charge les
+  adaptateurs MDPA, CGA, EGA, VGA, MCGA, HGC et Olivetti.
+
+  Contrairement à l'unité Graph de Turbo Pascal (basée sur BGI
+  avec pilotes chargeables), MSGraph intègre directement le
+  support de tous les adaptateurs vidéo sans fichiers externes.
+
+  L'unité offre deux systèmes de coordonnées :
+  - Coordonnées physiques/vue (Integer) : suffixe absent ou _w
+  - Coordonnées fenêtre (Double) : suffixe _w ou _wxy
+
+  Uses MSGraph;
+
+  Directives de compilation : (non spécifiées)
+
+  Note sur le type CSTRING :
+  QuickPascal possède un type de chaîne spécifique CSTRING, qui
+  combine le type String de Turbo Pascal avec un caractère nul
+  terminal. La structure est :
+    CSTRING[0]    = Length(chaîne)    { octet de longueur Pascal }
+    CSTRING[1..]  = contenu           { caractères de la chaîne }
+    CSTRING[Fin]  = #0               { terminateur nul, style C }
+  CSTRING est un type built-in de QuickPascal, permettant une
+  compatibilité directe avec les fonctions C et l'API DOS/BIOS.
+
+=========================================================================
+  1. DÉPENDANCE
+=========================================================================
+
+  L'unité MSGraph utilise l'unité MSGrUtil dans sa clause Uses :
+
+    Uses MSGrUtil;
+
+  MSGrUtil contient les routines utilitaires bas niveau utilisées
+  en interne par MSGraph (accès matériel vidéo, calculs de
+  coordonnées, etc.).
+
+=========================================================================
+  2. CONSTANTES - MODES VIDÉO (_SetVideoMode)
+=========================================================================
+
+  Ces constantes sont passées à _SetVideoMode et
+  _SetVideoModeRows pour sélectionner le mode d'affichage.
+
+  --- Modes spéciaux ---
+
+  Constante        Valeur   Description
+  ---------------  ------   ------------------------------------------
+  _MaxResMode        -3     Mode graphique à la plus haute résolution
+  _MaxColorMode      -2     Mode graphique avec le plus de couleurs
+  _DefaultMode       -1     Restaurer le mode d'écran d'origine
+
+  --- Modes texte ---
+
+  Constante        Valeur   Description
+  ---------------  ------   ------------------------------------------
+  _TextBW40           0     Texte 40 colonnes, 16 niveaux de gris
+  _TextC40            1     Texte 40 colonnes, couleur 16/8
+  _TextBW80           2     Texte 80 colonnes, 16 niveaux de gris
+  _TextC80            3     Texte 80 colonnes, couleur 16/8
+  _TextMono           7     Texte 80 colonnes, noir et blanc (mono)
+
+  --- Modes graphiques ---
+
+  Constante        Valeur   Résolution       Couleurs
+  ---------------  ------   ---------------  ----------------------
+  _MRes4Color         4     320 × 200        4 couleurs
+  _MResNoColor        5     320 × 200        4 niveaux de gris
+  _HResBW             6     640 × 200        Noir et blanc
+  _HercMono           8     720 × 348        Noir et blanc (HGC)
+  _MRes16Color       13     320 × 200        16 couleurs
+  _HRes16Color       14     640 × 200        16 couleurs
+  _EResNoColor       15     640 × 350        Noir et blanc
+  _EResColor         16     640 × 350        4 ou 16 couleurs
+  _VRes2Color        17     640 × 480        Noir et blanc
+  _VRes16Color       18     640 × 480        16 couleurs
+  _MRes256Color      19     320 × 200        256 couleurs
+  _OResColor         64     640 × 400        1 sur 16 (Olivetti)
+
+  Correspondance adaptateur/modes :
+    CGA     : 0-6
+    HGC     : 8
+    EGA     : 0-6, 13-16
+    VGA     : 0-6, 13-19
+    MCGA    : 0-6, 17, 19
+    Olivetti: 0-6, 64
+
+=========================================================================
+  3. CONSTANTES - ADAPTATEURS VIDÉO
+=========================================================================
+
+  Valeurs possibles du champ Adapter de _VideoConfig.
+
+  Constante   Valeur   Description
+  ---------   ------   ------------------------------------------
+  _MDPA       $0001    Monochrome Display Printer Adapter
+  _CGA        $0002    Color Graphics Adapter
+  _EGA        $0004    Enhanced Graphics Adapter
+  _VGA        $0008    Video Graphics Array
+  _MCGA       $0010    MultiColor Graphics Array
+  _HGC        $0020    Hercules Graphics Card
+  _OCGA       $0042    Olivetti Color Graphics Adapter
+  _OEGA       $0044    Olivetti Enhanced Graphics Adapter
+  _OVGA       $0048    Olivetti Video Graphics Array
+
+  Note : les constantes Olivetti combinent le bit de l'adaptateur
+  de base avec $0040 (bit spécifique Olivetti).
+
+=========================================================================
+  4. CONSTANTES - TYPES DE MONITEUR
+=========================================================================
+
+  Valeurs possibles du champ Monitor de _VideoConfig.
+
+  Constante      Valeur   Description
+  ------------   ------   ------------------------------------------
+  _Mono          $0001    Moniteur monochrome
+  _Color         $0002    Moniteur couleur (ou émulation améliorée)
+  _EnhColor      $0004    Moniteur couleur améliorée
+  _AnalogMono    $0008    Moniteur analogique monochrome uniquement
+  _AnalogColor   $0010    Moniteur analogique couleur uniquement
+  _Analog        $0018    Moniteur analogique (mono et couleur)
+
+  _Analog est la combinaison de _AnalogMono OR _AnalogColor.
+
+=========================================================================
+  5. CONSTANTES - CONTRÔLE DE DESSIN
+=========================================================================
+
+  --- Rectangle, Ellipse, Pie ---
+
+  Constante         Valeur   Description
+  ---------------   ------   ------------------------------------------
+  _GBorder             2     Dessiner le contour seulement
+  _GFillInterior       3     Remplir avec couleur et motif courants
+
+  --- ClearScreen ---
+
+  Constante         Valeur   Description
+  ---------------   ------   ------------------------------------------
+  _GClearScreen        0     Effacer tout l'écran
+  _GViewport           1     Effacer le viewport courant
+  _GWindow             2     Effacer la fenêtre de texte courante
+
+  --- ScrollTextWindow ---
+
+  Constante         Valeur   Description
+  ---------------   ------   ------------------------------------------
+  _GScrollUp           1     Défilement vers le haut
+  _GScrollDown        -1     Défilement vers le bas
+
+  --- SetTextRows / SetVideoModeRows ---
+
+  Constante         Valeur   Description
+  ---------------   ------   ------------------------------------------
+  _MaxTextRows       -1      Nombre maximal de lignes de texte
+
+=========================================================================
+  6. CONSTANTES - MODES D'ÉCRITURE D'IMAGE
+=========================================================================
+
+  « Verbes d'action » pour _PutImage et _SetWriteMode.
+  Définissent l'opération logique entre les pixels de l'image
+  source et les pixels existants à l'écran.
+
+  Constante   Valeur   Opération
+  ---------   ------   ------------------------------------------
+  _GOR           0     OR  : source OR destination
+  _GAND          1     AND : source AND destination
+  _GPRESET       2     Copie inversée (NOT source)
+  _GPSET         3     Copie directe (remplacement)
+  _GXOR          4     XOR : source XOR destination
+
+  _GPSET remplace complètement les pixels existants.
+  _GXOR est utile pour les animations (dessiner/effacer).
+  _GAND masque les pixels (intersection).
+  _GOR superpose les pixels (union).
+  _GPRESET dessine le négatif de l'image.
+
+=========================================================================
+  7. CONSTANTES - COULEURS UNIVERSELLES
+=========================================================================
+
+  Valeurs de couleur au format BGR 6 bits par composante
+  ($BBGGRR, chaque composante de 0 à $3F). Utilisées avec
+  _RemapPalette et _SetBkColor.
+
+  Constante        Valeur      Couleur
+  --------------   ---------   ---------------------
+  _Black           $000000     Noir
+  _Blue            $2a0000     Bleu
+  _Green           $002a00     Vert
+  _Cyan            $2a2a00     Cyan
+  _Red             $00002a     Rouge
+  _Magenta         $2a002a     Magenta
+  _Brown           $00152a     Brun
+  _White           $2a2a2a     Blanc (gris clair)
+  _Gray            $151515     Gris
+  _LightBlue       $3F1515     Bleu clair
+  _LightGreen      $153f15     Vert clair
+  _LightCyan       $3f3f15     Cyan clair
+  _LightRed        $15153f     Rouge clair
+  _LightMagenta    $3f153f     Magenta clair
+  _Yellow          $153f3f     Jaune
+  _BrightWhite     $3f3f3f     Blanc brillant
+
+  Le format est BGR (Blue-Green-Red) avec 6 bits par canal :
+    Bits 0-7   : Rouge (0-$3F)
+    Bits 8-15  : Vert (0-$3F)
+    Bits 16-23 : Bleu (0-$3F)
+
+=========================================================================
+  8. CONSTANTES - COULEURS MODE _EResNoColor
+=========================================================================
+
+  Couleurs spéciales pour le mode EGA haute résolution
+  monochrome (mode 15, 640 × 350, noir et blanc).
+
+  Constante        Valeur   Description
+  --------------   ------   ---------------------------
+  _ModeFOff           0     Éteint
+  _ModeFOffToOn       1     Éteint vers allumé
+  _ModeFOffToHi       2     Éteint vers haute intensité
+  _ModeFOnToOff       3     Allumé vers éteint
+  _ModeFOn            4     Allumé
+  _ModeFOnToHi        5     Allumé vers haute intensité
+  _ModeFHiToOff       6     Haute intensité vers éteint
+  _ModeFHiToOn        7     Haute intensité vers allumé
+  _ModeFHi            8     Haute intensité
+
+=========================================================================
+  9. CONSTANTES - COULEURS MODE _TextMono
+=========================================================================
+
+  Couleurs pour le mode texte monochrome (mode 7).
+
+  Constante     Valeur   Description
+  -----------   ------   ---------------------------
+  _Mode7Off        0     Éteint (invisible)
+  _Mode7On         1     Allumé (normal)
+  _Mode7Hi         2     Haute intensité (brillant)
+
+=========================================================================
+  10. CONSTANTES - CODES DE RETOUR _GrStatus
+=========================================================================
+
+  Valeurs retournées par _GrStatus pour indiquer l'état de
+  la dernière opération graphique.
+
+  --- Erreurs (valeurs négatives) ---
+
+  Constante                 Valeur   Description
+  -----------------------   ------   ---------------------------
+  _GrOk                        0     Pas d'erreur
+  _GrError                    -1     Erreur graphique générale
+  _GrModeNotSupported         -2     Mode non supporté
+  _GrNotInProperMode          -3     Pas dans le bon mode
+  _GrInvalidParameter         -4     Paramètre invalide
+  _GrFontFileNotFound         -5     Fichier de police introuvable
+  _GrInvalidFontFile          -6     Fichier de police invalide
+  _GrCorruptedFontFile        -7     Fichier de police corrompu
+  _GrInsufficientMemory       -8     Mémoire insuffisante
+  _GrInvalidImageBuffer       -9     Tampon d'image invalide
+
+  --- Avertissements (valeurs positives) ---
+
+  Constante                 Valeur   Description
+  -----------------------   ------   ---------------------------
+  _GrNoOutput                  1     Pas de sortie (hors écran)
+  _GrClipped                   2     Sortie tronquée (clipping)
+  _GrParameterAltered          3     Paramètre ajusté
+
+  Utilisation :
+    _Rectangle(_GBorder, 10, 10, 200, 100);
+    if _GrStatus < _GrOk then
+      WriteLn('Erreur graphique : ', _GrStatus);
+
+=========================================================================
+  11. TYPE - _VIDEOCONFIG
+=========================================================================
+
+  _VideoConfig = record
+    NumXPixels    : Integer;   Résolution horizontale (pixels)
+    NumYPixels    : Integer;   Résolution verticale (pixels)
+    NumTextCols   : Integer;   Colonnes de texte disponibles
+    NumTextRows   : Integer;   Lignes de texte disponibles
+    NumColors     : Integer;   Nombre de couleurs disponibles
+    BitsPerPixel  : Integer;   Bits par pixel
+    NumVideoPages : Integer;   Pages vidéo disponibles
+    Mode          : Integer;   Mode vidéo actuel
+    Adapter       : Integer;   Adaptateur vidéo actif
+    Monitor       : Integer;   Type de moniteur actif
+    Memory        : Integer;   Mémoire vidéo en Ko
+  end;
+  ---------------------------------------------------------------
+  Structure retournée par _GetVideoConfig. Contient toutes les
+  informations sur la configuration vidéo courante.
+
+  Exemple :
+    var vc : _VideoConfig;
+    _GetVideoConfig(vc);
+    WriteLn('Résolution : ', vc.NumXPixels, '×', vc.NumYPixels);
+    WriteLn('Couleurs : ', vc.NumColors);
+    WriteLn('Adaptateur : ', vc.Adapter);
+
+=========================================================================
+  12. TYPE - _FILLMASK
+=========================================================================
+
+  _FillMask = array[0..7] of Byte;
+  ---------------------------------------------------------------
+  Motif de remplissage 8 × 8 pixels. Chaque octet représente
+  une ligne du motif (bit 1 = pixel allumé, bit 0 = fond).
+
+  Exemple de motif en damier :
+    var Mask : _FillMask;
+    Mask[0] := $AA;  { 10101010 }
+    Mask[1] := $55;  { 01010101 }
+    Mask[2] := $AA;
+    Mask[3] := $55;
+    Mask[4] := $AA;
+    Mask[5] := $55;
+    Mask[6] := $AA;
+    Mask[7] := $55;
+    _SetFillMask(Mask);
+
+=========================================================================
+  13. TYPE - _XYCOORD
+=========================================================================
+
+  _XYCoord = record
+    xcoord : Integer;    Coordonnée X (vue/physique)
+    ycoord : Integer;    Coordonnée Y (vue/physique)
+  end;
+  ---------------------------------------------------------------
+  Paire de coordonnées entières. Utilisée pour les positions
+  en coordonnées de vue (viewport) ou physiques. Retournée par
+  les fonctions de conversion de coordonnées.
+
+=========================================================================
+  14. TYPE - _WXYCOORD
+=========================================================================
+
+  _WXYCoord = record
+    wx : Double;    Coordonnée X en fenêtre
+    wy : Double;    Coordonnée Y en fenêtre
+  end;
+  ---------------------------------------------------------------
+  Paire de coordonnées en virgule flottante. Utilisée pour le
+  système de coordonnées fenêtre (window coordinates) défini
+  par _SetWindow. Permet de travailler dans un espace logique
+  avec des valeurs réelles.
+
+  Exemple :
+    var P : _WXYCoord;
+    P.wx := 3.14;
+    P.wy := 2.71;
+
+=========================================================================
+  15. TYPE - _FONTINFO
+=========================================================================
+
+  _FontInfo = record
+    FontType  : Integer;      Bit 0 = 1 : vecteur, 0 : bitmap
+    Ascent    : Integer;      Pixels du haut à la ligne de base
+    PixWidth  : Integer;      Largeur en pixels (0 = proportionnel)
+    PixHeight : Integer;      Hauteur des caractères en pixels
+    AvgWidth  : Integer;      Largeur moyenne en pixels
+    FileName  : CSTRING[80];  Nom de fichier (chemin complet)
+    FaceName  : CSTRING[31];  Nom de la police
+  end;
+  ---------------------------------------------------------------
+  Structure retournée par _GetFontInfo. Contient les
+  caractéristiques de la police de caractères courante.
+
+  FontType :
+    Bit 0 = 1 : police vectorielle (redimensionnable)
+    Bit 0 = 0 : police bitmap (taille fixe)
+
+  PixWidth = 0 indique une police proportionnelle (chaque
+  caractère a une largeur différente).
+
+  Note : les champs FileName et FaceName utilisent le type
+  CSTRING spécifique à QuickPascal.
+
+=========================================================================
+  16. INSTALLATION ET CONFIGURATION VIDÉO
+=========================================================================
+
+  function _GrStatus : Integer;
+  ---------------------------------------------------------------
+  Retourne le code d'état de la dernière opération graphique.
+
+  Retour :
+    Code d'état (voir section 10 pour les valeurs)
+    < 0 : erreur
+    = 0 : succès (_GrOk)
+    > 0 : avertissement
+
+  Doit être consultée après chaque opération critique.
+
+  ---------------------------------------------------------------
+  function _SetVideoMode(mode : Integer) : Integer;
+  ---------------------------------------------------------------
+  Active le mode vidéo spécifié.
+
+  Paramètres :
+    mode  Constante de mode vidéo (_TextC80, _VRes16Color, etc.)
+          ou mode spécial (_MaxResMode, _MaxColorMode,
+          _DefaultMode)
+
+  Retour :
+    Nombre de lignes de texte dans le mode activé, ou
+    0 si le mode n'est pas supporté.
+
+  En cas de succès, l'écran est effacé et toutes les options
+  graphiques sont réinitialisées (couleur, motif, viewport, etc.).
+
+  Exemple :
+    if _SetVideoMode(_VRes16Color) = 0 then
+      WriteLn('Mode VGA 640×480 non supporté');
+
+  ---------------------------------------------------------------
+  function _SetVideoModeRows(mode, rows : Integer) : Integer;
+  ---------------------------------------------------------------
+  Active le mode vidéo avec un nombre de lignes de texte spécifié.
+
+  Paramètres :
+    mode  Constante de mode vidéo
+    rows  Nombre de lignes souhaité (_MaxTextRows pour le max.)
+
+  Retour :
+    Nombre de lignes réellement activées, ou 0 si échec.
+
+  Exemple :
+    _SetVideoModeRows(_TextC80, 50);  { 80×50 sur VGA }
+
+  ---------------------------------------------------------------
+  procedure _SetActivePage(page : Integer);
+  ---------------------------------------------------------------
+  Sélectionne la page vidéo active (celle sur laquelle les
+  opérations graphiques s'effectuent).
+
+  Paramètres :
+    page  Numéro de page (0 à NumVideoPages - 1)
+
+  ---------------------------------------------------------------
+  procedure _SetVisualPage(page : Integer);
+  ---------------------------------------------------------------
+  Sélectionne la page vidéo visible (celle affichée à l'écran).
+
+  Paramètres :
+    page  Numéro de page (0 à NumVideoPages - 1)
+
+  Les pages active et visible peuvent être différentes,
+  permettant le double buffering (dessiner sur une page
+  invisible, puis la rendre visible instantanément).
+
+  ---------------------------------------------------------------
+  function _GetActivePage : Integer;
+  ---------------------------------------------------------------
+  Retourne le numéro de la page vidéo active.
+
+  ---------------------------------------------------------------
+  function _GetVisualPage : Integer;
+  ---------------------------------------------------------------
+  Retourne le numéro de la page vidéo visible.
+
+  ---------------------------------------------------------------
+  procedure _GetVideoConfig(var vc : _VideoConfig);
+  ---------------------------------------------------------------
+  Remplit la structure vc avec les informations sur la
+  configuration vidéo courante.
+
+  Paramètres :
+    vc  (sortie) Structure _VideoConfig
+
+=========================================================================
+  17. SYSTÈMES DE COORDONNÉES
+=========================================================================
+
+  MSGraph offre trois systèmes de coordonnées :
+
+  1. Coordonnées physiques : pixels réels de l'écran
+     Origine en haut à gauche (0,0)
+
+  2. Coordonnées de vue (viewport) : relatives au viewport
+     L'origine peut être déplacée par _SetViewOrg
+
+  3. Coordonnées de fenêtre (window) : valeurs Double
+     Espace logique défini par _SetWindow
+
+  Les suffixes des fonctions indiquent le système :
+    (pas de suffixe) = coordonnées de vue (Integer)
+    _w               = coordonnées de fenêtre (Double)
+    _wxy             = coordonnées de fenêtre (_WXYCoord)
+
+  ---------------------------------------------------------------
+  procedure _SetViewOrg(x, y : Integer; var org : _XYCoord);
+  ---------------------------------------------------------------
+  Déplace l'origine du viewport aux coordonnées physiques (x, y).
+
+  Paramètres :
+    x, y  Nouvelles coordonnées physiques de l'origine
+    org   (sortie) Ancienne position de l'origine
+
+  Après cet appel, les coordonnées de vue (0, 0) correspondent
+  aux coordonnées physiques (x, y).
+
+  ---------------------------------------------------------------
+  procedure _SetViewport(x1, y1, x2, y2 : Integer);
+  ---------------------------------------------------------------
+  Définit la zone de vue (viewport) et le rectangle de clipping.
+  L'origine est placée au centre du viewport.
+
+  Paramètres :
+    x1, y1  Coin supérieur gauche (physique)
+    x2, y2  Coin inférieur droit (physique)
+
+  ---------------------------------------------------------------
+  procedure _SetClipRgn(x1, y1, x2, y2 : Integer);
+  ---------------------------------------------------------------
+  Définit le rectangle de clipping sans modifier l'origine.
+
+  Paramètres :
+    x1, y1  Coin supérieur gauche (physique)
+    x2, y2  Coin inférieur droit (physique)
+
+  Les dessins en dehors de cette zone sont tronqués.
+
+  ---------------------------------------------------------------
+  procedure _SetWindow(FInvert : Boolean;
+                       x1, y1, x2, y2 : Double);
+  ---------------------------------------------------------------
+  Définit un système de coordonnées fenêtre (valeurs réelles).
+
+  Paramètres :
+    FInvert  Si True, l'axe Y est inversé (Y croissant vers
+             le haut, convention mathématique).
+             Si False, Y croissant vers le bas.
+    x1, y1   Coin supérieur gauche de la fenêtre logique
+    x2, y2   Coin inférieur droit de la fenêtre logique
+
+  Exemple :
+    { Espace logique de (-10,-10) à (10,10) }
+    _SetWindow(True, -10.0, -10.0, 10.0, 10.0);
+    _LineTo_w(5.0, 5.0);  { ligne en coordonnées réelles }
+
+  ---------------------------------------------------------------
+  procedure _GetViewCoord(x, y : Integer; var xy : _XYCoord);
+  ---------------------------------------------------------------
+  Convertit des coordonnées physiques en coordonnées de vue.
+
+  ---------------------------------------------------------------
+  procedure _GetViewCoord_w(x, y : Double; var xy : _XYCoord);
+  ---------------------------------------------------------------
+  Convertit des coordonnées fenêtre en coordonnées de vue.
+
+  ---------------------------------------------------------------
+  procedure _GetViewCoord_wxy(var wxy : _WXYCoord;
+                              var xy : _XYCoord);
+  ---------------------------------------------------------------
+  Convertit un _WXYCoord en _XYCoord (fenêtre → vue).
+
+  ---------------------------------------------------------------
+  procedure _GetPhysCoord(x, y : Integer; var xy : _XYCoord);
+  ---------------------------------------------------------------
+  Convertit des coordonnées de vue en coordonnées physiques.
+
+  ---------------------------------------------------------------
+  procedure _GetWindowCoord(x, y : Integer; var wxy : _WXYCoord);
+  ---------------------------------------------------------------
+  Convertit des coordonnées de vue en coordonnées fenêtre.
+
+  ---------------------------------------------------------------
+  procedure _GetCurrentPosition(var xy : _XYCoord);
+  ---------------------------------------------------------------
+  Retourne la position graphique courante en coordonnées de vue.
+
+  ---------------------------------------------------------------
+  procedure _GetCurrentPosition_wxy(var wxy : _WXYCoord);
+  ---------------------------------------------------------------
+  Retourne la position graphique courante en coordonnées fenêtre.
+
+=========================================================================
+  18. ROUTINES DE SORTIE GRAPHIQUE
+=========================================================================
+
+  procedure _ClearScreen(area : Integer);
+  ---------------------------------------------------------------
+  Efface une zone de l'écran.
+
+  Paramètres :
+    area  Zone à effacer :
+          _GClearScreen = tout l'écran
+          _GViewport    = le viewport courant
+          _GWindow      = la fenêtre de texte courante
+
+  ---------------------------------------------------------------
+  procedure _MoveTo(x, y : Integer);
+  ---------------------------------------------------------------
+  Déplace la position graphique courante sans dessiner.
+
+  Paramètres :
+    x, y  Nouvelles coordonnées de vue
+
+  ---------------------------------------------------------------
+  procedure _MoveTo_w(wx, wy : Double);
+  ---------------------------------------------------------------
+  Comme _MoveTo, en coordonnées fenêtre.
+
+  ---------------------------------------------------------------
+  procedure _LineTo(x, y : Integer);
+  ---------------------------------------------------------------
+  Trace une ligne depuis la position courante jusqu'à (x, y).
+  La position courante est mise à jour à (x, y).
+
+  Paramètres :
+    x, y  Point d'arrivée (coordonnées de vue)
+
+  ---------------------------------------------------------------
+  procedure _LineTo_w(wx, wy : Double);
+  ---------------------------------------------------------------
+  Comme _LineTo, en coordonnées fenêtre.
+
+  ---------------------------------------------------------------
+  procedure _Rectangle(control, x1, y1, x2, y2 : Integer);
+  ---------------------------------------------------------------
+  Dessine un rectangle.
+
+  Paramètres :
+    control  _GBorder (contour) ou _GFillInterior (rempli)
+    x1, y1   Coin supérieur gauche
+    x2, y2   Coin inférieur droit
+
+  ---------------------------------------------------------------
+  procedure _Rectangle_w(control : Integer;
+                         wx1, wy1, wx2, wy2 : Double);
+  ---------------------------------------------------------------
+  Comme _Rectangle, en coordonnées fenêtre.
+
+  ---------------------------------------------------------------
+  procedure _Rectangle_wxy(control : Integer;
+                           var wxy1, wxy2 : _WXYCoord);
+  ---------------------------------------------------------------
+  Comme _Rectangle, avec des structures _WXYCoord.
+
+  ---------------------------------------------------------------
+  procedure _Ellipse(control, x1, y1, x2, y2 : Integer);
+  ---------------------------------------------------------------
+  Dessine une ellipse inscrite dans le rectangle (x1,y1)-(x2,y2).
+
+  Paramètres :
+    control  _GBorder (contour) ou _GFillInterior (remplie)
+    x1, y1   Coin supérieur gauche du rectangle englobant
+    x2, y2   Coin inférieur droit du rectangle englobant
+
+  Pour un cercle, utiliser un rectangle carré (ajuster pour
+  le rapport d'aspect des pixels).
+
+  ---------------------------------------------------------------
+  procedure _Ellipse_w(control : Integer;
+                       wx1, wy1, wx2, wy2 : Double);
+  ---------------------------------------------------------------
+  Comme _Ellipse, en coordonnées fenêtre.
+
+  ---------------------------------------------------------------
+  procedure _Ellipse_wxy(control : Integer;
+                         var wxy1, wxy2 : _WXYCoord);
+  ---------------------------------------------------------------
+  Comme _Ellipse, avec des structures _WXYCoord.
+
+  ---------------------------------------------------------------
+  procedure _Arc(x1, y1, x2, y2, x3, y3, x4, y4 : Integer);
+  ---------------------------------------------------------------
+  Dessine un arc d'ellipse.
+
+  Paramètres :
+    x1, y1  Coin supérieur gauche du rectangle englobant
+    x2, y2  Coin inférieur droit du rectangle englobant
+    x3, y3  Point de départ de l'arc (sur le vecteur depuis
+            le centre)
+    x4, y4  Point d'arrivée de l'arc (sur le vecteur depuis
+            le centre)
+
+  L'arc est tracé dans le sens anti-horaire de (x3,y3) à (x4,y4).
+
+  ---------------------------------------------------------------
+  procedure _Arc_wxy(var wxy1, wxy2, wxy3, wxy4 : _WXYCoord);
+  ---------------------------------------------------------------
+  Comme _Arc, en coordonnées fenêtre.
+
+  ---------------------------------------------------------------
+  procedure _Pie(control, x1, y1, x2, y2,
+                 x3, y3, x4, y4 : Integer);
+  ---------------------------------------------------------------
+  Dessine un secteur (portion de tarte / pie slice).
+
+  Paramètres :
+    control  _GBorder ou _GFillInterior
+    x1..y4   Mêmes que _Arc (rectangle englobant + vecteurs)
+
+  Le secteur est formé par l'arc plus deux lignes reliant
+  les extrémités de l'arc au centre de l'ellipse.
+
+  ---------------------------------------------------------------
+  procedure _Pie_wxy(control : Integer;
+                     var wxy1, wxy2, wxy3, wxy4 : _WXYCoord);
+  ---------------------------------------------------------------
+  Comme _Pie, en coordonnées fenêtre.
+
+  ---------------------------------------------------------------
+  procedure _FloodFill(x, y, boundary : Integer);
+  ---------------------------------------------------------------
+  Remplit une zone fermée par remplissage par diffusion.
+
+  Paramètres :
+    x, y       Point de départ (intérieur de la zone)
+    boundary   Couleur de la bordure délimitant la zone
+
+  Le remplissage utilise la couleur et le motif courants.
+
+  ---------------------------------------------------------------
+  procedure _FloodFill_w(wx, wy : Double; boundary : Integer);
+  ---------------------------------------------------------------
+  Comme _FloodFill, en coordonnées fenêtre.
+
+=========================================================================
+  19. INFORMATION SUR ARC ET PIE
+=========================================================================
+
+  function _GetArcInfo(var StartPoint, EndPoint,
+                       FillPoint : _XYCoord) : Boolean;
+  ---------------------------------------------------------------
+  Retourne les coordonnées calculées lors du dernier appel à
+  _Arc ou _Pie.
+
+  Paramètres :
+    StartPoint  (sortie) Point de départ réel de l'arc
+    EndPoint    (sortie) Point d'arrivée réel de l'arc
+    FillPoint   (sortie) Point intérieur pour le remplissage
+
+  Retour :
+    True si les informations sont disponibles (un _Arc ou _Pie
+    a été appelé précédemment), False sinon.
+
+  Utile pour connecter des lignes aux extrémités d'un arc.
+
+=========================================================================
+  20. ROUTINES DE PIXEL
+=========================================================================
+
+  procedure _SetPixel(x, y : Integer);
+  ---------------------------------------------------------------
+  Allume un pixel à la position (x, y) avec la couleur courante.
+
+  ---------------------------------------------------------------
+  procedure _SetPixel_w(wx, wy : Double);
+  ---------------------------------------------------------------
+  Comme _SetPixel, en coordonnées fenêtre.
+
+  ---------------------------------------------------------------
+  function _GetPixel(x, y : Integer) : Integer;
+  ---------------------------------------------------------------
+  Retourne la couleur du pixel à la position (x, y).
+
+  Retour :
+    Indice de couleur du pixel, ou -1 si hors de l'écran.
+
+  ---------------------------------------------------------------
+  function _GetPixel_w(wx, wy : Double) : Integer;
+  ---------------------------------------------------------------
+  Comme _GetPixel, en coordonnées fenêtre.
+
+=========================================================================
+  21. COULEUR, STYLE DE LIGNE ET MOTIF DE REMPLISSAGE
+=========================================================================
+
+  procedure _SetColor(color : Integer);
+  ---------------------------------------------------------------
+  Définit la couleur courante de dessin (stylo).
+
+  Paramètres :
+    color  Indice de couleur (0 à NumColors - 1)
+
+  Affecte toutes les opérations de dessin : lignes, rectangles,
+  ellipses, arcs, pixels, remplissage.
+
+  ---------------------------------------------------------------
+  function _GetColor : Integer;
+  ---------------------------------------------------------------
+  Retourne la couleur courante de dessin.
+
+  ---------------------------------------------------------------
+  procedure _SetLineStyle(style : Word);
+  ---------------------------------------------------------------
+  Définit le motif de style de ligne sur 16 bits.
+
+  Paramètres :
+    style  Masque de 16 bits (chaque bit = 1 pixel)
+           $FFFF = ligne pleine
+           $F0F0 = tirets
+           $CCCC = pointillés
+           $FF00 = tirets longs
+
+  Le motif est répété le long de la ligne.
+
+  ---------------------------------------------------------------
+  function _GetLineStyle : Word;
+  ---------------------------------------------------------------
+  Retourne le motif de style de ligne courant.
+
+  ---------------------------------------------------------------
+  procedure _SetWriteMode(wmode : Integer);
+  ---------------------------------------------------------------
+  Définit le mode d'écriture des pixels pour les lignes.
+
+  Paramètres :
+    wmode  Mode d'écriture (_GPSET, _GXOR, _GAND, _GOR,
+           _GPRESET)
+
+  ---------------------------------------------------------------
+  function _GetWriteMode : Integer;
+  ---------------------------------------------------------------
+  Retourne le mode d'écriture courant.
+
+  ---------------------------------------------------------------
+  procedure _SetFillMask(mask : _FillMask);
+  ---------------------------------------------------------------
+  Définit le motif de remplissage 8 × 8.
+
+  Paramètres :
+    mask  Tableau de 8 octets décrivant le motif
+
+  ---------------------------------------------------------------
+  function _GetFillMask(var mask : _FillMask) : Boolean;
+  ---------------------------------------------------------------
+  Retourne le motif de remplissage courant.
+
+  Paramètres :
+    mask  (sortie) Motif courant
+
+  Retour :
+    True si un motif personnalisé est défini,
+    False si le motif par défaut (plein) est utilisé.
+
+=========================================================================
+  22. COULEUR DE FOND
+=========================================================================
+
+  procedure _SetBkColor(color : LongInt);
+  ---------------------------------------------------------------
+  Définit la couleur de fond.
+
+  Paramètres :
+    color  Valeur de couleur (LongInt). En mode graphique,
+           utiliser les constantes de couleur universelles
+           (_Black, _Blue, etc.). En mode texte, utiliser
+           un indice de palette (0..15).
+
+  ---------------------------------------------------------------
+  function _GetBkColor : LongInt;
+  ---------------------------------------------------------------
+  Retourne la couleur de fond courante.
+
+=========================================================================
+  23. PALETTE DE COULEURS
+=========================================================================
+
+  function _RemapPalette(index : Integer;
+                         value : LongInt) : LongInt;
+  ---------------------------------------------------------------
+  Redéfinit une entrée de la palette de couleurs.
+
+  Paramètres :
+    index  Indice de palette à modifier (0 à NumColors - 1)
+    value  Nouvelle valeur de couleur (BGR, ex: _LightCyan)
+
+  Retour :
+    Ancienne valeur de la couleur à cet indice, ou
+    -1 si l'opération a échoué.
+
+  Note : fonctionne uniquement avec EGA et VGA. Pas d'effet
+  sur CGA.
+
+  ---------------------------------------------------------------
+  procedure _RemapAllPalette(var newpalette);
+  ---------------------------------------------------------------
+  Redéfinit toute la palette en une seule opération.
+
+  Paramètres :
+    newpalette  Tableau de LongInt contenant les nouvelles
+                valeurs de couleur pour tous les indices
+
+  Plus rapide que des appels multiples à _RemapPalette.
+
+  ---------------------------------------------------------------
+  function _SelectPalette(Number : Integer) : Integer;
+  ---------------------------------------------------------------
+  Sélectionne une palette CGA prédéfinie.
+
+  Paramètres :
+    Number  Numéro de palette (0..3)
+
+  Retour :
+    Numéro de la palette précédente.
+
+  Fonctionne uniquement en mode CGA 4 couleurs (_MRes4Color).
+
+=========================================================================
+  24. FONCTIONS DE TEXTE
+=========================================================================
+
+  function _SetTextRows(rows : Integer) : Integer;
+  ---------------------------------------------------------------
+  Définit le nombre de lignes de texte.
+
+  Paramètres :
+    rows  Nombre de lignes souhaité, ou _MaxTextRows
+
+  Retour :
+    Nombre de lignes réellement activées.
+
+  ---------------------------------------------------------------
+  procedure _SetTextWindow(r1, c1, r2, c2 : Integer);
+  ---------------------------------------------------------------
+  Définit la fenêtre de texte (zone de défilement).
+
+  Paramètres :
+    r1, c1  Coin supérieur gauche (ligne, colonne, base 1)
+    r2, c2  Coin inférieur droit (ligne, colonne, base 1)
+
+  ---------------------------------------------------------------
+  procedure _GetTextWindow(var r1, c1, r2, c2 : Integer);
+  ---------------------------------------------------------------
+  Retourne les coordonnées de la fenêtre de texte courante.
+
+  ---------------------------------------------------------------
+  procedure _ScrollTextWindow(Count : Integer);
+  ---------------------------------------------------------------
+  Fait défiler le contenu de la fenêtre de texte.
+
+  Paramètres :
+    Count  Nombre de lignes à défiler. Positif pour
+           _GScrollUp lignes, négatif pour _GScrollDown lignes.
+
+  Exemple :
+    _ScrollTextWindow(_GScrollUp);     { défiler 1 ligne vers le haut }
+    _ScrollTextWindow(3);              { défiler 3 lignes vers le haut }
+    _ScrollTextWindow(_GScrollDown);   { défiler 1 ligne vers le bas }
+
+  ---------------------------------------------------------------
+  procedure _OutMem(TextString : CSTRING; Length : Integer);
+  ---------------------------------------------------------------
+  Affiche les Length premiers caractères de la chaîne à la
+  position de texte courante.
+
+  Paramètres :
+    TextString  Chaîne à afficher (CSTRING)
+    Length      Nombre de caractères à afficher
+
+  ---------------------------------------------------------------
+  procedure _OutText(TextString : CSTRING);
+  ---------------------------------------------------------------
+  Affiche une chaîne complète à la position de texte courante.
+
+  Paramètres :
+    TextString  Chaîne à afficher (CSTRING)
+
+  Fonctionne en mode texte et en mode graphique. En mode
+  graphique, le texte est dessiné avec la police de texte
+  intégrée.
+
+  ---------------------------------------------------------------
+  function _WrapOn(Option : Boolean) : Boolean;
+  ---------------------------------------------------------------
+  Active ou désactive le retour à la ligne automatique.
+
+  Paramètres :
+    Option  True = activer, False = désactiver
+
+  Retour :
+    Ancienne valeur du paramètre.
+
+  ---------------------------------------------------------------
+  function _DisplayCursor(Toggle : Boolean) : Boolean;
+  ---------------------------------------------------------------
+  Affiche ou masque le curseur texte.
+
+  Paramètres :
+    Toggle  True = afficher, False = masquer
+
+  Retour :
+    Ancienne visibilité du curseur.
+
+=========================================================================
+  25. CURSEUR TEXTE
+=========================================================================
+
+  procedure _SetTextCursor(Attr : Word);
+  ---------------------------------------------------------------
+  Définit l'apparence du curseur texte.
+
+  Paramètres :
+    Attr  Attribut du curseur (lignes de balayage)
+          Octet haut = ligne de début, octet bas = ligne de fin
+
+  Exemple :
+    _SetTextCursor($0607);  { curseur standard (lignes 6-7) }
+    _SetTextCursor($0007);  { curseur bloc (lignes 0-7) }
+
+  ---------------------------------------------------------------
+  function _GetTextCursor : Word;
+  ---------------------------------------------------------------
+  Retourne l'attribut courant du curseur texte.
+
+=========================================================================
+  26. POSITION DE TEXTE
+=========================================================================
+
+  procedure _SetTextPosition(r, c : Integer);
+  ---------------------------------------------------------------
+  Positionne le curseur texte.
+
+  Paramètres :
+    r  Ligne (base 1)
+    c  Colonne (base 1)
+
+  ---------------------------------------------------------------
+  procedure _GetTextPosition(var r, c : Integer);
+  ---------------------------------------------------------------
+  Retourne la position courante du curseur texte.
+
+  Paramètres :
+    r  (sortie) Ligne courante
+    c  (sortie) Colonne courante
+
+=========================================================================
+  27. COULEUR DE TEXTE
+=========================================================================
+
+  procedure _SetTextColor(Color : Integer);
+  ---------------------------------------------------------------
+  Définit la couleur du texte affiché par _OutText et _OutMem.
+
+  Paramètres :
+    Color  Indice de couleur (0..15 en mode texte standard)
+
+  La couleur de texte est indépendante de la couleur de dessin
+  graphique (_SetColor).
+
+  ---------------------------------------------------------------
+  function _GetTextColor : Integer;
+  ---------------------------------------------------------------
+  Retourne la couleur de texte courante.
+
+=========================================================================
+  28. IMAGES D'ÉCRAN
+=========================================================================
+
+  procedure _GetImage(x1, y1, x2, y2 : Integer; var image);
+  ---------------------------------------------------------------
+  Capture une zone rectangulaire de l'écran dans un tampon.
+
+  Paramètres :
+    x1, y1  Coin supérieur gauche
+    x2, y2  Coin inférieur droit
+    image   Tampon destination (taille ≥ _ImageSize)
+
+  ---------------------------------------------------------------
+  procedure _GetImage_w(wx1, wy1, wx2, wy2 : Double;
+                        var image);
+  ---------------------------------------------------------------
+  Comme _GetImage, en coordonnées fenêtre.
+
+  ---------------------------------------------------------------
+  procedure _GetImage_wxy(var wxy1, wxy2 : _WXYCoord;
+                          var image);
+  ---------------------------------------------------------------
+  Comme _GetImage, avec des structures _WXYCoord.
+
+  ---------------------------------------------------------------
+  procedure _PutImage(x, y : Integer; var image;
+                      action : Integer);
+  ---------------------------------------------------------------
+  Affiche une image capturée par _GetImage.
+
+  Paramètres :
+    x, y    Position d'affichage (coin supérieur gauche)
+    image   Tampon contenant l'image
+    action  Mode d'écriture (_GPSET, _GXOR, _GAND, _GOR,
+            _GPRESET)
+
+  ---------------------------------------------------------------
+  procedure _PutImage_w(wx, wy : Double; var image;
+                        action : Integer);
+  ---------------------------------------------------------------
+  Comme _PutImage, en coordonnées fenêtre.
+
+  ---------------------------------------------------------------
+  function _ImageSize(x1, y1, x2, y2 : Integer) : LongInt;
+  ---------------------------------------------------------------
+  Retourne la taille mémoire nécessaire pour capturer la zone
+  rectangulaire spécifiée.
+
+  Paramètres :
+    x1, y1  Coin supérieur gauche
+    x2, y2  Coin inférieur droit
+
+  Retour :
+    Taille en octets du tampon nécessaire.
+
+  Utiliser cette valeur pour allouer le tampon avant _GetImage.
+
+  ---------------------------------------------------------------
+  function _ImageSize_w(wx1, wy1, wx2, wy2 : Double) : LongInt;
+  ---------------------------------------------------------------
+  Comme _ImageSize, en coordonnées fenêtre.
+
+  ---------------------------------------------------------------
+  function _ImageSize_wxy(var wxy1, wxy2 : _WXYCoord) : LongInt;
+  ---------------------------------------------------------------
+  Comme _ImageSize, avec des structures _WXYCoord.
+
+=========================================================================
+  29. POLICES DE CARACTÈRES
+=========================================================================
+
+  function _RegisterFonts(pathname : CSTRING) : Integer;
+  ---------------------------------------------------------------
+  Enregistre les fichiers de polices graphiques.
+
+  Paramètres :
+    pathname  Chemin du fichier .FON (peut contenir des
+              caractères génériques, ex: 'C:\QP\*.FON')
+
+  Retour :
+    Nombre de polices enregistrées, ou valeur négative
+    (_GrFontFileNotFound, etc.) en cas d'erreur.
+
+  Les polices doivent être enregistrées avant d'appeler
+  _SetFont.
+
+  ---------------------------------------------------------------
+  procedure _UnRegisterFonts;
+  ---------------------------------------------------------------
+  Libère la mémoire utilisée par les polices enregistrées.
+  Doit être appelée avant la fin du programme si des polices
+  ont été enregistrées.
+
+  ---------------------------------------------------------------
+  function _SetFont(options : CSTRING) : Integer;
+  ---------------------------------------------------------------
+  Sélectionne et configure la police courante.
+
+  Paramètres :
+    options  Chaîne de description de la police. Format :
+             'tNomPolice hHH wLL bF'
+             t = nom de la « typeface »
+             h = hauteur en pixels
+             w = largeur en pixels
+             b = gras (1) ou non (0)
+             f = fixe, p = proportionnel
+             r = meilleur ajustement (best fit)
+
+  Retour :
+    0 si succès, ou code d'erreur négatif.
+
+  Exemples :
+    _SetFont('t''courier'' h16 w8');
+    _SetFont('t''helv'' h20 b');
+
+  ---------------------------------------------------------------
+  procedure _OutGText(TextString : CSTRING);
+  ---------------------------------------------------------------
+  Affiche du texte avec la police graphique courante (définie
+  par _SetFont). La position est celle du curseur graphique
+  (pas le curseur texte).
+
+  Paramètres :
+    TextString  Texte à afficher (CSTRING)
+
+  Le texte est dessiné en mode graphique avec anti-aliasing
+  si la police le supporte.
+
+  ---------------------------------------------------------------
+  function _GetGTextExtent(TextString : CSTRING) : Integer;
+  ---------------------------------------------------------------
+  Retourne la largeur en pixels qu'occuperait la chaîne si
+  elle était affichée avec _OutGText.
+
+  Paramètres :
+    TextString  Texte à mesurer
+
+  Retour :
+    Largeur en pixels.
+
+  Utile pour centrer ou aligner du texte graphique.
+
+  ---------------------------------------------------------------
+  function _GetFontInfo(var FInfo : _FontInfo) : Integer;
+  ---------------------------------------------------------------
+  Retourne les informations sur la police courante.
+
+  Paramètres :
+    FInfo  (sortie) Structure _FontInfo
+
+  Retour :
+    0 si succès, code d'erreur négatif sinon.
+
+  ---------------------------------------------------------------
+  procedure _SetGTextVector(x, y : Integer);
+  ---------------------------------------------------------------
+  Définit la direction du texte graphique.
+
+  Paramètres :
+    x, y  Composantes du vecteur de direction
+           (1, 0) = horizontal (défaut)
+           (0, 1) = vertical (de bas en haut)
+
+  Permet d'écrire du texte à n'importe quel angle.
+
+  ---------------------------------------------------------------
+  procedure _GetGTextVector(var x, y : Integer);
+  ---------------------------------------------------------------
+  Retourne le vecteur de direction du texte graphique courant.
+
+=========================================================================
+  30. COMPARAISON MSGRAPH vs GRAPH (BGI)
+=========================================================================
+
+  MSGraph (QuickPascal)         Graph (BGI, Turbo Pascal)
+  ---------------------------   ---------------------------
+  _SetVideoMode(mode)          InitGraph(Gd,Gm,Path)
+  _DefaultMode                  CloseGraph
+  _GetVideoConfig(vc)          GetDriverName, GetMaxX, etc.
+  _SetViewport(x1,y1,x2,y2)   SetViewPort(x1,y1,x2,y2,Clip)
+  _SetWindow(inv,x1,y1,x2,y2) (pas d'équivalent direct)
+  _MoveTo(x,y)                 MoveTo(x,y)
+  _LineTo(x,y)                 LineTo(x,y)
+  _Rectangle(c,x1,y1,x2,y2)   Rectangle(x1,y1,x2,y2)
+  _Ellipse(c,x1,y1,x2,y2)     Ellipse(x,y,SA,EA,XR,YR)
+  _Arc(x1..y4)                 Arc(x,y,SA,EA,R)
+  _Pie(c,x1..y4)               PieSlice(x,y,SA,EA,R)
+  _FloodFill(x,y,bord)         FloodFill(x,y,bord)
+  _SetPixel(x,y)               PutPixel(x,y,c)
+  _GetPixel(x,y)               GetPixel(x,y)
+  _SetColor(c)                 SetColor(c)
+  _SetLineStyle(mask)          SetLineStyle(style,pat,thick)
+  _SetFillMask(mask)           SetFillPattern(pat,color)
+  _SetBkColor(c)               SetBkColor(c)
+  _RemapPalette(i,v)           SetPalette(i,c)
+  _GetImage / _PutImage        GetImage / PutImage
+  _ImageSize                   ImageSize
+  _OutText(s)                  OutText(s)
+  _OutGText(s)                 OutTextXY(x,y,s)
+  _RegisterFonts / _SetFont    InstallUserFont / SetTextStyle
+  Coordonnées _w (Double)      (pas d'équivalent)
+  _GrStatus                    GraphResult
+
+  Avantages de MSGraph :
+  - Coordonnées fenêtre en virgule flottante (Double)
+  - API cohérente avec Microsoft C
+  - Pas de fichier pilote externe (.BGI)
+  - Type CSTRING natif pour les chaînes
+
+  Avantages de Graph (BGI) :
+  - Écosystème plus large (pilotes tiers)
+  - Résolutions non-standard via pilotes
+  - Plus de polices intégrées
+
+=========================================================================
+  31. EXEMPLES
+=========================================================================
+
+  --- Exemple 1 : Dessin basique en VGA ---
+
+  program DessinVGA;
+  uses MSGraph;
+  var
+    vc : _VideoConfig;
+  begin
+    if _SetVideoMode(_VRes16Color) = 0 then
+    begin
+      WriteLn('Mode VGA non supporté');
+      Halt(1);
+    end;
+
+    _GetVideoConfig(vc);
+    _SetColor(4);  { rouge }
+    _Rectangle(_GBorder, 10, 10, vc.NumXPixels-10,
+               vc.NumYPixels-10);
+
+    _SetColor(2);  { vert }
+    _Ellipse(_GFillInterior, 100, 100, 400, 300);
+
+    _SetColor(1);  { bleu }
+    _MoveTo(0, 0);
+    _LineTo(vc.NumXPixels-1, vc.NumYPixels-1);
+
+    ReadLn;
+    _SetVideoMode(_DefaultMode);
+  end.
+
+  --- Exemple 2 : Coordonnées fenêtre ---
+
+  program FenetreDemo;
+  uses MSGraph;
+  var
+    x : Double;
+  begin
+    _SetVideoMode(_VRes16Color);
+    _SetWindow(True, -3.14, -1.5, 3.14, 1.5);
+
+    _SetColor(7);  { blanc }
+    { Dessiner une sinusoïde }
+    _MoveTo_w(-3.14, 0.0);
+    x := -3.14;
+    while x <= 3.14 do
+    begin
+      _LineTo_w(x, Sin(x));
+      x := x + 0.02;
+    end;
+
+    { Axes }
+    _SetColor(15);
+    _MoveTo_w(-3.14, 0.0);
+    _LineTo_w(3.14, 0.0);
+    _MoveTo_w(0.0, -1.5);
+    _LineTo_w(0.0, 1.5);
+
+    ReadLn;
+    _SetVideoMode(_DefaultMode);
+  end.
+
+  --- Exemple 3 : Camembert (Pie) ---
+
+  program CamembertDemo;
+  uses MSGraph;
+  begin
+    _SetVideoMode(_EResColor);
+
+    _SetColor(1);
+    _Pie(_GFillInterior, 100,50,400,300,
+         400,50, 250,50);
+    _SetColor(2);
+    _Pie(_GFillInterior, 100,50,400,300,
+         250,50, 100,175);
+    _SetColor(4);
+    _Pie(_GFillInterior, 100,50,400,300,
+         100,175, 400,50);
+
+    ReadLn;
+    _SetVideoMode(_DefaultMode);
+  end.
+
+  --- Exemple 4 : Polices graphiques ---
+
+  program FontDemo;
+  uses MSGraph;
+  var
+    FI : _FontInfo;
+  begin
+    _SetVideoMode(_VRes16Color);
+
+    if _RegisterFonts('*.FON') > 0 then
+    begin
+      _SetFont('t''helv'' h24');
+      _SetColor(15);
+      _MoveTo(50, 50);
+      _OutGText('Texte Helvetica 24');
+
+      _GetFontInfo(FI);
+      _SetTextPosition(20, 1);
+      _OutText('Police : ');
+      _OutText(FI.FaceName);
+
+      _UnRegisterFonts;
+    end
+    else
+    begin
+      _SetTextPosition(1, 1);
+      _OutText('Aucune police trouvée');
+    end;
+
+    ReadLn;
+    _SetVideoMode(_DefaultMode);
+  end.
+
+  --- Exemple 5 : Double buffering ---
+
+  program DoubleBuffer;
+  uses MSGraph;
+  var
+    vc : _VideoConfig;
+    x  : Integer;
+  begin
+    _SetVideoMode(_MRes16Color);
+    _GetVideoConfig(vc);
+
+    if vc.NumVideoPages >= 2 then
+    begin
+      for x := 0 to 319 do
+      begin
+        _SetActivePage(1 - (x mod 2));  { page cachée }
+        _ClearScreen(_GClearScreen);
+        _SetColor(1 + (x mod 15));
+        _Ellipse(_GFillInterior, x-20, 80, x+20, 120);
+        _SetVisualPage(1 - (x mod 2));  { afficher }
+      end;
+    end;
+
+    ReadLn;
+    _SetVideoMode(_DefaultMode);
+  end.
+
+  --- Exemple 6 : Capture et restitution d'image ---
+
+  program ImageDemo;
+  uses MSGraph;
+  var
+    Size : LongInt;
+    Buf  : Pointer;
+  begin
+    _SetVideoMode(_VRes16Color);
+
+    _SetColor(4);
+    _Ellipse(_GFillInterior, 50, 50, 150, 150);
+
+    Size := _ImageSize(50, 50, 150, 150);
+    GetMem(Buf, Size);
+    _GetImage(50, 50, 150, 150, Buf^);
+    _PutImage(200, 100, Buf^, _GPSET);
+    _PutImage(350, 200, Buf^, _GXOR);
+    FreeMem(Buf, Size);
+
+    ReadLn;
+    _SetVideoMode(_DefaultMode);
+  end.
+
+=========================================================================
+  32. RÉCAPITULATIF DE L'INTERFACE
+=========================================================================
+
+  --- Constantes de mode vidéo (21) ---
+  _MaxResMode, _MaxColorMode, _DefaultMode
+  _TextBW40, _TextC40, _TextBW80, _TextC80, _TextMono
+  _MRes4Color, _MResNoColor, _HResBW, _HercMono
+  _MRes16Color, _HRes16Color, _EResNoColor, _EResColor
+  _VRes2Color, _VRes16Color, _MRes256Color, _OResColor
+
+  --- Constantes d'adaptateur (9) ---
+  _MDPA, _CGA, _EGA, _VGA, _MCGA, _HGC, _OCGA, _OEGA, _OVGA
+
+  --- Constantes de moniteur (6) ---
+  _Mono, _Color, _EnhColor, _AnalogMono, _AnalogColor, _Analog
+
+  --- Constantes de contrôle (7) ---
+  _GBorder, _GFillInterior
+  _GClearScreen, _GViewport, _GWindow
+  _GScrollUp, _GScrollDown
+
+  --- Constantes d'option (1) ---
+  _MaxTextRows
+
+  --- Constantes d'écriture d'image (5) ---
+  _GPSET, _GPRESET, _GAND, _GOR, _GXOR
+
+  --- Constantes de couleur universelle (16) ---
+  _Black.._BrightWhite
+
+  --- Constantes de couleur _EResNoColor (9) ---
+  _ModeFOff.._ModeFHi
+
+  --- Constantes de couleur _TextMono (3) ---
+  _Mode7Off, _Mode7On, _Mode7Hi
+
+  --- Constantes d'état _GrStatus (13) ---
+  _GrOk.._GrParameterAltered
+
+  --- Types ---
+  _VideoConfig   (11 champs)
+  _FillMask      (array[0..7] of Byte)
+  _XYCoord       (xcoord, ycoord : Integer)
+  _WXYCoord      (wx, wy : Double)
+  _FontInfo      (7 champs, dont CSTRING)
+
+  --- Installation/Configuration (8) ---
+  Function  _GrStatus : Integer;
+  Function  _SetVideoMode(mode : Integer) : Integer;
+  Function  _SetVideoModeRows(mode, rows : Integer) : Integer;
+  Procedure _SetActivePage(page : Integer);
+  Procedure _SetVisualPage(page : Integer);
+  Function  _GetActivePage : Integer;
+  Function  _GetVisualPage : Integer;
+  Procedure _GetVideoConfig(var vc : _VideoConfig);
+
+  --- Coordonnées (11) ---
+  Procedure _SetViewOrg(x, y : Integer; var org : _XYCoord);
+  Procedure _SetViewport(x1, y1, x2, y2 : Integer);
+  Procedure _SetClipRgn(x1, y1, x2, y2 : Integer);
+  Procedure _SetWindow(FInvert : Boolean; x1,y1,x2,y2 : Double);
+  Procedure _GetViewCoord(x, y : Integer; var xy : _XYCoord);
+  Procedure _GetViewCoord_w(x, y : Double; var xy : _XYCoord);
+  Procedure _GetViewCoord_wxy(var wxy:_WXYCoord; var xy:_XYCoord);
+  Procedure _GetPhysCoord(x, y : Integer; var xy : _XYCoord);
+  Procedure _GetWindowCoord(x, y:Integer; var wxy:_WXYCoord);
+  Procedure _GetCurrentPosition(var xy : _XYCoord);
+  Procedure _GetCurrentPosition_wxy(var wxy : _WXYCoord);
+
+  --- Sortie graphique (18) ---
+  Procedure _ClearScreen(area : Integer);
+  Procedure _MoveTo(x, y : Integer);
+  Procedure _MoveTo_w(wx, wy : Double);
+  Procedure _LineTo(x, y : Integer);
+  Procedure _LineTo_w(wx, wy : Double);
+  Procedure _Rectangle(control, x1, y1, x2, y2 : Integer);
+  Procedure _Rectangle_w(control:Integer; wx1,wy1,wx2,wy2:Double);
+  Procedure _Rectangle_wxy(control:Integer; var wxy1,wxy2:_WXYCoord);
+  Procedure _Ellipse(control, x1, y1, x2, y2 : Integer);
+  Procedure _Ellipse_w(control:Integer; wx1,wy1,wx2,wy2:Double);
+  Procedure _Ellipse_wxy(control:Integer; var wxy1,wxy2:_WXYCoord);
+  Procedure _Arc(x1,y1,x2,y2,x3,y3,x4,y4 : Integer);
+  Procedure _Arc_wxy(var wxy1,wxy2,wxy3,wxy4 : _WXYCoord);
+  Procedure _Pie(control,x1,y1,x2,y2,x3,y3,x4,y4 : Integer);
+  Procedure _Pie_wxy(control:Integer; var wxy1..wxy4:_WXYCoord);
+  Procedure _FloodFill(x, y, boundary : Integer);
+  Procedure _FloodFill_w(wx, wy : Double; boundary : Integer);
+  Function  _GetArcInfo(var SP,EP,FP : _XYCoord) : Boolean;
+
+  --- Pixels (4) ---
+  Procedure _SetPixel(x, y : Integer);
+  Procedure _SetPixel_w(wx, wy : Double);
+  Function  _GetPixel(x, y : Integer) : Integer;
+  Function  _GetPixel_w(wx, wy : Double) : Integer;
+
+  --- Couleur/Style (8) ---
+  Procedure _SetColor(color : Integer);
+  Function  _GetColor : Integer;
+  Procedure _SetLineStyle(style : Word);
+  Function  _GetLineStyle : Word;
+  Procedure _SetWriteMode(wmode : Integer);
+  Function  _GetWriteMode : Integer;
+  Procedure _SetFillMask(mask : _FillMask);
+  Function  _GetFillMask(var mask : _FillMask) : Boolean;
+
+  --- Fond (2) ---
+  Procedure _SetBkColor(color : LongInt);
+  Function  _GetBkColor : LongInt;
+
+  --- Palette (3) ---
+  Function  _RemapPalette(index:Integer; value:LongInt):LongInt;
+  Procedure _RemapAllPalette(var newpalette);
+  Function  _SelectPalette(Number : Integer) : Integer;
+
+  --- Texte (8) ---
+  Function  _SetTextRows(rows : Integer) : Integer;
+  Procedure _SetTextWindow(r1, c1, r2, c2 : Integer);
+  Procedure _GetTextWindow(var r1, c1, r2, c2 : Integer);
+  Procedure _ScrollTextWindow(Count : Integer);
+  Procedure _OutMem(TextString : CSTRING; Length : Integer);
+  Procedure _OutText(TextString : CSTRING);
+  Function  _WrapOn(Option : Boolean) : Boolean;
+  Function  _DisplayCursor(Toggle : Boolean) : Boolean;
+
+  --- Curseur texte (2) ---
+  Procedure _SetTextCursor(Attr : Word);
+  Function  _GetTextCursor : Word;
+
+  --- Position texte (2) ---
+  Procedure _SetTextPosition(r, c : Integer);
+  Procedure _GetTextPosition(var r, c : Integer);
+
+  --- Couleur texte (2) ---
+  Procedure _SetTextColor(Color : Integer);
+  Function  _GetTextColor : Integer;
+
+  --- Images (8) ---
+  Procedure _GetImage(x1,y1,x2,y2:Integer; var image);
+  Procedure _GetImage_w(wx1,wy1,wx2,wy2:Double; var image);
+  Procedure _GetImage_wxy(var wxy1,wxy2:_WXYCoord; var image);
+  Procedure _PutImage(x,y:Integer; var image; action:Integer);
+  Procedure _PutImage_w(wx,wy:Double; var image; action:Integer);
+  Function  _ImageSize(x1,y1,x2,y2:Integer) : LongInt;
+  Function  _ImageSize_w(wx1,wy1,wx2,wy2:Double) : LongInt;
+  Function  _ImageSize_wxy(var wxy1,wxy2:_WXYCoord) : LongInt;
+
+  --- Polices (8) ---
+  Function  _RegisterFonts(pathname : CSTRING) : Integer;
+  Procedure _UnRegisterFonts;
+  Function  _SetFont(options : CSTRING) : Integer;
+  Procedure _OutGText(TextString : CSTRING);
+  Function  _GetGTextExtent(TextString : CSTRING) : Integer;
+  Function  _GetFontInfo(var FInfo : _FontInfo) : Integer;
+  Procedure _SetGTextVector(x, y : Integer);
+  Procedure _GetGTextVector(var x, y : Integer);
+
+=========================================================================
+  33. RÉSUMÉ PAR CATÉGORIE
+=========================================================================
+
+  Catégorie                   Nombre   Éléments
+  -------------------------   ------   ----------------------------------
+  Installation/Configuration     8     _GrStatus, _SetVideoMode,
+                                       _SetVideoModeRows,
+                                       _SetActivePage, _SetVisualPage,
+                                       _GetActivePage, _GetVisualPage,
+                                       _GetVideoConfig
+  Coordonnées                   11     _SetViewOrg, _SetViewport,
+                                       _SetClipRgn, _SetWindow,
+                                       _GetViewCoord (×3),
+                                       _GetPhysCoord, _GetWindowCoord,
+                                       _GetCurrentPosition (×2)
+  Sortie graphique              18     _ClearScreen, _MoveTo (×2),
+                                       _LineTo (×2), _Rectangle (×3),
+                                       _Ellipse (×3), _Arc (×2),
+                                       _Pie (×2), _FloodFill (×2),
+                                       _GetArcInfo
+  Pixels                         4     _SetPixel (×2), _GetPixel (×2)
+  Couleur/Style/Motif            8     _SetColor, _GetColor,
+                                       _SetLineStyle, _GetLineStyle,
+                                       _SetWriteMode, _GetWriteMode,
+                                       _SetFillMask, _GetFillMask
+  Couleur de fond                2     _SetBkColor, _GetBkColor
+  Palette                        3     _RemapPalette, _RemapAllPalette,
+                                       _SelectPalette
+  Texte                          8     _SetTextRows, _SetTextWindow,
+                                       _GetTextWindow,
+                                       _ScrollTextWindow,
+                                       _OutMem, _OutText,
+                                       _WrapOn, _DisplayCursor
+  Curseur texte                  2     _SetTextCursor, _GetTextCursor
+  Position texte                 2     _SetTextPosition,
+                                       _GetTextPosition
+  Couleur texte                  2     _SetTextColor, _GetTextColor
+  Images                         8     _GetImage (×3), _PutImage (×2),
+                                       _ImageSize (×3)
+  Polices                        8     _RegisterFonts, _UnRegisterFonts,
+                                       _SetFont, _OutGText,
+                                       _GetGTextExtent, _GetFontInfo,
+                                       _SetGTextVector,
+                                       _GetGTextVector
+  -------------------------   ------   ----------------------------------
+  TOTAL procédures/fonctions    86
+
+  Constantes exportées : 90   (21 modes + 9 adaptateurs +
+                                6 moniteurs + 7 contrôle +
+                                1 option + 5 écriture +
+                                16 couleurs + 9 EResNoColor +
+                                3 TextMono + 13 GrStatus)
+  Types exportés : 5          (_VideoConfig, _FillMask,
+                               _XYCoord, _WXYCoord, _FontInfo)
+  Variables exportées : 0
+  Dépendance : MSGrUtil
+
+=========================================================================
+  Fin du document - Unité MSGRAPH - QuickPascal 1.0
+=========================================================================

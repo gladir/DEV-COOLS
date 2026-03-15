@@ -1,0 +1,30 @@
+comment Algol 60 example - IF/THEN/ELSE et expressions conditionnelles ;
+BEGIN
+  INTEGER x, y, m;
+
+  x := 15;
+  y := 20;
+
+  comment IF/THEN/ELSE instruction ;
+  IF x < y THEN
+    outstring(1, `x<y`)
+  ELSE
+    outstring(1, `x>=y`);
+
+  comment Expression conditionnelle ;
+  m := IF x > y THEN x ELSE y;
+  outstring(1, ` max=`);
+  outinteger(1, m);
+
+  comment IF/THEN/ELSE imbrique ;
+  IF x = 0 THEN
+    outstring(1, ` zero`)
+  ELSE IF x > 0 THEN
+    outstring(1, ` positif`)
+  ELSE
+    outstring(1, ` negatif`);
+
+  comment Expression conditionnelle booleenne ;
+  outstring(1, ` ok=`);
+  outboolean(1, x > 10 AND y > 10)
+END.

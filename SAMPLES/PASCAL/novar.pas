@@ -1,0 +1,4 @@
+PROGRAM NoVar;
+BEGIN
+  WRITELN(42)
+END.

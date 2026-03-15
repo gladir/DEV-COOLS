@@ -1,5 +1,4 @@
-*.asm
 *.o
 *.obj
 *.ppu
-AL58C86
+*.class

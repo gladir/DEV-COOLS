@@ -1,0 +1,19 @@
+CO Test TODO 18 - TABLEAUX ET TRANCHES CO
+
+CO Array declaration with bounds CO
+[1:5] INT a := (10, 20, 30, 40, 50);
+
+CO Array element access CO
+INT x := a[1];
+INT y := a[3];
+
+CO LWB and UPB CO
+INT lo := LWB a;
+INT hi := UPB a;
+
+CO Array without initializer CO
+[1:3] INT b;
+
+CO Slice CO
+[1:5] INT c := (1, 2, 3, 4, 5);
+INT v := c[2];

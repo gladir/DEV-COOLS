@@ -1,0 +1,32 @@
+comment Algol 60 example - boucles FOR ;
+BEGIN
+  INTEGER i, s;
+
+  comment FOR/STEP/UNTIL classique ;
+  s := 0;
+  FOR i := 1 STEP 1 UNTIL 5 DO
+    s := s + i;
+  outstring(1, `sum(1..5)=`);
+  outinteger(1, s);
+
+  comment FOR avec pas negatif ;
+  outstring(1, ` countdown=`);
+  FOR i := 5 STEP -1 UNTIL 1 DO
+    outinteger(1, i);
+
+  comment FOR/WHILE ;
+  i := 1;
+  s := 0;
+  FOR i := i WHILE i <= 10 DO
+  BEGIN
+    s := s + i;
+    i := i + 1
+  END;
+  outstring(1, ` sum(1..10)=`);
+  outinteger(1, s);
+
+  comment FOR avec liste d elements ;
+  outstring(1, ` vals=`);
+  FOR i := 2, 4, 6, 8 DO
+    outinteger(1, i)
+END.

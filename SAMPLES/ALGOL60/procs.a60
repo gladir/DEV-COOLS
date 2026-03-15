@@ -1,0 +1,28 @@
+comment Algol 60 example - procedures et fonctions ;
+BEGIN
+  INTEGER PROCEDURE carre(n);
+    INTEGER n;
+    carre := n * n;
+
+  INTEGER PROCEDURE facto(n);
+    INTEGER n;
+    facto := IF n <= 1 THEN 1 ELSE n * facto(n - 1);
+
+  PROCEDURE afficher(x);
+    INTEGER x;
+  BEGIN
+    outstring(1, ` `);
+    outinteger(1, x)
+  END;
+
+  outstring(1, `carre(7)=`);
+  outinteger(1, carre(7));
+
+  outstring(1, ` facto(5)=`);
+  outinteger(1, facto(5));
+
+  outstring(1, ` vals:`);
+  afficher(10);
+  afficher(20);
+  afficher(30)
+END.

@@ -1,0 +1,1430 @@
+==============================================================================
+  APPLICATION_LINKER.txt
+  Comment ecrire un editeur de liens (linker)
+  Inspire du programme LINK.PAS du projet DEV-COOLS
+==============================================================================
+
+Table des matieres
+------------------
+
+  1.  Introduction
+  2.  Architecture generale d un editeur de liens
+  3.  Les structures de donnees fondamentales
+  4.  Le format OMF (Object Module Format)
+  5.  Phase 1 : Analyse de la ligne de commande
+  6.  Phase 2 : Lecture des fichiers objets (.OBJ)
+  7.  Phase 3 : Resolution des symboles externes
+  8.  Phase 4 : Traitement des bibliotheques (.LIB)
+  9.  Phase 5 : Calcul des adresses de segments
+  10. Phase 6 : Corrections d adresses (Fixups et Relocations)
+  11. Phase 7 : Generation du fichier executable (.EXE)
+  12. Phase 8 : Generation du fichier MAP
+  13. Le programme principal
+  14. Gestion de la memoire
+  15. Gestion des erreurs
+  16. Exemples concrets tires de LINK.PAS
+  17. Les formats binaires dans le projet DEV-COOLS
+  18. Conseils pratiques
+
+==============================================================================
+  1. Introduction
+==============================================================================
+
+  Un editeur de liens (linker) est un programme qui combine un ou
+  plusieurs fichiers objets (.OBJ) et bibliotheques (.LIB) pour
+  produire un fichier executable (.EXE). Il est le dernier maillon
+  de la chaine de compilation :
+
+    Code source  -->  Compilateur  -->  Fichier .OBJ  -->  Linker  -->  .EXE
+
+  Le linker accomplit les taches suivantes :
+
+    - Lire les fichiers objets et en extraire les segments, les
+      symboles et les donnees
+    - Resoudre les references entre modules (symboles externes)
+    - Calculer les adresses finales de chaque segment
+    - Appliquer les corrections d adresses (fixups / relocations)
+    - Generer le fichier executable avec l en-tete MZ ou PE
+    - Generer un fichier MAP de diagnostic (optionnel)
+
+  Le projet DEV-COOLS contient le programme LINK.PAS, un editeur de
+  liens pour DOS 16 bits ecrit en Turbo Pascal / Free Pascal. Ce
+  programme traite les fichiers objets au format OMF (Object Module
+  Format) et produit des executables DOS au format MZ.
+
+  Ce document explique, etape par etape, comment ecrire un editeur
+  de liens en s inspirant de LINK.PAS (4550 lignes de Pascal).
+
+==============================================================================
+  2. Architecture generale d un editeur de liens
+==============================================================================
+
+  Le flux de travail d un editeur de liens suit un pipeline lineaire :
+
+    Fichiers .OBJ (un ou plusieurs)
+    Fichiers .LIB (optionnels)
+            |
+            v
+    +---------------------------+
+    | Analyse de la ligne de    |  Determiner les fichiers d entree,
+    | commande                  |  les options et le fichier de sortie
+    +---------------------------+
+            |
+            v
+    +---------------------------+
+    | Lecture des fichiers .OBJ |  Parcourir les enregistrements OMF,
+    |                           |  extraire segments, symboles, fixups
+    +---------------------------+
+            |
+            v
+    +---------------------------+
+    | Resolution des symboles   |  Relier les symboles externes aux
+    | externes                  |  symboles publics definis
+    +---------------------------+
+            |
+            v
+    +---------------------------+
+    | Recherche dans les .LIB   |  Charger les modules necessaires
+    |                           |  depuis les bibliotheques
+    +---------------------------+
+            |
+            v
+    +---------------------------+
+    | Calcul des adresses       |  Attribuer une adresse de base a
+    | de segments               |  chaque segment (avec tri DOSSEG)
+    +---------------------------+
+            |
+            v
+    +---------------------------+
+    | Corrections d adresses    |  Appliquer les fixups et les
+    | (Fixups / Relocations)    |  relocations dans le code
+    +---------------------------+
+            |
+            v
+    +---------------------------+
+    | Generation du .EXE        |  Ecrire l en-tete MZ, les segments
+    |                           |  de code et de donnees
+    +---------------------------+
+            |
+            v
+    +---------------------------+
+    | Generation du .MAP        |  Ecrire la carte des segments et
+    | (optionnel)               |  des symboles publics
+    +---------------------------+
+            |
+            v
+    Fichier executable (.EXE)
+    Fichier carte (.MAP)
+
+  Dans LINK.PAS, toutes ces phases sont implementees dans un seul
+  fichier. Le programme principal orchestre les appels dans l ordre.
+
+==============================================================================
+  3. Les structures de donnees fondamentales
+==============================================================================
+
+  3.1 L en-tete DOS MZ (TExeHeader)
+  ----------------------------------
+
+  L en-tete d un fichier executable DOS suit le format MZ :
+
+    TExeHeader = Record
+      Signature     : Word;    { $5A4D = 'MZ' }
+      LastPageBytes : Word;    { Octets utilises dans la derniere page }
+      PageCount     : Word;    { Nombre de pages de 512 octets }
+      RelocCount    : Word;    { Nombre d entrees de relocation }
+      HeaderSize    : Word;    { Taille en-tete en paragraphes (x16) }
+      MinAlloc      : Word;    { Memoire minimale supplementaire }
+      MaxAlloc      : Word;    { Memoire maximale supplementaire }
+      InitSS        : Word;    { Valeur initiale de SS }
+      InitSP        : Word;    { Valeur initiale de SP }
+      Checksum      : Word;    { Somme de controle (souvent 0) }
+      InitIP        : Word;    { Valeur initiale de IP }
+      InitCS        : Word;    { Valeur initiale de CS }
+      RelocOffset   : Word;    { Offset de la table de relocation }
+      OverlayNumber : Word;    { Numero d overlay (0 = principal) }
+    End;
+
+  Chaque champ est un mot de 16 bits (Word). L en-tete fait 28 octets
+  au minimum, mais est generalement etendu a 32 octets ou plus pour
+  contenir la table de relocation.
+
+  3.2 Le segment logique (TSegment)
+  ---------------------------------
+
+  Un segment est une portion contigue de code ou de donnees :
+
+    TSegment = Record
+      Name    : String[16];    { Nom logique (ex: _TEXT, _DATA) }
+      Address : LongInt;       { Adresse de base dans l image liee }
+      Size    : Word;          { Taille en octets }
+      Class   : String[8];     { Classe (CODE, DATA, BSS, STACK) }
+    End;
+
+  Les segments sont regroupes par classe :
+
+    Classe    Contenu
+    --------- ---------------------------------
+    CODE      Code executable (instructions)
+    DATA      Donnees initialisees
+    BSS       Donnees non initialisees
+    STACK     Pile d execution
+    CONST     Constantes en lecture seule
+
+  3.3 Le symbole (TSymbol)
+  ------------------------
+
+  Un symbole est un nom associe a une adresse :
+
+    TSymbol = Record
+      Name       : String[32];  { Nom du symbole }
+      Segment    : Word;        { Index du segment de definition }
+      Offset     : Word;        { Offset dans le segment }
+      IsExternal : Boolean;     { True si non defini localement }
+    End;
+
+  Il existe deux categories de symboles :
+
+    Symboles publics (PUBDEF) :
+      Definis dans un module et visibles par les autres modules.
+      Exemple : la procedure _main, la variable _compteur
+
+    Symboles externes (EXTDEF) :
+      References a des symboles definis dans d autres modules.
+      Le linker doit trouver leur definition pour resoudre l adresse.
+
+  3.4 La relocation (TRelocation)
+  ------------------------------
+
+  Une entree de relocation indique un emplacement dans le code ou
+  une adresse doit etre corrigee au chargement :
+
+    TRelocation = Record
+      Offset  : Word;   { Offset MZ de la valeur a corriger }
+      Segment : Word;   { Segment MZ (en paragraphes) }
+      Target  : Word;   { Informations de cible }
+    End;
+
+  Les relocations sont necessaires car le systeme d exploitation
+  peut charger le programme a une adresse differente de celle prevue.
+  Le chargeur DOS parcourt la table de relocation et ajuste les
+  adresses de segment en ajoutant l adresse de base reelle.
+
+  3.5 Listes chainees
+  -------------------
+
+  Dans LINK.PAS, toutes les structures sont gerees par des listes
+  chainees dynamiques :
+
+    PSegmentItem = ^TSegmentItem;
+    TSegmentItem = Record
+      Value : TSegment;
+      Next  : PSegmentItem;
+    End;
+
+    PSymbolItem = ^TSymbolItem;
+    TSymbolItem = Record
+      Value : TSymbol;
+      Next  : PSymbolItem;
+    End;
+
+    PRelocationItem = ^TRelocationItem;
+    TRelocationItem = Record
+      Value : TRelocation;
+      Next  : PRelocationItem;
+    End;
+
+  Des pointeurs Head et Tail permettent un ajout en O(1) a la fin :
+
+    SegmentHead, SegmentTail : PSegmentItem;
+    SymbolHead, SymbolTail   : PSymbolItem;
+    ...
+
+  3.6 Les groupes OMF (TGroupItem)
+  --------------------------------
+
+  Un groupe OMF rassemble plusieurs segments sous un meme nom.
+  L exemple classique est DGROUP qui regroupe _DATA, _BSS et STACK :
+
+    PGroupItem = ^TGroupItem;
+    TGroupItem = Record
+      NameIndex   : Word;
+      Is32Bit     : Boolean;
+      MemberHead  : PGroupMemberItem;
+      MemberTail  : PGroupMemberItem;
+      MemberCount : Integer;
+      Next        : PGroupItem;
+    End;
+
+  3.7 Les alias (TAliasItem)
+  --------------------------
+
+  Les alias permettent de rediriger un nom de symbole vers un autre.
+  Par exemple, un compilateur peut emettre un ALIAS pour _printf
+  pointant vers __printf. La procedure ResolveAliasName resout les
+  chaines d alias.
+
+  3.8 Constantes de limites
+  -------------------------
+
+  LINK.PAS definit des limites maximales pour chaque structure :
+
+    Constante                    Valeur   Description
+    ---------------------------  ------   ---------------------------
+    MAX_SEGMENTS                 128      Segments logiques
+    MAX_SYMBOLS                  1024     Symboles (publics + externes)
+    MAX_RELOCATIONS              2048     Entrees de relocation
+    MAX_GROUPS                   128      Groupes OMF (GRPDEF)
+    MAX_LNAMES                   2048     Noms logiques (LNAMES)
+    MAX_LINENUMS                 4096     Informations de debug (LINNUM)
+    MAX_COMMENTS                 2048     Commentaires OMF (COMENT)
+    MAX_ALIASES                  1024     Definitions ALIAS
+    MAX_CMD_OBJS                 256      Fichiers OBJ en entree
+    MAX_CMD_LIBS                 256      Bibliotheques en entree
+    MAX_LIB_TRACKED_MODULES      256      Modules de bibliotheque charges
+
+==============================================================================
+  4. Le format OMF (Object Module Format)
+==============================================================================
+
+  4.1 Presentation du format OMF
+  ------------------------------
+
+  Le format OMF est le format standard des fichiers objets pour les
+  outils de developpement DOS et Windows 16 bits. Il est utilise par :
+
+    - MASM (Microsoft Macro Assembler)
+    - TASM (Borland Turbo Assembler)
+    - Turbo Pascal / Borland Pascal
+    - Microsoft C/C++, Borland C/C++, Watcom C/C++
+
+  Un fichier .OBJ OMF est une sequence d enregistrements binaires.
+  Chaque enregistrement a la structure suivante :
+
+    +----------+----------+-------------------+----------+
+    | RecType  | RecLen   | Payload (donnees) | Checksum |
+    | 1 octet  | 2 octets | RecLen-1 octets   | 1 octet  |
+    +----------+----------+-------------------+----------+
+
+    RecType  : identifie le type d enregistrement (voir ci-dessous)
+    RecLen   : taille du payload + checksum (petit-boutiste)
+    Payload  : contenu variable selon le type
+    Checksum : octet tel que la somme de tous les octets = 0 (mod 256)
+
+  4.2 Types d enregistrements OMF principaux
+  -------------------------------------------
+
+  Les types d enregistrements les plus importants sont :
+
+    Code hex  Nom       Description
+    --------  --------  ------------------------------------------
+    $80       THEADR    En-tete du module (nom du fichier source)
+    $82       LHEADR    En-tete alternatif
+    $88       COMENT    Commentaire (meta-donnees du compilateur)
+    $96       LNAMES    Liste de noms logiques (noms de segments,
+                        classes, groupes)
+    $98/$99   SEGDEF    Definition d un segment (nom, classe,
+                        taille, alignement, combinaison)
+    $9A/$9B   GRPDEF    Definition d un groupe (regroupe segments)
+    $8C       EXTDEF    Declaration de symboles externes
+    $90/$91   PUBDEF    Definition de symboles publics
+    $A0/$A1   LEDATA    Donnees initialisees d un segment
+    $A2/$A3   LIDATA    Donnees avec blocs iteres (compression)
+    $9C/$9D   FIXUPP    Corrections d adresses (fixups)
+    $B4/$B5   LEXTDEF   Extensions locales
+    $B6/$B7   LPUBDEF   Symboles publics locaux
+    $C6       ALIAS     Definition d alias de symbole
+    $B0       COMDEF    Definition de variables communales
+    $C2/$C3   COMDAT    Sections COMDAT (donnees communales)
+    $B2/$B3   BAKPAT    Corrections differees (back-patches)
+    $94/$95   LINNUM    Informations de numeros de lignes (debug)
+    $8A/$8B   MODEND    Fin du module (et point d entree optionnel)
+
+  Les codes impairs (ex: $99 au lieu de $98) indiquent la variante
+  32 bits de l enregistrement.
+
+  4.3 Lecture d un enregistrement OMF
+  ------------------------------------
+
+  Dans LINK.PAS, la lecture d un enregistrement OMF se fait par :
+
+    Function ReadOmfRecordAt(Var InF : File;
+                             Const Pos, Limit : LongInt;
+                             Var RecType : Byte;
+                             Var RecLen : Word;
+                             Var RecBuf : TObjRecBuffer) : Boolean;
+
+  Cette fonction :
+    1. Se positionne dans le fichier a l offset Pos
+    2. Lit l octet RecType
+    3. Lit le mot RecLen (petit-boutiste)
+    4. Lit RecLen octets dans RecBuf (payload + checksum)
+    5. Retourne True si la lecture a reussi
+
+  Le tampon TObjRecBuffer est un tableau de 65536 octets :
+
+    TObjRecBuffer = Array[0..65535] of Byte;
+
+  4.4 Les index OMF
+  -----------------
+
+  Certains champs OMF utilisent un format d index compact :
+
+    - Si l octet de tete < $80 : l index est cet octet (1 octet)
+    - Si l octet de tete >= $80 : l index est sur 2 octets
+      index = ((octet1 AND $7F) SHL 8) OR octet2
+
+  La fonction ReadOmfIndex implemente ce decodage :
+
+    Function ReadOmfIndex(Var Pos : Integer;
+                          Limit : Integer;
+                          Var Idx : Word) : Boolean;
+    Var b : Byte;
+    Begin
+      ReadOmfIndex := False;
+      If Pos >= Limit Then Exit;
+      b := Buffer[Pos];
+      Inc(Pos);
+      If (b And $80) <> 0 Then Begin
+        If Pos >= Limit Then Exit;
+        Idx := ((Word(b And $7F) Shl 8) Or Buffer[Pos]);
+        Inc(Pos);
+      End Else
+        Idx := b;
+      ReadOmfIndex := True;
+    End;
+
+  4.5 Structure d un module OMF complet
+  -------------------------------------
+
+  Un module OMF typique contient les enregistrements suivants
+  dans cet ordre :
+
+    THEADR    ->  Nom du module source
+    COMENT    ->  Commentaires (compilateur, options, ...)
+    LNAMES    ->  Noms logiques utilises dans les SEGDEF/GRPDEF
+    SEGDEF    ->  Definition des segments (un par segment)
+    GRPDEF    ->  Definition des groupes (DGROUP, ...)
+    EXTDEF    ->  Declaration des symboles externes
+    PUBDEF    ->  Definition des symboles publics
+    LEDATA    ->  Donnees du segment (code ou donnees)
+    FIXUPP    ->  Corrections d adresses pour le LEDATA precedent
+    LEDATA    ->  (repetition pour d autres segments)
+    FIXUPP    ->  (corrections correspondantes)
+    LINNUM    ->  Informations de debug (numeros de lignes)
+    MODEND    ->  Fin du module (avec point d entree eventuel)
+
+==============================================================================
+  5. Phase 1 : Analyse de la ligne de commande
+==============================================================================
+
+  5.1 Syntaxe de la ligne de commande
+  ------------------------------------
+
+  LINK.PAS accepte une syntaxe compatible avec Microsoft LINK :
+
+    LINK fichier1.obj [fichier2.obj ...] [, sortie.exe] [, carte.map]
+         [, biblio1.lib ...] [/options]
+
+  Les fichiers sont separes par des espaces ou des virgules.
+  La virgule sert aussi de separateur entre les quatre champs :
+
+    Champ 1 : fichiers .OBJ (obligatoire)
+    Champ 2 : fichier .EXE de sortie
+    Champ 3 : fichier .MAP
+    Champ 4 : fichiers .LIB
+
+  5.2 Options reconnues
+  ---------------------
+
+  LINK.PAS reconnait les options suivantes (prefixees par /) :
+
+    Option                    Description
+    ------------------------  -----------------------------------------
+    /MAP                      Generer un fichier .MAP
+    /LINENUMBERS              Inclure les numeros de lignes dans le MAP
+    /PUBLICS                  Inclure les symboles publics dans le MAP
+    /NODEFAULTLIBRARYSEARCH   Ne pas chercher les LIB par defaut
+    /NOGROUPASSOCIATION       Ignorer les GRPDEF
+    /DOSSEG                   Utiliser l ordre DOS des segments
+    /DSALLOCATE               Placer DATA/BSS en haut avant STACK
+    /EXEPACK                  Compresser l executable (parse seulement)
+    /HIGH                     Charger en memoire haute (parse seulement)
+    /PAUSE                    Pause avant la fin du programme
+    /OVERLAYINTERRUPT:nn      Definir l interruption overlay
+    /STACK:nnnn               Definir la taille de la pile
+    /SEGMENTS:nnn             Definir le nombre maximal de segments
+    /TRACE                    Tracer le chargement des modules LIB
+    /TRACESYM                 Tracer les symboles LIB
+    /HELP ou /?               Afficher l aide
+
+  5.3 Implementation
+  ------------------
+
+  La procedure ParseLinkCommandLinePhase1 parcourt tous les arguments
+  de la ligne de commande :
+
+    1. Initialiser toutes les options par defaut
+    2. Pour chaque argument :
+       a. Si commence par / -> traiter comme option
+       b. Si extension .LIB -> ajouter a la liste des bibliotheques
+       c. Si extension .OBJ ou autre -> ajouter a la liste des objets
+    3. Valider qu au moins un fichier .OBJ est fourni
+    4. Deduire le nom du .EXE si non specifie
+       (meme nom que le premier .OBJ avec extension .EXE)
+    5. Deduire le nom du .MAP si /MAP est active
+
+  Les listes d entree sont des tableaux dynamiques :
+
+    ObjInputList : tableau des noms de fichiers .OBJ
+    LibInputList : tableau des noms de fichiers .LIB
+    ObjInputCount, LibInputCount : compteurs
+
+  5.4 Fichiers de reponse
+  -----------------------
+
+  LINK.PAS supporte les fichiers de reponse (response files) avec
+  la syntaxe @fichier.rsp. La procedure ProcessResponseFile lit le
+  fichier et traite chaque ligne comme des arguments supplementaires.
+
+==============================================================================
+  6. Phase 2 : Lecture des fichiers objets (.OBJ)
+==============================================================================
+
+  6.1 Procedure ReadObjFile
+  -------------------------
+
+  La procedure ReadObjFile est le coeur du linker. Elle lit un fichier
+  .OBJ et en extrait toutes les informations necessaires :
+
+    Function ReadObjFile(Const FileName : String) : Boolean;
+
+  Elle ouvre le fichier en mode binaire et parcourt les enregistrements
+  OMF un par un, en utilisant une boucle :
+
+    Repeat
+      Lire un enregistrement OMF (RecType, RecLen, Buffer)
+      Case RecType of
+        $80, $82 : { THEADR / LHEADR - En-tete du module }
+        $88      : { COMENT - Commentaire }
+        $96      : { LNAMES - Noms logiques }
+        $98, $99 : { SEGDEF - Definition de segment }
+        $9A, $9B : { GRPDEF - Definition de groupe }
+        $8C      : { EXTDEF - Symboles externes }
+        $90, $91 : { PUBDEF - Symboles publics }
+        $A0, $A1 : { LEDATA - Donnees enumerees }
+        $A2, $A3 : { LIDATA - Donnees iterees }
+        $9C, $9D : { FIXUPP - Corrections d adresses }
+        $94, $95 : { LINNUM - Numeros de lignes }
+        $B4, $B5 : { LEXTDEF - Externes locaux }
+        $B6, $B7 : { LPUBDEF - Publics locaux }
+        $C6      : { ALIAS - Alias de symbole }
+        $B0      : { COMDEF - Variables communales }
+        $C2, $C3 : { COMDAT - Sections communales }
+        $B2, $B3 : { BAKPAT - Back-patches }
+        $8A, $8B : { MODEND - Fin du module }
+      End;
+    Until ModuleEnded or EOF;
+
+  6.2 Traitement de THEADR ($80)
+  ------------------------------
+
+  L enregistrement THEADR contient le nom du module source.
+  Le premier octet du payload est la longueur du nom, suivi du
+  nom en caracteres ASCII :
+
+    NameLen := Buffer[0];
+    For j := 1 to NameLen do
+      ModuleName := ModuleName + Chr(Buffer[j]);
+
+  6.3 Traitement de LNAMES ($96)
+  ------------------------------
+
+  LNAMES definit une liste de noms logiques utilises comme references
+  dans les enregistrements SEGDEF et GRPDEF. Chaque nom est precede
+  de sa longueur :
+
+    Position dans le buffer :
+      [0]   longueur du premier nom
+      [1..N] caracteres du premier nom
+      [N+1] longueur du deuxieme nom
+      ...
+
+  Les noms sont stockes dans une liste chainee et indexes a partir
+  de 1. L index 0 signifie "pas de nom" (chaine vide).
+
+  6.4 Traitement de SEGDEF ($98/$99)
+  -----------------------------------
+
+  SEGDEF definit un segment logique. Le premier octet contient les
+  attributs du segment (alignement, combinaison, Big/Use16/Use32) :
+
+    Bits 7-5 : Alignement (BYTE, WORD, PARA, PAGE, DWORD, ...)
+    Bits 4-2 : Combinaison (PRIVATE, PUBLIC, COMMON, STACK, ...)
+    Bit 1    : Big (taille = 64 Ko si 1)
+    Bit 0    : Use32 (segment 32 bits si 1)
+
+  Suivent :
+    - Taille du segment (Word ou DWord selon Use32)
+    - Index du nom du segment (reference LNAMES)
+    - Index de la classe du segment (reference LNAMES)
+    - Index d overlay (reference LNAMES)
+
+  Le linker cree un TSegment et l ajoute a la liste :
+
+    SegRec.Name  := GetLName(SegNameIdx);
+    SegRec.Class := GetLName(SegClassIdx);
+    SegRec.Size  := SegSize;
+    AddSegment(SegRec);
+
+  6.5 Traitement de EXTDEF ($8C)
+  ------------------------------
+
+  EXTDEF declare les symboles externes. Chaque symbole est defini
+  par un nom (longueur + caracteres) suivi d un index de type :
+
+    Repeat
+      Lire le nom du symbole
+      Lire l index de type (ReadOmfIndex)
+      Creer un TSymbol avec IsExternal = True
+      AddSymbol(SymRec)
+    Until fin du payload
+
+  6.6 Traitement de PUBDEF ($90/$91)
+  -----------------------------------
+
+  PUBDEF definit les symboles publics. Le format est :
+
+    - Index du groupe de base
+    - Index du segment de base
+    - Si index segment = 0 : un Word de cadre de base
+    - Pour chaque symbole :
+      - Longueur du nom + nom
+      - Offset dans le segment (Word ou DWord)
+      - Index de type
+
+  Le linker cree un TSymbol avec IsExternal = False :
+
+    SymRec.Name       := ParsedName;
+    SymRec.Segment    := BaseSegIdx;
+    SymRec.Offset     := PubOfs;
+    SymRec.IsExternal := False;
+    AddSymbol(SymRec);
+
+  6.7 Traitement de LEDATA ($A0/$A1)
+  -----------------------------------
+
+  LEDATA contient les donnees enumerees (brutes) d un segment.
+  Le format est :
+
+    - Index du segment (ReadOmfIndex)
+    - Offset dans le segment (Word ou DWord)
+    - Donnees brutes (le reste du payload)
+
+  Les donnees sont stockees en memoire pour etre ecrites dans
+  le fichier executable lors de la generation.
+
+  6.8 Traitement de LIDATA ($A2/$A3)
+  -----------------------------------
+
+  LIDATA contient des donnees avec blocs iteres (compression).
+  Le format utilise des blocs imbriques :
+
+    Bloc itere :
+      RepeatCount : Word   { nombre de repetitions }
+      BlockCount  : Word   { nombre de sous-blocs }
+      Si BlockCount = 0 :
+        DataCount : Byte   { taille des donnees }
+        Data[0..DataCount-1]
+      Sinon :
+        BlockCount blocs iteres imbriques
+
+  La procedure EmitIterBlock16 parcourt recursivement les blocs
+  et les ecrit dans le fichier de sortie.
+
+  6.9 Traitement de FIXUPP ($9C/$9D)
+  ------------------------------------
+
+  FIXUPP est l enregistrement le plus complexe. Il contient les
+  corrections d adresses (fixups) qui doivent etre appliquees aux
+  donnees du LEDATA ou LIDATA precedent.
+
+  Chaque fixup contient :
+
+    Locat (2 octets) :
+      Bit 15    : 1 = fixup, 0 = thread
+      Bits 14-10: Location type (0=LOBYTE, 1=OFFSET16, 2=BASE16,
+                  3=PTR32, 4=HIBYTE, 5=OFFSET32, ...)
+      Bit 9     : Self-relative (1) ou segment-relative (0)
+      Bits 8-0  : Offset dans le LEDATA precedent
+
+    FixDat (1 octet) :
+      Bits 7-4  : Frame method (0=SEGDEF, 1=GRPDEF, 2=EXTDEF, ...)
+      Bits 3-0  : Target method (meme codage)
+
+    Indexes de frame et/ou target selon les methodes
+
+  6.10 Traitement de MODEND ($8A/$8B)
+  ------------------------------------
+
+  MODEND marque la fin d un module OMF. Il peut contenir le point
+  d entree du programme (adresse de demarrage) :
+
+    ModType (1 octet) :
+      Bit 7 : module principal (contient point d entree)
+      Bit 6 : a un point de depart
+
+    Si bit 6 = 1 :
+      EndDat : methode de cadre/cible (comme FIXUPP)
+      Index de cadre et index de cible
+      Deplacement (Word ou DWord)
+
+  Le linker enregistre l adresse de demarrage (InitCS:InitIP).
+
+==============================================================================
+  7. Phase 3 : Resolution des symboles externes
+==============================================================================
+
+  7.1 Principe
+  ------------
+
+  Apres avoir lu tous les fichiers .OBJ, le linker possede :
+
+    - Une liste de symboles publics (definis avec un segment et un offset)
+    - Une liste de symboles externes (references sans definition)
+
+  La resolution consiste a trouver, pour chaque symbole externe,
+  le symbole public correspondant (meme nom) et a lui attribuer
+  le segment et l offset du symbole public.
+
+  7.2 Resolution des alias
+  ------------------------
+
+  Avant la resolution des symboles, les alias sont appliques.
+  La procedure ApplyAliasToExternalSymbols parcourt la liste des
+  symboles et remplace les noms d alias par les noms reels :
+
+    Pour chaque symbole externe :
+      nom_resolu := ResolveAliasName(symbole.Name)
+      Si nom_resolu <> symbole.Name :
+        symbole.Name := nom_resolu
+
+  La resolution d alias est recursive : si A est alias de B et
+  B est alias de C, alors A est resolu en C.
+
+  7.3 Symboles non resolus
+  ------------------------
+
+  Si un symbole externe n a pas de definition publique correspondante
+  apres avoir lu tous les fichiers .OBJ, le linker cherche dans les
+  bibliotheques .LIB (voir phase 4). Si le symbole reste non resolu,
+  une erreur est signalee :
+
+    Erreur : symbole externe 'nom' non resolu
+
+==============================================================================
+  8. Phase 4 : Traitement des bibliotheques (.LIB)
+==============================================================================
+
+  8.1 Structure d un fichier .LIB OMF
+  ------------------------------------
+
+  Un fichier .LIB OMF est une collection de modules .OBJ concatenes
+  avec un en-tete de bibliotheque et un dictionnaire :
+
+    +--------------------+
+    | LIBHDR (en-tete)   |  Taille de page, taille du dictionnaire
+    +--------------------+
+    | Module OBJ 1       |  THEADR ... MODEND (aligne sur page)
+    +--------------------+
+    | Module OBJ 2       |  THEADR ... MODEND
+    +--------------------+
+    | ...                |
+    +--------------------+
+    | LIBEND             |  Marqueur de fin
+    +--------------------+
+    | Dictionnaire       |  Table de hachage des symboles publics
+    +--------------------+
+
+  Les modules sont alignes sur des limites de page (generalement
+  16 octets).
+
+  Pour plus de details sur le format .LIB, voir DOC/LIB_FORMAT.txt.
+
+  8.2 Recherche de modules dans les bibliotheques
+  ------------------------------------------------
+
+  La procedure ResolveLibrariesForExternals cherche les symboles
+  externes non resolus dans les bibliotheques :
+
+    Pour chaque bibliotheque .LIB :
+      Ouvrir le fichier
+      Scanner les modules un par un :
+        FindNextOmfModuleInLib -> trouver le prochain module
+        Pour chaque symbole externe non resolu :
+          Si le module definit ce symbole (PUBDEF) :
+            Extraire le module dans un fichier temporaire
+            Lire le fichier temporaire comme un .OBJ
+            Supprimer le fichier temporaire
+
+  8.3 Extraction de modules
+  -------------------------
+
+  La procedure ExtractLibModuleToTempObj extrait un module d une
+  bibliotheque dans un fichier .OBJ temporaire :
+
+    1. Creer un fichier temporaire (~LNKLIB1.OBJ, ~LNKLIB2.OBJ, ...)
+    2. Copier les octets du module (de ModStart a ModEnd) dans le fichier
+    3. Le fichier est ensuite lu par ReadObjFile comme un .OBJ normal
+    4. Le fichier temporaire est supprime apres lecture
+
+  8.4 Detection des modules necessaires
+  --------------------------------------
+
+  La fonction PublicRecordDefinesNeededSymbol verifie si un
+  enregistrement PUBDEF d un module definit un symbole dont le
+  linker a besoin. Elle compare les noms des symboles publics du
+  module avec les symboles externes non resolus.
+
+  La fonction ModuleDefinesNeededSymbol parcourt tout un module
+  OMF a la recherche d enregistrements PUBDEF qui repondent aux
+  besoins du linker.
+
+  8.5 Resolution iterative
+  ------------------------
+
+  Le chargement d un module de bibliotheque peut introduire de
+  nouveaux symboles externes. Le linker repete donc la recherche
+  dans les bibliotheques jusqu a ce qu aucun nouveau module ne
+  soit charge (point fixe).
+
+==============================================================================
+  9. Phase 5 : Calcul des adresses de segments
+==============================================================================
+
+  9.1 Principe
+  ------------
+
+  Apres avoir lu tous les modules, le linker doit attribuer une
+  adresse de base a chaque segment. Les segments sont places
+  les uns a la suite des autres dans l image executable :
+
+    Adresse 0     : Premier segment
+    Adresse S1    : Deuxieme segment (S1 = taille du premier)
+    Adresse S1+S2 : Troisieme segment
+    ...
+
+  9.2 Ordre DOSSEG
+  ----------------
+
+  Avec l option /DOSSEG, les segments sont tries selon la convention
+  DOS standard :
+
+    Priorite  Classe        Description
+    --------  -----------   ----------------------------------
+    10        CODE          Segments de code en premier
+    20        DATA          Donnees initialisees
+    30        BSS           Donnees non initialisees
+    50        (autre)       Segments non classifies
+    70        DATA (haut)   Si /DSALLOCATE : DATA en haut
+    80        BSS (haut)    Si /DSALLOCATE : BSS en haut
+    90        STACK         Pile en dernier
+
+  La fonction DosSegPriority attribue une priorite a chaque segment
+  selon sa classe et son nom :
+
+    Function DosSegPriority(Const ClassName, SegName : String) : Integer;
+
+  9.3 Implementation de RecomputeSegmentAddresses
+  ------------------------------------------------
+
+  La procedure RecomputeSegmentAddresses :
+
+    1. Construire un tableau des segments avec leur priorite
+    2. Si /DOSSEG : trier par priorite (tri a bulles)
+    3. Sinon : garder l ordre d apparition
+    4. Parcourir le tableau et attribuer les adresses de base :
+       currentBase := 0;
+       Pour chaque segment :
+         segment.Address := currentBase;
+         currentBase := currentBase + segment.Size;
+
+  Le tri utilise un algorithme simple a bulles car le nombre de
+  segments est generalement faible (< 128).
+
+==============================================================================
+  10. Phase 6 : Corrections d adresses (Fixups et Relocations)
+==============================================================================
+
+  10.1 Fixups OMF
+  ---------------
+
+  Les fixups OMF (enregistrement FIXUPP) corrigent les adresses
+  dans le code et les donnees lors de l edition de liens.
+
+  Chaque fixup specifie :
+    - L emplacement a corriger (offset dans le LEDATA precedent)
+    - Le type de correction (segment, offset, pointeur 32 bits)
+    - La cible (segment, groupe ou symbole externe)
+    - La methode de cadre (frame)
+
+  10.2 Types de corrections
+  -------------------------
+
+    Type      Taille    Description
+    --------- --------- ----------------------------------
+    LOBYTE    1 octet   Octet bas d un offset
+    OFFSET16  2 octets  Offset 16 bits
+    BASE16    2 octets  Adresse de segment (paragraphe)
+    PTR32     4 octets  Pointeur far (offset:segment)
+    HIBYTE    1 octet   Octet haut d un offset
+    OFFSET32  4 octets  Offset 32 bits
+
+  10.3 Relocations MZ
+  -------------------
+
+  Pour les executables MZ (DOS), les corrections de type BASE16
+  (adresse de segment) doivent etre enregistrees dans la table de
+  relocation de l en-tete MZ. Au chargement, DOS ajoute l adresse
+  de base reelle a chaque emplacement indique.
+
+  Le linker ajoute une entree de relocation avec AddRelocationEntry :
+
+    Procedure AddRelocationEntry(Const OffsetVal, SegmentVal,
+                                 TargetVal : Word);
+
+  10.4 Offset patches et back-patches
+  ------------------------------------
+
+  Les offset patches sont des corrections supplementaires appliquees
+  apres le calcul des adresses. Elles ajoutent un delta a une valeur
+  existante dans le fichier de sortie :
+
+    Procedure AddOffsetPatch(Const Pos : LongInt;
+                             Const Delta : Integer);
+
+  Les back-patches (enregistrement BAKPAT) sont des corrections
+  differees emises par le compilateur. Elles sont appliquees apres
+  l ecriture initiale des donnees dans le fichier executable.
+
+  10.5 Application des corrections dans GenerateExe
+  --------------------------------------------------
+
+  La procedure GenerateExe applique les corrections dans cet ordre :
+
+    1. Ecrire les donnees brutes de chaque segment (LEDATA/LIDATA)
+    2. Appliquer les fixups FIXUPP (corrections d adresses)
+    3. Appliquer les back-patches BAKPAT
+    4. Appliquer les offset patches
+    5. Ecrire la table de relocation dans l en-tete MZ
+
+==============================================================================
+  11. Phase 7 : Generation du fichier executable (.EXE)
+==============================================================================
+
+  11.1 Procedure GenerateExe
+  --------------------------
+
+  La procedure GenerateExe est la plus longue du programme
+  (environ 570 lignes). Elle orchestre la generation complete
+  du fichier executable MZ.
+
+  11.2 Etapes de generation
+  -------------------------
+
+  La generation du fichier .EXE suit ces etapes :
+
+    1. Initialiser l en-tete MZ :
+         ExeHeader.Signature := $5A4D;  { 'MZ' }
+         ExeHeader.MinAlloc  := 0;
+         ExeHeader.MaxAlloc  := $FFFF;
+
+    2. Calculer la taille de l en-tete :
+         HeaderSize = taille fixe + nombre de relocations x 4
+         Arrondir au paragraphe superieur (multiple de 16)
+
+    3. Creer le fichier de sortie et ecrire un en-tete provisoire
+       (sera reecrit a la fin avec les valeurs definitives)
+
+    4. Pour chaque fichier .OBJ :
+         a. Ouvrir le fichier
+         b. Lire chaque enregistrement OMF
+         c. Pour LEDATA/LIDATA : ecrire les donnees a l offset
+            correct dans le fichier de sortie
+         d. Pour FIXUPP : appliquer les corrections d adresses
+         e. Pour COMDAT : traiter les sections communales
+         f. Fermer le fichier
+
+    5. Appliquer les back-patches (BAKPAT)
+
+    6. Appliquer les offset patches
+
+    7. Calculer les valeurs finales de l en-tete :
+         - Taille totale du fichier (en pages de 512 octets)
+         - Nombre de relocations
+         - Point d entree (InitCS:InitIP)
+         - Pile initiale (InitSS:InitSP)
+
+    8. Ecrire la table de relocation a la suite de l en-tete
+
+    9. Revenir au debut du fichier et reecrire l en-tete avec
+       les valeurs definitives
+
+  11.3 Calcul du point d entree
+  -----------------------------
+
+  Le point d entree du programme est determine par le MODEND du
+  module principal. Il est stocke sous forme CS:IP :
+
+    InitCS := segment du point d entree (en paragraphes)
+    InitIP := offset dans le segment
+
+  Le segment est calcule par rapport au debut de la zone de
+  chargement (apres l en-tete) :
+
+    InitCS := segment.Address DIV 16
+
+  11.4 Calcul de la pile
+  ----------------------
+
+  La pile est placee dans le segment de classe STACK. Sa taille
+  est determinee par l option /STACK:nnn (defaut : 2048 paragraphes).
+
+    InitSS := adresse du segment STACK DIV 16
+    InitSP := taille du segment STACK
+
+  11.5 Structure du fichier .EXE genere
+  --------------------------------------
+
+    Offset 0          : En-tete MZ (28 octets minimum)
+    Offset 28         : Table de relocation (4 octets par entree)
+    Offset HeaderSize : Donnees chargees en memoire
+      [Segments CODE] : Code executable
+      [Segments DATA] : Donnees initialisees
+      [Segments BSS]  : (non present dans le fichier, alloue en memoire)
+      [Segment STACK] : Pile d execution
+
+==============================================================================
+  12. Phase 8 : Generation du fichier MAP
+==============================================================================
+
+  12.1 Role du fichier MAP
+  ------------------------
+
+  Le fichier MAP est un document texte qui decrit l organisation
+  de l executable produit. Il est utile pour le debogage et
+  l analyse de l image liee.
+
+  12.2 Contenu du fichier MAP
+  ---------------------------
+
+  La procedure GenerateMapFile ecrit les sections suivantes :
+
+    1. En-tete : nom du fichier .EXE et date de generation
+
+    2. Liste des segments :
+         Adresse     Taille    Nom             Classe
+         00000000    01234h    _TEXT           CODE
+         00001234    00100h    _DATA           DATA
+         00001334    00080h    _BSS            BSS
+
+    3. Liste des groupes :
+         Groupe      Segments membres
+         DGROUP      _DATA, _BSS, STACK
+
+    4. Symboles publics (si /PUBLICS) :
+         Adresse     Nom
+         0000:0000   _main
+         0000:0042   _printf
+         0001:0000   _buffer
+
+    5. Informations de debug (si /LINENUMBERS) :
+         Fichier      Ligne   Adresse
+         hello.c      5       0000:0010
+         hello.c      6       0000:0018
+
+    6. Point d entree du programme :
+         Adresse d entree = 0000:0000
+
+  12.3 Utilite pour le debogage
+  -----------------------------
+
+  Le fichier MAP permet de :
+
+    - Localiser un symbole (fonction, variable) dans l executable
+    - Determiner quel segment contient une adresse donnee
+    - Verifier l ordre et la taille des segments
+    - Diagnostiquer les problemes d edition de liens
+
+==============================================================================
+  13. Le programme principal
+==============================================================================
+
+  Le programme principal de LINK.PAS orchestre toutes les phases :
+
+    BEGIN
+      1. Verifier les arguments (/? ou /HELP -> afficher l aide)
+
+      2. Initialiser les structures :
+           InitMainLists;          { listes de segments, symboles, ... }
+           InitOffsetPatchList;    { liste des offset patches }
+           StackSize := 2048;      { taille de pile par defaut }
+
+      3. Analyser la ligne de commande :
+           ParseLinkCommandLinePhase1;
+
+      4. Lire tous les fichiers .OBJ :
+           Pour i := 1 a ObjInputCount :
+             ReadObjFile(ObjInputList^[i]);
+
+      5. Appliquer les alias aux symboles externes :
+           ApplyAliasToExternalSymbols;
+
+      6. Resoudre les symboles via les bibliotheques :
+           ResolveLibrariesForExternals;
+
+      7. Recalculer les adresses de segments :
+           RecomputeSegmentAddresses;
+
+      8. Generer le fichier executable :
+           GenerateExe(ExeFileName);
+
+      9. Generer le fichier MAP :
+           GenerateMapFile(MapFileName);
+
+      10. Liberer la memoire :
+           FreeOffsetPatchList;
+           FreeMainLists;
+           FreeCommandInputStorage;
+
+      11. Si /PAUSE : attendre une touche
+
+      12. Terminer
+    END.
+
+  Ce flux est lineaire et chaque phase depend de la precedente.
+
+==============================================================================
+  14. Gestion de la memoire
+==============================================================================
+
+  14.1 Listes chainees dynamiques
+  -------------------------------
+
+  LINK.PAS utilise des listes chainees avec allocation dynamique
+  (New/Dispose) pour toutes les structures principales :
+
+    - Segments : PSegmentItem -> PSegmentItem -> ... -> Nil
+    - Symboles : PSymbolItem -> PSymbolItem -> ... -> Nil
+    - Relocations : PRelocationItem -> ...
+    - Groupes : PGroupItem -> ... (avec sous-liste de membres)
+    - Noms logiques : PLNameItem -> ...
+    - Commentaires : PCommentItem -> ...
+    - Back-patches : PBackPatchItem -> ...
+    - Alias : PAliasItem -> ...
+
+  Chaque liste a un pointeur Head (debut) et Tail (fin).
+  L ajout en fin de liste est O(1) grace au pointeur Tail.
+
+  14.2 Initialisation et liberation
+  ---------------------------------
+
+  La procedure InitMainLists initialise tous les pointeurs a Nil
+  et tous les compteurs a 0 :
+
+    SegmentHead := Nil;  SegmentTail := Nil;  SegmentCount := 0;
+    SymbolHead  := Nil;  SymbolTail  := Nil;  SymbolCount  := 0;
+    ...
+
+  La procedure FreeMainLists parcourt chaque liste et libere tous
+  les noeuds avec Dispose :
+
+    segItem := SegmentHead;
+    While segItem <> Nil do Begin
+      nextSeg := segItem^.Next;
+      Dispose(segItem);
+      segItem := nextSeg;
+    End;
+
+  Ce schema est repete pour chaque liste chainee.
+
+  14.3 Fichiers temporaires
+  -------------------------
+
+  Les modules extraits des bibliotheques sont stockes dans des
+  fichiers temporaires nommes ~LNKLIB1.OBJ, ~LNKLIB2.OBJ, etc.
+  Ils sont supprimes apres traitement.
+
+==============================================================================
+  15. Gestion des erreurs
+==============================================================================
+
+  15.1 Erreurs fatales
+  --------------------
+
+  Les erreurs fatales arretent immediatement le programme avec
+  un code de sortie non nul :
+
+    WriteLn('Erreur : description du probleme');
+    Halt(code_erreur);
+
+  Codes d erreur utilises dans LINK.PAS :
+
+    Code  Description
+    ----  ------------------------------------------
+    15    Trop de patchs OFFSET
+    16    Trop de groupes OMF
+    18    Trop d entrees BAKPAT
+    29    Aucun fichier objet indique
+
+  15.2 Avertissements
+  -------------------
+
+  Les avertissements n arretent pas le programme mais signalent
+  des situations inhabituelles :
+
+    WriteLn('Avertissement : description');
+
+  Exemples :
+    - Option /OVERLAYINTERRUPT non appliquee
+    - Option /EXEPACK ou /HIGH sans effet
+    - Symbole externe non resolu dans un module optionnel
+
+  15.3 Messages d information
+  ---------------------------
+
+  Le linker affiche des messages d information pour le suivi :
+
+    WriteLn('Info : recherche des externes non resolus dans les LIB activee.');
+    WriteLn('Info : /DOSSEG actif (ordre DOS des segments applique).');
+
+  En mode trace (/TRACE), des informations detaillees sont affichees
+  pour chaque module charge depuis une bibliotheque.
+
+==============================================================================
+  16. Exemples concrets tires de LINK.PAS
+==============================================================================
+
+  16.1 Ajout d un segment
+  -----------------------
+
+  La fonction AddSegment ajoute un segment a la liste chainee :
+
+    Function AddSegment(Const Seg : TSegment) : Integer;
+    Var item : PSegmentItem;
+    Begin
+      If SegmentCount >= MAX_SEGMENTS Then Begin
+        WriteLn('Erreur : Trop de segments');
+        Halt(11);
+      End;
+      New(item);
+      item^.Value := Seg;
+      item^.Next  := Nil;
+      If SegmentHead = Nil Then SegmentHead := item
+                           Else SegmentTail^.Next := item;
+      SegmentTail := item;
+      Inc(SegmentCount);
+      AddSegment := SegmentCount;
+    End;
+
+  16.2 Ajout d un symbole
+  -----------------------
+
+  La procedure AddSymbol ajoute un symbole :
+
+    Procedure AddSymbol(Const Sym : TSymbol);
+    Var item : PSymbolItem;
+    Begin
+      If SymbolCount >= MAX_SYMBOLS Then Begin
+        WriteLn('Erreur : Trop de symboles');
+        Halt(12);
+      End;
+      New(item);
+      item^.Value := Sym;
+      item^.Next  := Nil;
+      If SymbolHead = Nil Then SymbolHead := item
+                          Else SymbolTail^.Next := item;
+      SymbolTail := item;
+      Inc(SymbolCount);
+    End;
+
+  16.3 Decodage d un index OMF
+  ----------------------------
+
+  La fonction ReadOmfIndex decode un index OMF compact :
+
+    Function ReadOmfIndex(Var Pos : Integer;
+                          Limit : Integer;
+                          Var Idx : Word) : Boolean;
+    Var b : Byte;
+    Begin
+      ReadOmfIndex := False;
+      If Pos >= Limit Then Exit;
+      b := Buffer[Pos];
+      Inc(Pos);
+      If (b And $80) <> 0 Then Begin
+        If Pos >= Limit Then Exit;
+        Idx := ((Word(b And $7F) Shl 8) Or Buffer[Pos]);
+        Inc(Pos);
+      End Else
+        Idx := b;
+      ReadOmfIndex := True;
+    End;
+
+  16.4 Ecriture de donnees dans l executable
+  ------------------------------------------
+
+  La procedure EmitRawSpanToExe ecrit un bloc de donnees dans le
+  fichier executable a la position correcte :
+
+    Procedure EmitRawSpanToExe(Var ExeF : File;
+                               Var RecBuf : TObjRecBuffer;
+                               StartPos, Count : Integer;
+                               DestBase : LongInt;
+                               Var Produced : LongInt;
+                               MaxBytes : LongInt);
+    Var
+      Writable : LongInt;
+      WriteCount : Word;
+    Begin
+      If Count <= 0 Then Exit;
+      Writable := MaxBytes - Produced;
+      If Writable > Count Then Writable := Count;
+      If Writable > 0 Then Begin
+        WriteCount := Writable;
+        Seek(ExeF, DestBase + Produced);
+        BlockWrite(ExeF, RecBuf[StartPos], WriteCount);
+      End;
+      Inc(Produced, Count);
+    End;
+
+  16.5 Initialisation de l en-tete MZ
+  ------------------------------------
+
+  Le debut de GenerateExe initialise l en-tete :
+
+    FillChar(ExeHeader, SizeOf(ExeHeader), 0);
+    With ExeHeader do Begin
+      Signature := $5A4D;    { 'MZ' }
+      MinAlloc  := 0;
+      MaxAlloc  := $FFFF;    { demander le maximum de memoire }
+      RelocOffset := 28;     { offset de la table de relocation }
+      HeaderSize := ...;     { taille en paragraphes }
+    End;
+
+  Les valeurs de PageCount, LastPageBytes, InitCS, InitIP, InitSS,
+  InitSP et RelocCount sont calculees apres l ecriture des segments.
+
+==============================================================================
+  17. Les formats binaires dans le projet DEV-COOLS
+==============================================================================
+
+  17.1 Linker OMF/MZ (LINK.PAS)
+  -----------------------------
+
+  LINK.PAS produit des executables DOS au format MZ a partir de
+  fichiers .OBJ au format OMF. C est le linker classique DOS.
+
+  17.2 Generation PE integree (CCW32.PAS, ABAPCW32.PAS, TPCW32.PAS)
+  -------------------------------------------------------------------
+
+  Les compilateurs 32 bits du projet integrent leur propre linker PE :
+
+    - CCW32.PAS  : WritePEFile() et WriteCOFFFile()
+    - ABAPCW32.PAS : BinWriteExe() et BinWriteObj()
+    - TPCW32.PAS : generation PE complete
+
+  Ces linkers integres produisent des executables Windows 32 bits
+  (format PE) avec table d importation pour KERNEL32.DLL.
+
+  17.3 Differences entre linker OMF et PE
+  ----------------------------------------
+
+    Aspect            OMF/MZ (LINK.PAS)      PE (CCW32, etc.)
+    ----------------  --------------------   --------------------
+    Format d entree   .OBJ OMF               code en memoire
+    Format de sortie  .EXE DOS (MZ)          .EXE Windows (PE)
+    Architecture      16 bits (8086)         32 bits (i386)
+    Modele memoire    SMALL (segments)       FLAT (4 Go)
+    Relocations       table MZ segment       table PE base reloc
+    Importations      aucune (DOS)           IAT (DLL imports)
+    Sections          segments OMF           .text/.data/.idata
+
+  17.4 Documentation associee
+  ---------------------------
+
+  Pour plus de details sur les formats :
+
+    DOC/OBJ_FORMAT.txt    : format OMF detaille
+    DOC/LIB_FORMAT.txt    : format .LIB (OMF et COFF)
+    DOC/APPLICATION_COMPILER.txt : comment ecrire un compilateur
+
+==============================================================================
+  18. Conseils pratiques
+==============================================================================
+
+  18.1 Par ou commencer ?
+  -----------------------
+
+  Pour ecrire votre propre editeur de liens :
+
+    1. Etudier le format OMF (voir DOC/OBJ_FORMAT.txt)
+    2. Commencer par lire un seul fichier .OBJ et afficher les
+       enregistrements OMF (type, taille, contenu)
+    3. Extraire les segments (SEGDEF) et les symboles (PUBDEF/EXTDEF)
+    4. Ecrire un fichier .EXE minimal avec un seul segment de code
+    5. Ajouter la gestion de plusieurs fichiers .OBJ
+    6. Ajouter la resolution des symboles externes
+    7. Ajouter les fixups (corrections d adresses)
+    8. Ajouter les relocations MZ
+    9. Ajouter la recherche dans les bibliotheques .LIB
+    10. Ajouter les options de ligne de commande
+
+  18.2 Tester a chaque etape
+  --------------------------
+
+  Il est essentiel de tester avec des fichiers .OBJ simples :
+
+    - Utiliser MASM ou TASM pour assembler un petit programme
+    - Verifier le fichier .EXE avec un debugger (DEBUG, CodeView)
+    - Comparer avec la sortie de Microsoft LINK ou TLINK
+    - Utiliser un outil d inspection hexadecimale pour verifier
+      l en-tete MZ et les relocations
+
+  18.3 Outils utiles
+  ------------------
+
+    - Un editeur hexadecimal pour inspecter les fichiers binaires
+    - Un debugger DOS (DEBUG.COM, Turbo Debugger)
+    - Un desassembleur pour verifier le code genere
+    - La specification OMF (Tool Interface Standard)
+    - La specification MZ (DOS Technical Reference)
+
+  18.4 Pieges courants
+  --------------------
+
+    - Oublier d arrondir la taille de l en-tete aux paragraphes
+    - Confondre les offsets en octets et en paragraphes (x16)
+    - Ne pas traiter les variantes 32 bits des enregistrements OMF
+      (codes impairs : $99, $91, $A1, ...)
+    - Oublier les blocs iteres LIDATA (la plupart des linkers
+      simples ne traitent que LEDATA)
+    - Ne pas gerer les groupes OMF (DGROUP est essentiel)
+    - Oublier la resolution iterative des bibliotheques
+      (un module charge peut necessiter d autres modules)
+
+  18.5 Ressources dans le projet
+  ------------------------------
+
+  Pour approfondir, consultez les fichiers suivants du projet :
+
+    LINK.PAS              : editeur de liens OMF/MZ complet (4550 lignes)
+    DOC/OBJ_FORMAT.txt    : documentation du format OMF
+    DOC/LIB_FORMAT.txt    : documentation du format .LIB
+    DOC/APPLICATION_COMPILER.txt : comment ecrire un compilateur
+    CCW32.PAS             : compilateur C avec linker PE integre
+    ABAPCW32.PAS          : compilateur ABAP avec linker PE integre
+
+==============================================================================
+  Fin du document
+==============================================================================

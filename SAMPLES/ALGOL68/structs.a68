@@ -1,0 +1,37 @@
+CO structs.a68 : STRUCT, selection OF, constructeurs (TODO 25) CO
+
+CO Declaration de mode STRUCT CO
+MODE POINT = STRUCT(INT x, INT y);
+
+CO Constructeur CO
+POINT p := POINT(3, 7);
+
+CO Selection avec OF CO
+INT px := x OF p;
+INT py := y OF p;
+print(("p.x = ", px, newline));
+print(("p.y = ", py, newline));
+
+CO Structure a trois champs CO
+MODE VEC3 = STRUCT(INT a, INT b, INT c);
+VEC3 v := VEC3(10, 20, 30);
+INT va := a OF v;
+INT vb := b OF v;
+INT vc := c OF v;
+print(("v = (", va, ", ", vb, ", ", vc, ")", newline));
+
+CO Alias de mode CO
+MODE myint = INT;
+myint mz := 99;
+print(("mz = ", mz, newline));
+
+CO Structure rectangulaire CO
+MODE rect = STRUCT(INT largeur, INT hauteur);
+rect r := rect(40, 25);
+INT aire := largeur OF r * hauteur OF r;
+print(("aire = ", aire, newline));
+
+CO Plusieurs instances du meme mode CO
+POINT q := POINT(100, 200);
+INT qx := x OF q;
+print(("q.x = ", qx, newline))

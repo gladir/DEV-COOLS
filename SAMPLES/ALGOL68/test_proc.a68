@@ -1,0 +1,22 @@
+BEGIN
+  PROC double = (INT x) INT : x + x;
+  PROC add = (INT a, INT b) INT : a + b;
+  PROC sub3 = (INT a, INT b, INT c) INT : a - b - c;
+
+  INT r1 := double(21);
+  INT r2 := add(10, 32);
+  INT r3 := sub3(100, 30, 20);
+
+  PROC factorial = (INT n) INT :
+    IF n = 0 THEN 1 ELSE n * factorial(n - 1) FI;
+
+  INT r4 := factorial(5);
+
+  PROC greet = () VOID : SKIP;
+  greet();
+
+  PROC identity = (INT x) INT : x;
+  INT r5 := identity(42);
+
+  SKIP
+END

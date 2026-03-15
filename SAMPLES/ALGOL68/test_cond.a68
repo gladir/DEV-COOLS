@@ -1,0 +1,58 @@
+BEGIN
+  CO Test 1 : IF simple THEN/ELSE/FI CO
+  INT a := IF TRUE THEN 42 ELSE 0 FI;
+
+  CO Test 2 : IF FALSE CO
+  INT b := IF FALSE THEN 1 ELSE 99 FI;
+
+  CO Test 3 : IF ELIF chain CO
+  INT c := 2;
+  INT d := IF c = 1 THEN 10
+           ELIF c = 2 THEN 20
+           ELIF c = 3 THEN 30
+           ELSE 0
+           FI;
+
+  CO Test 4 : IF sans ELSE CO
+  IF TRUE THEN SKIP FI;
+
+  CO Test 5 : CASE simple CO
+  INT e := 2;
+  INT f := CASE e IN 10, 20, 30 ESAC;
+
+  CO Test 6 : CASE avec OUT CO
+  INT g := 9;
+  INT h := CASE g IN 10, 20, 30 OUT 99 ESAC;
+
+  CO Test 7 : Forme abregee IF : (cond | then | else) CO
+  BOOL p := TRUE;
+  INT i := (p | 42 | 0);
+
+  CO Test 8 : Forme abregee IF faux CO
+  BOOL q := FALSE;
+  INT j := (q | 1 | 99);
+
+  CO Test 9 : Forme abregee CASE : (expr | v1, v2 | defaut) CO
+  INT k := 2;
+  INT l := (k | 10, 20, 30 | 0);
+
+  CO Test 10 : Forme abregee CASE avec defaut CO
+  INT m := 5;
+  INT n := (m | 10, 20 | 99);
+
+  CO Test 11 : IF conditionnel comme expression CO
+  INT o := 3;
+  INT r := IF o > 2 THEN o * 10 ELSE o FI;
+
+  CO Test 12 : CASE OUSE CO
+  INT s := 1;
+  INT t := 2;
+  CASE s IN
+    SKIP
+  OUSE t IN
+    SKIP,
+    SKIP
+  ESAC;
+
+  SKIP
+END

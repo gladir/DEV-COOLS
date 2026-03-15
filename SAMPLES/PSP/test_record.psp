@@ -1,0 +1,50 @@
+<%
+{ test_record.psp - Tests pour TODO 20 : Enregistrements (Record) }
+program test_record;
+
+type
+  TPoint = record
+    X: Integer;
+    Y: Integer;
+  end;
+
+  TRect = record
+    Left: Integer;
+    Top: Integer;
+    Width: Integer;
+    Height: Integer;
+  end;
+
+var
+  p: TPoint;
+  r: TRect;
+  sum: Integer;
+
+begin
+  { Ecriture directe champ record }
+  p.X := 10;
+  p.Y := 20;
+
+  { Lecture directe champ record }
+  sum := p.X + p.Y;
+  WriteLn(sum);
+
+  { Ecriture champs multiples }
+  r.Left   := 5;
+  r.Top    := 15;
+  r.Width  := 100;
+  r.Height := 200;
+
+  { Lecture et calcul }
+  WriteLn(r.Left);
+  WriteLn(r.Width + r.Height);
+
+  { Test with }
+  with p do
+  begin
+    X := 42;
+    Y := 58;
+  end;
+  WriteLn(p.X + p.Y);
+end.
+%>

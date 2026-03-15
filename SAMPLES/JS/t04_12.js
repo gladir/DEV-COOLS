@@ -1,0 +1,1 @@
+// Test TODO 04 : operateurs et precedencevar a = 2 + 3 * 4;var b = (2 + 3) * 4;var c = 10 / 2 - 1;var d = 7 % 3;var e = 1 + 2 + 3 + 4;var t = true;var f = false;var x = !false;var y = ~0;var z = 1 < 2;var w = 3 >= 3;

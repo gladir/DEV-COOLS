@@ -1,0 +1,1172 @@
+============================================================
+SPECIFICATION DU LANGAGE RAKU
+(sous-ensemble implemente par RAKU86.PAS)
+Compilateur Raku vers assembleur 8086 (MASM .MODEL SMALL)
+============================================================
+
+Table des matieres :
+  1.  Presentation generale
+  2.  Structure lexicale
+  3.  Types de donnees
+  4.  Variables et sigils
+  5.  Operateurs
+  6.  Expressions
+  7.  Entrees/Sorties
+  8.  Structures conditionnelles
+  9.  Boucles
+  10. Tableaux et listes
+  11. Tables de hachage
+  12. Sous-routines et fonctions
+  13. Multi dispatch
+  14. Classes et objets
+  15. Roles
+  16. Grammaires et regex
+  17. Gestion des erreurs
+  18. Modules
+  19. Runtime et conventions d appel
+
+
+============================================================
+1. Presentation generale
+============================================================
+
+Raku (anciennement Perl 6) est un langage de programmation multi-
+paradigme concu par Larry Wall. Il supporte la programmation
+orientee objet, fonctionnelle et le pattern matching via
+les grammaires.
+
+RAKU86.PAS implemente un sous-ensemble significatif de Raku,
+compilant le code source vers de l assembleur 8086 pour
+MS-DOS (modele SMALL, MASM). Le code genere cible un
+processeur Intel 8086 en mode reel 16 bits.
+
+Extensions de fichiers reconnues :
+  .raku       Fichier source Raku
+  .rakumod    Module Raku
+  .rakutest   Fichier de test Raku
+  .p6         Ancien format Perl 6
+  .pm6        Ancien module Perl 6
+
+Utilisation :
+  RAKU86 source.raku [sortie.asm] [-v] [-d] [-h]
+  Options :
+    -v    Mode verbeux (afficher les etapes de compilation)
+    -d    Mode debug (afficher chaque token analyse)
+    -h    Aide en ligne
+
+
+============================================================
+2. Structure lexicale
+============================================================
+
+2.1 Commentaires
+----------------
+  # Commentaire de fin de ligne
+  #`( Commentaire de bloc imbrique )
+  #`[ Autre forme de commentaire bloc ]
+
+Les commentaires de bloc supportent l imbrication des
+delimiteurs correspondants.
+
+2.2 Mots-cles
+--------------
+Le langage reconnait les mots-cles suivants :
+
+  Declarateurs :    my our has constant
+  Sous-routines :   sub method return
+  Classes :         class role module self new
+  Conditionnels :   if elsif else unless given when default
+  Boucles :         for loop while until repeat do
+                    last next redo
+  Controle :        gather take
+  Multi :           multi proto only
+  Traits :          is does of returns where
+  Blocs :           begin end try CATCH CONTROL
+  Exceptions :      die fail throw
+  Import :          use need
+  Booleens :        True False
+  Indefinis :       Nil Mu Any
+
+2.3 Identificateurs
+-------------------
+Un identificateur commence par une lettre ou un underscore,
+suivi de lettres, chiffres ou underscores. Le trait d union
+est autorise dans les noms (kebab-case) :
+  $my-variable    sous-routine-name
+
+2.4 Sigils
+----------
+Chaque variable est precedee d un sigil indiquant son type :
+  $   Scalaire (Int, Str, Bool, objet)
+  @   Tableau (Array)
+  %   Hash (table de hachage)
+  &   Code (reference a une sous-routine)
+
+2.5 Twigils
+-----------
+Un twigil secondaire precise la portee ou le role :
+  $.   Attribut public d objet (accesseur auto-genere)
+  $!   Attribut prive d objet
+  $*   Variable dynamique (globale)
+  $?   Variable au temps de compilation
+  $^   Parametre placeholder de bloc
+
+2.6 Litteraux numeriques
+------------------------
+  42         Entier decimal (0..65535 non signe, -32768..32767 signe)
+  0xFF       Entier hexadecimal (prefixe 0x)
+  0o77       Entier octal (prefixe 0o)
+  0b1010     Entier binaire (prefixe 0b)
+  1_000_000  Separateur de milliers (underscore ignore)
+  3.14       Rationnel (arrondi a l entier sur 8086)
+
+Note : les nombres rationnels (Rat) sont reconnus par le
+lexeur mais tronques a leur partie entiere avec un
+avertissement. Les valeurs Inf et NaN ne sont pas supportees
+sur l architecture 8086.
+
+2.7 Litteraux chaine
+---------------------
+Guillemets doubles (avec interpolation) :
+  "Hello $name"       Interpolation de variable
+  "valeur = {$x+1}"   Interpolation d expression
+  "ligne\n"           Sequences d echappement
+
+Apostrophes simples (sans interpolation) :
+  'texte brut'        Pas d interpolation ni d echappement
+
+Heredocs :
+  q:to/END/;
+  Texte sur
+  plusieurs lignes
+  END
+
+Sequences d echappement dans les chaines doubles :
+  \n    Saut de ligne (CR+LF sous DOS)
+  \t    Tabulation
+  \r    Retour chariot
+  \\    Barre oblique inverse
+  \"    Guillemet double
+  \x[NN]  Caractere par code hexadecimal
+  \o[NN]  Caractere par code octal
+
+2.8 Tokens speciaux
+--------------------
+  True     Booleen vrai (valeur 1)
+  False    Booleen faux (valeur 0)
+  Nil      Valeur indefinie (valeur 0)
+
+
+============================================================
+3. Types de donnees
+============================================================
+
+3.1 Hierarchie de types
+-----------------------
+  Mu            Type racine (tous les types heritent de Mu)
+   +-- Any       Sous-type de Mu (la plupart des types)
+        +-- Int       Entier 16 bits signe (-32768..32767)
+        +-- Bool      Booleen (True=1, False=0)
+        +-- Str       Chaine de caracteres (pointeur ASCIIZ)
+        +-- Rat       Rationnel (traite comme Int sur 8086)
+        +-- Array     Tableau de valeurs
+        +-- Hash      Table de hachage cle/valeur
+        +-- Code      Reference a une sous-routine
+        +-- Pair      Paire cle => valeur
+        +-- Regex     Expression reguliere
+        +-- Match     Resultat de correspondance
+        +-- Junction  Jonction logique (any, all, one)
+   +-- Nil       Type indefini
+
+3.2 Tailles en memoire
+-----------------------
+  Int     2 octets (DW) - mot 16 bits
+  Bool    1 octet  (DB) - 0 ou 1
+  Str     2 octets (DW) - pointeur vers chaine ASCIIZ
+  Array   2 octets (DW) - pointeur vers bloc contigu
+  Hash    2 octets (DW) - pointeur vers table de hachage
+  Code    2 octets (DW) - pointeur vers code
+  Pair    4 octets (2 DW) - cle (ptr) + valeur (mot)
+
+3.3 Coercions de type
+---------------------
+  +$x    Contexte numerique (convertit en Int)
+  ~$x    Contexte chaine (convertit en Str)
+  ?$x    Contexte booleen (convertit en Bool)
+  so $x  Equivalent de ?$x
+
+3.4 Contraintes de type
+-----------------------
+  my Int $x where * > 0;
+Le mot-cle where permet de specifier une contrainte sur le
+type. L implementation est simplifiee (verification au
+moment de l affectation).
+
+
+============================================================
+4. Variables et sigils
+============================================================
+
+4.1 Declarateurs
+----------------
+  my $x       Variable lexicale (portee du bloc courant)
+  our $x      Variable de package (portee du module)
+  has $.attr  Attribut d objet (portee de la classe)
+  constant    Constante (valeur immuable)
+
+4.2 Variables scalaires
+-----------------------
+  my $x = 42;           Entier
+  my $name = "Raku";    Chaine
+  my Bool $ok = True;   Booleen avec type explicite
+  my Int $n;            Entier sans initialisation (defaut 0)
+
+Les variables my sont allouees sur la pile (acces [BP-offset]).
+Les variables our sont allouees dans le segment DATA.
+
+4.3 Typage optionnel
+---------------------
+  my Int $x = 42;       Contraint a Int
+  my Str $s = "hello";  Contraint a Str
+  my $y = 10;           Type infere (Int)
+
+4.4 Affectation et binding
+--------------------------
+  $x = 42;              Affectation (copie de valeur)
+  $x := $y;             Binding (alias, meme adresse)
+
+4.5 Affectation composee
+-------------------------
+  $x += 1;    Equivalent de $x = $x + 1
+  $x -= 1;    Equivalent de $x = $x - 1
+  $x *= 2;    Equivalent de $x = $x * 2
+  $x /= 2;    Equivalent de $x = $x / 2
+  $x ~= "!";  Equivalent de $x = $x ~ "!"
+  $x x= 3;    Equivalent de $x = $x x 3
+
+4.6 Affectation destructuree
+-----------------------------
+  my ($a, $b) = (1, 2);
+Distribue les valeurs de la liste aux variables.
+
+4.7 Portee lexicale
+--------------------
+Les variables my sont visibles uniquement dans le bloc
+ou elles sont declarees et dans les sous-blocs :
+
+  {
+      my $x = 1;
+      {
+          say $x;     # OK : $x visible ici
+          my $y = 2;
+      }
+      # $y n est plus visible ici
+  }
+
+
+============================================================
+5. Operateurs
+============================================================
+
+5.1 Operateurs arithmetiques
+-----------------------------
+  +     Addition            (ADD AX, BX)
+  -     Soustraction        (SUB AX, BX)
+  *     Multiplication      (IMUL BX)
+  /     Division            (CWD / IDIV BX, quotient AX)
+  div   Division entiere    (IDIV, quotient AX)
+  mod   Modulo              (IDIV, reste DX)
+  %%    Test de divisibilite (DX == 0 apres IDIV)
+
+5.2 Operateurs de chaine
+--------------------------
+  ~     Concatenation   (CALL _RKRT_CONCAT)
+  x     Repetition      (CALL _RKRT_REPEAT)
+
+5.3 Operateurs de comparaison numerique
+-----------------------------------------
+  ==    Egalite             (CMP + JE)
+  !=    Inegalite           (CMP + JNE)
+  <     Inferieur strict    (CMP + JL)
+  <=    Inferieur ou egal   (CMP + JLE)
+  >     Superieur strict    (CMP + JG)
+  >=    Superieur ou egal   (CMP + JGE)
+  <=>   Comparaison tri     (resultat -1, 0 ou 1)
+
+5.4 Operateurs de comparaison de chaine
+-----------------------------------------
+  eq    Egalite de chaine     (CALL _RKRT_STRCMP + JE)
+  ne    Inegalite de chaine   (CALL _RKRT_STRCMP + JNE)
+  lt    Inferieur lexical     (CALL _RKRT_STRCMP + JL)
+  le    Inf. ou egal lexical  (CALL _RKRT_STRCMP + JLE)
+  gt    Superieur lexical     (CALL _RKRT_STRCMP + JG)
+  ge    Sup. ou egal lexical  (CALL _RKRT_STRCMP + JGE)
+  leg   Comparaison lexicale  (resultat -1, 0 ou 1)
+  cmp   Comparaison generique (alias de leg)
+
+5.5 Operateurs logiques
+-------------------------
+  &&    ET logique (court-circuit : JZ vers false)
+  ||    OU logique (court-circuit : JNZ vers true)
+  !     Negation logique (prefixe)
+  //    Defini-ou (short-circuit si defini)
+  and   ET basse precedence
+  or    OU basse precedence
+  not   Negation basse precedence
+
+5.6 Operateurs d affectation
+------------------------------
+  =     Affectation simple
+  :=    Binding (aliasing)
+  +=    Addition-affectation
+  -=    Soustraction-affectation
+  *=    Multiplication-affectation
+  /=    Division-affectation
+  ~=    Concatenation-affectation
+  x=    Repetition-affectation
+
+5.7 Operateurs unaires
+-----------------------
+  +$x   Contexte numerique
+  -$x   Negation (NEG AX)
+  !$x   Negation logique (NOT, booleen)
+  ?$x   Contexte booleen
+  ~$x   Contexte chaine
+  so $x Equivalent de ?$x
+
+5.8 Increment / Decrement
+--------------------------
+  ++$x   Pre-increment
+  $x++   Post-increment
+  --$x   Pre-decrement
+  $x--   Post-decrement
+
+5.9 Operateurs d intervalle
+-----------------------------
+  ..     Intervalle inclusif (1..10)
+  ..^    Exclusif a droite (1..^10 = 1 a 9)
+  ^..    Exclusif a gauche (1^..10 = 2 a 10)
+  ^..^   Exclusif des deux cotes
+
+5.10 Operateur ternaire
+------------------------
+  $cond ?? $vrai !! $faux
+Equivalent du ternaire C, avec court-circuit.
+
+5.11 Smart match
+-----------------
+  $x ~~ $pattern
+Correspondance intelligente : le comportement depend
+du type de l operande droit (valeur, type, regex...).
+
+5.12 Jonctions
+---------------
+  $x | $y    any-junction (au moins un vrai)
+  $x & $y    all-junction (tous vrais)
+  $x ^ $y    one-junction (exactement un vrai)
+
+5.13 Precedence des operateurs
+-------------------------------
+Du plus fort au plus faible :
+  1.  Postfixe  : ++ -- .methode
+  2.  Prefixe   : ! + - ~ ? so not
+  3.  Mult/Div  : * / div mod %%
+  4.  Add/Sous  : + - ~ (binaire)
+  5.  Repetition: x
+  6.  Intervalle: .. ..^ ^.. ^..^
+  7.  Compar.   : == != < <= > >= eq ne lt le gt ge
+  8.  ET/DefOr  : && // ~~
+  9.  OU        : ||
+  10. Ternaire  : ?? !!
+  11. Affect.   : = := += -= etc.
+  12. Basse     : and or not
+
+
+============================================================
+6. Expressions
+============================================================
+
+6.1 Expressions primaires
+--------------------------
+  42              Litteral entier
+  "hello"         Litteral chaine
+  $x              Variable scalaire
+  @arr[$i]        Acces element de tableau
+  %h{"cle"}       Acces element de hash
+  sub_name(args)  Appel de sous-routine
+  Classe.new      Instanciation d objet
+  $obj.methode    Appel de methode
+  self            Reference a l objet courant
+  cle => valeur   Construction de Pair
+
+6.2 Interpolation de chaine
+-----------------------------
+Dans les chaines entre guillemets doubles :
+  "x = $x"         Interpolation de variable
+  "sum = {$a+$b}"  Interpolation d expression (entre accolades)
+Les segments sont concatenes pour produire la chaine finale.
+
+6.3 Analyse de precedence
+---------------------------
+Les expressions binaires sont analysees par une boucle de
+precedence de type Pratt (ParseExprPrec). L analyseur traite
+les operateurs de gauche a droite en respectant la table
+de precedence definie a la section 5.13.
+
+
+============================================================
+7. Entrees/Sorties
+============================================================
+
+7.1 Sortie standard
+---------------------
+  say $x;       Affiche $x suivi d un saut de ligne
+  print $x;     Affiche $x sans saut de ligne
+  put $x;       Alias de say
+
+say et print convertissent automatiquement leur argument
+en chaine (contexte Str).
+
+7.2 Entree standard
+---------------------
+  my $line = get();          Lit une ligne depuis STDIN
+  my $resp = prompt("? ");   Affiche le message et lit une ligne
+
+7.3 Sortie d erreur
+---------------------
+  note "message";     Ecrit sur STDERR (handle 2)
+
+7.4 Handles standards
+----------------------
+  $*IN    Handle d entree standard (0)
+  $*OUT   Handle de sortie standard (1)
+  $*ERR   Handle d erreur standard (2)
+
+7.5 Formatage
+--------------
+Les entiers sont convertis en chaine par _RKRT_NUMTOSTR.
+Les chaines interpolees sont construites par concatenation
+successive des segments litteraux et des valeurs interpolees.
+
+
+============================================================
+8. Structures conditionnelles
+============================================================
+
+8.1 if / elsif / else
+----------------------
+  if $cond {
+      # bloc si vrai
+  } elsif $autre_cond {
+      # bloc alternatif
+  } else {
+      # bloc par defaut
+  }
+
+Le test evalue l expression de condition, puis emet
+TEST AX,AX suivi de JZ vers le prochain label.
+
+8.2 unless
+-----------
+  unless $cond {
+      # execute si $cond est faux
+  }
+Inverse de if : emet JNZ au lieu de JZ.
+
+8.3 Forme postfixe
+--------------------
+  say "ok" if $x > 0;
+  die "erreur" unless $ok;
+
+La condition est evaluee en premier, puis le statement
+est execute si la condition est satisfaite.
+
+8.4 given / when
+-----------------
+  given $x {
+      when 1  { say "un"; }
+      when 2  { say "deux"; }
+      default { say "autre"; }
+  }
+
+Equivalent d un switch/case. Chaque when fait un smart match
+implicite sur $_ (la variable topique liee a $x).
+
+8.5 with / without
+-------------------
+  with $x { say "defini"; }
+  without $x { say "indefini"; }
+
+Teste si la valeur est definie (non-Nil).
+
+
+============================================================
+9. Boucles
+============================================================
+
+9.1 loop (style C)
+-------------------
+  loop (my $i = 0; $i < 10; $i++) {
+      say $i;
+  }
+
+Forme a trois clauses : initialisation, condition, increment.
+
+  loop {
+      # boucle infinie
+  }
+
+Sans clauses : boucle indefiniment.
+
+9.2 while
+----------
+  while $cond {
+      # repeter tant que vrai
+  }
+
+9.3 until
+----------
+  until $cond {
+      # repeter tant que faux
+  }
+Inverse de while : la condition est niee (JNZ au lieu de JZ).
+
+9.4 repeat
+-----------
+  repeat {
+      # execute au moins une fois
+  } while $cond;
+
+  repeat {
+      # execute au moins une fois
+  } until $cond;
+
+Le corps est execute avant le test de condition.
+
+9.5 for (iteration)
+--------------------
+  for @liste -> $elem {
+      say $elem;
+  }
+
+Itere sur chaque element du tableau. La variable $elem
+est liee a l element courant (lecture seule).
+
+  for 1..10 -> $i {
+      say $i;
+  }
+
+Itere sur un intervalle.
+
+9.6 Forme postfixe
+--------------------
+  say $_ for @list;
+  $count++ while $x > 0;
+
+9.7 Controle de boucle
+------------------------
+  last;    Sort de la boucle courante (JMP vers fin)
+  next;    Passe a l iteration suivante (JMP vers test/incr)
+  redo;    Recommence l iteration courante (JMP vers debut corps)
+
+
+============================================================
+10. Tableaux et listes
+============================================================
+
+10.1 Declaration
+-----------------
+  my @arr = (1, 2, 3);       Tableau avec initialisation
+  my @vide;                   Tableau vide
+  my @taille = 0 xx 10;      Tableau de 10 zeros
+
+Les tableaux sont stockes comme blocs contigus de mots (DW)
+avec un compteur d elements.
+
+10.2 Acces indexe
+------------------
+  @arr[0]       Premier element (offset 0)
+  @arr[$i]      Element a l index $i (offset = $i * 2)
+  @arr[*-1]     Dernier element
+
+10.3 Methodes de tableau
+--------------------------
+  @arr.elems      Nombre d elements
+  @arr.end        Dernier indice valide (elems - 1)
+  @arr.push($x)   Ajoute $x en fin de tableau
+  @arr.pop         Retire et retourne le dernier element
+  @arr.shift       Retire et retourne le premier element
+  @arr.unshift($x) Ajoute $x en debut de tableau
+  @arr.reverse     Inverse l ordre des elements
+  @arr.sort        Trie le tableau (tri par insertion)
+  @arr.join(",")   Joint les elements en une chaine
+
+10.4 Methodes fonctionnelles
+------------------------------
+  @arr.grep(-> $x { $x > 0 })   Filtre les elements
+  @arr.map(-> $x { $x * 2 })    Transforme les elements
+
+10.5 Tranches
+--------------
+  @arr[1..3]      Sous-tableau des indices 1, 2, 3
+  @arr[0, 2, 4]   Sous-tableau des indices specifies
+
+10.6 Aplatissement
+-------------------
+  |@arr    Aplatit le tableau dans une liste (slip)
+
+
+============================================================
+11. Tables de hachage
+============================================================
+
+11.1 Declaration
+-----------------
+  my %h = (clef => "valeur", nom => "Raku");
+  my %vide;
+
+Structure simplifiee : tableau de paires (cle Str + valeur).
+
+11.2 Acces
+-----------
+  %h{"clef"}      Acces par chaine
+  %h<clef>        Acces par mot (equivalent)
+
+11.3 Affectation
+-----------------
+  %h{"nouvelle"} = 42;    Ajoute ou modifie une entree
+
+11.4 Methodes de hash
+-----------------------
+  %h.keys          Liste des clefs
+  %h.values        Liste des valeurs
+  %h.pairs         Liste des paires (Pair)
+  %h.elems         Nombre d entrees
+  %h:exists{"c"}   Test d existence de la clef "c" (Bool)
+  %h:delete{"c"}   Supprime l entree de clef "c"
+
+11.5 Iteration
+---------------
+  for %h.kv -> $k, $v {
+      say "$k = $v";
+  }
+
+Itere sur les paires cle-valeur du hash.
+
+
+============================================================
+12. Sous-routines et fonctions
+============================================================
+
+12.1 Declaration
+-----------------
+  sub nom($a, $b) {
+      return $a + $b;
+  }
+
+12.2 Parametres positionnels
+------------------------------
+  sub f($a, $b, $c) { ... }
+Les parametres sont empiles de droite a gauche et accedes
+par [BP+offset] dans le code genere.
+
+12.3 Parametres optionnels
+----------------------------
+  sub f($a, $b = 42) { ... }
+Si l argument est absent a l appel, la valeur par defaut
+est utilisee.
+
+12.4 Parametres nommes
+------------------------
+  sub f(:$clef, :$autre) { ... }
+  f(clef => 1, autre => 2);
+Passage par paire cle => valeur.
+
+12.5 Parametres slurpy
+------------------------
+  sub f($a, *@rest) { ... }
+Collecte les arguments restants dans un tableau.
+
+12.6 Type de retour
+---------------------
+  sub f($x) returns Int { ... }
+  sub g($x --> Int) { ... }
+Declare le type de retour attendu.
+
+12.7 return
+------------
+  return $valeur;
+Place la valeur dans AX et saute vers l epilogue de la
+sous-routine.
+
+12.8 Convention d appel
+------------------------
+Convention cdecl 16 bits :
+  - Arguments empiles de droite a gauche (PUSH)
+  - Appel : CALL label
+  - Nettoyage de la pile par l appelant (ADD SP, n*2)
+  - Valeur de retour dans AX
+  - Prologue : PUSH BP / MOV BP,SP / SUB SP,locals_size
+  - Epilogue : MOV SP,BP / POP BP / RET
+
+12.9 Blocs anonymes (pointy blocks)
+-------------------------------------
+  -> $x { $x * 2 }
+  -> $x, $y { $x + $y }
+
+Blocs de code avec parametres, utilises comme arguments
+de methodes (map, grep, for).
+
+12.10 Appel indirect
+---------------------
+  my &f = &nom_sub;
+  &f(42);
+  $code.($args);
+Appel via un pointeur de code.
+
+12.11 Recursion
+----------------
+Les sous-routines peuvent s appeler elles-memes directement
+par nom :
+  sub fact($n) {
+      return 1 if $n <= 1;
+      return $n * fact($n - 1);
+  }
+
+
+============================================================
+13. Multi dispatch
+============================================================
+
+13.1 Declaration multi
+-----------------------
+  multi sub traiter(Int $x) {
+      say "entier : $x";
+  }
+  multi sub traiter(Str $x) {
+      say "chaine : $x";
+  }
+
+Plusieurs candidats pour un meme nom de sous-routine,
+distingues par le type des parametres.
+
+13.2 Proto
+-----------
+  proto sub traiter(|) {*}
+Declare le prototype (optionnel). Le {*} indique une
+delegation aux candidats multi.
+
+13.3 Resolution
+----------------
+A l appel, le compilateur genere un code qui :
+  1. Parcourt la table de dispatch (candidats)
+  2. Verifie le type de chaque argument
+  3. Appelle le premier candidat correspondant
+  4. Emet une erreur si aucun candidat ne correspond
+
+La table de dispatch est stockee dans le segment DATA avec
+le label _RKS_nom_DISP.
+
+13.4 Candidat par defaut
+--------------------------
+  multi sub traiter($x) { ... }
+Un candidat sans contrainte de type est utilise en dernier
+recours si aucun autre ne correspond.
+
+13.5 Multi method
+------------------
+  class C {
+      multi method m(Int $x) { ... }
+      multi method m(Str $x) { ... }
+  }
+Meme mecanisme que multi sub, avec self comme premier
+argument implicite.
+
+
+============================================================
+14. Classes et objets
+============================================================
+
+14.1 Declaration de classe
+----------------------------
+  class Animal {
+      has $.nom;
+      has $!age;
+      has $.espece is rw;
+
+      method parler() {
+          say "...";
+      }
+  }
+
+14.2 Attributs
+---------------
+  has $.attr     Attribut public (accesseur lecture auto-genere)
+  has $!attr     Attribut prive (pas d accesseur)
+  has $.attr is rw   Accesseur lecture/ecriture
+
+Les attributs sont stockes comme champs dans l instance
+a des offsets fixes.
+
+14.3 Methodes
+--------------
+  method nom(params) { ... }
+self est disponible comme premier parametre implicite.
+
+14.4 Constructeur
+------------------
+  my $obj = Animal.new(nom => "Rex", espece => "chien");
+Le constructeur .new :
+  1. Alloue la memoire (CALL _RKRT_NEW, CX=taille)
+  2. Initialise les attributs avec les arguments nommes
+  3. Appelle BUILD/TWEAK si definis
+  4. Retourne le pointeur vers l objet dans AX
+
+14.5 Heritage
+--------------
+  class Chien is Animal {
+      method parler() {
+          say "Ouaf!";
+      }
+  }
+
+L heritage copie les attributs du parent et les etend.
+Une vtable (table de methodes virtuelles) est maintenue
+dans le segment DATA pour le dispatch dynamique.
+
+14.6 Appel de methode
+-----------------------
+  $obj.methode(args)
+Code genere :
+  MOV BX,[AX]          # BX = ptr vers vtable
+  CALL [BX+offset]     # appel via vtable
+
+14.7 Methodes speciales
+-------------------------
+  method BUILD  { ... }  Initialisation personnalisee
+  method TWEAK  { ... }  Ajustement post-construction
+
+14.8 Test d heritage
+---------------------
+  $obj.isa(Classe)    Retourne True si $obj est de type Classe
+
+
+============================================================
+15. Roles
+============================================================
+
+15.1 Declaration de role
+--------------------------
+  role Affichable {
+      method afficher() {
+          say ~self;
+      }
+  }
+
+15.2 Composition
+-----------------
+  class Doc does Affichable does Serialisable {
+      ...
+  }
+
+Les attributs et methodes du role sont copies dans la classe
+au moment de la compilation (aplatissement).
+
+15.3 Methodes requises
+------------------------
+Si un role contient un stub de methode, la classe composante
+doit fournir l implementation :
+  role Drawable {
+      method draw() { ... }   # stub, doit etre implemente
+  }
+
+15.4 Resolution de conflits
+------------------------------
+Si deux roles fournissent la meme methode, la classe doit
+la redefinir pour lever l ambiguite.
+
+15.5 Roles parametres
+-----------------------
+  role Container[Type] {
+      has Type $.contenu;
+  }
+Support simplifie (un seul parametre de type).
+
+15.6 Test de composition
+--------------------------
+  $obj.does(Role)   Retourne True si l objet compose le role
+
+
+============================================================
+16. Grammaires et regex
+============================================================
+
+16.1 Declaration de grammaire
+-------------------------------
+  grammar JSON {
+      token TOP { <value> }
+      token value { <string> | <number> }
+      token string { '"' <-["]>* '"' }
+      token number { <[0..9]>+ }
+  }
+
+16.2 Types de regles
+----------------------
+  token nom { pattern }   Sans retour en arriere (backtrack)
+  rule nom { pattern }    Ignore les espaces, sans backtrack
+  regex nom { pattern }   Avec retour en arriere
+
+16.3 Motifs de base
+---------------------
+  'abc'          Correspondance exacte de litteraux
+  <[a..z]>       Classe de caracteres (intervalle)
+  <[0..9]>       Classe de caracteres numeriques
+  <alpha>        Classe predefinies (lettres)
+  <digit>        Classe predefinies (chiffres)
+  *              Quantificateur : 0 ou plus repetitions
+  +              Quantificateur : 1 ou plus repetitions
+  ?              Quantificateur : 0 ou 1 repetition
+  |              Alternation ordonnee
+  ||             Alternation premiere correspondance
+  [ ... ]        Groupement non-capturant
+  ( ... )        Groupement capturant
+  ^              Ancre de debut
+  $              Ancre de fin
+  <nom_token>    Appel de sous-regle
+
+16.4 Analyse
+--------------
+  my $resultat = JSON.parse($texte);
+Lance l analyse de $texte avec la grammaire. Le resultat
+est un objet Match stocke dans $/.
+
+16.5 Objet Match
+-----------------
+  $/              Resultat de la derniere correspondance
+  $/.made         Valeur construite par les actions
+  $0, $1, ...     Captures positionnelles
+
+16.6 Actions
+--------------
+  class JSON::Actions {
+      method nombre($/) {
+          make +$/;
+      }
+  }
+  JSON.parse($texte, actions => JSON::Actions);
+
+Les methodes d action sont appelees automatiquement apres
+chaque correspondance reussie d une regle de meme nom.
+
+
+============================================================
+17. Gestion des erreurs
+============================================================
+
+17.1 try / CATCH
+-----------------
+  try {
+      # code pouvant lever une exception
+      CATCH {
+          when X::AdHoc {
+              say "erreur attrapee";
+          }
+          default {
+              say "erreur inconnue";
+          }
+      }
+  }
+
+17.2 die
+---------
+  die "message d erreur";
+Leve une exception fatale. Si aucun handler n est installe,
+affiche "Unhandled exception" et termine le programme.
+
+17.3 fail
+----------
+  fail "message";
+Retourne une Failure (exception paresseuse). Sur 8086,
+equivalent a die (simplifie).
+
+17.4 warn
+----------
+  warn "attention";
+Ecrit un avertissement sur STDERR sans lever d exception.
+
+17.5 Mecanisme interne
+------------------------
+Le mecanisme d exception sans support OS fonctionne par :
+  - _RK_HANDLER DW : pointeur vers le handler courant
+  - try : sauvegarde l ancien handler, installe le nouveau
+  - CATCH : label cible du handler, dispatch par type
+  - Restauration de l ancien handler en sortie de try
+  - die sans handler : message + Halt (code 1)
+
+17.6 Sauvegarde de contexte
+-----------------------------
+Les registres SP et BP sont sauvegardes/restaures via
+_RK_SAVEDSP et _RK_SAVEDBP pour permettre la restauration
+de la pile lors d un saut vers le handler.
+
+
+============================================================
+18. Modules
+============================================================
+
+18.1 Declaration de module
+----------------------------
+  module MonModule {
+      sub fonction() is export {
+          say "hello";
+      }
+  }
+
+18.2 use
+---------
+  use MonModule;
+Importe les symboles exportes du module dans la portee
+courante. En assembleur, les symboles importes sont declares
+EXTRN et les symboles exportes sont declares PUBLIC.
+
+  use v6;
+Pragma de version (ignore, toujours accepte).
+
+18.3 need
+----------
+  need MonModule;
+Charge le module sans importer les symboles dans la portee.
+
+18.4 is export
+---------------
+  sub f() is export { ... }
+Marque un symbole comme exporte. En assembleur, genere
+une directive PUBLIC pour le label correspondant.
+
+18.5 Importation selective
+----------------------------
+  use Nom :only<sym1 sym2>;
+Importe uniquement les symboles specifies (simplifie :
+importe tout ou avertissement).
+
+18.6 Noms qualifies
+---------------------
+  Module::Ident
+Le double deux-points (::) permet d acceder a un symbole
+dans l espace de noms d un module specifique.
+
+18.7 Compilation separee
+--------------------------
+Un seul fichier source est compile a la fois. Les modules
+importes sont declares comme externes (EXTRN en ASM).
+L edition de liens est realisee par le linker MASM/LINK.
+
+
+============================================================
+19. Runtime et conventions d appel
+============================================================
+
+19.1 Modele memoire
+---------------------
+Le code genere utilise le modele SMALL de MASM :
+  _TEXT SEGMENT WORD PUBLIC 'CODE'
+  _DATA SEGMENT WORD PUBLIC 'DATA'
+  STACK SEGMENT STACK 'STACK' (1024 octets)
+
+19.2 Point d entree
+---------------------
+Le programme commence a _RKS_MAIN :
+  MOV AX, _DATA
+  MOV DS, AX
+(initialisation du registre de segment de donnees)
+
+19.3 Conventions de nommage
+-----------------------------
+Les symboles generes utilisent les prefixes suivants :
+  _RKV_     Variables (my, our)
+  _RKS_     Sous-routines et methodes
+  _RKK_     Constantes chaine
+  _RKRT_    Fonctions runtime
+  _RKL_     Labels internes (sauts, boucles)
+  _RKC_     Classes (vtable, methodes)
+  _RKR_     Roles
+  _RKG_     Grammaires
+
+19.4 Fonctions runtime
+------------------------
+Le compilateur emet un ensemble de fonctions runtime
+necessaires au fonctionnement du programme :
+
+  _RKRT_PRINT(BX=handle, SI=msg, CX=len)
+      Ecrit CX octets de SI sur le handle BX (INT 21h AH=40h)
+
+  _RKRT_PRINTLN
+      Appelle _RKRT_PRINT puis ecrit CR+LF
+
+  _RKRT_STRLEN(SI=str)
+      Compte les octets de SI jusqu au 0 terminal -> AX
+
+  _RKRT_NUMTOSTR(AX=n, DI=buf)
+      Convertit un entier signe en chaine ASCII -> DI
+
+  _RKRT_STRTONUM(SI=str)
+      Convertit une chaine ASCII en entier -> AX
+
+  _RKRT_CONCAT(SI=src1, DI=src2)
+      Concatene deux chaines -> AX = ptr resultat
+
+  _RKRT_REPEAT(SI=str, CX=count)
+      Repete la chaine CX fois -> AX = ptr resultat
+
+  _RKRT_STRCMP(SI=str1, DI=str2)
+      Compare deux chaines -> drapeaux ZF/CF
+
+  _RKRT_GETLINE(DI=buf, CX=maxlen)
+      Lit une ligne depuis STDIN -> AX = longueur
+
+  _RKRT_NEW(CX=nb_octets)
+      Alloue CX octets sur le heap -> AX = pointeur
+
+  _RKRT_PUSH(BX=arr_ptr, AX=valeur)
+      Ajoute une valeur en fin de tableau
+
+  _RKRT_POP(BX=arr_ptr)
+      Retire et retourne la derniere valeur -> AX
+
+  _RKRT_HLOOKUP(BX=hash_ptr, SI=clef)
+      Cherche une clef dans le hash -> AX = valeur
+
+  _RKRT_HSTORE(BX=hash_ptr, SI=clef, AX=valeur)
+      Stocke une valeur dans le hash
+
+  _RKRT_HKEYS(BX=hash_ptr, DI=buf)
+      Liste les clefs du hash -> AX = nombre
+
+  _RKRT_WARN(SI=msg)
+      Ecrit un avertissement sur STDERR
+
+  _RKRT_PANIC(SI=msg)
+      Affiche le message et termine (MOV AX,4C01h / INT 21h)
+
+19.5 Segment de donnees pre-initialise
+-----------------------------------------
+Le segment DATA contient les constantes internes :
+  _RK_CRLF      DB 13,10,0         Saut de ligne DOS
+  _RK_NL        DB 10,0             Saut de ligne Unix
+  _RK_SPACE     DB ' ',0            Espace
+  _RKK_TRUE     DB 'True',0         Chaine "True"
+  _RKK_FALSE    DB 'False',0        Chaine "False"
+  _RKK_NIL      DB 'Nil',0          Chaine "Nil"
+  _RK_STRBUF    DB 256 DUP(0)       Tampon de chaine
+  _RK_TMPBUF    DB 256 DUP(0)       Tampon temporaire
+  _RK_HEAP      DB 4096 DUP(0)      Tas statique
+  _RK_HEAPTOP   DW 0                Pointeur courant du tas
+
+19.6 Gestion du tas
+---------------------
+L allocation memoire utilise un tas statique (bump allocator).
+_RKRT_NEW avance _RK_HEAPTOP de CX octets et retourne
+l ancien pointeur. Pas de liberation memoire (pas de GC).
+
+
+============================================================

@@ -1,0 +1,21 @@
+<html>
+  <head>
+    <title>Pascal Server Pages - Calcul le calcium corrigé</title>
+  </head>
+  <body>
+<%
+     
+    Function CalculCalciumcorrige(CalciumTotal,Albumine:Real):Real;Begin
+     CalculCalciumcorrige:=CalciumTotal+0.8*(40-Albumine);
+    End;
+     
+    BEGIN
+     Write('Si Albumine=40g/L et Calcium Total=2,28mg/L alors le Calcium corrigé vaut ');
+     WriteLn(CalculCalciumcorrige(2.28,40),'mg/L','<br />');
+     Write('Si Albumine=38g/L et Calcium Total=2,28mg/L alors le Calcium corrigé vaut ');
+     WriteLn(CalculCalciumcorrige(2.28,38),'mg/L','<br />');
+    END.
+
+%>
+  </body>
+</html>

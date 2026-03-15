@@ -1,0 +1,30 @@
+comment Test des litteraux et constantes (TODO 03) ;
+BEGIN
+  comment Entiers decimaux ;
+  INTEGER x;
+  x := 0;
+  x := 42;
+  x := 65535;
+
+  comment Reels (tronques en entier) ;
+  REAL pi;
+  pi := 3.14;
+
+  comment Booleens ;
+  BOOLEAN flag;
+  flag := TRUE;
+  flag := FALSE;
+
+  comment Chaines backtick ;
+  outstring(1, `Hello, World!`);
+  outstring(1, `Algol 60 test`);
+
+  comment Chaines double-quote (extension) ;
+  outstring(1, "Another string");
+
+  comment Combinaison ;
+  x := 100;
+  flag := TRUE;
+  outstring(1, `Value is`);
+  outinteger(1, x)
+END.

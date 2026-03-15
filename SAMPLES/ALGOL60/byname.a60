@@ -1,0 +1,31 @@
+comment Algol 60 example - call by name (thunks) ;
+BEGIN
+  INTEGER i, s;
+  INTEGER ARRAY a[1:5];
+
+  comment Remplir le tableau ;
+  FOR i := 1 STEP 1 UNTIL 5 DO
+    a[i] := i;
+
+  comment Procedure somme avec call by name (Jensen device) ;
+  INTEGER PROCEDURE somme(k, lo, hi, expr);
+    VALUE lo, hi;
+    INTEGER k, lo, hi, expr;
+  BEGIN
+    INTEGER s;
+    s := 0;
+    FOR k := lo STEP 1 UNTIL hi DO
+      s := s + expr;
+    somme := s
+  END;
+
+  comment Somme des a[i] pour i=1..5 ;
+  s := somme(i, 1, 5, a[i]);
+  outstring(1, `somme(a[1..5])=`);
+  outinteger(1, s);
+
+  comment Somme des carres ;
+  s := somme(i, 1, 5, i * i);
+  outstring(1, ` somme(i*i,1..5)=`);
+  outinteger(1, s)
+END.
