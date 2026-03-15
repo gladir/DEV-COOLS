@@ -398,7 +398,7 @@
             LoopPush / LoopPop utilises pour que break fonctionne.
             Fichier test : test22_switch.cs (15 cas de tests).
 
-  TODO 16 - METHODES STATIQUES
+  TODO 16 - METHODES STATIQUES [IMPLEMENTE]
             ParseMethodDecl : declaration de methode statique.
               static type Nom(type1 param1, type2 param2, ...)
               { corps }.
@@ -423,7 +423,12 @@
               (pile d appels standard x86).
             Surcharge : non supportee dans le sous-ensemble minimal
               (une seule methode par nom).
-            FuncTab : table des methodes declarees.
+            FuncTab : TMethodEntry (Name/MangledName/ParamCount/
+              RetType/SymIdx/IsVoid). MethodTab[0..255]/MethodCount.
+              FindMethod / AddMethod / GetMethodParamCount.
+            MethExitLbl : variable globale pour return -> JMP epilogue.
+            Fichier test : test23_methods.cs (15 methodes,
+              parametres, locales, recursion, void, return).
 
   TODO 17 - CLASSES ET MEMBRES STATIQUES
             ParseClassDecl : class Nom { membres }.

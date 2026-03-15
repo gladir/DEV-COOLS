@@ -274,7 +274,7 @@
             Labels : _CSCL_CASE_N, _CSCL_CDEF_N, _CSCL_CEND_N.
             SwitchPush / SwitchPop : pile pour switch imbriques.
 
-  TODO 16 - METHODES STATIQUES
+  TODO 16 - METHODES STATIQUES [IMPLEMENTE]
             ParseMethodDecl : declaration de methode statique.
               static type Nom(type1 param1, type2 param2, ...)
               { corps }.
@@ -289,6 +289,10 @@
             Appel : evaluer args, PUSH, CALL, ADD ESP,n.
             Methodes void : pas de valeur de retour.
             Recursion : appels recursifs supportes.
+            FuncTab : table des methodes declarees.
+            FindMethod / AddMethod : recherche / ajout dans FuncTab.
+            MethExitLbl global : accessible depuis ParseStatement
+              pour JMP a l epilogue sur return.
 
   TODO 17 - CLASSES ET MEMBRES STATIQUES
             ParseClassDecl : class Nom { membres }.
@@ -565,6 +569,26 @@ Type
 Var
   SwitchStack : Array[0..MAX_SWITCH_DEPTH - 1] Of TSwitchEntry;
   SwitchDepth : Integer;        { profondeur courante de la pile switch  }
+
+{ Table des methodes declarees (TODO 16) }
+
+Const
+  MAX_METHODS = 256;            { nombre maximal de methodes declarees   }
+
+Type
+  TMethodEntry = Record
+    Name        : TString;      { nom C# de la methode                  }
+    MangledName : TString;      { nom ASM mangled (_CSCF_...)            }
+    ParamCount  : Integer;      { nombre de parametres                   }
+    RetType     : TString;      { type de retour (void, int, ...)        }
+    SymIdx      : Integer;      { indice dans SymTab                     }
+    IsVoid      : Boolean;      { True si void                           }
+  End;
+
+Var
+  MethodTab    : Array[0..MAX_METHODS - 1] Of TMethodEntry;
+  MethodCount  : Integer;       { nombre de methodes enregistrees        }
+  MethExitLbl  : TString;       { label de sortie de la methode courante }
 
   { Variables binaires }
   BinCode     : Array[0..MAX_BIN_CODE - 1] of Byte;
@@ -888,6 +912,9 @@ Procedure ParseDoWhileStmt; Forward;
 
 { Forward declarations for TODO 15 }
 Procedure ParseSwitchStmt; Forward;
+
+{ Forward declarations for TODO 16 }
+Procedure ParseMethodDecl(Const RetType, MName : TString); Forward;
 
 { ============================================================ }
 { TODO 02 - LEXEUR (TOKENS C#)                                 }
@@ -4456,9 +4483,9 @@ Begin
         EmitComment('appel methode inconnue: ' + QualName);
         EmitInstr('CALL', CSC_FN_PFX + StrUpperCase(QualName));
       End;
-      { Nettoyer la pile (convention CDECL pour les args) }
-      { Note: les built-in sont STDCALL, le callee nettoie }
-      { Pour les methodes utilisateur on utilise aussi STDCALL }
+      { Nettoyer la pile (convention CDECL : appelant nettoie) }
+      If ArgCount > 0 Then
+        EmitInstr('ADD', 'ESP,' + IntToStr_(ArgCount * 4));
     End
     { Indexation tableau : ident[index] }
     Else If TokIsPunct('[') Then
@@ -4989,6 +5016,9 @@ Begin
       EmitInstr('CALL', SymTab[Idx].MangledName)
     Else
       EmitInstr('CALL', CSC_FN_PFX + StrUpperCase(QualName));
+    { Nettoyer la pile (convention CDECL : appelant nettoie) }
+    If ArgCount > 0 Then
+      EmitInstr('ADD', 'ESP,' + IntToStr_(ArgCount * 4));
     If TokIsPunct(';') Then Consume;
   End
   { --- Indexation tableau : ident[i] ... --- }
@@ -5087,12 +5117,14 @@ Begin
     Exit;
   End;
 
-  { return [expr]; }
+  { return [expr]; (TODO 16 : JMP vers epilogue) }
   If TokIsKw('return') Then
   Begin
     Consume;
     If Not TokIsPunct(';') Then
-      ParseExpr;
+      ParseExpr;  { resultat dans EAX }
+    If MethExitLbl <> '' Then
+      EmitInstr('JMP', MethExitLbl);
     If TokIsPunct(';') Then Consume;
     Exit;
   End;
@@ -5916,6 +5948,147 @@ Begin
   LoopPop;
 End;
 
+{ ============================================================ }
+{ TODO 16 - METHODES STATIQUES                                  }
+{           [IMPLEMENTE]                                        }
+{ ============================================================ }
+(*                                                               *)
+(*  ParseMethodDecl : declaration de methode statique.           *)
+(*    static type Nom(type1 param1, type2 param2, ...) { ... }   *)
+(*  Convention cdecl 32 bits : appelant nettoie la pile.         *)
+(*    Parametres : [EBP+8], [EBP+12], ...                        *)
+(*    Locals : [EBP-4], [EBP-8], ...                             *)
+(*  FuncTab : table des methodes declarees.                      *)
+(*  FindMethod / AddMethod : recherche / ajout.                  *)
+(*  MethExitLbl : label global pour return -> JMP.               *)
+(*                                                               *)
+{ ============================================================ }
+
+{ ------------------------------------------------------------ }
+{ FindMethod : trouver une methode dans MethodTab               }
+{   Retourne l indice ou -1 si non trouvee                      }
+{ ------------------------------------------------------------ }
+
+Function FindMethod(Const N : TString) : Integer;
+Var I : Integer;
+    UN : TString;
+Begin
+  UN := StrUpperCase(N);
+  FindMethod := -1;
+  For I := 0 To MethodCount - 1 Do
+    If StrUpperCase(MethodTab[I].Name) = UN Then
+    Begin
+      FindMethod := I;
+      Exit;
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AddMethod : ajouter une methode dans MethodTab                }
+{   Retourne l indice ou -1 si plein                            }
+{ ------------------------------------------------------------ }
+
+Function AddMethod(Const N, Mangled, RType : TString;
+                   PCount : Integer;
+                   SIdx   : Integer) : Integer;
+Begin
+  If MethodCount >= MAX_METHODS Then
+  Begin
+    WarnMsg('table des methodes pleine');
+    AddMethod := -1;
+    Exit;
+  End;
+  MethodTab[MethodCount].Name        := N;
+  MethodTab[MethodCount].MangledName := Mangled;
+  MethodTab[MethodCount].ParamCount  := PCount;
+  MethodTab[MethodCount].RetType     := RType;
+  MethodTab[MethodCount].SymIdx      := SIdx;
+  MethodTab[MethodCount].IsVoid      := (StrUpperCase(RType) = 'VOID');
+  AddMethod := MethodCount;
+  Inc(MethodCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GetMethodParamCount : retourne le nombre de parametres        }
+{   d une methode identifiee par son nom qualifie.              }
+{   Retourne -1 si methode inconnue.                            }
+{ ------------------------------------------------------------ }
+
+Function GetMethodParamCount(Const N : TString) : Integer;
+Var MI : Integer;
+Begin
+  MI := FindMethod(N);
+  If MI >= 0 Then
+    GetMethodParamCount := MethodTab[MI].ParamCount
+  Else
+    GetMethodParamCount := -1;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseMethodDecl : analyser une declaration de methode         }
+{   static type Nom(type1 p1, type2 p2, ...) corps              }
+{   RetType et MName sont deja consommes par l appelant.        }
+{ ------------------------------------------------------------ }
+
+Procedure ParseMethodDecl(Const RetType, MName : TString);
+Var
+  SymIdx     : Integer;
+  ParamCnt   : Integer;
+  PType      : TString;
+  Mangled    : TString;
+Begin
+  { Ajouter la methode dans la table des symboles }
+  SymIdx := SymAdd(MName, SC_METHOD, TypeFromKeyword(RetType));
+  If SymIdx >= 0 Then
+    SymTab[SymIdx].IsStatic := True;
+
+  Mangled := SymMangle(MName, SC_METHOD);
+
+  { Reinitialiser les compteurs de pile locale }
+  ResetLocals;
+
+  { Compter et enregistrer les parametres }
+  ParamCnt := 0;
+  Consume;  { consommer ( }
+  While (CurToken.Kind <> TK_EOF) And (Not TokIsPunct(')')) Do
+  Begin
+    { Lire le type du parametre }
+    If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
+    Begin
+      PType := CurToken.Val;
+      Consume;
+      { Sauter [] si tableau }
+      If TokIsPunct('[') Then
+      Begin
+        Consume;
+        If TokIsPunct(']') Then Consume;
+      End;
+      { Nom du parametre }
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        SymIdx := SymAdd(CurToken.Val, SC_PARAM,
+                         TypeFromKeyword(PType));
+        If SymIdx >= 0 Then
+          SymTab[SymIdx].Offset := RegisterParam;
+        Inc(ParamCnt);
+        Consume;
+      End;
+    End
+    Else
+      Consume;
+    { Sauter la virgule }
+    If TokIsPunct(',') Then Consume;
+  End;
+  If TokIsPunct(')') Then Consume;
+
+  { Enregistrer dans FuncTab }
+  AddMethod(MName, Mangled, RetType, ParamCnt, SymIdx);
+
+  If Opts.Verbose Then
+    WriteLn('  static method ', RetType, ' ', MName,
+            '(', ParamCnt, ' params)');
+End;
+
 { ------------------------------------------------------------ }
 { ShowStats (corps)                                             }
 { ------------------------------------------------------------ }
@@ -5932,6 +6105,7 @@ Begin
   WriteLn('Constantes       : ', ConstCount);
   WriteLn('Symboles         : ', SymCount);
   WriteLn('Types            : ', TypeCount);
+  WriteLn('Methodes         : ', MethodCount);
   WriteLn('Donnees .DATA    : ', DataCount);
   WriteLn('Taille pile loc  : ', LocalOffset);
   WriteLn('Labels generes   : ', LabelSeq);
@@ -5953,12 +6127,12 @@ Var
   MethName   : TString;       { nom de la methode courante         }
   VarType    : TString;       { type d une variable                }
   VarName    : TString;       { nom d une variable                 }
+  MethRetType: TString;       { type de retour de la methode (TODO 16) }
   InClass    : Boolean;       { True si on est dans une classe     }
   InMethod   : Boolean;       { True si on est dans une methode    }
   BraceDepth : Integer;       { profondeur des accolades           }
   ClassDepth : Integer;       { profondeur a l entree de la classe }
   MethDepth  : Integer;       { profondeur a l entree de la methode }
-  MethExitLbl: TString;       { label de sortie de la methode (TODO 12) }
 Begin
   WriteLn('CSCW32: Compilation de ', Opts.SrcFile, ' ...');
 
@@ -5999,6 +6173,10 @@ Begin
 
   { Initialiser la pile de switch (TODO 15) }
   SwitchDepth := 0;
+
+  { Initialiser la table des methodes (TODO 16) }
+  MethodCount := 0;
+  MethExitLbl := '';
 
   { Initialiser le segment de donnees (TODO 08) }
   DataInit;
@@ -6143,7 +6321,7 @@ Begin
         InClass := False;
       Consume;
     End
-    { Reconnaitre static void/int/... Main/nom -> methode }
+    { Reconnaitre static void/int/... Main/nom -> methode (TODO 16) }
     Else If TokIsKw('static') Then
     Begin
       Consume;
@@ -6162,53 +6340,14 @@ Begin
         If CurToken.Kind = TK_IDENT Then
         Begin
           MethName := CurToken.Val;
+          MethRetType := VarType;
           Consume;
-          { Si suivi de ( -> c est une methode }
+          { Si suivi de ( -> c est une methode (TODO 16) }
           If TokIsPunct('(') Then
           Begin
-            SymIdx := SymAdd(MethName, SC_METHOD,
-                             TypeFromKeyword(VarType));
-            If SymIdx >= 0 Then
-              SymTab[SymIdx].IsStatic := True;
+            ParseMethodDecl(MethRetType, MethName);
             InMethod := True;
             MethDepth := BraceDepth;
-            ResetLocals;  { Reinitialiser le compteur de pile (TODO 09) }
-            If Opts.Verbose Then
-              WriteLn('  static method ', VarType, ' ', MethName);
-            { Lire les parametres }
-            Consume;  { consommer ( }
-            While (CurToken.Kind <> TK_EOF) And
-                  (Not TokIsPunct(')')) Do
-            Begin
-              { Lire type param }
-              If (CurToken.Kind = TK_KEYWORD) Or
-                 (CurToken.Kind = TK_IDENT) Then
-              Begin
-                VarType := CurToken.Val;
-                Consume;
-                { Sauter [] si tableau }
-                If TokIsPunct('[') Then
-                Begin
-                  Consume;
-                  If TokIsPunct(']') Then Consume;
-                End;
-                { Nom du parametre }
-                If CurToken.Kind = TK_IDENT Then
-                Begin
-                  SymIdx := SymAdd(CurToken.Val, SC_PARAM,
-                                   TypeFromKeyword(VarType));
-                  { Assigner l offset EBP+n au parametre (TODO 09) }
-                  If SymIdx >= 0 Then
-                    SymTab[SymIdx].Offset := RegisterParam;
-                  Consume;
-                End;
-              End
-              Else
-                Consume;
-              { Sauter la virgule }
-              If TokIsPunct(',') Then Consume;
-            End;
-            If TokIsPunct(')') Then Consume;
           End
           Else
           Begin
@@ -6354,6 +6493,7 @@ Begin
           TokenCount, ' tokens, ', UsingCount, ' using, ',
           StrLitCount, ' chaines, ', ConstCount, ' constantes, ',
           SymCount, ' symboles, ', TypeCount, ' types, ',
+          MethodCount, ' methodes, ',
           DataCount, ' data)');
 
   { Emettre le segment .DATA apres le code (TODO 12)             }
@@ -6364,7 +6504,7 @@ Begin
   EmitClose;
 
   WriteLn('CSCW32: ASM genere -> ', AsmFileName);
-  WriteLn('CSCW32: Les TODOs 16..25 ne sont pas encore implementes.');
+  WriteLn('CSCW32: Les TODOs 17..25 ne sont pas encore implementes.');
 End;
 
 { ------------------------------------------------------------ }
