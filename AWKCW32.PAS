@@ -447,7 +447,8 @@
             test_builtins18.awk (15 cas, fonctions builtin chaines)
 
   TODO 19 - PARSEUR : FONCTIONS BUILTIN MATHEMATIQUES
-            Procedure ParseBuiltinMath
+            [IMPLEMENTE]
+            Function ParseBuiltinMath(BFIdx)
             Fonctions a supporter :
               sin(x)     -> CALL _AWRT_SIN -> EAX (approximation entiere)
               cos(x)     -> CALL _AWRT_COS -> EAX (approximation entiere)
@@ -464,6 +465,8 @@
               fflush([file]) -> stub : emettre '; fflush() stub'
               mktime(spec) -> stub
               strftime(fmt [, timestamp]) -> stub
+            Var BuiltinMathCount pour les statistiques
+            test_builtins19.awk (15 cas, fonctions builtin mathematiques)
 
   TODO 20 - PARSEUR : GETLINE ET REDIRECTIONS E/S
             Procedure ParseGetline
@@ -1093,6 +1096,9 @@ Var
   { Fonctions builtin chaines (TODO 18) }
   BuiltinStrCount: Integer;    { nombre d appels fonctions builtin  }
 
+  { Fonctions builtin mathematiques (TODO 19) }
+  BuiltinMathCount: Integer;   { nombre d appels fonctions builtin math }
+
 Const
 {$IFDEF FPC}
   BinAPIDecorated : Array[0..PE_NUM_API - 1] Of String[32] = (
@@ -1454,6 +1460,7 @@ Begin
   WriteLn('Regex patterns   : ', RegexPatCount);
   WriteLn('Regex ops (~!~)  : ', RegexOpCount);
   WriteLn('Builtin str ops  : ', BuiltinStrCount);
+  WriteLn('Builtin math ops : ', BuiltinMathCount);
   WriteLn('Code gen ops     : ', GenCount);
   WriteLn('Litteraux chaine : ', StringLitCount);
   WriteLn('Scope depth      : ', ScopeDepth);
@@ -2602,6 +2609,9 @@ Procedure GenRegexMatch; Forward;
 
 { Forward declarations TODO 18 - Fonctions builtin chaines }
 Function  ParseBuiltinString(BFIdx: Integer): Integer; Forward;
+
+{ Forward declarations TODO 19 - Fonctions builtin mathematiques }
+Function  ParseBuiltinMath(BFIdx: Integer): Integer; Forward;
 
 { ---- Helpers de tokens --------------------------------------- }
 Function IsOp(Const S : String) : Boolean;
@@ -4255,11 +4265,330 @@ Begin
       ParseBuiltinString := TYK_STRING;
     End;
   Else
-    { Fonction builtin non-chaine : stub (TODO 19) }
-    EmitComment('--- builtin stub (non-chaine) ---');
+    { Fonction builtin non-chaine : dispatch via ParseBuiltinMath (TODO 19) }
+    Dec(BuiltinStrCount);  { ne pas compter les builtin math comme str }
+    ParseBuiltinString := ParseBuiltinMath(BFIdx);
+  End;  { case }
+End;
+
+{ ============================================================ }
+{ TODO 19 - PARSEUR : FONCTIONS BUILTIN MATHEMATIQUES          }
+{ ============================================================ }
+
+Function ParseBuiltinMath(BFIdx: Integer): Integer;
+Var
+  ExprType : Integer;
+  ArgCount : Integer;
+Begin
+  Inc(BuiltinMathCount);
+  ParseBuiltinMath := TYK_NUMBER;  { par defaut }
+
+  Case BFIdx Of
+    { ---- sin(x) ---- }
+    BF_SIN:
+    Begin
+      EmitComment('--- builtin sin ---');
+      If IsPunct('(') Then
+        ParserAdvance
+      Else
+        WarnMsg('sin: ( attendu');
+      ExprType := ParseExpr;
+      ExprType := GenCoerceToNumber(ExprType);
+      If IsPunct(')') Then
+        ParserAdvance
+      Else
+        WarnMsg('sin: ) attendu');
+      Emit('        PUSH    EAX');
+      Emit('        CALL    ' + AW_RT_PFX + 'SIN');
+      Emit('        ADD     ESP, 4');
+      ParseBuiltinMath := TYK_NUMBER;
+    End;
+
+    { ---- cos(x) ---- }
+    BF_COS:
+    Begin
+      EmitComment('--- builtin cos ---');
+      If IsPunct('(') Then
+        ParserAdvance
+      Else
+        WarnMsg('cos: ( attendu');
+      ExprType := ParseExpr;
+      ExprType := GenCoerceToNumber(ExprType);
+      If IsPunct(')') Then
+        ParserAdvance
+      Else
+        WarnMsg('cos: ) attendu');
+      Emit('        PUSH    EAX');
+      Emit('        CALL    ' + AW_RT_PFX + 'COS');
+      Emit('        ADD     ESP, 4');
+      ParseBuiltinMath := TYK_NUMBER;
+    End;
+
+    { ---- atan2(y, x) ---- }
+    BF_ATAN2:
+    Begin
+      EmitComment('--- builtin atan2 ---');
+      If IsPunct('(') Then
+        ParserAdvance
+      Else
+        WarnMsg('atan2: ( attendu');
+      { Premier argument : y }
+      ExprType := ParseExpr;
+      ExprType := GenCoerceToNumber(ExprType);
+      Emit('        PUSH    EAX');
+      { Virgule separatrice }
+      If IsPunct(',') Then
+      Begin
+        ParserAdvance; SkipNewlines;
+      End
+      Else
+        WarnMsg('atan2: , attendu');
+      { Deuxieme argument : x }
+      ExprType := ParseExpr;
+      ExprType := GenCoerceToNumber(ExprType);
+      Emit('        PUSH    EAX');
+      If IsPunct(')') Then
+        ParserAdvance
+      Else
+        WarnMsg('atan2: ) attendu');
+      Emit('        CALL    ' + AW_RT_PFX + 'ATAN2');
+      Emit('        ADD     ESP, 8');
+      ParseBuiltinMath := TYK_NUMBER;
+    End;
+
+    { ---- exp(x) ---- }
+    BF_EXP:
+    Begin
+      EmitComment('--- builtin exp ---');
+      If IsPunct('(') Then
+        ParserAdvance
+      Else
+        WarnMsg('exp: ( attendu');
+      ExprType := ParseExpr;
+      ExprType := GenCoerceToNumber(ExprType);
+      If IsPunct(')') Then
+        ParserAdvance
+      Else
+        WarnMsg('exp: ) attendu');
+      Emit('        PUSH    EAX');
+      Emit('        CALL    ' + AW_RT_PFX + 'EXP');
+      Emit('        ADD     ESP, 4');
+      ParseBuiltinMath := TYK_NUMBER;
+    End;
+
+    { ---- log(x) ---- }
+    BF_LOG:
+    Begin
+      EmitComment('--- builtin log ---');
+      If IsPunct('(') Then
+        ParserAdvance
+      Else
+        WarnMsg('log: ( attendu');
+      ExprType := ParseExpr;
+      ExprType := GenCoerceToNumber(ExprType);
+      If IsPunct(')') Then
+        ParserAdvance
+      Else
+        WarnMsg('log: ) attendu');
+      Emit('        PUSH    EAX');
+      Emit('        CALL    ' + AW_RT_PFX + 'LOG');
+      Emit('        ADD     ESP, 4');
+      ParseBuiltinMath := TYK_NUMBER;
+    End;
+
+    { ---- sqrt(x) ---- }
+    BF_SQRT:
+    Begin
+      EmitComment('--- builtin sqrt ---');
+      If IsPunct('(') Then
+        ParserAdvance
+      Else
+        WarnMsg('sqrt: ( attendu');
+      ExprType := ParseExpr;
+      ExprType := GenCoerceToNumber(ExprType);
+      If IsPunct(')') Then
+        ParserAdvance
+      Else
+        WarnMsg('sqrt: ) attendu');
+      Emit('        PUSH    EAX');
+      Emit('        CALL    ' + AW_RT_PFX + 'SQRT');
+      Emit('        ADD     ESP, 4');
+      ParseBuiltinMath := TYK_NUMBER;
+    End;
+
+    { ---- int(x) : troncature entiere, deja entier en EAX ---- }
+    BF_INT:
+    Begin
+      EmitComment('--- builtin int ---');
+      If IsPunct('(') Then
+        ParserAdvance
+      Else
+        WarnMsg('int: ( attendu');
+      ExprType := ParseExpr;
+      ExprType := GenCoerceToNumber(ExprType);
+      If IsPunct(')') Then
+        ParserAdvance
+      Else
+        WarnMsg('int: ) attendu');
+      { EAX contient deja la valeur entiere, pas de CALL necessaire }
+      ParseBuiltinMath := TYK_NUMBER;
+    End;
+
+    { ---- rand() : retourne un nombre aleatoire 0..32767 ---- }
+    BF_RAND:
+    Begin
+      EmitComment('--- builtin rand ---');
+      If IsPunct('(') Then
+      Begin
+        ParserAdvance;
+        If IsPunct(')') Then
+          ParserAdvance
+        Else
+          WarnMsg('rand: ) attendu');
+      End;
+      Emit('        CALL    ' + AW_RT_PFX + 'RAND');
+      ParseBuiltinMath := TYK_NUMBER;
+    End;
+
+    { ---- srand([x]) : initialiser graine aleatoire ---- }
+    BF_SRAND:
+    Begin
+      EmitComment('--- builtin srand ---');
+      If IsPunct('(') Then
+      Begin
+        ParserAdvance;
+        If Not IsPunct(')') Then
+        Begin
+          { Argument optionnel : graine }
+          ExprType := ParseExpr;
+          ExprType := GenCoerceToNumber(ExprType);
+          Emit('        PUSH    EAX');
+          If IsPunct(')') Then
+            ParserAdvance
+          Else
+            WarnMsg('srand: ) attendu');
+          Emit('        CALL    ' + AW_RT_PFX + 'SRAND');
+          Emit('        ADD     ESP, 4');
+        End
+        Else
+        Begin
+          { Pas d argument : utiliser valeur par defaut (time) }
+          ParserAdvance;  { consommer ) }
+          Emit('        CALL    ' + AW_RT_PFX + 'SRAND_TIME');
+        End;
+      End
+      Else
+      Begin
+        { srand sans parentheses : utiliser valeur par defaut }
+        Emit('        CALL    ' + AW_RT_PFX + 'SRAND_TIME');
+      End;
+      ParseBuiltinMath := TYK_NUMBER;
+    End;
+
+    { ---- system(cmd) : stub ---- }
+    BF_SYSTEM:
+    Begin
+      EmitComment('--- builtin system (stub) ---');
+      If IsPunct('(') Then
+      Begin
+        ParserAdvance;
+        ExprType := ParseExpr;
+        If IsPunct(')') Then
+          ParserAdvance
+        Else
+          WarnMsg('system: ) attendu');
+      End;
+      Emit('        XOR     EAX, EAX');
+      ParseBuiltinMath := TYK_NUMBER;
+    End;
+
+    { ---- close(file) : stub ---- }
+    BF_CLOSE:
+    Begin
+      EmitComment('--- builtin close (stub) ---');
+      If IsPunct('(') Then
+      Begin
+        ParserAdvance;
+        ExprType := ParseExpr;
+        If IsPunct(')') Then
+          ParserAdvance
+        Else
+          WarnMsg('close: ) attendu');
+      End;
+      Emit('        XOR     EAX, EAX');
+      ParseBuiltinMath := TYK_NUMBER;
+    End;
+
+    { ---- fflush([file]) : stub ---- }
+    BF_FFLUSH:
+    Begin
+      EmitComment('--- builtin fflush (stub) ---');
+      If IsPunct('(') Then
+      Begin
+        ParserAdvance;
+        If Not IsPunct(')') Then
+        Begin
+          ExprType := ParseExpr;
+        End;
+        If IsPunct(')') Then
+          ParserAdvance
+        Else
+          WarnMsg('fflush: ) attendu');
+      End;
+      Emit('        XOR     EAX, EAX');
+      ParseBuiltinMath := TYK_NUMBER;
+    End;
+
+    { ---- mktime(spec) : stub ---- }
+    BF_MKTIME:
+    Begin
+      EmitComment('--- builtin mktime (stub) ---');
+      If IsPunct('(') Then
+      Begin
+        ParserAdvance;
+        ExprType := ParseExpr;
+        If IsPunct(')') Then
+          ParserAdvance
+        Else
+          WarnMsg('mktime: ) attendu');
+      End;
+      Emit('        XOR     EAX, EAX');
+      ParseBuiltinMath := TYK_NUMBER;
+    End;
+
+    { ---- strftime(fmt [, timestamp]) : stub ---- }
+    BF_STRFTIME:
+    Begin
+      EmitComment('--- builtin strftime (stub) ---');
+      If IsPunct('(') Then
+      Begin
+        ParserAdvance;
+        ArgCount := 0;
+        If Not IsPunct(')') Then
+        Begin
+          ExprType := ParseExpr;
+          Inc(ArgCount);
+          While IsPunct(',') Do
+          Begin
+            ParserAdvance; SkipNewlines;
+            ExprType := ParseExpr;
+            Inc(ArgCount);
+          End;
+        End;
+        If IsPunct(')') Then
+          ParserAdvance
+        Else
+          WarnMsg('strftime: ) attendu');
+      End;
+      Emit('        XOR     EAX, EAX');
+      ParseBuiltinMath := TYK_STRING;
+    End;
+  Else
+    { Fonction builtin inconnue }
+    EmitComment('--- builtin inconnu ---');
     If IsPunct('(') Then
     Begin
-      ParserAdvance;  { consommer ( }
+      ParserAdvance;
       ArgCount := 0;
       If Not IsPunct(')') Then
       Begin
@@ -4277,7 +4606,7 @@ Begin
       Else
         WarnMsg(') attendu apres builtin');
     End;
-    ParseBuiltinString := TYK_UNKNOWN;
+    ParseBuiltinMath := TYK_UNKNOWN;
   End;  { case }
 End;
 
@@ -5580,6 +5909,7 @@ Begin
   RegexPatCount := 0;
   RegexOpCount := 0;
   BuiltinStrCount := 0;
+  BuiltinMathCount := 0;
   HasPushedBack := False;
   LexInit;
   { Mode debug : afficher tous les tokens }
@@ -5608,6 +5938,7 @@ Begin
     WriteLn('AWKCW32: ', RegexPatCount, ' pattern(s) regex, ',
             RegexOpCount, ' operation(s) regex (~ !~)');
     WriteLn('AWKCW32: ', BuiltinStrCount, ' appel(s) builtin chaines');
+    WriteLn('AWKCW32: ', BuiltinMathCount, ' appel(s) builtin math/systeme');
     WriteLn('AWKCW32: ', ExprCount, ' expression(s) parsees');
     WriteLn('AWKCW32: ', CoercionCount, ' coercition(s), ',
             ConcatCount, ' concatenation(s) implicite(s)');
@@ -5620,7 +5951,7 @@ Begin
     WriteLn('AWKCW32: ', GenCount, ' operation(s) code gen, ',
             StringLitCount, ' litteral(aux) chaine');
     WriteLn('AWKCW32: scope depth=', ScopeDepth, ', loop depth=', LoopDepth);
-    WriteLn('AWKCW32: TODO 19..25 non encore implementes.');
+    WriteLn('AWKCW32: TODO 20..25 non encore implementes.');
     WriteLn('AWKCW32: sortie prevue: ', Opts.OutFile);
   End;
   LexClose;

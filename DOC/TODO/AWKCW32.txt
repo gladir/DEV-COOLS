@@ -452,23 +452,28 @@
             test_builtins18.awk (15 cas, 14 builtin str ops)
 
   TODO 19 - PARSEUR : FONCTIONS BUILTIN MATHEMATIQUES
-            Procedure ParseBuiltinMath
-            Fonctions a supporter :
-              sin(x)     -> CALL _AWRT_SIN -> EAX (approximation entiere)
-              cos(x)     -> CALL _AWRT_COS -> EAX (approximation entiere)
-              atan2(y,x) -> CALL _AWRT_ATAN2 -> EAX
-              exp(x)     -> CALL _AWRT_EXP -> EAX
-              log(x)     -> CALL _AWRT_LOG -> EAX
-              sqrt(x)    -> CALL _AWRT_SQRT -> EAX
-              int(x)     -> valeur entiere (troncature) : deja entier
+            [IMPLEMENTE]
+            Function ParseBuiltinMath(BFIdx) :
+              Dispatch sur BFIdx (BF_SIN..BF_STRFTIME)
+            Fonctions supportees :
+              sin(x)     -> PUSH EAX + CALL _AWRT_SIN + ADD ESP,4 -> EAX
+              cos(x)     -> PUSH EAX + CALL _AWRT_COS + ADD ESP,4 -> EAX
+              atan2(y,x) -> PUSH y + PUSH x + CALL _AWRT_ATAN2 + ADD ESP,8
+              exp(x)     -> PUSH EAX + CALL _AWRT_EXP + ADD ESP,4 -> EAX
+              log(x)     -> PUSH EAX + CALL _AWRT_LOG + ADD ESP,4 -> EAX
+              sqrt(x)    -> PUSH EAX + CALL _AWRT_SQRT + ADD ESP,4 -> EAX
+              int(x)     -> GenCoerceToNumber (deja entier, NOP)
               rand()     -> CALL _AWRT_RAND -> EAX (0..32767)
-              srand([x]) -> CALL _AWRT_SRAND (initialiser graine)
-            Fonctions systeme :
-              system(cmd) -> stub : emettre '; system() stub'
-              close(file) -> stub : emettre '; close() stub'
-              fflush([file]) -> stub : emettre '; fflush() stub'
-              mktime(spec) -> stub
-              strftime(fmt [, timestamp]) -> stub
+              srand([x]) -> PUSH EAX + CALL _AWRT_SRAND ou SRAND_TIME
+            Fonctions systeme (stubs) :
+              system(cmd)  -> XOR EAX, EAX (stub)
+              close(file)  -> XOR EAX, EAX (stub)
+              fflush([f])  -> XOR EAX, EAX (stub)
+              mktime(spec) -> XOR EAX, EAX (stub)
+              strftime(fmt [, ts]) -> XOR EAX, EAX (stub)
+            ParseBuiltinString Else : dispatch via ParseBuiltinMath
+            Var BuiltinMathCount pour les statistiques
+            test_builtins19.awk (15 cas, fonctions builtin mathematiques)
 
   TODO 20 - PARSEUR : GETLINE ET REDIRECTIONS E/S
             Procedure ParseGetline
