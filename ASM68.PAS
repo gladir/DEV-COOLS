@@ -26,7 +26,7 @@
 { TODO 06 - Modes d'adressage : analyse et encodage [IMPLEMENTE] }
 { TODO 07 - Generateur de code : emission et sections [IMPLEMENTE] }
 { TODO 08 - Directives assembleur de base (ORG, DC, DS, EQU, END) [IMPLEMENTE] }
-{ TODO 09 - Directives assembleur avancees (SECTION, INCLUDE, macros) }
+{ TODO 09 - Directives assembleur avancees (SECTION, INCLUDE, macros) [IMPLEMENTE] }
 { TODO 10 - Assemblage conditionnel (IF, IFDEF, IFEQ, etc.) }
 { TODO 11 - Instructions de transfert de donnees }
 { TODO 12 - Instructions arithmetiques entieres }
@@ -61,6 +61,9 @@ Const
   MAX_SYM           = 2048;   { Symboles max (etiquettes + EQU + SET)  }
   MAX_LABEL         = 9999;   { Limite compteur labels internes        }
   MAX_MACRO         = 256;    { Macros max                             }
+  MAX_MACRO_LINES   = 256;    { Lignes max dans le corps d'une macro   }
+  MAX_MACRO_PARAMS  = 16;     { Parametres max par macro               }
+  MAX_INC_LINES     = 2048;   { Lignes max d'un fichier INCLUDE        }
   MAX_LINE          = 1024;   { Longueur max d'une ligne source        }
   MAX_INCLUDE_DEPTH = 8;      { Profondeur max d'imbrication INCLUDE   }
   MAX_SECTIONS      = 16;     { Sections max                           }
@@ -263,6 +266,20 @@ Type
     Addend   : LongInt;       { Valeur a ajouter (addend)              }
   End;
 
+  { --- Macro : definition de macro (TODO 09) --- }
+  TMacroEntry = Record
+    Name       : String[64];     { Nom de la macro (majuscules)           }
+    ParamCount : Integer;        { Nombre de parametres formels           }
+    ParamNames : Array[1..MAX_MACRO_PARAMS] of String[32]; { Noms params }
+    Body       : Array[1..MAX_MACRO_LINES] of String;      { Corps       }
+    BodyCount  : Integer;        { Nombre de lignes du corps              }
+    LineNum    : Integer;        { Ligne de definition                    }
+  End;
+
+  { --- Buffer de lignes pour INCLUDE (TODO 09) --- }
+  TIncLineBuf = Array[1..MAX_INC_LINES] of String;
+  PIncLineBuf = ^TIncLineBuf;
+
 { ============================================================================ }
 { Variables globales                                                           }
 { ============================================================================ }
@@ -330,6 +347,14 @@ Var
   start_address    : LongInt;      { Adresse de demarrage (END expr)      }
   start_address_set: Boolean;      { True si adresse de demarrage definie }
   cur_label        : String;       { Etiquette de la ligne courante       }
+
+  { --- Macros et includes (TODO 09) --- }
+  MacroTable     : Array[1..MAX_MACRO] of ^TMacroEntry; { Table macros   }
+  MacroCount     : Integer;      { Nombre de macros definies              }
+  macro_expanding: Boolean;      { True si expansion de macro en cours    }
+  macro_narg     : Integer;      { NARG pendant expansion                 }
+  macro_unique_id: Integer;      { Compteur pour etiquettes uniques (\@)  }
+  include_depth  : Integer;      { Profondeur d'imbrication INCLUDE       }
 
 { ============================================================================ }
 { Fonctions utilitaires                                                        }
@@ -646,13 +671,15 @@ Begin
  If (U = 'ORG') or (U = 'DC') or (U = 'DS') or
     (U = 'EQU') or (U = 'END') or (U = 'SET') Then Begin IsDirective := True; Exit; End;
  If (U = 'SECTION') or (U = 'INCLUDE') or
-    (U = 'MACRO') or (U = 'ENDM') Then Begin IsDirective := True; Exit; End;
+    (U = 'MACRO') or (U = 'ENDM') or
+    (U = 'MEXIT') Then Begin IsDirective := True; Exit; End;
  If (U = 'IF') or (U = 'IFDEF') or (U = 'IFNDEF') or
     (U = 'IFEQ') or (U = 'IFNE') or (U = 'IFGT') or
     (U = 'IFGE') or (U = 'IFLT') or (U = 'IFLE') or
     (U = 'ELSE') or (U = 'ENDC') or (U = 'ENDIF') Then Begin IsDirective := True; Exit; End;
  If (U = 'XDEF') or (U = 'XREF') or (U = 'PUBLIC') or
-    (U = 'EXTERN') Then Begin IsDirective := True; Exit; End;
+    (U = 'EXTERN') or (U = 'ENTRY') or
+    (U = 'EXTERNAL') Then Begin IsDirective := True; Exit; End;
  If (U = 'OPT') or (U = 'LIST') or (U = 'NOLIST') or
     (U = 'PAGE') or (U = 'TTL') or (U = 'SPC') Then Begin IsDirective := True; Exit; End;
  If (U = 'CNOP') or (U = 'EVEN') or (U = 'ALIGN') or
@@ -1394,6 +1421,7 @@ Begin
   WriteLn('  ', Sections[I].Name, ' : ', Sections[I].Size,
           ' octets (org=$', IntToHex(Sections[I].Origin, 6), ')');
  WriteLn('Fixups         : ', FixupCount);
+ WriteLn('Macros         : ', MacroCount);
  WriteLn('Taille code    : ', CodeSize, ' octets');
  If start_address_set Then
   WriteLn('Adresse debut  : $', IntToHex(start_address, 6));
@@ -3126,6 +3154,630 @@ Begin
   NextToken;
 End;
 
+{ ============================================================================ }
+{ TODO 09 - Directives assembleur avancees (SECTION, INCLUDE, macros)          }
+{ ============================================================================ }
+
+{ ParseLine est appele par ExpandMacro, DirINCLUDE et DirREPT }
+Procedure ParseLine; Forward;
+
+{ ---------- FindMacro : recherche d'une macro par nom ---------- }
+
+Function FindMacro(Const Name: String): Integer;
+Var I: Integer; UName: String;
+Begin
+ UName := UpCaseStr(Name);
+ For I := 1 to MacroCount do
+  If MacroTable[I]^.Name = UName Then
+  Begin FindMacro := I; Exit; End;
+ FindMacro := 0;
+End;
+
+{ ---------- FreeMacros : liberer la table des macros ---------- }
+
+Procedure FreeMacros;
+Var I: Integer;
+Begin
+ For I := 1 to MacroCount do
+  If MacroTable[I] <> nil Then
+  Begin
+   Dispose(MacroTable[I]);
+   MacroTable[I] := nil;
+  End;
+ MacroCount := 0;
+End;
+
+{ ---------- DirSECTION : changer de section ---------- }
+
+Procedure DirSECTION;
+{ SECTION name[,type] - declarer/changer de section.
+  Types : CODE/TEXT, DATA, BSS }
+Var
+  SecName: String;
+  SecType: Integer;
+  Idx: Integer;
+Begin
+ If cur_tok <> TOK_IDENT Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'SECTION: nom de section attendu');
+  Exit;
+ End;
+ SecName := UpCaseStr(cur_tok_str);
+ NextToken;
+
+ { Determiner le type de section }
+ SecType := -1;
+
+ { Type explicite apres virgule }
+ If cur_tok = TOK_COMMA Then
+ Begin
+  NextToken;
+  If cur_tok = TOK_IDENT Then
+  Begin
+   If (UpCaseStr(cur_tok_str) = 'CODE') or
+      (UpCaseStr(cur_tok_str) = 'TEXT') Then
+    SecType := SEC_CODE
+   Else If UpCaseStr(cur_tok_str) = 'DATA' Then
+    SecType := SEC_DATA
+   Else If UpCaseStr(cur_tok_str) = 'BSS' Then
+    SecType := SEC_BSS
+   Else
+    Warning(cur_tok_line, cur_tok_col,
+            'SECTION: type inconnu, defaut CODE');
+   NextToken;
+  End;
+ End;
+
+ { Si pas de type explicite, deduire du nom }
+ If SecType = -1 Then
+ Begin
+  If (SecName = 'CODE') or (SecName = 'TEXT') Then
+   SecType := SEC_CODE
+  Else If SecName = 'DATA' Then
+   SecType := SEC_DATA
+  Else If SecName = 'BSS' Then
+   SecType := SEC_BSS
+  Else
+   SecType := SEC_CODE;
+ End;
+
+ { Chercher ou creer la section }
+ Idx := FindSection(SecName);
+ If Idx = 0 Then
+ Begin
+  If SectionCount >= MAX_SECTIONS Then
+  Begin
+   Error(cur_tok_line, cur_tok_col, 'SECTION: trop de sections');
+   Exit;
+  End;
+  Inc(SectionCount);
+  Sections[SectionCount].Name := SecName;
+  Sections[SectionCount].SecType := SecType;
+  Sections[SectionCount].Origin := 0;
+  Sections[SectionCount].CurAddr := 0;
+  New(Sections[SectionCount].Buf);
+  FillChar(Sections[SectionCount].Buf^, SizeOf(TSectionBuf), 0);
+  Sections[SectionCount].Size := 0;
+  CurSection := SectionCount;
+ End
+ Else
+  CurSection := Idx;
+
+ expr_pc := GetPC;
+End;
+
+{ ---------- DirINCLUDE : inclusion de fichier source ---------- }
+
+Procedure DirINCLUDE;
+{ INCLUDE "filename" - inclure un fichier source.
+  Lit toutes les lignes dans un buffer puis les traite inline. }
+Var
+  FileName: String;
+  FullPath: String;
+  I: Integer;
+  IncFile: Text;
+  Found: Boolean;
+  IncBuf: PIncLineBuf;
+  IncCount: Integer;
+  SaveLine: String;
+  SaveCol: Integer;
+  SaveLineNum: Integer;
+  SaveEof: Boolean;
+Begin
+ { Recuperer le nom de fichier (apostrophes, guillemets ou identifiant) }
+ If cur_tok = TOK_STRING Then
+ Begin
+  FileName := cur_tok_str;
+  NextToken;
+ End
+ Else If (cur_tok = TOK_UNKNOWN) and (cur_tok_str = '"') Then
+ Begin
+  { Guillemets doubles : lire directement depuis src_line }
+  FileName := '';
+  While (src_col <= Length(src_line)) and (src_line[src_col] <> '"') do
+  Begin
+   FileName := FileName + src_line[src_col];
+   Inc(src_col);
+  End;
+  If (src_col <= Length(src_line)) and (src_line[src_col] = '"') Then
+   Inc(src_col);
+  NextToken;
+ End
+ Else If cur_tok = TOK_IDENT Then
+ Begin
+  FileName := cur_tok_str;
+  NextToken;
+ End
+ Else
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'INCLUDE: nom de fichier attendu');
+  Exit;
+ End;
+
+ { Verifier la profondeur d'imbrication }
+ If include_depth >= MAX_INCLUDE_DEPTH Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'INCLUDE: imbrication trop profonde');
+  Exit;
+ End;
+
+ { Chercher le fichier }
+ Found := False;
+ FullPath := FileName;
+
+ { Essayer le nom tel quel }
+ Assign(IncFile, FileName);
+ {$I-} Reset(IncFile); {$I+}
+ If IOResult = 0 Then
+ Begin
+  Found := True;
+  FullPath := FileName;
+ End;
+
+ { Essayer les repertoires -i }
+ If Not Found Then
+ Begin
+  For I := 1 to Opts.IncPathCount do
+  Begin
+   FullPath := Opts.IncludePaths[I];
+   If (Length(FullPath) > 0) and (FullPath[Length(FullPath)] <> '/') and
+      (FullPath[Length(FullPath)] <> '\') Then
+    FullPath := FullPath + '/';
+   FullPath := FullPath + FileName;
+   Assign(IncFile, FullPath);
+   {$I-} Reset(IncFile); {$I+}
+   If IOResult = 0 Then
+   Begin
+    Found := True;
+    Break;
+   End;
+  End;
+ End;
+
+ If Not Found Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'INCLUDE: fichier introuvable: ' + FileName);
+  Exit;
+ End;
+
+ { Lire toutes les lignes dans le buffer }
+ New(IncBuf);
+ IncCount := 0;
+ While Not Eof(IncFile) do
+ Begin
+  If IncCount >= MAX_INC_LINES Then
+  Begin
+   Warning(cur_tok_line, cur_tok_col,
+           'INCLUDE: fichier trop long, tronque a ' + FullPath);
+   Break;
+  End;
+  Inc(IncCount);
+  ReadLn(IncFile, IncBuf^[IncCount]);
+ End;
+ Close(IncFile);
+
+ { Sauvegarder l'etat du lexeur }
+ SaveLine := src_line;
+ SaveCol := src_col;
+ SaveLineNum := src_line_num;
+ SaveEof := src_eof;
+
+ { Traiter les lignes incluses }
+ Inc(include_depth);
+ src_eof := True; { Empecher SrcGetLine de lire le fichier principal }
+
+ For I := 1 to IncCount do
+ Begin
+  src_line := IncBuf^[I];
+  src_col := 1;
+  Inc(src_line_num);
+
+  NextToken;
+
+  If (cur_tok <> TOK_EOL) and (cur_tok <> TOK_EOF) Then
+  Begin
+   If end_source Then Break;
+   ParseLine;
+  End;
+ End;
+
+ Dec(include_depth);
+
+ { Restaurer l'etat du lexeur }
+ src_line := SaveLine;
+ src_col := SaveCol;
+ src_line_num := SaveLineNum;
+ src_eof := SaveEof;
+
+ Dispose(IncBuf);
+End;
+
+{ ---------- DirXDEF / DirENTRY : exporter des symboles ---------- }
+
+Procedure DirXDEF;
+{ XDEF sym[,sym,...] ou ENTRY sym - marquer des symboles comme exportes }
+Var
+  SymName: String;
+  Idx: Integer;
+Begin
+ Repeat
+  If (cur_tok <> TOK_IDENT) and (cur_tok <> TOK_LABEL) Then
+  Begin
+   Error(cur_tok_line, cur_tok_col, 'XDEF: nom de symbole attendu');
+   Exit;
+  End;
+  SymName := UpCaseStr(cur_tok_str);
+  Idx := FindSym(SymName);
+  If Idx <> 0 Then
+   SymTable[Idx].SymType := SYM_ENTRY
+  Else
+   AddSym(SymName, 0, CurSection, SYM_ENTRY, cur_tok_line);
+  NextToken;
+  If cur_tok = TOK_COMMA Then
+   NextToken
+  Else
+   Break;
+ Until False;
+End;
+
+{ ---------- DirXREF / DirEXTERNAL : importer des symboles ---------- }
+
+Procedure DirXREF;
+{ XREF sym[,sym,...] ou EXTERNAL sym - declarer symboles externes }
+Var
+  SymName: String;
+  Idx: Integer;
+Begin
+ Repeat
+  If (cur_tok <> TOK_IDENT) and (cur_tok <> TOK_LABEL) Then
+  Begin
+   Error(cur_tok_line, cur_tok_col, 'XREF: nom de symbole attendu');
+   Exit;
+  End;
+  SymName := UpCaseStr(cur_tok_str);
+  Idx := FindSym(SymName);
+  If Idx = 0 Then
+   AddSym(SymName, 0, CurSection, SYM_EXTERNAL, cur_tok_line);
+  NextToken;
+  If cur_tok = TOK_COMMA Then
+   NextToken
+  Else
+   Break;
+ Until False;
+End;
+
+{ ---------- DirMACRO : definition de macro ---------- }
+
+Procedure DirMACRO(Const MacName: String);
+{ name MACRO [param1,param2,...] - definir une macro.
+  Lit les lignes du corps jusqu'a ENDM. }
+Var
+  M: ^TMacroEntry;
+  Line_: String;
+  UDir: String;
+Begin
+ If MacName = '' Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'MACRO: nom de macro requis');
+  SkipToEOL;
+  Exit;
+ End;
+
+ If MacroCount >= MAX_MACRO Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'MACRO: table des macros pleine');
+  SkipToEOL;
+  Exit;
+ End;
+
+ Inc(MacroCount);
+ New(MacroTable[MacroCount]);
+ M := MacroTable[MacroCount];
+ M^.Name := UpCaseStr(MacName);
+ M^.ParamCount := 0;
+ M^.BodyCount := 0;
+ M^.LineNum := cur_tok_line;
+
+ { Lire les noms de parametres optionnels }
+ While (cur_tok <> TOK_EOL) and (cur_tok <> TOK_EOF) do
+ Begin
+  If (cur_tok = TOK_IDENT) and (M^.ParamCount < MAX_MACRO_PARAMS) Then
+  Begin
+   Inc(M^.ParamCount);
+   M^.ParamNames[M^.ParamCount] := UpCaseStr(cur_tok_str);
+  End;
+  NextToken;
+  If cur_tok = TOK_COMMA Then NextToken;
+ End;
+
+ { Lire les lignes du corps jusqu'a ENDM }
+ While Not src_eof do
+ Begin
+  If Not SrcGetLine Then Break;
+  Line_ := src_line;
+
+  { Verifier si c'est ENDM }
+  UDir := Trim(Line_);
+  While (Length(UDir) > 0) and (UDir[1] = #9) do Delete(UDir, 1, 1);
+  UDir := UpCaseStr(UDir);
+  If (UDir = 'ENDM') or
+     ((Length(UDir) > 4) and (Copy(UDir, 1, 4) = 'ENDM') and
+      (UDir[5] in [' ', #9, ';'])) Then
+  Begin
+   { ENDM trouve : charger la ligne suivante pour le lexeur }
+   If SrcGetLine Then
+    NextToken
+   Else
+   Begin
+    cur_tok := TOK_EOF;
+    src_eof := True;
+   End;
+   Exit;
+  End;
+
+  { Ajouter la ligne au corps de la macro }
+  If M^.BodyCount < MAX_MACRO_LINES Then
+  Begin
+   Inc(M^.BodyCount);
+   M^.Body[M^.BodyCount] := Line_;
+  End
+  Else
+   Warning(src_line_num, 1, 'MACRO: corps trop long, ligne ignoree');
+ End;
+
+ Error(src_line_num, 1, 'MACRO: ENDM manquant pour ' + M^.Name);
+End;
+
+{ ---------- ExpandMacro : expansion d'une macro ---------- }
+
+Procedure ExpandMacro(MacIdx: Integer);
+{ Expanse une macro avec les arguments de la ligne courante. }
+Var
+  M: ^TMacroEntry;
+  Args: Array[1..MAX_MACRO_PARAMS] of String;
+  ArgCount: Integer;
+  ArgStr: String;
+  I, J, K: Integer;
+  Line_: String;
+  Result_: String;
+  UniqueStr: String;
+  P: Integer;
+  ParamRef: String;
+  ExpLines: Array[1..MAX_MACRO_LINES] of String;
+  ExpCount: Integer;
+  SaveLine: String;
+  SaveCol: Integer;
+  SaveEof: Boolean;
+Begin
+ M := MacroTable[MacIdx];
+
+ { Lire les arguments de la macro }
+ ArgCount := 0;
+ While (cur_tok <> TOK_EOL) and (cur_tok <> TOK_EOF) do
+ Begin
+  ArgStr := '';
+  While (cur_tok <> TOK_COMMA) and (cur_tok <> TOK_EOL) and
+        (cur_tok <> TOK_EOF) do
+  Begin
+   If ArgStr <> '' Then ArgStr := ArgStr + ' ';
+   ArgStr := ArgStr + cur_tok_str;
+   NextToken;
+  End;
+  If ArgStr <> '' Then
+  Begin
+   Inc(ArgCount);
+   If ArgCount <= MAX_MACRO_PARAMS Then
+    Args[ArgCount] := ArgStr;
+  End;
+  If cur_tok = TOK_COMMA Then NextToken;
+ End;
+
+ { Remplir les arguments manquants }
+ For I := ArgCount + 1 to MAX_MACRO_PARAMS do
+  Args[I] := '';
+
+ { Generer un identifiant unique pour \@ }
+ Inc(macro_unique_id);
+ Str(macro_unique_id, UniqueStr);
+ While Length(UniqueStr) < 4 do UniqueStr := '0' + UniqueStr;
+
+ { Substituer les parametres dans chaque ligne du corps }
+ ExpCount := 0;
+ For I := 1 to M^.BodyCount do
+ Begin
+  Line_ := M^.Body[I];
+  Result_ := '';
+  J := 1;
+  While J <= Length(Line_) do
+  Begin
+   If (Line_[J] = '\') and (J < Length(Line_)) Then
+   Begin
+    Inc(J);
+    { \@ = suffixe d'etiquette unique }
+    If Line_[J] = '@' Then
+    Begin
+     Result_ := Result_ + UniqueStr;
+     Inc(J);
+    End
+    { \1..\9 = parametre positionnel }
+    Else If (Line_[J] >= '1') and (Line_[J] <= '9') Then
+    Begin
+     P := Ord(Line_[J]) - Ord('0');
+     If P <= ArgCount Then
+      Result_ := Result_ + Args[P];
+     Inc(J);
+    End
+    { \nom = parametre nomme }
+    Else If (Line_[J] in ['A'..'Z', 'a'..'z', '_']) Then
+    Begin
+     ParamRef := '';
+     While (J <= Length(Line_)) and
+           (Line_[J] in ['A'..'Z', 'a'..'z', '0'..'9', '_']) do
+     Begin
+      ParamRef := ParamRef + Line_[J];
+      Inc(J);
+     End;
+     { Separateur point optionnel (\param.suffix) }
+     If (J <= Length(Line_)) and (Line_[J] = '.') Then Inc(J);
+     { Chercher le parametre nomme }
+     P := 0;
+     For K := 1 to M^.ParamCount do
+      If UpCaseStr(ParamRef) = M^.ParamNames[K] Then
+      Begin P := K; Break; End;
+     If (P > 0) and (P <= MAX_MACRO_PARAMS) Then
+      Result_ := Result_ + Args[P]
+     Else
+      Result_ := Result_ + '\' + ParamRef;
+    End
+    Else
+    Begin
+     Result_ := Result_ + '\' + Line_[J];
+     Inc(J);
+    End;
+   End
+   Else
+   Begin
+    Result_ := Result_ + Line_[J];
+    Inc(J);
+   End;
+  End;
+
+  If ExpCount < MAX_MACRO_LINES Then
+  Begin
+   Inc(ExpCount);
+   ExpLines[ExpCount] := Result_;
+  End;
+ End;
+
+ { Sauvegarder l'etat et traiter les lignes expansees }
+ SaveLine := src_line;
+ SaveCol := src_col;
+ SaveEof := src_eof;
+
+ macro_expanding := True;
+ macro_narg := ArgCount;
+ src_eof := True; { Empecher SrcGetLine de lire le fichier principal }
+
+ For I := 1 to ExpCount do
+ Begin
+  src_line := ExpLines[I];
+  src_col := 1;
+
+  NextToken;
+
+  { MEXIT : sortie anticipee }
+  If (cur_tok = TOK_DIRECTIVE) and (UpCaseStr(cur_tok_str) = 'MEXIT') Then
+   Break;
+
+  If (cur_tok <> TOK_EOL) and (cur_tok <> TOK_EOF) Then
+   ParseLine;
+ End;
+
+ macro_expanding := False;
+ macro_narg := 0;
+
+ { Restaurer l'etat }
+ src_line := SaveLine;
+ src_col := SaveCol;
+ src_eof := SaveEof;
+End;
+
+{ ---------- DirREPT : repetition de bloc ---------- }
+
+Procedure DirREPT;
+{ REPT count ... ENDR - repeter un bloc count fois }
+Var
+  Count: LongInt;
+  Lines_: Array[1..MAX_MACRO_LINES] of String;
+  LineCount_: Integer;
+  UDir: String;
+  I, J: Integer;
+  SaveLine: String;
+  SaveCol: Integer;
+  SaveEof: Boolean;
+Begin
+ Count := EvalExpr;
+ If Count < 0 Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'REPT: compteur negatif');
+  Count := 0;
+ End;
+
+ { Lire le corps jusqu'a ENDR }
+ LineCount_ := 0;
+ While Not src_eof do
+ Begin
+  If Not SrcGetLine Then Break;
+
+  UDir := Trim(src_line);
+  While (Length(UDir) > 0) and (UDir[1] = #9) do Delete(UDir, 1, 1);
+  UDir := UpCaseStr(UDir);
+  If (UDir = 'ENDR') or
+     ((Length(UDir) > 4) and (Copy(UDir, 1, 4) = 'ENDR') and
+      (UDir[5] in [' ', #9, ';'])) Then
+   Break;
+
+  If LineCount_ < MAX_MACRO_LINES Then
+  Begin
+   Inc(LineCount_);
+   Lines_[LineCount_] := src_line;
+  End;
+ End;
+
+ { Sauvegarder l'etat et repeter le bloc }
+ SaveLine := src_line;
+ SaveCol := src_col;
+ SaveEof := src_eof;
+ src_eof := True;
+
+ For I := 1 to Count do
+ Begin
+  For J := 1 to LineCount_ do
+  Begin
+   src_line := Lines_[J];
+   src_col := 1;
+   NextToken;
+   If (cur_tok <> TOK_EOL) and (cur_tok <> TOK_EOF) Then
+    ParseLine;
+  End;
+ End;
+
+ { Restaurer l'etat }
+ src_line := SaveLine;
+ src_col := SaveCol;
+ src_eof := SaveEof;
+
+ { Charger la ligne suivante }
+ If SrcGetLine Then
+  NextToken
+ Else
+ Begin
+  cur_tok := TOK_EOF;
+  src_eof := True;
+ End;
+End;
+
 { ---------- ParseLine : traiter une ligne source ---------- }
 
 Procedure ParseLine;
@@ -3196,14 +3848,30 @@ Begin
   End
   Else
   Begin
-   { Ce n'est pas une etiquette, c'est un identifiant inconnu.
-     On a deja consomme le token suivant, on ne peut pas revenir.
-     Signaler une erreur. }
-   Error(cur_tok_line, cur_tok_col,
-         'instruction ou directive inconnue: ' + LblName);
-   SkipToEOL;
-   If cur_tok = TOK_EOL Then NextToken;
-   Exit;
+   { Definition de macro : name MACRO [params] }
+   If (cur_tok = TOK_DIRECTIVE) and
+      (UpCaseStr(cur_tok_str) = 'MACRO') Then
+   Begin
+    NextToken; { consommer MACRO }
+    DirMACRO(LblName);
+    If cur_tok = TOK_EOL Then NextToken;
+    Exit;
+   End
+   { Invocation de macro }
+   Else If FindMacro(LblName) <> 0 Then
+   Begin
+    ExpandMacro(FindMacro(LblName));
+    Exit;
+   End
+   Else
+   Begin
+    { Identifiant inconnu }
+    Error(cur_tok_line, cur_tok_col,
+          'instruction ou directive inconnue: ' + LblName);
+    SkipToEOL;
+    If cur_tok = TOK_EOL Then NextToken;
+    Exit;
+   End;
   End;
  End;
 
@@ -3262,14 +3930,49 @@ Begin
    { Directives de listing/controle - ignorer les arguments }
    SkipToEOL;
   End
-  Else
-  Begin
-   { Directive non encore implementee (SECTION, INCLUDE, etc.) }
-   Warning(cur_tok_line, cur_tok_col,
-           'directive non encore implementee: ' + DirName);
-   SkipToEOL;
-  End;
- End
+   { --- Directives avancees (TODO 09) --- }
+   Else If DirName = 'SECTION' Then
+    DirSECTION
+   Else If DirName = 'INCLUDE' Then
+    DirINCLUDE
+   Else If (DirName = 'XDEF') or (DirName = 'ENTRY') or
+           (DirName = 'PUBLIC') Then
+    DirXDEF
+   Else If (DirName = 'XREF') or (DirName = 'EXTERNAL') or
+           (DirName = 'EXTERN') Then
+    DirXREF
+   Else If DirName = 'MACRO' Then
+   Begin
+    { MACRO sans nom en debut de ligne }
+    Error(cur_tok_line, cur_tok_col, 'MACRO: nom de macro requis');
+    SkipToEOL;
+   End
+   Else If DirName = 'REPT' Then
+    DirREPT
+   Else If DirName = 'ENDM' Then
+   Begin
+    Warning(cur_tok_line, cur_tok_col, 'ENDM sans MACRO correspondant');
+    SkipToEOL;
+   End
+   Else If DirName = 'ENDR' Then
+   Begin
+    Warning(cur_tok_line, cur_tok_col, 'ENDR sans REPT correspondant');
+    SkipToEOL;
+   End
+   Else If DirName = 'MEXIT' Then
+   Begin
+    If Not macro_expanding Then
+     Warning(cur_tok_line, cur_tok_col, 'MEXIT en dehors d''une macro');
+    SkipToEOL;
+   End
+   Else
+   Begin
+    { Directive non encore implementee }
+    Warning(cur_tok_line, cur_tok_col,
+            'directive non encore implementee: ' + DirName);
+    SkipToEOL;
+   End;
+  End
  Else If cur_tok = TOK_OPCODE Then
  Begin
   { Opcode (instruction 68000) - non encore implemente, placeholder }
@@ -3449,6 +4152,14 @@ Begin
  start_address_set := False;
  cur_label    := '';
 
+ { Initialiser les macros et includes (TODO 09) }
+ MacroCount := 0;
+ macro_expanding := False;
+ macro_narg := 0;
+ macro_unique_id := 0;
+ include_depth := 0;
+ For I := 1 to MAX_MACRO do MacroTable[I] := nil;
+
  { Initialiser la table des symboles }
  InitSymTable;
 
@@ -3484,6 +4195,9 @@ Begin
 
  { Afficher le bilan de compilation }
  BilanCompilation;
+
+ { Liberer les macros (TODO 09) }
+ FreeMacros;
 
  { Liberer les buffers des sections (TODO 07) }
  FreeSections;

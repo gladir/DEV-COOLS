@@ -194,7 +194,7 @@ TODO 08 - Directives assembleur de base (ORG, DC, DS, EQU, END) [IMPLEMENTE]
   - Gestion des etiquettes : label: au debut de ligne
     (avec ou sans ':' selon convention)
 
-TODO 09 - Directives assembleur avancees (SECTION, INCLUDE, macros)
+TODO 09 - Directives assembleur avancees (SECTION, INCLUDE, macros) [IMPLEMENTE]
   ------------------------------------------------------------------
   - SECTION name[,type] : declarer/changer de section
     Types : CODE, DATA, BSS (ou TEXT, DATA, BSS)
