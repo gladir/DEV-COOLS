@@ -364,7 +364,7 @@
               WHEN val1 | val2 : serie CMP + JE _ADAL_match
               WHEN OTHERS = clause par defaut
 
-  TODO 18 - PARSEUR : BOUCLES LOOP/WHILE/FOR ET EXIT (32 BITS)
+  TODO 18 - PARSEUR : BOUCLES LOOP/WHILE/FOR ET EXIT (32 BITS) [IMPLEMENTE]
             ParseLoop :
               LOOP stmts END LOOP ;    (boucle infinie)
               _ADAL_top: corps + JMP _ADAL_top

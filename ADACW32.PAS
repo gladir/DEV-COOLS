@@ -373,7 +373,7 @@
               WHEN val1 | val2 : serie CMP + JE _ADAL_match
               WHEN OTHERS = clause par defaut
 
-  TODO 18 - PARSEUR : BOUCLES LOOP/WHILE/FOR ET EXIT (32 BITS)
+  TODO 18 - PARSEUR : BOUCLES LOOP/WHILE/FOR ET EXIT (32 BITS) [IMPLEMENTE]
             ParseLoop :
               LOOP stmts END LOOP ;    (boucle infinie)
               _ADAL_top: corps + JMP _ADAL_top
@@ -4211,16 +4211,27 @@ Begin
 End;
 
 { ---- ParseReturn : instruction RETURN [expression] ; -------- }
-{ Stub : skip l expression optionnelle avant ';'.                }
-{ La generation de code pour l expression sera en TODO 16+.      }
+{ Genere le code pour retourner d un sous-programme.              }
+{ FUNCTION : evaluer expression -> EAX, JMP label_exit.          }
+{ PROCEDURE : simple JMP label_exit.                             }
 Procedure ParseReturn;
+Var
+  LblExit : TString;
 Begin
   Consume; { RETURN }
   EmitComment('RETURN ...');
-  { Skip expression optionnelle jusqu au ';' }
-  While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) And
-        (Not TokIsKw(KW_END)) And (Not TokIsKw(KW_EXCEPTION)) Do
-    Consume;
+  LblExit := FindExitLabel;
+  { Expression optionnelle (pour les fonctions) }
+  If (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) And
+     (Not TokIsKw(KW_END)) And (Not TokIsKw(KW_EXCEPTION)) Then
+  Begin
+    ParseExpr;   { resultat dans EAX }
+  End;
+  { Sauter vers l epilogue }
+  If LblExit <> '' Then
+    EmitI('JMP  ' + LblExit)
+  Else
+    WarnMsg('RETURN en dehors d''un sous-programme');
   If CurTokType = TOK_SEMI Then Consume;
 End;
 
@@ -4238,15 +4249,35 @@ Begin
 End;
 
 { ---- ParseExit : instruction EXIT [name] [WHEN cond] ; ------ }
-{ Stub : skip le nom optionnel et la condition WHEN.             }
+{ Genere un saut vers le label de fin de la boucle englobante.    }
+{ EXIT WHEN cond : saut conditionnel (TEST + JNZ).                }
 Procedure ParseExit;
+Var
+  LblEnd : TString;
 Begin
   Consume; { EXIT }
   EmitComment('EXIT ...');
-  { Skip jusqu au ';' }
-  While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) And
-        (Not TokIsKw(KW_END)) And (Not TokIsKw(KW_EXCEPTION)) Do
+  LblEnd := FindLoopEnd;
+  { Skip optional loop name (identifier before WHEN or ;) }
+  If (CurTokType = TOK_IDENT) And (CurTokKw <> KW_WHEN) Then
     Consume;
+  If TokIsKw(KW_WHEN) Then
+  Begin
+    Consume; { WHEN }
+    ParseExpr;
+    EmitI('TEST EAX, EAX');
+    If LblEnd <> '' Then
+      EmitI('JNZ  ' + LblEnd)
+    Else
+      WarnMsg('EXIT WHEN en dehors d''une boucle');
+  End
+  Else
+  Begin
+    If LblEnd <> '' Then
+      EmitI('JMP  ' + LblEnd)
+    Else
+      WarnMsg('EXIT en dehors d''une boucle');
+  End;
   If CurTokType = TOK_SEMI Then Consume;
 End;
 
@@ -4436,83 +4467,189 @@ Begin
   If CurTokType = TOK_SEMI Then Consume;
 End;
 
-{ ---- ParseLoopStub : instruction LOOP (stub -> TODO 18) ------ }
-{ Parcourt le bloc LOOP/END LOOP correctement.                    }
-Procedure ParseLoopStub;
-Var Depth : Integer;
+{ ============================================================ }
+{ TODO 18 - PARSEUR : BOUCLES LOOP/WHILE/FOR ET EXIT           }
+{ ============================================================ }
+
+{ ---- ParseLoop : instruction LOOP ... END LOOP ; ------------ }
+{ Syntaxe Ada :                                                  }
+{   [label:] LOOP                                                }
+{     sequence_of_statements                                     }
+{   END LOOP [label] ;                                           }
+{ Generation 32 bits :                                           }
+{   _ADAL_top: corps + JMP _ADAL_top                              }
+{   EXIT -> JMP _ADAL_end                                         }
+Procedure ParseLoop;
+Var
+  LblTop  : TString;
+  LblEnd  : TString;
 Begin
-  EmitComment('LOOP ... (stub)');
-  { On cherche LOOP keyword pour commencer }
+  EmitComment('LOOP ... END LOOP');
+  { Chercher LOOP keyword si pas encore consomme }
   While (CurTokType <> TOK_EOF) And (Not TokIsKw(KW_LOOP)) Do
     Consume;
   If TokIsKw(KW_LOOP) Then Consume; { LOOP }
-  Depth := 1;
-  While (CurTokType <> TOK_EOF) And (Depth > 0) Do
-  Begin
-    If TokIsKw(KW_END) Then
-    Begin
-      Consume; { END }
-      If TokIsKw(KW_LOOP) Then
-      Begin
-        Consume; { LOOP }
-        Dec(Depth);
-        If Depth <= 0 Then
-        Begin
-          { Skip nom optionnel + ';' }
-          While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) Do
-            Consume;
-          If CurTokType = TOK_SEMI Then Consume;
-          Exit;
-        End;
-        If CurTokType = TOK_SEMI Then Consume;
-        Continue;
-      End
-      Else If TokIsKw(KW_IF) Then
-      Begin
-        Consume; Dec(Depth);
-        If CurTokType = TOK_SEMI Then Consume;
-        Continue;
-      End
-      Else If TokIsKw(KW_CASE) Then
-      Begin
-        Consume; Dec(Depth);
-        If CurTokType = TOK_SEMI Then Consume;
-        Continue;
-      End
-      Else
-      Begin
-        Dec(Depth);
-        If Depth <= 0 Then Exit;
-        While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) Do
-          Consume;
-        If CurTokType = TOK_SEMI Then Consume;
-        Continue;
-      End;
-    End;
-    If TokIsKw(KW_IF) Or TokIsKw(KW_LOOP) Or TokIsKw(KW_CASE) Or
-       TokIsKw(KW_DECLARE) Or TokIsKw(KW_SELECT) Or
-       TokIsKw(KW_BEGIN) Then
-      Inc(Depth);
+  LblTop := NewLabel;
+  LblEnd := NewLabel;
+  { Enregistrer les labels de boucle pour EXIT }
+  PushScope(SK_LOOP, 0);
+  EnterLoop(LblTop, LblEnd);
+  EmitLabel(LblTop);
+  ParseSequenceOfStatements;
+  EmitI('JMP  ' + LblTop);
+  EmitLabel(LblEnd);
+  PopScope;
+  { END LOOP [name] ; }
+  ExpectKw(KW_END, 'END');
+  ExpectKw(KW_LOOP, 'LOOP');
+  { Skip optional loop name }
+  While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) Do
     Consume;
-  End;
+  If CurTokType = TOK_SEMI Then Consume;
 End;
 
-{ ---- ParseWhileStub : instruction WHILE (stub -> TODO 18) ---- }
-{ Syntaxe : WHILE cond LOOP stmts END LOOP ;                     }
-Procedure ParseWhileStub;
+{ ---- ParseWhile : instruction WHILE ... LOOP ... END LOOP ; - }
+{ Syntaxe Ada :                                                  }
+{   WHILE condition LOOP                                         }
+{     sequence_of_statements                                     }
+{   END LOOP [label] ;                                           }
+{ Generation 32 bits :                                           }
+{   _ADAL_top: evaluer cond -> TEST EAX,EAX + JZ _ADAL_end       }
+{   corps + JMP _ADAL_top                                         }
+Procedure ParseWhile;
+Var
+  LblTop  : TString;
+  LblEnd  : TString;
 Begin
-  EmitComment('WHILE ... LOOP ... (stub)');
+  EmitComment('WHILE ... LOOP ... END LOOP');
   Consume; { WHILE }
-  ParseLoopStub; { skip a travers cond LOOP ... END LOOP ; }
+  LblTop := NewLabel;
+  LblEnd := NewLabel;
+  EmitLabel(LblTop);
+  { Evaluer la condition -> EAX }
+  ParseExpr;
+  EmitI('TEST EAX, EAX');
+  EmitI('JZ   ' + LblEnd);
+  { Consommer LOOP }
+  ExpectKw(KW_LOOP, 'LOOP');
+  { Enregistrer labels pour EXIT }
+  PushScope(SK_LOOP, 0);
+  EnterLoop(LblTop, LblEnd);
+  ParseSequenceOfStatements;
+  EmitI('JMP  ' + LblTop);
+  EmitLabel(LblEnd);
+  PopScope;
+  { END LOOP [name] ; }
+  ExpectKw(KW_END, 'END');
+  ExpectKw(KW_LOOP, 'LOOP');
+  { Skip optional loop name }
+  While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) Do
+    Consume;
+  If CurTokType = TOK_SEMI Then Consume;
 End;
 
-{ ---- ParseForStub : instruction FOR (stub -> TODO 18) -------- }
-{ Syntaxe : FOR ident IN [REVERSE] lo .. hi LOOP stmts END LOOP ;}
-Procedure ParseForStub;
+{ ---- ParseFor : instruction FOR ... IN ... LOOP ... END LOOP  }
+{ Syntaxe Ada :                                                  }
+{   FOR ident IN [REVERSE] lo .. hi LOOP                         }
+{     sequence_of_statements                                     }
+{   END LOOP [label] ;                                           }
+{ Generation 32 bits :                                           }
+{   Variable implicite [EBP-n] (STORE_AUTO)                       }
+{   Normal: init=lo, CMP counter,hi + JG end, corps, INC, JMP top }
+{   REVERSE: init=hi, CMP counter,lo + JL end, corps, DEC, JMP top}
+Procedure ParseFor;
+Var
+  LblTop    : TString;
+  LblEnd    : TString;
+  VarName   : TString;
+  SymIdx    : Integer;
+  LoVal     : LongInt;
+  HiVal     : LongInt;
+  GotLo     : Boolean;
+  GotHi     : Boolean;
+  IsReverse : Boolean;
+  Off       : Integer;
 Begin
-  EmitComment('FOR ... LOOP ... (stub)');
+  EmitComment('FOR ... IN ... LOOP ... END LOOP');
   Consume; { FOR }
-  ParseLoopStub; { skip a travers ident IN ... LOOP ... END LOOP ; }
+  { Nom de la variable de boucle }
+  VarName := CurTokStr;
+  Consume; { ident }
+  ExpectKw(KW_IN, 'IN');
+  { REVERSE optionnel }
+  IsReverse := TokIsKw(KW_REVERSE);
+  If IsReverse Then Consume; { REVERSE }
+  { Bornes : lo .. hi }
+  GotLo := ParseConstExpr32(LoVal);
+  Expect(TOK_DOTDOT, '`..` attendu dans FOR');
+  GotHi := ParseConstExpr32(HiVal);
+  { Consommer LOOP }
+  ExpectKw(KW_LOOP, 'LOOP');
+  { Creer un scope de boucle }
+  PushScope(SK_LOOP, 0);
+  LblTop := NewLabel;
+  LblEnd := NewLabel;
+  EnterLoop(LblTop, LblEnd);
+  { Creer la variable de boucle (STORE_AUTO, lecture seule) }
+  SymIdx := AddSym(VarName, TYPE_INT, STORE_AUTO);
+  Off := AllocLocal(4);
+  SymTab[SymIdx].BpOffset := Off;
+  { Initialiser le compteur }
+  If IsReverse Then
+  Begin
+    { REVERSE : init = hi, decrementer vers lo }
+    If GotHi Then
+      EmitI('MOV  DWORD PTR [EBP' + BpOff32(Off) + '], ' + IntToStr_(HiVal))
+    Else
+    Begin
+      { hi est dans EAX apres ParseConstExpr32 }
+      EmitI('MOV  DWORD PTR [EBP' + BpOff32(Off) + '], EAX');
+    End;
+    EmitLabel(LblTop);
+    { Condition : counter >= lo }
+    EmitI('MOV  EAX, DWORD PTR [EBP' + BpOff32(Off) + ']');
+    If GotLo Then
+      EmitI('CMP  EAX, ' + IntToStr_(LoVal))
+    Else
+      EmitI('CMP  EAX, 0');   { fallback si lo non constante }
+    EmitI('JL   ' + LblEnd);
+  End
+  Else
+  Begin
+    { Normal : init = lo, incrementer vers hi }
+    If GotLo Then
+      EmitI('MOV  DWORD PTR [EBP' + BpOff32(Off) + '], ' + IntToStr_(LoVal))
+    Else
+    Begin
+      { lo est dans EAX }
+      EmitI('MOV  DWORD PTR [EBP' + BpOff32(Off) + '], EAX');
+    End;
+    EmitLabel(LblTop);
+    { Condition : counter <= hi }
+    EmitI('MOV  EAX, DWORD PTR [EBP' + BpOff32(Off) + ']');
+    If GotHi Then
+      EmitI('CMP  EAX, ' + IntToStr_(HiVal))
+    Else
+      EmitI('CMP  EAX, 0');   { fallback si hi non constante }
+    EmitI('JG   ' + LblEnd);
+  End;
+  { Corps de la boucle }
+  ParseSequenceOfStatements;
+  { Incrementer/decrementer le compteur }
+  If IsReverse Then
+    EmitI('DEC  DWORD PTR [EBP' + BpOff32(Off) + ']')
+  Else
+    EmitI('INC  DWORD PTR [EBP' + BpOff32(Off) + ']');
+  EmitI('JMP  ' + LblTop);
+  EmitLabel(LblEnd);
+  PopScope;
+  { END LOOP [name] ; }
+  ExpectKw(KW_END, 'END');
+  ExpectKw(KW_LOOP, 'LOOP');
+  { Skip optional loop name }
+  While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) Do
+    Consume;
+  If CurTokType = TOK_SEMI Then Consume;
 End;
 
 { ---- ParseBeginBlock : bloc BEGIN ... END ; ------------------- }
@@ -4731,59 +4868,30 @@ Begin
   If CurTokType = TOK_SEMI Then Consume;
 End;
 
-{ ---- ParseBareLoopStub : LOOP ... END LOOP ; (stub) --------- }
-{ Comme ParseLoopStub mais appele quand LOOP est deja consomme.  }
-Procedure ParseBareLoopStub;
-Var Depth : Integer;
+{ ---- ParseBareLoop : LOOP ... END LOOP ; (LOOP deja consomme) }
+{ Appele quand le mot-cle LOOP a deja ete consomme.              }
+{ Cree un scope SK_LOOP, genere le code de boucle infinie.       }
+Procedure ParseBareLoop;
+Var
+  LblTop : TString;
+  LblEnd : TString;
 Begin
-  Depth := 1;
-  While (CurTokType <> TOK_EOF) And (Depth > 0) Do
-  Begin
-    If TokIsKw(KW_END) Then
-    Begin
-      Consume; { END }
-      If TokIsKw(KW_LOOP) Then
-      Begin
-        Consume; { LOOP }
-        Dec(Depth);
-        If Depth <= 0 Then
-        Begin
-          While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) Do
-            Consume;
-          If CurTokType = TOK_SEMI Then Consume;
-          Exit;
-        End;
-        If CurTokType = TOK_SEMI Then Consume;
-        Continue;
-      End
-      Else If TokIsKw(KW_IF) Then
-      Begin
-        Consume; Dec(Depth);
-        If CurTokType = TOK_SEMI Then Consume;
-        Continue;
-      End
-      Else If TokIsKw(KW_CASE) Then
-      Begin
-        Consume; Dec(Depth);
-        If CurTokType = TOK_SEMI Then Consume;
-        Continue;
-      End
-      Else
-      Begin
-        Dec(Depth);
-        If Depth <= 0 Then Exit;
-        While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) Do
-          Consume;
-        If CurTokType = TOK_SEMI Then Consume;
-        Continue;
-      End;
-    End;
-    If TokIsKw(KW_IF) Or TokIsKw(KW_LOOP) Or TokIsKw(KW_CASE) Or
-       TokIsKw(KW_DECLARE) Or TokIsKw(KW_SELECT) Or
-       TokIsKw(KW_BEGIN) Then
-      Inc(Depth);
+  LblTop := NewLabel;
+  LblEnd := NewLabel;
+  PushScope(SK_LOOP, 0);
+  EnterLoop(LblTop, LblEnd);
+  EmitLabel(LblTop);
+  ParseSequenceOfStatements;
+  EmitI('JMP  ' + LblTop);
+  EmitLabel(LblEnd);
+  PopScope;
+  { END LOOP [name] ; }
+  ExpectKw(KW_END, 'END');
+  ExpectKw(KW_LOOP, 'LOOP');
+  { Skip optional loop name }
+  While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) Do
     Consume;
-  End;
+  If CurTokType = TOK_SEMI Then Consume;
 End;
 
 { ---- ParseStatement : dispatcher principal des instructions -- }
@@ -4811,14 +4919,14 @@ Begin
     ParseCase
   Else If TokIsKw(KW_LOOP) Then
   Begin
-    EmitComment('LOOP ... (stub)');
+    EmitComment('LOOP ... END LOOP');
     Consume; { LOOP }
-    ParseBareLoopStub;
+    ParseBareLoop;
   End
   Else If TokIsKw(KW_WHILE) Then
-    ParseWhileStub
+    ParseWhile
   Else If TokIsKw(KW_FOR) Then
-    ParseForStub
+    ParseFor
   Else If TokIsKw(KW_BEGIN) Then
     ParseBeginBlock
   Else If TokIsKw(KW_DECLARE) Then
