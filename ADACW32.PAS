@@ -188,7 +188,7 @@
             GenPushEAX, GenPopEAX, GenPushEBX, GenPopEBX
             GenCall(label) : CALL label
 
-  TODO 08 - PARSEUR D'EXPRESSIONS : PRECEDENCES ADA (32 BITS)
+  TODO 08 - PARSEUR D'EXPRESSIONS : PRECEDENCES ADA (32 BITS) [IMPLEMENTE]
             Expression Ada (priorites croissantes) :
               Niveau 1 : and then | or else      (court-circuit)
               Niveau 2 : and | or | xor           (logique bit)
@@ -2649,6 +2649,478 @@ Begin
   EmitI('CALL ' + Lbl);
 End;
 
+{ ============================================================ }
+{ PARSEUR D'EXPRESSIONS : PRECEDENCES ADA (32 BITS) (TODO 08)  }
+{ ============================================================ }
+
+{ ---- Forward declaration ---- }
+{ ParsePrimary appelle ParseExpr pour les sous-expressions      }
+{ entre parentheses -> forward necessaire.                      }
+Procedure ParseExpr; Forward;
+
+{ ---- GenBinOp32 : operateur binaire arithmetique 32 bits ----- }
+{ Pile : PUSH gauche. EAX = droite.                               }
+{ Resultat dans EAX.                                              }
+Procedure GenBinOp32(Op : Integer);
+Begin
+  Case Op Of
+    TOK_PLUS :
+    Begin
+      EmitI('POP  EBX');
+      EmitI('ADD  EAX, EBX');
+    End;
+    TOK_MINUS :
+    Begin
+      EmitI('MOV  EBX, EAX');   { EBX = droite                }
+      EmitI('POP  EAX');        { EAX = gauche                 }
+      EmitI('SUB  EAX, EBX');
+    End;
+    TOK_STAR :
+    Begin
+      EmitI('POP  EBX');
+      EmitI('IMUL EAX, EBX');   { EAX = EAX * EBX (32 bits)   }
+    End;
+    TOK_SLASH :
+    Begin
+      EmitI('MOV  EBX, EAX');   { EBX = diviseur (droite)      }
+      EmitI('POP  EAX');        { EAX = dividende (gauche)     }
+      EmitI('CDQ');             { signe-etend EAX -> EDX:EAX   }
+      EmitI('IDIV EBX');       { EAX = quotient               }
+    End;
+    KW_MOD :
+    Begin
+      EmitI('MOV  EBX, EAX');
+      EmitI('POP  EAX');
+      EmitI('CDQ');
+      EmitI('IDIV EBX');       { EAX = quotient, EDX = reste   }
+      EmitI('MOV  EAX, EDX');  { Ada REM d abord                }
+      { Ada MOD : si signe(reste) <> signe(diviseur) -> +div    }
+      EmitI('TEST EAX, EAX');
+      EmitI('JE   ' + ADA_LBL_PFX + 'MOD_' + IntToStr_(LabelCounter + 1));
+      EmitI('XOR  ECX, ECX');
+      EmitI('TEST EBX, EBX');
+      EmitI('SETL CL');
+      EmitI('TEST EAX, EAX');
+      EmitI('SETL CH');
+      EmitI('CMP  CL, CH');
+      EmitI('JE   ' + ADA_LBL_PFX + 'MOD_' + IntToStr_(LabelCounter + 1));
+      EmitI('ADD  EAX, EBX');
+      EmitLabel(ADA_LBL_PFX + 'MOD_' + IntToStr_(LabelCounter + 1));
+      Inc(LabelCounter);
+    End;
+    KW_REM :
+    Begin
+      EmitI('MOV  EBX, EAX');
+      EmitI('POP  EAX');
+      EmitI('CDQ');
+      EmitI('IDIV EBX');       { EAX = quotient, EDX = reste   }
+      EmitI('MOV  EAX, EDX'); { Ada REM = reste C               }
+    End;
+    TOK_AMPERSAND :
+    Begin
+      { Concatenation chaines : stub -> appel helper runtime      }
+      EmitI('POP  EBX');
+      EmitI('PUSH EBX');       { arg 1 = gauche                  }
+      EmitI('PUSH EAX');       { arg 2 = droite                  }
+      EmitI('CALL ' + ADA_RT_PFX + 'STR_CAT');
+      EmitI('ADD  ESP, 8');    { nettoyage pile (cdecl)           }
+    End;
+  End;
+End;
+
+{ ---- GenRelOp32 : CMP + SETcc AL + MOVZX, resultat 0/1 dans EAX }
+{ Pile : PUSH gauche. EAX = droite. Resultat booleen dans EAX.     }
+Procedure GenRelOp32(Op : Integer);
+Begin
+  EmitI('MOV  EBX, EAX');    { EBX = droite                    }
+  EmitI('POP  EAX');          { EAX = gauche                    }
+  EmitI('CMP  EAX, EBX');
+  Case Op Of
+    TOK_EQ  : EmitI('SETE  AL');
+    TOK_NEQ : EmitI('SETNE AL');
+    TOK_LT  : EmitI('SETL  AL');
+    TOK_LE  : EmitI('SETLE AL');
+    TOK_GT  : EmitI('SETG  AL');
+    TOK_GE  : EmitI('SETGE AL');
+  End;
+  EmitI('MOVZX EAX, AL');
+End;
+
+{ ---- ParsePrimary : litteraux, idents, appels, (expr) ------- }
+Procedure ParsePrimary;
+Var
+  Sym, Sub, TI : Integer;
+  Nm, Lbl      : TString;
+  AI           : Integer;
+  I, J         : Integer;
+  ArgCount     : Integer;
+Begin
+  { --- Litteral entier --- }
+  If CurTokType = TOK_INTEGER Then
+  Begin
+    EmitI('MOV  EAX, ' + IntToStr_(CurTokNum));
+    Consume;
+    Exit;
+  End;
+
+  { --- Litteral flottant (stub 32 bits) --- }
+  If CurTokType = TOK_FLOAT Then
+  Begin
+    EmitI('XOR  EAX, EAX');   { stub : float non encore supporte }
+    Warning('Litteraux flottants non encore pleinement supportes');
+    Consume;
+    Exit;
+  End;
+
+  { --- Litteral caractere --- }
+  If CurTokType = TOK_CHAR Then
+  Begin
+    If Length(CurTokStr) > 0 Then
+      EmitI('MOV  EAX, ' + IntToStr_(Ord(CurTokStr[1])))
+    Else
+      EmitI('XOR  EAX, EAX');
+    Consume;
+    Exit;
+  End;
+
+  { --- Litteral chaine --- }
+  If CurTokType = TOK_STRING Then
+  Begin
+    Lbl := AsmStrLit(CurTokStr);
+    EmitI('MOV  EAX, OFFSET ' + Lbl);
+    Consume;
+    Exit;
+  End;
+
+  { --- TRUE / FALSE --- }
+  If (CurTokType = TOK_IDENT) And (CurTokKw = KW_TRUE) Then
+  Begin EmitI('MOV  EAX, 1'); Consume; Exit; End;
+  If (CurTokType = TOK_IDENT) And (CurTokKw = KW_FALSE) Then
+  Begin EmitI('XOR  EAX, EAX'); Consume; Exit; End;
+
+  { --- NULL --- }
+  If (CurTokType = TOK_IDENT) And (CurTokKw = KW_NULL) Then
+  Begin EmitI('XOR  EAX, EAX'); Consume; Exit; End;
+
+  { --- Identifiant : variable, constante, appel, attribut --- }
+  If CurTokType = TOK_IDENT Then
+  Begin
+    Nm := CurTokStr;
+    Consume;
+
+    { Attribut : Nom'FIRST | LAST | LENGTH | SIZE }
+    If CurTokType = TOK_TICK Then
+    Begin
+      Consume;
+      AI := 0;
+      If CurTokType = TOK_IDENT Then
+      Begin
+        If      CurTokStr = 'FIRST'  Then AI := 1
+        Else If CurTokStr = 'LAST'   Then AI := 2
+        Else If CurTokStr = 'LENGTH' Then AI := 3
+        Else If CurTokStr = 'SIZE'   Then AI := 4
+        Else Warning('Attribut Ada inconnu : ' + CurTokStr);
+        Consume;
+      End;
+      TI := FindType(Nm);
+      If TI > 0 Then
+      Begin
+        Case AI Of
+          1 : EmitI('MOV  EAX, ' + IntToStr_(TypeTab[TI].LoBound));
+          2 : EmitI('MOV  EAX, ' + IntToStr_(TypeTab[TI].HiBound));
+          3 : EmitI('MOV  EAX, ' +
+                IntToStr_(TypeTab[TI].HiBound - TypeTab[TI].LoBound + 1));
+          4 : EmitI('MOV  EAX, ' + IntToStr_(TypeTab[TI].TotalSize));
+        Else  EmitI('XOR  EAX, EAX');
+        End;
+      End
+      Else
+      Begin
+        Sym := FindSym(Nm);
+        If Sym > 0 Then
+        Begin
+          TI := SymTab[Sym].TypeIdx;
+          If TI > 0 Then
+          Case AI Of
+            1 : EmitI('MOV  EAX, ' + IntToStr_(TypeTab[TI].LoBound));
+            2 : EmitI('MOV  EAX, ' + IntToStr_(TypeTab[TI].HiBound));
+            3 : EmitI('MOV  EAX, ' +
+                  IntToStr_(TypeTab[TI].HiBound - TypeTab[TI].LoBound + 1));
+            4 : EmitI('MOV  EAX, ' + IntToStr_(TypeTab[TI].TotalSize));
+          Else  EmitI('XOR  EAX, EAX');
+          End
+          Else EmitI('XOR  EAX, EAX');
+        End
+        Else
+        Begin
+          Error('Nom inconnu pour attribut : ' + Nm);
+          EmitI('XOR  EAX, EAX');
+        End;
+      End;
+      Exit;
+    End; { TOK_TICK }
+
+    { Appel de fonction : Nom( args ) }
+    If CurTokType = TOK_LPAREN Then
+    Begin
+      Sub := FindSub(Nm);
+      If Sub > 0 Then
+      Begin
+        Consume; { ( }
+        ArgCount := 0;
+        While CurTokType <> TOK_RPAREN Do
+        Begin
+          If CurTokType = TOK_EOF Then Break;
+          ParseExpr;
+          GenPushEAX;
+          Inc(ArgCount);
+          If CurTokType = TOK_COMMA Then Consume;
+        End;
+        Expect(TOK_RPAREN, '`)` attendu apres arguments');
+        EmitI('CALL ' + SubTab[Sub].AsmLabel);
+        { callee-cleanup (STDCALL) -> pas de ADD ESP ici }
+        Exit;
+      End
+      Else
+      Begin
+        { Acces tableau : Nom(index) - stub simple }
+        Sym := FindSym(Nm);
+        If Sym <= 0 Then
+        Begin
+          Error('Identificateur inconnu : ' + Nm);
+          Consume;
+          ParseExpr;
+          Expect(TOK_RPAREN, '`)` attendu');
+          EmitI('XOR  EAX, EAX');
+          Exit;
+        End;
+        Consume; { ( }
+        ParseExpr;         { EAX = index }
+        Expect(TOK_RPAREN, '`)` attendu apres index');
+        { Stub : charge juste la variable pour l instant }
+        GenLoadVar(Sym);
+        Exit;
+      End;
+    End; { TOK_LPAREN apres ident }
+
+    { Variable ou constante simple }
+    Sym := FindSym(Nm);
+    If Sym > 0 Then
+      GenLoadVar(Sym)
+    Else
+    Begin
+      { Litteral d enumeration : chercher dans les types }
+      For I := 1 To TypeCount Do
+        If TypeTab[I].Kind = TK_ENUM Then
+          For J := 1 To TypeTab[I].EnumCount Do
+            If TypeTab[I].EnumNames[J] = Nm Then
+            Begin
+              EmitI('MOV  EAX, ' + IntToStr_(J - 1));
+              Exit;
+            End;
+      Error('Identificateur inconnu : ' + Nm);
+      EmitI('XOR  EAX, EAX');
+    End;
+    Exit;
+  End; { TOK_IDENT }
+
+  { --- Sous-expression ( expr ) --- }
+  If CurTokType = TOK_LPAREN Then
+  Begin
+    Consume;
+    ParseExpr;
+    Expect(TOK_RPAREN, '`)` attendu en fin de sous-expression');
+    Exit;
+  End;
+
+  { Rien reconnu }
+  Error('Primaire d''expression attendu, trouve: ''' + CurTokStr + '''');
+  EmitI('XOR  EAX, EAX');
+  Consume;
+End;
+
+{ ---- ParseFactor : ** et ABS --------------------------------- }
+Procedure ParseFactor;
+Var
+  Lbl1, LblLoop : TString;
+Begin
+  { ABS unaire }
+  If (CurTokType = TOK_IDENT) And (CurTokKw = KW_ABS) Then
+  Begin
+    Consume;
+    ParseFactor;
+    Lbl1 := NewLabel;
+    EmitI('TEST EAX, EAX');
+    EmitI('JGE  ' + Lbl1);
+    EmitI('NEG  EAX');
+    EmitLabel(Lbl1);
+    Exit;
+  End;
+  ParsePrimary;
+  { ** (puissance entiere iterative) }
+  While CurTokType = TOK_POWER Do
+  Begin
+    GenPushEAX;                          { gauche sur pile          }
+    Consume;
+    ParsePrimary;                        { EAX = exposant           }
+    EmitI('MOV  ECX, EAX');             { ECX = exposant           }
+    EmitI('POP  EBX');                  { EBX = base               }
+    Lbl1 := NewLabel;
+    EmitI('MOV  EAX, 1');              { resultat = 1             }
+    EmitI('TEST ECX, ECX');
+    EmitI('JE   ' + Lbl1);
+    LblLoop := NewLabel;
+    EmitLabel(LblLoop);
+    EmitI('IMUL EAX, EBX');
+    EmitI('DEC  ECX');
+    EmitI('JNZ  ' + LblLoop);
+    EmitLabel(Lbl1);
+  End;
+End;
+
+{ ---- ParseTerm : * / MOD REM --------------------------------- }
+Procedure ParseTerm;
+Var Op : Integer;
+Begin
+  ParseFactor;
+  While (CurTokType = TOK_STAR) Or (CurTokType = TOK_SLASH)
+     Or ((CurTokType = TOK_IDENT) And
+         ((CurTokKw = KW_MOD) Or (CurTokKw = KW_REM))) Do
+  Begin
+    GenPushEAX;
+    If CurTokType = TOK_IDENT Then Op := CurTokKw
+    Else Op := CurTokType;
+    Consume;
+    ParseFactor;
+    GenBinOp32(Op);
+  End;
+End;
+
+{ ---- ParseSimple : + - & (unaire + ou - possible en tete) ---- }
+Procedure ParseSimple;
+Var
+  Op   : Integer;
+  UNeg : Boolean;
+Begin
+  UNeg := False;
+  If CurTokType = TOK_MINUS Then
+  Begin UNeg := True; Consume; End
+  Else If CurTokType = TOK_PLUS Then Consume;
+  ParseTerm;
+  If UNeg Then EmitI('NEG  EAX');
+  While (CurTokType = TOK_PLUS) Or (CurTokType = TOK_MINUS)
+     Or (CurTokType = TOK_AMPERSAND) Do
+  Begin
+    GenPushEAX;
+    Op := CurTokType;
+    Consume;
+    ParseTerm;
+    GenBinOp32(Op);
+  End;
+End;
+
+{ ---- ParseRelation : = /= < <= > >= -------------------------- }
+Procedure ParseRelation;
+Var Op : Integer;
+Begin
+  ParseSimple;
+  If (CurTokType = TOK_EQ)  Or (CurTokType = TOK_NEQ) Or
+     (CurTokType = TOK_LT)  Or (CurTokType = TOK_LE)  Or
+     (CurTokType = TOK_GT)  Or (CurTokType = TOK_GE) Then
+  Begin
+    GenPushEAX;
+    Op := CurTokType;
+    Consume;
+    ParseSimple;
+    GenRelOp32(Op);
+  End;
+End;
+
+{ ---- ParseNot : NOT unaire logique --------------------------- }
+Procedure ParseNot;
+Begin
+  If (CurTokType = TOK_IDENT) And (CurTokKw = KW_NOT) Then
+  Begin
+    Consume;
+    ParseRelation;
+    EmitI('XOR  EAX, 1');   { NOT booleen : 0->1, 1->0         }
+  End
+  Else
+    ParseRelation;
+End;
+
+{ ---- ParseAnd : AND (bit ou logique) ------------------------- }
+Procedure ParseAnd;
+Begin
+  ParseNot;
+  While (CurTokType = TOK_IDENT) And (CurTokKw = KW_AND) Do
+  Begin
+    GenPushEAX;
+    Consume;
+    ParseNot;
+    EmitI('POP  EBX');
+    EmitI('AND  EAX, EBX');
+  End;
+End;
+
+{ ---- ParseOr : OR et XOR (bit ou logique) -------------------- }
+Procedure ParseOr;
+Var IsXor : Boolean;
+Begin
+  ParseAnd;
+  While (CurTokType = TOK_IDENT) And
+        ((CurTokKw = KW_OR) Or (CurTokKw = KW_XOR)) Do
+  Begin
+    GenPushEAX;
+    IsXor := (CurTokKw = KW_XOR);
+    Consume;
+    ParseAnd;
+    EmitI('POP  EBX');
+    If IsXor Then EmitI('XOR  EAX, EBX')
+    Else          EmitI('OR   EAX, EBX');
+  End;
+End;
+
+{ ---- ParseAndThen : AND THEN (court-circuit) ----------------- }
+Procedure ParseAndThen;
+Var LblFalse : TString;
+Begin
+  ParseOr;
+  While (CurTokType = TOK_IDENT) And (CurTokKw = KW_ANDTHEN) Do
+  Begin
+    LblFalse := NewLabel;
+    Consume;
+    EmitI('TEST EAX, EAX');
+    EmitI('JE   ' + LblFalse);
+    ParseOr;
+    EmitI('AND  EAX, EAX');
+    EmitLabel(LblFalse);
+  End;
+End;
+
+{ ---- ParseOrElse : OR ELSE (court-circuit) ------------------- }
+Procedure ParseOrElse;
+Var LblTrue : TString;
+Begin
+  ParseAndThen;
+  While (CurTokType = TOK_IDENT) And (CurTokKw = KW_ORELSE) Do
+  Begin
+    LblTrue := NewLabel;
+    Consume;
+    EmitI('TEST EAX, EAX');
+    EmitI('JNE  ' + LblTrue);
+    ParseAndThen;
+    EmitI('OR   EAX, EAX');
+    EmitLabel(LblTrue);
+  End;
+End;
+
+{ ---- ParseExpr : point d entree principal des expressions ---- }
+Procedure ParseExpr;
+Begin
+  ParseOrElse;
+End;
+
 { ---- LexInit : ouvrir le fichier source et lire le 1er token }
 Procedure LexInit;
 Begin
@@ -2886,8 +3358,8 @@ Begin
   Else
   Begin
     WriteLn('ADACW32: compilation de ', Opts.SrcFile, ' ...');
-    WriteLn('ADACW32: TODO 08+ non encore implemente - ',
-            'generateur de code OK');
+    WriteLn('ADACW32: TODO 09+ non encore implemente - ',
+            'parseur d''expressions OK');
   End;
   LexClose;
   BilanCompilation;

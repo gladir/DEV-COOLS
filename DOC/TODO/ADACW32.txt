@@ -177,7 +177,7 @@
             GenPushEAX, GenPopEAX, GenPushEBX, GenPopEBX
             GenCall(label) : CALL label
 
-  TODO 08 - PARSEUR D'EXPRESSIONS : PRECEDENCES ADA (32 BITS)
+  TODO 08 - PARSEUR D'EXPRESSIONS : PRECEDENCES ADA (32 BITS) [IMPLEMENTE]
             Expression Ada (priorites croissantes) :
               Niveau 1 : and then | or else      (court-circuit)
               Niveau 2 : and | or | xor           (logique bit)
