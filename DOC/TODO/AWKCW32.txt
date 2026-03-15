@@ -1,0 +1,624 @@
+  FEUILLE DE ROUTE - 25 TODOS
+  ============================================================
+
+
+  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF
+            TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings,
+              EmitExe, EmitObj, EmitAsm, FieldSep, InitVars, InitCount)
+            ParseArgs : analyser argv (source.awk [-o sortie] [-v]
+              [-d] [-w] [-obj] [-asm] [-F sep] [-v var=val] [-h])
+            Par defaut : produire un .EXE Windows 32 bits (PE)
+            -obj : produire uniquement un .OBJ (format COFF 32 bits)
+            -asm : produire egalement un listing assembleur .ASM lisible
+            -o nom : specifier le nom du fichier de sortie
+            -F sep : specifier le separateur de champs (FS)
+            -v var=val : initialiser une variable AWK avant execution
+            FatalError, WarnMsg, EXIT_OK / EXIT_ERROR / EXIT_USAGE
+            Detecter l extension .awk du fichier source
+            Version, Date, aide en ligne (option -h)
+            Constantes PE/COFF : PE_DOS_MAGIC ($5A4D), PE_PE_SIG,
+              PE_MACHINE_I386, PE_OPT_SIZE, PE_MAGIC_32,
+              PE_IMG_BASE ($00400000), PE_SEC_ALIGN (4096),
+              PE_FILE_ALIGN (512), PE_SUBSYS_CUI (console)
+            Constantes binaires : MAX_BIN_CODE (65536),
+              MAX_BIN_DATA (65536), MAX_BIN_LBL (4096),
+              MAX_BIN_FIX (8192)
+            Limites internes (32 bits) : MAX_SYM=2048, MAX_LABEL=2048,
+              MAX_SCOPE=64, MAX_DATA=512, MAX_PARAM=32,
+              MAX_LOOP_NEST=16, MAX_ERRORS=30, MAX_STR=255,
+              MAX_RULES=64, MAX_FIELDS=64, MAX_HASH_PAIRS=64,
+              MAX_INIT_VARS=16, STACK_SIZE=4096
+            Prefixes de nommage ASM : _AWV_ (variable utilisateur),
+              _AWF_ (fonction utilisateur), _AWK_ (constante chaine),
+              _AWRT_ (routine runtime), _AWL_ (label interne),
+              _AWA_ (tableau associatif), _AWP_ (pattern data),
+              _AWR_ (regle pattern-action)
+            Utilitaires : ItoS, ItoSI, UpCaseStr, AsmIdent
+
+  TODO 02 - TOKENISEUR AWK (LEXER)
+            Procedure LexInit : ouvrir le fichier source, initialiser
+              l etat du lexeur (ligne, colonne, caractere courant)
+            Procedure LexClose : fermer le fichier source
+            Procedure LexNextChar / LexPeekChar
+            Procedure LexNextToken : reconnaitre les tokens AWK :
+              - Identificateurs : lettres, chiffres, _ (max 64 cars)
+              - Litteraux entiers : 42, 0xFF, 0377 (octal)
+              - Litteraux flottants : 3.14, 1.5e3
+              - Litteraux chaines : "texte" (guillemets doubles,
+                sequences d echappement \n \t \\ \" \a \b \f \r \/)
+              - Expressions regulieres : /pattern/ (hors contexte
+                division)
+              - Commentaires ligne : # jusqu a fin de ligne
+              - Operateurs : + - * / % ^ = == != < > <= >= ~ !~
+                ++ -- += -= *= /= %= ^= && || ! >> |
+              - Separateurs : ; , ( ) [ ] { }
+              - Reference de champ : $0 $1 $NF $(expr)
+              - Newline significatif (separateur d instructions)
+            Types de tokens (TK_EOF, TK_INTEGER, TK_FLOAT,
+              TK_STRING, TK_REGEXP, TK_IDENT, TK_KEYWORD,
+              TK_BUILTIN, TK_FIELD, TK_OP, TK_PUNCT, TK_NEWLINE)
+            Stocker dans CurTok (Kind, Val, IntVal, FloatVal,
+              Line, Col)
+
+  TODO 03 - RECONNAISSANCE DES MOTS-CLES ET FONCTIONS BUILTIN AWK
+            Function IsKeyword(Const s: String): Integer
+            Mots-cles AWK a reconnaitre (21) :
+              BEGIN, END, BEGINFILE,
+              if, else, while, for, do, in,
+              break, continue, next, nextfile, exit,
+              function, return, delete,
+              print, printf, sprintf, getline
+            Constantes KW_BEGIN..KW_GETLINE
+            Function IsBuiltinFunc(Const s: String): Integer
+            Fonctions builtin AWK a reconnaitre (24) :
+              length, substr, index, split,
+              sub, gsub, match, sprintf,
+              tolower, toupper,
+              sin, cos, atan2, exp, log, sqrt, int,
+              rand, srand,
+              system, close, fflush,
+              mktime, strftime
+            Constantes BF_LENGTH..BF_STRFTIME
+            Function IsBuiltinVar(Const s: String): Integer
+            Variables builtin AWK :
+              FS, RS, OFS, ORS, NR, NF, FNR,
+              FILENAME, ARGC, ARGV, ENVIRON,
+              RSTART, RLENGTH, SUBSEP, OFMT, CONVFMT
+
+  TODO 04 - TABLE DES SYMBOLES (32 BITS)
+            Type TSymEntry : Name (String[64]), AsmLabel (String[64]),
+              TypeKind (TTypeKind), StoreClass (Integer),
+              BpOffset (Integer), IsParam (Boolean),
+              ParamIdx (Integer), IsGlobal (Boolean),
+              IsArray (Boolean), ArrayAsmLabel (String[64])
+            Type TFuncEntry : Name (String[64]), AsmLabel (String[64]),
+              ParamCount (Integer), ParamNames (Array[1..MAX_PARAM]),
+              Defined (Boolean), LocalCount (Integer)
+            SymTab[0..MAX_SYM-1] / SymCount
+            FuncTab[0..MAX_FUNC-1] / FuncCount
+            Procedure InitSymTable / Function FindSym / Function AddSym
+            Function FindFunc / Function AddFunc
+            Variables builtin auto-declarees :
+              FS (DD OFFSET _AWK_fs_default), NR (DD 0), NF (DD 0),
+              FNR (DD 0), RS (DD OFFSET _AWK_rs_default),
+              OFS (DD OFFSET _AWK_ofs_default),
+              ORS (DD OFFSET _AWK_ors_default),
+              FILENAME (DD 0), ARGC (DD 0), RSTART (DD 0),
+              RLENGTH (DD 0), SUBSEP (DD OFFSET _AWK_subsep_default)
+            Systeme de types AWK (coercition dynamique) :
+              TYK_NUMBER (entier 32 bits signe),
+              TYK_STRING (pointeur vers ASCIIZ),
+              TYK_UNINITIALIZED (valeur par defaut "" ou 0),
+              TYK_REGEXP (pointeur vers pattern data),
+              TYK_ARRAY (tableau associatif pointeur),
+              TYK_UNKNOWN (coercition dynamique)
+            Classes de stockage : STORE_GLOBAL (.DATA),
+              STORE_LOCAL (pile EBP), STORE_PARAM (EBP+n)
+
+  TODO 05 - GESTION DES SCOPES (GLOBAL, FUNCTION, REGLE)
+            Pile de scopes : chaque scope maintient ses propres
+              variables locales, un offset EBP courant, un label sortie
+            Procedure EnterScope(kind: Integer)
+            Procedure LeaveScope
+            Function AllocLocal(bytes: Integer): Integer
+            Function CurrentEbpOffset: Integer
+            Scopes supportes : SK_GLOBAL, SK_FUNCTION, SK_RULE,
+              SK_BLOCK, SK_LOOP
+            Compteur d offset EBP pour allocation variables locales
+            Offset EBP negatif pour locales [EBP-n]
+            Offset EBP positif pour parametres [EBP+8], [EBP+12]...
+            Convention STDCALL Win32 : parametres droite a gauche
+            Pile de boucles pour break / continue imbriques
+
+  TODO 06 - PARSEUR : EXPRESSIONS ARITHMETIQUES ET LOGIQUES (32 BITS)
+            Function ParseExpr: Integer (priorite la plus basse)
+            Function ParseAssignExpr: Integer
+              (= += -= *= /= %= ^= : affectation droite a gauche)
+            Function ParseTernaryExpr: Integer
+              (cond ? expr_vrai : expr_faux)
+            Function ParseOrExpr: Integer   (||)
+            Function ParseAndExpr: Integer  (&&)
+            Function ParseInExpr: Integer   (expr in array)
+            Function ParseMatchExpr: Integer (~ !~)
+            Function ParseCompareExpr: Integer (< <= > >= == !=)
+            Function ParseConcatExpr: Integer
+              (concatenation implicite par juxtaposition)
+            Function ParseAddExpr: Integer  (+ -)
+            Function ParseMulExpr: Integer  (* / %)
+            Function ParsePowExpr: Integer  (^ droite a gauche)
+            Function ParseUnaryExpr: Integer
+              (! - + ++ -- $ : prefixe)
+            Function ParsePostfixExpr: Integer (++ -- suffixe)
+            Function ParsePrimaryExpr: Integer
+              Constante numerique -> MOV EAX, imm32
+              Constante chaine    -> LEA EAX, [_AWK_n]
+              Variable            -> MOV EAX, [_AWV_x] ou [EBP-n]
+              Champ $n            -> CALL _AWRT_GETFIELD
+              Appel de fonction   -> PUSH args + CALL _AWF_nom
+              Fonction builtin    -> CALL _AWRT_xxx
+              Expression reguliere /pat/ -> LEA EAX, [_AWP_n]
+              Parentheses         -> ( ParseExpr )
+            Tous les calculs en registres 32 bits (EAX, EBX, ECX, EDX)
+
+  TODO 07 - PARSEUR : CONCATENATION DE CHAINES ET COERCITION
+            Concatenation implicite AWK :
+              "abc" x -> concatenation automatique sans operateur
+              Detection : deux expressions primaires adjacentes sans
+              operateur binaire entre elles
+            Coercition nombre <-> chaine :
+              Nombre vers chaine : CALL _AWRT_NUMTOSTR
+              Chaine vers nombre : CALL _AWRT_STRTONUM
+            Contexte de coercition :
+              Contexte arithmetique : forcer TYK_NUMBER
+              Contexte chaine : forcer TYK_STRING
+              Contexte booleen : forcer TYK_NUMBER (0 = faux)
+            Tampon de concatenation : _AWRT_CATBUF (512 octets)
+            Routine _AWRT_STRCAT : concatener deux ASCIIZ
+            Routine _AWRT_STRDUP : copier chaine dans le tas (HeapAlloc)
+
+  TODO 08 - GENERATION DE CODE : OPERATIONS ARITHMETIQUES 80386
+            Procedure GenLoadVar(sym_idx: Integer)
+              Variable scalaire : MOV EAX, DWORD PTR [_AWV_x] ou [EBP-n]
+              Variable chaine   : MOV EAX, DWORD PTR [_AWV_x] (pointeur)
+            Procedure GenStoreVar(sym_idx: Integer)
+              MOV DWORD PTR [_AWV_x], EAX ou MOV [EBP-n], EAX
+            Procedure GenBinOp(op: Integer)
+              + : ADD EAX, EBX
+              - : SUB EAX, EBX
+              * : IMUL EAX, EBX
+              / : CDQ + IDIV EBX (quotient dans EAX)
+              % : CDQ + IDIV EBX -> MOV EAX, EDX (reste)
+              ^ : CALL _AWRT_POW (puissance)
+            Procedure GenCompare(op: Integer)
+              CMP EAX, EBX + SETcc AL + MOVZX EAX, AL
+            Procedure GenUnaryOp(op: Integer)
+              - : NEG EAX
+              ! : TEST EAX,EAX / SETZ AL / MOVZX EAX,AL
+              ++ : INC DWORD PTR [var]
+              -- : DEC DWORD PTR [var]
+            Procedure GenFieldRef(field_idx: Integer)
+              PUSH field_idx + CALL _AWRT_GETFIELD -> EAX
+            Procedure GenFieldStore(field_idx: Integer)
+              PUSH EAX + PUSH field_idx + CALL _AWRT_SETFIELD
+            Primitives d emission : Emit, EmitLabel, EmitComment,
+              EmitBlank, NewLabel, AddStringLit
+
+  TODO 09 - PARSEUR : PRINT, PRINTF, SPRINTF (SORTIE CONSOLE WIN32)
+            Procedure ParsePrint
+            Syntaxe :
+              print                        -> afficher $0 + ORS
+              print expr [, expr ...]      -> afficher avec OFS entre
+              print expr > "fichier"       -> redirection fichier
+              print expr >> "fichier"      -> redirection append
+              print expr | "commande"      -> pipe (stub)
+            Generation Win32 (via WriteFile API) :
+              Variable nombre -> CALL _AWRT_NUMTOSTR + CALL _AWRT_PRINT
+              Variable chaine -> MOV EAX, [var] + CALL _AWRT_PRINT
+              Chaine litterale -> PUSH OFFSET _AWK_n + CALL _AWRT_PRINT
+              Separateur OFS entre chaque argument
+              Terminateur ORS (par defaut "\n") apres le dernier
+            Procedure ParsePrintf
+            Syntaxe :
+              printf fmt [, expr ...]      -> format style C
+              printf fmt [, expr ...] > "fichier"
+            Generation : CALL _AWRT_PRINTF avec format + arguments
+            Formats supportes : %d, %s, %f, %c, %o, %x, %%
+            Procedure ParseSprintf (retourne chaine formatee dans EAX)
+
+  TODO 10 - PARSEUR : IF / ELSE
+            Procedure ParseIf
+            Syntaxe :
+              if (condition) instruction
+              if (condition) instruction else instruction
+              if (condition) { instructions } else { instructions }
+            Generation 32 bits :
+              Evaluer condition -> EAX
+              TEST EAX, EAX + JZ _AWL_else ou _AWL_endif
+              Bloc vrai
+              JMP _AWL_endif (si else present)
+              _AWL_else: bloc faux
+              _AWL_endif:
+            Support des blocs entre accolades { }
+            Support des instructions simples sans accolades
+
+  TODO 11 - PARSEUR : WHILE, FOR, DO-WHILE, BREAK, CONTINUE
+            Procedure ParseWhile
+            Syntaxe : while (condition) instruction | { instructions }
+            Generation 32 bits :
+              _AWL_top: evaluer condition -> EAX
+              TEST EAX, EAX + JZ _AWL_end
+              Corps + JMP _AWL_top + _AWL_end:
+            Procedure ParseFor
+            Syntaxe : for (init; condition; incr) instruction
+            Generation 32 bits :
+              init + _AWL_top: condition + JZ _AWL_end
+              Corps + incr + JMP _AWL_top + _AWL_end:
+            Procedure ParseDoWhile
+            Syntaxe : do instruction | { instructions } while (cond)
+            Generation 32 bits :
+              _AWL_top: corps + evaluer condition
+              TEST EAX, EAX + JNZ _AWL_top
+            Procedure ParseBreak
+              break -> JMP _AWL_end (label fin de boucle courante)
+            Procedure ParseContinue
+              continue -> JMP _AWL_top (label debut de boucle courante)
+            Pile de boucles pour break / continue imbriques
+
+  TODO 12 - PARSEUR : FOR-IN (ITERATION SUR TABLEAUX ASSOCIATIFS)
+            Procedure ParseForIn
+            Syntaxe : for (var in array) instruction | { instructions }
+            Generation 32 bits :
+              Initialiser iterateur sur le tableau associatif
+              _AWL_top: CALL _AWRT_HASH_NEXT -> EAX (cle suivante)
+              TEST EAX, EAX + JZ _AWL_end (plus de cles)
+              Stocker cle dans var
+              Corps + JMP _AWL_top + _AWL_end:
+            Support break / continue dans for-in
+
+  TODO 13 - PARSEUR : FONCTIONS UTILISATEUR (FUNCTION / RETURN)
+            Procedure ParseFunctionDef
+            Syntaxe :
+              function nom(param1, param2, ...) { instructions }
+            Convention d appel Win32 STDCALL :
+              PUSH args droite a gauche (par valeur 32 bits)
+              CALL _AWF_nom
+              Prologue : PUSH EBP / MOV EBP, ESP / SUB ESP, locales
+              Epilogue : MOV ESP, EBP / POP EBP / RET n
+              Parametres a [EBP+8], [EBP+12], [EBP+16]...
+              Variables locales a [EBP-4], [EBP-8]...
+            Procedure ParseReturn
+              return [expr] -> MOV EAX, val + JMP _AWL_exit
+            Appel de fonction utilisateur :
+              PUSH args + CALL _AWF_nom
+              Resultat dans EAX
+            Support de la recursion (pile d appels)
+            Variables locales supplementaires declarees comme
+              parametres extra (convention AWK) :
+              function f(a, b,    c, d) -> c et d sont locales
+
+  TODO 14 - PARSEUR : REGLES PATTERN-ACTION (BEGIN, END, /regex/, expr)
+            Type TRuleEntry : Kind (RK_BEGIN, RK_END, RK_PATTERN,
+              RK_EXPR, RK_RANGE, RK_ALL), PatternStr, AsmLabel,
+              HasAction (Boolean)
+            RuleTab[0..MAX_RULES-1] / RuleCount
+            Procedure ParseProgram
+              Parcourir les regles de haut niveau :
+              BEGIN { action }         -> bloc initialisation
+              END { action }           -> bloc finalisation
+              /regexp/ { action }      -> filtre par regex
+              expression { action }    -> filtre par condition
+              /deb/,/fin/ { action }   -> range pattern (debut-fin)
+              { action }               -> action sans pattern (toutes lignes)
+            Generation 32 bits :
+              Chaque regle = label _AWR_n + test pattern + corps
+              Boucle principale : lire ligne -> tester chaque regle
+              BEGIN execute avant la boucle
+              END execute apres la boucle
+            Procedure ParseAction
+              ParseBlock entre accolades { }
+            Support de next (passer a la ligne suivante)
+            Support de nextfile (passer au fichier suivant)
+            Support de exit [expr] (terminer avec code de sortie)
+
+  TODO 15 - PARSEUR : CHAMPS $0..$NF ET SEPARATEURS FS, RS, OFS, ORS
+            Procedure ParseFieldRef
+              $0 -> ligne complete (pointeur vers _AWRT_LINE)
+              $1..$NF -> champ n (CALL _AWRT_GETFIELD)
+              $(expr) -> champ dynamique
+              $NF -> dernier champ
+            Procedure GenFieldSplit
+              Decouper $0 en champs selon FS :
+              CALL _AWRT_SPLITLINE -> met a jour NF et $1..$NF
+            Variables separateurs :
+              FS (defaut " ") : separateur de champs en entree
+              RS (defaut "\n") : separateur d enregistrements
+              OFS (defaut " ") : separateur de champs en sortie
+              ORS (defaut "\n") : separateur d enregistrements sortie
+            Affectation a un champ ($n = expr) :
+              Modifier le champ et reconstruire $0 avec OFS
+            Tampons :
+              _AWRT_LINE (4096 octets) : ligne courante
+              _AWRT_FIELDS[0..MAX_FIELDS] : tableau de pointeurs
+              _AWRT_NF (DD) : nombre de champs courant
+
+  TODO 16 - PARSEUR : TABLEAUX ASSOCIATIFS ET OPERATEUR IN / DELETE
+            Representation memoire :
+              Chaque tableau = bloc de MAX_HASH_PAIRS paires (cle, val)
+              Cle : pointeur vers chaine ASCIIZ
+              Valeur : DWORD (nombre ou pointeur chaine)
+            Procedure ParseArrayRef
+              array[expr] -> CALL _AWRT_HASH_GET(array_ptr, cle) -> EAX
+              array[expr] = val -> CALL _AWRT_HASH_SET(array_ptr, cle, val)
+            Operateur in :
+              (expr in array) -> CALL _AWRT_HASH_EXISTS -> 0/1
+            Operateur delete :
+              delete array[expr] -> CALL _AWRT_HASH_DEL
+              delete array -> CALL _AWRT_HASH_CLEAR (vider tout)
+            Indices multidimensionnels :
+              array[i, j] -> concatener i SUBSEP j comme cle
+            Routines runtime hash :
+              _AWRT_HASH_GET, _AWRT_HASH_SET, _AWRT_HASH_EXISTS,
+              _AWRT_HASH_DEL, _AWRT_HASH_CLEAR, _AWRT_HASH_NEXT
+            Allocation dynamique des paires via HeapAlloc
+
+  TODO 17 - PARSEUR : EXPRESSIONS REGULIERES ET MATCHING ~ / !~
+            Compilation de regex en pattern data :
+              /pattern/ -> stocker pattern dans segment .DATA
+              Support des metacaracteres : . * + ? [ ] ^ $ | ( )
+              Classes de caracteres : [abc] [a-z] [^0-9]
+              Echappement : \. \* \+ etc.
+            Operateur ~ (match) :
+              expr ~ /pattern/ -> CALL _AWRT_MATCH_RE -> 0/1
+            Operateur !~ (not match) :
+              expr !~ /pattern/ -> CALL _AWRT_MATCH_RE + NOT
+            Pattern dans les regles :
+              /pattern/ { action } -> tester $0 ~ /pattern/
+            Fonctions utilisant des regex :
+              sub(regex, repl, target)
+              gsub(regex, repl, target)
+              match(string, regex) -> met a jour RSTART, RLENGTH
+              split(string, array, regex)
+            Routines runtime regex :
+              _AWRT_MATCH_RE : matcher une chaine contre un pattern
+              _AWRT_REGEX_COMPILE : compiler un pattern (optionnel)
+
+  TODO 18 - PARSEUR : FONCTIONS BUILTIN CHAINES
+            Procedure ParseBuiltinString
+            Fonctions a supporter :
+              length(s)           -> CALL _AWRT_STRLEN -> EAX
+              length(array)       -> nombre d elements du tableau
+              substr(s, start [, len]) -> CALL _AWRT_SUBSTR -> EAX (ptr)
+              index(s, target)    -> CALL _AWRT_INDEX -> EAX (position)
+              split(s, array [, sep]) -> CALL _AWRT_SPLIT -> EAX (nb)
+              sub(regex, repl [, target])  -> CALL _AWRT_SUB -> EAX (nb)
+              gsub(regex, repl [, target]) -> CALL _AWRT_GSUB -> EAX (nb)
+              match(s, regex)     -> CALL _AWRT_MATCH -> EAX (position)
+                Met a jour RSTART et RLENGTH
+              sprintf(fmt, ...)   -> CALL _AWRT_SPRINTF -> EAX (ptr)
+              tolower(s)          -> CALL _AWRT_TOLOWER -> EAX (ptr)
+              toupper(s)          -> CALL _AWRT_TOUPPER -> EAX (ptr)
+            Tampons : _AWRT_STRBUF (512 octets), _AWRT_SUBBUF (512)
+
+  TODO 19 - PARSEUR : FONCTIONS BUILTIN MATHEMATIQUES
+            Procedure ParseBuiltinMath
+            Fonctions a supporter :
+              sin(x)     -> CALL _AWRT_SIN -> EAX (approximation entiere)
+              cos(x)     -> CALL _AWRT_COS -> EAX (approximation entiere)
+              atan2(y,x) -> CALL _AWRT_ATAN2 -> EAX
+              exp(x)     -> CALL _AWRT_EXP -> EAX
+              log(x)     -> CALL _AWRT_LOG -> EAX
+              sqrt(x)    -> CALL _AWRT_SQRT -> EAX
+              int(x)     -> valeur entiere (troncature) : deja entier
+              rand()     -> CALL _AWRT_RAND -> EAX (0..32767)
+              srand([x]) -> CALL _AWRT_SRAND (initialiser graine)
+            Fonctions systeme :
+              system(cmd) -> stub : emettre '; system() stub'
+              close(file) -> stub : emettre '; close() stub'
+              fflush([file]) -> stub : emettre '; fflush() stub'
+              mktime(spec) -> stub
+              strftime(fmt [, timestamp]) -> stub
+
+  TODO 20 - PARSEUR : GETLINE ET REDIRECTIONS E/S
+            Procedure ParseGetline
+            Syntaxe :
+              getline                  -> lire dans $0 depuis stdin
+              getline var              -> lire dans var depuis stdin
+              getline < "fichier"      -> lire depuis fichier
+              getline var < "fichier"  -> lire var depuis fichier
+              "cmd" | getline [var]    -> lire depuis pipe (stub)
+            Generation 32 bits :
+              CALL _AWRT_READLINE -> EAX (0=EOF, 1=succes)
+              Mettre a jour NR, FNR, $0, NF
+            Redirections de sortie (print/printf) :
+              > "fichier"  -> CALL _AWRT_OPEN_WRITE + WriteFile
+              >> "fichier" -> CALL _AWRT_OPEN_APPEND + WriteFile
+              | "commande" -> stub
+            Gestion des handles de fichier ouverts :
+              Table de fichiers ouverts (nom -> handle Win32)
+              CreateFileA / WriteFile / ReadFile / CloseHandle
+            Procedure ParseInputFiles
+              Traitement des fichiers passes en argument (ARGC/ARGV)
+              Boucle : ouvrir chaque fichier, lire ligne par ligne
+
+  TODO 21 - PARSEUR : VARIABLES BUILTIN AWK
+            Initialisation des variables builtin dans le segment .DATA :
+              NR       DD 0     (numero d enregistrement global)
+              NF       DD 0     (nombre de champs dans $0)
+              FNR      DD 0     (numero d enregistrement du fichier courant)
+              FS       DD OFFSET _AWK_FS_DEF  (defaut : " ")
+              RS       DD OFFSET _AWK_RS_DEF  (defaut : "\n")
+              OFS      DD OFFSET _AWK_OFS_DEF (defaut : " ")
+              ORS      DD OFFSET _AWK_ORS_DEF (defaut : "\n")
+              FILENAME DD 0     (nom du fichier courant, ptr ASCIIZ)
+              ARGC     DD 0     (nombre d arguments)
+              ARGV     : tableau de pointeurs (arguments)
+              RSTART   DD 0     (debut du dernier match)
+              RLENGTH  DD 0     (longueur du dernier match)
+              SUBSEP   DD OFFSET _AWK_SUBSEP_DEF (defaut : "\034")
+              OFMT     DD OFFSET _AWK_OFMT_DEF   (defaut : "%.6g")
+              CONVFMT  DD OFFSET _AWK_CONVFMT_DEF (defaut : "%.6g")
+              ENVIRON  : tableau associatif (stub)
+            Traitement des options -v var=val :
+              Initialiser les variables avant le bloc BEGIN
+            Traitement de -F sep :
+              Modifier FS avant le bloc BEGIN
+
+  TODO 22 - GENERATION : EN-TETE ASSEMBLEUR 80386 ET SEGMENT .DATA
+            Procedure EmitHeader
+              '; Generated by AWKCW32 V0.1'
+              '.386'
+              '.MODEL FLAT, STDCALL'
+              'OPTION CASEMAP:NONE'
+              Declarations EXTRN pour API Win32 :
+                ExitProcess, GetStdHandle, WriteFile, ReadFile,
+                GetProcessHeap, HeapAlloc, HeapFree,
+                CreateFileA, CloseHandle, GetCommandLineA
+              '.STACK 4096'
+              '_TEXT SEGMENT DWORD PUBLIC ''CODE'''
+              'ASSUME CS:_TEXT'
+            Procedure EmitDataSeg
+              Variables builtin : _AWV_NR DD 0, _AWV_NF DD 0, ...
+              Separateurs defaut : _AWK_FS_DEF DB ' ',0 ...
+              Variables utilisateur : _AWV_nom DD 0
+              Tableaux associatifs : _AWA_nom DB size DUP(0)
+              Chaines litterales : _AWK_1, _AWK_2... DB 'texte',0
+              Patterns regex : _AWP_1, _AWP_2... DB 'pattern',0
+              Tampons runtime : _AWRT_LINE, _AWRT_FIELDS,
+                _AWRT_NUMBUF, _AWRT_STRBUF, _AWRT_CATBUF,
+                _AWRT_INPUTBUF, _AWRT_CRLF_DATA,
+                _AWRT_HSTDOUT, _AWRT_HSTDIN, _AWRT_HHEAP
+            Mode -asm : ecrire fichier .ASM avec commentaires
+
+  TODO 23 - GENERATION : POINT D ENTREE WIN32, BOUCLE PRINCIPALE
+            ET HELPERS RUNTIME
+            Procedure EmitEntryPoint
+              _AWF_main:
+              PUSH EBP / MOV EBP, ESP
+              Initialiser stdout : PUSH -11 / CALL GetStdHandle
+                MOV [_AWRT_HSTDOUT], EAX
+              Initialiser stdin : PUSH -10 / CALL GetStdHandle
+                MOV [_AWRT_HSTDIN], EAX
+              Initialiser heap : CALL GetProcessHeap
+                MOV [_AWRT_HHEAP], EAX
+              Appliquer -v var=val et -F sep
+              Executer les regles BEGIN
+              Boucle principale :
+                CALL _AWRT_READLINE -> TEST EAX,EAX / JZ _AWL_eof
+                CALL _AWRT_SPLITLINE (decouper en champs)
+                INC DWORD PTR [_AWV_NR] / INC DWORD PTR [_AWV_FNR]
+                Pour chaque regle : tester pattern + executer action
+                JMP _AWL_loop
+              _AWL_eof:
+              Executer les regles END
+              PUSH 0 / CALL ExitProcess
+            Procedure EmitRuntimeHelpers
+              _AWRT_CRLF      : ecrire CR+LF via WriteFile
+              _AWRT_PRINT     : EAX=ptr ASCIIZ -> WriteFile(hStdOut)
+              _AWRT_NUMTOSTR  : EAX=entier -> ASCIIZ dans _AWRT_NUMBUF
+              _AWRT_STRTONUM  : EAX=ptr ASCIIZ -> EAX=entier
+              _AWRT_PRINTINT  : EAX=entier -> NUMTOSTR + PRINT
+              _AWRT_PRINTLN   : PRINT + CRLF
+              _AWRT_READLINE  : ReadFile -> _AWRT_LINE -> EAX=0/1
+              _AWRT_SPLITLINE : decouper _AWRT_LINE en champs selon FS
+              _AWRT_GETFIELD  : EAX=idx -> EAX=ptr champ
+              _AWRT_SETFIELD  : EAX=idx, EBX=val -> modifier champ
+              _AWRT_REBUILDLINE : reconstruire $0 depuis les champs
+              _AWRT_STRLEN    : EAX=ptr ASCIIZ -> EAX=longueur
+              _AWRT_STRCOPY   : ESI=src, EDI=dst -> copie ASCIIZ
+              _AWRT_STRCAT    : concatener deux ASCIIZ
+              _AWRT_STRDUP    : copier chaine dans le tas
+              _AWRT_STRCMP    : comparer deux ASCIIZ -> flags
+              _AWRT_HASH_GET  : rechercher dans tableau associatif
+              _AWRT_HASH_SET  : inserer/modifier dans tableau
+              _AWRT_HASH_EXISTS : tester existence cle
+              _AWRT_HASH_DEL  : supprimer entree
+              _AWRT_HASH_CLEAR : vider tableau
+              _AWRT_HASH_NEXT : iterateur for-in
+              _AWRT_MATCH_RE  : matcher regex
+              _AWRT_POW       : puissance (a^b)
+              _AWRT_SQRT      : racine carree (approximation entiere)
+              _AWRT_RAND      : nombre pseudo-aleatoire
+              _AWRT_SRAND     : initialiser graine
+              _AWRT_SUBSTR    : extraire sous-chaine
+              _AWRT_INDEX     : trouver position sous-chaine
+              _AWRT_SPLIT     : decouper chaine en tableau
+              _AWRT_SUB       : remplacer premiere occurrence
+              _AWRT_GSUB      : remplacer toutes les occurrences
+              _AWRT_MATCH     : matcher et retourner position
+              _AWRT_TOLOWER   : convertir en minuscules
+              _AWRT_TOUPPER   : convertir en majuscules
+              _AWRT_SPRINTF   : formater chaine (stub simplifie)
+              _AWRT_PRINTF    : formater et afficher
+              _AWRT_ERROR     : afficher erreur + ExitProcess(1)
+
+  TODO 24 - PARSEUR : DISPATCHER ET BOUCLE PRINCIPALE
+            Procedure ParseStatement
+            Dispatcher selon le token courant :
+              if          -> ParseIf
+              while       -> ParseWhile
+              for         -> ParseFor ou ParseForIn (selon contexte)
+              do          -> ParseDoWhile
+              break       -> ParseBreak
+              continue    -> ParseContinue
+              next        -> ParseNext (JMP _AWL_next_line)
+              nextfile    -> ParseNextfile (JMP _AWL_next_file)
+              exit        -> ParseExit (PUSH [expr] / CALL ExitProcess)
+              return      -> ParseReturn
+              delete      -> ParseDelete
+              print       -> ParsePrint
+              printf      -> ParsePrintf
+              getline     -> ParseGetline
+              {           -> ParseBlock (bloc entre accolades)
+              ;           -> instruction vide (consommer)
+              ident =     -> ParseAssignment
+              ident(      -> ParseFunctionCall
+              ident[      -> ParseArrayAssignment
+              $expr =     -> ParseFieldAssignment
+              expr        -> evaluer et ignorer le resultat
+            Procedure ParseBlock
+              { ParseStatement; ... }
+            Procedure Run
+              LexInit + ParseProgram + generation + LexClose
+              Afficher statistiques si -v (symboles, fonctions,
+              regles, chaines, erreurs)
+
+  TODO 25 - GENERATION FINALE : LINKER PE, FICHIERS .OBJ ET EXEMPLES
+            Procedure EmitClose : finaliser l emission ASM
+              EmitRuntimeHelpers + '_TEXT ENDS' + EmitDataSeg +
+              'END _AWF_main'
+            Procedure BinInit / BinEmit / BinEmitData / BinFixup
+            Si EmitExe (par defaut) :
+              Construire l image PE complete en memoire :
+              - DOS stub header (MZ + message + offset PE)
+              - PE signature + COFF header (Machine=i386)
+              - Optional header (ImageBase=$00400000, EntryPoint,
+                SectionAlignment=4096, FileAlignment=512,
+                Subsystem=CUI console)
+              - Section .text (code machine 80386)
+              - Section .data (variables et litteraux)
+              - Section .idata (Import Address Table pour
+                kernel32.dll : ExitProcess, GetStdHandle,
+                WriteFile, ReadFile, GetProcessHeap,
+                HeapAlloc, HeapFree, CreateFileA, CloseHandle,
+                GetCommandLineA)
+              Ecrire le fichier .EXE resultant
+            Si EmitObj (-obj) :
+              Construire un fichier COFF .OBJ 32 bits :
+              - COFF header + sections .text, .data
+              - Table de symboles et relocations
+              - Compatible avec les linkers Win32 (LINK.EXE)
+            Si EmitAsm (-asm) :
+              Ecrire le fichier .ASM lisible en parallele
+              (genere pendant la compilation, pas de passe
+              supplementaire)
+            Programmes de test : SAMPLES\AWK\*
+              hello.awk     : BEGIN, print, variables, chaines
+              fields.awk    : champs $1 $NF, NR, NF, FS
+              funcuser.awk  : fonctions utilisateur, recursion, return
+              arrays.awk    : tableaux associatifs, for-in, delete
+              regex.awk     : patterns /regexp/, sub, gsub, match
+              math.awk      : fonctions mathematiques, expressions
+              format.awk    : printf, redirection fichier
+              multifile.awk : FILENAME, FNR, ARGC, ARGV, getline
+            Rapport de compilation : 0 erreurs, N symboles,
+              M fonctions, P regles
