@@ -40,7 +40,7 @@
 { TODO 20 - Generation du fichier objet (format S-Record Motorola) [IMPLEMENTE] }
 { TODO 21 - Gestion des fichiers INCLUDE et pile de sources [IMPLEMENTE] }
 { TODO 22 - Gestion des macros (MACRO/ENDM) [IMPLEMENTE] }
-{ TODO 23 - Directives de listing et mise en page }
+{ TODO 23 - Directives de listing et mise en page [IMPLEMENTE] }
 { TODO 24 - Programme principal et orchestration complete }
 { TODO 25 - Programmes de test et validation (SAMPLES\ASM68\) }
 
@@ -410,6 +410,12 @@ Var
   MacroExpandCount : Integer;    { Nombre d'expansions de macros          }
   ReptExpandCount  : Integer;    { Nombre d'expansions de REPT            }
 
+  { --- Directives de listing (TODO 23) --- }
+  ListingDirCount : Integer;     { Nombre de directives de listing        }
+  list_start_sec  : Integer;     { Section au debut de ParseLine          }
+  list_start_off  : LongInt;     { Offset section au debut de ParseLine   }
+  list_src_text   : String;      { Ligne source pour le listing           }
+
 { ============================================================================ }
 { Fonctions utilitaires                                                        }
 { ============================================================================ }
@@ -740,7 +746,8 @@ Begin
  If (U = 'OPT') or (U = 'LIST') or (U = 'NOLIST') or
     (U = 'PAGE') or (U = 'TTL') or (U = 'SPC') Then Begin IsDirective := True; Exit; End;
  If (U = 'CNOP') or (U = 'EVEN') or (U = 'ALIGN') or
-    (U = 'FAIL') Then Begin IsDirective := True; Exit; End;
+    (U = 'FAIL') or (U = 'TITLE') or (U = 'EJECT') or
+    (U = 'INFORM') Then Begin IsDirective := True; Exit; End;
  If (U = 'REPT') or (U = 'ENDR') or (U = 'DCB') Then Begin IsDirective := True; Exit; End;
 End;
 
@@ -1492,6 +1499,7 @@ Begin
  WriteLn('REPT           : ', ReptExpandCount);
  WriteLn('Inclusions     : ', IncludeCount);
  WriteLn('Instructions   : ', InstrCount);
+ WriteLn('Dir. listing   : ', ListingDirCount);
  WriteLn('Taille code    : ', CodeSize, ' octets');
  If start_address_set Then
   WriteLn('Adresse debut  : $', IntToHex(start_address, 6));
@@ -7468,9 +7476,22 @@ Var
   LblName: String;
   DirName: String;
   DirSize: Integer;
+  ListBytes: String;
+  ListByteCount: Integer;
+  ListAddr: LongInt;
+  ListEndOff: LongInt;
+  J: Integer;
 Begin
  cur_label := '';
  LblName := '';
+
+ { Sauvegarder contexte pour le listing (TODO 23, passe 2) }
+ If (pass_num = 2) and list_opened Then
+ Begin
+  list_start_sec := CurSection;
+  list_start_off := Sections[CurSection].CurAddr;
+  list_src_text  := src_line;
+ End;
 
  { Verifier si fin de source }
  If end_source Then Exit;
@@ -7634,28 +7655,130 @@ Begin
    DirEND
   Else If (DirName = 'LIST') Then
   Begin
+   { LIST : activer le listing (TODO 23) }
    list_enabled := True;
+   If pass_num = 2 Then Inc(ListingDirCount);
    SkipToEOL;
   End
   Else If (DirName = 'NOLIST') Then
   Begin
+   { NOLIST : desactiver le listing (TODO 23) }
    list_enabled := False;
+   If pass_num = 2 Then Inc(ListingDirCount);
    SkipToEOL;
   End
-  Else If (DirName = 'TTL') Then
+  Else If (DirName = 'TTL') or (DirName = 'TITLE') Then
   Begin
+   { TTL/TITLE "titre" : definir le titre du listing (TODO 23) }
    If cur_tok = TOK_STRING Then
    Begin
     list_title := cur_tok_str;
     NextToken;
    End;
+   If pass_num = 2 Then Inc(ListingDirCount);
    SkipToEOL;
   End
-  Else If (DirName = 'SPC') or (DirName = 'PAGE') or
-          (DirName = 'OPT') or (DirName = 'FAIL') or
-          (DirName = 'ALIGN') Then
+  Else If (DirName = 'SPC') Then
   Begin
-   { Directives de listing/controle - ignorer les arguments }
+   { SPC n : inserer n lignes blanches dans le listing (TODO 23) }
+   DirSize := 1;
+   If (cur_tok = TOK_INTEGER) Then
+   Begin
+    DirSize := cur_tok_val;
+    NextToken;
+   End;
+   If (pass_num = 2) and list_opened and list_enabled Then
+    For DirSize := DirSize downto 1 do
+    Begin
+     WriteLn(list_file);
+     Inc(list_line_num);
+    End;
+   If pass_num = 2 Then Inc(ListingDirCount);
+   SkipToEOL;
+  End
+  Else If (DirName = 'PAGE') or (DirName = 'EJECT') Then
+  Begin
+   { PAGE/EJECT : saut de page dans le listing (TODO 23) }
+   If (pass_num = 2) Then
+    ListPage;
+   If pass_num = 2 Then Inc(ListingDirCount);
+   SkipToEOL;
+  End
+  Else If (DirName = 'OPT') Then
+  Begin
+   { OPT L+/L-/S+/S-/M+/M-/W+/W- : options assemblage (TODO 23) }
+   While (cur_tok <> TOK_EOL) and (cur_tok <> TOK_EOF) do
+   Begin
+    If cur_tok = TOK_IDENT Then
+    Begin
+     DirName := UpCaseStr(cur_tok_str);
+     NextToken;
+     { Lire le signe + ou - qui suit la lettre }
+     If (Length(DirName) = 1) and
+        ((cur_tok = TOK_PLUS) or (cur_tok = TOK_MINUS)) Then
+     Begin
+      DirName := DirName + cur_tok_str;
+      NextToken;
+     End;
+     If DirName = 'L+' Then list_enabled := True
+     Else If DirName = 'L-' Then list_enabled := False
+     Else If DirName = 'S+' Then Opts.IncludeSymTable := True
+     Else If DirName = 'S-' Then Opts.IncludeSymTable := False
+     Else If DirName = 'M+' Then Begin list_expand := True; Opts.ExpandMacros := True; End
+     Else If DirName = 'M-' Then Begin list_expand := False; Opts.ExpandMacros := False; End
+     Else If DirName = 'W+' Then Opts.ShowWarnings := True
+     Else If DirName = 'W-' Then Opts.ShowWarnings := False;
+    End
+    Else
+     NextToken;
+    { Sauter la virgule eventuelle }
+    If (cur_tok = TOK_COMMA) Then NextToken;
+   End;
+   If pass_num = 2 Then Inc(ListingDirCount);
+  End
+  Else If (DirName = 'FAIL') Then
+  Begin
+   { FAIL "message" : erreur d'assemblage volontaire (TODO 23) }
+   If cur_tok = TOK_STRING Then
+   Begin
+    Error(cur_tok_line, cur_tok_col, 'FAIL: ' + cur_tok_str);
+    NextToken;
+   End
+   Else
+    Error(cur_tok_line, cur_tok_col, 'FAIL: erreur d''assemblage');
+   If pass_num = 2 Then Inc(ListingDirCount);
+   SkipToEOL;
+  End
+  Else If (DirName = 'INFORM') Then
+  Begin
+   { INFORM level, "message" : message informatif (TODO 23) }
+   If cur_tok = TOK_INTEGER Then
+   Begin
+    DirSize := cur_tok_val;
+    NextToken;
+    If cur_tok = TOK_COMMA Then NextToken;
+    If cur_tok = TOK_STRING Then
+    Begin
+     If DirSize >= 2 Then
+      Error(cur_tok_line, cur_tok_col, 'INFORM: ' + cur_tok_str)
+     Else If DirSize = 1 Then
+      Warning(cur_tok_line, cur_tok_col, 'INFORM: ' + cur_tok_str)
+     Else If (pass_num = 2) and list_opened Then
+      WriteLn(list_file, '*** INFORM: ', cur_tok_str);
+     NextToken;
+    End;
+   End;
+   If pass_num = 2 Then Inc(ListingDirCount);
+   SkipToEOL;
+  End
+  Else If (DirName = 'ALIGN') Then
+  Begin
+   { ALIGN n : aligner sur frontiere }
+   If cur_tok = TOK_INTEGER Then
+   Begin
+    AlignPC(cur_tok_val);
+    NextToken;
+   End;
    SkipToEOL;
   End
    { --- Directives avancees (TODO 09) --- }
@@ -7753,6 +7876,24 @@ Begin
 
  { Mettre a jour expr_pc pour les expressions }
  expr_pc := GetPC;
+
+ { Emettre la ligne dans le listing (TODO 23, passe 2 uniquement) }
+ If (pass_num = 2) and list_opened and list_enabled and
+    (Not macro_expanding) Then
+ Begin
+  ListAddr := Sections[list_start_sec].Origin + list_start_off;
+  ListByteCount := 0;
+  ListBytes := '';
+  If (list_start_sec = CurSection) Then
+  Begin
+   ListEndOff := Sections[CurSection].CurAddr;
+   ListByteCount := ListEndOff - list_start_off;
+   If ListByteCount > 0 Then
+    For J := 0 to ListByteCount - 1 do
+     ListBytes := ListBytes + Chr(Sections[list_start_sec].Buf^[list_start_off + J]);
+  End;
+  ListLine(ListAddr, ListBytes, ListByteCount, list_src_text);
+ End;
 
  { Consommer le EOL }
  If cur_tok = TOK_EOL Then
@@ -8568,6 +8709,23 @@ End;
   - Compteurs : MacroExpandCount, ReptExpandCount }
 
 { ============================================================================ }
+{ TODO 23 - Directives de listing et mise en page                              }
+{ ============================================================================ }
+
+{ Directives de listing et mise en page implementees :
+  - TTL/TITLE "titre" : titre du listing (haut de page)
+  - SPC n : inserer n lignes blanches dans le listing
+  - PAGE/EJECT : saut de page dans le listing
+  - LIST / NOLIST : activer/desactiver la generation du listing
+  - OPT L+/L- S+/S- M+/M- W+/W- : options d'assemblage
+  - FAIL "message" : erreur d'assemblage volontaire
+  - INFORM level, "message" : message informatif dans le listing
+  - Listing integre dans ParseLine : adresse + octets + source
+  - Table des symboles en fin de listing (triee alphabetiquement)
+  - Numerotation des pages, en-tetes, pagination
+  - Compteur : ListingDirCount }
+
+{ ============================================================================ }
 { Procedure Run : programme principal d'assemblage                             }
 { ============================================================================ }
 
@@ -8626,6 +8784,12 @@ Begin
  macro_depth := 0;
  MacroExpandCount := 0;
  ReptExpandCount := 0;
+
+ { Initialiser les compteurs de listing (TODO 23) }
+ ListingDirCount := 0;
+ list_start_sec  := 1;
+ list_start_off  := 0;
+ list_src_text   := '';
 
  { Initialiser la table des symboles }
  InitSymTable;

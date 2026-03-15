@@ -485,7 +485,7 @@ TODO 22 - Gestion des macros (MACRO/ENDM) [IMPLEMENTE]
   - Listing des macros expandees si -x active
   - REPT count / ENDR : repetition de bloc (macro anonyme)
 
-TODO 23 - Directives de listing et mise en page
+TODO 23 - Directives de listing et mise en page [IMPLEMENTE]
   ------------------------------------------------
   - TTL "titre"  / TITLE "titre" : titre du listing (haut de page)
   - SPC n : inserer n lignes blanches dans le listing

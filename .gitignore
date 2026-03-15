@@ -2,6 +2,6 @@
 *.o
 *.obj
 *.ppu
+*.S68
 /JASMIN
 /ASM68
-*.S68
