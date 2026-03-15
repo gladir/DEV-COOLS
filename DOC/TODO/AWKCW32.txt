@@ -115,7 +115,7 @@
             Classes de stockage : STORE_GLOBAL (.DATA),
               STORE_LOCAL (pile EBP), STORE_PARAM (EBP+n)
 
-  TODO 05 - GESTION DES SCOPES (GLOBAL, FUNCTION, REGLE)
+  TODO 05 - GESTION DES SCOPES (GLOBAL, FUNCTION, REGLE) [IMPLEMENTE]
             Pile de scopes : chaque scope maintient ses propres
               variables locales, un offset EBP courant, un label sortie
             Procedure EnterScope(kind: Integer)

@@ -119,7 +119,7 @@
             Classes de stockage : STORE_GLOBAL (.DATA),
               STORE_LOCAL (pile EBP), STORE_PARAM (EBP+n)
 
-  TODO 05 - GESTION DES SCOPES (GLOBAL, FUNCTION, REGLE)
+  TODO 05 - GESTION DES SCOPES (GLOBAL, FUNCTION, REGLE) [IMPLEMENTE]
             Pile de scopes : chaque scope maintient ses propres
               variables locales, un offset EBP courant, un label sortie
             Procedure EnterScope(kind: Integer)
@@ -753,6 +753,17 @@ Const
   STORE_PARAM  = 2;          { parametre fonction (EBP+n)        }
 
 { ============================================================ }
+{ TODO 05 - CONSTANTES DE SCOPES                                }
+{ ============================================================ }
+
+  { Types de scopes }
+  SK_GLOBAL   = 0;            { scope global (programme)          }
+  SK_FUNCTION = 1;            { scope fonction utilisateur        }
+  SK_RULE     = 2;            { scope regle pattern-action        }
+  SK_BLOCK    = 3;            { scope bloc accolades              }
+  SK_LOOP     = 4;            { scope boucle (for/while/do)       }
+
+{ ============================================================ }
 { TYPES                                                        }
 { ============================================================ }
 
@@ -819,6 +830,19 @@ Type
     ParamNames : Array[1..MAX_PARAM] Of String[64];
     Defined    : Boolean;       { corps de fonction defini ?        }
     LocalCount : Integer;       { nombre de variables locales       }
+  End;
+
+{ ============================================================ }
+{ TODO 05 - GESTION DES SCOPES [IMPLEMENTE]                     }
+{ ============================================================ }
+
+  TScopeEntry = Record
+    Kind          : Integer;    { SK_GLOBAL / FUNCTION / RULE / ... }
+    SymBase       : Integer;    { SymCount au debut du scope        }
+    EbpOffset     : Integer;    { offset EBP courant (negatif)      }
+    ExitLabel     : String[64]; { label de sortie (function/rule)   }
+    BreakLabel    : String[64]; { label break (boucle)              }
+    ContinueLabel : String[64]; { label continue (boucle)           }
   End;
 
 { ============================================================ }
@@ -899,6 +923,12 @@ Var
   { Table des fonctions (TODO 04) }
   FuncTab     : Array[0..MAX_FUNC - 1] Of TFuncEntry;
   FuncCount   : Integer;      { nombre de fonctions enregistrees  }
+
+  { Pile de scopes (TODO 05) }
+  ScopeStack  : Array[0..MAX_SCOPE - 1] Of TScopeEntry;
+  ScopeDepth  : Integer;      { profondeur courante               }
+  LoopDepth   : Integer;      { profondeur des boucles imbriquees }
+  LabelSeq    : Integer;      { sequence pour labels uniques      }
 
 Const
 {$IFDEF FPC}
@@ -1245,6 +1275,8 @@ Begin
   WriteLn('Lignes analysees : ', TotalLines);
   WriteLn('Symboles         : ', SymCount);
   WriteLn('Fonctions        : ', FuncCount);
+  WriteLn('Scope depth      : ', ScopeDepth);
+  WriteLn('Labels generes   : ', LabelSeq);
   WriteLn('Erreurs          : ', ErrorCount);
   WriteLn('Avertissements   : ', WarnCount);
 End;
@@ -2128,6 +2160,154 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 05 - GESTION DES SCOPES [IMPLEMENTE]                     }
+{ ============================================================ }
+
+{ ---- GenScopeLabel : generer un label unique pour scopes ----- }
+Function GenScopeLabel(Const Prefix : String) : String;
+Var
+  S : String;
+Begin
+  Inc(LabelSeq);
+  Str(LabelSeq, S);
+  While Length(S) < 5 Do S := '0' + S;
+  GenScopeLabel := Prefix + S;
+End;
+
+{ ---- EnterScope : empiler un nouveau scope ------------------- }
+Procedure EnterScope(Kind : Integer);
+Begin
+  If ScopeDepth >= MAX_SCOPE Then
+  Begin FatalError('pile de scopes pleine'); Exit; End;
+  ScopeStack[ScopeDepth].Kind          := Kind;
+  ScopeStack[ScopeDepth].SymBase       := SymCount;
+  If ScopeDepth > 0 Then
+    ScopeStack[ScopeDepth].EbpOffset   := ScopeStack[ScopeDepth - 1].EbpOffset
+  Else
+    ScopeStack[ScopeDepth].EbpOffset   := 0;
+  ScopeStack[ScopeDepth].ExitLabel     := '';
+  ScopeStack[ScopeDepth].BreakLabel    := '';
+  ScopeStack[ScopeDepth].ContinueLabel := '';
+  Inc(ScopeDepth);
+End;
+
+{ ---- LeaveScope : depiler le scope courant ------------------- }
+Procedure LeaveScope;
+Begin
+  If ScopeDepth <= 0 Then
+  Begin FatalError('pile de scopes vide'); Exit; End;
+  Dec(ScopeDepth);
+  { Restaurer la table des symboles au debut du scope }
+  SymCount := ScopeStack[ScopeDepth].SymBase;
+End;
+
+{ ---- AllocLocal : allouer une variable locale sur la pile ---- }
+Function AllocLocal(Bytes : Integer) : Integer;
+Begin
+  If ScopeDepth <= 0 Then
+  Begin FatalError('AllocLocal hors scope'); AllocLocal := 0; Exit; End;
+  { Aligner a 4 octets (DWORD) }
+  If (Bytes Mod 4) <> 0 Then
+    Bytes := ((Bytes Div 4) + 1) * 4;
+  ScopeStack[ScopeDepth - 1].EbpOffset :=
+    ScopeStack[ScopeDepth - 1].EbpOffset - Bytes;
+  AllocLocal := ScopeStack[ScopeDepth - 1].EbpOffset;
+End;
+
+{ ---- CurrentEbpOffset : retourner l offset EBP courant ------- }
+Function CurrentEbpOffset : Integer;
+Begin
+  If ScopeDepth <= 0 Then
+    CurrentEbpOffset := 0
+  Else
+    CurrentEbpOffset := ScopeStack[ScopeDepth - 1].EbpOffset;
+End;
+
+{ ---- CurrentScopeKind : retourner le type du scope courant --- }
+Function CurrentScopeKind : Integer;
+Begin
+  If ScopeDepth <= 0 Then
+    CurrentScopeKind := SK_GLOBAL
+  Else
+    CurrentScopeKind := ScopeStack[ScopeDepth - 1].Kind;
+End;
+
+{ ---- SetExitLabel : definir le label de sortie du scope ------ }
+Procedure SetExitLabel(Const Lbl : String);
+Begin
+  If ScopeDepth > 0 Then
+    ScopeStack[ScopeDepth - 1].ExitLabel := Lbl;
+End;
+
+{ ---- FindExitLabel : trouver le label sortie le plus proche -- }
+Function FindExitLabel : String;
+Var
+  I : Integer;
+Begin
+  FindExitLabel := '';
+  For I := ScopeDepth - 1 DownTo 0 Do
+    If (ScopeStack[I].Kind = SK_FUNCTION) Or
+       (ScopeStack[I].Kind = SK_RULE) Then
+    Begin
+      FindExitLabel := ScopeStack[I].ExitLabel;
+      Exit;
+    End;
+End;
+
+{ ---- EnterLoop : pousser un scope boucle avec labels --------- }
+Procedure EnterLoop(Const BrkLbl, ContLbl : String);
+Begin
+  EnterScope(SK_LOOP);
+  ScopeStack[ScopeDepth - 1].BreakLabel    := BrkLbl;
+  ScopeStack[ScopeDepth - 1].ContinueLabel := ContLbl;
+  Inc(LoopDepth);
+End;
+
+{ ---- LeaveLoop : depiler le scope boucle --------------------- }
+Procedure LeaveLoop;
+Begin
+  LeaveScope;
+  Dec(LoopDepth);
+End;
+
+{ ---- FindLoopBreak : trouver le label break le plus proche --- }
+Function FindLoopBreak : String;
+Var
+  I : Integer;
+Begin
+  FindLoopBreak := '';
+  For I := ScopeDepth - 1 DownTo 0 Do
+    If ScopeStack[I].Kind = SK_LOOP Then
+    Begin
+      FindLoopBreak := ScopeStack[I].BreakLabel;
+      Exit;
+    End;
+End;
+
+{ ---- FindLoopContinue : trouver label continue plus proche --- }
+Function FindLoopContinue : String;
+Var
+  I : Integer;
+Begin
+  FindLoopContinue := '';
+  For I := ScopeDepth - 1 DownTo 0 Do
+    If ScopeStack[I].Kind = SK_LOOP Then
+    Begin
+      FindLoopContinue := ScopeStack[I].ContinueLabel;
+      Exit;
+    End;
+End;
+
+{ ---- InitScopes : initialiser la pile de scopes -------------- }
+Procedure InitScopes;
+Begin
+  ScopeDepth := 0;
+  LoopDepth  := 0;
+  LabelSeq   := 0;
+  EnterScope(SK_GLOBAL);
+End;
+
+{ ============================================================ }
 { PROCEDURE RUN (STUB - sera complete par les TODOs suivants)  }
 { ============================================================ }
 
@@ -2139,6 +2319,7 @@ Begin
   If Opts.InitCount > 0 Then
     WriteLn('AWKCW32: ', Opts.InitCount, ' variable(s) pre-initialisee(s)');
   InitSymTable;
+  InitScopes;
   LexInit;
   { Mode debug : afficher tous les tokens }
   If Opts.DebugMode Then
@@ -2159,7 +2340,8 @@ Begin
       LexNextToken(CurToken);
     WriteLn('AWKCW32: tokenisation terminee, ', TotalLines, ' lignes');
     WriteLn('AWKCW32: ', SymCount, ' symbole(s), ', FuncCount, ' fonction(s)');
-    WriteLn('AWKCW32: TODO 05..25 non encore implementes.');
+    WriteLn('AWKCW32: scope depth=', ScopeDepth, ', loop depth=', LoopDepth);
+    WriteLn('AWKCW32: TODO 06..25 non encore implementes.');
     WriteLn('AWKCW32: sortie prevue: ', Opts.OutFile);
   End;
   LexClose;
