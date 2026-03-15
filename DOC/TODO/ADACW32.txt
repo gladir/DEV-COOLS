@@ -512,7 +512,7 @@
              11. Close, Erase(tmp)
              12. Dispose() toutes les tables, BilanCompilation
 
-  TODO 25 - GENERATION FINALE : LINKER PE, FICHIERS .OBJ ET EXEMPLES
+  TODO 25 - GENERATION FINALE : LINKER PE, FICHIERS .OBJ ET EXEMPLES [IMPLEMENTE]
             Procedure EmitClose : finaliser l emission ASM
               EmitRuntimeHelpers + '_TEXT ENDS' + EmitDataSeg +
               'END _ADAF_main'
@@ -544,4 +544,5 @@
               HELLO.ADB, T01_HELLO.ADB, T02_LOOPS.ADB,
               T03_VARS.ADB, T04_TYPES.ADB, T05_FUNC.ADB,
               T06_COND.ADB, TEST.ADB
+            Test specifique : test_linker.ada (15 cas, 3 procs)
             Rapport de compilation : 0 erreurs, N symboles, M types
