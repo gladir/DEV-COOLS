@@ -250,7 +250,7 @@
             Bloc d instructions avec portee locale.
             SymEnterScope / SymLeaveScope pour variables de bloc.
 
-  TODO 14 - BOUCLES (for / while / do-while)
+  TODO 14 - BOUCLES (for / while / do-while) [IMPLEMENTE]
             ParseForStmt :
               for (init; cond; incr) { stmts }.
               Trois expressions optionnelles separees par ;.
@@ -536,6 +536,21 @@ Var
   { Variables locales et parametres (TODO 09) }
   LocalOffset : Integer;        { offset negatif courant [EBP-n]      }
   ParamOffset : Integer;        { offset positif courant [EBP+n]      }
+
+{ Pile de boucles pour break/continue (TODO 14) }
+
+Const
+  MAX_LOOP_DEPTH = 32;          { profondeur maximale de boucles imbriquees }
+
+Type
+  TLoopEntry = Record
+    BreakLbl    : TString;      { label de sortie (break -> JMP ici)     }
+    ContinueLbl : TString;      { label continue (continue -> JMP ici)   }
+  End;
+
+Var
+  LoopStack : Array[0..MAX_LOOP_DEPTH - 1] Of TLoopEntry;
+  LoopDepth : Integer;          { profondeur courante de la pile         }
 
   { Variables binaires }
   BinCode     : Array[0..MAX_BIN_CODE - 1] of Byte;
@@ -851,6 +866,11 @@ Procedure ParseMethodBody; Forward;
 
 { Forward declarations for TODO 13 }
 Procedure ParseIfStmt; Forward;
+
+{ Forward declarations for TODO 14 }
+Procedure ParseForStmt; Forward;
+Procedure ParseWhileStmt; Forward;
+Procedure ParseDoWhileStmt; Forward;
 
 { ============================================================ }
 { TODO 02 - LEXEUR (TOKENS C#)                                 }
@@ -5067,6 +5087,51 @@ Begin
     Exit;
   End;
 
+  (* for (init; cond; incr) { stmts } *)
+  If TokIsKw('for') Then
+  Begin
+    ParseForStmt;
+    Exit;
+  End;
+
+  (* while (cond) { stmts } *)
+  If TokIsKw('while') Then
+  Begin
+    ParseWhileStmt;
+    Exit;
+  End;
+
+  (* do { stmts } while (cond); *)
+  If TokIsKw('do') Then
+  Begin
+    ParseDoWhileStmt;
+    Exit;
+  End;
+
+  (* break; *)
+  If TokIsKw('break') Then
+  Begin
+    Consume;
+    If LoopDepth > 0 Then
+      EmitInstr('JMP', LoopStack[LoopDepth - 1].BreakLbl)
+    Else
+      FatalError('break en dehors d''une boucle');
+    If TokIsPunct(';') Then Consume;
+    Exit;
+  End;
+
+  (* continue; *)
+  If TokIsKw('continue') Then
+  Begin
+    Consume;
+    If LoopDepth > 0 Then
+      EmitInstr('JMP', LoopStack[LoopDepth - 1].ContinueLbl)
+    Else
+      FatalError('continue en dehors d''une boucle');
+    If TokIsPunct(';') Then Consume;
+    Exit;
+  End;
+
   { Declaration de variable locale : type ident [= expr]; }
   If IsTypeKeyword Then
   Begin
@@ -5256,6 +5321,345 @@ Begin
   End;
 End;
 
+(* ============================================================ *)
+(* TODO 14 - BOUCLES (for / while / do-while)                    *)
+(*           [IMPLEMENTE]                                        *)
+(* ============================================================ *)
+(*                                                               *)
+(*  LoopPush / LoopPop : pile de labels pour break / continue.   *)
+(*  ParseWhileStmt : while (cond) { stmts }                      *)
+(*    Genere : lbl_test -> ParseExpr -> TEST/JZ lbl_end          *)
+(*             -> stmts -> JMP lbl_test -> lbl_end               *)
+(*  ParseDoWhileStmt : do { stmts } while (cond);                *)
+(*    Genere : lbl_beg -> stmts -> ParseExpr -> TEST/JNZ lbl_beg *)
+(*             -> lbl_end                                        *)
+(*  ParseForStmt : for (init; cond; incr) { stmts }              *)
+(*    Genere : init -> lbl_test -> cond -> JZ lbl_end            *)
+(*             -> JMP lbl_body -> lbl_incr -> incr               *)
+(*             -> JMP lbl_test -> lbl_body -> stmts              *)
+(*             -> JMP lbl_incr -> lbl_end                        *)
+(*  break -> JMP BreakLbl,  continue -> JMP ContinueLbl.         *)
+(*                                                               *)
+(* ============================================================ *)
+
+{ ------------------------------------------------------------ }
+{ LoopPush : empiler les labels de boucle                       }
+{ ------------------------------------------------------------ }
+
+Procedure LoopPush(Const BrkLbl, ContLbl : TString);
+Begin
+  If LoopDepth >= MAX_LOOP_DEPTH Then
+  Begin
+    FatalError('profondeur maximale de boucles imbriquees atteinte');
+    Exit;
+  End;
+  LoopStack[LoopDepth].BreakLbl    := BrkLbl;
+  LoopStack[LoopDepth].ContinueLbl := ContLbl;
+  Inc(LoopDepth);
+End;
+
+{ ------------------------------------------------------------ }
+{ LoopPop : depiler les labels de boucle                        }
+{ ------------------------------------------------------------ }
+
+Procedure LoopPop;
+Begin
+  If LoopDepth > 0 Then
+    Dec(LoopDepth);
+End;
+
+(* ------------------------------------------------------------ *)
+(* ParseWhileStmt : while (cond) stmts                           *)
+(*   Labels : lbl_test (debut de boucle), lbl_end (sortie).      *)
+(*   continue -> JMP lbl_test,  break -> JMP lbl_end.            *)
+(* ------------------------------------------------------------ *)
+
+Procedure ParseWhileStmt;
+Var
+  LblTest : TString;
+  LblEnd  : TString;
+Begin
+  { Consommer 'while' }
+  Consume;
+
+  { Generer les labels }
+  LblTest := GenLabel;
+  LblEnd  := GenLabel;
+
+  { Empiler les labels pour break/continue }
+  LoopPush(LblEnd, LblTest);
+
+  { Label du test de condition }
+  EmitLabel(LblTest);
+
+  { Parenthese ouvrante }
+  If TokIsPunct('(') Then
+    Consume
+  Else
+    FatalError('( attendu apres while');
+
+  { Evaluer la condition -> resultat dans EAX }
+  ParseExpr;
+
+  { Parenthese fermante }
+  If TokIsPunct(')') Then
+    Consume
+  Else
+    FatalError(') attendu apres condition while');
+
+  { TEST EAX,EAX / JZ lbl_end (si condition fausse, sortir) }
+  EmitInstr('TEST', 'EAX, EAX');
+  EmitInstr('JZ', LblEnd);
+
+  { Corps de la boucle }
+  If TokIsPunct('{') Then
+  Begin
+    Consume;
+    SymEnterScope;
+    While (CurToken.Kind <> TK_EOF) And (Not TokIsPunct('}')) Do
+      ParseStatement;
+    If TokIsPunct('}') Then Consume;
+    SymLeaveScope;
+  End
+  Else
+    ParseStatement;
+
+  { Retour au test }
+  EmitInstr('JMP', LblTest);
+
+  { Label de sortie }
+  EmitLabel(LblEnd);
+
+  { Depiler les labels }
+  LoopPop;
+End;
+
+(* ------------------------------------------------------------ *)
+(* ParseDoWhileStmt : do stmts while (cond);                     *)
+(*   Labels : lbl_beg (debut corps), lbl_end (sortie).           *)
+(*   continue -> JMP lbl_beg,  break -> JMP lbl_end.             *)
+(* ------------------------------------------------------------ *)
+
+Procedure ParseDoWhileStmt;
+Var
+  LblBeg : TString;
+  LblEnd : TString;
+Begin
+  { Consommer 'do' }
+  Consume;
+
+  { Generer les labels }
+  LblBeg := GenLabel;
+  LblEnd := GenLabel;
+
+  { Empiler les labels pour break/continue }
+  LoopPush(LblEnd, LblBeg);
+
+  { Label de debut du corps }
+  EmitLabel(LblBeg);
+
+  { Corps de la boucle }
+  If TokIsPunct('{') Then
+  Begin
+    Consume;
+    SymEnterScope;
+    While (CurToken.Kind <> TK_EOF) And (Not TokIsPunct('}')) Do
+      ParseStatement;
+    If TokIsPunct('}') Then Consume;
+    SymLeaveScope;
+  End
+  Else
+    ParseStatement;
+
+  { Consommer 'while' }
+  If TokIsKw('while') Then
+    Consume
+  Else
+    FatalError('while attendu apres do { ... }');
+
+  { Parenthese ouvrante }
+  If TokIsPunct('(') Then
+    Consume
+  Else
+    FatalError('( attendu apres while');
+
+  { Evaluer la condition -> resultat dans EAX }
+  ParseExpr;
+
+  { Parenthese fermante }
+  If TokIsPunct(')') Then
+    Consume
+  Else
+    FatalError(') attendu apres condition while');
+
+  { TEST EAX,EAX / JNZ lbl_beg (si condition vraie, reboucler) }
+  EmitInstr('TEST', 'EAX, EAX');
+  EmitInstr('JNZ', LblBeg);
+
+  { Label de sortie }
+  EmitLabel(LblEnd);
+
+  { Point-virgule final }
+  If TokIsPunct(';') Then Consume;
+
+  { Depiler les labels }
+  LoopPop;
+End;
+
+(* ------------------------------------------------------------ *)
+(* ParseForStmt : for (init; cond; incr) stmts                   *)
+(*   Labels : lbl_test (test condition), lbl_incr (increment),   *)
+(*            lbl_body (corps), lbl_end (sortie).                *)
+(*   continue -> JMP lbl_incr,  break -> JMP lbl_end.            *)
+(*   Portee de bloc pour la variable d initialisation.           *)
+(* ------------------------------------------------------------ *)
+
+Procedure ParseForStmt;
+Var
+  LblTest  : TString;
+  LblIncr  : TString;
+  LblBody  : TString;
+  LblEnd   : TString;
+  VarType  : TString;
+  SavedName: TString;
+  Idx      : Integer;
+Begin
+  { Consommer 'for' }
+  Consume;
+
+  { Generer les labels }
+  LblTest := GenLabel;
+  LblIncr := GenLabel;
+  LblBody := GenLabel;
+  LblEnd  := GenLabel;
+
+  { Ouvrir le scope du for (pour la variable d init) }
+  SymEnterScope;
+
+  { Parenthese ouvrante }
+  If TokIsPunct('(') Then
+    Consume
+  Else
+    FatalError('( attendu apres for');
+
+  { --- INIT --- }
+  { init peut etre : declaration (int i = 0), expression, ou vide }
+  If Not TokIsPunct(';') Then
+  Begin
+    If IsTypeKeyword Then
+    Begin
+      { Declaration de variable : int i = 0 }
+      VarType := CurToken.Val;
+      Consume;
+      If CurToken.Kind = TK_IDENT Then
+        ParseVarDecl(VarType, False, '');
+    End
+    Else If CurToken.Kind = TK_IDENT Then
+    Begin
+      { Expression (affectation typique) }
+      SavedName := CurToken.Val;
+      Consume;
+      ParseAssignment(SavedName);
+    End
+    Else
+      ParseExpr;
+  End;
+  { Consommer le ; apres init }
+  If TokIsPunct(';') Then Consume;
+
+  { Empiler les labels pour break/continue }
+  LoopPush(LblEnd, LblIncr);
+
+  { --- CONDITION --- }
+  { Label du test de condition }
+  EmitLabel(LblTest);
+
+  If Not TokIsPunct(';') Then
+  Begin
+    { Evaluer la condition -> EAX }
+    ParseExpr;
+    { TEST EAX,EAX / JZ lbl_end }
+    EmitInstr('TEST', 'EAX, EAX');
+    EmitInstr('JZ', LblEnd);
+  End;
+  { Consommer le ; apres cond }
+  If TokIsPunct(';') Then Consume;
+
+  { Sauter par-dessus l increment vers le corps }
+  EmitInstr('JMP', LblBody);
+
+  { --- INCREMENT --- }
+  EmitLabel(LblIncr);
+
+  If Not TokIsPunct(')') Then
+  Begin
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      SavedName := CurToken.Val;
+      Consume;
+      ParseAssignment(SavedName);
+    End
+    Else If TokIsOp('++') Then
+    Begin
+      Consume;
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        Idx := SymFind(CurToken.Val);
+        Consume;
+        GenIncVar(Idx);
+      End;
+    End
+    Else If TokIsOp('--') Then
+    Begin
+      Consume;
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        Idx := SymFind(CurToken.Val);
+        Consume;
+        GenDecVar(Idx);
+      End;
+    End
+    Else
+      ParseExpr;
+  End;
+
+  { Retour au test de condition }
+  EmitInstr('JMP', LblTest);
+
+  { Parenthese fermante }
+  If TokIsPunct(')') Then
+    Consume
+  Else
+    FatalError(') attendu apres for (init; cond; incr');
+
+  { --- CORPS --- }
+  EmitLabel(LblBody);
+
+  If TokIsPunct('{') Then
+  Begin
+    Consume;
+    SymEnterScope;
+    While (CurToken.Kind <> TK_EOF) And (Not TokIsPunct('}')) Do
+      ParseStatement;
+    If TokIsPunct('}') Then Consume;
+    SymLeaveScope;
+  End
+  Else
+    ParseStatement;
+
+  { Saut vers l increment }
+  EmitInstr('JMP', LblIncr);
+
+  { Label de sortie }
+  EmitLabel(LblEnd);
+
+  { Depiler les labels }
+  LoopPop;
+
+  { Fermer le scope du for }
+  SymLeaveScope;
+End;
+
 { ------------------------------------------------------------ }
 { ShowStats (corps)                                             }
 { ------------------------------------------------------------ }
@@ -5333,6 +5737,9 @@ Begin
 
   { Initialiser l emetteur (TODO 07) }
   LabelSeq := 0;
+
+  { Initialiser la pile de boucles (TODO 14) }
+  LoopDepth := 0;
 
   { Initialiser le segment de donnees (TODO 08) }
   DataInit;
@@ -5698,7 +6105,7 @@ Begin
   EmitClose;
 
   WriteLn('CSCW32: ASM genere -> ', AsmFileName);
-  WriteLn('CSCW32: Les TODOs 14..25 ne sont pas encore implementes.');
+  WriteLn('CSCW32: Les TODOs 15..25 ne sont pas encore implementes.');
 End;
 
 { ------------------------------------------------------------ }

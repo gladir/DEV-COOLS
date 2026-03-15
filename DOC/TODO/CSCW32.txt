@@ -359,7 +359,7 @@
               sans accolades, else if, else if multiple, &&, ||,
               !, if imbriques, portee locale, appels methode).
 
-  TODO 14 - BOUCLES (for / while / do-while)
+  TODO 14 - BOUCLES (for / while / do-while) [IMPLEMENTE]
             ParseForStmt : for (init; cond; incr) { stmts }.
               Trois expressions separees par ;.
               init : declaration ou expression (int i = 0).
@@ -374,9 +374,11 @@
             ParseDoWhileStmt : do { stmts } while (cond);.
               Labels : _CSCL_DBEG_N (debut), _CSCL_DEND_N (sortie).
             LoopPush / LoopPop : pile de labels pour break/continue.
-              Profondeur maximale : MAX_LOOP_DEPTH.
-            break : JMP vers _CSCL_*END_N (fin de la boucle).
-            continue : JMP vers _CSCL_*INCR_N ou _CSCL_*TEST_N.
+              Profondeur maximale : MAX_LOOP_DEPTH = 32.
+            break : JMP vers BreakLbl (fin de la boucle).
+            continue : JMP vers ContinueLbl (increment ou test).
+            test21_loops.cs : 15 cas de test (while, do-while, for,
+              boucles imbriquees, break, continue).
 
   TODO 15 - SWITCH / CASE / DEFAULT
             ParseSwitchStmt : switch (expr) { case val: stmts }.
