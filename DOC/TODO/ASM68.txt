@@ -44,7 +44,7 @@ TODO 01 - Infrastructure, options de ligne de commande et constantes [IMPLEMENTE
   - Fonctions utilitaires : UpCaseStr, IntToHex, HexToInt,
     Trim, PadRight, FileExists
 
-TODO 02 - Lexeur : lecture source et tokenisation
+TODO 02 - Lexeur : lecture source et tokenisation [IMPLEMENTE]
   --------------------------------------------------
   - Token types : TOK_IDENT, TOK_INTEGER, TOK_STRING, TOK_CHAR,
     TOK_REGISTER, TOK_OPCODE, TOK_DIRECTIVE, TOK_LABEL,
