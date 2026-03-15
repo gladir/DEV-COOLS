@@ -4,3 +4,4 @@
 *.ppu
 /JASMIN
 /ASM68
+*.S68

@@ -27,7 +27,7 @@
 { TODO 07 - Generateur de code : emission et sections [IMPLEMENTE] }
 { TODO 08 - Directives assembleur de base (ORG, DC, DS, EQU, END) [IMPLEMENTE] }
 { TODO 09 - Directives assembleur avancees (SECTION, INCLUDE, macros) [IMPLEMENTE] }
-{ TODO 10 - Assemblage conditionnel (IF, IFDEF, IFEQ, etc.) }
+{ TODO 10 - Assemblage conditionnel (IF, IFDEF, IFEQ, etc.) [IMPLEMENTE] }
 { TODO 11 - Instructions de transfert de donnees }
 { TODO 12 - Instructions arithmetiques entieres }
 { TODO 13 - Instructions logiques et de manipulation de bits }
@@ -70,6 +70,7 @@ Const
   MAX_FIXUP         = 4096;   { Fixups max (references a resoudre)     }
   MAX_EXPR_DEPTH    = 32;     { Profondeur max d'expression            }
   MAX_DEF_SYMS      = 32;     { Symboles predefinis max (-d)           }
+  MAX_COND_DEPTH    = 32;     { Profondeur max d'imbrication IF        }
   MAX_INC_PATHS     = 16;     { Repertoires INCLUDE max (-i)           }
   MAX_SEC_SIZE      = 65536;  { Taille max d'une section en octets     }
   MAX_ERRORS        = 100;    { Erreurs max avant arret                }
@@ -355,6 +356,14 @@ Var
   macro_narg     : Integer;      { NARG pendant expansion                 }
   macro_unique_id: Integer;      { Compteur pour etiquettes uniques (\@)  }
   include_depth  : Integer;      { Profondeur d'imbrication INCLUDE       }
+
+  { --- Assemblage conditionnel (TODO 10) --- }
+  cond_stack     : Array[1..MAX_COND_DEPTH] of Record
+                     assembling : Boolean;  { True si on assemble dans ce niveau  }
+                     else_seen  : Boolean;  { True si ELSE deja rencontre         }
+                     outer_asm  : Boolean;  { True si le niveau parent assemble   }
+                   End;
+  cond_depth     : Integer;      { Profondeur courante d'imbrication IF   }
 
 { ============================================================================ }
 { Fonctions utilitaires                                                        }
@@ -676,6 +685,7 @@ Begin
  If (U = 'IF') or (U = 'IFDEF') or (U = 'IFNDEF') or
     (U = 'IFEQ') or (U = 'IFNE') or (U = 'IFGT') or
     (U = 'IFGE') or (U = 'IFLT') or (U = 'IFLE') or
+    (U = 'IFC') or (U = 'IFNC') or
     (U = 'ELSE') or (U = 'ENDC') or (U = 'ENDIF') Then Begin IsDirective := True; Exit; End;
  If (U = 'XDEF') or (U = 'XREF') or (U = 'PUBLIC') or
     (U = 'EXTERN') or (U = 'ENTRY') or
@@ -3778,6 +3788,296 @@ Begin
  End;
 End;
 
+{ ============================================================================ }
+{ TODO 10 - Assemblage conditionnel (IF, IFDEF, IFEQ, etc.)                    }
+{ ============================================================================ }
+
+Function CondAssembling: Boolean;
+{ Retourne True si on assemble au niveau courant }
+Begin
+ If cond_depth = 0 Then
+  CondAssembling := True
+ Else
+  CondAssembling := cond_stack[cond_depth].assembling;
+End;
+
+Procedure CondPush(Assembling_: Boolean);
+{ Empiler un nouveau niveau conditionnel }
+Begin
+ If cond_depth >= MAX_COND_DEPTH Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'imbrication IF trop profonde');
+  Exit;
+ End;
+ Inc(cond_depth);
+ cond_stack[cond_depth].outer_asm := CondAssembling;
+ { On assemble si le parent assemble ET que la condition est vraie }
+ If cond_depth > 1 Then
+  cond_stack[cond_depth].assembling := cond_stack[cond_depth - 1].assembling and Assembling_
+ Else
+  cond_stack[cond_depth].assembling := Assembling_;
+ cond_stack[cond_depth].else_seen := False;
+End;
+
+Procedure DirIFEQ;
+{ IFEQ expr : assembler si expr = 0 }
+Var V: LongInt;
+Begin
+ V := EvalExpr;
+ CondPush(V = 0);
+ SkipToEOL;
+End;
+
+Procedure DirIFNE;
+{ IFNE expr : assembler si expr <> 0 }
+Var V: LongInt;
+Begin
+ V := EvalExpr;
+ CondPush(V <> 0);
+ SkipToEOL;
+End;
+
+Procedure DirIFGT;
+{ IFGT expr : assembler si expr > 0 }
+Var V: LongInt;
+Begin
+ V := EvalExpr;
+ CondPush(V > 0);
+ SkipToEOL;
+End;
+
+Procedure DirIFGE;
+{ IFGE expr : assembler si expr >= 0 }
+Var V: LongInt;
+Begin
+ V := EvalExpr;
+ CondPush(V >= 0);
+ SkipToEOL;
+End;
+
+Procedure DirIFLT;
+{ IFLT expr : assembler si expr < 0 }
+Var V: LongInt;
+Begin
+ V := EvalExpr;
+ CondPush(V < 0);
+ SkipToEOL;
+End;
+
+Procedure DirIFLE;
+{ IFLE expr : assembler si expr <= 0 }
+Var V: LongInt;
+Begin
+ V := EvalExpr;
+ CondPush(V <= 0);
+ SkipToEOL;
+End;
+
+Procedure DirIFDEF;
+{ IFDEF sym : assembler si symbole defini }
+Var SymName_: String;
+Begin
+ If cur_tok = TOK_IDENT Then
+ Begin
+  SymName_ := cur_tok_str;
+  NextToken;
+ End
+ Else If cur_tok = TOK_LABEL Then
+ Begin
+  SymName_ := cur_tok_str;
+  If (Length(SymName_) > 0) and (SymName_[Length(SymName_)] = ':') Then
+   SymName_ := Copy(SymName_, 1, Length(SymName_) - 1);
+  NextToken;
+ End
+ Else
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'IFDEF: symbole attendu');
+  SymName_ := '';
+ End;
+ If SymName_ <> '' Then
+  CondPush(FindSym(SymName_) <> 0)
+ Else
+  CondPush(False);
+ SkipToEOL;
+End;
+
+Procedure DirIFNDEF;
+{ IFNDEF sym : assembler si symbole non defini }
+Var SymName_: String;
+Begin
+ If cur_tok = TOK_IDENT Then
+ Begin
+  SymName_ := cur_tok_str;
+  NextToken;
+ End
+ Else If cur_tok = TOK_LABEL Then
+ Begin
+  SymName_ := cur_tok_str;
+  If (Length(SymName_) > 0) and (SymName_[Length(SymName_)] = ':') Then
+   SymName_ := Copy(SymName_, 1, Length(SymName_) - 1);
+  NextToken;
+ End
+ Else
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'IFNDEF: symbole attendu');
+  SymName_ := '';
+ End;
+ If SymName_ <> '' Then
+  CondPush(FindSym(SymName_) = 0)
+ Else
+  CondPush(False);
+ SkipToEOL;
+End;
+
+Procedure DirIFC;
+{ IFC str1,str2 : assembler si chaines egales }
+Var S1, S2: String;
+Begin
+ S1 := '';
+ S2 := '';
+ { Lire premiere chaine }
+ If cur_tok = TOK_STRING Then
+ Begin
+  S1 := cur_tok_str;
+  NextToken;
+ End
+ Else If cur_tok = TOK_IDENT Then
+ Begin
+  S1 := cur_tok_str;
+  NextToken;
+ End
+ Else
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'IFC: chaine attendue');
+  CondPush(False);
+  SkipToEOL;
+  Exit;
+ End;
+ { Virgule }
+ If cur_tok = TOK_COMMA Then
+  NextToken
+ Else
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'IFC: virgule attendue');
+  CondPush(False);
+  SkipToEOL;
+  Exit;
+ End;
+ { Lire seconde chaine }
+ If cur_tok = TOK_STRING Then
+ Begin
+  S2 := cur_tok_str;
+  NextToken;
+ End
+ Else If cur_tok = TOK_IDENT Then
+ Begin
+  S2 := cur_tok_str;
+  NextToken;
+ End
+ Else
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'IFC: seconde chaine attendue');
+  CondPush(False);
+  SkipToEOL;
+  Exit;
+ End;
+ CondPush(S1 = S2);
+ SkipToEOL;
+End;
+
+Procedure DirIFNC;
+{ IFNC str1,str2 : assembler si chaines differentes }
+Var S1, S2: String;
+Begin
+ S1 := '';
+ S2 := '';
+ If cur_tok = TOK_STRING Then
+ Begin
+  S1 := cur_tok_str;
+  NextToken;
+ End
+ Else If cur_tok = TOK_IDENT Then
+ Begin
+  S1 := cur_tok_str;
+  NextToken;
+ End
+ Else
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'IFNC: chaine attendue');
+  CondPush(False);
+  SkipToEOL;
+  Exit;
+ End;
+ If cur_tok = TOK_COMMA Then
+  NextToken
+ Else
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'IFNC: virgule attendue');
+  CondPush(False);
+  SkipToEOL;
+  Exit;
+ End;
+ If cur_tok = TOK_STRING Then
+ Begin
+  S2 := cur_tok_str;
+  NextToken;
+ End
+ Else If cur_tok = TOK_IDENT Then
+ Begin
+  S2 := cur_tok_str;
+  NextToken;
+ End
+ Else
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'IFNC: seconde chaine attendue');
+  CondPush(False);
+  SkipToEOL;
+  Exit;
+ End;
+ CondPush(S1 <> S2);
+ SkipToEOL;
+End;
+
+Procedure DirELSE_;
+{ ELSE : inverser la condition du bloc courant }
+Begin
+ If cond_depth = 0 Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'ELSE sans IF correspondant');
+  SkipToEOL;
+  Exit;
+ End;
+ If cond_stack[cond_depth].else_seen Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'ELSE deja rencontre dans ce bloc IF');
+  SkipToEOL;
+  Exit;
+ End;
+ cond_stack[cond_depth].else_seen := True;
+ { Inverser: assembler si le parent assemble ET qu'on n'assemblait pas }
+ If cond_depth > 1 Then
+  cond_stack[cond_depth].assembling :=
+   cond_stack[cond_depth - 1].assembling and
+   (Not cond_stack[cond_depth].assembling)
+ Else
+  cond_stack[cond_depth].assembling :=
+   Not cond_stack[cond_depth].assembling;
+ SkipToEOL;
+End;
+
+Procedure DirENDC;
+{ ENDC / ENDIF : fin du bloc conditionnel }
+Begin
+ If cond_depth = 0 Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'ENDC/ENDIF sans IF correspondant');
+  SkipToEOL;
+  Exit;
+ End;
+ Dec(cond_depth);
+ SkipToEOL;
+End;
+
 { ---------- ParseLine : traiter une ligne source ---------- }
 
 Procedure ParseLine;
@@ -3801,6 +4101,53 @@ Begin
   Exit;
  End;
  If cur_tok = TOK_EOF Then Exit;
+
+ { --- Assemblage conditionnel (TODO 10) --- }
+ { Quand on n'assemble pas, on doit quand meme suivre les IF/ENDC imbriqu }
+ If Not CondAssembling Then
+ Begin
+  { Scanner la ligne pour trouver les directives conditionnelles }
+  { Sauter l'etiquette eventuelle }
+  If cur_tok = TOK_LABEL Then
+   NextToken
+  Else If cur_tok = TOK_IDENT Then
+  Begin
+   NextToken;
+   If cur_tok = TOK_COLON Then
+    NextToken;
+  End;
+  { Verifier si c'est une directive conditionnelle }
+  If cur_tok = TOK_DIRECTIVE Then
+  Begin
+   DirName := UpCaseStr(cur_tok_str);
+   NextToken;
+   If (DirName = 'IFEQ') or (DirName = 'IFNE') or
+      (DirName = 'IFGT') or (DirName = 'IFGE') or
+      (DirName = 'IFLT') or (DirName = 'IFLE') or
+      (DirName = 'IFDEF') or (DirName = 'IFNDEF') or
+      (DirName = 'IFC') or (DirName = 'IFNC') or
+      (DirName = 'IF') Then
+   Begin
+    { Empiler un faux niveau pour suivre l'imbrication }
+    CondPush(False);
+    SkipToEOL;
+   End
+   Else If DirName = 'ELSE' Then
+   Begin
+    DirELSE_;
+   End
+   Else If (DirName = 'ENDC') or (DirName = 'ENDIF') Then
+   Begin
+    DirENDC;
+   End
+   Else
+    SkipToEOL;
+  End
+  Else
+   SkipToEOL;
+  If cur_tok = TOK_EOL Then NextToken;
+  Exit;
+ End;
 
  { --- Etiquette en debut de ligne --- }
  If cur_tok = TOK_LABEL Then
@@ -3965,6 +4312,36 @@ Begin
      Warning(cur_tok_line, cur_tok_col, 'MEXIT en dehors d''une macro');
     SkipToEOL;
    End
+   { --- Assemblage conditionnel (TODO 10) --- }
+   Else If DirName = 'IFEQ' Then
+    DirIFEQ
+   Else If DirName = 'IFNE' Then
+    DirIFNE
+   Else If DirName = 'IFGT' Then
+    DirIFGT
+   Else If DirName = 'IFGE' Then
+    DirIFGE
+   Else If DirName = 'IFLT' Then
+    DirIFLT
+   Else If DirName = 'IFLE' Then
+    DirIFLE
+   Else If DirName = 'IFDEF' Then
+    DirIFDEF
+   Else If DirName = 'IFNDEF' Then
+    DirIFNDEF
+   Else If DirName = 'IFC' Then
+    DirIFC
+   Else If DirName = 'IFNC' Then
+    DirIFNC
+   Else If (DirName = 'IF') Then
+   Begin
+    { IF expr : assembler si expr <> 0 (alias de IFNE) }
+    DirIFNE;
+   End
+   Else If DirName = 'ELSE' Then
+    DirELSE_
+   Else If (DirName = 'ENDC') or (DirName = 'ENDIF') Then
+    DirENDC
    Else
    Begin
     { Directive non encore implementee }
@@ -4160,6 +4537,9 @@ Begin
  include_depth := 0;
  For I := 1 to MAX_MACRO do MacroTable[I] := nil;
 
+ { Initialiser l'assemblage conditionnel (TODO 10) }
+ cond_depth := 0;
+
  { Initialiser la table des symboles }
  InitSymTable;
 
@@ -4179,6 +4559,11 @@ Begin
  Begin
   ParseLine;
  End;
+
+ { Verifier les blocs conditionnels non fermes (TODO 10) }
+ If cond_depth > 0 Then
+  Error(cur_tok_line, cur_tok_col,
+        IntToStr(cond_depth) + ' bloc(s) IF non ferme(s) (ENDC/ENDIF manquant)');
 
  { Calculer la taille totale du code genere }
  CodeSize := 0;

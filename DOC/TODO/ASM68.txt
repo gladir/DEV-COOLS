@@ -213,7 +213,7 @@ TODO 09 - Directives assembleur avancees (SECTION, INCLUDE, macros) [IMPLEMENTE]
   - Etiquettes locales dans les macros (\@)
   - Concatenation de symboles dans les macros (\param.suffix)
 
-TODO 10 - Assemblage conditionnel (IF, IFDEF, IFEQ, etc.)
+TODO 10 - Assemblage conditionnel (IF, IFDEF, IFEQ, etc.) [IMPLEMENTE]
   ----------------------------------------------------------
   - IFEQ expr / IFNE expr : assembler si expr == 0 / != 0
   - IFGT expr / IFGE expr : assembler si expr > 0 / >= 0
