@@ -331,7 +331,7 @@
             Optimisation : si l argument est une simple variable,
               passage par reference au lieu de thunk (LEA au lieu de CALL)
 
-  TODO 23 - GESTION DES ERREURS DE COMPILATION
+  TODO 23 - GESTION DES ERREURS DE COMPILATION [IMPLEMENTE]
             TErrorRec : Line, Col, Msg
             ErrTab[0..MAX_ERRORS-1], ErrCount
             FatalError(msg) : affiche erreur + arret immediat (Halt)
@@ -534,6 +534,13 @@ Type
     ElemCount : Integer;  { DK_ARRAY_BLK : nb elements }
   End;
 
+  { ---- Enregistrement d'erreur (TODO 23) ----------------- }
+  TErrorRec = Record
+    Line : Integer;
+    Col  : Integer;
+    Msg  : TString;
+  End;
+
   { ---- Valeurs d'expression (TODO 03) -------------------- }
   TExprKind = (
     EK_NONE,   { void / pas de valeur             }
@@ -606,6 +613,10 @@ Var
 
   { Etat general }
   RuntimeEmitted : Boolean;
+
+  { Table des erreurs (TODO 23) }
+  ErrTab   : Array[0..MAX_ERRORS - 1] Of TErrorRec;
+  ErrCount : Integer;
 
 { ============================================================
   FORWARD DECLARATIONS
@@ -711,6 +722,8 @@ Procedure ParseProcDecl; Forward;
 Procedure ParseGotoStmt; Forward;
 { TODO 19 - Declarations switch }
 Procedure ParseSwitchDecl; Forward;
+{ TODO 23 - Gestion des erreurs }
+Procedure ErrorRecover; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -733,9 +746,17 @@ End;
 
 Procedure CompileError(Const Msg : TString);
 Begin
+  { Enregistrer l erreur dans ErrTab (TODO 23) }
+  If ErrCount < MAX_ERRORS Then
+  Begin
+    ErrTab[ErrCount].Line := CurToken.Line;
+    ErrTab[ErrCount].Col  := CurToken.Col;
+    ErrTab[ErrCount].Msg  := Msg;
+    Inc(ErrCount);
+  End;
   Write('AL58C86:');
   If CurToken.Line > 0 Then
-    Write(Opts.SrcFile, ':', CurToken.Line, ': ');
+    Write(Opts.SrcFile, ':', CurToken.Line, ':', CurToken.Col, ': ');
   WriteLn('error: ', Msg);
   Inc(ErrorCount);
   If ErrorCount >= MAX_ERRORS Then
@@ -747,9 +768,31 @@ Begin
   If Not Opts.Warnings Then Exit;
   Write('AL58C86:');
   If CurToken.Line > 0 Then
-    Write(Opts.SrcFile, ':', CurToken.Line, ': ');
+    Write(Opts.SrcFile, ':', CurToken.Line, ':', CurToken.Col, ': ');
   WriteLn('warning: ', Msg);
   Inc(WarnCount);
+End;
+
+{ ---- ErrorRecover : recuperation apres erreur (TODO 23) ------ }
+{ Saute les tokens jusqu au prochain point-virgule ou mot-cle    }
+{ structurant (begin, end, for, if, procedure) pour permettre    }
+{ la continuation de la compilation apres une erreur.            }
+Procedure ErrorRecover;
+Begin
+  While (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    Begin
+      ParserAdvance;
+      Exit;
+    End;
+    If (CurToken.Kind = TK_KEYWORD) And
+       ((CurToken.Val = 'begin') Or (CurToken.Val = 'end') Or
+        (CurToken.Val = 'for') Or (CurToken.Val = 'if') Or
+        (CurToken.Val = 'procedure')) Then
+      Exit;
+    ParserAdvance;
+  End;
 End;
 
 { ---- Banniere ---------------------------------------------- }
@@ -919,6 +962,7 @@ Procedure GlobalInit;
 Begin
   ErrorCount     := 0;
   WarnCount      := 0;
+  ErrCount       := 0;
   TotalLines     := 0;
   TotalSyms      := 0;
   SymCount       := 0;
@@ -950,6 +994,7 @@ End;
 { ---- ShowStats --------------------------------------------- }
 
 Procedure ShowStats;
+Var I : Integer;
 Begin
   WriteLn;
   WriteLn('Compilation terminee : ', Opts.SrcFile, ' -> ', Opts.OutFile);
@@ -957,6 +1002,15 @@ Begin
   WriteLn('  Symboles       : ', TotalSyms);
   WriteLn('  Erreurs        : ', ErrorCount);
   WriteLn('  Avertissements : ', WarnCount);
+  { Resume des erreurs enregistrees (TODO 23) }
+  If ErrCount > 0 Then
+  Begin
+    WriteLn;
+    WriteLn('Resume des erreurs :');
+    For I := 0 To ErrCount - 1 Do
+      WriteLn('  ', Opts.SrcFile, ':', ErrTab[I].Line, ':',
+              ErrTab[I].Col, ': ', ErrTab[I].Msg);
+  End;
 End;
 
 { ============================================================
@@ -1079,6 +1133,18 @@ Begin
   Begin
     Ch := LexLine[LexColNo];
     N := N * 10 + (Ord(Ch) - Ord('0'));
+    { Detection de debordement entier 16 bits (TODO 23) }
+    If N > 32767 Then
+    Begin
+      CompileError('nombre trop grand (debordement entier 16 bits)');
+      N := 32767;
+      { Consommer les chiffres restants }
+      Inc(LexColNo);
+      While (LexColNo <= Length(LexLine)) And
+            (LexLine[LexColNo] >= '0') And (LexLine[LexColNo] <= '9') Do
+        Inc(LexColNo);
+      Break;
+    End;
     Inc(LexColNo);
   End;
 
@@ -1123,12 +1189,15 @@ Begin
 End;
 
 { ---- LexScanString : scanner une chaine entre guillemets --- }
+{ Detecte les chaines non fermees en fin de ligne (TODO 23)    }
 Procedure LexScanString;
 Var
-  S  : TString;
-  Ch : Char;
+  S      : TString;
+  Ch     : Char;
+  Closed : Boolean;
 Begin
   S := '';
+  Closed := False;
   Inc(LexColNo); { sauter guillemet ouvrant }
   While LexColNo <= Length(LexLine) Do
   Begin
@@ -1143,7 +1212,10 @@ Begin
         Inc(LexColNo);
       End
       Else
+      Begin
+        Closed := True;
         Break; { fin de chaine }
+      End;
     End
     Else
     Begin
@@ -1151,6 +1223,8 @@ Begin
       Inc(LexColNo);
     End;
   End;
+  If Not Closed Then
+    CompileError('chaine non fermee (guillemet manquant)');
   CurToken.Kind   := TK_STRING;
   CurToken.Val    := S;
   CurToken.IntVal := 0;
@@ -1158,7 +1232,8 @@ End;
 
 { ---- LexSkipComment : sauter commentaire Algol 58 ---------- }
 { Le mot-cle 'comment' a deja ete lu. On saute tout jusqu au   }
-{ prochain point-virgule ;                                      }
+{ prochain point-virgule ; Detecte commentaire non termine      }
+{ en fin de fichier (TODO 23)                                   }
 Procedure LexSkipComment;
 Begin
   While Not LexEOF Do
@@ -1175,6 +1250,8 @@ Begin
     Else
       Inc(LexColNo);
   End;
+  { EOF atteint sans trouver le ; -> commentaire non termine }
+  CompileError('commentaire non termine (point-virgule manquant)');
 End;
 
 { ---- LexNextToken : scanner principal ----------------------- }
@@ -4432,6 +4509,28 @@ End;
   - Les fonctions transcendantes (sin,cos,arctan,ln,exp) sont
     des stubs CALL _A58RT_xxx avec avertissement
   - entier(x) est une identite en mode entier 16 bits           }
+
+{ ============================================================
+  TODO 23 - GESTION DES ERREURS DE COMPILATION [IMPLEMENTE]
+  ============================================================ }
+
+{ Gestion des erreurs de compilation :
+  - TErrorRec : Line, Col, Msg
+  - ErrTab[0..MAX_ERRORS-1] : table des erreurs enregistrees
+  - ErrCount : nombre d erreurs enregistrees dans ErrTab
+  - CompileError(msg) : enregistre dans ErrTab + affiche + Inc(ErrorCount)
+    Arret si ErrorCount >= MAX_ERRORS
+  - FatalError(msg) : affiche erreur + arret immediat (Halt)
+  - WarnMsg(msg) : affiche avertissement + Inc(WarnCount)
+  - ErrorRecover : saute au prochain ; ou mot-cle structurant
+    (begin, end, for, if, procedure) pour continuer l analyse
+  - Erreurs lexicales : caractere invalide, chaine non fermee,
+    nombre trop grand (debordement 16 bits), commentaire non termine
+  - Erreurs syntaxiques : token inattendu, begin/end non apparie,
+    point-virgule manquant, parenthese non fermee
+  - Erreurs semantiques : variable non declaree, type incompatible,
+    tableau hors bornes, label duplique
+  - ShowStats : resume des erreurs a la fin de la compilation        }
 
 { ============================================================
   TODO 22 - PARAMETRES PAR NOM ET THUNKS [IMPLEMENTE]
