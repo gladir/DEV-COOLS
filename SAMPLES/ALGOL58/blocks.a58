@@ -1,0 +1,83 @@
+comment Algol 58 - Exemple : blocs begin...end et portees ;
+comment Portees imbriquees, variables own, visibilite ;
+
+begin
+  integer x ;
+  x := 10 ;
+  writeln(x) ;
+
+  comment Bloc imbrique avec variable locale ;
+  begin
+    integer y ;
+    y := 20 ;
+    writeln(y) ;
+
+    comment Variable du bloc parent visible ;
+    writeln(x)
+  end ;
+
+  comment Plusieurs niveaux de blocs imbriques ;
+  begin
+    integer a ;
+    a := 1 ;
+    begin
+      integer b ;
+      b := 2 ;
+      begin
+        integer c ;
+        c := 3 ;
+        writeln(a) ;
+        writeln(b) ;
+        writeln(c)
+      end
+    end
+  end ;
+
+  comment Blocs sequentiels avec variables locales distinctes ;
+  begin
+    integer t ;
+    t := 100 ;
+    writeln(t)
+  end ;
+  begin
+    integer t ;
+    t := 200 ;
+    writeln(t)
+  end ;
+
+  comment Variable own : persistante entre appels ;
+  own integer total ;
+  total := 0 ;
+  total := total + 5 ;
+  writeln(total) ;
+
+  comment Bloc avec declarations et calculs ;
+  begin
+    integer i, s ;
+    s := 0 ;
+    for i := 1 step 1 until 5 do
+      s := s + i ;
+    writeln(s)
+  end ;
+
+  comment Bloc avec conditionnelle ;
+  begin
+    integer v ;
+    v := 42 ;
+    if v > 40 then
+      writeln("grand")
+    else
+      writeln("petit")
+  end ;
+
+  comment Bloc avec procedure locale ;
+  begin
+    procedure sayhi() ;
+      writeln("salut") ;
+
+    sayhi() ;
+    sayhi()
+  end ;
+
+  writeln("fin")
+end

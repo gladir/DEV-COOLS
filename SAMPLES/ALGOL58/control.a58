@@ -1,0 +1,67 @@
+comment Algol 58 - Exemple : structures de controle ;
+comment if/then/else, for step until, for while ;
+
+begin
+  integer x, y, s, i ;
+
+  comment if/then/else simple ;
+  x := 10 ;
+  if x > 5 then
+    writeln("x est grand")
+  else
+    writeln("x est petit") ;
+
+  comment if imbrique ;
+  y := -3 ;
+  if y > 0 then
+    writeln("positif")
+  else if y = 0 then
+    writeln("zero")
+  else
+    writeln("negatif") ;
+
+  comment Expression conditionnelle inline ;
+  x := 7 ;
+  y := if x > 5 then 100 else 200 ;
+  writeln(y) ;
+
+  comment Boucle for step until : somme de 1 a 10 ;
+  s := 0 ;
+  for i := 1 step 1 until 10 do
+    s := s + i ;
+  writeln(s) ;
+
+  comment Boucle for avec step 2 : nombres impairs de 1 a 9 ;
+  for i := 1 step 2 until 9 do
+    writeln(i) ;
+
+  comment Boucle for decroissante : compte a rebours ;
+  for i := 5 step -1 until 1 do
+    writeln(i) ;
+
+  comment Boucle for avec bloc ;
+  s := 1 ;
+  for i := 1 step 1 until 5 do
+  begin
+    s := s * i
+  end ;
+  writeln(s) ;
+
+  comment Boucle for while ;
+  s := 0 ;
+  i := 1 ;
+  for i := i while i <= 100 do
+  begin
+    s := s + i ;
+    i := i + 1
+  end ;
+  writeln(s) ;
+
+  comment Boucle for avec clause simple ;
+  for i := 42 do
+    writeln(i) ;
+
+  comment If dans une boucle ;
+  for i := 1 step 1 until 10 do
+    if i mod 2 = 0 then writeln(i)
+end

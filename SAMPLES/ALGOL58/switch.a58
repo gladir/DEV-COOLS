@@ -1,0 +1,79 @@
+comment Algol 58 - Exemple : switch, go to, etiquettes ;
+comment Declarations switch, saut conditionnel, etiquettes ;
+
+begin
+  integer choice, result ;
+
+  comment Switch simple : saut selon un index ;
+  switch menu := opt1, opt2, opt3 ;
+
+  choice := 2 ;
+  result := 0 ;
+  goto menu[choice] ;
+
+  opt1: result := 10 ;
+  goto done1 ;
+  opt2: result := 20 ;
+  goto done1 ;
+  opt3: result := 30 ;
+  goto done1 ;
+
+  done1:
+  writeln(result) ;
+
+  comment Go to avec etiquette symbolique ;
+  integer x ;
+  x := 0 ;
+  goto skip ;
+  x := 999 ;
+  skip:
+  writeln(x) ;
+
+  comment Etiquettes numeriques ;
+  integer y ;
+  y := 0 ;
+  goto 100 ;
+  y := 888 ;
+  100: y := 42 ;
+  writeln(y) ;
+
+  comment Switch avec variable comme index ;
+  integer idx ;
+  switch s2 := labA, labB, labC ;
+  integer r2 ;
+  r2 := 0 ;
+  idx := 3 ;
+  goto s2[idx] ;
+  labA: r2 := 1 ;
+  goto endS2 ;
+  labB: r2 := 2 ;
+  goto endS2 ;
+  labC: r2 := 3 ;
+  goto endS2 ;
+  endS2:
+  writeln(r2) ;
+
+  comment Switch avec expression comme index ;
+  switch s3 := dest1, dest2 ;
+  integer r3 ;
+  r3 := 0 ;
+  goto s3[1 + 1] ;
+  dest1: r3 := 10 ;
+  goto endS3 ;
+  dest2: r3 := 20 ;
+  goto endS3 ;
+  endS3:
+  writeln(r3) ;
+
+  comment Chaine de sauts via switch ;
+  switch chain := step1, step2, step3 ;
+  integer acc ;
+  acc := 0 ;
+  goto chain[1] ;
+  step1: acc := acc + 1 ;
+  goto chain[2] ;
+  step2: acc := acc + 10 ;
+  goto chain[3] ;
+  step3: acc := acc + 100 ;
+  writeln(acc)
+end
