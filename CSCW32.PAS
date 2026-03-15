@@ -5229,15 +5229,20 @@ Begin
       Begin
         { Convertir l operande droit en chaine si necessaire }
         If CurExprType <> TY_IDX_STRING Then
+        Begin
+          EmitInstr('MOV', 'EDI,OFFSET _CSC_NUMBUF');
           EmitInstr('CALL', CSC_RT_PFX + 'NUMTOSTR');
+          EmitInstr('MOV', 'EAX,OFFSET _CSC_NUMBUF');
+        End;
         GenPopEBX;
         { Convertir l operande gauche en chaine si necessaire }
         If LeftType <> TY_IDX_STRING Then
         Begin
           EmitInstr('PUSH', 'EAX');
           EmitInstr('MOV', 'EAX,EBX');
+          EmitInstr('MOV', 'EDI,OFFSET _CSC_NUMBUF');
           EmitInstr('CALL', CSC_RT_PFX + 'NUMTOSTR');
-          EmitInstr('MOV', 'EBX,EAX');
+          EmitInstr('MOV', 'EBX,OFFSET _CSC_NUMBUF');
           EmitInstr('POP', 'EAX');
         End;
         { ESI = chaine gauche, EDI = chaine droite }
