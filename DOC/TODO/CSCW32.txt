@@ -676,7 +676,7 @@
             Fichier test : test31_runtime.cs (15 cas,
               16 methodes, 20 routines runtime).
 
-  TODO 25 - GENERATION PE/COFF ET FICHIERS EXEMPLES
+  TODO 25 - GENERATION PE/COFF ET FICHIERS EXEMPLES [IMPLEMENTE]
             Generation PE (.EXE Windows 32 bits) :
               DOS stub (programme MZ minimal affichant un message).
               Signature PE : 'PE\0\0' ($00004550).
