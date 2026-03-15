@@ -24,7 +24,7 @@
 { TODO 04 - Table des symboles : etiquettes, EQU, SET [IMPLEMENTE] }
 { TODO 05 - Analyseur d'expressions arithmetiques [IMPLEMENTE] }
 { TODO 06 - Modes d'adressage : analyse et encodage [IMPLEMENTE] }
-{ TODO 07 - Generateur de code : emission et sections }
+{ TODO 07 - Generateur de code : emission et sections [IMPLEMENTE] }
 { TODO 08 - Directives assembleur de base (ORG, DC, DS, EQU, END) }
 { TODO 09 - Directives assembleur avancees (SECTION, INCLUDE, macros) }
 { TODO 10 - Assemblage conditionnel (IF, IFDEF, IFEQ, etc.) }
@@ -240,6 +240,29 @@ Type
     LineNum    : Integer;     { Numero de ligne de definition          }
   End;
 
+  { --- Section de code/donnees (TODO 07) --- }
+  TSectionBuf = Array[0..MAX_SEC_SIZE - 1] of Byte;
+  PSectionBuf = ^TSectionBuf;
+
+  TSection = Record
+    Name     : String[32];    { Nom de la section (CODE, DATA, etc.)   }
+    SecType  : Integer;       { SEC_CODE, SEC_DATA, SEC_BSS            }
+    Origin   : LongInt;       { Adresse d'origine (ORG)                }
+    CurAddr  : LongInt;       { Offset courant dans le buffer          }
+    Buf      : PSectionBuf;   { Buffer de code (alloue dynamiquement)  }
+    Size     : LongInt;       { Taille maximale utilisee               }
+  End;
+
+  { --- Fixup : reference a resoudre en passe 2 (TODO 07) --- }
+  TFixup = Record
+    Section  : Integer;       { Index de section (1..SectionCount)     }
+    Offset   : LongInt;       { Offset dans le buffer de la section    }
+    Size     : Integer;       { Taille du champ : 8, 16 ou 32 bits    }
+    SymIdx   : Integer;       { Index dans SymTable (0 = absolu)       }
+    FixType  : Integer;       { FIX_ABSOLUTE ou FIX_PC_RELATIVE        }
+    Addend   : LongInt;       { Valeur a ajouter (addend)              }
+  End;
+
 { ============================================================================ }
 { Variables globales                                                           }
 { ============================================================================ }
@@ -293,6 +316,13 @@ Var
   { --- Evaluateur d'expressions (TODO 05) --- }
   expr_pc       : LongInt;      { Adresse courante (pour * et $)         }
   expr_depth    : Integer;      { Profondeur de recursion courante       }
+
+  { --- Sections et generateur de code (TODO 07) --- }
+  Sections      : Array[1..MAX_SECTIONS] of TSection; { Sections          }
+  SectionCount  : Integer;      { Nombre de sections                     }
+  CurSection    : Integer;      { Index de la section courante (1-base)  }
+  Fixups        : Array[1..MAX_FIXUP] of TFixup; { Table des fixups      }
+  FixupCount    : Integer;      { Nombre de fixups enregistres           }
 
 { ============================================================================ }
 { Fonctions utilitaires                                                        }
@@ -1341,6 +1371,7 @@ End;
 
 Procedure BilanCompilation;
 { Affiche les statistiques de compilation }
+Var I: Integer;
 Begin
  WriteLn;
  WriteLn('ASM68 - Assembleur Motorola 68000');
@@ -1351,6 +1382,11 @@ Begin
  WriteLn;
  WriteLn('Lignes lues    : ', LineCount);
  WriteLn('Symboles       : ', SymCount);
+ WriteLn('Sections       : ', SectionCount);
+ For I := 1 to SectionCount do
+  WriteLn('  ', Sections[I].Name, ' : ', Sections[I].Size,
+          ' octets (org=$', IntToHex(Sections[I].Origin, 6), ')');
+ WriteLn('Fixups         : ', FixupCount);
  WriteLn('Taille code    : ', CodeSize, ' octets');
  WriteLn('Erreurs        : ', ErrorCount);
  WriteLn('Avertissements : ', WarningCount);
@@ -1841,9 +1877,14 @@ End;
   ParseOperand lit les tokens et remplit un TOperand.
   EncodeEA produit les 6 bits mode/reg.
   CalcExtWords compte les mots d'extension (0, 1 ou 2).
-  EmitExtWords est un stub pour le generateur de code (TODO 07).
+  EmitExtWords emet les mots d'extension via Emit16/Emit32 (TODO 07).
   CheckEAMask valide qu'un mode est permis par l'instruction.
   ParseRegList analyse D0-D3/A0-A2 pour MOVEM. }
+
+{ Forward declarations pour le generateur de code (TODO 07) }
+Procedure Emit8(B: Byte); Forward;
+Procedure Emit16(W: Word); Forward;
+Procedure Emit32(L: LongInt); Forward;
 
 Procedure InitOperand(Var Op: TOperand);
 { Initialise un operande a un etat neutre }
@@ -1993,10 +2034,38 @@ Begin
 End;
 
 Procedure EmitExtWords(Const Op: TOperand; OpSize: Integer);
-{ Stub : emettre les mots d'extension dans le code.
-  Sera implemente dans TODO 07 (generateur de code). }
+{ Emettre les mots d'extension d'un operande dans la section courante.
+  Appele apres l'emission du mot d'instruction principal.
+  Les mots d'extension dependent du mode d'adressage :
+  - d16(An), d16(PC) : 1 mot d'extension (deplacement 16 bits)
+  - d8(An,Xn), d8(PC,Xn) : 1 mot d'extension (brief extension word)
+  - xxx.W : 1 mot d'extension (adresse 16 bits)
+  - xxx.L : 2 mots d'extension (adresse 32 bits)
+  - #imm : 1 mot (.B/.W) ou 2 mots (.L) d'extension }
 Begin
- { Pas d'emission pour le moment - stub pour TODO 07 }
+ Case Op.Mode of
+  AM_ADDR_IND_DISP,
+  AM_PC_DISP:
+   Emit16(Word(Op.Disp and $FFFF));
+
+  AM_ADDR_IND_IDX,
+  AM_PC_IDX:
+   Emit16(Word(EncodeExtWordIdx(Op)));
+
+  AM_ABS_SHORT:
+   Emit16(Word(Op.Disp and $FFFF));
+
+  AM_ABS_LONG:
+   Emit32(Op.Disp);
+
+  AM_IMMEDIATE:
+  Begin
+   If OpSize = SIZE_LONG Then
+    Emit32(Op.Imm32)
+   Else
+    Emit16(Word(Op.Imm32 and $FFFF));
+  End;
+ End;
 End;
 
 Function CheckEAMask(Const Op: TOperand; Mask: Integer): Boolean;
@@ -2508,6 +2577,294 @@ Begin
 End;
 
 { ============================================================================ }
+{ TODO 07 - Generateur de code : emission et sections                          }
+{ ============================================================================ }
+
+{ Gestion des sections (CODE, DATA, BSS) et emission de code big-endian.
+  Chaque section possede un buffer dynamique, une adresse d'origine et
+  un offset courant. Les fixups enregistrent les references a resoudre
+  lors de la passe 2 (symboles non encore definis, references PC-relatives). }
+
+{ ---------- Initialisation et gestion des sections ---------- }
+
+Procedure InitSections;
+{ Cree les trois sections par defaut : CODE, DATA, BSS.
+  Alloue les buffers dynamiques. CurSection pointe sur CODE. }
+Begin
+ SectionCount := 3;
+ CurSection   := 1;
+
+ { Section 1 : CODE (text) }
+ Sections[1].Name    := 'CODE';
+ Sections[1].SecType := SEC_CODE;
+ Sections[1].Origin  := 0;
+ Sections[1].CurAddr := 0;
+ Sections[1].Size    := 0;
+ New(Sections[1].Buf);
+ FillChar(Sections[1].Buf^, MAX_SEC_SIZE, 0);
+
+ { Section 2 : DATA }
+ Sections[2].Name    := 'DATA';
+ Sections[2].SecType := SEC_DATA;
+ Sections[2].Origin  := 0;
+ Sections[2].CurAddr := 0;
+ Sections[2].Size    := 0;
+ New(Sections[2].Buf);
+ FillChar(Sections[2].Buf^, MAX_SEC_SIZE, 0);
+
+ { Section 3 : BSS }
+ Sections[3].Name    := 'BSS';
+ Sections[3].SecType := SEC_BSS;
+ Sections[3].Origin  := 0;
+ Sections[3].CurAddr := 0;
+ Sections[3].Size    := 0;
+ New(Sections[3].Buf);
+ FillChar(Sections[3].Buf^, MAX_SEC_SIZE, 0);
+
+ { Initialiser les fixups }
+ FixupCount := 0;
+End;
+
+Procedure FreeSections;
+{ Libere les buffers dynamiques des sections }
+Var I: Integer;
+Begin
+ For I := 1 to SectionCount do
+  If Sections[I].Buf <> Nil Then
+  Begin
+   Dispose(Sections[I].Buf);
+   Sections[I].Buf := Nil;
+  End;
+End;
+
+Function FindSection(Const Name: String): Integer;
+{ Recherche une section par nom (insensible a la casse).
+  Retourne l'index (1..SectionCount) ou 0 si non trouvee. }
+Var
+  I: Integer;
+  UName: String;
+Begin
+ UName := UpCaseStr(Name);
+ FindSection := 0;
+ For I := 1 to SectionCount do
+  If UpCaseStr(Sections[I].Name) = UName Then
+  Begin
+   FindSection := I;
+   Exit;
+  End;
+End;
+
+Procedure SetSection(Const Name: String; SecType: Integer);
+{ Change la section courante. Cree la section si elle n'existe pas. }
+Var Idx: Integer;
+Begin
+ Idx := FindSection(Name);
+ If Idx > 0 Then
+ Begin
+  CurSection := Idx;
+  Exit;
+ End;
+ { Creer une nouvelle section }
+ If SectionCount >= MAX_SECTIONS Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'trop de sections (max ' +
+        IntToStr(MAX_SECTIONS) + ')');
+  Exit;
+ End;
+ Inc(SectionCount);
+ Sections[SectionCount].Name    := Name;
+ Sections[SectionCount].SecType := SecType;
+ Sections[SectionCount].Origin  := 0;
+ Sections[SectionCount].CurAddr := 0;
+ Sections[SectionCount].Size    := 0;
+ New(Sections[SectionCount].Buf);
+ FillChar(Sections[SectionCount].Buf^, MAX_SEC_SIZE, 0);
+ CurSection := SectionCount;
+End;
+
+{ ---------- Emission de code (big-endian, Motorola byte order) ---------- }
+
+Procedure Emit8(B: Byte);
+{ Emettre un octet dans la section courante }
+Begin
+ If (CurSection < 1) or (CurSection > SectionCount) Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'pas de section courante');
+  Exit;
+ End;
+ If Sections[CurSection].CurAddr >= MAX_SEC_SIZE Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'section pleine (' +
+        IntToStr(MAX_SEC_SIZE) + ' octets max)');
+  Exit;
+ End;
+ Sections[CurSection].Buf^[Sections[CurSection].CurAddr] := B;
+ Inc(Sections[CurSection].CurAddr);
+ If Sections[CurSection].CurAddr > Sections[CurSection].Size Then
+  Sections[CurSection].Size := Sections[CurSection].CurAddr;
+End;
+
+Procedure Emit16(W: Word);
+{ Emettre un mot 16 bits en big-endian (octet de poids fort d'abord) }
+Begin
+ Emit8(Byte(W shr 8));  { poids fort }
+ Emit8(Byte(W and $FF)); { poids faible }
+End;
+
+Procedure Emit32(L: LongInt);
+{ Emettre un long mot 32 bits en big-endian }
+Begin
+ Emit16(Word(L shr 16));   { mot de poids fort }
+ Emit16(Word(L and $FFFF)); { mot de poids faible }
+End;
+
+Procedure EmitBytes(Const Buf: Array of Byte; Len: Integer);
+{ Emettre un bloc d'octets dans la section courante }
+Var I: Integer;
+Begin
+ For I := 0 to Len - 1 do
+  Emit8(Buf[I]);
+End;
+
+{ ---------- Adresse courante et alignement ---------- }
+
+Function GetPC: LongInt;
+{ Retourne l'adresse courante : Origin + CurAddr de la section courante }
+Begin
+ If (CurSection >= 1) and (CurSection <= SectionCount) Then
+  GetPC := Sections[CurSection].Origin + Sections[CurSection].CurAddr
+ Else
+  GetPC := 0;
+End;
+
+Procedure AlignPC(N: Integer);
+{ Aligne l'adresse courante sur une frontiere de N octets.
+  Remplit avec des octets nuls (00). N doit etre une puissance de 2. }
+Var Addr: LongInt;
+    Pad: Integer;
+Begin
+ If (N <= 0) or (CurSection < 1) or (CurSection > SectionCount) Then Exit;
+ Addr := GetPC;
+ If (Addr mod N) <> 0 Then
+ Begin
+  Pad := N - Integer(Addr mod N);
+  While Pad > 0 do
+  Begin
+   Emit8(0);
+   Dec(Pad);
+  End;
+ End;
+End;
+
+{ ---------- Patch : ecrire dans le buffer a une position donnee ---------- }
+
+Procedure Patch8(SecIdx: Integer; Offset: LongInt; B: Byte);
+{ Ecrit un octet a une position donnee dans le buffer d'une section }
+Begin
+ If (SecIdx >= 1) and (SecIdx <= SectionCount) and
+    (Offset >= 0) and (Offset < MAX_SEC_SIZE) Then
+  Sections[SecIdx].Buf^[Offset] := B;
+End;
+
+Procedure Patch16(SecIdx: Integer; Offset: LongInt; W: Word);
+{ Ecrit un mot 16 bits big-endian a une position donnee }
+Begin
+ Patch8(SecIdx, Offset,     Byte(W shr 8));
+ Patch8(SecIdx, Offset + 1, Byte(W and $FF));
+End;
+
+Procedure Patch32(SecIdx: Integer; Offset: LongInt; L: LongInt);
+{ Ecrit un long mot 32 bits big-endian a une position donnee }
+Begin
+ Patch16(SecIdx, Offset,     Word(L shr 16));
+ Patch16(SecIdx, Offset + 2, Word(L and $FFFF));
+End;
+
+{ ---------- Fixups : references a resoudre en passe 2 ---------- }
+
+Procedure AddFixup(SecIdx: Integer; Offset: LongInt; Size: Integer;
+                   SymIdx: Integer; FixType: Integer; Addend: LongInt);
+{ Enregistre une reference a resoudre en passe 2.
+  SecIdx  = section contenant la reference
+  Offset  = position dans le buffer
+  Size    = taille du champ (8, 16 ou 32)
+  SymIdx  = index du symbole dans SymTable (0 = absolu)
+  FixType = FIX_ABSOLUTE ou FIX_PC_RELATIVE
+  Addend  = valeur a ajouter a la valeur du symbole }
+Begin
+ If FixupCount >= MAX_FIXUP Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'trop de fixups (max ' +
+        IntToStr(MAX_FIXUP) + ')');
+  Exit;
+ End;
+ Inc(FixupCount);
+ Fixups[FixupCount].Section := SecIdx;
+ Fixups[FixupCount].Offset  := Offset;
+ Fixups[FixupCount].Size    := Size;
+ Fixups[FixupCount].SymIdx  := SymIdx;
+ Fixups[FixupCount].FixType := FixType;
+ Fixups[FixupCount].Addend  := Addend;
+End;
+
+Procedure ResolveFixups;
+{ Resoudre toutes les references enregistrees.
+  Pour chaque fixup, recupere la valeur du symbole, ajoute l'addend,
+  puis applique le patch dans le buffer de la section correspondante.
+  Pour les fixups PC-relatifs, soustrait l'adresse du fixup. }
+Var
+  I: Integer;
+  SymVal: LongInt;
+  FixAddr: LongInt;
+  FinalVal: LongInt;
+Begin
+ For I := 1 to FixupCount do
+ Begin
+  { Recuperer la valeur du symbole }
+  If (Fixups[I].SymIdx >= 1) and (Fixups[I].SymIdx <= SymCount) Then
+  Begin
+   If Not SymTable[Fixups[I].SymIdx].Defined Then
+   Begin
+    Error(0, 0, 'fixup: symbole non defini: ' +
+          SymTable[Fixups[I].SymIdx].Name);
+    Continue;
+   End;
+   SymVal := SymTable[Fixups[I].SymIdx].Value;
+  End
+  Else
+   SymVal := 0;
+
+  FinalVal := SymVal + Fixups[I].Addend;
+
+  { Ajustement PC-relatif }
+  If Fixups[I].FixType = FIX_PC_RELATIVE Then
+  Begin
+   FixAddr := Sections[Fixups[I].Section].Origin + Fixups[I].Offset;
+   FinalVal := FinalVal - FixAddr;
+  End;
+
+  { Appliquer le patch selon la taille }
+  Case Fixups[I].Size of
+   8:  Patch8(Fixups[I].Section, Fixups[I].Offset, Byte(FinalVal and $FF));
+   16: Patch16(Fixups[I].Section, Fixups[I].Offset, Word(FinalVal and $FFFF));
+   32: Patch32(Fixups[I].Section, Fixups[I].Offset, FinalVal);
+  End;
+ End;
+End;
+
+Function SectionTypeName(T: Integer): String;
+{ Retourne le nom du type de section pour affichage }
+Begin
+ Case T of
+  SEC_CODE: SectionTypeName := 'CODE';
+  SEC_DATA: SectionTypeName := 'DATA';
+  SEC_BSS:  SectionTypeName := 'BSS';
+ Else
+  SectionTypeName := '???';
+ End;
+End;
+
+{ ============================================================================ }
 { Analyse des options de ligne de commande                                     }
 { ============================================================================ }
 
@@ -2659,6 +3016,9 @@ Begin
  { Initialiser la table des symboles }
  InitSymTable;
 
+ { Initialiser les sections (TODO 07) }
+ InitSections;
+
  { Ouvrir le fichier listing si demande }
  ListOpen(Opts.ListFile);
 
@@ -2724,6 +3084,9 @@ Begin
 
  { Afficher le bilan de compilation }
  BilanCompilation;
+
+ { Liberer les buffers des sections (TODO 07) }
+ FreeSections;
 End;
 
 { ============================================================================ }

@@ -155,7 +155,7 @@ TODO 06 - Modes d'adressage : analyse et encodage [IMPLEMENTE]
   - ParseRegList(s) -> Word : analyser D0-D3/A0-A2 pour MOVEM
     (masque de 16 bits)
 
-TODO 07 - Generateur de code : emission et sections
+TODO 07 - Generateur de code : emission et sections [IMPLEMENTE]
   ----------------------------------------------------
   - Gestion des sections : CODE (text), DATA, BSS
   - Record TSection : Name, Type (SEC_CODE, SEC_DATA, SEC_BSS),
