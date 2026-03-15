@@ -89,7 +89,7 @@ TODO 03 - Gestion des erreurs, avertissements et listing [IMPLEMENTE]
   - BilancCompilation : afficher stats (lignes, symboles, erreurs,
     avertissements, taille du code genere)
 
-TODO 04 - Table des symboles : etiquettes, EQU, SET
+TODO 04 - Table des symboles : etiquettes, EQU, SET [IMPLEMENTE]
   ----------------------------------------------------
   - Record TSymEntry : Name, Value (LongInt 32 bits), Section,
     SymType (LABEL, EQU_CONST, SET_VAR, EXTERNAL, ENTRY),

@@ -21,7 +21,7 @@
 { TODO 01 - Infrastructure, options de ligne de commande et constantes [IMPLEMENTE] }
 { TODO 02 - Lexeur : lecture source et tokenisation [IMPLEMENTE] }
 { TODO 03 - Gestion des erreurs, avertissements et listing [IMPLEMENTE] }
-{ TODO 04 - Table des symboles : etiquettes, EQU, SET }
+{ TODO 04 - Table des symboles : etiquettes, EQU, SET [IMPLEMENTE] }
 { TODO 05 - Analyseur d'expressions arithmetiques }
 { TODO 06 - Modes d'adressage : analyse et encodage }
 { TODO 07 - Generateur de code : emission et sections }
@@ -221,6 +221,18 @@ Type
     ExprStr : String;         { Expression source brute                }
   End;
 
+  { --- Entree de la table des symboles (TODO 04) --- }
+  TSymEntry = Record
+    Name       : String[64];  { Nom du symbole (majuscules)            }
+    Value      : LongInt;     { Valeur (adresse ou constante 32 bits)  }
+    Section    : Integer;     { SEC_CODE, SEC_DATA, SEC_BSS            }
+    SymType    : Integer;     { SYM_LABEL, SYM_EQU, SYM_SET, etc.     }
+    Defined    : Boolean;     { True si symbole defini                 }
+    Referenced : Boolean;     { True si symbole reference              }
+    Pass1Value : LongInt;     { Valeur en passe 1 (verif phase)        }
+    LineNum    : Integer;     { Numero de ligne de definition          }
+  End;
+
 { ============================================================================ }
 { Variables globales                                                           }
 { ============================================================================ }
@@ -265,6 +277,11 @@ Var
   list_title    : String;       { Titre du listing (directive TTL)       }
   list_enabled  : Boolean;      { True si listing actif (LIST/NOLIST)    }
   list_expand   : Boolean;      { True si expansion macros visible       }
+
+  { --- Table des symboles (TODO 04) --- }
+  SymTable      : Array[1..MAX_SYM] of TSymEntry; { Table des symboles   }
+  SymCount      : Integer;      { Nombre de symboles dans la table       }
+  last_global_sym : String[64]; { Derniere etiquette globale (pour loc.) }
 
 { ============================================================================ }
 { Fonctions utilitaires                                                        }
@@ -1230,13 +1247,21 @@ Begin
  End;
 End;
 
+{ ---------- Helpers d'affichage symboles (utilises par ListSymbolTable) --- }
+
+Function SymTypeName(T: Integer): String; Forward;
+Function SymSectionName(S: Integer): String; Forward;
+
 Procedure ListSymbolTable;
 { Affiche la table des symboles triee dans le listing.
-  Stub : sera complete quand la table des symboles sera implementee (TODO 04).
-  Pour l'instant, affiche juste un en-tete. }
+  Tri par insertion simple sur les noms. }
+Var
+  SortIdx : Array[1..MAX_SYM] of Integer;
+  I, J, Tmp : Integer;
 Begin
  If Not list_opened Then Exit;
  If Not Opts.IncludeSymTable Then Exit;
+ If SymCount = 0 Then Exit;
  ListPage;
  WriteLn(list_file, '--- Table des symboles ---');
  WriteLn(list_file);
@@ -1244,8 +1269,35 @@ Begin
          PadRight('Type', 10), 'Section');
  WriteLn(list_file, PadRight('-------', 24), PadRight('------', 12),
          PadRight('----', 10), '-------');
- { Les symboles seront ajoutes par TODO 04 }
- WriteLn(list_file, '(table vide - TODO 04)');
+ { Initialiser les index de tri }
+ For I := 1 to SymCount do
+  SortIdx[I] := I;
+ { Tri par insertion sur le nom }
+ For I := 2 to SymCount do
+ Begin
+  Tmp := SortIdx[I];
+  J := I - 1;
+  While (J >= 1) and (SymTable[SortIdx[J]].Name > SymTable[Tmp].Name) do
+  Begin
+   SortIdx[J + 1] := SortIdx[J];
+   Dec(J);
+  End;
+  SortIdx[J + 1] := Tmp;
+ End;
+ { Afficher les symboles tries }
+ For I := 1 to SymCount do
+ Begin
+  If list_line_num >= LIST_PAGE_SIZE Then
+   ListPage;
+  WriteLn(list_file,
+          PadRight(SymTable[SortIdx[I]].Name, 24),
+          PadRight(IntToHex(SymTable[SortIdx[I]].Value, 8), 12),
+          PadRight(SymTypeName(SymTable[SortIdx[I]].SymType), 10),
+          SymSectionName(SymTable[SortIdx[I]].Section));
+  Inc(list_line_num);
+ End;
+ WriteLn(list_file);
+ WriteLn(list_file, SymCount, ' symbole(s).');
  WriteLn(list_file);
 End;
 
@@ -1262,9 +1314,190 @@ Begin
   WriteLn('Listing        : ', Opts.ListFile);
  WriteLn;
  WriteLn('Lignes lues    : ', LineCount);
+ WriteLn('Symboles       : ', SymCount);
  WriteLn('Taille code    : ', CodeSize, ' octets');
  WriteLn('Erreurs        : ', ErrorCount);
  WriteLn('Avertissements : ', WarningCount);
+End;
+
+{ ============================================================================ }
+{ TODO 04 - Table des symboles : etiquettes, EQU, SET                         }
+{ ============================================================================ }
+
+{ ---------- Helpers d'affichage ---------- }
+
+Function SymTypeName(T: Integer): String;
+{ Retourne le nom du type de symbole pour affichage }
+Begin
+ Case T of
+  SYM_LABEL:    SymTypeName := 'LABEL';
+  SYM_EQU:      SymTypeName := 'EQU';
+  SYM_SET:      SymTypeName := 'SET';
+  SYM_EXTERNAL: SymTypeName := 'XREF';
+  SYM_ENTRY:    SymTypeName := 'XDEF';
+ Else
+  SymTypeName := '???';
+ End;
+End;
+
+Function SymSectionName(S: Integer): String;
+{ Retourne le nom de la section pour affichage }
+Begin
+ Case S of
+  SEC_CODE: SymSectionName := 'CODE';
+  SEC_DATA: SymSectionName := 'DATA';
+  SEC_BSS:  SymSectionName := 'BSS';
+ Else
+  SymSectionName := 'ABS';
+ End;
+End;
+
+{ ---------- Recherche et ajout ---------- }
+
+Function FindSym(Const Name: String): Integer;
+{ Recherche un symbole par nom (insensible a la casse).
+  Pour les etiquettes locales (.xxx ou @xxx), le nom est prefixe
+  par la derniere etiquette globale pour limiter la portee.
+  Retourne l'index (1..SymCount) ou 0 si non trouve. }
+Var
+  I: Integer;
+  UName: String;
+Begin
+ UName := UpCaseStr(Name);
+ { Recherche en ordre inverse pour trouver la def la plus recente (SET) }
+ For I := SymCount DownTo 1 do
+ Begin
+  If SymTable[I].Name = UName Then
+  Begin
+   FindSym := I;
+   Exit;
+  End;
+ End;
+ FindSym := 0;
+End;
+
+Function AddSym(Const Name: String; Value: LongInt; Section, SymType: Integer;
+                LineNum: Integer): Integer;
+{ Ajoute un symbole a la table.
+  - LABEL/EQU : erreur si deja defini (sauf si meme valeur en passe 2)
+  - SET : redefinition autorisee (met a jour la valeur)
+  - EXTERNAL/ENTRY : ajout sans valeur definie
+  Retourne l'index du symbole ou 0 si erreur. }
+Var
+  Idx: Integer;
+  UName: String;
+Begin
+ UName := UpCaseStr(Name);
+ Idx := FindSym(UName);
+
+ { Si symbole existe deja }
+ If Idx <> 0 Then
+ Begin
+  { SET est redefinissable }
+  If (SymType = SYM_SET) Then
+  Begin
+   SymTable[Idx].Value   := Value;
+   SymTable[Idx].Section := Section;
+   SymTable[Idx].LineNum := LineNum;
+   SymTable[Idx].Defined := True;
+   AddSym := Idx;
+   Exit;
+  End;
+  { Si le symbole existant etait un EXTERNAL et on le definit maintenant }
+  If (SymTable[Idx].SymType = SYM_EXTERNAL) and (SymType = SYM_LABEL) Then
+  Begin
+   SymTable[Idx].Value   := Value;
+   SymTable[Idx].Section := Section;
+   SymTable[Idx].SymType := SYM_LABEL;
+   SymTable[Idx].Defined := True;
+   SymTable[Idx].LineNum := LineNum;
+   AddSym := Idx;
+   Exit;
+  End;
+  { Si le symbole existe et est deja defini, erreur de doublon }
+  If SymTable[Idx].Defined Then
+  Begin
+   Error(LineNum, 1, 'symbole deja defini: ' + UName);
+   AddSym := 0;
+   Exit;
+  End;
+  { Symbole existe mais pas encore defini (forward reference) -> definir }
+  SymTable[Idx].Value   := Value;
+  SymTable[Idx].Section := Section;
+  SymTable[Idx].SymType := SymType;
+  SymTable[Idx].Defined := True;
+  SymTable[Idx].LineNum := LineNum;
+  AddSym := Idx;
+  Exit;
+ End;
+
+ { Nouveau symbole }
+ If SymCount >= MAX_SYM Then
+ Begin
+  Error(LineNum, 1, 'table des symboles pleine (' + IntToStr(MAX_SYM) + ')');
+  AddSym := 0;
+  Exit;
+ End;
+ Inc(SymCount);
+ SymTable[SymCount].Name       := UName;
+ SymTable[SymCount].Value      := Value;
+ SymTable[SymCount].Section    := Section;
+ SymTable[SymCount].SymType    := SymType;
+ SymTable[SymCount].Defined    := (SymType <> SYM_EXTERNAL);
+ SymTable[SymCount].Referenced := False;
+ SymTable[SymCount].Pass1Value := Value;
+ SymTable[SymCount].LineNum    := LineNum;
+
+ { Memoriser la derniere etiquette globale (pour portee locale) }
+ If (SymType = SYM_LABEL) and (Length(UName) > 0) and
+    (UName[1] <> '.') and (UName[1] <> '@') Then
+  last_global_sym := UName;
+
+ AddSym := SymCount;
+End;
+
+Procedure UpdateSym(Const Name: String; Value: LongInt);
+{ Met a jour la valeur d'un symbole existant (pour SET ou passe 2).
+  Verifie la coherence de phase pour les LABEL/EQU en passe 2. }
+Var
+  Idx: Integer;
+  UName: String;
+Begin
+ UName := UpCaseStr(Name);
+ Idx := FindSym(UName);
+ If Idx = 0 Then Exit; { Symbole non trouve, rien a faire }
+
+ { Pour SET, mise a jour libre }
+ If SymTable[Idx].SymType = SYM_SET Then
+ Begin
+  SymTable[Idx].Value := Value;
+  Exit;
+ End;
+
+ { Pour LABEL/EQU, verification de phase : erreur si valeur change }
+ If SymTable[Idx].Defined and (SymTable[Idx].Pass1Value <> Value) Then
+ Begin
+  Error(SymTable[Idx].LineNum, 1,
+        'erreur de phase pour symbole ' + UName +
+        ' (passe1=' + IntToStr(SymTable[Idx].Pass1Value) +
+        ', passe2=' + IntToStr(Value) + ')');
+ End;
+
+ SymTable[Idx].Value := Value;
+End;
+
+{ ---------- Initialisation ---------- }
+
+Procedure InitSymTable;
+{ Initialise la table des symboles et ajoute les symboles predefinis (-d) }
+Var
+  I: Integer;
+Begin
+ SymCount := 0;
+ last_global_sym := '';
+ { Ajouter les symboles predefinis de la ligne de commande (-d) }
+ For I := 1 to Opts.DefSymCount do
+  AddSym(Opts.DefSymbols[I], 1, SEC_CODE, SYM_EQU, 0);
 End;
 
 { ============================================================================ }
@@ -1413,6 +1646,9 @@ Begin
  WarningCount := 0;
  LineCount    := 0;
  CodeSize     := 0;
+
+ { Initialiser la table des symboles }
+ InitSymTable;
 
  { Ouvrir le fichier listing si demande }
  ListOpen(Opts.ListFile);
