@@ -321,6 +321,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de transformer un icône (.ICO) en code source Pascal.</td>
 		</tr>
 		<tr>
+			<td><b>JASMIN.PAS</b></td>
+			<td>Cette commande permet d'aassembler un fichier source Jasmin (.j) en fichier .class (bytecode Java) compatible avec la JVM.</td>
+		</tr>
+		<tr>
 			<td><b>JAVAC86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur Java (Java-Lite) pour l'assembleur du microprocesseur 8086.</td>
 		</tr>
