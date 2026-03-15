@@ -22,7 +22,7 @@
 { TODO 02 - Lexeur : lecture source et tokenisation [IMPLEMENTE] }
 { TODO 03 - Gestion des erreurs, avertissements et listing [IMPLEMENTE] }
 { TODO 04 - Table des symboles : etiquettes, EQU, SET [IMPLEMENTE] }
-{ TODO 05 - Analyseur d'expressions arithmetiques }
+{ TODO 05 - Analyseur d'expressions arithmetiques [IMPLEMENTE] }
 { TODO 06 - Modes d'adressage : analyse et encodage }
 { TODO 07 - Generateur de code : emission et sections }
 { TODO 08 - Directives assembleur de base (ORG, DC, DS, EQU, END) }
@@ -152,6 +152,13 @@ Const
   TOK_COLON     = 18;       { :                                        }
   TOK_EQUAL     = 19;       { =                                        }
   TOK_EOL       = 20;       { Fin de ligne                             }
+  TOK_AMPERSAND = 21;       { &                                        }
+  TOK_PIPE      = 22;       { |                                        }
+  TOK_CARET     = 23;       { ^                                        }
+  TOK_PERCENT   = 24;       { %  (modulo dans expressions)             }
+  TOK_TILDE     = 25;       { ~  (complement bit a bit)                }
+  TOK_LSHIFT    = 26;       { << (decalage gauche)                     }
+  TOK_RSHIFT    = 27;       { >> (decalage droite)                     }
   TOK_EOF       = 99;       { Fin de fichier                           }
 
   { ------------------------------------------------------------------ }
@@ -282,6 +289,10 @@ Var
   SymTable      : Array[1..MAX_SYM] of TSymEntry; { Table des symboles   }
   SymCount      : Integer;      { Nombre de symboles dans la table       }
   last_global_sym : String[64]; { Derniere etiquette globale (pour loc.) }
+
+  { --- Evaluateur d'expressions (TODO 05) --- }
+  expr_pc       : LongInt;      { Adresse courante (pour * et $)         }
+  expr_depth    : Integer;      { Profondeur de recursion courante       }
 
 { ============================================================================ }
 { Fonctions utilitaires                                                        }
@@ -1020,6 +1031,31 @@ Begin
   '.': cur_tok := TOK_DOT;
   ':': cur_tok := TOK_COLON;
   '=': cur_tok := TOK_EQUAL;
+  '&': cur_tok := TOK_AMPERSAND;
+  '|': cur_tok := TOK_PIPE;
+  '^': cur_tok := TOK_CARET;
+  '%': cur_tok := TOK_PERCENT;
+  '~': cur_tok := TOK_TILDE;
+  '<': Begin
+        If (src_col <= Length(src_line)) and (src_line[src_col] = '<') Then
+        Begin
+         cur_tok := TOK_LSHIFT;
+         cur_tok_str := '<<';
+         Inc(src_col);
+        End
+        Else
+         cur_tok := TOK_UNKNOWN;
+       End;
+  '>': Begin
+        If (src_col <= Length(src_line)) and (src_line[src_col] = '>') Then
+        Begin
+         cur_tok := TOK_RSHIFT;
+         cur_tok_str := '>>';
+         Inc(src_col);
+        End
+        Else
+         cur_tok := TOK_UNKNOWN;
+       End;
  Else
   cur_tok := TOK_UNKNOWN;
  End;
@@ -1501,6 +1537,303 @@ Begin
 End;
 
 { ============================================================================ }
+{ TODO 05 - Analyseur d'expressions arithmetiques                              }
+{ ============================================================================ }
+
+{ Evaluateur d'expressions recursif avec precedence d'operateurs.
+  Niveaux de priorite (croissante) :
+    1 : | (OR bit a bit)
+    2 : ^ (XOR bit a bit)
+    3 : & (AND bit a bit)
+    4 : << >> (decalages)
+    5 : + - (addition, soustraction)
+    6 : * / % (multiplication, division, modulo)
+    7 : ~ - (complement, negation unaire)
+    8 : primaire (nombre, symbole, *, $, parentheses)
+}
+
+Function EvalExpr: LongInt; Forward;
+
+Function EvalPrimary: LongInt;
+{ Niveau 8 : nombre litteral, symbole, adresse courante (*, $), parentheses }
+Var
+  V: LongInt;
+  Idx: Integer;
+  SymName: String;
+Begin
+ EvalPrimary := 0;
+
+ Case cur_tok of
+  TOK_INTEGER:
+  Begin
+   EvalPrimary := cur_tok_val;
+   NextToken;
+  End;
+
+  TOK_CHAR:
+  Begin
+   EvalPrimary := cur_tok_val;
+   NextToken;
+  End;
+
+  TOK_STAR:
+  Begin
+   { * = adresse courante (PC) }
+   EvalPrimary := expr_pc;
+   NextToken;
+  End;
+
+  TOK_IDENT:
+  Begin
+   { Symbole : rechercher dans la table }
+   SymName := cur_tok_str;
+   Idx := FindSym(SymName);
+   If Idx <> 0 Then
+   Begin
+    SymTable[Idx].Referenced := True;
+    If SymTable[Idx].Defined Then
+     EvalPrimary := SymTable[Idx].Value
+    Else
+    Begin
+     { Symbole pas encore defini (forward) - retourner 0 en passe 1 }
+     EvalPrimary := 0;
+    End;
+   End
+   Else
+   Begin
+    { Symbole inconnu : ajouter comme forward reference }
+    Idx := AddSym(SymName, 0, SEC_CODE, SYM_LABEL, cur_tok_line);
+    If Idx <> 0 Then
+    Begin
+     SymTable[Idx].Defined := False;
+     SymTable[Idx].Referenced := True;
+    End;
+    EvalPrimary := 0;
+   End;
+   NextToken;
+  End;
+
+  TOK_LPAREN:
+  Begin
+   { Expression entre parentheses }
+   NextToken; { consommer '(' }
+   V := EvalExpr;
+   If cur_tok = TOK_RPAREN Then
+    NextToken { consommer ')' }
+   Else
+    Error(cur_tok_line, cur_tok_col, 'parenthese fermante attendue');
+   EvalPrimary := V;
+  End;
+
+ Else
+  Error(cur_tok_line, cur_tok_col,
+        'expression attendue, token inattendu: ' + cur_tok_str);
+  NextToken;
+ End;
+End;
+
+Function EvalUnary: LongInt;
+{ Niveau 7 : operateurs unaires ~ (complement) et - (negation) et + (identite) }
+Begin
+ If cur_tok = TOK_MINUS Then
+ Begin
+  NextToken;
+  EvalUnary := -EvalUnary;
+ End
+ Else If cur_tok = TOK_PLUS Then
+ Begin
+  NextToken;
+  EvalUnary := EvalUnary;
+ End
+ Else If cur_tok = TOK_TILDE Then
+ Begin
+  NextToken;
+  EvalUnary := Not EvalUnary;
+ End
+ Else
+  EvalUnary := EvalPrimary;
+End;
+
+Function EvalMulDiv: LongInt;
+{ Niveau 6 : *, /, % (multiplication, division, modulo) }
+Var
+  Left, Right: LongInt;
+Begin
+ Left := EvalUnary;
+ While cur_tok in [TOK_STAR, TOK_SLASH, TOK_PERCENT] do
+ Begin
+  Case cur_tok of
+   TOK_STAR:
+   Begin
+    NextToken;
+    Left := Left * EvalUnary;
+   End;
+   TOK_SLASH:
+   Begin
+    NextToken;
+    Right := EvalUnary;
+    If Right = 0 Then
+    Begin
+     Error(cur_tok_line, cur_tok_col, 'division par zero');
+     Left := 0;
+    End
+    Else
+     Left := Left div Right;
+   End;
+   TOK_PERCENT:
+   Begin
+    NextToken;
+    Right := EvalUnary;
+    If Right = 0 Then
+    Begin
+     Error(cur_tok_line, cur_tok_col, 'modulo par zero');
+     Left := 0;
+    End
+    Else
+     Left := Left mod Right;
+   End;
+  End;
+ End;
+ EvalMulDiv := Left;
+End;
+
+Function EvalAddSub: LongInt;
+{ Niveau 5 : +, - (addition, soustraction) }
+Var Left: LongInt;
+Begin
+ Left := EvalMulDiv;
+ While cur_tok in [TOK_PLUS, TOK_MINUS] do
+ Begin
+  If cur_tok = TOK_PLUS Then
+  Begin
+   NextToken;
+   Left := Left + EvalMulDiv;
+  End
+  Else
+  Begin
+   NextToken;
+   Left := Left - EvalMulDiv;
+  End;
+ End;
+ EvalAddSub := Left;
+End;
+
+Function EvalShift: LongInt;
+{ Niveau 4 : <<, >> (decalages gauche/droite) }
+Var
+  Left: LongInt;
+  Shift: LongInt;
+Begin
+ Left := EvalAddSub;
+ While cur_tok in [TOK_LSHIFT, TOK_RSHIFT] do
+ Begin
+  If cur_tok = TOK_LSHIFT Then
+  Begin
+   NextToken;
+   Shift := EvalAddSub;
+   If (Shift >= 0) and (Shift < 32) Then
+    Left := Left shl Shift
+   Else
+   Begin
+    Warning(cur_tok_line, cur_tok_col,
+            'decalage hors limites: ' + IntToStr(Shift));
+    Left := 0;
+   End;
+  End
+  Else
+  Begin
+   NextToken;
+   Shift := EvalAddSub;
+   If (Shift >= 0) and (Shift < 32) Then
+    Left := Left shr Shift
+   Else
+   Begin
+    Warning(cur_tok_line, cur_tok_col,
+            'decalage hors limites: ' + IntToStr(Shift));
+    Left := 0;
+   End;
+  End;
+ End;
+ EvalShift := Left;
+End;
+
+Function EvalAnd: LongInt;
+{ Niveau 3 : & (AND bit a bit) }
+Var Left: LongInt;
+Begin
+ Left := EvalShift;
+ While cur_tok = TOK_AMPERSAND do
+ Begin
+  NextToken;
+  Left := Left and EvalShift;
+ End;
+ EvalAnd := Left;
+End;
+
+Function EvalXor: LongInt;
+{ Niveau 2 : ^ (XOR bit a bit) }
+Var Left: LongInt;
+Begin
+ Left := EvalAnd;
+ While cur_tok = TOK_CARET do
+ Begin
+  NextToken;
+  Left := Left xor EvalAnd;
+ End;
+ EvalXor := Left;
+End;
+
+Function EvalOr: LongInt;
+{ Niveau 1 : | (OR bit a bit) }
+Var Left: LongInt;
+Begin
+ Left := EvalXor;
+ While cur_tok = TOK_PIPE do
+ Begin
+  NextToken;
+  Left := Left or EvalXor;
+ End;
+ EvalOr := Left;
+End;
+
+Function EvalExpr: LongInt;
+{ Point d'entree de l'evaluateur d'expressions.
+  Verifie la profondeur de recursion. }
+Begin
+ Inc(expr_depth);
+ If expr_depth > MAX_EXPR_DEPTH Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'expression trop profonde (>' + IntToStr(MAX_EXPR_DEPTH) + ')');
+  EvalExpr := 0;
+  Dec(expr_depth);
+  Exit;
+ End;
+ EvalExpr := EvalOr;
+ Dec(expr_depth);
+End;
+
+Function EvalExprCheck(Size: Integer): LongInt;
+{ Evalue une expression et verifie les debordements selon la taille.
+  Size = SIZE_BYTE (1), SIZE_WORD (2) ou SIZE_LONG (4). }
+Var V: LongInt;
+Begin
+ V := EvalExpr;
+ Case Size of
+  SIZE_BYTE:
+   If (V < -128) or (V > 255) Then
+    Warning(cur_tok_line, cur_tok_col,
+            'valeur hors limites 8 bits: ' + IntToStr(V));
+  SIZE_WORD:
+   If (V < -32768) or (V > 65535) Then
+    Warning(cur_tok_line, cur_tok_col,
+            'valeur hors limites 16 bits: ' + IntToStr(V));
+  { SIZE_LONG : pas de verification, LongInt suffit }
+ End;
+ EvalExprCheck := V;
+End;
+
+{ ============================================================================ }
 { Analyse des options de ligne de commande                                     }
 { ============================================================================ }
 
@@ -1646,6 +1979,8 @@ Begin
  WarningCount := 0;
  LineCount    := 0;
  CodeSize     := 0;
+ expr_pc      := 0;
+ expr_depth   := 0;
 
  { Initialiser la table des symboles }
  InitSymTable;
@@ -1680,6 +2015,13 @@ Begin
    TOK_DOT:       TokName := 'DOT';
    TOK_COLON:     TokName := 'COLON';
    TOK_EQUAL:     TokName := 'EQUAL';
+   TOK_AMPERSAND: TokName := 'AMPERSAND';
+   TOK_PIPE:      TokName := 'PIPE';
+   TOK_CARET:     TokName := 'CARET';
+   TOK_PERCENT:   TokName := 'PERCENT';
+   TOK_TILDE:     TokName := 'TILDE';
+   TOK_LSHIFT:    TokName := 'LSHIFT';
+   TOK_RSHIFT:    TokName := 'RSHIFT';
    TOK_EOL:       TokName := 'EOL';
   Else
    TokName := 'UNKNOWN';

@@ -108,7 +108,7 @@ TODO 04 - Table des symboles : etiquettes, EQU, SET [IMPLEMENTE]
   - Etiquettes locales (format .label ou @label) avec portee
     limitee entre deux etiquettes globales
 
-TODO 05 - Analyseur d'expressions arithmetiques
+TODO 05 - Analyseur d'expressions arithmetiques [IMPLEMENTE]
   ------------------------------------------------
   - Expressions avec operateurs (priorite croissante) :
     Niveau 1 : | (OR logique bit a bit)
