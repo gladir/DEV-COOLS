@@ -374,7 +374,7 @@
             Compteur ConsoleOpCount pour les statistiques.
             Fichier test : test28_console.cs.
 
-  TODO 22 - GOTO, BREAK, CONTINUE, RETURN
+  TODO 22 - GOTO, BREAK, CONTINUE, RETURN [IMPLEMENTE]
             goto label; : saut inconditionnel vers label.
               label: stmt; -> definition du label.
               Verification : label defini dans la meme methode.
@@ -387,6 +387,7 @@
             return expr; : retour de methode avec valeur.
               MOV EAX, valeur -> JMP vers epilogue.
             return; : retour de methode void.
+            Fichier test : test29_goto.cs.
 
   TODO 23 - CAST, TYPEOF ET SIZEOF
             Cast explicite : (type)expr.
@@ -592,6 +593,22 @@ Type
 Var
   SwitchStack : Array[0..MAX_SWITCH_DEPTH - 1] Of TSwitchEntry;
   SwitchDepth : Integer;        { profondeur courante de la pile switch  }
+
+{ Table des labels utilisateur pour goto (TODO 22) }
+
+Const
+  MAX_GOTO_LABELS = 64;           { nombre max de labels par methode     }
+
+Type
+  TGotoLabelEntry = Record
+    Name    : TString;            { nom du label utilisateur             }
+    AsmLbl  : TString;            { nom ASM _CSCL_USR_labelname          }
+    Defined : Boolean;            { True si label: a ete rencontre       }
+  End;
+
+Var
+  GotoLabelTab   : Array[0..MAX_GOTO_LABELS - 1] Of TGotoLabelEntry;
+  GotoLabelCount : Integer;       { nombre de labels dans la table       }
 
 { Table des methodes declarees (TODO 16) }
 
@@ -990,6 +1007,11 @@ Procedure ParseClassDecl; Forward;
 Function  FindNs(Const N : TString) : Integer; Forward;
 Function  AddNs(Const N : TString; SIdx : Integer) : Integer; Forward;
 Procedure ParseNamespaceDecl; Forward;
+
+{ Forward declarations for TODO 22 }
+Function  FindGotoLabel(Const N : TString) : Integer; Forward;
+Function  AddGotoLabel(Const N : TString) : Integer; Forward;
+Procedure ResetGotoLabels; Forward;
 
 { ============================================================ }
 { TODO 02 - LEXEUR (TOKENS C#)                                 }
@@ -2585,6 +2607,9 @@ Var
 
   { Variables pour les entrees/sorties Console (TODO 21) }
   ConsoleOpCount  : Integer;      { nombre d operations Console         }
+
+  { Variables pour goto / labels utilisateur (TODO 22) }
+  GotoCount       : Integer;      { nombre d instructions goto          }
 
 { ------------------------------------------------------------ }
 { SymMangle : generer le nom ASM mangled                        }
@@ -5543,6 +5568,24 @@ Begin
     Exit;
   End;
 
+  (* goto label; (TODO 22) *)
+  If TokIsKw('goto') Then
+  Begin
+    Consume;
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      Idx := AddGotoLabel(CurToken.Val);
+      If Idx >= 0 Then
+        EmitInstr('JMP', GotoLabelTab[Idx].AsmLbl);
+      Inc(GotoCount);
+      Consume;
+    End
+    Else
+      FatalError('nom de label attendu apres goto');
+    If TokIsPunct(';') Then Consume;
+    Exit;
+  End;
+
   { Declaration de variable locale : type ident [= expr]; }
   If IsTypeKeyword Then
   Begin
@@ -5604,17 +5647,99 @@ Begin
     Exit;
   End;
 
-  { Identifiant : affectation, appel, ou expression }
+  { Identifiant : label utilisateur OU affectation/appel/expression }
   If CurToken.Kind = TK_IDENT Then
   Begin
     SavedName := CurToken.Val;
     Consume;
+    { Detection de label utilisateur : ident ':' (TODO 22) }
+    If TokIsPunct(':') Then
+    Begin
+      Consume;
+      Idx := AddGotoLabel(SavedName);
+      If Idx >= 0 Then
+      Begin
+        GotoLabelTab[Idx].Defined := True;
+        EmitLabel(GotoLabelTab[Idx].AsmLbl);
+      End;
+      { Le label peut etre suivi d une instruction }
+      If (CurToken.Kind <> TK_EOF) And (Not TokIsPunct('}')) Then
+        ParseStatement;
+      Exit;
+    End;
     ParseAssignment(SavedName);
     Exit;
   End;
 
   { Token inconnu : sauter }
   Consume;
+End;
+
+(* ============================================================ *)
+(* TODO 22 - GOTO, BREAK, CONTINUE, RETURN                      *)
+(*           [IMPLEMENTE]                                        *)
+(* ============================================================ *)
+(*                                                               *)
+(*  goto label; -> JMP _CSCL_USR_labelname                       *)
+(*  label: stmt -> EmitLabel(_CSCL_USR_labelname)                *)
+(*  Table de labels utilisateur par methode (max 64).            *)
+(*  break/continue/return : deja geres par TODO 14/15/16.        *)
+(*                                                               *)
+(* ============================================================ *)
+
+{ ------------------------------------------------------------ }
+{ FindGotoLabel : chercher un label utilisateur dans la table   }
+{   Retourne l indice ou -1 si non trouve.                     }
+{ ------------------------------------------------------------ }
+
+Function FindGotoLabel(Const N : TString) : Integer;
+Var I : Integer;
+Begin
+  FindGotoLabel := -1;
+  For I := 0 To GotoLabelCount - 1 Do
+    If GotoLabelTab[I].Name = N Then
+    Begin
+      FindGotoLabel := I;
+      Exit;
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AddGotoLabel : ajouter un label utilisateur dans la table     }
+{   Retourne l indice du label ajoute.                         }
+{ ------------------------------------------------------------ }
+
+Function AddGotoLabel(Const N : TString) : Integer;
+Var Idx : Integer;
+Begin
+  Idx := FindGotoLabel(N);
+  If Idx >= 0 Then
+  Begin
+    AddGotoLabel := Idx;
+    Exit;
+  End;
+  If GotoLabelCount >= MAX_GOTO_LABELS Then
+  Begin
+    FatalError('trop de labels utilisateur');
+    AddGotoLabel := -1;
+    Exit;
+  End;
+  Idx := GotoLabelCount;
+  GotoLabelTab[Idx].Name    := N;
+  GotoLabelTab[Idx].AsmLbl  := '_CSCL_USR_' + N;
+  GotoLabelTab[Idx].Defined := False;
+  Inc(GotoLabelCount);
+  AddGotoLabel := Idx;
+End;
+
+{ ------------------------------------------------------------ }
+{ ResetGotoLabels : reinitialiser la table des labels goto      }
+{   Appelee au debut de chaque methode.                        }
+{ ------------------------------------------------------------ }
+
+Procedure ResetGotoLabels;
+Begin
+  GotoLabelCount := 0;
 End;
 
 { ------------------------------------------------------------ }
@@ -6643,6 +6768,7 @@ Begin
               EmitLabel(SymMangle(MethName, SC_METHOD));
               EmitProlog(METHOD_STACK_SIZE);
               MethExitLbl := GenLabel;
+              ResetGotoLabels;  { TODO 22 }
               ParseMethodBody;
               EmitLabel(MethExitLbl);
               If StrLowerCase(MethName) = 'main' Then
@@ -7033,6 +7159,7 @@ Begin
   WriteLn('Tableaux         : ', ArrayCount);
   WriteLn('Ops chaines      : ', StringOpCount);
   WriteLn('Ops Console      : ', ConsoleOpCount);
+  WriteLn('Goto             : ', GotoCount);
   WriteLn('Donnees .DATA    : ', DataCount);
   WriteLn('Taille pile loc  : ', LocalOffset);
   WriteLn('Labels generes   : ', LabelSeq);
@@ -7125,6 +7252,10 @@ Begin
 
   { Initialiser les entrees/sorties Console (TODO 21) }
   ConsoleOpCount   := 0;
+
+  { Initialiser goto / labels utilisateur (TODO 22) }
+  GotoCount        := 0;
+  GotoLabelCount   := 0;
 
   { Initialiser le segment de donnees (TODO 08) }
   DataInit;
@@ -7232,6 +7363,7 @@ Begin
         EmitLabel(SymMangle(MethName, SC_METHOD));
         EmitProlog(METHOD_STACK_SIZE);
         MethExitLbl := GenLabel;
+        ResetGotoLabels;  { TODO 22 }
         ParseMethodBody;
         EmitLabel(MethExitLbl);
         If StrLowerCase(MethName) = 'main' Then
@@ -7446,7 +7578,7 @@ Begin
   EmitClose;
 
   WriteLn('CSCW32: ASM genere -> ', AsmFileName);
-  WriteLn('CSCW32: Les TODOs 22..25 ne sont pas encore implementes.');
+  WriteLn('CSCW32: Les TODOs 23..25 ne sont pas encore implementes.');
 End;
 
 { ------------------------------------------------------------ }

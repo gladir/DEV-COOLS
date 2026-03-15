@@ -572,7 +572,7 @@
             Compteur ConsoleOpCount pour les statistiques.
             Fichier test : test28_console.cs (15 cas).
 
-  TODO 22 - GOTO, BREAK, CONTINUE, RETURN
+  TODO 22 - GOTO, BREAK, CONTINUE, RETURN [IMPLEMENTE]
             goto label; : saut inconditionnel vers label.
               label: stmt; -> definition du label dans le code.
               JMP _CSCL_USR_labelname.
@@ -593,6 +593,7 @@
               JMP vers label d epilogue.
             Verification : return avec valeur dans methode non-void,
               return sans valeur dans methode void.
+            Fichier test : test29_goto.cs (15 cas).
 
   TODO 23 - CAST, TYPEOF ET SIZEOF
             Cast explicite : (type)expr.
