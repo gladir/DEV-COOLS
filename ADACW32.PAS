@@ -271,7 +271,7 @@
             Convention STDCALL : parametres droite a gauche
             Boucle PROCEDURE/FUNCTION dans Run
 
-  TODO 13 - PARSEUR : CORPS PROCEDURE ET FUNCTION (32 BITS)
+  TODO 13 - PARSEUR : CORPS PROCEDURE ET FUNCTION (32 BITS) [IMPLEMENTE]
             ParseProcedureBody :
               PROCEDURE nom [(params)] IS
                 declarative_part
@@ -3920,6 +3920,12 @@ End;
 { TODO 12 - PARSEUR : SIGNATURES PROCEDURE ET FUNCTION          }
 { ============================================================ }
 
+{ Forward declarations pour recursion mutuelle (TODO 12 / 13) }
+Procedure ParseProcedureDecl; Forward;
+Procedure ParseFunctionDecl; Forward;
+Procedure ParseProcedureBody(SubIdx : Integer); Forward;
+Procedure ParseFunctionBody(SubIdx : Integer); Forward;
+
 { ---- ParseParamList : analyser la liste de parametres -------- }
 { Syntaxe Ada :                                                    }
 {   ( nom [, nom2] : [IN | IN OUT | OUT] type [:= default] ;      }
@@ -4057,9 +4063,286 @@ Begin
   End;
 End;
 
+{ ============================================================ }
+{ TODO 13 - PARSEUR : CORPS PROCEDURE ET FUNCTION (32 BITS)     }
+{ ============================================================ }
+
+{ ---- RegisterParams : enregistrer les parametres formels ----- }
+{ Inscrit les parametres de SubTab[SubIdx] dans la table des       }
+{ symboles comme STORE_PARAM avec des offsets EBP positifs.        }
+{ Convention STDCALL : parametres empiles droite a gauche.          }
+{ EBP+8 = premier parametre, EBP+12 = deuxieme, etc.              }
+Procedure RegisterParams(SubIdx : Integer);
+Var
+  I, Off, SymIdx, TI, Mode : Integer;
+Begin
+  Off := 8;  { EBP+0 = old EBP, EBP+4 = ret addr, EBP+8 = 1st param }
+  For I := 1 To SubTab[SubIdx].ParamCount Do
+  Begin
+    TI   := SubTab[SubIdx].ParamTypes[I];
+    Mode := SubTab[SubIdx].ParamModes[I];
+
+    SymIdx := AddSym(SubTab[SubIdx].ParamNames[I], TI, STORE_PARAM);
+    If SymIdx > 0 Then
+    Begin
+      SymTab[SymIdx].BpOffset := Off;
+      { OUT / INOUT : le parametre est une adresse (pointeur 32 bits) }
+      If (Mode = PARAM_OUT) Or (Mode = PARAM_INOUT) Then
+        Inc(Off, 4)
+      Else
+        Inc(Off, AlignDWord(GetTypeSize(TI)));
+    End;
+  End;
+End;
+
+{ ---- ParseDeclarativePart : partie declarative d un body ----- }
+{ Parse entre IS (deja consomme) et BEGIN.                         }
+{ Reconnaît : TYPE, SUBTYPE, declarations d objets (variables /    }
+{ constantes), et sous-programmes imbriques (PROCEDURE / FUNCTION).}
+Procedure ParseDeclarativePart;
+Begin
+  While (CurTokType <> TOK_EOF) And (Not TokIsKw(KW_BEGIN)) Do
+  Begin
+    If CurTokKw = KW_TYPE Then
+      ParseTypeDecl
+    Else If CurTokKw = KW_SUBTYPE Then
+      ParseSubtypeDecl
+    Else If CurTokKw = KW_PROCEDURE Then
+      ParseProcedureDecl
+    Else If CurTokKw = KW_FUNCTION Then
+      ParseFunctionDecl
+    Else If CurTokType = TOK_IDENT Then
+      ParseObjectDecl
+    Else
+    Begin
+      { Token inattendu dans la partie declarative }
+      Error('Token inattendu dans la partie declarative : ' +
+            CurTokStr);
+      Consume;
+    End;
+  End;
+End;
+
+{ ---- SkipStatements : sauter les instructions jusqu a END ---- }
+{ Saute les instructions d un bloc BEGIN..END en gerant les        }
+{ constructions imbriquees : IF, LOOP, CASE, DECLARE, SELECT,     }
+{ BEGIN, PROCEDURE/FUNCTION (body), EXCEPTION.                     }
+{ S arrete juste avant END ou EXCEPTION (selon stop_at_except).    }
+Procedure SkipStatements;
+Var
+  Depth  : Integer;
+  PFWait : Boolean;
+Begin
+  Depth := 1;
+  PFWait := False;
+  While (CurTokType <> TOK_EOF) And (Depth > 0) Do
+  Begin
+    If TokIsKw(KW_PROCEDURE) Or TokIsKw(KW_FUNCTION) Or
+       TokIsKw(KW_PACKAGE) Then
+      PFWait := True
+    Else If TokIsKw(KW_IS) And PFWait Then
+    Begin
+      Inc(Depth);
+      PFWait := False;
+    End
+    Else If TokIsKw(KW_IF) Or TokIsKw(KW_LOOP) Or TokIsKw(KW_CASE) Or
+            TokIsKw(KW_DECLARE) Or TokIsKw(KW_SELECT) Or
+            TokIsKw(KW_BEGIN) Then
+    Begin
+      Inc(Depth);
+      PFWait := False;
+    End
+    Else If TokIsKw(KW_END) Then
+    Begin
+      Dec(Depth);
+      PFWait := False;
+      If Depth <= 0 Then
+        Exit;  { on s arrete AVANT de consommer END }
+      { END intermediaire (END LOOP, END IF, END RECORD, etc.) :    }
+      { consommer END puis sauter les tokens jusqu a ';'              }
+      Consume; { END }
+      While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) Do
+        Consume;
+      If CurTokType = TOK_SEMI Then Consume;
+      Continue; { ne pas faire le Consume final }
+    End
+    Else If TokIsKw(KW_EXCEPTION) And (Depth = 1) Then
+    Begin
+      { EXCEPTION au niveau du bloc courant : on s arrete avant }
+      Exit;
+    End
+    Else If CurTokType = TOK_SEMI Then
+      PFWait := False;
+    Consume;
+  End;
+End;
+
+{ ---- ParseSequenceOfStatements : parser la sequence d instr --- }
+{ Stub pour TODO 13 : reconnaît les instructions de base :         }
+{   NULL ;                                                          }
+{   RETURN [expr] ;                                                 }
+{   identifiant ... ;  (appel ou assignation - skip)                }
+{ Pour les instructions plus complexes, la TODO 15 implementera    }
+{ le dispatcher complet (IF, LOOP, CASE, etc.).                    }
+{ En attendant, on utilise SkipStatements pour traverser le corps. }
+Procedure ParseSequenceOfStatements;
+Begin
+  { Stub : skip les instructions jusqu a END ou EXCEPTION }
+  SkipStatements;
+End;
+
+{ ---- ParseProcedureBody : corps complet d une PROCEDURE ------ }
+{ Appele apres avoir consomme IS. SubIdx pointe dans SubTab.       }
+{ Etapes :                                                          }
+{   1. PushScope(SK_PROC)                                           }
+{   2. RegisterParams (inscrire les parametres en STORE_PARAM)      }
+{   3. ParseDeclarativePart (types, variables locales, etc.)        }
+{   4. Expect BEGIN                                                 }
+{   5. GenPrologue                                                  }
+{   6. ParseSequenceOfStatements                                    }
+{   7. [EXCEPTION : skip handler]                                   }
+{   8. Expect END [nom] ;                                           }
+{   9. GenEpilogue                                                  }
+{  10. PopScope -> FrameSize pour GenPrologue/GenEpilogue            }
+Procedure ParseProcedureBody(SubIdx : Integer);
+Var
+  FrameSz   : Integer;
+  ParamSz   : Integer;
+  LblExit_  : TString;
+  SubName   : TString;
+Begin
+  SubName := SubTab[SubIdx].Name;
+
+  { 1. Entrer dans le scope de la procedure }
+  PushScope(SK_PROC, SubIdx);
+
+  { 2. Enregistrer les parametres formels comme STORE_PARAM }
+  RegisterParams(SubIdx);
+
+  { Label de sortie (pour RETURN eventuel) }
+  LblExit_ := NewLabel;
+  SetExitLabel(LblExit_);
+
+  { 3. Partie declarative (entre IS et BEGIN) }
+  ParseDeclarativePart;
+
+  { 4. Expect BEGIN }
+  ExpectKw(KW_BEGIN, 'BEGIN');
+
+  { 5. Prologue ASM : PUSH EBP / MOV EBP, ESP / SUB ESP, frame }
+  { On emet le label de la procedure }
+  EmitBlank;
+  EmitComment('--- PROCEDURE ' + SubName + ' ---');
+  EmitLabel(SubTab[SubIdx].AsmLabel);
+
+  { Le frame size sera connu apres PopScope, on emet un stub }
+  { On genere le prologue maintenant avec le FrameSize courant }
+  { NB : les variables locales ont deja ete allouees par ParseObjectDecl }
+  FrameSz := -ScopeStack[ScopeTop].BpTop;
+  GenPrologue(FrameSz);
+
+  { 6. Sequence d instructions }
+  ParseSequenceOfStatements;
+
+  { 7. EXCEPTION optionnel }
+  If TokIsKw(KW_EXCEPTION) Then
+  Begin
+    Consume; { EXCEPTION }
+    { Skip le handler pour l instant (stub) }
+    SkipStatements;
+  End;
+
+  { 8. END [nom] ; }
+  ExpectKw(KW_END, 'END');
+  { Sauter le nom optionnel apres END }
+  If (CurTokType = TOK_IDENT) And
+     (StrUpperCase(CurTokStr) = SubName) Then
+    Consume;
+  Expect(TOK_SEMI, '`;` attendu apres END');
+
+  { 9. Epilogue : label de sortie + MOV ESP, EBP / POP EBP / RET n }
+  EmitLabel(LblExit_);
+  ParamSz := SubParamBytes32(SubIdx);
+  GenEpilogue(FrameSz, ParamSz);
+
+  { 10. Depiler le scope }
+  FrameSz := PopScope;
+  SubTab[SubIdx].FrameSize := FrameSz;
+End;
+
+{ ---- ParseFunctionBody : corps complet d une FUNCTION --------- }
+{ Identique a ParseProcedureBody sauf :                            }
+{   - Le scope est SK_FUNC                                          }
+{   - Le resultat de la fonction doit etre dans EAX                 }
+{   - RETURN expr ; met la valeur dans EAX                          }
+{ Pour l instant (stub), le corps est traverse sans generer de     }
+{ code pour les instructions. La valeur par defaut est EAX = 0.    }
+Procedure ParseFunctionBody(SubIdx : Integer);
+Var
+  FrameSz   : Integer;
+  ParamSz   : Integer;
+  LblExit_  : TString;
+  SubName   : TString;
+Begin
+  SubName := SubTab[SubIdx].Name;
+
+  { 1. Entrer dans le scope de la function }
+  PushScope(SK_FUNC, SubIdx);
+
+  { 2. Enregistrer les parametres formels }
+  RegisterParams(SubIdx);
+
+  { Label de sortie }
+  LblExit_ := NewLabel;
+  SetExitLabel(LblExit_);
+
+  { 3. Partie declarative (entre IS et BEGIN) }
+  ParseDeclarativePart;
+
+  { 4. Expect BEGIN }
+  ExpectKw(KW_BEGIN, 'BEGIN');
+
+  { 5. Prologue ASM }
+  EmitBlank;
+  EmitComment('--- FUNCTION ' + SubName + ' ---');
+  EmitLabel(SubTab[SubIdx].AsmLabel);
+
+  FrameSz := -ScopeStack[ScopeTop].BpTop;
+  GenPrologue(FrameSz);
+
+  { Valeur de retour par defaut : EAX = 0 }
+  EmitI('XOR  EAX, EAX');
+
+  { 6. Sequence d instructions }
+  ParseSequenceOfStatements;
+
+  { 7. EXCEPTION optionnel }
+  If TokIsKw(KW_EXCEPTION) Then
+  Begin
+    Consume; { EXCEPTION }
+    SkipStatements;
+  End;
+
+  { 8. END [nom] ; }
+  ExpectKw(KW_END, 'END');
+  If (CurTokType = TOK_IDENT) And
+     (StrUpperCase(CurTokStr) = SubName) Then
+    Consume;
+  Expect(TOK_SEMI, '`;` attendu apres END');
+
+  { 9. Epilogue }
+  EmitLabel(LblExit_);
+  ParamSz := SubParamBytes32(SubIdx);
+  GenEpilogue(FrameSz, ParamSz);
+
+  { 10. Depiler le scope }
+  FrameSz := PopScope;
+  SubTab[SubIdx].FrameSize := FrameSz;
+End;
+
 { ---- ParseProcedureDecl : declaration ou corps de PROCEDURE --- }
 { PROCEDURE nom [(params)] ;        => spec (forward declaration)  }
-{ PROCEDURE nom [(params)] IS ...   => body (skip pour TODO 13)    }
+{ PROCEDURE nom [(params)] IS ...   => body                        }
 Procedure ParseProcedureDecl;
 Var
   Name : TString;
@@ -4099,8 +4382,8 @@ Begin
     Consume; { IS }
     If Opts.Verbose Then
       WriteLn('  Procedure body: ', Name, ' (',
-              SubTab[Idx].ParamCount, ' params) [skip]');
-    SkipProcBody;
+              SubTab[Idx].ParamCount, ' params)');
+    ParseProcedureBody(Idx);
   End
   Else
     Error(''';'' ou ''IS'' attendu apres signature PROCEDURE');
@@ -4156,8 +4439,8 @@ Begin
     If Opts.Verbose Then
       WriteLn('  Function body: ', Name, ' (',
               SubTab[Idx].ParamCount, ' params) -> type #',
-              RetT, ' [skip]');
-    SkipProcBody;
+              RetT);
+    ParseFunctionBody(Idx);
   End
   Else
     Error(''';'' ou ''IS'' attendu apres signature FUNCTION');
@@ -4424,8 +4707,27 @@ Begin
       If CurTokKw = KW_PROCEDURE Then ParseProcedureDecl
       Else ParseFunctionDecl;
     End;
-    WriteLn('ADACW32: TODO 13+ non encore implemente - ',
-            'WITH/USE + TYPE/SUBTYPE + objets + sous-programmes OK');
+    { TODO 13 : le programme principal (BEGIN ... END) ou fin }
+    If TokIsKw(KW_BEGIN) Then
+    Begin
+      { Programme principal : BEGIN ... END [nom] ; }
+      Consume; { BEGIN }
+      { Stub : skip les instructions du corps principal }
+      SkipStatements;
+      If TokIsKw(KW_EXCEPTION) Then
+      Begin
+        Consume;
+        SkipStatements;
+      End;
+      If TokIsKw(KW_END) Then
+      Begin
+        Consume; { END }
+        { Sauter le nom optionnel }
+        While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) Do
+          Consume;
+        If CurTokType = TOK_SEMI Then Consume;
+      End;
+    End;
   End;
   LexClose;
   BilanCompilation;

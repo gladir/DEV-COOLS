@@ -260,7 +260,7 @@
             Convention STDCALL : parametres droite a gauche
             Boucle PROCEDURE/FUNCTION dans Run
 
-  TODO 13 - PARSEUR : CORPS PROCEDURE ET FUNCTION (32 BITS)
+  TODO 13 - PARSEUR : CORPS PROCEDURE ET FUNCTION (32 BITS) [IMPLEMENTE]
             ParseProcedureBody :
               PROCEDURE nom [(params)] IS
                 declarative_part
