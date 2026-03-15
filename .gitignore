@@ -2,5 +2,6 @@
 *.obj
 *.ppu
 *.class
+SAMPLES/ADA/*.asm
 /JASMIN
 /ADACW32
