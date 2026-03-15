@@ -246,7 +246,7 @@ TODO 11 - Instructions de transfert de donnees [IMPLEMENTE]
   - Validation des modes d'adressage autorises par instruction
   - Exemples : SAMPLES\ASM68\move.asm
 
-TODO 12 - Instructions arithmetiques entieres
+TODO 12 - Instructions arithmetiques entieres [IMPLEMENTE]
   ----------------------------------------------
   - ADD.s  ea, Dn / Dn, ea  : addition
   - ADDA.s ea, An            : addition sur registre d'adresse
@@ -272,7 +272,7 @@ TODO 12 - Instructions arithmetiques entieres
   - CMPM.s (An)+, (An)+     : comparaison memoire a memoire
   - TST.s  ea                : tester (comparer a zero)
   - TAS.B  ea                : tester et positionner bit 7
-  - Exemples : SAMPLES\ASM68\arith.asm
+  - Exemples : SAMPLES\ASM68\arith.asm, test_arith.asm
 
 TODO 13 - Instructions logiques et de manipulation de bits
   -----------------------------------------------------------

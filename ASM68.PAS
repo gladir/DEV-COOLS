@@ -29,7 +29,7 @@
 { TODO 09 - Directives assembleur avancees (SECTION, INCLUDE, macros) [IMPLEMENTE] }
 { TODO 10 - Assemblage conditionnel (IF, IFDEF, IFEQ, etc.) [IMPLEMENTE] }
 { TODO 11 - Instructions de transfert de donnees [IMPLEMENTE] }
-{ TODO 12 - Instructions arithmetiques entieres }
+{ TODO 12 - Instructions arithmetiques entieres [IMPLEMENTE] }
 { TODO 13 - Instructions logiques et de manipulation de bits }
 { TODO 14 - Instructions de decalage et rotation }
 { TODO 15 - Instructions de branchement et controle de flux }
@@ -4743,9 +4743,1080 @@ Begin
  Emit16(InstrW);
 End;
 
+{ ============================================================================ }
+{ TODO 12 - Instructions arithmetiques entieres                               }
+{ ============================================================================ }
+{ ADD, ADDA, ADDQ, ADDI, ADDX, SUB, SUBA, SUBQ, SUBI, SUBX,                }
+{ MULS, MULU, DIVS, DIVU, NEG, NEGX, CLR, EXT,                              }
+{ CMP, CMPA, CMPI, CMPM, TST, TAS                                            }
+
+Function EncodeSizeBits(S: Integer): Integer;
+{ Encode la taille en 2 bits pour les instructions ADD/SUB/CMP/etc. :
+  00 = byte, 01 = word, 10 = long }
+Begin
+ Case S of
+  SIZE_BYTE: EncodeSizeBits := 0;
+  SIZE_WORD: EncodeSizeBits := 1;
+  SIZE_LONG: EncodeSizeBits := 2;
+ Else
+  EncodeSizeBits := 1;
+ End;
+End;
+
+Procedure InstrADD(OpSize: Integer);
+{ ADD.s <ea>,Dn  -> $D000 | Dn<<9 | opmode(3) | srcEA(6)
+  ADD.s Dn,<ea>  -> $D000 | Dn<<9 | opmode(3) | dstEA(6)
+  opmode ea,Dn : 000=byte, 001=word, 010=long
+  opmode Dn,ea : 100=byte, 101=word, 110=long }
+Var
+ Src, Dst: TOperand;
+ EA: Integer;
+ InstrW: Word;
+ ActualSize, SzBits, OpMode: Integer;
+ Dn: Integer;
+Begin
+ ActualSize := OpSize;
+ If ActualSize = 0 Then ActualSize := SIZE_WORD;
+ SzBits := EncodeSizeBits(ActualSize);
+
+ ParseOperand(Src);
+ If cur_tok <> TOK_COMMA Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'virgule attendue');
+  SkipToEOL; Exit;
+ End;
+ NextToken;
+ ParseOperand(Dst);
+
+ If Dst.Mode = AM_DATA_REG Then
+ Begin
+  { ADD <ea>, Dn }
+  Dn := Dst.Reg;
+  OpMode := SzBits; { 000/001/010 }
+  EA := EncodeEA(Src);
+  If EA < 0 Then
+  Begin
+   Error(cur_tok_line, cur_tok_col, 'mode source invalide pour ADD');
+   SkipToEOL; Exit;
+  End;
+  InstrW := $D000 or Word(Dn shl 9) or Word(OpMode shl 6) or Word(EA);
+  Emit16(InstrW);
+  EmitExtWords(Src, ActualSize);
+ End
+ Else If Src.Mode = AM_DATA_REG Then
+ Begin
+  { ADD Dn, <ea> }
+  Dn := Src.Reg;
+  OpMode := SzBits + 4; { 100/101/110 }
+  If Not CheckEAMask(Dst, EA_MEM_ALT) Then
+  Begin
+   Error(cur_tok_line, cur_tok_col,
+         'mode destination invalide pour ADD Dn,<ea>');
+   SkipToEOL; Exit;
+  End;
+  EA := EncodeEA(Dst);
+  If EA < 0 Then
+  Begin
+   Error(cur_tok_line, cur_tok_col, 'encodage EA destination impossible');
+   SkipToEOL; Exit;
+  End;
+  InstrW := $D000 or Word(Dn shl 9) or Word(OpMode shl 6) or Word(EA);
+  Emit16(InstrW);
+  EmitExtWords(Dst, ActualSize);
+ End
+ Else
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'ADD requiert un registre de donnees en source ou destination');
+  SkipToEOL;
+ End;
+End;
+
+Procedure InstrADDA(OpSize: Integer);
+{ ADDA.s <ea>,An -> $D0C0 (word) / $D1C0 (long) | An<<9 | srcEA(6) }
+Var
+ Src, Dst: TOperand;
+ EA: Integer;
+ InstrW: Word;
+ ActualSize: Integer;
+Begin
+ ActualSize := OpSize;
+ If ActualSize = 0 Then ActualSize := SIZE_WORD;
+ If ActualSize = SIZE_BYTE Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'ADDA.B non supporte');
+  SkipToEOL; Exit;
+ End;
+
+ ParseOperand(Src);
+ If cur_tok <> TOK_COMMA Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'virgule attendue');
+  SkipToEOL; Exit;
+ End;
+ NextToken;
+ ParseOperand(Dst);
+
+ If Dst.Mode <> AM_ADDR_REG Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'ADDA requiert un registre d''adresse en destination');
+  SkipToEOL; Exit;
+ End;
+
+ EA := EncodeEA(Src);
+ If EA < 0 Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'mode source invalide pour ADDA');
+  SkipToEOL; Exit;
+ End;
+
+ If ActualSize = SIZE_WORD Then
+  InstrW := $D0C0
+ Else
+  InstrW := $D1C0;
+ InstrW := InstrW or Word((Dst.Reg - REG_A0) shl 9) or Word(EA);
+ Emit16(InstrW);
+ EmitExtWords(Src, ActualSize);
+End;
+
+Procedure InstrADDQ(OpSize: Integer);
+{ ADDQ.s #imm3,<ea> -> $5000 | data<<9 | sz<<6 | dstEA(6)
+  data = 1..8 (8 est encode comme 0) }
+Var
+ Src, Dst: TOperand;
+ EA: Integer;
+ InstrW: Word;
+ ActualSize, SzBits: Integer;
+ Data3: Integer;
+Begin
+ ActualSize := OpSize;
+ If ActualSize = 0 Then ActualSize := SIZE_WORD;
+ SzBits := EncodeSizeBits(ActualSize);
+
+ ParseOperand(Src);
+ If cur_tok <> TOK_COMMA Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'virgule attendue');
+  SkipToEOL; Exit;
+ End;
+ NextToken;
+ ParseOperand(Dst);
+
+ If Src.Mode <> AM_IMMEDIATE Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'ADDQ requiert un immediat en source');
+  SkipToEOL; Exit;
+ End;
+ If (Src.Imm32 < 1) or (Src.Imm32 > 8) Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'ADDQ : valeur immediate doit etre entre 1 et 8');
+  SkipToEOL; Exit;
+ End;
+ If Not CheckEAMask(Dst, EA_ALTER) Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'mode destination invalide pour ADDQ');
+  SkipToEOL; Exit;
+ End;
+
+ EA := EncodeEA(Dst);
+ If EA < 0 Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'encodage EA destination impossible');
+  SkipToEOL; Exit;
+ End;
+
+ Data3 := Src.Imm32 and 7; { 8 -> 0 }
+ InstrW := $5000 or Word(Data3 shl 9) or Word(SzBits shl 6) or Word(EA);
+ Emit16(InstrW);
+ EmitExtWords(Dst, ActualSize);
+End;
+
+Procedure InstrADDI(OpSize: Integer);
+{ ADDI.s #imm,<ea> -> $0600 | sz<<6 | dstEA(6) + ext words }
+Var
+ Src, Dst: TOperand;
+ EA: Integer;
+ InstrW: Word;
+ ActualSize, SzBits: Integer;
+Begin
+ ActualSize := OpSize;
+ If ActualSize = 0 Then ActualSize := SIZE_WORD;
+ SzBits := EncodeSizeBits(ActualSize);
+
+ ParseOperand(Src);
+ If cur_tok <> TOK_COMMA Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'virgule attendue');
+  SkipToEOL; Exit;
+ End;
+ NextToken;
+ ParseOperand(Dst);
+
+ If Src.Mode <> AM_IMMEDIATE Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'ADDI requiert un immediat en source');
+  SkipToEOL; Exit;
+ End;
+ If Not CheckEAMask(Dst, EA_DATA_ALT) Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'mode destination invalide pour ADDI');
+  SkipToEOL; Exit;
+ End;
+
+ EA := EncodeEA(Dst);
+ If EA < 0 Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'encodage EA destination impossible');
+  SkipToEOL; Exit;
+ End;
+
+ InstrW := $0600 or Word(SzBits shl 6) or Word(EA);
+ Emit16(InstrW);
+ EmitExtWords(Src, ActualSize);
+ EmitExtWords(Dst, ActualSize);
+End;
+
+Procedure InstrADDX(OpSize: Integer);
+{ ADDX.s Dn,Dn       -> $D100 | Dn_dst<<9 | sz<<6 | Dn_src
+  ADDX.s -(An),-(An) -> $D108 | An_dst<<9 | sz<<6 | An_src }
+Var
+ Src, Dst: TOperand;
+ InstrW: Word;
+ ActualSize, SzBits: Integer;
+Begin
+ ActualSize := OpSize;
+ If ActualSize = 0 Then ActualSize := SIZE_WORD;
+ SzBits := EncodeSizeBits(ActualSize);
+
+ ParseOperand(Src);
+ If cur_tok <> TOK_COMMA Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'virgule attendue');
+  SkipToEOL; Exit;
+ End;
+ NextToken;
+ ParseOperand(Dst);
+
+ If (Src.Mode = AM_DATA_REG) and (Dst.Mode = AM_DATA_REG) Then
+ Begin
+  InstrW := $D100 or Word(Dst.Reg shl 9) or Word(SzBits shl 6)
+            or Word(Src.Reg);
+  Emit16(InstrW);
+ End
+ Else If (Src.Mode = AM_ADDR_IND_PRE) and (Dst.Mode = AM_ADDR_IND_PRE) Then
+ Begin
+  InstrW := $D108 or Word((Dst.Reg - REG_A0) shl 9)
+            or Word(SzBits shl 6) or Word(Src.Reg - REG_A0);
+  Emit16(InstrW);
+ End
+ Else
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'ADDX requiert Dn,Dn ou -(An),-(An)');
+  SkipToEOL;
+ End;
+End;
+
+Procedure InstrSUB(OpSize: Integer);
+{ SUB.s <ea>,Dn  -> $9000 | Dn<<9 | opmode(3) | srcEA(6)
+  SUB.s Dn,<ea>  -> $9000 | Dn<<9 | opmode(3) | dstEA(6)
+  opmode ea,Dn : 000=byte, 001=word, 010=long
+  opmode Dn,ea : 100=byte, 101=word, 110=long }
+Var
+ Src, Dst: TOperand;
+ EA: Integer;
+ InstrW: Word;
+ ActualSize, SzBits, OpMode: Integer;
+ Dn: Integer;
+Begin
+ ActualSize := OpSize;
+ If ActualSize = 0 Then ActualSize := SIZE_WORD;
+ SzBits := EncodeSizeBits(ActualSize);
+
+ ParseOperand(Src);
+ If cur_tok <> TOK_COMMA Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'virgule attendue');
+  SkipToEOL; Exit;
+ End;
+ NextToken;
+ ParseOperand(Dst);
+
+ If Dst.Mode = AM_DATA_REG Then
+ Begin
+  { SUB <ea>, Dn }
+  Dn := Dst.Reg;
+  OpMode := SzBits;
+  EA := EncodeEA(Src);
+  If EA < 0 Then
+  Begin
+   Error(cur_tok_line, cur_tok_col, 'mode source invalide pour SUB');
+   SkipToEOL; Exit;
+  End;
+  InstrW := $9000 or Word(Dn shl 9) or Word(OpMode shl 6) or Word(EA);
+  Emit16(InstrW);
+  EmitExtWords(Src, ActualSize);
+ End
+ Else If Src.Mode = AM_DATA_REG Then
+ Begin
+  { SUB Dn, <ea> }
+  Dn := Src.Reg;
+  OpMode := SzBits + 4;
+  If Not CheckEAMask(Dst, EA_MEM_ALT) Then
+  Begin
+   Error(cur_tok_line, cur_tok_col,
+         'mode destination invalide pour SUB Dn,<ea>');
+   SkipToEOL; Exit;
+  End;
+  EA := EncodeEA(Dst);
+  If EA < 0 Then
+  Begin
+   Error(cur_tok_line, cur_tok_col, 'encodage EA destination impossible');
+   SkipToEOL; Exit;
+  End;
+  InstrW := $9000 or Word(Dn shl 9) or Word(OpMode shl 6) or Word(EA);
+  Emit16(InstrW);
+  EmitExtWords(Dst, ActualSize);
+ End
+ Else
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'SUB requiert un registre de donnees en source ou destination');
+  SkipToEOL;
+ End;
+End;
+
+Procedure InstrSUBA(OpSize: Integer);
+{ SUBA.s <ea>,An -> $90C0 (word) / $91C0 (long) | An<<9 | srcEA(6) }
+Var
+ Src, Dst: TOperand;
+ EA: Integer;
+ InstrW: Word;
+ ActualSize: Integer;
+Begin
+ ActualSize := OpSize;
+ If ActualSize = 0 Then ActualSize := SIZE_WORD;
+ If ActualSize = SIZE_BYTE Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'SUBA.B non supporte');
+  SkipToEOL; Exit;
+ End;
+
+ ParseOperand(Src);
+ If cur_tok <> TOK_COMMA Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'virgule attendue');
+  SkipToEOL; Exit;
+ End;
+ NextToken;
+ ParseOperand(Dst);
+
+ If Dst.Mode <> AM_ADDR_REG Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'SUBA requiert un registre d''adresse en destination');
+  SkipToEOL; Exit;
+ End;
+
+ EA := EncodeEA(Src);
+ If EA < 0 Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'mode source invalide pour SUBA');
+  SkipToEOL; Exit;
+ End;
+
+ If ActualSize = SIZE_WORD Then
+  InstrW := $90C0
+ Else
+  InstrW := $91C0;
+ InstrW := InstrW or Word((Dst.Reg - REG_A0) shl 9) or Word(EA);
+ Emit16(InstrW);
+ EmitExtWords(Src, ActualSize);
+End;
+
+Procedure InstrSUBQ(OpSize: Integer);
+{ SUBQ.s #imm3,<ea> -> $5100 | data<<9 | sz<<6 | dstEA(6) }
+Var
+ Src, Dst: TOperand;
+ EA: Integer;
+ InstrW: Word;
+ ActualSize, SzBits: Integer;
+ Data3: Integer;
+Begin
+ ActualSize := OpSize;
+ If ActualSize = 0 Then ActualSize := SIZE_WORD;
+ SzBits := EncodeSizeBits(ActualSize);
+
+ ParseOperand(Src);
+ If cur_tok <> TOK_COMMA Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'virgule attendue');
+  SkipToEOL; Exit;
+ End;
+ NextToken;
+ ParseOperand(Dst);
+
+ If Src.Mode <> AM_IMMEDIATE Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'SUBQ requiert un immediat en source');
+  SkipToEOL; Exit;
+ End;
+ If (Src.Imm32 < 1) or (Src.Imm32 > 8) Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'SUBQ : valeur immediate doit etre entre 1 et 8');
+  SkipToEOL; Exit;
+ End;
+ If Not CheckEAMask(Dst, EA_ALTER) Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'mode destination invalide pour SUBQ');
+  SkipToEOL; Exit;
+ End;
+
+ EA := EncodeEA(Dst);
+ If EA < 0 Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'encodage EA destination impossible');
+  SkipToEOL; Exit;
+ End;
+
+ Data3 := Src.Imm32 and 7;
+ InstrW := $5100 or Word(Data3 shl 9) or Word(SzBits shl 6) or Word(EA);
+ Emit16(InstrW);
+ EmitExtWords(Dst, ActualSize);
+End;
+
+Procedure InstrSUBI(OpSize: Integer);
+{ SUBI.s #imm,<ea> -> $0400 | sz<<6 | dstEA(6) + ext words }
+Var
+ Src, Dst: TOperand;
+ EA: Integer;
+ InstrW: Word;
+ ActualSize, SzBits: Integer;
+Begin
+ ActualSize := OpSize;
+ If ActualSize = 0 Then ActualSize := SIZE_WORD;
+ SzBits := EncodeSizeBits(ActualSize);
+
+ ParseOperand(Src);
+ If cur_tok <> TOK_COMMA Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'virgule attendue');
+  SkipToEOL; Exit;
+ End;
+ NextToken;
+ ParseOperand(Dst);
+
+ If Src.Mode <> AM_IMMEDIATE Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'SUBI requiert un immediat en source');
+  SkipToEOL; Exit;
+ End;
+ If Not CheckEAMask(Dst, EA_DATA_ALT) Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'mode destination invalide pour SUBI');
+  SkipToEOL; Exit;
+ End;
+
+ EA := EncodeEA(Dst);
+ If EA < 0 Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'encodage EA destination impossible');
+  SkipToEOL; Exit;
+ End;
+
+ InstrW := $0400 or Word(SzBits shl 6) or Word(EA);
+ Emit16(InstrW);
+ EmitExtWords(Src, ActualSize);
+ EmitExtWords(Dst, ActualSize);
+End;
+
+Procedure InstrSUBX(OpSize: Integer);
+{ SUBX.s Dn,Dn       -> $9100 | Dn_dst<<9 | sz<<6 | Dn_src
+  SUBX.s -(An),-(An) -> $9108 | An_dst<<9 | sz<<6 | An_src }
+Var
+ Src, Dst: TOperand;
+ InstrW: Word;
+ ActualSize, SzBits: Integer;
+Begin
+ ActualSize := OpSize;
+ If ActualSize = 0 Then ActualSize := SIZE_WORD;
+ SzBits := EncodeSizeBits(ActualSize);
+
+ ParseOperand(Src);
+ If cur_tok <> TOK_COMMA Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'virgule attendue');
+  SkipToEOL; Exit;
+ End;
+ NextToken;
+ ParseOperand(Dst);
+
+ If (Src.Mode = AM_DATA_REG) and (Dst.Mode = AM_DATA_REG) Then
+ Begin
+  InstrW := $9100 or Word(Dst.Reg shl 9) or Word(SzBits shl 6)
+            or Word(Src.Reg);
+  Emit16(InstrW);
+ End
+ Else If (Src.Mode = AM_ADDR_IND_PRE) and (Dst.Mode = AM_ADDR_IND_PRE) Then
+ Begin
+  InstrW := $9108 or Word((Dst.Reg - REG_A0) shl 9)
+            or Word(SzBits shl 6) or Word(Src.Reg - REG_A0);
+  Emit16(InstrW);
+ End
+ Else
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'SUBX requiert Dn,Dn ou -(An),-(An)');
+  SkipToEOL;
+ End;
+End;
+
+Procedure InstrMULS(OpSize: Integer);
+{ MULS.W <ea>,Dn -> $C1C0 | Dn<<9 | srcEA(6) }
+Var
+ Src, Dst: TOperand;
+ EA: Integer;
+ InstrW: Word;
+Begin
+ If (OpSize <> 0) and (OpSize <> SIZE_WORD) Then
+  Warning(cur_tok_line, cur_tok_col,
+          'MULS supporte uniquement .W, taille ignoree');
+
+ ParseOperand(Src);
+ If cur_tok <> TOK_COMMA Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'virgule attendue');
+  SkipToEOL; Exit;
+ End;
+ NextToken;
+ ParseOperand(Dst);
+
+ If Dst.Mode <> AM_DATA_REG Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'MULS requiert un registre de donnees en destination');
+  SkipToEOL; Exit;
+ End;
+ If Not CheckEAMask(Src, EA_DATA) Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'mode source invalide pour MULS');
+  SkipToEOL; Exit;
+ End;
+
+ EA := EncodeEA(Src);
+ If EA < 0 Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'encodage EA source impossible');
+  SkipToEOL; Exit;
+ End;
+
+ InstrW := $C1C0 or Word(Dst.Reg shl 9) or Word(EA);
+ Emit16(InstrW);
+ EmitExtWords(Src, SIZE_WORD);
+End;
+
+Procedure InstrMULU(OpSize: Integer);
+{ MULU.W <ea>,Dn -> $C0C0 | Dn<<9 | srcEA(6) }
+Var
+ Src, Dst: TOperand;
+ EA: Integer;
+ InstrW: Word;
+Begin
+ If (OpSize <> 0) and (OpSize <> SIZE_WORD) Then
+  Warning(cur_tok_line, cur_tok_col,
+          'MULU supporte uniquement .W, taille ignoree');
+
+ ParseOperand(Src);
+ If cur_tok <> TOK_COMMA Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'virgule attendue');
+  SkipToEOL; Exit;
+ End;
+ NextToken;
+ ParseOperand(Dst);
+
+ If Dst.Mode <> AM_DATA_REG Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'MULU requiert un registre de donnees en destination');
+  SkipToEOL; Exit;
+ End;
+ If Not CheckEAMask(Src, EA_DATA) Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'mode source invalide pour MULU');
+  SkipToEOL; Exit;
+ End;
+
+ EA := EncodeEA(Src);
+ If EA < 0 Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'encodage EA source impossible');
+  SkipToEOL; Exit;
+ End;
+
+ InstrW := $C0C0 or Word(Dst.Reg shl 9) or Word(EA);
+ Emit16(InstrW);
+ EmitExtWords(Src, SIZE_WORD);
+End;
+
+Procedure InstrDIVS(OpSize: Integer);
+{ DIVS.W <ea>,Dn -> $81C0 | Dn<<9 | srcEA(6) }
+Var
+ Src, Dst: TOperand;
+ EA: Integer;
+ InstrW: Word;
+Begin
+ If (OpSize <> 0) and (OpSize <> SIZE_WORD) Then
+  Warning(cur_tok_line, cur_tok_col,
+          'DIVS supporte uniquement .W, taille ignoree');
+
+ ParseOperand(Src);
+ If cur_tok <> TOK_COMMA Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'virgule attendue');
+  SkipToEOL; Exit;
+ End;
+ NextToken;
+ ParseOperand(Dst);
+
+ If Dst.Mode <> AM_DATA_REG Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'DIVS requiert un registre de donnees en destination');
+  SkipToEOL; Exit;
+ End;
+ If Not CheckEAMask(Src, EA_DATA) Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'mode source invalide pour DIVS');
+  SkipToEOL; Exit;
+ End;
+
+ EA := EncodeEA(Src);
+ If EA < 0 Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'encodage EA source impossible');
+  SkipToEOL; Exit;
+ End;
+
+ InstrW := $81C0 or Word(Dst.Reg shl 9) or Word(EA);
+ Emit16(InstrW);
+ EmitExtWords(Src, SIZE_WORD);
+End;
+
+Procedure InstrDIVU(OpSize: Integer);
+{ DIVU.W <ea>,Dn -> $80C0 | Dn<<9 | srcEA(6) }
+Var
+ Src, Dst: TOperand;
+ EA: Integer;
+ InstrW: Word;
+Begin
+ If (OpSize <> 0) and (OpSize <> SIZE_WORD) Then
+  Warning(cur_tok_line, cur_tok_col,
+          'DIVU supporte uniquement .W, taille ignoree');
+
+ ParseOperand(Src);
+ If cur_tok <> TOK_COMMA Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'virgule attendue');
+  SkipToEOL; Exit;
+ End;
+ NextToken;
+ ParseOperand(Dst);
+
+ If Dst.Mode <> AM_DATA_REG Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'DIVU requiert un registre de donnees en destination');
+  SkipToEOL; Exit;
+ End;
+ If Not CheckEAMask(Src, EA_DATA) Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'mode source invalide pour DIVU');
+  SkipToEOL; Exit;
+ End;
+
+ EA := EncodeEA(Src);
+ If EA < 0 Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'encodage EA source impossible');
+  SkipToEOL; Exit;
+ End;
+
+ InstrW := $80C0 or Word(Dst.Reg shl 9) or Word(EA);
+ Emit16(InstrW);
+ EmitExtWords(Src, SIZE_WORD);
+End;
+
+Procedure InstrNEG(OpSize: Integer);
+{ NEG.s <ea> -> $4400 | sz<<6 | dstEA(6) }
+Var
+ Op: TOperand;
+ EA: Integer;
+ InstrW: Word;
+ ActualSize, SzBits: Integer;
+Begin
+ ActualSize := OpSize;
+ If ActualSize = 0 Then ActualSize := SIZE_WORD;
+ SzBits := EncodeSizeBits(ActualSize);
+
+ ParseOperand(Op);
+ If Not CheckEAMask(Op, EA_DATA_ALT) Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'mode d''adressage invalide pour NEG');
+  SkipToEOL; Exit;
+ End;
+
+ EA := EncodeEA(Op);
+ If EA < 0 Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'encodage EA impossible');
+  SkipToEOL; Exit;
+ End;
+
+ InstrW := $4400 or Word(SzBits shl 6) or Word(EA);
+ Emit16(InstrW);
+ EmitExtWords(Op, ActualSize);
+End;
+
+Procedure InstrNEGX(OpSize: Integer);
+{ NEGX.s <ea> -> $4000 | sz<<6 | dstEA(6) }
+Var
+ Op: TOperand;
+ EA: Integer;
+ InstrW: Word;
+ ActualSize, SzBits: Integer;
+Begin
+ ActualSize := OpSize;
+ If ActualSize = 0 Then ActualSize := SIZE_WORD;
+ SzBits := EncodeSizeBits(ActualSize);
+
+ ParseOperand(Op);
+ If Not CheckEAMask(Op, EA_DATA_ALT) Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'mode d''adressage invalide pour NEGX');
+  SkipToEOL; Exit;
+ End;
+
+ EA := EncodeEA(Op);
+ If EA < 0 Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'encodage EA impossible');
+  SkipToEOL; Exit;
+ End;
+
+ InstrW := $4000 or Word(SzBits shl 6) or Word(EA);
+ Emit16(InstrW);
+ EmitExtWords(Op, ActualSize);
+End;
+
+Procedure InstrCLR(OpSize: Integer);
+{ CLR.s <ea> -> $4200 | sz<<6 | dstEA(6) }
+Var
+ Op: TOperand;
+ EA: Integer;
+ InstrW: Word;
+ ActualSize, SzBits: Integer;
+Begin
+ ActualSize := OpSize;
+ If ActualSize = 0 Then ActualSize := SIZE_WORD;
+ SzBits := EncodeSizeBits(ActualSize);
+
+ ParseOperand(Op);
+ If Not CheckEAMask(Op, EA_DATA_ALT) Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'mode d''adressage invalide pour CLR');
+  SkipToEOL; Exit;
+ End;
+
+ EA := EncodeEA(Op);
+ If EA < 0 Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'encodage EA impossible');
+  SkipToEOL; Exit;
+ End;
+
+ InstrW := $4200 or Word(SzBits shl 6) or Word(EA);
+ Emit16(InstrW);
+ EmitExtWords(Op, ActualSize);
+End;
+
+Procedure InstrEXT(OpSize: Integer);
+{ EXT.W Dn -> $4880 | Dn    (byte->word)
+  EXT.L Dn -> $48C0 | Dn    (word->long) }
+Var
+ Op: TOperand;
+ InstrW: Word;
+ ActualSize: Integer;
+Begin
+ ActualSize := OpSize;
+ If ActualSize = 0 Then ActualSize := SIZE_WORD;
+
+ ParseOperand(Op);
+ If Op.Mode <> AM_DATA_REG Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'EXT requiert un registre de donnees');
+  SkipToEOL; Exit;
+ End;
+
+ If ActualSize = SIZE_WORD Then
+  InstrW := $4880 or Word(Op.Reg)
+ Else If ActualSize = SIZE_LONG Then
+  InstrW := $48C0 or Word(Op.Reg)
+ Else
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'EXT.B non supporte');
+  SkipToEOL; Exit;
+ End;
+ Emit16(InstrW);
+End;
+
+Procedure InstrCMP(OpSize: Integer);
+{ CMP.s <ea>,Dn -> $B000 | Dn<<9 | opmode(3) | srcEA(6)
+  opmode : 000=byte, 001=word, 010=long }
+Var
+ Src, Dst: TOperand;
+ EA: Integer;
+ InstrW: Word;
+ ActualSize, SzBits: Integer;
+Begin
+ ActualSize := OpSize;
+ If ActualSize = 0 Then ActualSize := SIZE_WORD;
+ SzBits := EncodeSizeBits(ActualSize);
+
+ ParseOperand(Src);
+ If cur_tok <> TOK_COMMA Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'virgule attendue');
+  SkipToEOL; Exit;
+ End;
+ NextToken;
+ ParseOperand(Dst);
+
+ If Dst.Mode <> AM_DATA_REG Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'CMP requiert un registre de donnees en destination');
+  SkipToEOL; Exit;
+ End;
+
+ EA := EncodeEA(Src);
+ If EA < 0 Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'mode source invalide pour CMP');
+  SkipToEOL; Exit;
+ End;
+
+ InstrW := $B000 or Word(Dst.Reg shl 9) or Word(SzBits shl 6) or Word(EA);
+ Emit16(InstrW);
+ EmitExtWords(Src, ActualSize);
+End;
+
+Procedure InstrCMPA(OpSize: Integer);
+{ CMPA.s <ea>,An -> $B0C0 (word) / $B1C0 (long) | An<<9 | srcEA(6) }
+Var
+ Src, Dst: TOperand;
+ EA: Integer;
+ InstrW: Word;
+ ActualSize: Integer;
+Begin
+ ActualSize := OpSize;
+ If ActualSize = 0 Then ActualSize := SIZE_WORD;
+ If ActualSize = SIZE_BYTE Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'CMPA.B non supporte');
+  SkipToEOL; Exit;
+ End;
+
+ ParseOperand(Src);
+ If cur_tok <> TOK_COMMA Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'virgule attendue');
+  SkipToEOL; Exit;
+ End;
+ NextToken;
+ ParseOperand(Dst);
+
+ If Dst.Mode <> AM_ADDR_REG Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'CMPA requiert un registre d''adresse en destination');
+  SkipToEOL; Exit;
+ End;
+
+ EA := EncodeEA(Src);
+ If EA < 0 Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'mode source invalide pour CMPA');
+  SkipToEOL; Exit;
+ End;
+
+ If ActualSize = SIZE_WORD Then
+  InstrW := $B0C0
+ Else
+  InstrW := $B1C0;
+ InstrW := InstrW or Word((Dst.Reg - REG_A0) shl 9) or Word(EA);
+ Emit16(InstrW);
+ EmitExtWords(Src, ActualSize);
+End;
+
+Procedure InstrCMPI(OpSize: Integer);
+{ CMPI.s #imm,<ea> -> $0C00 | sz<<6 | dstEA(6) + ext words }
+Var
+ Src, Dst: TOperand;
+ EA: Integer;
+ InstrW: Word;
+ ActualSize, SzBits: Integer;
+Begin
+ ActualSize := OpSize;
+ If ActualSize = 0 Then ActualSize := SIZE_WORD;
+ SzBits := EncodeSizeBits(ActualSize);
+
+ ParseOperand(Src);
+ If cur_tok <> TOK_COMMA Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'virgule attendue');
+  SkipToEOL; Exit;
+ End;
+ NextToken;
+ ParseOperand(Dst);
+
+ If Src.Mode <> AM_IMMEDIATE Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'CMPI requiert un immediat en source');
+  SkipToEOL; Exit;
+ End;
+ If Not CheckEAMask(Dst, EA_DATA_ALT) Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'mode destination invalide pour CMPI');
+  SkipToEOL; Exit;
+ End;
+
+ EA := EncodeEA(Dst);
+ If EA < 0 Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'encodage EA destination impossible');
+  SkipToEOL; Exit;
+ End;
+
+ InstrW := $0C00 or Word(SzBits shl 6) or Word(EA);
+ Emit16(InstrW);
+ EmitExtWords(Src, ActualSize);
+ EmitExtWords(Dst, ActualSize);
+End;
+
+Procedure InstrCMPM(OpSize: Integer);
+{ CMPM.s (An)+,(An)+ -> $B108 | An_dst<<9 | sz<<6 | An_src }
+Var
+ Src, Dst: TOperand;
+ InstrW: Word;
+ ActualSize, SzBits: Integer;
+Begin
+ ActualSize := OpSize;
+ If ActualSize = 0 Then ActualSize := SIZE_WORD;
+ SzBits := EncodeSizeBits(ActualSize);
+
+ ParseOperand(Src);
+ If cur_tok <> TOK_COMMA Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'virgule attendue');
+  SkipToEOL; Exit;
+ End;
+ NextToken;
+ ParseOperand(Dst);
+
+ If Src.Mode <> AM_ADDR_IND_POST Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'CMPM requiert (An)+ en source');
+  SkipToEOL; Exit;
+ End;
+ If Dst.Mode <> AM_ADDR_IND_POST Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'CMPM requiert (An)+ en destination');
+  SkipToEOL; Exit;
+ End;
+
+ InstrW := $B108 or Word((Dst.Reg - REG_A0) shl 9)
+           or Word(SzBits shl 6) or Word(Src.Reg - REG_A0);
+ Emit16(InstrW);
+End;
+
+Procedure InstrTST(OpSize: Integer);
+{ TST.s <ea> -> $4A00 | sz<<6 | dstEA(6) }
+Var
+ Op: TOperand;
+ EA: Integer;
+ InstrW: Word;
+ ActualSize, SzBits: Integer;
+Begin
+ ActualSize := OpSize;
+ If ActualSize = 0 Then ActualSize := SIZE_WORD;
+ SzBits := EncodeSizeBits(ActualSize);
+
+ ParseOperand(Op);
+ If Not CheckEAMask(Op, EA_DATA_ALT) Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'mode d''adressage invalide pour TST');
+  SkipToEOL; Exit;
+ End;
+
+ EA := EncodeEA(Op);
+ If EA < 0 Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'encodage EA impossible');
+  SkipToEOL; Exit;
+ End;
+
+ InstrW := $4A00 or Word(SzBits shl 6) or Word(EA);
+ Emit16(InstrW);
+ EmitExtWords(Op, ActualSize);
+End;
+
+Procedure InstrTAS;
+{ TAS.B <ea> -> $4AC0 | dstEA(6) }
+Var
+ Op: TOperand;
+ EA: Integer;
+ InstrW: Word;
+Begin
+ ParseOperand(Op);
+ If Not CheckEAMask(Op, EA_DATA_ALT) Then
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'mode d''adressage invalide pour TAS');
+  SkipToEOL; Exit;
+ End;
+
+ EA := EncodeEA(Op);
+ If EA < 0 Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'encodage EA impossible');
+  SkipToEOL; Exit;
+ End;
+
+ InstrW := $4AC0 or Word(EA);
+ Emit16(InstrW);
+ EmitExtWords(Op, SIZE_BYTE);
+End;
+
 Procedure AssembleInstruction(Const OpName: String; OpSize: Integer);
 { Dispatch : appelle le bon encodeur selon le mnemonique }
 Begin
+ { --- Instructions de transfert (TODO 11) --- }
  If OpName = 'MOVE' Then InstrMOVE(OpSize)
  Else If OpName = 'MOVEA' Then InstrMOVEA(OpSize)
  Else If OpName = 'MOVEQ' Then InstrMOVEQ
@@ -4757,6 +5828,31 @@ Begin
  Else If OpName = 'SWAP' Then InstrSWAP
  Else If OpName = 'LINK' Then InstrLINK
  Else If OpName = 'UNLK' Then InstrUNLK
+ { --- Instructions arithmetiques (TODO 12) --- }
+ Else If OpName = 'ADD' Then InstrADD(OpSize)
+ Else If OpName = 'ADDA' Then InstrADDA(OpSize)
+ Else If OpName = 'ADDQ' Then InstrADDQ(OpSize)
+ Else If OpName = 'ADDI' Then InstrADDI(OpSize)
+ Else If OpName = 'ADDX' Then InstrADDX(OpSize)
+ Else If OpName = 'SUB' Then InstrSUB(OpSize)
+ Else If OpName = 'SUBA' Then InstrSUBA(OpSize)
+ Else If OpName = 'SUBQ' Then InstrSUBQ(OpSize)
+ Else If OpName = 'SUBI' Then InstrSUBI(OpSize)
+ Else If OpName = 'SUBX' Then InstrSUBX(OpSize)
+ Else If OpName = 'MULS' Then InstrMULS(OpSize)
+ Else If OpName = 'MULU' Then InstrMULU(OpSize)
+ Else If OpName = 'DIVS' Then InstrDIVS(OpSize)
+ Else If OpName = 'DIVU' Then InstrDIVU(OpSize)
+ Else If OpName = 'NEG' Then InstrNEG(OpSize)
+ Else If OpName = 'NEGX' Then InstrNEGX(OpSize)
+ Else If OpName = 'CLR' Then InstrCLR(OpSize)
+ Else If OpName = 'EXT' Then InstrEXT(OpSize)
+ Else If OpName = 'CMP' Then InstrCMP(OpSize)
+ Else If OpName = 'CMPA' Then InstrCMPA(OpSize)
+ Else If OpName = 'CMPI' Then InstrCMPI(OpSize)
+ Else If OpName = 'CMPM' Then InstrCMPM(OpSize)
+ Else If OpName = 'TST' Then InstrTST(OpSize)
+ Else If OpName = 'TAS' Then InstrTAS
  Else
  Begin
   Warning(cur_tok_line, cur_tok_col,
