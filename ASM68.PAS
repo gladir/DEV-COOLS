@@ -28,7 +28,7 @@
 { TODO 08 - Directives assembleur de base (ORG, DC, DS, EQU, END) [IMPLEMENTE] }
 { TODO 09 - Directives assembleur avancees (SECTION, INCLUDE, macros) [IMPLEMENTE] }
 { TODO 10 - Assemblage conditionnel (IF, IFDEF, IFEQ, etc.) [IMPLEMENTE] }
-{ TODO 11 - Instructions de transfert de donnees }
+{ TODO 11 - Instructions de transfert de donnees [IMPLEMENTE] }
 { TODO 12 - Instructions arithmetiques entieres }
 { TODO 13 - Instructions logiques et de manipulation de bits }
 { TODO 14 - Instructions de decalage et rotation }
@@ -4078,6 +4078,598 @@ Begin
  SkipToEOL;
 End;
 
+{ ============================================================================ }
+{ TODO 11 - Instructions de transfert de donnees                              }
+{ ============================================================================ }
+{ MOVE, MOVEA, MOVEQ, MOVEM, MOVEP, LEA, PEA, EXG, SWAP, LINK, UNLK        }
+
+Procedure InstrMOVE(OpSize: Integer);
+{ MOVE.s <ea>,<ea> - transfert general
+  Encodage : 00 | sz(2) | dstReg(3) | dstMode(3) | srcEA(6)
+  sz : 01=byte, 11=word, 10=long
+  Champs destination : reg et mode INVERSES par rapport a l'EA normal }
+Var
+ Src, Dst: TOperand;
+ SrcEA, DstEA: Integer;
+ SzCode: Integer;
+ DstMd, DstRg: Integer;
+ InstrW: Word;
+ ActualSize: Integer;
+Begin
+ ActualSize := OpSize;
+ If ActualSize = 0 Then ActualSize := SIZE_WORD;
+
+ ParseOperand(Src);
+ If cur_tok <> TOK_COMMA Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'virgule attendue apres operande source');
+  SkipToEOL; Exit;
+ End;
+ NextToken;
+ ParseOperand(Dst);
+
+ { Verifier si c'est en fait un MOVEA (destination = An) }
+ If Dst.Mode = AM_ADDR_REG Then
+ Begin
+  If ActualSize = SIZE_BYTE Then
+  Begin
+   Error(cur_tok_line, cur_tok_col, 'MOVE.B vers An interdit, utiliser MOVEA.W ou .L');
+   SkipToEOL; Exit;
+  End;
+  { Encoder comme MOVEA }
+  SrcEA := EncodeEA(Src);
+  If SrcEA < 0 Then
+  Begin
+   Error(cur_tok_line, cur_tok_col, 'mode d''adressage source invalide');
+   SkipToEOL; Exit;
+  End;
+  If ActualSize = SIZE_WORD Then
+   InstrW := $3040
+  Else
+   InstrW := $2040;
+  InstrW := InstrW or Word((Dst.Reg - REG_A0) shl 9) or Word(SrcEA);
+  Emit16(InstrW);
+  EmitExtWords(Src, ActualSize);
+  Exit;
+ End;
+
+ { Source : tous les modes }
+ If Not CheckEAMask(Src, EA_ALL) Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'mode d''adressage source invalide pour MOVE');
+  SkipToEOL; Exit;
+ End;
+ { Destination : modes data alterable }
+ If Not CheckEAMask(Dst, EA_DATA_ALT) Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'mode d''adressage destination invalide pour MOVE');
+  SkipToEOL; Exit;
+ End;
+
+ SrcEA := EncodeEA(Src);
+ DstEA := EncodeEA(Dst);
+ If (SrcEA < 0) or (DstEA < 0) Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'encodage EA impossible');
+  SkipToEOL; Exit;
+ End;
+
+ { Taille -> code MOVE }
+ Case ActualSize of
+  SIZE_BYTE: SzCode := 1;
+  SIZE_WORD: SzCode := 3;
+  SIZE_LONG: SzCode := 2;
+ Else
+  SzCode := 3;
+ End;
+
+ { Destination : reg et mode inverses }
+ DstMd := (DstEA shr 3) and 7;
+ DstRg := DstEA and 7;
+
+ InstrW := Word(SzCode shl 12) or Word(DstRg shl 9) or
+           Word(DstMd shl 6) or Word(SrcEA);
+ Emit16(InstrW);
+ EmitExtWords(Src, ActualSize);
+ EmitExtWords(Dst, ActualSize);
+End;
+
+Procedure InstrMOVEA(OpSize: Integer);
+{ MOVEA.s <ea>,An - transfert vers registre d'adresse
+  .W : $3040 | (An<<9) | srcEA
+  .L : $2040 | (An<<9) | srcEA }
+Var
+ Src, Dst: TOperand;
+ SrcEA: Integer;
+ InstrW: Word;
+ ActualSize: Integer;
+Begin
+ ActualSize := OpSize;
+ If ActualSize = 0 Then ActualSize := SIZE_WORD;
+ If ActualSize = SIZE_BYTE Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'MOVEA.B non supporte');
+  SkipToEOL; Exit;
+ End;
+
+ ParseOperand(Src);
+ If cur_tok <> TOK_COMMA Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'virgule attendue apres operande source');
+  SkipToEOL; Exit;
+ End;
+ NextToken;
+ ParseOperand(Dst);
+
+ If Dst.Mode <> AM_ADDR_REG Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'MOVEA requiert un registre d''adresse en destination');
+  SkipToEOL; Exit;
+ End;
+ If Not CheckEAMask(Src, EA_ALL) Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'mode d''adressage source invalide pour MOVEA');
+  SkipToEOL; Exit;
+ End;
+
+ SrcEA := EncodeEA(Src);
+ If SrcEA < 0 Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'encodage EA source impossible');
+  SkipToEOL; Exit;
+ End;
+
+ If ActualSize = SIZE_WORD Then
+  InstrW := $3040
+ Else
+  InstrW := $2040;
+ InstrW := InstrW or Word((Dst.Reg - REG_A0) shl 9) or Word(SrcEA);
+ Emit16(InstrW);
+ EmitExtWords(Src, ActualSize);
+End;
+
+Procedure InstrMOVEQ;
+{ MOVEQ #imm8,Dn - chargement rapide 8 bits signe-etendu
+  Encodage : $7000 | (Dn<<9) | (data & $FF) }
+Var
+ Src, Dst: TOperand;
+ InstrW: Word;
+ Val8: LongInt;
+Begin
+ ParseOperand(Src);
+ If cur_tok <> TOK_COMMA Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'virgule attendue apres #imm');
+  SkipToEOL; Exit;
+ End;
+ NextToken;
+ ParseOperand(Dst);
+
+ If Src.Mode <> AM_IMMEDIATE Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'MOVEQ requiert une valeur immediate');
+  SkipToEOL; Exit;
+ End;
+ If Dst.Mode <> AM_DATA_REG Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'MOVEQ requiert un registre Dn en destination');
+  SkipToEOL; Exit;
+ End;
+
+ Val8 := Src.Imm32;
+ If (Val8 < -128) or (Val8 > 127) Then
+  Warning(cur_tok_line, cur_tok_col, 'valeur MOVEQ hors plage -128..127');
+
+ InstrW := $7000 or Word(Dst.Reg shl 9) or Word(Val8 and $FF);
+ Emit16(InstrW);
+End;
+
+Procedure InstrMOVEM(OpSize: Integer);
+{ MOVEM.s reglist,<ea> - sauvegarde registres (reg->mem)
+  MOVEM.s <ea>,reglist - restauration registres (mem->reg)
+  reg->mem : $4880 | (szBit<<6) | EA + mot de masque
+  mem->reg : $4C80 | (szBit<<6) | EA + mot de masque
+  Pour predecrement -(An), le masque est inverse (bit0=A7, bit15=D0) }
+Var
+ Op: TOperand;
+ RegStr: String;
+ Mask: Word;
+ SzBit: Integer;
+ EA: Integer;
+ InstrW: Word;
+ RegToMem: Boolean;
+ ActualSize: Integer;
+ I: Integer;
+ RevMask: Word;
+Begin
+ ActualSize := OpSize;
+ If ActualSize = 0 Then ActualSize := SIZE_WORD;
+ If ActualSize = SIZE_BYTE Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'MOVEM.B non supporte');
+  SkipToEOL; Exit;
+ End;
+
+ If ActualSize = SIZE_LONG Then SzBit := 1 Else SzBit := 0;
+
+ { Determiner la direction : reglist en premier ou EA en premier }
+ { Si on voit un registre suivi de '-' ou '/', c'est une reglist }
+ RegToMem := False;
+ If (cur_tok = TOK_REGISTER) Then
+ Begin
+  { Reglist en premier -> reg->mem }
+  RegToMem := True;
+ End;
+
+ If RegToMem Then
+ Begin
+  { Lire la liste de registres depuis le flux de tokens }
+  RegStr := '';
+  While (cur_tok = TOK_REGISTER) or (cur_tok = TOK_MINUS) or
+        (cur_tok = TOK_SLASH) do
+  Begin
+   RegStr := RegStr + cur_tok_str;
+   NextToken;
+  End;
+  Mask := ParseRegList(RegStr);
+
+  If cur_tok <> TOK_COMMA Then
+  Begin
+   Error(cur_tok_line, cur_tok_col, 'virgule attendue apres la liste de registres');
+   SkipToEOL; Exit;
+  End;
+  NextToken;
+  ParseOperand(Op);
+
+  { Modes autorises : controle alterable + predecrement }
+  If (Op.Mode <> AM_ADDR_IND_PRE) and
+     Not CheckEAMask(Op, EA_CONTROL and EA_ALTER) Then
+  Begin
+   Error(cur_tok_line, cur_tok_col, 'mode d''adressage invalide pour MOVEM reg->mem');
+   SkipToEOL; Exit;
+  End;
+
+  EA := EncodeEA(Op);
+  If EA < 0 Then
+  Begin
+   Error(cur_tok_line, cur_tok_col, 'encodage EA impossible pour MOVEM');
+   SkipToEOL; Exit;
+  End;
+
+  { Pour predecrement, inverser le masque }
+  If Op.Mode = AM_ADDR_IND_PRE Then
+  Begin
+   RevMask := 0;
+   For I := 0 to 15 do
+    If (Mask and Word(1 shl I)) <> 0 Then
+     RevMask := RevMask or Word(1 shl (15 - I));
+   Mask := RevMask;
+  End;
+
+  InstrW := $4880 or Word(SzBit shl 6) or Word(EA);
+  Emit16(InstrW);
+  Emit16(Mask);
+  EmitExtWords(Op, ActualSize);
+ End
+ Else
+ Begin
+  { EA en premier -> mem->reg }
+  ParseOperand(Op);
+
+  If cur_tok <> TOK_COMMA Then
+  Begin
+   Error(cur_tok_line, cur_tok_col, 'virgule attendue apres l''operande');
+   SkipToEOL; Exit;
+  End;
+  NextToken;
+
+  { Lire la liste de registres }
+  RegStr := '';
+  While (cur_tok = TOK_REGISTER) or (cur_tok = TOK_MINUS) or
+        (cur_tok = TOK_SLASH) do
+  Begin
+   RegStr := RegStr + cur_tok_str;
+   NextToken;
+  End;
+  Mask := ParseRegList(RegStr);
+
+  { Modes autorises : controle + postincrement }
+  If (Op.Mode <> AM_ADDR_IND_POST) and
+     Not CheckEAMask(Op, EA_CONTROL) Then
+  Begin
+   Error(cur_tok_line, cur_tok_col, 'mode d''adressage invalide pour MOVEM mem->reg');
+   SkipToEOL; Exit;
+  End;
+
+  EA := EncodeEA(Op);
+  If EA < 0 Then
+  Begin
+   Error(cur_tok_line, cur_tok_col, 'encodage EA impossible pour MOVEM');
+   SkipToEOL; Exit;
+  End;
+
+  InstrW := $4C80 or Word(SzBit shl 6) or Word(EA);
+  Emit16(InstrW);
+  Emit16(Mask);
+  EmitExtWords(Op, ActualSize);
+ End;
+End;
+
+Procedure InstrMOVEP(OpSize: Integer);
+{ MOVEP.s Dn,d16(An) ou MOVEP.s d16(An),Dn
+  mem->reg .W: $0108 | (Dn<<9) | An  + d16
+  mem->reg .L: $0148 | (Dn<<9) | An  + d16
+  reg->mem .W: $0188 | (Dn<<9) | An  + d16
+  reg->mem .L: $01C8 | (Dn<<9) | An  + d16 }
+Var
+ Src, Dst: TOperand;
+ Dn, An: Integer;
+ InstrW: Word;
+ Disp16: Integer;
+ ActualSize: Integer;
+Begin
+ ActualSize := OpSize;
+ If ActualSize = 0 Then ActualSize := SIZE_WORD;
+ If ActualSize = SIZE_BYTE Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'MOVEP.B non supporte');
+  SkipToEOL; Exit;
+ End;
+
+ ParseOperand(Src);
+ If cur_tok <> TOK_COMMA Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'virgule attendue');
+  SkipToEOL; Exit;
+ End;
+ NextToken;
+ ParseOperand(Dst);
+
+ If (Src.Mode = AM_DATA_REG) and (Dst.Mode = AM_ADDR_IND_DISP) Then
+ Begin
+  { reg->mem }
+  Dn := Src.Reg;
+  An := Dst.Reg - REG_A0;
+  Disp16 := Dst.Disp;
+  If ActualSize = SIZE_WORD Then
+   InstrW := $0188
+  Else
+   InstrW := $01C8;
+  InstrW := InstrW or Word(Dn shl 9) or Word(An);
+  Emit16(InstrW);
+  Emit16(Word(Disp16 and $FFFF));
+ End
+ Else If (Src.Mode = AM_ADDR_IND_DISP) and (Dst.Mode = AM_DATA_REG) Then
+ Begin
+  { mem->reg }
+  Dn := Dst.Reg;
+  An := Src.Reg - REG_A0;
+  Disp16 := Src.Disp;
+  If ActualSize = SIZE_WORD Then
+   InstrW := $0108
+  Else
+   InstrW := $0148;
+  InstrW := InstrW or Word(Dn shl 9) or Word(An);
+  Emit16(InstrW);
+  Emit16(Word(Disp16 and $FFFF));
+ End
+ Else
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'MOVEP requiert Dn,d16(An) ou d16(An),Dn');
+  SkipToEOL; Exit;
+ End;
+End;
+
+Procedure InstrLEA;
+{ LEA <ea>,An - chargement d'adresse effective
+  Encodage : $41C0 | (An<<9) | srcEA
+  Source : modes controle seulement }
+Var
+ Src, Dst: TOperand;
+ SrcEA: Integer;
+ InstrW: Word;
+Begin
+ ParseOperand(Src);
+ If cur_tok <> TOK_COMMA Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'virgule attendue apres operande source');
+  SkipToEOL; Exit;
+ End;
+ NextToken;
+ ParseOperand(Dst);
+
+ If Dst.Mode <> AM_ADDR_REG Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'LEA requiert un registre d''adresse en destination');
+  SkipToEOL; Exit;
+ End;
+ If Not CheckEAMask(Src, EA_CONTROL) Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'mode d''adressage source invalide pour LEA');
+  SkipToEOL; Exit;
+ End;
+
+ SrcEA := EncodeEA(Src);
+ If SrcEA < 0 Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'encodage EA impossible');
+  SkipToEOL; Exit;
+ End;
+
+ InstrW := $41C0 or Word((Dst.Reg - REG_A0) shl 9) or Word(SrcEA);
+ Emit16(InstrW);
+ EmitExtWords(Src, SIZE_LONG);
+End;
+
+Procedure InstrPEA;
+{ PEA <ea> - empiler adresse effective
+  Encodage : $4840 | srcEA
+  Source : modes controle seulement }
+Var
+ Src: TOperand;
+ SrcEA: Integer;
+ InstrW: Word;
+Begin
+ ParseOperand(Src);
+
+ If Not CheckEAMask(Src, EA_CONTROL) Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'mode d''adressage invalide pour PEA');
+  SkipToEOL; Exit;
+ End;
+
+ SrcEA := EncodeEA(Src);
+ If SrcEA < 0 Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'encodage EA impossible');
+  SkipToEOL; Exit;
+ End;
+
+ InstrW := $4840 or Word(SrcEA);
+ Emit16(InstrW);
+ EmitExtWords(Src, SIZE_LONG);
+End;
+
+Procedure InstrEXG;
+{ EXG Xn,Xn - echange de deux registres
+  Dx,Dy : $C140 | (Rx<<9) | Ry
+  Ax,Ay : $C148 | ((Rx-8)<<9) | (Ry-8)
+  Dx,Ay : $C188 | (Rx<<9) | (Ry-8) }
+Var
+ Src, Dst: TOperand;
+ InstrW: Word;
+Begin
+ ParseOperand(Src);
+ If cur_tok <> TOK_COMMA Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'virgule attendue');
+  SkipToEOL; Exit;
+ End;
+ NextToken;
+ ParseOperand(Dst);
+
+ If (Src.Mode = AM_DATA_REG) and (Dst.Mode = AM_DATA_REG) Then
+ Begin
+  { Dx,Dy }
+  InstrW := $C140 or Word(Src.Reg shl 9) or Word(Dst.Reg);
+  Emit16(InstrW);
+ End
+ Else If (Src.Mode = AM_ADDR_REG) and (Dst.Mode = AM_ADDR_REG) Then
+ Begin
+  { Ax,Ay }
+  InstrW := $C148 or Word((Src.Reg - REG_A0) shl 9) or
+            Word(Dst.Reg - REG_A0);
+  Emit16(InstrW);
+ End
+ Else If (Src.Mode = AM_DATA_REG) and (Dst.Mode = AM_ADDR_REG) Then
+ Begin
+  { Dx,Ay }
+  InstrW := $C188 or Word(Src.Reg shl 9) or Word(Dst.Reg - REG_A0);
+  Emit16(InstrW);
+ End
+ Else If (Src.Mode = AM_ADDR_REG) and (Dst.Mode = AM_DATA_REG) Then
+ Begin
+  { Ay,Dx -> encode comme Dx,Ay }
+  InstrW := $C188 or Word(Dst.Reg shl 9) or Word(Src.Reg - REG_A0);
+  Emit16(InstrW);
+ End
+ Else
+ Begin
+  Error(cur_tok_line, cur_tok_col,
+        'EXG requiert deux registres (Dn/An)');
+  SkipToEOL; Exit;
+ End;
+End;
+
+Procedure InstrSWAP;
+{ SWAP Dn - echanger les deux moities 16 bits d'un registre
+  Encodage : $4840 | Dn }
+Var
+ Op: TOperand;
+ InstrW: Word;
+Begin
+ ParseOperand(Op);
+ If Op.Mode <> AM_DATA_REG Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'SWAP requiert un registre Dn');
+  SkipToEOL; Exit;
+ End;
+ InstrW := $4840 or Word(Op.Reg);
+ Emit16(InstrW);
+End;
+
+Procedure InstrLINK;
+{ LINK An,#disp - creer un cadre de pile
+  Encodage : $4E50 | (An-8) suivi du deplacement 16 bits }
+Var
+ Src, Dst: TOperand;
+ InstrW: Word;
+Begin
+ ParseOperand(Src);
+ If cur_tok <> TOK_COMMA Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'virgule attendue apres An');
+  SkipToEOL; Exit;
+ End;
+ NextToken;
+ ParseOperand(Dst);
+
+ If Src.Mode <> AM_ADDR_REG Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'LINK requiert un registre d''adresse');
+  SkipToEOL; Exit;
+ End;
+ If Dst.Mode <> AM_IMMEDIATE Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'LINK requiert un deplacement immediat');
+  SkipToEOL; Exit;
+ End;
+
+ InstrW := $4E50 or Word(Src.Reg - REG_A0);
+ Emit16(InstrW);
+ Emit16(Word(Dst.Imm32 and $FFFF));
+End;
+
+Procedure InstrUNLK;
+{ UNLK An - detruire le cadre de pile
+  Encodage : $4E58 | (An-8) }
+Var
+ Op: TOperand;
+ InstrW: Word;
+Begin
+ ParseOperand(Op);
+ If Op.Mode <> AM_ADDR_REG Then
+ Begin
+  Error(cur_tok_line, cur_tok_col, 'UNLK requiert un registre d''adresse');
+  SkipToEOL; Exit;
+ End;
+ InstrW := $4E58 or Word(Op.Reg - REG_A0);
+ Emit16(InstrW);
+End;
+
+Procedure AssembleInstruction(Const OpName: String; OpSize: Integer);
+{ Dispatch : appelle le bon encodeur selon le mnemonique }
+Begin
+ If OpName = 'MOVE' Then InstrMOVE(OpSize)
+ Else If OpName = 'MOVEA' Then InstrMOVEA(OpSize)
+ Else If OpName = 'MOVEQ' Then InstrMOVEQ
+ Else If OpName = 'MOVEM' Then InstrMOVEM(OpSize)
+ Else If OpName = 'MOVEP' Then InstrMOVEP(OpSize)
+ Else If OpName = 'LEA' Then InstrLEA
+ Else If OpName = 'PEA' Then InstrPEA
+ Else If OpName = 'EXG' Then InstrEXG
+ Else If OpName = 'SWAP' Then InstrSWAP
+ Else If OpName = 'LINK' Then InstrLINK
+ Else If OpName = 'UNLK' Then InstrUNLK
+ Else
+ Begin
+  Warning(cur_tok_line, cur_tok_col,
+          'instruction non encore implementee: ' + OpName);
+  SkipToEOL;
+ End;
+End;
+
 { ---------- ParseLine : traiter une ligne source ---------- }
 
 Procedure ParseLine;
@@ -4352,11 +4944,12 @@ Begin
   End
  Else If cur_tok = TOK_OPCODE Then
  Begin
-  { Opcode (instruction 68000) - non encore implemente, placeholder }
+  { Instruction 68000 }
+  DirName := UpCaseStr(cur_tok_str);
+  DirSize := cur_tok_size;
   ProcessLabel(LblName);
-  Warning(cur_tok_line, cur_tok_col,
-          'encodage instructions pas encore implemente: ' + cur_tok_str);
-  SkipToEOL;
+  NextToken;
+  AssembleInstruction(DirName, DirSize);
  End
  Else If (cur_tok <> TOK_EOL) and (cur_tok <> TOK_EOF) Then
  Begin
