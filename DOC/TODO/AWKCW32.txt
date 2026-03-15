@@ -85,7 +85,7 @@
               FILENAME, ARGC, ARGV, ENVIRON,
               RSTART, RLENGTH, SUBSEP, OFMT, CONVFMT
 
-  TODO 04 - TABLE DES SYMBOLES (32 BITS)
+  TODO 04 - TABLE DES SYMBOLES (32 BITS) [IMPLEMENTE]
             Type TSymEntry : Name (String[64]), AsmLabel (String[64]),
               TypeKind (TTypeKind), StoreClass (Integer),
               BpOffset (Integer), IsParam (Boolean),

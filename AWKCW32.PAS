@@ -89,7 +89,7 @@
             TK_BVAR ajoute a TTokenKind, LexScanIdent mis a jour,
             PrintToken mis a jour, Run mis a jour
 
-  TODO 04 - TABLE DES SYMBOLES (32 BITS)
+  TODO 04 - TABLE DES SYMBOLES (32 BITS) [IMPLEMENTE]
             Type TSymEntry : Name (String[64]), AsmLabel (String[64]),
               TypeKind (TTypeKind), StoreClass (Integer),
               BpOffset (Integer), IsParam (Boolean),
@@ -736,6 +736,23 @@ Const
   BV_CONVFMT   = 16;
 
 { ============================================================ }
+{ TODO 04 - CONSTANTES TYPES AWK ET CLASSES DE STOCKAGE         }
+{ ============================================================ }
+
+  { Types AWK (coercition dynamique) }
+  TYK_NUMBER        = 0;    { entier 32 bits signe              }
+  TYK_STRING        = 1;    { pointeur vers ASCIIZ              }
+  TYK_UNINITIALIZED = 2;    { valeur par defaut "" ou 0         }
+  TYK_REGEXP        = 3;    { pointeur vers pattern data        }
+  TYK_ARRAY         = 4;    { tableau associatif pointeur       }
+  TYK_UNKNOWN       = 5;    { coercition dynamique              }
+
+  { Classes de stockage }
+  STORE_GLOBAL = 0;          { variable globale (.DATA)          }
+  STORE_LOCAL  = 1;          { variable locale (pile EBP-n)      }
+  STORE_PARAM  = 2;          { parametre fonction (EBP+n)        }
+
+{ ============================================================ }
 { TYPES                                                        }
 { ============================================================ }
 
@@ -777,6 +794,32 @@ Type
     InCode : Boolean;
   End;
 {$ENDIF}
+
+{ ============================================================ }
+{ TODO 04 - TABLE DES SYMBOLES (32 BITS) [IMPLEMENTE]          }
+{ ============================================================ }
+
+  TSymEntry = Record
+    Name         : String[64];  { nom AWK de la variable            }
+    AsmLabel     : String[64];  { label assembleur (_AWV_xxx)       }
+    TypeKind     : Integer;     { TYK_NUMBER / TYK_STRING / ...     }
+    StoreClass   : Integer;     { STORE_GLOBAL / LOCAL / PARAM      }
+    BpOffset     : Integer;     { offset [EBP+n] ou [EBP-n]        }
+    IsParam      : Boolean;     { est un parametre de fonction ?    }
+    ParamIdx     : Integer;     { indice dans la liste de params    }
+    IsGlobal     : Boolean;     { variable globale (.DATA) ?        }
+    IsArray      : Boolean;     { tableau associatif ?              }
+    ArrayAsmLabel: String[64];  { label assembleur du tableau       }
+  End;
+
+  TFuncEntry = Record
+    Name       : String[64];    { nom AWK de la fonction            }
+    AsmLabel   : String[64];    { label assembleur (_AWF_xxx)       }
+    ParamCount : Integer;       { nombre de parametres              }
+    ParamNames : Array[1..MAX_PARAM] Of String[64];
+    Defined    : Boolean;       { corps de fonction defini ?        }
+    LocalCount : Integer;       { nombre de variables locales       }
+  End;
 
 { ============================================================ }
 { TODO 02 - TOKENISEUR AWK (LEXER) [IMPLEMENTE]               }
@@ -848,6 +891,14 @@ Var
   LexOpened   : Boolean;      { fichier source ouvert ?           }
   CurToken    : TToken;       { token courant                     }
   LexLastKind : TTokenKind;   { dernier token emis (pour regexp)  }
+
+  { Table des symboles (TODO 04) }
+  SymTab      : Array[0..MAX_SYM - 1] Of TSymEntry;
+  SymCount    : Integer;      { nombre de symboles enregistres    }
+
+  { Table des fonctions (TODO 04) }
+  FuncTab     : Array[0..MAX_FUNC - 1] Of TFuncEntry;
+  FuncCount   : Integer;      { nombre de fonctions enregistrees  }
 
 Const
 {$IFDEF FPC}
@@ -1192,6 +1243,8 @@ Begin
   WriteLn;
   WriteLn('--- Statistiques ---');
   WriteLn('Lignes analysees : ', TotalLines);
+  WriteLn('Symboles         : ', SymCount);
+  WriteLn('Fonctions        : ', FuncCount);
   WriteLn('Erreurs          : ', ErrorCount);
   WriteLn('Avertissements   : ', WarnCount);
 End;
@@ -1986,6 +2039,95 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 04 - TABLE DES SYMBOLES (32 BITS) [IMPLEMENTE]          }
+{ ============================================================ }
+
+{ ---- FindSym : chercher un symbole par nom ------------------- }
+Function FindSym(Const Name : String) : Integer;
+Var
+  I : Integer;
+Begin
+  FindSym := -1;
+  For I := 0 To SymCount - 1 Do
+    If SymTab[I].Name = Name Then
+    Begin FindSym := I; Exit; End;
+End;
+
+{ ---- AddSym : ajouter un symbole ----------------------------- }
+Function AddSym(Const Name : String; TK : Integer;
+                SC : Integer; IsGlob : Boolean) : Integer;
+Var
+  Idx : Integer;
+Begin
+  If SymCount >= MAX_SYM Then
+  Begin FatalError('table des symboles pleine'); AddSym := -1; Exit; End;
+  Idx := SymCount;
+  SymTab[Idx].Name          := Name;
+  SymTab[Idx].AsmLabel      := AW_VAR_PFX + AsmIdent(Name);
+  SymTab[Idx].TypeKind      := TK;
+  SymTab[Idx].StoreClass    := SC;
+  SymTab[Idx].BpOffset      := 0;
+  SymTab[Idx].IsParam       := False;
+  SymTab[Idx].ParamIdx      := 0;
+  SymTab[Idx].IsGlobal      := IsGlob;
+  SymTab[Idx].IsArray       := (TK = TYK_ARRAY);
+  If TK = TYK_ARRAY Then
+    SymTab[Idx].ArrayAsmLabel := AW_ARR_PFX + AsmIdent(Name)
+  Else
+    SymTab[Idx].ArrayAsmLabel := '';
+  Inc(SymCount);
+  AddSym := Idx;
+End;
+
+{ ---- FindFunc : chercher une fonction par nom ---------------- }
+Function FindFunc(Const Name : String) : Integer;
+Var
+  I : Integer;
+Begin
+  FindFunc := -1;
+  For I := 0 To FuncCount - 1 Do
+    If FuncTab[I].Name = Name Then
+    Begin FindFunc := I; Exit; End;
+End;
+
+{ ---- AddFunc : ajouter une fonction -------------------------- }
+Function AddFunc(Const Name : String) : Integer;
+Var
+  Idx : Integer;
+Begin
+  If FuncCount >= MAX_FUNC Then
+  Begin FatalError('table des fonctions pleine'); AddFunc := -1; Exit; End;
+  Idx := FuncCount;
+  FuncTab[Idx].Name       := Name;
+  FuncTab[Idx].AsmLabel   := AW_FN_PFX + AsmIdent(Name);
+  FuncTab[Idx].ParamCount := 0;
+  FuncTab[Idx].Defined    := False;
+  FuncTab[Idx].LocalCount := 0;
+  Inc(FuncCount);
+  AddFunc := Idx;
+End;
+
+{ ---- InitSymTable : initialiser table + builtin vars --------- }
+Procedure InitSymTable;
+Begin
+  SymCount  := 0;
+  FuncCount := 0;
+  { Declarer les 12 variables builtin AWK globales }
+  AddSym('FS', TYK_STRING, STORE_GLOBAL, True);
+  AddSym('RS', TYK_STRING, STORE_GLOBAL, True);
+  AddSym('OFS', TYK_STRING, STORE_GLOBAL, True);
+  AddSym('ORS', TYK_STRING, STORE_GLOBAL, True);
+  AddSym('NR', TYK_NUMBER, STORE_GLOBAL, True);
+  AddSym('NF', TYK_NUMBER, STORE_GLOBAL, True);
+  AddSym('FNR', TYK_NUMBER, STORE_GLOBAL, True);
+  AddSym('FILENAME', TYK_STRING, STORE_GLOBAL, True);
+  AddSym('ARGC', TYK_NUMBER, STORE_GLOBAL, True);
+  AddSym('RSTART', TYK_NUMBER, STORE_GLOBAL, True);
+  AddSym('RLENGTH', TYK_NUMBER, STORE_GLOBAL, True);
+  AddSym('SUBSEP', TYK_STRING, STORE_GLOBAL, True);
+End;
+
+{ ============================================================ }
 { PROCEDURE RUN (STUB - sera complete par les TODOs suivants)  }
 { ============================================================ }
 
@@ -1996,6 +2138,7 @@ Begin
     WriteLn('AWKCW32: FS = ', Opts.FieldSep);
   If Opts.InitCount > 0 Then
     WriteLn('AWKCW32: ', Opts.InitCount, ' variable(s) pre-initialisee(s)');
+  InitSymTable;
   LexInit;
   { Mode debug : afficher tous les tokens }
   If Opts.DebugMode Then
@@ -2015,7 +2158,8 @@ Begin
     While CurToken.Kind <> TK_EOF Do
       LexNextToken(CurToken);
     WriteLn('AWKCW32: tokenisation terminee, ', TotalLines, ' lignes');
-    WriteLn('AWKCW32: TODO 04..25 non encore implementes.');
+    WriteLn('AWKCW32: ', SymCount, ' symbole(s), ', FuncCount, ' fonction(s)');
+    WriteLn('AWKCW32: TODO 05..25 non encore implementes.');
     WriteLn('AWKCW32: sortie prevue: ', Opts.OutFile);
   End;
   LexClose;
