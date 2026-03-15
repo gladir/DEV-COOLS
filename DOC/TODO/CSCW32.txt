@@ -81,7 +81,7 @@
               les namespaces actifs pour la resolution de noms.
             Verification des using non utilises (avertissement).
 
-  TODO 04 - LITTERAUX ET CONSTANTES
+  TODO 04 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
             Entiers decimaux : 0..4294967295 (32 bits non signe).
             Entiers hexadecimaux : 0xFF -> valeur 32 bits.
             Suffixes entiers : u/U (unsigned), l/L (long), ul/UL.

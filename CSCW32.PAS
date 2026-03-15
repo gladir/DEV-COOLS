@@ -83,7 +83,7 @@
               les namespaces actifs pour la resolution de noms.
             Verification des using non utilises (avertissement).
 
-  TODO 04 - LITTERAUX ET CONSTANTES
+  TODO 04 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
             Entiers decimaux : 0..4294967295 (32 bits non signe).
             Entiers hexadecimaux : 0xFF -> valeur 32 bits.
             Suffixes entiers : u/U (unsigned), l/L (long), ul/UL.
@@ -92,6 +92,7 @@
               Echappement : '\n'=10, '\t'=9, '\r'=13, '\0'=0,
                 '\\'=92, '\''=39, '\"'=34, '\x41'=65.
             Chaines : "abc" -> pointeur vers donnees .DATA.
+              Label _CSCK_N dans le segment .DATA.
             Chaines verbatim : @"c:\path" (echappement desactive).
             Constantes booleennes : true (1), false (0).
             null : pointeur nul (0).
@@ -1912,6 +1913,396 @@ Begin
               ' (ligne ' + IntToStr_(UsingTab[I].Line) + ')');
 End;
 
+{ ============================================================ }
+{ TODO 04 - LITTERAUX ET CONSTANTES                             }
+{           [IMPLEMENTE]                                        }
+{ ============================================================ }
+
+Const
+  MAX_STR_LIT = 1024;          { max litteraux chaines en .DATA     }
+  MAX_CONST   = 256;           { max constantes nommees             }
+  CSC_STR_PFX = '_CSCK_';     { prefixe labels chaines .DATA       }
+
+Type
+  TStrLitEntry = Record
+    Text    : TString;          { contenu de la chaine               }
+    AsmLbl  : TString;          { label ASM (_CSCK_1, _CSCK_2 ...)  }
+  End;
+
+  TConstEntry = Record
+    Name    : TString;          { nom de la constante (ex. 'X')      }
+    Value   : LongInt;          { valeur entiere evaluee             }
+    StrVal  : TString;          { valeur chaine si applicable        }
+    IsStr   : Boolean;          { true si constante chaine           }
+    Line    : Integer;          { ligne source de la declaration     }
+  End;
+
+Var
+  StrLitTab    : Array[1..MAX_STR_LIT] Of TStrLitEntry;
+  StrLitCount  : Integer;      { nombre de litteraux chaines         }
+  StrLitSeq    : Integer;      { compteur de sequence pour labels    }
+  ConstTab     : Array[1..MAX_CONST] Of TConstEntry;
+  ConstCount   : Integer;      { nombre de constantes nommees        }
+
+{ ------------------------------------------------------------ }
+{ InitStrLitTable : initialiser la table des litteraux chaines  }
+{ ------------------------------------------------------------ }
+
+Procedure InitStrLitTable;
+Begin
+  StrLitCount := 0;
+  StrLitSeq   := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ AddStrLit : ajouter un litteral chaine avec deduplication     }
+{   Retourne le label ASM _CSCK_N                              }
+{ ------------------------------------------------------------ }
+
+Function AddStrLit(Const S : TString) : TString;
+Var
+  I   : Integer;
+  Lbl : TString;
+Begin
+  { Deduplication : chercher si deja present }
+  For I := 1 To StrLitCount Do
+    If StrLitTab[I].Text = S Then
+    Begin
+      AddStrLit := StrLitTab[I].AsmLbl;
+      Exit;
+    End;
+
+  { Ajouter nouveau }
+  If StrLitCount >= MAX_STR_LIT Then
+  Begin
+    WriteLn('CSCW32: erreur: table des litteraux chaines pleine (max ',
+            MAX_STR_LIT, ')');
+    Inc(ErrorCount);
+    AddStrLit := CSC_STR_PFX + '0';
+    Exit;
+  End;
+
+  Inc(StrLitCount);
+  Inc(StrLitSeq);
+  Lbl := CSC_STR_PFX + IntToStr_(StrLitSeq);
+  StrLitTab[StrLitCount].Text   := S;
+  StrLitTab[StrLitCount].AsmLbl := Lbl;
+  AddStrLit := Lbl;
+End;
+
+{ ------------------------------------------------------------ }
+{ InitConstTable : initialiser la table des constantes nommees  }
+{ ------------------------------------------------------------ }
+
+Procedure InitConstTable;
+Begin
+  ConstCount := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ AddConst : ajouter une constante nommee                       }
+{   Retourne l index (1-based) ou 0 si table pleine            }
+{ ------------------------------------------------------------ }
+
+Function AddConst(Const Name : TString; Value : LongInt;
+                  Const SVal : TString; IsS : Boolean;
+                  Ln : Integer) : Integer;
+Var I : Integer;
+Begin
+  { Verifier doublon }
+  For I := 1 To ConstCount Do
+    If ConstTab[I].Name = Name Then
+    Begin
+      WriteLn('CSCW32: erreur ligne ', Ln,
+              ': constante deja definie : ', Name,
+              ' (ligne ', ConstTab[I].Line, ')');
+      Inc(ErrorCount);
+      AddConst := I;
+      Exit;
+    End;
+
+  If ConstCount >= MAX_CONST Then
+  Begin
+    WriteLn('CSCW32: erreur: table des constantes pleine (max ',
+            MAX_CONST, ')');
+    Inc(ErrorCount);
+    AddConst := 0;
+    Exit;
+  End;
+
+  Inc(ConstCount);
+  ConstTab[ConstCount].Name   := Name;
+  ConstTab[ConstCount].Value  := Value;
+  ConstTab[ConstCount].StrVal := SVal;
+  ConstTab[ConstCount].IsStr  := IsS;
+  ConstTab[ConstCount].Line   := Ln;
+  AddConst := ConstCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ FindConst : chercher une constante par nom                    }
+{   Retourne l index (1-based) ou 0 si non trouvee             }
+{ ------------------------------------------------------------ }
+
+Function FindConst(Const Name : TString) : Integer;
+Var I : Integer;
+Begin
+  For I := 1 To ConstCount Do
+    If ConstTab[I].Name = Name Then
+    Begin
+      FindConst := I;
+      Exit;
+    End;
+  FindConst := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ EvalConstExpr : evaluer une expression constante simple       }
+{   Supporte : entier, hex, char, true/false, null,             }
+{              negation unaire (-), identifiant const            }
+{   Retourne la valeur LongInt                                  }
+{ ------------------------------------------------------------ }
+
+Function EvalConstExpr(Var IsStr : Boolean;
+                       Var SVal : TString) : LongInt;
+Var
+  V     : LongInt;
+  Neg   : Boolean;
+  Idx   : Integer;
+Begin
+  V     := 0;
+  IsStr := False;
+  SVal  := '';
+  Neg   := False;
+
+  { Negation unaire }
+  If TokIsOp('-') Then
+  Begin
+    Neg := True;
+    Consume;
+  End;
+
+  Case CurToken.Kind Of
+    TK_INTEGER :
+    Begin
+      V := CurToken.IntVal;
+      Consume;
+    End;
+    TK_FLOAT :
+    Begin
+      V := CurToken.IntVal;  { partie entiere tronquee }
+      Consume;
+    End;
+    TK_CHAR :
+    Begin
+      V := CurToken.IntVal;
+      Consume;
+    End;
+    TK_STRING :
+    Begin
+      IsStr := True;
+      SVal  := CurToken.Val;
+      V     := 0;
+      Consume;
+    End;
+    TK_KEYWORD :
+    Begin
+      If CurToken.Val = 'true' Then
+        V := 1
+      Else If CurToken.Val = 'false' Then
+        V := 0
+      Else If CurToken.Val = 'null' Then
+        V := 0
+      Else
+      Begin
+        WriteLn('CSCW32: erreur ligne ', CurToken.Line,
+                ': mot-cle inattendu dans expression constante : ',
+                CurToken.Val);
+        Inc(ErrorCount);
+      End;
+      Consume;
+    End;
+    TK_IDENT :
+    Begin
+      Idx := FindConst(CurToken.Val);
+      If Idx > 0 Then
+      Begin
+        V     := ConstTab[Idx].Value;
+        IsStr := ConstTab[Idx].IsStr;
+        SVal  := ConstTab[Idx].StrVal;
+      End
+      Else
+      Begin
+        WriteLn('CSCW32: erreur ligne ', CurToken.Line,
+                ': identifiant inconnu dans expression constante : ',
+                CurToken.Val);
+        Inc(ErrorCount);
+      End;
+      Consume;
+    End;
+  Else
+    WriteLn('CSCW32: erreur ligne ', CurToken.Line,
+            ': valeur attendue dans expression constante');
+    Inc(ErrorCount);
+    Consume;
+  End;
+
+  If Neg Then V := -V;
+  EvalConstExpr := V;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseConstDecl : analyser  const type nom = expr;             }
+{   Le mot-cle 'const' a deja ete consomme                     }
+{ ------------------------------------------------------------ }
+
+Procedure ParseConstDecl;
+Var
+  TypeName  : TString;
+  ConstName : TString;
+  V         : LongInt;
+  IsStr     : Boolean;
+  SVal      : TString;
+  Ln        : Integer;
+Begin
+  Ln := CurToken.Line;
+
+  { Type (int, string, bool, char, etc.) }
+  If (CurToken.Kind <> TK_KEYWORD) And (CurToken.Kind <> TK_IDENT) Then
+  Begin
+    WriteLn('CSCW32: erreur ligne ', Ln,
+            ': type attendu apres ''const''');
+    Inc(ErrorCount);
+    { Resynchroniser }
+    While (CurToken.Kind <> TK_EOF) And (Not TokIsPunct(';')) Do
+      Consume;
+    If TokIsPunct(';') Then Consume;
+    Exit;
+  End;
+  TypeName := CurToken.Val;
+  Consume;
+
+  { Nom de la constante }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    WriteLn('CSCW32: erreur ligne ', Ln,
+            ': identifiant attendu pour le nom de constante');
+    Inc(ErrorCount);
+    While (CurToken.Kind <> TK_EOF) And (Not TokIsPunct(';')) Do
+      Consume;
+    If TokIsPunct(';') Then Consume;
+    Exit;
+  End;
+  ConstName := CurToken.Val;
+  Consume;
+
+  { Signe = }
+  If Not TokIsOp('=') Then
+  Begin
+    WriteLn('CSCW32: erreur ligne ', Ln,
+            ': ''='' attendu apres le nom de constante');
+    Inc(ErrorCount);
+    While (CurToken.Kind <> TK_EOF) And (Not TokIsPunct(';')) Do
+      Consume;
+    If TokIsPunct(';') Then Consume;
+    Exit;
+  End;
+  Consume;
+
+  { Expression constante }
+  V := EvalConstExpr(IsStr, SVal);
+
+  { Si c est une chaine, l ajouter a la table des litteraux }
+  If IsStr Then
+    AddStrLit(SVal);
+
+  { Enregistrer la constante }
+  AddConst(ConstName, V, SVal, IsStr, Ln);
+
+  { Attendre ; }
+  If TokIsPunct(';') Then
+    Consume
+  Else
+  Begin
+    WriteLn('CSCW32: erreur ligne ', CurToken.Line,
+            ': '';'' attendu apres declaration de constante');
+    Inc(ErrorCount);
+  End;
+
+  If Opts.Verbose Then
+  Begin
+    Write('  const ', TypeName, ' ', ConstName, ' = ');
+    If IsStr Then
+      WriteLn('"', SVal, '"')
+    Else
+      WriteLn(V);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseLiteral : reconnaitre un litteral et retourner sa valeur }
+{   int/hex -> IntVal; char -> IntVal (ordinal);                }
+{   string/verbatim -> ajoute a StrLitTab, retourne label;      }
+{   true -> 1; false -> 0; null -> 0                            }
+{   Retourne True si un litteral a ete reconnu                  }
+{ ------------------------------------------------------------ }
+
+Function ParseLiteral(Var IntV : LongInt; Var StrL : TString;
+                      Var IsStr : Boolean) : Boolean;
+Begin
+  ParseLiteral := True;
+  IsStr := False;
+  StrL  := '';
+  IntV  := 0;
+
+  Case CurToken.Kind Of
+    TK_INTEGER :
+    Begin
+      IntV := CurToken.IntVal;
+      Consume;
+    End;
+    TK_FLOAT :
+    Begin
+      IntV := CurToken.IntVal;  { tronque }
+      Consume;
+    End;
+    TK_CHAR :
+    Begin
+      IntV := CurToken.IntVal;
+      Consume;
+    End;
+    TK_STRING :
+    Begin
+      IsStr := True;
+      StrL  := AddStrLit(CurToken.Val);
+      IntV  := 0;
+      Consume;
+    End;
+    TK_KEYWORD :
+    Begin
+      If CurToken.Val = 'true' Then
+      Begin
+        IntV := 1;
+        Consume;
+      End
+      Else If CurToken.Val = 'false' Then
+      Begin
+        IntV := 0;
+        Consume;
+      End
+      Else If CurToken.Val = 'null' Then
+      Begin
+        IntV := 0;
+        Consume;
+      End
+      Else
+        ParseLiteral := False;
+    End;
+  Else
+    ParseLiteral := False;
+  End;
+End;
+
 { ------------------------------------------------------------ }
 { ShowStats (corps)                                             }
 { ------------------------------------------------------------ }
@@ -1924,6 +2315,8 @@ Begin
   WriteLn('Lignes analysees : ', TotalLines);
   WriteLn('Tokens           : ', TokenCount);
   WriteLn('Usings           : ', UsingCount);
+  WriteLn('Litteraux chaine : ', StrLitCount);
+  WriteLn('Constantes       : ', ConstCount);
   WriteLn('Erreurs          : ', ErrorCount);
   WriteLn('Avertissements   : ', WarnCount);
 End;
@@ -1956,6 +2349,10 @@ Begin
   { Initialiser la table des using }
   InitUsingTable;
 
+  { Initialiser les tables de litteraux et constantes (TODO 04) }
+  InitStrLitTable;
+  InitConstTable;
+
   { Lire le premier token }
   Consume;
 
@@ -1980,9 +2377,25 @@ Begin
     End;
   End;
 
-  { Continuer a lire les tokens restants (pour les TODOs suivants) }
+  { Scanner les tokens restants : reconnaitre les litteraux       }
+  { et les declarations const pour les TODOs suivants.            }
   While CurToken.Kind <> TK_EOF Do
-    Consume;
+  Begin
+    { Reconnaitre les litteraux chaines pour la table .DATA }
+    If CurToken.Kind = TK_STRING Then
+    Begin
+      AddStrLit(CurToken.Val);
+      Consume;
+    End
+    { Reconnaitre les declarations const }
+    Else If TokIsKw('const') Then
+    Begin
+      Consume;
+      ParseConstDecl;
+    End
+    Else
+      Consume;
+  End;
 
   { Marquer System comme utilise (toujours implicitement utilise) }
   MarkUsingUsed('System');
@@ -1993,9 +2406,11 @@ Begin
   { Fermer le fichier source }
   LexClose;
 
+  { Afficher bilan }
   WriteLn('CSCW32: Lexer OK (', TotalLines, ' lignes, ',
-          TokenCount, ' tokens, ', UsingCount, ' using)');
-  WriteLn('CSCW32: Les TODOs 04..25 ne sont pas encore implementes.');
+          TokenCount, ' tokens, ', UsingCount, ' using, ',
+          StrLitCount, ' chaines, ', ConstCount, ' constantes)');
+  WriteLn('CSCW32: Les TODOs 05..25 ne sont pas encore implementes.');
 End;
 
 { ------------------------------------------------------------ }
