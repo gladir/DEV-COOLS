@@ -313,13 +313,22 @@
             Plusieurs classes par fichier : supportees.
             Fichier test : test24_classes.cs.
 
-  TODO 18 - ESPACES DE NOMS (namespace)
+  TODO 18 - ESPACES DE NOMS (namespace) [IMPLEMENTE]
             ParseNamespaceDecl : namespace Nom { classes }.
             Namespace englobant le programme entier.
             Resolution de noms qualifies : Namespace.Classe.Methode.
             Espaces de noms imbriques : namespace A.B { ... }.
-            Table des namespaces actifs (via using).
+            Table des namespaces declares : NsTab (TNsEntry).
+              MAX_NS=32. NsTab[0..31] / NsCount / CurNsName / NsDepth.
+            FindNs / AddNs : recherche / ajout dans NsTab.
+            ParseNamespaceDecl : namespace Nom { classes }.
+              Consomme namespace, lit le nom (qualifie A.B.C),
+              ajoute dans NsTab, ouvre accolade, parse les classes
+              et declarations internes, ferme accolade.
+            Table des namespaces importes (via using) : UsingTab
+              (deja implemente en TODO 05).
             Mangling : _CSCN_Namespace_Classe_Methode.
+            Fichier test : test25_namespaces.cs.
 
   TODO 19 - TABLEAUX
             Declaration : type[] nom = new type[taille];
@@ -618,6 +627,27 @@ Var
   ClassTab    : Array[0..MAX_CLASSES - 1] Of TClassEntry;
   ClassCount  : Integer;        { nombre de classes enregistrees         }
   CurClassName: TString;        { nom de la classe en cours d analyse    }
+
+{ Table des namespaces declares (TODO 18) }
+
+Const
+  MAX_NS = 32;                  { nombre maximal de namespaces declares  }
+
+Type
+  TNsEntry = Record
+    Name        : TString;      { nom complet du namespace (ex. A.B.C)   }
+    MangledName : TString;      { nom ASM mangled (_CSCN_...)            }
+    SymIdx      : Integer;      { indice dans SymTab                     }
+    ClassStart  : Integer;      { premier indice dans ClassTab           }
+    ClassCount  : Integer;      { nombre de classes dans ce namespace    }
+    Depth       : Integer;      { profondeur d imbrication               }
+  End;
+
+Var
+  NsTab       : Array[0..MAX_NS - 1] Of TNsEntry;
+  NsCount     : Integer;        { nombre de namespaces enregistres       }
+  CurNsName   : TString;        { nom du namespace en cours d analyse    }
+  NsDepth     : Integer;        { profondeur d imbrication des namespace }
 
   { Variables binaires }
   BinCode     : Array[0..MAX_BIN_CODE - 1] of Byte;
@@ -949,6 +979,11 @@ Procedure ParseMethodDecl(Const RetType, MName : TString); Forward;
 Function  FindClass(Const N : TString) : Integer; Forward;
 Function  AddClass(Const N : TString; SIdx : Integer) : Integer; Forward;
 Procedure ParseClassDecl; Forward;
+
+{ Forward declarations for TODO 18 }
+Function  FindNs(Const N : TString) : Integer; Forward;
+Function  AddNs(Const N : TString; SIdx : Integer) : Integer; Forward;
+Procedure ParseNamespaceDecl; Forward;
 
 { ============================================================ }
 { TODO 02 - LEXEUR (TOKENS C#)                                 }
@@ -6477,6 +6512,210 @@ Begin
     ClassTab[ClsIdx].MethCount := MethodCount - MethStartSave;
 End;
 
+{ ============================================================ }
+{ TODO 18 - ESPACES DE NOMS (namespace)                         }
+{           [IMPLEMENTE]                                        }
+{ ============================================================ }
+(*                                                               *)
+(*  ParseNamespaceDecl : namespace Nom { classes }.              *)
+(*    Le namespace englobe les declarations de classes.           *)
+(*    Namespace comme enveloppe syntaxique : la declaration       *)
+(*    est reconnue et le nom enregistre dans NsTab, mais         *)
+(*    n affecte pas la generation de code dans le sous-           *)
+(*    ensemble minimal.                                          *)
+(*  Noms qualifies : namespace A.B.C { ... } reconnus,           *)
+(*    traites comme un seul namespace de nom A.B.C.              *)
+(*  FindNs / AddNs : recherche / ajout dans NsTab.              *)
+(*  NsDepth : profondeur d imbrication des namespaces.           *)
+(*  CurNsName : nom du namespace en cours d analyse.             *)
+(*                                                               *)
+
+{ ------------------------------------------------------------ }
+{ FindNs : recherche un namespace par nom dans NsTab            }
+{   Retourne l indice (0..NsCount-1) ou -1 si non trouve        }
+{ ------------------------------------------------------------ }
+
+Function FindNs(Const N : TString) : Integer;
+Var I : Integer;
+Begin
+  FindNs := -1;
+  For I := 0 To NsCount - 1 Do
+    If NsTab[I].Name = N Then
+    Begin
+      FindNs := I;
+      Exit;
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AddNs : ajoute un namespace dans NsTab                        }
+{   N    = nom C# du namespace (ex. MyApp.Models)                }
+{   SIdx = indice dans SymTab du symbole namespace               }
+{   Retourne l indice dans NsTab ou -1 si table pleine           }
+{ ------------------------------------------------------------ }
+
+Function AddNs(Const N : TString; SIdx : Integer) : Integer;
+Var Idx : Integer;
+Begin
+  AddNs := -1;
+  { Verifier si deja declare }
+  Idx := FindNs(N);
+  If Idx >= 0 Then
+  Begin
+    AddNs := Idx;
+    Exit;
+  End;
+  { Verifier la capacite }
+  If NsCount >= MAX_NS Then
+  Begin
+    FatalError('trop de namespaces declares (max=' + IntToStr_(MAX_NS) + ')');
+    Exit;
+  End;
+  Idx := NsCount;
+  NsTab[Idx].Name        := N;
+  NsTab[Idx].MangledName := CSC_NS_PFX + StrUpperCase(N);
+  NsTab[Idx].SymIdx      := SIdx;
+  NsTab[Idx].ClassStart  := ClassCount;
+  NsTab[Idx].ClassCount  := 0;
+  NsTab[Idx].Depth       := NsDepth;
+  Inc(NsCount);
+  AddNs := Idx;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseNamespaceDecl : parse namespace Nom ...                  }
+{   Attend : le mot-cle 'namespace' deja consomme, le curseur   }
+{   pointe sur le nom du namespace.                              }
+{   Parse le nom (eventuellement qualifie A.B.C), ouvre          }
+{   l accolade, parse les classes et declarations internes,     }
+{   puis ferme l accolade.                                      }
+{ ------------------------------------------------------------ }
+
+Procedure ParseNamespaceDecl;
+Var
+  NName      : TString;
+  NIdx       : Integer;
+  SIdx       : Integer;
+  SaveNsName : TString;
+Begin
+  { Lire le nom du namespace }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    FatalError('nom de namespace attendu');
+    Exit;
+  End;
+
+  NName := CurToken.Val;
+  Consume;
+
+  { Gerer les noms qualifies : namespace A.B.C }
+  While TokIsPunct('.') Do
+  Begin
+    Consume;
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      NName := NName + '.' + CurToken.Val;
+      Consume;
+    End
+    Else
+    Begin
+      FatalError('identificateur attendu apres . dans le nom de namespace');
+      Exit;
+    End;
+  End;
+
+  { Enregistrer le symbole dans la table des symboles }
+  SIdx := SymAdd(NName, SC_NAMESPACE, 0);
+
+  { Ajouter dans la table des namespaces }
+  NIdx := AddNs(NName, SIdx);
+
+  If Opts.Verbose Then
+    WriteLn('  namespace ', NName, ' (idx=', NIdx, ')');
+
+  { Sauvegarder l etat du namespace courant }
+  SaveNsName := CurNsName;
+  CurNsName  := NName;
+  Inc(NsDepth);
+
+  { Attendre l accolade ouvrante }
+  If Not TokIsPunct('{') Then
+  Begin
+    FatalError('accolade ouvrante attendue apres le nom de namespace');
+    CurNsName := SaveNsName;
+    Dec(NsDepth);
+    Exit;
+  End;
+  Consume;
+
+  { Parser le contenu du namespace }
+  While (CurToken.Kind <> TK_EOF) And (Not TokIsPunct('}')) Do
+  Begin
+    { Reconnaitre les declarations internes }
+    If TokIsKw('namespace') Then
+    Begin
+      Consume;
+      ParseNamespaceDecl;
+    End
+    Else If TokIsKw('class') Then
+    Begin
+      Consume;
+      ParseClassDecl;
+      { Incrementer le compteur de classes du namespace }
+      If NIdx >= 0 Then
+        Inc(NsTab[NIdx].ClassCount);
+    End
+    Else If (TokIsKw('public') Or TokIsKw('private') Or
+             TokIsKw('protected') Or TokIsKw('internal')) Then
+    Begin
+      Consume; { ignorer la visibilite }
+      { Si suivi de class -> ParseClassDecl }
+      If TokIsKw('class') Then
+      Begin
+        Consume;
+        ParseClassDecl;
+        If NIdx >= 0 Then
+          Inc(NsTab[NIdx].ClassCount);
+      End
+      { Si suivi de static -> on ne consomme pas, le niveau parent gerera }
+      Else If TokIsKw('static') Then
+      Begin
+        { Ne rien faire, le static sera traite par la boucle suivante }
+      End
+      Else If TokIsKw('namespace') Then
+      Begin
+        Consume;
+        ParseNamespaceDecl;
+      End;
+    End
+    Else If TokIsKw('const') Then
+    Begin
+      Consume;
+      ParseConstDecl;
+    End
+    Else If CurToken.Kind = TK_STRING Then
+    Begin
+      AddStrLit(CurToken.Val);
+      Consume;
+    End
+    Else
+    Begin
+      { Token non reconnu dans le namespace, avancer }
+      Consume;
+    End;
+  End;
+
+  { Consommer l accolade fermante }
+  If TokIsPunct('}') Then
+    Consume
+  Else
+    FatalError('accolade fermante attendue pour fermer le namespace ' + NName);
+
+  { Restaurer l etat }
+  CurNsName := SaveNsName;
+  Dec(NsDepth);
+End;
+
 { ------------------------------------------------------------ }
 { ShowStats (corps)                                             }
 { ------------------------------------------------------------ }
@@ -6495,6 +6734,7 @@ Begin
   WriteLn('Types            : ', TypeCount);
   WriteLn('Methodes         : ', MethodCount);
   WriteLn('Classes          : ', ClassCount);
+  WriteLn('Namespaces       : ', NsCount);
   WriteLn('Donnees .DATA    : ', DataCount);
   WriteLn('Taille pile loc  : ', LocalOffset);
   WriteLn('Labels generes   : ', LabelSeq);
@@ -6571,6 +6811,11 @@ Begin
   ClassCount := 0;
   CurClassName := '';
 
+  { Initialiser la table des namespaces (TODO 18) }
+  NsCount   := 0;
+  CurNsName := '';
+  NsDepth   := 0;
+
   { Initialiser le segment de donnees (TODO 08) }
   DataInit;
 
@@ -6633,28 +6878,11 @@ Begin
       Consume;
       ParseConstDecl;
     End
-    { Reconnaitre les declarations namespace }
+    { Reconnaitre les declarations namespace (TODO 18) }
     Else If TokIsKw('namespace') Then
     Begin
       Consume;
-      If CurToken.Kind = TK_IDENT Then
-      Begin
-        NsName := CurToken.Val;
-        SymIdx := SymAdd(NsName, SC_NAMESPACE, 0);
-        If Opts.Verbose Then
-          WriteLn('  namespace ', NsName);
-        Consume;
-        { Gerer les noms qualifies A.B.C }
-        While TokIsPunct('.') Do
-        Begin
-          Consume;
-          If CurToken.Kind = TK_IDENT Then
-          Begin
-            NsName := NsName + '.' + CurToken.Val;
-            Consume;
-          End;
-        End;
-      End;
+      ParseNamespaceDecl;
     End
     { Reconnaitre les declarations class (TODO 17) }
     Else If TokIsKw('class') Then
@@ -6895,6 +7123,7 @@ Begin
           TokenCount, ' tokens, ', UsingCount, ' using, ',
           StrLitCount, ' chaines, ', ConstCount, ' constantes, ',
           SymCount, ' symboles, ', TypeCount, ' types, ',
+          NsCount, ' namespaces, ',
           ClassCount, ' classes, ',
           MethodCount, ' methodes, ',
           DataCount, ' data)');
@@ -6907,7 +7136,7 @@ Begin
   EmitClose;
 
   WriteLn('CSCW32: ASM genere -> ', AsmFileName);
-  WriteLn('CSCW32: Les TODOs 18..25 ne sont pas encore implementes.');
+  WriteLn('CSCW32: Les TODOs 19..25 ne sont pas encore implementes.');
 End;
 
 { ------------------------------------------------------------ }
