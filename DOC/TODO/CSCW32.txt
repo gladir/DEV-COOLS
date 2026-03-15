@@ -341,22 +341,23 @@
             Affectation de tableau : arr[i] = expr.
             Affectation de string : copie de pointeur (MOV).
 
-  TODO 13 - INSTRUCTIONS DE CONTROLE (if / else)
-            ParseIfStmt : if (cond) { stmts } [else { stmts }].
+  TODO 13 - INSTRUCTIONS DE CONTROLE (if / else) [IMPLEMENTE]
+            ParseIfStmt : if (cond) stmt [else stmt].
               Evaluer condition -> TEST EAX,EAX / JZ label_else.
               Bloc then : instructions puis JMP label_endif.
               Bloc else : instructions.
-              Labels : _CSCL_ELSE_N, _CSCL_ENDIF_N.
-            if imbriques : else if (cond) { stmts } ...
-              Enchainement de labels _CSCL_ELIF_N.
-            ParseCompoundStmt : { stmt; stmt; ... }
-              Bloc d instructions avec portee locale.
+              Labels via GenLabel.
+            if imbriques : else if (cond) stmt ...
+              Enchainement recursif de ParseIfStmt.
+            Bloc d instructions avec portee locale.
               SymEnterScope / SymLeaveScope pour variables de bloc.
-            ParseExprStmt : expr; (expression comme instruction).
             Instruction vide : ; (no-op).
-            Accolades obligatoires non requises : le compilateur
-              accepte aussi if (cond) stmt; sans accolades
+            Accolades optionnelles : le compilateur
+              accepte if (cond) stmt; sans accolades
               (une seule instruction).
+            Test : test20_ifelse.cs (13 cas : if simple, if/else,
+              sans accolades, else if, else if multiple, &&, ||,
+              !, if imbriques, portee locale, appels methode).
 
   TODO 14 - BOUCLES (for / while / do-while)
             ParseForStmt : for (init; cond; incr) { stmts }.

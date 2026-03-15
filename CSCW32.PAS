@@ -241,12 +241,12 @@
             Pre-increment ++ : var += 1; val = var -> INC + MOV.
             Pre-decrement -- : var -= 1; val = var -> DEC + MOV.
 
-  TODO 13 - INSTRUCTIONS DE CONTROLE (if / else)
+  TODO 13 - INSTRUCTIONS DE CONTROLE (if / else) [IMPLEMENTE]
             ParseIfStmt : if (cond) { stmts } [else { stmts }].
             Emission TEST EAX,EAX / JZ pour condition fausse.
-            Labels : _CSCL_ELSE_N, _CSCL_ENDIF_N.
+            Labels via GenLabel.
             if imbriques : else if (cond) { stmts } ...
-            ParseCompoundStmt : { stmt; stmt; ... }.
+            Accolades optionnelles : if (cond) stmt; sans accolades.
             Bloc d instructions avec portee locale.
             SymEnterScope / SymLeaveScope pour variables de bloc.
 
@@ -848,6 +848,9 @@ Function  IsAssignOp : Boolean; Forward;
 Procedure ParseAssignment(Const TargetName : TString); Forward;
 Procedure ParseStatement; Forward;
 Procedure ParseMethodBody; Forward;
+
+{ Forward declarations for TODO 13 }
+Procedure ParseIfStmt; Forward;
 
 { ============================================================ }
 { TODO 02 - LEXEUR (TOKENS C#)                                 }
@@ -5057,6 +5060,13 @@ Begin
     Exit;
   End;
 
+  (* if (cond) stmt_ou_bloc [else stmt_ou_bloc] *)
+  If TokIsKw('if') Then
+  Begin
+    ParseIfStmt;
+    Exit;
+  End;
+
   { Declaration de variable locale : type ident [= expr]; }
   If IsTypeKeyword Then
   Begin
@@ -5138,6 +5148,112 @@ Procedure ParseMethodBody;
 Begin
   While (CurToken.Kind <> TK_EOF) And (Not TokIsPunct('}')) Do
     ParseStatement;
+End;
+
+(* ============================================================ *)
+(* TODO 13 - INSTRUCTIONS DE CONTROLE (if / else)                *)
+(*           [IMPLEMENTE]                                        *)
+(* ============================================================ *)
+(*                                                               *)
+(*  ParseIfStmt : if (cond) stmt [else stmt]                     *)
+(*  Genere :                                                     *)
+(*    condition -> TEST EAX,EAX / JZ lbl_else                    *)
+(*    bloc then -> instructions                                  *)
+(*    JMP lbl_endif                                              *)
+(*    lbl_else: [else if -> chain / else -> instructions]         *)
+(*    lbl_endif:                                                  *)
+(*  Accolades optionnelles : if (cond) stmt; sans accolades.     *)
+(*  else if imbriques : enchainement automatique.                 *)
+(*                                                               *)
+(* ============================================================ *)
+
+{ ------------------------------------------------------------ }
+{ ParseIfStmt                                                   }
+{   if ( expr ) stmt_ou_bloc [else stmt_ou_bloc]                }
+{   Genere TEST EAX,EAX / JZ / JMP avec labels.                }
+{ ------------------------------------------------------------ }
+
+Procedure ParseIfStmt;
+Var
+  LblElse  : TString;
+  LblEnd   : TString;
+Begin
+  { Consommer 'if' }
+  Consume;
+
+  { Parenthese ouvrante }
+  If TokIsPunct('(') Then
+    Consume
+  Else
+    FatalError('( attendu apres if');
+
+  { Evaluer la condition -> resultat dans EAX }
+  ParseExpr;
+
+  { Parenthese fermante }
+  If TokIsPunct(')') Then
+    Consume
+  Else
+    FatalError(') attendu apres condition if');
+
+  { Generer labels }
+  LblElse := GenLabel;
+  LblEnd  := GenLabel;
+
+  { TEST EAX,EAX / JZ lbl_else }
+  EmitInstr('TEST', 'EAX, EAX');
+  EmitInstr('JZ', LblElse);
+
+  { Bloc then : avec ou sans accolades }
+  If TokIsPunct('{') Then
+  Begin
+    Consume;
+    SymEnterScope;
+    While (CurToken.Kind <> TK_EOF) And (Not TokIsPunct('}')) Do
+      ParseStatement;
+    If TokIsPunct('}') Then Consume;
+    SymLeaveScope;
+  End
+  Else
+    ParseStatement;
+
+  { Verifier s il y a un else }
+  If TokIsKw('else') Then
+  Begin
+    { JMP lbl_end pour sauter le bloc else }
+    EmitInstr('JMP', LblEnd);
+
+    { Label else }
+    EmitLabel(LblElse);
+
+    { Consommer 'else' }
+    Consume;
+
+    { else if imbrique ? }
+    If TokIsKw('if') Then
+      ParseIfStmt
+    Else If TokIsPunct('{') Then
+    Begin
+      Consume;
+      SymEnterScope;
+      While (CurToken.Kind <> TK_EOF) And (Not TokIsPunct('}')) Do
+        ParseStatement;
+      If TokIsPunct('}') Then Consume;
+      SymLeaveScope;
+    End
+    Else
+      ParseStatement;
+
+    { Label endif }
+    EmitLabel(LblEnd);
+  End
+  Else
+  Begin
+    { Pas de else : le label else pointe ici directement }
+    EmitLabel(LblElse);
+    { LblEnd n est pas utilise dans ce cas, mais on l emet }
+    { au meme endroit pour la coherence.                   }
+  End;
 End;
 
 { ------------------------------------------------------------ }
@@ -5582,7 +5698,7 @@ Begin
   EmitClose;
 
   WriteLn('CSCW32: ASM genere -> ', AsmFileName);
-  WriteLn('CSCW32: Les TODOs 13..25 ne sont pas encore implementes.');
+  WriteLn('CSCW32: Les TODOs 14..25 ne sont pas encore implementes.');
 End;
 
 { ------------------------------------------------------------ }
