@@ -1,0 +1,681 @@
+  FEUILLE DE ROUTE - 25 TODOS
+  ============================================================
+
+  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF [IMPLEMENTE]
+            Constantes de base (version, limites des tables).
+            Constantes PE/COFF (DOS stub, signature PE, en-tete
+              COFF, en-tete optionnel, sections, imports) :
+              PE_DOS_MAGIC ($5A4D), PE_PE_SIG ($00004550),
+              PE_MACHINE_I386 ($014C), PE_OPT_SIZE (224),
+              PE_MAGIC_32 ($010B), PE_IMG_BASE ($00400000),
+              PE_SEC_ALIGN ($1000), PE_FILE_ALIGN ($0200),
+              PE_SUBSYS_CUI (3), PE_SCN_TEXT, PE_SCN_RDATA,
+              PE_SCN_BSS, MAX_BIN_CODE (64 KB), MAX_BIN_DATA (64 KB),
+              MAX_BIN_LBL (4096), MAX_BIN_FIX (8192),
+              PE_NUM_API (7), COFF_RELOC_DIR32 (6),
+              COFF_RELOC_REL32 (20).
+            TOptions (SrcFile, OutFile, Verbose, DebugMode,
+              Warnings, AsmOutput, ObjOnly).
+            ParseArgs : analyser argv (source.cs [sortie.exe]
+              [-v] [-d] [-w] [-obj] [-asm]).
+            -obj : produire uniquement un fichier .OBJ (COFF).
+            -asm : produire egalement un fichier .ASM lisible.
+            Par defaut : produire un .EXE (PE Windows 32 bits).
+            FatalError, WarnMsg, EXIT_OK / EXIT_ERROR / EXIT_USAGE.
+            Detecter l extension .cs du fichier source.
+            Programme principal : validation et appel Run.
+            Version, Date, aide en ligne (-h ou /?).
+            Utilitaires : IntToStr, StrUpper, ExtractExt,
+              ChangeExt, FileExists.
+
+  TODO 02 - LEXEUR (TOKENS C#) [IMPLEMENTE]
+            TTokenKind : TK_EOF, TK_INTEGER, TK_FLOAT, TK_STRING,
+              TK_CHAR, TK_IDENT, TK_KEYWORD, TK_OP, TK_PUNCT.
+            LexInit, LexClose, LexNextToken, LexScanIdent,
+              LexScanNumber, LexScanString, LexScanCharLit.
+            LexScanString : chaine entre guillemets "abc"
+              Sequences d echappement : \n \t \r \0 \\ \" \' \x41.
+            LexScanCharLit : caractere entre apostrophes 'A' '\n'.
+            LexScanHexNumber : entiers hexadecimaux 0xFF 0XAB.
+            Commentaires : // (ligne) et /* ... */ (multi-lignes).
+            Commentaires XML : /// (reconnus et ignores).
+            Mots-cles C# : abstract as base bool break byte case
+              catch char class const continue decimal default
+              delegate do double else enum event explicit extern
+              false finally fixed float for foreach goto if
+              implicit in int interface internal is lock long
+              namespace new null object operator out override
+              params private protected public readonly ref return
+              sbyte sealed short sizeof stackalloc static string
+              struct switch this throw true try typeof uint ulong
+              unchecked unsafe ushort using virtual void volatile
+              while.
+            Operateurs multi-caracteres : ++ -- += -= *= /= %= &=
+              |= ^= <<= >>= == != <= >= && || << >> -> ??.
+            Ponctuation : ( ) [ ] { } ; , . : ? ~ ! #.
+            Mode debug -d : affichage de chaque token avec PrintToken.
+
+  TODO 03 - DIRECTIVES USING ET IMPORTS [IMPLEMENTE]
+            using namespace; : declaration d importation.
+            using System; : acces aux classes du namespace System.
+            Espaces de noms standard integres en built-in dans le
+              compilateur (pas de fichier externe necessaire, le
+              compilateur reconnait ces using et injecte les
+              declarations correspondantes) :
+              System : Console, Math, String, Array, Object,
+                Convert, Environment, Int32, Boolean, Char.
+                Console.Write(int/string/bool/char) : sortie console.
+                Console.WriteLine(int/string/bool/char) : sortie + CRLF.
+                Console.ReadLine() : lecture d une ligne.
+                Math.Abs(int) : valeur absolue.
+                Math.Max(int, int) : maximum.
+                Math.Min(int, int) : minimum.
+                Convert.ToInt32(string) : conversion string -> int.
+                Convert.ToString(int) : conversion int -> string.
+                Int32.Parse(string) : conversion string -> int.
+                Int32.MaxValue, Int32.MinValue : constantes.
+                String.IsNullOrEmpty(string) : test chaine vide.
+              System.Collections : ArrayList (stub).
+              System.IO : File, StreamReader, StreamWriter (stubs).
+            Le compilateur reconnait les using et enregistre
+              les namespaces actifs pour la resolution de noms.
+            Verification des using non utilises (avertissement).
+
+  TODO 04 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
+            Entiers decimaux : 0..4294967295 (32 bits non signe).
+            Entiers hexadecimaux : 0xFF -> valeur 32 bits.
+            Suffixes entiers : u/U (unsigned), l/L (long), ul/UL.
+            Flottants : 3.14, 1.0e10 (reconnus, tronques en entier
+              dans le sous-ensemble minimal).
+            Caracteres : 'A' -> valeur ordinale 32 bits.
+              Echappement : '\n'=10, '\t'=9, '\r'=13, '\0'=0,
+                '\\'=92, '\''=39, '\"'=34, '\x41'=65.
+            Chaines : "abc" -> pointeur vers donnees .DATA.
+              Label _CSCK_N dans le segment .DATA.
+            Chaines verbatim : @"c:\path" (echappement desactive,
+              backslash litteral).
+            Constantes booleennes : true (1), false (0).
+            null : pointeur nul (valeur 0, DWORD).
+            Expressions constantes : const int X = 10;
+              Valeur evaluee a la compilation.
+            Concatenation implicite de chaines non supportee
+              (contrairement a C, les chaines adjacentes ne
+              fusionnent pas ; utiliser l operateur +).
+
+  TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
+            TSymCat : SC_VAR, SC_PARAM, SC_METHOD, SC_CLASS,
+              SC_FIELD, SC_ENUM_VAL, SC_LABEL, SC_STATIC,
+              SC_NAMESPACE, SC_CONST.
+            TSymRec : Name, MangledName, Cat, TypeIdx, Offset,
+              Scope, ScopeId, IsGlobal, IsStatic, IsConst.
+            SymAdd, SymFind, SymFindInScope, SymMangle.
+            CurScope : compteur de portee imbriquee (max MAX_SCOPE).
+            SymEnterScope / SymLeaveScope : gestion des portees.
+            Portees : globale (fichier), namespace, classe,
+              methode, bloc {}.
+            Prefixes de mangling : _CSCV_ (variable globale/champ
+              statique), _CSCF_ (methode), _CSCK_ (chaine const),
+              _CSCRT_ (runtime), _CSCL_ (label interne),
+              _CSCA_ (tableau), _CSCC_ (classe), _CSCN_ (namespace),
+              _CSCE_ (enum), _CSCST_ (variable statique locale).
+            Methodes standard C# pre-enregistrees en built-in dans
+              la table des symboles (le compilateur les reconnait
+              automatiquement lorsqu elles apparaissent dans le
+              code source C#, sans declaration explicite requise) :
+              Console.Write (int/string/bool/char) -> _CSCRT_PRINT*.
+              Console.WriteLine (int/string/bool/char) -> _CSCRT_PRINT* + CRLF.
+              Console.ReadLine -> _CSCRT_READSTR.
+              int.Parse -> _CSCRT_STRTONUM.
+              int.ToString -> _CSCRT_NUMTOSTR.
+              Math.Abs -> inline (CDQ + XOR + SUB).
+              Math.Max -> inline (CMP + CMOVGE).
+              Math.Min -> inline (CMP + CMOVLE).
+              Convert.ToInt32 -> _CSCRT_STRTONUM.
+              Convert.ToString -> _CSCRT_NUMTOSTR.
+
+  TODO 06 - SYSTEME DE TYPES [IMPLEMENTE]
+            TTypeKind : TKP_VOID, TKP_INT (32 bits signe),
+              TKP_UINT (32 bits non signe), TKP_LONG (64 bits stub,
+              tronque a 32 bits), TKP_BOOL (8 bits, stocke DWORD),
+              TKP_CHAR (16 bits Unicode stub, stocke 8 bits ASCII),
+              TKP_BYTE (8 bits non signe), TKP_SBYTE (8 bits signe),
+              TKP_SHORT (16 bits signe), TKP_USHORT (16 bits non
+              signe), TKP_FLOAT (stub entier), TKP_DOUBLE (stub
+              entier), TKP_DECIMAL (stub entier), TKP_STRING
+              (pointeur 32 bits vers chaine ASCIIZ), TKP_OBJECT
+              (pointeur 32 bits generique), TKP_ARRAY, TKP_CLASS,
+              TKP_ENUM.
+            TypeTab : tableau des types enregistres.
+            TypeInit : enregistrer les types primitifs predefinis.
+            TypeSizeof : void=0, bool=1, byte=1, sbyte=1, char=1,
+              short=2, ushort=2, int=4, uint=4, long=4, float=4,
+              double=8, decimal=8, string=4, object=4, pointeur=4.
+            TypeCompatible : verification de compatibilite
+              d affectation (ex: int vers long OK, string vers int
+              erreur).
+            TypeCoerce : conversions implicites automatiques
+              (byte->int, sbyte->int, short->int, ushort->int,
+              char->int).
+            Alias de types : int = System.Int32, bool =
+              System.Boolean, string = System.String, char =
+              System.Char, object = System.Object.
+
+  TODO 07 - EMETTEUR DE CODE ASM 80386 [IMPLEMENTE]
+            TEmitter : OutF (Text), OutFOpen, EmitOpen, EmitClose.
+            EmitRaw(s) : ecrire une ligne brute dans le fichier.
+            EmitLabel(lbl) : ecrire un label suivi de ':'.
+            EmitInstr(op, args) : ecrire une instruction avec
+              indentation de 8 espaces.
+            EmitComment(msg) : ecrire un commentaire ; msg.
+            EmitBlankLine : ecrire une ligne vide.
+            LabelSeq : compteur global unique pour generer
+              des labels internes _CSCL_NNNNN.
+            GenLabel : generer un label unique _CSCL_NNNNN.
+            Prefixes 32 bits : _CSCV_ (variable), _CSCF_ (methode),
+              _CSCK_ (chaine const), _CSCRT_ (runtime),
+              _CSCL_ (label interne).
+            EmitHeader : en-tete du fichier assembleur
+              .386 / .MODEL FLAT, STDCALL
+              EXTRN _ExitProcess@4:NEAR
+              EXTRN _GetStdHandle@4:NEAR
+              EXTRN _WriteFile@20:NEAR
+              EXTRN _ReadFile@20:NEAR
+              EXTRN _GetProcessHeap@0:NEAR
+              EXTRN _HeapAlloc@12:NEAR
+              EXTRN _HeapFree@12:NEAR
+              .DATA section et .CODE section.
+            EmitProlog(locals) : PUSH EBP / MOV EBP,ESP /
+              SUB ESP,locals.
+            EmitEpilog : MOV ESP,EBP / POP EBP / RET.
+            EmitDataSeg : ecrire le segment .DATA avec toutes
+              les entrees du DataTab (chaines, tampons I/O).
+            EmitCodeSeg : ouvrir le segment .CODE.
+            EmitFooter : ecrire END _CSCF_MAIN.
+            Run : EmitOpen/EmitHeader/EmitDataSeg/EmitCodeSeg
+              stub point d entree _CSCF_MAIN avec ExitProcess(0)
+              EmitFooter/EmitClose.
+
+  TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
+            TDataRec : LblName, Kind (DK_DWORD/DK_BYTE/DK_STR/
+              DK_ARRAY/DK_ZERO), IntVal, StrVal.
+            DataTab[0..MAX_DATA-1], DataCount.
+            DataAdd : ajouter une entree au DataTab.
+            DataAddStr(s) : ajouter une constante chaine
+              DB "abc",0 avec label _CSCK_N.
+            DataAddDWord(lbl, val) : ajouter un DWORD dans .DATA.
+            DataAddByte(lbl, val) : ajouter un BYTE dans .DATA.
+            DataAddArray(lbl, elemType, count) : ajouter un tableau
+              dans .DATA avec taille = count * sizeof(elem).
+            DataAddZero(lbl, size) : ajouter un bloc BSS zero.
+            DataAddGlobalVar(nom, typeIdx) : cree _CSCV_nom
+              dans le segment .DATA.
+            DataAddStaticVar(classe, var, typeIdx) : cree
+              _CSCST_N dans .DATA (variable statique de classe).
+            Variables globales (champs statiques de classe) :
+              DD/DB dans .DATA avec label _CSCV_nom.
+            Constantes chaines : DB "abc",0 dans .DATA avec
+              label _CSCK_N.
+            Tampons I/O : INBUF (256 octets), NUMBUF (16 octets).
+            Variables de handles : HSTDOUT, HSTDIN, HHEAP (DWORD).
+
+  TODO 09 - VARIABLES ET DECLARATIONS [IMPLEMENTE]
+            Champs statiques de classe : segment .DATA,
+              acces par [_CSCV_nom].
+            Variables locales : pile EBP, acces [EBP-offset].
+              Allocation : SUB ESP,n dans le prologue.
+            Parametres de methode : [EBP+8], [EBP+12], ...
+              (convention cdecl 32 bits, appelant nettoie la pile).
+            Declaration simple : type nom;
+              int a; bool ok; char c; string s;
+            Declaration avec initialisation : type nom = expr;
+              int a = 10; bool ok = true; char c = 'A';
+              string s = "hello";
+            Declarations multiples : int a, b, c;
+            Qualificateurs : const (valeur immuable, evaluee
+              a la compilation), static (champ de classe),
+              readonly (stub, traite comme const).
+            Portee de bloc : accolades ouvertes = portee locale,
+              variable locale au bloc, liberee a la sortie.
+            Initialisation locale : MOV [EBP-offset], valeur.
+            Initialisation globale : donnees dans .DATA.
+            AlignDWord : aligner les tailles sur 4 octets.
+            AllocLocal : allouer une variable locale sur la pile.
+            RegisterParam : assigner un offset EBP+n a un parametre.
+            ResetLocals : reinitialiser les compteurs de pile.
+            IsTypeKeyword : verifier si un token est un type C#.
+            GenInitLocal : emettre MOV [EBP-n], valeur.
+            GenInitLocalStr : emettre MOV [EBP-n], OFFSET label.
+            ParseVarDecl : analyser une declaration de variable
+              avec initialisation optionnelle et multiples noms.
+            LocalOffset, ParamOffset : compteurs de pile.
+
+  TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
+            ParsePrimary : literal entier, literal chaine,
+              true, false, null, identificateur, appel de methode,
+              expression entre parentheses.
+            Acces variable globale (champ statique) :
+              MOV EAX,[_CSCV_nom].
+            Acces variable locale : MOV EAX,[EBP-offset].
+            Acces parametre : MOV EAX,[EBP+offset].
+            Appel de methode statique : CALL _CSCF_nom
+              -> resultat dans EAX.
+            Parentheses : (expr) pour forcer la precedence.
+            new type[taille] : allocation de tableau
+              (calcul taille, appel HeapAlloc via Win32 API).
+            Acces tableau : expr[index] ->
+              base + index * sizeof(elem).
+            Pre-increment/decrement : ++expr --expr.
+            Post-increment/decrement : expr++ expr--.
+            Negation unaire : -expr -> NEG EAX.
+            Negation logique : !expr -> TEST + SETZ + MOVZX.
+            Complement bit a bit : ~expr -> NOT EAX.
+            GenLoadConst, GenLoadStr, GenLoadVar, GenStoreVar.
+            GenPushEAX, GenPopEBX, GenNeg, GenLogNot, GenBitNot.
+            GenIncVar, GenDecVar.
+            ParseExpr : alias de ParsePrimary (etendu TODO 11).
+
+  TODO 11 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
+            ParseExprPrec(MinPrec) : boucle de precedence (Pratt)
+              avec analyse recursive descendante.
+            Arithmetique 32 bits :
+              ADD EAX, EBX pour + (addition).
+              SUB EAX, EBX pour - (soustraction).
+              IMUL EAX, EBX pour * (multiplication).
+              CDQ + IDIV EBX pour / (division entiere signee).
+            Modulo : CDQ + IDIV EBX -> resultat dans EDX pour %.
+            Decalages : SHL EAX, CL pour <<.
+              SHR EAX, CL pour >>.
+            Comparaison : CMP EAX, EBX + SETcc AL + MOVZX :
+              SETE pour ==, SETNE pour !=, SETL pour <,
+              SETLE pour <=, SETG pour >, SETGE pour >=.
+            Logique AND : && (court-circuit, JZ vers false).
+            Logique OR  : || (court-circuit, JNZ vers true).
+            Logique NOT : !expr -> TEST EAX,EAX / SETZ AL / MOVZX.
+            Complement bit a bit : ~expr -> NOT EAX.
+            ET bit a bit : & -> AND EAX, EBX.
+            OU bit a bit : | -> OR EAX, EBX.
+            OU exclusif   : ^ -> XOR EAX, EBX.
+            Negation unaire : -expr -> NEG EAX.
+            Concatenation de chaines : operateur + sur string
+              -> appel _CSCRT_STRCAT.
+            Precedence (du plus fort au plus faible) :
+              1. () [] . (postfixe, appel, indexation, membre)
+              2. ++ -- + - ! ~ new typeof sizeof (prefixe/unaire)
+              3. * / % (multiplicatif)
+              4. + - (additif, concatenation string)
+              5. << >> (decalage)
+              6. < <= > >= is as (relationnel)
+              7. == != (egalite)
+              8. & (ET bit a bit)
+              9. ^ (OU exclusif)
+              10. | (OU bit a bit)
+              11. && (ET logique)
+              12. || (OU logique)
+              13. ?? (null-coalescing)
+              14. = += -= *= /= %= &= |= ^= <<= >>= (affectation)
+
+  TODO 12 - AFFECTATIONS ET OPERATEURS COMPOSES [IMPLEMENTE]
+            Affectation simple : var = expr -> MOV [var], EAX.
+            Affectation composee += : var += expr ->
+              MOV EBX,[var] / ADD EBX,EAX / MOV [var],EBX.
+            Affectation composee -= : var -= expr ->
+              MOV EBX,[var] / SUB EBX,EAX / MOV [var],EBX.
+            Affectation composee *= : var *= expr ->
+              MOV EBX,[var] / IMUL EBX,EAX / MOV [var],EBX.
+            Affectation composee /= : var /= expr ->
+              PUSH EAX / MOV EAX,[var] / CDQ / IDIV dword /
+              MOV [var],EAX / POP stub.
+            Affectation composee %= : var %= expr ->
+              comme /= mais MOV [var],EDX (reste).
+            Affectation composee &= : var &= expr -> AND [var],EAX.
+            Affectation composee |= : var |= expr -> OR [var],EAX.
+            Affectation composee ^= : var ^= expr -> XOR [var],EAX.
+            Affectation composee <<= : var <<= expr ->
+              MOV CL,AL / SHL DWORD PTR [var],CL.
+            Affectation composee >>= : var >>= expr ->
+              MOV CL,AL / SHR DWORD PTR [var],CL.
+            Post-increment ++ : val = var; var += 1 -> MOV + INC.
+            Post-decrement -- : val = var; var -= 1 -> MOV + DEC.
+            Pre-increment ++  : var += 1; val = var -> INC + MOV.
+            Pre-decrement --  : var -= 1; val = var -> DEC + MOV.
+            Affectation de tableau : arr[i] = expr.
+            Affectation de string : copie de pointeur (MOV).
+
+  TODO 13 - INSTRUCTIONS DE CONTROLE (if / else) [IMPLEMENTE]
+            ParseIfStmt : if (cond) stmt [else stmt].
+              Evaluer condition -> TEST EAX,EAX / JZ label_else.
+              Bloc then : instructions puis JMP label_endif.
+              Bloc else : instructions.
+              Labels via GenLabel.
+            if imbriques : else if (cond) stmt ...
+              Enchainement recursif de ParseIfStmt.
+            Bloc d instructions avec portee locale.
+              SymEnterScope / SymLeaveScope pour variables de bloc.
+            Instruction vide : ; (no-op).
+            Accolades optionnelles : le compilateur
+              accepte if (cond) stmt; sans accolades
+              (une seule instruction).
+            Test : test20_ifelse.cs (13 cas : if simple, if/else,
+              sans accolades, else if, else if multiple, &&, ||,
+              !, if imbriques, portee locale, appels methode).
+
+  TODO 14 - BOUCLES (for / while / do-while) [IMPLEMENTE]
+            ParseForStmt : for (init; cond; incr) { stmts }.
+              Trois expressions separees par ;.
+              init : declaration ou expression (int i = 0).
+              cond : expression booleenne (i < 10).
+              incr : expression d increment (i++).
+              Labels : _CSCL_FTEST_N (test de condition),
+                _CSCL_FINCR_N (increment), _CSCL_FBODY_N (corps),
+                _CSCL_FEND_N (sortie).
+              Portee de bloc pour la variable d initialisation.
+            ParseWhileStmt : while (cond) { stmts }.
+              Labels : _CSCL_WTEST_N (test), _CSCL_WEND_N (sortie).
+            ParseDoWhileStmt : do { stmts } while (cond);.
+              Labels : _CSCL_DBEG_N (debut), _CSCL_DEND_N (sortie).
+            LoopPush / LoopPop : pile de labels pour break/continue.
+              Profondeur maximale : MAX_LOOP_DEPTH = 32.
+            break : JMP vers BreakLbl (fin de la boucle).
+            continue : JMP vers ContinueLbl (increment ou test).
+            test21_loops.cs : 15 cas de test (while, do-while, for,
+              boucles imbriquees, break, continue).
+
+  TODO 15 - SWITCH / CASE / DEFAULT [IMPLEMENTE]
+            ParseSwitchStmt : switch (expr) { case val: stmts }.
+              Expression de controle : entier dans EAX,
+                sauvee sur la pile (PUSH EAX).
+              case valeur : branche pour une valeur
+                (MOV EAX,[ESP] / CMP EAX,val / JE label_body).
+              case val1: case val2: : valeurs multiples
+                (CMP successifs avec JE vers meme label).
+              default : branche par defaut (JMP label_default).
+              break : sortie du switch (JMP vers label_end).
+              Pas de fall-through implicite (C# exige break).
+              ADD ESP,4 a la fin pour depiler la valeur.
+              Labels : _CSCL_CASE_N, _CSCL_CDEF_N, _CSCL_CEND_N.
+            SwitchPush / SwitchPop : pile pour switch imbriques
+              (MAX_SWITCH_DEPTH = 32).
+            TSwitchEntry(EndLbl) dans SwitchStack.
+            break dans switch : priorite switch > boucle.
+            test22_switch.cs : 12 cas de test (simple, multi-case,
+              default, valeurs negatives, expressions, grandes
+              valeurs, instructions multiples).
+
+  TODO 16 - METHODES STATIQUES
+            ParseMethodDecl : declaration de methode statique.
+              static type Nom(type1 param1, type2 param2, ...)
+              { corps }.
+            Convention cdecl 32 bits : appelant nettoie la pile.
+              Parametres empiles de droite a gauche (PUSH).
+              Offsets : [EBP+8] (param1), [EBP+12] (param2),
+                [EBP+16] (param3), ...
+              Valeur de retour dans EAX (int, bool, char, string).
+            Variables locales : [EBP-4], [EBP-8], [EBP-12], ...
+              Allocation via SUB ESP,n dans le prologue.
+            Prologue : PUSH EBP / MOV EBP,ESP / SUB ESP,n.
+            Epilogue : MOV ESP,EBP / POP EBP / RET.
+            Main() : point d entree du programme (_CSCF_Main).
+              Signature : static void Main() { ... }.
+              Detection automatique de la methode Main dans la
+                classe Program (ou toute classe contenant Main).
+            Appel de methode : evaluer args de droite a gauche,
+              PUSH chaque arg, CALL _CSCF_Nom, ADD ESP,n.
+            Methodes void : pas de valeur de retour (EAX ignore).
+            Methodes avec retour : MOV EAX,expr + JMP epilogue.
+            Recursion : appels recursifs supportes
+              (pile d appels standard x86).
+            Surcharge : non supportee dans le sous-ensemble minimal
+              (une seule methode par nom).
+            FuncTab : table des methodes declarees.
+
+  TODO 17 - CLASSES ET MEMBRES STATIQUES
+            ParseClassDecl : class Nom { membres }.
+              Analyse de la classe : parcourir les declarations
+              de champs statiques et methodes statiques.
+            Membres statiques :
+              Champs static : variables globales (.DATA).
+                static int count; -> _CSCV_count DD 0.
+              Methodes static : fonctions autonomes.
+                static void Print() { ... } -> _CSCF_Print.
+            Portee de classe : acces aux membres par
+              NomClasse.Membre (resolution lors de l analyse).
+            Classe Program : classe contenant Main()
+              (point d entree du programme).
+            Un seul niveau de classe (pas d heritage, pas
+              d interfaces, pas de polymorphisme dans le
+              sous-ensemble minimal).
+            Visibilite : public, private, protected, internal
+              (reconnus par le lexeur mais non verifies dans
+              le sous-ensemble minimal, tout est traite comme
+              public).
+            Constructeurs et destructeurs : non supportes dans
+              le sous-ensemble minimal (les champs sont
+              initialises dans .DATA).
+            Plusieurs classes par fichier : supportees.
+
+  TODO 18 - ESPACES DE NOMS (namespace)
+            ParseNamespaceDecl : namespace Nom { classes }.
+              Le namespace englobe toutes les classes du fichier.
+            Namespace comme enveloppe syntaxique :
+              la declaration namespace Nom { ... } est reconnue
+              et le nom est enregistre, mais n affecte pas
+              la generation de code dans le sous-ensemble minimal.
+            Resolution de noms qualifies :
+              Namespace.Classe.Methode -> _CSCF_Methode.
+              Dans le sous-ensemble minimal, le prefixe namespace
+              est ignore pour le mangling (seul le nom de methode
+              est utilise).
+            Espaces de noms imbriques : namespace A.B { ... }
+              reconnus, traites comme un seul namespace A.B.
+            Table des namespaces declares : NsTab.
+            Table des namespaces importes (via using) : UsTab.
+            Mangling etendu (optionnel, pour compatibilite future) :
+              _CSCN_Namespace_Classe_Methode.
+
+  TODO 19 - TABLEAUX
+            Declaration : type[] nom = new type[taille];
+              int[] arr = new int[5];
+              Taille en octets = nombre_elements * sizeof(type).
+            Acces : arr[index] -> base + index * sizeof(type).
+              MOV EBX,[arr] / LEA EAX,[EBX + index*4] pour int[].
+              MOV EAX,[EBX + index*4] pour lire un element.
+              MOV [EBX + index*4],EAX pour ecrire un element.
+            Allocation statique dans .DATA pour champs statiques
+              de classe (DD count DUP(0)).
+            Allocation sur la pile pour variables locales
+              (SUB ESP, count * sizeof(elem), pointeur dans
+              [EBP-offset]).
+            Propriete Length : arr.Length -> taille du tableau
+              (stockee comme constante connue a la compilation
+              ou dans un DWORD associe au tableau).
+            Initialisation element par element :
+              arr[0] = 10; arr[1] = 20; ...
+            Passage de tableau a methode : par reference
+              (pointeur vers premier element, DWORD).
+            Types supportes : int[], bool[], char[].
+            Verification de bornes : optionnelle (stub),
+              non implementee dans le sous-ensemble minimal.
+
+  TODO 20 - CHAINES ET OPERATIONS SUR LES CHAINES
+            Chaines C# : type string, reference vers donnees
+              en memoire.
+            Stockage interne : ASCIIZ (termine par 0) dans .DATA.
+              Chaque litteral de chaine recoit un label _CSCK_N.
+            Variable string : pointeur DWORD vers chaine ASCIIZ.
+            Concatenation : s1 + s2 -> appel _CSCRT_STRCAT.
+              Resultat : nouvelle chaine allouee sur le heap.
+            Concatenation mixte : "texte" + valeur_int
+              -> conversion int vers string (_CSCRT_NUMTOSTR)
+              puis concatenation (_CSCRT_STRCAT).
+            Affectation : s = "abc" -> copie du pointeur.
+            Comparaison : s1 == s2 via _CSCRT_STRCMP.
+              s1 != s2 via _CSCRT_STRCMP + inversion.
+            Propriete Length : s.Length -> _CSCRT_STRLEN(s).
+            Chaines immuables : en C# les chaines sont immuables;
+              la concatenation cree une nouvelle chaine.
+            Interpolation de chaines : $"texte {expr}" non
+              supportee dans le sous-ensemble minimal (utiliser
+              la concatenation avec +).
+
+  TODO 21 - ENTREES/SORTIES (Console)
+            Console.WriteLine(expr) : sortie avec saut de ligne.
+              Detection automatique du type de l argument :
+                int    -> CALL _CSCRT_PRINTINT + CALL _CSCRT_PRINTCRLF.
+                string -> CALL _CSCRT_PRINTSTR + CALL _CSCRT_PRINTCRLF.
+                bool   -> CALL _CSCRT_PRINTBOOL + CALL _CSCRT_PRINTCRLF.
+                char   -> CALL _CSCRT_PRINTCHAR + CALL _CSCRT_PRINTCRLF.
+                sans argument -> CALL _CSCRT_PRINTCRLF.
+            Console.Write(expr) : sortie sans saut de ligne.
+              Memes surcharges que WriteLine, sans CRLF final.
+                int    -> CALL _CSCRT_PRINTINT.
+                string -> CALL _CSCRT_PRINTSTR.
+                bool   -> CALL _CSCRT_PRINTBOOL.
+                char   -> CALL _CSCRT_PRINTCHAR.
+            Console.ReadLine() : lire une ligne depuis stdin.
+              CALL _CSCRT_READSTR -> EAX (pointeur string).
+              Resultat utilisable dans une affectation :
+                string s = Console.ReadLine();
+            Resolution de Console : si using System; est declare,
+              le compilateur reconnait Console.Write, Console.WriteLine
+              et Console.ReadLine comme des appels intrinseques
+              et genere directement les appels runtime correspondants.
+
+  TODO 22 - GOTO, BREAK, CONTINUE, RETURN
+            goto label; : saut inconditionnel vers label.
+              label: stmt; -> definition du label dans le code.
+              JMP _CSCL_USR_labelname.
+              Verification : le label doit etre defini dans
+                la meme methode.
+              Table de labels utilisateur (max MAX_GOTO_LABELS
+                par methode).
+            break; : sortie de la boucle ou switch englobant.
+              JMP vers label de fin de boucle/switch.
+              Erreur si utilise hors d une boucle ou switch.
+            continue; : passage a l iteration suivante.
+              JMP vers label d increment/test de la boucle.
+              Erreur si utilise hors d une boucle.
+            return expr; : retour de methode avec valeur.
+              Evaluer expr -> MOV EAX, valeur.
+              JMP vers label d epilogue de la methode.
+            return; : retour de methode void (sans valeur).
+              JMP vers label d epilogue.
+            Verification : return avec valeur dans methode non-void,
+              return sans valeur dans methode void.
+
+  TODO 23 - CAST, TYPEOF ET SIZEOF
+            Cast explicite : (type)expr.
+              (int)c    : promotion char -> int (MOVZX EAX, AL).
+              (char)i   : troncature int -> char (AND EAX, 0FFh).
+              (byte)i   : troncature int -> byte (AND EAX, 0FFh).
+              (short)i  : troncature int -> short (AND EAX, 0FFFFh).
+              (bool)i   : i != 0 -> true (TEST EAX,EAX / SETNZ AL
+                / MOVZX EAX, AL).
+              (uint)i   : reinterpretation signe -> non signe (NOP).
+            typeof(type) : retourne le nom du type sous forme
+              de chaine (stub : renvoie un pointeur vers un
+              litteral de chaine "Int32", "Boolean", etc.).
+            sizeof(type) : taille en octets d un type.
+              sizeof(int) -> 4, sizeof(char) -> 1,
+              sizeof(bool) -> 1, sizeof(byte) -> 1,
+              sizeof(short) -> 2, sizeof(long) -> 4,
+              sizeof(float) -> 4, sizeof(double) -> 8.
+              Evalue a la compilation (constante).
+            Conversions implicites : byte->int, sbyte->int,
+              short->int, ushort->int, char->int.
+              Le compilateur insere automatiquement MOVZX/MOVSX
+              lorsque necessaire.
+
+  TODO 24 - RUNTIME MINIMAL WIN32
+            Routines runtime emises directement dans le segment
+            .CODE du fichier assembleur genere :
+            _CSCRT_PRINTSTR(ESI=msg) : WriteFile sur hStdOut.
+              Calcule la longueur (REPNE SCASB), puis appel
+              WriteFile(hStdOut, ptr, len, &written, 0).
+            _CSCRT_PRINTINT(EAX=n) : conversion entier -> ASCII
+              (division successive par 10), puis WriteFile.
+            _CSCRT_PRINTCRLF : ecriture CR+LF (0Dh, 0Ah).
+            _CSCRT_PRINTCHAR(EAX=c) : afficher un seul caractere.
+            _CSCRT_PRINTBOOL(EAX=b) : si EAX<>0 afficher "True",
+              sinon afficher "False".
+            _CSCRT_NUMTOSTR(EAX=n, EDI=buf) : entier signe ->
+              chaine ASCII terminee par 0.
+            _CSCRT_STRTONUM(ESI=str) : chaine ASCII -> entier
+              signe -> resultat dans EAX.
+            _CSCRT_STRLEN(ESI=str) : longueur chaine ASCIIZ
+              -> resultat dans EAX.
+            _CSCRT_STRCMP(ESI=s1, EDI=s2) : comparaison octet
+              par octet -> drapeaux (ZF si egal).
+            _CSCRT_STRCPY(ESI=src, EDI=dst) : copie de chaine
+              ASCIIZ.
+            _CSCRT_STRCAT(ESI=s1, EDI=s2) : concatenation ->
+              EAX = pointeur vers nouvelle chaine (heap).
+            _CSCRT_READINT -> EAX : lire une ligne depuis stdin,
+              convertir en entier.
+            _CSCRT_READSTR(EDI=buf) : lire une ligne depuis stdin
+              dans le tampon.
+            _CSCRT_READCHAR -> EAX : lire un seul caractere
+              depuis stdin.
+            _CSCRT_READLN : consommer les caracteres jusqu au
+              prochain CR+LF.
+            _CSCRT_MALLOC(EAX=taille) : allocation memoire via
+              HeapAlloc(hHeap, 0, taille) -> EAX = pointeur.
+            _CSCRT_FREE(EAX=ptr) : liberation memoire via
+              HeapFree(hHeap, 0, ptr).
+            _CSCRT_MEMCPY(ESI=src, EDI=dst, ECX=len) : copie
+              memoire (REP MOVSB).
+            _CSCRT_MEMSET(EDI=dst, EAX=val, ECX=len) : remplissage
+              memoire (REP STOSB).
+            _CSCRT_PANIC(ESI=msg) : afficher le message d erreur
+              puis appeler ExitProcess(1).
+            Heap Win32 : GetProcessHeap + HeapAlloc / HeapFree.
+            Handles : hStdOut via GetStdHandle(STD_OUTPUT_HANDLE),
+              hStdIn via GetStdHandle(STD_INPUT_HANDLE),
+              hHeap via GetProcessHeap.
+
+  TODO 25 - GENERATION PE/COFF ET FICHIERS EXEMPLES
+            Generation PE (.EXE Windows 32 bits) :
+              DOS stub (programme MZ minimal affichant un message).
+              Signature PE : 'PE\0\0' ($00004550).
+              En-tete COFF : Machine=$014C, NumberOfSections=3.
+              En-tete optionnel : Magic=$010B, ImageBase=$400000,
+                SectionAlignment=$1000, FileAlignment=$200,
+                Subsystem=3 (CONSOLE).
+              Sections :
+                .text  (code executable, caracteristiques $60000020).
+                .rdata (imports et constantes, $40000040).
+                .data  (donnees initialisees, $C0000040).
+              Table d imports : kernel32.dll
+                ExitProcess, GetStdHandle, WriteFile, ReadFile,
+                GetProcessHeap, HeapAlloc, HeapFree.
+              Point d entree : _CSCF_Main.
+              Alignement des sections sur $200 (fichier) et
+                $1000 (memoire).
+            Generation COFF (.OBJ) : option -obj.
+              En-tete COFF + sections .text/.data.
+              Table de symboles COFF.
+              Relocations pour les references externes
+                (COFF_RELOC_DIR32 et COFF_RELOC_REL32).
+            Generation ASM (.ASM) : option -asm.
+              Fichier assembleur MASM lisible en plus du binaire.
+              Format compatible avec MASM 6.x+ et JWASM.
+            EmitClose : finalisation du fichier de sortie
+              (ecriture de l en-tete PE, table d imports,
+              sections, padding).
+            Run : pipeline complet :
+              1. LexInit (ouverture source .cs)
+              2. Parse (analyse syntaxique et semantique)
+              3. Emit (generation de code assembleur/binaire)
+              4. Binary (generation PE/COFF si necessaire)
+              5. Close (fermeture fichiers)
+            Fichiers SAMPLES\CSHARP\*.cs existants :
+              test01_hello.cs   - Hello World (Console.WriteLine)
+              test02_vars.cs    - Variables et types de base
+              test03_arith.cs   - Operations arithmetiques
+              test04_cond.cs    - Conditions (if/else, &&, ||, !)
+              test05_while.cs   - Boucle while, break, continue
+              test06_for.cs     - Boucle for, boucles imbriquees
+              test07_fonct.cs   - Methodes statiques et appels
+              test08_string.cs  - Chaines et concatenation
+              test09_array.cs   - Tableaux (new int[], indexation)
+              test10_recurs.cs  - Recursion (factorielle)
+            Smoke tests : CSCW32.EXE -v SAMPLES\CSHARP\*.cs.

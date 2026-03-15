@@ -3,5 +3,7 @@
 *.ppu
 *.class
 SAMPLES/ADA/*.asm
+SAMPLES/CSHARP/*.asm
 /JASMIN
 /ADACW32
+/CSCW32
