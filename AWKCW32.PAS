@@ -468,27 +468,24 @@
             Var BuiltinMathCount pour les statistiques
             test_builtins19.awk (15 cas, fonctions builtin mathematiques)
 
-  TODO 20 - PARSEUR : GETLINE ET REDIRECTIONS E/S
-            Procedure ParseGetline
+  TODO 20 - PARSEUR : GETLINE ET REDIRECTIONS E/S [IMPLEMENTE]
+            Function ParseGetline : Integer
             Syntaxe :
-              getline                  -> lire dans $0 depuis stdin
-              getline var              -> lire dans var depuis stdin
-              getline < "fichier"      -> lire depuis fichier
-              getline var < "fichier"  -> lire var depuis fichier
-              "cmd" | getline [var]    -> lire depuis pipe (stub)
+              getline                  -> CALL _AWRT_READLINE -> EAX
+              getline var              -> READLINE + GenStoreVar(var)
+              getline < "fichier"      -> PUSH EAX + CALL GETLINE_FILE
+              getline var < "fichier"  -> GETLINE_FILE + GenStoreVar(var)
+              "cmd" | getline [var]    -> stub (pipe)
             Generation 32 bits :
-              CALL _AWRT_READLINE -> EAX (0=EOF, 1=succes)
-              Mettre a jour NR, FNR, $0, NF
+              CALL _AWRT_READLINE -> EAX (ptr ligne ou 0 si EOF)
+              TEST EAX + JZ -> 0 (EOF) ou 1 (succes)
             Redirections de sortie (print/printf) :
-              > "fichier"  -> CALL _AWRT_OPEN_WRITE + WriteFile
-              >> "fichier" -> CALL _AWRT_OPEN_APPEND + WriteFile
-              | "commande" -> stub
-            Gestion des handles de fichier ouverts :
-              Table de fichiers ouverts (nom -> handle Win32)
-              CreateFileA / WriteFile / ReadFile / CloseHandle
-            Procedure ParseInputFiles
-              Traitement des fichiers passes en argument (ARGC/ARGV)
-              Boucle : ouvrir chaque fichier, lire ligne par ligne
+              > "fichier"  -> PUSH EAX + CALL _AWRT_REDIR_WRITE
+              >> "fichier" -> PUSH EAX + CALL _AWRT_REDIR_APPEND
+              | "commande" -> stub (pipe, warning)
+            ParseStatement : getline / next / nextfile handlers
+            Var GetlineCount pour les statistiques
+            test_getline20.awk (15 cas, getline et redirections E/S)
 
   TODO 21 - PARSEUR : VARIABLES BUILTIN AWK
             Initialisation des variables builtin dans le segment .DATA :
@@ -1099,6 +1096,9 @@ Var
   { Fonctions builtin mathematiques (TODO 19) }
   BuiltinMathCount: Integer;   { nombre d appels fonctions builtin math }
 
+  { Getline et redirections E/S (TODO 20) }
+  GetlineCount   : Integer;    { nombre d instructions getline           }
+
 Const
 {$IFDEF FPC}
   BinAPIDecorated : Array[0..PE_NUM_API - 1] Of String[32] = (
@@ -1461,6 +1461,7 @@ Begin
   WriteLn('Regex ops (~!~)  : ', RegexOpCount);
   WriteLn('Builtin str ops  : ', BuiltinStrCount);
   WriteLn('Builtin math ops : ', BuiltinMathCount);
+  WriteLn('Getline ops      : ', GetlineCount);
   WriteLn('Code gen ops     : ', GenCount);
   WriteLn('Litteraux chaine : ', StringLitCount);
   WriteLn('Scope depth      : ', ScopeDepth);
@@ -2613,6 +2614,9 @@ Function  ParseBuiltinString(BFIdx: Integer): Integer; Forward;
 { Forward declarations TODO 19 - Fonctions builtin mathematiques }
 Function  ParseBuiltinMath(BFIdx: Integer): Integer; Forward;
 
+{ Forward declarations TODO 20 - Getline et redirections E/S }
+Function  ParseGetline: Integer; Forward;
+
 { ---- Helpers de tokens --------------------------------------- }
 Function IsOp(Const S : String) : Boolean;
 Begin
@@ -2815,14 +2819,11 @@ Begin
     End;
     TK_KEYWORD:
     Begin
-      { getline est un keyword qui peut apparaitre en expression }
+      { getline est un keyword qui peut apparaitre en expression (TODO 20) }
       If IsKW(KW_GETLINE) Then
       Begin
         ParserAdvance;
-        { getline var < file : skip optionnel }
-        If CurToken.Kind = TK_IDENT Then
-          ParserAdvance;
-        ParsePrimaryExpr := TYK_NUMBER;
+        ParsePrimaryExpr := ParseGetline;
       End
       { sprintf est un keyword mais fonctionne comme une fonction }
       Else If IsKW(KW_SPRINTF) Then
@@ -4611,6 +4612,80 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 20 - PARSEUR : GETLINE ET REDIRECTIONS E/S              }
+{ ============================================================ }
+
+{ ---- ParseGetline -------------------------------------------- }
+{ Parse et genere du code pour getline AWK                       }
+{ getline                  -> lire dans $0 depuis stdin           }
+{ getline var              -> lire dans var depuis stdin           }
+{ getline < "fichier"      -> lire depuis fichier dans $0         }
+{ getline var < "fichier"  -> lire var depuis fichier             }
+{ "cmd" | getline [var]    -> lire depuis pipe (stub)             }
+{ Retourne TYK_NUMBER (0=EOF, 1=succes)                          }
+Function ParseGetline: Integer;
+Var
+  VarIdx   : Integer;
+  HasVar   : Boolean;
+  HasFile  : Boolean;
+  ExprType : Integer;
+  LblEof   : TString;
+Begin
+  Inc(GetlineCount);
+  ParseGetline := TYK_NUMBER;  { getline retourne 0 ou 1 }
+  EmitComment('--- getline ---');
+  VarIdx  := -1;
+  HasVar  := False;
+  HasFile := False;
+  LblEof  := NewLabel;
+
+  { Verifier si un nom de variable suit getline }
+  If (CurToken.Kind = TK_IDENT) And
+     Not IsOp('<') Then
+  Begin
+    HasVar := True;
+    VarIdx := FindSym(CurToken.Val);
+    If VarIdx < 0 Then
+      VarIdx := AddSym(CurToken.Val, TYK_STRING, STORE_GLOBAL, True);
+    ParserAdvance;
+  End;
+
+  { Verifier si une redirection < suit }
+  If IsOp('<') Then
+  Begin
+    HasFile := True;
+    ParserAdvance;  { consommer < }
+    ExprType := ParseExpr;
+    ExprType := GenCoerceToString(ExprType);
+    { EAX = nom du fichier }
+    Emit('        PUSH    EAX');
+    Emit('        CALL    ' + AW_RT_PFX + 'GETLINE_FILE');
+    Emit('        ADD     ESP, 4');
+  End
+  Else
+  Begin
+    { getline simple depuis stdin }
+    Emit('        CALL    ' + AW_RT_PFX + 'READLINE');
+  End;
+
+  { EAX = pointeur vers la ligne lue (ou 0 si EOF) }
+  { Si une variable est specifiee, stocker dans la variable }
+  If HasVar And (VarIdx >= 0) Then
+  Begin
+    EmitComment('getline -> store in var');
+    GenStoreVar(VarIdx);
+  End;
+
+  { Resultat : EAX = 1 si succes, 0 si EOF }
+  { _AWRT_READLINE et _AWRT_GETLINE_FILE retournent la ligne }
+  { On genere le test : si EAX = 0 -> 0 (EOF), sinon -> 1     }
+  Emit('        TEST    EAX, EAX');
+  Emit('        JZ      ' + LblEof);
+  Emit('        MOV     EAX, 1');
+  EmitLabel(LblEof);
+End;
+
+{ ============================================================ }
 { TODO 09 - PARSEUR : PRINT, PRINTF, SPRINTF                  }
 { ============================================================ }
 
@@ -4712,16 +4787,37 @@ Begin
     Inc(ArgCount);
   End;
 
-  { Redirection > >> | optionnelle (stub: on parse mais on warn) }
+  { Redirection > >> | optionnelle (TODO 20) }
   If IsOp('>') Or IsOp('>>') Or IsOp('|') Then
   Begin
     HasRedir := True;
     If IsOp('|') Then
-      WarnMsg('print | "cmd" : pipe non supporte, ignore')
+    Begin
+      EmitComment('print | cmd (pipe stub)');
+      WarnMsg('print | "cmd" : pipe non supporte, ignore');
+      ParserAdvance;  { consommer | }
+      D := ParseExpr; { parser la commande, ignorer }
+    End
+    Else If IsOp('>>') Then
+    Begin
+      EmitComment('print >> fichier (append)');
+      ParserAdvance;  { consommer >> }
+      D := ParseExpr;
+      D := GenCoerceToString(D);
+      Emit('        PUSH    EAX');
+      Emit('        CALL    ' + AW_RT_PFX + 'REDIR_APPEND');
+      Emit('        ADD     ESP, 4');
+    End
     Else
-      WarnMsg('print > / >> "fichier" : redirection non supportee, ignore');
-    ParserAdvance;  { consommer > / >> / | }
-    D := ParseExpr; { parser le nom de fichier/commande, ignorer }
+    Begin
+      EmitComment('print > fichier (write)');
+      ParserAdvance;  { consommer > }
+      D := ParseExpr;
+      D := GenCoerceToString(D);
+      Emit('        PUSH    EAX');
+      Emit('        CALL    ' + AW_RT_PFX + 'REDIR_WRITE');
+      Emit('        ADD     ESP, 4');
+    End;
   End;
 
   { Terminateur ORS }
@@ -4770,12 +4866,36 @@ Begin
     Emit('        ADD     ESP, ' + NS);
   End;
 
-  { Redirection > >> optionnelle (stub) }
-  If IsOp('>') Or IsOp('>>') Then
+  { Redirection > >> | optionnelle (TODO 20) }
+  If IsOp('>') Or IsOp('>>') Or IsOp('|') Then
   Begin
-    WarnMsg('printf > / >> "fichier" : redirection non supportee, ignore');
-    ParserAdvance;
-    D := ParseExpr;
+    If IsOp('|') Then
+    Begin
+      EmitComment('printf | cmd (pipe stub)');
+      WarnMsg('printf | "cmd" : pipe non supporte, ignore');
+      ParserAdvance;
+      D := ParseExpr;
+    End
+    Else If IsOp('>>') Then
+    Begin
+      EmitComment('printf >> fichier (append)');
+      ParserAdvance;
+      D := ParseExpr;
+      D := GenCoerceToString(D);
+      Emit('        PUSH    EAX');
+      Emit('        CALL    ' + AW_RT_PFX + 'REDIR_APPEND');
+      Emit('        ADD     ESP, 4');
+    End
+    Else
+    Begin
+      EmitComment('printf > fichier (write)');
+      ParserAdvance;
+      D := ParseExpr;
+      D := GenCoerceToString(D);
+      Emit('        PUSH    EAX');
+      Emit('        CALL    ' + AW_RT_PFX + 'REDIR_WRITE');
+      Emit('        ADD     ESP, 4');
+    End;
   End;
 End;
 
@@ -5019,7 +5139,30 @@ Begin
       ParseFunctionDef;
       Exit;
     End;
-    { Autres keywords : skip (next, etc.) }
+    { getline comme statement (TODO 20) }
+    If TK = KW_GETLINE Then
+    Begin
+      ParserAdvance;
+      D := ParseGetline;
+      Exit;
+    End;
+    { next : sauter au prochain enregistrement }
+    If TK = KW_NEXT Then
+    Begin
+      ParserAdvance;
+      EmitComment('--- next ---');
+      Emit('        JMP     ' + AW_RT_PFX + 'NEXT');
+      Exit;
+    End;
+    { nextfile : sauter au prochain fichier }
+    If TK = KW_NEXTFILE Then
+    Begin
+      ParserAdvance;
+      EmitComment('--- nextfile ---');
+      Emit('        JMP     ' + AW_RT_PFX + 'NEXTFILE');
+      Exit;
+    End;
+    { Autres keywords : skip }
     ParserAdvance;
     Exit;
   End;
@@ -5910,6 +6053,7 @@ Begin
   RegexOpCount := 0;
   BuiltinStrCount := 0;
   BuiltinMathCount := 0;
+  GetlineCount := 0;
   HasPushedBack := False;
   LexInit;
   { Mode debug : afficher tous les tokens }
@@ -5939,6 +6083,7 @@ Begin
             RegexOpCount, ' operation(s) regex (~ !~)');
     WriteLn('AWKCW32: ', BuiltinStrCount, ' appel(s) builtin chaines');
     WriteLn('AWKCW32: ', BuiltinMathCount, ' appel(s) builtin math/systeme');
+    WriteLn('AWKCW32: ', GetlineCount, ' getline/redirection(s) E/S');
     WriteLn('AWKCW32: ', ExprCount, ' expression(s) parsees');
     WriteLn('AWKCW32: ', CoercionCount, ' coercition(s), ',
             ConcatCount, ' concatenation(s) implicite(s)');
@@ -5951,7 +6096,7 @@ Begin
     WriteLn('AWKCW32: ', GenCount, ' operation(s) code gen, ',
             StringLitCount, ' litteral(aux) chaine');
     WriteLn('AWKCW32: scope depth=', ScopeDepth, ', loop depth=', LoopDepth);
-    WriteLn('AWKCW32: TODO 20..25 non encore implementes.');
+    WriteLn('AWKCW32: TODO 21..25 non encore implementes.');
     WriteLn('AWKCW32: sortie prevue: ', Opts.OutFile);
   End;
   LexClose;

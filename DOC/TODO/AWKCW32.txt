@@ -476,26 +476,24 @@
             test_builtins19.awk (15 cas, fonctions builtin mathematiques)
 
   TODO 20 - PARSEUR : GETLINE ET REDIRECTIONS E/S
-            Procedure ParseGetline
+            [IMPLEMENTE]
+            Function ParseGetline : Integer
             Syntaxe :
-              getline                  -> lire dans $0 depuis stdin
-              getline var              -> lire dans var depuis stdin
-              getline < "fichier"      -> lire depuis fichier
-              getline var < "fichier"  -> lire var depuis fichier
-              "cmd" | getline [var]    -> lire depuis pipe (stub)
+              getline                  -> CALL _AWRT_READLINE -> EAX
+              getline var              -> READLINE + GenStoreVar(var)
+              getline < "fichier"      -> PUSH EAX + CALL GETLINE_FILE
+              getline var < "fichier"  -> GETLINE_FILE + GenStoreVar(var)
+              "cmd" | getline [var]    -> stub (pipe)
             Generation 32 bits :
-              CALL _AWRT_READLINE -> EAX (0=EOF, 1=succes)
-              Mettre a jour NR, FNR, $0, NF
+              CALL _AWRT_READLINE -> EAX (ptr ligne ou 0 si EOF)
+              TEST EAX + JZ -> 0 (EOF) ou 1 (succes)
             Redirections de sortie (print/printf) :
-              > "fichier"  -> CALL _AWRT_OPEN_WRITE + WriteFile
-              >> "fichier" -> CALL _AWRT_OPEN_APPEND + WriteFile
-              | "commande" -> stub
-            Gestion des handles de fichier ouverts :
-              Table de fichiers ouverts (nom -> handle Win32)
-              CreateFileA / WriteFile / ReadFile / CloseHandle
-            Procedure ParseInputFiles
-              Traitement des fichiers passes en argument (ARGC/ARGV)
-              Boucle : ouvrir chaque fichier, lire ligne par ligne
+              > "fichier"  -> PUSH EAX + CALL _AWRT_REDIR_WRITE
+              >> "fichier" -> PUSH EAX + CALL _AWRT_REDIR_APPEND
+              | "commande" -> stub (pipe, warning)
+            ParseStatement : getline / next / nextfile handlers
+            Var GetlineCount pour les statistiques
+            test_getline20.awk (15 cas, getline et redirections E/S)
 
   TODO 21 - PARSEUR : VARIABLES BUILTIN AWK
             Initialisation des variables builtin dans le segment .DATA :
