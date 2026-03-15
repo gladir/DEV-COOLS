@@ -193,7 +193,7 @@
             Acces tableau : expr[index] ->
               base + index*sizeof(elem).
 
-  TODO 11 - OPERATEURS ET PRECEDENCE
+  TODO 11 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
             ParseExprPrec(MinPrec) : boucle de precedence (Pratt).
             Arithmetique 32 bits : ADD/SUB/IMUL/IDIV
               pour +, -, *, /.
@@ -838,6 +838,9 @@ Procedure ParseVarDecl(Const VarType : TString; IsStatic : Boolean;
 { Forward declarations for TODO 10 }
 Procedure ParseExpr; Forward;
 Procedure ParsePrimary; Forward;
+
+{ Forward declarations for TODO 11 }
+Procedure ParseExprPrec(MinPrec : Integer); Forward;
 
 { ============================================================ }
 { TODO 02 - LEXEUR (TOKENS C#)                                 }
@@ -3922,8 +3925,7 @@ End;
 {  - suffixes post-increment/decrement : expr++ expr--          }
 {  - indexation tableau : expr[index]                           }
 {                                                               }
-{  ParseExpr : pour l instant, alias de ParsePrimary            }
-{  (sera etendu en TODO 11 avec ParseExprPrec)                  }
+{  ParseExpr : appelle ParseExprPrec(0) (voir TODO 11)           }
 {                                                               }
 { ============================================================ }
 
@@ -4445,16 +4447,267 @@ Begin
   End;
 End;
 
+{ ============================================================ }
+{ TODO 11 - OPERATEURS ET PRECEDENCE                            }
+{           [IMPLEMENTE]                                        }
+{ ============================================================ }
+{                                                               }
+{  GetBinOpPrec : retourne la precedence d un operateur binaire }
+{    0 si pas un operateur binaire.                             }
+{  GenBinOp(Op) : generer le code pour Op avec LHS=EBX RHS=EAX }
+{  ParseExprPrec(MinPrec) : boucle de precedence Pratt          }
+{    avec court-circuit pour && || et ?? (null-coalescing).     }
+{  ParseExpr : appelle ParseExprPrec(0).                        }
+{                                                               }
+{  Precedence (du plus fort au plus faible) :                   }
+{    12 : * / %           (multiplicatif)                       }
+{    11 : + -             (additif)                             }
+{    10 : << >>           (decalage)                            }
+{     9 : < <= > >=       (relationnel)                         }
+{     8 : == !=           (egalite)                             }
+{     7 : &               (ET bit a bit)                        }
+{     6 : ^               (OU exclusif)                         }
+{     5 : |               (OU bit a bit)                        }
+{     4 : &&              (ET logique, court-circuit)            }
+{     3 : ||              (OU logique, court-circuit)            }
+{     2 : ??              (null-coalescing)                      }
+{                                                               }
+{ ============================================================ }
+
+{ ------------------------------------------------------------ }
+{ GetBinOpPrec : retourner la precedence d un operateur binaire }
+{   Retourne 0 si ce n est pas un operateur binaire connu.      }
+{   Plus la valeur est haute, plus l operateur lie fort.         }
+{ ------------------------------------------------------------ }
+
+Function GetBinOpPrec : Integer;
+Begin
+  If CurToken.Kind <> TK_OP Then
+  Begin
+    GetBinOpPrec := 0;
+    Exit;
+  End;
+
+  If (CurToken.Val = '*') Or (CurToken.Val = '/') Or
+     (CurToken.Val = '%') Then
+    GetBinOpPrec := 12
+  Else If (CurToken.Val = '+') Or (CurToken.Val = '-') Then
+    GetBinOpPrec := 11
+  Else If (CurToken.Val = '<<') Or (CurToken.Val = '>>') Then
+    GetBinOpPrec := 10
+  Else If (CurToken.Val = '<') Or (CurToken.Val = '<=') Or
+          (CurToken.Val = '>') Or (CurToken.Val = '>=') Then
+    GetBinOpPrec := 9
+  Else If (CurToken.Val = '==') Or (CurToken.Val = '!=') Then
+    GetBinOpPrec := 8
+  Else If CurToken.Val = '&' Then
+    GetBinOpPrec := 7
+  Else If CurToken.Val = '^' Then
+    GetBinOpPrec := 6
+  Else If CurToken.Val = '|' Then
+    GetBinOpPrec := 5
+  Else If CurToken.Val = '&&' Then
+    GetBinOpPrec := 4
+  Else If CurToken.Val = '||' Then
+    GetBinOpPrec := 3
+  Else If CurToken.Val = '??' Then
+    GetBinOpPrec := 2
+  Else
+    GetBinOpPrec := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenBinOp : generer le code pour un operateur binaire          }
+{   LHS dans EBX (pop), RHS dans EAX.                          }
+{   Resultat dans EAX.                                          }
+{ ------------------------------------------------------------ }
+
+Procedure GenBinOp(Const Op : TString);
+Begin
+  { Addition : EBX + EAX }
+  If Op = '+' Then
+    EmitInstr('ADD', 'EAX,EBX')
+  { Soustraction : EBX - EAX }
+  Else If Op = '-' Then
+  Begin
+    EmitInstr('SUB', 'EBX,EAX');
+    EmitInstr('MOV', 'EAX,EBX');
+  End
+  { Multiplication : EAX * EBX }
+  Else If Op = '*' Then
+    EmitInstr('IMUL', 'EAX,EBX')
+  { Division entiere signee : EBX / EAX }
+  Else If Op = '/' Then
+  Begin
+    EmitInstr('MOV', 'ECX,EAX');
+    EmitInstr('MOV', 'EAX,EBX');
+    EmitInstr('CDQ', '');
+    EmitInstr('IDIV', 'ECX');
+  End
+  { Modulo : EBX % EAX -> reste dans EDX }
+  Else If Op = '%' Then
+  Begin
+    EmitInstr('MOV', 'ECX,EAX');
+    EmitInstr('MOV', 'EAX,EBX');
+    EmitInstr('CDQ', '');
+    EmitInstr('IDIV', 'ECX');
+    EmitInstr('MOV', 'EAX,EDX');
+  End
+  { Decalage gauche : EBX << EAX }
+  Else If Op = '<<' Then
+  Begin
+    EmitInstr('MOV', 'ECX,EAX');
+    EmitInstr('MOV', 'EAX,EBX');
+    EmitInstr('SHL', 'EAX,CL');
+  End
+  { Decalage droit : EBX >> EAX }
+  Else If Op = '>>' Then
+  Begin
+    EmitInstr('MOV', 'ECX,EAX');
+    EmitInstr('MOV', 'EAX,EBX');
+    EmitInstr('SHR', 'EAX,CL');
+  End
+  { Egalite : EBX == EAX }
+  Else If Op = '==' Then
+  Begin
+    EmitInstr('CMP', 'EBX,EAX');
+    EmitInstr('SETE', 'AL');
+    EmitInstr('MOVZX', 'EAX,AL');
+  End
+  { Inegalite : EBX != EAX }
+  Else If Op = '!=' Then
+  Begin
+    EmitInstr('CMP', 'EBX,EAX');
+    EmitInstr('SETNE', 'AL');
+    EmitInstr('MOVZX', 'EAX,AL');
+  End
+  { Inferieur : EBX < EAX }
+  Else If Op = '<' Then
+  Begin
+    EmitInstr('CMP', 'EBX,EAX');
+    EmitInstr('SETL', 'AL');
+    EmitInstr('MOVZX', 'EAX,AL');
+  End
+  { Inferieur ou egal : EBX <= EAX }
+  Else If Op = '<=' Then
+  Begin
+    EmitInstr('CMP', 'EBX,EAX');
+    EmitInstr('SETLE', 'AL');
+    EmitInstr('MOVZX', 'EAX,AL');
+  End
+  { Superieur : EBX > EAX }
+  Else If Op = '>' Then
+  Begin
+    EmitInstr('CMP', 'EBX,EAX');
+    EmitInstr('SETG', 'AL');
+    EmitInstr('MOVZX', 'EAX,AL');
+  End
+  { Superieur ou egal : EBX >= EAX }
+  Else If Op = '>=' Then
+  Begin
+    EmitInstr('CMP', 'EBX,EAX');
+    EmitInstr('SETGE', 'AL');
+    EmitInstr('MOVZX', 'EAX,AL');
+  End
+  { ET bit a bit : EBX & EAX }
+  Else If Op = '&' Then
+    EmitInstr('AND', 'EAX,EBX')
+  { OU bit a bit : EBX | EAX }
+  Else If Op = '|' Then
+    EmitInstr('OR', 'EAX,EBX')
+  { OU exclusif : EBX ^ EAX }
+  Else If Op = '^' Then
+    EmitInstr('XOR', 'EAX,EBX')
+  Else
+    EmitComment('operateur binaire inconnu: ' + Op);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseExprPrec : boucle de precedence Pratt                    }
+{   MinPrec : precedence minimale pour continuer a parser.      }
+{   Resultat dans EAX.                                          }
+{   Les operateurs && et || utilisent le court-circuit.         }
+{   L operateur ?? teste si EAX est null (0).                   }
+{ ------------------------------------------------------------ }
+
+Procedure ParseExprPrec(MinPrec : Integer);
+Var
+  Op       : TString;
+  Prec     : Integer;
+  LblA     : TString;
+  LblEnd   : TString;
+Begin
+  ParsePrimary;
+
+  While True Do
+  Begin
+    Prec := GetBinOpPrec;
+    If (Prec = 0) Or (Prec < MinPrec) Then
+      Break;
+
+    Op := CurToken.Val;
+    Consume;
+
+    { --- Court-circuit pour && (ET logique) --- }
+    If Op = '&&' Then
+    Begin
+      LblA   := GenLabel;
+      LblEnd := GenLabel;
+      EmitInstr('TEST', 'EAX,EAX');
+      EmitInstr('JZ', LblA);
+      ParseExprPrec(Prec + 1);
+      EmitInstr('TEST', 'EAX,EAX');
+      EmitInstr('JZ', LblA);
+      EmitInstr('MOV', 'EAX,1');
+      EmitInstr('JMP', LblEnd);
+      EmitLabel(LblA);
+      EmitInstr('XOR', 'EAX,EAX');
+      EmitLabel(LblEnd);
+    End
+    { --- Court-circuit pour || (OU logique) --- }
+    Else If Op = '||' Then
+    Begin
+      LblA   := GenLabel;
+      LblEnd := GenLabel;
+      EmitInstr('TEST', 'EAX,EAX');
+      EmitInstr('JNZ', LblA);
+      ParseExprPrec(Prec + 1);
+      EmitInstr('TEST', 'EAX,EAX');
+      EmitInstr('JNZ', LblA);
+      EmitInstr('XOR', 'EAX,EAX');
+      EmitInstr('JMP', LblEnd);
+      EmitLabel(LblA);
+      EmitInstr('MOV', 'EAX,1');
+      EmitLabel(LblEnd);
+    End
+    { --- Null-coalescing ?? (associatif a droite) --- }
+    Else If Op = '??' Then
+    Begin
+      LblEnd := GenLabel;
+      EmitInstr('TEST', 'EAX,EAX');
+      EmitInstr('JNZ', LblEnd);
+      ParseExprPrec(Prec);
+      EmitLabel(LblEnd);
+    End
+    { --- Operateurs binaires standards --- }
+    Else
+    Begin
+      GenPushEAX;
+      ParseExprPrec(Prec + 1);
+      GenPopEBX;
+      GenBinOp(Op);
+    End;
+  End;
+End;
+
 { ------------------------------------------------------------ }
 { ParseExpr : analyser une expression complete                  }
-{   Pour l instant (TODO 10), c est un simple alias de          }
-{   ParsePrimary. Sera etendu en TODO 11 avec les operateurs    }
-{   binaires et la precedence (Pratt parser).                   }
+{   Appelle ParseExprPrec avec precedence minimale 0.           }
 { ------------------------------------------------------------ }
 
 Procedure ParseExpr;
 Begin
-  ParsePrimary;
+  ParseExprPrec(0);
 End;
 
 { ------------------------------------------------------------ }
@@ -4877,7 +5130,7 @@ Begin
   EmitClose;
 
   WriteLn('CSCW32: ASM genere -> ', AsmFileName);
-  WriteLn('CSCW32: Les TODOs 11..25 ne sont pas encore implementes.');
+  WriteLn('CSCW32: Les TODOs 12..25 ne sont pas encore implementes.');
 End;
 
 { ------------------------------------------------------------ }

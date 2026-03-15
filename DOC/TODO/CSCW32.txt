@@ -274,7 +274,7 @@
             GenIncVar, GenDecVar.
             ParseExpr : alias de ParsePrimary (etendu TODO 11).
 
-  TODO 11 - OPERATEURS ET PRECEDENCE
+  TODO 11 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
             ParseExprPrec(MinPrec) : boucle de precedence (Pratt)
               avec analyse recursive descendante.
             Arithmetique 32 bits :
