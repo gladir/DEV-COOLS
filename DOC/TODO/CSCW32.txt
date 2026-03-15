@@ -28,7 +28,7 @@
             Utilitaires : IntToStr, StrUpper, ExtractExt,
               ChangeExt, FileExists.
 
-  TODO 02 - LEXEUR (TOKENS C#)
+  TODO 02 - LEXEUR (TOKENS C#) [IMPLEMENTE]
             TTokenKind : TK_EOF, TK_INTEGER, TK_FLOAT, TK_STRING,
               TK_CHAR, TK_IDENT, TK_KEYWORD, TK_OP, TK_PUNCT.
             LexInit, LexClose, LexNextToken, LexScanIdent,
