@@ -221,6 +221,7 @@
               EmitBlank, NewLabel, AddStringLit
 
   TODO 09 - PARSEUR : PRINT, PRINTF, SPRINTF (SORTIE CONSOLE WIN32)
+            [IMPLEMENTE]
             Procedure ParsePrint
             Syntaxe :
               print                        -> afficher $0 + ORS
@@ -241,6 +242,11 @@
             Generation : CALL _AWRT_PRINTF avec format + arguments
             Formats supportes : %d, %s, %f, %c, %o, %x, %%
             Procedure ParseSprintf (retourne chaine formatee dans EAX)
+            GenPrintVal : coercer en chaine + CALL _AWRT_PRINT
+            GenPrintOFS : afficher le separateur OFS
+            GenPrintORS : afficher le terminateur ORS
+            Var PrintCount pour les statistiques
+            test_print.awk (print, printf, sprintf, redirection)
 
   TODO 10 - PARSEUR : IF / ELSE
             Procedure ParseIf
@@ -990,6 +996,9 @@ Var
   StringLitCount : Integer;    { nombre de litteraux chaine        }
   LastSymIdx     : Integer;    { dernier symbole charge/affecte    }
 
+  { Print/Printf/Sprintf (TODO 09) }
+  PrintCount     : Integer;    { nombre d instructions print/printf }
+
 Const
 {$IFDEF FPC}
   BinAPIDecorated : Array[0..PE_NUM_API - 1] Of String[32] = (
@@ -1338,6 +1347,7 @@ Begin
   WriteLn('Expressions      : ', ExprCount);
   WriteLn('Coercitions      : ', CoercionCount);
   WriteLn('Concatenations   : ', ConcatCount);
+  WriteLn('Print/Printf     : ', PrintCount);
   WriteLn('Code gen ops     : ', GenCount);
   WriteLn('Litteraux chaine : ', StringLitCount);
   WriteLn('Scope depth      : ', ScopeDepth);
@@ -2426,6 +2436,14 @@ Procedure GenDecVar(SymIdx: Integer); Forward;
 Procedure GenFieldRef; Forward;
 Procedure GenFieldStore; Forward;
 
+{ Forward declarations TODO 09 - Print/Printf/Sprintf }
+Procedure GenPrintVal(ExprType: Integer); Forward;
+Procedure GenPrintOFS; Forward;
+Procedure GenPrintORS; Forward;
+Procedure ParsePrint; Forward;
+Procedure ParsePrintf; Forward;
+Function  ParseSprintf: Integer; Forward;
+
 { ---- Helpers de tokens --------------------------------------- }
 Function IsOp(Const S : String) : Boolean;
 Begin
@@ -2626,26 +2644,8 @@ Begin
       { sprintf est un keyword mais fonctionne comme une fonction }
       Else If IsKW(KW_SPRINTF) Then
       Begin
-        ParserAdvance;
-        If IsPunct('(') Then
-        Begin
-          ParserAdvance;
-          ArgC := 0;
-          If Not IsPunct(')') Then
-          Begin
-            D := ParseExpr;
-            Inc(ArgC);
-            While IsPunct(',') Do
-            Begin
-              ParserAdvance;
-              SkipNewlines;
-              D := ParseExpr;
-              Inc(ArgC);
-            End;
-          End;
-          Expect(TK_PUNCT, ')');
-        End;
-        ParsePrimaryExpr := TYK_STRING;
+        ParserAdvance; { consommer sprintf }
+        ParsePrimaryExpr := ParseSprintf;
       End
       Else
         FatalError('mot-cle inattendu "' + CurToken.Val +
@@ -3455,6 +3455,231 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 09 - PARSEUR : PRINT, PRINTF, SPRINTF                  }
+{ ============================================================ }
+
+{ ---- GenPrintVal --------------------------------------------- }
+{ Affiche la valeur dans EAX selon son type                      }
+{ Si nombre : CALL _AWRT_NUMTOSTR puis CALL _AWRT_PRINT         }
+{ Si chaine : CALL _AWRT_PRINT directement                      }
+Procedure GenPrintVal(ExprType: Integer);
+Begin
+  If ExprType = TYK_NUMBER Then
+  Begin
+    EmitComment('print val (number -> str then print)');
+    Emit('        CALL    ' + AW_RT_PFX + 'NUMTOSTR');
+    Emit('        CALL    ' + AW_RT_PFX + 'PRINT');
+  End
+  Else
+  Begin
+    EmitComment('print val (string)');
+    Emit('        CALL    ' + AW_RT_PFX + 'PRINT');
+  End;
+End;
+
+{ ---- GenPrintOFS --------------------------------------------- }
+{ Affiche le separateur de champs (OFS) entre les arguments      }
+Procedure GenPrintOFS;
+Var
+  SI : Integer;
+Begin
+  EmitComment('print OFS');
+  SI := FindSym('OFS');
+  If SI >= 0 Then
+    Emit('        MOV     EAX, DWORD PTR [' +
+         SymTab[SI].AsmLabel + ']')
+  Else
+    Emit('        MOV     EAX, OFFSET ' + AW_STR_PFX + 'ofs_default');
+  Emit('        CALL    ' + AW_RT_PFX + 'PRINT');
+End;
+
+{ ---- GenPrintORS --------------------------------------------- }
+{ Affiche le terminateur d enregistrement (ORS) apres print      }
+Procedure GenPrintORS;
+Var
+  SI : Integer;
+Begin
+  EmitComment('print ORS');
+  SI := FindSym('ORS');
+  If SI >= 0 Then
+    Emit('        MOV     EAX, DWORD PTR [' +
+         SymTab[SI].AsmLabel + ']')
+  Else
+    Emit('        MOV     EAX, OFFSET ' + AW_STR_PFX + 'ors_default');
+  Emit('        CALL    ' + AW_RT_PFX + 'PRINT');
+End;
+
+{ ---- ParsePrint ---------------------------------------------- }
+{ Parse et genere du code pour l instruction print AWK            }
+{ print                   -> afficher $0 + ORS                    }
+{ print expr [, expr ...] -> afficher avec OFS entre, ORS a la fin}
+{ print expr > "fichier"  -> redirection (stub: warning)          }
+{ print expr >> "fichier" -> redirection append (stub: warning)   }
+{ print expr | "cmd"      -> pipe (stub: warning)                 }
+Procedure ParsePrint;
+Var
+  ExprType  : Integer;
+  ArgCount  : Integer;
+  D         : Integer;
+  HasRedir  : Boolean;
+Begin
+  Inc(PrintCount);
+  EmitComment('--- print statement ---');
+  ArgCount := 0;
+  HasRedir := False;
+
+  { print sans argument -> print $0 }
+  If (CurToken.Kind = TK_NEWLINE) Or (CurToken.Kind = TK_EOF) Or
+     IsPunct(';') Or IsPunct('}') Then
+  Begin
+    EmitComment('print $0 (no args)');
+    Emit('        MOV     EAX, 0');
+    Emit('        PUSH    EAX');
+    Emit('        CALL    ' + AW_RT_PFX + 'GETFIELD');
+    Emit('        CALL    ' + AW_RT_PFX + 'PRINT');
+    GenPrintORS;
+    Exit;
+  End;
+
+  { print expr [, expr ...] }
+  ExprType := ParseExpr;
+  GenPrintVal(ExprType);
+  Inc(ArgCount);
+
+  While IsPunct(',') Do
+  Begin
+    ParserAdvance;  { consommer , }
+    SkipNewlines;
+    GenPrintOFS;
+    ExprType := ParseExpr;
+    GenPrintVal(ExprType);
+    Inc(ArgCount);
+  End;
+
+  { Redirection > >> | optionnelle (stub: on parse mais on warn) }
+  If IsOp('>') Or IsOp('>>') Or IsOp('|') Then
+  Begin
+    HasRedir := True;
+    If IsOp('|') Then
+      WarnMsg('print | "cmd" : pipe non supporte, ignore')
+    Else
+      WarnMsg('print > / >> "fichier" : redirection non supportee, ignore');
+    ParserAdvance;  { consommer > / >> / | }
+    D := ParseExpr; { parser le nom de fichier/commande, ignorer }
+  End;
+
+  { Terminateur ORS }
+  GenPrintORS;
+End;
+
+{ ---- ParsePrintf --------------------------------------------- }
+{ Parse et genere du code pour l instruction printf AWK           }
+{ printf fmt [, expr ...]   -> appeler _AWRT_PRINTF              }
+{ printf fmt, expr > "file" -> redirection (stub: warning)       }
+Procedure ParsePrintf;
+Var
+  ExprType : Integer;
+  ArgCount : Integer;
+  D        : Integer;
+  NS       : TString;
+Begin
+  Inc(PrintCount);
+  EmitComment('--- printf statement ---');
+  ArgCount := 0;
+
+  { Parser les arguments : fmt, expr1, expr2, ... }
+  { Tous les arguments sont pousses sur la pile }
+  Repeat
+    ExprType := ParseExpr;
+    GenPushEAX;
+    Inc(ArgCount);
+    If IsPunct(',') Then
+    Begin
+      ParserAdvance;
+      SkipNewlines;
+    End
+    Else
+      Break;
+  Until (CurToken.Kind = TK_EOF) Or (CurToken.Kind = TK_NEWLINE)
+        Or IsPunct(';') Or IsPunct('}');
+
+  { Appeler _AWRT_PRINTF avec le nombre d arguments dans ECX }
+  Str(ArgCount, NS);
+  Emit('        MOV     ECX, ' + NS);
+  Emit('        CALL    ' + AW_RT_PFX + 'PRINTF');
+  { Nettoyer la pile : ArgCount * 4 octets (32 bits) }
+  If ArgCount > 0 Then
+  Begin
+    Str(ArgCount * 4, NS);
+    Emit('        ADD     ESP, ' + NS);
+  End;
+
+  { Redirection > >> optionnelle (stub) }
+  If IsOp('>') Or IsOp('>>') Then
+  Begin
+    WarnMsg('printf > / >> "fichier" : redirection non supportee, ignore');
+    ParserAdvance;
+    D := ParseExpr;
+  End;
+End;
+
+{ ---- ParseSprintf -------------------------------------------- }
+{ Parse sprintf(fmt, expr...) et retourne le type du resultat    }
+{ sprintf est une expression qui retourne une chaine formatee    }
+{ PUSH args + MOV ECX, count + CALL _AWRT_SPRINTF -> EAX        }
+Function ParseSprintf: Integer;
+Var
+  ExprType : Integer;
+  ArgCount : Integer;
+  NS       : TString;
+Begin
+  Inc(PrintCount);
+  EmitComment('--- sprintf expression ---');
+  ArgCount := 0;
+
+  { Attendre ( apres sprintf }
+  If IsPunct('(') Then
+    ParserAdvance
+  Else
+    WarnMsg('sprintf: ( attendu');
+
+  { Parser les arguments : fmt, expr1, expr2, ... }
+  If Not IsPunct(')') Then
+  Repeat
+    ExprType := ParseExpr;
+    GenPushEAX;
+    Inc(ArgCount);
+    If IsPunct(',') Then
+    Begin
+      ParserAdvance;
+      SkipNewlines;
+    End
+    Else
+      Break;
+  Until IsPunct(')') Or (CurToken.Kind = TK_EOF);
+
+  { Fermer la parenthese }
+  If IsPunct(')') Then
+    ParserAdvance
+  Else
+    WarnMsg('sprintf: ) attendu');
+
+  { Appeler _AWRT_SPRINTF avec le nombre d arguments dans ECX }
+  Str(ArgCount, NS);
+  Emit('        MOV     ECX, ' + NS);
+  Emit('        CALL    ' + AW_RT_PFX + 'SPRINTF');
+  { Nettoyer la pile }
+  If ArgCount > 0 Then
+  Begin
+    Str(ArgCount * 4, NS);
+    Emit('        ADD     ESP, ' + NS);
+  End;
+
+  { Le resultat (chaine formatee) est dans EAX }
+  ParseSprintf := TYK_STRING;
+End;
+
+{ ============================================================ }
 { PROCEDURE RUN (STUB - sera complete par les TODOs suivants)  }
 { ============================================================ }
 
@@ -3478,6 +3703,7 @@ Begin
   GenEnabled := True;
   StringLitCount := 0;
   LastSymIdx := -1;
+  PrintCount := 0;
   LexInit;
   { Mode debug : afficher tous les tokens }
   If Opts.DebugMode Then
@@ -3509,30 +3735,20 @@ Begin
       If CurToken.Kind = TK_KEYWORD Then
       Begin
         TK := CurToken.IntVal;
-        { print / printf : parser la liste d expressions }
-        If (TK = KW_PRINT) Or (TK = KW_PRINTF) Then
+        { print : parser avec generation de code (TODO 09) }
+        If TK = KW_PRINT Then
         Begin
-          ParserAdvance; { consommer print/printf }
+          ParserAdvance; { consommer print }
           Inc(StmtCount);
-          { Pas d arguments si ; ou newline ou accolade suit }
-          If (CurToken.Kind <> TK_NEWLINE) And
-             (CurToken.Kind <> TK_EOF) And
-             Not IsPunct(';') And Not IsPunct('}') Then
-          Begin
-            D := ParseExpr;
-            While IsPunct(',') Do
-            Begin
-              ParserAdvance;
-              SkipNewlines;
-              D := ParseExpr;
-            End;
-            { Redirection > >> | optionnelle }
-            If IsOp('>') Or IsOp('>>') Then
-            Begin
-              ParserAdvance;
-              D := ParseExpr;
-            End;
-          End;
+          ParsePrint;
+          Continue;
+        End;
+        { printf : parser avec generation de code (TODO 09) }
+        If TK = KW_PRINTF Then
+        Begin
+          ParserAdvance; { consommer printf }
+          Inc(StmtCount);
+          ParsePrintf;
           Continue;
         End;
         { for : parser la condition entre parentheses }
@@ -3648,10 +3864,11 @@ Begin
             StmtCount, ' instruction(s)');
     WriteLn('AWKCW32: ', CoercionCount, ' coercition(s), ',
             ConcatCount, ' concatenation(s) implicite(s)');
+    WriteLn('AWKCW32: ', PrintCount, ' print/printf instruction(s)');
     WriteLn('AWKCW32: ', GenCount, ' operation(s) code gen, ',
             StringLitCount, ' litteral(aux) chaine');
     WriteLn('AWKCW32: scope depth=', ScopeDepth, ', loop depth=', LoopDepth);
-    WriteLn('AWKCW32: TODO 09..25 non encore implementes.');
+    WriteLn('AWKCW32: TODO 10..25 non encore implementes.');
     WriteLn('AWKCW32: sortie prevue: ', Opts.OutFile);
   End;
   LexClose;

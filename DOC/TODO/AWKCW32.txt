@@ -221,6 +221,7 @@
               EmitBlank, NewLabel, AddStringLit
 
   TODO 09 - PARSEUR : PRINT, PRINTF, SPRINTF (SORTIE CONSOLE WIN32)
+            [IMPLEMENTE]
             Procedure ParsePrint
             Syntaxe :
               print                        -> afficher $0 + ORS
@@ -241,6 +242,11 @@
             Generation : CALL _AWRT_PRINTF avec format + arguments
             Formats supportes : %d, %s, %f, %c, %o, %x, %%
             Procedure ParseSprintf (retourne chaine formatee dans EAX)
+            GenPrintVal : coercer en chaine + CALL _AWRT_PRINT
+            GenPrintOFS : afficher le separateur OFS
+            GenPrintORS : afficher le terminateur ORS
+            Var PrintCount pour les statistiques
+            test_print.awk (20 cas, 23 print/printf, 210 ops gen)
 
   TODO 10 - PARSEUR : IF / ELSE
             Procedure ParseIf
