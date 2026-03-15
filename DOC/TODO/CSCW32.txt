@@ -437,7 +437,7 @@
             test23_methods.cs : 14 cas de test (void, params,
               return, boucle, recursion, imbrication, chaine).
 
-  TODO 17 - CLASSES ET MEMBRES STATIQUES
+  TODO 17 - CLASSES ET MEMBRES STATIQUES [IMPLEMENTE]
             ParseClassDecl : class Nom { membres }.
               Analyse de la classe : parcourir les declarations
               de champs statiques et methodes statiques.
@@ -448,6 +448,8 @@
                 static void Print() { ... } -> _CSCF_Print.
             Portee de classe : acces aux membres par
               NomClasse.Membre (resolution lors de l analyse).
+              FindClass pour verifier si le prefixe est une classe
+              connue, puis resolution du membre sans prefixe.
             Classe Program : classe contenant Main()
               (point d entree du programme).
             Un seul niveau de classe (pas d heritage, pas
@@ -461,6 +463,17 @@
               le sous-ensemble minimal (les champs sont
               initialises dans .DATA).
             Plusieurs classes par fichier : supportees.
+            TClassEntry : Name, AsmPrefix, FieldCount, MethCount,
+              HasMain.
+            ClassTab[0..MAX_CLASS-1] / ClassCount.
+            FindClass / AddClass : recherche et ajout dans la table.
+            SymFind modifie pour respecter IsGlobal (membres
+              statiques visibles hors du scope de leur classe).
+            ParsePrimary et ParseAssignment : resolution de noms
+              qualifies ClassName.Member -> Member.
+            test24_classes.cs : 15 cas de test (4 classes, 10
+              methodes, visibilite, champs statiques, acces
+              qualifie inter-classes).
 
   TODO 18 - ESPACES DE NOMS (namespace)
             ParseNamespaceDecl : namespace Nom { classes }.
