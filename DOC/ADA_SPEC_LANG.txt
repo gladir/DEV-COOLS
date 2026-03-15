@@ -1337,12 +1337,77 @@ TABLE DES MATIERES
     Ada.Direct_IO             E/S a acces direct
     Ada.Streams.Stream_IO     E/S par flux (Ada 95+)
 
-  Exemple :
+  Exemple (console) :
     with Ada.Text_IO; use Ada.Text_IO;
 
     Put ("Entrez un nombre : ");
     Get_Line (Ligne);
     Put_Line ("Vous avez entre : " & Ligne);
+
+13.3.1 Ada.Text_IO - Operations sur fichiers
+
+  Le paquetage Ada.Text_IO definit un type File_Type pour
+  les operations sur fichiers texte. Les modes disponibles sont
+  In_File (lecture), Out_File (ecriture) et Append_File (ajout).
+
+  Types et constantes :
+    type File_Type is limited private;
+    type File_Mode is (In_File, Out_File, Append_File);
+
+  Operations principales :
+
+    procedure Create (File : in out File_Type;
+                      Mode : in File_Mode := Out_File;
+                      Name : in String := "");
+    -- Cree un nouveau fichier et l'ouvre dans le mode specifie.
+
+    procedure Open (File : in out File_Type;
+                    Mode : in File_Mode;
+                    Name : in String);
+    -- Ouvre un fichier existant dans le mode specifie.
+
+    procedure Close (File : in out File_Type);
+    -- Ferme le fichier.
+
+    procedure Put (File : in File_Type; Item : in String);
+    -- Ecrit une chaine dans le fichier.
+
+    procedure Put_Line (File : in File_Type; Item : in String);
+    -- Ecrit une chaine suivie d'un saut de ligne dans le fichier.
+
+    procedure Get_Line (File : in File_Type;
+                        Item : out String;
+                        Last : out Natural);
+    -- Lit une ligne du fichier dans Item, Last = longueur lue.
+
+    procedure New_Line (File : in File_Type;
+                        Spacing : in Positive_Count := 1);
+    -- Ecrit des sauts de ligne dans le fichier.
+
+  Exemple (fichier) :
+    with Ada.Text_IO; use Ada.Text_IO;
+
+    procedure Ecrire_Fichier is
+       F : File_Type;
+    begin
+       Create (F, Out_File, "resultat.txt");
+       Put_Line (F, "Premiere ligne");
+       Put_Line (F, "Deuxieme ligne");
+       Close (F);
+    end Ecrire_Fichier;
+
+    procedure Lire_Fichier is
+       F    : File_Type;
+       Buf  : String (1 .. 255);
+       Last : Natural;
+    begin
+       Open (F, In_File, "resultat.txt");
+       while not End_Of_File (F) loop
+          Get_Line (F, Buf, Last);
+          Put_Line (Buf (1 .. Last));
+       end loop;
+       Close (F);
+    end Lire_Fichier;
 
 
 14. CONTRATS ET ASPECTS (ADA 2012+)

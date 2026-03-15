@@ -529,7 +529,8 @@
               - Section .idata (Import Address Table pour
                 kernel32.dll : ExitProcess, GetStdHandle,
                 WriteFile, ReadFile, GetProcessHeap,
-                HeapAlloc, HeapFree)
+                HeapAlloc, HeapFree, CreateFileA,
+                CloseHandle)
               Ecrire le fichier .EXE resultant
             Si EmitObj (-obj) :
               Construire un fichier COFF .OBJ 32 bits :
@@ -546,3 +547,34 @@
               T06_COND.ADB, TEST.ADB
             Test specifique : test_linker.ada (15 cas, 3 procs)
             Rapport de compilation : 0 erreurs, N symboles, M types
+
+  EXTENSIONS - ENTREES/SORTIES FICHIERS
+            PE_NUM_API passe de 7 a 9 pour inclure CreateFileA
+              et CloseHandle (kernel32.dll).
+            Tampons runtime pour fichiers :
+              _ADART_FILEBUF  DB 256 DUP(0) : tampon lecture
+              _ADART_FWRITTEN DD 0 : compteur octets ecrits
+              _ADART_FREADCNT DD 0 : compteur octets lus
+              _ADART_FLINEBUF DB 256 DUP(0) : tampon ligne
+            Nouvelles routines runtime fichier :
+              _ADART_FCREATE   : CreateFileA GENERIC_WRITE
+              _ADART_FOPEN     : CreateFileA GENERIC_READ
+              _ADART_FCLOSE    : CloseHandle
+              _ADART_FPUT      : WriteFile chaine ASCIIZ
+              _ADART_FPUT_LINE : FPUT + CRLF
+              _ADART_FPUT_INT  : NUMTOSTR + FPUT
+              _ADART_FGET_LINE : ReadFile octet par octet
+            Parseur modifie :
+              Put(F, "str")    -> FPUT (2 args = fichier)
+              Put_Line(F, "s") -> FPUT_LINE (2 args)
+              Put(F, N)        -> FPUT_INT (2 args, entier)
+              Create(F, Mode, "name") -> FCREATE + store
+              Open(F, Mode, "name")   -> FOPEN + store
+              Close(F)                -> FCLOSE
+              Get_Line(F, Buf, Last)  -> FGET_LINE (3 args)
+            DetectArgTypeForPut ameliore :
+              array-of-Character detecte comme TYPE_STR
+            Exemples de test fichier :
+              test_fileio.ada    : ecriture et relecture
+              test_filewrite.ada : operations d ecriture
+              test_fileread.ada  : lecture ligne par ligne
