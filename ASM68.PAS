@@ -37,7 +37,7 @@
 { TODO 17 - Encodage binaire des instructions (passe 2) [IMPLEMENTE] }
 { TODO 18 - Architecture deux passes de l'assembleur [IMPLEMENTE] }
 { TODO 19 - Parseur de ligne assembleur [IMPLEMENTE] }
-{ TODO 20 - Generation du fichier objet (format S-Record Motorola) }
+{ TODO 20 - Generation du fichier objet (format S-Record Motorola) [IMPLEMENTE] }
 { TODO 21 - Gestion des fichiers INCLUDE et pile de sources }
 { TODO 22 - Gestion des macros (MACRO/ENDM) }
 { TODO 23 - Directives de listing et mise en page }
@@ -76,6 +76,7 @@ Const
   MAX_ERRORS        = 100;    { Erreurs max avant arret                }
   MAX_LIST_BYTES    = 6;      { Octets max affiches par ligne listing  }
   LIST_PAGE_SIZE    = 60;     { Lignes par page dans le listing        }
+  MAX_SREC_DATA     = 32;     { Octets de donnees max par S-Record     }
 
   { ------------------------------------------------------------------ }
   { Tailles d'operande (suffixes .B, .W, .L)                           }
@@ -383,6 +384,11 @@ Var
 
   { --- Parseur de ligne assembleur (TODO 19) --- }
   InstrCount     : Integer;      { Nombre d'instructions assemblees       }
+
+  { --- Generation fichier objet S-Record (TODO 20) --- }
+  obj_file       : Text;         { Fichier objet S-Record                 }
+  obj_opened     : Boolean;      { True si fichier objet ouvert           }
+  obj_record_count : Integer;    { Nombre d'enregistrements S1 emis       }
 
 { ============================================================================ }
 { Fonctions utilitaires                                                        }
@@ -1458,6 +1464,8 @@ Begin
  WriteLn('Taille code    : ', CodeSize, ' octets');
  If start_address_set Then
   WriteLn('Adresse debut  : $', IntToHex(start_address, 6));
+ If (Not Opts.NoObject) and (ErrorCount = 0) Then
+  WriteLn('S-Records      : ', obj_record_count, ' enregistrements S1');
  WriteLn('Erreurs        : ', ErrorCount);
  WriteLn('Avertissements : ', WarningCount);
 End;
@@ -1967,6 +1975,9 @@ Procedure Emit32(L: LongInt); Forward;
 { Forward declarations pour le parseur de ligne (TODO 19) }
 Function DecomposeLine(Const Line: String; Var Info: TLineInfo): Boolean; Forward;
 Function ParseRegisterList: Word; Forward;
+
+{ Forward declarations pour la generation S-Record (TODO 20) }
+Procedure WriteObjectFile; Forward;
 
 Procedure InitOperand(Var Op: TOperand);
 { Initialise un operande a un etat neutre }
@@ -7893,6 +7904,9 @@ Begin
 
  { Fermer le fichier listing }
  ListClose;
+
+ { Generer le fichier objet S-Record (TODO 20) }
+ WriteObjectFile;
 End;
 
 { ============================================================================ }
@@ -8135,6 +8149,152 @@ Begin
 End;
 
 { ============================================================================ }
+{ TODO 20 - Generation du fichier objet (format S-Record Motorola)             }
+{ ============================================================================ }
+
+{ GenSRecord genere un enregistrement S-Record et l'ecrit dans obj_file.
+  Format : Sn LL AAAA DD...DD CC
+    n    = type (0, 1, 5, 9)
+    LL   = longueur en octets (adresse + donnees + checksum)
+    AAAA = adresse (2 octets pour S0/S1/S5/S9)
+    DD   = donnees
+    CC   = checksum (complement a un de LL+AAAA+DD) }
+
+Procedure GenSRecord(SType: Integer; Addr: LongInt;
+                     Var Data; Len: Integer);
+Var
+  I: Integer;
+  RecLen: Integer;
+  Checksum: Integer;
+  AddrHi, AddrLo: Byte;
+  Line: String;
+  P: ^Byte;
+Begin
+  If Not obj_opened Then Exit;
+
+  { Longueur = adresse (2 octets) + donnees + checksum (1 octet) }
+  RecLen := 2 + Len + 1;
+
+  AddrHi := Byte((Addr shr 8) and $FF);
+  AddrLo := Byte(Addr and $FF);
+
+  { Construire la ligne S-Record }
+  Line := 'S' + Chr(Ord('0') + SType) +
+          IntToHex(RecLen, 2) +
+          IntToHex(AddrHi, 2) + IntToHex(AddrLo, 2);
+
+  { Checksum : somme de RecLen + adresse + donnees }
+  Checksum := RecLen + AddrHi + AddrLo;
+
+  { Ajouter les octets de donnees }
+  P := @Data;
+  For I := 1 to Len do
+  Begin
+    Line := Line + IntToHex(P^, 2);
+    Checksum := Checksum + P^;
+    Inc(P);
+  End;
+
+  { Complement a un du checksum (8 bits) }
+  Checksum := (Not Checksum) and $FF;
+  Line := Line + IntToHex(Checksum, 2);
+
+  WriteLn(obj_file, Line);
+End;
+
+Procedure WriteObjectFile;
+{ Parcourir les sections et emettre les enregistrements S-Record.
+  S0 : en-tete (nom du module)
+  S1 : donnees (adresse 16 bits, max MAX_SREC_DATA octets par enregistrement)
+  S5 : compteur d'enregistrements de donnees
+  S9 : fin avec adresse de demarrage (16 bits) }
+Var
+  I: Integer;
+  Offset: LongInt;
+  Remaining: LongInt;
+  ChunkLen: Integer;
+  Addr: LongInt;
+  HeaderBuf: Array[0..63] of Byte;
+  HeaderLen: Integer;
+  CountBuf: Array[0..1] of Byte;
+  StartBuf: Array[0..1] of Byte;
+  BaseName: String;
+Begin
+  If Opts.NoObject Then Exit;
+  If Opts.ObjFile = '' Then Exit;
+  If ErrorCount > 0 Then Exit;
+
+  Assign(obj_file, Opts.ObjFile);
+  {$I-} Rewrite(obj_file); {$I+}
+  If IOResult <> 0 Then
+  Begin
+    WriteLn('Erreur: impossible de creer le fichier objet ', Opts.ObjFile);
+    Exit;
+  End;
+  obj_opened := True;
+  obj_record_count := 0;
+
+  { --- S0 : enregistrement d'en-tete (nom du fichier source) --- }
+  BaseName := Opts.SrcFile;
+  { Extraire le nom de base (sans repertoire) }
+  For I := Length(BaseName) DownTo 1 do
+    If (BaseName[I] = '/') or (BaseName[I] = '\') Then
+    Begin
+      BaseName := Copy(BaseName, I + 1, Length(BaseName) - I);
+      Break;
+    End;
+  If Length(BaseName) > 60 Then
+    BaseName := Copy(BaseName, 1, 60);
+
+  HeaderLen := Length(BaseName);
+  For I := 1 to HeaderLen do
+    HeaderBuf[I - 1] := Ord(BaseName[I]);
+  GenSRecord(0, 0, HeaderBuf, HeaderLen);
+
+  { --- S1 : enregistrements de donnees (adresse 16 bits) --- }
+  For I := 1 to SectionCount do
+  Begin
+    { Les sections BSS n'ont pas de donnees a emettre }
+    If Sections[I].SecType = SEC_BSS Then Continue;
+    If Sections[I].Size = 0 Then Continue;
+
+    Offset := 0;
+    Remaining := Sections[I].Size;
+    While Remaining > 0 do
+    Begin
+      If Remaining > MAX_SREC_DATA Then
+        ChunkLen := MAX_SREC_DATA
+      Else
+        ChunkLen := Remaining;
+
+      Addr := Sections[I].Origin + Offset;
+      GenSRecord(1, Addr, Sections[I].Buf^[Offset], ChunkLen);
+      Inc(obj_record_count);
+
+      Inc(Offset, ChunkLen);
+      Dec(Remaining, ChunkLen);
+    End;
+  End;
+
+  { --- S5 : compteur d'enregistrements de donnees --- }
+  CountBuf[0] := 0;
+  CountBuf[1] := 0;
+  GenSRecord(5, obj_record_count, CountBuf, 0);
+
+  { --- S9 : fin avec adresse de demarrage (16 bits) --- }
+  StartBuf[0] := 0;
+  StartBuf[1] := 0;
+  If start_address_set Then
+    GenSRecord(9, start_address, StartBuf, 0)
+  Else
+    GenSRecord(9, 0, StartBuf, 0);
+
+  { Fermer le fichier objet }
+  Close(obj_file);
+  obj_opened := False;
+End;
+
+{ ============================================================================ }
 { Procedure Run : programme principal d'assemblage                             }
 { ============================================================================ }
 
@@ -8180,6 +8340,10 @@ Begin
 
  { Initialiser le parseur de ligne (TODO 19) }
  InstrCount := 0;
+
+ { Initialiser la generation S-Record (TODO 20) }
+ obj_opened := False;
+ obj_record_count := 0;
 
  { Initialiser la table des symboles }
  InitSymTable;

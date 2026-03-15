@@ -424,7 +424,7 @@ TODO 19 - Parseur de ligne assembleur [IMPLEMENTE]
   - AssembleInstruction : dispatcher vers le bon encodeur
     selon l'opcode reconnu
 
-TODO 20 - Generation du fichier objet (format S-Record Motorola)
+TODO 20 - Generation du fichier objet (format S-Record Motorola) [IMPLEMENTE]
   ----------------------------------------------------------------
   - Format S-Record (SREC) Motorola :
     S0 : enregistrement d'en-tete (nom du module)
