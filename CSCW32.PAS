@@ -263,10 +263,10 @@
             break : saut vers la fin de la boucle englobante.
             continue : saut vers l increment/test de la boucle.
 
-  TODO 15 - SWITCH / CASE / DEFAULT
+  TODO 15 - SWITCH / CASE / DEFAULT [IMPLEMENTE]
             ParseSwitchStmt : switch (expr) { case val: stmts }.
             Expression de controle : entier dans EAX, sauvee
-              sur pile.
+              sur pile (PUSH EAX).
             case valeur : branche pour une valeur (CMP + JE).
             case val1: case val2: : valeurs multiples.
             default : branche par defaut.
@@ -551,6 +551,20 @@ Type
 Var
   LoopStack : Array[0..MAX_LOOP_DEPTH - 1] Of TLoopEntry;
   LoopDepth : Integer;          { profondeur courante de la pile         }
+
+{ Pile de switch pour break dans switch (TODO 15) }
+
+Const
+  MAX_SWITCH_DEPTH = 32;        { profondeur maximale de switch imbriques }
+
+Type
+  TSwitchEntry = Record
+    BreakLbl : TString;         { label de fin du switch (break -> JMP)  }
+  End;
+
+Var
+  SwitchStack : Array[0..MAX_SWITCH_DEPTH - 1] Of TSwitchEntry;
+  SwitchDepth : Integer;        { profondeur courante de la pile switch  }
 
   { Variables binaires }
   BinCode     : Array[0..MAX_BIN_CODE - 1] of Byte;
@@ -871,6 +885,9 @@ Procedure ParseIfStmt; Forward;
 Procedure ParseForStmt; Forward;
 Procedure ParseWhileStmt; Forward;
 Procedure ParseDoWhileStmt; Forward;
+
+{ Forward declarations for TODO 15 }
+Procedure ParseSwitchStmt; Forward;
 
 { ============================================================ }
 { TODO 02 - LEXEUR (TOKENS C#)                                 }
@@ -5108,14 +5125,21 @@ Begin
     Exit;
   End;
 
-  (* break; *)
+  (* switch (expr) { case val: stmts } *)
+  If TokIsKw('switch') Then
+  Begin
+    ParseSwitchStmt;
+    Exit;
+  End;
+
+  (* break; -- fonctionne dans boucles ET switch *)
   If TokIsKw('break') Then
   Begin
     Consume;
     If LoopDepth > 0 Then
       EmitInstr('JMP', LoopStack[LoopDepth - 1].BreakLbl)
     Else
-      FatalError('break en dehors d''une boucle');
+      FatalError('break en dehors d''une boucle ou d''un switch');
     If TokIsPunct(';') Then Consume;
     Exit;
   End;
@@ -5660,6 +5684,238 @@ Begin
   SymLeaveScope;
 End;
 
+(* ============================================================ *)
+(* TODO 15 - SWITCH / CASE / DEFAULT                            *)
+(*                                                               *)
+(*  ParseSwitchStmt : switch (expr) { case val: stmts }.         *)
+(*    Expression de controle -> EAX, sauvee sur la pile (PUSH).  *)
+(*    case valeur : CMP EAX,val / JE label_case.                 *)
+(*    case val1: case val2: : CMP successifs avec JE vers meme   *)
+(*      label de corps.                                          *)
+(*    default : branche par defaut (JMP label_default).          *)
+(*    break : sortie du switch (JMP vers label_end) via LoopPush.*)
+(*    Pas de fall-through implicite (C# exige break).            *)
+(*  SwitchPush / SwitchPop : pile pour switch imbriques.         *)
+(*                                                               *)
+(* ============================================================ *)
+
+{ ------------------------------------------------------------ }
+{ SwitchPush : empiler le contexte de switch                    }
+{ ------------------------------------------------------------ }
+
+Procedure SwitchPush(Const BrkLbl : TString);
+Begin
+  If SwitchDepth >= MAX_SWITCH_DEPTH Then
+  Begin
+    FatalError('profondeur maximale de switch imbriques atteinte');
+    Exit;
+  End;
+  SwitchStack[SwitchDepth].BreakLbl := BrkLbl;
+  Inc(SwitchDepth);
+End;
+
+{ ------------------------------------------------------------ }
+{ SwitchPop : depiler le contexte de switch                     }
+{ ------------------------------------------------------------ }
+
+Procedure SwitchPop;
+Begin
+  If SwitchDepth > 0 Then
+    Dec(SwitchDepth);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseSwitchStmt : switch (expr) - case val: stmts             }
+{   Evaluation de l expression dans EAX, sauvee sur pile.       }
+{   Pour chaque case : reload EAX + CMP EAX,val + JE.          }
+{   default : saut inconditionnel.                              }
+{   break : JMP vers LblEnd (via LoopPush).                     }
+{ ------------------------------------------------------------ }
+
+Procedure ParseSwitchStmt;
+Var
+  LblEnd     : TString;        { label de fin du switch (apres cleanup) }
+  LblClean   : TString;        { label de nettoyage de la pile         }
+  LblNext    : TString;        { label du prochain test de case       }
+  LblBody    : TString;        { label du corps du case courant       }
+  CaseVal    : LongInt;        { valeur entiere du case               }
+  HasDefault : Boolean;        { True si default present              }
+  S          : TString;        { chaine temporaire pour IntToStr      }
+Begin
+  { Consommer 'switch' }
+  Consume;
+
+  { Parenthese ouvrante }
+  If TokIsPunct('(') Then
+    Consume
+  Else
+    FatalError('( attendu apres switch');
+
+  { Evaluer l expression de controle -> EAX }
+  ParseExpr;
+
+  { Parenthese fermante }
+  If TokIsPunct(')') Then
+    Consume
+  Else
+    FatalError(') attendu apres switch (expr');
+
+  { Sauvegarder la valeur de controle sur la pile }
+  EmitInstr('PUSH', 'EAX');
+
+  { Labels }
+  LblClean   := GenLabel;      { label cleanup : ADD ESP,4             }
+  LblEnd     := GenLabel;      { label apres cleanup                   }
+  HasDefault := False;
+
+  { Empiler le switch pour break (via LoopPush et SwitchPush)          }
+  { break saute vers LblClean qui nettoie la pile puis tombe sur LblEnd }
+  LoopPush(LblClean, '');
+  SwitchPush(LblClean);
+
+  { Accolade ouvrante }
+  If TokIsPunct('{') Then
+    Consume
+  Else
+    FatalError('{ attendu apres switch (expr)');
+
+  { Generer le saut vers le premier test de case }
+  LblNext := GenLabel;
+  EmitInstr('JMP', LblNext);
+
+  { Boucle sur les case / default }
+  While (CurToken.Kind <> TK_EOF) And (Not TokIsPunct('}')) Do
+  Begin
+    { --- case val: [case val2:] stmts --- }
+    If TokIsKw('case') Then
+    Begin
+      { Emettre le label du test suivant }
+      EmitLabel(LblNext);
+
+      { Boucle pour valeurs multiples (case val1: case val2:) }
+      LblBody := GenLabel;
+      While TokIsKw('case') Do
+      Begin
+        Consume;
+
+        { Recharger la valeur de controle depuis la pile }
+        { (POP dans EAX puis PUSH pour la garder)       }
+        EmitInstr('MOV', 'EAX,DWORD PTR [ESP]');
+
+        { Lire la valeur du case }
+        If CurToken.Kind = TK_INTEGER Then
+        Begin
+          CaseVal := CurToken.IntVal;
+          Consume;
+        End
+        Else If CurToken.Kind = TK_CHAR Then
+        Begin
+          CaseVal := CurToken.IntVal;
+          Consume;
+        End
+        Else If TokIsOp('-') Then
+        Begin
+          Consume;
+          If CurToken.Kind = TK_INTEGER Then
+          Begin
+            CaseVal := -CurToken.IntVal;
+            Consume;
+          End
+          Else
+          Begin
+            FatalError('valeur entiere attendue apres case -');
+            CaseVal := 0;
+          End;
+        End
+        Else
+        Begin
+          FatalError('valeur entiere ou caractere attendue apres case');
+          CaseVal := 0;
+          If CurToken.Kind <> TK_EOF Then Consume;
+        End;
+
+        { Deux-points apres la valeur }
+        If TokIsPunct(':') Then
+          Consume
+        Else
+          FatalError(': attendu apres case val');
+
+        { Comparer et sauter vers le corps si egal }
+        Str(CaseVal, S);
+        EmitInstr('CMP', 'EAX,' + S);
+        EmitInstr('JE', LblBody);
+      End;
+
+      { Si aucune valeur ne correspond, sauter au prochain test }
+      LblNext := GenLabel;
+      EmitInstr('JMP', LblNext);
+
+      { Emettre le label du corps }
+      EmitLabel(LblBody);
+
+      { Parser les instructions du corps du case }
+      While (CurToken.Kind <> TK_EOF) And
+            (Not TokIsPunct('}')) And
+            (Not TokIsKw('case')) And
+            (Not TokIsKw('default')) Do
+        ParseStatement;
+    End
+
+    { --- default: stmts --- }
+    Else If TokIsKw('default') Then
+    Begin
+      { Emettre le label du test suivant (le JMP du case precedent) }
+      EmitLabel(LblNext);
+
+      Consume;
+      If TokIsPunct(':') Then
+        Consume
+      Else
+        FatalError(': attendu apres default');
+
+      { Le default n a pas besoin de comparaison }
+      HasDefault := True;
+
+      { Parser les instructions du corps du default }
+      While (CurToken.Kind <> TK_EOF) And
+            (Not TokIsPunct('}')) And
+            (Not TokIsKw('case')) And
+            (Not TokIsKw('default')) Do
+        ParseStatement;
+
+      { Preparer le prochain label si d autres case suivent }
+      LblNext := GenLabel;
+    End
+
+    Else
+    Begin
+      { Token inattendu dans le switch }
+      Consume;
+    End;
+  End;
+
+  { Si le dernier LblNext n a pas ete emis (pas de default apres) }
+  If Not HasDefault Then
+    EmitLabel(LblNext);
+
+  { Accolade fermante }
+  If TokIsPunct('}') Then
+    Consume;
+
+  { Label de nettoyage : break saute ici }
+  EmitLabel(LblClean);
+
+  { Depiler la valeur de controle }
+  EmitInstr('ADD', 'ESP,4');
+
+  { Label de fin }
+  EmitLabel(LblEnd);
+
+  { Depiler le switch }
+  SwitchPop;
+  LoopPop;
+End;
+
 { ------------------------------------------------------------ }
 { ShowStats (corps)                                             }
 { ------------------------------------------------------------ }
@@ -5740,6 +5996,9 @@ Begin
 
   { Initialiser la pile de boucles (TODO 14) }
   LoopDepth := 0;
+
+  { Initialiser la pile de switch (TODO 15) }
+  SwitchDepth := 0;
 
   { Initialiser le segment de donnees (TODO 08) }
   DataInit;
@@ -6105,7 +6364,7 @@ Begin
   EmitClose;
 
   WriteLn('CSCW32: ASM genere -> ', AsmFileName);
-  WriteLn('CSCW32: Les TODOs 15..25 ne sont pas encore implementes.');
+  WriteLn('CSCW32: Les TODOs 16..25 ne sont pas encore implementes.');
 End;
 
 { ------------------------------------------------------------ }

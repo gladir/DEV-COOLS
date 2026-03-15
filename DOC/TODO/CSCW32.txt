@@ -380,25 +380,23 @@
             test21_loops.cs : 15 cas de test (while, do-while, for,
               boucles imbriquees, break, continue).
 
-  TODO 15 - SWITCH / CASE / DEFAULT
+  TODO 15 - SWITCH / CASE / DEFAULT [IMPLEMENTE]
             ParseSwitchStmt : switch (expr) { case val: stmts }.
               Expression de controle : entier dans EAX,
-                sauvee dans variable temporaire ou sur pile.
+                sauvee sur pile (PUSH EAX).
               case valeur : branche pour une valeur
-                (CMP EAX,val / JE label_case).
+                (MOV EAX,[ESP] / CMP EAX,val / JE label_body).
               case val1: case val2: : valeurs multiples
                 (CMP successifs avec JE vers meme label).
-              default : branche par defaut (JMP label_default).
-              break : sortie du switch (JMP vers label_end).
-              Pas de fall-through implicite (C# exige break ou
-                goto case, contrairement au C).
-              Labels : _CSCL_CASE_N, _CSCL_CDEF_N, _CSCL_CEND_N.
+              default : branche par defaut (pas de CMP).
+              break : sortie du switch (JMP vers label_end)
+                via LoopPush.
+              Pas de fall-through implicite (C# exige break).
+              Labels generes via GenLabel (_CSCL_NNNNN).
             SwitchPush / SwitchPop : pile pour switch imbriques
               (max 32 niveaux d imbrication).
-            goto case val; : saut explicite vers un autre case
-              (stub optionnel).
-            goto default; : saut explicite vers default
-              (stub optionnel).
+            LoopPush / LoopPop utilises pour que break fonctionne.
+            Fichier test : test22_switch.cs (15 cas de tests).
 
   TODO 16 - METHODES STATIQUES
             ParseMethodDecl : declaration de methode statique.
