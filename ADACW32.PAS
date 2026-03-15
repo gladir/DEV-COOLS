@@ -2564,10 +2564,14 @@ Begin
   For I := 1 To StrCount Do
   Begin
     S := StrTab[I];
-    Emit(StrLblTab[I] + ' DB ' + IntToStr_(Length(S)));
     If Length(S) > 0 Then
-      For J := 1 To Length(S) Do
+    Begin
+      Emit(StrLblTab[I] + ' DB ' + IntToStr_(Ord(S[1])));
+      For J := 2 To Length(S) Do
         EmitI('DB ' + IntToStr_(Ord(S[J])));
+    End
+    Else
+      Emit(StrLblTab[I] + ' DB 0');
     EmitI('DB 0');  { terminateur null }
   End;
 End;
@@ -8332,6 +8336,30 @@ Begin
   If Mnem = 'JNS' Then
   Begin
     BinEmitByte($0F); BinEmitByte($89);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0); Exit;
+  End;
+  If Mnem = 'JG' Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($8F);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0); Exit;
+  End;
+  If Mnem = 'JL' Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($8C);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0); Exit;
+  End;
+  If (Mnem = 'JLE') Or (Mnem = 'JNG') Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($8E);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0); Exit;
+  End;
+  If Mnem = 'JS' Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($88);
     BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
     BinEmitDWord(0); Exit;
   End;
