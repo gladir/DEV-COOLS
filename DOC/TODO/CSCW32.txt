@@ -133,7 +133,7 @@
               Convert.ToInt32 -> _CSCRT_STRTONUM.
               Convert.ToString -> _CSCRT_NUMTOSTR.
 
-  TODO 06 - SYSTEME DE TYPES
+  TODO 06 - SYSTEME DE TYPES [IMPLEMENTE]
             TTypeKind : TKP_VOID, TKP_INT (32 bits signe),
               TKP_UINT (32 bits non signe), TKP_LONG (64 bits stub,
               tronque a 32 bits), TKP_BOOL (8 bits, stocke DWORD),

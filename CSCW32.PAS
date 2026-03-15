@@ -117,7 +117,7 @@
               int.Parse, int.ToString, Math.Abs, Math.Max,
               Math.Min, Convert.ToInt32, Convert.ToString.
 
-  TODO 06 - SYSTEME DE TYPES
+  TODO 06 - SYSTEME DE TYPES [IMPLEMENTE]
             TTypeKind : TKP_VOID, TKP_INT (32 bits signe),
               TKP_UINT (32 bits non signe), TKP_LONG (64 bits stub),
               TKP_BOOL (8 bits), TKP_CHAR (16 bits Unicode stub,
@@ -2324,6 +2324,26 @@ Const
   CSC_ENUM_PFX = '_CSCE_';    { enumerations                        }
   CSC_ST_PFX   = '_CSCST_';   { variables statiques locales         }
 
+  { Indices predefinis pour les types primitifs C# (TODO 06)     }
+  { Definis ici pour usage dans SymInit ci-dessous               }
+  TY_IDX_VOID    = 0;
+  TY_IDX_INT     = 1;
+  TY_IDX_UINT    = 2;
+  TY_IDX_LONG    = 3;
+  TY_IDX_ULONG   = 4;
+  TY_IDX_BOOL    = 5;
+  TY_IDX_CHAR    = 6;
+  TY_IDX_BYTE    = 7;
+  TY_IDX_SBYTE   = 8;
+  TY_IDX_SHORT   = 9;
+  TY_IDX_USHORT  = 10;
+  TY_IDX_FLOAT   = 11;
+  TY_IDX_DOUBLE  = 12;
+  TY_IDX_DECIMAL = 13;
+  TY_IDX_STRING  = 14;
+  TY_IDX_OBJECT  = 15;
+  TY_PRIM_COUNT  = 16;         { nombre de types primitifs           }
+
 Type
   TSymCat = (
     SC_VAR,          { variable locale ou globale                    }
@@ -2548,80 +2568,80 @@ Begin
   ScopeIdSeq    := 0;
 
   { Methodes standard C# pre-enregistrees (built-in) }
-  { Console.Write (int/string/bool/char) }
-  Idx := SymAdd('Console.Write', SC_METHOD, 0);
+  { Console.Write (int/string/bool/char) -> void }
+  Idx := SymAdd('Console.Write', SC_METHOD, TY_IDX_VOID);
   If Idx >= 0 Then
   Begin
     SymTab[Idx].MangledName := CSC_RT_PFX + 'PRINT';
     SymTab[Idx].IsStatic := True;
   End;
 
-  { Console.WriteLine (int/string/bool/char) }
-  Idx := SymAdd('Console.WriteLine', SC_METHOD, 0);
+  { Console.WriteLine (int/string/bool/char) -> void }
+  Idx := SymAdd('Console.WriteLine', SC_METHOD, TY_IDX_VOID);
   If Idx >= 0 Then
   Begin
     SymTab[Idx].MangledName := CSC_RT_PFX + 'PRINTLN';
     SymTab[Idx].IsStatic := True;
   End;
 
-  { Console.ReadLine }
-  Idx := SymAdd('Console.ReadLine', SC_METHOD, 0);
+  { Console.ReadLine -> string }
+  Idx := SymAdd('Console.ReadLine', SC_METHOD, TY_IDX_STRING);
   If Idx >= 0 Then
   Begin
     SymTab[Idx].MangledName := CSC_RT_PFX + 'READSTR';
     SymTab[Idx].IsStatic := True;
   End;
 
-  { int.Parse }
-  Idx := SymAdd('int.Parse', SC_METHOD, 0);
+  { int.Parse -> int }
+  Idx := SymAdd('int.Parse', SC_METHOD, TY_IDX_INT);
   If Idx >= 0 Then
   Begin
     SymTab[Idx].MangledName := CSC_RT_PFX + 'STRTONUM';
     SymTab[Idx].IsStatic := True;
   End;
 
-  { int.ToString }
-  Idx := SymAdd('int.ToString', SC_METHOD, 0);
+  { int.ToString -> string }
+  Idx := SymAdd('int.ToString', SC_METHOD, TY_IDX_STRING);
   If Idx >= 0 Then
   Begin
     SymTab[Idx].MangledName := CSC_RT_PFX + 'NUMTOSTR';
     SymTab[Idx].IsStatic := True;
   End;
 
-  { Math.Abs }
-  Idx := SymAdd('Math.Abs', SC_METHOD, 0);
+  { Math.Abs -> int }
+  Idx := SymAdd('Math.Abs', SC_METHOD, TY_IDX_INT);
   If Idx >= 0 Then
   Begin
     SymTab[Idx].MangledName := CSC_RT_PFX + 'ABS';
     SymTab[Idx].IsStatic := True;
   End;
 
-  { Math.Max }
-  Idx := SymAdd('Math.Max', SC_METHOD, 0);
+  { Math.Max -> int }
+  Idx := SymAdd('Math.Max', SC_METHOD, TY_IDX_INT);
   If Idx >= 0 Then
   Begin
     SymTab[Idx].MangledName := CSC_RT_PFX + 'MAX';
     SymTab[Idx].IsStatic := True;
   End;
 
-  { Math.Min }
-  Idx := SymAdd('Math.Min', SC_METHOD, 0);
+  { Math.Min -> int }
+  Idx := SymAdd('Math.Min', SC_METHOD, TY_IDX_INT);
   If Idx >= 0 Then
   Begin
     SymTab[Idx].MangledName := CSC_RT_PFX + 'MIN';
     SymTab[Idx].IsStatic := True;
   End;
 
-  { Convert.ToInt32 }
-  Idx := SymAdd('Convert.ToInt32', SC_METHOD, 0);
+  { Convert.ToInt32 -> int }
+  Idx := SymAdd('Convert.ToInt32', SC_METHOD, TY_IDX_INT);
   If Idx >= 0 Then
   Begin
     SymTab[Idx].MangledName := CSC_RT_PFX + 'STRTONUM';
     SymTab[Idx].IsStatic := True;
   End;
 
-  { Convert.ToString }
-  Idx := SymAdd('Convert.ToString', SC_METHOD, 0);
+  { Convert.ToString -> string }
+  Idx := SymAdd('Convert.ToString', SC_METHOD, TY_IDX_STRING);
   If Idx >= 0 Then
   Begin
     SymTab[Idx].MangledName := CSC_RT_PFX + 'NUMTOSTR';
@@ -2651,6 +2671,414 @@ Begin
   End;
 End;
 
+{ ============================================================ }
+{ TODO 06 - SYSTEME DE TYPES                                    }
+{           [IMPLEMENTE]                                        }
+{ ============================================================ }
+
+Const
+  MAX_TYPE      = 256;          { max types dans la table            }
+
+Type
+  TTypeKind = (
+    TKP_VOID,        { void - pas de valeur                          }
+    TKP_INT,         { int  - 32 bits signe                          }
+    TKP_UINT,        { uint - 32 bits non signe                      }
+    TKP_LONG,        { long - 64 bits stub (tronque a 32 bits)       }
+    TKP_ULONG,       { ulong - 64 bits non signe stub (tronque 32)   }
+    TKP_BOOL,        { bool - 8 bits (stocke comme DWORD)            }
+    TKP_CHAR,        { char - 16 bits Unicode stub (stocke 8 bits)   }
+    TKP_BYTE,        { byte - 8 bits non signe                       }
+    TKP_SBYTE,       { sbyte - 8 bits signe                          }
+    TKP_SHORT,       { short - 16 bits signe                         }
+    TKP_USHORT,      { ushort - 16 bits non signe                    }
+    TKP_FLOAT,       { float - 32 bits flottant (stub entier)        }
+    TKP_DOUBLE,      { double - 64 bits flottant (stub entier)       }
+    TKP_DECIMAL,     { decimal - 128 bits stub (stocke 64 bits)      }
+    TKP_STRING,      { string - pointeur 32 bits vers ASCIIZ         }
+    TKP_OBJECT,      { object - pointeur 32 bits generique           }
+    TKP_ARRAY,       { tableau                                       }
+    TKP_CLASS,       { classe utilisateur                             }
+    TKP_ENUM         { enumeration                                    }
+  );
+
+  TTypeRec = Record
+    Name     : TString;         { nom C# du type (minuscules)        }
+    Kind     : TTypeKind;       { categorie du type                   }
+    Size     : Integer;         { taille en octets (32 bits)          }
+    Signed   : Boolean;         { True si type signe                  }
+    ElemType : Integer;         { index du type element (array/ptr)   }
+  End;
+
+Var
+  TypeTab   : Array[0..MAX_TYPE - 1] Of TTypeRec;
+  TypeCount : Integer;          { nombre de types enregistres         }
+
+{ ------------------------------------------------------------ }
+{ TypeAdd : ajouter un type dans la table                       }
+{   Retourne l indice du type ajoute, ou -1 si table pleine     }
+{ ------------------------------------------------------------ }
+
+Function TypeAdd(Const AName : TString; AKind : TTypeKind;
+                 ASize : Integer; ASigned : Boolean;
+                 AElem : Integer) : Integer;
+Var
+  Idx : Integer;
+Begin
+  If TypeCount >= MAX_TYPE Then
+  Begin
+    WriteLn('CSCW32: erreur: table des types pleine (max ',
+            MAX_TYPE, ')');
+    Inc(ErrorCount);
+    TypeAdd := -1;
+    Exit;
+  End;
+  Idx := TypeCount;
+  Inc(TypeCount);
+  TypeTab[Idx].Name     := AName;
+  TypeTab[Idx].Kind     := AKind;
+  TypeTab[Idx].Size     := ASize;
+  TypeTab[Idx].Signed   := ASigned;
+  TypeTab[Idx].ElemType := AElem;
+  TypeAdd := Idx;
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeInit : initialiser les types primitifs C# predefinis      }
+{   Les indices doivent correspondre aux TY_IDX_* constants     }
+{ ------------------------------------------------------------ }
+
+Procedure TypeInit;
+Begin
+  TypeCount := 0;
+
+  { 0 : void }
+  TypeAdd('void',    TKP_VOID,    0, False, -1);
+  { 1 : int (System.Int32) }
+  TypeAdd('int',     TKP_INT,     4, True,  -1);
+  { 2 : uint (System.UInt32) }
+  TypeAdd('uint',    TKP_UINT,    4, False, -1);
+  { 3 : long (System.Int64) - stub tronque a 32 bits }
+  TypeAdd('long',    TKP_LONG,    4, True,  -1);
+  { 4 : ulong (System.UInt64) - stub tronque a 32 bits }
+  TypeAdd('ulong',   TKP_ULONG,   4, False, -1);
+  { 5 : bool (System.Boolean) }
+  TypeAdd('bool',    TKP_BOOL,    1, False, -1);
+  { 6 : char (System.Char) - stub 8 bits ASCII }
+  TypeAdd('char',    TKP_CHAR,    1, False, -1);
+  { 7 : byte (System.Byte) }
+  TypeAdd('byte',    TKP_BYTE,    1, False, -1);
+  { 8 : sbyte (System.SByte) }
+  TypeAdd('sbyte',   TKP_SBYTE,   1, True,  -1);
+  { 9 : short (System.Int16) }
+  TypeAdd('short',   TKP_SHORT,   2, True,  -1);
+  { 10 : ushort (System.UInt16) }
+  TypeAdd('ushort',  TKP_USHORT,  2, False, -1);
+  { 11 : float (System.Single) - stub entier }
+  TypeAdd('float',   TKP_FLOAT,   4, True,  -1);
+  { 12 : double (System.Double) - stub entier }
+  TypeAdd('double',  TKP_DOUBLE,  8, True,  -1);
+  { 13 : decimal (System.Decimal) - stub entier }
+  TypeAdd('decimal', TKP_DECIMAL, 8, True,  -1);
+  { 14 : string (System.String) }
+  TypeAdd('string',  TKP_STRING,  4, False, -1);
+  { 15 : object (System.Object) }
+  TypeAdd('object',  TKP_OBJECT,  4, False, -1);
+
+  If Opts.DebugMode Then
+    WriteLn('  TYPE_INIT: ', TypeCount, ' types primitifs enregistres');
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeFind : chercher un type par nom                           }
+{   Retourne l indice (0-based) ou -1 si non trouve             }
+{   Gere les alias System.* (System.Int32 -> int, etc.)         }
+{ ------------------------------------------------------------ }
+
+Function TypeFind(Const Name : TString) : Integer;
+Var
+  I    : Integer;
+  Lw   : TString;
+  Alias: TString;
+Begin
+  Lw := StrLowerCase(Name);
+
+  { Gerer les alias .NET Framework vers mots-cles C# }
+  Alias := Lw;
+  If Lw = 'system.int32'   Then Alias := 'int'
+  Else If Lw = 'system.uint32'  Then Alias := 'uint'
+  Else If Lw = 'system.int64'   Then Alias := 'long'
+  Else If Lw = 'system.uint64'  Then Alias := 'ulong'
+  Else If Lw = 'system.boolean' Then Alias := 'bool'
+  Else If Lw = 'system.char'    Then Alias := 'char'
+  Else If Lw = 'system.byte'    Then Alias := 'byte'
+  Else If Lw = 'system.sbyte'   Then Alias := 'sbyte'
+  Else If Lw = 'system.int16'   Then Alias := 'short'
+  Else If Lw = 'system.uint16'  Then Alias := 'ushort'
+  Else If Lw = 'system.single'  Then Alias := 'float'
+  Else If Lw = 'system.double'  Then Alias := 'double'
+  Else If Lw = 'system.decimal' Then Alias := 'decimal'
+  Else If Lw = 'system.string'  Then Alias := 'string'
+  Else If Lw = 'system.object'  Then Alias := 'object'
+  Else If Lw = 'system.void'    Then Alias := 'void'
+  Else If Lw = 'int32'          Then Alias := 'int'
+  Else If Lw = 'uint32'         Then Alias := 'uint'
+  Else If Lw = 'int64'          Then Alias := 'long'
+  Else If Lw = 'uint64'         Then Alias := 'ulong'
+  Else If Lw = 'int16'          Then Alias := 'short'
+  Else If Lw = 'uint16'         Then Alias := 'ushort'
+  Else If Lw = 'single'         Then Alias := 'float';
+
+  For I := 0 To TypeCount - 1 Do
+  Begin
+    If TypeTab[I].Name = Alias Then
+    Begin
+      TypeFind := I;
+      Exit;
+    End;
+  End;
+  TypeFind := -1;
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeFromKeyword : mapper un mot-cle C# de type vers TypeIdx   }
+{   Retourne l indice du type ou -1 si pas un type reconnu      }
+{ ------------------------------------------------------------ }
+
+Function TypeFromKeyword(Const Kw : TString) : Integer;
+Var
+  Lw : TString;
+Begin
+  Lw := StrLowerCase(Kw);
+  If      Lw = 'void'    Then TypeFromKeyword := TY_IDX_VOID
+  Else If Lw = 'int'     Then TypeFromKeyword := TY_IDX_INT
+  Else If Lw = 'uint'    Then TypeFromKeyword := TY_IDX_UINT
+  Else If Lw = 'long'    Then TypeFromKeyword := TY_IDX_LONG
+  Else If Lw = 'ulong'   Then TypeFromKeyword := TY_IDX_ULONG
+  Else If Lw = 'bool'    Then TypeFromKeyword := TY_IDX_BOOL
+  Else If Lw = 'char'    Then TypeFromKeyword := TY_IDX_CHAR
+  Else If Lw = 'byte'    Then TypeFromKeyword := TY_IDX_BYTE
+  Else If Lw = 'sbyte'   Then TypeFromKeyword := TY_IDX_SBYTE
+  Else If Lw = 'short'   Then TypeFromKeyword := TY_IDX_SHORT
+  Else If Lw = 'ushort'  Then TypeFromKeyword := TY_IDX_USHORT
+  Else If Lw = 'float'   Then TypeFromKeyword := TY_IDX_FLOAT
+  Else If Lw = 'double'  Then TypeFromKeyword := TY_IDX_DOUBLE
+  Else If Lw = 'decimal' Then TypeFromKeyword := TY_IDX_DECIMAL
+  Else If Lw = 'string'  Then TypeFromKeyword := TY_IDX_STRING
+  Else If Lw = 'object'  Then TypeFromKeyword := TY_IDX_OBJECT
+  Else                         TypeFromKeyword := -1;
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeSizeof : retourner la taille en octets d un type          }
+{   Si l indice est invalide, retourne 4 (taille par defaut)    }
+{ ------------------------------------------------------------ }
+
+Function TypeSizeof(TypeIdx : Integer) : Integer;
+Begin
+  If (TypeIdx >= 0) And (TypeIdx < TypeCount) Then
+    TypeSizeof := TypeTab[TypeIdx].Size
+  Else
+    TypeSizeof := 4;  { defaut : DWord 32 bits }
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeKindOf : retourner le TTypeKind d un type                 }
+{ ------------------------------------------------------------ }
+
+Function TypeKindOf(TypeIdx : Integer) : TTypeKind;
+Begin
+  If (TypeIdx >= 0) And (TypeIdx < TypeCount) Then
+    TypeKindOf := TypeTab[TypeIdx].Kind
+  Else
+    TypeKindOf := TKP_INT;  { defaut }
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeKindName : nom textuel d un TTypeKind                     }
+{ ------------------------------------------------------------ }
+
+Function TypeKindName(K : TTypeKind) : TString;
+Begin
+  Case K Of
+    TKP_VOID    : TypeKindName := 'void';
+    TKP_INT     : TypeKindName := 'int';
+    TKP_UINT    : TypeKindName := 'uint';
+    TKP_LONG    : TypeKindName := 'long';
+    TKP_ULONG   : TypeKindName := 'ulong';
+    TKP_BOOL    : TypeKindName := 'bool';
+    TKP_CHAR    : TypeKindName := 'char';
+    TKP_BYTE    : TypeKindName := 'byte';
+    TKP_SBYTE   : TypeKindName := 'sbyte';
+    TKP_SHORT   : TypeKindName := 'short';
+    TKP_USHORT  : TypeKindName := 'ushort';
+    TKP_FLOAT   : TypeKindName := 'float';
+    TKP_DOUBLE  : TypeKindName := 'double';
+    TKP_DECIMAL : TypeKindName := 'decimal';
+    TKP_STRING  : TypeKindName := 'string';
+    TKP_OBJECT  : TypeKindName := 'object';
+    TKP_ARRAY   : TypeKindName := 'array';
+    TKP_CLASS   : TypeKindName := 'class';
+    TKP_ENUM    : TypeKindName := 'enum';
+  Else
+    TypeKindName := '?';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeIsNumeric : True si le type est un type numerique         }
+{ ------------------------------------------------------------ }
+
+Function TypeIsNumeric(TypeIdx : Integer) : Boolean;
+Var
+  K : TTypeKind;
+Begin
+  K := TypeKindOf(TypeIdx);
+  TypeIsNumeric :=
+    (K = TKP_INT)    Or (K = TKP_UINT)    Or
+    (K = TKP_LONG)   Or (K = TKP_ULONG)   Or
+    (K = TKP_BYTE)   Or (K = TKP_SBYTE)   Or
+    (K = TKP_SHORT)  Or (K = TKP_USHORT)  Or
+    (K = TKP_FLOAT)  Or (K = TKP_DOUBLE)  Or
+    (K = TKP_DECIMAL) Or (K = TKP_CHAR);
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeIsIntegral : True si le type est un entier (pas float)    }
+{ ------------------------------------------------------------ }
+
+Function TypeIsIntegral(TypeIdx : Integer) : Boolean;
+Var
+  K : TTypeKind;
+Begin
+  K := TypeKindOf(TypeIdx);
+  TypeIsIntegral :=
+    (K = TKP_INT)   Or (K = TKP_UINT)   Or
+    (K = TKP_LONG)  Or (K = TKP_ULONG)  Or
+    (K = TKP_BYTE)  Or (K = TKP_SBYTE)  Or
+    (K = TKP_SHORT) Or (K = TKP_USHORT) Or
+    (K = TKP_CHAR);
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeCompatible : verification de compatibilite d affectation  }
+{   True si une valeur de type FromType peut etre affectee      }
+{   a une variable de type ToType (avec conversion implicite)   }
+{ ------------------------------------------------------------ }
+
+Function TypeCompatible(FromType, ToType : Integer) : Boolean;
+Var
+  FK, TK : TTypeKind;
+Begin
+  { Meme type : toujours compatible }
+  If FromType = ToType Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  { Types invalides : non compatible }
+  If (FromType < 0) Or (FromType >= TypeCount) Or
+     (ToType < 0) Or (ToType >= TypeCount) Then
+  Begin
+    TypeCompatible := False;
+    Exit;
+  End;
+
+  FK := TypeTab[FromType].Kind;
+  TK := TypeTab[ToType].Kind;
+
+  { void n est compatible avec rien }
+  If (FK = TKP_VOID) Or (TK = TKP_VOID) Then
+  Begin
+    TypeCompatible := False;
+    Exit;
+  End;
+
+  { object accepte tout (boxing implicite) }
+  If TK = TKP_OBJECT Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  { Conversions implicites numeriques elargissantes (widening) }
+  { byte/sbyte/short/ushort/char -> int OK }
+  If TK = TKP_INT Then
+  Begin
+    TypeCompatible :=
+      (FK = TKP_BYTE)  Or (FK = TKP_SBYTE) Or
+      (FK = TKP_SHORT) Or (FK = TKP_USHORT) Or
+      (FK = TKP_CHAR);
+    Exit;
+  End;
+
+  { byte/sbyte/short/ushort/char/int/uint -> long OK }
+  If TK = TKP_LONG Then
+  Begin
+    TypeCompatible :=
+      (FK = TKP_BYTE)   Or (FK = TKP_SBYTE)  Or
+      (FK = TKP_SHORT)  Or (FK = TKP_USHORT) Or
+      (FK = TKP_CHAR)   Or (FK = TKP_INT)    Or
+      (FK = TKP_UINT);
+    Exit;
+  End;
+
+  { byte/ushort/char -> uint OK }
+  If TK = TKP_UINT Then
+  Begin
+    TypeCompatible :=
+      (FK = TKP_BYTE)  Or (FK = TKP_USHORT) Or
+      (FK = TKP_CHAR);
+    Exit;
+  End;
+
+  { byte/ushort/uint/char -> ulong OK }
+  If TK = TKP_ULONG Then
+  Begin
+    TypeCompatible :=
+      (FK = TKP_BYTE)   Or (FK = TKP_USHORT) Or
+      (FK = TKP_UINT)   Or (FK = TKP_CHAR);
+    Exit;
+  End;
+
+  { entiers -> float/double/decimal OK }
+  If (TK = TKP_FLOAT) Or (TK = TKP_DOUBLE) Or
+     (TK = TKP_DECIMAL) Then
+  Begin
+    TypeCompatible := TypeIsNumeric(FromType);
+    Exit;
+  End;
+
+  { Aucune autre conversion implicite }
+  TypeCompatible := False;
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeCoerce : conversion implicite d un type petit vers int    }
+{   Retourne TY_IDX_INT si le type source est un petit entier   }
+{   (byte, sbyte, short, ushort, char) ; sinon retourne le      }
+{   type source tel quel.                                       }
+{ ------------------------------------------------------------ }
+
+Function TypeCoerce(FromType : Integer) : Integer;
+Var
+  FK : TTypeKind;
+Begin
+  If (FromType < 0) Or (FromType >= TypeCount) Then
+  Begin
+    TypeCoerce := FromType;
+    Exit;
+  End;
+  FK := TypeTab[FromType].Kind;
+  If (FK = TKP_BYTE)   Or (FK = TKP_SBYTE) Or
+     (FK = TKP_SHORT)  Or (FK = TKP_USHORT) Or
+     (FK = TKP_CHAR) Then
+    TypeCoerce := TY_IDX_INT
+  Else
+    TypeCoerce := FromType;
+End;
+
 { ------------------------------------------------------------ }
 { ShowStats (corps)                                             }
 { ------------------------------------------------------------ }
@@ -2666,6 +3094,7 @@ Begin
   WriteLn('Litteraux chaine : ', StrLitCount);
   WriteLn('Constantes       : ', ConstCount);
   WriteLn('Symboles         : ', SymCount);
+  WriteLn('Types            : ', TypeCount);
   WriteLn('Erreurs          : ', ErrorCount);
   WriteLn('Avertissements   : ', WarnCount);
 End;
@@ -2713,6 +3142,9 @@ Begin
   { Initialiser les tables de litteraux et constantes (TODO 04) }
   InitStrLitTable;
   InitConstTable;
+
+  { Initialiser le systeme de types (TODO 06) }
+  TypeInit;
 
   { Initialiser la table des symboles (TODO 05) }
   SymInit;
@@ -2844,7 +3276,8 @@ Begin
           { Si suivi de ( -> c est une methode }
           If TokIsPunct('(') Then
           Begin
-            SymIdx := SymAdd(MethName, SC_METHOD, 0);
+            SymIdx := SymAdd(MethName, SC_METHOD,
+                             TypeFromKeyword(VarType));
             If SymIdx >= 0 Then
               SymTab[SymIdx].IsStatic := True;
             InMethod := True;
@@ -2871,7 +3304,8 @@ Begin
                 { Nom du parametre }
                 If CurToken.Kind = TK_IDENT Then
                 Begin
-                  SymIdx := SymAdd(CurToken.Val, SC_PARAM, 0);
+                  SymIdx := SymAdd(CurToken.Val, SC_PARAM,
+                                   TypeFromKeyword(VarType));
                   Consume;
                 End;
               End
@@ -2885,7 +3319,8 @@ Begin
           Else
           Begin
             { C est une variable statique : static int x; }
-            SymIdx := SymAdd(MethName, SC_STATIC, 0);
+            SymIdx := SymAdd(MethName, SC_STATIC,
+                             TypeFromKeyword(VarType));
             If SymIdx >= 0 Then
               SymTab[SymIdx].IsStatic := True;
           End;
@@ -2920,14 +3355,15 @@ Begin
         { Verifier que c est bien une declaration (suivi de ; , =) }
         If TokIsPunct(';') Or TokIsPunct(',') Or TokIsOp('=') Then
         Begin
-          SymIdx := SymAdd(VarName, SC_VAR, 0);
+          SymIdx := SymAdd(VarName, SC_VAR, TypeFromKeyword(VarType));
           { Declarations multiples : int a, b, c; }
           While TokIsPunct(',') Do
           Begin
             Consume;
             If CurToken.Kind = TK_IDENT Then
             Begin
-              SymIdx := SymAdd(CurToken.Val, SC_VAR, 0);
+              SymIdx := SymAdd(CurToken.Val, SC_VAR,
+                               TypeFromKeyword(VarType));
               Consume;
             End;
           End;
@@ -2951,8 +3387,8 @@ Begin
   WriteLn('CSCW32: Lexer OK (', TotalLines, ' lignes, ',
           TokenCount, ' tokens, ', UsingCount, ' using, ',
           StrLitCount, ' chaines, ', ConstCount, ' constantes, ',
-          SymCount, ' symboles)');
-  WriteLn('CSCW32: Les TODOs 06..25 ne sont pas encore implementes.');
+          SymCount, ' symboles, ', TypeCount, ' types)');
+  WriteLn('CSCW32: Les TODOs 07..25 ne sont pas encore implementes.');
 End;
 
 { ------------------------------------------------------------ }
