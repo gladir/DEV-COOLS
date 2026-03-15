@@ -401,7 +401,7 @@ TODO 18 - Architecture deux passes de l'assembleur [IMPLEMENTE]
   - Detection automatique des deplacements courts/longs
     pour les branchements (BRA.S vs BRA.W)
 
-TODO 19 - Parseur de ligne assembleur
+TODO 19 - Parseur de ligne assembleur [IMPLEMENTE]
   --------------------------------------
   - Format d'une ligne assembleur 68000 :
     [etiquette:]  [opcode[.s]  [operande1[,operande2]]]  [; commentaire]

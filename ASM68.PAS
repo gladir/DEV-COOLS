@@ -36,7 +36,7 @@
 { TODO 16 - Instructions BCD et operations speciales [IMPLEMENTE] }
 { TODO 17 - Encodage binaire des instructions (passe 2) [IMPLEMENTE] }
 { TODO 18 - Architecture deux passes de l'assembleur [IMPLEMENTE] }
-{ TODO 19 - Parseur de ligne assembleur }
+{ TODO 19 - Parseur de ligne assembleur [IMPLEMENTE] }
 { TODO 20 - Generation du fichier objet (format S-Record Motorola) }
 { TODO 21 - Gestion des fichiers INCLUDE et pile de sources }
 { TODO 22 - Gestion des macros (MACRO/ENDM) }
@@ -281,6 +281,20 @@ Type
   TIncLineBuf = Array[1..MAX_INC_LINES] of String;
   PIncLineBuf = ^TIncLineBuf;
 
+  { --- Ligne decomposee (TODO 19) --- }
+  TLineInfo = Record
+    LabelStr   : String[64];     { Etiquette (sans le ':')                }
+    Opcode     : String[16];     { Mnemonique de l'opcode                 }
+    OpSize     : Integer;        { Suffixe de taille (.B .W .L .S)        }
+    Operand1   : String;         { Premier operande (texte brut)          }
+    Operand2   : String;         { Deuxieme operande (texte brut)         }
+    Comment    : String;         { Commentaire (apres ';')                }
+    HasLabel   : Boolean;        { True si etiquette presente             }
+    HasOpcode  : Boolean;        { True si opcode/directive present       }
+    NumOperands: Integer;        { Nombre d'operandes (0, 1 ou 2)        }
+    IsDirective: Boolean;        { True si c'est une directive            }
+  End;
+
 { ============================================================================ }
 { Variables globales                                                           }
 { ============================================================================ }
@@ -366,6 +380,9 @@ Var
                      outer_asm  : Boolean;  { True si le niveau parent assemble   }
                    End;
   cond_depth     : Integer;      { Profondeur courante d'imbrication IF   }
+
+  { --- Parseur de ligne assembleur (TODO 19) --- }
+  InstrCount     : Integer;      { Nombre d'instructions assemblees       }
 
 { ============================================================================ }
 { Fonctions utilitaires                                                        }
@@ -1437,6 +1454,7 @@ Begin
           ' octets (org=$', IntToHex(Sections[I].Origin, 6), ')');
  WriteLn('Fixups         : ', FixupCount);
  WriteLn('Macros         : ', MacroCount);
+ WriteLn('Instructions   : ', InstrCount);
  WriteLn('Taille code    : ', CodeSize, ' octets');
  If start_address_set Then
   WriteLn('Adresse debut  : $', IntToHex(start_address, 6));
@@ -1945,6 +1963,10 @@ End;
 Procedure Emit8(B: Byte); Forward;
 Procedure Emit16(W: Word); Forward;
 Procedure Emit32(L: LongInt); Forward;
+
+{ Forward declarations pour le parseur de ligne (TODO 19) }
+Function DecomposeLine(Const Line: String; Var Info: TLineInfo): Boolean; Forward;
+Function ParseRegisterList: Word; Forward;
 
 Procedure InitOperand(Var Op: TOperand);
 { Initialise un operande a un etat neutre }
@@ -7199,6 +7221,8 @@ End;
 Procedure AssembleInstruction(Const OpName: String; OpSize: Integer);
 { Dispatch : appelle le bon encodeur selon le mnemonique }
 Begin
+ If pass_num = 2 Then
+  Inc(InstrCount); { TODO 19 : compter les instructions (passe 2 seulement) }
  { --- Instructions de transfert (TODO 11) --- }
  If OpName = 'MOVE' Then InstrMOVE(OpSize)
  Else If OpName = 'MOVEA' Then InstrMOVEA(OpSize)
@@ -7872,6 +7896,245 @@ Begin
 End;
 
 { ============================================================================ }
+{ TODO 19 - Parseur de ligne assembleur                                        }
+{ ============================================================================ }
+
+{ DecomposeLine decompose une ligne source brute en ses composants :
+  [etiquette:]  [opcode[.s]  [operande1[,operande2]]]  [; commentaire]
+  Retourne True si la ligne contient au moins un element significatif. }
+
+Function DecomposeLine(Const Line: String; Var Info: TLineInfo): Boolean;
+Var
+  I, Len: Integer;
+  Ch: Char;
+  Tok: String;
+  DotPos: Integer;
+  SizeSuffix: String;
+  ParenDepth: Integer;
+Begin
+ { Initialiser TLineInfo }
+ Info.LabelStr    := '';
+ Info.Opcode      := '';
+ Info.OpSize      := 0;
+ Info.Operand1    := '';
+ Info.Operand2    := '';
+ Info.Comment     := '';
+ Info.HasLabel    := False;
+ Info.HasOpcode   := False;
+ Info.NumOperands := 0;
+ Info.IsDirective := False;
+
+ DecomposeLine := False;
+ Len := Length(Line);
+ If Len = 0 Then Exit;
+
+ I := 1;
+
+ { --- Extraire le commentaire (apres ';' hors chaines) --- }
+ ParenDepth := 0;
+ While I <= Len do
+ Begin
+  Ch := Line[I];
+  If Ch = '''' Then
+  Begin
+   { Sauter une chaine entre apostrophes }
+   Inc(I);
+   While (I <= Len) and (Line[I] <> '''') do Inc(I);
+   If I <= Len Then Inc(I);
+   Continue;
+  End;
+  If Ch = ';' Then
+  Begin
+   Info.Comment := Copy(Line, I + 1, Len - I);
+   Len := I - 1;
+   Break;
+  End;
+  If Ch = '*' Then
+  Begin
+   { Commentaire style ancien (si en colonne 1) }
+   If I = 1 Then
+   Begin
+    Info.Comment := Copy(Line, 2, Length(Line) - 1);
+    DecomposeLine := False;
+    Exit;
+   End;
+  End;
+  Inc(I);
+ End;
+
+ { Supprimer les espaces de fin }
+ While (Len > 0) and (Line[Len] in [' ', #9]) do Dec(Len);
+ If Len = 0 Then Exit;
+
+ I := 1;
+
+ { --- Extraire l'etiquette --- }
+ { Si la ligne commence en colonne 1 (pas espace/tab), c'est une etiquette }
+ If Not (Line[1] in [' ', #9]) Then
+ Begin
+  Tok := '';
+  While (I <= Len) and Not (Line[I] in [' ', #9, ':']) do
+  Begin
+   Tok := Tok + Line[I];
+   Inc(I);
+  End;
+  { Consommer le ':' si present }
+  If (I <= Len) and (Line[I] = ':') Then
+   Inc(I);
+  Info.LabelStr := Tok;
+  Info.HasLabel := True;
+ End;
+
+ { Sauter les espaces apres l'etiquette }
+ While (I <= Len) and (Line[I] in [' ', #9]) do Inc(I);
+ If I > Len Then
+ Begin
+  DecomposeLine := Info.HasLabel;
+  Exit;
+ End;
+
+ { --- Extraire l'opcode et le suffixe de taille --- }
+ Tok := '';
+ While (I <= Len) and Not (Line[I] in [' ', #9]) do
+ Begin
+  Tok := Tok + UpCase(Line[I]);
+  Inc(I);
+ End;
+
+ { Separer opcode et suffixe de taille (.B, .W, .L, .S) }
+ DotPos := 0;
+ If (Length(Tok) >= 3) and (Tok[Length(Tok) - 1] = '.') and
+    (Tok[Length(Tok)] in ['B', 'W', 'L', 'S']) Then
+  DotPos := Length(Tok) - 1;
+
+ If DotPos > 0 Then
+ Begin
+  SizeSuffix := Copy(Tok, DotPos + 1, 1);
+  Info.Opcode := Copy(Tok, 1, DotPos - 1);
+  Case SizeSuffix[1] of
+   'B': Info.OpSize := SIZE_BYTE;
+   'W': Info.OpSize := SIZE_WORD;
+   'L': Info.OpSize := SIZE_LONG;
+   'S': Info.OpSize := SIZE_BYTE;
+  End;
+ End
+ Else
+ Begin
+  Info.Opcode := Tok;
+  Info.OpSize := 0;
+ End;
+
+ Info.HasOpcode := True;
+
+ { Determiner si c'est une directive }
+ If (Info.Opcode = 'ORG') or (Info.Opcode = 'EQU') or
+    (Info.Opcode = 'SET') or (Info.Opcode = 'DC') or
+    (Info.Opcode = 'DS') or (Info.Opcode = 'DCB') or
+    (Info.Opcode = 'END') or (Info.Opcode = 'EVEN') or
+    (Info.Opcode = 'CNOP') or (Info.Opcode = 'SECTION') or
+    (Info.Opcode = 'INCLUDE') or (Info.Opcode = 'MACRO') or
+    (Info.Opcode = 'ENDM') or (Info.Opcode = 'REPT') or
+    (Info.Opcode = 'ENDR') or (Info.Opcode = 'MEXIT') or
+    (Info.Opcode = 'XDEF') or (Info.Opcode = 'XREF') or
+    (Info.Opcode = 'ENTRY') or (Info.Opcode = 'PUBLIC') or
+    (Info.Opcode = 'EXTERNAL') or (Info.Opcode = 'EXTERN') or
+    (Info.Opcode = 'LIST') or (Info.Opcode = 'NOLIST') or
+    (Info.Opcode = 'TTL') or (Info.Opcode = 'SPC') or
+    (Info.Opcode = 'PAGE') or (Info.Opcode = 'OPT') or
+    (Info.Opcode = 'FAIL') or (Info.Opcode = 'ALIGN') or
+    (Info.Opcode = 'IFEQ') or (Info.Opcode = 'IFNE') or
+    (Info.Opcode = 'IFGT') or (Info.Opcode = 'IFGE') or
+    (Info.Opcode = 'IFLT') or (Info.Opcode = 'IFLE') or
+    (Info.Opcode = 'IFDEF') or (Info.Opcode = 'IFNDEF') or
+    (Info.Opcode = 'IFC') or (Info.Opcode = 'IFNC') or
+    (Info.Opcode = 'IF') or (Info.Opcode = 'ELSE') or
+    (Info.Opcode = 'ENDC') or (Info.Opcode = 'ENDIF') Then
+  Info.IsDirective := True;
+
+ { Sauter les espaces avant les operandes }
+ While (I <= Len) and (Line[I] in [' ', #9]) do Inc(I);
+
+ If I > Len Then
+ Begin
+  DecomposeLine := True;
+  Exit;
+ End;
+
+ { --- Extraire les operandes --- }
+ { Operande 1 : tout jusqu'a la virgule (hors parentheses) ou fin }
+ ParenDepth := 0;
+ Tok := '';
+ While (I <= Len) do
+ Begin
+  Ch := Line[I];
+  If Ch = '''' Then
+  Begin
+   Tok := Tok + Ch;
+   Inc(I);
+   While (I <= Len) and (Line[I] <> '''') do
+   Begin
+    Tok := Tok + Line[I];
+    Inc(I);
+   End;
+   If I <= Len Then
+   Begin
+    Tok := Tok + Line[I];
+    Inc(I);
+   End;
+   Continue;
+  End;
+  If Ch = '(' Then Inc(ParenDepth)
+  Else If Ch = ')' Then Dec(ParenDepth);
+  If (Ch = ',') and (ParenDepth = 0) Then
+  Begin
+   Inc(I);
+   Break;
+  End;
+  Tok := Tok + Ch;
+  Inc(I);
+ End;
+
+ { Supprimer espaces de fin de l'operande 1 }
+ While (Length(Tok) > 0) and (Tok[Length(Tok)] in [' ', #9]) do
+  Tok := Copy(Tok, 1, Length(Tok) - 1);
+ Info.Operand1 := Tok;
+ Info.NumOperands := 1;
+
+ { Sauter espaces avant operande 2 }
+ While (I <= Len) and (Line[I] in [' ', #9]) do Inc(I);
+
+ If I <= Len Then
+ Begin
+  Tok := Copy(Line, I, Len - I + 1);
+  While (Length(Tok) > 0) and (Tok[Length(Tok)] in [' ', #9]) do
+   Tok := Copy(Tok, 1, Length(Tok) - 1);
+  Info.Operand2 := Tok;
+  Info.NumOperands := 2;
+ End;
+
+ DecomposeLine := True;
+End;
+
+{ ParseRegisterList lit une liste de registres depuis le flux de tokens courant.
+  Syntaxe : D0-D3/A0-A2  ou  D0/D1/A3  ou  D0-D7
+  Retourne un masque 16 bits (bits 0-7 = D0-D7, bits 8-15 = A0-A7).
+  Consomme les tokens correspondants. }
+
+Function ParseRegisterList: Word;
+Var
+  RegStr: String;
+Begin
+ RegStr := '';
+ While (cur_tok = TOK_REGISTER) or (cur_tok = TOK_MINUS) or
+       (cur_tok = TOK_SLASH) do
+ Begin
+  RegStr := RegStr + cur_tok_str;
+  NextToken;
+ End;
+ ParseRegisterList := ParseRegList(RegStr);
+End;
+
+{ ============================================================================ }
 { Procedure Run : programme principal d'assemblage                             }
 { ============================================================================ }
 
@@ -7914,6 +8177,9 @@ Begin
 
  { Initialiser l'assemblage conditionnel (TODO 10) }
  cond_depth := 0;
+
+ { Initialiser le parseur de ligne (TODO 19) }
+ InstrCount := 0;
 
  { Initialiser la table des symboles }
  InitSymTable;
