@@ -6670,6 +6670,8 @@ Var
   ParamCnt   : Integer;
   PType      : TString;
   Mangled    : TString;
+  ParamSyms  : Array[0..31] Of Integer;
+  I, J, TmpOfs : Integer;
 Begin
   { Ajouter la methode dans la table des symboles }
   SymIdx := SymAdd(MName, SC_METHOD, TypeFromKeyword(RetType));
@@ -6703,7 +6705,11 @@ Begin
         SymIdx := SymAdd(CurToken.Val, SC_PARAM,
                          TypeFromKeyword(PType));
         If SymIdx >= 0 Then
+        Begin
           SymTab[SymIdx].Offset := RegisterParam;
+          If ParamCnt <= 31 Then
+            ParamSyms[ParamCnt] := SymIdx;
+        End;
         Inc(ParamCnt);
         Consume;
       End;
@@ -6714,6 +6720,20 @@ Begin
     If TokIsPunct(',') Then Consume;
   End;
   If TokIsPunct(')') Then Consume;
+
+  { Inverser les offsets des parametres pour correspondre }
+  { a l ordre de push gauche-a-droite (left-to-right)    }
+  If ParamCnt > 1 Then
+    For I := 0 To (ParamCnt Div 2) - 1 Do
+    Begin
+      J := ParamCnt - 1 - I;
+      If (I <= 31) And (J <= 31) Then
+      Begin
+        TmpOfs := SymTab[ParamSyms[I]].Offset;
+        SymTab[ParamSyms[I]].Offset := SymTab[ParamSyms[J]].Offset;
+        SymTab[ParamSyms[J]].Offset := TmpOfs;
+      End;
+    End;
 
   { Enregistrer dans FuncTab }
   AddMethod(MName, Mangled, RetType, ParamCnt, SymIdx);
@@ -8713,20 +8733,50 @@ Begin
     AsmSplitOps(Ops, Op1, Op2);
     R1 := AsmRegIdx32(Op1);
 
-    { ALU reg8,imm8 : opcode 80 /n ib }
+    { ALU reg8,reg8 or reg8,imm8 }
     If R1 < 0 Then
     Begin
       R1 := AsmRegIdx8(Op1);
       If R1 >= 0 Then
       Begin
+        R2 := AsmRegIdx8(Op2);
+        If R2 >= 0 Then
+        Begin
+          { ALU reg8,reg8 }
+          If Mnem = 'TEST' Then
+          Begin
+            BinEmitByte($84);
+            BinEmitByte(Byte($C0 Or (R2 Shl 3) Or R1));
+          End
+          Else
+          Begin
+            If Mnem = 'CMP' Then BinEmitByte($38)
+            Else If Mnem = 'ADD' Then BinEmitByte($00)
+            Else If Mnem = 'SUB' Then BinEmitByte($28)
+            Else If Mnem = 'AND' Then BinEmitByte($20)
+            Else If Mnem = 'OR'  Then BinEmitByte($08)
+            Else If Mnem = 'XOR' Then BinEmitByte($30);
+            BinEmitByte(Byte($C0 Or (R2 Shl 3) Or R1));
+          End;
+          Exit;
+        End;
+        { ALU reg8,imm8 : opcode 80 /n ib }
         Imm := AsmParseImm(Op2);
-        BinEmitByte($80);
-        If Mnem = 'ADD' Then BinEmitByte(Byte($C0 Or R1))
-        Else If Mnem = 'SUB' Then BinEmitByte(Byte($E8 Or R1))
-        Else If Mnem = 'AND' Then BinEmitByte(Byte($E0 Or R1))
-        Else If Mnem = 'OR'  Then BinEmitByte(Byte($C8 Or R1))
-        Else If Mnem = 'XOR' Then BinEmitByte(Byte($F0 Or R1))
-        Else If Mnem = 'CMP' Then BinEmitByte(Byte($F8 Or R1));
+        If Mnem = 'TEST' Then
+        Begin
+          BinEmitByte($F6);
+          BinEmitByte(Byte($C0 Or R1));
+        End
+        Else
+        Begin
+          BinEmitByte($80);
+          If Mnem = 'ADD' Then BinEmitByte(Byte($C0 Or R1))
+          Else If Mnem = 'SUB' Then BinEmitByte(Byte($E8 Or R1))
+          Else If Mnem = 'AND' Then BinEmitByte(Byte($E0 Or R1))
+          Else If Mnem = 'OR'  Then BinEmitByte(Byte($C8 Or R1))
+          Else If Mnem = 'XOR' Then BinEmitByte(Byte($F0 Or R1))
+          Else If Mnem = 'CMP' Then BinEmitByte(Byte($F8 Or R1));
+        End;
         BinEmitByte(Byte(Imm And $FF));
         Exit;
       End;
