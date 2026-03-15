@@ -381,24 +381,30 @@
             test_fields.awk (15 cas, champs et separateurs)
 
   TODO 16 - PARSEUR : TABLEAUX ASSOCIATIFS ET OPERATEUR IN / DELETE
+            [IMPLEMENTE]
             Representation memoire :
               Chaque tableau = bloc de MAX_HASH_PAIRS paires (cle, val)
               Cle : pointeur vers chaine ASCIIZ
               Valeur : DWORD (nombre ou pointeur chaine)
-            Procedure ParseArrayRef
-              array[expr] -> CALL _AWRT_HASH_GET(array_ptr, cle) -> EAX
-              array[expr] = val -> CALL _AWRT_HASH_SET(array_ptr, cle, val)
-            Operateur in :
-              (expr in array) -> CALL _AWRT_HASH_EXISTS -> 0/1
-            Operateur delete :
-              delete array[expr] -> CALL _AWRT_HASH_DEL
-              delete array -> CALL _AWRT_HASH_CLEAR (vider tout)
+            Procedure GenArrayGet(SymIdx)
+              PUSH EAX (cle) + PUSH OFFSET _AWA_array + CALL HASH_GET
+            Procedure GenArraySet(SymIdx)
+              PUSH EAX (val) + PUSH EBX (cle) + PUSH OFFSET array + CALL HASH_SET
+            Procedure GenArrayExists(SymIdx)
+              PUSH EAX (cle) + PUSH OFFSET _AWA_array + CALL HASH_EXISTS
+            Procedure GenArrayDel(SymIdx)
+              PUSH EAX (cle) + PUSH OFFSET _AWA_array + CALL HASH_DEL
+            Procedure GenArrayClear(SymIdx)
+              PUSH OFFSET _AWA_array + CALL HASH_CLEAR
+            ParsePrimaryExpr: ident[ expr ] -> GenArrayGet (lecture)
+            ParseAssignExpr: ident[ expr ] = val -> GenArraySet (ecriture)
+              via LastArraySym (index sym du tableau) et LastArrayHasKey
+            ParseInExpr: expr in array -> GenArrayExists -> 0/1
+            ParseStatement delete: array[expr] -> GenArrayDel, array -> GenArrayClear
             Indices multidimensionnels :
-              array[i, j] -> concatener i SUBSEP j comme cle
-            Routines runtime hash :
-              _AWRT_HASH_GET, _AWRT_HASH_SET, _AWRT_HASH_EXISTS,
-              _AWRT_HASH_DEL, _AWRT_HASH_CLEAR, _AWRT_HASH_NEXT
-            Allocation dynamique des paires via HeapAlloc
+              array[i, j] -> GenConcat avec SUBSEP entre chaque indice
+            Var ArrayOpCount pour les statistiques
+            test_arrays16.awk (15 cas, tableaux associatifs)
 
   TODO 17 - PARSEUR : EXPRESSIONS REGULIERES ET MATCHING ~ / !~
             Compilation de regex en pattern data :

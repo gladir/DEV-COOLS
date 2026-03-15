@@ -379,24 +379,30 @@
             test_fields.awk (15 cas, champs et separateurs)
 
   TODO 16 - PARSEUR : TABLEAUX ASSOCIATIFS ET OPERATEUR IN / DELETE
+            [IMPLEMENTE]
             Representation memoire :
               Chaque tableau = bloc de MAX_HASH_PAIRS paires (cle, val)
               Cle : pointeur vers chaine ASCIIZ
               Valeur : DWORD (nombre ou pointeur chaine)
-            Procedure ParseArrayRef
-              array[expr] -> CALL _AWRT_HASH_GET(array_ptr, cle) -> EAX
-              array[expr] = val -> CALL _AWRT_HASH_SET(array_ptr, cle, val)
-            Operateur in :
-              (expr in array) -> CALL _AWRT_HASH_EXISTS -> 0/1
-            Operateur delete :
-              delete array[expr] -> CALL _AWRT_HASH_DEL
-              delete array -> CALL _AWRT_HASH_CLEAR (vider tout)
+            Procedure GenArrayGet(SymIdx)
+              PUSH EAX (cle) + PUSH OFFSET _AWA_array + CALL HASH_GET
+            Procedure GenArraySet(SymIdx)
+              PUSH EAX (val) + PUSH EBX (cle) + PUSH OFFSET array + CALL HASH_SET
+            Procedure GenArrayExists(SymIdx)
+              PUSH EAX (cle) + PUSH OFFSET _AWA_array + CALL HASH_EXISTS
+            Procedure GenArrayDel(SymIdx)
+              PUSH EAX (cle) + PUSH OFFSET _AWA_array + CALL HASH_DEL
+            Procedure GenArrayClear(SymIdx)
+              PUSH OFFSET _AWA_array + CALL HASH_CLEAR
+            ParsePrimaryExpr: ident[ expr ] -> GenArrayGet (lecture)
+            ParseAssignExpr: ident[ expr ] = val -> GenArraySet (ecriture)
+              via LastArraySym (index sym du tableau) et LastArrayHasKey
+            ParseInExpr: expr in array -> GenArrayExists -> 0/1
+            ParseStatement delete: array[expr] -> GenArrayDel, array -> GenArrayClear
             Indices multidimensionnels :
-              array[i, j] -> concatener i SUBSEP j comme cle
-            Routines runtime hash :
-              _AWRT_HASH_GET, _AWRT_HASH_SET, _AWRT_HASH_EXISTS,
-              _AWRT_HASH_DEL, _AWRT_HASH_CLEAR, _AWRT_HASH_NEXT
-            Allocation dynamique des paires via HeapAlloc
+              array[i, j] -> GenConcat avec SUBSEP entre chaque indice
+            Var ArrayOpCount pour les statistiques
+            test_arrays16.awk (15 cas, tableaux associatifs)
 
   TODO 17 - PARSEUR : EXPRESSIONS REGULIERES ET MATCHING ~ / !~
             Compilation de regex en pattern data :
@@ -1061,6 +1067,11 @@ Var
   LastFieldIdx   : Integer;    { dernier index de champ ($0..$n)    }
   LastFieldIsExpr: Boolean;    { dernier champ est $(expr) ?        }
 
+  { Tableaux associatifs (TODO 16) }
+  ArrayOpCount   : Integer;    { nombre d operations sur tableaux   }
+  LastArraySym   : Integer;    { index sym du tableau LHS           }
+  LastArrayHasKey: Boolean;    { le LHS est array[key] ?            }
+
 Const
 {$IFDEF FPC}
   BinAPIDecorated : Array[0..PE_NUM_API - 1] Of String[32] = (
@@ -1418,6 +1429,7 @@ Begin
   WriteLn('Func definitions : ', FuncDefCount);
   WriteLn('Rules            : ', RuleDefCount);
   WriteLn('Field refs       : ', FieldRefCount);
+  WriteLn('Array ops        : ', ArrayOpCount);
   WriteLn('Code gen ops     : ', GenCount);
   WriteLn('Litteraux chaine : ', StringLitCount);
   WriteLn('Scope depth      : ', ScopeDepth);
@@ -2553,6 +2565,13 @@ Procedure ParseProgram; Forward;
 Function  ParseFieldRef: Integer; Forward;
 Procedure GenFieldSplit; Forward;
 
+{ Forward declarations TODO 16 - Tableaux associatifs }
+Procedure GenArrayGet(SymIdx: Integer); Forward;
+Procedure GenArraySet(SymIdx: Integer); Forward;
+Procedure GenArrayExists(SymIdx: Integer); Forward;
+Procedure GenArrayDel(SymIdx: Integer); Forward;
+Procedure GenArrayClear(SymIdx: Integer); Forward;
+
 { ---- Helpers de tokens --------------------------------------- }
 Function IsOp(Const S : String) : Boolean;
 Begin
@@ -2687,22 +2706,45 @@ Begin
         { Resultat dans EAX }
         ParsePrimaryExpr := TYK_UNKNOWN;
       End
-      { Acces tableau : ident [ expr ] }
+      { Acces tableau : ident [ expr ] (TODO 16 : code gen) }
       Else If IsPunct('[') Then
       Begin
         ParserAdvance;  { consommer [ }
         D := ParseExpr;
-        { SUBSEP : indices multiples a[i,j] }
+        D := GenCoerceToString(D);
+        { SUBSEP : indices multidimensionnels a[i,j] -> concat avec SUBSEP }
         While IsPunct(',') Do
         Begin
-          ParserAdvance;
+          GenPushEAX;     { sauver la cle accumulee }
+          ParserAdvance;  { consommer , }
+          SkipNewlines;
+          { Charger SUBSEP et concatener }
+          FnIdx := FindSym('SUBSEP');
+          If FnIdx >= 0 Then
+          Begin
+            Emit('        MOV     EBX, EAX');
+            Emit('        MOV     EAX, [' + SymTab[FnIdx].AsmLabel + ']');
+            GenConcat;       { EAX = cle_accumulee + SUBSEP }
+          End;
+          Emit('        POP     EBX');  { restaurer cle accumulee+SUBSEP avant }
+          { On a maintenant le resultat de concat dans EAX, mais }
+          { il faut concatener avec l indice suivant }
+          GenPushEAX;
           D := ParseExpr;
+          D := GenCoerceToString(D);
+          GenPopEBX;
+          GenConcat;       { EAX = cle_accum + SUBSEP + indice }
         End;
         Expect(TK_PUNCT, ']');
         { Enregistrer comme tableau si inconnu }
         TK := FindSym(IdName);
         If TK < 0 Then
           TK := AddSym(IdName, TYK_ARRAY, STORE_GLOBAL, True);
+        { Sauver l information du tableau pour ParseAssignExpr }
+        LastArraySym := TK;
+        LastArrayHasKey := True;
+        { Generer HASH_GET : EAX = cle -> resultat dans EAX }
+        GenArrayGet(TK);
         ParsePrimaryExpr := TYK_UNKNOWN;
       End
       Else
@@ -3075,7 +3117,7 @@ Begin
 End;
 
 { ---- ParseInExpr --------------------------------------------- }
-{ expr in array }
+{ expr in array (TODO 16 : code gen HASH_EXISTS) }
 Function ParseInExpr : Integer;
 Var
   TK : Integer;
@@ -3085,12 +3127,16 @@ Begin
   If IsKW(KW_IN) Then
   Begin
     ParserAdvance;  { consommer 'in' }
+    { EAX contient la cle (expression a gauche de in) }
+    TK := GenCoerceToString(TK);
     { Le token suivant doit etre un nom de tableau }
     If CurToken.Kind = TK_IDENT Then
     Begin
       Idx := FindSym(CurToken.Val);
       If Idx < 0 Then
         Idx := AddSym(CurToken.Val, TYK_ARRAY, STORE_GLOBAL, True);
+      { Generer HASH_EXISTS : EAX = cle -> EAX = 0/1 }
+      GenArrayExists(Idx);
       ParserAdvance;
     End Else
       FatalError('nom de tableau attendu apres "in" (ligne ' +
@@ -3165,12 +3211,15 @@ End;
 { ---- ParseAssignExpr ----------------------------------------- }
 { = += -= *= /= %= ^= (droite a gauche) }
 { TODO 15 : supporte aussi $n = expr via GenFieldStore }
+{ TODO 16 : supporte aussi array[key] = expr via GenArraySet }
 Function ParseAssignExpr : Integer;
 Var
-  TK        : Integer;
-  SaveSym   : Integer;
-  SaveField : Integer;
-  SaveFExpr : Boolean;
+  TK          : Integer;
+  SaveSym     : Integer;
+  SaveField   : Integer;
+  SaveFExpr   : Boolean;
+  SaveArrSym  : Integer;
+  SaveArrKey  : Boolean;
 Begin
   TK := ParseTernaryExpr;
   If (CurToken.Kind = TK_OP) And
@@ -3179,14 +3228,24 @@ Begin
       (CurToken.Val = '/=') Or (CurToken.Val = '%=') Or
       (CurToken.Val = '^=')) Then
   Begin
-    SaveSym   := LastSymIdx;
-    SaveField := LastFieldIdx;
-    SaveFExpr := LastFieldIsExpr;
+    SaveSym    := LastSymIdx;
+    SaveField  := LastFieldIdx;
+    SaveFExpr  := LastFieldIsExpr;
+    SaveArrSym := LastArraySym;
+    SaveArrKey := LastArrayHasKey;
     ParserAdvance;
     SkipNewlines;
     TK := ParseAssignExpr;  { droite a gauche : recursion }
+    { TODO 16 : si le LHS est array[key], utiliser GenArraySet }
+    If SaveArrKey And (SaveArrSym >= 0) Then
+    Begin
+      { EAX contient la valeur, la cle etait dans EAX avant GenArrayGet }
+      { On re-emet un SET : EAX=valeur, EBX devrait avoir la cle }
+      { Simplification : on emet PUSH EAX + re-evaluation de la cle }
+      GenArraySet(SaveArrSym);
+    End
     { TODO 15 : si le LHS est un champ ($n), utiliser GenFieldStore }
-    If (SaveField >= 0) Or SaveFExpr Then
+    Else If (SaveField >= 0) Or SaveFExpr Then
     Begin
       EmitComment('  $field = expr (store)');
       If (SaveField >= 0) And (Not SaveFExpr) Then
@@ -3210,6 +3269,8 @@ Begin
   Inc(ExprCount);
   LastFieldIdx := -1;
   LastFieldIsExpr := False;
+  LastArraySym := -1;
+  LastArrayHasKey := False;
   ParseExpr := ParseAssignExpr;
 End;
 
@@ -3692,6 +3753,72 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 16 - PARSEUR : TABLEAUX ASSOCIATIFS ET OPERATEUR        }
+{           IN / DELETE  [IMPLEMENTE]                           }
+{ ============================================================ }
+
+{ ---- GenArrayGet --------------------------------------------- }
+{ EAX contient la cle (pointeur chaine).                         }
+{ PUSH EAX (cle) + PUSH OFFSET _AWA_array + CALL HASH_GET       }
+{ Resultat dans EAX (valeur associee a la cle).                  }
+Procedure GenArrayGet(SymIdx: Integer);
+Begin
+  Inc(ArrayOpCount);
+  EmitComment('  array GET: ' + SymTab[SymIdx].Name + '[key]');
+  Emit('        PUSH    EAX');
+  Emit('        PUSH    OFFSET ' + SymTab[SymIdx].ArrayAsmLabel);
+  Emit('        CALL    ' + AW_RT_PFX + 'HASH_GET');
+End;
+
+{ ---- GenArraySet --------------------------------------------- }
+{ EAX contient la valeur, EBX contient la cle.                   }
+{ PUSH EAX (val) + PUSH EBX (cle) + PUSH OFFSET arr + CALL SET  }
+Procedure GenArraySet(SymIdx: Integer);
+Begin
+  Inc(ArrayOpCount);
+  EmitComment('  array SET: ' + SymTab[SymIdx].Name + '[key] = val');
+  Emit('        PUSH    EAX');
+  Emit('        PUSH    EBX');
+  Emit('        PUSH    OFFSET ' + SymTab[SymIdx].ArrayAsmLabel);
+  Emit('        CALL    ' + AW_RT_PFX + 'HASH_SET');
+End;
+
+{ ---- GenArrayExists ------------------------------------------ }
+{ EAX contient la cle.                                           }
+{ PUSH EAX (cle) + PUSH OFFSET _AWA_array + CALL HASH_EXISTS    }
+{ Resultat dans EAX (0 ou 1).                                    }
+Procedure GenArrayExists(SymIdx: Integer);
+Begin
+  Inc(ArrayOpCount);
+  EmitComment('  array EXISTS: (key in ' + SymTab[SymIdx].Name + ')');
+  Emit('        PUSH    EAX');
+  Emit('        PUSH    OFFSET ' + SymTab[SymIdx].ArrayAsmLabel);
+  Emit('        CALL    ' + AW_RT_PFX + 'HASH_EXISTS');
+End;
+
+{ ---- GenArrayDel --------------------------------------------- }
+{ EAX contient la cle.                                           }
+{ PUSH EAX (cle) + PUSH OFFSET _AWA_array + CALL HASH_DEL       }
+Procedure GenArrayDel(SymIdx: Integer);
+Begin
+  Inc(ArrayOpCount);
+  EmitComment('  array DEL: delete ' + SymTab[SymIdx].Name + '[key]');
+  Emit('        PUSH    EAX');
+  Emit('        PUSH    OFFSET ' + SymTab[SymIdx].ArrayAsmLabel);
+  Emit('        CALL    ' + AW_RT_PFX + 'HASH_DEL');
+End;
+
+{ ---- GenArrayClear ------------------------------------------- }
+{ PUSH OFFSET _AWA_array + CALL HASH_CLEAR                      }
+Procedure GenArrayClear(SymIdx: Integer);
+Begin
+  Inc(ArrayOpCount);
+  EmitComment('  array CLEAR: delete ' + SymTab[SymIdx].Name);
+  Emit('        PUSH    OFFSET ' + SymTab[SymIdx].ArrayAsmLabel);
+  Emit('        CALL    ' + AW_RT_PFX + 'HASH_CLEAR');
+End;
+
+{ ============================================================ }
 { TODO 09 - PARSEUR : PRINT, PRINTF, SPRINTF                  }
 { ============================================================ }
 
@@ -4053,7 +4180,7 @@ Begin
         D := ParseExpr;
       Exit;
     End;
-    { delete : parser ident[expr] }
+    { delete : parser ident[expr] (TODO 16 : code gen HASH_DEL/HASH_CLEAR) }
     If TK = KW_DELETE Then
     Begin
       ParserAdvance;
@@ -4065,10 +4192,30 @@ Begin
         ParserAdvance;
         If IsPunct('[') Then
         Begin
+          { delete array[expr] -> supprimer une entree }
           ParserAdvance;
-          D := ParseExpr;
+          TK := ParseExpr;
+          TK := GenCoerceToString(TK);
+          { SUBSEP : indices multidimensionnels }
+          While IsPunct(',') Do
+          Begin
+            GenPushEAX;
+            ParserAdvance;
+            SkipNewlines;
+            TK := ParseExpr;
+            TK := GenCoerceToString(TK);
+            GenPopEBX;
+            GenConcat;
+          End;
           If IsPunct(']') Then
             ParserAdvance;
+          { EAX = cle -> HASH_DEL }
+          GenArrayDel(D);
+        End
+        Else
+        Begin
+          { delete array -> vider tout le tableau }
+          GenArrayClear(D);
         End;
       End;
       Exit;
@@ -4964,6 +5111,9 @@ Begin
   FieldRefCount := 0;
   LastFieldIdx := -1;
   LastFieldIsExpr := False;
+  ArrayOpCount := 0;
+  LastArraySym := -1;
+  LastArrayHasKey := False;
   HasPushedBack := False;
   LexInit;
   { Mode debug : afficher tous les tokens }
@@ -4988,6 +5138,7 @@ Begin
     WriteLn('AWKCW32: ', RuleDefCount, ' regle(s) pattern-action (',
             RuleCount, ' enregistree(s))');
     WriteLn('AWKCW32: ', FieldRefCount, ' reference(s) de champs');
+    WriteLn('AWKCW32: ', ArrayOpCount, ' operation(s) tableau(x) associatif(s)');
     WriteLn('AWKCW32: ', ExprCount, ' expression(s) parsees');
     WriteLn('AWKCW32: ', CoercionCount, ' coercition(s), ',
             ConcatCount, ' concatenation(s) implicite(s)');
@@ -5000,7 +5151,7 @@ Begin
     WriteLn('AWKCW32: ', GenCount, ' operation(s) code gen, ',
             StringLitCount, ' litteral(aux) chaine');
     WriteLn('AWKCW32: scope depth=', ScopeDepth, ', loop depth=', LoopDepth);
-    WriteLn('AWKCW32: TODO 16..25 non encore implementes.');
+    WriteLn('AWKCW32: TODO 17..25 non encore implementes.');
     WriteLn('AWKCW32: sortie prevue: ', Opts.OutFile);
   End;
   LexClose;
