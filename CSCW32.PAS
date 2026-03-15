@@ -181,7 +181,7 @@
             Portee de bloc : { int x = 0; ... }.
             Initialisation locale : MOV [EBP-offset], valeur.
 
-  TODO 10 - EXPRESSIONS PRIMAIRES
+  TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
             ParsePrimary : literal entier, literal chaine,
               true, false, null, ident, appel de methode.
             Acces variable statique : MOV EAX,[_CSCV_nom].
@@ -834,6 +834,10 @@ Procedure DataInit; Forward;
 Function  AllocLocal(Size : Integer) : Integer; Forward;
 Procedure ParseVarDecl(Const VarType : TString; IsStatic : Boolean;
                        Const ClassName : TString); Forward;
+
+{ Forward declarations for TODO 10 }
+Procedure ParseExpr; Forward;
+Procedure ParsePrimary; Forward;
 
 { ============================================================ }
 { TODO 02 - LEXEUR (TOKENS C#)                                 }
@@ -3893,6 +3897,566 @@ Begin
   Until TokIsPunct(';') Or (CurToken.Kind = TK_EOF);
 End;
 
+{ ============================================================ }
+{ TODO 10 - EXPRESSIONS PRIMAIRES                               }
+{           [IMPLEMENTE]                                        }
+{ ============================================================ }
+{                                                               }
+{  Generateurs de code pour charger des valeurs dans EAX :      }
+{  - GenLoadConst : immediat entier -> MOV EAX,valeur           }
+{  - GenLoadStr : label chaine -> MOV EAX,OFFSET label          }
+{  - GenLoadVar : variable/parametre/statique -> MOV EAX,[...]  }
+{  - GenPushEAX / GenPopEBX : sauvegarde sur la pile            }
+{  - GenNeg : negation arithmetique -> NEG EAX                  }
+{  - GenLogNot : negation logique -> TEST+SETZ+MOVZX            }
+{  - GenBitNot : complement bit a bit -> NOT EAX                }
+{  - GenIncVar / GenDecVar : ++/-- sur variable                 }
+{                                                               }
+{  ParsePrimary : analyse d une expression primaire C# :        }
+{  - literal entier, chaine, true, false, null                  }
+{  - identificateur (variable, parametre, champ statique)       }
+{  - appel de methode ident(args)                               }
+{  - expression entre parentheses (expr)                        }
+{  - operateurs unaires prefixes : - ! ~ ++ --                  }
+{  - operateur new type[taille]                                 }
+{  - suffixes post-increment/decrement : expr++ expr--          }
+{  - indexation tableau : expr[index]                           }
+{                                                               }
+{  ParseExpr : pour l instant, alias de ParsePrimary            }
+{  (sera etendu en TODO 11 avec ParseExprPrec)                  }
+{                                                               }
+{ ============================================================ }
+
+{ ------------------------------------------------------------ }
+{ GenLoadConst : charger une constante entiere dans EAX         }
+{   MOV EAX, valeur                                             }
+{ ------------------------------------------------------------ }
+
+Procedure GenLoadConst(Val : LongInt);
+Var S : TString;
+Begin
+  Str(Val, S);
+  EmitInstr('MOV', 'EAX,' + S);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenLoadStr : charger l adresse d une chaine dans EAX          }
+{   MOV EAX, OFFSET label                                      }
+{ ------------------------------------------------------------ }
+
+Procedure GenLoadStr(Const Lbl : TString);
+Begin
+  EmitInstr('MOV', 'EAX,OFFSET ' + Lbl);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenLoadVar : charger une variable dans EAX                    }
+{   Selon la categorie du symbole :                             }
+{   - SC_VAR locale : MOV EAX,[EBP-offset]                     }
+{   - SC_PARAM      : MOV EAX,[EBP+offset]                     }
+{   - SC_STATIC     : MOV EAX,[_CSCST_label]                   }
+{   - SC_VAR globale: MOV EAX,[_CSCV_nom]                      }
+{   - SC_CONST      : MOV EAX,valeur constante                 }
+{ ------------------------------------------------------------ }
+
+Procedure GenLoadVar(Idx : Integer);
+Var
+  S : TString;
+  Off : Integer;
+  CI : Integer;
+Begin
+  If Idx < 0 Then
+  Begin
+    EmitComment('GenLoadVar: symbole inconnu');
+    EmitInstr('XOR', 'EAX,EAX');
+    Exit;
+  End;
+
+  { Constante nommee : charger sa valeur }
+  If SymTab[Idx].Cat = SC_CONST Then
+  Begin
+    CI := FindConst(SymTab[Idx].Name);
+    If CI > 0 Then
+    Begin
+      If ConstTab[CI].IsStr Then
+        EmitInstr('MOV', 'EAX,OFFSET ' +
+                  AddStrLit(ConstTab[CI].StrVal))
+      Else
+      Begin
+        Str(ConstTab[CI].Value, S);
+        EmitInstr('MOV', 'EAX,' + S);
+      End;
+    End
+    Else
+      EmitInstr('XOR', 'EAX,EAX');
+    Exit;
+  End;
+
+  Off := SymTab[Idx].Offset;
+
+  { Variable locale ou parametre : acces via EBP }
+  If (SymTab[Idx].Cat = SC_VAR) And (Not SymTab[Idx].IsGlobal) Then
+  Begin
+    Str(Off, S);
+    If Off < 0 Then
+      EmitInstr('MOV', 'EAX,DWORD PTR [EBP' + S + ']')
+    Else
+      EmitInstr('MOV', 'EAX,DWORD PTR [EBP+' + S + ']');
+  End
+  Else If SymTab[Idx].Cat = SC_PARAM Then
+  Begin
+    Str(Off, S);
+    EmitInstr('MOV', 'EAX,DWORD PTR [EBP+' + S + ']');
+  End
+  { Variable statique ou globale : acces par label }
+  Else If (SymTab[Idx].Cat = SC_STATIC) Or
+          (SymTab[Idx].IsGlobal) Then
+  Begin
+    EmitInstr('MOV', 'EAX,DWORD PTR [' +
+              SymTab[Idx].MangledName + ']');
+  End
+  Else
+  Begin
+    { Fallback : acces par label mangled }
+    EmitInstr('MOV', 'EAX,DWORD PTR [' +
+              SymTab[Idx].MangledName + ']');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenStoreVar : stocker EAX dans une variable                   }
+{   Selon la categorie du symbole :                             }
+{   - SC_VAR locale : MOV [EBP-offset],EAX                     }
+{   - SC_PARAM      : MOV [EBP+offset],EAX                     }
+{   - SC_STATIC     : MOV [_CSCST_label],EAX                   }
+{   - SC_VAR globale: MOV [_CSCV_nom],EAX                      }
+{ ------------------------------------------------------------ }
+
+Procedure GenStoreVar(Idx : Integer);
+Var
+  S : TString;
+  Off : Integer;
+Begin
+  If Idx < 0 Then
+  Begin
+    EmitComment('GenStoreVar: symbole inconnu');
+    Exit;
+  End;
+
+  Off := SymTab[Idx].Offset;
+
+  If (SymTab[Idx].Cat = SC_VAR) And (Not SymTab[Idx].IsGlobal) Then
+  Begin
+    Str(Off, S);
+    If Off < 0 Then
+      EmitInstr('MOV', 'DWORD PTR [EBP' + S + '],EAX')
+    Else
+      EmitInstr('MOV', 'DWORD PTR [EBP+' + S + '],EAX');
+  End
+  Else If SymTab[Idx].Cat = SC_PARAM Then
+  Begin
+    Str(Off, S);
+    EmitInstr('MOV', 'DWORD PTR [EBP+' + S + '],EAX');
+  End
+  Else If (SymTab[Idx].Cat = SC_STATIC) Or
+          (SymTab[Idx].IsGlobal) Then
+  Begin
+    EmitInstr('MOV', 'DWORD PTR [' +
+              SymTab[Idx].MangledName + '],EAX');
+  End
+  Else
+  Begin
+    EmitInstr('MOV', 'DWORD PTR [' +
+              SymTab[Idx].MangledName + '],EAX');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenPushEAX : sauvegarder EAX sur la pile                      }
+{ ------------------------------------------------------------ }
+
+Procedure GenPushEAX;
+Begin
+  EmitInstr('PUSH', 'EAX');
+End;
+
+{ ------------------------------------------------------------ }
+{ GenPopEBX : restaurer la valeur dans EBX depuis la pile       }
+{ ------------------------------------------------------------ }
+
+Procedure GenPopEBX;
+Begin
+  EmitInstr('POP', 'EBX');
+End;
+
+{ ------------------------------------------------------------ }
+{ GenNeg : negation arithmetique (NEG EAX)                      }
+{ ------------------------------------------------------------ }
+
+Procedure GenNeg;
+Begin
+  EmitInstr('NEG', 'EAX');
+End;
+
+{ ------------------------------------------------------------ }
+{ GenLogNot : negation logique                                  }
+{   TEST EAX,EAX / SETZ AL / MOVZX EAX,AL                     }
+{   Resultat : EAX = 1 si etait 0, 0 sinon                     }
+{ ------------------------------------------------------------ }
+
+Procedure GenLogNot;
+Begin
+  EmitInstr('TEST', 'EAX,EAX');
+  EmitInstr('SETZ', 'AL');
+  EmitInstr('MOVZX', 'EAX,AL');
+End;
+
+{ ------------------------------------------------------------ }
+{ GenBitNot : complement bit a bit (NOT EAX)                    }
+{ ------------------------------------------------------------ }
+
+Procedure GenBitNot;
+Begin
+  EmitInstr('NOT', 'EAX');
+End;
+
+{ ------------------------------------------------------------ }
+{ GenIncVar : incrementer une variable                          }
+{   INC DWORD PTR [var]                                         }
+{ ------------------------------------------------------------ }
+
+Procedure GenIncVar(Idx : Integer);
+Var
+  S : TString;
+  Off : Integer;
+Begin
+  If Idx < 0 Then Exit;
+  Off := SymTab[Idx].Offset;
+
+  If (SymTab[Idx].Cat = SC_VAR) And (Not SymTab[Idx].IsGlobal) Then
+  Begin
+    Str(Off, S);
+    If Off < 0 Then
+      EmitInstr('INC', 'DWORD PTR [EBP' + S + ']')
+    Else
+      EmitInstr('INC', 'DWORD PTR [EBP+' + S + ']');
+  End
+  Else If SymTab[Idx].Cat = SC_PARAM Then
+  Begin
+    Str(Off, S);
+    EmitInstr('INC', 'DWORD PTR [EBP+' + S + ']');
+  End
+  Else
+    EmitInstr('INC', 'DWORD PTR [' + SymTab[Idx].MangledName + ']');
+End;
+
+{ ------------------------------------------------------------ }
+{ GenDecVar : decrementer une variable                          }
+{   DEC DWORD PTR [var]                                         }
+{ ------------------------------------------------------------ }
+
+Procedure GenDecVar(Idx : Integer);
+Var
+  S : TString;
+  Off : Integer;
+Begin
+  If Idx < 0 Then Exit;
+  Off := SymTab[Idx].Offset;
+
+  If (SymTab[Idx].Cat = SC_VAR) And (Not SymTab[Idx].IsGlobal) Then
+  Begin
+    Str(Off, S);
+    If Off < 0 Then
+      EmitInstr('DEC', 'DWORD PTR [EBP' + S + ']')
+    Else
+      EmitInstr('DEC', 'DWORD PTR [EBP+' + S + ']');
+  End
+  Else If SymTab[Idx].Cat = SC_PARAM Then
+  Begin
+    Str(Off, S);
+    EmitInstr('DEC', 'DWORD PTR [EBP+' + S + ']');
+  End
+  Else
+    EmitInstr('DEC', 'DWORD PTR [' + SymTab[Idx].MangledName + ']');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePrimary : analyser une expression primaire C#            }
+{   Resultat dans EAX.                                          }
+{   Gere : literaux, idents, appels, parentheses, unaires,     }
+{          new type[taille], indexation, post-inc/dec.           }
+{ ------------------------------------------------------------ }
+
+Procedure ParsePrimary;
+Var
+  SavedName : TString;
+  QualName  : TString;
+  Idx       : Integer;
+  Lbl       : TString;
+  ArgCount  : Integer;
+Begin
+  { --- Literal entier --- }
+  If CurToken.Kind = TK_INTEGER Then
+  Begin
+    GenLoadConst(CurToken.IntVal);
+    Consume;
+  End
+  { --- Literal chaine --- }
+  Else If CurToken.Kind = TK_STRING Then
+  Begin
+    Lbl := AddStrLit(CurToken.Val);
+    GenLoadStr(Lbl);
+    Consume;
+  End
+  { --- Literal caractere --- }
+  Else If CurToken.Kind = TK_CHAR Then
+  Begin
+    If Length(CurToken.Val) > 0 Then
+      GenLoadConst(Ord(CurToken.Val[1]))
+    Else
+      GenLoadConst(0);
+    Consume;
+  End
+  { --- true --- }
+  Else If TokIsKw('true') Then
+  Begin
+    GenLoadConst(1);
+    Consume;
+  End
+  { --- false --- }
+  Else If TokIsKw('false') Then
+  Begin
+    GenLoadConst(0);
+    Consume;
+  End
+  { --- null --- }
+  Else If TokIsKw('null') Then
+  Begin
+    GenLoadConst(0);
+    Consume;
+  End
+  { --- Expression entre parentheses --- }
+  Else If TokIsPunct('(') Then
+  Begin
+    Consume;  { consommer ( }
+    ParseExpr;
+    If TokIsPunct(')') Then
+      Consume;  { consommer ) }
+  End
+  { --- Negation unaire -expr --- }
+  Else If TokIsOp('-') Then
+  Begin
+    Consume;
+    ParsePrimary;
+    GenNeg;
+  End
+  { --- Negation logique !expr --- }
+  Else If TokIsOp('!') Then
+  Begin
+    Consume;
+    ParsePrimary;
+    GenLogNot;
+  End
+  { --- Complement bit a bit ~expr --- }
+  Else If TokIsOp('~') Then
+  Begin
+    Consume;
+    ParsePrimary;
+    GenBitNot;
+  End
+  { --- Pre-increment ++ident --- }
+  Else If TokIsOp('++') Then
+  Begin
+    Consume;
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      Idx := SymFind(CurToken.Val);
+      Consume;
+      GenIncVar(Idx);
+      GenLoadVar(Idx);
+    End
+    Else
+    Begin
+      ParsePrimary;
+      { Fallback : ne peut pas incrementer un non-ident }
+    End;
+  End
+  { --- Pre-decrement --ident --- }
+  Else If TokIsOp('--') Then
+  Begin
+    Consume;
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      Idx := SymFind(CurToken.Val);
+      Consume;
+      GenDecVar(Idx);
+      GenLoadVar(Idx);
+    End
+    Else
+    Begin
+      ParsePrimary;
+    End;
+  End
+  { --- new type[taille] : allocation de tableau --- }
+  Else If TokIsKw('new') Then
+  Begin
+    Consume;
+    { Lire le type de l element }
+    If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
+      Consume;
+    { Lire [taille] }
+    If TokIsPunct('[') Then
+    Begin
+      Consume;
+      ParseExpr;  { taille dans EAX }
+      If TokIsPunct(']') Then Consume;
+      { Multiplier par sizeof(element) = 4 (DWORD par defaut) }
+      EmitInstr('SHL', 'EAX,2');  { *4 }
+      { Appeler HeapAlloc(hHeap, flags, size)  STDCALL }
+      { Arguments pushes en ordre inverse }
+      EmitInstr('PUSH', 'EAX');                   { dwBytes  }
+      EmitInstr('PUSH', '0');                      { dwFlags  }
+      EmitInstr('CALL', '_GetProcessHeap@0');
+      EmitInstr('PUSH', 'EAX');                   { hHeap    }
+      EmitInstr('CALL', '_HeapAlloc@12');
+      { Resultat : EAX = pointeur vers le bloc alloue }
+    End
+    Else
+    Begin
+      { new Type() - simple allocation objet (stub) }
+      EmitComment('new objet (stub)');
+      EmitInstr('XOR', 'EAX,EAX');
+    End;
+  End
+  { --- Identificateur --- }
+  Else If CurToken.Kind = TK_IDENT Then
+  Begin
+    SavedName := CurToken.Val;
+    Consume;
+
+    { Construire un nom qualifie (ex: Console.WriteLine) }
+    QualName := SavedName;
+    While TokIsPunct('.') Do
+    Begin
+      Consume;
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        QualName := QualName + '.' + CurToken.Val;
+        Consume;
+      End;
+    End;
+
+    { Appel de methode : ident(...) }
+    If TokIsPunct('(') Then
+    Begin
+      Idx := SymFind(QualName);
+      Consume;  { consommer ( }
+      ArgCount := 0;
+      { Evaluer et empiler les arguments }
+      While (CurToken.Kind <> TK_EOF) And
+            (Not TokIsPunct(')')) Do
+      Begin
+        ParseExpr;
+        GenPushEAX;
+        Inc(ArgCount);
+        If TokIsPunct(',') Then Consume;
+      End;
+      If TokIsPunct(')') Then Consume;
+      { Appeler la methode }
+      If Idx >= 0 Then
+        EmitInstr('CALL', SymTab[Idx].MangledName)
+      Else
+      Begin
+        EmitComment('appel methode inconnue: ' + QualName);
+        EmitInstr('CALL', CSC_FN_PFX + StrUpperCase(QualName));
+      End;
+      { Nettoyer la pile (convention CDECL pour les args) }
+      { Note: les built-in sont STDCALL, le callee nettoie }
+      { Pour les methodes utilisateur on utilise aussi STDCALL }
+    End
+    { Indexation tableau : ident[index] }
+    Else If TokIsPunct('[') Then
+    Begin
+      Idx := SymFind(QualName);
+      GenLoadVar(Idx);
+      GenPushEAX;  { sauver l adresse de base }
+      Consume;  { consommer [ }
+      ParseExpr;  { index dans EAX }
+      If TokIsPunct(']') Then Consume;
+      { Calculer l adresse : base + index*4 }
+      EmitInstr('SHL', 'EAX,2');     { index * 4 }
+      GenPopEBX;                      { base dans EBX }
+      EmitInstr('ADD', 'EAX,EBX');   { adresse element }
+      EmitInstr('MOV', 'EAX,DWORD PTR [EAX]');  { charger valeur }
+    End
+    { Post-increment : ident++ }
+    Else If TokIsOp('++') Then
+    Begin
+      Idx := SymFind(QualName);
+      GenLoadVar(Idx);   { valeur avant dans EAX }
+      GenIncVar(Idx);    { incrementer la variable }
+      Consume;           { consommer ++ }
+    End
+    { Post-decrement : ident-- }
+    Else If TokIsOp('--') Then
+    Begin
+      Idx := SymFind(QualName);
+      GenLoadVar(Idx);   { valeur avant dans EAX }
+      GenDecVar(Idx);    { decrementer la variable }
+      Consume;           { consommer -- }
+    End
+    { Variable simple ou constante }
+    Else
+    Begin
+      Idx := SymFind(QualName);
+      If Idx >= 0 Then
+        GenLoadVar(Idx)
+      Else
+      Begin
+        { Peut etre une constante nommee }
+        Idx := FindConst(StrLowerCase(QualName));
+        If Idx > 0 Then
+        Begin
+          If ConstTab[Idx].IsStr Then
+            GenLoadStr(AddStrLit(ConstTab[Idx].StrVal))
+          Else
+            GenLoadConst(ConstTab[Idx].Value);
+        End
+        Else
+        Begin
+          EmitComment('symbole inconnu: ' + QualName);
+          EmitInstr('XOR', 'EAX,EAX');
+        End;
+      End;
+    End;
+  End
+  { --- Literal flottant (stub : tronque en entier) --- }
+  Else If CurToken.Kind = TK_FLOAT Then
+  Begin
+    GenLoadConst(CurToken.IntVal);
+    Consume;
+  End
+  { --- Token inconnu --- }
+  Else
+  Begin
+    EmitComment('expression primaire inattendue: ' + CurToken.Val);
+    EmitInstr('XOR', 'EAX,EAX');
+    Consume;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseExpr : analyser une expression complete                  }
+{   Pour l instant (TODO 10), c est un simple alias de          }
+{   ParsePrimary. Sera etendu en TODO 11 avec les operateurs    }
+{   binaires et la precedence (Pratt parser).                   }
+{ ------------------------------------------------------------ }
+
+Procedure ParseExpr;
+Begin
+  ParsePrimary;
+End;
+
 { ------------------------------------------------------------ }
 { ShowStats (corps)                                             }
 { ------------------------------------------------------------ }
@@ -4304,7 +4868,7 @@ Begin
   EmitLabel('_CSCF_MAIN');
   EmitProlog(LocalOffset);
   EmitComment('--- initialisations locales (TODO 09) ---');
-  EmitComment('--- code a generer (TODO 10+) ---');
+  EmitComment('--- code a generer (TODO 11+) ---');
   EmitInstr('PUSH', '0');
   EmitInstr('CALL', '_ExitProcess@4');
   EmitEpilog;
@@ -4313,7 +4877,7 @@ Begin
   EmitClose;
 
   WriteLn('CSCW32: ASM genere -> ', AsmFileName);
-  WriteLn('CSCW32: Les TODOs 10..25 ne sont pas encore implementes.');
+  WriteLn('CSCW32: Les TODOs 11..25 ne sont pas encore implementes.');
 End;
 
 { ------------------------------------------------------------ }

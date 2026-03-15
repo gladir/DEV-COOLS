@@ -249,7 +249,7 @@
               avec initialisation optionnelle et multiples noms.
             LocalOffset, ParamOffset : compteurs de pile.
 
-  TODO 10 - EXPRESSIONS PRIMAIRES
+  TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
             ParsePrimary : literal entier, literal chaine,
               true, false, null, identificateur, appel de methode,
               expression entre parentheses.
@@ -261,14 +261,18 @@
               -> resultat dans EAX.
             Parentheses : (expr) pour forcer la precedence.
             new type[taille] : allocation de tableau
-              (calcul taille, appel _CSCRT_MALLOC ou
-              reservation .DATA selon contexte).
+              (calcul taille, appel HeapAlloc via Win32 API).
             Acces tableau : expr[index] ->
               base + index * sizeof(elem).
             Pre-increment/decrement : ++expr --expr.
             Post-increment/decrement : expr++ expr--.
             Negation unaire : -expr -> NEG EAX.
             Negation logique : !expr -> TEST + SETZ + MOVZX.
+            Complement bit a bit : ~expr -> NOT EAX.
+            GenLoadConst, GenLoadStr, GenLoadVar, GenStoreVar.
+            GenPushEAX, GenPopEBX, GenNeg, GenLogNot, GenBitNot.
+            GenIncVar, GenDecVar.
+            ParseExpr : alias de ParsePrimary (etendu TODO 11).
 
   TODO 11 - OPERATEURS ET PRECEDENCE
             ParseExprPrec(MinPrec) : boucle de precedence (Pratt)

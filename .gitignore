@@ -7,3 +7,4 @@ CSCW32
 *.o
 SAMPLES/CSHARP/*.asm
 SAMPLES/CSHARP/*.exe
+*.asm
