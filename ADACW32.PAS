@@ -786,7 +786,7 @@ Const
   MAX_BIN_DATA    = 65536;       { 64 KB max data section             }
   MAX_BIN_LBL     = 4096;        { max labels                         }
   MAX_BIN_FIX     = 8192;        { max fixups                         }
-  PE_NUM_API      = 7;           { number of imported Win32 APIs      }
+  PE_NUM_API      = 9;           { number of imported Win32 APIs      }
   COFF_RELOC_DIR32  = 6;         { IMAGE_REL_I386_DIR32               }
   COFF_RELOC_REL32  = 20;        { IMAGE_REL_I386_REL32               }
 {$ENDIF}
@@ -974,11 +974,12 @@ Const
   BinAPIDecorated : Array[0..PE_NUM_API - 1] Of String[32] = (
     '_ExitProcess@4', '_GetStdHandle@4', '_WriteFile@20',
     '_ReadFile@20', '_GetProcessHeap@0', '_HeapAlloc@12',
-    '_HeapFree@12'
+    '_HeapFree@12', '_CreateFileA@28', '_CloseHandle@4'
   );
   BinAPIName : Array[0..PE_NUM_API - 1] Of String[20] = (
     'ExitProcess', 'GetStdHandle', 'WriteFile', 'ReadFile',
-    'GetProcessHeap', 'HeapAlloc', 'HeapFree'
+    'GetProcessHeap', 'HeapAlloc', 'HeapFree',
+    'CreateFileA', 'CloseHandle'
   );
 {$ENDIF}
 
@@ -2716,6 +2717,14 @@ Begin
   EmitI(ADA_RT_PFX + 'CUREXC    DD 0');
   EmitBlank;
 
+  { --- Tampons et variables pour fichiers (File I/O) --- }
+  EmitComment('--- tampons et variables fichiers ---');
+  EmitI(ADA_RT_PFX + 'FILEBUF   DB 256 DUP(0)');
+  EmitI(ADA_RT_PFX + 'FWRITTEN  DD 0');
+  EmitI(ADA_RT_PFX + 'FREADCNT  DD 0');
+  EmitI(ADA_RT_PFX + 'FLINEBUF  DB 256 DUP(0)');
+  EmitBlank;
+
   { --- Messages d erreur runtime (TODO 24) --- }
   EmitComment('--- messages d''erreur runtime ---');
   EmitI(ADA_RT_PFX + 'ERR_RANGE DB ''Constraint_Error: valeur hors bornes'', 0');
@@ -2800,6 +2809,7 @@ Var
   LblReadLoop, LblReadDone, LblReadSkip       : TString;
   LblCopyLoop, LblCatFnd, LblCatLoop          : TString;
   LblOk, LblErr                               : TString;
+  LblTop, LblEnd                              : TString;
 Begin
   EmitBlank;
   EmitComment('========================================');
@@ -3210,6 +3220,202 @@ Begin
   EmitI('CALL ' + ADA_RT_PFX + 'STRLEN');
   EmitI('MOV  EBX, DWORD PTR [EBP+12]');
   EmitI('MOV  DWORD PTR [EBX], EAX');
+  EmitI('POP  EBP');
+  EmitI('RET  8');
+
+  { ---- _ADART_FCREATE : creer un fichier en ecriture ---- }
+  { Entree : [ESP+4] = pointeur vers nom de fichier ASCIIZ   }
+  { Sortie : EAX = handle du fichier (INVALID_HANDLE = -1)   }
+  EmitBlank;
+  EmitComment('--- _ADART_FCREATE : creer fichier en ecriture ---');
+  EmitLabel(ADA_RT_PFX + 'FCREATE');
+  EmitI('PUSH EBP');
+  EmitI('MOV  EBP, ESP');
+  { CreateFileA(lpFileName, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL) }
+  EmitI('PUSH 0');                 { hTemplateFile = NULL }
+  EmitI('PUSH 128');               { dwFlagsAndAttributes = FILE_ATTRIBUTE_NORMAL }
+  EmitI('PUSH 2');                 { dwCreationDisposition = CREATE_ALWAYS }
+  EmitI('PUSH 0');                 { lpSecurityAttributes = NULL }
+  EmitI('PUSH 0');                 { dwShareMode = 0 }
+  EmitI('PUSH 1073741824');        { dwDesiredAccess = GENERIC_WRITE = 0x40000000 }
+  EmitI('MOV  EAX, DWORD PTR [EBP+8]');
+  EmitI('PUSH EAX');               { lpFileName }
+  EmitI('CALL _CreateFileA@28');
+  EmitI('POP  EBP');
+  EmitI('RET  4');
+
+  { ---- _ADART_FOPEN : ouvrir un fichier en lecture ---- }
+  { Entree : [ESP+4] = pointeur vers nom de fichier ASCIIZ   }
+  { Sortie : EAX = handle du fichier (INVALID_HANDLE = -1)   }
+  EmitBlank;
+  EmitComment('--- _ADART_FOPEN : ouvrir fichier en lecture ---');
+  EmitLabel(ADA_RT_PFX + 'FOPEN');
+  EmitI('PUSH EBP');
+  EmitI('MOV  EBP, ESP');
+  { CreateFileA(lpFileName, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL) }
+  EmitI('PUSH 0');                 { hTemplateFile = NULL }
+  EmitI('PUSH 128');               { dwFlagsAndAttributes = FILE_ATTRIBUTE_NORMAL }
+  EmitI('PUSH 3');                 { dwCreationDisposition = OPEN_EXISTING }
+  EmitI('PUSH 0');                 { lpSecurityAttributes = NULL }
+  EmitI('PUSH 1');                 { dwShareMode = FILE_SHARE_READ }
+  EmitI('PUSH -2147483648');       { dwDesiredAccess = GENERIC_READ = 0x80000000 }
+  EmitI('MOV  EAX, DWORD PTR [EBP+8]');
+  EmitI('PUSH EAX');               { lpFileName }
+  EmitI('CALL _CreateFileA@28');
+  EmitI('POP  EBP');
+  EmitI('RET  4');
+
+  { ---- _ADART_FCLOSE : fermer un handle de fichier ---- }
+  { Entree : [ESP+4] = handle du fichier                   }
+  EmitBlank;
+  EmitComment('--- _ADART_FCLOSE : fermer fichier ---');
+  EmitLabel(ADA_RT_PFX + 'FCLOSE');
+  EmitI('PUSH EBP');
+  EmitI('MOV  EBP, ESP');
+  EmitI('MOV  EAX, DWORD PTR [EBP+8]');
+  EmitI('PUSH EAX');
+  EmitI('CALL _CloseHandle@4');
+  EmitI('POP  EBP');
+  EmitI('RET  4');
+
+  { ---- _ADART_FPUT : ecrire chaine ASCIIZ dans un fichier ---- }
+  { Entree : [ESP+4] = handle, [ESP+8] = pointeur vers chaine    }
+  EmitBlank;
+  EmitComment('--- _ADART_FPUT : ecrire chaine dans fichier ---');
+  EmitLabel(ADA_RT_PFX + 'FPUT');
+  EmitI('PUSH EBP');
+  EmitI('MOV  EBP, ESP');
+  EmitI('PUSH ESI');
+  { Calculer la longueur de la chaine }
+  EmitI('MOV  ESI, DWORD PTR [EBP+8]');  { ESI = pointeur chaine }
+  EmitI('XOR  ECX, ECX');
+  LblTop := NewLabel;
+  LblEnd := NewLabel;
+  EmitLabel(LblTop);
+  EmitI('CMP  BYTE PTR [ESI+ECX], 0');
+  EmitI('JE   ' + LblEnd);
+  EmitI('INC  ECX');
+  EmitI('JMP  ' + LblTop);
+  EmitLabel(LblEnd);
+  { WriteFile(hFile, ESI, ECX, @FWRITTEN, NULL) }
+  EmitI('PUSH 0');
+  EmitI('LEA  EAX, DWORD PTR [' + ADA_RT_PFX + 'FWRITTEN]');
+  EmitI('PUSH EAX');
+  EmitI('PUSH ECX');
+  EmitI('PUSH ESI');
+  EmitI('MOV  EAX, DWORD PTR [EBP+12]'); { handle }
+  EmitI('PUSH EAX');
+  EmitI('CALL _WriteFile@20');
+  EmitI('POP  ESI');
+  EmitI('POP  EBP');
+  EmitI('RET  8');
+
+  { ---- _ADART_FPUT_LINE : ecrire chaine + CRLF dans fichier --- }
+  { Entree : [ESP+4] = handle, [ESP+8] = pointeur vers chaine     }
+  EmitBlank;
+  EmitComment('--- _ADART_FPUT_LINE : ecrire chaine + CRLF fichier ---');
+  EmitLabel(ADA_RT_PFX + 'FPUT_LINE');
+  EmitI('PUSH EBP');
+  EmitI('MOV  EBP, ESP');
+  EmitI('PUSH ESI');
+  { Calculer la longueur de la chaine }
+  EmitI('MOV  ESI, DWORD PTR [EBP+8]');  { ESI = pointeur chaine }
+  EmitI('XOR  ECX, ECX');
+  LblTop := NewLabel;
+  LblEnd := NewLabel;
+  EmitLabel(LblTop);
+  EmitI('CMP  BYTE PTR [ESI+ECX], 0');
+  EmitI('JE   ' + LblEnd);
+  EmitI('INC  ECX');
+  EmitI('JMP  ' + LblTop);
+  EmitLabel(LblEnd);
+  { WriteFile(hFile, ESI, ECX, @FWRITTEN, NULL) }
+  EmitI('PUSH 0');
+  EmitI('LEA  EAX, DWORD PTR [' + ADA_RT_PFX + 'FWRITTEN]');
+  EmitI('PUSH EAX');
+  EmitI('PUSH ECX');
+  EmitI('PUSH ESI');
+  EmitI('MOV  EAX, DWORD PTR [EBP+12]'); { handle }
+  EmitI('PUSH EAX');
+  EmitI('CALL _WriteFile@20');
+  { Ecrire CRLF }
+  EmitI('PUSH 0');
+  EmitI('LEA  EAX, DWORD PTR [' + ADA_RT_PFX + 'FWRITTEN]');
+  EmitI('PUSH EAX');
+  EmitI('PUSH 2');
+  EmitI('LEA  EAX, DWORD PTR [' + ADA_RT_PFX + 'CRLF_DATA]');
+  EmitI('PUSH EAX');
+  EmitI('MOV  EAX, DWORD PTR [EBP+12]'); { handle }
+  EmitI('PUSH EAX');
+  EmitI('CALL _WriteFile@20');
+  EmitI('POP  ESI');
+  EmitI('POP  EBP');
+  EmitI('RET  8');
+
+  { ---- _ADART_FPUT_INT : ecrire entier dans fichier ---- }
+  { Entree : pile = handle(premier push), valeur(second push)     }
+  { Apres frame : [EBP+8] = valeur, [EBP+12] = handle            }
+  EmitBlank;
+  EmitComment('--- _ADART_FPUT_INT : ecrire entier fichier ---');
+  EmitLabel(ADA_RT_PFX + 'FPUT_INT');
+  EmitI('PUSH EBP');
+  EmitI('MOV  EBP, ESP');
+  { Convertir en chaine }
+  EmitI('MOV  EAX, DWORD PTR [EBP+8]');  { valeur }
+  EmitI('CALL ' + ADA_RT_PFX + 'NUMTOSTR');
+  { Ecrire la chaine resultante via FPUT(handle, chaine) }
+  EmitI('PUSH DWORD PTR [EBP+12]');       { push handle }
+  EmitI('PUSH EAX');                       { push pointeur chaine }
+  EmitI('CALL ' + ADA_RT_PFX + 'FPUT');
+  EmitI('POP  EBP');
+  EmitI('RET  8');
+
+  { ---- _ADART_FGET_LINE : lire une ligne depuis un fichier ---- }
+  { Entree : [ESP+4] = handle, [ESP+8] = ptr buffer dest          }
+  { Lit caractere par caractere jusqu a CR/LF ou EOF               }
+  EmitBlank;
+  EmitComment('--- _ADART_FGET_LINE : lire une ligne fichier ---');
+  EmitLabel(ADA_RT_PFX + 'FGET_LINE');
+  EmitI('PUSH EBP');
+  EmitI('MOV  EBP, ESP');
+  EmitI('PUSH EBX');
+  EmitI('PUSH EDI');
+  EmitI('MOV  EDI, DWORD PTR [EBP+8]');   { EDI = buffer dest }
+  EmitI('XOR  EBX, EBX');                 { EBX = index dans buffer }
+  LblTop := NewLabel;
+  LblEnd := NewLabel;
+  EmitLabel(LblTop);
+  { ReadFile(hFile, @FILEBUF, 1, @FREADCNT, NULL) }
+  EmitI('PUSH 0');
+  EmitI('LEA  EAX, DWORD PTR [' + ADA_RT_PFX + 'FREADCNT]');
+  EmitI('PUSH EAX');
+  EmitI('PUSH 1');
+  EmitI('LEA  EAX, DWORD PTR [' + ADA_RT_PFX + 'FILEBUF]');
+  EmitI('PUSH EAX');
+  EmitI('MOV  EAX, DWORD PTR [EBP+12]');  { handle }
+  EmitI('PUSH EAX');
+  EmitI('CALL _ReadFile@20');
+  { Verifier si on a lu 0 octets (EOF) }
+  EmitI('MOV  ECX, DWORD PTR [' + ADA_RT_PFX + 'FREADCNT]');
+  EmitI('TEST ECX, ECX');
+  EmitI('JE   ' + LblEnd);
+  { Verifier le caractere lu }
+  EmitI('MOVZX EAX, BYTE PTR [' + ADA_RT_PFX + 'FILEBUF]');
+  EmitI('CMP  AL, 10');                    { LF ? }
+  EmitI('JE   ' + LblEnd);
+  EmitI('CMP  AL, 13');                    { CR ? }
+  EmitI('JE   ' + LblTop);                { Ignorer CR, continuer }
+  { Stocker le caractere }
+  EmitI('MOV  BYTE PTR [EDI+EBX], AL');
+  EmitI('INC  EBX');
+  EmitI('CMP  EBX, 254');                  { Limite buffer }
+  EmitI('JGE  ' + LblEnd);
+  EmitI('JMP  ' + LblTop);
+  EmitLabel(LblEnd);
+  EmitI('MOV  BYTE PTR [EDI+EBX], 0');    { Terminateur NUL }
+  EmitI('MOV  EAX, EBX');                 { EAX = longueur lue }
+  EmitI('POP  EDI');
+  EmitI('POP  EBX');
   EmitI('POP  EBP');
   EmitI('RET  8');
 
@@ -6051,6 +6257,7 @@ End;
 Function DetectArgTypeForPut : Integer;
 Var
   Sym : Integer;
+  TI  : Integer;
 Begin
   Case CurTokType Of
     TOK_INTEGER : DetectArgTypeForPut := TYPE_INT;
@@ -6064,7 +6271,15 @@ Begin
         Begin
           Sym := FindSym(CurTokStr);
           If Sym > 0 Then
-            DetectArgTypeForPut := SymTab[Sym].TypeIdx
+          Begin
+            TI := SymTab[Sym].TypeIdx;
+            { Detecter les tableaux de caracteres comme chaines }
+            If (TI > 0) And (TI <= TypeCount) And
+               (TypeTab[TI].ElemType = TYPE_CHAR) Then
+              DetectArgTypeForPut := TYPE_STR
+            Else
+              DetectArgTypeForPut := TI;
+          End
           Else
             DetectArgTypeForPut := TYPE_INT;
         End;
@@ -6078,9 +6293,40 @@ End;
 { Genere un appel inline a _ADART_PRINTINT, _ADART_PRINT ou     }
 { _ADART_PRINTCHR selon le type de l argument.                   }
 { Si IsLine est vrai, ajoute un CALL _ADART_CRLF apres.         }
+{ Si 2 arguments (File, Value), utilise les helpers fichier.     }
 Procedure GenTextIOPutInline(IsLine : Boolean);
 Var
-  ArgTy : Integer;
+  ArgTy, Sym, TI : Integer;
+
+  Procedure ParseStrOrExpr;
+  { Parse l argument : si c est une variable array-of-char, genere  }
+  { LEA (adresse) au lieu de MOV (valeur) pour obtenir un pointeur. }
+  Var
+    VName : TString;
+    VSym  : Integer;
+    VTI   : Integer;
+  Begin
+    If (ArgTy = TYPE_STR) And (CurTokType = TOK_IDENT) Then
+    Begin
+      VName := CurTokStr;
+      VSym := FindSym(VName);
+      If VSym > 0 Then
+      Begin
+        VTI := SymTab[VSym].TypeIdx;
+        If (VTI > 0) And (VTI <= TypeCount) And
+           (TypeTab[VTI].ElemType = TYPE_CHAR) Then
+        Begin
+          { Array de caracteres : utiliser adresse au lieu de valeur }
+          GenLoadAddr(VSym);
+          Consume;
+          Exit;
+        End;
+      End;
+    End;
+    { Cas standard : litterale chaine, entier, etc. }
+    ParseExpr;
+  End;
+
 Begin
   If IsLine Then
     EmitComment('Ada.Text_IO.Put_Line (type-dispatched)')
@@ -6090,27 +6336,59 @@ Begin
   If CurTokType = TOK_LPAREN Then
   Begin
     Consume; { ( }
+    { Parser le premier argument }
     ArgTy := DetectArgTypeForPut;
-    ParseExpr;
-    Expect(TOK_RPAREN, '`)` attendu apres argument Put');
-    { Dispatcher selon le type }
-    Case ArgTy Of
-      TYPE_STR :
+    ParseStrOrExpr;   { EAX = premier argument (LEA pour arrays-of-char) }
+
+    If CurTokType = TOK_COMMA Then
+    Begin
+      { ---- Mode fichier : Put(F, Value) / Put_Line(F, Value) ---- }
+      { EAX = handle du fichier                                      }
+      EmitI('PUSH EAX');   { Sauver handle sur la pile }
+      Consume;             { Consommer la virgule }
+      ArgTy := DetectArgTypeForPut;
+      ParseStrOrExpr;      { EAX = valeur a ecrire (LEA pour arrays) }
+      Expect(TOK_RPAREN, '`)` attendu apres arguments');
+      Case ArgTy Of
+        TYPE_STR :
+          Begin
+            EmitI('PUSH EAX');  { push chaine }
+            If IsLine Then
+              EmitI('CALL ' + ADA_RT_PFX + 'FPUT_LINE')
+            Else
+              EmitI('CALL ' + ADA_RT_PFX + 'FPUT');
+          End;
+      Else
         Begin
-          EmitI('PUSH EAX');
-          EmitI('CALL ' + ADA_RT_PFX + 'PRINT');
+          { Integer, Boolean, enum -> FPUT_INT }
+          EmitI('PUSH EAX');  { push valeur }
+          EmitI('CALL ' + ADA_RT_PFX + 'FPUT_INT');
         End;
-      TYPE_CHAR :
-        Begin
-          EmitI('PUSH EAX');
-          EmitI('CALL ' + ADA_RT_PFX + 'PRINTCHR');
-        End;
-    Else
-      Begin
-        { Integer, Boolean, enum, etc. -> PRINTINT }
-        EmitI('PUSH EAX');
-        EmitI('CALL ' + ADA_RT_PFX + 'PRINTINT');
       End;
+    End
+    Else
+    Begin
+      { ---- Mode console : Put(Value) / Put_Line(Value) ---- }
+      Expect(TOK_RPAREN, '`)` attendu apres argument Put');
+      Case ArgTy Of
+        TYPE_STR :
+          Begin
+            EmitI('PUSH EAX');
+            EmitI('CALL ' + ADA_RT_PFX + 'PRINT');
+          End;
+        TYPE_CHAR :
+          Begin
+            EmitI('PUSH EAX');
+            EmitI('CALL ' + ADA_RT_PFX + 'PRINTCHR');
+          End;
+      Else
+        Begin
+          EmitI('PUSH EAX');
+          EmitI('CALL ' + ADA_RT_PFX + 'PRINTINT');
+        End;
+      End;
+      If IsLine Then
+        EmitI('CALL ' + ADA_RT_PFX + 'CRLF');
     End;
   End
   Else
@@ -6123,10 +6401,6 @@ Begin
       Exit;
     End;
   End;
-
-  { Put_Line : ajouter retour a la ligne }
-  If IsLine Then
-    EmitI('CALL ' + ADA_RT_PFX + 'CRLF');
 
   If CurTokType = TOK_SEMI Then Consume;
 End;
@@ -6179,6 +6453,255 @@ Begin
   If CurTokType = TOK_SEMI Then Consume;
 End;
 
+{ ---- GenTextIOCreateInline : Create (File, Mode, Name) ------- }
+{ Ada.Text_IO.Create (F, Out_File, "filename.txt")               }
+{ Genere :                                                        }
+{   PUSH OFFSET "filename.txt"                                    }
+{   CALL _ADART_FCREATE                                           }
+{   MOV [F], EAX                                                  }
+Procedure GenTextIOCreateInline;
+Var
+  VarSym : Integer;
+  VarName : TString;
+Begin
+  EmitComment('Ada.Text_IO.Create');
+  If CurTokType <> TOK_LPAREN Then
+  Begin
+    Error('`(` attendu apres Create');
+    Exit;
+  End;
+  Consume; { ( }
+  { Premier argument : variable File_Type }
+  If CurTokType <> TOK_IDENT Then
+  Begin
+    Error('Variable fichier attendue pour Create');
+    ParseExpr;
+    If CurTokType = TOK_RPAREN Then Consume;
+    If CurTokType = TOK_SEMI Then Consume;
+    Exit;
+  End;
+  VarName := CurTokStr;
+  Consume;
+  VarSym := FindSym(VarName);
+  If VarSym = 0 Then
+  Begin
+    Error('Variable non declaree : ' + VarName);
+    If CurTokType = TOK_RPAREN Then Consume;
+    If CurTokType = TOK_SEMI Then Consume;
+    Exit;
+  End;
+  { Deuxieme argument : mode (Out_File, In_File) - on ignore }
+  If CurTokType = TOK_COMMA Then
+  Begin
+    Consume;
+    { Skipper l argument mode (identifiant) }
+    If CurTokType = TOK_IDENT Then Consume;
+  End;
+  { Troisieme argument : nom de fichier }
+  If CurTokType = TOK_COMMA Then
+  Begin
+    Consume;
+    ParseExpr;  { EAX = pointeur vers chaine nom fichier }
+  End
+  Else
+  Begin
+    Error('Nom de fichier attendu pour Create');
+    If CurTokType = TOK_RPAREN Then Consume;
+    If CurTokType = TOK_SEMI Then Consume;
+    Exit;
+  End;
+  Expect(TOK_RPAREN, '`)` attendu apres arguments Create');
+  { Appeler _ADART_FCREATE }
+  EmitI('PUSH EAX');
+  EmitI('CALL ' + ADA_RT_PFX + 'FCREATE');
+  { Stocker le handle dans la variable }
+  GenStoreVar(VarSym);
+  If CurTokType = TOK_SEMI Then Consume;
+End;
+
+{ ---- GenTextIOOpenInline : Open (File, Mode, Name) ----------- }
+{ Ada.Text_IO.Open (F, In_File, "filename.txt")                  }
+Procedure GenTextIOOpenInline;
+Var
+  VarSym : Integer;
+  VarName : TString;
+Begin
+  EmitComment('Ada.Text_IO.Open');
+  If CurTokType <> TOK_LPAREN Then
+  Begin
+    Error('`(` attendu apres Open');
+    Exit;
+  End;
+  Consume; { ( }
+  { Premier argument : variable File_Type }
+  If CurTokType <> TOK_IDENT Then
+  Begin
+    Error('Variable fichier attendue pour Open');
+    ParseExpr;
+    If CurTokType = TOK_RPAREN Then Consume;
+    If CurTokType = TOK_SEMI Then Consume;
+    Exit;
+  End;
+  VarName := CurTokStr;
+  Consume;
+  VarSym := FindSym(VarName);
+  If VarSym = 0 Then
+  Begin
+    Error('Variable non declaree : ' + VarName);
+    If CurTokType = TOK_RPAREN Then Consume;
+    If CurTokType = TOK_SEMI Then Consume;
+    Exit;
+  End;
+  { Deuxieme argument : mode (In_File, Out_File) - on ignore }
+  If CurTokType = TOK_COMMA Then
+  Begin
+    Consume;
+    If CurTokType = TOK_IDENT Then Consume;
+  End;
+  { Troisieme argument : nom de fichier }
+  If CurTokType = TOK_COMMA Then
+  Begin
+    Consume;
+    ParseExpr;  { EAX = pointeur vers chaine nom fichier }
+  End
+  Else
+  Begin
+    Error('Nom de fichier attendu pour Open');
+    If CurTokType = TOK_RPAREN Then Consume;
+    If CurTokType = TOK_SEMI Then Consume;
+    Exit;
+  End;
+  Expect(TOK_RPAREN, '`)` attendu apres arguments Open');
+  { Appeler _ADART_FOPEN }
+  EmitI('PUSH EAX');
+  EmitI('CALL ' + ADA_RT_PFX + 'FOPEN');
+  { Stocker le handle dans la variable }
+  GenStoreVar(VarSym);
+  If CurTokType = TOK_SEMI Then Consume;
+End;
+
+{ ---- GenTextIOCloseInline : Close (File) --------------------- }
+{ Ada.Text_IO.Close (F)                                           }
+Procedure GenTextIOCloseInline;
+Begin
+  EmitComment('Ada.Text_IO.Close');
+  If CurTokType <> TOK_LPAREN Then
+  Begin
+    Error('`(` attendu apres Close');
+    Exit;
+  End;
+  Consume; { ( }
+  ParseExpr;  { EAX = handle du fichier }
+  Expect(TOK_RPAREN, '`)` attendu apres argument Close');
+  EmitI('PUSH EAX');
+  EmitI('CALL ' + ADA_RT_PFX + 'FCLOSE');
+  If CurTokType = TOK_SEMI Then Consume;
+End;
+
+{ ---- GenTextIOGetLineInline : Get_Line (file or console) ----- }
+{ Get_Line (Buf, Last)      -> console (stdin)                    }
+{ Get_Line (F, Buf, Last)   -> fichier                            }
+Procedure GenTextIOGetLineInline;
+Var
+  ArgCount : Integer;
+  VarName1, VarName2, VarName3 : TString;
+  Sym1, Sym2, Sym3 : Integer;
+Begin
+  EmitComment('Ada.Text_IO.Get_Line');
+  If CurTokType <> TOK_LPAREN Then
+  Begin
+    Error('`(` attendu apres Get_Line');
+    Exit;
+  End;
+  Consume; { ( }
+  { Compter les arguments pour distinguer console (2) et fichier (3) }
+  { Premier argument est toujours un identifiant }
+  If CurTokType <> TOK_IDENT Then
+  Begin
+    Error('Identifiant attendu pour Get_Line');
+    ParseExpr;
+    If CurTokType = TOK_RPAREN Then Consume;
+    If CurTokType = TOK_SEMI Then Consume;
+    Exit;
+  End;
+  VarName1 := CurTokStr;
+  Consume;
+  Sym1 := FindSym(VarName1);
+
+  If CurTokType <> TOK_COMMA Then
+  Begin
+    Error('Virgule attendue apres premier argument Get_Line');
+    If CurTokType = TOK_RPAREN Then Consume;
+    If CurTokType = TOK_SEMI Then Consume;
+    Exit;
+  End;
+  Consume; { , }
+
+  If CurTokType <> TOK_IDENT Then
+  Begin
+    Error('Identifiant attendu pour Get_Line');
+    ParseExpr;
+    If CurTokType = TOK_RPAREN Then Consume;
+    If CurTokType = TOK_SEMI Then Consume;
+    Exit;
+  End;
+  VarName2 := CurTokStr;
+  Consume;
+  Sym2 := FindSym(VarName2);
+
+  If CurTokType = TOK_COMMA Then
+  Begin
+    { 3 arguments : Get_Line (F, Buf, Last) - mode fichier }
+    Consume; { , }
+    If CurTokType <> TOK_IDENT Then
+    Begin
+      Error('Identifiant attendu pour Get_Line');
+      ParseExpr;
+      If CurTokType = TOK_RPAREN Then Consume;
+      If CurTokType = TOK_SEMI Then Consume;
+      Exit;
+    End;
+    VarName3 := CurTokStr;
+    Consume;
+    Sym3 := FindSym(VarName3);
+    Expect(TOK_RPAREN, '`)` attendu apres arguments Get_Line');
+
+    { Mode fichier : F=Sym1, Buf=Sym2, Last=Sym3 }
+    If (Sym1 > 0) And (Sym2 > 0) And (Sym3 > 0) Then
+    Begin
+      EmitComment('Get_Line fichier');
+      { Charger handle }
+      GenLoadVar(Sym1);
+      EmitI('PUSH EAX');   { push handle }
+      { Charger adresse buffer }
+      GenLoadAddr(Sym2);
+      EmitI('PUSH EAX');   { push adresse buffer }
+      EmitI('CALL ' + ADA_RT_PFX + 'FGET_LINE');
+      { EAX = longueur lue, stocker dans Last }
+      GenStoreVar(Sym3);
+    End
+    Else
+      Error('Variables non declarees pour Get_Line');
+  End
+  Else
+  Begin
+    { 2 arguments : Get_Line (Buf, Last) - mode console }
+    Expect(TOK_RPAREN, '`)` attendu apres arguments Get_Line');
+    If (Sym1 > 0) And (Sym2 > 0) Then
+    Begin
+      EmitComment('Get_Line console');
+      GenLoadAddr(Sym1);
+      EmitI('PUSH EAX');
+      GenLoadAddr(Sym2);
+      EmitI('PUSH EAX');
+      EmitI('CALL ' + ADA_RT_PFX + 'GET_LINE');
+    End
+    Else
+      Error('Variables non declarees pour Get_Line');
+  End;
+  If CurTokType = TOK_SEMI Then Consume;
+End;
+
 { ---- IsTextIOProc : detecter un appel Ada.Text_IO ------------ }
 { Retourne le nom court de la procedure Text_IO (PUT, PUT_LINE,  }
 { NEW_LINE, SET_COL, GET, GET_LINE) ou '' si ce n est pas un     }
@@ -6204,7 +6727,8 @@ Begin
     End;
   { Nom court direct (si enregistre dans SubTab via GenTextIOStubs) }
   If (U = 'PUT') Or (U = 'PUT_LINE') Or (U = 'NEW_LINE') Or
-     (U = 'SET_COL') Then
+     (U = 'SET_COL') Or (U = 'CREATE') Or (U = 'OPEN') Or
+     (U = 'CLOSE') Or (U = 'GET_LINE') Then
     IsTextIOProc := U;
 End;
 
@@ -6234,7 +6758,15 @@ Begin
     Begin GenTextIONewLineInline; Exit; End;
     If TIOProc = 'SET_COL' Then
     Begin GenTextIOSetColInline; Exit; End;
-    { GET / GET_LINE : passer au traitement normal (stubs existants) }
+    If TIOProc = 'CREATE' Then
+    Begin GenTextIOCreateInline; Exit; End;
+    If TIOProc = 'OPEN' Then
+    Begin GenTextIOOpenInline; Exit; End;
+    If TIOProc = 'CLOSE' Then
+    Begin GenTextIOCloseInline; Exit; End;
+    If TIOProc = 'GET_LINE' Then
+    Begin GenTextIOGetLineInline; Exit; End;
+    { GET : passer au traitement normal (stubs existants) }
   End;
 
   Sub := FindSub(ProcName);
